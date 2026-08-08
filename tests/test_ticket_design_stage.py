@@ -519,6 +519,30 @@ def test_promote_rejects_design_required_with_unfilled_section(board_git, capsys
 
 
 @requires_git
+def test_promote_rejects_design_required_even_when_section_is_filled(board_git, capsys):
+    """설계 절을 다 채워도 `design: required` 면 promote 가 거부한다 (엄격 promote).
+
+    claim 게이트와 같은 판정이 승격 자리에도 걸린다 — **설계 검토 완료(`done`/`waived`)가
+    open 진입 조건**이라, 절만 채우고 검토 없이 공유 보드에 올리는 경로를 막는다. 미충전
+    케이스만 있으면 "채우면 통과"로 오독되므로 충전 케이스를 따로 못박는다(T-0594 R1 공백).
+    """
+    board_dir = board_git._board_dir
+    assert board_git.cmd_new(_new_args(estimate="large")) == 0
+    draft = _draft_path(board_dir)
+    fm, _ = board_git.load_ticket(draft)
+    assert fm["design"] == board_git.DESIGN_REQUIRED
+    board_git.dump_ticket(draft, fm, _body())      # 설계 절까지 전부 충전·필드만 required
+
+    assert board_git.cmd_promote(argparse.Namespace(id=fm["id"])) == 1
+    err = capsys.readouterr().err
+    assert "design-pending" in err
+    assert board_git.DESIGN_DONE in err, "승격 처방(design: done)이 안내에 없다."
+    assert list((board_dir / "tickets" / ".drafts").glob("T-*-*.md")), \
+        "거부된 draft 는 .drafts/ 에 남아야 한다."
+    assert not list((board_dir / "tickets" / "open").glob("T-*-*.md"))
+
+
+@requires_git
 def test_promote_accepts_filled_design_section_with_done(board_git):
     """설계 절 완성 + `design: done` draft 는 승격(rc=0)·open/ 이동."""
     board_dir = board_git._board_dir

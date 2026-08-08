@@ -23,7 +23,7 @@ type: reference
 
 ### Ticket 본문
 - **self-contained 의무.** 새 세션이 본문만 보고 작업 시작 가능해야. template 만 채워 두면 안 됨.
-- 표준 섹션: 목표 / 인터페이스 / 결정 / 완료 조건 / 참고 / 메모.
+- 표준 섹션(7절): 목표 / 인터페이스 / 결정 / 설계 / 완료 조건 / 참고 / 메모. `## 설계` 는 frontmatter `design: required` 인 ticket 만 채운다(`n/a`·`waived` 는 뼈대 유지·게이트 비대상).
 - 참고: spec / ADR / 의존 모듈 / 패턴 reference (이미 done 된 비슷한 ticket).
 - 본문에 정확한 함수/라인·인터페이스·패턴 reference 를 넣어 dev 읽기 범위와 cold subagent 컨텍스트를 제한한다.
 - ticket 크기는 노력 + 컨텍스트 두 축이다. `estimate` 가 small 이어도 touches 에 대형 파일이 있거나 광범위 읽기가 필요하면 **분할하거나** 정확한 함수/라인·패턴 reference 로 pre-digest 한다. 큰 ticket pre-digest 는 architect 위임 후보.
@@ -93,7 +93,12 @@ additional_reviewer.model=gpt-5.6-sol
 additional_reviewer.reasoning=max
 ```
 
-`external_review_enabled=true` 는 설정된 외부 전송과 통상 과금에 대한 **지속 동의**다 — 켠 뒤에는 리뷰마다·라운드 상한 재개마다 사용자에게 비용을 다시 묻지 않는다. 라운드/wave 상한(`--ack-rounds`·`--ack-wave`)은 비용 게이트가 아니라 기계적 anti-loop 정지다: rc=4 면 `--rounds-report` 로 장부를 읽고, **같은 scope 의 정상 수렴이면 PM 이 자율로 ack** 하며 판단 근거를 log 에 남긴다. 사용자에게 올리는 경우는 진짜 미수렴(같은 findings 반복·판정 진동)·중대한 scope 확대·그 밖의 독립적 사용자 게이트 사유다.
+`external_review_enabled=true` 는 설정된 외부 전송과 통상 과금에 대한 **지속 동의**다 — 켠 뒤에는 리뷰마다·상한 재개마다 사용자에게 비용을 다시 묻지 않는다. 라운드/wave 상한은 비용 게이트가 아니라 기계적 anti-loop 정지이며 축마다 규율이 다르다:
+
+- **리뷰 라운드 축(연장 승인 없음)** — 상한 3회(`review_rounds_max`), 직전 라운드 대비 must-fix 증가는 상한 전 조기 차단이다. rc=4 면 `--rounds-report` 로 장부를 읽고 **재설계·티켓 분할**로 전환한다(남은 지적은 다음 티켓 목표로 이동). 라운드를 연장하는 승인 플래그는 폐지됐고, 옛 플래그를 붙여 호출하면 rc=1 로 거부된다. 직전 지적의 해소 확인만 필요하면 게이트당 1회 `--confirm-fix`(확인 전용 라운드)를 쓰며, 거기서 나온 신규 발견은 재설계 신호로 본다.
+- **wave 예산 축(재개 ack 유지)** — rc=4 면 `--rounds-report` 로 장부를 읽고 **같은 scope 의 정상 수렴이면 PM 이 자율로 `--ack-wave`** 하며 판단 근거를 log 에 남긴다. 예산을 열어도 라운드 축의 수렴 판정은 그대로 닫혀 있다.
+
+사용자에게 올리는 경우는 중대한 scope 확대·그 밖의 독립적 사용자 게이트 사유다.
 
 레거시 `reviewer_cmd` 를 쓰던 채택자는 그대로 동작한다 — 엔진이 자동 마이그레이션하지 않고, 온보딩도 기존 결정을 덮지 않는다.
 
@@ -132,8 +137,8 @@ ticket 본문의 목표 / 인터페이스 / 결정 / DoD 대로 수행.
 
 ### Wave 구성 (9 단계)
 
-1. **ticket 발행** — PM 자율 (pm_role.md §"자율 + 사후 로그"). 본문은 self-contained: 목표 / 인터페이스 / 결정 / DoD / 참고 / 메모.
-2. **claim** — `/pm-wave-claim T-NNNN`. DoD self-containment·depends_on·placeholder·wikilink dangling 검증 후 claim.
+1. **ticket 발행** — PM 자율 (pm_role.md §"자율 + 사후 로그"). 본문은 self-contained: 목표 / 인터페이스 / 결정 / 설계(`design: required` 만) / DoD / 참고 / 메모.
+2. **claim** — `/pm-wave-claim T-NNNN`. DoD self-containment·depends_on·placeholder·wikilink dangling 검증 후 claim. `design: required` ticket 은 설계 절 완성 + `design: done|waived` 승격 전까지 claim 이 rc=1 로 차단된다.
 3. **dev background 위임** — `/pm-dev-delegate T-NNNN --role developer`. Agent 툴 `run_in_background: true`. **병렬 시 touches disjoint 필수** (file 겹침 0).
 4. **(병렬 wave) dev 실행 중 PM 안전 작업** — touches 와 겹치지 않는 파일 편집·다른 ticket 본문 작성·`.project_manager/wiki/` 페이지 정비. ⚠️ touches 겹치는 파일 편집 금지(reviewer `git diff` 오염). ⚠️ 회귀 baseline 측정도 race 위험 — dev cycle 후 한 번에.
 5. **reviewer 위임 + 추가 리뷰어 교차** — `/pm-dev-delegate T-NNNN --role code-reviewer` (background) **+ 추가 리뷰어 병행**. 내부 reviewer 프롬프트에 *"status.md / log/current.md 갱신은 orchestrator 담당 — 그 누락은 developer must-fix 아님"* 명시. 추가 리뷰어 must-fix 와 내부 must-fix 를 합쳐 6단계에서 처리.

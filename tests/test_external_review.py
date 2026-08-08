@@ -4,9 +4,10 @@
 한 게이트 클러스터 25라운드). PM 자의 "수렴 판단"을 기계 판정으로 대체한다
 ([[mechanize-dont-instruct-llm]]): `--gate <T-NNNN>` 별 라운드 장부
 (`.project_manager/.local/review_rounds.json`·per-clone·git-ignored)에 실 전송 count 를 쌓고,
-승인 없이 limit(local.conf `external_review_round_limit`·기본 4)을 넘기면 실행 *전에* 거부(전용 rc
-`EXIT_ROUND_LIMIT_EXCEEDED`)하고 "사용자 보고·대기" loud 안내를 낸다. 사용자 승인 후 `--ack-rounds`
-로만 재개(+limit 창).
+limit(local.conf `external_review_round_limit`·기본 4)을 넘기면 실행 *전에* 거부(전용 rc
+`EXIT_ROUND_LIMIT_EXCEEDED`)하고 loud 안내를 낸다. **재개 승인 경로는 없다**(T-0593 이 라운드 연장
+승인을 폐지 — 이 파일의 `--ack-rounds` 리터럴은 전부 "어느 표면에서도 rc=1 로 거부된다"는 단언이다).
+출구는 재설계·티켓 분할이고, 직전 must-fix 해소 확인만 게이트당 1회 `--confirm-fix` 로 한다.
 
 T-0583 이 같은 장부에 두 축을 더한다: 라운드별 **산출**(`rounds` — 판정 rc·must-fix 수) append 와
 게이트별 상한과 **별개**인 wave 단위 총 예산(`wave` 절 · local.conf `external_review_wave_budget`·

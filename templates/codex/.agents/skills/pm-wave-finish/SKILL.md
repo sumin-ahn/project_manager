@@ -25,12 +25,19 @@ python3 .project_manager/tools/ticket_finish.py T-NNNN
 
 1. **회귀 측정** — `pytest tests/ -q`. red면 즉시 중단하고 dev 재작업. ticket complete도 차단한다.
 2. **log/current.md skeleton append** — `## [YYYY-MM-DD] complete | T-NNNN — <title>`; 본문은 `<PM: 무엇을·왜>` placeholder.
-3. **board.py complete T-NNNN** — `--tests-pass` 가드 후 open→done.
+3. **board.py complete T-NNNN** — `--tests-pass` 가드 + **DoD 부기 게이트** 후 open→done.
 4. **git stage** — ticket frontmatter `touches` ∪ 이 실행이 실제 쓴 산출물만 `git add`:
    - `.project_manager/wiki/log/current.md`
    - legacy 형상(board 미분리·**출하 기본**)에서 옮긴 ticket의 옛/새 경로
 
 ADR(`decisions/`)·domain 페이지·`architecture.md`·`status.md`는 다른 실행의 산출물이므로 자동 stage하지 않는다. 이번 작업에서 고쳤다면 아래 3단계에서 PM이 경로를 직접 나열한다. commit도 PM이 한다.
+
+> **DoD는 실행 전에 마감한다.** `board.py complete`는 ticket 본문 `## 완료 조건` 절의 체크박스를 전부 본다 — 통과 형태는 두 가지뿐이다.
+>
+> - `- [x] <원문>` — 실제로 했다.
+> - `- [>] <원문> (이월: <사유·귀속>)` — 안 했고, 사유와 귀속(다음 ticket·wave 종료 측정 등)을 같은 줄에 남기고 이월했다.
+>
+> 미체크(`- [ ]`)나 사유 없는 `- [>]`가 하나라도 남으면 3단계에서 rc=1로 차단되고, 2단계 log skeleton은 이미 append된 상태다. 본문을 고친 뒤 재실행하면 중복 entry가 생기므로 **실행 전에** 본문 DoD를 마감한다.
 
 > **[4/5] 잔여 보고는 둘 다 확인한다.**
 >

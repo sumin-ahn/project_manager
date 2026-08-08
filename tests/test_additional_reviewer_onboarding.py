@@ -27,6 +27,8 @@ from pathlib import Path
 
 import pytest
 
+from _repo_owned_inventory import OWNED, repo_owned_paths
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 TEMPLATE_DIRS = ("claude_code", "codex", "opencode")
@@ -38,6 +40,24 @@ EXPECTED_DEFAULTS = (
     ("additional_reviewer.harness", "codex"),
     ("additional_reviewer.model", "gpt-5.6-sol"),
     ("additional_reviewer.reasoning", "max"),
+)
+
+# 폐지된 라운드 연장 승인 플래그 (T-0593) — 출하 문서에서 0 이어야 한다(축 5 가드).
+RETIRED_ROUND_ACK_FLAG = "--ack-rounds"
+# 새 수렴 게이트(T-0593)의 카드 서술 계약 — 문장이 아니라 **규율 4요소**를 못박는다:
+# 상한 3회 · 발산 조기 차단 · 확인 전용 라운드 1회(신규 발견은 재설계 신호) · 출구는 재설계/분할.
+# 두 판정 경계는 엔진(`_convergence_refusal`)과 글자로 맞춘다 — 상한 도달은 must-fix 잔존과 무관한
+# 차단이고(사유 라벨만 `cap-unresolved`/`cap-reached` 로 갈린다), 조기 차단은 **strict 증가**만이다
+# (평탄 3→2→2 는 조기 차단이 아니라 상한에서 걸린다). 이 둘을 느슨하게 적으면 카드가 "must-fix 0
+# 이면 4라운드째가 열린다"·"평탄도 조기 차단" 같은 없는 경로를 가르친다.
+CONVERGENCE_GATE_CONTRACTS = (
+    "review_rounds_max",
+    "라운드 상한 3회",
+    "must-fix 잔존과 무관하게 차단",
+    "발산 조기 차단",
+    "--confirm-fix",
+    "신규 발견은 재설계 신호",
+    "재설계·티켓 분할",
 )
 
 CANONICAL_PM_REVIEW = REPO / ".claude" / "skills" / "pm-review" / "SKILL.md"
@@ -723,15 +743,18 @@ def test_codex_pm_review_card_is_self_contained_for_egress():
 
 
 def test_codex_pm_review_card_states_durable_consent_and_mechanical_caps():
-    """지속 동의 + 라운드 상한의 PM 자율 ack 가 codex 카드에 명시된다."""
+    """지속 동의 + 수렴 게이트 규율(3R·발산(증가) 차단·confirm-fix 1회)이 codex 카드에 명시된다."""
     text = CODEX_PM_REVIEW.read_text(encoding="utf-8")
     assert "external_review_enabled=true" in text
     assert "후속 호출마다 비용을 다시 묻지 않는다" in text
     assert "기계적 anti-loop 정지" in text
     assert "--rounds-report" in text
-    assert "PM이 자율로 `--ack-rounds`" in text
+    for contract in CONVERGENCE_GATE_CONTRACTS:
+        assert contract in text, f"수렴 게이트 서술 누락: {contract}"
+    # 재개 ack 가 남은 축은 wave 예산 하나 — 라운드 축엔 연장 승인 경로가 없다.
+    assert "--ack-wave" in text
+    assert RETIRED_ROUND_ACK_FLAG not in text
     # 폐기된 규율: 재개 때마다 사용자 승인을 요구하던 문장.
-    assert "승인 없이 `--ack-rounds` 금지" not in text
     assert "사용자가 계속을 승인한 경우에만" not in text
 
 
@@ -756,7 +779,7 @@ def test_codex_egress_metadata_does_not_leak_into_shared_cards():
 
 
 def test_shared_pm_review_cards_use_active_role_and_durable_consent():
-    """공용 카드도 추가 리뷰어 역할·지속 동의·PM 자율 ack 규율을 고정한다."""
+    """공용 카드도 추가 리뷰어 역할·지속 동의·수렴 게이트 규율을 고정한다."""
     for path in SHARED_PM_REVIEW_CARDS:
         text = path.read_text(encoding="utf-8")
         assert "# /pm-review — 추가 리뷰어 교차검증 게이트" in text, path
@@ -764,8 +787,10 @@ def test_shared_pm_review_cards_use_active_role_and_durable_consent():
         for key, value in EXPECTED_DEFAULTS:
             assert f"{key}={value}" in text, (path, key)
         assert "기계적 anti-loop 정지" in text, path
-        assert "PM이 자율로 `--ack-rounds`" in text, path
-        assert "승인 없이 `--ack-rounds` 금지" not in text, path
+        for contract in CONVERGENCE_GATE_CONTRACTS:
+            assert contract in text, (path, contract)
+        assert "--ack-wave" in text, path
+        assert RETIRED_ROUND_ACK_FLAG not in text, path
         assert "사용자가 계속을 승인한 경우에만" not in text, path
         assert "후속 호출마다 비용을 다시 묻지 않는다" not in text, path
         assert "리뷰마다·라운드 상한 재개마다 사용자에게 비용을 다시 묻지 않는다" in text, path
@@ -833,16 +858,23 @@ def test_readme_documents_optin_tuple_and_no_per_review_reapproval():
 
 
 def test_pm_role_makes_cap_ack_autonomous_not_a_cost_gate():
-    """PM 매뉴얼: 정상 수렴 ack 는 자율 영역, 사용자 게이트는 비용이 아니라 판단."""
+    """PM 매뉴얼: wave 예산 ack 는 자율 영역, 라운드 축은 연장 승인 자체가 없다."""
     text = (REPO / ".project_manager" / "wiki" / "pm_role.md").read_text(
         encoding="utf-8"
     )
-    # ack 두 축이 *자율* 절에 들어 있어야 한다 — 사용자 게이트 절이 아니라.
+    # 남은 ack 축(wave 예산)이 *자율* 절에 들어 있어야 한다 — 사용자 게이트 절이 아니라.
     autonomous = text.split("**자율+사후")[1].split("**사용자 게이트")[0]
-    assert "--ack-rounds" in autonomous and "--ack-wave" in autonomous
+    assert "--ack-wave" in autonomous
     assert "정상 수렴 ack" in autonomous
+    # 폐지된 라운드 연장 승인은 자율 목록에서도 문서 전체에서도 사라져야 한다.
+    assert RETIRED_ROUND_ACK_FLAG not in text
     assert "비용 동의는 **켤 때 한 번**이다" in text
     assert "기계적 anti-loop 정지" in text
+    # 새 규율: 라운드 축의 출구는 재설계·티켓 분할이고 예외는 확인 전용 라운드 1회다.
+    assert "리뷰 라운드 축은 연장 승인이 없다" in text
+    assert "review_rounds_max" in text
+    assert "--confirm-fix" in text
+    assert "재설계·티켓 분할" in text
 
 
 def test_active_docs_have_no_per_round_user_cost_approval_rule():
@@ -993,6 +1025,115 @@ def test_codex_cards_keep_dollar_skill_entry_notation():
         heading = next(ln for ln in text.splitlines() if ln.startswith("# "))
         assert heading.startswith(f"# ${card.parent.name}"), (card, heading)
         assert not heading.startswith(f"# /{card.parent.name}"), card
+
+
+# ── 축 5: 폐지된 라운드 연장 승인 플래그 잔재 0 (T-0598) ─────────────────────
+#
+# T-0593 이 라운드 연장 승인을 엔진에서 폐지했다(호출하면 rc=1 거부·아무것도 실행 안 함). 출하
+# 문서가 그 플래그를 계속 가르치면 PM 이 존재하지 않는 출구를 시도하고, 문서-엔진 모순이 그대로
+# 운영 지침이 된다. 그래서 출하 표면의 **잔존 0** 을 기계로 못박는다. 잔존이 정당한 자리는 셋뿐:
+#   - `CHANGELOG.md` — 릴리즈 히스토리(그 시점의 동작 서술).
+#   - 엔진 `external_review.py` — 폐지 거부 안내 문구 + 구 장부 필드(`acked_through`) 해석 주석.
+#   - **명시된 테스트 파일들** — 폐지 동작(거부)·구 장부 해석을 단언하는 테스트 자신.
+# `tests/` 를 통째로 빼지 않는 이유: 그러면 테스트 docstring 에 남은 *옛 흐름 서술*(실제로 R1 이
+# `test_external_review.py` 에서 잡았다)을 가드가 영영 못 본다. 파일을 이름으로 적고, 각 파일이
+# 실제로 그 문자열을 갖고 있는지까지 단언해 목록이 썩지 않게 한다.
+# 히스토리 디렉토리 제외는 두지 않는다 — dev-state(log·decisions·tickets 상태·sealed spike)는 PM
+# 홈 repo 소유라 이 제품 repo 스캔에 애초에 없다(`.gitkeep` 뿐). 검증할 수 없는 공허한 예외는
+# allowlist 를 헐겁게만 만든다.
+_RETIRED_ACK_SCAN_SUFFIXES = {".md", ".py"}
+# 엔진의 폐지 안내·구 장부 해석이 사는 파일 (canonical + 템플릿 미러 4벌 모두 같은 이름).
+_RETIRED_ACK_ENGINE_FILE = "external_review.py"
+# 폐지 동작을 단언하느라 플래그 리터럴이 정당하게 남는 테스트 (파일명 명시 — 디렉토리 통째 아님).
+_RETIRED_ACK_TEST_FILES = (
+    "tests/test_additional_reviewer_onboarding.py",   # 이 가드 자신(상수·부재 단언)
+    "tests/test_external_review.py",                  # 어느 표면에서도 거부됨을 단언
+    "tests/test_raw_output_ledger.py",                # 폐지 플래그 argv 의 장부 무변경
+    "tests/test_review_convergence_gate.py",          # 수렴 축 서술(폐지 사실 인용)
+)
+
+
+def _retired_ack_scan_targets() -> list[Path]:
+    """폐지 플래그 잔존을 검사할 출하 표면 (allowlist 제외 후)."""
+    targets: list[Path] = []
+    for path in repo_owned_paths(REPO, ".", mode=OWNED):
+        if not path.is_file() or path.suffix.lower() not in _RETIRED_ACK_SCAN_SUFFIXES:
+            continue
+        rel = path.relative_to(REPO).as_posix()
+        if rel == "CHANGELOG.md" or rel in _RETIRED_ACK_TEST_FILES:
+            continue
+        if path.name == _RETIRED_ACK_ENGINE_FILE:
+            continue
+        targets.append(path)
+    return targets
+
+
+def test_retired_round_ack_flag_has_no_residue_in_shipping_surfaces():
+    """출하 문서·코드 전수에 폐지된 라운드 연장 승인 플래그가 0건이다."""
+    residue = [
+        f"{path.relative_to(REPO).as_posix()}:{lineno}"
+        for path in _retired_ack_scan_targets()
+        for lineno, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), 1)
+        if RETIRED_ROUND_ACK_FLAG in line
+    ]
+    assert not residue, (
+        f"폐지된 연장 승인 플래그 잔존({RETIRED_ROUND_ACK_FLAG}) — 새 흐름"
+        "(3R 상한·발산(증가) 차단·confirm-fix 1회·출구=재설계/분할)으로 고쳐라:\n  "
+        + "\n  ".join(residue)
+    )
+
+
+def test_retired_round_ack_scan_covers_the_swept_surfaces():
+    """스캔 인벤토리가 sweep 대상을 실제로 포함한다 — 빈/좁은 스캔의 false-green 방지."""
+    scanned = {path.relative_to(REPO).as_posix() for path in _retired_ack_scan_targets()}
+    for rel in (
+        ".claude/skills/pm-review/SKILL.md",
+        "templates/claude_code/.claude/skills/pm-review/SKILL.md",
+        "templates/opencode/.claude/skills/pm-review/SKILL.md",
+        "templates/codex/.agents/skills/pm-review/SKILL.md",
+        ".project_manager/wiki/pm_role.md",
+        ".project_manager/wiki/pm_playbook.md",
+        "templates/codex/.project_manager/wiki/pm_playbook.md",
+        ".project_manager/tools/pm_bootstrap.py",
+    ):
+        assert rel in scanned, f"sweep 대상이 스캔 밖: {rel}"
+
+
+def test_retired_round_ack_allowlist_entries_are_load_bearing():
+    """allowlist 는 실제로 그 문자열을 담은 자리만 뺀다 — 빈 예외는 가드를 헐겁게 만든다."""
+    engine = (TOOLS / _RETIRED_ACK_ENGINE_FILE).read_text(encoding="utf-8")
+    assert RETIRED_ROUND_ACK_FLAG in engine      # 거부 안내 + 구 장부 필드 해석 주석
+    assert "폐지" in engine
+    assert RETIRED_ROUND_ACK_FLAG in (REPO / "CHANGELOG.md").read_text(
+        encoding="utf-8")                        # 릴리즈 히스토리
+    for rel in _RETIRED_ACK_TEST_FILES:          # 목록이 썩으면(잔존 0 파일이 남으면) red
+        path = REPO / rel
+        assert path.is_file(), f"allowlist 대상 부재: {rel}"
+        assert RETIRED_ROUND_ACK_FLAG in path.read_text(encoding="utf-8"), (
+            f"{rel} 에 더는 폐지 플래그가 없다 — allowlist 에서 빼라(스캔 대상 복귀)."
+        )
+
+
+def test_retired_round_ack_allowlisted_tests_teach_the_new_flow():
+    """allowlist 테스트의 *산문*(모듈 docstring)은 폐지된 재개 흐름을 가르치지 않는다.
+
+    파일 단위 allowlist 의 값은 "리터럴은 허용, 옛 흐름 서술은 불허"다 — 거부를 단언하는 코드는
+    플래그를 쓸 수밖에 없지만, 그 파일의 docstring 이 "승인 후 재개"를 계속 설명하면 읽는 사람이
+    폐지 사실을 놓친다(R1 실측 지적).
+    """
+    retired_prose = ("승인 후 `--ack-rounds`", "승인 후에만 `--ack-rounds`",
+                     "`--ack-rounds`로만 재개", "`--ack-rounds` 로만 재개")
+    # 이 파일 자신은 제외 — 폐기 문구를 *열거* 하는 자리라 정당하다(test_terminology `_SELF` 동형).
+    self_rel = Path(__file__).resolve().relative_to(REPO).as_posix()
+    offenders = [
+        f"{rel} — {phrase}"
+        for rel in _RETIRED_ACK_TEST_FILES
+        if rel != self_rel
+        for phrase in retired_prose
+        if phrase in (REPO / rel).read_text(encoding="utf-8")
+    ]
+    assert not offenders, "테스트 산문에 폐지된 재개 흐름 잔존:\n  " + "\n  ".join(offenders)
 
 
 # ── canonical ↔ 3 템플릿 parity (온보딩을 싣는 엔진·방법론) ──────────────────

@@ -30,7 +30,8 @@ python3 .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   
 
 전부 충족할 때만 claim한다. 실패하면 ticket 본문부터 보강한다(pm_playbook.md §메타 정책 "Ticket 본문").
 
-- [ ] **표준 섹션** — 목표 / 인터페이스 / 결정 / 완료 조건 / 참고 / 메모(6절). lint는 **목표·완료 조건·참고 3개만** 누락 차단(`_REQUIRED_SECTIONS`)하므로 인터페이스·결정·메모는 PM이 채운다. `<...>` placeholder도 0개여야 한다(lint 차단).
+- [ ] **표준 섹션** — 목표 / 인터페이스 / 결정 / 설계 / 완료 조건 / 참고 / 메모(7절). lint는 **목표·완료 조건·참고 3개만** 누락 차단(`_REQUIRED_SECTIONS`)하므로 인터페이스·결정·메모는 PM이 채운다. `## 설계`는 `design: required` 티켓만 채운다(아래 항목). `<...>` placeholder도 0개여야 한다(lint 차단).
+- [ ] **설계 단계 해소** — frontmatter `design:`이 `done` / `"waived: <사유>"` / `n/a`(필드 부재 포함) 중 하나여야 한다. `required`로 남아 있거나 `## 설계` 절이 뼈대(경계 실측·불변식·표면 상한·테스트 전략)면 **claim이 rc=1로 거부**된다. 설계 절을 완성하고 설계 검토(리뷰어 세션 겸임·상한 2라운드)를 마친 뒤 PM이 `design: done`을 수동 기입한다. 작성 규칙은 `/pm-ticket` §설계 단계.
 - [ ] **depends_on 모두 done** — open/claimed 의존이면 차단. blocked 의존은 reason 확인.
 - [ ] **touches 명시** — wave 병렬의 touches disjoint 안전성 검증에 필요. 누락 시 보강.
 - [ ] **wikilink dangling 0개** — `[[name]]`이 실제 페이지·메모리·ADR·ticket을 가리키는지 lint 또는 별도 회귀 가드로 확인.
@@ -55,10 +56,11 @@ PM 자율 claim 가능(pm_role.md §"자율 + 사후 로그"):
 - **depends_on 미충족** → 의존 ticket 우선 진행 또는 본 ticket blocked 처리.
 - **lint warning** → 의존성 모순 fix.
 - **wikilink dangling** → log/current.md 메타 entry 인용을 link 형태 또는 raw 단어로 재작성.
+- **design 미해소** → claim이 `cannot claim <T-NNNN>: 설계 단계 미완 — …`로 rc=1 거부한다(`design-pending` 라벨은 lint·promote 출력에만 붙는다). `## 설계` 절을 채우고 설계 검토 후 `design: done` 기입. 설계가 불필요하면 `design: "waived: <사유>"`로 사유를 남긴다(콜론이 들어가므로 YAML 따옴표 필수).
 
 ## 제약
 
-- board.py lint 자동 검증은 placeholder·표준 섹션 중 목표/완료 조건/참고·순환 의존이다. DoD verify-able·self-containment·게이트 분류는 PM이 수동 검증한다.
+- board.py lint 자동 검증은 placeholder·표준 섹션 중 목표/완료 조건/참고·순환 의존이다. `design: required` 미해소는 lint에서 `design-pending` 경고 1줄(never-block)이고 실제 차단은 claim/promote가 한다. DoD verify-able·self-containment·게이트 분류는 PM이 수동 검증한다.
 - wave 안 **1 ticket 1 claim**. 동시 다중 claim 금지.
 - dev/reviewer 위임 ticket도 PM이 claim한다(board.py claim은 orchestrator/PM 영역). 서브에이전트는 구현/검토만 한다.
 - ticket 본문 self-contained 의무와 claim 워크플로의 단일 진실은 `.project_manager/wiki/pm_role.md`.
