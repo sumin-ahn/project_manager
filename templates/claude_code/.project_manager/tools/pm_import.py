@@ -2954,13 +2954,52 @@ def _load_file_lock():
     )
 
 
+def _local_conf_lock_path(conf_path: Path) -> Path:
+    """conf writer 직렬화 락 경로 — 공용 seam 의 유도 규칙을 그대로 쓴다(pm_update 사본과 동형).
+
+    같은 conf 를 건드리는 모든 writer 가 같은 파일에 도달해야 배타가 성립하므로 규칙은
+    `file_lock.conf_lock_path` 한 곳이 소유한다. 그 함수가 없는 **구세대 file_lock 사본**에서는
+    같은 규칙의 인라인 폴백으로 계산한다(`conf_lock_path`·`local_conf_write_lock` 는 rev 중간에
+    들어왔고 `ENGINE_REV` 는 릴리스 단위로 찍히므로, 같은 rev 안에서도 사본의 API 형상이 갈릴 수
+    있다). marked rev skew 는 여기서도 삼키지 않는다 — 부분 사본 진단을 잃지 않는다.
+    """
+    try:
+        return _load_file_lock().conf_lock_path(conf_path)
+    except Exception as exc:  # noqa: BLE001 — 일반 형제 손상만 인라인 유도로 물러난다.
+        if _is_engine_rev_skew(exc):
+            raise
+        return Path(conf_path).parent / ".local" / "local-conf.lock"
+
+
+def _conf_lock_section(lock, conf_path: Path):
+    """로드된 `file_lock` 사본의 API 형상에 맞는 conf 락 구간을 만든다 (부분 업그레이드 호환).
+
+    새 `local_conf_write_lock` 이 있으면 그것을 쓴다. 없고 구 `exclusive_file_lock` 만 있는 사본
+    (같은 rev 로 찍혔지만 새 seam 이전 파일)에서는 **같은 락 파일**을 구 API 로 잡는다 —
+    AttributeError 로 죽으면 복구 채널이 자기 자신을 못 고치고, 다른 파일을 잡으면 배타가 조용히
+    사라진다. 둘 다 없으면 None = 종전 복구 계약의 무락 진행(프리미티브 *부재* 에만 허용).
+    """
+    section = getattr(lock, "local_conf_write_lock", None)
+    if callable(section):
+        return section(conf_path)
+    legacy = getattr(lock, "exclusive_file_lock", None)
+    if callable(legacy):
+        return legacy(_local_conf_lock_path(conf_path))
+    return None
+
+
 @contextlib.contextmanager
 def _local_conf_write_lock(conf_path: Path):
     """conf 를 쓰는 구간의 배타락 — 락 seam 을 못 읽으면 무락으로 진행한다(fail-soft).
 
     경로 유도는 `file_lock.conf_lock_path` 한 곳이 소유한다(board init·pm_update 온보딩과 같은
     파일에 도달해야 배타가 성립). 무락 폴백은 `file_lock` 자신의 규약과 같은 선택이다
-    (프리미티브 *부재* 에만 허용 — 여기서 부재는 형제 모듈을 못 읽는 손상 사본이다).
+    (프리미티브 *부재* 에만 허용 — 여기서 부재는 형제 모듈을 못 읽는 손상 사본이거나 락
+    프리미티브가 없는 구세대 사본이다·`_conf_lock_section`).
+
+    구간의 단위는 write 가 아니라 **"이 conf 를 읽고 판단하고 쓰는" 전체**다 — 현재 상태를 락
+    밖에서 읽어 계획을 세우면 그 계획이 커밋 시점엔 이미 낡아(stale plan) 그사이 들어온 결정을
+    덮는다. 호출부는 존재 판정·현재 텍스트 읽기·계획·쓰기·postcondition 을 이 안에 둔다.
     """
     try:
         lock = _load_file_lock()
@@ -2968,10 +3007,11 @@ def _local_conf_write_lock(conf_path: Path):
         if _is_engine_rev_skew(exc):
             raise
         lock = None
-    if lock is None:
-        yield None
+    section = None if lock is None else _conf_lock_section(lock, conf_path)
+    if section is None:
+        yield lock
         return
-    with lock.local_conf_write_lock(conf_path):
+    with section:
         yield lock
 
 
@@ -2988,7 +3028,9 @@ def _write_conf_keys(path: Path, updates: dict[str, str]) -> bool:
     실효값 검증도 같은 구간에 둔다(락 밖에서 다시 읽으면 남의 정상 append 를 불일치로 오판한다).
 
     **재진입 금지** — 호출부는 이 함수를 conf 락을 쥔 채 부르지 않는다(현 호출부는 전부 락 밖:
-    pm_import 의 sync/preserve/record_*, pm_update.record_upstream_revs, pm_config upstream set).
+    pm_import 의 sync_local_conf/record_*, pm_config upstream set). 이미 락을 쥔 구간
+    (pm_import.reapply_preserved_conf_keys·pm_update.record_upstream_revs)은
+    `_write_conf_keys_locked` 를 직접 부른다.
     """
     with _local_conf_write_lock(path):
         return _write_conf_keys_locked(path, updates)
@@ -3064,22 +3106,34 @@ def reapply_preserved_conf_keys(dest_root: Path, original_text: str) -> bool:
     문자열로만 다루므로 점 표기(`additional_reviewer.harness`)든 채택자가 만든 커스텀
     `additional_reviewer.<임의>` 든 그대로 왕복한다. 레거시 `reviewer_cmd` 를 구조적 튜플로
     **자동 마이그레이션하지 않고**, 사용자가 이미 쓴 튜플 값도 덮지 않는다(원문 보존).
+
+    보존 대상 계산은 **쓰기와 같은 락 구간 안**이다. 현재 conf 를 락 밖에서 읽어 계획을 세우면
+    그사이 다른 진입(추가 리뷰어·위임 opt-in)이 기록한 새 결정이 "현재 conf 에 없는 키" 로 남아,
+    백업에 있던 **옛 값이 새 결정을 덮는다**(예: 백업 `external_review_enabled=false` 가 방금
+    기록된 `true` 를 되돌린다). 백업 텍스트 파싱은 대상 conf 와 경쟁하지 않으므로 락 밖이다.
     """
     local_conf = dest_root / ".project_manager" / "local.conf"
     if not local_conf.is_file():
+        # conf 자체가 없는 형상에 락 파일을 만들지 않는 값싼 단축(pm_update.record_upstream_revs
+        # 와 같은 규약) — "쓰지 않는다" 만 결정하고 어떤 write 계획의 입력도 아니다. 권위 판정은
+        # 락 안에서 다시 한다.
         return False
-    current_text = local_conf.read_text(encoding="utf-8")
-    current_keys = _parse_conf_keys(current_text)
-    original_keys = _parse_conf_keys(original_text)
-    # board init 이 새로 쓴 local.conf 에 *없는* 기존 사용자 키만 복원(init 값 우선).
-    preserved = {
-        key: value
-        for key, value in original_keys.items()
-        if key not in current_keys
-    }
-    if not preserved:
-        return False
-    if _write_conf_keys(local_conf, preserved):
+    original_keys = _parse_conf_keys(original_text)  # 대상 conf 와 무경쟁 — 락 밖.
+    with _local_conf_write_lock(local_conf):
+        if not local_conf.is_file():
+            return False
+        current_keys = _parse_conf_keys(local_conf.read_text(encoding="utf-8"))
+        # board init 이 새로 쓴 local.conf 에 *없는* 기존 사용자 키만 복원(init 값 우선).
+        preserved = {
+            key: value
+            for key, value in original_keys.items()
+            if key not in current_keys
+        }
+        if not preserved:
+            return False
+        # 락을 이미 쥐었으므로 임계 구간 본문을 직접 부른다(`_write_conf_keys` 재호출 = 재진입).
+        changed = _write_conf_keys_locked(local_conf, preserved)
+    if changed:
         kept = "·".join(sorted(preserved))
         print(f"✓ 기존 local.conf 사용자 키 보존: {kept}")
         return True

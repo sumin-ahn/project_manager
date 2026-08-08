@@ -618,7 +618,16 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   anchor 가 모두 유일하게 해소됐다(`_slice_replace` 의 count==1 단언 통과). 두 실행이
 #   PM_NONINTERACTIVE=1 이라 질문·conf write 는 여전히 발화하지 않으므로 배달 의미도 불변이고,
 #   현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "58ba6f815fd94fa4dcab162425b64f6f8bfffaed72a3c15fc1f361b5275502c9"
+#   T-0590 R6 에서 또 이동 — conf 락 구간이 "쓰기" 에서 "읽기→계획→쓰기→검증" 으로 넓어졌다.
+#   들어온 것은 `_conf_lock_section`(구세대 file_lock 사본 호환·518행대)과 rev 기록의 계획 분리
+#   (`_upstream_rev_updates`·`_warn_missing_conf_for_rev`·`record_upstream_revs` 본문·2081행대)뿐이다.
+#   역적용 delta 의 anchor 는 `sync_adapter_configs`(4488행대)·`_print_adapter_config_finding`·
+#   `_main` 수렴 블록(5449행대)이라 겹치는 구간이 없고, 이번에도 네 anchor 가 모두 유일하게
+#   해소됐다(`_slice_replace` 의 count==1 단언 통과). 배달 경계(source/manifest planning → apply →
+#   self-update 순서)는 불변이며, 이 테스트의 두 실행은 PM_NONINTERACTIVE=1 이라 온보딩 질문·
+#   conf write 가 발화하지 않는다. rev 기록은 두 실행 모두에서 종전과 같은 키를 같은 값으로
+#   쓴다(락이 추가됐을 뿐 기록 의미 불변) — 현재화한 것은 기대 SHA 하나뿐이다.
+_T0585_PM_UPDATE_SHA256 = "7667a25f97eec1802fdc3fea23da04aa2d3555dc9a9532a7960e0e0f90a30b8a"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).

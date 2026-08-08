@@ -506,8 +506,10 @@ def _local_conf_lock_path(conf_path: Path) -> Path:
     같은 conf 를 건드리는 **모든** writer(board init 의 전체/병합 write·두 진입의 opt-in append·
     pm_import 의 키 writer)가 같은 파일에 도달해야 배타가 성립한다. 규칙을 도구마다 복제하면 한
     사본만 어긋나도 직렬화가 조용히 사라지므로 `file_lock.conf_lock_path` 한 곳이 소유한다.
-    seam 을 못 읽는 손상 사본(복구 채널)에서는 같은 규칙의 인라인 폴백으로 경로만 계산한다 —
-    그 경우 락 자체가 없으므로(아래 `_local_conf_write_lock`) 경로는 진단용이다.
+    `conf_lock_path` 를 못 읽는 사본(형제를 아예 못 읽는 손상 사본·그 함수 이전의 구세대 사본)에서는
+    같은 규칙의 인라인 폴백으로 계산한다. 손상 사본에서는 락 자체가 없어(아래
+    `_local_conf_write_lock`) 이 경로가 진단용이지만, 구 `exclusive_file_lock` 만 있는 사본에서는
+    **실제로 잡는 경로**다(`_conf_lock_section`) — 그래서 폴백이 공용 seam 과 글자 단위로 같아야 한다.
     """
     try:
         return _load_file_lock().conf_lock_path(conf_path)
@@ -515,22 +517,45 @@ def _local_conf_lock_path(conf_path: Path) -> Path:
         return Path(conf_path).parent / ".local" / "local-conf.lock"
 
 
+def _conf_lock_section(lock, conf_path: Path):
+    """로드된 `file_lock` 사본의 API 형상에 맞는 conf 락 구간을 만든다 (부분 업그레이드 호환).
+
+    새 `local_conf_write_lock` 이 있으면 그것을 쓴다. 없고 구 `exclusive_file_lock` 만 있는 사본
+    (같은 rev 로 찍혔지만 새 seam 이전 파일 — `ENGINE_REV` 는 릴리스 단위라 같은 rev 안에서도 API
+    형상이 갈릴 수 있고 이 로더는 rev 를 확인하지 않는다)에서는 **같은 락 파일**을 구 API 로
+    잡는다: AttributeError 로 죽으면 복구 채널이 자기 자신을 못 고치고, 다른 파일을 잡으면 배타가
+    조용히 사라진다. 둘 다 없으면 None = 종전 복구 계약의 무락 진행(프리미티브 *부재* 에만 허용).
+    """
+    section = getattr(lock, "local_conf_write_lock", None)
+    if callable(section):
+        return section(conf_path)
+    legacy = getattr(lock, "exclusive_file_lock", None)
+    if callable(legacy):
+        return legacy(_local_conf_lock_path(conf_path))
+    return None
+
+
 @contextlib.contextmanager
 def _local_conf_write_lock(conf_path: Path):
     """conf 커밋 구간의 배타락 — 락 seam 을 못 읽으면 무락으로 진행한다(fail-soft).
 
     무락 폴백은 `file_lock` 자신의 규약과 같은 선택이다(프리미티브 *부재* 에만 허용). 여기서
-    부재는 형제 모듈을 못 읽는 손상 사본이고, 그때도 재읽기→재판정→단일 추가라는 좁은 구간은
-    그대로 남는다.
+    부재는 형제 모듈을 못 읽는 손상 사본이거나 락 프리미티브가 없는 구세대 사본
+    (`_conf_lock_section`)이고, 그때도 재읽기→재판정→단일 추가라는 좁은 구간은 그대로 남는다.
+
+    구간의 단위는 write 가 아니라 **"이 conf 를 읽고 판단하고 쓰는" 전체**다 — 현재 상태를 락
+    밖에서 읽어 계획을 세우면 커밋 시점엔 이미 낡은 계획(stale plan)이라 그사이 들어온 결정을
+    잘못된 분기로 덮거나 누락한다.
     """
     try:
         lock = _load_file_lock()
     except Exception:  # noqa: BLE001 — 복구 채널은 형제 손상으로 죽지 않는다.
         lock = None
-    if lock is None:
-        yield None
+    section = None if lock is None else _conf_lock_section(lock, conf_path)
+    if section is None:
+        yield lock
         return
-    with lock.local_conf_write_lock(conf_path):
+    with section:
         yield lock
 
 
@@ -2055,6 +2080,26 @@ def _upstream_shape(pm_import, dest_root: Path) -> str:
         return "path"
 
 
+def _upstream_rev_updates(pm_import, dest_root: Path, rev: str) -> dict[str, str]:
+    """이번에 기록할 rev 키 계획 — baseline 은 항상, 관찰값은 **경로 형상에서만**.
+
+    형상 입력은 대상 conf 의 현재 `upstream=` 값이라 이 계산은 conf 락 구간 안에서만 유효하다
+    (락 밖에서 세운 계획은 커밋 시점에 이미 낡을 수 있다 — 동시 `upstream set` 이 path↔URL 을
+    뒤집으면 stale 형상으로 `upstream_seen_rev` 을 잘못 쓰거나 빠뜨린다). 계획을 락 안에서 다시
+    세울 수 있게 분리한 조각이다.
+    """
+    updates = {"upstream_rev": rev}
+    if _upstream_shape(pm_import, dest_root) == "path":
+        updates[_SEEN_REV_KEY] = rev
+    return updates
+
+
+def _warn_missing_conf_for_rev(local_conf: Path) -> tuple[bool, dict[str, str]]:
+    """local.conf 부재 — rev 기록을 graceful 생략하고 `record_upstream_revs` 반환값을 낸다."""
+    print(f"경고: local.conf 없음 ({local_conf}) — upstream_rev 기록 건너뜀.", file=sys.stderr)
+    return False, {}
+
+
 def record_upstream_revs(dest_root: Path, source_root: Path) -> tuple[bool, dict[str, str]]:
     """매 sync 후 upstream rev 키들을 dest local.conf 에 **단일 write** 로 기록.
 
@@ -2073,28 +2118,43 @@ def record_upstream_revs(dest_root: Path, source_root: Path) -> tuple[bool, dict
 
     두 키를 한 번의 공용 atomic writer로 묶는다 — 중간 중단에도 baseline 만 앞선 반쪽
     상태가 생기지 않는다(어긋난 두 키 = 거짓 drift 의 원인이었다). rev 읽기는 pm_import 의
-    read_upstream_rev(URL 안전 git 호출), 파일 갱신은 pm_import 의 `_write_conf_keys`(키 중복
-    정규화·atomic replace·실효값 검증·record_upstream_rev·pm_config upstream set 과 동일 백엔드)를
-    재사용한다. git repo 아님·HEAD 해소 실패·pm_import 로드 실패·local.conf 부재는 **graceful
-    생략**(best-effort — sync 자체는 안 깬다).
+    read_upstream_rev(URL 안전 git 호출), 파일 갱신은 pm_import 의 `_write_conf_keys_locked`(키 중복
+    정규화·atomic replace·실효값 검증·record_upstream_rev·pm_config upstream set 과 동일 백엔드의
+    임계 구간 본문)를 재사용한다. git repo 아님·HEAD 해소 실패·pm_import 로드 실패·local.conf
+    부재는 **graceful 생략**(best-effort — sync 자체는 안 깬다).
+
+    conf 존재 판정·형상 판정(`upstream=` 읽기)·updates 계산·atomic write·실효값 검증은 **한
+    락 구간**이다 — 형상을 락 밖에서 읽으면 동시 `pm-config upstream set` 이 path↔URL 을 뒤집는
+    사이 stale 형상으로 계획이 굳어, URL 이 된 conf 에 `upstream_seen_rev`(스킬층 소유)을 쓰거나
+    path 가 된 conf 에서 그 키를 빠뜨린다. source rev 읽기(git·네트워크)는 대상 conf 와 무관하므로
+    락 밖이다 — 사람/네트워크 대기를 임계 구역에 넣지 않는다는 seam 규약 그대로다.
     """
     try:
         pm_import = _load_pm_import()
     except Exception:  # noqa: BLE001 — 로드 실패는 baseline best-effort: sync 를 안 깬다.
         return False, {}
-    rev = pm_import.read_upstream_rev(source_root)
+    rev = pm_import.read_upstream_rev(source_root)  # 대상 conf 와 무관(git) — 락 밖.
     if not rev:
         return False, {}  # git repo 아님·HEAD 해소 실패 — graceful 생략(URL upstream 포함).
 
-    updates = {"upstream_rev": rev}
-    if _upstream_shape(pm_import, dest_root) == "path":
-        updates[_SEEN_REV_KEY] = rev
-
     local_conf = dest_root / ".project_manager" / "local.conf"
     if not local_conf.is_file():
-        print(f"경고: local.conf 없음 ({local_conf}) — upstream_rev 기록 건너뜀.", file=sys.stderr)
-        return False, {}
-    changed = pm_import._write_conf_keys(local_conf, updates)
+        # init 전 트리·출하 템플릿처럼 conf 자체가 없는 형상에 락 파일을 만들지 않는 값싼 단축이다
+        # (권위 판정은 아래 락 안에서 다시 한다 — 이 단축은 "쓰지 않는다" 만 결정하고 어떤 write
+        # 계획의 입력도 아니다). conf 가 그사이 생기면 종전처럼 다음 sync 가 기록한다.
+        return _warn_missing_conf_for_rev(local_conf)
+    if not callable(getattr(pm_import, "_write_conf_keys_locked", None)):
+        # 구세대 pm_import 사본(임계 구간 본문 seam 이전) — 자기-락 writer 로 물러난다. 우리 락을
+        # 쥔 채 부르면 같은 락 파일을 두 fd 로 잡아 데드락이므로 락 밖에서 계획·위임한다(종전 동작:
+        # 그 사본에서만 stale-plan 창이 남는다·부분 업그레이드 복구가 크래시보다 우선).
+        updates = _upstream_rev_updates(pm_import, dest_root, rev)
+        return pm_import._write_conf_keys(local_conf, updates), updates
+
+    with _local_conf_write_lock(local_conf):
+        if not local_conf.is_file():
+            return _warn_missing_conf_for_rev(local_conf)
+        updates = _upstream_rev_updates(pm_import, dest_root, rev)
+        changed = pm_import._write_conf_keys_locked(local_conf, updates)
     return changed, updates
 
 

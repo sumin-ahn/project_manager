@@ -46,9 +46,11 @@
 - **`local.conf` writer 단일 직렬화 경계** — `board init`·두 opt-in·`pm_config`·`pm_import`·
   `pm_update`의 모든 read-plan-write/postcondition 구간이 `file_lock.py`가 소유한 같은
   `local-conf.lock`을 사용한다. 질문 대기 중의 stale snapshot뿐 아니라 서로 다른 writer 종류가
-  동시에 실행될 때도 마지막 writer가 앞선 결정을 되돌리지 않는다. 일반 형제 모듈 손상은 기존
-  복구 채널대로 무락 진행할 수 있지만, 표시된 engine-rev skew는 사용자 입력 오류로 번역하거나
-  삼키지 않고 다시 올린다.
+  동시에 실행될 때도 마지막 writer가 앞선 결정을 되돌리지 않는다. 재-import 보존값 계산과
+  `upstream`의 URL/path 형상 판정도 write와 같은 임계 구간에서 다시 계산해 stale 계획에 의한
+  결정 롤백·`upstream_seen_rev` 오기록/누락을 막는다. 새 conf-lock API가 없는 구세대
+  `file_lock.py` 사본은 같은 락 파일을 구 API로 잡고, 일반 형제 모듈 손상만 기존 복구 채널대로
+  무락 진행한다. 표시된 engine-rev skew는 사용자 입력 오류로 번역하거나 삼키지 않고 다시 올린다.
 - **Codex cross-harness egress 승인 브리지** — `workspace-write` 샌드박스의
   `network_access=false`를 유지한 채 `pm_delegate → claude/opencode/codex CLI` 실위임과
   `external_review.py` 추가 리뷰 송신만 각 진입점의 Codex `exec_command` 건별 승격으로 실행한다.

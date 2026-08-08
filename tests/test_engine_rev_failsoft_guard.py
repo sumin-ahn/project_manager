@@ -874,7 +874,10 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 162 = 160 + T-0590 local.conf 공유락의 두 경계. pm_import 는 일반 형제 모듈 손상을
     #   무락으로 복구하되 마킹된 엔진 skew 를 다시 올리고, pm_config 도 그 skew 를 사용자
     #   입력 RuntimeError 로 번역하지 않고 그대로 전파한다.
-    assert len(report.boundaries) == 162, "propagation sweep boundary ratchet changed"
+    # 163 = 162 + T-0590 R6 부분 업그레이드 호환의 한 경계. pm_import 의 락 경로 유도가
+    #   `conf_lock_path` 없는 구세대 file_lock 사본에서 같은 규칙의 인라인 폴백으로 물러나되,
+    #   마킹된 skew(rev 자체가 다른 사본)는 삼키지 않고 그대로 올린다.
+    assert len(report.boundaries) == 163, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

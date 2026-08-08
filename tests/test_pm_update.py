@@ -620,7 +620,9 @@ def test_record_upstream_revs_writes_both_keys_in_single_pass(
     """두 키는 **공용 writer 한 번**에 묶인다 — baseline 만 앞선 반쪽 상태 불가.
 
     중간 중단 시 두 키가 어긋난 채 남는 것이 바로 이 티켓이 없앤 거짓 drift 의 원인이므로,
-    분리 write 로 되돌아가면 실패한다(회귀 가드).
+    분리 write 로 되돌아가면 실패한다(회귀 가드). 감시 지점은 공용 writer 의 임계 구간 본문
+    (`_write_conf_keys_locked`)이다 — 형상 판정·계획·write 가 한 conf 락 안이라 호출부가 그 본문을
+    직접 부른다(락 재진입 금지).
     """
     dest = tmp_path / "dest"
     _write_local_conf(dest, "upstream=/w/project_manager_1\n")
@@ -631,9 +633,9 @@ def test_record_upstream_revs_writes_both_keys_in_single_pass(
     monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: "onepassrev5")
     monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
     calls: list[dict] = []
-    real_write = pm_import._write_conf_keys
+    real_write = pm_import._write_conf_keys_locked
     monkeypatch.setattr(
-        pm_import, "_write_conf_keys",
+        pm_import, "_write_conf_keys_locked",
         lambda path, updates: (calls.append(dict(updates)), real_write(path, updates))[1])
 
     assert pm_update.record_upstream_revs(dest, source)[0] is True
