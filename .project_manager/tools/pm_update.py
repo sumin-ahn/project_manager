@@ -195,7 +195,7 @@ MANIFEST = REPO / ".project_manager" / "engine.manifest"
 #   해소를 하지 않는 이유는 무거운 external_review 코어를 업데이트 경로로 끌어오지 않기
 #   위해서다 — 여기서는 값만 시드하고 드리프트는 테스트가 잡는다.
 #   `reviewer_cmd` 는 신규 온보딩에서 만들지 않는다(레거시 채택자 전용 키).
-#   게이트 키는 `additional_reviewer_enabled` 로 개칭됐다(T-0597) — 신규 기록은 신키만 쓰고,
+#   게이트 키는 `additional_reviewer_enabled` 로 개칭됐다 — 신규 기록은 신키만 쓰고,
 #   구키 `external_review_enabled` 는 "이미 결정됨" 판정에서만 1릴리즈 더 인정한다(+안내 1줄).
 ADDITIONAL_REVIEWER_ENABLED_KEY = "additional_reviewer_enabled"
 LEGACY_EXTERNAL_REVIEW_ENABLED_KEY = "external_review_enabled"

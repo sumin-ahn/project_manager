@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pm_delegate — cross-harness 역할 위임 채널 (sealed spike cross-harness-delegate).
+"""pm_delegate — cross-harness 역할 위임 채널.
 
 PM 메인세션(claude/codex/opencode 어디든)이 세션을 떠나지 않고 역할 노동
 (developer/researcher/architect/code-reviewer)을 **다른 하네스 CLI subprocess** 로 위임하는
@@ -29,7 +29,7 @@ PM 메인세션(claude/codex/opencode 어디든)이 세션을 떠나지 않고 �
   · 무음 대체 금지 — 채널 실행 실패(스폰 실패·비정상 rc·타임아웃·연결 실패)는 fail-loud rc 로
                   끝난다. 같은 호출 안에서 **명시 fallback tuple 밖의** 다른 하네스/모델로 자동
                   재시도하지 않고, 실패 안내도 다른 수신자를 권하지 않는다(권유가 곧 무기록
-                  대행의 입구다·T-0596). 재위임 = 사람의 명시 재호출 · 실패는 raw 장부에 잔존.
+                  대행의 입구다). 재위임 = 사람의 명시 재호출 · 실패는 raw 장부에 잔존.
   · opt-in 게이트 — `delegate_enabled`(기본 OFF) 비활성 시 rc=3 + stderr 안내(false-green 차단).
   · Codex egress  — Codex sandbox 의 네트워크 차단(`CODEX_SANDBOX_NETWORK_DISABLED`) 환경에서는
                   `--codex-egress-escalated` 호출층 증명이 없는 실행을 스폰·raw 예약·과금 전에
@@ -308,7 +308,7 @@ ACK_FALLBACK_SUPPRESSION_REASON = (
     "`--harness/--model` 로 명시 재실행하거나 승인 없이 통과하도록 프롬프트를 정리하십시오."
 )
 
-# 위임 채널 실패 안내의 공통 꼬리 — **무음 대체 금지**(T-0596). 실행 실패는 fail-loud rc 로 끝나고,
+# 위임 채널 실패 안내의 공통 꼬리 — **무음 대체 금지**. 실행 실패는 fail-loud rc 로 끝나고,
 # 이 호출은 명시 설정(`delegate.<role>[.hard].fallback.*` 원자 tuple) 밖의 다른 하네스/모델로
 # 자동 대체하지 않는다. 실사고: 실패 안내가 "네이티브/다른 하네스로 재시도를 검토하라"였고, 그
 # 문구를 읽은 세션의 native 모델이 위임 대상 작업을 조용히 대행했다 — 장부엔 그 대행 기록이
@@ -4522,7 +4522,7 @@ def _execute_and_collect(
 
     # 미설정 또는 비-인프라 실패 → 현행 fail-loud(rc=1 + stderr + raw 경로). 종료는 전부
     # `fail_loud` 단일 깔때기를 거친다 — 실패 안내가 다른 수신자를 권하면 그 권유가 곧 무기록
-    # 대행의 입구이고, 지점마다 손으로 안내를 잇는 방식은 새 경로에서 반드시 빠진다(T-0596).
+    # 대행의 입구이고, 지점마다 손으로 안내를 잇는 방식은 새 경로에서 반드시 빠진다.
     if timed_out:
         actual_timeout = _timeout_result_summary(result, fallback_timeout=timeout)
         return fail_loud(

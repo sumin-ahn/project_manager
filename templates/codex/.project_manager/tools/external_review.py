@@ -879,7 +879,7 @@ DEFAULT_REVIEWER_CMD = "codex exec --sandbox read-only --skip-git-repo-check"
 # 판정 기준을 무진행으로 교체했고, 벽시계는 "감지기 자체가 고장난 경우"의 유한 상한으로 강등된다.
 # 조정: 일회성 `--timeout`/`--idle-timeout` > local.conf `harness.<reviewer>.wall_timeout`/
 # `.idle_timeout` > 아래 표면-flat legacy 키 > 프로필 선언.
-# opt-in 게이트 키는 사람 역할 이름과 같이 `additional_reviewer_enabled` 로 개칭됐다(T-0597).
+# opt-in 게이트 키는 사람 역할 이름과 같이 `additional_reviewer_enabled` 로 개칭됐다.
 # 구키 `external_review_enabled` 는 **이번 릴리즈까지만** fallback 으로 읽고(신키 우선), 읽히면
 # deprecation 경고 1줄을 낸다 — 엔진은 채택자 local.conf 를 대신 고쳐 쓰지 않는다(자동 마이그레이션
 # 없음). 모듈 파일명·raw 파일 접두·아래 표면-flat legacy 타임아웃 키는 기계 식별자로 그대로 남는다

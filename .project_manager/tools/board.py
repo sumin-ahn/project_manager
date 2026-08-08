@@ -6819,7 +6819,7 @@ def _complete_gate(tid: str, args: argparse.Namespace,
             "ticket)")
 
     # 3. DoD 전항이 체크(`- [x]`)되었거나 사유와 함께 이월(`- [>] … (이월: …)`)되어야 한다.
-    #    미체크 항목이 남은 채 done 이 되면 그 항목은 보드에서 증발한다(T-0596).
+    #    미체크 항목이 남은 채 done 이 되면 그 항목은 보드에서 증발한다.
     if body is not None:
         problems.extend(_dod_open_items(body))
 
@@ -6932,7 +6932,7 @@ INIT_GUIDE = """\
 # 추가 리뷰어(additional reviewer) 첫 opt-in 이 원자적으로 심는 기본 프로필.
 #   사람이 부르는 역할 이름은 **추가 리뷰어**이고, `external_*` 은 이미 기록된 산출물에 박힌 기계
 #   식별자(모듈 파일 이름·raw 파일 접두)와 외부 전송·격리·과금 축에만 남긴다. 게이트 키는
-#   `additional_reviewer_enabled` 로 개칭됐다(T-0597) — 신규 온보딩은 **신키만** 기록하고, 구키
+#   `additional_reviewer_enabled` 로 개칭됐다 — 신규 온보딩은 **신키만** 기록하고, 구키
 #   `external_review_enabled` 는 "이미 결정됨" 판정에서만 1릴리즈 더 인정한다(자동 마이그레이션
 #   없음 — 엔진은 채택자 conf 를 대신 고쳐 쓰지 않는다).
 #   `reviewer_cmd` 는 **신규 온보딩에서 만들지 않는다** — 레거시 키는 이미 쓰는 채택자에게만
