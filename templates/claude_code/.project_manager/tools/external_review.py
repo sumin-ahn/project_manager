@@ -3705,7 +3705,9 @@ def _launch_failed_definitely(exc: BaseException) -> bool:
     """이 예외가 "자식이 뜬 적 없음"을 **확정**하는가.
 
     1순위는 relay 가 스폰 경계에서 붙인 표식(`spawn_failed`)이다 — 그 층만 `Popen` 반환 전후를
-    실제로 본다. `Popen` 성공 뒤의 실패에 같은 종류가 실려 오면 표식이 False 라 여기서도 False 다.
+    실제로 본다. 그래서 종류표에 없는 pre-child 거절(argv NUL 의 `ValueError`)도 표식이 True 면
+    여기서 True 이고, 반대로 `Popen` 성공 뒤의 실패에 종류표의 예외가 실려 와도 표식이 False 라
+    여기서도 False 다(재시도 도중 자식이 한 번이라도 떴던 실행 포함).
     표식이 없는 경로(주입 러너·직접 호출)는 예외 종류만으로 보수적으로 판정한다.
     """
     marked = getattr(exc, "spawn_failed", None)
@@ -3872,7 +3874,9 @@ def _run_reviewer_ex(
                 output += f"\n{exc.output}"
             return False, ReviewerOutput(output, getattr(exc, "stderr", "") or ""), True
         if _launch_failed_definitely(exc):
-            # relay 가 "exec 실패"로 표식한 그 밖의 OSError — 자식이 없으므로 환불 대상이다.
+            # relay 가 스폰 경계에서 "자식 없음"으로 표식한 실패 — 종류는 exec `OSError` 만이
+            # 아니다(argv NUL 의 `ValueError` 처럼 `Popen` 이 fork 전에 거절한 형상도 여기 온다).
+            # 자식이 없었으므로 전송 0·과금 0 이고 환불 대상이다.
             return False, ReviewerOutput(_launch_failure_output(argv, exc)), False
         # 스폰 경계 뒤의 실패는 시작 여부가 불확실하다 — 보수적으로 started=True (상한 우회 방지 >
         # 과잉 카운트). 경계 **전**의 실패는 자식이 아직 없었다는 사실이 확정이라 False 다.

@@ -17,8 +17,10 @@
   기록한다 — `reviewer_cmd` 는 만들지 않는다. 파일 변경이 0인 수렴 `pm_update` 도 같은 첫 opt-in 을
   배달한다. 이미 결정(true/false)이 있으면 다시 묻지 않고, 활성 플래그만 빠진 채 유효한 구조적
   튜플·레거시 `reviewer_cmd`가 있으면 대상은 byte 그대로 두고 플래그만 기록한다. 부분 튜플·이중
-  대상은 쓰기 전에 크게 알리고, stdin EOF는 거절로 박제하지 않는다. 재-import/update 는 커스텀
-  `additional_reviewer.*` 를 포함해 무손실 왕복한다.
+  대상은 쓰기 전에 크게 알리고, stdin EOF는 거절로 박제하지 않는다. 질문에 답하는 동안 다른
+  writer가 설정을 바꿔도 commit 시점에 잠금 안에서 최신 파일을 다시 판정해 새 결정·대상을
+  덮어쓰거나 이중 대상을 만들지 않는다. 재-import/update 는 커스텀 `additional_reviewer.*` 를
+  포함해 무손실 왕복한다.
 - **추가 리뷰어 구조화 실행 계약** — `additional_reviewer.{harness,model,reasoning}` 을 원자적으로
   해소해 codex·claude·opencode 세 하네스를 같은 공용 relay seam 으로 실행한다. 기본값은
   `codex/gpt-5.6-sol/max`, 역할은 하네스별 고정 read-only `code-reviewer`이고, 실행 전 stderr·
@@ -50,6 +52,10 @@
   재질문하지 않는다. 일반 sandbox 오호출은 원격 CLI
   재시도·raw 예약·과금 전 fail-loud하고, 거절/실패를 native GPT로 무음
   대체하지 않는다.
+- **추가 리뷰 실행 예산의 실제 spawn 판정** — 자식 프로세스 생성 여부를 실제 `Popen` 경계에서
+  실행 전체에 걸쳐 단조롭게 기록한다. 첫 재시도에서 이미 자식이 생겼다면 뒤 재시도의 launch
+  실패로 리뷰 예산을 환불하지 않고, NUL argv 같은 pre-child 비-`OSError` 거절은 무실행으로
+  판정해 예약을 되돌린다. `Popen` 이후 초기화·정리 실패는 보수적으로 실행됨으로 유지한다.
 - **worktree git mutation 앵커 가드** — Claude `PreToolUse(Bash)`와 OpenCode hook이 실제 shell
   command word·cwd 전이·Git pathspec을 중앙 `board.py` 판정으로 해석한다. PM 홈의 공유 경로
   mutation은 deny, 활성 canonical slot 안의 명백한 mutation은 allow, 동적 wrapper·복잡 shell·

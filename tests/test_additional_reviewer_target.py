@@ -1420,6 +1420,180 @@ def test_missing_reviewer_binary_refunds_exactly_once_through_finalization(
     assert "스폰 전 중단" not in _raw_text(repo)
 
 
+# ── 스폰 경계 표식의 예산 귀결 (T-0590 R4) ─────────────────────────────────
+#
+# 환불 판정의 입력은 예외 **종류**가 아니라 relay 가 스폰 경계에서 붙인 표식이다. 아래 세 축이
+# 그 귀결을 예산 장부로 못박는다: (1) 재시도 중 자식이 한 번이라도 떴으면 뒤 시도의 기동 실패는
+# 환불하지 않는다, (2) `Popen` 이 fork 전에 거절한 실행(argv NUL)은 전송 0 이라 환불한다,
+# (3) `Popen` 성공 뒤의 같은 종류 예외는 환불하지 않는다.
+
+
+class _FakeClock:
+    """단조 fake clock — sleep 이 advance 해 relay 폴 루프를 결정적으로 전진시킨다."""
+
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def __call__(self) -> float:
+        return self.t
+
+    def advance(self, dt: float) -> None:
+        self.t += dt
+
+
+class _StallingProc:
+    """첫 이벤트가 영원히 오지 않는 fake 자식 — relay 의 startup stall 축을 태운다."""
+
+    def __init__(self) -> None:
+        self.kill_count = 0
+        self._killed = False
+
+    def first_event_ready(self) -> bool:
+        return False
+
+    def poll(self):
+        return -9 if self._killed else None
+
+    def kill(self) -> None:
+        self.kill_count += 1
+        self._killed = True
+
+    def communicate(self, timeout=None):
+        return ("", "")
+
+    def last_event_at(self):
+        return None
+
+    def partial_output(self):
+        return ("", "")
+
+    @property
+    def returncode(self):
+        return self.poll()
+
+
+def _relay_runner(relay, popen, clock, *, retries: int):
+    """기본 러너(`_watchdog_reviewer_run`)와 같은 형상의 러너 — 자식 생성만 대역화한다.
+
+    `popen` seam 하나만 갈아 끼우고 재시도·kill·표식은 **실 relay 코드**가 그대로 한다. 러너를
+    통째로 대역화하면 이 절이 소유한 스폰 경계 표식 계약이 통과 없이 green 이 된다.
+    `on_spawn_attempt` 를 이름으로 선언해 소유권 이전 seam 이 relay 안까지 내려가는 실 배선을
+    유지한다."""
+    def _run(argv, *, input=None, timeout=None, idle_timeout=None,
+             cwd=None, env=None, on_spawn_attempt=None, **_ignored):
+        return relay.run_with_first_event_watchdog(
+            argv, first_event_timeout=5.0, overall_timeout=600.0, retries=retries,
+            idle_timeout=None, popen=popen, clock=clock, sleep=clock.advance,
+            log=[].append, poll_interval=1.0, on_spawn_attempt=on_spawn_attempt,
+        )
+    return _run
+
+
+def test_a_second_attempt_launch_failure_still_charges_the_first_spawn(
+        external, relay, monkeypatch, tmp_path, capsys):
+    """1회차 스폰 + 2회차 기동 실패 = 정확히 두 시도 — 예약은 소비된 채로 남는다(환불 0).
+
+    stall 재시도는 자식을 여러 번 띄운다. 2회차가 exec 에 실패했다고 실행 전체를 '스폰 없음'으로
+    읽으면, **1회차에 이미 나갔을 수 있는 전송**이 라운드·wave 예산에서 사라진다(같은 형상을
+    반복하면 상한이 무한히 우회된다). 종류(FileNotFoundError)가 아니라 실행 단위 표식이 이긴다."""
+    repo = _repo(tmp_path / "repo", _conf())
+    _wire_main(external, monkeypatch, repo)          # 러너 자리는 아래에서 실 relay 로 건다
+    clock = _FakeClock()
+    first = _StallingProc()
+    attempts: list[str] = []
+
+    def popen(argv):
+        if not attempts:
+            attempts.append("spawned")
+            return first
+        attempts.append("launch-failed")
+        raise FileNotFoundError(argv[0])             # 2회차: 자식이 뜨지 못했다
+
+    monkeypatch.setattr(
+        external, "_watchdog_reviewer_run", _relay_runner(relay, popen, clock, retries=1))
+
+    assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 1
+    err = capsys.readouterr().err
+
+    assert attempts == ["spawned", "launch-failed"]  # 정확히 2회 시도
+    assert first.kill_count == 1                     # 1회차 자식은 실제로 떴다가 kill 됐다
+    ledger = _round_ledger(repo)
+    assert ledger["T-0590"]["count"] == 1, "이미 전송됐을 수 있는 실행이 환불됐다"
+    assert ledger[external.WAVE_SECTION_KEY]["spent"] == 1
+    assert "라운드 예약 환불" not in err
+    assert "전송은 일어나지 않았습니다" not in err     # 확정 기동 실패 문구를 쓰면 안 된다
+
+
+def test_a_nul_argv_rejected_before_the_child_refunds_and_the_next_call_still_runs(
+        external, monkeypatch, tmp_path, capsys):
+    """argv NUL 은 `Popen` 이 fork 전에 거절한다(전송 0) — 상한 1 에서도 슬롯이 살아남는다.
+
+    실 러너·실 relay·실 `_WatchedPopen` 을 그대로 태운다(프로세스는 하나도 뜨지 않는다 — 거절이
+    fork 앞이라 hermetic 하다). 종류가 `ValueError` 라 확정 기동 실패 종류표에는 없다: 표식이
+    없으면 보수적으로 '전송됐을 수 있음'이 되어, 상한 1·미완 1 인 채택자는 **한 번도 전송하지
+    못한 채** 다음 호출이 막힌다."""
+    repo = _repo(tmp_path / "repo", {
+        "external_review_enabled": "true",
+        "reviewer_cmd": "my-reviewer --flag\x00bad",     # 인자에 NUL — fork 전 거절
+        "external_review_round_limit": "1",
+        "external_review_incomplete_round_limit": "1",
+    })
+    _wire_main(external, monkeypatch, repo)              # 러너는 실 워치독 그대로
+
+    assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 1
+    capsys.readouterr()
+
+    ledger = _round_ledger(repo)
+    assert (ledger["T-0590"]["count"], ledger["T-0590"]["records"]) == (0, [])
+    assert ledger[external.WAVE_SECTION_KEY]["spent"] == 0
+    raw = _raw_text(repo)
+    assert "실행할 수 없음" in raw and "외부 전송은 일어나지 않았습니다" in raw
+
+    # 환불한 슬롯은 살아 있다 — 상한 1·미완 1 인데 다음 정상 호출이 그대로 전송된다.
+    reviewer = _FakeReviewer(stdout=_PASS_REPLY)
+    monkeypatch.setattr(external, "_watchdog_reviewer_run", reviewer)
+    assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 0
+    capsys.readouterr()
+    assert len(reviewer.calls) == 1
+    assert _round_ledger(repo)["T-0590"]["count"] == 1
+
+
+def _runner_that_spawns_then_raises_marked(reviewer: _FakeReviewer, relay, failure: type):
+    """스폰(=전송)한 뒤 `Popen` 성공 뒤 실패로 죽는 러너 — relay 가 붙이는 표식까지 재현한다."""
+    def _run(argv, *, input=None, timeout=None, idle_timeout=None,
+             cwd=None, env=None, **_ignored):
+        reviewer(argv, input=input, timeout=timeout, idle_timeout=idle_timeout,
+                 cwd=cwd, env=env)
+        exc = failure("Popen 성공 뒤 초기화 실패(주입)")
+        relay._mark_spawn_failed(exc, False)      # `_WatchedPopen` 이 붙이는 그 표식
+        raise exc
+    return _run
+
+
+@pytest.mark.parametrize("failure", [ValueError, PermissionError])
+def test_a_post_spawn_failure_is_never_refunded_whatever_its_type(
+        external, relay, monkeypatch, tmp_path, capsys, failure):
+    """`Popen` 성공 뒤의 실패는 종류와 무관하게 환불하지 않는다 — 자식이 있었던 실행이다.
+
+    NUL 거절과 **같은 종류**(`ValueError`)를 반대편으로 세워, 환불을 종류로 정하는 회귀를 막는다.
+    `PermissionError` 는 확정 기동 실패 종류표에 있는데도 표식이 False 면 환불 대상이 아니다."""
+    repo = _repo(tmp_path / "repo", _conf())
+    reviewer = _FakeReviewer(stdout=_wire("codex"))
+    _wire_main(external, monkeypatch, repo, reviewer)
+    monkeypatch.setattr(
+        external, "_watchdog_reviewer_run",
+        _runner_that_spawns_then_raises_marked(reviewer, relay, failure))
+
+    assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 1
+    err = capsys.readouterr().err
+
+    assert len(reviewer.calls) == 1                       # 전송은 실제로 일어났다
+    ledger = _round_ledger(repo)
+    assert ledger["T-0590"]["count"] == 1
+    assert ledger[external.WAVE_SECTION_KEY]["spent"] == 1
+    assert "라운드 예약 환불" not in err
+
+
 def _missing_binary_runner(argv, *, input=None, timeout=None, idle_timeout=None,
                            cwd=None, env=None, **_ignored):
     """실행 파일 부재 — exec 이 실패해 자식이 **뜬 적 없는** 실 러너 결과(started=False)."""

@@ -1610,8 +1610,9 @@ SPAWN_FAILED_ATTR = "spawn_failed"
 def _mark_spawn_failed(exc: BaseException, failed: bool) -> None:
     """예외에 "자식이 떴는가" 표식을 붙인다 — 이미 붙어 있으면 그대로 둔다(최초 관측이 진실).
 
-    표식의 소유자는 **스폰 경계를 실제로 본 층**이다: `_WatchedPopen` 은 `Popen` 반환 뒤의 실패에
-    False(자식 있었음)를, 워치독 루프는 어댑터에서 나온 exec 실패에 True(자식 없음)를 붙인다.
+    표식의 소유자는 **스폰 경계를 실제로 본 층**이다: `_WatchedPopen` 은 실 `Popen` 호출의 앞뒤를
+    보고 pre-child 거절에 True(자식 없음)를, `Popen` 반환 뒤의 실패에 False(자식 있었음)를 붙이고,
+    워치독 루프는 표식 없는 주입 어댑터의 exec 실패(OSError)에 True 를 붙인다.
     상위(추가 리뷰어 러너)는 이 표식이 있으면 그것을, 없으면 예외 종류만 보고 보수적으로 판정한다.
     속성을 못 받는 예외(슬롯 정의)는 조용히 넘긴다 — 표식 없음은 '판정 유보'라 안전쪽이다.
     """
@@ -1619,6 +1620,20 @@ def _mark_spawn_failed(exc: BaseException, failed: bool) -> None:
         return
     try:
         setattr(exc, SPAWN_FAILED_ATTR, failed)
+    except (AttributeError, TypeError):
+        pass
+
+
+def _mark_child_existed(exc: BaseException) -> None:
+    """이 **실행**에 자식이 한 번이라도 있었음을 못박는다 — 기존 표식도 덮는다.
+
+    `_mark_spawn_failed` 는 최초 관측이 이긴다(같은 시도 안에서 층끼리 서로 덮지 않게). 이 선언은
+    시도를 가로지르는 상위 사실이라 그 규칙 위에 선다: 앞 시도가 자식을 띄웠다면 뒤 시도가 exec 에
+    실패해도 실행 전체는 '자식 없음'이 아니다(앞 자식이 프롬프트를 이미 보냈을 수 있다). 방향은
+    True→False 한쪽뿐이라 단조롭고, 그 쪽이 보수적(전송됐을 수 있음)이다.
+    """
+    try:
+        setattr(exc, SPAWN_FAILED_ATTR, False)
     except (AttributeError, TypeError):
         pass
 
@@ -1664,7 +1679,20 @@ class _WatchedPopen:
         try:
             # 실제 자식 생성도 try 안에 둔다. Popen이 핸들을 반환한 직후부터 아래 후속 초기화
             # (Event/Lock/Thread 생성·start)가 실패해도 같은 트랜잭션에서 자식을 회수한다.
-            spawned = subprocess.Popen(argv, **popen_kwargs)
+            try:
+                spawned = subprocess.Popen(argv, **popen_kwargs)
+            except Exception as pre_child:
+                # `Popen` 이 **자식을 남기지 않고** 거절했다. 이 경계의 거절은 exec 실패
+                # (`OSError`)만이 아니다 — argv 에 NUL 이 섞이면 `ValueError("embedded null
+                # byte")` 가 fork 전에 나고, 잘못된 kwargs 조합도 같은 자리에서 거부된다. 어느
+                # 쪽이든 전송은 0 이다(CPython 은 exec 실패 시 자기가 만든 자식을 회수하고,
+                # 프롬프트를 밀어 넣는 stdin 펌프는 `Popen` 이 돌아온 **뒤에야** 시작한다).
+                # 그래서 판정을 예외 **종류**가 아니라 이 **경계**로 한다 — 종류만 보는 상위
+                # (추가 리뷰어 러너)는 OSError 가 아닌 pre-child 거절을 보수적 '전송됐을 수 있음'
+                # 으로 오분류해 예산을 태운다. `BaseException`(Ctrl-C 등)은 표식 없이 그대로
+                # 올린다: 판정 유보 = 보수쪽이다.
+                _mark_spawn_failed(pre_child, True)
+                raise
             self._proc = spawned
             self._argv = argv
             # start_new_session=True이므로 POSIX 그룹장은 곧 pid다. 부모 종료 후에는 getpgid(pid)를
@@ -2043,8 +2071,14 @@ def run_with_first_event_watchdog(
     지점은 인자 검증·프로필 해소·워치독 준비가 모두 끝나 **다음 문장이 자식을 띄우는** 자리다 —
     그보다 앞의 실패(준비 구간)는 전송이 확실히 0 이라, 이 콜백으로 예산 소유권을 옮기는 호출부가
     그 구간을 환불 대상으로 유지할 수 있다. stall 재시도의 2회차 이후에는 다시 호출하지 않는다
-    (소유권 이전은 실행당 1회이고, 그때는 이미 자식이 한 번 떴다). 어댑터가 exec 에 실패해 던진
-    `OSError` 에는 "자식 없음" 표식(`spawn_failed=True`)을 붙여 다시 던진다.
+    (소유권 이전은 실행당 1회이고, 그때는 이미 자식이 한 번 떴다).
+
+    스폰 실패의 "자식 없음" 표식(`spawn_failed`)은 두 층이 나눠 붙인다. 실 어댑터
+    (`_WatchedPopen`)는 `Popen` 경계를 직접 보므로 pre-child 거절(NUL argv 의 `ValueError`·exec
+    `OSError`)에 True 를, `Popen` 성공 뒤의 초기화 실패에 False 를 붙인다. 이 루프는 표식 없는
+    주입 어댑터의 `OSError` 에만 True 를 덧붙이고, **이 실행에서 자식이 한 번이라도 떴으면**
+    그 뒤 어떤 시도가 어떻게 실패해도 표식을 False 로 못박는다(앞선 자식의 전송이 환불되지
+    않게 — 실행 단위 보수 규칙이 시도 단위 관측을 이긴다).
     overall_timeout 은 호출부의 벽시계 백스톱이다 — 무진행 판정이 켜지면 주 판정 자리를 내주고
     "감지기가 고장난 경우"의 유한 상한으로만 남는다.
     """
@@ -2070,6 +2104,9 @@ def run_with_first_event_watchdog(
     last_silence: float | None = None
     stalled_stdout: list[str] = []
     stalled_stderr: list[str] = []
+    # 이 **실행**에서 자식이 한 번이라도 실제로 떴는가. 재시도 2회차 이후의 기동 실패가 1회차
+    # 자식(이미 전송·과금됐을 수 있다)을 '자식 없음'으로 되돌리지 못하게 막는 상위 사실이다.
+    child_created = False
     for attempt in range(1, attempts + 1):
         # ── 실 스폰 경계 ────────────────────────────────────────────────
         # 여기까지가 "확실히 전송 전"이다(인자 검증·프로필 해소·워치독 준비). 다음 문장이 자식을
@@ -2079,11 +2116,22 @@ def run_with_first_event_watchdog(
             on_spawn_attempt()
         try:
             proc = popen(argv)
-        except OSError as exc:
-            # 어댑터가 exec 자체에 실패했다(파일 부재·권한·경로 형상) — 자식은 뜬 적이 없다.
-            # `_WatchedPopen` 이 Popen 성공 뒤의 실패에 이미 False 를 붙였으면 덮지 않는다.
-            _mark_spawn_failed(exc, True)
+        except BaseException as exc:
+            if child_created:
+                # 앞선 시도의 자식이 이미 떴다 — 그 자식이 프롬프트를 보냈을 수 있으므로 이번
+                # 시도가 무엇으로 실패했든 **실행 전체**를 '자식 없음'으로 만들 수 없다. 여기서
+                # 되돌리면 이미 나간 전송이 예산에서 사라진다(재시도 2회차의 기동 실패가 1회차
+                # 전송을 환불하던 구멍).
+                _mark_child_existed(exc)
+                raise
+            # 첫 자식을 만들다 실패했다 — 자식은 아직 없었다. `_WatchedPopen` 이 실 `Popen`
+            # 경계에서 붙인 표식(pre-child 거절 True·`Popen` 성공 뒤 실패 False)이 1순위고,
+            # 표식 없는 주입 어댑터는 종전 규칙대로 exec 실패 종류(OSError)만 '자식 없음'으로
+            # 확정한다(그 밖의 종류는 표식 없이 올려 상위가 보수적으로 판정한다).
+            if isinstance(exc, OSError):
+                _mark_spawn_failed(exc, True)
             raise
+        child_created = True
         cleaned = False
         try:
             start = clock()

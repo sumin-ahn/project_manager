@@ -2332,3 +2332,114 @@ def test_watched_popen_marks_post_spawn_init_failure_as_spawned(relay, monkeypat
     with pytest.raises(PermissionError) as excinfo:
         relay._WatchedPopen([sys.executable, "-c", "import time; time.sleep(30)"])
     assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is False
+
+
+# ── 스폰 경계 표식: 경계가 종류를 이긴다 (T-0590 R4) ─────────────────────────
+#
+# "자식이 있었나"는 예외 **종류**로 알 수 없다. 같은 `ValueError` 가 `Popen` 이 fork 전에 argv 를
+# 거절한 결과일 수도(전송 0·환불 대상), `Popen` 성공 뒤 초기화가 깨진 결과일 수도(자식 있었음·
+# 과금 가능) 있다. 그래서 판정은 경계를 실제로 본 층이 표식으로 남기고, 상위는 그 표식을 읽는다.
+# 그리고 표식은 **실행 단위**다 — 재시도 중 한 번이라도 자식이 떴으면 그 뒤 어떤 기동 실패도
+# 실행 전체를 '자식 없음'으로 되돌릴 수 없다(앞선 자식이 이미 프롬프트를 보냈을 수 있다).
+
+
+def test_a_second_attempt_launch_failure_never_unmarks_the_first_child(relay):
+    """1회차가 자식을 띄우고 stall → 2회차 기동 실패: 표식은 '자식 있었음'(False)이다.
+
+    시도 단위로만 보면 2회차는 exec 실패라 '자식 없음'이다. 그 표식이 그대로 올라가면 상위가
+    실행 전체를 스폰 0 으로 읽어 **1회차에 이미 나갔을 수 있는 전송**을 환불한다(라운드/wave 예산이
+    조용히 되살아난다). 실행 단위 사실이 시도 단위 관측을 이겨야 한다."""
+    clock = _FakeClock()
+    first = _ScriptedProc(clock, event_times=[], exit_at=None)   # 첫 이벤트가 영원히 안 옴
+    attempts: list[str] = []
+    handoffs: list[int] = []
+
+    def popen(_argv):
+        if not attempts:
+            attempts.append("spawned")
+            return first
+        attempts.append("launch-failed")
+        raise FileNotFoundError("drv")            # 2회차: exec 실패(이 시도엔 자식 없음)
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        relay.run_with_first_event_watchdog(
+            ["drv"], first_event_timeout=5.0, overall_timeout=600.0, retries=1,
+            idle_timeout=None, popen=popen, clock=clock, sleep=clock.advance,
+            log=[].append, poll_interval=1.0,
+            on_spawn_attempt=lambda: handoffs.append(1),
+        )
+
+    assert attempts == ["spawned", "launch-failed"]     # 정확히 2회 시도
+    assert first.kill_count == 1                        # 1회차 자식은 실제로 떴다가 kill 됐다
+    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is False, (
+        "2회차 기동 실패가 1회차 자식을 '자식 없음'으로 되돌렸다 — 나간 전송이 환불된다")
+    assert handoffs == [1]                              # 소유권 이전은 실행당 1회 그대로
+
+
+def test_watched_popen_marks_a_nul_argv_rejection_as_no_child(relay):
+    """argv 에 NUL 이 섞이면 `Popen` 이 fork **전에** `ValueError` 로 거절한다 → 자식 없음.
+
+    OSError 만 '자식 없음'으로 표식하면 이 형상은 표식이 없어, 상위가 보수적으로 '전송됐을 수
+    있음'으로 읽고 예산을 태운다 — 실제로는 프로세스가 만들어진 적이 없다."""
+    with pytest.raises(ValueError) as excinfo:
+        relay._WatchedPopen([sys.executable, "-c", "print(1)\x00"])
+    assert "null" in str(excinfo.value)
+    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is True
+
+
+def test_nul_argv_through_the_real_watchdog_is_marked_no_child(relay):
+    """같은 형상이 실 어댑터를 쓰는 워치독 경로에서도 '자식 없음' 표식으로 올라온다."""
+    handoffs: list[int] = []
+    with pytest.raises(ValueError) as excinfo:
+        relay.run_with_first_event_watchdog(
+            [sys.executable, "-c", "print(1)\x00"],
+            first_event_timeout=None, overall_timeout=30.0, retries=0,
+            idle_timeout=None, log=[].append,
+            on_spawn_attempt=lambda: handoffs.append(1),
+        )
+    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is True
+    assert handoffs == [1]      # 경계 콜백은 종전 자리 그대로 — 되돌림은 표식이 소유한다
+
+
+def test_watched_popen_marks_post_spawn_valueerror_as_spawned(relay, monkeypatch):
+    """`Popen` **성공 뒤**의 `ValueError` 는 자식이 있었던 실행이다 → 표식 False.
+
+    NUL 거절과 **같은 종류**의 예외로 반대편을 세운다: 종류로 환불을 정하면 이 형상이 '전송 0'
+    으로 오분류돼 과금된 실행이 예산에서 사라진다."""
+    class _NoThreads:
+        Event = threading.Event
+        Lock = threading.Lock
+
+        @staticmethod
+        def Thread(*args, **kwargs):        # noqa: N802 — 표준 API 이름을 맞춘다
+            raise ValueError("스레드 생성 거부")
+
+    monkeypatch.setattr(relay, "threading", _NoThreads)
+    with pytest.raises(ValueError) as excinfo:
+        relay._WatchedPopen([sys.executable, "-c", "import time; time.sleep(30)"])
+    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is False
+
+
+def test_cleanup_failure_after_a_post_spawn_valueerror_keeps_the_spawned_mark(
+        relay, monkeypatch):
+    """자식 회수(정리)까지 실패해도 원 예외의 표식은 '자식 있었음' 그대로다.
+
+    정리 실패는 잔존 프로세스 가능성을 뜻하는 **더 나쁜** 형상이다. 여기서 표식이 흔들려 환불
+    쪽으로 넘어가면 과금 가능성이 가장 큰 실행이 예산을 안 먹는다."""
+    class _NoThreads:
+        Event = threading.Event
+        Lock = threading.Lock
+
+        @staticmethod
+        def Thread(*args, **kwargs):        # noqa: N802 — 표준 API 이름을 맞춘다
+            raise ValueError("스레드 생성 거부")
+
+    def _cleanup_boom(*args, **kwargs):
+        raise relay.ProcessCleanupError("정리 실패(주입)")
+
+    monkeypatch.setattr(relay, "threading", _NoThreads)
+    monkeypatch.setattr(relay, "_cleanup_failed_watched_spawn", _cleanup_boom)
+    with pytest.raises(ValueError) as excinfo:
+        relay._WatchedPopen([sys.executable, "-c", "pass"])
+    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is False
+    assert isinstance(excinfo.value.__cause__, relay.ProcessCleanupError)

@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import datetime
 import filecmp
 import os
@@ -222,6 +223,24 @@ ADDITIONAL_REVIEWER_ENABLE_HINT = (
     "local.conf 에 external_review_enabled=true + "
     "additional_reviewer.harness/model/reasoning"
 )
+
+# **이미 대상이 있는** conf 의 안내 — 활성 플래그 한 줄만 말한다(board 사본과 같은 값·같은 이유).
+#   기본 문장을 그대로 쓰면 구조화 3키를 *더* 적으라는 말이 돼, 레거시 `reviewer_cmd` 위에서는
+#   엔진이 거부하는 이중 대상이 되고 구조화 튜플 위에서는 last-wins 로 자기 선언이 덮인다.
+ADDITIONAL_REVIEWER_ENABLE_ONLY_HINT = "local.conf 에 external_review_enabled=true"
+
+# 거절이 기록하는 블록 — 결정 자체는 대상과 무관하므로 한 벌뿐이다(board 사본과 같은 값).
+ADDITIONAL_REVIEWER_DECLINE_BLOCK = (
+    "# 추가 리뷰어 — 기본 OFF. 켜려면 true 로.\n"
+    "external_review_enabled=false\n"
+)
+
+# opt-in 커밋 결과 — 락 안에서 **다시 판정한** 사실이다(질문 시점의 판정이 아니다·board 동형).
+OPTIN_COMMIT_ALREADY = "already"          # 질문하는 사이 활성 키가 생김 → byte 보존 no-op
+OPTIN_COMMIT_BROKEN = "broken"            # 질문하는 사이 대상이 깨짐 → loud no-write
+OPTIN_COMMIT_DEFAULTS = "defaults"        # 대상 없음 + 수락 → 기본 4키
+OPTIN_COMMIT_ENABLE_ONLY = "enable_only"  # 대상 있음 + 수락 → 활성 플래그 한 줄
+OPTIN_COMMIT_DECLINED = "declined"        # 거절 → false 실키
 
 # ── 기존 대상 판정 (온보딩 전용 · 실행 해소 없음 · board 와 같은 규칙) ────────
 # 실행 해소(하네스→실 명령·값 검증)는 external_review 코어가 소유하고, 온보딩이 알아야 하는 것은
@@ -455,6 +474,116 @@ def _is_noninteractive() -> bool:
     )
 
 
+def _additional_reviewer_enable_hint(target: str) -> str:
+    """대상 유무에 맞는 "나중에 켜는 법" 1줄 (비대화형·거절 경로 공용·board 사본과 동형).
+
+    대상이 없으면(`none`) 종전 문장 그대로 — 그 conf 는 활성 플래그와 대상을 **둘 다** 받아야
+    한다. 대상이 이미 있으면 활성 플래그만 안내한다.
+    """
+    return (ADDITIONAL_REVIEWER_ENABLE_HINT if target == REVIEWER_TARGET_NONE
+            else ADDITIONAL_REVIEWER_ENABLE_ONLY_HINT)
+
+
+def _load_file_lock():
+    """공용 파일락 seam(`file_lock.py`)을 같은 tools/ 에서 로드 (`_load_pm_render` 패턴 동형).
+
+    onboarding 응답의 conf write 를 배타락 + 단일 O_APPEND 로 닫는 데만 쓴다. board 처럼 import
+    시점에 바인딩하지 않는 이유는 pm_update 가 **복구 채널**이기 때문이다 — 엔진 사본이 깨진
+    채택자에게도 이 도구는 떠야 하고, 동기가 이미 끝난 뒤의 온보딩 질문이 형제 로드 실패로 죽으면
+    자기 자신을 못 고친다. 그래서 로드 실패는 호출부가 fail-soft 로 받는다(락 없는 단일 추가로
+    물러나되 재읽기·재판정은 유지 — 프로세스 간 배타성만 잃는다).
+    """
+    lock_py = Path(__file__).resolve().parent / "file_lock.py"
+    return _load_module_from_path(
+        lock_py, "file_lock.py", allow_unverified=True, cache=True,
+        cache_key=f"_project_manager_file_lock:{lock_py}",
+    )
+
+
+def _local_conf_lock_path(conf_path: Path) -> Path:
+    """local.conf append 를 직렬화하는 락 경로 — board 사본과 **같은 규칙**으로 유도한다.
+
+    두 온보딩 진입(board init·pm_update)이 같은 conf 에 대해 같은 락 파일에 도달해야 배타가
+    성립한다. 그래서 상수가 아니라 대상 conf 경로에서 유도한다(pm_update 는 `dest_root` 의 conf 를
+    쓴다·board 는 자기 `LOCAL_CONF`).
+    """
+    return Path(conf_path).parent / ".local" / "local-conf.lock"
+
+
+@contextlib.contextmanager
+def _local_conf_write_lock(conf_path: Path):
+    """conf 커밋 구간의 배타락 — 락 seam 을 못 읽으면 무락으로 진행한다(fail-soft).
+
+    무락 폴백은 `file_lock` 자신의 규약과 같은 선택이다(프리미티브 *부재* 에만 허용). 여기서
+    부재는 형제 모듈을 못 읽는 손상 사본이고, 그때도 재읽기→재판정→단일 추가라는 좁은 구간은
+    그대로 남는다.
+    """
+    try:
+        lock = _load_file_lock()
+    except Exception:  # noqa: BLE001 — 복구 채널은 형제 손상으로 죽지 않는다.
+        lock = None
+    if lock is None:
+        yield None
+        return
+    with lock.exclusive_file_lock(_local_conf_lock_path(conf_path)):
+        yield lock
+
+
+def _append_local_conf_atomic(conf_path: Path, block: str, lock) -> None:
+    """conf 끝에 블록을 **한 번의 원자 추가**로 붙인다 (필요한 선행 개행 포함·board 동형).
+
+    개행 보장과 블록 추가를 두 write 로 나누면 그 사이가 또 하나의 창이다 — 선행 개행을 같은
+    문자열에 실어 O_APPEND 단일 write 로 붙인다. 끝 개행 판정은 **바이트**로 한다(디코딩 불가한
+    conf 에서도 마지막 줄을 변질시키지 않게). `lock` 이 None(seam 부재 폴백)이면 같은 의미의
+    stdlib append 로 물러난다.
+    """
+    try:
+        raw = Path(conf_path).read_bytes()
+    except OSError:
+        raw = b""
+    text = ("\n" if raw and not raw.endswith(b"\n") else "") + block
+    if lock is not None:
+        lock.append_atomic(conf_path, text)
+        return
+    with Path(conf_path).open("a", encoding="utf-8") as f:
+        f.write(text)
+
+
+def _commit_additional_reviewer_optin(
+        local_conf: Path, accepted: bool) -> tuple[str, str]:
+    """opt-in 응답을 대상 local.conf 에 확정한다 — 락 안에서 **다시 읽고 다시 판정**한다.
+
+    board.`_commit_additional_reviewer_optin` 과 같은 계약이다. 질문은 사람이 답할 때까지 열려
+    있고, 그동안 다른 행위자가 같은 conf 를 바꿀 수 있다 — 활성 키를 켜거나, 레거시
+    `reviewer_cmd`/구조화 튜플을 새로 적거나, 부분 튜플로 깨뜨린다. 질문 **전** 판정으로 쓰면 그
+    사이 생긴 대상 위에 기본 4키가 얹혀 이중 대상·last-wins 손상이 재현된다. 재읽기→재판정→append
+    를 배타락 + 단일 O_APPEND write 로 닫아 그 사이에 새 창을 만들지 않는다.
+
+    반환 `(결과, 상세)` — 결과는 `OPTIN_COMMIT_*`, 상세는 broken 이면 진단 사유, 그 밖에는 커밋
+    시점의 대상 종류. 사용자 표면 문구는 호출부가 낸다(락 밖).
+    """
+    with _local_conf_write_lock(local_conf) as lock:
+        conf = _read_local_conf(local_conf)
+        if "external_review_enabled" in conf:
+            # 질문하는 사이 결정이 생겼다 — 그 결정이 이긴다(이 응답은 버린다·byte 보존).
+            return OPTIN_COMMIT_ALREADY, ""
+        try:
+            target = classify_additional_reviewer_target(conf)
+        except AdditionalReviewerTargetError as exc:
+            # 질문 전에는 온전했던 대상이 그사이 깨졌다 — 어느 쪽이 이기는지 추측해 쓰지 않는다.
+            return OPTIN_COMMIT_BROKEN, str(exc)
+        if not accepted:
+            block, outcome = ADDITIONAL_REVIEWER_DECLINE_BLOCK, OPTIN_COMMIT_DECLINED
+        elif target == REVIEWER_TARGET_NONE:
+            block, outcome = ADDITIONAL_REVIEWER_OPTIN_BLOCK, OPTIN_COMMIT_DEFAULTS
+        else:
+            # 이미 있는 대상은 한 글자도 건드리지 않는다 — 활성 플래그만 덧붙인다.
+            block, outcome = (ADDITIONAL_REVIEWER_ENABLE_ONLY_BLOCK,
+                              OPTIN_COMMIT_ENABLE_ONLY)
+        _append_local_conf_atomic(local_conf, block, lock)
+        return outcome, target
+
+
 def maybe_prompt_external_review(dest_root: Path) -> None:
     """업데이트 후 추가 리뷰어(additional reviewer) opt-in — 아직 미설정이면 **1회** 묻는다.
 
@@ -466,6 +595,10 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
     구조화 튜플)이 있으면 **활성 플래그 한 줄만** 덧붙여 그 대상을 byte 그대로 둔다. 어느
     경로에서도 `reviewer_cmd` 는 만들지 않는다. 기존 대상이 깨져 있으면(부분 튜플·이중 대상)
     질문도 기록도 하지 않고 진단만 낸다.
+
+    질문 전 판정은 **질문 문구**의 입력일 뿐이다. 기록의 입력은 `_commit_additional_reviewer_optin`
+    이 커밋 시점에 배타락 안에서 다시 읽어 다시 판정한다 — 사람이 답하는 동안 conf 가 바뀌면 옛
+    판정으로 쓴 기본 4키가 그사이 생긴 대상을 이중 대상/last-wins 로 망가뜨린다.
 
     dest_root: 동기화 대상 루트 (루트 또는 타깃). local.conf 는 이 경로 기준으로 읽고 쓴다.
     --target 모드에서 루트 local.conf 를 오염시키지 않기 위해 반드시 effective_dest 를 전달한다.
@@ -490,7 +623,8 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
     # 명시적 비대화 신호 우선: Windows DEVNULL isatty() 신뢰불가 함정 회피.
     # PM_NONINTERACTIVE truthy 면 묻지 않고 안전쪽 skip. isatty 는 보조 폴백(env 없을 때).
     if _is_noninteractive() or not sys.stdin.isatty():
-        print(f"[pm_update] 추가 리뷰어 OFF 유지(비대화형). 켜려면 {ADDITIONAL_REVIEWER_ENABLE_HINT}")
+        print("[pm_update] 추가 리뷰어 OFF 유지(비대화형). 켜려면 "
+              f"{_additional_reviewer_enable_hint(target)}")
         return
     print("\n[pm_update] 추가 리뷰어(additional reviewer·external_review)를 켤까요? 코드 diff 가 "
           "설정된 리뷰 하네스로 *전송*되고 그 하네스에 *과금*됩니다 — 내부 code-reviewer 와 상보적.")
@@ -507,24 +641,25 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
         # 질문이라 결정을 박제하면 안 된다(board.prompt_external_review_optin 과 같은 계약).
         # 아무것도 쓰지 않고 반환한다: 다음 실행이 제대로 된 표면에서 다시 묻는다.
         return
-    # 개행 없는 conf(`…upstream_rev=abc`)에 바로 append 하면 마지막 키가 변질된다(board 온보딩과
-    # 동일 가드). 응답 후에 읽는다 — 질문 동안 바뀌었을 수 있는 실제 끝 상태가 기준.
-    text = local_conf.read_text(encoding="utf-8")
-    with local_conf.open("a", encoding="utf-8") as f:
-        if text and not text.endswith("\n"):
-            f.write("\n")
-        if answer in ("y", "yes"):
-            if target == REVIEWER_TARGET_NONE:
-                f.write(ADDITIONAL_REVIEWER_OPTIN_BLOCK)
-                print("  ✓ 추가 리뷰어 ON (codex · gpt-5.6-sol · reasoning max — "
-                      "local.conf additional_reviewer.* 로 교체 가능)")
-            else:
-                # 이미 있는 대상은 한 글자도 건드리지 않는다 — 활성 플래그만 덧붙인다.
-                f.write(ADDITIONAL_REVIEWER_ENABLE_ONLY_BLOCK)
-                print(f"  ✓ 추가 리뷰어 ON (기존 {target} 대상 유지 — local.conf 의 설정 그대로)")
-        else:
-            f.write("# 추가 리뷰어 — 기본 OFF. 켜려면 true 로.\nexternal_review_enabled=false\n")
-            print(f"  → 추가 리뷰어 OFF (나중에 {ADDITIONAL_REVIEWER_ENABLE_HINT} 로 켤 수 있음).")
+    # 질문 전 판정(target)은 **질문 문구**까지의 입력이다. 기록의 입력(대상 판정·개행 가드)은
+    # 커밋 시점에 배타락 안에서 다시 읽는다 — 질문하는 동안 바뀐 실제 끝 상태가 기준이다.
+    outcome, detail = _commit_additional_reviewer_optin(
+        local_conf, answer in ("y", "yes"))
+    if outcome == OPTIN_COMMIT_ALREADY:
+        print("[pm_update] 질문하는 사이 local.conf 에 external_review_enabled 결정이 생겨 "
+              "그 결정을 그대로 둡니다 — 이 응답은 기록하지 않았습니다.")
+    elif outcome == OPTIN_COMMIT_BROKEN:
+        print(f"[pm_update] ⚠ 추가 리뷰어 설정이 이미 깨져 있어 opt-in 을 기록하지 않습니다: "
+              f"{detail} (local.conf 를 고친 뒤 다시 실행하세요 — 지금은 아무것도 기록하지 "
+              "않았습니다.)")
+    elif outcome == OPTIN_COMMIT_DEFAULTS:
+        print("  ✓ 추가 리뷰어 ON (codex · gpt-5.6-sol · reasoning max — "
+              "local.conf additional_reviewer.* 로 교체 가능)")
+    elif outcome == OPTIN_COMMIT_ENABLE_ONLY:
+        print(f"  ✓ 추가 리뷰어 ON (기존 {detail} 대상 유지 — local.conf 의 설정 그대로)")
+    else:
+        print("  → 추가 리뷰어 OFF (나중에 "
+              f"{_additional_reviewer_enable_hint(detail)} 로 켤 수 있음).")
 
 
 def maybe_prompt_delegate_optin(dest_root: Path) -> None:

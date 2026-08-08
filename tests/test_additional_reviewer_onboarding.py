@@ -1342,3 +1342,269 @@ def test_pm_update_main_eof_leaves_the_conf_untouched(pm_update, monkeypatch, tm
     assert "external_review_enabled" not in _parse_conf(
         conf_path.read_text(encoding="utf-8")
     )
+
+
+# ── 축 6: 판정은 **커밋 시점**의 conf 가 소유한다 (T-0590 R4) ────────────────
+#
+# 질문은 사람이 답할 때까지 열려 있다(수 초~수 분). 그 사이 다른 행위자가 같은 local.conf 를
+# 바꿀 수 있다 — 다른 세션의 `board.py init`, 병렬 `pm_update`, 손으로 여는 편집기. 질문 **전**
+# 판정으로 기록하면 그사이 생긴 대상 위에 기본 4키가 얹혀, 축 4 가 닫은 손상(레거시와의 이중
+# 대상·구조화의 last-wins)이 창만 바꿔 그대로 재현된다. 그래서 기록 직전에 다시 읽고 다시
+# 판정하며, 재읽기→판정→append 는 배타락 + 단일 O_APPEND 로 닫는다.
+
+_ENABLE_ONLY_HINT_TEXT = "local.conf 에 external_review_enabled=true"
+
+
+def _optin_entry(kind, board, pm_update, monkeypatch, tmp_path, text: str):
+    """두 온보딩 진입을 같은 모양으로 세운다 → (conf 경로, 무인자 호출)."""
+    monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
+    if kind == "board":
+        conf = _isolated_conf(board, monkeypatch, tmp_path, text)
+        monkeypatch.setattr(board.sys.stdin, "isatty", lambda: True)
+        return conf, board.prompt_external_review_optin
+    dest, conf = _dest_with_conf(tmp_path / "u", text)
+    monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda self: True})())
+    return conf, lambda: pm_update.maybe_prompt_external_review(dest)
+
+
+def _answer_after_writing(conf: Path, new_text: str, answer: str):
+    """질문 도중(=`input()` 안) conf 를 통째로 바꾸고 답을 돌려주는 stdin 대역."""
+    def _input(prompt=""):
+        conf.write_text(new_text, encoding="utf-8")
+        return answer
+    return _input
+
+
+ENTRIES = ["board", "pm_update"]
+
+
+@pytest.mark.parametrize("kind", ENTRIES)
+@pytest.mark.parametrize(
+    "appeared",
+    [
+        pytest.param("session=pm\nexternal_review_enabled=false\n", id="decided-false"),
+        pytest.param(
+            "session=pm\nexternal_review_enabled=true\n"
+            "additional_reviewer.harness=opencode\n"
+            "additional_reviewer.model=qwen3-coder-next\n",
+            id="decided-true-with-target",
+        ),
+    ],
+)
+def test_a_decision_that_appears_during_the_question_wins_byte_for_byte(
+    board, pm_update, monkeypatch, tmp_path, capsys, kind, appeared
+):
+    """질문 도중 활성 키가 생기면 그 결정이 이긴다 — 이 응답은 한 바이트도 쓰지 않는다."""
+    conf, run = _optin_entry(kind, board, pm_update, monkeypatch, tmp_path, "session=pm\n")
+    monkeypatch.setattr("builtins.input", _answer_after_writing(conf, appeared, "y"))
+
+    run()
+
+    assert conf.read_text(encoding="utf-8") == appeared, "그사이 생긴 결정 위에 덧썼다"
+    assert "기록하지 않았습니다" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("kind", ENTRIES)
+@pytest.mark.parametrize(
+    ("appeared", "label"),
+    [
+        pytest.param(LEGACY_ONLY_CONF, "legacy", id="legacy-appears"),
+        pytest.param(STRUCTURED_ONLY_CONF, "structured", id="structured-appears"),
+        pytest.param(
+            "session=pm\nreviewer_cmd=my-reviewer --flag", "legacy", id="newlineless",
+        ),
+    ],
+)
+def test_a_target_that_appears_during_the_question_gets_only_the_flag(
+    board, pm_update, monkeypatch, tmp_path, kind, appeared, label
+):
+    """질문 시점엔 대상이 없었어도, 커밋 시점에 있으면 활성 플래그 한 줄만 붙는다.
+
+    옛 판정으로 기록하면 레거시 위에는 이중 대상이, 구조화 위에는 last-wins 덮어쓰기가 생긴다.
+    개행 없이 끝난 바이트열도 마지막 대상 줄이 변질되지 않아야 한다."""
+    conf, run = _optin_entry(kind, board, pm_update, monkeypatch, tmp_path, "session=pm\n")
+    monkeypatch.setattr("builtins.input", _answer_after_writing(conf, appeared, "y"))
+
+    run()
+
+    after = conf.read_text(encoding="utf-8")
+    assert after.startswith(appeared), "그사이 생긴 대상의 바이트가 변형됐다"
+    parsed = _parse_conf(after)
+    assert parsed["external_review_enabled"] == "true"
+    if label == "legacy":
+        assert "additional_reviewer." not in after, "레거시 위에 구조화 대상을 겹쳤다(이중 대상)"
+        assert parsed["reviewer_cmd"] == _parse_conf(appeared)["reviewer_cmd"]
+    else:
+        assert "reviewer_cmd" not in after
+        for key, value in EXPECTED_DEFAULTS[1:]:
+            assert parsed[key] != value, f"{key} 가 기본값으로 덮였다(last-wins)"
+
+
+@pytest.mark.parametrize("kind", ENTRIES)
+@pytest.mark.parametrize("appeared", BROKEN_TARGET_CONFS)
+@pytest.mark.parametrize("answer", ["y", "n"])
+def test_a_target_that_breaks_during_the_question_is_a_loud_no_write(
+    board, pm_update, monkeypatch, tmp_path, capsys, kind, appeared, answer
+):
+    """커밋 시점에 대상이 깨져 있으면 어떤 답이 와도 write 0 (loud 진단만)."""
+    conf, run = _optin_entry(kind, board, pm_update, monkeypatch, tmp_path, "session=pm\n")
+    monkeypatch.setattr("builtins.input", _answer_after_writing(conf, appeared, answer))
+
+    run()
+
+    assert conf.read_text(encoding="utf-8") == appeared, "깨진 대상 위에 무언가를 썼다"
+    out = capsys.readouterr().out
+    assert "깨져" in out and "기록하지 않았습니다" in out
+
+
+@pytest.mark.parametrize("kind", ENTRIES)
+def test_a_target_that_disappears_during_the_question_gets_the_defaults(
+    board, pm_update, monkeypatch, tmp_path, kind
+):
+    """반대 방향도 커밋 시점이 이긴다 — 질문 땐 대상이 있었어도 사라졌으면 기본 4키를 심는다.
+
+    옛 판정을 쓰면 활성 플래그만 붙어 **대상 없는 ON** 이 된다(실행이 기본 커맨드로 흘러가거나
+    해소에 실패한다). 질문 문구와 기록이 갈라지는 것은 감수한다 — 정직한 기록이 먼저다."""
+    conf, run = _optin_entry(
+        kind, board, pm_update, monkeypatch, tmp_path, LEGACY_ONLY_CONF)
+    monkeypatch.setattr(
+        "builtins.input", _answer_after_writing(conf, "session=pm\n", "y"))
+
+    run()
+
+    after = conf.read_text(encoding="utf-8")
+    parsed = _parse_conf(after)
+    for key, value in EXPECTED_DEFAULTS:
+        assert parsed[key] == value, f"{key} 미기록/오값: {parsed.get(key)!r}"
+    assert "reviewer_cmd" not in after
+
+
+@pytest.mark.parametrize("kind", ENTRIES)
+def test_declining_after_a_target_appears_records_only_the_flag_and_guides_to_it(
+    board, pm_update, monkeypatch, tmp_path, capsys, kind
+):
+    """거절 계약은 그대로(false 실키 1개) + 안내는 활성 플래그만 말한다.
+
+    이미 대상이 있는 conf 에 "구조화 3키를 더 적으라"고 안내하면, 그 말을 따른 사람이 손으로
+    이중 대상(레거시 위)·last-wins(구조화 위)를 만든다 — 엔진이 write 경로에서 막아 둔 손상이다."""
+    conf, run = _optin_entry(kind, board, pm_update, monkeypatch, tmp_path, "session=pm\n")
+    monkeypatch.setattr(
+        "builtins.input", _answer_after_writing(conf, LEGACY_ONLY_CONF, "n"))
+
+    run()
+
+    after = conf.read_text(encoding="utf-8")
+    assert after.startswith(LEGACY_ONLY_CONF)
+    assert _parse_conf(after)["external_review_enabled"] == "false"
+    assert "additional_reviewer." not in after
+    out = capsys.readouterr().out
+    assert _ENABLE_ONLY_HINT_TEXT in out
+    assert "additional_reviewer.harness/model/reasoning" not in out, (
+        "이미 대상이 있는데 구조화 키를 더 적으라고 안내했다")
+
+
+@pytest.mark.parametrize("kind", ENTRIES)
+@pytest.mark.parametrize(
+    "appeared",
+    [
+        pytest.param(LEGACY_ONLY_CONF, id="target-appeared"),
+        pytest.param("session=pm\nadditional_reviewer.harness=codex\n", id="broken"),
+        pytest.param("session=pm\nupstream_rev=abc123", id="newlineless"),
+    ],
+)
+def test_eof_after_a_conf_change_still_writes_nothing(
+    board, pm_update, monkeypatch, tmp_path, kind, appeared
+):
+    """EOF 계약 불변 — 질문 도중 conf 가 바뀌어도 아무것도 쓰지 않는다(다음 실행이 다시 묻는다)."""
+    conf, run = _optin_entry(kind, board, pm_update, monkeypatch, tmp_path, "session=pm\n")
+
+    def _eof(prompt=""):
+        conf.write_text(appeared, encoding="utf-8")
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", _eof)
+
+    run()
+
+    assert conf.read_text(encoding="utf-8") == appeared
+    assert "external_review_enabled" not in _parse_conf(appeared)
+
+
+@pytest.mark.parametrize("kind", ENTRIES)
+@pytest.mark.parametrize(
+    "existing",
+    [
+        pytest.param(LEGACY_ONLY_CONF, id="legacy-target"),
+        pytest.param(STRUCTURED_ONLY_CONF, id="structured-target"),
+    ],
+)
+def test_noninteractive_guidance_on_an_existing_target_names_only_the_flag(
+    board, pm_update, monkeypatch, tmp_path, capsys, kind, existing
+):
+    """비대화형 안내도 대상이 있으면 활성 플래그만 말한다(대상 없을 때는 종전 문장 그대로)."""
+    conf, run = _optin_entry(kind, board, pm_update, monkeypatch, tmp_path, existing)
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+    monkeypatch.setattr(
+        "builtins.input", lambda prompt="": pytest.fail("비대화형인데 질문함"))
+
+    run()
+
+    assert conf.read_text(encoding="utf-8") == existing
+    out = capsys.readouterr().out
+    assert _ENABLE_ONLY_HINT_TEXT in out
+    assert "additional_reviewer.harness/model/reasoning" not in out
+
+
+def test_the_two_entries_share_the_enable_hint_wording(board, pm_update):
+    """두 사본의 안내 문구·판정이 글자 단위로 같다(드리프트 가드·축 4 의 키 미러와 같은 이유)."""
+    for module in (board, pm_update):
+        assert module.ADDITIONAL_REVIEWER_ENABLE_ONLY_HINT == _ENABLE_ONLY_HINT_TEXT
+        assert module.ADDITIONAL_REVIEWER_ENABLE_HINT == ENABLE_HINT_TEXT
+        assert module._additional_reviewer_enable_hint(
+            module.REVIEWER_TARGET_NONE) == ENABLE_HINT_TEXT
+        for target in (module.REVIEWER_TARGET_LEGACY, module.REVIEWER_TARGET_STRUCTURED):
+            assert module._additional_reviewer_enable_hint(target) == _ENABLE_ONLY_HINT_TEXT
+    assert board.ADDITIONAL_REVIEWER_DECLINE_BLOCK == pm_update.ADDITIONAL_REVIEWER_DECLINE_BLOCK
+
+
+@pytest.mark.parametrize("kind", ENTRIES)
+def test_the_commit_point_append_is_one_write_under_the_shared_lock(
+    board, pm_update, monkeypatch, tmp_path, kind
+):
+    """재읽기→판정→append 가 배타락 안에서 **단일 추가**로 닫힌다(그 사이에 새 창을 안 만든다).
+
+    두 진입이 같은 conf 에 대해 같은 락 파일에 도달해야 직렬화가 성립하므로 경로 규약도 함께
+    못박는다(상수가 아니라 대상 conf 에서 유도)."""
+    conf, run = _optin_entry(kind, board, pm_update, monkeypatch, tmp_path, "session=pm\n")
+    module = board if kind == "board" else pm_update
+    assert module._local_conf_lock_path(conf) == conf.parent / ".local" / "local-conf.lock"
+
+    file_lock = _load("file_lock")
+    appends: list[tuple[str, str]] = []
+    real_append = file_lock.append_atomic
+    locked: list[str] = []
+    real_lock = file_lock.exclusive_file_lock
+
+    def _spy_append(path, text, **kwargs):
+        appends.append((str(path), text))
+        assert locked, "락 밖에서 conf 를 건드렸다"
+        return real_append(path, text, **kwargs)
+
+    def _spy_lock(path, **kwargs):
+        locked.append(str(path))
+        return real_lock(path, **kwargs)
+
+    if kind == "board":
+        monkeypatch.setattr(board.file_lock, "append_atomic", _spy_append)
+        monkeypatch.setattr(board.file_lock, "exclusive_file_lock", _spy_lock)
+    else:
+        loaded = pm_update._load_file_lock()
+        monkeypatch.setattr(loaded, "append_atomic", _spy_append)
+        monkeypatch.setattr(loaded, "exclusive_file_lock", _spy_lock)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+
+    run()
+
+    assert locked == [str(conf.parent / ".local" / "local-conf.lock")]
+    assert [path for path, _text in appends] == [str(conf)]
+    assert appends[0][1] == module.ADDITIONAL_REVIEWER_OPTIN_BLOCK

@@ -601,7 +601,15 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   않도록 대상 판정(classify_additional_reviewer_target)과 활성 플래그 전용 블록이 들어왔고,
 #   EOF 응답이 false 를 박제하지 않게 바뀌었다. 이동 범위는 온보딩 상수/헬퍼와
 #   maybe_prompt_external_review 본문뿐이라 역적용 delta 구간·배달 경계와 겹치지 않는다.
-_T0585_PM_UPDATE_SHA256 = "db9f672c9b10ce5ab9ea29062cadd8f0aa7d6d3e75678758a33116c69df77c77"
+#   T-0590 R4 에서 또 이동 — 온보딩 응답의 기록 시점 판정이 질문 **전** 판정에서 커밋 시점
+#   재읽기·재판정(배타락 + 단일 O_APPEND)으로 바뀌었다. 들어온 것은 온보딩 상수/헬퍼
+#   (`_load_file_lock`·`_local_conf_lock_path`·`_local_conf_write_lock`·
+#   `_append_local_conf_atomic`·`_commit_additional_reviewer_optin`)와
+#   maybe_prompt_external_review 본문, 그리고 `contextlib` import 한 줄뿐이다. 역적용 delta 의
+#   4개 anchor(어댑터 config 게이트·sync_adapter_configs 본문·`_main` 수렴 블록)와 배달 경계
+#   (source/manifest planning → apply → self-update 순서)에는 겹침이 없고, 이 테스트의 두 실행은
+#   모두 PM_NONINTERACTIVE=1 이라 질문·conf write 자체가 발화하지 않는다.
+_T0585_PM_UPDATE_SHA256 = "548e6291e1f259a27744f34780403ecaccbe5c198bb119ec0719a972b7ec812d"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
