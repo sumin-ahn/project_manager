@@ -3168,6 +3168,8 @@ def cmd_upstream(
     try:
         pm_import_mod._write_conf_keys(local_conf, {"upstream": value})
     except RuntimeError as exc:
+        if _is_engine_rev_skew(exc):
+            raise
         print(
             f"[중단] {exc}",
             file=sys.stderr,

@@ -64,6 +64,7 @@ opt-in 실 e2e (CI 비포함 — 토큰·외부모델 비용 발생):
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import errno
 import functools
@@ -2938,13 +2939,63 @@ def _parse_conf_keys(text: str) -> dict[str, str]:
     return conf
 
 
+def _load_file_lock():
+    """공용 파일락 seam(`file_lock.py`)을 같은 tools/ 에서 로드 (pm_update 사본과 동형).
+
+    conf 키 writer 의 임계 구간을 여는 데만 쓴다. import 시점에 바인딩하지 않는 이유는 pm_import
+    가 **복구/도입 채널**이기 때문이다 — 엔진 사본이 부분적으로 깨진 트리에서도 `pm-config
+    upstream set` 같은 키 갱신은 떠야 하고, 형제 로드 실패로 죽으면 자기 자신을 못 고친다.
+    로드 실패는 호출부가 fail-soft 로 받는다(무락 진행 — 프로세스 간 배타성만 잃는다).
+    """
+    lock_py = Path(__file__).resolve().parent / "file_lock.py"
+    return _load_module_from_path(
+        lock_py, "file_lock.py", verifier=_verify_engine_rev, cache=True,
+        cache_key=f"_project_manager_file_lock:{lock_py}",
+    )
+
+
+@contextlib.contextmanager
+def _local_conf_write_lock(conf_path: Path):
+    """conf 를 쓰는 구간의 배타락 — 락 seam 을 못 읽으면 무락으로 진행한다(fail-soft).
+
+    경로 유도는 `file_lock.conf_lock_path` 한 곳이 소유한다(board init·pm_update 온보딩과 같은
+    파일에 도달해야 배타가 성립). 무락 폴백은 `file_lock` 자신의 규약과 같은 선택이다
+    (프리미티브 *부재* 에만 허용 — 여기서 부재는 형제 모듈을 못 읽는 손상 사본이다).
+    """
+    try:
+        lock = _load_file_lock()
+    except Exception as exc:  # noqa: BLE001 — 일반 형제 손상만 무락 복구한다.
+        if _is_engine_rev_skew(exc):
+            raise
+        lock = None
+    if lock is None:
+        yield None
+        return
+    with lock.local_conf_write_lock(conf_path):
+        yield lock
+
+
 def _write_conf_keys(path: Path, updates: dict[str, str]) -> bool:
     """local.conf 키들을 중복 없이 atomic 기록하고 실효값을 검증한다.
 
     `_set_conf_keys`로 모든 갱신 키를 유일화한 뒤 같은 디렉터리의 임시파일을
     `os.replace`하여 부분 쓰기를 막는다. 변경이 없어도 reader와 같은 last-wins 파서로
     postcondition을 확인하며, 불일치는 성공으로 흡수하지 않고 fail-loud한다.
+
+    읽기→교체→검증 전체가 **전 writer 공용 배타락** 안이다. 이 writer 는 커밋 전 내용을 읽고
+    나중에 통째로 갈아끼우므로, 그 사이에 다른 진입이 원자적으로 append 한 결정(추가 리뷰어·
+    위임 opt-in)이 교체본에 없어 사라진다 — 원자성만으로는 못 막고 같은 락을 공유해야 막힌다.
+    실효값 검증도 같은 구간에 둔다(락 밖에서 다시 읽으면 남의 정상 append 를 불일치로 오판한다).
+
+    **재진입 금지** — 호출부는 이 함수를 conf 락을 쥔 채 부르지 않는다(현 호출부는 전부 락 밖:
+    pm_import 의 sync/preserve/record_*, pm_update.record_upstream_revs, pm_config upstream set).
     """
+    with _local_conf_write_lock(path):
+        return _write_conf_keys_locked(path, updates)
+
+
+def _write_conf_keys_locked(path: Path, updates: dict[str, str]) -> bool:
+    """`_write_conf_keys` 의 임계 구간 본문 — 락을 **이미 쥔** 호출부 전용."""
     text = path.read_text(encoding="utf-8")
     new_text = _set_conf_keys(text, updates)
     changed = new_text != text

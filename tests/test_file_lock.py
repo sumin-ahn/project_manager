@@ -234,6 +234,23 @@ def test_lock_file_survives_the_critical_section(file_lock, tmp_path):
     assert lock_path.is_file()
 
 
+def test_local_conf_lock_derives_its_path_from_the_target_conf(file_lock, tmp_path):
+    """local.conf 락은 **대상 conf** 에서 유도한다 — 남의 트리 conf 를 쓰는 진입도 같은 파일에.
+
+    이 경로 규약만 seam 이 소유하는 이유는 그것이 한 도구의 내부 관례가 아니라 도구 *간* 규약이기
+    때문이다(사본이 갈리면 같은 conf 에 다른 락 = 직렬화 없음).
+    """
+    conf = tmp_path / "dest" / ".project_manager" / "local.conf"
+    expected = conf.parent / ".local" / file_lock.LOCAL_CONF_LOCK_NAME
+    assert file_lock.conf_lock_path(conf) == expected
+    assert file_lock.conf_lock_path(str(conf)) == expected
+
+    with file_lock.local_conf_write_lock(conf):
+        assert expected.is_file()          # 부모 디렉토리 생성 포함
+    assert expected.is_file()              # 구간 뒤에도 남는다(inode 유지)
+    assert not conf.exists(), "락이 conf 자체를 만들지 않는다"
+
+
 def _has_lock_primitive() -> bool:
     """OS 배타락 프리미티브(fcntl/msvcrt) 유무 — 없으면 seam 은 무락 폴백(배타성 단언 비적용)."""
     try:
@@ -395,9 +412,16 @@ def test_import_time_consumers_bind_the_canonical_seam(tool):
     ).read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("tool", ("pm_log.py", "pm_relay.py", "external_review.py"))
+@pytest.mark.parametrize(
+    "tool",
+    ("pm_log.py", "pm_relay.py", "external_review.py", "pm_update.py", "pm_import.py"),
+)
 def test_lazy_consumers_load_the_canonical_seam(tool):
-    """지연 소비자는 쓰는 경로에서만 seam 을 로드한다(읽기·재사용 경로 fail-soft 보존)."""
+    """지연 소비자는 쓰는 경로에서만 seam 을 로드한다(읽기·재사용 경로 fail-soft 보존).
+
+    pm_update·pm_import 는 **복구 채널**이라 지연 로드다 — 엔진 사본이 부분적으로 깨진 트리에서도
+    이 두 도구는 떠야 하고(자기 자신을 고치는 경로), conf 락은 그 안의 쓰기 구간에서만 필요하다.
+    """
     module = _load(TOOLS / tool, f"{tool[:-3]}_file_lock_seam")
     assert Path(module._load_file_lock().__file__).resolve() == FILE_LOCK_PY.resolve()
 

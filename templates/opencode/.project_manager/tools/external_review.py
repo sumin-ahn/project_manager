@@ -3716,6 +3716,23 @@ def _launch_failed_definitely(exc: BaseException) -> bool:
     return isinstance(exc, _DEFINITE_LAUNCH_FAILURES)
 
 
+def _started_after(exc: BaseException, seam_reached: bool) -> bool:
+    """스폰 표식이 있으면 그것으로, 없으면 seam 위치로 `started` 를 정한다 (단일 우선순위).
+
+    우선순위는 한 줄이다 — `spawn_failed=True` → started=False(자식 없음·환불 대상),
+    `spawn_failed=False` → started=True(자식 있었음·환불 금지), **표식 없음** → 종전대로 스폰 경계
+    콜백이 돌았는지(`seam_reached`). 표식은 `Popen` 앞뒤를 실제로 본 층(relay)이 붙이므로 경계
+    콜백의 위치 추정보다 강하다: 콜백이 아직 안 돌았어도 relay 가 '자식 있었음'을 봤으면 그
+    실행은 이미 전송됐을 수 있고, 반대로 콜백이 돈 뒤라도 relay 가 '자식 없음'을 확정했으면 전송
+    0 이다. 이 판정을 분기마다 다시 쓰면 한 분기만 표식을 빠뜨려도 예산이 조용히 새므로 여기 한
+    곳이 소유한다.
+    """
+    marked = getattr(exc, "spawn_failed", None)
+    if marked is not None:
+        return not bool(marked)
+    return seam_reached
+
+
 def _launch_failure_output(argv: list[str], exc: BaseException) -> str:
     """확정 기동 실패의 사람 진단 1줄 — 원인축(부재 vs 실행 불가)을 구분해 말한다."""
     if isinstance(exc, FileNotFoundError):
@@ -3782,7 +3799,9 @@ def _run_reviewer_ex(
     반환값 하나가 소유하고, 되돌림 시점만 호출부 계약이다. 확정 기동 실패의 판정 입력은 relay 가
     붙이는 스폰 표식(`spawn_failed`)이 1순위, 없으면 예외 종류다 — `Popen` 성공 **뒤**의 실패에
     같은 예외 종류가 실려 오면 relay 표식이 그것을 post-spawn 으로 못박아 보수적 started=True 가
-    유지된다."""
+    유지된다. 그 우선순위(표식 True→False·표식 False→True·표식 없음→스폰 경계 위치)는 확정 기동
+    실패 분기만이 아니라 seam 호출 오류(`TypeError`)·일반 실행 오류 분기에도 **같이** 적용된다
+    (`_started_after` 한 곳이 소유). 한 분기만 표식을 무시해도 그 자리로 예산이 샌다."""
     if metrics is not None:
         metrics.clear()
         metrics.update({"rc": 1, "silence_sec": None})
@@ -3857,9 +3876,12 @@ def _run_reviewer_ex(
         return False, ReviewerOutput(
             f"[리뷰어 runner seam 계약 오류 — 호출 전 차단: {exc}]"), False
     except TypeError as exc:
-        # runner 내부에서 발생한 키워드/시그니처 skew. 스폰 경계 뒤면 시작 여부가 불명이라
-        # 보수적으로 started=True, 경계 전이면 자식이 없다.
-        return False, ReviewerOutput(f"[리뷰어 runner seam 호출 오류: {exc}]"), spawn_reached
+        # runner 내부에서 발생한 키워드/시그니처 skew. 판정은 다른 분기와 **같은 우선순위**다 —
+        # relay 표식이 있으면 그것이 이기고(True→환불·False→환불 금지), 없을 때만 스폰 경계 위치를
+        # 본다. 표식을 무시하고 경계 위치만 보면, `Popen` 뒤에 실려 온 TypeError 가 콜백이 아직 안
+        # 돈 러너에서 올라올 때 이미 나간 전송이 환불된다.
+        return (False, ReviewerOutput(f"[리뷰어 runner seam 호출 오류: {exc}]"),
+                _started_after(exc, spawn_reached))
     except Exception as exc:  # noqa: BLE001
         # _load_relay는 호출마다 독립 module 객체를 만들 수 있어 클래스 identity 대신 sentinel의
         # 구조화 속성을 본다. 일반 RuntimeError를 정리 실패로 오인하지 않는다.
@@ -3879,8 +3901,11 @@ def _run_reviewer_ex(
             # 자식이 없었으므로 전송 0·과금 0 이고 환불 대상이다.
             return False, ReviewerOutput(_launch_failure_output(argv, exc)), False
         # 스폰 경계 뒤의 실패는 시작 여부가 불확실하다 — 보수적으로 started=True (상한 우회 방지 >
-        # 과잉 카운트). 경계 **전**의 실패는 자식이 아직 없었다는 사실이 확정이라 False 다.
-        return False, ReviewerOutput(f"[리뷰어 실행 오류: {exc}]"), spawn_reached
+        # 과잉 카운트). 경계 **전**의 실패는 자식이 아직 없었다는 사실이 확정이라 False 다. 단
+        # relay 가 '자식 있었음'(False)으로 못박은 예외는 경계 콜백이 아직 안 돌았어도 True 다 —
+        # 위 `_DEFINITE_LAUNCH_FAILURES` 분기와 같은 우선순위(표식 > 위치)를 여기서도 쓴다.
+        return (False, ReviewerOutput(f"[리뷰어 실행 오류: {exc}]"),
+                _started_after(exc, spawn_reached))
 
 
 def run_reviewer(

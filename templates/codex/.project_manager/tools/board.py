@@ -1704,19 +1704,6 @@ def local_config(repo: Path | None = None) -> dict[str, str]:
     return conf
 
 
-def _ensure_trailing_newline(path: Path) -> None:
-    """파일 끝 개행 보장 — append 전 가드. 마지막 개행 없는 local.conf(`…upstream_rev=abc`)에 바로
-    append 하면 append 텍스트가 그 값에 이어붙어 기존 키가 손상된다(`abc# cross…`). 파일이 비어있지
-    않고 개행으로 끝나지 않으면 `"\\n"` 하나를 덧붙인다(부재/읽기 실패는 무해 no-op)."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError):
-        return
-    if text and not text.endswith("\n"):
-        with path.open("a", encoding="utf-8") as f:
-            f.write("\n")
-
-
 def _set_conf_keys(text: str, updates: dict[str, str]) -> str:
     """local.conf 텍스트에서 지정 키만 set-or-replace. 나머지 줄·주석은 보존.
 
@@ -6816,13 +6803,23 @@ OPTIN_COMMIT_DECLINED = "declined"        # 거절 → false 실키
 
 
 def _local_conf_lock_path(conf_path: Path) -> Path:
-    """local.conf append 를 직렬화하는 락 경로 — 같은 conf 를 쓰는 진입이 같은 파일을 잡는다.
+    """local.conf writer 직렬화 락 경로 — 공용 seam 이 대상 conf 에서 유도한다(사본 0).
 
-    board 의 락 관례(`.project_manager/.local/*.lock`)를 그대로 쓰되 상수 `LOCAL_DIR` 이 아니라
-    **주어진 conf 경로**에서 유도한다: pm_update 는 동기 대상(`dest_root`)의 conf 를 쓰므로 두
-    진입이 같은 규칙으로 같은 파일에 도달해야 배타가 성립한다(pm_update 사본과 동형).
+    유도 규칙이 도구마다 복제되면 한 사본만 어긋나도 배타가 조용히 사라지므로
+    `file_lock.conf_lock_path` 한 곳이 소유한다. 이름은 호출부/테스트 호환으로 남긴 얇은 별칭이다.
     """
-    return Path(conf_path).parent / ".local" / "local-conf.lock"
+    return file_lock.conf_lock_path(conf_path)
+
+
+def _local_conf_write_lock(conf_path: Path):
+    """이 conf 를 쓰는 구간의 배타락 — **전 writer 공용**(전체 write·병합 교체·opt-in append).
+
+    board 의 conf writer 는 셋이다(init 최초 생성 · init 비파괴 병합 · opt-in append). 셋이 같은
+    락을 잡아야 "커밋 전에 읽고 나중에 통째 교체하는" writer 가 그사이의 append 를 지우지 않는다.
+    재진입 금지 — 이 구간 안에서 다른 conf writer/프롬프트를 부르지 않는다(cmd_init 은 쓰기
+    구간을 닫은 **뒤** 온보딩 질문으로 넘어간다).
+    """
+    return file_lock.local_conf_write_lock(conf_path)
 
 
 def _append_local_conf_atomic(conf_path: Path, block: str) -> None:
@@ -6854,7 +6851,7 @@ def _commit_additional_reviewer_optin(accepted: bool) -> tuple[str, str]:
     반환 `(결과, 상세)` — 결과는 `OPTIN_COMMIT_*`, 상세는 broken 이면 진단 사유, 그 밖에는 커밋
     시점의 대상 종류(`none`/`legacy`/`structured`). 사용자 표면 문구는 호출부가 낸다(락 밖).
     """
-    with file_lock.exclusive_file_lock(_local_conf_lock_path(LOCAL_CONF)):
+    with _local_conf_write_lock(LOCAL_CONF):
         conf = local_config()
         if "external_review_enabled" in conf:
             # 질문하는 사이 결정이 생겼다 — 그 결정이 이긴다(이 응답은 버린다·byte 보존).
@@ -6977,16 +6974,113 @@ def prompt_delegate_optin() -> None:
     except EOFError:
         # stdin EOF(Ctrl-D) = 기본 거절 → false 실키를 **기록**(매번 재질문 방지·opt-in 결정 박제).
         answer = ""
-    _ensure_trailing_newline(LOCAL_CONF)  # 개행 없는 conf 에 바로 append 시 기존 값 손상 방지
-    with LOCAL_CONF.open("a", encoding="utf-8") as f:
-        if answer in ("y", "yes"):
-            f.write("# cross-harness 위임 — ON.\ndelegate_enabled=true\n")
-            print("  ✓ cross-harness 위임 ON (delegate_enabled=true·외부 송신·과금 수용). "
-                  "역할 매핑은 local.conf delegate.<role>.* 주석 예시 참조.")
-        else:
-            f.write("# cross-harness 위임 — 기본 OFF. 켜려면 true 로.\n"
-                    "delegate_enabled=false\n")
-            print("  → cross-harness 위임 OFF (나중에 local.conf delegate_enabled=true 로 켤 수 있음).")
+    # 기록은 추가 리뷰어 opt-in 과 같은 규약이다 — 전 writer 공용 배타락 안에서 **단일 원자 추가**
+    # (선행 개행 포함). 개행 보장과 블록 추가를 두 write 로 나누면 그 사이가 창이고, 락 밖에서
+    # 붙이면 같은 conf 를 통째 교체하는 writer(init 병합·`_write_conf_keys`)가 이 결정을 덮는다.
+    accepted = answer in ("y", "yes")
+    block = ("# cross-harness 위임 — ON.\ndelegate_enabled=true\n" if accepted else
+             "# cross-harness 위임 — 기본 OFF. 켜려면 true 로.\ndelegate_enabled=false\n")
+    with _local_conf_write_lock(LOCAL_CONF):
+        if "delegate_enabled" in local_config():
+            # 질문하는 사이 결정이 생겼다 — 그 결정이 이긴다(이 응답은 버린다·byte 보존).
+            print("  (질문하는 사이 local.conf 에 delegate_enabled 결정이 생겨 그대로 둡니다 "
+                  "— 이 응답은 기록하지 않았습니다.)")
+            return
+        _append_local_conf_atomic(LOCAL_CONF, block)
+    if accepted:
+        print("  ✓ cross-harness 위임 ON (delegate_enabled=true·외부 송신·과금 수용). "
+              "역할 매핑은 local.conf delegate.<role>.* 주석 예시 참조.")
+    else:
+        print("  → cross-harness 위임 OFF (나중에 local.conf delegate_enabled=true 로 켤 수 있음).")
+
+
+def _write_init_local_conf(*, prefix: str | None, namespaced: bool,
+                           sess: str, override: str | None) -> str:
+    """init 의 local.conf 쓰기 — 존재 판정·읽기·병합·쓰기를 **한 배타 구간**에 닫는다.
+
+    구간을 나누면 두 곳이 새는데 둘 다 남의 결정을 지운다: (a) 존재 판정과 최초 생성 사이에
+    다른 writer 가 만든 conf 를 통째 write 로 덮고, (b) 병합 경로가 읽은 뒤 교체하는 사이에 붙은
+    opt-in append(그 자체는 원자였어도)가 교체본에 없어 사라진다. 그래서 락의 단위는 "쓰기" 가
+    아니라 "읽고 쓰는 구간" 이고, 같은 락을 conf 의 **모든** writer 가 공유한다.
+
+    온보딩 질문(추가 리뷰어·위임 opt-in)은 이 구간 **밖**에서 한다 — 그 커밋이 같은 락을 다시
+    잡으므로 안에서 부르면 재진입(정의되지 않은 동작)이다. 반환값은 사용자에게 표면화할 세션명.
+    """
+    # 인터프리터 탐지는 conf 내용과 무관한 **외부 프로브**(subprocess)다 — 락 밖에서 미리 푼다
+    # (임계 구간을 프로브 시간만큼 늘리지 않는다).
+    detected_py = _detect_py()
+    with _local_conf_write_lock(LOCAL_CONF):
+        if not LOCAL_CONF.exists():
+            # 부재 시(첫 생성) — 현행 그대로 전체 default conf write. 회귀 0.
+            conf = "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
+            if namespaced:
+                conf += f"prefix={prefix}\n"  # solo-legacy — multi 홈은 areas.md 유도
+            conf += (
+                f"session={sess}\n"  # solo-legacy — multi 홈은 lease 유도
+                "# 엔진 문서 operational placeholder 해소값 ({{PY}}·{{TEST_CMD}}·{{PROJECT_NAME}}):\n"
+                f"py={detected_py}\ntest_cmd=pytest -q\nproject_name=\n"
+                "# ctx 정지-핸드오프 임계 (어댑터 훅이 잔여 컨텍스트 %로 판정):\n"
+                f"ctx_nudge_pct={CTX_NUDGE_PCT_DEFAULT}\nctx_stop_pct={CTX_STOP_PCT_DEFAULT}\n"
+                "# ctx_window_tokens: 핸드오프 토큰 예산(위 nudge/stop %의 기준). 큰 window(1M)\n"
+                "# 모델이라도 낮게 두면 이른 핸드오프 = 토큰 경제(큰 컨텍스트가 매 턴 소모 가속).\n"
+                "# 올리면 세션당 더 길게. 물리 window 아님 — 사용자 비용/맥락 선택.\n"
+                f"ctx_window_tokens={CTX_WINDOW_TOKENS_DEFAULT}\n"
+                "# 하네스별 오버라이드(옵션·주석 해제 시 활성): 한 repo 를 claude·opencode 동시\n"
+                "# 운용 시 하네스별 예산 분리(ctx_window_tokens_<harness> > generic > 200K·\n"
+                "# claude/opencode 독립). 미설정 시 위 generic 값이 분모.\n"
+                "# ctx_window_tokens_claude=500000\n"
+                "# ctx_window_tokens_opencode=200000\n"
+                "# ctx_window_tokens_codex=200000\n"
+                + _DELEGATE_CONF_SEED + _HARNESS_BUDGET_CONF_SEED)
+            LOCAL_CONF.write_text(conf, encoding="utf-8")
+            return sess
+        # 존재 시 — 비파괴 병합. init 이 안 쓰는 사용자/operational 키
+        # (external_review_enabled·additional_reviewer.*·레거시 reviewer_cmd·upstream·
+        # upstream_rev·opencode_pro_model·status_total_style·user 등)를 절대 삭제/변경하지
+        # 않는다. 통째 write 금지.
+        text = LOCAL_CONF.read_text(encoding="utf-8")
+        existing = local_config()
+        updates: dict[str, str] = {}
+        # init 기본키는 *없을 때만* 추가 — 기존 값(커스텀 ctx_window_tokens 등)은 보존.
+        defaults = {
+            "py": detected_py,
+            "test_cmd": "pytest -q",
+            "project_name": "",
+            "ctx_nudge_pct": str(CTX_NUDGE_PCT_DEFAULT),
+            "ctx_stop_pct": str(CTX_STOP_PCT_DEFAULT),
+            "ctx_window_tokens": str(CTX_WINDOW_TOKENS_DEFAULT),
+        }
+        for key, value in defaults.items():
+            if key not in existing:
+                updates[key] = value
+        # session·prefix 는 명시 인자일 때만 set-or-replace(재등록 UX 보존). 인자 없으면
+        # 기존 session 보존 — 없으면 default(`pm`/`<prefix>-pm`)로 표면화만. (둘 다 solo-legacy·
+        # multi 홈은 유도로 무시.
+        if override:
+            updates["session"] = override
+        if namespaced:
+            updates["prefix"] = prefix
+        merged = _set_conf_keys(text, updates)
+        # trailing newline 보장 — updates 가 비어(default 키 전부 존재) `_set_conf_keys` 가
+        # 원문을 그대로 반환하고 그 원문이 개행 없이 끝나면, 뒤이은 prompt_external_review_optin()
+        # 의 append 가 마지막 키에 그대로 붙어 기존 키를 변질시킨다(codex must-fix·병합 경로 회귀).
+        if merged and not merged.endswith("\n"):
+            merged += "\n"
+        # 기존 adopter 보완: delegate 스키마 시드는 fresh 생성 branch 에만 있으므로
+        # this-change 이전 local.conf 를 가진 채택자는 재실행에도 스키마를 못 받는다. **스키마 블록
+        # 마커**가 없으면 시드를 파일 끝에 append 한다 — 기존 byte 는 위에서 보존(비파괴 병합). 마커로
+        # 판정하므로 실키 결정(delegate_enabled)과 독립이다(스키마 문서 = 별개 축). 이미 있으면 no-op
+        # → 재실행 멱등(fresh conf 는 이미 포함하므로 자연 no-op). 실키 opt-in 은 prompt_delegate_optin.
+        if _DELEGATE_SEED_MARKER not in merged:
+            merged += _DELEGATE_CONF_SEED
+        # 하네스별 시간 예산 스키마도 같은 규칙으로 append(별도 마커 — 위 블록을 이미 받은
+        # 기존 채택자에게도 도달한다). 전부 주석이라 기존 동작/값은 불변.
+        if _HARNESS_BUDGET_SEED_MARKER not in merged:
+            merged += _HARNESS_BUDGET_CONF_SEED
+        LOCAL_CONF.write_text(merged, encoding="utf-8")
+        if override:
+            return override
+        return existing.get("session") or sess
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -7049,77 +7143,8 @@ def cmd_init(args: argparse.Namespace) -> int:
     # --repo 단독이면 그 repo 의 활성 리스가 1개일 때만 해소(0개/무인자 → None → 아래 default).
     override = _actor_session_override(args)
     sess = override or (f"{prefix.lower()}-pm" if namespaced else "pm")
-    if not LOCAL_CONF.exists():
-        # 부재 시(첫 생성) — 현행 그대로 전체 default conf write. 회귀 0.
-        conf = "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
-        if namespaced:
-            conf += f"prefix={prefix}\n"  # solo-legacy — multi 홈은 areas.md 유도
-        conf += (f"session={sess}\n"  # solo-legacy — multi 홈은 lease 유도
-                 "# 엔진 문서 operational placeholder 해소값 ({{PY}}·{{TEST_CMD}}·{{PROJECT_NAME}}):\n"
-                 f"py={_detect_py()}\ntest_cmd=pytest -q\nproject_name=\n"
-                 "# ctx 정지-핸드오프 임계 (어댑터 훅이 잔여 컨텍스트 %로 판정):\n"
-                 f"ctx_nudge_pct={CTX_NUDGE_PCT_DEFAULT}\nctx_stop_pct={CTX_STOP_PCT_DEFAULT}\n"
-                 "# ctx_window_tokens: 핸드오프 토큰 예산(위 nudge/stop %의 기준). 큰 window(1M)\n"
-                 "# 모델이라도 낮게 두면 이른 핸드오프 = 토큰 경제(큰 컨텍스트가 매 턴 소모 가속).\n"
-                 "# 올리면 세션당 더 길게. 물리 window 아님 — 사용자 비용/맥락 선택.\n"
-                 f"ctx_window_tokens={CTX_WINDOW_TOKENS_DEFAULT}\n"
-                 "# 하네스별 오버라이드(옵션·주석 해제 시 활성): 한 repo 를 claude·opencode 동시\n"
-                 "# 운용 시 하네스별 예산 분리(ctx_window_tokens_<harness> > generic > 200K·\n"
-                 "# claude/opencode 독립). 미설정 시 위 generic 값이 분모.\n"
-                 "# ctx_window_tokens_claude=500000\n"
-                 "# ctx_window_tokens_opencode=200000\n"
-                 "# ctx_window_tokens_codex=200000\n"
-                 + _DELEGATE_CONF_SEED + _HARNESS_BUDGET_CONF_SEED)
-        LOCAL_CONF.write_text(conf, encoding="utf-8")
-        surface_sess = sess
-    else:
-        # 존재 시 — 비파괴 병합. init 이 안 쓰는 사용자/operational 키
-        # (external_review_enabled·additional_reviewer.*·레거시 reviewer_cmd·upstream·
-        # upstream_rev·opencode_pro_model·status_total_style·user 등)를 절대 삭제/변경하지
-        # 않는다. 통째 write 금지.
-        text = LOCAL_CONF.read_text(encoding="utf-8")
-        existing = local_config()
-        updates: dict[str, str] = {}
-        # init 기본키는 *없을 때만* 추가 — 기존 값(커스텀 ctx_window_tokens 등)은 보존.
-        defaults = {
-            "py": _detect_py(),
-            "test_cmd": "pytest -q",
-            "project_name": "",
-            "ctx_nudge_pct": str(CTX_NUDGE_PCT_DEFAULT),
-            "ctx_stop_pct": str(CTX_STOP_PCT_DEFAULT),
-            "ctx_window_tokens": str(CTX_WINDOW_TOKENS_DEFAULT),
-        }
-        for key, value in defaults.items():
-            if key not in existing:
-                updates[key] = value
-        # session·prefix 는 명시 인자일 때만 set-or-replace(재등록 UX 보존). 인자 없으면
-        # 기존 session 보존 — 없으면 default(`pm`/`<prefix>-pm`)로 표면화만. (둘 다 solo-legacy·
-        # multi 홈은 유도로 무시.
-        if override:
-            updates["session"] = override
-        if namespaced:
-            updates["prefix"] = prefix
-        merged = _set_conf_keys(text, updates)
-        # trailing newline 보장 — updates 가 비어(default 키 전부 존재) `_set_conf_keys` 가
-        # 원문을 그대로 반환하고 그 원문이 개행 없이 끝나면, 뒤이은 prompt_external_review_optin()
-        # 의 append 가 마지막 키에 그대로 붙어 기존 키를 변질시킨다(codex must-fix·병합 경로 회귀).
-        if merged and not merged.endswith("\n"):
-            merged += "\n"
-        # 기존 adopter 보완: delegate 스키마 시드는 fresh 생성 branch 에만 있으므로
-        # this-change 이전 local.conf 를 가진 채택자는 재실행에도 스키마를 못 받는다. **스키마 블록
-        # 마커**가 없으면 시드를 파일 끝에 append 한다 — 기존 byte 는 위에서 보존(비파괴 병합). 마커로
-        # 판정하므로 실키 결정(delegate_enabled)과 독립이다(스키마 문서 = 별개 축). 이미 있으면 no-op
-        # → 재실행 멱등(fresh conf 는 이미 포함하므로 자연 no-op). 실키 opt-in 은 prompt_delegate_optin.
-        if _DELEGATE_SEED_MARKER not in merged:
-            merged += _DELEGATE_CONF_SEED
-        # 하네스별 시간 예산 스키마도 같은 규칙으로 append(별도 마커 — 위 블록을 이미 받은
-        # 기존 채택자에게도 도달한다). 전부 주석이라 기존 동작/값은 불변.
-        if _HARNESS_BUDGET_SEED_MARKER not in merged:
-            merged += _HARNESS_BUDGET_CONF_SEED
-        LOCAL_CONF.write_text(merged, encoding="utf-8")
-        surface_sess = existing.get("session") or sess
-        if override:
-            surface_sess = override
+    surface_sess = _write_init_local_conf(
+        prefix=prefix, namespaced=namespaced, sess=sess, override=override)
     print(f"✓ local.conf: {('prefix=' + prefix + ' · ') if namespaced else ''}session={surface_sess}")
     if not PM_STATE_FILE.exists() and PM_STATE_TEMPLATE.exists():
         # `{{DATE}}` 의 소유자는 **생성 시점**이다 — 템플릿은 채택자 디스크에 토큰-form

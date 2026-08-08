@@ -1888,6 +1888,78 @@ def test_default_runner_forwards_the_boundary_to_the_shared_watchdog(external, m
     assert seen["on_spawn_attempt"] is sentinel
 
 
+# ── seam 오류(TypeError) 분기의 표식 우선순위 (T-0590 R4 추가 리뷰어 4차) ──────
+#
+# `_run_reviewer_ex` 의 TypeError 전용 분기는 relay 표식을 보지 않고 스폰 경계 위치만 봤다. 같은
+# 예외 종류가 경계 앞뒤 어디서든 올라올 수 있으므로 그 위치 추정은 두 방향으로 다 틀린다 —
+# 표식 True 인데 경계를 지났으면 전송 0 인 실행이 예산을 먹고, 표식 False 인데 콜백이 아직 안
+# 돌았으면 이미 나간 전송이 환불된다. 우선순위는 한 줄이다: 표식 True→started False,
+# 표식 False→started True, 표식 없음→종전 seam 위치.
+
+
+def _marked(exc: BaseException, spawn_failed: bool) -> BaseException:
+    """relay 가 스폰 경계에서 붙이는 그 표식을 그대로 얹는다(테스트 픽스처)."""
+    exc.spawn_failed = spawn_failed
+    return exc
+
+
+def test_seam_typeerror_marked_no_child_is_started_false(external):
+    """경계 콜백이 돈 뒤 올라온 TypeError 라도 표식이 '자식 없음'이면 started=False (환불)."""
+    handoffs = []
+    runner = _spawn_boundary_runner(
+        raise_after=_marked(TypeError("relay 가 fork 전에 거절"), True))
+    ok, out, started = external._run_reviewer_ex(
+        "p", "codex", 5, runner, on_spawn_attempt=lambda: handoffs.append(1))
+    assert (ok, started) == (False, False), "표식(자식 없음)을 무시하고 경계 위치로 판정했다"
+    assert handoffs == [1]
+    assert "seam 호출 오류" in out.answer
+
+
+def test_seam_typeerror_marked_child_existed_is_started_true(external):
+    """콜백 전에 올라온 TypeError 라도 표식이 '자식 있었음'이면 started=True (환불 금지)."""
+    handoffs = []
+    runner = _spawn_boundary_runner(
+        raise_before=_marked(TypeError("Popen 뒤 초기화 skew"), False))
+    ok, _out, started = external._run_reviewer_ex(
+        "p", "codex", 5, runner, on_spawn_attempt=lambda: handoffs.append(1))
+    assert (ok, started) == (False, True), "표식(자식 있었음)을 무시하고 이미 나간 전송을 환불했다"
+    assert handoffs == [], "경계 콜백은 실제로 돌지 않았다(표식만이 판정 입력)"
+
+
+@pytest.mark.parametrize(
+    ("factory", "expected_started"),
+    (
+        pytest.param(lambda: dict(raise_before=TypeError("준비 구간 skew")), False,
+                     id="before-boundary"),
+        pytest.param(lambda: dict(raise_after=TypeError("경계 뒤 skew")), True,
+                     id="after-boundary"),
+    ),
+)
+def test_unmarked_seam_typeerror_keeps_the_boundary_position_rule(
+    external, factory, expected_started,
+):
+    """표식이 없으면 종전 규칙 그대로 — 경계 전이면 False, 경계 뒤면 보수적 True."""
+    runner = _spawn_boundary_runner(**factory())
+    ok, _out, started = external._run_reviewer_ex("p", "codex", 5, runner)
+    assert (ok, started) == (False, expected_started)
+
+
+def test_general_failure_marked_child_existed_is_started_true(external):
+    """일반 실행 오류 분기도 같은 우선순위다 — 콜백 전이어도 표식 False 면 started=True."""
+    runner = _spawn_boundary_runner(
+        raise_before=_marked(RuntimeError("Popen 뒤 정리 중 오류"), False))
+    ok, _out, started = external._run_reviewer_ex("p", "codex", 5, runner)
+    assert (ok, started) == (False, True)
+
+
+def test_started_priority_is_owned_by_one_helper(external):
+    """우선순위(표식 > 위치)를 한 곳이 소유한다 — 분기마다 다시 쓰면 한 자리만 새도 예산이 샌다."""
+    assert external._started_after(_marked(TypeError("x"), True), True) is False
+    assert external._started_after(_marked(TypeError("x"), False), False) is True
+    assert external._started_after(TypeError("x"), True) is True
+    assert external._started_after(TypeError("x"), False) is False
+
+
 def _wire_real_run_review(external, monkeypatch, tmp_path, *, conf, runner,
                           diff="diff --git a/x b/x\n@@ -1 +1 @@\n-o\n+n\n"):
     """main() → **실** run_review → 주입 러너까지 태우는 배선(스폰 경계 판정 e2e).
@@ -1961,6 +2033,27 @@ def test_preparation_failure_before_popen_spends_no_budget(
     monkeypatch.setattr(external, "_watchdog_reviewer_run", passing)
     assert run(gate) == 0
     assert _ledger(external, tmp_path)["T-9002"]["count"] == 1
+
+
+def test_marked_no_child_seam_error_spends_no_budget(external, monkeypatch, tmp_path):
+    """relay 가 '자식 없음'으로 표식한 seam 오류는 라운드·wave 예산을 먹지 않는다(환불 도달).
+
+    분기 반환값이 아니라 장부까지 본다 — 표식을 무시하던 TypeError 분기는 여기서 예산을 태워
+    상한 1 형상의 다음 정상 호출을 rc=4 로 막았다."""
+    failing = _spawn_boundary_runner(
+        raise_after=_marked(TypeError("relay 가 fork 전에 거절"), True))
+    run = _wire_real_run_review(
+        external, monkeypatch, tmp_path, conf=_ALL_LIMITS_ONE, runner=failing)
+    gate = ["--gate", "T-9004", "--paths", "x.py"]
+
+    assert run(gate) == 1
+    ledger = _ledger(external, tmp_path)
+    assert ledger["T-9004"]["count"] == 0, "자식 0 인 실행이 라운드를 먹었다"
+    assert _wave_budget_state(external, tmp_path)["spent"] == 0
+
+    passing = _spawn_boundary_runner()
+    monkeypatch.setattr(external, "_watchdog_reviewer_run", passing)
+    assert run(gate) == 0, "환불되지 않아 다음 정상 호출이 상한에 막혔다"
 
 
 def test_failure_after_popen_still_consumes_the_round(external, monkeypatch, tmp_path):

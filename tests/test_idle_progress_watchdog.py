@@ -2443,3 +2443,281 @@ def test_cleanup_failure_after_a_post_spawn_valueerror_keeps_the_spawned_mark(
         relay._WatchedPopen([sys.executable, "-c", "pass"])
     assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is False
     assert isinstance(excinfo.value.__cause__, relay.ProcessCleanupError)
+
+
+# ── 스폰 경계 표식: `popen` 성공 뒤의 본문 실패 (T-0590 추가 리뷰어 4차) ─────────
+#
+# `proc = popen(argv)` 가 돌아온 순간 이 **실행**에는 자식이 있었다. 그 뒤 본문(시계·
+# first_event_ready·poll·communicate·정리)이 무엇으로 실패하든 실행 전체가 '자식 없음'으로 읽히면
+# 이미 나갔을 프롬프트가 환불된다. 종류만 보는 상위(추가 리뷰어 러너)의 확정-기동-실패 표
+# (`PermissionError` 등)와 같은 종류가 본문에서 올라오는 것이 정확히 그 반례다.
+
+_BODY_FAILURE_KINDS = (
+    # 상위의 확정-기동-실패 표에 실린 종류 — 표식이 없으면 종류만 보고 환불된다.
+    pytest.param(PermissionError, id="permission-denied"),
+    pytest.param(FileNotFoundError, id="file-not-found"),
+    pytest.param(NotADirectoryError, id="not-a-directory"),
+    pytest.param(IsADirectoryError, id="is-a-directory"),
+    # 표에 없는 종류도 같은 규칙이다(표식이 위치 추정을 대신한다).
+    pytest.param(RuntimeError, id="runtime-error"),
+    pytest.param(KeyboardInterrupt, id="keyboard-interrupt"),
+)
+
+
+class _BodyBoomProc(_ScriptedProc):
+    """자식은 떴고 본문의 지정 지점에서 터지는 fake proc — 어디서 터져도 자식은 있었다."""
+
+    def __init__(self, clock, *, boom_at: str, exc: BaseException):
+        super().__init__(clock, event_times=[], exit_at=None)
+        self._boom_at = boom_at
+        self._exc = exc
+
+    def first_event_ready(self):
+        if self._boom_at == "first_event_ready":
+            raise self._exc
+        return True
+
+    def poll(self):
+        if self._boom_at == "poll":
+            raise self._exc
+        return super().poll()
+
+    def communicate(self, timeout=None):
+        if self._boom_at == "communicate":
+            raise self._exc
+        return super().communicate(timeout=timeout)
+
+
+@pytest.mark.parametrize("exc_type", _BODY_FAILURE_KINDS)
+@pytest.mark.parametrize("boom_at", ("first_event_ready", "poll", "communicate"))
+def test_body_failure_after_a_successful_popen_is_marked_as_spawned(
+    relay, exc_type, boom_at,
+):
+    """`popen` 성공 뒤 본문에서 나온 예외는 종류·지점과 무관하게 '자식 있었음'(False)이다."""
+    clock = _FakeClock()
+    proc = _BodyBoomProc(clock, boom_at=boom_at, exc=exc_type("본문 실패"))
+
+    with pytest.raises(exc_type) as excinfo:
+        relay.run_with_first_event_watchdog(
+            ["drv"], first_event_timeout=5.0, overall_timeout=600.0, retries=0,
+            idle_timeout=None, popen=lambda _argv: proc, clock=clock,
+            sleep=clock.advance, log=[].append, poll_interval=1.0,
+        )
+
+    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is False, (
+        "자식이 떴던 실행이 '자식 없음'으로 올라간다 — 상위가 종류만 보고 환불한다")
+    assert proc.kill_count == 1, "본문 실패 뒤 자식을 회수하지 않았다"
+
+
+def test_clock_failure_after_a_successful_popen_is_marked_as_spawned(relay):
+    """본문의 첫 문장(시계 읽기)이 터져도 자식은 이미 떴다 — 표식은 False 다."""
+    proc = _ScriptedProc(_FakeClock(), event_times=[], exit_at=None)
+    calls = {"n": 0}
+
+    def clock():
+        calls["n"] += 1
+        if calls["n"] > 1:          # popen 은 통과시키고 본문 진입 직후에 터뜨린다.
+            raise PermissionError("시계 실패")
+        return 0.0
+
+    with pytest.raises(PermissionError) as excinfo:
+        relay.run_with_first_event_watchdog(
+            ["drv"], first_event_timeout=None, overall_timeout=30.0, retries=0,
+            idle_timeout=None, popen=lambda _argv: proc, clock=clock,
+            sleep=lambda _s: None, log=[].append,
+        )
+    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is False
+
+
+class _CleanupBoomProc(_BodyBoomProc):
+    """본문에서 터지고, 그 뒤 회수(kill)까지 실패하는 fake proc — 최악 형상."""
+
+    def __init__(self, clock, *, boom_at, exc, cleanup_exc):
+        super().__init__(clock, boom_at=boom_at, exc=exc)
+        self._cleanup_exc = cleanup_exc
+
+    def kill(self):
+        raise self._cleanup_exc
+
+
+def test_cleanup_failure_after_a_body_failure_keeps_the_spawned_mark(relay):
+    """정리까지 실패해도(잔존 프로세스 가능성) 원 예외의 '자식 있었음' 표식은 보존된다.
+
+    정리 실패는 과금 가능성이 가장 큰 형상이다 — 여기서 표식이 흔들려 환불 쪽으로 넘어가면
+    잔존 자식이 있는 실행이 예산을 안 먹는다. 표식을 정리 **전에** 붙여야 원 예외 객체에 남는다.
+    """
+    clock = _FakeClock()
+    proc = _CleanupBoomProc(clock, boom_at="first_event_ready",
+                            exc=PermissionError("본문 실패"),
+                            cleanup_exc=relay.ProcessCleanupError("정리 실패(주입)"))
+
+    with pytest.raises(PermissionError) as excinfo:
+        relay.run_with_first_event_watchdog(
+            ["drv"], first_event_timeout=5.0, overall_timeout=600.0, retries=0,
+            idle_timeout=None, popen=lambda _argv: proc, clock=clock,
+            sleep=clock.advance, log=[].append, poll_interval=1.0,
+        )
+    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is False
+    assert isinstance(excinfo.value.__cause__, relay.ProcessCleanupError)
+
+
+# ── `Popen` 예외의 보수 판정 (T-0590 추가 리뷰어 4차) ────────────────────────
+#
+# "`Popen` 이 던졌다 = 자식이 없었다" 는 성립하지 않는다. 그 생성자는 fork/exec **앞**의 인자 검증도,
+# 자식이 뜬 **뒤**의 부모측 초기화(errpipe 읽기·fd 정리)도 같은 자리에서 올린다. 그래서 확정
+# 판정은 두 갈래로만 남긴다 — (a) fork/exec 전에 검증 가능한 입력(NUL)은 **명시 preflight** 가
+# 부르기 전에 거절하고, (b) exec 자체가 실패한 확정 기동 실패(파일 부재 등)만 기존 환불 계약을
+# 유지한다. 그 밖의 `Popen` 예외는 자식이 있었을 수 있으므로 보수쪽(False)이다.
+
+_NUL_INPUTS = (
+    pytest.param({"argv": [sys.executable, "-c", "print(1)\x00"]}, "argv[2]", id="argv"),
+    pytest.param({"argv": ["\x00drv"]}, "argv[0]", id="argv-0"),
+    pytest.param({"argv": [sys.executable, "-c", "pass"], "cwd": "/tmp/\x00x"}, "cwd",
+                 id="cwd"),
+    pytest.param({"argv": [sys.executable, "-c", "pass"], "env": {"A\x00": "v"}},
+                 "env key", id="env-key"),
+    pytest.param({"argv": [sys.executable, "-c", "pass"], "env": {"A": "v\x00"}},
+                 "env['A']", id="env-value"),
+)
+
+
+@pytest.mark.parametrize(("kwargs", "where"), _NUL_INPUTS)
+def test_nul_inputs_are_rejected_before_the_spawn_boundary(relay, kwargs, where):
+    """argv·cwd·env 의 NUL 은 `Popen` 을 **부르기 전에** 거절한다 → 자식 없음 표식.
+
+    거절이 preflight 에서 나오므로 그 표식은 예외 종류를 보고 추측한 값이 아니라 경계 앞의
+    관측이다(어디가 문제인지도 진단에 남는다)."""
+    argv = kwargs.pop("argv")
+    called = []
+    with pytest.raises(ValueError) as excinfo:
+        relay._WatchedPopen(argv, **kwargs)
+    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is True
+    assert "null" in str(excinfo.value) and where in str(excinfo.value)
+    assert called == []
+
+
+class _PopenPatchedSubprocess:
+    """relay 가 보는 `subprocess` 표면 — `Popen` 만 대역이고 나머지는 실 모듈 그대로.
+
+    실 모듈 속성을 직접 갈아끼우면 이 테스트 파일 자신이 쓰는 `subprocess.Popen` 까지 바뀐다
+    (대역 안에서 실 자식을 띄우는 반례가 자기 자신을 재귀 호출한다)."""
+
+    def __init__(self, popen):
+        self.Popen = popen
+
+    def __getattr__(self, name):
+        return getattr(subprocess, name)
+
+
+def test_preflight_runs_before_subprocess_popen_is_touched(relay, monkeypatch):
+    """preflight 는 `Popen` 을 아예 부르지 않는다(거절의 근거가 경계 **앞** 임을 실증)."""
+    def _fail(*_args, **_kwargs):
+        pytest.fail("preflight 가 거절해야 할 입력으로 Popen 을 불렀다")
+
+    monkeypatch.setattr(relay, "subprocess", _PopenPatchedSubprocess(_fail))
+    with pytest.raises(ValueError):
+        relay._WatchedPopen(["drv\x00"])
+
+
+@pytest.mark.parametrize(
+    "exc_type",
+    [FileNotFoundError, PermissionError, NotADirectoryError, IsADirectoryError],
+)
+def test_definite_launch_failure_from_popen_keeps_the_refund_contract(
+    relay, monkeypatch, exc_type,
+):
+    """exec 자체가 실패한 확정 기동 실패는 종전대로 '자식 없음'(True) — 환불 계약 보존.
+
+    이 네 종류만 예외 종류로 확정한다. 근거는 CPython 의 보고 경로다 — exec 실패는 자식이
+    errpipe 로 올린 오류를 부모가 읽어 **자식을 회수한 뒤** 이 종류들로 다시 던진다. 그 밖의
+    종류는 같은 자리에서 자식이 뜬 뒤에도 나올 수 있으므로 확정하지 않는다(아래 반례).
+    """
+    def _boom(*_args, **_kwargs):
+        raise exc_type("launch")
+
+    monkeypatch.setattr(relay, "subprocess", _PopenPatchedSubprocess(_boom))
+    with pytest.raises(exc_type) as excinfo:
+        relay._WatchedPopen(["drv"])
+    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is True
+
+
+def test_missing_binary_through_the_real_popen_is_marked_no_child(relay, tmp_path):
+    """실 `Popen` 으로도 같다 — 없는 바이너리는 자식이 뜬 적 없다(표식 True)."""
+    with pytest.raises(FileNotFoundError) as excinfo:
+        relay._WatchedPopen([str(tmp_path / "no-such-binary-xyz")])
+    assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR) is True
+
+
+class _ChildThenRaisePopen:
+    """자식을 **실제로 만든 뒤** 부모측에서 터지는 `Popen` 대역.
+
+    CPython 의 `Popen.__init__` 은 `_execute_child` 가 돌아온 뒤에도 부모측 정리/읽기에서 예외를
+    낼 수 있다. 그 형상을 실 자식(sleep)으로 재현해 "던졌다 = 자식 없다" 추론의 반례로 쓴다."""
+
+    def __init__(self, exc: BaseException, spawned: list):
+        self._exc = exc
+        self._spawned = spawned
+
+    def __call__(self, argv, **kwargs):
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        self._spawned.append(child)
+        raise self._exc
+
+
+@pytest.mark.parametrize(
+    "exc",
+    (
+        pytest.param(ValueError("embedded null byte"), id="valueerror-same-class-as-preflight"),
+        pytest.param(OSError("errpipe 읽기 실패"), id="generic-oserror-after-child"),
+        pytest.param(RuntimeError("부모측 초기화 실패"), id="runtime-after-child"),
+    ),
+)
+def test_popen_exception_after_a_child_exists_is_not_ruled_a_no_child(
+    relay, monkeypatch, exc,
+):
+    """`Popen` 안에서 자식이 뜬 뒤 나온 예외는 '자식 없음'으로 확정하지 않는다.
+
+    preflight 가 내는 `ValueError` 와 **같은 종류**가 여기서도 나온다 — 종류로 확정하면 이 형상이
+    전송 0 으로 오분류돼 과금된 실행이 환불된다. 확정할 수 없으면 보수쪽(False)이다."""
+    spawned: list = []
+    monkeypatch.setattr(relay, "subprocess",
+                        _PopenPatchedSubprocess(_ChildThenRaisePopen(exc, spawned)))
+    try:
+        with pytest.raises(type(exc)) as excinfo:
+            relay._WatchedPopen(["drv"])
+        assert spawned, "반례 형상이 성립하려면 자식이 실제로 떠야 한다"
+        assert getattr(excinfo.value, relay.SPAWN_FAILED_ATTR, None) is not True, (
+            "자식이 있었는데 '자식 없음'으로 확정했다 — 나간 전송이 환불된다")
+    finally:
+        for child in spawned:
+            child.kill()
+            child.wait(timeout=10)
+
+
+def test_same_exception_class_splits_by_boundary_not_by_kind(relay, monkeypatch):
+    """같은 `ValueError` 가 preflight 에서는 True, 자식 생성 뒤에서는 True 가 아니다(exact)."""
+    with pytest.raises(ValueError) as pre:
+        relay._WatchedPopen(["drv\x00"])
+
+    spawned: list = []
+    monkeypatch.setattr(
+        relay, "subprocess",
+        _PopenPatchedSubprocess(
+            _ChildThenRaisePopen(ValueError("embedded null byte"), spawned)))
+    try:
+        with pytest.raises(ValueError) as post:
+            relay._WatchedPopen(["drv"])
+        assert getattr(pre.value, relay.SPAWN_FAILED_ATTR) is True
+        assert getattr(post.value, relay.SPAWN_FAILED_ATTR, None) is not True
+    finally:
+        for child in spawned:
+            child.kill()
+            child.wait(timeout=10)
+
+
+def test_relay_and_reviewer_share_the_definite_launch_failure_table(relay, external):
+    """확정 기동 실패 표가 두 층에서 같다 — 갈리면 한쪽만 환불하는 비대칭이 생긴다."""
+    assert relay._DEFINITE_LAUNCH_FAILURES == external._DEFINITE_LAUNCH_FAILURES

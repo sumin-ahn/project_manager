@@ -501,13 +501,18 @@ def _load_file_lock():
 
 
 def _local_conf_lock_path(conf_path: Path) -> Path:
-    """local.conf append 를 직렬화하는 락 경로 — board 사본과 **같은 규칙**으로 유도한다.
+    """local.conf writer 직렬화 락 경로 — 공용 seam 의 유도 규칙을 그대로 쓴다.
 
-    두 온보딩 진입(board init·pm_update)이 같은 conf 에 대해 같은 락 파일에 도달해야 배타가
-    성립한다. 그래서 상수가 아니라 대상 conf 경로에서 유도한다(pm_update 는 `dest_root` 의 conf 를
-    쓴다·board 는 자기 `LOCAL_CONF`).
+    같은 conf 를 건드리는 **모든** writer(board init 의 전체/병합 write·두 진입의 opt-in append·
+    pm_import 의 키 writer)가 같은 파일에 도달해야 배타가 성립한다. 규칙을 도구마다 복제하면 한
+    사본만 어긋나도 직렬화가 조용히 사라지므로 `file_lock.conf_lock_path` 한 곳이 소유한다.
+    seam 을 못 읽는 손상 사본(복구 채널)에서는 같은 규칙의 인라인 폴백으로 경로만 계산한다 —
+    그 경우 락 자체가 없으므로(아래 `_local_conf_write_lock`) 경로는 진단용이다.
     """
-    return Path(conf_path).parent / ".local" / "local-conf.lock"
+    try:
+        return _load_file_lock().conf_lock_path(conf_path)
+    except Exception:  # noqa: BLE001 — 복구 채널은 형제 손상으로 죽지 않는다.
+        return Path(conf_path).parent / ".local" / "local-conf.lock"
 
 
 @contextlib.contextmanager
@@ -525,7 +530,7 @@ def _local_conf_write_lock(conf_path: Path):
     if lock is None:
         yield None
         return
-    with lock.exclusive_file_lock(_local_conf_lock_path(conf_path)):
+    with lock.local_conf_write_lock(conf_path):
         yield lock
 
 
@@ -689,18 +694,23 @@ def maybe_prompt_delegate_optin(dest_root: Path) -> None:
     except EOFError:
         # stdin EOF(Ctrl-D) = 기본 거절 → false 실키를 **기록**(매번 재질문 방지·opt-in 결정 박제).
         answer = ""
-    # 개행 없는 conf(`…upstream_rev=abc`)에 바로 append 시 기존 값 손상 방지 — 필요 시 개행 선행.
-    existing = local_conf.read_text(encoding="utf-8")
-    with local_conf.open("a", encoding="utf-8") as f:
-        if existing and not existing.endswith("\n"):
-            f.write("\n")
-        if answer in ("y", "yes"):
-            f.write("# cross-harness 위임 — ON.\ndelegate_enabled=true\n")
-            print("  ✓ cross-harness 위임 ON (delegate_enabled=true·외부 송신·과금 수용).")
-        else:
-            f.write("# cross-harness 위임 — 기본 OFF. 켜려면 true 로.\n"
-                    "delegate_enabled=false\n")
-            print("  → cross-harness 위임 OFF (나중에 local.conf delegate_enabled=true 로 켤 수 있음).")
+    # 기록은 추가 리뷰어 opt-in 과 같은 규약이다 — 전 writer 공용 배타락 안에서 재읽기·재판정 뒤
+    # **단일 원자 추가**(선행 개행 포함). 락 밖에서 붙이면 같은 conf 를 통째 교체하는
+    # writer(board init 병합·`pm_import._write_conf_keys`)가 이 결정을 덮는다.
+    accepted = answer in ("y", "yes")
+    block = ("# cross-harness 위임 — ON.\ndelegate_enabled=true\n" if accepted else
+             "# cross-harness 위임 — 기본 OFF. 켜려면 true 로.\ndelegate_enabled=false\n")
+    with _local_conf_write_lock(local_conf) as lock:
+        if "delegate_enabled" in _read_local_conf(local_conf):
+            # 질문하는 사이 결정이 생겼다 — 그 결정이 이긴다(이 응답은 버린다·byte 보존).
+            print("  (질문하는 사이 local.conf 에 delegate_enabled 결정이 생겨 그대로 둡니다 "
+                  "— 이 응답은 기록하지 않았습니다.)")
+            return
+        _append_local_conf_atomic(local_conf, block, lock)
+    if accepted:
+        print("  ✓ cross-harness 위임 ON (delegate_enabled=true·외부 송신·과금 수용).")
+    else:
+        print("  → cross-harness 위임 OFF (나중에 local.conf delegate_enabled=true 로 켤 수 있음).")
 
 
 def read_manifest(path: Path) -> list[ManifestEntry]:

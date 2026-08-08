@@ -871,7 +871,10 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   re-raise 하고(환불 판정은 호출부 seam 이 소유), 그 정리 경로
     #   (`_abort_pre_spawn_raw` 의 raw 장부 마감)만 등록된 사유로 흡수한다 — 정리 실패가 중단
     #   사유를 덮으면 이 실행이 왜 죽었는지가 사라지기 때문이다.
-    assert len(report.boundaries) == 160, "propagation sweep boundary ratchet changed"
+    # 162 = 160 + T-0590 local.conf 공유락의 두 경계. pm_import 는 일반 형제 모듈 손상을
+    #   무락으로 복구하되 마킹된 엔진 skew 를 다시 올리고, pm_config 도 그 skew 를 사용자
+    #   입력 RuntimeError 로 번역하지 않고 그대로 전파한다.
+    assert len(report.boundaries) == 162, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

@@ -14,6 +14,12 @@ pm_relay(raw 장부 `<ledger>.lock`)·pm_handoff(`dashboard.lock`)·worktree_poo
 seam 의 관심사가 아니다. 이 모듈은 "주어진 경로에 배타락을 건다"·"주어진 경로에 한 번에
 붙인다"만 책임진다.
 
+그 규칙의 **예외가 local.conf 락 하나**다(`conf_lock_path`·`local_conf_write_lock`). 이 락은 한
+도구의 내부 관례가 아니라 **서로 다른 프로세스**(board init·pm_update 온보딩·pm_import/pm_config
+의 키 writer)가 같은 파일을 두고 지켜야 하는 *도구 간* 규약이라, 유도 규칙이 모듈마다 복제되면
+한 사본만 어긋나도 배타가 조용히 사라진다(같은 conf, 다른 락 파일 = 직렬화 없음). 그래서 경로
+유도까지 이 한 곳이 소유한다.
+
 (모듈 *파일명* `file_lock.py` 는 배타락 seam 으로 출발한 유래다 — 개명은 manifest 4벌·
 `STAMPED_MODULES`·소비자 로더·테스트·채택자 사본 orphan 비용이 커서 하지 않고, 소유 범위를
 이 docstring 으로 명시한다.)
@@ -115,6 +121,39 @@ def exclusive_file_lock(
             release_exclusive(fd)
     finally:
         os.close(fd)  # close 만으로도 OS 가 락을 해제 (크래시 시 안전망)
+
+
+# local.conf writer 직렬화 락의 파일명. 경로는 `conf_lock_path` 가 대상 conf 에서 유도한다.
+LOCAL_CONF_LOCK_NAME = "local-conf.lock"
+
+
+def conf_lock_path(conf_path: Path | str) -> Path:
+    """`local.conf` writer 를 직렬화하는 락 경로 — **대상 conf 에서** 유도한다.
+
+    상수(도구 자기 repo 의 `LOCAL_CONF`)가 아니라 인자로 받은 conf 에서 유도하는 이유는
+    pm_update/pm_import 가 **남의 트리**(dest_root)의 conf 를 쓰기 때문이다. 같은 conf 를 건드리는
+    모든 writer 가 같은 파일에 도달해야 배타가 성립한다. board 의 락 관례
+    (`.project_manager/.local/*.lock`)를 그대로 따른다.
+    """
+    return Path(conf_path).parent / ".local" / LOCAL_CONF_LOCK_NAME
+
+
+@contextlib.contextmanager
+def local_conf_write_lock(
+    conf_path: Path | str, *, mode: int = DEFAULT_LOCK_MODE,
+) -> Iterator[None]:
+    """`conf_path` 의 **모든** writer(전체 write·RMW 교체·opt-in append)가 공유하는 배타 구간.
+
+    append 만 서로 직렬화해서는 부족하다 — 커밋 전 내용을 읽고 나중에 통째 교체하는 writer
+    (`board init` 병합·`pm_import._write_conf_keys` 의 temp+`os.replace`)가 그 사이의 append 를
+    읽지 못하면, 원자적으로 쓴 append 도 교체에 덮여 사라진다(lost update). 그래서 락의 단위는
+    "append" 가 아니라 "이 conf 를 쓰는 구간" 이고, 읽기→판정→쓰기→(검증)까지 한 구간 안에 든다.
+
+    **재진입 금지**(`exclusive_file_lock` 계약 그대로) — 이 구간 안에서 다른 conf writer 를 부르지
+    않는다. 온보딩 프롬프트는 락 밖에서 묻고 커밋만 이 구간에서 한다.
+    """
+    with exclusive_file_lock(conf_lock_path(conf_path), mode=mode):
+        yield
 
 
 def append_atomic(

@@ -43,6 +43,12 @@
   Codex tool metadata 를 싣지 않는다.
 
 ### Fixed
+- **`local.conf` writer 단일 직렬화 경계** — `board init`·두 opt-in·`pm_config`·`pm_import`·
+  `pm_update`의 모든 read-plan-write/postcondition 구간이 `file_lock.py`가 소유한 같은
+  `local-conf.lock`을 사용한다. 질문 대기 중의 stale snapshot뿐 아니라 서로 다른 writer 종류가
+  동시에 실행될 때도 마지막 writer가 앞선 결정을 되돌리지 않는다. 일반 형제 모듈 손상은 기존
+  복구 채널대로 무락 진행할 수 있지만, 표시된 engine-rev skew는 사용자 입력 오류로 번역하거나
+  삼키지 않고 다시 올린다.
 - **Codex cross-harness egress 승인 브리지** — `workspace-write` 샌드박스의
   `network_access=false`를 유지한 채 `pm_delegate → claude/opencode/codex CLI` 실위임과
   `external_review.py` 추가 리뷰 송신만 각 진입점의 Codex `exec_command` 건별 승격으로 실행한다.
@@ -54,8 +60,9 @@
   대체하지 않는다.
 - **추가 리뷰 실행 예산의 실제 spawn 판정** — 자식 프로세스 생성 여부를 실제 `Popen` 경계에서
   실행 전체에 걸쳐 단조롭게 기록한다. 첫 재시도에서 이미 자식이 생겼다면 뒤 재시도의 launch
-  실패로 리뷰 예산을 환불하지 않고, NUL argv 같은 pre-child 비-`OSError` 거절은 무실행으로
-  판정해 예약을 되돌린다. `Popen` 이후 초기화·정리 실패는 보수적으로 실행됨으로 유지한다.
+  실패로 리뷰 예산을 환불하지 않는다. NUL argv·명령 부재·권한·경로 형상처럼 확실한 pre-child
+  거절만 무실행으로 판정해 예약을 되돌리고, 그 밖의 모호한 `Popen` 예외와 `Popen` 반환 뒤
+  초기화·정리 실패는 보수적으로 실행됨으로 유지한다.
 - **worktree git mutation 앵커 가드** — Claude `PreToolUse(Bash)`와 OpenCode hook이 실제 shell
   command word·cwd 전이·Git pathspec을 중앙 `board.py` 판정으로 해석한다. PM 홈의 공유 경로
   mutation은 deny, 활성 canonical slot 안의 명백한 mutation은 allow, 동적 wrapper·복잡 shell·

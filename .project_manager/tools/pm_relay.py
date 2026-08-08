@@ -1611,8 +1611,9 @@ def _mark_spawn_failed(exc: BaseException, failed: bool) -> None:
     """예외에 "자식이 떴는가" 표식을 붙인다 — 이미 붙어 있으면 그대로 둔다(최초 관측이 진실).
 
     표식의 소유자는 **스폰 경계를 실제로 본 층**이다: `_WatchedPopen` 은 실 `Popen` 호출의 앞뒤를
-    보고 pre-child 거절에 True(자식 없음)를, `Popen` 반환 뒤의 실패에 False(자식 있었음)를 붙이고,
-    워치독 루프는 표식 없는 주입 어댑터의 exec 실패(OSError)에 True 를 붙인다.
+    보고 preflight 거절(NUL 입력)과 확정 기동 실패에 True(자식 없음)를, 그 밖의 `Popen` 예외와
+    `Popen` 반환 뒤의 실패에 False(자식 있었음·보수)를 붙이고, 워치독 루프는 표식 없는 주입
+    어댑터의 exec 실패(OSError)에 True 를 붙인다.
     상위(추가 리뷰어 러너)는 이 표식이 있으면 그것을, 없으면 예외 종류만 보고 보수적으로 판정한다.
     속성을 못 받는 예외(슬롯 정의)는 조용히 넘긴다 — 표식 없음은 '판정 유보'라 안전쪽이다.
     """
@@ -1622,6 +1623,59 @@ def _mark_spawn_failed(exc: BaseException, failed: bool) -> None:
         setattr(exc, SPAWN_FAILED_ATTR, failed)
     except (AttributeError, TypeError):
         pass
+
+
+# `Popen` 이 던졌을 때 "자식이 뜬 적 없음"을 **확정**할 수 있는 종류. exec 자체가 실패한 형상들이고
+# (파일 부재·실행 권한·경로 형상), CPython 은 이때 자기가 만든 자식을 errpipe 로 확인한 뒤 회수한다.
+# external_review 의 `_DEFINITE_LAUNCH_FAILURES` 와 같은 집합이다(양쪽 테스트가 동치를 못박는다).
+_DEFINITE_LAUNCH_FAILURES = (
+    FileNotFoundError, PermissionError, NotADirectoryError, IsADirectoryError,
+)
+
+# 문자열/경로/환경값에 섞이면 fork/exec **전에** 거절이 확정되는 바이트.
+_NUL = "\x00"
+
+
+def _nul_in(value) -> bool:
+    """문자열·바이트·PathLike 어디에 실려 오든 embedded NUL 을 본다(판정 불가면 False)."""
+    if isinstance(value, (bytes, bytearray)):
+        return b"\x00" in value
+    if isinstance(value, str):
+        return _NUL in value
+    try:
+        return _NUL in os.fspath(value)
+    except (TypeError, ValueError):
+        return False
+
+
+def _preflight_spawn_inputs(argv, *, cwd, env) -> None:
+    """fork/exec **전에** 확정 판정할 수 있는 입력만 명시적으로 거절한다 (embedded NUL).
+
+    `Popen` 이 던졌다는 사실만으로는 자식 유무를 확정할 수 없다 — 그 생성자는 fork/exec 앞의 인자
+    검증도, 자식이 뜬 **뒤**의 부모측 초기화도 같은 자리에서 올린다. 그래서 "전송 0" 판정의 근거를
+    예외를 받는 자리가 아니라 **부르기 전**으로 옮긴다: argv·cwd·env 의 NUL 은 이 함수가 보고
+    거절하므로 그 거절에 붙는 '자식 없음' 표식은 관측이지 추측이 아니다(환불 계약 보존).
+
+    검사 범위는 *확정 가능한 것* 뿐이다 — 여기서 통과한 입력이 `Popen` 안에서 무엇으로 실패하든
+    그 판정은 호출부의 보수 규칙이 맡는다(넓히면 다시 추측이 된다).
+    """
+    for index, item in enumerate(argv or ()):
+        if _nul_in(item):
+            _reject_pre_child(f"argv[{index}]")
+    if cwd is not None and _nul_in(cwd):
+        _reject_pre_child("cwd")
+    for key, value in (env or {}).items():
+        if _nul_in(key):
+            _reject_pre_child(f"env key {key!r}")
+        if _nul_in(value):
+            _reject_pre_child(f"env[{key!r}]")
+
+
+def _reject_pre_child(where: str):
+    """NUL 입력 거절 — `Popen` 과 같은 종류(`ValueError`)에 '자식 없음' 표식을 붙여 올린다."""
+    exc = ValueError(f"embedded null byte: {where}")
+    _mark_spawn_failed(exc, True)
+    raise exc
 
 
 def _mark_child_existed(exc: BaseException) -> None:
@@ -1660,6 +1714,9 @@ class _WatchedPopen:
 
     def __init__(self, argv, *, cwd=None, env=None, text=True,
                  input_text: str | None = None, clock=None):
+        # fork/exec 전에 확정 판정 가능한 입력(NUL)은 여기서 거절한다 — 그 거절의 '자식 없음'
+        # 표식은 `Popen` 예외 종류를 보고 추측한 것이 아니라 경계 **앞**의 관측이다.
+        _preflight_spawn_inputs(argv, cwd=cwd, env=env)
         popen_kwargs = dict(
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd, env=env,
         )
@@ -1681,17 +1738,20 @@ class _WatchedPopen:
             # (Event/Lock/Thread 생성·start)가 실패해도 같은 트랜잭션에서 자식을 회수한다.
             try:
                 spawned = subprocess.Popen(argv, **popen_kwargs)
-            except Exception as pre_child:
-                # `Popen` 이 **자식을 남기지 않고** 거절했다. 이 경계의 거절은 exec 실패
-                # (`OSError`)만이 아니다 — argv 에 NUL 이 섞이면 `ValueError("embedded null
-                # byte")` 가 fork 전에 나고, 잘못된 kwargs 조합도 같은 자리에서 거부된다. 어느
-                # 쪽이든 전송은 0 이다(CPython 은 exec 실패 시 자기가 만든 자식을 회수하고,
-                # 프롬프트를 밀어 넣는 stdin 펌프는 `Popen` 이 돌아온 **뒤에야** 시작한다).
-                # 그래서 판정을 예외 **종류**가 아니라 이 **경계**로 한다 — 종류만 보는 상위
-                # (추가 리뷰어 러너)는 OSError 가 아닌 pre-child 거절을 보수적 '전송됐을 수 있음'
-                # 으로 오분류해 예산을 태운다. `BaseException`(Ctrl-C 등)은 표식 없이 그대로
-                # 올린다: 판정 유보 = 보수쪽이다.
-                _mark_spawn_failed(pre_child, True)
+            except _DEFINITE_LAUNCH_FAILURES as launch_failure:
+                # exec 자체가 실패한 확정 기동 실패다 — CPython 은 이때 자기가 만든 자식을
+                # errpipe 로 확인하고 회수하며, 프롬프트를 밀어 넣는 stdin 펌프는 `Popen` 이
+                # 돌아온 **뒤에야** 시작한다. 전송 0·과금 0 이므로 환불 계약을 유지한다.
+                _mark_spawn_failed(launch_failure, True)
+                raise
+            except Exception as unknown_boundary:
+                # `Popen` 이 던졌다는 사실만으로는 자식 유무를 확정할 수 없다. 이 생성자는
+                # fork/exec 앞의 인자 검증(그건 위 preflight 가 이미 걷어냈다)과 자식이 뜬
+                # **뒤**의 부모측 초기화(errpipe 읽기·fd 정리)를 같은 자리에서 올린다. 확정할 수
+                # 없는 나머지는 보수쪽으로 못박는다 — '자식 있었음'(False)이면 최악의 경우
+                # 라운드를 한 번 더 세지만, 반대로 틀리면 이미 나간 전송이 예산에서 사라진다.
+                # `BaseException`(Ctrl-C 등)은 표식 없이 그대로 올린다: 판정 유보 = 보수쪽이다.
+                _mark_spawn_failed(unknown_boundary, False)
                 raise
             self._proc = spawned
             self._argv = argv
@@ -2074,11 +2134,14 @@ def run_with_first_event_watchdog(
     (소유권 이전은 실행당 1회이고, 그때는 이미 자식이 한 번 떴다).
 
     스폰 실패의 "자식 없음" 표식(`spawn_failed`)은 두 층이 나눠 붙인다. 실 어댑터
-    (`_WatchedPopen`)는 `Popen` 경계를 직접 보므로 pre-child 거절(NUL argv 의 `ValueError`·exec
-    `OSError`)에 True 를, `Popen` 성공 뒤의 초기화 실패에 False 를 붙인다. 이 루프는 표식 없는
-    주입 어댑터의 `OSError` 에만 True 를 덧붙이고, **이 실행에서 자식이 한 번이라도 떴으면**
-    그 뒤 어떤 시도가 어떻게 실패해도 표식을 False 로 못박는다(앞선 자식의 전송이 환불되지
-    않게 — 실행 단위 보수 규칙이 시도 단위 관측을 이긴다).
+    (`_WatchedPopen`)는 `Popen` 경계를 직접 보므로 preflight 거절(argv/cwd/env 의 NUL)과 확정 기동
+    실패(exec 이 실패한 `FileNotFoundError`·`PermissionError`·`NotADirectoryError`·
+    `IsADirectoryError`)에 True 를, 그 밖의 `Popen` 예외와 `Popen` 성공 뒤의 초기화 실패에는 False
+    를 붙인다(자식 유무를 확정할 수 없으면 보수쪽). 이 루프는 표식 없는 주입 어댑터의 `OSError`
+    에만 True 를 덧붙이고, **자식이 한 번이라도 떴으면** 그 뒤의 실패에 표식을 False 로 못박는다:
+    앞선 시도의 자식이 있는데 뒤 시도가 기동에 실패한 경우도, `popen` 이 돌아온 **뒤** 본문
+    (시계·first_event·poll·communicate·정리)이 무엇으로 실패한 경우도 같다. 실행 단위 보수 규칙이
+    시도 단위 관측을 이긴다(이미 나갔을 전송이 환불되지 않게).
     overall_timeout 은 호출부의 벽시계 백스톱이다 — 무진행 판정이 켜지면 주 판정 자리를 내주고
     "감지기가 고장난 경우"의 유한 상한으로만 남는다.
     """
@@ -2211,11 +2274,19 @@ def run_with_first_event_watchdog(
             # 감사용 관측치 — 완주 시점의 침묵 초(다음 kill 의 원인을 사후 확정하는 입력).
             setattr(completed, SILENCE_SEC_ATTR, _silence_seconds(proc, clock(), start))
             return completed
-        except (WatchdogTimeoutExpired, ProcessCleanupError):
-            # 이 sentinel들은 해당 판정 경로가 이미 그룹 kill+drain을 끝냈거나 그 정리 자체가
-            # 실패했음을 뜻한다. 기존 timeout 의미론을 그대로 재전파한다.
-            raise
         except BaseException as primary:
+            # 여기까지 왔다는 것은 `popen(argv)` 가 이미 핸들을 돌려줬다는 뜻이다 — 이 실행에는
+            # 자식이 **있었다**. 그러니 본문(시계·first_event·poll·communicate·정리)에서 무엇이
+            # 나오든 실행 전체를 '자식 없음'으로 읽히게 두면 안 된다. 종류만 보는 상위(추가 리뷰어
+            # 러너)는 `PermissionError` 같은 확정-기동-실패 종류가 여기서 올라오면 전송 0 으로
+            # 오분류해 이미 나갔을 프롬프트를 환불한다. 정리·재전파 **전에** 못박고(정리가 실패해
+            # cause 로 매달려도 원 예외 객체는 그대로라 표식이 보존된다), 방향은 True→False 한쪽뿐이라
+            # 단조롭다(`_mark_child_existed` 는 앞선 표식도 덮는 실행 단위 사실이다).
+            _mark_child_existed(primary)
+            if isinstance(primary, (WatchdogTimeoutExpired, ProcessCleanupError)):
+                # 이 sentinel들은 해당 판정 경로가 이미 그룹 kill+drain을 끝냈거나 그 정리 자체가
+                # 실패했음을 뜻한다. 기존 timeout 의미론을 그대로 재전파한다.
+                raise
             # Ctrl-C/SystemExit 및 실행 중 예상 밖 오류 모두 새 세션의 자식을 남기지 않는다.
             # 정리 실패 시에도 원래 BaseException을 재전파하되 cause로 안전 실패를 노출한다.
             if not cleaned:
@@ -2237,7 +2308,7 @@ def run_with_first_event_watchdog(
         " startup network fetch stall 의심(upstream #13841)."
         if last_axis == TIMEOUT_AXIS_FIRST_EVENT else ""
     )
-    raise StallWatchdogError(
+    exhausted = StallWatchdogError(
         f"{headline}("
         f"실제 발화: {last_reason}{silence_label}) — 재시도 소진. "
         f"{diagnosis}".rstrip(),
@@ -2247,6 +2318,10 @@ def run_with_first_event_watchdog(
         output="".join(stalled_stdout),
         stderr="".join(stalled_stderr),
     )
+    # 여기 도달했다는 것은 모든 시도가 자식을 띄우고 stall 로 kill 됐다는 뜻이다 — 표식을 명시해
+    # 상위가 종류 추론으로 이 실행을 '전송 0' 으로 읽을 여지를 남기지 않는다.
+    _mark_child_existed(exhausted)
+    raise exhausted
 
 
 # ── opencode 출력 cap-hit(32k 절단) detector (하니스-무관 순수 헬퍼) ──────────────────

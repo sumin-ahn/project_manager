@@ -609,7 +609,16 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   4개 anchor(어댑터 config 게이트·sync_adapter_configs 본문·`_main` 수렴 블록)와 배달 경계
 #   (source/manifest planning → apply → self-update 순서)에는 겹침이 없고, 이 테스트의 두 실행은
 #   모두 PM_NONINTERACTIVE=1 이라 질문·conf write 자체가 발화하지 않는다.
-_T0585_PM_UPDATE_SHA256 = "548e6291e1f259a27744f34780403ecaccbe5c198bb119ec0719a972b7ec812d"
+#   T-0590 4차에서 또 이동 — conf 락의 단위가 "opt-in append" 에서 "conf 를 읽고 쓰는 구간"으로
+#   넓어졌다. 들어온 것은 `_local_conf_lock_path` 의 공용 seam 위임(+손상 사본 폴백),
+#   `_local_conf_write_lock` 의 `local_conf_write_lock` 호출, `maybe_prompt_delegate_optin` 의
+#   기록부(락 안 재판정 + 단일 원자 추가)뿐이다. 셋 다 온보딩 질문 경로이고 역적용 delta 의 4개
+#   anchor(어댑터 config 게이트·sync_adapter_configs 본문·`_main` 수렴 블록)와 배달 경계
+#   (source/manifest planning → apply → self-update 순서)에는 겹치지 않는다 — 실제로 이번에도 네
+#   anchor 가 모두 유일하게 해소됐다(`_slice_replace` 의 count==1 단언 통과). 두 실행이
+#   PM_NONINTERACTIVE=1 이라 질문·conf write 는 여전히 발화하지 않으므로 배달 의미도 불변이고,
+#   현재화한 것은 기대 SHA 하나뿐이다.
+_T0585_PM_UPDATE_SHA256 = "58ba6f815fd94fa4dcab162425b64f6f8bfffaed72a3c15fc1f361b5275502c9"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
