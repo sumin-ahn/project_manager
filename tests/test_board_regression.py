@@ -14,6 +14,7 @@ pytest 자식은 절대 실기동하지 않는다 — 회귀 러너 seam(`subpro
 from __future__ import annotations
 
 import argparse
+import datetime
 import importlib.util
 import io
 import json
@@ -1351,10 +1352,295 @@ def test_pure_hooks_dir_follows_a_linked_worktree_to_the_shared_hooks(board, tmp
     assert board._pure_hooks_dir() == (main_git / "hooks").resolve()
 
 
-def test_pure_hooks_dir_skips_custom_hooks_path(board):
-    """`core.hooksPath` 커스텀(보호훅 형상)은 git 없이 확정 불가 — 치유를 건너뛴다(fail-open)."""
+# ── `core.hooksPath` 값 파싱 (T-0601 ④) ────────────────────────────────────
+# 존재-only 감지는 선언이 있기만 하면 치유를 포기했다 — adopter#0 처럼 *기본 위치를 가리키는*
+# 선언까지 자기치유 밖에 남는다. 값을 순수 파이썬으로 읽어 그 경로를 훅 위치로 쓴다(subprocess 0).
+# git 은 섹션·키를 대소문자 무관으로 다루고, 상대 경로는 worktree 루트 기준으로 해소한다.
+
+
+def _write_git_config(board, text: str) -> None:
     git_dir = board.REPO / ".git"
-    (git_dir / "hooks").mkdir(parents=True)
-    (git_dir / "config").write_text(
-        "[core]\n\thooksPath = .githooks\n", encoding="utf-8")
+    (git_dir / "hooks").mkdir(parents=True, exist_ok=True)
+    (git_dir / "config").write_text(text, encoding="utf-8")
+
+
+def test_pure_hooks_dir_parses_a_relative_hooks_path(board):
+    """상대 `core.hooksPath` 는 worktree 루트(REPO) 기준으로 해소한다 (프로세스 cwd 아님)."""
+    _write_git_config(board, "[core]\n\thooksPath = .githooks\n")
+    assert board._pure_hooks_dir() == (board.REPO / ".githooks").resolve()
+
+
+def test_pure_hooks_dir_parses_an_absolute_hooks_path(board, tmp_path):
+    """절대 `core.hooksPath`(보호훅 형상)는 그 경로 그대로다."""
+    elsewhere = tmp_path / "repo-hooks" / "proj"
+    elsewhere.mkdir(parents=True)
+    _write_git_config(board, f"[core]\n\thooksPath = {elsewhere}\n")
+    assert board._pure_hooks_dir() == elsewhere.resolve()
+
+
+@pytest.mark.parametrize("text", [
+    "[CORE]\n\thooksPath = .githooks\n",          # 섹션 대문자
+    "[core]\n\tHOOKSPATH = .githooks\n",          # 키 대문자
+    "[Core]\n\tHooksPath=.githooks\n",            # 혼합 + 공백 없음
+    '[core]\n\thooksPath = ".githooks"\n',        # 인용값
+    "[core]\n\thooksPath = .old\n[core]\n\thooksPath = .githooks\n",   # last-wins
+    "# 주석\n[core]\n\t; 세미콜론 주석\n\thooksPath = .githooks\n",
+    "[core]\n\thooksPath = .githooks  # 사내 표준\n",                  # 인용 밖 후행 주석
+])
+def test_hooks_path_key_is_case_insensitive_and_last_wins(board, text):
+    """git config 키/섹션은 대소문자 무관이고 마지막 선언이 이긴다 (codex suggestion 흡수)."""
+    _write_git_config(board, text)
+    assert board._pure_hooks_dir() == (board.REPO / ".githooks").resolve()
+
+
+@pytest.mark.parametrize("text", [
+    "[core]\n\tbare = false\n",                       # 선언 없음
+    "[receive]\n\thooksPath = .githooks\n",           # 다른 섹션의 동명 키
+    "[core]\n\thooksPathExtra = .githooks\n",         # 다른 키
+])
+def test_absent_hooks_path_keeps_the_default_location(board, text):
+    """`core.hooksPath` 선언이 없으면 기본 `.git/hooks` — 오탐 0."""
+    _write_git_config(board, text)
+    assert board._pure_hooks_dir() == (board.REPO / ".git" / "hooks").resolve()
+
+
+@pytest.mark.parametrize("text", [
+    "[include]\n\tpath = ../shared.config\n",
+    '[includeIf "gitdir:~/work/"]\n\tpath = ../work.config\n',
+    "[core]\n\thooksPath =\n",                        # 빈 값
+])
+def test_unresolvable_config_stays_fail_open(board, text):
+    """include/includeIf·빈 값은 git 없이 확정 불가 — 치유를 건너뛴다(fail-open·안 고치는 쪽)."""
+    _write_git_config(board, text)
     assert board._pure_hooks_dir() is None
+    assert board._heal_pre_push_hook_drift() is False
+
+
+def test_healing_covers_a_hooks_path_at_the_default_location(board, monkeypatch, tmp_path):
+    """기본 위치를 가리키는 선언(adopter#0 형상)도 자기치유가 커버한다 (이 항목의 직접 근거)."""
+    _write_git_config(board, "[core]\n\thooksPath = .git/hooks\n")
+    hook = _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
+    assert board._pure_hooks_dir() == (board.REPO / ".git" / "hooks").resolve()
+    assert board._heal_pre_push_hook_drift() is True
+    assert hook.read_text(encoding="utf-8") == board.pre_push_hook_body("python3")
+
+
+def test_healing_reaches_a_hook_under_a_custom_hooks_path(board, monkeypatch, tmp_path):
+    """커스텀 위치의 엔진 훅도 치유 대상이다 — 위치 선언이 세대 관리를 끊지 않는다."""
+    custom = board.REPO / ".githooks"
+    custom.mkdir(parents=True)
+    _write_git_config(board, "[core]\n\thooksPath = .githooks\n")
+    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    hook = custom / "pre-push"
+    hook.write_text(_legacy_hook(), encoding="utf-8")
+    hook.chmod(0o755)
+
+    assert board._heal_pre_push_hook_drift() is True
+    assert hook.read_text(encoding="utf-8") == board.pre_push_hook_body("python3")
+
+
+# ── 치유 실행은 강등 없이 FULL (T-0601 ⑦) ──────────────────────────────────
+# 치유가 일어난 실행에서 지금 돌고 있는 훅은 교체 **전** 본문(옛 inode·`--final` 부재)이다.
+# 그 실행이 targeted 로 강등돼 rc0 을 내면 옛 훅이 그것을 push 허가로 읽는다 — 치유가 다음
+# push 부터 유효한 사이에 바로 이번 push 가 열린다. 그래서 치유 감지가 강등 판정보다 앞이다.
+
+
+def test_healing_run_forces_the_full_gate(board, monkeypatch, tmp_path, capsys):
+    """활성 사이클 + 치유 → 강등하지 않고 FULL 로 돈다 · 게이트 플래그 기록 (DoD)."""
+    _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
+    _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
+    monkeypatch.setattr(board, "_ticket_touches", lambda tid: ["src/pay.py"])
+    _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
+    fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
+
+    assert board.cmd_regression(_run_args()) == 0
+
+    out = capsys.readouterr().out
+    assert "강등합니다" not in out
+    assert "강등 없이 FULL" in out                  # 올린 사실을 조용히 넘기지 않는다
+    assert "-k" not in fake.calls[0]["args"][0]
+    assert _flag(board)["scope"] == "full"
+
+
+def test_healed_hook_forces_full_across_the_check_then_run_sequence(
+        board, monkeypatch, tmp_path, capsys):
+    """훅은 `check || run` **2프로세스**다 — 치유는 check 에서 일어나고 run 은 재진입이다.
+
+    run 이 자기 프로세스의 치유만 보면 그때는 이미 현행 훅이라 False 를 얻어 강등하고, 실행 중인
+    옛 inode 훅(`--final` 부재)이 그 강등 rc0 을 push 허가로 읽는다 — 치유가 다음 push 부터
+    유효한 사이에 바로 이번 push 가 열린다. 표식이 두 프로세스를 잇는다."""
+    _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
+    _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
+    monkeypatch.setattr(board, "_ticket_touches", lambda tid: ["src/pay.py"])
+    hook = _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
+
+    # 훅 1단계 — 기록 없음이라 rc 1(그래서 2단계가 돈다). 이 프로세스가 훅을 교체한다.
+    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+    assert hook.read_text(encoding="utf-8") == board.pre_push_hook_body("python3")
+    assert board._hook_heal_sentinel().is_file(), "치유가 표식을 남기지 않았다"
+    capsys.readouterr()
+
+    # 훅 2단계 — 재진입(치유 대상 없음). 표식이 없으면 여기서 강등된다.
+    fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
+    assert board.cmd_regression(_run_args()) == 0
+
+    out = capsys.readouterr().out
+    assert "targeted 로 강등합니다" not in out
+    assert "강등 없이 FULL" in out
+    assert "-k" not in fake.calls[0]["args"][0]
+    assert _flag(board)["scope"] == "full"          # push 게이트 플래그를 실제로 쓴다
+    assert not board._hook_heal_sentinel().exists(), "표식이 일회성이 아니다"
+
+
+@pytest.mark.parametrize("interleaved", [
+    {"touches": "src/other.py"},        # dev 피드백 스코프 run
+    {"ticket": "T-0002"},               # 명시 티켓 스코프 run
+    {"final": True},                    # 강등 판정 자체를 안 타는 실행
+])
+def test_interleaved_run_does_not_steal_the_heal_sentinel(
+        board, monkeypatch, tmp_path, capsys, interleaved):
+    """표식을 **쓰지 않는** 실행은 그것을 지우지 않는다 — 끼어들어 창을 다시 열면 안 된다.
+
+    훅 1단계(check·치유)와 2단계(run) 사이에 dev 가 스코프 회귀를 한 번 돌리는 것은 정상 동선이다.
+    소비가 판정 밖에 있으면 그 실행이 표식을 가져가 버리고, 이어지는 훅 2단계가 강등돼 옛 훅이
+    그 rc0 을 push 허가로 읽는다."""
+    _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
+    _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
+    monkeypatch.setattr(board, "_ticket_touches", lambda tid: ["src/pay.py"])
+    _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
+    assert board.cmd_regression(argparse.Namespace(action="check")) == 1   # 훅 1단계(치유)
+    assert board._hook_heal_sentinel().is_file()
+
+    # 끼어든 실행 — 강등 판정을 쓰지 않으므로 표식도 건드리지 않아야 한다.
+    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="2 passed in 0.10s\n"))
+    assert board.cmd_regression(_run_args(**interleaved)) == 0
+    assert board._hook_heal_sentinel().is_file(), "표식을 탈취당했다 — 강등 창이 다시 열린다"
+    capsys.readouterr()
+
+    # 훅 2단계 — 표식이 살아 있어야 FULL 로 돈다.
+    fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
+    assert board.cmd_regression(_run_args()) == 0
+    out = capsys.readouterr().out
+    assert "targeted 로 강등합니다" not in out and "강등 없이 FULL" in out
+    assert "-k" not in fake.calls[0]["args"][0]
+    assert _flag(board)["scope"] == "full"
+
+
+def test_future_stamped_sentinel_is_treated_as_fresh(board, monkeypatch, tmp_path):
+    """미래 시각(시계 스큐)은 신선으로 본다 — 판정 불능일 때 비싼 쪽(FULL)으로 틀리는 게 안전하다."""
+    board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    ahead = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=3)
+    board._hook_heal_sentinel().write_text(
+        json.dumps({"ts": ahead.isoformat(timespec="seconds"), "head": "deadbeef"}),
+        encoding="utf-8")
+
+    assert board._consume_hook_heal_sentinel() is True
+    assert not board._hook_heal_sentinel().exists()
+
+
+def test_sentinel_write_is_atomic(board, monkeypatch, tmp_path):
+    """표식 쓰기는 원자 교체다 — 잘린 JSON 은 '강제 없음'으로 접혀 창을 그대로 두는 방향이다."""
+    calls: list[Path] = []
+    monkeypatch.setattr(board, "_write_json_atomic",
+                        lambda path, data: calls.append(path))
+    _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
+
+    assert board._heal_pre_push_hook_drift() is True
+    assert calls == [board._hook_heal_sentinel()]
+
+
+def test_heal_sentinel_is_consumed_once(board, monkeypatch, tmp_path, capsys):
+    """표식은 한 번만 쓰인다 — 다음 run 은 종전대로 강등된다(영구 FULL 방지)."""
+    _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
+    _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
+    monkeypatch.setattr(board, "_ticket_touches", lambda tid: ["src/pay.py"])
+    _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
+    board.cmd_regression(argparse.Namespace(action="check"))
+    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
+    assert board.cmd_regression(_run_args()) == 0       # 1회차 — 표식 소비
+    board.REGRESSION_FLAG.unlink()
+    capsys.readouterr()
+
+    assert board.cmd_regression(_run_args()) == 0       # 2회차 — 표식 없음
+    out = capsys.readouterr().out
+    assert "targeted 로 강등합니다" in out and "강등 없이 FULL" not in out
+    assert not board.REGRESSION_FLAG.exists()
+
+
+def test_stale_heal_sentinel_is_dropped_not_honored(board, monkeypatch, tmp_path, capsys):
+    """TTL 밖 표식은 강제하지 않고 **지운다** — check 만 돌고 끝난 형상이 영구 FULL 이 되지 않게.
+
+    치유↔run 간격은 같은 push 시도 안의 초 단위다. 그보다 오래된 표식은 다른 실행의 잔재다."""
+    _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
+    _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
+    monkeypatch.setattr(board, "_ticket_touches", lambda tid: ["src/pay.py"])
+    board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    stale = (datetime.datetime.now(datetime.timezone.utc)
+             - datetime.timedelta(seconds=board._HOOK_HEAL_SENTINEL_TTL_SEC + 60))
+    board._hook_heal_sentinel().write_text(
+        json.dumps({"ts": stale.isoformat(timespec="seconds"), "head": "deadbeef"}),
+        encoding="utf-8")
+    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="2 passed in 0.10s\n"))
+
+    assert board.cmd_regression(_run_args()) == 0
+
+    assert "targeted 로 강등합니다" in capsys.readouterr().out
+    assert not board._hook_heal_sentinel().exists(), "낡은 표식이 남아 다음 실행에도 살아 있다"
+
+
+@pytest.mark.parametrize("payload", ["{ not json", '{"ts": "어제"}', '{"head": "x"}'])
+def test_corrupt_heal_sentinel_is_dropped_without_forcing(
+        board, monkeypatch, tmp_path, payload, capsys):
+    """손상 표식은 강제도 크래시도 없이 지운다 — 이 축의 실패가 회귀 판정을 바꾸지 않는다."""
+    board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    board._hook_heal_sentinel().write_text(payload, encoding="utf-8")
+
+    assert board._consume_hook_heal_sentinel() is False
+    assert not board._hook_heal_sentinel().exists()
+
+
+def test_direct_run_heals_and_forces_full_in_one_process(
+        board, monkeypatch, tmp_path, capsys):
+    """`regression run` 이 직접 치유한 경우도 같은 표식 경로로 FULL 이 된다(단일 프로세스 형상)."""
+    _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
+    _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
+    monkeypatch.setattr(board, "_ticket_touches", lambda tid: ["src/pay.py"])
+    _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
+    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
+
+    assert board.cmd_regression(_run_args()) == 0
+
+    out = capsys.readouterr().out
+    assert "targeted 로 강등합니다" not in out and "강등 없이 FULL" in out
+    assert _flag(board)["scope"] == "full"
+    assert not board._hook_heal_sentinel().exists()
+
+
+def test_forced_full_note_is_quiet_without_an_active_cycle(
+        board, monkeypatch, tmp_path, capsys):
+    """강등 대상이 아니었으면 안내도 없다 — 치유만 알린다(소음 0)."""
+    _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
+    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
+
+    assert board.cmd_regression(_run_args()) == 0
+
+    out = capsys.readouterr().out
+    assert "구버전 pre-push 훅" in out and "강등 없이 FULL" not in out
+    assert _flag(board)["scope"] == "full"
+
+
+def test_current_hook_still_downgrades_during_an_active_cycle(
+        board, monkeypatch, tmp_path, capsys):
+    """치유가 없는 실행(현행 세대 훅)은 종전대로 강등된다 — 예외는 치유 실행 한정이다."""
+    _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
+    _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
+    monkeypatch.setattr(board, "_ticket_touches", lambda tid: ["src/pay.py"])
+    hook = _hooked_repo(board, monkeypatch, tmp_path, None)
+    hook.write_text(board.pre_push_hook_body("python3"), encoding="utf-8")
+    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="2 passed in 0.10s\n"))
+
+    assert board.cmd_regression(_run_args()) == 0
+
+    out = capsys.readouterr().out
+    assert "targeted 로 강등합니다" in out and "강등 없이 FULL" not in out
+    assert not board.REGRESSION_FLAG.exists()

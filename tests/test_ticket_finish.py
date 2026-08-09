@@ -1662,6 +1662,207 @@ def test_default_diff_cap_seam_is_off_when_external_review_is_absent(
     assert finisher._default_diff_cap_block("T-1234") is None
 
 
+# ── 측정 스코프 정규화 · 기계 mirror 제외 (T-0601 ①⑧) ────────────────────────
+#
+# ⑧ PM 홈 좌표 touches(`work/<repo>_<N>/…`)를 그대로 재면 측정 트리에 그 경로가 없어 diff 가 0 이
+#    나오고 상한이 조용히 우회된다. 정규화는 stage 경로와 **같은** `repo_coordinates` seam 이다.
+# ① 기계 mirror 제외는 external_review 측정 seam 이 소유한다 — 완료 부기는 그 판정을 빌려 쓴다.
+
+
+def test_measured_touches_normalizes_pm_home_coordinates(tf, tmp_path, monkeypatch):
+    """PM 홈 좌표는 측정 트리 좌표로 정규화된다 (stage 경로와 같은 규칙·사본 0)."""
+    workspace = tmp_path / "work" / "proj_1"
+    workspace.mkdir(parents=True)
+    monkeypatch.setattr(tf, "REPO", tmp_path)
+    monkeypatch.setattr(
+        tf, "get_ticket_touches",
+        lambda board_py, tid: ["work/proj_1/.project_manager/tools/board.py",
+                               "work/proj_1/tests/"])
+
+    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", task_workspace=workspace)
+    assert finisher._measured_touches("T-1") == [
+        ".project_manager/tools/board.py", "tests"]
+
+
+def test_measured_touches_leaves_plain_repo_paths_untouched(tf, tmp_path, monkeypatch):
+    """접두 없는 채택자 형상은 normalizer 를 타지 않는다 (경량 판정·현행 무변경)."""
+    monkeypatch.setattr(tf, "get_ticket_touches",
+                        lambda board_py, tid: [".project_manager/tools/board.py"])
+    monkeypatch.setattr(tf, "_load_repo_coordinates",
+                        lambda: (_ for _ in ()).throw(AssertionError("normalizer 미호출")))
+    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md")
+    assert finisher._measured_touches("T-1") == [".project_manager/tools/board.py"]
+
+
+def test_measured_touches_slot_mismatch_is_loud_guard_off(tf, tmp_path, monkeypatch, capsys):
+    """슬롯 불일치는 **경고 1줄 + 가드 off** 다 — 조용한 diff 0 으로 접지 않는다."""
+    workspace = tmp_path / "work" / "proj_1"
+    workspace.mkdir(parents=True)
+    monkeypatch.setattr(tf, "REPO", tmp_path)
+    monkeypatch.setattr(tf, "get_ticket_touches",
+                        lambda board_py, tid: ["work/other_2/tools/board.py"])
+
+    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", task_workspace=workspace)
+    assert finisher._measured_touches("T-1") is None
+    assert "좌표 정규화 실패" in capsys.readouterr().err
+
+
+def test_diff_cap_measures_the_normalized_scope(tf, tmp_path, monkeypatch):
+    """서킷브레이커가 **정규화된 스코프**로 잰다 — 접두 불일치로 상한이 우회되던 구멍 폐쇄."""
+    workspace = tmp_path / "work" / "proj_1"
+    workspace.mkdir(parents=True)
+    external = tf._load_external_review()
+    seen: dict[str, object] = {}
+
+    def _measure(root, base, paths):
+        seen["root"], seen["paths"] = root, list(paths)
+        return 301
+
+    monkeypatch.setattr(tf, "REPO", tmp_path)
+    monkeypatch.setattr(tf, "get_ticket_touches",
+                        lambda board_py, tid: ["work/proj_1/src/pay.py"])
+    monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: "small")
+    monkeypatch.setattr(external, "local_config", lambda repo=None: {})
+    monkeypatch.setattr(external, "diff_line_total", _measure)
+    monkeypatch.setattr(tf, "_load_external_review", lambda: external)
+
+    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", task_workspace=workspace)
+    block = finisher._default_diff_cap_block("T-1")
+    assert seen["paths"] == ["src/pay.py"], "PM 홈 좌표 그대로 측정하면 diff 0 으로 우회된다"
+    assert seen["root"] == workspace
+    assert block is not None and "301줄" in block
+
+
+def test_completion_surface_carries_the_shared_measurement_meaning(
+        tf, tmp_path, monkeypatch):
+    """완료 부기 안내도 '측정=손작업 스코프(기계 mirror 제외)'를 싣는다 (문구 단일 출처)."""
+    external = tf._load_external_review()
+    monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: ["templates/"])
+    monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: "small")
+    monkeypatch.setattr(external, "local_config", lambda repo=None: {})
+    monkeypatch.setattr(external, "diff_line_total", lambda *a, **k: 301)
+    monkeypatch.setattr(tf, "_load_external_review", lambda: external)
+
+    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md")
+    assert external.MEASURED_SCOPE_NOTE in finisher._default_diff_cap_block("T-1")
+
+
+# ── DoD 부기 게이트 preflight (T-0601 ②) ─────────────────────────────────────
+#
+# DoD 판정이 [3/5] `board.py complete` 안에만 있던 동안에는, 차단될 때마다 [2/5] 가 이미 append 한
+# stray log 스켈레톤이 남고 재실행이 그것을 중복 append 했다(실측). 판정을 append **앞**으로 당겨
+# 순서 결함 자체를 없앤다 — 권위 있는 차단은 여전히 board 가 소유한다(여기는 같은 판정의 조기 호출).
+
+
+def _dod_finisher(tf, tmp_path, *, dod_block, log_file: Path | None = None):
+    """DoD preflight 만 살아 있는 finisher — 나머지 부작용 seam 은 전부 폭발 대역."""
+    return tf.TicketFinisher(
+        run_pytest_fn=_boom_pytest,
+        run_board_fn=lambda args: (_ for _ in ()).throw(AssertionError("board 미호출")),
+        run_git_fn=lambda args: (_ for _ in ()).throw(AssertionError("git 미호출")),
+        board_count_fn=lambda: 10,
+        ticket_title_fn=lambda tid: "t",
+        affected_domain_fn=lambda tid: [],
+        diff_cap_block_fn=lambda tid: None,
+        dod_block_fn=lambda tid: dod_block,
+        log_file=log_file if log_file is not None else tmp_path / "log.md",
+    )
+
+
+def test_dod_preflight_blocks_before_the_log_skeleton(tf, tmp_path, capsys):
+    """DoD 미마감 → rc 1 · 회귀/log/board/git 어느 것도 건드리지 않는다 (순서 결함 폐쇄·DoD)."""
+    log_file = tmp_path / "log.md"
+    finisher = _dod_finisher(tf, tmp_path, log_file=log_file,
+                            dod_block="완료 조건(DoD) 미마감 — T-1234 (1건)")
+    assert finisher.run("T-1234", section=None, dry_run=False) == 1
+    assert not log_file.exists(), "차단된 실행이 stray 스켈레톤을 남겼다"
+    err = capsys.readouterr().err
+    assert "[중단]" in err and "DoD" in err and "T-1234" in err
+
+
+def test_repeated_dod_block_never_duplicates_the_skeleton(tf, tmp_path):
+    """재실행해도 log 는 그대로다 — 차단마다 중복 append 되던 실측 결함의 직접 재현."""
+    log_file = tmp_path / "log.md"
+    log_file.write_text("# log\n", encoding="utf-8")
+    finisher = _dod_finisher(tf, tmp_path, log_file=log_file, dod_block="DoD 미마감")
+    for _ in range(3):
+        assert finisher.run("T-1234", section=None, dry_run=False) == 1
+    assert log_file.read_text(encoding="utf-8") == "# log\n"
+
+
+def test_dod_preflight_runs_after_the_diff_cap(tf, tmp_path, capsys):
+    """진입 게이트 순서 = 서킷브레이커 → DoD (더 넓은 거절이 먼저·안내 1개만 뜬다)."""
+    finisher = tf.TicketFinisher(
+        run_pytest_fn=_boom_pytest,
+        board_count_fn=lambda: 10,
+        ticket_title_fn=lambda tid: "t",
+        affected_domain_fn=lambda tid: [],
+        diff_cap_block_fn=lambda tid: "서킷브레이커 차단",
+        dod_block_fn=lambda tid: (_ for _ in ()).throw(
+            AssertionError("cap 차단 뒤에는 DoD 판정을 묻지 않는다")),
+        log_file=tmp_path / "log.md",
+    )
+    assert finisher.run("T-1234", section=None, dry_run=False) == 1
+    assert "서킷브레이커 차단" in capsys.readouterr().err
+
+
+def test_dry_run_is_also_refused_by_the_dod_preflight(tf, tmp_path):
+    """dry-run 도 같은 거절이다 — 미리보기는 '부작용 없음'이지 '게이트 면제'가 아니다."""
+    finisher = _dod_finisher(tf, tmp_path, dod_block="DoD 미마감")
+    assert finisher.run("T-1234", section=None, dry_run=True) == 1
+
+
+def _write_dod_board(tmp_path, body_repr: str, *, with_gate: bool = True) -> Path:
+    """`_dod_open_items` 를 노출하는 board.py 대역 (판정 규칙은 실 board 문법 그대로)."""
+    gate = (
+        "def _dod_open_items(body):\n"
+        "    return [line.strip() for line in body.splitlines()\n"
+        "            if line.strip().startswith('- [ ]')]\n"
+        if with_gate else ""
+    )
+    board_py = tmp_path / "dod_board.py"
+    board_py.write_text(
+        f"ENGINE_REV = {_real_engine_rev()!r}\n"
+        "REPO = None\n"
+        "_DOD_VALUE_FORMS = '`- [x] <원문>` 또는 `- [>] <원문> (이월: <사유·귀속>)`'\n"
+        "def find_ticket(ticket_id):\n"
+        "    return ('claimed', ticket_id)\n"
+        f"def load_ticket(path):\n"
+        f"    return ({{}}, {body_repr})\n"
+        + gate,
+        encoding="utf-8",
+    )
+    return board_py
+
+
+def test_default_dod_preflight_consumes_the_board_gate(tf, tmp_path):
+    """기본 seam 은 board 의 DoD 판정을 그대로 부른다 (규칙 사본 0·값 형식도 board 것)."""
+    board_py = _write_dod_board(
+        tmp_path, repr("## 완료 조건\n- [x] 한 건\n- [ ] 남은 항목\n"))
+    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", board_py=board_py)
+
+    block = finisher._default_dod_block("T-1234")
+    assert block is not None
+    assert "T-1234" in block and "남은 항목" in block
+    assert "(이월: <사유·귀속>)" in block                  # 값 형식은 board 소유분
+    assert "board.py complete 의 게이트와 **같은 판정**" in block
+
+
+def test_default_dod_preflight_passes_a_closed_ticket(tf, tmp_path):
+    """전항 마감이면 None — 정상 완료 흐름은 무영향."""
+    board_py = _write_dod_board(
+        tmp_path, repr("## 완료 조건\n- [x] 한 건\n- [>] 이월분 (이월: v1.7.1·T-0602)\n"))
+    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", board_py=board_py)
+    assert finisher._default_dod_block("T-1234") is None
+
+
+def test_default_dod_preflight_is_off_without_the_board_gate(tf, tmp_path):
+    """구세대 board 사본(게이트 부재)은 preflight 가 조용히 off — 진짜 게이트가 뒤에 있다."""
+    board_py = _write_dod_board(tmp_path, repr("- [ ] 남은 항목\n"), with_gate=False)
+    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", board_py=board_py)
+    assert finisher._default_dod_block("T-1234") is None
+
+
 def test_ticket_estimate_reads_frontmatter(tf, tmp_path):
     """`estimate` 는 board frontmatter 에서 읽고, 부재/비-문자열은 None 이다."""
     board_py = tmp_path / "estimate_board.py"

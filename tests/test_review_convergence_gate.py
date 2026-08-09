@@ -402,6 +402,79 @@ def test_numstat_sum_ignores_binary_and_junk(external):
     assert external._sum_numstat(text) == 18
 
 
+# ── 기계 mirror 제외 (T-0601 ①) ────────────────────────────────────────────
+# `templates/<타깃>/.project_manager/` 는 pm_update 가 기계로 내보내는 엔진 사본이다. 손작업과
+# 같은 가중으로 합산하면 구현 스코프가 출하 타깃 수만큼 부풀어(실측 estimate 교정 2회) 분할이
+# 필요 없는 티켓을 서킷이 막는다. mirror 정합은 drift-0 가드가 따로 지킨다.
+
+
+@pytest.mark.parametrize("path, mirrored", [
+    ("templates/claude_code/.project_manager/tools/board.py", True),
+    ("templates/codex/.project_manager/tools/pm_delegate.py", True),
+    ("./templates/opencode/.project_manager/local.conf", True),          # `./` 표기
+    (r"templates\opencode\.project_manager\tools\board.py", True),       # Windows 표기
+    (".project_manager/tools/board.py", False),                          # 엔진 원본(손작업)
+    ("templates/claude_code/CLAUDE.md", False),                          # 어댑터층(손작업)
+    ("templates/claude_code/.claude/agents/architect.md", False),        # 어댑터층(손작업)
+    ("tests/test_board_lint.py", False),
+])
+def test_machine_mirror_predicate_is_the_single_exclusion_rule(external, path, mirrored):
+    """제외 판정은 경로 문자열 하나다 — 두 소비처(리뷰·완료)가 같은 술어를 쓴다(사본 0)."""
+    assert external.is_machine_mirror_path(path) is mirrored
+
+
+def test_exclusion_is_a_subtree_including_hand_edited_files(external):
+    """제외는 **subtree 단위**다 — 그 안의 manifest 밖 손편집 파일도 함께 빠진다(알고 고른 경계).
+
+    이 경계를 문서와 술어가 같은 말로 해야 다음 사람이 "mirror 만 빠진다"로 오독하지 않는다.
+    오차 방향은 측정 축소(=가드 약화)뿐이라 정당한 작업을 오차단하지 않는다."""
+    hand_edited = "templates/codex/.project_manager/engine.manifest"
+    assert external.is_machine_mirror_path(hand_edited) is True
+    doc = external.is_machine_mirror_path.__doc__
+    assert "전부는 아니다" in doc and "측정 축소" in doc
+
+
+def test_mirror_rows_do_not_inflate_the_measured_total(external):
+    """mirror 행은 합산에서 빠지고 손작업 행만 남는다 (rename 표기도 목적지로 판정)."""
+    text = (
+        "40\t10\t.project_manager/tools/board.py\n"                       # 손작업 50
+        "40\t10\ttemplates/claude_code/.project_manager/tools/board.py\n"  # 기계 mirror
+        "40\t10\ttemplates/codex/.project_manager/tools/board.py\n"        # 기계 mirror
+        "40\t10\ttemplates/opencode/.project_manager/tools/board.py\n"     # 기계 mirror
+        "3\t0\ttemplates/claude_code/CLAUDE.md\n"                          # 어댑터층 손작업 3
+        "2\t1\t{templates/codex => templates/codex}/.project_manager/tools/x.py\n"
+    )
+    assert external._sum_numstat(text) == 53
+
+
+def test_broad_template_declaration_still_excludes_the_mirror(external, tmp_path):
+    """선언이 넓은 접두(`templates/`)여도 제외가 성립한다 — 판정이 선언 형태에 안 좌우된다.
+
+    이게 경로 목록 필터가 아니라 **측정 출력 필터**여야 하는 이유다: 이 wave 의 실 티켓들이
+    `templates/` 한 줄로 선언한다."""
+    root = _git_repo(tmp_path)
+    hand = root / "engine.py"
+    hand.write_text("".join(f"h{i}\n" for i in range(7)), encoding="utf-8")
+    mirror = root / "templates" / "codex" / ".project_manager" / "tools" / "engine.py"
+    mirror.parent.mkdir(parents=True)
+    mirror.write_text("".join(f"m{i}\n" for i in range(500)), encoding="utf-8")
+    adapter = root / "templates" / "codex" / "AGENTS.md"
+    adapter.write_text("a\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True, capture_output=True)
+
+    total = external.diff_line_total(root, "HEAD", ["engine.py", "templates/"])
+    assert total == 7 + 1, "기계 mirror 500줄이 손작업 스코프에 합산됐다"
+
+
+def test_cap_block_states_the_measured_scope_meaning(external):
+    """차단 안내가 측정 의미를 스스로 말한다 — "왜 내 diff 보다 적나"를 문구가 답한다."""
+    block = external.diff_cap_block(
+        301, 300, ticket="T-0601", estimate="small", scope=["templates/"],
+    )
+    assert external.MEASURED_SCOPE_NOTE in block
+    assert "기계 mirror 제외" in block
+
+
 def _git_repo(tmp_path: Path) -> Path:
     root = tmp_path / "code"
     root.mkdir()

@@ -296,6 +296,100 @@ def test_no_substitute_note_has_single_consumer(pd):
     assert pd.fail_loud is not None  # 로드된 모듈에도 같은 seam 이 존재
 
 
+# ════════════════════════════════════════════════════════════════════════
+# AST 가드 확장 (T-0601 ⑥) — "안내를 아예 안 쓰는 새 실패 종료" 클래스
+# ════════════════════════════════════════════════════════════════════════
+# 위의 단일-소비자 가드는 "안내를 깔때기 **밖에서** 결합했나"만 본다. 새 실패 종료가 안내를 아예
+# 안 쓰면 그 가드는 조용히 통과한다 — T-0596 의 원 사고가 정확히 그 클래스였다. 그래서 채널 실행
+# 구간의 **비영 종료 전수**가 `fail_loud` 경유임을 구조로 단언한다.
+
+# 채널 실행 구간 = 하네스를 실제로 스폰하고 결과를 회수하는 함수. 이 앞의 게이트(설정 해소·시크릿
+# 스캔·재앵커)는 전송 자체가 없어 다른 축이다.
+_CHANNEL_FUNCTION = "_execute_and_collect"
+
+
+def _own_returns(node: ast.AST) -> list[ast.Return]:
+    """그 함수 **자신의** return 문 (중첩 함수/람다의 것은 제 소유가 아니라 제외)."""
+    found: list[ast.Return] = []
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        if isinstance(child, ast.Return):
+            found.append(child)
+        found.extend(_own_returns(child))
+    return found
+
+
+def _is_success_exit(node: ast.Return) -> bool:
+    """`return 0` — 성공 종료(안내 대상 아님)."""
+    return isinstance(node.value, ast.Constant) and node.value.value == 0
+
+
+def _is_funnel_exit(node: ast.Return) -> bool:
+    """`return fail_loud(...)` — 단일 깔때기 경유 실패 종료."""
+    return (isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "fail_loud")
+
+
+def _leaking_exits(source: str, function: str) -> list[int]:
+    """그 함수에서 `return 0` 도 `return fail_loud(...)` 도 아닌 종료의 줄 번호."""
+    tree = ast.parse(source)
+    target = next(
+        (node for node in ast.walk(tree)
+         if isinstance(node, ast.FunctionDef) and node.name == function), None)
+    assert target is not None, f"채널 실행 구간 `{function}` 이 사라짐 — 가드 앵커 소실"
+    return [node.lineno for node in _own_returns(target)
+            if not (_is_success_exit(node) or _is_funnel_exit(node))]
+
+
+def test_every_channel_exit_goes_through_the_funnel(pd):
+    """채널 실행 구간의 종료는 `return 0` 아니면 `return fail_loud(...)` 뿐이다.
+
+    이 단언이 막는 것은 "안내를 손으로 안 이어붙였다"가 아니라 **안내를 아예 안 내는 새 실패
+    종료**다 — 그 경로는 raw 장부만 남고 사람에겐 아무 처방이 없어, 실패한 위임을 세션 native
+    모델이 조용히 대행하는 입구가 된다."""
+    leaked = _leaking_exits(PM_DELEGATE.read_text(encoding="utf-8"), _CHANNEL_FUNCTION)
+    assert not leaked, (
+        f"깔때기를 안 거치는 종료: pm_delegate.py:{leaked} — 실패 종료는 "
+        "`return fail_loud(<사유>)`, 성공 종료는 `return 0` 으로만 끝내라.")
+    assert callable(pd.fail_loud)
+
+
+@pytest.mark.parametrize("statement, detected", [
+    ("return 1", True),                       # 안내 없는 새 실패 종료(원 사고 클래스)
+    ("return rc", True),                      # 변수 rc 도 안내를 안 낸다
+    ("print('실패'); return 2", True),         # 손으로 낸 메시지는 깔때기가 아니다
+    ("return _other_helper(msg)", True),      # 다른 헬퍼 경유도 안내를 보장 못 한다
+    ("return fail_loud('오류: x')", False),
+    ("return 0", False),
+])
+def test_guard_actually_detects_a_new_silent_exit(statement, detected):
+    """가드 자신의 검출력 — 합성 종료를 실제로 잡는지 확인한다(가짜 게이트 방지).
+
+    안 돌려보면 가짜 게이트다: 이 파라미터가 없으면 분류기가 무엇이든 통과시키도록 퇴화해도
+    위 단언은 계속 green 이다."""
+    source = (
+        f"def {_CHANNEL_FUNCTION}(*, args):\n"
+        "    if args:\n"
+        f"        {statement}\n"
+        "    return 0\n"
+    )
+    assert bool(_leaking_exits(source, _CHANNEL_FUNCTION)) is detected
+
+
+def test_guard_ignores_nested_helper_returns():
+    """중첩 함수의 종료는 채널 종료가 아니다 — 오탐으로 가드가 못 쓰이게 되는 걸 막는다."""
+    source = (
+        f"def {_CHANNEL_FUNCTION}(*, args):\n"
+        "    def _tally(rows):\n"
+        "        return len(rows)\n"
+        "    _tally(args)\n"
+        "    return 0\n"
+    )
+    assert _leaking_exits(source, _CHANNEL_FUNCTION) == []
+
+
 def test_successful_delegation_prints_no_substitute_note(pd, monkeypatch, tmp_path, capsys):
     """정상 위임(rc=0·reply 있음)은 무음 대체 금지 안내를 내지 않는다(실패 경로 전용 문구)."""
     fake = _FakeRun(stdout=_codex_stdout("정상답변"))

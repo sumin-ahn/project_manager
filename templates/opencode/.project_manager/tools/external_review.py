@@ -972,6 +972,18 @@ _CONVERGENCE_REASONS: dict[str, str] = {
 DEFAULT_DIFF_CAPS: dict[str, int] = {"small": 300, "medium": 1000, "large": 2500}
 DIFF_CAP_KEY_PREFIX = "diff_cap."
 
+# 측정 제외 subtree — `templates/<타깃>/.project_manager/` 는 그 대부분이 pm_update 가 엔진 사본을
+# 내보내는 자리다. 손작업 diff 와 같은 가중으로 합산하면 한 티켓의 구현 스코프가 출하 타깃 수만큼
+# 부풀어(실측: 이 wave 에서 estimate 사후 교정 2회), 분할이 필요 없는 티켓을 서킷브레이커가 막는다.
+# 제외는 **subtree 단위**이고 그 안에 manifest 밖 손편집 파일(타깃별 manifest·wiki 문서류)이 실재
+# 함을 알고 고른 경계다 — 티켓 인터페이스가 이 경로를 명시했고, 오차의 방향이 "측정 축소 = 가드
+# 약화"라 무손실 축(차단해야 할 것을 통과)만 남고 정당한 작업을 오차단하지 않는다.
+# subtree 자체의 정합은 drift-0 가드가 따로 지키고, 리뷰가 보는 diff 폭은 그대로다(측정 축과 검토
+# 축은 여기서 갈린다).
+_MACHINE_MIRROR_RE = re.compile(r"^templates/[^/]+/\.project_manager/")
+# 사람 표면에 측정 의미를 실어 두는 한 줄 — "왜 내 diff 보다 적게 세나"를 안내가 스스로 답한다.
+MEASURED_SCOPE_NOTE = "측정=손작업 스코프(기계 mirror 제외)"
+
 # wave(세션) 단위 총 라운드 예산 — 게이트별 상한과 **별개** 축이다. 게이트 상한만 있으면 비용이
 # 티켓 수 × 라운드 상한으로 확장되므로, 전 게이트 합계 전송을 이 예산으로 묶는다. 기본 24 는
 # 게이트 상한 4 × 동시 진행 6티켓 어림이고 실측 세션당 라운드(~50)보다 낮게 잡아 PM 이 중간에
@@ -1188,11 +1200,27 @@ _ACK_ROUNDS_REMOVED_GUIDANCE = (
     "  · 현재 수렴 상황은 `--rounds-report --gate <T-NNNN>` 로 확인하세요."
 )
 
+# `--confirm-fix` 게이트 누락 안내 — 확인 전용 라운드는 **게이트당 1회**라 장부 항목이 있어야
+# 회계가 성립한다. 게이트 없는 confirm-fix 는 그 1회 제한 밖에서 도는 전송이므로(경고만 내고
+# 실행하면 상한 밖 라운드가 무한히 열린다) 전송 전에 거부한다 — `--ack-rounds` 폐지와 같은 자리·
+# 같은 규율이다(부작용 0 지점).
+_CONFIRM_FIX_REQUIRES_GATE_GUIDANCE = (
+    "오류: `--confirm-fix` 는 `--gate <T-NNNN>` 와 함께 써야 합니다 — 이 실행은 아무것도 "
+    "하지 않았습니다.\n"
+    "  · 확인 전용 라운드는 **게이트당 1회**이고 그 회계를 라운드 장부가 소유합니다 — 게이트가 "
+    "없으면 1회 제한이 성립하지 않습니다.\n"
+    "  · 이번 확인이 어느 티켓의 must_fix 해소인지 게이트로 지정하세요:\n"
+    "      python3 .project_manager/tools/external_review.py --gate <T-NNNN> --confirm-fix "
+    "[기존 옵션]\n"
+    "  · 게이트 없이 그냥 한 번 더 보고 싶은 것이면 `--confirm-fix` 를 빼세요(상한 대상 밖 실행)."
+)
+
 # diff 서킷브레이커 차단 안내 — 리뷰/완료 진입에서 같은 문구를 쓴다(두 표면이 다른 말을 하지 않게).
 _DIFF_CAP_GUIDANCE = (
     "오류: diff 서킷브레이커 차단 — {ticket}(estimate={estimate}) · "
     "diff {total}줄 > 상한 {cap}줄\n"
     "  측정 범위: {scope}\n"
+    "  측정 의미: {measured_note}\n"
     "  · 한 티켓의 구현 스코프가 estimate 를 넘겼습니다 — 리뷰 라운드가 수렴하지 않는 원인입니다.\n"
     "  · **티켓 분할·재설계**로 스코프를 줄이세요 (분할 후 각 티켓이 자기 상한 안에서 돕니다).\n"
     "  · estimate 자체가 틀렸다면 티켓 frontmatter `estimate` 를 고치세요 "
@@ -2432,14 +2460,11 @@ def _reserve_round_budget(args, conf: dict[str, str]) -> RoundBudget:
     기록한다. wave 승인(`--ack-wave`)은 **먼저 적용한 뒤** 남은 축을 다시 본다 — 적용해 놓고 저장
     없이 되돌아가면 PM 이 적용한 승인이 조용히 사라진다."""
     if not args.gate:
-        flags = " / ".join(
-            flag for flag, given in (
-                ("--ack-wave", args.ack_wave),
-                ("--confirm-fix", getattr(args, "confirm_fix", False)),
-            ) if given
-        )
-        if flags:
-            print(f"경고: {flags} 는 --gate 와 함께 써야 합니다 (게이트 단위 장부) — 무시.",
+        # `--confirm-fix` 는 여기 오지 못한다 — main 이 부작용 0 지점에서 rc 거부한다(게이트당
+        # 1회 회계가 장부 항목 없이는 성립하지 않는다). wave 승인만 무시 경고로 흡수한다:
+        # 그쪽은 "예산 리셋"이라 게이트가 없으면 리셋할 대상 자체가 없고 실행은 정상이다.
+        if args.ack_wave:
+            print("경고: --ack-wave 는 --gate 와 함께 써야 합니다 (게이트 단위 장부) — 무시.",
                   file=sys.stderr)
         return RoundBudget()
 
@@ -2974,12 +2999,50 @@ def _stage_diff_runs(
     ]
 
 
+def _canonical_measure_path(path: str) -> str:
+    """측정 판정 전 표기 변형을 POSIX 한 좌표로 모은다(`repo_coordinates` 정규화와 동형)."""
+    normalized = path.replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
+
+
+def _numstat_path(field: str) -> str:
+    """`--numstat` 3번째 필드 → 판정 대상 경로 (rename 표기는 **목적지**로 접는다).
+
+    rename 은 `{a => b}/c` 또는 `a => b` 로 나온다. 목적지를 보는 이유는 그게 지금 트리에 있는
+    경로이고, mirror 판정도 "지금 어디에 있나"의 물음이기 때문이다."""
+    if " => " not in field:
+        return field
+    expanded = re.sub(r"\{([^{}]*) => ([^{}]*)\}", r"\2", field)
+    return expanded.split(" => ")[-1].strip()
+
+
+def is_machine_mirror_path(path: str) -> bool:
+    """diff 서킷브레이커의 **측정 제외 subtree**(`templates/<타깃>/.project_manager/` 아래)인가.
+
+    이 subtree 의 대부분은 pm_update 가 내보낸 엔진 사본이지만 전부는 아니다 — 타깃별 manifest 나
+    출하 wiki 문서처럼 manifest 밖 손편집 파일도 여기 산다. 그래도 경로 단위로 통째 제외하는 이유는
+    티켓 인터페이스가 이 subtree 를 제외 대상으로 명시했고, 오차의 방향이 **측정 축소 = 가드 약화**
+    라 정당한 작업을 오차단하지 않기 때문이다(과다 차단이 아니라 과소 차단 쪽으로만 틀린다).
+
+    **측정 제외 규칙의 단일 진실** — 리뷰(external_review)와 완료 부기(ticket_finish)가 같은 판정을
+    쓴다(사본 0). 판정은 경로 문자열뿐이라 트리 상태에 의존하지 않는다."""
+    return _MACHINE_MIRROR_RE.match(_canonical_measure_path(path)) is not None
+
+
 def _sum_numstat(text: str) -> int:
-    """`git diff --numstat` 출력의 추가+삭제 합계 (바이너리 `-`/깨진 줄은 제외)."""
+    """`git diff --numstat` 출력의 추가+삭제 합계 (바이너리 `-`/깨진 줄은 제외).
+
+    **기계 mirror 경로는 세지 않는다**(`is_machine_mirror_path`) — 이 합계의 소비자는 diff
+    서킷브레이커뿐이고, 그 상한은 사람이 손으로 쓴 스코프에 대한 값이다. 선언 경로가 mirror 를
+    포함하는 넓은 접두(`templates/`)여도 여기서 걸러지므로 제외가 선언 형태에 좌우되지 않는다."""
     total = 0
     for line in text.splitlines():
         fields = line.split("\t")
         if len(fields) < 3:
+            continue
+        if is_machine_mirror_path(_numstat_path(fields[2])):
             continue
         for value in fields[:2]:
             if value.isdigit():
@@ -3041,13 +3104,16 @@ def diff_cap_block(
 ) -> str | None:
     """diff 총량이 estimate 상한을 넘었으면 차단 안내를, 아니면 None 을 돌려준다.
 
-    두 진입 표면(추가 리뷰 · 티켓 완료)이 같은 문구를 쓰도록 판정과 문구를 한 곳에 둔다."""
+    두 진입 표면(추가 리뷰 · 티켓 완료)이 같은 문구를 쓰도록 판정과 문구를 한 곳에 둔다.
+    안내는 측정 의미(`MEASURED_SCOPE_NOTE`)를 함께 실어, 선언 스코프와 실제 측정 대상이
+    다르다는 사실을 사람이 문구만 보고 알 수 있게 한다."""
     if cap is None or total <= cap:
         return None
     key = f"{DIFF_CAP_KEY_PREFIX}{(estimate or '').strip().lower()}"
     return _DIFF_CAP_GUIDANCE.format(
         ticket=ticket, estimate=estimate or "미지정", total=total, cap=cap,
         scope=", ".join(scope) or "(없음)", key=key,
+        measured_note=MEASURED_SCOPE_NOTE,
         small=DEFAULT_DIFF_CAPS["small"], medium=DEFAULT_DIFF_CAPS["medium"],
         large=DEFAULT_DIFF_CAPS["large"],
     )
@@ -5512,6 +5578,11 @@ def _main(argv: list[str] | None = None) -> int:
     # 썼는데 안 먹었다"가 남아 규율이 흐려진다. 부작용 0 지점(장부 접근·전송 전)에서 거부한다.
     if args.ack_rounds:
         print(_ACK_ROUNDS_REMOVED_GUIDANCE, file=sys.stderr)
+        return 1
+    # 게이트 없는 확인 전용 라운드는 어느 표면에서도 뜻이 없다 — 장부 항목이 없어 1회 제한을
+    # 셀 수 없다. `--ack-rounds` 와 같은 부작용 0 지점에서 거부한다(경고-만-실행 폐지).
+    if getattr(args, "confirm_fix", False) and not args.gate:
+        print(_CONFIRM_FIX_REQUIRES_GATE_GUIDANCE, file=sys.stderr)
         return 1
     if args.rounds_report:
         ignored = ", ".join(

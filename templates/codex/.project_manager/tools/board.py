@@ -3457,16 +3457,80 @@ def _write_hook_atomic(hook: Path, body: str) -> None:
 # 아무도 실행하지 않으므로, **게이트 자신이 진입할 때** 대조하고 스스로 고친다.
 
 
+# git config 순수 파서 — `core.hooksPath` 값 하나만 읽는다(subprocess 0). git 은 섹션·키 이름을
+# **대소문자 무관**으로 다루므로 매칭도 그렇게 한다(`[CORE] HooksPath` 도 같은 키다).
+_GIT_CONFIG_SECTION_RE = re.compile(r"^\s*\[(?P<name>[^\]\s]+)(?:\s+\"(?P<sub>[^\"]*)\")?\]")
+_GIT_CONFIG_ENTRY_RE = re.compile(r"^\s*(?P<key>[A-Za-z][A-Za-z0-9-]*)\s*=\s*(?P<value>.*)$")
+# 이 섹션이 있으면 값 해석을 포기한다 — 포함 파일의 선언이 최종 값을 뒤집을 수 있는데, 그 파일까지
+# 따라가는 것은 git config 해소를 다시 구현하는 일이다(fail-open 이 안전한 방향).
+_GIT_CONFIG_INCLUDE_SECTIONS = frozenset({"include", "includeif"})
+_HOOKS_PATH_KEY = "hookspath"
+_HOOKS_PATH_SECTION = "core"
+# "선언은 있는데 git 없이 확정 불가" 를 "선언 없음"과 구분하는 표식.
+_HOOKS_PATH_UNRESOLVED = object()
+
+
+def _git_config_value(raw: str) -> str:
+    """git config 값 한 줄에서 실제 값만 남긴다 — 인용 해제 + 인용 밖 주석(`#`/`;`) 절단.
+
+    손편집 config 에 `hooksPath = .githooks  # 사내 표준` 같은 줄이 있으면 주석까지 경로로 읽는다
+    (git 은 인용 밖 `#`/`;` 부터를 주석으로 본다)."""
+    text = raw.strip()
+    if text.startswith('"'):
+        end = text.find('"', 1)
+        return text[1:end] if end != -1 else text[1:]
+    for comment in ("#", ";"):
+        cut = text.find(comment)
+        if cut != -1:
+            text = text[:cut]
+    return text.strip()
+
+
+def _config_hooks_path(text: str) -> object | None:
+    """git config 원문에서 `core.hooksPath` 선언 값을 순수 파싱한다.
+
+    반환은 셋 중 하나다:
+      · `str` — 선언된 값(마지막 선언이 이긴다 · git 의 last-wins 와 같다).
+      · `None` — 선언 없음(훅은 기본 위치).
+      · `_HOOKS_PATH_UNRESOLVED` — include/includeIf 가 있거나 값이 비어 git 없이 확정 불가.
+    """
+    section = ""
+    value: object | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped[0] in "#;":
+            continue
+        header = _GIT_CONFIG_SECTION_RE.match(line)
+        if header is not None:
+            section = header.group("name").lower()
+            if section in _GIT_CONFIG_INCLUDE_SECTIONS:
+                return _HOOKS_PATH_UNRESOLVED
+            continue
+        if section != _HOOKS_PATH_SECTION:
+            continue
+        entry = _GIT_CONFIG_ENTRY_RE.match(line)
+        if entry is None or entry.group("key").lower() != _HOOKS_PATH_KEY:
+            continue
+        resolved = _git_config_value(entry.group("value"))
+        if not resolved:
+            return _HOOKS_PATH_UNRESOLVED
+        value = resolved
+    return value
+
+
 def _pure_hooks_dir() -> Path | None:
-    """훅 디렉토리를 **git 호출 없이** 해소한다 (해소 불가·커스텀 hooksPath 면 None).
+    """훅 디렉토리를 **git 호출 없이** 해소한다 (해소 불가면 None).
 
     회귀 게이트 진입은 hot path 라 여기에 subprocess 를 더하지 않는다 — `_hooks_dir()`(git
     `rev-parse --git-path`)는 설치 경로가 계속 쓰고, 치유는 이 순수 해소만 쓴다. 규칙:
       · `REPO/.git` 디렉토리 → 그 아래 `hooks/`.
       · `REPO/.git` 파일(linked worktree·`gitdir: <경로>`) → 그 gitdir 의 `commondir` 을 따라
         **공용 git 디렉토리**로 올라간 뒤 `hooks/` (훅은 worktree 간 공유다).
-      · repo config 에 `hooksPath` 선언이 있으면 **None** — 실제 훅 위치를 git 없이 확정할 수
-        없으므로 치유를 건너뛴다(fail-open·치유는 best-effort 이고 안 고치는 쪽이 안전하다).
+      · repo config 에 `core.hooksPath` 선언이 있으면 **그 값을 파싱해** 훅 위치로 쓴다. 상대
+        경로는 git 과 같이 worktree 루트(`REPO`) 기준이고 `~` 는 확장한다. 존재-only 로 보고
+        포기하면 adopter#0 처럼 *기본 위치를 가리키는 선언*까지 자기치유 밖에 남는다.
+      · include/includeIf 가 있거나 값이 비면 **None** — 포함 파일의 선언이 최종 값을 뒤집을 수
+        있어 git 없이 확정할 수 없다(fail-open·치유는 best-effort 이고 안 고치는 쪽이 안전하다).
     """
     try:
         git_path = REPO / ".git"
@@ -3487,8 +3551,14 @@ def _pure_hooks_dir() -> Path | None:
                 shared = Path(relative)
                 git_dir = shared if shared.is_absolute() else (git_dir / shared)
         config = git_dir / "config"
-        if config.is_file() and "hooksPath" in config.read_text(encoding="utf-8"):
-            return None
+        if config.is_file():
+            declared = _config_hooks_path(config.read_text(encoding="utf-8"))
+            if declared is _HOOKS_PATH_UNRESOLVED:
+                return None
+            if isinstance(declared, str):
+                hooks = Path(declared).expanduser()
+                # 상대 `core.hooksPath` 는 git 이 worktree 루트 기준으로 해소한다(프로세스 cwd 아님).
+                return (hooks if hooks.is_absolute() else (REPO / hooks)).resolve()
         return (git_dir / "hooks").resolve()
     except (OSError, UnicodeError, ValueError):
         return None
@@ -3538,9 +3608,82 @@ def _heal_pre_push_hook_drift() -> bool:
         _write_hook_atomic(hook, pre_push_hook_body(interpreter))
     except OSError:
         return False
+    # 같은 push 시도의 `regression run`(별 프로세스·재진입)이 소비할 표식을 남긴다.
+    _write_hook_heal_sentinel()
     print("regression: 구버전 pre-push 훅을 감지해 현행 본문으로 교체했습니다 "
           "(push 게이트가 FULL 회귀를 요구하도록 복구).")
     return True
+
+
+# 치유가 일어난 push 시도는 **그 시도의 회귀도** FULL 이어야 한다. 지금 돌고 있는 훅은 교체 *전*
+# 본문(옛 inode·`--final` 부재)이라, 그 시도의 회귀가 targeted 로 강등돼 rc0 을 내면 옛 훅이 그걸
+# push 허가로 읽는다 — 치유가 다음 push 부터 유효한 사이에 바로 이번 push 가 열린다.
+#
+# **프로세스가 하나가 아니다**: 훅 본문은 `regression check || regression run` 2프로세스이고,
+# 치유는 첫 프로세스(check)에서 일어난다. run 은 재진입이라 그때는 이미 현행 훅이므로 자기
+# 프로세스의 치유 여부만 보면 항상 False 다(강등이 그대로 적용된다). 그래서 치유는 **일회성
+# 표식**을 남기고 `regression run` 이 그것을 소비(삭제)해 FULL 을 강제한다. 표식에 시각을 실어
+# TTL 밖이면 무시한다 — check 만 돌고 끝난 형상에서 표식이 남아 이후 회귀가 영구 FULL 이 되지
+# 않게(치유↔run 간격은 같은 push 시도 안의 초 단위다).
+#
+# **경계 둘을 명시한다.**
+#  · 이 표식이 잇는 것은 **같은 PM 홈의 순차 2프로세스**다. 훅은 worktree 간 공유지만 `LOCAL_DIR`
+#    은 슬롯별로 갈리므로, 슬롯 A 의 check 가 훅을 교체하고 슬롯 B 에서 run 이 돌면 표식이 이어지지
+#    않는다. 파일 교체는 **1회만** 감지되는 사건이라(다음 진입엔 이미 현행 훅) 그 형상까지 덮으려면
+#    치유 사실을 슬롯 밖 공유 상태로 올려야 한다 — 본질적 한계로 수용한다(다음 push 는 새 훅이
+#    `--final` 을 싣는다).
+#  · 표식 위치는 **이 board.py 사본의 `LOCAL_DIR`** 이다(`REGRESSION_FLAG` 와 같은 자리).
+#    `_inherit_flag_anchor` 가 이어받는 *회귀 실행 cwd 앵커*와는 다른 축이라 서로 따라가지 않는다 —
+#    저쪽은 "어느 트리에서 도는가", 이쪽은 "누가 방금 훅을 고쳤나"다.
+HOOK_HEAL_SENTINEL_NAME = "hook-heal.json"
+_HOOK_HEAL_SENTINEL_TTL_SEC = 900
+_HEAL_FORCED_FULL_NOTE = (
+    "regression: 이번 실행은 강등 없이 FULL 로 돕니다 — 방금 교체된 구버전 훅이 실행 중이라 "
+    "강등 rc0 을 push 허가로 읽을 수 있습니다."
+)
+
+
+def _hook_heal_sentinel() -> Path:
+    """훅 치유 표식 경로 — 호출 시점 `LOCAL_DIR` 파생(테스트 격리 추종·장부와 같은 규칙)."""
+    return LOCAL_DIR / HOOK_HEAL_SENTINEL_NAME
+
+
+def _write_hook_heal_sentinel() -> None:
+    """치유 사실을 일회성 표식으로 남긴다 (같은 push 시도의 `regression run` 이 소비).
+
+    쓰기는 **원자 교체**다(`_write_json_atomic`) — 잘린 JSON 은 소비 쪽에서 파싱 실패 = 강제 없음
+    으로 접혀 열린 창을 그대로 두는 방향(fail-open)이라, 부분 기록 자체를 만들지 않는다.
+    쓰기 실패는 조용히 넘긴다 — 표식은 보강이고, 같은 프로세스에서 치유한 경우는 반환값으로도
+    FULL 이 강제된다(fail-soft)."""
+    with contextlib.suppress(OSError):
+        LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+        _write_json_atomic(_hook_heal_sentinel(),
+                           {"ts": now_utc(), "head": _git_head()})
+
+
+def _consume_hook_heal_sentinel() -> bool:
+    """표식이 있으면 **삭제하고** 신선한지 돌려준다 (일회성 — 다음 실행에는 남지 않는다).
+
+    삭제는 신선도와 무관하다: 오래된 표식도 지워야 영구 FULL 이 안 된다. 손상·읽기 실패도 같은
+    축으로 지우고 False(강제 없음) — 이 표식의 실패가 회귀를 바꾸지 않는다.
+
+    **미래 시각(음수 age)은 신선으로 본다** — 시계 스큐·타임존 오기의 방향을 "강제 안 함"으로
+    잡으면 그게 곧 창을 여는 쪽이다. 판정 불능일 때는 비싼 쪽(FULL)으로 틀리는 게 안전하다."""
+    sentinel = _hook_heal_sentinel()
+    try:
+        raw = sentinel.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return False
+    with contextlib.suppress(OSError):
+        sentinel.unlink()
+    try:
+        stamped = str(json.loads(raw).get("ts") or "")
+        age = (datetime.datetime.now(datetime.timezone.utc)
+               - datetime.datetime.fromisoformat(
+                   stamped.replace("Z", "+00:00"))).total_seconds()
+    except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
+        return False
+    return age <= _HOOK_HEAL_SENTINEL_TTL_SEC
 
 
 def _configure_board_submodule() -> bool:
@@ -6115,7 +6258,8 @@ def cmd_regression(args: argparse.Namespace) -> int:
     """
     # 설치된 훅 drift 자기치유 — run/check 두 진입 모두에서 대조한다. 회귀 게이트는 push 게이트의
     # 유일한 상시 진입점이라, 여기서 고치면 채택자가 릴리즈 노트를 읽지 않아도 옛 훅이 소멸한다.
-    _heal_pre_push_hook_drift()
+    # **치유 여부를 강등 판정보다 먼저 안다** — 치유가 일어난 실행은 아래에서 FULL 로 강제한다.
+    healed_hook = _heal_pre_push_hook_drift()
     # task-mode(`--task`) 실행 위치 — 특정 슬롯 worktree 절대경로를 cwd
     # 로 고정하고 슬롯 test_cmd 를 실어 잘못된 형제-슬롯 유도를 피한다. 절대경로를
     # surface 해 dev/git 짐작 여지를 없앤다(cwd 비참여). run 만 실행 위치가 필요하다.
@@ -6158,12 +6302,28 @@ def cmd_regression(args: argparse.Namespace) -> int:
                    else (args.touches.split(",") if getattr(args, "touches", None) else []))
         # 회귀 스테이징 — 활성 리뷰 사이클 중의 FULL 요청은 그 티켓 touches 로 강등한다.
         # `--final`(수렴 후)·핸드오프·pre-push 훅만 FULL 을 그대로 돈다(훅은 `--final` 을 싣는다).
-        if not touches and not getattr(args, "final", False):
-            gates, cycle_touches = _review_cycle_downgrade()
-            if cycle_touches:
-                touches = cycle_touches
-                print(f"regression: 활성 리뷰 사이클 [{', '.join(gates)}] — FULL 요청을 touches "
-                      f"targeted 로 강등합니다 (수렴 후 FULL 은 `regression run --final`).")
+        # 훅을 방금 교체한 push 시도도 예외다 — 실행 중인 옛 훅이 강등 rc0 을 push 허가로 읽는다.
+        # 치유는 **다른 프로세스**(훅 1단계 `regression check`)에서 일어나므로 자기 프로세스의
+        # 반환값만 보면 놓친다. 치유가 남긴 일회성 표식을 소비해 그 시도의 run 까지 잇는다
+        # (같은 프로세스 치유는 표식 쓰기가 실패해도 반환값이 받쳐 준다).
+        implicit_full = not touches and not getattr(args, "final", False)
+        if implicit_full:
+            # 소비는 **이 분기 안**이다. 밖에서 무조건 소비하면 값을 쓰지도 않는 실행(스코프
+            # `--ticket`/`--touches` dev 피드백·`--final`)이 표식을 지운다 — 훅 1단계(치유)와
+            # 2단계(run) 사이에 그런 실행이 끼면 표식을 빼앗겨 강등 창이 다시 열린다(표식 탈취).
+            # 잔존은 TTL 이 무해화하므로 값을 쓰는 자리에서만 소비하면 된다.
+            healed_hook = _consume_hook_heal_sentinel() or healed_hook
+            if not healed_hook:
+                gates, cycle_touches = _review_cycle_downgrade()
+                if cycle_touches:
+                    touches = cycle_touches
+                    print(f"regression: 활성 리뷰 사이클 [{', '.join(gates)}] — FULL 요청을 "
+                          f"touches targeted 로 강등합니다 (수렴 후 FULL 은 "
+                          f"`regression run --final`).")
+            elif _review_cycle_downgrade()[1]:
+                # 강등 대상이던 실행을 FULL 로 올린 사실을 고지한다(비용이 달라지므로 조용히
+                # 넘기지 않는다).
+                print(_HEAL_FORCED_FULL_NOTE)
         scoped = bool(touches)
         parts = [_test_cmd(args.cmd, session=sess)]
         if scoped:
@@ -6547,6 +6707,37 @@ def _parse_ticket_text(text: str, source: Path | str) -> tuple[dict[str, Any], s
 def load_ticket(path: Path) -> tuple[dict[str, Any], str]:
     """Return (frontmatter dict, body string)."""
     return _parse_ticket_text(path.read_text(encoding="utf-8"), path)
+
+
+# 손상 frontmatter fail-soft — **디렉토리 순회** 전용 로더.
+#
+# 한 티켓의 YAML 이 깨지면(실측: `design: waived: 사유` 처럼 콜론을 인용 없이 쓴 스칼라) 그 파일을
+# 읽는 순간 예외가 나고, 순회 소비자(`list`·`lint`·`refresh`)가 통째로 traceback 으로 죽는다 —
+# 보드 전체가 한 파일 때문에 조회 불능이 되는 클래스다. 순회에서는 그 티켓만 건너뛰되 **조용히
+# 넘기지 않는다**(경고 1줄 + 경로 + 사유). 지정 대상 mutation(claim/complete/block/…)은 그대로
+# `load_ticket` 을 써 fail-loud 다 — 고치라고 지목받은 파일이 조용히 무시되면 안 된다.
+_LOAD_TICKET_SOFT_ERRORS = (OSError, UnicodeError, ValueError, yaml.YAMLError)
+
+
+def load_ticket_soft(path: Path) -> tuple[dict[str, Any], str] | None:
+    """순회용 `load_ticket` — 읽기/파싱 실패면 경고 1줄 뒤 None (그 티켓만 skip).
+
+    frontmatter 가 dict 가 아닌 형상(스칼라·리스트)도 같은 축으로 접는다 — 뒤따르는 `fm.get(...)`
+    이 AttributeError 로 터지면 fail-soft 가 반쪽이다.
+    """
+    try:
+        fm, body = load_ticket(path)
+    except _LOAD_TICKET_SOFT_ERRORS as exc:
+        print(f"경고: 티켓을 읽지 못해 건너뜁니다 — {_rel_to_repo(path)} "
+              f"({type(exc).__name__}: {exc})\n"
+              "  · frontmatter YAML 문법을 확인하세요 (콜론 포함 값은 인용 필요 — "
+              'design: "waived: <사유>").', file=sys.stderr)
+        return None
+    if not isinstance(fm, dict):
+        print(f"경고: 티켓 frontmatter 가 매핑이 아니라 건너뜁니다 — {_rel_to_repo(path)} "
+              f"({type(fm).__name__})", file=sys.stderr)
+        return None
+    return fm, body
 
 
 def dump_ticket(path: Path, fm: dict[str, Any], body: str) -> None:
@@ -8260,7 +8451,10 @@ def cmd_list(args: argparse.Namespace) -> int:
         if status not in allowed_statuses:
             continue
         for p in sorted((tickets_dir() / status).glob("T-*.md")):
-            fm, _ = load_ticket(p)
+            loaded = load_ticket_soft(p)
+            if loaded is None:
+                continue
+            fm, _ = loaded
             if args.tag and args.tag not in _tag_values(fm):
                 continue
             if session_view:
@@ -8342,7 +8536,10 @@ def cmd_prefix_list(args: argparse.Namespace) -> int:
     buckets: dict[str | None, list[tuple[int, str]]] = {}
     for status in STATUS_DIRS:
         for p in sorted((tickets_dir() / status).glob("T-*.md")):
-            fm, _ = load_ticket(p)
+            loaded = load_ticket_soft(p)
+            if loaded is None:
+                continue
+            fm, _ = loaded
             tid = fm.get("id") or _ticket_id_from_filename(p.name)
             if not tid:
                 continue
@@ -8391,18 +8588,29 @@ def _format_ticket_id(prefix: str | None, num: int) -> str:
     return f"T-{num:04d}"
 
 
-def _scan_prefix_tickets() -> list[dict[str, Any]]:
+def _scan_prefix_tickets(skipped: list[Path] | None = None) -> list[dict[str, Any]]:
     """STATUS_DIRS 전 티켓을 relabel 용 레코드로 수집한다 (id·num·prefix·status·path·created).
 
     `created` 는 merge 시간순 정렬 키(문자열 ISO 로 정규화 — yaml date/str 양쪽 흡수). ID 미해소
     (파일명·frontmatter 둘 다 실패)나 순번 미상 파일은 건너뛴다(`cmd_prefix_list` 버킷팅과 동형).
+
+    `skipped` 를 주면 **읽지 못한 티켓 경로**를 거기 싣는다. 이 스캔은 조회(prefix list)와
+    mutation(rename·merge·reid·delete)이 함께 쓰는데, 못 읽은 티켓의 의미가 두 쪽에서 다르다:
+    조회는 한 줄 빠질 뿐이지만 mutation 은 그 티켓의 **ID 를 못 본 채** 유일성을 판정하므로
+    그 ID 위로 다른 티켓을 덮어쓴다. 그래서 skip 사실을 삼키지 않고 호출부에 돌려준다
+    (`_prefix_scan` 이 mutation 쪽 판정을 소유).
     """
     out: list[dict[str, Any]] = []
     # .drafts 포함 — draft 도 이미 발행된 ID(find_ticket/_next_id 인지).
     # relabel 이 draft 를 놓치면 old-prefix draft 가 잔존, promote 시 혼재가 보드로 재유입된다.
     for status in (*STATUS_DIRS, ".drafts"):
         for p in sorted((tickets_dir() / status).glob("T-*.md")):
-            fm, _ = load_ticket(p)
+            loaded = load_ticket_soft(p)
+            if loaded is None:
+                if skipped is not None:
+                    skipped.append(p)
+                continue
+            fm, _ = loaded
             tid = fm.get("id") or _ticket_id_from_filename(p.name)
             if not tid:
                 continue
@@ -8415,6 +8623,35 @@ def _scan_prefix_tickets() -> list[dict[str, Any]]:
                 "created": str(fm.get("created") or ""),
             })
     return out
+
+
+# ID 재부여 표면의 손상-티켓 차단 안내 — 조회 표면과 갈리는 지점을 문구가 스스로 밝힌다.
+_UNREADABLE_SCAN_BLOCK = (
+    "[중단] {op}: 읽지 못한 티켓 {count}건이 있어 ID 유일성을 판정할 수 없다 — {sample}\n"
+    "  · 못 본 ID 는 곧 clobber 다 — 유일성 검사와 번호 이어붙이기(`start=max(...)`)가 그 ID 를 "
+    "모른 채 전진해 다른 티켓을 그 위에 덮어쓴다.\n"
+    "  · 위 경고의 frontmatter 오류를 고친 뒤 다시 실행하라. 조회 표면"
+    "(`list`·`prefix list`·`lint`)은 그 티켓만 빼고 계속 동작한다."
+)
+
+
+def _prefix_scan(op: str) -> tuple[list[dict[str, Any]] | None, int]:
+    """ID 재부여 표면용 전수 스캔 — 읽지 못한 티켓이 1건이라도 있으면 `(None, 1)` 로 막는다.
+
+    조회는 손상 1건을 건너뛰고 계속 도는 게 옳지만(보드 전체가 조회 불능이 되면 안 된다),
+    **ID 를 재부여하는 표면은 반대**다: 못 본 ID 는 유일성 판정에서 빠져 그 위로 다른 티켓이
+    덮인다. 같은 스캔을 쓰되 skip 의 의미만 표면별로 가른다.
+    """
+    skipped: list[Path] = []
+    tickets = _scan_prefix_tickets(skipped)
+    if not skipped:
+        return tickets, 0
+    sample = ", ".join(_rel_to_repo(p) for p in skipped[:5])
+    if len(skipped) > 5:
+        sample += " …"
+    print(_UNREADABLE_SCAN_BLOCK.format(op=op, count=len(skipped), sample=sample),
+          file=sys.stderr)
+    return None, 1
 
 
 def _existing_ticket_prefixes() -> set[str]:
@@ -8781,7 +9018,9 @@ def cmd_prefix_rename(args: argparse.Namespace) -> int:
         return 1
     def build_map() -> "tuple[dict[str, str] | None, int]":
         # 락 안 fresh snapshot 에서 스캔→맵→collision (TOCTOU 봉합·dry-run 은 락 밖 호출).
-        tickets = _scan_prefix_tickets()
+        tickets, scan_rc = _prefix_scan("prefix rename")
+        if tickets is None:
+            return None, scan_rc
         id_map = _rename_map(src, dst, tickets)
         if not id_map:
             print(f"prefix {args.src} 에 해당하는 티켓이 없다 — 변경 없음.")
@@ -8823,7 +9062,9 @@ def cmd_prefix_merge(args: argparse.Namespace) -> int:
 
     def build_map() -> "tuple[dict[str, str] | None, int]":
         # 락 안 fresh snapshot — merge 의 append start=max(...) 도 stale 이면 clobber.
-        tickets = _scan_prefix_tickets()
+        tickets, scan_rc = _prefix_scan("prefix merge")
+        if tickets is None:
+            return None, scan_rc
         id_map = (_merge_reorder_map if reorder else _merge_append_map)(sources, into, tickets)
         if not id_map:
             print("통합할 source 티켓이 없다 — 변경 없음.")
@@ -8905,7 +9146,11 @@ def cmd_prefix_delete(args: argparse.Namespace) -> int:
     # 티켓 존재 카운트는 **case-insensitive fold**(`_fold_key`) — `delete AAA` 가 case-변종
     # `T-aaa-*` 도 세어, fold-비지 않은 네임스페이스를 "빈 것"으로 오판해 등록만 지우는 것을 막는다.
     target_key = _fold_key(target)
-    count = sum(1 for t in _scan_prefix_tickets() if _fold_key(t["prefix"]) == target_key)
+    # 손상 티켓이 있으면 "0 티켓" 판정 자체를 믿을 수 없다 — 그 티켓이 이 네임스페이스일 수 있다.
+    tickets, scan_rc = _prefix_scan("prefix delete")
+    if tickets is None:
+        return scan_rc
+    count = sum(1 for t in tickets if _fold_key(t["prefix"]) == target_key)
     if count > 0:
         print(f"[중단] prefix {args.prefix} 에 티켓 {count}개 — delete 는 빈(0티켓) prefix 전용"
               f"(무손실·물리삭제 없음). 개명은 `board.py prefix rename {args.prefix} <B|none>`, "
@@ -8971,8 +9216,12 @@ def cmd_reid(args: argparse.Namespace) -> int:
         # 가 glob 에 걸려 silent-noop / `T-0036-slug.md` 와 `T-0036-001-slug.md` 공존 시 디렉토리
         # 순서에 따라 후자가 먼저 잡혀 canonical mismatch 로 실재하는 OLD 를 놓침(false-negative).
         # `_scan_prefix_tickets`(fm.get("id") or 파일명 폴백·전 상태 디렉토리+.drafts)로 전수 스캔해
-        # canonical ID 가 정확히 old_id 인 레코드만 고른다.
-        matches = [t for t in _scan_prefix_tickets() if t["id"] == old_id]
+        # canonical ID 가 정확히 old_id 인 레코드만 고른다. 스냅샷은 **한 번만** 뜬다 — OLD 선택과
+        # NEW collision 판정이 같은 스냅샷을 봐야 그 사이의 변화로 판정이 갈리지 않는다.
+        tickets, scan_rc = _prefix_scan("reid")
+        if tickets is None:
+            return None, scan_rc
+        matches = [t for t in tickets if t["id"] == old_id]
         if not matches:
             print(f"[중단] OLD 티켓 {old_id} 을 찾을 수 없다 — 재부여할 대상이 없다.",
                   file=sys.stderr)
@@ -9009,7 +9258,7 @@ def cmd_reid(args: argparse.Namespace) -> int:
         # NEW collision — `_detect_collisions` 재사용(zero-pad 폭 정규화 포함). {OLD:NEW} 를 전 티켓
         # ID 집합에 적용해 두 티켓이 같은 논리 ID(전 상태 디렉토리+.drafts)로 떨어지면 잡는다.
         id_map = {old_id: new_id}
-        collisions = _detect_collisions(id_map, {t["id"] for t in _scan_prefix_tickets()})
+        collisions = _detect_collisions(id_map, {t["id"] for t in tickets})
         if collisions:
             sample = ", ".join(collisions[:5])
             print(f"[중단] NEW-ID {new_id} collision — 이미 존재하는 티켓과 번호가 겹친다({sample}). "
@@ -9078,7 +9327,10 @@ def cmd_idea_list(args: argparse.Namespace) -> int:
         if args.status and args.status != status:
             continue
         for p in sorted((IDEAS_DIR / status).glob("[0-9]*.md")):
-            fm, _ = load_ticket(p)
+            loaded = load_ticket_soft(p)
+            if loaded is None:
+                continue
+            fm, _ = loaded
             if args.tag and args.tag not in _tag_values(fm):
                 continue
             rows.append((status, fm))
@@ -9242,12 +9494,17 @@ def _rel_to_repo(path: Path) -> str:
 # ── lint ───────────────────────────────────────────────────────────────
 
 def _all_tickets() -> list[tuple[str, dict]]:
-    """[(status, frontmatter), ...] for every ticket regardless of dir."""
+    """[(status, frontmatter), ...] for every ticket regardless of dir.
+
+    손상 티켓은 경고 1줄과 함께 빠진다(`load_ticket_soft`) — 한 파일이 lint 전체를 죽이지 않는다.
+    """
     out: list[tuple[str, dict]] = []
     for status in STATUS_DIRS:
         for p in sorted((tickets_dir() / status).glob("T-*.md")):
-            fm, _ = load_ticket(p)
-            out.append((status, fm))
+            loaded = load_ticket_soft(p)
+            if loaded is None:
+                continue
+            out.append((status, loaded[0]))
     return out
 
 
@@ -9397,7 +9654,7 @@ _DOD_DEFERRED_REASON_RE = re.compile(r"\(이월:\s*\S[^)]*\)")
 _DOD_VALUE_FORMS = "`- [x] <원문>` 또는 `- [>] <원문> (이월: <사유·귀속>)`"
 
 
-def _section_text(body: str, heading: str) -> str | None:
+def _section_text(body: str, heading: str, *, exact: bool = False) -> str | None:
     """`<heading>` 절 본문(다음 `## ` 헤딩 직전까지) — 절이 없으면 None.
 
     **헤딩 탐색 전에** fenced 코드블록을 먼저 제거한다. 펜스를 무시하면 판정이 양방향으로
@@ -9407,10 +9664,21 @@ def _section_text(body: str, heading: str) -> str | None:
 
     DoD 판정과 설계 절 판정이 같은 슬라이서를 쓴다 — 절 경계 규칙이 두 벌이면 한쪽만 펜스를
     보거나 한쪽만 본문 전체를 스캔하는 절반 배선이 생긴다.
+
+    `exact` 면 헤딩 줄이 그 이름 자체이거나 **괄호 부제만** 뒤에 붙어야 절 시작이다
+    (`## 설계` · `## 설계 (DRAFT — 초안)`). 자유 접두 일치는 `## 설계` 같은 짧은 이름에서 다른
+    절(`## 설계 검토 이력`)을 그 절로 오인해, 산문 한 줄만으로 "절이 있다"가 성립하는 우회를
+    남긴다. 괄호 부제를 허용하는 이유는 그게 실재 표기이고(같은 절에 상태를 병기), 괄호 없이
+    이어지는 말은 다른 절 제목이기 때문이다. 이름 뒤에 자유 부제가 붙는 절
+    (`## 완료 조건 (Definition of Done)`)은 접두 일치가 정상이라 기본값은 종전(False)이다.
     """
     lines = _FENCED_CODE_RE.sub("", body).splitlines()
-    start = next(
-        (i for i, line in enumerate(lines) if line.startswith(heading)), None)
+    if exact:
+        heading_re = re.compile(rf"{re.escape(heading)}(?:\s*\(.*\))?\s*$")
+        matches: Callable[[str], bool] = lambda line: heading_re.match(line) is not None
+    else:
+        matches = lambda line: line.startswith(heading)  # noqa: E731
+    start = next((i for i, line in enumerate(lines) if matches(line)), None)
     if start is None:
         return None
     end = next((i for i in range(start + 1, len(lines))
@@ -9531,8 +9799,12 @@ def _design_section_gaps(body: str) -> list[str]:
     다루는 후속 티켓이 다른 절에서 뼈대 문장을 인용하기만 해도 "미충전"으로 읽는다 — 그 티켓의
     설계 절은 다 채워져 있는데도 경고가 뜨는 오탐이다. 절 슬라이싱은 DoD 판정과 같은 공용
     슬라이서를 쓰므로 펜스 안에 인용된 헤딩도 절 시작으로 오인하지 않는다.
+
+    **존재 축도 같은 규율이다**: 절 시작은 `## 설계` 헤딩 줄(괄호 부제 허용)이어야 한다(`exact`).
+    자유 접두 일치면 `## 설계 검토 이력` 같은 다른 절이 설계 절로 잡혀, 산문 한 줄만으로
+    `design: done` 이 통과한다 — 펜스 인용은 선-strip 이 이미 막지만 산문 헤딩은 이 축이 막는다.
     """
-    section = _section_text(body, _DESIGN_SECTION)
+    section = _section_text(body, _DESIGN_SECTION, exact=True)
     if section is None:
         return [f"{_DESIGN_SECTION} 절 부재"]
     prose = _strip_code(section)
@@ -9570,6 +9842,29 @@ def _design_issues(tid: str, body: str, design: Any) -> list[tuple[str, str, str
              f"design: {DESIGN_REQUIRED} — {unfilled}설계 절 완성 후 "
              f"`design: {DESIGN_DONE}` 으로 승격"
              f"(면제는 `design: \"{DESIGN_WAIVED}: <사유>\"`)")]
+
+
+def _design_estimate_advisory(
+    tid: str, estimate: Any, design: Any,
+) -> list[tuple[str, str, str]]:
+    """`estimate=large` 인데 설계 단계가 비대상(`n/a`·필드 부재)이면 재유도 1줄 (advisory).
+
+    자동 `required` 판정은 **발행 시점 1회**뿐이다(`_resolve_design`). 그래서 medium 으로 발행한
+    뒤 large 로 사후 교정한 티켓에는 설계 게이트가 영영 붙지 않는다 — 이 wave 에서 실제로 두 번
+    지나갔다. 여기서 자동으로 `required` 로 올리지 않는 이유는 그게 사람의 판정이기 때문이고
+    (면제도 정당하다), 그래서 kind 는 `_ADVISORY_LINT_KINDS` 에 등재된 never-block 이다.
+
+    `waived: <사유>`(면제를 사유와 함께 선언) · `required`/`done`(이미 대상) · `invalid`(그쪽
+    깔때기가 이미 1줄을 낸다)은 전부 무영향 — 여기서 보는 건 "비대상으로 남아 있는가" 하나다.
+    """
+    if str(estimate or "").strip().lower() != DESIGN_REQUIRED_ESTIMATE:
+        return []
+    if _design_state(design) != DESIGN_NA:
+        return []
+    return [(tid, "design-estimate", (
+        f"estimate={DESIGN_REQUIRED_ESTIMATE} 인데 design: {DESIGN_NA} — 발행 후 estimate 를 "
+        f"올린 티켓은 자동 required 를 못 받는다. 설계 대상이면 `design: {DESIGN_REQUIRED}`, "
+        f"아니면 `design: \"{DESIGN_WAIVED}: <사유>\"` 로 판정을 남겨라"))]
 
 
 def _body_lint_issues(tid: str, body: str, *,
@@ -9612,15 +9907,22 @@ def lint_bodies() -> list[tuple[str, str, str]]:
       - thin:        a standard section (목표 / 완료 조건 / 참고) is missing
       - design-pending: 설계 단계(`design: required`) 미완 — 설계 절 미충전/필드 미승격
         (advisory·never-block. 차단은 그 티켓을 실제로 집는 claim 게이트가 한다.)
+      - design-estimate: `estimate=large` 인데 설계 단계가 비대상(`n/a`) — 발행 후 estimate 를
+        올린 티켓의 설계 게이트 재유도 (advisory·never-block).
 
     done/blocked tickets are skipped — only live, claimable work is gated.
     """
     issues: list[tuple[str, str, str]] = []
     for status in ("open", "claimed"):
         for p in sorted((tickets_dir() / status).glob("T-*.md")):
-            fm, body = load_ticket(p)
+            loaded = load_ticket_soft(p)
+            if loaded is None:
+                continue
+            fm, body = loaded
             tid = fm.get("id") or p.name
             issues.extend(_body_lint_issues(tid, body, design=fm.get("design")))
+            issues.extend(_design_estimate_advisory(
+                tid, fm.get("estimate"), fm.get("design")))
     return issues
 
 
@@ -9633,7 +9935,10 @@ def lint_ideas() -> list[tuple[str, str, str]]:
     issues: list[tuple[str, str, str]] = []
     for status in IDEA_STATUS_DIRS:
         for p in sorted((IDEAS_DIR / status).glob("[0-9]*.md")):
-            fm, _ = load_ticket(p)
+            loaded = load_ticket_soft(p)
+            if loaded is None:
+                continue
+            fm, _ = loaded
             iid = fm.get("id") or p.name
             fm_status = fm.get("status")
             if fm_status != status:
@@ -10721,6 +11026,9 @@ def _ticket_id_from_filename(filename: str) -> str | None:
 #   - design-pending : 티켓 설계 단계(`design: required`) 미완 — 설계 절 미충전 또는 필드
 #     미승격. 차단은 **그 티켓을 실제로 집는 claim 게이트**가 하므로, 전역 lint 는 남의
 #     설계-중 티켓이 내 push 를 막지 않게 visibility 만 준다(never-block).
+#   - design-estimate : `estimate=large` 인데 `design: n/a`(또는 필드 부재). 자동 required 는
+#     발행 시점 1회뿐이라 estimate 를 사후 교정한 티켓엔 설계 게이트가 영영 안 붙는다. 올릴지
+#     면제할지는 **사람 판정**이라 엔진은 재유도만 한다(never-block).
 _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
     {"status-done-accum", "unstable-ref-advice", "scope-advice", "coverage",
      "stale", "orphan", "oversized", "history", "adr-lifecycle", "architecture-stale",
@@ -10728,7 +11036,7 @@ _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
      "architecture-unverifiable", "status-unverifiable",
      "dangling-wikilink-scaffold", "un-migrated-overlay", "adapter-drift",
      "adr-author", "areas-duplicate-repo", "areas-merge-union",
-     "delegate-same-model", "design-pending"})
+     "delegate-same-model", "design-pending", "design-estimate"})
 
 
 def _adr_id_from_path(p: Path) -> str:
@@ -12098,8 +12406,10 @@ def _refresh_board_locked() -> None:
     by_status: dict[str, list[dict]] = {s: [] for s in STATUS_DIRS}
     for status in STATUS_DIRS:
         for p in sorted((tickets_dir() / status).glob("T-*.md")):
-            fm, _ = load_ticket(p)
-            by_status[status].append(fm)
+            loaded = load_ticket_soft(p)
+            if loaded is None:
+                continue        # 손상 1건이 board.md 재생성 전체를 죽이지 않는다(경고는 위에서).
+            by_status[status].append(loaded[0])
 
     lines: list[str] = [
         "---",

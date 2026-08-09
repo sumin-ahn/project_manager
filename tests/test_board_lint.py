@@ -3211,3 +3211,121 @@ def test_lint_tickets_includes_areas_duplicate_repo(board, monkeypatch):
         monkeypatch.setattr(board, fn, lambda: [])
     monkeypatch.setattr(board, "lint_areas_duplicate_repo", lambda: sentinel)
     assert sentinel[0] in board.lint_tickets()
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 손상 frontmatter fail-soft (T-0601 ⑤)
+# ════════════════════════════════════════════════════════════════════════
+# 한 티켓의 YAML 이 깨지면(실측: `design: waived: 사유` — 콜론 포함 스칼라를 인용 없이 씀) 그 파일을
+# 읽는 순간 예외가 나고, 순회 소비자(`list`·`lint`·`refresh`)가 통째로 traceback 으로 죽었다.
+# 순회는 그 티켓만 건너뛰되 **조용히 넘기지 않는다**(경고 1줄 + 경로 + 사유). 지정 대상 mutation 은
+# 그대로 fail-loud — 고치라고 지목받은 파일이 조용히 무시되면 안 된다.
+
+_BROKEN_FRONTMATTER = (
+    "---\n"
+    "id: T-0002\n"
+    "title: 손상 티켓\n"
+    "design: waived: 인용 없는 콜론\n"          # ← yaml.safe_load 가 여기서 터진다
+    "---\n"
+    "## 목표\n본문\n"
+)
+
+
+def _ticket(board, status: str, tid: str, text: str) -> Path:
+    p = board.TICKETS_DIR / status / f"{tid}-seed.md"
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+def _healthy_ticket_text(tid: str) -> str:
+    return (f"---\nid: {tid}\ntitle: 정상 티켓\nstatus: open\ndepends_on: []\n---\n"
+            "## 목표\n실값\n\n## 완료 조건\n- [x] 끝\n\n## 참고\n- 없음\n")
+
+
+def test_broken_frontmatter_is_unparseable_by_the_strict_loader(board, monkeypatch, tmp_path):
+    """전제 고정 — 이 픽스처는 실제로 파싱 불능이다(테스트가 가짜 손상을 쓰지 않게)."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    path = _ticket(board, "open", "T-0002", _BROKEN_FRONTMATTER)
+    with pytest.raises(Exception):
+        board.load_ticket(path)
+
+
+def test_scan_loader_skips_a_broken_ticket_loudly(board, monkeypatch, tmp_path, capsys):
+    """순회 로더는 None + 경고 1줄 — 경로와 사유, 그리고 실제 처방(콜론 인용)을 함께 낸다."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    path = _ticket(board, "open", "T-0002", _BROKEN_FRONTMATTER)
+
+    assert board.load_ticket_soft(path) is None
+    err = capsys.readouterr().err
+    assert "건너뜁니다" in err and "T-0002" in err
+    assert "인용" in err, "처방(콜론 포함 값은 인용)이 경고에 없다"
+
+
+def test_scan_loader_rejects_non_mapping_frontmatter(board, monkeypatch, tmp_path, capsys):
+    """frontmatter 가 매핑이 아닌 형상도 같은 축으로 접는다 — 뒤따르는 `fm.get` 이 안 터지게."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    path = _ticket(board, "open", "T-0003", "---\n- 리스트\n- 형상\n---\n# 본문\n")
+    assert board.load_ticket_soft(path) is None
+    assert "매핑이 아니라" in capsys.readouterr().err
+
+
+def test_lint_survives_a_broken_ticket(board, monkeypatch, tmp_path, capsys):
+    """`lint` 는 손상 1건을 건너뛰고 나머지를 계속 본다 (traceback 0)."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    _ticket(board, "open", "T-0002", _BROKEN_FRONTMATTER)
+    _ticket(board, "open", "T-0001", _healthy_ticket_text("T-0001"))
+
+    assert board.lint_bodies() == []                    # 정상 티켓은 그대로 판정된다
+    assert board._all_tickets() == [("open", {
+        "id": "T-0001", "title": "정상 티켓", "status": "open", "depends_on": []})]
+    assert "T-0002" in capsys.readouterr().err
+
+
+def test_list_survives_a_broken_ticket(board, monkeypatch, tmp_path, capsys):
+    """`list` 도 손상 1건을 건너뛰고 나머지를 출력한다 (보드 전체 조회 불능 폐쇄)."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    monkeypatch.setattr(board, "LOCAL_CONF", tmp_path / ".project_manager" / "local.conf")
+    monkeypatch.setattr(board, "_git_config_email", lambda: None)
+    _ticket(board, "open", "T-0002", _BROKEN_FRONTMATTER)
+    _ticket(board, "open", "T-0001", _healthy_ticket_text("T-0001"))
+
+    rc = board.cmd_list(SimpleNamespace(
+        status=None, tag=None, mine=False, all=True, task=None, repo=None, slot=None))
+    out, err = capsys.readouterr()
+    assert rc == 0
+    assert "T-0001" in out and "T-0002" not in out
+    assert "T-0002" in err                              # 조용한 드롭이 아니다
+
+
+def test_board_refresh_survives_a_broken_ticket(board, monkeypatch, tmp_path):
+    """claim/complete 가 부르는 board.md 재생성도 손상 1건에 죽지 않는다."""
+    wiki = _wire_repo(board, monkeypatch, tmp_path)
+    monkeypatch.setattr(board, "BOARD_FILE", wiki / "board.md")
+    _ticket(board, "open", "T-0002", _BROKEN_FRONTMATTER)
+    _ticket(board, "open", "T-0001", _healthy_ticket_text("T-0001"))
+
+    board._refresh_board_locked()
+    rendered = (wiki / "board.md").read_text(encoding="utf-8")
+    assert "T-0001" in rendered and "T-0002" not in rendered
+
+
+def test_designated_mutation_stays_fail_loud(board, monkeypatch, tmp_path):
+    """지정 대상 mutation 은 fail-soft 하지 않는다 — 조용한 무시는 금지다.
+
+    `claim T-0002` 처럼 그 파일을 고치라고 지목한 실행이 skip 되면, 사용자는 아무 일도
+    일어나지 않은 이유를 모른 채 티켓이 open/ 에 남은 것을 나중에 발견한다."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    pm = tmp_path / ".project_manager"
+    (pm / ".local").mkdir(parents=True, exist_ok=True)
+    for name, value in (("LOCAL_CONF", pm / "local.conf"), ("LOCAL_DIR", pm / ".local"),
+                        ("BOARD_LOCK", pm / ".local" / "board.lock"),
+                        ("AREAS_FILE", pm / "areas.md"),
+                        ("LEASES_FILE", pm / ".local" / "worktree-leases.json")):
+        monkeypatch.setattr(board, name, value)
+    (pm / "local.conf").write_text("session=pm-1\nuser=tester\n", encoding="utf-8")
+    monkeypatch.setattr(board, "_git_config_email", lambda: None)
+    ticket = _ticket(board, "open", "T-0002", _BROKEN_FRONTMATTER)
+
+    with pytest.raises(Exception):
+        board.cmd_claim(SimpleNamespace(id="T-0002", repo=None, slot=None, user=None))
+    assert ticket.exists(), "차단된 claim 이 티켓을 옮겼다"

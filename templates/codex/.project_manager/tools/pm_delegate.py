@@ -2375,11 +2375,15 @@ RESUME_FRESH_FALLBACK_ATTEMPT = "fresh-after-resume-mismatch"
 
 
 class ResumePlan(NamedTuple):
-    """확정된 세션 재사용 1건 — 이어받을 세션 id 와 그 세션에 보낼 delta payload."""
+    """확정된 세션 재사용 1건 — 이어받을 세션 id 와 그 세션에 보낼 delta payload.
+
+    `ticket` 은 이어받은 **레코드가 기록한** 티켓 식별자다(없을 수 있다). 이 라운드의 새 레코드가
+    그 값을 계승해야 다음 재개의 티켓 지시자 선택이 유지된다."""
 
     session_id: str
     record_id: str
     delta_prompt: str
+    ticket: str | None = None
 
 
 def _resume_selector_matches(row: dict, selector: str) -> bool:
@@ -2387,6 +2391,60 @@ def _resume_selector_matches(row: dict, selector: str) -> bool:
     if selector.startswith(RESUME_TICKET_PREFIX):
         return row.get(RESUME_FIELD_TICKET) == selector
     return row.get("id") == selector
+
+
+def _resume_candidate_is_reusable(row: dict) -> bool:
+    """그 레코드에서 **이어받을 세션**을 얻을 수 있는가 (후보 정밀화 축).
+
+    두 가지를 본다:
+      · 세션 id 가 실제로 남았는가 — 이 필드는 회신 wire 관측으로만 채워진다. rc 0 이어도 회신을
+        못 읽은 라운드는 이어받을 세션을 모른다.
+      · `resume_matched` 가 False 가 아닌가 — False 면 그 라운드는 **다른 세션**이 답한 실행이고,
+        기록된 세션 id 는 그 남의 세션 것이다. 후보로 두면 다음 재개가 맥락 없는 세션을 이어받아
+        fresh 재실행 비용을 다시 지불한다.
+    이 둘을 선택 *전에* 거르는 이유는 결정 규칙이 "최신 1건"이기 때문이다 — 뒤에서 걸러 봐야
+    최신이 탈락하면 유효한 이전 후보가 있어도 재사용이 통째로 불가로 접힌다.
+    """
+    session_id = row.get(RESUME_FIELD_SESSION_ID)
+    if not isinstance(session_id, str) or not session_id.strip():
+        return False
+    return row.get(RESUME_FIELD_RESUME_MATCHED) is not False
+
+
+def _resume_axis_matches(row: dict, *, selector: str, role: str, harness: str) -> bool:
+    """지시자·role·하네스·성공 마감이 맞는가 (재사용 가능성은 별개 축)."""
+    return (
+        isinstance(row, dict)
+        and row.get("surface") == DELEGATE_RAW_SURFACE
+        and row.get("role") == role
+        and row.get("harness") == harness
+        and row.get("rc") == RESUME_REQUIRED_RC
+        and _resume_selector_matches(row, selector)
+    )
+
+
+def resume_unusable_reason(
+    rows: Sequence[dict], *, selector: str, role: str, harness: str,
+) -> str | None:
+    """지시자에 맞는 레코드는 **있는데** 이어받을 수 없는 사유 (해당 없으면 None).
+
+    후보 0 의 사유가 두 가지인데 안내가 하나면 진단이 사람을 엉뚱한 데로 보낸다: 정말 없는 것
+    (보존 창 밖·아직 없는 라운드)과, 있는데 그 레코드로는 이어받을 수 없는 것(세션 id 미관측·
+    세션 불일치 라운드)은 처방이 다르다. 특히 레코드 id 를 **직접 지목**한 실행에 "보존 창 밖"이라
+    답하면 방금 눈으로 본 레코드를 없다고 하는 셈이다."""
+    unusable = [
+        row for row in rows
+        if _resume_axis_matches(row, selector=selector, role=role, harness=harness)
+        and not _resume_candidate_is_reusable(row)
+    ]
+    if not unusable:
+        return None
+    row = max(unusable, key=lambda item: str(item.get("started_at", "")))
+    if row.get(RESUME_FIELD_RESUME_MATCHED) is False:
+        return (f"레코드 {row.get('id')} 는 세션 불일치로 끝난 라운드다(resume_matched=false) — "
+                "기록된 세션 id 는 남의 세션 것이라 이어받을 수 없음")
+    return (f"레코드 {row.get('id')} 에 세션 id 가 관측되지 않았다(회신 wire 미기록) — "
+            "이어받을 세션을 알 수 없음")
 
 
 def select_resume_record(
@@ -2398,15 +2456,14 @@ def select_resume_record(
     이유는 세션 id 가 발급 축 안에서만 뜻이 있기 때문이다 — 다른 축의 id 도 형식 가드를 통과할
     수 있어(codex thread id 가 uuid 표기다) 형식만으로는 남의 세션을 거르지 못하고, 그대로
     보내면 확정 실패 뒤 fresh 재실행으로 한 라운드를 더 지불한다.
+
+    후보 조건에 "이어받을 세션이 실제로 있는가"(`_resume_candidate_is_reusable`)를 함께 건다 —
+    회신을 못 읽은 라운드와 세션 불일치로 끝난 라운드는 rc 0 이어도 재개의 입력이 아니다.
     """
     matches = [
         row for row in rows
-        if isinstance(row, dict)
-        and row.get("surface") == DELEGATE_RAW_SURFACE
-        and row.get("role") == role
-        and row.get("harness") == harness
-        and row.get("rc") == RESUME_REQUIRED_RC
-        and _resume_selector_matches(row, selector)
+        if _resume_axis_matches(row, selector=selector, role=role, harness=harness)
+        and _resume_candidate_is_reusable(row)
     ]
     if not matches:
         return None
@@ -2488,9 +2545,11 @@ def resolve_resume_plan(
         rows, selector=selector, role=role, harness=harness,
     )
     if record is None:
+        # 사유를 갈라 낸다 — "정말 없다"와 "있는데 이어받을 수 없다"는 처방이 다르다.
         _resume_unavailable(
-            f"{selector!r} 의 성공 마감 위임 레코드(role={role}·harness={harness}) 없음 — "
-            "장부 보존 창 밖이거나 아직 없는 라운드"
+            resume_unusable_reason(rows, selector=selector, role=role, harness=harness)
+            or (f"{selector!r} 의 성공 마감 위임 레코드(role={role}·harness={harness}) 없음 — "
+                "장부 보존 창 밖이거나 아직 없는 라운드")
         )
         return None
     session_id = record.get(RESUME_FIELD_SESSION_ID)
@@ -2501,9 +2560,11 @@ def resolve_resume_plan(
         return None
     must_fix_items = record.get(RESUME_FIELD_MUST_FIX)
     base_rev = record.get(RESUME_FIELD_BASE_REV)
+    record_ticket = record.get(RESUME_FIELD_TICKET)
     return ResumePlan(
         session_id=session_id,
         record_id=str(record.get("id")),
+        ticket=record_ticket if isinstance(record_ticket, str) and record_ticket else None,
         delta_prompt=build_resume_delta_payload(
             must_fix_items=(
                 must_fix_items if isinstance(must_fix_items, list) else ()
@@ -4305,7 +4366,12 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
             profile_source=profile_source,
             codex_egress=codex_egress,
             resume=resume,
-            ticket=args.ticket,
+            # 재개 라운드의 티켓 식별자 **계승** — 명시 `--ticket` 이 우선이고, 없으면 이어받은
+            # 레코드의 티켓을 그대로 싣는다. 안 실으면 이 라운드 레코드에 ticket 이 없어 **다음**
+            # 재개의 티켓 지시자 선택(최신 1건)에서 빠지고, 재개 사슬이 한 라운드 만에 끊긴다.
+            # 범위 판정(scope audit)은 계승하지 않는다 — 그건 선언 touches 의 축이라 이 실행이
+            # 무엇을 선언했는지가 기준이다.
+            ticket=args.ticket or (resume.ticket if resume is not None else None),
             # 이 위임의 기준 rev — 이미 캡처한 실행-전 worktree 상태를 그대로 쓴다(추가 git 호출 0).
             base_rev=(
                 scope_audit.before.head or None if scope_audit is not None else None
@@ -4383,6 +4449,22 @@ def _execute_and_collect(
             and primary.session_id != resume.session_id
             and classify_infrastructure_failure(primary.result) is None
         ):
+            # write 계열 역할(기존 권한축 `WRITE_ROLES`)은 재실행하지 않는다 — 불일치 실행도
+            # 저장소 쓰기 권한으로 돌았으므로 이미 트리를 고쳤을 수 있고, 같은 지시를 fresh 로 한
+            # 번 더 태우면 같은 편집이 두 번 적용되거나(중복) 반쯤 고친 트리 위에 다른 판단이
+            # 얹힌다(충돌). 무엇이 남았는지는 사람이 보고 정해야 하므로 rc 실패 + 상황 안내다.
+            # read 계열(researcher·code-reviewer)은 트리를 안 만지므로 현행 재실행을 유지한다.
+            if args.role in WRITE_ROLES:
+                return fail_loud(
+                    f"오류: 세션 재사용 실패(write 역할 {args.role}) — 요청 "
+                    f"{resume.session_id} · 회신 {primary.session_id or '없음'}.\n"
+                    "  · 이 실행은 쓰기 권한으로 돌았습니다 — **트리를 이미 고쳤을 수 있어** "
+                    "fresh 재실행을 자동으로 태우지 않습니다(중복·충돌 편집 차단).\n"
+                    "  · 먼저 작업 트리를 확인하세요(`git status` · `git diff`). 남은 변경이 "
+                    "없으면 `--resume-from` 없이 같은 위임을 다시 부르고, 부분 적용이 있으면 "
+                    "그 상태를 반영해 프롬프트를 고쳐 부르세요.\n"
+                    f"  · resume raw: {primary.raw_path}"
+                )
             print(
                 f"세션 재사용 실패: 요청 {resume.session_id} · 회신 "
                 f"{primary.session_id or '없음'} — fresh 스폰 + full payload 로 이 라운드를 "

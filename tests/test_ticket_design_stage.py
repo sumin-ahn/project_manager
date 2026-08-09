@@ -319,12 +319,14 @@ def _claim_args(tid="T-0001"):
     return argparse.Namespace(id=tid, repo=None, slot=None, user=None)
 
 
-def _seed_open(board, *, design, body=None, tid="T-0001"):
+def _seed_open(board, *, design, body=None, tid="T-0001", estimate=None):
     """open/ 에 티켓 하나를 심는다 — `design` 이 None 이면 **필드 자체를 안 쓴다**(구티켓)."""
     fm = {"id": tid, "title": "seed", "status": "open",
           "claimed_by": None, "depends_on": []}
     if design is not None:
         fm["design"] = design
+    if estimate is not None:
+        fm["estimate"] = estimate
     path = board.TICKETS_DIR / "open" / f"{tid}-seed.md"
     board.dump_ticket(path, fm, body if body is not None else _body())
     return path
@@ -467,6 +469,124 @@ def test_cmd_lint_gate_does_not_block_on_design_pending(board, monkeypatch):
     monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
     assert board.cmd_lint(argparse.Namespace(gate=True)) == 0
     assert board.cmd_lint(argparse.Namespace(gate=False)) == 1
+
+
+# ════════════════════════════════════════════════════════════════════════
+# estimate 사후 교정 재유도 advisory (T-0601 ③)
+# ════════════════════════════════════════════════════════════════════════
+# 자동 `required` 판정은 **발행 시점 1회**뿐이라, medium 으로 발행한 뒤 large 로 교정한 티켓에는
+# 설계 게이트가 영영 안 붙는다(이 wave 실경로 2회). 올릴지 면제할지는 사람 판정이므로 엔진은
+# 재유도 1줄만 낸다(never-block).
+
+
+def test_design_estimate_is_advisory_kind():
+    """`design-estimate` 는 advisory 등재 — pre-push 게이트를 막지 않는다."""
+    assert "design-estimate" in board_mod._ADVISORY_LINT_KINDS
+
+
+def test_large_estimate_with_na_design_is_readvised():
+    """`estimate=large ∧ design: n/a` → 1줄 (두 값과 두 출구를 모두 안내한다)."""
+    issues = board_mod._design_estimate_advisory("T-0601", "large", "n/a")
+    assert len(issues) == 1
+    tid, kind, detail = issues[0]
+    assert (tid, kind) == ("T-0601", "design-estimate")
+    assert "large" in detail and "required" in detail and "waived" in detail
+
+
+def test_missing_design_field_counts_as_na(board_estimate="large"):
+    """필드 부재도 `n/a` 다 — 구세대 티켓을 large 로 교정한 형상이 실경로다."""
+    assert len(board_mod._design_estimate_advisory("T-0601", board_estimate, None)) == 1
+
+
+@pytest.mark.parametrize("estimate, design", [
+    ("small", "n/a"),                    # 자동 required 대상이 아니다
+    ("medium", None),                    # 같은 축
+    (None, "n/a"),                       # estimate 미선언
+    ("", "n/a"),
+    ("large", "required"),               # 이미 설계 대상 — design-pending 이 소유
+    ("large", "done"),
+    ("large", "waived: 리뷰 상한 초과"),   # 사유와 함께 면제 — 판정이 이미 남았다
+    ("large", "requried"),               # invalid — 값 자체 안내는 다른 깔때기가 낸다
+    ("LARGE", "required"),
+])
+def test_readvisory_stays_silent_outside_its_axis(estimate, design):
+    """이 advisory 가 보는 건 '비대상으로 남아 있는가' 하나 — 그 밖은 전부 0건(오탐 0)."""
+    assert board_mod._design_estimate_advisory("T-0601", estimate, design) == []
+
+
+def test_lint_bodies_emits_the_estimate_readvisory(board):
+    """사후 교정된 티켓(large + n/a)을 전역 lint 가 1줄로 보고한다."""
+    _seed_open(board, design="n/a", estimate="large")
+    assert [(tid, kind) for tid, kind, _d in board.lint_bodies()] == [
+        ("T-0001", "design-estimate")]
+
+
+def test_lint_bodies_silent_for_a_large_ticket_already_on_the_design_track(board):
+    """large 인데 이미 `done` 이면 재유도가 없다 — 정상 경로 무영향."""
+    _seed_open(board, design="done", estimate="large")
+    assert board.lint_bodies() == []
+
+
+def test_cmd_lint_gate_does_not_block_on_design_estimate(board, monkeypatch):
+    """`--gate` 는 design-estimate 만 있으면 rc=0(never-block), 무인자 lint 는 보고(rc=1)."""
+    monkeypatch.setattr(board, "lint_tickets",
+                        lambda: [("T-0001", "design-estimate", "estimate=large 인데 n/a")])
+    monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
+    assert board.cmd_lint(argparse.Namespace(gate=True)) == 0
+    assert board.cmd_lint(argparse.Namespace(gate=False)) == 1
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 설계 절 **존재** 판정 앵커화 (T-0601 ⑫)
+# ════════════════════════════════════════════════════════════════════════
+# 충전 축(T-0594)은 이미 펜스 선-strip + 절 슬라이스로 판정한다. 존재 축도 같은 규율이어야
+# `## 설계` 라는 짧은 이름이 다른 절(`## 설계 검토 이력`)이나 인용으로 성립하지 않는다.
+
+
+def test_prose_heading_prefix_is_not_the_design_section():
+    """`## 설계 검토 이력` 같은 **다른 절**이 설계 절로 잡히지 않는다 (접두 일치 우회 폐쇄).
+
+    잡히면 그 절 안에 뼈대 문장이 없다는 이유로 `design: done` 이 그냥 통과한다."""
+    body = _body("## 설계 검토 이력\n- 2026-08-09 PM 이 구두로 확인했다.\n\n")
+    assert board_mod._design_section_gaps(body) == [
+        f"{board_mod._DESIGN_SECTION} 절 부재"]
+    assert len(board_mod._design_issues("T-0601", body, board_mod.DESIGN_DONE)) == 1
+
+
+def test_fenced_design_heading_is_not_the_design_section():
+    """펜스 안에 인용된 `## 설계` 도 절이 아니다 (선-strip 규율이 존재 축에도 적용)."""
+    body = _body("## 참고 인용\n```md\n## 설계\n- **불변식**: 예시다.\n```\n\n")
+    assert board_mod._design_section_gaps(body) == [
+        f"{board_mod._DESIGN_SECTION} 절 부재"]
+
+
+def test_exact_heading_line_is_the_design_section():
+    """줄 전체가 `## 설계`(후행 공백 허용)면 그 절이다 — 정상 티켓 무영향."""
+    assert board_mod._design_section_gaps(_body()) == []
+    assert board_mod._design_section_gaps(
+        _body(_DESIGN_FILLED.replace("## 설계\n", "## 설계   \n", 1))) == []
+
+
+@pytest.mark.parametrize("heading", [
+    "## 설계 (DRAFT — 리뷰 전)",      # 실재 표기 — 같은 절에 상태를 병기한다
+    "## 설계 (T-0594)",
+    "## 설계(초안)",
+])
+def test_parenthesized_subtitle_is_still_the_design_section(heading):
+    """괄호 부제가 붙은 헤딩은 그 절이다 — 존재 축 강화가 실 사용례를 오차단하면 안 된다.
+
+    괄호 없이 이어지는 말(`## 설계 검토 이력`)은 다른 절 제목이라 여전히 차단된다."""
+    assert board_mod._design_section_gaps(
+        _body(_DESIGN_FILLED.replace("## 설계\n", f"{heading}\n", 1))) == []
+
+
+def test_subtitled_headings_still_slice_by_prefix():
+    """부제가 붙는 절(`## 완료 조건 (Definition of Done)`)은 접두 일치가 정상이다.
+
+    존재 축 강화가 DoD 슬라이서를 함께 조이면 실 템플릿의 DoD 가 통째로 안 보인다."""
+    body = _body()
+    assert board_mod._dod_section_text(body) is not None
+    assert board_mod._dod_open_items(body), "DoD 미체크 항목을 못 봤다 — 슬라이서 회귀"
 
 
 # ════════════════════════════════════════════════════════════════════════

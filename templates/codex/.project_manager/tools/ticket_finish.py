@@ -1144,6 +1144,7 @@ class TicketFinisher:
         run_git_stdout_at_fn: Callable[[Path, list[str]], tuple[int, str]] | None = None,
         status_entries_at_fn: Callable[[Path], tuple[tuple[str, str], ...]] | None = None,
         diff_cap_block_fn: Callable[[str], str | None] | None = None,
+        dod_block_fn: Callable[[str], str | None] | None = None,
         log_file: Path = LOG_FILE,
         board_py: Path = BOARD_PY,
         venv_python: str | Path = _default_python(),
@@ -1193,6 +1194,9 @@ class TicketFinisher:
         # diff 서킷브레이커 seam — 차단 안내 문자열 또는 None(통과·가드 off). 정책·측정식은
         # external_review 가 소유하고 여기서는 판정만 소비한다.
         self._diff_cap_block_fn = diff_cap_block_fn or self._default_diff_cap_block
+        # DoD 부기 게이트 preflight seam — 차단 사유 문자열 또는 None(통과·판정 불가).
+        # 규칙 소유자는 board(`_dod_open_items`)이고 여기서는 **더 앞에서 한 번 더** 물을 뿐이다.
+        self._dod_block_fn = dod_block_fn or self._default_dod_block
         # (스코프 밖 staged, 미스테이지 잔여) 건수 — `[완료]` 줄 재고지용(loud 강화).
         self._dirty_summary: tuple[int, int] = (0, 0)
 
@@ -1247,16 +1251,50 @@ class TicketFinisher:
             return Path(self._regression_cwd)
         return Path(_regression_cwd())
 
+    def _measured_touches(self, ticket_id: str) -> list[str] | None:
+        """서킷브레이커가 잴 스코프 — 선언 `touches` 를 **측정 트리 좌표**로 정규화한 것.
+
+        PM 홈 좌표(`work/<repo>_<N>/…`)를 그대로 재면 측정 트리(코드 worktree)에 그 경로가 없어
+        diff 가 0 으로 나오고 상한이 조용히 우회된다. 정규화 규칙은 stage 경로가 쓰는 공용
+        `repo_coordinates` seam 그대로다 — 좌표계 사본을 두면 한쪽만 고쳐진다.
+
+        정규화 불능(normalizer 부재·슬롯 불일치)은 "이 트리에서는 잴 수 없다"는 뜻이므로
+        **loud 1줄 + 가드 off**(None) 다. 조용한 0 으로 접으면 우회 구멍이 그대로 남는다.
+        """
+        touches = get_ticket_touches(self._board_py, ticket_id)
+        if not touches:
+            return None
+        if not any(_has_worktree_touch_prefix(touch) for touch in touches):
+            return touches
+        coords = _load_repo_coordinates()
+        if coords is None:
+            print(f"  ⚠ diff 서킷브레이커 측정 skip — repo 좌표 normalizer 부재 "
+                  f"({TOOLS_DIR / 'repo_coordinates.py'}) · PM 홈 좌표 touches 를 측정 트리 "
+                  "좌표로 옮길 수 없다.", file=sys.stderr)
+            return None
+        # 측정 트리 해소는 try **밖**이다 — 그쪽은 형제 엔진 로더를 타므로(회귀 cwd 자동해소)
+        # 여기 좌표 예외 처리에 섞이면 사본 skew 가 "정규화 실패" 한 줄로 위장된다.
+        workspace = self._code_tree()
+        try:
+            return list(coords.normalize_repo_paths(
+                touches, pm_root=REPO, workspace=workspace,
+            ))
+        except getattr(coords, "RepoCoordinateError", RuntimeError) as exc:
+            print(f"  ⚠ diff 서킷브레이커 측정 skip — touches 좌표 정규화 실패 ({exc}).",
+                  file=sys.stderr)
+            return None
+
     def _default_diff_cap_block(self, ticket_id: str) -> str | None:
         """diff 서킷브레이커 판정 — 차단 안내 문자열, 통과·가드 off 면 None.
 
-        상한 표·측정식·문구는 external_review 소유분을 그대로 쓴다. 측정 불가(모듈 부재·touches
-        부재·estimate 미선언·비-git 트리)는 **가드 off** 다 — 이 축의 실패로 완료 부기를 막지
+        상한 표·측정식·문구는 external_review 소유분을 그대로 쓴다(기계 mirror 제외도 그
+        측정 seam 이 소유한다 — 여기 사본 없음). 측정 불가(모듈 부재·touches 부재·좌표 정규화
+        불능·estimate 미선언·비-git 트리)는 **가드 off** 다 — 이 축의 실패로 완료 부기를 막지
         않는다(hard 차단은 상한 초과라는 확정 사실에만 건다)."""
         external = _load_external_review()
         if external is None:
             return None
-        touches = get_ticket_touches(self._board_py, ticket_id)
+        touches = self._measured_touches(ticket_id)
         if not touches:
             return None
         estimate = get_ticket_estimate(self._board_py, ticket_id)
@@ -1270,6 +1308,38 @@ class TicketFinisher:
         return external.diff_cap_block(
             total, cap, ticket=ticket_id, estimate=estimate, scope=touches,
         )
+
+    def _default_dod_block(self, ticket_id: str) -> str | None:
+        """DoD 부기 게이트 preflight 판정 — 차단 사유 문자열, 통과·판정 불가면 None.
+
+        규칙 소유자는 board(`_dod_open_items`)다 — 판정 사본을 두지 않고 그 함수를 부른다.
+        권위 있는 차단은 여전히 [3/5] `board.py complete` 가 하고, 여기서는 **더 앞에서 한 번 더**
+        묻는다. 이 preflight 가 없으면 [2/5] 가 log 스켈레톤을 append 한 *뒤에* [3/5] 가 막아,
+        차단될 때마다 stray 스켈레톤이 남고 재실행마다 중복 append 된다(실측).
+
+        판정 불가(board 미로드·티켓 부재/손상)는 None 이다 — preflight 는 조기 안내일 뿐이고
+        진짜 게이트가 뒤에 있으므로, 여기서 fail-soft 해도 미체크 DoD 가 done 으로 새지 않는다."""
+        board = load_board_module(self._board_py)
+        gate = getattr(board, "_dod_open_items", None) if board else None
+        if gate is None:
+            return None
+        try:
+            _status, path = board.find_ticket(ticket_id)
+            _fm, body = board.load_ticket(path)
+        except Exception as exc:  # noqa: BLE001 — 조회 실패는 뒤 게이트가 소유(preflight fail-soft).
+            if _is_engine_rev_skew(exc):
+                raise
+            return None
+        problems = gate(body)
+        if not problems:
+            return None
+        forms = getattr(board, "_DOD_VALUE_FORMS", "")
+        lines = [f"완료 조건(DoD) 미마감 — {ticket_id} ({len(problems)}건)"]
+        lines += [f"  ✗ {problem}" for problem in problems]
+        lines.append(f"  · 각 항목을 {forms} 로 마감하라." if forms else "")
+        lines.append("  · board.py complete 의 게이트와 **같은 판정**이다 — "
+                     "log/current.md 스켈레톤을 남기기 전에 미리 묻는다.")
+        return "\n".join(line for line in lines if line)
 
     def _default_run_board(self, args: list[str]) -> tuple[int, str]:
         """board.py 를 subprocess 로 호출해 (returncode, stdout+stderr) 반환."""
@@ -1426,13 +1496,16 @@ class TicketFinisher:
             f"(dry_run={dry_run}, skip_pytest={skip_pytest})"
         )
 
-        # ── 0. diff 서킷브레이커 (진입 검사) ─────────────────────────
-        # 회귀보다 **앞**이다: estimate 를 넘긴 스코프는 회귀가 green 이어도 완료 대상이 아니라
-        # 분할 대상이고, 어떤 부작용(회귀 실행·log append·board·git)도 나기 전에 멈춰야 한다.
-        cap_block = self._diff_cap_block_fn(ticket_id)
-        if cap_block:
-            print(f"\n[중단] {cap_block}", file=sys.stderr)
-            return 1
+        # ── 0. 진입 게이트(preflight) — diff 서킷브레이커 · DoD 부기 ─────
+        # 둘 다 회귀보다 **앞**이고, 무엇보다 [2/5] log 스켈레톤 append 보다 앞이다: 여기서 막힐
+        # 실행은 어떤 부작용(회귀 실행·log append·board·git)도 내지 않아야 한다. DoD 판정이
+        # [3/5] `board.py complete` 안에만 있던 동안에는 차단마다 stray 스켈레톤이 남고 재실행이
+        # 그것을 중복 append 했다(실측) — 순서가 곧 결함이었다.
+        for preflight in (self._diff_cap_block_fn, self._dod_block_fn):
+            block = preflight(ticket_id)
+            if block:
+                print(f"\n[중단] {block}", file=sys.stderr)
+                return 1
 
         # ── 1. 회귀 실행 ──────────────────────────────────────────────
         # dry-run 도 pytest 를 실제 실행한다 — "부작용 없음"이지 "빠름"이 아니다.

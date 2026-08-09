@@ -61,10 +61,19 @@
   차단한다. `--ack-rounds` 라운드 연장은 폐지(rc=1 거부·재개 승인이 남은 축은 wave 예산 하나).
   잔여 fix 확인 전용 `--confirm-fix` 를 게이트당 1회 허용(수렴 축 예외일 뿐 전송 횟수 상한은
   열지 않음·전송 0 실행은 count/wave/confirm 3축 동일 조건 환불). 비수렴의 출구는 라운드 연장이
-  아니라 티켓 재설계·분할이다.
+  아니라 티켓 재설계·분할이다. **`--confirm-fix` 는 `--gate` 필수** — 게이트 없는 확인 전용
+  라운드는 경고 후 실행하던 것을 **전송 전 rc 1 거부**로 바꾼다(1회 제한을 세는 장부 항목이
+  게이트 단위라, 게이트가 없으면 예외가 회계 밖에서 무한히 열린다). 조회면(`--rounds-report`)도
+  같은 규율로 거부한다.
 - **diff 서킷브레이커** — 티켓 touches 스코프 diff 총량이 estimate 상한(small 300 / medium
   1,000 / large 2,500줄·`diff_cap.<estimate>` conf override)을 넘으면 리뷰 진입과 완료 부기를
   차단하고 분할·재설계를 요구한다. dry-run·비활성·egress 차단 경로는 검사 밖(전송 확정 구간만).
+  **측정 의미 = 손작업 스코프**: `templates/<타깃>/.project_manager/` 아래 pm_update 관리
+  mirror 는 합산에서 제외한다(기계 산출을 손작업과 같은 가중으로 세면 구현 스코프가 출하 타깃
+  수만큼 부풀어 분할이 불필요한 티켓이 막힌다 — mirror 정합은 drift-0 가드가 따로 지킨다).
+  선언이 넓은 접두(`templates/`)여도 제외가 성립하고, 차단 안내가 그 측정 의미를 한 줄로 밝힌다.
+  PM 홈 좌표 touches(`work/<repo>_<N>/…`)는 측정 트리 좌표로 정규화한 뒤 잰다(정규화 불능은
+  경고 1줄 + 가드 off).
 - **회귀 스테이징** — 활성 리뷰 사이클(라운드 장부 미종결 ∧ 티켓 claimed) 중 FULL 회귀 요청을
   touches targeted 로 강등하고, FULL 은 `--final`·pre-push 게이트 경로에서만 돈다. 설치된
   pre-push 훅이 구세대 본문이면 regression run/check 진입에서 원자 교체로 자기치유한다

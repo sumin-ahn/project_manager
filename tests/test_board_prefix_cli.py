@@ -791,3 +791,99 @@ def test_relabel_dst_occupied_aborts_before_any_write(board, monkeypatch, capsys
     assert "dst body" in dst_path.read_text(encoding="utf-8")
     fm, _ = board.load_ticket(src_path)
     assert fm["id"] == "T-foo-001"                     # rewrite 도 안 일어남(쓰기 0).
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 손상 티켓 — 조회는 fail-soft, ID 재부여는 fail-loud (T-0601 R1 must-fix 2)
+# ════════════════════════════════════════════════════════════════════════
+# 손상 frontmatter fail-soft(T-0601 ⑤)를 순회 전체에 걸면 `_scan_prefix_tickets` 를 소비하는
+# mutation 표면이 눈이 먼다: 못 본 ID 는 `_detect_collisions` 유일성 검사와 merge 의
+# `start=max(...)` 에서 빠지고, 그 ID 위로 다른 티켓이 덮인다(중복·clobber). skip 의 의미를
+# 표면별로 가른다 — 조회는 그 한 줄만 빼고 계속, 재부여는 [중단].
+
+_BROKEN_TICKET = (
+    "---\n"
+    "id: T-foo-004\n"
+    "title: 손상 티켓\n"
+    "design: waived: 인용 없는 콜론\n"          # ← yaml.safe_load 가 여기서 터진다
+    "---\n"
+    "# T-foo-004\n"
+)
+
+
+def _seed_broken(board, name: str = "T-foo-004-slug.md") -> Path:
+    path = board.TICKETS_DIR / "open" / name
+    path.write_text(_BROKEN_TICKET, encoding="utf-8")
+    return path
+
+
+def test_scan_reports_the_skipped_ticket_to_its_caller(board):
+    """스캔은 skip 을 삼키지 않고 호출부에 돌려준다 — 표면별 판정의 입력이다."""
+    _seed_ticket(board, "T-foo-001")
+    broken = _seed_broken(board)
+
+    skipped: list[Path] = []
+    rows = board._scan_prefix_tickets(skipped)
+
+    assert [t["id"] for t in rows] == ["T-foo-001"]
+    assert skipped == [broken]
+
+
+@pytest.mark.parametrize("verb, call", [
+    ("prefix rename", lambda b: b.cmd_prefix_rename(_ns(src="foo", dst="bar", dry_run=False))),
+    ("prefix merge", lambda b: b.cmd_prefix_merge(
+        _ns(sources=["foo"], into="bar", dry_run=False, reorder_chronological=False))),
+    ("prefix delete", lambda b: b.cmd_prefix_delete(_ns(prefix="ghost", dry_run=False))),
+])
+def test_id_reassigning_verbs_abort_on_an_unreadable_ticket(board, capsys, verb, call):
+    """읽지 못한 티켓이 1건이라도 있으면 재부여 동사는 rc 1 로 멈추고 파일을 건드리지 않는다."""
+    _seed_ticket(board, "T-foo-001")
+    _seed_broken(board)
+    before = _ids_on_disk(board)
+
+    assert call(board) == 1
+    err = capsys.readouterr().err
+    assert "[중단]" in err and verb in err
+    assert "T-foo-004-slug.md" in err and "clobber" in err
+    assert _ids_on_disk(board) == before                  # 무변경
+
+
+def test_reid_aborts_on_an_unreadable_ticket(board, capsys):
+    """reid 도 같은 축이다 — 손상 티켓의 ID 가 NEW collision 검사에서 빠지면 그 위로 덮는다."""
+    _seed_ticket(board, "T-0036")
+    _seed_broken(board)
+    before = _ids_on_disk(board)
+
+    reid_args = argparse.Namespace(old_id="T-0036", new_id="T-0250", dry_run=False,
+                                   repo=None, slot=None)
+    assert board.cmd_reid(reid_args) == 1
+    err = capsys.readouterr().err
+    assert "[중단]" in err and "reid" in err and "clobber" in err
+    assert _ids_on_disk(board) == before
+
+
+def test_dry_run_is_blocked_too(board, capsys):
+    """dry-run preview 도 같은 판정이다 — 신뢰할 수 없는 계획을 미리보기로 내보내지 않는다."""
+    _seed_ticket(board, "T-foo-001")
+    _seed_broken(board)
+    assert board.cmd_prefix_rename(_ns(src="foo", dst="bar", dry_run=True)) == 1
+    assert "[중단]" in capsys.readouterr().err
+
+
+def test_read_only_prefix_list_survives_the_unreadable_ticket(board, capsys):
+    """조회(`prefix list`)는 그 티켓만 빼고 계속 동작한다 — 보드 전체가 조회 불능이 되면 안 된다."""
+    _seed_ticket(board, "T-foo-001")
+    _seed_broken(board)
+
+    assert board.cmd_prefix_list(_ns()) == 0
+    out, err = capsys.readouterr()
+    assert "foo" in out
+    assert "T-foo-004-slug.md" in err                      # 조용한 드롭이 아니다
+    assert "[중단]" not in err
+
+
+def test_healthy_board_is_unaffected(board):
+    """손상 0 인 보드에서는 종전 동작 그대로다 (게이트 추가로 정상 경로가 바뀌지 않는다)."""
+    _seed_ticket(board, "T-foo-001")
+    assert board.cmd_prefix_rename(_ns(src="foo", dst="bar", dry_run=False)) == 0
+    assert _ids_on_disk(board) == {"T-bar-001"}

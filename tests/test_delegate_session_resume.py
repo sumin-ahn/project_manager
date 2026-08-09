@@ -301,6 +301,81 @@ def test_record_id_selector_is_exact_match(pd):
         rows, selector="rec-zzz", role="code-reviewer", harness="claude") is None
 
 
+# ── 후보 정밀화 (T-0601 ⑩) ──────────────────────────────────────────────────
+# rc 0 이라고 다 재개의 입력이 아니다. 회신을 못 읽은 라운드는 이어받을 세션 id 자체가 없고,
+# 세션 불일치로 끝난 라운드의 세션 id 는 **남의 세션** 것이다. 둘 다 선택 *전에* 거른다 — 뒤에서
+# 걸러 최신이 탈락하면 유효한 이전 후보가 있어도 재사용이 통째로 불가로 접힌다.
+
+
+@pytest.mark.parametrize("broken", [
+    {"session_id": None},                    # 회신 wire 관측 실패
+    {"session_id": ""},
+    {"session_id": "   "},
+    {"resume_matched": False},               # 다른 세션이 답한 라운드 — 남의 세션 id 다
+])
+def test_candidate_selection_excludes_unusable_records(pd, broken):
+    """이어받을 세션이 없는 레코드는 최신이어도 후보가 아니고, 유효한 이전 건이 선택된다."""
+    newest = _candidate(id="unusable", started_at="2026-08-08T23:00:00+00:00", **broken)
+    keeper = _candidate(id="keeper", started_at="2026-08-08T10:00:00+00:00")
+
+    picked = pd.select_resume_record(
+        [keeper, newest], selector=TICKET_ID, role="code-reviewer", harness="claude")
+    assert picked["id"] == "keeper"
+    # 입력 순서가 달라도 같은 값 — 결정성은 정밀화 뒤에도 유지된다.
+    assert pd.select_resume_record(
+        [newest, keeper], selector=TICKET_ID, role="code-reviewer",
+        harness="claude")["id"] == "keeper"
+    # 유효 후보가 하나도 없으면 재사용 불가(None) — fresh 로 간다.
+    assert pd.select_resume_record(
+        [newest], selector=TICKET_ID, role="code-reviewer", harness="claude") is None
+
+
+@pytest.mark.parametrize("broken, needle", [
+    ({"session_id": None}, "세션 id 가 관측되지 않았다"),
+    ({"resume_matched": False}, "세션 불일치로 끝난 라운드"),
+])
+def test_unusable_record_gets_its_own_reason_not_retention(pd, broken, needle):
+    """있는데 못 이어받는 것과 정말 없는 것은 처방이 다르다 — 사유를 갈라 낸다.
+
+    특히 레코드 id 를 **직접 지목**한 실행에 "보존 창 밖"이라 답하면 방금 눈으로 본 레코드를
+    없다고 하는 셈이다."""
+    row = _candidate(id="rec-x", **broken)
+    reason = pd.resume_unusable_reason(
+        [row], selector="rec-x", role="code-reviewer", harness="claude")
+    assert reason is not None and needle in reason and "rec-x" in reason
+    assert "보존 창" not in reason
+
+
+def test_truly_absent_record_keeps_the_retention_reason(pd):
+    """맞는 레코드가 아예 없으면 종전 안내(보존 창 밖·아직 없는 라운드) 그대로다."""
+    assert pd.resume_unusable_reason(
+        [_candidate(id="rec-x")], selector="rec-zzz", role="code-reviewer",
+        harness="claude") is None
+
+
+def test_resume_resolution_surfaces_the_unusable_reason(pd, relay, tmp_path, capsys):
+    """실 해소 경로가 그 사유를 stderr 로 낸다 (판정 헬퍼가 배선돼 있다)."""
+    out_dir = tmp_path / "raw"
+    ledger_path = out_dir / "raw_outputs.json"
+    record_id = _seed_record(relay, ledger_path, start_extra={"ticket": TICKET_ID})
+
+    plan = pd.resolve_resume_plan(
+        record_id, harness="claude", role="code-reviewer",
+        task_text="본문", output_dir=out_dir)
+
+    assert plan is None
+    err = capsys.readouterr().err
+    assert "세션 id 가 관측되지 않았다" in err and "보존 창" not in err
+
+
+def test_matched_resume_records_stay_candidates(pd):
+    """`resume_matched=True` 인 재개 라운드는 정상 후보다 — 사슬이 이어진다."""
+    row = _candidate(id="chained", resume_matched=True,
+                     resume_from_session_id=SESSION_ID)
+    assert pd.select_resume_record(
+        [row], selector=TICKET_ID, role="code-reviewer", harness="claude")["id"] == "chained"
+
+
 def test_retention_window_bounds_resume_availability(pd, relay, tmp_path):
     """장부 완료 보존 창 밖 레코드는 정리돼 후보에서 사라진다 — 창 밖 재위임은 자연 fresh."""
     ledger_path = tmp_path / "raw_outputs.json"
@@ -474,6 +549,147 @@ def test_resume_failure_without_reply_falls_back_to_full_payload(
     assert rc == 0 and len(fake.calls) == 2
     assert "세션 재사용 실패" in err and "회신 없음" in err
     assert _PREAMBLE_MARKER in fake.calls[1]["stdin_text"]
+
+
+# ── 티켓 식별자 계승 (T-0601 ⑩) ─────────────────────────────────────────────
+
+
+def test_resume_round_record_inherits_the_ticket(pd, monkeypatch, tmp_path):
+    """`--ticket` 없는 재개 라운드도 레코드에 티켓을 남긴다 — 다음 재개의 선택이 유지된다.
+
+    안 남기면 이 라운드 레코드가 티켓 지시자 선택(최신 1건)에서 빠지고, 다음 `--resume-from
+    T-NNNN` 이 **직전 라운드가 아닌 그 앞 라운드**를 이어받아 사슬이 끊긴다."""
+    out_dir, ledger_path, _record_id = _resume_fixture(pd, tmp_path)
+    prompt = _write_prompt(tmp_path, "해소했다.")
+    fake = _FakeRun(_ok(_claude_wire("판정: 통과", session_id=SESSION_ID)))
+
+    rc = _run_main(pd, monkeypatch,
+                   _argv(prompt, tmp_path, out_dir, "--resume-from", TICKET_ID), fake)
+
+    assert rc == 0
+    latest = max(_rows(ledger_path), key=lambda row: row["started_at"])
+    assert latest["ticket"] == TICKET_ID
+    # 그리고 그 레코드가 다음 재개의 후보로 실제 선택된다(사슬 유지의 진짜 관측치).
+    assert pd.select_resume_record(
+        _rows(ledger_path), selector=TICKET_ID, role="code-reviewer",
+        harness="claude")["id"] == latest["id"]
+
+
+def test_explicit_ticket_wins_over_the_inherited_one(pd, monkeypatch, tmp_path):
+    """명시 `--ticket` 이 우선이다 — 계승은 미지정일 때의 폴백이다."""
+    other = "T-" + "0888"
+    out_dir, ledger_path, _record_id = _resume_fixture(pd, tmp_path)
+    prompt = _write_prompt(tmp_path)
+    fake = _FakeRun(_ok(_claude_wire("판정: 통과")))
+
+    rc = _run_main(
+        pd, monkeypatch,
+        _argv(prompt, tmp_path, out_dir, "--resume-from", TICKET_ID, "--ticket", other),
+        fake)
+
+    assert rc == 0
+    latest = max(_rows(ledger_path), key=lambda row: row["started_at"])
+    assert latest["ticket"] == other
+
+
+def test_record_id_selector_resume_also_inherits_the_ticket(pd, monkeypatch, tmp_path):
+    """레코드 id 로 재개해도 그 레코드의 티켓을 계승한다 (지시자 형태와 무관한 규칙)."""
+    out_dir, ledger_path, record_id = _resume_fixture(pd, tmp_path)
+    prompt = _write_prompt(tmp_path)
+    fake = _FakeRun(_ok(_claude_wire("판정: 통과")))
+
+    rc = _run_main(pd, monkeypatch,
+                   _argv(prompt, tmp_path, out_dir, "--resume-from", record_id), fake)
+
+    assert rc == 0
+    latest = max(_rows(ledger_path), key=lambda row: row["started_at"])
+    assert latest["ticket"] == TICKET_ID
+
+
+# ── write 역할 재개 불일치 fail-loud (T-0601 ⑪) ──────────────────────────────
+# 불일치 실행도 **쓰기 권한**으로 돌았으므로 이미 트리를 고쳤을 수 있다. 그 위에 같은 지시를
+# fresh 로 한 번 더 태우면 같은 편집이 두 번 적용되거나(중복) 반쯤 고친 트리에 다른 판단이
+# 얹힌다(충돌). read 계열은 트리를 안 만지므로 현행 재실행을 유지한다.
+
+
+def _write_role_fixture(pd, tmp_path, role: str):
+    """write 역할 레코드로 재개 픽스처를 세운다(role 은 후보 선택 키다)."""
+    out_dir = tmp_path / "raw"
+    out_dir.mkdir()
+    ledger_path = out_dir / "raw_outputs.json"
+    relay = pd._load_relay()
+    record_id = relay.start_raw_record(
+        ledger_path, surface="delegate", harness="claude", model="opus",
+        role=role, raw_path=out_dir / "seed_raw.txt", attempt="primary",
+        now=datetime.datetime(2026, 8, 8, 9, 0, tzinfo=datetime.timezone.utc),
+        extra={"ticket": TICKET_ID, "base_rev": "cafebabe"},
+    )
+    relay.finish_raw_record(
+        ledger_path, record_id, rc=0, elapsed_sec=1.0, silence_sec=None,
+        now=datetime.datetime(2026, 8, 8, 9, 1, tzinfo=datetime.timezone.utc),
+        extra={"session_id": SESSION_ID, "must_fix_items": ["직전 지적 A"]},
+    )
+    return out_dir, ledger_path
+
+
+@pytest.mark.parametrize("role", sorted({"developer", "architect"}))
+def test_write_role_resume_mismatch_fails_loud(pd, monkeypatch, tmp_path, capsys, role):
+    """write 역할 불일치 → rc 1 · fresh 재실행 0 · 트리 확인 안내 (중복·충돌 편집 차단)."""
+    assert role in pd.WRITE_ROLES                      # 분류표는 기존 권한축 그대로다
+    out_dir, _ledger_path = _write_role_fixture(pd, tmp_path, role)
+    prompt = _write_prompt(tmp_path, "구현했다.")
+    fake = _FakeRun(_ok(_claude_wire("다른 세션의 답", session_id=OTHER_SESSION_ID)))
+
+    rc = _run_main(
+        pd, monkeypatch,
+        _argv(prompt, tmp_path, out_dir, "--resume-from", TICKET_ID, role=role), fake)
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert len(fake.calls) == 1, f"write 역할인데 fresh 재실행이 일어남: {fake.calls}"
+    assert "세션 재사용 실패" in err and role in err
+    assert "트리를 이미 고쳤을 수 있어" in err and "git status" in err
+    assert "재위임은 명시 재호출만" in err              # 무음 대체 금지 안내(단일 깔때기)
+
+
+@pytest.mark.parametrize("role", sorted({"researcher", "code-reviewer"}))
+def test_read_role_resume_mismatch_still_reruns(pd, monkeypatch, tmp_path, capsys, role):
+    """read 역할은 현행 유지 — 트리를 안 만지므로 fresh + full payload 재실행이 안전하다."""
+    assert role in pd.READ_ROLES
+    out_dir, _ledger_path = _write_role_fixture(pd, tmp_path, role)
+    prompt = _write_prompt(tmp_path, "해소 주장 본문")
+    fake = _FakeRun(
+        _ok(_claude_wire("맥락 없는 답", session_id=OTHER_SESSION_ID)),
+        _ok(_claude_wire("판정: 통과")),
+    )
+
+    rc = _run_main(
+        pd, monkeypatch,
+        _argv(prompt, tmp_path, out_dir, "--resume-from", TICKET_ID, role=role), fake)
+
+    assert rc == 0 and len(fake.calls) == 2
+    assert _PREAMBLE_MARKER in fake.calls[1]["stdin_text"]
+    assert "1회 다시 실행합니다" in capsys.readouterr().err
+
+
+def test_write_role_infrastructure_failure_is_not_the_resume_axis(
+        pd, monkeypatch, tmp_path, capsys):
+    """스폰 실패는 재사용 축의 실패가 아니다 — write 역할도 기존 인프라 경로 그대로다."""
+    out_dir, _ledger_path = _write_role_fixture(pd, tmp_path, "developer")
+    prompt = _write_prompt(tmp_path)
+    fake = _FakeRun({"returncode": 127, "stdout": "",
+                     "stderr": "하네스 claude 실행 불가: not found",
+                     "timed_out": False, pd.RUN_RESULT_LAUNCH_FAILED: True})
+
+    rc = _run_main(
+        pd, monkeypatch,
+        _argv(prompt, tmp_path, out_dir, "--resume-from", TICKET_ID, role="developer"),
+        fake)
+
+    err = capsys.readouterr().err
+    assert rc == 1 and len(fake.calls) == 1
+    assert "트리를 이미 고쳤을 수 있어" not in err        # 재사용 축 안내가 아니다
+    assert "재위임은 명시 재호출만" in err
 
 
 def _fallback_conf() -> dict:

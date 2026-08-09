@@ -804,10 +804,34 @@ def test_ack_rounds_without_gate_is_refused_too(external, monkeypatch, tmp_path,
     assert _ledger(external, tmp_path) == {}
 
 
-def test_confirm_fix_without_gate_warns_and_proceeds(external, monkeypatch, tmp_path, capsys):
-    """`--confirm-fix` 를 --gate 없이 쓰면 경고 후 정상 진행 (장부 대상 아님·--ack-wave 동형)."""
+def test_confirm_fix_without_gate_is_refused_before_sending(
+        external, monkeypatch, tmp_path, capsys):
+    """`--confirm-fix` 를 --gate 없이 쓰면 **전송 전 rc 거부** (T-0601 ⑨ — 경고-만-실행 폐지).
+
+    확인 전용 라운드는 게이트당 1회이고 그 회계를 장부가 소유한다 — 게이트가 없으면 1회 제한을
+    셀 자리가 없어, 경고만 내고 실행하면 상한 밖 전송이 무한히 열린다."""
+    calls = _wire(external, monkeypatch, tmp_path)
+    assert external.main(["--confirm-fix", "--paths", "x.py"]) == 1
+    err = capsys.readouterr().err
+    assert "--gate" in err and "게이트당 1회" in err
+    assert calls["n"] == 0                       # 외부 전송 0(과금 0)
+    assert _ledger(external, tmp_path) == {}     # 장부도 만들지 않는다
+
+
+def test_confirm_fix_without_gate_is_refused_on_the_report_surface_too(
+        external, monkeypatch, tmp_path, capsys):
+    """조회면에서도 무시 경고로 흡수하지 않는다 (`--ack-rounds` 거부와 같은 규율·형상 예외 없음)."""
     _wire(external, monkeypatch, tmp_path)
-    assert external.main(["--confirm-fix", "--paths", "x.py"]) == 0
+    assert external.main(["--rounds-report", "--confirm-fix"]) == 1
+    err = capsys.readouterr().err
+    assert "--gate" in err and "무시" not in err
+
+
+def test_ack_wave_without_gate_still_warns_and_proceeds(
+        external, monkeypatch, tmp_path, capsys):
+    """`--ack-wave` 는 종전대로 경고 후 진행 — 리셋할 게이트 장부가 없을 뿐 실행은 정상이다."""
+    _wire(external, monkeypatch, tmp_path)
+    assert external.main(["--ack-wave", "--paths", "x.py"]) == 0
     assert "--gate 와 함께" in capsys.readouterr().err
     assert _ledger(external, tmp_path) == {}
 

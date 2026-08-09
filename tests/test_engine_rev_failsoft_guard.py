@@ -890,7 +890,10 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 172 = 169 + T-0600 사본 장부 병기의 세 경계(pm_delegate 형제 로더 + 사본 판정 + 사본 미마감
     #   조회). 병기는 가시성 보조라 부재·손상을 사유 1줄로 접지만, 판정을 빌려 오는 대상이 형제
     #   엔진 사본이므로 마킹된 skew 는 같은 규칙으로 그대로 올린다.
-    assert len(report.boundaries) == 172, "propagation sweep boundary ratchet changed"
+    # 173 = 172 + T-0601 DoD preflight 의 한 경계. 완료 부기가 board 의 DoD 판정을 형제 로드해
+    #   **log 스켈레톤 append 앞에서** 한 번 더 묻되, 티켓 부재/손상은 preflight 를 조용히 끄고
+    #   (권위 있는 게이트가 뒤에 있다) 마킹된 skew 는 그대로 올린다.
+    assert len(report.boundaries) == 173, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
