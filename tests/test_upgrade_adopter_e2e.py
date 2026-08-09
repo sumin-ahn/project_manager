@@ -645,9 +645,11 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   경계도 불변이다: 이 fixture 채택자는 codex 단독이라 훅 세트 판정이 항상 빈 결과고(게이트
 #   미발화·출력 0줄), apply 분기도 등재 파일이 `.codex/pm_orch_codex.py` 뿐이라 이 fixture 의
 #   변경 목록에 들지 않는다. 뒤이은 수렴 라운드가 더한 경로 스코프 반쪽 갱신 가드
-#   (`refuse_partial_hook_set_scope`)도 `--paths` 전용이라 이 fixture(스코프 없음)에서 비발화다 —
-#   현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "cb42ad5562f04e5403869106d6baab26c261422c39d4841bb4476e84a43b94b7"
+#   (`refuse_partial_hook_set_scope`)도 `--paths` 전용이라 이 fixture(스코프 없음)에서 비발화다.
+#   T-0610 이 세대 선언 해소를 단일 지점(`resolve_hook_set_generation`)으로 통일했으나 그 역시
+#   같은 두 소비자(원자 write 판정자·훅 세대 채널)만 태우고, 이 fixture 채택자는 codex 단독이라
+#   판정이 여전히 빈 결과다 — 현재화한 것은 기대 SHA 하나뿐이다.
+_T0585_PM_UPDATE_SHA256 = "2506c37b14627af41e9a1c288cfc7590c48d9485a0e87ef5fd36282056b25bee"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).

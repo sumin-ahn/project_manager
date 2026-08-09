@@ -80,7 +80,8 @@ def pm_config():
     return _load("pm_config", "pm_config.py")
 
 
-def _settings(*, git_anchor: bool, wrapper_rel: str = _WRAPPER_REL) -> str:
+def _settings(*, git_anchor: bool, wrapper_rel: str = _WRAPPER_REL,
+              flag: str = _GIT_ANCHOR_FLAG) -> str:
     """claude settings.json — PreToolUse 훅 2건(공통 넛지 + 선택적 git-anchor Bash 매처)."""
     groups = [{
         "matcher": "*",
@@ -92,23 +93,41 @@ def _settings(*, git_anchor: bool, wrapper_rel: str = _WRAPPER_REL) -> str:
         groups.append({
             "matcher": "Bash",
             "hooks": [{"type": "command",
-                       "command": ("${CLAUDE_PROJECT_DIR}/" + wrapper_rel
-                                   + f" {_GIT_ANCHOR_FLAG}"),
+                       "command": ("${CLAUDE_PROJECT_DIR}/" + wrapper_rel + f" {flag}"),
                        "timeout": 15}],
         })
     return json.dumps({"hooks": {"PreToolUse": groups}},
                       ensure_ascii=False, indent=2) + "\n"
 
 
+_UPSTREAM_PM_IMPORT_REL = ".project_manager/tools/pm_import.py"
+
+
+def _plant_upstream_pm_import(source: Path, *, extra_tail: str = "") -> Path:
+    """상류 트리에 pm_import 사본을 놓는다 — 게이트가 **상류 세대 선언**을 읽는 전제.
+
+    실 파일을 그대로 복사해야 "상류 세대 == 현행 선언" 이라는 기본 형상이 되고(게이트 통과),
+    `extra_tail` 로 선언을 덧붙이면 **상류만 아는 세대**가 된다(설치본은 모르는 묶음/경로)."""
+    target = source / _UPSTREAM_PM_IMPORT_REL
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        (TOOLS / "pm_import.py").read_text(encoding="utf-8") + extra_tail,
+        encoding="utf-8")
+    return target
+
+
 def _make_case(tmp_path: Path, *, dest_settings: str, dest_wrapper: str | None,
                dest_driver: str | None, template_settings: str | None = None,
                template_wrapper: str = _WRAPPER_NEW,
                template_driver: str = _DRIVER_NEW,
-               ledger: dict | None = None) -> tuple[Path, Path]:
+               ledger: dict | None = None,
+               upstream_tail: str | None = "") -> tuple[Path, Path]:
     """(dest, source) — claude 채택자 + 합성 프레임워크.
 
     `dest_wrapper`/`dest_driver` 를 None 으로 주면 그 파일이 **설치되지 않은** 형상이다.
-    `ledger` 는 어댑터 원장(설치 시점 해시) — `edited` 판정을 만들려면 dest 와 다른 해시를 준다."""
+    `ledger` 는 어댑터 원장(설치 시점 해시) — `edited` 판정을 만들려면 dest 와 다른 해시를 준다.
+    `upstream_tail` 은 상류 pm_import 사본에 덧붙일 선언(None 이면 사본 자체를 놓지 않는다 —
+    상류 세대 미해소 형상)."""
     source = tmp_path / "framework"
     template = source / "templates" / "claude_code"
     (template / ".claude").mkdir(parents=True)
@@ -117,6 +136,8 @@ def _make_case(tmp_path: Path, *, dest_settings: str, dest_wrapper: str | None,
         encoding="utf-8")
     (template / _WRAPPER_REL).write_text(template_wrapper, encoding="utf-8")
     (template / _DRIVER_REL).write_text(template_driver, encoding="utf-8")
+    if upstream_tail is not None:
+        _plant_upstream_pm_import(source, extra_tail=upstream_tail)
 
     dest = tmp_path / "adopter"
     (dest / ".claude").mkdir(parents=True)
@@ -462,24 +483,26 @@ def test_apply_writes_hook_set_atomically_and_others_in_place(pm_update, tmp_pat
 
 
 _NEXT_GENERATION_HOOK_REL = ".claude/next_generation_hook.sh"
-# 다음 세대 pm_import 가 들고 오는 선언 — 판정자 자신이 pm_import 안에 살기 때문에, dest 사본의
+# 다음 세대 pm_import 가 들고 오는 선언 — 선언 자신이 pm_import 안에 살기 때문에, dest 사본의
 # 선언은 업그레이드 시점에 정의상 한 세대 뒤다.
-_SOURCE_PM_IMPORT = (
-    "def is_live_hook_set_path(relpath):\n"
-    f"    return str(relpath) == {_NEXT_GENERATION_HOOK_REL!r}\n"
+_UPSTREAM_ADDS_HOOK_PATH = (
+    "\n"
+    'ADAPTER_HOOK_SET["claude"] = ADAPTER_HOOK_SET["claude"]._replace(\n'
+    "    live_files=ADAPTER_HOOK_SET['claude'].live_files + "
+    f"({_NEXT_GENERATION_HOOK_REL!r},),\n"
+    ")\n"
 )
 
 
 def test_apply_uses_source_generation_declaration_not_the_installed_one(
         pm_update, tmp_path, monkeypatch):
-    """이번 세대가 **새로 추가한** 훅 경로도 같은 실행에서 원자 교체된다(구세대 판정자 폐쇄).
+    """이번 세대가 **새로 추가한** 훅 경로도 같은 실행에서 원자 교체된다(구세대 선언 폐쇄).
 
-    판정자를 dest 사본에서 읽으면 원자 write 가 영영 한 세대 늦게 도착한다 — pm_import 자체를
+    선언을 dest 사본에서 읽으면 원자 write 가 영영 한 세대 늦게 도착한다 — pm_import 자체를
     갱신하는 바로 그 실행에서, 새 세대가 등재한 훅 파일이 copy2 로 떨어진다."""
     source = tmp_path / "framework"
-    (source / ".project_manager" / "tools").mkdir(parents=True)
-    (source / ".project_manager" / "tools" / "pm_import.py").write_text(
-        _SOURCE_PM_IMPORT, encoding="utf-8")
+    source.mkdir()
+    _plant_upstream_pm_import(source, extra_tail=_UPSTREAM_ADDS_HOOK_PATH)
     dest = tmp_path / "adopter"
     (dest / ".claude").mkdir(parents=True)
     hook_dst = dest / _NEXT_GENERATION_HOOK_REL
@@ -1008,6 +1031,406 @@ def test_accept_all_prints_targets_before_touching_them(pm_config, pm_import,
     assert rc == 0, out
     assert out.index("# 세트 수용 대상 1건") < out.index("✓ 어댑터 config 수용"), out
     assert f"  - {_SETTINGS_REL} · claude · " in out, out
+
+
+# ── 세대 선언 소비자 상류-통일 (T-0610) ──────────────────────────────────────
+# 선언 자체가 pm_import 안에 살기 때문에 설치본 선언은 업그레이드 시점에 정의상 한 세대 뒤다.
+# 게이트가 그 선언으로 판정하면 **상류가 이번에 들여오는 것**을 모른 채 통과한다.
+
+_UPSTREAM_ONLY_FLAG = "--upstream-only-hook"
+_UPSTREAM_ADDS_FLAG = (
+    "\n"
+    'ADAPTER_HOOK_SET["claude"] = ADAPTER_HOOK_SET["claude"]._replace(\n'
+    "    flag_support=dict(ADAPTER_HOOK_SET['claude'].flag_support, **{\n"
+    f"        {_UPSTREAM_ONLY_FLAG!r}: ({_WRAPPER_REL!r}, {_DRIVER_REL!r})}}),\n"
+    ")\n"
+)
+_UPSTREAM_ONLY_GROUP = (".claude/alpha_hook.sh", ".claude/alpha_core.py")
+_UPSTREAM_ADDS_GROUP = (
+    "\n"
+    'ADAPTER_HOOK_SET["claude"] = ADAPTER_HOOK_SET["claude"]._replace(\n'
+    "    live_files=ADAPTER_HOOK_SET['claude'].live_files + "
+    f"{_UPSTREAM_ONLY_GROUP!r},\n"
+    "    coupled_groups=ADAPTER_HOOK_SET['claude'].coupled_groups + "
+    f"({_UPSTREAM_ONLY_GROUP!r},),\n"
+    ")\n"
+)
+
+
+def test_accept_gate_judges_with_upstream_generation_not_installed(
+        pm_config, pm_import, tmp_path, capsys):
+    """상류만 아는 플래그를 요구하는 config 는 수용이 거부된다 — 게이트는 상류 세대로 판정한다.
+
+    설치본 선언은 그 플래그를 모르므로 "선언 밖 플래그" 로 접어 게이트가 통과시킨다(있으나 마나).
+    미지원 드라이버 위에 새 config 를 앉히는 게 정확히 이 게이트가 막는 락아웃이다."""
+    dest, source = _make_case(
+        tmp_path, dest_settings=_settings(git_anchor=False),
+        dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,  # 신 세대지만 새 플래그는 모름.
+        template_settings=_settings(git_anchor=True, flag=_UPSTREAM_ONLY_FLAG),
+        upstream_tail=_UPSTREAM_ADDS_FLAG)
+    before = (dest / _SETTINGS_REL).read_text(encoding="utf-8")
+
+    installed_only = pm_import.hook_set_accept_decision(
+        dest, source, _SETTINGS_REL,
+        declarations=pm_import.hook_set_declarations(None))
+    rc = pm_config.cmd_sync_adapter_config(
+        _accept_args(source, accept=_SETTINGS_REL), pm_import=pm_import, dest_root=dest)
+
+    assert installed_only.blockers == [], \
+        "픽스처 전제 붕괴 — 설치본 선언이 이미 그 플래그를 안다(상류 축이 무의미)"
+    assert rc == 1
+    assert (dest / _SETTINGS_REL).read_text(encoding="utf-8") == before, \
+        "상류만 아는 세대 요구를 못 보고 config 를 앞세웠다"
+    err = capsys.readouterr().err
+    assert "수용 거부" in err and _UPSTREAM_ONLY_FLAG in err, err
+
+
+def test_accept_gate_binds_checked_template_bytes_to_the_copy(pm_import, tmp_path):
+    """게이트가 검사한 template bytes 와 실제 복사 bytes 가 다르면 수용이 중단된다.
+
+    판정↔쓰기 사이에 상류가 바뀌면 "검사한 세대" 와 다른 내용이 설치된다 — dest 동시 편집을 막는
+    `expected_sha256` 의 반대편 축이다."""
+    dest, source = _make_case(
+        tmp_path, dest_settings=_settings(git_anchor=False),
+        dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
+        template_settings=_settings(git_anchor=True))
+    decision = pm_import.hook_set_accept_decision(
+        dest, source, _SETTINGS_REL,
+        declarations=pm_import.hook_set_declarations(source, required=True))
+    assert decision.blockers == [] and decision.template_sha256, decision
+    before = (dest / _SETTINGS_REL).read_text(encoding="utf-8")
+    # 판정 뒤 상류가 바뀐다(다른 세대의 config 가 그 자리에 놓임).
+    (source / "templates" / "claude_code" / _SETTINGS_REL).write_text(
+        _settings(git_anchor=True, flag=_UPSTREAM_ONLY_FLAG), encoding="utf-8")
+
+    outcome = pm_import.accept_adapter_config(
+        dest, source, _SETTINGS_REL,
+        expected_template_sha256=decision.template_sha256)
+
+    assert outcome.status == "raced", outcome
+    assert "상류 template" in outcome.detail, outcome.detail
+    assert (dest / _SETTINGS_REL).read_text(encoding="utf-8") == before, \
+        "검사하지 않은 bytes 가 설치됐다"
+
+
+def test_accept_gate_is_fail_closed_when_upstream_generation_is_unreadable(
+        pm_config, pm_import, tmp_path, capsys):
+    """상류 세대를 못 읽으면 수용을 거부한다 — mutation 게이트는 모르면 멈춘다(fail-closed)."""
+    dest, source = _make_case(
+        tmp_path, dest_settings=_settings(git_anchor=False),
+        dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
+        template_settings=_settings(git_anchor=True),
+        upstream_tail=None)  # 상류 트리에 pm_import 없음.
+    before = (dest / _SETTINGS_REL).read_text(encoding="utf-8")
+
+    rc = pm_config.cmd_sync_adapter_config(
+        _accept_args(source, accept=_SETTINGS_REL), pm_import=pm_import, dest_root=dest)
+
+    err = capsys.readouterr().err
+    assert rc == 1, err
+    assert (dest / _SETTINGS_REL).read_text(encoding="utf-8") == before
+    assert "수용 거부" in err and "상류 세대 선언" in err, err
+
+
+def test_partial_guard_sees_a_coupled_group_only_upstream_knows(
+        pm_update, pm_import, tmp_path, monkeypatch, capsys):
+    """상류만 아는 결합 묶음의 부분 지목도 거부된다 — 가드도 상류 세대로 판정한다.
+
+    새 묶음을 들여오는 **첫 전파**가 정확히 반쪽 갱신이 나는 자리다(설치본 선언은 그 묶음이 없다)."""
+    alpha, beta = _UPSTREAM_ONLY_GROUP
+    dest, source = _make_case(
+        tmp_path, dest_settings=_settings(git_anchor=True),
+        dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
+        upstream_tail=_UPSTREAM_ADDS_GROUP)
+    for rel, text in ((alpha, "# 신 alpha\n"), (beta, "# 신 beta\n")):
+        (source / rel).parent.mkdir(parents=True, exist_ok=True)
+        (source / rel).write_text(text, encoding="utf-8")
+        (dest / rel).write_text("# 구 세대\n", encoding="utf-8")
+    _write_source_manifest(source, [alpha, beta])
+    monkeypatch.setattr(pm_update, "REPO", dest)
+
+    assert pm_import.hook_set_partial_update([alpha], [alpha, beta]) == [], \
+        "픽스처 전제 붕괴 — 설치본 선언이 이미 그 묶음을 안다"
+    rc = pm_update.main(["--from", str(source), "--paths", alpha])
+
+    err = capsys.readouterr().err
+    assert rc == 1, err
+    assert (dest / alpha).read_text(encoding="utf-8") == "# 구 세대\n", \
+        "거부인데 alpha 가 이미 갱신됐다"
+    assert "훅 세트를 반쪽만 갱신한다" in err and beta in err, err
+
+
+def test_accept_gate_binds_the_declaration_snapshot_too(pm_import, tmp_path):
+    """선언 소스(상류 pm_import)가 판정 뒤 바뀌면 중단한다 — template 해시만으로는 못 막는다.
+
+    config template 이 그대로여도 상류가 통째로 갱신되면 **구 선언으로 낸 판정** 위에 새 세대가
+    설치된다. 두 해시는 한 벌의 스냅샷이라 어느 쪽이 변해도 raced 다."""
+    dest, source = _make_case(
+        tmp_path, dest_settings=_settings(git_anchor=False),
+        dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
+        template_settings=_settings(git_anchor=True))
+    decision = pm_import.hook_set_accept_decision(
+        dest, source, _SETTINGS_REL,
+        declarations=pm_import.hook_set_declarations(source, required=True))
+    assert decision.blockers == [] and decision.generation_sha256, decision
+    before = (dest / _SETTINGS_REL).read_text(encoding="utf-8")
+    # config template 은 그대로 두고 **선언 소스만** 새 세대로 바꾼다.
+    _plant_upstream_pm_import(source, extra_tail=_UPSTREAM_ADDS_FLAG)
+
+    outcome = pm_import.accept_adapter_config(
+        dest, source, _SETTINGS_REL,
+        expected_template_sha256=decision.template_sha256,
+        expected_generation_sha256=decision.generation_sha256)
+
+    assert outcome.status == "raced", outcome
+    assert "세대 선언" in outcome.detail, outcome.detail
+    assert (dest / _SETTINGS_REL).read_text(encoding="utf-8") == before
+
+
+def test_accept_gate_blocks_when_snapshot_hash_cannot_be_made(
+        pm_import, tmp_path, monkeypatch):
+    """스냅샷 해시를 못 만들면 수용을 막는다 — 결속이 조용히 생략된 채 진행되면 안 된다.
+
+    호출부는 `is not None` 으로 결속 인자를 붙이므로, 해시 계산 실패는 "검증 없이 교체" 로
+    번역된다. mutation 축은 모르면 멈춘다(구세대 강등의 **의도적** None 과 구분되는 실패성 None)."""
+    dest, source = _make_case(
+        tmp_path, dest_settings=_settings(git_anchor=False),
+        dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
+        template_settings=_settings(git_anchor=True))
+    generation = pm_import.hook_set_declarations(source, required=True)
+    assert pm_import.hook_set_accept_decision(
+        dest, source, _SETTINGS_REL, declarations=generation).blockers == [], \
+        "픽스처 전제(정상 경로는 통과)"
+    monkeypatch.setattr(pm_import, "file_sha256", lambda _path: None)  # 해시 계산 실패 주입.
+
+    decision = pm_import.hook_set_accept_decision(
+        dest, source, _SETTINGS_REL, declarations=generation)
+
+    assert decision.blockers, "해시 부재인데 게이트가 통과시켰다"
+    assert "재확인할 수" in decision.blockers[0].detail, decision.blockers[0].detail
+
+
+def test_accept_downgrades_loudly_on_legacy_sibling_engine(pm_config, pm_import,
+                                                           tmp_path, capsys):
+    """직전 세대 형제 pm_import 에서도 CLI 가 죽지 않는다 — 구 시그니처로 강등하되 loud.
+
+    복구 채널은 사본 세대가 섞인 창을 의도적으로 연다(그게 복구 exemption 의 목적이다). 새 키워드를
+    무조건 넘기면 그 창에서 `--accept` 가 TypeError 로 죽어 복구 자체가 막힌다."""
+    dest, source = _make_case(
+        tmp_path, dest_settings=_settings(git_anchor=False),
+        dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
+        template_settings=_settings(git_anchor=True),
+        ledger={_SETTINGS_REL: _ledger_entry(_settings(git_anchor=False))})
+
+    class LegacyPmImport:
+        """T-0606 이전 세대 — 세대 게이트도, 스냅샷 결속 키워드도 없다."""
+        ADAPTER_CONFIG_REAPPROVAL_NOTE = pm_import.ADAPTER_CONFIG_REAPPROVAL_NOTE
+        resolve_adapter_config_source = staticmethod(
+            pm_import.resolve_adapter_config_source)
+        judge_adapter_configs = staticmethod(pm_import.judge_adapter_configs)
+        unconverged_managed_adapter_configs = staticmethod(
+            pm_import.unconverged_managed_adapter_configs)
+        ADAPTER_CONFIG_REPORT = pm_import.ADAPTER_CONFIG_REPORT
+        ADAPTER_CONFIG_MANAGED = pm_import.ADAPTER_CONFIG_MANAGED
+
+        @staticmethod
+        def accept_adapter_config(dest_root, source_root, relpath, *,
+                                  expected_sha256=None, root_identity=None):
+            return pm_import.accept_adapter_config(
+                dest_root, source_root, relpath, expected_sha256=expected_sha256,
+                root_identity=root_identity)
+
+    rc = pm_config.cmd_sync_adapter_config(
+        _accept_args(source, accept=_SETTINGS_REL),
+        pm_import=LegacyPmImport, dest_root=dest)
+
+    out, err = capsys.readouterr()
+    assert rc == 0, (out, err)  # TypeError 로 죽지 않는다.
+    assert (dest / _SETTINGS_REL).read_text(encoding="utf-8") == _settings(git_anchor=True)
+    assert "구세대라 훅 세트 세대 게이트 없이 진행한다" in err, err
+
+
+def _previous_generation_pm_import(pm_import):
+    """직전 세대 형제 — 신 API(`hook_set_accept_decision`)는 없고 구 blocker 판정만 있는 사본."""
+
+    class PreviousGeneration:
+        ADAPTER_CONFIG_REAPPROVAL_NOTE = pm_import.ADAPTER_CONFIG_REAPPROVAL_NOTE
+        ADAPTER_CONFIG_REPORT = pm_import.ADAPTER_CONFIG_REPORT
+        ADAPTER_CONFIG_MANAGED = pm_import.ADAPTER_CONFIG_MANAGED
+        resolve_adapter_config_source = staticmethod(
+            pm_import.resolve_adapter_config_source)
+        judge_adapter_configs = staticmethod(pm_import.judge_adapter_configs)
+        unconverged_managed_adapter_configs = staticmethod(
+            pm_import.unconverged_managed_adapter_configs)
+
+        @staticmethod
+        def hook_set_accept_blockers(dest_root, source_root, relpath):
+            """구 시그니처 — 설치본 선언으로 판정한 blockers 목록만 낸다(결속 없음)."""
+            return pm_import.hook_set_accept_decision(
+                dest_root, source_root, relpath,
+                declarations=pm_import.hook_set_declarations(None)).blockers
+
+        @staticmethod
+        def accept_adapter_config(dest_root, source_root, relpath, *,
+                                  expected_sha256=None, root_identity=None):
+            return pm_import.accept_adapter_config(
+                dest_root, source_root, relpath, expected_sha256=expected_sha256,
+                root_identity=root_identity)
+
+    return PreviousGeneration
+
+
+def test_previous_generation_sibling_still_enforces_the_order_gate(
+        pm_config, pm_import, tmp_path, capsys):
+    """직전 세대 형제에서도 순서 게이트는 살아 있다 — 강등이 게이트를 끄면 그 창에 락아웃이 설치된다.
+
+    신 API 부재를 "게이트 없음" 으로 접으면, 직전 세대에 실재하는 blocker 판정까지 버리는 셈이다."""
+    dest, source = _make_case(
+        tmp_path, dest_settings=_settings(git_anchor=False),
+        dest_wrapper=_WRAPPER_NEW, dest_driver=None,  # 드라이버 미설치 = 선행조건 미충족.
+        template_settings=_settings(git_anchor=True))
+    before = (dest / _SETTINGS_REL).read_text(encoding="utf-8")
+
+    rc = pm_config.cmd_sync_adapter_config(
+        _accept_args(source, accept=_SETTINGS_REL),
+        pm_import=_previous_generation_pm_import(pm_import), dest_root=dest)
+
+    err = capsys.readouterr().err
+    assert rc == 1, err
+    assert (dest / _SETTINGS_REL).read_text(encoding="utf-8") == before, \
+        "강등 경로가 게이트를 통째로 꺼 미충족 config 를 앞세웠다"
+    assert "수용 거부" in err and _DRIVER_REL in err, err
+    assert "구세대라 상류 세대 선언·수용 스냅샷 결속 없이 진행한다" in err, err
+
+
+def test_previous_generation_sibling_accepts_with_binding_omitted_warning(
+        pm_config, pm_import, tmp_path, capsys):
+    """선행조건이 충족되면 직전 세대에서도 수용은 진행되고, 결속 생략만 경고로 남는다."""
+    dest, source = _make_case(
+        tmp_path, dest_settings=_settings(git_anchor=False),
+        dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
+        template_settings=_settings(git_anchor=True),
+        ledger={_SETTINGS_REL: _ledger_entry(_settings(git_anchor=False))})
+
+    rc = pm_config.cmd_sync_adapter_config(
+        _accept_args(source, accept=_SETTINGS_REL),
+        pm_import=_previous_generation_pm_import(pm_import), dest_root=dest)
+
+    out, err = capsys.readouterr()
+    assert rc == 0, (out, err)
+    assert (dest / _SETTINGS_REL).read_text(encoding="utf-8") == _settings(git_anchor=True)
+    assert "수용 거부" not in err, err
+    assert "결속" in err and "구세대" in err, "결속 생략 사실이 안 보인다"
+
+
+def test_check_downgrades_loudly_on_legacy_sibling_engine(pm_config, pm_import,
+                                                          tmp_path, capsys):
+    """`--check` 도 구세대 형제에서 죽지 않고 강등 사실을 알린다."""
+    dest, source = _make_case(
+        tmp_path, dest_settings=_settings(git_anchor=True),
+        dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW)
+
+    class LegacyJudgePmImport:
+        ADAPTER_CONFIG_REPORT = pm_import.ADAPTER_CONFIG_REPORT
+        ADAPTER_CONFIG_MANAGED = pm_import.ADAPTER_CONFIG_MANAGED
+        resolve_adapter_config_source = staticmethod(
+            pm_import.resolve_adapter_config_source)
+        judge_adapter_configs = staticmethod(pm_import.judge_adapter_configs)
+        unconverged_managed_adapter_configs = staticmethod(
+            pm_import.unconverged_managed_adapter_configs)
+        hook_set_remedy_lines = staticmethod(pm_import.hook_set_remedy_lines)
+
+        @staticmethod
+        def judge_adapter_hook_sets(dest_root, source_root=None, harnesses=None):
+            return pm_import.judge_adapter_hook_sets(dest_root, source_root, harnesses)
+
+    rc = pm_config.cmd_sync_adapter_config(
+        _accept_args(source, check=True), pm_import=LegacyJudgePmImport, dest_root=dest)
+
+    err = capsys.readouterr().err
+    assert rc == 0, err
+    assert "구세대라 훅 세트 상류 선언 없이 진행한다" in err, err
+
+
+def test_partial_guard_refuses_upstream_only_group_when_upstream_is_unreadable(
+        pm_update, pm_import, tmp_path, monkeypatch, capsys):
+    """상류만 아는 묶음 + 상류 미해소 — 로컬 묶음에 없어도 거부한다(fail-closed 계약).
+
+    로컬 membership 으로 좁히면 정확히 이 조합이 빠져나간다: 로컬 선언은 그 묶음을 모르고, 상류
+    선언은 읽을 수 없다. 그래서 판정 단위를 훅이 사는 **네임스페이스**로 올린다."""
+    alpha, beta = _UPSTREAM_ONLY_GROUP
+    dest, source = _make_case(
+        tmp_path, dest_settings=_settings(git_anchor=True),
+        dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
+        upstream_tail=None)  # 상류 pm_import 없음 = 세대 미해소.
+    for rel in (alpha, beta):
+        (source / rel).parent.mkdir(parents=True, exist_ok=True)
+        (source / rel).write_text("# 신 세대\n", encoding="utf-8")
+        (dest / rel).write_text("# 구 세대\n", encoding="utf-8")
+    _write_source_manifest(source, [alpha, beta])
+    monkeypatch.setattr(pm_update, "REPO", dest)
+
+    assert pm_import.hook_set_partial_update([alpha], [alpha, beta]) == [], \
+        "픽스처 전제 붕괴 — 로컬 선언이 그 묶음을 안다(구멍 재현 불가)"
+    rc = pm_update.main(["--from", str(source), "--paths", alpha])
+
+    err = capsys.readouterr().err
+    assert rc == 1, err
+    assert (dest / alpha).read_text(encoding="utf-8") == "# 구 세대\n"
+    assert "어댑터 훅 영역의 부분 전파를 거부한다" in err and alpha in err, err
+
+
+def test_partial_guard_is_fail_closed_when_upstream_generation_is_unreadable(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """상류 세대를 못 읽는데 스코프가 훅 파일을 건드리면 거부한다(검증 불가 = 멈춤)."""
+    dest, source = _make_case(
+        tmp_path, dest_settings=_settings(git_anchor=True),
+        dest_wrapper=_WRAPPER_OLD, dest_driver=_DRIVER_OLD, upstream_tail=None)
+    for rel in (_WRAPPER_REL, _DRIVER_REL):
+        (source / rel).parent.mkdir(parents=True, exist_ok=True)
+        (source / rel).write_text(
+            (source / "templates" / "claude_code" / rel).read_text(encoding="utf-8"),
+            encoding="utf-8")
+    _write_source_manifest(source, [_WRAPPER_REL, _DRIVER_REL])
+    monkeypatch.setattr(pm_update, "REPO", dest)
+
+    rc = pm_update.main(
+        ["--from", str(source), "--paths", _WRAPPER_REL, _DRIVER_REL])
+
+    err = capsys.readouterr().err
+    assert rc == 1, err
+    assert (dest / _WRAPPER_REL).read_text(encoding="utf-8") == _WRAPPER_OLD
+    assert "상류 훅 세트 세대 선언을 확인할 수 없어" in err, err
+
+
+def test_partial_guard_is_loud_when_the_judgment_channel_is_absent(
+        pm_update, monkeypatch, capsys):
+    """판정 채널 자체가 없으면 가드가 꺼진 사실을 알린다 — 무진단 rc0 은 관측 불가다."""
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: None)
+
+    rc = pm_update.refuse_partial_hook_set_scope(
+        [(_WRAPPER_REL, "src", "dst", "M")], [(_WRAPPER_REL, "src", "dst", "M")])
+
+    assert rc == 0, "판정 불가가 전파를 자기잠금하면 안 된다"
+    assert "부분 전파 가드를 건너뛰었다" in capsys.readouterr().err
+
+
+def test_partial_guard_leaves_non_hook_scope_alone_without_upstream(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """훅과 무관한 부분 전파는 상류 세대를 못 읽어도 통과한다 — fail-closed 가 과잉이면 안 된다."""
+    dest, source = _make_case(
+        tmp_path, dest_settings=_settings(git_anchor=True),
+        dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW, upstream_tail=None)
+    engine_rel = ".project_manager/tools/__t0610_sentinel__.py"
+    (source / engine_rel).parent.mkdir(parents=True, exist_ok=True)
+    (source / engine_rel).write_text("# 상류 엔진 파일\n", encoding="utf-8")
+    _write_source_manifest(source, [engine_rel])
+    monkeypatch.setattr(pm_update, "REPO", dest)
+
+    rc = pm_update.main(["--from", str(source), "--paths", engine_rel])
+
+    assert rc == 0, capsys.readouterr()
+    assert (dest / engine_rel).read_text(encoding="utf-8") == "# 상류 엔진 파일\n"
 
 
 def test_accept_all_excludes_unrecorded_because_edits_cannot_be_judged(

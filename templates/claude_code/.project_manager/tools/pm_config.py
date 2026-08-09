@@ -67,6 +67,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import inspect
 import os
 import re
 import shutil
@@ -74,6 +75,7 @@ import subprocess
 import sys
 import unicodedata
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable
 
 _TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
@@ -3285,25 +3287,70 @@ _ADAPTER_ACCEPT_FAILURE_HINT = {
 }
 
 
-def _adapter_accept_order_blocked(pm_import_mod, dest: Path, source_root: Path,
-                                  relpath: str) -> bool:
+def _accepts_kwarg(func, name: str) -> bool:
+    """그 함수가 이 키워드를 받는가 — **엔진 사본 세대 차** 흡수 지점.
+
+    복구 채널·부분 전파 창에서는 형제 pm_import 가 직전 세대일 수 있다(그 창을 열어 두는 게
+    복구 exemption 의 목적이다). 새 키워드를 무조건 넘기면 그 상태에서 CLI 가 TypeError 로
+    죽는다 — 있으면 쓰고 없으면 구 시그니처로 강등하되, 강등은 **loud** 다(무음 강등 금지)."""
+    if func is None:
+        return False
+    try:
+        return name in inspect.signature(func).parameters
+    except (TypeError, ValueError):  # 시그니처를 못 읽는 호출가능 객체 — 보수적으로 구형 취급.
+        return False
+
+
+def _warn_engine_downgrade(what: str, effect: str) -> None:
+    """구형 형제 엔진 때문에 기능을 낮춰 실행한다는 사실을 알린다(관측 불가 금지)."""
+    print(f"[경고] 형제 pm_import 가 구세대라 {what} 없이 진행한다 — {effect}. "
+          "pm-update 로 엔진 사본을 맞춘 뒤 다시 실행하면 정상 판정을 받는다.", file=sys.stderr)
+
+
+def _adapter_accept_decision(pm_import_mod, dest: Path, source_root: Path, relpath: str):
+    """수용 전 세대 판정 — 막을 사유 + 판정에 쓴 template 해시(`None` = 강제할 게이트 부재).
+
+    **mutation 게이트라 상류 세대 선언으로 판정한다**: 설치본 선언은 상류가 이번에 들여오는 새
+    플래그를 모르므로, 그 위에서 config 를 앞세우면 게이트가 있으나 마나다. 상류를 못 읽으면
+    엔진이 fail-closed 로 blocker 를 낸다(모르면 멈춘다).
+
+    형제 사본이 구세대면 **있는 만큼 게이트를 살린다**(강등은 3단이고 각 단은 loud 다):
+      신 API 전부      상류 선언 판정 + 스냅샷 결속.
+      `hook_set_accept_blockers` 만  직전 세대 — 순서 게이트 판정은 그대로 적용하고 결속만 뺀다.
+                       게이트가 실재하는데 통째로 끄면 그 창에서 락아웃을 그대로 설치한다.
+      둘 다 부재       강제할 선언 자체가 없는 세대 — loud 후 게이트 없이 진행(도입 이전 경로)."""
+    decide = getattr(pm_import_mod, "hook_set_accept_decision", None)
+    resolve = getattr(pm_import_mod, "hook_set_declarations", None)
+    if decide is not None and resolve is not None:
+        return decide(dest, source_root, relpath,
+                      declarations=resolve(source_root, required=True))
+    blockers_fn = getattr(pm_import_mod, "hook_set_accept_blockers", None)
+    if blockers_fn is not None:
+        _warn_engine_downgrade(
+            "상류 세대 선언·수용 스냅샷 결속",
+            "직전 세대의 순서 게이트로 판정한다(설치본 선언 기준이라 이번 상류가 새로 들여오는 "
+            "플래그는 못 보고, 판정한 상류 bytes 와 설치 bytes 도 결속되지 않는다)")
+        return SimpleNamespace(
+            blockers=list(blockers_fn(dest, source_root, relpath)),
+            template_sha256=None, generation_sha256=None,
+            generation="로컬", reasons=())
+    _warn_engine_downgrade(
+        "훅 세트 세대 게이트", "미지원 드라이버 위에 config 를 앞세워도 막지 못한다")
+    return None
+
+
+def _adapter_accept_order_blocked(decision, relpath: str) -> bool:
     """엔진 파일 선행 순서를 어기는 수용인가 — 어기면 처방을 내고 True(파일 미변경).
 
     수용은 dest config 를 상류 세대로 **앞세우는** 행위다. 그 세대가 요구하는 래퍼/드라이버가
     dest 에 아직 없으면 훅이 미지원 플래그를 rc2 로 거부하고, 그 rc 는 도구 차단으로 번역된다
     (v1.7.0 흡수 실측 락아웃). 위험 방향은 이쪽 하나뿐이라 "엔진 파일 선행 · config 후행"
-    순서를 여기서 기계가 강제한다 — 단건 `--accept` 와 세트 수용이 같은 게이트를 탄다.
-
-    판정 함수가 없는 구형 엔진 사본이면 게이트를 건너뛴다(강제할 선언 자체가 없는 세대)."""
-    blockers_fn = getattr(pm_import_mod, "hook_set_accept_blockers", None)
-    if blockers_fn is None:
-        return False
-    blockers = blockers_fn(dest, source_root, relpath)
-    if not blockers:
+    순서를 여기서 기계가 강제한다 — 단건 `--accept` 와 세트 수용이 같은 게이트를 탄다."""
+    if decision is None or not decision.blockers:
         return False
     print(f"[중단] 어댑터 config 수용 거부 ({relpath}) — 이 세대가 요구하는 훅 파일이 아직 "
           "dest 에 설치돼 있지 않다(파일을 바꾸지 않았다).", file=sys.stderr)
-    for finding in blockers:
+    for finding in decision.blockers:
         print(f"  - {finding.detail}", file=sys.stderr)
     print("  → pm-update 로 엔진 파일을 먼저 받은 뒤 이 수용을 다시 실행하라 "
           "(엔진 파일 선행 · config 후행).", file=sys.stderr)
@@ -3315,15 +3362,32 @@ def _accept_adapter_config_one(pm_import_mod, dest: Path, source_root: Path,
     """config 한 개 수용 — 선행조건 게이트 → 원자 교체 → rc·안내 (단건·세트 공용 경로).
 
     단건과 세트가 이 함수 하나만 호출하므로 게이트·백업·경쟁 판정·안내가 갈릴 수 없다."""
-    if _adapter_accept_order_blocked(pm_import_mod, dest, source_root, relpath):
+    decision = _adapter_accept_decision(pm_import_mod, dest, source_root, relpath)
+    if _adapter_accept_order_blocked(decision, relpath):
         return 1
     # 수용은 **판정을 먼저 받고** 그 시점 해시를 넘긴다 — 판정과 쓰기 사이에 파일이 바뀌면
-    #   엔진이 raced 로 중단한다(검증 없는 덮어쓰기 0).
+    #   엔진이 raced 로 중단한다(검증 없는 덮어쓰기 0). 축은 둘이다: dest(채택자 동시 편집)와
+    #   **template**(게이트가 검사한 bytes 와 실제 복사할 bytes 의 결속) — 후자가 없으면 상류가
+    #   그 사이 바뀌어도 "검사한 세대" 와 다른 내용이 설치된다.
     judged = next((item for item in judgments if item.relpath == relpath), None)
+    accept = pm_import_mod.accept_adapter_config
+    snapshot = {}
+    if decision is not None:
+        # 스냅샷 결속은 **둘이 한 벌**이다(상류 config bytes + 선언 소스 bytes) — 한쪽만 지원하는
+        #   사본은 없지만, 지원 여부는 각각 확인해 구세대에서 TypeError 로 죽지 않게 한다.
+        for name, value in (("expected_template_sha256", decision.template_sha256),
+                            ("expected_generation_sha256", decision.generation_sha256)):
+            if _accepts_kwarg(accept, name):
+                snapshot[name] = value
+            elif value is not None:
+                _warn_engine_downgrade(
+                    f"수용 스냅샷 결속({name})",
+                    "판정한 상류 내용과 다른 bytes 가 설치돼도 감지하지 못한다")
     try:
-        outcome = pm_import_mod.accept_adapter_config(
+        outcome = accept(
             dest, source_root, relpath,
-            expected_sha256=judged.dest_sha256 if judged is not None else None)
+            expected_sha256=judged.dest_sha256 if judged is not None else None,
+            **snapshot)
     except ValueError as exc:
         print(f"오류: {exc}", file=sys.stderr)
         return 1
@@ -3360,12 +3424,21 @@ _ADAPTER_SET_ACCEPT_EXCLUDED = {
 def _report_hook_set_findings(pm_import_mod, dest: Path, source_root: Path) -> bool:
     """훅 세트 세대 불일치를 stderr 로 내고 하나라도 있으면 True (`--check` 소비·write 0).
 
-    판정·처방은 pm_import 단일 진실을 그대로 쓴다(pm-update 와 같은 문구). 판정 함수가 없는
-    구형 사본이면 조용히 건너뛴다 — 강제할 선언 자체가 없는 세대다."""
+    판정·처방은 pm_import 단일 진실을 그대로 쓴다(pm-update 와 같은 문구). 선언은 **상류 세대**를
+    우선한다(같은 해소 지점) — 조회 성격이라 상류를 못 읽으면 설치본 선언으로 내려간다. 판정 함수가
+    없는 구형 사본이면 조용히 건너뛴다 — 강제할 선언 자체가 없는 세대다."""
     judge = getattr(pm_import_mod, "judge_adapter_hook_sets", None)
     if judge is None:
         return False
-    findings = judge(dest, source_root)
+    resolve = getattr(pm_import_mod, "hook_set_declarations", None)
+    if not _accepts_kwarg(judge, "declarations") or resolve is None:
+        # 구세대 사본 — 판정은 하되(그 세대가 아는 만큼) 상류 선언은 못 태운다.
+        _warn_engine_downgrade(
+            "훅 세트 상류 선언", "이번 상류가 새로 들여오는 플래그·묶음은 판정되지 않는다")
+        findings = judge(dest, source_root)
+    else:
+        generation = resolve(source_root)
+        findings = judge(dest, source_root, declarations=generation.declarations)
     for finding in findings:
         print(f"[중단] 어댑터 훅 세트 세대 불일치({finding.harness}) — {finding.detail}.",
               file=sys.stderr)

@@ -212,6 +212,10 @@ EXEMPT_FROM_STAMP = {
 # 코드 소유·빈 사유 금지라 새 미검증 loader가 자동으로 섞이지 않는다.
 EXEMPT_UNVERIFIED_DEEP_IMPORTS = {
     ("board.py", "_run_lint_hooks"): "채택자 소유 .project_manager/hooks/lint_*.py 확장점",
+    ("pm_import.py", "_upstream_hook_set_declarations"):
+        "훅 세트 세대 선언을 읽으려 **다른 세대**의 상류 pm_import 를 의도적으로 로드한다 — "
+        "rev 대조로 거르면 이 판정의 목적(세대 차 확인) 자체가 불가능해진다. 읽는 것은 선언 "
+        "데이터뿐이고 판정 코드는 실행 중 엔진 것을 쓴다",
 }
 
 _REV_RE = re.compile(r"^v\d+\.\d+\.\d+$")

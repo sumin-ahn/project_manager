@@ -58,6 +58,7 @@ import tempfile
 import warnings
 import zlib
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 _TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
@@ -339,11 +340,11 @@ _ENGINE_REV_SKEW_RECOVERY_REASONS = {
         "동기화가 끝난 뒤의 훅 재설치가 부분 동기 목적지 엔진 때문에 실패해도 "
         "다음 pm-update 재실행 경로를 열어 둔다"
     ),
-    "resolve_hook_set_predicate": (
-        "훅 세트 원자 write 판정자는 상류/형제 pm_import 사본에서 읽는다 — 그 사본의 rev 가 실행 "
-        "중 엔진과 갈리는 것이 업그레이드의 정상 경로이므로, 여기서 skew 를 올리면 엔진이 반쯤 "
-        "적용된 채 죽는다. 해소 실패는 다음 후보로 내려가고 전부 실패하면 copy2 폴백을 loud 로 "
-        "알린다(사본 불일치 자체는 동기 본류의 skew 표면이 진단한다)"
+    "resolve_hook_set_generation": (
+        "훅 세트 세대 선언은 상류/형제 pm_import 사본에서 읽는다 — 그 사본의 rev 가 실행 중 "
+        "엔진과 갈리는 것이 업그레이드의 정상 경로이므로, 여기서 skew 를 올리면 엔진이 반쯤 적용된 "
+        "채 죽는다. 해소 실패는 '미해소' 로 내려가 소비자별 정책(조회=loud 폴백·게이트=fail-closed)이 "
+        "판정한다(사본 불일치 자체는 동기 본류의 skew 표면이 진단한다)"
     ),
 }
 
@@ -1004,55 +1005,59 @@ def _atomic_copy2(source: Path, dest: Path) -> None:
         tmp.unlink(missing_ok=True)
 
 
-def _load_source_pm_import(source_root: Path):
-    """**상류(source) 트리**의 pm_import 를 로드한다 — 이번에 설치되는 세대의 선언을 읽는다.
+def resolve_hook_set_generation(source_root=None, *, required: bool = False):
+    """훅 세트 세대 선언을 해소한다 — pm_update 안 **모든 소비자의 단일 진입**.
 
-    형제 로더(`_load_pm_import`)는 *실행 중인* 엔진 옆 사본을 읽는데, 업그레이드에서 그 사본은
-    정의상 한 세대 뒤다. 훅 세트 선언 자체가 pm_import 안에 있으므로 그 구세대 선언을 쓰면
-    **이번 세대가 새로 추가한 훅 경로**가 같은 실행에서 copy2 로 떨어진다(원자 write 가 항상 한
-    세대 늦게 도착). 부재/로드 실패는 None — 호출부가 로컬 세대로 폴백한다."""
-    path = Path(source_root) / ".project_manager" / "tools" / "pm_import.py"
-    if not path.is_file():
-        return None
-    return _load_module_from_path(
-        path, "pm_import.py", allow_unverified=True,
-        cache=True, cache_key=f"_pm_update_source_pm_import:{os.path.realpath(path)}",
-    )
+    해소 규칙 자체는 pm_import 소유(`hook_set_declarations`)다: 상류 우선, 조회는 로컬 폴백,
+    mutation 게이트는 fail-closed. 여기서는 형제 로드 실패를 흡수해 그 규칙에 태우기만 한다 —
+    사본이 구형/손상이어도 동기 자체는 계속돼야 한다(등록된 복구 경계).
+
+    반환은 pm_import 의 `HookSetGeneration`(declarations·origin·reasons) 형상이고, declarations 가
+    None 이면 판정 근거가 없다는 뜻이다(게이트는 멈추고, 조회는 loud 후 무판정)."""
+    try:
+        pm_import = _load_pm_import()
+        resolver = getattr(pm_import, "hook_set_declarations", None) if pm_import else None
+        if resolver is not None:
+            return resolver(source_root, required=required)
+        reason = "형제 pm_import 에 세대 선언 해소 지점 부재(구세대 사본)"
+    except Exception as exc:  # noqa: BLE001 — 구형/손상 사본에서도 동기는 계속된다.
+        # marked skew 도 여기서는 의도적으로 흡수한다(등록된 복구 경계) — apply 도중
+        #   형제 사본이 갈리는 건 업그레이드의 정상 경로다.
+        _absorb_engine_rev_skew_for_recovery(exc, "resolve_hook_set_generation")
+        reason = f"형제 pm_import 로드 실패({type(exc).__name__}: {exc})"
+    return SimpleNamespace(declarations=None, origin="미해소", reasons=(reason,))
 
 
 def resolve_hook_set_predicate(source_root=None):
-    """훅 세트 판정자 1개를 해소한다 — **상류 세대 우선**, 실패하면 로컬 세대, 최후엔 loud False.
+    """훅 세트 원자-write 판정자 — 위 단일 진입이 준 **상류 세대 선언**으로 만든다.
 
     선언은 pm_import 단일 진실이다(여기 사본을 두면 "검사는 하는데 원자 write 는 안 하는" 파일이
     조용히 생긴다). 해소는 실행당 1회이고 결과를 `apply` 에 넘긴다 — 파일마다 부르면 사본 수만큼
     모듈을 다시 로드한다(`_load_pm_import` 는 캐시 없음).
 
-    전부 실패하면 훅 파일이 통째로 비원자 copy2 로 떨어지므로 **조용히 넘어가지 않는다** —
-    torn read 창이 다시 열린 사실을 stderr 한 줄로 남긴다(무진단 침묵 금지)."""
-    attempts = []
-    if source_root is not None:
-        attempts.append(("상류", lambda: _load_source_pm_import(Path(source_root))))
-    attempts.append(("로컬", _load_pm_import))
-    reasons = []
-    for origin, loader in attempts:
-        try:
-            module = loader()
-        except Exception as exc:  # noqa: BLE001 — 구형/손상 사본에서도 동기는 계속된다.
-            # marked skew 도 여기서는 의도적으로 흡수한다(등록된 복구 경계) — apply 도중
-            #   형제 사본이 갈리는 건 업그레이드의 정상 경로다.
-            _absorb_engine_rev_skew_for_recovery(exc, "resolve_hook_set_predicate")
-            reasons.append(f"{origin}: {type(exc).__name__}: {exc}")
-            continue
-        predicate = getattr(module, "is_live_hook_set_path", None) if module else None
-        if predicate is not None:
-            return lambda rel, _p=predicate: bool(_p(str(rel).replace("\\", "/")))
-        reasons.append(f"{origin}: 선언 부재(pm_import 미해소 또는 구세대)")
-    print(
-        "[경고] 훅 세트 원자 write 판정자를 해소하지 못했다 — 이번 동기는 훅 파일도 일반 복사로 "
-        f"쓴다(실행 중 하네스가 부분 파일을 읽을 창이 열린다). {' / '.join(reasons)}",
-        file=sys.stderr,
-    )
-    return lambda _rel: False
+    조회 성격이라 로컬 폴백까지 관대하되, **전부 실패하면** 훅 파일이 통째로 비원자 copy2 로
+    떨어지므로 조용히 넘어가지 않는다 — torn read 창이 다시 열린 사실을 stderr 한 줄로 남긴다."""
+    generation = resolve_hook_set_generation(source_root)
+    declarations = getattr(generation, "declarations", None)
+    reasons = " / ".join(getattr(generation, "reasons", ())) or "사유 미상"
+    if declarations is None:
+        print(
+            "[경고] 훅 세트 원자 write 판정자를 해소하지 못했다 — 이번 동기는 훅 파일도 일반 복사로 "
+            f"쓴다(실행 중 하네스가 부분 파일을 읽을 창이 열린다). {reasons}",
+            file=sys.stderr,
+        )
+        return lambda _rel: False
+    if source_root is not None and getattr(generation, "reasons", ()):
+        # 상류를 주고도 그 선언을 못 읽어 **설치본 세대로 강등**됐다 — 이번에 새로 등재되는 훅
+        #   경로는 이 판정자가 모르므로 그 파일만 비원자 복사로 떨어진다. 조용히 넘기지 않는다.
+        print(
+            "[경고] 상류 훅 세트 선언을 읽지 못해 설치본 세대로 판정한다 — 이번 상류가 새로 "
+            f"등재하는 훅 파일은 원자 교체 대상에서 빠진다. {reasons}",
+            file=sys.stderr,
+        )
+    pm_import = _load_pm_import()
+    return lambda rel, _t=declarations: bool(
+        pm_import.is_live_hook_set_path(str(rel).replace("\\", "/"), _t))
 
 
 def central_loader_needs_recovery(dest_root: Path) -> bool:
@@ -4801,7 +4806,12 @@ def check_adapter_hook_sets(dest_root: Path, source_root: Path) -> dict:
         pm_import = _load_pm_import()
         if pm_import is None:
             return {**result, "status": "unavailable", "reason": "pm_import 로드 실패"}
-        findings = pm_import.judge_adapter_hook_sets(dest_root, source_root)
+        # 판정 선언은 **상류 세대**를 우선한다 — 상류가 이번에 들여오는 새 플래그를 설치본 선언은
+        #   모르므로, 그 세대로 보면 요구를 "선언 밖 플래그" 로 접어 green 이 된다. 조회 성격이라
+        #   상류를 못 읽으면 로컬 선언으로 내려간다(판정을 통째로 잃지 않는다).
+        generation = resolve_hook_set_generation(source_root)
+        findings = pm_import.judge_adapter_hook_sets(
+            dest_root, source_root, declarations=generation.declarations)
         remedy_lines = pm_import.hook_set_remedy_lines
     except Exception as exc:  # noqa: BLE001 — 판정 실패가 동기를 무효화하지 않는다.
         if _is_engine_rev_skew(exc):
@@ -4822,7 +4832,8 @@ def _change_dest_paths(changes) -> list[str]:
     return [str(change[0]).replace("\\", "/").strip("/") for change in changes]
 
 
-def refuse_partial_hook_set_scope(scoped_changes, planned_changes) -> int:
+def refuse_partial_hook_set_scope(scoped_changes, planned_changes,
+                                  source_root=None) -> int:
     """경로 스코프가 결합 묶음을 반쪽만 갱신하면 **쓰기 전에** 거부한다 (rc 1·정상이면 0).
 
     `--paths` 는 어댑터 채널을 끄므로(요청 밖 write 0) 세대 검사가 전무하다 — 래퍼만 옮기고
@@ -4836,17 +4847,53 @@ def refuse_partial_hook_set_scope(scoped_changes, planned_changes) -> int:
     dest 좌표(`.claude/…`) 선언과 교집합 0 이 되어 검사가 통째로 무발화한다. 계획을 입력으로 삼으면
     좌표 표기 전반이 한 번에 닫히고, **이미 최신인 형제**는 `planned` 에 없어 거짓 거부도 없다.
 
+    결합 묶음 선언은 **상류 세대**를 쓴다 — 상류가 이번에 들여오는 새 묶음을 설치본 선언은 모르고,
+    그 첫 전파가 정확히 반쪽 갱신이 나는 자리다. 상류를 못 읽으면 설치본 선언으로 한 번 더 보되,
+    **어댑터 훅 네임스페이스 하위를 건드리는 스코프는 통째로 거부**한다 — 그 세대의 결합을 검증할
+    방법이 없고, 로컬 묶음 membership 으로 좁히면 "상류만 아는 묶음" 이 정확히 그 틈으로 빠진다
+    (탈출구는 스코프 없는 전량 pm-update). 훅과 무관한 부분 전파는 종전대로 통과한다.
+
     판정 채널을 못 불러오면 가드를 끄되 조용히 넘어가지 않는다(무진단 침묵 금지)."""
+    updated = _change_dest_paths(scoped_changes)
+    unverified: tuple[str, ...] = ()
     try:
         pm_import = _load_pm_import()
-        partial = (pm_import.hook_set_partial_update(
-            _change_dest_paths(scoped_changes), _change_dest_paths(planned_changes))
-            if pm_import is not None else None)
+        generation = resolve_hook_set_generation(source_root, required=True)
+        if pm_import is None:
+            partial = None
+            print("[경고] 훅 세트 부분 전파 가드를 건너뛰었다 — 형제 pm_import 로드 실패(판정 "
+                  "채널 없음). 이 스코프가 훅 세트를 반쪽만 갱신해도 막지 못한다.",
+                  file=sys.stderr)
+        else:
+            if generation.declarations is None:
+                # 조회 폴백(설치본 선언)으로 판정은 계속한다 — 그 세대가 아는 반쪽 갱신은 여전히
+                #   잡는다. 다만 fail-closed 대상은 **로컬 결합 묶음으로 좁히지 않는다**: 상류에만
+                #   있는 묶음은 정의상 로컬이 모르므로, membership 으로 좁히면 지금 닫으려는
+                #   케이스가 그대로 빠져나간다. 훅이 사는 **네임스페이스** 하위를 건드리면 전부
+                #   거부하고, 훅과 무관한 경로는 종전대로 통과시킨다.
+                generation = resolve_hook_set_generation(source_root)
+                namespaces = tuple(
+                    f"{name}/" for name in
+                    pm_import.hook_set_namespaces(generation.declarations))
+                unverified = tuple(
+                    path for path in updated if path.startswith(namespaces))
+            partial = pm_import.hook_set_partial_update(
+                updated, _change_dest_paths(planned_changes),
+                declarations=generation.declarations)
     except Exception as exc:  # noqa: BLE001 — 가드 판정 실패가 복구 전파를 자기잠금하면 안 된다.
         if _is_engine_rev_skew(exc):
             raise
         partial = None
         print(f"[경고] 훅 세트 부분 전파 가드를 건너뛰었다 — {exc}.", file=sys.stderr)
+    if unverified:
+        print(
+            "[중단] 상류 훅 세트 세대 선언을 확인할 수 없어 어댑터 훅 영역의 부분 전파를 거부한다 — "
+            f"이 스코프가 결합 묶음을 반쪽만 갱신하는지 검증할 방법이 없다: {', '.join(unverified)}\n"
+            "  → 스코프 없이 pm-update 를 돌리거나(전량 전파는 이 가드 대상이 아니다) `--from` 이 "
+            "온전한 프레임워크 checkout 인지 확인하라.",
+            file=sys.stderr,
+        )
+        return 1
     if not partial:
         return 0
     for harness, left_behind, required in partial:
@@ -5524,7 +5571,7 @@ def _main(argv: list[str] | None = None) -> int:
         #   입력은 **해소된 계획**이다(원문 스코프 표기 아님) — `--paths` 는 dest 좌표와 `@source`
         #   상류 좌표를 모두 받으므로, 원문을 그대로 비교하면 상류 좌표 요청이 교집합 0 으로 빠져
         #   검사가 통째로 무발화한다(래퍼만 갱신하고 rc0).
-        rc = refuse_partial_hook_set_scope(changes, planned_changes)
+        rc = refuse_partial_hook_set_scope(changes, planned_changes, source_root)
         if rc:
             return rc
 

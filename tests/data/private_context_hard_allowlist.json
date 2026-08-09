@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "count": 389,
+  "count": 393,
   "surface_counts": {
     "markdown": 153,
     "python-non-prose": 16,
-    "python-prose": 220
+    "python-prose": 224
   },
   "entries": [
     {
@@ -429,6 +429,14 @@
       "match": "T-0587",
       "surface": "python-prose",
       "hash": "17bc466fd036a21548319e9d10865f2ad1658e792fcc86455261fdd7cba82cfa",
+      "count": 1
+    },
+    {
+      "path": ".project_manager/tools/pm_import.py",
+      "kind": "work_item",
+      "match": "T-0606",
+      "surface": "python-prose",
+      "hash": "9d4091bfdcd666d3be192f1055083526d3b83641745927f45df043dfbd61ad4f",
       "count": 1
     },
     {
@@ -933,6 +941,14 @@
       "match": "T-0587",
       "surface": "python-prose",
       "hash": "17bc466fd036a21548319e9d10865f2ad1658e792fcc86455261fdd7cba82cfa",
+      "count": 1
+    },
+    {
+      "path": "templates/claude_code/.project_manager/tools/pm_import.py",
+      "kind": "work_item",
+      "match": "T-0606",
+      "surface": "python-prose",
+      "hash": "9d4091bfdcd666d3be192f1055083526d3b83641745927f45df043dfbd61ad4f",
       "count": 1
     },
     {
@@ -1637,6 +1653,14 @@
       "match": "T-0587",
       "surface": "python-prose",
       "hash": "17bc466fd036a21548319e9d10865f2ad1658e792fcc86455261fdd7cba82cfa",
+      "count": 1
+    },
+    {
+      "path": "templates/codex/.project_manager/tools/pm_import.py",
+      "kind": "work_item",
+      "match": "T-0606",
+      "surface": "python-prose",
+      "hash": "9d4091bfdcd666d3be192f1055083526d3b83641745927f45df043dfbd61ad4f",
       "count": 1
     },
     {
@@ -2509,6 +2533,14 @@
       "match": "T-0587",
       "surface": "python-prose",
       "hash": "17bc466fd036a21548319e9d10865f2ad1658e792fcc86455261fdd7cba82cfa",
+      "count": 1
+    },
+    {
+      "path": "templates/opencode/.project_manager/tools/pm_import.py",
+      "kind": "work_item",
+      "match": "T-0606",
+      "surface": "python-prose",
+      "hash": "9d4091bfdcd666d3be192f1055083526d3b83641745927f45df043dfbd61ad4f",
       "count": 1
     },
     {

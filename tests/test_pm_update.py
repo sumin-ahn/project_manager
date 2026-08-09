@@ -1386,11 +1386,19 @@ _OPENCODE_FLAVOR_MANIFEST = (
 
 
 def _make_guest_framework(root: Path) -> Path:
-    """합성 프레임워크 — `templates/{claude_code,opencode}` 최소 manifest + 실 파일."""
+    """합성 프레임워크 — `templates/{claude_code,opencode}` 최소 manifest + 실 파일.
+
+    실 프레임워크와 같이 `tools/pm_import.py` 사본을 둔다 — 훅 세트 세대 선언이 거기 살고,
+    경로 스코프 가드가 상류 세대를 못 읽으면 어댑터 훅 영역 부분 전파를 fail-closed 로 거부한다
+    (T-0610). 상류가 온전한 checkout 이라는 전제를 픽스처가 재현해야 그 가드의 정상 경로를 탄다."""
     for rel, text in _GUEST_FRAMEWORK_FILES.items():
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
+    upstream_pm_import = root / ".project_manager" / "tools" / "pm_import.py"
+    upstream_pm_import.parent.mkdir(parents=True, exist_ok=True)
+    upstream_pm_import.write_text(
+        (TOOLS / "pm_import.py").read_text(encoding="utf-8"), encoding="utf-8")
     (root / ".project_manager" / "engine.manifest").write_text(
         ".project_manager/tools/board.py\n", encoding="utf-8")
     for flavor, text in (("claude_code", _CLAUDE_FLAVOR_MANIFEST),

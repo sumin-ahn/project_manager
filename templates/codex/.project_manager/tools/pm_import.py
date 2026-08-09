@@ -5636,6 +5636,111 @@ class AdapterHookSetFinding(NamedTuple):
     detail: str
 
 
+# ── 세대 선언 해소 — **모든 소비자의 단일 지점** ──────────────────────────────
+# 훅 세트 선언(`ADAPTER_HOOK_SET`)은 pm_import 안에 산다. 그래서 *실행 중인* 엔진 옆 사본은
+# 업그레이드에서 정의상 한 세대 뒤다 — 상류가 새 플래그·새 결합 묶음을 도입하는 **첫 전파**에서
+# 게이트가 그 세대를 모른 채 통과한다(T-0606 라운드에 같은 클래스가 3회 반복 발견). 불변식:
+#
+#   훅 세트 세대 선언의 **게이트 소비자는 항상 상류 세대 선언으로 판정한다.**
+#
+# 소비자(원자 write 판정자·수용 게이트·부분 전파 가드·동기 채널 판정)는 전부 이 함수 하나로
+# 선언을 받는다. 판정 코드는 실행 중 엔진 것을 그대로 쓰고 **선언 데이터만** 상류에서 온다 —
+# 상류 판정 함수를 호출하면 그쪽 버그·시그니처 변화까지 실행 경로에 들어온다.
+HOOK_SET_ORIGIN_UPSTREAM = "상류"
+HOOK_SET_ORIGIN_LOCAL = "로컬"
+HOOK_SET_ORIGIN_UNRESOLVED = "미해소"
+
+
+class HookSetGeneration(NamedTuple):
+    """세대 선언 해소 결과. `declarations` 가 None 이면 판정할 근거가 없다(게이트는 멈춘다).
+
+    `source_sha256` 은 **선언을 읽어 온 파일의 그 시점 bytes 해시**다 — 게이트가 판정에 쓴 세대
+    자체를 쓰기 직전에 재검증하는 결속 축이다(template 해시만 묶으면 "구 선언 판정 + 신 template"
+    조합이 통과한다)."""
+    declarations: dict | None
+    origin: str
+    reasons: tuple[str, ...] = ()
+    source_sha256: str | None = None
+
+
+def _hook_set_declaration_source(source_root) -> Path:
+    """선언을 읽어 오는 파일 — 상류 트리의 pm_import(없으면 실행 중인 이 사본)."""
+    return Path(source_root) / ".project_manager" / "tools" / "pm_import.py"
+
+
+def _upstream_hook_set_declarations(
+        source_root) -> tuple[dict | None, str | None, str | None]:
+    """상류 트리 pm_import 의 선언 테이블 — (테이블, 실패 사유, 그 파일 bytes 해시)."""
+    path = _hook_set_declaration_source(source_root)
+    if not path.is_file():
+        return None, f"상류 pm_import 부재({path})", None
+    # 해시는 **파일 bytes 를 그때그때** 읽어 만든다 — 모듈 캐시를 태우면 상류가 바뀌어도 같은
+    #   값이 나와 결속이 무력해진다.
+    digest = file_sha256(path)
+    if os.path.realpath(path) == os.path.realpath(__file__):
+        # 상류가 실행 중인 바로 그 파일이면 **이 선언이 곧 상류 세대**다 — 같은 파일을 한 번 더
+        #   로드할 이유도, 미해소로 볼 이유도 없다(게이트가 자기 자신 앞에서 멈추는 오작동 방지).
+        return ADAPTER_HOOK_SET, None, digest
+    try:
+        module = _load_module_from_path(
+            path, "pm_import.py", allow_unverified=True, cache=True,
+            cache_key=f"_pm_hook_set_upstream:{os.path.realpath(path)}:{digest}")
+    except Exception as exc:  # noqa: BLE001 — 상류 사본 손상은 사유로 내리고 호출부가 판정한다.
+        return None, f"상류 pm_import 로드 실패({type(exc).__name__}: {exc})", None
+    table = getattr(module, "ADAPTER_HOOK_SET", None)
+    if not isinstance(table, dict) or not table:
+        return None, "상류 pm_import 에 훅 세트 선언 부재(그 세대는 이 개념이 없다)", None
+    return table, None, digest
+
+
+def hook_set_declarations(source_root=None, *, required: bool = False) -> HookSetGeneration:
+    """훅 세트 세대 선언을 해소한다 — 상류 우선, 폴백은 호출부 성격이 정한다.
+
+    `required=False`(조회·보고): 상류를 못 읽으면 로컬 선언으로 내려간다. 판정을 아예 잃는 것보다
+    한 세대 뒤 선언으로라도 보는 편이 낫고, 사유는 `reasons` 로 올라가 호출부가 알린다.
+
+    `required=True`(**mutation 게이트**): 상류를 못 읽으면 로컬로 내려가지 않는다(`declarations`
+    None). 확인되지 않은 세대 위에서 파일을 바꾸는 것이 정확히 이 게이트가 막으려는 상태다 —
+    모르면 멈춘다(fail-closed).
+    """
+    reasons: list[str] = []
+    if source_root is not None:
+        table, reason, digest = _upstream_hook_set_declarations(source_root)
+        if table is not None:
+            return HookSetGeneration(table, HOOK_SET_ORIGIN_UPSTREAM, (), digest)
+        if reason:
+            reasons.append(reason)
+    else:
+        reasons.append("상류 좌표 미지정")
+    if required:
+        return HookSetGeneration(None, HOOK_SET_ORIGIN_UNRESOLVED, tuple(reasons))
+    if ADAPTER_HOOK_SET:
+        return HookSetGeneration(ADAPTER_HOOK_SET, HOOK_SET_ORIGIN_LOCAL, tuple(reasons))
+    return HookSetGeneration(None, HOOK_SET_ORIGIN_UNRESOLVED, tuple(reasons))
+
+
+def hook_set_namespaces(declarations=None) -> tuple[str, ...]:
+    """훅 세트가 사는 **어댑터 네임스페이스 접두** — 선언 데이터에서 파생(하드코딩 0).
+
+    상류 세대를 확인할 수 없을 때 fail-closed 대상을 정하는 축이다. 그 상태에서는 로컬 선언의
+    결합 묶음 membership 으로 좁힐 수 없다 — 상류에만 있는 묶음은 정의상 로컬이 모르므로, 좁히면
+    바로 그 케이스가 빠져나간다. 그래서 판정 단위를 "이 하네스의 훅이 사는 영역" 으로 올린다."""
+    out: set[str] = set()
+    for spec in _hook_set_table(declarations).values():
+        if spec is None:
+            continue
+        for declared in spec.live_files:
+            head = declared.strip("/").split("/", 1)[0]
+            if head:
+                out.add(head)
+    return tuple(sorted(out))
+
+
+def _hook_set_table(declarations) -> dict:
+    """판정이 쓸 선언 테이블 — 미지정이면 이 엔진 선언(조회 기본값·게이트는 명시 전달)."""
+    return ADAPTER_HOOK_SET if declarations is None else declarations
+
+
 def _hook_commands(document) -> list[str]:
     """config document 의 훅 커맨드 전수 — `hooks.<event>[].hooks[].command`.
 
@@ -5816,19 +5921,24 @@ def _hook_set_finding(harness: str, spec: AdapterHookSetSpec, kind: str, subject
 
 
 def judge_adapter_hook_sets(dest_root: Path, source_root: Path | None = None,
-                            harnesses=None) -> list[AdapterHookSetFinding]:
+                            harnesses=None, *,
+                            declarations=None) -> list[AdapterHookSetFinding]:
     """설치된 훅 세트가 채택자 config 가 요구하는 세대인지 판정 (읽기 전용·부작용 0).
 
     pm_update 동기 경로와 `sync-adapter-config` 가 같은 판정을 본다(판정 사본 0). `source_root`
     를 주면 처방까지 분기한다 — 상류 template 이 그 요구를 충족하면 dest 엔진 파일이 뒤처진
     것이고(pm-update 로 자가 수리), 상류도 못 주면 config 가 이 엔진 세대보다 앞선 것이다
-    (채택자 소유라 엔진이 못 덮으므로 `sync-adapter-config --accept` 가 유일 채널)."""
+    (채택자 소유라 엔진이 못 덮으므로 `sync-adapter-config --accept` 가 유일 채널).
+
+    `declarations` 는 세대 선언 테이블이다(`hook_set_declarations`) — 게이트 호출부는 상류
+    세대를 명시로 넘긴다. 미지정이면 이 엔진 선언(설치본)으로 판정한다."""
     dest_root = Path(dest_root)
+    table = _hook_set_table(declarations)
     names = (list(harnesses) if harnesses is not None
              else installed_harnesses(dest_root, source_root))
     out: list[AdapterHookSetFinding] = []
     for harness in names:
-        spec = ADAPTER_HOOK_SET.get(harness)
+        spec = table.get(harness)
         if spec is None or not spec.config_relpath:
             continue
         document = _read_hook_set_config(dest_root / spec.config_relpath)
@@ -5867,25 +5977,80 @@ def hook_set_remedy_lines(finding: AdapterHookSetFinding) -> list[str]:
     return [engine_first, f"그래도 남으면 {accept}"]
 
 
-def hook_set_accept_blockers(dest_root: Path, source_root: Path,
-                             relpath: str) -> list[AdapterHookSetFinding]:
-    """그 config 를 상류 값으로 수용하기 전에 dest 가 먼저 갖춰야 할 훅 파일 미충족분.
+class HookSetAcceptDecision(NamedTuple):
+    """수용 전 세대 판정 결과 — 막는 사유와 **판정에 쓴 template bytes 의 해시**를 함께 낸다.
+
+    blockers          비어 있지 않으면 호출부는 파일을 건드리지 않고 거부한다.
+    template_sha256   판정 시점 template 내용의 해시(없으면 None).
+    generation_sha256 판정에 쓴 **선언 소스**(상류 pm_import) 그 시점 bytes 해시.
+    generation        판정에 쓴 선언의 출처(`HOOK_SET_ORIGIN_*`).
+    reasons           상류 선언을 못 읽었을 때의 사유(호출부가 loud 로 낸다).
+
+    두 해시는 **하나의 스냅샷**이다 — 호출부가 그대로 `accept_adapter_config` 에 넘겨 쓰기 직전에
+    함께 재확인한다. template 만 묶으면 "선언 해소 뒤 상류가 통째로 갱신됐는데 그 config 파일만
+    우연히 같은" 조합이 구 선언 판정으로 통과한다(어느 쪽이 변했든 중단해야 한다).
+    """
+    blockers: list
+    template_sha256: str | None
+    generation: str
+    reasons: tuple[str, ...] = ()
+    generation_sha256: str | None = None
+
+
+def hook_set_accept_decision(dest_root: Path, source_root: Path, relpath: str, *,
+                             declarations=None) -> HookSetAcceptDecision:
+    """그 config 를 상류 값으로 수용해도 되는지 — 순서 게이트 판정 + 판정한 bytes 결속.
 
     판정 대상은 **들어올 config**(상류 template)의 요구다 — 수용은 dest config 를 그 세대로
     앞세우는 행위이므로, 그 세대의 래퍼·드라이버가 dest 에 이미 있어야 한다. 이 검사가 순서
-    (엔진 파일 선행 · config 후행)를 기계가 강제하는 지점이고, 비어 있지 않으면 호출부는 파일을
-    건드리지 않고 거부한다(위험 방향 자체를 막는다).
+    (엔진 파일 선행 · config 후행)를 기계가 강제하는 지점이다.
 
-    조회 판정과 달리 **fail-closed** 다(`unknown_supported=False`) — 읽을 수 없는 훅 파일을
-    "지원함" 으로 넘기면 확인되지 않은 근거로 config 를 앞세우게 되고, 그 상태가 정확히 이
-    게이트가 막으려는 락아웃이다. 조회는 관대해도 되지만 mutation 은 모르면 멈춘다."""
+    두 축이 모두 fail-closed 다:
+      - 읽을 수 없는 훅 파일은 "지원함" 으로 넘기지 않는다(`unknown_supported=False`).
+      - 세대 선언은 **상류**여야 한다(`declarations` 필수) — 설치본 선언은 상류가 이번에 들여오는
+        새 플래그를 모르므로, 그 위에서 config 를 앞세우면 게이트가 있으나 마나다. 상류를 못 읽어
+        `declarations` 가 None 이면 판정 불가를 blocker 로 낸다(모르면 멈춘다).
+    """
     dest_root = Path(dest_root)
     out: list[AdapterHookSetFinding] = []
     if not (dest_root / relpath).is_file():
         # 그 config 가 dest 에 없으면 수용 자체가 성립하지 않는다 — 순서 게이트가 아니라
         #   채널 판정이 낼 오류다(여기서 가로채면 엉뚱한 처방이 나간다).
-        return out
-    for harness, spec in ADAPTER_HOOK_SET.items():
+        return HookSetAcceptDecision([], None, HOOK_SET_ORIGIN_UNRESOLVED, ())
+    generation = (declarations if isinstance(declarations, HookSetGeneration)
+                  else HookSetGeneration(declarations, HOOK_SET_ORIGIN_LOCAL, ()))
+    template_sha256: str | None = None
+    targets = {rel: template for rel, _h, _m, template
+               in adapter_config_targets(dest_root, source_root)}
+    template_path = targets.get(relpath)
+    if template_path is not None:
+        template_sha256 = file_sha256(template_path)
+    if generation.declarations is None:
+        blocker = AdapterHookSetFinding(
+            "-", relpath, HOOK_SET_MISSING_SCRIPT, relpath, (), HOOK_SET_REMEDY_UNKNOWN,
+            f"상류 세대 선언을 읽지 못해 {relpath} 가 요구하는 훅 세대를 검증할 수 없다 "
+            f"({'; '.join(generation.reasons) or '사유 미상'})")
+        return HookSetAcceptDecision(
+            [blocker], template_sha256, generation.origin, generation.reasons,
+            generation.source_sha256)
+    # 스냅샷 해시를 못 만들면 결속이 조용히 생략된다(호출부의 `is not None` 가드) — mutation 축은
+    #   모르면 멈춘다. **판정한 세대를 재확인할 수 없는 상태**를 blocker 로 올린다.
+    #   상류 선언으로 판정한 경로에서만 본다 — 결속을 약속하는 게 그 경로이고, 구세대 강등이
+    #   의도적으로 넘기는 None(설치본 선언 판정)은 계산 실패가 아니라 애초에 결속이 없는 계약이다.
+    unreadable = [] if generation.origin != HOOK_SET_ORIGIN_UPSTREAM else [
+        name for name, value in
+        (("상류 config template", template_sha256),
+         ("상류 세대 선언(pm_import)", generation.source_sha256))
+        if value is None]
+    if unreadable:
+        blocker = AdapterHookSetFinding(
+            "-", relpath, HOOK_SET_MISSING_SCRIPT, relpath, (), HOOK_SET_REMEDY_UNKNOWN,
+            f"{', '.join(unreadable)} 의 해시를 만들지 못해 판정한 스냅샷을 쓰기 직전에 재확인할 "
+            f"수 없다 — 검증 없이 {relpath} 를 교체하지 않는다")
+        return HookSetAcceptDecision(
+            [blocker], template_sha256, generation.origin, generation.reasons,
+            generation.source_sha256)
+    for harness, spec in generation.declarations.items():
         if spec is None or spec.config_relpath != relpath:
             continue
         template_root = _hook_set_template_root(source_root, harness)
@@ -5899,7 +6064,9 @@ def hook_set_accept_blockers(dest_root: Path, source_root: Path,
                                   unknown_supported=False).items()):
             out.append(_hook_set_finding(
                 harness, spec, kind, subject, unmet, HOOK_SET_REMEDY_ENGINE_STALE))
-    return out
+    return HookSetAcceptDecision(
+        out, template_sha256, generation.origin, generation.reasons,
+        generation.source_sha256)
 
 
 def _entry_holds_path(declared: str, path: str) -> bool:
@@ -5914,7 +6081,8 @@ def _entries_hit_by(group: tuple[str, ...], paths: set[str]) -> set[str]:
             if any(_entry_holds_path(declared, path) for path in paths)}
 
 
-def hook_set_partial_update(updated_paths, pending_paths) -> list[tuple[str, tuple, tuple]]:
+def hook_set_partial_update(updated_paths, pending_paths, *,
+                            declarations=None) -> list[tuple[str, tuple, tuple]]:
     """이번 전파가 결합 묶음을 **반쪽만** 갱신하는가 — (harness, 남겨진 항목, 함께 옮길 항목).
 
     경로 스코프 전파(`--paths`)는 어댑터 채널을 끄므로 세대 검사가 전무하다. 그 상태에서 래퍼만
@@ -5926,7 +6094,11 @@ def hook_set_partial_update(updated_paths, pending_paths) -> list[tuple[str, tup
       `updated_paths` 이번 실행이 갱신할 경로 · `pending_paths` 스코프가 없었다면 갱신됐을 경로.
     원문 스코프 표기를 보면 `@source` 상류 좌표 요청이 선언과 교집합 0 으로 빠져 검사가 무발화하고,
     "묶음 전량이 스코프에 있나" 만 보면 **이미 최신인 형제**까지 요구해 거짓 거부가 된다. 그래서
-    조건은 하나다: 이 묶음에서 뭔가 옮기는데(`updated`) **옮겨야 할 것이 남으면**(`pending`) 거부."""
+    조건은 하나다: 이 묶음에서 뭔가 옮기는데(`updated`) **옮겨야 할 것이 남으면**(`pending`) 거부.
+
+    `declarations` 는 세대 선언 테이블이다(`hook_set_declarations`) — 상류가 이번에 들여오는 새
+    결합 묶음은 설치본 선언에 없으므로, 게이트 호출부는 상류 세대를 명시로 넘긴다."""
+    table = _hook_set_table(declarations)
     updated = {str(path).replace("\\", "/").strip("/")
                for path in (updated_paths or []) if str(path).strip()}
     pending = {str(path).replace("\\", "/").strip("/")
@@ -5934,8 +6106,7 @@ def hook_set_partial_update(updated_paths, pending_paths) -> list[tuple[str, tup
     if not updated:
         return []
     out: list[tuple[str, tuple, tuple]] = []
-    for harness in REGISTERED_HARNESSES:
-        spec = ADAPTER_HOOK_SET.get(harness)
+    for harness, spec in table.items():
         if spec is None:
             continue
         for group in spec.coupled_groups:
@@ -5953,22 +6124,41 @@ def hook_set_partial_update(updated_paths, pending_paths) -> list[tuple[str, tup
     return out
 
 
-def live_hook_set_paths() -> tuple[str, ...]:
+def coupled_hook_set_paths(paths, declarations=None) -> tuple[str, ...]:
+    """그 경로들 중 **결합 묶음에 속한** 것 — 상류 세대를 못 읽었을 때 fail-closed 대상 판별.
+
+    결합이 없는 훅 파일(독립 relay 드라이버 등)은 반쪽 갱신이라는 개념 자체가 없으므로, 세대를
+    검증하지 못해도 단건 전파를 막지 않는다(가드 과잉 금지)."""
+    table = _hook_set_table(declarations)
+    out: list[str] = []
+    for path in paths:
+        norm = str(path).replace("\\", "/").strip("/")
+        for spec in table.values():
+            if spec is None:
+                continue
+            if any(_entries_hit_by(group, {norm}) for group in spec.coupled_groups):
+                out.append(norm)
+                break
+    return tuple(out)
+
+
+def live_hook_set_paths(declarations=None) -> tuple[str, ...]:
     """실행 중 하네스가 읽는 훅 세트 파일 전수(하네스 합집합·`/` 끝 = 디렉토리 접두)."""
     out: set[str] = set()
-    for spec in ADAPTER_HOOK_SET.values():
+    for spec in _hook_set_table(declarations).values():
         if spec is not None:
             out.update(spec.live_files)
     return tuple(sorted(out))
 
 
-def is_live_hook_set_path(relpath: str) -> bool:
+def is_live_hook_set_path(relpath: str, declarations=None) -> bool:
     """동기가 그 dest 경로를 **원자 교체**해야 하는가 (하네스가 실행 중 읽는 파일인가).
 
     copy2 는 dest 를 truncate 한 뒤 채우므로 그 창에 하네스가 읽으면 부분 파일을 실행한다.
-    훅 세트만 원자 write 로 올린다 — 전 파일 확대는 이 클래스가 요구하지 않는다."""
+    훅 세트만 원자 write 로 올린다 — 전 파일 확대는 이 클래스가 요구하지 않는다. `declarations`
+    미지정이면 이 엔진 선언(설치본)으로 판정한다(호출부가 상류 세대를 명시로 넘긴다)."""
     text = str(relpath).replace("\\", "/")
-    for declared in live_hook_set_paths():
+    for declared in live_hook_set_paths(declarations):
         if declared.endswith("/"):
             if text.startswith(declared):
                 return True
@@ -6056,6 +6246,8 @@ class AdapterConfigAcceptResult(NamedTuple):
 
 def accept_adapter_config(dest_root: Path, source_root: Path, relpath: str, *,
                           expected_sha256: str | None = None,
+                          expected_template_sha256: str | None = None,
+                          expected_generation_sha256: str | None = None,
                           root_identity: tuple | None = None) -> AdapterConfigAcceptResult:
     """config 한 개를 **백업 후** 현행 template 으로 원자 교체하고 원장 기록까지 확인한다.
 
@@ -6064,6 +6256,10 @@ def accept_adapter_config(dest_root: Path, source_root: Path, relpath: str, *,
       1) 원장 쓰기 가능 여부 선확인 — 기록할 수 없으면 파일을 아예 안 건드린다(갱신해 놓고 판정
          기준을 못 남기면 다음 실행이 영구 보고 모드로 본다).
       2) `expected_sha256` 재검증 — 판정과 쓰기 사이의 동시 편집을 검증 없이 덮지 않는다.
+      2') `expected_template_sha256`·`expected_generation_sha256` 재검증 — **게이트가 검사한 상류
+         스냅샷과 지금 설치할 것을 결속**한다. 세대 게이트는 두 가지를 읽고 판정한다: 상류 config
+         template 내용과 **선언 소스**(상류 pm_import). 둘 중 하나라도 판정 뒤에 바뀌면 "검사한
+         세대" 가 아닌 상태가 설치되므로 중단한다(config 만 묶으면 선언 갱신이 그대로 통과한다).
       3) 중앙 백업(`.pm_import_backups/<날짜>/`) 후 **백업 내용까지** 같은 해시인지 확인 — 덮는
          내용이 백업에 담겼음이 확인된 뒤에만 교체한다.
       4) 같은 디렉토리 임시 파일에 write→flush→fsync→`os.replace` 로 **원자 교체** — 디스크 오류가
@@ -6102,8 +6298,21 @@ def accept_adapter_config(dest_root: Path, source_root: Path, relpath: str, *,
             "raced", relpath, backup, None,
             "백업 시점 내용이 판정 내용과 달랐다(동시 편집) — 덮지 않았다")
 
+    if expected_generation_sha256 is not None:
+        # 선언 소스는 **파일 bytes 를 다시 읽어** 대조한다(모듈 캐시를 태우면 결속이 무력해진다).
+        current_generation = file_sha256(_hook_set_declaration_source(source_root))
+        if current_generation != expected_generation_sha256:
+            return AdapterConfigAcceptResult(
+                "raced", relpath, backup, None,
+                "판정 뒤 상류 세대 선언(pm_import)이 바뀌었다 — 구 선언으로 낸 판정 위에 새 세대를 "
+                "설치하지 않는다. 다시 실행해 새 판정을 받아라")
     payload = template.read_bytes()
     digest = hashlib.sha256(payload).hexdigest()
+    if expected_template_sha256 is not None and digest != expected_template_sha256:
+        return AdapterConfigAcceptResult(
+            "raced", relpath, backup, None,
+            "판정 뒤 상류 template 이 바뀌었다 — 게이트가 검사한 bytes 와 다른 내용을 설치하지 "
+            "않는다. 다시 실행해 새 판정을 받아라")
     if not _atomic_write_dest_bytes(dest_root, Path(relpath), payload,
                                     root_identity=root_identity):
         return AdapterConfigAcceptResult(
