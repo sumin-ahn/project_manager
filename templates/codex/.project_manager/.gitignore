@@ -16,5 +16,9 @@ wiki/pm_state.md
 # local.conf = per-clone 설정 (prefix·session). pm-init 이 생성.
 local.conf
 
+# review_context.local.md = external_review 가 읽는 인스턴스 소유 overlay (외부 리뷰어 프롬프트 보강).
+#   인스턴스마다 내용이 다른 per-clone 파일이라 공유하지 않는다 (T-0608).
+review_context.local.md
+
 # .local/ = per-clone·per-slot 스크래치 (회귀 게이트 플래그·worktree-leases·slots/<repo>_<N>/pm_state.md).
 .local/
