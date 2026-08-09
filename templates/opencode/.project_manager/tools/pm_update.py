@@ -335,6 +335,23 @@ def _is_engine_rev_skew(exc) -> bool:
     return getattr(exc, "_engine_rev_skew", False)
 
 
+# ── 동기 실행 중 사본 rev 혼합 = 정상 과도 상태 ────────────────────────────
+# `apply` 는 per-file 순차 write 라(원자 교체는 파일 단위·트리 단위가 아니다) 실행 중 목적지
+# 트리에는 구/신 `ENGINE_REV` 가 공존한다. 그 사이에 일어나는 **중첩 로드**(pm_update 가 형제
+# pm_import·목적지 pm_config 를 불러오고, 그 형제가 다시 자기 형제를 verifier 로 로드하는 계층)는
+# 이 혼합을 marked skew 로 올린다. 동기 채널은 skew 를 *고치는* 유일한 복구 경로이므로 자기
+# 실행 중 그걸 사유로 죽으면 채택자는 복구 수단을 잃는다(engine_rev.EXEMPT_FROM_STAMP 의
+# `pm_update.py` 면제와 같은 논거 · v1.7.0 흡수 실행에서 실측 1회).
+#
+# **불변식**: 동기 실행 경로의 어떤 중첩 로드도 rev 혼합을 사유로 동기를 중단하지 않는다. 대신
+# 각 경계는 자기 fail-soft 로 내려가고(사유는 아래 장부에 등재), 실행 **종료 시** 한 번
+# 수렴을 검증한다(`_verify_engine_rev_convergence`) — 흡수가 침묵으로 전락하지 않게 하는 짝이다.
+#
+# **범위**: 여기서 흡수하는 것은 pm_update 안의 경계뿐이다. 동기 실행 밖(board.py 등 일반 CLI 의
+# 형제 로드)에서 skew 는 여전히 실결함 신호라 fail-loud 를 유지한다.
+#
+# 이번 실행이 흡수한 경계 목록 — 종료 시 수렴 검증이 소비한다(실행마다 초기화).
+_ABSORBED_ENGINE_REV_SKEW: list[str] = []
 _ENGINE_REV_SKEW_RECOVERY_REASONS = {
     "reinstall_protected_hooks": (
         "동기화가 끝난 뒤의 훅 재설치가 부분 동기 목적지 엔진 때문에 실패해도 "
@@ -346,20 +363,184 @@ _ENGINE_REV_SKEW_RECOVERY_REASONS = {
         "채 죽는다. 해소 실패는 '미해소' 로 내려가 소비자별 정책(조회=loud 폴백·게이트=fail-closed)이 "
         "판정한다(사본 불일치 자체는 동기 본류의 skew 표면이 진단한다)"
     ),
+    "installed_entry_notation_manifests": (
+        "설치 하네스 판별은 형제 pm_import 가 상류 출하물을 열거하려 다시 형제 repo_owned_files 를 "
+        "verifier 로 로드하는 계층이라 **계획 수립 전** 혼합 트리에서 바로 발화한다"
+        "(v1.7.0 흡수 실측 지점) — 표기 context 는 core manifest 만으로도 성립하므로 guest 보탬을 "
+        "포기하고 동기를 계속한다"
+    ),
+    "sync_adapter_configs.judge": (
+        "어댑터 config 판정 채널이 형제 pm_import 를 통해 revved 형제까지 들어간다 — 판정 불가는 "
+        "`unavailable` 로 내려가 완료 게이트가 rc1 로 재실행을 요구하고(엔진 적용은 보존), "
+        "여기서 올리면 이미 착지한 엔진 파일 위에서 동기가 traceback 으로 죽는다"
+    ),
+    "sync_adapter_configs.accept": (
+        "한 파일 수용은 백업·원자 교체·원장 기록이라 형제 락 seam 까지 들어간다 — 한 파일의 "
+        "사본 불일치가 나머지 파일과 이미 끝난 엔진 동기를 되돌리지 않게 보존으로 내린다"
+    ),
+    "sync_adapter_configs.record_baseline": (
+        "원장 기록 실패는 파일 적용을 되돌리지 않는다 — `degraded` 로 내려가 쓰기 후 재판정이 "
+        "같은 red 를 올리고, 다음 실행이 원장을 수렴시킨다"
+    ),
+    "check_adapter_hook_sets": (
+        "훅 세트 세대 검사는 형제 pm_import 판정을 빌려 쓰는 **가드**다 — 판정 채널이 혼합 트리 "
+        "때문에 안 열리면 검사를 unavailable 로 접고(경고는 loud) 동기 자체는 완주시킨다"
+    ),
+    "refuse_partial_hook_set_scope": (
+        "경로 스코프 반쪽 갱신 가드도 같은 판정 채널을 쓴다 — 복구 전파(부분 동기 트리에서 "
+        "돌리는 pm-update)가 자기 가드의 로드 실패로 자기잠금하면 안 된다"
+    ),
+    "record_upstream_revs.write": (
+        "baseline 기록은 형제 pm_import 의 conf writer(다시 형제 file_lock 을 verifier 로 로드)를 "
+        "재사용한다 — best-effort 단계라 혼합 트리에서는 기록을 건너뛰고(다음 실행이 기록) 이미 "
+        "적용된 엔진 파일을 traceback 으로 덮지 않는다"
+    ),
 }
 
 
 def _absorb_engine_rev_skew_for_recovery(exc, boundary: str) -> bool:
-    """업데이트의 최외곽 복구 경계가 marked skew를 의도적으로 흡수했음을 표시한다.
+    """동기 실행 중 경계가 marked skew를 의도적으로 흡수했음을 표시한다 (True=흡수).
 
-    동기화 뒤의 보호 훅 재설치는 부가 수렴 단계다. 목적지 엔진이 부분 동기 상태라 이 단계가
-    실패해도 ``pm_update`` 자체는 다음 재실행으로 나머지 엔진을 복구할 수 있어야 한다. 호출부는
-    반환값으로 일반 실패와 사본 불일치를 구분해 loud 진단하되 update 성공을 되돌리지 않는다.
+    실행 중 목적지 트리의 rev 혼합은 정상 과도 상태이므로(위 불변식), 등록된 경계는 이 판정으로
+    자기 fail-soft 경로에 내려간다. 호출부는 반환값으로 일반 실패와 사본 불일치를 구분해 loud
+    진단하되 update 성공을 되돌리지 않는다. 사유가 등재되지 않은 경계는 fail-loud(ValueError) —
+    흡수는 장부에 남은 판단이어야 감사 가능하다.
     """
     reason = _ENGINE_REV_SKEW_RECOVERY_REASONS.get(boundary, "").strip()
     if not reason:
         raise ValueError(f"등록되지 않았거나 사유가 빈 복구 경계: {boundary!r}")
-    return _is_engine_rev_skew(exc)
+    absorbed = _is_engine_rev_skew(exc)
+    if absorbed:
+        _ABSORBED_ENGINE_REV_SKEW.append(boundary)
+    return absorbed
+
+
+# 종료 시 수렴을 검증할 실행 스코프 `(dest, source, write)`. `_main` 이 좌표를 해소하는 즉시
+# 기록하고 `main` 의 종료 경로가 소비한다 — 중간 return(게이트 rc1·오류 rc2·예외)이 몇 개든
+# 검증이 빠질 자리가 없게 종료 지점을 하나로 묶는다. 부분 전파(`--paths`)는 혼합이 *정상 결과*라
+# 기록하지 않는다(그 경로의 rev 혼재 경고는 스코프 분기가 이미 낸다).
+_SYNC_RUN_SCOPE: tuple[Path, Path, bool] | None = None
+# 실행당 수렴 판정 1회 — baseline 억제와 종료 rc 가 **같은 판정**을 쓰고 보고는 한 번만 나간다.
+_ENGINE_REV_CONVERGENCE: bool | None = None
+# 미수렴 종료 rc — 파일 적용 자체는 서지만 실행은 성공이 아니다(게이트 rc1 관례와 같은 값).
+_UNCONVERGED_RC = 1
+# baked 리터럴 스캐너 — engine_rev.read_literal 과 같은 패턴이지만 **형제를 로드하지 않는다**.
+# 혼합 트리를 진단하는 쪽이 그 혼합 때문에 로드로 죽으면 검증 자체가 성립하지 않는다.
+_ENGINE_REV_LITERAL_RE = re.compile(r'^ENGINE_REV = "([^"]*)"', re.MULTILINE)
+
+
+def _load_engine_rev(tools_dir: Path):
+    """`engine_rev.py`(스탬프 단일 진실)를 로드한다 — 활성 inventory·기대 rev 의 출처.
+
+    복구 채널 면제 로드다(`allow_unverified=True`·engine_rev 는 `EXEMPT_FROM_STAMP`): 혼합 트리를
+    *진단하는* 쪽이 그 혼합 때문에 로드로 죽으면 검증 자체가 성립하지 않는다. 부재·손상은 None
+    (호출부가 판정 불가로 강등)."""
+    path = Path(tools_dir) / "engine_rev.py"
+    if not path.is_file():
+        return None
+    try:
+        return _load_module_from_path(path, "engine_rev.py", allow_unverified=True)
+    except Exception:  # noqa: BLE001 — 진단 보조 로드 실패는 판정 불가로 강등(동기는 계속).
+        return None
+
+
+def engine_rev_expectation(source_root: Path) -> tuple[tuple[str, ...], str | None]:
+    """`(활성 stamped inventory, 상류 기대 rev)` — 수렴 판정의 두 입력.
+
+    **inventory 는 `engine_rev.STAMPED_MODULES` 다**(디렉토리 glob 아님). glob 은 두 방향으로 틀린다:
+    스탬프 리터럴이 없는 **구형 활성 모듈**을 판정 대상에서 빼 미해소 skew 를 침묵시키고, 동기가
+    지우지 않는 **폐기 모듈**까지 세어 영구 오경고를 낸다. 활성 목록은 상류가 소유하므로 상류에서 읽고,
+    못 읽으면 실행 중 엔진의 사본으로 물러난다(둘 다 없으면 판정 불가).
+
+    기대 rev 는 **상류 값만** 인정한다 — 목적지 다수결은 중단 초기(구 rev 다수) 형상에서 방금
+    착지한 새 파일을 straggler 로 오지목한다. 상류 미해소면 None 이고 보고가 rev별 그룹으로
+    강등된다."""
+    upstream = _load_engine_rev(Path(source_root) / ".project_manager" / "tools")
+    inventory = tuple(getattr(upstream, "STAMPED_MODULES", ()) or ())
+    if not inventory:
+        running = _load_engine_rev(Path(__file__).resolve().parent)
+        inventory = tuple(getattr(running, "STAMPED_MODULES", ()) or ())
+    return inventory, getattr(upstream, "ENGINE_REV", None)
+
+
+def baked_engine_revs(dest_root: Path, inventory) -> tuple[dict[str, str], list[str]]:
+    """`(파일 → baked rev, 리터럴 없는 파일)` — **활성 inventory 안에 실재하는** 사본만 본다.
+
+    리터럴 부재는 "스탬프 이전 세대의 활성 모듈" 이라 verifier 가 skew 로 판정하는 상태다 →
+    별도 버킷으로 올려 미수렴으로 센다. 부재 *파일*은 여기 관심사가 아니다(부분 전파·manifest
+    누락은 다른 축이 진단한다)."""
+    revs: dict[str, str] = {}
+    unstamped: list[str] = []
+    tools = Path(dest_root) / ".project_manager" / "tools"
+    for name in inventory:
+        path = tools / name
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue                   # 부재·읽기 실패 — 다른 축 소관.
+        match = _ENGINE_REV_LITERAL_RE.search(text)
+        if match:
+            revs[name] = match.group(1)
+        else:
+            unstamped.append(name)
+    return revs, sorted(unstamped)
+
+
+def _engine_rev_divergence_report(revs: dict[str, str], unstamped: list[str],
+                                  expected: str | None) -> str:
+    """미수렴 내역 1줄 — 기대 rev 를 알면 어긋난 사본을, 모르면 rev별 그룹을 지목한다."""
+    if expected is not None:
+        off = sorted(f"{name}({rev})" for name, rev in revs.items() if rev != expected)
+        off += [f"{name}(스탬프 없음)" for name in unstamped]
+        return f"상류 기대 rev {expected} 와 어긋난 사본 {len(off)}건: {', '.join(off)}"
+    groups = []
+    for rev in sorted(set(revs.values())):
+        names = sorted(name for name, value in revs.items() if value == rev)
+        groups.append(f"{rev}: {', '.join(names)}")
+    if unstamped:
+        groups.append(f"스탬프 없음: {', '.join(unstamped)}")
+    return "상류 기대 rev 미해소 — rev별 사본 " + " / ".join(groups)
+
+
+def _verify_engine_rev_convergence(dest_root: Path, source_root: Path) -> bool:
+    """동기 종료 시 목적지 엔진 사본이 상류 rev 로 수렴했는지 본다 (True=수렴·실행당 1회 판정).
+
+    실행 중 흡수의 **짝**이다. 흡수가 옳은 이유는 "혼합은 실행 중의 과도 상태" 라는 전제인데,
+    **끝난 뒤에도** 혼합이면 그 전제가 깨진 것(미해소 skew)이므로 침묵하면 안 된다. 수렴이면 완전히
+    조용하고(steady-state 무출력), 아니면 stderr 한 줄 + 처방을 낸다.
+
+    미수렴은 baseline 억제(`converge_upstream_revs`)와 비영 rc 로 이어진다 — 혼합 `--from` 트리를
+    그대로 복사한 실행을 성공으로 보고하면 baseline 이 "여기까지 흡수함" 으로 박혀 drift-lint 가
+    침묵하고, 소스 자체가 혼합이면 재실행도 영영 못 고치는 침묵 루프가 된다. 판정 불가(활성
+    inventory 를 어디서도 못 읽음)는 미수렴이 아니라 **무판정**이다(엔진 트리가 아닌 형상)."""
+    global _ENGINE_REV_CONVERGENCE
+    if _ENGINE_REV_CONVERGENCE is not None:
+        return _ENGINE_REV_CONVERGENCE     # 같은 실행에서 두 번 보고하지 않는다.
+    inventory, expected = engine_rev_expectation(source_root)
+    revs, unstamped = baked_engine_revs(dest_root, inventory)
+    if not inventory or (not revs and not unstamped):
+        # 활성 모듈 사본이 **하나도 없는** 트리는 판정 대상이 아니다(스캐폴드·부분 픽스처) —
+        #   미수렴이 아니라 무판정이다. 사본이 있는데 전부 리터럴 없는 구형이면 그건 무판정이
+        #   아니라 **미수렴**이다(verifier 가 곧 skew 로 판정할 상태) — 아래로 내려간다.
+        _ENGINE_REV_CONVERGENCE = True
+        return True
+    observed = set(revs.values())
+    converged = not unstamped and (
+        observed == {expected} if expected is not None else len(observed) <= 1)
+    _ENGINE_REV_CONVERGENCE = converged
+    if converged:
+        return True
+    absorbed = len(_ABSORBED_ENGINE_REV_SKEW)
+    print(
+        "[경고] 동기 종료 시 엔진 사본 rev 가 수렴하지 않았다 — "
+        + _engine_rev_divergence_report(revs, unstamped, expected) + "."
+        + (f" 이번 실행이 중첩 로드 skew {absorbed}건을 흡수했으나 아직 해소되지 않았다."
+           if absorbed else "")
+        + "\n  → pm-update 를 한 번 더 돌려라. 그래도 남으면 `--from` 트리 자신이 혼합이다 "
+        "(그 checkout 을 먼저 수렴시켜라 — 여기서 재실행해도 같은 혼합이 복사된다).",
+        file=sys.stderr,
+    )
+    return False
 
 # manifest 의 render 태그 () — path 행 끝 `  @render` 면 byte-copy 대신 render_adapter.
 RENDER_TAG = "@render"
@@ -2226,29 +2407,40 @@ def record_upstream_revs(dest_root: Path, source_root: Path) -> tuple[bool, dict
         pm_import = _load_pm_import()
     except Exception:  # noqa: BLE001 — 로드 실패는 baseline best-effort: sync 를 안 깬다.
         return False, {}
-    rev = pm_import.read_upstream_rev(source_root)  # 대상 conf 와 무관(git) — 락 밖.
-    if not rev:
-        return False, {}  # git repo 아님·HEAD 해소 실패 — graceful 생략(URL upstream 포함).
+    # 아래는 형제 pm_import 의 rev 조회·conf writer 를 재사용한다 — writer 가 다시 형제 file_lock 을
+    #   verifier 로 로드하므로 **동기 실행 중 사본 rev 혼합의 표면**이다. baseline 기록은
+    #   best-effort 단계이고 이 지점은 apply 이후라, 여기서 skew 를 올리면 이미 착지한 엔진 파일
+    #   위에서 동기가 traceback 으로 죽는다(등록된 경계로 흡수·다음 실행이 기록한다).
+    try:
+        rev = pm_import.read_upstream_rev(source_root)  # 대상 conf 와 무관(git) — 락 밖.
+        if not rev:
+            return False, {}  # git repo 아님·HEAD 해소 실패 — graceful 생략(URL upstream 포함).
 
-    local_conf = dest_root / ".project_manager" / "local.conf"
-    if not local_conf.is_file():
-        # init 전 트리·출하 템플릿처럼 conf 자체가 없는 형상에 락 파일을 만들지 않는 값싼 단축이다
-        # (권위 판정은 아래 락 안에서 다시 한다 — 이 단축은 "쓰지 않는다" 만 결정하고 어떤 write
-        # 계획의 입력도 아니다). conf 가 그사이 생기면 종전처럼 다음 sync 가 기록한다.
-        return _warn_missing_conf_for_rev(local_conf)
-    if not callable(getattr(pm_import, "_write_conf_keys_locked", None)):
-        # 구세대 pm_import 사본(임계 구간 본문 seam 이전) — 자기-락 writer 로 물러난다. 우리 락을
-        # 쥔 채 부르면 같은 락 파일을 두 fd 로 잡아 데드락이므로 락 밖에서 계획·위임한다(종전 동작:
-        # 그 사본에서만 stale-plan 창이 남는다·부분 업그레이드 복구가 크래시보다 우선).
-        updates = _upstream_rev_updates(pm_import, dest_root, rev)
-        return pm_import._write_conf_keys(local_conf, updates), updates
-
-    with _local_conf_write_lock(local_conf):
+        local_conf = dest_root / ".project_manager" / "local.conf"
         if not local_conf.is_file():
+            # init 전 트리·출하 템플릿처럼 conf 자체가 없는 형상에 락 파일을 만들지 않는 값싼 단축이다
+            # (권위 판정은 아래 락 안에서 다시 한다 — 이 단축은 "쓰지 않는다" 만 결정하고 어떤 write
+            # 계획의 입력도 아니다). conf 가 그사이 생기면 종전처럼 다음 sync 가 기록한다.
             return _warn_missing_conf_for_rev(local_conf)
-        updates = _upstream_rev_updates(pm_import, dest_root, rev)
-        changed = pm_import._write_conf_keys_locked(local_conf, updates)
-    return changed, updates
+        if not callable(getattr(pm_import, "_write_conf_keys_locked", None)):
+            # 구세대 pm_import 사본(임계 구간 본문 seam 이전) — 자기-락 writer 로 물러난다. 우리 락을
+            # 쥔 채 부르면 같은 락 파일을 두 fd 로 잡아 데드락이므로 락 밖에서 계획·위임한다(종전 동작:
+            # 그 사본에서만 stale-plan 창이 남는다·부분 업그레이드 복구가 크래시보다 우선).
+            updates = _upstream_rev_updates(pm_import, dest_root, rev)
+            return pm_import._write_conf_keys(local_conf, updates), updates
+
+        with _local_conf_write_lock(local_conf):
+            if not local_conf.is_file():
+                return _warn_missing_conf_for_rev(local_conf)
+            updates = _upstream_rev_updates(pm_import, dest_root, rev)
+            changed = pm_import._write_conf_keys_locked(local_conf, updates)
+        return changed, updates
+    except Exception as exc:  # noqa: BLE001 — 사본 skew 만 생략으로 내린다(그 밖은 종전대로 전파).
+        if not _absorb_engine_rev_skew_for_recovery(exc, "record_upstream_revs.write"):
+            raise
+        print(f"경고: 엔진 사본 rev 혼합으로 upstream_rev 기록을 건너뛴다 ({exc}) — "
+              "다음 pm-update 가 기록한다(엔진 파일 적용은 유지).", file=sys.stderr)
+        return False, {}
 
 
 def record_upstream_rev_baseline(dest_root: Path, source_root: Path) -> bool:
@@ -2267,6 +2459,13 @@ def converge_upstream_revs(
             "둔다. 로컬 engine.manifest 를 reconcile 한 뒤 다시 pm-update 하라(신규 등재분 "
             ")."
         )
+        return
+    if not _verify_engine_rev_convergence(dest_root, source_root):
+        # manifest skew 억제와 **같은 패턴**이다 — 사본 rev 가 상류로 수렴하지 않았는데 baseline 을
+        #   박으면 "여기까지 흡수함" 이 되어 drift-lint 가 침묵한다(거짓 최신). 위 경고가 이미
+        #   어긋난 사본을 지목했으므로 여기서는 억제 사실만 한 줄로 남긴다.
+        print("→ 엔진 사본 rev 미수렴으로 upstream_rev baseline(+`upstream_seen_rev`) 갱신을 "
+              "**억제**한다 — 수렴한 뒤의 실행이 기록한다.")
         return
 
     # 안내 문구는 **엔진이 실제로 기록한 키**(recorded)로 정한다 — 파일의 결과 상태로
@@ -3042,8 +3241,11 @@ def _installed_entry_notation_manifests(
         harnesses = pm_import.installed_harnesses(effective_dest, source_root)
         template_registry = pm_import.HARNESS_TEMPLATE_DIRS
     except Exception as exc:  # noqa: BLE001 — pm_import 부재·손상은 core sync 우선.
-        if _is_engine_rev_skew(exc):
-            raise
+        # 사본 rev 혼합도 등록된 경계로 흡수한다 — 이 판별은 **계획 수립 전**에 형제
+        #   pm_import → repo_owned_files(verifier) 계층까지 들어가므로, 올리면 혼합 트리에서 돌린
+        #   pm-update 가 자기 복구 경로를 잃는다(v1.7.0 흡수 실측 지점). 표기 context 는 core
+        #   manifest 만으로도 성립하므로 guest 보탬만 포기하고 동기를 계속한다.
+        _absorb_engine_rev_skew_for_recovery(exc, "installed_entry_notation_manifests")
         return paths
     seen = {Path(path).resolve() for path in paths}
     for harness in harnesses:
@@ -4609,9 +4811,11 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
         if pm_import is None:
             return {**result, "status": "unavailable", "reason": "pm_import 로드 실패"}
         judgments = pm_import.judge_adapter_configs(dest_root, source_root)
-    except Exception as exc:  # noqa: BLE001 — 판정 실패는 sync 를 막지 않는다(skew 만 예외).
-        if _is_engine_rev_skew(exc):
-            raise
+    except Exception as exc:  # noqa: BLE001 — 판정 실패는 sync 를 막지 않는다(사본 skew 포함).
+        # 사본 rev 혼합은 실행 중의 정상 과도 상태라 등록된 경계로 흡수한다 — 판정 불가는
+        #   `unavailable` 로 내려가 완료 게이트가 rc1 로 재실행을 요구하고, 이미 착지한 엔진
+        #   파일은 그대로 선다(여기서 올리면 그 위에서 traceback 으로 죽는다).
+        _absorb_engine_rev_skew_for_recovery(exc, "sync_adapter_configs.judge")
         return {**result, "status": "unavailable", "reason": str(exc)}
 
     backfill_candidates = {
@@ -4635,10 +4839,16 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
                     accepted = pm_import.accept_adapter_config(
                         dest_root, source_root, judgment.relpath,
                         expected_sha256=judgment.dest_sha256)
-                except (OSError, ValueError) as exc:
+                except Exception as exc:  # noqa: BLE001 — 아래에서 skew·IO 만 보존으로 내린다.
                     # 한 파일의 실패가 이미 끝난 엔진 sync 를 traceback 으로 덮지 않게 보존 쪽으로
-                    #   내린다(다음 실행이 같은 판정으로 재시도). 경로 안전 거부·루트 교체는
-                    #   의도적 hard abort 라 그대로 올라간다.
+                    #   내린다(다음 실행이 같은 판정으로 재시도). 수용은 백업·원자 교체·원장까지
+                    #   가느라 형제 락 seam 을 로드하므로 사본 rev 혼합도 같은 자리에서 보존으로
+                    #   내린다(등록된 경계). 경로 안전 거부·루트 교체는 의도적 hard abort 라
+                    #   그대로 올라간다.
+                    if not _absorb_engine_rev_skew_for_recovery(
+                        exc, "sync_adapter_configs.accept",
+                    ) and not isinstance(exc, (OSError, ValueError)):
+                        raise
                     result["preserved"].append({
                         "relpath": judgment.relpath, "status": "update-failed",
                         "summary": str(exc)})
@@ -4668,8 +4878,10 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
         try:
             pm_import.record_adapter_baseline(dest_root, source_root)
         except Exception as exc:  # noqa: BLE001 — 파일 적용은 보존, 재판정이 rc1로 승격.
-            if _is_engine_rev_skew(exc):
-                raise
+            # 사본 rev 혼합도 같은 규칙이다(등록된 경계) — 원장 기록 실패는 아래 재판정이 같은
+            #   red 로 올리고, 다음 실행이 원장을 수렴시킨다.
+            _absorb_engine_rev_skew_for_recovery(
+                exc, "sync_adapter_configs.record_baseline")
             result["degraded"].append({
                 "relpath": ", ".join(sorted(backfill_candidates)) or "adapter_baseline.json",
                 "status": "ledger-failed",
@@ -4682,8 +4894,8 @@ def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> 
     try:
         final_judgments = pm_import.judge_adapter_configs(dest_root, source_root)
     except Exception as exc:  # noqa: BLE001 — 엔진 적용 결과는 보존하되 게이트는 red.
-        if _is_engine_rev_skew(exc):
-            raise
+        # 첫 판정과 같은 경계·같은 이유로 사본 rev 혼합을 흡수한다(게이트는 여전히 red).
+        _absorb_engine_rev_skew_for_recovery(exc, "sync_adapter_configs.judge")
         return {**result, "status": "unavailable", "reason": str(exc)}
     unconverged = pm_import.unconverged_managed_adapter_configs(final_judgments)
     result["blocking"] = [
@@ -4814,8 +5026,9 @@ def check_adapter_hook_sets(dest_root: Path, source_root: Path) -> dict:
             dest_root, source_root, declarations=generation.declarations)
         remedy_lines = pm_import.hook_set_remedy_lines
     except Exception as exc:  # noqa: BLE001 — 판정 실패가 동기를 무효화하지 않는다.
-        if _is_engine_rev_skew(exc):
-            raise
+        # 사본 rev 혼합도 등록된 경계로 흡수한다 — 이건 채널이 아니라 **가드**라, 판정 채널이
+        #   혼합 트리에서 안 열리면 검사를 unavailable 로 접고(경고는 loud) 동기는 완주시킨다.
+        _absorb_engine_rev_skew_for_recovery(exc, "check_adapter_hook_sets")
         return {**result, "status": "unavailable", "reason": str(exc)}
     result["findings"] = [
         {"harness": finding.harness, "config_relpath": finding.config_relpath,
@@ -4825,6 +5038,19 @@ def check_adapter_hook_sets(dest_root: Path, source_root: Path) -> dict:
         for finding in findings
     ]
     return result
+
+
+def _unverified_hook_scope_paths(pm_import, updated) -> tuple[str, ...]:
+    """판정 채널을 잃었을 때 **거부해야 할** 스코프 경로 — 훅 네임스페이스 하위 전량.
+
+    "결합 묶음을 검증할 수 없다" 는 인식 상태는 하나이므로 처분도 하나여야 한다(선언 미해소 폴백과
+    같은 fail-closed). 네임스페이스 목록조차 못 얻는 형상(판정 채널 자체 부재)은 종전대로 loud
+    통과다 — 거기서 거부하면 채널 없는 트리의 부분 복구가 통째로 잠긴다."""
+    try:
+        namespaces = tuple(f"{name}/" for name in pm_import.hook_set_namespaces(None))
+    except Exception:  # noqa: BLE001 — 채널 부재/손상은 위 계약대로 통과(경고는 호출부가 낸다).
+        return ()
+    return tuple(path for path in updated if path.startswith(namespaces))
 
 
 def _change_dest_paths(changes) -> list[str]:
@@ -4856,6 +5082,7 @@ def refuse_partial_hook_set_scope(scoped_changes, planned_changes,
     판정 채널을 못 불러오면 가드를 끄되 조용히 넘어가지 않는다(무진단 침묵 금지)."""
     updated = _change_dest_paths(scoped_changes)
     unverified: tuple[str, ...] = ()
+    pm_import = None
     try:
         pm_import = _load_pm_import()
         generation = resolve_hook_set_generation(source_root, required=True)
@@ -4881,9 +5108,15 @@ def refuse_partial_hook_set_scope(scoped_changes, planned_changes,
                 updated, _change_dest_paths(planned_changes),
                 declarations=generation.declarations)
     except Exception as exc:  # noqa: BLE001 — 가드 판정 실패가 복구 전파를 자기잠금하면 안 된다.
-        if _is_engine_rev_skew(exc):
-            raise
+        # 사본 rev 혼합도 등록된 경계로 흡수한다 — 부분 동기 트리에서 돌리는 복구 전파가 자기
+        #   가드의 형제 로드 실패로 잠기면 안 된다는 이 함수의 계약이 그대로 적용된다.
+        _absorb_engine_rev_skew_for_recovery(exc, "refuse_partial_hook_set_scope")
         partial = None
+        # **인식 상태는 위 폴백과 같다** — 결합 묶음을 검증할 방법이 없다. 그러니 처분도 같아야
+        #   한다: 흡수 경로로 들어왔다는 이유만으로 훅 영역 반쪽 갱신이 rc0 으로 통과하면 이 가드는
+        #   skew 한 줄로 우회된다. 훅 네임스페이스 하위만 거부하고(무관 경로는 종전대로 통과)
+        #   탈출구는 스코프 없는 pm-update 다 — `--paths` 한정이라 복구 채널은 잠기지 않는다.
+        unverified = _unverified_hook_scope_paths(pm_import, updated)
         print(f"[경고] 훅 세트 부분 전파 가드를 건너뛰었다 — {exc}.", file=sys.stderr)
     if unverified:
         print(
@@ -5173,6 +5406,7 @@ def _print_protected_hook_reinstall_finding(result: dict, *, dry_run: bool = Fal
 
 
 def _main(argv: list[str] | None = None) -> int:
+    global _SYNC_RUN_SCOPE          # 종료 시 수렴 검증 대상(아래 dest 해소 지점에서 등록).
     ap = argparse.ArgumentParser(
         prog="pm_update.py",
         description=__doc__,
@@ -5286,6 +5520,12 @@ def _main(argv: list[str] | None = None) -> int:
     # 전체 export 는 타깃 집합을 디렉토리에서 매번 발견한다. 단일 타깃 실행을 재사용해
     # manifest/안전 가드/출력의 의미를 갈라놓지 않는다. 한 타깃의 실패는 즉시 반환한다.
     if args.all_targets:
+        # 자식 실행(`main` 재귀)이 모듈 전역 장부(`_SYNC_RUN_SCOPE`·`_ABSORBED_ENGINE_REV_SKEW`·
+        #   수렴 판정 캐시)를 **자기 것으로** 초기화하고 소비한다. 그게 성립하는 전제는 이 분기가
+        #   dest 해소보다 **앞**이라 부모가 스코프를 등록하지 않는다는 것 — 순서가 바뀌면 부모의
+        #   스코프를 자식이 지워 검증이 조용히 사라지므로 전제를 기계로 못박는다.
+        assert _SYNC_RUN_SCOPE is None, (
+            "--all-targets 분기는 dest 해소(_SYNC_RUN_SCOPE 등록)보다 앞이어야 한다")
         if args.changes:
             print("오류: --all-targets 는 실 동기화 옵션이며 --changes 와 함께 쓸 수 없다.", file=sys.stderr)
             return 1
@@ -5318,6 +5558,10 @@ def _main(argv: list[str] | None = None) -> int:
     if rc != 0:
         return rc
     effective_dest = dest_root if dest_root is not None else REPO
+    if not scope_paths:
+        # 종료 시 수렴 검증 대상 등록(흡수의 짝) — 부분 전파는 혼합이 정상 결과라 제외한다.
+        #   dry-run 은 판정·보고만 하고 rc 를 세우지 않는다(무write 실행의 rc 는 "계획이 온전한가"다).
+        _SYNC_RUN_SCOPE = (effective_dest, source_root, not args.dry_run)
 
     # ── guest 절 해소(읽기 전용) — 스코프 선검증·계획·기록이 **같은 산출**을 쓴다. 엔진 행은 upstream
     #    flavor 에서 매 실행 재파생하므로, 절에 아직 기록되지 않은 파생분도 이 시점에 확정된다.
@@ -5449,8 +5693,10 @@ def _main(argv: list[str] | None = None) -> int:
             )
         )
     except RuntimeError as exc:
-        # 엔진 사본 skew 는 삼키지 않는다 — 이 블록이 설치 하네스 판별(pm_import 로드·출하 열거)
-        #   까지 품게 됐고, 그걸 "context 실패 rc2" 로 덮으면 로드 경계 진단이 사라진다.
+        # 엔진 사본 skew 는 삼키지 않는다 — 그걸 "context 실패 rc2" 로 덮으면 로드 경계 진단이
+        #   사라진다. 동기 실행 중 발화하는 설치 하네스 판별의 skew 는 **안쪽 경계**
+        #   (`_installed_entry_notation_manifests`)가 이미 흡수하므로, 이 지점은 그 밖에서 온
+        #   사본 불일치를 최외곽까지 올려 보내는 방어선으로 남는다(무진단 침묵 금지).
         if _is_engine_rev_skew(exc):
             raise
         print(f"오류: {exc}", file=sys.stderr)
@@ -5852,11 +6098,17 @@ def main(argv: list[str] | None = None) -> int:
         allow_unverified=True,
     )
     _console_encoding.configure_console_utf8()
+    global _SYNC_RUN_SCOPE, _ENGINE_REV_CONVERGENCE
+    _SYNC_RUN_SCOPE = None
+    _ENGINE_REV_CONVERGENCE = None
+    _ABSORBED_ENGINE_REV_SKEW.clear()
+    converged = True
+    write_run = False
     try:
-        return _main(argv)
+        rc = _main(argv)
     except EmptyShippingInventoryError as exc:
         print(f"오류: {exc}", file=sys.stderr)
-        return 1
+        rc = 1
     except Exception as exc:
         # 엔진 사본 skew 는 분류 이전에 그대로 올린다 — 아래 분기도 결과적으로 re-raise 하지만,
         #   skew 가 이 경계를 지난다는 사실을 명시해 둔다(_main 이 설치 하네스 판별을 품은 뒤로
@@ -5877,7 +6129,19 @@ def main(argv: list[str] | None = None) -> int:
             f"{exc}; 해당 checkout 경로와 git index 상태를 확인·복구한 뒤 다시 실행하라.",
             file=sys.stderr,
         )
-        return 1
+        rc = 1
+    finally:
+        # 실행 중 흡수의 **짝** — 어느 종료 경로(정상 rc·게이트 rc1·오류 rc2·예외 전파)로 나가든
+        #   한 번만 본다(판정은 캐시되어 baseline 억제와 같은 결과를 쓴다). 종료 지점이 늘어도
+        #   검증이 빠질 자리가 없게 여기 하나로 묶는다.
+        scope, _SYNC_RUN_SCOPE = _SYNC_RUN_SCOPE, None
+        if scope is not None:
+            dest_root, source_root, write_run = scope
+            converged = _verify_engine_rev_convergence(dest_root, source_root)
+    # 미수렴은 성공으로 보고하지 않는다 — 혼합 `--from` 을 그대로 복사한 실행이 rc0 이면 그
+    #   침묵이 다음 실행에도 이어진다(baseline 은 위에서 이미 억제됐다). 무write 실행(dry-run)은
+    #   보고만 하고 rc 를 세우지 않는다.
+    return rc if converged or not write_run else (rc or _UNCONVERGED_RC)
 
 
 if __name__ == "__main__":

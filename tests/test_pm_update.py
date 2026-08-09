@@ -1360,12 +1360,26 @@ def test_resolve_manifest_selfheal_ignores_legacy_guest_block_and_heals(pm_updat
 # 엔진 파일=update 채널(plan 포함·byte-copy). 아래 픽스처는 **실 flavor 디렉토리명**을 쓴다 —
 # 이름이 실물이어야 pm_import 하네스 registry 로 어댑터 namespace 가 해소된다(가짜 이름은 파생 제외).
 
+def _current_engine_rev() -> str:
+    spec = importlib.util.spec_from_file_location(
+        "_fixture_engine_rev", TOOLS / "engine_rev.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.ENGINE_REV
+
+
+# 합성 엔진 사본도 **스탬프를 단다** — 활성 stamped 모듈이 리터럴 없이 놓인 트리는 "구형 활성
+# 모듈"(verifier 가 곧 skew 로 판정할 상태)이라 동기 종료 시 미수렴으로 잡힌다. 이 파일의 관심사는
+# guest 절 채널이지 rev 수렴이 아니므로, 픽스처가 그 상태를 우연히 만들지 않게 상류·채택자 양쪽을
+# 현행 rev 로 맞춘다(byte 전파 판정에는 영향 없음 — 양쪽이 같은 텍스트다).
+_ENGINE_SENTINEL = f'# engine v2\nENGINE_REV = "{_current_engine_rev()}"\n'
+
 _GUEST_FRAMEWORK_FILES = {
     "templates/claude_code/.claude/ctx_guard.py": "# ctx guard v2\n",
     "templates/opencode/.opencode/lib/relay.js": "// relay v2\n",
     "templates/opencode/.opencode/pm_orch_opencode.py": "# driver v2\n",
     "templates/opencode/.opencode/agents/pm.md": "upstream agent\n",
-    ".project_manager/tools/board.py": "# engine v2\n",
+    ".project_manager/tools/board.py": _ENGINE_SENTINEL,
 }
 
 _CLAUDE_FLAVOR_MANIFEST = (
@@ -1427,7 +1441,7 @@ def _make_legacy_guest_adopter(pm_update, dest: Path, *, core: str | None = None
         (".opencode/pm_orch_opencode.py", "# driver v1 (frozen)\n"),
         (".opencode/agents/pm.md", "adopter-owned agent\n"),
         (".claude/ctx_guard.py", "# ctx guard v2\n"),
-        (".project_manager/tools/board.py", "# engine v2\n"),
+        (".project_manager/tools/board.py", _ENGINE_SENTINEL),
     ):
         path = dest / rel
         path.parent.mkdir(parents=True, exist_ok=True)

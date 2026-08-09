@@ -649,7 +649,15 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   T-0610 이 세대 선언 해소를 단일 지점(`resolve_hook_set_generation`)으로 통일했으나 그 역시
 #   같은 두 소비자(원자 write 판정자·훅 세대 채널)만 태우고, 이 fixture 채택자는 codex 단독이라
 #   판정이 여전히 빈 결과다 — 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "2506c37b14627af41e9a1c288cfc7590c48d9485a0e87ef5fd36282056b25bee"
+#   T-0607 이 동기 실행 중 rev 혼합 흡수를 넣으며 또 이동했다. 배달 경계는 불변이다: 새 코드는
+#   marked skew 가 실제로 났을 때만 분기하고(이 fixture 의 RUN1 은 rev 가 단일이라 어느 경계도
+#   발화하지 않는다), 종료 시 수렴 검증도 혼합일 때만 출력한다(단일 rev → 무출력·rc 불변).
+#   역적용 delta 의 anchor 도 그대로다 — 흡수 지점은 전부 anchor 바깥이고, 슬라이스로 교체되는
+#   `sync_adapter_configs` 안의 변경은 정의상 digest 에 남지 않는다. 현재화한 것은 기대 SHA 하나뿐.
+#   같은 티켓의 수렴 게이트(미수렴 시 baseline 억제·비영 rc)도 이 fixture 의 배달 경계를 바꾸지
+#   않는다: RUN1 채택자 트리는 canonical 로 승격된 단일 rev 라 판정이 수렴이고, 그 경로의
+#   baseline·rc 는 종전과 같다(미수렴에서만 갈라진다).
+_T0585_PM_UPDATE_SHA256 = "d14117339c159c28afbd210bbebc4cd89a3858e35c6c2dc79f57a8500b8f20db"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).

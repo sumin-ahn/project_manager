@@ -279,6 +279,44 @@ def test_pm_config_load_module_reraises_nested_skew(tmp_path):
     assert "identity_args.py" in str(exc.value)
 
 
+# ── 동기 실행 **밖**의 fail-loud 불변 (T-0607) ───────────────────────────────
+# pm_update 는 동기 실행 중 중첩 로드 skew 를 등록된 경계로 흡수한다(rev 혼합은 그 실행의 정상
+# 과도 상태이고, 동기는 그걸 고치는 유일한 채널이다). 그 완화가 **일반 CLI 로드로 새면** 사본
+# 불일치가 조용히 넘어가므로, 같은 중첩 로드 계층을 동기 밖에서 직접 부르면 여전히 fail-loud
+# 여야 한다. 아래 둘이 그 경계를 못박는다.
+
+
+def test_pm_import_nested_loader_fails_loud_outside_sync(tmp_path):
+    """구 pm_import + 현행 repo_owned_files → 중첩 로드는 동기 밖에서 fail-loud.
+
+    pm_update 가 동기 실행 중 흡수하는 **바로 그 호출 계층**이다(설치 하네스 판별 →
+    `_load_repo_owned_files` verifier). 동기 밖에서는 실결함 신호라 그대로 올라와야 한다."""
+    tools = _build_tools(tmp_path, {
+        "engine_rev.py": None,
+        "repo_owned_files.py": None,
+        "pm_import.py": _stale_source("pm_import"),
+    })
+    pm_import = _load(tools, "pm_import")
+    with pytest.raises(RuntimeError) as exc:
+        pm_import._load_repo_owned_files()
+    assert getattr(exc.value, "_engine_rev_skew", False) is True
+    assert "repo_owned_files.py" in str(exc.value)
+
+
+def test_engine_rev_skew_absorption_ledger_owners_are_a_closed_set():
+    """흡수 장부를 가진 도구는 닫힌 집합이다 — 일반 CLI 는 완화 지점을 갖지 않는다.
+
+    `pm_update` 는 skew 를 실제로 **고치는** 복구 채널이라 자기 실행 중의 rev 혼합을 흡수하고,
+    `external_review` 는 스폰 전 중단의 정리 경계 하나만 흡수한다(주 예외를 덮지 않기 위해).
+    그 밖의 도구에서 skew 는 실결함 신호이므로 fail-loud 다 — 새 도구가 조용히 완화 지점을
+    들이면 여기서 red 가 된다."""
+    owners = sorted(
+        path.name for path in TOOLS.glob("*.py")
+        if "_ENGINE_REV_SKEW_RECOVERY_REASONS" in path.read_text(encoding="utf-8")
+    )
+    assert owners == ["external_review.py", "pm_update.py"]
+
+
 def test_pm_config_load_module_unstamped_sibling_no_false_positive(tmp_path):
     """pm_config._load_module 은 미계측 형제(_STAMPED_SIBLINGS 밖)엔 verify 를 안 걸어 오탐 없음.
 

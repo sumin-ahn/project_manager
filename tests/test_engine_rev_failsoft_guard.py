@@ -910,7 +910,13 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 176 = 175 + T-0606 경로 스코프 반쪽 갱신 가드의 한 경계. `refuse_partial_hook_set_scope` 도
     #   같은 형제 선언을 빌려 판정하되, 판정 채널 부재/손상은 가드를 끄고(복구 전파가 자기잠금하면
     #   안 된다) 마킹된 skew 는 그대로 올린다 — 다른 형제 로더와 같은 규칙이다.
-    assert len(report.boundaries) == 176, "propagation sweep boundary ratchet changed"
+    # 178 = 176 + T-0607 동기 실행 중 rev 혼합 흡수의 **새** 두 경계(어댑터 config 한 파일 수용 ·
+    #   upstream_rev baseline 기록). 둘 다 apply 이후에 형제 pm_import → 락/원장 seam 까지 들어가는
+    #   자리라, 실행 중 혼합(정상 과도 상태)을 올리면 이미 착지한 엔진 파일 위에서 동기가 죽는다.
+    #   기존 여섯 경계(`_installed_entry_notation_manifests` · `sync_adapter_configs` 판정/원장 ·
+    #   `check_adapter_hook_sets` · `refuse_partial_hook_set_scope`)는 re-raise 에서 등록된 흡수로
+    #   **처분만** 바뀌어 개수가 그대로다. 흡수의 짝인 종료 시 수렴 검증은 pm_update 가 소유한다.
+    assert len(report.boundaries) == 178, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
