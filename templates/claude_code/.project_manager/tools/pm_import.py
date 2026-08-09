@@ -419,7 +419,7 @@ CLAUDE_FILL_CMD = ("claude", "-p")
 OPENCODE_FILL_CMD = ("opencode", "run")
 CODEX_FILL_CMD = ("codex", "exec")
 
-# fill 실행도 위임·외부리뷰와 같은 하네스 프로필을 쓴다. 과거 fill 전용 300초 wall 상한은
+# fill 실행도 위임·추가 리뷰와 같은 하네스 프로필을 쓴다. 과거 fill 전용 300초 wall 상한은
 # cloud idle 임계보다 먼저 발화해 무진행 판정을 사실상 무력화했고, opencode 로컬 GPU 축의 실측
 # 장시간 실행도 잘랐다. 채택 시점 1회성이라는 UX 차이는 별도 판정값의 근거가 아니므로 제거한다.
 # 배포 환경 차이는 대상 repo local.conf 의 `harness.<name>.{idle,wall}_timeout` 으로 조정한다.

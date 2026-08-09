@@ -3436,11 +3436,18 @@ def _write_hook_atomic(hook: Path, body: str) -> None:
     `regression check` 가 치유를 수행하는 형상이 실재하고, shell 은 스크립트를 실행하며 읽으므로
     파일 오프셋이 바뀐 바이트를 이어 읽어 구문이 깨진다(정렬에 따라 fail-open 방향도 나온다).
     새 inode 로 갈아끼우면 실행 중인 shell 은 옛 fd 를 그대로 읽어 끝까지 온전하다.
-    실행 권한은 **교체 전 tmp 에** 준다 — 교체 뒤에 chmod 하면 그 사이 훅이 실행 불가다."""
+    실행 권한은 **교체 전 tmp 에** 준다 — 교체 뒤에 chmod 하면 그 사이 훅이 실행 불가다.
+    교체가 실패하면 tmp 를 지운다 — `pre-push.<pid>.tmp` 는 git 이 실행하지 않는 이름이라
+    무해했지만, 실패마다 훅 디렉토리에 잔재가 쌓인다. 실패 자체는 그대로 올린다(호출부가 판정)."""
     tmp = hook.with_name(f"{hook.name}.{os.getpid()}.tmp")
     tmp.write_text(body, encoding="utf-8")
     tmp.chmod(0o755)
-    os.replace(str(tmp), str(hook))
+    try:
+        os.replace(str(tmp), str(hook))
+    except OSError:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise
 
 
 # ── 설치된 훅 drift 자기치유 ────────────────────────────────────────────────
@@ -9379,32 +9386,41 @@ _STRICT_REQUIRED_SECTIONS: tuple[str, ...] = (
 _DOD_SECTION = "## 완료 조건"
 _DOD_CHECKED_MARKS = frozenset({"x", "X"})
 _DOD_DEFERRED_MARK = ">"
-# 체크박스 줄: `- [ ] …` / `* [x] …` / `+ [>] …`(들여쓰기 허용·마커 1글자).
+# 체크박스 줄: `- [ ] …` / `* [x] …` / `+ [>] …`(들여쓰기 허용·마커 0~1글자).
 # 불릿 세 종(`-`·`*`·`+`)을 모두 본다 — markdown 이 셋 다 리스트로 렌더하므로 하나라도 빼면
-# 그 표기의 미체크 항목이 조용히 통과한다(fail-open 방향).
-_DOD_CHECKBOX_RE = re.compile(r"^\s*[-*+]\s+\[(?P<mark>.)\]\s?(?P<text>.*)$")
+# 그 표기의 미체크 항목이 조용히 통과한다(fail-open 방향). 마커를 `.?` 로 두는 이유도 같다 —
+# 빈 브라켓(`- []`)은 사람 눈에 미체크지만 1글자 마커만 보면 체크박스로 인식조차 못 해 통과했다.
+_DOD_CHECKBOX_RE = re.compile(r"^\s*[-*+]\s+\[(?P<mark>.?)\]\s?(?P<text>.*)$")
 # 이월 사유: 같은 줄의 `(이월: <사유·귀속>)` — 괄호 안이 비면 사유가 아니다.
 _DOD_DEFERRED_REASON_RE = re.compile(r"\(이월:\s*\S[^)]*\)")
 # 사람 표면(차단 메시지)의 두 통과 형식 — 한 곳에서 렌더한다.
 _DOD_VALUE_FORMS = "`- [x] <원문>` 또는 `- [>] <원문> (이월: <사유·귀속>)`"
 
 
-def _dod_section_text(body: str) -> str | None:
-    """`## 완료 조건` 절 본문(다음 `## ` 헤딩 직전까지) — 절이 없으면 None.
+def _section_text(body: str, heading: str) -> str | None:
+    """`<heading>` 절 본문(다음 `## ` 헤딩 직전까지) — 절이 없으면 None.
 
-    **헤딩 탐색 전에** fenced 코드블록을 먼저 제거한다(`_design_section_gaps` 가 `_strip_code`
-    를 먼저 태우는 것과 같은 규율). 펜스를 무시하면 판정이 양방향으로 틀어진다 — 코드블록 안에
-    인용된 `## 완료 조건` 이 절 시작으로 잡혀 실제 DoD 를 못 보거나, 코드블록 안 `## …` 한 줄이
-    절 끝으로 잡혀 뒤쪽 미체크 항목이 통째로 빠진다. 제거 후 남는 예시 체크박스도 함께 사라진다.
+    **헤딩 탐색 전에** fenced 코드블록을 먼저 제거한다. 펜스를 무시하면 판정이 양방향으로
+    틀어진다 — 코드블록 안에 인용된 `## 완료 조건` 이 절 시작으로 잡혀 실제 DoD 를 못 보거나,
+    코드블록 안 `## …` 한 줄이 절 끝으로 잡혀 뒤쪽 미체크 항목이 통째로 빠진다. 제거 후 남는
+    예시 체크박스도 함께 사라진다.
+
+    DoD 판정과 설계 절 판정이 같은 슬라이서를 쓴다 — 절 경계 규칙이 두 벌이면 한쪽만 펜스를
+    보거나 한쪽만 본문 전체를 스캔하는 절반 배선이 생긴다.
     """
     lines = _FENCED_CODE_RE.sub("", body).splitlines()
     start = next(
-        (i for i, line in enumerate(lines) if line.startswith(_DOD_SECTION)), None)
+        (i for i, line in enumerate(lines) if line.startswith(heading)), None)
     if start is None:
         return None
     end = next((i for i in range(start + 1, len(lines))
                 if lines[i].startswith("## ")), len(lines))
     return "\n".join(lines[start + 1:end])
+
+
+def _dod_section_text(body: str) -> str | None:
+    """`## 완료 조건` 절 본문 — 공용 슬라이서(`_section_text`)의 DoD 이름."""
+    return _section_text(body, _DOD_SECTION)
 
 
 def _dod_open_items(body: str) -> list[str]:
@@ -9509,10 +9525,17 @@ def _validate_design(design: str) -> str | None:
 
 
 def _design_section_gaps(body: str) -> list[str]:
-    """`## 설계` 절의 미충전 지점 이름 — 절 부재는 절 이름, 충전 완료는 빈 리스트."""
-    if _DESIGN_SECTION not in body:
+    """`## 설계` 절의 미충전 지점 이름 — 절 부재는 절 이름, 충전 완료는 빈 리스트.
+
+    뼈대 토큰 스캔 범위는 **설계 절 슬라이스**다(본문 전체가 아니다). 전체 스캔은 설계 단계를
+    다루는 후속 티켓이 다른 절에서 뼈대 문장을 인용하기만 해도 "미충전"으로 읽는다 — 그 티켓의
+    설계 절은 다 채워져 있는데도 경고가 뜨는 오탐이다. 절 슬라이싱은 DoD 판정과 같은 공용
+    슬라이서를 쓰므로 펜스 안에 인용된 헤딩도 절 시작으로 오인하지 않는다.
+    """
+    section = _section_text(body, _DESIGN_SECTION)
+    if section is None:
         return [f"{_DESIGN_SECTION} 절 부재"]
-    prose = _strip_code(body)
+    prose = _strip_code(section)
     return [label
             for token, label in zip(_DESIGN_PLACEHOLDERS, _DESIGN_PLACEHOLDER_LABELS)
             if token in prose]

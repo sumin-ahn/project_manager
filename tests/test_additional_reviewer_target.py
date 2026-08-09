@@ -1059,6 +1059,25 @@ def test_opt_in_off_is_a_no_op_that_creates_no_output_dir(
     assert "추가 리뷰어 비활성" in capsys.readouterr().err
 
 
+def test_disabled_notice_quotes_the_adopters_own_key(
+        external, monkeypatch, tmp_path, capsys):
+    """구키만 있는 채택자는 **자기 conf 에 있는 줄**을 안내에서 본다 (T-0600).
+
+    고정 표기(신키=false)는 그 채택자에게 존재하지 않는 줄이라 "어디를 고치라는 건지"가 끊긴다.
+    처방(켜는 법)은 그대로 신키다.
+    """
+    conf = _conf()
+    del conf[external.ADDITIONAL_REVIEWER_ENABLED_KEY]
+    conf[external.LEGACY_EXTERNAL_REVIEW_ENABLED_KEY] = "false"
+    repo = _repo(tmp_path / "repo", conf)
+    _wire_main(external, monkeypatch, repo, _FakeReviewer(stdout=_wire("codex")))
+
+    assert external.main(["--paths", "x.py"]) == 0
+    err = capsys.readouterr().err
+    assert f"local.conf {external.LEGACY_EXTERNAL_REVIEW_ENABLED_KEY}=false" in err
+    assert f"`{external.ADDITIONAL_REVIEWER_ENABLED_KEY}=true`" in err   # 처방은 신키
+
+
 def test_round_limit_refusal_enters_no_isolation_and_creates_no_output_dir(
         external, monkeypatch, tmp_path, capsys):
     """전송 전 거부(라운드 상한)도 같은 규율이다 — 격리 진입·산출 디렉토리·장부 변화 모두 0.

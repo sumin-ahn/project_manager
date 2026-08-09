@@ -1018,18 +1018,24 @@ def _surface_label(path: Path) -> str:
         return path.name
 
 
-def _phrase_residue(paths, phrases) -> list[str]:
+def _phrase_residue(paths, phrases, allowed_lines=None) -> list[str]:
     """주어진 표면들에서 폐기 표현이 놓인 자리 — `<자리>:<lineno> — <표현>` 목록.
 
     잔존 가드 3축(역할·활동 명사·구키)이 같은 검출기를 쓰게 만드는 단일 seam 이다. 축마다 스캔을
     베끼면 sensitivity 를 축마다 다시 증명해야 하고, 대개 한 축만 증명한 채 남는다.
+
+    `allowed_lines` = `{repo상대경로: (허용 줄 텍스트, …)}` — **줄 단위 예외**다. 파일 통째
+    예외는 그 파일에 새로 들어온 사용까지 영영 가려주지만, 줄 단위는 적어 둔 그 줄만 뺀다.
     """
     hits: list[str] = []
     for path in paths:
         assert path.is_file(), f"인벤토리 대상 부재: {path}"
+        allowed = frozenset((allowed_lines or {}).get(_surface_label(path), ()))
         for lineno, line in enumerate(
             path.read_text(encoding="utf-8").splitlines(), 1
         ):
+            if line.strip() in allowed:
+                continue
             hits += [
                 f"{_surface_label(path)}:{lineno} — {phrase}"
                 for phrase in phrases
@@ -1061,6 +1067,40 @@ def test_retired_phrase_scan_detects_an_injected_residue(tmp_path):
 
     surface.write_text(clean, encoding="utf-8")
     assert _phrase_residue([surface], RETIRED_REVIEW_PHRASES) == []
+
+
+# 활동 명사 sweep 이 닿은 엔진 파일 — 위임/추가 리뷰 실행 축 4종(T-0600). **엔진 파일 전체를
+# 잔존 스캔 인벤토리(`_active_pm_surfaces`)에 넣지는 않는다**: 거긴 과거 지적 인용·릴리즈 서술
+# 같은 히스토리가 사는 자리라(`test_role_rename_keeps_transport_identifiers_and_history` 가 그
+# 경계를 값으로 고정한다) 전면 스캔은 과거 기록 개서를 요구한다. 여기서 보는 건 **활동 명사
+# 하나**뿐이고, 역할 이름·codex 인용은 대상이 아니다.
+_ACTIVITY_SWEEP_ENGINE_FILES = (
+    "pm_delegate.py", "external_review.py", "pm_relay.py", "pm_handoff.py",
+    "pm_import.py",
+)
+
+
+@pytest.mark.parametrize("name", _ACTIVITY_SWEEP_ENGINE_FILES)
+def test_swept_engine_files_drop_the_retired_activity_noun(name):
+    """sweep 대상 엔진 파일에 폐기 활동 명사가 0건이다 (docstring·주석·CLI help 포함)."""
+    residue = _phrase_residue([TOOLS / name], RETIRED_ACTIVITY_PHRASES)
+    assert not residue, "폐기된 활동 명사 잔존(엔진):\n  " + "\n  ".join(residue)
+
+
+def test_engine_cli_help_names_the_activity_as_additional_review(capsys):
+    """**사용자에게 렌더되는** 엔진 CLI help 가 활동을 '추가 리뷰'로 부른다.
+
+    파일 텍스트 스캔이 아니라 argparse 가 실제로 찍는 문자열을 태운다 — 사용자 노출 표면은
+    소스 어디에 적혔는지가 아니라 출력이 진실이고, 히스토리 주석과 섞이지 않는다.
+    """
+    delegate = _load("pm_delegate")
+    with pytest.raises(SystemExit):
+        delegate._cmd_raw(["--help"])
+    help_text = capsys.readouterr().out
+
+    assert "추가 리뷰" in help_text
+    for phrase in RETIRED_REVIEW_PHRASES:
+        assert phrase not in help_text, f"CLI help 에 폐기 명칭 잔존 — {phrase}"
 
 
 def test_retired_activity_noun_scan_covers_the_swept_surfaces():
@@ -1144,7 +1184,11 @@ def test_codex_cards_keep_dollar_skill_entry_notation():
 # 히스토리 디렉토리 제외는 두지 않는다 — dev-state(log·decisions·tickets 상태·sealed spike)는 PM
 # 홈 repo 소유라 이 제품 repo 스캔에 애초에 없다(`.gitkeep` 뿐). 검증할 수 없는 공허한 예외는
 # allowlist 를 헐겁게만 만든다.
-_RETIRED_ACK_SCAN_SUFFIXES = {".md", ".py"}
+# 잔존 스캔 3축(폐지 플래그·구 게이트 키·구 노브 키)이 공유하는 확장자 인벤토리. 산문·엔진만
+# 보던 `.md`/`.py` 에 **실행/설정 표면**을 더한다(T-0600) — 진입 스크립트(`.sh`·`.cmd`)·opencode
+# 설정(`.jsonc`)·codex agent 카드와 설정(`.toml`)도 폐기 키/플래그를 실을 수 있는 자리이고,
+# 확장자 하나가 빠지면 그 표면의 잔존은 영영 안 보인다(현행 실잔재는 0 — 그 상태를 못박는다).
+_RETIRED_ACK_SCAN_SUFFIXES = {".md", ".py", ".sh", ".cmd", ".jsonc", ".toml"}
 # 엔진의 폐지 안내·구 장부 해석이 사는 파일 (canonical + 템플릿 미러 4벌 모두 같은 이름).
 _RETIRED_ACK_ENGINE_FILE = "external_review.py"
 # 폐지 동작을 단언하느라 플래그 리터럴이 정당하게 남는 테스트 (파일명 명시 — 디렉토리 통째 아님).
@@ -1201,6 +1245,19 @@ def test_retired_round_ack_scan_covers_the_swept_surfaces():
         ".project_manager/tools/pm_bootstrap.py",
     ):
         assert rel in scanned, f"sweep 대상이 스캔 밖: {rel}"
+
+
+@pytest.mark.parametrize("rel", [
+    "pm-import.sh",                                     # 루트 진입 파사드(bash)
+    "templates/claude_code/pm-update.cmd",              # Windows 진입 파사드
+    "templates/opencode/.opencode/opencode.jsonc",      # opencode 어댑터 설정
+    "templates/codex/.codex/agents/code-reviewer.toml",  # codex agent 카드
+    "templates/codex/.codex/config.toml",               # codex 어댑터 설정
+])
+def test_residue_scan_covers_the_execution_and_config_surfaces(rel):
+    """확장자 인벤토리가 실행/설정 표면까지 본다 (T-0600 — 좁은 스캔의 false-green 방지)."""
+    scanned = {path.relative_to(REPO).as_posix() for path in _retired_ack_scan_targets()}
+    assert rel in scanned, f"스캔 밖 표면: {rel}"
 
 
 def test_retired_round_ack_allowlist_entries_are_load_bearing():
@@ -1873,11 +1930,28 @@ LEGACY_GATE_KEY = "external_review_enabled"
 # 다시 설명하면 "둘 다 쓰면 된다"로 읽히고, 제거 릴리즈에서 그 문장들이 통째로 stale 이 된다.
 _LEGACY_GATE_KEY_ENGINE_FILES = ("external_review.py", "board.py", "pm_update.py")
 _LEGACY_GATE_KEY_DOC_FILES = ("CHANGELOG.md", "README.md")
-_LEGACY_GATE_KEY_TEST_FILES = (
-    "tests/test_additional_reviewer_onboarding.py",   # 이 가드 자신(상수·fallback 단언)
-    "tests/test_additional_reviewer_target.py",       # 코어 상수/판정 단언
-    "tests/test_external_review.py",                  # CLI 안내 배선 단언(구키 conf 로 main 실행)
-)
+# 테스트 예외는 **줄 단위**다(T-0600) — 파일 통째로 빼면 같은 파일에 새로 들어온 구키 사용
+# (옛 흐름 서술·새 단언의 하드코딩)을 가드가 영영 못 본다. 줄 텍스트를 그대로 적고, 그 줄이
+# 실제로 그 파일에 있는지까지 단언해 목록이 썩지 않게 한다. 새 단언은 리터럴 대신 엔진 상수
+# (`LEGACY_EXTERNAL_REVIEW_ENABLED_KEY`)를 쓰면 예외를 늘리지 않고도 통과한다.
+# 줄 텍스트는 **상수로 조립**한다 — 리터럴을 그대로 적으면 이 표 자신이 구키를 담은 새 잔존이
+# 되고, 그걸 다시 예외로 넣는 순환이 생긴다.
+_LEGACY_GATE_KEY_TEST_LINES: dict[str, tuple[str, ...]] = {
+    # 이 가드 자신 — 구키 정체를 세우는 상수 정의 + 그 개칭을 설명하는 절 주석 1줄.
+    "tests/test_additional_reviewer_onboarding.py": (
+        f'LEGACY_GATE_KEY = "{LEGACY_GATE_KEY}"',
+        f"# opt-in 게이트 키가 `{LEGACY_GATE_KEY}` → `{GATE_KEY}` 로 바뀌었다. 개칭은",
+    ),
+    # 코어 상수 판정 — 엔진 상수가 그 리터럴임을 글자 단위로 못박는 줄.
+    "tests/test_additional_reviewer_target.py": (
+        f'assert external.LEGACY_EXTERNAL_REVIEW_ENABLED_KEY == "{LEGACY_GATE_KEY}"',
+    ),
+    # CLI 안내 배선 — 구키 conf 로 main 을 돌리는 픽스처와 그 안내 부재 단언.
+    "tests/test_external_review.py": (
+        f'_LEGACY_ENABLED_CONF = {{"{LEGACY_GATE_KEY}": "true"}}',
+        f'assert "{LEGACY_GATE_KEY}" not in capsys.readouterr().err',
+    ),
+}
 
 
 def test_gate_key_constants_are_shared_across_the_three_entries(board, pm_update):
@@ -1917,6 +1991,32 @@ def test_core_gate_reads_new_key_first_and_falls_back_once(conf, enabled, warns)
     assert (warning is not None) is warns
     if warns:
         assert warning == core.LEGACY_ENABLED_KEY_DEPRECATION
+
+
+@pytest.mark.parametrize(
+    ("conf_shape", "expected"),
+    [
+        pytest.param("new", f"local.conf {GATE_KEY}=false", id="new-key"),
+        pytest.param("legacy", f"local.conf {LEGACY_GATE_KEY}=false", id="legacy-key"),
+        pytest.param("none", "local.conf 에 opt-in 결정 없음", id="undecided"),
+    ],
+)
+def test_disabled_notice_names_the_key_that_supplied_the_decision(conf_shape, expected):
+    """비활성 안내는 **결정을 공급한 키 실명**으로 현재 상태를 말한다 (T-0600).
+
+    고정 표기(신키=false)는 구키만 있는 채택자에게 자기 conf 에 없는 줄을 인용한다 — 처방을
+    적용할 자리를 못 찾는다. 미결정도 마찬가지라 키 이름 대신 "결정 없음"을 말한다.
+    """
+    core = _external_review()
+    conf = {"new": {GATE_KEY: "false"}, "legacy": {LEGACY_GATE_KEY: "false"},
+            "none": {}}[conf_shape]
+
+    notice = core.disabled_gate_notice(conf)
+
+    assert expected in notice
+    assert f"`{GATE_KEY}=true`" in notice                 # 처방은 언제나 신키
+    if conf_shape != "legacy":
+        assert LEGACY_GATE_KEY not in notice              # 구키를 새로 가르치지 않는다
 
 
 def test_onboarding_blocks_never_write_the_legacy_key(board, pm_update):
@@ -1996,13 +2096,17 @@ def test_pm_update_new_key_decision_is_quiet(pm_update, monkeypatch, tmp_path, c
 
 
 def _legacy_gate_key_scan_targets() -> list[Path]:
-    """구키 잔존을 검사할 출하 표면 (allowlist 제외 후·축 5 스캔과 같은 인벤토리)."""
+    """구키 잔존을 검사할 출하 표면 (allowlist 제외 후·축 5 스캔과 같은 인벤토리).
+
+    테스트 파일은 **빼지 않는다** — 줄 단위 예외(`_LEGACY_GATE_KEY_TEST_LINES`)로 그 안의
+    정당한 줄만 통과시키고 나머지 줄은 그대로 검사한다.
+    """
     targets: list[Path] = []
     for path in repo_owned_paths(REPO, ".", mode=OWNED):
         if not path.is_file() or path.suffix.lower() not in _RETIRED_ACK_SCAN_SUFFIXES:
             continue
         rel = path.relative_to(REPO).as_posix()
-        if rel in _LEGACY_GATE_KEY_DOC_FILES or rel in _LEGACY_GATE_KEY_TEST_FILES:
+        if rel in _LEGACY_GATE_KEY_DOC_FILES:
             continue
         if path.name in _LEGACY_GATE_KEY_ENGINE_FILES:
             continue
@@ -2012,11 +2116,32 @@ def _legacy_gate_key_scan_targets() -> list[Path]:
 
 def test_legacy_gate_key_has_no_residue_in_shipping_surfaces():
     """출하 문서·코드 전수에 구 게이트 키가 0건이다 (fallback 구현·히스토리 제외)."""
-    residue = _phrase_residue(_legacy_gate_key_scan_targets(), (LEGACY_GATE_KEY,))
+    residue = _phrase_residue(
+        _legacy_gate_key_scan_targets(), (LEGACY_GATE_KEY,),
+        allowed_lines=_LEGACY_GATE_KEY_TEST_LINES,
+    )
     assert not residue, (
         f"구 게이트 키 잔존({LEGACY_GATE_KEY}) — `{GATE_KEY}` 로 고쳐라:\n  "
         + "\n  ".join(residue)
     )
+
+
+def test_legacy_gate_key_line_exception_still_scans_the_rest_of_the_file():
+    """줄 단위 예외는 **그 줄만** 뺀다 — 같은 파일의 새 사용은 잡힌다 (T-0600 sensitivity).
+
+    파일 통째 예외의 실패 형상이 이것이다: 예외 파일에 나중에 들어온 옛 흐름 서술·하드코딩
+    단언을 가드가 영영 못 본다. 예외 목록에서 한 줄만 빼면 그 줄이 즉시 잡혀야 한다.
+    """
+    rel = "tests/test_additional_reviewer_onboarding.py"
+    allowed = _LEGACY_GATE_KEY_TEST_LINES[rel]
+    assert len(allowed) >= 2, "부분 예외 비교가 성립하려면 예외 줄이 둘 이상이어야 한다."
+    surface = REPO / rel
+
+    partial = _phrase_residue([surface], (LEGACY_GATE_KEY,),
+                              allowed_lines={rel: allowed[:1]})
+    assert partial, "예외에서 뺀 줄이 안 잡힌다 — 예외가 파일 통째로 걸렸다."
+    assert _phrase_residue([surface], (LEGACY_GATE_KEY,),
+                           allowed_lines=_LEGACY_GATE_KEY_TEST_LINES) == []
 
 
 def test_legacy_gate_key_scan_covers_the_swept_surfaces():
@@ -2050,12 +2175,16 @@ def test_legacy_gate_key_allowlist_entries_are_load_bearing():
         assert GATE_KEY in text                               # 처방(신키)이 같은 문서 안에 있다
     changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
     assert "다음 릴리즈에서 제거한다" in changelog              # 구키 제거 예고 부기
-    for rel in _LEGACY_GATE_KEY_TEST_FILES:
+    for rel, lines in _LEGACY_GATE_KEY_TEST_LINES.items():
         path = REPO / rel
         assert path.is_file(), f"allowlist 대상 부재: {rel}"
-        assert LEGACY_GATE_KEY in path.read_text(encoding="utf-8"), (
-            f"{rel} 에 더는 구키가 없다 — allowlist 에서 빼라(스캔 대상 복귀)."
-        )
+        source = {line.strip() for line in
+                  path.read_text(encoding="utf-8").splitlines()}
+        for line in lines:
+            assert LEGACY_GATE_KEY in line, f"{rel}: 구키가 없는 예외 줄 — {line!r}"
+            assert line in source, (
+                f"{rel} 에 예외로 적은 줄이 더는 없다 — 목록에서 빼라(스캔 대상 복귀): {line!r}"
+            )
 
 
 # ── 축 7: 노브 키 개칭 + 구키 1릴리즈 fallback (T-0599) ──────────────────────
@@ -2167,6 +2296,23 @@ def test_empty_knob_value_is_unset_not_a_decision():
         resolve = getattr(core, resolver_name)
         assert resolve({new: "   ", legacy: "7"}) == 7
         assert resolve({new: "   "}) == engine_default
+
+
+@pytest.mark.parametrize("broken", ["abc", "-1", "3.5"])
+def test_broken_new_knob_value_falls_to_the_engine_default_not_the_legacy_key(broken):
+    """신키의 **깨진 값**은 엔진 기본값으로 간다 — 구키로 내려가지 않는다 (T-0600 엣지).
+
+    공급 판정은 값의 존재이지 형식이 아니다. 형식이 틀렸다고 구키를 살리면 오타 하나가 조용히
+    옛 값을 되돌린다(신키 우선 규칙이 값의 상태에 따라 뒤집히는 셈).
+    """
+    core = _external_review()
+    for new, legacy in KNOB_KEY_PAIRS:
+        resolver_name, engine_default = _KNOB_RESOLVERS[new]
+        resolve = getattr(core, resolver_name)
+        assert resolve({new: broken, legacy: "7"}) == engine_default
+        # 값을 공급한 키는 여전히 신키다 — 구키 deprecation 을 잘못 띄우지 않는다.
+        assert core.knob_value_key({new: broken, legacy: "7"}, new) == new
+        assert core.legacy_key_warnings({new: broken, legacy: "7"}) == []
 
 
 def test_engine_guidance_names_the_new_knob_keys():

@@ -591,9 +591,14 @@ def test_dry_run_previews_the_resume_round_without_sending(pd, monkeypatch, tmp_
 
 
 def test_missing_candidate_falls_back_to_fresh_with_notice(pd, monkeypatch, tmp_path, capsys):
-    """후보가 없으면 안내 1줄 + fresh — 차단하지 않는다(새 거부 rc 없음)."""
+    """후보가 없으면 안내 1줄 + fresh — 차단하지 않는다(새 거부 rc 없음).
+
+    장부는 **있고** 그 안에 대응 레코드만 없는 형상이다(장부 부재는 별도 사유·아래 테스트).
+    """
     out_dir = tmp_path / "raw"
     out_dir.mkdir()
+    _seed_record(pd._load_relay(), out_dir / "raw_outputs.json",
+                 start_extra={"ticket": "T-" + "0001"})   # 다른 티켓 = 후보 아님
     prompt = _write_prompt(tmp_path)
     fake = _FakeRun(_ok(_claude_wire("판정: 통과")))
 
@@ -604,6 +609,42 @@ def test_missing_candidate_falls_back_to_fresh_with_notice(pd, monkeypatch, tmp_
     assert rc == 0 and len(fake.calls) == 1
     assert "--resume" not in fake.calls[0]["argv"]
     assert "세션 재사용 미적용" in err and "성공 마감 위임 레코드" in err
+
+
+# ══ ⑨ 장부 부재 형상 — 조회가 아무것도 만들지 않는다 (T-0600) ═══════════════════
+
+def test_absent_ledger_is_reported_before_any_lock_is_taken(pd, tmp_path, capsys):
+    """장부가 없으면 락 획득 전에 끝난다 — 상위 디렉터리·`.lock` 파일을 만들지 않는다.
+
+    락 획득(`file_lock.exclusive_file_lock`)은 부모 디렉터리와 락 파일을 **만든다**. 조회
+    한 번이 트리에 `.project_manager/.local/` 을 새로 심으면 읽기 전용 경로가 아니다.
+    """
+    out_dir = tmp_path / "never-created"
+    plan = pd.resolve_resume_plan(
+        TICKET_ID, harness="claude", role="code-reviewer",
+        task_text="본문", output_dir=out_dir,
+    )
+    err = capsys.readouterr().err
+
+    assert plan is None
+    assert "세션 재사용 미적용" in err and "raw 장부 없음" in err
+    assert not out_dir.exists()                      # 디렉터리·lock 신설 0
+
+
+def test_resume_dry_run_leaves_no_trace_on_a_fresh_tree(pd, monkeypatch, tmp_path, capsys):
+    """`--resume-from` 미리보기는 부작용 0 — 장부 위치에 아무 파일도 생기지 않는다."""
+    out_dir = tmp_path / "raw"                        # 미생성 상태로 넘긴다
+    prompt = _write_prompt(tmp_path)
+    fake = _FakeRun(_ok(_claude_wire("판정: 통과")))
+
+    rc = _run_main(
+        pd, monkeypatch,
+        _argv(prompt, tmp_path, out_dir, "--resume-from", TICKET_ID, "--dry-run"), fake)
+    out = capsys.readouterr().out
+
+    assert rc == 0 and fake.calls == []
+    assert "세션 재사용: 미적용" in out
+    assert not out_dir.exists()
 
 
 # ══ ⑥ 하네스 축 (codex 미검증 argv 미출하·opencode 무배선) ═══════════════════

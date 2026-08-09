@@ -176,10 +176,21 @@ def test_design_placeholder_tokens_live_in_shipped_template():
 
 @pytest.mark.parametrize("token", board_mod._DESIGN_PLACEHOLDERS)
 def test_each_design_placeholder_is_detected(token):
-    """뼈대 토큰 하나만 남아도 개별 탐지된다 (sensitivity — 등재만 되고 검사 누락 방지)."""
-    body = _body() + f"\n간섭 문장: {token}\n"
+    """뼈대 토큰 하나만 **설계 절에** 남아도 개별 탐지된다 (sensitivity — 검사 누락 방지)."""
+    body = _body(_DESIGN_FILLED + f"- 잔존 뼈대: {token}\n\n")
     issues = board_mod._design_issues("T-0001", body, board_mod.DESIGN_DONE)
     assert issues, f"설계 뼈대 토큰 {token!r} 이 탐지되지 않음 — sensitivity 갭."
+
+
+@pytest.mark.parametrize("token", board_mod._DESIGN_PLACEHOLDERS)
+def test_placeholder_quoted_outside_the_design_section_is_not_a_gap(token):
+    """설계 절 **밖**(메모·인터페이스)의 뼈대 문장 인용은 미충전이 아니다 — 오탐 0 (T-0600).
+
+    설계 단계 자체를 다루는 후속 티켓은 본문에서 뼈대 문장을 인용한다. 본문 전체를 스캔하면
+    그 인용만으로 "설계 절 미충전" 경고가 뜨고, 채운 티켓이 영영 green 이 되지 않는다.
+    """
+    body = _body() + f"\n메모: 뼈대 문장 '{token}' 을 인용해 설명한다.\n"
+    assert board_mod._design_issues("T-0001", body, board_mod.DESIGN_DONE) == []
 
 
 def test_required_with_unfilled_section_is_flagged():

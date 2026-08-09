@@ -2294,7 +2294,7 @@ def _cmd_raw(argv: list[str]) -> int:
     """공유 장부의 최근 위임/리뷰 raw를 stdout에 조회한다."""
     parser = argparse.ArgumentParser(
         prog="pm_delegate.py raw",
-        description="최근 위임·외부리뷰 raw 장부 조회",
+        description="최근 위임·추가 리뷰 raw 장부 조회",
     )
     parser.add_argument(
         "--unfinished", action="store_true", help="미마감 레코드만 표시"
@@ -2461,8 +2461,13 @@ def resolve_resume_plan(
 ) -> ResumePlan | None:
     """`--resume-from` 지시자를 확정된 재사용 1건으로 해소한다(불가하면 None + loud 1줄).
 
-    막히는 자리는 셋이고 전부 **비차단**이다: 재개 미지원 하네스, 후보 부재(보존 창 밖·다른
-    role·미마감/실패 레코드), 세션 id 형식 불일치. 어느 쪽이든 fresh + full payload 로 진행한다.
+    막히는 자리는 넷이고 전부 **비차단**이다: 재개 미지원 하네스, 장부 부재, 후보 부재(보존 창
+    밖·다른 role·미마감/실패 레코드), 세션 id 형식 불일치. 어느 쪽이든 fresh + full payload 로
+    진행한다.
+
+    장부 부재는 **락을 잡기 전에** 끝낸다 — 조회는 읽기인데 락 획득이 장부 상위 디렉터리와
+    `.lock` 파일을 만든다(`file_lock.exclusive_file_lock`). 한 번도 위임하지 않은 트리에서
+    `--dry-run` 이 `.project_manager/.local/` 을 새로 만드는 건 미리보기의 부작용 0 원칙 위반이다.
     """
     if not selector:
         return None
@@ -2471,6 +2476,9 @@ def resolve_resume_plan(
         _resume_unavailable(f"{harness} 하네스는 재개 argv 가 미검증(선언표 미지원)")
         return None
     _raw_dir, ledger_path = _raw_storage(output_dir)
+    if not ledger_path.is_file():
+        _resume_unavailable(f"raw 장부 없음({ledger_path}) — 이 위치에 아직 위임 기록이 없음")
+        return None
     try:
         rows = relay.raw_records(ledger_path)
     except (OSError, ValueError) as exc:
@@ -3735,7 +3743,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--secret-scan-ack", default=None, metavar="DIGEST",
                         help="이번 합성 프롬프트의 차단을 사람이 발췌 확인 후 건별 승인"
                              "(digest는 합성 프롬프트 전문 + 해소된 primary 수신자 harness:model에 결속"
-                             "·차단 출력 digest와 정확히 일치할 때만 유효·CLI 전용)")
+                             "·차단 출력 digest와 정확히 일치할 때만 유효·CLI 전용). 차단과 승인 "
+                             "사이에 같은 티켓·역할 위임이 새로 마감되면 --resume-from 후보가 바뀌어 "
+                             "합성 프롬프트도 digest도 달라진다 — 불일치는 loud 차단이므로 그때 나온 "
+                             "새 digest 로 다시 승인한다")
     parser.add_argument("--codex-egress-escalated", action="store_true",
                         help="Codex egress 승격 호출층 증명 — 이 호출을 "
                              'sandbox_permissions="require_escalated" 로 올려 실행한다는 '

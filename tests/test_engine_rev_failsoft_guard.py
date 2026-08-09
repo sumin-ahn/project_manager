@@ -887,7 +887,10 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   해소 + 미마감 조회). sweep 은 비차단 표면이라 부재·손상·조회 실패를 사유 1줄로 접지만,
     #   조회는 deep 형제(`file_lock`)까지 들어가므로 마킹된 skew 만은 그대로 올린다 — 부분 복사
     #   사실이 "미마감 raw 조회 실패" 한 줄에 묻히면 안 된다.
-    assert len(report.boundaries) == 169, "propagation sweep boundary ratchet changed"
+    # 172 = 169 + T-0600 사본 장부 병기의 세 경계(pm_delegate 형제 로더 + 사본 판정 + 사본 미마감
+    #   조회). 병기는 가시성 보조라 부재·손상을 사유 1줄로 접지만, 판정을 빌려 오는 대상이 형제
+    #   엔진 사본이므로 마킹된 skew 는 같은 규칙으로 그대로 올린다.
+    assert len(report.boundaries) == 172, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

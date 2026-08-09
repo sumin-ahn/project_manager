@@ -1238,6 +1238,36 @@ def test_healing_replaces_the_hook_atomically(board, monkeypatch, tmp_path):
     assert not list(hook.parent.glob("pre-push.*.tmp"))    # tmp 잔재 없음
 
 
+def test_failed_replace_leaves_no_tmp_residue(board, monkeypatch, tmp_path):
+    """교체가 실패해도 `pre-push.<pid>.tmp` 를 남기지 않는다 (T-0600 — 실패는 그대로 올린다).
+
+    잔재는 git 이 실행하지 않는 이름이라 무해했지만, 실패마다 훅 디렉토리에 쌓인다.
+    """
+    hook = _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
+    monkeypatch.setattr(
+        board.os, "replace",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("교체 실패")),
+    )
+
+    with pytest.raises(OSError):
+        board._write_hook_atomic(hook, board.pre_push_hook_body("python3"))
+
+    assert not list(hook.parent.glob("pre-push.*.tmp"))
+    assert hook.read_text(encoding="utf-8") == _legacy_hook()   # 원본 미변경
+
+
+def test_failed_healing_stays_non_fatal_and_clean(board, monkeypatch, tmp_path):
+    """치유 중 교체 실패는 회귀를 막지 않고(비차단) 잔재도 남기지 않는다."""
+    hook = _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
+    monkeypatch.setattr(
+        board.os, "replace",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("교체 실패")),
+    )
+
+    assert board._heal_pre_push_hook_drift() is False
+    assert not list(hook.parent.glob("pre-push.*.tmp"))
+
+
 def test_healing_preserves_the_installed_interpreter(board, monkeypatch, tmp_path):
     """채택자의 런처 선택(`py -3.12`)을 치유가 바꾸지 않는다 — 설치된 인터프리터를 보존."""
     hook = _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook("py -3.12"))

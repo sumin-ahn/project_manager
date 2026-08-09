@@ -1277,6 +1277,10 @@ def knob_value_key(conf: dict[str, str], key: str) -> str | None:
     조정한 사람이 조용히 무시된다) **공급 판정만 다르다**: 게이트는 키 존재가 곧 결정이지만
     (`false` 도 결정이라 온보딩이 다시 묻지 않는다) 노브는 종전부터 빈 값을 미설정으로 읽어
     기본값으로 fail-soft 했다. 그 의미를 그대로 승계해 "비어 있지 않은 값"만 공급으로 본다.
+
+    공급 판정은 값의 **존재**이지 형식이 아니다 — 신키가 깨진 값(비정수)을 공급하면 해소는
+    엔진 기본값으로 가고 구키로 내려가지 않는다(신키 우선 규칙을 값이 깨졌다는 이유로 뒤집으면,
+    오타 하나가 조용히 옛 값을 되살린다).
     """
     for candidate in (key, LEGACY_KNOB_KEYS[key]):
         if conf.get(candidate, "").strip():
@@ -1314,6 +1318,24 @@ def legacy_key_warnings(conf: dict[str, str]) -> list[str]:
         if knob_value_key(conf, key) == LEGACY_KNOB_KEYS[key]
     ]
     return warnings
+
+
+def disabled_gate_notice(conf: dict[str, str]) -> str:
+    """게이트가 꺼져 있을 때의 안내 — 현재 상태를 **결정을 공급한 키 실명**으로 말한다.
+
+    구키만 있는 채택자에게 신키 이름으로 "…=false" 라고 말하면 자기 conf 에 **없는 줄**을 찾게
+    된다(고정 표기의 실패 형상). 결정이 아예 없으면 키 이름 대신 그 사실을 말한다 — 없는 줄을
+    인용하지 않는다. 처방은 두 경우 모두 신키다(구키는 다음 릴리즈에서 제거).
+    """
+    key = enabled_decision_key(conf)
+    state = (f"local.conf {key}={conf.get(key, '').strip()}" if key
+             else "local.conf 에 opt-in 결정 없음")
+    return (
+        f"추가 리뷰어 비활성 — 코드 diff 외부 전송이 꺼져 있습니다 ({state}).\n"
+        f"켜기: local.conf 에 `{ADDITIONAL_REVIEWER_ENABLED_KEY}=true` 추가, 또는 "
+        "`board.py init` / `pm_update` 시 opt-in 프롬프트. "
+        "미리보기는 `--dry-run`, 1회 강제는 `--force`."
+    )
 
 
 def _is_enabled(conf: dict[str, str]) -> bool:
@@ -4581,7 +4603,7 @@ def detect_output_contamination(output: str) -> OutputContamination:
 
 
 def _raw_storage(output_dir: Path | None = None) -> tuple[Path, Path]:
-    """외부리뷰 raw/공유 장부 위치 — 앵커는 해소된 소유 PM 홈(미해소만 tempdir 폴백).
+    """추가 리뷰 raw/공유 장부 위치 — 앵커는 해소된 소유 PM 홈(미해소만 tempdir 폴백).
 
     diff 앵커(`_main` 이 주입하는 REPO=diff_root)가 아니라 `_PM_HOME_OVERRIDE`(= 같은 실행이
     해소한 소유 PM 홈)를 쓴다. 기록이 슬롯/스냅샷 장부로 갈리면 PM 홈 장부를 읽는
@@ -4601,7 +4623,7 @@ def _raw_storage(output_dir: Path | None = None) -> tuple[Path, Path]:
 
 
 def _reserve_output(reviewer: str, output_dir: Path | None = None) -> Path:
-    """실행 전 장부가 가리킬 외부리뷰 raw를 충돌 없이 선점한다."""
+    """실행 전 장부가 가리킬 추가 리뷰 raw를 충돌 없이 선점한다."""
     base_dir, _ledger_path = _raw_storage(output_dir)
     base_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -5828,14 +5850,7 @@ def _main(argv: list[str] | None = None) -> int:
 
     # 활성화 게이트 (외부 전송이므로 기본 OFF)
     if not _is_enabled(conf) and not args.force:
-        print(
-            "추가 리뷰어 비활성 — 코드 diff 외부 전송이 꺼져 있습니다 "
-            f"(local.conf {ADDITIONAL_REVIEWER_ENABLED_KEY}=false).\n"
-            f"켜기: local.conf 에 `{ADDITIONAL_REVIEWER_ENABLED_KEY}=true` 추가, 또는 "
-            "`board.py init` / `pm_update` 시 opt-in 프롬프트. "
-            "미리보기는 `--dry-run`, 1회 강제는 `--force`.",
-            file=sys.stderr,
-        )
+        print(disabled_gate_notice(conf), file=sys.stderr)
         return 0  # no-op — 실패 아님
 
     # Codex egress 게이트 — `--output-dir` 생성·격리 거울·라운드 예약·raw 예약·외부 스폰·과금

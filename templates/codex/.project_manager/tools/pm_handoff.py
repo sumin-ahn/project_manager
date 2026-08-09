@@ -20,7 +20,7 @@ slot/solo 호환 경로:
      의 트리거(역할 framing + /pm-bootstrap)를 채워 stdout. 인계 본문은 log entry 가 이월 —
      부트스트랩이 자동 dump 하므로 프롬프트에 손-채움 안 함.
   6. git status dump — git status -s 출력 + 변경 파일 카운트 + 미push commit 수(ahead) 경고.
-  6b. 미마감 raw sweep — 위임/외부리뷰 raw 장부의 미마감 레코드 표면화(비차단 경고).
+  6b. 미마감 raw sweep — 위임/추가 리뷰 raw 장부의 미마감 레코드 표면화(비차단 경고).
   7. 잔여 PM 수동 작업 출력 — checklist(커밋 + push 단계 포함).
 
 결정:
@@ -427,9 +427,31 @@ def _load_pm_relay():
     return mod
 
 
+def _load_pm_delegate():
+    """pm_delegate 모듈을 동적 로드한다. 부재/로드 실패 시 None (fail-soft).
+
+    미마감 raw sweep([6b/7])이 **사본 장부 병기**에만 쓴다 — "이 조회가 안 보는 장부가 어디
+    있는가"는 위임 조회면(`pm_delegate.py raw`)이 이미 판정하므로(`_peer_engine_ledgers`) 그
+    규칙을 재사용한다(같은 판정이 두 곳이면 반드시 갈라진다). 비차단 surface 라 부재/실패는
+    병기만 건너뛴다(핸드오프 불변).
+    """
+    delegate_path = TOOLS_DIR / "pm_delegate.py"
+    if not delegate_path.exists():
+        return None
+    try:
+        mod = _load_module_from_path(
+            delegate_path, "pm_delegate.py", verifier=_verify_engine_rev,
+        )
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 병기만 끈다.
+        if _is_engine_rev_skew(exc):
+            raise  # pm_delegate 사본 skew 는 fail-loud(삼키지 않는다).
+        return None
+    return mod
+
+
 # ── 미마감 raw sweep ([6b/7] · 비차단 경고 — T-0596) ──────────────────────────
 #
-# 위임/외부리뷰는 외부 프로세스 실행 **전**에 raw 장부에 미마감 레코드를 예약하고 종료 시 같은
+# 위임/추가 리뷰는 외부 프로세스 실행 **전**에 raw 장부에 미마감 레코드를 예약하고 종료 시 같은
 # 레코드를 마감한다 — 그래서 미마감으로 남은 레코드는 "죽은 실행"의 흔적이다. 세션이 그걸 안 보면
 # 조용히 누적하고(실측 17건), 나중에 장부는 조회해도 의미를 못 준다. 핸드오프가 세션 끝에서
 # 건수 + 최근 몇 건을 표면화한다. **차단하지 않는다** — 잔존 자체는 정상 종료 실패의 결과이지
@@ -2391,12 +2413,16 @@ class PmHandoff:
         venv_python: str | Path = _default_python(),
         worktree_pool=None,
         raw_ledger_file: Path | None = None,
+        peer_raw_ledger_files: tuple[Path, ...] | None = None,
     ) -> None:
         self._log_file = log_file
         self._pm_playbook_file = pm_playbook_file
         # 미마감 raw sweep([6b/7]) 장부 seam — 명시(hermetic 테스트)면 그 경로, None(프로덕션)이면
         # sweep 시점에 pm_relay 의 기본 위치(`.project_manager/.local/raw_outputs.json`)로 해소한다.
         self._raw_ledger_file = raw_ledger_file
+        # 사본 장부 병기 seam — 명시(hermetic 테스트)면 그 목록(`()` = 사본 없음), None(프로덕션)
+        # 이면 sweep 시점에 위임 조회면 판정(`pm_delegate._peer_engine_ledgers`)으로 해소한다.
+        self._peer_raw_ledger_files = peer_raw_ledger_files
         # slot 대시보드 seam — 자기 섹션 overwrite 대상. 명시(hermetic 테스트)면
         # 그 경로, None(프로덕션)이면 write 시 `_dashboard_file()`(호출 시점 REPO 추종)로 해소한다.
         self._dashboard_file = dashboard_file
@@ -2918,7 +2944,8 @@ class PmHandoff:
         판정 범위(어느 장부를 봤는지)를 항상 1줄로 밝힌다 — 위임은 소유 PM 홈
         (`pm_delegate._CONFIG_REPO_OVERRIDE`)이나 명시 `--output-dir` 기준으로 장부를 고르므로
         이 sweep 이 안 보는 사본 장부(예: worktree 쪽)가 있을 수 있다. 표기가 없으면 "0건"이
-        "전 장부 0건"으로 읽힌다(전 장부 통합 조회는 이 표면의 범위 밖).
+        "전 장부 0건"으로 읽힌다. 그 사본이 **실재하면** 경로와 건수도 병기한다(가시성만 —
+        전 장부 통합 조회는 이 표면의 범위 밖).
         """
         relay = _load_pm_relay()
         if relay is None:
@@ -2929,6 +2956,11 @@ class PmHandoff:
             print("  raw 장부 위치 미해소 — sweep skip.")
             return
         print(f"  이 장부 기준: {ledger}")
+        self._report_unfinished_raw(relay, ledger)
+        self._report_peer_raw_ledgers(relay, ledger)
+
+    def _report_unfinished_raw(self, relay, ledger: Path) -> None:
+        """결정 공급 장부 1개의 미마감 판정 — 건수 + 최근 N건 (비차단·사유 1줄 후 skip)."""
         if not ledger.exists():
             print("  raw 장부 없음 — 미마감 raw 0건.")
             return
@@ -2954,6 +2986,42 @@ class PmHandoff:
             )
         if len(rows) > UNFINISHED_RAW_DISPLAY_LIMIT:
             print(f"    … 외 {len(rows) - UNFINISHED_RAW_DISPLAY_LIMIT}건")
+
+    def _peer_raw_ledgers(self, primary: Path) -> tuple[Path, ...]:
+        """이 sweep 이 **안 보는** 사본 장부(worktree 등) — 판정은 위임 조회면 것을 재사용."""
+        try:
+            resolved_primary = primary.resolve()
+            if self._peer_raw_ledger_files is not None:
+                peers: tuple[Path, ...] = tuple(self._peer_raw_ledger_files)
+            else:
+                delegate = _load_pm_delegate()
+                if delegate is None:
+                    return ()
+                peers = tuple(delegate._peer_engine_ledgers())
+        except Exception as exc:  # noqa: BLE001 — fail-soft: 병기 실패가 핸드오프를 막지 않는다.
+            if _is_engine_rev_skew(exc):
+                raise  # 사본 skew 는 삼키지 않는다(`_load_pm_delegate` 와 같은 규칙).
+            return ()
+        return tuple(peer for peer in peers if peer != resolved_primary)
+
+    def _report_peer_raw_ledgers(self, relay, primary: Path) -> None:
+        """사본 장부가 실재하면 **경로와 미마감 건수**를 1줄씩 병기한다 (가시성만·비차단).
+
+        통합 조회는 범위 밖이다 — 이 sweep 은 결정 공급 장부 하나만 판정하고, 다른 사본이
+        있다는 사실과 그 건수만 알린다. 사본이 없으면(솔로 형상) 아무 줄도 내지 않는다.
+        """
+        for peer in self._peer_raw_ledgers(primary):
+            try:
+                count = len(relay.unfinished_raw_records(peer))
+            except Exception as exc:  # noqa: BLE001 — fail-soft: 손상 사본이 핸드오프를 막지 않는다.
+                if _is_engine_rev_skew(exc):
+                    raise
+                print(f"  ⚠ 사본 장부 조회 실패 ({peer}: {exc}) — 건수 미상.")
+                continue
+            print(
+                f"  {'⚠ ' if count else ''}사본 장부 {peer} — 미마감 {count}건 "
+                "(이 sweep 밖·통합 조회는 범위 밖)."
+            )
 
     # ── 구 task state 호환 backfill (정상 생성은 bind_task 시점) ─────────────────────
 

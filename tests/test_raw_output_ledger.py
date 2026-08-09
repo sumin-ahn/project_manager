@@ -158,6 +158,46 @@ def test_start_and_finish_record_preserve_audit_fields(relay, tmp_path):
     assert rows[0]["finished_at"]
 
 
+def test_reserved_key_table_covers_every_common_schema_field(relay, tmp_path):
+    """예약표가 시작·마감이 쓰는 공통 필드를 전부 담는다 — 표가 뒤처지면 예약이 헐거워진다."""
+    ledger_path = tmp_path / "raw_outputs.json"
+    record_id = relay.start_raw_record(
+        ledger_path, surface="delegate", harness="codex", model="gpt-x",
+        role="developer", raw_path=tmp_path / "raw.txt", attempt="primary",
+    )
+    relay.finish_raw_record(
+        ledger_path, record_id, rc=0, elapsed_sec=1.0, silence_sec=None,
+    )
+    common = set(_ledger(ledger_path)["records"][0])
+    assert common <= relay.RAW_LEDGER_RESERVED_KEYS, (
+        f"공통 스키마 키가 예약표 밖: {sorted(common - relay.RAW_LEDGER_RESERVED_KEYS)}"
+    )
+
+
+def test_start_extra_cannot_seed_finish_only_schema_keys(relay, tmp_path):
+    """시작 `extra` 도 **마감 전용** 공통 키를 심지 못한다 (T-0600 — 두 표면 한 규칙).
+
+    시작을 "지금 이 행에 있는 키"로만 막으면 `finished_at`/`rc` 는 시작 시점에 아직 없어
+    통과한다. 그렇게 심긴 `finished_at` 은 실행이 죽어도 레코드를 마감된 것으로 보이게 해
+    미마감 sweep 이 못 본다(fail-open).
+    """
+    ledger_path = tmp_path / "raw_outputs.json"
+    record_id = relay.start_raw_record(
+        ledger_path, surface="delegate", harness="codex", model="gpt-x",
+        role="developer", raw_path=tmp_path / "raw.txt", attempt="primary",
+        extra={"finished_at": "2026-01-01T00:00:00+00:00", "rc": 0,
+               "elapsed_sec": 0.0, "silence_sec": 0.0, "surface": "spoofed",
+               "ticket": "T-" + "0600"},
+    )
+    row = _ledger(ledger_path)["records"][0]
+
+    assert row["id"] == record_id and row["surface"] == "delegate"
+    for finish_only in ("finished_at", "rc", "elapsed_sec", "silence_sec"):
+        assert finish_only not in row, f"시작 extra 가 마감 키를 심었다: {finish_only}"
+    assert row["ticket"] == "T-" + "0600"          # 예약 밖 필드는 그대로 실린다
+    assert relay.unfinished_raw_records(ledger_path) == [row]   # sweep 이 본다
+
+
 def test_retention_is_bounded_and_keeps_unfinished_separate(relay):
     now = datetime.datetime(2026, 7, 30, tzinfo=datetime.timezone.utc)
 

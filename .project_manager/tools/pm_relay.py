@@ -282,7 +282,7 @@ def validate_relay_budget(budget: int | None, stop_pct: int) -> None:
             "ctx_window_tokens를 높이거나 stop_pct를 낮춰라."
         )
 
-# 위임/외부리뷰 raw 위치 장부. 두 실행 표면이 같은 파일을 갱신하므로 파일락 아래
+# 위임/추가 리뷰 raw 위치 장부. 두 실행 표면이 같은 파일을 갱신하므로 파일락 아래
 # read-modify-write 하고 unique tmp를 atomic replace한다. 미마감은 완료 폭주와 별도 보존해
 # 최근 비정상 종료를 찾을 수 있게 하되, 기간과 개수에 모두 상한을 둬 조회가 무한 누적으로
 # 무력화되지 않게 한다. raw 파일은 감사 산출물이므로 이 장부 정리에서 삭제하지 않는다.
@@ -400,6 +400,17 @@ def _prune_raw_records(
     return sorted((*unfinished, *completed), key=key)
 
 
+# 장부 공통 스키마 키 — 표면별 `extra` 가 절대 덮어쓰지 못하는 이름이다. 조회면이 보는 필드의
+# 뜻이 표면마다 달라지면 장부 하나로 실행을 재구성할 수 없다. **시작·마감이 같은 이 한 표를**
+# 예약 규칙으로 쓴다: 시작을 "지금 이 행에 있는 키"로만 막으면 마감 전용 키(finished_at·rc 등)가
+# 시작 시점엔 아직 없어 통과하고, 그러면 시작 extra 가 `finished_at` 을 심어 미마감 sweep 이
+# 죽은 실행을 못 보거나 마감이 그 값을 덮어써 두 표면의 extra 가 서로를 지운다.
+RAW_LEDGER_RESERVED_KEYS: frozenset[str] = frozenset({
+    "id", "surface", "harness", "model", "role", "attempt", "pid",
+    "started_at", "raw_path", "finished_at", "rc", "elapsed_sec", "silence_sec",
+})
+
+
 def start_raw_record(
     ledger_path: Path,
     *,
@@ -415,7 +426,8 @@ def start_raw_record(
     """외부 프로세스 실행 전에 미마감 레코드를 원자 등록하고 record id를 반환한다.
 
     `extra` = 표면별 해소 provenance 의 **추가** 필드(예: 추가 리뷰어의 source/reasoning/command).
-    공통 스키마 키는 덮어쓰지 않는다 — 조회면이 보는 필드 이름의 뜻이 표면마다 달라지지 않게 한다.
+    공통 스키마 키(`RAW_LEDGER_RESERVED_KEYS`)는 덮어쓰지 않는다 — 조회면이 보는 필드 이름의 뜻이
+    표면마다 달라지지 않게 한다(마감의 같은 규칙과 **한 표**를 공유한다).
     """
     current = now or datetime.datetime.now(datetime.timezone.utc)
     if current.tzinfo is None:
@@ -435,7 +447,7 @@ def start_raw_record(
         "raw_path": str(raw_path.resolve()),
     }
     for key, value in (extra or {}).items():
-        if key not in row:
+        if key not in RAW_LEDGER_RESERVED_KEYS:
             row[key] = value
     with _raw_ledger_lock(ledger_path):
         ledger = _read_raw_ledger(ledger_path)
@@ -445,14 +457,6 @@ def start_raw_record(
         ledger["records"] = _prune_raw_records(records, now=current)
         _write_raw_ledger(ledger_path, ledger)
     return record_id
-
-
-# 장부 공통 스키마 키 — 표면별 `extra` 가 절대 덮어쓰지 못하는 이름이다. 조회면이 보는 필드의
-# 뜻이 표면마다 달라지면 장부 하나로 실행을 재구성할 수 없다(start 의 같은 정책과 짝).
-RAW_LEDGER_RESERVED_KEYS: frozenset[str] = frozenset({
-    "id", "surface", "harness", "model", "role", "attempt", "pid",
-    "started_at", "raw_path", "finished_at", "rc", "elapsed_sec", "silence_sec",
-})
 
 
 def finish_raw_record(
@@ -1583,7 +1587,7 @@ REVIEWER_FALLBACK_PROFILE = HarnessProfile(PROGRESS_SIGNAL_NONE, False,
                                            DEFAULT_IDLE_TIMEOUT_SEC, DEFAULT_WALL_TIMEOUT_SEC)
 
 # local.conf 하네스별 override 키 — GPU 여유/네트워크 같은 **환경 조건**은 엔진 속성이 아니라
-# 배포 속성이라 per-clone 으로 받는다. 두 표면(위임·외부리뷰)이 같은 키를 읽는다.
+# 배포 속성이라 per-clone 으로 받는다. 두 표면(위임·추가 리뷰)이 같은 키를 읽는다.
 HARNESS_IDLE_TIMEOUT_KEY = "harness.{harness}.idle_timeout"
 HARNESS_WALL_TIMEOUT_KEY = "harness.{harness}.wall_timeout"
 

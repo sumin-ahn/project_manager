@@ -221,6 +221,18 @@ def test_dod_unknown_mark_blocks(board):
     assert any("DoD 미체크" in p for p in problems), f"미지 마커가 통과함: {problems}"
 
 
+@pytest.mark.parametrize("line", ["- [] 빈 브라켓 항목", "* []빈 브라켓·공백 없음"])
+def test_dod_empty_bracket_blocks(board, line):
+    """`- []`(빈 브라켓)도 차단 — 마커를 1글자로만 보면 체크박스로 인식조차 못 해 통과했다.
+
+    사람 눈에는 미체크인 줄이라, 조용한 통과는 done 이행에서 그 항목을 증발시킨다(fail-open).
+    """
+    problems = board._complete_gate("T-0596", _gate_args(), _dod_body("- [x] 코드", line))
+
+    assert any("DoD 미체크" in p and "빈 브라켓" in p for p in problems), (
+        f"빈 브라켓 항목이 통과함: {problems}")
+
+
 def test_dod_gate_ignores_checkboxes_outside_dod_section(board):
     """DoD 절 **밖**(메모·참고)의 미체크 체크박스는 판정 대상이 아니다(오탐 0)."""
     body = _dod_body("- [x] 코드") + "\n## 메모\n- [ ] 다음 세션 후보 아이디어\n"

@@ -22,6 +22,7 @@ import os
 import subprocess
 import sys
 import threading
+import types
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
@@ -1972,11 +1973,14 @@ class _SnapPool:
         return "v1.3.3"
 
 
-def _hermetic_handoff(hf, tmp_path, pool, *, run_git_fn=None, raw_ledger_file=None):
+def _hermetic_handoff(hf, tmp_path, pool, *, run_git_fn=None, raw_ledger_file=None,
+                      peer_raw_ledger_files=()):
     """명시 pm_state/log/dashboard 주입 + mock worktree_pool 로 hermetic PmHandoff 구성.
 
     `raw_ledger_file` 미지정이면 tmp 의 **없는** 경로를 준다 — [6b/7] 미마감 raw sweep 이
     실 PM 홈 장부를 읽지 않게 하는 격리다(sweep 자체 검증은 명시 주입 케이스가 한다).
+    `peer_raw_ledger_files` 기본 `()` 도 같은 격리다 — 사본 장부 병기가 실 트리 탐색
+    (`pm_delegate._peer_engine_ledgers`)으로 새지 않게 한다.
     """
     pm_state = tmp_path / "pm_state.md"
     pm_state.write_text(
@@ -1993,6 +1997,7 @@ def _hermetic_handoff(hf, tmp_path, pool, *, run_git_fn=None, raw_ledger_file=No
         dashboard_file=tmp_path / "dashboard.md",
         worktree_pool=pool,
         raw_ledger_file=raw_ledger_file or (tmp_path / "absent_raw_outputs.json"),
+        peer_raw_ledger_files=peer_raw_ledger_files,
     )
 
 
@@ -3501,6 +3506,78 @@ def test_handoff_raw_sweep_reports_missing_ledger(hf, tmp_path, capsys):
                            raw_ledger_file=tmp_path / "없는장부.json")
 
     assert "raw 장부 없음" in out
+
+
+def _write_named_ledger(directory: Path, *, unfinished: int) -> Path:
+    """사본 장부 픽스처 — 다른 디렉터리에 같은 이름의 장부를 하나 더 만든다."""
+    directory.mkdir(parents=True, exist_ok=True)
+    return _write_ledger(directory, unfinished=unfinished)
+
+
+def test_handoff_names_peer_ledgers_with_their_unfinished_count(hf, tmp_path, capsys):
+    """[6b/7]: worktree 사본 장부가 있으면 **경로와 건수**를 1줄 병기한다 (T-0600·가시성만).
+
+    결정 공급 장부 하나만 보고 "0건"이라고 말하면 다른 사본에 쌓인 미마감이 통째로 안 보인다.
+    통합 조회는 범위 밖이라 이 표면은 존재와 건수만 알린다.
+    """
+    primary = _write_ledger(tmp_path, unfinished=1)
+    peer = _write_named_ledger(tmp_path / "worktree-copy", unfinished=2)
+
+    out = _run_handoff_out(hf, tmp_path, capsys, raw_ledger_file=primary,
+                           peer_raw_ledger_files=(peer,))
+
+    line = next(l for l in out.splitlines() if "사본 장부" in l)
+    assert str(peer) in line, f"사본 장부 경로가 안 실림: {line!r}"
+    assert "미마감 2건" in line, f"사본 장부 건수가 안 실림: {line!r}"
+    assert "범위 밖" in line, f"통합 조회가 아님을 밝히지 않음: {line!r}"
+    assert f"이 장부 기준: {primary}" in out          # 판정 장부 표기는 그대로
+
+
+def test_handoff_stays_silent_about_peers_when_there_are_none(hf, tmp_path, capsys):
+    """[6b/7]: 사본이 없으면(솔로 형상) 병기 줄 자체가 없다 — 새 상시 소음 금지."""
+    out = _run_handoff_out(hf, tmp_path, capsys,
+                           raw_ledger_file=_write_ledger(tmp_path, unfinished=1))
+
+    assert "사본 장부" not in out
+
+
+def test_peer_ledger_line_is_failsoft_on_a_corrupt_copy(hf, tmp_path, capsys):
+    """[6b/7]: 손상된 사본 장부는 사유 1줄 후 건너뛴다 — 핸드오프를 막지 않는다."""
+    broken = tmp_path / "broken" / "raw_outputs.json"
+    broken.parent.mkdir()
+    broken.write_text("{not json", encoding="utf-8")
+
+    out = _run_handoff_out(hf, tmp_path, capsys,
+                           raw_ledger_file=_write_ledger(tmp_path, unfinished=1),
+                           peer_raw_ledger_files=(broken,))
+
+    assert "⚠ 사본 장부 조회 실패" in out
+
+
+def test_peer_ledger_discovery_reuses_the_delegate_query_rule(hf, tmp_path, monkeypatch):
+    """프로덕션(주입 없음) 사본 판정은 위임 조회면 규칙을 그대로 쓰고, 자기 장부는 뺀다.
+
+    같은 판정을 여기서 다시 구현하면 두 표면이 서로 다른 사본 집합을 말한다.
+    """
+    primary = tmp_path / "primary" / "raw_outputs.json"
+    primary.parent.mkdir()
+    primary.write_text("{}", encoding="utf-8")
+    peer = tmp_path / "peer" / "raw_outputs.json"
+    stub = types.SimpleNamespace(
+        _peer_engine_ledgers=lambda: (primary.resolve(), peer))
+    monkeypatch.setattr(hf, "_load_pm_delegate", lambda: stub)
+    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool(), peer_raw_ledger_files=None)
+
+    assert handoff._peer_raw_ledgers(primary) == (peer,)
+
+
+def test_peer_ledger_discovery_is_failsoft_without_the_delegate_engine(
+        hf, tmp_path, monkeypatch):
+    """pm_delegate 부재/로드 실패면 병기를 조용히 건너뛴다(핸드오프 불변)."""
+    monkeypatch.setattr(hf, "_load_pm_delegate", lambda: None)
+    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool(), peer_raw_ledger_files=None)
+
+    assert handoff._peer_raw_ledgers(tmp_path / "raw_outputs.json") == ()
 
 
 def test_handoff_checklist_includes_push_step_after_commit(hf, tmp_path, capsys):

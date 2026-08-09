@@ -391,6 +391,19 @@ def test_ack_help_names_prompt_and_resolved_primary_recipient_binding(pd):
     assert "합성 프롬프트 전문 + 해소된 primary 수신자 harness:model에 결속" in help_text
 
 
+def test_ack_help_warns_that_a_new_round_changes_the_digest(pd):
+    """차단→승인 사이에 같은 티켓·역할 위임이 마감되면 digest 가 바뀐다는 안내 1줄 (T-0600).
+
+    `--resume-from` 후보가 그 사이 새 레코드로 바뀌면 delta 가 달라져 합성 프롬프트 전문이
+    달라진다 — 받아 둔 digest 는 불일치로 loud 차단되고 재승인이 필요하다. 안내가 없으면
+    승인자가 그 실패를 "ack 이 안 먹는다"로 읽는다.
+    """
+    help_text = " ".join(pd.build_arg_parser().format_help().split())
+
+    assert "--resume-from 후보가 바뀌어" in help_text
+    assert "다시 승인한다" in help_text
+
+
 def test_missing_digest_fails_closed_without_python_assert(
     pd, monkeypatch, tmp_path, capsys
 ):
