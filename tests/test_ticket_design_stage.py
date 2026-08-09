@@ -585,7 +585,7 @@ def test_subtitled_headings_are_sliced_by_the_same_rule():
 
     존재 축 강화가 DoD 슬라이서를 함께 조여 실 템플릿의 DoD 가 통째로 안 보이면 안 된다."""
     body = _body()
-    assert board_mod._dod_section_text(body) is not None
+    assert board_mod._dod_section_texts(body)
     assert board_mod._dod_open_items(body), "DoD 미체크 항목을 못 봤다 — 슬라이서 회귀"
 
 

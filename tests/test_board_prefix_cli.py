@@ -887,3 +887,85 @@ def test_healthy_board_is_unaffected(board):
     _seed_ticket(board, "T-foo-001")
     assert board.cmd_prefix_rename(_ns(src="foo", dst="bar", dry_run=False)) == 0
     assert _ids_on_disk(board) == {"T-bar-001"}
+
+
+# ════════════════════════════════════════════════════════════════════════
+# mutation 조회 = canonical 정확 일치만 (T-0605 ①)
+# ════════════════════════════════════════════════════════════════════════
+# codex R5 지적: `find_ticket` 은 canonical ID 불일치를 **경고만 하고 반환**한다. legacy
+# `T-NNNN` 이 없고 prefixed `T-NNNN-001` 만 있을 때 claim·complete·block 등이 그 다른 티켓을
+# 실제로 이동시킨다(경고를 봤을 땐 이미 옮겨진 뒤다). 상태-변경 명령의 조회는 정확 일치만
+# 인정하고, 불일치는 미존재로 fail-loud 한다.
+
+_MISSING_LEGACY_ID = "T-0036"          # 실재하지 않는 번호 (오타 입력)
+_COEXISTING_PREFIXED_ID = "T-0036-001"  # 같은 번호로 시작하는 **다른** 티켓
+
+
+def _seed_prefixed_only(board, *, status: str = "open"):
+    """legacy 번호는 부재하고 prefixed 티켓만 사는 보드 (오이동 재현 픽스처)."""
+    return _seed_ticket(board, _COEXISTING_PREFIXED_ID, status=status)
+
+
+def test_prefix_glob_first_match_is_the_reproduced_hazard(board, capsys):
+    """재현 — 읽기 seam(`find_ticket`)은 없는 번호를 **다른 티켓**으로 답한다(경고 + 반환).
+
+    읽기(`show`)는 그 폴백이 legacy 조회를 살리는 자리라 종전대로 두고, 이동은 아래처럼 막는다."""
+    path = _seed_prefixed_only(board)
+    status, found = board.find_ticket(_MISSING_LEGACY_ID)
+    assert (status, found) == ("open", path)
+    assert "정확 일치 티켓 없음" in capsys.readouterr().err
+
+
+def test_mutation_lookup_refuses_a_prefix_only_match(board):
+    """mutation 조회는 canonical 불일치를 **미존재**로 올린다 (안내에 실재 후보를 싣는다)."""
+    _seed_prefixed_only(board)
+    with pytest.raises(FileNotFoundError) as excinfo:
+        board.find_ticket_for_mutation(_MISSING_LEGACY_ID)
+    message = str(excinfo.value)
+    assert _MISSING_LEGACY_ID in message and _COEXISTING_PREFIXED_ID in message
+
+
+@pytest.mark.parametrize("mutation, seeded_status", [
+    ("block", "open"),
+    ("unclaim", "claimed"),
+    ("unblock", "blocked"),
+    ("complete", "claimed"),
+    ("promote", "open"),
+])
+def test_state_changing_commands_never_move_a_prefix_only_match(
+        board, capsys, mutation, seeded_status):
+    """없는 번호로 부른 상태-변경 명령은 rc 2 로 끝나고 **아무 티켓도 옮기지 않는다** (DoD)."""
+    path = _seed_prefixed_only(board, status=seeded_status)
+    args = {
+        "block": _ns(id=_MISSING_LEGACY_ID, reason="r"),
+        "unclaim": _ns(id=_MISSING_LEGACY_ID),
+        "unblock": _ns(id=_MISSING_LEGACY_ID),
+        "complete": _ns(id=_MISSING_LEGACY_ID, tests_pass=True,
+                        allow_missing_log=True, allow_untested=False),
+        "promote": _ns(id=_MISSING_LEGACY_ID),
+    }[mutation]
+    command = getattr(board, f"cmd_{mutation}")
+
+    assert command(args) == 2
+
+    assert path.exists(), f"{mutation} 이 남의 티켓을 옮겼다"
+    assert _ids_on_disk(board) == {_COEXISTING_PREFIXED_ID}
+    assert _COEXISTING_PREFIXED_ID in capsys.readouterr().err   # 왜 못 찾았는지 말한다
+
+
+def test_the_exact_id_still_moves_the_ticket(board):
+    """정상 경로 무변경 — 정확한 canonical ID 로 부르면 종전대로 이동한다."""
+    path = _seed_prefixed_only(board)
+
+    assert board.cmd_block(_ns(id=_COEXISTING_PREFIXED_ID, reason="r")) == 0
+
+    assert not path.exists()
+    assert (board.TICKETS_DIR / "blocked" / f"{_COEXISTING_PREFIXED_ID}-slug.md").exists()
+
+
+def test_a_ticket_absent_everywhere_is_still_a_plain_not_found(board, capsys):
+    """비슷한 번호조차 없으면 안내는 종전처럼 단순 미존재다 (없는 후보를 지어내지 않는다)."""
+    _seed_ticket(board, "T-9999")
+    assert board.cmd_block(_ns(id=_MISSING_LEGACY_ID, reason="r")) == 2
+    err = capsys.readouterr().err
+    assert _MISSING_LEGACY_ID in err and "T-9999" not in err

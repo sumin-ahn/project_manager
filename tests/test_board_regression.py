@@ -19,11 +19,18 @@ import io
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 from _pytest_summary import pytest_summary
+
+requires_git = pytest.mark.skipif(
+    shutil.which("git") is None,
+    reason="git 바이너리 부재 — 권위 해소(rev-parse) 케이스 skip.",
+)
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -1539,10 +1546,11 @@ def test_an_unreadable_hook_is_refused(board, monkeypatch, tmp_path, capsys):
     assert "세대를 판정할 수 없습니다" in err and "board.py init" in err
 
 
-def test_the_refusal_resolves_hooks_without_calling_git(board, monkeypatch, tmp_path):
-    """경로 해소는 순수 파이썬이다 — 회귀 진입 경로에 subprocess 를 추가하지 않는다.
+def test_the_refusal_resolves_a_present_hook_without_calling_git(board, monkeypatch, tmp_path):
+    """순수 해소 자리에 훅이 **실재하면** 그 파일로 판정한다 — 회귀 진입에 subprocess 0.
 
-    `_hooks_dir`(git `rev-parse`)를 호출하면 실패하도록 두고, 그래도 판정이 성립함을 단언한다."""
+    `_hooks_dir`(git `rev-parse`)를 호출하면 실패하도록 두고, 그래도 판정이 성립함을 단언한다.
+    (훅을 못 찾은 형상에서만 git 권위 해소를 묻는다 — 아래 hooksPath 절.)"""
     monkeypatch.setattr(board, "_hooks_dir",
                         lambda: (_ for _ in ()).throw(AssertionError("git 조회 금지")))
     _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
@@ -1714,3 +1722,201 @@ def test_current_hook_still_downgrades_during_an_active_cycle(
 
     assert "targeted 로 강등합니다" in capsys.readouterr().out
     assert not board.REGRESSION_FLAG.exists()
+
+
+# ── repo config 밖 `core.hooksPath` = git 권위 해소 (T-0605 ②) ────────────────
+# codex R5 지적: 훅 위치 판정이 **저장소 config 만** 읽어 global/system/worktree 선언을 놓쳤다.
+# git 과 설치기는 그 선언을 따르므로 구세대 훅은 선언된 경로에서 계속 실행되는데, 판정은
+# `.git/hooks` 를 보고 "미설치"로 읽어 세대 차단이 통째로 우회됐다. 순수 해소가 훅을 못 찾은
+# 자리에서만 git 에 권위 해소(`rev-parse --git-path hooks`)를 묻는다 — 훅이 이미 순수 위치에
+# 있으면 그 파일로 판정하므로 회귀 진입의 subprocess 는 0 이다(위 절).
+
+
+def _real_git_repo(board, monkeypatch, tmp_path) -> Path:
+    """실 git 저장소로 만든 tmp REPO — 권위 해소(`rev-parse`)가 실제로 답하게 한다.
+
+    global/system config 는 격리한다(실행 환경의 사용자 설정이 판정을 흔들지 않게).
+    """
+    subprocess.run(["git", "init", "-q", "-b", "main", str(board.REPO)],
+                   check=True, capture_output=True, text=True,
+                   encoding="utf-8", errors="replace")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "global.gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(tmp_path / "system.gitconfig"))
+    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    return board.REPO
+
+
+@requires_git
+def test_a_global_hooks_path_is_covered_by_the_authoritative_resolution(
+        board, monkeypatch, tmp_path):
+    """global `core.hooksPath` 아래의 구세대 훅도 차단된다 (재현 → 차단·DoD).
+
+    재현: repo config 에는 선언이 없고 global config 만 hooksPath 를 가리킨다. 순수 해소는
+    `.git/hooks`(훅 없음)를 답하므로 판정이 서지 않았다 — git 의 권위 해소가 그 자리를 메운다."""
+    _real_git_repo(board, monkeypatch, tmp_path)
+    hooks = tmp_path / "company-hooks"
+    hooks.mkdir()
+    (tmp_path / "global.gitconfig").write_text(
+        f"[core]\n\thooksPath = {hooks}\n", encoding="utf-8")
+    hook = hooks / "pre-push"
+    hook.write_text(_legacy_hook(), encoding="utf-8")
+    hook.chmod(0o755)
+
+    # 재현 축 — 순수 해소만 보면 이 훅은 보이지 않는다(우회가 성립하던 자리).
+    assert board._pure_hooks_dir() == (board.REPO / ".git" / "hooks").resolve()
+    assert not (board.REPO / ".git" / "hooks" / "pre-push").exists()
+    # 차단 축 — git 권위 해소가 실제 실행되는 훅을 찾아 세대를 판정한다.
+    assert board._authoritative_hooks_dir() == hooks.resolve()
+    assert "구버전" in (board._stale_pre_push_hook_refusal() or "")
+    assert hook.read_text(encoding="utf-8") == _legacy_hook()   # 고치지 않는다
+
+
+@requires_git
+def test_a_current_hook_under_a_global_hooks_path_passes(board, monkeypatch, tmp_path):
+    """같은 형상의 **현행 세대** 훅은 무소음 통과다 — 위치 확장이 과차단을 만들지 않는다."""
+    _real_git_repo(board, monkeypatch, tmp_path)
+    hooks = tmp_path / "company-hooks"
+    hooks.mkdir()
+    (tmp_path / "global.gitconfig").write_text(
+        f"[core]\n\thooksPath = {hooks}\n", encoding="utf-8")
+    (hooks / "pre-push").write_text(board.pre_push_hook_body("python3"), encoding="utf-8")
+
+    assert board._stale_pre_push_hook_refusal() is None
+
+
+def test_a_failed_git_resolution_keeps_the_pure_verdict(board, monkeypatch, tmp_path):
+    """git 호출이 실패해도 판정은 현행 순수 해소 그대로다 (무간섭 아님·폴백)."""
+    monkeypatch.setattr(board, "_hooks_dir",
+                        lambda: (_ for _ in ()).throw(OSError("git 없음")))
+    _write_git_config(board, "[core]\n\thooksPath = .githooks\n")
+    custom = board.REPO / ".githooks"
+    custom.mkdir(parents=True)
+    monkeypatch.setattr(board, "_detect_py", lambda: "python3")
+    (custom / "pre-push").write_text(_legacy_hook(), encoding="utf-8")
+
+    assert "구버전" in (board._stale_pre_push_hook_refusal() or "")
+
+
+def test_a_tree_without_git_never_asks_git(board, monkeypatch):
+    """`.git` 없는 트리는 권위 해소도 묻지 않는다 — 판정 대상 밖(조상 repo 를 끌어오지 않는다)."""
+    monkeypatch.setattr(board, "_hooks_dir",
+                        lambda: (_ for _ in ()).throw(AssertionError("git 조회 금지")))
+    assert board._repo_git_dir() is None
+    assert board._stale_pre_push_hook_refusal() is None
+
+
+# ── touches 정규화 = 리스트[str] 강제 (T-0605 ③) ─────────────────────────────
+# codex R5 지적: `touches` 가 YAML 스칼라 문자열이면 `list(...)` 가 **문자 목록**을 만들어
+# `-k "s or r or c ..."` 같은 오염된 스코프가 선다(그 실행의 rc0 은 아무 것도 검증하지 않는다).
+# 형식이 불명이면 강등을 취소하고 FULL 로 남긴다(fail-closed).
+
+
+@pytest.mark.parametrize("raw, expected", [
+    (None, []),                                   # 선언 없음
+    ([], []),                                     # 빈 목록
+    (["src/pay.py", " src/fee.py "], ["src/pay.py", "src/fee.py"]),
+    (["src/pay.py", "  "], ["src/pay.py"]),       # 빈 원소는 걷는다
+    ("src/pay.py", None),                         # 스칼라 문자열 — 형식 불명
+    (["src/pay.py", 3], None),                    # 비문자열 원소 — 형식 불명
+    ({"path": "src/pay.py"}, None),               # 매핑 — 형식 불명
+])
+def test_touches_normalization_forces_a_list_of_strings(board, raw, expected):
+    """정규화는 리스트[str] 만 인정하고 그 밖은 None(=확정 실패) 이다."""
+    assert board._normalized_touches(raw) == expected
+
+
+def test_scalar_touches_cancels_the_downgrade_instead_of_scoping_by_characters(
+        board, monkeypatch, capsys):
+    """스칼라 touches 는 문자 스코프가 아니라 **강등 취소 = FULL** 이다 (재현 → 차단·DoD)."""
+    _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
+    _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
+    monkeypatch.setattr(board, "_ticket_touches", lambda tid: None)
+    fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
+
+    assert board.cmd_regression(_run_args()) == 0
+
+    out, err = capsys.readouterr()
+    assert "강등을 취소" in err and "T-0002" in err
+    assert "형식을 확정하지 못했습니다" in err
+    assert "강등합니다" not in out
+    assert '-k "' not in fake.calls[0]["args"][0]     # 문자 스코프가 서지 않았다
+    assert _flag(board)["scope"] == "full"
+
+
+def test_ticket_scope_with_an_unresolvable_touches_stays_full(board, monkeypatch, capsys):
+    """`--ticket` 스코프도 확정 실패면 FULL 이다 — 확정 못 한 선언으로 좁히지 않는다."""
+    monkeypatch.setattr(board, "_ticket_touches", lambda tid: None)
+    fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
+
+    assert board.cmd_regression(_run_args(ticket="T-0002", final=True)) == 0
+
+    assert '-k "' not in fake.calls[0]["args"][0]
+    assert _flag(board)["scope"] == "full"
+
+
+def test_declared_touches_still_scope_the_run(board, monkeypatch, capsys):
+    """정상 경로 무변경 — 리스트[str] 선언은 종전대로 targeted 스코프를 만든다."""
+    monkeypatch.setattr(board, "_ticket_touches", lambda tid: ["src/pay.py"])
+    fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="2 passed in 0.10s\n"))
+
+    assert board.cmd_regression(_run_args(ticket="T-0002")) == 0
+
+    assert '-k "pay"' in fake.calls[0]["args"][0]
+
+
+# ── 구세대 outcome 정렬 = 신기록보다 앞 (T-0605 ⑥) ──────────────────────────
+# codex R5 지적: `sequence` 없는 구기록을 신기록 **뒤**에 두면, 업그레이드 후 새 통과가 쌓여도
+# 옛 반려가 영원히 '최신'이 되어 마감된 게이트가 계속 활성으로 읽힌다(영구 강등).
+
+
+def _ledger_with_legacy_round(board, gate: str, rounds: list[dict]) -> None:
+    """`sequence` 유무가 섞인 산출을 그대로 심는다 (구기록 정렬 재현용)."""
+    board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {gate: {"rounds": rounds}, "wave": {"id": "gen", "started": None, "spent": 0}}
+    board._review_rounds_ledger().write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_a_sequenceless_old_rejection_is_not_the_latest_round(board, monkeypatch):
+    """순번 없는 구기록 반려 + 순번 있는 신기록 통과 → **최신은 통과**(게이트 마감)."""
+    _ledger_with_legacy_round(board, "T-0002", [
+        {"verdict": 1, "must_fix": 3},                 # 구세대 기록(순번 없음·오래된 쪽)
+        {"sequence": 1, "verdict": 0, "must_fix": 0},  # 업그레이드 후의 통과
+    ])
+    _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
+
+    assert board._last_round_verdict({"rounds": [
+        {"verdict": 1}, {"sequence": 1, "verdict": 0}]}) == 0
+    assert board._active_review_gates() == []          # 옛 반려가 영구 활성으로 남지 않는다
+
+
+def test_a_sequenceless_round_is_still_the_latest_when_alone(board, monkeypatch):
+    """정상 경로 무변경 — 구기록만 있는 게이트는 그 판정이 그대로 최신이다."""
+    _ledger_with_legacy_round(board, "T-0002", [{"verdict": 1, "must_fix": 2}])
+    _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
+
+    assert board._active_review_gates() == ["T-0002"]
+
+
+def test_round_order_key_puts_sequenced_rounds_after_legacy_ones(board):
+    """공용 정렬 seam — 순번 없는 기록이 앞, 순번 있는 기록이 순번 순으로 뒤."""
+    rounds = [{"sequence": 2}, {"verdict": 1}, {"sequence": 1}]
+    ordered = sorted(rounds, key=board.round_outcome_order_key)
+    assert ordered == [{"verdict": 1}, {"sequence": 1}, {"sequence": 2}]
+
+
+def test_scalar_touches_in_a_real_ticket_never_becomes_a_character_scope(
+        board, monkeypatch, capsys):
+    """실 frontmatter 재현 — 스칼라 선언이 문자 스코프(`-k "s or r or c …"`)로 서지 않는다.
+
+    이 경로가 오염되면 그 실행은 무관 테스트만 돌고 rc0 을 남긴다('가짜 green')."""
+    tickets = board.tickets_dir() / "claimed"
+    tickets.mkdir(parents=True, exist_ok=True)
+    (tickets / "T-0054-x.md").write_text(
+        "---\nid: T-0054\ntouches: src/pay.py\n---\n\n# 본문\n", encoding="utf-8")
+    fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
+
+    assert board._ticket_touches("T-0054") is None
+    assert board.cmd_regression(_run_args(ticket="T-0054", final=True)) == 0
+
+    assert '-k "' not in fake.calls[0]["args"][0]
+    assert _flag(board)["scope"] == "full"

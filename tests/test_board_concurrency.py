@@ -153,7 +153,7 @@ def _worker_claim(proj_str: str, tid: str, ready, go, out_q) -> None:
 
     board 의 atomic rename(`os.rename`)이 락이고, **진 쪽은 FileNotFoundError 로 표면화**된다
     (board.py move_item docstring·`a lost race surfaces as FileNotFoundError`). 다만
-    `cmd_claim` 은 `find_ticket` 으로 open path 를 본 뒤 `load_ticket`→`move_ticket` 순으로
+    `cmd_claim` 은 `find_ticket_for_mutation` 으로 open path 를 본 뒤 `load_ticket`→`move_ticket` 순으로
     진행하므로, 패배의 FileNotFoundError 가 `load_ticket` *또는* `move_ticket` 어느 쪽 race
     window 에서든 날 수 있다. **ADR-0012 계약(T-0057)**: 두 window 모두 cmd_claim 안에서
     `claim race lost`(stderr) + rc=1 로 *깨끗이* 흡수되어야 한다 — 패배자에게 미처리 traceback 이
@@ -362,9 +362,9 @@ def test_concurrent_claim_only_one_wins(proj):
       1. *안전성* — 정확히 한 세션만 claim 성공·ticket 은 한 번만 claimed 로 이동(분열·중복 0).
       2. *깨끗한 패배* — 패배자는 **미처리 traceback 없이 rc=1 로 깨끗이 실패**해야 한다(EXC 0).
          패배는 타이밍에 따라 세 가지 *깨끗한* 형태 중 하나로 난다(모두 rc=1·traceback 0):
-           (a) 늦게 들어와 `find_ticket` 이 이미 claimed/ 상태를 봄 → "cannot claim ... claimed/"
-           (b) `find_ticket`→`load_ticket` window race → "claim race lost"
-           (c) `find_ticket`→`move_ticket` window race → "claim race lost"
+           (a) 늦게 들어와 조회가 이미 claimed/ 상태를 봄 → "cannot claim ... claimed/"
+           (b) 조회→`load_ticket` window race → "claim race lost"
+           (c) 조회→`move_ticket` window race → "claim race lost"
          fix 전엔 (b) 가 미처리 FileNotFoundError 로 새어 EXC(=계약 위반)로 잡혔다. fix 후엔
          (b)도 (c)처럼 board 안에서 rc=1 로 흡수된다. 어느 *깨끗한* 형태로 지든 무해하므로 이
          테스트는 EXC(미처리 traceback)만 fail 로 본다. (b) window 의 결정적 박제 + "claim race
@@ -414,11 +414,11 @@ def test_concurrent_claim_only_one_wins(proj):
 
 
 def test_claim_load_window_race_lost_cleanly(board, capsys):
-    """sensitivity(결정적) — `find_ticket`→`load_ticket` 사이 window 의 패배를 깨끗이 흡수.
+    """sensitivity(결정적) — 조회→`load_ticket` 사이 window 의 패배를 깨끗이 흡수.
 
     spawn 워커는 부하·타이밍에 따라 `load_ticket` window 가 안 열릴 수 있어(승자가 너무 빨리
     옮기지 *않으면* 패배가 `move_ticket` window 로만 떨어짐) 그 window 의 계약을 *결정적으로*
-    노출하지 못한다. 그래서 그 seam 을 직접 연다: `find_ticket` 이 open path 를 돌려준 *직후*
+    노출하지 못한다. 그래서 그 seam 을 직접 연다: 조회(`find_ticket_for_mutation`)가 open path 를 돌려준 *직후*
     승자가 옮긴 효과로 그 파일을 사라지게 하고 `cmd_claim` 을 호출한다.
 
     ADR-0012(T-0057) 계약: 그 window 에서 `load_ticket(path)` 가 던지는 FileNotFoundError 는
@@ -432,9 +432,9 @@ def test_claim_load_window_race_lost_cleanly(board, capsys):
     board.dump_ticket(path, {"id": tid, "title": "seed", "status": "open",
                              "depends_on": []}, "# seed\n")
 
-    # find_ticket 을 래핑해 *반환 직후* open path 를 제거 — 승자가 옮긴(rename out) 효과를
-    # 결정적으로 재현한다. 이어지는 load_ticket(path) 가 그 사라진 path 를 읽으려다 진다.
-    orig_find = board.find_ticket
+    # mutation 조회 seam 을 래핑해 *반환 직후* open path 를 제거 — 승자가 옮긴(rename out)
+    # 효과를 결정적으로 재현한다. 이어지는 load_ticket(path) 가 그 사라진 path 를 읽으려다 진다.
+    orig_find = board.find_ticket_for_mutation
 
     def racing_find(t):
         status, p = orig_find(t)
@@ -442,11 +442,11 @@ def test_claim_load_window_race_lost_cleanly(board, capsys):
             p.unlink()  # 승자가 open/ 밖으로 옮긴 효과
         return status, p
 
-    board.find_ticket = racing_find
+    board.find_ticket_for_mutation = racing_find
     try:
         rc = board.cmd_claim(_Args(id=tid, repo="loser", slot=1))  # 미처리 예외면 여기서 죽음(fail)
     finally:
-        board.find_ticket = orig_find
+        board.find_ticket_for_mutation = orig_find
 
     err = capsys.readouterr().err
     assert rc == 1, f"load 단계 race 패배 rc 가 1 이 아님: {rc}"
@@ -515,11 +515,11 @@ def test_claim_critical_section_holds_board_lock(board):
 
     observed: dict[str, bool] = {}
     orig_load = board.load_ticket
-    orig_find = board.find_ticket
+    orig_find = board.find_ticket_for_mutation
     armed: list[bool] = []
 
     def arming_find(t):
-        # 티켓 **조회**(`find_ticket`)는 임계구역 밖이고, canonical ID 정확 일치 판정 때문에
+        # 티켓 **조회**(`find_ticket_for_mutation`)는 임계구역 밖이고, 정확 일치 판정 때문에
         # 후보 frontmatter 를 읽는다 — 그 읽기까지 세면 첫 load 가 조회분이라 프로브가 조회
         # 시점(락 밖)을 관측한다. 조회가 끝난 뒤부터 관측을 켜서 '첫 load = 임계구역' 을 유지한다.
         result = orig_find(t)
@@ -538,12 +538,12 @@ def test_claim_critical_section_holds_board_lock(board):
         return orig_load(p)
 
     board.load_ticket = probing_load
-    board.find_ticket = arming_find
+    board.find_ticket_for_mutation = arming_find
     try:
         rc = board.cmd_claim(_Args(id=tid, repo="s", slot=1))
     finally:
         board.load_ticket = orig_load
-        board.find_ticket = orig_find
+        board.find_ticket_for_mutation = orig_find
 
     assert rc == 0, f"비경합 claim 이 성공해야 함: rc={rc}"
     assert observed.get("lock_free_during_load") is False, (

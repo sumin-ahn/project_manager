@@ -1273,3 +1273,171 @@ def test_slugless_ticket_filename_still_resolves(external, tmp_path, monkeypatch
         encoding="utf-8")
     monkeypatch.setattr(external, "REPO", tmp_path)
     assert external.parse_ticket_estimate("T-0040", pm_home=tmp_path) == "medium"
+
+
+# ══ ④ 비-매핑 frontmatter 는 조회 경로를 죽이지 않는다 (T-0605 ④) ═══════════
+# codex R5 지적: YAML 이 비어 있지 않은 **스칼라·리스트**면 파싱은 성공하고 `fm.get()` 이
+# AttributeError 로 터진다. 그 예외가 정확-일치 조회(`find_ticket_exact`) 안에서 나면 활성 리뷰
+# 판정·강등 판정보다 먼저 실행이 죽어, "손상 티켓은 skip 하고 FULL 로 남긴다"는 규약이 깨진다.
+
+
+def _write_raw_ticket(tmp_path, name: str, text: str):
+    """티켓 파일을 **원문 그대로** 심는다 (frontmatter 형상 자체가 검증 대상이라 조립하지 않는다)."""
+    tickets = tmp_path / ".project_manager" / "board" / "tickets" / "claimed"
+    tickets.mkdir(parents=True, exist_ok=True)
+    path = tickets / name
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("frontmatter", [
+    "그냥 문자열",                      # 스칼라
+    "- 목록\n- 원소",                   # 리스트
+])
+def test_non_mapping_frontmatter_never_crashes_the_lookup(tmp_path, monkeypatch, frontmatter):
+    """비-매핑 frontmatter 는 **파일명 폴백**으로 접힌다 — 조회가 예외로 죽지 않는다."""
+    board = _load("board")
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    path = _write_raw_ticket(tmp_path, "T-0050-x.md", f"---\n{frontmatter}\n---\n\n# 본문\n")
+
+    assert board._canonical_ticket_id(path) == "T-0050"      # AttributeError 없이 폴백
+    assert board.find_ticket_exact("T-0050") == ("claimed", path)
+
+
+def test_a_broken_ticket_does_not_hide_the_healthy_one(tmp_path, monkeypatch):
+    """같은 번호 공간에 손상 티켓이 섞여도 정확-일치 조회는 성한 티켓을 답한다."""
+    board = _load("board")
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    _write_raw_ticket(tmp_path, "T-0051-001-broken.md", "---\n스칼라\n---\n\n# 본문\n")
+    healthy = _write_raw_ticket(
+        tmp_path, "T-0051-ok.md",
+        "---\nid: T-0051\ntouches:\n- src/pay.py\n---\n\n# 본문\n")
+
+    assert board.find_ticket_exact("T-0051") == ("claimed", healthy)
+    assert board._ticket_touches("T-0051") == ["src/pay.py"]
+
+
+def test_a_broken_ticket_scope_is_unresolved_not_a_crash(tmp_path, monkeypatch):
+    """손상 티켓의 스코프 조회는 None(확정 실패) — 호출부가 FULL 로 남긴다."""
+    board = _load("board")
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    _write_raw_ticket(tmp_path, "T-0052-x.md", "---\n스칼라\n---\n\n# 본문\n")
+
+    assert board._ticket_touches("T-0052") is None
+
+
+# ══ ⑤ touches 형식 불명 = 강등 취소 (T-0605 ③) ══════════════════════════════
+# 스칼라 문자열 touches 를 `list(...)` 로 펴면 문자 목록이 되어 `-k "s or r or c ..."` 같은
+# 오염된 스코프가 선다. 실 frontmatter 로 그 경로를 재현하고 확정 실패(None)를 단언한다.
+
+
+@pytest.mark.parametrize("declaration, expected", [
+    ("touches: src/pay.py", None),                   # 스칼라 문자열 — 문자 스코프 재현
+    ("touches:\n- src/pay.py\n- 3", None),           # 비문자열 원소
+    ("touches:\n- src/pay.py", ["src/pay.py"]),      # 정상(무변경)
+])
+def test_ticket_touches_forces_a_list_of_strings(tmp_path, monkeypatch, declaration, expected):
+    """실 frontmatter 기준 — 리스트[str] 만 스코프가 되고 그 밖은 확정 실패(None)다."""
+    board = _load("board")
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    _write_raw_ticket(tmp_path, "T-0053-x.md", f"---\nid: T-0053\n{declaration}\n---\n\n# 본문\n")
+
+    assert board._ticket_touches("T-0053") == expected
+
+
+# ══ ⑥ 구세대 outcome 은 신기록보다 앞 (T-0605 ⑥) ════════════════════════════
+# codex R5 지적: `sequence` 없는 구기록을 뒤에 정렬하면 업그레이드 후 새 통과가 기록돼도 옛
+# 반려가 영원히 '최신'이 된다. 정렬 판정은 board 공용 seam 하나가 소유한다(사본 금지).
+
+
+def test_legacy_outcomes_sort_before_the_sequenced_ones(external):
+    """순번 없는 구기록이 앞(오래된 쪽)·순번 있는 기록이 순번 순으로 뒤."""
+    rounds = [{"sequence": 2, "verdict": 0}, {"verdict": 1}, {"sequence": 1, "verdict": 1}]
+    ordered = external._ordered_round_outcomes(rounds)
+    assert [row.get("sequence") for row in ordered] == [None, 1, 2]
+
+
+def test_an_upgrade_pass_becomes_the_latest_over_a_legacy_rejection(external):
+    """구기록 반려 뒤에 신기록 통과가 쌓이면 **최신은 통과**다 — 자격도 닫힌다."""
+    entry = external._gate_entry({"g": {"rounds": [
+        {"verdict": 1, "must_fix": 2},                       # 구세대 반려(순번 없음)
+        {"sequence": 1, "verdict": 0, "must_fix": 0},        # 업그레이드 후 통과
+    ]}}, "g")
+
+    assert external._latest_round_outcome(entry)["verdict"] == 0
+    assert external._latest_verdict_label(entry) == "0(통과)"
+    assert external._confirm_fix_evidence(entry) is None
+
+
+def test_the_ordering_rule_is_the_shared_board_seam(external):
+    """정렬 규칙의 소유자는 board 공용 seam 이다 — 사본이 생기면 두 표면이 갈린다."""
+    board = _load("board")
+    rounds = [{"sequence": 2}, {"verdict": 1}, {"sequence": 1}]
+    assert external._ordered_round_outcomes(rounds) == sorted(
+        rounds, key=board.round_outcome_order_key)
+
+
+# ══ ⑦ 확인 전용 라운드 자격 = 실제 리뷰 판정 (T-0605 ⑦) ═════════════════════
+# codex R5 지적: timeout·하네스 실패·판정 불명확도 `determine_exit_code()` 에서 rc 1 로 저장되므로
+# 산출의 rc 만 보면 **리뷰 판정이 없는 라운드**가 반려로 세어져 과금 예외(`--confirm-fix`)가 열린다.
+# 예약 레코드가 마감 때 새기는 실제 verdict 존재를 함께 본다.
+
+
+def _entry_with(external, *, record_verdict, round_verdict: int = 1):
+    """산출 1건 + 그 산출을 낸 예약 레코드 1건을 가진 게이트 항목."""
+    record = {"id": "r1", "sequence": 1, "started_at": "2026-08-09T00:00:00+00:00",
+              "finished_at": "2026-08-09T00:00:01+00:00", "must_fix_items": ["결함 1"]}
+    if record_verdict is not None:
+        record["verdict"] = record_verdict
+    return external._gate_entry({"g": {
+        "count": 1, "acked_through": 0, "sequence": 1, "records": [record],
+        "rounds": [{"ts": "2026-08-09T00:00:01+00:00", "id": "r1", "sequence": 1,
+                    "verdict": round_verdict, "must_fix": 1, "suggestions": None}],
+    }}, "g")
+
+
+def test_a_timeout_round_does_not_open_the_confirm_fix_exception(external):
+    """판정을 못 낸 라운드(timeout·하네스 실패·불명확)는 반려로 세지 않는다 (재현 → 차단)."""
+    entry = _entry_with(external, record_verdict=False)
+
+    assert external._confirm_fix_evidence(entry) is None
+    assert "리뷰 판정 없음" in external._latest_verdict_label(entry)
+
+
+def test_an_unlinked_outcome_does_not_open_the_exception(external):
+    """예약 레코드에 그 축이 없는 구세대 기록도 자격 없음이다 (과금 축 보수 방향)."""
+    assert external._confirm_fix_evidence(_entry_with(external, record_verdict=None)) is None
+
+
+def test_a_real_rejection_still_opens_the_exception(external):
+    """정상 경로 무변경 — 실제 리뷰 판정으로서의 반려는 그대로 자격을 연다."""
+    entry = _entry_with(external, record_verdict=True)
+    evidence = external._confirm_fix_evidence(entry)
+
+    assert evidence is not None and "결함 1" in evidence
+    assert external._latest_verdict_label(entry) == "1(비통과)"
+
+
+def test_confirm_fix_after_a_timeout_round_is_refused_before_sending(
+        external, monkeypatch, tmp_path, capsys):
+    """e2e — 판정 없이 끝난 라운드 뒤의 `--confirm-fix` 는 **전송 전에** 거부된다(과금 0)."""
+    capture = _PromptCapture([0])
+    _wire(external, monkeypatch, tmp_path, series=[0])
+    monkeypatch.setattr(external, "run_review", capture)
+    ledger = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(json.dumps({"T-0605a": {
+        "count": 1, "acked_through": 0, "sequence": 1,
+        "records": [{"id": "r1", "sequence": 1, "started_at": "2026-08-09T00:00:00+00:00",
+                     "finished_at": "2026-08-09T00:00:01+00:00", "verdict": False}],
+        "rounds": [{"ts": "2026-08-09T00:00:01+00:00", "id": "r1", "sequence": 1,
+                    "verdict": 1, "must_fix": None, "suggestions": None}],
+    }}), encoding="utf-8")
+
+    rc = external.main(["--gate", "T-0605a", "--paths", "x.py", "--confirm-fix"])
+
+    assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
+    assert capture.prompts == []                     # 외부 전송 0
+    err = capsys.readouterr().err
+    assert "최신 완료 라운드가 반려인 게이트" in err and "리뷰 판정 없음" in err
+    assert _ledger(tmp_path)["T-0605a"].get("confirm_fix", 0) == 0   # quota 미소비

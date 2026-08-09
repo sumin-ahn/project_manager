@@ -2828,6 +2828,59 @@ def _failure_scan_text(result: RunResult) -> str:
     return "\n".join(parts)
 
 
+# ── 재개 대상 세션 부재 (양성 패턴·재실행 자격) ────────────────────────────────
+# 재개 실패의 **재실행 자격**은 두 가지뿐이다: 깨끗한 완료의 명시적 세션 id 불일치, 그리고 여기
+# 잡히는 "그 세션이 없다"는 확정 오류다. 세션이 없으면 delta 프롬프트는 소비되지 않았으므로
+# (전송 자체가 성립하지 않는다) full payload 재실행은 중복 과금·중복 외부 전송이 아니다.
+# 그 밖의 미분류 rc≠0 은 **전송 후 실패**일 수 있어 재실행하지 않는다(기존 fail-loud).
+# 스캔 범위는 인프라 분류와 같은 `_failure_scan_text` 다 — reply 에코가 자격을 지어내지 못한다.
+_RESUME_SESSION_MISSING_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # claude: `--resume <id>` 대상이 없을 때(다른 cwd·만료·오타) — 실측 문구.
+    re.compile(r"\bno conversation found\b", re.IGNORECASE),
+    # opencode `-s <id>` / 일반 하네스 표기.
+    re.compile(r"\bsession not found\b", re.IGNORECASE),
+    # codex 계열 표기(대화 id 미존재).
+    re.compile(r"\bconversation not found\b", re.IGNORECASE),
+)
+# 재실행 자격 사유 — loud 안내가 "무엇을 보고 다시 태우는지" 그대로 말한다.
+RESUME_RERUN_ID_MISMATCH = "회신 세션 id 불일치"
+RESUME_RERUN_SESSION_MISSING = "재개 대상 세션 없음"
+
+
+def is_resume_session_missing(result: RunResult) -> bool:
+    """재개 대상 세션이 **없다고 확정된** 실패인가 (양성 패턴 일치·아니면 False).
+
+    rc=0 정상 완료는 대상이 아니다 — 그쪽 판정은 회신 세션 id 일치가 소유한다.
+    """
+    if result.get("returncode", 1) == 0:
+        return False
+    text = _failure_scan_text(result)
+    return any(pattern.search(text) for pattern in _RESUME_SESSION_MISSING_PATTERNS)
+
+
+def resume_rerun_reason(
+    result: RunResult, observed_session_id: str | None, requested_session_id: str,
+) -> str | None:
+    """fresh + full payload 재실행 자격 (없으면 None) — 자격 사유 문자열은 안내에 그대로 쓴다.
+
+    자격은 둘뿐이다:
+      · **깨끗한 완료의 명시적 불일치** — rc=0 으로 끝났는데 회신이 말한 세션 id 가 요청한 id 와
+        다르다. 맥락 없는 세션이 delta 만 받고 답한 라운드라 그대로 두면 수렴 추이가 오염된다.
+      · **확정된 세션 없음** — 재개 대상이 없다는 오류(`is_resume_session_missing`). 세션이 없으니
+        delta 는 소비되지 않았고, 재실행이 중복 전송이 아니다.
+
+    나머지(미분류 `rc≠0`·관측 실패로 세션 id 를 못 읽은 rc=0)는 **재실행하지 않는다**. 전송 후에
+    죽은 실행일 수 있어 full payload 를 다시 태우면 같은 라운드가 두 번 과금·외부 전송된다.
+    """
+    if is_resume_session_missing(result):
+        return RESUME_RERUN_SESSION_MISSING
+    if result.get("returncode", 1) != 0:
+        return None
+    if observed_session_id is None or observed_session_id == requested_session_id:
+        return None
+    return RESUME_RERUN_ID_MISMATCH
+
+
 def classify_infrastructure_failure(result: RunResult) -> str | None:
     """하네스 결과를 폴백 가능한 인프라 실패 클래스로 보수 분류한다.
 
@@ -4436,9 +4489,12 @@ def _execute_and_collect(
     클라우드 예산에 잘리는 걸 막는다).
 
     `resume` 가 있으면 **delta payload 를 그 세션으로** 먼저 보낸다. 성공 판정은 회신 세션 id 가
-    요청한 id 와 같은가 하나뿐이고(rc 로 판정하지 않는다), 어긋나면 같은 라운드를 fresh + full
-    payload 로 1회 다시 실행한다 — 맥락 없는 세션에 delta 만 주면 그 라운드 산출이 수렴 추이를
-    오염시키기 때문이다. 그 라운드는 적재 비용을 한 번 더 지불한다(의도된 예외)."""
+    요청한 id 와 같은가 하나뿐이다(rc 로 판정하지 않는다). 어긋난 라운드를 fresh + full payload
+    로 1회 다시 실행하는 것은 **재실행 자격**(`resume_rerun_reason`)이 선 경우뿐이다 — 깨끗한
+    완료의 명시적 id 불일치, 또는 확정된 "세션 없음" 오류. 맥락 없는 세션에 delta 만 주면 그
+    라운드 산출이 수렴 추이를 오염시키므로 그 두 경우는 적재 비용을 한 번 더 지불한다(의도된
+    예외). 미분류 `rc≠0` 은 **전송 후** 실패일 수 있어 재실행하지 않는다(중복 과금·중복 외부
+    전송 차단·기존 fail-loud)."""
     try:
         primary = _execute_attempt(
             harness=harness,
@@ -4461,14 +4517,18 @@ def _execute_and_collect(
             ticket=ticket,
             base_rev=base_rev,
         )
-        # 재실행은 **재사용 축의 실패에만** 쓴다. 스폰 실패·타임아웃·한도 같은 인프라 실패도
-        # 세션 id 를 못 남기므로 형식만 보면 "불일치"로 보이는데, 그때 같은 하네스로 full
-        # payload 를 다시 태우면 실패를 반복하고 그 뒤 인프라 폴백까지 겹쳐 한 위임이 세 번
-        # 스폰된다. 인프라 실패는 아래 분류·폴백 축이 이미 소유한다("No conversation found"
-        # 류의 미분류 rc≠0 은 여기 남아 계속 재실행된다).
+        # 재실행은 **재사용 축의 확정된 실패에만** 쓴다(`resume_rerun_reason`) — 깨끗한 완료의
+        # 명시적 세션 id 불일치, 또는 확정된 "세션 없음" 오류. 미분류 `rc≠0` 은 **전송 후** 죽은
+        # 실행일 수 있어(프롬프트는 이미 나갔다) full payload 재실행이 곧 중복 과금·중복 외부
+        # 전송이다 — 그런 실패는 기존 fail-loud/폴백 축이 그대로 소유한다. 인프라 실패(스폰·
+        # 타임아웃·한도)도 세션 id 를 못 남겨 형식만 보면 "불일치"라, 분류 결과를 함께 본다.
+        rerun_reason = (
+            None if resume is None
+            else resume_rerun_reason(
+                primary.result, primary.session_id, resume.session_id)
+        )
         if (
-            resume is not None
-            and primary.session_id != resume.session_id
+            rerun_reason is not None
             and classify_infrastructure_failure(primary.result) is None
         ):
             # write 계열 역할(기존 권한축 `WRITE_ROLES`)은 재실행하지 않는다 — 불일치 실행도
@@ -4478,7 +4538,7 @@ def _execute_and_collect(
             # read 계열(researcher·code-reviewer)은 트리를 안 만지므로 현행 재실행을 유지한다.
             if args.role in WRITE_ROLES:
                 return fail_loud(
-                    f"오류: 세션 재사용 실패(write 역할 {args.role}) — 요청 "
+                    f"오류: 세션 재사용 실패(write 역할 {args.role}·{rerun_reason}) — 요청 "
                     f"{resume.session_id} · 회신 {primary.session_id or '없음'}.\n"
                     "  · 이 실행은 쓰기 권한으로 돌았습니다 — **트리를 이미 고쳤을 수 있어** "
                     "fresh 재실행을 자동으로 태우지 않습니다(중복·충돌 편집 차단).\n"
@@ -4488,7 +4548,7 @@ def _execute_and_collect(
                     f"  · resume raw: {primary.raw_path}"
                 )
             print(
-                f"세션 재사용 실패: 요청 {resume.session_id} · 회신 "
+                f"세션 재사용 실패({rerun_reason}): 요청 {resume.session_id} · 회신 "
                 f"{primary.session_id or '없음'} — fresh 스폰 + full payload 로 이 라운드를 "
                 f"1회 다시 실행합니다(적재 비용 1회 추가). resume raw: {primary.raw_path}",
                 file=sys.stderr,

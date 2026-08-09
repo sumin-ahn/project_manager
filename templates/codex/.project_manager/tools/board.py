@@ -3533,20 +3533,17 @@ def _config_hooks_path(text: str) -> object | None:
     return value
 
 
-def _pure_hooks_dir() -> Path | None:
-    """훅 디렉토리를 **git 호출 없이** 해소한다 (해소 불가면 None).
+def _repo_git_dir() -> Path | None:
+    """REPO 의 **공용 git 디렉토리** (`.git` 부재·해소 불가면 None = 비-repo 형상).
 
-    회귀 게이트 진입은 hot path 라 여기에 subprocess 를 더하지 않는다 — `_hooks_dir()`(git
-    `rev-parse --git-path`)는 설치 경로가 계속 쓰고, 세대 판정은 이 순수 해소만 쓴다. 규칙:
-      · `REPO/.git` 디렉토리 → 그 아래 `hooks/`.
+    규칙:
+      · `REPO/.git` 디렉토리 → 그 경로.
       · `REPO/.git` 파일(linked worktree·`gitdir: <경로>`) → 그 gitdir 의 `commondir` 을 따라
-        **공용 git 디렉토리**로 올라간 뒤 `hooks/` (훅은 worktree 간 공유다).
-      · repo config 에 `core.hooksPath` 선언이 있으면 **그 값을 파싱해** 훅 위치로 쓴다. 상대
-        경로는 git 과 같이 worktree 루트(`REPO`) 기준이고 `~` 는 확장한다. 존재-only 로 보고
-        포기하면 *기본 위치를 가리키는 선언*까지 세대 관리 밖에 남는다.
-      · include/includeIf 가 있거나 값이 비면 **None** — 포함 파일의 선언이 최종 값을 뒤집을 수
-        있어 git 없이 확정할 수 없다. 훅 위치를 모르면 판정 자체가 없다(차단 사유는 "구형 훅이
-        실재한다" 하나뿐이라, 위치 미상을 차단으로 접으면 훅을 안 쓰는 형상까지 회귀가 멈춘다).
+        **공용 git 디렉토리**로 올라간다 (훅은 worktree 간 공유다).
+
+    반환 None 은 "이 트리는 판정 대상이 아니다"라는 뜻이다 — 훅 세대 판정도 그 자리에서 끝내고
+    git 조회조차 하지 않는다(REPO 가 repo 루트가 아닌 트리에서 조상 repo 의 훅을 끌어오지
+    않는다·종전 무영향 형상 보존).
     """
     try:
         git_path = REPO / ".git"
@@ -3566,6 +3563,28 @@ def _pure_hooks_dir() -> Path | None:
             if relative:
                 shared = Path(relative)
                 git_dir = shared if shared.is_absolute() else (git_dir / shared)
+        return git_dir
+    except (OSError, UnicodeError, ValueError):
+        return None
+
+
+def _pure_hooks_dir() -> Path | None:
+    """훅 디렉토리를 **git 호출 없이** 해소한다 (해소 불가면 None).
+
+    회귀 게이트 진입은 hot path 라 여기에 subprocess 를 더하지 않는다 — `_hooks_dir()`(git
+    `rev-parse --git-path`)는 설치 경로가 계속 쓰고, 세대 판정은 이 순수 해소를 먼저 쓴다
+    (권위 해소는 이 자리에서 훅을 못 찾았을 때만·`_stale_pre_push_hook_refusal`). 규칙:
+      · `REPO/.git`(디렉토리·linked worktree 파일) → 공용 git 디렉토리 아래 `hooks/`.
+      · repo config 에 `core.hooksPath` 선언이 있으면 **그 값을 파싱해** 훅 위치로 쓴다. 상대
+        경로는 git 과 같이 worktree 루트(`REPO`) 기준이고 `~` 는 확장한다. 존재-only 로 보고
+        포기하면 *기본 위치를 가리키는 선언*까지 세대 관리 밖에 남는다.
+      · include/includeIf 가 있거나 값이 비면 **None** — 포함 파일의 선언이 최종 값을 뒤집을 수
+        있어 git 없이 확정할 수 없다(그 형상은 권위 해소가 받는다).
+    """
+    git_dir = _repo_git_dir()
+    if git_dir is None:
+        return None
+    try:
         config = git_dir / "config"
         if config.is_file():
             declared = _config_hooks_path(config.read_text(encoding="utf-8"))
@@ -3577,6 +3596,34 @@ def _pure_hooks_dir() -> Path | None:
                 return (hooks if hooks.is_absolute() else (REPO / hooks)).resolve()
         return (git_dir / "hooks").resolve()
     except (OSError, UnicodeError, ValueError):
+        return None
+
+
+def _has_pre_push(hooks: Path) -> bool:
+    """그 훅 디렉토리에 `pre-push` 파일이 실재하는가 (읽기 실패는 False·fail-soft)."""
+    try:
+        return (hooks / "pre-push").is_file()
+    except OSError:
+        return False
+
+
+def _authoritative_hooks_dir() -> Path | None:
+    """git 자신이 해소한 훅 디렉토리 (`rev-parse --git-path hooks`) — 확정 못 하면 None.
+
+    저장소 config 직접 파싱(`_pure_hooks_dir`)은 **repo config 의 선언만** 본다. `core.hooksPath`
+    는 global(`~/.gitconfig`)·system·명령행(`-c`)·worktree 범위에서도 선언되고, 훅을 실행하는
+    git 과 훅을 설치하는 엔진(`install_pre_push_hook` → `_hooks_dir`)은 그 해소를 따른다 —
+    세대 판정만 `.git/hooks` 를 보면 사내 표준 hooksPath 형상에서 **구세대 훅이 계속 실행되는데
+    차단은 서지 않는다**(우회). 이 함수가 그 자리를 메운다.
+
+    subprocess 1회를 쓴다 — 회귀 진입은 hot path 지만 이 축은 push 게이트 차단이라 "위치를 잘못
+    봐서 안 막는 것"이 비용보다 크다. 그래서 **언제 묻는지**는 호출부가 정한다
+    (`_stale_pre_push_hook_refusal` — 순수 해소가 훅을 못 찾았을 때만). 실패(git 부재·비-repo·
+    대역 subprocess)는 None 이고 호출부가 현행 순수 해소 결과를 그대로 쓴다(기존 판정 유지).
+    """
+    try:
+        return _hooks_dir()
+    except Exception:  # noqa: BLE001 — git 부재/대역 subprocess/비-repo 는 순수 해소로 폴백.
         return None
 
 
@@ -3615,9 +3662,29 @@ def _stale_pre_push_hook_refusal() -> str | None:
     실행하지 못한다).
 
     인터프리터는 **설치된 훅의 것**으로 대조한다 — 채택자의 런처 선택(`py -3.12`)이 세대 판정을
-    뒤집지 않게. 경로 해소는 순수 파이썬(`_pure_hooks_dir`)이라 **회귀 진입에 subprocess 를
-    추가하지 않는다**."""
+    뒤집지 않게.
+
+    위치 해소는 두 단계다:
+      1. 순수 해소(`_pure_hooks_dir`)가 찾은 자리에 `pre-push` 가 **실재하면** 그 파일로 판정한다
+         — 이미 판정 대상을 손에 쥐었으므로 git 을 부를 이유가 없다(회귀 진입에 subprocess 0).
+      2. 그 자리에 훅이 없거나 순수 해소가 확정에 실패하면 **git 의 권위 해소**
+         (`_authoritative_hooks_dir`)를 묻는다. repo config 밖(global/system/worktree)에서
+         `core.hooksPath` 가 선언된 형상이 정확히 이 경우다 — 훅은 그 경로에 설치돼 실행되는데
+         순수 해소는 `.git/hooks` 를 보고 "미설치"로 읽어 세대 차단이 우회됐다. git 호출이
+         실패하면(부재·비-repo) 현행 순수 해소 결과를 그대로 쓴다(기존 판정 유지).
+
+    `REPO` 가 repo 루트가 아닌 트리(`.git` 부재)는 그 앞에서 끝낸다 — 조상 repo 의 훅을 이 트리의
+    판정으로 끌어오지 않는다(종전 '위치 해소 불가 = 무영향'과 같은 결론·git 호출 0).
+
+    남는 사각은 하나다: repo config 밖 `hooksPath` 형상에서 `.git/hooks/pre-push` 잔재가 남아
+    있으면 1단계가 그 잔재를 판정한다(git 이 실행하지 않는 파일). 잔재가 구세대 엔진 훅이면
+    차단(안전 방향)이고, 남의 훅/현행 본문이면 권위 경로를 못 본다 — 잔재 파일이 있어야 성립하는
+    좁은 형상이라, 회귀 진입 비용(모든 실행에 git 1회)과 바꾸지 않는다."""
+    if _repo_git_dir() is None:
+        return None                                   # 비-repo 트리 — 판정 대상 밖(git 호출 0).
     hooks = _pure_hooks_dir()
+    if hooks is None or not _has_pre_push(hooks):
+        hooks = _authoritative_hooks_dir() or hooks
     if hooks is None:
         return None                                   # 위치 해소 불가 — 비-훅 형상 차단 금지.
     hook = hooks / "pre-push"
@@ -5550,17 +5617,52 @@ def ctx_thresholds() -> dict[str, int]:
     }
 
 
-def _ticket_touches(tid: str) -> list[str]:
-    """회귀 스코프용 티켓 touches — **canonical ID 정확 일치**만 (아니면 빈 목록 = FULL).
+def _normalized_touches(raw: object) -> list[str] | None:
+    """frontmatter `touches` → 경로 목록(**리스트[str] 강제**) · 형식이 불명이면 None.
+
+    선언이 스칼라 문자열이면(`touches: src/pay.py` — YAML 로는 유효하다) `list(...)` 가 **문자
+    목록**을 만든다: `-k "a or c or p or …"` 같은 오염된 회귀 스코프가 서고, 그 실행의 rc0 은
+    아무 것도 검증하지 않은 '가짜 green' 이다. 비문자열 원소(숫자·매핑)는 그 뒤 경로 연산에서
+    크래시한다.
+
+    그래서 반환은 셋 중 하나다:
+      · `list[str]` — 정상 선언(빈 문자열 원소는 걷는다).
+      · `[]` — 선언 없음(`None`·빈 목록).
+      · `None` — **형식 불명**. 호출부는 강등을 취소하고 FULL 로 남긴다(강등 fail-closed 규칙과
+        동형 — 스코프를 확정하지 못한 채 좁히면 안 된다).
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        return None
+    normalized: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            return None
+        text = item.strip()
+        if text:
+            normalized.append(text)
+    return normalized
+
+
+def _ticket_touches(tid: str) -> list[str] | None:
+    """회귀 스코프용 티켓 touches — **canonical ID 정확 일치**만 · 확정 실패면 None.
 
     조회 규칙은 강등 판정(`_gate_ticket`)과 같은 한 지점이다 — 판정은 정확 일치로 하고 스코프는
     glob 첫 매칭으로 읽으면 두 표면이 서로 다른 티켓을 볼 수 있다(무관 touches 로 좁혀진 '가짜
-    green'). 못 찾으면 빈 목록이고, 호출부는 그때 FULL 로 남긴다(좁히는 방향으로는 안 틀린다)."""
+    green'). 티켓을 못 찾으면 빈 목록이고, 호출부는 그때 FULL 로 남긴다(좁히는 방향으로는 안
+    틀린다).
+
+    반환 None 은 **스코프를 확정하지 못했다**는 뜻이다 — 손상/비-매핑 frontmatter
+    (`load_ticket_soft` 규약으로 skip)와 형식 불명 touches(`_normalized_touches`)가 같은 축이고,
+    호출부는 둘 다 FULL 로 남긴다."""
     found = _gate_ticket(tid)
     if found is None:
         return []
-    fm, _ = load_ticket(found[1])
-    return list(fm.get("touches") or [])
+    loaded = load_ticket_soft(found[1])
+    if loaded is None:
+        return None
+    return _normalized_touches(loaded[0].get("touches"))
 
 
 def _scope_args(touches: list[str]) -> str:
@@ -5587,20 +5689,34 @@ def _review_rounds_ledger() -> Path:
     return LOCAL_DIR / REVIEW_ROUNDS_LEDGER_NAME
 
 
+def round_outcome_order_key(outcome: dict) -> tuple[bool, int]:
+    """라운드 산출의 **예약 순번** 정렬 키 — 이 판정의 공용 seam (사본 금지).
+
+    append 순서는 *완료* 순서라 라운드 번호가 아니다(동시 라운드가 역순으로 끝나면 뒤바뀐다).
+    그래서 나열은 예약 순번(`sequence`)을 따른다.
+
+    **순번이 없는 구세대 기록은 신기록보다 앞(오래된 쪽)이다.** 뒤에 두면 업그레이드 후 새 통과가
+    쌓여도 옛 반려가 영원히 '최신'이 되어, 이미 닫힌 게이트가 계속 활성으로 읽히고(회귀 강등)
+    확인 전용 라운드 자격도 영구히 열린다. 구기록은 정의상 순번 도입 *이전* 이라 앞이 맞다 —
+    같은 축의 안정 정렬로 구기록끼리는 append 순서를 보존한다.
+
+    이 판정을 쓰는 표면이 board 밖에도 있어(추가 리뷰어의 조회 표·수렴 추이·확인 전용 라운드
+    자격) 공용 seam 으로 둔다 — 사본을 만들면 그 사본이 다시 뒤집힌 '최신'을 답한다.
+    """
+    sequence = outcome.get("sequence")
+    valid = isinstance(sequence, int) and not isinstance(sequence, bool)
+    return (valid, sequence if valid else 0)
+
+
 def _last_round_verdict(entry: dict) -> int | None:
     """게이트의 **마지막 라운드** 판정 rc (기록 없음/손상이면 None).
 
-    나열 순서는 append 순서가 아니라 **예약 순번**이다 — 동시 라운드가 역순으로 끝나면 append
-    순서가 실제 라운드 순서를 뒤집는다(external_review 조회 표와 같은 규칙)."""
+    나열 순서는 append 순서가 아니라 **예약 순번**이다(공용 seam `round_outcome_order_key` —
+    external_review 조회 표와 같은 한 규칙)."""
     rounds = [row for row in (entry.get("rounds") or []) if isinstance(row, dict)]
     if not rounds:
         return None
-    ordered = sorted(
-        rounds,
-        key=lambda row: (
-            not isinstance(row.get("sequence"), int), row.get("sequence") or 0,
-        ),
-    )
+    ordered = sorted(rounds, key=round_outcome_order_key)
     verdict = ordered[-1].get("verdict")
     return verdict if isinstance(verdict, int) and not isinstance(verdict, bool) else None
 
@@ -5691,6 +5807,9 @@ def _review_cycle_downgrade() -> tuple[list[str], list[str]]:
         except Exception as exc:  # noqa: BLE001 — 손상 티켓 1건이 회귀 실행을 막지 않는다.
             return _downgrade_cancelled(
                 gate, f"touches 를 읽지 못했습니다 ({type(exc).__name__}: {exc})")
+        if gate_touches is None:
+            return _downgrade_cancelled(
+                gate, "touches 형식을 확정하지 못했습니다 (리스트[str] 아님·손상 frontmatter)")
         if not gate_touches:
             return _downgrade_cancelled(
                 gate, "touches 를 확정하지 못했습니다 (빈 선언·티켓 미해소)")
@@ -6292,7 +6411,9 @@ def cmd_regression(args: argparse.Namespace) -> int:
     # test_cmd/cwd threading 용(env 유효·위에서 M>1 만 걸러냄·--cwd 핀은 soft 해소).
     sess = session_name(explicit_override)
     if args.action == "run":
-        touches = (_ticket_touches(args.ticket) if getattr(args, "ticket", None)
+        # `--ticket` 스코프도 확정 실패(None·형식 불명·손상)는 빈 목록 = FULL 이다 — 확정 못 한
+        # 선언으로 좁히면 그 실행의 rc0 이 아무 것도 검증하지 않은 '가짜 green' 이 된다.
+        touches = ((_ticket_touches(args.ticket) or []) if getattr(args, "ticket", None)
                    else (args.touches.split(",") if getattr(args, "touches", None) else []))
         # 회귀 스테이징 — 활성 리뷰 사이클 중의 FULL 요청은 그 티켓 touches 로 강등한다.
         # `--final`(수렴 후)·핸드오프·pre-push 훅만 FULL 을 그대로 돈다(훅은 `--final` 을 싣는다).
@@ -6681,8 +6802,49 @@ def find_ticket_exact(
     return None
 
 
+def find_ticket_for_mutation(tid: str) -> tuple[str, Path]:
+    """상태-변경 명령 전용 조회 — canonical ID **정확 일치만** (없으면 FileNotFoundError).
+
+    claim/complete/block/unclaim/unblock/promote 와 backfill 쓰기는 조회 결과를 **이동·기록**
+    한다. 그 자리에서 옛 glob 첫-매칭 폴백(`find_ticket`)을 쓰면 없는 번호를 입력했을 때 같은
+    번호로 시작하는 **다른 티켓**(legacy `T-NNNN` 부재 · prefixed `T-NNNN-001` 실재)이 이동한다 —
+    경고 한 줄이 나가지만 파일은 이미 옮겨진 뒤다. 되돌리려면 사람이 손으로 상태를 복원해야
+    하므로, 이 축은 경고가 아니라 **차단**이다(불일치 = 미존재).
+
+    조회 범위는 `find_ticket_exact` 와 같다 — STATUS_DIRS(open/claimed/blocked/done) →
+    draft 격리 디렉토리(`drafts_dir()`·pseudo-status `"draft"`). draft 를 찾은 mutation 은
+    각자의 status 검사가 즉시 거부한다(예: "cannot claim T-x: currently in draft/").
+
+    안내는 "왜 못 찾았나"를 말한다 — 같은 번호로 시작하는 후보가 실재하면 그 canonical ID 를
+    함께 보여, 오타 입력이 조용한 오이동 대신 정확한 재입력으로 이어지게 한다.
+    """
+    exact = find_ticket_exact(tid)
+    if exact is not None:
+        return exact
+    near = _near_miss_ticket_ids(tid)
+    hint = (f" — 같은 번호로 시작하는 티켓은 있으나 canonical ID 가 다르다: "
+            f"{', '.join(near)} (정확한 ID 로 다시 호출하라)" if near else "")
+    raise FileNotFoundError(f"ticket not found: {tid}{hint}")
+
+
+def _near_miss_ticket_ids(tid: str) -> list[str]:
+    """`{tid}-*.md` prefix 로 잡히지만 canonical ID 가 다른 티켓들의 ID (없으면 빈 목록).
+
+    차단 안내 전용이다 — 옛 폴백이 *이동시켰을* 티켓을 이름으로 보여줘 "왜 못 찾았나"가
+    미스터리로 남지 않게 한다. 조회 자체에는 관여하지 않는다(fail-soft: 읽기 실패는 무시).
+    """
+    near: list[str] = []
+    with contextlib.suppress(OSError):
+        for _status, directory in _ticket_search_dirs():
+            for path in sorted(Path(directory).glob(f"{tid}-*.md")):
+                canonical = _canonical_ticket_id(path)
+                if canonical and canonical != tid and canonical not in near:
+                    near.append(canonical)
+    return near
+
+
 def find_ticket(tid: str) -> tuple[str, Path]:
-    """Return (status_dir, path). Raises FileNotFoundError if missing.
+    """Return (status_dir, path). Raises FileNotFoundError if missing. **읽기 소비자 전용.**
 
     **canonical ID 정확 일치가 우선이다**(`find_ticket_exact`) — 그 뒤에야 옛 glob 첫 매칭으로
     떨어진다. 순서가 이렇게 정해진 이유는 `T-NNNN` 과 `T-NNNN-001` 이 공존할 때 첫 매칭이
@@ -6691,11 +6853,13 @@ def find_ticket(tid: str) -> tuple[str, Path]:
     (`T-NNNN-<slug>-123.md`)까지 못 찾게 되면 조회 자체가 회귀하기 때문이다 — 정확 일치 후보가
     있으면 언제나 그쪽이고, 없을 때만 종전 동작이다.
 
+    **상태를 바꾸는 명령은 이 함수를 쓰지 않는다** — 폴백이 답한 남의 티켓을 그대로 옮기기
+    때문이다(경고를 봤을 땐 이미 이동한 뒤다). 그쪽은 `find_ticket_for_mutation`(정확 일치만)
+    이 소유하고, 여기 남는 소비자는 부작용 없는 조회(`show`)뿐이다.
+
     STATUS_DIRS(open/claimed/blocked/done)에서 못 찾으면 draft 격리 디렉토리
-    (`drafts_dir()`)를 폴백으로 스캔해 pseudo-status `"draft"` 로 반환한다 — `show`/
-    `promote`가 draft 를 조회할 수 있게 한다. 다른 mutation(claim/block/complete 등)이 이
-    경로로 draft 를 찾아도 각자의 status 검사(`!= "open"` 등)가 즉시 거부하므로 안전하다
-    (예: "cannot claim T-x: currently in draft/" — 오히려 명확한 신호).
+    (`drafts_dir()`)를 폴백으로 스캔해 pseudo-status `"draft"` 로 반환한다 — `show` 가 draft 를
+    조회할 수 있게 한다.
     """
     exact = find_ticket_exact(tid)
     if exact is not None:
@@ -6942,7 +7106,7 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str) -> int:
     orig_head = prefetch.anchor
 
     try:
-        status, path = find_ticket(args.id)
+        status, path = find_ticket_for_mutation(args.id)
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         return 2
@@ -6972,7 +7136,9 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str) -> int:
             # Check dependencies
             for dep in fm.get("depends_on") or []:
                 try:
-                    dep_status, _ = find_ticket(dep)
+                    # 의존성 조회도 정확 일치만 — 이 판정이 claim 이동 여부를 정하므로, 폴백이
+                    # 답한 *다른* 티켓의 done 상태로 게이트가 열리면 안 된다(미해소 = 거부).
+                    dep_status, _ = find_ticket_for_mutation(dep)
                 except FileNotFoundError:
                     print(f"dependency {dep} not found", file=sys.stderr)
                     return 1
@@ -7066,7 +7232,7 @@ def _complete_gate(tid: str, args: argparse.Namespace,
 
 def cmd_complete(args: argparse.Namespace) -> int:
     try:
-        status, path = find_ticket(args.id)
+        status, path = find_ticket_for_mutation(args.id)
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         return 2
@@ -7101,7 +7267,7 @@ def cmd_complete(args: argparse.Namespace) -> int:
 
 def cmd_block(args: argparse.Namespace) -> int:
     try:
-        status, path = find_ticket(args.id)
+        status, path = find_ticket_for_mutation(args.id)
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         return 2
@@ -7121,7 +7287,7 @@ def cmd_block(args: argparse.Namespace) -> int:
 
 def cmd_unclaim(args: argparse.Namespace) -> int:
     try:
-        status, path = find_ticket(args.id)
+        status, path = find_ticket_for_mutation(args.id)
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         return 2
@@ -7142,7 +7308,7 @@ def cmd_unclaim(args: argparse.Namespace) -> int:
 
 def cmd_unblock(args: argparse.Namespace) -> int:
     try:
-        status, path = find_ticket(args.id)
+        status, path = find_ticket_for_mutation(args.id)
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         return 2
@@ -7943,7 +8109,7 @@ def _migrate_tickets_apply(
             # 쓰기 *직전* ID 로 현재 경로 재조회 — 스캔 경로와 다르거나 사라졌으면 stale
             # 쓰기를 막는다(이동/완료된 티켓에 안 씀). 살아 있으면 현재 경로에 atomic write.
             try:
-                cur_status, cur_path = find_ticket(tid)
+                cur_status, cur_path = find_ticket_for_mutation(tid)
             except FileNotFoundError:
                 print(f"  skip {tid}: 재조회 시 없음(다른 세션이 완료/삭제) — backfill 안 함",
                       file=sys.stderr)
@@ -8204,7 +8370,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
     `open/` 에 발행) status 는 정상적으로 "open" 이다.
     """
     try:
-        status, path = find_ticket(args.id)
+        status, path = find_ticket_for_mutation(args.id)
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         return 2
@@ -8836,12 +9002,20 @@ def _canonical_ticket_id(path: Path, fm: dict[str, Any] | None = None) -> str | 
     rename-planning 측이 같은 canonical 해소를 쓰게 해 파일명↔content 불일치를 원천 차단한다.
 
     `fm` 이 주어지면(호출부가 이미 로드) 재-read 를 피한다. 미지정이면 여기서 fail-soft 로 로드한다.
+
+    **frontmatter 가 매핑이 아닌 형상**(스칼라·리스트)도 같은 축으로 접는다(`load_ticket_soft`
+    규약 — 손상 = 없는 것으로 보고 파일명 폴백). YAML 이 비어 있지 않은 스칼라면 파싱은 성공하고
+    `fm.get` 이 AttributeError 로 터지는데, 이 함수는 정확-일치 조회(`find_ticket_exact`)의
+    후보 순회 안에서 불리므로 그 예외가 **활성 리뷰 판정·강등 판정보다 먼저** 실행을 죽인다
+    (손상 티켓은 skip 하고 FULL 로 남긴다는 규약이 깨진다).
     """
     if fm is None:
         try:
             fm, _ = load_ticket(path)
         except Exception:  # noqa: BLE001 — 읽기/파싱 실패는 파일명 폴백(fail-soft·비-UTF-8 등).
             fm = {}
+    if not isinstance(fm, dict):
+        fm = {}
     fid = fm.get("id")
     if isinstance(fid, str) and fid:
         return fid
@@ -9719,28 +9893,47 @@ def _section_text(body: str, heading: str, *, exact: bool = False) -> str | None
     이어지는 말은 다른 절 제목이기 때문이다. 이름 뒤에 자유 부제가 붙는 절
     (`## 완료 조건 (Definition of Done)`)은 접두 일치가 정상이라 기본값은 종전(False)이다.
     """
+    sections = _section_texts(body, heading, exact=exact)
+    return sections[0] if sections else None
+
+
+def _section_texts(body: str, heading: str, *, exact: bool = False) -> list[str]:
+    """그 이름의 **모든** 절 본문 (없으면 빈 목록) — `_section_text` 의 전-절 형태.
+
+    같은 이름의 절이 두 번 나오는 본문에서 첫 절만 보면, 앞에 빈(또는 전부 체크된) 절을 하나 두고
+    뒤 절에 미체크 항목을 남기는 우회가 성립한다. 판정이 '있는 항목 전부'여야 하는 소비자
+    (DoD 마감 검사)는 이 함수로 **합산**한다. 절 경계·펜스 제거 규칙은 `_section_text` 와 같은
+    한 지점이다(두 벌이면 한쪽만 펜스를 보는 절반 배선이 생긴다).
+    """
     lines = _FENCED_CODE_RE.sub("", body).splitlines()
     if exact:
         heading_re = re.compile(rf"{re.escape(heading)}(?:\s*\(.*\))?\s*$")
         matches: Callable[[str], bool] = lambda line: heading_re.match(line) is not None
     else:
         matches = lambda line: line.startswith(heading)  # noqa: E731
-    start = next((i for i, line in enumerate(lines) if matches(line)), None)
-    if start is None:
-        return None
-    end = next((i for i in range(start + 1, len(lines))
-                if lines[i].startswith("## ")), len(lines))
-    return "\n".join(lines[start + 1:end])
+    sections: list[str] = []
+    for start, line in enumerate(lines):
+        if not matches(line):
+            continue
+        end = next((i for i in range(start + 1, len(lines))
+                    if lines[i].startswith("## ")), len(lines))
+        sections.append("\n".join(lines[start + 1:end]))
+    return sections
 
 
-def _dod_section_text(body: str) -> str | None:
-    """`## 완료 조건` 절 본문 — 공용 슬라이서(`_section_text`)의 DoD 이름(**정확 일치**).
+def _dod_section_texts(body: str) -> list[str]:
+    """`## 완료 조건` 절 본문 **전부** — 공용 슬라이서(`_section_texts`)의 DoD 이름(정확 일치).
 
     존재 판정은 설계 절과 같은 규칙(`exact`)이다: 헤딩 줄이 그 이름 자체이거나 괄호 부제만
     붙어야 한다(`## 완료 조건 (Definition of Done)`). 자유 접두 일치는 `## 완료 조건 검토 이력`
     같은 **다른 절**을 DoD 로 잡아 실제 DoD 를 통째로 가린다 — 그 절엔 체크박스가 없으니 미체크
-    항목이 있어도 완료가 통과했다(fail-open)."""
-    return _section_text(body, _DOD_SECTION, exact=True)
+    항목이 있어도 완료가 통과했다(fail-open).
+
+    **중복 절은 합산한다**(거부하지 않는다). 기존 판정 구조가 "있는 체크박스의 미결만 막는다"
+    (절 부재·체크박스 0개는 무영향)이므로, 새 형식 거부를 만드는 것보다 판정 대상을 전 절로
+    넓히는 쪽이 그 구조와 같은 축이다 — 우회(앞 빈 절로 뒤 절 가리기)는 그대로 닫히고 레거시
+    본문에는 새 차단 사유가 생기지 않는다."""
+    return _section_texts(body, _DOD_SECTION, exact=True)
 
 
 def _dod_heading_mismatch(body: str) -> str | None:
@@ -9761,16 +9954,19 @@ def _dod_open_items(body: str) -> list[str]:
 
     `_complete_gate` 가 쓰는 단일 깔때기다. 절 부재·체크박스 0개(산문 DoD)는 빈 리스트 —
     이 게이트는 체크박스를 *요구* 하지 않고, 있는 체크박스의 미결만 막는다(레거시 무영향).
+
+    `## 완료 조건` 절이 여럿이면 **전 절을 합산**한다 — 첫 절만 보면 앞에 빈 절 하나를 두고 뒤
+    절에 미체크 항목을 남기는 우회가 성립한다.
     """
-    section = _dod_section_text(body)
-    if section is None:
+    sections = _dod_section_texts(body)
+    if not sections:
         heading = _dod_heading_mismatch(body)
         if heading is None:
             return []                       # DoD 절 자체가 없는 레거시 본문 — 종전대로 무영향.
         return [f"DoD 절 헤딩 형식: {heading!r} — 절을 식별할 수 없어 미체크 항목을 판정하지 "
                 f"못한다. `{_DOD_SECTION}` 또는 `{_DOD_SECTION} (부제)` 형식으로 쓰라"]
     problems: list[str] = []
-    for line in section.splitlines():
+    for line in "\n".join(sections).splitlines():
         match = _DOD_CHECKBOX_RE.match(line)
         if match is None:
             continue

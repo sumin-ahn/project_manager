@@ -1040,3 +1040,104 @@ def test_base_rev_comes_from_the_prerun_worktree_capture(pd, monkeypatch, tmp_pa
     assert rc == 0
     row = _rows(out_dir / "raw_outputs.json")[0]
     assert row["base_rev"] == head
+
+
+# ── 재실행 자격 = 확정된 재사용 실패뿐 (T-0605 ⑤) ─────────────────────────────
+# codex R5 지적: 세션 id 가 없고 인프라 실패로 분류되지 않은 **모든** 실패를 재사용 불일치로 보고
+# read 역할을 자동 재실행했다 — 전송 *후* 죽은 미분류 `rc≠0` 도 full payload 로 다시 나가
+# 중복 과금·중복 외부 전송이 된다. 자격은 둘뿐이다: 깨끗한 완료의 명시적 id 불일치, 확정된
+# "세션 없음" 오류.
+
+
+def test_unclassified_failure_after_send_is_not_rerun(pd, monkeypatch, tmp_path, capsys):
+    """미분류 `rc≠0`(전송 후 실패 가능)은 재실행하지 않는다 — 기존 fail-loud (DoD)."""
+    out_dir, _ledger_path, _record_id = _resume_fixture(pd, tmp_path)
+    prompt = _write_prompt(tmp_path)
+    fake = _FakeRun(
+        {"returncode": 1, "stdout": "", "stderr": "unexpected tool crash",
+         "timed_out": False},
+        _ok(_claude_wire("판정: 통과")),          # 재실행이 일어나면 이걸 소비한다
+    )
+
+    rc = _run_main(pd, monkeypatch,
+                   _argv(prompt, tmp_path, out_dir, "--resume-from", TICKET_ID), fake)
+    err = capsys.readouterr().err
+
+    assert rc == 1
+    assert len(fake.calls) == 1, f"미분류 실패인데 재전송이 일어남: {fake.calls}"
+    assert "세션 재사용 실패" not in err          # 재사용 축 오진단 없음
+    assert "위임 하네스 실패(rc=1)" in err        # 기존 fail-loud 그대로
+
+
+def test_a_clean_completion_without_an_observed_id_is_not_rerun(
+        pd, monkeypatch, tmp_path, capsys):
+    """rc=0 인데 세션 id 를 **관측하지 못한** 라운드도 재실행 대상이 아니다(불일치 미확정).
+
+    관측 실패는 재사용이 깨졌다는 증거가 아니다 — 그 상태로 full payload 를 다시 태우면 이미
+    소비된 라운드가 한 번 더 과금된다."""
+    out_dir, _ledger_path, _record_id = _resume_fixture(pd, tmp_path)
+    prompt = _write_prompt(tmp_path)
+    fake = _FakeRun(
+        _ok(json.dumps({"type": "result", "result": "판정: 통과"})),   # session_id 없음
+        _ok(_claude_wire("판정: 통과")),
+    )
+
+    rc = _run_main(pd, monkeypatch,
+                   _argv(prompt, tmp_path, out_dir, "--resume-from", TICKET_ID), fake)
+
+    assert rc == 0
+    assert len(fake.calls) == 1, f"관측 실패인데 재전송이 일어남: {fake.calls}"
+    assert "세션 재사용 실패" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("wire", [
+    "No conversation found",           # claude 실측 문구
+    "Session not found: 11111111",     # opencode 계열
+    "conversation not found",          # codex 계열
+])
+def test_a_confirmed_missing_session_still_reruns(pd, monkeypatch, tmp_path, capsys, wire):
+    """정상 경로 무변경 — "세션 없음"이 확정된 실패는 delta 가 소비되지 않았으므로 재실행한다."""
+    out_dir, _ledger_path, _record_id = _resume_fixture(pd, tmp_path)
+    prompt = _write_prompt(tmp_path)
+    fake = _FakeRun(
+        {"returncode": 1, "stdout": "", "stderr": wire, "timed_out": False},
+        _ok(_claude_wire("판정: 통과")),
+    )
+
+    rc = _run_main(pd, monkeypatch,
+                   _argv(prompt, tmp_path, out_dir, "--resume-from", TICKET_ID), fake)
+
+    assert rc == 0 and len(fake.calls) == 2
+    assert "재개 대상 세션 없음" in capsys.readouterr().err
+    assert _PREAMBLE_MARKER in fake.calls[1]["stdin_text"]
+
+
+def test_write_role_unclassified_failure_keeps_the_generic_fail_loud(
+        pd, monkeypatch, tmp_path, capsys):
+    """write 역할의 미분류 실패도 재사용 축 안내가 아니라 기존 fail-loud 다 (오진단 0)."""
+    out_dir, _ledger_path = _write_role_fixture(pd, tmp_path, "developer")
+    prompt = _write_prompt(tmp_path)
+    fake = _FakeRun({"returncode": 1, "stdout": "", "stderr": "unexpected tool crash",
+                     "timed_out": False})
+
+    rc = _run_main(
+        pd, monkeypatch,
+        _argv(prompt, tmp_path, out_dir, "--resume-from", TICKET_ID, role="developer"),
+        fake)
+    err = capsys.readouterr().err
+
+    assert rc == 1 and len(fake.calls) == 1
+    assert "트리를 이미 고쳤을 수 있어" not in err
+    assert "위임 하네스 실패(rc=1)" in err
+
+
+@pytest.mark.parametrize("result, observed, expected", [
+    ({"returncode": 0}, OTHER_SESSION_ID, "회신 세션 id 불일치"),
+    ({"returncode": 0}, SESSION_ID, None),          # 일치 = 성공
+    ({"returncode": 0}, None, None),                # 관측 실패 = 미확정
+    ({"returncode": 1, "stderr": "boom"}, None, None),            # 미분류 실패
+    ({"returncode": 1, "stderr": "No conversation found"}, None, "재개 대상 세션 없음"),
+])
+def test_rerun_reason_is_the_single_eligibility_funnel(pd, result, observed, expected):
+    """자격 판정은 한 함수가 소유한다 — 호출부가 각자 조건을 조립하면 다시 갈린다."""
+    assert pd.resume_rerun_reason(dict(result), observed, SESSION_ID) == expected

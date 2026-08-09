@@ -2523,20 +2523,54 @@ def _latest_round_outcome(entry: dict) -> dict | None:
     return ordered[-1] if ordered else None
 
 
-def _is_rejection(outcome: dict) -> bool:
-    """그 산출의 판정이 반려(rc≠0)인가. 판정 미상(기록 없음·손상)은 반려로 세지 않는다 —
-    확인 전용 라운드는 과금 라운드라 자격을 못 세우는 쪽이 보수 방향이다(board 강등 판정이
-    미상 게이트를 활성으로 세지 않는 것과 같은 방향)."""
+def _has_recorded_verdict(entry: dict, outcome: dict) -> bool:
+    """그 산출을 낸 **예약 레코드**가 실제 리뷰 판정을 남겼는가 (`records[].verdict` 가 참).
+
+    산출의 `verdict` 는 `determine_exit_code()` 의 rc 라 **timeout·하네스 실패·판정 불명확도
+    1** 이다 — 그 값만 보면 리뷰어가 아무 판정도 내지 않은 라운드가 '반려'로 세어져 확인 전용
+    라운드(과금 예외)의 자격이 선다. 마감 시점에 예약 레코드가 따로 새기는
+    `verdict = _round_has_verdict(result)`(통과 또는 must-fix 선언이 실재했는가)를 함께 본다.
+
+    연결 좌표는 예약 identity(`id`)다(`_recorded_must_fix_texts` 와 같은 규칙). 레코드를 못
+    찾거나 그 축이 없는 구세대 기록은 **자격 없음**이다 — 과금 축은 못 세우는 쪽이 보수 방향이다.
+    """
+    round_id = outcome.get("id")
+    if not round_id:
+        return False
+    for row in entry.get("records") or []:
+        if isinstance(row, dict) and row.get("id") == round_id:
+            return bool(row.get("verdict"))
+    return False
+
+
+def _is_rejection(entry: dict, outcome: dict) -> bool:
+    """그 산출이 **실제 리뷰 판정으로서의** 반려(rc≠0)인가.
+
+    판정 미상(기록 없음·손상)은 반려로 세지 않는다 — 확인 전용 라운드는 과금 라운드라 자격을 못
+    세우는 쪽이 보수 방향이다(board 강등 판정이 미상 게이트를 활성으로 세지 않는 것과 같은 방향).
+    rc 만으로는 timeout·하네스 실패·판정 불명확이 반려와 구분되지 않으므로 예약 레코드의 실제
+    verdict 존재(`_has_recorded_verdict`)를 함께 요구한다."""
     verdict = outcome.get("verdict")
-    return isinstance(verdict, int) and not isinstance(verdict, bool) and verdict != 0
+    if not (isinstance(verdict, int) and not isinstance(verdict, bool) and verdict != 0):
+        return False
+    return _has_recorded_verdict(entry, outcome)
 
 
 def _latest_verdict_label(entry: dict) -> str:
-    """최신 완료 라운드의 판정 표기 — 거부 안내가 '무엇을 보고 막았는지' 그대로 말한다."""
+    """최신 완료 라운드의 판정 표기 — 거부 안내가 '무엇을 보고 막았는지' 그대로 말한다.
+
+    rc 는 비통과인데 실제 리뷰 판정이 없던 라운드(timeout·하네스 실패·판정 불명확)는 그 사실을
+    함께 적는다 — 안 적으면 안내가 "최신 판정은 1(비통과)"이라고 말해 놓고 반려 자격은 없다고
+    막는 모순으로 읽힌다."""
     outcome = _latest_round_outcome(entry)
     if outcome is None:
         return "라운드 기록 없음"
-    return _format_round_verdict(outcome.get("verdict"))
+    label = _format_round_verdict(outcome.get("verdict"))
+    verdict = outcome.get("verdict")
+    if (isinstance(verdict, int) and not isinstance(verdict, bool) and verdict != 0
+            and not _has_recorded_verdict(entry, outcome)):
+        return f"{label} · 리뷰 판정 없음(timeout·하네스 실패·판정 불명확)"
+    return label
 
 
 def _recorded_must_fix_texts(entry: dict, outcome: dict) -> list[str]:
@@ -2561,7 +2595,7 @@ def _confirm_fix_evidence(entry: dict) -> str | None:
     """확인 전용 라운드 프롬프트에 실을 근거 블록 — **최신 완료 라운드가 반려가 아니면
     None(자격 없음)**. 근거는 그 최신 반려 라운드의 must_fix 다(자격과 같은 산출 1건)."""
     outcome = _latest_round_outcome(entry)
-    if outcome is None or not _is_rejection(outcome):
+    if outcome is None or not _is_rejection(entry, outcome):
         return None
     sequence = _round_sequence(outcome)
     header = _CONFIRM_FIX_EVIDENCE_HEADER.format(
@@ -3028,13 +3062,13 @@ def _ordered_round_outcomes(rounds: list) -> list[dict]:
     """산출을 **예약 순서**로 정렬한다 — append 순서는 *완료* 순서라 라운드 번호가 아니다.
 
     같은 게이트의 두 라운드가 역순으로 끝나면(느린 1라운드·빠른 2라운드) append 순서는 실제 라운드
-    순서를 뒤집는다. 순번이 없는 구세대/미연결 산출은 뒤에 원래 순서대로 남긴다(안정 정렬)."""
-    return sorted(
-        rounds,
-        key=lambda outcome: (
-            _round_sequence(outcome) is None, _round_sequence(outcome) or 0,
-        ),
-    )
+    순서를 뒤집는다. 순번이 없는 구세대/미연결 산출은 **앞**(오래된 쪽)에 원래 순서대로 남긴다
+    (안정 정렬) — 뒤에 두면 업그레이드 후 새 통과가 쌓여도 옛 반려가 영원히 '최신'이 된다.
+
+    정렬 규칙은 board 의 공용 seam(`round_outcome_order_key`)이 소유한다 — 같은 장부를 읽는
+    board 의 강등 판정(`_last_round_verdict`)과 사본으로 갈리면 두 표면이 서로 다른 라운드를
+    '최신'이라고 답한다. 방향은 이 파일이 board 를 로드하는 쪽이다(역방향은 순환)."""
+    return sorted(rounds, key=_load_board().round_outcome_order_key)
 
 
 def render_rounds_report(

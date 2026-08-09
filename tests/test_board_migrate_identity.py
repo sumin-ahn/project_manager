@@ -696,7 +696,7 @@ def test_ticket_moved_before_write_is_skipped(board, capsys, monkeypatch):
     """쓰기 직전 티켓이 *이동*되면 재조회→skip — stale 쓰기 0(이동된 파일 안 건드림).
 
     best-effort 동시성: 다른 세션이 claim 으로 open/→claimed/ 이동시킨 상황을 모사한다.
-    `find_ticket`(쓰기 직전 재조회)을 래핑해 스캔 경로(open/)가 아닌 새 경로(claimed/)를
+    `find_ticket_for_mutation`(쓰기 직전 재조회)을 래핑해 스캔 경로(open/)가 아닌 새 경로(claimed/)를
     돌려주면, 경로 불일치로 skip 되고 스캔 경로엔 절대 쓰지 않는다. (하드 보장 아님 — 재조회와
     replace 사이 미세 창은 단일-세션 전제로 수용. 여기선 *재조회가 잡는* 케이스를 검증.)
     """
@@ -706,7 +706,7 @@ def test_ticket_moved_before_write_is_skipped(board, capsys, monkeypatch):
     # 다른 세션이 claim 으로 open/→claimed/ 옮긴 상태를 모사 — 재조회가 claimed/ 경로를
     # 반환하게 한다(물리 사본은 안 둠 — skip 은 쓰기 *전* 경로 불일치로 발동하므로 충분).
     moved_path = board.TICKETS_DIR / "claimed" / "T-0001-seed.md"
-    real_find = board.find_ticket
+    real_find = board.find_ticket_for_mutation
 
     def _find_moved(tid):
         # 재조회는 항상 이동된(claimed/) 경로를 반환 → 스캔 경로(open/)와 불일치 → skip.
@@ -714,7 +714,7 @@ def test_ticket_moved_before_write_is_skipped(board, capsys, monkeypatch):
             return "claimed", moved_path
         return real_find(tid)
 
-    monkeypatch.setattr(board, "find_ticket", _find_moved)
+    monkeypatch.setattr(board, "find_ticket_for_mutation", _find_moved)
     rc, _, err = _run(board, capsys)
     assert rc == 0
     # skip 경고가 stderr 에 떴고, 스캔 경로(open/)엔 stale 쓰기가 없다(bytes 불변).
@@ -730,14 +730,14 @@ def test_ticket_gone_before_write_is_skipped(board, capsys, monkeypatch):
     _seed(board, "T-0001", "open")
     _seed(board, "T-0002", "open")  # 살아있는 다른 티켓.
 
-    real_find = board.find_ticket
+    real_find = board.find_ticket_for_mutation
 
     def _find_gone(tid):
         if tid == "T-0001":
             raise FileNotFoundError("ticket not found: T-0001")  # 완료/삭제 모사.
         return real_find(tid)
 
-    monkeypatch.setattr(board, "find_ticket", _find_gone)
+    monkeypatch.setattr(board, "find_ticket_for_mutation", _find_gone)
     rc, _, err = _run(board, capsys)
     assert rc == 0
     assert "skip T-0001" in err and "없음" in err

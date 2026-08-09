@@ -471,3 +471,74 @@ def test_done_tickets_are_not_retroactively_checked(live_board):
     assert rc == 0, "done/ 의 옛 미체크 DoD 가 무관한 complete 를 막음(소급 검사 발생)"
     assert legacy.exists() and legacy.read_text(encoding="utf-8") == before, \
         "옛 done 티켓이 건드려짐"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 중복 `## 완료 조건` 절 = 전 절 합산 (T-0605 ⑧)
+# ════════════════════════════════════════════════════════════════════════
+# codex R5 지적: 슬라이서가 **첫 절만** 검사한다 — 앞에 빈(또는 전부 체크된) `## 완료 조건` 절을
+# 하나 두고 뒤 절에 `- [ ]` 를 남기면 완료 게이트가 통과한다. 판정 대상을 그 이름의 **모든** 절로
+# 넓혀 닫는다(중복 자체를 새 형식 차단으로 만들지 않는다 — 기존 판정 구조가 "있는 체크박스의
+# 미결만 막는다"이므로 레거시 본문에 새 차단 사유를 만들지 않는 쪽이 같은 축이다).
+
+_DUPLICATE_DOD_BODY = (
+    "# T-0605 — 픽스처\n\n## 목표\n게이트 판정 입력.\n\n"
+    "## 완료 조건 (Definition of Done)\n- [x] 앞 절은 전부 체크돼 있다\n\n"
+    "## 참고\n- 없음\n\n"
+    "## 완료 조건 (Definition of Done)\n- [ ] 뒤 절에 남은 미체크 항목\n\n"
+    "## 메모\n"
+)
+
+
+def test_a_second_dod_section_cannot_hide_unchecked_items(board):
+    """앞 절이 전부 체크돼 있어도 **뒤 절**의 미체크가 잡힌다 (재현 → 차단·DoD)."""
+    problems = board._complete_gate("T-0605", _gate_args(), _DUPLICATE_DOD_BODY)
+
+    assert any("뒤 절에 남은 미체크 항목" in p for p in problems), (
+        f"앞 빈 절이 뒤 절을 가림: {problems}")
+
+
+def test_every_dod_section_is_summed_not_just_the_first(board):
+    """합산이다 — 두 절에 각각 남은 미체크가 **모두** 사유로 올라온다."""
+    body = (
+        "# T-0605 — 픽스처\n\n## 목표\n게이트 판정 입력.\n\n"
+        "## 완료 조건 (Definition of Done)\n- [ ] 앞 절 항목\n\n"
+        "## 참고\n- 없음\n\n"
+        "## 완료 조건 (Definition of Done)\n- [ ] 뒤 절 항목\n\n## 메모\n"
+    )
+
+    problems = board._dod_open_items(body)
+
+    assert len(problems) == 2
+    assert any("앞 절 항목" in p for p in problems) and any("뒤 절 항목" in p for p in problems)
+
+
+def test_duplicate_sections_fully_checked_still_pass(board):
+    """정상 경로 무변경 — 중복 절이라도 전부 마감돼 있으면 통과다(중복 자체는 차단 사유 아님)."""
+    body = (
+        "# T-0605 — 픽스처\n\n## 목표\n게이트 판정 입력.\n\n"
+        "## 완료 조건 (Definition of Done)\n- [x] 앞 절 항목\n\n"
+        "## 참고\n- 없음\n\n"
+        "## 완료 조건 (Definition of Done)\n"
+        "- [>] 뒤 절 항목 (이월: 하네스 한도 소진·다음 wave 귀속)\n\n## 메모\n"
+    )
+
+    assert board._complete_gate("T-0605", _gate_args(), body) == []
+
+
+def test_a_single_dod_section_is_unchanged(board):
+    """단일 절 본문의 판정은 종전 그대로다 (합산 도입이 정상 티켓을 바꾸지 않는다)."""
+    assert board._dod_open_items(_dod_body("- [x] 코드")) == []
+    assert board._dod_section_texts(_dod_body("- [x] 코드")) == ["- [x] 코드\n"]
+
+
+def test_cmd_complete_blocks_on_a_hidden_second_dod_section(live_board, capsys):
+    """e2e — 우회 본문으로 부른 complete 는 rc 1 이고 티켓은 claimed/ 에 남는다."""
+    path = _seed_ticket(live_board, "T-9005", _DUPLICATE_DOD_BODY)
+
+    rc = live_board.cmd_complete(_complete_args("T-9005"))
+
+    assert rc == 1
+    assert path.exists()
+    assert not list((live_board.tickets_dir() / "done").glob("T-9005*"))
+    assert "DoD 미체크" in capsys.readouterr().err
