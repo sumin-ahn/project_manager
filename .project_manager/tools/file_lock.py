@@ -49,7 +49,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 # baked 엔진 rev — engine_rev.py --bump 이 STAMPED_MODULES 전체와 함께 기계 재작성한다.
-ENGINE_REV = "v1.7.0"
+ENGINE_REV = "v1.7.1"
 
 # 락 파일 기본 권한. 더 좁은 권한이 필요한 호출자는 `mode=` 로 명시한다(pm_relay raw 장부=0o600).
 DEFAULT_LOCK_MODE = 0o644
