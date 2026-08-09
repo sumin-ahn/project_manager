@@ -2369,6 +2369,8 @@ RESUME_FIELD_USAGE = "usage"
 RESUME_FIELD_TICKET = "ticket"
 RESUME_FIELD_RESUME_FROM = "resume_from_session_id"
 RESUME_FIELD_RESUME_MATCHED = "resume_matched"
+# 회신 검증까지 통과한 **유효 성공**인가 — rc(자식 종료 코드)만으로는 못 세는 축이다.
+RESUME_FIELD_REPLY_EXTRACTED = "reply_extracted"
 # attempt 라벨 — raw 헤더/장부가 이 실행이 어떤 라운드였는지 그대로 말한다.
 RESUME_ATTEMPT = "resume"
 RESUME_FRESH_FALLBACK_ATTEMPT = "fresh-after-resume-mismatch"
@@ -2396,17 +2398,24 @@ def _resume_selector_matches(row: dict, selector: str) -> bool:
 def _resume_candidate_is_reusable(row: dict) -> bool:
     """그 레코드에서 **이어받을 세션**을 얻을 수 있는가 (후보 정밀화 축).
 
-    두 가지를 본다:
+    세 가지를 본다:
       · 세션 id 가 실제로 남았는가 — 이 필드는 회신 wire 관측으로만 채워진다. rc 0 이어도 회신을
         못 읽은 라운드는 이어받을 세션을 모른다.
       · `resume_matched` 가 False 가 아닌가 — False 면 그 라운드는 **다른 세션**이 답한 실행이고,
         기록된 세션 id 는 그 남의 세션 것이다. 후보로 두면 다음 재개가 맥락 없는 세션을 이어받아
         fresh 재실행 비용을 다시 지불한다.
-    이 둘을 선택 *전에* 거르는 이유는 결정 규칙이 "최신 1건"이기 때문이다 — 뒤에서 걸러 봐야
+      · `reply_extracted` 가 False 가 아닌가 — 장부의 `rc` 는 **자식 프로세스 종료 코드**라 회신
+        검증보다 먼저 확정된다. 세션 id 만 관측되고 유효 회신이 없던 실행(wire 절단·형상 붕괴)도
+        rc 0 으로 남으므로, 그 축을 안 보면 *실패한 라운드*가 성공 후보로 재개된다. 필드가 아예
+        없는 **구레코드는 종전대로 rc 기준**이다(하위호환 — 이 축이 없던 시절 기록을 일괄 탈락
+        시키면 정상 재개가 회귀한다).
+    이 셋을 선택 *전에* 거르는 이유는 결정 규칙이 "최신 1건"이기 때문이다 — 뒤에서 걸러 봐야
     최신이 탈락하면 유효한 이전 후보가 있어도 재사용이 통째로 불가로 접힌다.
     """
     session_id = row.get(RESUME_FIELD_SESSION_ID)
     if not isinstance(session_id, str) or not session_id.strip():
+        return False
+    if row.get(RESUME_FIELD_REPLY_EXTRACTED) is False:
         return False
     return row.get(RESUME_FIELD_RESUME_MATCHED) is not False
 
@@ -2443,6 +2452,9 @@ def resume_unusable_reason(
     if row.get(RESUME_FIELD_RESUME_MATCHED) is False:
         return (f"레코드 {row.get('id')} 는 세션 불일치로 끝난 라운드다(resume_matched=false) — "
                 "기록된 세션 id 는 남의 세션 것이라 이어받을 수 없음")
+    if row.get(RESUME_FIELD_REPLY_EXTRACTED) is False:
+        return (f"레코드 {row.get('id')} 는 유효 회신이 없던 라운드다(reply_extracted=false) — "
+                "rc 0 은 자식 종료 코드일 뿐이라 성공 후보가 아님")
     return (f"레코드 {row.get('id')} 에 세션 id 가 관측되지 않았다(회신 wire 미기록) — "
             "이어받을 세션을 알 수 없음")
 
@@ -3243,8 +3255,12 @@ def _finished_ledger_fields(
 
     `usage` 는 하네스가 분해 관측을 준 축에서만 실린다 — 0 채우기·추정 매핑은 비용 표를
     false-정밀하게 만든다. `must_fix_items` 는 생산 시점 추출이라 다음 라운드 delta 가 raw 텍스트를
-    재파싱하지 않아도 된다."""
-    fields: dict[str, object] = {}
+    재파싱하지 않아도 된다.
+
+    `reply_extracted` 는 **판정이라 항상 싣는다**(True/False 둘 다) — 이 실행이 회신 검증까지
+    통과한 유효 성공인지를 rc 와 분리해 기록하는 유일한 자리다. 부재로 두면 '이 축을 모르는
+    구레코드'와 구분되지 않아 다음 재개가 실패 실행을 성공 후보로 집는다."""
+    fields: dict[str, object] = {RESUME_FIELD_REPLY_EXTRACTED: observed.reply is not None}
     if observed.session_id is not None:
         fields[RESUME_FIELD_SESSION_ID] = observed.session_id
     if observed.usage:

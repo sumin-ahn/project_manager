@@ -607,33 +607,31 @@ def count_board_done(board_py: Path) -> int:
 
 
 def get_ticket_title(board_py: Path, ticket_id: str) -> str:
-    """ticket_id 의 title 을 board.py 를 import 해서 읽어온다.
+    """ticket_id 의 title 을 board.py 를 import 해서 읽어온다 (실패 시 빈 문자열).
 
-    실패 시 빈 문자열 반환.
+    조회는 `_ticket_frontmatter` 한 지점을 쓴다 — 제목과 estimate/touches 가 서로 다른 파일을
+    보면 마감 로그가 가리키는 티켓과 게이트가 판정한 티켓이 갈린다.
     """
-    try:
-        mod = _load_module_from_path(
-            Path(board_py), Path(board_py).name, verifier=_verify_engine_rev,
-        )
-        _status, path = mod.find_ticket(ticket_id)
-        fm, _body = mod.load_ticket(path)
-        return fm.get("title") or ""
-    except Exception as exc:
-        if _is_engine_rev_skew(exc):
-            raise  # 사본 skew 는 fail-loud(삼키지 않는다).
-        return ""
+    title = _ticket_frontmatter(board_py, ticket_id).get("title")
+    return title if isinstance(title, str) and title else ""
 
 
 def _ticket_frontmatter(board_py: Path, ticket_id: str) -> dict:
     """ticket frontmatter 를 board.py 로 읽는다 (board 미로드·ticket 부재/깨짐 → {}).
 
-    touches·estimate 소비처의 단일 해소 지점 — 같은 티켓을 두 번 다르게 찾지 않는다."""
+    touches·estimate 소비처의 단일 해소 지점 — 같은 티켓을 두 번 다르게 찾지 않는다.
+    조회는 board 의 공용 정확-일치 seam(`find_ticket_exact`)이다: `{id}-*.md` prefix glob 의
+    첫 매칭을 믿으면 `T-NNNN` 과 `T-NNNN-001` 공존 시 **다른 티켓의 estimate/touches** 로 완료
+    게이트가 판정한다(조용한 오판). 정확 일치가 없으면 폴백 없이 {} 다 — 판정 입력이 없는 것과
+    무관 티켓으로 판정하는 것 중 전자가 안전하다(게이트는 off 로 떨어질 뿐이다)."""
     try:
         mod = _load_module_from_path(
             Path(board_py), Path(board_py).name, verifier=_verify_engine_rev,
         )
-        _status, path = mod.find_ticket(ticket_id)
-        fm, _body = mod.load_ticket(path)
+        found = mod.find_ticket_exact(ticket_id)
+        if found is None:
+            return {}
+        fm, _body = mod.load_ticket(found[1])
     except Exception as exc:
         if _is_engine_rev_skew(exc):
             raise  # 사본 skew 는 fail-loud(삼키지 않는다).

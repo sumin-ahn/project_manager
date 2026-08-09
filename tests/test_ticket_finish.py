@@ -406,11 +406,11 @@ def _real_engine_rev() -> str:
 
 
 def _write_fake_board(tmp_path, touches_repr):
-    """find_ticket/load_ticket 만 정의하는 board.py 대역을 tmp 에 쓴다(hermetic)."""
+    """조회 seam(find_ticket_exact)/load_ticket 만 정의하는 board.py 대역을 tmp 에 쓴다(hermetic)."""
     board_py = tmp_path / "fake_board.py"
     board_py.write_text(
         f"ENGINE_REV = {_real_engine_rev()!r}\n"  # T-0397 rev 스탬프
-        "def find_ticket(ticket_id):\n"
+        "def find_ticket_exact(ticket_id, **kwargs):\n"
         "    return ('open', 'p')\n"
         "def load_ticket(path):\n"
         f"    return ({{'touches': {touches_repr}}}, 'body')\n",
@@ -1390,7 +1390,7 @@ def _write_coordinate_stage_board(tmp_path, touches: list[str]) -> Path:
     path = tmp_path / "board_coordinate_stage.py"
     path.write_text(
         f"ENGINE_REV = {_real_engine_rev()!r}\n"
-        "def find_ticket(ticket_id):\n"
+        "def find_ticket_exact(ticket_id, **kwargs):\n"
         "    return ('open', 'ticket')\n"
         "def load_ticket(path):\n"
         f"    return ({{'touches': {touches!r}}}, 'body')\n"
@@ -1868,7 +1868,7 @@ def test_ticket_estimate_reads_frontmatter(tf, tmp_path):
     board_py = tmp_path / "estimate_board.py"
     board_py.write_text(
         f"ENGINE_REV = {_real_engine_rev()!r}\n"   # T-0397 rev 스탬프
-        "def find_ticket(ticket_id):\n"
+        "def find_ticket_exact(ticket_id, **kwargs):\n"
         "    return ('claimed', ticket_id)\n"
         "def load_ticket(path):\n"
         "    table = {'T-1': {'estimate': ' medium '}, 'T-2': {},\n"

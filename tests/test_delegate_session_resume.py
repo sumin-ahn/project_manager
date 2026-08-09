@@ -330,9 +330,39 @@ def test_candidate_selection_excludes_unusable_records(pd, broken):
         [newest], selector=TICKET_ID, role="code-reviewer", harness="claude") is None
 
 
+# ── 유효 성공만 후보다 (T-0603 ③) ─────────────────────────────────────────
+# codex R3 지적: 장부 `rc` 는 subprocess 종료 코드로 **회신 검증보다 먼저** 확정되고, 유효한
+# reply 가 없어도 세션 id 는 저장된다 — 실제로는 실패한 실행이 rc 0 성공 후보로 재개된다.
+# 유효 성공 여부를 레코드 필드(`reply_extracted`)로 남기고 후보 조건에 편입해 그 경로를 닫는다.
+
+
+def test_reply_extraction_failure_is_not_a_success_candidate(pd):
+    """재현: rc 0 · 세션 id 있음 · **회신 미추출** — 최신이어도 후보가 아니다 (DoD)."""
+    newest = _candidate(id="no-reply", started_at="2026-08-08T23:00:00+00:00",
+                        reply_extracted=False)
+    keeper = _candidate(id="keeper", started_at="2026-08-08T10:00:00+00:00",
+                        reply_extracted=True)
+
+    assert pd.select_resume_record(
+        [keeper, newest], selector=TICKET_ID, role="code-reviewer",
+        harness="claude")["id"] == "keeper"
+    assert pd.select_resume_record(
+        [newest], selector=TICKET_ID, role="code-reviewer", harness="claude") is None
+
+
+def test_legacy_records_without_the_field_keep_the_rc_rule(pd):
+    """필드 자체가 없는 **구레코드**는 종전대로 rc 기준이다 (하위호환 — 정상 재개 무회귀)."""
+    legacy = _candidate(id="legacy")
+    assert "reply_extracted" not in legacy
+    assert pd.select_resume_record(
+        [legacy], selector=TICKET_ID, role="code-reviewer",
+        harness="claude")["id"] == "legacy"
+
+
 @pytest.mark.parametrize("broken, needle", [
     ({"session_id": None}, "세션 id 가 관측되지 않았다"),
     ({"resume_matched": False}, "세션 불일치로 끝난 라운드"),
+    ({"reply_extracted": False}, "유효 회신이 없던 라운드"),
 ])
 def test_unusable_record_gets_its_own_reason_not_retention(pd, broken, needle):
     """있는데 못 이어받는 것과 정말 없는 것은 처방이 다르다 — 사유를 갈라 낸다.
@@ -414,12 +444,33 @@ def test_structured_fields_live_on_the_single_delegate_ledger_row(pd, relay, tmp
         "세션 id 판정을 rc 로 하지 마라", "원장 0 채우기 금지"]
     assert row["base_rev"] == "deadbeef" and row["ticket"] == TICKET_ID
     assert row["rc"] == 0 and row["finished_at"]   # 공통 스키마도 그대로
+    assert row["reply_extracted"] is True          # 회신 검증까지 통과한 유효 성공
 
     # 같은 장부에 한 건 더 쓰면 정리 규칙이 다시 돈다 — 행 id 와 구조화 필드가 생존해야 한다.
     _seed_record(relay, ledger_path, started=datetime.datetime.now(datetime.timezone.utc))
     survived = _row(ledger_path, row["id"])
     assert survived["session_id"] == SESSION_ID
     assert survived["must_fix_items"] == row["must_fix_items"]
+
+
+def test_rc_zero_without_a_reply_is_recorded_as_an_invalid_success(pd, tmp_path):
+    """rc 0 + 세션 id 관측 + **회신 없음** 실행은 장부에 `reply_extracted: false` 로 남고
+    그 레코드는 재개 후보가 아니다 (기록 → 후보 조건 배선 e2e·DoD)."""
+    out_dir = tmp_path / "raw"
+    ledger_path = out_dir / "raw_outputs.json"
+    # init 이벤트만 있는 wire — 세션 id 는 관측되지만 최종 회신(result)이 없다.
+    truncated = json.dumps(
+        {"type": "system", "subtype": "init", "session_id": SESSION_ID})
+    pd._execute_attempt(
+        harness="claude", model="opus", reasoning=None, role="code-reviewer",
+        cwd=tmp_path, prompt="p", timeout=60, output_dir=out_dir,
+        run_fn=_FakeRun(_ok(truncated)), attempt="primary", ticket=TICKET_ID,
+    )
+    row = _rows(ledger_path)[0]
+    assert (row["rc"], row["session_id"]) == (0, SESSION_ID)   # rc 는 성공처럼 보인다
+    assert row["reply_extracted"] is False                     # 유효 성공은 아니다
+    assert pd.select_resume_record(
+        [row], selector=TICKET_ID, role="code-reviewer", harness="claude") is None
 
 
 def test_ledger_extra_cannot_overwrite_common_schema(relay, tmp_path):

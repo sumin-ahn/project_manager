@@ -3443,12 +3443,14 @@ def _write_hook_atomic(hook: Path, body: str) -> None:
     파일 오프셋이 바뀐 바이트를 이어 읽어 구문이 깨진다(정렬에 따라 fail-open 방향도 나온다).
     새 inode 로 갈아끼우면 실행 중인 shell 은 옛 fd 를 그대로 읽어 끝까지 온전하다.
     실행 권한은 **교체 전 tmp 에** 준다 — 교체 뒤에 chmod 하면 그 사이 훅이 실행 불가다.
-    교체가 실패하면 tmp 를 지운다 — `pre-push.<pid>.tmp` 는 git 이 실행하지 않는 이름이라
-    무해했지만, 실패마다 훅 디렉토리에 잔재가 쌓인다. 실패 자체는 그대로 올린다(호출부가 판정)."""
+    **어느 단계가 실패하든 tmp 를 지운다** — 쓰기·chmod·교체 세 단계가 모두 정리 범위다(교체만
+    감싸면 앞 단계 실패에서 잔재가 남아 서술과 어긋난다). `pre-push.<pid>.tmp` 는 git 이 실행하지
+    않는 이름이라 무해했지만, 실패마다 훅 디렉토리에 잔재가 쌓인다. 실패 자체는 그대로
+    올린다(호출부가 판정)."""
     tmp = hook.with_name(f"{hook.name}.{os.getpid()}.tmp")
-    tmp.write_text(body, encoding="utf-8")
-    tmp.chmod(0o755)
     try:
+        tmp.write_text(body, encoding="utf-8")
+        tmp.chmod(0o755)
         os.replace(str(tmp), str(hook))
     except OSError:
         with contextlib.suppress(OSError):
@@ -5666,40 +5668,19 @@ def _gate_ticket(gate: str) -> tuple[str, Path] | None:
     게이트 이름은 자유 문자열이 실사용이다(장부 실측 `wave4-b1`). 그 문자열을 그대로 조회에
     넘기면 두 가지가 샌다:
 
-      (a) `find_ticket` 은 `{이름}-*.md` **glob** 이라 legacy ID(`T-NNNN`)가 같은 번호로 시작하는
-         prefixed 티켓(`T-NNNN-001-<slug>.md`)에 오인 매칭된다 — 무관한 티켓의 touches 로 FULL
-         회귀가 targeted 강등되면 그 실행은 '가짜 green'이다. 그래서 파일이 잡혀도 **frontmatter
-         canonical ID**(`_canonical_ticket_id`)가 게이트 이름과 정확히 같을 때만 인정한다.
+      (a) `{이름}-*.md` **prefix glob 의 첫 매칭**은 legacy ID(`T-NNNN`)를 같은 번호로 시작하는
+         prefixed 티켓(`T-NNNN-001-<slug>.md`)에 오인 매칭시킨다 — 무관한 티켓의 touches 로 FULL
+         회귀가 targeted 강등되면 그 실행은 '가짜 green'이다. 그래서 조회는 공용 정확-일치
+         seam(`find_ticket_exact`)만 쓴다(폴백 없음 — 여긴 못 찾으면 FULL 이 안전한 축이다).
       (b) 애초에 티켓 ID 문법(`_is_valid_ticket_id`)이 아닌 라벨은 조회 자체를 생략한다 — glob
          메타(`*`·`?`·`[`)가 든 이름이 보드를 훑는 것도, 없는 티켓을 매번 찾는 것도 뜻이 없다.
     """
     if not _is_valid_ticket_id(gate):
         return None
     try:
-        status, path = find_ticket(gate)
-    except (FileNotFoundError, OSError):
+        return find_ticket_exact(gate)
+    except OSError:
         return None
-    if _canonical_ticket_id(path) == gate:
-        return status, path
-    # 첫 매칭이 다른 티켓이었다 — 같은 glob 의 나머지 후보에서 정확 일치를 찾는다.
-    return _exact_ticket_among_candidates(gate)
-
-
-def _exact_ticket_among_candidates(gate: str) -> tuple[str, Path] | None:
-    """glob 후보들 중 canonical ID 가 **정확히** `gate` 인 티켓 (없으면 None).
-
-    `find_ticket` 은 glob 의 *첫* 매칭을 돌려주므로 legacy ID(`T-NNNN`)와 같은 번호로 시작하는
-    prefixed ID(`T-NNNN-001`)가 공존하면 어느 쪽이 잡힐지 디렉토리 순서가 정한다 — 강등 판정이
-    그 순서에 흔들리지 않게 후보 전체를 본다.
-    탐색 범위·순서는 `find_ticket` 과 같다(STATUS_DIRS → drafts)."""
-    for status in STATUS_DIRS:
-        for path in sorted((tickets_dir() / status).glob(f"{gate}-*.md")):
-            if _canonical_ticket_id(path) == gate:
-                return status, path
-    for path in sorted(drafts_dir().glob(f"{gate}-*.md")):
-        if _canonical_ticket_id(path) == gate:
-            return "draft", path
-    return None
 
 
 def _gate_ticket_is_claimed(gate: str) -> bool:
@@ -5738,21 +5719,38 @@ def _active_review_gates() -> list[str]:
     return active
 
 
+def _downgrade_cancelled(gate: str, reason: str) -> tuple[list[str], list[str]]:
+    """강등 전체 취소 — 미해소 게이트를 식별하는 사유 1줄 + 빈 결과(호출부가 FULL 로 남긴다)."""
+    print(f"regression: 게이트 {gate} 의 {reason} — 활성 리뷰 사이클 강등을 취소하고 FULL 로 "
+          "실행합니다 (부분 강등은 미해소 게이트 범위를 한 번도 돌지 않는 '가짜 green').",
+          file=sys.stderr)
+    return [], []
+
+
 def _review_cycle_downgrade() -> tuple[list[str], list[str]]:
     """활성 리뷰 사이클의 (게이트 목록, 그 티켓들의 touches 합집합).
 
     touches 를 못 얻으면(자유 문자열 게이트·ticket 부재) 강등하지 않는다 — 스코프를 모르는 채
-    좁히면 아무 테스트도 안 도는 '가짜 green'이 된다. 손상 frontmatter 한 건이 모든
-    `regression run` 을 크래시시키지 않게 티켓별로 fail-soft 한다(경고 1줄 + 그 게이트 skip)."""
+    좁히면 아무 테스트도 안 도는 '가짜 green'이 된다.
+
+    **확정은 전-게이트 단위다** — 활성 게이트 중 하나라도 스코프를 확정하지 못하면 나머지
+    touches 로 부분 강등하지 않고 강등 자체를 취소한다. 부분 강등은 미해소 게이트가 건드린
+    범위를 한 번도 돌지 않은 실행에 rc0 을 주는데, 그 green 은 활성 게이트 **전부**에 대한
+    통과로 읽힌다(false-green). 확정 실패는 세 가지고 전부 같은 취급이다: 읽기/파싱 실패(손상
+    frontmatter)·빈 touches(선언 없음)·티켓 미해소(`_ticket_touches` 가 빈 목록).
+    손상 티켓 한 건이 `regression run` 을 크래시시키지는 않는다 — 사유 1줄을 내고 FULL 로
+    진행한다(넓히는 방향이라 안전하다)."""
     gates: list[str] = []
     touches: list[str] = []
     for gate in _active_review_gates():
         try:
             gate_touches = _ticket_touches(gate)
         except Exception as exc:  # noqa: BLE001 — 손상 티켓 1건이 회귀 실행을 막지 않는다.
-            print(f"regression: 경고 — 게이트 {gate} 의 touches 를 읽지 못해 강등 판정에서 "
-                  f"제외합니다 ({type(exc).__name__}: {exc}).", file=sys.stderr)
-            continue
+            return _downgrade_cancelled(
+                gate, f"touches 를 읽지 못했습니다 ({type(exc).__name__}: {exc})")
+        if not gate_touches:
+            return _downgrade_cancelled(
+                gate, "touches 를 확정하지 못했습니다 (빈 선언·티켓 미해소)")
         gates.append(gate)
         for touch in gate_touches:
             if touch not in touches:
@@ -6705,6 +6703,11 @@ def find_item(base_dir: Path, statuses: tuple[str, ...], item_id: str,
 
     Generic over tickets and ideas — the lookup is identical, only the
     directory layout and ID shape differ. Raises FileNotFoundError if missing.
+
+    **prefix glob 의 첫 매칭이다.** 티켓 조회는 이 함수를 직접 부르지 말고 `find_ticket`
+    (정확 일치 우선) 또는 `find_ticket_exact`(정확 일치만)를 쓴다 — 티켓 ID 공간은 legacy
+    `T-NNNN` 과 prefixed `T-NNNN-001` 이 공존해 첫 매칭이 남의 티켓을 답한다. idea ID 는
+    `NNNN` 하나뿐이라(`_next_idea_id`) 그 충돌 공간이 없다.
     """
     for status in statuses:
         for p in (base_dir / status).glob(f"{item_id}-*.md"):
@@ -6712,8 +6715,46 @@ def find_item(base_dir: Path, statuses: tuple[str, ...], item_id: str,
     raise FileNotFoundError(f"{kind} not found: {item_id}")
 
 
+def _ticket_search_dirs() -> list[tuple[str, Path]]:
+    """티켓 조회 범위 — (status 라벨, 디렉토리) 순서쌍. STATUS_DIRS → draft 격리 디렉토리."""
+    return [*((status, tickets_dir() / status) for status in STATUS_DIRS),
+            ("draft", drafts_dir())]
+
+
+def find_ticket_exact(
+    tid: str, *, search_dirs: Sequence[tuple[str, Path]] | None = None,
+) -> tuple[str, Path] | None:
+    """canonical ID 가 **정확히** `tid` 인 티켓의 (status, path) — 없으면 None (공용 seam).
+
+    `{tid}-*.md` **prefix glob 의 첫 매칭**을 티켓-ID 조회로 쓰면 legacy ID(`T-NNNN`)가 같은
+    번호로 시작하는 prefixed ID(`T-NNNN-001`)에 오인 매칭된다 — 어느 쪽이 잡힐지는 디렉토리
+    순서가 정하고, 그 결과 회귀 강등 스코프·diff 상한(estimate)·완료 게이트가 **무관한 티켓의
+    frontmatter** 를 보게 된다(전부 조용한 오판). 그래서 후보 전체를 훑어 frontmatter canonical
+    ID(`_canonical_ticket_id`)가 정확히 일치하는 것만 인정한다.
+
+    이 판정을 쓰는 표면이 board 밖에도 있어(추가 리뷰어 estimate 조회·`ticket_finish` 티켓 로드)
+    공용 seam 으로 둔다 — 사본을 만들면 그 사본이 다시 첫-매칭으로 흘러 half-fix 가 재발한다.
+    `search_dirs` 를 주면 그 (status 라벨, 디렉토리) 순서로만 본다 — 다른 PM 홈의 보드를 읽는
+    호출부(`external_review --pm-home`)가 자기 범위를 명시하는 자리다. 미지정이면 이 board 의
+    STATUS_DIRS → drafts.
+    """
+    for status, directory in (search_dirs if search_dirs is not None
+                              else _ticket_search_dirs()):
+        for path in sorted(Path(directory).glob(f"{tid}-*.md")):
+            if _canonical_ticket_id(path) == tid:
+                return status, path
+    return None
+
+
 def find_ticket(tid: str) -> tuple[str, Path]:
     """Return (status_dir, path). Raises FileNotFoundError if missing.
+
+    **canonical ID 정확 일치가 우선이다**(`find_ticket_exact`) — 그 뒤에야 옛 glob 첫 매칭으로
+    떨어진다. 순서가 이렇게 정해진 이유는 `T-NNNN` 과 `T-NNNN-001` 이 공존할 때 첫 매칭이
+    디렉토리 순서에 좌우되기 때문이다(호출부는 어느 티켓을 받았는지 모른 채 그 frontmatter 를
+    쓴다). 폴백을 남겨 두는 건 frontmatter `id:` 가 없고 파일명 파서가 모호한 legacy 티켓
+    (`T-NNNN-<slug>-123.md`)까지 못 찾게 되면 조회 자체가 회귀하기 때문이다 — 정확 일치 후보가
+    있으면 언제나 그쪽이고, 없을 때만 종전 동작이다.
 
     STATUS_DIRS(open/claimed/blocked/done)에서 못 찾으면 draft 격리 디렉토리
     (`drafts_dir()`)를 폴백으로 스캔해 pseudo-status `"draft"` 로 반환한다 — `show`/
@@ -6721,11 +6762,26 @@ def find_ticket(tid: str) -> tuple[str, Path]:
     경로로 draft 를 찾아도 각자의 status 검사(`!= "open"` 등)가 즉시 거부하므로 안전하다
     (예: "cannot claim T-x: currently in draft/" — 오히려 명확한 신호).
     """
+    exact = find_ticket_exact(tid)
+    if exact is not None:
+        return exact
+
+    def _loud_if_mismatch(result: tuple[str, Path]) -> tuple[str, Path]:
+        # 폴백이 남의 티켓을 무음으로 답하는 마지막 표면 가시화 — 차단이 아니라 경고
+        # (legacy `id:` 부재 티켓 조회는 유지·정확 후보가 있으면 여기 도달하지 않는다).
+        canonical = _canonical_ticket_id(result[1])
+        if canonical and canonical != tid:
+            print(
+                f"⚠ 정확 일치 티켓 없음 — {result[1].name} (canonical {canonical}) 로 폴백",
+                file=sys.stderr,
+            )
+        return result
+
     try:
-        return find_item(tickets_dir(), STATUS_DIRS, tid, "ticket")
+        return _loud_if_mismatch(find_item(tickets_dir(), STATUS_DIRS, tid, "ticket"))
     except FileNotFoundError:
         for p in drafts_dir().glob(f"{tid}-*.md"):
-            return "draft", p
+            return _loud_if_mismatch(("draft", p))
         raise
 
 

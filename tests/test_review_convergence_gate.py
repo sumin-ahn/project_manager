@@ -390,7 +390,8 @@ def test_confirm_fix_on_a_first_round_gate_is_refused(
     assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
     assert reviewer.calls == 0                      # 외부 전송 0
     err = capsys.readouterr().err
-    assert "반려 라운드가 실재하는 게이트" in err
+    assert "최신 완료 라운드가 반려인 게이트" in err
+    assert "라운드 기록 없음" in err                  # 무엇을 보고 막았는지 그대로
     assert "첫 리뷰는" in err                        # 처방 1줄
     assert _ledger(tmp_path) == {}                  # 거부는 장부를 만들지 않는다
 
@@ -405,8 +406,70 @@ def test_confirm_fix_on_an_all_pass_gate_is_refused(
 
     assert external.main(argv + ["--confirm-fix"]) == external.EXIT_ROUND_LIMIT_EXCEEDED
     assert reviewer.calls == 1                      # 확인 전용 라운드는 나가지 않았다
-    assert "반려(판정 rc≠0) 라운드가 없습니다" in capsys.readouterr().err
+    assert "최신 판정은 0(통과)" in capsys.readouterr().err
     assert _ledger(tmp_path)["T-0602b"]["confirm_fix"] == 0   # quota 도 안 쓴다
+
+
+# ── 자격은 **최신** 완료 판정이다 (T-0603 ②) ────────────────────────────────
+# codex R3 지적: 자격 판정이 '과거의 마지막 반려'를 찾는다 — 반려 → 통과로 이미 닫힌 게이트도
+# 옛 지적을 근거로 영원히 자격을 갖는다(수렴 축의 1회 예외가 상시 예외가 되고 과금이 따라온다).
+
+
+def test_confirm_fix_on_a_gate_closed_by_a_pass_is_refused(
+        external, monkeypatch, tmp_path, capsys):
+    """반려 → 통과로 **이미 닫힌** 게이트의 `--confirm-fix` 는 전송 전에 거부된다 (DoD).
+
+    재현: 1라운드 반려 · 2라운드 통과로 수렴을 마친 게이트에 확인 전용 라운드를 요청한다."""
+    reviewer = _wire(external, monkeypatch, tmp_path, series=[1, 0])
+    argv = ["--gate", "T-0603a", "--paths", "x.py"]
+    assert external.main(argv) == 1                 # 1R 반려
+    assert external.main(argv) == 0                 # 2R 통과 — 사이클 마감
+    capsys.readouterr()
+
+    assert external.main(argv + ["--confirm-fix"]) == external.EXIT_ROUND_LIMIT_EXCEEDED
+    assert reviewer.calls == 2                      # 외부 전송 0 (과금 라운드가 열리지 않는다)
+    err = capsys.readouterr().err
+    assert "최신 완료 라운드가 반려인 게이트" in err
+    assert "최신 판정은 0(통과)" in err
+    assert _ledger(tmp_path)["T-0603a"]["confirm_fix"] == 0   # quota 미소비
+
+
+def test_confirm_fix_opens_for_the_latest_rejection_after_a_pass(
+        external, monkeypatch, tmp_path):
+    """정상 경로 무변경 — 통과 뒤 다시 반려로 끝났으면 열리고, 근거는 **그 최신 반려**다."""
+    capture = _PromptCapture([3, 0, 2, 0])
+    _wire(external, monkeypatch, tmp_path, series=[3])
+    monkeypatch.setattr(external, "run_review", capture)
+    argv = ["--gate", "T-0603b", "--paths", "x.py"]
+    assert external.main(argv) == 1                 # 1R 반려 3건
+    assert external.main(argv) == 0                 # 2R 통과
+    assert external.main(argv) == 1                 # 3R 반려 2건 — 최신 반려
+
+    assert external.main(argv + ["--confirm-fix"]) == 0
+    prompt = capture.prompts[-1]
+    assert "결함 1" in prompt and "결함 2" in prompt
+    assert "결함 3" not in prompt, "1라운드(3건)가 아니라 최신 반려(2건)가 근거여야 한다"
+
+
+def test_latest_round_helpers_read_reservation_order(external):
+    """자격 판정 입력은 **예약 순번**의 마지막이다 — append 순서로 읽으면 최신이 뒤바뀐다."""
+    entry = external._gate_entry({"g": {"rounds": [
+        {"sequence": 2, "verdict": 0, "must_fix": 0},     # 나중 순번이 먼저 append 됨
+        {"sequence": 1, "verdict": 1, "must_fix": 2},
+    ]}}, "g")
+    assert external._latest_round_outcome(entry)["sequence"] == 2
+    assert external._latest_verdict_label(entry) == "0(통과)"
+    assert external._confirm_fix_evidence(entry) is None       # 최신이 통과 = 자격 없음
+
+
+def test_unknown_latest_verdict_does_not_open_the_exception(external):
+    """최신 라운드 판정이 미상(기록 없음·손상)이면 자격을 세우지 않는다 (과금 축 보수 방향)."""
+    entry = external._gate_entry({"g": {"rounds": [
+        {"sequence": 1, "verdict": 1, "must_fix": 2},
+        {"sequence": 2, "verdict": None, "must_fix": None},
+    ]}}, "g")
+    assert external._confirm_fix_evidence(entry) is None
+    assert external._latest_verdict_label(entry) == "미상"
 
 
 def test_confirm_fix_prompt_carries_the_previous_must_fix_items(
@@ -913,7 +976,8 @@ def test_review_and_finish_gates_read_the_same_estimate(external, tmp_path, monk
         f"'shim_board', {str(TOOLS / 'board.py')!r})\n"
         "_real = importlib.util.module_from_spec(_spec)\n"
         "_spec.loader.exec_module(_real)\n"
-        f"def find_ticket(tid): return ('claimed', pathlib.Path({str(path)!r}))\n"
+        "def find_ticket_exact(tid, **kwargs): "
+        f"return ('claimed', pathlib.Path({str(path)!r}))\n"
         "load_ticket = _real.load_ticket\n",
         encoding="utf-8")
 
@@ -931,3 +995,102 @@ def test_corrupt_frontmatter_turns_the_guard_off_without_crashing(
         "---\nid: T-0913\ndesign: waived: 인용 없는 콜론\n---\n\n# 본문\n", encoding="utf-8")
     monkeypatch.setattr(external, "REPO", tmp_path)
     assert external.parse_ticket_estimate("T-0913", pm_home=tmp_path) is None
+
+
+# ══ ③-c 티켓 조회는 canonical ID 정확 일치 (T-0603 ④) ═══════════════════════
+# codex R3 지적: estimate 조회(추가 리뷰어)와 티켓 로드(ticket_finish)가 `{id}-*.md` prefix glob
+# **첫 매칭**을 믿는다 — `T-0036` 과 `T-0036-001` 이 공존하면 다른 티켓의 estimate 로 diff 상한이
+# 정해지거나(허용/차단이 뒤바뀐다) 완료 게이트가 남의 touches 로 판정한다. 판정을 board 공용
+# seam(`find_ticket_exact`) 하나로 모아 닫았고, 아래는 공존 픽스처에서 **세 소비처**(회귀 강등·
+# estimate·완료 로드)가 전부 오인 0 임을 한 자리에서 단언한다.
+
+
+def _coexisting_tickets(tmp_path) -> Path:
+    """legacy `T-0036` 과 prefixed `T-0036-001` 이 함께 사는 tmp 보드 (claimed/)."""
+    tickets = tmp_path / ".project_manager" / "board" / "tickets" / "claimed"
+    tickets.mkdir(parents=True, exist_ok=True)
+    (tickets / "T-0036-본래-티켓.md").write_text(
+        "---\nid: T-0036\nestimate: small\ntouches:\n- src/pay.py\n---\n\n# 본문\n",
+        encoding="utf-8")
+    (tickets / "T-0036-001-다른-티켓.md").write_text(
+        "---\nid: T-0036-001\nestimate: large\ntouches:\n- src/unrelated.py\n---\n\n# 본문\n",
+        encoding="utf-8")
+    return tickets
+
+
+def _real_board_shim(tmp_path, finish) -> Path:
+    """실 board 엔진을 tmp 보드에 앵커한 shim — 조회 판정은 **실 seam** 그대로다."""
+    shim = tmp_path / "board_shim_exact.py"
+    shim.write_text(
+        f"ENGINE_REV = {finish.ENGINE_REV!r}\n"
+        "import importlib.util, pathlib\n"
+        "_spec = importlib.util.spec_from_file_location("
+        f"'shim_board_exact', {str(TOOLS / 'board.py')!r})\n"
+        "_real = importlib.util.module_from_spec(_spec)\n"
+        "_spec.loader.exec_module(_real)\n"
+        f"_real.REPO = pathlib.Path({str(tmp_path)!r})\n"
+        "find_ticket_exact = _real.find_ticket_exact\n"
+        "load_ticket = _real.load_ticket\n",
+        encoding="utf-8")
+    return shim
+
+
+def test_prefix_glob_first_match_is_the_reproduced_hazard(tmp_path):
+    """재현 — 공존 픽스처의 `T-0036-*.md` 첫 매칭은 **다른 티켓**이다(차단이 어디서 서는지 못박음)."""
+    tickets = _coexisting_tickets(tmp_path)
+    assert sorted(tickets.glob("T-0036-*.md"))[0].name.startswith("T-0036-001")
+
+
+def test_three_gate_consumers_never_answer_with_a_prefixed_ticket(
+        external, tmp_path, monkeypatch):
+    """강등 스코프·estimate 상한·완료 로드가 모두 canonical `T-0036` 을 본다 (오인 0·DoD)."""
+    _coexisting_tickets(tmp_path)
+    finish = _load("ticket_finish")
+    board = _load("board")
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    monkeypatch.setattr(external, "REPO", tmp_path)
+
+    # ① 회귀 강등 스코프 (board)
+    assert board._ticket_touches("T-0036") == ["src/pay.py"]
+    assert board._gate_ticket("T-0036")[1].name.startswith("T-0036-본래")
+    # ② diff 서킷브레이커 상한 (추가 리뷰어)
+    assert external.parse_ticket_estimate("T-0036", pm_home=tmp_path) == "small"
+    assert external.parse_ticket_touches("T-0036", pm_home=tmp_path) == ["src/pay.py"]
+    # ③ 완료 게이트 티켓 로드 (ticket_finish)
+    shim = _real_board_shim(tmp_path, finish)
+    assert finish.get_ticket_estimate(shim, "T-0036") == "small"
+    assert finish.get_ticket_touches(shim, "T-0036") == ["src/pay.py"]
+
+    # prefixed 티켓 자신의 조회는 그대로 자기 값을 본다 (좁힘이 정상 조회를 삼키지 않는다).
+    assert external.parse_ticket_estimate("T-0036-001", pm_home=tmp_path) == "large"
+    assert finish.get_ticket_estimate(shim, "T-0036-001") == "large"
+    assert board._ticket_touches("T-0036-001") == ["src/unrelated.py"]
+
+
+def test_missing_ticket_keeps_each_consumer_on_its_own_fail_soft(
+        external, tmp_path, monkeypatch):
+    """정확 일치가 없으면 각 소비처는 종전 fail-soft 그대로다 (가드 off·빈 값·fail-loud)."""
+    _coexisting_tickets(tmp_path)
+    finish = _load("ticket_finish")
+    board = _load("board")
+    monkeypatch.setattr(board, "REPO", tmp_path)
+    monkeypatch.setattr(external, "REPO", tmp_path)
+    shim = _real_board_shim(tmp_path, finish)
+
+    assert board._ticket_touches("T-0036-002") == []              # 스코프 없음 = FULL
+    assert external.parse_ticket_estimate("T-0036-002", pm_home=tmp_path) is None
+    assert finish.get_ticket_estimate(shim, "T-0036-002") is None
+    assert finish.get_ticket_touches(shim, "T-0036-002") == []
+    with pytest.raises(external.AnchorResolutionError):           # touches 는 fail-loud 유지
+        external.parse_ticket_touches("T-0036-002", pm_home=tmp_path)
+
+
+def test_slugless_ticket_filename_still_resolves(external, tmp_path, monkeypatch):
+    """슬러그 없는 `T-0040.md` 폴백은 유지된다 — prefix 충돌이 불가능한 정확 이름이다."""
+    tickets = tmp_path / ".project_manager" / "board" / "tickets" / "claimed"
+    tickets.mkdir(parents=True, exist_ok=True)
+    (tickets / "T-0040.md").write_text(
+        "---\nid: T-0040\nestimate: medium\ntouches:\n- src/a.py\n---\n\n# 본문\n",
+        encoding="utf-8")
+    monkeypatch.setattr(external, "REPO", tmp_path)
+    assert external.parse_ticket_estimate("T-0040", pm_home=tmp_path) == "medium"

@@ -3435,3 +3435,22 @@ def test_ticket_iteration_consumers_use_the_shared_soft_loader(board):
         if "load_ticket" in calls:
             offenders.append(f"{node.name}:{node.lineno}")
     assert not offenders, f"티켓 순회가 공용 soft 로더를 안 쓴다: {offenders}"
+
+def test_fallback_lookup_warns_when_it_answers_with_a_different_ticket(
+    tmp_path, monkeypatch, capsys
+):
+    """정확 후보가 없을 때의 폴백 반환은 무음이 아니다 — canonical 불일치를 stderr 로 알린다."""
+    board = _load_board()
+
+    tickets = tmp_path / "tickets"
+    (tickets / "open").mkdir(parents=True)
+    (tickets / "open" / "T-7777-001-other.md").write_text(
+        "---\nid: T-7777-001\ntitle: t\nstatus: open\n---\n\n# T-7777-001\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(board, "tickets_dir", lambda: tickets)
+    monkeypatch.setattr(board, "drafts_dir", lambda: tickets / ".drafts")
+    status, path = board.find_ticket("T-7777")
+    assert path.name == "T-7777-001-other.md"
+    err = capsys.readouterr().err
+    assert "정확 일치 티켓 없음" in err and "T-7777-001" in err

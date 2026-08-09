@@ -2122,7 +2122,8 @@ def test_parameter_loaders_are_measured_and_hook_exemption_is_code_owned():
     assert {
         ("delegate_scope.py", "ticket_touches"),
         ("ticket_finish.py", "count_board_done"),
-        ("ticket_finish.py", "get_ticket_title"),
+        # `get_ticket_title` 은 자체 로드를 두지 않는다 — 티켓 조회는 `_ticket_frontmatter`
+        # 한 지점이라 계측 대상도 그쪽 하나다(제목과 게이트 입력이 같은 파일을 본다).
         ("ticket_finish.py", "_ticket_frontmatter"),
         ("ticket_finish.py", "_load_tool_module"),
     } <= measured

@@ -1212,11 +1212,13 @@ _CONFIRM_FIX_SPENT_GUIDANCE = (
 # 반려 라운드가 없는 게이트(첫 라운드·전건 통과)에서 열어 주면 그 라운드는 근거 없는 통과 판정
 # 채널이 된다(리뷰어 세션은 fresh 라 직전 맥락을 스스로 알지 못한다).
 _CONFIRM_FIX_NO_REJECTION_GUIDANCE = (
-    "오류: `--confirm-fix` 는 **반려 라운드가 실재하는 게이트**에서만 씁니다 — 게이트 {gate} 의 "
-    "장부에 반려(판정 rc≠0) 라운드가 없습니다 (기록된 산출 {rounds}건).\n"
+    "오류: `--confirm-fix` 는 **최신 완료 라운드가 반려인 게이트**에서만 씁니다 — 게이트 {gate} 의 "
+    "최신 판정은 {verdict} 입니다 (기록된 산출 {rounds}건).\n"
     "  · 확인 전용 라운드의 임무는 '직전 must_fix 해소 확인'입니다 — 확인할 지적이 없으면 "
     "근거 없는 통과 판정만 남습니다.\n"
     "  · 첫 리뷰는 `--confirm-fix` 없이 그냥 실행하세요 (일반 라운드).\n"
+    "  · 통과로 닫힌 게이트는 다시 열지 않습니다 — 옛 반려를 근거로 과금 라운드를 여는 경로입니다. "
+    "새 변경은 일반 라운드로 리뷰하세요.\n"
     "  · 기록 상황은 `--rounds-report --gate {gate}` 로 확인하세요.\n"
     "  (장부: {ledger})"
 )
@@ -2465,31 +2467,45 @@ def _convergence_refusal(
     return None
 
 
-# ── 확인 전용 라운드의 자격·근거 (직전 반려 must_fix) ────────────────────────
+# ── 확인 전용 라운드의 자격·근거 (최신 반려 must_fix) ────────────────────────
 # 리뷰어 세션은 라운드마다 fresh 다 — 장부에 "몇 건이었나"만 있으면 확인 전용 라운드는 *무엇을*
 # 확인하는지 모른 채 통과를 선언할 수 있다. 이 절이 두 축을 한 함수로 소유한다:
-#   (a) **자격** — 반려 라운드(판정 rc≠0)가 실재하는 게이트에서만 예외를 연다. 첫 라운드나 전건
-#      통과 게이트의 `--confirm-fix` 는 확인할 지적이 없어 근거 없는 통과 판정 채널이 된다.
-#   (b) **근거** — 그 반려 라운드의 must_fix 항목 **텍스트**를 프롬프트에 싣는다. 텍스트는 마감
+#   (a) **자격** — **최신 완료 라운드의 판정이 반려(rc≠0)** 인 게이트에서만 예외를 연다. 첫 라운드나
+#      전건 통과 게이트의 `--confirm-fix` 는 확인할 지적이 없어 근거 없는 통과 판정 채널이 되고,
+#      '과거에 반려가 하나라도 있었나'로 물으면 **반려 → 통과로 이미 닫힌 게이트**에도 옛 지적을
+#      근거로 과금 라운드가 열린다(수렴 축의 유일한 예외가 상시 예외가 된다).
+#   (b) **근거** — 그 최신 반려 라운드의 must_fix 항목 **텍스트**를 프롬프트에 싣는다. 텍스트는 마감
 #      시점에 예약 레코드(`records[].must_fix_items`)가 보관하고, 구세대 라운드처럼 보관분이
 #      없으면 건수 + 재구성 안내로 떨어진다(무근거 통과보다 낫다).
 # 자격과 근거가 **같은 함수**를 쓰는 이유는 갈림 방지다 — 따로 두면 "자격은 있는데 실을 근거가
 # 없다"(또는 그 반대)가 조용히 생긴다.
 
 
-def _last_rejected_outcome(entry: dict) -> dict | None:
-    """예약 순번 순 **마지막 반려**(판정 rc≠0) 라운드 산출 (없으면 None).
+def _latest_round_outcome(entry: dict) -> dict | None:
+    """예약 순번 순 **마지막 완료 라운드** 산출 (기록이 없으면 None).
 
     순서는 조회 표·수렴 추이와 같은 정렬(`_ordered_round_outcomes`)이다 — append 순서는 완료
-    순서라 동시 라운드가 역순으로 끝나면 '직전'이 뒤바뀐다."""
-    latest: dict | None = None
-    for outcome in _ordered_round_outcomes(
+    순서라 동시 라운드가 역순으로 끝나면 '최신'이 뒤바뀐다."""
+    ordered = _ordered_round_outcomes(
         [row for row in (entry.get("rounds") or []) if isinstance(row, dict)]
-    ):
-        verdict = outcome.get("verdict")
-        if isinstance(verdict, int) and not isinstance(verdict, bool) and verdict != 0:
-            latest = outcome
-    return latest
+    )
+    return ordered[-1] if ordered else None
+
+
+def _is_rejection(outcome: dict) -> bool:
+    """그 산출의 판정이 반려(rc≠0)인가. 판정 미상(기록 없음·손상)은 반려로 세지 않는다 —
+    확인 전용 라운드는 과금 라운드라 자격을 못 세우는 쪽이 보수 방향이다(board 강등 판정이
+    미상 게이트를 활성으로 세지 않는 것과 같은 방향)."""
+    verdict = outcome.get("verdict")
+    return isinstance(verdict, int) and not isinstance(verdict, bool) and verdict != 0
+
+
+def _latest_verdict_label(entry: dict) -> str:
+    """최신 완료 라운드의 판정 표기 — 거부 안내가 '무엇을 보고 막았는지' 그대로 말한다."""
+    outcome = _latest_round_outcome(entry)
+    if outcome is None:
+        return "라운드 기록 없음"
+    return _format_round_verdict(outcome.get("verdict"))
 
 
 def _recorded_must_fix_texts(entry: dict, outcome: dict) -> list[str]:
@@ -2511,9 +2527,10 @@ def _recorded_must_fix_texts(entry: dict, outcome: dict) -> list[str]:
 
 
 def _confirm_fix_evidence(entry: dict) -> str | None:
-    """확인 전용 라운드 프롬프트에 실을 근거 블록 — **반려 라운드가 없으면 None(자격 없음)**."""
-    outcome = _last_rejected_outcome(entry)
-    if outcome is None:
+    """확인 전용 라운드 프롬프트에 실을 근거 블록 — **최신 완료 라운드가 반려가 아니면
+    None(자격 없음)**. 근거는 그 최신 반려 라운드의 must_fix 다(자격과 같은 산출 1건)."""
+    outcome = _latest_round_outcome(entry)
+    if outcome is None or not _is_rejection(outcome):
         return None
     sequence = _round_sequence(outcome)
     header = _CONFIRM_FIX_EVIDENCE_HEADER.format(
@@ -2714,14 +2731,15 @@ def _reserve_round_budget(
                     gate=args.gate, used=entry["confirm_fix"],
                     ledger=_round_ledger_path()), file=sys.stderr)
                 return RoundBudget(refused_rc=EXIT_ROUND_LIMIT_EXCEEDED)
-            # 예외의 **자격** — 확인할 지적(반려 라운드)이 실재해야 한다. 판정 입력은 방금 만든
-            # 근거 블록 자체라, 자격이 열린 실행은 반드시 실을 근거를 갖는다.
+            # 예외의 **자격** — 확인할 지적(최신 완료 라운드의 반려)이 실재해야 한다. 판정 입력은
+            # 방금 만든 근거 블록 자체라, 자격이 열린 실행은 반드시 실을 근거를 갖는다.
             if confirm_fix and confirm_fix_evidence is None:
                 if approved or wave_repaired:
                     _save_round_ledger(ledger)
                 announce(resumed=False)
                 print(_CONFIRM_FIX_NO_REJECTION_GUIDANCE.format(
                     gate=args.gate, rounds=len(entry["rounds"]),
+                    verdict=_latest_verdict_label(entry),
                     ledger=_round_ledger_path()), file=sys.stderr)
                 return RoundBudget(refused_rc=EXIT_ROUND_LIMIT_EXCEEDED)
             if convergence is not None and not confirm_fix:
@@ -3383,6 +3401,12 @@ def _find_ticket_file(ticket_id: str, *, pm_home: Path | None = None) -> Path:
 
     ticket 디렉토리는 `_tickets_dir()`로 *호출 시점* 해소한다 —
     board/ 분리 후 wiki/ legacy 위치(stale·ticket 미발견)를 안 보게.
+
+    조회 판정은 board 의 공용 정확-일치 seam(`find_ticket_exact`)이 소유한다 — `{id}-*.md`
+    prefix glob 의 **첫 매칭**을 믿으면 `T-NNNN` 과 `T-NNNN-001` 공존 시 **다른 티켓의
+    estimate/touches** 로 diff 상한이 정해진다(조용한 오판). 사본 판정을 두지 않는 이유는
+    같은 클래스가 표면마다 half-fix 로 재발해서다. 슬러그 없는 파일명(`T-NNNN.md`)은 prefix
+    충돌이 불가능한 정확 이름이라 seam 이 비면 그 폴백을 그대로 본다(종전 동작).
     """
     if not ticket_id or re.search(r"[\\/*?\[\]]", ticket_id):
         raise AnchorResolutionError(f"ticket id 형식이 안전하지 않습니다: {ticket_id!r}")
@@ -3392,13 +3416,14 @@ def _find_ticket_file(ticket_id: str, *, pm_home: Path | None = None) -> Path:
         pm_dir = pm_home / ".project_manager"
         board_tickets = pm_dir / "board" / "tickets"
         tickets_dir = board_tickets if board_tickets.is_dir() else pm_dir / "wiki" / "tickets"
+    found = _load_board().find_ticket_exact(
+        ticket_id,
+        search_dirs=[(status, tickets_dir / status) for status in STATUS_DIRS],
+    )
+    if found is not None:
+        return found[1]
     for status_dir in STATUS_DIRS:
-        dir_path = tickets_dir / status_dir
-        if not dir_path.exists():
-            continue
-        for ticket_file in dir_path.glob(f"{ticket_id}-*.md"):
-            return ticket_file
-        exact = dir_path / f"{ticket_id}.md"
+        exact = tickets_dir / status_dir / f"{ticket_id}.md"
         if exact.exists():
             return exact
     raise AnchorResolutionError(
@@ -3409,7 +3434,8 @@ def _find_ticket_file(ticket_id: str, *, pm_home: Path | None = None) -> Path:
 def parse_ticket_touches(ticket_id: str, *, pm_home: Path | None = None) -> list[str]:
     """board ticket frontmatter 의 touches 필드를 파싱해 경로 목록을 반환한다.
 
-    YAML frontmatter 직접 파싱 (board.py 를 import 하지 않음). 못 찾으면 fail-loud.
+    touches 값 파싱은 이 파일의 YAML 리더가 하고, **어느 파일이 그 티켓인가**는 board 의 정확-일치
+    seam 이 정한다(`_find_ticket_file`). 못 찾으면 fail-loud.
     """
     return _parse_touches_from_file(_find_ticket_file(ticket_id, pm_home=pm_home))
 
@@ -3419,14 +3445,14 @@ def parse_ticket_estimate(ticket_id: str, *, pm_home: Path | None = None) -> str
 
     diff 서킷브레이커의 상한 선택 입력이다. 못 찾으면 **가드 off**(None)다 — `--gate` 는 자유
     문자열이 실사용이라(장부 실측 `wave4-b1`) 티켓이 아닌 이름으로 상한을 지어내면 안 된다.
-    손상 frontmatter 도 같은 축이다(fail-soft) — 다만 엔진 사본 skew 는 삼키지 않는다."""
+    손상 frontmatter 도 같은 축이다(fail-soft) — 다만 엔진 사본 skew 는 삼키지 않는다.
+    조회 실패(ticket 부재·형식 거부·board seam 로드 실패)와 파싱 실패를 **한 깔때기**에서 받는
+    이유는 둘 다 같은 처방(가드 off)이라서다 — 두 try 로 나누면 조회 쪽 새 실패 형상이 그대로
+    실행을 죽인다."""
     try:
-        path = _find_ticket_file(ticket_id, pm_home=pm_home)
-    except AnchorResolutionError:
-        return None
-    try:
-        return _parse_estimate_from_file(path)
-    except Exception as exc:  # noqa: BLE001 — 읽기/파싱 실패는 가드 off(ticket_finish 동형).
+        return _parse_estimate_from_file(
+            _find_ticket_file(ticket_id, pm_home=pm_home))
+    except Exception as exc:  # noqa: BLE001 — 조회/파싱 실패는 가드 off(ticket_finish 동형).
         if _is_engine_rev_skew(exc):
             raise  # 사본 skew 는 fail-loud(삼키지 않는다).
         return None

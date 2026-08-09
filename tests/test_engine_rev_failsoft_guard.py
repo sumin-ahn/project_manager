@@ -896,7 +896,11 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 174 = 173 + T-0602 estimate 해석 단일화의 한 경계. 리뷰쪽 estimate 조회가 board 의
     #   frontmatter 로더를 형제 로드해 완료 게이트와 **같은 값**을 읽되, 티켓 부재/손상은 상한
     #   가드를 조용히 끄고(엔진이 상한을 지어내지 않는다) 마킹된 skew 는 그대로 올린다.
-    assert len(report.boundaries) == 174, "propagation sweep boundary ratchet changed"
+    # 173 = 174 − T-0603 티켓 조회 seam 통일로 **사라진** 한 경계. `get_ticket_title` 이 자체
+    #   board 로드를 두지 않고 `_ticket_frontmatter` 한 지점을 쓰므로(제목과 게이트 입력이 같은
+    #   파일을 본다) 그 함수의 경계가 통째로 없어졌다 — 흡수 규칙이 느슨해진 게 아니라 경계가
+    #   하나로 합쳐진 것이고, 남은 지점은 종전대로 마킹된 skew 를 re-raise 한다.
+    assert len(report.boundaries) == 173, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

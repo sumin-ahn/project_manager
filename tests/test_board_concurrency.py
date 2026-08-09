@@ -515,22 +515,35 @@ def test_claim_critical_section_holds_board_lock(board):
 
     observed: dict[str, bool] = {}
     orig_load = board.load_ticket
+    orig_find = board.find_ticket
+    armed: list[bool] = []
+
+    def arming_find(t):
+        # 티켓 **조회**(`find_ticket`)는 임계구역 밖이고, canonical ID 정확 일치 판정 때문에
+        # 후보 frontmatter 를 읽는다 — 그 읽기까지 세면 첫 load 가 조회분이라 프로브가 조회
+        # 시점(락 밖)을 관측한다. 조회가 끝난 뒤부터 관측을 켜서 '첫 load = 임계구역' 을 유지한다.
+        result = orig_find(t)
+        armed.append(True)
+        return result
 
     def probing_load(p):
         # claim 이 이 load 를 호출하는 시점 = board_lock 임계구역 *안*이어야 한다. 별도 fd 로
         # 비차단 프로브를 걸어 락이 실제로 잡혀있는지 관찰한다(flock/msvcrt 는 같은 프로세스의
         # 다른 fd 도 상호배제 — `_probe_lock_free` 가 False 를 봐야 정상).
-        # setdefault: 첫 load(=claim 임계구역)만 기록 — claim 완료 후 refresh_board 가 자기
-        # board_lock 을 쥔 채 load_ticket 을 또 부르므로, 덮어쓰면 그쪽 False 가 임계구역
+        # setdefault: 조회 뒤 첫 load(=claim 임계구역)만 기록 — claim 완료 후 refresh_board 가
+        # 자기 board_lock 을 쥔 채 load_ticket 을 또 부르므로, 덮어쓰면 그쪽 False 가 임계구역
         # 관측을 가려 락을 걷어내도 통과하는 false-green 이 된다(T-0213 reviewer must-fix).
-        observed.setdefault("lock_free_during_load", _probe_lock_free(board.BOARD_LOCK))
+        if armed:
+            observed.setdefault("lock_free_during_load", _probe_lock_free(board.BOARD_LOCK))
         return orig_load(p)
 
     board.load_ticket = probing_load
+    board.find_ticket = arming_find
     try:
         rc = board.cmd_claim(_Args(id=tid, repo="s", slot=1))
     finally:
         board.load_ticket = orig_load
+        board.find_ticket = orig_find
 
     assert rc == 0, f"비경합 claim 이 성공해야 함: rc={rc}"
     assert observed.get("lock_free_during_load") is False, (

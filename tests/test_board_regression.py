@@ -1023,13 +1023,15 @@ def _write_rounds_ledger(board, gates: dict) -> None:
 
 
 def _ticket_statuses(board, monkeypatch, statuses: dict) -> None:
-    """보드 티켓 status 대역 — `{ticket_id: status}` 이외의 id 는 부재(FileNotFoundError)."""
-    def _find(tid):
+    """보드 티켓 status 대역 — `{ticket_id: status}` 이외의 id 는 부재(None).
+
+    강등 판정이 쓰는 조회 seam 은 정확-일치(`find_ticket_exact`)다 — 대역도 같은 자리에 건다."""
+    def _find_exact(tid, **_kwargs):
         if tid not in statuses:
-            raise FileNotFoundError(tid)
+            return None
         return statuses[tid], Path(f"/board/{statuses[tid]}/{tid}.md")
 
-    monkeypatch.setattr(board, "find_ticket", _find)
+    monkeypatch.setattr(board, "find_ticket_exact", _find_exact)
 
 
 def test_active_review_cycle_is_the_last_round_not_a_pass(board, monkeypatch):
@@ -1080,8 +1082,8 @@ def test_missing_or_corrupt_ledger_never_downgrades(board):
     assert board._active_review_gates() == []
 
 
-def test_corrupt_ticket_frontmatter_skips_that_gate(board, monkeypatch, capsys):
-    """손상 frontmatter 한 건이 모든 `regression run` 을 크래시시키지 않는다 (fail-soft)."""
+def test_corrupt_ticket_frontmatter_cancels_the_downgrade(board, monkeypatch, capsys):
+    """손상 frontmatter 는 강등을 취소하고 FULL 로 간다 — 크래시도, 부분 강등도 아니다."""
     _write_rounds_ledger(board, {"T-0002": [(1, 1)]})
     _ticket_statuses(board, monkeypatch, {"T-0002": "claimed"})
 
@@ -1092,8 +1094,8 @@ def test_corrupt_ticket_frontmatter_skips_that_gate(board, monkeypatch, capsys):
     _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
     assert board.cmd_regression(_run_args()) == 0
     out, err = capsys.readouterr()
-    assert "강등 판정에서 제외" in err and "T-0002" in err
-    assert "강등" not in out
+    assert "강등을 취소" in err and "T-0002" in err
+    assert "강등합니다" not in out
     assert _flag(board)["scope"] == "full"
 
 
@@ -1212,11 +1214,11 @@ def test_free_form_gate_label_skips_the_ticket_lookup(board, monkeypatch):
     """티켓 ID 문법이 아닌 라벨(`wave4-b1`·glob 메타)은 조회 자체를 생략한다."""
     calls: list[str] = []
 
-    def _find(tid):
+    def _find(tid, **_kwargs):
         calls.append(tid)
-        raise FileNotFoundError(tid)
+        return None
 
-    monkeypatch.setattr(board, "find_ticket", _find)
+    monkeypatch.setattr(board, "find_ticket_exact", _find)
     for label in ("wave4-b1", "T-*", "T-0036-001-fix", "리뷰", ""):
         assert board._gate_ticket(label) is None
         assert board._gate_ticket_is_claimed(label) is False
@@ -1236,6 +1238,109 @@ def test_ticket_id_gate_with_empty_touches_stays_full(board, monkeypatch, capsys
     assert board.cmd_regression(_run_args()) == 0
     assert "강등" not in capsys.readouterr().out
     assert _flag(board)["scope"] == "full"
+
+
+# ── 강등 확정은 전-게이트 fail-closed (T-0603 ①) ────────────────────────────
+# codex R3 지적: 활성 게이트가 여럿일 때 하나만 touches 를 확정하지 못해도 나머지 touches 로
+# 강등이 성사됐다 — 그 실행은 미해소 게이트가 건드린 범위를 **한 번도 돌지 않은 채** rc0 을 내고,
+# 그 green 은 활성 게이트 전부에 대한 통과로 읽힌다(false-green). 아래는 두 미해소 형상(빈
+# touches·읽기 실패)을 재현하고 **강등 전체 취소**를 단언한다.
+
+
+def _two_active_gates(board, monkeypatch, resolver) -> None:
+    """활성 게이트 둘(T-0002·T-0003)을 심고 touches 해소기를 주입한다."""
+    _write_rounds_ledger(board, {"T-0002": [(1, 1)], "T-0003": [(1, 1)]})
+    _ticket_statuses(board, monkeypatch, {"T-0002": "claimed", "T-0003": "claimed"})
+    monkeypatch.setattr(board, "_ticket_touches", resolver)
+
+
+def test_one_gate_without_touches_cancels_the_whole_downgrade(
+        board, monkeypatch, capsys):
+    """게이트 하나가 빈 touches 면 다른 게이트의 touches 로 부분 강등하지 않는다 (DoD)."""
+    _two_active_gates(board, monkeypatch,
+                      lambda tid: ["src/pay.py"] if tid == "T-0002" else [])
+    fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
+
+    assert board.cmd_regression(_run_args()) == 0
+    out, err = capsys.readouterr()
+    assert "강등합니다" not in out                       # 부분 강등 안내가 뜨지 않는다
+    assert "T-0003" in err and "강등을 취소" in err       # 미해소 게이트를 지목한 사유 1줄
+    assert "-k" not in fake.calls[0]["args"][0]         # FULL 그대로 돈다
+    assert _flag(board)["scope"] == "full"              # push 게이트 플래그 = FULL
+
+
+def test_one_unreadable_gate_cancels_the_whole_downgrade(board, monkeypatch, capsys):
+    """touches 읽기 실패(손상 frontmatter)도 같은 취급 — 확정 못 한 게이트가 있으면 FULL."""
+    def _resolve(tid):
+        if tid == "T-0003":
+            raise ValueError("frontmatter 손상")
+        return ["src/pay.py"]
+
+    _two_active_gates(board, monkeypatch, _resolve)
+    fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
+
+    assert board.cmd_regression(_run_args()) == 0
+    out, err = capsys.readouterr()
+    assert "강등합니다" not in out
+    assert "T-0003" in err and "ValueError" in err      # 사유에 실패 형상을 남긴다
+    assert "-k" not in fake.calls[0]["args"][0]
+    assert _flag(board)["scope"] == "full"
+
+
+def test_all_gates_resolved_still_downgrade_to_the_union(board, monkeypatch, capsys):
+    """정상 경로 무변경 — 활성 게이트 전부가 touches 를 확정하면 종전대로 합집합 강등이다."""
+    _two_active_gates(
+        board, monkeypatch,
+        lambda tid: ["src/pay.py"] if tid == "T-0002" else ["src/ledger.py"])
+    fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="2 passed in 0.10s\n"))
+
+    assert board.cmd_regression(_run_args()) == 0
+    out = capsys.readouterr().out
+    assert "활성 리뷰 사이클 [T-0002, T-0003]" in out and "강등합니다" in out
+    scoped = fake.calls[0]["args"][0]
+    assert '-k "ledger or pay"' in scoped               # 두 게이트의 합집합
+    assert not board.REGRESSION_FLAG.exists()           # 강등 실행은 게이트 플래그를 안 쓴다
+
+
+# ── 티켓 조회 공용 seam (T-0603 ④) ──────────────────────────────────────────
+# 정확-일치 판정을 board 공개 함수로 승격했다 — 강등(board)·estimate(추가 리뷰어)·완료 게이트
+# (ticket_finish)가 **같은 함수**를 쓴다. 사본 판정을 두면 그 사본이 다시 첫-매칭으로 흘러
+# half-fix 가 재발한다(이 클래스의 재발 이력).
+
+
+def test_find_ticket_exact_answers_only_for_the_canonical_id(board):
+    """공존 픽스처에서 정확-일치 seam 은 각 ID 에 그 ID 의 파일만 돌려준다."""
+    _seed_ticket_file(board, "T-0036", status="claimed", slug="본래-티켓")
+    _seed_ticket_file(board, "T-0036-001", status="open", slug="다른-티켓",
+                      touches="src/unrelated.py")
+
+    legacy = board.find_ticket_exact("T-0036")
+    prefixed = board.find_ticket_exact("T-0036-001")
+    assert legacy is not None and legacy[0] == "claimed"
+    assert legacy[1].name.startswith("T-0036-본래")
+    assert prefixed is not None and prefixed[0] == "open"
+    assert board.find_ticket_exact("T-0036-002") is None      # 없는 ID 는 None
+
+
+def test_find_ticket_prefers_the_exact_match_over_the_first_glob_hit(board):
+    """`find_ticket` 도 정확 일치를 먼저 본다 — 이 조회를 쓰는 모든 소비처가 상속한다."""
+    _seed_ticket_file(board, "T-0036", status="done", slug="본래-티켓")
+    _seed_ticket_file(board, "T-0036-001", status="open", slug="다른-티켓")
+
+    status, path = board.find_ticket("T-0036")
+    assert (status, path.name.startswith("T-0036-본래")) == ("done", True)
+
+
+def test_find_ticket_still_falls_back_when_no_exact_candidate_exists(board):
+    """정확 일치 후보가 없으면 종전 glob 첫 매칭 그대로 — legacy 티켓 조회가 회귀하지 않는다."""
+    path = board.tickets_dir() / "open" / "T-0038-fix-123.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # frontmatter `id:` 부재 + 숫자로 끝나는 slug — 파일명 파서가 `T-0038-fix-123` 으로 읽어
+    # canonical 이 `T-0038` 과 어긋나는 legacy 형상(`_canonical_ticket_id` 주석의 그 모호성).
+    path.write_text("---\ntitle: 픽스처\nstatus: open\n---\n\n# 본문\n", encoding="utf-8")
+
+    assert board.find_ticket_exact("T-0038") is None
+    assert board.find_ticket("T-0038")[1] == path
 
 
 def test_explicit_scope_is_untouched_by_the_staging_rule(board, monkeypatch, capsys):
@@ -1336,6 +1441,28 @@ def test_failed_replace_leaves_no_tmp_residue(board, monkeypatch, tmp_path):
         board.os, "replace",
         lambda *a, **k: (_ for _ in ()).throw(OSError("교체 실패")),
     )
+
+    with pytest.raises(OSError):
+        board._write_hook_atomic(hook, board.pre_push_hook_body("python3"))
+
+    assert not list(hook.parent.glob("pre-push.*.tmp"))
+    assert hook.read_text(encoding="utf-8") == _legacy_hook()   # 원본 미변경
+
+
+def test_failed_chmod_leaves_no_tmp_residue(board, monkeypatch, tmp_path):
+    """교체 **앞 단계**(쓰기·chmod) 실패도 tmp 를 남기지 않는다 (T-0603 suggestion).
+
+    정리 범위가 `os.replace` 뿐이면 chmod 가 죽은 실행마다 `pre-push.<pid>.tmp` 가 쌓인다 —
+    문서 서술("교체 전 tmp 에 권한을 준다")과 실제 정리 범위가 어긋난 자리다."""
+    hook = _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
+    real_chmod = Path.chmod
+
+    def _boom(self, mode, **kwargs):
+        if self.name.endswith(".tmp"):
+            raise OSError("chmod 실패")
+        return real_chmod(self, mode, **kwargs)
+
+    monkeypatch.setattr(Path, "chmod", _boom)
 
     with pytest.raises(OSError):
         board._write_hook_atomic(hook, board.pre_push_hook_body("python3"))
