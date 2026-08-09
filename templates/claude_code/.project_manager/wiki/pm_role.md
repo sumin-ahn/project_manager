@@ -133,11 +133,11 @@ PM은 여러 출처의 synthesis를 직접 흡수하고, bounded fact-gather·�
 
 ### PM 직접편집 면제
 
-다른 세션과 충돌하지 않을 때만 아래 저위험 변경은 ticket·dev·외부리뷰 없이 PM이 직접 편집할 수 있다. 구체 deny 경로는 [[pm_role.local.md]] §보호 영역.
+다른 세션과 충돌하지 않을 때만 아래 저위험 변경은 ticket·dev·추가 리뷰 없이 PM이 직접 편집할 수 있다. 구체 deny 경로는 [[pm_role.local.md]] §보호 영역.
 
 **허용:** UI/UX·템플릿·문구·docstring·주석·typo·표시 라벨·링크·README; 비핵심 상수·임계값(가독성·로깅·표시 항목 수·UI timeout 등); 재현·검증이 명백한 한 파일·수십 줄 이내 버그; 부기·`status.md` process·`log/current.md`·`board.md`·메모리·현재-진실 doc 점검; 개발 도구/스크립트의 비기능 출력 포맷·도움말·dry-run 개선.
 
-**금지(반드시 ticket → dev → 외부리뷰):** 핵심 로직·안전 게이트·보안/인증/시크릿·외부 노출; 신규 모듈·신규 ADR·구조/스키마 변경; `scope: mission` ADR; [[pm_role.local.md]] §보호 영역.
+**금지(반드시 ticket → dev → 추가 리뷰):** 핵심 로직·안전 게이트·보안/인증/시크릿·외부 노출; 신규 모듈·신규 ADR·구조/스키마 변경; `scope: mission` ADR; [[pm_role.local.md]] §보호 영역.
 
 **직접편집 공통 의무:**
 1. full 또는 변경 모듈 회귀 통과.

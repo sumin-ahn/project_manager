@@ -47,12 +47,12 @@ raw 파일 접두)에만 남는다. 설정 키는 `additional_reviewer_enabled`/
     (small 300 / medium 1,000 / large 2,500 · local.conf diff_cap.<estimate>)을 넘긴 스코프는
     리뷰 라운드로 닫히지 않으므로 분할·재설계로 보낸다.
   - 라운드 상한 도달(--gate 별) → exit 4 (실행 전 거부·전용 rc). 같은 게이트로
-    판정 4회(local.conf external_review_round_limit) 또는 미완 2회
-    (external_review_incomplete_round_limit)를 채우면 이후 실행을 기계 차단한다. 성격은
+    판정 4회(local.conf additional_reviewer_round_limit) 또는 미완 2회
+    (additional_reviewer_incomplete_round_limit)를 채우면 이후 실행을 기계 차단한다. 성격은
     **무한 루프 차단(anti-loop pause)**이다 — 연장 승인(`--ack-rounds`)은 폐지됐고, 호출하면
     아무것도 하지 않고 거부한다.
   - wave 예산 소진 → exit 4 (같은 rc·같은 실행 전 거부). 게이트별 상한과 **별개로** wave 단위
-    총 라운드 예산(local.conf external_review_wave_budget·기본 24)을 두어 티켓 수 × 라운드 상한
+    총 라운드 예산(local.conf additional_reviewer_wave_budget·기본 24)을 두어 티켓 수 × 라운드 상한
     으로 비용이 무한 확장되는 구조를 막는다 — 재개는 같은 규율의 `--ack-wave`(예산 리셋).
 
 설계:
@@ -886,6 +886,29 @@ DEFAULT_REVIEWER_CMD = "codex exec --sandbox read-only --skip-git-repo-check"
 # (기존 raw 감사물과 채택자 PM 홈 사본의 안정 계약).
 ADDITIONAL_REVIEWER_ENABLED_KEY = "additional_reviewer_enabled"
 LEGACY_EXTERNAL_REVIEW_ENABLED_KEY = "external_review_enabled"
+
+# 라운드/wave 예산 노브도 게이트 키와 **같은 규칙**으로 개칭됐다 — 이름만 바뀌고 값 의미·기본값은
+# 그대로다. 게이트 키 하나만 바꾸면 채택자 local.conf 안에서 같은 기능의 키가 두 접두로 갈려
+# ("어느 게 현재 이름인가") 개칭이 절반만 도착한다. 구키는 이번 릴리즈까지만 fallback 이고,
+# 값을 공급하면 키마다 deprecation 1줄을 낸다(엔진은 채택자 conf 를 대신 고쳐 쓰지 않는다).
+ADDITIONAL_REVIEWER_ROUND_LIMIT_KEY = "additional_reviewer_round_limit"
+LEGACY_EXTERNAL_REVIEW_ROUND_LIMIT_KEY = "external_review_round_limit"
+ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY = (
+    "additional_reviewer_incomplete_round_limit")
+LEGACY_EXTERNAL_REVIEW_INCOMPLETE_ROUND_LIMIT_KEY = (
+    "external_review_incomplete_round_limit")
+ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY = "additional_reviewer_wave_budget"
+LEGACY_EXTERNAL_REVIEW_WAVE_BUDGET_KEY = "external_review_wave_budget"
+
+# 신키 → 구키 매핑. 해소도 경고도 이 한 표에서 파생한다 — 키마다 분기를 복사하면 새 노브가
+# fallback 만 갖고 경고를 못 갖는(또는 그 반대) 절반 배선이 생긴다.
+LEGACY_KNOB_KEYS: dict[str, str] = {
+    ADDITIONAL_REVIEWER_ROUND_LIMIT_KEY: LEGACY_EXTERNAL_REVIEW_ROUND_LIMIT_KEY,
+    ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY:
+        LEGACY_EXTERNAL_REVIEW_INCOMPLETE_ROUND_LIMIT_KEY,
+    ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY: LEGACY_EXTERNAL_REVIEW_WAVE_BUDGET_KEY,
+}
+
 # Codex egress attestation 플래그 — 판정/문구 단일 소유자는 pm_relay 이고, 여기 리터럴은 argparse
 # 선언용 사본이다(드리프트는 회귀 테스트가 막는다).
 CODEX_EGRESS_FLAG = "--codex-egress-escalated"
@@ -920,7 +943,7 @@ _REVIEWER_PROGRESS_CONTRACTS = {
 
 # 라운드 상한 — 같은 --gate 로 이 횟수를 넘겨 실 전송하면 이후 실행을 거부한다.
 # 기본 4 는 사용자 전역 규율(추가 리뷰 ">3~4 라운드면 수렴 판단")의 기계화. local.conf
-# external_review_round_limit 로 조정 가능.
+# additional_reviewer_round_limit 로 조정 가능.
 DEFAULT_ROUND_LIMIT = 4
 DEFAULT_INCOMPLETE_ROUND_LIMIT = 2
 
@@ -952,7 +975,8 @@ DIFF_CAP_KEY_PREFIX = "diff_cap."
 # wave(세션) 단위 총 라운드 예산 — 게이트별 상한과 **별개** 축이다. 게이트 상한만 있으면 비용이
 # 티켓 수 × 라운드 상한으로 확장되므로, 전 게이트 합계 전송을 이 예산으로 묶는다. 기본 24 는
 # 게이트 상한 4 × 동시 진행 6티켓 어림이고 실측 세션당 라운드(~50)보다 낮게 잡아 PM 이 중간에
-# `--rounds-report`로 수렴 상태를 점검하는 관측점을 만든다. local.conf external_review_wave_budget 로 조정 가능.
+# `--rounds-report`로 수렴 상태를 점검하는 관측점을 만든다. local.conf
+# additional_reviewer_wave_budget 로 조정 가능.
 DEFAULT_WAVE_BUDGET = 24
 
 # 라운드 상한 초과 전용 종료 코드 (기존 0=통과·1=반려/실패/오류·2=argparse·3=예약 과 구분).
@@ -1125,8 +1149,8 @@ _ROUND_LIMIT_GUIDANCE = (
     "  · **재설계·티켓 분할이 유일한 출구입니다** — 라운드 연장 승인(`--ack-rounds`)은 "
     "폐지됐고, 확인 전용 라운드(`--confirm-fix`)는 수렴 축의 예외라 이 전송 횟수 상한은 "
     "열지 않습니다.\n"
-    "  · 상한 조정은 local.conf `external_review_round_limit`(판정)과 "
-    "`external_review_incomplete_round_limit`(미완).\n"
+    "  · 상한 조정은 local.conf `additional_reviewer_round_limit`(판정)과 "
+    "`additional_reviewer_incomplete_round_limit`(미완).\n"
     "  (장부: {ledger} · count={count} acked_through={acked})"
 )
 
@@ -1189,7 +1213,7 @@ _WAVE_BUDGET_GUIDANCE = (
     "(spent 를 0 으로 리셋):\n"
     "      python3 .project_manager/tools/external_review.py --gate {gate} --ack-wave [기존 옵션]\n"
     "  · 수렴이 안 되고 있으면(같은 지적 반복·범위 재설계) 그때 사용자에게 보고하세요.\n"
-    "  · 예산 조정은 local.conf `external_review_wave_budget`.\n"
+    "  · 예산 조정은 local.conf `additional_reviewer_wave_budget`.\n"
     "  (장부: {ledger})"
 )
 
@@ -1244,6 +1268,52 @@ def legacy_enabled_key_warning(conf: dict[str, str]) -> str | None:
     if enabled_decision_key(conf) == LEGACY_EXTERNAL_REVIEW_ENABLED_KEY:
         return LEGACY_ENABLED_KEY_DEPRECATION
     return None
+
+
+def knob_value_key(conf: dict[str, str], key: str) -> str | None:
+    """노브 값을 공급하는 키 — 신키 우선·구키 fallback. 공급이 없으면 None.
+
+    게이트 키와 우선순위 규칙은 같고(둘 다 있으면 신키가 이긴다 — 새 값을 옛 값이 되돌리면
+    조정한 사람이 조용히 무시된다) **공급 판정만 다르다**: 게이트는 키 존재가 곧 결정이지만
+    (`false` 도 결정이라 온보딩이 다시 묻지 않는다) 노브는 종전부터 빈 값을 미설정으로 읽어
+    기본값으로 fail-soft 했다. 그 의미를 그대로 승계해 "비어 있지 않은 값"만 공급으로 본다.
+    """
+    for candidate in (key, LEGACY_KNOB_KEYS[key]):
+        if conf.get(candidate, "").strip():
+            return candidate
+    return None
+
+
+def _knob_raw(conf: dict[str, str], key: str) -> str:
+    """공급 키의 원문 값 — 공급이 없으면 빈 문자열(호출부가 기본값으로 간다)."""
+    supplier = knob_value_key(conf, key)
+    return conf.get(supplier, "").strip() if supplier else ""
+
+
+def legacy_knob_key_deprecation(key: str) -> str:
+    """노브 구키 안내 1줄 — 게이트 안내와 같은 형태·같은 처방(제거 예고 포함)."""
+    return (
+        f"⚠ local.conf `{LEGACY_KNOB_KEYS[key]}` 는 구키다 — "
+        f"`{key}` 로 바꾸세요(다음 릴리즈에서 구키 제거)."
+    )
+
+
+def legacy_key_warnings(conf: dict[str, str]) -> list[str]:
+    """이 conf 가 받아야 할 구키 deprecation 전부 — 게이트 1줄 + 값을 공급한 노브마다 1줄.
+
+    호출부가 축마다 따로 찍으면 새 노브가 안내 없이 fallback 만 갖는 절반 배선이 생긴다. 깔때기를
+    하나로 두어 "구키를 읽었으면 반드시 안내한다"가 한 곳의 성질이 된다.
+    """
+    warnings = []
+    enabled_warning = legacy_enabled_key_warning(conf)
+    if enabled_warning:
+        warnings.append(enabled_warning)
+    warnings += [
+        legacy_knob_key_deprecation(key)
+        for key in LEGACY_KNOB_KEYS
+        if knob_value_key(conf, key) == LEGACY_KNOB_KEYS[key]
+    ]
+    return warnings
 
 
 def _is_enabled(conf: dict[str, str]) -> bool:
@@ -1614,11 +1684,11 @@ def _denylist_patterns(conf: dict[str, str]) -> tuple[str, ...]:
 
 
 def _round_limit(conf: dict[str, str]) -> int:
-    """라운드 상한 (local.conf external_review_round_limit·기본 `DEFAULT_ROUND_LIMIT`).
+    """라운드 상한 (local.conf additional_reviewer_round_limit·기본 `DEFAULT_ROUND_LIMIT`).
 
     비정수·음수는 기본값으로 fail-soft — 장부/노브 값이 깨졌다고 게이트를 벽돌로 만들지 않는다
     (음수 상한은 첫 라운드부터 무조건 차단이라 무의미)."""
-    raw = conf.get("external_review_round_limit", "").strip()
+    raw = _knob_raw(conf, ADDITIONAL_REVIEWER_ROUND_LIMIT_KEY)
     if not raw:
         return DEFAULT_ROUND_LIMIT
     try:
@@ -1630,7 +1700,7 @@ def _round_limit(conf: dict[str, str]) -> int:
 
 def _incomplete_round_limit(conf: dict[str, str]) -> int:
     """판정 없는 전송의 별도 재시도 상한(기본 2)."""
-    raw = conf.get("external_review_incomplete_round_limit", "").strip()
+    raw = _knob_raw(conf, ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY)
     if not raw:
         return DEFAULT_INCOMPLETE_ROUND_LIMIT
     try:
@@ -1641,11 +1711,11 @@ def _incomplete_round_limit(conf: dict[str, str]) -> int:
 
 
 def _wave_budget(conf: dict[str, str]) -> int:
-    """wave 총 라운드 예산 (local.conf external_review_wave_budget·기본 `DEFAULT_WAVE_BUDGET`).
+    """wave 총 라운드 예산 (local.conf additional_reviewer_wave_budget·기본 `DEFAULT_WAVE_BUDGET`).
 
     비정수·음수는 기본값으로 fail-soft — 라운드 상한 노브와 같은 규칙이다(깨진 노브가 게이트를
     벽돌로 만들지 않는다)."""
-    raw = conf.get("external_review_wave_budget", "").strip()
+    raw = _knob_raw(conf, ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY)
     if not raw:
         return DEFAULT_WAVE_BUDGET
     try:
@@ -2551,7 +2621,7 @@ class _PreSpawnReservation:
     확실히 없으므로 예약은 되돌아가야 한다. 환불 조건을 예외 **종류**로 잡으면(알려진
     `ReviewerWorkspaceError` 만) 나머지 예외가 예약을 finished_at 없는 미완 레코드로 남겨, 전송도
     과금도 없던 실행이 다음 실행의 미완 재시도 예산을 깎는다 —
-    `external_review_incomplete_round_limit=1` 이면 다음 **정상** 호출이 곧바로 차단된다. 그래서
+    `additional_reviewer_incomplete_round_limit=1` 이면 다음 **정상** 호출이 곧바로 차단된다. 그래서
     조건은 종류가 아니라 **구간**이다: 여기서 나가는 모든 `BaseException`
     (`KeyboardInterrupt`·`SystemExit` 포함)이 환불을 부른다.
 
@@ -5728,11 +5798,11 @@ def _main(argv: list[str] | None = None) -> int:
         diff=diff, adr_refs=args.adr, gate=args.gate, confirm_fix=args.confirm_fix,
     )
 
-    # 구키 deprecation — 미리보기·실행 **양쪽**에서 같은 자리에 1줄. 게이트 판정 앞이라 꺼져 있는
+    # 구키 deprecation — 미리보기·실행 **양쪽**에서 같은 자리에 안내. 게이트 판정 앞이라 꺼져 있는
     # conf 도 안내를 받는다(구키로 `false` 를 적어 둔 채택자가 켜려 할 때 신키를 알아야 한다).
-    legacy_key_warning = legacy_enabled_key_warning(conf)
-    if legacy_key_warning:
-        print(legacy_key_warning, file=sys.stderr)
+    # 게이트와 노브를 한 깔때기에서 받아 축마다 다른 자리에 찍히지 않게 한다.
+    for warning in legacy_key_warnings(conf):
+        print(warning, file=sys.stderr)
 
     if args.dry_run:
         # 미리보기는 **부작용 0**이다(외부 송신·raw 예약·라운드 예약·격리 거울·`--output-dir`

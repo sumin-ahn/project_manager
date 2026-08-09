@@ -39,7 +39,7 @@ engine은 `--gate <T-NNNN>`별 라운드 장부를 세고, 실행 전에 **수�
 - **라운드 상한 3회**(`local.conf`의 `review_rounds_max`) — 기록 라운드가 상한에 닿으면 must-fix 잔존과 무관하게 차단한다. 잔존 여부는 차단 사유 라벨만 가른다(`cap-unresolved` / `cap-reached`).
 - **발산 조기 차단** — 직전 라운드보다 must-fix가 늘면 상한 도달을 기다리지 않고 그 자리에서 차단한다. 줄지 않고 평탄한 형상(3→2→2)은 조기 차단이 아니라 상한에서 걸린다.
 
-전송 횟수만 세는 축도 그대로 있다 — 판정 라운드 상한(기본 4, `external_review_round_limit`)과 미완(미마감) 라운드 상한(기본 2, `DEFAULT_INCOMPLETE_ROUND_LIMIT`). 호출 전 예약이라 반복 타임아웃으로 우회할 수 없다.
+전송 횟수만 세는 축도 그대로 있다 — 판정 라운드 상한(기본 4, `additional_reviewer_round_limit`)과 미완(미마감) 라운드 상한(기본 2, `additional_reviewer_incomplete_round_limit`). 호출 전 예약이라 반복 타임아웃으로 우회할 수 없다.
 
 1. rc=4 → `--rounds-report`로 장부를 먼저 읽는다. 확인 항목: *지금까지 라운드 수 · 라운드별 수락/기각 판정 요지 · must-fix 추이*.
 2. **출구는 재설계·티켓 분할뿐이다.** 라운드를 연장하는 승인 플래그는 폐지됐다 — 옛 플래그를 붙여 호출하면 rc=1로 거부되고 아무것도 실행되지 않는다. 남은 지적은 다음 티켓의 목표로 옮긴다.
@@ -47,7 +47,7 @@ engine은 `--gate <T-NNNN>`별 라운드 장부를 세고, 실행 전에 **수�
 4. 사용자에게 올리는 경우는 **비용이 아니라 판단**이다 — 중대한 scope 확대, 그 밖의 독립적 사용자 게이트 사유(미션·핵심 안전 경계·외부 게시). 이때는 위 확인 항목과 분할/재설계 권고를 함께 보고하고 대기한다.
 5. 종결(수락/override) 시 판정 근거를 log에 박제하고 게이트를 닫는다. 연쇄 결함이 이어졌다면 과설계 신호로 설계 재질문도 올린다(cascade-defects-signal-overengineering).
 
-게이트별 상한과 별개로 **wave(세션) 총예산**이 있다 — 실 전송 누적이 한도(기본 24, `local.conf`의 `external_review_wave_budget`)에 닿으면 rc=4로 거부한다. 안내 문구가 `--ack-wave`를 지목하면 게이트 상한이 아니라 이 축이다. **재개 ack가 남은 축은 이것 하나**이며(보고서 확인 → 같은 scope의 정상 수렴이면 PM 자율 ack·예산 리셋·판단 근거는 log), wave 예산을 열어도 게이트의 수렴 판정은 그대로 닫혀 있다.
+게이트별 상한과 별개로 **wave(세션) 총예산**이 있다 — 실 전송 누적이 한도(기본 24, `local.conf`의 `additional_reviewer_wave_budget`)에 닿으면 rc=4로 거부한다. 안내 문구가 `--ack-wave`를 지목하면 게이트 상한이 아니라 이 축이다. **재개 ack가 남은 축은 이것 하나**이며(보고서 확인 → 같은 scope의 정상 수렴이면 PM 자율 ack·예산 리셋·판단 근거는 log), wave 예산을 열어도 게이트의 수렴 판정은 그대로 닫혀 있다.
 
 라운드 수렴 상황 보고에는 `--rounds-report`를 쓴다 — 게이트별 라운드 수·라운드별 판정(verdict)·must-fix 수·wave 소비를 표로 dump하는 read-only 조회면이다(`--gate T-NNNN`으로 단일 게이트 한정·`--ticket`/`--paths`를 주면 기록면과 같은 앵커로 해소).
 

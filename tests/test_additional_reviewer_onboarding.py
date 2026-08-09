@@ -906,6 +906,15 @@ def test_active_docs_have_no_per_round_user_cost_approval_rule():
 # 인벤토리에 agent 카드가 없어 opencode architect 카드 하나가 R1 까지 살아남았다(카드 사각).
 RETIRED_ROLE_PHRASES = ("codex 외부 교차검증", "codex 교차검증", "외부 리뷰어")
 
+# 폐기된 활동 명사 — 활동 이름은 **추가 리뷰**다(T-0599). 역할(누가)과 축이 달라 따로 둔다:
+# 구키 제거 릴리즈에서 한쪽만 풀릴 수 있고, 활동 명사는 역할 이름이 없는 문장("ticket → dev →
+# 외부리뷰")에도 박혀 있어 역할 스캔이 통째로 놓쳤다.
+RETIRED_ACTIVITY_PHRASES = ("외부리뷰",)
+
+# 활성 표면 스캔이 보는 폐기 표현 전체. 두 축이 같은 인벤토리를 쓰므로 스캔은 하나다 —
+# 축마다 스캔을 복사하면 새 표면이 한쪽 목록에만 들어가는 절반 커버가 생긴다.
+RETIRED_REVIEW_PHRASES = (*RETIRED_ROLE_PHRASES, *RETIRED_ACTIVITY_PHRASES)
+
 SKILL_CARD_ROOTS = (
     REPO / ".claude" / "skills",
     REPO / "templates" / "claude_code" / ".claude" / "skills",
@@ -998,18 +1007,76 @@ def test_active_pm_surface_inventory_covers_agent_cards():
         assert rel in scanned, f"agent 카드가 인벤토리 밖: {rel}"
 
 
-def test_active_pm_surfaces_drop_the_retired_reviewer_role_name():
-    """활성 출하 PM 표면 전수에 폐기된 역할 이름이 없다."""
-    residue = []
-    for path in _active_pm_surfaces():
+def _surface_label(path: Path) -> str:
+    """진단용 자리 이름 — repo 안이면 repo-상대 경로, 밖이면 파일 이름.
+
+    sensitivity 가 합성 표면(tmp)으로 검출기를 태울 수 있어야 하므로 repo 결합을 여기서만 푼다.
+    """
+    try:
+        return path.relative_to(REPO).as_posix()
+    except ValueError:
+        return path.name
+
+
+def _phrase_residue(paths, phrases) -> list[str]:
+    """주어진 표면들에서 폐기 표현이 놓인 자리 — `<자리>:<lineno> — <표현>` 목록.
+
+    잔존 가드 3축(역할·활동 명사·구키)이 같은 검출기를 쓰게 만드는 단일 seam 이다. 축마다 스캔을
+    베끼면 sensitivity 를 축마다 다시 증명해야 하고, 대개 한 축만 증명한 채 남는다.
+    """
+    hits: list[str] = []
+    for path in paths:
         assert path.is_file(), f"인벤토리 대상 부재: {path}"
-        text = path.read_text(encoding="utf-8")
-        residue += [
-            f"{path.relative_to(REPO)} — {phrase}"
-            for phrase in RETIRED_ROLE_PHRASES
-            if phrase in text
-        ]
-    assert not residue, "폐기된 역할 이름 잔존(활성 표면):\n  " + "\n  ".join(residue)
+        for lineno, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), 1
+        ):
+            hits += [
+                f"{_surface_label(path)}:{lineno} — {phrase}"
+                for phrase in phrases
+                if phrase in line
+            ]
+    return hits
+
+
+def test_active_pm_surfaces_drop_the_retired_reviewer_names():
+    """활성 출하 PM 표면 전수에 폐기된 역할 이름·활동 명사가 없다."""
+    residue = _phrase_residue(_active_pm_surfaces(), RETIRED_REVIEW_PHRASES)
+    assert not residue, "폐기된 명칭 잔존(활성 표면):\n  " + "\n  ".join(residue)
+
+
+def test_retired_phrase_scan_detects_an_injected_residue(tmp_path):
+    """주입한 폐기 표현을 검출기가 실제로 잡고, 복원하면 다시 green (비공허 sensitivity).
+
+    잔존 0 단언은 스캔이 죽어도(빈 인벤토리·오탈자 패턴) 통과한다 — 검출기 자체를 합성
+    표면으로 태워 "잡을 수 있음"을 증명한다.
+    """
+    surface = tmp_path / "SKILL.md"
+    clean = "위임(`pm_delegate.py`)과 추가 리뷰(`external_review.py`)는 raw 를 예약한다.\n"
+    surface.write_text(clean, encoding="utf-8")
+    assert _phrase_residue([surface], RETIRED_REVIEW_PHRASES) == []
+
+    surface.write_text(clean + "금지(반드시 ticket → dev → 외부리뷰)\n", encoding="utf-8")
+    hits = _phrase_residue([surface], RETIRED_REVIEW_PHRASES)
+    assert hits == ["SKILL.md:2 — 외부리뷰"], hits
+
+    surface.write_text(clean, encoding="utf-8")
+    assert _phrase_residue([surface], RETIRED_REVIEW_PHRASES) == []
+
+
+def test_retired_activity_noun_scan_covers_the_swept_surfaces():
+    """활동 명사 sweep 대상 8파일이 스캔 인벤토리 안에 있다 — 좁은 스캔의 false-green 방지."""
+    scanned = {path.relative_to(REPO).as_posix() for path in _active_pm_surfaces()}
+    expected = {
+        f"{prefix}.claude/skills/pm-dev-delegate/SKILL.md"
+        for prefix in ("", "templates/claude_code/", "templates/opencode/")
+    } | {
+        "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
+        ".project_manager/wiki/pm_role.md",
+        *(f"templates/{flavor}/.project_manager/wiki/pm_role.md"
+          for flavor in TEMPLATE_DIRS),
+    }
+    assert len(expected) == 8
+    assert expected <= scanned, f"sweep 대상이 스캔 밖: {sorted(expected - scanned)}"
 
 
 def test_bootstrap_first_turn_card_names_the_additional_reviewer(
@@ -1028,7 +1095,7 @@ def test_bootstrap_first_turn_card_names_the_additional_reviewer(
     review_lines = [ln for ln in card.splitlines() if "external_review.py" in ln]
     assert len(review_lines) == 1, f"external_review 줄이 1개가 아님: {review_lines}"
     assert "추가 리뷰어" in review_lines[0], review_lines[0]
-    for phrase in RETIRED_ROLE_PHRASES:
+    for phrase in RETIRED_REVIEW_PHRASES:
         assert phrase not in card, f"카드에 폐기 이름 잔존 — {phrase}"
 
 
@@ -1945,13 +2012,7 @@ def _legacy_gate_key_scan_targets() -> list[Path]:
 
 def test_legacy_gate_key_has_no_residue_in_shipping_surfaces():
     """출하 문서·코드 전수에 구 게이트 키가 0건이다 (fallback 구현·히스토리 제외)."""
-    residue = [
-        f"{path.relative_to(REPO).as_posix()}:{lineno}"
-        for path in _legacy_gate_key_scan_targets()
-        for lineno, line in enumerate(
-            path.read_text(encoding="utf-8").splitlines(), 1)
-        if LEGACY_GATE_KEY in line
-    ]
+    residue = _phrase_residue(_legacy_gate_key_scan_targets(), (LEGACY_GATE_KEY,))
     assert not residue, (
         f"구 게이트 키 잔존({LEGACY_GATE_KEY}) — `{GATE_KEY}` 로 고쳐라:\n  "
         + "\n  ".join(residue)
@@ -1994,4 +2055,184 @@ def test_legacy_gate_key_allowlist_entries_are_load_bearing():
         assert path.is_file(), f"allowlist 대상 부재: {rel}"
         assert LEGACY_GATE_KEY in path.read_text(encoding="utf-8"), (
             f"{rel} 에 더는 구키가 없다 — allowlist 에서 빼라(스캔 대상 복귀)."
+        )
+
+
+# ── 축 7: 노브 키 개칭 + 구키 1릴리즈 fallback (T-0599) ──────────────────────
+#
+# 게이트 키(축 6)와 **같은 규칙**을 예산 노브 3종(판정 라운드 상한·미완 라운드 상한·wave 예산)에
+# 확장한다. 값 의미·기본값은 그대로고 이름만 바뀐다. 게이트만 개칭하면 채택자 `local.conf` 안에서
+# 같은 기능의 키가 두 접두로 갈려 "어느 게 현재 이름인가"를 사람이 알 수 없다.
+#
+# 공급 판정이 게이트와 다른 점 하나: 게이트는 **키 존재**가 결정이지만(`false` 도 결정) 노브는
+# 종전부터 빈 값을 미설정으로 읽어 기본값으로 fail-soft 했다. 그 의미를 승계해 "비어 있지 않은
+# 값"만 공급으로 본다. 우선순위(신키 우선)·경고 문구·제거 예고는 축 6 그대로다.
+KNOB_KEY_PAIRS = (
+    ("additional_reviewer_round_limit", "external_review_round_limit"),
+    ("additional_reviewer_incomplete_round_limit",
+     "external_review_incomplete_round_limit"),
+    ("additional_reviewer_wave_budget", "external_review_wave_budget"),
+)
+LEGACY_KNOB_KEY_LIST = tuple(legacy for _new, legacy in KNOB_KEY_PAIRS)
+
+# 각 노브의 해소 함수와 엔진 기본값 — 어느 축이 어느 키를 읽는지까지 못박는다(세 키가 한 표에서
+# 파생하므로 배선이 어긋나면 상한/예산이 서로의 값을 읽는다).
+_KNOB_RESOLVERS = {
+    "additional_reviewer_round_limit": ("_round_limit", 4),
+    "additional_reviewer_incomplete_round_limit": ("_incomplete_round_limit", 2),
+    "additional_reviewer_wave_budget": ("_wave_budget", 24),
+}
+
+# 구 노브 키 잔존이 정당한 자리 — fallback 을 구현하는 엔진 파일(canonical + 템플릿 미러 모두 같은
+# 이름), 릴리즈 히스토리(CHANGELOG), 그리고 개칭·fallback 을 단언하는 테스트들. 운영 표면(카드·
+# 방법론)은 **현재 키만** 가르친다.
+_LEGACY_KNOB_KEY_ENGINE_FILES = ("external_review.py",)
+_LEGACY_KNOB_KEY_DOC_FILES = ("CHANGELOG.md",)
+_LEGACY_KNOB_KEY_TEST_FILES = (
+    "tests/test_additional_reviewer_onboarding.py",   # 이 가드 자신(키 표·fallback 단언)
+    "tests/test_external_review.py",                  # CLI 배선 단언(구 노브 conf 로 main 실행)
+)
+
+
+def test_knob_key_constants_match_the_engine_table():
+    """엔진의 신키/구키 상수와 매핑표가 글자 단위로 이 표와 같다."""
+    core = _external_review()
+    assert core.LEGACY_KNOB_KEYS == dict(KNOB_KEY_PAIRS)
+    for new, legacy in KNOB_KEY_PAIRS:
+        suffix = new[len("additional_reviewer_"):].upper()
+        assert getattr(core, f"ADDITIONAL_REVIEWER_{suffix}_KEY") == new
+        assert getattr(core, f"LEGACY_EXTERNAL_REVIEW_{suffix}_KEY") == legacy
+
+
+@pytest.mark.parametrize(("new", "legacy"), KNOB_KEY_PAIRS,
+                         ids=[new for new, _ in KNOB_KEY_PAIRS])
+@pytest.mark.parametrize(
+    ("conf_shape", "expected", "warns"),
+    [
+        pytest.param("new", 3, False, id="new-key"),
+        pytest.param("legacy", 3, True, id="legacy-key"),
+        pytest.param("none", None, False, id="unset-default"),
+        pytest.param("both", 3, False, id="new-beats-legacy"),
+        pytest.param("both-reversed", 3, False, id="new-beats-legacy-reversed"),
+    ],
+)
+def test_knob_resolution_reads_new_key_first_and_falls_back_once(
+    new, legacy, conf_shape, expected, warns
+):
+    """노브 해소: 신키 우선·구키 fallback·구키가 값을 공급할 때만 경고 1줄.
+
+    양방향(신 2/구 9 · 신 2/구 1)을 모두 본다 — 한쪽만 보면 "큰 값이 이긴다" 같은 우연한 배선이
+    통과한다. `expected=None` 은 "엔진 기본값" 이라는 뜻이다(노브별로 다르다).
+    """
+    core = _external_review()
+    resolver_name, engine_default = _KNOB_RESOLVERS[new]
+    conf = {
+        "new": {new: "3"},
+        "legacy": {legacy: "3"},
+        "none": {},
+        "both": {new: "3", legacy: "9"},
+        "both-reversed": {new: "3", legacy: "1"},
+    }[conf_shape]
+
+    resolved = getattr(core, resolver_name)(conf)
+    assert resolved == (engine_default if expected is None else expected)
+
+    warnings = core.legacy_key_warnings(conf)
+    expected_line = core.legacy_knob_key_deprecation(new)
+    assert (expected_line in warnings) is warns
+    if warns:
+        assert legacy in expected_line and new in expected_line
+        assert "다음 릴리즈에서 구키 제거" in expected_line
+
+
+def test_legacy_key_warning_funnel_covers_gate_and_every_knob():
+    """깔때기 하나가 게이트 + 값을 공급한 노브 전부를 낸다 (축마다 다른 자리 금지)."""
+    core = _external_review()
+    conf = {LEGACY_GATE_KEY: "true", **{legacy: "1" for legacy in LEGACY_KNOB_KEY_LIST}}
+    warnings = core.legacy_key_warnings(conf)
+
+    assert warnings[0] == core.LEGACY_ENABLED_KEY_DEPRECATION
+    assert sorted(warnings[1:]) == sorted(
+        core.legacy_knob_key_deprecation(new) for new, _ in KNOB_KEY_PAIRS)
+    # 신키만 쓴 conf 는 조용하다 — 조건 없이 모으는 깔때기면 red.
+    quiet = {GATE_KEY: "true", **{new: "1" for new, _ in KNOB_KEY_PAIRS}}
+    assert core.legacy_key_warnings(quiet) == []
+
+
+def test_empty_knob_value_is_unset_not_a_decision():
+    """빈 신키는 미설정이라 구키 값이 살아난다 — 게이트(키 존재=결정)와 다른 축의 규칙."""
+    core = _external_review()
+    for new, legacy in KNOB_KEY_PAIRS:
+        resolver_name, engine_default = _KNOB_RESOLVERS[new]
+        resolve = getattr(core, resolver_name)
+        assert resolve({new: "   ", legacy: "7"}) == 7
+        assert resolve({new: "   "}) == engine_default
+
+
+def test_engine_guidance_names_the_new_knob_keys():
+    """상한/예산 차단 안내가 신키를 가르친다 — 안내는 채택자가 값을 고치는 유일한 접점이다."""
+    core = _external_review()
+    round_guidance = core._ROUND_LIMIT_GUIDANCE
+    assert core.ADDITIONAL_REVIEWER_ROUND_LIMIT_KEY in round_guidance
+    assert core.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY in round_guidance
+    assert core.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY in core._WAVE_BUDGET_GUIDANCE
+    for legacy in LEGACY_KNOB_KEY_LIST:
+        assert legacy not in round_guidance and legacy not in core._WAVE_BUDGET_GUIDANCE
+
+
+def _legacy_knob_key_scan_targets() -> list[Path]:
+    """구 노브 키 잔존을 검사할 출하 표면 (allowlist 제외 후·축 5/6 스캔과 같은 인벤토리)."""
+    targets: list[Path] = []
+    for path in repo_owned_paths(REPO, ".", mode=OWNED):
+        if not path.is_file() or path.suffix.lower() not in _RETIRED_ACK_SCAN_SUFFIXES:
+            continue
+        rel = path.relative_to(REPO).as_posix()
+        if rel in _LEGACY_KNOB_KEY_DOC_FILES or rel in _LEGACY_KNOB_KEY_TEST_FILES:
+            continue
+        if path.name in _LEGACY_KNOB_KEY_ENGINE_FILES:
+            continue
+        targets.append(path)
+    return targets
+
+
+def test_legacy_knob_keys_have_no_residue_in_shipping_surfaces():
+    """출하 문서·코드 전수에 구 노브 키가 0건이다 (fallback 구현·히스토리 제외)."""
+    residue = _phrase_residue(_legacy_knob_key_scan_targets(), LEGACY_KNOB_KEY_LIST)
+    assert not residue, (
+        "구 노브 키 잔존 — `additional_reviewer_*` 로 고쳐라:\n  " + "\n  ".join(residue)
+    )
+
+
+def test_legacy_knob_key_scan_covers_the_swept_surfaces():
+    """스캔 인벤토리가 노브를 가르치던 표면(카드 4벌)을 포함한다 — 좁은 스캔 false-green 방지."""
+    scanned = {path.relative_to(REPO).as_posix() for path in _legacy_knob_key_scan_targets()}
+    for rel in (
+        ".claude/skills/pm-review/SKILL.md",
+        "templates/claude_code/.claude/skills/pm-review/SKILL.md",
+        "templates/opencode/.claude/skills/pm-review/SKILL.md",
+        "templates/codex/.agents/skills/pm-review/SKILL.md",
+        "tests/test_additional_reviewer_target.py",
+        "tests/test_external_review_reviewer_isolation.py",
+    ):
+        assert rel in scanned, f"sweep 대상이 스캔 밖: {rel}"
+
+
+def test_legacy_knob_key_allowlist_entries_are_load_bearing():
+    """allowlist 는 실제로 구 노브 키를 담은 자리만 뺀다 — 빈 예외는 가드를 헐겁게 만든다."""
+    for name in _LEGACY_KNOB_KEY_ENGINE_FILES:
+        source = (TOOLS / name).read_text(encoding="utf-8")
+        for legacy in LEGACY_KNOB_KEY_LIST:
+            assert legacy in source, f"{name} 에 {legacy} fallback 이 없다 — allowlist 에서 빼라."
+    for rel in _LEGACY_KNOB_KEY_DOC_FILES:
+        text = (REPO / rel).read_text(encoding="utf-8")
+        for new, legacy in KNOB_KEY_PAIRS:
+            assert legacy in text, f"{rel} 에 {legacy} 언급이 없다 — allowlist 에서 빼라."
+            assert new in text                            # 처방(신키)이 같은 문서 안에 있다
+        assert "세 구키는 다음 릴리즈에서 제거한다" in text   # 노브 구키 제거 예고 부기
+    for rel in _LEGACY_KNOB_KEY_TEST_FILES:
+        path = REPO / rel
+        assert path.is_file(), f"allowlist 대상 부재: {rel}"
+        text = path.read_text(encoding="utf-8")
+        assert any(legacy in text for legacy in LEGACY_KNOB_KEY_LIST), (
+            f"{rel} 에 더는 구 노브 키가 없다 — allowlist 에서 빼라(스캔 대상 복귀)."
         )

@@ -15,11 +15,20 @@
   채택자는 `local.conf` 의 `external_review_enabled` 를 `additional_reviewer_enabled` 로 바꾼다
   (자동 마이그레이션 없음·엔진은 채택자 conf 를 고쳐 쓰지 않는다). 새 온보딩(`board.py init`·
   `pm_update` 첫 opt-in)은 신키만 기록한다. 모듈 파일명(`external_review.py`)·raw 파일 접두
-  (`external_review_*.txt`)·라운드/wave 노브(`external_review_round_limit`·
-  `external_review_wave_budget`·`external_review_incomplete_round_limit`)와 레거시 타임아웃 키
-  (`external_review_timeout`·`external_review_idle_timeout`·`external_review_progress_signal`)는
-  그대로다 — 파일명 변경은 채택자 PM 홈에 구 사본이 남는 형상(동기는 상류 부재 파일을 지우지
-  않는다)을 만들고, raw 접두는 이미 기록된 감사물의 이름이다.
+  (`external_review_*.txt`)·레거시 타임아웃 키(`external_review_timeout`·
+  `external_review_idle_timeout`·`external_review_progress_signal`)는 그대로다 — 파일명 변경은
+  채택자 PM 홈에 구 사본이 남는 형상(동기는 상류 부재 파일을 지우지 않는다)을 만들고, raw 접두는
+  이미 기록된 감사물의 이름이다.
+- **라운드/wave 노브 키 개칭** — 게이트 키와 같은 규칙으로 예산 노브 3종도 개칭한다:
+  `external_review_round_limit` → **`additional_reviewer_round_limit`**,
+  `external_review_wave_budget` → **`additional_reviewer_wave_budget`**,
+  `external_review_incomplete_round_limit` →
+  **`additional_reviewer_incomplete_round_limit`**. 값 의미와 기본값(판정 4 · 미완 2 · wave 24)은
+  바뀌지 않고 이름만 바뀐다. 구키는 이번 릴리즈까지만 fallback 으로 읽히고(신키 우선·둘 다 값이
+  있으면 신키가 이긴다), 구키가 값을 공급하면 `external_review.py` 가 키마다 deprecation 경고
+  1줄을 낸다(게이트 안내와 같은 깔때기·미리보기에서도 같은 자리).
+  **세 구키는 다음 릴리즈에서 제거한다** — 채택자는 `local.conf` 의 세 키 접두를
+  `additional_reviewer_` 로 바꾼다(자동 마이그레이션 없음).
 - **추가 리뷰어(additional reviewer) 온보딩·명명** — 사람이 부르는 역할 이름을 "외부 리뷰어"에서
   **추가 리뷰어**로 바꾼다. `external_review.py`·`external_review_*` 등 모듈/raw 기계 식별자와
   외부 전송·격리·과금 축의 이름은 그대로다(게이트 키만 위 항목대로 개칭·자동 마이그레이션 0).

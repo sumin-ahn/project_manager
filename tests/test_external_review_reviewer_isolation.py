@@ -718,7 +718,7 @@ def _blocked_gate_repo(external, monkeypatch, tmp_path) -> Path:
     monkeypatch.setattr(external, "extract_diff",
                         lambda *a, **k: ("diff --git a/x b/x\n+n\n", []))
     monkeypatch.setattr(external, "local_config", lambda repo=None: {
-        "additional_reviewer_enabled": "true", "external_review_round_limit": "0"})
+        "additional_reviewer_enabled": "true", "additional_reviewer_round_limit": "0"})
     return repo
 
 
