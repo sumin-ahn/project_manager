@@ -1733,6 +1733,61 @@ def test_diff_cap_measures_the_normalized_scope(tf, tmp_path, monkeypatch):
     assert block is not None and "301줄" in block
 
 
+# ── untracked 신규 파일 측정 (T-0604 ③) ─────────────────────────────────────
+#
+# 완료 부기는 **[0/5] 서킷브레이커 → … → [4/5] git stage** 순서다. `git diff` 가 아직 add 되지
+# 않은 파일을 못 보던 동안에는 그 순서 자체가 결함이었다 — 대형 신규 파일이 0 줄로 측정돼 상한을
+# 통과한 뒤, 바로 다음 단계에서 stage 됐다. 측정이 untracked 를 포함하면 그 창이 닫힌다.
+
+
+def _git_tree_with_untracked(tmp_path: Path, relpath: str, lines: int) -> Path:
+    """커밋 하나 + **add 되지 않은** 신규 파일이 있는 실 git 트리 (측정 입력)."""
+    root = tmp_path / "code"
+    root.mkdir()
+    for args in (["init"], ["config", "user.email", "t@e"], ["config", "user.name", "t"]):
+        subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+    (root / "seed.py").write_text("seed\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-m", "seed"], check=True,
+                   capture_output=True)
+    target = root / relpath
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("".join(f"n{i}\n" for i in range(lines)), encoding="utf-8")
+    return root
+
+
+def test_a_large_untracked_file_is_measured_before_staging(tf, tmp_path, monkeypatch):
+    """stage 전에 잰다 — 상한을 넘는 신규 파일은 **측정 시점에** 잡혀 완료가 막힌다.
+
+    실 git 트리로 `diff_line_total` 을 그대로 태운다(측정 스텁 없음) — 이 순서 결함은 측정식이
+    아니라 '무엇이 diff 에 들어오나'의 문제였기 때문이다."""
+    root = _git_tree_with_untracked(tmp_path, "src/new_module.py", 400)
+    external = tf._load_external_review()
+    monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: ["src/"])
+    monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: "small")
+    monkeypatch.setattr(external, "local_config", lambda repo=None: {})
+    monkeypatch.setattr(tf, "_load_external_review", lambda: external)
+
+    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", regression_cwd=root)
+    block = finisher._default_diff_cap_block("T-0604")
+
+    assert block is not None and "400줄" in block and "300줄" in block
+
+
+def test_an_untracked_file_within_the_cap_still_completes(tf, tmp_path, monkeypatch):
+    """상한 이내면 종전대로 통과한다 — 포함이 정당한 완료를 오차단하지 않는다."""
+    root = _git_tree_with_untracked(tmp_path, "src/new_module.py", 40)
+    external = tf._load_external_review()
+    monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: ["src/"])
+    monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: "small")
+    monkeypatch.setattr(external, "local_config", lambda repo=None: {})
+    monkeypatch.setattr(tf, "_load_external_review", lambda: external)
+
+    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", regression_cwd=root)
+
+    assert finisher._default_diff_cap_block("T-0604") is None
+
+
 def test_completion_surface_carries_the_shared_measurement_meaning(
         tf, tmp_path, monkeypatch):
     """완료 부기 안내도 '측정=손작업 스코프(기계 mirror 제외)'를 싣는다 (문구 단일 출처)."""

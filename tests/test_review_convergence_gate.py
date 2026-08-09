@@ -700,6 +700,81 @@ def test_refunded_reservation_does_not_hold_the_cap(external, monkeypatch, tmp_p
     assert reviewer.calls == 1
 
 
+# ══ ②-c 만료 기준은 **레코드가 소유한다** (T-0604 ④) ═════════════════════════
+# 회수 기준을 "지금 장부를 읽는 호출자의 백스톱"으로 재면, 짧은 timeout 의 후속 호출이 긴
+# timeout 으로 실제 돌고 있는 라운드를 stale 로 접어 상한을 넘겨 예약한다. 예약 시점에 그 실행의
+# 만료 시각을 레코드에 새기고, 판정은 그 값을 본다. 값 없는 구레코드만 종전 규칙으로 합산한다.
+
+
+def _ahead(seconds: float) -> str:
+    """지금으로부터 `seconds` 초 뒤의 UTC ISO 시각 (장부 표기와 같은 형식)."""
+    return (datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(seconds=seconds)).isoformat()
+
+
+def _inflight_entry(*, deadline: str | None, started_at: str) -> dict:
+    record = {"id": "live1", "sequence": 1, "started_at": started_at}
+    if deadline is not None:
+        record["deadline"] = deadline
+    return {"records": [record], "rounds": []}
+
+
+def test_reservation_stamps_its_own_deadline(external):
+    """예약이 **이 실행의** 백스톱을 만료 시각으로 새긴다 (백스톱 없으면 null)."""
+    entry: dict = {}
+    record = external._reserve_round(entry, "r1", wall_timeout_sec=3600)
+    assert record["deadline"] > _ahead(3500) and record["deadline"] < _ahead(3700)
+    assert external._reserve_round(entry, "r2")["deadline"] is None
+    assert external._reserve_round(entry, "r3", wall_timeout_sec=0)["deadline"] is None
+
+
+def test_a_short_caller_timeout_does_not_expire_a_long_running_reservation(external):
+    """긴 timeout 으로 도는 라운드를 짧은 timeout 의 후속 호출이 stale 로 접지 않는다.
+
+    이 오판이 곧 상한 초과 예약이다 — 실제로 나가 있는 전송을 0으로 세고 슬롯을 다시 내준다."""
+    entry = _inflight_entry(deadline=_ahead(3600), started_at=_ago(600))
+
+    assert external._inflight_reservations(entry, wall_timeout_sec=60) == 1
+    assert external._convergence_refusal(entry, 1, wall_timeout_sec=60) is not None
+
+
+def test_an_expired_deadline_is_reclaimed_even_with_a_long_caller_timeout(external):
+    """반대 방향도 레코드가 이긴다 — 만료 시각을 지난 예약은 호출자 백스톱과 무관하게 회수된다."""
+    entry = _inflight_entry(deadline=_ago(1), started_at=_ago(30))
+
+    assert external._inflight_reservations(entry, wall_timeout_sec=3600 * 24) == 0
+
+
+def test_a_legacy_record_without_a_deadline_keeps_the_previous_rule(external):
+    """만료 시각이 없는 구레코드는 종전 규칙(호출자 백스톱 대 `started_at`)으로 보수 합산한다."""
+    fresh = _inflight_entry(deadline=None, started_at=_ago(5))
+    stale = _inflight_entry(deadline=None, started_at=_ago(3600 + 60))
+
+    assert external._inflight_reservations(fresh, wall_timeout_sec=3600) == 1
+    assert external._inflight_reservations(stale, wall_timeout_sec=3600) == 0
+    assert external._inflight_reservations(stale) == 1        # 백스톱 없으면 전부 센다
+
+
+def test_an_unreadable_deadline_is_counted_conservatively(external):
+    """만료 시각을 읽을 수 없는 레코드는 계속 센다 — 판정 불능은 세는 쪽으로 틀린다."""
+    entry = _inflight_entry(deadline=None, started_at=_ago(5))
+    entry["records"][0]["deadline"] = 12345                   # 문자열 아님 = 판정 불가
+
+    assert external._inflight_reservations(entry, wall_timeout_sec=3600) == 1
+
+
+def test_a_real_reservation_records_the_deadline_in_the_ledger(
+        external, monkeypatch, tmp_path):
+    """실 실행이 만든 예약도 장부에 만료 시각을 남긴다 (`--timeout` 이 그 값의 출처)."""
+    _wire(external, monkeypatch, tmp_path, series=[0])
+
+    assert external.main(
+        ["--gate", "T-0604a", "--paths", "x.py", "--timeout", "3600"]) == 0
+
+    record = _ledger(tmp_path)["T-0604a"]["records"][-1]
+    assert record["deadline"] > _ahead(3500) and record["deadline"] < _ahead(3700)
+
+
 # ══ ③ diff 서킷브레이커 ═════════════════════════════════════════════════════
 
 
@@ -846,6 +921,110 @@ def test_diff_line_total_reuses_the_review_stage_table(external, tmp_path):
                                   encoding="utf-8")
     assert external.diff_line_total(root, "HEAD", ["seed.py"]) == 12
     assert external.diff_line_total(root, "HEAD", ["없는경로.py"]) == 0
+
+
+# ── untracked 신규 파일 (T-0604 ③) ──────────────────────────────────────────
+# `git diff` 는 index/커밋에 있는 것만 본다 — 아직 add 되지 않은 신규 파일은 리뷰 diff 에서도,
+# 서킷브레이커 측정에서도 통째로 빠졌다. 대형 신규 파일이 0 줄로 측정된 뒤 그대로 stage 되는
+# 순서(완료 부기)가 그 공백의 직접 대가다. 포함은 **index 를 건드리지 않는** `--no-index` 로 한다.
+
+
+def _untracked(root: Path, relpath: str, lines: int) -> Path:
+    path = root / relpath
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(f"n{i}\n" for i in range(lines)), encoding="utf-8")
+    return path
+
+
+def test_untracked_new_files_count_toward_the_measured_total(external, tmp_path):
+    """add 안 된 신규 파일도 측정에 잡힌다 — 종전엔 몇 줄이든 0 이었다."""
+    root = _git_repo(tmp_path)
+    _untracked(root, "new_module.py", 40)
+
+    assert external.diff_line_total(root, "HEAD", ["new_module.py"]) == 40
+    assert external.diff_line_total(root, "HEAD", ["."]) == 40
+
+
+def test_measuring_untracked_files_does_not_touch_the_index(external, tmp_path):
+    """측정은 read-only 다 — `git add -N` 류로 index 를 바꾸면 위임 스코프 지문이 흔들린다."""
+    root = _git_repo(tmp_path)
+    _untracked(root, "new_module.py", 12)
+    before = subprocess.run(["git", "-C", str(root), "status", "--porcelain"],
+                            capture_output=True, text=True, check=True).stdout
+
+    assert external.diff_line_total(root, "HEAD", ["."]) == 12
+
+    after = subprocess.run(["git", "-C", str(root), "status", "--porcelain"],
+                           capture_output=True, text=True, check=True).stdout
+    assert after == before == "?? new_module.py\n"
+
+
+def test_untracked_mirror_files_stay_out_of_the_total(external, tmp_path):
+    """기계 mirror 제외는 untracked 에도 그대로 걸린다 (측정 의미 = 손작업 스코프)."""
+    root = _git_repo(tmp_path)
+    _untracked(root, "hand.py", 5)
+    _untracked(root, "templates/codex/.project_manager/tools/engine.py", 500)
+
+    assert external.diff_line_total(root, "HEAD", ["hand.py", "templates/"]) == 5
+
+
+def test_untracked_files_outside_the_declared_scope_are_not_measured(external, tmp_path):
+    """폭은 선언 경로가 정한다 — 스코프 밖 신규 파일은 세지 않는다(diff 와 같은 pathspec)."""
+    root = _git_repo(tmp_path)
+    _untracked(root, "src/inside.py", 7)
+    _untracked(root, "elsewhere/outside.py", 900)
+
+    assert external.diff_line_total(root, "HEAD", ["src/"]) == 7
+
+
+def test_ignored_files_are_not_measured(external, tmp_path):
+    """`.gitignore` 대상은 신규 파일이어도 측정 밖이다 (산출물이 스코프를 부풀리지 않게)."""
+    root = _git_repo(tmp_path)
+    (root / ".gitignore").write_text("build/\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", ".gitignore"], check=True,
+                   capture_output=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-m", "ignore"], check=True,
+                   capture_output=True)
+    (root / "seed.py").write_text("seed\nedit\n", encoding="utf-8")   # 손작업 1줄 추가
+    _untracked(root, "build/artifact.py", 300)
+
+    assert external.diff_line_total(root, "HEAD", ["."]) == 1
+
+
+def test_a_commit_range_stage_does_not_pull_in_untracked_files(external, tmp_path):
+    """커밋 사이 폭(명시 base)에는 붙이지 않는다 — 아직 커밋되지 않은 파일은 그 폭의 구성원이 아니다."""
+    root = _git_repo(tmp_path)
+    (root / "seed.py").write_text("seed\nmore\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-m", "second"], check=True,
+                   capture_output=True)
+    _untracked(root, "new_module.py", 40)
+
+    assert external.diff_line_total(root, "HEAD~1..HEAD", ["."]) == 1
+
+
+def test_untracked_new_files_appear_in_the_review_diff(external, monkeypatch, tmp_path):
+    """리뷰가 보는 diff 에도 신규 파일이 실린다 — 잰 것과 보낸 것이 같은 폭이다."""
+    root = _git_repo(tmp_path)
+    _untracked(root, "new_module.py", 3)
+    monkeypatch.setattr(external, "REPO", root)
+
+    diff, excluded = external.extract_diff("HEAD", ["new_module.py"])
+
+    assert excluded == []
+    assert "new file mode" in diff and "new_module.py" in diff and "+n0" in diff
+
+
+def test_a_secret_named_untracked_file_is_still_filtered(external, monkeypatch, tmp_path):
+    """신규 파일도 denylist 필터를 그대로 탄다 — 포함 채널이 시크릿 우회로가 되지 않는다."""
+    root = _git_repo(tmp_path)
+    _untracked(root, ".env", 2)
+    _untracked(root, "new_module.py", 2)
+    monkeypatch.setattr(external, "REPO", root)
+
+    diff, excluded = external.extract_diff("HEAD", [".env", "new_module.py"])
+
+    assert excluded == [".env"] and "new_module.py" in diff
 
 
 def test_main_blocks_an_oversized_ticket_before_the_reviewer(

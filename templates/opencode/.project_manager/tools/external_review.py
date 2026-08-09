@@ -2265,8 +2265,15 @@ def _round_has_verdict(result: dict) -> bool:
     return bool(verdict.get("has_pass") or verdict.get("has_must_fix"))
 
 
-def _reserve_round(entry: dict, record_id: str) -> dict:
-    """단조 sequence identity로 전송을 예약하고 레코드를 반환한다."""
+def _reserve_round(
+    entry: dict, record_id: str, *, wall_timeout_sec: int | None = None,
+) -> dict:
+    """단조 sequence identity로 전송을 예약하고 레코드를 반환한다.
+
+    **이 실행의 벽시계 백스톱을 `deadline` 으로 레코드에 새긴다** — 진행 중 예약이 언제까지
+    살아 있을 수 있는지는 그 예약을 만든 실행의 timeout 이 정하는 값이지, 나중에 장부를 읽는
+    호출자의 timeout 이 아니다(짧은 timeout 의 후속 호출이 긴 timeout 으로 도는 라운드를 stale
+    로 접으면 수렴 상한을 넘겨 예약할 수 있다). 백스톱이 없는 실행은 만료 시각도 없다(null)."""
     entry["sequence"] = max(0, _as_int(entry.get("sequence"))) + 1
     entry["count"] = max(0, _as_int(entry.get("count"))) + 1
     record = {
@@ -2274,9 +2281,20 @@ def _reserve_round(entry: dict, record_id: str) -> dict:
         "number": entry["sequence"],
         "sequence": entry["sequence"],
         "started_at": _utc_now_iso(),
+        "deadline": _reservation_deadline(wall_timeout_sec),
     }
     entry.setdefault("records", []).append(record)
     return record
+
+
+def _reservation_deadline(wall_timeout_sec: int | None) -> str | None:
+    """예약이 살아 있을 수 있는 마지막 시각 (백스톱 없으면 None) — 기록·판정 공용 산식."""
+    if not wall_timeout_sec or wall_timeout_sec <= 0:
+        return None
+    return (
+        datetime.datetime.now(datetime.timezone.utc)
+        + datetime.timedelta(seconds=wall_timeout_sec)
+    ).isoformat()
 
 
 def _refund_round(entry: dict, record_id: str) -> bool:
@@ -2407,14 +2425,20 @@ def _inflight_reservations(entry: dict, *, wall_timeout_sec: int | None = None) 
     전송이 확실히 없던 예약은 환불로 레코드 자체가 사라지므로(`_refund_round`) 여기 남지 않는다.
     남는 위험은 **회수 경로 없는 잠식**이다 — kill·전원차단으로 마감하지 못한 레코드는 영원히
     미마감이라, 연장 승인이 폐지된 수렴 축에서 상한을 영구 잠식한다(중단 2회면 상한 3 이 라운드
-    1회로 줄고 안내는 "3라운드 썼다"고 오도한다). 그래서 `wall_timeout_sec`(이 실행이 해소한
-    하네스 벽시계 백스톱)을 넘긴 예약은 세지 않는다 — 그 시각을 지난 라운드는 하네스가 이미
-    죽였을 것이라 *실행 중일 수 없다*. 대가는 백스톱 직후의 좁은 창(마감 write 직전 구간)뿐이고,
-    그건 회수 불능 잠식보다 작다(승인 축과 회수 축을 묶지 않는다 — `--ack-wave` 는 예산 축이다).
-    시각을 못 읽는 레코드는 보수적으로 계속 센다."""
-    cutoff = None
+    1회로 줄고 안내는 "3라운드 썼다"고 오도한다). 그래서 만료 시각을 지난 예약은 세지 않는다 —
+    그 시각을 지난 라운드는 하네스가 이미 죽였을 것이라 *실행 중일 수 없다*. 대가는 백스톱 직후의
+    좁은 창(마감 write 직전 구간)뿐이고, 그건 회수 불능 잠식보다 작다(승인 축과 회수 축을 묶지
+    않는다 — `--ack-wave` 는 예산 축이다).
+
+    **만료 기준은 레코드가 소유한다**(`deadline` — 그 예약을 만든 실행의 백스톱). 지금 장부를 읽는
+    호출자의 `wall_timeout_sec` 으로 재면, 짧은 timeout 의 후속 호출이 긴 timeout 으로 *실제 돌고
+    있는* 라운드를 stale 로 접어 수렴 상한을 넘겨 예약한다. `deadline` 이 없는 구레코드만 종전
+    규칙(호출자 백스톱 기준 `started_at` 대조)으로 보수 합산한다 — 시각을 못 읽는 레코드는 계속
+    센다(판정 불능은 세는 쪽으로 틀린다)."""
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    legacy_cutoff = None
     if wall_timeout_sec and wall_timeout_sec > 0:
-        cutoff = (
+        legacy_cutoff = (
             datetime.datetime.now(datetime.timezone.utc)
             - datetime.timedelta(seconds=wall_timeout_sec)
         ).isoformat()
@@ -2422,9 +2446,16 @@ def _inflight_reservations(entry: dict, *, wall_timeout_sec: int | None = None) 
     for row in entry.get("records") or []:
         if not isinstance(row, dict) or row.get("finished_at"):
             continue
-        started = row.get("started_at")
         # 같은 형식의 UTC ISO 문자열은 사전순 비교가 곧 시간순이다(`_recorded_round_outcomes` 동형).
-        if cutoff is not None and isinstance(started, str) and started and started < cutoff:
+        deadline = row.get("deadline")
+        if isinstance(deadline, str) and deadline:
+            if deadline < now:
+                continue
+            total += 1
+            continue
+        started = row.get("started_at")
+        if (legacy_cutoff is not None and isinstance(started, str) and started
+                and started < legacy_cutoff):
             continue
         total += 1
     return total
@@ -2796,8 +2827,10 @@ def _reserve_round_budget(
                 )
             round_id = uuid.uuid4().hex
             # 예약 sequence 는 **여기서** 잡는다 — 마감 시점에 레코드를 되찾아 읽으면 그 사이
-            # 집계 창이 비워진 실행만 순번을 잃는다.
-            sequence = _reserve_round(entry, round_id)["sequence"]  # 호출 전 라운드 예약
+            # 집계 창이 비워진 실행만 순번을 잃는다. 만료 시각도 같은 자리에서 새긴다 — 이 예약이
+            # 언제까지 살아 있을 수 있는지는 **이 실행의** 백스톱이 정한다.
+            sequence = _reserve_round(                              # 호출 전 라운드 예약
+                entry, round_id, wall_timeout_sec=wall_timeout_sec)["sequence"]
             _spend_wave_round(wave)                   # 같은 전송을 wave 예산에서도 차감
             _save_round_ledger(ledger)
             return RoundBudget(
@@ -3204,23 +3237,86 @@ def _slot_selection_bases(base: str) -> tuple[str, ...]:
     return tuple(stage for stage in _diff_bases(base) if stage == base)
 
 
+# untracked 신규 파일의 '새 파일 diff' 는 `--no-index` 로 뽑는다 — **index 를 건드리지 않는
+# 방식**이어야 한다. `git add -N`(intent-to-add) 선행이 더 짧지만 그건 read-only 여야 할 리뷰·측정
+# 경로가 채택자 index 를 바꾸는 일이고, 위임 스코프 가드가 `git status --porcelain` 지문으로
+# 작업트리 상태를 재는 축과 정면으로 부딪힌다(리뷰가 지문을 흔들면 범위 위반으로 오판된다).
+# `/dev/null` 은 git 이 **문자열 그대로** 특수 취급하는 이름이라 Windows 에서도 같은 인자다.
+_DEV_NULL_DIFF_OPERAND = "/dev/null"
+# `--no-index` 는 `--exit-code` 를 내장해 **차이가 있으면 rc 1** 이다. 소비자는 rc 0 만 읽으므로
+# (실패한 실행 = 그 단계에 변경 없음) 여기서 '차이 있음'을 rc 0 으로 접는다. rc≥2(진짜 오류)는
+# 그대로 두어 종전 폴백 규칙을 탄다.
+_NO_INDEX_DIFFERENCES_RC = 1
+
+
+def _untracked_paths(
+    root: Path, paths: Sequence[str],
+    run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
+) -> tuple[str, ...]:
+    """검토 폭 안의 untracked 신규 파일 경로 (`.gitignore` 제외 · 조회 실패는 빈 튜플).
+
+    pathspec 을 그대로 넘겨 폭이 diff 와 같게 유지한다. 출력 경로는 cwd(=`root`) 기준 상대라
+    이어지는 `--no-index` 실행과 numstat 판정(`is_machine_mirror_path`)이 같은 좌표를 본다."""
+    _run = run_fn or subprocess.run
+    result = _run(
+        ["git", "-C", str(root), "ls-files", "--others", "--exclude-standard", "-z",
+         "--", *paths],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    if result.returncode != 0:
+        return ()
+    return tuple(entry for entry in (result.stdout or "").split("\0") if entry)
+
+
+def _untracked_diff_runs(
+    root: Path, paths: Sequence[str],
+    run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
+    *, extra_args: Sequence[str] = (),
+) -> list[subprocess.CompletedProcess]:
+    """untracked 신규 파일 각각의 '새 파일 diff' 실행 결과 (index 미변경).
+
+    `git diff` 는 index/커밋에 있는 것만 보므로 신규 파일이 통째로 빠진다 — 리뷰는 새 파일을 못
+    보고, 서킷브레이커는 그것을 0 줄로 잰다(완료 부기가 재고 나서 stage 하는 순서라 대형 신규
+    파일이 상한을 그대로 통과했다)."""
+    _run = run_fn or subprocess.run
+    runs: list[subprocess.CompletedProcess] = []
+    for path in _untracked_paths(root, paths, run_fn):
+        result = _run(
+            ["git", "-C", str(root), "diff", "--no-index", *extra_args, "--",
+             _DEV_NULL_DIFF_OPERAND, path],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+        if result.returncode == _NO_INDEX_DIFFERENCES_RC:
+            result = subprocess.CompletedProcess(
+                result.args, 0, result.stdout, result.stderr)
+        runs.append(result)
+    return runs
+
+
 def _stage_diff_runs(
     root: Path, stage_base: str, paths: Sequence[str],
     run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
     *, extra_args: Sequence[str] = (),
 ) -> list[subprocess.CompletedProcess]:
-    """한 diff 단계를 이루는 git 실행 결과 — 'HEAD' 단계만 스테이징/언스테이징 2회다.
+    """한 diff 단계를 이루는 git 실행 결과 — 'HEAD' 단계만 스테이징/언스테이징+untracked 다.
 
     `extra_args` 는 같은 폭을 **다른 형식**으로 뽑는 데 쓴다(`--numstat`). 폭 자체(단계 표)는
     한 곳이 정하고 형식만 갈리게 해, 리뷰가 본 diff 와 서킷브레이커가 잰 diff 가 어긋나지 않게 한다.
+
+    untracked 는 **작업트리 단계('HEAD')에만** 붙인다 — 명시 base·폴백 커밋 단계는 커밋 사이의
+    폭이라 아직 커밋되지 않은 신규 파일이 그 폭의 구성원이 아니다.
     """
     _run = run_fn or subprocess.run
     arg_sets = (("--cached",), ()) if stage_base == "HEAD" else ((stage_base,),)
-    return [
+    runs = [
         _run(["git", "-C", str(root), "diff", *extra_args, *args, "--", *paths],
              capture_output=True, text=True, encoding="utf-8", errors="replace")
         for args in arg_sets
     ]
+    if stage_base == "HEAD":
+        runs.extend(
+            _untracked_diff_runs(root, paths, run_fn, extra_args=extra_args))
+    return runs
 
 
 def _canonical_measure_path(path: str) -> str:

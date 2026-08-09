@@ -453,6 +453,28 @@ def test_structured_fields_live_on_the_single_delegate_ledger_row(pd, relay, tmp
     assert survived["must_fix_items"] == row["must_fix_items"]
 
 
+def test_a_pass_replys_none_marker_is_not_a_must_fix_item(pd, tmp_path):
+    """통과 응답의 `- 없음` 은 항목이 아니다 — `["없음"]` 으로 박제되면 다음 라운드 delta 가
+    '없음'을 고칠 지적으로 되읽는다. 정규화는 추가 리뷰 경로와 **같은 술어**(`_is_none_items`)를
+    쓴다 — 두 축이 각자 판별하면 같은 회신이 축마다 다르게 남는다 (T-0604 ⑤)."""
+    assert pd._observed_must_fix_items(
+        "판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n") == []
+    assert pd._observed_must_fix_items(
+        "판정: 반려\n\n**must-fix** (반드시 수정):\n- 실 지적\n") == ["실 지적"]
+
+    out_dir = tmp_path / "raw"
+    ledger_path = out_dir / "raw_outputs.json"
+    pd._execute_attempt(
+        harness="claude", model="opus", reasoning=None, role="code-reviewer",
+        cwd=tmp_path, prompt="p", timeout=60, output_dir=out_dir,
+        run_fn=_FakeRun(_ok(_claude_wire(
+            "판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n"))),
+        attempt="primary", ticket=TICKET_ID, base_rev="deadbeef",
+    )
+    # 항목 0 건은 종전대로 필드 자체를 만들지 않는다(빈 목록과 동치·구레코드 구분 규칙 불변).
+    assert _rows(ledger_path)[0].get("must_fix_items", []) == []
+
+
 def test_rc_zero_without_a_reply_is_recorded_as_an_invalid_success(pd, tmp_path):
     """rc 0 + 세션 id 관측 + **회신 없음** 실행은 장부에 `reply_extracted: false` 로 남고
     그 레코드는 재개 후보가 아니다 (기록 → 후보 조건 배선 e2e·DoD)."""

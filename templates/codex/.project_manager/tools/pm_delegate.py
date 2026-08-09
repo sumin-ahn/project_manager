@@ -2592,11 +2592,18 @@ def _observed_must_fix_items(reply: str | None) -> list[str]:
 
     다음 라운드의 delta 는 이 목록만 읽는다 — raw 박제 텍스트를 나중에 다시 파싱하지 않는다.
     추출기는 추가 리뷰어 축이 이미 쓰는 것을 그대로 재사용한다(파서를 새로 만들지 않는다).
+
+    **통과 응답의 `- 없음` 은 항목이 아니다.** 그 표기를 그대로 실으면 장부에 `["없음"]` 이 남고,
+    다음 라운드 delta 가 "없음"을 고칠 지적으로 되읽는다. 정규화도 추가 리뷰 경로와 **같은
+    술어**(`_is_none_items`)를 쓴다 — 두 축이 각자 판별하면 같은 회신이 축마다 다르게 박제된다.
     """
     if not reply or not reply.strip():
         return []
     try:
-        items = _load_external_review()._extract_must_fix_items(reply)
+        external = _load_external_review()
+        items = external._extract_must_fix_items(reply)
+        items = [item for item in items if item and item.strip()]
+        return [] if external._is_none_items(items) else items
     except Exception as exc:  # noqa: BLE001 — 원장 보강 실패가 위임 자체를 죽이지 않는다.
         if _is_engine_rev_skew(exc):
             raise
@@ -2605,7 +2612,6 @@ def _observed_must_fix_items(reply: str | None) -> list[str]:
             file=sys.stderr,
         )
         return []
-    return [item for item in items if item and item.strip()]
 
 
 def _format_silence(silence_sec: float | None, idle_killed: bool) -> str:

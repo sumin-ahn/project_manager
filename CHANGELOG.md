@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+### 업그레이드 노트
+
+- **`board.py init` 을 한 번 재실행하라.** 이 릴리스는 pre-push 훅 본문 세대를 올린다. 구버전
+  훅이 깔린 트리에서는 `regression run`/`check` 가 rc 1 로 막히고(따라서 push 도 막힌다) 안내
+  1줄이 이 명령을 지목한다. 엔진은 설치된 훅을 **자동으로 고치지 않는다** — 재설치 1회가 유일한
+  처방이고, 그 뒤로는 종전대로 동작한다. 훅을 손으로 고쳐 쓰던 트리는 재설치가 그 편집을 덮으므로,
+  추가 단계가 필요하면 재설치 후 다시 얹는다(Windows 는 `py -3 .project_manager/tools/board.py init`).
+
 ### Changed
 - **추가 리뷰어 게이트 키 개칭** — opt-in 게이트 키가 `external_review_enabled` 에서
   **`additional_reviewer_enabled`** 로 바뀐다. 구키는 이번 릴리즈까지만 fallback 으로 읽히고
@@ -75,10 +83,19 @@
   PM 홈 좌표 touches(`work/<repo>_<N>/…`)는 측정 트리 좌표로 정규화한 뒤 잰다(정규화 불능은
   경고 1줄 + 가드 off).
 - **회귀 스테이징** — 활성 리뷰 사이클(라운드 장부 미종결 ∧ 티켓 claimed) 중 FULL 회귀 요청을
-  touches targeted 로 강등하고, FULL 은 `--final`·pre-push 게이트 경로에서만 돈다. 설치된
-  pre-push 훅이 구세대 본문이면 regression run/check 진입에서 원자 교체로 자기치유한다
-  (`# pm-hook-rev` 세대 스탬프·알려진 구세대 정확일치만·커스텀 본문은 미접촉+경고·순수 파이썬
-  경로 해소로 회귀 진입 subprocess 0).
+  touches targeted 로 강등하고, FULL 은 `--final`·pre-push 게이트 경로에서만 돈다.
+- **구버전 pre-push 훅 차단** — 설치된 pre-push 훅이 현행 세대(`# pm-hook-rev` 스탬프 포함
+  정확일치)가 아니면 `regression run`/`check` 가 **회귀를 돌리지 않고 rc 1 로 막고** `board.py init`
+  재실행을 안내한다(구세대 registry 일치·엔진이 모르는 본문 둘 다 차단·읽지 못한 훅도 차단).
+  훅 미설치·서명 없는 남의 훅·훅 위치 해소 불가는 무영향이고, 경로 해소는 순수 파이썬이라 회귀
+  진입에 subprocess 를 더하지 않는다. 자동 교체(자기치유)는 **넣지 않는다** — 교체는 다음 실행부터
+  유효한데 지금 도는 것은 교체 전 본문이라, 그 창을 닫으려면 "방금 고쳤다"를 별 프로세스에 전달할
+  공유 상태가 필요하고 그 상태가 경합·TTL·표식 탈취를 낳는다. 차단은 상태가 필요 없다.
+- **untracked 신규 파일이 리뷰 diff·측정에 포함된다** — `git diff` 는 아직 add 되지 않은 파일을
+  보지 못해 리뷰가 새 파일을 못 보고 diff 서킷브레이커가 그것을 0 줄로 쟀다(완료 부기는 재고 나서
+  stage 하는 순서라 대형 신규 파일이 상한을 그대로 통과했다). 이제 작업트리 단계('HEAD')의 추출과
+  `--numstat` 측정이 `.gitignore` 밖 신규 파일을 함께 센다. 포함 방식은 `--no-index` 라 **index 를
+  건드리지 않는다**(선언 pathspec 밖·기계 mirror 제외는 종전 규칙 그대로).
 - **티켓 설계 단계** — frontmatter `design: required|done|waived:<사유>|n/a`(estimate=large 는
   required 기본)와 본문 `## 설계` 절(경계 실측·불변식·표면 상한·테스트 전략)을 신설. required
   티켓은 설계 검토 완료(`done`/`waived`) 전까지 promote 가 거부하고 claim 게이트가 막는다.
@@ -104,6 +121,14 @@
   Codex tool metadata 를 싣지 않는다.
 
 ### Fixed
+- **진행 중 리뷰 예약의 만료 기준이 레코드 자신의 것이다** — 예약 시점에 그 실행의 벽시계 백스톱을
+  `deadline` 으로 장부에 새기고, 수렴 상한의 미마감 예약 합산이 그 값을 본다. 종전에는 지금 장부를
+  읽는 호출자의 timeout 으로 재서, 짧은 timeout 의 후속 호출이 긴 timeout 으로 **실제 돌고 있는**
+  라운드를 stale 로 접고 상한을 넘겨 예약할 수 있었다. `deadline` 없는 구레코드는 종전 규칙(호출자
+  백스톱 대 `started_at`)으로 보수 합산한다.
+- **위임 장부의 must-fix "없음" 정규화** — 통과 회신의 `- 없음` 표기가 `must_fix_items=["없음"]` 로
+  박제돼 다음 라운드 delta 가 그것을 고칠 지적으로 되읽던 것을, 추가 리뷰 경로와 같은 술어로
+  정규화해 항목 0 건으로 남긴다.
 - **`local.conf` writer 단일 직렬화 경계** — `board init`·두 opt-in·`pm_config`·`pm_import`·
   `pm_update`의 모든 read-plan-write/postcondition 구간이 `file_lock.py`가 소유한 같은
   `local-conf.lock`을 사용한다. 질문 대기 중의 stale snapshot뿐 아니라 서로 다른 writer 종류가

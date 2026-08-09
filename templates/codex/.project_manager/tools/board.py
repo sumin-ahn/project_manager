@@ -3371,20 +3371,21 @@ def _hooks_dir() -> Path | None:
     return d if d.is_absolute() else REPO / d
 
 
-# 엔진이 설치한 훅임을 알아보는 서명 — drift 치유가 남의 pre-push 훅을 덮지 않게 한다.
+# 엔진이 설치한 훅임을 알아보는 서명 — 세대 판정이 남의 pre-push 훅까지 막지 않게 한다.
 _PM_HOOK_SIGNATURE = "pm pre-push gate"
-# 본문 세대 스탬프 — "이 훅이 어느 세대인가"를 파일 자신이 말하게 한다. 스탬프가 없으면 자기치유는
-# 본문 차이만 보고 채택자 커스터마이즈까지 구버전으로 오판해 조용히 덮는다.
+# 본문 세대 스탬프 — "이 훅이 어느 세대인가"를 파일 자신이 말하게 한다. 게이트 명령을 바꿀 때
+# 이 값을 올리면, 이미 깔린 옛 훅이 스스로 구세대임을 드러낸다.
 PM_HOOK_REV = 2
 _PM_HOOK_REV_PREFIX = "# pm-hook-rev: "
-# 설치된 훅에서 인터프리터를 되읽는 규칙 — 채택자의 런처 선택(`py -3.12` 등)을 치유가 바꾸지 않게.
+# 설치된 훅에서 인터프리터를 되읽는 규칙 — 채택자의 런처 선택(`py -3.12` 등)이 세대 판정을
+# 뒤집지 않게 한다(본문 대조를 그 인터프리터로 조립한다).
 _PM_HOOK_INTERPRETER_RE = re.compile(
     r"^(?P<py>\S.*?) \.project_manager/tools/board\.py regression check", re.M,
 )
 
 
 def pre_push_hook_body(py: str | None = None) -> str:
-    """pre-push 훅 본문 **단일 진실** — 설치·drift 대조가 같은 문자열을 본다.
+    """pre-push 훅 본문 **단일 진실** — 설치·세대 대조가 같은 문자열을 본다.
 
     두 표면이 각자 본문을 알면 "설치된 훅이 현행인가"를 물을 수 없다(그게 구버전 훅이 조용히
     사는 채널이었다). `py` 미지정이면 호출 시점 인터프리터를 탐지한다."""
@@ -3400,14 +3401,15 @@ def pre_push_hook_body(py: str | None = None) -> str:
 
 
 def _legacy_pre_push_hook_bodies(py: str) -> tuple[str, ...]:
-    """자동 교체를 허용하는 **알려진 구세대 본문** 전수 (현행 직전 세대 1종).
+    """**알려진 구세대 본문** 전수 (현행 직전 세대 1종) — 정확일치 registry.
 
-    registry 를 정확일치로 두는 이유: "서명이 있고 본문이 다르다"만으로 덮으면 채택자가 손댄 훅
-    (단계 추가·경로 변경)이 조용히 사라진다. 아는 세대만 고치고 모르는 본문은 손대지 않는다.
+    차단 여부는 이 registry 가 아니라 "현행 본문인가" 하나로 갈린다(비-현행은 전부 차단). registry
+    가 가르는 것은 안내의 사유 낱말뿐이다 — 아는 세대면 "구버전", 모르는 본문이면 "엔진이 모르는
+    본문"이라고 말해 채택자가 자기 훅에 무슨 일이 있었는지 구분할 수 있게 한다.
     """
     return (
         # rev 미표기 세대 — 회귀 게이트가 `--final` 없이 FULL 을 요구하던 본문. 활성 리뷰 사이클
-        # 중에는 강등 실행의 rc0 을 push 허가로 읽어 게이트가 열린다(이 치유의 직접 대상).
+        # 중에는 강등 실행의 rc0 을 push 허가로 읽어 게이트가 열린다(차단의 직접 대상).
         "#!/bin/sh\n"
         "# pm pre-push gate — green 회귀 AND lint 게이트만 push. board.py init 이 설치.\n"
         f"{py} .project_manager/tools/board.py regression check || \\\n"
@@ -3438,10 +3440,10 @@ def install_pre_push_hook() -> bool:
 def _write_hook_atomic(hook: Path, body: str) -> None:
     """훅 파일을 temp + `os.replace` 로 **원자 교체**한다 (`_write_json_atomic` 동형).
 
-    같은 inode 에 truncate-rewrite 하면 **실행 중인 훅을 자기 자신이 덮는다** — 훅이 부른
-    `regression check` 가 치유를 수행하는 형상이 실재하고, shell 은 스크립트를 실행하며 읽으므로
-    파일 오프셋이 바뀐 바이트를 이어 읽어 구문이 깨진다(정렬에 따라 fail-open 방향도 나온다).
-    새 inode 로 갈아끼우면 실행 중인 shell 은 옛 fd 를 그대로 읽어 끝까지 온전하다.
+    같은 inode 에 truncate-rewrite 하면 **실행 중인 훅을 자기 자신이 덮을 수 있다** — shell 은
+    스크립트를 실행하며 읽으므로 파일 오프셋이 바뀐 바이트를 이어 읽어 구문이 깨진다(정렬에 따라
+    fail-open 방향도 나온다). 새 inode 로 갈아끼우면 실행 중인 shell 은 옛 fd 를 그대로 읽어
+    끝까지 온전하다.
     실행 권한은 **교체 전 tmp 에** 준다 — 교체 뒤에 chmod 하면 그 사이 훅이 실행 불가다.
     **어느 단계가 실패하든 tmp 를 지운다** — 쓰기·chmod·교체 세 단계가 모두 정리 범위다(교체만
     감싸면 앞 단계 실패에서 잔재가 남아 서술과 어긋난다). `pre-push.<pid>.tmp` 는 git 이 실행하지
@@ -3458,11 +3460,16 @@ def _write_hook_atomic(hook: Path, body: str) -> None:
         raise
 
 
-# ── 설치된 훅 drift 자기치유 ────────────────────────────────────────────────
+# ── 구형 서명 훅 감지 (fail-closed) ─────────────────────────────────────────
 # 훅 본문은 **설치 시점에 박제**되므로 엔진이 게이트 명령을 바꿔도 이미 설치된 훅은 옛 명령을
 # 계속 돈다. 실측 클래스: 강등(`--final` 부재) 훅이 targeted 결과 rc0 을 push 허가로 해석해
-# FULL 플래그 없이 push 가 열린다. 릴리즈 체크리스트("훅 재설치하세요")에 맡기면 채택자 트리에서는
-# 아무도 실행하지 않으므로, **게이트 자신이 진입할 때** 대조하고 스스로 고친다.
+# FULL 플래그 없이 push 가 열린다. 그래서 회귀 게이트가 진입할 때 세대를 대조하고, 현행이 아니면
+# **차단**한다(고치지 않는다).
+#
+# 자동 교체(치유)를 두지 않는 이유: 교체는 *다음* 실행부터 유효한데 지금 돌고 있는 것은 교체 전
+# 본문이라, 그 실행의 강등 rc0 을 옛 훅이 push 허가로 읽는다. 그 창을 닫으려면 "방금 고쳤다"를
+# 별 프로세스(훅 `check || run` 2단계)에 전달해야 하고, 그건 공유 상태이며 공유 상태는 경합·TTL·
+# 표식 탈취를 낳는다(4라운드 실증). 차단은 상태가 필요 없다 — 판정 한 번이 곧 결론이다.
 
 
 # git config 순수 파서 — `core.hooksPath` 값 하나만 읽는다(subprocess 0). git 은 섹션·키 이름을
@@ -3530,15 +3537,16 @@ def _pure_hooks_dir() -> Path | None:
     """훅 디렉토리를 **git 호출 없이** 해소한다 (해소 불가면 None).
 
     회귀 게이트 진입은 hot path 라 여기에 subprocess 를 더하지 않는다 — `_hooks_dir()`(git
-    `rev-parse --git-path`)는 설치 경로가 계속 쓰고, 치유는 이 순수 해소만 쓴다. 규칙:
+    `rev-parse --git-path`)는 설치 경로가 계속 쓰고, 세대 판정은 이 순수 해소만 쓴다. 규칙:
       · `REPO/.git` 디렉토리 → 그 아래 `hooks/`.
       · `REPO/.git` 파일(linked worktree·`gitdir: <경로>`) → 그 gitdir 의 `commondir` 을 따라
         **공용 git 디렉토리**로 올라간 뒤 `hooks/` (훅은 worktree 간 공유다).
       · repo config 에 `core.hooksPath` 선언이 있으면 **그 값을 파싱해** 훅 위치로 쓴다. 상대
         경로는 git 과 같이 worktree 루트(`REPO`) 기준이고 `~` 는 확장한다. 존재-only 로 보고
-        포기하면 adopter#0 처럼 *기본 위치를 가리키는 선언*까지 자기치유 밖에 남는다.
+        포기하면 *기본 위치를 가리키는 선언*까지 세대 관리 밖에 남는다.
       · include/includeIf 가 있거나 값이 비면 **None** — 포함 파일의 선언이 최종 값을 뒤집을 수
-        있어 git 없이 확정할 수 없다(fail-open·치유는 best-effort 이고 안 고치는 쪽이 안전하다).
+        있어 git 없이 확정할 수 없다. 훅 위치를 모르면 판정 자체가 없다(차단 사유는 "구형 훅이
+        실재한다" 하나뿐이라, 위치 미상을 차단으로 접으면 훅을 안 쓰는 형상까지 회귀가 멈춘다).
     """
     try:
         git_path = REPO / ".git"
@@ -3578,120 +3586,55 @@ def _installed_hook_interpreter(body: str) -> str | None:
     return match.group("py") if match else None
 
 
-def _heal_pre_push_hook_drift() -> bool:
-    """설치된 pre-push 훅이 **알려진 구세대**면 현행 본문으로 원자 교체한다 (교체했으면 True).
-
-    판정은 세 갈래다:
-      · 현행 세대(`# pm-hook-rev: N` 포함 정확일치) → 무소음 no-op.
-      · 알려진 구세대(정확일치 registry) → 원자 교체 + 안내 1줄.
-      · 서명은 있으나 모르는 본문(채택자 커스터마이즈) → **미접촉 + loud 경고 1줄**. 아는 세대만
-        고치는 게 이 치유의 경계다 — 본문 차이만 보고 덮으면 채택자가 손댄 단계가 조용히 사라진다.
-    **미설치는 무영향**(훅을 새로 심지 않는다)이고, 서명 없는 남의 훅도 대상이 아니다.
-    인터프리터는 설치된 훅의 것을 **보존**한다(채택자의 런처 선택을 치유가 바꾸지 않는다).
-
-    경로 해소는 순수 파이썬(`_pure_hooks_dir`)이라 **회귀 진입에 subprocess 를 추가하지 않는다**.
-    `.git` 부재·커스텀 `hooksPath`·해소 실패는 조용히 skip 한다(fail-open·치유는 best-effort).
-    읽기/쓰기 실패도 회귀 실행을 막지 않는다."""
-    hooks = _pure_hooks_dir()
-    if hooks is None:
-        return False
-    hook = hooks / "pre-push"
-    try:
-        if not hook.is_file():
-            return False
-        current = hook.read_text(encoding="utf-8")
-    except (OSError, UnicodeError):
-        return False
-    if _PM_HOOK_SIGNATURE not in current:
-        return False                                  # 남의 훅 — 대상 아님.
-    interpreter = _installed_hook_interpreter(current) or _detect_py()
-    if current == pre_push_hook_body(interpreter):
-        return False                                  # 현행 세대 — 무소음.
-    if current not in _legacy_pre_push_hook_bodies(interpreter):
-        print(f"regression: 경고 — pre-push 훅 본문이 알려진 세대와 다릅니다 ({hook}). "
-              "커스터마이즈로 보고 건드리지 않았습니다 — 엔진 본문으로 갱신하려면 "
-              "`board.py init` 을 실행하세요.", file=sys.stderr)
-        return False
-    try:
-        _write_hook_atomic(hook, pre_push_hook_body(interpreter))
-    except OSError:
-        return False
-    # 같은 push 시도의 `regression run`(별 프로세스·재진입)이 소비할 표식을 남긴다.
-    _write_hook_heal_sentinel()
-    print("regression: 구버전 pre-push 훅을 감지해 현행 본문으로 교체했습니다 "
-          "(push 게이트가 FULL 회귀를 요구하도록 복구).")
-    return True
-
-
-# 치유가 일어난 push 시도는 **그 시도의 회귀도** FULL 이어야 한다. 지금 돌고 있는 훅은 교체 *전*
-# 본문(옛 inode·`--final` 부재)이라, 그 시도의 회귀가 targeted 로 강등돼 rc0 을 내면 옛 훅이 그걸
-# push 허가로 읽는다 — 치유가 다음 push 부터 유효한 사이에 바로 이번 push 가 열린다.
-#
-# **프로세스가 하나가 아니다**: 훅 본문은 `regression check || regression run` 2프로세스이고,
-# 치유는 첫 프로세스(check)에서 일어난다. run 은 재진입이라 그때는 이미 현행 훅이므로 자기
-# 프로세스의 치유 여부만 보면 항상 False 다(강등이 그대로 적용된다). 그래서 치유는 **일회성
-# 표식**을 남기고 `regression run` 이 그것을 소비(삭제)해 FULL 을 강제한다. 표식에 시각을 실어
-# TTL 밖이면 무시한다 — check 만 돌고 끝난 형상에서 표식이 남아 이후 회귀가 영구 FULL 이 되지
-# 않게(치유↔run 간격은 같은 push 시도 안의 초 단위다).
-#
-# **경계 둘을 명시한다.**
-#  · 이 표식이 잇는 것은 **같은 PM 홈의 순차 2프로세스**다. 훅은 worktree 간 공유지만 `LOCAL_DIR`
-#    은 슬롯별로 갈리므로, 슬롯 A 의 check 가 훅을 교체하고 슬롯 B 에서 run 이 돌면 표식이 이어지지
-#    않는다. 파일 교체는 **1회만** 감지되는 사건이라(다음 진입엔 이미 현행 훅) 그 형상까지 덮으려면
-#    치유 사실을 슬롯 밖 공유 상태로 올려야 한다 — 본질적 한계로 수용한다(다음 push 는 새 훅이
-#    `--final` 을 싣는다).
-#  · 표식 위치는 **이 board.py 사본의 `LOCAL_DIR`** 이다(`REGRESSION_FLAG` 와 같은 자리).
-#    `_inherit_flag_anchor` 가 이어받는 *회귀 실행 cwd 앵커*와는 다른 축이라 서로 따라가지 않는다 —
-#    저쪽은 "어느 트리에서 도는가", 이쪽은 "누가 방금 훅을 고쳤나"다.
-HOOK_HEAL_SENTINEL_NAME = "hook-heal.json"
-_HOOK_HEAL_SENTINEL_TTL_SEC = 900
-_HEAL_FORCED_FULL_NOTE = (
-    "regression: 이번 실행은 강등 없이 FULL 로 돕니다 — 방금 교체된 구버전 훅이 실행 중이라 "
-    "강등 rc0 을 push 허가로 읽을 수 있습니다."
+# 차단 안내 — 처방은 `init` 재실행 하나뿐이라 두 사유(구세대·미상 본문)가 같은 문장을 쓴다.
+# 인터프리터 표기는 채택자 문서와 같은 규칙이다(Linux/macOS `python3` · Windows 런처 `py -3`).
+_STALE_HOOK_REFUSAL = (
+    "regression: 설치된 pre-push 훅이 {kind}입니다 ({hook}) — "
+    "`python3 .project_manager/tools/board.py init` 재실행 후 다시 시도"
+    "(Windows 는 py -3)."
+)
+_UNREADABLE_HOOK_REFUSAL = (
+    "regression: 설치된 pre-push 훅을 읽지 못해 세대를 판정할 수 없습니다 ({hook}: {error}) — "
+    "`python3 .project_manager/tools/board.py init` 재실행 후 다시 시도(Windows 는 py -3)."
 )
 
 
-def _hook_heal_sentinel() -> Path:
-    """훅 치유 표식 경로 — 호출 시점 `LOCAL_DIR` 파생(테스트 격리 추종·장부와 같은 규칙)."""
-    return LOCAL_DIR / HOOK_HEAL_SENTINEL_NAME
+def _stale_pre_push_hook_refusal() -> str | None:
+    """설치된 pre-push 훅이 **현행 세대가 아니면** 차단 안내 1줄, 아니면 None.
 
+    차단 대상은 **pm 서명을 가진 비-현행 훅** 하나다(구세대 registry 일치 · 엔진이 모르는 본문
+    둘 다). 아는 세대만 골라 다루던 옛 경계는 자동 교체가 있을 때의 것이었다 — 덮어쓰지 않는
+    지금은 커스터마이즈 본문도 "이 게이트가 무엇을 강제하는지 확정할 수 없는 훅"이라 같은 결론이다.
+    registry 는 남아서 안내의 사유 낱말만 가른다(구버전인지, 엔진이 모르는 본문인지).
 
-def _write_hook_heal_sentinel() -> None:
-    """치유 사실을 일회성 표식으로 남긴다 (같은 push 시도의 `regression run` 이 소비).
+    **무영향으로 두는 형상 셋**: 훅 미설치 · 서명 없는 남의 훅 · 훅 위치 해소 불가. 셋 다
+    "이 트리에 엔진 push 게이트가 없다"는 뜻이라, 차단하면 훅을 안 쓰는 정상 형상까지 막는다.
 
-    쓰기는 **원자 교체**다(`_write_json_atomic`) — 잘린 JSON 은 소비 쪽에서 파싱 실패 = 강제 없음
-    으로 접혀 열린 창을 그대로 두는 방향(fail-open)이라, 부분 기록 자체를 만들지 않는다.
-    쓰기 실패는 조용히 넘긴다 — 표식은 보강이고, 같은 프로세스에서 치유한 경우는 반환값으로도
-    FULL 이 강제된다(fail-soft)."""
-    with contextlib.suppress(OSError):
-        LOCAL_DIR.mkdir(parents=True, exist_ok=True)
-        _write_json_atomic(_hook_heal_sentinel(),
-                           {"ts": now_utc(), "head": _git_head()})
+    나머지 판정 실패는 **차단 방향**이다: 훅 파일이 있는데 읽지 못하면 세대를 확정할 수 없고,
+    확정 못 한 훅을 통과시키는 것이 곧 옛 게이트가 조용히 사는 채널이다(git 도 읽지 못하는 훅은
+    실행하지 못한다).
 
-
-def _consume_hook_heal_sentinel() -> bool:
-    """표식이 있으면 **삭제하고** 신선한지 돌려준다 (일회성 — 다음 실행에는 남지 않는다).
-
-    삭제는 신선도와 무관하다: 오래된 표식도 지워야 영구 FULL 이 안 된다. 손상·읽기 실패도 같은
-    축으로 지우고 False(강제 없음) — 이 표식의 실패가 회귀를 바꾸지 않는다.
-
-    **미래 시각(음수 age)은 신선으로 본다** — 시계 스큐·타임존 오기의 방향을 "강제 안 함"으로
-    잡으면 그게 곧 창을 여는 쪽이다. 판정 불능일 때는 비싼 쪽(FULL)으로 틀리는 게 안전하다."""
-    sentinel = _hook_heal_sentinel()
+    인터프리터는 **설치된 훅의 것**으로 대조한다 — 채택자의 런처 선택(`py -3.12`)이 세대 판정을
+    뒤집지 않게. 경로 해소는 순수 파이썬(`_pure_hooks_dir`)이라 **회귀 진입에 subprocess 를
+    추가하지 않는다**."""
+    hooks = _pure_hooks_dir()
+    if hooks is None:
+        return None                                   # 위치 해소 불가 — 비-훅 형상 차단 금지.
+    hook = hooks / "pre-push"
     try:
-        raw = sentinel.read_text(encoding="utf-8")
-    except (OSError, UnicodeError):
-        return False
-    with contextlib.suppress(OSError):
-        sentinel.unlink()
-    try:
-        stamped = str(json.loads(raw).get("ts") or "")
-        age = (datetime.datetime.now(datetime.timezone.utc)
-               - datetime.datetime.fromisoformat(
-                   stamped.replace("Z", "+00:00"))).total_seconds()
-    except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
-        return False
-    return age <= _HOOK_HEAL_SENTINEL_TTL_SEC
+        if not hook.is_file():
+            return None                               # 미설치 — 무영향.
+        current = hook.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        return _UNREADABLE_HOOK_REFUSAL.format(hook=hook, error=exc)
+    if _PM_HOOK_SIGNATURE not in current:
+        return None                                   # 남의 훅 — 대상 아님.
+    interpreter = _installed_hook_interpreter(current) or _detect_py()
+    if current == pre_push_hook_body(interpreter):
+        return None                                   # 현행 세대 — 무소음 통과.
+    kind = ("구버전" if current in _legacy_pre_push_hook_bodies(interpreter)
+            else "엔진이 모르는 본문")
+    return _STALE_HOOK_REFUSAL.format(kind=kind, hook=hook)
 
 
 def _configure_board_submodule() -> bool:
@@ -6303,10 +6246,14 @@ def cmd_regression(args: argparse.Namespace) -> int:
     (문서화된 의도적 조작)만 단일-슬롯으로 좁히고 env 는 이 판정에서 제외한다 — 단일-lease/
     솔로/명시는 현행 결과 동일. (env 는 단일-슬롯 threading 등 다른 해소엔 그대로 유효.)
     """
-    # 설치된 훅 drift 자기치유 — run/check 두 진입 모두에서 대조한다. 회귀 게이트는 push 게이트의
-    # 유일한 상시 진입점이라, 여기서 고치면 채택자가 릴리즈 노트를 읽지 않아도 옛 훅이 소멸한다.
-    # **치유 여부를 강등 판정보다 먼저 안다** — 치유가 일어난 실행은 아래에서 FULL 로 강제한다.
-    healed_hook = _heal_pre_push_hook_drift()
+    # 구형 서명 훅 = 차단 — run/check 두 진입 모두에서 대조한다. 회귀 게이트는 push 게이트의
+    # 유일한 상시 진입점이라, 여기서 막으면 채택자가 릴리즈 노트를 읽지 않아도 옛 훅으로는 push 가
+    # 성립하지 않는다(처방은 `init` 재실행 1회). 판정은 **어떤 부작용보다 앞**이다 — 회귀를 돌리고
+    # 기록까지 남긴 뒤 막으면, 그 기록이 다음 실행의 green 재사용 입력이 된다.
+    stale_hook = _stale_pre_push_hook_refusal()
+    if stale_hook is not None:
+        print(stale_hook, file=sys.stderr)
+        return 1
     # task-mode(`--task`) 실행 위치 — 특정 슬롯 worktree 절대경로를 cwd
     # 로 고정하고 슬롯 test_cmd 를 실어 잘못된 형제-슬롯 유도를 피한다. 절대경로를
     # surface 해 dev/git 짐작 여지를 없앤다(cwd 비참여). run 만 실행 위치가 필요하다.
@@ -6349,28 +6296,16 @@ def cmd_regression(args: argparse.Namespace) -> int:
                    else (args.touches.split(",") if getattr(args, "touches", None) else []))
         # 회귀 스테이징 — 활성 리뷰 사이클 중의 FULL 요청은 그 티켓 touches 로 강등한다.
         # `--final`(수렴 후)·핸드오프·pre-push 훅만 FULL 을 그대로 돈다(훅은 `--final` 을 싣는다).
-        # 훅을 방금 교체한 push 시도도 예외다 — 실행 중인 옛 훅이 강등 rc0 을 push 허가로 읽는다.
-        # 치유는 **다른 프로세스**(훅 1단계 `regression check`)에서 일어나므로 자기 프로세스의
-        # 반환값만 보면 놓친다. 치유가 남긴 일회성 표식을 소비해 그 시도의 run 까지 잇는다
-        # (같은 프로세스 치유는 표식 쓰기가 실패해도 반환값이 받쳐 준다).
+        # 강등이 push 게이트를 열지 못하는 근거는 **훅 본문이 현행 세대임이 확정**됐다는 것이다 —
+        # 그렇지 않은 훅은 여기 오기 전에 진입에서 차단된다(`_stale_pre_push_hook_refusal`).
         implicit_full = not touches and not getattr(args, "final", False)
         if implicit_full:
-            # 소비는 **이 분기 안**이다. 밖에서 무조건 소비하면 값을 쓰지도 않는 실행(스코프
-            # `--ticket`/`--touches` dev 피드백·`--final`)이 표식을 지운다 — 훅 1단계(치유)와
-            # 2단계(run) 사이에 그런 실행이 끼면 표식을 빼앗겨 강등 창이 다시 열린다(표식 탈취).
-            # 잔존은 TTL 이 무해화하므로 값을 쓰는 자리에서만 소비하면 된다.
-            healed_hook = _consume_hook_heal_sentinel() or healed_hook
-            if not healed_hook:
-                gates, cycle_touches = _review_cycle_downgrade()
-                if cycle_touches:
-                    touches = cycle_touches
-                    print(f"regression: 활성 리뷰 사이클 [{', '.join(gates)}] — FULL 요청을 "
-                          f"touches targeted 로 강등합니다 (수렴 후 FULL 은 "
-                          f"`regression run --final`).")
-            elif _review_cycle_downgrade()[1]:
-                # 강등 대상이던 실행을 FULL 로 올린 사실을 고지한다(비용이 달라지므로 조용히
-                # 넘기지 않는다).
-                print(_HEAL_FORCED_FULL_NOTE)
+            gates, cycle_touches = _review_cycle_downgrade()
+            if cycle_touches:
+                touches = cycle_touches
+                print(f"regression: 활성 리뷰 사이클 [{', '.join(gates)}] — FULL 요청을 "
+                      f"touches targeted 로 강등합니다 (수렴 후 FULL 은 "
+                      f"`regression run --final`).")
         scoped = bool(touches)
         parts = [_test_cmd(args.cmd, session=sess)]
         if scoped:
