@@ -559,6 +559,99 @@ ADAPTER_CONFIG_REAPPROVAL_NOTE = {
     ".codex/hooks.json": "codex 세션에서 `/hooks` 로 훅을 다시 승인해야 새 정의가 발화한다",
 }
 
+# ── 어댑터 훅 세트 (세대 정합 판정의 데이터 축) ─────────────────────────────────
+# 훅 세트 = "instance-owned config 가 선언한 훅 호출" + "그 호출이 실행하는 manifest 소유
+# 래퍼/드라이버". 두 축은 **갱신 주체가 다르다** — config 는 채택자 소유라 pm_update 가 못 덮고,
+# 래퍼/드라이버는 manifest 등재라 pm_update 가 덮는다. 그래서 한쪽만 새 세대인 창이 구조적으로
+# 열리고, 그중 **config 가 앞선 조합만** 락아웃이다(v1.7.0 흡수 실측: 신 settings.json 의
+# `--git-anchor-hook` 을 구 pm_orch_claude.py 가 argparse rc2 로 거부 → PreToolUse rc2 = 도구 차단
+# → Bash 전면 락아웃). 반대 방향(구 config + 신 드라이버)은 훅 미발화라 무해하다
+# (tests/test_git_anchor_guard.py 의 unknown-flag rc0 관용).
+#
+# 판정을 하드코딩 claude 전용으로 두지 않기 위해 검사 대상은 전부 이 표에서만 온다. 등록 하네스
+# 전수가 키를 가져야 하며(가드가 강제), 훅 커맨드를 선언하는 config 가 없는 하네스는 빈
+# `config_relpath` 로 그 사실을 명시한다 — 미선언과 "없음" 이 구분되지 않으면 네 번째 하네스가
+# 조용히 미검사로 떨어진다.
+
+# 훅 커맨드에서 스크립트 경로를 뽑을 때 벗겨내는 접두 토큰(하네스 런타임이 해소하는 루트 변수).
+_HOOK_COMMAND_ROOT_TOKENS = ("${CLAUDE_PROJECT_DIR}/", "$CLAUDE_PROJECT_DIR/", "./")
+
+
+class AdapterHookSetSpec(NamedTuple):
+    """한 하네스의 훅 세트 선언 — 판정에 필요한 데이터 전부.
+
+    config_relpath : 훅 호출을 선언하는 instance-owned config(dest 루트 기준 POSIX relpath).
+    live_files     : 실행 중 하네스가 읽는 manifest 소유 훅 파일. `/` 로 끝나면 디렉토리 접두
+                     (manifest 의 파일/디렉토리 semantics 와 같다). 판정 범위이자 동기 시
+                     원자 write 대상이다 — 채택자 자작 훅 스크립트는 여기 없으므로 검사하지
+                     않는다(엔진 소관 밖·거짓 처방 금지).
+    flag_support   : 훅 커맨드 플래그 → 그 플래그를 **실제로 지원해야 하는** dest 파일들.
+                     래퍼가 다른 파일로 dispatch 하면(claude: ctx_stop_hook.sh → pm_orch_
+                     claude.py) 그 체인 전부를 적는다. 지원 판정은 파일 본문의 리터럴 보유다
+                     (실행 없이 판정·훅 실행은 그 자체가 부작용).
+    coupled_groups : **한 세대로 함께 옮겨야** 하는 묶음(로드 시점 결합). 부분 전파가 묶음의
+                     일부만 갱신하면 그 자리에서 세대가 갈린다. `live_files` 와 관심사가 다르다 —
+                     저쪽은 "원자 write 대상"(파일 단위 torn read)이고 이쪽은 "함께 움직여야
+                     하는 단위"다. 결합이 없는 파일(독립 relay 드라이버·회귀 게이트 훅)은 어느
+                     묶음에도 들지 않아 단건 전파가 정당하다.
+    """
+    config_relpath: str
+    live_files: tuple[str, ...]
+    flag_support: dict[str, tuple[str, ...]]
+    coupled_groups: tuple[tuple[str, ...], ...] = ()
+
+
+ADAPTER_HOOK_SET = {
+    "claude": AdapterHookSetSpec(
+        config_relpath=".claude/settings.json",
+        live_files=(
+            ".claude/ctx_guard.py",
+            ".claude/ctx_stop_hook.py",
+            ".claude/ctx_stop_hook.sh",
+            ".claude/ctx_statusline.py",
+            ".claude/ctx_statusline.sh",
+            ".claude/pm_orch_claude.py",
+            ".claude/run_tests_hook.sh",
+        ),
+        flag_support={
+            # T-0587 이 도입한 세대 결합 — settings.json 의 Bash 매처가 이 플래그를 넘기고,
+            #   래퍼가 pm_orch_claude.py 로 dispatch 한다. 둘 중 하나라도 구 세대면 락아웃.
+            "--git-anchor-hook": (
+                ".claude/ctx_stop_hook.sh", ".claude/pm_orch_claude.py"),
+        },
+        coupled_groups=(
+            # 훅 체인 + 공유 코어: 래퍼가 플래그로 두 파이썬 진입 중 하나를 고르고, 그 둘이
+            #   ctx_guard 를 import 한다. 일부만 옮기면 미지원 플래그·import 불일치가 난다.
+            (".claude/ctx_stop_hook.sh", ".claude/ctx_stop_hook.py",
+             ".claude/pm_orch_claude.py", ".claude/ctx_guard.py"),
+            # statusline 래퍼/구현 쌍(같은 근거·독립 축).
+            (".claude/ctx_statusline.sh", ".claude/ctx_statusline.py"),
+        ),
+    ),
+    "codex": AdapterHookSetSpec(
+        # `.codex/hooks.json` 의 훅 커맨드는 인라인 printf(스크립트 실행 0)라 세대 결합이 없다.
+        #   그래도 같은 깔때기를 태운다 — 커맨드가 스크립트 호출로 바뀌면 선언만 늘리면 된다.
+        config_relpath=".codex/hooks.json",
+        live_files=(".codex/pm_orch_codex.py",),
+        flag_support={},
+    ),
+    # opencode 는 훅 커맨드를 선언하는 config 가 없다 — 플러그인은 `.opencode/plugins/`
+    #   autoload 라 config 가 호출 형태를 담지 않는다. 판정 대상은 없지만 실행 중 하네스가 읽는
+    #   파일이라 원자 write 대상에는 든다. `lib/` 도 함께다 — 플러그인 3종이 로드 시점에
+    #   `../lib/*-core.cjs` 를 즉시 import 하므로(plugins/ctx-guard.js·git-anchor.js·
+    #   safe-write.js 실측) 코어가 부분 파일이면 플러그인 로드 자체가 깨진다. claude 축이 공유
+    #   코어 `ctx_guard.py` 를 넣은 것과 같은 이유다(하네스 간 비대칭 금지).
+    "opencode": AdapterHookSetSpec(
+        config_relpath="",
+        live_files=(".opencode/lib/", ".opencode/plugins/",
+                    ".opencode/pm_orch_opencode.py"),
+        flag_support={},
+        # 플러그인이 로드 시점에 코어를 import 한다 — 한쪽만 옮기면 그 자리에서 세대가 갈린다.
+        #   relay 드라이버는 결합이 없어 묶음 밖이다(단건 전파 정당).
+        coupled_groups=((".opencode/plugins/", ".opencode/lib/"),),
+    ),
+}
+
 # 위 정적 경로와 같은 instance-owned 정책 섹션의 조건부 보호 규칙. Codex template은 model을
 # 생략해 사용자 기본값을 상속하지만, adopter가 agent별 model/reasoning을 명시하면 그 *파일 전체*가
 # override overlay다. 자동 TOML merge 대신 byte 보존한다. pattern/필드 추가는 이 선언만 고친다.
@@ -5520,6 +5613,368 @@ def unconverged_managed_adapter_configs(
         if status not in ("converged", "report-only"):
             out.append((judgment, status))
     return out
+
+
+# ── 훅 세트 세대 정합 (판정 단일 진실 — pm_update/pm_config 는 소비만) ────────────
+# 판정 결과의 두 축: 무엇이 어긋났나(kind)와 어느 쪽이 뒤처졌나(remedy). 처방이 갈리는 건
+# 후자 하나뿐이라 상수로 못박는다 — 문자열을 호출부가 지어내면 처방이 두 벌이 된다.
+HOOK_SET_MISSING_SCRIPT = "missing-hook-script"
+HOOK_SET_UNSUPPORTED_FLAG = "unsupported-hook-flag"
+HOOK_SET_REMEDY_ENGINE_STALE = "engine-stale"     # dest 엔진 파일이 config 보다 구세대
+HOOK_SET_REMEDY_CONFIG_AHEAD = "config-ahead"     # config 가 이 엔진 세대 자체보다 앞섬
+HOOK_SET_REMEDY_UNKNOWN = "unknown"               # 비교 기준(상류 template) 미해소
+
+
+class AdapterHookSetFinding(NamedTuple):
+    """훅 세트 세대 불일치 1건. 빈 목록 = 정합(락아웃 위험 없음)."""
+    harness: str
+    config_relpath: str
+    kind: str
+    subject: str                  # 문제의 스크립트 relpath 또는 플래그
+    unmet_paths: tuple[str, ...]  # 그 세대로 설치돼 있지 않은 dest 파일
+    remedy: str
+    detail: str
+
+
+def _hook_commands(document) -> list[str]:
+    """config document 의 훅 커맨드 전수 — `hooks.<event>[].hooks[].command`.
+
+    claude `settings.json` 과 codex `hooks.json` 이 같은 형상이라 추출 규칙이 하나다. 형상이
+    어긋난 항목은 조용히 건너뛴다(채택자 소유 파일이라 임의 구조가 정상 범위)."""
+    hooks = document.get("hooks") if isinstance(document, dict) else None
+    if not isinstance(hooks, dict):
+        return []
+    out: list[str] = []
+    for groups in hooks.values():
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            entries = group.get("hooks") if isinstance(group, dict) else None
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                command = entry.get("command") if isinstance(entry, dict) else None
+                if isinstance(command, str) and command.strip():
+                    out.append(command)
+    return out
+
+
+def _split_hook_command(command: str) -> list[str]:
+    """훅 커맨드 → 토큰. 따옴표가 깨져 shlex 가 못 읽으면 공백 분할로 내려간다(판정 포기 0)."""
+    try:
+        return shlex.split(command, posix=True)
+    except ValueError:
+        return command.split()
+
+
+def _hook_script_relpath(token: str) -> str | None:
+    """훅 커맨드 첫 토큰 → dest 기준 POSIX relpath. 해소 불가(절대경로·미지 변수)면 None."""
+    text = token.strip().replace("\\", "/")
+    for prefix in _HOOK_COMMAND_ROOT_TOKENS:
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+            break
+    if not text or text.startswith("/") or "$" in text or text.startswith(".."):
+        return None
+    return text
+
+
+def _is_hook_set_file(relpath: str, spec: AdapterHookSetSpec) -> bool:
+    """그 relpath 가 이 하네스의 훅 세트 파일인가 (파일 동일 또는 디렉토리 접두)."""
+    for declared in spec.live_files:
+        if declared.endswith("/"):
+            if relpath.startswith(declared):
+                return True
+        elif relpath == declared:
+            return True
+    return False
+
+
+def _hook_set_reference_prefix(relpath: str, spec: AdapterHookSetSpec) -> str | None:
+    """훅 커맨드가 가리킨 경로 → 그 훅 세트가 놓인 **디렉토리 접두**(선언 좌표면 빈 문자열).
+
+    선언 좌표(`.claude/…`)로 부르는 게 채택자 형상이지만, 같은 엔진 파일을 **다른 좌표**로 부르는
+    토폴로지가 실재한다 — 제품 루트의 settings.json 은 자기 `.claude/` 에 훅이 없어
+    `templates/claude_code/.claude/ctx_stop_hook.sh` 를 부른다. 좌표가 선언과 다르다는 이유로 그
+    커맨드를 검사에서 빼면 그 트리는 세대 검사가 통째로 꺼진다(stale 드라이버가 green). 접두를
+    뽑아 두면 플래그 요구 파일까지 같은 접두로 판정할 수 있다(체인 전체가 같은 자리에 산다).
+
+    훅 세트 밖(관련 없는 스크립트·트리 밖 좌표)이면 None — 채택자 자작 훅은 판정 대상이 아니다."""
+    if _is_hook_set_file(relpath, spec):
+        return ""
+    for declared in spec.live_files:
+        marker = "/" + declared.rstrip("/")
+        if declared.endswith("/"):
+            index = relpath.find(marker + "/")
+            if index > 0:
+                return relpath[:index]
+        elif relpath.endswith(marker) and len(relpath) > len(marker):
+            return relpath[:-len(marker)]
+    return None
+
+
+def _with_hook_set_prefix(prefix: str, relpath: str) -> str:
+    """선언 relpath 를 그 훅 세트가 실제로 놓인 좌표로 옮긴다(접두 없으면 그대로)."""
+    return f"{prefix}/{relpath}" if prefix else relpath
+
+
+def _hook_file_declares(path: Path, literal: str, *, unknown_supported: bool) -> bool:
+    """설치된 훅 파일이 그 리터럴(플래그)을 담고 있는가 — 실행 없이 하는 세대 판정.
+
+    훅을 실제로 실행해 보는 판정은 그 자체가 부작용(락아웃 재현)이라 쓸 수 없다. 파일 부재는
+    항상 미지원이고, **판정 불가**(권한·바이너리·해독 실패)는 호출부가 방향을 고른다:
+
+      `unknown_supported=True`  조회(report) — 판정 불가를 red 로 올리면 거짓 처방이 나간다.
+      `unknown_supported=False` 수용(mutation) — 확인되지 않은 파일을 근거로 config 를 새 세대로
+                                앞세우면 그게 곧 락아웃이다. 모르면 진행하지 않는다(fail-closed).
+    """
+    try:
+        return literal in path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    except (OSError, UnicodeDecodeError):
+        return unknown_supported
+
+
+def _hook_set_demands(document, spec: AdapterHookSetSpec, root: Path, *,
+                      unknown_supported: bool = True
+                      ) -> dict[tuple[str, str], tuple[str, ...]]:
+    """그 config 가 요구하는 것 중 `root` 트리가 충족하지 못한 항목 — {(kind, subject): 미충족}.
+
+    `root` 는 판정 대상 트리다: 채택자 dest 를 주면 "지금 설치된 세대가 이 config 를 감당하나",
+    상류 template 루트를 주면 "이 엔진 세대가 애초에 그걸 줄 수 있나" 가 된다. 처방 분기(어느
+    쪽이 뒤처졌나)를 같은 코어 하나로 판정하려고 트리를 파라미터로 뺐다.
+
+    `unknown_supported` 는 판정 불가 파일의 방향이다(`_hook_file_declares` 참조) — 기본은 조회용
+    관대 판정이고, 수용 게이트만 fail-closed 로 뒤집는다."""
+    out: dict[tuple[str, str], tuple[str, ...]] = {}
+
+    def _record(kind: str, subject: str, unmet: tuple[str, ...]) -> None:
+        # 같은 플래그를 여러 좌표에서 부르면(선언 좌표 + template 하위 참조) 미충족을 합친다 —
+        #   뒤 커맨드가 앞 판정을 덮으면 한쪽 좌표의 구세대가 조용히 사라진다.
+        merged = dict.fromkeys(out.get((kind, subject), ()) + unmet)
+        out[(kind, subject)] = tuple(merged)
+
+    for command in _hook_commands(document):
+        tokens = _split_hook_command(command)
+        if not tokens:
+            continue
+        script_rel = _hook_script_relpath(tokens[0])
+        if script_rel is None:
+            continue
+        prefix = _hook_set_reference_prefix(script_rel, spec)
+        if prefix is None:
+            continue  # 엔진 소유 훅 세트 밖 — 채택자 자작 훅은 판정 대상이 아니다.
+        if not (Path(root) / script_rel).is_file():
+            _record(HOOK_SET_MISSING_SCRIPT, script_rel, (script_rel,))
+            continue  # 스크립트가 없으면 플래그 지원 여부는 물을 것도 없다.
+        for token in tokens[1:]:
+            required = spec.flag_support.get(token)
+            if not required:
+                continue  # 선언 밖 플래그 — 지원 여부를 기계가 알 수 없다(판정 유보).
+            unmet = tuple(
+                actual for actual in
+                (_with_hook_set_prefix(prefix, rel) for rel in required)
+                if not _hook_file_declares(Path(root) / actual, token,
+                                           unknown_supported=unknown_supported))
+            if unmet:
+                _record(HOOK_SET_UNSUPPORTED_FLAG, token, unmet)
+    return out
+
+
+def _hook_set_template_root(source_root: Path | None, harness: str) -> Path | None:
+    """그 하네스의 상류 template 루트 — 처방 분기의 비교 기준(해소 불가면 None)."""
+    if source_root is None:
+        return None
+    template_dir = HARNESS_TEMPLATE_DIRS.get(harness, (None,))[0]
+    if template_dir is None:
+        return None
+    root = Path(source_root) / "templates" / template_dir
+    return root if root.is_dir() else None
+
+
+def _read_hook_set_config(path: Path):
+    """훅 세트 config 파싱 — 부재/파손이면 None(채택자 소유 파일이라 임의 상태가 정상 범위)."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+
+def _hook_set_finding(harness: str, spec: AdapterHookSetSpec, kind: str, subject: str,
+                      unmet: tuple[str, ...], remedy: str) -> AdapterHookSetFinding:
+    joined = ", ".join(unmet)
+    if kind == HOOK_SET_MISSING_SCRIPT:
+        detail = (f"{spec.config_relpath} 이 실행하는 훅 스크립트가 설치돼 있지 않다 "
+                  f"({subject}) — 이 훅은 매 발화마다 실패한다")
+    else:
+        detail = (f"{spec.config_relpath} 이 넘기는 `{subject}` 를 설치된 훅 세트가 "
+                  f"지원하지 않는다 ({joined}) — 구 드라이버는 미지원 플래그를 rc2 로 거부하고 "
+                  f"그 rc 는 도구 차단으로 번역된다(락아웃)")
+    return AdapterHookSetFinding(
+        harness, spec.config_relpath, kind, subject, unmet, remedy, detail)
+
+
+def judge_adapter_hook_sets(dest_root: Path, source_root: Path | None = None,
+                            harnesses=None) -> list[AdapterHookSetFinding]:
+    """설치된 훅 세트가 채택자 config 가 요구하는 세대인지 판정 (읽기 전용·부작용 0).
+
+    pm_update 동기 경로와 `sync-adapter-config` 가 같은 판정을 본다(판정 사본 0). `source_root`
+    를 주면 처방까지 분기한다 — 상류 template 이 그 요구를 충족하면 dest 엔진 파일이 뒤처진
+    것이고(pm-update 로 자가 수리), 상류도 못 주면 config 가 이 엔진 세대보다 앞선 것이다
+    (채택자 소유라 엔진이 못 덮으므로 `sync-adapter-config --accept` 가 유일 채널)."""
+    dest_root = Path(dest_root)
+    names = (list(harnesses) if harnesses is not None
+             else installed_harnesses(dest_root, source_root))
+    out: list[AdapterHookSetFinding] = []
+    for harness in names:
+        spec = ADAPTER_HOOK_SET.get(harness)
+        if spec is None or not spec.config_relpath:
+            continue
+        document = _read_hook_set_config(dest_root / spec.config_relpath)
+        if document is None:
+            continue
+        dest_unmet = _hook_set_demands(document, spec, dest_root)
+        if not dest_unmet:
+            continue
+        template_root = _hook_set_template_root(source_root, harness)
+        template_unmet = ({} if template_root is None
+                          else _hook_set_demands(document, spec, template_root))
+        for (kind, subject), unmet in sorted(dest_unmet.items()):
+            if template_root is None:
+                remedy = HOOK_SET_REMEDY_UNKNOWN
+            elif (kind, subject) in template_unmet:
+                remedy = HOOK_SET_REMEDY_CONFIG_AHEAD
+            else:
+                remedy = HOOK_SET_REMEDY_ENGINE_STALE
+            out.append(_hook_set_finding(harness, spec, kind, subject, unmet, remedy))
+    return out
+
+
+def hook_set_remedy_lines(finding: AdapterHookSetFinding) -> list[str]:
+    """처방 줄 — pm_update 와 pm_config 가 같은 문구를 낸다(처방 사본 0).
+
+    manifest 소유 파일(래퍼·드라이버)은 엔진이 직접 고칠 수 있고, 채택자 소유 config 는 수용
+    커맨드가 유일 채널이다. 순서는 항상 **엔진 파일 먼저** — 반대 순서가 지금 닫는 락아웃이다."""
+    accept = (f"pm-config sync-adapter-config --accept {finding.config_relpath} "
+              f"(백업 후 이 엔진 세대의 config 로 되돌린다)")
+    engine_first = (f"pm-update 로 훅 세트 엔진 파일을 먼저 받아라 "
+                    f"({', '.join(finding.unmet_paths)})")
+    if finding.remedy == HOOK_SET_REMEDY_ENGINE_STALE:
+        return [engine_first]
+    if finding.remedy == HOOK_SET_REMEDY_CONFIG_AHEAD:
+        return [f"{finding.config_relpath} 가 이 엔진 세대보다 앞선 요구를 담고 있다 — {accept}"]
+    return [engine_first, f"그래도 남으면 {accept}"]
+
+
+def hook_set_accept_blockers(dest_root: Path, source_root: Path,
+                             relpath: str) -> list[AdapterHookSetFinding]:
+    """그 config 를 상류 값으로 수용하기 전에 dest 가 먼저 갖춰야 할 훅 파일 미충족분.
+
+    판정 대상은 **들어올 config**(상류 template)의 요구다 — 수용은 dest config 를 그 세대로
+    앞세우는 행위이므로, 그 세대의 래퍼·드라이버가 dest 에 이미 있어야 한다. 이 검사가 순서
+    (엔진 파일 선행 · config 후행)를 기계가 강제하는 지점이고, 비어 있지 않으면 호출부는 파일을
+    건드리지 않고 거부한다(위험 방향 자체를 막는다).
+
+    조회 판정과 달리 **fail-closed** 다(`unknown_supported=False`) — 읽을 수 없는 훅 파일을
+    "지원함" 으로 넘기면 확인되지 않은 근거로 config 를 앞세우게 되고, 그 상태가 정확히 이
+    게이트가 막으려는 락아웃이다. 조회는 관대해도 되지만 mutation 은 모르면 멈춘다."""
+    dest_root = Path(dest_root)
+    out: list[AdapterHookSetFinding] = []
+    if not (dest_root / relpath).is_file():
+        # 그 config 가 dest 에 없으면 수용 자체가 성립하지 않는다 — 순서 게이트가 아니라
+        #   채널 판정이 낼 오류다(여기서 가로채면 엉뚱한 처방이 나간다).
+        return out
+    for harness, spec in ADAPTER_HOOK_SET.items():
+        if spec is None or spec.config_relpath != relpath:
+            continue
+        template_root = _hook_set_template_root(source_root, harness)
+        if template_root is None:
+            continue
+        document = _read_hook_set_config(template_root / spec.config_relpath)
+        if document is None:
+            continue
+        for (kind, subject), unmet in sorted(
+                _hook_set_demands(document, spec, dest_root,
+                                  unknown_supported=False).items()):
+            out.append(_hook_set_finding(
+                harness, spec, kind, subject, unmet, HOOK_SET_REMEDY_ENGINE_STALE))
+    return out
+
+
+def _entry_holds_path(declared: str, path: str) -> bool:
+    """그 dest 경로가 선언 항목에 속하는가 (파일 항목은 동일·디렉토리 항목은 접두)."""
+    norm = declared.rstrip("/")
+    return path == norm or path.startswith(norm + "/")
+
+
+def _entries_hit_by(group: tuple[str, ...], paths: set[str]) -> set[str]:
+    """그 경로 집합이 건드리는 묶음 항목."""
+    return {declared for declared in group
+            if any(_entry_holds_path(declared, path) for path in paths)}
+
+
+def hook_set_partial_update(updated_paths, pending_paths) -> list[tuple[str, tuple, tuple]]:
+    """이번 전파가 결합 묶음을 **반쪽만** 갱신하는가 — (harness, 남겨진 항목, 함께 옮길 항목).
+
+    경로 스코프 전파(`--paths`)는 어댑터 채널을 끄므로 세대 검사가 전무하다. 그 상태에서 래퍼만
+    옮기면 "신 래퍼 + 구 드라이버" 를 손수 만들어 놓고 rc0 로 끝난다(락아웃 생성). 판정 단위는
+    **결합 묶음**(`coupled_groups`)이다 — 결합이 없는 파일(독립 relay 드라이버 등)까지 묶으면
+    정당한 단건 전파를 막는다.
+
+    입력은 **해소된 계획의 dest 좌표**다:
+      `updated_paths` 이번 실행이 갱신할 경로 · `pending_paths` 스코프가 없었다면 갱신됐을 경로.
+    원문 스코프 표기를 보면 `@source` 상류 좌표 요청이 선언과 교집합 0 으로 빠져 검사가 무발화하고,
+    "묶음 전량이 스코프에 있나" 만 보면 **이미 최신인 형제**까지 요구해 거짓 거부가 된다. 그래서
+    조건은 하나다: 이 묶음에서 뭔가 옮기는데(`updated`) **옮겨야 할 것이 남으면**(`pending`) 거부."""
+    updated = {str(path).replace("\\", "/").strip("/")
+               for path in (updated_paths or []) if str(path).strip()}
+    pending = {str(path).replace("\\", "/").strip("/")
+               for path in (pending_paths or []) if str(path).strip()}
+    if not updated:
+        return []
+    out: list[tuple[str, tuple, tuple]] = []
+    for harness in REGISTERED_HARNESSES:
+        spec = ADAPTER_HOOK_SET.get(harness)
+        if spec is None:
+            continue
+        for group in spec.coupled_groups:
+            moving = _entries_hit_by(group, updated)
+            if not moving:
+                continue
+            left_behind = _entries_hit_by(group, pending) - moving
+            if left_behind:
+                order = {declared: index for index, declared in enumerate(group)}
+                out.append((
+                    harness,
+                    tuple(sorted(left_behind, key=order.get)),
+                    tuple(sorted(moving | left_behind, key=order.get)),
+                ))
+    return out
+
+
+def live_hook_set_paths() -> tuple[str, ...]:
+    """실행 중 하네스가 읽는 훅 세트 파일 전수(하네스 합집합·`/` 끝 = 디렉토리 접두)."""
+    out: set[str] = set()
+    for spec in ADAPTER_HOOK_SET.values():
+        if spec is not None:
+            out.update(spec.live_files)
+    return tuple(sorted(out))
+
+
+def is_live_hook_set_path(relpath: str) -> bool:
+    """동기가 그 dest 경로를 **원자 교체**해야 하는가 (하네스가 실행 중 읽는 파일인가).
+
+    copy2 는 dest 를 truncate 한 뒤 채우므로 그 창에 하네스가 읽으면 부분 파일을 실행한다.
+    훅 세트만 원자 write 로 올린다 — 전 파일 확대는 이 클래스가 요구하지 않는다."""
+    text = str(relpath).replace("\\", "/")
+    for declared in live_hook_set_paths():
+        if declared.endswith("/"):
+            if text.startswith(declared):
+                return True
+        elif text == declared:
+            return True
+    return False
 
 
 def record_adapter_baseline(dest_root: Path, source_root: Path, harnesses=None, *,

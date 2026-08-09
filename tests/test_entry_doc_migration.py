@@ -599,7 +599,7 @@ def test_sequencing_migration_after_apply_success(pm_update, old_gen_text, tmp_p
     order = []
     real_migrate = pm_update.migrate_entry_doc
 
-    def spy_apply(changes):
+    def spy_apply(changes, **_kwargs):  # 호출부가 훅 세트 판정자를 함께 넘긴다(T-0606).
         order.append("apply")
 
     def spy_migrate(*a, **k):
@@ -624,7 +624,7 @@ def test_sequencing_apply_failure_leaves_old_gen(pm_update, old_gen_text, tmp_pa
     class ExpectedApplyFailure(RuntimeError):
         pass
 
-    def boom_apply(changes):
+    def boom_apply(changes, **_kwargs):  # 호출부가 훅 세트 판정자를 함께 넘긴다(T-0606).
         raise ExpectedApplyFailure("apply failed (render/IO)")
 
     def spy_migrate(*a, **k):

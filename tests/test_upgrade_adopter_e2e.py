@@ -637,7 +637,17 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   self-update 순서)에는 겹침이 없고, 이번에도 네 anchor 가 모두 유일하게 해소됐다
 #   (`_slice_replace` 의 count==1 단언 통과). 두 실행은 PM_NONINTERACTIVE=1 이고 fixture 채택자
 #   conf 에 구키가 없어 새 안내 1줄도 발화하지 않는다 — 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "d86889411db598afa03a301ffafc90c0a3642762898f3c536ba7d14e997effba"
+#   T-0606 에서 또 이동 — 훅 세트 세대 정합 검사가 들어왔다. 새로 들어온 것은 판정 채널
+#   (`check_adapter_hook_sets`·`_adapter_hook_set_gate_failed`·`_print_adapter_hook_set_finding`),
+#   `_main` 두 지점의 그 채널 호출, 그리고 `apply` 의 훅 세트 원자 write 분기
+#   (`resolve_hook_set_predicate` → `_atomic_copy2`)다. 역적용 delta 의 네 anchor 는 그대로
+#   유일하게 해소된다(새 블록이 anchor **앞**에 들어가 슬라이스 범위를 건드리지 않는다). 배달
+#   경계도 불변이다: 이 fixture 채택자는 codex 단독이라 훅 세트 판정이 항상 빈 결과고(게이트
+#   미발화·출력 0줄), apply 분기도 등재 파일이 `.codex/pm_orch_codex.py` 뿐이라 이 fixture 의
+#   변경 목록에 들지 않는다. 뒤이은 수렴 라운드가 더한 경로 스코프 반쪽 갱신 가드
+#   (`refuse_partial_hook_set_scope`)도 `--paths` 전용이라 이 fixture(스코프 없음)에서 비발화다 —
+#   현재화한 것은 기대 SHA 하나뿐이다.
+_T0585_PM_UPDATE_SHA256 = "cb42ad5562f04e5403869106d6baab26c261422c39d4841bb4476e84a43b94b7"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).

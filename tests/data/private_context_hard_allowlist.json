@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "count": 385,
+  "count": 389,
   "surface_counts": {
     "markdown": 153,
     "python-non-prose": 16,
-    "python-prose": 216
+    "python-prose": 220
   },
   "entries": [
     {
@@ -421,6 +421,14 @@
       "match": "T-0596",
       "surface": "python-prose",
       "hash": "778e791d6d4206d429d70b5b4c5d0658591b890c68c3da5ae4bee4f41c5a9c89",
+      "count": 1
+    },
+    {
+      "path": ".project_manager/tools/pm_import.py",
+      "kind": "work_item",
+      "match": "T-0587",
+      "surface": "python-prose",
+      "hash": "17bc466fd036a21548319e9d10865f2ad1658e792fcc86455261fdd7cba82cfa",
       "count": 1
     },
     {
@@ -917,6 +925,14 @@
       "match": "T-0596",
       "surface": "python-prose",
       "hash": "778e791d6d4206d429d70b5b4c5d0658591b890c68c3da5ae4bee4f41c5a9c89",
+      "count": 1
+    },
+    {
+      "path": "templates/claude_code/.project_manager/tools/pm_import.py",
+      "kind": "work_item",
+      "match": "T-0587",
+      "surface": "python-prose",
+      "hash": "17bc466fd036a21548319e9d10865f2ad1658e792fcc86455261fdd7cba82cfa",
       "count": 1
     },
     {
@@ -1613,6 +1629,14 @@
       "match": "T-0596",
       "surface": "python-prose",
       "hash": "778e791d6d4206d429d70b5b4c5d0658591b890c68c3da5ae4bee4f41c5a9c89",
+      "count": 1
+    },
+    {
+      "path": "templates/codex/.project_manager/tools/pm_import.py",
+      "kind": "work_item",
+      "match": "T-0587",
+      "surface": "python-prose",
+      "hash": "17bc466fd036a21548319e9d10865f2ad1658e792fcc86455261fdd7cba82cfa",
       "count": 1
     },
     {
@@ -2477,6 +2501,14 @@
       "match": "T-0596",
       "surface": "python-prose",
       "hash": "778e791d6d4206d429d70b5b4c5d0658591b890c68c3da5ae4bee4f41c5a9c89",
+      "count": 1
+    },
+    {
+      "path": "templates/opencode/.project_manager/tools/pm_import.py",
+      "kind": "work_item",
+      "match": "T-0587",
+      "surface": "python-prose",
+      "hash": "17bc466fd036a21548319e9d10865f2ad1658e792fcc86455261fdd7cba82cfa",
       "count": 1
     },
     {

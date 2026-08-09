@@ -339,6 +339,12 @@ _ENGINE_REV_SKEW_RECOVERY_REASONS = {
         "동기화가 끝난 뒤의 훅 재설치가 부분 동기 목적지 엔진 때문에 실패해도 "
         "다음 pm-update 재실행 경로를 열어 둔다"
     ),
+    "resolve_hook_set_predicate": (
+        "훅 세트 원자 write 판정자는 상류/형제 pm_import 사본에서 읽는다 — 그 사본의 rev 가 실행 "
+        "중 엔진과 갈리는 것이 업그레이드의 정상 경로이므로, 여기서 skew 를 올리면 엔진이 반쯤 "
+        "적용된 채 죽는다. 해소 실패는 다음 후보로 내려가고 전부 실패하면 copy2 폴백을 loud 로 "
+        "알린다(사본 불일치 자체는 동기 본류의 skew 표면이 진단한다)"
+    ),
 }
 
 
@@ -996,6 +1002,57 @@ def _atomic_copy2(source: Path, dest: Path) -> None:
         os.replace(tmp, dest)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def _load_source_pm_import(source_root: Path):
+    """**상류(source) 트리**의 pm_import 를 로드한다 — 이번에 설치되는 세대의 선언을 읽는다.
+
+    형제 로더(`_load_pm_import`)는 *실행 중인* 엔진 옆 사본을 읽는데, 업그레이드에서 그 사본은
+    정의상 한 세대 뒤다. 훅 세트 선언 자체가 pm_import 안에 있으므로 그 구세대 선언을 쓰면
+    **이번 세대가 새로 추가한 훅 경로**가 같은 실행에서 copy2 로 떨어진다(원자 write 가 항상 한
+    세대 늦게 도착). 부재/로드 실패는 None — 호출부가 로컬 세대로 폴백한다."""
+    path = Path(source_root) / ".project_manager" / "tools" / "pm_import.py"
+    if not path.is_file():
+        return None
+    return _load_module_from_path(
+        path, "pm_import.py", allow_unverified=True,
+        cache=True, cache_key=f"_pm_update_source_pm_import:{os.path.realpath(path)}",
+    )
+
+
+def resolve_hook_set_predicate(source_root=None):
+    """훅 세트 판정자 1개를 해소한다 — **상류 세대 우선**, 실패하면 로컬 세대, 최후엔 loud False.
+
+    선언은 pm_import 단일 진실이다(여기 사본을 두면 "검사는 하는데 원자 write 는 안 하는" 파일이
+    조용히 생긴다). 해소는 실행당 1회이고 결과를 `apply` 에 넘긴다 — 파일마다 부르면 사본 수만큼
+    모듈을 다시 로드한다(`_load_pm_import` 는 캐시 없음).
+
+    전부 실패하면 훅 파일이 통째로 비원자 copy2 로 떨어지므로 **조용히 넘어가지 않는다** —
+    torn read 창이 다시 열린 사실을 stderr 한 줄로 남긴다(무진단 침묵 금지)."""
+    attempts = []
+    if source_root is not None:
+        attempts.append(("상류", lambda: _load_source_pm_import(Path(source_root))))
+    attempts.append(("로컬", _load_pm_import))
+    reasons = []
+    for origin, loader in attempts:
+        try:
+            module = loader()
+        except Exception as exc:  # noqa: BLE001 — 구형/손상 사본에서도 동기는 계속된다.
+            # marked skew 도 여기서는 의도적으로 흡수한다(등록된 복구 경계) — apply 도중
+            #   형제 사본이 갈리는 건 업그레이드의 정상 경로다.
+            _absorb_engine_rev_skew_for_recovery(exc, "resolve_hook_set_predicate")
+            reasons.append(f"{origin}: {type(exc).__name__}: {exc}")
+            continue
+        predicate = getattr(module, "is_live_hook_set_path", None) if module else None
+        if predicate is not None:
+            return lambda rel, _p=predicate: bool(_p(str(rel).replace("\\", "/")))
+        reasons.append(f"{origin}: 선언 부재(pm_import 미해소 또는 구세대)")
+    print(
+        "[경고] 훅 세트 원자 write 판정자를 해소하지 못했다 — 이번 동기는 훅 파일도 일반 복사로 "
+        f"쓴다(실행 중 하네스가 부분 파일을 읽을 창이 열린다). {' / '.join(reasons)}",
+        file=sys.stderr,
+    )
+    return lambda _rel: False
 
 
 def central_loader_needs_recovery(dest_root: Path) -> bool:
@@ -3669,7 +3726,7 @@ def _copy_manifest_preserving_guest(
     dst.write_text(_reattach_guest_block(new_text, guest_block), encoding="utf-8")
 
 
-def apply(changes: list[tuple]) -> None:
+def apply(changes: list[tuple], *, is_hook_set_path=None) -> None:
     """change 적용 — render=False(기본)는 순수 copy2, render=True 는 render_adapter 후 기록.
 
     dst 가 `_RenderDst`(render 플래그 운반·plan 산출)면 그 플래그로 분기한다. 평문 Path dst
@@ -3678,7 +3735,15 @@ def apply(changes: list[tuple]) -> None:
     engine.manifest self-prop overwrite 는 add-harness guest 절을 재부착한다(위 헬퍼). 그 재부착에
     함께 기록할 파생 엔진 행은 dst(`_RenderDst.guest_backfill_lines`)가 실어 나른다 — `entry_
     notation_template` 과 같은 운반 방식이라 이 함수의 시그니처는 그대로다.
+
+    **훅 세트 파일만 원자 교체**한다 — 하네스가 실행 중에 읽는 파일을 copy2 로 덮으면
+    truncate→채움 창에 부분 파일이 실행된다. 그 밖의 파일은 현행 copy2 그대로다(전 파일 확대는
+    이 클래스가 요구하지 않는다). `is_hook_set_path` 는 호출부가 **상류 세대**로 해소해 넘긴다
+    (`resolve_hook_set_predicate`) — 미지정이면 로컬 세대로 폴백하는데, 그 폴백은 이번 실행이
+    새로 추가하는 훅 경로를 모른다(구세대 선언).
     """
+    hook_set_path = (is_hook_set_path if is_hook_set_path is not None
+                     else resolve_hook_set_predicate())
     render_mod = None  # render path 가 있을 때만 lazy-load.
     for _r, sp, dst, _kind in changes:
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -3710,6 +3775,8 @@ def apply(changes: list[tuple]) -> None:
             # engine.manifest self-prop — upstream 사본으로 덮되 guest 절 보존(+파생 행 기록).
             _copy_manifest_preserving_guest(
                 sp, Path(dst), getattr(dst, "guest_backfill_lines", None))
+        elif hook_set_path(_r):
+            _atomic_copy2(Path(sp), Path(dst))
         else:
             shutil.copy2(sp, dst)
 
@@ -4716,6 +4783,120 @@ def _print_adapter_config_finding(result: dict, *, dry_run: bool = False) -> Non
               f"`{_ADAPTER_CONFIG_ACCEPT_HINT} <경로>` ({_ADAPTER_CONFIG_WINDOWS_HINT}).")
 
 
+# ── 훅 세트 세대 정합 검사 ───────────────────────────────────
+# 어댑터 config 채널의 형제다. 채널이 "config 내용이 상류와 같은가" 를 보는 반면, 이 검사는
+# "config 가 요구하는 훅 세대를 **설치된 래퍼/드라이버가 실제로 감당하는가**" 를 본다. 두 축의
+# 갱신 주체가 달라(config = 채택자 소유·엔진 불가침 / 래퍼·드라이버 = manifest 등재) 세대 혼합
+# 창이 구조적으로 열리고, 그중 config 가 앞선 조합은 PreToolUse rc2 = 도구 전면 차단이다
+# (v1.7.0 흡수 실측). 검사는 읽기 전용이고, 판정·처방은 pm_import 단일 진실을 그대로 쓴다.
+
+
+def check_adapter_hook_sets(dest_root: Path, source_root: Path) -> dict:
+    """훅 세트 세대 정합을 1회 판정한다 — 결과 dict(출력은 호출부·write 0).
+
+    판정 실패는 `status="unavailable"` 로 내린다(형제 `sync_adapter_configs` 와 같은 fail-soft
+    — 이 검사가 성공한 엔진 동기를 traceback 으로 덮지 않는다). 엔진 사본 skew 만 예외."""
+    result: dict = {"status": "ok", "findings": [], "reason": None}
+    try:
+        pm_import = _load_pm_import()
+        if pm_import is None:
+            return {**result, "status": "unavailable", "reason": "pm_import 로드 실패"}
+        findings = pm_import.judge_adapter_hook_sets(dest_root, source_root)
+        remedy_lines = pm_import.hook_set_remedy_lines
+    except Exception as exc:  # noqa: BLE001 — 판정 실패가 동기를 무효화하지 않는다.
+        if _is_engine_rev_skew(exc):
+            raise
+        return {**result, "status": "unavailable", "reason": str(exc)}
+    result["findings"] = [
+        {"harness": finding.harness, "config_relpath": finding.config_relpath,
+         "kind": finding.kind, "subject": finding.subject,
+         "unmet_paths": list(finding.unmet_paths), "remedy": finding.remedy,
+         "detail": finding.detail, "remedy_lines": remedy_lines(finding)}
+        for finding in findings
+    ]
+    return result
+
+
+def _change_dest_paths(changes) -> list[str]:
+    """change 목록 → dest 기준 relpath 목록 (판정 입력 정규화)."""
+    return [str(change[0]).replace("\\", "/").strip("/") for change in changes]
+
+
+def refuse_partial_hook_set_scope(scoped_changes, planned_changes) -> int:
+    """경로 스코프가 결합 묶음을 반쪽만 갱신하면 **쓰기 전에** 거부한다 (rc 1·정상이면 0).
+
+    `--paths` 는 어댑터 채널을 끄므로(요청 밖 write 0) 세대 검사가 전무하다 — 래퍼만 옮기고
+    드라이버를 두면 "신 래퍼 + 구 드라이버" 락아웃을 손수 만들고도 rc0 다. 엔진 도구 부분 전파
+    경고와는 **다른 축**이다: 저쪽은 rev 혼재를 알리기만 하고, 이쪽은 하네스가 잠기므로 차단한다.
+
+    입력은 **해소된 계획**이다(원문 `--paths` 표기가 아니라 dest 좌표의 change 목록):
+      `scoped_changes`  이번 실행이 실제로 갱신할 change
+      `planned_changes` 스코프가 없었다면 갱신됐을 change(= 상류와 다른 것 전수)
+    원문 표기를 비교하면 `@source` 상류 좌표(`templates/claude_code/.claude/…`)로 지목한 요청이
+    dest 좌표(`.claude/…`) 선언과 교집합 0 이 되어 검사가 통째로 무발화한다. 계획을 입력으로 삼으면
+    좌표 표기 전반이 한 번에 닫히고, **이미 최신인 형제**는 `planned` 에 없어 거짓 거부도 없다.
+
+    판정 채널을 못 불러오면 가드를 끄되 조용히 넘어가지 않는다(무진단 침묵 금지)."""
+    try:
+        pm_import = _load_pm_import()
+        partial = (pm_import.hook_set_partial_update(
+            _change_dest_paths(scoped_changes), _change_dest_paths(planned_changes))
+            if pm_import is not None else None)
+    except Exception as exc:  # noqa: BLE001 — 가드 판정 실패가 복구 전파를 자기잠금하면 안 된다.
+        if _is_engine_rev_skew(exc):
+            raise
+        partial = None
+        print(f"[경고] 훅 세트 부분 전파 가드를 건너뛰었다 — {exc}.", file=sys.stderr)
+    if not partial:
+        return 0
+    for harness, left_behind, required in partial:
+        print(
+            f"[중단] 경로 스코프가 {harness} 훅 세트를 반쪽만 갱신한다 — 갱신이 필요한데 스코프 "
+            f"밖인 {len(left_behind)}건: {', '.join(left_behind)}",
+            file=sys.stderr,
+        )
+        print(
+            "  훅 세트는 한 세대 단위로만 정합이다(래퍼·드라이버·공유 코어). 반쪽 갱신은 "
+            "미지원 플래그 rc2 = 도구 차단을 만든다.\n"
+            f"  → 이 묶음을 함께 지목하거나(--paths {' '.join(required)}) 스코프 없이 pm-update 를 "
+            "돌려라.",
+            file=sys.stderr,
+        )
+    return 1
+
+
+def _adapter_hook_set_gate_failed(result: dict) -> bool:
+    """훅 세트 검사의 완료 게이트 — 불일치가 하나라도 남으면 True.
+
+    `unavailable` 은 게이트를 막지 않는다(형제 config 채널과 다른 판단): 이 검사는 채널이 아니라
+    가드라, 판정 불가를 red 로 올리면 구형/부분 트리에서 복구 실행 자체가 자기잠김한다. 대신
+    침묵하지 않고 경고를 낸다."""
+    return bool(result.get("findings"))
+
+
+def _print_adapter_hook_set_finding(result: dict, *, dry_run: bool = False) -> None:
+    """훅 세트 검사 결과 — 정합이면 무출력, 불일치는 loud 처방(사유 + 실행 커맨드).
+
+    dry_run 은 문구만 바꾼다(판정 자체가 읽기 전용이라 write 경로와 결과가 같다)."""
+    status = result.get("status")
+    if status == "unavailable":
+        print(
+            "[경고] 어댑터 훅 세트 세대 검사를 건너뛰었다 — "
+            f"{result.get('reason')}. 설치된 훅 래퍼/드라이버가 채택자 config 가 요구하는 "
+            "세대인지 확인되지 않았다.",
+            file=sys.stderr,
+        )
+        return
+    for finding in result.get("findings", []):
+        print(f"⚠️  어댑터 훅 세트 세대 불일치({finding['harness']}) — {finding['detail']}.",
+              file=sys.stderr)
+        for line in finding["remedy_lines"]:
+            print(f"    → {line}", file=sys.stderr)
+    if result.get("findings") and dry_run:
+        print("    (dry-run — 판정만 했다. 위 처방을 적용한 뒤 실 pm-update 를 돌려라.)",
+              file=sys.stderr)
+
+
 # ── 보호 훅 전수 재설치 트리거 ────────────────────────────────
 # 보호 훅(`.local/repo-hooks/<repo>/pre-push`·`pre-commit`)은 엔진 코드(worktree_pool 의 훅
 # 본문 상수)에서 *생성*되는 런타임 산출물이라, 엔진 파일이 갱신돼도 **재설치가 돌아야** 새 훅이
@@ -5299,6 +5480,9 @@ def _main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
+        # 스코프 적용 **전** 계획을 보존한다 — 훅 세트 반쪽 갱신 판정이 "이번에 옮기는 것" 과
+        #   "옮겨야 하는데 스코프 밖인 것" 을 dest 좌표로 대조하는 데 쓴다(아래).
+        planned_changes = list(changes)
         changes = [
             change for change in changes
             if any(_in_scope_paths(candidate, scope_paths)
@@ -5336,6 +5520,13 @@ def _main(argv: list[str] | None = None) -> int:
                   f"ENGINE_REV 를 섞을 수 있다(로더 skew 진단 유발 가능). 차단하지 않으니 wave "
                   f"마감에 `--all-targets` 전량 전파 + parity 로 수렴시켜라: {', '.join(stamped)}",
                   file=sys.stderr)
+        # 훅 세트 반쪽 갱신은 알리는 데서 그치지 않는다 — 하네스가 잠기므로 **쓰기 전에** 거부.
+        #   입력은 **해소된 계획**이다(원문 스코프 표기 아님) — `--paths` 는 dest 좌표와 `@source`
+        #   상류 좌표를 모두 받으므로, 원문을 그대로 비교하면 상류 좌표 요청이 교집합 0 으로 빠져
+        #   검사가 통째로 무발화한다(래퍼만 갱신하고 rc0).
+        rc = refuse_partial_hook_set_scope(changes, planned_changes)
+        if rc:
+            return rc
 
     for r, _sp, _dst, kind in changes:
         # render path 는 byte-copy 가 아니라 재렌더 산출물 — PM 이 구분하게 [render] 로 표기
@@ -5472,6 +5663,19 @@ def _main(argv: list[str] | None = None) -> int:
             configs = sync_adapter_configs(
                 effective_dest, source_root, write=not args.dry_run)
             _print_adapter_config_finding(configs, dry_run=args.dry_run)
+            # 세대 정합은 config 채널과 **같은 경계·같은 자리**에서 본다(둘 다 manifest 밖
+            #   config 를 축으로 하는 판정이라 한쪽만 도는 실행이 있으면 안 된다). 게이트 순서는
+            #   심각도순 — 세대 불일치는 하네스가 잠기는 상태고 원장 미수렴은 다음 실행이
+            #   수렴시킨다(두 소견 자체는 이미 위에서 각자 출력됐다).
+            hook_sets = check_adapter_hook_sets(effective_dest, source_root)
+            _print_adapter_hook_set_finding(hook_sets, dry_run=args.dry_run)
+            if not args.dry_run and _adapter_hook_set_gate_failed(hook_sets):
+                print(
+                    "[중단] 설치된 훅 세트가 채택자 config 가 요구하는 세대가 아니다 — 위 처방 후 "
+                    "pm-update 를 재실행하라(방치하면 훅이 rc2 로 도구 호출을 막는다).",
+                    file=sys.stderr,
+                )
+                return 1
             if not args.dry_run and _adapter_config_gate_failed(configs):
                 # 엔진 파일에는 적용할 변경이 없었다는 사실만 말한다. adapter config 가 red인데
                 # "최신/흡수 완료"라고 접으면 release가 false-complete 되므로 baseline 기록도 막는다.
@@ -5513,9 +5717,15 @@ def _main(argv: list[str] | None = None) -> int:
         if do_adapter_config:  # 판정만(write=False·파일·원장 미변경).
             configs = sync_adapter_configs(effective_dest, source_root, write=False)
             _print_adapter_config_finding(configs, dry_run=True)
+            _print_adapter_hook_set_finding(
+                check_adapter_hook_sets(effective_dest, source_root), dry_run=True)
         return 0
 
-    apply(changes)  # ← 실패 시 예외 전파 → 아래 전환 미도달(채택자 완전한 구형 유지).
+    # 훅 세트 판정자는 **상류 세대**로 미리 해소해 넘긴다 — 이번 실행이 pm_import 자체를
+    #   갱신하면 dest 사본의 선언은 구세대라, 이번 세대가 추가한 훅 경로가 바로 이 실행에서
+    #   비원자 copy2 로 떨어진다(원자 write 가 영영 한 세대 늦게 도착).
+    apply(changes,  # ← 실패 시 예외 전파 → 아래 전환 미도달(채택자 완전한 구형 유지).
+          is_hook_set_path=resolve_hook_set_predicate(source_root))
     msg = f"✓ {len(changes)} 파일 동기화"
     print(msg)
 
@@ -5538,6 +5748,18 @@ def _main(argv: list[str] | None = None) -> int:
         #   어댑터 config 만 새 세대로 앞서가지 않게·migrate 와 같은 시퀀싱 논거).
         configs = sync_adapter_configs(effective_dest, source_root, write=True)
         _print_adapter_config_finding(configs, dry_run=False)
+        # apply 로 방금 착지한 **새 훅 세트**를 기준으로 판정한다 — 이 순서라야 "엔진 파일이
+        #   뒤처져서 난 불일치" 가 이번 실행에서 저절로 해소되고, 그래도 남는 것만 red 다.
+        hook_sets = check_adapter_hook_sets(effective_dest, source_root)
+        _print_adapter_hook_set_finding(hook_sets, dry_run=False)
+        if _adapter_hook_set_gate_failed(hook_sets):
+            print(
+                f"[중단] 엔진 파일 {len(changes)}건은 적용됐지만 설치된 훅 세트가 채택자 config "
+                "가 요구하는 세대가 아니다 — 위 처방 후 pm-update 를 재실행하라"
+                "(방치하면 훅이 rc2 로 도구 호출을 막는다).",
+                file=sys.stderr,
+            )
+            return 1
         if _adapter_config_gate_failed(configs):
             # apply는 이미 완료됐다. rollback/성공 은폐 없이 엔진 적용 사실(위 ✓ 출력)을 남기고,
             # 전체 흡수 baseline·후속 성공 프롬프트만 차단한다.

@@ -900,7 +900,17 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   board 로드를 두지 않고 `_ticket_frontmatter` 한 지점을 쓰므로(제목과 게이트 입력이 같은
     #   파일을 본다) 그 함수의 경계가 통째로 없어졌다 — 흡수 규칙이 느슨해진 게 아니라 경계가
     #   하나로 합쳐진 것이고, 남은 지점은 종전대로 마킹된 skew 를 re-raise 한다.
-    assert len(report.boundaries) == 173, "propagation sweep boundary ratchet changed"
+    # 175 = 173 + T-0606 훅 세트 세대 정합의 두 경계. 판정 채널(`check_adapter_hook_sets`)은
+    #   형제 pm_import 판정을 빌려 쓰되 부재/손상은 unavailable 경고로 접고 마킹된 skew 는 그대로
+    #   올린다(형제 config 채널과 같은 규칙). 반면 원자 write 판정자 해소
+    #   (`resolve_hook_set_predicate`)는 **상류/형제 pm_import 사본**을 읽어 apply 에 넘기는
+    #   지점이라 등록된 복구 경계로 흡수한다 — 그 사본의 rev 가 실행 중 엔진과 갈리는 것이
+    #   업그레이드의 정상 경로이고, 여기서 올리면 엔진이 반쯤 적용된 채 죽는다. 후보를 모두
+    #   잃으면 copy2 폴백(종전 동작)을 loud 로 알린다.
+    # 176 = 175 + T-0606 경로 스코프 반쪽 갱신 가드의 한 경계. `refuse_partial_hook_set_scope` 도
+    #   같은 형제 선언을 빌려 판정하되, 판정 채널 부재/손상은 가드를 끄고(복구 전파가 자기잠금하면
+    #   안 된다) 마킹된 skew 는 그대로 올린다 — 다른 형제 로더와 같은 규칙이다.
+    assert len(report.boundaries) == 176, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

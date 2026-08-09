@@ -25,7 +25,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config update [--from <upstream>]                   # 엔진 갱신 (pm-update 흡수)
     pm-config upstream show | set <url|path>               # upstream 조회/전환 (검증·fail-closed)
     pm-config add-harness <harness> [--from <src>] [--dry-run]  # 라이브 인스턴스에 두 번째 harness 어댑터 추가
-    pm-config sync-adapter-config [--list | --check | --accept <경로>] # 어댑터 config 판정 조회 / 수렴 게이트 / 상류 값 수용
+    pm-config sync-adapter-config [--list | --check | --accept <경로> | --accept-all] # 어댑터 config 판정 조회 / 수렴 게이트 / 상류 값 수용(단건·세트)
 
 서브커맨드별 엔진 배선:
   - init      → board.main(["init", ...]) verbatim forward (clone 당 1회 셋업·N=1·M=1[solo] ~ N×M 공용).
@@ -3285,6 +3285,141 @@ _ADAPTER_ACCEPT_FAILURE_HINT = {
 }
 
 
+def _adapter_accept_order_blocked(pm_import_mod, dest: Path, source_root: Path,
+                                  relpath: str) -> bool:
+    """엔진 파일 선행 순서를 어기는 수용인가 — 어기면 처방을 내고 True(파일 미변경).
+
+    수용은 dest config 를 상류 세대로 **앞세우는** 행위다. 그 세대가 요구하는 래퍼/드라이버가
+    dest 에 아직 없으면 훅이 미지원 플래그를 rc2 로 거부하고, 그 rc 는 도구 차단으로 번역된다
+    (v1.7.0 흡수 실측 락아웃). 위험 방향은 이쪽 하나뿐이라 "엔진 파일 선행 · config 후행"
+    순서를 여기서 기계가 강제한다 — 단건 `--accept` 와 세트 수용이 같은 게이트를 탄다.
+
+    판정 함수가 없는 구형 엔진 사본이면 게이트를 건너뛴다(강제할 선언 자체가 없는 세대)."""
+    blockers_fn = getattr(pm_import_mod, "hook_set_accept_blockers", None)
+    if blockers_fn is None:
+        return False
+    blockers = blockers_fn(dest, source_root, relpath)
+    if not blockers:
+        return False
+    print(f"[중단] 어댑터 config 수용 거부 ({relpath}) — 이 세대가 요구하는 훅 파일이 아직 "
+          "dest 에 설치돼 있지 않다(파일을 바꾸지 않았다).", file=sys.stderr)
+    for finding in blockers:
+        print(f"  - {finding.detail}", file=sys.stderr)
+    print("  → pm-update 로 엔진 파일을 먼저 받은 뒤 이 수용을 다시 실행하라 "
+          "(엔진 파일 선행 · config 후행).", file=sys.stderr)
+    return True
+
+
+def _accept_adapter_config_one(pm_import_mod, dest: Path, source_root: Path,
+                               relpath: str, judgments) -> int:
+    """config 한 개 수용 — 선행조건 게이트 → 원자 교체 → rc·안내 (단건·세트 공용 경로).
+
+    단건과 세트가 이 함수 하나만 호출하므로 게이트·백업·경쟁 판정·안내가 갈릴 수 없다."""
+    if _adapter_accept_order_blocked(pm_import_mod, dest, source_root, relpath):
+        return 1
+    # 수용은 **판정을 먼저 받고** 그 시점 해시를 넘긴다 — 판정과 쓰기 사이에 파일이 바뀌면
+    #   엔진이 raced 로 중단한다(검증 없는 덮어쓰기 0).
+    judged = next((item for item in judgments if item.relpath == relpath), None)
+    try:
+        outcome = pm_import_mod.accept_adapter_config(
+            dest, source_root, relpath,
+            expected_sha256=judged.dest_sha256 if judged is not None else None)
+    except ValueError as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"오류: 어댑터 config 를 교체하지 못했습니다 ({relpath}: {exc}) — "
+              "원본은 그대로입니다.", file=sys.stderr)
+        return 1
+    if outcome.status != "accepted":
+        print(f"오류: 어댑터 config 수용 실패 ({relpath} · {outcome.status}): "
+              f"{outcome.detail}", file=sys.stderr)
+        hint = _ADAPTER_ACCEPT_FAILURE_HINT.get(outcome.status)
+        if hint:
+            print(f"  → {hint}", file=sys.stderr)
+        if outcome.backup is not None:
+            print(f"  백업: {_dest_relative_label(outcome.backup, dest)}", file=sys.stderr)
+        return 1
+    print(f"✓ 어댑터 config 수용: {relpath} "
+          f"(백업 {_dest_relative_label(outcome.backup, dest)})")
+    print("  원장 기록까지 확인했다 — 다음 동기부터 무편집 판정(자동 갱신 궤도)이다.")
+    note = pm_import_mod.ADAPTER_CONFIG_REAPPROVAL_NOTE.get(relpath)
+    if note:
+        print(f"  ⚠️ {note}")
+    return 0
+
+
+# 세트 수용에서 빼는 판정 → 제외 사유(출력 문구). 여기 없는 판정만 세트가 받는다 —
+# 실질적으로 `unedited`(원장으로 무편집이 확인된 파일) 하나다.
+_ADAPTER_SET_ACCEPT_EXCLUDED = {
+    "edited": "채택자 편집분",
+    "unrecorded": "원장 부재로 편집 여부 판정 불가",
+}
+
+
+def _report_hook_set_findings(pm_import_mod, dest: Path, source_root: Path) -> bool:
+    """훅 세트 세대 불일치를 stderr 로 내고 하나라도 있으면 True (`--check` 소비·write 0).
+
+    판정·처방은 pm_import 단일 진실을 그대로 쓴다(pm-update 와 같은 문구). 판정 함수가 없는
+    구형 사본이면 조용히 건너뛴다 — 강제할 선언 자체가 없는 세대다."""
+    judge = getattr(pm_import_mod, "judge_adapter_hook_sets", None)
+    if judge is None:
+        return False
+    findings = judge(dest, source_root)
+    for finding in findings:
+        print(f"[중단] 어댑터 훅 세트 세대 불일치({finding.harness}) — {finding.detail}.",
+              file=sys.stderr)
+        for line in pm_import_mod.hook_set_remedy_lines(finding):
+            print(f"    → {line}", file=sys.stderr)
+    return bool(findings)
+
+
+def _accept_adapter_config_set(pm_import_mod, dest: Path, source_root: Path,
+                               judgments) -> int:
+    """세트 수용 — 대상 선정·선-표시·파일당 수용 (`--accept-all`).
+
+    선정 규칙 둘:
+      - 이미 상류와 같은 파일은 후보에서 빠진다(바꿀 게 없다·byte churn 0).
+      - **채택자 값이 걸린 판정은 기본 제외**한다. report 모드 대상(settings.json·
+         opencode.jsonc·config.toml)에는 권한 allowlist·모델·threshold 같은 실 노브가 들어 있고,
+         세트 커맨드 한 번이 그것을 무지목 일괄 교체하면 "채택자 커스텀은 안 덮는다" 하한선이
+         깨진다. 제외 대상은 둘이다 — `edited`(편집이 확인됨)와 `unrecorded`(원장이 없어 편집
+         여부를 **판정할 수 없음**). 후자를 받으면 원장 도입 전 구세대 채택자의 커스텀이 조용히
+         사라진다(모르면 덮지 않는다). 둘 다 단건 `--accept <경로>` 로만 받는다(제외 사유를 함께
+         낸다). 결국 세트가 받는 건 `unedited` — 설치가 내려놓은 그대로임이 원장으로 확인된
+         파일뿐이다.
+
+    무엇을 건드릴지 **먼저 전부 보이고** 나서 파일당 수용한다. 파일 1개 단위는 기존 원자 교체를
+    그대로 재사용하고 다중 파일 롤백은 만들지 않는다 — 순서 게이트 + per-file 원자로 관측
+    클래스가 닫히므로 상태 기계는 과설계다."""
+    candidates = [item for item in judgments if item.status != "in-sync"]
+    excluded = [item for item in candidates
+                if item.status in _ADAPTER_SET_ACCEPT_EXCLUDED]
+    targets = [item for item in candidates
+               if item.status not in _ADAPTER_SET_ACCEPT_EXCLUDED]
+    for item in excluded:
+        print(f"→ 세트 수용 제외({_ADAPTER_SET_ACCEPT_EXCLUDED[item.status]}): {item.relpath} · "
+              f"{item.harness} · {item.mode} "
+              f"— 받으려면 `{_FACADE_PROG} sync-adapter-config --accept {item.relpath}`")
+    if not targets:
+        print("어댑터 config 세트 수용 대상 없음 "
+              + ("(편집분 제외 후 남은 대상 없음)." if excluded else "(전부 상류와 동일)."))
+        return 1 if excluded else 0
+    print(f"# 세트 수용 대상 {len(targets)}건 (소스: {source_root})")
+    for item in targets:
+        print(f"  - {item.relpath} · {item.harness} · {item.mode} · "
+              f"{_adapter_config_label(item, pm_import_mod)}")
+    failed = 0
+    for item in targets:
+        if _accept_adapter_config_one(
+                pm_import_mod, dest, source_root, item.relpath, judgments) != 0:
+            failed += 1
+    print(f"# 세트 수용 결과: {len(targets) - failed}/{len(targets)} 수용"
+          + (f" · {failed} 실패/거부" if failed else "")
+          + (f" · {len(excluded)} 편집분 제외" if excluded else ""))
+    return 1 if (failed or excluded) else 0
+
+
 def _adapter_config_label(judgment, pm_import_mod) -> str:
     """판정 → 표시 라벨 (mode 와 status 를 함께 본다·mode 상수는 엔진 소유)."""
     common = _ADAPTER_CONFIG_STATUS_LABEL.get(judgment.status, judgment.status)
@@ -3299,12 +3434,14 @@ def cmd_sync_adapter_config(
     pm_import=None,
     dest_root: Path | None = None,
 ) -> int:
-    """`sync-adapter-config [--list | --check | --accept <relpath>]` — config 채널.
+    """`sync-adapter-config [--list | --check | --accept <relpath> | --accept-all]` — config 채널.
 
     이 파일들(`.codex/hooks.json`·`config.toml`·`.claude/settings.json`·`.opencode/opencode.jsonc`)
     은 manifest 밖이라 pm-update 가 절대 덮지 않는다. 동기는 무편집(원장 일치)인 managed 대상만
-    자동 갱신하고 나머지는 보존+보고한다 — `--accept` 는 그 보존분을 채택자가 **명시적으로**
-    받는 유일한 채널이다(이게 없으면 원장 도입 전 채택자가 영구 보고 모드에 갇힌다).
+    자동 갱신하고 나머지는 보존+보고한다 — `--accept`(단건)·`--accept-all`(세트)가 그 보존분을
+    채택자가 **명시적으로** 받는 유일한 채널이다(이게 없으면 원장 도입 전 채택자가 영구 보고
+    모드에 갇힌다). 두 경로 모두 수용 전에 훅 세트 선행조건을 같은 게이트로 검사한다
+    (`_adapter_accept_order_blocked` — 엔진 파일 선행 · config 후행).
 
     판정·수용 로직은 pm_import 단일 진실(`judge_adapter_configs`·`accept_adapter_config`)이고
     여기선 표시와 rc 번역만 한다. dest 해소는 pm_config 관례(REPO 앵커·cmd_add_harness 동형),
@@ -3340,39 +3477,18 @@ def cmd_sync_adapter_config(
         return 1
     accept = getattr(args, "accept", None)
     if accept:
-        # 수용은 **판정을 먼저 받고** 그 시점 해시를 넘긴다 — 판정과 쓰기 사이에 파일이 바뀌면
-        #   엔진이 raced 로 중단한다(검증 없는 덮어쓰기 0).
-        judged = next((item for item in judgments if item.relpath == accept), None)
-        try:
-            outcome = pm_import_mod.accept_adapter_config(
-                dest, source_root, accept,
-                expected_sha256=judged.dest_sha256 if judged is not None else None)
-        except ValueError as exc:
-            print(f"오류: {exc}", file=sys.stderr)
-            return 1
-        except OSError as exc:
-            print(f"오류: 어댑터 config 를 교체하지 못했습니다 ({accept}: {exc}) — "
-                  "원본은 그대로입니다.", file=sys.stderr)
-            return 1
-        if outcome.status != "accepted":
-            print(f"오류: 어댑터 config 수용 실패 ({accept} · {outcome.status}): "
-                  f"{outcome.detail}", file=sys.stderr)
-            hint = _ADAPTER_ACCEPT_FAILURE_HINT.get(outcome.status)
-            if hint:
-                print(f"  → {hint}", file=sys.stderr)
-            if outcome.backup is not None:
-                print(f"  백업: {_dest_relative_label(outcome.backup, dest)}", file=sys.stderr)
-            return 1
-        print(f"✓ 어댑터 config 수용: {accept} "
-              f"(백업 {_dest_relative_label(outcome.backup, dest)})")
-        print("  원장 기록까지 확인했다 — 다음 동기부터 무편집 판정(자동 갱신 궤도)이다.")
-        note = pm_import_mod.ADAPTER_CONFIG_REAPPROVAL_NOTE.get(accept)
-        if note:
-            print(f"  ⚠️ {note}")
-        return 0
+        return _accept_adapter_config_one(
+            pm_import_mod, dest, source_root, accept, judgments)
+    if getattr(args, "accept_all", False):
+        return _accept_adapter_config_set(
+            pm_import_mod, dest, source_root, judgments)
 
     if not judgments:
         print("어댑터 config 채널 대상 없음 (설치 하네스의 config 가 없거나 소스에 template 부재).")
+        # config 채널 대상이 0 이어도 훅 세트는 따로 볼 수 있다(설치된 훅 + 채택자 settings 는
+        #   실재). 여기서 조용히 green 을 내면 게이트 표면이 통째로 우회된다.
+        if getattr(args, "check", False):
+            return 1 if _report_hook_set_findings(pm_import_mod, dest, source_root) else 0
         return 0
     print(f"# 어댑터 config 판정 (소스: {source_root})")
     for judgment in judgments:
@@ -3381,8 +3497,13 @@ def cmd_sync_adapter_config(
     if getattr(args, "check", False):
         # `--check`는 판정만 읽는다(write 0). 완료 판정은 pm_import helper가 소유하므로
         # pm-update와 이 CLI가 상태를 서로 다르게 해석할 수 없다.
+        # 훅 세트 세대도 **같은 자리에서** 본다 — 스킬 카드가 이 커맨드를 완료 게이트로 지목하는데
+        #   pm-update 가 rc1 로 막는 클래스를 여기서 green 으로 통과시키면 게이트가 갈린다.
+        hook_set_failed = _report_hook_set_findings(pm_import_mod, dest, source_root)
         unconverged = pm_import_mod.unconverged_managed_adapter_configs(judgments)
         if not unconverged:
+            if hook_set_failed:
+                return 1
             print("✓ managed 어댑터 config 수렴 확인 (template byte + 원장 dest hash).")
             return 0
         print("[중단] managed 어댑터 config 미수렴:", file=sys.stderr)
@@ -3900,6 +4021,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--accept", metavar="RELPATH", default=None,
         help="그 경로를 백업 후 현행 template 으로 교체하고 원장에 기록한다 "
              "(보고 모드 탈출 채널·경로는 인스턴스 루트 기준 예 `.codex/hooks.json`).",
+    )
+    sync_cfg_mode.add_argument(
+        "--accept-all", action="store_true",
+        help="상류와 다른 config 를 세트로 수용한다(파일당 백업+원자 교체·대상 선-표시). "
+             "채택자 편집분은 기본 제외이고(단건 --accept 로만), 훅 세트 선행조건(엔진 파일 선행)을 "
+             "못 갖춘 파일은 건드리지 않고 거부한다. 남은 대상이 있으면 rc 1.",
     )
     p_sync_cfg.add_argument(
         "--from", dest="source", metavar="SOURCE", default=None,
