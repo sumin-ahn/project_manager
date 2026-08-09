@@ -7,6 +7,43 @@
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-08-10
+
+### 업그레이드 노트
+
+- **핸드오프에 dirty-tree 게이트가 생겼다.** `/pm-handoff` 는 이제 첫 단계([0/7])에서 PM 홈과
+  활성 worktree 전수의 미커밋 잔여(tracked 수정 ∪ untracked-unignored·gitignored 제외)를 보고,
+  잔여가 있으면 어떤 파일도 건드리기 전에 rc 1 로 차단한다. 정상 해소는 세션 산출을 먼저
+  커밋하는 것이고, 불가피하면 `--ack-dirty "<사유>"` 로 명시 통과한다(사유는 handoff entry 에
+  박제·개행은 공백으로 평탄화). 커밋이 하나도 없는 트리는 untracked 만으로 판정하므로,
+  **`pm-import --new` 직후에는 scaffold 를 먼저 커밋해야 첫 핸드오프가 통과한다**(ADOPT.md 0단계).
+- **pm-update 가 full 동기 종료 시 rev 수렴을 검증한다.** 활성 stamped 사본에 rev 혼합이 남으면
+  baseline 기록을 억제하고 rc 를 비영으로 낸다(재실행이 처방·`--paths`/dry-run 은 대상 아님).
+  혼합 `--from` 트리를 복사하고도 성공으로 끝나던 침묵이 사라진다.
+
+### Added
+- **어댑터 훅 세트 세대 게이트** — "신 config(채택자 소유 settings 류) + 구 훅 드라이버" 조합이
+  훅 오류로 도구 호출을 전면 차단하던 락아웃 클래스를 기계로 폐쇄한다. pm-update 동기 경로가
+  훅 세트 세대 정합을 판정해 미지원 조합을 rc 1 + 처방으로 막고(settings 가 실제 참조하는 스크립트
+  경로 기준·전 하네스), `pm-config sync-adapter-config` 에 세트 수용 `--accept-all` 이 생겼다
+  (엔진 파일 선행 검사·원장으로 무편집이 확인된 파일만 세트 수용·`edited`/`unrecorded` 는 단건
+  `--accept` 처방·판정한 선언/template 스냅샷을 이중 해시로 쓰기 직전 재검증). `--paths` 부분
+  전파가 훅 결합 묶음을 반쪽만 갱신하는 것도 거부한다. 훅 세트 파일 write 는 원자 교체다.
+- **훅 세트 세대 판정의 상류-통일** — 세대 선언을 소비하는 게이트 전부가 설치본이 아니라 **상류
+  세대 선언**으로 판정한다(단일 해소 seam·조회 축은 loud 폴백 관대·mutation 축은 fail-closed).
+  직전 세대 엔진과의 혼재는 3단 강등 사다리(신 API → 구 blocker → loud 통과)로 호환한다.
+- **pm-update mid-sync skew 흡수** — 동기 실행 중 per-file 순차 write 가 만드는 rev 혼합(정상
+  과도 상태)을 내부 중첩 로드가 skew 오류로 fail-loud 해 동기 자신이 죽던 클래스를 폐쇄한다.
+  등록 사유 장부로 흡수하고(흡수 밖 호출은 AST 전수 감사로 기계 박제), 종료 시 수렴 검증이 짝이다.
+  동기 실행 밖에서는 skew 가 종전대로 fail-loud 다.
+- **핸드오프 dirty-tree 게이트** — 위 업그레이드 노트 참조. 비대화 자동 실행용 예약 플래그
+  `--auto-trigger`(차단 대신 loud 경고+사유 자동 박제) 포함.
+
+### Fixed
+- **인스턴스 로컬 산출물 커밋 유입 차단** — 추가 리뷰어의 인스턴스 overlay
+  `.project_manager/review_context.local.md` 를 엔진 `.project_manager/.gitignore` 에 정확명
+  등재했다(3타깃 전파·`*.local.md` 와일드카드 아님 — 채택자 소유 wiki 로컬 문서는 계속 추적 가능).
+
 ## [1.7.0] - 2026-08-09
 
 ### 업그레이드 노트
