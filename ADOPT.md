@@ -36,6 +36,7 @@
 
 채택자 트리에 PM 스킬/command 이 함께 도착한다. 순서대로:
 
+0. **scaffold 첫 커밋** — `--new` 직후 트리는 커밋 0 이고 도착 파일 전부가 untracked 다. 먼저 전체를 커밋해 둔다(`git add -A && git commit`). 핸드오프의 dirty-tree 게이트가 "커밋 0 + 미커밋 잔여"를 정당하게 차단하므로, 이 커밋 없이는 첫 `/pm-handoff` 가 `--ack-dirty` 없이 통과하지 않는다.
 1. **`/pm-bootstrap`** — 보드·git·회귀·log 마지막 entry 를 한 번에 측정(세션 시작 상태점검).
 2. **`/pm-env`** — 환경 관리(multi-PM repo/worktree 슬롯·upstream show/switch). 솔로면 보통 불필요.
 3. 이후 엔진 갱신이 필요할 때 **`/pm-update`** — upstream(위 값)에서 엔진 변경을 흡수(URL→cache clone·경로→pull).

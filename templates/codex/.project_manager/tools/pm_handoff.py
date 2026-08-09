@@ -9,9 +9,13 @@ slot/solo 호환 경로:
       --session-seq <N차> \\
       [--repo <name> [--slot <N>]] \\
       --wave-summary "<wave 1~3 한 줄 요약>" \\
-      [--dry-run] [--no-pytest]
+      [--dry-run] [--no-pytest] [--ack-dirty "<사유>"]
 
 동작 순서 (하나라도 실패하면 이후 단계 중단):
+  0. dirty-tree 게이트 — 실행 앵커 트리(PM 홈 + 활성 worktree 전수)에 미커밋 잔여가 있으면
+     **어떤 mutation 보다 먼저·회귀보다도 먼저** 중단(판정은 git 조회 몇 번). override =
+     `--ack-dirty "<사유>"`(사유는 entry 에 박제). `--auto-trigger`(비대화 자동 실행)는 차단
+     대신 loud 경고 + 사유 자동 박제.
   1. 회귀 측정 — pytest tests/ -q. red 면 즉시 중단·핸드오프 불가.
   2. log/current.md handoff entry skeleton append — 세션 중 박제 entry 자동 목록+메타학습·pending intent+회귀/incident.
   3. pm_state.md 세션 식별 표 sliding window 정리 — 신규 entry 추가 + 가장 오래된 entry 제거.
@@ -913,6 +917,10 @@ _LOG_ENTRY_RE = re.compile(r"^## \[\d{4}-\d{2}-\d{2}\]", re.MULTILINE)
 # 슬라이딩 윈도우 크기 — 최근 N 차 만 short inline 유지. 프로젝트별 조정 가능.
 SLIDING_WINDOW_SIZE = 3
 
+# ── dirty-tree 게이트 상수 ([0/7]) ────────────────────────────────────────────
+# 차단/경고 메시지에 열거할 최대 경로 수 — 초과분은 "… 외 N건" 으로 접는다(수백 건 dump 방지).
+DIRTY_GATE_LIST_LIMIT = 20
+
 # ── 출하 변경 분류 글롭 (surface) ─────
 # 미push diff 가 이 글롭 중 하나라도 건드리면 출하 변경 → 비차단 surface([1b/7]). 채택자
 # 산출물을 바꾸는 경로([[smoke-gate-by-output-change]])만 포함한다 — 엔진(.project_manager/
@@ -1157,8 +1165,67 @@ HANDOFF_LOG_SKELETON_TEMPLATE = """\
 - 이 세션 박제 entries:{entries}
 - 메타 학습: <PM 손 — ticket 상태에서 도출 불가한 교훈만. 없으면 "없음".>
 - pending user intent: {pending_intent}
-{worktree_line}- 회귀/incident: <PM 손 — 회귀 "N passed / 상태" 1줄(green 도 — baseline) + 비-자명 incident. (회귀는 1줄 load-bearing 이라 항상 적음 — board/git/log 대량 재열거만 금지.)>
+{worktree_line}{dirty_ack_line}- 회귀/incident: <PM 손 — 회귀 "N passed / 상태" 1줄(green 도 — baseline) + 비-자명 incident. (회귀는 1줄 load-bearing 이라 항상 적음 — board/git/log 대량 재열거만 금지.)>
 """
+
+# dirty-tree ack 박제 줄의 라벨 — `incident` 줄 관례를 따르되 기계-소유임을 라벨로 구분한다
+# (PM 손-채움 `- 회귀/incident:` 줄과 별개 줄·grep 가능한 고정 접두). 같은-세션 재실행의 멱등
+# upsert 도 이 라벨을 앵커로 쓴다(기계 소유 구획 = 이 줄 하나).
+DIRTY_ACK_ENTRY_LABEL = "- incident (dirty-tree ack)"
+
+# 기존 entry 안의 ack 줄(멱등 upsert 대상). 라벨로 시작하는 한 줄 전체를 잡되 **줄 종결자의 CR 은
+# 따로 캡처**한다 — `[^\n]*` 로 뭉뚱그리면 CR 까지 소비한 자리에 CR 없는 본문을 넣어 CRLF 로그에
+# bare LF 를 섞고(줄 종결자 변조) 같은 사유 재실행이 byte-identical 하지 않게 된다.
+_DIRTY_ACK_LINE_RE = re.compile(
+    r"^" + re.escape(DIRTY_ACK_ENTRY_LABEL) + r":[^\r\n]*(?P<cr>\r?)$", re.MULTILINE
+)
+
+# ack 줄 삽입 앵커 — PM 손-채움 `- 회귀/incident:` 줄 **바로 앞**(신규 skeleton 과 같은 자리).
+_INCIDENT_LINE_RE = re.compile(r"^- 회귀/incident:", re.MULTILINE)
+
+
+class DirtyAckStampError(RuntimeError):
+    """기존 handoff entry 에 ack 사유를 박제할 자리를 찾지 못했다 (부작용 0 상태에서 발생)."""
+
+
+def _dirty_ack_line(note: str | None) -> str:
+    """handoff entry 의 dirty-tree ack 박제 줄을 빌드한다 (미ack 이면 줄 자체 생략).
+
+    dirty 를 override 하고 나간 세션(`--ack-dirty` 또는 비대화 자동 경로)만 이 줄을 갖는다 —
+    다음 세션 부트스트랩이 log entry 에서 "왜 미커밋인 채 넘어왔나"를 그대로 읽는다.
+    """
+    if not note:
+        return ""
+    return f"{DIRTY_ACK_ENTRY_LABEL}: {note}\n"
+
+
+def upsert_dirty_ack_line(entry_text: str, note: str, newline: str = "\n") -> str:
+    """기존 handoff entry 에 ack 줄을 **멱등 upsert** 한 entry 텍스트를 반환한다.
+
+    같은-세션 재실행은 기존 entry 본문을 보존하는 경로라 skeleton 을 다시 만들지 않는다. 그렇다고
+    ack 를 콘솔 경고로 흘리면 "왜 미커밋인 채 넘어왔나"가 log 에 남지 않는다 — 기계 소유 줄
+    하나(`DIRTY_ACK_ENTRY_LABEL`)만 골라 갱신한다:
+      - 이미 있으면 그 줄을 **교체**(재삽입 없음·같은 입력이면 byte 동일 → 멱등). 기존 줄의
+        종결자(CRLF/LF)를 그대로 되살려 CRLF 로그에 bare LF 를 섞지 않는다.
+      - 없으면 `- 회귀/incident:` 줄 바로 앞에 삽입(신규 skeleton 과 같은 자리).
+      - 그 앵커도 없으면 entry 끝에 붙인다.
+    entry 가 비어 앵커도 끝줄도 없으면 `DirtyAckStampError` — 조용히 통과시키지 않는다
+    (박제 불가는 차단이 기본).
+    """
+    line = f"{DIRTY_ACK_ENTRY_LABEL}: {note}"
+    existing = _DIRTY_ACK_LINE_RE.search(entry_text)
+    if existing is not None:
+        replacement = line + existing.group("cr")
+        return entry_text[:existing.start()] + replacement + entry_text[existing.end():]
+    anchor = _INCIDENT_LINE_RE.search(entry_text)
+    if anchor is not None:
+        return entry_text[:anchor.start()] + line + newline + entry_text[anchor.start():]
+    if not entry_text.strip():
+        raise DirtyAckStampError(
+            "기존 handoff entry 가 비어 ack 사유를 박제할 자리가 없다"
+        )
+    suffix = "" if entry_text.endswith(("\n", "\r")) else newline
+    return entry_text + suffix + line + newline
 
 
 def build_handoff_log_skeleton(
@@ -1169,6 +1236,7 @@ def build_handoff_log_skeleton(
     session: str | None = None,
     log_text: str = "",
     task: str | None = None,
+    dirty_ack_note: str | None = None,
 ) -> str:
     """log/current.md 에 append 할 handoff entry skeleton 을 반환한다.
 
@@ -1178,6 +1246,8 @@ def build_handoff_log_skeleton(
     session 주입 시(multi-PM 정체성 해소·canonical `<repo>_<N>`) 헤더 차수 뒤에 `({session})`
     정체성 태그를 박는다 — per-slot 시퀀스의 감사 단서(이벤트 메타·상태 저장 아님).
     미지정(솔로)이면 태그를 생략해 현행 헤더와 byte-호환이다.
+    dirty_ack_note 주입 시(dirty-tree 게이트 override) ack 사유 줄을 추가한다 — 미지정이면
+    줄 생략(clean 핸드오프는 현행 스키마 byte-호환).
     """
     if date is None:
         date = datetime.date.today().isoformat()
@@ -1189,6 +1259,7 @@ def build_handoff_log_skeleton(
         entries=_session_entries_text(entries, boundary_unresolved),
         pending_intent=PENDING_INTENT_PLACEHOLDER,
         worktree_line=_worktree_line(worktree_slot, branch),
+        dirty_ack_line=_dirty_ack_line(dirty_ack_note),
     )
 
 
@@ -1236,6 +1307,7 @@ def _prepare_handoff_log_change(
     branch: str | None,
     session: str | None,
     task: str | None,
+    dirty_ack_note: str | None = None,
 ) -> tuple[bool, str, str, str | None]:
     """handoff log 변경 계획을 만든다.
 
@@ -1243,6 +1315,9 @@ def _prepare_handoff_log_change(
     기존 log 전체를 비파괴 갱신한 값이고, 아니면 append할 문자열이다. 같은 정체성의 마지막
     handoff 차수가 이번 차수와 같을 때만 갱신한다. 헤더 차수 파싱 실패나 기계 구획 경계
     모호(marker 0/2+)는 현행 append로 보수적 폴백하며 warning 한 줄을 돌려준다.
+
+    dirty_ack_note 는 신규 entry(append) skeleton 에만 박힌다 — 같은-세션 갱신 모드는 기계
+    소유 구획('이 세션 박제 entries')만 건드리는 byte-멱등 경로라 본문 줄을 새로 끼우지 않는다.
     """
     normalized_num = _normalize_session_num(session_num)
     candidates = [
@@ -1302,9 +1377,21 @@ def _prepare_handoff_log_change(
             # replacement 끝의 CR도 되살려 경계 개행이 bare LF로 변하지 않게 한다.
             if original_block.endswith("\r") and not refreshed_block.endswith("\r"):
                 refreshed_block += "\r"
-            block_start = target.start() + blocks[0].start()
-            block_end = target.start() + blocks[0].end()
-            updated = log_text[:block_start] + refreshed_block + log_text[block_end:]
+            new_entry_text = (
+                entry_text[:blocks[0].start()]
+                + refreshed_block
+                + entry_text[blocks[0].end():]
+            )
+            # ack 사유는 기존 entry 안에서 **기계 소유 줄 하나**로 멱등 upsert 한다 — 재실행이
+            # 줄을 쌓지 않고, 박제할 자리가 없으면 DirtyAckStampError 로 fail-loud(무접촉 상태에서
+            # 발생 — 이 함수는 계획만 만들고 write 는 호출부가 뒤에 한다).
+            if dirty_ack_note:
+                new_entry_text = upsert_dirty_ack_line(
+                    new_entry_text, dirty_ack_note, block_newline
+                )
+            updated = (
+                log_text[:target.start()] + new_entry_text + log_text[entry_end:]
+            )
             return True, updated, refreshed_block, None
         warning = (
             "같은-세션 판정 실패 — 기존 handoff의 '이 세션 박제 entries' 구획 경계가 "
@@ -1320,6 +1407,7 @@ def _prepare_handoff_log_change(
         session=session,
         log_text=log_text,
         task=task,
+        dirty_ack_note=dirty_ack_note,
     )
     return False, "\n" + skeleton, skeleton, warning
 
@@ -1334,6 +1422,7 @@ def _commit_handoff_log_change(
     session: str | None,
     task: str | None,
     pm_log_module=None,
+    dirty_ack_note: str | None = None,
 ) -> tuple[bool, str, str | None]:
     """handoff log 판정과 append/replace를 공유 lock 한 구간에서 원자화한다.
 
@@ -1353,6 +1442,7 @@ def _commit_handoff_log_change(
             branch=branch,
             session=session,
             task=task,
+            dirty_ack_note=dirty_ack_note,
         )
         if same_session_rerun:
             pm_log._replace_atomic(log_file, payload)
@@ -2152,6 +2242,115 @@ def _module_run_git(args: list[str]) -> tuple[int, str]:
     return result.returncode, result.stdout + result.stderr
 
 
+# ── dirty-tree 게이트 ([0/7]·조기 중단) ───────────────────────────────────────
+#
+# 불변식: **핸드오프 시작 시점의 실행 앵커 트리는 clean 이다(gitignored 제외).** 세션 관례상
+# 티켓 산출물은 wave-finish 에서 티켓별로 커밋되고 핸드오프 커밋은 부기(log·pm_state)만 담으므로,
+# 시작 시점의 dirty 는 전부 "부기 누락" 신호다. 실측 사례: 세션 산출 11파일이 미커밋인 채 핸드오프가
+# 완결·커밋·push 됐고 다음 세션 부트스트랩이 뒤늦게 발견했다 — [6/7] git status dump 가 그 사실을
+# *보여주기만* 하고 차단하지 않았기 때문이다.
+#
+# 그래서 판정을 **어떤 mutation 보다 앞**([2/7] log append·task state 보장·task pid=0 기록 앞)으로
+# 끌어올려 조기 중단으로 승격한다. [6/7] 시점 차단은 log entry 가 이미 append 된 뒤라 재실행이
+# 중복 entry 를 만든다(위임 부기 게이트에서 확인된 순서 문제와 같은 클래스·같은 해법). 회귀
+# ([1/7])보다도 앞에 두는 이유는 비용이다 — 판정은 git 조회 몇 번인데 회귀는 수 분이다.
+# 자기-산출물 allowlist 는 필요 없다 — 시점이 allowlist 를 대체한다(log/current.md·pm_state 는
+# 게이트 통과 *후에* 써진다).
+
+
+def _unborn_head_dirty_paths(
+    tree: str,
+    runner: Callable[[list[str]], tuple[int, str]],
+) -> list[str] | None:
+    """커밋 0(unborn HEAD) 트리의 미커밋 경로 전량 — 조회 실패면 None.
+
+    unborn 에서도 동작하는 두 축을 union 한다. **둘 다 필요하다**:
+      - `git -C <tree> diff --cached --name-only` → index 에 올라간 것(staged). `git add` 를
+        마친 트리는 이 축만 답한다.
+      - `git -C <tree> ls-files --others --exclude-standard` → 아직 add 안 한 것(untracked).
+    untracked 만 보면 **전량 staged 인 커밋 0 저장소가 clean 으로 오판**된다(그 트리야말로
+    아무것도 커밋되지 않은 상태다). gitignored 는 `--exclude-standard` 가 뺀다 — `--cached` 는
+    이미 index 에 있는 것만 보므로 ignore 규칙과 무관하다.
+    """
+    rc_staged, out_staged = runner(["-C", tree, "diff", "--cached", "--name-only"])
+    if rc_staged != 0:
+        return None
+    rc_untracked, out_untracked = runner(
+        ["-C", tree, "ls-files", "--others", "--exclude-standard"]
+    )
+    if rc_untracked != 0:
+        return None
+    paths: list[str] = []
+    for out in (out_staged, out_untracked):
+        paths.extend(line.strip() for line in out.splitlines() if line.strip())
+    return list(dict.fromkeys(paths))
+
+
+def _dirty_paths_in_tree(
+    tree: str,
+    runner: Callable[[list[str]], tuple[int, str]],
+) -> list[str] | None:
+    """트리의 미커밋(tracked modified) ∪ untracked-unignored 경로 — 판정 불가면 None.
+
+    정상 경로의 판정 축은 [1b/7] 출하 surface 와 **같은 seam**(`_uncommitted_and_untracked_paths`):
+      - `git -C <tree> diff --name-only HEAD`               → staged+unstaged tracked 변경
+      - `git -C <tree> ls-files --others --exclude-standard` → untracked(gitignored 제외)
+    `--exclude-standard` 가 "clean 제외 gitignored" 판정 기준을 그대로 만족한다.
+
+    그 seam 이 접어버리는 실패 하나를 여기서 정련한다 — **unborn HEAD**(커밋 0). `diff HEAD` 는
+    비교 ref 가 없어 실패하지만 그 트리는 "전량 미커밋"이라 게이트가 가장 잡아야 할 상태다.
+    커밋 유무를 `rev-parse --verify HEAD` 로 확인해, 커밋이 없으면 staged ∪ untracked 로 판정한다
+    (`_unborn_head_dirty_paths` — 전량 staged 인 트리를 clean 으로 오판하지 않는다).
+    커밋이 있는데 diff 가 실패했거나(git 이상) unborn 조회까지 실패(비-git 트리·git 부재)면 None —
+    호출부가 비차단 경고로 처리한다(판정 못 한 것을 dirty 로 단정해 정상 핸드오프를 막지 않는다).
+    """
+    try:
+        paths = _uncommitted_and_untracked_paths(tree, runner)
+        if paths is not None:
+            return paths
+        rc_head, _out = runner(["-C", tree, "rev-parse", "--verify", "--quiet", "HEAD"])
+        if rc_head == 0:
+            return None      # 커밋은 있는데 tracked diff 실패 — 판정 불가.
+        return _unborn_head_dirty_paths(tree, runner)
+    except Exception:  # noqa: BLE001 — 판정 실패는 크래시가 아니라 '불명'(호출부가 surface).
+        return None
+
+
+def flatten_ack_reason(reason: str) -> str:
+    """ack 사유를 **단일행**으로 평탄화한다 — 개행/탭/연속 공백을 단일 공백으로.
+
+    사유는 handoff entry 의 한 줄로 박히므로, CR/LF 가 살아 있으면 사유 문자열 하나로 가짜 entry
+    줄(심지어 `## [날짜] handoff …` 헤더)을 위조할 수 있다. 값을 거부하는 대신 무해화해 CLI·엔진
+    직접 호출 어느 경로로 들어와도 단일행 보장이 깨지지 않게 한다(단일 choke).
+    """
+    return " ".join(reason.split())
+
+
+def _format_dirty_paths(
+    paths: list[str],
+    limit: int = DIRTY_GATE_LIST_LIMIT,
+) -> list[str]:
+    """차단/경고 메시지의 경로 열거 줄 목록 — limit 초과분은 '… 외 N건' 으로 접는다."""
+    ordered = sorted(paths)
+    lines = [f"    {path}" for path in ordered[:limit]]
+    if len(ordered) > limit:
+        lines.append(f"    … 외 {len(ordered) - limit}건")
+    return lines
+
+
+def build_dirty_ack_note(reason: str, dirty_count: int, *, auto: bool) -> str:
+    """handoff entry 에 박제할 dirty-tree ack 사유 문장을 만든다 (**단일행 보장**).
+
+    `auto`(비대화 자동 트리거)면 사람이 준 사유가 없으므로 "자동 경로라 차단하지 않았다"는
+    사실 자체를 사유로 박는다. 명시 `--ack-dirty` 면 사람이 준 사유를 평탄화해 그대로 싣고
+    override 수단을 병기한다. 둘 다 잔존 건수를 함께 남겨 다음 세션이 "몇 개를 못 보고
+    넘어왔나"를 log 만 읽고 안다.
+    """
+    if auto:
+        return f"ctx 자동 핸드오프 — dirty {dirty_count}건 잔존 (비대화 경로·차단하지 않음)."
+    return f"{flatten_ack_reason(reason)} (미커밋 {dirty_count}건 — `--ack-dirty` override)."
+
+
 # ── slot 대시보드 (수정형) ─────────────────────────────────────
 # multi-PM 슬롯 간 *가벼운* 공유 — 슬롯당 고정 섹션 1개(헤딩 키 = 세션 정체성 `## <repo>_<N>`)를
 # 핸드오프가 **자기 섹션만 overwrite** 한다(append 아님·타 슬롯 섹션 byte 불변). 저장 위치 =
@@ -2911,6 +3110,117 @@ class PmHandoff:
             return
         print("  출하 변경 없음 (미push diff 가 비-출하·또는 push 없음) — release 라이브 불요.")
 
+    # ── dirty-tree 게이트 step ([0/7]·조기 중단) ────────────────
+
+    def _dirty_gate_trees(self, task: str | None) -> list[str]:
+        """게이트가 판정할 실행 앵커 트리 목록 — PM 홈 + **활성 worktree 전수**.
+
+        모드별 특례를 두지 않는다(solo = multi-PM 의 부분집합):
+          - task 모드: 보유 슬롯 전수. run() 진입부가 영속 변경 전에 한 번 해소해 둔 스냅샷
+            (`_task_slots_snapshot`)을 그대로 쓴다 — 게이트가 장부를 다시 조회해 다른 집합을
+            보는 비대칭을 만들지 않는다.
+          - slot/솔로 모드: 활성 worktree 1개 — [1b] 출하 surface 가 쓰는 것과 **같은 해소**
+            (`_regression_cwd(self._worktree_slot)`·솔로는 단일 self-host 자동해소).
+        PM 홈 `.gitignore` 는 보통 `work/` 를 ignore 하므로 슬롯 트리는 PM 홈 판정에 **절대**
+        안 잡힌다 — 슬롯을 따로 넣지 않으면 그 트리의 미커밋 산출은 게이트를 통과한다.
+        슬롯 → 트리 변환은 회귀/출하와 같은 `_regression_cwd`(stale 슬롯은 REPO 폴백)라 중복이
+        생길 수 있어 순서 보존 dedup 한다.
+        """
+        trees = [str(REPO)]
+        snapshot = self._task_slots_snapshot
+        if task is not None:
+            if snapshot is not None and snapshot[0] == task:
+                trees.extend(_regression_cwd(slot) for slot in snapshot[1])
+        else:
+            trees.append(_regression_cwd(self._worktree_slot))
+        ordered: list[str] = []
+        for tree in trees:
+            if tree not in ordered:
+                ordered.append(tree)
+        return ordered
+
+    def _dirty_tree_gate(
+        self,
+        task: str | None,
+        *,
+        ack_dirty: str | None,
+        auto_trigger: bool,
+        dry_run: bool,
+    ) -> tuple[int, str | None]:
+        """[0/7] 미커밋 잔여를 **첫 mutation 전에** 판정한다. 반환: (rc, ack 박제 사유).
+
+        rc 1 = 차단(어떤 파일도 건드리지 않은 상태). 차단 조건은 "판정 트리 중 하나라도 dirty
+        ∧ override 없음" 하나뿐이다:
+          - `--ack-dirty "<사유>"` → 통과 + 사유를 handoff entry 에 박제.
+          - `--auto-trigger`(비대화 자동 실행 전용 신호) → 차단 대신 loud 경고 + 사유 자동 박제
+            (ctx 한계 시점 차단은 세션 상태 전체를 잃는다).
+          - `--dry-run` → 판정 결과 미리보기만(차단 없음·기존 dry-run 의미 유지).
+        판정 불가 트리(비-git·git 부재)는 비차단 경고 1줄로 stderr surface 한다 — 판정을 못 한
+        것을 dirty 로 단정해 정상 핸드오프를 막지 않는다(false-block 회피). 커밋 0(unborn HEAD)은
+        판정 불가가 아니라 **전량 미커밋**이라 untracked 목록으로 정상 판정한다.
+        """
+        trees = self._dirty_gate_trees(task)
+        dirty: list[tuple[str, list[str]]] = []
+        unresolved: list[str] = []
+        for tree in trees:
+            paths = _dirty_paths_in_tree(tree, self._run_git_fn)
+            if paths is None:
+                unresolved.append(tree)
+            elif paths:
+                dirty.append((tree, paths))
+        for tree in unresolved:
+            # 게이트의 다른 판정 메시지(차단·강등 경고)와 같은 채널(stderr)로 낸다 — "게이트가
+            # 못 본 트리" 는 성공 로그가 아니라 경고다.
+            print(
+                f"  ⚠ dirty 판정 불가 — {tree} (비-git 트리·git 부재). "
+                "이 트리는 게이트가 보지 못했다.",
+                file=sys.stderr,
+            )
+        dirty_count = sum(len(paths) for _tree, paths in dirty)
+        if not dirty:
+            if ack_dirty:
+                print("  --ack-dirty 무시 — 판정 결과 clean(박제할 잔여 없음).")
+            print(f"  ✓ clean — 미커밋/untracked 없음 (판정 트리 {len(trees)}개).")
+            return 0, None
+
+        print(f"  미커밋 잔여 {dirty_count}건 (판정 트리 {len(trees)}개):")
+        for tree, paths in dirty:
+            print(f"  ▷ {tree} — {len(paths)}건:")
+            for line in _format_dirty_paths(paths):
+                print(line)
+
+        if dry_run:
+            # 미리보기 — dry-run 은 아무것도 쓰지 않으므로 차단할 이유가 없다(기존 의미 유지).
+            print("  [dry-run] 판정 결과 미리보기 — 차단하지 않는다.")
+            if ack_dirty:
+                return 0, build_dirty_ack_note(ack_dirty, dirty_count, auto=False)
+            if auto_trigger:
+                return 0, build_dirty_ack_note("", dirty_count, auto=True)
+            return 0, None
+
+        if ack_dirty:
+            note = build_dirty_ack_note(ack_dirty, dirty_count, auto=False)
+            print(f"  ⚠ --ack-dirty override — 사유를 handoff entry 에 박제한다: {note}")
+            return 0, note
+
+        if auto_trigger:
+            note = build_dirty_ack_note("", dirty_count, auto=True)
+            print(
+                "  ⚠ 비대화 자동 트리거(--auto-trigger) — 차단하지 않고 사유를 자동 박제한다: "
+                f"{note} 다음 세션이 이 잔여를 먼저 처리해야 한다.",
+                file=sys.stderr,
+            )
+            return 0, note
+
+        print(
+            f"\n[중단] 핸드오프 시작 시점에 미커밋 잔여 {dirty_count}건 — 핸드오프 불가. "
+            "세션 산출물을 먼저 커밋하라(티켓 산출은 티켓별 커밋이 관례). "
+            "의도적으로 두고 나간다면 `--ack-dirty \"<사유>\"` 로 사유를 남겨라. "
+            "log/current.md·pm_state.md 어떤 것도 건드리지 않는다.",
+            file=sys.stderr,
+        )
+        return 1, None
+
     # ── 미마감 raw sweep step ────────────────
 
     def _resolve_raw_ledger(self, relay=None) -> Path | None:
@@ -3146,6 +3456,8 @@ class PmHandoff:
         branch: str | None = None,
         done: bool = False,
         task: str | None = None,
+        ack_dirty: str | None = None,
+        auto_trigger: bool = False,
     ) -> int:
         """PM 핸드오프 7단계 자동화 전체 흐름을 실행한다.
 
@@ -3157,9 +3469,23 @@ class PmHandoff:
             `.local/tasks/<task>/` 에 기록(task 생성 시 이미 존재)·dashboard 자기 섹션은
             `## <task>`·log 헤더 태그는 `(task:<task>)`. lease 는 유지한다(세션 종료 ≠ task 종료).
             repo/slot 입력 없이 보유 작업공간 집합을 자동 수령한다. task-only(슬롯 0개)도 정상이다.
+        ack_dirty: dirty-tree 게이트([0/7]) override 사유. 비어있지 않은 문자열이어야 하며
+            (빈 사유는 부작용 0 로 중단) 사유는 단일행으로 평탄화돼 handoff entry 에 박제된다.
+        auto_trigger: 비대화 자동 실행(ctx 정지-핸드오프 등 문서화된 자동 경로) 전용 신호.
+            dirty-tree 게이트를 차단 대신 loud 경고 + 사유 자동 박제로 강등한다. 사람이 손으로
+            쓰는 플래그가 아니다 — 자동 경로임을 아는 호출부만 준다.
 
         반환: 0=성공, 1=실패 (중단).
         """
+        # ack 사유는 **박제가 목적**이라 빈 문자열이면 override 를 받아들이지 않는다. CLI(argparse)
+        # 뿐 아니라 run() 직접 호출도 같은 경계를 탄다 — 어떤 파일도 건드리기 전에 판정한다.
+        if ack_dirty is not None and not ack_dirty.strip():
+            print(
+                "\n[중단] --ack-dirty 는 사유가 필수다 — 빈 사유로는 dirty 를 override 할 수 없다 "
+                "(log/current.md·pm_state.md 어떤 것도 건드리지 않는다).",
+                file=sys.stderr,
+            )
+            return 1
         # task 차수는 caller 입력을 신뢰하지 않는다. CLI는 명시 `--session-seq`를 usage error로
         # 거부하고, 엔진 직접 호출은 전달값을 폐기한 뒤 회귀 게이트 통과 후 task pm_state에서만
         # 추론한다. 따라서 어떤 호출 경로도 임의 차수를 log/state/dashboard에 영속할 수 없다.
@@ -3264,6 +3590,19 @@ class PmHandoff:
             f"(dry_run={dry_run}, skip_pytest={skip_pytest}, "
             f"worktree_slot={worktree_slot}, done={done})"
         )
+
+        # ── 0. dirty-tree 게이트 (조기 중단) ──────────────────────────────────
+        # "핸드오프 시작 시점 tree 는 clean" 불변식의 기계 차단. 위치가 load-bearing 이다 —
+        # 어떤 mutation(task state 보장·task pid=0 기록·[2/7] log append)보다도 앞이라 차단돼도
+        # 재실행이 중복 entry 를 만들지 않는다. 회귀([1/7]) **앞**에 두는 이유는 비용이다:
+        # 판정은 git 조회 몇 번(초 단위)인데 회귀는 수 분이라, 뒤에 두면 커밋만 하면 될 PM 이
+        # 회귀 한 판을 통째로 기다린 뒤에야 차단 사유를 본다.
+        print("\n[0/7] dirty-tree 게이트 (미커밋 잔여 — 첫 mutation 전 판정)...")
+        dirty_rc, dirty_ack_note = self._dirty_tree_gate(
+            task, ack_dirty=ack_dirty, auto_trigger=auto_trigger, dry_run=dry_run,
+        )
+        if dirty_rc != 0:
+            return dirty_rc
 
         # ── 1. 회귀 측정 ───────────────────────────────────────────────────────
         # task 회귀 모드: task-only 정체성으로 변경 흔적(lease 스냅 대비
@@ -3380,33 +3719,47 @@ class PmHandoff:
             session_identity = f"{_parsed_slot[0]}_{_parsed_slot[1]}" if _parsed_slot else None
             log_session_tag = session_identity
         normalized_session_num = _normalize_session_num(session_num)
-        if dry_run:
-            log_text = (
-                _read_log_text_exact(self._log_file)
-                if self._log_file.exists() else ""
-            )
-            same_session_rerun, _payload, preview, handoff_warning = (
-                _prepare_handoff_log_change(
-                    log_text,
+        # ack 박제 자리를 못 찾으면(`DirtyAckStampError`) 통과시키지 않는다 — 사유를 잃은 채
+        # 미커밋 세션이 넘어가는 것이 게이트가 막으려는 바로 그 상태다. 예외는 계획 단계에서
+        # 나므로(write 앞) log 는 무접촉이다.
+        try:
+            if dry_run:
+                log_text = (
+                    _read_log_text_exact(self._log_file)
+                    if self._log_file.exists() else ""
+                )
+                same_session_rerun, _payload, preview, handoff_warning = (
+                    _prepare_handoff_log_change(
+                        log_text,
+                        session_num=normalized_session_num,
+                        date=date_str,
+                        worktree_slot=worktree_slot,
+                        branch=branch,
+                        session=log_session_tag,
+                        task=task,
+                        dirty_ack_note=dirty_ack_note,
+                    )
+                )
+            else:
+                # 판정+read-modify-write/append는 helper가 pm_log 공유 락 한 임계구역에서 원자화한다.
+                same_session_rerun, preview, handoff_warning = _commit_handoff_log_change(
+                    self._log_file,
                     session_num=normalized_session_num,
                     date=date_str,
                     worktree_slot=worktree_slot,
                     branch=branch,
                     session=log_session_tag,
                     task=task,
+                    dirty_ack_note=dirty_ack_note,
                 )
+        except DirtyAckStampError as exc:
+            print(
+                f"\n[중단] dirty-tree ack 사유를 handoff entry 에 박제할 수 없다 — {exc}. "
+                f"기존 entry 를 복구하거나 `{DIRTY_ACK_ENTRY_LABEL}: {dirty_ack_note}` 를 "
+                "손으로 적은 뒤 재실행하라 (log/current.md 는 건드리지 않았다).",
+                file=sys.stderr,
             )
-        else:
-            # 판정+read-modify-write/append는 helper가 pm_log 공유 락 한 임계구역에서 원자화한다.
-            same_session_rerun, preview, handoff_warning = _commit_handoff_log_change(
-                self._log_file,
-                session_num=normalized_session_num,
-                date=date_str,
-                worktree_slot=worktree_slot,
-                branch=branch,
-                session=log_session_tag,
-                task=task,
-            )
+            return 1
 
         if handoff_warning is not None:
             print(f"  ⚠ {handoff_warning}", file=sys.stderr)
@@ -3415,6 +3768,8 @@ class PmHandoff:
                 f"[모드] 같은 차수({normalized_session_num}) 재실행 — "
                 "entry 갱신·윈도 shift 생략"
             )
+            if dirty_ack_note:
+                print(f"  ✓ dirty-tree ack 사유 멱등 upsert: {dirty_ack_note}")
             if dry_run:
                 print("  [dry-run] 기존 entry 본문 유지·기계 소유 구획 갱신 미리보기:")
                 print("  " + preview.replace("\n", "\n  "))
@@ -3786,6 +4141,24 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="회귀 측정 skip (기본 측정·대화형 경로).",
     )
+    parser.add_argument(
+        "--ack-dirty",
+        metavar="사유",
+        default=None,
+        help=(
+            "dirty-tree 게이트([0/7]) override — 미커밋 잔여를 두고 나가는 **사유**가 필수다"
+            "(bare 플래그·빈 사유 거부). 사유는 단일행으로 평탄화돼 handoff entry 에 박제된다."
+        ),
+    )
+    parser.add_argument(
+        "--auto-trigger",
+        action="store_true",
+        help=(
+            "비대화 자동 실행 전용 신호 (ctx 정지-핸드오프 등 문서화된 자동 경로). dirty-tree "
+            "게이트를 차단 대신 loud 경고 + 사유 자동 박제로 강등한다 — 자동 실행 시점의 차단은 "
+            "세션 상태를 통째로 잃기 때문이다. **사람이 손으로 쓰는 플래그가 아니다.**"
+        ),
+    )
     # ── 유지보수 모드 (핸드오프 7단계와 독립) ──────────────────────────
     parser.add_argument(
         "--normalize-session-anchors",
@@ -3869,6 +4242,17 @@ def _main(argv: list[str] | None = None) -> int:
             "(multi-PM 모드 회전 재부착 단서)."
         )
 
+    # --ack-dirty 는 **사유 박제**가 목적이라 빈/공백 사유를 받지 않는다 (사유 없는 bare 플래그는
+    # argparse 가 "expected one argument" 로 이미 usage error). 엔진 run() 도 같은 경계를 갖는다.
+    # 개행이 살아 있으면 사유 하나로 가짜 entry 줄을 위조할 수 있어 여기서 단일행으로 평탄화한다
+    # (엔진 `build_dirty_ack_note` 도 같은 choke 를 다시 태운다 — 직접 호출 경로 보호).
+    if args.ack_dirty is not None:
+        if not args.ack_dirty.strip():
+            parser.error(
+                "--ack-dirty 는 사유가 필수다 — 빈 사유로는 dirty-tree 게이트를 override 할 수 없다."
+            )
+        args.ack_dirty = flatten_ack_reason(args.ack_dirty)
+
     # ── 오형식 차수 정규화 모드 (--normalize-session-anchors) ──────
     # 세션 식별 절의 `**N차차+**` → `**N차**` 멱등·비파괴 정규화. 핸드오프
     # 7단계와 독립된 유지보수 모드라 session-seq/wave-summary required 체크 *앞에서* 분기해
@@ -3903,6 +4287,8 @@ def _main(argv: list[str] | None = None) -> int:
         branch=args.branch,
         done=args.done,
         task=identity.task,
+        ack_dirty=args.ack_dirty,
+        auto_trigger=args.auto_trigger,
     )
 
 

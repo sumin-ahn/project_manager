@@ -53,12 +53,15 @@ python3 .project_manager/tools/pm_handoff.py \
 > canonical `--repo <repo> --slot <N>` 으로 준다.
 
 옵션:
-- `--dry-run` — log/current.md / pm_state.md 변경 미적용·stdout 미리보기만.
+- `--dry-run` — log/current.md / pm_state.md 변경 미적용·stdout 미리보기만 (dirty 게이트도 판정 미리보기만·비차단).
 - `--no-pytest` — 회귀 측정 skip (직전 wave 종결 commit 의 숫자 신뢰 시·**비권장**).
+- `--ack-dirty "<사유>"` — [0/7] dirty-tree 게이트 명시 override. 사유 필수(개행은 공백으로 평탄화)·handoff entry 에 박제된다. 정상 경로는 override 가 아니라 **세션 산출을 먼저 커밋**하는 것이다.
+- `--auto-trigger` — 엔진 내부 비대화 자동 실행 전용 예약 플래그(현재 호출부 없음·향후 자동 배선용). dirty 게이트를 차단 대신 loud 경고+사유 자동 박제로 강등한다. 핸드오프는 사용자 명시 종료가 트리거라는 계약은 불변 — PM/사용자가 손으로 쓰는 플래그가 아니다.
 - `--task <이름>` — task 모드의 **정상 사용자 경로**. 세션 종료 연속성 앵커를 slot→task로 이동하며, task 생성 시 만들어진 `.local/tasks/<이름>/pm_state.md`에 기록·dashboard 자기 섹션 `## <이름>`·log 헤더 태그 `(task:<이름>)`. lease는 유지한다(세션 종료 ≠ task 종료). 이름은 **공백·괄호·path 문자 없는 단일 토큰**(슬롯 예약 `<repo>_<N>` 불가)이다.
 
 ## CLI 자동 처리 단계
 
+0. **dirty-tree 게이트** — PM 홈 + 활성 worktree 전수에서 미커밋 잔여(tracked 수정 ∪ untracked-unignored·gitignored 제외)를 판정한다. 잔여가 있으면 어떤 파일도 건드리기 전에 rc 1 차단 + 목록 열거 — **세션 산출을 먼저 커밋**하고 재실행한다(불가피하면 `--ack-dirty "<사유>"`). 커밋 0 트리는 untracked 만으로 판정하고, 비-git 트리는 비차단 경고다.
 1. **회귀 측정** — `pytest tests/ -q`. red 면 즉시 중단·핸드오프 불가 (baseline fix 후 재시도).
 2. **log/current.md handoff entry skeleton append** — `## [YYYY-MM-DD] handoff | PM N차 → 다음 PM 세션` 형식. 본문 = `<PM 손 채움>`.
 3. **pm_state.md sliding window 정리** — §세션 식별 표에 N차 entry 추가 + 가장 오래된 entry 제거. 자세히 → pm_role.md §핸드오프 절차 #4.

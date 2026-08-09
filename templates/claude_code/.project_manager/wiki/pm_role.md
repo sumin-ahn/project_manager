@@ -250,6 +250,7 @@ CLI가 차수·인계 본문·남은작업을 이미 dump하므로 손 추출하
 `/pm-handoff` skill(backbone `pm_handoff.py`)을 사용하고 dry-run을 권장한다(`--dry-run`). task 경로는 `/pm-handoff --task <이름>`만 쓰며 backbone도 `pm_handoff.py --task <이름>`으로 차수·기본 요약·보유 작업공간을 해소한다. 다음 트리거는 `/pm-bootstrap --task <이름>`이다.
 
 자동 처리:
+0. dirty-tree 게이트 — PM 홈 + 활성 worktree 전수의 미커밋 잔여(gitignored 제외)를 어떤 파일 mutation 보다 앞에서 판정. 잔여가 있으면 rc 1 차단 + 목록 열거이며 정상 해소는 세션 산출 선-커밋이다(불가피 시 `--ack-dirty "<사유>"` — 사유는 handoff entry 에 박제). 비대화 자동 실행은 `--auto-trigger`로 차단 대신 loud 경고+사유 자동 박제. 커밋 0 트리는 untracked 만으로 판정, 비-git 트리는 비차단 경고.
 1. local.conf·board regression이 해소한 test_cmd로 회귀 측정. red면 즉시 중단·핸드오프 불가.
 2. `log/current.md` handoff entry skeleton append.
 3. `pm_state.md` 세션 식별 sliding window에 신규 entry 추가·가장 오래된 entry 제거.

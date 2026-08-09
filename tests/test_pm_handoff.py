@@ -2259,7 +2259,7 @@ def test_task_session_inference_advances_after_bootstrap_but_reruns_when_release
     ) == 3
 
 
-def test_task_cli_two_process_rerun_is_idempotent_then_bootstrap_advances(tmp_path):
+def test_task_cli_two_process_rerun_is_idempotent_then_bootstrap_advances(hf, tmp_path):
     """실제 adopter CLI: 같은 task handoff 두 프로세스는 1개, 새 bootstrap 뒤엔 N+1."""
     dest = tmp_path / "task-adopter"
     env = {**os.environ, "PM_NONINTERACTIVE": "1"}
@@ -2283,8 +2283,12 @@ def test_task_cli_two_process_rerun_is_idempotent_then_bootstrap_advances(tmp_pa
 
     boot1 = run("pm_bootstrap.py", "--task", "mytask", "--json")
     assert boot1.returncode == 0, boot1.stdout + boot1.stderr
-    first = run("pm_handoff.py", "--task", "mytask", "--no-pytest")
-    second = run("pm_handoff.py", "--task", "mytask", "--no-pytest")
+    # fresh import 직후의 adopter 트리는 **커밋 0**(scaffold 전량 untracked)이라 [0/7]
+    # dirty-tree 게이트가 정당하게 차단한다. 이 테스트의 대상은 handoff 재실행 멱등성이므로
+    # 사유를 남겨 통과시킨다(게이트 자체는 test_pm_handoff_dirty_gate.py 가 덮는다).
+    ack = ["--ack-dirty", "fresh import scaffold 미커밋 — 멱등성 e2e"]
+    first = run("pm_handoff.py", "--task", "mytask", "--no-pytest", *ack)
+    second = run("pm_handoff.py", "--task", "mytask", "--no-pytest", *ack)
     assert first.returncode == second.returncode == 0, (
         first.stdout + first.stderr + second.stdout + second.stderr
     )
@@ -2294,15 +2298,19 @@ def test_task_cli_two_process_rerun_is_idempotent_then_bootstrap_advances(tmp_pa
     task_state = (
         dest / ".project_manager" / ".local" / "tasks" / "mytask" / "pm_state.md"
     )
-    assert log_file.read_text(encoding="utf-8").count(
-        "handoff | PM 1차 (task:mytask)"
-    ) == 1
+    log_text = log_file.read_text(encoding="utf-8")
+    assert log_text.count("handoff | PM 1차 (task:mytask)") == 1
+    # 재실행이 ack 줄을 쌓지 않는다 — 같은-세션 갱신의 멱등 upsert(실 CLI 2프로세스 확인).
+    assert len([
+        line for line in log_text.splitlines()
+        if line.startswith(hf.DIRTY_ACK_ENTRY_LABEL)
+    ]) == 1
     once_shifted = task_state.read_bytes()
 
     # 진짜 다음 세션은 bootstrap bind가 pid를 다시 채운 뒤 N+1로 전진한다.
     boot2 = run("pm_bootstrap.py", "--task", "mytask", "--json")
     assert boot2.returncode == 0, boot2.stdout + boot2.stderr
-    third = run("pm_handoff.py", "--task", "mytask", "--no-pytest")
+    third = run("pm_handoff.py", "--task", "mytask", "--no-pytest", *ack)
     assert third.returncode == 0, third.stdout + third.stderr
     final_log = log_file.read_text(encoding="utf-8")
     assert final_log.count("handoff | PM 1차 (task:mytask)") == 1
@@ -3094,7 +3102,10 @@ def test_task_shipping_surface_per_changed_slot(hf, tmp_path, capsys, monkeypatc
     )
     box[0] = handoff
     rc = handoff.run(
-        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=False, task="mytask"
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=False, task="mytask",
+        # b_1 stub 은 미커밋 변경이라 [1c] dirty-tree 게이트가 차단한다 — 이 테스트의 대상은
+        # [1b] 슬롯별 출하 surface 이므로 사유를 남기고 통과시킨다(게이트 자체는 전용 테스트에서).
+        ack_dirty="출하 surface 검증용 미커밋 stub",
     )
     assert rc == 0
     out = capsys.readouterr().out
@@ -3146,7 +3157,9 @@ def test_task_shipping_surface_per_changed_slot_under_no_pytest(hf, tmp_path, ca
     )
     box[0] = handoff
     rc = handoff.run(
-        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True, task="mytask"
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=True, task="mytask",
+        # b_1 stub = 미커밋 변경 → [1c] dirty-tree 게이트 대상. 여기 대상은 [1b] surface 다.
+        ack_dirty="출하 surface 검증용 미커밋 stub",
     )
     assert rc == 0
     assert cwds == []   # --no-pytest — 회귀는 실행되지 않는다(열거만 수행).
