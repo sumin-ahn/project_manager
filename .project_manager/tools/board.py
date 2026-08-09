@@ -2894,10 +2894,14 @@ def _distinct_ticket_users() -> int:
     users: set[str] = set()
     for status in STATUS_DIRS:
         for p in (tickets_dir() / status).glob("T-*.md"):
-            try:
-                fm, _ = load_ticket(p)
-            except (OSError, ValueError, yaml.YAMLError):
+            # 순회 소비자는 **공용 soft 로더**를 쓴다(사본 금지) — 자체 except 목록은 비-dict
+            # frontmatter(스칼라·리스트: 파싱은 성공)를 걸러내지 못해 바로 아래 `fm.get` 이
+            # AttributeError 로 죽었다. 기본 `list` 가 이 함수를 먼저 부르므로 보드 조회 전체가
+            # 티켓 한 건 때문에 traceback 이 된다.
+            loaded = load_ticket_soft(p)
+            if loaded is None:
                 continue
+            fm, _ = loaded
             cb_user = _created_by_user(fm.get("created_by"))
             if cb_user:
                 users.add(cb_user)
@@ -2934,10 +2938,12 @@ def scan_task_tickets(user: str | None, task: str,
     prefix_open: list[dict] = []
     for status in STATUS_DIRS:
         for p in sorted((tickets_dir() / status).glob("T-*.md")):
-            try:
-                fm, _ = load_ticket(p)
-            except (OSError, ValueError, yaml.YAMLError):
+            # 순회 소비자 공통 규약 — 손상/비-dict frontmatter 는 공용 soft 로더가 경고 1줄과
+            # 함께 걸러낸다(`_distinct_ticket_users` 동형·자체 except 사본 금지).
+            loaded = load_ticket_soft(p)
+            if loaded is None:
                 continue
+            fm, _ = loaded
             tid = fm.get("id") or p.stem
             row = {"id": tid, "title": fm.get("title") or "", "status": status}
             cb = fm.get("claimed_by") or ""
@@ -5600,11 +5606,15 @@ def ctx_thresholds() -> dict[str, int]:
 
 
 def _ticket_touches(tid: str) -> list[str]:
-    try:
-        _status, path = find_ticket(tid)
-    except FileNotFoundError:
+    """회귀 스코프용 티켓 touches — **canonical ID 정확 일치**만 (아니면 빈 목록 = FULL).
+
+    조회 규칙은 강등 판정(`_gate_ticket`)과 같은 한 지점이다 — 판정은 정확 일치로 하고 스코프는
+    glob 첫 매칭으로 읽으면 두 표면이 서로 다른 티켓을 볼 수 있다(무관 touches 로 좁혀진 '가짜
+    green'). 못 찾으면 빈 목록이고, 호출부는 그때 FULL 로 남긴다(좁히는 방향으로는 안 틀린다)."""
+    found = _gate_ticket(tid)
+    if found is None:
         return []
-    fm, _ = load_ticket(path)
+    fm, _ = load_ticket(found[1])
     return list(fm.get("touches") or [])
 
 
@@ -5650,6 +5660,48 @@ def _last_round_verdict(entry: dict) -> int | None:
     return verdict if isinstance(verdict, int) and not isinstance(verdict, bool) else None
 
 
+def _gate_ticket(gate: str) -> tuple[str, Path] | None:
+    """게이트 이름이 가리키는 티켓의 (status, path) — **canonical ID 정확 일치**만 (아니면 None).
+
+    게이트 이름은 자유 문자열이 실사용이다(장부 실측 `wave4-b1`). 그 문자열을 그대로 조회에
+    넘기면 두 가지가 샌다:
+
+      (a) `find_ticket` 은 `{이름}-*.md` **glob** 이라 legacy ID(`T-NNNN`)가 같은 번호로 시작하는
+         prefixed 티켓(`T-NNNN-001-<slug>.md`)에 오인 매칭된다 — 무관한 티켓의 touches 로 FULL
+         회귀가 targeted 강등되면 그 실행은 '가짜 green'이다. 그래서 파일이 잡혀도 **frontmatter
+         canonical ID**(`_canonical_ticket_id`)가 게이트 이름과 정확히 같을 때만 인정한다.
+      (b) 애초에 티켓 ID 문법(`_is_valid_ticket_id`)이 아닌 라벨은 조회 자체를 생략한다 — glob
+         메타(`*`·`?`·`[`)가 든 이름이 보드를 훑는 것도, 없는 티켓을 매번 찾는 것도 뜻이 없다.
+    """
+    if not _is_valid_ticket_id(gate):
+        return None
+    try:
+        status, path = find_ticket(gate)
+    except (FileNotFoundError, OSError):
+        return None
+    if _canonical_ticket_id(path) == gate:
+        return status, path
+    # 첫 매칭이 다른 티켓이었다 — 같은 glob 의 나머지 후보에서 정확 일치를 찾는다.
+    return _exact_ticket_among_candidates(gate)
+
+
+def _exact_ticket_among_candidates(gate: str) -> tuple[str, Path] | None:
+    """glob 후보들 중 canonical ID 가 **정확히** `gate` 인 티켓 (없으면 None).
+
+    `find_ticket` 은 glob 의 *첫* 매칭을 돌려주므로 legacy ID(`T-NNNN`)와 같은 번호로 시작하는
+    prefixed ID(`T-NNNN-001`)가 공존하면 어느 쪽이 잡힐지 디렉토리 순서가 정한다 — 강등 판정이
+    그 순서에 흔들리지 않게 후보 전체를 본다.
+    탐색 범위·순서는 `find_ticket` 과 같다(STATUS_DIRS → drafts)."""
+    for status in STATUS_DIRS:
+        for path in sorted((tickets_dir() / status).glob(f"{gate}-*.md")):
+            if _canonical_ticket_id(path) == gate:
+                return status, path
+    for path in sorted(drafts_dir().glob(f"{gate}-*.md")):
+        if _canonical_ticket_id(path) == gate:
+            return "draft", path
+    return None
+
+
 def _gate_ticket_is_claimed(gate: str) -> bool:
     """그 게이트 이름이 **현재 claimed 인 티켓**인가 (아니면·못 찾으면 False).
 
@@ -5658,11 +5710,8 @@ def _gate_ticket_is_claimed(gate: str) -> bool:
     쓰는 대신 **이미 있는 데이터**(보드 티켓 status)를 대조한다: 리뷰 사이클은 그 티켓이 작업 중
     (claimed)일 때만 살아 있고, done/open/blocked/draft 는 정의상 라운드를 더 돌지 않는다.
     """
-    try:
-        status, _path = find_ticket(gate)
-    except (FileNotFoundError, OSError):
-        return False
-    return status == "claimed"
+    found = _gate_ticket(gate)
+    return found is not None and found[0] == "claimed"
 
 
 def _active_review_gates() -> list[str]:
@@ -9643,11 +9692,18 @@ _STRICT_REQUIRED_SECTIONS: tuple[str, ...] = (
 _DOD_SECTION = "## 완료 조건"
 _DOD_CHECKED_MARKS = frozenset({"x", "X"})
 _DOD_DEFERRED_MARK = ">"
-# 체크박스 줄: `- [ ] …` / `* [x] …` / `+ [>] …`(들여쓰기 허용·마커 0~1글자).
+# 체크박스 줄: `- [ ] …` / `* [x] …` / `+ [>] …`(들여쓰기 허용·마커 길이 무제한).
 # 불릿 세 종(`-`·`*`·`+`)을 모두 본다 — markdown 이 셋 다 리스트로 렌더하므로 하나라도 빼면
-# 그 표기의 미체크 항목이 조용히 통과한다(fail-open 방향). 마커를 `.?` 로 두는 이유도 같다 —
-# 빈 브라켓(`- []`)은 사람 눈에 미체크지만 1글자 마커만 보면 체크박스로 인식조차 못 해 통과했다.
-_DOD_CHECKBOX_RE = re.compile(r"^\s*[-*+]\s+\[(?P<mark>.?)\]\s?(?P<text>.*)$")
+# 그 표기의 미체크 항목이 조용히 통과한다(fail-open 방향). 마커 길이를 열어 두는 이유도 같다 —
+# 빈 브라켓(`- []`)과 **다문자 마커**(`- [xx]`)는 사람 눈에 체크박스지만 0~1글자만 보면 이 줄이
+# 체크박스로 인식조차 안 돼(=판정 대상 밖) 미체크 항목이 통과했다. 이제 브라켓 불릿은 전부
+# 체크박스로 보고, 통과 마커(`x`·`X`·`>`) 밖은 **미지 마커**로 차단한다.
+#
+# 링크는 체크박스가 아니다 — `- [라벨](경로)`·`- [라벨][ref]` 는 markdown 링크 문법이라 닫는
+# 브라켓 뒤에 `(`/`[` 가 붙는다. 그 두 형태만 lookahead 로 제외한다(정상 본문 오차단 0).
+# `- [[wikilink]]` 는 여는 브라켓이 겹쳐 애초에 매칭되지 않는다.
+_DOD_CHECKBOX_RE = re.compile(
+    r"^\s*[-*+]\s+\[(?P<mark>[^\[\]]*)\](?![\(\[])\s?(?P<text>.*)$")
 # 이월 사유: 같은 줄의 `(이월: <사유·귀속>)` — 괄호 안이 비면 사유가 아니다.
 _DOD_DEFERRED_REASON_RE = re.compile(r"\(이월:\s*\S[^)]*\)")
 # 사람 표면(차단 메시지)의 두 통과 형식 — 한 곳에서 렌더한다.
@@ -9687,8 +9743,26 @@ def _section_text(body: str, heading: str, *, exact: bool = False) -> str | None
 
 
 def _dod_section_text(body: str) -> str | None:
-    """`## 완료 조건` 절 본문 — 공용 슬라이서(`_section_text`)의 DoD 이름."""
-    return _section_text(body, _DOD_SECTION)
+    """`## 완료 조건` 절 본문 — 공용 슬라이서(`_section_text`)의 DoD 이름(**정확 일치**).
+
+    존재 판정은 설계 절과 같은 규칙(`exact`)이다: 헤딩 줄이 그 이름 자체이거나 괄호 부제만
+    붙어야 한다(`## 완료 조건 (Definition of Done)`). 자유 접두 일치는 `## 완료 조건 검토 이력`
+    같은 **다른 절**을 DoD 로 잡아 실제 DoD 를 통째로 가린다 — 그 절엔 체크박스가 없으니 미체크
+    항목이 있어도 완료가 통과했다(fail-open)."""
+    return _section_text(body, _DOD_SECTION, exact=True)
+
+
+def _dod_heading_mismatch(body: str) -> str | None:
+    """`## 완료 조건` 으로 시작하지만 절 이름 규칙에 안 맞는 헤딩 줄 (없으면 None).
+
+    정확 일치 규칙은 오인 매칭을 닫는 대신 **새 사각**을 만든다: `## 완료 조건 (DoD) — 부제`
+    처럼 괄호 밖 부제가 붙은 헤딩은 어느 절로도 안 잡혀 DoD 가 통째로 안 보인다(미체크 항목이
+    있어도 통과 — 닫으려던 그 형상 그대로). 그래서 "정확 일치 실패 + 접두는 일치"를 조용한 통과가
+    아니라 차단 사유로 표면화한다. 펜스 안 인용 헤딩은 슬라이서와 같은 규칙으로 먼저 걷는다."""
+    if _section_text(body, _DOD_SECTION, exact=True) is not None:
+        return None
+    lines = _FENCED_CODE_RE.sub("", body).splitlines()
+    return next((line.strip() for line in lines if line.startswith(_DOD_SECTION)), None)
 
 
 def _dod_open_items(body: str) -> list[str]:
@@ -9699,13 +9773,19 @@ def _dod_open_items(body: str) -> list[str]:
     """
     section = _dod_section_text(body)
     if section is None:
-        return []
+        heading = _dod_heading_mismatch(body)
+        if heading is None:
+            return []                       # DoD 절 자체가 없는 레거시 본문 — 종전대로 무영향.
+        return [f"DoD 절 헤딩 형식: {heading!r} — 절을 식별할 수 없어 미체크 항목을 판정하지 "
+                f"못한다. `{_DOD_SECTION}` 또는 `{_DOD_SECTION} (부제)` 형식으로 쓰라"]
     problems: list[str] = []
     for line in section.splitlines():
         match = _DOD_CHECKBOX_RE.match(line)
         if match is None:
             continue
-        mark = match.group("mark")
+        # 마커는 좌우 공백을 걷고 본다 — `- [ x ]` 는 사람이 체크한 표기다. 걷고도 남는 다문자
+        # (`xx`)는 통과 형식이 아니므로 미지 마커로 차단한다(비인식=통과 폐쇄).
+        mark = match.group("mark").strip()
         text = match.group("text").strip()
         if mark in _DOD_CHECKED_MARKS:
             continue
@@ -9715,7 +9795,8 @@ def _dod_open_items(body: str) -> list[str]:
             problems.append(
                 f"DoD 이월 사유 누락: {text!r} — 이월은 같은 줄에 `(이월: <사유·귀속>)` 필수")
             continue
-        problems.append(f"DoD 미체크: {text!r} — {_DOD_VALUE_FORMS} 로 마감하라")
+        unknown = f"마커 `[{mark}]` 는 통과 형식이 아니다 · " if mark else ""
+        problems.append(f"DoD 미체크: {text!r} — {unknown}{_DOD_VALUE_FORMS} 로 마감하라")
     return problems
 
 
@@ -9792,25 +9873,66 @@ def _validate_design(design: str) -> str | None:
     return None
 
 
+def _design_item_values(section: str) -> dict[str, str]:
+    """설계 절 → {항목 이름: 그 항목의 값 텍스트} (선언 안 된 항목은 키 자체가 없다).
+
+    항목 줄은 `- **경계 실측**: <값>` 형태이고, 값은 그 줄의 나머지 + **다음 항목 줄 직전까지**의
+    이어지는 줄이다 — 값을 하위 불릿으로 적는 실 표기(`- **테스트 전략**:` 다음 줄부터 케이스
+    나열)를 '빈 값'으로 오판하지 않게 한다. 항목 이름은 `_DESIGN_PLACEHOLDER_LABELS` 단일
+    진실이라 라벨이 바뀌면 판정도 같이 바뀐다(사본 0)."""
+    label_res = [
+        (label, re.compile(rf"^\s*[-*+]\s*\**\s*{re.escape(label)}\s*\**\s*[:：](?P<value>.*)$"))
+        for label in _DESIGN_PLACEHOLDER_LABELS
+    ]
+    values: dict[str, list[str]] = {}
+    current: list[str] | None = None
+    for line in section.splitlines():
+        matched = next(
+            ((label, m) for label, pattern in label_res
+             if (m := pattern.match(line)) is not None), None)
+        if matched is not None:
+            label, match = matched
+            current = values.setdefault(label, [])
+            current.append(match.group("value"))
+            continue
+        if current is not None:
+            current.append(line)
+    return {label: "\n".join(lines).strip() for label, lines in values.items()}
+
+
 def _design_section_gaps(body: str) -> list[str]:
     """`## 설계` 절의 미충전 지점 이름 — 절 부재는 절 이름, 충전 완료는 빈 리스트.
 
-    뼈대 토큰 스캔 범위는 **설계 절 슬라이스**다(본문 전체가 아니다). 전체 스캔은 설계 단계를
-    다루는 후속 티켓이 다른 절에서 뼈대 문장을 인용하기만 해도 "미충전"으로 읽는다 — 그 티켓의
-    설계 절은 다 채워져 있는데도 경고가 뜨는 오탐이다. 절 슬라이싱은 DoD 판정과 같은 공용
-    슬라이서를 쓰므로 펜스 안에 인용된 헤딩도 절 시작으로 오인하지 않는다.
+    항목마다 **한 판정**을 낸다(우선순위: 항목 부재 > 값 없음 > 뼈대 잔존):
 
-    **존재 축도 같은 규율이다**: 절 시작은 `## 설계` 헤딩 줄(괄호 부제 허용)이어야 한다(`exact`).
-    자유 접두 일치면 `## 설계 검토 이력` 같은 다른 절이 설계 절로 잡혀, 산문 한 줄만으로
-    `design: done` 이 통과한다 — 펜스 인용은 선-strip 이 이미 막지만 산문 헤딩은 이 축이 막는다.
+      - **항목 부재**·**값 없음** — placeholder 부재만 보면 뼈대를 *지우는 것*만으로 게이트가
+        열린다(빈 `## 설계` 절이나 산문 한 줄짜리 절이 `design: done` 을 통과했다). 4항목
+        (`_DESIGN_PLACEHOLDER_LABELS`)의 존재와 비어 있지 않은 값을 함께 본다.
+      - **뼈대 잔존** — 토큰 스캔 범위는 **설계 절 슬라이스**다(본문 전체가 아니다). 전체 스캔은
+        설계 단계를 다루는 후속 티켓이 다른 절에서 뼈대 문장을 인용하기만 해도 "미충전"으로
+        읽는다. 토큰은 항목 값이 아니라 절 전체에서 찾는다 — 라벨을 지우고 뼈대 문장만 남긴
+        형상도 그 항목의 미충전으로 잡힌다.
+
+    절 슬라이싱은 DoD 판정과 같은 공용 슬라이서를 쓰므로 펜스 안에 인용된 헤딩도 절 시작으로
+    오인하지 않는다. **존재 축도 같은 규율이다**: 절 시작은 `## 설계` 헤딩 줄(괄호 부제 허용)
+    이어야 한다(`exact`). 자유 접두 일치면 `## 설계 검토 이력` 같은 다른 절이 설계 절로 잡혀,
+    산문 한 줄만으로 `design: done` 이 통과한다.
     """
     section = _section_text(body, _DESIGN_SECTION, exact=True)
     if section is None:
         return [f"{_DESIGN_SECTION} 절 부재"]
     prose = _strip_code(section)
-    return [label
-            for token, label in zip(_DESIGN_PLACEHOLDERS, _DESIGN_PLACEHOLDER_LABELS)
-            if token in prose]
+    values = _design_item_values(prose)
+    gaps: list[str] = []
+    for token, label in zip(_DESIGN_PLACEHOLDERS, _DESIGN_PLACEHOLDER_LABELS):
+        value = values.get(label)
+        if value is None:
+            gaps.append(f"{label} 항목 부재")
+        elif not value:
+            gaps.append(f"{label} 값 없음")
+        elif token in prose:
+            gaps.append(label)
+    return gaps
 
 
 def _design_issues(tid: str, body: str, design: Any) -> list[tuple[str, str, str]]:

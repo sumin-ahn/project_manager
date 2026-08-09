@@ -18,6 +18,7 @@ extract_diff·run_review·local_config 를 주입해 실제 git/추가 리뷰어
 """
 from __future__ import annotations
 
+import datetime
 import importlib.util
 import json
 import subprocess
@@ -334,10 +335,14 @@ def test_confirm_fix_quota_is_refunded_when_isolation_fails(
 
 
 def test_confirm_fix_quota_is_per_gate(external, monkeypatch, tmp_path):
-    """quota 는 게이트별이다 — 한 티켓이 썼다고 다른 티켓이 잠기지 않는다."""
-    _wire(external, monkeypatch, tmp_path, series=[0])
-    assert external.main(["--gate", "T-0599", "--paths", "x.py", "--confirm-fix"]) == 0
-    assert external.main(["--gate", "T-0600", "--paths", "x.py", "--confirm-fix"]) == 0
+    """quota 는 게이트별이다 — 한 티켓이 썼다고 다른 티켓이 잠기지 않는다.
+
+    두 게이트 모두 **반려 라운드를 먼저 쓴다** — 확인 전용 라운드는 확인할 지적이 있는 게이트
+    에서만 열리므로(T-0602 ①), 자격을 갖춘 상태에서 quota 의 게이트별 독립성을 본다."""
+    _wire(external, monkeypatch, tmp_path, series=[1, 0, 1, 0])
+    for gate in ("T-0599", "T-0600"):
+        assert external.main(["--gate", gate, "--paths", "x.py"]) == 1     # 반려 1라운드
+        assert external.main(["--gate", gate, "--paths", "x.py", "--confirm-fix"]) == 0
     ledger = _ledger(tmp_path)
     assert ledger["T-0599"]["confirm_fix"] == ledger["T-0600"]["confirm_fix"] == 1
 
@@ -351,6 +356,285 @@ def test_confirm_fix_prompt_carries_the_charter(external, monkeypatch):
     assert "must-fix 로 올리지 말고" in prompt
     # 일반 라운드에는 헌장이 없다 (예외가 기본이 되지 않게).
     assert "확인 전용" not in external.build_prompt(diff="x", gate="T-0593")
+
+
+# ══ ②-a 확인 전용 라운드의 **자격·근거** (T-0602 ①) ══════════════════════════
+# codex R2 지적: 리뷰어는 매 라운드 fresh 세션이고 장부에는 must_fix **개수**만 남았다 — 그래서
+# ① 첫 라운드에서도 `--confirm-fix` 를 쓸 수 있고(확인할 지적이 없는데 통과 판정만 나온다)
+# ② 열리더라도 프롬프트가 직전 지적을 들고 가지 않아 무엇을 확인하는지 모른다.
+# 아래 절은 두 우회를 **그 형상 그대로** 재현하고 차단을 단언한다.
+
+
+class _PromptCapture:
+    """run_review 대역 — 프롬프트를 보관하면서 지정한 must_fix 수를 돌려준다."""
+
+    def __init__(self, series: list[int]):
+        self._series = list(series)
+        self.prompts: list[str] = []
+
+    def __call__(self, *args, **kwargs):
+        must_fix = self._series[min(len(self.prompts), len(self._series) - 1)]
+        self.prompts.append(kwargs.get("prompt") or (args[0] if args else ""))
+        return dict(_result(must_fix))
+
+
+def test_confirm_fix_on_a_first_round_gate_is_refused(
+        external, monkeypatch, tmp_path, capsys):
+    """장부가 없는 **첫 라운드**의 `--confirm-fix` 는 전송 전에 거부된다 (근거 없는 통과 차단).
+
+    재현: 반려 라운드가 하나도 없는 게이트에 확인 전용 라운드를 요청한다(codex R2 지적 형상)."""
+    reviewer = _wire(external, monkeypatch, tmp_path, series=[0])
+
+    rc = external.main(["--gate", "T-0602", "--paths", "x.py", "--confirm-fix"])
+
+    assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
+    assert reviewer.calls == 0                      # 외부 전송 0
+    err = capsys.readouterr().err
+    assert "반려 라운드가 실재하는 게이트" in err
+    assert "첫 리뷰는" in err                        # 처방 1줄
+    assert _ledger(tmp_path) == {}                  # 거부는 장부를 만들지 않는다
+
+
+def test_confirm_fix_on_an_all_pass_gate_is_refused(
+        external, monkeypatch, tmp_path, capsys):
+    """라운드는 있으나 **전건 통과**인 게이트도 자격 미달이다 — 확인할 지적이 없다."""
+    reviewer = _wire(external, monkeypatch, tmp_path, series=[0, 0])
+    argv = ["--gate", "T-0602b", "--paths", "x.py"]
+    assert external.main(argv) == 0
+    capsys.readouterr()
+
+    assert external.main(argv + ["--confirm-fix"]) == external.EXIT_ROUND_LIMIT_EXCEEDED
+    assert reviewer.calls == 1                      # 확인 전용 라운드는 나가지 않았다
+    assert "반려(판정 rc≠0) 라운드가 없습니다" in capsys.readouterr().err
+    assert _ledger(tmp_path)["T-0602b"]["confirm_fix"] == 0   # quota 도 안 쓴다
+
+
+def test_confirm_fix_prompt_carries_the_previous_must_fix_items(
+        external, monkeypatch, tmp_path):
+    """확인 전용 라운드 프롬프트에 **직전 반려 항목 텍스트**가 실린다 (fresh 세션 근거 주입)."""
+    capture = _PromptCapture([2, 0])
+    _wire(external, monkeypatch, tmp_path, series=[2])
+    monkeypatch.setattr(external, "run_review", capture)
+    argv = ["--gate", "T-0602c", "--paths", "x.py"]
+    assert external.main(argv) == 1                 # 반려 1라운드 (근거 생성)
+
+    assert external.main(argv + ["--confirm-fix"]) == 0
+    prompt = capture.prompts[-1]
+    assert "직전 라운드 must-fix" in prompt
+    assert "결함 1" in prompt and "결함 2" in prompt  # 항목 **텍스트** 그대로
+    assert "확인 전용" in prompt                     # 헌장과 같은 프롬프트에 붙는다
+    # 일반 라운드 프롬프트에는 근거 블록이 없다 (예외 전용).
+    assert "직전 라운드 must-fix" not in capture.prompts[0]
+
+
+def test_recorded_must_fix_texts_survive_in_the_reservation_record(
+        external, monkeypatch, tmp_path):
+    """항목 텍스트의 저장 지점은 예약 레코드다 — 정규화(`_gate_entry`)에서 살아남는다."""
+    _wire(external, monkeypatch, tmp_path, series=[2])
+    assert external.main(["--gate", "T-0602d", "--paths", "x.py"]) == 1
+
+    entry = _ledger(tmp_path)["T-0602d"]
+    assert [row.get("must_fix_items") for row in entry["records"]] == [["결함 1", "결함 2"]]
+    # 개수 축(rounds[].must_fix)과 텍스트 축이 같은 파서를 쓴다 — 갈리면 근거가 거짓이 된다.
+    assert entry["rounds"][0]["must_fix"] == 2
+    assert external._gate_entry({"g": entry}, "g")["records"][0]["must_fix_items"] == [
+        "결함 1", "결함 2"]
+
+
+def test_confirm_fix_evidence_comes_from_the_eligibility_snapshot(
+        external, monkeypatch, tmp_path):
+    """자격 판정과 프롬프트 근거는 **같은 스냅샷**에서 나온다 (두 번 읽으면 갈린다).
+
+    재현: 프롬프트 조립 시점의 read 는 반려 *이전* 장부를, 예약 임계 구역의 read 는 반려가 실린
+    장부를 본다(동시 라운드가 그 사이에 마감한 형상). 두 read 를 그대로 두면 "자격 통과 · 근거
+    블록 없음" 라운드가 난다 — 근거 없는 통과 판정 채널이 다시 열리는 것과 같다."""
+    capture = _PromptCapture([0])
+    _wire(external, monkeypatch, tmp_path, series=[0])
+    monkeypatch.setattr(external, "run_review", capture)
+    rejected = {"T-0602i": {
+        "count": 1, "acked_through": 0, "sequence": 1,
+        "records": [{"id": "r1", "sequence": 1, "started_at": "2026-08-09T00:00:00+00:00",
+                     "finished_at": "2026-08-09T00:00:01+00:00", "verdict": True,
+                     "must_fix_items": ["동시 라운드가 남긴 지적"]}],
+        "rounds": [{"ts": "2026-08-09T00:00:01+00:00", "id": "r1", "sequence": 1,
+                    "verdict": 1, "must_fix": 1, "suggestions": None}],
+    }}
+    before_rejection = {"T-0602i": {"count": 0, "acked_through": 0, "sequence": 0,
+                                    "records": [], "rounds": []}}
+    reads = {"n": 0}
+
+    def _load_round_ledger():
+        reads["n"] += 1
+        # 첫 read(프롬프트 조립)만 반려 이전 상태 — 이후 read(자격·마감)는 반려가 실린 장부.
+        import copy
+        return copy.deepcopy(before_rejection if reads["n"] == 1 else rejected)
+
+    monkeypatch.setattr(external, "_load_round_ledger", _load_round_ledger)
+
+    assert external.main(["--gate", "T-0602i", "--paths", "x.py", "--confirm-fix"]) == 0
+    assert reads["n"] >= 2, "스냅샷이 하나뿐이면 이 재현이 성립하지 않는다"
+    prompt = capture.prompts[-1]
+    assert "직전 라운드 must-fix" in prompt
+    assert "동시 라운드가 남긴 지적" in prompt, (
+        "자격은 통과했는데 프롬프트에 근거가 없다 — 두 read 가 갈렸다")
+
+
+def test_legacy_round_without_texts_falls_back_to_the_count(
+        external, monkeypatch, tmp_path):
+    """텍스트 보관분이 없는 구세대 반려 라운드는 **건수 + 재구성 지시**로 떨어진다.
+
+    자격은 그대로 열린다 — '근거가 빈 통과'보다 '무엇을 확인할지 재구성하라'가 낫다."""
+    capture = _PromptCapture([0])
+    _wire(external, monkeypatch, tmp_path, series=[0])
+    monkeypatch.setattr(external, "run_review", capture)
+    ledger = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(json.dumps({"T-0602e": {
+        "count": 1, "acked_through": 0, "sequence": 1,
+        "records": [{"id": "r1", "sequence": 1, "finished_at": "2026-08-09T00:00:00+00:00",
+                     "verdict": True}],
+        "rounds": [{"ts": "2026-08-09T00:00:00+00:00", "id": "r1", "sequence": 1,
+                    "verdict": 1, "must_fix": 3, "suggestions": None}],
+    }}), encoding="utf-8")
+
+    assert external.main(["--gate", "T-0602e", "--paths", "x.py", "--confirm-fix"]) == 0
+    prompt = capture.prompts[-1]
+    assert "직전 라운드 must-fix" in prompt
+    assert "must-fix 건수: 3" in prompt and "재구성" in prompt
+
+
+# ══ ②-b 수렴 상한의 **진행 중 예약** (T-0602 ②) ══════════════════════════════
+# codex R2 지적: 상한 판정이 완료 `rounds` 만 세고 예약된 실행을 무시한다 — 2완료 상태에서 두
+# 실행이 연속 예약되면 둘 다 통과해 상한 3 인데 4라운드가 전송된다. 미마감 예약을 상한에 더해
+# 그 창을 닫는다(미완 재시도 상한과는 역할이 다르다).
+
+
+def _ago(seconds: float) -> str:
+    """지금으로부터 `seconds` 초 전의 UTC ISO 시각 (장부 표기와 같은 형식)."""
+    return (datetime.datetime.now(datetime.timezone.utc)
+            - datetime.timedelta(seconds=seconds)).isoformat()
+
+
+def _seed_rounds(tmp_path, gate: str, *, completed: int, inflight: int,
+                 inflight_age_sec: float = 5) -> None:
+    """완료 산출 `completed` 건 + **미마감 예약** `inflight` 건인 장부를 심는다.
+
+    미마감 예약의 나이(`inflight_age_sec`)가 회수 판정 입력이다 — 하네스 벽시계 백스톱을 넘긴
+    예약은 실행 중일 수 없으므로 상한 합산에서 빠진다."""
+    records = [
+        {"id": f"done{index}", "sequence": index, "started_at": "2026-08-09T00:00:00+00:00",
+         "finished_at": "2026-08-09T00:00:01+00:00", "verdict": True}
+        for index in range(1, completed + 1)
+    ] + [
+        {"id": f"live{index}", "sequence": completed + index,
+         "started_at": _ago(inflight_age_sec)}               # 마감 기록 없음 = 진행 중
+        for index in range(1, inflight + 1)
+    ]
+    rounds = [
+        {"ts": "2026-08-09T00:00:01+00:00", "id": f"done{index}", "sequence": index,
+         "verdict": 1, "must_fix": 2, "suggestions": None}
+        for index in range(1, completed + 1)
+    ]
+    path = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({gate: {
+        "count": completed + inflight, "acked_through": 0,
+        "sequence": completed + inflight, "records": records, "rounds": rounds,
+    }}), encoding="utf-8")
+
+
+def test_inflight_reservation_counts_toward_the_convergence_cap(external, tmp_path):
+    """2완료 + 1예약 = 상한 3 도달 — 완료분만 세면 이 형상이 통과해 4전송이 난다 (순수 판정)."""
+    _seed_rounds(tmp_path, "g", completed=2, inflight=1)
+    ledger = json.loads(
+        (tmp_path / ".project_manager" / ".local" / "review_rounds.json").read_text(
+            encoding="utf-8"))
+    entry = external._gate_entry(ledger, "g")
+    assert external._inflight_reservations(entry) == 1
+    assert external._convergence_round_usage(entry) == (2, 1)
+    assert external._convergence_refusal(entry, 3) == external.CONVERGENCE_CAP_UNRESOLVED
+
+
+def test_second_concurrent_reservation_is_refused_before_sending(
+        external, monkeypatch, tmp_path, capsys):
+    """재현: 2완료 + 1예약(동시 실행 A) 상태에서 실행 B 는 전송 전에 막힌다 (상한 3·4전송 창)."""
+    reviewer = _wire(external, monkeypatch, tmp_path, series=[2])
+    _seed_rounds(tmp_path, "T-0602f", completed=2, inflight=1)
+
+    rc = external.main(["--gate", "T-0602f", "--paths", "x.py"])
+
+    assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
+    assert reviewer.calls == 0                       # 외부 전송 0
+    err = capsys.readouterr().err
+    assert "수렴 게이트 차단" in err
+    assert "진행 중 예약 1" in err                    # 판정 근거를 그대로 보여준다
+    assert _ledger(tmp_path)["T-0602f"]["count"] == 3   # 거부는 예약을 늘리지 않는다
+
+
+def test_completed_rounds_below_the_cap_still_run(external, monkeypatch, tmp_path):
+    """정상 경로 무변경 — 진행 중 예약이 없으면 2완료 상태의 3라운드째는 그대로 나간다."""
+    reviewer = _wire(external, monkeypatch, tmp_path, series=[1])
+    _seed_rounds(tmp_path, "T-0602g", completed=2, inflight=0)
+
+    assert external.main(["--gate", "T-0602g", "--paths", "x.py"]) == 1
+    assert reviewer.calls == 1
+
+
+def test_fresh_reservation_counts_but_a_timed_out_one_does_not(external, tmp_path):
+    """회수 기준은 **하네스 벽시계 백스톱**이다 — 신선 예약은 세고, 초과 예약은 세지 않는다.
+
+    kill·전원차단으로 마감하지 못한 레코드는 영원히 미마감이라, 세면 연장 승인이 없는 수렴 축을
+    영구 잠식한다(중단 2회 = 상한 3 이 라운드 1회). 백스톱을 넘긴 예약은 그 시점에 실행 중일 수
+    없으므로 회수한다."""
+    def _entry(age_sec: float) -> dict:
+        _seed_rounds(tmp_path, "g", completed=0, inflight=1, inflight_age_sec=age_sec)
+        ledger = json.loads(
+            (tmp_path / ".project_manager" / ".local" / "review_rounds.json").read_text(
+                encoding="utf-8"))
+        return external._gate_entry(ledger, "g")
+
+    fresh = _entry(5)
+    assert external._inflight_reservations(fresh, wall_timeout_sec=3600) == 1
+    stale = _entry(3600 + 60)
+    assert external._inflight_reservations(stale, wall_timeout_sec=3600) == 0
+    # 백스톱을 안 넘기면 종전대로 전부 센다(회수는 시간 조건 하나뿐).
+    assert external._inflight_reservations(stale) == 1
+
+
+def test_timed_out_reservation_does_not_lock_the_convergence_axis(
+        external, monkeypatch, tmp_path):
+    """같은 2완료+1예약 형상이라도 그 예약이 **백스톱을 넘겼으면** 라운드는 나간다 (회수 경로).
+
+    신선 예약이면 같은 장부가 차단된다(`test_second_concurrent_reservation_is_refused_before_sending`)
+    — 두 테스트가 회수 기준이 *시간* 하나임을 함께 못박는다. 회수가 없으면 kill 한 번이 상한을
+    영구 잠식한다(연장 승인이 폐지된 축이라 되돌릴 손잡이가 없다)."""
+    reviewer = _wire(external, monkeypatch, tmp_path, series=[1])
+    _seed_rounds(tmp_path, "T-0602j", completed=2, inflight=1,
+                 inflight_age_sec=3600 * 24)             # 하루 전 예약 = 실행 중일 수 없다
+
+    assert external.main(["--gate", "T-0602j", "--paths", "x.py"]) == 1
+    assert reviewer.calls == 1, "회수되지 않은 잔재가 라운드를 잠갔다"
+
+
+def test_refunded_reservation_does_not_hold_the_cap(external, monkeypatch, tmp_path):
+    """전송이 없던 예약은 환불로 레코드째 사라져 상한을 잡아 두지 않는다 (fail-closed 오차단 방지)."""
+    _wire(external, monkeypatch, tmp_path, series=[1])
+    unstarted = {
+        "reviewer": "x", "ok": False, "output": "[리뷰어 명령 없음]",
+        "answer": "[리뷰어 명령 없음]",
+        "verdict": {"has_must_fix": False, "has_pass": False}, "file": None,
+        "failed": True, "started": False, "any_must_fix": False, "all_pass": False,
+    }
+    monkeypatch.setattr(external, "run_review", lambda *a, **k: dict(unstarted))
+    _seed_rounds(tmp_path, "T-0602h", completed=2, inflight=0)
+    assert external.main(["--gate", "T-0602h", "--paths", "x.py"]) == 1
+
+    entry = _ledger(tmp_path)["T-0602h"]
+    assert external._inflight_reservations(external._gate_entry({"g": entry}, "g")) == 0
+    reviewer = _Reviewer([1])
+    monkeypatch.setattr(external, "run_review", reviewer)
+    assert external.main(["--gate", "T-0602h", "--paths", "x.py"]) == 1   # 여전히 열려 있다
+    assert reviewer.calls == 1
 
 
 # ══ ③ diff 서킷브레이커 ═════════════════════════════════════════════════════
@@ -563,3 +847,87 @@ def test_ticket_estimate_is_read_from_frontmatter(external, tmp_path, monkeypatc
     assert external.parse_ticket_estimate("T-0900", pm_home=tmp_path) == "medium"
     assert external.parse_ticket_estimate("T-0901", pm_home=tmp_path) is None
     assert external.parse_ticket_estimate("T-9999", pm_home=tmp_path) is None
+
+
+# ══ ③-b estimate 해석 단일화 (T-0602 ⑥) ═════════════════════════════════════
+# codex R2 지적: 리뷰쪽은 정규식으로 읽어 `estimate: small # reviewed` 를 `small # reviewed` 로
+# 해석해 상한을 조용히 끄고(모르는 값 = 가드 off), 완료쪽(`ticket_finish.get_ticket_estimate`)은
+# 같은 값을 YAML 로 `small` 로 읽는다 — 두 게이트가 다른 값을 본다. 해석을 board 의 frontmatter
+# 로더 하나로 모아 닫는다.
+
+
+def _write_ticket(tmp_path, tid: str, frontmatter: str) -> Path:
+    """tmp board 에 티켓 한 건 — frontmatter 본문만 케이스별로 바꾼다."""
+    tickets = tmp_path / ".project_manager" / "board" / "tickets" / "claimed"
+    tickets.mkdir(parents=True, exist_ok=True)
+    path = tickets / f"{tid}-x.md"
+    path.write_text(f"---\nid: {tid}\n{frontmatter}\ntouches:\n- src/\n---\n\n# 본문\n",
+                    encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("declared, expected", [
+    ("estimate: small # reviewed", "small"),        # 재현 형상 — YAML 주석 꼬리
+    ("estimate: small   # 2026-08-09 PM 재판정", "small"),
+    ("estimate: 'small'", "small"),                 # 인용 형상
+    ('estimate: "medium"  # quoted', "medium"),
+    ("estimate:   large  ", "large"),               # 공백 여백
+    ("estimate: [small]", None),                    # 비-문자열 — 상한을 지어내지 않는다
+    ("estimate:", None),                            # 빈 값 = 가드 off
+])
+def test_estimate_is_read_as_yaml_not_as_a_regex_tail(
+        external, tmp_path, monkeypatch, declared, expected):
+    """주석·인용·여백 형상을 YAML 해석으로 읽는다 — 꼬리를 값에 붙이면 상한이 조용히 꺼진다."""
+    _write_ticket(tmp_path, "T-0910", declared)
+    monkeypatch.setattr(external, "REPO", tmp_path)
+    assert external.parse_ticket_estimate("T-0910", pm_home=tmp_path) == expected
+
+
+def test_commented_estimate_keeps_the_circuit_breaker_on(
+        external, monkeypatch, tmp_path, capsys):
+    """`estimate: small # reviewed` 티켓의 초과 diff 는 그대로 차단된다 (가드 off 폐쇄·e2e)."""
+    reviewer = _wire(external, monkeypatch, tmp_path, series=[0], stub_diff_cap=False)
+    _write_ticket(tmp_path, "T-0911", "estimate: small # reviewed")
+    monkeypatch.setattr(external, "diff_line_total", lambda *a, **k: 301)
+
+    assert external.main(["--gate", "T-0911", "--paths", "x.py"]) == 1
+    assert reviewer.calls == 0                       # 리뷰어 호출 전에 막힌다
+    err = capsys.readouterr().err
+    assert "서킷브레이커 차단" in err and "estimate=small" in err
+
+
+def test_review_and_finish_gates_read_the_same_estimate(external, tmp_path, monkeypatch):
+    """리뷰 게이트와 완료 게이트가 **같은 값**을 읽는다 (두 게이트 불일치 폐쇄).
+
+    완료쪽은 board 로더를 통해 읽으므로, 리뷰쪽도 같은 로더를 쓰는지 실제 두 함수의 반환으로
+    대조한다 — '둘 다 YAML 이겠지' 대신 같은 입력에 같은 답을 요구한다."""
+    finish = _load("ticket_finish")
+    path = _write_ticket(tmp_path, "T-0912", "estimate: small # reviewed")
+    monkeypatch.setattr(external, "REPO", tmp_path)
+    # 완료쪽 board 로더를 tmp 티켓에 묶는 shim — frontmatter 파싱은 **실 board** 그대로다.
+    shim = tmp_path / "board_shim.py"
+    shim.write_text(
+        f"ENGINE_REV = {finish.ENGINE_REV!r}\n"
+        "import importlib.util, pathlib\n"
+        "_spec = importlib.util.spec_from_file_location("
+        f"'shim_board', {str(TOOLS / 'board.py')!r})\n"
+        "_real = importlib.util.module_from_spec(_spec)\n"
+        "_spec.loader.exec_module(_real)\n"
+        f"def find_ticket(tid): return ('claimed', pathlib.Path({str(path)!r}))\n"
+        "load_ticket = _real.load_ticket\n",
+        encoding="utf-8")
+
+    review_side = external.parse_ticket_estimate("T-0912", pm_home=tmp_path)
+    finish_side = finish.get_ticket_estimate(shim, "T-0912")
+    assert review_side == finish_side == "small"
+
+
+def test_corrupt_frontmatter_turns_the_guard_off_without_crashing(
+        external, tmp_path, monkeypatch):
+    """손상 frontmatter 는 가드 off(None) — 상한 조회가 리뷰 실행을 크래시시키지 않는다."""
+    tickets = tmp_path / ".project_manager" / "board" / "tickets" / "claimed"
+    tickets.mkdir(parents=True)
+    (tickets / "T-0913-x.md").write_text(
+        "---\nid: T-0913\ndesign: waived: 인용 없는 콜론\n---\n\n# 본문\n", encoding="utf-8")
+    monkeypatch.setattr(external, "REPO", tmp_path)
+    assert external.parse_ticket_estimate("T-0913", pm_home=tmp_path) is None

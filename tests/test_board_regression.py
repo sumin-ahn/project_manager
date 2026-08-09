@@ -1151,6 +1151,93 @@ def test_downgrade_needs_resolvable_touches(board, monkeypatch, capsys):
     assert _flag(board)["scope"] == "full"
 
 
+# ── 게이트 조회는 canonical ID 정확 일치 (T-0602 ③) ────────────────────────
+# codex R2 지적: 자유 문자열 게이트를 glob 기반 `find_ticket` 에 그대로 넘긴다 — `T-0036` 이
+# `T-0036-001-*.md` 에 오인 매칭되면 **무관한 티켓의 touches** 로 FULL 회귀가 강등된다(그 실행은
+# 아무것도 검증하지 않은 '가짜 green'). 아래는 그 형상을 실 파일로 재현하고 차단을 단언한다.
+
+
+def _seed_ticket_file(board, tid: str, *, status: str, slug: str,
+                      touches: str = "src/pay.py") -> Path:
+    """tmp 보드에 실 티켓 파일을 심는다 (조회는 실 `find_ticket` glob 을 탄다)."""
+    path = board.tickets_dir() / status / f"{tid}-{slug}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    declared = f"touches:\n- {touches}" if touches else "touches: []"
+    path.write_text(
+        f"---\nid: {tid}\ntitle: 픽스처\nstatus: {status}\n{declared}\n---\n\n# 본문\n",
+        encoding="utf-8")
+    return path
+
+
+def test_prefixed_ticket_does_not_answer_for_a_legacy_gate_id(board):
+    """재현: 게이트 `T-0036` · 보드엔 `T-0036-001-*` 만 — glob 은 잡지만 canonical ID 가 다르다."""
+    _seed_ticket_file(board, "T-0036-001", status="claimed", slug="다른-티켓",
+                      touches="src/unrelated.py")
+    # glob 은 실제로 오인 매칭한다(차단이 어디서 서는지 못박는다).
+    assert board.find_ticket("T-0036")[1].name.startswith("T-0036-001")
+
+    assert board._gate_ticket("T-0036") is None
+    assert board._gate_ticket_is_claimed("T-0036") is False
+    assert board._ticket_touches("T-0036") == []     # 무관 touches 로 좁히지 않는다
+
+
+def test_glob_mismatched_gate_never_downgrades_a_full_run(board, monkeypatch, capsys):
+    """그 형상에서 FULL 요청은 강등되지 않는다 — 무관 touches 로 좁힌 '가짜 green' 폐쇄 (DoD)."""
+    _seed_ticket_file(board, "T-0036-001", status="claimed", slug="다른-티켓",
+                      touches="src/unrelated.py")
+    _write_rounds_ledger(board, {"T-0036": [(1, 1)]})
+    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
+
+    assert board.cmd_regression(_run_args()) == 0
+    assert board._active_review_gates() == []
+    assert "강등" not in capsys.readouterr().out
+    assert _flag(board)["scope"] == "full"
+
+
+def test_exact_ticket_gate_still_downgrades(board, monkeypatch, capsys):
+    """정상 경로 무변경 — canonical ID 가 정확히 일치하면 종전대로 그 touches 로 강등한다."""
+    _seed_ticket_file(board, "T-0036", status="claimed", slug="본래-티켓")
+    _seed_ticket_file(board, "T-0036-001", status="claimed", slug="다른-티켓",
+                      touches="src/unrelated.py")
+    _write_rounds_ledger(board, {"T-0036": [(1, 1)]})
+    fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="2 passed in 0.10s\n"))
+
+    assert board.cmd_regression(_run_args()) == 0
+    out = capsys.readouterr().out
+    assert "활성 리뷰 사이클 [T-0036]" in out and "강등" in out
+    assert '-k "pay"' in fake.calls[0]["args"][0]     # 본래 티켓의 touches 로 좁힌다
+
+
+def test_free_form_gate_label_skips_the_ticket_lookup(board, monkeypatch):
+    """티켓 ID 문법이 아닌 라벨(`wave4-b1`·glob 메타)은 조회 자체를 생략한다."""
+    calls: list[str] = []
+
+    def _find(tid):
+        calls.append(tid)
+        raise FileNotFoundError(tid)
+
+    monkeypatch.setattr(board, "find_ticket", _find)
+    for label in ("wave4-b1", "T-*", "T-0036-001-fix", "리뷰", ""):
+        assert board._gate_ticket(label) is None
+        assert board._gate_ticket_is_claimed(label) is False
+    assert calls == [], f"비-ID 라벨이 보드 조회를 탔다: {calls}"
+
+    # canonical ID 는 종전대로 조회한다 (생략 규칙이 정상 게이트를 삼키지 않는다).
+    assert board._gate_ticket("T-0036-001") is None
+    assert calls == ["T-0036-001"]
+
+
+def test_ticket_id_gate_with_empty_touches_stays_full(board, monkeypatch, capsys):
+    """canonical ID 게이트인데 touches 가 비면 강등하지 않는다 — 스코프 없는 좁힘 금지(불변)."""
+    _seed_ticket_file(board, "T-0037", status="claimed", slug="빈-touches", touches="")
+    _write_rounds_ledger(board, {"T-0037": [(1, 1)]})
+    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
+
+    assert board.cmd_regression(_run_args()) == 0
+    assert "강등" not in capsys.readouterr().out
+    assert _flag(board)["scope"] == "full"
+
+
 def test_explicit_scope_is_untouched_by_the_staging_rule(board, monkeypatch, capsys):
     """명시 스코프(`--ticket`/`--touches`)는 종전 그대로다 (강등 판정 자체를 타지 않는다)."""
     _write_rounds_ledger(board, {"T-0002": [(1, 1)]})

@@ -3329,3 +3329,109 @@ def test_designated_mutation_stays_fail_loud(board, monkeypatch, tmp_path):
     with pytest.raises(Exception):
         board.cmd_claim(SimpleNamespace(id="T-0002", repo=None, slot=None, user=None))
     assert ticket.exists(), "차단된 claim 이 티켓을 옮겼다"
+
+
+# ── 순회 소비자 전수 soft 화 (T-0602 ⑦) ──────────────────────────────────────
+# codex R2 지적: soft 로더가 **실제 전체 순회**에 일관되게 연결되지 않았다 — YAML 스칼라·리스트
+# frontmatter(파싱은 성공하나 dict 가 아님)는 자체 except 목록을 통과해 뒤따르는 `fm.get` 에서
+# AttributeError 로 죽고, 기본 `list` 가 그 경로(`_distinct_ticket_users`)를 **먼저** 부른다.
+# 아래는 그 형상 그대로 재현하고, 순회 소비자들이 공용 로더로 접히는지 본다.
+
+_NON_MAPPING_FRONTMATTER = "---\n- 리스트\n- 형상\n---\n# 본문\n"
+_SCALAR_FRONTMATTER = "---\n그냥 스칼라 한 줄\n---\n# 본문\n"
+
+
+def _claimed_ticket_text(tid: str, *, claimed_by: str) -> str:
+    return (f"---\nid: {tid}\ntitle: 정상 티켓\nstatus: claimed\n"
+            f"created_by: tester/{claimed_by}\nclaimed_by: tester/{claimed_by}\n"
+            "depends_on: []\n---\n## 목표\n실값\n\n## 완료 조건\n- [x] 끝\n\n## 참고\n- 없음\n")
+
+
+@pytest.mark.parametrize("text, shape", [
+    (_NON_MAPPING_FRONTMATTER, "리스트"),
+    (_SCALAR_FRONTMATTER, "스칼라"),
+])
+def test_distinct_ticket_users_skips_non_mapping_frontmatter(
+        board, monkeypatch, tmp_path, capsys, text, shape):
+    """재현: 비-dict frontmatter 는 파싱에 성공해 옛 except 목록을 통과했다 — `fm.get` 이 터졌다."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    _ticket(board, "open", "T-0002", text)
+    _ticket(board, "claimed", "T-0001", _claimed_ticket_text("T-0001", claimed_by="pm_1"))
+
+    assert board._distinct_ticket_users() == 1, f"{shape} 형상에서 사용자 신호가 깨졌다"
+    assert "T-0002" in capsys.readouterr().err       # 조용한 드롭이 아니다
+
+
+def test_default_list_view_survives_a_non_mapping_frontmatter_ticket(
+        board, monkeypatch, tmp_path, capsys):
+    """**기본 `list`** e2e — 그 경로가 먼저 부르는 사용자 신호 산정에서 죽지 않는다 (traceback 0).
+
+    무인자 `list`(세션 뷰)는 `_distinct_ticket_users` 를 먼저 부른다 — 비-dict 티켓 1건이 거기서
+    터지면 보드 조회 자체가 불능이 된다(`--all` 경로는 그 산정을 지나지 않아 재현되지 않는다)."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    pm = tmp_path / ".project_manager"
+    (pm / ".local").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(board, "LOCAL_CONF", pm / "local.conf")
+    monkeypatch.setattr(board, "AREAS_FILE", pm / "areas.md")
+    monkeypatch.setattr(board, "LEASES_FILE", pm / ".local" / "worktree-leases.json")
+    (pm / "local.conf").write_text("session=pm_1\nuser=tester\n", encoding="utf-8")
+    monkeypatch.setattr(board, "_git_config_email", lambda: None)
+    _ticket(board, "open", "T-0002", _NON_MAPPING_FRONTMATTER)
+    _ticket(board, "open", "T-0001", _healthy_ticket_text("T-0001"))
+
+    rc = board.cmd_list(SimpleNamespace(
+        status=None, tag=None, mine=False, all=False, task=None, repo=None, slot=None))
+
+    out, err = capsys.readouterr()
+    assert rc == 0
+    assert "T-0002" not in out
+    assert "T-0002" in err
+
+
+def test_scan_task_tickets_skips_broken_and_non_mapping(board, monkeypatch, tmp_path, capsys):
+    """`scan_task_tickets`(task end 소진 게이트)도 같은 공용 로더를 탄다 — 정상분은 그대로 모은다."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    _ticket(board, "claimed", "T-0003", _NON_MAPPING_FRONTMATTER)
+    _ticket(board, "claimed", "T-0002", _BROKEN_FRONTMATTER)
+    _ticket(board, "claimed", "T-0001", _claimed_ticket_text("T-0001", claimed_by="wave-x"))
+
+    scanned = board.scan_task_tickets("tester", "wave-x")
+
+    assert [row["id"] for row in scanned["claimed"]] == ["T-0001"]
+    err = capsys.readouterr().err
+    assert "T-0002" in err and "T-0003" in err        # 두 손상 형상 모두 표면화
+
+
+# 티켓 **순회**에서 strict 로더를 그대로 쓰는 것이 정당한 지점 — 지정 대상 mutation 은 fail-loud
+# 다(T-0601 결정). migrate-identity 는 스캔한 티켓을 *고치는* op 이라, 못 읽은 티켓을 건너뛰면
+# 그 티켓만 마이그레이션에서 조용히 빠진다.
+_STRICT_TICKET_SCAN_FUNCTIONS = frozenset({
+    "_migrate_identity_preview", "_migrate_tickets_apply",
+})
+
+
+def test_ticket_iteration_consumers_use_the_shared_soft_loader(board):
+    """사본 0 — `T-*.md` 를 순회하면서 strict `load_ticket` 을 직접 부르는 함수가 남으면 red.
+
+    사본은 이번 클래스(비-dict frontmatter 미포섭·자체 except 목록)를 그대로 되살린다. mutation
+    op 만 예외이고 그 목록은 위 상수가 소유한다(무언의 예외 금지)."""
+    import ast
+
+    source = (TOOLS / "board.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name in _STRICT_TICKET_SCAN_FUNCTIONS:
+            continue
+        body = ast.get_source_segment(source, node) or ""
+        if 'glob("T-*.md")' not in body:
+            continue
+        calls = {
+            call.func.id for call in ast.walk(node)
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+        }
+        if "load_ticket" in calls:
+            offenders.append(f"{node.name}:{node.lineno}")
+    assert not offenders, f"티켓 순회가 공용 soft 로더를 안 쓴다: {offenders}"

@@ -233,6 +233,77 @@ def test_dod_empty_bracket_blocks(board, line):
         f"빈 브라켓 항목이 통과함: {problems}")
 
 
+# ── 다문자 마커·접두 헤딩 (T-0602 ④) ─────────────────────────────────────────
+# codex R2 지적: ① `- [xx] 항목` 은 마커를 0~1글자로만 보던 정규식에 **체크박스로 인식조차 안 돼**
+# 판정 대상 밖이었고 ② `## 완료 조건 검토 이력` 같은 다른 절이 접두 매칭으로 DoD 를 가렸다.
+# 두 경우 모두 미체크 항목이 남아도 완료가 통과한다 — 아래는 그 형상 그대로 재현하고 차단을 본다.
+
+
+@pytest.mark.parametrize("line, mark", [
+    ("- [xx] 다문자 마커 항목", "xx"),
+    ("- [ x] 앞 공백만 다른 게 아니라 두 글자", "x"),      # strip 후 `x` = 체크 (통과)
+    ("* [WIP] 진행 중 표기", "WIP"),
+    ("+ [x?] 물음표 붙은 마커", "x?"),
+])
+def test_dod_multichar_mark_is_an_unknown_marker(board, line, mark):
+    """다문자 마커는 미지 마커로 **차단**된다 — 단 공백만 걷어 `x` 가 되는 표기는 체크로 본다."""
+    problems = board._complete_gate("T-0602", _gate_args(), _dod_body("- [x] 코드", line))
+
+    if mark == "x":
+        assert problems == [], f"사람이 체크한 `[ x]` 표기가 차단됨: {problems}"
+        return
+    assert any("DoD 미체크" in p and mark in p for p in problems), (
+        f"다문자 마커 {mark!r} 가 판정에서 빠짐(비인식=통과): {problems}")
+
+
+def test_dod_markdown_link_bullet_is_not_a_checkbox(board):
+    """`- [라벨](경로)`·`- [라벨][ref]`·`- [[wikilink]]` 는 링크지 체크박스가 아니다 (오탐 0)."""
+    body = _dod_body(
+        "- [x] 코드",
+        "- [산출물 보고서](.project_manager/wiki/raw/report.md) 첨부",
+        "- [참고][ref-1] 표기",
+        "- [[architecture]] 절 갱신",
+    )
+
+    assert board._complete_gate("T-0602", _gate_args(), body) == []
+
+
+def test_dod_prefix_heading_cannot_hide_the_real_section(board):
+    """`## 완료 조건 검토 이력` 이 앞서 있어도 **실제 DoD** 의 미체크를 잡는다 (접두 매칭 폐쇄)."""
+    body = (
+        "# T-0602 — 픽스처\n\n## 목표\n게이트 판정 입력.\n\n"
+        "## 완료 조건 검토 이력\n- 2026-08-09 PM 이 구두로 확인했다.\n\n"
+        "## 완료 조건 (Definition of Done)\n- [ ] 진짜 미체크 항목\n\n"
+        "## 참고\n- 없음\n"
+    )
+
+    problems = board._complete_gate("T-0602", _gate_args(), body)
+
+    assert any("진짜 미체크 항목" in p for p in problems), (
+        f"접두 헤딩이 실제 DoD 를 가림: {problems}")
+
+
+def test_dod_heading_with_a_parenthesized_subtitle_is_the_section(board):
+    """괄호 부제(`(Definition of Done)`)는 그 절이다 — 정상 티켓 무영향(정확 일치 규칙)."""
+    for heading in ("## 완료 조건", "## 완료 조건 (Definition of Done)", "## 완료 조건 (DoD)"):
+        body = _dod_body("- [ ] 미체크 항목", section=heading)
+        problems = board._complete_gate("T-0602", _gate_args(), body)
+        assert any("미체크 항목" in p for p in problems), f"{heading!r} 절을 못 봤다: {problems}"
+
+
+def test_dod_unidentifiable_heading_blocks_instead_of_passing(board):
+    """괄호 밖 부제가 붙은 헤딩은 조용히 통과시키지 않고 형식 차단으로 표면화한다.
+
+    정확 일치만 요구하면 `## 완료 조건 (DoD) — 부제` 가 어느 절로도 안 잡혀 미체크 항목이 통째로
+    안 보인다(닫으려던 그 형상이 헤딩만 바꿔 되살아난다)."""
+    body = _dod_body("- [ ] 미체크 항목",
+                     section="## 완료 조건 (Definition of Done) — falsifiable verdict")
+
+    problems = board._complete_gate("T-0602", _gate_args(), body)
+
+    assert any("헤딩 형식" in p for p in problems), f"식별 불가 헤딩이 통과함: {problems}"
+
+
 def test_dod_gate_ignores_checkboxes_outside_dod_section(board):
     """DoD 절 **밖**(메모·참고)의 미체크 체크박스는 판정 대상이 아니다(오탐 0)."""
     body = _dod_body("- [x] 코드") + "\n## 메모\n- [ ] 다음 세션 후보 아이디어\n"

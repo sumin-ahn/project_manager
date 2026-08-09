@@ -893,7 +893,10 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 173 = 172 + T-0601 DoD preflight 의 한 경계. 완료 부기가 board 의 DoD 판정을 형제 로드해
     #   **log 스켈레톤 append 앞에서** 한 번 더 묻되, 티켓 부재/손상은 preflight 를 조용히 끄고
     #   (권위 있는 게이트가 뒤에 있다) 마킹된 skew 는 그대로 올린다.
-    assert len(report.boundaries) == 173, "propagation sweep boundary ratchet changed"
+    # 174 = 173 + T-0602 estimate 해석 단일화의 한 경계. 리뷰쪽 estimate 조회가 board 의
+    #   frontmatter 로더를 형제 로드해 완료 게이트와 **같은 값**을 읽되, 티켓 부재/손상은 상한
+    #   가드를 조용히 끄고(엔진이 상한을 지어내지 않는다) 마킹된 skew 는 그대로 올린다.
+    assert len(report.boundaries) == 174, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

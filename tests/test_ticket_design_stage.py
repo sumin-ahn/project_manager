@@ -580,13 +580,107 @@ def test_parenthesized_subtitle_is_still_the_design_section(heading):
         _body(_DESIGN_FILLED.replace("## 설계\n", f"{heading}\n", 1))) == []
 
 
-def test_subtitled_headings_still_slice_by_prefix():
-    """부제가 붙는 절(`## 완료 조건 (Definition of Done)`)은 접두 일치가 정상이다.
+def test_subtitled_headings_are_sliced_by_the_same_rule():
+    """부제가 붙는 절(`## 완료 조건 (Definition of Done)`)도 같은 규칙으로 잡힌다(괄호 부제 허용).
 
-    존재 축 강화가 DoD 슬라이서를 함께 조이면 실 템플릿의 DoD 가 통째로 안 보인다."""
+    존재 축 강화가 DoD 슬라이서를 함께 조여 실 템플릿의 DoD 가 통째로 안 보이면 안 된다."""
     body = _body()
     assert board_mod._dod_section_text(body) is not None
     assert board_mod._dod_open_items(body), "DoD 미체크 항목을 못 봤다 — 슬라이서 회귀"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 설계 절 **실질** 검사 — 4항목의 존재 + 값 (T-0602 ⑤)
+# ════════════════════════════════════════════════════════════════════════
+# codex R2 지적: placeholder 문자열이 없다는 이유로 **빈 `## 설계` 절**이나 임의 산문 한 줄짜리
+# 절도 `design: done` 을 통과했다 — 뼈대를 지우는 것만으로 claim 게이트가 열린다. 항목 이름은
+# `_DESIGN_PLACEHOLDER_LABELS` 단일 진실을 재사용하고, 값이 실제로 있는지까지 본다.
+
+_DESIGN_LABELS = board_mod._DESIGN_PLACEHOLDER_LABELS
+
+
+@pytest.mark.parametrize("section, reason", [
+    ("## 설계\n\n", "빈 절"),
+    ("## 설계\n설계는 리뷰에서 구두로 합의했다.\n\n", "라벨 없는 산문"),
+    ("## 설계\n- 뼈대를 지웠다.\n- 항목 이름도 없다.\n\n", "라벨 없는 불릿"),
+])
+def test_emptied_design_section_no_longer_passes(section, reason):
+    """재현: 뼈대를 **삭제한** 설계 절 — placeholder 0 이지만 4항목 전부 미충전으로 잡힌다."""
+    gaps = board_mod._design_section_gaps(_body(section))
+
+    assert gaps == [f"{label} 항목 부재" for label in _DESIGN_LABELS], (
+        f"{reason} 절이 통과함(뼈대 삭제 우회): {gaps}")
+    issues = board_mod._design_issues("T-0602", _body(section), board_mod.DESIGN_DONE)
+    assert len(issues) == 1 and "미충전" in issues[0][2]
+
+
+def test_declared_item_without_a_value_is_a_gap():
+    """라벨만 남기고 값을 비운 항목도 미충전이다 (형식만 흉내낸 통과 차단)."""
+    section = (
+        "## 설계\n"
+        "- **경계 실측**: `board.py lint` 실행 → rc=0 확인.\n"
+        "- **불변식**:\n"
+        "- **표면 상한**: 입력은 frontmatter 문자열 하나 — 유한.\n"
+        "- **테스트 전략**:   \n\n"
+    )
+
+    assert board_mod._design_section_gaps(_body(section)) == [
+        "불변식 값 없음", "테스트 전략 값 없음"]
+
+
+def test_value_written_as_sub_bullets_is_not_an_empty_value():
+    """값을 하위 불릿으로 적은 실 표기는 '값 없음'이 아니다 (오탐 0 — 다음 항목 줄까지가 값)."""
+    section = (
+        "## 설계\n"
+        "- **경계 실측**: 실행 로그로 확인.\n"
+        "- **불변식**:\n"
+        "  - 어떤 입력에도 rc 는 0 또는 1 이다.\n"
+        "- **표면 상한**: 상태 5종으로 유한.\n"
+        "- **테스트 전략**:\n"
+        "  - 경계값 3종 · 실패 경로 1종.\n\n"
+    )
+
+    assert board_mod._design_section_gaps(_body(section)) == []
+
+
+def test_missing_one_item_names_exactly_that_item():
+    """항목 하나만 지우면 그 항목만 지목한다 (경고가 무엇이 비었는지 말한다)."""
+    section = _DESIGN_FILLED.replace(
+        "- **표면 상한**: 입력은 frontmatter 문자열 하나 — 상태 5종으로 유한.\n", "")
+
+    assert board_mod._design_section_gaps(_body(section)) == ["표면 상한 항목 부재"]
+
+
+def test_skeleton_still_reports_one_gap_per_item():
+    """뼈대 잔존 축은 종전대로다 — 항목마다 판정 1건(부재/값 없음과 중복 보고하지 않는다)."""
+    gaps = board_mod._design_section_gaps(_body(_DESIGN_SKELETON))
+
+    assert gaps == list(_DESIGN_LABELS), f"뼈대 절 판정이 항목당 1건이 아니다: {gaps}"
+
+
+def test_filled_section_stays_clean_and_claimable():
+    """정상 경로 무변경 — 4항목을 실값으로 채운 절은 `design: done` 으로 0건이다."""
+    assert board_mod._design_section_gaps(_body()) == []
+    assert board_mod._design_issues("T-0602", _body(), board_mod.DESIGN_DONE) == []
+
+
+@pytest.mark.parametrize("bullet", ["-", "*", "+"])
+def test_item_detection_accepts_all_bullet_markers(bullet):
+    """불릿 세 종과 굵게 표기 유무는 항목 인식에 영향을 주지 않는다 (표기 편차 흡수)."""
+    lines = "\n".join(
+        f"{bullet} {label}: 실값 {index}." for index, label in enumerate(_DESIGN_LABELS, 1))
+
+    assert board_mod._design_section_gaps(_body(f"## 설계\n{lines}\n\n")) == []
+
+
+def test_claim_blocked_when_done_but_design_section_is_emptied(board, capsys):
+    """claim 게이트 e2e — 뼈대를 지운 빈 설계 절 + `design: done` 은 여전히 차단된다 (DoD)."""
+    _seed_open(board, design=board_mod.DESIGN_DONE, body=_body("## 설계\n\n"))
+
+    assert board.cmd_claim(_claim_args()) == 1
+    err = capsys.readouterr().err
+    assert "설계 단계 미완" in err and "항목 부재" in err
+    assert list((board.TICKETS_DIR / "open").glob("T-*.md")), "차단됐는데 티켓이 open/ 을 떠남"
 
 
 # ════════════════════════════════════════════════════════════════════════

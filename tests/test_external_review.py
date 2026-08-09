@@ -1301,15 +1301,18 @@ def test_spawn_failure_leaves_no_outcome(external, monkeypatch, tmp_path):
 
 def test_confirm_fix_round_keeps_the_outcome_history(
         external, monkeypatch, tmp_path, capsys):
-    """확인 전용 라운드도 산출 이력에 그대로 쌓인다 — 비용 판단 근거는 append-only 다."""
-    _wire(external, monkeypatch, tmp_path, result=_PASS_WITH_ANSWER)
+    """확인 전용 라운드도 산출 이력에 그대로 쌓인다 — 비용 판단 근거는 append-only 다.
+
+    라운드는 **반려**로 채운다 — 확인 전용 라운드는 확인할 지적(반려 라운드)이 있는 게이트에서만
+    열리므로(T-0602 ①), 이력 축을 보려면 자격을 갖춘 형상이어야 한다."""
+    _wire(external, monkeypatch, tmp_path, result=_REJECT_WITH_ANSWER)
     argv = ["--gate", "T-0308", "--paths", "x.py"]
     for _ in range(3):
-        assert external.main(argv) == 0
+        assert external.main(argv) == 1
     assert external.main(argv) == external.EXIT_ROUND_LIMIT_EXCEEDED
     capsys.readouterr()
 
-    assert external.main(argv + ["--confirm-fix"]) == 0
+    assert external.main(argv + ["--confirm-fix"]) == 1
     entry = _ledger(external, tmp_path)["T-0308"]
     assert len(entry["rounds"]) == 4          # 상한 3 + 확인 전용 1 (이력은 append-only)
     assert entry["confirm_fix"] == 1
@@ -1544,18 +1547,40 @@ def test_confirm_fix_does_not_open_the_wave_budget(
     """반대 방향도 같다 — 확인 전용 라운드가 wave 예산을 열지 않는다 (축이 다르다).
 
     거부된 실행은 예외 quota 도 쓰지 않는다 — 쓰지도 못한 라운드로 1회를 소모하면 다음 실행이
-    처방(`--confirm-fix`)을 잃는다."""
-    conf = {"additional_reviewer_enabled": "true", "additional_reviewer_wave_budget": "2"}
-    calls = _wire(external, monkeypatch, tmp_path, conf=conf)
-    for gate in ("T-0316", "T-0317"):
-        assert external.main(["--gate", gate, "--paths", "x.py"]) == 0
+    처방(`--confirm-fix`)을 잃는다. 라운드는 **반려**로 채운다 — 확인 전용 라운드의 자격
+    (반려 라운드 실재·T-0602 ①)을 갖춘 게이트라야 wave 축이 판정 자리에 온다."""
+    conf = {"additional_reviewer_enabled": "true", "additional_reviewer_wave_budget": "3"}
+    calls = _wire(external, monkeypatch, tmp_path, conf=conf, result=_REJECT_WITH_ANSWER)
+    for gate in ("T-0316", "T-0317", "T-0318"):
+        assert external.main(["--gate", gate, "--paths", "x.py"]) == 1
     capsys.readouterr()
 
     rc = external.main(["--gate", "T-0318", "--paths", "x.py", "--confirm-fix"])
     assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
     assert "wave 예산 소진" in capsys.readouterr().err
-    assert calls["n"] == 2
-    assert "T-0318" not in _ledger(external, tmp_path)   # 거부는 quota 도 쓰지 않는다
+    assert calls["n"] == 3
+    # 거부는 quota 도 쓰지 않는다 — 처방이 다음 실행에 살아 있어야 한다.
+    assert _ledger(external, tmp_path)["T-0318"]["confirm_fix"] == 0
+
+
+def test_refused_run_leaves_no_gate_entry_in_the_ledger(
+        external, monkeypatch, tmp_path, capsys):
+    """거부된 실행은 그 게이트의 장부 항목 자체를 만들지 않는다 (전송 0 = 흔적 0).
+
+    항목을 만들어 두면 "라운드를 쓴 적 없는 게이트"가 장부에 나타나 조회 표와 승계 판정이 실제
+    소비와 어긋난다 — 정규화 결과는 통과한 실행만 저장한다."""
+    conf = {"additional_reviewer_enabled": "true", "additional_reviewer_wave_budget": "2"}
+    calls = _wire(external, monkeypatch, tmp_path, conf=conf)
+    for gate in ("T-0330", "T-0331"):
+        assert external.main(["--gate", gate, "--paths", "x.py"]) == 0
+    capsys.readouterr()
+
+    rc = external.main(["--gate", "T-0332", "--paths", "x.py"])   # wave 예산 소진으로 거부
+
+    assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
+    assert "wave 예산 소진" in capsys.readouterr().err
+    assert calls["n"] == 2                                        # 전송 없음
+    assert "T-0332" not in _ledger(external, tmp_path)
 
 
 # ── 두 상한 동시 소진: wave 승인 유실 금지 ──────────────────────────────────
