@@ -2196,8 +2196,15 @@ def _current_truth_doc_paragraphs() -> list[tuple[str, str]]:
     readme = (REPO / "README.md").read_text(encoding="utf-8")
     blocks += [("README.md", para) for para in readme.split("\n\n")]
     changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
-    unreleased = changelog.split("## [Unreleased]", 1)[1].split("\n## [", 1)[0]
+    # 현재-진실 = [Unreleased] + **최신 릴리즈 절 1개** — 릴리즈 확정으로 Unreleased 가 비는
+    # 경계에서도 가드가 공허해지지 않는다(그 아래 절들은 히스토리·비검사 유지).
+    after_unreleased = changelog.split("## [Unreleased]", 1)[1]
+    unreleased = after_unreleased.split("\n## [", 1)[0]
     blocks += [("CHANGELOG.md [Unreleased]", para) for para in unreleased.split("\n\n")]
+    rest = after_unreleased.split("\n## [", 1)
+    if len(rest) == 2:
+        latest = rest[1].split("\n## [", 1)[0]
+        blocks += [("CHANGELOG.md 최신 릴리즈 절", para) for para in latest.split("\n\n")]
     return blocks
 
 

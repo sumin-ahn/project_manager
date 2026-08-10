@@ -41,7 +41,7 @@ _WORKTREE_PREFIX = re.compile(
 
 # baked stamp. 소비처는 이 값을 자기 rev와 대조해 부분 동기된 구 사본을
 # RepoCoordinateError 속성 접근 전에 명시적인 sibling-skew 오류로 막는다.
-ENGINE_REV = "v1.7.1"
+ENGINE_REV = "v1.7.2"
 
 
 class RepoCoordinateError(ValueError):
