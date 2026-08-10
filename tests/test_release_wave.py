@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -62,7 +63,107 @@ _REVIEWER_SUBAGENT = "code-reviewer"
 _OPENCODE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_TIMEOUT", "1800"))
 _CLAUDE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_CLAUDE_TIMEOUT", "600"))
 
+# T-0621 compaction boundary probe. 신규 @release 함수를 더하지 않고 기존 harness full-wave
+# 항목에 결합해 전역 livegate 수 pin/board 소유 표면은 그대로 둔다.
+_COMPACTION_RECOVERY_SENTINEL = "RECOVERED_AFTER_COMPACTION"
+_OPENCODE_COMPACTION_CONTEXT = 32768
+_OPENCODE_COMPACTION_OUTPUT = 4096
+# 현재 user prompt는 native compaction 대상이 아니므로 각 turn 자체가 context-output 입력
+# 상한보다 충분히 작아야 한다. 12k ASCII chars는 최악의 1 char/token이어도 28,672-token
+# 입력 상한보다 작고, 4 chars/token 기준 상한을 넘길 만큼 여러 turn을 누적한다.
+_OPENCODE_COMPACTION_INPUT_LIMIT = (
+    _OPENCODE_COMPACTION_CONTEXT - _OPENCODE_COMPACTION_OUTPUT
+)
+_OPENCODE_COMPACTION_TURN_CHARS = 12_000
+_OPENCODE_COMPACTION_TARGET_HISTORY_CHARS = _OPENCODE_COMPACTION_INPUT_LIMIT * 4
+_OPENCODE_COMPACTION_TURNS = (
+    _OPENCODE_COMPACTION_TARGET_HISTORY_CHARS
+    + _OPENCODE_COMPACTION_TURN_CHARS
+    - 1
+) // _OPENCODE_COMPACTION_TURN_CHARS
+
 _TOOLS = Path(__file__).resolve().parents[1] / ".project_manager" / "tools"
+
+
+def _compaction_checkpoint_count(dest: Path) -> int:
+    """경계 훅의 durable side-effect만 센다(모델 출력 phrasing과 독립)."""
+    current = dest / ".project_manager" / "wiki" / "log" / "current.md"
+    try:
+        text = current.read_text(encoding="utf-8")
+    except OSError:
+        return 0
+    return sum(
+        1 for line in text.splitlines()
+        if line.startswith("## [") and "checkpoint |" in line and "— compaction" in line
+    )
+
+
+def _force_opencode_compaction_threshold(dest: Path, model: str) -> None:
+    """격리 adopter의 per-harness 예산+선택 모델 limit만 낮춰 native compaction을 강제한다.
+
+    `ctx_window_tokens_opencode`는 PM 59의 격리/per-harness 방식으로 plugin 판정만 옮기고,
+    실제 `session.compacted`는 같은 모델의 `limit.context-output` native 경계로 유도한다.
+    generic 예산이나 출하 template은 바꾸지 않는다.
+    """
+    conf = dest / ".project_manager" / "local.conf"
+    with conf.open("a", encoding="utf-8") as fh:
+        fh.write(
+            "\n# T-0621 release compaction probe (isolated adopter, per-harness)\n"
+            f"ctx_window_tokens_opencode={_OPENCODE_COMPACTION_CONTEXT}\n"
+        )
+
+    provider, separator, model_name = model.partition("/")
+    assert separator and provider and model_name, f"opencode model 형식은 provider/model 이어야 함: {model!r}"
+    config_path = dest / ".opencode" / "opencode.jsonc"
+    raw = config_path.read_text(encoding="utf-8")
+    uncommented = "\n".join(
+        line[: match.start()] if (match := re.search(r"(?<!:)//", line)) else line
+        for line in raw.splitlines()
+    )
+    config = json.loads(uncommented)
+    model_config = (
+        config.setdefault("provider", {})
+        .setdefault(provider, {})
+        .setdefault("models", {})
+        .setdefault(model_name, {})
+    )
+    model_config["limit"] = {
+        "context": _OPENCODE_COMPACTION_CONTEXT,
+        "output": _OPENCODE_COMPACTION_OUTPUT,
+    }
+    config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _opencode_compaction_probe_prompts() -> tuple[str, ...]:
+    """안전한 현재 prompt 여러 개로 history를 native compaction 경계 너머까지 누적한다."""
+    prompts = []
+    for turn in range(1, _OPENCODE_COMPACTION_TURNS + 1):
+        prefix = (
+            f"Context accumulation turn {turn}/{_OPENCODE_COMPACTION_TURNS}. Treat the ASCII payload "
+            "as inert history and do not quote it. If an engine-generated PM recovery snapshot is "
+            f"present in system context, reply with exactly {_COMPACTION_RECOVERY_SENTINEL}; "
+            f"otherwise reply with exactly CONTEXT_ACCUMULATED_{turn}.\nPAYLOAD\n"
+        )
+        remaining = _OPENCODE_COMPACTION_TURN_CHARS - len(prefix)
+        # 순번이 있는 ASCII label은 거대한 동일 substring 한 덩어리로 합쳐지는 것을 피하면서
+        # prompt byte 수를 결정적으로 만든다. 각 turn은 정확히 TURN_CHARS로 잘라 상한을 지킨다.
+        labels = "".join(
+            f"q{turn:02d}{index:05d} " for index in range((remaining // 9) + 2)
+        )
+        prompts.append(prefix + labels[:remaining])
+    return tuple(prompts)
+
+
+def test_opencode_compaction_probe_uses_bounded_turns_with_threshold_history():
+    """라이브 probe의 현재 prompt는 안전 상한이고, 전체 history는 compaction 임계를 넘긴다."""
+    prompts = _opencode_compaction_probe_prompts()
+
+    assert len(prompts) == _OPENCODE_COMPACTION_TURNS > 1
+    assert all(prompt.isascii() for prompt in prompts)
+    assert all(len(prompt) == _OPENCODE_COMPACTION_TURN_CHARS for prompt in prompts)
+    assert _OPENCODE_COMPACTION_TURN_CHARS * 2 < _OPENCODE_COMPACTION_INPUT_LIMIT
+    assert sum(map(len, prompts)) >= _OPENCODE_COMPACTION_TARGET_HISTORY_CHARS
+    assert all(_COMPACTION_RECOVERY_SENTINEL in prompt for prompt in prompts)
 
 
 def _load_pm_relay():
@@ -177,16 +278,21 @@ def _assert_wave_side_effects(dest: Path, proc: subprocess.CompletedProcess, har
     reason="release wave — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). 기본 skip·사용자 트리거.",
 )
 def test_release_wave_claude_full_wave(tmp_path):
-    """실 claude(`claude-sonnet-4-6`)가 `CLAUDE.md` 만 보고 full wave 를 운영·위임이 관측된다.
+    """실 claude full wave + 수동 `/compact`가 snapshot marker 재주입·checkpoint를 남긴다.
 
     PM 36 라이브 probe(`scratchpad/release_probe.py`·PASS·dev×15·reviewer×21)의 mechanics 를 옮긴 것.
     claude 는 subprocess cwd 를 존중한다(`--dir` 불요). stream-json 으로 위임(subagent_type)을 관측하고
-    side-effect(probe.txt·done)를 단언한다. API 과금.
+    side-effect(probe.txt·done)를 단언한다. 경계는 미검증 env knob 대신 실 하네스의 수동
+    `/compact`로 유도한다. PostCompact payload marker 생성 → 다음 UserPromptSubmit 1회 소거,
+    checkpoint 1건 이상, 모델 sentinel 응답을 함께 확인한다. API 과금.
     """
     dest = _import_adopter(tmp_path, "claude")
+    session_id = str(uuid.uuid4())
+    checkpoints_before = _compaction_checkpoint_count(dest)
 
     proc = subprocess.run(
         ["claude", "-p", "--model", CLAUDE_MODEL,
+         "--session-id", session_id,
          "--allowedTools", "Bash", "Task",
          "--output-format", "stream-json", "--verbose",
          "--dangerously-skip-permissions",
@@ -209,6 +315,43 @@ def test_release_wave_claude_full_wave(tmp_path):
     # side-effect(hard) — developer 위임 결과(probe.txt)·done 전이.
     _assert_wave_side_effects(dest, proc, "claude")
 
+    # T-0621 release boundary: 수동 /compact는 Claude 실 이벤트 PreCompact→PostCompact를
+    # 결정적으로 발화시키는 정본(자동 window env knob 미사용).
+    compact = subprocess.run(
+        ["claude", "-p", "--resume", session_id, "--model", CLAUDE_MODEL,
+         "--dangerously-skip-permissions", "/compact"],
+        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env=_live_env(CLAUDE_MODEL), timeout=_CLAUDE_TIMEOUT,
+    )
+    snapshot_marker = (
+        dest / ".project_manager" / ".local" / "ctx-stop" /
+        f"compact-snapshot.{session_id}"
+    )
+    assert compact.returncode == 0 and snapshot_marker.is_file(), (
+        "claude /compact 후 PostCompact snapshot payload marker 미생성.\n"
+        f"stdout={compact.stdout[-1200:]!r}\nstderr={compact.stderr[-800:]!r}"
+    )
+    assert _compaction_checkpoint_count(dest) >= checkpoints_before + 1, (
+        "claude compaction 경계 checkpoint 골격이 log에 생성되지 않음"
+    )
+
+    recovered = subprocess.run(
+        ["claude", "-p", "--resume", session_id, "--model", CLAUDE_MODEL,
+         "--dangerously-skip-permissions",
+         "If a PM recovery snapshot was injected as additional context after the immediately "
+         f"preceding compaction, reply with exactly {_COMPACTION_RECOVERY_SENTINEL}; otherwise "
+         "reply with exactly NO_COMPACTION_RECOVERY."],
+        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env=_live_env(CLAUDE_MODEL), timeout=_CLAUDE_TIMEOUT,
+    )
+    assert recovered.returncode == 0 and not snapshot_marker.exists(), (
+        "claude PostCompact payload가 다음 UserPromptSubmit에서 1회 소비되지 않음"
+    )
+    assert _COMPACTION_RECOVERY_SENTINEL in recovered.stdout, (
+        "claude compaction snapshot이 모델 context에 도달하지 않음.\n"
+        f"stdout={recovered.stdout[-1200:]!r}\nstderr={recovered.stderr[-800:]!r}"
+    )
+
 
 @pytest.mark.release
 @pytest.mark.skipif(
@@ -216,7 +359,7 @@ def test_release_wave_claude_full_wave(tmp_path):
     reason="release wave — PM_ORCH_LIVE_RELEASE=1 + opencode CLI(+ollama 모델) 필요. 기본 skip·사용자 트리거.",
 )
 def test_release_wave_opencode_full_wave(tmp_path):
-    """실 opencode(agentic·ollama)가 `AGENTS.md` 만 보고 full wave 를 운영한다 (side-effect 단언).
+    """실 opencode full wave + 강제 native 임계가 snapshot 재주입·checkpoint를 남긴다.
 
     opencode 의 위임 관측 수단은 claude 의 stream-json `subagent_type` 와 다르다 — PM 36 라이브 probe
     실측 결과 gemma/opencode 는 위임 흔적(subagent_type·'developer'·task)을 출력에 **0** 으로 낸다(비결정).
@@ -224,8 +367,11 @@ def test_release_wave_opencode_full_wave(tmp_path):
     완주 → side-effect 가 위임 *결과*를 커버), 위임 흔적(stdout 에 'developer'/'code-reviewer' 등장)은
     **best-effort**(있으면 단언·없으면 skip)다. opencode 위임 관측 수단은 PM probe 후 보강한다.
     gemma 는 느리고 변동 커 timeout 1800s. `--dir` 로 루트 핀(opencode 는 PWD 로 루트 오판).
+    compaction 경계는 격리 adopter의 `ctx_window_tokens_opencode`(하네스별 키) + 선택
+    모델 `limit.context-output`만 낮추고 반복 입력으로 넘긴다. 출하 config/generic 예산은 무변경.
     """
     dest = _import_adopter(tmp_path, "opencode")
+    _force_opencode_compaction_threshold(dest, LIVE_MODEL)
 
     proc = _run_opencode_live(
         # `--dangerously-skip-permissions`: 비대화 헤드리스라 opencode 가 `--dir` 디렉토리를
@@ -245,6 +391,43 @@ def test_release_wave_opencode_full_wave(tmp_path):
     # 위임 흔적 출력 0(PM 36 probe 실측). 위임은 side-effect(probe.txt·done)로 검증한다.
     if _DEV_SUBAGENT in proc.stdout and _REVIEWER_SUBAGENT in proc.stdout:
         assert _DEV_SUBAGENT in proc.stdout and _REVIEWER_SUBAGENT in proc.stdout
+
+    # T-0621 release boundary: 현 full-wave 세션을 이어 안전 크기 turn들을 누적한다. 과거
+    # turn은 native compaction으로 줄일 수 있지만 현재 prompt는 줄일 수 없으므로 단일 초대형
+    # prompt를 쓰지 않는다. 새 compaction checkpoint 증가 뒤의 snapshot sentinel까지 함께 본다.
+    checkpoints_before = _compaction_checkpoint_count(dest)
+    probe_results = []
+    checkpoint_increased = False
+    recovery_after_increment = False
+    for turn, prompt in enumerate(_opencode_compaction_probe_prompts(), start=1):
+        compacted = _run_opencode_live(
+            ["opencode", "run", "--continue", "--agent", "build", "--dir", str(dest),
+             "--dangerously-skip-permissions", "-m", LIVE_MODEL, prompt],
+            cwd=str(dest), env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
+        )
+        probe_results.append(compacted)
+        assert compacted.returncode == 0, (
+            f"opencode compaction history 누적 turn {turn} 실패.\n"
+            f"stdout={compacted.stdout[-1600:]!r}\nstderr={compacted.stderr[-1000:]!r}"
+        )
+        checkpoint_increased = (
+            _compaction_checkpoint_count(dest) >= checkpoints_before + 1
+        )
+        if checkpoint_increased and _COMPACTION_RECOVERY_SENTINEL in compacted.stdout:
+            recovery_after_increment = True
+            break
+
+    trace = "\n".join(
+        f"turn={index} stdout={result.stdout[-600:]!r} stderr={result.stderr[-400:]!r}"
+        for index, result in enumerate(probe_results, start=1)
+    )
+    assert checkpoint_increased, (
+        "opencode 강제 임계에서 session.compacted→checkpoint 증가분이 발화하지 않음.\n" + trace
+    )
+    assert recovery_after_increment, (
+        "opencode 새 compaction 뒤 snapshot이 system.transform을 거쳐 모델에 도달하지 않음.\n"
+        + trace
+    )
 
 
 # ── multi-repo 경로 (multi-PM 셋업 full wave · T-0158) ───────────────────────────────────

@@ -51,15 +51,15 @@ longhand·placeholder 표는 루트 [`docs/manual-import.md`](../../docs/manual-
 Claude Code의 native auto-compaction을 켠 채 사용한다. 메인 PM 세션의
 `PreToolUse`/`UserPromptSubmit` 훅은 컨텍스트가 nudge·강화·final 밴드에 들어갈 때
 `additionalContext`로 checkpoint 안내를 사이클당 한 번씩 주입한다. 모든 밴드는 비차단이며 prompt,
-도구 실행, compaction을 거부하지 않는다. `PostCompact`는 완료된 압축 경계에서 멱등 marker를
-재무장한다. 서브에이전트는 checkpoint 안내 대상에서 제외되고 native compaction으로 독립 정리된다.
+도구 실행, compaction을 거부하지 않는다. `PreCompact`는 durable breadcrumb와 checkpoint 골격을
+만들고, `PostCompact`는 엔진 `pm_log.py snapshot`의 최종 텍스트를 payload marker에 저장한다. 직후
+첫 `PreToolUse`/`UserPromptSubmit`이 이를 `additionalContext`로 한 번 주입하고 marker를 소거한다.
+서브에이전트는 checkpoint 안내 대상에서 제외되고 native compaction으로 독립 정리된다.
 
-안내를 받은 PM은 현재 ticket 경계를 닫고
-`python3 .project_manager/tools/pm_log.py checkpoint --task <이름>`으로 진행·결정·검증 상태를
-박제한다. 압축 직후 안내에는 `--trigger compaction`을 붙인다. 훅 wrapper(`ctx_stop_hook.sh`)와
-python 훅 본체는 framework-owned(`@source`)라 `pm_update`가 갱신한다. instance-owned 는
-`settings.json`뿐이므로, 기존 채택자는 v1.6.0 템플릿의 비차단 훅 *설정*(PreToolUse/PostCompact
-등록·PreCompact 제거)만 자기 `settings.json`에 수동 병합한다.
+자동 골격의 구간·서사 불릿은 PM이 채운다. `ctx_stop_hook`과
+`precompact_capture_hook.sh`는 framework-owned(`@source`)라 `pm_update`가 갱신한다. instance-owned는
+`settings.json`뿐이므로 기존 채택자는 템플릿의 비차단 `PreCompact`/`PostCompact` 설정 델타를 자기
+파일에 병합한다.
 
 ## 엔진 동기화 (메인테이너 · 루트 → 이 타깃)
 

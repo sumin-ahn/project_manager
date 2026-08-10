@@ -37,12 +37,13 @@ self-driven 으로 구동한다. claude_code 의 `CLAUDE.md`+`.claude/`·opencod
 ## Context safety: direct TUI vs. relay
 
 `model_auto_compact_token_limit`은 auto-compaction을 유발하는 숫자 threshold일 뿐 off 스위치가 아니다.
-`hooks.json`도 compaction을 차단하지 않는다. `auto`와 `manual` PreCompact matcher는 각각 JSON
-`systemMessage`로 `[ctx-checkpoint]` 안내를 내고 transaction을 통과시킨다. 안내를 받은 PM은 직전 박제
-경계 이후 구간을 `python3 .project_manager/tools/pm_log.py checkpoint --task <이름> --trigger compaction`으로
-기록한다.
+`hooks.json`도 compaction을 차단하지 않는다. `auto`와 `manual` PreCompact matcher는 checkpoint
+골격을 자동 생성한 뒤 JSON `systemMessage` 안내를 내고 transaction을 통과시킨다. Codex CLI 0.147.0
+로컬 바이너리의 hook event enum에서 `PostCompact` 지원을 확인했으므로 같은 두 matcher를 배선했고,
+이 이벤트는 `pm_log.py snapshot --json`의 엔진 소유 최종 텍스트를 모델에 재주입한다.
 compaction 횟수를 세는 영속 상태는 두지 않는다. 각 handler는 POSIX `command`와 native Windows
-PowerShell-safe `commandWindows`에서 동일한 checkpoint 의미의 JSON을 stdout으로 낸다. Windows payload는
+PowerShell-safe `commandWindows`에서 동일한 checkpoint 의미의 JSON 하나만 stdout으로 낸다. checkpoint
+subprocess stdout/stderr는 전량 폐기하며 PowerShell 5.x 호환을 위해 명령은 `;`로 분리한다. Windows payload는
 PowerShell 5.1 리다이렉션의 cp949 기본값에서도 JSON이 깨지지 않도록 ASCII 안내문을 쓴다.
 
 - direct TUI: 메인테이너 실측(2026-08-06, codex-cli 0.146.0)에서 `^manual$`은 TUI의

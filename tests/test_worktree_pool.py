@@ -1154,6 +1154,65 @@ def test_reclaim_stale_pid_logic_sensitivity(wp, monkeypatch):
     assert wp.reclaim_stale(git_runner=git) == [], "pid 판정 무력화 시 stale 회수돼선 안 됨"
 
 
+def test_shared_pid_alive_windows_uses_query_handle_and_absorbs_oserror(wp):
+    """공용 seam의 Windows 분기는 OpenProcess 조회만 하고 WinError 계열을 부재로 본다."""
+    relay = wp._load_relay()
+    calls = []
+
+    class WindowsApi:
+        def OpenProcess(self, access, inherit, pid):
+            calls.append(("open", access, inherit, pid))
+            return 73
+
+        def CloseHandle(self, handle):
+            calls.append(("close", handle))
+
+    assert relay.pid_is_alive(
+        4321, _platform_name="nt", _windows_api=WindowsApi(),
+    ) is True
+    assert calls == [("open", 0x1000, False, 4321), ("close", 73)]
+
+    class DeadWindowsApi:
+        def OpenProcess(self, access, inherit, pid):
+            raise OSError(87, "invalid parameter")
+
+    assert relay.pid_is_alive(
+        999999, _platform_name="nt", _windows_api=DeadWindowsApi(),
+    ) is False
+
+    # NULL 핸들은 PID 부재만이 아니다 — GetLastError 로 갈라 접근 거부(5)는 생존,
+    # 명백한 부재(87)만 사망으로 본다. 접근 거부 OSError 도 같은 규약(생존 보수).
+    class NullHandleApi:
+        def __init__(self, last_error):
+            self._last_error = last_error
+
+        def OpenProcess(self, access, inherit, pid):
+            return 0
+
+        def GetLastError(self):
+            return self._last_error
+
+    assert relay.pid_is_alive(
+        4321, _platform_name="nt", _windows_api=NullHandleApi(5),
+    ) is True, "접근 거부(NULL+5)는 생존 보수 판정"
+    assert relay.pid_is_alive(
+        999999, _platform_name="nt", _windows_api=NullHandleApi(87),
+    ) is False, "명백한 PID 부재(NULL+87)만 사망"
+
+    class DeniedWindowsApi:
+        def OpenProcess(self, access, inherit, pid):
+            raise OSError(5, "access denied")
+
+    assert relay.pid_is_alive(
+        4321, _platform_name="nt", _windows_api=DeniedWindowsApi(),
+    ) is True, "접근 거부 OSError 는 생존 보수 판정"
+    assert all(
+        relay.pid_is_alive(value, _platform_name="nt", _windows_api=WindowsApi())
+        is False
+        for value in (True, False, 0, -1, "4321", None)
+    )
+
+
 # ════════════════════════════════════════════════════════════════════════
 # force_release
 # ════════════════════════════════════════════════════════════════════════
@@ -6156,6 +6215,34 @@ def test_snapshot_submodule_pins_strips_flag(wp):
     assert pins == [{"path": "vendor/clean", "pin": "aaa111"},
                     {"path": "vendor/drift", "pin": "bbb222"},
                     {"path": "vendor/uninit", "pin": "ccc333"}]
+
+
+def test_snapshot_submodule_pins_preserves_space_path(wp):
+    """공백 경로 submodule 도 전체 경로로 스냅한다 — 경로는 공용 파서 재사용."""
+    sha = "47da353aa9d261e231ec9b6bbaf1a1cbc7626d9c"
+    git = FakeGit(submodule_status_out=f"+{sha} vendor/my lib (heads/master)\n")
+    pins = wp._snapshot_submodule_pins(git)
+    assert pins == [{"path": "vendor/my lib", "pin": sha}]
+
+
+def test_parse_submodule_entries_preserves_flags_and_space_paths(wp):
+    """공용 파서 — describe 를 걷고 공백 경로·미초기화 flag/괄호 경로를 손실 없이 보존한다."""
+    status_out = (
+        f" {'a' * 40} vendor/my lib (heads/main)\n"
+        f"+{'b' * 40} nested/space child (v1-2-gabc1234)\n"
+        f"-{'c' * 40} vendor/uninitialized (archive)\n"
+        f"U{'d' * 40} vendor/conflict (archive)\n"
+    )
+
+    entries = wp._parse_submodule_entries(status_out)
+
+    assert entries == [
+        (" ", "vendor/my lib"),
+        ("+", "nested/space child"),
+        ("-", "vendor/uninitialized (archive)"),
+        ("U", "vendor/conflict (archive)"),
+    ]
+    assert wp._parse_submodule_paths(status_out) == [path for _flag, path in entries]
 
 
 def test_record_git_snapshot_writes_to_ledger(wp):

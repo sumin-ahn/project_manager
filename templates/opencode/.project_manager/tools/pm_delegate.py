@@ -2290,11 +2290,114 @@ def _peer_engine_ledgers() -> tuple[Path, ...]:
         return ()
 
 
+def _cmd_raw_close(argv: list[str]) -> int:
+    """명시한 미마감 raw 장부 레코드를 비정상 종료(rc=-1)로 마감한다."""
+    parser = argparse.ArgumentParser(
+        prog="pm_delegate.py raw close",
+        description="kill·비정상 종료로 남은 raw 장부 레코드 수동 마감",
+    )
+    parser.add_argument("record_ids", nargs="+", metavar="RECORD-ID")
+    parser.add_argument(
+        "--note", default="수동 마감(raw close)", help="마감 사유",
+    )
+    parser.add_argument(
+        "--force", action="store_true", help="생존 PID가 있어도 마감",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        metavar="DIR",
+        help="마감할 raw 출력 디렉터리(그 안의 raw_outputs.json 장부)",
+    )
+    args = parser.parse_args(argv)
+    output_dir = Path(args.output_dir) if args.output_dir is not None else None
+    _raw_dir, ledger_path = _raw_storage(output_dir)
+    resolved_ledger = ledger_path.resolve()
+    relay = _load_relay()
+
+    # 중복 id는 한 레코드에 대한 한 번의 마감 요청으로 정규화한다.
+    record_ids = list(dict.fromkeys(args.record_ids))
+    rows_by_id = {
+        str(row.get("id")): row for row in relay.raw_records(ledger_path)
+    }
+    selected: list[tuple[dict, float]] = []
+    current = datetime.datetime.now(datetime.timezone.utc)
+    for record_id in record_ids:
+        row = rows_by_id.get(record_id)
+        if row is None:
+            print(
+                f"오류: raw 장부 레코드 미발견: {record_id} "
+                f"(장부: {resolved_ledger})",
+                file=sys.stderr,
+            )
+            return 1
+        if row.get("finished_at") is not None:
+            print(
+                f"오류: raw 장부 레코드 이미 마감: {record_id}",
+                file=sys.stderr,
+            )
+            return 1
+        pid = row.get("pid")
+        if not args.force and relay.pid_is_alive(pid):
+            print(
+                f"오류: raw 장부 레코드 PID가 실행 중이어서 마감 거부: "
+                f"{record_id} (pid={pid}; 의도한 우회는 --force)",
+                file=sys.stderr,
+            )
+            return 1
+        started = relay._parse_raw_time(row.get("started_at"))
+        if started is None:
+            print(
+                f"오류: raw 장부 started_at 형식 오류: {record_id}",
+                file=sys.stderr,
+            )
+            return 1
+        selected.append((row, (current - started).total_seconds()))
+
+    for row, elapsed_sec in selected:
+        record_id = str(row["id"])
+        try:
+            relay.finish_raw_record(
+                ledger_path,
+                record_id,
+                rc=-1,
+                elapsed_sec=elapsed_sec,
+                silence_sec=None,
+                now=current,
+                finish_note=args.note,
+            )
+        except ValueError as exc:
+            # 조회 후 다른 프로세스가 먼저 마감한 경합도 rc=1로 fail-loud.
+            print(f"오류: {exc}", file=sys.stderr)
+            return 1
+        print(f"raw 레코드 마감: {record_id}")
+        if not any(
+            str(item.get("id")) == record_id
+            for item in relay.raw_records(ledger_path)
+        ):
+            print(
+                f"경고: raw 레코드 {record_id}는 완료 보존창"
+                f"({relay.RAW_LEDGER_COMPLETED_DAYS}일) 밖이어서 마감과 동시에 "
+                "장부에서 제거됨"
+            )
+    print(f"마감 장부: {resolved_ledger}")
+    return 0
+
+
 def _cmd_raw(argv: list[str]) -> int:
-    """공유 장부의 최근 위임/리뷰 raw를 stdout에 조회한다."""
+    """공유 장부의 raw 조회 또는 명시 레코드 마감을 수행한다."""
+    if argv and argv[0] == "close":
+        return _cmd_raw_close(argv[1:])
     parser = argparse.ArgumentParser(
         prog="pm_delegate.py raw",
-        description="최근 위임·추가 리뷰 raw 장부 조회",
+        description=(
+            "최근 위임·추가 리뷰 raw 장부 조회; close로 미마감 레코드 수동 마감"
+        ),
+        epilog=(
+            "마감 표면: close <RECORD-ID> ... "
+            "[--note NOTE] [--force] [--output-dir DIR]"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--unfinished", action="store_true", help="미마감 레코드만 표시"
@@ -3274,14 +3377,20 @@ def _execute_attempt(
         ),
     )
     observed = _observe_harness_result(harness, stdout)
-    relay.finish_raw_record(
-        ledger_path,
-        record_id,
-        rc=rc,
-        elapsed_sec=elapsed,
-        silence_sec=result.get(RUN_RESULT_SILENCE_SEC),
-        extra=_finished_ledger_fields(observed, resume_session_id),
-    )
+    try:
+        relay.finish_raw_record(
+            ledger_path,
+            record_id,
+            rc=rc,
+            elapsed_sec=elapsed,
+            silence_sec=result.get(RUN_RESULT_SILENCE_SEC),
+            extra=_finished_ledger_fields(observed, resume_session_id),
+        )
+    except relay.RawRecordAlreadyFinished as exc:
+        # 수동 `raw close`(--force) 가 먼저 마감한 충돌 — 첫 마감을 보존하고 실행 결과는
+        # 실패로 바꾸지 않는다(회신은 raw 파일에 이미 박제됨).
+        print(f"경고: 장부 마감 충돌 — {exc} (수동 마감 보존·회신은 raw 파일 참조)",
+              file=sys.stderr)
     return DelegateAttempt(
         harness, model, argv, result, raw_path, observed.session_id,
     )

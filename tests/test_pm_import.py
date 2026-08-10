@@ -4574,10 +4574,10 @@ def test_add_harness_guest_registration_within_namespace_or_flavor_render(
 # 출하 flavor manifest 가 지금 들고 있는 **어댑터 네임스페이스 엔진 파일**(비-`@render`) 수 —
 #   codex `.codex/{pm_orch_codex.py,rules/default.rules}` 2 · opencode `.opencode/{lib,plugins,
 #   pm_orch_opencode.py,.gitignore}` 4 · claude ctx 가드 5종 + `pm_orch_claude.py` +
-#   `run_tests_hook.sh` 7. 구조 단언(파생 집합 일치)과 별개로 **수**를 못박아, 상류가 엔진 파일을
+#   `run_tests_hook.sh` + `precompact_capture_hook.sh` 8. 구조 단언과 별개로 **수**를 못박아,
 #   새로 얹을 때 그것이 guest 채널을 타는지 사람이 한 번 확인하게 만든다(등재 누락 = 그 하네스의
 #   영구 동결). codex 의 2번째가 T-0584 로 편입된 execpolicy rules 다.
-_GUEST_ENGINE_ROW_COUNT = {"codex": 2, "opencode": 4, "claude": 7}
+_GUEST_ENGINE_ROW_COUNT = {"codex": 2, "opencode": 4, "claude": 8}
 
 
 @pytest.mark.parametrize("base,added", _ADD_HARNESS_APPLY_PAIRS)
@@ -4590,7 +4590,7 @@ def test_add_harness_registers_flavor_engine_rows(
     복사만 하고 등재하지 않았고, 등재 유일분이던 `@render` 행은 update plan 에서 전량 차감됐다.
 
     단언 셋: (a) 등재 집합 == 복사 술어 파생 기대집합(host 실소유 차감 포함) · (b) 출하 수 일치
-    (codex 1·opencode 4·claude 7) · (c) 각 엔진 행이 `@target-owned` + 비-`@render` 마커다."""
+    (codex 2·opencode 4·claude 8) · (c) 각 엔진 행이 `@target-owned` + 비-`@render` 마커다."""
     dest = _build_live_instance(pm_import, tmp_path / f"{base}_eng_{added}", base)
     dest_owned = pm_import._dest_manifest_core_paths(dest)
     expected = _expected_guest_engine_paths(pm_import, added, dest_owned)

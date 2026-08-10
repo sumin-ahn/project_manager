@@ -546,16 +546,13 @@ def test_backslash_literal_follows_posix_shell_unescaping(tmp_path):
 
 # ── stale 참조 + 소유권 안내 (정적 가드·양 트리) ────────────────────────────────
 
-def test_hook_has_no_stale_precompact_reference():
-    """훅 주석의 `precompact_capture_hook.sh` 참조 부재 — 출하 트리엔 그 파일이 없다(`56b0162` 삭제).
-
-    루트 `.claude/` 에만 남은 instance-owned 파일이라, 출하 사본을 받은 채택자에겐 dangling 참조였다.
-    """
-    assert not (SHIPPED_HOOK.parent / "precompact_capture_hook.sh").exists(), (
-        "출하 템플릿에 precompact_capture_hook.sh 가 생겼다면 이 가드의 전제를 재검토할 것")
-    for path in (ROOT_HOOK, SHIPPED_HOOK):
-        assert "precompact_capture_hook" not in path.read_text(encoding="utf-8"), (
-            f"{path} 에 stale 참조 재유입")
+def test_shipped_precompact_hook_is_formal_non_recursive_entrypoint():
+    """T-0621로 복귀한 출하 훅은 ctx_stop 본체를 호출하고 자기 재귀 참조가 없다."""
+    precompact = SHIPPED_HOOK.parent / "precompact_capture_hook.sh"
+    assert precompact.is_file()
+    text = precompact.read_text(encoding="utf-8")
+    assert "ctx_stop_hook.py" in text and "--precompact-capture" in text
+    assert text.count("precompact_capture_hook.sh") <= 1
 
 
 def test_hook_header_documents_local_conf_ownership():

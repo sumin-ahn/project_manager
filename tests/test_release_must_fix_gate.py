@@ -5,10 +5,10 @@
 두 표면을 단언한다:
 
   ① 처분 선언 (`external_review.py --resolve-gate <게이트> --into|--fixed`) — 잔여 must-fix 를
-     **어떻게 소화했는지**를 라운드 장부에 기록한다. 이관(`--into`)은 후속 티켓 ID 를, 해소
+     **어떻게 소화했는지**를 라운드 장부에 기록한다. 재설계(`--into`)는 후속 티켓 ID 를, 해소
      (`--fixed`)는 통과로 끝난 **근거 게이트**를 장부 사실로 요구한다.
   ② 릴리즈 차단 (`board.py livegate record`) — 실행 **전에** 장부를 스캔해 미처분/미소화 잔여를
-     rc 비영으로 막는다. 이관은 면제가 아니라 처분이라 대상 티켓이 done 이어야 열린다. 우회
+     rc 비영으로 막는다. 재설계는 면제가 아니라 처분이라 대상 티켓이 done 이어야 열린다. 우회
      플래그는 없고, 판정 입력은 장부의 기록 사실뿐이다(PM 자의 판정이 들어갈 자리 없음).
 
 hermetic: 두 도구의 경로 전역(REPO·LOCAL_DIR·LIVEGATE_FLAG)을 tmp 프로젝트로 재지정하고, 라이브
@@ -128,7 +128,7 @@ def declare(tmp_path, monkeypatch):
 
 
 def test_into_declaration_records_follow_up_ticket(declare, capsys):
-    """`--resolve-gate --into` — 이관 대상 티켓 ID 를 장부에 남긴다 (rc 0)."""
+    """`--resolve-gate --into` — 재설계 대상 티켓 ID 를 장부에 남긴다 (rc 0)."""
     assert declare.run("--resolve-gate", "T-0610", "--into", "T-0611") == 0
     resolution = declare.ledger()["T-0610"]["resolution"]
     assert resolution["kind"] == "into"
@@ -139,7 +139,7 @@ def test_into_declaration_records_follow_up_ticket(declare, capsys):
     assert resolution["round_sequence"] == _REJECTED_ROUNDS[-1]["sequence"]
     assert resolution["rounds"] == len(_REJECTED_ROUNDS)
     out = capsys.readouterr().out
-    assert "이관→T-0611" in out
+    assert "재설계→T-0611" in out
     assert "done 일 때만" in out            # 면제가 아님을 선언 응답이 말한다
 
 
@@ -333,14 +333,14 @@ def test_disposition_must_be_exactly_one(declare, argv, capsys):
 
 
 def test_self_referential_into_is_refused(declare, capsys):
-    """자기 자신으로의 이관은 우회다 — 그 게이트가 done 이라는 사실만으로 잔여가 지워진다."""
+    """자기 자신으로의 재설계는 우회다 — 그 게이트가 done 이라는 사실만으로 잔여가 지워진다."""
     assert declare.run("--resolve-gate", "T-0610", "--into", "T-0610") == 1
     assert declare.ledger()["T-0610"].get("resolution") is None
     assert "자기 자신" in capsys.readouterr().err
 
 
 def test_into_ticket_must_exist_on_board(declare, capsys):
-    """이관 대상이 보드에 없으면 선언 시점에 거부한다 (ID 오기·미생성)."""
+    """재설계 대상이 보드에 없으면 선언 시점에 거부한다 (ID 오기·미생성)."""
     assert declare.run("--resolve-gate", "T-0610", "--into", "T-7777") == 1
     assert declare.ledger()["T-0610"].get("resolution") is None
     assert "보드에서 찾지 못했습니다" in capsys.readouterr().err
@@ -385,14 +385,14 @@ def test_redeclaration_replaces_previous_disposition(declare, capsys):
 
 
 def test_rounds_report_shows_disposition_column(declare, capsys):
-    """`--rounds-report` 처분 열 — 미처분/이관/해소/무대상이 릴리즈 판정과 같은 사실을 보인다."""
+    """`--rounds-report` 처분 열 — 미처분/재설계/해소/무대상이 릴리즈 판정과 같은 사실을 보인다."""
     assert declare.run("--rounds-report") == 0
     report = capsys.readouterr().out
     assert "게이트 T-0610" in report and "처분=미처분" in report
     assert "처분=무대상" in report                       # T-0612 (잔여 없음)
     assert declare.run("--resolve-gate", "T-0610", "--into", "T-0611") == 0
     assert declare.run("--rounds-report") == 0
-    assert "처분=이관→T-0611" in capsys.readouterr().out
+    assert "처분=재설계→T-0611" in capsys.readouterr().out
     assert declare.run("--resolve-gate", "T-0610", "--fixed", "T-0612") == 0
     assert declare.run("--rounds-report") == 0
     assert "처분=해소(근거 T-0612)" in capsys.readouterr().out
@@ -496,18 +496,18 @@ def test_block_records_fail_so_push_hook_stays_closed(release):
 
 
 def test_into_open_ticket_still_blocks(release, capsys):
-    """이관 선언돼도 대상 티켓이 done 이 아니면 차단 유지 — 이관은 면제가 아니다."""
+    """재설계 선언돼도 대상 티켓이 done 이 아니면 차단 유지 — 재설계는 면제가 아니다."""
     _write_ledger(release.proj, {
         "T-0610": _rejected_gate(kind="into", ticket="T-0611")})
     assert release.record() == 1
     assert release.runner.calls == []
     err = capsys.readouterr().err
-    assert "이관 선언 T-0611" in err
+    assert "재설계 선언 T-0611" in err
     assert "아직 done 이 아닙니다(현재 claimed)" in err
 
 
 def test_into_done_ticket_passes(release):
-    """이관 대상이 done 이면 통과 — 같은 릴리즈 안에서 소화된 경우."""
+    """재설계 대상이 done 이면 통과 — 같은 릴리즈 안에서 소화된 경우."""
     _write_ledger(release.proj, {
         "T-0610": _rejected_gate(kind="into", ticket="T-0620")})
     assert release.record() == 0
@@ -515,7 +515,7 @@ def test_into_done_ticket_passes(release):
 
 
 def test_into_unknown_ticket_blocks(release, capsys):
-    """보드에 없는 티켓으로의 이관 선언은 처분으로 인정하지 않는다 (fail-closed)."""
+    """보드에 없는 티켓으로의 재설계 선언은 처분으로 인정하지 않는다 (fail-closed)."""
     _write_ledger(release.proj, {
         "T-0610": _rejected_gate(kind="into", ticket="T-7777")})
     assert release.record() == 1
@@ -587,7 +587,7 @@ def test_unknown_count_on_passing_round_is_not_a_residual(release):
 
 
 def test_unknown_residual_clears_with_disposition(release):
-    """미상 게이트도 처분(이관 done)으로 열린다 — 차단 축과 처분 축이 같은 술어를 쓴다."""
+    """미상 게이트도 처분(재설계 done)으로 열린다 — 차단 축과 처분 축이 같은 술어를 쓴다."""
     _write_ledger(release.proj, {"T-0610": {
         "count": 1, "rounds": list(_UNKNOWN_ROUNDS),
         "resolution": {"kind": "into", "ticket": "T-0620",
@@ -614,7 +614,7 @@ def test_wave_budget_section_is_not_a_gate(release):
 
 def test_corrupt_resolution_is_not_a_disposition(release, capsys):
     """해석할 수 없는 처분 값은 처분이 아니다 — 손상 한 줄이 차단을 열지 않는다."""
-    _write_ledger(release.proj, {"T-0610": _rejected_gate(kind="이관했음", ticket="T-0620")})
+    _write_ledger(release.proj, {"T-0610": _rejected_gate(kind="재설계했음", ticket="T-0620")})
     assert release.record() == 1
     assert "처분 선언 없음" in capsys.readouterr().err
 
@@ -672,7 +672,7 @@ def test_fixed_evidence_gate_removed_from_ledger_blocks(release, capsys):
     ({"rounds": 3}, "`rounds` 형식 오류(int)"),               # 정수 (옛 예외 중단)
     ({"rounds": [{"sequence": 1, "verdict": 1, "must_fix": 3}, "x"]},
      "매핑이 아닌 원소"),                                     # 라운드 원소 손상
-    ({"rounds": list(_REJECTED_ROUNDS), "resolution": "이관함"},
+    ({"rounds": list(_REJECTED_ROUNDS), "resolution": "재설계함"},
      "`resolution` 형식 오류(str)"),                          # 처분 절 손상
 ])
 def test_corrupt_gate_entries_all_block(release, capsys, entry, expected):
@@ -840,6 +840,6 @@ def test_declaration_then_release_uses_one_ledger(tmp_path, monkeypatch, capsys)
     assert board.cmd_livegate(record) == 1                      # 미처분 → 차단
     assert review.main(["--resolve-gate", "T-0610", "--into", "T-0620"]) == 0
     assert (local / "release-must-fix").read_text(encoding="ascii") == "clear\n"
-    assert board.cmd_livegate(record) == 0                      # done 이관 → 통과
+    assert board.cmd_livegate(record) == 0                      # done 재설계 → 통과
     assert board._unresolved_must_fix_gates(_ledger_path(proj)) == []
     capsys.readouterr()

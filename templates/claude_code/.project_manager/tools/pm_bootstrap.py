@@ -3878,6 +3878,8 @@ class PmBootstrap:
             )
             return None
         except Exception as exc:  # noqa: BLE001 — state seed/template 실패를 traceback 대신 loud 진단.
+            if _is_engine_rev_skew(exc):
+                raise  # bind_task 가 중첩 로드한 형제 skew 는 fail-loud(삼키지 않는다).
             print(
                 f"[중단·F1] task {task!r} 생성/재개 중 pm_state 보장에 실패했습니다 — {exc}. "
                 "task 장부만 있는 반쪽 상태로 진행하지 않습니다.",

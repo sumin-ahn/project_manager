@@ -2149,12 +2149,18 @@ def _uncommitted_and_untracked_paths(
     """작업트리 미커밋(staged+unstaged tracked) + untracked 신규파일 경로를 union 반환.
 
     push 시 확실히 올라갈 변경(커밋만 하면 됨). 두 git 호출을 합친다:
-      - `git -C <wt> diff --name-only HEAD`              → staged+unstaged tracked 변경
+      - `git -C <wt> diff --name-only --ignore-submodules=none HEAD`
+                                                         → staged+unstaged tracked 변경 + gitlink drift
       - `git -C <wt> ls-files --others --exclude-standard` → untracked 신규파일(.gitignore 제외)
+    tracked 축의 `--ignore-submodules=none` 은 `.gitmodules`/로컬 config 의 `ignore = all` 을
+    **이 판정에 한해서만** override 한다. 인스턴스 소유 설정은 건드리지 않으면서 submodule HEAD 와
+    상위 pin 이 다른 gitlink 를 놓치지 않는다.
     둘 중 하나라도 비-0 종료면 작업트리 상태 불명 → None (호출부가 ambiguous 처리).
     runner DI seam 경유(hermetic). 예외는 호출부에서 흡수.
     """
-    rc_diff, out_diff = runner(["-C", worktree, "diff", "--name-only", "HEAD"])
+    rc_diff, out_diff = runner(
+        ["-C", worktree, "diff", "--name-only", "--ignore-submodules=none", "HEAD"]
+    )
     if rc_diff != 0:
         return None
     rc_others, out_others = runner(
@@ -2180,7 +2186,8 @@ def _shipping_paths_in_pending_push(
     따라서 커밋된-미push 만 보면(diff <baseline>..HEAD) 정상 핸드오프 시 게이트가 발동하지
     않는다(must-fix). "지금 push 하면 올라갈 변경 전체"를 union 한다:
       - 커밋된 미push: `git -C <wt> diff --name-only <baseline>..HEAD` (baseline 해소된 경우만)
-      - 작업트리 vs HEAD(staged+unstaged tracked): `git -C <wt> diff --name-only HEAD`
+      - 작업트리 vs HEAD(staged+unstaged tracked·gitlink drift):
+        `git -C <wt> diff --name-only --ignore-submodules=none HEAD`
       - untracked 신규파일: `git -C <wt> ls-files --others --exclude-standard`
     이 union ∩ SHIPPING_GLOBS 가 `shipping_hits`.
 
@@ -2307,7 +2314,8 @@ def _dirty_paths_in_tree(
     """트리의 미커밋(tracked modified) ∪ untracked-unignored 경로 — 판정 불가면 None.
 
     정상 경로의 판정 축은 [1b/7] 출하 surface 와 **같은 seam**(`_uncommitted_and_untracked_paths`):
-      - `git -C <tree> diff --name-only HEAD`               → staged+unstaged tracked 변경
+      - `git -C <tree> diff --name-only --ignore-submodules=none HEAD`
+                                                            → tracked 변경 + gitlink drift
       - `git -C <tree> ls-files --others --exclude-standard` → untracked(gitignored 제외)
     `--exclude-standard` 가 "clean 제외 gitignored" 판정 기준을 그대로 만족한다.
 
@@ -2328,6 +2336,40 @@ def _dirty_paths_in_tree(
         return _unborn_head_dirty_paths(tree, runner)
     except Exception:  # noqa: BLE001 — 판정 실패는 크래시가 아니라 '불명'(호출부가 surface).
         return None
+
+
+def _submodule_paths_in_tree(
+    tree: str,
+    runner: Callable[[list[str]], tuple[int, str]],
+) -> list[str] | None:
+    """등록된 재귀 submodule 경로(superproject 상대)를 반환 — 열거 불가면 None.
+
+    `git -C <tree> submodule status --recursive` 하나를 권위로 쓰고, 출력 해석은 동적 로드 seam
+    `_load_worktree_pool` 로 공용 `_parse_submodule_entries`(flag+공백 경로 보존)를 재사용한다.
+    flag `-` 는 미초기화라 working tree 가 없으므로 제외한다. 부재 경로에서 `git -C` 를 돌리면
+    상위 repo 로 올라가 상위 dirty 목록을 중복 반환할 수 있기 때문이다. 빈 출력은 등록된
+    submodule 없음(`[]`)이다. git/파서 로드 실패·해석 불가능한 비어있지 않은 출력은 None 으로
+    흡수해 호출부가 **비차단 경고**로 surface 한다 — 판정 못 한 것을 dirty 로 단정하지 않는다.
+    """
+    try:
+        rc, output = runner(["-C", tree, "submodule", "status", "--recursive"])
+    except Exception:  # noqa: BLE001 — git 부재 등은 판정 불가로 강등.
+        return None
+    if rc != 0:
+        return None
+
+    wp = _load_worktree_pool()
+    parser = getattr(wp, "_parse_submodule_entries", None) if wp is not None else None
+    if not callable(parser):
+        return None
+    try:
+        entries = parser(output)
+    except Exception:  # noqa: BLE001 — 공용 파서/동적 모듈 이상도 판정 불가로 강등.
+        return None
+    if output.strip() and not entries:
+        return None
+    paths = [path for flag, path in entries if flag != "-"]
+    return list(dict.fromkeys(paths))
 
 
 def flatten_ack_reason(reason: str) -> str:
@@ -3139,6 +3181,10 @@ class PmHandoff:
         안 잡힌다 — 슬롯을 따로 넣지 않으면 그 트리의 미커밋 산출은 게이트를 통과한다.
         슬롯 → 트리 변환은 회귀/출하와 같은 `_regression_cwd`(stale 슬롯은 REPO 폴백)라 중복이
         생길 수 있어 순서 보존 dedup 한다.
+
+        반환한 각 앵커 아래 등록된 submodule working tree 전수도 `_dirty_tree_gate` 가
+        `submodule status --recursive` 로 확장 판정한다. 앵커 목록 자체는 기존 list[str] 계약을
+        유지해 task/slot 해소와 submodule 열거 책임을 섞지 않는다.
         """
         trees = [str(REPO)]
         snapshot = self._task_slots_snapshot
@@ -3176,12 +3222,38 @@ class PmHandoff:
         trees = self._dirty_gate_trees(task)
         dirty: list[tuple[str, list[str]]] = []
         unresolved: list[str] = []
+        unresolved_submodules: list[str] = []
+        judged_tree_count = 0
         for tree in trees:
-            paths = _dirty_paths_in_tree(tree, self._run_git_fn)
-            if paths is None:
+            tree_paths = _dirty_paths_in_tree(tree, self._run_git_fn)
+            if tree_paths is None:
                 unresolved.append(tree)
-            elif paths:
-                dirty.append((tree, paths))
+                paths: list[str] = []
+            else:
+                judged_tree_count += 1
+                paths = list(tree_paths)
+
+            submodules = _submodule_paths_in_tree(tree, self._run_git_fn)
+            if submodules is None:
+                # 앵커 자체도 판정 불가면 기존 경고 한 줄이 이미 전체 트리를 대표한다. 앵커는
+                # 판정됐는데 열거만 실패한 경우에만 별도 경고해 silent skip 을 막는다.
+                if tree_paths is not None:
+                    unresolved_submodules.append(tree)
+            else:
+                for submodule in submodules:
+                    sub_tree = str(Path(tree) / submodule)
+                    sub_paths = _dirty_paths_in_tree(sub_tree, self._run_git_fn)
+                    if sub_paths is None:
+                        unresolved.append(sub_tree)
+                        continue
+                    judged_tree_count += 1
+                    prefix = submodule.rstrip("/")
+                    paths.extend(
+                        f"{prefix}/{path.lstrip('/')}" for path in sub_paths
+                    )
+
+            if paths:
+                dirty.append((tree, list(dict.fromkeys(paths))))
         for tree in unresolved:
             # 게이트의 다른 판정 메시지(차단·강등 경고)와 같은 채널(stderr)로 낸다 — "게이트가
             # 못 본 트리" 는 성공 로그가 아니라 경고다.
@@ -3190,14 +3262,20 @@ class PmHandoff:
                 "이 트리는 게이트가 보지 못했다.",
                 file=sys.stderr,
             )
+        for tree in unresolved_submodules:
+            print(
+                f"  ⚠ dirty 판정 불가 — {tree} (submodule status --recursive 실패). "
+                "이 앵커의 서브모듈은 게이트가 보지 못했다.",
+                file=sys.stderr,
+            )
         dirty_count = sum(len(paths) for _tree, paths in dirty)
         if not dirty:
             if ack_dirty:
                 print("  --ack-dirty 무시 — 판정 결과 clean(박제할 잔여 없음).")
-            print(f"  ✓ clean — 미커밋/untracked 없음 (판정 트리 {len(trees)}개).")
+            print(f"  ✓ clean — 미커밋/untracked 없음 (판정 트리 {judged_tree_count}개).")
             return 0, None
 
-        print(f"  미커밋 잔여 {dirty_count}건 (판정 트리 {len(trees)}개):")
+        print(f"  미커밋 잔여 {dirty_count}건 (판정 트리 {judged_tree_count}개):")
         for tree, paths in dirty:
             print(f"  ▷ {tree} — {len(paths)}건:")
             for line in _format_dirty_paths(paths):

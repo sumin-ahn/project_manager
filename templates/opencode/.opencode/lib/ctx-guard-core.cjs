@@ -29,6 +29,8 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const childProcess = require("node:child_process");
+const crypto = require("node:crypto");
 
 // ── 엔진 기본값 (board.py CTX_*_PCT_DEFAULT 미러 — 폴백 전용) ──────────────────
 // T-0207 상향(20/10→30/20). stop 값은 computeCtxState 파리티와 nudge2 파생에 계속 쓰인다.
@@ -50,6 +52,8 @@ const LOCAL_CONF_REL = path.join(".project_manager", "local.conf");
 // 세션 parentID 역조회는 ctx guard 의 보조 입력이다. SDK가 응답하지 않아 이벤트 처리가 멈추지
 // 않도록 짧게 제한한다.
 const SESSION_LOOKUP_TIMEOUT_MS = 1000;
+const SNAPSHOT_TIMEOUT_MS = 3000;
+const CHECKPOINT_TIMEOUT_MS = 5000;
 
 // ── 순수 함수: local.conf 파싱 (board.local_config 미러 — KEY=value·# 주석 무시) ──
 function parseLocalConf(text) {
@@ -186,23 +190,11 @@ function buildNudge2Guidance(state, thresholds) {
   );
 }
 
-// ── 순수 함수: compaction 후 checkpoint 안내문 ─────────────────────────────
-function buildCompactedGuidance() {
-  return (
-    `[ctx-checkpoint/압축후] compaction이 방금 일어났다. ` +
-    `직전 박제 경계 이후 구간을 ` +
-    `\`python3 .project_manager/tools/pm_log.py checkpoint --task <이름> --trigger compaction\` ` +
-    `으로 기록하고, 생성된 골격의 구간·서사 불릿을 즉시 채워 요약 직후 ` +
-    `결정·진행·검증 상태를 보충 박제하라. ` +
-    `(ADR-0081).`
-  );
-}
-
 // ── 엔진 루트 탐색: directory 에서 위로 .project_manager 를 찾는다 ───────────
 function findEngineRoot(startDir) {
   let dir = startDir;
   for (let i = 0; i < 12 && dir; i++) {
-    if (fs.existsSync(path.join(dir, ".project_manager", "tools", "pm_handoff.py"))) {
+    if (fs.existsSync(path.join(dir, ".project_manager", "tools", "pm_log.py"))) {
       return dir;
     }
     const parent = path.dirname(dir);
@@ -210,6 +202,67 @@ function findEngineRoot(startDir) {
     dir = parent;
   }
   return null;
+}
+
+// ── compaction 엔진 호출: git-anchor-core의 spawnSync+python3→python+timeout 패턴 동형 ──
+function runPmLog(root, args, options = {}, spawnSync = childProcess.spawnSync) {
+  if (!root) return null;
+  const engine = path.join(root, ".project_manager", "tools", "pm_log.py");
+  const capture = options.capture === true;
+  for (const py of ["python3", "python"]) {
+    const result = spawnSync(py, [engine, ...args], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: options.timeout || SNAPSHOT_TIMEOUT_MS,
+      maxBuffer: 32 * 1024,
+      stdio: capture ? ["ignore", "pipe", "ignore"] : ["ignore", "ignore", "ignore"],
+    });
+    if (result && result.error && result.error.code === "ENOENT") continue;
+    return result || null;
+  }
+  return null;
+}
+
+function buildCompactionSnapshot(root, cwd, spawnSync = childProcess.spawnSync) {
+  // Builder command token: pm_log.py snapshot. stdout payload는 변형 없이 system[]에 전달한다.
+  const result = runPmLog(
+    root,
+    ["snapshot", "--cwd", String(cwd || root)],
+    { capture: true, timeout: SNAPSHOT_TIMEOUT_MS },
+    spawnSync,
+  );
+  return result && result.status === 0 && typeof result.stdout === "string" && result.stdout
+    ? result.stdout
+    : null;
+}
+
+function buildCompactionFallbackGuidance() {
+  return (
+    "[ctx-checkpoint] compaction이 방금 일어났지만 PM snapshot을 읽지 못했다. " +
+    "현재 task의 pm_state와 log/current.md를 확인하고, 필요하면 pm_log.py checkpoint로 경계를 보충하라."
+  );
+}
+
+function createCompactionBoundaryID(sessionID) {
+  // count는 plugin 재시작 때 0으로 돌아가므로 dedup ID에 쓰지 않는다. UTC+UUID 축을 앞에 두어
+  // pm_log의 marker 길이 상한에서도 재시작 불변 유일 성분이 잘리지 않게 한다.
+  const utc = new Date().toISOString().replace(/[-:.]/g, "");
+  return `opencode-${utc}-${crypto.randomUUID()}-${String(sessionID || "unknown")}`;
+}
+
+function createCompactionCheckpoint(
+  root, cwd, sessionID, boundaryID, spawnSync = childProcess.spawnSync,
+) {
+  const args = [
+    "checkpoint", "--trigger", "compaction", "--cwd", String(cwd || root), "--phase", "post",
+  ];
+  if (typeof sessionID === "string" && sessionID.trim()) {
+    args.push("--session-id", sessionID.trim());
+  }
+  if (typeof boundaryID === "string" && boundaryID.trim()) {
+    args.push("--boundary-id", boundaryID.trim());
+  }
+  runPmLog(root, args, { capture: false, timeout: CHECKPOINT_TIMEOUT_MS }, spawnSync);
 }
 
 // ── plugin 팩토리 (진입점 ../plugins/ctx-guard.js 가 ESM named-export 로 재노출·opencode autoload) ──
@@ -243,6 +296,7 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
   }
 
   const root = findEngineRoot(directory || worktree || process.cwd());
+  const hookCwd = directory || worktree || process.cwd();
 
   // local.conf 직접 파싱 (thresholds·budget 공용·1회 캐시). root 없거나 실패 시 {}.
   function loadConf() {
@@ -372,15 +426,16 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
         // compaction 이후 사용량이 낮아지는 새 사이클에서 사전 밴드 안내가 다시 발화하도록 재무장.
         session.fired.nudge = false;
         session.fired.nudge2 = false;
-        // opencode v1.18.5 packages/opencode/src/plugin/index.ts 의 event dispatcher는 hook Promise를
-        // await하지 않는다. auto-continue의 첫 system.transform보다 앞서도록 첫 await 전에 적재한다.
-        const stagedGuidance = buildCompactedGuidance();
-        session.pendingNudgeText = stagedGuidance;
-
-        if (await isChildSession(sessionID)) {
-          if (session.pendingNudgeText === stagedGuidance) session.pendingNudgeText = null;
-          return;
-        }
+        // snapshot 본문/렌더는 pm_log.py 단일 소유. plugin은 builder stdout을 verbatim 적재한다.
+        // 자식 세션은 snapshot/checkpoint 모두 면제다. 최대 3초 동기 subprocess 전에 판정해
+        // 면제 대상 compaction 이벤트가 메인 세션용 snapshot 때문에 멈추지 않게 한다.
+        if (await isChildSession(sessionID)) return;
+        const stagedSnapshot = buildCompactionSnapshot(root, hookCwd);
+        const stagedNotice = stagedSnapshot || buildCompactionFallbackGuidance();
+        session.pendingNudgeText = stagedNotice;
+        createCompactionCheckpoint(
+          root, hookCwd, sessionID, createCompactionBoundaryID(sessionID),
+        );
         await notifyCompacted();
         return;
       }
@@ -454,9 +509,15 @@ module.exports = {
   computeCtxState,
   buildNudgeGuidance,
   buildNudge2Guidance,
-  buildCompactedGuidance,
   findEngineRoot,
+  runPmLog,
+  buildCompactionSnapshot,
+  buildCompactionFallbackGuidance,
+  createCompactionBoundaryID,
+  createCompactionCheckpoint,
   SESSION_LOOKUP_TIMEOUT_MS,
+  SNAPSHOT_TIMEOUT_MS,
+  CHECKPOINT_TIMEOUT_MS,
   NUDGE_PCT_DEFAULT,
   STOP_PCT_DEFAULT,
   NUDGE2_MARGIN_PCT,

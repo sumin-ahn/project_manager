@@ -7,6 +7,36 @@
 
 ## [Unreleased]
 
+### Added
+- **compaction 경계 기계화 (3하네스)** — 컨텍스트 압축 경계의 보존·복구를 LLM 규율에서 기계
+  실행으로 승격. 엔진 스냅샷 빌더(`pm_log.py snapshot` — 장부 직접 읽기·git 호출 0·3초/8,000자/
+  24,000바이트 상한·포인터 중심)가 주입 텍스트를 단일 소유하고, 어댑터는 이벤트 바인딩+그대로
+  주입만 한다: claude 는 PreCompact 훅 정식 등재 + marker-armed 1회 재주입, opencode 는
+  `session.compacted` 관측 주입, codex 는 PreCompact/PostCompact 배선. 체크포인트 골격은 경계에서
+  기계 생성하며(서사 채움은 PM 판단) 경계 dedup 은 UTC+UUID 식별자·경계별 pending 파일로
+  archive/재시작/동시 경계에 안전하다. 정체성 해소는 cwd→lease → 활성 단일 task → solo/legacy
+  3순위·해소 실패는 훅 경로만 무음 skip(수동 명령은 fail-loud).
+- **raw 장부 kill 잔재 수동 마감 CLI** — `pm_delegate.py raw close <RECORD-ID> ...`.
+  kill/비정상 종료로 미마감으로 남은 raw 레코드를 정식 마감한다(`rc=-1` 표기·`--note` 사유·
+  살아있는 pid 는 거부하고 `--force` 로만 우회). 장부 부기 전용이며 프로세스·raw 파일은
+  건드리지 않는다. pid 생존 판정은 공용 seam `pm_relay.pid_is_alive` 로 승격 — Windows 는
+  `OpenProcess` 조회(비파괴·접근 거부는 생존 보수 판정)이며 worktree 회수와 같은 판정을 쓴다.
+
+### Fixed
+- **핸드오프 dirty-tree 게이트의 서브모듈 미탐지 폐쇄** — 게이트가 등록 서브모듈 working tree
+  내부의 미커밋 잔여와 gitlink pin 미갱신을 상위 기준 상대경로로 열거·차단한다.
+  `.gitmodules` 의 `ignore = all` 설정에서도 발동하며(게이트 판정에 한해
+  `--ignore-submodules=none` override) 미초기화 서브모듈은 제외한다. `git submodule status`
+  파싱은 공용 파서로 단일화해 공백 경로·충돌(`U`) 행을 손실 없이 보존한다.
+
+### Changed
+- **추가 리뷰어 코드 리뷰 라운드 상한 기본값 3→2** — `review_rounds_max` 기본값만 이동.
+  `local.conf` 에 값을 명시한 인스턴스는 영향 없다. 근거는 장부 실측: 관측된 3라운드째는
+  전부(8/8) 반려였고, green 종결 6건 중 5건이 2R(나머지 1건은 명세 빈틈 병리의 6R)였다.
+- **must-fix 잔여 처분 표기 "이관" → "재설계"** — 상한 도달의 출구가 재설계·티켓 분할임을
+  표기에 반영. CLI 메시지·도움말·문서 표기만 바뀌며 장부 JSON 스키마·`--into` 플래그·판정
+  로직은 무변경(기존 장부 기록도 새 표기로 렌더된다).
+
 ## [1.7.2] - 2026-08-10
 
 ### 업그레이드 노트

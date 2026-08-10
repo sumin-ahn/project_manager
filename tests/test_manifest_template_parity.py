@@ -63,6 +63,7 @@ CLAUDE_ONLY_PATHS = {
     ".claude/agents",
     ".claude/ctx_guard.py", ".claude/ctx_stop_hook.py", ".claude/ctx_stop_hook.sh",
     ".claude/ctx_statusline.py", ".claude/ctx_statusline.sh",
+    ".claude/precompact_capture_hook.sh",
     ".claude/pm_orch_claude.py", ".claude/run_tests_hook.sh",
 }
 # codex 트리(ADR-0070)의 정당한 manifest 차이(3-way·화이트리스트). claude_code 대비:
@@ -94,6 +95,7 @@ CODEX_DROPPED_PATHS = CLAUDE_ONLY_PATHS | {".claude/skills"}
 CLAUDE_HOOK_PATHS = frozenset({
     ".claude/ctx_guard.py", ".claude/ctx_stop_hook.py", ".claude/ctx_stop_hook.sh",
     ".claude/ctx_statusline.py", ".claude/ctx_statusline.sh",
+    ".claude/precompact_capture_hook.sh",
     ".claude/pm_orch_claude.py", ".claude/run_tests_hook.sh",
 })
 OPENCODE_HOOK_PATHS = frozenset({
@@ -275,6 +277,21 @@ def test_claude_manifests_register_engine_mirror_hooks_and_driver():
                 f"{name} manifest {rel} 의 @source remap 이 templates/claude_code/ 를 가리키지 않음: {src!r}")
 
 
+def test_compaction_adapters_reference_engine_builder_without_copying_snapshot_labels():
+    """재주입 하네스는 builder command token만 갖고 최종 텍스트 라벨은 pm_log 한 곳에만 둔다."""
+    adapters = {
+        "claude": TEMPLATE_ROOTS["claude_code"] / ".claude" / "ctx_stop_hook.py",
+        "opencode": TEMPLATE_ROOTS["opencode"] / ".opencode" / "lib" / "ctx-guard-core.cjs",
+        "codex": TEMPLATE_ROOTS["codex"] / ".codex" / "hooks.json",
+    }
+    builder_labels = ("## PM 정체성 (compaction 복구)", "## 장부 포인터", "## pm_state 머리", "## 복구 포인터")
+    for harness, path in adapters.items():
+        text = path.read_text(encoding="utf-8")
+        assert "pm_log.py snapshot" in text, f"{harness}: builder command token 누락"
+        assert not any(label in text for label in builder_labels), (
+            f"{harness}: 엔진 전용 snapshot 라벨을 adapter가 복제함")
+
+
 def test_opencode_manifest_registers_engine_mirror_hooks_and_driver():
     """opencode manifest 가 ctx-guard core/plugin·relay 드라이버를 @source 로 등록 (T-0305·T-0303 채널).
 
@@ -327,14 +344,13 @@ def test_all_manifests_self_propagate():
 
 
 def test_instance_owned_config_not_registered():
-    """adopter config(settings.json·opencode.jsonc·루트 doc·local.conf·precompact)는 manifest 밖·미전파 (T-0305 DoD).
+    """adopter config(settings.json·opencode.jsonc·루트 doc·local.conf)는 manifest 밖·미전파.
 
     hooks/driver 는 전파하되 adopter-소유 config 는 전파하지 않는다(customization clobber 방지·ADR-0032 Q3).
-    precompact_capture_hook.sh 는 ship 템플릿 부재·루트 settings 전용이라 engine-mirror 아님(미등록)."""
+    precompact_capture_hook.sh는 T-0621로 @source 정식 등재되어 이 금지 집합에서 빠졌다."""
     forbidden = {
         "root": (ROOT_MANIFEST, {
-            ".claude/settings.json", ".claude/precompact_capture_hook.sh",
-            "CLAUDE.md", ".project_manager/local.conf"}),
+            ".claude/settings.json", "CLAUDE.md", ".project_manager/local.conf"}),
         "claude_code": (CC_MANIFEST, {".claude/settings.json", "CLAUDE.md"}),
         "opencode": (OC_MANIFEST, {".opencode/opencode.jsonc", "AGENTS.md", "AGENTS.lite.md"}),
         # codex(ADR-0070·§3.6): AGENTS.md(공통 코어 root doc)·.codex/config.toml·.codex/hooks.json 는
@@ -425,6 +441,13 @@ def _engine_content_diffs(template_root: Path, manifest_entries=None) -> list[st
     for entry in manifest_entries:
         if getattr(entry, "render", False) or getattr(entry, "target_owned", False):
             continue  # 렌더/타깃소유 = byte-copy 계약 밖
+        if (
+            getattr(entry, "source_rel", None)
+            and str(entry) != ".claude/precompact_capture_hook.sh"
+        ):
+            # 일반 @source adapter remap은 개별 등록 가드가 검증한다. 다만 공개 제품 루트에도
+            # canonical 사본이 실재하는 PreCompact 훅은 byte parity로 drift를 가시화한다.
+            continue
         rel = str(entry)
         if rel == SELF_PROP_PATH:
             # 매니페스트 자기전파(B-selfprop·T-0305): 매니페스트는 harness-flavor(루트↔claude_code↔
@@ -494,6 +517,18 @@ def test_content_guard_is_sensitive_to_drift():
     # 음성 통제: 동일 입력(canonical=REPO 자신)엔 0 diff (false-positive 아님 확인).
     no_diff = _engine_content_diffs(REPO, manifest_entries=[entry])
     assert no_diff == [], f"동일 트리에 false-positive drift 검출 — {no_diff}"
+
+
+def test_content_guard_does_not_hide_precompact_source_remap_drift(tmp_path):
+    """공개 루트에 실재하는 PreCompact @source 사본은 전면 source_rel 면제 밖이다."""
+    pm_update = _load_pm_update()
+    rel = ".claude/precompact_capture_hook.sh"
+    entry = next(e for e in pm_update.read_manifest(ROOT_MANIFEST) if str(e) == rel)
+    target = tmp_path / rel
+    target.parent.mkdir(parents=True)
+    target.write_bytes((REPO / rel).read_bytes() + b"\n# deliberate drift\n")
+
+    assert _engine_content_diffs(tmp_path, manifest_entries=[entry]) == [rel]
 
 
 # ── 가드 3: facade 정합 (갭3 재발 차단) ──────────────────────────────────────

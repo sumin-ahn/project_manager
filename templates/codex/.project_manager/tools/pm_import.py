@@ -611,6 +611,7 @@ ADAPTER_HOOK_SET = {
             ".claude/ctx_stop_hook.sh",
             ".claude/ctx_statusline.py",
             ".claude/ctx_statusline.sh",
+            ".claude/precompact_capture_hook.sh",
             ".claude/pm_orch_claude.py",
             ".claude/run_tests_hook.sh",
         ),
@@ -623,7 +624,8 @@ ADAPTER_HOOK_SET = {
         coupled_groups=(
             # 훅 체인 + 공유 코어: 래퍼가 플래그로 두 파이썬 진입 중 하나를 고르고, 그 둘이
             #   ctx_guard 를 import 한다. 일부만 옮기면 미지원 플래그·import 불일치가 난다.
-            (".claude/ctx_stop_hook.sh", ".claude/ctx_stop_hook.py",
+            (".claude/ctx_stop_hook.sh", ".claude/precompact_capture_hook.sh",
+             ".claude/ctx_stop_hook.py",
              ".claude/pm_orch_claude.py", ".claude/ctx_guard.py"),
             # statusline 래퍼/구현 쌍(같은 근거·독립 축).
             (".claude/ctx_statusline.sh", ".claude/ctx_statusline.py"),

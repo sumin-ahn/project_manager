@@ -709,7 +709,9 @@ def test_timeout_uses_separate_incomplete_retry_limit(external, monkeypatch, tmp
 
     프롬프트가 이미 전송·과금됐을 수 있으므로 실패여도 예약을 환불하지 않는다. 두 번 모두 종료
     마감되지만 verdict=false이고, 세 번째 호출은 reviewer 전에 차단된다."""
-    calls = _wire(external, monkeypatch, tmp_path, result=_FAIL_STARTED)
+    calls = _wire(
+        external, monkeypatch, tmp_path, result=_FAIL_STARTED, conf=_ROUNDS_MAX_OFF,
+    )
     argv = ["--gate", "T-0104", "--paths", "x.py"]
     for i in range(1, 3):
         assert external.main(argv) == 1, f"round {i} 는 FALLBACK(rc=1)"
@@ -1313,7 +1315,8 @@ def test_confirm_fix_round_keeps_the_outcome_history(
 
     라운드는 **반려**로 채운다 — 확인 전용 라운드는 확인할 지적(반려 라운드)이 있는 게이트에서만
     열리므로(T-0602 ①), 이력 축을 보려면 자격을 갖춘 형상이어야 한다."""
-    _wire(external, monkeypatch, tmp_path, result=_REJECT_WITH_ANSWER)
+    conf = {"additional_reviewer_enabled": "true", "review_rounds_max": "3"}
+    _wire(external, monkeypatch, tmp_path, result=_REJECT_WITH_ANSWER, conf=conf)
     argv = ["--gate", "T-0308", "--paths", "x.py"]
     for _ in range(3):
         assert external.main(argv) == 1

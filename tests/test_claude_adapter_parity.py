@@ -4,10 +4,10 @@
 동기화된다(pm_update 전파). 드리프트 시 채택 프로젝트가 옛/다른 동작을 받는다
 ([[verify-engine-template-propagation]]). v2 머지 전 codex 제안 — 핵심 어댑터 산출물의
 양 트리 parity 를 자동 검증한다:
-  - `settings.json` 훅 집합 비대칭: root=PreCompact breadcrumb / template=PostCompact ctx 재무장.
+  - `settings.json` 훅 집합 비대칭: root=기존 PreCompact / template=Pre+PostCompact 기계 경계.
     양쪽 auto-compact ON(template 은 T-0458 로 autoCompactEnabled:true — 메인은 훅 hard-stop 선행·
     서브에이전트는 compaction 자체 정리). breadcrumb 은 net-less 도그푸딩 root 전용으로 유지.
-  - `precompact_capture_hook.sh`: root 전용(template 엔 없음) — byte-identical 대상 아님.
+  - `precompact_capture_hook.sh`: template canonical·manifest @source 정식 출하. root 교체는 PM update 몫.
   - `run_tests_hook.sh`: byte-identical. 루트 사본이 manifest 전파 **원본**(root-sourced·bare)인데
     런타임 테스트 하네스는 출하 사본만 복사해 돌린다 — 루트만 깨져도 전 스위트가 green 이던 커버리지
     갭을 이 동일성으로 기계 폐쇄한다(T-0579).
@@ -79,7 +79,7 @@ def test_hook_registration_sets_asymmetric_both_autocompact_on():
         f"root 등록 훅 집합 드리프트: {set(root.get('hooks', {}))}"
     )
     assert set(tmpl.get("hooks", {})) == {
-        "PostToolUse", "PreToolUse", "UserPromptSubmit", "PostCompact",
+        "PostToolUse", "PreToolUse", "UserPromptSubmit", "PreCompact", "PostCompact",
     }, (
         f"template 등록 훅 집합 드리프트: {set(tmpl.get('hooks', {}))}"
     )
@@ -107,6 +107,8 @@ def test_hook_registration_sets_asymmetric_both_autocompact_on():
         "template 에 중복 auto-compact 토글 env.DISABLE_AUTO_COMPACT 잔존 — 정본은 top-level "
         "autoCompactEnabled 하나(T-0300 dedup·claude-code-guide 확인)"
     )
+    assert "precompact_capture_hook.sh" in json.dumps(tmpl["hooks"]["PreCompact"])
+    assert (TEMPLATE_CLAUDE / "precompact_capture_hook.sh").is_file()
 
 
 # ── byte-identical 어댑터 산출물 (hook·skills·agents) ─────────────────────────

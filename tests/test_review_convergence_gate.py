@@ -5,7 +5,7 @@
 축을 단언한다:
 
   ① 수렴-형상 게이트 — 라운드 장부의 `rounds[].must_fix` 추이로 판정한다(LLM 판단 0).
-     상한 도달(local.conf `review_rounds_max`·기본 3)·직전 대비 증가(조기 차단)면 rc 4 로 막고,
+     상한 도달(local.conf `review_rounds_max`·기본 2)·직전 대비 증가(조기 차단)면 rc 4 로 막고,
      감소 수렴은 그대로 통과시킨다. 출구는 재설계·티켓 분할뿐이다(`--ack-rounds` 폐지).
   ② 확인 전용 라운드(`--confirm-fix`) — 수렴 축의 유일한 예외. 게이트당 1회이고 장부가 소유하며,
      프롬프트에 "신규 발견은 재설계 신호" 헌장을 싣는다.
@@ -127,15 +127,15 @@ def _ledger(tmp_path) -> dict:
 
 
 def test_rounds_max_default_and_knob(external):
-    """미설정 → 3(사용자 확정 값) · local.conf `review_rounds_max` 가 상한을 바꾼다."""
-    assert external._review_rounds_max({}) == external.DEFAULT_REVIEW_ROUNDS_MAX == 3
+    """미설정 → 2(출하 기본값) · local.conf `review_rounds_max` 가 상한을 바꾼다."""
+    assert external._review_rounds_max({}) == external.DEFAULT_REVIEW_ROUNDS_MAX == 2
     assert external._review_rounds_max({"review_rounds_max": "5"}) == 5
 
 
 def test_rounds_max_garbage_and_negative_fall_back(external):
     """비정수·음수는 기본값으로 fail-soft (다른 예산 노브와 같은 규칙)."""
-    assert external._review_rounds_max({"review_rounds_max": "x"}) == 3
-    assert external._review_rounds_max({"review_rounds_max": "-2"}) == 3
+    assert external._review_rounds_max({"review_rounds_max": "x"}) == 2
+    assert external._review_rounds_max({"review_rounds_max": "-2"}) == 2
 
 
 def _entry(external, must_fix_series):
@@ -197,28 +197,29 @@ def test_convergence_treats_unknown_last_round_as_unresolved(external):
 # ══ ① main 흐름: 차단·통과 ══════════════════════════════════════════════════
 
 
-def test_flat_series_is_blocked_at_the_fourth_round(external, monkeypatch, tmp_path, capsys):
-    """must_fix 3→2→2 (비감소)는 4라운드째 실행 전에 막힌다 — 실측 형상 (DoD)."""
-    reviewer = _wire(external, monkeypatch, tmp_path, series=[3, 2, 2])
+def test_default_cap_blocks_the_third_round(external, monkeypatch, tmp_path, capsys):
+    """출하 기본 2에서 must_fix 3→2 뒤 3라운드째 실행 전에 막힌다 (DoD)."""
+    reviewer = _wire(external, monkeypatch, tmp_path, series=[3, 2])
     argv = ["--gate", "T-0593", "--paths", "x.py"]
-    for _ in range(3):
+    for _ in range(2):
         assert external.main(argv) == 1          # 반려 rc (라운드 자체는 정상 진행)
-    assert reviewer.calls == 3
+    assert reviewer.calls == 2
     capsys.readouterr()
 
     assert external.main(argv) == external.EXIT_ROUND_LIMIT_EXCEEDED
-    assert reviewer.calls == 3                    # 리뷰어 미호출 (외부 전송 0)
+    assert reviewer.calls == 2                    # 리뷰어 미호출 (외부 전송 0)
     err = capsys.readouterr().err
     assert "수렴 게이트 차단" in err
-    assert "3 → 2 → 2" in err                     # 판정 근거를 그대로 보여준다
+    assert "3 → 2" in err                         # 판정 근거를 그대로 보여준다
     assert "재설계" in err and "분할" in err        # 유일한 출구
     assert "--confirm-fix" in err                 # 해소 확인 전용 예외
-    assert _ledger(tmp_path)["T-0593"]["count"] == 3   # 거부는 장부를 늘리지 않는다
+    assert _ledger(tmp_path)["T-0593"]["count"] == 2   # 거부는 장부를 늘리지 않는다
 
 
 def test_increasing_series_is_blocked_early(external, monkeypatch, tmp_path, capsys):
-    """must_fix 3→5 는 상한(3) 전인 3라운드째에 막힌다 (발산 조기 차단·DoD)."""
-    reviewer = _wire(external, monkeypatch, tmp_path, series=[3, 5])
+    """override 3에서도 must_fix 3→5 는 3라운드째에 조기 차단된다 (DoD)."""
+    conf = {"additional_reviewer_enabled": "true", "review_rounds_max": "3"}
+    reviewer = _wire(external, monkeypatch, tmp_path, series=[3, 5], conf=conf)
     argv = ["--gate", "T-0594", "--paths", "x.py"]
     for _ in range(2):
         assert external.main(argv) == 1
@@ -231,8 +232,9 @@ def test_increasing_series_is_blocked_early(external, monkeypatch, tmp_path, cap
 
 
 def test_converging_series_runs_all_rounds(external, monkeypatch, tmp_path):
-    """must_fix 3→1→0 은 세 라운드 모두 통과한다 (감소 수렴 무영향·DoD)."""
-    reviewer = _wire(external, monkeypatch, tmp_path, series=[3, 1, 0])
+    """local.conf 3 상향 시 must_fix 3→1→0 세 라운드를 모두 허용한다 (DoD)."""
+    conf = {"additional_reviewer_enabled": "true", "review_rounds_max": "3"}
+    reviewer = _wire(external, monkeypatch, tmp_path, series=[3, 1, 0], conf=conf)
     argv = ["--gate", "T-0595", "--paths", "x.py"]
     assert [external.main(argv) for _ in range(3)] == [1, 1, 0]
     assert reviewer.calls == 3
@@ -240,15 +242,25 @@ def test_converging_series_runs_all_rounds(external, monkeypatch, tmp_path):
     assert [row["must_fix"] for row in entry["rounds"]] == [3, 1, 0]
 
 
-def test_rounds_max_knob_changes_the_cap(external, monkeypatch, tmp_path):
-    """`review_rounds_max=2` → 3라운드째 차단 (노브 반영)."""
-    conf = {"additional_reviewer_enabled": "true", "review_rounds_max": "2"}
-    reviewer = _wire(external, monkeypatch, tmp_path, series=[2, 2], conf=conf)
+def test_rounds_max_knob_can_raise_the_cap(external, monkeypatch, tmp_path):
+    """`review_rounds_max=3` 상향 시 기본값과 달리 3라운드째를 허용한다."""
+    conf = {"additional_reviewer_enabled": "true", "review_rounds_max": "3"}
+    reviewer = _wire(external, monkeypatch, tmp_path, series=[2, 1, 0], conf=conf)
     argv = ["--gate", "T-0596", "--paths", "x.py"]
-    for _ in range(2):
-        assert external.main(argv) == 1
+    assert [external.main(argv) for _ in range(3)] == [1, 1, 0]
+    assert reviewer.calls == 3
+
+
+def test_rounds_max_knob_can_lower_the_cap(external, monkeypatch, tmp_path):
+    """`review_rounds_max=1` 하향 시 첫 라운드 뒤 2라운드째를 차단한다."""
+    conf = {"additional_reviewer_enabled": "true", "review_rounds_max": "1"}
+    reviewer = _wire(external, monkeypatch, tmp_path, series=[1], conf=conf)
+    argv = ["--gate", "T-0596-lower", "--paths", "x.py"]
+
+    assert external.main(argv) == 1
     assert external.main(argv) == external.EXIT_ROUND_LIMIT_EXCEEDED
-    assert reviewer.calls == 2
+    assert reviewer.calls == 1
+    assert _ledger(tmp_path)["T-0596-lower"]["count"] == 1
 
 
 def test_gate_without_a_ledger_is_untouched(external, monkeypatch, tmp_path):
@@ -265,7 +277,8 @@ def test_gate_without_a_ledger_is_untouched(external, monkeypatch, tmp_path):
 def test_confirm_fix_opens_exactly_one_round_per_gate(
         external, monkeypatch, tmp_path, capsys):
     """차단된 게이트를 1회만 연다 — 장부에 기록되고 2회째는 거부된다 (DoD)."""
-    reviewer = _wire(external, monkeypatch, tmp_path, series=[2, 2, 2, 0, 0])
+    conf = {"additional_reviewer_enabled": "true", "review_rounds_max": "3"}
+    reviewer = _wire(external, monkeypatch, tmp_path, series=[2, 2, 2, 0, 0], conf=conf)
     argv = ["--gate", "T-0598", "--paths", "x.py"]
     for _ in range(3):
         assert external.main(argv) == 1
@@ -291,7 +304,8 @@ def test_confirm_fix_quota_is_refunded_when_nothing_was_sent(
 
     안 되돌리면 설치/PATH 문제 한 번으로 게이트당 1회뿐인 유일한 처방이 소멸한다("전송 0 실행은
     예산을 먹지 않는다" 불변식의 세 번째 축)."""
-    _wire(external, monkeypatch, tmp_path, series=[2, 2, 2])
+    conf = {"additional_reviewer_enabled": "true", "review_rounds_max": "3"}
+    _wire(external, monkeypatch, tmp_path, series=[2, 2, 2], conf=conf)
     argv = ["--gate", "T-0603", "--paths", "x.py"]
     for _ in range(3):
         assert external.main(argv) == 1
@@ -320,7 +334,8 @@ def test_confirm_fix_quota_is_refunded_when_nothing_was_sent(
 def test_confirm_fix_quota_is_refunded_when_isolation_fails(
         external, monkeypatch, tmp_path):
     """예약 뒤·스폰 전 중단(격리 실패)도 같은 환불 규칙을 탄다 (환불 소유가 한 seam)."""
-    _wire(external, monkeypatch, tmp_path, series=[2, 2, 2])
+    conf = {"additional_reviewer_enabled": "true", "review_rounds_max": "3"}
+    _wire(external, monkeypatch, tmp_path, series=[2, 2, 2], conf=conf)
     argv = ["--gate", "T-0604", "--paths", "x.py"]
     for _ in range(3):
         assert external.main(argv) == 1
@@ -438,7 +453,8 @@ def test_confirm_fix_opens_for_the_latest_rejection_after_a_pass(
         external, monkeypatch, tmp_path):
     """정상 경로 무변경 — 통과 뒤 다시 반려로 끝났으면 열리고, 근거는 **그 최신 반려**다."""
     capture = _PromptCapture([3, 0, 2, 0])
-    _wire(external, monkeypatch, tmp_path, series=[3])
+    conf = {"additional_reviewer_enabled": "true", "review_rounds_max": "3"}
+    _wire(external, monkeypatch, tmp_path, series=[3], conf=conf)
     monkeypatch.setattr(external, "run_review", capture)
     argv = ["--gate", "T-0603b", "--paths", "x.py"]
     assert external.main(argv) == 1                 # 1R 반려 3건
@@ -621,7 +637,8 @@ def test_inflight_reservation_counts_toward_the_convergence_cap(external, tmp_pa
 def test_second_concurrent_reservation_is_refused_before_sending(
         external, monkeypatch, tmp_path, capsys):
     """재현: 2완료 + 1예약(동시 실행 A) 상태에서 실행 B 는 전송 전에 막힌다 (상한 3·4전송 창)."""
-    reviewer = _wire(external, monkeypatch, tmp_path, series=[2])
+    conf = {"additional_reviewer_enabled": "true", "review_rounds_max": "3"}
+    reviewer = _wire(external, monkeypatch, tmp_path, series=[2], conf=conf)
     _seed_rounds(tmp_path, "T-0602f", completed=2, inflight=1)
 
     rc = external.main(["--gate", "T-0602f", "--paths", "x.py"])
@@ -636,7 +653,8 @@ def test_second_concurrent_reservation_is_refused_before_sending(
 
 def test_completed_rounds_below_the_cap_still_run(external, monkeypatch, tmp_path):
     """정상 경로 무변경 — 진행 중 예약이 없으면 2완료 상태의 3라운드째는 그대로 나간다."""
-    reviewer = _wire(external, monkeypatch, tmp_path, series=[1])
+    conf = {"additional_reviewer_enabled": "true", "review_rounds_max": "3"}
+    reviewer = _wire(external, monkeypatch, tmp_path, series=[1], conf=conf)
     _seed_rounds(tmp_path, "T-0602g", completed=2, inflight=0)
 
     assert external.main(["--gate", "T-0602g", "--paths", "x.py"]) == 1
@@ -671,7 +689,8 @@ def test_timed_out_reservation_does_not_lock_the_convergence_axis(
     신선 예약이면 같은 장부가 차단된다(`test_second_concurrent_reservation_is_refused_before_sending`)
     — 두 테스트가 회수 기준이 *시간* 하나임을 함께 못박는다. 회수가 없으면 kill 한 번이 상한을
     영구 잠식한다(연장 승인이 폐지된 축이라 되돌릴 손잡이가 없다)."""
-    reviewer = _wire(external, monkeypatch, tmp_path, series=[1])
+    conf = {"additional_reviewer_enabled": "true", "review_rounds_max": "3"}
+    reviewer = _wire(external, monkeypatch, tmp_path, series=[1], conf=conf)
     _seed_rounds(tmp_path, "T-0602j", completed=2, inflight=1,
                  inflight_age_sec=3600 * 24)             # 하루 전 예약 = 실행 중일 수 없다
 
@@ -681,7 +700,8 @@ def test_timed_out_reservation_does_not_lock_the_convergence_axis(
 
 def test_refunded_reservation_does_not_hold_the_cap(external, monkeypatch, tmp_path):
     """전송이 없던 예약은 환불로 레코드째 사라져 상한을 잡아 두지 않는다 (fail-closed 오차단 방지)."""
-    _wire(external, monkeypatch, tmp_path, series=[1])
+    conf = {"additional_reviewer_enabled": "true", "review_rounds_max": "3"}
+    _wire(external, monkeypatch, tmp_path, series=[1], conf=conf)
     unstarted = {
         "reviewer": "x", "ok": False, "output": "[리뷰어 명령 없음]",
         "answer": "[리뷰어 명령 없음]",

@@ -11,8 +11,8 @@
 #    파일이라 pm_update 가 덮으면 커스터마이즈 손실. 대신 파일 자체가 portable-by-construction —
 #    치환 토큰·절대경로 0(${CLAUDE_PROJECT_DIR} + 래퍼 self-resolve)이라 import 복사만으로 어느
 #    머신/프로젝트에서든 정확 동작(재작성 채널 불요). 머신-특정 오버라이드는 settings.local.json
-#    (gitignore). ⚠️ **훅 스크립트/드라이버 7종은 manifest 안이다** — ctx_guard.py·ctx_stop_hook.py·
-#    ctx_stop_hook.sh·ctx_statusline.py·ctx_statusline.sh·pm_orch_claude.py·run_tests_hook.sh
+#    (gitignore). ⚠️ **훅 스크립트/드라이버 8종은 manifest 안이다** — ctx_guard.py·ctx_stop_hook.py·
+#    ctx_stop_hook.sh·ctx_statusline.py·ctx_statusline.sh·precompact_capture_hook.sh·pm_orch_claude.py·run_tests_hook.sh
 #    (아래 "서브에이전트 훅/드라이버" 절 등재·T-0305 로 전환). settings.json 과 같은 취급이라던
 #    옛 서술은 실측과 어긋나 정정했다. `.claude/` 안에서 **미등재인 건 settings.json 뿐**이다.
 #    이 소유 분할이 곧 세대 혼합 창이라(config 는 채택자·훅 파일은 엔진) pm_update 가 훅 세트
@@ -107,11 +107,13 @@
 #   run_tests_hook.sh 는 프레임워크 루트 `.claude/` 에도 byte-identical 로 실재라 root-sourced(bare).
 #   치환 토큰 0·portable-by-construction 이라 byte-copy 안전(render 불요·.md 아님).
 #   ⚠️ instance-owned 예외(미등록): settings.json(권한·T-0202)·CLAUDE.md(루트 doc)·local.conf.
+#   precompact_capture_hook.sh는 경계 보존 load-bearing 출하물이라 @source 정식 등재한다.
 .claude/ctx_guard.py       @source=templates/claude_code/.claude/ctx_guard.py
 .claude/ctx_stop_hook.py   @source=templates/claude_code/.claude/ctx_stop_hook.py
 .claude/ctx_stop_hook.sh   @source=templates/claude_code/.claude/ctx_stop_hook.sh
 .claude/ctx_statusline.py  @source=templates/claude_code/.claude/ctx_statusline.py
 .claude/ctx_statusline.sh  @source=templates/claude_code/.claude/ctx_statusline.sh
+.claude/precompact_capture_hook.sh  @source=templates/claude_code/.claude/precompact_capture_hook.sh
 .claude/pm_orch_claude.py  @source=templates/claude_code/.claude/pm_orch_claude.py
 .claude/run_tests_hook.sh
 

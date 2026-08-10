@@ -71,12 +71,18 @@ def _shim_src() -> str:
     return PLUGIN_FILE.read_text(encoding="utf-8")
 
 
-def _make_ctx_guard_project(tmp_path: Path) -> Path:
+def _make_ctx_guard_project(tmp_path: Path, *, snapshot: bool = True) -> Path:
     """findEngineRoot가 인식할 최소 project를 pytest tmp_path 아래에 만든다(소스 트리 무오염)."""
     root = tmp_path / "ctx-guard-project"
     tools = root / ".project_manager" / "tools"
     tools.mkdir(parents=True)
-    (tools / "pm_handoff.py").write_text("# ctx-guard test probe\n", encoding="utf-8")
+    source = "import sys\n"
+    if snapshot:
+        source += (
+            "if 'snapshot' in sys.argv:\n"
+            "    print('## PM 정체성 (compaction 복구)\\n- task: main')\n"
+        )
+    (tools / "pm_log.py").write_text(source, encoding="utf-8")
     return root
 
 
@@ -256,7 +262,8 @@ def test_plugin_subscribes_compaction_events_with_local_observation_count():
         "compactionRestoredBaseline",
     ):
         assert removed not in src, f"폐기된 compaction 복원 기계 잔존: {removed}"
-    assert "buildCompactedGuidance" in src, "압축 후 모델 안내 빌더 없음"
+    assert "buildCompactionSnapshot" in src, "압축 후 엔진 snapshot 호출 없음"
+    assert '"snapshot"' in src and '"checkpoint"' in src
     assert "notifyCompacted" in src, "압축 후 사람용 toast 없음"
 
 
@@ -432,13 +439,10 @@ const nudgeEvent = () => ({
   await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
   output = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID}, output);
-  assert.strictEqual(output.system.length, 1, "post-compaction notice missing");
-  assert.ok(output.system[0].includes("compaction이 방금 일어났다"), "event notice missing");
+  assert.strictEqual(output.system.length, 1, "post-compaction snapshot missing");
+  assert.ok(output.system[0].startsWith("## PM 정체성 (compaction 복구)"), "engine snapshot missing");
   assert.ok(!/compaction\s+\d+회/.test(output.system[0]), "display-only count must not be exposed");
-  assert.ok(output.system[0].includes(
-    "python3 .project_manager/tools/pm_log.py checkpoint --task <이름> --trigger compaction"
-  ));
-  assert.ok(output.system[0].includes("구간·서사"), "post-compaction skeleton fill instruction missing");
+  assert.ok(output.system[0].includes("- task: main"), "snapshot identity missing");
   assert.ok(toasts.some((text) => text.includes("compaction이 방금 일어남")), "human toast missing");
   assert.ok(toasts.every((text) => !/compaction\s+\d+회/.test(text)), "toast exposed count");
 
@@ -453,12 +457,127 @@ const nudgeEvent = () => ({
     assert "JS_COMPACTION_REARM_OK" in out, f"compaction 병행 신호 실패. out={out!r}"
 
 
-def test_plugin_stages_compacted_notice_before_unawaited_event_hook_settles(tmp_path):
-    """dispatcher가 event Promise를 버려도 첫 transform 전에 압축 후 안내를 동기 적재한다.
+def test_plugin_compaction_snapshot_failure_keeps_model_facing_fallback(tmp_path):
+    """builder가 null이어도 다음 model turn에는 최소 복구 안내가 1회 남는다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — snapshot fallback 단위 skip")
+
+    project_root = _make_ctx_guard_project(tmp_path, snapshot=False)
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+const projectRoot = __PROJECT_ROOT__;
+const sessionID = "ses_snapshot_null";
+
+(async () => {
+  const hooks = await m.CtxGuardPlugin({client:{session:{
+    get: async ({path:{id}}) => ({data:{id}}),
+  }}, directory:projectRoot});
+  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  const output = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID}, output);
+  assert.strictEqual(output.system.length, 1, "null snapshot erased model-facing notice");
+  assert.ok(output.system[0].includes("[ctx-checkpoint]"), "fallback marker missing");
+  assert.ok(output.system[0].includes("pm_state"), "fallback recovery pointer missing");
+  console.log("JS_COMPACTION_FALLBACK_OK");
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
+    out = _run_node_check(script)
+    assert "JS_COMPACTION_FALLBACK_OK" in out, f"snapshot null fallback 실패. out={out!r}"
+
+
+def test_create_compaction_checkpoint_passes_boundary_and_post_phase():
+    """OpenCode compaction count 기반 경계 ID와 post phase가 엔진 argv에 보존된다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — checkpoint argv 단위 skip")
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+let seen = null;
+m.createCompactionCheckpoint("/tmp/project", "/tmp/project", "sid-1", "opencode-sid-1-3",
+  (command, args) => { seen = {command, args}; return {status:0, stdout:""}; });
+assert.ok(seen, "spawn was not called");
+assert.ok(seen.args.includes("--phase") && seen.args.includes("post"));
+assert.ok(seen.args.includes("--boundary-id") && seen.args.includes("opencode-sid-1-3"));
+console.log("JS_COMPACTION_BOUNDARY_ARGV_OK");
+'''
+    out = _run_node_check(script)
+    assert "JS_COMPACTION_BOUNDARY_ARGV_OK" in out
+
+
+def test_compaction_boundary_id_remains_unique_after_plugin_restart():
+    """같은 SID·같은 millisecond에도 재로드 뒤 UUID 축이 달라 marker를 재사용하지 않는다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — compaction restart boundary 단위 skip")
+    script = r'''
+const assert = require("node:assert");
+const modulePath = require.resolve("./ctx-guard-core.cjs");
+const RealDate = Date;
+global.Date = class extends RealDate {
+  constructor() { super("2026-08-11T00:00:00.000Z"); }
+};
+const firstModule = require(modulePath);
+const first = firstModule.createCompactionBoundaryID("same-session");
+delete require.cache[modulePath];
+const restartedModule = require(modulePath);
+const second = restartedModule.createCompactionBoundaryID("same-session");
+assert.match(first, /^opencode-\d{8}T\d{6}\d{3}Z-[0-9a-f-]{36}-same-session$/);
+assert.notStrictEqual(first, second, "plugin restart reused a compaction boundary ID");
+console.log("JS_COMPACTION_RESTART_BOUNDARY_OK");
+'''
+    out = _run_node_check(script)
+    assert "JS_COMPACTION_RESTART_BOUNDARY_OK" in out
+
+
+def test_child_compaction_is_classified_before_any_snapshot_subprocess(tmp_path):
+    """면제 자식의 session.compacted는 동기 pm_log snapshot/checkpoint를 한 번도 실행하지 않는다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — child compaction subprocess 단위 skip")
+    project_root = _make_ctx_guard_project(tmp_path)
+    probe = project_root / "pm-log-was-run"
+    engine = project_root / ".project_manager" / "tools" / "pm_log.py"
+    engine.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(probe)!r}).write_text('ran', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+const fs = require("node:fs");
+const projectRoot = __PROJECT_ROOT__;
+const probe = __PROBE__;
+const sessionID = "ses_child_no_snapshot";
+
+(async () => {
+  const hooks = await m.CtxGuardPlugin({client:{session:{
+    get: async () => ({data:{id:sessionID, parentID:"ses_parent"}}),
+  }}, directory:projectRoot});
+  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  assert.strictEqual(fs.existsSync(probe), false, "child compaction spawned pm_log");
+  console.log("JS_CHILD_COMPACTION_NO_SUBPROCESS_OK");
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
+        "__PROBE__", json.dumps(str(probe))
+    )
+    out = _run_node_check(script)
+    assert "JS_CHILD_COMPACTION_NO_SUBPROCESS_OK" in out
+
+
+def test_plugin_stages_compacted_notice_after_child_lookup_before_event_hook_settles(tmp_path):
+    """자식 판정을 먼저 하되 즉시 해소된 메인 조회는 첫 transform 전에 안내를 적재한다.
 
     upstream opencode v1.18.5 ``plugin/index.ts`` 의 event dispatcher는 각 plugin event hook을
-    await하지 않는다. event 훅의 첫 await 전 적재를 정적으로 단언하고, toast가
-    pending인 동안에도 transform이 안내를 소비할 수 있는지 동적으로 검증한다.
+    await하지 않는다. snapshot이 자식 판정 뒤임을 정적으로 단언하고, 즉시 해소되는 메인 조회와
+    pending toast 사이에도 transform이 안내를 소비할 수 있는지 동적으로 검증한다.
     """
     if _NODE is None:
         import pytest
@@ -467,9 +586,9 @@ def test_plugin_stages_compacted_notice_before_unawaited_event_hook_settles(tmp_
 
     src = _plugin_src()
     branch = src.index('if (event.type === "session.compacted")')
-    staged = src.index("session.pendingNudgeText = stagedGuidance", branch)
-    first_await = src.index("if (await isChildSession", branch)
-    assert staged < first_await, "compacted 안내가 첫 await 뒤로 밀렸음"
+    child_check = src.index("if (await isChildSession", branch)
+    snapshot = src.index("buildCompactionSnapshot(root, hookCwd)", branch)
+    assert child_check < snapshot, "자식 판정 전에 동기 snapshot subprocess를 실행함"
 
     project_root = _make_ctx_guard_project(tmp_path)
     script = r'''
@@ -496,7 +615,7 @@ const sessionID = "ses_unawaited_compacted";
   await hooks["experimental.chat.system.transform"]({sessionID}, output);
   assert.strictEqual(eventSettled, false, "toast fixture did not keep event hook pending");
   assert.strictEqual(output.system.length, 1, "unawaited event did not stage notice");
-  assert.ok(output.system[0].includes("[ctx-checkpoint/압축후]"));
+  assert.ok(output.system[0].includes("## PM 정체성 (compaction 복구)"));
 
   resolveToast();
   await eventPromise;
@@ -543,7 +662,7 @@ const nudgeEvent = () => ({event:{type:"message.updated", properties:{info:{
   const output = {system:[]};
   await hooks["experimental.chat.system.transform"]({sessionID}, output);
   assert.strictEqual(output.system.length, 1, "compacted notice was lost");
-  assert.ok(output.system[0].includes("[ctx-checkpoint/압축후]"), "old message overwrote new-cycle notice");
+  assert.ok(output.system[0].includes("## PM 정체성 (compaction 복구)"), "old message overwrote snapshot");
 
   await hooks.event(nudgeEvent());
   const freshOutput = {system:[]};

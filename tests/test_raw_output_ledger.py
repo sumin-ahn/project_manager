@@ -5,6 +5,7 @@ import datetime
 import importlib.util
 import inspect
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -47,6 +48,21 @@ def _repo(tmp_path: Path) -> Path:
 
 def _ledger(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _unfinished_record(relay, ledger_path: Path, tmp_path: Path) -> str:
+    """raw close 검증용 미마감 레코드를 현재 프로세스 PID로 등록한다."""
+    return relay.start_raw_record(
+        ledger_path,
+        surface="delegate",
+        harness="codex",
+        model="gpt-x",
+        role="developer",
+        raw_path=tmp_path / "raw.txt",
+        attempt="primary",
+        now=datetime.datetime.now(datetime.timezone.utc)
+        - datetime.timedelta(seconds=2),
+    )
 
 
 def _engine_family(tmp_path: Path) -> tuple[Path, Path]:
@@ -172,6 +188,45 @@ def test_reserved_key_table_covers_every_common_schema_field(relay, tmp_path):
     assert common <= relay.RAW_LEDGER_RESERVED_KEYS, (
         f"공통 스키마 키가 예약표 밖: {sorted(common - relay.RAW_LEDGER_RESERVED_KEYS)}"
     )
+
+
+def test_finish_record_rejects_second_completion_without_overwrite(relay, tmp_path):
+    """마감 락 안에서 재마감을 거부해 raw close 조회 후 경합도 덮어쓰지 않는다.
+
+    재마감 신호는 전용 타입(`RawRecordAlreadyFinished`)이다 — 원 실행 마감 호출부가
+    "이미 수동 마감됨" 충돌만 경고로 강등하고 시작 레코드 유실(fail-loud)과 구분한다."""
+    ledger_path = tmp_path / "raw_outputs.json"
+    record_id = _unfinished_record(relay, ledger_path, tmp_path)
+    relay.finish_raw_record(
+        ledger_path, record_id, rc=0, elapsed_sec=2, silence_sec=0,
+        finish_note="첫 마감",
+    )
+
+    with pytest.raises(relay.RawRecordAlreadyFinished, match="이미 마감"):
+        relay.finish_raw_record(
+            ledger_path, record_id, rc=-1, elapsed_sec=3, silence_sec=None,
+            finish_note="덮어쓰기",
+        )
+
+    row = _ledger(ledger_path)["records"][0]
+    assert row["rc"] == 0
+    assert row["finish_note"] == "첫 마감"
+
+
+def test_finish_note_is_explicit_field_not_extra_injectable(relay, tmp_path):
+    """`finish_note` 는 명시 완료 필드다 — 시작/마감 `extra` 로는 예약 키라 주입 불가."""
+    ledger_path = tmp_path / "raw_outputs.json"
+    record_id = relay.start_raw_record(
+        ledger_path, surface="delegate", harness="codex", model="gpt-x",
+        role="developer", raw_path=tmp_path / "raw.txt", attempt="primary",
+        extra={"finish_note": "시작 주입 시도"},
+    )
+    assert "finish_note" not in _ledger(ledger_path)["records"][0]
+    relay.finish_raw_record(
+        ledger_path, record_id, rc=0, elapsed_sec=1.0, silence_sec=None,
+        finish_note="정식 마감 사유", extra={"finish_note": "extra 주입 시도"},
+    )
+    assert _ledger(ledger_path)["records"][0]["finish_note"] == "정식 마감 사유"
 
 
 def test_start_extra_cannot_seed_finish_only_schema_keys(relay, tmp_path):
@@ -355,6 +410,143 @@ def test_raw_output_dir_reads_that_ledger(
     assert lines[1] == "최근 raw 1건"
     assert "explicit-model" not in "\n".join(lines)
     assert str(raw_path.resolve()) in lines[2]
+
+
+def test_raw_close_finishes_unfinished_record_with_fixed_abnormal_schema(
+        delegate, relay, monkeypatch, tmp_path, capsys):
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(delegate, "REPO", repo)
+    output_dir = tmp_path / "explicit-output"
+    ledger_path = output_dir / "raw_outputs.json"
+    record_id = _unfinished_record(relay, ledger_path, tmp_path)
+    # pid 부재는 안전 게이트를 통과한다.
+    ledger = _ledger(ledger_path)
+    ledger["records"][0].pop("pid")
+    ledger_path.write_text(
+        json.dumps(ledger, ensure_ascii=False), encoding="utf-8"
+    )
+
+    assert delegate.main([
+        "raw", "close", record_id, "--output-dir", str(output_dir),
+    ]) == 0
+
+    row = _ledger(ledger_path)["records"][0]
+    finished = datetime.datetime.fromisoformat(row["finished_at"])
+    started = datetime.datetime.fromisoformat(row["started_at"])
+    assert row["rc"] == -1
+    assert row["elapsed_sec"] == round((finished - started).total_seconds(), 3)
+    assert row["silence_sec"] is None
+    assert row["finish_note"] == "수동 마감(raw close)"
+    output = capsys.readouterr().out
+    assert f"raw 레코드 마감: {record_id}" in output
+    assert f"마감 장부: {ledger_path.resolve()}" in output
+
+
+def test_raw_close_rejects_already_finished_record(
+        delegate, relay, monkeypatch, tmp_path, capsys):
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(delegate, "REPO", repo)
+    output_dir = tmp_path / "explicit-output"
+    ledger_path = output_dir / "raw_outputs.json"
+    record_id = _unfinished_record(relay, ledger_path, tmp_path)
+    relay.finish_raw_record(
+        ledger_path, record_id, rc=0, elapsed_sec=2, silence_sec=0,
+    )
+
+    assert delegate._cmd_raw([
+        "close", record_id, "--output-dir", str(output_dir),
+    ]) == 1
+    assert "이미 마감" in capsys.readouterr().err
+    assert _ledger(ledger_path)["records"][0]["rc"] == 0
+
+
+def test_raw_close_rejects_unknown_record_id(
+        delegate, monkeypatch, tmp_path, capsys):
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(delegate, "REPO", repo)
+    output_dir = tmp_path / "explicit-output"
+
+    assert delegate._cmd_raw([
+        "close", "missing-record", "--output-dir", str(output_dir),
+    ]) == 1
+    assert "미발견: missing-record" in capsys.readouterr().err
+    assert not (output_dir / "raw_outputs.json").exists()
+
+
+def test_raw_close_rejects_live_pid(
+        delegate, relay, monkeypatch, tmp_path, capsys):
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(delegate, "REPO", repo)
+    output_dir = tmp_path / "explicit-output"
+    ledger_path = output_dir / "raw_outputs.json"
+    record_id = _unfinished_record(relay, ledger_path, tmp_path)
+    assert _ledger(ledger_path)["records"][0]["pid"] == os.getpid()
+
+    assert delegate._cmd_raw([
+        "close", record_id, "--output-dir", str(output_dir),
+    ]) == 1
+    assert "PID가 실행 중" in capsys.readouterr().err
+    assert "finished_at" not in _ledger(ledger_path)["records"][0]
+
+
+def test_raw_close_force_bypasses_live_pid_and_preserves_note(
+        delegate, relay, monkeypatch, tmp_path):
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(delegate, "REPO", repo)
+    output_dir = tmp_path / "explicit-output"
+    ledger_path = output_dir / "raw_outputs.json"
+    record_id = _unfinished_record(relay, ledger_path, tmp_path)
+
+    assert delegate._cmd_raw([
+        "close", record_id,
+        "--note", "PM 확인 후 강제 마감",
+        "--force",
+        "--output-dir", str(output_dir),
+    ]) == 0
+    row = _ledger(ledger_path)["records"][0]
+    assert row["rc"] == -1
+    assert row["finish_note"] == "PM 확인 후 강제 마감"
+
+
+def test_raw_close_warns_when_old_completion_is_pruned(
+        delegate, relay, monkeypatch, tmp_path, capsys):
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(delegate, "REPO", repo)
+    output_dir = tmp_path / "explicit-output"
+    ledger_path = output_dir / "raw_outputs.json"
+    started = (
+        datetime.datetime.now(datetime.timezone.utc)
+        - datetime.timedelta(days=relay.RAW_LEDGER_COMPLETED_DAYS + 1)
+    )
+    record_id = relay.start_raw_record(
+        ledger_path,
+        surface="delegate",
+        harness="codex",
+        model="gpt-x",
+        role="developer",
+        raw_path=tmp_path / "old-raw.txt",
+        attempt="primary",
+        now=started,
+    )
+
+    assert delegate._cmd_raw([
+        "close", record_id, "--force", "--output-dir", str(output_dir),
+    ]) == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    warning = [line for line in lines if line.startswith("경고:")]
+    assert warning == [
+        f"경고: raw 레코드 {record_id}는 완료 보존창"
+        f"({relay.RAW_LEDGER_COMPLETED_DAYS}일) 밖이어서 마감과 동시에 장부에서 제거됨"
+    ]
+    assert relay.raw_records(ledger_path) == []
+
+
+def test_raw_help_exposes_close_surface(delegate, capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        delegate._cmd_raw(["--help"])
+    assert exc_info.value.code == 0
+    assert "close <RECORD-ID> ..." in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("query_side", ["pm-home", "worktree"])

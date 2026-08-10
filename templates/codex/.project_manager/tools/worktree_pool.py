@@ -891,6 +891,15 @@ def _load_file_lock():
     )
 
 
+def _load_relay():
+    """공용 PID 생존 조회 seam을 소유한 ``pm_relay.py``를 형제 경로에서 로드한다."""
+    relay_path = Path(__file__).resolve().with_name("pm_relay.py")
+    _require_engine_sibling(relay_path, "pm_relay.py")
+    return _load_module_from_path(
+        relay_path, "pm_relay.py", verifier=_verify_engine_rev, cache=True,
+    )
+
+
 @contextlib.contextmanager
 def _lease_lock() -> Iterator[None]:
     """리스 장부 write 를 직렬화하는 OS 파일락 컨텍스트매니저.
@@ -1938,30 +1947,9 @@ def _existing_slot_numbers(repo: str, leases: list[Lease]) -> set[int]:
 # ── pid 생존 판정 (stale 회수) ───────────────────────────────────────────────
 
 
-def _pid_alive(pid: int) -> bool:
-    """pid 가 살아있는지 (stale 회수 판정·pid 생존만).
-
-    POSIX: `os.kill(pid, 0)` — ESRCH=죽음·EPERM=살아있으나 권한 없음(=살아있음으로 간주).
-    Windows: OpenProcess 로 핸들 획득 가능 여부. pid<=0 은 죽음으로 본다.
-    """
-    if pid <= 0:
-        return False
-    if os.name == "nt":  # pragma: no cover — POSIX 테스트 환경에선 미실행
-        import ctypes
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        handle = ctypes.windll.kernel32.OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-        if handle:
-            ctypes.windll.kernel32.CloseHandle(handle)
-            return True
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # 살아있으나 시그널 권한 없음 — 생존으로 간주(보수적·조기회수 방지)
+def _pid_alive(pid: object) -> bool:
+    """공용 ``pm_relay.pid_is_alive`` seam으로 stale/활성 PID를 판정한다."""
+    return _load_relay().pid_is_alive(pid)
 
 
 # ── 공개 API ─────────────────────────────────────────────────────────────────
@@ -3669,14 +3657,15 @@ def _snapshot_submodule_pins(git_runner: GitRunner) -> "list[dict]":
         return []
     pins: list[dict] = []
     for line in out.splitlines():
-        parts = line.split()
-        if len(parts) < 2:
+        # 경로는 공용 파서 단일 진실(`_parse_submodule_entries`) — 공백 경로·describe 를
+        # 손실 없이 처리한다. sha 는 첫 토큰(flag+sha)에서 뽑는다(경로 공백과 무관).
+        entries = _parse_submodule_entries(line)
+        if not entries:
             continue
-        # 라인 형식 `<flag><40-hex-sha> <path>[ (<describe>)]` — flag(공백/+/-/U)는 line[0].
-        # 공백 flag 는 split 이 이미 떼어내 parts[0]=sha, 그 외 flag 는 parts[0]=flag+sha.
-        raw = parts[0]
+        raw = line.split(maxsplit=1)[0]
         sha = raw[1:] if raw[:1] in ("+", "-", "U") else raw
-        pins.append({"path": parts[1], "pin": sha})
+        _flag, path = entries[0]
+        pins.append({"path": path, "pin": sha})
     return pins
 
 
@@ -5024,19 +5013,29 @@ def _parse_submodule_entries(status_out: str) -> list[tuple[str, str]]:
 
     각 라인 형식 = `<flag><40-hex-sha> <path>[ (<describe>)]` — **선두 1글자가 status 플래그**
     (`' '`=index pin 과 일치·`'+'`=working≠pin·`'-'`=미초기화·`'U'`=충돌)다. 플래그는 항상
-    라인 첫 글자(`line[0]`)이고(공백 플래그도 포함), **두 번째 whitespace 토큰이 경로**다
-    (`line.split()[1]` — 선두 공백은 split 이 무시·플래그 문자는 sha 에 붙어 토큰이 안 쪼개짐).
-    `len(parts) >= 2` 를 만족하면 라인은 비어있지 않으므로 `line[0]` 접근이 안전하다. 빈 출력
-    (submodule 없음)·토큰 2개 미만 라인은 건너뛴다.
+    라인 첫 글자(`line[0]`)이고(공백 플래그도 포함), sha 뒤 첫 whitespace 이후부터 선택적인
+    마지막 ` (<describe>)` 직전까지가 경로다. 경로 자체에는 공백이 올 수 있으므로 전체
+    whitespace 토큰 분리는 쓰지 않는다. describe 는 git 2.43 구현상 `' '`/`'+'` 상태에만
+    출력되므로 그 두 flag 에서만 걷는다 — `-`(미초기화)·`U`(충돌) 행의 괄호로 끝나는
+    경로는 그대로 보존한다. 빈 출력(submodule 없음)·sha/경로 경계가 없는 행은
+    건너뛴다.
 
     `flag` 는 pin↔working 판정에 필요하다(`+`=drift·`' '`=pinned). 경로만
     필요한 호출부(`_resync_submodules_selective`)는 `_parse_submodule_paths` 를 쓴다(경로만 뽑음).
     """
     entries: list[tuple[str, str]] = []
     for line in status_out.splitlines():
-        parts = line.split()
+        parts = line.split(maxsplit=1)
         if len(parts) >= 2:
-            entries.append((line[0], parts[1]))
+            flag = line[0]
+            path = parts[1]
+            if flag in (" ", "+") and path.endswith(")"):
+                candidate, separator, describe = path.rpartition(" (")
+                if separator and describe[:-1] and not any(
+                    char.isspace() for char in describe[:-1]
+                ):
+                    path = candidate
+            entries.append((flag, path))
     return entries
 
 

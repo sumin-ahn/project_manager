@@ -52,12 +52,14 @@ def hf():
 # ── git seam stub (트리별 dirty 응답) ─────────────────────────────────────────
 #
 # 게이트가 트리마다 부르는 명령(실코드 `_dirty_paths_in_tree`·`_unborn_head_dirty_paths` 기준):
-#   git -C <tree> diff --name-only HEAD                → tracked 미커밋(staged+unstaged)
+#   git -C <tree> diff --name-only --ignore-submodules=none HEAD
+#                                                       → tracked 미커밋 + gitlink drift
 #   git -C <tree> ls-files --others --exclude-standard → untracked(gitignored 제외)
 #   git -C <tree> rev-parse --verify --quiet HEAD      → 커밋 유무(unborn 정련·diff 실패 시에만)
 #   git -C <tree> diff --cached --name-only            → index 축(**커밋 0 트리 한정** — 전량
 #                                                        `git add` 된 트리를 clean 으로 오판하지
 #                                                        않게 untracked 와 union 한다)
+#   git -C <tree> submodule status --recursive         → 등록된 submodule working tree 전수
 # 나머지 호출([1b] 출하 surface·[6/7] status -s·ahead)은 무해한 기본 응답을 준다.
 
 
@@ -67,14 +69,24 @@ def _lines(paths: list[str]) -> str:
 
 def _git_stub(dirty: dict[str, tuple[list[str], list[str]]] | None = None, *,
               staged: dict[str, list[str]] | None = None,
+              submodules: dict[str, tuple[str, ...]] | None = None,
+              gitlink_drift: dict[str, list[str]] | None = None,
+              submodule_status_fail_trees: tuple[str, ...] = (),
               non_git_trees: tuple[str, ...] = (),
-              unborn_trees: tuple[str, ...] = ()):
+              unborn_trees: tuple[str, ...] = (),
+              calls: list[list[str]] | None = None):
     """트리 → (tracked 미커밋, untracked) 응답 stub.
 
-    `dirty`          = 트리 → (`diff --name-only HEAD` 목록, `ls-files --others` 목록).
+    `dirty`          = 트리 → (`diff --name-only --ignore-submodules=none HEAD` 목록,
+                       `ls-files --others` 목록).
     `staged`         = 트리 → `diff --cached --name-only` 목록. **커밋 0 트리에서만 소비된다** —
                        엔진이 그 조회를 unborn 정련 경로에서만 부르기 때문이다(그래서 이 값은
                        `unborn_trees` 와 짝으로 준다).
+    `submodules`      = 앵커 트리 → `submodule status --recursive` 가 열거할 상대경로 전수.
+    `gitlink_drift`   = 트리 → 상위 pin 과 다른 submodule 경로. stub 은 tracked diff 에
+                        `--ignore-submodules=none` 이 있을 때만 이를 돌려줘 `ignore = all` override 를
+                        모델한다.
+    `submodule_status_fail_trees` = submodule 열거만 rc 128(판정 불가 경고 경로).
     `non_git_trees`  = 모든 조회 rc 128(비-git 트리·판정 불가).
     `unborn_trees`   = 커밋 0 — `diff HEAD` 와 `rev-parse HEAD` 는 실패하고 `diff --cached`·
                        `ls-files` 만 답한다(실 git 의 unborn 동작·아래 실측 테스트가 이 stub
@@ -82,12 +94,21 @@ def _git_stub(dirty: dict[str, tuple[list[str], list[str]]] | None = None, *,
     """
     table = dirty or {}
     staged_table = staged or {}
+    submodule_table = submodules or {}
+    drift_table = gitlink_drift or {}
 
     def _runner(args: list[str]) -> tuple[int, str]:
+        if calls is not None:
+            calls.append(list(args))
         tree = args[args.index("-C") + 1] if "-C" in args else None
         tracked, untracked = table.get(tree, ([], []))
         if tree is not None and tree in non_git_trees:
             return 128, "fatal: not a git repository\n"
+        if "submodule" in args and "status" in args:
+            if tree in submodule_status_fail_trees:
+                return 128, "fatal: submodule status failed\n"
+            paths = submodule_table.get(tree, ())
+            return 0, "".join(f" {'a' * 40} {path}\n" for path in paths)
         if "ls-files" in args:
             return 0, _lines(untracked)
         if "rev-parse" in args:
@@ -101,7 +122,8 @@ def _git_stub(dirty: dict[str, tuple[list[str], list[str]]] | None = None, *,
                 return 0, ""            # 커밋된-미push 없음([1b] 출하 surface).
             if tree in unborn_trees:
                 return 128, "fatal: ambiguous argument 'HEAD'\n"
-            return 0, _lines(tracked)
+            drift = drift_table.get(tree, []) if "--ignore-submodules=none" in args else []
+            return 0, _lines([*tracked, *drift])
         return 0, ""                    # status -s·rev-list 등.
 
     return _runner
@@ -382,6 +404,155 @@ def test_gate_trees_dedup_pm_home_and_stale_slot(hf, tmp_path, monkeypatch):
     trees = inst._dirty_gate_trees("alpha")
 
     assert trees == [str(tmp_path)]
+
+
+# ── submodule 경계 확장 (T-0620) ─────────────────────────────────────────────
+
+def test_submodule_discovery_reuses_shared_parser_requests_recursive_and_skips_uninit(
+        hf, monkeypatch):
+    """공용 flag 파서를 호출하고 `--recursive` 전수 열거 중 `-` working tree 만 제외한다."""
+    parser_calls: list[str] = []
+    git_calls: list[list[str]] = []
+
+    class SharedParser:
+        @staticmethod
+        def _parse_submodule_entries(output: str):
+            parser_calls.append(output)
+            return [
+                ("-", "vendor/uninitialized"),
+                (" ", "vendor/my lib"),
+                ("+", "vendor/my lib"),
+            ]
+
+    def _runner(args: list[str]):
+        git_calls.append(list(args))
+        return 0, "shared-parser-input"
+
+    monkeypatch.setattr(hf, "_load_worktree_pool", lambda: SharedParser)
+
+    paths = hf._submodule_paths_in_tree("/super", _runner)
+
+    assert paths == ["vendor/my lib"]
+    assert parser_calls == ["shared-parser-input"]
+    assert git_calls == [["-C", "/super", "submodule", "status", "--recursive"]]
+
+
+def test_submodule_dirty_blocks_and_lists_parent_relative_paths(
+        hf, tmp_path, monkeypatch, capsys):
+    """재귀 열거된 모든 submodule 의 내부 잔여를 앵커 상대경로로 합쳐 차단한다."""
+    board = tmp_path / ".project_manager" / "board"
+    nested = tmp_path / "vendor" / "outer" / "inner"
+    runner = _git_stub(
+        {
+            str(board): (["tickets/_template.md"], []),
+            str(nested): ([], ["notes/leftover.md"]),
+        },
+        submodules={
+            str(tmp_path): (".project_manager/board", "vendor/outer/inner"),
+        },
+    )
+    inst, _log = _make_handoff(hf, tmp_path, monkeypatch, git_runner=runner)
+
+    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert ".project_manager/board/tickets/_template.md" in captured.out
+    assert "vendor/outer/inner/notes/leftover.md" in captured.out
+    assert "미커밋 잔여 2건" in captured.out
+
+
+def test_gitlink_pin_drift_blocks_via_ignore_submodules_none(
+        hf, tmp_path, monkeypatch, capsys):
+    """상위 pin ≠ submodule HEAD 는 `ignore = all` 모델에서도 tracked 축이 차단한다."""
+    calls: list[list[str]] = []
+    runner = _git_stub(
+        submodules={str(tmp_path): (".project_manager/board",)},
+        gitlink_drift={str(tmp_path): [".project_manager/board"]},
+        calls=calls,
+    )
+    inst, _log = _make_handoff(hf, tmp_path, monkeypatch, git_runner=runner)
+
+    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+
+    assert rc == 1
+    assert ".project_manager/board" in capsys.readouterr().out
+    tracked_calls = [args for args in calls if "diff" in args and "HEAD" in args]
+    assert tracked_calls
+    assert all("--ignore-submodules=none" in args for args in tracked_calls)
+
+
+def test_parent_and_registered_submodule_clean_pass(
+        hf, tmp_path, monkeypatch, capsys):
+    """앵커와 등록 submodule 모두 clean 이면 기존 핸드오프 흐름을 그대로 통과한다."""
+    runner = _git_stub(
+        submodules={str(tmp_path): (".project_manager/board",)},
+    )
+    inst, log_file = _make_handoff(hf, tmp_path, monkeypatch, git_runner=runner)
+
+    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+
+    assert rc == 0
+    assert "판정 트리 2개" in capsys.readouterr().out
+    assert "PM 5차" in log_file.read_text(encoding="utf-8")
+
+
+def test_judged_tree_count_excludes_unjudgeable_submodule(
+        hf, tmp_path, monkeypatch, capsys):
+    """판정 실패한 submodule 은 clean 요약의 판정 트리 수에 포함하지 않는다."""
+    sub_tree = tmp_path / "vendor" / "missing"
+    runner = _git_stub(
+        submodules={str(tmp_path): ("vendor/missing",)},
+        non_git_trees=(str(sub_tree),),
+    )
+    inst, _log = _make_handoff(hf, tmp_path, monkeypatch, git_runner=runner)
+
+    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "판정 트리 1개" in captured.out
+    assert str(sub_tree) in captured.err
+
+
+def test_submodule_status_failure_warns_without_blocking(
+        hf, tmp_path, monkeypatch, capsys):
+    """submodule 열거 실패는 판정 불가 stderr 경고만 내고 정상 핸드오프를 유지한다."""
+    runner = _git_stub(submodule_status_fail_trees=(str(tmp_path),))
+    inst, log_file = _make_handoff(hf, tmp_path, monkeypatch, git_runner=runner)
+
+    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "submodule status --recursive 실패" in captured.err
+    assert "[중단]" not in captured.err
+    assert "PM 5차" in log_file.read_text(encoding="utf-8")
+
+
+def test_ignore_all_override_closes_internal_dirty_and_gitlink_axes(
+        hf, tmp_path, monkeypatch, capsys):
+    """`ignore = all` 모델에서도 내부 파일·gitlink drift 두 축을 함께 놓치지 않는다."""
+    board = tmp_path / ".project_manager" / "board"
+    calls: list[list[str]] = []
+    runner = _git_stub(
+        {str(board): (["tickets/open.md"], [])},
+        submodules={str(tmp_path): (".project_manager/board",)},
+        gitlink_drift={str(tmp_path): [".project_manager/board"]},
+        calls=calls,
+    )
+    inst, _log = _make_handoff(hf, tmp_path, monkeypatch, git_runner=runner)
+
+    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert ".project_manager/board" in out
+    assert ".project_manager/board/tickets/open.md" in out
+    assert any(
+        "diff" in args and "HEAD" in args and "--ignore-submodules=none" in args
+        for args in calls
+    )
 
 
 # ── --ack-dirty override (사유 필수·단일행·entry 박제) ───────────────────────
@@ -847,6 +1018,8 @@ def test_non_git_tree_warns_on_stderr_without_blocking(hf, tmp_path, monkeypatch
     assert rc == 0
     captured = capsys.readouterr()
     assert "dirty 판정 불가" in captured.err
+    assert captured.err.count("dirty 판정 불가") == 1
+    assert "submodule status --recursive 실패" not in captured.err
     assert "dirty 판정 불가" not in captured.out
     assert "PM 5차" in log_file.read_text(encoding="utf-8")
 
@@ -902,6 +1075,82 @@ def test_format_dirty_paths_keeps_all_within_limit(hf):
 def _git(*args: str, cwd: Path) -> None:
     subprocess.run([_GIT, *args], cwd=str(cwd), check=True,
                    capture_output=True, text=True)
+
+
+def _git_output(*args: str, cwd: Path) -> str:
+    return subprocess.run(
+        [_GIT, *args], cwd=str(cwd), check=True, capture_output=True, text=True,
+    ).stdout
+
+
+def _init_real_repo(repo: Path) -> None:
+    repo.mkdir()
+    _git("init", "-q", cwd=repo)
+    _git("config", "user.email", "t@example.com", cwd=repo)
+    _git("config", "user.name", "t", cwd=repo)
+    _git("commit", "-q", "--allow-empty", "-m", "init", cwd=repo)
+
+
+@requires_git_binary
+def test_real_git_ignore_all_is_overridden_for_gitlink_drift(hf, tmp_path):
+    """실 git — `.gitmodules ignore=all` 이어도 명시 none override 는 gitlink drift 를 보고한다."""
+    source = tmp_path / "source"
+    superproject = tmp_path / "super"
+    _init_real_repo(source)
+    _init_real_repo(superproject)
+    _git(
+        "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+        str(source), "vendor/lib", cwd=superproject,
+    )
+    _git("config", "-f", ".gitmodules", "submodule.vendor/lib.ignore", "all",
+         cwd=superproject)
+    _git("commit", "-q", "-am", "add ignored submodule", cwd=superproject)
+
+    _git("commit", "-q", "--allow-empty", "-m", "drift", cwd=source)
+    drift_sha = _git_output("rev-parse", "HEAD", cwd=source).strip()
+    checkout = superproject / "vendor" / "lib"
+    _git("fetch", "-q", cwd=checkout)
+    _git("checkout", "-q", drift_sha, cwd=checkout)
+
+    rc_plain, out_plain = hf._module_run_git(
+        ["-C", str(superproject), "diff", "--name-only", "HEAD"]
+    )
+    assert rc_plain == 0 and out_plain.strip() == ""  # ignore=all 전제 실측.
+    assert hf._dirty_paths_in_tree(
+        str(superproject), hf._module_run_git,
+    ) == ["vendor/lib"]
+
+
+@requires_git_binary
+def test_real_git_recursive_submodule_paths_are_superproject_relative(hf, tmp_path):
+    """실 git — 재귀 status 의 중첩·공백 경로는 최상위 superproject 상대경로다."""
+    leaf = tmp_path / "leaf"
+    middle = tmp_path / "middle"
+    superproject = tmp_path / "super"
+    _init_real_repo(leaf)
+    _init_real_repo(middle)
+    _git(
+        "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+        str(leaf), "deps/inner lib", cwd=middle,
+    )
+    _git("commit", "-q", "-am", "add leaf", cwd=middle)
+    _init_real_repo(superproject)
+    _git(
+        "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+        str(middle), "vendor/outer lib", cwd=superproject,
+    )
+    _git("commit", "-q", "-am", "add middle", cwd=superproject)
+    _git(
+        "-c", "protocol.file.allow=always", "submodule", "update", "--init",
+        "--recursive", cwd=superproject,
+    )
+
+    raw = _git_output("submodule", "status", "--recursive", cwd=superproject)
+    nested = "vendor/outer lib/deps/inner lib"
+    assert nested in raw  # Git 자체 출력 좌표계 실측.
+    assert hf._submodule_paths_in_tree(
+        str(superproject), hf._module_run_git,
+    ) == ["vendor/outer lib", nested]
 
 
 @requires_git_binary

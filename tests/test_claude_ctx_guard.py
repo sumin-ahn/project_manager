@@ -477,8 +477,8 @@ def test_hook_final_pretooluse_injects_without_permission_decision(stop_hook, tm
     assert (marker_dir / "sess-pretool.final").exists()
 
 
-def test_settings_wires_pretool_userprompt_and_postcompact():
-    # PreToolUse/UserPromptSubmit 은 넛지 주입, PostCompact 는 완료 경계 재무장 채널이다.
+def test_settings_wires_precompact_pretool_userprompt_and_postcompact():
+    # PreCompact는 durable flush+골격, PostCompact는 snapshot marker 무장 채널이다.
     # T-0202: 이제 래퍼(ctx_stop_hook.sh) 경유 — 래퍼가 인터프리터 self-resolve 후 ctx_stop_hook.py 를
     #   exec(stdin/args/rc 투명 전달). 래퍼→.py 링크는 test_new_wrappers_self_contained 가 커버.
     data = json.loads((CLAUDE / "settings.json").read_text(encoding="utf-8"))
@@ -490,8 +490,9 @@ def test_settings_wires_pretool_userprompt_and_postcompact():
     assert data["hooks"]["PostCompact"] == data["hooks"]["UserPromptSubmit"], (
         "PostCompact 등록이 UserPromptSubmit ctx 훅과 동형이 아님")
     assert data["hooks"]["PreToolUse"][0].get("matcher") == "*"
-    assert "PreCompact" not in data["hooks"], (
-        "압축 전 발화하는 PreCompact 에 재무장 훅이 남음")
+    precompact = json.dumps(data["hooks"]["PreCompact"])
+    assert "precompact_capture_hook.sh" in precompact
+    assert "ctx_stop_hook.sh" not in precompact, "PreCompact가 재무장 훅을 직접 호출함"
 
 
 def test_hook_session_id_sanitized(stop_hook):
@@ -751,6 +752,31 @@ def test_hook_nudge_refires_after_postcompact_without_ok_observation(stop_hook, 
     assert first is not None and duplicate is None
     assert compacting is None
     assert next_cycle is not None
+
+
+def test_postcompact_arms_snapshot_then_first_supported_channel_injects_once(
+        stop_hook, tmp_path, monkeypatch):
+    """PostCompact 저장→첫 UserPromptSubmit verbatim 주입→payload 소거 (marker-armed 정본)."""
+    payload = "## PM 정체성 (compaction 복구)\n- task: main\n"
+    checkpoints = []
+    monkeypatch.setattr(stop_hook, "_build_snapshot", lambda root, stdin: payload)
+    monkeypatch.setattr(
+        stop_hook, "_create_checkpoint",
+        lambda root, stdin, **kwargs: checkpoints.append((stdin["session_id"], kwargs)),
+    )
+    boundary = {"session_id": "sess-snapshot", "hook_event_name": "PostCompact"}
+    assert stop_hook.evaluate(boundary, tmp_path, {}) == (0, None)
+    marker = (tmp_path / ".project_manager" / ".local" / "ctx-stop" /
+              "compact-snapshot.sess-snapshot")
+    assert marker.read_text(encoding="utf-8") == payload
+    assert checkpoints == [("sess-snapshot", {"phase": "post"})]
+
+    prompt = {"session_id": "sess-snapshot", "hook_event_name": "UserPromptSubmit"}
+    rc, output = stop_hook.evaluate(prompt, tmp_path, {})
+    assert rc == 0
+    assert output["hookSpecificOutput"]["additionalContext"] == payload
+    assert not marker.exists()
+    assert stop_hook.evaluate(prompt, tmp_path, {}) == (0, None)
 
 
 def test_hook_postcompact_waits_for_postboundary_usage_before_refiring(stop_hook, tmp_path):

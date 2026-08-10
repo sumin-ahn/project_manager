@@ -924,7 +924,12 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   시작의 구 pm_import 사본이 낸 marked skew를 등록된 복구 사유로 흡수하고 종료 시 수렴을
     #   검증한다. 독립 `sync-adapter-config --check` 경계는 복구 실행이 아니므로 같은 skew를 그대로
     #   re-raise한다. 일반 판독 실패만 전량 확인 advisory로 내린다.
-    assert len(report.boundaries) == 181, "propagation sweep boundary ratchet changed"
+    # 183 = 181 + T-0625 raw close 수동 마감 충돌 경계 둘. 원 실행(pm_delegate
+    #   `_execute_attempt` · external_review run_review)의 종료 마감이 수동 `raw close --force`
+    #   선행 마감과 충돌하면 전용 타입(`RawRecordAlreadyFinished`)만 잡아 경고로 강등한다 —
+    #   첫 마감 보존이 계약이고 회신은 raw 파일에 이미 박제돼 있어 rc 를 뒤집지 않는다.
+    #   marked skew 는 그 타입이 아니므로 이 경계가 흡수하지 않는다.
+    assert len(report.boundaries) == 183, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

@@ -26,6 +26,7 @@ from __future__ import annotations
 import codecs
 import contextlib
 import datetime
+import errno
 import json
 import math
 import os
@@ -293,6 +294,70 @@ RAW_LEDGER_MAX_UNFINISHED = 128
 RAW_LEDGER_MAX_COMPLETED = 256
 
 
+def pid_is_alive(
+    pid: object,
+    *,
+    _platform_name: str | None = None,
+    _windows_api=None,
+) -> bool:
+    """프로세스를 종료하지 않고 PID 생존 여부만 조회하는 공용 cross-platform seam.
+
+    Windows는 ``OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`` 핸들 획득 여부만
+    확인하고, POSIX는 signal 0의 ESRCH/EPERM 규약을 따른다. 장부에서 읽은 값의
+    bool/비정수/0 이하 입력은 실제 PID가 아니므로 부재로 정규화한다.
+
+    ``_platform_name``과 ``_windows_api``는 Windows 분기를 비-Windows 회귀 환경에서도
+    실제 프로세스에 손대지 않고 검증하기 위한 주입 seam이다.
+    """
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return False
+
+    is_windows = (
+        os.name == "nt" if _platform_name is None else _platform_name == "nt"
+    )
+    if is_windows:
+        if _windows_api is None:  # pragma: no cover — Windows 실환경 경로
+            import ctypes
+            _windows_api = ctypes.windll.kernel32
+        try:
+            handle = _windows_api.OpenProcess(0x1000, False, pid)
+        except OSError as exc:
+            # 명백한 PID 부재(WinError 87)만 사망 — 접근 거부 등 그 외 실패는 보수적으로
+            # 생존으로 본다(살아있는 프로세스의 레코드를 마감하는 쪽이 더 나쁘다).
+            code = getattr(exc, "winerror", None)
+            if code is None:
+                code = exc.errno
+            return code != 87 if code is not None else True
+        if not handle:
+            # NULL 은 PID 부재만이 아니다 — 접근 거부(ERROR_ACCESS_DENIED=5)도 NULL 을
+            # 준다(프로세스는 살아 있다). GetLastError 로 명백한 부재
+            # (ERROR_INVALID_PARAMETER=87)만 False, 접근 거부·불명 오류는 True(생존 보수).
+            last_error = None
+            get_last_error = getattr(_windows_api, "GetLastError", None)
+            if callable(get_last_error):
+                try:
+                    last_error = int(get_last_error())
+                except (OSError, TypeError, ValueError):
+                    last_error = None
+            return last_error not in (87,) if last_error is not None else True
+        try:
+            _windows_api.CloseHandle(handle)
+        except OSError:
+            # 생존 판정은 이미 끝났다. 핸들 정리 오류가 PID를 죽음으로 뒤집지는 않는다.
+            pass
+        return True
+
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError as exc:
+        if exc.errno == errno.ESRCH:
+            return False
+        # EPERM은 존재하지만 조회 권한이 없는 프로세스다. 그 밖의 조회 오류도 슬롯을
+        # 조기 회수하지 않도록 보수적으로 생존으로 간주한다.
+        return True
+
+
 def raw_storage_paths(
     repo: Path,
     surface: str,
@@ -408,7 +473,15 @@ def _prune_raw_records(
 RAW_LEDGER_RESERVED_KEYS: frozenset[str] = frozenset({
     "id", "surface", "harness", "model", "role", "attempt", "pid",
     "started_at", "raw_path", "finished_at", "rc", "elapsed_sec", "silence_sec",
+    "finish_note",
 })
+
+
+class RawRecordAlreadyFinished(ValueError):
+    """마감 충돌 — 레코드에 이미 `finished_at` 이 있다(수동 `raw close` 선행 등).
+
+    첫 마감을 보존한다는 신호다. 원 실행의 후속 마감 호출부는 이 예외를 잡아 실행 결과를
+    실패로 바꾸지 않고 경고로 강등한다(회신 자체는 raw 파일에 이미 박제돼 있다)."""
 
 
 def start_raw_record(
@@ -467,9 +540,13 @@ def finish_raw_record(
     elapsed_sec: float,
     silence_sec: float | None,
     now: datetime.datetime | None = None,
+    finish_note: str | None = None,
     extra: dict[str, object] | None = None,
 ) -> None:
     """동일 레코드에 종료 관측치를 기록한다. 시작 레코드 부재는 유실이므로 fail-loud한다.
+
+    `finish_note` 는 마감 provenance 의 명시 완료 필드다 — 예약 키라 시작/마감 extra 로는
+    주입될 수 없고 이 파라미터로만 기록된다(수동 `raw close` 사유 등).
 
     `extra` = 실행 **후에야 알 수 있는** 표면별 구조화 관측(예: 위임의 세션 id·usage 분해·
     직전 라운드 must_fix 항목). 공통 스키마 키는 무시하고, 나머지만 같은 레코드 행에 싣는다 —
@@ -483,6 +560,10 @@ def finish_raw_record(
         found = False
         for row in ledger["records"]:
             if isinstance(row, dict) and row.get("id") == record_id:
+                if row.get("finished_at") is not None:
+                    raise RawRecordAlreadyFinished(
+                        f"raw 장부 레코드는 이미 마감됨: {record_id}"
+                    )
                 row.update({
                     "finished_at": current.astimezone(
                         datetime.timezone.utc
@@ -493,6 +574,8 @@ def finish_raw_record(
                         None if silence_sec is None else round(float(silence_sec), 3)
                     ),
                 })
+                if finish_note is not None:
+                    row["finish_note"] = finish_note
                 for key, value in (extra or {}).items():
                     if key not in RAW_LEDGER_RESERVED_KEYS:
                         row[key] = value

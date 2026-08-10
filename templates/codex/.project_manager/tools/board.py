@@ -5822,16 +5822,16 @@ def gate_residual_label(entry: dict) -> str:
 # 쓰는 쪽은 external_review(`--resolve-gate`)지만 **읽는 규칙은 여기 하나**다 — 릴리즈 차단과
 # 조회 표가 각자 해석하면 같은 장부를 놓고 "처분됐다/아니다"가 갈린다. 로드 방향이
 # external_review → board 라 공용 판정은 board 가 소유한다(`round_outcome_order_key` 와 같은 자리).
-GATE_RESOLUTION_INTO = "into"     # 후속 티켓 이관 — 그 티켓이 done 이어야 릴리즈가 열린다.
+GATE_RESOLUTION_INTO = "into"     # 후속 티켓 재설계 — 그 티켓이 done 이어야 릴리즈가 열린다.
 GATE_RESOLUTION_FIXED = "fixed"   # 코드로 해소 — 근거 게이트(통과로 끝난 게이트) 지목이 조건.
-# 처분 종류별 **대상 필드** — 이관은 티켓 ID, 해소는 근거 게이트 이름을 싣는다.
+# 처분 종류별 **대상 필드** — 재설계는 티켓 ID, 해소는 근거 게이트 이름을 싣는다.
 _GATE_RESOLUTION_TARGET_KEYS: dict[str, str] = {
     GATE_RESOLUTION_INTO: "ticket",
     GATE_RESOLUTION_FIXED: "evidence_gate",
 }
 # 처분 표기 어휘 — 선언 응답(external_review)과 차단 사유(여기)가 같은 말을 쓰게.
 GATE_RESOLUTION_LABELS: dict[str, str] = {
-    GATE_RESOLUTION_INTO: "이관", GATE_RESOLUTION_FIXED: "해소",
+    GATE_RESOLUTION_INTO: "재설계", GATE_RESOLUTION_FIXED: "해소",
 }
 # 처분이 결속하는 **라운드 좌표** 필드 — 선언 시점의 마지막 라운드 순번과 산출 수.
 _GATE_RESOLUTION_BINDING_KEYS: tuple[str, ...] = ("round_sequence", "rounds")
@@ -6898,7 +6898,7 @@ def _resolve_livegate_flag(cwd: str) -> tuple[Path, str]:
 # 것이 근절 대상이다(실사고: PM 자체 판정 "전이-세대 엣지"로 must-fix 4건을 이월한 채 릴리즈).
 #
 # 판정 입력은 **장부의 기록 사실**뿐이다 — 최종 라운드의 must_fix 수(`gate_residual_must_fix`),
-# 처분 선언(`gate_resolution`), 이관 대상 티켓의 보드 status. PM 자의 판정("사소함·엣지")이 들어갈
+# 처분 선언(`gate_resolution`), 재설계 대상 티켓의 보드 status. PM 자의 판정("사소함·엣지")이 들어갈
 # 자리를 만들지 않는다(그 자의 판정이 사고의 원인이었다). 우회 플래그도 없다.
 #
 # 검사 지점이 `livegate record` 인 이유는 그것이 릴리즈 절차의 첫 기계 관문이고 push 보호훅이 그
@@ -6915,9 +6915,9 @@ _MUST_FIX_BLOCK_GUIDANCE = (
     "  처방 — 게이트마다 처분을 **선언**하세요 (선언 없이는 릴리즈가 열리지 않습니다):\n"
     "    · 코드로 해소했으면: python3 .project_manager/tools/external_review.py "
     "--resolve-gate <게이트> --fixed <근거 게이트>\n"
-    "    · 후속 티켓으로 이관하면: python3 .project_manager/tools/external_review.py "
+    "    · 후속 티켓으로 재설계하면: python3 .project_manager/tools/external_review.py "
     "--resolve-gate <게이트> --into <T-NNNN>\n"
-    "      (이관은 면제가 아니라 처분입니다 — 그 티켓이 done 이어야 이번 릴리즈가 열립니다)\n"
+    "      (재설계는 면제가 아니라 처분입니다 — 그 티켓이 done 이어야 이번 릴리즈가 열립니다)\n"
     "  라운드 장부: {ledger}"
 )
 
@@ -6968,11 +6968,11 @@ def _write_release_must_fix_marker(flag: Path, problems: Sequence[str]) -> Path:
 
 
 def _release_gate_search_dirs(ledger: Path) -> list[tuple[str, Path]]:
-    """이관 대상 티켓을 조회할 범위 — **장부와 같은 PM 홈**의 보드.
+    """재설계 대상 티켓을 조회할 범위 — **장부와 같은 PM 홈**의 보드.
 
     `<root>/.project_manager/.local/review_rounds.json` 에서 `<root>` 를 되짚어 그 홈의 board
     루트를 쓴다(board/ 분리 추종). 장부는 engine-root 로 정렬해 놓고 티켓만 호출된 사본의 board
-    에서 찾으면, worktree 사본으로 record 할 때 티켓을 못 찾아 정상 이관까지 차단된다."""
+    에서 찾으면, worktree 사본으로 record 할 때 티켓을 못 찾아 정상 재설계까지 차단된다."""
     pm_home = ledger.parent.parent.parent
     return [(status, _board_root_at(pm_home) / "tickets" / status)
             for status in STATUS_DIRS]
@@ -7022,7 +7022,7 @@ def _gate_disposition_problem(gate: str, entry: object, ledger_data: dict,
                 "(ID 오기 또는 미생성)")
     if found[0] != "done":
         return (f"{prefix} · {label} {ticket} — 아직 done 이 아닙니다(현재 {found[0]}) · "
-                "이관은 면제가 아니라 같은 릴리즈 안 소화입니다")
+                "재설계는 면제가 아니라 같은 릴리즈 안 소화입니다")
     return None
 
 
