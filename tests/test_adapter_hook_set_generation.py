@@ -1483,3 +1483,375 @@ def test_build_parser_routes_accept_all_and_excludes_other_modes(pm_config):
         parser.parse_args(["sync-adapter-config", "--accept-all", "--accept", _SETTINGS_REL])
     with pytest.raises(SystemExit):
         parser.parse_args(["sync-adapter-config", "--accept-all", "--check"])
+
+
+# ── 구세대 형제 강등 사다리 · 선언 결속 · 강등 사유 표면화 (T-0611) ────────────
+# T-0610 이 소비자를 상류 선언으로 통일하면서, 그 선언을 **못 받는** 조합의 처분이 한 갈래로
+# 뭉쳤다: 형제가 구세대면 해소 지점이 없다는 이유로 그 세대가 이미 제공하던 보호(설치본 선언 기준
+# 원자 write 판정·결합 묶음 판정·세대 불일치 판정)까지 함께 버린다. 이 절이 고정하는 성질:
+#
+#   조회 축은 **관대하되 loud**, mutation 축은 fail-closed — 그리고 어느 축이든 강등이
+#   "직전 세대가 하던 일" 까지 끄지 않는다(강등은 사다리이지 스위치가 아니다).
+
+
+def _t0606_generation_sibling(pm_import):
+    """T-0606 세대 형제 사본 — 세대 선언 해소 지점(`hook_set_declarations`)이 아직 없고, 판정
+    API 는 **선언 주입 이전 시그니처**만 가진 형상(혼합 세대 복구 중 실제로 열리는 창)."""
+
+    class PreviousGeneration:
+        hook_set_remedy_lines = staticmethod(pm_import.hook_set_remedy_lines)
+
+        @staticmethod
+        def is_live_hook_set_path(relpath):
+            return pm_import.is_live_hook_set_path(relpath)
+
+        @staticmethod
+        def hook_set_partial_update(updated_paths, pending_paths):
+            return pm_import.hook_set_partial_update(updated_paths, pending_paths)
+
+        @staticmethod
+        def judge_adapter_hook_sets(dest_root, source_root=None, harnesses=None):
+            return pm_import.judge_adapter_hook_sets(dest_root, source_root, harnesses)
+
+    return PreviousGeneration
+
+
+def test_predicate_keeps_the_previous_generation_atomic_write_judgment(
+        pm_update, pm_import, monkeypatch, capsys):
+    """구세대 형제에서도 훅 파일은 원자 교체 대상으로 남는다 — 강등이 판정을 끄면 안 된다.
+
+    선언 해소 지점이 없다는 이유로 무판정(`lambda: False`)으로 내려가면, 혼합 세대 복구 중에 훅
+    파일이 통째로 비원자 copy2 로 떨어진다(T-0606 이 닫은 torn read 창이 그대로 다시 열린다)."""
+    monkeypatch.setattr(pm_update, "_load_pm_import",
+                        lambda: _t0606_generation_sibling(pm_import))
+
+    predicate = pm_update.resolve_hook_set_predicate()
+
+    assert predicate(_WRAPPER_REL), "구세대 형제가 아는 훅 경로까지 비원자 복사로 떨어졌다"
+    assert not predicate(".project_manager/tools/board.py"), \
+        "훅 세트 밖까지 원자 write 로 확대됐다"
+    err = capsys.readouterr().err
+    assert "구세대라 훅 세트 상류 세대 선언 없이 진행한다" in err, f"무음 강등: {err!r}"
+
+
+def test_predicate_is_no_judgment_only_when_the_old_api_is_gone_too(
+        pm_update, monkeypatch, capsys):
+    """구 API 마저 없는 세대에서만 무판정이다 — 사다리의 마지막 단(도입 이전 경로)."""
+
+    class BeforeHookSets:
+        """훅 세트 개념 자체가 없는 사본."""
+
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: BeforeHookSets)
+
+    predicate = pm_update.resolve_hook_set_predicate()
+
+    assert not predicate(_WRAPPER_REL)
+    assert "원자 write 판정자를 해소하지 못했다" in capsys.readouterr().err
+
+
+def test_partial_guard_keeps_the_previous_generation_coupled_group_gate(
+        pm_update, pm_import, monkeypatch, capsys):
+    """구세대 형제에서도 반쪽 갱신은 거부된다 — 새 키워드 TypeError 로 가드가 꺼지면 안 된다.
+
+    그 세대가 이미 막던 락아웃(신 래퍼 + 구 드라이버)이 강등 한 번으로 rc0 통과가 된다."""
+    monkeypatch.setattr(pm_update, "_load_pm_import",
+                        lambda: _t0606_generation_sibling(pm_import))
+    scoped = [(_WRAPPER_REL, None, None, "M")]
+    planned = [(_WRAPPER_REL, None, None, "M"), (_DRIVER_REL, None, None, "M")]
+
+    rc = pm_update.refuse_partial_hook_set_scope(scoped, planned, None)
+
+    err = capsys.readouterr().err
+    assert rc == 1, err
+    assert "훅 세트를 반쪽만 갱신한다" in err and _DRIVER_REL in err, err
+    assert "구세대라 훅 세트 상류 세대 선언 주입 없이 진행한다" in err, f"무음 강등: {err!r}"
+
+
+def test_partial_guard_downgrade_still_lets_unrelated_scope_through(
+        pm_update, pm_import, monkeypatch, capsys):
+    """훅과 무관한 부분 전파는 강등 경로에서도 통과한다(가드가 과잉이면 복구가 잠긴다)."""
+    monkeypatch.setattr(pm_update, "_load_pm_import",
+                        lambda: _t0606_generation_sibling(pm_import))
+    scoped = [(".project_manager/tools/board.py", None, None, "M")]
+
+    rc = pm_update.refuse_partial_hook_set_scope(scoped, scoped, None)
+
+    assert rc == 0, capsys.readouterr().err
+
+
+def test_hook_set_check_keeps_the_previous_generation_judgment(
+        pm_update, pm_import, tmp_path, monkeypatch, capsys):
+    """구세대 형제에서도 세대 불일치 검사는 살아 있다 — `unavailable` 로 접으면 게이트가 사라진다.
+
+    새 키워드를 그대로 넘기면 TypeError 가 나고, 그걸 fail-soft 로 받으면 판정 결과가 빈 목록이
+    되어 완료 게이트가 green 이 된다(락아웃을 그대로 둔 채 성공 보고)."""
+    dest, source = _make_case(
+        tmp_path, dest_settings=_settings(git_anchor=True),
+        dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_OLD)
+    monkeypatch.setattr(pm_update, "_load_pm_import",
+                        lambda: _t0606_generation_sibling(pm_import))
+
+    result = pm_update.check_adapter_hook_sets(dest, source)
+
+    err = capsys.readouterr().err
+    assert result["status"] == "ok", result
+    assert [finding["subject"] for finding in result["findings"]] == [_GIT_ANCHOR_FLAG], \
+        result["findings"]
+    assert pm_update._adapter_hook_set_gate_failed(result) is True
+    assert "구세대라 훅 세트 상류 세대 선언 주입 없이 진행한다" in err, f"무음 강등: {err!r}"
+
+
+# ── 선언 해시 ↔ 실행 선언 결속 (stale `.pyc` 창 폐쇄) ─────────────────────────
+_STALE_PYC_FLAG_A = "--t0611-generation-a"
+_STALE_PYC_FLAG_B = "--t0611-generation-b"
+
+
+def _flag_declaration_tail(flag: str) -> str:
+    """상류 선언에 플래그 하나를 더하는 꼬리 — 두 세대의 **bytes 길이가 같다**(플래그 길이 동일)."""
+    return (
+        "\n"
+        'ADAPTER_HOOK_SET["claude"] = ADAPTER_HOOK_SET["claude"]._replace(\n'
+        "    flag_support=dict(ADAPTER_HOOK_SET['claude'].flag_support, **{\n"
+        f"        {flag!r}: ({_WRAPPER_REL!r}, {_DRIVER_REL!r})}}),\n"
+        ")\n"
+    )
+
+
+def test_declaration_load_is_bound_to_the_hashed_bytes(pm_import, tmp_path):
+    """해시한 bytes 와 **실행된 선언**이 같은 세대다 — timestamp 유효한 stale `.pyc` 폐쇄.
+
+    엔진 전파는 `copy2`(mtime 보존)로 파일을 내려놓으므로, 크기까지 같은 사본이 앞 세대의 유효한
+    `.pyc` 와 짝지어지는 창이 실재한다. 그 창에서 제자리 import 를 하면 "최신 파일 해시 + 구 선언
+    코드" 가 성립해, 게이트가 결속했다고 믿는 스냅샷이 거짓이 된다(수용은 그 해시를 쓰기 직전에
+    다시 대조하므로 거짓 통과가 그대로 설치된다)."""
+    source = tmp_path / "framework"
+    upstream = _plant_upstream_pm_import(
+        source, extra_tail=_flag_declaration_tail(_STALE_PYC_FLAG_A))
+    stat_before = upstream.stat()
+    # 1) A 세대를 한 번 로드해 그 bytes 의 `.pyc` 를 남긴다.
+    assert _STALE_PYC_FLAG_A in pm_import.hook_set_declarations(
+        source, required=True).declarations["claude"].flag_support
+    cached = Path(importlib.util.cache_from_source(str(upstream)))
+    # 2) 같은 크기·같은 mtime 으로 B 세대를 덮는다(전파가 실제로 만드는 형상).
+    upstream.write_text(
+        (TOOLS / "pm_import.py").read_text(encoding="utf-8")
+        + _flag_declaration_tail(_STALE_PYC_FLAG_B), encoding="utf-8")
+    os.utime(upstream, ns=(stat_before.st_atime_ns, stat_before.st_mtime_ns))
+    assert upstream.stat().st_size == stat_before.st_size, "픽스처 전제(같은 크기)가 아니다"
+
+    generation = pm_import.hook_set_declarations(source, required=True)
+
+    flags = generation.declarations["claude"].flag_support
+    assert _STALE_PYC_FLAG_B in flags and _STALE_PYC_FLAG_A not in flags, \
+        "해시한 bytes 가 아니라 캐시된 구 선언 코드가 실행됐다(결속 붕괴)"
+    assert generation.source_sha256 == hashlib.sha256(
+        upstream.read_bytes()).hexdigest(), "해시가 그 bytes 의 것이 아니다"
+    if cached.is_file():
+        # 민감도 — 이 fixture 가 실제로 stale `.pyc` 창을 재현하는지 확인한다(바이트코드 캐시가
+        #   꺼진 환경이면 창 자체가 없어 위 단언이 공허해질 수 있다).
+        stale = pm_import._load_module_from_path(
+            upstream, "pm_import.py", allow_unverified=True)
+        assert _STALE_PYC_FLAG_A in stale.ADAPTER_HOOK_SET["claude"].flag_support, \
+            "제자리 import 가 구 선언을 재사용하지 않는다 — 창 재현 실패(단언이 공허하다)"
+
+
+# ── 조회 축 강등 사유 표면화 (차단 아님·침묵만 제거) ─────────────────────────
+
+
+def test_check_surfaces_the_query_axis_downgrade_reason(pm_config, pm_import,
+                                                        tmp_path, capsys):
+    """`--check` 는 상류 선언을 못 읽으면 그 사유를 낸다 — 무경고 green 이 곧 관측 불가다.
+
+    조회 축은 관대 계약이라 rc 는 그대로다(차단은 mutation 축의 몫). 다만 침묵하면 채택자는 상류
+    전용 플래그를 한 번도 판정받지 못한 green 을 정상 통과로 읽는다."""
+    dest, source = _make_case(
+        tmp_path, dest_settings=_settings(git_anchor=True),
+        dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
+        upstream_tail=None)  # 상류 트리에 pm_import 없음 → 로컬 선언으로 강등.
+
+    rc = pm_config.cmd_sync_adapter_config(
+        _accept_args(source, check=True), pm_import=pm_import, dest_root=dest)
+
+    err = capsys.readouterr().err
+    assert rc == 0, err                      # 조회 축은 차단하지 않는다.
+    assert "설치본 선언으로 판정한다" in err, f"강등 사유가 버려졌다: {err!r}"
+    assert "상류 pm_import 부재" in err, "사유가 없어 무엇을 고쳐야 할지 알 수 없다"
+
+
+def test_check_stays_quiet_when_the_upstream_generation_resolves(pm_config, pm_import,
+                                                                 tmp_path, capsys):
+    """상류 선언이 읽히면 조용하다 — 강등 경고가 상시 울리면 신호가 죽는다."""
+    dest, source = _make_case(
+        tmp_path, dest_settings=_settings(git_anchor=True),
+        dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW)
+
+    rc = pm_config.cmd_sync_adapter_config(
+        _accept_args(source, check=True), pm_import=pm_import, dest_root=dest)
+
+    err = capsys.readouterr().err
+    assert rc == 0, err
+    assert "설치본 선언으로 판정한다" not in err, err
+
+
+def test_sync_check_surfaces_the_query_axis_downgrade_reason(pm_update, tmp_path,
+                                                             capsys):
+    """pm-update 의 세대 검사도 같은 사유를 낸다 — 변경 0 실행이 무경고 green 이면 안 된다."""
+    dest, source = _make_case(
+        tmp_path, dest_settings=_settings(git_anchor=True),
+        dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
+        upstream_tail=None)
+
+    result = pm_update.check_adapter_hook_sets(dest, source)
+
+    err = capsys.readouterr().err
+    assert result["status"] == "ok" and result["findings"] == [], result
+    assert "설치본 선언으로 판정한다" in err, f"강등 사유가 버려졌다: {err!r}"
+    assert "상류 pm_import 부재" in err, err
+
+
+def _load_pm_import_at(path: Path, name: str):
+    """그 경로의 pm_import 사본을 **실행 중인 엔진**으로 적재한다(자기 자신 경로 재현)."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_same_path_generation_is_loaded_from_the_hashed_bytes(tmp_path):
+    """상류가 **실행 중인 그 파일**이어도 선언은 해시한 bytes 에서 읽는다(빠른 경로 특례 없음).
+
+    "자기 자신이면 메모리 적재 선언을 쓴다" 는 단축은 정확히 같은 결속 붕괴를 남긴다: 적재된 선언은
+    import 시점 코드인데(그 자체가 stale `.pyc` 였을 수 있다) 해시는 지금 디스크 bytes 의 것이다.
+    자기 갱신 실행은 실행 도중 그 파일을 덮으므로(pm-update 가 하는 일이 그것이다) 두 시점이 갈리는
+    창이 상시 열려 있고, 그 조합이 곧 게이트가 결속했다고 믿는 거짓 스냅샷이다."""
+    source = tmp_path / "framework"
+    upstream = _plant_upstream_pm_import(
+        source, extra_tail=_flag_declaration_tail(_STALE_PYC_FLAG_A))
+    running = _load_pm_import_at(upstream, "pm_import_selfpath")
+    assert Path(running.__file__).resolve() == upstream.resolve(), \
+        "픽스처 전제 붕괴 — 상류가 실행 중인 그 파일이 아니다(빠른 경로 미도달)"
+    assert _STALE_PYC_FLAG_A in running.ADAPTER_HOOK_SET["claude"].flag_support, \
+        "픽스처 전제(적재 세대 = A)"
+    # 실행 중에 그 파일이 새 세대로 덮인다 — 자기 갱신 sync 가 만드는 형상 그대로.
+    upstream.write_text(
+        (TOOLS / "pm_import.py").read_text(encoding="utf-8")
+        + _flag_declaration_tail(_STALE_PYC_FLAG_B), encoding="utf-8")
+
+    generation = running.hook_set_declarations(source, required=True)
+
+    flags = generation.declarations["claude"].flag_support
+    assert _STALE_PYC_FLAG_B in flags and _STALE_PYC_FLAG_A not in flags, \
+        "자기 자신 빠른 경로가 메모리 적재(구) 선언을 신 해시와 짝지었다(결속 붕괴)"
+    assert generation.origin == running.HOOK_SET_ORIGIN_UPSTREAM, generation.origin
+    assert generation.source_sha256 == hashlib.sha256(
+        upstream.read_bytes()).hexdigest(), "해시가 그 bytes 의 것이 아니다"
+
+
+def _namespace_aware_legacy_sibling(pm_import):
+    """네임스페이스 열거 채널은 있으나 **선언 주입은 없는** 사본.
+
+    강등 분기가 "구세대라서" 라는 이유로 fail-closed 검사까지 끄는지 보는 형상이다 — 강등은 그
+    세대가 아는 판정을 유지할 뿐, 검증 불가 상태의 처분을 바꾸지 않는다."""
+
+    class NamespaceAwareLegacy:
+        hook_set_namespaces = staticmethod(pm_import.hook_set_namespaces)
+        hook_set_remedy_lines = staticmethod(pm_import.hook_set_remedy_lines)
+
+        @staticmethod
+        def is_live_hook_set_path(relpath):
+            return pm_import.is_live_hook_set_path(relpath)
+
+        @staticmethod
+        def hook_set_partial_update(updated_paths, pending_paths):
+            return pm_import.hook_set_partial_update(updated_paths, pending_paths)
+
+    return NamespaceAwareLegacy
+
+
+def test_partial_guard_downgrade_still_fails_closed_over_the_hook_namespace(
+        pm_update, pm_import, monkeypatch, capsys):
+    """구세대 강등 분기도 상류 미확인 상태의 훅 영역 전파는 거부한다 — 인식 상태가 같으면 처분도 같다.
+
+    구 판정자는 **상류에만 추가된 결합 묶음**을 정의상 모른다. 강등을 이유로 네임스페이스
+    fail-closed 를 건너뛰면 그 첫 전파(정확히 반쪽 갱신이 나는 자리)가 이 분기로 빠져나간다."""
+    alpha, beta = _UPSTREAM_ONLY_GROUP
+    monkeypatch.setattr(pm_update, "_load_pm_import",
+                        lambda: _namespace_aware_legacy_sibling(pm_import))
+    assert pm_import.hook_set_partial_update([alpha], [alpha, beta]) == [], \
+        "픽스처 전제 붕괴 — 설치본 선언이 이미 그 묶음을 안다(구멍 재현 불가)"
+
+    rc = pm_update.refuse_partial_hook_set_scope(
+        [(alpha, None, None, "M")],
+        [(alpha, None, None, "M"), (beta, None, None, "M")], None)
+
+    err = capsys.readouterr().err
+    assert rc == 1, err
+    assert "어댑터 훅 영역의 부분 전파를 거부한다" in err and alpha in err, err
+    assert "스코프 없이 pm-update" in err, "탈출구 처방 부재"
+
+
+def test_partial_guard_downgrade_fail_closed_spares_non_hook_paths(
+        pm_update, pm_import, monkeypatch, capsys):
+    """강등 분기의 fail-closed 도 훅 밖 경로는 건드리지 않는다(복구 전파 자기잠금 금지)."""
+    monkeypatch.setattr(pm_update, "_load_pm_import",
+                        lambda: _namespace_aware_legacy_sibling(pm_import))
+    scoped = [(".project_manager/tools/board.py", None, None, "M")]
+
+    rc = pm_update.refuse_partial_hook_set_scope(scoped, scoped, None)
+
+    assert rc == 0, capsys.readouterr().err
+
+
+def test_staging_cleanup_failure_does_not_fail_the_declaration_load(
+        pm_import, tmp_path, monkeypatch):
+    """스테이징 뒷정리 실패가 상류 로드 실패로 번역되지 않는다 — 선언은 이미 읽혔다.
+
+    삭제 실패는 Windows 실 클래스다(핸들 잠금·AV 스캔). 그것을 로드 경계 안에 묶으면 사유 한 줄이
+    `declarations=None` 으로 번역되고, mutation 게이트가 **근거 없이** fail-closed 로 떨어진다."""
+    source = tmp_path / "framework"
+    _plant_upstream_pm_import(
+        source, extra_tail=_flag_declaration_tail(_STALE_PYC_FLAG_A))
+    leaked: list[str] = []
+    real_rmtree = pm_import.shutil.rmtree
+
+    def _locked_rmtree(path, *args, **kwargs):
+        leaked.append(str(path))
+        raise OSError(f"임시 디렉토리 정리 실패(주입): {path}")
+
+    monkeypatch.setattr(pm_import.shutil, "rmtree", _locked_rmtree)
+    try:
+        generation = pm_import.hook_set_declarations(source, required=True)
+    finally:
+        monkeypatch.undo()
+        for path in leaked:
+            real_rmtree(path, ignore_errors=True)
+
+    assert leaked, "스테이징 정리 경로에 도달하지 않았다(단언이 공허하다)"
+    assert generation.declarations is not None, generation.reasons
+    assert _STALE_PYC_FLAG_A in generation.declarations["claude"].flag_support
+    assert generation.origin == pm_import.HOOK_SET_ORIGIN_UPSTREAM, generation.origin
+
+
+def test_query_fallback_wording_has_one_owner(pm_import, pm_update, pm_config,
+                                              tmp_path, capsys):
+    """강등 안내 문구는 pm_import 단일 진실이고 두 소비자가 **같은 문장**을 낸다.
+
+    사본을 두면 한쪽만 고쳐지고, 채택자는 같은 상태를 서로 다른 말로 듣는다(게이트가 둘로 보인다)."""
+    dest, source = _make_case(
+        tmp_path, dest_settings=_settings(git_anchor=True),
+        dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
+        upstream_tail=None)  # 상류 pm_import 부재 → 조회 축 강등.
+    owned = pm_import.hook_set_query_fallback_lines(
+        pm_import.hook_set_declarations(source))
+    assert owned and "설치본 선언으로 판정한다" in owned[0], owned
+
+    pm_update.check_adapter_hook_sets(dest, source)
+    sync_err = capsys.readouterr().err
+    pm_config.cmd_sync_adapter_config(
+        _accept_args(source, check=True), pm_import=pm_import, dest_root=dest)
+    check_err = capsys.readouterr().err
+
+    assert owned[0] in sync_err, sync_err
+    assert owned[0] in check_err, check_err
+    assert pm_import.hook_set_query_fallback_lines(
+        pm_import.hook_set_declarations(REPO)) == [], "해소되면 안내가 없어야 한다"

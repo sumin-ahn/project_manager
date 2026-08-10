@@ -857,3 +857,154 @@ def test_mixed_source_tree_fails_loud_instead_of_silently_copying(tmp_path):
     assert "baseline" in combined                        # 억제 사실
     assert "upstream_rev=" not in (dest / ".project_manager" / "local.conf").read_text(
         encoding="utf-8")
+
+
+# ── §5 부분 전파의 흡수 보고 · 수렴 결과 소비 (T-0611) ────────────────────────
+# 흡수의 짝(종료 시 수렴 검증)은 전량 실행에만 걸린다 — `--paths` 는 혼합이 *정상 결과*라 검증
+# 대상이 아니기 때문이다. 그런데 계획-전 형제 로드(`_installed_entry_notation_manifests` 등)는
+# 스코프와 무관하게 돌아 skew 를 흡수하므로, 비엔진 경로만 지목한 실행은 흡수 장부를 아무도 읽지
+# 않은 채 rc0 으로 끝난다. 이 절이 고정하는 성질:
+#
+#   부분 전파 실행도 흡수 사실은 **반드시 보고**한다(rc 는 불변 — report-only).
+#   그리고 미수렴으로 끝나는 실행은 baseline 뿐 아니라 **opt-in 프롬프트도 건너뛴다.**
+
+
+def _sync_tree(tmp_path: Path, *, dest_rev: str) -> tuple[Path, Path, str]:
+    """(dest, source, 전파 대상 relpath) — 실 sync 1회를 태우는 최소 트리.
+
+    dest 의 stamped 사본 rev 하나로 수렴/미수렴을 만든다(상류 기대 rev 는 v9.9.9 고정)."""
+    source, dest = tmp_path / "source", tmp_path / "dest"
+    rel = ".project_manager/wiki/pm_role.md"
+    (source / rel).parent.mkdir(parents=True, exist_ok=True)
+    (source / rel).write_text("# 상류 문서\n", encoding="utf-8")
+    _write_upstream_engine_rev(source, "v9.9.9", ("board.py",))
+    (source / ".project_manager" / "engine.manifest").write_text(
+        rel + "\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(source), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(source), "add", "-f", "-A"], check=True)
+    _write_tools(dest, {"board.py": dest_rev})
+    (dest / rel).parent.mkdir(parents=True, exist_ok=True)
+    (dest / rel).write_text("# 구 문서\n", encoding="utf-8")
+    return dest, source, rel
+
+
+def test_partial_run_reports_absorbed_skew_at_exit(pm_update, tmp_path, monkeypatch,
+                                                   capsys):
+    """`--paths` 실행이 흡수한 skew 는 종료 시 보고된다 — 장부가 조용히 폐기되면 안 된다.
+
+    비엔진 경로만 지목하면 그 뒤 어댑터·훅 채널이 전부 꺼지므로, 흡수 사실을 알릴 자리가 이
+    종료 지점 말고는 없다. rc 는 건드리지 않는다(부분 전파는 혼합이 정상 결과다)."""
+    dest, source, rel = _sync_tree(tmp_path, dest_rev="v9.9.9")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: _SkewingSibling())
+
+    rc = pm_update.main(["--from", str(source), "--paths", rel])
+
+    err = capsys.readouterr().err
+    assert rc == 0, err                       # report-only — rc 불변
+    assert (dest / rel).read_text(encoding="utf-8") == "# 상류 문서\n", \
+        "보고 때문에 요청 경로 전파가 막혔다"
+    assert "경로 스코프 실행이 엔진 사본 rev 혼합 skew" in err, f"장부가 폐기됐다: {err!r}"
+    assert "installed_entry_notation_manifests" in err, "어느 경계가 흡수했는지 안 나온다"
+    assert "스코프 없이 pm-update" in err, "처방 부재"
+
+
+def test_partial_run_is_quiet_when_nothing_was_absorbed(pm_update, tmp_path,
+                                                        monkeypatch, capsys):
+    """흡수가 없으면 조용하다 — 정상 부분 전파에 상시 알림이 붙으면 신호가 죽는다."""
+    dest, source, rel = _sync_tree(tmp_path, dest_rev="v9.9.9")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+
+    rc = pm_update.main(["--from", str(source), "--paths", rel])
+
+    err = capsys.readouterr().err
+    assert rc == 0, err
+    assert "엔진 사본 rev 혼합 skew" not in err, err
+
+
+def test_partial_run_scope_does_not_leak_between_runs(pm_update, tmp_path, monkeypatch,
+                                                      capsys):
+    """부분 전파 스코프는 실행마다 초기화된다 — 다음 실행이 남의 장부를 보고하면 안 된다."""
+    dest, source, rel = _sync_tree(tmp_path, dest_rev="v9.9.9")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: _SkewingSibling())
+    assert pm_update.main(["--from", str(source), "--paths", rel]) == 0
+    assert pm_update._PARTIAL_RUN_SCOPE is None
+    capsys.readouterr()
+
+    monkeypatch.undo()
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    assert pm_update.main(["--from", str(source), "--paths", rel]) == 0
+    assert "엔진 사본 rev 혼합 skew" not in capsys.readouterr().err
+
+
+def test_unconverged_run_skips_the_optin_prompts(pm_update, tmp_path, monkeypatch,
+                                                 capsys):
+    """미수렴 실행은 opt-in 을 묻지 않는다 — baseline 억제와 같은 논거(성공 아닌 실행).
+
+    성공하지 않은 실행이 던진 질문의 답을 local.conf 에 박으면, 그 실행의 비영 rc 와 기록이
+    어긋난다(다음 실행은 이미 답한 것으로 보고 다시 묻지 않는다)."""
+    dest, source, rel = _sync_tree(tmp_path, dest_rev="v0.0.0-stale")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    asked: list[str] = []
+    monkeypatch.setattr(pm_update, "maybe_prompt_external_review",
+                        lambda _dest: asked.append("external_review"))
+    monkeypatch.setattr(pm_update, "maybe_prompt_delegate_optin",
+                        lambda _dest: asked.append("delegate"))
+
+    rc = pm_update.main(["--from", str(source)])
+
+    err = capsys.readouterr().err
+    assert rc == pm_update._UNCONVERGED_RC, err
+    assert asked == [], "미수렴 실행이 opt-in 을 물었다"
+    assert (dest / rel).read_text(encoding="utf-8") == "# 상류 문서\n", \
+        "프롬프트 게이트가 파일 적용까지 되돌렸다"
+
+
+def test_converged_run_still_asks_the_optin_prompts(pm_update, tmp_path, monkeypatch,
+                                                    capsys):
+    """수렴 실행은 종전대로 묻는다 — 게이트가 정상 경로까지 좁히면 안 된다."""
+    dest, source, rel = _sync_tree(tmp_path, dest_rev="v9.9.9")
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    asked: list[str] = []
+    monkeypatch.setattr(pm_update, "maybe_prompt_external_review",
+                        lambda _dest: asked.append("external_review"))
+    monkeypatch.setattr(pm_update, "maybe_prompt_delegate_optin",
+                        lambda _dest: asked.append("delegate"))
+
+    rc = pm_update.main(["--from", str(source)])
+
+    assert rc == 0, capsys.readouterr().err
+    assert asked == ["external_review", "delegate"]
+
+
+def test_converge_returns_the_convergence_verdict(pm_update, tmp_path, capsys):
+    """`converge_upstream_revs` 는 수렴 여부를 돌려준다 — 호출부가 프롬프트를 그 값으로 가른다."""
+    source, dest = tmp_path / "source", tmp_path / "dest"
+    _write_upstream_engine_rev(source, "v9.9.9")
+
+    _fresh_run(pm_update)
+    _write_tools(dest, {"board.py": "v9.9.9"})
+    assert pm_update.converge_upstream_revs(dest, source, "in_sync", []) is True
+
+    _fresh_run(pm_update)
+    _write_tools(dest, {"board.py": "v0.0.0-stale"})
+    assert pm_update.converge_upstream_revs(dest, source, "in_sync", []) is False
+    assert "미수렴" in capsys.readouterr().out
+
+
+def test_manifest_skew_branch_reports_the_same_verdict(pm_update, tmp_path, capsys):
+    """manifest skew 억제는 baseline 축이라 rev 수렴 판정과 독립이다(반환은 수렴 여부 하나).
+
+    그 분기에서 무조건 True 를 돌려주면 혼합 트리 + manifest skew 조합이 프롬프트까지 간다."""
+    source, dest = tmp_path / "source", tmp_path / "dest"
+    _write_upstream_engine_rev(source, "v9.9.9")
+
+    _fresh_run(pm_update)
+    _write_tools(dest, {"board.py": "v9.9.9"})
+    assert pm_update.converge_upstream_revs(dest, source, "skew", ["new.py"]) is True
+
+    _fresh_run(pm_update)
+    _write_tools(dest, {"board.py": "v0.0.0-stale"})
+    assert pm_update.converge_upstream_revs(dest, source, "skew", ["new.py"]) is False
+    assert "manifest skew" in capsys.readouterr().out

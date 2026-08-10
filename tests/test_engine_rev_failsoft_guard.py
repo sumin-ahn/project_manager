@@ -916,7 +916,11 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   기존 여섯 경계(`_installed_entry_notation_manifests` · `sync_adapter_configs` 판정/원장 ·
     #   `check_adapter_hook_sets` · `refuse_partial_hook_set_scope`)는 re-raise 에서 등록된 흡수로
     #   **처분만** 바뀌어 개수가 그대로다. 흡수의 짝인 종료 시 수렴 검증은 pm_update 가 소유한다.
-    assert len(report.boundaries) == 178, "propagation sweep boundary ratchet changed"
+    # 179 = 178 + T-0611 원자 write 판정자의 **구세대 형제 강등** 한 경계. 선언 해소가 실패해도
+    #   그 세대가 이미 제공하던 판정(`is_live_hook_set_path` 단일 인자)을 살리려 형제 사본을 한 번
+    #   더 로드하는데, 그 로드는 혼합 트리에서 정확히 발화하는 지점이라 등록된 사유로 흡수한다 —
+    #   여기서 올리면 강등 사다리를 얹으려다 동기 자체를 죽인다(판정자만 무판정으로 내려간다).
+    assert len(report.boundaries) == 179, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

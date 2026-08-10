@@ -5670,23 +5670,50 @@ def _hook_set_declaration_source(source_root) -> Path:
 
 def _upstream_hook_set_declarations(
         source_root) -> tuple[dict | None, str | None, str | None]:
-    """상류 트리 pm_import 의 선언 테이블 — (테이블, 실패 사유, 그 파일 bytes 해시)."""
+    """상류 트리 pm_import 의 선언 테이블 — (테이블, 실패 사유, 그 파일 bytes 해시).
+
+    **해시와 실행되는 선언 코드는 한 벌이어야 한다.** 상류 파일을 제자리에서 import 하면 그 결속이
+    바이트코드 캐시 한 겹으로 끊긴다: 엔진 전파는 `copy2`(mtime 보존)로 파일을 내려놓으므로 크기까지
+    같은 사본이 앞 세대의 **timestamp 유효한 `.pyc`** 와 짝지어지는 창이 실재하고, 그러면 "최신 파일
+    해시 + 구 선언 코드" 가 조용히 성립한다(게이트가 결속했다고 믿는 스냅샷이 거짓이 된다). 그래서
+    읽어서 해시한 그 bytes 를 **캐시가 없는 새 경로**에 내려놓고 거기서 로드한다 — 실행되는 선언은
+    정의상 우리가 해시한 그 bytes 다. (file-location import 는 엔진 단일 경계인 중앙 로더로만 한다 —
+    `exec(compile(...))` 직접 실행은 그 경계를 우회하므로 쓰지 않는다.)
+
+    **상류가 실행 중인 바로 그 파일이어도 예외가 없다.** "자기 자신이면 메모리 적재 선언을 그대로
+    쓴다" 는 단축은 정확히 같은 결속 붕괴를 남긴다: 이 프로세스가 적재한 선언은 *import 시점*의
+    코드인데(그 자체가 stale `.pyc` 였을 수 있다) 해시는 *지금* 디스크 bytes 의 것이다. 자기 갱신
+    실행은 그 파일을 실행 도중 덮으므로(pm-update 가 하는 일이 그것이다) 두 시점이 갈리는 창이
+    상시 열려 있다 — 빠른 경로가 곧 "신 해시 + 구 선언" 통과다."""
     path = _hook_set_declaration_source(source_root)
     if not path.is_file():
         return None, f"상류 pm_import 부재({path})", None
     # 해시는 **파일 bytes 를 그때그때** 읽어 만든다 — 모듈 캐시를 태우면 상류가 바뀌어도 같은
-    #   값이 나와 결속이 무력해진다.
-    digest = file_sha256(path)
-    if os.path.realpath(path) == os.path.realpath(__file__):
-        # 상류가 실행 중인 바로 그 파일이면 **이 선언이 곧 상류 세대**다 — 같은 파일을 한 번 더
-        #   로드할 이유도, 미해소로 볼 이유도 없다(게이트가 자기 자신 앞에서 멈추는 오작동 방지).
-        return ADAPTER_HOOK_SET, None, digest
+    #   값이 나와 결속이 무력해진다. 그 bytes 를 그대로 들고 있다가 로드에도 쓴다.
     try:
-        module = _load_module_from_path(
-            path, "pm_import.py", allow_unverified=True, cache=True,
-            cache_key=f"_pm_hook_set_upstream:{os.path.realpath(path)}:{digest}")
-    except Exception as exc:  # noqa: BLE001 — 상류 사본 손상은 사유로 내리고 호출부가 판정한다.
-        return None, f"상류 pm_import 로드 실패({type(exc).__name__}: {exc})", None
+        payload = path.read_bytes()
+    except OSError as exc:
+        return None, f"상류 pm_import 읽기 실패({type(exc).__name__}: {exc})", None
+    digest = hashlib.sha256(payload).hexdigest()
+    cache_key = f"_pm_hook_set_upstream:{os.path.realpath(path)}:{digest}"
+    module = sys.modules.get(cache_key)   # 같은 bytes 는 실행당 한 번만 로드한다.
+    if module is None:
+        # 스테이징 **정리는 로드 성공/실패와 분리**한다. `with TemporaryDirectory` 로 묶으면 삭제
+        #   실패(핸들 잠금·AV 스캔 — Windows 실 클래스)가 `__exit__` 에서 올라와 "상류 로드 실패" 로
+        #   분류되고, 그 사유 한 줄이 mutation 게이트를 근거 없이 fail-closed 로 떨어뜨린다. 선언은
+        #   이미 읽혔다 — 뒷정리 실패가 그 사실을 뒤집지 않는다(best-effort).
+        staging = tempfile.mkdtemp(prefix=".pm_hook_set_gen.")
+        try:
+            staged = Path(staging) / "pm_import.py"
+            staged.write_bytes(payload)
+            module = _load_module_from_path(
+                staged, "pm_import.py", allow_unverified=True, cache=True,
+                cache_key=cache_key)
+        except Exception as exc:  # noqa: BLE001 — 상류 사본 손상은 사유로 내리고 호출부가 판정한다.
+            return None, f"상류 pm_import 로드 실패({type(exc).__name__}: {exc})", None
+        finally:
+            with contextlib.suppress(OSError):
+                shutil.rmtree(staging, ignore_errors=True)
     table = getattr(module, "ADAPTER_HOOK_SET", None)
     if not isinstance(table, dict) or not table:
         return None, "상류 pm_import 에 훅 세트 선언 부재(그 세대는 이 개념이 없다)", None
@@ -5717,6 +5744,20 @@ def hook_set_declarations(source_root=None, *, required: bool = False) -> HookSe
     if ADAPTER_HOOK_SET:
         return HookSetGeneration(ADAPTER_HOOK_SET, HOOK_SET_ORIGIN_LOCAL, tuple(reasons))
     return HookSetGeneration(None, HOOK_SET_ORIGIN_UNRESOLVED, tuple(reasons))
+
+
+def hook_set_query_fallback_lines(generation) -> list[str]:
+    """조회 축 강등 사유 안내 줄 — 상류 선언을 못 읽고 내려간 판정이면 1줄, 아니면 빈 목록.
+
+    문구는 처방(`hook_set_remedy_lines`)과 같은 규약으로 **여기 단일 진실**이다 — pm-update 와
+    `pm-config --check` 가 같은 상태를 서로 다른 문장으로 말하면 채택자가 두 게이트를 다른 것으로
+    읽는다. 조회 축은 관대 계약이라 이 줄은 차단이 아니라 침묵 제거다(mutation 축은 fail-closed)."""
+    reasons = getattr(generation, "reasons", ())
+    if not reasons:
+        return []
+    return ["[경고] 상류 훅 세트 세대 선언을 읽지 못해 설치본 선언으로 판정한다 — 이번 상류가 "
+            "새로 들여오는 플래그·결합 묶음은 이 판정에 보이지 않는다(green 이어도 무판정 구간이 "
+            f"있다). {' / '.join(reasons)}"]
 
 
 def hook_set_namespaces(declarations=None) -> tuple[str, ...]:

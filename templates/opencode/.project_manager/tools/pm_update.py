@@ -49,6 +49,7 @@ import base64
 import contextlib
 import datetime
 import filecmp
+import inspect
 import os
 import re
 import shutil
@@ -363,6 +364,12 @@ _ENGINE_REV_SKEW_RECOVERY_REASONS = {
         "채 죽는다. 해소 실패는 '미해소' 로 내려가 소비자별 정책(조회=loud 폴백·게이트=fail-closed)이 "
         "판정한다(사본 불일치 자체는 동기 본류의 skew 표면이 진단한다)"
     ),
+    "resolve_hook_set_predicate": (
+        "원자 write 판정자는 선언 해소가 실패한 뒤에도 **구세대 형제가 아는 만큼**(설치본 선언 "
+        "기준 훅 경로 판정)을 살리려 형제 사본을 한 번 더 로드한다 — 그 로드가 혼합 트리에서 "
+        "발화하면 판정자만 무판정으로 내려가고(훅 파일이 일반 복사로 떨어지는 사실은 loud) 동기 "
+        "자체는 완주한다"
+    ),
     "installed_entry_notation_manifests": (
         "설치 하네스 판별은 형제 pm_import 가 상류 출하물을 열거하려 다시 형제 repo_owned_files 를 "
         "verifier 로 로드하는 계층이라 **계획 수립 전** 혼합 트리에서 바로 발화한다"
@@ -420,6 +427,11 @@ def _absorb_engine_rev_skew_for_recovery(exc, boundary: str) -> bool:
 # 검증이 빠질 자리가 없게 종료 지점을 하나로 묶는다. 부분 전파(`--paths`)는 혼합이 *정상 결과*라
 # 기록하지 않는다(그 경로의 rev 혼재 경고는 스코프 분기가 이미 낸다).
 _SYNC_RUN_SCOPE: tuple[Path, Path, bool] | None = None
+# 부분 전파(`--paths`) 실행의 **흡수 장부 보고** 대상. 수렴 검증은 하지 않는다(혼합이 정상 결과라
+# 미수렴 보고가 거짓 경보가 된다) — 그렇다고 장부까지 버리면 계획-전 형제 로드
+# (`_installed_entry_notation_manifests` 등)가 삼킨 skew 가 비엔진 경로만 지목한 rc0 실행에서
+# 조용히 사라진다. 그래서 이 실행은 **report-only** 다: 흡수 사실만 남기고 rc 는 건드리지 않는다.
+_PARTIAL_RUN_SCOPE: tuple[Path, Path] | None = None
 # 실행당 수렴 판정 1회 — baseline 억제와 종료 rc 가 **같은 판정**을 쓰고 보고는 한 번만 나간다.
 _ENGINE_REV_CONVERGENCE: bool | None = None
 # 미수렴 종료 rc — 파일 적용 자체는 서지만 실행은 성공이 아니다(게이트 rc1 관례와 같은 값).
@@ -541,6 +553,27 @@ def _verify_engine_rev_convergence(dest_root: Path, source_root: Path) -> bool:
         file=sys.stderr,
     )
     return False
+
+
+def _report_partial_run_absorption() -> None:
+    """부분 전파(`--paths`) 실행이 흡수한 skew 를 종료 시 보고한다 (report-only·rc 불변).
+
+    `--paths` 는 수렴 검증 대상이 아니다 — 요청 경로만 옮기므로 혼합이 *정상 결과*이고, 거기에
+    미수렴 rc 를 세우면 정당한 부분 전파가 전부 실패로 보인다. 그렇다고 흡수 장부를 그대로 버리면
+    관측이 사라진다: 계획-전 형제 로드(`_installed_entry_notation_manifests` 등)는 스코프와 무관하게
+    돌아 marked skew 를 흡수하는데, 비엔진 경로만 지목한 실행은 그 뒤 훅/어댑터 채널을 전부 건너뛰고
+    rc0 으로 끝나므로 흡수 사실을 알릴 자리가 어디에도 없다. 사실만 남기고 rc 는 호출부가 정한
+    값 그대로 둔다."""
+    if not _ABSORBED_ENGINE_REV_SKEW:
+        return
+    boundaries = ", ".join(sorted(set(_ABSORBED_ENGINE_REV_SKEW)))
+    print(
+        f"[알림] 경로 스코프 실행이 엔진 사본 rev 혼합 skew {len(_ABSORBED_ENGINE_REV_SKEW)}건을 "
+        f"흡수했다({boundaries}) — 부분 전파는 혼합이 정상 결과라 수렴을 검증하지 않으므로 이 실행의 "
+        "rc 는 그대로다.\n  → 스코프 없이 pm-update 를 한 번 돌려 사본을 수렴시켜라(그 실행이 "
+        "수렴을 검증한다).",
+        file=sys.stderr,
+    )
 
 # manifest 의 render 태그 () — path 행 끝 `  @render` 면 byte-copy 대신 render_adapter.
 RENDER_TAG = "@render"
@@ -1209,6 +1242,43 @@ def resolve_hook_set_generation(source_root=None, *, required: bool = False):
     return SimpleNamespace(declarations=None, origin="미해소", reasons=(reason,))
 
 
+def _sibling_accepts_kwarg(func, name: str) -> bool:
+    """그 형제 API 가 이 키워드를 받는가 — **엔진 사본 세대 차** 흡수 지점.
+
+    복구 채널·부분 전파 창에서는 형제 pm_import 가 직전 세대일 수 있다(그 창을 열어 두는 게 복구
+    exemption 의 목적이다). 새 키워드를 무조건 넘기면 그 상태에서 판정이 TypeError 로 죽고, 그걸
+    fail-soft 로 받으면 **그 세대가 이미 제공하던 보호까지** 함께 버린다. 있으면 쓰고 없으면 구
+    시그니처로 강등하되 강등은 loud 다(pm_config `_accepts_kwarg` 와 같은 규약)."""
+    if func is None:
+        return False
+    try:
+        return name in inspect.signature(func).parameters
+    except (TypeError, ValueError):  # 시그니처를 못 읽는 호출가능 객체 — 보수적으로 구형 취급.
+        return False
+
+
+def _warn_hook_set_downgrade(what: str, effect: str) -> None:
+    """구세대 형제 사본 때문에 훅 세트 보호를 낮춰 실행한다는 사실을 알린다(무음 강등 금지)."""
+    print(f"[경고] 형제 pm_import 가 구세대라 {what} 없이 진행한다 — {effect}. "
+          "pm-update 로 엔진 사본을 맞춘 뒤 다시 실행하면 정상 판정을 받는다.", file=sys.stderr)
+
+
+def _print_hook_set_query_fallback(lines_fn, generation) -> None:
+    """조회 축 강등 사유 표면화 — 상류 선언을 못 읽어 설치본 세대로 판정했다는 사실을 남긴다.
+
+    조회 축은 관대 계약이라 여기서 차단하지 않는다(판정을 통째로 잃는 것보다 한 세대 뒤 선언으로라도
+    보는 편이 낫다). 다만 사유까지 버리면 `--check`·변경 0 실행이 **상류 전용 플래그를 못 본 채**
+    green 으로 끝나고, 채택자는 강등된 판정을 정상 판정으로 읽는다 — 침묵만 제거한다.
+
+    **문구는 pm_import 단일 진실**(`hook_set_query_fallback_lines`)이다 — pm-config `--check` 와
+    같은 문장을 써야 두 게이트가 같은 상태를 같은 말로 보고한다. 그 함수가 없는 세대 사본이면
+    조용히 건너뛴다(그 세대엔 이 안내 자체가 없고, 강등 사실은 사다리가 따로 알린다)."""
+    if lines_fn is None:
+        return
+    for line in lines_fn(generation):
+        print(line, file=sys.stderr)
+
+
 def resolve_hook_set_predicate(source_root=None):
     """훅 세트 원자-write 판정자 — 위 단일 진입이 준 **상류 세대 선언**으로 만든다.
 
@@ -1217,28 +1287,54 @@ def resolve_hook_set_predicate(source_root=None):
     모듈을 다시 로드한다(`_load_pm_import` 는 캐시 없음).
 
     조회 성격이라 로컬 폴백까지 관대하되, **전부 실패하면** 훅 파일이 통째로 비원자 copy2 로
-    떨어지므로 조용히 넘어가지 않는다 — torn read 창이 다시 열린 사실을 stderr 한 줄로 남긴다."""
+    떨어지므로 조용히 넘어가지 않는다 — torn read 창이 다시 열린 사실을 stderr 한 줄로 남긴다.
+
+    강등은 3단이고 각 단은 loud 다(pm_config `_adapter_accept_decision` 과 같은 사다리):
+      선언 해소됨          상류(또는 로컬) 선언으로 훅 경로를 판정 → 그 파일만 원자 교체.
+      선언 미해소 + 구 API  형제가 선언 주입 이전 세대면 `is_live_hook_set_path` 단일 인자로
+                           강등한다 — **그 세대가 이미 제공하던 보호**(설치본 선언 기준 판정)를
+                           버리지 않는다.
+      둘 다 부재           무판정(전 파일 일반 복사) — 그 사실을 알린다."""
     generation = resolve_hook_set_generation(source_root)
     declarations = getattr(generation, "declarations", None)
     reasons = " / ".join(getattr(generation, "reasons", ())) or "사유 미상"
-    if declarations is None:
-        print(
-            "[경고] 훅 세트 원자 write 판정자를 해소하지 못했다 — 이번 동기는 훅 파일도 일반 복사로 "
-            f"쓴다(실행 중 하네스가 부분 파일을 읽을 창이 열린다). {reasons}",
-            file=sys.stderr,
-        )
-        return lambda _rel: False
-    if source_root is not None and getattr(generation, "reasons", ()):
-        # 상류를 주고도 그 선언을 못 읽어 **설치본 세대로 강등**됐다 — 이번에 새로 등재되는 훅
-        #   경로는 이 판정자가 모르므로 그 파일만 비원자 복사로 떨어진다. 조용히 넘기지 않는다.
-        print(
-            "[경고] 상류 훅 세트 선언을 읽지 못해 설치본 세대로 판정한다 — 이번 상류가 새로 "
-            f"등재하는 훅 파일은 원자 교체 대상에서 빠진다. {reasons}",
-            file=sys.stderr,
-        )
-    pm_import = _load_pm_import()
-    return lambda rel, _t=declarations: bool(
-        pm_import.is_live_hook_set_path(str(rel).replace("\\", "/"), _t))
+    try:
+        # 로드와 **구 API 탐지**를 한 경계 안에 둔다 — 손상/혼합 사본은 로드가 아니라 속성 접근에서
+        #   발화하므로(형제 verifier 계층), 탐지만 밖에 두면 그 예외가 apply 직전에 그대로 올라간다.
+        pm_import = _load_pm_import()
+        legacy_predicate = (getattr(pm_import, "is_live_hook_set_path", None)
+                            if pm_import is not None else None)
+    except Exception as exc:  # noqa: BLE001 — 구형/손상 사본에서도 동기는 계속된다.
+        _absorb_engine_rev_skew_for_recovery(exc, "resolve_hook_set_predicate")
+        pm_import = None
+        legacy_predicate = None
+        reasons = f"{reasons} / 형제 pm_import 로드 실패({type(exc).__name__}: {exc})"
+    if declarations is not None and pm_import is not None:
+        if source_root is not None and getattr(generation, "reasons", ()):
+            # 상류를 주고도 그 선언을 못 읽어 **설치본 세대로 강등**됐다 — 이번에 새로 등재되는 훅
+            #   경로는 이 판정자가 모르므로 그 파일만 비원자 복사로 떨어진다. 조용히 넘기지 않는다.
+            print(
+                "[경고] 상류 훅 세트 선언을 읽지 못해 설치본 세대로 판정한다 — 이번 상류가 새로 "
+                f"등재하는 훅 파일은 원자 교체 대상에서 빠진다. {reasons}",
+                file=sys.stderr,
+            )
+        return lambda rel, _t=declarations: bool(
+            pm_import.is_live_hook_set_path(str(rel).replace("\\", "/"), _t))
+    if legacy_predicate is not None:
+        # 선언 해소는 실패했지만 판정 함수 자체는 있다 — 그 사본의 설치본 선언으로 판정한다.
+        #   여기서 무판정으로 내려가면 혼합 세대 복구 중에 훅 파일이 통째로 비원자 복사가 된다.
+        _warn_hook_set_downgrade(
+            "훅 세트 상류 세대 선언",
+            f"설치본 선언으로 원자 write 대상을 정한다(이번 상류가 새로 등재하는 훅 파일은 "
+            f"그 대상에서 빠진다). {reasons}")
+        return lambda rel, _p=legacy_predicate: bool(
+            _p(str(rel).replace("\\", "/")))
+    print(
+        "[경고] 훅 세트 원자 write 판정자를 해소하지 못했다 — 이번 동기는 훅 파일도 일반 복사로 "
+        f"쓴다(실행 중 하네스가 부분 파일을 읽을 창이 열린다). {reasons}",
+        file=sys.stderr,
+    )
+    return lambda _rel: False
 
 
 def central_loader_needs_recovery(dest_root: Path) -> bool:
@@ -2450,8 +2546,14 @@ def record_upstream_rev_baseline(dest_root: Path, source_root: Path) -> bool:
 
 def converge_upstream_revs(
     dest_root: Path, source_root: Path, skew_status: str, skew_new: list[str]
-) -> None:
-    """skew 안전장치를 보존하며 sync 뒤 revision 키를 수렴·안내한다."""
+) -> bool:
+    """skew 안전장치를 보존하며 sync 뒤 revision 키를 수렴·안내한다 (반환=이번 실행의 수렴 여부).
+
+    반환값은 **엔진 사본이 상류 rev 로 수렴했는가** 하나다(`main` 종료 경로가 쓰는 그 판정 —
+    실행당 1회 캐시). 미수렴이면 이 실행은 종료 rc 가 서는 실패 실행이므로, 호출부는 baseline
+    기록(여기서 이미 억제)에 더해 **후속 opt-in 프롬프트도 건너뛴다** — 성공하지 않은 실행이
+    사용자에게 새 질문을 던지고 그 답을 local.conf 에 적을 자리가 아니다(수렴한 뒤의 실행이
+    묻는다). manifest skew 억제는 rc 축이 아니라 baseline 축이므로 그 판정과 독립이다."""
     if skew_status == "skew":
         print(
             f"→ manifest skew({len(skew_new)}건)로 upstream_rev baseline(+경로 upstream 의 "
@@ -2459,14 +2561,14 @@ def converge_upstream_revs(
             "둔다. 로컬 engine.manifest 를 reconcile 한 뒤 다시 pm-update 하라(신규 등재분 "
             ")."
         )
-        return
+        return _verify_engine_rev_convergence(dest_root, source_root)
     if not _verify_engine_rev_convergence(dest_root, source_root):
         # manifest skew 억제와 **같은 패턴**이다 — 사본 rev 가 상류로 수렴하지 않았는데 baseline 을
         #   박으면 "여기까지 흡수함" 이 되어 drift-lint 가 침묵한다(거짓 최신). 위 경고가 이미
         #   어긋난 사본을 지목했으므로 여기서는 억제 사실만 한 줄로 남긴다.
         print("→ 엔진 사본 rev 미수렴으로 upstream_rev baseline(+`upstream_seen_rev`) 갱신을 "
               "**억제**한다 — 수렴한 뒤의 실행이 기록한다.")
-        return
+        return False
 
     # 안내 문구는 **엔진이 실제로 기록한 키**(recorded)로 정한다 — 파일의 결과 상태로
     # 역추론하면 URL 형상(스킬층이 쓴 seen 이 이미 baseline 과 같음)에서 "동시 기록" 이
@@ -2476,6 +2578,7 @@ def converge_upstream_revs(
         seen_note = " (+upstream_seen_rev 동시 기록)" if _SEEN_REV_KEY in recorded else ""
         print("✓ local.conf upstream_rev baseline 갱신 (drift-lint 기준점): "
               f"{recorded['upstream_rev']}{seen_note}")
+    return True
 
 
 def detect_manifest_skew(
@@ -5020,10 +5123,22 @@ def check_adapter_hook_sets(dest_root: Path, source_root: Path) -> dict:
             return {**result, "status": "unavailable", "reason": "pm_import 로드 실패"}
         # 판정 선언은 **상류 세대**를 우선한다 — 상류가 이번에 들여오는 새 플래그를 설치본 선언은
         #   모르므로, 그 세대로 보면 요구를 "선언 밖 플래그" 로 접어 green 이 된다. 조회 성격이라
-        #   상류를 못 읽으면 로컬 선언으로 내려간다(판정을 통째로 잃지 않는다).
-        generation = resolve_hook_set_generation(source_root)
-        findings = pm_import.judge_adapter_hook_sets(
-            dest_root, source_root, declarations=generation.declarations)
+        #   상류를 못 읽으면 로컬 선언으로 내려가되(판정을 통째로 잃지 않는다) **사유는 알린다**.
+        judge = pm_import.judge_adapter_hook_sets
+        if _sibling_accepts_kwarg(judge, "declarations"):
+            generation = resolve_hook_set_generation(source_root)
+            _print_hook_set_query_fallback(
+                getattr(pm_import, "hook_set_query_fallback_lines", None), generation)
+            findings = judge(dest_root, source_root,
+                             declarations=generation.declarations)
+        else:
+            # 구세대 형제(선언 주입 이전 시그니처) — 새 키워드를 넘기면 TypeError 로 판정이 통째로
+            #   `unavailable` 이 된다. 그 세대가 제공하던 판정(설치본 선언 기준)은 그대로 살린다.
+            _warn_hook_set_downgrade(
+                "훅 세트 상류 세대 선언 주입",
+                "직전 세대 판정으로 내려간다(이번 상류가 새로 들여오는 플래그·묶음은 판정되지 않지만, "
+                "그 세대가 아는 세대 불일치는 그대로 잡는다)")
+            findings = judge(dest_root, source_root)
         remedy_lines = pm_import.hook_set_remedy_lines
     except Exception as exc:  # noqa: BLE001 — 판정 실패가 동기를 무효화하지 않는다.
         # 사본 rev 혼합도 등록된 경계로 흡수한다 — 이건 채널이 아니라 **가드**라, 판정 채널이
@@ -5079,19 +5194,39 @@ def refuse_partial_hook_set_scope(scoped_changes, planned_changes,
     방법이 없고, 로컬 묶음 membership 으로 좁히면 "상류만 아는 묶음" 이 정확히 그 틈으로 빠진다
     (탈출구는 스코프 없는 전량 pm-update). 훅과 무관한 부분 전파는 종전대로 통과한다.
 
-    판정 채널을 못 불러오면 가드를 끄되 조용히 넘어가지 않는다(무진단 침묵 금지)."""
+    형제가 **선언 주입 이전 세대**면 구 시그니처로 강등해 그 세대의 결합 묶음 판정을 살린다(loud) —
+    새 키워드를 그대로 넘겨 TypeError 로 가드를 통째로 끄면, 그 세대가 이미 막던 반쪽 갱신까지
+    rc0 으로 통과한다. 판정 채널을 못 불러오면 가드를 끄되 조용히 넘어가지 않는다(무진단 침묵 금지)."""
     updated = _change_dest_paths(scoped_changes)
     unverified: tuple[str, ...] = ()
     pm_import = None
     try:
         pm_import = _load_pm_import()
-        generation = resolve_hook_set_generation(source_root, required=True)
+        partial_update = (getattr(pm_import, "hook_set_partial_update", None)
+                          if pm_import is not None else None)
         if pm_import is None:
             partial = None
             print("[경고] 훅 세트 부분 전파 가드를 건너뛰었다 — 형제 pm_import 로드 실패(판정 "
                   "채널 없음). 이 스코프가 훅 세트를 반쪽만 갱신해도 막지 못한다.",
                   file=sys.stderr)
+        elif (partial_update is not None
+                and not _sibling_accepts_kwarg(partial_update, "declarations")):
+            # 구세대 형제(선언 주입 이전 시그니처) — 새 키워드를 넘기면 TypeError 로 가드가 통째로
+            #   꺼지고 반쪽 갱신이 rc0 으로 통과한다. 그 세대의 결합 묶음 판정은 그대로 살린다.
+            _warn_hook_set_downgrade(
+                "훅 세트 상류 세대 선언 주입",
+                "설치본 선언의 결합 묶음으로 반쪽 갱신을 판정한다(상류만 아는 묶음은 못 본다)")
+            # **인식 상태는 선언 미해소 폴백과 같다** — 이 사본에는 해소 지점 자체가 없어 상류
+            #   세대를 확인할 방법이 없다. 그러니 처분도 같아야 한다: 구세대가 아는 묶음 판정은
+            #   유지하되(아래 호출), 훅 네임스페이스 하위를 건드리는 스코프는 fail-closed 로
+            #   거부한다. 강등을 이유로 이 검사만 빼면 **상류에만 추가된 결합 묶음**의 반쪽 전파가
+            #   정확히 이 분기로 빠져나간다(구 판정자는 그 묶음을 정의상 모른다). 네임스페이스
+            #   목록조차 못 얻는 사본은 종전대로 loud 통과다(판정 단위를 얻을 방법이 없고, 거기서
+            #   막으면 채널 없는 트리의 부분 복구가 통째로 잠긴다).
+            unverified = _unverified_hook_scope_paths(pm_import, updated)
+            partial = partial_update(updated, _change_dest_paths(planned_changes))
         else:
+            generation = resolve_hook_set_generation(source_root, required=True)
             if generation.declarations is None:
                 # 조회 폴백(설치본 선언)으로 판정은 계속한다 — 그 세대가 아는 반쪽 갱신은 여전히
                 #   잡는다. 다만 fail-closed 대상은 **로컬 결합 묶음으로 좁히지 않는다**: 상류에만
@@ -5407,6 +5542,7 @@ def _print_protected_hook_reinstall_finding(result: dict, *, dry_run: bool = Fal
 
 def _main(argv: list[str] | None = None) -> int:
     global _SYNC_RUN_SCOPE          # 종료 시 수렴 검증 대상(아래 dest 해소 지점에서 등록).
+    global _PARTIAL_RUN_SCOPE       # 종료 시 흡수 장부 보고 대상(부분 전파 실행·같은 지점).
     ap = argparse.ArgumentParser(
         prog="pm_update.py",
         description=__doc__,
@@ -5524,8 +5660,8 @@ def _main(argv: list[str] | None = None) -> int:
         #   수렴 판정 캐시)를 **자기 것으로** 초기화하고 소비한다. 그게 성립하는 전제는 이 분기가
         #   dest 해소보다 **앞**이라 부모가 스코프를 등록하지 않는다는 것 — 순서가 바뀌면 부모의
         #   스코프를 자식이 지워 검증이 조용히 사라지므로 전제를 기계로 못박는다.
-        assert _SYNC_RUN_SCOPE is None, (
-            "--all-targets 분기는 dest 해소(_SYNC_RUN_SCOPE 등록)보다 앞이어야 한다")
+        assert _SYNC_RUN_SCOPE is None and _PARTIAL_RUN_SCOPE is None, (
+            "--all-targets 분기는 dest 해소(수렴 검증·흡수 보고 스코프 등록)보다 앞이어야 한다")
         if args.changes:
             print("오류: --all-targets 는 실 동기화 옵션이며 --changes 와 함께 쓸 수 없다.", file=sys.stderr)
             return 1
@@ -5562,6 +5698,11 @@ def _main(argv: list[str] | None = None) -> int:
         # 종료 시 수렴 검증 대상 등록(흡수의 짝) — 부분 전파는 혼합이 정상 결과라 제외한다.
         #   dry-run 은 판정·보고만 하고 rc 를 세우지 않는다(무write 실행의 rc 는 "계획이 온전한가"다).
         _SYNC_RUN_SCOPE = (effective_dest, source_root, not args.dry_run)
+    else:
+        # 부분 전파는 수렴 검증 대상이 아니지만 **흡수 장부는 보고 대상**이다 — 계획-전 형제 로드는
+        #   스코프와 무관하게 돌아 skew 를 흡수하는데, 비엔진 경로만 지목한 실행은 그 뒤 채널을
+        #   전부 건너뛰고 rc0 으로 끝나 흡수 사실을 알릴 자리가 없다(report-only·rc 불변).
+        _PARTIAL_RUN_SCOPE = (effective_dest, source_root)
 
     # ── guest 절 해소(읽기 전용) — 스코프 선검증·계획·기록이 **같은 산출**을 쓴다. 엔진 행은 upstream
     #    flavor 에서 매 실행 재파생하므로, 절에 아직 기록되지 않은 파생분도 이 시점에 확정된다.
@@ -5987,14 +6128,17 @@ def _main(argv: list[str] | None = None) -> int:
         #    `--paths` 는 baseline 을 건드리지 않는다 — 부분 전파를 "여기까지 흡수함" 으로 박으면
         #    나머지 미전파분이 drift-lint 에서 사라진다(거짓 최신).
         if not args.dry_run and not scope_paths:
-            converge_upstream_revs(effective_dest, source_root, skew_status, skew_new)
             # 변경 0 경로에서도 opt-in/안내 — has-changes 경로와 **같은 순서·같은 게이트**.
             #   추가 리뷰어를 배달한 RUN1 은 구 엔진이 실행할 수 있고, 이미 최신인 채택자는
             #   changes 가 영영 0 이라 apply 경로로 오지 않는다. 여기서 묻지 않으면 미결정
             #   채택자가 첫 질문/안내를 한 번도 못 받는다(훅 재설치·migrate 와 같은 논거).
             #   재질문은 두 helper 의 "실키 있으면 no-op" 계약이 흡수한다.
-            maybe_prompt_external_review(effective_dest)
-            maybe_prompt_delegate_optin(effective_dest)
+            #   단 **미수렴 실행에서는 묻지 않는다** — 종료 rc 가 서는 실패 실행이라 baseline 과
+            #   같은 이유로 그 답을 local.conf 에 박을 자리가 아니다(수렴한 뒤 실행이 묻는다).
+            if converge_upstream_revs(
+                    effective_dest, source_root, skew_status, skew_new):
+                maybe_prompt_external_review(effective_dest)
+                maybe_prompt_delegate_optin(effective_dest)
         return 0
     if args.dry_run:
         print(f"[dry-run] {len(changes)} 파일 변경 예정 (적용 안 함).")
@@ -6080,10 +6224,11 @@ def _main(argv: list[str] | None = None) -> int:
         print("  (경로 스코프 — upstream_rev baseline 을 갱신하지 않는다: 나머지 경로는 "
               "여전히 미전파다.)")
         return 0
-    converge_upstream_revs(effective_dest, source_root, skew_status, skew_new)
-
-    maybe_prompt_external_review(effective_dest)
-    maybe_prompt_delegate_optin(effective_dest)  # 동기 후 delegate opt-in(TTY 질문·비TTY 안내)
+    # 미수렴이면 프롬프트도 건너뛴다 — baseline 억제와 같은 논거다(성공하지 않은 실행이 던진
+    #   질문의 답을 local.conf 에 박으면, 그 실행의 rc1 과 기록이 어긋난다).
+    if converge_upstream_revs(effective_dest, source_root, skew_status, skew_new):
+        maybe_prompt_external_review(effective_dest)
+        maybe_prompt_delegate_optin(effective_dest)  # 동기 후 delegate opt-in(TTY 질문·비TTY 안내)
     return 0
 
 
@@ -6098,8 +6243,9 @@ def main(argv: list[str] | None = None) -> int:
         allow_unverified=True,
     )
     _console_encoding.configure_console_utf8()
-    global _SYNC_RUN_SCOPE, _ENGINE_REV_CONVERGENCE
+    global _SYNC_RUN_SCOPE, _PARTIAL_RUN_SCOPE, _ENGINE_REV_CONVERGENCE
     _SYNC_RUN_SCOPE = None
+    _PARTIAL_RUN_SCOPE = None
     _ENGINE_REV_CONVERGENCE = None
     _ABSORBED_ENGINE_REV_SKEW.clear()
     converged = True
@@ -6135,9 +6281,14 @@ def main(argv: list[str] | None = None) -> int:
         #   한 번만 본다(판정은 캐시되어 baseline 억제와 같은 결과를 쓴다). 종료 지점이 늘어도
         #   검증이 빠질 자리가 없게 여기 하나로 묶는다.
         scope, _SYNC_RUN_SCOPE = _SYNC_RUN_SCOPE, None
+        partial_scope, _PARTIAL_RUN_SCOPE = _PARTIAL_RUN_SCOPE, None
         if scope is not None:
             dest_root, source_root, write_run = scope
             converged = _verify_engine_rev_convergence(dest_root, source_root)
+        elif partial_scope is not None:
+            # 부분 전파 실행 — 수렴은 판정하지 않고(혼합이 정상 결과) 흡수 사실만 보고한다.
+            #   rc 는 `_main` 이 낸 값 그대로다(report-only).
+            _report_partial_run_absorption()
     # 미수렴은 성공으로 보고하지 않는다 — 혼합 `--from` 을 그대로 복사한 실행이 rc0 이면 그
     #   침묵이 다음 실행에도 이어진다(baseline 은 위에서 이미 억제됐다). 무write 실행(dry-run)은
     #   보고만 하고 rc 를 세우지 않는다.

@@ -657,7 +657,13 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   같은 티켓의 수렴 게이트(미수렴 시 baseline 억제·비영 rc)도 이 fixture 의 배달 경계를 바꾸지
 #   않는다: RUN1 채택자 트리는 canonical 로 승격된 단일 rev 라 판정이 수렴이고, 그 경로의
 #   baseline·rc 는 종전과 같다(미수렴에서만 갈라진다).
-_T0585_PM_UPDATE_SHA256 = "d14117339c159c28afbd210bbebc4cd89a3858e35c6c2dc79f57a8500b8f20db"
+#   T-0611 이 강등 사다리·흡수 보고·수렴 결과 반환을 더하며 또 이동했다. 배달 경계는 여전히
+#   불변이다: 구세대 형제 강등 3단은 **형제가 구세대일 때만** 갈라지고(이 fixture 의 형제는
+#   canonical 사본이라 1단), 조회 축 강등 사유 표면화도 상류 선언 해소 실패에서만 발화하며
+#   (여기선 성공), 부분 실행 흡수 보고는 `--paths` 전용이다. 수렴 결과 반환은 프롬프트 게이트만
+#   좁히는데 이 RUN1 은 단일 rev(수렴)라 종전대로 프롬프트까지 간다. 역적용 delta 의 anchor 도
+#   그대로다 — 현재화한 것은 기대 SHA 하나뿐이다.
+_T0585_PM_UPDATE_SHA256 = "3a9f311add265ae9d8d16b42b5e422aa93b874126d2197343eb906247aae9d01"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).

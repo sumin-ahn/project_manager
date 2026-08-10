@@ -3421,12 +3421,30 @@ _ADAPTER_SET_ACCEPT_EXCLUDED = {
 }
 
 
+def _warn_hook_set_query_fallback(pm_import_mod, generation) -> None:
+    """조회 축 강등 사유 표면화 — 상류 선언을 못 읽어 설치본 세대로 판정했다는 사실을 남긴다.
+
+    조회 축은 관대 계약이라 차단하지 않는다(판정을 통째로 잃는 것보다 한 세대 뒤 선언으로라도 보는
+    편이 낫다). 다만 사유까지 버리면 `--check` 가 **상류 전용 플래그를 못 본 채** 무경고 green 이라,
+    채택자는 강등된 판정을 정상 판정으로 읽는다 — 차단이 아니라 침묵만 제거한다(mutation 축의
+    fail-closed 와 대비).
+
+    **문구는 pm_import 단일 진실**(`hook_set_query_fallback_lines` — `hook_set_remedy_lines` 와 같은
+    규약)이다. 그 함수가 없는 세대 사본이면 조용히 건너뛴다(그 세대엔 이 안내 자체가 없다)."""
+    lines = getattr(pm_import_mod, "hook_set_query_fallback_lines", None)
+    if lines is None:
+        return
+    for line in lines(generation):
+        print(line, file=sys.stderr)
+
+
 def _report_hook_set_findings(pm_import_mod, dest: Path, source_root: Path) -> bool:
     """훅 세트 세대 불일치를 stderr 로 내고 하나라도 있으면 True (`--check` 소비·write 0).
 
     판정·처방은 pm_import 단일 진실을 그대로 쓴다(pm-update 와 같은 문구). 선언은 **상류 세대**를
-    우선한다(같은 해소 지점) — 조회 성격이라 상류를 못 읽으면 설치본 선언으로 내려간다. 판정 함수가
-    없는 구형 사본이면 조용히 건너뛴다 — 강제할 선언 자체가 없는 세대다."""
+    우선한다(같은 해소 지점) — 조회 성격이라 상류를 못 읽으면 설치본 선언으로 내려가되 **그 사유는
+    알린다**(무경고 green 금지). 판정 함수가 없는 구형 사본이면 조용히 건너뛴다 — 강제할 선언
+    자체가 없는 세대다."""
     judge = getattr(pm_import_mod, "judge_adapter_hook_sets", None)
     if judge is None:
         return False
@@ -3438,6 +3456,7 @@ def _report_hook_set_findings(pm_import_mod, dest: Path, source_root: Path) -> b
         findings = judge(dest, source_root)
     else:
         generation = resolve(source_root)
+        _warn_hook_set_query_fallback(pm_import_mod, generation)
         findings = judge(dest, source_root, declarations=generation.declarations)
     for finding in findings:
         print(f"[중단] 어댑터 훅 세트 세대 불일치({finding.harness}) — {finding.detail}.",
