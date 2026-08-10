@@ -366,9 +366,9 @@ _ENGINE_REV_SKEW_RECOVERY_REASONS = {
     ),
     "resolve_hook_set_predicate": (
         "원자 write 판정자는 선언 해소가 실패한 뒤에도 **구세대 형제가 아는 만큼**(설치본 선언 "
-        "기준 훅 경로 판정)을 살리려 형제 사본을 한 번 더 로드한다 — 그 로드가 혼합 트리에서 "
-        "발화하면 판정자만 무판정으로 내려가고(훅 파일이 일반 복사로 떨어지는 사실은 loud) 동기 "
-        "자체는 완주한다"
+        "기준 훅 경로 판정)을 살리려 그 사본의 판정 API 를 조회한다 — 손상/혼합 사본은 로드가 "
+        "아니라 속성 접근에서 발화하므로, 그 조회가 혼합 트리에서 터지면 판정자만 무판정으로 "
+        "내려가고(훅 파일이 일반 복사로 떨어지는 사실은 loud) 동기 자체는 완주한다"
     ),
     "installed_entry_notation_manifests": (
         "설치 하네스 판별은 형제 pm_import 가 상류 출하물을 열거하려 다시 형제 repo_owned_files 를 "
@@ -1206,7 +1206,11 @@ def _missing_repo_owned_files_api(module) -> list[str]:
 
 
 def _atomic_copy2(source: Path, dest: Path) -> None:
-    """같은 디렉토리의 완성된 임시 사본을 원자적으로 dest에 교체한다."""
+    """같은 디렉토리의 완성된 임시 사본을 원자적으로 dest에 교체한다.
+
+    dest 가 symlink 면 `os.replace` 는 **링크 자체를 대체**한다(일반 copy2 는 링크 너머 타깃에
+    쓴다) — 의도된 동작이다. 엔진이 관리하는 훅 세트 파일은 manifest 소유 실파일이고, 그 자리를
+    링크로 바꿔 둔 트리에 링크 너머로 쓰면 엔진이 자기 관리 밖 경로를 갱신하게 된다."""
     fd, tmp_name = tempfile.mkstemp(
         prefix=f".{dest.name}.", suffix=".tmp", dir=dest.parent,
     )
@@ -1219,6 +1223,32 @@ def _atomic_copy2(source: Path, dest: Path) -> None:
         tmp.unlink(missing_ok=True)
 
 
+def _resolve_hook_set_generation_and_sibling(source_root=None, *, required: bool = False):
+    """`(세대 선언, 그 해소에 쓴 형제 모듈)` — 형제 로드는 **이 한 지점**이다.
+
+    `_load_pm_import` 는 캐시가 없어 부를 때마다 사본을 다시 exec 한다. 해소와 소비(원자 write
+    판정자·강등 사다리·세대 검사)가 각자 부르면 한 실행에서 같은 사본을 두 번 적재하고, 두 번째
+    로드는 첫 로드가 등록 경계로 흡수한 바로 그 skew 를 **경계 밖에서** 다시 올릴 수 있다. 한 번
+    받아 함께 돌려주면 그 창이 없어진다(모듈은 `None` 일 수 있다 — 로드 자체가 실패한 경우).
+
+    로드는 됐는데 해소만 실패한 경우 모듈은 그대로 돌려준다 — 그 사본이 구세대라 해소 지점이 없는
+    것이 정확히 강등 사다리가 살려야 하는 상태다."""
+    pm_import = None
+    try:
+        pm_import = _load_pm_import()
+        resolver = getattr(pm_import, "hook_set_declarations", None) if pm_import else None
+        if resolver is not None:
+            return resolver(source_root, required=required), pm_import
+        reason = "형제 pm_import 에 세대 선언 해소 지점 부재(구세대 사본)"
+    except Exception as exc:  # noqa: BLE001 — 구형/손상 사본에서도 동기는 계속된다.
+        # marked skew 도 여기서는 의도적으로 흡수한다(등록된 복구 경계) — apply 도중
+        #   형제 사본이 갈리는 건 업그레이드의 정상 경로다.
+        _absorb_engine_rev_skew_for_recovery(exc, "resolve_hook_set_generation")
+        reason = f"형제 pm_import 로드 실패({type(exc).__name__}: {exc})"
+    return (SimpleNamespace(declarations=None, origin="미해소", reasons=(reason,)),
+            pm_import)
+
+
 def resolve_hook_set_generation(source_root=None, *, required: bool = False):
     """훅 세트 세대 선언을 해소한다 — pm_update 안 **모든 소비자의 단일 진입**.
 
@@ -1227,19 +1257,9 @@ def resolve_hook_set_generation(source_root=None, *, required: bool = False):
     사본이 구형/손상이어도 동기 자체는 계속돼야 한다(등록된 복구 경계).
 
     반환은 pm_import 의 `HookSetGeneration`(declarations·origin·reasons) 형상이고, declarations 가
-    None 이면 판정 근거가 없다는 뜻이다(게이트는 멈추고, 조회는 loud 후 무판정)."""
-    try:
-        pm_import = _load_pm_import()
-        resolver = getattr(pm_import, "hook_set_declarations", None) if pm_import else None
-        if resolver is not None:
-            return resolver(source_root, required=required)
-        reason = "형제 pm_import 에 세대 선언 해소 지점 부재(구세대 사본)"
-    except Exception as exc:  # noqa: BLE001 — 구형/손상 사본에서도 동기는 계속된다.
-        # marked skew 도 여기서는 의도적으로 흡수한다(등록된 복구 경계) — apply 도중
-        #   형제 사본이 갈리는 건 업그레이드의 정상 경로다.
-        _absorb_engine_rev_skew_for_recovery(exc, "resolve_hook_set_generation")
-        reason = f"형제 pm_import 로드 실패({type(exc).__name__}: {exc})"
-    return SimpleNamespace(declarations=None, origin="미해소", reasons=(reason,))
+    None 이면 판정 근거가 없다는 뜻이다(게이트는 멈추고, 조회는 loud 후 무판정). 형제 모듈까지
+    함께 쓰는 소비자는 `_resolve_hook_set_generation_and_sibling` 로 **한 번만** 로드한다."""
+    return _resolve_hook_set_generation_and_sibling(source_root, required=required)[0]
 
 
 def _sibling_accepts_kwarg(func, name: str) -> bool:
@@ -1295,20 +1315,21 @@ def resolve_hook_set_predicate(source_root=None):
                            강등한다 — **그 세대가 이미 제공하던 보호**(설치본 선언 기준 판정)를
                            버리지 않는다.
       둘 다 부재           무판정(전 파일 일반 복사) — 그 사실을 알린다."""
-    generation = resolve_hook_set_generation(source_root)
+    # 해소와 소비가 **같은 형제 적재**를 쓴다 — 여기서 따로 로드하면 한 실행에 사본을 두 번
+    #   exec 하고, 두 번째 로드가 첫 로드의 흡수 밖에서 skew 를 올린다.
+    generation, pm_import = _resolve_hook_set_generation_and_sibling(source_root)
     declarations = getattr(generation, "declarations", None)
     reasons = " / ".join(getattr(generation, "reasons", ())) or "사유 미상"
     try:
-        # 로드와 **구 API 탐지**를 한 경계 안에 둔다 — 손상/혼합 사본은 로드가 아니라 속성 접근에서
-        #   발화하므로(형제 verifier 계층), 탐지만 밖에 두면 그 예외가 apply 직전에 그대로 올라간다.
-        pm_import = _load_pm_import()
+        # 구 API 탐지도 경계 안이다 — 손상/혼합 사본은 로드가 아니라 **속성 접근**에서 발화하므로
+        #   (형제 verifier 계층), 탐지를 밖에 두면 그 예외가 apply 직전에 그대로 올라간다.
         legacy_predicate = (getattr(pm_import, "is_live_hook_set_path", None)
                             if pm_import is not None else None)
     except Exception as exc:  # noqa: BLE001 — 구형/손상 사본에서도 동기는 계속된다.
         _absorb_engine_rev_skew_for_recovery(exc, "resolve_hook_set_predicate")
         pm_import = None
         legacy_predicate = None
-        reasons = f"{reasons} / 형제 pm_import 로드 실패({type(exc).__name__}: {exc})"
+        reasons = f"{reasons} / 형제 판정 API 조회 실패({type(exc).__name__}: {exc})"
     if declarations is not None and pm_import is not None:
         if source_root is not None and getattr(generation, "reasons", ()):
             # 상류를 주고도 그 선언을 못 읽어 **설치본 세대로 강등**됐다 — 이번에 새로 등재되는 훅
@@ -5118,15 +5139,15 @@ def check_adapter_hook_sets(dest_root: Path, source_root: Path) -> dict:
     — 이 검사가 성공한 엔진 동기를 traceback 으로 덮지 않는다). 엔진 사본 skew 만 예외."""
     result: dict = {"status": "ok", "findings": [], "reason": None}
     try:
-        pm_import = _load_pm_import()
-        if pm_import is None:
-            return {**result, "status": "unavailable", "reason": "pm_import 로드 실패"}
         # 판정 선언은 **상류 세대**를 우선한다 — 상류가 이번에 들여오는 새 플래그를 설치본 선언은
         #   모르므로, 그 세대로 보면 요구를 "선언 밖 플래그" 로 접어 green 이 된다. 조회 성격이라
         #   상류를 못 읽으면 로컬 선언으로 내려가되(판정을 통째로 잃지 않는다) **사유는 알린다**.
+        #   해소와 판정이 같은 형제 적재를 쓴다(사본 1회 exec).
+        generation, pm_import = _resolve_hook_set_generation_and_sibling(source_root)
+        if pm_import is None:
+            return {**result, "status": "unavailable", "reason": "pm_import 로드 실패"}
         judge = pm_import.judge_adapter_hook_sets
         if _sibling_accepts_kwarg(judge, "declarations"):
-            generation = resolve_hook_set_generation(source_root)
             _print_hook_set_query_fallback(
                 getattr(pm_import, "hook_set_query_fallback_lines", None), generation)
             findings = judge(dest_root, source_root,
@@ -5201,7 +5222,9 @@ def refuse_partial_hook_set_scope(scoped_changes, planned_changes,
     unverified: tuple[str, ...] = ()
     pm_import = None
     try:
-        pm_import = _load_pm_import()
+        # 해소와 가드 판정이 같은 형제 적재를 쓴다 — 따로 로드하면 한 실행에 사본을 두 번 exec 한다.
+        generation, pm_import = _resolve_hook_set_generation_and_sibling(
+            source_root, required=True)
         partial_update = (getattr(pm_import, "hook_set_partial_update", None)
                           if pm_import is not None else None)
         if pm_import is None:
@@ -5226,7 +5249,6 @@ def refuse_partial_hook_set_scope(scoped_changes, planned_changes,
             unverified = _unverified_hook_scope_paths(pm_import, updated)
             partial = partial_update(updated, _change_dest_paths(planned_changes))
         else:
-            generation = resolve_hook_set_generation(source_root, required=True)
             if generation.declarations is None:
                 # 조회 폴백(설치본 선언)으로 판정은 계속한다 — 그 세대가 아는 반쪽 갱신은 여전히
                 #   잡는다. 다만 fail-closed 대상은 **로컬 결합 묶음으로 좁히지 않는다**: 상류에만

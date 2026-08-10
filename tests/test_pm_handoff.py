@@ -1235,6 +1235,8 @@ def _write_leases(path: Path, entries: list[dict]) -> None:
 
 def test_regression_cwd_single_self_host_resolves_slot(hf, tmp_path):
     # 단일 self-host: areas 1 repo + 그 repo 슬롯 정확히 1개 → work/<repo>_<N> 로 끝남.
+    # 자동해소도 명시 슬롯과 같은 존재 검사를 타므로(장부-파일시스템 out-of-sync 대칭 처리)
+    # repo_root 를 tmp_path 로 두고 그 슬롯 디렉토리를 실제로 만든다(hermetic).
     areas = tmp_path / "areas.md"
     leases = tmp_path / "worktree-leases.json"
     _write_areas(areas, ["project_manager"])
@@ -1242,7 +1244,9 @@ def test_regression_cwd_single_self_host_resolves_slot(hf, tmp_path):
         {"slot": "work/project_manager_1", "repo": "project_manager",
          "session": "project_manager_1", "state": "leased"},
     ])
-    result = hf._regression_cwd(areas_file=areas, leases_file=leases)
+    (tmp_path / "work" / "project_manager_1").mkdir(parents=True)
+    result = hf._regression_cwd(
+        areas_file=areas, leases_file=leases, repo_root=tmp_path)
     assert result.replace(os.sep, "/").endswith("work/project_manager_1")
 
 
@@ -1525,6 +1529,29 @@ def test_regression_cwd_explicit_slot_existing_dir_not_stale(hf, tmp_path):
     (tmp_path / "work" / "foo_2").mkdir(parents=True)
     result = hf._regression_cwd("work/foo_2", repo_root=tmp_path)
     assert result == str(tmp_path / "work" / "foo_2")
+
+
+def test_regression_cwd_auto_slot_stale_falls_back_like_the_explicit_branch(
+        hf, tmp_path, capsys):
+    """자동해소 슬롯도 디렉토리가 없으면 REPO 로 폴백한다 — 두 분기가 같은 검사를 탄다.
+
+    판정은 장부(areas·leases)만 보므로 자동해소도 장부-파일시스템 out-of-sync 를 그대로 통과한다.
+    거기서 검사를 빼면 같은 상태가 명시 슬롯에선 soft 폴백, 자동해소에선 `subprocess.run(cwd=...)`
+    의 FileNotFoundError 크래시로 갈린다."""
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_areas(areas, ["project_manager"])
+    _write_leases(leases, [
+        {"slot": "work/project_manager_1", "repo": "project_manager",
+         "session": "project_manager_1", "state": "leased"},
+    ])   # 장부는 슬롯을 알지만 디스크엔 그 디렉토리가 없다.
+
+    result = hf._regression_cwd(
+        areas_file=areas, leases_file=leases, repo_root=tmp_path)
+
+    assert result == str(tmp_path)
+    err = capsys.readouterr().err
+    assert "project_manager_1" in err and "REPO 로 폴백" in err, err
 
 
 # ── ADR-0044 handoff 헤더 세션 정체성 태그 (T-0252) ──────────────────────────────

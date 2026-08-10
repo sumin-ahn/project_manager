@@ -663,7 +663,11 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   (여기선 성공), 부분 실행 흡수 보고는 `--paths` 전용이다. 수렴 결과 반환은 프롬프트 게이트만
 #   좁히는데 이 RUN1 은 단일 rev(수렴)라 종전대로 프롬프트까지 간다. 역적용 delta 의 anchor 도
 #   그대로다 — 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "3a9f311add265ae9d8d16b42b5e422aa93b874126d2197343eb906247aae9d01"
+#   T-0612 가 그 **전제 자체를 없앴다**: 역델타가 훅 세트 게이트(세대 검사 3지점 + 원자 write
+#   판정자 주입)를 통째로 걷어내므로, 이제 이 합성본은 "codex 훅 세트 판정이 늘 빈 결과" 인지와
+#   무관하다(T-0585 세대엔 그 개념이 없었다는 사실만 남는다). 부재는 아래 부재 단언이 기계로
+#   지킨다 — 위 문단들의 전제 서술은 그 시점 근거의 기록이고, 현재 구속력은 그 단언에 있다.
+_T0585_PM_UPDATE_SHA256 = "ca583773e71e739fc6cf1ec387f09d37addef61646ccf47da8c2bc4bbb5f05b5"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
@@ -781,10 +785,20 @@ def _t0585_pm_update_source() -> str:
         "    do_adapter_config = not args.target and not scope_paths\n",
         1,
     )
+    # 훅 세트 게이트(T-0606 이후 세대)는 **역델타에서 통째로 걷어낸다** — T-0585 세대 updater 엔
+    #   그 개념이 없었다. 남겨 두면 이 fixture 가 "codex 훅 세트 판정이 늘 빈 결과" 라는 전제에
+    #   기대게 되고(그 전제가 깨지는 순간 조용히 다른 것을 검증한다), 합성본이 세대 시대착오를
+    #   품는다. 지우면 전제 자체가 필요 없어진다(아래 부재 단언이 그걸 기계로 못박는다).
     source = _slice_replace(
         source,
-        "            if not args.dry_run and _adapter_config_gate_failed(configs):\n",
+        "            # 세대 정합은 config 채널과 **같은 경계·같은 자리**에서 본다(둘 다 manifest 밖\n",
         "        print(\"최신 — 변경 없음.\")\n",
+        "",
+    )
+    source = _slice_replace(
+        source,
+        "            _print_adapter_hook_set_finding(\n",
+        "        return 0\n",
         "",
     )
     assert source.count('        print("최신 — 변경 없음.")\n') == 1
@@ -796,10 +810,23 @@ def _t0585_pm_update_source() -> str:
     )
     source = _slice_replace(
         source,
-        "        if _adapter_config_gate_failed(configs):\n",
+        "        # apply 로 방금 착지한 **새 훅 세트**를 기준으로 판정한다",
         "\n    # upstream_rev baseline 갱신",
         "",
     )
+    source = _slice_replace(
+        source,
+        "    # 훅 세트 판정자는 **상류 세대**로 미리 해소해 넘긴다",
+        "    msg = f\"✓ {len(changes)} 파일 동기화\"",
+        "    apply(changes)  # ← 실패 시 예외 전파 → 아래 전환 미도달(채택자 완전한 구형 유지).\n",
+    )
+    # 세대 시대착오 부재를 **기계로** 못박는다 — 전제(“codex 판정이 늘 빈 결과”)에 기대지 않는다.
+    #   대조 대상은 `_main` 의 **호출 지점**이다(`apply` 시그니처의 기본값 파라미터는 호출하지
+    #   않으면 발화하지 않으므로 이 합성본의 동작 축이 아니다).
+    for anachronism in ("check_adapter_hook_sets(effective_dest",
+                        "is_hook_set_path=resolve_hook_set_predicate("):
+        assert anachronism not in source, (
+            f"T-0585 세대 합성본에 훅 세트 게이트가 남았다: {anachronism}")
     digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
     assert digest == _T0585_PM_UPDATE_SHA256, (
         f"T-0585 updater fixture drift: {digest} — reverse delta/expected SHA를 함께 검토하라")

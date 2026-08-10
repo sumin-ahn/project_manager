@@ -51,10 +51,13 @@ def hf():
 
 # ── git seam stub (트리별 dirty 응답) ─────────────────────────────────────────
 #
-# 게이트가 트리마다 부르는 명령:
+# 게이트가 트리마다 부르는 명령(실코드 `_dirty_paths_in_tree`·`_unborn_head_dirty_paths` 기준):
 #   git -C <tree> diff --name-only HEAD                → tracked 미커밋(staged+unstaged)
 #   git -C <tree> ls-files --others --exclude-standard → untracked(gitignored 제외)
 #   git -C <tree> rev-parse --verify --quiet HEAD      → 커밋 유무(unborn 정련·diff 실패 시에만)
+#   git -C <tree> diff --cached --name-only            → index 축(**커밋 0 트리 한정** — 전량
+#                                                        `git add` 된 트리를 clean 으로 오판하지
+#                                                        않게 untracked 와 union 한다)
 # 나머지 호출([1b] 출하 surface·[6/7] status -s·ahead)은 무해한 기본 응답을 준다.
 
 
@@ -68,7 +71,10 @@ def _git_stub(dirty: dict[str, tuple[list[str], list[str]]] | None = None, *,
               unborn_trees: tuple[str, ...] = ()):
     """트리 → (tracked 미커밋, untracked) 응답 stub.
 
-    `staged`         = 트리 → `diff --cached --name-only` 목록(커밋 0 트리의 index 축).
+    `dirty`          = 트리 → (`diff --name-only HEAD` 목록, `ls-files --others` 목록).
+    `staged`         = 트리 → `diff --cached --name-only` 목록. **커밋 0 트리에서만 소비된다** —
+                       엔진이 그 조회를 unborn 정련 경로에서만 부르기 때문이다(그래서 이 값은
+                       `unborn_trees` 와 짝으로 준다).
     `non_git_trees`  = 모든 조회 rc 128(비-git 트리·판정 불가).
     `unborn_trees`   = 커밋 0 — `diff HEAD` 와 `rev-parse HEAD` 는 실패하고 `diff --cached`·
                        `ls-files` 만 답한다(실 git 의 unborn 동작·아래 실측 테스트가 이 stub
@@ -986,10 +992,15 @@ def test_real_git_clean_tree_reports_empty(hf, tmp_path):
 
 
 @requires_git_binary
-def test_real_git_non_repo_is_unjudgeable(hf, tmp_path):
-    """실 git — git repo 가 아닌 디렉토리는 None(판정 불가·비차단 경고 대상)."""
+def test_real_git_non_repo_is_unjudgeable(hf, tmp_path, monkeypatch):
+    """실 git — git repo 가 아닌 디렉토리는 None(판정 불가·비차단 경고 대상).
+
+    `GIT_CEILING_DIRECTORIES` 로 상위 탐색을 tmp 경계에서 끊는다. TMPDIR 가 어쩌다 git repo 안에
+    있는 환경(개발자 로컬·일부 CI)에서는 git 이 상위로 올라가 그 repo 를 찾아내 rc 0 을 내므로,
+    고정하지 않으면 이 단언이 환경에 따라 흔들린다."""
     plain = tmp_path / "plain"
     plain.mkdir()
     (plain / "file.md").write_text("x\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
 
     assert hf._dirty_paths_in_tree(str(plain), hf._module_run_git) is None

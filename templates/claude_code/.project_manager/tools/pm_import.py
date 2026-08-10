@@ -5782,8 +5782,14 @@ def _hook_set_table(declarations) -> dict:
     return ADAPTER_HOOK_SET if declarations is None else declarations
 
 
+# 훅 항목이 커맨드를 싣는 키 — 플랫폼별로 갈린다. codex `hooks.json` 은 POSIX 용 `command` 와
+# Windows 용 `commandWindows` 를 **함께** 싣고, 그 플랫폼에서 실제로 실행되는 건 후자다. 한쪽만
+# 스캔하면 Windows 채택자의 세대 불일치가 통째로 판정 밖이 된다(같은 락아웃, 다른 플랫폼).
+_HOOK_COMMAND_KEYS = ("command", "commandWindows")
+
+
 def _hook_commands(document) -> list[str]:
-    """config document 의 훅 커맨드 전수 — `hooks.<event>[].hooks[].command`.
+    """config document 의 훅 커맨드 전수 — `hooks.<event>[].hooks[].{command,commandWindows}`.
 
     claude `settings.json` 과 codex `hooks.json` 이 같은 형상이라 추출 규칙이 하나다. 형상이
     어긋난 항목은 조용히 건너뛴다(채택자 소유 파일이라 임의 구조가 정상 범위)."""
@@ -5799,9 +5805,12 @@ def _hook_commands(document) -> list[str]:
             if not isinstance(entries, list):
                 continue
             for entry in entries:
-                command = entry.get("command") if isinstance(entry, dict) else None
-                if isinstance(command, str) and command.strip():
-                    out.append(command)
+                if not isinstance(entry, dict):
+                    continue
+                for key in _HOOK_COMMAND_KEYS:
+                    command = entry.get(key)
+                    if isinstance(command, str) and command.strip():
+                        out.append(command)
     return out
 
 
@@ -5814,7 +5823,7 @@ def _split_hook_command(command: str) -> list[str]:
 
 
 def _hook_script_relpath(token: str) -> str | None:
-    """훅 커맨드 첫 토큰 → dest 기준 POSIX relpath. 해소 불가(절대경로·미지 변수)면 None."""
+    """훅 커맨드 토큰 → dest 기준 POSIX relpath. 해소 불가(절대경로·미지 변수)면 None."""
     text = token.strip().replace("\\", "/")
     for prefix in _HOOK_COMMAND_ROOT_TOKENS:
         if text.startswith(prefix):
@@ -5823,6 +5832,38 @@ def _hook_script_relpath(token: str) -> str | None:
     if not text or text.startswith("/") or "$" in text or text.startswith(".."):
         return None
     return text
+
+
+# 인터프리터를 앞세우는 훅 커맨드(`bash <path> --flag`·`py -3 <path>`)의 첫 토큰. 목록은 유한하고
+# basename 소문자로 대조한다(`/usr/bin/bash`·`bash.exe` 포함) — 표기가 달라도 **실행되는 스크립트**가
+# 판정 단위라, 이 형태를 못 읽으면 같은 훅이 표기 하나로 판정에서 빠진다.
+# 의도된 경계 2가지(보수적 miss — 거짓 red 없음·판정 누락만): ① 이 목록 밖 래퍼 선행(`env`·
+# `command`·`winpty` 등)은 그 토큰이 live_files 와 안 맞아 판정 대상 밖으로 떨어진다. ② 분해가
+# POSIX shlex 라 인용 없는 백슬래시 경로(`...\x.sh`)는 이스케이프로 먹혀 miss 다 — 출하 config 는
+# 전부 forward slash/인라인이라 실영향 0 이며, 확장은 실수요(백슬래시 훅 커맨드 출하) 때 한다.
+_HOOK_COMMAND_INTERPRETERS = frozenset({
+    "sh", "bash", "zsh", "dash", "python", "python3", "py", "node", "pwsh", "powershell",
+})
+
+
+def _hook_script_and_arguments(tokens: list[str]) -> tuple[str | None, list[str]]:
+    """훅 커맨드 토큰 → (스크립트 relpath, 그 뒤 인자). 해소 불가면 (None, []).
+
+    직접 실행(`<path> --flag`)과 인터프리터 선행(`bash <path> --flag`)이 **같은 판정**을 타야 한다 —
+    실행되는 스크립트와 그 스크립트가 받는 플래그는 표기와 무관하게 같기 때문이다. 인터프리터 뒤의
+    옵션(`py -3.12 <path>`)은 건너뛴다(스크립트는 첫 비-옵션 토큰이다)."""
+    if not tokens:
+        return None, []
+    head = tokens[0].strip().replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if head.endswith(".exe"):
+        head = head[:-len(".exe")]
+    if head not in _HOOK_COMMAND_INTERPRETERS:
+        return _hook_script_relpath(tokens[0]), tokens[1:]
+    for index in range(1, len(tokens)):
+        if tokens[index].startswith("-"):
+            continue                    # 인터프리터 옵션 — 스크립트는 아직 뒤다.
+        return _hook_script_relpath(tokens[index]), tokens[index + 1:]
+    return None, []                     # 인터프리터만 있고 스크립트가 없다(판정 대상 아님).
 
 
 def _is_hook_set_file(relpath: str, spec: AdapterHookSetSpec) -> bool:
@@ -5905,7 +5946,7 @@ def _hook_set_demands(document, spec: AdapterHookSetSpec, root: Path, *,
         tokens = _split_hook_command(command)
         if not tokens:
             continue
-        script_rel = _hook_script_relpath(tokens[0])
+        script_rel, arguments = _hook_script_and_arguments(tokens)
         if script_rel is None:
             continue
         prefix = _hook_set_reference_prefix(script_rel, spec)
@@ -5914,7 +5955,7 @@ def _hook_set_demands(document, spec: AdapterHookSetSpec, root: Path, *,
         if not (Path(root) / script_rel).is_file():
             _record(HOOK_SET_MISSING_SCRIPT, script_rel, (script_rel,))
             continue  # 스크립트가 없으면 플래그 지원 여부는 물을 것도 없다.
-        for token in tokens[1:]:
+        for token in arguments:
             required = spec.flag_support.get(token)
             if not required:
                 continue  # 선언 밖 플래그 — 지원 여부를 기계가 알 수 없다(판정 유보).
@@ -6009,8 +6050,12 @@ def hook_set_remedy_lines(finding: AdapterHookSetFinding) -> list[str]:
     커맨드가 유일 채널이다. 순서는 항상 **엔진 파일 먼저** — 반대 순서가 지금 닫는 락아웃이다."""
     accept = (f"pm-config sync-adapter-config --accept {finding.config_relpath} "
               f"(백업 후 이 엔진 세대의 config 로 되돌린다)")
-    engine_first = (f"pm-update 로 훅 세트 엔진 파일을 먼저 받아라 "
-                    f"({', '.join(finding.unmet_paths)})")
+    # 지목할 파일이 없는 소견도 있다 — 상류 세대 자체를 못 읽어 **무엇이 미충족인지 열거할 수
+    #   없는** blocker(`unmet_paths=()`)가 그렇다. 빈 괄호 `()` 를 붙이면 처방이 깨진 문장으로
+    #   보이므로 괄호째 생략한다(사유는 `detail` 이 이미 말한다).
+    engine_first = "pm-update 로 훅 세트 엔진 파일을 먼저 받아라"
+    if finding.unmet_paths:
+        engine_first += f" ({', '.join(finding.unmet_paths)})"
     if finding.remedy == HOOK_SET_REMEDY_ENGINE_STALE:
         return [engine_first]
     if finding.remedy == HOOK_SET_REMEDY_CONFIG_AHEAD:
@@ -6165,11 +6210,15 @@ def hook_set_partial_update(updated_paths, pending_paths, *,
     return out
 
 
-def coupled_hook_set_paths(paths, declarations=None) -> tuple[str, ...]:
+def coupled_hook_set_paths(paths, *, declarations=None) -> tuple[str, ...]:
     """그 경로들 중 **결합 묶음에 속한** 것 — 상류 세대를 못 읽었을 때 fail-closed 대상 판별.
 
     결합이 없는 훅 파일(독립 relay 드라이버 등)은 반쪽 갱신이라는 개념 자체가 없으므로, 세대를
-    검증하지 못해도 단건 전파를 막지 않는다(가드 과잉 금지)."""
+    검증하지 못해도 단건 전파를 막지 않는다(가드 과잉 금지).
+
+    `declarations` 는 형제 API 전부와 같은 **kw-only** 다(`judge_adapter_hook_sets`·
+    `hook_set_partial_update`·`is_live_hook_set_path` 계열) — 세대 선언을 위치인자로 받는 지점이
+    하나라도 있으면 호출부가 표기를 헷갈리고, 인자 하나가 밀려도 조용히 통과한다."""
     table = _hook_set_table(declarations)
     out: list[str] = []
     for path in paths:

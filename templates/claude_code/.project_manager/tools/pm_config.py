@@ -3618,8 +3618,10 @@ def cmd_sync_adapter_config(
                     file=sys.stderr,
                 )
         return 1
+    # 세트 수용도 여기서 병기한다 — 단건만 노출하면 무편집분이 여러 개인 채택자가 세트 커맨드의
+    #   존재를 모른 채 한 파일씩 수용한다(발견성). 제외 규칙은 세트 커맨드가 스스로 알린다.
     print(f"  수용(백업 후 상류 값 채택): {_FACADE_PROG} sync-adapter-config --accept <경로> "
-          "(Windows 는 `.\\pm-config.cmd`)")
+          "· 무편집분 일괄은 --accept-all (Windows 는 `.\\pm-config.cmd`)")
     return 0
 
 

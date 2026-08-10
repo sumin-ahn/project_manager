@@ -1855,3 +1855,124 @@ def test_query_fallback_wording_has_one_owner(pm_import, pm_update, pm_config,
     assert owned[0] in check_err, check_err
     assert pm_import.hook_set_query_fallback_lines(
         pm_import.hook_set_declarations(REPO)) == [], "해소되면 안내가 없어야 한다"
+
+
+# ── 커맨드 표기 커버리지 · 문구·API 정리 (T-0612) ─────────────────────────────
+# 판정 단위는 **실행되는 스크립트와 그 플래그**다. 표기(인터프리터 선행·플랫폼별 키)가 달라도 같은
+# 훅이면 같은 판정을 타야 한다 — 표기 하나로 판정에서 빠지면 그 형상의 채택자만 락아웃을 그대로 받는다.
+
+
+def test_interpreter_prefixed_command_is_judged_like_a_direct_one(pm_import, tmp_path):
+    """`bash <path> --flag` 표기도 직접 실행 표기와 **같은 판정**을 탄다.
+
+    첫 토큰만 보면 인터프리터를 스크립트로 읽어 훅 세트 밖으로 접고, 그 config 의 세대 요구가
+    통째로 판정 밖이 된다(채택자가 표기를 바꿨다는 이유로 게이트가 사라진다)."""
+    direct = _settings(git_anchor=True)
+    interpreted = direct.replace(
+        "${CLAUDE_PROJECT_DIR}/" + _WRAPPER_REL,
+        "bash ${CLAUDE_PROJECT_DIR}/" + _WRAPPER_REL)
+    dest, source = _make_case(
+        tmp_path, dest_settings=interpreted,
+        dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_OLD)   # 락아웃 조합.
+    assert "bash ${CLAUDE_PROJECT_DIR}" in interpreted, "픽스처 전제(인터프리터 선행 표기)"
+
+    findings = pm_import.judge_adapter_hook_sets(dest, source)
+
+    assert [(f.kind, f.subject, f.unmet_paths) for f in findings] == [
+        (pm_import.HOOK_SET_UNSUPPORTED_FLAG, _GIT_ANCHOR_FLAG, (_DRIVER_REL,))], findings
+
+
+def test_interpreter_options_before_the_script_are_skipped(pm_import):
+    """인터프리터 옵션(`py -3.12 <path>`)을 건너뛰고 스크립트를 집는다 — 인자도 그 뒤부터."""
+    script, arguments = pm_import._hook_script_and_arguments(
+        ["py", "-3.12", "${CLAUDE_PROJECT_DIR}/" + _WRAPPER_REL, _GIT_ANCHOR_FLAG])
+
+    assert script == _WRAPPER_REL and arguments == [_GIT_ANCHOR_FLAG]
+
+
+def test_non_interpreter_first_token_keeps_the_direct_reading(pm_import):
+    """인터프리터 목록 밖 첫 토큰은 종전대로 스크립트로 읽는다(과잉 해석 금지)."""
+    assert pm_import._hook_script_and_arguments(
+        ["./" + _WRAPPER_REL, _GIT_ANCHOR_FLAG]) == (_WRAPPER_REL, [_GIT_ANCHOR_FLAG])
+    assert pm_import._hook_script_and_arguments(["bash"]) == (None, [])
+
+
+def test_windows_command_key_is_scanned_like_the_posix_one(pm_import, tmp_path):
+    """`commandWindows` 도 같은 스캔에 든다 — 그 플랫폼에서 실제로 실행되는 커맨드다.
+
+    한쪽만 보면 Windows 채택자의 세대 불일치(같은 락아웃)가 통째로 판정 밖이 된다."""
+    # Windows 쪽만 그 플래그를 넘긴다(플랫폼별로 다른 세대를 부르는 형상) — 인터프리터 선행 표기도
+    #   함께 태운다(두 항목이 같은 스캔·같은 해소를 쓴다).
+    document = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{
+        "type": "command",
+        "command": "${CLAUDE_PROJECT_DIR}/" + _WRAPPER_REL,
+        "commandWindows": ("bash ${CLAUDE_PROJECT_DIR}/" + _WRAPPER_REL
+                           + " " + _GIT_ANCHOR_FLAG),
+    }]}]}}
+    dest, _source = _make_case(
+        tmp_path, dest_settings=_settings(git_anchor=False),
+        dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_OLD)
+
+    commands = pm_import._hook_commands(document)
+    unmet = pm_import._hook_set_demands(
+        document, pm_import.ADAPTER_HOOK_SET["claude"], dest)
+
+    assert len(commands) == 2, commands
+    assert unmet == {(pm_import.HOOK_SET_UNSUPPORTED_FLAG, _GIT_ANCHOR_FLAG):
+                     (_DRIVER_REL,)}, \
+        "Windows 커맨드만 요구하는 플래그가 판정에서 빠졌다"
+
+
+def test_remedy_line_omits_empty_parentheses(pm_import, tmp_path):
+    """지목할 파일이 없는 소견은 빈 괄호 `()` 없이 처방한다 — 깨진 문장을 내지 않는다.
+
+    상류 세대 미해소 blocker 가 그 형상이다(`unmet_paths=()`) — 무엇이 미충족인지 열거할 수 없다."""
+    dest, source = _make_case(
+        tmp_path, dest_settings=_settings(git_anchor=True),
+        dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_NEW,
+        upstream_tail=None)  # 상류 pm_import 부재 → 해소 불가 blocker.
+    decision = pm_import.hook_set_accept_decision(
+        dest, source, _SETTINGS_REL,
+        declarations=pm_import.hook_set_declarations(source, required=True))
+    blocker = decision.blockers[0]
+    assert blocker.unmet_paths == (), blocker
+
+    lines = pm_import.hook_set_remedy_lines(blocker)
+
+    assert lines and all("()" not in line for line in lines), lines
+    assert any("먼저 받아라" in line for line in lines), lines
+    # 경계 반대편 — 지목할 파일이 있으면 종전대로 괄호로 열거한다.
+    stale = pm_import.judge_adapter_hook_sets(*_make_case(
+        tmp_path / "stale", dest_settings=_settings(git_anchor=True),
+        dest_wrapper=_WRAPPER_NEW, dest_driver=_DRIVER_OLD))[0]
+    assert f"({_DRIVER_REL})" in pm_import.hook_set_remedy_lines(stale)[0]
+
+
+def test_coupled_hook_set_paths_takes_declarations_keyword_only(pm_import):
+    """세대 선언은 형제 API 전부와 같이 **kw-only** 다 — 위치인자 표기가 하나만 다르면 안 된다."""
+    alpha = pm_import.ADAPTER_HOOK_SET["claude"].coupled_groups[0][0]
+
+    assert pm_import.coupled_hook_set_paths([alpha]) == (alpha,)
+    assert pm_import.coupled_hook_set_paths(
+        [alpha], declarations=pm_import.ADAPTER_HOOK_SET) == (alpha,)
+    with pytest.raises(TypeError):
+        pm_import.coupled_hook_set_paths([alpha], pm_import.ADAPTER_HOOK_SET)
+
+
+def test_generation_and_sibling_resolve_with_one_load(pm_update, monkeypatch):
+    """세대 해소와 판정자 구성이 형제 사본을 **한 번만** 적재한다.
+
+    `_load_pm_import` 는 캐시가 없다 — 두 번 부르면 같은 실행에서 사본을 두 번 exec 하고, 두 번째
+    로드는 첫 로드가 등록 경계로 흡수한 skew 를 경계 밖에서 다시 올릴 수 있다."""
+    real = pm_update._load_pm_import
+    loads: list[int] = []
+
+    def _counted():
+        loads.append(1)
+        return real()
+
+    monkeypatch.setattr(pm_update, "_load_pm_import", _counted)
+    predicate = pm_update.resolve_hook_set_predicate()
+
+    assert predicate(_WRAPPER_REL), "판정자가 훅 경로를 놓쳤다(해소 실패)"
+    assert len(loads) == 1, f"형제 사본을 {len(loads)}회 적재했다"

@@ -532,7 +532,8 @@ def _regression_cwd(
     해소 순서:
       - `worktree_slot`(명시 `--repo`/`--slot`) 가 있으면 `repo_root / worktree_slot`
         (단 그 디렉토리가 실제로 없으면 stale 슬롯 → `repo_root` 로 폴백·경고 1줄),
-      - 없으면 bootstrap `_auto_slot` 으로 단일 self-host 슬롯을 자동해소(`work/<repo>_<N>`),
+      - 없으면 bootstrap `_auto_slot` 으로 단일 self-host 슬롯을 자동해소(`work/<repo>_<N>` ·
+        **같은 존재 검사**를 탄다 — 디렉토리가 없으면 명시 분기와 동형으로 `repo_root` 폴백·경고),
       - 그것도 없으면(솔로/모호/부재) **현 `repo_root` 기본** (fail-soft 폴백·솔로 무변경).
 
     판정 로직은 pm_bootstrap `_auto_slot` 재사용 —
@@ -541,11 +542,13 @@ def _regression_cwd(
     legacy 위치를 보면 _auto_slot 이
     등록 repo 를 0개로 세 self-host 슬롯을 미해소한다. `repo_root` 미지정이면 모듈 `REPO`.
 
-    명시 `worktree_slot` 이 리스 장부 조인은 통과했더라도
+    슬롯이 리스 장부 조인은 통과했더라도(명시든 자동해소든)
     실제 worktree 디렉토리가 물리적으로 없을 수 있다(장부-파일시스템 out-of-sync·저빈도 엣지) —
     그대로 `subprocess.run(cwd=...)` 에 넘기면 `FileNotFoundError` 로 크래시한다. 여기서 존재를
     확인해 없으면 **REPO 로 폴백**(비차단·경고 1줄)한다 — (장부 자체가 모순 — 하드 fail-loud)와
     boundary 를 정합시킨다: 장부-불일치는 loud reject, 장부는 맞는데 디스크만 stale 이면 soft 폴백.
+    **두 분기가 같은 검사를 탄다** — 같은 상태(장부에는 있고 디스크에는 없음)를 해소 경로에 따라
+    다르게 처리하면 자동해소 실행만 크래시한다.
     """
     if repo_root is None:
         repo_root = REPO
@@ -571,7 +574,18 @@ def _regression_cwd(
             auto = None
         if auto:
             repo, n = auto
-            return str(repo_root / f"work/{repo}_{n}")
+            # 자동해소도 **명시 슬롯과 같은 존재 검사**를 탄다. 판정은 장부(areas·leases)만 보므로
+            #   worktree 디렉토리가 물리적으로 없을 수 있고(장부-파일시스템 out-of-sync), 그대로
+            #   `subprocess.run(cwd=...)` 에 넘기면 FileNotFoundError 로 크래시한다 — 같은 상태를
+            #   분기마다 다르게 처리할 이유가 없다(폴백도 경고도 동형).
+            candidate = repo_root / f"work/{repo}_{n}"
+            if candidate.is_dir():
+                return str(candidate)
+            print(
+                f"  ⚠ 자동해소 슬롯 '{repo}_{n}' 의 worktree 디렉토리가 없다 ({candidate}) — "
+                "REPO 로 폴백한다 (stale 슬롯).",
+                file=sys.stderr,
+            )
     return str(repo_root)
 
 

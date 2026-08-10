@@ -845,7 +845,9 @@ def test_regression_cwd_self_host_resolves_worktree_slot(tf, tmp_path, monkeypat
 
     이게 깨지면 ② 홈서 ticket_finish 회귀가 tests/ 없는 ② cwd 에서 돌아 "no tests ran" red.
     슬롯명을 `work/myrepo_7` 로 둬 REPO suffix(`work/project_manager_1`)와 구조적으로 구별한다 —
-    REPO 폴백과 우연 일치하지 않아야 self-host 해소를 실제로 단언하는 가드가 된다.
+    REPO 폴백과 우연 일치하지 않아야 self-host 해소를 실제로 단언하는 가드가 된다. 자동해소도
+    명시 슬롯과 같은 존재 검사를 타므로(장부-파일시스템 out-of-sync 대칭 처리) repo_root 를
+    tmp_path 로 두고 그 슬롯 디렉토리를 실제로 만든다(hermetic·실 REPO 미접촉).
     """
     areas = tmp_path / "areas.md"
     leases = tmp_path / "worktree-leases.json"
@@ -854,11 +856,11 @@ def test_regression_cwd_self_host_resolves_worktree_slot(tf, tmp_path, monkeypat
         {"slot": "work/myrepo_7", "repo": "myrepo",
          "session": "myrepo_7", "state": "leased"},
     ])
-    _bind_pm_handoff_seams(tf, monkeypatch, areas, leases)
+    (tmp_path / "work" / "myrepo_7").mkdir(parents=True)
+    _bind_pm_handoff_seams(tf, monkeypatch, areas, leases, repo_root=tmp_path)
     result = tf._regression_cwd()
-    # REPO 자체가 work/project_manager_1 이므로 myrepo_7 로 끝나면 self-host 해소 확정(폴백 아님).
     assert result.replace(os.sep, "/").endswith("work/myrepo_7")
-    assert not result.endswith(str(tf.REPO))  # REPO 폴백과 구별
+    assert result != str(tmp_path)  # repo_root 폴백과 구별
 
 
 def test_regression_cwd_explicit_slot_overrides_auto(tf, tmp_path, monkeypatch):
