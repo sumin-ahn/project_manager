@@ -7,6 +7,24 @@
 
 ## [Unreleased]
 
+## [1.7.3] - 2026-08-11
+
+### 업그레이드 노트
+
+- **compaction 경계 기계화는 어댑터 config 반영까지 해야 발화한다.** 엔진·훅 스크립트는
+  `pm-update` 가 자동 현행화하지만 이벤트 배선은 하네스별 인스턴스 소유 config 에 있다 —
+  claude 는 `.claude/settings.json` 의 PreCompact 배선을 수용해야 하고
+  (`./pm-config.sh sync-adapter-config --accept .claude/settings.json` 또는 수동 병합),
+  codex 는 세션에서 `/hooks` 로 새 훅 정의를 재승인해야 한다. opencode 는 플러그인 경로가
+  엔진 동기라 추가 조치가 없다.
+- **추가 리뷰어 코드 리뷰 라운드 상한 기본값이 3→2 로 내려갔다.** `local.conf` 에
+  `review_rounds_max` 를 명시한 인스턴스는 영향 없다.
+- (v1.7.2 이월 안내) **추가 리뷰어 구키 4종은 제거됐다 — 여전히 읽지 않는다.** 게이트
+  `external_review_enabled` 와 노브 `external_review_round_limit`·`external_review_wave_budget`·
+  `external_review_incomplete_round_limit` 가 대상이다. 구키만 있는 `local.conf` 는 추가
+  리뷰어가 꺼진 상태이므로, 키 이름을 신키(`additional_reviewer_*`)로 직접 바꾸거나 opt-in
+  질문(`board.py init`·`pm-update`)에 다시 답한다.
+
 ### Added
 - **compaction 경계 기계화 (3하네스)** — 컨텍스트 압축 경계의 보존·복구를 LLM 규율에서 기계
   실행으로 승격. 엔진 스냅샷 빌더(`pm_log.py snapshot` — 장부 직접 읽기·git 호출 0·3초/8,000자/

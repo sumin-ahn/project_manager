@@ -155,7 +155,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 
 # baked stamp. 소비처는 이 값을 자기 rev와 대조해 부분 동기된 구 사본을
 # SnapshotError 속성 접근 전에 명시적인 sibling-skew 오류로 막는다.
-ENGINE_REV = "v1.7.2"
+ENGINE_REV = "v1.7.3"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
