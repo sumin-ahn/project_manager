@@ -49,7 +49,21 @@ engine은 `--gate <T-NNNN>`별 라운드 장부를 세고, 실행 전에 **수�
 
 게이트별 상한과 별개로 **wave(세션) 총예산**이 있다 — 실 전송 누적이 한도(기본 24, `local.conf`의 `additional_reviewer_wave_budget`)에 닿으면 rc=4로 거부한다. 안내 문구가 `--ack-wave`를 지목하면 게이트 상한이 아니라 이 축이다. **재개 ack가 남은 축은 이것 하나**이며(보고서 확인 → 같은 scope의 정상 수렴이면 PM 자율 ack·예산 리셋·판단 근거는 log), wave 예산을 열어도 게이트의 수렴 판정은 그대로 닫혀 있다.
 
-라운드 수렴 상황 보고에는 `--rounds-report`를 쓴다 — 게이트별 라운드 수·라운드별 판정(verdict)·must-fix 수·wave 소비를 표로 dump하는 read-only 조회면이다(`--gate T-NNNN`으로 단일 게이트 한정·`--ticket`/`--paths`를 주면 기록면과 같은 앵커로 해소).
+라운드 수렴 상황 보고에는 `--rounds-report`를 쓴다 — 게이트별 라운드 수·라운드별 판정(verdict)·must-fix 수·처분 상태·wave 소비를 표로 dump하는 read-only 조회면이다(`--gate T-NNNN`으로 단일 게이트 한정·`--ticket`/`--paths`를 주면 기록면과 같은 앵커로 해소).
+
+## 잔여 must-fix 의 처분 선언
+
+상한으로 종결된 게이트에 must-fix 가 남았으면 게이트를 닫기 전에 그 잔여의 처분을 장부에 선언한다. 선언되지 않은 잔여는 릴리즈를 막는다 — `board.py livegate record`/`check` 가 실행 전에 차단하고 우회 플래그는 없다(그 자리에 "사소하니 넘어간다"는 판단이 들어가 실사고가 났다).
+
+```bash
+python3 .project_manager/tools/external_review.py --resolve-gate <게이트> --into <T-NNNN>     # 후속 티켓 이관
+python3 .project_manager/tools/external_review.py --resolve-gate <게이트> --fixed <근거 게이트>  # 코드로 해소
+```
+
+- **이관(`--into`)은 면제가 아니다** — 대상 티켓이 done 이어야 릴리즈가 열리므로 잔여는 같은 릴리즈 안에서 소화된다. 자기 자신 지목은 거부된다.
+- **해소(`--fixed`)는 근거 게이트를 지목한다** — 마지막 라운드가 통과로 끝난 장부 게이트(확인 전용 라운드 또는 후속 게이트)여야 하고, 그 게이트가 뒤이어 반려로 뒤집히면 릴리즈 시점 재검증에서 다시 막힌다.
+- 선언은 **그때의 라운드에 결속한다** — 선언 뒤 새 반려 라운드가 오면 미처분으로 되돌아가므로 새 잔여로 다시 선언한다. suggestion 은 처분 대상이 아니다(이월 허용).
+- 처분 상태는 `--rounds-report` 의 처분 열(미처분/이관→티켓/해소/무대상)로 확인해 보고한다.
 
 ## 실행 규율
 

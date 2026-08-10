@@ -351,7 +351,7 @@ def test_ledger_corrupt_falls_back_to_empty(external, tmp_path, monkeypatch):
 def test_gate_entry_normalizes_missing_and_corrupt(external):
     """`_gate_entry` — 부재/손상 항목을 0/0 으로 정규화하고 ledger 에 심는다."""
     empty = {"count": 0, "acked_through": 0, "sequence": 0, "confirm_fix": 0,
-             "records": [], "rounds": []}
+             "resolution": None, "records": [], "rounds": []}
     gate_one, gate_two, gate_three = ("T-" + suffix for suffix in ("0001", "0002", "0003"))
     ledger: dict = {gate_two: {"count": "bad", "acked_through": None}, gate_three: 7}
     assert external._gate_entry(ledger, gate_one) == empty
@@ -371,6 +371,7 @@ def test_gate_entry_normalizes_missing_and_corrupt(external):
         "acked_through": 0,
         "sequence": 3,
         "confirm_fix": 0,
+        "resolution": None,
         "records": [{"sequence": "3", "verdict": True}],
         "rounds": [{"ts": "2026-08-07T00:00:00+00:00", "verdict": 1}],
     }

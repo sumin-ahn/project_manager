@@ -5708,17 +5708,153 @@ def round_outcome_order_key(outcome: dict) -> tuple[bool, int]:
     return (valid, sequence if valid else 0)
 
 
+def gate_last_round(entry: dict) -> dict | None:
+    """게이트의 **마지막 라운드 산출** — 기록이 없으면 None (공용 seam·사본 금지).
+
+    "마지막이 어느 라운드인가"를 이 한 곳이 정한다 — append 순서가 아니라 예약 순번이다
+    (`round_outcome_order_key`). 이 판정을 세 표면이 쓴다: 회귀 강등의 최신 판정, 릴리즈 게이트의
+    잔여 must-fix, 처분 선언의 근거 게이트 통과 여부. 사본을 두면 그 사본이 서로 다른 라운드를
+    '최신'이라고 답한다. `rounds` 가 리스트가 아닌 손상 항목은 None 이다 — 이 seam 은 판정을
+    돌려줄 뿐이라 손상의 **처분**은 호출부가 정한다(회귀 강등은 fail-open·릴리즈는 fail-closed·
+    `gate_entry_corruption`)."""
+    rounds = entry.get("rounds")
+    if not isinstance(rounds, list):
+        return None
+    rounds = [row for row in rounds if isinstance(row, dict)]
+    if not rounds:
+        return None
+    return sorted(rounds, key=round_outcome_order_key)[-1]
+
+
 def _last_round_verdict(entry: dict) -> int | None:
     """게이트의 **마지막 라운드** 판정 rc (기록 없음/손상이면 None).
 
-    나열 순서는 append 순서가 아니라 **예약 순번**이다(공용 seam `round_outcome_order_key` —
+    나열 순서는 append 순서가 아니라 **예약 순번**이다(공용 seam `gate_last_round` —
     external_review 조회 표와 같은 한 규칙)."""
-    rounds = [row for row in (entry.get("rounds") or []) if isinstance(row, dict)]
-    if not rounds:
-        return None
-    ordered = sorted(rounds, key=round_outcome_order_key)
-    verdict = ordered[-1].get("verdict")
+    outcome = gate_last_round(entry)
+    verdict = outcome.get("verdict") if outcome is not None else None
     return verdict if isinstance(verdict, int) and not isinstance(verdict, bool) else None
+
+
+def gate_passed(entry: dict) -> bool:
+    """마지막 라운드가 **통과**(rc 0)로 끝난 게이트인가 (공용 seam).
+
+    처분 선언(`external_review --resolve-gate ... --fixed <근거 게이트>`)이 "근거 게이트가 실제로
+    통과했나"를 이 술어로 묻는다 — 선언자의 주장이 아니라 장부의 기록 사실이 입력이다."""
+    return _last_round_verdict(entry) == 0
+
+
+def gate_residual_must_fix(entry: dict) -> int:
+    """마지막 라운드가 남긴 must-fix 건수 — 기록 없음·'미상'·손상은 0 (공용 seam).
+
+    릴리즈 차단(`livegate record`)과 처분 선언(`external_review --resolve-gate`)이 **같은 한
+    술어**로 "잔여가 있나"를 본다. 입력은 장부에 기록된 사실뿐이다: 마지막 라운드의 `must_fix`
+    정수. 셀 근거가 없던 라운드('미상'=None)는 잔여 주장이 아니라 0 이다 — 없는 사실로 릴리즈를
+    막지 않는다. suggestion 은 이 축에 들어오지 않는다(이월 허용 대상)."""
+    outcome = gate_last_round(entry)
+    value = outcome.get("must_fix") if outcome is not None else None
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, value)
+
+
+# ── 게이트 처분 선언 (장부 `resolution` 절) ────────────────────────────────
+# 라운드 상한으로 종결된 게이트의 **잔여 must-fix 를 어떻게 소화했는가**를 장부에 남기는 절이다.
+# 쓰는 쪽은 external_review(`--resolve-gate`)지만 **읽는 규칙은 여기 하나**다 — 릴리즈 차단과
+# 조회 표가 각자 해석하면 같은 장부를 놓고 "처분됐다/아니다"가 갈린다. 로드 방향이
+# external_review → board 라 공용 판정은 board 가 소유한다(`round_outcome_order_key` 와 같은 자리).
+GATE_RESOLUTION_INTO = "into"     # 후속 티켓 이관 — 그 티켓이 done 이어야 릴리즈가 열린다.
+GATE_RESOLUTION_FIXED = "fixed"   # 코드로 해소 — 근거 게이트(통과로 끝난 게이트) 지목이 조건.
+# 처분 종류별 **대상 필드** — 이관은 티켓 ID, 해소는 근거 게이트 이름을 싣는다.
+_GATE_RESOLUTION_TARGET_KEYS: dict[str, str] = {
+    GATE_RESOLUTION_INTO: "ticket",
+    GATE_RESOLUTION_FIXED: "evidence_gate",
+}
+# 처분 표기 어휘 — 선언 응답(external_review)과 차단 사유(여기)가 같은 말을 쓰게.
+GATE_RESOLUTION_LABELS: dict[str, str] = {
+    GATE_RESOLUTION_INTO: "이관", GATE_RESOLUTION_FIXED: "해소",
+}
+# 처분이 결속하는 **라운드 좌표** 필드 — 선언 시점의 마지막 라운드 순번과 산출 수.
+_GATE_RESOLUTION_BINDING_KEYS: tuple[str, ...] = ("round_sequence", "rounds")
+_MISSING_BINDING = object()   # `round_sequence` 키 부재와 명시 null(정상 값)을 구분하는 표식.
+
+
+def gate_entry_corruption(entry: object) -> str | None:
+    """게이트 항목이 **해석 가능한 형상**인지 — 아니면 사유 (정상이면 None·공용 seam).
+
+    "존재하는데 읽을 수 없음"은 "잔여 없음"이 아니다. 손상 형상마다 조용한 통과 조각이 생기는 것이
+    이 축의 실패 모드였다 — 비-dict 항목은 순회에서 건너뛰고, 문자열 `rounds` 는 '기록 없음'으로,
+    정수 `rounds` 는 예외로 갈렸다(각각 통과·통과·중단). 셋을 한 술어로 모아 호출부가 **한 처분**
+    (릴리즈 차단)으로 수렴시킨다."""
+    if not isinstance(entry, dict):
+        return f"게이트 항목 형식 오류({type(entry).__name__}) — 해석 불가"
+    rounds = entry.get("rounds")
+    if rounds is not None and not isinstance(rounds, list):
+        return f"`rounds` 형식 오류({type(rounds).__name__}) — 라운드 이력 해석 불가"
+    if isinstance(rounds, list) and any(not isinstance(row, dict) for row in rounds):
+        return "`rounds` 에 매핑이 아닌 원소 — 라운드 이력 해석 불가"
+    resolution = entry.get("resolution")
+    if resolution is not None and not isinstance(resolution, dict):
+        return f"`resolution` 형식 오류({type(resolution).__name__}) — 처분 선언 해석 불가"
+    return None
+
+
+def gate_round_binding(entry: dict) -> dict:
+    """게이트의 **현재 라운드 좌표** — `{round_sequence, rounds}` (선언·검증 공용 seam).
+
+    처분은 "그때 그 잔여"에 대한 선언이다. 좌표 없이 게이트 단위로만 남기면 처분 뒤에 새 반려
+    라운드가 와도 옛 선언이 잔여를 계속 지운다(처분의 무기한 유효화). 좌표는 둘을 함께 본다 —
+    마지막 라운드의 예약 순번(정렬 좌표)과 산출 수. 순번 없는 구세대 산출만 있는 장부에서도
+    산출 수가 증가를 잡는다."""
+    rounds = entry.get("rounds")
+    rounds = [row for row in rounds if isinstance(row, dict)] if isinstance(rounds, list) else []
+    last = gate_last_round(entry)
+    sequence = last.get("sequence") if last is not None else None
+    if isinstance(sequence, bool) or not isinstance(sequence, int):
+        sequence = None
+    return {"round_sequence": sequence, "rounds": len(rounds)}
+
+
+def gate_resolution(entry: dict) -> dict | None:
+    """게이트 처분 선언의 해석 — 미선언·형식 불명이면 None(=미처분·공용 seam).
+
+    읽을 수 없는 값은 처분이 아니다(fail-closed) — 손상된 한 줄이 릴리즈 차단을 **여는** 방향으로
+    작동하면 그 게이트는 기계가 아니다. 라운드 좌표(`round_sequence`·`rounds`)도 같은 축이다:
+    좌표 없는 선언은 어느 잔여를 처분했는지 확인할 수 없으므로 처분으로 인정하지 않는다.
+    반환은 정규화된 사본 `{kind, ticket|evidence_gate, round_sequence, rounds, ts?}`.
+    """
+    raw = entry.get("resolution")
+    if not isinstance(raw, dict):
+        return None
+    key = _GATE_RESOLUTION_TARGET_KEYS.get(raw.get("kind"))
+    if key is None:
+        return None
+    target = raw.get(key)
+    if not isinstance(target, str) or not target.strip():
+        return None
+    sequence = raw.get("round_sequence", _MISSING_BINDING)
+    count = raw.get("rounds")
+    if sequence is _MISSING_BINDING:
+        return None                      # 좌표 없는 선언 — 어느 잔여를 처분했는지 확인 불가.
+    if sequence is not None and (isinstance(sequence, bool) or not isinstance(sequence, int)):
+        return None
+    if isinstance(count, bool) or not isinstance(count, int):
+        return None
+    declared = {"kind": raw["kind"], key: target.strip(),
+                "round_sequence": sequence, "rounds": count}
+    ts = raw.get("ts")
+    if isinstance(ts, str) and ts.strip():
+        declared["ts"] = ts.strip()
+    return declared
+
+
+def gate_resolution_is_stale(entry: dict, declared: dict) -> bool:
+    """처분이 결속한 라운드 좌표가 **지금 장부와 다른가** (다르면 미처분 취급·공용 seam).
+
+    선언 이후 새 라운드가 기록됐다면 그 잔여는 처분되지 않은 새 사실이다. 좌표가 뒤로 간 경우
+    (장부 손편집)도 같은 처분이다 — 어느 쪽이든 선언이 가리키던 상태가 아니다."""
+    current = gate_round_binding(entry)
+    return any(current[key] != declared.get(key) for key in _GATE_RESOLUTION_BINDING_KEYS)
 
 
 def _gate_ticket(gate: str) -> tuple[str, Path] | None:
@@ -6617,6 +6753,156 @@ def _resolve_livegate_flag(cwd: str) -> tuple[Path, str]:
     return root / ".project_manager" / ".local" / "livegate.json", _LG_ENGINE_ROOT
 
 
+# ── 릴리즈 must-fix 잔여 차단 (릴리즈 절차의 첫 기계 관문) ────────────────
+# "must-fix 잔여가 있으면 릴리즈하지 않는다"를 PM 규율이 아니라 기계 게이트로 박는다. 라운드
+# 상한으로 종결된 게이트의 잔여 must-fix 가 후속 티켓으로 소화되지 않은 채 릴리즈 절차가 진행되던
+# 것이 근절 대상이다(실사고: PM 자체 판정 "전이-세대 엣지"로 must-fix 4건을 이월한 채 릴리즈).
+#
+# 판정 입력은 **장부의 기록 사실**뿐이다 — 최종 라운드의 must_fix 수(`gate_residual_must_fix`),
+# 처분 선언(`gate_resolution`), 이관 대상 티켓의 보드 status. PM 자의 판정("사소함·엣지")이 들어갈
+# 자리를 만들지 않는다(그 자의 판정이 사고의 원인이었다). 우회 플래그도 없다.
+#
+# 검사 지점이 `livegate record` 인 이유는 그것이 릴리즈 절차의 첫 기계 관문이고 push 보호훅이 그
+# green 을 소비하기 때문이다 — 여기서 막으면 하류 전체가 막힌다. 그래서 차단은 **fail 기록까지**
+# 남긴다(같은 HEAD 의 옛 green 이 살아남아 훅을 통과하는 창을 닫는다).
+_LIVEGATE_MUST_FIX_REASON = "unresolved-must-fix"   # fail 기록의 사유 표식(훅 메시지와 별개 감사면).
+
+_MUST_FIX_BLOCK_GUIDANCE = (
+    "livegate: fail — 미해소 must-fix 잔여 {count}건 (릴리즈 차단 · 우회 플래그 없음).\n"
+    "{items}\n"
+    "  처방 — 게이트마다 처분을 **선언**하세요 (선언 없이는 릴리즈가 열리지 않습니다):\n"
+    "    · 코드로 해소했으면: python3 .project_manager/tools/external_review.py "
+    "--resolve-gate <게이트> --fixed <근거 게이트>\n"
+    "    · 후속 티켓으로 이관하면: python3 .project_manager/tools/external_review.py "
+    "--resolve-gate <게이트> --into <T-NNNN>\n"
+    "      (이관은 면제가 아니라 처분입니다 — 그 티켓이 done 이어야 이번 릴리즈가 열립니다)\n"
+    "  라운드 장부: {ledger}"
+)
+
+
+def _release_rounds_ledger(flag: Path) -> Path:
+    """릴리즈 검사가 읽을 라운드 장부 — livegate.json 과 **같은 `.local`**.
+
+    기록 위치 정렬(`_resolve_livegate_flag`)을 그대로 물려받는다 — 어느 board.py 사본/cwd 로
+    record 하든 external_review 가 실제로 쓴 그 장부(소유 PM 홈 `.local/review_rounds.json`)를
+    본다. 사본별로 다른 장부를 읽으면 잔여가 있는데 "무대상"으로 통과하는 false-green 이 난다."""
+    return flag.parent / REVIEW_ROUNDS_LEDGER_NAME
+
+
+def _release_gate_search_dirs(ledger: Path) -> list[tuple[str, Path]]:
+    """이관 대상 티켓을 조회할 범위 — **장부와 같은 PM 홈**의 보드.
+
+    `<root>/.project_manager/.local/review_rounds.json` 에서 `<root>` 를 되짚어 그 홈의 board
+    루트를 쓴다(board/ 분리 추종). 장부는 engine-root 로 정렬해 놓고 티켓만 호출된 사본의 board
+    에서 찾으면, worktree 사본으로 record 할 때 티켓을 못 찾아 정상 이관까지 차단된다."""
+    pm_home = ledger.parent.parent.parent
+    return [(status, _board_root_at(pm_home) / "tickets" / status)
+            for status in STATUS_DIRS]
+
+
+def _fixed_evidence_problem(ledger_data: dict, evidence: str) -> str | None:
+    """`fixed` 근거 게이트가 **지금도** 통과인지 (뒷받침하면 None).
+
+    근거는 선언 시점에 한 번 확인하고 끝낼 사실이 아니다 — 그 게이트가 뒤이어 반려로 뒤집히면
+    "코드로 해소됐다"는 선언의 근거가 사라진다. 릴리즈 시점에 같은 술어(`gate_passed`)로 다시
+    묻는다(선언 시점 검증과 같은 한 규칙)."""
+    entry = ledger_data.get(evidence)
+    corruption = gate_entry_corruption(entry) if evidence in ledger_data else None
+    if evidence not in ledger_data:
+        return f"근거 게이트 {evidence} 의 기록이 장부에서 사라졌습니다"
+    if corruption is not None:
+        return f"근거 게이트 {evidence} — {corruption}"
+    if not gate_passed(entry):
+        residual = gate_residual_must_fix(entry)
+        return (f"근거 게이트 {evidence} 가 더 이상 통과가 아닙니다 "
+                f"(마지막 라운드 must_fix {residual}건)")
+    return None
+
+
+def _gate_disposition_problem(gate: str, entry: object, ledger_data: dict,
+                              search_dirs: list[tuple[str, Path]]) -> str | None:
+    """게이트 하나의 처분 판정 — 차단 사유 1줄 (통과면 None).
+
+    순서대로 본다: **항목 해석 가능성**(손상이면 잔여를 셀 수 없으니 차단) → 잔여 must_fix(0 이면
+    비대상·suggestion 만 남은 게이트 포함) → 처분 선언(미선언·좌표 stale 이면 차단) → 갈래별 조건
+    (`fixed` = 근거 게이트가 지금도 통과 · `into` = 대상 티켓이 done)."""
+    corruption = gate_entry_corruption(entry)
+    if corruption is not None:
+        return f"  · {gate}: {corruption} — 잔여 must-fix 를 확인할 수 없어 차단합니다"
+    residual = gate_residual_must_fix(entry)
+    if residual <= 0:
+        return None
+    prefix = f"  · {gate}: 최종 라운드 must_fix {residual}건"
+    declared = gate_resolution(entry)
+    if declared is None:
+        return f"{prefix} · 처분 선언 없음"
+    label = f"{GATE_RESOLUTION_LABELS[declared['kind']]} 선언"
+    if gate_resolution_is_stale(entry, declared):
+        current = gate_round_binding(entry)
+        return (f"{prefix} · {label} 이후 새 라운드가 기록됐습니다 "
+                f"(선언 시점 #{declared['round_sequence']}/{declared['rounds']}건 ≠ 현재 "
+                f"#{current['round_sequence']}/{current['rounds']}건) · 새 잔여로 다시 선언하세요")
+    if declared["kind"] == GATE_RESOLUTION_FIXED:
+        problem = _fixed_evidence_problem(ledger_data, declared["evidence_gate"])
+        return None if problem is None else f"{prefix} · {label} — {problem}"
+    ticket = declared["ticket"]
+    found = find_ticket_exact(ticket, search_dirs=search_dirs)
+    if found is None:
+        return (f"{prefix} · {label} {ticket} — 그 티켓을 보드에서 찾지 못했습니다 "
+                "(ID 오기 또는 미생성)")
+    if found[0] != "done":
+        return (f"{prefix} · {label} {ticket} — 아직 done 이 아닙니다(현재 {found[0]}) · "
+                "이관은 면제가 아니라 같은 릴리즈 안 소화입니다")
+    return None
+
+
+def _unresolved_must_fix_gates(ledger: Path) -> list[str]:
+    """미해소 must-fix 잔여의 차단 사유 목록 — 없으면 빈 목록(=릴리즈 진행).
+
+    장부가 **아예 없으면 무대상**이다(빈 목록) — 추가 리뷰어를 쓰지 않는 채택자에겐 검사할 사실
+    자체가 없고, 그 형상에 없는 파일을 요구하면 게이트가 아니라 장애물이다. 반면 장부가 있는데
+    **읽지 못하면 차단**한다: "잔여가 없다"를 확인하지 못한 것과 "잔여가 없다"는 다르다. 그 원칙은
+    파일 단위에서 끝나지 않고 **항목 단위**까지 간다(`gate_entry_corruption`).
+    """
+    if not ledger.exists():
+        return []
+    try:
+        data = json.loads(ledger.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError) as exc:
+        return [f"  · 라운드 장부를 읽지 못했습니다 ({type(exc).__name__}: {exc}) — 잔여 "
+                "must-fix 를 확인할 수 없어 차단합니다 (장부 수리 후 재실행)"]
+    if not isinstance(data, dict):
+        return ["  · 라운드 장부 형식 오류(최상위가 매핑이 아님) — 잔여 must-fix 를 확인할 수 "
+                "없어 차단합니다"]
+    search_dirs = _release_gate_search_dirs(ledger)
+    problems: list[str] = []
+    for gate, entry in sorted(data.items()):
+        if gate == _REVIEW_LEDGER_WAVE_KEY:
+            continue                     # 예약 키(wave 예산 절)는 게이트가 아니다.
+        problem = _gate_disposition_problem(gate, entry, data, search_dirs)
+        if problem is not None:
+            problems.append(problem)
+    return problems
+
+
+def _refuse_release_for_must_fix(flag: Path, cwd: str, problems: list[str]) -> int:
+    """미해소 must-fix 잔여로 릴리즈를 거부한다 — fail 기록 + 목록·처방 + rc1.
+
+    fail 을 **기록까지** 하는 이유는 훅이 `livegate check` 로 소비하는 그 파일이 판정의 하류이기
+    때문이다 — 거부만 하고 파일을 그대로 두면 같은 HEAD 에 남은 옛 green 이 push 를 통과시킨다
+    (이 게이트가 막으려는 바로 그 형상). 실행 전 거부라 수집 N 은 0 이고 rc 는 미실행(None)이다.
+    """
+    flag.parent.mkdir(parents=True, exist_ok=True)   # 기록 경로 보장 (pass 기록과 같은 규칙)
+    _write_json_atomic(flag, {
+        "head": _git_head_at(cwd), "status": "fail", "n": 0, "rc": None,
+        "ts": now_utc(), "reason": _LIVEGATE_MUST_FIX_REASON,
+    })
+    print(_MUST_FIX_BLOCK_GUIDANCE.format(
+        count=len(problems), items="\n".join(problems),
+        ledger=_release_rounds_ledger(flag)), file=sys.stderr)
+    return 1
+
+
 def _livegate_record(args: argparse.Namespace) -> int:
     """`pytest -m release` 를 실행·측정하고 결과를 livegate.json 에 기록한다 (실행=기록).
 
@@ -6661,6 +6947,11 @@ def _livegate_record(args: argparse.Namespace) -> int:
               "있어 거부(false-green 차단). engine-root sidecar 수리 또는 "
               "`pm-config repo add` 재실행. 릴리즈 차단.", file=sys.stderr)
         return 1
+    # 미해소 must-fix 잔여 — 값비싼 라이브 wave 를 돌리기 **전에** 본다(BROKEN 조기 거부와 같은
+    # 축). 장부가 없는 형상(추가 리뷰어 비활성 채택자)은 무대상이라 그대로 지나간다.
+    problems = _unresolved_must_fix_gates(_release_rounds_ledger(flag))
+    if problems:
+        return _refuse_release_for_must_fix(flag, cwd, problems)
     print(f"livegate: $ {LIVEGATE_TEST_CMD}  (cwd={cwd})")
     # 자식 pytest 인코딩을 코드로 명시(env 워크어라운드 아님) — cp949 콘솔에서도 UTF-8.
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
@@ -6722,6 +7013,16 @@ def _livegate_check(args: argparse.Namespace) -> int:
               "(hooksPath 설치됐으나 PM 홈 board.py 미해소) — 기록 위치와 훅 read 위치가 갈릴 수 "
               "있어 거부(false-green 차단). engine-root sidecar 수리 또는 "
               "`pm-config repo add` 재실행. 릴리즈 차단.", file=sys.stderr)
+        return 1
+    # 미해소 must-fix 잔여 — record 와 **같은 검사**를 소비 시점에도 한다(대칭). 기록은 HEAD 로
+    # 키되지만 라운드 장부는 그 뒤로도 자란다: record 가 green 을 찍은 뒤 같은 HEAD 에서 새 반려
+    # 라운드가 기록되면 옛 green 이 push 를 통과시킨다(check 만 스냅샷을 믿는 창). 판정을 소비
+    # 지점에서 다시 물어 그 창을 닫는다 — 읽기 전용이라 기록은 손대지 않는다.
+    problems = _unresolved_must_fix_gates(_release_rounds_ledger(flag))
+    if problems:
+        print(_MUST_FIX_BLOCK_GUIDANCE.format(
+            count=len(problems), items="\n".join(problems),
+            ledger=_release_rounds_ledger(flag)), file=sys.stderr)
         return 1
     if not flag.exists():
         print("livegate: 기록 없음 — `board.py livegate record` 필요 (릴리즈 차단).",
