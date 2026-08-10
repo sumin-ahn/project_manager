@@ -1059,12 +1059,12 @@ def test_opt_in_off_is_a_no_op_that_creates_no_output_dir(
     assert "추가 리뷰어 비활성" in capsys.readouterr().err
 
 
-def test_disabled_notice_quotes_the_adopters_own_key(
+def test_disabled_notice_on_a_legacy_only_conf_says_undecided_and_names_the_old_key(
         external, monkeypatch, tmp_path, capsys):
-    """구키만 있는 채택자는 **자기 conf 에 있는 줄**을 안내에서 본다 (T-0600).
+    """구키만 있는 채택자는 "결정 없음" + 구키 감지 1줄을 함께 받는다 (T-0600·T-0614).
 
-    고정 표기(신키=false)는 그 채택자에게 존재하지 않는 줄이라 "어디를 고치라는 건지"가 끊긴다.
-    처방(켜는 법)은 그대로 신키다.
+    구키는 더 이상 결정을 공급하지 않으므로 비활성 안내가 그 줄을 인용하면 거짓말이 된다(읽지도
+    않는 줄을 현재 상태로 제시하는 셈). 대신 별도 안내가 그 키를 지목하고, 처방은 그대로 신키다.
     """
     conf = _conf()
     del conf[external.ADDITIONAL_REVIEWER_ENABLED_KEY]
@@ -1074,7 +1074,8 @@ def test_disabled_notice_quotes_the_adopters_own_key(
 
     assert external.main(["--paths", "x.py"]) == 0
     err = capsys.readouterr().err
-    assert f"local.conf {external.LEGACY_EXTERNAL_REVIEW_ENABLED_KEY}=false" in err
+    assert "local.conf 에 opt-in 결정 없음" in err
+    assert external.LEGACY_ENABLED_KEY_REMOVED in err        # 구키는 별도 1줄이 지목
     assert f"`{external.ADDITIONAL_REVIEWER_ENABLED_KEY}=true`" in err   # 처방은 신키
 
 

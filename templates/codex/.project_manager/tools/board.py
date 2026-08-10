@@ -5595,6 +5595,43 @@ _HARNESS_BUDGET_CONF_SEED = (
 )
 
 
+# 예시 시드가 안내하는 **축**의 실키 표기 — 이름 그대로이거나 그 접두 아래(`delegate.<role>.<knob>`·
+# `harness.<name>.<knob>`)다. 축마다 표기가 둘로 갈리므로(밑줄 게이트 키 + 점 네임스페이스) 두
+# 형태를 함께 선언한다. 표면-flat 구키(`delegate_timeout`·`external_review_timeout` 류)는 **의도적으로
+# 축 밖**이다 — 그 키만 쓰는 채택자에게는 하네스별 예시 블록이 곧 이주 힌트라, 그걸 활성으로 세면
+# 정작 이주 안내를 받아야 할 사람이 못 받는다.
+_DELEGATE_AXIS_KEYS = ("delegate_enabled", "delegate.")
+_HARNESS_BUDGET_AXIS_KEYS = ("harness.",)
+
+
+def _conf_axis_is_configured(conf: dict[str, str], axis_keys: tuple[str, ...]) -> bool:
+    """그 축을 **실키로 이미 쓰고 있는가** (정확히 그 이름이거나 그 접두 아래 키가 있는가).
+
+    판정 입력은 파싱된 conf 다(주석 제외) — 원문 substring 으로 보면 예시 블록 자신의 주석
+    (`# delegate_enabled=false`)이 "설정됨" 으로 읽혀 판정이 자기 자신을 삼킨다.
+    """
+    for key in conf:
+        for axis in axis_keys:
+            if key == axis or (axis.endswith(".") and key.startswith(axis)):
+                return True
+    return False
+
+
+def _example_seed_is_redundant(text: str, conf: dict[str, str], marker: str,
+                               axis_keys: tuple[str, ...]) -> bool:
+    """이 예시 시드를 붙이지 말아야 하는가 — 두 사유 중 하나면 True.
+
+    ㄱ. **이미 있다**(마커 존재) — 같은 블록을 다시 붙이면 재실행마다 conf 가 길어진다(멱등).
+    ㄴ. **그 축을 이미 쓴다**(실키 존재) — 예시 블록은 *그 키를 아직 안 쓰는* 채택자에게 존재를
+        알리는 문서다. 활성 설정 아래에 "기본 OFF" 예시가 통째로 붙으면 그 conf 는 자기 모순이
+        되고(무엇이 유효한지 사람이 못 읽는다), 문서로서의 값도 이미 0 이다.
+
+    반대로 **이미 오염된 conf 를 되돌리지는 않는다** — 붙은 블록을 지우는 것은 채택자 소유 파일의
+    재작성이라 엔진이 하지 않는다(신규 append 만 위생화·소급 청소는 사람 손에 남긴다).
+    """
+    return marker in text or _conf_axis_is_configured(conf, axis_keys)
+
+
 def _ctx_pct(key: str, default: int) -> int:
     """local.conf 의 ctx 임계값을 정수로 읽는다. 없거나 비정수면 default."""
     raw = local_config().get(key)
@@ -7638,8 +7675,9 @@ INIT_GUIDE = """\
 #   사람이 부르는 역할 이름은 **추가 리뷰어**이고, `external_*` 은 이미 기록된 산출물에 박힌 기계
 #   식별자(모듈 파일 이름·raw 파일 접두)와 외부 전송·격리·과금 축에만 남긴다. 게이트 키는
 #   `additional_reviewer_enabled` 로 개칭됐다 — 신규 온보딩은 **신키만** 기록하고, 구키
-#   `external_review_enabled` 는 "이미 결정됨" 판정에서만 1릴리즈 더 인정한다(자동 마이그레이션
-#   없음 — 엔진은 채택자 conf 를 대신 고쳐 쓰지 않는다).
+#   `external_review_enabled` 는 개칭 유예가 끝나 **더 이상 읽지 않는다**: 구키만 있는 conf 는
+#   미결정이라 온보딩이 다시 묻고(그 답이 신키로 기록되는 것이 이주 경로다) 그 전에 감지 안내
+#   1줄을 낸다(자동 마이그레이션 없음 — 엔진은 채택자 conf 를 대신 고쳐 쓰지 않는다).
 #   `reviewer_cmd` 는 **신규 온보딩에서 만들지 않는다** — 레거시 키는 이미 쓰는 채택자에게만
 #   남고, 새 채택자는 구조적 튜플 하나로 통일한다.
 #   같은 값을 pm_update.ADDITIONAL_REVIEWER_DEFAULTS 도 심는다(두 온보딩 진입·동일 프로필).
@@ -7658,25 +7696,31 @@ ADDITIONAL_REVIEWER_DEFAULTS: tuple[tuple[str, str], ...] = (
 
 
 def additional_reviewer_decision_key(conf: dict[str, str]) -> str | None:
-    """이미 기록된 opt-in 결정을 공급하는 키 — 신키 우선·구키 1릴리즈 fallback (없으면 None).
+    """이미 기록된 opt-in 결정을 공급하는 키 — **신키뿐** (없으면 None).
 
-    구키만 있는 채택자를 "미결정"으로 보면 온보딩이 다시 물어 **두 키가 공존**하는 conf 를 만든다.
-    그래서 판정은 두 키의 존재로 한다(값의 truthiness 가 아니다 — `false` 도 기록된 결정이다).
-    external_review 코어의 `enabled_decision_key` 와 같은 판정·같은 순서다.
+    구키 fallback 이 제거됐으므로 구키만 있는 conf 는 **미결정**이다. 게이트가 그 값을 읽지 않는데
+    "결정됨" 으로 접으면 그 채택자는 OFF 인 채 다시 질문도 못 받는다 — 다시 묻는 것이 이주 경로다
+    (답이 신키로 기록된다). 판정은 키 존재다(값의 truthiness 가 아니다 — `false` 도 결정이다).
+    external_review 코어의 `enabled_decision_key` 와 같은 판정이다.
     """
-    if ADDITIONAL_REVIEWER_ENABLED_KEY in conf:
-        return ADDITIONAL_REVIEWER_ENABLED_KEY
-    if LEGACY_EXTERNAL_REVIEW_ENABLED_KEY in conf:
-        return LEGACY_EXTERNAL_REVIEW_ENABLED_KEY
-    return None
+    return (ADDITIONAL_REVIEWER_ENABLED_KEY
+            if ADDITIONAL_REVIEWER_ENABLED_KEY in conf else None)
 
 
-# 구키 deprecation 안내 1줄 — external_review·pm_update 사본과 **같은 문구**다(드리프트는 회귀가
+# 구키 감지 안내 1줄 — external_review·pm_update 사본과 **같은 문구**다(드리프트는 회귀가
 # 잡는다). 세 진입이 균일해야 채택자가 어느 표면에서 만나든 같은 처방을 받는다.
-LEGACY_ENABLED_KEY_DEPRECATION = (
-    f"⚠ local.conf `{LEGACY_EXTERNAL_REVIEW_ENABLED_KEY}` 는 구키다 — "
-    f"`{ADDITIONAL_REVIEWER_ENABLED_KEY}` 로 바꾸세요(다음 릴리즈에서 구키 제거)."
+LEGACY_ENABLED_KEY_REMOVED = (
+    f"⚠ local.conf `{LEGACY_EXTERNAL_REVIEW_ENABLED_KEY}` 는 더 이상 읽지 않는다(구키 제거) — "
+    f"`{ADDITIONAL_REVIEWER_ENABLED_KEY}` 로 바꾸세요. 그 전까지 추가 리뷰어는 OFF 입니다."
 )
+
+
+def legacy_enabled_key_notice(conf: dict[str, str]) -> str | None:
+    """구키만 있어 결정이 무시되는 conf 면 안내 1줄 — external_review 판정과 같은 조건."""
+    if (LEGACY_EXTERNAL_REVIEW_ENABLED_KEY in conf
+            and ADDITIONAL_REVIEWER_ENABLED_KEY not in conf):
+        return LEGACY_ENABLED_KEY_REMOVED
+    return None
 
 # opt-in "예" 가 append 하는 블록. additional_reviewer_enabled=true 는 *설정된* 외부 전송과 통상
 #   과금에 대한 **지속 동의**라, 이후 리뷰마다·라운드 상한마다 비용을 다시 묻지 않는다.
@@ -7919,12 +7963,14 @@ def prompt_external_review_optin() -> None:
     판정으로 쓴 기본 4키가 그사이 생긴 대상을 이중 대상/last-wins 로 망가뜨린다.
     """
     conf = local_config()
+    # 구키 감지는 **판정보다 먼저** — init 도 채택자가 구키를 만나는 진입이라 코어·pm_update 와
+    #   같은 문구를 낸다. 어느 경로로 빠지든 그 사실을 이 실행에서 듣는다.
+    legacy_notice = legacy_enabled_key_notice(conf)
+    if legacy_notice:
+        print(f"  {legacy_notice}")
     decision_key = additional_reviewer_decision_key(conf)
     if decision_key is not None:
-        # 이미 결정됨 (신키/구키·true/false 무관·기존 프로필/레거시 키 불변). 구키면 처방 1줄 —
-        # init 도 채택자가 구키를 만나는 진입이라 코어·pm_update 와 같은 문구를 낸다.
-        if decision_key == LEGACY_EXTERNAL_REVIEW_ENABLED_KEY:
-            print(f"  {LEGACY_ENABLED_KEY_DEPRECATION}")
+        # 이미 결정됨 (true/false 무관·기존 프로필/레거시 키 불변·자동 마이그레이션 없음).
         return
     try:
         target = classify_additional_reviewer_target(conf)
@@ -8088,11 +8134,14 @@ def _write_init_local_conf(*, prefix: str | None, namespaced: bool,
         # 마커**가 없으면 시드를 파일 끝에 append 한다 — 기존 byte 는 위에서 보존(비파괴 병합). 마커로
         # 판정하므로 실키 결정(delegate_enabled)과 독립이다(스키마 문서 = 별개 축). 이미 있으면 no-op
         # → 재실행 멱등(fresh conf 는 이미 포함하므로 자연 no-op). 실키 opt-in 은 prompt_delegate_optin.
-        if _DELEGATE_SEED_MARKER not in merged:
+        # 가드는 둘이다 — **멱등**(마커) + **활성-키 인지**(그 축을 이미 실키로 쓰는가).
+        if not _example_seed_is_redundant(
+                merged, existing, _DELEGATE_SEED_MARKER, _DELEGATE_AXIS_KEYS):
             merged += _DELEGATE_CONF_SEED
         # 하네스별 시간 예산 스키마도 같은 규칙으로 append(별도 마커 — 위 블록을 이미 받은
         # 기존 채택자에게도 도달한다). 전부 주석이라 기존 동작/값은 불변.
-        if _HARNESS_BUDGET_SEED_MARKER not in merged:
+        if not _example_seed_is_redundant(
+                merged, existing, _HARNESS_BUDGET_SEED_MARKER, _HARNESS_BUDGET_AXIS_KEYS):
             merged += _HARNESS_BUDGET_CONF_SEED
         LOCAL_CONF.write_text(merged, encoding="utf-8")
         if override:

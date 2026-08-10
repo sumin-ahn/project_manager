@@ -5837,8 +5837,8 @@ def _hook_script_relpath(token: str) -> str | None:
 # 인터프리터를 앞세우는 훅 커맨드(`bash <path> --flag`·`py -3 <path>`)의 첫 토큰. 목록은 유한하고
 # basename 소문자로 대조한다(`/usr/bin/bash`·`bash.exe` 포함) — 표기가 달라도 **실행되는 스크립트**가
 # 판정 단위라, 이 형태를 못 읽으면 같은 훅이 표기 하나로 판정에서 빠진다.
-# 의도된 경계 2가지(보수적 miss — 거짓 red 없음·판정 누락만): ① 이 목록 밖 래퍼 선행(`env`·
-# `command`·`winpty` 등)은 그 토큰이 live_files 와 안 맞아 판정 대상 밖으로 떨어진다. ② 분해가
+# 의도된 경계 2가지(보수적 miss — 거짓 red 없음·판정 누락만): 하나는 이 목록 밖 래퍼 선행(`env`·
+# `command`·`winpty` 등)으로, 그 토큰이 live_files 와 안 맞아 판정 대상 밖으로 떨어진다. 다른 하나는 분해가
 # POSIX shlex 라 인용 없는 백슬래시 경로(`...\x.sh`)는 이스케이프로 먹혀 miss 다 — 출하 config 는
 # 전부 forward slash/인라인이라 실영향 0 이며, 확장은 실수요(백슬래시 훅 커맨드 출하) 때 한다.
 _HOOK_COMMAND_INTERPRETERS = frozenset({

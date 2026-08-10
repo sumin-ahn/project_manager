@@ -2113,34 +2113,39 @@ def test_failure_after_popen_still_consumes_the_round(external, monkeypatch, tmp
     assert failing.seen["calls"] == 1, "상한을 넘긴 호출이 리뷰어를 또 띄웠다"
 
 
-# ── 게이트 키 개칭: 구키 deprecation 배선 (T-0597) ───────────────────────────
+# ── 게이트 키 개칭: 구키 제거 + 감지 안내 배선 (T-0597·T-0614) ──────────────
 #
 # 판정 헬퍼(`legacy_enabled_key_warning`)의 단위 단언만으로는 **`_main` 에서 그 헬퍼를 실제로 부르고
 # 출력하는 배선**이 지워져도 green 이다. 그래서 CLI 표면에서 직접 본다 — 자리는 게이트 판정 *앞*이라
-# 미리보기와 실행이 같은 안내를 받는다(구키로 false 를 적어 둔 채택자가 켜려 할 때도 신키를 안다).
+# 미리보기와 실행이 같은 안내를 받는다. 구키 fallback 은 제거됐으므로 구키로 `true` 를 적어 둔
+# 채택자는 **게이트가 열리지 않고**(전송 0) 안내만 받는다 — 그 조합이 바로 무음 강등 방지 지점이다.
 
 _LEGACY_ENABLED_CONF = {"external_review_enabled": "true"}
 
 
-def test_legacy_gate_key_deprecation_is_printed_on_actual_run(
+def test_legacy_gate_key_no_longer_opens_the_gate_but_is_announced(
         external, monkeypatch, tmp_path, capsys):
-    """구키로 켜진 conf 의 실 실행이 안내 1줄을 stderr 로 낸다 — 실행 자체는 막지 않는다."""
+    """구키로 `true` 를 적어 둔 conf 는 **전송 0**(게이트 OFF)이고 안내 1줄을 stderr 로 받는다.
+
+    fallback 제거의 핵심 케이스다 — 켜 뒀다고 믿는 채택자가 이유를 못 들으면 그게 무음 강등이다.
+    """
     calls = _wire(external, monkeypatch, tmp_path, conf=_LEGACY_ENABLED_CONF)
 
     assert external.main(["--paths", "x.py"]) == 0
-    assert calls["n"] == 1                                   # 구키도 1릴리즈는 게이트를 연다
+    assert calls["n"] == 0, "구키가 여전히 게이트를 열었다(fallback 잔존)"
     err = capsys.readouterr().err
-    assert err.count(external.LEGACY_ENABLED_KEY_DEPRECATION) == 1
+    assert err.count(external.LEGACY_ENABLED_KEY_REMOVED) == 1
+    assert "추가 리뷰어 비활성" in err                        # 왜 안 나갔는지도 말한다
 
 
-def test_legacy_gate_key_deprecation_is_printed_on_dry_run(
+def test_legacy_gate_key_notice_is_printed_on_dry_run(
         external, monkeypatch, tmp_path, capsys):
     """미리보기도 같은 안내를 받는다 — 전송 0 인 경로에서 처방을 미리 볼 수 있어야 한다."""
     calls = _wire(external, monkeypatch, tmp_path, conf=_LEGACY_ENABLED_CONF)
 
     assert external.main(["--paths", "x.py", "--dry-run"]) == 0
     assert calls["n"] == 0                                   # 미리보기는 전송 없음
-    assert external.LEGACY_ENABLED_KEY_DEPRECATION in capsys.readouterr().err
+    assert external.LEGACY_ENABLED_KEY_REMOVED in capsys.readouterr().err
 
 
 def test_new_gate_key_run_is_quiet_about_the_legacy_key(
@@ -2152,7 +2157,7 @@ def test_new_gate_key_run_is_quiet_about_the_legacy_key(
     assert "external_review_enabled" not in capsys.readouterr().err
 
 
-# ── 노브 키 개칭: 구키 fallback·deprecation 배선 (T-0599) ────────────────────
+# ── 노브 키 개칭: 구키 제거·감지 안내 배선 (T-0599·T-0614) ──────────────────
 #
 # 게이트 키와 같은 축을 노브 3종(판정 상한·미완 상한·wave 예산)에 확장한다. 여기서 CLI 표면을
 # 보는 이유도 같다: 해소 헬퍼의 단위 단언만으로는 **상한 판정이 그 헬퍼를 실제로 소비하는지**와
@@ -2166,18 +2171,22 @@ _LEGACY_KNOB_CONF = {
 }
 
 
-def test_legacy_knob_keys_still_drive_the_round_limit_gate(
-        external, monkeypatch, tmp_path):
-    """구키로 적힌 상한 1 이 실 게이트를 움직인다 — 2회째가 rc=4 로 거부된다.
+def test_legacy_knob_keys_no_longer_drive_the_round_limit_gate(
+        external, monkeypatch, tmp_path, capsys):
+    """구키로 적힌 상한 1 은 더 이상 게이트를 움직이지 않는다 — 엔진 기본값(4)으로 간다.
 
-    해소가 신키만 보게 되면 상한이 조용히 기본 4 로 돌아가 채택자가 설정한 예산이 사라진다.
+    2회째가 통과하는 것이 곧 "구키 값이 안 읽힌다" 의 실 증거다. 값이 사라지는 사실은 안내가
+    말한다(같은 실행의 stderr) — 조용히 기본값으로 돌아가면 그게 무음 강등이다.
     """
     calls = _wire(external, monkeypatch, tmp_path, conf=_LEGACY_KNOB_CONF)
     gate = ["--gate", "T-9101", "--paths", "x.py"]
 
     assert external.main(gate) == 0
-    assert external.main(gate) == external.EXIT_ROUND_LIMIT_EXCEEDED
-    assert calls["n"] == 1, "상한을 넘긴 호출이 리뷰어를 또 띄웠다"
+    assert external.main(gate) == 0, "구키 상한 1 이 아직 게이트를 움직인다(fallback 잔존)"
+    assert calls["n"] == 2
+    err = capsys.readouterr().err
+    for key in external.LEGACY_KNOB_KEYS:
+        assert external.legacy_knob_key_deprecation(key) in err, key
 
 
 def test_legacy_knob_key_deprecations_are_printed_on_actual_run(
@@ -2186,7 +2195,7 @@ def test_legacy_knob_key_deprecations_are_printed_on_actual_run(
     calls = _wire(external, monkeypatch, tmp_path, conf=_LEGACY_KNOB_CONF)
 
     assert external.main(["--paths", "x.py"]) == 0
-    assert calls["n"] == 1                                   # 구 노브도 1릴리즈는 읽힌다
+    assert calls["n"] == 1                                   # 게이트(신키)는 정상 동작
     err = capsys.readouterr().err
     for key in external.LEGACY_KNOB_KEYS:
         assert err.count(external.legacy_knob_key_deprecation(key)) == 1, key

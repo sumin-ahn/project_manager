@@ -537,10 +537,11 @@ additional_reviewer.reasoning=max
 비용 승인을 다시 받지 않는다. 프로필은 세 키를 고쳐 교체한다. 옛 `reviewer_cmd` 를 쓰던 프로젝트는
 그대로 동작하며 자동 마이그레이션 대상이 아니다.
 
-게이트 키 이름이 `external_review_enabled` 에서 `additional_reviewer_enabled` 로 바뀌었다. 구키는
-이번 릴리즈까지만 읽히고(읽히면 경고 1줄) **다음 릴리즈에서 제거된다** — `local.conf` 의 키 이름을
-직접 바꾼다(엔진은 인스턴스 소유인 `local.conf` 를 대신 고쳐 쓰지 않는다). 두 키가 함께 있으면
-신키가 이긴다.
+게이트 키 이름이 `external_review_enabled` 에서 `additional_reviewer_enabled` 로 바뀌었고, **구키는
+더 이상 읽히지 않는다**(라운드/wave 노브 3종도 같다). 구키만 있는 `local.conf` 는 추가 리뷰어가
+꺼진 상태이며 그 사실을 안내 1줄로 알린다 — `local.conf` 의 키 이름을 직접 바꾸거나, 다시 묻는
+opt-in 질문(`board.py init`·`pm-update`)에 답하면 신키로 기록된다(엔진은 인스턴스 소유인
+`local.conf` 를 대신 고쳐 쓰지 않는다). 두 키가 함께 있으면 신키가 이긴다.
 
 ### 티켓의 수명
 

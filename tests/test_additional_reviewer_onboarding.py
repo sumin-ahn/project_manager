@@ -1916,10 +1916,9 @@ def test_the_commit_point_append_is_one_write_under_the_shared_lock(
 # opt-in 게이트 키가 `external_review_enabled` → `additional_reviewer_enabled` 로 바뀌었다. 개칭은
 # 채택자 `local.conf` 를 깨는 축이라 세 가지를 한꺼번에 못박는다:
 #   ① 신규 기록은 **신키만** 쓴다(구키를 새로 만들지 않는다).
-#   ② 구키만 있는 채택자는 여전히 결정된 것으로 읽힌다 — 아니면 온보딩이 다시 물어 두 키가
-#      공존하는 conf 가 생기고, 그 conf 는 어느 값이 이기는지 사람이 알 수 없다.
-#   ③ 두 키가 함께 있으면 **신키가 이긴다** — 개칭 뒤 남은 구키는 옛 결정이라, 새 결정을 옛 값이
-#      되돌리면 켠 사람이 조용히 꺼진다.
+#   ② 구키 fallback 은 **제거됐다**(개칭 릴리즈가 예고한 유예 종료) — 구키만 있는 conf 는
+#      미결정이고 게이트는 OFF 다. 다만 **무음 강등은 금지**라, 그 conf 는 안내 1줄을 받는다.
+#   ③ 두 키가 함께 있으면 **신키가 이긴다**(그 상태는 이미 이주한 채택자라 안내도 조용하다).
 # 엔진은 채택자 conf 를 대신 고쳐 쓰지 않으므로(인스턴스 소유) 처방은 안내 1줄이다.
 GATE_KEY = "additional_reviewer_enabled"
 LEGACY_GATE_KEY = "external_review_enabled"
@@ -1961,11 +1960,17 @@ def test_gate_key_constants_are_shared_across_the_three_entries(board, pm_update
         assert module.ADDITIONAL_REVIEWER_ENABLED_KEY == GATE_KEY
         assert module.LEGACY_EXTERNAL_REVIEW_ENABLED_KEY == LEGACY_GATE_KEY
     # 안내 1줄도 한 문구다 — 채택자가 어느 진입에서 만나든 같은 처방을 받아야 한다(3진입 균일).
-    assert (core.LEGACY_ENABLED_KEY_DEPRECATION
-            == pm_update.LEGACY_ENABLED_KEY_DEPRECATION
-            == board.LEGACY_ENABLED_KEY_DEPRECATION)
-    assert LEGACY_GATE_KEY in core.LEGACY_ENABLED_KEY_DEPRECATION
-    assert GATE_KEY in core.LEGACY_ENABLED_KEY_DEPRECATION
+    assert (core.LEGACY_ENABLED_KEY_REMOVED
+            == pm_update.LEGACY_ENABLED_KEY_REMOVED
+            == board.LEGACY_ENABLED_KEY_REMOVED)
+    assert LEGACY_GATE_KEY in core.LEGACY_ENABLED_KEY_REMOVED
+    assert GATE_KEY in core.LEGACY_ENABLED_KEY_REMOVED
+    # 판정도 세 진입이 같다 — 구키는 어디서도 결정을 공급하지 않는다.
+    for module, resolver in ((core, "enabled_decision_key"),
+                             (board, "additional_reviewer_decision_key"),
+                             (pm_update, "additional_reviewer_decision_key")):
+        assert getattr(module, resolver)({LEGACY_GATE_KEY: "true"}) is None
+        assert getattr(module, resolver)({GATE_KEY: "false"}) == GATE_KEY
 
 
 @pytest.mark.parametrize(
@@ -1973,7 +1978,8 @@ def test_gate_key_constants_are_shared_across_the_three_entries(board, pm_update
     [
         pytest.param({GATE_KEY: "true"}, True, False, id="new-key-on"),
         pytest.param({GATE_KEY: "false"}, False, False, id="new-key-off"),
-        pytest.param({LEGACY_GATE_KEY: "true"}, True, True, id="legacy-key-on"),
+        # 구키는 값을 공급하지 않는다 — on/off 어느 쪽이 적혀 있어도 OFF(+안내).
+        pytest.param({LEGACY_GATE_KEY: "true"}, False, True, id="legacy-key-on"),
         pytest.param({LEGACY_GATE_KEY: "false"}, False, True, id="legacy-key-off"),
         pytest.param({}, False, False, id="undecided"),
         # 둘 다 있으면 신키가 이긴다 (양방향).
@@ -1983,21 +1989,26 @@ def test_gate_key_constants_are_shared_across_the_three_entries(board, pm_update
                      id="new-on-beats-legacy-off"),
     ],
 )
-def test_core_gate_reads_new_key_first_and_falls_back_once(conf, enabled, warns):
-    """코어 게이트: 신키 우선·구키 fallback·구키가 결정을 공급할 때만 경고 1줄."""
+def test_core_gate_reads_the_new_key_only(conf, enabled, warns):
+    """코어 게이트: **신키만** 읽는다 — 구키만 있으면 OFF 이고, 그 사실을 1줄로 알린다.
+
+    fallback 을 지우면서 안내까지 지우면 그게 무음 강등이다(켜 뒀다고 믿는 채택자가 이유 모를
+    OFF 를 겪는다). 반대로 이미 이주한 conf(두 키 공존)는 조용해야 한다 — 잡음이 되면 안내가 죽는다.
+    """
     core = _external_review()
     assert core._is_enabled(conf) is enabled
     warning = core.legacy_enabled_key_warning(conf)
     assert (warning is not None) is warns
     if warns:
-        assert warning == core.LEGACY_ENABLED_KEY_DEPRECATION
+        assert warning == core.LEGACY_ENABLED_KEY_REMOVED
 
 
 @pytest.mark.parametrize(
     ("conf_shape", "expected"),
     [
         pytest.param("new", f"local.conf {GATE_KEY}=false", id="new-key"),
-        pytest.param("legacy", f"local.conf {LEGACY_GATE_KEY}=false", id="legacy-key"),
+        # 구키만 있는 conf 도 이제 "결정 없음" 이다(그 키는 읽히지 않는다).
+        pytest.param("legacy", "local.conf 에 opt-in 결정 없음", id="legacy-key"),
         pytest.param("none", "local.conf 에 opt-in 결정 없음", id="undecided"),
     ],
 )
@@ -2015,8 +2026,7 @@ def test_disabled_notice_names_the_key_that_supplied_the_decision(conf_shape, ex
 
     assert expected in notice
     assert f"`{GATE_KEY}=true`" in notice                 # 처방은 언제나 신키
-    if conf_shape != "legacy":
-        assert LEGACY_GATE_KEY not in notice              # 구키를 새로 가르치지 않는다
+    assert LEGACY_GATE_KEY not in notice                  # 구키를 새로 가르치지 않는다
 
 
 def test_onboarding_blocks_never_write_the_legacy_key(board, pm_update):
@@ -2033,25 +2043,29 @@ def test_onboarding_blocks_never_write_the_legacy_key(board, pm_update):
             assert GATE_KEY in hint
 
 
-def test_board_treats_a_legacy_only_conf_as_decided_with_one_notice(
+def test_board_asks_again_on_a_legacy_only_conf_with_one_notice(
     board, monkeypatch, tmp_path, capsys
 ):
-    """구키만 있는 채택자에게 다시 묻지 않고, init 진입도 같은 처방 1줄을 낸다.
+    """구키만 있는 채택자는 **미결정**이라 init 이 다시 묻고, 왜 다시 묻는지 1줄로 말한다.
 
-    재질문은 두 키가 공존하는 conf 를 만든다. 안내를 pm_update 에만 두면 `board.py init` 만 도는
-    채택자는 제거 릴리즈까지 구키 사실을 한 번도 못 듣는다.
+    구키가 더 이상 읽히지 않는 이상 "결정됨" 으로 접으면 그 채택자는 OFF 인 채 질문도 못 받는다 —
+    다시 묻는 것이 이주 경로다(답은 신키로 기록된다). 안내를 pm_update 에만 두면 `board.py init`
+    만 도는 채택자는 구키 사실을 한 번도 못 듣는다. 거절해도 conf 값은 엔진이 고쳐 쓰지 않는다.
     """
     existing = f"session=pm\n{LEGACY_GATE_KEY}=true\n"
     conf = _isolated_conf(board, monkeypatch, tmp_path, existing)
     monkeypatch.setattr(board.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(
-        "builtins.input", lambda prompt="": pytest.fail("구키 결정을 미결정으로 봤다")
-    )
+    asked: list[str] = []
+    monkeypatch.setattr("builtins.input",
+                        lambda prompt="": (asked.append(prompt), "n")[1])
 
     board.prompt_external_review_optin()
 
-    assert conf.read_text(encoding="utf-8") == existing      # 자동 마이그레이션 없음
-    assert capsys.readouterr().out.count(board.LEGACY_ENABLED_KEY_DEPRECATION) == 1
+    assert asked, "구키 결정을 여전히 '결정됨' 으로 봤다(다시 묻지 않았다)"
+    assert existing in conf.read_text(encoding="utf-8")      # 기존 줄 불변(자동 마이그레이션 0)
+    assert LEGACY_GATE_KEY not in conf.read_text(
+        encoding="utf-8").replace(existing, "")              # 구키를 새로 쓰지 않는다
+    assert capsys.readouterr().out.count(board.LEGACY_ENABLED_KEY_REMOVED) == 1
 
 
 def test_board_new_key_decision_is_quiet(board, monkeypatch, tmp_path, capsys):
@@ -2065,23 +2079,24 @@ def test_board_new_key_decision_is_quiet(board, monkeypatch, tmp_path, capsys):
     assert LEGACY_GATE_KEY not in capsys.readouterr().out
 
 
-def test_pm_update_treats_a_legacy_only_conf_as_decided_with_one_notice(
+def test_pm_update_asks_again_on_a_legacy_only_conf_with_one_notice(
     pm_update, monkeypatch, tmp_path, capsys
 ):
-    """pm_update 도 같은 판정 — 쓰지 않고, 채택자가 만나는 채널이라 처방 1줄을 남긴다."""
+    """pm_update 도 같은 판정 — 미결정이라 다시 묻고, 채택자가 만나는 채널이라 안내 1줄을 남긴다."""
     existing = f"session=pm\n{LEGACY_GATE_KEY}=false\n"
     dest, conf = _dest_with_conf(tmp_path, existing)
     monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
     monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda self: True})())
-    monkeypatch.setattr(
-        "builtins.input", lambda prompt="": pytest.fail("구키 결정을 미결정으로 봤다")
-    )
+    asked: list[str] = []
+    monkeypatch.setattr("builtins.input",
+                        lambda prompt="": (asked.append(prompt), "n")[1])
 
     pm_update.maybe_prompt_external_review(dest)
 
-    assert conf.read_text(encoding="utf-8") == existing      # 자동 마이그레이션 없음
+    assert asked, "구키 결정을 여전히 '결정됨' 으로 봤다(다시 묻지 않았다)"
+    assert existing in conf.read_text(encoding="utf-8")      # 기존 줄 불변
     out = capsys.readouterr().out
-    assert out.count(pm_update.LEGACY_ENABLED_KEY_DEPRECATION) == 1
+    assert out.count(pm_update.LEGACY_ENABLED_KEY_REMOVED) == 1
 
 
 def test_pm_update_new_key_decision_is_quiet(pm_update, monkeypatch, tmp_path, capsys):
@@ -2164,6 +2179,53 @@ def test_legacy_gate_key_scan_covers_the_swept_surfaces():
         assert rel in scanned, f"sweep 대상이 스캔 밖: {rel}"
 
 
+# 문서 축 예외(`_LEGACY_GATE_KEY_DOC_FILES`)는 **잔존 스캔에서만** 정당하다 — 릴리즈 히스토리와
+# 마이그레이션 절차는 구키를 이름으로 불러야 한다. 그런데 그 예외가 두 파일을 통째로 빼면서
+# "구키는 아직 읽힌다" 는 **옛 계약 서술**이 남아도 아무 가드가 못 봤다(T-0614 실측 drift). 그래서
+# 잔존이 아니라 **계약**을 검사하는 축을 따로 둔다: 현재-진실 문서(README 전체 + CHANGELOG 의
+# `[Unreleased]` 절)에서 구키를 언급하는 문단은 "더 이상 읽지 않는다" 를 말해야 하고, "이번
+# 릴리즈까지"·"fallback" 같은 옛 계약 표현을 담으면 안 된다. 이미 릴리즈된 절은 히스토리라
+# 검사 대상이 아니다(그 시점 사실의 기록이지 현재 구속력이 아니다).
+_DOC_REMOVAL_PHRASES = ("더 이상 읽히지 않는다", "더 이상 읽지 않는다", "읽지 않는다", "제거됐다")
+_DOC_STILL_READ_PHRASES = ("이번 릴리즈까지", "fallback", "1릴리즈", "다음 릴리즈에서 제거")
+
+
+def _current_truth_doc_paragraphs() -> list[tuple[str, str]]:
+    """(출처, 문단) — 현재-진실 문서의 문단 전수 (README 전체 + CHANGELOG `[Unreleased]`)."""
+    blocks: list[tuple[str, str]] = []
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    blocks += [("README.md", para) for para in readme.split("\n\n")]
+    changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+    unreleased = changelog.split("## [Unreleased]", 1)[1].split("\n## [", 1)[0]
+    blocks += [("CHANGELOG.md [Unreleased]", para) for para in unreleased.split("\n\n")]
+    return blocks
+
+
+def test_current_truth_docs_do_not_promise_the_legacy_keys_are_read():
+    """현재-진실 문서가 구키를 "여전히 읽힌다" 로 안내하지 않는다 (T-0614 계약 가드).
+
+    잔존 스캔은 이 두 파일을 통째로 빼므로(히스토리·이주 절차가 구키를 불러야 한다) 계약 서술의
+    drift 를 못 본다. 채택자가 문서를 믿고 구키를 그대로 두면 추가 리뷰어가 꺼진 채로 운영된다 —
+    그게 이 축이 막는 실패다.
+    """
+    # 대상 키는 **엔진 선언에서** 받는다(리터럴 사본 0) — 게이트 + 노브 3종.
+    legacy_keys = (LEGACY_GATE_KEY, *_external_review().LEGACY_KNOB_KEYS.values())
+    offenders: list[str] = []
+    mentions = 0
+    for source, paragraph in _current_truth_doc_paragraphs():
+        if not any(key in paragraph for key in legacy_keys):
+            continue
+        mentions += 1
+        stale = [phrase for phrase in _DOC_STILL_READ_PHRASES if phrase in paragraph]
+        if stale:
+            offenders.append(f"{source}: 옛 계약 표현 {stale} — {paragraph.strip()[:80]}")
+        elif not any(phrase in paragraph for phrase in _DOC_REMOVAL_PHRASES):
+            offenders.append(
+                f"{source}: 제거 사실 미기재 — {paragraph.strip()[:80]}")
+    assert not offenders, "\n".join(offenders)
+    assert mentions >= 2, "현재-진실 문서에 구키 이주 안내가 없다(가드가 공허하다)"
+
+
 def test_legacy_gate_key_allowlist_entries_are_load_bearing():
     """allowlist 는 실제로 구키를 담은 자리만 뺀다 — 빈 예외는 가드를 헐겁게 만든다."""
     for name in _LEGACY_GATE_KEY_ENGINE_FILES:
@@ -2174,7 +2236,9 @@ def test_legacy_gate_key_allowlist_entries_are_load_bearing():
         assert LEGACY_GATE_KEY in text, f"{rel} 에 구키 언급이 없다 — allowlist 에서 빼라."
         assert GATE_KEY in text                               # 처방(신키)이 같은 문서 안에 있다
     changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert "다음 릴리즈에서 제거한다" in changelog              # 구키 제거 예고 부기
+    # 제거 **예고**는 개칭 릴리즈 절의 히스토리이고, 제거 **사실**은 현재-진실 절에 있다
+    # (그 절의 계약 서술은 위 `test_current_truth_docs_...` 가 따로 지킨다).
+    assert "다음 릴리즈에서 제거한다" in changelog.split("## [Unreleased]", 1)[1]
     for rel, lines in _LEGACY_GATE_KEY_TEST_LINES.items():
         path = REPO / rel
         assert path.is_file(), f"allowlist 대상 부재: {rel}"
@@ -2195,7 +2259,7 @@ def test_legacy_gate_key_allowlist_entries_are_load_bearing():
 #
 # 공급 판정이 게이트와 다른 점 하나: 게이트는 **키 존재**가 결정이지만(`false` 도 결정) 노브는
 # 종전부터 빈 값을 미설정으로 읽어 기본값으로 fail-soft 했다. 그 의미를 승계해 "비어 있지 않은
-# 값"만 공급으로 본다. 우선순위(신키 우선)·경고 문구·제거 예고는 축 6 그대로다.
+# 값"만 공급으로 본다. 구키 fallback 제거·안내 유지는 축 6 그대로다(값이 무시되면 기본값으로 간다).
 KNOB_KEY_PAIRS = (
     ("additional_reviewer_round_limit", "external_review_round_limit"),
     ("additional_reviewer_incomplete_round_limit",
@@ -2212,8 +2276,8 @@ _KNOB_RESOLVERS = {
     "additional_reviewer_wave_budget": ("_wave_budget", 24),
 }
 
-# 구 노브 키 잔존이 정당한 자리 — fallback 을 구현하는 엔진 파일(canonical + 템플릿 미러 모두 같은
-# 이름), 릴리즈 히스토리(CHANGELOG), 그리고 개칭·fallback 을 단언하는 테스트들. 운영 표면(카드·
+# 구 노브 키 잔존이 정당한 자리 — 감지·안내를 구현하는 엔진 파일(canonical + 템플릿 미러 모두 같은
+# 이름), 릴리즈 히스토리(CHANGELOG), 그리고 개칭·제거를 단언하는 테스트들. 운영 표면(카드·
 # 방법론)은 **현재 키만** 가르친다.
 _LEGACY_KNOB_KEY_ENGINE_FILES = ("external_review.py",)
 _LEGACY_KNOB_KEY_DOC_FILES = ("CHANGELOG.md",)
@@ -2239,18 +2303,19 @@ def test_knob_key_constants_match_the_engine_table():
     ("conf_shape", "expected", "warns"),
     [
         pytest.param("new", 3, False, id="new-key"),
-        pytest.param("legacy", 3, True, id="legacy-key"),
+        # 구키 값은 무시되고 엔진 기본값으로 간다(+안내 1줄).
+        pytest.param("legacy", None, True, id="legacy-key"),
         pytest.param("none", None, False, id="unset-default"),
         pytest.param("both", 3, False, id="new-beats-legacy"),
         pytest.param("both-reversed", 3, False, id="new-beats-legacy-reversed"),
     ],
 )
-def test_knob_resolution_reads_new_key_first_and_falls_back_once(
+def test_knob_resolution_reads_the_new_key_only(
     new, legacy, conf_shape, expected, warns
 ):
-    """노브 해소: 신키 우선·구키 fallback·구키가 값을 공급할 때만 경고 1줄.
+    """노브 해소: **신키만** 읽는다 — 구키 값은 무시되고 엔진 기본값으로 가되 1줄로 알린다.
 
-    양방향(신 2/구 9 · 신 2/구 1)을 모두 본다 — 한쪽만 보면 "큰 값이 이긴다" 같은 우연한 배선이
+    양방향(신 3/구 9 · 신 3/구 1)을 모두 본다 — 한쪽만 보면 "큰 값이 이긴다" 같은 우연한 배선이
     통과한다. `expected=None` 은 "엔진 기본값" 이라는 뜻이다(노브별로 다르다).
     """
     core = _external_review()
@@ -2271,7 +2336,7 @@ def test_knob_resolution_reads_new_key_first_and_falls_back_once(
     assert (expected_line in warnings) is warns
     if warns:
         assert legacy in expected_line and new in expected_line
-        assert "다음 릴리즈에서 구키 제거" in expected_line
+        assert "더 이상 읽지 않는다" in expected_line
 
 
 def test_legacy_key_warning_funnel_covers_gate_and_every_knob():
@@ -2280,7 +2345,7 @@ def test_legacy_key_warning_funnel_covers_gate_and_every_knob():
     conf = {LEGACY_GATE_KEY: "true", **{legacy: "1" for legacy in LEGACY_KNOB_KEY_LIST}}
     warnings = core.legacy_key_warnings(conf)
 
-    assert warnings[0] == core.LEGACY_ENABLED_KEY_DEPRECATION
+    assert warnings[0] == core.LEGACY_ENABLED_KEY_REMOVED
     assert sorted(warnings[1:]) == sorted(
         core.legacy_knob_key_deprecation(new) for new, _ in KNOB_KEY_PAIRS)
     # 신키만 쓴 conf 는 조용하다 — 조건 없이 모으는 깔때기면 red.
@@ -2288,14 +2353,20 @@ def test_legacy_key_warning_funnel_covers_gate_and_every_knob():
     assert core.legacy_key_warnings(quiet) == []
 
 
-def test_empty_knob_value_is_unset_not_a_decision():
-    """빈 신키는 미설정이라 구키 값이 살아난다 — 게이트(키 존재=결정)와 다른 축의 규칙."""
+def test_empty_knob_value_is_unset_and_the_legacy_key_cannot_revive_it():
+    """빈 신키는 미설정이고, 그 자리를 구키가 대신 채우지 않는다(엔진 기본값으로 간다).
+
+    공백만 있는 신키는 종전대로 "설정 안 함" 이다. 예전엔 그 틈으로 구키 값이 살아났지만 fallback
+    제거 뒤에는 어느 틈으로도 옛 값이 돌아오지 않는다 — 대신 안내 1줄이 나간다.
+    """
     core = _external_review()
     for new, legacy in KNOB_KEY_PAIRS:
         resolver_name, engine_default = _KNOB_RESOLVERS[new]
         resolve = getattr(core, resolver_name)
-        assert resolve({new: "   ", legacy: "7"}) == 7
+        assert resolve({new: "   ", legacy: "7"}) == engine_default
         assert resolve({new: "   "}) == engine_default
+        assert core.legacy_key_warnings({new: "   ", legacy: "7"}) == [
+            core.legacy_knob_key_deprecation(new)]
 
 
 @pytest.mark.parametrize("broken", ["abc", "-1", "3.5"])
@@ -2310,7 +2381,7 @@ def test_broken_new_knob_value_falls_to_the_engine_default_not_the_legacy_key(br
         resolver_name, engine_default = _KNOB_RESOLVERS[new]
         resolve = getattr(core, resolver_name)
         assert resolve({new: broken, legacy: "7"}) == engine_default
-        # 값을 공급한 키는 여전히 신키다 — 구키 deprecation 을 잘못 띄우지 않는다.
+        # 값을 공급한 키는 여전히 신키다 — 이미 이주한 conf 라 안내도 조용하다.
         assert core.knob_value_key({new: broken, legacy: "7"}, new) == new
         assert core.legacy_key_warnings({new: broken, legacy: "7"}) == []
 

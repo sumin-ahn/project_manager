@@ -198,7 +198,7 @@ MANIFEST = REPO / ".project_manager" / "engine.manifest"
 #   위해서다 — 여기서는 값만 시드하고 드리프트는 테스트가 잡는다.
 #   `reviewer_cmd` 는 신규 온보딩에서 만들지 않는다(레거시 채택자 전용 키).
 #   게이트 키는 `additional_reviewer_enabled` 로 개칭됐다 — 신규 기록은 신키만 쓰고,
-#   구키 `external_review_enabled` 는 "이미 결정됨" 판정에서만 1릴리즈 더 인정한다(+안내 1줄).
+#   구키 `external_review_enabled` 의 fallback 은 제거됐다(유예 종료·감지 안내 1줄만 남는다).
 ADDITIONAL_REVIEWER_ENABLED_KEY = "additional_reviewer_enabled"
 LEGACY_EXTERNAL_REVIEW_ENABLED_KEY = "external_review_enabled"
 
@@ -211,23 +211,29 @@ ADDITIONAL_REVIEWER_DEFAULTS: tuple[tuple[str, str], ...] = (
 
 
 def additional_reviewer_decision_key(conf: dict[str, str]) -> str | None:
-    """이미 기록된 opt-in 결정을 공급하는 키 — 신키 우선·구키 1릴리즈 fallback (없으면 None).
+    """이미 기록된 opt-in 결정을 공급하는 키 — **신키뿐** (없으면 None).
 
-    board·external_review 사본과 같은 판정·같은 순서다. 구키만 있는 채택자를 "미결정"으로 보면
-    업데이트가 다시 물어 두 키가 공존하는 conf 를 만든다.
+    board·external_review 사본과 같은 판정이다. 구키 fallback 이 제거됐으므로 구키만 있는 채택자는
+    **미결정**이다 — 게이트가 그 값을 읽지 않는 이상 "결정됨" 으로 접으면 그 채택자는 OFF 인 채로
+    다시 물어보지도 않는 상태에 갇힌다. 다시 묻는 것이 곧 이주 경로다(답이 신키로 기록된다).
     """
-    if ADDITIONAL_REVIEWER_ENABLED_KEY in conf:
-        return ADDITIONAL_REVIEWER_ENABLED_KEY
-    if LEGACY_EXTERNAL_REVIEW_ENABLED_KEY in conf:
-        return LEGACY_EXTERNAL_REVIEW_ENABLED_KEY
-    return None
+    return (ADDITIONAL_REVIEWER_ENABLED_KEY
+            if ADDITIONAL_REVIEWER_ENABLED_KEY in conf else None)
 
 
-# 구키 deprecation 안내 1줄 — external_review 사본과 **같은 문구**(드리프트는 회귀가 잡는다).
-LEGACY_ENABLED_KEY_DEPRECATION = (
-    f"⚠ local.conf `{LEGACY_EXTERNAL_REVIEW_ENABLED_KEY}` 는 구키다 — "
-    f"`{ADDITIONAL_REVIEWER_ENABLED_KEY}` 로 바꾸세요(다음 릴리즈에서 구키 제거)."
+# 구키 감지 안내 1줄 — external_review 사본과 **같은 문구**(드리프트는 회귀가 잡는다).
+LEGACY_ENABLED_KEY_REMOVED = (
+    f"⚠ local.conf `{LEGACY_EXTERNAL_REVIEW_ENABLED_KEY}` 는 더 이상 읽지 않는다(구키 제거) — "
+    f"`{ADDITIONAL_REVIEWER_ENABLED_KEY}` 로 바꾸세요. 그 전까지 추가 리뷰어는 OFF 입니다."
 )
+
+
+def legacy_enabled_key_notice(conf: dict[str, str]) -> str | None:
+    """구키만 있어 결정이 무시되는 conf 면 안내 1줄 — external_review 판정과 같은 조건."""
+    if (LEGACY_EXTERNAL_REVIEW_ENABLED_KEY in conf
+            and ADDITIONAL_REVIEWER_ENABLED_KEY not in conf):
+        return LEGACY_ENABLED_KEY_REMOVED
+    return None
 
 ADDITIONAL_REVIEWER_OPTIN_BLOCK = (
     "# 추가 리뷰어(additional reviewer) — ON.\n"
@@ -863,10 +869,11 @@ def _commit_additional_reviewer_optin(
 def maybe_prompt_external_review(dest_root: Path) -> None:
     """업데이트 후 추가 리뷰어(additional reviewer) opt-in — 아직 미설정이면 **1회** 묻는다.
 
-    코드 diff 외부 *전송*이라 기본 OFF. `additional_reviewer_enabled`(또는 1릴리즈 더 인정하는
-    구키 `external_review_enabled`) **실키**가 이미 있으면 (true/false 무관) 묻지 않고 기존
-    프로필·레거시 `reviewer_cmd` 를 그대로 둔다(자동 마이그레이션 없음 — 구키는 안내 1줄로만
-    처방한다). 비대화형은 안전쪽으로 건너뛰되 나중에 켜는 법을 1줄로 남긴다.
+    코드 diff 외부 *전송*이라 기본 OFF. `additional_reviewer_enabled` **실키**가 이미 있으면
+    (true/false 무관) 묻지 않고 기존 프로필·레거시 `reviewer_cmd` 를 그대로 둔다. 구키만 있는
+    conf 는 **미결정**이라 다시 묻되(그 답이 신키로 기록되는 게 이주 경로다) 먼저 안내 1줄로 왜
+    다시 묻는지 말한다 — 엔진은 채택자 conf 를 대신 고쳐 쓰지 않는다(자동 마이그레이션 없음).
+    비대화형은 안전쪽으로 건너뛰되 나중에 켜는 법을 1줄로 남긴다.
     board.prompt_external_review_optin 과 같은 계약이다 — "예" 는 기존 대상이 없을 때만
     ADDITIONAL_REVIEWER_DEFAULTS 4키를 원자 기록하고, 이미 유효한 대상(레거시 `reviewer_cmd`·
     구조화 튜플)이 있으면 **활성 플래그 한 줄만** 덧붙여 그 대상을 byte 그대로 둔다. 어느
@@ -884,16 +891,18 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
     if not local_conf.exists():
         return  # init 전 — board.py init 에서 묻는다
     conf = _read_local_conf(local_conf)
+    # 구키 감지는 **판정보다 먼저** 낸다 — 아래 어느 경로로 빠지든(이미 결정됨·비대화형·질문)
+    #   그 채택자는 자기 구키 줄이 더 이상 읽히지 않는다는 사실을 이 실행에서 듣는다.
+    #   업데이트는 채택자가 구키를 실제로 만나는 채널이고, 엔진은 conf 를 대신 고쳐 쓰지 않는다.
+    legacy_notice = legacy_enabled_key_notice(conf)
+    if legacy_notice:
+        print(f"[pm_update] {legacy_notice}")
     decision_key = additional_reviewer_decision_key(conf)
     if decision_key is not None:
-        # 실키로 이미 결정됨(신키/구키·true/false 무관·기존 프로필/레거시 키 불변). 판정은 파싱된
+        # 실키로 이미 결정됨(true/false 무관·기존 프로필/레거시 키 불변). 판정은 파싱된
         # 키 존재로 한다 — raw 텍스트 substring 으로 보면 주석(`# additional_reviewer_enabled=false`)
         # 이나 안내 문장이 결정을 가로채, 켜려던 채택자가 질문도 안내도 못 받는다.
         # maybe_prompt_delegate_optin·board.prompt_external_review_optin 과 같은 seam.
-        if decision_key == LEGACY_EXTERNAL_REVIEW_ENABLED_KEY:
-            # 업데이트는 채택자가 구키를 실제로 만나는 채널이다 — 여기서 처방 1줄을 준다.
-            # 엔진이 대신 고쳐 쓰지 않는 이유는 위와 같다(채택자 conf 는 인스턴스 소유).
-            print(f"[pm_update] {LEGACY_ENABLED_KEY_DEPRECATION}")
         return
     try:
         target = classify_additional_reviewer_target(conf)

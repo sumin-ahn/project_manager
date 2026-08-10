@@ -880,17 +880,21 @@ DEFAULT_REVIEWER_CMD = "codex exec --sandbox read-only --skip-git-repo-check"
 # 조정: 일회성 `--timeout`/`--idle-timeout` > local.conf `harness.<reviewer>.wall_timeout`/
 # `.idle_timeout` > 아래 표면-flat legacy 키 > 프로필 선언.
 # opt-in 게이트 키는 사람 역할 이름과 같이 `additional_reviewer_enabled` 로 개칭됐다.
-# 구키 `external_review_enabled` 는 **이번 릴리즈까지만** fallback 으로 읽고(신키 우선), 읽히면
-# deprecation 경고 1줄을 낸다 — 엔진은 채택자 local.conf 를 대신 고쳐 쓰지 않는다(자동 마이그레이션
-# 없음). 모듈 파일명·raw 파일 접두·아래 표면-flat legacy 타임아웃 키는 기계 식별자로 그대로 남는다
-# (기존 raw 감사물과 채택자 PM 홈 사본의 안정 계약).
+# 구키 `external_review_enabled` 의 **fallback 읽기는 제거됐다**(개칭 릴리즈가 예고한 유예 종료) —
+# 이제 이 키는 값을 공급하지 않는다. 다만 **감지·안내는 남긴다**: 구키만 있는 채택자가 이유 모를
+# OFF 를 겪으면 그게 곧 무음 강등이다. 엔진은 채택자 local.conf 를 대신 고쳐 쓰지 않으므로(자동
+# 마이그레이션 없음) 처방은 사람에게 준다. 모듈 파일명·raw 파일 접두·아래 표면-flat legacy 타임아웃
+# 키는 기계 식별자로 그대로 남는다(기존 raw 감사물과 채택자 PM 홈 사본의 안정 계약).
+# **아래 `LEGACY_*_KEY` 4종은 감지 전용이다** — 값 공급 경로는 없고(어느 해소도 이 상수를 읽어
+# 값을 꺼내지 않는다) 오직 "이 conf 에 구키가 남아 있는가" 를 판정해 안내 1줄을 만드는 데만 쓴다.
 ADDITIONAL_REVIEWER_ENABLED_KEY = "additional_reviewer_enabled"
 LEGACY_EXTERNAL_REVIEW_ENABLED_KEY = "external_review_enabled"
 
-# 라운드/wave 예산 노브도 게이트 키와 **같은 규칙**으로 개칭됐다 — 이름만 바뀌고 값 의미·기본값은
-# 그대로다. 게이트 키 하나만 바꾸면 채택자 local.conf 안에서 같은 기능의 키가 두 접두로 갈려
-# ("어느 게 현재 이름인가") 개칭이 절반만 도착한다. 구키는 이번 릴리즈까지만 fallback 이고,
-# 값을 공급하면 키마다 deprecation 1줄을 낸다(엔진은 채택자 conf 를 대신 고쳐 쓰지 않는다).
+# 라운드/wave 예산 노브도 게이트 키와 **같은 규칙**으로 개칭됐고, fallback 도 같은 릴리즈에 함께
+# 제거됐다 — 이름만 바뀌고 값 의미·기본값은 그대로다. 게이트 키 하나만 바꾸면 채택자 local.conf
+# 안에서 같은 기능의 키가 두 접두로 갈려("어느 게 현재 이름인가") 개칭이 절반만 도착한다. 구키가
+# 값을 담고 있으면 그 값은 무시되고 키마다 안내 1줄이 나간다(엔진 기본값으로 간다). 게이트 축과
+# 같이 아래 `LEGACY_*_KEY` 3종도 **감지 전용**이다(값 공급 아님).
 ADDITIONAL_REVIEWER_ROUND_LIMIT_KEY = "additional_reviewer_round_limit"
 LEGACY_EXTERNAL_REVIEW_ROUND_LIMIT_KEY = "external_review_round_limit"
 ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY = (
@@ -900,8 +904,8 @@ LEGACY_EXTERNAL_REVIEW_INCOMPLETE_ROUND_LIMIT_KEY = (
 ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY = "additional_reviewer_wave_budget"
 LEGACY_EXTERNAL_REVIEW_WAVE_BUDGET_KEY = "external_review_wave_budget"
 
-# 신키 → 구키 매핑. 해소도 경고도 이 한 표에서 파생한다 — 키마다 분기를 복사하면 새 노브가
-# fallback 만 갖고 경고를 못 갖는(또는 그 반대) 절반 배선이 생긴다.
+# 신키 → 구키 매핑. **감지·안내가 이 한 표에서 파생한다**(값 해소는 더 이상 이 표를 타지 않는다) —
+# 키마다 분기를 복사하면 새 노브가 안내를 못 갖는 절반 배선이 생긴다.
 LEGACY_KNOB_KEYS: dict[str, str] = {
     ADDITIONAL_REVIEWER_ROUND_LIMIT_KEY: LEGACY_EXTERNAL_REVIEW_ROUND_LIMIT_KEY,
     ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY:
@@ -1360,50 +1364,49 @@ def _local_config_for_repo(repo: Path) -> dict[str, str]:
 
 
 def enabled_decision_key(conf: dict[str, str]) -> str | None:
-    """게이트 결정을 공급하는 키 — 신키 우선·구키 fallback. 결정이 없으면 None.
+    """게이트 결정을 공급하는 키 — **신키뿐**. 결정이 없으면 None.
 
     "결정"의 판정은 **키 존재**다(값의 truthiness 가 아니다) — `false` 도 기록된 결정이라 온보딩이
-    다시 묻지 않는다. 둘 다 있으면 신키가 이긴다: 개칭 뒤 남은 구키는 옛 결정이고, 새 결정을 옛
-    값이 되돌리면 켠 사람이 조용히 꺼진다.
+    다시 묻지 않는다. 구키는 개칭 릴리즈의 유예가 끝나 더 이상 결정을 공급하지 않는다: 구키만 있는
+    conf 는 **미결정**이고, 게이트는 기본값(OFF)으로 간다. 그 전환이 무음이 되지 않게 아래
+    `legacy_enabled_key_warning` 이 같은 conf 를 감지해 안내 1줄을 낸다(fallback 은 없되 침묵도 없다).
     """
-    if ADDITIONAL_REVIEWER_ENABLED_KEY in conf:
-        return ADDITIONAL_REVIEWER_ENABLED_KEY
-    if LEGACY_EXTERNAL_REVIEW_ENABLED_KEY in conf:
-        return LEGACY_EXTERNAL_REVIEW_ENABLED_KEY
-    return None
+    return (ADDITIONAL_REVIEWER_ENABLED_KEY
+            if ADDITIONAL_REVIEWER_ENABLED_KEY in conf else None)
 
 
-# 구키가 결정을 공급할 때의 안내 1줄 — board/pm_update 사본과 **같은 문구**를 쓴다(드리프트는
-# 회귀가 잡는다). 엔진은 채택자 conf 를 대신 고쳐 쓰지 않으므로 처방을 사람에게 준다.
-LEGACY_ENABLED_KEY_DEPRECATION = (
-    f"⚠ local.conf `{LEGACY_EXTERNAL_REVIEW_ENABLED_KEY}` 는 구키다 — "
-    f"`{ADDITIONAL_REVIEWER_ENABLED_KEY}` 로 바꾸세요(다음 릴리즈에서 구키 제거)."
+# 구키만 남은 conf 의 안내 1줄 — board/pm_update 사본과 **같은 문구**를 쓴다(드리프트는 회귀가
+# 잡는다). 엔진은 채택자 conf 를 대신 고쳐 쓰지 않으므로 처방을 사람에게 준다. 버전 리터럴을 박지
+# 않는 이유는 이 문장이 릴리즈마다 stale 해지기 때문이다 — "더 이상 읽지 않는다" 는 사실만 말한다.
+LEGACY_ENABLED_KEY_REMOVED = (
+    f"⚠ local.conf `{LEGACY_EXTERNAL_REVIEW_ENABLED_KEY}` 는 더 이상 읽지 않는다(구키 제거) — "
+    f"`{ADDITIONAL_REVIEWER_ENABLED_KEY}` 로 바꾸세요. 그 전까지 추가 리뷰어는 OFF 입니다."
 )
 
 
 def legacy_enabled_key_warning(conf: dict[str, str]) -> str | None:
-    """구키가 결정을 공급하는 conf 면 deprecation 1줄, 아니면 None."""
-    if enabled_decision_key(conf) == LEGACY_EXTERNAL_REVIEW_ENABLED_KEY:
-        return LEGACY_ENABLED_KEY_DEPRECATION
+    """구키만 있어 결정이 무시되는 conf 면 안내 1줄, 아니면 None.
+
+    조건은 **구키 존재 + 신키 부재**다. 둘 다 있으면 신키가 결정을 공급하므로 구키 줄은 무해한
+    잔존이고(이미 이주한 채택자) 안내가 잡음이 된다 — 동작이 바뀐 conf 만 알린다.
+    """
+    if (LEGACY_EXTERNAL_REVIEW_ENABLED_KEY in conf
+            and ADDITIONAL_REVIEWER_ENABLED_KEY not in conf):
+        return LEGACY_ENABLED_KEY_REMOVED
     return None
 
 
 def knob_value_key(conf: dict[str, str], key: str) -> str | None:
-    """노브 값을 공급하는 키 — 신키 우선·구키 fallback. 공급이 없으면 None.
+    """노브 값을 공급하는 키 — **신키뿐**. 공급이 없으면 None.
 
-    게이트 키와 우선순위 규칙은 같고(둘 다 있으면 신키가 이긴다 — 새 값을 옛 값이 되돌리면
-    조정한 사람이 조용히 무시된다) **공급 판정만 다르다**: 게이트는 키 존재가 곧 결정이지만
-    (`false` 도 결정이라 온보딩이 다시 묻지 않는다) 노브는 종전부터 빈 값을 미설정으로 읽어
-    기본값으로 fail-soft 했다. 그 의미를 그대로 승계해 "비어 있지 않은 값"만 공급으로 본다.
+    게이트 키와 규칙은 같고(구키 fallback 제거) **공급 판정만 다르다**: 게이트는 키 존재가 곧
+    결정이지만 (`false` 도 결정이라 온보딩이 다시 묻지 않는다) 노브는 종전부터 빈 값을 미설정으로
+    읽어 기본값으로 fail-soft 했다. 그 의미를 그대로 승계해 "비어 있지 않은 값"만 공급으로 본다.
 
     공급 판정은 값의 **존재**이지 형식이 아니다 — 신키가 깨진 값(비정수)을 공급하면 해소는
-    엔진 기본값으로 가고 구키로 내려가지 않는다(신키 우선 규칙을 값이 깨졌다는 이유로 뒤집으면,
-    오타 하나가 조용히 옛 값을 되살린다).
+    엔진 기본값으로 간다(구키로 내려가지 않는다).
     """
-    for candidate in (key, LEGACY_KNOB_KEYS[key]):
-        if conf.get(candidate, "").strip():
-            return candidate
-    return None
+    return key if conf.get(key, "").strip() else None
 
 
 def _knob_raw(conf: dict[str, str], key: str) -> str:
@@ -1413,18 +1416,28 @@ def _knob_raw(conf: dict[str, str], key: str) -> str:
 
 
 def legacy_knob_key_deprecation(key: str) -> str:
-    """노브 구키 안내 1줄 — 게이트 안내와 같은 형태·같은 처방(제거 예고 포함)."""
+    """노브 구키 안내 1줄 — 게이트 안내와 같은 형태·같은 처방(값이 무시된다는 사실 포함)."""
     return (
-        f"⚠ local.conf `{LEGACY_KNOB_KEYS[key]}` 는 구키다 — "
-        f"`{key}` 로 바꾸세요(다음 릴리즈에서 구키 제거)."
+        f"⚠ local.conf `{LEGACY_KNOB_KEYS[key]}` 는 더 이상 읽지 않는다(구키 제거) — "
+        f"`{key}` 로 바꾸세요. 그 전까지 엔진 기본값을 씁니다."
     )
 
 
-def legacy_key_warnings(conf: dict[str, str]) -> list[str]:
-    """이 conf 가 받아야 할 구키 deprecation 전부 — 게이트 1줄 + 값을 공급한 노브마다 1줄.
+def legacy_knob_key_ignored(conf: dict[str, str], key: str) -> bool:
+    """그 노브의 구키가 값을 담았는데 신키가 비어 있는가 — 값이 무시되는 상태.
 
-    호출부가 축마다 따로 찍으면 새 노브가 안내 없이 fallback 만 갖는 절반 배선이 생긴다. 깔때기를
-    하나로 두어 "구키를 읽었으면 반드시 안내한다"가 한 곳의 성질이 된다.
+    둘 다 값이 있으면 신키가 이기고 구키 줄은 무해한 잔존이라 알리지 않는다(이미 이주한 채택자에게
+    잡음을 내지 않는다) — 게이트 축과 같은 판정 규칙이다.
+    """
+    return bool(conf.get(LEGACY_KNOB_KEYS[key], "").strip()) and not conf.get(
+        key, "").strip()
+
+
+def legacy_key_warnings(conf: dict[str, str]) -> list[str]:
+    """이 conf 가 받아야 할 구키 안내 전부 — 게이트 1줄 + 값이 무시되는 노브마다 1줄.
+
+    호출부가 축마다 따로 찍으면 새 노브가 안내 없이 조용히 무시되는 절반 배선이 생긴다. 깔때기를
+    하나로 두어 "구키 때문에 동작이 달라지면 반드시 알린다"가 한 곳의 성질이 된다.
     """
     warnings = []
     enabled_warning = legacy_enabled_key_warning(conf)
@@ -1433,7 +1446,7 @@ def legacy_key_warnings(conf: dict[str, str]) -> list[str]:
     warnings += [
         legacy_knob_key_deprecation(key)
         for key in LEGACY_KNOB_KEYS
-        if knob_value_key(conf, key) == LEGACY_KNOB_KEYS[key]
+        if legacy_knob_key_ignored(conf, key)
     ]
     return warnings
 
@@ -1441,9 +1454,9 @@ def legacy_key_warnings(conf: dict[str, str]) -> list[str]:
 def disabled_gate_notice(conf: dict[str, str]) -> str:
     """게이트가 꺼져 있을 때의 안내 — 현재 상태를 **결정을 공급한 키 실명**으로 말한다.
 
-    구키만 있는 채택자에게 신키 이름으로 "…=false" 라고 말하면 자기 conf 에 **없는 줄**을 찾게
-    된다(고정 표기의 실패 형상). 결정이 아예 없으면 키 이름 대신 그 사실을 말한다 — 없는 줄을
-    인용하지 않는다. 처방은 두 경우 모두 신키다(구키는 다음 릴리즈에서 제거).
+    결정이 아예 없으면 키 이름 대신 그 사실을 말한다 — 없는 줄을 인용하지 않는다(고정 표기의 실패
+    형상). 구키만 있는 conf 도 이제 "결정 없음" 이다(구키는 값을 공급하지 않는다) — 그 사실 자체는
+    `legacy_enabled_key_warning` 이 별도 1줄로 알린다. 처방은 언제나 신키다.
     """
     key = enabled_decision_key(conf)
     state = (f"local.conf {key}={conf.get(key, '').strip()}" if key

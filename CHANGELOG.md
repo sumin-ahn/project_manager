@@ -7,6 +7,18 @@
 
 ## [Unreleased]
 
+### 업그레이드 노트
+
+- **추가 리뷰어 구키 4종이 제거됐다.** v1.7.0 개칭이 예고한 유예가 끝났다. 게이트
+  `external_review_enabled` 와 노브 `external_review_round_limit`·`external_review_wave_budget`·
+  `external_review_incomplete_round_limit` 는 **더 이상 읽지 않는다**. 구키만 있는 `local.conf` 는
+  추가 리뷰어가 꺼진 상태(노브는 엔진 기본값)이고, 그 사실은 안내 1줄로 알린다 — 값을 대신 읽어
+  주지는 않되 침묵하지도 않는다. 이주는 둘 중 하나다: `local.conf` 의 키 이름을 신키
+  (`additional_reviewer_*`)로 직접 바꾸거나, 구키만 남은 conf 를 미결정으로 보고 다시 묻는 opt-in
+  질문(`board.py init`·`pm-update`)에 답한다(그 답이 신키로 기록된다). 엔진은 인스턴스 소유인
+  `local.conf` 를 대신 고쳐 쓰지 않으므로 구키 줄 자체는 남는다(무해·직접 지운다). 두 키가 함께
+  있으면 종전대로 신키가 이긴다.
+
 ## [1.7.1] - 2026-08-10
 
 ### 업그레이드 노트

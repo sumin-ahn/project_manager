@@ -2722,3 +2722,116 @@ def test_same_exception_class_splits_by_boundary_not_by_kind(relay, monkeypatch)
 def test_relay_and_reviewer_share_the_definite_launch_failure_table(relay, external):
     """확정 기동 실패 표가 두 층에서 같다 — 갈리면 한쪽만 환불하는 비대칭이 생긴다."""
     assert relay._DEFINITE_LAUNCH_FAILURES == external._DEFINITE_LAUNCH_FAILURES
+
+
+# ── local.conf 온보딩 위생 — 활성-키 인지·멱등·비파괴 (T-0615) ────────────────
+# 예시 시드는 **그 키를 아직 안 쓰는 채택자에게 존재를 알리는 문서**다. 이미 실키로 그 축을 쓰는
+# conf 에 "기본 OFF" 예시가 통째로 붙으면 그 파일은 자기 모순이 되고(활성 설정과 예시가 섞여 무엇이
+# 유효한지 사람이 못 읽는다·adopter#0 실측) 문서로서의 값도 0 이다. 반대로 **이미 붙은 블록을 엔진이
+# 지우지는 않는다** — 채택자 소유 파일의 재작성은 하지 않는다(신규 append 만 위생화).
+
+
+def _conf_with(board, text: str) -> None:
+    board.LOCAL_CONF.parent.mkdir(parents=True, exist_ok=True)
+    board.LOCAL_CONF.write_text(text, encoding="utf-8")
+
+
+def test_active_delegate_axis_suppresses_the_example_seed(board):
+    """활성 `delegate.*` 설정이 있으면 위임 예시 블록을 붙이지 않는다 (모순 차단)."""
+    _conf_with(board, "session=pm\ndelegate.developer.harness=codex\n"
+                      "delegate.developer.model=gpt-5.6-terra\n")
+
+    assert board.cmd_init(_init_args()) == 0
+
+    conf = board.LOCAL_CONF.read_text(encoding="utf-8")
+    assert board._DELEGATE_SEED_MARKER not in conf, \
+        "활성 위임 설정 아래에 '기본 OFF' 예시 블록이 붙었다"
+    assert "# delegate_enabled=false" not in conf
+    assert "delegate.developer.harness=codex" in conf            # 실키 보존
+
+
+def test_active_gate_key_alone_also_suppresses_the_delegate_seed(board):
+    """`delegate_enabled` 실키만 있어도 예시는 생략된다 — 축 표기 둘(밑줄·점)을 함께 본다."""
+    _conf_with(board, "session=pm\ndelegate_enabled=true\n")
+
+    assert board.cmd_init(_init_args()) == 0
+
+    assert board._DELEGATE_SEED_MARKER not in board.LOCAL_CONF.read_text(encoding="utf-8")
+
+
+def test_active_harness_budget_key_suppresses_its_example_seed(board):
+    """활성 `harness.*` 값이 있으면 시간 예산 예시 블록도 생략된다(같은 규칙·다른 축)."""
+    _conf_with(board, "session=pm\nharness.codex.idle_timeout=1200\n")
+
+    assert board.cmd_init(_init_args()) == 0
+
+    conf = board.LOCAL_CONF.read_text(encoding="utf-8")
+    assert board._HARNESS_BUDGET_SEED_MARKER not in conf
+    assert "harness.codex.idle_timeout=1200" in conf             # 실값 보존
+
+
+def test_unconfigured_axis_still_receives_the_seed(board):
+    """축을 아직 안 쓰는 채택자는 종전대로 예시를 받는다 — 가드가 과잉이면 문서가 사라진다."""
+    _conf_with(board, "session=pm\npy=python3\n")
+
+    assert board.cmd_init(_init_args()) == 0
+
+    conf = board.LOCAL_CONF.read_text(encoding="utf-8")
+    assert board._DELEGATE_SEED_MARKER in conf
+    assert board._HARNESS_BUDGET_SEED_MARKER in conf
+
+
+def test_repeated_init_is_byte_identical(board):
+    """같은 conf 에 init 을 두 번 돌려도 byte 가 같다 — 재-append 0(멱등).
+
+    두 축(예시 시드 2종)이 마커로 자기 존재를 판정하므로, 실행 횟수가 conf 길이에 영향을 주지
+    않는다. 이 단언이 깨지면 채택자 conf 는 업데이트를 거칠수록 길어진다.
+    """
+    _conf_with(board, "session=pm\npy=python3\n")
+
+    assert board.cmd_init(_init_args()) == 0
+    once = board.LOCAL_CONF.read_bytes()
+    assert board.cmd_init(_init_args()) == 0
+
+    assert board.LOCAL_CONF.read_bytes() == once
+
+
+def _conf_with_init_defaults(board, extra: str) -> str:
+    """init 기본키를 모두 갖춘 conf 원문 — 그 실행이 **더할 것이 없는** 상태를 만든다.
+
+    기본키 보충(없는 키만 추가)은 이 절의 관심사가 아니다(비파괴 병합의 정상 동작) — 그 잡음을
+    빼야 "엔진이 기존 내용을 재작성하지 않는다" 를 byte 로 단언할 수 있다.
+    """
+    return (
+        "session=pm\npy=python3\ntest_cmd=pytest -q\nproject_name=\n"
+        f"ctx_nudge_pct={board.CTX_NUDGE_PCT_DEFAULT}\n"
+        f"ctx_stop_pct={board.CTX_STOP_PCT_DEFAULT}\n"
+        f"ctx_window_tokens={board.CTX_WINDOW_TOKENS_DEFAULT}\n" + extra)
+
+
+def test_already_polluted_conf_is_left_untouched(board):
+    """이미 예시가 붙어 오염된 conf 는 **그대로 둔다** — 소급 청소는 엔진 소관이 아니다."""
+    polluted = _conf_with_init_defaults(
+        board, "delegate.developer.harness=codex\n"
+        + board._DELEGATE_CONF_SEED + board._HARNESS_BUDGET_CONF_SEED)
+    _conf_with(board, polluted)
+
+    assert board.cmd_init(_init_args()) == 0
+
+    conf = board.LOCAL_CONF.read_text(encoding="utf-8")
+    assert conf == polluted, "채택자 conf 를 엔진이 재작성했다(소급 청소 금지)"
+
+
+def test_axis_judgment_ignores_commented_examples(board):
+    """축 판정은 **파싱된 실키**만 본다 — 예시 주석이 '설정됨' 으로 읽히면 자기 자신을 삼킨다."""
+    assert board._conf_axis_is_configured(
+        {"delegate.developer.harness": "codex"}, board._DELEGATE_AXIS_KEYS) is True
+    assert board._conf_axis_is_configured(
+        {"delegate_enabled": "false"}, board._DELEGATE_AXIS_KEYS) is True
+    assert board._conf_axis_is_configured(
+        {"session": "pm"}, board._DELEGATE_AXIS_KEYS) is False
+    # 접두가 겹치는 남의 키(`delegate_timeout`)는 이 축이 아니다 — 예시를 잘못 끄지 않는다.
+    assert board._conf_axis_is_configured(
+        {"delegate_timeout": "900"}, board._DELEGATE_AXIS_KEYS) is False
+    assert board._conf_axis_is_configured(
+        {"harness.opencode.wall_timeout": "1"}, board._HARNESS_BUDGET_AXIS_KEYS) is True
