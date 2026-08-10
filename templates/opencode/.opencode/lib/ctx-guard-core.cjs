@@ -49,11 +49,13 @@ const CTX_WINDOW_TOKENS_DEFAULT = 200000;
 
 // 엔진 경로 (plugin 의 directory 기준 .project_manager 까지 거슬러 올라가 해석).
 const LOCAL_CONF_REL = path.join(".project_manager", "local.conf");
+const CTX_STOP_REL = path.join(".project_manager", ".local", "ctx-stop");
 // 세션 parentID 역조회는 ctx guard 의 보조 입력이다. SDK가 응답하지 않아 이벤트 처리가 멈추지
 // 않도록 짧게 제한한다.
 const SESSION_LOOKUP_TIMEOUT_MS = 1000;
 const SNAPSHOT_TIMEOUT_MS = 3000;
 const CHECKPOINT_TIMEOUT_MS = 5000;
+const COMPACTION_SNAPSHOT_RECEIPT_RETAIN = 8;
 
 // ── 순수 함수: local.conf 파싱 (board.local_config 미러 — KEY=value·# 주석 무시) ──
 function parseLocalConf(text) {
@@ -243,6 +245,199 @@ function buildCompactionFallbackGuidance() {
   );
 }
 
+// ── compaction snapshot durable marker (Claude PostCompact 패턴 대칭) ─────────
+// opencode run --continue 는 프로세스-당-턴 one-shot 이므로 턴 말미 session.compacted 에서
+// in-memory pendingNudgeText 만 무장하면 다음 프로세스까지 payload가 살아남지 못한다. PM root의
+// 기존 ctx-stop 디렉터리(compact-checkpoint.*와 동일)에 SID+generation별 payload를
+// 원자 stage한다. SID 필터/길이는 pm_log.py `_safe_marker_key`의 파일명 규약과
+// 맞추되 marker 채널에서는 빈 결과를 unknown으로 합치지 않고 skip한다.
+function safeCompactionSnapshotSessionKey(sessionID) {
+  if (typeof sessionID !== "string" || !sessionID.trim()) return null;
+  const key = sessionID.trim().replace(/[^A-Za-z0-9_-]/g, "").slice(0, 96);
+  return key || null;
+}
+
+function createCompactionSnapshotGeneration() {
+  const utc = new Date().toISOString().replace(/[-:.]/g, "");
+  return `${utc}-${crypto.randomUUID()}`;
+}
+
+function compactionSnapshotMarkerDirectory(root) {
+  return root ? path.resolve(root, CTX_STOP_REL) : null;
+}
+
+function compactionSnapshotMarkerPath(root, sessionID, generation) {
+  const directory = compactionSnapshotMarkerDirectory(root);
+  const key = safeCompactionSnapshotSessionKey(sessionID);
+  if (!directory || !key || typeof generation !== "string") return null;
+  if (!/^[A-Za-z0-9_-]+$/.test(generation)) return null;
+  return path.join(directory, `compact-snapshot.${key}.${generation}`);
+}
+
+function compactionSnapshotReceiptPath(root, sessionID, generation) {
+  const directory = compactionSnapshotMarkerDirectory(root);
+  const key = safeCompactionSnapshotSessionKey(sessionID);
+  if (!directory || !key || typeof generation !== "string") return null;
+  if (!/^[A-Za-z0-9_-]+$/.test(generation)) return null;
+  return path.join(directory, `compact-snapshot-receipt.${key}.${generation}`);
+}
+
+function compactionSnapshotGenerationFromMarker(root, sessionID, ownedMarker) {
+  const directory = compactionSnapshotMarkerDirectory(root);
+  const key = safeCompactionSnapshotSessionKey(sessionID);
+  if (!directory || !key || typeof ownedMarker !== "string") return null;
+  const marker = path.resolve(ownedMarker);
+  const prefix = `compact-snapshot.${key}.`;
+  if (path.dirname(marker) !== directory || !path.basename(marker).startsWith(prefix)) return null;
+  const generation = path.basename(marker).slice(prefix.length);
+  return generation && /^[A-Za-z0-9_-]+$/.test(generation) ? generation : null;
+}
+
+function writeCompactionSnapshotReceipt(root, sessionID, generation) {
+  const receipt = compactionSnapshotReceiptPath(root, sessionID, generation);
+  if (!receipt) return;
+  try {
+    // receipt 자체가 전달 증거다. generation이 유일하므로 원자 rename 없이 빈 0600 파일이면 충분하다.
+    fs.writeFileSync(receipt, "", { encoding: "utf8", mode: 0o600 });
+  } catch {
+    /* 관측 채널 IO 실패가 이미 수행된 system 전달을 막지 않는다. */
+  }
+}
+
+function pruneCompactionSnapshotReceipts(root, sessionID) {
+  const directory = compactionSnapshotMarkerDirectory(root);
+  const key = safeCompactionSnapshotSessionKey(sessionID);
+  if (!directory || !key) return;
+  const prefix = `compact-snapshot-receipt.${key}.`;
+  try {
+    const receipts = fs.readdirSync(directory, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.startsWith(prefix))
+      .map((entry) => ({
+        receipt: path.join(directory, entry.name),
+        generation: entry.name.slice(prefix.length),
+      }))
+      .filter(({ generation }) => generation && /^[A-Za-z0-9_-]+$/.test(generation))
+      .sort((left, right) => left.generation.localeCompare(right.generation));
+    for (const { receipt } of receipts.slice(0, -COMPACTION_SNAPSHOT_RECEIPT_RETAIN)) {
+      try {
+        fs.unlinkSync(receipt);
+      } catch {
+        /* 동시 정리/권한 오류는 다음 staging GC에 맡긴다. */
+      }
+    }
+  } catch {
+    /* receipt 열거 실패도 snapshot staging을 실패로 바꾸지 않는다. */
+  }
+}
+
+function stageCompactionSnapshot(root, sessionID, payload) {
+  if (typeof payload !== "string" || !payload) return null;
+  const marker = compactionSnapshotMarkerPath(
+    root, sessionID, createCompactionSnapshotGeneration(),
+  );
+  if (!marker) return null;
+  const temp = path.join(
+    path.dirname(marker),
+    `.${path.basename(marker)}.${process.pid}.${crypto.randomUUID()}.tmp`,
+  );
+  try {
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    fs.writeFileSync(temp, payload, { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(temp, marker);
+    pruneCompactionSnapshotReceipts(root, sessionID);
+    return marker;
+  } catch {
+    return null;
+  } finally {
+    try {
+      fs.unlinkSync(temp);
+    } catch {
+      /* staging 실패/rename 완료 뒤 temp 정리는 best-effort. */
+    }
+  }
+}
+
+function discardCompactionSnapshot(root, sessionID, ownedMarker) {
+  const directory = compactionSnapshotMarkerDirectory(root);
+  const key = safeCompactionSnapshotSessionKey(sessionID);
+  if (!directory || !key || typeof ownedMarker !== "string") return;
+  const marker = path.resolve(ownedMarker);
+  const prefix = `compact-snapshot.${key}.`;
+  // 세션 상태가 기억한 자기 generation 정확한 경로만 삭제한다.
+  if (path.dirname(marker) !== directory || !path.basename(marker).startsWith(prefix)) return;
+  try {
+    fs.unlinkSync(marker);
+  } catch {
+    /* marker 부재/삭제 실패는 모델 호출을 막지 않는다. */
+  }
+}
+
+function listCompactionSnapshots(root, sessionID) {
+  const directory = compactionSnapshotMarkerDirectory(root);
+  const key = safeCompactionSnapshotSessionKey(sessionID);
+  if (!directory || !key) return [];
+  const prefix = `compact-snapshot.${key}.`;
+  const snapshots = [];
+  try {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.startsWith(prefix)) continue;
+      const generation = entry.name.slice(prefix.length);
+      if (!generation || !/^[A-Za-z0-9_-]+$/.test(generation)) continue;
+      const marker = path.join(directory, entry.name);
+      try {
+        const stat = fs.statSync(marker, { bigint: true });
+        if (stat.isFile()) snapshots.push({ marker, generation, mtimeNs: stat.mtimeNs });
+      } catch {
+        /* 동시 소비/정리로 사라진 entry는 다음 스냅샷에 맡긴다. */
+      }
+    }
+  } catch {
+    return [];
+  }
+  snapshots.sort((left, right) => {
+    if (left.mtimeNs < right.mtimeNs) return -1;
+    if (left.mtimeNs > right.mtimeNs) return 1;
+    return left.generation.localeCompare(right.generation);
+  });
+  return snapshots;
+}
+
+function takeCompactionSnapshot(root, sessionID) {
+  // 최초 관측의 최신 generation만 rename 선점한다. 경합 패배는 구 generation으로
+  // fallback하지 않고 skip하며, 선점 승자만 관측한 구 generation을 정리한다.
+  const snapshots = listCompactionSnapshots(root, sessionID);
+  if (!snapshots.length) return null;
+  const latest = snapshots[snapshots.length - 1];
+  const claimed = path.join(
+    path.dirname(latest.marker),
+    `.${path.basename(latest.marker)}.${process.pid}.${crypto.randomUUID()}.claimed`,
+  );
+  try {
+    fs.renameSync(latest.marker, claimed);
+  } catch {
+    return null;
+  }
+  try {
+    const payload = fs.readFileSync(claimed, "utf8");
+    return payload ? { payload, generation: latest.generation } : null;
+  } catch {
+    return null;
+  } finally {
+    try {
+      fs.unlinkSync(claimed);
+    } catch {
+      /* claimed marker 정리 실패도 주입 경계를 막지 않는다. */
+    }
+    for (const snapshot of snapshots.slice(0, -1)) {
+      try {
+        fs.unlinkSync(snapshot.marker);
+      } catch {
+        /* 이미 소비됐거나 삭제 실패한 구 generation은 fail-soft. */
+      }
+    }
+  }
+}
+
 function createCompactionBoundaryID(sessionID) {
   // count는 plugin 재시작 때 0으로 돌아가므로 dedup ID에 쓰지 않는다. UTC+UUID 축을 앞에 두어
   // pm_log의 marker 길이 상한에서도 재시작 불변 유일 성분이 잘리지 않게 한다.
@@ -286,6 +481,7 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
       state = {
         fired: { nudge: false, nudge2: false },
         pendingNudgeText: null,
+        pendingSnapshotMarker: null,
         compactionCount: 0,
         cycleEpoch: 0,
         childLookup: null,
@@ -433,6 +629,17 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
         const stagedSnapshot = buildCompactionSnapshot(root, hookCwd);
         const stagedNotice = stagedSnapshot || buildCompactionFallbackGuidance();
         session.pendingNudgeText = stagedNotice;
+        // 같은 payload를 프로세스 경계 너머에도 보존한다. 같은 프로세스의
+        // 재-compaction은 새 generation stage 성공 후 자기 구 generation만 정리한다.
+        const previousMarker = session.pendingSnapshotMarker;
+        const stagedMarker = stageCompactionSnapshot(root, sessionID, stagedNotice);
+        if (stagedMarker) {
+          session.pendingSnapshotMarker = stagedMarker;
+          if (previousMarker && previousMarker !== stagedMarker) {
+            discardCompactionSnapshot(root, sessionID, previousMarker);
+          }
+        }
+        // staging 실패 시 memory는 새 payload이어도 구 durable marker 소유권은 보수적으로 유지한다.
         createCompactionCheckpoint(
           root, hookCwd, sessionID, createCompactionBoundaryID(sessionID),
         );
@@ -467,11 +674,13 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
         session.fired.nudge2 = true;
         // 2단 모델-주입 안내 대기 — 1단과 동일 채널(system.transform 1회 소비).
         session.pendingNudgeText = buildNudge2Guidance(state, t);
+        session.pendingSnapshotMarker = null;
         await notifyNudge2(state, t); // 2단 강한 toast (사람 UI·1회).
       } else if (state.level === "nudge" && !session.fired.nudge) {
         session.fired.nudge = true;
         // 다음 모델 호출의 system.transform 이 checkpoint 안내를 소비한다.
         session.pendingNudgeText = buildNudgeGuidance(state, t);
+        session.pendingSnapshotMarker = null;
         await notifyNudge(state, t); // 넛지 toast (사람 UI·1회).
       }
     },
@@ -482,14 +691,32 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
     // messageID 필수)보다 string push 가 안전·정확. ⚠️ experimental namespace — opencode 가 이 surface
     // 를 바꾸면 *조용히* 주입이 멈출 수 있다. 호환성 게이트 = T-0183 Tier2
     // 라이브 smoke(버전 회귀 포착)·codex 권고 반영. 변동 시 안정 chat.message 전환 검토.
-    // 멱등: 해당 SID의 pendingNudgeText 만 1회 소비(push 후 null). 자식 세션은 주입도 면제한다.
+    // 멱등: in-memory payload는 자기가 stage한 generation만 함께 지운다.
+    // 새 프로세스라 in-memory payload가 없으면 최신 marker를 선점·읽기·소거하고,
+    // 그 관측 스냅샷에 함께 있던 구 generation들을 중복 주입 없이 정리한다.
+    // 자식 세션은 적재와 마찬가지로 marker 소비도 면제한다.
     "experimental.chat.system.transform": async (input, output) => {
       const sessionID = input && input.sessionID;
       if (await isChildSession(sessionID)) return;
       const session = sessionState(sessionID);
       if (session && session.pendingNudgeText && output && Array.isArray(output.system)) {
         output.system.push(session.pendingNudgeText);
+        const ownedMarker = session.pendingSnapshotMarker;
         session.pendingNudgeText = null;
+        session.pendingSnapshotMarker = null;
+        if (ownedMarker) {
+          const generation = compactionSnapshotGenerationFromMarker(root, sessionID, ownedMarker);
+          if (generation) writeCompactionSnapshotReceipt(root, sessionID, generation);
+          discardCompactionSnapshot(root, sessionID, ownedMarker);
+        }
+        return;
+      }
+      if (output && Array.isArray(output.system)) {
+        const stagedSnapshot = takeCompactionSnapshot(root, sessionID);
+        if (stagedSnapshot) {
+          output.system.push(stagedSnapshot.payload);
+          writeCompactionSnapshotReceipt(root, sessionID, stagedSnapshot.generation);
+        }
       }
     },
   };
@@ -513,6 +740,8 @@ module.exports = {
   runPmLog,
   buildCompactionSnapshot,
   buildCompactionFallbackGuidance,
+  safeCompactionSnapshotSessionKey,
+  createCompactionSnapshotGeneration,
   createCompactionBoundaryID,
   createCompactionCheckpoint,
   SESSION_LOOKUP_TIMEOUT_MS,

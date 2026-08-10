@@ -86,6 +86,41 @@ def _make_ctx_guard_project(tmp_path: Path, *, snapshot: bool = True) -> Path:
     return root
 
 
+def _snapshot_marker_dir(root: Path) -> Path:
+    return root / ".project_manager" / ".local" / "ctx-stop"
+
+
+def _safe_snapshot_key(session_id: str) -> str:
+    """pm_log.py `_safe_marker_key`와 같은 ASCII 파일명 allowlist/96자 제한."""
+    return re.sub(r"[^A-Za-z0-9_-]", "", session_id.strip())[:96]
+
+
+def _snapshot_markers(root: Path, session_id: str) -> list[Path]:
+    key = _safe_snapshot_key(session_id)
+    if not key:
+        return []
+    return sorted(_snapshot_marker_dir(root).glob(f"compact-snapshot.{key}.*"))
+
+
+def _snapshot_marker(root: Path, session_id: str, generation: str) -> Path:
+    key = _safe_snapshot_key(session_id)
+    assert key
+    return _snapshot_marker_dir(root) / f"compact-snapshot.{key}.{generation}"
+
+
+def _snapshot_receipts(root: Path, session_id: str) -> list[Path]:
+    key = _safe_snapshot_key(session_id)
+    if not key:
+        return []
+    return sorted(_snapshot_marker_dir(root).glob(f"compact-snapshot-receipt.{key}.*"))
+
+
+def _snapshot_receipt(root: Path, session_id: str, generation: str) -> Path:
+    key = _safe_snapshot_key(session_id)
+    assert key
+    return _snapshot_marker_dir(root) / f"compact-snapshot-receipt.{key}.{generation}"
+
+
 # ── 1. config 정합: 기본 compaction + 모델 limit 제약 ───────────────────────
 
 def test_accumulate_tokens_prefers_total_with_sum_fallback():
@@ -486,6 +521,787 @@ const sessionID = "ses_snapshot_null";
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
     out = _run_node_check(script)
     assert "JS_COMPACTION_FALLBACK_OK" in out, f"snapshot null fallback 실패. out={out!r}"
+
+
+def test_plugin_compaction_stages_builder_payload_in_durable_marker(tmp_path):
+    """session.compacted는 builder stdout을 SID+generation marker로 원자 생성한다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — durable snapshot staging 단위 skip")
+
+    project_root = _make_ctx_guard_project(tmp_path)
+    session_id = "ses_durable_stage"
+    marker_dir = _snapshot_marker_dir(project_root)
+    assert not marker_dir.exists(), "fixture가 marker 디렉터리를 미리 생성함"
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const projectRoot = __PROJECT_ROOT__;
+const sessionID = __SESSION_ID__;
+
+(async () => {
+  const hooks = await m.CtxGuardPlugin({client:{session:{
+    get: async ({path:{id}}) => ({data:{id}}),
+  }}, directory:projectRoot});
+  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  console.log("JS_DURABLE_SNAPSHOT_STAGE_OK");
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
+        "__SESSION_ID__", json.dumps(session_id)
+    )
+    out = _run_node_check(script)
+    assert "JS_DURABLE_SNAPSHOT_STAGE_OK" in out, f"durable snapshot staging 실패. out={out!r}"
+    markers = _snapshot_markers(project_root, session_id)
+    assert len(markers) == 1
+    assert re.fullmatch(
+        rf"compact-snapshot\.{session_id}\.\d{{8}}T\d{{9}}Z-[0-9a-f-]{{36}}",
+        markers[0].name,
+    )
+    assert markers[0].read_text(encoding="utf-8") == (
+        "## PM 정체성 (compaction 복구)\n- task: main\n"
+    )
+
+
+def test_plugin_snapshot_session_key_cannot_escape_marker_directory(tmp_path):
+    """traversal/절대/공백 SID는 단일 안전 파일명이거나 marker skip으로 끝난다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — durable snapshot SID 경로 안전 단위 skip")
+
+    project_root = _make_ctx_guard_project(tmp_path)
+    escaped_target = project_root / ".project_manager" / ".local" / "evil"
+    escaped_target.parent.mkdir(parents=True)
+    escaped_target.write_text("sentinel", encoding="utf-8")
+    session_ids = (
+        "../../evil",
+        str(tmp_path / "absolute target"),
+        "session with spaces",
+        "../../",
+        " / ",
+    )
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const projectRoot = __PROJECT_ROOT__;
+const sessionIDs = __SESSION_IDS__;
+
+(async () => {
+  const hooks = await m.CtxGuardPlugin({client:{session:{
+    get: async ({path:{id}}) => ({data:{id}}),
+  }}, directory:projectRoot});
+  for (const sessionID of sessionIDs) {
+    await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  }
+  console.log("JS_DURABLE_SNAPSHOT_SID_PATH_SAFE_OK");
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
+        "__SESSION_IDS__", json.dumps(session_ids)
+    )
+    out = _run_node_check(script)
+    assert "JS_DURABLE_SNAPSHOT_SID_PATH_SAFE_OK" in out, f"SID 경로 안전화 실패. out={out!r}"
+
+    marker_dir = _snapshot_marker_dir(project_root)
+    expected_keys = {_safe_snapshot_key(sid) for sid in session_ids}
+    expected_keys.discard("")
+    markers = sorted(marker_dir.glob("compact-snapshot.*"))
+    assert len(markers) == len(expected_keys)
+    assert all(marker.is_file() and marker.parent == marker_dir for marker in markers)
+    assert all(
+        re.fullmatch(r"compact-snapshot\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", marker.name)
+        for marker in markers
+    )
+    assert {marker.name.split(".", 2)[1] for marker in markers} == expected_keys
+    assert not any(path.is_dir() for path in marker_dir.iterdir())
+    assert escaped_target.read_text(encoding="utf-8") == "sentinel"
+
+
+def test_plugin_restarted_transform_consumes_durable_marker_exactly_once(tmp_path):
+    """재시작은 최신 generation을 1회 주입하고 구 generation까지 정리한다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — durable snapshot restart consume 단위 skip")
+
+    project_root = _make_ctx_guard_project(tmp_path)
+    session_id = "ses_durable_restart"
+    marker_dir = _snapshot_marker_dir(project_root)
+    engine = project_root / ".project_manager" / "tools" / "pm_log.py"
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+const fs = require("node:fs");
+const path = require("node:path");
+const projectRoot = __PROJECT_ROOT__;
+const markerDir = __MARKER_DIR__;
+const engine = __ENGINE__;
+const sessionID = __SESSION_ID__;
+const markerPaths = () => fs.readdirSync(markerDir)
+  .filter((name) => name.startsWith(`compact-snapshot.${sessionID}.`))
+  .map((name) => `${markerDir}/${name}`);
+const receiptPaths = () => fs.readdirSync(markerDir)
+  .filter((name) => name.startsWith(`compact-snapshot-receipt.${sessionID}.`))
+  .sort()
+  .map((name) => `${markerDir}/${name}`);
+const builder = (value) =>
+  `import sys\nif 'snapshot' in sys.argv:\n    print('${value}')\n`;
+
+(async () => {
+  const client = {session:{get: async ({path:{id}}) => ({data:{id}})}};
+  fs.writeFileSync(engine, builder("snapshot-v1"), "utf8");
+  const firstProcess = await m.CtxGuardPlugin({client, directory:projectRoot});
+  await firstProcess.event({event:{type:"session.compacted", properties:{sessionID}}});
+  const firstMarker = markerPaths()[0];
+  assert.ok(firstMarker, "first process did not leave marker");
+
+  fs.writeFileSync(engine, builder("snapshot-v2"), "utf8");
+  const secondProcess = await m.CtxGuardPlugin({client, directory:projectRoot});
+  await secondProcess.event({event:{type:"session.compacted", properties:{sessionID}}});
+  const staged = markerPaths();
+  assert.strictEqual(staged.length, 2, "independent generations did not coexist");
+  const secondMarker = staged.find((marker) => marker !== firstMarker);
+  const secondGeneration = path.basename(secondMarker)
+    .slice(`compact-snapshot.${sessionID}.`.length);
+  fs.utimesSync(firstMarker, new Date(1000), new Date(1000));
+  fs.utimesSync(secondMarker, new Date(2000), new Date(2000));
+
+  const restartedProcess = await m.CtxGuardPlugin({client, directory:projectRoot});
+  const firstOutput = {system:[]};
+  await restartedProcess["experimental.chat.system.transform"]({sessionID}, firstOutput);
+  assert.strictEqual(firstOutput.system.length, 1, "restarted process did not inject marker");
+  assert.strictEqual(firstOutput.system[0], "snapshot-v2\n", "restart did not choose newest marker");
+  assert.deepStrictEqual(markerPaths(), [], "consumed and older generations remain");
+  assert.deepStrictEqual(
+    receiptPaths(),
+    [`${markerDir}/compact-snapshot-receipt.${sessionID}.${secondGeneration}`],
+    "fallback delivery receipt did not bind only the pushed generation",
+  );
+
+  const secondOutput = {system:[]};
+  await restartedProcess["experimental.chat.system.transform"]({sessionID}, secondOutput);
+  assert.deepStrictEqual(secondOutput.system, [], "marker was injected more than once");
+  console.log("JS_DURABLE_SNAPSHOT_RESTART_CONSUME_OK");
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
+        "__MARKER_DIR__", json.dumps(str(marker_dir))
+    ).replace("__ENGINE__", json.dumps(str(engine))).replace(
+        "__SESSION_ID__", json.dumps(session_id)
+    )
+    out = _run_node_check(script)
+    assert "JS_DURABLE_SNAPSHOT_RESTART_CONSUME_OK" in out, (
+        f"durable snapshot restart consume 실패. out={out!r}"
+    )
+
+
+def test_plugin_in_memory_consumption_preserves_newer_foreign_generation(tmp_path):
+    """A의 stale in-memory 소비는 나중에 B가 stage한 같은 SID marker를 지우지 않는다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — in-memory snapshot marker cleanup 단위 skip")
+
+    project_root = _make_ctx_guard_project(tmp_path)
+    session_id = "ses_memory_precedence"
+    marker_dir = _snapshot_marker_dir(project_root)
+    engine = project_root / ".project_manager" / "tools" / "pm_log.py"
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+const fs = require("node:fs");
+const path = require("node:path");
+const projectRoot = __PROJECT_ROOT__;
+const markerDir = __MARKER_DIR__;
+const engine = __ENGINE__;
+const sessionID = __SESSION_ID__;
+const markerPaths = () => fs.readdirSync(markerDir)
+  .filter((name) => name.startsWith(`compact-snapshot.${sessionID}.`))
+  .map((name) => `${markerDir}/${name}`);
+const receiptPaths = () => fs.readdirSync(markerDir)
+  .filter((name) => name.startsWith(`compact-snapshot-receipt.${sessionID}.`))
+  .sort()
+  .map((name) => `${markerDir}/${name}`);
+const builder = (value) =>
+  `import sys\nif 'snapshot' in sys.argv:\n    print('${value}')\n`;
+
+(async () => {
+  const client = {session:{get: async ({path:{id}}) => ({data:{id}})}};
+  fs.writeFileSync(engine, builder("process-a"), "utf8");
+  const processA = await m.CtxGuardPlugin({client, directory:projectRoot});
+  await processA.event({event:{type:"session.compacted", properties:{sessionID}}});
+  const markerA = markerPaths()[0];
+  const generationA = path.basename(markerA).slice(`compact-snapshot.${sessionID}.`.length);
+
+  fs.writeFileSync(engine, builder("process-b"), "utf8");
+  const processB = await m.CtxGuardPlugin({client, directory:projectRoot});
+  await processB.event({event:{type:"session.compacted", properties:{sessionID}}});
+  const staged = markerPaths();
+  assert.strictEqual(staged.length, 2);
+  const markerB = staged.find((marker) => marker !== markerA);
+
+  const output = {system:[]};
+  await processA["experimental.chat.system.transform"]({sessionID}, output);
+  assert.strictEqual(output.system.length, 1);
+  assert.strictEqual(output.system[0], "process-a\n", "A did not inject its memory payload");
+  assert.strictEqual(fs.existsSync(markerA), false, "A left its owned generation");
+  assert.strictEqual(fs.readFileSync(markerB, "utf8"), "process-b\n", "A deleted B generation");
+  const receiptA = `${markerDir}/compact-snapshot-receipt.${sessionID}.${generationA}`;
+  assert.deepStrictEqual(receiptPaths(), [receiptA], "memory delivery receipt generation mismatch");
+  assert.strictEqual(fs.statSync(receiptA).mode & 0o777, 0o600, "receipt mode is not 0600");
+  assert.strictEqual(fs.readFileSync(receiptA, "utf8"), "", "receipt must be empty");
+  console.log("JS_IN_MEMORY_MARKER_OWNERSHIP_OK");
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
+        "__MARKER_DIR__", json.dumps(str(marker_dir))
+    ).replace("__ENGINE__", json.dumps(str(engine))).replace(
+        "__SESSION_ID__", json.dumps(session_id)
+    )
+    out = _run_node_check(script)
+    assert "JS_IN_MEMORY_MARKER_OWNERSHIP_OK" in out, f"in-memory marker 소유 규율 실패. out={out!r}"
+
+
+def test_plugin_nudge_overwrite_preserves_snapshot_marker_for_next_transform(tmp_path):
+    """nudge2가 memory 슬롯을 덮어도 snapshot marker는 다음 transform까지 생존한다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — nudge/snapshot marker 간섭 단위 skip")
+
+    project_root = _make_ctx_guard_project(tmp_path)
+    session_id = "ses_nudge_snapshot_interference"
+    marker_dir = _snapshot_marker_dir(project_root)
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+const fs = require("node:fs");
+const projectRoot = __PROJECT_ROOT__;
+const markerDir = __MARKER_DIR__;
+const sessionID = __SESSION_ID__;
+const snapshotPayload = "## PM 정체성 (compaction 복구)\n- task: main\n";
+const markerPaths = () => fs.readdirSync(markerDir)
+  .filter((name) => name.startsWith(`compact-snapshot.${sessionID}.`))
+  .map((name) => `${markerDir}/${name}`);
+const receiptPaths = () => fs.readdirSync(markerDir)
+  .filter((name) => name.startsWith(`compact-snapshot-receipt.${sessionID}.`))
+  .sort()
+  .map((name) => `${markerDir}/${name}`);
+
+(async () => {
+  const hooks = await m.CtxGuardPlugin({client:{session:{
+    get: async ({path:{id}}) => ({data:{id}}),
+  }}, directory:projectRoot});
+
+  // compaction은 동일 payload를 memory 슬롯과 durable marker 양쪽에 적재한다.
+  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  const staged = markerPaths();
+  assert.strictEqual(staged.length, 1, "compaction did not stage exactly one marker");
+  assert.strictEqual(fs.readFileSync(staged[0], "utf8"), snapshotPayload);
+
+  // nudge2가 memory 슬롯을 덮을 때 snapshot marker 소유권을 놓아야 한다.
+  await hooks.event({event:{type:"message.updated", properties:{info:{
+    sessionID, role:"assistant", tokens:{input:155000}
+  }}}});
+
+  const firstOutput = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID}, firstOutput);
+  assert.strictEqual(firstOutput.system.length, 1, "nudge2 was not injected once");
+  assert.ok(firstOutput.system[0].includes("[ctx-nudge/강화]"), "wrong first payload");
+  assert.deepStrictEqual(markerPaths(), staged, "nudge2 transform deleted snapshot marker");
+  assert.strictEqual(fs.readFileSync(staged[0], "utf8"), snapshotPayload);
+  assert.deepStrictEqual(receiptPaths(), [], "ownership-released nudge created snapshot receipt");
+
+  const secondOutput = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID}, secondOutput);
+  assert.deepStrictEqual(secondOutput.system, [snapshotPayload], "marker fallback lost snapshot");
+  assert.deepStrictEqual(markerPaths(), [], "marker remained after fallback consumption");
+  assert.strictEqual(receiptPaths().length, 1, "fallback delivery did not create one receipt");
+
+  const thirdOutput = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID}, thirdOutput);
+  assert.deepStrictEqual(thirdOutput.system, [], "snapshot was injected more than once");
+  const delivered = [...firstOutput.system, ...secondOutput.system, ...thirdOutput.system];
+  assert.strictEqual(
+    delivered.filter((payload) => payload === snapshotPayload).length,
+    1,
+    "snapshot payload delivery count was not exactly one",
+  );
+  console.log("JS_NUDGE_SNAPSHOT_MARKER_INTERFERENCE_OK");
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
+        "__MARKER_DIR__", json.dumps(str(marker_dir))
+    ).replace("__SESSION_ID__", json.dumps(session_id))
+    out = _run_node_check(script)
+    assert "JS_NUDGE_SNAPSHOT_MARKER_INTERFERENCE_OK" in out, (
+        f"nudge/snapshot marker 간섭 방지 실패. out={out!r}"
+    )
+
+
+def test_plugin_recompaction_replaces_owned_generation_with_latest_payload(tmp_path):
+    """같은 프로세스의 연속 compaction은 새 generation의 최신 payload만 남긴다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — durable snapshot overwrite 단위 skip")
+
+    project_root = _make_ctx_guard_project(tmp_path)
+    session_id = "ses_latest_snapshot"
+    marker_dir = _snapshot_marker_dir(project_root)
+    engine = project_root / ".project_manager" / "tools" / "pm_log.py"
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+const fs = require("node:fs");
+const projectRoot = __PROJECT_ROOT__;
+const markerDir = __MARKER_DIR__;
+const engine = __ENGINE__;
+const sessionID = __SESSION_ID__;
+const markerPaths = () => fs.readdirSync(markerDir)
+  .filter((name) => name.startsWith(`compact-snapshot.${sessionID}.`))
+  .map((name) => `${markerDir}/${name}`);
+const builder = (value) =>
+  `import sys\nif 'snapshot' in sys.argv:\n    print('${value}')\n`;
+
+(async () => {
+  const hooks = await m.CtxGuardPlugin({client:{session:{
+    get: async ({path:{id}}) => ({data:{id}}),
+  }}, directory:projectRoot});
+  fs.writeFileSync(engine, builder("snapshot-v1"), "utf8");
+  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  const firstMarker = markerPaths()[0];
+  assert.strictEqual(fs.readFileSync(firstMarker, "utf8"), "snapshot-v1\n");
+
+  fs.writeFileSync(engine, builder("snapshot-v2"), "utf8");
+  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  const latest = markerPaths();
+  assert.strictEqual(latest.length, 1, "owned old generation remains");
+  assert.notStrictEqual(latest[0], firstMarker, "recompaction reused a generation");
+  assert.strictEqual(fs.readFileSync(latest[0], "utf8"), "snapshot-v2\n", "latest payload lost");
+  console.log("JS_DURABLE_SNAPSHOT_OVERWRITE_OK");
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
+        "__MARKER_DIR__", json.dumps(str(marker_dir))
+    ).replace("__ENGINE__", json.dumps(str(engine))).replace(
+        "__SESSION_ID__", json.dumps(session_id)
+    )
+    out = _run_node_check(script)
+    assert "JS_DURABLE_SNAPSHOT_OVERWRITE_OK" in out, f"durable snapshot overwrite 실패. out={out!r}"
+
+
+def test_plugin_recompaction_staging_failure_preserves_owned_generation(tmp_path):
+    """재-compaction staging 실패는 구 marker 소유권을 유지해 새 memory payload 전달과 묶는다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — recompaction staging 실패 소유권 단위 skip")
+
+    project_root = _make_ctx_guard_project(tmp_path)
+    session_id = "ses_recompaction_stage_failure"
+    marker_dir = _snapshot_marker_dir(project_root)
+    engine = project_root / ".project_manager" / "tools" / "pm_log.py"
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+const fs = require("node:fs");
+const path = require("node:path");
+const projectRoot = __PROJECT_ROOT__;
+const markerDir = __MARKER_DIR__;
+const engine = __ENGINE__;
+const sessionID = __SESSION_ID__;
+const markerPaths = () => fs.readdirSync(markerDir)
+  .filter((name) => name.startsWith(`compact-snapshot.${sessionID}.`))
+  .sort()
+  .map((name) => `${markerDir}/${name}`);
+const receiptPaths = () => fs.readdirSync(markerDir)
+  .filter((name) => name.startsWith(`compact-snapshot-receipt.${sessionID}.`))
+  .sort()
+  .map((name) => `${markerDir}/${name}`);
+const builder = (value) =>
+  `import sys\nif 'snapshot' in sys.argv:\n    print('${value}')\n`;
+
+(async () => {
+  const hooks = await m.CtxGuardPlugin({client:{session:{
+    get: async ({path:{id}}) => ({data:{id}}),
+  }}, directory:projectRoot});
+  fs.writeFileSync(engine, builder("snapshot-v1"), "utf8");
+  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  const firstMarker = markerPaths()[0];
+  const firstGeneration = path.basename(firstMarker)
+    .slice(`compact-snapshot.${sessionID}.`.length);
+  assert.strictEqual(fs.readFileSync(firstMarker, "utf8"), "snapshot-v1\n");
+
+  fs.writeFileSync(engine, builder("snapshot-v2"), "utf8");
+  const originalRenameSync = fs.renameSync;
+  let stagingFailureObserved = false;
+  fs.renameSync = (source, destination) => {
+    if (
+      path.basename(String(source)).endsWith(".tmp") &&
+      String(destination).startsWith(`${markerDir}/compact-snapshot.${sessionID}.`)
+    ) {
+      stagingFailureObserved = true;
+      throw new Error("synthetic recompaction staging failure");
+    }
+    return originalRenameSync(source, destination);
+  };
+  try {
+    await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  } finally {
+    fs.renameSync = originalRenameSync;
+  }
+
+  assert.strictEqual(stagingFailureObserved, true, "second staging failure was not induced");
+  assert.deepStrictEqual(markerPaths(), [firstMarker], "failed staging discarded the owned marker");
+  assert.strictEqual(fs.readFileSync(firstMarker, "utf8"), "snapshot-v1\n");
+  assert.deepStrictEqual(receiptPaths(), [], "non-delivery staging path created a receipt");
+
+  const output = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID}, output);
+  assert.deepStrictEqual(output.system, ["snapshot-v2\n"], "latest in-memory payload was not delivered");
+  assert.deepStrictEqual(markerPaths(), [], "owned old marker was not consumed with memory delivery");
+  assert.deepStrictEqual(
+    receiptPaths(),
+    [`${markerDir}/compact-snapshot-receipt.${sessionID}.${firstGeneration}`],
+    "memory delivery receipt did not retain the owned durable generation",
+  );
+  console.log("JS_RECOMPACTION_STAGING_FAILURE_OWNERSHIP_OK");
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
+        "__MARKER_DIR__", json.dumps(str(marker_dir))
+    ).replace("__ENGINE__", json.dumps(str(engine))).replace(
+        "__SESSION_ID__", json.dumps(session_id)
+    )
+    out = _run_node_check(script)
+    assert "JS_RECOMPACTION_STAGING_FAILURE_OWNERSHIP_OK" in out, (
+        f"recompaction staging 실패 소유권 보존 실패. out={out!r}"
+    )
+
+
+def test_plugin_concurrent_consumers_claim_newest_or_skip_without_stale_fallback(tmp_path):
+    """동일 관측의 latest 선점 패배자는 old로 fallback하지 않고 승자만 GC·receipt한다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — concurrent snapshot consumer 단위 skip")
+
+    project_root = _make_ctx_guard_project(tmp_path)
+    session_id = "ses_concurrent_snapshot_consumers"
+    marker_dir = _snapshot_marker_dir(project_root)
+    marker_dir.mkdir(parents=True)
+    old_generation = "20260811T000000000Z-00000000-0000-4000-8000-000000000001"
+    latest_generation = "20260811T000000001Z-00000000-0000-4000-8000-000000000002"
+    old_marker = _snapshot_marker(project_root, session_id, old_generation)
+    latest_marker = _snapshot_marker(project_root, session_id, latest_generation)
+    old_payload = "snapshot-old\n"
+    latest_payload = "snapshot-latest\n"
+    old_marker.write_text(old_payload, encoding="utf-8")
+    latest_marker.write_text(latest_payload, encoding="utf-8")
+    os.utime(old_marker, (1, 1))
+    os.utime(latest_marker, (2, 2))
+    rendezvous_dir = tmp_path / "snapshot-claim-rendezvous"
+    rendezvous_dir.mkdir()
+
+    consumer_script = r'''
+const m = require("./ctx-guard-core.cjs");
+const fs = require("node:fs");
+const path = require("node:path");
+const projectRoot = __PROJECT_ROOT__;
+const markerDir = __MARKER_DIR__;
+const rendezvousDir = __RENDEZVOUS_DIR__;
+const sessionID = __SESSION_ID__;
+const consumerID = __CONSUMER_ID__;
+const oldMarker = __OLD_MARKER__;
+const latestMarker = __LATEST_MARKER__;
+const sleeper = new Int32Array(new SharedArrayBuffer(4));
+const sleep = (milliseconds) => Atomics.wait(sleeper, 0, 0, milliseconds);
+const countSignals = (suffix) => fs.readdirSync(rendezvousDir)
+  .filter((name) => name.endsWith(suffix)).length;
+const waitForSignals = (suffix) => {
+  const deadline = Date.now() + 5000;
+  while (countSignals(suffix) < 2) {
+    if (Date.now() >= deadline) throw new Error(`rendezvous timeout: ${suffix}`);
+    sleep(10);
+  }
+};
+
+(async () => {
+  const hooks = await m.CtxGuardPlugin({client:{session:{
+    get: async ({path:{id}}) => ({data:{id}}),
+  }}, directory:projectRoot});
+  const originalRenameSync = fs.renameSync;
+  let wonLatest = false;
+  let lostLatest = false;
+  fs.renameSync = (source, destination) => {
+    if (String(source) !== latestMarker || !String(destination).endsWith(".claimed")) {
+      return originalRenameSync(source, destination);
+    }
+    fs.writeFileSync(path.join(rendezvousDir, `${consumerID}.ready`), "", "utf8");
+    waitForSignals(".ready");
+    let renameError = null;
+    try {
+      originalRenameSync(source, destination);
+      wonLatest = true;
+    } catch (error) {
+      lostLatest = true;
+      renameError = error;
+    } finally {
+      fs.writeFileSync(path.join(rendezvousDir, `${consumerID}.attempted`), "", "utf8");
+    }
+    if (wonLatest) {
+      waitForSignals(".attempted");
+      // 패배자가 skip 직후 old를 관측할 때까지 승자의 finally GC를 지연한다.
+      sleep(400);
+    }
+    if (renameError) throw renameError;
+  };
+
+  const output = {system:[]};
+  try {
+    await hooks["experimental.chat.system.transform"]({sessionID}, output);
+  } finally {
+    fs.renameSync = originalRenameSync;
+  }
+  console.log(JSON.stringify({
+    consumerID,
+    wonLatest,
+    lostLatest,
+    output: output.system,
+    oldExistsAfterTransform: fs.existsSync(oldMarker),
+  }));
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''
+
+    def render_consumer(consumer_id: str) -> str:
+        return (
+            consumer_script.replace("__PROJECT_ROOT__", json.dumps(str(project_root)))
+            .replace("__MARKER_DIR__", json.dumps(str(marker_dir)))
+            .replace("__RENDEZVOUS_DIR__", json.dumps(str(rendezvous_dir)))
+            .replace("__SESSION_ID__", json.dumps(session_id))
+            .replace("__CONSUMER_ID__", json.dumps(consumer_id))
+            .replace("__OLD_MARKER__", json.dumps(str(old_marker)))
+            .replace("__LATEST_MARKER__", json.dumps(str(latest_marker)))
+        )
+
+    processes = [
+        subprocess.Popen(
+            [_NODE, "-e", render_consumer(consumer_id)],
+            cwd=str(CORE_DIR),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for consumer_id in ("consumer-a", "consumer-b")
+    ]
+    results = []
+    for process in processes:
+        stdout, stderr = process.communicate(timeout=15)
+        assert process.returncode == 0, f"consumer 실패. stdout={stdout!r} stderr={stderr!r}"
+        results.append(json.loads(stdout.strip().splitlines()[-1]))
+
+    winner = next(result for result in results if result["wonLatest"])
+    loser = next(result for result in results if result["lostLatest"])
+    assert winner["output"] == [latest_payload]
+    assert winner["oldExistsAfterTransform"] is False, "선점 승자가 구 generation을 GC하지 않음"
+    assert loser["output"] == [], "latest 선점 패배자가 old snapshot을 stale 주입함"
+    assert loser["oldExistsAfterTransform"] is True, "선점 패배자가 구 generation을 GC함"
+    assert _snapshot_markers(project_root, session_id) == []
+    assert list(marker_dir.glob(".compact-snapshot.*.claimed")) == []
+    assert _snapshot_receipts(project_root, session_id) == [
+        _snapshot_receipt(project_root, session_id, latest_generation)
+    ]
+
+
+def test_plugin_staging_prunes_receipts_to_latest_eight_without_new_receipt(tmp_path):
+    """성공한 staging은 같은 SID receipt만 최신 8개로 줄이고 자체 receipt는 만들지 않는다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — snapshot receipt GC 단위 skip")
+
+    project_root = _make_ctx_guard_project(tmp_path)
+    session_id = "ses_receipt_gc"
+    other_session_id = "ses_receipt_gc_other"
+    marker_dir = _snapshot_marker_dir(project_root)
+    marker_dir.mkdir(parents=True)
+    for index in range(10):
+        receipt = _snapshot_receipt(project_root, session_id, f"g{index:02d}")
+        receipt.write_text("", encoding="utf-8")
+        # GC 순서가 파일 mtime/경과시간이 아니라 generation과 개수에만 의존하는지 고정한다.
+        os.utime(receipt, (100 - index, 100 - index))
+    other_receipt = _snapshot_receipt(project_root, other_session_id, "g00")
+    other_receipt.write_text("", encoding="utf-8")
+
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const projectRoot = __PROJECT_ROOT__;
+const sessionID = __SESSION_ID__;
+
+(async () => {
+  const hooks = await m.CtxGuardPlugin({client:{session:{
+    get: async ({path:{id}}) => ({data:{id}}),
+  }}, directory:projectRoot});
+  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  console.log("JS_SNAPSHOT_RECEIPT_GC_OK");
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
+        "__SESSION_ID__", json.dumps(session_id)
+    )
+    out = _run_node_check(script)
+    assert "JS_SNAPSHOT_RECEIPT_GC_OK" in out, f"snapshot receipt GC 실패. out={out!r}"
+
+    receipts = _snapshot_receipts(project_root, session_id)
+    assert [receipt.name.rsplit(".", 1)[-1] for receipt in receipts] == [
+        f"g{index:02d}" for index in range(2, 10)
+    ]
+    assert len(receipts) == 8
+    assert len(_snapshot_markers(project_root, session_id)) == 1
+    assert other_receipt.exists(), "receipt GC가 다른 safeKey를 삭제함"
+
+
+def test_plugin_receipt_write_failure_does_not_block_in_memory_delivery(tmp_path):
+    """receipt 쓰기 실패는 이미 수행된 system push와 owned marker 정리를 되돌리지 않는다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — snapshot receipt IO fail-soft 단위 skip")
+
+    project_root = _make_ctx_guard_project(tmp_path)
+    session_id = "ses_receipt_io_failure"
+    marker_dir = _snapshot_marker_dir(project_root)
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+const fs = require("node:fs");
+const projectRoot = __PROJECT_ROOT__;
+const markerDir = __MARKER_DIR__;
+const sessionID = __SESSION_ID__;
+const markerPaths = () => fs.readdirSync(markerDir)
+  .filter((name) => name.startsWith(`compact-snapshot.${sessionID}.`));
+const receiptPaths = () => fs.readdirSync(markerDir)
+  .filter((name) => name.startsWith(`compact-snapshot-receipt.${sessionID}.`));
+
+(async () => {
+  const hooks = await m.CtxGuardPlugin({client:{session:{
+    get: async ({path:{id}}) => ({data:{id}}),
+  }}, directory:projectRoot});
+  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  assert.strictEqual(markerPaths().length, 1, "snapshot was not staged");
+
+  const originalWriteFileSync = fs.writeFileSync;
+  fs.writeFileSync = (...args) => {
+    if (String(args[0]).includes("compact-snapshot-receipt.")) {
+      throw new Error("synthetic receipt write failure");
+    }
+    return originalWriteFileSync(...args);
+  };
+  const output = {system:[]};
+  try {
+    await hooks["experimental.chat.system.transform"]({sessionID}, output);
+  } finally {
+    fs.writeFileSync = originalWriteFileSync;
+  }
+  assert.strictEqual(output.system.length, 1, "receipt IO failure blocked system delivery");
+  assert.deepStrictEqual(markerPaths(), [], "receipt IO failure blocked marker cleanup");
+  assert.deepStrictEqual(receiptPaths(), [], "failed receipt write left a receipt");
+  console.log("JS_SNAPSHOT_RECEIPT_IO_FAIL_SOFT_OK");
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
+        "__MARKER_DIR__", json.dumps(str(marker_dir))
+    ).replace("__SESSION_ID__", json.dumps(session_id))
+    out = _run_node_check(script)
+    assert "JS_SNAPSHOT_RECEIPT_IO_FAIL_SOFT_OK" in out, (
+        f"snapshot receipt IO fail-soft 실패. out={out!r}"
+    )
+
+
+def test_plugin_snapshot_marker_io_failure_is_fail_soft(tmp_path):
+    """ctx-stop 경로가 디렉터리가 아니어도 event/transform은 예외 없이 기존 memory 경로로 간다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — durable snapshot IO fail-soft 단위 skip")
+
+    project_root = _make_ctx_guard_project(tmp_path)
+    marker_parent = _snapshot_marker_dir(project_root)
+    marker_parent.parent.mkdir(parents=True)
+    marker_parent.write_text("directory collision", encoding="utf-8")
+    session_id = "ses_marker_io_failure"
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+const projectRoot = __PROJECT_ROOT__;
+const sessionID = __SESSION_ID__;
+
+(async () => {
+  const client = {session:{get: async ({path:{id}}) => ({data:{id}})}};
+  const hooks = await m.CtxGuardPlugin({client, directory:projectRoot});
+  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  const output = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID}, output);
+  assert.strictEqual(output.system.length, 1, "IO failure blocked in-memory delivery");
+
+  const restarted = await m.CtxGuardPlugin({client, directory:projectRoot});
+  const freshOutput = {system:[]};
+  await restarted["experimental.chat.system.transform"]({sessionID}, freshOutput);
+  assert.deepStrictEqual(freshOutput.system, [], "failed marker path produced phantom payload");
+  console.log("JS_DURABLE_SNAPSHOT_IO_FAIL_SOFT_OK");
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
+        "__SESSION_ID__", json.dumps(session_id)
+    )
+    out = _run_node_check(script)
+    assert "JS_DURABLE_SNAPSHOT_IO_FAIL_SOFT_OK" in out, f"marker IO fail-soft 실패. out={out!r}"
+    assert marker_parent.is_file()
+    assert not _snapshot_receipts(project_root, session_id), "staging 실패가 receipt를 생성함"
+
+
+def test_plugin_child_session_neither_stages_nor_consumes_snapshot_marker(tmp_path):
+    """면제 자식은 compaction marker를 만들지 않고 이미 있는 marker도 소비하지 않는다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — child durable snapshot exemption 단위 skip")
+
+    project_root = _make_ctx_guard_project(tmp_path)
+    staged_child_id = "ses_child_no_marker"
+    preserved_child_id = "ses_child_keep_marker"
+    preserved_marker = _snapshot_marker(
+        project_root,
+        preserved_child_id,
+        "20260811T000000000Z-00000000-0000-4000-8000-000000000000",
+    )
+    preserved_marker.parent.mkdir(parents=True)
+    preserved_marker.write_text("must remain", encoding="utf-8")
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+const fs = require("node:fs");
+const projectRoot = __PROJECT_ROOT__;
+const stagedChildID = __STAGED_CHILD_ID__;
+const preservedChildID = __PRESERVED_CHILD_ID__;
+const markerDir = __MARKER_DIR__;
+const preservedMarker = __PRESERVED_MARKER__;
+
+(async () => {
+  const hooks = await m.CtxGuardPlugin({client:{session:{get: async ({path:{id}}) => ({
+    data:{id, parentID:"ses_parent"},
+  })}}, directory:projectRoot});
+  await hooks.event({event:{type:"session.compacted", properties:{sessionID:stagedChildID}}});
+  const stagedMarkers = fs.readdirSync(markerDir)
+    .filter((name) => name.startsWith(`compact-snapshot.${stagedChildID}.`));
+  assert.deepStrictEqual(stagedMarkers, [], "child compaction staged marker");
+
+  const output = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID:preservedChildID}, output);
+  assert.deepStrictEqual(output.system, [], "child transform injected durable marker");
+  assert.strictEqual(fs.readFileSync(preservedMarker, "utf8"), "must remain", "child consumed marker");
+  console.log("JS_CHILD_DURABLE_SNAPSHOT_EXEMPT_OK");
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
+        "__STAGED_CHILD_ID__", json.dumps(staged_child_id)
+    ).replace("__PRESERVED_CHILD_ID__", json.dumps(preserved_child_id)).replace(
+        "__MARKER_DIR__", json.dumps(str(_snapshot_marker_dir(project_root)))
+    ).replace("__PRESERVED_MARKER__", json.dumps(str(preserved_marker)))
+    out = _run_node_check(script)
+    assert "JS_CHILD_DURABLE_SNAPSHOT_EXEMPT_OK" in out, (
+        f"child durable snapshot exemption 실패. out={out!r}"
+    )
 
 
 def test_create_compaction_checkpoint_passes_boundary_and_post_phase():

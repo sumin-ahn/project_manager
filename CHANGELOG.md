@@ -30,7 +30,9 @@
   실행으로 승격. 엔진 스냅샷 빌더(`pm_log.py snapshot` — 장부 직접 읽기·git 호출 0·3초/8,000자/
   24,000바이트 상한·포인터 중심)가 주입 텍스트를 단일 소유하고, 어댑터는 이벤트 바인딩+그대로
   주입만 한다: claude 는 PreCompact 훅 정식 등재 + marker-armed 1회 재주입, opencode 는
-  `session.compacted` 관측 주입, codex 는 PreCompact/PostCompact 배선. 체크포인트 골격은 경계에서
+  `session.compacted` 관측 주입(payload 를 내구 marker 파일로 이중 적재해 `opencode run`
+  one-shot 프로세스 경계에서도 유실 없음 — 세션 키 정규화·generation 소유 규율·1회 소비),
+  codex 는 PreCompact/PostCompact 배선. 체크포인트 골격은 경계에서
   기계 생성하며(서사 채움은 PM 판단) 경계 dedup 은 UTC+UUID 식별자·경계별 pending 파일로
   archive/재시작/동시 경계에 안전하다. 정체성 해소는 cwd→lease → 활성 단일 task → solo/legacy
   3순위·해소 실패는 훅 경로만 무음 skip(수동 명령은 fail-loud).

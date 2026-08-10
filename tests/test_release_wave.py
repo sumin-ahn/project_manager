@@ -98,6 +98,21 @@ def _compaction_checkpoint_count(dest: Path) -> int:
     )
 
 
+_OPENCODE_SNAPSHOT_RECEIPT_RE = re.compile(
+    r"^compact-snapshot-receipt\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$"
+)
+
+
+def _opencode_snapshot_receipts(marker_dir: Path) -> frozenset[tuple[str, str]]:
+    """실제 system[] 전달 뒤 남은 receipt를 (safeKey, generation)으로 읽는다."""
+    generations = set()
+    for receipt in marker_dir.glob("compact-snapshot-receipt.*"):
+        match = _OPENCODE_SNAPSHOT_RECEIPT_RE.fullmatch(receipt.name)
+        if match and receipt.is_file():
+            generations.add((match.group(1), match.group(2)))
+    return frozenset(generations)
+
+
 def _force_opencode_compaction_threshold(dest: Path, model: str) -> None:
     """격리 adopter의 per-harness 예산+선택 모델 limit만 낮춰 native compaction을 강제한다.
 
@@ -392,13 +407,18 @@ def test_release_wave_opencode_full_wave(tmp_path):
     if _DEV_SUBAGENT in proc.stdout and _REVIEWER_SUBAGENT in proc.stdout:
         assert _DEV_SUBAGENT in proc.stdout and _REVIEWER_SUBAGENT in proc.stdout
 
-    # T-0621 release boundary: 현 full-wave 세션을 이어 안전 크기 turn들을 누적한다. 과거
+    # T-0627 release boundary: 현 full-wave 세션을 이어 안전 크기 turn들을 누적한다. 과거
     # turn은 native compaction으로 줄일 수 있지만 현재 prompt는 줄일 수 없으므로 단일 초대형
-    # prompt를 쓰지 않는다. 새 compaction checkpoint 증가 뒤의 snapshot sentinel까지 함께 본다.
+    # prompt를 쓰지 않는다. 새 checkpoint 증가 뒤에는 snapshot payload가 system[]에 실제 push된
+    # generation receipt를 모델 phrasing·in-process marker 수명과 독립적으로 관측한다.
     checkpoints_before = _compaction_checkpoint_count(dest)
+    marker_dir = dest / ".project_manager" / ".local" / "ctx-stop"
     probe_results = []
+    receipt_observations = []
+    receipt_appearances = []
+    receipts_before_turn = _opencode_snapshot_receipts(marker_dir)
     checkpoint_increased = False
-    recovery_after_increment = False
+    delivered_receipts = set()
     for turn, prompt in enumerate(_opencode_compaction_probe_prompts(), start=1):
         compacted = _run_opencode_live(
             ["opencode", "run", "--continue", "--agent", "build", "--dir", str(dest),
@@ -413,21 +433,55 @@ def test_release_wave_opencode_full_wave(tmp_path):
         checkpoint_increased = (
             _compaction_checkpoint_count(dest) >= checkpoints_before + 1
         )
-        if checkpoint_increased and _COMPACTION_RECOVERY_SENTINEL in compacted.stdout:
-            recovery_after_increment = True
+        receipts = _opencode_snapshot_receipts(marker_dir)
+        appeared = receipts - receipts_before_turn
+        receipt_observations.append(receipts)
+        receipt_appearances.append(appeared)
+        if checkpoint_increased:
+            delivered_receipts.update(appeared)
+        if checkpoint_increased and delivered_receipts:
             break
+        receipts_before_turn = receipts
+
+    # 마지막 누적 turn에서 process-boundary marker만 stage됐을 수 있으므로 작은 후속 turn에서
+    # fallback push/receipt까지 한 번 더 관측한다. in-memory 소비면 이미 receipt가 있어 생략된다.
+    if checkpoint_increased and not delivered_receipts:
+        recovered = _run_opencode_live(
+            ["opencode", "run", "--continue", "--agent", "build", "--dir", str(dest),
+             "--dangerously-skip-permissions", "-m", LIVE_MODEL,
+             "If a PM recovery snapshot is present in system context, reply with exactly "
+             f"{_COMPACTION_RECOVERY_SENTINEL}; otherwise reply with exactly NO_COMPACTION_RECOVERY."],
+            cwd=str(dest), env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
+        )
+        probe_results.append(recovered)
+        assert recovered.returncode == 0, (
+            "opencode durable snapshot 소비 후속 turn 실패.\n"
+            f"stdout={recovered.stdout[-1600:]!r}\nstderr={recovered.stderr[-1000:]!r}"
+        )
+        receipts = _opencode_snapshot_receipts(marker_dir)
+        appeared = receipts - receipts_before_turn
+        receipt_observations.append(receipts)
+        receipt_appearances.append(appeared)
+        delivered_receipts.update(appeared)
 
     trace = "\n".join(
-        f"turn={index} stdout={result.stdout[-600:]!r} stderr={result.stderr[-400:]!r}"
-        for index, result in enumerate(probe_results, start=1)
+        f"turn={index} receipts={sorted(receipts)!r} new={sorted(appeared)!r} "
+        f"stdout={result.stdout[-600:]!r} "
+        f"stderr={result.stderr[-400:]!r}"
+        for index, (result, receipts, appeared) in enumerate(
+            zip(probe_results, receipt_observations, receipt_appearances), start=1
+        )
     )
     assert checkpoint_increased, (
         "opencode 강제 임계에서 session.compacted→checkpoint 증가분이 발화하지 않음.\n" + trace
     )
-    assert recovery_after_increment, (
-        "opencode 새 compaction 뒤 snapshot이 system.transform을 거쳐 모델에 도달하지 않음.\n"
-        + trace
+    assert delivered_receipts, (
+        "opencode checkpoint 증가 뒤 staged snapshot이 system[]에 전달됐다는 새 "
+        "(safeKey, generation) receipt가 관측되지 않음.\n" + trace
     )
+
+    # PM 36 실측처럼 glm은 exact-reply 지시 자체를 무시할 수 있어 echo는 best-effort다.
+    # sentinel 미등장은 receipt hard 단언을 실패시키지 않으며, 보인 echo는 trace에 보존된다.
 
 
 # ── multi-repo 경로 (multi-PM 셋업 full wave · T-0158) ───────────────────────────────────
