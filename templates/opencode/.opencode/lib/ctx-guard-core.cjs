@@ -403,11 +403,21 @@ function listCompactionSnapshots(root, sessionID) {
 }
 
 function takeCompactionSnapshot(root, sessionID) {
-  // 최초 관측의 최신 generation만 rename 선점한다. 경합 패배는 구 generation으로
-  // fallback하지 않고 skip하며, 선점 승자만 관측한 구 generation을 정리한다.
   const snapshots = listCompactionSnapshots(root, sessionID);
   if (!snapshots.length) return null;
   const latest = snapshots[snapshots.length - 1];
+  // old를 latest보다 먼저 지워 claim 진행 중 [old]만 관측되는 상태를 만들지 않는다.
+  // old 삭제 뒤 claim 전에 crash해도 latest는 생존하며, atomic rename 승자는 정확히 하나다.
+  // rename 패배자는 구 generation 재탐색/fallback 없이 skip한다.
+  for (const snapshot of snapshots.slice(0, -1)) {
+    try {
+      fs.unlinkSync(snapshot.marker);
+    } catch (error) {
+      // 동시 GC로 이미 사라진 old는 성공 동치다. 그 밖의 실패에서는 latest를 남겨
+      // 다음 소비자가 old와 함께 다시 관측하도록 claim 없이 fail-soft skip한다.
+      if (!error || error.code !== "ENOENT") return null;
+    }
+  }
   const claimed = path.join(
     path.dirname(latest.marker),
     `.${path.basename(latest.marker)}.${process.pid}.${crypto.randomUUID()}.claimed`,
@@ -427,13 +437,6 @@ function takeCompactionSnapshot(root, sessionID) {
       fs.unlinkSync(claimed);
     } catch {
       /* claimed marker 정리 실패도 주입 경계를 막지 않는다. */
-    }
-    for (const snapshot of snapshots.slice(0, -1)) {
-      try {
-        fs.unlinkSync(snapshot.marker);
-      } catch {
-        /* 이미 소비됐거나 삭제 실패한 구 generation은 fail-soft. */
-      }
     }
   }
 }

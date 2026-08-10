@@ -973,8 +973,190 @@ const builder = (value) =>
     )
 
 
-def test_plugin_concurrent_consumers_claim_newest_or_skip_without_stale_fallback(tmp_path):
-    """동일 관측의 latest 선점 패배자는 old로 fallback하지 않고 승자만 GC·receipt한다."""
+def test_plugin_late_entry_never_observes_old_while_latest_claim_is_pending(tmp_path):
+    """A의 old GC 전환점을 쪼개면 B는 [latest] 또는 []만 관측한다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — late-entry snapshot consumer 단위 skip")
+
+    project_root = _make_ctx_guard_project(tmp_path)
+    marker_dir = _snapshot_marker_dir(project_root)
+    marker_dir.mkdir(parents=True)
+    before_session_id = "ses_late_entry_before_claim"
+    after_session_id = "ses_late_entry_after_claim"
+    before_latest_generation = "20260811T000000001Z-00000000-0000-4000-8000-000000000012"
+    before_old_marker = _snapshot_marker(
+        project_root, before_session_id,
+        "20260811T000000000Z-00000000-0000-4000-8000-000000000011",
+    )
+    before_latest_marker = _snapshot_marker(
+        project_root, before_session_id, before_latest_generation,
+    )
+    before_latest_payload = "snapshot-latest-before-claim\n"
+    before_old_marker.write_text("snapshot-old-before-claim\n", encoding="utf-8")
+    before_latest_marker.write_text(before_latest_payload, encoding="utf-8")
+    os.utime(before_old_marker, (1, 1))
+    os.utime(before_latest_marker, (2, 2))
+
+    after_old_marker = _snapshot_marker(
+        project_root, after_session_id,
+        "20260811T000000000Z-00000000-0000-4000-8000-000000000013",
+    )
+    after_latest_marker = _snapshot_marker(
+        project_root, after_session_id,
+        "20260811T000000001Z-00000000-0000-4000-8000-000000000014",
+    )
+    after_latest_payload = "snapshot-latest-after-claim\n"
+    after_old_marker.write_text("snapshot-old-after-claim\n", encoding="utf-8")
+    after_latest_marker.write_text(after_latest_payload, encoding="utf-8")
+    os.utime(after_old_marker, (1, 1))
+    os.utime(after_latest_marker, (2, 2))
+
+    # A의 단계를 쪼갠다: claim 전에는 old를 지워 [latest], claim 후에는 []가 보인다.
+    before_old_marker.unlink()
+    after_old_marker.unlink()
+    after_claimed = marker_dir / f".{after_latest_marker.name}.synthetic.claimed"
+    after_latest_marker.rename(after_claimed)
+    assert _snapshot_markers(project_root, before_session_id) == [before_latest_marker]
+    assert _snapshot_markers(project_root, after_session_id) == []
+
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+const projectRoot = __PROJECT_ROOT__;
+const beforeSessionID = __BEFORE_SESSION_ID__;
+const afterSessionID = __AFTER_SESSION_ID__;
+const beforeLatestPayload = __BEFORE_LATEST_PAYLOAD__;
+
+(async () => {
+  const hooks = await m.CtxGuardPlugin({client:{session:{
+    get: async ({path:{id}}) => ({data:{id}}),
+  }}, directory:projectRoot});
+  const beforeOutput = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID:beforeSessionID}, beforeOutput);
+  assert.deepStrictEqual(beforeOutput.system, [beforeLatestPayload], "pre-claim B missed latest");
+  const afterOutput = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID:afterSessionID}, afterOutput);
+  assert.deepStrictEqual(afterOutput.system, [], "post-claim B injected a stale snapshot");
+  console.log("JS_SNAPSHOT_LATE_ENTRY_GC_FIRST_OK");
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
+        "__BEFORE_SESSION_ID__", json.dumps(before_session_id)
+    ).replace("__AFTER_SESSION_ID__", json.dumps(after_session_id)).replace(
+        "__BEFORE_LATEST_PAYLOAD__", json.dumps(before_latest_payload)
+    )
+    out = _run_node_check(script)
+    assert "JS_SNAPSHOT_LATE_ENTRY_GC_FIRST_OK" in out, (
+        f"snapshot late-entry GC-선행 실패. out={out!r}"
+    )
+    assert _snapshot_markers(project_root, before_session_id) == []
+    assert _snapshot_receipts(project_root, before_session_id) == [
+        _snapshot_receipt(project_root, before_session_id, before_latest_generation)
+    ]
+    assert _snapshot_markers(project_root, after_session_id) == []
+    assert _snapshot_receipts(project_root, after_session_id) == []
+    assert after_claimed.read_text(encoding="utf-8") == after_latest_payload
+
+
+def test_plugin_old_gc_failure_skips_latest_claim_until_retry(tmp_path):
+    """old unlink 실패 시 latest를 보존하고, 실패 해제 뒤 latest를 정확히 1회 전달한다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — snapshot old GC IO fail-soft 단위 skip")
+
+    project_root = _make_ctx_guard_project(tmp_path)
+    session_id = "ses_snapshot_old_gc_failure"
+    marker_dir = _snapshot_marker_dir(project_root)
+    marker_dir.mkdir(parents=True)
+    old_generation = "20260811T000000000Z-00000000-0000-4000-8000-000000000031"
+    latest_generation = "20260811T000000001Z-00000000-0000-4000-8000-000000000032"
+    old_marker = _snapshot_marker(project_root, session_id, old_generation)
+    latest_marker = _snapshot_marker(project_root, session_id, latest_generation)
+    latest_payload = "snapshot-latest-after-old-gc-retry\n"
+    old_marker.write_text("snapshot-old-blocked-by-eperm\n", encoding="utf-8")
+    latest_marker.write_text(latest_payload, encoding="utf-8")
+    os.utime(old_marker, (1, 1))
+    os.utime(latest_marker, (2, 2))
+
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+const fs = require("node:fs");
+const projectRoot = __PROJECT_ROOT__;
+const markerDir = __MARKER_DIR__;
+const sessionID = __SESSION_ID__;
+const oldMarker = __OLD_MARKER__;
+const latestMarker = __LATEST_MARKER__;
+const latestPayload = __LATEST_PAYLOAD__;
+const markerPaths = () => fs.readdirSync(markerDir)
+  .filter((name) => name.startsWith(`compact-snapshot.${sessionID}.`))
+  .map((name) => `${markerDir}/${name}`)
+  .sort();
+const receiptPaths = () => fs.readdirSync(markerDir)
+  .filter((name) => name.startsWith(`compact-snapshot-receipt.${sessionID}.`));
+
+(async () => {
+  const hooks = await m.CtxGuardPlugin({client:{session:{
+    get: async ({path:{id}}) => ({data:{id}}),
+  }}, directory:projectRoot});
+  const originalUnlinkSync = fs.unlinkSync;
+  let oldGcFailureObserved = false;
+  fs.unlinkSync = (target) => {
+    if (String(target) === oldMarker) {
+      oldGcFailureObserved = true;
+      const error = new Error("synthetic old snapshot GC failure");
+      error.code = "EPERM";
+      throw error;
+    }
+    return originalUnlinkSync(target);
+  };
+
+  const blockedOutput = {system:[]};
+  try {
+    await hooks["experimental.chat.system.transform"]({sessionID}, blockedOutput);
+  } finally {
+    fs.unlinkSync = originalUnlinkSync;
+  }
+  assert.strictEqual(oldGcFailureObserved, true, "old unlink failure was not induced");
+  assert.deepStrictEqual(blockedOutput.system, [], "old GC failure injected a snapshot");
+  assert.deepStrictEqual(markerPaths(), [oldMarker, latestMarker].sort(), "old GC failure claimed a marker");
+  assert.deepStrictEqual(receiptPaths(), [], "old GC failure created a receipt");
+  assert.deepStrictEqual(
+    fs.readdirSync(markerDir).filter((name) => name.endsWith(".claimed")),
+    [],
+    "old GC failure renamed latest to a claim",
+  );
+
+  const retryOutput = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID}, retryOutput);
+  assert.deepStrictEqual(retryOutput.system, [latestPayload], "retry did not deliver latest");
+  const duplicateOutput = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID}, duplicateOutput);
+  assert.deepStrictEqual(duplicateOutput.system, [], "retry delivered latest more than once");
+  console.log("JS_SNAPSHOT_OLD_GC_FAILURE_RETRY_OK");
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
+        "__MARKER_DIR__", json.dumps(str(marker_dir))
+    ).replace("__SESSION_ID__", json.dumps(session_id)).replace(
+        "__OLD_MARKER__", json.dumps(str(old_marker))
+    ).replace("__LATEST_MARKER__", json.dumps(str(latest_marker))).replace(
+        "__LATEST_PAYLOAD__", json.dumps(latest_payload)
+    )
+    out = _run_node_check(script)
+    assert "JS_SNAPSHOT_OLD_GC_FAILURE_RETRY_OK" in out, (
+        f"snapshot old GC 실패 후 재시도 복구 실패. out={out!r}"
+    )
+    assert _snapshot_markers(project_root, session_id) == []
+    assert list(marker_dir.glob(".compact-snapshot.*.claimed")) == []
+    assert _snapshot_receipts(project_root, session_id) == [
+        _snapshot_receipt(project_root, session_id, latest_generation)
+    ]
+
+
+def test_plugin_atomic_rename_race_has_one_winner_and_loser_skips_without_receipt(tmp_path):
+    """동일 latest의 atomic rename 승자는 하나며 패배자는 무주입·무receipt로 skip한다."""
     if _NODE is None:
         import pytest
 
@@ -1045,7 +1227,7 @@ const waitForSignals = (suffix) => {
     }
     if (wonLatest) {
       waitForSignals(".attempted");
-      // 패배자가 skip 직후 old를 관측할 때까지 승자의 finally GC를 지연한다.
+      // 패배자가 무receipt로 끝났음을 관측할 때까지 승자의 전달/receipt를 지연한다.
       sleep(400);
     }
     if (renameError) throw renameError;
@@ -1063,6 +1245,8 @@ const waitForSignals = (suffix) => {
     lostLatest,
     output: output.system,
     oldExistsAfterTransform: fs.existsSync(oldMarker),
+    receiptsAfterTransform: fs.readdirSync(markerDir)
+      .filter((name) => name.startsWith(`compact-snapshot-receipt.${sessionID}.`)),
   }));
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''
@@ -1099,7 +1283,67 @@ const waitForSignals = (suffix) => {
     assert winner["output"] == [latest_payload]
     assert winner["oldExistsAfterTransform"] is False, "선점 승자가 구 generation을 GC하지 않음"
     assert loser["output"] == [], "latest 선점 패배자가 old snapshot을 stale 주입함"
-    assert loser["oldExistsAfterTransform"] is True, "선점 패배자가 구 generation을 GC함"
+    assert loser["oldExistsAfterTransform"] is False, "latest claim 전에 old GC가 끝나지 않음"
+    assert loser["receiptsAfterTransform"] == [], "선점 패배자가 receipt를 생성함"
+    assert _snapshot_markers(project_root, session_id) == []
+    assert list(marker_dir.glob(".compact-snapshot.*.claimed")) == []
+    assert _snapshot_receipts(project_root, session_id) == [
+        _snapshot_receipt(project_root, session_id, latest_generation)
+    ]
+
+
+def test_plugin_consumer_recovers_latest_after_crash_between_old_gc_and_claim(tmp_path):
+    """old GC 직후 소비자가 crash한 중간 상태에서도 다음 소비자는 latest를 1회 전달한다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — snapshot pre-claim crash recovery 단위 skip")
+
+    project_root = _make_ctx_guard_project(tmp_path)
+    session_id = "ses_snapshot_preclaim_crash"
+    marker_dir = _snapshot_marker_dir(project_root)
+    marker_dir.mkdir(parents=True)
+    old_generation = "20260811T000000000Z-00000000-0000-4000-8000-000000000021"
+    latest_generation = "20260811T000000001Z-00000000-0000-4000-8000-000000000022"
+    old_marker = _snapshot_marker(project_root, session_id, old_generation)
+    latest_marker = _snapshot_marker(project_root, session_id, latest_generation)
+    latest_payload = "snapshot-latest-after-preclaim-crash\n"
+    old_marker.write_text("snapshot-old-before-preclaim-crash\n", encoding="utf-8")
+    latest_marker.write_text(latest_payload, encoding="utf-8")
+    os.utime(old_marker, (1, 1))
+    os.utime(latest_marker, (2, 2))
+
+    # A가 관측한 old만 GC한 직후 crash하고 latest claim은 시작하지 않은 상태를 재현한다.
+    old_marker.unlink()
+    assert _snapshot_markers(project_root, session_id) == [latest_marker]
+    assert _snapshot_receipts(project_root, session_id) == []
+
+    script = r'''
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+const projectRoot = __PROJECT_ROOT__;
+const sessionID = __SESSION_ID__;
+const latestPayload = __LATEST_PAYLOAD__;
+
+(async () => {
+  const hooks = await m.CtxGuardPlugin({client:{session:{
+    get: async ({path:{id}}) => ({data:{id}}),
+  }}, directory:projectRoot});
+  const firstOutput = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID}, firstOutput);
+  assert.deepStrictEqual(firstOutput.system, [latestPayload], "surviving latest was not delivered");
+  const secondOutput = {system:[]};
+  await hooks["experimental.chat.system.transform"]({sessionID}, secondOutput);
+  assert.deepStrictEqual(secondOutput.system, [], "surviving latest was delivered more than once");
+  console.log("JS_SNAPSHOT_PRECLAIM_CRASH_RECOVERY_OK");
+})().catch((err) => { console.error(err); process.exitCode = 1; });
+'''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
+        "__SESSION_ID__", json.dumps(session_id)
+    ).replace("__LATEST_PAYLOAD__", json.dumps(latest_payload))
+    out = _run_node_check(script)
+    assert "JS_SNAPSHOT_PRECLAIM_CRASH_RECOVERY_OK" in out, (
+        f"snapshot pre-claim crash 복구 실패. out={out!r}"
+    )
     assert _snapshot_markers(project_root, session_id) == []
     assert list(marker_dir.glob(".compact-snapshot.*.claimed")) == []
     assert _snapshot_receipts(project_root, session_id) == [
