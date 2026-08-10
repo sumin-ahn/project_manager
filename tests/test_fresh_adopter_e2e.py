@@ -142,6 +142,70 @@ def pm_update():
     return _load_pm_update()
 
 
+def test_fresh_adopter_default_installs_every_registered_harness_adapter(
+        pm_import, tmp_path):
+    """``--harness`` 생략은 ``all``과 같아 등록된 세 하네스 어댑터를 전부 설치한다."""
+    dest = tmp_path / "adopter-default-all"
+
+    rc = pm_import.main([
+        "--new", str(dest), "--name", "Default All", "--fill", "manual",
+    ])
+
+    assert rc == 0, f"default import 실패 (rc={rc})"
+    assert set(HARNESSES) == set(pm_import.REGISTERED_HARNESSES)
+    assert len(HARNESSES) == 3, "현재 출하 계약은 claude·opencode·codex 세 하네스다"
+    for harness in HARNESSES:
+        for adapter_dir in HARNESS_ADAPTER_DIRS[harness]:
+            assert (dest / adapter_dir).is_dir(), (
+                f"default import 에 {harness} 어댑터 {adapter_dir} 미설치"
+            )
+        assert (dest / HARNESS_ROOT_DOC[harness]).is_file(), (
+            f"default import 에 {harness} 루트 진입문서 미설치"
+        )
+
+    receipt = json.loads(
+        (dest / pm_import.INSTALL_RECEIPT_RELPATH).read_text(encoding="utf-8")
+    )
+    assert receipt["harnesses"] == list(pm_import.REGISTERED_HARNESSES)
+
+
+def test_fresh_adopter_default_folds_shared_agents_entry_to_neutral_source(
+        pm_import, tmp_path):
+    """3하네스 기본 공존은 opencode+codex 공유 AGENTS.md를 중립 codex 원본 하나로 접는다."""
+    dest = tmp_path / "adopter-default-shared-entry"
+
+    assert pm_import.main([
+        "--new", str(dest), "--name", "Shared Entry", "--fill", "manual",
+    ]) == 0
+
+    receipt = json.loads(
+        (dest / pm_import.INSTALL_RECEIPT_RELPATH).read_text(encoding="utf-8")
+    )
+    assert receipt["instance_owned_templates"]["AGENTS.md"] == {
+        "weight": "full",
+        "source": "templates/codex/AGENTS.md",
+    }
+    agents = (dest / "AGENTS.md").read_text(encoding="utf-8")
+    assert "`/pm-bootstrap`(opencode) / `$pm-bootstrap`(codex)" in agents
+
+
+def test_default_import_partial_templates_error_suggests_narrow_harness(
+        pm_import, tmp_path, capsys):
+    """무인자=all인데 source가 일부 flavor만 가지면 단일 하네스 탈출구를 함께 안내한다."""
+    source = tmp_path / "partial-framework"
+    (source / "templates" / "claude_code").mkdir(parents=True)
+
+    rc = pm_import.main([
+        "--new", str(tmp_path / "adopter-partial"), "--from", str(source),
+        "--name", "Partial",
+    ])
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "소스 어댑터 트리 없음" in captured.err
+    assert "또는 --harness claude 처럼 설치할 하네스를 좁혀라" in captured.err
+
+
 @pytest.mark.parametrize("weight", ("full", "lite"))
 @pytest.mark.parametrize(
     "selection", ("codex", "claude,codex", "codex,opencode", "all")

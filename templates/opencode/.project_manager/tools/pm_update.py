@@ -387,6 +387,11 @@ _ENGINE_REV_SKEW_RECOVERY_REASONS = {
         "`unavailable` 로 내려가 완료 게이트가 rc1 로 재실행을 요구하고(엔진 적용은 보존), "
         "여기서 올리면 이미 착지한 엔진 파일 위에서 동기가 traceback 으로 죽는다"
     ),
+    "instance_owned_template_delta": (
+        "인스턴스 소유 세대 요약도 형제 pm_import 를 통해 revved 형제까지 들어간다 — 동기 시작의 "
+        "구 사본으로 판정하지 못해도 엔진 적용을 완주하고, 종료 수렴 검증 뒤 다음 실행이 같은 "
+        "요약을 재판정한다"
+    ),
     "sync_adapter_configs.accept": (
         "한 파일 수용은 백업·원자 교체·원장 기록이라 형제 락 seam 까지 들어간다 — 한 파일의 "
         "사본 불일치가 나머지 파일과 이미 끝난 엔진 동기를 되돌리지 않게 보존으로 내린다"
@@ -4928,6 +4933,33 @@ def _has_adapter_config_candidate(dest_root: Path) -> bool:
     return False
 
 
+def _instance_owned_template_delta_lines(
+        dest_root: Path, source_root: Path) -> list[str]:
+    """세대 델타 관측 채널 — 실패도 변경 없음으로 접지 않는 advisory 한 줄."""
+    try:
+        pm_import = _load_pm_import()
+        if pm_import is None:
+            raise RuntimeError("pm_import 로드 실패")
+        return pm_import.instance_owned_template_delta_lines(dest_root, source_root)
+    except Exception as exc:  # noqa: BLE001 — sync 결과는 보존하고 관측 불가만 loud.
+        mixed_rev = _absorb_engine_rev_skew_for_recovery(
+            exc, "instance_owned_template_delta")
+        reason = (
+            "동기 실행 중 엔진 사본 혼합(종료 시 수렴 검증·다음 실행에서 재판정)"
+            if mixed_rev else str(exc)
+        )
+        return [
+            "⚠️  인스턴스 소유 템플릿 세대 판정 unavailable — "
+            f"{reason} · 판정 불가(변경 없음 아님)·전량 확인 권장."
+        ]
+
+
+def _print_instance_owned_template_delta(lines: list[str]) -> None:
+    """파일별 한 줄 출력. 정합이면 ``lines=[]``라 완전 무출력."""
+    for line in lines:
+        print(line)
+
+
 def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
 
@@ -6105,6 +6137,14 @@ def _main(argv: list[str] | None = None) -> int:
         not args.target and not scope_paths
         and _has_adapter_config_candidate(effective_dest)
     )
+    # instance-owned 세대 요약은 각 종료 분기에서 config 채널의 **최종 판정 뒤** 계산한다.
+    # 무편집 managed는 같은 실행에서 자동 갱신·원장화되므로 사전 계산한 --accept 처방을 뒤늦게
+    # 출력하면 실제 최종 상태와 모순된다. report-drift·edited managed는 원장이 전진하지 않아
+    # 최종 계산에도 그대로 남는다. --target·--paths는 채택 인스턴스 전체 흡수가 아니므로 비발화.
+    def print_instance_owned_delta() -> None:
+        if not args.target and not scope_paths:
+            _print_instance_owned_template_delta(
+                _instance_owned_template_delta_lines(effective_dest, source_root))
 
     if not changes:
         # 잔존 은퇴 파일은 changes 와 독립이다 — "변경 없음" 이 곧 "dest 가 상류와 같다" 는 아니다.
@@ -6134,6 +6174,7 @@ def _main(argv: list[str] | None = None) -> int:
             #   수렴시킨다(두 소견 자체는 이미 위에서 각자 출력됐다).
             hook_sets = check_adapter_hook_sets(effective_dest, source_root)
             _print_adapter_hook_set_finding(hook_sets, dry_run=args.dry_run)
+            print_instance_owned_delta()
             if not args.dry_run and _adapter_hook_set_gate_failed(hook_sets):
                 print(
                     "[중단] 설치된 훅 세트가 채택자 config 가 요구하는 세대가 아니다 — 위 처방 후 "
@@ -6151,6 +6192,8 @@ def _main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 return 1
+        else:
+            print_instance_owned_delta()
         print("최신 — 변경 없음.")
         # RUN2 수렴 지점: 엔진을 배달한 RUN1은 구 pm_update로 실행될 수 있으므로, 새 엔진의
         # 변경 0 재실행에서도 경로 upstream의 baseline/seen 쌍을 확인한다. dry-run은 기존
@@ -6187,6 +6230,7 @@ def _main(argv: list[str] | None = None) -> int:
             _print_adapter_config_finding(configs, dry_run=True)
             _print_adapter_hook_set_finding(
                 check_adapter_hook_sets(effective_dest, source_root), dry_run=True)
+        print_instance_owned_delta()
         return 0
 
     # 훅 세트 판정자는 **상류 세대**로 미리 해소해 넘긴다 — 이번 실행이 pm_import 자체를
@@ -6220,6 +6264,7 @@ def _main(argv: list[str] | None = None) -> int:
         #   뒤처져서 난 불일치" 가 이번 실행에서 저절로 해소되고, 그래도 남는 것만 red 다.
         hook_sets = check_adapter_hook_sets(effective_dest, source_root)
         _print_adapter_hook_set_finding(hook_sets, dry_run=False)
+        print_instance_owned_delta()
         if _adapter_hook_set_gate_failed(hook_sets):
             print(
                 f"[중단] 엔진 파일 {len(changes)}건은 적용됐지만 설치된 훅 세트가 채택자 config "
@@ -6238,6 +6283,8 @@ def _main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
+    else:
+        print_instance_owned_delta()
 
     # upstream_rev baseline 갱신 — 매 sync 마다 source(upstream) HEAD 를
     # local.conf 에 박아 drift-lint의 "마지막 동기 이후" 기준점을 최신화한다. 경로

@@ -7,7 +7,7 @@
 ## 한 줄
 
 ```
-<manager>/pm-import.sh --new <대상경로> --harness <자기-하니스> [--upstream <url|path>]
+<manager>/pm-import.sh --new <대상경로> [--harness <하니스|콤마조합|all>] [--upstream <url|path>]
 ```
 
 `<manager>` = 이 repo(project_manager)의 루트(또는 그 clone). `pm-import.sh` 가 deep 경로·인터프리터를
@@ -15,7 +15,7 @@
 
 ## 자율 판단 3가지
 
-1. **harness — 권장 `all`** (CLI default 은 `claude`) — 등록된 모든 어댑터를 설치하고 엔진은 공유한다.
+1. **harness — 권장 `all`** (CLI default 은 `all`) — 등록된 모든 어댑터를 설치하고 엔진은 공유한다.
    사용자가 단일 하네스를 명시했거나 대상 환경이 좁으면 그것만(`--harness claude` | `opencode` |
    `codex`), 원하는 조합이면 콤마로 고른다(예 `--harness claude,codex`). 순서와 중복은 결과에
    영향이 없고 `all`은 등록 목록에서 파생된다. 기존 채택본에 나중에 추가할 때는 `add-harness` 채널이다.

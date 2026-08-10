@@ -201,8 +201,8 @@ def test_fill_failure_partial_formatter_reraises_engine_rev_skew(
         pm_import._fill_failure_with_partial("head", RuntimeError("original"))
 
 
-def test_fill_harness_help_lists_are_registry_derived(pm_import, capsys):
-    """실제 --help의 choices·본문 바이너리 목록이 codex 포함 registry와 일치한다."""
+def test_fill_harness_help_lists_and_import_default_are_registry_derived(pm_import, capsys):
+    """실제 --help의 registry 목록과 import 기본값/epilog가 ``all`` 계약에 일치한다."""
     with pytest.raises(SystemExit) as exc_info:
         pm_import.main(["--help"])
     assert exc_info.value.code == 0
@@ -212,6 +212,9 @@ def test_fill_harness_help_lists_are_registry_derived(pm_import, capsys):
     for harness in pm_import.HARNESS_TEMPLATE_DIRS:
         assert f"`{harness}`" in help_text
     assert "--fill-harness {claude,opencode}" not in help_text
+    assert "전체: all; default: all" in help_text
+    assert "harness=기본 all(등록 어댑터 전체:" in help_text
+    assert "default: claude" not in help_text
 
 
 def test_fill_harness_cap_advisory_uses_shared_relay_judgment(pm_import, monkeypatch, tmp_path):

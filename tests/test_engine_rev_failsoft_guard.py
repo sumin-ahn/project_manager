@@ -920,7 +920,11 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   그 세대가 이미 제공하던 판정(`is_live_hook_set_path` 단일 인자)을 살리려 형제 사본을 한 번
     #   더 로드하는데, 그 로드는 혼합 트리에서 정확히 발화하는 지점이라 등록된 사유로 흡수한다 —
     #   여기서 올리면 강등 사다리를 얹으려다 동기 자체를 죽인다(판정자만 무판정으로 내려간다).
-    assert len(report.boundaries) == 179, "propagation sweep boundary ratchet changed"
+    # 181 = 179 + T-0617 인스턴스 소유 template 세대 요약의 두 경계. pm-update 동기 경계는 실행
+    #   시작의 구 pm_import 사본이 낸 marked skew를 등록된 복구 사유로 흡수하고 종료 시 수렴을
+    #   검증한다. 독립 `sync-adapter-config --check` 경계는 복구 실행이 아니므로 같은 skew를 그대로
+    #   re-raise한다. 일반 판독 실패만 전량 확인 advisory로 내린다.
+    assert len(report.boundaries) == 181, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

@@ -26,12 +26,13 @@ PM(메인 세션)이 `Agent` 툴을 `subagent_type=developer|code-reviewer|archi
 
 ## 채택 (pm_import — 정규 경로)
 
-manager 루트의 `pm-import.sh`(`/.cmd`) 파사드로 한다 (default harness = claude):
+manager 루트의 `pm-import.sh`(`/.cmd`) 파사드로 한다 (default harness = all;
+`--harness`를 생략하면 등록된 어댑터 전체를 채택):
 
 ```bash
-<manager>/pm-import.sh --new <dest>             # 신규 프로젝트 (디렉토리 + git init)
-<manager>/pm-import.sh --into <dest>            # 기존 프로젝트에 도입 (비파괴 · 충돌 백업)
-<manager>/pm-import.sh --new <dest> --dry-run   # 적용 전 계획만 — 파일 미변경 (권장)
+<manager>/pm-import.sh --new <dest>             # 신규 프로젝트 + 전체 어댑터 (default all)
+<manager>/pm-import.sh --into <dest>            # 기존 프로젝트에 전체 어댑터 도입 (비파괴·충돌 백업)
+<manager>/pm-import.sh --new <dest> --dry-run   # 전체 어댑터 적용 계획만 — 파일 미변경 (권장)
 ```
 
 (Windows 는 `pm-import.cmd`. `--from` 은 manager 루트 auto-default.) 파사드 없이 푸는 수동

@@ -3538,6 +3538,11 @@ def cmd_sync_adapter_config(
     판정·수용 로직은 pm_import 단일 진실(`judge_adapter_configs`·`accept_adapter_config`)이고
     여기선 표시와 rc 번역만 한다. dest 해소는 pm_config 관례(REPO 앵커·cmd_add_harness 동형),
     소스 해소는 add-harness 와 같은 규칙(`--from` > local.conf upstream > dest 자기전환)이다.
+
+    ``--check``의 인스턴스-소유 세대 요약은 경로별 기준 원장을 따른다. 동기가
+    ``upstream_rev``를 전진시키는 경로는 직후 check에서 사라질 수 있지만, report-drift·
+    edited managed 파일은 보존된 파일별 ``template_rev``를 쓰므로 명시적 ``--accept``
+    전까지 매 check에 반복된다. 백업/git을 대신하는 durable backstop은 아니다.
     """
     pm_import_mod = pm_import or _load_module("pm_import", "pm_import.py")
     if pm_import_mod is None:
@@ -3546,14 +3551,31 @@ def cmd_sync_adapter_config(
             f"({TOOLS_DIR / 'pm_import.py'} 부재 또는 로드 실패).",
             file=sys.stderr,
         )
-        return 1
+        return _finish_sync_adapter_config(1, check=getattr(args, "check", False))
     dest = dest_root if dest_root is not None else REPO
     try:
         source_root = pm_import_mod.resolve_adapter_config_source(
             dest, getattr(args, "source", None))
     except FileNotFoundError as exc:
         print(f"[중단] {exc}", file=sys.stderr)
-        return 1
+        return _finish_sync_adapter_config(1, check=getattr(args, "check", False))
+
+    # 완료 게이트가 보는 같은 source checkout에서 instance-owned 전량(진입문서 ``none`` 포함)의
+    # 세대 델타도 읽기 전용으로 노출한다. 판정 실패는 config 수렴 rc와 섞지 않는 advisory지만,
+    # 변경 없음으로 접지 않고 전량 확인을 명시한다.
+    if getattr(args, "check", False):
+        try:
+            delta_lines = pm_import_mod.instance_owned_template_delta_lines(
+                dest, source_root)
+        except Exception as exc:  # noqa: BLE001 — 구/부분 엔진도 check 본류는 계속한다.
+            if _is_engine_rev_skew(exc):
+                raise
+            delta_lines = [
+                "⚠️  인스턴스 소유 템플릿 세대 판정 unavailable — "
+                f"{exc} · 판정 불가(변경 없음 아님)·전량 확인 권장."
+            ]
+        for line in delta_lines:
+            print(line)
 
     try:
         judgments = pm_import_mod.judge_adapter_configs(dest, source_root)
@@ -3566,22 +3588,31 @@ def cmd_sync_adapter_config(
             "source인지 확인하고 pm-update 후 다시 검사하라.",
             file=sys.stderr,
         )
-        return 1
+        return _finish_sync_adapter_config(1, check=getattr(args, "check", False))
     accept = getattr(args, "accept", None)
     if accept:
-        return _accept_adapter_config_one(
-            pm_import_mod, dest, source_root, accept, judgments)
+        return _finish_sync_adapter_config(
+            _accept_adapter_config_one(
+                pm_import_mod, dest, source_root, accept, judgments),
+            check=getattr(args, "check", False),
+        )
     if getattr(args, "accept_all", False):
-        return _accept_adapter_config_set(
-            pm_import_mod, dest, source_root, judgments)
+        return _finish_sync_adapter_config(
+            _accept_adapter_config_set(
+                pm_import_mod, dest, source_root, judgments),
+            check=getattr(args, "check", False),
+        )
 
     if not judgments:
         print("어댑터 config 채널 대상 없음 (설치 하네스의 config 가 없거나 소스에 template 부재).")
         # config 채널 대상이 0 이어도 훅 세트는 따로 볼 수 있다(설치된 훅 + 채택자 settings 는
         #   실재). 여기서 조용히 green 을 내면 게이트 표면이 통째로 우회된다.
         if getattr(args, "check", False):
-            return 1 if _report_hook_set_findings(pm_import_mod, dest, source_root) else 0
-        return 0
+            return _finish_sync_adapter_config(
+                1 if _report_hook_set_findings(pm_import_mod, dest, source_root) else 0,
+                check=True,
+            )
+        return _finish_sync_adapter_config(0, check=False)
     print(f"# 어댑터 config 판정 (소스: {source_root})")
     for judgment in judgments:
         label = _adapter_config_label(judgment, pm_import_mod)
@@ -3595,9 +3626,9 @@ def cmd_sync_adapter_config(
         unconverged = pm_import_mod.unconverged_managed_adapter_configs(judgments)
         if not unconverged:
             if hook_set_failed:
-                return 1
+                return _finish_sync_adapter_config(1, check=True)
             print("✓ managed 어댑터 config 수렴 확인 (template byte + 원장 dest hash).")
-            return 0
+            return _finish_sync_adapter_config(0, check=True)
         print("[중단] managed 어댑터 config 미수렴:", file=sys.stderr)
         for judgment, status in unconverged:
             print(f"  - {judgment.relpath}: {status}", file=sys.stderr)
@@ -3617,12 +3648,21 @@ def cmd_sync_adapter_config(
                     f"{judgment.relpath}` (백업 후 상류 값 수용·원장화).",
                     file=sys.stderr,
                 )
-        return 1
+        return _finish_sync_adapter_config(1, check=True)
     # 세트 수용도 여기서 병기한다 — 단건만 노출하면 무편집분이 여러 개인 채택자가 세트 커맨드의
     #   존재를 모른 채 한 파일씩 수용한다(발견성). 제외 규칙은 세트 커맨드가 스스로 알린다.
     print(f"  수용(백업 후 상류 값 채택): {_FACADE_PROG} sync-adapter-config --accept <경로> "
           "· 무편집분 일괄은 --accept-all (Windows 는 `.\\pm-config.cmd`)")
-    return 0
+    return _finish_sync_adapter_config(0, check=False)
+
+
+def _finish_sync_adapter_config(rc: int, *, check: bool) -> int:
+    """``--check`` 말미에 경로별 세대 요약 수명을 명시한다."""
+    if check:
+        print("세대 요약은 기준 원장별 수명 — upstream_rev 전진분은 이후 사라질 수 있고, "
+              "보존·미수용 managed 파일은 --accept 전까지 매 검사 반복; "
+              "지난 세대는 백업/git 로 확인")
+    return rc
 
 
 def _dest_relative_label(path, dest_root) -> str:

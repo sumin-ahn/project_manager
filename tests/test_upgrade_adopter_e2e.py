@@ -763,6 +763,12 @@ def _t0585_pm_update_source() -> str:
         encoding="utf-8")
     source = _slice_replace(
         source,
+        '    "instance_owned_template_delta": (\n',
+        '    "sync_adapter_configs.accept": (\n',
+        "",
+    )
+    source = _slice_replace(
+        source,
         "# pm_import 자체를 아직 못 불러오는 복구 RUN에서도 채널 적용 여부를 판정할 최소 좌표.\n",
         "def sync_adapter_configs",
         "\n\n",
@@ -784,6 +790,34 @@ def _t0585_pm_update_source() -> str:
         "    )\n",
         "    do_adapter_config = not args.target and not scope_paths\n",
         1,
+    )
+    # T-0617 세대 관측은 T-0585 updater에 없었다. 판정 snapshot과 세 종료 표면 호출을 모두
+    # 역적용해야 합성본에 undefined helper가 남지 않고 whole-file SHA가 실제 결함 세대를 가리킨다.
+    source = _slice_replace(
+        source,
+        "    # config 채널이 원장을 새 세대로 갱신하기 **전** 직전 세대를 스냅샷으로 판정한다. 출력은 각\n",
+        "\n    if not changes:\n",
+        "",
+    )
+    source = source.replace(
+        "        else:\n"
+        "            _print_instance_owned_template_delta(instance_owned_delta_lines)\n",
+        "",
+        1,
+    )
+    source = source.replace(
+        "    else:\n"
+        "        _print_instance_owned_template_delta(instance_owned_delta_lines)\n",
+        "",
+        1,
+    )
+    source = source.replace(
+        "            _print_instance_owned_template_delta(instance_owned_delta_lines)\n",
+        "",
+    )
+    source = source.replace(
+        "        _print_instance_owned_template_delta(instance_owned_delta_lines)\n",
+        "",
     )
     # 훅 세트 게이트(T-0606 이후 세대)는 **역델타에서 통째로 걷어낸다** — T-0585 세대 updater 엔
     #   그 개념이 없었다. 남겨 두면 이 fixture 가 "codex 훅 세트 판정이 늘 빈 결과" 라는 전제에

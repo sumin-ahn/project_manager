@@ -7,7 +7,7 @@ sed 로 못 채우는 **자유서술 placeholder** 채움(하니스 헤드리스
 
 사용:
     pm_import.py (--into <기존프로젝트> | --new <프로젝트>)   # 모드 택1
-                 --harness <harness[,harness...]|all>        # 어댑터 집합 (default: claude)
+                 [--harness <harness[,harness...]|all>]      # 어댑터 집합 (default: all)
                  --weight  {full,lite}                        # 무게축 (default: full)
                  [--from <프레임워크-checkout>]               # 소스 (default: 이 repo 루트)
                  [--name <표시이름>]                          # {{PROJECT_NAME}} (default: 디렉토리명)
@@ -66,6 +66,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime
+import difflib
 import errno
 import functools
 import hashlib
@@ -80,7 +81,7 @@ import subprocess
 import sys
 import tempfile
 import warnings
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, NamedTuple, NoReturn
 
 _TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
@@ -4576,7 +4577,8 @@ def resolve_template_roots(
                 raise FileNotFoundError(
                     f"소스 어댑터 트리 없음: {root}. "
                     f"--from 이 올바른 프레임워크 checkout 인지 확인하라 "
-                    f"(templates/{name}/ 필요)."
+                    f"(templates/{name}/ 필요). 또는 --harness claude 처럼 설치할 하네스를 "
+                    f"좁혀라."
                 )
             roots.append(root)
     return roots
@@ -5010,10 +5012,13 @@ def _pm_install_evidence(source_root: Path) -> tuple[dict[str, set[str]], dict[s
 #     추적이라 기록과 대상이 같은 채널로 함께 이동한다(다중 사용자 clone 공유).
 #   - clobber 면역: manifest 미등재라 pm_update 동기 대상이 아니고, `board.py init` 이 통째로 다시
 #     쓰는 local.conf 의 백업·재병합 왕복도 타지 않는다(재-import 마다 값이 되살아나는 창 없음).
-# 형식은 JSON 한 객체 — `harnesses` 목록만 의미를 갖고(읽기는 `schema` 를 요구하지 않는다) 날짜 등
-# 변하는 값을 넣지 않아 같은 집합이면 매 실행 byte 동일이다(재-import churn 0).
+# 형식은 JSON 한 객체 — `harnesses`와 실제로 레이다운한 instance-owned template 좌표만 의미를
+# 갖는다. 좌표는 dst relpath → `{weight, source}`이고, source는 checkout 기준 POSIX 경로다. 특히
+# lite의 `X.lite.md → X.md` rename을 나중 관측이 full `X.md`로 되짚지 않게 설치 순간 선택을 박제한다.
+# 날짜 등 변하는 값은 넣지 않아 같은 설치 형상이면 매 실행 byte 동일이다(re-import churn 0).
 INSTALL_RECEIPT_RELPATH = Path(".project_manager") / "install.json"
-INSTALL_RECEIPT_SCHEMA = 1
+INSTALL_RECEIPT_SCHEMA = 2
+INSTALL_RECEIPT_TEMPLATE_COORDINATES_KEY = "instance_owned_templates"
 
 
 def _install_receipt_fix_hint(dest_root: Path) -> str:
@@ -5183,7 +5188,8 @@ def _preserve_corrupt_install_receipt(dest_root: Path,
 
 
 def record_install_receipt(dest_root: Path, harnesses,
-                           root_identity: tuple | None = None) -> bool:
+                           root_identity: tuple | None = None, *,
+                           template_coordinates: dict | None = None) -> bool:
     """설치 하네스를 인스턴스 설치 기록에 박제한다 — 내용이 바뀌었으면 True.
 
     기록 시점은 **실제 설치·추가가 일어난 run**(`--new`·`--into`·add-harness 의 적용 경로)뿐이다.
@@ -5193,6 +5199,10 @@ def record_install_receipt(dest_root: Path, harnesses,
     쌓는 대신 한 번 원천으로 옮긴다). 엔진 동기(pm_update)는 기록 채널이 아니다: 그쪽 dest 는 채택자
     인스턴스일 수도, 출하 템플릿 트리(`--target`)나 프레임워크 checkout 자신일 수도 있어 "설치했다"
     는 사실을 만들 자격이 없다(설치 행위를 한 쪽만 기록한다).
+
+    `template_coordinates`는 이번 복사에서 실제 성공한 instance-owned dst만 받는다. 기존 좌표와
+    합쳐 쓰므로 add-harness가 create-if-absent로 보존한 진입문서나 파일 단위 적용 제외분의 과거
+    좌표를 현재 full 좌표로 바꾸지 않는다. 인자를 생략한 기존 호출도 이미 기록된 좌표를 보존한다.
 
     기존 기록의 **미등록 이름은 보존한다**: 그 값은 이 엔진보다 새로운 엔진이 남긴 하네스일 수
     있어, 구 엔진의 재기록이 지우면 신 엔진의 설치 사실이 영구 소실된다(판정에서 빼는 것과 기록에서
@@ -5233,9 +5243,26 @@ def record_install_receipt(dest_root: Path, harnesses,
     for name in preserved:  # 중복 접기(원래 순서 유지·byte 안정).
         if name not in seen_preserved:
             seen_preserved.append(name)
+    existing_coordinates = (existing.document or {}).get(
+        INSTALL_RECEIPT_TEMPLATE_COORDINATES_KEY)
+    coordinates = dict(existing_coordinates) if isinstance(existing_coordinates, dict) else {}
+    if template_coordinates:
+        for relpath, coordinate in template_coordinates.items():
+            if not isinstance(relpath, str) or not isinstance(coordinate, dict):
+                continue
+            weight = coordinate.get("weight")
+            source = coordinate.get("source")
+            if weight not in WEIGHT_CHOICES or not isinstance(source, str):
+                continue
+            coordinates[relpath] = {"weight": weight, "source": source}
+    payload = {
+        "schema": INSTALL_RECEIPT_SCHEMA,
+        "harnesses": ordered + seen_preserved,
+    }
+    if coordinates:
+        payload[INSTALL_RECEIPT_TEMPLATE_COORDINATES_KEY] = coordinates
     text = json.dumps(
-        {"schema": INSTALL_RECEIPT_SCHEMA, "harnesses": ordered + seen_preserved},
-        ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     try:
         if read_dest_text(dest_root, INSTALL_RECEIPT_RELPATH,
                           root_identity=root_identity) == text:
@@ -5256,6 +5283,40 @@ def record_install_receipt(dest_root: Path, harnesses,
               f"내려갑니다. {_install_receipt_fix_hint(dest_root)}.", file=sys.stderr)
         return False
     return True
+
+
+def _copied_instance_owned_template_coordinates(
+        plan: list[CopyAction], dest_root: Path, source_root: Path,
+        copied_relpaths, weight: str) -> dict[str, dict[str, str]]:
+    """실제 복사 성공분에서 instance-owned template 좌표를 추출한다.
+
+    계획 전체나 설치 하네스 선언으로 재구성하지 않고 ``CopyAction.src``를 직접 읽는다. 그래야
+    lite rename과 공존 중립 source override가 기록에 그대로 남고, 적용 단계에서 제외된 파일이나
+    create-if-absent로 보존한 기존 파일은 현재 실행 좌표로 오염되지 않는다.
+    """
+    dest_root = Path(dest_root)
+    source_root = Path(source_root)
+    copied = {Path(rel) for rel in copied_relpaths}
+    instance_owned = {
+        relpath
+        for relpaths in INSTANCE_OWNED_ADAPTER_FILES.values()
+        for relpath in relpaths
+    }
+    coordinates: dict[str, dict[str, str]] = {}
+    for action in plan:
+        try:
+            dest_rel = action.dst.relative_to(dest_root)
+            source_rel = action.src.relative_to(source_root)
+        except ValueError:
+            continue
+        relpath = dest_rel.as_posix()
+        if dest_rel not in copied or relpath not in instance_owned:
+            continue
+        coordinates[relpath] = {
+            "weight": weight,
+            "source": source_rel.as_posix(),
+        }
+    return coordinates
 
 
 def _has_adapter_shape(dest_root: Path, harness: str) -> bool:
@@ -5462,6 +5523,292 @@ def read_adapter_baseline(dest_root: Path) -> dict:
     if loaded.status != "ok" or loaded.document is None:
         return {"schema": ADAPTER_BASELINE_SCHEMA, "files": {}}
     return loaded.document
+
+
+class InstanceOwnedTemplateTarget(NamedTuple):
+    """설치 인스턴스가 소유하는 한 파일과 설치 때 선택된 template 좌표."""
+    relpath: str
+    harness: str
+    mode: str
+    weight: str | None
+    template: Path | None
+    template_git_relpath: str | None
+
+
+def _recorded_instance_owned_template_coordinates(dest_root: Path) -> dict:
+    """설치 영수증의 파일별 template 좌표 — 구/손상 기록은 빈 좌표다."""
+    loaded = _load_install_receipt_document(Path(dest_root), quiet=True)
+    if loaded.status != "ok" or loaded.document is None:
+        return {}
+    if _install_receipt_is_newer_schema(loaded.document):
+        return {}
+    coordinates = loaded.document.get(INSTALL_RECEIPT_TEMPLATE_COORDINATES_KEY)
+    return coordinates if isinstance(coordinates, dict) else {}
+
+
+def _resolve_recorded_template_coordinate(
+        source_root: Path, dest_relpath: str, coordinate) -> tuple[str, Path, str] | None:
+    """영수증 좌표를 안전한 checkout 내부 source로 해소한다.
+
+    install.json은 채택자가 편집할 수 있으므로 source를 그대로 현재 파일 read 경로로 쓰지 않는다.
+    `templates/<등록 tree>/...` 아래이며 lite rename을 적용한 dst가 관측 대상과 정확히 같을 때만
+    받아들인다. lite weight의 full source는 해당 tree에 lite 변종이 없을 때의 선언된 폴백이라
+    허용하지만, full weight가 lite source를 가리키는 역조합은 거부한다.
+    """
+    if not isinstance(coordinate, dict):
+        return None
+    weight = coordinate.get("weight")
+    source = coordinate.get("source")
+    if weight not in WEIGHT_CHOICES or not isinstance(source, str) or "\\" in source:
+        return None
+    parts = source.split("/")
+    template_dirs = {
+        dirname
+        for dirnames in HARNESS_TEMPLATE_DIRS.values()
+        for dirname in dirnames
+    }
+    if (len(parts) < 3 or parts[0] != "templates" or parts[1] not in template_dirs
+            or any(part in {"", ".", ".."} for part in parts)):
+        return None
+    source_template_rel = Path(*parts[2:])
+    is_lite = source_template_rel.name.endswith(LITE_SUFFIX)
+    mapped_dest = (
+        _full_relpath_for_lite(source_template_rel) if is_lite else source_template_rel)
+    if mapped_dest.as_posix() != dest_relpath or (weight == "full" and is_lite):
+        return None
+    git_relpath = "/".join(parts)
+    return weight, Path(source_root).joinpath(*parts), git_relpath
+
+
+def instance_owned_template_targets(
+        dest_root: Path, source_root: Path) -> list[InstanceOwnedTemplateTarget]:
+    """설치 하네스의 instance-owned 파일 전수(진입문서 ``none`` 포함).
+
+    ``adapter_config_targets``는 실제 동기 채널이라 ``none``을 의도적으로 제외한다. 이 함수는
+    반대로 *관측* 인벤토리이므로 ``INSTANCE_OWNED_ADAPTER_FILES`` 전량을 소비한다. 공존
+    opencode+codex의 공유 ``AGENTS.md``는 최초 import와 같은 중립 소유 template(codex) 하나로
+    접어 파일당 한 줄 계약을 지킨다.
+    """
+    dest_root = Path(dest_root)
+    source_root = Path(source_root)
+    coordinates = _recorded_instance_owned_template_coordinates(dest_root)
+    names = installed_harnesses(dest_root, source_root)
+    installed = set(names)
+    neutral_owner_by_rel = {
+        rel.as_posix(): owner
+        for rel, (members, owner) in NEUTRAL_SHARED_ENTRY_DOCS.items()
+        if members <= installed
+    }
+    out: list[InstanceOwnedTemplateTarget] = []
+    seen: set[str] = set()
+    for harness in names:
+        for relpath in sorted(INSTANCE_OWNED_ADAPTER_FILES.get(harness, ())):
+            owner = neutral_owner_by_rel.get(relpath, harness)
+            if owner != harness:
+                continue
+            if relpath in seen:
+                continue
+            resolved = _resolve_recorded_template_coordinate(
+                source_root, relpath, coordinates.get(relpath))
+            weight, template, template_git_relpath = (
+                resolved if resolved is not None else (None, None, None))
+            out.append(InstanceOwnedTemplateTarget(
+                relpath=relpath,
+                harness=owner,
+                mode=ADAPTER_CONFIG_CHANNEL[owner][relpath],
+                weight=weight,
+                template=template,
+                template_git_relpath=template_git_relpath,
+            ))
+            seen.add(relpath)
+    return out
+
+
+def _instance_owned_fallback_rev(dest_root: Path) -> str | None:
+    """진입문서 등 파일별 원장 rev가 없는 경로의 직전 동기 세대."""
+    try:
+        text = read_dest_text(
+            Path(dest_root), Path(".project_manager") / "local.conf")
+    except (OSError, UnsafeDestPathError, UnicodeDecodeError):
+        return None
+    value = _parse_conf_keys(text).get("upstream_rev", "").strip()
+    return value or None
+
+
+def _template_generation_size(old_lines: list[str], current_lines: list[str]) -> tuple[int, int, int]:
+    """template 두 세대의 (+줄, -줄, 첫 차이 current 줄 번호)."""
+    matcher = difflib.SequenceMatcher(a=old_lines, b=current_lines, autojunk=False)
+    added = 0
+    removed = 0
+    first_diff: int | None = None
+    for tag, old_start, old_end, current_start, current_end in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        if first_diff is None:
+            first_diff = current_start + 1
+        removed += old_end - old_start
+        added += current_end - current_start
+    return added, removed, first_diff or 1
+
+
+def instance_owned_template_delta_lines(
+        dest_root: Path, source_root: Path, *,
+        git_runner: GitRunner | None = None) -> list[str]:
+    """instance-owned 파일의 baseline template 세대 ↔ 현행 세대 델타 요약.
+
+    파일별 ``adapter_baseline.json.template_rev``를 우선하고, 항목이 없는 진입문서는 직전
+    ``local.conf upstream_rev``로 폴백한다. 판정은 source checkout의 로컬 object DB만 읽고
+    파일을 쓰거나 자동 병합하지 않는다. 기준이 없거나 도달하지 않으면 그것을 변경 없음으로
+    접지 않고 전량 확인 경고 한 줄로 축약한다.
+
+    노출 수명은 경로별 기준 원장을 따른다. 진입 문서처럼 ``upstream_rev``를 폴백하는
+    경로는 성공한 동기 후 기준이 전진해 이후 요약에서 사라질 수 있다. 반면 report-drift·edited
+    managed 파일은 보존된 ``adapter_baseline.json.template_rev``가 기준이다. pm-update가
+    무편집 managed 파일을 자동 갱신·원장화한 뒤 이 판정을 호출하면 그 항목은 사라지고, 원장이
+    전진하지 않은 report-drift·edited managed만 명시적 ``--accept`` 전까지 반복된다. 어느 쪽도
+    지난 세대를 복구하는 durable backstop은 아니며, 그 역할은 백업/git이 담당한다.
+    """
+    dest_root = Path(dest_root)
+    source_root = Path(source_root)
+    targets = instance_owned_template_targets(dest_root, source_root)
+    if not targets:
+        return []
+    recorded = read_adapter_baseline(dest_root).get("files", {})
+    fallback_rev = _instance_owned_fallback_rev(dest_root)
+    # pm-update는 이 함수를 adapter 채널의 쓰기 후 최종 판정에서 호출한다. dirty source처럼
+    # template_rev만으로 현행 bytes를 정확히 이름 붙일 수 없는 경우에도, managed 파일과 원장이
+    # 모두 현행 template에 수렴했다면 같은 파일에 --accept를 다시 처방하지 않는다. 동기 직전의
+    # unedited/edited·원장 미기록은 converged가 아니므로 기존 처방을 그대로 유지한다.
+    managed_converged: set[str] = set()
+    try:
+        managed_converged = {
+            judgment.relpath
+            for judgment in judge_adapter_configs(dest_root, source_root)
+            if (judgment.mode == ADAPTER_CONFIG_MANAGED
+                and adapter_config_convergence_status(judgment) == "converged")
+        }
+    except (OSError, ValueError, AdapterConfigChannelUnavailable):
+        # 세대 관측이 config 판정 실패를 숨기면 안 된다. 수렴을 증명하지 못한 경우는 아무 항목도
+        # 자동 완료로 접지 않고 아래의 원장 기준 경고/처방을 보존한다.
+        managed_converged = set()
+    runner = git_runner if git_runner is not None else _real_upstream_git_runner()
+    git_rc, git_out = runner([
+        "-C", str(source_root), "rev-parse", "--is-inside-work-tree",
+    ])
+    if git_rc != 0 and "not a git repository" in git_out.lower():
+        return ["ℹ️  이 소스는 git 이 아니라 세대 판정 비대상."]
+    if git_rc == 0 and git_out.strip().lower() != "true":
+        return ["ℹ️  이 소스는 git 이 아니라 세대 판정 비대상."]
+    prefix_rc, prefix_out = runner([
+        "-C", str(source_root), "rev-parse", "--show-prefix",
+    ])
+    # 영수증의 template 좌표는 source_root 상대지만 show/ls-tree의 path는 저장소 최상위
+    # 상대다. source_root가 상위 저장소의 하위 디렉터리면 prefix를 붙이지 않은 조회는 모든
+    # 과거 파일을 "없음"으로 오판한다. prefix 자체를 해소하지 못하거나 비정상 형상이면
+    # 전량 추가로 접지 않고 기준 해소 불가로 내린다.
+    source_prefix = prefix_out.rstrip("\r\n") if prefix_rc == 0 else ""
+    prefix_path = PurePosixPath(source_prefix)
+    if (prefix_rc != 0 or "\n" in source_prefix or "\r" in source_prefix
+            or prefix_path.is_absolute()
+            or any(part in {".", ".."} for part in prefix_path.parts)):
+        return [
+            "⚠️  인스턴스 소유 템플릿 기준 해소 불가 — "
+            "판정 불가(변경 없음 아님)·전량 확인 권장."
+        ]
+    reachability: dict[str, bool] = {}
+    findings: list[str] = []
+    coordinate_unknown = False
+    baseline_unknown = False
+    baseline_unreachable = False
+
+    for target in targets:
+        if target.template is None or target.template_git_relpath is None:
+            coordinate_unknown = True
+            continue
+        entry = recorded.get(target.relpath)
+        entry_rev = entry.get("template_rev") if isinstance(entry, dict) else None
+        baseline_rev = entry_rev.strip() if isinstance(entry_rev, str) else ""
+        baseline_rev = baseline_rev or fallback_rev
+        if not baseline_rev:
+            baseline_unknown = True
+            continue
+
+        if baseline_rev not in reachability:
+            rc, _out = runner([
+                "-C", str(source_root), "cat-file", "-e",
+                baseline_rev + "^{commit}",
+            ])
+            reachability[baseline_rev] = rc == 0
+        if not reachability[baseline_rev]:
+            baseline_unreachable = True
+            continue
+
+        try:
+            # dirty source checkout도 현행 배달 후보인 on-disk bytes와 대조하는 것이 의도다.
+            current_lines = target.template.read_text(
+                encoding="utf-8", errors="replace").splitlines(keepends=True)
+        except OSError:
+            baseline_unreachable = True
+            continue
+
+        git_relpath = (prefix_path / target.template_git_relpath).as_posix()
+
+        rc, old_text = runner([
+            "-C", str(source_root), "show",
+            f"{baseline_rev}:{git_relpath}",
+        ])
+        if rc == 0:
+            old_lines = old_text.splitlines(keepends=True)
+        else:
+            # `git show rev:path` 비0 하나만으로는 과거 경로 부재와 git I/O·timeout·저장소
+            # 손상을 구분할 수 없다. 같은 commit tree를 별도 조회해 **부재가 증명될 때만**
+            # 신규 파일(기존 0줄)로 본다. tree 조회 실패 또는 경로가 있는데 blob show만 실패한
+            # 경우는 기준 해소 불가다 — 전량 추가라는 거짓 요약을 만들지 않는다.
+            tree_rc, tree_out = runner([
+                "-C", str(source_root), "ls-tree", "--name-only", "-z",
+                baseline_rev, "--", git_relpath,
+            ])
+            tree_paths = {
+                line
+                for nul_chunk in tree_out.split("\0")
+                for line in nul_chunk.splitlines()
+                if line
+            }
+            if tree_rc != 0 or git_relpath in tree_paths:
+                baseline_unreachable = True
+                continue
+            old_lines = []
+        if old_lines == current_lines:
+            continue
+        if target.mode == ADAPTER_CONFIG_MANAGED and target.relpath in managed_converged:
+            # pm-update의 config 채널이 이미 "이번 동기에서 갱신"을 별도 한 줄로 보고한다.
+            # 여기서는 최종 상태와 모순되는 --accept 재처방을 만들지 않는다.
+            continue
+        added, removed, first_diff = _template_generation_size(
+            old_lines, current_lines)
+        if target.mode == ADAPTER_CONFIG_NO_CHANNEL:
+            remedy = (
+                "현재 파일을 백업한 뒤 수동 병합 또는 ADOPT.md 절차로 재-import")
+        else:
+            remedy = f"pm-config sync-adapter-config --accept {target.relpath}"
+        findings.append(
+            f"⚠️  인스턴스 소유 템플릿 변경 — {target.relpath} · "
+            f"+{added}/-{removed}줄 · 첫 차이 {first_diff}줄 · "
+            f"처방(세대 변경; 기존 config 채널 보고는 내용 drift): {remedy}"
+        )
+
+    prefix: list[str] = []
+    if coordinate_unknown:
+        prefix.append(
+            "⚠️  인스턴스 소유 템플릿 좌표 미기록·수동 확인 — "
+            "자동 비교 생략(변경 없음 아님).")
+    if baseline_unknown:
+        prefix.append(
+            "⚠️  인스턴스 소유 템플릿 기준 미기록 — 판정 불가(변경 없음 아님)·전량 확인 권장.")
+    if baseline_unreachable:
+        prefix.append(
+            "⚠️  인스턴스 소유 템플릿 기준 해소 불가 — 판정 불가(변경 없음 아님)·전량 확인 권장.")
+    return [*prefix, *findings]
 
 
 def _write_adapter_baseline(dest_root: Path, document: dict,
@@ -7311,7 +7658,11 @@ def add_harness(
     if unestablished:
         print(f"  ⚠️ {', '.join(unestablished)} 어댑터가 이번 실행에서 서지 않아(복사 제외) 설치 "
               f"기록에 올리지 않습니다 — 위 제외 사유를 해소한 뒤 다시 실행하세요.", file=sys.stderr)
-    if record_install_receipt(dest_root, recordable, root_identity=root_identity):
+    template_coordinates = _copied_instance_owned_template_coordinates(
+        plan, dest_root, src_root, copied_relpaths, "full")
+    if record_install_receipt(
+            dest_root, recordable, root_identity=root_identity,
+            template_coordinates=template_coordinates):
         print(f"  ✓ 설치 기록 갱신 ({INSTALL_RECEIPT_RELPATH.as_posix()}): "
               f"{', '.join(recordable)}")
     # instance-owned config 원장 — **레이다운/보존 판정 직후**가 기록 시점이다. 방금 내려놓은
@@ -7701,8 +8052,8 @@ def main(argv: list[str] | None = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "온보딩(fresh 채택자): manager(project_manager) 경로/URL 만 있으면 자율 import — "
-            "harness=자기 세션(" + "|".join(HARNESS_TEMPLATE_DIRS)
-            + "), --new(빈 PM 홈)/--into(기존 프로젝트 임베드) "
+            "harness=기본 all(등록 어댑터 전체: " + "|".join(HARNESS_TEMPLATE_DIRS)
+            + "; 단일/콤마 조합 명시 가능), --new(빈 PM 홈)/--into(기존 프로젝트 임베드) "
             "맥락 판단. 상세 가이드 = manager 루트 ADOPT.md. import 후 다음 단계: "
             + _runtime_skill_entry("pm-bootstrap") + " → "
             + _runtime_skill_entry("pm-env") + ".\n\n"
@@ -7719,11 +8070,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--harness",
         type=_parse_harness_arg,
-        default="claude",
+        default="all",
         metavar="HARNESS[,HARNESS...]|all",
         help=(
             "어댑터 집합 (등록: " + ", ".join(REGISTERED_HARNESSES)
-            + "; 전체: all; default: claude)"
+            + "; 전체: all; default: all)"
         ),
     )
     ap.add_argument("--weight", choices=WEIGHT_CHOICES, default="full",
@@ -8297,7 +8648,11 @@ def main(argv: list[str] | None = None) -> int:
     if unestablished:
         print(f"  ⚠️ {', '.join(unestablished)} 어댑터가 이번 실행에서 서지 않아(복사 제외) 설치 "
               f"기록에 올리지 않습니다 — 위 제외 사유를 해소한 뒤 다시 실행하세요.", file=sys.stderr)
-    if record_install_receipt(dest_root, recordable, root_identity=root_identity):
+    template_coordinates = _copied_instance_owned_template_coordinates(
+        actions, dest_root, source_root, copied_relpaths, args.weight)
+    if record_install_receipt(
+            dest_root, recordable, root_identity=root_identity,
+            template_coordinates=template_coordinates):
         print(f"✓ 설치 기록 갱신 ({INSTALL_RECEIPT_RELPATH.as_posix()}): "
               f"{', '.join(recordable)}")
 
