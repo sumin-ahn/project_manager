@@ -1,0 +1,128 @@
+# project_manager Codex command policy — Claude settings.json allow/deny 대응.
+# 일상 PM git 작업은 sandbox 밖(.git protected path)에서도 묻지 않고 실행한다.
+#
+# raw git cwd-anchor 파리티 예외(T-0587): execpolicy prefix_rule은 argv prefix와 decision만
+# 판정하며 프로세스 cwd·등록 slot 장부·양쪽 checkout의 path 실재를 읽거나 모델 context를
+# 주입할 수 없다. 따라서 board.judge_git_anchor의 좁은 동적 deny를 여기서 정적 forbidden/prompt로
+# 흉내 내면 정상 PM 홈/worktree commit까지 과차단한다. Codex는 실행 샌드박스가 실제 cwd를 사용자에게
+# 표시하는 기존 관측 채널을 유지하고, 동적 동등 가드는 execpolicy가 cwd predicate/hook command를
+# 지원할 때만 추가한다. 이 비대칭은 false-deny 0 계약을 보존하기 위한 의도된 capability gap이다.
+prefix_rule(
+    pattern = ["git", "add"],
+    decision = "allow",
+    justification = "Scoped staging is a routine PM operation.",
+    match = ["git add -- README.md", "git add -A -- tests"],
+)
+
+prefix_rule(
+    pattern = ["git", "commit"],
+    decision = "allow",
+    justification = "Local commits are reversible PM checkpoints.",
+    match = ["git commit -m checkpoint", "git commit --amend --no-edit"],
+)
+
+prefix_rule(
+    pattern = ["git", ["status", "log", "diff", "show", "fetch", "pull"]],
+    decision = "allow",
+    justification = "Routine repository inspection and synchronization.",
+    match = ["git status --short", "git diff --check", "git fetch origin", "git pull --ff-only"],
+)
+
+prefix_rule(
+    pattern = [["python", "python3", "py"], "-m", "pytest"],
+    decision = "allow",
+    justification = "The repository test suite is a routine local verification command.",
+    match = ["python3 -m pytest tests/ -q", "python -m pytest tests/test_board.py -q"],
+)
+
+prefix_rule(
+    pattern = ["pytest"],
+    decision = "allow",
+    justification = "The repository test suite is a routine local verification command.",
+    match = ["pytest tests/ -q"],
+)
+
+prefix_rule(
+    pattern = [
+        ["python", "python3", "py"],
+        [
+            ".project_manager/tools/board.py",
+            ".project_manager/tools/domain.py",
+            ".project_manager/tools/pm_bootstrap.py",
+            ".project_manager/tools/pm_handoff.py",
+            ".project_manager/tools/pm_log.py",
+            ".project_manager/tools/pm_update.py",
+            ".project_manager/tools/ticket_finish.py",
+        ],
+    ],
+    decision = "allow",
+    justification = "These checked-in PM CLIs are routine project-management entry points.",
+    match = ["python3 .project_manager/tools/board.py list", "python3 .project_manager/tools/ticket_finish.py T-0001"],
+)
+
+# 사용자가 normal push를 상시 승인했다. fast-forward 원격 게시는 무질의로 실행하고,
+# history rewrite·remote ref 삭제처럼 파괴적인 변형만 사용자 게이트를 유지한다.
+prefix_rule(
+    pattern = ["git", "push"],
+    decision = "allow",
+    justification = "Normal git push is approved for routine publication; destructive variants have narrower prompt rules.",
+    match = ["git push", "git push origin task/main", "git push origin main"],
+)
+
+prefix_rule(
+    pattern = [
+        "git",
+        "push",
+        ["--force", "-f", "--force-with-lease", "--force-if-includes", "--delete", "--mirror"],
+    ],
+    decision = "prompt",
+    justification = "History rewrites and remote ref deletion require explicit user approval.",
+    match = [
+        "git push --force origin main",
+        "git push -f origin task/main",
+        "git push --force-with-lease origin main",
+        "git push --delete origin old-branch",
+        "git push --mirror origin",
+    ],
+    not_match = ["git push origin main", "git push origin task/main"],
+)
+
+# Canonical agent 명령은 옵션을 remote 앞에 둔다. 사람이 흔히 쓰는 현재 보호 브랜치의
+# late-option 형태도 별도로 prompt 처리한다(prefix_rule은 argv 중간 wildcard가 없다).
+prefix_rule(
+    pattern = [
+        "git",
+        "push",
+        "origin",
+        ["main", "task/main"],
+        ["--force", "-f", "--force-with-lease", "--force-if-includes"],
+    ],
+    decision = "prompt",
+    justification = "Late force options on known publication branches still require explicit user approval.",
+    match = [
+        "git push origin main --force",
+        "git push origin task/main --force-with-lease",
+    ],
+)
+
+prefix_rule(
+    pattern = ["git", "reset"],
+    decision = "prompt",
+    justification = "Git reset can discard index or working-tree state and requires explicit review.",
+    match = ["git reset --soft HEAD~1", "git reset -q --hard"],
+)
+
+# AGENTS.md 안전 경계와 Claude settings.json deny를 Codex에서도 기계 강제한다.
+prefix_rule(
+    pattern = ["rm"],
+    decision = "forbidden",
+    justification = "Agents do not delete files; report the reason and let the user delete them.",
+    match = ["rm file.txt", "rm -rf build"],
+)
+
+prefix_rule(
+    pattern = ["git", "clean"],
+    decision = "forbidden",
+    justification = "Git clean can irreversibly delete untracked user files; use status/dry inspection instead.",
+    match = ["git clean -f", "git clean -df", "git clean --force"],
+)

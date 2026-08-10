@@ -151,3 +151,18 @@
 .project_manager/.gitignore
 .gitattributes
 # 공개 제품 루트의 .github/workflows/regression.yml 은 제품 CI 이며 adopter PM 홈에는 출하하지 않는다.
+
+# >>> pm add-harness guest @render (local·pm_update-preserved) >>>
+.agents/skills    @render    @target-owned    @source=.claude/skills
+.agents/skills/pm-dev-delegate/SKILL.md    @render    @target-owned    @source=templates/codex/.agents/skills/pm-dev-delegate/SKILL.md
+.agents/skills/pm-review/SKILL.md    @render    @target-owned    @source=templates/codex/.agents/skills/pm-review/SKILL.md
+.codex/agents    @render    @target-owned    @source=templates/codex/.codex/agents
+.codex/pm_orch_codex.py    @target-owned    @source=templates/codex/.codex/pm_orch_codex.py
+.codex/rules/default.rules    @target-owned    @source=templates/codex/.codex/rules/default.rules
+.opencode/.gitignore    @target-owned    @source=templates/opencode/.opencode/.gitignore
+.opencode/agents    @render    @target-owned    @source=templates/opencode/.opencode/agents
+.opencode/lib    @target-owned    @source=templates/opencode/.opencode/lib
+.opencode/plugins    @target-owned    @source=templates/opencode/.opencode/plugins
+.opencode/pm-instructions.md    @render    @target-owned    @source=templates/opencode/.opencode/pm-instructions.md
+.opencode/pm_orch_opencode.py    @target-owned    @source=templates/opencode/.opencode/pm_orch_opencode.py
+# <<< pm add-harness guest @render (local) <<<

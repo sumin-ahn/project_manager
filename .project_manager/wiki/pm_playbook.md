@@ -64,7 +64,7 @@ PM 이 `Agent` 툴로 spawn 하고 `subagent_type` 으로 전용 정의를 쓴�
 - **구현(developer)** — `subagent_type: developer`
 - **검토(code-reviewer)** — `subagent_type: code-reviewer`
 
-세 정의가 역할·제약·부트스트랩·프로젝트 제약을 담으므로 프롬프트는 한 줄이면 된다(구현/검토는 `/pm-dev-delegate` skill 이 표준 프롬프트를 dump):
+세 정의가 역할·제약·부트스트랩·프로젝트 제약을 담으므로 프롬프트는 한 줄이면 된다(구현/검토는 `/pm-dev-delegate`(claude·opencode) / `$pm-dev-delegate`(codex) skill 이 표준 프롬프트를 dump):
 
 ```
 Idea-00NN 을 promote/kill 분석하고 promote 면 ADR 초안을 내라. (architect)
@@ -147,16 +147,16 @@ ticket 본문의 목표 / 인터페이스 / 결정 / DoD 대로 수행.
 ### Wave 구성 (9 단계)
 
 1. **ticket 발행** — PM 자율 (pm_role.md §"자율 + 사후 로그"). 본문은 self-contained: 목표 / 인터페이스 / 결정 / 설계(`design: required` 만) / DoD / 참고 / 메모.
-2. **claim** — `/pm-wave-claim T-NNNN`. DoD self-containment·depends_on·placeholder·wikilink dangling 검증 후 claim. `design: required` ticket 은 설계 절 완성 + `design: done|waived` 승격 전까지 claim 이 rc=1 로 차단된다.
-3. **dev background 위임** — `/pm-dev-delegate T-NNNN --role developer`. Agent 툴 `run_in_background: true`. **병렬 시 touches disjoint 필수** (file 겹침 0).
+2. **claim** — `/pm-wave-claim T-NNNN`(claude·opencode) / `$pm-wave-claim T-NNNN`(codex). DoD self-containment·depends_on·placeholder·wikilink dangling 검증 후 claim. `design: required` ticket 은 설계 절 완성 + `design: done|waived` 승격 전까지 claim 이 rc=1 로 차단된다.
+3. **dev background 위임** — `/pm-dev-delegate T-NNNN --role developer`(claude·opencode) / `$pm-dev-delegate T-NNNN --role developer`(codex). Agent 툴 `run_in_background: true`. **병렬 시 touches disjoint 필수** (file 겹침 0).
 4. **(병렬 wave) dev 실행 중 PM 안전 작업** — touches 와 겹치지 않는 파일 편집·다른 ticket 본문 작성·`.project_manager/wiki/` 페이지 정비. ⚠️ touches 겹치는 파일 편집 금지(reviewer `git diff` 오염). ⚠️ 회귀 baseline 측정도 race 위험 — dev cycle 후 한 번에.
-5. **reviewer 위임 + 추가 리뷰어 교차** — `/pm-dev-delegate T-NNNN --role code-reviewer` (background) **+ 추가 리뷰어 병행**. 내부 reviewer 프롬프트에 *"status.md / log/current.md 갱신은 orchestrator 담당 — 그 누락은 developer must-fix 아님"* 명시. 추가 리뷰어 must-fix 와 내부 must-fix 를 합쳐 6단계에서 처리.
+5. **reviewer 위임 + 추가 리뷰어 교차** — `/pm-dev-delegate T-NNNN --role code-reviewer`(claude·opencode) / `$pm-dev-delegate T-NNNN --role code-reviewer`(codex) (background) **+ 추가 리뷰어 병행**. 내부 reviewer 프롬프트에 *"status.md / log/current.md 갱신은 orchestrator 담당 — 그 누락은 developer must-fix 아님"* 명시. 추가 리뷰어 must-fix 와 내부 must-fix 를 합쳐 6단계에서 처리.
 6. **PM should-fix 분기**:
    - **PM 직접 fix**: 1줄·1패턴 변경 + dev 가 안 도는 영역.
    - **dev 재작업**: 여러 줄 변경 또는 dev 가 같은 file 작업 중.
    - **별도 ticket 후보 메모**: 본 ticket 범위 외 / 후속 caller 추가 시. 다음 PM 세션용 영구 기록.
    - **처리 보류 (suggestion)**: 운영 영향 0·기능 충분. 이것이 should-fix vs suggestion 기준.
-7. **ticket complete + 부기** — `/pm-wave-finish T-NNNN` (`ticket_finish.py` wrapper). 회귀 green 확인(red 면 중단·아무것도 안 건드림) → log/current.md 스켈레톤 append → board complete (`--tests-pass`) → git stage — **그 ticket 이 선언한 경로만**.
+7. **ticket complete + 부기** — `/pm-wave-finish T-NNNN`(claude·opencode) / `$pm-wave-finish T-NNNN`(codex) (`ticket_finish.py` wrapper). 회귀 green 확인(red 면 중단·아무것도 안 건드림) → log/current.md 스켈레톤 append → board complete (`--tests-pass`) → git stage — **그 ticket 이 선언한 경로만**.
    선언원 = frontmatter `touches` ∪ **이 실행이 실제로 쓴 산출물**, 즉 `log/current.md` + legacy 형상(board 미분리·출하 기본)에서 옮긴 티켓 파일의 **옛/새 경로** 둘뿐. ADR·domain 페이지·`architecture.md`·`status.md` 는 다른 실행 산출이므로 제외한다.
    stage 후 두 방향으로 loud 보고: `미스테이지 잔여`(내 누락이면 `touches` 보강 후 재stage·남의 WIP 면 그대로) · `스코프 밖 staged`(남이 올려둔 것 — bare commit 이면 실림·빼려면 `git restore --staged <경로>`).
    **status.md 는 건드리지 않는다**(judgment-only · 테스트 수 박제 ✗). **모듈 행 판정/비고·git commit 은 PM 손**(commit 도 pathspec 명시).
@@ -189,8 +189,8 @@ ticket 본문의 목표 / 인터페이스 / 결정 / DoD 대로 수행.
 
 board·status·log·로드맵 단일 진실은 PM 1명이 유지하되 잡일을 줄인다:
 
-- **부기 자동화** — ticket 완료 부기(회귀 green → log/current.md 스켈레톤 → board complete → git stage)는 `.project_manager/tools/ticket_finish.py` / `/pm-wave-finish` skill 로 자동화. status.md 는 안 건드린다. PM 은 서술(왜·무엇)만 채운다. ⚠️ status.md **모듈 행 판정/비고**·**git commit** 은 자동화하지 않는다 — PM 손. commit 도 pathspec 명시: `-- <touches> log/current.md [status.md]`.
-- **세션 시작·종료 자동화** — `/pm-bootstrap` (세션 시작 dump), `/pm-handoff` (세션 종료 7단계).
+- **부기 자동화** — ticket 완료 부기(회귀 green → log/current.md 스켈레톤 → board complete → git stage)는 `.project_manager/tools/ticket_finish.py` / `/pm-wave-finish`(claude·opencode) / `$pm-wave-finish`(codex) skill 로 자동화. status.md 는 안 건드린다. PM 은 서술(왜·무엇)만 채운다. ⚠️ status.md **모듈 행 판정/비고**·**git commit** 은 자동화하지 않는다 — PM 손. commit 도 pathspec 명시: `-- <touches> log/current.md [status.md]`.
+- **세션 시작·종료 자동화** — `/pm-bootstrap`(claude·opencode) / `$pm-bootstrap`(codex) (세션 시작 dump), `/pm-handoff`(claude·opencode) / `$pm-handoff`(codex) (세션 종료 7단계).
 - **dev→review 는 background 우선** — `Agent` 툴 `run_in_background: true`. 실행 중 PM 은 독립적인 다음 ticket 을 설계한다. ⚠️ background 창에는 ticket 설계·`.project_manager/wiki/` 문서 작업만; 검토 대상 코드 파일 편집 시 reviewer `git diff` 오염.
 - **회귀 tmp 위생 (worktree 다발 실행 시 필수)** — worktree 병렬 회귀는 pytest run·tmp 를 폭증시킨다. **pytest 쓰는 인스턴스는 `pytest.ini` 에 `tmp_path_retention_policy=failed` + `tmp_path_retention_count=3`** 을 둔다(통과 tmp 즉시 teardown·실패만 보존). `pytest.ini` 는 instance 소유라 엔진이 자동 못 고치므로 채택 시 직접 추가. ⚠️ 중단 run 의 stale `.lock` 이 옛 세션 cleanup 을 skip 하는 pytest+xdist 동작은 패치 불가 — `policy=failed` 로 디스크 영향을 무력화한다. **perf**: worktree 다발 실행에서 `-n auto`(코어수) 워커가 경합하면 `-n N` 또는 `PYTEST_XDIST_AUTO_NUM_WORKERS` 로 캡한다.
 - **ticket fact-gathering 위임** — 파일 목록·cross-ref·grep은 `Explore`/`general-purpose` 서브에이전트에 위임. **목표/결정/DoD 서술은 PM 이 직접** 쓴다.
@@ -203,14 +203,14 @@ handoff 는 board/git/log/ADR 에서 파생 가능한 상태를 재열거하지 
 
 **비파생 salient 레이어와 자동 박제(반드시 포함):**
 
-- **(a) 이 세션 박제 entries** — `/pm-handoff`가 직전 자기 handoff 뒤의 complete/checkpoint 헤더를 자동 나열한다. 자기 경계가 없으면 직전 임의 handoff를 경계로 삼고, handoff가 전혀 없으면 `(경계 미해소 — 최근 10건)`과 함께 최근 10건만 싣는다.
+- **(a) 이 세션 박제 entries** — `/pm-handoff`(claude·opencode) / `$pm-handoff`(codex)가 직전 자기 handoff 뒤의 complete/checkpoint 헤더를 자동 나열한다. 자기 경계가 없으면 직전 임의 handoff를 경계로 삼고, handoff가 전혀 없으면 `(경계 미해소 — 최근 10건)`과 함께 최근 10건만 싣는다.
 - **(b) 메타 학습** — ticket 상태에서 도출 불가한 교훈.
 - **(c) 다음 intent**:
   - **pending user intent** — 다음 우선순위 + 사용자 결정 대기. PM 손.
 
 **FORBIDDEN (본문 재열거 금지):**
 
-- ❌ board done/open/claimed/blocked **카운트** (→ `board.py list`[무인자=내 스트림·전체는 `--all`]·`/pm-bootstrap` 라이브).
+- ❌ board done/open/claimed/blocked **카운트** (→ `board.py list`[무인자=내 스트림·전체는 `--all`]·`/pm-bootstrap`(claude·opencode) / `$pm-bootstrap`(codex) 라이브).
 - ❌ **open ticket ID 목록** (→ `pm_bootstrap` 가 라이브로 출력).
 - ❌ **commit 해시·push 상태** (→ `git log`/`git status`).
 - ❌ **직전 complete entry 산출물 재요약** (→ 자동 박제된 entry 헤더와 인접 원문을 따른다).
@@ -234,13 +234,13 @@ upstream 엔진 개선을 당기는 저빈도 유지보수. **메인테이너가
 
 ## 다음 PM 세션 부트스트랩 프롬프트 (템플릿)
 
-핸드오프 절차 #5 에서 `/pm-handoff` 가 자동 출력한다. 새 PM 세션 첫 메시지로 이 커맨드만 복사·붙여넣는다. 역할·인계는 CLAUDE.md·`/pm-bootstrap` 이 자동 로드/dump 한다.
+핸드오프 절차 #5 에서 `/pm-handoff`(claude·opencode) / `$pm-handoff`(codex) 가 자동 출력한다. 새 PM 세션 첫 메시지로 이 커맨드만 복사·붙여넣는다. 역할·인계는 CLAUDE.md·`/pm-bootstrap`(claude·opencode) / `$pm-bootstrap`(codex) 이 자동 로드/dump 한다.
 
 ```
-/pm-bootstrap
+`/pm-bootstrap`(claude·opencode) / `$pm-bootstrap`(codex)
 ```
 
-인계 본문은 log handoff entry 가 단일 진실이다. `/pm-bootstrap` 이 자동 박제 entries·메타 학습·pending intent·회귀/incident를 dump 하므로 프롬프트에 옮겨 적지 않는다.
+인계 본문은 log handoff entry 가 단일 진실이다. `/pm-bootstrap`(claude·opencode) / `$pm-bootstrap`(codex) 이 자동 박제 entries·메타 학습·pending intent·회귀/incident를 dump 하므로 프롬프트에 옮겨 적지 않는다.
 
 ---
 

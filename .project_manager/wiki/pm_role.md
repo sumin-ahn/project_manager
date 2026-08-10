@@ -16,27 +16,27 @@ PM 역할의 정적 운영 매뉴얼이다. PM 역할은 보드 운영·분할·
 ## 부트스트랩 (PM 세션 시작 시)
 
 <!-- pm-bootstrap-preread:start -->
-세션 시작 필독 셋은 이미 로드된 진입문서, 현재 정체성의 `pm_state`, `/pm-bootstrap` dump 한 번뿐이다.
+세션 시작 필독 셋은 이미 로드된 진입문서, 현재 정체성의 `pm_state`, `/pm-bootstrap`(claude·opencode) / `$pm-bootstrap`(codex) dump 한 번뿐이다.
 
 필독 셋:
 ```
 1) 진입문서(CLAUDE.md 또는 AGENTS.md) ← 프로젝트 규칙·형상
 2) 현재 정체성의 pm_state           ← 내 동적 상태(세션 window·남은작업)
    · task: `.project_manager/.local/tasks/<task>/pm_state.md` (세션보다 오래 사는 연속성 앵커)
-     신규 task는 `/pm-bootstrap --task <이름>` 진입 즉시 생성되므로 호출 전에는 없어도 정상
+     신규 task는 `/pm-bootstrap --task <이름>`(claude·opencode) / `$pm-bootstrap --task <이름>`(codex) 진입 즉시 생성되므로 호출 전에는 없어도 정상
    · slot: `.project_manager/.local/slots/<repo>_<N>/pm_state.md`
      (`<repo>_<N>` = worktree `work/<repo>_<N>` basename) · git-ignored
    · solo: `wiki/pm_state.md` legacy 폴백
-3) /pm-bootstrap dump (CLI 한 번) — 아래를 한꺼번에 surface:
+3) `/pm-bootstrap`(claude·opencode) / `$pm-bootstrap`(codex) dump (CLI 한 번) — 아래를 한꺼번에 surface:
    · 커맨드 카드 — 이 세션이 쓸 전 커맨드를 정체성 채워 dump(커맨드 표기 단일 진실)
    · 차수 · 직전 handoff entry 본문 · 남은작업(self-sufficient)
    · `--mine` 보드 카운트 + 타 PM 대시보드 slot 1줄
 ```
 <!-- pm-bootstrap-preread:end -->
 
-기계 측정은 `/pm-bootstrap` skill(backbone `.project_manager/tools/pm_bootstrap.py`) 한 번으로 끝낸다.
+기계 측정은 `/pm-bootstrap`(claude·opencode) / `$pm-bootstrap`(codex) skill(backbone `.project_manager/tools/pm_bootstrap.py`) 한 번으로 끝낸다.
 
-**task 계약:** 시작/재개는 `/pm-bootstrap --task <이름>`, 종료는 `/pm-handoff --task <이름>`만 쓴다. Python backbone의 task 진입도 각각 `pm_bootstrap.py --task <이름>`·`pm_handoff.py --task <이름>`뿐이다. 신규 task는 작업공간 0개여도 task pm_state를 즉시 만들고, 기존 task는 보유 슬롯 집합과 task pm_state를 자동 수령한다. task와 repo/slot 혼합 진입은 거부한다. 작업공간 대여·편입은 task-aware pm-env/worktree 명령의 책임이다. 단, alloc/release와 rebase 소유검사처럼 repo/slot이 **대상 자원**, task가 **소유 명의**인 자원 연산은 유지한다.
+**task 계약:** 시작/재개는 `/pm-bootstrap --task <이름>`(claude·opencode) / `$pm-bootstrap --task <이름>`(codex), 종료는 `/pm-handoff --task <이름>`(claude·opencode) / `$pm-handoff --task <이름>`(codex)만 쓴다. Python backbone의 task 진입도 각각 `pm_bootstrap.py --task <이름>`·`pm_handoff.py --task <이름>`뿐이다. 신규 task는 작업공간 0개여도 task pm_state를 즉시 만들고, 기존 task는 보유 슬롯 집합과 task pm_state를 자동 수령한다. task와 repo/slot 혼합 진입은 거부한다. 작업공간 대여·편입은 task-aware pm-env/worktree 명령의 책임이다. 단, alloc/release와 rebase 소유검사처럼 repo/slot이 **대상 자원**, task가 **소유 명의**인 자원 연산은 유지한다.
 
 `architecture.md`·`status.md`·`decisions/`·`roadmap.md`·전체 보드·타 슬롯 log는 시작 시 통독하지
 않고, 실제 필요가 생길 때 §찾아가는 법에 따라 해당 절만 읽는다.
@@ -78,26 +78,26 @@ PM wave의 claim·finish·qa·dev-delegate·handoff·regression은 **스킬/comm
 
 ## skill 카탈로그
 
-표준 wave: `/pm-bootstrap` → 반복{`/pm-wave-claim` → `/pm-dev-delegate`(dev/reviewer) → `/pm-wave-finish`} → `/pm-handoff`. 자세한 구성은 [`pm_playbook.md`](pm_playbook.md) §"Wave 패턴". 호출줄의 실 인자·`--repo <repo> --slot <N>` 값과 전제 경고는 부트스트랩 카드가 단일 진실이다.
+표준 wave: `/pm-bootstrap`(claude·opencode) / `$pm-bootstrap`(codex) → 반복{`/pm-wave-claim`(claude·opencode) / `$pm-wave-claim`(codex) → `/pm-dev-delegate`(claude·opencode) / `$pm-dev-delegate`(codex)(dev/reviewer) → `/pm-wave-finish`(claude·opencode) / `$pm-wave-finish`(codex)} → `/pm-handoff`(claude·opencode) / `$pm-handoff`(codex). 자세한 구성은 [`pm_playbook.md`](pm_playbook.md) §"Wave 패턴". 호출줄의 실 인자·`--repo <repo> --slot <N>` 값과 전제 경고는 부트스트랩 카드가 단일 진실이다.
 
 | skill | 역할 | 감싸는 내부 엔진 (직접호출 금지) |
 |---|---|---|
-| `/pm-bootstrap` | 세션 시작; board·git·차수·log 본문·남은작업 surface | `pm_bootstrap.py` |
-| `/pm-wave-claim T-NNNN` | DoD self-containment 검증 + claim | `board.py show/lint/claim` |
-| `/pm-dev-delegate T-NNNN --role developer\|code-reviewer` | orchestrator 위임 표준 프롬프트 | `Agent` 툴 |
-| `/pm-regression` | 비차단 백그라운드 회귀 pre-warm + 완료 알림 | `board.py regression` |
-| `/pm-qa` | 회귀+lint+git 통합 report | `board.py regression/lint` |
-| `/pm-wave-finish T-NNNN` | 회귀+log+board+stage; status 미접촉 | `ticket_finish.py` |
-| `/pm-handoff` | 세션 종료 7단계 | `pm_handoff.py` |
+| `/pm-bootstrap`(claude·opencode) / `$pm-bootstrap`(codex) | 세션 시작; board·git·차수·log 본문·남은작업 surface | `pm_bootstrap.py` |
+| `/pm-wave-claim T-NNNN`(claude·opencode) / `$pm-wave-claim T-NNNN`(codex) | DoD self-containment 검증 + claim | `board.py show/lint/claim` |
+| `/pm-dev-delegate T-NNNN --role developer\|code-reviewer`(claude·opencode) / `$pm-dev-delegate T-NNNN --role developer\|code-reviewer`(codex) | orchestrator 위임 표준 프롬프트 | `Agent` 툴 |
+| `/pm-regression`(claude·opencode) / `$pm-regression`(codex) | 비차단 백그라운드 회귀 pre-warm + 완료 알림 | `board.py regression` |
+| `/pm-qa`(claude·opencode) / `$pm-qa`(codex) | 회귀+lint+git 통합 report | `board.py regression/lint` |
+| `/pm-wave-finish T-NNNN`(claude·opencode) / `$pm-wave-finish T-NNNN`(codex) | 회귀+log+board+stage; status 미접촉 | `ticket_finish.py` |
+| `/pm-handoff`(claude·opencode) / `$pm-handoff`(codex) | 세션 종료 7단계 | `pm_handoff.py` |
 
-**무코드/개념(ADR·doc·decision) ticket의 test-less done:** `board.py complete --allow-untested`를 쓰며 본문에 log entry도 없으면 `--allow-missing-log`를 더한다. `/pm-wave-finish`(`ticket_finish.py`)도 코드 변경 없는 ticket에는 같은 플래그를 넘긴다.
+**무코드/개념(ADR·doc·decision) ticket의 test-less done:** `board.py complete --allow-untested`를 쓰며 본문에 log entry도 없으면 `--allow-missing-log`를 더한다. `/pm-wave-finish`(claude·opencode) / `$pm-wave-finish`(codex)(`ticket_finish.py`)도 코드 변경 없는 ticket에는 같은 플래그를 넘긴다.
 
 환경·갱신:
 
 | skill | 역할 | 감싸는 내부 엔진 (직접호출 금지) |
 |---|---|---|
-| `/pm-env` | repo/worktree 슬롯·upstream show/switch(path↔URL) | `pm-config.sh`→`pm_config.py` |
-| `/pm-update` | upstream freshness 자동분기·manifest reconcile·adapter-drift 표면화 | `pm-update.sh`→`pm_update.py` |
+| `/pm-env`(claude·opencode) / `$pm-env`(codex) | repo/worktree 슬롯·upstream show/switch(path↔URL) | `pm-config.sh`→`pm_config.py` |
+| `/pm-update`(claude·opencode) / `$pm-update`(codex) | upstream freshness 자동분기·manifest reconcile·adapter-drift 표면화 | `pm-update.sh`→`pm_update.py` |
 
 각 skill의 체크리스트는 `.claude/skills/pm-*/SKILL.md`를 본다.
 
@@ -166,7 +166,7 @@ PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비
 세션명·ticket prefix는 저장하지 않고 다음 순서로 유도한다:
 `명시(--repo/--slot·--prefix) > $PM_SESSION_NAME(env·CLAUDE_SESSION_NAME alias) > lease 장부에 leased 슬롯이 정확히 1개면 그 세션(count-based 유도) > (solo 홈·lease 부재) local.conf session=/prefix= legacy 폴백`.
 
-leased ≥2인 multi 홈은 local.conf를 건너뛴다. 모호(leased ≥2·무명시)한 귀속 조작(claim/complete/unclaim/release/new owner)은 **fail-loud**하며 `--repo <repo> --slot <N>` 명시를 요구한다. 조회 whoami/status는 `(비바인딩)`을 표시한다. solo의 lease 장부가 없으면 legacy 폴백이며 multi 홈의 `local.conf session=`/`prefix=`는 제거해도, 남아도 무시되어 동일하다. 동적 세션 목록은 [`pm_state.md`](pm_state.md) §"세션 식별 (현재까지 사용된 이름)"에 있고 `/pm-handoff`가 갱신한다.
+leased ≥2인 multi 홈은 local.conf를 건너뛴다. 모호(leased ≥2·무명시)한 귀속 조작(claim/complete/unclaim/release/new owner)은 **fail-loud**하며 `--repo <repo> --slot <N>` 명시를 요구한다. 조회 whoami/status는 `(비바인딩)`을 표시한다. solo의 lease 장부가 없으면 legacy 폴백이며 multi 홈의 `local.conf session=`/`prefix=`는 제거해도, 남아도 무시되어 동일하다. 동적 세션 목록은 [`pm_state.md`](pm_state.md) §"세션 식별 (현재까지 사용된 이름)"에 있고 `/pm-handoff`(claude·opencode) / `$pm-handoff`(codex)가 갱신한다.
 
 **`list` 스코핑:** `board.py list`의 `--repo`/`--slot`/`--mine`은 **조회 필터**(해당 식별자의 open+claim), `claim`/`complete`/`migrate-identity`의 `--repo`/`--slot`은 **행위자 지정**이다. 미해소 귀속 조작은 fail-loud하고 조회는 `(비바인딩)`으로 계속된다.
 
@@ -195,14 +195,14 @@ prefix는 작업 카테고리이며 repo 네임스페이스 전용이 아니고 
   - `delete <A>`: 0-ticket 등록만 제거. ticket이 있으면 fail-loud하며 rename/merge 안내.
 
 **어댑터 마이그 절차(사용자 주도, 순서):**
-1. `/pm-update`로 prefix 도구를 흡수.
+1. `/pm-update`(claude·opencode) / `$pm-update`(codex)로 prefix 도구를 흡수.
 2. `board.py prefix list`.
 3. `board.py prefix merge/rename ... --dry-run`.
 4. 홈 git clean 확인 후 실행(board-git 자동 백업). 예: finance_dev `board.py prefix merge finance --into none` → `T-finance-*`를 created 순 무prefix로 흡수.
 
 ## 운영 레퍼런스
 
-[`pm_playbook.md`](pm_playbook.md)는 해당 활동 때만 읽는다: 위임 시 "위임 — 두 가지 방식", wave 시 "Wave 패턴"(9단계+메타 학습), 운영 시 "PM 운영 효율 규칙", ticket 발행·분할 시 "메타 정책", 핸드오프 시 "다음 PM 부트스트랩 프롬프트 템플릿"(`/pm-handoff` 자동 추출).
+[`pm_playbook.md`](pm_playbook.md)는 해당 활동 때만 읽는다: 위임 시 "위임 — 두 가지 방식", wave 시 "Wave 패턴"(9단계+메타 학습), 운영 시 "PM 운영 효율 규칙", ticket 발행·분할 시 "메타 정책", 핸드오프 시 "다음 PM 부트스트랩 프롬프트 템플릿"(`/pm-handoff`(claude·opencode) / `$pm-handoff`(codex) 자동 추출).
 
 ## 라이브 외부 행위 안전 가드
 
@@ -247,7 +247,7 @@ CLI가 차수·인계 본문·남은작업을 이미 dump하므로 손 추출하
 
 ## 핸드오프 절차 (7단계)
 
-`/pm-handoff` skill(backbone `pm_handoff.py`)을 사용하고 dry-run을 권장한다(`--dry-run`). task 경로는 `/pm-handoff --task <이름>`만 쓰며 backbone도 `pm_handoff.py --task <이름>`으로 차수·기본 요약·보유 작업공간을 해소한다. 다음 트리거는 `/pm-bootstrap --task <이름>`이다.
+`/pm-handoff`(claude·opencode) / `$pm-handoff`(codex) skill(backbone `pm_handoff.py`)을 사용하고 dry-run을 권장한다(`--dry-run`). task 경로는 `/pm-handoff --task <이름>`(claude·opencode) / `$pm-handoff --task <이름>`(codex)만 쓰며 backbone도 `pm_handoff.py --task <이름>`으로 차수·기본 요약·보유 작업공간을 해소한다. 다음 트리거는 `/pm-bootstrap --task <이름>`(claude·opencode) / `$pm-bootstrap --task <이름>`(codex)이다.
 
 자동 처리:
 0. dirty-tree 게이트 — PM 홈 + 활성 worktree 전수의 미커밋 잔여(gitignored 제외)를 어떤 파일 mutation 보다 앞에서 판정. 잔여가 있으면 rc 1 차단 + 목록 열거이며 정상 해소는 세션 산출 선-커밋이다(불가피 시 `--ack-dirty "<사유>"` — 사유는 handoff entry 에 박제). 비대화 자동 실행은 `--auto-trigger`로 차단 대신 loud 경고+사유 자동 박제. 커밋 0 트리는 untracked 만으로 판정, 비-git 트리는 비차단 경고.
@@ -255,7 +255,7 @@ CLI가 차수·인계 본문·남은작업을 이미 dump하므로 손 추출하
 2. `log/current.md` handoff entry skeleton append.
 3. `pm_state.md` 세션 식별 sliding window에 신규 entry 추가·가장 오래된 entry 제거.
 4. `pm_state.md` 700라인 초과 warning; `log/current.md` entry 누적 시 archive 권장.
-5. `pm_playbook.md` §"다음 PM 세션 부트스트랩 프롬프트 (템플릿)"의 역할 framing+`/pm-bootstrap` 트리거를 stdout 출력. 인계 본문은 채우지 않으며 log entry가 단일 진실이고 다음 bootstrap이 차수·인계 본문·남은작업을 dump.
+5. `pm_playbook.md` §"다음 PM 세션 부트스트랩 프롬프트 (템플릿)"의 역할 framing+`/pm-bootstrap`(claude·opencode) / `$pm-bootstrap`(codex) 트리거를 stdout 출력. 인계 본문은 채우지 않으며 log entry가 단일 진실이고 다음 bootstrap이 차수·인계 본문·남은작업을 dump.
 6. git status와 변경 파일 수 dump.
 7. PM 수동 잔여 checklist 출력.
 
@@ -265,7 +265,7 @@ PM 수동 작업:
 - `pm_state.md` "진행 중인 의사결정" 표와 "남은 작업 전체 그림" 갱신.
 - lint 경고 시 `status.md` 정비. 안정화된 ✅ 행은 `status_done.md`로 이동. `status.md`는 judgment-only라 테스트 수를 적지 않으며 상태/비고는 architect 유지·PM 점검.
 - **pathspec을 명시해 이번 세션 산출 전부와 그것만 commit.** bare `git commit` 금지. `log/current.md` + 갱신/신설 `wiki/domain/*.md` + 이번에 정비한 `status.md`·`status_done.md`를 [6/7] `git status -s`에서 직접 고른다. CLI가 직접 쓰는 파일은 `log/current.md`뿐이고 나머지는 PM 손 산출이며 핸드오프에는 finish식 스코프 잔여 보고가 없다. 예: `git commit -m "PM 세션(N차) 핸드오프 — …" -- .project_manager/wiki/log/current.md .project_manager/wiki/domain/<페이지>.md .project_manager/wiki/status.md`. 신설 파일은 `git add` 선행 필수이며 아니면 `pathspec … did not match`로 전체 commit이 rc=1 실패한다. `pm_state.md`는 gitignored. `(Co-Authored-By: Claude 트레일러)`.
-- 마지막 응답에 인계 트리거를 코드블록으로 출력한다. 다음 세션은 `/pm-bootstrap` 실행; 인계 본문은 bootstrap이 log entry에서 dump한다.
+- 마지막 응답에 인계 트리거를 코드블록으로 출력한다. 다음 세션은 `/pm-bootstrap`(claude·opencode) / `$pm-bootstrap`(codex) 실행; 인계 본문은 bootstrap이 log entry에서 dump한다.
 
 ## 동적 상태
 
@@ -273,7 +273,7 @@ PM 수동 작업:
 
 ## 다음 PM 세션 부트스트랩 프롬프트
 
-[`pm_playbook.md`](pm_playbook.md) §"다음 PM 세션 부트스트랩 프롬프트 (템플릿)"을 `/pm-handoff`(backbone `pm_handoff.py`)가 자동 추출해 stdout 출력한다.
+[`pm_playbook.md`](pm_playbook.md) §"다음 PM 세션 부트스트랩 프롬프트 (템플릿)"을 `/pm-handoff`(claude·opencode) / `$pm-handoff`(codex)(backbone `pm_handoff.py`)가 자동 추출해 stdout 출력한다.
 
 ## 참고
 

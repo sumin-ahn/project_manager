@@ -1,0 +1,8 @@
+{
+  "harnesses": [
+    "claude",
+    "opencode",
+    "codex"
+  ],
+  "schema": 1
+}

@@ -18,3 +18,4 @@ scratch/
 work/
 
 # 루트 도그푸딩 .project_manager 의 per-clone 파일은 .project_manager/.gitignore(엔진)가 처리.
+.pm_import_backups/
