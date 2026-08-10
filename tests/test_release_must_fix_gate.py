@@ -30,23 +30,34 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
-# 반려로 끝난 게이트의 최소 장부 항목 — 최종 라운드 must_fix 3건.
-# `ts` 는 게이트 간 선후 비교의 유일한 좌표다(`sequence` 는 게이트별 순번이라 비교 불가) —
-# 근거 게이트의 통과가 이 반려보다 **뒤**여야 해소 근거로 인정된다.
+# 반려로 끝난 게이트의 최소 장부 항목 — 최종 라운드 must_fix 3건. 신규 writer는 완료 `ts`뿐 아니라
+# 예약 `started_at`과 실제 검토 diff의 `target_rev`를 함께 싣는다. 근거는 반려 **종료 뒤 시작**하고
+# 다른 revision을 검토한 통과여야 한다(완료 순서만으로는 동시 리뷰를 배제하지 못함).
+_REJECTED_REV_1 = "sha256:" + "a" * 64
+_REJECTED_REV_2 = "sha256:" + "b" * 64
+_PASSED_REV = "sha256:" + "c" * 64
+_EARLIER_REV = "sha256:" + "d" * 64
 _REJECTED_ROUNDS = [
     {"sequence": 1, "verdict": 1, "must_fix": 4, "suggestions": 2,
+     "started_at": "2026-07-31T23:00:00+00:00", "target_rev": _REJECTED_REV_1,
      "ts": "2026-08-01T00:00:00+00:00"},
     {"sequence": 2, "verdict": 1, "must_fix": 3, "suggestions": 1,
+     "started_at": "2026-08-01T23:00:00+00:00", "target_rev": _REJECTED_REV_2,
      "ts": "2026-08-02T00:00:00+00:00"},
 ]
-# 통과로 끝난 게이트 — `--fixed` 근거 게이트(반려 이후 시각)이자 릴리즈 검사의 비대상.
+# 통과로 끝난 게이트 — 마지막 반려 종료 뒤 시작·변경된 diff를 검토한 `--fixed` 근거.
 _PASSED_ROUNDS = [{"sequence": 1, "verdict": 0, "must_fix": 0, "suggestions": 0,
+                   "started_at": "2026-08-02T01:00:00+00:00", "target_rev": _PASSED_REV,
                    "ts": "2026-08-03T00:00:00+00:00"}]
-# 반려보다 **앞선** 통과 — 연관성 없는 근거(우연한 시간 순서)를 태우는 절.
+# 반려보다 **앞서 시작한** 통과 — 연관성 없는 근거(우연한 완료 순서)를 태우는 절.
 _EARLIER_PASSED_ROUNDS = [{"sequence": 1, "verdict": 0, "must_fix": 0,
+                           "started_at": "2026-07-19T00:00:00+00:00",
+                           "target_rev": _EARLIER_REV,
                            "ts": "2026-07-20T00:00:00+00:00"}]
 # 판정이 무효했던 라운드 — 전송은 됐으나 must_fix 를 셀 근거가 없다('미상').
 _UNKNOWN_ROUNDS = [{"sequence": 1, "verdict": 1, "must_fix": None,
+                    "started_at": "2026-08-01T23:00:00+00:00",
+                    "target_rev": _REJECTED_REV_2,
                     "ts": "2026-08-02T00:00:00+00:00"}]
 
 
@@ -160,12 +171,113 @@ def test_fixed_self_reference_is_refused(declare, capsys):
 
 
 def test_fixed_evidence_must_postdate_the_rejection(declare, capsys):
-    """근거 통과가 반려보다 **앞서면** 거부 — 우연한 시간 순서는 해소의 근거가 아니다."""
+    """근거 통과가 반려보다 **앞서 시작**하면 거부 — 우연한 완료 순서는 근거가 아니다."""
     assert declare.run("--resolve-gate", "T-0610", "--fixed", "T-0614") == 1
     assert declare.ledger()["T-0610"].get("resolution") is None
     err = capsys.readouterr().err
-    assert "통과가 반려보다 앞섭니다" in err
-    assert "그 반려 **이후**의 통과여야" in err
+    assert "반려 이후에 시작되지 않았습니다" in err
+    assert "그 반려 **이후 시작한** 통과여야" in err
+
+
+def test_fixed_rejects_concurrent_review_started_before_rejection(declare, capsys):
+    """반려 전 시작·반려 후 종료한 동시 리뷰는 `--fixed` 근거가 아니다 (T-0618 핵심 재현)."""
+    ledger = declare.ledger()
+    ledger["T-0616"] = {"count": 1, "rounds": [{
+        "sequence": 1, "verdict": 0, "must_fix": 0,
+        "started_at": "2026-08-01T23:30:00+00:00",  # 반려(8/2 00:00) 전 시작
+        "target_rev": _REJECTED_REV_2,                # 같은 미수정 diff
+        "ts": "2026-08-03T00:00:00+00:00",          # 반려 뒤 늦게 종료
+    }]}
+    _write_ledger(declare.proj, ledger)
+
+    assert declare.run("--resolve-gate", "T-0610", "--fixed", "T-0616") == 1
+    assert "반려 이후에 시작되지 않았습니다" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("field,value", [
+    ("ts", "zzz"),
+    ("started_at", "2026-08-02 01:00:00"),
+    ("ts", "2026-08-03T09:00:00+09:00"),
+])
+def test_fixed_rejects_malformed_or_non_utc_timestamps(declare, capsys, field, value):
+    """완료/시작 ts는 엄격한 ISO 8601 UTC만 허용 — 손상·비UTC는 fail-closed."""
+    ledger = declare.ledger()
+    row = dict(_PASSED_ROUNDS[0])
+    row[field] = value
+    ledger["T-0616"] = {"count": 1, "rounds": [row]}
+    _write_ledger(declare.proj, ledger)
+
+    assert declare.run("--resolve-gate", "T-0610", "--fixed", "T-0616") == 1
+    err = capsys.readouterr().err
+    assert "엄격한 ISO 8601 UTC" in err and "결속 불충분" in err
+
+
+@pytest.mark.parametrize("started_at", [
+    pytest.param(None, id="missing"),
+    pytest.param("2026-08-02 08:00:00", id="non-iso"),
+    pytest.param("2026-08-02T08:00:00+09:00", id="non-utc"),
+])
+def test_fixed_rejects_unbound_rejection_started_at(declare, capsys, started_at):
+    """반려 started_at 도 누락·비파싱·비UTC면 선후 결속을 확인할 수 없어 거부한다."""
+    ledger = declare.ledger()
+    row = dict(ledger["T-0610"]["rounds"][-1])
+    if started_at is None:
+        row.pop("started_at")
+    else:
+        row["started_at"] = started_at
+    ledger["T-0610"]["rounds"][-1] = row
+    _write_ledger(declare.proj, ledger)
+
+    assert declare.run("--resolve-gate", "T-0610", "--fixed", "T-0612") == 1
+    err = capsys.readouterr().err
+    assert "엄격한 ISO 8601 UTC" in err and "결속 불충분" in err
+
+
+def test_fixed_rejects_rejection_completed_before_it_started(declare, capsys):
+    """반려 시작 10:00·완료 09:00·근거 시작 09:30 조합은 다른 rev여도 거부한다."""
+    ledger = declare.ledger()
+    blocked = dict(ledger["T-0610"]["rounds"][-1])
+    blocked.update({
+        "started_at": "2026-08-02T10:00:00+00:00",
+        "ts": "2026-08-02T09:00:00+00:00",
+    })
+    ledger["T-0610"]["rounds"][-1] = blocked
+    evidence = dict(ledger["T-0612"]["rounds"][-1])
+    evidence.update({
+        "started_at": "2026-08-02T09:30:00+00:00",
+        "ts": "2026-08-02T11:00:00+00:00",
+    })
+    ledger["T-0612"]["rounds"][-1] = evidence
+    _write_ledger(declare.proj, ledger)
+
+    assert declare.run("--resolve-gate", "T-0610", "--fixed", "T-0612") == 1
+    err = capsys.readouterr().err
+    assert "반려 라운드 완료 ts가 started_at 보다 앞서" in err
+    assert "결속 불충분" in err
+
+
+def test_fixed_rejects_old_round_without_binding_fields(declare, capsys):
+    """구 라운드는 마이그레이션으로 꾸미지 않고 결속 불충분 사유로 거부한다."""
+    ledger = declare.ledger()
+    ledger["T-0616"] = {"count": 1, "rounds": [{
+        "sequence": 1, "verdict": 0, "must_fix": 0,
+        "ts": "2026-08-03T00:00:00+00:00",
+    }]}
+    _write_ledger(declare.proj, ledger)
+
+    assert declare.run("--resolve-gate", "T-0610", "--fixed", "T-0616") == 1
+    assert "결속 불충분" in capsys.readouterr().err
+
+
+def test_fixed_rejects_unchanged_target_revision(declare, capsys):
+    """반려 뒤 새로 시작했어도 같은 diff fingerprint면 코드 해소 근거가 아니다."""
+    ledger = declare.ledger()
+    row = {**_PASSED_ROUNDS[0], "target_rev": _REJECTED_REV_2}
+    ledger["T-0616"] = {"count": 1, "rounds": [row]}
+    _write_ledger(declare.proj, ledger)
+
+    assert declare.run("--resolve-gate", "T-0610", "--fixed", "T-0616") == 1
+    assert "같은 대상 rev fingerprint" in capsys.readouterr().err
 
 
 def test_unknown_residual_can_be_disposed(declare, capsys):
@@ -198,6 +310,15 @@ def test_fixed_without_evidence_is_refused(declare, capsys):
     assert declare.run("--resolve-gate", "T-0610", "--fixed") == 1
     assert declare.ledger()["T-0610"].get("resolution") is None
     assert "--fixed <근거 게이트>" in capsys.readouterr().err
+
+
+def test_cli_help_documents_fixed_binding_and_dry_run_refusal(declare):
+    """CLI 도움말도 새 `--fixed` 선후/rev 결속과 resolve dry-run 거부를 직접 말한다."""
+    help_text = declare.module.build_arg_parser().format_help()
+    assert "반려 종료 뒤 시작" in help_text
+    assert "target_rev" in help_text
+    assert "결속 필드 없는 구 라운드는 거부" in help_text
+    assert "--resolve-gate 는 기록 명령이므로 함께 쓰면 exit 1" in help_text
 
 
 @pytest.mark.parametrize("argv", [
@@ -340,6 +461,8 @@ def test_absent_ledger_is_not_a_target(release):
     assert not _ledger_path(release.proj).exists()
     assert release.record() == 0
     assert release.flag()["status"] == "pass"
+    assert (release.proj / ".project_manager" / ".local" / "release-must-fix").read_text(
+        encoding="ascii") == "clear\n"
     assert len(release.runner.calls) == 1        # release wave 가 실제로 돌았다
 
 
@@ -353,6 +476,8 @@ def test_unresolved_must_fix_blocks_before_live_wave(release, capsys):
     assert "T-0610: 최종 라운드 must_fix 3건 · 처분 선언 없음" in err
     assert "--resolve-gate <게이트> --into <T-NNNN>" in err     # 처방
     assert "우회 플래그 없음" in err
+    assert (release.proj / ".project_manager" / ".local" / "release-must-fix").read_text(
+        encoding="ascii") == "blocked\n"
 
 
 def test_block_records_fail_so_push_hook_stays_closed(release):
@@ -404,6 +529,31 @@ def test_fixed_declaration_passes(release):
         "T-0612": {"count": 1, "rounds": list(_PASSED_ROUNDS)}})
     assert release.record() == 0
     assert release.flag()["status"] == "pass"
+
+
+def test_fixed_rejection_interval_is_reverified_at_release(release, capsys):
+    """반려 자체의 시작/완료 선후가 손상된 fixed 선언은 릴리즈 재검증에서도 차단한다."""
+    blocked = _rejected_gate(kind="fixed", evidence_gate="T-0612")
+    blocked["rounds"][-1] = {
+        **blocked["rounds"][-1],
+        "started_at": "2026-08-02T10:00:00+00:00",
+        "ts": "2026-08-02T09:00:00+00:00",
+    }
+    evidence = {
+        **_PASSED_ROUNDS[-1],
+        "started_at": "2026-08-02T09:30:00+00:00",
+        "ts": "2026-08-02T11:00:00+00:00",
+    }
+    _write_ledger(release.proj, {
+        "T-0610": blocked,
+        "T-0612": {"count": 1, "rounds": [evidence]},
+    })
+
+    assert release.record() == 1
+    assert release.runner.calls == []
+    err = capsys.readouterr().err
+    assert "반려 라운드 완료 ts가 started_at 보다 앞서" in err
+    assert "결속 불충분" in err
 
 
 def test_suggestion_only_residue_passes(release):
@@ -568,7 +718,10 @@ def test_livegate_has_no_bypass_flag(release):
 # ── ③ push 보호훅 — 라이브 축 우회가 이 차단까지 열지 않는다 ───────────────
 
 
-def _install_hook_fixture(tmp_path: Path, *, status: str, reason: str | None) -> Path:
+def _install_hook_fixture(
+    tmp_path: Path, *, status: str, reason: str | None,
+    marker_content: str | None = "clear\n",
+) -> Path:
     """보호 pre-push 훅 + sidecar(보호목록·release 계약·engine-root) 를 tmp 에 깐다.
 
     livegate.json 은 `status`/`reason` 그대로 만든다 — 우회 거부 판정의 입력이 **사유 표식**이지
@@ -588,6 +741,8 @@ def _install_hook_fixture(tmp_path: Path, *, status: str, reason: str | None) ->
     if reason:
         record["reason"] = reason
     (local / "livegate.json").write_text(json.dumps(record), encoding="utf-8")
+    if marker_content is not None:
+        (local / "release-must-fix").write_text(marker_content, encoding="ascii")
     (hook_dir / "engine-root").write_text(f"{engine_root}\n", encoding="utf-8")
     return hook_dir / "pre-push"
 
@@ -607,7 +762,7 @@ def test_skip_live_gate_env_does_not_bypass_must_fix_block(tmp_path):
     우회 사유(오프라인·라이브 무관 변경·긴급 hotfix)와 이 차단 사유(리뷰 잔여)는 다른 축이다.
     훅은 fail 기록의 사유 표식을 읽어 그 한 사유만 거부한다(다른 사유의 우회는 현행 유지)."""
     result = _run_hook(_install_hook_fixture(
-        tmp_path, status="fail", reason="unresolved-must-fix"))
+        tmp_path, status="fail", reason="unresolved-must-fix", marker_content="blocked\n"))
     assert result.returncode != 0
     assert "미해소 must-fix 잔여" in result.stderr
     assert "우회 대상이 아니다" in result.stderr
@@ -625,6 +780,34 @@ def test_skip_live_gate_env_still_bypasses_other_reasons(tmp_path, status, reaso
     라이브 red·인프라 실패까지 우회가 막혀 긴급 hotfix 경로가 사라진다."""
     assert _run_hook(_install_hook_fixture(
         tmp_path, status=status, reason=reason)).returncode == 0
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 직접 실행 불가)")
+@pytest.mark.parametrize("marker_content", [None, "", "clear", "clear\nextra\n", "unknown\n"])
+def test_skip_live_gate_marker_absent_or_malformed_is_fail_closed(tmp_path, marker_content):
+    """표식 부재·부분행·추가행·미지값은 잔여 없음이 아니라 판정 불가라 우회를 거부한다."""
+    result = _run_hook(_install_hook_fixture(
+        tmp_path, status="pass", reason=None, marker_content=marker_content))
+    assert result.returncode != 0
+    assert "잔여 판정 표식" in result.stderr
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 직접 실행 불가)")
+def test_green_then_new_rejection_writer_closes_skip_marker(tmp_path, monkeypatch):
+    """옛 green 뒤 신규 반려가 오면 장부 writer가 blocked를 먼저 써 우회도 즉시 닫는다."""
+    hook = _install_hook_fixture(tmp_path, status="pass", reason=None)
+    assert _run_hook(hook).returncode == 0
+    engine_root = Path((hook.parent / "engine-root").read_text(encoding="utf-8").strip())
+    review = _load("external_review", "must_fix_marker_writer")
+    monkeypatch.setattr(review, "REPO", engine_root)
+    with review._round_ledger_lock():
+        review._save_round_ledger({"T-0610": _rejected_gate()})
+
+    assert (engine_root / ".project_manager" / ".local" / "release-must-fix").read_text(
+        encoding="ascii") == "blocked\n"
+    result = _run_hook(hook)
+    assert result.returncode != 0
+    assert "미해소 must-fix 잔여" in result.stderr
 
 
 # ── ④ 두 도구가 같은 장부를 본다 (선언 → 릴리즈) ───────────────────────────
@@ -656,6 +839,7 @@ def test_declaration_then_release_uses_one_ledger(tmp_path, monkeypatch, capsys)
 
     assert board.cmd_livegate(record) == 1                      # 미처분 → 차단
     assert review.main(["--resolve-gate", "T-0610", "--into", "T-0620"]) == 0
+    assert (local / "release-must-fix").read_text(encoding="ascii") == "clear\n"
     assert board.cmd_livegate(record) == 0                      # done 이관 → 통과
     assert board._unresolved_must_fix_gates(_ledger_path(proj)) == []
     capsys.readouterr()

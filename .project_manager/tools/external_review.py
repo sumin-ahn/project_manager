@@ -91,6 +91,7 @@ import argparse
 import contextlib
 import datetime
 import fnmatch
+import hashlib
 import io
 import inspect
 import json
@@ -1292,8 +1293,8 @@ _RESOLVE_GATE_MODE_GUIDANCE = (
     "하지 않았습니다.\n"
     "  · 후속 티켓으로 이관: `--into <T-NNNN>` (면제가 아닙니다 — 그 티켓이 done 이어야 "
     "릴리즈가 열립니다)\n"
-    "  · 코드로 해소: `--fixed <근거 게이트>` (마지막 라운드가 **통과**로 끝난 장부 게이트를 "
-    "지목하세요 — 확인 라운드나 후속 게이트)\n"
+    "  · 코드로 해소: `--fixed <근거 게이트>` (반려 종료 뒤 **시작**해 변경된 diff를 검토하고 "
+    "통과한 장부 게이트를 지목하세요 — 확인 라운드나 후속 게이트)\n"
     "  · 두 처분을 같이 쓸 수 없습니다 (한 게이트의 잔여는 한 갈래로 소화됩니다)."
 )
 
@@ -1341,7 +1342,9 @@ _RESOLVE_GATE_TICKET_GUIDANCE = (
 _RESOLVE_GATE_EVIDENCE_GUIDANCE = (
     "오류: 근거 게이트 {evidence} 가 해소를 뒷받침하지 못합니다 — {detail}\n"
     "  · `--fixed` 는 '마지막 반려분이 코드로 해소됐고 그 사실을 **통과 라운드가 보였다**'는 "
-    "선언입니다 — 근거는 장부의 기록(마지막 라운드 판정 0)이어야 합니다.\n"
+    "선언입니다 — 근거는 장부의 기록(마지막 라운드 판정 0 + 반려 종료 뒤 started_at + 서로 다른 "
+    "target_rev)이어야 합니다. 구 라운드처럼 결속 필드가 없거나 ts가 ISO 8601 UTC가 아니면 "
+    "근거로 인정하지 않습니다.\n"
     "  · 확인 전용 라운드(`--gate {gate} --confirm-fix`)나 후속 게이트를 통과시킨 뒤 그 게이트를 "
     "지목하세요.\n"
     "  · 아직 통과 근거가 없으면 후속 티켓으로 이관하세요: `--resolve-gate {gate} --into <T-NNNN>`."
@@ -2012,17 +2015,28 @@ def _inherit_legacy_round_entry(ledger: dict, gate: str) -> dict | None:
 
 
 def _save_round_ledger(ledger: dict) -> None:
-    """라운드 장부를 원자적으로 기록한다 (unique tmp + os.replace·부분기록/crash 잔재 방지).
+    """라운드 장부와 shell 소비 잔여 표식을 fail-closed 순서로 원자 기록한다.
 
     tmp 이름에 pid+uuid 를 실어 동시 실행 간 고정 `.tmp` 충돌(카운트 유실·write 예외)을 없앤다
     os.replace 는 원자 rename — 독자는 옛 파일 또는 새 파일만 본다(부분기록 없음).
-    확인·예약·저장의 원자성은 호출자가 `_round_ledger_lock()` 임계 구역으로 보장한다."""
+    확인·예약·저장의 원자성은 호출자가 `_round_ledger_lock()` 임계 구역으로 보장한다.
+
+    두 파일은 한 rename 으로 묶을 수 없으므로 순서가 안전성이다: 새 장부가 blocked 면 표식을 먼저,
+    clear 면 장부를 먼저 쓴다. 어느 사이에서 죽어도 false-clear 대신 false-block 만 남는다. livegate
+    record/check 도 같은 락과 board 공용 판정을 써 stale clear overwrite 를 막는다."""
     path = _round_ledger_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    board = _load_board()
+    problems = board._unresolved_must_fix_data(ledger, path)
+    livegate_flag = path.with_name("livegate.json")
+    if problems:
+        board._write_release_must_fix_marker(livegate_flag, problems)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         tmp.write_text(json.dumps(ledger, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(str(tmp), str(path))
+        if not problems:
+            board._write_release_must_fix_marker(livegate_flag, problems)
     finally:
         with contextlib.suppress(OSError):
             if tmp.exists():
@@ -2077,6 +2091,15 @@ def _round_ledger_lock() -> Iterator[None]:
 def _utc_now_iso() -> str:
     """장부 시각 표기 단일 소스 — UTC ISO-8601 (예약/마감/산출이 같은 형식을 쓴다)."""
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _target_rev_fingerprint(diff: str) -> str:
+    """리뷰어에게 실제 전송할 diff의 content revision (`sha256:<hex>`).
+
+    git HEAD 는 working tree의 staged/unstaged/untracked 변경을 식별하지 못한다. 프롬프트에 들어가는
+    UTF-8 diff 바이트를 직접 해시하면 같은 미수정 diff의 동시 리뷰는 같은 좌표, 수정 뒤 리뷰는 새
+    좌표를 얻는다."""
+    return "sha256:" + hashlib.sha256(diff.encode("utf-8")).hexdigest()
 
 
 def _as_int(value: object) -> int:
@@ -2356,6 +2379,7 @@ def _round_has_verdict(result: dict) -> bool:
 
 def _reserve_round(
     entry: dict, record_id: str, *, wall_timeout_sec: int | None = None,
+    target_rev: str | None = None,
 ) -> dict:
     """단조 sequence identity로 전송을 예약하고 레코드를 반환한다.
 
@@ -2370,6 +2394,9 @@ def _reserve_round(
         "number": entry["sequence"],
         "sequence": entry["sequence"],
         "started_at": _utc_now_iso(),
+        # 실제 프롬프트에 실린 diff의 안정 fingerprint. HEAD 만으로는 staged/unstaged/untracked
+        # working diff를 식별하지 못하므로 content hash를 쓴다. 장부 밖 직접 helper 호출만 None.
+        "target_rev": target_rev,
         "deadline": _reservation_deadline(wall_timeout_sec),
     }
     entry.setdefault("records", []).append(record)
@@ -2443,19 +2470,22 @@ def _must_fix_count(result: dict) -> int | None:
 
 
 def _round_outcome(result: dict, *, record: dict | None = None) -> dict:
-    """리뷰 결과 → 라운드 산출 레코드(`{ts, id, sequence, verdict, must_fix, suggestions}`).
+    """리뷰 결과 → 라운드 산출(`{ts, started_at, target_rev, id, sequence, ...}`).
 
     verdict 는 이 실행이 돌려주는 **rc 판정**(0=통과·1=반려)이라 장부와 종료 코드가 갈리지 않는다.
     suggestions 는 응답에 suggestion 판별기가 아직 없어 null 로 시작한다 — 자리를 먼저 두어 파서가
     생기면 스키마 변경 없이 채워진다(파서 확장은 후속).
 
-    `id`/`sequence` 는 이 산출을 낸 **예약 레코드**의 좌표다. 같은 게이트에서 여러 실행이 동시에
-    끝나면 append 순서만으로는 어느 산출이 어느 라운드의 것인지 확정할 수 없어, 예약 identity 를
-    그대로 실어 라운드↔결과 연결을 잠근다(예약 레코드를 못 찾은 경우만 null)."""
+    `id`/`sequence`/`started_at`/`target_rev` 는 이 산출을 낸 **예약 레코드**의 좌표다. 같은 게이트에서
+    여러 실행이 동시에 끝나면 append 순서나 완료 ts 만으로 어느 실행이 반려 뒤 시작했는지 확정할
+    수 없어, 예약 identity 와 실제 검토 diff를 그대로 실어 라운드↔결과 연결을 잠근다(예약 레코드를
+    못 찾은 장부 밖 직접 호출만 null)."""
     return {
         "ts": _utc_now_iso(),
         "id": (record or {}).get("id"),
         "sequence": (record or {}).get("sequence"),
+        "started_at": (record or {}).get("started_at"),
+        "target_rev": (record or {}).get("target_rev"),
         "verdict": determine_exit_code(result),
         "must_fix": _must_fix_count(result),
         "suggestions": None,
@@ -2782,6 +2812,8 @@ class RoundBudget(NamedTuple):
     gate: str | None = None
     round_id: str | None = None
     sequence: int | None = None
+    started_at: str | None = None
+    target_rev: str | None = None
     wave_id: str | None = None
     confirm_fix_spent: bool = False
     confirm_fix_evidence: str | None = None
@@ -2794,6 +2826,7 @@ class RoundBudget(NamedTuple):
 
 def _reserve_round_budget(
     args, conf: dict[str, str], *, wall_timeout_sec: int | None = None,
+    target_rev: str | None = None,
 ) -> RoundBudget:
     """라운드 상한·wave 예산을 한 임계 구역에서 확인하고 이번 전송을 예약한다.
 
@@ -2952,12 +2985,15 @@ def _reserve_round_budget(
             # 예약 sequence 는 **여기서** 잡는다 — 마감 시점에 레코드를 되찾아 읽으면 그 사이
             # 집계 창이 비워진 실행만 순번을 잃는다. 만료 시각도 같은 자리에서 새긴다 — 이 예약이
             # 언제까지 살아 있을 수 있는지는 **이 실행의** 백스톱이 정한다.
-            sequence = _reserve_round(                              # 호출 전 라운드 예약
-                entry, round_id, wall_timeout_sec=wall_timeout_sec)["sequence"]
+            record = _reserve_round(                                # 호출 전 라운드 예약
+                entry, round_id, wall_timeout_sec=wall_timeout_sec,
+                target_rev=target_rev,
+            )
             _spend_wave_round(wave)                   # 같은 전송을 wave 예산에서도 차감
             _save_round_ledger(ledger)
             return RoundBudget(
-                gate=args.gate, round_id=round_id, sequence=sequence,
+                gate=args.gate, round_id=round_id, sequence=record["sequence"],
+                started_at=record["started_at"], target_rev=record["target_rev"],
                 wave_id=wave["id"],                   # 환불은 이 세대에만 유효
                 confirm_fix_spent=confirm_fix,        # 전송 0 이면 quota 도 되돌린다
                 confirm_fix_evidence=confirm_fix_evidence,   # 자격을 판정한 그 스냅샷의 근거
@@ -5778,6 +5814,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
   # 게이트 처분 선언 (외부 전송 없음 — 릴리즈 게이트가 읽는 잔여 must-fix 소화 기록)
   python3 .project_manager/tools/external_review.py --resolve-gate T-NNNN --into T-MMMM
   python3 .project_manager/tools/external_review.py --resolve-gate T-NNNN --fixed T-MMMM
+  # --fixed 근거는 마지막 반려 종료 뒤 시작 + 변경된 target_rev + 통과가 모두 필요.
+  # --resolve-gate 와 --dry-run 조합은 기록 목적과 모순이라 rc1로 거부.
 
   # Codex sandbox(network-off) 안에서: 미리보기 → 도구 승격 + 증명 동반 실행
   python3 .project_manager/tools/external_review.py --dry-run
@@ -5828,10 +5866,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fixed", nargs="?", const=_FIXED_WITHOUT_EVIDENCE, default=None,
                         metavar="T-NNNN",
                         help="--resolve-gate 처분: 잔여 must-fix 가 코드로 해소됐음을 선언 — 값은 "
-                             "그 사실을 보인 **근거 게이트**(마지막 라운드가 통과로 끝난 장부 "
-                             "게이트·확인 라운드 또는 후속 게이트)다. 지목은 필수")
+                             "그 사실을 보인 **근거 게이트**다. 근거 마지막 라운드는 반려 종료 뒤 "
+                             "시작했고(started_at·ISO 8601 UTC), 다른 target_rev를 검토해 통과해야 "
+                             "한다. 결속 필드 없는 구 라운드는 거부. 지목은 필수")
     parser.add_argument("--dry-run", action="store_true",
-                        help="diff·프롬프트만 출력, 외부 호출/전송 안 함 (비활성이어도 허용·빈 diff 면 exit 1)")
+                        help="diff·프롬프트만 출력, 외부 호출/전송 안 함 (비활성이어도 허용·빈 diff 면 "
+                             "exit 1). --resolve-gate 는 기록 명령이므로 함께 쓰면 exit 1")
     parser.add_argument("--force", action="store_true",
                         help=f"{ADDITIONAL_REVIEWER_ENABLED_KEY}=false 여도 1회 강제 실행 (외부 전송 발생)")
     parser.add_argument(CODEX_EGRESS_FLAG, action="store_true",
@@ -6624,7 +6664,10 @@ def _main(argv: list[str] | None = None) -> int:
     # 격리 컨테이너 생성보다 **먼저**다 — 이미 상한에 닿은 호출은 스폰이 없어도 격리를 먼저 만들면
     # 저장소·인증 사본을 만들었다 지우는 실 작업을 하고, 그건 "전송 없이 끝나는 실행은 부작용 0"
     # 규율(dry-run·비활성 no-op·egress 차단과 같은 축)을 이 rc 에서만 깨는 것이다.
-    budget = _reserve_round_budget(args, conf, wall_timeout_sec=timeout)
+    budget = _reserve_round_budget(
+        args, conf, wall_timeout_sec=timeout,
+        target_rev=_target_rev_fingerprint(diff),
+    )
     if budget.refused_rc is not None:
         return budget.refused_rc
     if budget.confirm_fix_evidence is not None:
@@ -6785,6 +6828,7 @@ def _run_isolated_review(
         outcome = (
             _round_outcome(result, record={
                 "id": budget.round_id, "sequence": budget.sequence,
+                "started_at": budget.started_at, "target_rev": budget.target_rev,
             })
             if started else None
         )

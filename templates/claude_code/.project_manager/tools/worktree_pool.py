@@ -1250,9 +1250,9 @@ def _slot_branch_exists(runner: GitRunner, branch: str) -> bool:
 # 편승 차단). remote ref (`refs/heads/<b>`)의 `<b>` 가 sidecar 보호목록에 있으면 (그 ref 의 localsha 로) —
 #   - `PM_ALLOW_PROTECTED_PUSH=1` 아니면 하드 차단(echo 안내·exit 1).
 #   - `release`: push SHA의 `board.py livegate check --rev <sha>` rc0을 추가 요구.
-#     `PM_SKIP_LIVE_GATE=1`은 라이브-무관·긴급 변경 한정 우회다. 단 **미해소 must-fix 잔여**로 찍힌
-#     fail 기록(`livegate.json` 의 `unresolved-must-fix` 표식)은 그 우회의 대상이 아니라 거부한다 —
-#     우회 사유(라이브 축)와 차단 사유(리뷰 잔여 축)가 다르기 때문이다.
+#     `PM_SKIP_LIVE_GATE=1`은 라이브-무관·긴급 변경 한정 우회다. 단 **미해소 must-fix 잔여**는
+#     그 우회의 대상이 아니다. 훅은 장부 writer가 현행화한 `release-must-fix` 한 줄 표식만 읽고,
+#     `clear`가 명확할 때만 우회한다. 표식 부재·손상·읽기 실패는 잔여 미상이라 fail-closed다.
 #   - `self-test`: 현재 checkout HEAD=push SHA·clean을 고정한 뒤 계약의 repo 테스트
 #     명령을 실행한다. `PM_SKIP_SELF_TEST=1` + 빈 값이 아닌
 #     `PM_SELF_TEST_BYPASS_REASON` 조합만 감사 로그를 남기고 우회한다.
@@ -1419,22 +1419,47 @@ $branch
             # 적용하지 않아 skip 상시화가 자기 검증까지 무력화하지 않게 한다.
             if [ "$PM_SKIP_LIVE_GATE" = "1" ]; then
                 # 우회 사유는 **라이브 축**(오프라인·라이브 무관 변경·긴급 hotfix)이다. 미해소
-                # must-fix 는 다른 축이라 이 우회의 대상이 아니다 — 그 사유로 찍힌 fail 기록이
-                # 있으면 우회를 거부한다. 기록 판독은 파일 표식 1개라 Python 해소가 필요 없다
-                # (우회는 실행 환경이 깨진 상황에서도 써야 하는 경로다).
+                # must-fix 는 다른 축이라 이 우회의 대상이 아니다. livegate 마지막 reason 은 green
+                # 뒤 새 반려를 못 보므로, 장부 writer가 매 변경에 원자 갱신하는 현행 잔여 표식만
+                # 읽는다. Python 해소는 불요지만 `clear` 정확 한 줄 외에는 전부 fail-closed다.
                 mf_engine_root=""
                 [ -f "$engine_root_file" ] && IFS= read -r mf_engine_root < "$engine_root_file"
-                mf_flag="$mf_engine_root/.project_manager/.local/livegate.json"
-                if [ -n "$mf_engine_root" ] && [ -f "$mf_flag" ] &&
-                        grep -q "unresolved-must-fix" "$mf_flag" 2>/dev/null; then
-                    echo "[pm 라이브 게이트] 보호 브랜치 '$branch' push 거부 — 미해소 must-fix 잔여." >&2
-                    echo "  PM_SKIP_LIVE_GATE 는 라이브 축 우회이고 이 차단은 리뷰 잔여 축이다 — 우회 대상이 아니다." >&2
-                    echo "  게이트마다 처분을 선언한 뒤 다시 기록하라:" >&2
-                    echo "    external_review.py --resolve-gate <게이트> --into <T-NNNN> | --fixed <근거 게이트>" >&2
+                mf_flag="$mf_engine_root/.project_manager/.local/release-must-fix"
+                mf_state=""
+                mf_extra=""
+                mf_read_rc=1
+                mf_extra_rc=1
+                if [ -n "$mf_engine_root" ] && [ -f "$mf_flag" ]; then
+                    {
+                        IFS= read -r mf_state
+                        mf_read_rc=$?
+                        IFS= read -r mf_extra
+                        mf_extra_rc=$?
+                    } < "$mf_flag"
+                fi
+                if [ "$mf_read_rc" -ne 0 ] || [ "$mf_extra_rc" -eq 0 ] || [ -n "$mf_extra" ]; then
+                    echo "[pm 라이브 게이트] 보호 브랜치 '$branch' push 거부 — must-fix 잔여 판정 표식을 읽을 수 없음." >&2
+                    echo "  PM_SKIP_LIVE_GATE 는 잔여가 없다는 현행 표식(clear)이 명확할 때만 허용된다 — 부재·손상·판독 실패는 fail-closed." >&2
+                    echo "  장부/환경을 복구하고 표식을 다시 생성하라:" >&2
                     echo "    board.py livegate record" >&2
                     exit 1
                 fi
-                continue
+                case "$mf_state" in
+                    clear) continue ;;
+                    blocked)
+                        echo "[pm 라이브 게이트] 보호 브랜치 '$branch' push 거부 — 미해소 must-fix 잔여." >&2
+                        echo "  PM_SKIP_LIVE_GATE 는 라이브 축 우회이고 이 차단은 리뷰 잔여 축이다 — 우회 대상이 아니다." >&2
+                        echo "  게이트마다 처분을 선언한 뒤 다시 기록하라:" >&2
+                        echo "    external_review.py --resolve-gate <게이트> --into <T-NNNN> | --fixed <근거 게이트>" >&2
+                        echo "    board.py livegate record" >&2
+                        exit 1
+                        ;;
+                    *)
+                        echo "[pm 라이브 게이트] 보호 브랜치 '$branch' push 거부 — must-fix 잔여 판정 표식 형식 오류('$mf_state')." >&2
+                        echo "  허용 형식은 writer가 원자 기록한 clear 또는 blocked 정확 한 줄뿐이다. board.py livegate record를 다시 실행하라." >&2
+                        exit 1
+                        ;;
+                esac
             fi
             ;;
         self-test)
@@ -1614,7 +1639,7 @@ $branch
                 echo "  Python 3.11+ 필요, 발견: ${found_versions:-없음}." >&2
             fi
             echo "  보호 브랜치 push 는 라이브 게이트 green 을 요구한다. 게이트를 못 돌리면 무력화 방지로 거부한다." >&2
-            echo "  라이브-무관 변경(docs 등)·긴급 hotfix 면 우회:" >&2
+            echo "  라이브-무관 변경(docs 등)·긴급 hotfix 면 우회(현행 must-fix 잔여-무 표식 clear 가 있어야 함 — 부재면 record 1회 선행):" >&2
             echo "    PM_SKIP_LIVE_GATE=1 PM_ALLOW_PROTECTED_PUSH=1 git push ..." >&2
             exit 1
         fi
@@ -1632,7 +1657,7 @@ $branch
         echo "  릴리즈(main 머지)는 릴리즈 라이브 wave 가 이 커밋에서 green 이어야 한다(위 사유 참조)." >&2
         echo "  - 환경 문제(오프라인·LLM 서비스 장애/한도·게이트 오작동)면 — 우회 아님·환경 복구 후 재실행:" >&2
         echo "      board.py livegate record" >&2
-        echo "  - 라이브-무관 변경(docs 등)·긴급 hotfix 면 — 우회:" >&2
+        echo "  - 라이브-무관 변경(docs 등)·긴급 hotfix 면 — 우회(현행 must-fix 잔여-무 표식 clear 필요·부재면 record 1회 선행):" >&2
         echo "      PM_SKIP_LIVE_GATE=1 PM_ALLOW_PROTECTED_PUSH=1 git push ..." >&2
         exit 1
     fi

@@ -5907,22 +5907,47 @@ def gate_resolution(entry: dict) -> dict | None:
     return declared
 
 
-def _round_timestamp(outcome: dict | None) -> str | None:
-    """라운드 산출의 기록 시각 (없거나 손상이면 None) — 게이트 간 선후 비교의 유일한 좌표.
+_UTC_ISO_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)$"
+)
+_TARGET_REV_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
-    `sequence` 는 **게이트별** 예약 순번이라 다른 게이트끼리 비교하면 뜻이 없다. 시각은 한 형식의
-    UTC ISO 문자열(`_utc_now_iso`)이라 사전순 비교가 곧 시간순이다."""
-    ts = outcome.get("ts") if outcome is not None else None
-    return ts.strip() if isinstance(ts, str) and ts.strip() else None
+
+def _parse_utc_iso(value: object) -> datetime.datetime | None:
+    """writer 형식의 ISO-8601 UTC 시각만 datetime 으로 파싱한다 (아니면 None).
+
+    `datetime.fromisoformat` 단독은 공백 separator·offset 생략 등도 받아들인다. 장부 선후는 보안
+    경계라 writer 가 내는 `YYYY-MM-DDTHH:MM:SS[.ffffff]+00:00`(`Z`도 동치)만 받고, 실제 달력값과
+    UTC offset 을 다시 확인한다. 문자열 사전순 비교는 손상값 `zzz`가 미래로 통하는 구멍이라 쓰지
+    않는다."""
+    if not isinstance(value, str) or _UTC_ISO_RE.fullmatch(value) is None:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.utcoffset() == datetime.timedelta(0) else None
+
+
+def _round_timestamp(outcome: dict | None, key: str = "ts") -> datetime.datetime | None:
+    """라운드 산출의 UTC 시각 필드 — 누락·비-ISO·비-UTC면 None (fail-closed 판정용)."""
+    return _parse_utc_iso(outcome.get(key) if outcome is not None else None)
+
+
+def _round_target_rev(outcome: dict | None) -> str | None:
+    """실제 전송 diff의 안정 fingerprint(`sha256:<hex>`) — 구/손상 라운드는 None."""
+    value = outcome.get("target_rev") if outcome is not None else None
+    return value if isinstance(value, str) and _TARGET_REV_RE.fullmatch(value) else None
 
 
 def gate_evidence_problem(entry: dict, evidence_entry: object) -> str | None:
     """근거 게이트가 이 게이트의 잔여 해소를 뒷받침하는지 — 사유 1줄 (뒷받침하면 None·공용 seam).
 
-    조건 셋을 장부 사실로만 본다: (1) 항목이 해석 가능하고, (2) 마지막 라운드가 통과(rc 0)이며,
-    (3) 그 통과가 **차단 라운드보다 뒤**다. (3)이 없으면 반려보다 *먼저* 통과했던 무관한 게이트가
-    근거로 통하고, 그건 "해소됐다"의 근거가 아니라 우연한 시간 순서다. 시각을 못 읽으면 선후를
-    확인할 수 없으므로 거부한다(fail-closed — 확인 못 함 ≠ 뒷받침함).
+    조건을 장부 사실로만 본다: (1) 항목이 해석 가능하고, (2) 마지막 라운드가 통과(rc 0)이며,
+    (3) 반려·근거 양쪽의 시작≤완료가 정합하고, (4) 근거 라운드가 차단 반려의 **종료 뒤 시작**했고,
+    (5) 실제 검토한 diff fingerprint 가 반려 때와 다르다. 완료 시각만 뒤인 동시 리뷰는 반려 전에
+    같은 미수정 diff 로 이미 시작했을 수 있어 근거가 아니다. 시각·fingerprint 를 못 읽는 구
+    라운드는 통과로 추측하지 않고 "결속 불충분"으로 거부한다(fail-closed — 확인 못 함 ≠ 뒷받침함).
 
     선언 시점(external_review)과 릴리즈 재검증(여기)이 **같은 한 술어**를 쓴다."""
     corruption = gate_entry_corruption(evidence_entry)
@@ -5931,14 +5956,34 @@ def gate_evidence_problem(entry: dict, evidence_entry: object) -> str | None:
     if not gate_passed(evidence_entry):
         return (f"마지막 라운드가 통과가 아닙니다 "
                 f"(잔여 must_fix {gate_residual_label(evidence_entry)})")
-    evidence_ts = _round_timestamp(gate_last_round(evidence_entry))
-    blocked_ts = _round_timestamp(gate_last_round(entry))
-    if evidence_ts is None or blocked_ts is None:
-        return ("라운드 시각이 기록되지 않아 반려와 통과의 선후를 확인할 수 없습니다 "
-                "(근거로 인정하지 않음)")
-    if evidence_ts <= blocked_ts:
-        return (f"통과가 반려보다 앞섭니다 (통과 {evidence_ts} ≤ 반려 {blocked_ts}) — "
-                "근거는 그 반려 **이후**의 통과여야 합니다")
+    evidence_round = gate_last_round(evidence_entry)
+    blocked_round = gate_last_round(entry)
+    evidence_ts = _round_timestamp(evidence_round)
+    evidence_started = _round_timestamp(evidence_round, "started_at")
+    blocked_ts = _round_timestamp(blocked_round)
+    blocked_started = _round_timestamp(blocked_round, "started_at")
+    blocked_rev = _round_target_rev(blocked_round)
+    evidence_rev = _round_target_rev(evidence_round)
+    if (evidence_ts is None or evidence_started is None
+            or blocked_ts is None or blocked_started is None):
+        return ("반려/근거 라운드 ts/started_at 이 엄격한 ISO 8601 UTC 형식이 아니거나 기록되지 않아 "
+                "반려 이후 시작을 확인할 수 없습니다 (결속 불충분 · 근거로 인정하지 않음)")
+    if blocked_rev is None or evidence_rev is None:
+        return ("라운드 대상 rev fingerprint(target_rev)가 없거나 형식이 손상돼 검토 대상을 "
+                "확인할 수 없습니다 (결속 불충분 · 근거로 인정하지 않음)")
+    if evidence_ts < evidence_started:
+        return ("근거 라운드 완료 ts가 started_at 보다 앞서 장부 선후를 신뢰할 수 없습니다 "
+                "(결속 불충분 · 근거로 인정하지 않음)")
+    if blocked_ts < blocked_started:
+        return ("반려 라운드 완료 ts가 started_at 보다 앞서 장부 선후를 신뢰할 수 없습니다 "
+                "(결속 불충분 · 근거로 인정하지 않음)")
+    if evidence_started <= blocked_ts:
+        return ("근거 라운드가 반려 이후에 시작되지 않았습니다 "
+                f"(시작 {evidence_started.isoformat()} ≤ 반려 {blocked_ts.isoformat()}) — "
+                "근거는 그 반려 **이후 시작한** 통과여야 합니다")
+    if evidence_rev == blocked_rev:
+        return (f"근거 라운드가 반려와 같은 대상 rev fingerprint({evidence_rev})를 검토했습니다 — "
+                "코드 변경 뒤의 통과가 아니므로 근거로 인정하지 않습니다")
     return None
 
 
@@ -6860,6 +6905,9 @@ def _resolve_livegate_flag(cwd: str) -> tuple[Path, str]:
 # green 을 소비하기 때문이다 — 여기서 막으면 하류 전체가 막힌다. 그래서 차단은 **fail 기록까지**
 # 남긴다(같은 HEAD 의 옛 green 이 살아남아 훅을 통과하는 창을 닫는다).
 _LIVEGATE_MUST_FIX_REASON = "unresolved-must-fix"   # fail 기록의 사유 표식(훅 메시지와 별개 감사면).
+_RELEASE_MUST_FIX_MARKER_NAME = "release-must-fix"
+_RELEASE_MUST_FIX_CLEAR = "clear"
+_RELEASE_MUST_FIX_BLOCKED = "blocked"
 
 _MUST_FIX_BLOCK_GUIDANCE = (
     "livegate: fail — 미해소 must-fix 잔여 {count}건 (릴리즈 차단 · 우회 플래그 없음).\n"
@@ -6884,6 +6932,39 @@ def _release_rounds_ledger(flag: Path) -> Path:
     정렬이 성립하는 범위는 **engine-root 모드**(보호훅 활성)다 — 솔로 폴백(`_LG_SOLO`)에서는 호출된
     사본의 `.local` 이 곧 장부 위치라 같은 식이 그대로 맞는다(단일-repo 형상)."""
     return flag.parent / REVIEW_ROUNDS_LEDGER_NAME
+
+
+def _release_must_fix_marker(flag: Path) -> Path:
+    """보호훅이 shell 단독으로 읽는 현행 잔여 표식 — livegate/장부와 같은 `.local`."""
+    return flag.parent / _RELEASE_MUST_FIX_MARKER_NAME
+
+
+def _release_rounds_lock(ledger: Path) -> Path:
+    """external_review writer 와 livegate record/check 가 공유하는 장부 락 경로."""
+    return ledger.with_name("review_rounds.lock")
+
+
+def _write_release_must_fix_marker(flag: Path, problems: Sequence[str]) -> Path:
+    """현행 잔여를 `clear|blocked` 정확 한 줄로 원자 교체한다.
+
+    훅은 JSON/Python 없이 이 파일만 읽는다. 미해소 상태는 **장부보다 먼저**, 해소 상태는 **장부보다
+    나중**에 쓰는 순서를 writer 가 지키면 두 파일을 한 rename 으로 묶을 수 없는 crash 창도 항상
+    차단 쪽으로만 기운다. 이 함수는 한 파일의 atomic replace 를 소유하고, 호출 순서는 writer 가
+    소유한다. 호출자는 review_rounds.lock 을 보유해야 한다."""
+    marker = _release_must_fix_marker(flag)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    state = _RELEASE_MUST_FIX_BLOCKED if problems else _RELEASE_MUST_FIX_CLEAR
+    tmp = marker.with_name(
+        f"{marker.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
+    try:
+        tmp.write_text(state + "\n", encoding="ascii")
+        os.replace(str(tmp), str(marker))
+    finally:
+        with contextlib.suppress(OSError):
+            if tmp.exists():
+                tmp.unlink()
+    return marker
 
 
 def _release_gate_search_dirs(ledger: Path) -> list[tuple[str, Path]]:
@@ -6945,6 +7026,22 @@ def _gate_disposition_problem(gate: str, entry: object, ledger_data: dict,
     return None
 
 
+def _unresolved_must_fix_data(data: object, ledger: Path) -> list[str]:
+    """파싱된 라운드 장부의 미해소 must-fix 차단 사유 (writer/reader 공용)."""
+    if not isinstance(data, dict):
+        return ["  · 라운드 장부 형식 오류(최상위가 매핑이 아님) — 잔여 must-fix 를 확인할 수 "
+                "없어 차단합니다"]
+    search_dirs = _release_gate_search_dirs(ledger)
+    problems: list[str] = []
+    for gate, entry in sorted(data.items()):
+        if gate == _REVIEW_LEDGER_WAVE_KEY:
+            continue                     # 예약 키(wave 예산 절)는 게이트가 아니다.
+        problem = _gate_disposition_problem(gate, entry, data, search_dirs)
+        if problem is not None:
+            problems.append(problem)
+    return problems
+
+
 def _unresolved_must_fix_gates(ledger: Path) -> list[str]:
     """미해소 must-fix 잔여의 차단 사유 목록 — 없으면 빈 목록(=릴리즈 진행).
 
@@ -6960,17 +7057,18 @@ def _unresolved_must_fix_gates(ledger: Path) -> list[str]:
     except (OSError, json.JSONDecodeError, UnicodeError) as exc:
         return [f"  · 라운드 장부를 읽지 못했습니다 ({type(exc).__name__}: {exc}) — 잔여 "
                 "must-fix 를 확인할 수 없어 차단합니다 (장부 수리 후 재실행)"]
-    if not isinstance(data, dict):
-        return ["  · 라운드 장부 형식 오류(최상위가 매핑이 아님) — 잔여 must-fix 를 확인할 수 "
-                "없어 차단합니다"]
-    search_dirs = _release_gate_search_dirs(ledger)
-    problems: list[str] = []
-    for gate, entry in sorted(data.items()):
-        if gate == _REVIEW_LEDGER_WAVE_KEY:
-            continue                     # 예약 키(wave 예산 절)는 게이트가 아니다.
-        problem = _gate_disposition_problem(gate, entry, data, search_dirs)
-        if problem is not None:
-            problems.append(problem)
+    return _unresolved_must_fix_data(data, ledger)
+
+
+def _sync_release_must_fix_marker(flag: Path) -> list[str]:
+    """장부 스냅샷 판정과 잔여 표식 교체를 writer 락 하나로 직렬화한다.
+
+    livegate record/check 경로다. external_review 는 이미 같은 락을 보유한 `_save_round_ledger` 안에서
+    `_unresolved_must_fix_data` + `_write_release_must_fix_marker` 를 직접 호출해 재진입을 피한다."""
+    ledger = _release_rounds_ledger(flag)
+    with file_lock.exclusive_file_lock(_release_rounds_lock(ledger)):
+        problems = _unresolved_must_fix_gates(ledger)
+        _write_release_must_fix_marker(flag, problems)
     return problems
 
 
@@ -7038,7 +7136,15 @@ def _livegate_record(args: argparse.Namespace) -> int:
         return 1
     # 미해소 must-fix 잔여 — 값비싼 라이브 wave 를 돌리기 **전에** 본다(BROKEN 조기 거부와 같은
     # 축). 장부가 없는 형상(추가 리뷰어 비활성 채택자)은 무대상이라 그대로 지나간다.
-    problems = _unresolved_must_fix_gates(_release_rounds_ledger(flag))
+    try:
+        # 장부 판정과 shell 소비 표식을 같은 review_rounds.lock 아래 갱신한다. 표식 쓰기 실패는
+        # 우회 경로를 현행화하지 못한 상태라 release wave 를 돌리지 않고 fail-closed 한다.
+        problems = _sync_release_must_fix_marker(flag)
+    except OSError as exc:
+        print("livegate: fail — must-fix 잔여 표식을 원자 갱신할 수 없어 차단 "
+              f"({type(exc).__name__}: {exc}). 장부/`.local` 권한을 복구한 뒤 다시 실행하세요.",
+              file=sys.stderr)
+        return 1
     if problems:
         return _refuse_release_for_must_fix(flag, cwd, problems)
     print(f"livegate: $ {LIVEGATE_TEST_CMD}  (cwd={cwd})")
@@ -7107,7 +7213,15 @@ def _livegate_check(args: argparse.Namespace) -> int:
     # 키되지만 라운드 장부는 그 뒤로도 자란다: record 가 green 을 찍은 뒤 같은 HEAD 에서 새 반려
     # 라운드가 기록되면 옛 green 이 push 를 통과시킨다(check 만 스냅샷을 믿는 창). 판정을 소비
     # 지점에서 다시 물어 그 창을 닫는다 — 읽기 전용이라 기록은 손대지 않는다.
-    problems = _unresolved_must_fix_gates(_release_rounds_ledger(flag))
+    try:
+        # record 와 같은 장부 스냅샷으로 표식까지 현행화한다. check 가 라운드 writer 와 경합해
+        # 옛 clear 를 새 blocked 위에 덮지 않도록 둘 다 review_rounds.lock 을 공유한다.
+        problems = _sync_release_must_fix_marker(flag)
+    except OSError as exc:
+        print("livegate: fail — must-fix 잔여 표식을 원자 갱신할 수 없어 차단 "
+              f"({type(exc).__name__}: {exc}). 장부/`.local` 권한을 복구한 뒤 다시 실행하세요.",
+              file=sys.stderr)
+        return 1
     if problems:
         print(_MUST_FIX_BLOCK_GUIDANCE.format(
             count=len(problems), items="\n".join(problems),

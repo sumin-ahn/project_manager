@@ -4164,10 +4164,13 @@ def test_generated_hook_pm_allow_with_skip_passes_protected(wp):
     """생성 훅 직접 실행 — PM_ALLOW_PROTECTED_PUSH=1 + PM_SKIP_LIVE_GATE=1 이면 보호목록(main)도
     통과 (T-0223 — 라이브 게이트 승격 후 우회 경로·라이브-무관·긴급 변경 한정).
 
-    skip 은 라이브 check 만 생략 → 훅이 board.py 를 아예 호출하지 않아 hermetic(cwd 무관).
+    skip 은 라이브 check 만 생략하되, 장부 writer가 남긴 must-fix 잔여-없음 표식은 shell로 확인한다.
     """
     _mk_bare_placeholder(wp, "A")
     wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    marker = wp.REPO / ".project_manager" / ".local" / "release-must-fix"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("clear\n", encoding="ascii")
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
     assert _run_hook(hook, _push_line("refs/heads/main"),
                      env_override=True, skip_live_gate=True) == 0
@@ -5464,8 +5467,8 @@ def test_real_git_protected_push_pm_allow_with_skip_allowed(proj, tmp_path):
     보호 main push 허용·전진 (T-0096·T-0223 DoD ③).
 
     T-0223 승격 후 PM_ALLOW 만으론 보호 push 가 라이브 게이트에 막힌다 — PM_SKIP_LIVE_GATE=1
-    (라이브-무관·긴급 변경 우회)이 붙어야 통과한다. skip 은 board.py 호출 자체를 생략하므로
-    라이브 게이트 기록이 없어도 전진함을 실 push 로 단언한다.
+    (라이브-무관·긴급 변경 우회)이 붙어야 통과한다. skip 은 board.py 호출 자체는 생략하지만
+    장부 writer가 남긴 must-fix `clear` 표식은 요구한다(부재/손상은 fail-closed).
     """
     _init_repo(proj)
     wp = _load_wp_bound(proj)
@@ -5484,6 +5487,9 @@ def test_real_git_protected_push_pm_allow_with_skip_allowed(proj, tmp_path):
     _git(slot_dir, "commit", "-q", "-m", "skip change on main",
          env={"PM_ALLOW_PROTECTED_COMMIT": "1"})
     slot_main = _git(slot_dir, "rev-parse", "main").stdout.strip()
+    marker = proj / ".project_manager" / ".local" / "release-must-fix"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("clear\n", encoding="ascii")
 
     # PM_ALLOW + PM_SKIP — _git 헬퍼가 env 를 merge 한다(check=True·통과 기대).
     _git(slot_dir, "push", "server", "main",

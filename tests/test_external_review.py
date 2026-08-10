@@ -862,9 +862,12 @@ def test_save_ledger_uses_unique_tmp_names(external, tmp_path, monkeypatch):
     monkeypatch.setattr(external.os, "replace", lambda src, dst: seen.append(str(src)))
     external._save_round_ledger({"a": 1})
     external._save_round_ledger({"b": 2})
-    assert len(seen) == 2 and seen[0] != seen[1]                 # unique (고정 .tmp 아님)
-    assert all(f".{external.os.getpid()}." in s for s in seen)   # pid 포함
-    assert all(s.endswith(".tmp") for s in seen)
+    ledger_tmps = [s for s in seen if "review_rounds.json." in s]
+    marker_tmps = [s for s in seen if "release-must-fix." in s]
+    assert len(ledger_tmps) == 2 and ledger_tmps[0] != ledger_tmps[1]  # unique
+    assert all(f".{external.os.getpid()}." in s for s in ledger_tmps)  # pid 포함
+    assert all(s.endswith(".tmp") for s in ledger_tmps)
+    assert len(marker_tmps) == 2, "장부 저장마다 shell 소비 잔여 표식도 원자 교체해야 한다"
 
 
 def _flaky_round_lock(external, monkeypatch, *, fail_on: int):
@@ -1264,13 +1267,17 @@ def test_reject_without_a_must_fix_section_records_null_count(
 
 
 def test_round_outcome_carries_the_reservation_identity(external, monkeypatch, tmp_path):
-    """산출 레코드가 예약 identity(id·sequence)를 실어 라운드↔결과 연결이 확정된다."""
+    """산출이 예약 identity·시작 시각·실제 diff fingerprint를 실어 라운드↔결과를 잠근다."""
     _wire(external, monkeypatch, tmp_path, result=_PASS_WITH_ANSWER)
     assert external.main(["--gate", "T-0328", "--paths", "x.py"]) == 0
     entry = _ledger(external, tmp_path)["T-0328"]
     outcome, record = entry["rounds"][0], entry["records"][0]
     assert outcome["id"] == record["id"]
     assert outcome["sequence"] == record["sequence"] == 1
+    assert outcome["started_at"] == record["started_at"]
+    assert outcome["target_rev"] == record["target_rev"]
+    assert outcome["target_rev"].startswith("sha256:")
+    assert len(outcome["target_rev"]) == len("sha256:") + 64
 
 
 def test_unparsable_outcome_is_null_and_does_not_block_the_review(
