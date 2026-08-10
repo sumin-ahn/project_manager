@@ -795,7 +795,7 @@ def _t0585_pm_update_source() -> str:
     # 역적용해야 합성본에 undefined helper가 남지 않고 whole-file SHA가 실제 결함 세대를 가리킨다.
     source = _slice_replace(
         source,
-        "    # config 채널이 원장을 새 세대로 갱신하기 **전** 직전 세대를 스냅샷으로 판정한다. 출력은 각\n",
+        "    # instance-owned 세대 요약은 각 종료 분기에서 config 채널의 **최종 판정 뒤** 계산한다.\n",
         "\n    if not changes:\n",
         "",
     )
