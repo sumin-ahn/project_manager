@@ -9,7 +9,7 @@
 
 | 하위 디렉토리 | 의미 | 예시 파일명 |
 |---|---|---|
-| `spikes/` | 대화형 설계 spike 산출 (옵션 비교 + ADR/ticket DRAFT). `/spike-new`(claude·opencode) / `$spike-new`(codex) 스킬이 박제 | `web-auth-redesign-2026-06-03.md`, `_template.md` |
+| `spikes/` | 대화형 설계 spike 산출 (옵션 비교 + ADR/ticket DRAFT). `/spike-new` 스킬이 박제 | `web-auth-redesign-2026-06-03.md`, `_template.md` |
 | `plans/` | plan_v1 → plan_v2 → … 누적되는 전체 계획 문서 | `plan_v1.md`, `plan_v2.md`, `plan_v5_review_A.md` |
 | `evaluations/` | 모델 평가·외부 코드 리뷰·사용자 피드백 정리 | `model_eval_2026-05.md`, `external_review_2026-06.md` |
 | `benchmarks/` | 실측 결과 (latency·throughput·정확도 등) | `latency_2026-05-19.md`, `bench_GPU_2026-06.md` |
