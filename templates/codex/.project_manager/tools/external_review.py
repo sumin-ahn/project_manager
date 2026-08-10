@@ -1310,6 +1310,14 @@ _RESOLVE_GATE_UNKNOWN_GUIDANCE = (
     "  · 게이트 이름을 `--rounds-report` 로 확인하세요 (장부: {ledger})."
 )
 
+_RESOLVE_GATE_DRY_RUN_GUIDANCE = (
+    "오류: `--resolve-gate {gate}` 는 `--dry-run` 과 함께 쓸 수 없습니다 — 이 실행은 아무것도 "
+    "하지 않았습니다.\n"
+    "  · 처분 선언은 장부에 사실을 남기는 것이 목적이라 미리보기가 성립하지 않습니다 "
+    "(외부 전송은 어차피 없습니다).\n"
+    "  · 지금 상태만 보려면 `--rounds-report --gate {gate}` 를 쓰세요."
+)
+
 _RESOLVE_GATE_NO_RESIDUAL_GUIDANCE = (
     "오류: 게이트 {gate} 에는 처분할 잔여 must-fix 가 없습니다 (최종 라운드 must_fix={residual}).\n"
     "  · 처분 선언은 **반려로 끝난** 게이트의 잔여를 소화하는 기록입니다 — 잔여가 없으면 릴리즈 "
@@ -3161,7 +3169,7 @@ def _format_gate_resolution(entry: dict) -> str:
     board = _load_board()
     declared = board.gate_resolution(entry)
     if declared is None:
-        return "미처분" if board.gate_residual_must_fix(entry) > 0 else "무대상"
+        return "미처분" if board.gate_has_residual(entry) else "무대상"
     return _describe_resolution(declared)
 
 
@@ -3280,24 +3288,21 @@ def _describe_resolution(declared: dict) -> str:
     return f"{label}(근거 {declared['evidence_gate']})"
 
 
-def _evidence_gate_problem(ledger: dict, evidence: str) -> str | None:
-    """근거 게이트가 해소를 뒷받침하는지 — 아니면 사유 1줄 (뒷받침하면 None).
+def _evidence_gate_problem(ledger: dict, gate: str, entry: dict, evidence: str) -> str | None:
+    """근거 게이트가 이 게이트의 해소를 뒷받침하는지 — 아니면 사유 1줄 (뒷받침하면 None).
 
-    입력은 장부 사실 둘뿐이다: 그 게이트의 기록이 있는가, 마지막 라운드가 통과(rc 0)인가.
-    통과 판정은 board 의 공용 seam(`gate_passed`)이 소유한다 — 릴리즈 차단이 '최신 라운드'를
-    정하는 규칙과 같은 한 규칙이어야 근거가 표면마다 달라지지 않는다."""
+    입력은 장부 사실뿐이고, 판정은 board 의 공용 seam(`gate_evidence_problem`)이 소유한다 —
+    선언 시점(여기)과 릴리즈 재검증이 다른 규칙을 쓰면 "선언은 됐는데 릴리즈에서 막힌다"가 난다.
+    자기 자신 지목은 근거가 될 수 없다: 반려로 끝난 그 게이트의 통과 라운드를 자기 안에서 찾는
+    셈이라 정의상 성립하지 않는다(명시 거부로 안내를 정확히 한다)."""
+    if evidence == gate:
+        return "자기 자신은 근거가 될 수 없습니다 — 해소를 보인 다른 게이트를 지목하세요"
     if evidence not in ledger:
         return "라운드 장부에 그 게이트의 기록이 없습니다"
-    board = _load_board()
-    entry = _gate_entry(ledger, evidence)
-    if board.gate_passed(entry):
-        return None
-    outcome = board.gate_last_round(entry)
-    if outcome is None:
-        return "그 게이트에는 기록된 라운드 산출이 없습니다"
-    return (f"마지막 라운드가 통과가 아닙니다 "
-            f"(판정={_format_round_verdict(outcome.get('verdict'))} · "
-            f"must_fix={_format_round_field(outcome.get('must_fix'))})")
+    # 차단 게이트 항목은 **호출부가 정규화한 그 객체**를 그대로 받는다 — 여기서 다시
+    # `_gate_entry` 를 부르면 장부의 항목이 새 dict 로 교체돼 호출부가 들고 있던 참조가 고아가
+    # 되고, 그 뒤 기록한 처분이 저장되지 않는다(선언은 rc0 인데 장부는 그대로).
+    return _load_board().gate_evidence_problem(entry, _gate_entry(ledger, evidence))
 
 
 def _resolve_gate_ignored_flags(args: argparse.Namespace) -> str:
@@ -3308,7 +3313,6 @@ def _resolve_gate_ignored_flags(args: argparse.Namespace) -> str:
             ("--rounds-report", args.rounds_report),
             ("--confirm-fix", args.confirm_fix),
             ("--ack-wave", args.ack_wave),
-            ("--dry-run", args.dry_run),
             ("--force", args.force),
         ) if given
     )
@@ -3336,6 +3340,11 @@ def _resolve_gate_command(args: argparse.Namespace, engine_repo: Path) -> int:
         if reserved is not None:
             print(reserved, file=sys.stderr)
             return 1
+    if args.dry_run:
+        # 선언은 기록이 목적인 실행이라 "미리보기"가 성립하지 않는다 — 경고 후 기록하면
+        # `--dry-run` 의 부작용 0 계약이 이 표면에서만 깨진다. 거부가 정직하다.
+        print(_RESOLVE_GATE_DRY_RUN_GUIDANCE.format(gate=gate), file=sys.stderr)
+        return 1
     ignored = _resolve_gate_ignored_flags(args)
     if ignored:
         print(f"경고: --resolve-gate 는 장부 기록 전용이라 다음 플래그를 무시합니다: {ignored}.",
@@ -3360,17 +3369,20 @@ def _resolve_gate_command(args: argparse.Namespace, engine_repo: Path) -> int:
                 gate=gate, ledger=_round_ledger_path()), file=sys.stderr)
             return 1
         entry = _gate_entry(ledger, gate)
-        residual = board.gate_residual_must_fix(entry)
-        if residual <= 0:
-            print(_RESOLVE_GATE_NO_RESIDUAL_GUIDANCE.format(gate=gate, residual=residual),
-                  file=sys.stderr)
+        if not board.gate_has_residual(entry):
+            # 잔여 없음만 거부한다 — **미상**(판정 무효 라운드)은 릴리즈가 차단하는 축이라
+            # 선언도 받아야 한다(둘이 갈리면 차단은 되는데 처분은 못 하는 데드락).
+            print(_RESOLVE_GATE_NO_RESIDUAL_GUIDANCE.format(
+                gate=gate, residual=board.gate_residual_label(entry)), file=sys.stderr)
             return 1
+        residual = board.gate_residual_must_fix(entry)
         if fixed:
-            detail = _evidence_gate_problem(ledger, fixed)
+            detail = _evidence_gate_problem(ledger, gate, entry, fixed)
             if detail is not None:
                 print(_RESOLVE_GATE_EVIDENCE_GUIDANCE.format(
                     evidence=fixed, gate=gate, detail=detail), file=sys.stderr)
                 return 1
+        residual_label = board.gate_residual_label(entry)
         previous = board.gate_resolution(entry)
         declared = {
             "kind": board.GATE_RESOLUTION_INTO if into else board.GATE_RESOLUTION_FIXED,
@@ -3386,7 +3398,7 @@ def _resolve_gate_command(args: argparse.Namespace, engine_repo: Path) -> int:
         _save_round_ledger(ledger)
     if previous is not None:
         print(f"이전 처분 선언을 교체합니다: {_describe_resolution(previous)}", file=sys.stderr)
-    print(f"게이트 처분 선언: {gate} · 잔여 must_fix {residual}건 · "
+    print(f"게이트 처분 선언: {gate} · 잔여 must_fix {residual_label} · "
           f"{_describe_resolution(declared)}")
     print(f"  · 장부: {_round_ledger_path()}")
     if into:

@@ -5781,18 +5781,40 @@ def gate_passed(entry: dict) -> bool:
     return _last_round_verdict(entry) == 0
 
 
-def gate_residual_must_fix(entry: dict) -> int:
-    """마지막 라운드가 남긴 must-fix 건수 — 기록 없음·'미상'·손상은 0 (공용 seam).
+def gate_residual_must_fix(entry: dict) -> int | None:
+    """마지막 라운드가 남긴 must-fix 잔여 — 3-상태 (공용 seam).
 
-    릴리즈 차단(`livegate record`)과 처분 선언(`external_review --resolve-gate`)이 **같은 한
-    술어**로 "잔여가 있나"를 본다. 입력은 장부에 기록된 사실뿐이다: 마지막 라운드의 `must_fix`
-    정수. 셀 근거가 없던 라운드('미상'=None)는 잔여 주장이 아니라 0 이다 — 없는 사실로 릴리즈를
-    막지 않는다. suggestion 은 이 축에 들어오지 않는다(이월 허용 대상)."""
+    반환은 `0`(잔여 없음) · `N>0`(N 건) · **`None`(미상)** 이다. 미상은 "전송은 됐는데 판정이
+    무효했다"(타임아웃·오염·섹션 부재로 셀 근거가 없던 라운드)이고, 그건 "잔여가 없다"가 아니라
+    **확인하지 못했다**이다 — 0 으로 접으면 판정 무효 라운드로 끝난 게이트에서 릴리즈 차단이
+    조용히 풀린다(실장부 실례). 형제 seam(external_review 의 수렴 판정)도 '미상'을 해소로 세지
+    않는 같은 규칙이다.
+
+    다만 **통과(rc 0)로 끝난 라운드의 미상은 비대상(0)** 이다 — 그쪽은 판정이 났고 must-fix 섹션이
+    없었을 뿐이라 반려 사실이 없다. suggestion 은 어느 경우에도 이 축에 들어오지 않는다(이월 허용).
+    """
     outcome = gate_last_round(entry)
-    value = outcome.get("must_fix") if outcome is not None else None
-    if isinstance(value, bool) or not isinstance(value, int):
+    if outcome is None:
         return 0
-    return max(0, value)
+    value = outcome.get("must_fix")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return max(0, value)
+    return 0 if _last_round_verdict(entry) == 0 else None
+
+
+def gate_has_residual(entry: dict) -> bool:
+    """처분이 필요한 잔여가 있는가 — N>0 **또는 미상** (공용 seam).
+
+    릴리즈 차단과 처분 선언(`--resolve-gate`)이 이 한 술어를 공유한다. 두 표면이 갈리면 차단은
+    되는데 선언은 거부되는 데드락이 난다(미상 게이트가 정확히 그 형상이다)."""
+    residual = gate_residual_must_fix(entry)
+    return residual is None or residual > 0
+
+
+def gate_residual_label(entry: dict) -> str:
+    """잔여 표기 — `N건` / `미상(판정 무효 라운드)` (차단 사유·선언 응답 공용)."""
+    residual = gate_residual_must_fix(entry)
+    return "미상(판정 무효 라운드)" if residual is None else f"{residual}건"
 
 
 # ── 게이트 처분 선언 (장부 `resolution` 절) ────────────────────────────────
@@ -5883,6 +5905,41 @@ def gate_resolution(entry: dict) -> dict | None:
     if isinstance(ts, str) and ts.strip():
         declared["ts"] = ts.strip()
     return declared
+
+
+def _round_timestamp(outcome: dict | None) -> str | None:
+    """라운드 산출의 기록 시각 (없거나 손상이면 None) — 게이트 간 선후 비교의 유일한 좌표.
+
+    `sequence` 는 **게이트별** 예약 순번이라 다른 게이트끼리 비교하면 뜻이 없다. 시각은 한 형식의
+    UTC ISO 문자열(`_utc_now_iso`)이라 사전순 비교가 곧 시간순이다."""
+    ts = outcome.get("ts") if outcome is not None else None
+    return ts.strip() if isinstance(ts, str) and ts.strip() else None
+
+
+def gate_evidence_problem(entry: dict, evidence_entry: object) -> str | None:
+    """근거 게이트가 이 게이트의 잔여 해소를 뒷받침하는지 — 사유 1줄 (뒷받침하면 None·공용 seam).
+
+    조건 셋을 장부 사실로만 본다: (1) 항목이 해석 가능하고, (2) 마지막 라운드가 통과(rc 0)이며,
+    (3) 그 통과가 **차단 라운드보다 뒤**다. (3)이 없으면 반려보다 *먼저* 통과했던 무관한 게이트가
+    근거로 통하고, 그건 "해소됐다"의 근거가 아니라 우연한 시간 순서다. 시각을 못 읽으면 선후를
+    확인할 수 없으므로 거부한다(fail-closed — 확인 못 함 ≠ 뒷받침함).
+
+    선언 시점(external_review)과 릴리즈 재검증(여기)이 **같은 한 술어**를 쓴다."""
+    corruption = gate_entry_corruption(evidence_entry)
+    if corruption is not None:
+        return corruption
+    if not gate_passed(evidence_entry):
+        return (f"마지막 라운드가 통과가 아닙니다 "
+                f"(잔여 must_fix {gate_residual_label(evidence_entry)})")
+    evidence_ts = _round_timestamp(gate_last_round(evidence_entry))
+    blocked_ts = _round_timestamp(gate_last_round(entry))
+    if evidence_ts is None or blocked_ts is None:
+        return ("라운드 시각이 기록되지 않아 반려와 통과의 선후를 확인할 수 없습니다 "
+                "(근거로 인정하지 않음)")
+    if evidence_ts <= blocked_ts:
+        return (f"통과가 반려보다 앞섭니다 (통과 {evidence_ts} ≤ 반려 {blocked_ts}) — "
+                "근거는 그 반려 **이후**의 통과여야 합니다")
+    return None
 
 
 def gate_resolution_is_stale(entry: dict, declared: dict) -> bool:
@@ -6822,7 +6879,10 @@ def _release_rounds_ledger(flag: Path) -> Path:
 
     기록 위치 정렬(`_resolve_livegate_flag`)을 그대로 물려받는다 — 어느 board.py 사본/cwd 로
     record 하든 external_review 가 실제로 쓴 그 장부(소유 PM 홈 `.local/review_rounds.json`)를
-    본다. 사본별로 다른 장부를 읽으면 잔여가 있는데 "무대상"으로 통과하는 false-green 이 난다."""
+    본다. 사본별로 다른 장부를 읽으면 잔여가 있는데 "무대상"으로 통과하는 false-green 이 난다.
+
+    정렬이 성립하는 범위는 **engine-root 모드**(보호훅 활성)다 — 솔로 폴백(`_LG_SOLO`)에서는 호출된
+    사본의 `.local` 이 곧 장부 위치라 같은 식이 그대로 맞는다(단일-repo 형상)."""
     return flag.parent / REVIEW_ROUNDS_LEDGER_NAME
 
 
@@ -6837,23 +6897,16 @@ def _release_gate_search_dirs(ledger: Path) -> list[tuple[str, Path]]:
             for status in STATUS_DIRS]
 
 
-def _fixed_evidence_problem(ledger_data: dict, evidence: str) -> str | None:
+def _fixed_evidence_problem(ledger_data: dict, entry: dict, evidence: str) -> str | None:
     """`fixed` 근거 게이트가 **지금도** 통과인지 (뒷받침하면 None).
 
-    근거는 선언 시점에 한 번 확인하고 끝낼 사실이 아니다 — 그 게이트가 뒤이어 반려로 뒤집히면
-    "코드로 해소됐다"는 선언의 근거가 사라진다. 릴리즈 시점에 같은 술어(`gate_passed`)로 다시
-    묻는다(선언 시점 검증과 같은 한 규칙)."""
-    entry = ledger_data.get(evidence)
-    corruption = gate_entry_corruption(entry) if evidence in ledger_data else None
+    근거는 선언 시점에 한 번 확인하고 끝낼 사실이 아니다 — 그 게이트가 뒤이어 반려로 뒤집히거나
+    장부에서 사라지면 "코드로 해소됐다"는 선언의 근거 자체가 없어진다. 판정은 선언 시점과 같은
+    공용 seam(`gate_evidence_problem`)이 소유하고 여기서는 장부 조회만 얹는다."""
     if evidence not in ledger_data:
         return f"근거 게이트 {evidence} 의 기록이 장부에서 사라졌습니다"
-    if corruption is not None:
-        return f"근거 게이트 {evidence} — {corruption}"
-    if not gate_passed(entry):
-        residual = gate_residual_must_fix(entry)
-        return (f"근거 게이트 {evidence} 가 더 이상 통과가 아닙니다 "
-                f"(마지막 라운드 must_fix {residual}건)")
-    return None
+    problem = gate_evidence_problem(entry, ledger_data.get(evidence))
+    return None if problem is None else f"근거 게이트 {evidence} — {problem}"
 
 
 def _gate_disposition_problem(gate: str, entry: object, ledger_data: dict,
@@ -6861,15 +6914,14 @@ def _gate_disposition_problem(gate: str, entry: object, ledger_data: dict,
     """게이트 하나의 처분 판정 — 차단 사유 1줄 (통과면 None).
 
     순서대로 본다: **항목 해석 가능성**(손상이면 잔여를 셀 수 없으니 차단) → 잔여 must_fix(0 이면
-    비대상·suggestion 만 남은 게이트 포함) → 처분 선언(미선언·좌표 stale 이면 차단) → 갈래별 조건
-    (`fixed` = 근거 게이트가 지금도 통과 · `into` = 대상 티켓이 done)."""
+    비대상·suggestion 만 남은 게이트 포함·**미상은 대상**) → 처분 선언(미선언·좌표 stale 이면 차단)
+    → 갈래별 조건(`fixed` = 근거 게이트가 지금도 뒷받침 · `into` = 대상 티켓이 done)."""
     corruption = gate_entry_corruption(entry)
     if corruption is not None:
         return f"  · {gate}: {corruption} — 잔여 must-fix 를 확인할 수 없어 차단합니다"
-    residual = gate_residual_must_fix(entry)
-    if residual <= 0:
+    if not gate_has_residual(entry):
         return None
-    prefix = f"  · {gate}: 최종 라운드 must_fix {residual}건"
+    prefix = f"  · {gate}: 최종 라운드 must_fix {gate_residual_label(entry)}"
     declared = gate_resolution(entry)
     if declared is None:
         return f"{prefix} · 처분 선언 없음"
@@ -6880,7 +6932,7 @@ def _gate_disposition_problem(gate: str, entry: object, ledger_data: dict,
                 f"(선언 시점 #{declared['round_sequence']}/{declared['rounds']}건 ≠ 현재 "
                 f"#{current['round_sequence']}/{current['rounds']}건) · 새 잔여로 다시 선언하세요")
     if declared["kind"] == GATE_RESOLUTION_FIXED:
-        problem = _fixed_evidence_problem(ledger_data, declared["evidence_gate"])
+        problem = _fixed_evidence_problem(ledger_data, entry, declared["evidence_gate"])
         return None if problem is None else f"{prefix} · {label} — {problem}"
     ticket = declared["ticket"]
     found = find_ticket_exact(ticket, search_dirs=search_dirs)

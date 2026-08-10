@@ -20,6 +20,8 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
+import shutil
 import types
 from pathlib import Path
 
@@ -29,12 +31,23 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
 # 반려로 끝난 게이트의 최소 장부 항목 — 최종 라운드 must_fix 3건.
+# `ts` 는 게이트 간 선후 비교의 유일한 좌표다(`sequence` 는 게이트별 순번이라 비교 불가) —
+# 근거 게이트의 통과가 이 반려보다 **뒤**여야 해소 근거로 인정된다.
 _REJECTED_ROUNDS = [
-    {"sequence": 1, "verdict": 1, "must_fix": 4, "suggestions": 2},
-    {"sequence": 2, "verdict": 1, "must_fix": 3, "suggestions": 1},
+    {"sequence": 1, "verdict": 1, "must_fix": 4, "suggestions": 2,
+     "ts": "2026-08-01T00:00:00+00:00"},
+    {"sequence": 2, "verdict": 1, "must_fix": 3, "suggestions": 1,
+     "ts": "2026-08-02T00:00:00+00:00"},
 ]
-# 통과로 끝난 게이트 — `--fixed` 근거 게이트이자 릴리즈 검사의 비대상.
-_PASSED_ROUNDS = [{"sequence": 1, "verdict": 0, "must_fix": 0, "suggestions": 0}]
+# 통과로 끝난 게이트 — `--fixed` 근거 게이트(반려 이후 시각)이자 릴리즈 검사의 비대상.
+_PASSED_ROUNDS = [{"sequence": 1, "verdict": 0, "must_fix": 0, "suggestions": 0,
+                   "ts": "2026-08-03T00:00:00+00:00"}]
+# 반려보다 **앞선** 통과 — 연관성 없는 근거(우연한 시간 순서)를 태우는 절.
+_EARLIER_PASSED_ROUNDS = [{"sequence": 1, "verdict": 0, "must_fix": 0,
+                           "ts": "2026-07-20T00:00:00+00:00"}]
+# 판정이 무효했던 라운드 — 전송은 됐으나 must_fix 를 셀 근거가 없다('미상').
+_UNKNOWN_ROUNDS = [{"sequence": 1, "verdict": 1, "must_fix": None,
+                    "ts": "2026-08-02T00:00:00+00:00"}]
 
 
 def _load(name: str, alias: str):
@@ -88,8 +101,11 @@ def declare(tmp_path, monkeypatch):
     module = _load("external_review", "must_fix_external_review")
     monkeypatch.setattr(module, "REPO", proj)
     _write_ledger(proj, {
-        "T-0610": {"count": 3, "rounds": list(_REJECTED_ROUNDS)},
-        "T-0612": {"count": 1, "rounds": list(_PASSED_ROUNDS)},
+        "T-0610": {"count": 3, "rounds": list(_REJECTED_ROUNDS)},       # 반려로 종결
+        "T-0612": {"count": 1, "rounds": list(_PASSED_ROUNDS)},         # 반려 이후 통과 = 근거
+        "T-0613": {"count": 1, "rounds": list(_REJECTED_ROUNDS)},       # 근거가 못 되는 반려 게이트
+        "T-0614": {"count": 1, "rounds": list(_EARLIER_PASSED_ROUNDS)},  # 반려보다 앞선 통과
+        "T-0615": {"count": 1, "rounds": list(_UNKNOWN_ROUNDS)},        # 판정 무효(미상)
     })
     _add_ticket(proj, "T-0611", "open")
     _add_ticket(proj, "T-0620", "done")
@@ -129,11 +145,45 @@ def test_fixed_rejected_when_evidence_gate_still_rejected(declare, capsys):
 
     '해소했다'는 주장이 아니라 **장부의 통과 기록**이 근거다 — 주장만으로 선언되면 이 게이트는
     자의 판정을 장부에 옮겨 적는 도구가 된다."""
-    assert declare.run("--resolve-gate", "T-0610", "--fixed", "T-0610") == 1
+    assert declare.run("--resolve-gate", "T-0610", "--fixed", "T-0613") == 1
     assert declare.ledger()["T-0610"].get("resolution") is None
     err = capsys.readouterr().err
-    assert "근거 게이트 T-0610" in err
+    assert "근거 게이트 T-0613" in err
     assert "마지막 라운드가 통과가 아닙니다" in err
+
+
+def test_fixed_self_reference_is_refused(declare, capsys):
+    """자기 자신은 근거가 될 수 없다 — 반려로 끝난 게이트 안에서 자기 통과를 찾는 셈이다."""
+    assert declare.run("--resolve-gate", "T-0610", "--fixed", "T-0610") == 1
+    assert declare.ledger()["T-0610"].get("resolution") is None
+    assert "자기 자신은 근거가 될 수 없습니다" in capsys.readouterr().err
+
+
+def test_fixed_evidence_must_postdate_the_rejection(declare, capsys):
+    """근거 통과가 반려보다 **앞서면** 거부 — 우연한 시간 순서는 해소의 근거가 아니다."""
+    assert declare.run("--resolve-gate", "T-0610", "--fixed", "T-0614") == 1
+    assert declare.ledger()["T-0610"].get("resolution") is None
+    err = capsys.readouterr().err
+    assert "통과가 반려보다 앞섭니다" in err
+    assert "그 반려 **이후**의 통과여야" in err
+
+
+def test_unknown_residual_can_be_disposed(declare, capsys):
+    """판정 무효('미상')로 끝난 게이트도 처분을 선언할 수 있다 — 릴리즈가 막는 축이므로.
+
+    차단(릴리즈)과 선언(여기)이 서로 다른 술어를 쓰면 "막히는데 처분은 못 하는" 데드락이 난다."""
+    assert declare.run("--resolve-gate", "T-0615", "--into", "T-0611") == 0
+    resolution = declare.ledger()["T-0615"]["resolution"]
+    assert resolution["kind"] == "into"
+    assert resolution["must_fix"] is None                 # 미상은 건수로 위장하지 않는다
+    assert "미상(판정 무효 라운드)" in capsys.readouterr().out
+
+
+def test_dry_run_refuses_declaration(declare, capsys):
+    """`--dry-run` 은 거부한다 — 기록이 목적인 표면에서 '미리보기'는 성립하지 않는다."""
+    assert declare.run("--resolve-gate", "T-0610", "--into", "T-0611", "--dry-run") == 1
+    assert declare.ledger()["T-0610"].get("resolution") is None
+    assert "--dry-run` 과 함께 쓸 수 없습니다" in capsys.readouterr().err
 
 
 def test_fixed_rejected_when_evidence_gate_absent_from_ledger(declare, capsys):
@@ -366,10 +416,32 @@ def test_suggestion_only_residue_passes(release):
     assert release.flag()["status"] == "pass"
 
 
-def test_unknown_must_fix_count_is_not_a_residual_claim(release):
-    """'미상'(셀 근거가 없던 라운드)은 잔여 주장이 아니다 — 없는 사실로 릴리즈를 막지 않는다."""
+def test_unknown_residual_blocks(release, capsys):
+    """판정 무효 라운드('미상')로 끝난 게이트는 차단 — 확인 못 한 것은 잔여 없음이 아니다.
+
+    전송은 됐는데 판정이 무효했던 라운드(타임아웃·오염·섹션 부재)를 0 으로 접으면 차단이 조용히
+    풀린다. 이 축은 처분 선언으로만 열린다."""
     _write_ledger(release.proj, {"T-0610": {
-        "count": 1, "rounds": [{"sequence": 1, "verdict": 1, "must_fix": None}]}})
+        "count": 1, "rounds": list(_UNKNOWN_ROUNDS)}})
+    assert release.record() == 1
+    assert release.runner.calls == []
+    assert "must_fix 미상(판정 무효 라운드)" in capsys.readouterr().err
+
+
+def test_unknown_count_on_passing_round_is_not_a_residual(release):
+    """통과(rc 0)로 끝난 라운드의 미상은 비대상 — 판정은 났고 must-fix 섹션이 없었을 뿐이다."""
+    _write_ledger(release.proj, {"T-0610": {
+        "count": 1, "rounds": [{"sequence": 1, "verdict": 0, "must_fix": None,
+                                "ts": "2026-08-03T00:00:00+00:00"}]}})
+    assert release.record() == 0
+
+
+def test_unknown_residual_clears_with_disposition(release):
+    """미상 게이트도 처분(이관 done)으로 열린다 — 차단 축과 처분 축이 같은 술어를 쓴다."""
+    _write_ledger(release.proj, {"T-0610": {
+        "count": 1, "rounds": list(_UNKNOWN_ROUNDS),
+        "resolution": {"kind": "into", "ticket": "T-0620",
+                       "round_sequence": 1, "rounds": 1}}})
     assert release.record() == 0
 
 
@@ -432,8 +504,8 @@ def test_fixed_evidence_is_reverified_at_release(release, capsys):
                                           {"sequence": 2, "verdict": 1, "must_fix": 2}]}})
     assert release.record() == 1
     err = capsys.readouterr().err
-    assert "근거 게이트 T-0612 가 더 이상 통과가 아닙니다" in err
-    assert "must_fix 2건" in err
+    assert "근거 게이트 T-0612 — 마지막 라운드가 통과가 아닙니다" in err
+    assert "잔여 must_fix 2건" in err
 
 
 def test_fixed_evidence_gate_removed_from_ledger_blocks(release, capsys):
@@ -493,7 +565,69 @@ def test_livegate_has_no_bypass_flag(release):
                 if any(word in opt for word in ("skip", "force", "bypass", "allow"))], options
 
 
-# ── ③ 두 도구가 같은 장부를 본다 (선언 → 릴리즈) ───────────────────────────
+# ── ③ push 보호훅 — 라이브 축 우회가 이 차단까지 열지 않는다 ───────────────
+
+
+def _install_hook_fixture(tmp_path: Path, *, status: str, reason: str | None) -> Path:
+    """보호 pre-push 훅 + sidecar(보호목록·release 계약·engine-root) 를 tmp 에 깐다.
+
+    livegate.json 은 `status`/`reason` 그대로 만든다 — 우회 거부 판정의 입력이 **사유 표식**이지
+    fail 여부가 아님을 테스트가 직접 태울 수 있게 둘을 분리한다.
+    훅 본문은 출하 상수(`worktree_pool._PROTECTED_PRE_PUSH_HOOK`)를 그대로 쓴다.
+    """
+    pool = _load("worktree_pool", f"must_fix_pool_{status}_{reason or 'none'}")
+    hook_dir = tmp_path / "hooks"
+    hook_dir.mkdir()
+    (hook_dir / "pre-push").write_text(pool._PROTECTED_PRE_PUSH_HOOK, encoding="utf-8")
+    (hook_dir / "protected").write_text("main\n", encoding="utf-8")
+    (hook_dir / "gate-contract").write_text("release\n\n", encoding="utf-8")
+    engine_root = tmp_path / "pmhome"
+    local = engine_root / ".project_manager" / ".local"
+    local.mkdir(parents=True)
+    record = {"head": "abc123", "status": status, "n": 0, "rc": None}
+    if reason:
+        record["reason"] = reason
+    (local / "livegate.json").write_text(json.dumps(record), encoding="utf-8")
+    (hook_dir / "engine-root").write_text(f"{engine_root}\n", encoding="utf-8")
+    return hook_dir / "pre-push"
+
+
+def _run_hook(hook: Path):
+    import subprocess
+    env = {**os.environ, "PM_ALLOW_PROTECTED_PUSH": "1", "PM_SKIP_LIVE_GATE": "1"}
+    env.pop("PM_SKIP_SELF_TEST", None)
+    return subprocess.run(["sh", str(hook)], input="refs/heads/local 0000 refs/heads/main 1111\n",
+                          capture_output=True, text=True, env=env)
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 직접 실행 불가)")
+def test_skip_live_gate_env_does_not_bypass_must_fix_block(tmp_path):
+    """`PM_SKIP_LIVE_GATE=1` 은 라이브 축 우회다 — must-fix 잔여로 찍힌 fail 은 우회하지 못한다.
+
+    우회 사유(오프라인·라이브 무관 변경·긴급 hotfix)와 이 차단 사유(리뷰 잔여)는 다른 축이다.
+    훅은 fail 기록의 사유 표식을 읽어 그 한 사유만 거부한다(다른 사유의 우회는 현행 유지)."""
+    result = _run_hook(_install_hook_fixture(
+        tmp_path, status="fail", reason="unresolved-must-fix"))
+    assert result.returncode != 0
+    assert "미해소 must-fix 잔여" in result.stderr
+    assert "우회 대상이 아니다" in result.stderr
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 직접 실행 불가)")
+@pytest.mark.parametrize("status,reason", [
+    ("pass", None),              # green 기록 — 종전 우회 경로 무변경
+    ("fail", "release-red"),     # **fail 이지만 다른 사유** — 라이브 축 red 는 우회 대상 그대로
+])
+def test_skip_live_gate_env_still_bypasses_other_reasons(tmp_path, status, reason):
+    """다른 사유의 우회는 현행 유지 — 이 변경은 **한 사유만** 좁게 닫는다.
+
+    판정 입력이 "fail 인가"가 아니라 "사유가 미해소 must-fix 인가"임을 못박는다 — 전자로 넓히면
+    라이브 red·인프라 실패까지 우회가 막혀 긴급 hotfix 경로가 사라진다."""
+    assert _run_hook(_install_hook_fixture(
+        tmp_path, status=status, reason=reason)).returncode == 0
+
+
+# ── ④ 두 도구가 같은 장부를 본다 (선언 → 릴리즈) ───────────────────────────
 
 
 def test_declaration_then_release_uses_one_ledger(tmp_path, monkeypatch, capsys):
