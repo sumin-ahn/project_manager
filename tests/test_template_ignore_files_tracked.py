@@ -258,6 +258,48 @@ def test_opencode_manifest_registers_adapter_gitignore():
         "가리키지 않음 — self-update 가 소스를 못 찾아 전파 실패(rc2)")
 
 
+# ── 가드 ④ 제품 루트 opencode npm 산출물 재추적 방지 ───────────────────────────
+
+
+@requires_git_worktree
+def test_root_opencode_tracks_only_its_gitignore():
+    """제품 루트 `.opencode` 추적 집합은 ignore 규칙 파일 1건뿐이다 (T-0631).
+
+    opencode 런타임이 `node_modules`·`package*.json` 을 다시 만들어도 제품 소스가 아니므로 index 에
+    들어오면 안 된다. 반대로 `.gitignore` 자체는 fresh clone 에도 있어야 이 규칙이 계속 유효하다.
+    """
+    rel = ".opencode/.gitignore"
+    assert (REPO / rel).is_file(), f"루트 opencode ignore 규칙 파일 부재: {rel}"
+    assert _tracked_relpaths(REPO, ".opencode") == {rel}, (
+        "루트 .opencode 추적 집합은 .gitignore 1건이어야 한다 — npm 재생성물 재추적 회귀")
+
+
+@requires_git_binary
+def test_root_opencode_gitignore_matches_template_and_ignores_runtime_artifacts():
+    """루트 판은 템플릿과 동형이고, 런타임 npm 재생성물 4종을 실제 git 의미론으로 무시한다."""
+    root_ignore = REPO / ".opencode" / ".gitignore"
+    template_ignore = REPO / "templates" / "opencode" / ".opencode" / ".gitignore"
+    assert root_ignore.read_bytes() == template_ignore.read_bytes(), \
+        "루트 .opencode/.gitignore 가 canonical 템플릿 판과 다름"
+
+    artifacts = (
+        ".opencode/node_modules/runtime-regenerated.js",
+        ".opencode/package.json",
+        ".opencode/package-lock.json",
+        ".opencode/bun.lock",
+    )
+    decision = subprocess.run(
+        [_GIT, "check-ignore", "--no-index", "--", *artifacts],
+        cwd=str(REPO), capture_output=True, text=True, encoding="utf-8",
+    )
+    assert decision.returncode == 0, (
+        f"opencode 런타임 재생성물이 ignore 되지 않음(rc={decision.returncode}): "
+        f"{decision.stderr.strip()}")
+    assert set(decision.stdout.splitlines()) == set(artifacts), (
+        "opencode 런타임 재생성물 중 일부가 ignore 밖이라 다시 추적될 수 있음: "
+        f"{decision.stdout.splitlines()}")
+
+
 # ── sensitivity — 가드가 실제로 도는지 (가짜 게이트 방지) ────────────────────────
 
 

@@ -855,7 +855,9 @@ def test_numstat_sum_ignores_binary_and_junk(external):
     ("templates/codex/.project_manager/tools/pm_delegate.py", True),
     ("./templates/opencode/.project_manager/local.conf", True),          # `./` 표기
     (r"templates\opencode\.project_manager\tools\board.py", True),       # Windows 표기
+    (".opencode/node_modules/pkg/index.js", True),                       # 루트 npm 산출물
     (".project_manager/tools/board.py", False),                          # 엔진 원본(손작업)
+    (".opencode/package.json", False),                                   # 별도 소형 untrack
     ("templates/claude_code/CLAUDE.md", False),                          # 어댑터층(손작업)
     ("templates/claude_code/.claude/agents/architect.md", False),        # 어댑터층(손작업)
     ("tests/test_board_lint.py", False),
@@ -883,6 +885,7 @@ def test_mirror_rows_do_not_inflate_the_measured_total(external):
         "40\t10\ttemplates/claude_code/.project_manager/tools/board.py\n"  # 기계 mirror
         "40\t10\ttemplates/codex/.project_manager/tools/board.py\n"        # 기계 mirror
         "40\t10\ttemplates/opencode/.project_manager/tools/board.py\n"     # 기계 mirror
+        "500\t500\t.opencode/node_modules/pkg/index.js\n"                 # npm 산출물
         "3\t0\ttemplates/claude_code/CLAUDE.md\n"                          # 어댑터층 손작업 3
         "2\t1\t{templates/codex => templates/codex}/.project_manager/tools/x.py\n"
     )
