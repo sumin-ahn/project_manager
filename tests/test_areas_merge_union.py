@@ -239,16 +239,18 @@ def test_ensure_noop_on_legacy_inline(board, tmp_path):
     assert not (tmp_path / ".gitattributes").exists()
 
 
+@requires_git
 def test_ensure_creates_gitattributes_in_board_git(board, tmp_path):
-    board_dir = _make_board_dir(board, tmp_path)
+    board_dir = _make_board_dir(board, tmp_path, real_git=True)
     assert board._ensure_board_gitattributes() is True
     text = (board_dir / ".gitattributes").read_text(encoding="utf-8")
     assert board._areas_union_declared(text, board._BOARD_AREAS_ATTR_TARGETS) is True
 
 
+@requires_git
 def test_ensure_is_idempotent_no_duplicate_line(board, tmp_path):
     """두 번째 호출은 False + 파일 무변경 (멱등 no-write — 줄 중복 0)."""
-    board_dir = _make_board_dir(board, tmp_path)
+    board_dir = _make_board_dir(board, tmp_path, real_git=True)
     assert board._ensure_board_gitattributes() is True
     first = (board_dir / ".gitattributes").read_text(encoding="utf-8")
     assert board._ensure_board_gitattributes() is False
@@ -257,11 +259,14 @@ def test_ensure_is_idempotent_no_duplicate_line(board, tmp_path):
     assert second.count("areas.md merge=union") == 1
 
 
+@requires_git
 def test_ensure_preserves_adopter_custom_lines(board, tmp_path):
     """기존 `.gitattributes` 를 덮어쓰지 않고 **append 로만** 보강한다 (채택자 규칙 보존)."""
-    board_dir = _make_board_dir(board, tmp_path)
+    board_dir = _make_board_dir(board, tmp_path, real_git=True)
     custom = "# 채택자 규칙\n*.md text eol=lf\ntickets/** linguist-generated\n"
     (board_dir / ".gitattributes").write_text(custom, encoding="utf-8")
+    _git(["add", "--", ".gitattributes"], board_dir)
+    _git(["commit", "-qm", "seed custom attributes"], board_dir)
 
     assert board._ensure_board_gitattributes() is True
 
@@ -271,10 +276,13 @@ def test_ensure_preserves_adopter_custom_lines(board, tmp_path):
     assert board._areas_union_declared(text, board._BOARD_AREAS_ATTR_TARGETS) is True
 
 
+@requires_git
 def test_ensure_appends_cleanly_when_file_lacks_trailing_newline(board, tmp_path):
     """줄바꿈 없이 끝난 파일도 마지막 줄과 붙지 않게 이어붙인다."""
-    board_dir = _make_board_dir(board, tmp_path)
+    board_dir = _make_board_dir(board, tmp_path, real_git=True)
     (board_dir / ".gitattributes").write_text("*.md text eol=lf", encoding="utf-8")
+    _git(["add", "--", ".gitattributes"], board_dir)
+    _git(["commit", "-qm", "seed attributes without newline"], board_dir)
 
     assert board._ensure_board_gitattributes() is True
 
@@ -418,11 +426,41 @@ def test_advisory_is_never_blocking(board):
     assert "areas-merge-union" in board._ADVISORY_LINT_KINDS
 
 
+@requires_git
 def test_advisory_resolved_after_backfill(board, tmp_path):
-    _make_board_dir(board, tmp_path)
+    _make_board_dir(board, tmp_path, real_git=True)
     assert board.lint_areas_merge_union()
     board._ensure_board_gitattributes()
     assert board.lint_areas_merge_union() == []
+
+
+@requires_git
+def test_missing_rule_in_dirty_gitattributes_is_preserved(
+        board, tmp_path, capsys):
+    """union 누락 + 사용자 dirty `.gitattributes`는 append/스코프 커밋 모두 거부한다."""
+    board_dir = _make_board_dir(board, tmp_path, real_git=True, ticket="T-0001")
+    attrs = board_dir / ".gitattributes"
+    ignore = board_dir / ".gitignore"
+    committed = "*.md text eol=lf\n"
+    attrs.write_text(committed, encoding="utf-8")
+    ignore.write_text("tickets/.drafts/\n", encoding="utf-8")
+    _git(["add", "--", ".gitattributes", ".gitignore"], board_dir)
+    _git(["commit", "-qm", "seed root files"], board_dir)
+    wip = committed + "# 사용자 작업 중\n*.bin binary\n"
+    attrs.write_text(wip, encoding="utf-8")
+    ticket = board_dir / "tickets" / "open" / "T-0001-t.md"
+    ticket.write_text(ticket.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
+
+    assert board._board_git_stage_and_commit("mutation", (ticket,)) is True
+
+    assert attrs.read_text(encoding="utf-8") == wip
+    assert _git(["show", "HEAD:.gitattributes"], board_dir).stdout == committed
+    changed = _git(["show", "--name-only", "--format=", "HEAD"], board_dir).stdout.splitlines()
+    assert ".gitattributes" not in changed, "사용자 WIP가 mutation 커밋에 포함됨."
+    assert _git(["status", "--porcelain", "--", ".gitattributes"], board_dir).stdout.rstrip() == \
+        " M .gitattributes"
+    warning = capsys.readouterr().err
+    assert "사용자 WIP" in warning and ".gitattributes" in warning
 
 
 def test_advisory_silent_for_inline_with_root_declaration(board, tmp_path):

@@ -279,8 +279,13 @@ def test_claim_confirm_push_nonff_rolls_back_scoped(board, tmp_path):
         "push 충돌 rollback 후 ticket 이 open/ 으로 복원 안 됨."
     assert not list((board_dir / "tickets" / "claimed").glob("T-0001-*.md")), \
         "push 충돌인데 ticket 이 claimed/ 에 남음 — rollback 누락."
-    assert board._board_git_head() == anchor, \
-        "롤백 후 HEAD 가 anchor 로 안 돌아옴 — reset --soft 누락(claim commit 잔존)."
+    # reset --soft 로 claim commit 을 제거한 뒤 rollback refresh 가 원격 winner 를 당긴다. 루트
+    # backfill 잔여가 staged 로 남으면 이 pull 이 막혀 우연히 anchor 에 머무르므로, 최종 HEAD 는
+    # stale anchor 가 아니라 원격 최신 tip 이어야 복구가 완결된 것이다.
+    remote_head = _git(["rev-parse", "main"], bare).stdout.strip()
+    assert board._board_git_head() == remote_head, \
+        "롤백 뒤 claim commit 제거·원격 최신화가 완결되지 않음."
+    assert remote_head != anchor, "fixture 전제: 원격 winner 가 anchor 를 전진시켜야 한다."
 
 
 @requires_git

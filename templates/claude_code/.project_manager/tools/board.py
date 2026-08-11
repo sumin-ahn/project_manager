@@ -25,6 +25,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -3783,6 +3784,77 @@ _BOARD_GITATTRIBUTES_BLOCK = (
     "# board 는 별도 git 이라 superproject 루트의 같은 선언이 닿지 않는다 — 여기가 그 배포처다.\n"
     f"areas.md merge={_AREAS_UNION_DRIVER}\n"
 )
+# board 루트에 엔진이 배포하는 파일들. ensure/판정/snapshot/pathspec 이 모두 이 seam 을 공유해
+# 한 파일만 WIP 보호에서 빠지는 drift 를 막는다. 순서는 pathspec·복구 안내의 나열 순서다.
+_BOARD_GIT_ROOT_FILES: tuple[str, ...] = (".gitattributes", ".gitignore")
+
+
+class _BoardGitRootFileBackfillTarget(NamedTuple):
+    """루트 파일 backfill 이 안전하다고 판정된 append 대상."""
+    path: Path
+    text: str
+
+
+def _board_git_root_file_backfill_target(
+        name: str, declared: Callable[[str], bool]) -> _BoardGitRootFileBackfillTarget | None:
+    """루트 배포 파일 하나의 regular·tracked·clean 상태를 확인한다.
+
+    파일이 **없어도** index/porcelain 을 조회한다. ``ls-files`` 비매치 + status clean 만 진짜
+    미배포로 보며, index/worktree 어느 쪽이든 삭제가 기록돼 있으면 사용자 WIP 로 보존한다.
+    기존 파일은 regular + tracked + status clean 일 때만 append 가능하다. 반환 ``None`` 은
+    이미 선언됨 또는 안전하게 쓸 수 없음이다.
+    """
+    if name not in _BOARD_GIT_ROOT_FILES:
+        raise ValueError(f"board 루트 배포 파일 seam 밖의 이름: {name}")
+    path = board_root() / name
+    try:
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            info = None
+        if info is not None and not stat.S_ISREG(info.st_mode):
+            kind = "symlink" if stat.S_ISLNK(info.st_mode) else "비정규 파일"
+            print(f"  ⚠ board {name} backfill 거부 — {kind} 이므로 안전하게 append 할 수 없다: "
+                  f"{path}", file=sys.stderr)
+            return None
+        text = path.read_text(encoding="utf-8") if info is not None else ""
+        if declared(text):
+            return None
+    except (OSError, UnicodeError):
+        return None
+
+    try:
+        tracked = _board_git(["ls-files", "--error-unmatch", "--", name])
+        dirty = _board_git([
+            "status", "--porcelain", "-z", "-uall", "--", name,
+        ])
+    except Exception as exc:  # noqa: BLE001 — 소유/clean 미확인은 append 거부(안전 방향).
+        print(f"  ⚠ board {name} backfill 보류 — git 소유/clean 상태를 확인하지 못했다({exc}). "
+              "사용자 편집 보존을 위해 쓰지 않는다.", file=sys.stderr)
+        return None
+
+    if tracked.returncode not in (0, 1) or dirty.returncode != 0:
+        print(f"  ⚠ board {name} backfill 보류 — git 상태 확인 실패. 사용자 WIP를 mutation "
+              "커밋에 쓸어 담지 않도록 쓰지 않는다.", file=sys.stderr)
+        return None
+
+    has_status = bool(dirty.stdout)
+    if info is None:
+        # tracked+부재(status 가 clean 인 skip-worktree 포함) 또는 porcelain 삭제 표식은 사용자가
+        # 파일을 없애는 중인 상태다. untracked+부재+status clean 만 신규 배포 대상으로 인정한다.
+        if tracked.returncode == 0 or has_status:
+            print(f"  ⚠ board {name} backfill 보류 — 추적 파일의 삭제 WIP가 감지됐다. 사용자 "
+                  "삭제를 되돌리거나 mutation 커밋에 포함하지 않도록 파일을 만들지 않는다. "
+                  f"{name} 변경을 직접 커밋하면 다음 mutation 이 필요한 규칙을 보강한다.",
+                  file=sys.stderr)
+            return None
+    elif tracked.returncode != 0 or has_status:
+        state = "git 미추적" if tracked.returncode != 0 else "미커밋 변경 있음"
+        print(f"  ⚠ board {name} backfill 보류 — 기존 파일이 {state}. 사용자 WIP를 mutation "
+              f"커밋에 쓸어 담지 않도록 쓰지 않는다. {name} 변경을 직접 커밋하면 다음 mutation "
+              "이 필요한 규칙을 보강한다.", file=sys.stderr)
+        return None
+    return _BoardGitRootFileBackfillTarget(path, text)
 
 
 def _gitattributes_pattern_matches(pattern: str, targets: tuple[str, ...]) -> bool:
@@ -3871,7 +3943,9 @@ def _ensure_board_gitattributes() -> bool:
     같은 이유다 — 빠지면 이 backfill 이 영구 미커밋으로 남아 배포가 죽는다.
 
     **비파괴**: 파일이 있으면 덮어쓰지 않고, union 선언이 *없을 때만* 블록을 append 한다(채택자
-    가 자기 규칙을 가진 경우 보존). 이미 선언돼 있으면 no-write(멱등). append 는
+    가 자기 규칙을 가진 경우 보존). 이미 선언돼 있으면 no-write(멱등). 기존 파일에 append
+    하려면 regular file 이고 git 추적 상태가 clean 이어야 한다 — symlink/비정규 파일이나
+    untracked·staged·unstaged·삭제 WIP 면 loud 하게 알리고 쓰지 않는다. append 는
     `file_lock.append_atomic`(O_APPEND) — 동시 writer 가 서로를 덮지 않는다.
 
     fail-soft: board 미분리(legacy·솔로)·areas 가 이 git 밖·IO 실패면 아무 것도 하지 않고 False.
@@ -3880,19 +3954,275 @@ def _ensure_board_gitattributes() -> bool:
     root = board_root()
     if not (root / ".git").exists() or areas_file().parent != root:
         return False  # board 미분리(legacy·솔로) 또는 areas 가 이 git 밖 — no-op.
-    attrs = root / ".gitattributes"
+    target = _board_git_root_file_backfill_target(
+        ".gitattributes",
+        lambda text: _areas_union_declared(text, _BOARD_AREAS_ATTR_TARGETS),
+    )
+    if target is None:
+        return False
     try:
-        text = attrs.read_text(encoding="utf-8") if attrs.is_file() else ""
-        if _areas_union_declared(text, _BOARD_AREAS_ATTR_TARGETS):
-            return False
         # 기존 내용 뒤에 빈 줄 하나를 띄우고 append (줄바꿈 없이 끝난 파일도 안전하게 이어붙임).
-        separator = "" if not text else ("\n" if text.endswith("\n") else "\n\n")
-        file_lock.append_atomic(attrs, separator + _BOARD_GITATTRIBUTES_BLOCK)
+        separator = "" if not target.text else (
+            "\n" if target.text.endswith("\n") else "\n\n")
+        file_lock.append_atomic(target.path, separator + _BOARD_GITATTRIBUTES_BLOCK)
     except (OSError, UnicodeError):
         # IO 실패·비-UTF8 `.gitattributes` — 보강을 포기한다. 이 함수는 ticket mutation 의
         # commit funnel 에서 불리므로 어떤 예외도 mutation 을 깨선 안 된다(advisory 가 표면화).
         return False
     return True
+
+
+# ── draft 격리 gitignore 배포 ───────────────────
+# `tickets/.drafts/`(미충전 draft)는 **설계상 board-git 미커밋**이다(draft authoring flow 결정 —
+# placeholder 본문이 공유 board 에 올라가는 것을 막는다). mutation 축엔 그 의도가 이미 박혀
+# 있지만(`_BOARD_GIT_SCOPE_EXCLUDE`·`_BOARD_GIT_DRAFT_PATHSPEC`), **관측 축**엔 아무 선언도 없어
+# draft 파일이 untracked 로 남는다 — dirty-tree 를 재는 소비자(`pm_handoff` [0/7] 게이트·사람의
+# `git status`)가 그걸 매번 "부기 누락 잔여" 로 오탐해 핸드오프마다 `--ack-dirty` override 를
+# 요구했다(핸드오프 관측 결과). board git 의 `.gitignore` 에 그 디렉토리를 선언해 오탐을 원천에서
+# 없앤다 — 새 판정 규칙이 아니라 이미 있던 의도(미커밋)를 git 에 명시하는 것이다.
+_BOARD_GIT_DRAFT_IGNORE_PATTERN = "tickets/.drafts/"
+# 위 패턴과 **같은 디렉토리**를 가리키는 것으로 인정하는 정규화 표기. 슬래시 없는 `.drafts` 는
+# 비앵커드일 때만 git 규칙상 어느 깊이의 그 디렉토리에도 걸린다.
+_BOARD_DRAFT_IGNORE_FORMS: tuple[str, ...] = (
+    _BOARD_GIT_DRAFT_IGNORE_PATTERN.rstrip("/"),
+    _BOARD_GIT_DRAFT_IGNORE_PATTERN.rstrip("/").rsplit("/", 1)[-1],
+)
+_BOARD_GITIGNORE_BLOCK = (
+    "# tickets/.drafts/ = 미충전 draft 티켓 — 설계상 board-git 미커밋(promote 가 open/ 으로 옮긴다).\n"
+    "# 선언하지 않으면 draft 가 untracked 로 남아 dirty-tree 관측이 매번 미커밋 잔여로 오탐한다.\n"
+    f"{_BOARD_GIT_DRAFT_IGNORE_PATTERN}\n"
+)
+
+
+def _gitignore_pattern_targets_drafts(pattern: str) -> bool:
+    """`.gitignore` 한 줄이 draft 격리 디렉토리를 가리키는가 (부정 `!` 줄 포함).
+
+    선행 `!`(부정)·선행 `**/`·후행 `/`(디렉토리 표기)를 벗겨
+    `_BOARD_DRAFT_IGNORE_FORMS` 와 대조한다. 선행 `/` 는 제거 전에 앵커로 기록한다 — 앵커드
+    `/.drafts` 는 board 루트의 `.drafts` 만 가리켜 실제 `tickets/.drafts/` 에 닿지 않으므로
+    선언으로 세지 않고, `/tickets/.drafts` 만 인정한다. **부정도 '가리킨다' 로 센다** — `!` 는
+    채택자가 draft 를 추적하겠다고 명시한 결정이고, gitignore 는 last-match-wins 라 그 뒤에
+    우리 줄을 붙이면 그 결정을 실제로 뒤집는다(비파괴 원칙).
+
+    판정 불가/불일치는 항상 False = **한 번 더 append** 하는 쪽으로 기운다(`.gitattributes`
+    backfill 과 같은 기울기). 그 방향은 무해하고(같은 디렉토리에 대한 중복 선언·효과 동일),
+    반대 방향(거짓 정상)은 오탐이 그대로 남는다. 복합 glob(`tickets/*`·문자 클래스·
+    이스케이프)은 인식 대상 밖이다.
+    """
+    pat = pattern.strip()
+    if pat.startswith("!"):
+        pat = pat[1:].strip()
+    anchored = pat.startswith("/")
+    if anchored:
+        pat = pat[1:]
+    pat = pat.rstrip("/")
+    if pat.startswith("**/"):
+        pat = pat[len("**/"):]
+    forms = _BOARD_DRAFT_IGNORE_FORMS[:1] if anchored else _BOARD_DRAFT_IGNORE_FORMS
+    return pat in forms
+
+
+def _drafts_ignore_declared(text: str) -> bool:
+    """이 `.gitignore` 본문이 draft 격리 디렉토리를 이미 다루고 있는가 (내용 판정).
+
+    빈 줄과 `#` 로 시작하는 주석 줄은 건너뛴다 — 우리 블록의 설명 주석이 그 자신을
+    "선언됨" 으로 읽게 하지 않는다.
+    """
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if _gitignore_pattern_targets_drafts(line):
+            return True
+    return False
+
+
+def _board_git_root_file_rule_declared(name: str, text: str) -> bool:
+    """루트 배포 파일별 내용 규칙 — `_BOARD_GIT_ROOT_FILES` lockstep dispatcher."""
+    if name == ".gitattributes":
+        return _areas_union_declared(text, _BOARD_AREAS_ATTR_TARGETS)
+    if name == ".gitignore":
+        return _drafts_ignore_declared(text)
+    raise ValueError(f"board 루트 배포 파일 seam 밖의 이름: {name}")
+
+
+def _board_git_root_files_need_backfill() -> bool:
+    """draft-only sync funnel 을 열 루트 backfill 필요 여부 (read-only·fail-open 술어).
+
+    둘 다 이미 정합인 regular file 이면 False 이므로 두 번째 draft 는 commit/pull/push 경로에
+    들어가지 않는다. 부재·비정규·읽기 실패·규칙 누락은 True 로 두어 실제 ensure 가 공용
+    git/WIP 판정을 하고 필요한 write 또는 loud 보류를 수행하게 한다.
+    """
+    root = board_root()
+    if not (root / ".git").exists():
+        return False
+    for name in _BOARD_GIT_ROOT_FILES:
+        path = root / name
+        try:
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode):
+                return True
+            text = path.read_text(encoding="utf-8")
+        except (FileNotFoundError, OSError, UnicodeError):
+            return True
+        if not _board_git_root_file_rule_declared(name, text):
+            return True
+    return False
+
+
+def _ensure_board_gitignore() -> bool:
+    """board git 의 `.gitignore` 에 `tickets/.drafts/` 를 **멱등 보강**.
+
+    `_ensure_board_gitattributes` 와 같은 backfill 패턴이다 — 신규 채택자(board scaffold)든 이미
+    만들어진 board(backfill)든 같은 ensure 경로로 수렴하므로 별도 마이그레이션 명령이 없다.
+    호출처도 같은 commit funnel(`_board_git_stage_and_commit`) 하나뿐이다: write→stage→commit 이
+    한 호출에 닫혀야 엔진이 만든 파일이 board 에 미커밋으로 눌러앉지 않는다(그러면 이 함수가
+    없애려는 바로 그 오탐을 스스로 만든다).
+
+    **비파괴**: 파일이 있으면 덮어쓰지 않고, draft 를 다루는 줄이 *없을 때만* 블록을 append
+    한다(채택자 규칙·부정 선언 보존). 이미 다뤄지고 있으면 no-write(멱등). 기존 파일에
+    append 하려면 regular file 이고 git 추적 상태가 clean 이어야 한다 — symlink/비정규 파일이나
+    untracked·staged·unstaged WIP 면 사유를 loud 하게 알리고 쓰지 않는다. append 는
+    `file_lock.append_atomic`(O_APPEND) — 동시 writer 가 서로를 덮지 않는다.
+
+    fail-soft: board 미분리(legacy·솔로)·IO 실패면 아무 것도 하지 않고 False.
+    반환 True = 이번 호출이 보강했다.
+    """
+    root = board_root()
+    if not (root / ".git").exists():
+        return False  # board 미분리(legacy·솔로) — no-op(draft 격리는 board-git 형상 전용).
+    target = _board_git_root_file_backfill_target(
+        ".gitignore", _drafts_ignore_declared)
+    if target is None:
+        return False
+    try:
+        # 기존 내용 뒤에 빈 줄 하나를 띄우고 append (줄바꿈 없이 끝난 파일도 안전하게 이어붙임).
+        separator = "" if not target.text else (
+            "\n" if target.text.endswith("\n") else "\n\n")
+        file_lock.append_atomic(target.path, separator + _BOARD_GITIGNORE_BLOCK)
+    except (OSError, UnicodeError):
+        # IO 실패·비-UTF8 `.gitignore` — `_ensure_board_gitattributes` 와 같은 fail-soft 규약
+        # (이 축의 실패가 ticket mutation 을 깨선 안 된다).
+        return False
+    return True
+
+
+class _BoardGitRootFileState(NamedTuple):
+    """strict mutation 전 board 루트 파일의 워킹트리 상태."""
+    existed: bool
+    contents: bytes | None
+
+
+class _BoardGitRootFilesSnapshot:
+    """strict claim 의 루트 backfill 전후 소유 경계를 함께 기록한다."""
+
+    def __init__(self, states: dict[str, _BoardGitRootFileState] | None):
+        self.states = states
+        self.backfilled: list[str] = []
+        self.staged_index: dict[str, tuple[str, str]] | None = None
+
+
+def _board_git_root_files_snapshot() -> _BoardGitRootFilesSnapshot:
+    """엔진 backfill 전 루트 파일 상태와 이후 실제 작성 목록을 캡처할 그릇을 만든다.
+
+    strict claim 이 실패하면 index 만 되돌려서는 부족하다. 새 파일은 untracked 로, 기존 파일에
+    append 한 블록은 unstaged 로 남아 다음 ensure 가 no-write 하는 영구 잔여가 된다. 워킹트리
+    바이트도 함께 복원해야 다음 mutation 이 backfill 을 다시 정상 시도할 수 있다. 단, 복원
+    소유권은 이 스냅샷 뒤 `_ensure_board_root_files()` 가 실제로 쓴 파일에만 생긴다.
+    """
+    snapshot: dict[str, _BoardGitRootFileState] = {}
+    for name in _BOARD_GIT_ROOT_FILES:
+        path = board_root() / name
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            snapshot[name] = _BoardGitRootFileState(False, None)
+            continue
+        except OSError:
+            return _BoardGitRootFilesSnapshot(None)
+        if not stat.S_ISREG(info.st_mode):
+            snapshot[name] = _BoardGitRootFileState(True, None)
+            continue
+        try:
+            snapshot[name] = _BoardGitRootFileState(True, path.read_bytes())
+        except OSError:
+            return _BoardGitRootFilesSnapshot(None)
+    return _BoardGitRootFilesSnapshot(snapshot)
+
+
+def _board_git_expected_backfill_state(
+        name: str, before: _BoardGitRootFileState) -> _BoardGitRootFileState | None:
+    """스냅샷 원본에 엔진 블록 하나를 append 한 정확한 워킹트리 상태."""
+    if before.existed and before.contents is None:
+        return None
+    original = before.contents or b""
+    separator = b"" if not original else (b"\n" if original.endswith(b"\n") else b"\n\n")
+    if name == ".gitattributes":
+        block = _BOARD_GITATTRIBUTES_BLOCK
+    elif name == ".gitignore":
+        block = _BOARD_GITIGNORE_BLOCK
+    else:
+        return None
+    return _BoardGitRootFileState(True, original + separator + block.encode("utf-8"))
+
+
+def _board_git_restore_root_files(
+        snapshot: _BoardGitRootFilesSnapshot | None) -> tuple[str, ...]:
+    """실제 backfill 파일만 원복하되 제3자 변경은 보존한다 (절대 throw 금지)."""
+    if snapshot is None or snapshot.states is None:
+        print("  ⚠ board 루트 파일의 claim 직전 상태를 캡처하지 못해 정확히 복원하지 못했다. "
+              "`git -C .project_manager/board status` 로 확인하라.", file=sys.stderr)
+        return ()
+    restored: list[str] = []
+    for name in snapshot.backfilled:
+        before = snapshot.states.get(name)
+        path = board_root() / name
+        expected = _board_git_expected_backfill_state(name, before) if before is not None else None
+        if before is None or expected is None:
+            print(f"  ⚠ board rollback 이 {name} backfill 원본을 확인하지 못해 덮어쓰지 않았다: "
+                  f"{path}", file=sys.stderr)
+            continue
+        try:
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                current = _BoardGitRootFileState(False, None)
+            else:
+                if not stat.S_ISREG(info.st_mode):
+                    current = _BoardGitRootFileState(True, None)
+                else:
+                    current = _BoardGitRootFileState(True, path.read_bytes())
+
+            # 이미 원본으로 돌아갔으면 워킹트리는 no-op. 엔진 산출과 원본 어느 쪽도 아니면
+            # hook/동시 편집이 만든 제3의 상태이므로 소유권 밖이다 — bytes를 최우선 보존한다.
+            if current == before:
+                restored.append(name)
+                continue
+            if current != expected:
+                print(f"  ⚠ board rollback 이 스냅샷 이후 제3자 변경을 보존했다: {path} "
+                      "(engine backfill/원본 어느 쪽과도 달라 덮어쓰지 않음).",
+                      file=sys.stderr)
+                continue
+
+            if before.existed:
+                assert before.contents is not None
+                path.write_bytes(before.contents)
+            else:
+                path.unlink()
+            restored.append(name)
+        except OSError as exc:
+            print(f"  ⚠ board rollback 루트 파일 복원 실패: {path} ({exc})", file=sys.stderr)
+    return tuple(restored)
+
+
+def _ensure_board_root_files() -> tuple[str, ...]:
+    """board 루트 엔진 파일들을 멱등 보강하고 **이번 호출이 실제로 쓴** 파일명만 돌려준다."""
+    written: list[str] = []
+    if _ensure_board_gitattributes():
+        written.append(".gitattributes")
+    if _ensure_board_gitignore():
+        written.append(".gitignore")
+    return tuple(written)
 
 
 # ── board git 즉시 sync ────────
@@ -4521,7 +4851,8 @@ def git_scope_stage_pathspec(repo: Path, paths: Sequence[Path], *,
 
 
 def git_scope_stage_and_commit(repo: Path, message: str, pathspec: Sequence[str], *,
-                               run_git: GitRunner | None = None) -> None:
+                               run_git: GitRunner | None = None,
+                               after_stage: Callable[[], None] | None = None) -> None:
     """선언된 pathspec **만** stage+commit 한다 (`add -A --` + `commit -m … --` 쌍).
 
     `add` 선행은 **필수**다 — `git commit --only -- <새 경로>` 단독은 그 경로가 untracked 라
@@ -4530,6 +4861,8 @@ def git_scope_stage_and_commit(repo: Path, message: str, pathspec: Sequence[str]
     """
     run = run_git or (lambda args: _git_scope_run(repo, args))
     run(["add", "-A", "--", *pathspec])
+    if after_stage is not None:
+        after_stage()
     run(["commit", "-m", message, "--", *pathspec])
 
 
@@ -4560,26 +4893,26 @@ def _board_git_relpath(path: Path) -> str | None:
 
 
 def _board_git_scope_pathspec(paths: Sequence[Path], *,
-                              gitattributes: bool = False) -> tuple[str, ...]:
+                              root_files: Sequence[str] = ()) -> tuple[str, ...]:
     """이 mutation 이 만진 경로 → board git pathspec (`git_scope_pathspec` 의 board 바인딩).
 
     스코프 규칙(repo 밖 제외·금지 구역 제외·중복 제거)은 repo-중립 프리미티브
     `git_scope_pathspec` 이 단일 구현으로 갖고 있고, 여기선 board 고유분만 얹는다:
       - `board_root()` 를 repo 로, `tickets/.drafts/`(`_BOARD_GIT_SCOPE_EXCLUDE`)를 금지 구역으로.
-      - `gitattributes=True` 일 때만 `.gitattributes` 를 덧붙인다 — **이번 호출의 backfill 이
-        실제로 썼을 때**(`_ensure_board_gitattributes()` 반환 True)만 참이다. 무조건 붙이면
-        사용자가 편집 중인 `.gitattributes` 를 아무 티켓 mutation 이 대신 커밋해 이 티켓이
-        닫으려는 누출과 **동형** 이 된다(reviewer). 반대로 backfill 분을 빼면 그 파일이 영구
-        미커밋으로 남아 (areas union 배포)이 무력화되므로, "썼으면 싣는다" 가 정확한
-        조건이다. 파일 부재 시엔 붙이지 않는다(`add` rc=128 fatal 방지).
+      - `root_files` 로 준 board 루트 파일(`_BOARD_GIT_ROOT_FILES` 부분집합)만 덧붙인다 —
+        **이번 호출의 backfill 이 실제로 쓴 것**(`_ensure_board_root_files()` 반환)만 온다.
+        무조건 붙이면 사용자가 편집 중인 `.gitattributes`/`.gitignore` 를 아무 티켓 mutation 이
+        대신 커밋해 스코프 커밋이 닫으려는 누출과 **동형** 이 된다(reviewer). 반대로 backfill
+        분을 빼면 그 파일이 영구 미커밋으로 남아 배포(areas union·draft ignore)가 무력화되므로,
+        "썼으면 싣는다" 가 정확한 조건이다. 파일 부재 시엔 붙이지 않는다(`add` rc=128 fatal 방지).
     반환이 비면 커밋할 스코프가 없다는 뜻(호출부가 no-op 으로 처리).
     """
     rels: list[str] = list(git_scope_pathspec(
         board_root(), paths, exclude_prefixes=_BOARD_GIT_SCOPE_EXCLUDE))
-    if gitattributes:
-        attrs = _board_git_relpath(board_root() / ".gitattributes")
-        if attrs and attrs not in rels and (board_root() / ".gitattributes").is_file():
-            rels.append(attrs)
+    for name in root_files:
+        rel = _board_git_relpath(board_root() / name)
+        if rel and rel not in rels and (board_root() / name).is_file():
+            rels.append(rel)
     return tuple(rels)
 
 
@@ -4593,8 +4926,11 @@ def _board_git_stageable(pathspec: Sequence[str]) -> tuple[str, ...]:
     return git_scope_stageable(board_root(), pathspec, run_git=_board_git_rc_out)
 
 
-def _board_git_stage_and_commit(message: str,
-                                paths: Sequence[Path] | None = None) -> bool:
+def _board_git_stage_and_commit(
+        message: str, paths: Sequence[Path] | None = None, *,
+        root_files_written: list[str] | None = None,
+        root_files_snapshot: _BoardGitRootFilesSnapshot | None = None,
+) -> bool:
     """이 mutation 이 만진 **경로만** stage+commit 한다.
 
     `paths` = 그 mutation 이 만들거나 옮긴 파일들(절대 경로). `git add -A -- <경로>` +
@@ -4613,22 +4949,34 @@ def _board_git_stage_and_commit(message: str,
     못 잡으면 rc 가 애매한데, claim 은 "커밋을 못 내면 거짓 소유"라 커밋 *사실* 을
     확인해야 한다. 반환 True = 새 commit 생성.
 
-    stage 직전 `areas.md merge=union` 배포를 멱등 보강한다. **이번 호출이 실제로
-    보강했을 때만** `.gitattributes` 를 pathspec 에 넣는다 — 무조건 넣으면 사용자가 편집 중인
-    `.gitattributes` 를 이 mutation 이 대신 커밋한다(이 티켓이 닫는 누출과 동형).
+    stage 직전 board 루트 배포 파일(`areas.md merge=union` 선언 · draft 격리 `.gitignore`)을 멱등
+    보강한다. **이번 호출이 실제로 보강한 파일만** pathspec 에 넣는다 — 무조건 넣으면 사용자가
+    편집 중인 그 파일을 이 mutation 이 대신 커밋한다(스코프 커밋이 닫는 누출과 동형).
     """
-    wrote_gitattributes = _ensure_board_gitattributes()
+    wrote_root_files = _ensure_board_root_files()
+    if root_files_written is not None:
+        root_files_written.extend(wrote_root_files)
+    if root_files_snapshot is not None:
+        root_files_snapshot.backfilled.extend(wrote_root_files)
+
+    def _capture_staged_root_index() -> None:
+        if root_files_snapshot is not None:
+            root_files_snapshot.staged_index = _board_git_index_snapshot(
+                (), root_files=wrote_root_files)
+
     before = _board_git_head()
     if paths is None:
         _board_git(["add", "-A", "--", *_BOARD_GIT_DRAFT_PATHSPEC])
+        _capture_staged_root_index()
         _board_git(["commit", "-m", message])
     else:
         pathspec = _board_git_stageable(
-            _board_git_scope_pathspec(paths, gitattributes=wrote_gitattributes))
+            _board_git_scope_pathspec(paths, root_files=wrote_root_files))
         if not pathspec:
             return False  # 커밋할 스코프 없음(전부 board 밖·draft·미존재) — no-op.
         git_scope_stage_and_commit(board_root(), message, pathspec,
-                                   run_git=_board_git_rc_out)
+                                   run_git=_board_git_rc_out,
+                                   after_stage=_capture_staged_root_index)
     return _board_git_head() != before
 
 
@@ -4638,7 +4986,10 @@ class _BoardGitUncommittedScope(NamedTuple):
     recovery_paths: tuple[str, ...] = ()
 
 
-def _board_git_uncommitted_scope(paths: Sequence[Path] | None) -> _BoardGitUncommittedScope:
+def _board_git_uncommitted_scope(
+        paths: Sequence[Path] | None, *,
+        root_files: Sequence[str] = (),
+) -> _BoardGitUncommittedScope:
     """이번 mutation 경로에 남은 board-git 변경만 반환한다.
 
     best-effort가 local commit을 못 만든 경우, board 전체 dirty를 진단에 쓰면 다른 ticket의
@@ -4648,28 +4999,22 @@ def _board_git_uncommitted_scope(paths: Sequence[Path] | None) -> _BoardGitUncom
     """
     if paths is None:
         return _BoardGitUncommittedScope()
-    pathspec = _board_git_scope_pathspec(paths)
+    pathspec = _board_git_scope_pathspec(paths, root_files=root_files)
     if not pathspec:
         return _BoardGitUncommittedScope()
-    # `.gitattributes`는 이 호출이 `_ensure_board_gitattributes()`로 새로 만들면 실제 stage
-    # 대상이 된다. status에는 함께 넣되, staged 상태일 때만 recovery pathspec에도 보탠다.
-    status_paths = [*pathspec]
-    if ".gitattributes" not in status_paths:
-        status_paths.append(".gitattributes")
     try:
         result = _board_git([
-            "status", "--porcelain", "-z", "--untracked-files=all", "--", *status_paths,
+            "status", "--porcelain", "-z", "--untracked-files=all", "--", *pathspec,
         ])
     except Exception:  # noqa: BLE001 — 진단 실패가 best-effort mutation을 막으면 안 된다.
         return _BoardGitUncommittedScope()
     if result.returncode != 0:
         return _BoardGitUncommittedScope()
     entries = git_parse_porcelain_z(result.stdout)
-    recovery = list(pathspec)  # porcelain rename의 새 경로만으로 old 삭제를 잃지 않는다.
-    if any(path == ".gitattributes" and code[0] not in (" ", "?")
-           for code, path in entries):
-        recovery.append(".gitattributes")
-    return _BoardGitUncommittedScope(entries, tuple(recovery))
+    # pathspec 자체를 보존해야 porcelain rename의 새 경로만으로 old 삭제를 잃지 않는다.
+    # root_files 는 이번 commit funnel 이 실제 쓴 이름만 오므로 빈 ticket pathspec인 첫 draft도
+    # 정확히 진단하면서, 이미 정합인 루트 파일/사용자 WIP는 이번 실패 범위에 끌어오지 않는다.
+    return _BoardGitUncommittedScope(entries, tuple(pathspec))
 
 
 def _warn_board_git_local_commit_failed(message: str,
@@ -4753,14 +5098,17 @@ def _board_git_sync_best_effort_locked(message: str,
               file=sys.stderr)
         return False
     committed = False
+    wrote_root_files: list[str] = []
     try:
-        committed = _board_git_stage_and_commit(message, paths)
+        committed = _board_git_stage_and_commit(
+            message, paths, root_files_written=wrote_root_files)
         if not committed:
             # False 자체는 scope가 없거나 변경이 이미 없는 정상 no-op일 수 있다. 하지만 이번
             # mutation 경로가 아직 staged/unstaged/untracked면 HEAD 불변은 local commit 실패다.
             # 이 상태에서 push가 rc=0(up-to-date)을 내도 파일은 remote에 없으므로, "보존·다음
             # mutation catch-up"이라고 말하거나 pull/push를 계속하면 false-success가 된다.
-            uncommitted = _board_git_uncommitted_scope(paths)
+            uncommitted = _board_git_uncommitted_scope(
+                paths, root_files=wrote_root_files)
             if uncommitted.entries:
                 _warn_board_git_local_commit_failed(message, uncommitted)
                 return False
@@ -4773,7 +5121,8 @@ def _board_git_sync_best_effort_locked(message: str,
         pull = None if _board_git_has_tracked_changes() else _board_git_pull_rebase()
         push = _board_git_push() if (pull is None or pull.returncode == 0) else None
     except Exception as exc:  # noqa: BLE001 — fail-soft: best-effort sync 는 절대 작업을 막지 않는다.
-        uncommitted = _board_git_uncommitted_scope(paths)
+        uncommitted = _board_git_uncommitted_scope(
+            paths, root_files=wrote_root_files)
         if uncommitted.entries:
             _warn_board_git_local_commit_failed(message, uncommitted, exc)
             return False
@@ -5001,7 +5350,27 @@ class _ClaimFiles(NamedTuple):
     original: bytes  # 이동 전 파일 바이트(claimed_by/claimed_at 갱신 전)
 
 
-def _board_git_index_snapshot(paths: Sequence[Path]) -> dict[str, tuple[str, str]] | None:
+def _board_git_index_pathspec(paths: Sequence[Path], *,
+                              root_files: Sequence[str] = ()) -> tuple[str, ...]:
+    """index snapshot/restore pathspec — 부재한 루트 파일도 이름으로 포함한다.
+
+    일반 commit pathspec 은 실제로 쓴 루트 파일만 받지만, rollback 사전 스냅샷은 아직 생성되지
+    않은 파일의 **부재**도 기억해야 한다. 그래서 존재 여부로 거르는
+    `_board_git_scope_pathspec(..., root_files=...)` 와 별도인 이 작은 경계를 둔다.
+    """
+    rels = list(_board_git_scope_pathspec(paths))
+    for name in root_files:
+        if name not in _BOARD_GIT_ROOT_FILES:
+            continue
+        rel = _board_git_relpath(board_root() / name)
+        if rel and rel not in rels:
+            rels.append(rel)
+    return tuple(rels)
+
+
+def _board_git_index_snapshot(
+        paths: Sequence[Path], *, root_files: Sequence[str] = (),
+) -> dict[str, tuple[str, str]] | None:
     """대상 경로들의 **index 항목** 을 그대로 캡처 — `{경로: (mode, blob sha)}`.
 
     롤백이 "미커밋 작업을 상태·내용 그대로 보존" 하려면 무관 파일뿐 아니라 **claim 대상 파일
@@ -5016,7 +5385,7 @@ def _board_git_index_snapshot(paths: Sequence[Path]) -> dict[str, tuple[str, str
     **캡처 실패는 None** — 파싱 불가·unmerged(stage≠0) 항목처럼 정확 복원을 보장할 수 없으면
     조용히 다른 상태로 만들지 말고 호출부가 보수적 현행 동작(+loud 경고)으로 가게 한다.
     """
-    pathspec = _board_git_scope_pathspec(paths)
+    pathspec = _board_git_index_pathspec(paths, root_files=root_files)
     if not pathspec:
         return {}
     try:
@@ -5041,7 +5410,8 @@ def _board_git_index_snapshot(paths: Sequence[Path]) -> dict[str, tuple[str, str
 
 
 def _board_git_restore_index(paths: Sequence[Path],
-                             snapshot: dict[str, tuple[str, str]]) -> bool:
+                             snapshot: dict[str, tuple[str, str]], *,
+                             root_files: Sequence[str] = ()) -> bool:
     """캡처한 index 상태로 되돌린다 (`update-index`) — 전부 성공해야 True.
 
     항목이 있던 경로는 `--cacheinfo <mode>,<sha>,<path>` 로 **그 blob 그대로** 되꽂고(그래서
@@ -5050,7 +5420,7 @@ def _board_git_restore_index(paths: Sequence[Path],
     둘을 합치면 `git status` 출력이 claim 직전과 같아진다.
     """
     ok = True
-    for rel in _board_git_scope_pathspec(paths):
+    for rel in _board_git_index_pathspec(paths, root_files=root_files):
         entry = snapshot.get(rel)
         if entry is not None:
             mode, blob = entry
@@ -5125,7 +5495,9 @@ def _board_git_refresh_after_rollback() -> None:
 
 def _board_git_claim_rollback(anchor: str, files: _ClaimFiles,
                               claim_commit: str | None = None,
-                              index_snapshot: dict[str, tuple[str, str]] | None = None) -> None:
+                              index_snapshot: dict[str, tuple[str, str]] | None = None,
+                              root_files_snapshot: _BoardGitRootFilesSnapshot | None = None,
+                              ) -> None:
     """claim 을 **그 claim 이 만진 것만** 되돌린다 (절대 throw 금지).
 
     시점별로 하는 일이 다른데, 규칙은 하나다 — *내가 만든 것만* 되돌린다:
@@ -5138,10 +5510,11 @@ def _board_git_claim_rollback(anchor: str, files: _ClaimFiles,
         아예 부르지 않는다.
       - **rebase 충돌**: prefetch 단계라 로컬 mutation 이 0 — 롤백 대상 자체가 없다.
 
-    `index_snapshot` = claim 직전 대상 경로들의 index 항목(`_board_git_index_snapshot`). 파일
-    내용뿐 아니라 **index 상태까지** 되돌려야 "미커밋 작업을 상태 그대로 보존" 이 claim 대상
-    파일 자신에도 성립한다 — 옛 코드는 무조건 `add -A` 라 unstaged/untracked 였던 티켓을
-    staged 로 바꿨다(codex must-fix).
+    `index_snapshot` = claim 직전 티켓 + board 루트 파일의 index 항목
+    (`_board_git_index_snapshot`). `root_files_snapshot` 은 같은 루트 파일의 워킹트리 상태다.
+    둘을 함께 되돌려야 새로 만든 파일이 `A ` 또는 `??` 로, 기존 파일의 append 가 ` M` 으로
+    남아 다음 claim 을 막는 영구 잔여가 생기지 않는다. 티켓 경로도 파일 내용뿐 아니라
+    **index 상태까지** 되돌려 "미커밋 작업을 상태 그대로 보존" 한다.
 
     **어떤 git/IO 호출이 throw 해도 예외를 삼킨다** — confirm 이 "loser 는 깨끗한
     race-lost rc=1·never traceback" 을 어기지 않도록. 복원이 불완전해도 claim 을 *확정하지
@@ -5153,22 +5526,66 @@ def _board_git_claim_rollback(anchor: str, files: _ClaimFiles,
             _board_git(["reset", "--soft", anchor])
     with contextlib.suppress(Exception):
         _board_git_restore_claim_files(files)
+    restored_root_files: tuple[str, ...] = ()
     with contextlib.suppress(Exception):
-        _board_git_restore_claim_index((files.old, files.new), index_snapshot)
+        restored_root_files = _board_git_restore_root_files(root_files_snapshot)
+    safe_root_indexes: tuple[str, ...] = ()
+    with contextlib.suppress(Exception):
+        safe_root_indexes = _board_git_root_indexes_safe_to_restore(
+            index_snapshot, root_files_snapshot, restored_root_files)
+    with contextlib.suppress(Exception):
+        _board_git_restore_claim_index(
+            (files.old, files.new), index_snapshot, root_files=safe_root_indexes)
     _board_git_refresh_after_rollback()
 
 
+def _board_git_root_indexes_safe_to_restore(
+        before_index: dict[str, tuple[str, str]] | None,
+        root_snapshot: _BoardGitRootFilesSnapshot | None,
+        root_files: Sequence[str],
+) -> tuple[str, ...]:
+    """현재 index가 원본/engine-stage 중 하나인 실제 backfill 파일만 복원 허용한다."""
+    if not root_files:
+        return ()
+    if before_index is None or root_snapshot is None or root_snapshot.staged_index is None:
+        print("  ⚠ board rollback 이 루트 파일 index의 제3자 변경 여부를 확인하지 못해 "
+              "덮어쓰지 않았다. `git -C .project_manager/board status` 로 확인하라.",
+              file=sys.stderr)
+        return ()
+    current = _board_git_index_snapshot((), root_files=root_files)
+    if current is None:
+        print("  ⚠ board rollback 이 현재 루트 파일 index를 읽지 못해 덮어쓰지 않았다. "
+              "`git -C .project_manager/board status` 로 확인하라.", file=sys.stderr)
+        return ()
+    safe: list[str] = []
+    for name in root_files:
+        rel = _board_git_relpath(board_root() / name)
+        if rel is None:
+            continue
+        now = current.get(rel)
+        before = before_index.get(rel)
+        staged = root_snapshot.staged_index.get(rel)
+        if now == before or now == staged:
+            safe.append(name)
+            continue
+        print(f"  ⚠ board rollback 이 스냅샷 이후 제3자 index 변경을 보존했다: {rel} "
+              "(engine stage/원본 어느 쪽과도 달라 덮어쓰지 않음).", file=sys.stderr)
+    return tuple(safe)
+
+
 def _board_git_restore_claim_index(paths: Sequence[Path],
-                                   snapshot: dict[str, tuple[str, str]] | None) -> None:
-    """대상 두 경로의 index 를 **claim 직전 스냅샷**으로 되돌린다 (실패는 loud·조용한 변조 금지).
+                                   snapshot: dict[str, tuple[str, str]] | None, *,
+                                   root_files: Sequence[str] = ()) -> None:
+    """티켓·루트 파일 index 를 **claim 직전 스냅샷**으로 되돌린다 (실패는 loud).
 
     스냅샷이 없거나(캡처 실패) 복원이 실패하면 현행 동작(`add -A -- <두 경로>`)으로 폴백해
     index 를 최소한 워킹트리와 일치시키되, **그 사실을 loud 하게 알린다** — claim 대상 파일이
     staged 로 바뀔 수 있다는 뜻이라 사용자가 모르면 안 된다(조용히 다른 상태로 만들지 않는다).
     """
-    if snapshot is not None and _board_git_restore_index(paths, snapshot):
+    if snapshot is not None and _board_git_restore_index(
+            paths, snapshot, root_files=root_files):
         return
-    print("  ⚠ board index 상태를 claim 직전으로 정확히 되돌리지 못했다 — 그 티켓 경로가 "
+    print("  ⚠ board index 상태를 claim 직전으로 정확히 되돌리지 못했다 — 티켓/루트 경로가 "
           "staged 로 남을 수 있다(내용은 보존됨). `git -C .project_manager/board status` 로 "
           "확인하고 필요하면 `git -C .project_manager/board reset -- <경로>` 로 unstage 하라.",
           file=sys.stderr)
@@ -5182,7 +5599,7 @@ def _board_git_claim_confirm(anchor: str | None, files: _ClaimFiles) -> bool:
 
     board 가 별도 git 이 아니거나 prefetch 가 sync 를 비활성(`""`)으로 판단했으면 True
     (로컬 atomic-rename 만으로 확정·legacy 무변경). 별도 git 이고 유효 anchor 면:
-      1. commit(**그 티켓 두 경로 + `.gitattributes`**) — 로컬 claim 박제. **새 commit 을 못
+      1. commit(**그 티켓 두 경로 + 이번에 보강한 board 루트 파일**) — 로컬 claim 박제. **새 commit 을 못
          내면**(identity 부재·hook·nothing-to-commit) push 가 "up-to-date" rc=0 을 내 remote
          미전파인데 확정될 수 있다(거짓 소유) → 즉시 rollback + False.
       2. push — rc=0 이어야 *비로소* 소유 확정(원격 ref FF = CAS·조율 권위).
@@ -5199,15 +5616,21 @@ def _board_git_claim_confirm(anchor: str | None, files: _ClaimFiles) -> bool:
     if not _board_git_enabled() or not anchor:
         return True  # sync 비활성(legacy·anchor 없음) — 로컬 rename 만으로 확정(무변경).
     paths = (files.old, files.new)
-    index_snapshot = _board_git_index_snapshot(paths)
+    index_snapshot = _board_git_index_snapshot(paths, root_files=_BOARD_GIT_ROOT_FILES)
+    root_files_snapshot = _board_git_root_files_snapshot()
     try:
-        committed = _board_git_stage_and_commit("claim", paths)
+        committed = _board_git_stage_and_commit(
+            "claim", paths, root_files_snapshot=root_files_snapshot)
     except Exception:  # noqa: BLE001 — fail-soft: 어떤 sync 예외도 거짓 확정을 만들지 않는다.
-        _board_git_claim_rollback(anchor, files, index_snapshot=index_snapshot)
+        _board_git_claim_rollback(
+            anchor, files, index_snapshot=index_snapshot,
+            root_files_snapshot=root_files_snapshot)
         return False
     if not committed:
         # commit 이 새 commit 을 못 냄 → push rc=0(up-to-date)이 거짓 확정을 낼 수 있다.
-        _board_git_claim_rollback(anchor, files, index_snapshot=index_snapshot)
+        _board_git_claim_rollback(
+            anchor, files, index_snapshot=index_snapshot,
+            root_files_snapshot=root_files_snapshot)
         return False
     claim_commit = _board_git_head()
     try:
@@ -5220,11 +5643,13 @@ def _board_git_claim_confirm(anchor: str | None, files: _ClaimFiles) -> bool:
             print("  ⚠ board push 응답이 끊겼으나(timeout) 원격 브랜치가 이 claim 커밋을 이미 "
                   "포함 — 소유 확정(롤백하지 않는다·고아 claim 방지).", file=sys.stderr)
             return True
-        _board_git_claim_rollback(anchor, files, claim_commit, index_snapshot)
+        _board_git_claim_rollback(
+            anchor, files, claim_commit, index_snapshot, root_files_snapshot)
         return False
     if push.returncode == 0:
         return True
-    _board_git_claim_rollback(anchor, files, claim_commit, index_snapshot)
+    _board_git_claim_rollback(
+        anchor, files, claim_commit, index_snapshot, root_files_snapshot)
     return False
 
 
@@ -8858,18 +9283,24 @@ def cmd_new(args: argparse.Namespace) -> int:
     if is_draft:
         # draft 는 STATUS_DIRS 밖(drafts_dir())에 있어 board.md(STATUS_DIRS 스캔)에도, 다른
         # slot 의 board-git pull/handoff 에도 나타나지 않는다 — 로컬 `board.py show <id>` 로만
-        # 조회 가능(`find_ticket` 이 drafts_dir() 폴백으로 찾는다). board-git sync 자체를
-        # 부르지 않는다(draft 는 STATUS_DIRS 밖이라 다른 mutation 의 `git add -A` pathspec
-        # exclude 와 별개로 이미 board_root 스캔에 걸리지 않지만, 명시적으로 skip).
+        # 조회 가능(`find_ticket` 이 drafts_dir() 폴백으로 찾는다). draft **파일**은 기존 금지
+        # pathspec 으로 계속 커밋하지 않되, sync funnel 은 한 번 태운다. 그래야 `.gitignore` 없는
+        # board 의 첫 mutation 이 바로 draft 인 경우에도 루트 backfill 이 commit/push 되어, 방금
+        # 만든 draft 가 handoff dirty 관측에 untracked 로 남는 창이 없다.
         print(f"  ⚠ draft — board-git 미커밋(공유 board 오염 방지): "
               f"미충전(placeholder/thin) 본문. 본문을 채운 뒤 "
               f"`board.py promote {tid}` 로 승격(open/ 이동 + board-git 커밋)하라.",
               file=sys.stderr)
-        return 0
-    refresh_board()
-    ready = _board_git_sync_best_effort(f"new {tid}", (path,))
+    else:
+        refresh_board()
+    sync_needed = not is_draft or _board_git_root_files_need_backfill()
+    ready = True
+    if sync_needed:
+        sync_label = f"new {tid} draft isolation" if is_draft else f"new {tid}"
+        ready = _board_git_sync_best_effort(sync_label, (path,))
     if not ready:
-        print("  ⚠ board-git 부기 보류: local-only/uncommitted", file=sys.stderr)
+        label = "draft 격리 부기" if is_draft else "부기"
+        print(f"  ⚠ board-git {label} 보류: local-only/uncommitted", file=sys.stderr)
     return 0
 
 

@@ -38,8 +38,8 @@ _GIT_IDENTITY = {
 }
 
 
-def _load_board():
-    spec = importlib.util.spec_from_file_location("board", TOOLS / "board.py")
+def _load_tool(name: str):
+    spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -92,7 +92,7 @@ def _make_board_git(root: Path, *, remote: Path) -> Path:
 
 @pytest.fixture
 def board(tmp_path, monkeypatch):
-    mod = _load_board()
+    mod = _load_tool("board")
     monkeypatch.setattr(mod, "REPO", tmp_path)
     lock = tmp_path / ".project_manager" / ".local" / "board.lock"
     monkeypatch.setattr(mod, "BOARD_LOCK", lock)
@@ -124,28 +124,93 @@ def test_new_placeholder_body_not_committed_to_board_git(board, tmp_path, capsys
 
     rc = board.cmd_new(_new_args("어떤 제목"))
     assert rc == 0
-    out = capsys.readouterr().out + capsys.readouterr().err
+    captured = capsys.readouterr()
+    out = captured.out + captured.err
 
     open_files = list((board_dir / "tickets" / "open").glob("T-*-*.md"))
     assert not open_files, "draft 가 STATUS_DIRS 대상인 open/ 에 있으면 안 된다(격리 위반)."
     draft_files = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))
     assert draft_files, "draft 는 drafts_dir()(tickets/.drafts/)엔 존재해야 한다."
 
-    # 순수 `git status --porcelain`(exclude 없음)은 draft 를 untracked(`??`)로 보여준다 —
-    # 이건 정상(파일이 board_root 안에 물리적으로 있으므로). "커밋 안 됐다"만 확인한다.
+    # 첫 mutation 이 draft 여도 sync funnel 이 루트 ignore backfill 을 즉시 commit/push 한다.
+    # draft 파일은 계속 commit 대상이 아니지만 이제 일반 status/handoff 관측에서도 사라져야 한다.
     status = _git(["status", "--porcelain"], board_dir).stdout
-    assert status.strip(), "미충전 draft 가 board-git 에 이미 커밋됨 — 게이트 누출."
-    assert "?? tickets/.drafts/" in status, \
-        f"draft 가 예상과 다른 형태로 나타남: {status!r}"
+    assert status.strip() == "", f"첫 draft 생성 뒤 dirty 잔여가 남음: {status!r}"
+    head_files = _git(["ls-tree", "-r", "--name-only", "HEAD"], board_dir).stdout
+    assert ".gitignore" in head_files
+    assert "tickets/.drafts/" not in head_files, "ignore backfill 커밋에 draft 자체가 유출됨."
+    remote_files = _git(["ls-tree", "-r", "--name-only", "main"], bare).stdout
+    assert ".gitignore" in remote_files, "첫 draft 경로에서 ignore backfill 이 push 되지 않음."
 
     # dirty *판정용* 헬퍼(`_board_git_status_porcelain` — claim prefetch 가 쓴다)는 draft 를
     # pathspec exclude 하므로 clean 으로 봐야 한다(무관 claim 이 draft 때문에 막히면 안 됨).
     assert not board._board_git_status_porcelain().strip(), (
         "_board_git_status_porcelain 이 draft 를 dirty 로 오판함 — 무관 claim 이 막힐 위험.")
 
+    handoff = _load_tool("pm_handoff")
+    assert handoff._dirty_paths_in_tree(str(board_dir), handoff._module_run_git) == [], \
+        "cmd_new→draft 뒤 handoff 실제 dirty seam 이 draft 잔여를 검출함."
+
     log = _git(["log", "--oneline"], board_dir).stdout
     assert "board init" in log
-    assert len(log.strip().splitlines()) == 1, "draft 가 board-git 에 커밋되면 안 된다."
+    assert len(log.strip().splitlines()) == 2, "첫 draft 의 루트 backfill 커밋이 정확히 1개여야 한다."
+
+
+@requires_git
+def test_first_draft_root_backfill_commit_failure_is_loud_and_pending(
+        board, tmp_path, capsys):
+    """빈 draft pathspec이어도 실제 작성한 루트 파일의 commit 실패를 성공으로 숨기지 않는다."""
+    bare = tmp_path / "bare-first-draft-commit-fail"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    board_dir = _make_board_git(tmp_path, remote=bare)
+    head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
+    hook = board_dir / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+    assert board.cmd_new(_new_args("commit 실패 draft")) == 0
+
+    captured = capsys.readouterr()
+    err = captured.err
+    assert _git(["rev-parse", "HEAD"], board_dir).stdout.strip() == head_before
+    status = _git([
+        "status", "--porcelain", "--", ".gitattributes", ".gitignore",
+    ], board_dir).stdout
+    assert "A  .gitattributes" in status and "A  .gitignore" in status, status
+    assert "board local commit 실패" in err, err
+    assert ".gitattributes" in err and ".gitignore" in err, err
+    assert "draft 격리 부기 보류: local-only/uncommitted" in err, err
+    remote_files = _git(["ls-tree", "-r", "--name-only", "main"], bare).stdout
+    assert ".gitattributes" not in remote_files and ".gitignore" not in remote_files
+
+
+@requires_git
+def test_second_draft_with_deployed_root_rules_never_contacts_remote(
+        board, tmp_path, monkeypatch, capsys):
+    """보강할 루트 규칙이 없으면 두 번째 draft는 pull/push sync funnel을 열지 않는다."""
+    bare = tmp_path / "bare-noop-draft"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    board_dir = _make_board_git(tmp_path, remote=bare)
+    assert board.cmd_new(_new_args("첫 번째")) == 0
+    capsys.readouterr()
+    head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
+    remote_calls: list[str] = []
+
+    def _unexpected_remote(op: str):
+        def _call():
+            remote_calls.append(op)
+            raise AssertionError(f"두 번째 draft가 원격 {op}를 호출함")
+        return _call
+
+    monkeypatch.setattr(board, "_board_git_pull_rebase", _unexpected_remote("pull"))
+    monkeypatch.setattr(board, "_board_git_push", _unexpected_remote("push"))
+
+    assert board.cmd_new(_new_args("두 번째")) == 0
+
+    assert remote_calls == []
+    assert _git(["rev-parse", "HEAD"], board_dir).stdout.strip() == head_before
+    assert len(list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))) == 2
+    assert "board sync 보류" not in capsys.readouterr().err
 
 
 @requires_git
@@ -158,11 +223,12 @@ def test_promote_rejects_still_placeholder(board, tmp_path):
     board.cmd_new(_new_args("제목"))
     tid = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0].name.split("-", 2)
     ticket_id = f"{tid[0]}-{tid[1]}"
+    head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
 
     rc = board.cmd_promote(argparse.Namespace(id=ticket_id))
     assert rc == 1
-    log = _git(["log", "--oneline"], board_dir).stdout
-    assert len(log.strip().splitlines()) == 1, "거부된 promote 가 커밋을 남기면 안 된다."
+    assert _git(["rev-parse", "HEAD"], board_dir).stdout.strip() == head_before, \
+        "거부된 promote 가 추가 커밋을 남기면 안 된다."
     assert list((board_dir / "tickets" / ".drafts").glob("T-*-*.md")), \
         "거부된 promote 후 draft 파일이 drafts_dir() 에 남아있어야 한다(이동 없음)."
     assert not list((board_dir / "tickets" / "open").glob("T-*-*.md")), \
@@ -201,7 +267,8 @@ def test_promote_commits_when_body_filled(board, tmp_path):
         "승격된 티켓이 open/ 으로 이동 안 됨."
     log = _git(["log", "--oneline"], board_dir).stdout
     lines = log.strip().splitlines()
-    assert len(lines) == 2, "채운 본문의 promote 는 board-git 에 새 commit 을 남겨야 한다."
+    assert len(lines) == 3, \
+        "board init + 첫 draft 격리 backfill + promote 커밋이 각각 하나여야 한다."
     assert any("promote" in ln for ln in lines)
     # `-z` 로 NUL 구분 raw 경로를 받는다 — 기본 `ls-tree` 는 non-ASCII(한글) 파일명을
     # core.quotepath 8진 이스케이프로 quote 해 문자열 포함 비교가 깨진다.

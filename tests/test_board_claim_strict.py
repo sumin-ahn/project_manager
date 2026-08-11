@@ -101,13 +101,15 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
 
 
 def _make_board_git(root: Path, *, remote: Path, tid: str = "T-0001",
-                    gitattributes: bool = True) -> Path:
+                    gitattributes: bool = True, gitignore: bool = True) -> Path:
     """`<root>/.project_manager/board/` 에 실 board git 을 만든다 (tickets/ + areas + remote).
 
     `notes.md` 는 **추적 파일**이다 — unstaged dirty 3종 모사에 필요하다(untracked 만으로는
-    `pull --rebase` 가 성공해 잔여 차단 경로를 못 탄다). `.gitattributes` 는 기본으로 seed 해
-    (pm_import seed 형상) 커밋 스코프 단언에 backfill 잡음이 섞이지 않게 한다 — backfill 자체는
-    `test_gitattributes_backfill_rides_scoped_claim_commit` 이 따로 본다.
+    `pull --rebase` 가 성공해 잔여 차단 경로를 못 탄다). board 루트 배포 파일
+    (`.gitattributes`·`.gitignore`)은 기본으로 seed 해 **이미 배포된 board** 형상을 만든다 —
+    커밋 스코프 단언에 backfill 잡음이 섞이지 않게 하기 위해서다. backfill 자체는
+    `test_gitattributes_backfill_rides_scoped_claim_commit`(areas union)과
+    `test_board_draft_gitignore.py`(draft ignore)가 따로 본다.
     """
     board = root / ".project_manager" / "board"
     for status in ("open", "claimed", "blocked", "done"):
@@ -120,6 +122,8 @@ def _make_board_git(root: Path, *, remote: Path, tid: str = "T-0001",
     (board / "notes.md").write_text("original\n", encoding="utf-8")
     if gitattributes:
         (board / ".gitattributes").write_text("areas.md merge=union\n", encoding="utf-8")
+    if gitignore:
+        (board / ".gitignore").write_text("tickets/.drafts/\n", encoding="utf-8")
     _git(["init", "-q", "-b", "main"], board)
     _git(["remote", "add", "origin", str(remote)], board)
     _git(["add", "-A"], board)
@@ -390,6 +394,161 @@ def test_rollback_preserves_claim_target_index_state(board, tmp_path, monkeypatc
         f"롤백이 claim 대상 파일의 index 상태를 바꿈({target_state}): "
         f"{before} → {_porcelain(board_dir)}")
     assert ticket.read_bytes() == body_before, "롤백이 대상 파일 내용을 바꿈."
+
+
+@requires_git
+@pytest.mark.parametrize("failure", ["commit", "push-rejected", "push-exception"])
+def test_rollback_restores_absent_board_root_files(
+        board, tmp_path, monkeypatch, failure):
+    """strict 실패 3경로 모두 backfill 루트 파일을 index·워킹트리에서 정확히 걷어낸다."""
+    bare = _bare(tmp_path, f"bare-root-rb-{failure}")
+    board_dir = _make_board_git(
+        tmp_path, remote=bare, gitattributes=False, gitignore=False)
+    root_names = (".gitattributes", ".gitignore")
+    assert all(not (board_dir / name).exists() for name in root_names)
+
+    if failure == "commit":
+        hook = board_dir / ".git" / "hooks" / "pre-commit"
+        hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+    elif failure == "push-rejected":
+        monkeypatch.setattr(
+            board, "_board_git_push",
+            _racing_push(board, tmp_path, bare, name="root-rb-other"))
+    else:
+        def _timeout():
+            raise subprocess.TimeoutExpired(cmd="git push", timeout=30)
+        monkeypatch.setattr(board, "_board_git_push", _timeout)
+
+    assert board.cmd_claim(_claim_args()) == 1, f"{failure} 실패인데 claim 이 확정됨."
+
+    assert all(not (board_dir / name).exists() for name in root_names), \
+        f"{failure} rollback 뒤 backfill 파일이 워킹트리에 남음."
+    after = _porcelain(board_dir)
+    assert not any(name in after for name in root_names), \
+        f"{failure} rollback 뒤 루트 파일이 staged/untracked 잔여로 남음: {after}"
+    assert list((board_dir / "tickets" / "open").glob("T-0001-*.md")), \
+        f"{failure} rollback 이 티켓을 open 으로 복원하지 못함."
+
+
+@requires_git
+def test_rollback_restores_preexisting_clean_gitattributes(
+        board, tmp_path, monkeypatch):
+    """선재 clean `.gitattributes` backfill도 push rollback 뒤 원래 bytes/index로 돌아간다."""
+    bare = _bare(tmp_path, "bare-root-rb-existing")
+    board_dir = _make_board_git(tmp_path, remote=bare, gitattributes=False)
+    attrs = board_dir / ".gitattributes"
+    original = b"*.md text eol=lf\n"
+    attrs.write_bytes(original)
+    _git(["add", "--", ".gitattributes"], board_dir)
+    _git(["commit", "-qm", "seed custom attributes"], board_dir)
+    _git(["push", "-q", "origin", "main"], board_dir)
+    monkeypatch.setattr(
+        board, "_board_git_push",
+        _racing_push(board, tmp_path, bare, name="root-rb-existing-other"))
+
+    assert board.cmd_claim(_claim_args()) == 1
+
+    assert attrs.read_bytes() == original, "rollback 뒤 engine append 가 워킹트리에 남음."
+    assert ".gitattributes" not in _porcelain(board_dir), \
+        f"rollback 뒤 선재 루트 파일 index 상태가 dirty: {_porcelain(board_dir)}"
+
+
+@requires_git
+def test_rollback_does_not_restore_root_file_without_backfill(
+        board, tmp_path, capsys):
+    """이미 정합해 실제 backfill하지 않은 루트 파일은 실패 hook의 후속 편집을 보존한다."""
+    bare = _bare(tmp_path, "bare-root-rb-no-backfill")
+    board_dir = _make_board_git(tmp_path, remote=bare)
+    attrs = board_dir / ".gitattributes"
+    hook_line = "# hook-owned-after-snapshot\n"
+    hook = board_dir / ".git" / "hooks" / "pre-commit"
+    hook.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s' '{hook_line.rstrip()}' >> .gitattributes\n"
+        "git add -- .gitattributes\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+
+    assert board.cmd_claim(_claim_args()) == 1
+
+    assert hook_line.strip() in attrs.read_text(encoding="utf-8"), \
+        "실제 backfill하지 않은 .gitattributes를 rollback이 스냅샷으로 덮어씀."
+    assert ".gitattributes" in _porcelain(board_dir), \
+        "실패 hook의 루트 파일 index/워킹트리 변경이 rollback에서 사라짐."
+    assert "claim race lost" in capsys.readouterr().err
+
+
+@requires_git
+def test_rollback_preserves_and_warns_on_post_backfill_root_edit(
+        board, tmp_path, capsys):
+    """실제 backfill 파일도 snapshot 이후 제3자 bytes/index면 보존하고 loud 경고한다."""
+    bare = _bare(tmp_path, "bare-root-rb-third-party")
+    board_dir = _make_board_git(tmp_path, remote=bare, gitattributes=False)
+    attrs = board_dir / ".gitattributes"
+    hook_line = "# third-party-after-backfill\n"
+    hook = board_dir / ".git" / "hooks" / "pre-commit"
+    hook.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s' '{hook_line.rstrip()}' >> .gitattributes\n"
+        "git add -- .gitattributes\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+
+    assert board.cmd_claim(_claim_args()) == 1
+
+    text = attrs.read_text(encoding="utf-8")
+    assert "areas.md merge=union" in text, "engine backfill 자체가 예상 밖으로 사라짐."
+    assert hook_line.strip() in text, "snapshot 이후 제3자 편집을 rollback이 덮어씀."
+    assert ".gitattributes" in _porcelain(board_dir), \
+        "보존해야 할 제3자 루트 파일 변경이 index/워킹트리에서 사라짐."
+    err = capsys.readouterr().err
+    assert "스냅샷 이후 제3자 변경을 보존했다" in err, err
+    assert "덮어쓰지 않음" in err, err
+
+
+@requires_git
+def test_rollback_warns_when_root_file_snapshot_capture_raises_oserror(
+        board, tmp_path, monkeypatch, capsys):
+    """snapshot OSError(None)도 restore seam을 지나 loud 경고 후 나머지 rollback을 마친다."""
+    bare = _bare(tmp_path, "bare-root-snapshot-oserror")
+    board_dir = _make_board_git(tmp_path, remote=bare)
+    attrs = board_dir / ".gitattributes"
+    roots_before = {
+        name: (board_dir / name).read_bytes()
+        for name in board._BOARD_GIT_ROOT_FILES
+    }
+    head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
+    real_read_bytes = Path.read_bytes
+    failed = {"once": False}
+
+    def _fail_snapshot_once(path: Path) -> bytes:
+        if path == attrs and not failed["once"]:
+            failed["once"] = True
+            raise OSError("forced root snapshot failure")
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", _fail_snapshot_once)
+    hook = board_dir / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+    assert board.cmd_claim(_claim_args()) == 1
+
+    assert failed["once"] is True
+    assert "캡처하지 못해 정확히 복원하지 못했다" in capsys.readouterr().err
+    assert _git(["rev-parse", "HEAD"], board_dir).stdout.strip() == head_before
+    assert list((board_dir / "tickets" / "open").glob("T-0001-*.md"))
+    assert not list((board_dir / "tickets" / "claimed").glob("T-0001-*.md"))
+    assert _porcelain(board_dir) == {}
+    assert {
+        name: real_read_bytes(board_dir / name)
+        for name in board._BOARD_GIT_ROOT_FILES
+    } == roots_before
 
 
 @requires_git
