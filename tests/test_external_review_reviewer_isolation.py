@@ -555,7 +555,7 @@ def test_scrub_failure_is_distinguished_from_absence(external, monkeypatch, tmp_
         "contamination": (), "unisolated": False, "file": None, "failed": False,
         "started": True, "any_must_fix": False, "all_pass": True})
 
-    assert external.main(["--paths", str(repo / "src"),
+    assert external.main(["--paths", str(repo / "src"), "--no-gate",
                           "--output-dir", str(tmp_path / "raw")]) == 0
     err = capsys.readouterr().err
     assert "홈 정화 실패 1개 미복제(.codex/config.toml)" in err
@@ -588,7 +588,7 @@ def test_main_passes_resolved_denylist_and_conf_to_isolation(external, monkeypat
         "contamination": (), "unisolated": False, "file": None, "failed": False,
         "started": True, "any_must_fix": False, "all_pass": True})
 
-    assert external.main(["--paths", str(repo / "src"),
+    assert external.main(["--paths", str(repo / "src"), "--no-gate",
                           "--output-dir", str(tmp_path / "raw")]) == 0
     # denylist: 해소된 폭(엔진 기본 + local.conf 승계)이 그대로 거울로 간다.
     assert "*vendor_dump*" in seen["denylist"]
@@ -1060,7 +1060,7 @@ def test_main_runs_reviewer_inside_isolated_workspace(external, monkeypatch, tmp
                 "any_must_fix": False, "all_pass": True}
 
     monkeypatch.setattr(external, "run_review", _fake_run_review)
-    rc = external.main(["--paths", str(repo / "src"),
+    rc = external.main(["--paths", str(repo / "src"), "--no-gate",
                         "--output-dir", str(tmp_path / "raw")])
 
     assert rc == 0
@@ -1087,7 +1087,7 @@ def test_isolation_banner_names_applied_keep_extra(external, monkeypatch, tmp_pa
         "contamination": (), "unisolated": False, "file": None, "failed": False,
         "started": True, "any_must_fix": False, "all_pass": True})
 
-    assert external.main(["--paths", str(repo / "src"),
+    assert external.main(["--paths", str(repo / "src"), "--no-gate",
                           "--output-dir", str(tmp_path / "raw")]) == 0
     err = capsys.readouterr().err
     assert "reviewer_env_keep_extra 통과: VENDOR_REVIEW_KEY" in err
@@ -1107,7 +1107,7 @@ def test_reviewer_failure_hint_names_both_escape_keys(external, monkeypatch, tmp
         "contamination": (), "unisolated": False, "file": None, "failed": True,
         "started": True, "any_must_fix": False, "all_pass": False})
 
-    assert external.main(["--paths", str(repo / "src"),
+    assert external.main(["--paths", str(repo / "src"), "--no-gate",
                           "--output-dir", str(tmp_path / "raw")]) == 1
     err = capsys.readouterr().err
     # 이름만 스치는 게 아니라 **실행 가능한 처방**(키=값 형태)이어야 진단으로서 쓸모가 있다.
@@ -1146,7 +1146,7 @@ def _wire_unbuildable_isolation(external, monkeypatch, tmp_path):
 def test_main_blocks_the_gate_when_isolation_fails(external, monkeypatch, tmp_path, capsys):
     """기본은 차단 — 격리 없이 외부로 나가지 않는다(전송 0)."""
     repo, calls = _wire_unbuildable_isolation(external, monkeypatch, tmp_path)
-    rc = external.main(["--paths", str(repo / "src"),
+    rc = external.main(["--paths", str(repo / "src"), "--no-gate",
                         "--output-dir", str(tmp_path / "raw")])
     assert rc == 1 and calls["n"] == 0
     err = capsys.readouterr().err
@@ -1158,6 +1158,7 @@ def test_main_opt_out_flag_runs_unisolated_once(external, monkeypatch, tmp_path,
     """명시 opt-out 은 자기잠김 탈출구 — 미격리로 1회 실행하되 판정은 강등하지 않는다."""
     repo, calls = _wire_unbuildable_isolation(external, monkeypatch, tmp_path)
     rc = external.main([external.UNISOLATED_REVIEWER_FLAG, "--paths", str(repo / "src"),
+                        "--no-gate",
                         "--output-dir", str(tmp_path / "raw")])
     assert rc == 0 and calls["n"] == 1 and calls["cwd"] is None
     assert calls["cwd"] is None        # 미격리 사실이 실인자에서 그대로 드러난다.

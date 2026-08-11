@@ -78,6 +78,9 @@ raw 파일 접두)에만 남는다. 설정 키는 `additional_reviewer_enabled`/
     count 하고, limit(기본 4)회를 넘기면 실행 *전에* 거부(exit 4)한다. "몇 라운드나 돌았나"라는
     PM 자의 집계를 기계 장부로 대체하는 것이고([[mechanize-dont-instruct-llm]]), 수렴 여부 판정도
     같은 장부의 must_fix 추이가 소유한다(사람의 "이번엔 진짜 수렴 중" 판단을 입력으로 쓰지 않는다).
+    게이트를 붙이는 것도 기억에 맡기지 않는다 — `--gate` 미지정 `--ticket` 실행은 게이트를 그
+    티켓으로 **자동 유도**하고(명시 `--gate` 가 항상 우선), 회계 밖 자문 실행은 명시
+    opt-out `--no-gate` 로만 연다(그 실행은 무기록·비회계를 loud 로 표기한다).
   - 라운드별 산출 장부 + wave 예산: 같은 장부에 라운드마다 산출(`rounds` — 판정 rc·must-fix 수)을
     append 하고, 전 게이트 합계 전송을 wave 단위로 센다(`wave` 절). 라운드 수만으로는 "그 라운드가
     실결함을 냈는가"를 기계로 확인할 수 없어 게이트 심도 대비 비용 적정성 판단이 PM 자기보고에
@@ -976,15 +979,16 @@ _CONVERGENCE_REASONS: dict[str, str] = {
 DEFAULT_DIFF_CAPS: dict[str, int] = {"small": 300, "medium": 1000, "large": 2500}
 DIFF_CAP_KEY_PREFIX = "diff_cap."
 
-# 측정 제외 subtree — `templates/<타깃>/.project_manager/` 는 그 대부분이 pm_update 가 엔진 사본을
-# 내보내는 자리다. 손작업 diff 와 같은 가중으로 합산하면 한 티켓의 구현 스코프가 출하 타깃 수만큼
-# 부풀어(실측: 이 wave 에서 estimate 사후 교정 2회), 분할이 필요 없는 티켓을 서킷브레이커가 막는다.
-# 제외는 **subtree 단위**이고 그 안에 manifest 밖 손편집 파일(타깃별 manifest·wiki 문서류)이 실재
-# 함을 알고 고른 경계다 — 티켓 인터페이스가 이 경로를 명시했고, 오차의 방향이 "측정 축소 = 가드
-# 약화"라 무손실 축(차단해야 할 것을 통과)만 남고 정당한 작업을 오차단하지 않는다.
-# subtree 자체의 정합은 drift-0 가드가 따로 지키고, 리뷰가 보는 diff 폭은 그대로다(측정 축과 검토
-# 축은 여기서 갈린다).
-_MACHINE_MIRROR_RE = re.compile(r"^templates/[^/]+/\.project_manager/")
+# 측정 제외 subtree — 기계 생성·설치 산출물을 손작업 diff 와 같은 가중으로 합산하지 않는다.
+# `templates/<타깃>/.project_manager/`는 그 대부분이 pm_update 가 내보낸 엔진 사본이고,
+# `.opencode/node_modules/`는 패키지 설치 트리다. 이들을 세면 한 티켓의 구현 스코프가 출하 타깃 수나
+# 의존성 크기만큼 부풀어 분할이 필요 없는 티켓을 서킷브레이커가 막는다. 제외는 **subtree 단위**라
+# templates 안의 manifest 밖 손편집 파일도 함께 빠지지만, 오차의 방향은 **측정 축소 = 가드 약화**라
+# 정당한 작업을 오차단하지 않는다. template subtree 자체의 정합은 drift-0 가드가 따로 지키고,
+# 리뷰가 보는 diff 폭은 그대로다(측정 축과 검토 축은 여기서 갈린다).
+_MACHINE_MIRROR_RE = re.compile(
+    r"^templates/[^/]+/\.project_manager/|^\.opencode/node_modules/"
+)
 # 사람 표면에 측정 의미를 실어 두는 한 줄 — "왜 내 diff 보다 적게 세나"를 안내가 스스로 답한다.
 MEASURED_SCOPE_NOTE = "측정=손작업 스코프(기계 mirror 제외)"
 
@@ -1250,6 +1254,73 @@ _CONFIRM_FIX_REQUIRES_GATE_GUIDANCE = (
     "      python3 .project_manager/tools/external_review.py --gate <T-NNNN> --confirm-fix "
     "[기존 옵션]\n"
     "  · 게이트 없이 그냥 한 번 더 보고 싶은 것이면 `--confirm-fix` 를 빼세요(상한 대상 밖 실행)."
+)
+
+
+# ── 게이트 회계 자동 유도 (`--ticket` → `--gate`) ─────────────────────────────
+# `--ticket` 만 준 실행은 리뷰를 정상 전송·과금하면서 라운드 예약·기록·상한 회계를 통째로
+# 건너뛰었다(실측: 하루 8 라운드 넘게가 장부에 0건). 그 조용한 무기록은 반려 must-fix 가
+# 릴리즈 차단 표면(`board.py livegate record`)에 도달하지 못하게 만드는 구멍이라, 기본값을
+# **기록**으로 뒤집는다 — `--ticket` 은 이미 이번 검토가 어느 티켓의 것인지 말하고 있으므로 그
+# 값을 게이트로 쓰면 회계를 붙이는 데 사람의 기억이 필요 없다([[mechanize-dont-instruct-llm]]:
+# "게이트를 같이 붙여라"는 규율 기억은 실측에서 실패했다). 회계 밖 자문 실행은 명시
+# opt-out(`--no-gate`)으로만 연다.
+#
+# 고지 **출력 자리**는 해소 결과를 말하는 자리다 — 유도 자체는 인자 파싱 직후에 하지만(뒤따르는
+# 게이트 검사·프롬프트·예약이 모두 그 값을 쓴다), 문구는 stderr **첫 줄 = config provenance** 계약을
+# 깨지 않게 provenance 직후에 낸다. 빈 diff·비활성·egress·diff-cap 으로 아직 끝날 수 있는
+# 예약 전 자리이므로, 장부에 붙었다는 확정형이 아니라 전송 조건형으로만 말한다.
+_GATE_DERIVED_NOTICE = (
+    "게이트 자동 유도: --gate {gate} (--ticket 값에서 유도 — 이 실행이 전송되면 라운드 회계가 "
+    "게이트 {gate}에 붙습니다). "
+    "회계 밖 자문 실행은 --no-gate 로 명시하세요."
+)
+# 미리보기는 예약도 기록도 하지 않는다 — 같은 문구를 쓰면 "이번 실행이 기록된다"는 오보가 된다.
+_GATE_DERIVED_DRY_RUN_NOTICE = (
+    "게이트 자동 유도: --gate {gate} (--ticket 값에서 유도 — 미리보기라 이번 실행은 기록·집계하지 "
+    "않고, 실 전송 때 라운드 회계가 이 게이트에 붙습니다)."
+)
+
+# 회계 밖 실행의 loud 표기 — 침묵이 이 함정의 본체였으므로 명시 opt-out 실행은 자기
+# 상태를 스스로 말한다. 아무 선택도 없는 실 전송은 아래 `_GATE_ACCOUNTING_REQUIRED_GUIDANCE`로
+# 거부하므로, 이 조건형 경고는 `--no-gate` 경로에서만 나온다.
+# 예약 자리(전송 확정 전)의 문구는 **조건형**이다: 이 뒤로 격리 생성·스폰이 남아 있어 "전송했다"고
+# 확정하면 격리 실패로 중단된 실행이 이미 찍힌 고지와 모순된다. 확정 표기는 실행이 끝난 뒤 판정
+# 블록(`print_summary`)의 게이트 줄이 낸다.
+_UNACCOUNTED_RUN_TAIL = (
+    "전송되면 라운드 장부에 기록되지 않고 라운드·wave 예산도 쓰지 않습니다 — 그 라운드에서 나온 "
+    "반려 must-fix 는 릴리즈 차단(`board.py livegate record`)이 읽는 장부에 남지 않습니다.\n"
+    "  · 회계에 넣으려면 `--ticket <T-NNNN>`(게이트 자동 유도) 또는 `--gate <게이트>` 로 "
+    "실행하세요."
+)
+_UNACCOUNTED_OPT_OUT_NOTICE = (
+    "경고: `--no-gate` 명시 opt-out — 이 실행이 " + _UNACCOUNTED_RUN_TAIL
+)
+
+# 실 전송은 회계에 넣거나 명시적으로 빠져야 한다. 어느 쪽도 고르지 않은 실행을 경고만
+# 하고 보내면 티켓 누락 한 번이 라운드 장부·livegate 누락으로 이어진다. dry-run·조회·처분과
+# 비활성/egress/diff-cap 조기 종료는 실제 외부 송신이 없어 이 검사에 도달하지 않는다.
+_GATE_ACCOUNTING_REQUIRED_GUIDANCE = (
+    "오류: 실 전송에는 게이트 회계 지정 또는 명시 opt-out 이 필요합니다 — "
+    "이 실행은 외부로 전송하지 않았습니다.\n"
+    "  · 라운드 회계에 넣으려면 `--ticket <T-NNNN>`(게이트 자동 유도) 또는 "
+    "`--gate <게이트>` 를 지정하세요.\n"
+    "  · 회계 밖 자문 실행이면 `--no-gate` 를 명시하세요."
+)
+
+# 판정 블록의 게이트 줄 — 회계 밖 실행은 **끝난 뒤** 여기서 확정형으로 말한다. stderr 경고는 로그를
+# 안 읽으면 사라지지만 PM 은 판정 블록을 반드시 읽는다(오염 진단·실패 사유와 같은 근거).
+_SUMMARY_UNACCOUNTED_GATE = "(없음 — 회계 밖·라운드 장부 미기록)"
+
+# `--gate` 와 `--no-gate` 동시 지정 안내 — 한 실행이 "기록한다"와 "기록하지 않는다"를 동시에
+# 뜻할 수 없다. 경고 후 한쪽을 골라 실행하면 그 선택이 조용한 자의 판정이 되므로 부작용 0
+# 지점에서 거부한다(`--confirm-fix` 게이트 누락·`--ack-rounds` 폐지와 같은 자리·같은 규율).
+_GATE_OPT_OUT_CONFLICT_GUIDANCE = (
+    "오류: `--no-gate` 와 `--gate {gate}` 는 함께 쓸 수 없습니다 — 이 실행은 아무것도 "
+    "하지 않았습니다.\n"
+    "  · `--gate` 는 이 라운드를 장부에 기록하겠다는 지정이고, `--no-gate` 는 기록하지 않겠다는 "
+    "opt-out 입니다.\n"
+    "  · 회계에 넣으려면 `--no-gate` 를 빼고, 회계 밖 자문이면 `--gate` 를 빼세요."
 )
 
 # diff 서킷브레이커 차단 안내 — 리뷰/완료 진입에서 같은 문구를 쓴다(두 표면이 다른 말을 하지 않게).
@@ -1947,8 +2018,9 @@ def _diff_cap(conf: dict[str, str], estimate: str | None) -> int | None:
 #     있으면 비용이 티켓 수 × 상한으로 확장되므로 전 게이트 합계를 이 예산이 묶는다. 두 축이 한
 #     dict 를 공유하므로 **예약 키를 게이트 이름으로 쓰는 것은 기계로 막는다**(`_reserved_gate_error`
 #     가 `--gate` 를 거르고 `_gate_entry` 가 그 키를 fail-loud 로 거부·집계 순회는 건너뛴다).
-# 두 축의 적용 범위는 같다 — 장부를 타는 실행은 `--gate` 지정분뿐이라 wave 도 게이트 라운드만
-# 센다(`--gate` 없는 실행은 종전대로 장부 밖이고 어느 예산도 쓰지 않는다).
+# 두 축의 적용 범위는 같다 — 장부를 타는 실행은 게이트가 해소된 실행(명시 `--gate` 또는 `--ticket`
+# 자동 유도)뿐이라 wave 도 그 라운드만 센다. 게이트가 없는 실행(selector 에 티켓이 없거나 명시
+# `--no-gate` opt-out)은 장부 밖이고 어느 예산도 쓰지 않으며, 그 사실을 loud 로 표기한다.
 
 
 def _round_ledger_path() -> Path:
@@ -2823,6 +2895,51 @@ class RoundBudget(NamedTuple):
         return self.gate is not None and self.round_id is not None
 
 
+class GateDerivation(NamedTuple):
+    """게이트 유도 결과 — 거부 안내 / 유도 고지. **출력은 호출부가** 제 자리에서 한다.
+
+    고지를 여기서 찍지 않는 이유는 자리 때문이다: 유도는 인자 파싱 직후여야 하고(뒤따르는 게이트
+    검사·프롬프트·예약이 그 값을 쓴다) 고지는 stderr 첫 줄 provenance 뒤여야 한다."""
+
+    refusal: str | None = None
+    notice: str | None = None
+
+
+def _derive_gate_from_ticket(args) -> GateDerivation:
+    """`--ticket` 실행의 게이트를 티켓으로 유도한다 (거부 사유가 있으면 그 안내를 돌려준다).
+
+    유도는 **리뷰 실행면에서만** 한다 — 조회(`--rounds-report`)와 기록(`--resolve-gate`) 면은
+    같은 `--gate` 를 각각 '한 게이트만 보기' 필터와 '무시 목록'으로 읽어, 유도값이 사용자가 주지
+    않은 선택으로 둔갑한다(그 두 면은 전송도 예약도 하지 않아 여기서 닫을 구멍이 없다).
+
+    명시 `--gate` 가 항상 이기고, `--no-gate` 는 유도를 끄는 명시 opt-out 이다. 리뷰
+    실행면에서 둘을 함께 주면 한 실행이 "기록한다"와 "기록하지 않는다"를 동시에
+    뜻하므로 거부한다. 조회·처분면에서는 둘 다 필터/무시 입력이라 충돌이 아니다.
+
+    유도한 이름도 **예약 키 검사를 지난다** — `_gate_entry` 는 예약 키를 hard 예외로 거부하므로,
+    거르지 않으면 자유 문자열 티켓 하나가 예약 임계 구역에서 크래시로 나타난다(불변식을 주석이
+    아니라 기계로 지킨다)."""
+    opt_out = getattr(args, "no_gate", False)
+    # 조회·처분면을 **충돌 판정보다 먼저** 가른다. 이 두 표면은 실 리뷰를
+    # 전송·예약하지 않아 `--gate`는 필터/무시 입력, `--no-gate`는 무시 경고 대상이다.
+    # 여기서 닫아야 호출부의 각 표면 무시-플래그 처리까지 정상 도달한다.
+    if args.rounds_report or args.resolve_gate:
+        return GateDerivation()
+    if args.gate and opt_out:
+        return GateDerivation(refusal=_GATE_OPT_OUT_CONFLICT_GUIDANCE.format(gate=args.gate))
+    if args.gate or opt_out or not args.ticket:
+        return GateDerivation()
+    reserved = _reserved_gate_error(args.ticket, flag="--ticket")
+    if reserved is not None:
+        return GateDerivation(refusal=reserved)
+    args.gate = args.ticket
+    template = (
+        _GATE_DERIVED_DRY_RUN_NOTICE if getattr(args, "dry_run", False)
+        else _GATE_DERIVED_NOTICE
+    )
+    return GateDerivation(notice=template.format(gate=args.gate))
+
+
 def _reserve_round_budget(
     args, conf: dict[str, str], *, wall_timeout_sec: int | None = None,
     target_rev: str | None = None,
@@ -2831,7 +2948,13 @@ def _reserve_round_budget(
 
     여기까지 왔으면 dry-run·빈-diff·비활성 no-op·egress 차단을 모두 통과해 *실 외부 전송*이
     일어난다 — 그것들은 전송이 없어 라운드가 아니므로(카운트 제외) 이 앞의 조기 return 뒤에
-    게이트를 둔다. `--gate` 지정 시에만 per-gate 장부를 대조한다("--gate 미지정 실행은 상한 대상 밖").
+    게이트를 둔다. 게이트가 해소된 실행에서만 per-gate 장부를 대조한다(게이트 없는 실행 = 상한
+    대상 밖).
+
+    게이트가 있는지는 이 함수보다 앞에서 정해진다 — `--ticket` 실행은 `_derive_gate_from_ticket`
+    이 게이트를 유도하고, selector 에 티켓이 없으면 실 전송 seam 이 명시 `--no-gate`를
+    요구한다. 따라서 여기 게이트 없이 오는 실행은 모두 명시 opt-out 이며, loud 표기 뒤
+    회계 없이 지난다(조용한 무기록은 반려 must-fix 를 릴리즈 차단 표면에서 지운다).
 
     MF-A(예약-후-환불): count 를 *호출 전에* +1 예약한다 — 타임아웃·비정상 종료도 프롬프트가 이미
     전송·과금됐을 수 있는데 성공시에만 세면 반복 타임아웃으로 상한을 무한 우회한다. 외부 프로세스가
@@ -2856,6 +2979,11 @@ def _reserve_round_budget(
         if args.ack_wave:
             print("경고: --ack-wave 는 --gate 와 함께 써야 합니다 (게이트 단위 장부) — 무시.",
                   file=sys.stderr)
+        # 전송이 확정된 구간이지만 **아직 스폰 전**이다(격리 생성이 남아 있다) — 그래서 문구는
+        # 조건형이고("이 실행이 전송되면"), 확정 표기는 실행이 끝난 뒤 판정 블록의 게이트 줄이
+        # 낸다. 그래도 여기서 한 번 말하는 이유는 침묵이 이 함정의 본체였기 때문이다(장부 0건·
+        # 릴리즈 차단 미도달) — 전송 전에 멈출 기회를 PM 에게 준다.
+        print(_UNACCOUNTED_OPT_OUT_NOTICE, file=sys.stderr)
         return RoundBudget()
 
     limit = _round_limit(conf)
@@ -3345,6 +3473,8 @@ def _resolve_gate_ignored_flags(args: argparse.Namespace) -> str:
     return ", ".join(
         flag for flag, given in (
             ("--gate", bool(args.gate)),        # 처분 대상은 `--resolve-gate` 가 지정한다
+            # 회계 opt-out 도 선언면에선 뜻이 없다 — 이 실행은 전송도 예약도 하지 않는다.
+            ("--no-gate", bool(getattr(args, "no_gate", False))),
             ("--rounds-report", args.rounds_report),
             ("--confirm-fix", args.confirm_fix),
             ("--ack-wave", args.ack_wave),
@@ -3660,12 +3790,13 @@ def _numstat_path(field: str) -> str:
 
 
 def is_machine_mirror_path(path: str) -> bool:
-    """diff 서킷브레이커의 **측정 제외 subtree**(`templates/<타깃>/.project_manager/` 아래)인가.
+    """diff 서킷브레이커의 **측정 제외 subtree**인가.
 
-    이 subtree 의 대부분은 pm_update 가 내보낸 엔진 사본이지만 전부는 아니다 — 타깃별 manifest 나
-    출하 wiki 문서처럼 manifest 밖 손편집 파일도 여기 산다. 그래도 경로 단위로 통째 제외하는 이유는
-    티켓 인터페이스가 이 subtree 를 제외 대상으로 명시했고, 오차의 방향이 **측정 축소 = 가드 약화**
-    라 정당한 작업을 오차단하지 않기 때문이다(과다 차단이 아니라 과소 차단 쪽으로만 틀린다).
+    정책은 pm_update 엔진 사본인 `templates/<타깃>/.project_manager/` 아래와 패키지 설치
+    산출물인 `.opencode/node_modules/` 아래를 제외한다. template subtree 의 파일 전부는 아니다 —
+    manifest 밖 손편집 파일도 있어 통째 제외하면 과소 측정이 생기지만, 오차의 방향이
+    **측정 축소 = 가드 약화**라
+    정당한 작업을 오차단하지 않는다(과다 차단이 아니라 과소 차단 쪽으로만 틀린다).
 
     **측정 제외 규칙의 단일 진실** — 리뷰(external_review)와 완료 부기(ticket_finish)가 같은 판정을
     쓴다(사본 0). 판정은 경로 문자열뿐이라 트리 상태에 의존하지 않는다."""
@@ -5728,14 +5859,17 @@ def print_summary(result: dict, gate: str | None = None,
     """결과 요약을 stdout 에 출력한다.
 
     excluded — 시크릿 denylist 로 diff 에서 제외된 암묵 수집분 경로. 비어있지 않으면 종합 판정
-    라인에 제외 건수·경로를 병기한다(false-confidence 차단). 0건이면 종전과 동일 출력."""
+    라인에 제외 건수·경로를 병기한다(false-confidence 차단). 0건이면 종전과 동일 출력.
+
+    게이트 줄은 **항상** 나온다 — 게이트 없이 끝난 실행은 그 사실이 회계 상태(장부 미기록)라
+    stderr 경고 하나에만 맡기지 않는다(오염 진단·실패 사유와 같은 근거: 판정 블록은 읽힌다).
+    이 줄은 실행이 끝난 뒤라 확정형으로 말할 수 있다."""
     sep = "=" * 60
     name = result.get("reviewer", "reviewer")
     suffix = _exclusion_suffix(excluded)
     print(sep)
     print(f"추가 리뷰어 코드리뷰 결과 요약 [{name}]")
-    if gate:
-        print(f"게이트: {gate}")
+    print(f"게이트: {gate if gate else _SUMMARY_UNACCOUNTED_GATE}")
     print(sep)
     print(f"\n[{name}] {_format_verdict(result['ok'], result.get('verdict'))}")
     if result.get("file"):
@@ -5798,20 +5932,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 예시:
-  # 기본 (HEAD 기준 변경, local.conf review_paths/기본 경로) — 활성화돼 있어야 실제 호출
-  python3 .project_manager/tools/external_review.py
+  # 기본 (HEAD 기준 변경, local.conf review_paths/기본 경로) — 회계 밖 실행을 명시
+  python3 .project_manager/tools/external_review.py --no-gate
 
-  # ticket 의 touches 로 경로 결정
+  # ticket 의 touches 로 경로 결정 (--gate 미지정이면 그 티켓으로 게이트 자동 유도·장부 기록)
   python3 .project_manager/tools/external_review.py --ticket T-0259
 
-  # 특정 base 와 경로 지정
-  python3 .project_manager/tools/external_review.py --base main --paths src/ tests/
+  # 게이트 회계 밖 자문 실행 (명시 opt-out · 장부 미기록·예산 미소모)
+  python3 .project_manager/tools/external_review.py --ticket T-NNNN --no-gate
+
+  # 특정 base 와 경로·게이트 지정
+  python3 .project_manager/tools/external_review.py --base main --paths src/ tests/ --gate T-NNNN
 
   # dry-run (diff·프롬프트만 출력, 외부 호출/전송 안 함 — 비활성이어도 허용)
   python3 .project_manager/tools/external_review.py --dry-run
 
   # 비활성 상태에서 1회 강제 실행
-  python3 .project_manager/tools/external_review.py --force
+  python3 .project_manager/tools/external_review.py --force --no-gate
 
   # 라운드 장부 조회 (외부 전송 없음 — 게이트별 라운드 수·라운드별 산출·처분·wave spent)
   python3 .project_manager/tools/external_review.py --rounds-report --gate T-NNNN
@@ -5823,8 +5960,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
   # --resolve-gate 와 --dry-run 조합은 기록 목적과 모순이라 rc1로 거부.
 
   # Codex sandbox(network-off) 안에서: 미리보기 → 도구 승격 + 증명 동반 실행
-  python3 .project_manager/tools/external_review.py --dry-run
-  python3 .project_manager/tools/external_review.py --codex-egress-escalated
+  python3 .project_manager/tools/external_review.py --ticket T-NNNN --dry-run
+  python3 .project_manager/tools/external_review.py --ticket T-NNNN --codex-egress-escalated
 
 활성화: local.conf 에 `additional_reviewer_enabled=true` ·
         또는 `board.py init` / `pm_update` 시 opt-in 프롬프트.
@@ -5844,19 +5981,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--paths", nargs="+", default=None,
                         help="검토 대상 경로 (기본: local.conf review_paths / src tests scripts ...)")
     parser.add_argument("--ticket", default=None, metavar="T-NNNN",
-                        help="ticket ID — touches 로 검토 경로 결정")
+                        help="ticket ID — touches 로 검토 경로 결정. --gate 미지정이면 이 값이 "
+                             "게이트로 자동 유도돼 라운드가 장부에 기록·집계된다")
     parser.add_argument("--gate", default=None, metavar="T-NNNN",
-                        help="게이트 ticket 표식 (로깅 + 라운드 상한 장부 키)")
+                        help="게이트 ticket 표식 (로깅 + 라운드 상한 장부 키) — 미지정이면 "
+                             "--ticket 에서 자동 유도한다(명시 값이 항상 우선)")
+    parser.add_argument("--no-gate", action="store_true",
+                        help="게이트 회계 opt-out — --ticket 자동 유도를 끄고 라운드 장부 기록·"
+                             "라운드/wave 예산 집계 없이 실행한다 (회계 밖 자문 실행·loud 표기 · "
+                             "--gate 와 함께 쓸 수 없음)")
     parser.add_argument("--ack-rounds", action="store_true",
                         help="(폐지됨) 라운드 연장 승인 — 호출하면 아무것도 하지 않고 거부한다. "
                              "출구는 재설계·티켓 분할이고, 해소 확인만 필요하면 --confirm-fix.")
     parser.add_argument("--confirm-fix", action="store_true",
-                        help="확인 전용 라운드 — 상한 밖에서 게이트당 1회만 허용(--gate 필수). "
+                        help="확인 전용 라운드 — 상한 밖에서 게이트당 1회만 허용"
+                             "(게이트 지정 필수 — --gate 또는 --ticket 유도). "
                              "직전 must-fix 해소만 확인하고 신규 발견은 '재설계 신호'로 보고하는 "
                              "헌장을 프롬프트에 싣는다 (장부 기록·2회째는 거부)")
     parser.add_argument("--ack-wave", action="store_true",
                         help="wave 예산 재개 — wave spent 를 0 으로 리셋 후 재개 "
-                             "(--gate 필수 · 같은 범위의 정상 수렴이면 PM 이 자율 판단)")
+                             "(게이트 지정 필수 — --gate 또는 --ticket 유도 · 같은 범위의 "
+                             "정상 수렴이면 PM 이 자율 판단)")
     parser.add_argument("--rounds-report", action="store_true",
                         help="라운드 장부 조회 — 게이트별 라운드 수·라운드별 판정/결함 수·처분·wave "
                              "spent 를 출력하고 종료 (외부 전송 없음·--gate 로 한 게이트만)")
@@ -6256,6 +6401,15 @@ def _main(argv: list[str] | None = None) -> int:
     if args.ack_rounds:
         print(_ACK_ROUNDS_REMOVED_GUIDANCE, file=sys.stderr)
         return 1
+    # 게이트 회계 자동 유도 — `--ticket` 실행의 기본값은 "기록"이다(조용한 무기록 폐지). 아무것도
+    # 하지 않고 끝나는 `--ack-rounds` 거부 **뒤**에 둔다: 그 실행이 유도 고지를 내면 오보다.
+    # `--confirm-fix` 게이트 누락 검사보다는 **앞**이라, 유도된 게이트가 확인 전용 라운드의
+    # 회계 자리도 그대로 제공한다. **고지 출력은 여기서 하지 않는다** — stderr 첫 줄은 config
+    # provenance 라 그 뒤에 낸다(아래 provenance 직후).
+    gate_derivation = _derive_gate_from_ticket(args)
+    if gate_derivation.refusal is not None:
+        print(gate_derivation.refusal, file=sys.stderr)
+        return 1
     # 게이트 없는 확인 전용 라운드는 어느 표면에서도 뜻이 없다 — 장부 항목이 없어 1회 제한을
     # 셀 수 없다. `--ack-rounds` 와 같은 부작용 0 지점에서 거부한다(경고-만-실행 폐지).
     if getattr(args, "confirm_fix", False) and not args.gate:
@@ -6274,6 +6428,8 @@ def _main(argv: list[str] | None = None) -> int:
         ignored = ", ".join(
             flag for flag, given in (
                 ("--confirm-fix", args.confirm_fix), ("--ack-wave", args.ack_wave),
+                # 조회면은 전송도 예약도 없어 회계 자체가 없다 — opt-out 도 무시 대상이다.
+                ("--no-gate", args.no_gate),
                 ("--dry-run", args.dry_run), ("--force", args.force),
                 (CODEX_EGRESS_FLAG, args.codex_egress_escalated),
             ) if given
@@ -6455,6 +6611,10 @@ def _main(argv: list[str] | None = None) -> int:
         f"· diff_root={diff_root} · pm_home={pm_home} · resolved_profile={profile}",
         file=sys.stderr,
     )
+    if gate_derivation.notice is not None:
+        # 게이트 유도 고지는 **provenance 다음**이다 — 첫 줄 계약(그 자리에서 어느 conf·어느
+        # diff_root 로 해소했는지 읽는다)을 이 고지가 밀어내면 안내 문서와 실제 출력이 갈린다.
+        print(gate_derivation.notice, file=sys.stderr)
     deferred_warnings = resolution_warnings.getvalue()
     if deferred_warnings:
         print(deferred_warnings, end="", file=sys.stderr)
@@ -6669,6 +6829,14 @@ def _main(argv: list[str] | None = None) -> int:
     # 격리 컨테이너 생성보다 **먼저**다 — 이미 상한에 닿은 호출은 스폰이 없어도 격리를 먼저 만들면
     # 저장소·인증 사본을 만들었다 지우는 실 작업을 하고, 그건 "전송 없이 끝나는 실행은 부작용 0"
     # 규율(dry-run·비활성 no-op·egress 차단과 같은 축)을 이 rc 에서만 깨는 것이다.
+    # dry-run·조회·처분은 이미 반환했고, 비활성 no-op·egress 차단·diff-cap 거부도 송신 없이
+    # 종료됐다. 여기까지 온 실행은 이제 외부 송신으로 가므로, `--gate`(또는 `--ticket`
+    # 자동 유도) / 명시 `--no-gate` 중 하나가 반드시 있어야 한다. 둘 다 없으면 예약·격리·raw·
+    # 리뷰어 스폰 전 부작용 0 지점에서 fail-loud 한다.
+    if not args.gate and not args.no_gate:
+        print(_GATE_ACCOUNTING_REQUIRED_GUIDANCE, file=sys.stderr)
+        return 1
+
     budget = _reserve_round_budget(
         args, conf, wall_timeout_sec=timeout,
         target_rev=_target_rev_fingerprint(diff),

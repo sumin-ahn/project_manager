@@ -43,6 +43,32 @@ def external():
     return _load("external_review")
 
 
+@pytest.fixture(autouse=True)
+def isolated_round_ledger(external, monkeypatch, tmp_path):
+    """라운드 장부의 **읽기·쓰기 양쪽**을 tmp 로 격리한다 (REPO 앵커는 실 저장소 그대로).
+
+    게이트 회계 자동 유도(T-0626) 이후 `--ticket` 실행은 라운드를 장부에 예약·기록한다 — 이 파일은
+    실 저장소 앵커로 denylist 분기를 태우므로, 격리하지 않으면 denylist 단언이 실 장부에 라운드를
+    쌓고 상한까지 흔들어 테스트가 실행 이력에 의존하게 된다.
+
+    쓰기 경로(`_round_ledger_path`·락 파일은 여기서 파생)만 옮기면 절반이다 — 승계 입력인 legacy
+    경로(`_legacy_round_ledger_path`)는 REPO 파생이라 **실 장부를 계속 읽는다**. 실 장부에 같은
+    이름의 게이트가 있으면 그 상태가 tmp 장부로 승계돼 단언이 다시 실행 이력에 묶인다."""
+    local = tmp_path / ".project_manager" / ".local"
+    local.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(external, "_round_ledger_path", lambda: local / "review_rounds.json")
+    monkeypatch.setattr(
+        external, "_legacy_round_ledger_path", lambda: local / "legacy_review_rounds.json")
+
+
+def test_round_ledger_isolation_covers_read_and_write(external, tmp_path):
+    """격리 fixture 가 쓰기(장부)와 **읽기**(legacy 승계 입력) 양쪽을 tmp 로 옮겼는지 못박는다.
+
+    쓰기만 옮기면 실 장부의 동명 게이트 상태가 legacy 승계로 흘러들어 단언이 실행 이력에 묶인다."""
+    for resolve in (external._round_ledger_path, external._legacy_round_ledger_path):
+        assert tmp_path in resolve().parents, resolve()
+
+
 # ── (A) 실 matching — 발단 파일이 *token* 에 걸림 (패턴 불변 전제 박제) ───────────
 
 
@@ -243,9 +269,9 @@ def test_ticket_multiple_exclusions_annotates_count(external, monkeypatch, capsy
 
 
 def test_default_paths_exclusion_annotates_not_block(external, monkeypatch, capsys):
-    """--paths·--ticket 없이 기본 경로 → 암묵 지정이므로 제외는 병기(비차단·exit 0)."""
+    """기본 경로는 암묵 지정이므로 제외을 병기하고, 명시 opt-out 실송은 비차단한다."""
     exit_code, reviewer_called = _run_main(
-        external, monkeypatch, argv=[], excluded=[TOKEN_FILE])
+        external, monkeypatch, argv=["--no-gate"], excluded=[TOKEN_FILE])
     assert exit_code == 0
     assert reviewer_called is True
     assert f"(검토 제외 1건 — {TOKEN_FILE})" in capsys.readouterr().out
@@ -265,7 +291,7 @@ def test_ticket_exclusion_stderr_warns_with_pattern(external, monkeypatch, capsy
 def test_zero_exclusion_paths_unchanged(external, monkeypatch, capsys):
     """--paths 제외 0건 → 리뷰 진행·exit 0·판정 라인에 '검토 제외' 접미사 없음(종전 무변경)."""
     exit_code, reviewer_called = _run_main(
-        external, monkeypatch, argv=["--paths", REAL_FILE], excluded=[])
+        external, monkeypatch, argv=["--paths", REAL_FILE, "--no-gate"], excluded=[])
     assert exit_code == 0
     assert reviewer_called is True
     out = capsys.readouterr().out

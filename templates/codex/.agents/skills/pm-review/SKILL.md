@@ -30,6 +30,16 @@ opt-in 질문은 **첫 1회**뿐이다. `additional_reviewer_enabled=true` 는 �
 - **사소한 docs/prose/자명한 편집에는 실행하지 않는다**. self/내부 리뷰로 끝낸다.
 - 코드 리뷰 라운드는 **상한 2회**다. 2회로 안 닫히면 라운드를 더 쓰지 않고 재설계·티켓 분할로 전환한다.
 
+### 게이트 회계 (자동 유도·opt-out)
+
+게이트를 붙이는 일도 PM 기억에 맡기지 않는다. `--gate` 없는 `--ticket` 실행은 **게이트를 그 티켓으로 자동 유도**해 라운드를 예약·기록하고(stderr 유도 1줄), 명시 `--gate` 는 항상 우선한다.
+
+- 회계 밖 자문 실행은 **`--no-gate` 명시 opt-out** 으로만 연다. 그 실행은 장부에 남지 않고 라운드·wave 예산도 쓰지 않으며, 무기록·비회계라는 사실을 loud 로 표기한다.
+- `--gate` 와 `--no-gate` 동시 지정은 rc=1 로 거부된다(한 실행이 기록과 무기록을 동시에 뜻할 수 없다).
+- 티켓·게이트 없는 `--paths` 실 전송은 rc=1 로 거부된다. `--gate <게이트>` 또는 명시적 `--no-gate` 중 하나를 반드시 선택한다(`--dry-run` 미리보기는 예외).
+
+기본값을 "기록"으로 둔 근거는 실측이다. `--ticket` 만으로 돈 라운드가 하루 8건 넘게 장부에 0건으로 남아, 반려 must-fix 가 릴리즈 차단 표면(`board.py livegate record`)에 도달하지 못했다.
+
 ## 수렴 게이트와 라운드 상한
 
 라운드/wave 상한은 **기계적 anti-loop 정지**이지 비용 승인 게이트가 아니다. 비용 의사표시는 `additional_reviewer_enabled=true` 한 번으로 끝났다.
@@ -100,16 +110,18 @@ git add <신규/변경 경로>     # untracked 파일이 diff 에 포함되게
 정상 리뷰를 통째로 폐기했다.
 
 ticket의 `touches`로 정하려면 `--ticket`, 직접 지정하려면 `--paths`로 리뷰 대상을 핀한다.
+`--paths` 실 전송에는 게이트 지정(`--gate <게이트>`) 또는 명시적 `--no-gate`가 필요하다.
 
 ```bash
-# ticket touches 로 경로 결정 (권장 — DoD/touches 와 정합)
-python3 .project_manager/tools/external_review.py --ticket T-NNNN --gate T-NNNN
+# ticket touches 로 경로 결정 (권장 — DoD/touches 와 정합 · 게이트는 티켓으로 자동 유도·기록)
+python3 .project_manager/tools/external_review.py --ticket T-NNNN
 
-# 또는 경로/base 직접 지정
-python3 .project_manager/tools/external_review.py --base main --paths src/ tests/ .project_manager/tools/
+# 또는 경로/base 직접 지정 (실 전송 회계 선택: 여기서는 --gate)
+python3 .project_manager/tools/external_review.py --base main --paths src/ tests/ .project_manager/tools/ --gate T-NNNN
 ```
 
-- `--gate T-NNNN`: 게이트 ticket 표식(로깅용).
+- `--gate T-NNNN`: 게이트 명시 override(자동 유도보다 우선). `--ticket` 실행은 생략 시 티켓으로 유도·기록된다.
+- `--no-gate`: 게이트 회계 opt-out(장부 미기록·예산 미소모·loud 표기). `--gate` 와 함께 쓰지 못한다.
 - `--adr ADR-NNNN …`: 관련 ADR을 프롬프트에 포함.
 - 외부 전송 없는 미리보기: `--dry-run`.
 - 비활성 상태 1회 강제: `--force`.
@@ -123,7 +135,7 @@ Codex 출하 기본은 `workspace-write` + `network_access=false`다. 추가 리
 
 ```text
 exec_command(
-  cmd="python3 .project_manager/tools/external_review.py --codex-egress-escalated --ticket T-NNNN --gate T-NNNN",
+  cmd="python3 .project_manager/tools/external_review.py --codex-egress-escalated --ticket T-NNNN",
   workdir="<worktree 절대경로>",
   sandbox_permissions="require_escalated",
   justification="설정된 추가 리뷰어 호출에 필요한 network를 sandbox 밖에서 허용합니다.",

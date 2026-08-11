@@ -192,7 +192,9 @@ def test_main_pm_home_no_paths_derives_worktree(external, monkeypatch, tmp_path,
     """PM 홈 엔진 사본도 등록 슬롯 하나에서 diff worktree를 자동 파생한다."""
     home, worktree = _make_pm_home(tmp_path)
     conf = {"additional_reviewer_enabled": "true"}
-    exit_code, reviewer_called = _run_main(external, monkeypatch, home, conf, [])
+    exit_code, reviewer_called = _run_main(
+        external, monkeypatch, home, conf, ["--no-gate"],
+    )
     assert exit_code == 0
     assert reviewer_called is True
     err = capsys.readouterr().err
@@ -268,7 +270,9 @@ def test_main_pm_home_with_paths_passes_gate(external, monkeypatch, tmp_path, ca
     home, worktree = _make_pm_home(tmp_path)
     conf = {"additional_reviewer_enabled": "true"}
     exit_code, reviewer_called = _run_main(
-        external, monkeypatch, home, conf, ["--paths", ".project_manager/tools/"])
+        external, monkeypatch, home, conf,
+        ["--paths", ".project_manager/tools/", "--no-gate"],
+    )
     assert reviewer_called is True    # 게이트 미차단 → 리뷰어 진행
     assert exit_code == 0
     assert "PM 홈" not in capsys.readouterr().err
@@ -281,7 +285,9 @@ def test_main_worktree_shape_no_block(external, monkeypatch, tmp_path, capsys):
     home, worktree = _make_pm_home(tmp_path)
     conf = {"additional_reviewer_enabled": "true"}
     # worktree 앵커: 실 board 미소유 → 게이트 미발화.
-    exit_code, reviewer_called = _run_main(external, monkeypatch, worktree, conf, [])
+    exit_code, reviewer_called = _run_main(
+        external, monkeypatch, worktree, conf, ["--no-gate"],
+    )
     assert reviewer_called is True
     assert exit_code == 0
     assert "PM 홈" not in capsys.readouterr().err

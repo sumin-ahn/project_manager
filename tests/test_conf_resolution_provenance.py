@@ -805,7 +805,7 @@ def test_external_review_actual_execution_keeps_same_provenance(
         }
 
     monkeypatch.setattr(external, "run_review", _run_review)
-    assert external.main(["--paths", "x.py"]) == 0
+    assert external.main(["--paths", "x.py", "--no-gate"]) == 0
     err = capsys.readouterr().err
     assert err.splitlines()[0].startswith("[external-review] config provenance:")
     assert seen["local_conf_path"] == engine / ".project_manager" / "local.conf"

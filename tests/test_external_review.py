@@ -790,10 +790,10 @@ def test_round_limit_knob_changes_threshold(external, monkeypatch, tmp_path):
 
 
 def test_no_gate_is_not_ledgered(external, monkeypatch, tmp_path):
-    """`--gate` 미지정 실행은 상한 대상 밖 — 무제한 진행·장부 미생성 (gate 단위 장부)."""
+    """명시 `--no-gate` 실행은 상한 대상 밖 — 무제한 진행·장부 미생성."""
     calls = _wire(external, monkeypatch, tmp_path)
     for _ in range(8):
-        assert external.main(["--paths", "x.py"]) == 0
+        assert external.main(["--paths", "x.py", "--no-gate"]) == 0
     assert calls["n"] == 8
     assert _ledger(external, tmp_path) == {}
 
@@ -834,7 +834,7 @@ def test_ack_wave_without_gate_still_warns_and_proceeds(
         external, monkeypatch, tmp_path, capsys):
     """`--ack-wave` 는 종전대로 경고 후 진행 — 리셋할 게이트 장부가 없을 뿐 실행은 정상이다."""
     _wire(external, monkeypatch, tmp_path)
-    assert external.main(["--ack-wave", "--paths", "x.py"]) == 0
+    assert external.main(["--ack-wave", "--paths", "x.py", "--no-gate"]) == 0
     assert "--gate 와 함께" in capsys.readouterr().err
     assert _ledger(external, tmp_path) == {}
 
@@ -1655,7 +1655,7 @@ def test_dry_run_and_empty_diff_do_not_spend_the_wave_budget(
 def test_ack_wave_without_gate_warns_and_proceeds(external, monkeypatch, tmp_path, capsys):
     """`--ack-wave` 를 --gate 없이 쓰면 경고 후 정상 진행 (장부 대상 아님·--ack-rounds 동형)."""
     _wire(external, monkeypatch, tmp_path)
-    assert external.main(["--ack-wave", "--paths", "x.py"]) == 0
+    assert external.main(["--ack-wave", "--paths", "x.py", "--no-gate"]) == 0
     err = capsys.readouterr().err
     assert "--ack-wave" in err and "--gate 와 함께" in err
     assert _ledger(external, tmp_path) == {}
@@ -2163,7 +2163,7 @@ def test_new_gate_key_run_is_quiet_about_the_legacy_key(
     """신키 conf 는 안내를 내지 않는다 — 조건 없이 항상 찍는 배선이면 red."""
     _wire(external, monkeypatch, tmp_path, conf={"additional_reviewer_enabled": "true"})
 
-    assert external.main(["--paths", "x.py"]) == 0
+    assert external.main(["--paths", "x.py", "--no-gate"]) == 0
     assert "external_review_enabled" not in capsys.readouterr().err
 
 
@@ -2204,7 +2204,7 @@ def test_legacy_knob_key_deprecations_are_printed_on_actual_run(
     """값을 공급한 구 노브 키마다 안내 1줄 — 실행 자체는 막지 않는다."""
     calls = _wire(external, monkeypatch, tmp_path, conf=_LEGACY_KNOB_CONF)
 
-    assert external.main(["--paths", "x.py"]) == 0
+    assert external.main(["--paths", "x.py", "--no-gate"]) == 0
     assert calls["n"] == 1                                   # 게이트(신키)는 정상 동작
     err = capsys.readouterr().err
     for key in external.LEGACY_KNOB_KEYS:
@@ -2232,7 +2232,7 @@ def test_new_knob_key_run_is_quiet_about_the_legacy_keys(
             "additional_reviewer_incomplete_round_limit": "1"}
     _wire(external, monkeypatch, tmp_path, conf=conf)
 
-    assert external.main(["--paths", "x.py"]) == 0
+    assert external.main(["--paths", "x.py", "--no-gate"]) == 0
     err = capsys.readouterr().err
     for legacy in external.LEGACY_KNOB_KEYS.values():
         assert legacy not in err, legacy

@@ -745,7 +745,7 @@ def test_review_run_records_raw_in_pm_home_and_unified_query_shows_it(
     monkeypatch.setattr(external, "REPO", engine_repo)
     _stub_reviewer(external, monkeypatch)
 
-    assert external.main([*review_paths, "--force"]) == 0
+    assert external.main([*review_paths, "--force", "--no-gate"]) == 0
     capsys.readouterr()
 
     home_ledger = pm_home / ".project_manager" / ".local" / "raw_outputs.json"
@@ -787,7 +787,7 @@ def test_legacy_diff_root_raw_anchor_writes_to_the_slot_ledger(
         )
 
     monkeypatch.setattr(external, "_raw_storage", legacy_raw_storage)
-    assert external.main(["--paths", "seed.txt", "--force"]) == 0
+    assert external.main(["--paths", "seed.txt", "--force", "--no-gate"]) == 0
     capsys.readouterr()
 
     assert not (
@@ -809,7 +809,7 @@ def test_unresolvable_pm_home_keeps_loud_diff_root_fallback(
     monkeypatch.setattr(external, "REPO", worktree)
     _stub_reviewer(external, monkeypatch)
 
-    assert external.main(["--paths", "seed.txt", "--force"]) == 0
+    assert external.main(["--paths", "seed.txt", "--force", "--no-gate"]) == 0
 
     err = capsys.readouterr().err
     assert err.splitlines()[0].startswith("경고: PM 홈 해소 실패")
@@ -1041,6 +1041,6 @@ def test_main_clears_raw_anchor_between_calls(
     monkeypatch.setattr(external, "REPO", worktree)
     _stub_reviewer(external, monkeypatch)
 
-    assert external.main(["--paths", "seed.txt", "--force"]) == 0
+    assert external.main(["--paths", "seed.txt", "--force", "--no-gate"]) == 0
     capsys.readouterr()
     assert external._PM_HOME_OVERRIDE is None

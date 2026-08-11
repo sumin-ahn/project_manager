@@ -508,7 +508,7 @@ def test_copied_home_config_defaults_cannot_change_argv_or_ledger(
                     root=repo / "mirror", tree=repo / "mirror-tree", home=home,
                     files=1, skipped_unsafe=0, git_repo=True))
             (repo / "mirror-tree").mkdir(parents=True, exist_ok=True)
-            assert external.main(["--paths", "x.py"]) == 0
+            assert external.main(["--paths", "x.py", "--no-gate"]) == 0
             capsys.readouterr()
         rows = _raw_ledger(repo)
         assert len(rows) == 1
@@ -567,7 +567,7 @@ def test_opencode_prompt_file_is_0600_and_removed_after_success_and_failure(
     reviewer = _FakeReviewer(stdout=_wire("opencode"), rc=rc)
     _wire_main(external, monkeypatch, repo, reviewer)
 
-    external.main(["--paths", "x.py"])
+    external.main(["--paths", "x.py", "--no-gate"])
     err = capsys.readouterr().err
 
     call = reviewer.calls[0]
@@ -603,7 +603,7 @@ def test_prompt_file_cleanup_failure_is_loud_and_does_not_mask_the_result(
     _wire_main(external, monkeypatch, repo, reviewer)
     _failing_prompt_unlink(monkeypatch)
 
-    rc = external.main(["--paths", "x.py"])
+    rc = external.main(["--paths", "x.py", "--no-gate"])
     captured = capsys.readouterr()
 
     # 주 결과 보존 — 판정·종료코드·raw 박제 어느 것도 정리 실패에 오염되지 않는다.
@@ -848,7 +848,7 @@ def test_malformed_wire_does_not_send_the_operator_down_the_auth_path(
     reviewer = _FakeReviewer(stdout=_malformed_wire('{"type":"result","result":{"a":1}}'))
     _wire_main(external, monkeypatch, repo, reviewer)
 
-    assert external.main(["--paths", "x.py"]) == 1
+    assert external.main(["--paths", "x.py", "--no-gate"]) == 1
     captured = capsys.readouterr()
 
     assert "인증 입력이 빠져 실패했을 수" not in captured.err
@@ -888,7 +888,7 @@ def test_legacy_unpinned_model_is_loud_in_every_provenance_surface(
     assert f"model={external.UNPINNED_MODEL_LABEL}" in preview.out
     assert "command: codex exec --model gpt-x --sandbox read-only" in preview.out
 
-    assert external.main(["--paths", "x.py"]) == 0
+    assert external.main(["--paths", "x.py", "--no-gate"]) == 0
     err = capsys.readouterr().err
     first = err.splitlines()[0]
     assert first.startswith("[external-review] config provenance:")
@@ -937,7 +937,7 @@ def test_structured_provenance_is_one_string_across_four_surfaces(
     assert f"source={external.REVIEWER_SOURCE_STRUCTURED}" in preview
     assert f"harness={harness}, model={model}, reasoning={reasoning}" in preview
 
-    assert external.main(["--paths", "x.py"]) == 0
+    assert external.main(["--paths", "x.py", "--no-gate"]) == 0
     first = capsys.readouterr().err.splitlines()[0]
     assert f"local_conf={conf_path}" in first
     assert (f"source={external.REVIEWER_SOURCE_STRUCTURED}, harness={harness}, "
@@ -974,7 +974,7 @@ def test_dry_run_and_execution_render_the_same_command_for_opencode_placeholders
     assert external.REVIEWER_CWD_PLACEHOLDER in target.command
     assert external.REVIEWER_PROMPT_FILE_PLACEHOLDER in target.command
 
-    assert external.main(["--paths", "x.py"]) == 0
+    assert external.main(["--paths", "x.py", "--no-gate"]) == 0
     capsys.readouterr()
     argv = reviewer.calls[0]["argv"]
     # 실 argv 는 같은 자리에 실제 값이 들어가고, 나머지 토큰 순서/내용은 정체 문자열과 같다.
@@ -2028,7 +2028,9 @@ def test_permitted_run_still_creates_the_requested_output_dir(
     _wire_main(external, monkeypatch, repo, reviewer)
     outdir = tmp_path / "raw-out"
 
-    assert external.main(["--paths", "x.py", "--output-dir", str(outdir)]) == 0
+    assert external.main([
+        "--paths", "x.py", "--no-gate", "--output-dir", str(outdir),
+    ]) == 0
     capsys.readouterr()
 
     assert outdir.is_dir()
@@ -2073,7 +2075,9 @@ def test_attested_run_proceeds_and_labels_the_boundary_everywhere(
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
 
-    assert external.main(["--paths", "x.py", external.CODEX_EGRESS_FLAG]) == 0
+    assert external.main([
+        "--paths", "x.py", "--no-gate", external.CODEX_EGRESS_FLAG,
+    ]) == 0
     err = capsys.readouterr().err
 
     assert len(reviewer.calls) == 1                       # 실행됨(sandbox 완화 시도 없음)
