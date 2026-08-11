@@ -182,6 +182,7 @@ STAMPED_MODULES = (
     "console_encoding.py",
     "pm_delegate.py",
     "delegate_scope.py",
+    "delegate_channel_guard.py",
     "pm_relay.py",
     "external_review.py",
     "gate_snapshot.py",

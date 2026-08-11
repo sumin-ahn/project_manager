@@ -4577,7 +4577,7 @@ def test_add_harness_guest_registration_within_namespace_or_flavor_render(
 #   `run_tests_hook.sh` + `precompact_capture_hook.sh` 8. 구조 단언과 별개로 **수**를 못박아,
 #   새로 얹을 때 그것이 guest 채널을 타는지 사람이 한 번 확인하게 만든다(등재 누락 = 그 하네스의
 #   영구 동결). codex 의 2번째가 T-0584 로 편입된 execpolicy rules 다.
-_GUEST_ENGINE_ROW_COUNT = {"codex": 2, "opencode": 4, "claude": 8}
+_GUEST_ENGINE_ROW_COUNT = {"codex": 2, "opencode": 4, "claude": 9}
 
 
 @pytest.mark.parametrize("base,added", _ADD_HARNESS_APPLY_PAIRS)

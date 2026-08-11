@@ -65,6 +65,7 @@ CLAUDE_ONLY_PATHS = {
     ".claude/ctx_statusline.py", ".claude/ctx_statusline.sh",
     ".claude/precompact_capture_hook.sh",
     ".claude/pm_orch_claude.py", ".claude/run_tests_hook.sh",
+    ".claude/delegate_channel_guard_hook.sh",
 }
 # codex 트리(ADR-0070)의 정당한 manifest 차이(3-way·화이트리스트). claude_code 대비:
 #   codex 가 추가: .codex/agents(TOML 4축 custom agent·claude .claude/agents 대응) · .agents/skills
@@ -97,6 +98,7 @@ CLAUDE_HOOK_PATHS = frozenset({
     ".claude/ctx_statusline.py", ".claude/ctx_statusline.sh",
     ".claude/precompact_capture_hook.sh",
     ".claude/pm_orch_claude.py", ".claude/run_tests_hook.sh",
+    ".claude/delegate_channel_guard_hook.sh",
 })
 OPENCODE_HOOK_PATHS = frozenset({
     ".opencode/lib", ".opencode/plugins", ".opencode/pm_orch_opencode.py",

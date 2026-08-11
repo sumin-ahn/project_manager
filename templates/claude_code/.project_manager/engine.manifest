@@ -11,8 +11,8 @@
 #    파일이라 pm_update 가 덮으면 커스터마이즈 손실. 대신 파일 자체가 portable-by-construction —
 #    치환 토큰·절대경로 0(${CLAUDE_PROJECT_DIR} + 래퍼 self-resolve)이라 import 복사만으로 어느
 #    머신/프로젝트에서든 정확 동작(재작성 채널 불요). 머신-특정 오버라이드는 settings.local.json
-#    (gitignore). ⚠️ **훅 스크립트/드라이버 8종은 manifest 안이다** — ctx_guard.py·ctx_stop_hook.py·
-#    ctx_stop_hook.sh·ctx_statusline.py·ctx_statusline.sh·precompact_capture_hook.sh·pm_orch_claude.py·run_tests_hook.sh
+#    (gitignore). ⚠️ **훅 스크립트/드라이버 9종은 manifest 안이다** — ctx_guard.py·ctx_stop_hook.py·
+#    ctx_stop_hook.sh·ctx_statusline.py·ctx_statusline.sh·precompact_capture_hook.sh·pm_orch_claude.py·run_tests_hook.sh·delegate_channel_guard_hook.sh
 #    (아래 "서브에이전트 훅/드라이버" 절 등재·T-0305 로 전환). settings.json 과 같은 취급이라던
 #    옛 서술은 실측과 어긋나 정정했다. `.claude/` 안에서 **미등재인 건 settings.json 뿐**이다.
 #    이 소유 분할이 곧 세대 혼합 창이라(config 는 채택자·훅 파일은 엔진) pm_update 가 훅 세트
@@ -65,6 +65,8 @@
 #   단일 구현. board(board.lock·board-git.lock)·pm_log(log.lock)·pm_relay(raw 장부 .lock)가
 #   소비한다(락 파일 경로 규약은 각 도구 소유). 신설 도구라 등록 필수(미등록=전파 안 됨·pm_render 사례).
 .project_manager/tools/file_lock.py
+# delegate_channel_guard: claude PreToolUse(Agent) 위임 채널 가드 — local.conf delegate 매핑 불일치 시 deny·자체 고장 fail-open (T-0633). 래퍼 delegate_channel_guard_hook.sh 는 claude 어댑터층(ADAPTER_HOOK_SET)
+.project_manager/tools/delegate_channel_guard.py
 # delegate_scope: 위임 전/후 porcelain 상태를 비교해 ticket touches 밖 변경을 loud 경고로
 #   표면화하는 비차단 판정기(T-0462). PM-home 좌표는 repo_coordinates 공용 normalizer를 재사용.
 .project_manager/tools/delegate_scope.py
@@ -115,6 +117,7 @@
 .claude/ctx_statusline.sh  @source=templates/claude_code/.claude/ctx_statusline.sh
 .claude/precompact_capture_hook.sh  @source=templates/claude_code/.claude/precompact_capture_hook.sh
 .claude/pm_orch_claude.py  @source=templates/claude_code/.claude/pm_orch_claude.py
+.claude/delegate_channel_guard_hook.sh  @source=templates/claude_code/.claude/delegate_channel_guard_hook.sh
 .claude/run_tests_hook.sh
 
 # ── manifest 자기전파 (B-selfprop·T-0305·OQ-B1) ──────────────────

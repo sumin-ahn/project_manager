@@ -929,7 +929,11 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   선행 마감과 충돌하면 전용 타입(`RawRecordAlreadyFinished`)만 잡아 경고로 강등한다 —
     #   첫 마감 보존이 계약이고 회신은 raw 파일에 이미 박제돼 있어 rc 를 뒤집지 않는다.
     #   marked skew 는 그 타입이 아니므로 이 경계가 흡수하지 않는다.
-    assert len(report.boundaries) == 183, "propagation sweep boundary ratchet changed"
+    # 184 = 183 + T-0633 delegate_channel_guard 훅 fail-open 경계 하나. PreToolUse 훅은 가드
+    #   자신의 고장(사본 skew 포함)으로 정상 위임을 막지 않는 것이 계약이라, 등록 사유
+    #   (`hook_fail_open`) 기반 recovery marker 로 흡수하고 skew 진단(pm-update 처방)은
+    #   stderr 로 남긴다. 여기서 fail-loud 로 올리면 부분 동기 하나가 모든 Agent 호출을 막는다.
+    assert len(report.boundaries) == 184, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

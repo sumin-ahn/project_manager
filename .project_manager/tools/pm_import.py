@@ -611,6 +611,7 @@ ADAPTER_HOOK_SET = {
             ".claude/ctx_stop_hook.sh",
             ".claude/ctx_statusline.py",
             ".claude/ctx_statusline.sh",
+            ".claude/delegate_channel_guard_hook.sh",
             ".claude/precompact_capture_hook.sh",
             ".claude/pm_orch_claude.py",
             ".claude/run_tests_hook.sh",

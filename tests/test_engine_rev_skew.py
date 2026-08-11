@@ -308,13 +308,15 @@ def test_engine_rev_skew_absorption_ledger_owners_are_a_closed_set():
 
     `pm_update` 는 skew 를 실제로 **고치는** 복구 채널이라 자기 실행 중의 rev 혼합을 흡수하고,
     `external_review` 는 스폰 전 중단의 정리 경계 하나만 흡수한다(주 예외를 덮지 않기 위해).
-    그 밖의 도구에서 skew 는 실결함 신호이므로 fail-loud 다 — 새 도구가 조용히 완화 지점을
-    들이면 여기서 red 가 된다."""
+    `delegate_channel_guard` 는 PreToolUse 훅 fail-open 경계 하나만 흡수한다(T-0633 — 가드
+    자신의 고장[사본 skew 포함]이 정상 Agent 위임을 막지 않는 것이 계약·skew 진단은 stderr 로
+    남긴다). 그 밖의 도구에서 skew 는 실결함 신호이므로 fail-loud 다 — 새 도구가 조용히 완화
+    지점을 들이면 여기서 red 가 된다."""
     owners = sorted(
         path.name for path in TOOLS.glob("*.py")
         if "_ENGINE_REV_SKEW_RECOVERY_REASONS" in path.read_text(encoding="utf-8")
     )
-    assert owners == ["external_review.py", "pm_update.py"]
+    assert owners == ["delegate_channel_guard.py", "external_review.py", "pm_update.py"]
 
 
 def test_pm_config_load_module_unstamped_sibling_no_false_positive(tmp_path):

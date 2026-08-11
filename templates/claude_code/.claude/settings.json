@@ -92,6 +92,16 @@
             "timeout": 15
           }
         ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/delegate_channel_guard_hook.sh",
+            "timeout": 15
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -128,7 +138,7 @@
       }
     ]
   },
-  "_comment": "Claude Code 프로젝트 공통 settings (git tracked·멀티-유저 공유 안전·T-0202 portable-by-construction). 이 파일은 치환 토큰·절대경로 0 — 모든 머신/프로젝트에서 byte-identical 하게 동작하므로 import/update 가 경로를 재작성할 필요가 없다(pm_update 는 이 파일을 덮지 않음·인스턴스 소유). 네이티브 auto-compact 는 autoCompactEnabled:true 로 활성(top-level 스키마 정본·env DISABLE_AUTO_COMPACT 중복 제거·T-0300·claude-code-guide 확인). PreCompact는 durable breadcrumb와 checkpoint 골격을 만들고, PostCompact는 엔진 snapshot을 marker에 저장한다. 직후 첫 PreToolUse/UserPromptSubmit이 그 최종 텍스트를 additionalContext로 1회 주입·소거한다. ctx_stop_hook의 기존 nudge/nudge2/stop 밴드는 그대로 비차단이며 PostCompact에서 사이클 marker를 재무장한다. 모든 경계 subprocess 출력과 실패는 흡수한다. PreToolUse 출력에는 permissionDecision 을 두지 않아 정상 권한 흐름을 유지하며, stop 밴드도 최종 넛지일 뿐 prompt·도구·compaction 을 차단하지 않으며, compaction 후 유효한 ok 실측 재무장도 보조로 유지한다(ADR-0081). 서브에이전트(sidechain·transcript isSidechain:true)는 checkpoint 안내가 무의미해 면제를 유지하며 auto-compact 로 자체 정리한다. 두 Bash timeout의 역할은 분리한다. BASH_DEFAULT_TIMEOUT_MS=1800000(30분)은 timeout을 명시하지 않은 일반 명령의 기본값으로, 대형 repo `worktree add`(로컬 bare→full checkout·느린 디스크/VPN/Windows)가 하네스 bash 툴 기본 2분/10분 상한에 false-kill 되던 것을 막되 멈춘 무-파라미터 명령을 반나절 살려두지 않는다. BASH_MAX_TIMEOUT_MS=29300000(8시간 8분 20초)은 호출자가 timeout을 명시할 때 허용되는 상한이며 **엔진의 최악 primary+fallback 실행 경로보다 위**여야 한다 — 안 그러면 엔진이 자기 타임아웃을 분류(인프라 실패 → 폴백)하고 부분 산출물을 raw 에 박제하기 전에 하네스가 먼저 죽여 진단이 통째로 사라진다(원인 불명 kill 누적의 한 축·무출력 kill 실물 관찰). DEFAULT는 의도적으로 위임 최악 예산보다 작고, cross 위임 호출 카드가 Bash 툴의 MAX timeout을 명시한다. 구 5시간 MAX는 opencode startup 재시도와 별도 폴백 예산의 합을 담지 못했다. 부등식 `max(유효 primary+fallback 실행 경로) + 여유 ≤ MAX` 는 tests/test_settings_hygiene.py 가 기계 단언하며, 별도 단언이 `DEFAULT < MAX`와 `DEFAULT < 위임 최악 예산`을 고정한다(T-0293·3-layer 타임아웃 중 claude 하네스 레이어·엔진 `PM_GIT_TIMEOUT`[T-0292]·opencode `OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS` 와 대칭). 넘으면 엔진 트립 메시지가 터미널 직접 실행 안내. env 는 시작 시 read — 값 변경 시 세션 재시작. 훅 경로는 런타임 머신별 해소 ${CLAUDE_PROJECT_DIR} + 인터프리터는 래퍼(.sh)가 self-resolve(python3→python — PY 치환토큰 폐기·T-0202). statusLine 은 ${CLAUDE_PROJECT_DIR} 미지원이라 상대경로 래퍼(cwd=프로젝트루트면 동작·아니면 무표시 graceful·필요시 settings.local.json 절대경로 override). permissions.allow 는 보수적 기본값(python/python3/py 와일드카드가 PM 도구 호출 커버). 머신-특정 권한/오버라이드는 settings.local.json (gitignore) 으로 분리.",
+  "_comment": "Claude Code 프로젝트 공통 settings (git tracked·멀티-유저 공유 안전·T-0202 portable-by-construction). 이 파일은 치환 토큰·절대경로 0 — 모든 머신/프로젝트에서 byte-identical 하게 동작하므로 import/update 가 경로를 재작성할 필요가 없다(pm_update 는 이 파일을 덮지 않음·인스턴스 소유). 네이티브 auto-compact 는 autoCompactEnabled:true 로 활성(top-level 스키마 정본·env DISABLE_AUTO_COMPACT 중복 제거·T-0300·claude-code-guide 확인). PreCompact는 durable breadcrumb와 checkpoint 골격을 만들고, PostCompact는 엔진 snapshot을 marker에 저장한다. 직후 첫 PreToolUse/UserPromptSubmit이 그 최종 텍스트를 additionalContext로 1회 주입·소거한다. ctx_stop_hook의 기존 nudge/nudge2/stop 밴드는 그대로 비차단이며 PostCompact에서 사이클 marker를 재무장한다. 모든 경계 subprocess 출력과 실패는 흡수한다. ctx 훅의 PreToolUse 출력에는 permissionDecision 을 두지 않아 정상 권한 흐름을 유지하며(deny 를 내는 PreToolUse 훅은 둘 — git-anchor(Bash matcher·pm_orch_claude.py)와 위임 채널 가드 delegate_channel_guard_hook.sh(Agent matcher 한정·local.conf delegate 매핑 불일치 시 deny+pm_delegate 처방·opt-in OFF 형상은 통과·가드 자체 고장은 fail-open·T-0633)), stop 밴드도 최종 넛지일 뿐 prompt·도구·compaction 을 차단하지 않으며, compaction 후 유효한 ok 실측 재무장도 보조로 유지한다(ADR-0081). 서브에이전트(sidechain·transcript isSidechain:true)는 checkpoint 안내가 무의미해 면제를 유지하며 auto-compact 로 자체 정리한다. 두 Bash timeout의 역할은 분리한다. BASH_DEFAULT_TIMEOUT_MS=1800000(30분)은 timeout을 명시하지 않은 일반 명령의 기본값으로, 대형 repo `worktree add`(로컬 bare→full checkout·느린 디스크/VPN/Windows)가 하네스 bash 툴 기본 2분/10분 상한에 false-kill 되던 것을 막되 멈춘 무-파라미터 명령을 반나절 살려두지 않는다. BASH_MAX_TIMEOUT_MS=29300000(8시간 8분 20초)은 호출자가 timeout을 명시할 때 허용되는 상한이며 **엔진의 최악 primary+fallback 실행 경로보다 위**여야 한다 — 안 그러면 엔진이 자기 타임아웃을 분류(인프라 실패 → 폴백)하고 부분 산출물을 raw 에 박제하기 전에 하네스가 먼저 죽여 진단이 통째로 사라진다(원인 불명 kill 누적의 한 축·무출력 kill 실물 관찰). DEFAULT는 의도적으로 위임 최악 예산보다 작고, cross 위임 호출 카드가 Bash 툴의 MAX timeout을 명시한다. 구 5시간 MAX는 opencode startup 재시도와 별도 폴백 예산의 합을 담지 못했다. 부등식 `max(유효 primary+fallback 실행 경로) + 여유 ≤ MAX` 는 tests/test_settings_hygiene.py 가 기계 단언하며, 별도 단언이 `DEFAULT < MAX`와 `DEFAULT < 위임 최악 예산`을 고정한다(T-0293·3-layer 타임아웃 중 claude 하네스 레이어·엔진 `PM_GIT_TIMEOUT`[T-0292]·opencode `OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS` 와 대칭). 넘으면 엔진 트립 메시지가 터미널 직접 실행 안내. env 는 시작 시 read — 값 변경 시 세션 재시작. 훅 경로는 런타임 머신별 해소 ${CLAUDE_PROJECT_DIR} + 인터프리터는 래퍼(.sh)가 self-resolve(python3→python — PY 치환토큰 폐기·T-0202). statusLine 은 ${CLAUDE_PROJECT_DIR} 미지원이라 상대경로 래퍼(cwd=프로젝트루트면 동작·아니면 무표시 graceful·필요시 settings.local.json 절대경로 override). permissions.allow 는 보수적 기본값(python/python3/py 와일드카드가 PM 도구 호출 커버). 머신-특정 권한/오버라이드는 settings.local.json (gitignore) 으로 분리.",
   "statusLine": {
     "type": "command",
     "command": ".claude/ctx_statusline.sh",
