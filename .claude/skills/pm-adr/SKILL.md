@@ -94,8 +94,9 @@ python3 .project_manager/tools/pm_adr.py new \
 - contradiction lint는 이 명령에 배선된다. amends/supersedes 시 `contradiction_lint.py`가 개정 ADR의
   `[[wikilink]]` 참조 문서를 stderr advisory로 표시한다. 탐지는 LLM 기본 dry·미호출·프롬프트 표면화,
   판정은 사람이며 차단하지 않는다. 신규 plain 발행과 refines는 발화하지 않는다.
-- canonical `.claude/skills/*/SKILL.md` 하나를 claude·opencode가 소비한다. 별도 opencode command 사본은
-  출하하지 않는다.
+- 저작 canonical 은 `.claude/skills/*/SKILL.md` 하나다. 모델 진입(스킬 툴)과 사람 진입(슬래시
+  팔레트)은 별개 표면이라 opencode 는 `.opencode/command/*.md` 사본도 함께 출하하며, 그 사본은
+  canonical 에서 기계 생성한다(손 편집 금지).
 - backbone 기계 동작은 `tests/test_pm_adr.py`, 실제 스킬 흐름은 on-demand `PM_ORCH_LIVE` 라이브
   하네스로 검증한다.
 
