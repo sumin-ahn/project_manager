@@ -174,7 +174,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
-ENGINE_REV = "v1.7.3"
+ENGINE_REV = "v1.7.4"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -2169,6 +2169,106 @@ def ensure_task_pm_state(name: str) -> Path:
     return target
 
 
+def slot_pm_state_file(slot: str) -> Path:
+    """slot 연속성 앵커 `.local/slots/<repo>_<N>/pm_state.md` 경로.
+
+    lease 표준형(`work/<repo>_<N>`)과 handoff 표준형(`<repo>_<N>`)을 같은 canonical
+    디렉토리로 모은다. `pm_handoff._slots_root() / slot / "pm_state.md"`와 동형이다.
+    """
+    normalized = _normalize_slot(slot)
+    return LOCAL_DIR / "slots" / Path(normalized).name / "pm_state.md"
+
+
+def _load_pm_handoff_for_slot_state():
+    """slot state 경로·마이그레이션의 단일 진실인 ``pm_handoff``를 fail-loud 로 로드한다."""
+    path = Path(__file__).resolve().with_name("pm_handoff.py")
+    if not path.exists():
+        raise RuntimeError(
+            "pm_handoff.py 부재 — slot pm_state 마이그레이션 계약을 해소할 수 없다"
+        )
+    # 로드/검증 실패는 그대로 fail-loud. 복구 경계가 아니므로 broad catch로 감싸 엔진
+    # fail-soft 경계를 늘리지 않는다.
+    module = _load_module_from_path(
+        path,
+        "pm_handoff.py",
+        verifier=_verify_engine_rev,
+    )
+    # hermetic 호출부가 worktree_pool.REPO를 재배선해도 handoff의 호출시점 경로 함수들이
+    # 같은 프로젝트를 보게 한다. explicit slot을 넘기므로 lease/areas 자동해소는 타지 않는다.
+    module.REPO = REPO
+    return module
+
+
+def _ensure_slot_pm_state_locked(
+    slot: str,
+    lease: "Lease | None",
+    task_names: set[str],
+) -> Path:
+    """락 안의 lease 스냅샷으로 slot-mode pm_state를 보장한다."""
+    normalized = _normalize_slot(slot)
+    target = slot_pm_state_file(normalized)
+    if target.exists():
+        return target
+
+    if (
+        lease is None
+        or lease.slot != normalized
+        or lease.state != "leased"
+        or lease.role != "work"
+        or not lease.session
+        or lease.session in task_names
+    ):
+        return target
+
+    handoff = _load_pm_handoff_for_slot_state()
+    migrated = Path(handoff._migrate_legacy_pm_state(normalized))
+    if migrated != target:
+        raise RuntimeError(
+            "slot pm_state 경로 drift — "
+            f"worktree_pool={target}, pm_handoff={migrated}"
+        )
+    if target.exists():
+        return target
+
+    template = _task_pm_state_template_file()
+    if not template.exists():
+        raise FileNotFoundError(
+            f"slot pm_state template 부재: {template} — slot state를 만들 수 없다"
+        )
+    rendered = _render_initial_task_pm_state(
+        template.read_text(encoding="utf-8"),
+        datetime.date.today().isoformat(),
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp.write_text(rendered, encoding="utf-8")
+    os.replace(str(tmp), str(target))
+    return target
+
+
+def ensure_slot_pm_state(slot: str) -> Path:
+    """slot-mode lease의 pm_state를 즉시 보장한다.
+
+    발동 술어는 session 문자열의 모양이 아니라 장부 정체성이다. ``leased`` 상태의 일반 작업
+    슬롯 중 session이 있고, 그 session이 task 장부 이름이 아닌 lease만 slot-mode다. 따라서
+    ``_default_session()``이 env/기존 lease/local.conf/host-pid 중 무엇을 내도 slot state를 만들고,
+    task 소유·readonly(무소유) 슬롯은 거짓 앵커를 만들지 않는다.
+
+    canonical 파일이 없으면 템플릿보다 먼저 ``pm_handoff._migrate_legacy_pm_state``를 호출해
+    handoff와 똑같은 bare 슬롯 dir backfill → legacy 이동 체인을 탄다. 그래도 없을 때만 tracked
+    template을 첫 세션 형태로 렌더해 원자 교체한다. 이미 있으면 byte 불변 no-op이고 template
+    부재/손상은 fail-loud 한다.
+    """
+    normalized = _normalize_slot(slot)
+    with _lease_lock():
+        lease = next(
+            (item for item in _read_ledger_strict() if item.slot == normalized),
+            None,
+        )
+        task_names = {task.name for task in _read_tasks_strict()}
+        return _ensure_slot_pm_state_locked(normalized, lease, task_names)
+
+
 def _read_tasks() -> list[Task]:
     """장부의 `tasks` 컬렉션을 읽는다. 부재/손상 → 빈 리스트(fail-soft). **_lease_lock 보유 전제**."""
     rows = _read_ledger_raw().get("tasks", [])
@@ -2519,7 +2619,7 @@ def alloc(
     owner_task: str | None = None,
     git_runner: GitRunner | None = None,
 ) -> Lease:
-    """repo 슬롯을 리스한다.
+    """repo 슬롯을 리스하고 slot-mode 정체성의 pm_state를 보장한다.
 
     - **idempotent** — 이 세션(session)이 이 repo 에 이미 leased 슬롯을 갖고 있으면 그걸
       반환한다(get-or-create-my-lease). branch 가 주어지고 슬롯의 live HEAD 와 다르면 같은
@@ -2555,6 +2655,14 @@ def alloc(
         # 슬롯-세션 alloc(owner_task=None)이 branch 매칭으로 타 task 소유 슬롯을 탈취하는 것을 막는다.
         task_names = {t.name for t in _read_tasks_strict()}
 
+        def _finalize(lease: Lease, *, write_ledger: bool) -> Lease:
+            if not task_alloc:
+                # (a) pm_state를 lease 장부 최종 확정 전에 만들어 template 실패 시 장부를 호출 전 상태로 둔다.
+                _ensure_slot_pm_state_locked(lease.slot, lease, task_names)
+            if write_ledger:
+                _write_ledger(leases)
+            return lease
+
         # 1) idempotent — 이 세션의 기존 leased 슬롯 (같은 repo). **task-명의 alloc 은 이 경로를
         #    건너뛴다**(항상 신규 대여) — 멱등이 기존 슬롯을 신규처럼 반환하는 silent
         #    같은 repo 복수 보유를 지원한다. 슬롯-세션 도착 alloc 만 idempotent.
@@ -2564,6 +2672,7 @@ def alloc(
             if lease.repo == repo and lease.state == "leased" and lease.session == sess:
                 # 슬롯이 이미 target_branch 인가 = 슬롯 worktree 의 live HEAD 로 판정(
                 # git=진실·저장 복사본 미사용). 아니면 재체크아웃(git 이 권위).
+                ledger_changed = False
                 if (target_branch is not None
                         and current_branch(lease.slot, git_runner=git_runner) != target_branch):
                     # checkout 실패면 raise — git=진실이므로 부분 실패 시 호출부에 위임.
@@ -2571,8 +2680,8 @@ def alloc(
                     # 브랜치 재배치가 일어난 경우만 arrival 스냅 갱신 + 장부 write(base 보존).
                     # 순수 재진입(브랜치 동일)은 상태 변화가 없어 스냅/write 를 생략한다(재진입 비용 0).
                     _apply_git_snapshot(lease, git_runner=git_runner)
-                    _write_ledger(leases)
-                return lease
+                    ledger_changed = True
+                return _finalize(lease, write_ledger=ledger_changed)
 
         # 2) resume/branch 우선 re-alloc — 같은 작업스트림(브랜치)의 슬롯 재부착(연속성).
         #    **task-명의 alloc 은 이 경로도 건너뛴다**(항상 신규 idle 대여) — owner_task 에
@@ -2610,8 +2719,7 @@ def alloc(
                     lease.started = _now_utc()
                     lease.bound = False  # pool 재부착 — 사람 bind 마커 해제(task 소유는 tasks 장부가 진실).
                     _apply_git_snapshot(lease, git_runner=git_runner)  # arrival 스냅(기대 baseline·base 보존).
-                    _write_ledger(leases)
-                    return lease
+                    return _finalize(lease, write_ledger=True)
 
         # 3) idle 슬롯 리스 — **최소 번호 우선**(결정론 ⓒ·번호 안정). 같은 repo 의 idle
         #    후보를 슬롯 번호 오름차순으로 정렬해 최소 가용 번호부터 대여한다(대여 중 불변·반납 후
@@ -2645,8 +2753,7 @@ def alloc(
             # 아니라 tasks 장부 조인이 담당한다.
             lease.bound = False
             _apply_git_snapshot(lease, git_runner=git_runner)  # arrival 스냅(기대 baseline·base 보존).
-            _write_ledger(leases)
-            return lease
+            return _finalize(lease, write_ledger=True)
 
         # 4) 풀 소진 — idle 슬롯 없음. 새 슬롯 생성은 fs 행위라 사용자 게이트(호출부).
         raise NeedsCreate(repo)
@@ -3169,8 +3276,10 @@ def create_slot(
                 raise RuntimeError(
                     f"git worktree add failed for {slot!r} (rc={rc}, out={out!r}). {bare_hint}{branch_hint}{orphan_hint}"
                     f"매우 느린 op(대형 repo·느린 디스크/VPN)이면 timeout({timeout_desc}·PM_GIT_TIMEOUT)에 "
-                    f"걸렸을 수 있다 — 터미널에서 `pm-config worktree add {repo}` 를 직접 실행하면 진행상황이 "
-                    f"보이고, `PM_GIT_TIMEOUT=none` 으로 무제한 실행할 수 있다."
+                    f"걸렸을 수 있다 — 먼저 사용자에게 repo {repo!r} 슬롯 생성 승인을 "
+                    f"요청하라. 승인한 사용자만 터미널에서 `pm-config worktree add {repo} "
+                    f"--user-ack {repo}`를 대상값에 결속해 직접 실행하면 진행상황이 보이고, "
+                    f"`PM_GIT_TIMEOUT=none` 으로 무제한 실행할 수 있다(세션 자동 부착 금지)."
                 )
             # add 성공 — fs 에 worktree 존재. 이후 단계(submodule)/interrupt 실패 시 except 가 이 슬롯을
             # 롤백(remove)한다. add *자체* 실패면 worktree_created=False 라 remove 를 안 부른다(범위 유지).
@@ -3273,6 +3382,7 @@ def bind_slot(slot: str, repo: str, session: str, *, git_runner: GitRunner | Non
     """
     with _lease_lock():
         leases = _read_ledger_strict()
+        task_names = {task.name for task in _read_tasks_strict()}
         target = next((l for l in leases if l.slot == slot), None)
         # readonly 공유 슬롯은 바인딩(점유) 대상이 아니다 — bind 는 *점유*고
         # 0단계 carve-out은 *조회 지칭*만 허용한다(의미 불일치). readonly 를 무조건 leased 로 덮으면
@@ -3304,6 +3414,8 @@ def bind_slot(slot: str, repo: str, session: str, *, git_runner: GitRunner | Non
             target.bound = True
         # arrival git 스냅(기대 baseline·기존 base 보존·fail-soft — 슬롯 부재면 no-op).
         _apply_git_snapshot(target, git_runner=git_runner)
+        # (a) pm_state를 lease 장부 최종 확정 전에 만들어 template 실패 시 bound/session까지 미변경으로 둔다.
+        _ensure_slot_pm_state_locked(target.slot, target, task_names)
         _write_ledger(leases)
         return target
 

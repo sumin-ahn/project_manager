@@ -318,7 +318,7 @@ def _repository_query_batch():
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
-ENGINE_REV = "v1.7.3"
+ENGINE_REV = "v1.7.4"
 
 # rev 스탬프를 지닌 형제 파일만 대조 대상. AST deep-import 가드가 실제 target과 정합을 단언한다.
 _STAMPED_SIBLINGS = frozenset({"board.py", "repo_coordinates.py", "repo_owned_files.py"})
@@ -808,6 +808,41 @@ def _pathspec_observable(runner: GitRunner, pathspec: str, verified_at: str,
     return bool(out.strip())
 
 
+class _PageCovers(list):
+    """list 호환 covers + 그 페이지의 frontmatter ``repo:`` 소유 채널."""
+
+    def __init__(self, values, owner_repo):
+        super().__init__(values)
+        self.owner_repo = owner_repo
+
+
+def _missing_foreign_hierarchy(glob, covers, owner_repo: Path) -> bool:
+    """foreign-owned covers가 현재 checkout에 없는 최상위 계층인지 판정한다.
+
+    ``False``가 보수 기본값이다. 즉 parse_page가 보존한 ``repo: upstream`` 신호, 별개 git
+    저장소라는 정체성, literal 최상위 디렉토리의 부재를 모두 증명한 경우만 ``True``다.
+    """
+    if getattr(covers, "owner_repo", None) != "upstream":
+        return False
+    same_repository, _identity_error = _same_repository_checkouts(REPO, owner_repo)
+    if same_repository is not False:
+        return False
+    value = str(glob or "").strip()
+    parts = value.split("/", 1)
+    if len(parts) != 2:
+        return False  # 최상위 파일은 "부재 계층"으로 증명할 parent가 없다.
+    top_level = parts[0]
+    if not top_level or "*" in top_level:
+        return False  # wildcard 최상위는 어느 계층인지 확정할 수 없다.
+    try:
+        (REPO / top_level).stat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False  # 파일시스템 판정 실패를 downstream 완화로 흡수하지 않는다.
+    return False
+
+
 def covers_pathspecs(covers, *, repo: Path | None = None,
                      git_runner: GitRunner | None = None,
                      verified_at: str) -> tuple[list[str], list[str], list[str]]:
@@ -833,6 +868,11 @@ def covers_pathspecs(covers, *, repo: Path | None = None,
     **fail-soft**: git 부재·non-repo·rc≠0·예외인 pathspec 은 분류 불가라 어느 쪽에도 안 넣는다
     (거짓 분류 회피 — unmappable 과 구분: git 오류는 skip, 형식상 매핑불가는 unmappable). `verified_at`
     = pin(호출부가 anchor 유효성 검증 후 전달·range 양끝). `git_runner` 미지정 시 `_real_git_runner(repo)`.
+
+    ``parse_page``가 보존한 ``repo: upstream`` 페이지를 별개 downstream에서 판정할 때는, 현재
+    checkout에 literal 최상위 계층 자체가 없는 absent만 advisory 대상에서 제외한다. 소유 checkout
+    (동일 git 정체성), 현재 checkout에 계층이 있는 경로, 정체성/계층을 증명 못 한 경로는 종전처럼
+    전수 검증한다.
     """
     repo = repo or REPO
     runner = git_runner or _real_git_runner(repo)
@@ -850,7 +890,11 @@ def covers_pathspecs(covers, *, repo: Path | None = None,
         observable = _pathspec_observable(runner, spec, verified_at, empty_tree)
         if observable is None:
             continue  # git 오류·빈 트리 OID 산출 실패 — 거짓 분류 없이 skip(fail-soft).
-        (present if observable else absent).append(glob)  # 원본 글롭 보고
+        if observable:
+            present.append(glob)
+        elif not _missing_foreign_hierarchy(glob, covers, repo):
+            # 다른 repo 소유 페이지의 이 checkout 비출하 계층은 여기서 영구 검증할 수 없다.
+            absent.append(glob)
     return present, absent, unmappable
 
 
@@ -993,6 +1037,7 @@ def parse_page(path: Path) -> dict:
         owner_repo = fm.get("repo")
         if isinstance(owner_repo, str):
             owner_repo = owner_repo.strip()  # 명시 `repo: ""`는 "" 유지(self 흡수 금지).
+    covers = _PageCovers(covers, owner_repo)
     return {
         "path": path,
         "title": fm.get("title") or "",

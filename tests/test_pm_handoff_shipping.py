@@ -42,6 +42,18 @@ requires_git_binary = pytest.mark.skipif(
 )
 
 
+
+def _run_handoff(inst, **kw):
+    """핸드오프 실행 — 승인 게이트에 정식 승인값을 실어 통과시킨다.
+
+    이 모듈의 축은 승인 게이트가 아니다(그 축은 ``tests/test_pm_handoff_user_ack.py``가
+    소유한다). 승인 대상값은 task > 슬롯 이름 > legacy solo sentinel 순으로 정해진다.
+    """
+    if "user_ack" not in kw:
+        slot = kw.get("worktree_slot")
+        kw["user_ack"] = kw.get("task") or (slot.rsplit("/", 1)[-1] if slot else "solo")
+    return inst.run(**kw)
+
 def _load_module(name: str = "pm_handoff"):
     spec = importlib.util.spec_from_file_location(name, PM_HANDOFF_PY)
     mod = importlib.util.module_from_spec(spec)
@@ -354,7 +366,7 @@ def test_run_surfaces_shipping_change_nonblocking(hf, tmp_path, capsys):
             ".project_manager/tools/pm_handoff.py", "tests/test_x.py",
         ]),
     )
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
     assert rc == 0  # 비차단 — 출하 변경이 있어도 핸드오프 진행.
     out = capsys.readouterr().out
     assert "미검증 출하 변경" in out
@@ -365,7 +377,7 @@ def test_run_surfaces_shipping_change_nonblocking(hf, tmp_path, capsys):
 def test_run_surfaces_ambiguous_nonblocking(hf, tmp_path, capsys):
     """baseline 해소불가(분류불명) → "가능성 … 분류 불명 … release wave" surface·rc 0."""
     inst = _make_handoff(hf, tmp_path, git_runner=_git_stub(baseline_ok=False))
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
     assert rc == 0
     out = capsys.readouterr().out
     assert "분류 불명" in out
@@ -380,7 +392,7 @@ def test_run_reports_no_shipping_change(hf, tmp_path, capsys):
             ".project_manager/wiki/raw/spikes/s.md", "tests/test_x.py",
         ]),
     )
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
     assert rc == 0
     out = capsys.readouterr().out
     assert "출하 변경 없음" in out
@@ -397,7 +409,7 @@ def test_run_shipping_surface_never_blocks_handoff(hf, tmp_path):
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=["templates/opencode/AGENTS.md"]),
     )
-    rc = inst.run(session_num=7, wave_summary="x", dry_run=False, skip_pytest=False)
+    rc = _run_handoff(inst, session_num=7, wave_summary="x", dry_run=False, skip_pytest=False)
     assert rc == 0
     assert "PM 7차" in (tmp_path / "current.md").read_text(encoding="utf-8")
 
@@ -408,7 +420,7 @@ def test_run_dry_run_skips_shipping_surface(hf, tmp_path, capsys):
         hf, tmp_path,
         git_runner=_git_stub(diff_paths=[".project_manager/tools/pm_handoff.py"]),
     )
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=True, skip_pytest=False)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=True, skip_pytest=False)
     assert rc == 0
     out = capsys.readouterr().out
     assert "[dry-run] 출하 변경 surface skip" in out
@@ -422,7 +434,7 @@ def test_run_skips_shipping_surface_when_machine_regression_red(hf, tmp_path, ca
         git_runner=_git_stub(diff_paths=[".project_manager/tools/pm_handoff.py"]),
     )
     inst._run_pytest_fn = lambda: (1, "1 failed in 1.0s\n")  # 기계회귀 red.
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
     assert rc == 1
     out = capsys.readouterr().out
     assert "미검증 출하 변경" not in out  # 회귀에서 먼저 중단 → surface 미도달.

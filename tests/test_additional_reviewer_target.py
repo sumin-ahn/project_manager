@@ -15,7 +15,8 @@
 7. Codex egress 게이트(network-off 안전 경계) — 증명 없는 실행은 스폰 전에 끊고 `--force` 로도
    못 넘으며, dry-run 은 부작용 0 으로 처방만 낸다.
 8. 모듈 경계 — pm_relay 는 cycle-free(다른 엔진 표면을 읽지 않는다)·external_review 는
-   pm_delegate 를 import 하지 않는다·위임 공개 wrapper 는 T-0592 행동을 그대로 보존한다.
+   opencode 전달 사본만 pm_delegate에서 지연 재사용한다·위임 공개 wrapper 는 T-0592 행동을
+   그대로 보존한다.
 9. 문구 규율 — 사람 역할 이름은 **추가 리뷰어**, 상한은 anti-loop PM 자율 ack, 기계 식별자·전송
    문구는 불변.
 
@@ -27,6 +28,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import inspect
 import json
 import os
 import shlex
@@ -579,16 +581,17 @@ def test_opencode_prompt_file_is_0600_and_removed_after_success_and_failure(
     assert "프롬프트 파일 정리 실패" not in err             # 정상 정리는 조용하다
 
 
-def _failing_prompt_unlink(monkeypatch, reason: str = "정리 거부"):
-    """프롬프트 임시 파일의 unlink 만 실패시킨다(다른 경로의 정리는 그대로 둔다)."""
-    original = Path.unlink
+def _failing_prompt_unlink(external, monkeypatch, reason: str = "정리 거부"):
+    """공용 전달 seam의 prompt.md unlink만 실패시킨다(다른 경로 정리는 그대로 둔다)."""
+    delegate = external._load_delegate_transport()
+    original = delegate.os.unlink
 
-    def _unlink(self, *args, **kwargs):
-        if self.name.startswith("external_review_prompt_"):
+    def _unlink(path, *args, **kwargs):
+        if Path(path).name == "prompt.md":
             raise OSError(reason)
-        return original(self, *args, **kwargs)
+        return original(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "unlink", _unlink)
+    monkeypatch.setattr(delegate.os, "unlink", _unlink)
 
 
 def test_prompt_file_cleanup_failure_is_loud_and_does_not_mask_the_result(
@@ -601,7 +604,7 @@ def test_prompt_file_cleanup_failure_is_loud_and_does_not_mask_the_result(
                                           reasoning="medium"))
     reviewer = _FakeReviewer(stdout=_wire("opencode"))
     _wire_main(external, monkeypatch, repo, reviewer)
-    _failing_prompt_unlink(monkeypatch)
+    _failing_prompt_unlink(external, monkeypatch)
 
     rc = external.main(["--paths", "x.py", "--no-gate"])
     captured = capsys.readouterr()
@@ -613,9 +616,9 @@ def test_prompt_file_cleanup_failure_is_loud_and_does_not_mask_the_result(
     # 정리 실패는 loud 하고, 남은 파일을 경로로 지목한다.
     leftover = reviewer.calls[0]["prompt_file"]
     assert leftover.exists()                              # 실제로 남았다(주입한 형상 그대로)
-    assert "프롬프트 파일 정리 실패" in captured.err
+    assert "opencode 합성 프롬프트 삭제 실패" in captured.err
     assert str(leftover) in captured.err
-    assert "OSError" in captured.err and "정리 거부" in captured.err
+    assert "정리 거부" in captured.err
     monkeypatch.undo()                                    # 주입 해제 후 tmp 잔존물 회수
     leftover.unlink()
 
@@ -626,7 +629,7 @@ def test_prompt_file_cleanup_failure_still_propagates_the_primary_exception(
     target = external.resolve_reviewer_target(
         {"additional_reviewer.harness": "opencode",
          "additional_reviewer.model": "zai/glm-4.6"})
-    _failing_prompt_unlink(monkeypatch)
+    _failing_prompt_unlink(external, monkeypatch)
     seen: dict[str, Path] = {}
 
     with pytest.raises(RuntimeError, match="스폰 중 폭발"):
@@ -634,7 +637,7 @@ def test_prompt_file_cleanup_failure_still_propagates_the_primary_exception(
             seen["path"] = Path(argv[argv.index("--file") + 1])
             raise RuntimeError("스폰 중 폭발")
 
-    assert "프롬프트 파일 정리 실패" in capsys.readouterr().err
+    assert "opencode 합성 프롬프트 삭제 실패" in capsys.readouterr().err
     monkeypatch.undo()
     seen["path"].unlink()
 
@@ -2156,12 +2159,17 @@ def test_pm_relay_is_cycle_free(relay):
     assert Path(relay._load_file_lock().__file__).name == "file_lock.py"
 
 
-def test_external_review_never_imports_pm_delegate(external):
-    """역방향 deep-import 가 이미 있어 여기서 되부르면 순환이 된다."""
-    assert "pm_delegate.py" not in _sibling_loads("external_review.py")
+def test_external_review_reuses_only_pm_delegate_transport_seam(external):
+    """리뷰 축은 opencode 전달 사본만 실행 시점에 지연 로드해 복제 구현을 두지 않는다."""
+    assert "pm_delegate.py" in _sibling_loads("external_review.py")
     assert not hasattr(external, "pm_delegate")
     assert Path(external._load_relay().__file__).name == "pm_relay.py"
-    # 위임 쪽은 반대 방향 deep-import 를 계속 보유한다(순환이 되려면 이 짝이 필요하다).
+    assert Path(external._load_delegate_transport().__file__).name == "pm_delegate.py"
+    source = inspect.getsource(external._structured_transport)
+    assert "_save_opencode_transport_prompt" in source
+    assert "_cleanup_attempt_transport" in source
+    assert "mkstemp" not in source
+    # 위임 쪽 반대 방향 deep-import는 지연 함수 안에만 있어 import-time 순환은 생기지 않는다.
     assert "external_review.py" in _sibling_loads("pm_delegate.py")
 
 

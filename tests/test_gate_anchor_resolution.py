@@ -92,6 +92,43 @@ def _unregistered_worktree(tmp_path: Path) -> tuple[Path, Path]:
     return home, worktree
 
 
+def _enable_additional_review(repo: Path) -> None:
+    """실 전송 분기까지 태울 최소 opt-in conf."""
+    local = repo / ".project_manager" / "local.conf"
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_text("additional_reviewer_enabled=true\n", encoding="utf-8")
+
+
+def _stub_review_send(external, monkeypatch, tmp_path: Path) -> dict[str, int]:
+    """실 프로세스 없이 격리·전송 경계를 지나게 하는 최소 리뷰어 대역."""
+    calls = {"reviewer": 0}
+
+    def _workspace(*args, **kwargs):
+        root = tmp_path / f"reviewer-{calls['reviewer']}"
+        tree = root / "tree"
+        home = root / "home"
+        tree.mkdir(parents=True)
+        home.mkdir()
+        return external.ReviewerWorkspace(
+            root=root, tree=tree, home=home,
+            files=1, skipped_unsafe=0, git_repo=True,
+        )
+
+    def _review(*args, **kwargs):
+        calls["reviewer"] += 1
+        answer = "판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n"
+        return {
+            "reviewer": "x", "ok": True, "output": answer, "answer": answer,
+            "verdict": {"has_must_fix": False, "has_pass": True}, "file": None,
+            "failed": False, "started": True,
+            "any_must_fix": False, "all_pass": True,
+        }
+
+    monkeypatch.setattr(external, "create_reviewer_workspace", _workspace)
+    monkeypatch.setattr(external, "run_review", _review)
+    return calls
+
+
 def test_delegate_config_anchor_follows_registered_worktree_from_both_shell_dirs(
     tmp_path, monkeypatch, capsys,
 ):
@@ -164,6 +201,425 @@ def test_unregistered_worktree_allows_boardless_delegate_and_review(
     assert review_err.count("board가 필요 없는 실행") == 1
     assert f"diff_root={worktree.resolve()}" in review_err
     assert f"pm_home={worktree.resolve()}" in review_err
+
+
+def test_unregistered_snapshot_gated_round_fails_before_ledger_raw_or_spawn(
+    tmp_path, monkeypatch, capsys,
+):
+    """미등록 linked worktree 자기 앵커 + 실 장부 라운드는 rc1 로 기계 차단한다."""
+    _source, snapshot = _unregistered_worktree(tmp_path)
+    _enable_additional_review(snapshot)
+    (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
+    external = _load("external_review_unregistered_round_block")
+    monkeypatch.setattr(external, "REPO", snapshot)
+    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
+    monkeypatch.setattr(
+        external, "_reserve_round_budget",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("round ledger must not be reserved"),
+        ),
+    )
+    monkeypatch.setattr(
+        external, "reviewer_visibility_scope",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("reviewer isolation/spawn path must not run"),
+        ),
+    )
+    output_dir = tmp_path / "raw"
+
+    assert external.main([
+        "--gate", "T-0634", "--paths", "seed.txt",
+        "--output-dir", str(output_dir),
+    ]) == 1
+
+    err = capsys.readouterr().err
+    assert "미등록 linked worktree 자기 앵커" in err
+    assert "외부로 전송하지 않았습니다" in err
+    assert "PM 홈 cwd" in err and "--paths <경로>" in err and "--ticket <T-NNNN>" in err
+    assert str(snapshot / ".project_manager" / ".local" / "review_rounds.json") in err
+    assert not output_dir.exists()
+    assert not (snapshot / ".project_manager" / ".local" / "review_rounds.json").exists()
+
+
+def test_unregistered_snapshot_with_ticket_gated_round_still_fails_before_side_effects(
+    tmp_path, monkeypatch, capsys,
+):
+    """스냅샷의 실 ticket이 강등 기록을 없애도 lease 미등록 자기 앵커는 전송하지 않는다."""
+    _source, snapshot = _unregistered_worktree(tmp_path)
+    _enable_additional_review(snapshot)
+    tickets = snapshot / ".project_manager" / "board" / "tickets" / "open"
+    tickets.mkdir(parents=True)
+    (tickets / "T-0634-snapshot.md").write_text(
+        "---\nid: T-0634\ntitle: snapshot fixture\nstatus: open\n---\n",
+        encoding="utf-8",
+    )
+    (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
+    external = _load("external_review_unregistered_ticket_round_block")
+    monkeypatch.setattr(external, "REPO", snapshot)
+    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
+
+    # 발단 우회 형상을 고정한다: real-board 조기 반환 때문에 자기 앵커지만 강등 기록은 없다.
+    demotions = []
+    assert external.resolve_pm_home_for_repo(
+        snapshot, demotion_sink=demotions,
+    ) == snapshot.resolve()
+    assert demotions == []
+
+    side_effects = []
+
+    def _forbidden(name):
+        def _fail(*args, **kwargs):
+            side_effects.append(name)
+            raise AssertionError(f"{name} must not run")
+        return _fail
+
+    monkeypatch.setattr(external, "_reserve_round_budget", _forbidden("round"))
+    monkeypatch.setattr(external, "_reserve_output", _forbidden("raw"))
+    monkeypatch.setattr(external, "reviewer_visibility_scope", _forbidden("spawn"))
+    output_dir = tmp_path / "raw-ticket-snapshot"
+
+    assert external.main([
+        "--gate", "T-0634", "--paths", "seed.txt",
+        "--output-dir", str(output_dir),
+    ]) == 1
+
+    err = capsys.readouterr().err
+    assert "미등록 linked worktree 자기 앵커" in err
+    assert "lease 장부" in err and "외부로 전송하지 않았습니다" in err
+    assert "PM 홈 cwd" in err and "--paths <경로>" in err and "--ticket <T-NNNN>" in err
+    assert side_effects == []
+    assert not output_dir.exists()
+    assert not (snapshot / ".project_manager" / ".local" / "review_rounds.json").exists()
+
+
+def test_unregistered_snapshot_no_gate_send_keeps_explicit_paths_recovery_channel(
+    tmp_path, monkeypatch, capsys,
+):
+    """명시 --paths + --no-gate 실 자문은 장부를 안 쓰므로 기존 자기 앵커 폴백을 유지한다."""
+    _source, snapshot = _unregistered_worktree(tmp_path)
+    _enable_additional_review(snapshot)
+    (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
+    external = _load("external_review_unregistered_no_gate")
+    monkeypatch.setattr(external, "REPO", snapshot)
+    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
+    calls = _stub_review_send(external, monkeypatch, tmp_path)
+
+    assert external.main([
+        "--paths", "seed.txt", "--no-gate",
+        "--output-dir", str(tmp_path / "raw"),
+    ]) == 0
+
+    assert calls["reviewer"] == 1
+    err = capsys.readouterr().err
+    assert "PM 홈 해소 실패" in err
+    assert "`--no-gate` 명시 opt-out" in err
+    assert "미등록 linked worktree 자기 앵커에서는" not in err
+    assert not (snapshot / ".project_manager" / ".local" / "review_rounds.json").exists()
+
+
+def test_resolver_override_is_guard_seam_even_when_anchor_has_snapshot_marker(
+    tmp_path, monkeypatch, capsys,
+):
+    """resolver pin을 둔 하네스에서는 가드가 실제 마커/git/lease를 독자 재조회하지 않는다."""
+    _source, snapshot = _unregistered_worktree(tmp_path)
+    _enable_additional_review(snapshot)
+    marker = snapshot / ".project_manager" / ".local" / "gate-snapshot.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("{}\n", encoding="utf-8")
+    (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
+    external = _load("external_review_resolver_guard_seam")
+    monkeypatch.setattr(external, "REPO", snapshot)
+    monkeypatch.setattr(
+        external, "resolve_pm_home_for_repo", lambda anchor, **kwargs: snapshot.resolve(),
+    )
+    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
+    calls = _stub_review_send(external, monkeypatch, tmp_path)
+
+    gate = "T-0643-resolver-seam"
+    assert external.main([
+        "--gate", gate, "--paths", "seed.txt", "--force",
+        "--output-dir", str(tmp_path / "resolver-seam-raw"),
+    ]) == 0
+
+    assert calls["reviewer"] == 1
+    ledger = snapshot / ".project_manager" / ".local" / "review_rounds.json"
+    assert json.loads(ledger.read_text(encoding="utf-8"))[gate]["count"] == 1
+    assert "게이트 스냅샷 마커가 있는 앵커" not in capsys.readouterr().err
+
+
+def test_unregistered_snapshot_dry_run_report_and_disposition_surfaces_stay_open(
+    tmp_path, monkeypatch, capsys,
+):
+    """미전송 dry-run·조회와 외부 송신 없는 처분 기록은 새 라운드 차단 대상이 아니다."""
+    _source, snapshot = _unregistered_worktree(tmp_path)
+    _enable_additional_review(snapshot)
+    (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
+    external = _load("external_review_unregistered_non_sending")
+    monkeypatch.setattr(external, "REPO", snapshot)
+
+    assert external.main([
+        "--gate", "T-0634", "--paths", "seed.txt", "--dry-run",
+    ]) == 0
+    assert external.main([
+        "--rounds-report", "--gate", "T-0634", "--paths", "seed.txt",
+    ]) == 0
+
+    ledger_path = snapshot / ".project_manager" / ".local" / "review_rounds.json"
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    ledger_path.write_text(json.dumps({
+        "T-0634-rejected": {
+            "count": 1,
+            "rounds": [{
+                "sequence": 1, "verdict": 1, "must_fix": 1, "suggestions": 0,
+                "started_at": "2026-08-11T00:00:00+00:00",
+                "ts": "2026-08-11T00:01:00+00:00",
+                "target_rev": "sha256:" + "a" * 64,
+            }],
+        },
+        "T-0634-passed": {
+            "count": 1,
+            "rounds": [{
+                "sequence": 1, "verdict": 0, "must_fix": 0, "suggestions": 0,
+                "started_at": "2026-08-11T00:02:00+00:00",
+                "ts": "2026-08-11T00:03:00+00:00",
+                "target_rev": "sha256:" + "b" * 64,
+            }],
+        },
+    }), encoding="utf-8")
+
+    assert external.main([
+        "--resolve-gate", "T-0634-rejected", "--fixed", "T-0634-passed",
+    ]) == 0
+    saved = json.loads(ledger_path.read_text(encoding="utf-8"))
+    assert saved["T-0634-rejected"]["resolution"]["kind"] == "fixed"
+    captured = capsys.readouterr()
+    assert "[dry-run] 외부 호출 생략" in captured.out
+    assert "게이트 처분 선언: T-0634-rejected" in captured.out
+    assert "미등록 linked worktree 자기 앵커에서는" not in captured.err
+
+
+def test_registered_worktree_gated_round_still_uses_pm_home_ledger(
+    tmp_path, monkeypatch, capsys,
+):
+    """유효 lease 등록 worktree의 실 라운드는 종전대로 PM 홈 장부에 기록한다."""
+    home, worktree, _ticket = _managed_worktree(tmp_path)
+    _enable_additional_review(home)
+    (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
+    external = _load("external_review_registered_round")
+    monkeypatch.setattr(external, "REPO", worktree)
+    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
+    calls = _stub_review_send(external, monkeypatch, tmp_path)
+
+    assert external.main([
+        "--gate", "T-0634-registered", "--paths", "seed.txt",
+        "--output-dir", str(tmp_path / "raw"),
+    ]) == 0
+
+    assert calls["reviewer"] == 1
+    home_ledger = home / ".project_manager" / ".local" / "review_rounds.json"
+    assert json.loads(home_ledger.read_text(encoding="utf-8"))["T-0634-registered"]["count"] == 1
+    assert not (worktree / ".project_manager" / ".local" / "review_rounds.json").exists()
+    assert "미등록 linked worktree 자기 앵커에서는" not in capsys.readouterr().err
+
+
+def test_registered_worktree_with_ticket_gated_round_remains_allowed(
+    tmp_path, monkeypatch, capsys,
+):
+    """자기 실 ticket 때문에 self-anchor여도 lease 등록 worktree는 오탐 차단하지 않는다."""
+    home, worktree, _ticket = _managed_worktree(tmp_path)
+    tickets = worktree / ".project_manager" / "board" / "tickets" / "open"
+    tickets.mkdir(parents=True)
+    (tickets / "T-0634-registered.md").write_text(
+        "---\nid: T-0634-registered\ntitle: registered fixture\nstatus: open\n---\n",
+        encoding="utf-8",
+    )
+    _enable_additional_review(worktree)
+    (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
+    external = _load("external_review_registered_ticket_round")
+    monkeypatch.setattr(external, "REPO", worktree)
+    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
+    calls = _stub_review_send(external, monkeypatch, tmp_path)
+
+    demotions = []
+    assert external.resolve_pm_home_for_repo(
+        worktree, demotion_sink=demotions,
+    ) == worktree.resolve()
+    assert demotions == []
+
+    assert external.main([
+        "--gate", "T-0634-registered-ticket", "--paths", "seed.txt",
+        "--output-dir", str(tmp_path / "registered-ticket-raw"),
+    ]) == 0
+
+    assert calls["reviewer"] == 1
+    ledger = worktree / ".project_manager" / ".local" / "review_rounds.json"
+    assert json.loads(ledger.read_text(encoding="utf-8"))[
+        "T-0634-registered-ticket"
+    ]["count"] == 1
+    assert "미등록 linked worktree 자기 앵커에서는" not in capsys.readouterr().err
+
+
+def test_corrupt_lease_registered_slot_keeps_round_recovery_fallback(
+    tmp_path, monkeypatch, capsys,
+):
+    """마커 없는 단일 관리 후보는 lease 손상이어도 실 라운드 복구 채널을 유지한다."""
+    home, worktree, _ticket = _managed_worktree(tmp_path)
+    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.write_text("{broken", encoding="utf-8")
+    (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
+    external = _load("external_review_corrupt_lease_round_recovery")
+    monkeypatch.setattr(external, "REPO", worktree)
+    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
+    calls = _stub_review_send(external, monkeypatch, tmp_path)
+
+    assert external.main([
+        "--gate", "T-0643-corrupt-lease", "--paths", "seed.txt", "--force",
+        "--output-dir", str(tmp_path / "corrupt-lease-raw"),
+    ]) == 0
+
+    assert calls["reviewer"] == 1
+    round_ledger = worktree / ".project_manager" / ".local" / "review_rounds.json"
+    assert json.loads(round_ledger.read_text(encoding="utf-8"))[
+        "T-0643-corrupt-lease"
+    ]["count"] == 1
+    err = capsys.readouterr().err
+    assert "worktree lease 장부를 확정할 수 없습니다" in err
+    assert "미등록 linked worktree 자기 앵커에서는" not in err
+
+
+@pytest.mark.parametrize("ledger_state", ["corrupt", "missing"])
+def test_self_board_registered_slot_keeps_recovery_for_unreadable_lease(
+    tmp_path, monkeypatch, capsys, ledger_state,
+):
+    """자기 실 board로 조기 해소된 등록 슬롯도 장부 손상/부재면 복구 폴백을 유지한다."""
+    home, worktree, _ticket = _managed_worktree(tmp_path)
+    tickets = worktree / ".project_manager" / "board" / "tickets" / "open"
+    tickets.mkdir(parents=True)
+    (tickets / f"T-0643-{ledger_state}.md").write_text(
+        f"---\nid: T-0643-{ledger_state}\ntitle: self board fixture\nstatus: open\n---\n",
+        encoding="utf-8",
+    )
+    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
+    if ledger_state == "corrupt":
+        ledger.write_text("{broken", encoding="utf-8")
+    else:
+        ledger.unlink()
+    _enable_additional_review(worktree)
+    (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
+
+    external = _load(f"external_review_self_board_{ledger_state}_lease_recovery")
+    monkeypatch.setattr(external, "REPO", worktree)
+    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
+    calls = _stub_review_send(external, monkeypatch, tmp_path)
+
+    demotions = []
+    resolutions = []
+    assert external.resolve_pm_home_for_repo(
+        worktree, demotion_sink=demotions, resolution_sink=resolutions,
+    ) == worktree.resolve()
+    assert demotions == []
+    assert resolutions[0].unregistered_linked_self_anchor is False
+
+    gate = f"T-0643-self-board-{ledger_state}"
+    assert external.main([
+        "--gate", gate, "--paths", "seed.txt", "--force",
+        "--output-dir", str(tmp_path / f"self-board-{ledger_state}-raw"),
+    ]) == 0
+
+    assert calls["reviewer"] == 1
+    round_ledger = worktree / ".project_manager" / ".local" / "review_rounds.json"
+    assert json.loads(round_ledger.read_text(encoding="utf-8"))[gate]["count"] == 1
+    assert "미등록 linked worktree 자기 앵커에서는" not in capsys.readouterr().err
+
+
+def test_markerless_snapshot_with_corrupt_lease_keeps_known_exposure_open(
+    tmp_path, monkeypatch, capsys,
+):
+    """마커 도입 전 스냅샷은 손상 장부와 겹치면 관리 후보 복구 규칙상 휘발 장부를 허용한다."""
+    home, _registered, _ticket = _managed_worktree(tmp_path)
+    snapshot = home / "work" / "gate-markerless"
+    _git(home, "worktree", "add", "-q", "-b", "markerless-snapshot", str(snapshot))
+    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.write_text("{broken", encoding="utf-8")
+    _enable_additional_review(snapshot)
+    (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
+    assert not (
+        snapshot / ".project_manager" / ".local" / "gate-snapshot.json"
+    ).exists()
+
+    external = _load("external_review_markerless_corrupt_lease_exposure")
+    monkeypatch.setattr(external, "REPO", snapshot)
+    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
+    calls = _stub_review_send(external, monkeypatch, tmp_path)
+
+    demotions = []
+    resolutions = []
+    assert external.resolve_pm_home_for_repo(
+        snapshot, demotion_sink=demotions, resolution_sink=resolutions,
+    ) == snapshot.resolve()
+    assert demotions[0].candidates == (home.resolve(),)
+    assert resolutions[0].snapshot_marker is None
+    assert resolutions[0].unregistered_linked_self_anchor is False
+
+    gate = "T-0643-markerless-corrupt-ledger"
+    assert external.main([
+        "--gate", gate, "--paths", "seed.txt", "--force",
+        "--output-dir", str(tmp_path / "markerless-corrupt-raw"),
+    ]) == 0
+
+    assert calls["reviewer"] == 1
+    volatile_ledger = snapshot / ".project_manager" / ".local" / "review_rounds.json"
+    assert json.loads(volatile_ledger.read_text(encoding="utf-8"))[gate]["count"] == 1
+    err = capsys.readouterr().err
+    assert "worktree lease 장부를 확정할 수 없습니다" in err
+    assert "미등록 linked worktree 자기 앵커에서는" not in err
+
+
+def test_valid_empty_lease_blocks_unregistered_worktree_round(
+    tmp_path, monkeypatch, capsys,
+):
+    """단일 후보여도 정상 장부의 non-match는 복구 폴백이 아니며 실 라운드를 차단한다."""
+    home, worktree, _ticket = _managed_worktree(tmp_path)
+    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.write_text(json.dumps({"leases": []}), encoding="utf-8")
+    (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
+    external = _load("external_review_valid_empty_lease_round_block")
+    monkeypatch.setattr(external, "REPO", worktree)
+    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
+
+    side_effects = []
+
+    def _forbidden(name):
+        def _fail(*args, **kwargs):
+            side_effects.append(name)
+            raise AssertionError(f"{name} must not run")
+        return _fail
+
+    monkeypatch.setattr(external, "_reserve_round_budget", _forbidden("round"))
+    monkeypatch.setattr(external, "_reserve_output", _forbidden("raw"))
+    monkeypatch.setattr(external, "reviewer_visibility_scope", _forbidden("spawn"))
+    output_dir = tmp_path / "valid-empty-lease-raw"
+
+    demotions = []
+    assert external.resolve_pm_home_for_repo(
+        worktree, demotion_sink=demotions,
+    ) == worktree.resolve()
+    assert len(demotions) == 1
+    assert demotions[0].candidates == (home.resolve(),)
+    board = external._load_board()
+    assert board._ledger_registration(home, worktree) == (False, None)
+
+    assert external.main([
+        "--gate", "T-0643-valid-empty-lease", "--paths", "seed.txt", "--force",
+        "--output-dir", str(output_dir),
+    ]) == 1
+
+    err = capsys.readouterr().err
+    assert "worktree lease 장부에서 소유 PM 홈을 찾지 못했습니다" in err
+    assert "미등록 linked worktree 자기 앵커" in err
+    assert side_effects == []
+    assert not output_dir.exists()
+    assert not (worktree / ".project_manager" / ".local" / "review_rounds.json").exists()
 
 
 @pytest.mark.parametrize(

@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import anchor_board_module
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -177,9 +179,7 @@ def _template_file_text() -> str:
 @pytest.fixture
 def board_git(tmp_path, monkeypatch):
     mod = _load_board()
-    monkeypatch.setattr(mod, "REPO", tmp_path)
-    monkeypatch.setattr(mod, "BOARD_LOCK",
-                        tmp_path / ".project_manager" / ".local" / "board.lock")
+    anchor_board_module(mod, tmp_path, monkeypatch)
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     board = tmp_path / ".project_manager" / "board"

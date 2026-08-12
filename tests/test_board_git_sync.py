@@ -31,6 +31,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import anchor_board_module
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -130,10 +132,9 @@ def _make_board_git(root: Path, *, remote: Path, tid: str = "T-0001") -> Path:
 def board(tmp_path, monkeypatch):
     """REPO 를 tmp 로 재지정한 fresh board 모듈 + BOARD_LOCK 을 tmp 로 (실 루트 미접촉)."""
     mod = _load_board()
-    monkeypatch.setattr(mod, "REPO", tmp_path)
-    # board_lock() / best-effort sync 가 .local/ 을 건드린다 — tmp 로 격리.
-    lock = tmp_path / ".project_manager" / ".local" / "board.lock"
-    monkeypatch.setattr(mod, "BOARD_LOCK", lock)
+    # board_lock() / best-effort sync 가 .local/ 을 건드리고 렌더가 wiki/board.md 를 쓴다 —
+    # REPO 파생 상수를 공용 헬퍼로 한꺼번에 tmp 로 격리한다.
+    anchor_board_module(mod, tmp_path, monkeypatch)
     # 엔진의 board git subprocess(os.environ 상속)가 결정적 author 를 쓰도록 git identity 만 주입.
     # `os.environ` 전체를 갈아끼우지 않고(fragile·HOME/PATH 등 보존) 필요한 키만 setenv 한다.
     for key, val in _GIT_IDENTITY.items():

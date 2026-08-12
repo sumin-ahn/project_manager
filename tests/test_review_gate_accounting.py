@@ -155,15 +155,17 @@ def _rejected_ledger() -> dict:
 
 
 def _subprocess_project(tmp_path: Path) -> tuple[Path, Path]:
-    """`external_review.py` 실 CLI 프로세스를 tmp PM 홈에서 돌릴 최소 엔진 사본."""
+    """`external_review.py` 실 CLI 프로세스를 tmp PM 홈의 엔진 사본에서 돌린다.
+
+    형제 모듈 목록을 테스트가 재선언하지 않고 tools 집합을 그대로 복사한다. 엔진 seam이 새로
+    분리돼도 사본만 낡아 실 CLI 경로가 깨지는 형상을 만들지 않는다.
+    """
     project = tmp_path / "subprocess-project"
     tools = project / ".project_manager" / "tools"
-    tools.mkdir(parents=True)
-    for filename in (
-        "external_review.py", "board.py", "repo_owned_files.py",
-        "console_encoding.py", "file_lock.py", "identity_args.py",
-    ):
-        shutil.copy2(TOOLS / filename, tools / filename)
+    shutil.copytree(
+        TOOLS, tools,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
     for status in ("open", "claimed", "blocked", "done"):
         (project / ".project_manager" / "wiki" / "tickets" / status).mkdir(
             parents=True, exist_ok=True,
@@ -552,6 +554,19 @@ def test_report_gate_and_no_gate_reaches_report_with_ignore_warning_in_subproces
     assert proc.returncode == 0, proc.stderr
     assert "무시합니다" in proc.stderr and "--no-gate" in proc.stderr
     assert f"게이트 {TICKET}: count=1" in proc.stdout
+
+
+def test_rounds_report_missing_companion_fails_loud_in_subprocess(tmp_path):
+    """동반 seam이 빠진 불완전 엔진 사본은 파일명과 복구법을 명시해 진단한다."""
+    project, script = _subprocess_project(tmp_path)
+    (script.parent / "review_rounds.py").unlink()
+
+    proc = _run_external_review(project, script, "--rounds-report")
+
+    assert proc.returncode == 1
+    assert "엔진 사본 불완전" in proc.stderr
+    assert "review_rounds.py" in proc.stderr
+    assert "pm-update" in proc.stderr
 
 
 def test_resolve_gate_and_no_gate_records_disposition_with_ignore_warning_in_subprocess(

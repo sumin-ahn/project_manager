@@ -1,0 +1,29 @@
+판정: **반려**
+
+### Must-fix
+
+1. 실제 손편집 manifest가 payload와 리뷰어 거울에서 누락됩니다.
+
+`is_machine_mirror_path`는 `templates/<target>/.project_manager/**` 전체를 매칭합니다. 따라서 현재 구현은 실제 파일 `templates/codex/.project_manager/engine.manifest`를 `extract_diff`에서 제거하고, 거울에서도 제외합니다.
+
+새 역방향 테스트는 존재하지 않는 `templates/codex/engine.manifest`를 사용해 이 결함을 놓칩니다. 반면 기존 테스트는 실제 경로가 술어상 `True`임을 명시적으로 고정합니다.
+
+즉, “기존 술어 그대로 적용”과 “실제 손편집 manifest 보존”이 현재 정책에서는 동시에 성립하지 않습니다. payload/거울에서 실제 manifest를 보존하도록 정책을 해소하고, 실재 경로로 역방향 단언해야 합니다.
+
+### Should-fix
+
+- 주석은 아직 “리뷰가 보는 diff 폭은 그대로”라고 서술하지만 이제 사실이 아닙니다.
+- `extract_diff` docstring의 고립된 문장을 정리해야 합니다.
+
+### Suggestion
+
+- 세 타깃의 실제 `.project_manager/engine.manifest`를 매개변수화하고, 테스트 시작 시 파일 존재도 단언하면 이번과 같은 오경로 false-green을 막을 수 있습니다.
+
+### 정상 확인 항목
+
+- `_sum_numstat`·`diff_line_total`에는 변경 hunk가 없고, `ticket_finish.py`의 동적 로드 및 `diff_line_total` 호출도 유지됩니다.
+- 암묵 제외 경고·판정 suffix와 명시 `--paths` rc=1 배선은 요구대로입니다.
+
+### 회귀
+
+요청대로 `pytest`는 실행하지 않았습니다. dev 보고값을 인용하면 지정 회귀는 **555 passed**입니다.

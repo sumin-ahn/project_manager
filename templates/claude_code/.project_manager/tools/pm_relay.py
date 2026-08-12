@@ -166,7 +166,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 
 
 # baked 엔진 rev — engine_rev.py --bump가 기계 일괄 재작성한다.
-ENGINE_REV = "v1.7.3"
+ENGINE_REV = "v1.7.4"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -1039,22 +1039,45 @@ def claude_tools(role: str) -> str:
     return CLAUDE_TOOLS_REVIEWER
 
 
-def build_codex_argv(model: str, reasoning: str | None, role: str,
-                     cwd: str | None = None) -> list[str]:
+def build_codex_argv(
+    model: str,
+    reasoning: str | None,
+    role: str,
+    cwd: str | None = None,
+    resume_session_id: str | None = None,
+) -> list[str]:
     """codex argv. `-a never -s <mode>` 는 exec **앞** 전역 옵션(exec 뒤는 rc=2).
 
     프롬프트는 stdin 주입(argv positional 아님). `cwd` 를 주면 `-C` 로 핀하고, 생략하면 프로세스
     cwd 를 그대로 쓴다(추가 리뷰어는 격리 거울을 subprocess cwd 로 이미 고정한다)."""
     mode = CODEX_SANDBOX[perm_axis(role)]
-    argv = ["codex", "-a", "never", "-s", mode, "exec", "--json", "--skip-git-repo-check"]
-    if cwd is not None:
-        argv += ["-C", str(cwd)]
+    argv = ["codex", "-a", "never", "-s", mode]
+    if resume_session_id is None:
+        argv += ["exec", "--json", "--skip-git-repo-check"]
+        if cwd is not None:
+            argv += ["-C", str(cwd)]
+    else:
+        if not is_resumable_session_id(resume_session_id):
+            raise HarnessContractError(
+                f"세션 id 형식 불일치로 재개 argv 를 만들지 않는다: "
+                f"{resume_session_id!r} — 형식(uuid 표기)이 맞는 값만 실린다"
+                "(플래그 오소비 차단)."
+            )
+        # codex-cli 0.147.0 라이브 실측(2026-08-12): `codex exec --help`가 resume
+        # 하위 커맨드를, `codex exec resume --help`가 `--json`과 `[SESSION_ID]
+        # [PROMPT](`-`이면 stdin)을 함께 선언한다. resume 하위 커맨드에는 `-C`가 없으므로
+        # 전역 `-C`를 exec 앞에 두고, 기존 JSONL 파이프라인과 같은 stdin을 `-`로 명시한다.
+        if cwd is not None:
+            argv += ["-C", str(cwd)]
+        argv += ["exec", "resume", "--json", "--skip-git-repo-check"]
     if model:
         argv += ["-m", model]
     if reasoning:
         # `-c model_reasoning_effort=<r>` 는 `-a`/`-s`(exec 뒤=rc=2)와 달리 exec **앞/뒤 모두
         # rc=0 수용**된다(실측). reasoning 미지정 시 무영향.
         argv += ["-c", f"model_reasoning_effort={reasoning}"]
+    if resume_session_id is not None:
+        argv += [resume_session_id, "-"]
     return argv
 
 
@@ -1102,17 +1125,51 @@ def build_opencode_argv(
     return argv
 
 
+def assert_opencode_prompt_in_cwd(cwd: str | Path, prompt_file: str | Path) -> None:
+    """opencode ``--file`` 이 ``--dir`` sandbox의 실제 하위 경로인지 단언한다.
+
+    argv 빌더 자체는 추가 리뷰어의 표시용 placeholder도 조립하므로 순수 함수로 둔다. 실제 파일을
+    전송하는 호출부가 이 가드를 직전에 호출한다. 양쪽 경로를 resolve해 실제 containment를 판정하며,
+    해소 자체가 실패하면 공용 계약 예외로 번역한다. 따라서 ``--dir`` 안의 symlink가 바깥 파일을
+    가리키는 형상도 거부하며, 파일 경로가 sandbox 루트와 같은 값인 형상도 하위로 인정하지 않는다.
+    """
+    try:
+        sandbox = Path(cwd).resolve()
+        attached = Path(prompt_file).resolve()
+    except (OSError, RuntimeError) as exc:
+        raise HarnessContractError(
+            "opencode --file/--dir 실경로 해소 실패 — "
+            f"--file={prompt_file} · --dir={cwd} · {type(exc).__name__}: {exc}"
+        ) from exc
+    try:
+        relative = attached.relative_to(sandbox)
+    except ValueError as exc:
+        raise HarnessContractError(
+            "opencode 전달 프롬프트가 --dir sandbox 밖입니다 — "
+            f"--file={attached} · --dir={sandbox}"
+        ) from exc
+    if not relative.parts:
+        raise HarnessContractError(
+            "opencode 전달 프롬프트는 --dir sandbox의 파일 하위 경로여야 합니다 — "
+            f"--file={attached} · --dir={sandbox}"
+        )
+
+
 # ── 세션 재사용(resume) 계약 ─────────────────────────────────────────────────
 #
 # 재개는 **직전 세션 컨텍스트의 프롬프트 캐시 재적재 + 도구 재읽기 0**이다(재적재 비용 0 아님).
 # 지원 여부는 분기가 아니라 선언표다:
 #   · claude — `-p` 재개 플래그로 같은 세션 id 를 이어받는다. 성공 판정은 **회신 세션 id 일치**
 #     (rc 로 판정하지 않는다 — 만료/부분 손상이 rc=0 새 세션으로 나오는 축은 미측정이다).
-#   · codex — 재개가 대화형 전용이라 `exec --json` argv 와 형식이 다르다. 미검증 argv 를
-#     출하하지 않는다(항상 fresh).
+#   · codex — 설치 codex-cli 0.147.0 라이브 실측(2026-08-12): `codex exec --help`에
+#     `resume` 하위 커맨드가 있고, `codex exec resume --help`가 `[SESSION_ID] [PROMPT]`와
+#     `--json`을 함께 선언한다. `codex -a never -s read-only -C /tmp exec resume --json
+#     --skip-git-repo-check <uuid> -`도 인자 파싱을 통과해 app-server 초기화까지 진입했다
+#     (현재 read-only 상위 sandbox에서는 상태 파일 생성 EROFS로 라이브 turn 전 중단). 따라서
+#     위임 드라이버는 `SESSION_ID -`로 stdin delta를 보내고 기존 JSONL 파서를 그대로 쓴다.
 #   · opencode — 위임 드라이버에 재개 배선 없음.
 HARNESS_RESUME_SUPPORT: dict[str, bool] = {
-    "claude": True, "codex": False, "opencode": False,
+    "claude": True, "codex": True, "opencode": False,
 }
 
 # 세션 id 형식(uuid 표기) 가드. 재개 id 는 장부에서 온 값이라 형식이 맞을 때만 argv 에 싣는다.

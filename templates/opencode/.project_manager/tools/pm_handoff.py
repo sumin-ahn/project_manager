@@ -2,20 +2,24 @@
 """PM 핸드오프 7단계 자동화 헬퍼 — PM 세션 종료 시 기계 측정·편집 부분을 한 명령으로 묶는다.
 
 사용:
-    venv/bin/python .project_manager/tools/pm_handoff.py --task <이름>
+    venv/bin/python .project_manager/tools/pm_handoff.py --task <이름> --user-ack <이름>
 
 slot/solo 호환 경로:
     venv/bin/python .project_manager/tools/pm_handoff.py \\
       --session-seq <N차> \\
       [--repo <name> [--slot <N>]] \\
       --wave-summary "<wave 1~3 한 줄 요약>" \\
+      --user-ack <repo_N|solo> \\
       [--dry-run] [--no-pytest] [--ack-dirty "<사유>"]
+
+    --dry-run 미리보기는 쓰기 0이라 --user-ack 없이 허용한다. 실제 핸드오프는 대상값에
+    결속된 사용자 명시 승인 토큰이 필요하다.
 
 동작 순서 (하나라도 실패하면 이후 단계 중단):
   0. dirty-tree 게이트 — 실행 앵커 트리(PM 홈 + 활성 worktree 전수)에 미커밋 잔여가 있으면
      **어떤 mutation 보다 먼저·회귀보다도 먼저** 중단(판정은 git 조회 몇 번). override =
-     `--ack-dirty "<사유>"`(사유는 entry 에 박제). `--auto-trigger`(비대화 자동 실행)는 차단
-     대신 loud 경고 + 사유 자동 박제.
+     `--ack-dirty "<사유>"`(사유는 entry 에 박제). `--auto-trigger`는 사용자 명시 핸드오프
+     호출부의 호환 신호일 뿐 독자 실행 권한이 아니며, ack 계약을 우회하지 않는다.
   1. 회귀 측정 — pytest tests/ -q. red 면 즉시 중단·핸드오프 불가.
   2. log/current.md handoff entry skeleton append — 세션 중 박제 entry 자동 목록+메타학습·pending intent+회귀/incident.
   3. pm_state.md 세션 식별 표 sliding window 정리 — 신규 entry 추가 + 가장 오래된 entry 제거.
@@ -202,7 +206,7 @@ LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
-ENGINE_REV = "v1.7.3"
+ENGINE_REV = "v1.7.4"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -1205,7 +1209,8 @@ class DirtyAckStampError(RuntimeError):
 def _dirty_ack_line(note: str | None) -> str:
     """handoff entry 의 dirty-tree ack 박제 줄을 빌드한다 (미ack 이면 줄 자체 생략).
 
-    dirty 를 override 하고 나간 세션(`--ack-dirty` 또는 비대화 자동 경로)만 이 줄을 갖는다 —
+    dirty 를 override 하고 나간 세션(`--ack-dirty` 또는 사용자 명시 핸드오프 호환 신호)만
+    이 줄을 갖는다 —
     다음 세션 부트스트랩이 log entry 에서 "왜 미커밋인 채 넘어왔나"를 그대로 읽는다.
     """
     if not note:
@@ -1782,13 +1787,13 @@ def update_session_window(
     return new_pm_state_text
 
 
-# ── 비대화 트리거 자동 채움 (ctx 정지-핸드오프) ─────────────────────
+# ── task 세션 차수 자동 추론 ────────────────────────────────────────
 
 def infer_next_session_num(pm_state_text: str) -> int | str:
     """pm_state.md 세션 식별 절에서 다음 PM 세션 차수를 추론한다.
 
     가장 높은 기존 차수 + 1 을 반환. entry 가 없으면 안전한 placeholder.
-    (대화형 경로의 사람-작성 --session-num 을 비대화에서 대신 채운다.)
+    (task 경로에서는 사람 입력 차수 대신 task state를 단일 진실로 쓴다.)
     """
     result = _extract_session_section(pm_state_text)
     if result is None:
@@ -2397,13 +2402,16 @@ def _format_dirty_paths(
 def build_dirty_ack_note(reason: str, dirty_count: int, *, auto: bool) -> str:
     """handoff entry 에 박제할 dirty-tree ack 사유 문장을 만든다 (**단일행 보장**).
 
-    `auto`(비대화 자동 트리거)면 사람이 준 사유가 없으므로 "자동 경로라 차단하지 않았다"는
-    사실 자체를 사유로 박는다. 명시 `--ack-dirty` 면 사람이 준 사유를 평탄화해 그대로 싣고
-    override 수단을 병기한다. 둘 다 잔존 건수를 함께 남겨 다음 세션이 "몇 개를 못 보고
-    넘어왔나"를 log 만 읽고 안다.
+    `auto`(사용자 명시 핸드오프 호출부 호환 신호)면 별도 dirty 사유가 없으므로 그 신호로
+    차단을 강등했다는 사실 자체를 박는다. 명시 `--ack-dirty` 면 사람이 준 사유를 평탄화해
+    그대로 싣고 override 수단을 병기한다. 둘 다 잔존 건수를 함께 남겨 다음 세션이 "몇 개를
+    못 보고 넘어왔나"를 log 만 읽고 안다.
     """
     if auto:
-        return f"ctx 자동 핸드오프 — dirty {dirty_count}건 잔존 (비대화 경로·차단하지 않음)."
+        return (
+            "사용자 명시 핸드오프 호환 신호 — "
+            f"dirty {dirty_count}건 잔존 (`--auto-trigger`·차단하지 않음)."
+        )
     return f"{flatten_ack_reason(reason)} (미커밋 {dirty_count}건 — `--ack-dirty` override)."
 
 
@@ -2694,6 +2702,9 @@ class PmHandoff:
         # 회귀 cwd 해소용 worktree 슬롯— run() 진입부에서 worktree_slot 인자로 세팅.
         # _default_run_pytest 가 _regression_cwd 에 넘긴다. 솔로/미세팅이면 None → REPO 폴백.
         self._worktree_slot: str | None = None
+        # run() 경계에서 슬롯 해소가 끝났는지(해소 결과 None도 값이다). True 뒤에는 downstream이
+        # None을 "미해소"로 오인해 lease를 재조회하지 않고 같은 solo 스냅샷을 REPO에 결속한다.
+        self._worktree_slot_resolution_frozen = False
         # task handoff 시작 시 영속 변경 전에 한 번 해소한 보유 슬롯 스냅샷. 회귀/출하/재스냅이
         # 같은 집합을 재사용해 후반 재조회 실패가 이미 기록된 handoff를 false-green으로 끝내지 않게 한다.
         self._task_slots_snapshot: tuple[str, tuple[str, ...]] | None = None
@@ -2987,10 +2998,21 @@ class PmHandoff:
             text=True,
             encoding="utf-8",
             errors="replace",
-            cwd=_regression_cwd(self._worktree_slot),
+            cwd=self._run_regression_cwd(self._worktree_slot),
         )
         output = result.stdout + result.stderr
         return result.returncode, output
+
+    def _run_regression_cwd(self, worktree_slot: str | None) -> str:
+        """run()의 단일 슬롯 스냅샷에 결속된 cwd를 반환한다.
+
+        run() 경계에서 해소된 None은 legacy solo라는 확정값이다. 그 뒤 `_regression_cwd(None)`을
+        호출하면 lease를 다시 읽어 새 슬롯으로 바뀔 수 있으므로 REPO를 바로 반환한다. run() 밖
+        단위 seam은 기존 자동해소 동작을 보존한다.
+        """
+        if self._worktree_slot_resolution_frozen and worktree_slot is None:
+            return str(REPO)
+        return _regression_cwd(worktree_slot)
 
     # ── task 퇴장: 변경 흔적 있는 보유 슬롯 각각에서 회귀 ──────
 
@@ -3047,8 +3069,9 @@ class PmHandoff:
             print(
                 f"  · task {task!r} 보유 슬롯 0개 — 대상 없음(skip). "
                 f"회귀가 필요하면 `{_runtime_skill_entry('pm-env')} alloc <repo> --task <이름>` "
-                "또는 task-aware "
-                "worktree add로 작업공간을 대여한 뒤 task-only handoff를 다시 실행."
+                "을 먼저 시도하라. 풀이 소진됐다면 사용자에게 task-aware 슬롯 생성 승인을 "
+                "요청하고, 승인한 사용자만 worktree add를 직접 실행한 뒤 task-only handoff를 "
+                "다시 실행한다(세션 자동 생성 금지)."
             )
             return []
         changed: list[tuple[str, str]] = []
@@ -3084,7 +3107,9 @@ class PmHandoff:
                     f"{REPO / slot}) — REPO 폴백 회귀는 vacuous-pass(엉뚱한 트리 green)이므로 "
                     f"그 슬롯을 red 로 차단한다. `{_runtime_skill_entry('pm-worktree')} "
                     "prune-stale`(장부 정리) 또는 "
-                    "`worktree add <repo> --task <이름>`(재생성) 후 재시도하라. "
+                    "사용자에게 슬롯 재생성 승인을 요청하라. 승인한 사용자만 "
+                    "`worktree add <repo> --task <이름> --user-ack <repo>`를 직접 실행한 뒤 "
+                    "재시도한다(세션 자동 실행 금지). "
                     "log/current.md·pm_state.md 어떤 것도 건드리지 않는다.",
                     file=sys.stderr,
                 )
@@ -3192,7 +3217,7 @@ class PmHandoff:
             if snapshot is not None and snapshot[0] == task:
                 trees.extend(_regression_cwd(slot) for slot in snapshot[1])
         else:
-            trees.append(_regression_cwd(self._worktree_slot))
+            trees.append(self._run_regression_cwd(self._worktree_slot))
         ordered: list[str] = []
         for tree in trees:
             if tree not in ordered:
@@ -3212,8 +3237,8 @@ class PmHandoff:
         rc 1 = 차단(어떤 파일도 건드리지 않은 상태). 차단 조건은 "판정 트리 중 하나라도 dirty
         ∧ override 없음" 하나뿐이다:
           - `--ack-dirty "<사유>"` → 통과 + 사유를 handoff entry 에 박제.
-          - `--auto-trigger`(비대화 자동 실행 전용 신호) → 차단 대신 loud 경고 + 사유 자동 박제
-            (ctx 한계 시점 차단은 세션 상태 전체를 잃는다).
+          - `--auto-trigger`(사용자 명시 핸드오프 호출부 호환 신호) → 차단 대신 loud 경고 +
+            사유 자동 박제. 이 플래그 자체는 실행 승인이나 자동 핸드오프 트리거가 아니다.
           - `--dry-run` → 판정 결과 미리보기만(차단 없음·기존 dry-run 의미 유지).
         판정 불가 트리(비-git·git 부재)는 비차단 경고 1줄로 stderr surface 한다 — 판정을 못 한
         것을 dirty 로 단정해 정상 핸드오프를 막지 않는다(false-block 회피). 커밋 0(unborn HEAD)은
@@ -3298,7 +3323,8 @@ class PmHandoff:
         if auto_trigger:
             note = build_dirty_ack_note("", dirty_count, auto=True)
             print(
-                "  ⚠ 비대화 자동 트리거(--auto-trigger) — 차단하지 않고 사유를 자동 박제한다: "
+                "  ⚠ 사용자 명시 핸드오프 호환 신호(--auto-trigger) — dirty를 차단하지 않고 "
+                "사유를 자동 박제한다: "
                 f"{note} 다음 세션이 이 잔여를 먼저 처리해야 한다.",
                 file=sys.stderr,
             )
@@ -3550,6 +3576,7 @@ class PmHandoff:
         task: str | None = None,
         ack_dirty: str | None = None,
         auto_trigger: bool = False,
+        user_ack: str | None = None,
     ) -> int:
         """PM 핸드오프 7단계 자동화 전체 흐름을 실행한다.
 
@@ -3563,9 +3590,11 @@ class PmHandoff:
             repo/slot 입력 없이 보유 작업공간 집합을 자동 수령한다. task-only(슬롯 0개)도 정상이다.
         ack_dirty: dirty-tree 게이트([0/7]) override 사유. 비어있지 않은 문자열이어야 하며
             (빈 사유는 부작용 0 로 중단) 사유는 단일행으로 평탄화돼 handoff entry 에 박제된다.
-        auto_trigger: 비대화 자동 실행(ctx 정지-핸드오프 등 문서화된 자동 경로) 전용 신호.
-            dirty-tree 게이트를 차단 대신 loud 경고 + 사유 자동 박제로 강등한다. 사람이 손으로
-            쓰는 플래그가 아니다 — 자동 경로임을 아는 호출부만 준다.
+        auto_trigger: 사용자 명시 핸드오프 호출부의 호환 신호. dirty-tree 게이트를 차단 대신
+            loud 경고 + 사유 자동 박제로 강등하지만, 독자 트리거나 승인으로 취급하지 않으며
+            ``user_ack`` 값-결속 계약을 그대로 적용한다.
+        user_ack: 사용자 발화에서 받은 핸드오프 대상 승인값. 세션이 만들거나 자동 부착하면
+            안 되며, 실제 실행은 해소된 task/slot 대상값과 정확히 일치해야 한다.
 
         반환: 0=성공, 1=실패 (중단).
         """
@@ -3593,6 +3622,18 @@ class PmHandoff:
             print(
                 "\n[중단] task handoff는 `--task <이름>` 정체성만 받는다 — "
                 "`--repo/--slot/--branch/--done`과 함께 쓸 수 없다.",
+                file=sys.stderr,
+            )
+            return 1
+
+        # run() 직접 호출도 CLI ingress와 같은 canonical slot 도메인을 강제한다. 파싱 실패를
+        # `solo`로 강등하면 malformed 경로에 solo ack가 결속되므로, ack 판정과 모든 pipeline
+        # 진입보다 앞에서 부작용 0으로 거부한다.
+        if worktree_slot is not None and _parse_worktree_slot(worktree_slot) is None:
+            print(
+                f"\n[중단] worktree_slot {worktree_slot!r} 이(가) 부적합 — "
+                "canonical `work/<repo>_<N>` 형식이어야 한다 "
+                "(log/current.md·pm_state.md 어떤 것도 건드리지 않는다).",
                 file=sys.stderr,
             )
             return 1
@@ -3659,13 +3700,32 @@ class PmHandoff:
                     file=sys.stderr,
                 )
                 return 1
-            # 해소된 슬롯을 실행 슬롯으로 thread — handoff entry skeleton·_pm_state_path·migrate 가
-            # 같은 슬롯을 본다. solo/미해소(None)는 현행 폴백 유지(worktree_slot 그대로 None).
-            if resolved_slot is not None:
-                worktree_slot = resolved_slot
+            if resolved_slot is not None and _parse_worktree_slot(resolved_slot) is None:
+                print(
+                    f"\n[중단] 해소된 worktree_slot {resolved_slot!r} 이(가) 부적합 — "
+                    "canonical `work/<repo>_<N>` 형식이어야 한다 "
+                    "(log/current.md·pm_state.md 어떤 것도 건드리지 않는다).",
+                    file=sys.stderr,
+                )
+                return 1
+            # 해소 결과를 실행 슬롯으로 thread한다. None도 legacy solo라는 **확정 스냅샷**이므로
+            # 그대로 결속하고 downstream이 lease를 다시 조회하지 못하게 한다.
+            worktree_slot = resolved_slot
+
+        # 사용자 ack는 CLI가 아니라 핵심 엔진 경계에서 검증한다. bare slot은 바로 위에서 딱 한 번
+        # 해소한 값을 실제 실행 전체에 thread하고, **그 동일 값**에 ack를 결속한다. 여기서 재조회하면
+        # 두 조회 사이 lease 변화로 승인 대상과 실행 대상이 갈리는 TOCTOU가 되므로 금지한다.
+        if not require_handoff_user_ack(
+            user_ack,
+            task=task,
+            worktree_slot=worktree_slot,
+            dry_run=dry_run,
+        ):
+            return 1
         # 회귀 cwd 해소용 — _default_run_pytest 가 _regression_cwd 에 넘긴다.
-        # 명시/해소 슬롯이 있으면 그 worktree, 없으면 _regression_cwd 가 단일 self-host 자동해소.
+        # 명시/해소 슬롯이 있으면 그 worktree, 해소값 None이면 이 실행 내내 REPO(solo)로 고정.
         self._worktree_slot = worktree_slot
+        self._worktree_slot_resolution_frozen = True
         # per-slot pm_state 경로 해소— 명시 주입(테스트)이 없을 때만. 진입부에선
         # **읽기 위치(target 경로)만 정하고 파일은 옮기지 않는다**(migrate=False) — 회귀/출하
         # 게이트(아래)가 red 면 "중단 시 pm_state 무접촉" 보장을 지켜야 하므로, legacy→slot
@@ -3674,6 +3734,10 @@ class PmHandoff:
         if not self._pm_state_file_explicit:
             if task_mode:
                 self._pm_state_file = _task_pm_state_file(task)
+            elif worktree_slot is None:
+                # run()의 1회 해소 결과 None을 legacy solo에 직접 결속한다. `_pm_state_path(None)`은
+                # lease를 재조회하므로 호출하지 않는다(MF-2/NEW-1의 TOCTOU 공통 뿌리).
+                self._pm_state_file = _legacy_pm_state_file()
             else:
                 self._pm_state_file = _pm_state_path(worktree_slot, migrate=False)
         print(
@@ -3707,7 +3771,15 @@ class PmHandoff:
         # skip_pytest 여도 수행·[1b] REPO 폴백 단일 검사로의 후퇴 방지).
         task_shipping_slots: list[str] | None = None
         print("\n[1/7] 회귀 측정...")
-        if skip_pytest:
+        if dry_run:
+            # ack 면제의 전제는 쓰기 0이다. pytest는 프로젝트 코드가 아니어도 cacheprovider 등
+            # 플러그인이 파일을 만들 수 있으므로 dry-run에서는 runner 자체를 호출하지 않는다.
+            print("  [dry-run] 순수 미리보기 — pytest 실행 생략(캐시 생성 없음).")
+            pytest_summary = "(dry-run 미실행)"
+            if task_regression:
+                changed = self._classify_task_changed_slots(task)
+                task_shipping_slots = [slot for slot, _reason in changed]
+        elif skip_pytest:
             print("  [--no-pytest] 회귀 측정 skip.")
             pytest_summary = "(skip)"
             if task_regression:
@@ -3722,8 +3794,6 @@ class PmHandoff:
             task_shipping_slots = ran_slots
             pytest_summary = "(task 슬롯별 회귀·위 참조)"
         else:
-            if dry_run:
-                print("  [dry-run] pytest tests/ -q 실행 중 (파일 편집만 생략)...")
             returncode, output = self._run_pytest_fn()
             print(output.rstrip())
             if not is_pytest_green(output, returncode):
@@ -3749,7 +3819,7 @@ class PmHandoff:
         elif task_shipping_slots is not None:
             self._shipping_surface_for_slots(task_shipping_slots)
         else:
-            worktree = _regression_cwd(self._worktree_slot)
+            worktree = self._run_regression_cwd(self._worktree_slot)
             self._shipping_surface_step(worktree)
 
         # task state 보장/차수 추론은 회귀·출하 게이트를 통과한 뒤, log/dashboard 등 첫 영속 변경
@@ -3919,7 +3989,10 @@ class PmHandoff:
         # 첫 영속 변경 전 위에서 이미 끝냈다.
         if not dry_run and not self._pm_state_file_explicit:
             if not task_mode:
-                self._pm_state_file = _migrate_legacy_pm_state(worktree_slot)
+                if worktree_slot is None:
+                    self._pm_state_file = _legacy_pm_state_file()
+                else:
+                    self._pm_state_file = _migrate_legacy_pm_state(worktree_slot)
 
         # ── 3·4. pm_state.md sliding window 정리 + 길이 검증 ───────────────────
         # pm_state.md 부재(board.py init 미실행 clone)는 치명 아님 — fail-soft.
@@ -4184,6 +4257,61 @@ def _run_normalize_session_anchors(worktree_slot: str | None, dry_run: bool) -> 
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
+def _handoff_user_ack_target(
+    task: str | None,
+    worktree_slot: str | None,
+) -> tuple[str, str]:
+    """핸드오프 승인 토큰의 canonical 대상값과 사람이 읽는 대상 설명을 반환한다."""
+    if task is not None:
+        return task, f"task {task!r}"
+    parsed = _parse_worktree_slot(worktree_slot)
+    if parsed is not None:
+        repo, slot = parsed
+        target = f"{repo}_{slot}"
+        return target, f"slot {target!r}"
+    # legacy solo에는 task/물리 slot 식별자가 없다. 기존 solo 동작을 보존하면서도 값-결속
+    # 게이트를 우회하지 않도록 논리적 단일 slot sentinel을 공개 대상값으로 쓴다.
+    return "solo", "legacy solo slot 'solo'"
+
+
+def require_handoff_user_ack(
+    user_ack: str | None,
+    *,
+    task: str | None,
+    worktree_slot: str | None,
+    dry_run: bool,
+) -> bool:
+    """기존 값-결속 ack 관용구로 실제 핸드오프만 사용자 승인 게이트한다."""
+    target, description = _handoff_user_ack_target(task, worktree_slot)
+    if dry_run:
+        print(
+            f"[dry-run] 쓰기 0 미리보기는 사용자 ack 없이 허용한다. 실제 {description} "
+            "핸드오프를 실행하려면 사용자 명시 승인이 필요하다 — 먼저 사용자에게 핸드오프 "
+            f"여부를 확인하라. 승인한 사용자만 `--user-ack {target}`를 대상값 그대로 "
+            "붙여 실행하라(세션 자동 부착 금지)."
+        )
+        return True
+    if user_ack == target:
+        print(
+            f"[승인 감사] pm_handoff: 사용자 승인 토큰이 {description} 대상값 {target!r}에 "
+            "값-결속됨."
+        )
+        return True
+    mismatch = (
+        f" 제공된 값 {user_ack!r}은 대상값 {target!r}에 결속되지 않았다."
+        if user_ack is not None
+        else ""
+    )
+    print(
+        f"[중단] pm_handoff {description}: 세션 핸드오프에는 사용자 명시 승인이 필요하다."
+        f"{mismatch}\n"
+        "  1순위: 사용자에게 핸드오프 여부를 확인하라.\n"
+        f"  부차 수단: 승인한 사용자만 `--user-ack {target}`를 대상값 그대로 붙여 "
+        "실행하라(세션 자동 부착 금지).",
+        file=sys.stderr,
+    )
+    return False
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pm_handoff.py",
@@ -4229,6 +4357,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="파일 편집 없이 변경 미리보기.",
     )
     parser.add_argument(
+        "--user-ack",
+        metavar="<task 또는 slot>",
+        default=None,
+        help=(
+            "사용자가 명시 승인한 핸드오프 대상값과 정확히 결속하는 토큰"
+            "(task 이름 또는 canonical <repo>_<N>; legacy solo slot은 `solo`). "
+            "--dry-run 미리보기는 생략 가능."
+        ),
+    )
+    parser.add_argument(
         "--no-pytest",
         action="store_true",
         help="회귀 측정 skip (기본 측정·대화형 경로).",
@@ -4246,9 +4384,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--auto-trigger",
         action="store_true",
         help=(
-            "비대화 자동 실행 전용 신호 (ctx 정지-핸드오프 등 문서화된 자동 경로). dirty-tree "
-            "게이트를 차단 대신 loud 경고 + 사유 자동 박제로 강등한다 — 자동 실행 시점의 차단은 "
-            "세션 상태를 통째로 잃기 때문이다. **사람이 손으로 쓰는 플래그가 아니다.**"
+            "사용자가 핸드오프를 명시 지시한 호출부를 위한 호환 신호. dirty-tree 게이트를 "
+            "차단 대신 loud 경고 + 사유 자동 박제로 강등한다. 독자 트리거·승인이 아니며 "
+            "--user-ack 값-결속 계약을 우회하지 않는다."
         ),
     )
     # ── 유지보수 모드 (핸드오프 7단계와 독립) ──────────────────────────
@@ -4370,6 +4508,8 @@ def _main(argv: list[str] | None = None) -> int:
         if missing:
             parser.error(f"{', '.join(missing)} 가 필수다.")
 
+    # CLI는 승인값과 아직 미해소일 수 있는 정체성을 엔진에 그대로 전달한다. 실제 slot 해소와
+    # 값-결속 ack 검증은 PmHandoff.run()의 단일 경계가 한 번만 수행한다(TOCTOU 방지).
     return handoff.run(
         session_num=args.session_seq,
         wave_summary=args.wave_summary,
@@ -4381,6 +4521,7 @@ def _main(argv: list[str] | None = None) -> int:
         task=identity.task,
         ack_dirty=args.ack_dirty,
         auto_trigger=args.auto_trigger,
+        user_ack=args.user_ack,
     )
 
 

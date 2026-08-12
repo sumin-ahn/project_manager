@@ -1,6 +1,6 @@
 # AGENTS.md — opencode PM 어댑터 (lite 진입·경량·자족)
 
-> 이 파일 + 공유 엔진(`board.py`) + opencode가 네이티브 스캔하는 `.claude/skills/`로 부트스트랩→ticket 발행→위임→finish를 운영한다. `pm_role.md`·`pm_playbook.md`는 happy-path 밖에서만 lazy Read한다.
+> 이 파일 + 공유 엔진(`board.py`) + `.claude/skills/` 모델 스킬 채널 + `.opencode/command/` 사람 슬래시 팔레트로 부트스트랩→ticket 발행→위임→finish를 운영한다. command 사본은 canonical SKILL.md에서 기계 생성한다. `pm_role.md`·`pm_playbook.md`는 happy-path 밖에서만 lazy Read한다.
 
 ## 프로젝트 한 줄
 
@@ -75,7 +75,7 @@
 `status.md` 모듈 행·`log/current.md` entry를 갱신하고 회귀 `{{TEST_CMD}}` green을 확인한 뒤 경로를 명시해 커밋한다:
 `git commit -m "T-NNNN — <요약>" -- <ticket touches> .project_manager/wiki/status.md .project_manager/wiki/log/current.md .project_manager/wiki/tickets/claimed/T-NNNN-<slug>.md .project_manager/wiki/tickets/done/T-NNNN-<slug>.md`
 
-bare commit은 남이 stage한 변경도 싣는다. 티켓 이동은 옛·새 경로를 모두 지정한다. **신규 파일은 `git add` 선행**: 미추적 pathspec은 `pathspec … did not match` rc=1을 낸다. 메시지에 `Co-Authored-By` 트레일러를 둔다. `.claude/skills/`의 pm-* 스킬(slash `/pm-…`·단일 소비)이 스칼라·skeleton·stage를 자동화한다.
+bare commit은 남이 stage한 변경도 싣는다. 티켓 이동은 옛·새 경로를 모두 지정한다. **신규 파일은 `git add` 선행**: 미추적 pathspec은 `pathspec … did not match` rc=1을 낸다. 메시지에 `Co-Authored-By` 트레일러를 둔다. `.opencode/command/`의 `/pm-…` 슬래시 진입이 canonical `.claude/skills/` 내용을 호출해 스칼라·skeleton·stage를 자동화한다.
 
 ## 6. 결정 권한 (요약)
 
@@ -101,7 +101,7 @@ bare commit은 남이 stage한 변경도 싣는다. 티켓 이동은 옛·새 �
 |---|---|
 | `.project_manager/tools/` | 공유 엔진 board.py·pm_*.py(0 수정) |
 | `.project_manager/wiki/` | status·pm_state/domain(`domain.py`)/pm_role·pm_playbook(lazy)/log/decisions/raw |
-| `.claude/skills/` · `.opencode/agents/` | PM workflow 스킬(단일 소비·slash `/pm-…`) · subagent(`task` 위임 1차) |
+| `.claude/skills/` · `.opencode/command/` · `.opencode/agents/` | canonical 모델 스킬 · 기계 생성 slash `/pm-…` 팔레트 · subagent(`task` 위임 1차) |
 | `AGENTS.md` | 이 파일(=claude_code의 CLAUDE.md lite) |
 
 ## 9. 막혔을 때 / lazy 참조 (happy-path 밖 → 그때 Read)

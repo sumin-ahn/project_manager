@@ -157,3 +157,13 @@ opencode run --agent plan  --format json "<reviewer 프롬프트>"        # 읽�
 - `.project_manager/wiki/pm_playbook.md` — Wave 패턴·메타 정책 (필요 시 Read)
 - ADR-0006 (`.project_manager/wiki/decisions/`) — opencode 어댑터 결정 (위임·인코딩·모델·self-driven)
 - ADR-0069 — 진입 doc 공통 코어 + 하네스별 전달 채널 (이 지침의 전달 채널 근거)
+
+## PM-workflow 진입 두 표면
+
+opencode 는 사람 슬래시 팔레트와 모델 스킬 표면을 따로 만든다(1.18.16 실측).
+
+- `.opencode/command/*.md` — 팔레트 진입(`/pm-bootstrap` 등 15개). 입력한 인자를 그대로 전달한다.
+- `.claude/skills/<이름>/SKILL.md` — canonical 저작 소스이자 모델 `skill` tool 표면.
+
+command 파일은 canonical 에서 기계 생성한 사본이라 손으로 편집하지 않는다. 두 표면은 서로를
+대체하지 않으므로 한쪽만 출하하면 나머지 진입이 사라진다.

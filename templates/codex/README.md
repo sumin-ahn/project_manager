@@ -97,14 +97,22 @@ compaction을 abort하거나 거부하는 설정을 두지 않는다. 병합 뒤
 ## trust 선행 (codex 고유·2단계·import 직후 1회)
 
 codex 의 `.codex/config.toml`·`.codex/hooks.json`·`.codex/agents/*.toml` 은 **trusted project + hook
-trust 승인** 후에만 로드·발화한다. import 는 완료 시 이 2단계를 loud 하게 안내한다 — 미승인 상태로
-두면 위임 subagent 스폰·PreCompact ctx checkpoint 안내가 조용히 발화하지 않는다. import/add-harness 직후
-1회 수동으로 밟는다:
+trust 승인** 후에만 로드·발화한다. hook trust는 **현재 hook 정의의 hash**에 결속되므로 새 hook이나
+변경된 hook은 다시 검토할 때까지 skip된다. 재검토가 필요하면 Codex host가 시작 시 경고하고 `/hooks`에서
+source·상태를 확인해 review/trust하거나 개별 hook을 disable할 수 있다. hook command 자신은 미승인일 때
+아예 실행되지 않으므로 자기 미승인을 감지하거나 차단할 수 없지만, host 측 감지 표면(startup warning·
+`/hooks`)은 존재한다. 승인 전에는 위임 spawn 가드와 PreCompact ctx checkpoint가 설치돼 있어도 무력하다.
+([공식 review/trust 계약](https://developers.openai.com/codex/hooks#review-and-trust-hooks))
+import/add-harness 직후 1회 수동으로 밟는다:
 
 1. 이 디렉토리에서 대화형 `codex` 를 한 번 열어 **프로젝트 trust 를 수락**한다
    (`.codex/agents/*.toml`·`config.toml` 은 trusted project 한정 로드).
-2. codex 안에서 `/hooks` 로 **hook trust 를 승인**한다 (PreCompact ctx checkpoint 안내 발화 전제).
+2. codex 안에서 `/hooks` 로 현재 hook 정의와 상태를 확인하고 **hook trust 를 승인**한다
+   (위임 spawn 가드·PreCompact ctx checkpoint 발화 전제).
 3. 검증 — 위임 스폰 대상 목록에 `architect`/`code-reviewer`/`developer`/`researcher` 가 보이면 로드 성공.
+
+격리 `CODEX_HOME`에서 hook 발화만 재현할 때는 `--dangerously-bypass-hook-trust`로 승인 축을 우회할 수
+있다. 이는 개인 설정을 건드리지 않는 실측용 절차이며, 실제 채택 환경의 `/hooks` 승인을 대신하지 않는다.
 
 > ⚠️ `-c projects.<path>.trust_level=trusted` CLI override 는 **먹지 않는다**(실측) — user config
 > `[projects]` 영속 trust 가 있어야 project-level `.codex/agents`·hooks 가 로드된다. 위 ① 대화형
@@ -134,6 +142,47 @@ agent 를 스폰한다(부모 sandbox 상속·`codex exec --agent` 플래그 부
   `workspace-write`·code-reviewer/researcher=`read-only`)를 담는다. `model` 키는 없다 — 사용자
   config 기본 상속(D5).
 - 표준 위임 프롬프트는 `$pm-dev-delegate` 스킬. (위임 *개념*·generate≠evaluate 는 루트 README.)
+- **native spawn 채널 가드 실측**(codex-cli 0.147.0): 라이브 `PreToolUse` payload의 native spawn
+  tool 이름은 `collaborationspawn_agent`이고 선택 역할은 `tool_input.task_name`에 실린다.
+  spawn payload에는 `tool_input.agent_type`이 없다. cross-harness deny만
+  `hookSpecificOutput.permissionDecision="deny"` + `permissionDecisionReason` 및
+  `decision="block"` + `reason`을 출력한다. 정상 allow는 빈 객체 `{}`라 host 판정에 무개입이다.
+- **deny host 실효성 실측**(codex-cli 0.147.0): 격리 `CODEX_HOME`에서
+  `--dangerously-bypass-hook-trust`를 주고 `collaborationspawn_agent`의 `PreToolUse`가 현행 deny
+  5필드 envelope(`decision:"block"` + `reason` +
+  `hookSpecificOutput.permissionDecision:"deny"` + `systemMessage` + `suppressOutput:false`)를
+  출력하게 한 뒤 spawn을 지시했다. 재시도로 `PreToolUse` 4건과 `error` 2건이
+  기록됐지만 `SubagentStart`는 0건이라 실제 spawn이 차단됐다. 같은 지시를 allow-only tee hook으로
+  바꾼 대조군(현재 출하 allow와 같은 빈 객체 `{}`)은 `SubagentStart` 1건이 발화했다. 출하 wrapper는
+  이 exact deny 5필드·빈 allow·2필드 fail-open 경고만 통과시키며 다른 shape은 경고로 강등한다.
+  현재 공식 문서는 PreToolUse의 `suppressOutput`을
+  미지원으로 적고 그런 출력은 hook failure 후 tool을 계속한다고 설명하지만, 0.147.0 host 실동작은
+  deny를 먼저 적용했다. 따라서 문서 schema만으로 차단 실패를 추론하지 말고 버전별 host를 끝까지
+  재실측하며, 이 envelope의 block+deny 쌍은 다음 host 재검증 전까지 유지한다
+  ([공식 PreToolUse 출력 계약](https://developers.openai.com/codex/hooks#pretooluse)).
+  2026-08-12에 동일한 격리 `CODEX_HOME`으로 deny/allow를 재실행했으나 현재 executor의 네트워크
+  sandbox가 WebSocket과 HTTPS 모두 `Operation not permitted`로 막아 두 실행이 모델 응답·hook 전에
+  rc=1로 끝났다(`PreToolUse=0`, `SubagentStart=0` 각각). 이 0/0은 deny 효력이나 allow 대조값이
+  아니며, 네트워크가 허용된 릴리즈 환경에서 재측정해야 한다.
+- **matcher drift 관측**: `SubagentStart`는 deny 필드가 없는 관측 전용 hook이다. 두 hook은 소비
+  가능한 receipt를 만들지 않고 append-only JSONL만 남긴다.
+  `PreToolUse`는 처리 결과를, deny 필드가 없는 `SubagentStart`는 실제 start를 기록한다.
+  `SubagentStart.agent_type`의 실값 `default`는 역할이 아니므로 대조에 쓰지 않는다. parent spawn과
+  child start의 `turn_id`가 서로 다르고 spawn에는 `agent_id`가 없으므로, `board.py lint`는 같은
+  `session_id`의 선행 allow-spawn을 start와 1:1 대조하고 start 자체는
+  `(session_id, turn_id, agent_id)`로 식별한다. 대조가 없는 start를 PM이 읽는 advisory 한 줄로
+  표면화하며, 같은 바이트를 재스캔해도 rename/소비/삭제 없이 같은 결과다. 기록 채널은
+  `.project_manager/.local/delegate-channel/codex-observations.jsonl`이고 세그먼트당 256 KiB·활성 파일
+  포함 최대 4개로 회전해 디렉터리 크기와 JSONL 개수를 제한한다. hook의 `systemMessage`는 기록 실패
+  때의 부가 시도일 뿐 TUI 도달 보장이 아니며, matcher-miss 보장 표면은 `board.py lint`다.
+- 대기 도구 `collaborationwait_agent`와 `agent_id`가 동반된 서브에이전트 자신의 도구 호출은 spawn이
+  아니므로 matcher와 가드 내부 판정 모두 통과한다.
+- execpolicy는 argv-only라 동적 `task_name` 판정을 구조적으로 수행할 수 없으며, hooks의
+  `PreToolUse`만 차단 채널이다. 각 hook command는 10초 외부 제한보다 짧은 8초 subprocess 제한으로
+  가드를 감싸 가드 파일 부재·비정상 종료·정지에도 유효한 allow JSON을 출력한다.
+  단, POSIX shell 자체의 기동 실패나 command 문자열 파싱 실패는 이 wrapper가 실행되기 전이라
+  JSON fallback을 출력할 수 없다. 이 최외곽 실패가 Codex hook host에서 fail-open인지 live probe로
+  입증하지 못했으므로 보장하지 않는다.
 
 ## 스킬 (canonical `.agents/skills` · `$` 멘션 · auto-trigger)
 
@@ -183,3 +232,17 @@ python3 .project_manager/tools/pm_update.py --from ../../
 - ADR-0070 — codex 어댑터 타깃 + 어댑터 구성 단일 진실 · ADR-0069 — 진입 doc 공통 코어 + 하네스별
   전달 채널 · ADR-0054 — @source 전파 채널 · ADR-0065 — 스킬 단일 소비.
 - 루트 [`README.md`](../../README.md) — 프레임워크 전체 가이드(네 기둥·도입·워크플로·이식성·계보).
+
+#### deny envelope 3셀 재측정 (2026-08-12 · codex-cli 0.147.0)
+
+격리 `CODEX_HOME` + `--dangerously-bypass-hook-trust` + tee 훅, 셀당 실 스폰 1회.
+
+| 변형 | PreToolUse(spawn) | SubagentStart |
+| --- | ---: | ---: |
+| deny + `suppressOutput: false` (출하 형상) | 1 | 0 |
+| deny (`suppressOutput` 제거) | 1 | 0 |
+| allow 대조군 (훅 무출력) | 1 | 1 |
+
+`suppressOutput` 유무는 차단 여부와 무관하다. deny 는 두 변형 모두에서 스폰을 막고, 대조군만
+`SubagentStart` 에 도달한다. 출하 형상을 5필드로 유지하는 이유는 그 bytes 가 측정된 값이기 때문이다.
+공식 문서 서술과 설치 호스트의 실동작이 갈릴 수 있으므로, 호스트 버전이 오르면 end-to-end 로 재측정한다.

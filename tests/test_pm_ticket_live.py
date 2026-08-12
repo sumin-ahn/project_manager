@@ -53,8 +53,8 @@ _CLAUDE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_CLAUDE_TIMEOUT", "600"))
 _OPENCODE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_TIMEOUT", "1800"))
 _CODEX_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_CODEX_TIMEOUT", "600"))
 
-# 검증 대상 스킬(① canonical·ADR-0065 단일 소비·command 사본 은퇴). PM 이 scratchpad 에서
-# `.claude/skills/pm-ticket/SKILL.md` 로 적용한다(T-0366). 미적용 시 스킬-의존 가드는 skip.
+# 검증 대상 저작 소스(① canonical). opencode command는 이 파일에서 기계 생성되며
+# 정합은 T-0674 전용 가드가 별도 강제한다. 미적용 시 스킬-의존 가드는 skip.
 _SKILL = REPO / ".claude" / "skills" / "pm-ticket" / "SKILL.md"
 _skill_present = pytest.mark.skipif(
     not _SKILL.exists(),

@@ -42,7 +42,7 @@ grep -rlI '{{' . --exclude-dir=.git --exclude-dir=__pycache__ --exclude-dir=node
 
 # 3) 이 clone 등록 (clone 당 1회) — solo(N=1·M=1) 또는 multi-repo(N×M·ADR-0016·multi-repo.md)
 python3 .project_manager/tools/board.py init                        # solo: legacy T-NNNN
-#   multi-repo(M>1·prefix 네임스페이스): board.py init --prefix pay --area "결제"   # → T-pay-NNN
+#   multi-repo(M>1·prefix 네임스페이스): board.py init --prefix pay --area "결제" --user-ack pay   # → T-pay-NNN
 
 # 4) board.py 동작 확인 — 첫 ticket 발행
 python3 .project_manager/tools/board.py new "첫 ticket — 환경 셋업 검증" --tag infra
@@ -57,6 +57,11 @@ python3 .project_manager/tools/board.py list
 
 # 이후 프레임워크 개선 받기: ./pm-update.sh [--from <upstream-checkout>] [--dry-run]
 ```
+
+새 prefix를 처음 만드는 `board.py new --prefix`, `board.py init --prefix`, `pm-config task
+prefix`, `board.py prefix rename/merge`는 사용자가 승인한 대상값과 같은 `--user-ack <prefix>`가
+필요하다. 이미 areas·기발행 티켓·task 장부(또는 등록 prefix 0개인 solo conf)에 있는 prefix는
+대소문자 무관으로 재사용되며 별도 ack가 필요 없다.
 
 치환 후 남은 `{{...}}` 확인 — 위 2)와 **문자 그대로 같은 파이프라인**(파일 단위 `-rlI` + 동일 제외
 egrep)을 건다. 엔진 소스·engine.manifest·pm_role/pm_playbook 의 토큰은 **의도적으로 남는다**(local.conf

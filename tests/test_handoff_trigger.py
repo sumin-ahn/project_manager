@@ -234,7 +234,7 @@ def test_interactive_run_prompt_goes_to_stdout_not_log(handoff, tmp_path, capsys
         pm_state_file=state_file,
         pm_playbook_file=playbook_file,
     )
-    rc = inst.run(session_num=5, wave_summary="ws", dry_run=False, skip_pytest=True)
+    rc = inst.run(session_num=5, wave_summary="ws", dry_run=False, skip_pytest=True, user_ack="solo")
     assert rc == 0
     out = capsys.readouterr().out
     # 인계 프롬프트는 stdout 으로 나간다 ([5/7]).
@@ -270,8 +270,8 @@ def test_handoff_prompt_template_is_lean(handoff):
 
 def test_no_stale_handoff_guidance_across_tree():
     """루트 + 템플릿(pm_update 동기화분 + 어댑터 미러)의 handoff 가이드 파일에 옛 verbose 문구가
-    남지 않았는지 (ADR-0008·codex 게이트 회귀 방지). opencode 도 canonical 스킬 단일 소비
-    (ADR-0065·command 은퇴·T-0364)라 그 출하 미러(templates/opencode/.claude/skills)를 가드한다."""
+    남지 않았는지 (ADR-0008·codex 게이트 회귀 방지). opencode의 skill 미러와
+    canonical에서 생성한 command 사본을 모두 가드한다(T-0674)."""
     candidates = [
         REPO / ".project_manager/wiki/pm_playbook.md",
         REPO / ".claude/skills/pm-handoff/SKILL.md",
@@ -279,6 +279,7 @@ def test_no_stale_handoff_guidance_across_tree():
         REPO / "templates/claude_code/.claude/skills/pm-handoff/SKILL.md",
         REPO / "templates/opencode/.project_manager/wiki/pm_playbook.md",
         REPO / "templates/opencode/.claude/skills/pm-handoff/SKILL.md",
+        REPO / "templates/opencode/.opencode/command/pm-handoff.md",
     ]
     stale_phrases = ("5~10 불릿", "5~10개 불릿", "board 상태 / 진행 중 작업", "board 상태·진행 중 작업")
     for path in candidates:

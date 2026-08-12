@@ -18,7 +18,7 @@ python3 .project_manager/tools/ticket_finish.py T-NNNN
 ```
 
 - `--repo <repo> --slot <N>` (multi-PM): 회귀를 돌릴 worktree 슬롯. 분리된 PM 홈에는 `tests/`가 없어 활성 worktree에서 회귀해야 한다. **솔로/단일슬롯/default-1은 생략 가능**(자동해소). 미지정 상태에서 진짜 모호(repo≥2·slot-1 부재)하면 **fail-loud**하며 `--slot`을 요구한다. pm_handoff `--repo/--slot`과 동형.
-- **`--no-pytest`**: 회귀를 별도(`/pm-qa` 등)로 이미 측정했을 때 회귀를 skip한다(board complete는 `--tests-pass` 유지). 회귀 cwd가 불필요하므로 모호 게이트도 우회한다.
+- **`--no-pytest`**: 회귀를 별도(`/pm-qa` 등)로 이미 측정했을 때 회귀를 skip한다(board complete는 `--tests-pass` 유지). 회귀 cwd가 불필요하므로 모호 게이트도 우회한다. **wave 중 완료 부기는 이 형태가 표준**이다 — 지정 회귀 실측(dev/reviewer 라운드 보고 숫자)을 근거로 부기하고, 전체 회귀는 릴리즈 절차 1단계 1회(조용한 트리·green 확인 → livegate record)로 미룬다(병렬 wave 의 전체 회귀는 타 dev WIP 로 오염된 신호다 — `pm_playbook.md` §"라운드 프로토콜").
 - `--section`: **deprecated no-op**(status.md 합계표 제거, 후방호환 수용만).
 
 ## CLI 자동 처리
@@ -59,6 +59,12 @@ ADR(`decisions/`)·domain 페이지·`architecture.md`·`status.md`는 다른 �
    - spec/ADR 정합 갱신(있으면)
 
 3. **git commit — pathspec 필수** — bare `git commit`은 남이 stage한 것도 싣는다. **[4/5]의 `✓ git add — 선언 경로 N개만 stage` 아래 출력 경로 목록**을 그대로 `--` 뒤에 쓴다.
+
+   > ⚠ **index-only 변경(untrack·`git rm --cached`)은 pathspec 커밋 금지.** `git commit -- <pathspec>` 은
+   > staged 가 아니라 **워킹트리 내용**을 커밋한다 — untrack 은 파일이 디스크에 남아 있으므로 pathspec
+   > 커밋이 삭제를 조용히 무효화하고 index 를 HEAD 로 되돌린다(실측: 수천 건 untrack 이 한 번에
+   > 증발해 amend 로 보정). 그 변경만 단독 stage 된 상태를 `git status --porcelain` 으로 확인한 뒤
+   > **bare commit** 으로 싣는다.
 
    ```bash
    git commit -m "T-NNNN — <title 요약>" -- \

@@ -595,7 +595,9 @@ def test_delegate_registration_is_structurally_before_runner(delegate):
     source = inspect.getsource(delegate._execute_attempt)
     registration = source.index("record_id = relay.start_raw_record(")
     execution = source.index("result = run_fn(")
-    completion = source.index("relay.finish_raw_record(")
+    # 마감은 실행 *뒤* 경로를 앵커로 잡는다 — pre-spawn 거부(스폰 없이 rc=1 마감)가 실행보다
+    # 앞에 있는 것은 설계 동작이라 첫 출현으로 재면 정상 구조를 역전으로 오판한다.
+    completion = source.index("relay.finish_raw_record(", execution)
     assert registration < execution < completion
 
 
@@ -1014,9 +1016,13 @@ def test_legacy_round_inheritance_happens_once_per_gate(
     assert _round_count(pm_home, gate) == 3
 
 
-def test_unresolvable_pm_home_keeps_loud_diff_root_round_fallback(
+def test_corrupt_lease_registered_slot_keeps_loud_round_fallback(
         external, monkeypatch, tmp_path, capsys):
-    """소유자 해소 실패면 라운드 장부도 loud 경고 + diff_root 폴백(raw 장부와 같은 강등 경로)."""
+    """lease 손상 관리 슬롯은 마커가 없으면 종전 diff-root 회계 폴백을 유지한다([[T-0643]]).
+
+    T-0634의 강등 사유 기반 차단은 lease 손상 관리 슬롯까지 닫았다. 스냅샷 생성 사실은 이제
+    전용 마커가 증명하므로, 마커 없는 단일 관리 후보는 강등 사유가 같아도 실 라운드와 회계 밖
+    자문 모두 종전 loud 폴백으로 통과한다. 이 대비가 사유 문자열 단독 판정을 막는다."""
     pm_home, worktree = _review_slot_family(tmp_path)
     lease = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     lease.write_text("{broken", encoding="utf-8")
@@ -1025,11 +1031,16 @@ def test_unresolvable_pm_home_keeps_loud_diff_root_round_fallback(
     gate = "T-" + "0001"
 
     assert external.main(["--paths", "seed.txt", "--gate", gate, "--force"]) == 0
-
     err = capsys.readouterr().err
     assert err.splitlines()[0].startswith("경고: PM 홈 해소 실패")
-    assert _round_count(worktree, gate) == 1        # 강등 앵커에 기록(자기잠김 금지)
+    assert "게이트 스냅샷 마커" not in err
+    assert _round_count(worktree, gate) == 1        # 손상 중에는 강등 앵커에 loud 기록
     assert _round_count(pm_home, gate) == 0
+
+    # 회계 밖 자문은 종전대로 통과하며 raw 장부는 강등 앵커 폴백을 유지한다.
+    assert external.main(["--paths", "seed.txt", "--force", "--no-gate"]) == 0
+    err = capsys.readouterr().err
+    assert err.splitlines()[0].startswith("경고: PM 홈 해소 실패")
 
 
 def test_main_clears_raw_anchor_between_calls(

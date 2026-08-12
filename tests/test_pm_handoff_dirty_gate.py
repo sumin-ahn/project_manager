@@ -37,6 +37,19 @@ requires_git_binary = pytest.mark.skipif(
 )
 
 
+
+def _run_handoff(inst, **kw):
+    """핸드오프 실행 — 승인 게이트에 정식 승인값을 실어 통과시킨다.
+
+    이 모듈의 축은 dirty-tree 게이트이지 사용자-명시 승인 게이트가 아니다(그 축은
+    ``tests/test_pm_handoff_user_ack.py``가 소유한다). 승인 대상값은 task > 슬롯 이름 >
+    legacy solo sentinel 순으로 정해진다.
+    """
+    if "user_ack" not in kw:
+        slot = kw.get("worktree_slot")
+        kw["user_ack"] = kw.get("task") or (slot.rsplit("/", 1)[-1] if slot else "solo")
+    return inst.run(**kw)
+
 def _load(name: str = "pm_handoff"):
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
@@ -206,7 +219,7 @@ def test_clean_tree_passes_and_appends_entry(hf, tmp_path, monkeypatch, capsys):
     """clean → rc 0·게이트 통과 표시·[2/7] log skeleton 이 실제로 append 된다."""
     inst, log_file = _make_handoff(hf, tmp_path, monkeypatch, git_runner=_git_stub())
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
 
     assert rc == 0
     out = capsys.readouterr().out
@@ -219,7 +232,7 @@ def test_clean_tree_entry_has_no_ack_line(hf, tmp_path, monkeypatch):
     """clean 핸드오프 entry 는 ack 줄이 없다 (현행 lean 스키마 byte-호환)."""
     inst, log_file = _make_handoff(hf, tmp_path, monkeypatch, git_runner=_git_stub())
 
-    assert inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True) == 0
+    assert _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True) == 0
     assert hf.DIRTY_ACK_ENTRY_LABEL not in log_file.read_text(encoding="utf-8")
 
 
@@ -232,7 +245,7 @@ def test_dirty_tree_blocks_with_rc1_and_file_list(hf, tmp_path, monkeypatch, cap
         git_runner=_git_stub({str(tmp_path): _DIRTY_TWO}),
     )
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
 
     assert rc == 1
     captured = capsys.readouterr()
@@ -256,7 +269,7 @@ def test_dirty_gate_runs_before_regression(hf, tmp_path, monkeypatch, capsys):
     )
     inst._run_pytest_fn = lambda: (calls.append("pytest"), (0, "1 passed\n"))[1]
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
 
     assert rc == 1
     assert calls == []                      # 회귀 미실행.
@@ -275,7 +288,7 @@ def test_dirty_block_touches_no_file(hf, tmp_path, monkeypatch):
     )
     before = log_file.read_bytes()
 
-    assert inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True) == 1
+    assert _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True) == 1
 
     assert log_file.read_bytes() == before
     assert not (tmp_path / "dashboard.md").exists()
@@ -287,10 +300,10 @@ def test_dirty_rerun_after_block_is_still_first_entry(hf, tmp_path, monkeypatch)
         hf, tmp_path, monkeypatch,
         git_runner=_git_stub({str(tmp_path): _DIRTY_TWO}),
     )
-    assert inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True) == 1
+    assert _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True) == 1
 
     inst._run_git_fn = _git_stub()      # 잔여를 커밋했다 — 이제 clean.
-    assert inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True) == 0
+    assert _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True) == 0
 
     assert log_file.read_text(encoding="utf-8").count("handoff | PM 5차") == 1
 
@@ -307,7 +320,7 @@ def test_dirty_block_does_not_release_task_pid(hf, tmp_path, monkeypatch, capsys
     )
     before = log_file.read_bytes()
 
-    rc = inst.run(session_num=None, wave_summary="x", dry_run=False,
+    rc = _run_handoff(inst, session_num=None, wave_summary="x", dry_run=False,
                   skip_pytest=True, task="alpha")
 
     assert rc == 1
@@ -329,7 +342,7 @@ def test_clean_task_run_reaches_pid_release(hf, tmp_path, monkeypatch):
         pool=pool, task_mode=True,
     )
 
-    rc = inst.run(session_num=None, wave_summary="x", dry_run=False,
+    rc = _run_handoff(inst, session_num=None, wave_summary="x", dry_run=False,
                   skip_pytest=True, task="alpha")
 
     assert rc == 0
@@ -349,7 +362,7 @@ def test_task_mode_gate_covers_held_slots(hf, tmp_path, monkeypatch, capsys):
         pool=pool, task_mode=True,
     )
 
-    rc = inst.run(session_num=None, wave_summary="x", dry_run=False,
+    rc = _run_handoff(inst, session_num=None, wave_summary="x", dry_run=False,
                   skip_pytest=True, task="alpha")
 
     assert rc == 1
@@ -373,7 +386,7 @@ def test_slot_mode_gate_covers_active_worktree(hf, tmp_path, monkeypatch, capsys
         git_runner=_git_stub({str(slot_dir): ([], ["untracked-slot-output.md"])}),
     )
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
                   worktree_slot="work/app_1")
 
     assert rc == 1
@@ -453,7 +466,7 @@ def test_submodule_dirty_blocks_and_lists_parent_relative_paths(
     )
     inst, _log = _make_handoff(hf, tmp_path, monkeypatch, git_runner=runner)
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
 
     assert rc == 1
     captured = capsys.readouterr()
@@ -473,7 +486,7 @@ def test_gitlink_pin_drift_blocks_via_ignore_submodules_none(
     )
     inst, _log = _make_handoff(hf, tmp_path, monkeypatch, git_runner=runner)
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
 
     assert rc == 1
     assert ".project_manager/board" in capsys.readouterr().out
@@ -490,7 +503,7 @@ def test_parent_and_registered_submodule_clean_pass(
     )
     inst, log_file = _make_handoff(hf, tmp_path, monkeypatch, git_runner=runner)
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
 
     assert rc == 0
     assert "판정 트리 2개" in capsys.readouterr().out
@@ -507,7 +520,7 @@ def test_judged_tree_count_excludes_unjudgeable_submodule(
     )
     inst, _log = _make_handoff(hf, tmp_path, monkeypatch, git_runner=runner)
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
 
     assert rc == 0
     captured = capsys.readouterr()
@@ -521,7 +534,7 @@ def test_submodule_status_failure_warns_without_blocking(
     runner = _git_stub(submodule_status_fail_trees=(str(tmp_path),))
     inst, log_file = _make_handoff(hf, tmp_path, monkeypatch, git_runner=runner)
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
 
     assert rc == 0
     captured = capsys.readouterr()
@@ -543,7 +556,7 @@ def test_ignore_all_override_closes_internal_dirty_and_gitlink_axes(
     )
     inst, _log = _make_handoff(hf, tmp_path, monkeypatch, git_runner=runner)
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
 
     assert rc == 1
     out = capsys.readouterr().out
@@ -564,7 +577,7 @@ def test_ack_dirty_passes_and_stamps_reason(hf, tmp_path, monkeypatch, capsys):
         git_runner=_git_stub({str(tmp_path): _DIRTY_TWO}),
     )
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
                   ack_dirty="어댑터 사본은 다음 세션 릴리즈 wave 에서 커밋")
 
     assert rc == 0
@@ -579,7 +592,7 @@ def test_ack_dirty_on_clean_tree_stamps_nothing(hf, tmp_path, monkeypatch, capsy
     """clean 인데 ack 를 줘도 박제하지 않는다 (없는 incident 를 log 에 만들지 않음)."""
     inst, log_file = _make_handoff(hf, tmp_path, monkeypatch, git_runner=_git_stub())
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
                   ack_dirty="사유")
 
     assert rc == 0
@@ -596,7 +609,7 @@ def test_blank_ack_reason_aborts_engine_path(hf, tmp_path, monkeypatch, blank, c
     )
     before = log_file.read_bytes()
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
                   ack_dirty=blank)
 
     assert rc == 1
@@ -642,7 +655,7 @@ def test_multiline_ack_reason_cannot_forge_entry(hf, tmp_path, monkeypatch):
         git_runner=_git_stub({str(tmp_path): _DIRTY_TWO}),
     )
 
-    rc = inst.run(
+    rc = _run_handoff(inst, 
         session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
         ack_dirty="사유\n## [2026-08-09] handoff | PM 99차 → 다음 PM 세션\n- 위조: 있음",
     )
@@ -683,12 +696,12 @@ def test_auto_trigger_warns_and_stamps_instead_of_blocking(
         git_runner=_git_stub({str(tmp_path): _DIRTY_TWO}),
     )
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
                   auto_trigger=True)
 
     assert rc == 0
-    assert "비대화 자동 트리거(--auto-trigger)" in capsys.readouterr().err
-    assert "ctx 자동 핸드오프 — dirty 2건 잔존" in log_file.read_text(encoding="utf-8")
+    assert "사용자 명시 핸드오프 호환 신호(--auto-trigger)" in capsys.readouterr().err
+    assert "사용자 명시 핸드오프 호환 신호 — dirty 2건 잔존" in log_file.read_text(encoding="utf-8")
 
 
 def test_auto_trigger_ack_reason_wins_over_default(hf, tmp_path, monkeypatch):
@@ -698,7 +711,7 @@ def test_auto_trigger_ack_reason_wins_over_default(hf, tmp_path, monkeypatch):
         git_runner=_git_stub({str(tmp_path): _DIRTY_TWO}),
     )
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
                   ack_dirty="사람이 준 사유", auto_trigger=True)
 
     assert rc == 0
@@ -722,7 +735,7 @@ def test_env_noninteractive_does_not_degrade_gate(
     )
     before = log_file.read_bytes()
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
 
     assert rc == 1
     assert "핸드오프 시작 시점에 미커밋 잔여" in capsys.readouterr().err
@@ -743,11 +756,11 @@ def test_cli_auto_trigger_flag_defaults_off(hf):
 def test_same_session_rerun_upserts_ack_line(hf, tmp_path, monkeypatch, capsys):
     """같은 차수 재실행이 기존 entry 에 ack 줄을 **삽입**한다 (콘솔로 흘리지 않는다)."""
     inst, log_file = _make_handoff(hf, tmp_path, monkeypatch, git_runner=_git_stub())
-    assert inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True) == 0
+    assert _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True) == 0
     capsys.readouterr()
 
     inst._run_git_fn = _git_stub({str(tmp_path): _DIRTY_TWO})
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
                   ack_dirty="두고 나가는 사유")
 
     assert rc == 0
@@ -760,13 +773,13 @@ def test_same_session_rerun_upserts_ack_line(hf, tmp_path, monkeypatch, capsys):
 def test_same_session_rerun_ack_is_idempotent(hf, tmp_path, monkeypatch):
     """같은 사유로 두 번 더 재실행해도 ack 줄은 1개·두 번째부터 byte 동일(멱등)."""
     inst, log_file = _make_handoff(hf, tmp_path, monkeypatch, git_runner=_git_stub())
-    assert inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True) == 0
+    assert _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True) == 0
 
     inst._run_git_fn = _git_stub({str(tmp_path): _DIRTY_TWO})
-    assert inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
+    assert _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
                     ack_dirty="같은 사유") == 0
     first = log_file.read_bytes()
-    assert inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
+    assert _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
                     ack_dirty="같은 사유") == 0
 
     assert log_file.read_bytes() == first
@@ -851,10 +864,10 @@ def test_same_session_rerun_ack_is_idempotent_on_crlf_log(hf, tmp_path, monkeypa
     )
     log_file.write_bytes(("# log\r\n\r\n" + _CRLF_ENTRY).encode("utf-8"))
 
-    assert inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
+    assert _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
                     ack_dirty="같은 사유") == 0
     first = log_file.read_bytes()
-    assert inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
+    assert _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
                     ack_dirty="같은 사유") == 0
 
     assert log_file.read_bytes() == first
@@ -885,11 +898,11 @@ def test_unstampable_ack_blocks_handoff(hf, tmp_path, monkeypatch, capsys):
     )
     # 같은-세션 재실행 경로로 들어가도록 기존 entry 를 미리 깔아 둔다.
     inst._run_git_fn = _git_stub()
-    assert inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True) == 0
+    assert _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True) == 0
     before = log_file.read_bytes()
     inst._run_git_fn = _git_stub({str(tmp_path): _DIRTY_TWO})
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
                   ack_dirty="사유")
 
     assert rc == 1
@@ -907,7 +920,7 @@ def test_dry_run_previews_dirty_without_blocking(hf, tmp_path, monkeypatch, caps
     )
     before = log_file.read_bytes()
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=True, skip_pytest=True)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=True, skip_pytest=True)
 
     assert rc == 0
     out = capsys.readouterr().out
@@ -923,7 +936,7 @@ def test_dry_run_preview_shows_ack_line_in_skeleton(hf, tmp_path, monkeypatch, c
         git_runner=_git_stub({str(tmp_path): _DIRTY_TWO}),
     )
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=True, skip_pytest=True,
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=True, skip_pytest=True,
                   ack_dirty="릴리즈 wave 에서 커밋")
 
     assert rc == 0
@@ -943,7 +956,7 @@ def test_unborn_head_tree_is_judged_by_untracked(hf, tmp_path, monkeypatch, caps
                              unborn_trees=(str(tmp_path),)),
     )
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
 
     assert rc == 1
     captured = capsys.readouterr()
@@ -967,7 +980,7 @@ def test_unborn_head_all_staged_is_dirty(hf, tmp_path, monkeypatch, capsys):
     )
     before = log_file.read_bytes()
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
 
     assert rc == 1
     captured = capsys.readouterr()
@@ -1013,7 +1026,7 @@ def test_non_git_tree_warns_on_stderr_without_blocking(hf, tmp_path, monkeypatch
         git_runner=_git_stub(non_git_trees=(str(tmp_path),)),
     )
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
 
     assert rc == 0
     captured = capsys.readouterr()

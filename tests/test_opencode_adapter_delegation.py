@@ -60,9 +60,9 @@ MODEL_PIN_LINE = 'model: "{{OPENCODE_PRO_MODEL}}"'
 def _opencode_md_files() -> list[Path]:
     """검사 대상 어댑터 md 파일 전부 — 존재하는 것만 (hermetic)."""
     candidates = [AGENTS_MD, AGENTS_LITE_MD]
-    # ADR-0065(단일 소비·T-0364): opencode `.opencode/command` 은퇴 → PM-workflow 표면은
-    #   canonical `.claude/skills` 미러. 모델-플래그 위생을 그 미러 표면으로 계승 검사한다.
+    # T-0674: canonical skill 미러와 사람 slash command 기계 사본을 모두 검사한다.
     candidates += sorted((OPENCODE / ".claude" / "skills").glob("*/SKILL.md"))
+    candidates += sorted((OPENCODE / ".opencode" / "command").glob("*.md"))
     candidates += sorted((OPENCODE / ".opencode" / "agents").glob("*.md"))
     return [p for p in candidates if p.exists()]
 

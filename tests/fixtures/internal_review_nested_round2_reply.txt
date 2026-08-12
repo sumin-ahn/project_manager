@@ -1,0 +1,24 @@
+## 판정: 반려
+
+Must-fix 2건이 남았습니다.
+
+- **MF-3 미해소** — 락 실패는 정상적으로 fail-open하고 malformed JSON도 복구하지만, UTF-8 손상 장부는 `UnicodeDecodeError`로 세션을 차단합니다.
+  - 락 실패 probe: `refused_rc=None`, `reserved=False`, 장부 없음.
+  - malformed JSON: `refused_rc=None`, 예약·계측 진행.
+  - invalid UTF-8: `UnicodeDecodeError` 전파 — 요구한 손상 장부 fail-open 불충족.
+
+- **MF-6 미해소·퇴행** — 지정 회귀가 red입니다.
+  - `1205 passed, 2 skipped, 1 failed`
+  - 실패: `test_shared_pm_review_cards_stay_byte_identical`
+  - `pm-review` canonical↔Claude/OpenCode 미러 2쌍 drift.
+  - 수동 byte 대조에서 `pm-dev-delegate` canonical↔Claude/OpenCode 미러도 2쌍 drift.
+  - `board.py`, `pm_delegate.py`, `review_rounds.py`, `pm_playbook.md`, `pm_role.md`의 3개 템플릿 사본은 byte-identical이었습니다.
+
+나머지 판정:
+
+- **MF-1 해소, 퇴행 없음** — 장부/entry/완료 라운드 부재는 각각 problem 0, 반려·unknown은 각각 1입니다.
+- **MF-2 해소** — raw write `OSError` 후 `any_spawned=True`, `count=1`, records/rounds 각 1입니다.
+- **MF-4 해소** — `- 없음`, `- 해당 없음` 모두 `(verdict=0, must_fix_items=[])`입니다.
+- **MF-5 해소** — `T-PAY-001=True`, `T-PAY=False`입니다.
+- **외부 blast-radius 및 1R 통과 축** — 위 parity 실패 외 지정 회귀에서 추가 퇴행 없음.
+- **NEW** — 없음.

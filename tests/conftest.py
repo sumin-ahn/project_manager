@@ -61,6 +61,11 @@ _REPO_RAW_OUTPUT_FILES = (
     Path(".project_manager") / ".local" / "raw_outputs.json.lock",
 )
 
+_REPO_LIVE_BOARD_OUTPUT_ROOTS = (
+    Path(".project_manager") / "wiki",
+    Path(".project_manager") / "board",
+)
+
 
 def _snapshot_repo_raw_outputs(
         repo_root: Path) -> dict[Path, tuple[int, int, int, int]]:
@@ -97,6 +102,51 @@ def _snapshot_repo_raw_outputs(
     return snapshot
 
 
+def _snapshot_repo_board_outputs(
+        repo_root: Path) -> dict[Path, tuple[int, int, int, int]]:
+    """라이브 board가 소유하는 두 루트 아래 모든 파일 정체를 스냅샷한다.
+
+    산출 파일명을 나열하지 않고 소유 루트를 단일 진실로 둔다. 따라서 ``wiki/board.md`` 같은
+    파생 출력과 이후 추가되는 board 산출도 자동으로 감시 대상이 된다. 테스트 픽스처는 pytest
+    tmp 아래에 있어야 하며, 세션 전후 신규·변경·삭제를 모두 잡는다.
+    """
+    snapshot: dict[Path, tuple[int, int, int, int]] = {}
+    for rel in _REPO_LIVE_BOARD_OUTPUT_ROOTS:
+        base = repo_root / rel
+        if not base.is_dir():
+            continue
+        for path in base.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                stat_result = path.stat()
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            snapshot[path] = (
+                stat_result.st_dev,
+                stat_result.st_ino,
+                stat_result.st_mtime_ns,
+                stat_result.st_size,
+            )
+    return snapshot
+
+
+def _assert_repo_board_outputs_unchanged(
+    before: dict[Path, tuple[int, int, int, int]],
+    after: dict[Path, tuple[int, int, int, int]],
+) -> None:
+    """동일 live board의 전후 스냅샷에 신규·변경·삭제가 없음을 단언한다."""
+    changed = sorted(
+        path for path in (before.keys() | after.keys())
+        if before.get(path) != after.get(path)
+    )
+    assert not changed, (
+        "테스트 세션이 실 작업 트리의 live board 산출을 만들거나 변경했습니다 — "
+        "REPO/BOARD_FILE/tickets_dir()/board_root()를 모두 pytest tmp_path로 재앵커하세요:\n"
+        + "\n".join(f"  - {path}" for path in changed)
+    )
+
+
 def _snapshot_project_temp_outputs(
         root: Path) -> dict[Path, tuple[int, int, int, int]]:
     """프로젝트가 지정 tempdir에 만드는 이름 있는 산출물의 경로와 파일 정체를 스냅샷한다.
@@ -131,6 +181,7 @@ def _forbid_real_tempdir_project_outputs(tmp_path_factory):
     session_tempdir = tmp_path_factory.mktemp("project-temp-output-guard")
     before = _snapshot_project_temp_outputs(session_tempdir)
     repo_before = _snapshot_repo_raw_outputs(_REPO_ROOT_FOR_RAW_GUARD)
+    board_before = _snapshot_repo_board_outputs(_REPO_ROOT_FOR_RAW_GUARD)
     previous_tempdir = tempfile.tempdir
     previous_env = {key: os.environ.get(key) for key in _TEMPDIR_ENV_KEYS}
     for key in _TEMPDIR_ENV_KEYS:
@@ -140,6 +191,7 @@ def _forbid_real_tempdir_project_outputs(tmp_path_factory):
         yield
         after = _snapshot_project_temp_outputs(session_tempdir)
         repo_after = _snapshot_repo_raw_outputs(_REPO_ROOT_FOR_RAW_GUARD)
+        board_after = _snapshot_repo_board_outputs(_REPO_ROOT_FOR_RAW_GUARD)
     finally:
         tempfile.tempdir = previous_tempdir
         for key, value in previous_env.items():
@@ -162,6 +214,70 @@ def _forbid_real_tempdir_project_outputs(tmp_path_factory):
         "--output-dir/output_dir 를 명시해야 합니다:\n"
         + "\n".join(f"  - {path}" for path in repo_written)
     )
+    _assert_repo_board_outputs_unchanged(board_before, board_after)
+
+
+_LIVE_RENDER_OUTPUTS = (
+    Path(".project_manager/wiki/board.md"),
+    Path(".project_manager/wiki/log/dashboard.md"),
+)
+
+
+def _live_render_identity() -> dict[Path, tuple[int, int, int] | None]:
+    identity: dict[Path, tuple[int, int, int] | None] = {}
+    for rel in _LIVE_RENDER_OUTPUTS:
+        path = _REPO_ROOT_FOR_RAW_GUARD / rel
+        try:
+            st = path.stat()
+        except OSError:
+            identity[path] = None
+        else:
+            identity[path] = (st.st_mtime_ns, st.st_size, st.st_ino)
+    return identity
+
+
+@pytest.fixture(autouse=True)
+def _name_the_live_render_polluter():
+    """실 트리 렌더 산출을 건드린 **그 테스트**를 이름으로 짚는다.
+
+    세션 스코프 오염 가드(`_forbid_real_tempdir_project_outputs`)는 누가 썼는지는 못 짚어
+    범인 추적이 이분탐색이 된다. 감시 대상을 렌더 산출 두 개로 좁히면 테스트당 stat 두 번이라
+    상시 켜 둘 수 있다. 재앵커 누락은 `conftest.anchor_board_module` 로 닫는다."""
+    before = _live_render_identity()
+    yield
+    after = _live_render_identity()
+    changed = sorted(str(path) for path, ident in after.items() if before.get(path) != ident)
+    assert not changed, (
+        "이 테스트가 실 작업 트리의 렌더 산출을 갱신했습니다 — board 모듈을 "
+        "`conftest.anchor_board_module(mod, tmp_path, monkeypatch)` 로 재앵커하세요:\n  "
+        + "\n  ".join(changed))
+
+
+def anchor_board_module(mod, tmp_path, monkeypatch) -> None:
+    """board 모듈의 **import 시점 REPO 파생 상수**를 tmp 로 한꺼번에 재앵커한다.
+
+    `REPO` 만 바꾸면 상수로 굳은 `BOARD_FILE`·`BOARD_LOCK` 이 실 작업 트리를 계속 가리켜
+    렌더가 live `wiki/board.md` 를 갱신한다(이 파일의 live board 오염 가드가 세션 끝에서 잡되,
+    세션 스코프라 어느 테스트가 썼는지는 못 짚는다). 재앵커 목록을 테스트마다 재선언하지 않도록
+    여기 한 곳에 둔다 — 새 파생 상수가 생기면 이 함수만 고친다.
+    """
+    monkeypatch.setattr(mod, "REPO", tmp_path)
+    monkeypatch.setattr(
+        mod, "BOARD_FILE", tmp_path / ".project_manager" / "wiki" / "board.md")
+    if hasattr(mod, "BOARD_LOCK"):
+        monkeypatch.setattr(
+            mod, "BOARD_LOCK",
+            tmp_path / ".project_manager" / ".local" / "board.lock")
+    # 디렉터리는 미리 만들지 않는다 — 호출 테스트가 자기 형상대로 만든다(선-생성은 그쪽
+    # `mkdir(parents=True)` 와 충돌한다). 대신 렌더 시점에 부모가 없으면 만들도록
+    # `refresh_board` 를 감싼다(엔진은 wiki/ 존재를 전제한다).
+    refresh = getattr(mod, "refresh_board", None)
+    if callable(refresh):
+        def _refresh_with_parent(*args, _orig=refresh, _mod=mod, **kwargs):
+            _mod.BOARD_FILE.parent.mkdir(parents=True, exist_ok=True)
+            return _orig(*args, **kwargs)
+        monkeypatch.setattr(mod, "refresh_board", _refresh_with_parent)
+
 
 # ── ① codex ambient env 중화 (autouse) ────────────────────────────────────────
 

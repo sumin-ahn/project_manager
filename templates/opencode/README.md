@@ -18,17 +18,19 @@ claude_code 의 `CLAUDE.md`+`.claude/` 에 대응하는 opencode 등가물 — �
   결정 권한·안전 가드. opencode build 세션이 곧 PM 이다. (실행 모델·위임 규약은 아래 pm-instructions.)
 - **`.opencode/pm-instructions.md`** — opencode-고유 실행 모델·위임 규약. `opencode.jsonc` `instructions`
   배열로 공통 코어와 함께 자동 로드된다 (@source 전파 — 방법론 갱신이 채택자에 도달·ADR-0069).
-- **`AGENTS.lite.md`** (경량 진입) — 한 파일 + 공유 엔진 + `.claude/skills/` 만으로 PM
+- **`AGENTS.lite.md`** (경량 진입) — 한 파일 + 공유 엔진 + `.claude/skills/` + `.opencode/command/`로 PM
   happy-path(부트스트랩 → 발행 → 위임 → finish)를 자족 운영하도록 압축한 판. 회사 200K 배포 1급.
   도입 시 `--weight lite` 로 선택 (아래 §채택).
 - **`.opencode/agents/`** — pm primary 정의(`mode: primary` — orchestrator relay spawn 타깃) +
   researcher · developer · code-reviewer · architect subagent 정의(`mode: subagent`).
   위임 1차 = 네이티브 `task` tool 이 이 정의를 별도 자식 세션에서 구동한다.
-- **`.claude/skills/`** — PM workflow 스킬 (pm-bootstrap·pm-wave-claim·pm-dev-delegate·pm-qa·
-  pm-wave-finish·pm-handoff·pm-env·pm-update·pm-worktree·pm-release·spike-new · 전체는 `.claude/skills/`
-  디렉토리). **canonical `SKILL.md` 단일 소비**(ADR-0065) — opencode(≥1.17.19)가 Claude Code 스킬을
-  네이티브 스캔 후 접두사 없이 `pm-…` 이름을 언급해 호출하므로 claude 와 **같은 스킬을 양 하네스가 공유**한다(옛
-  `.opencode/command/` 수기 사본 채널 은퇴·T-0364). 스킬 스캔 비활성화 금지(`OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` 미설정).
+- **`.claude/skills/`** — PM workflow canonical 스킬 15개. opencode 모델이 `skill` tool로 소비하는
+  채널이며 canonical은 이 경로 하나다. 스킬 스캔 비활성화 금지
+  (`OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` 미설정).
+- **`.opencode/command/`** — `/pm-bootstrap` 같은 사람 슬래시 팔레트 진입 15개. opencode 1.18.16
+  실측에서 팔레트는 `{command,commands}/**/*.md`, 스킬은 별도 `skill` tool 표면이므로 둘 다
+  출하한다. 각 `<name>.md`는 root canonical `.claude/skills/<name>/SKILL.md`에서 `pm_update`가
+  기계 생성하며 command 파일을 손으로 편집하지 않는다(T-0674·ADR-0065 개정 대기).
 
 ### 위임 규약 단일 진실 = `.opencode/pm-instructions.md §2`
 

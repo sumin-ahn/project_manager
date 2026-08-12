@@ -1,10 +1,11 @@
-"""T-0633 native Agent delegation-channel guard tests."""
+"""T-0641 harness-neutral native delegation-channel guard tests."""
 
 from __future__ import annotations
 
 import importlib.util
 import io
 import json
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,6 +31,7 @@ def _payload(role: str, tool_name: str = "Agent") -> dict[str, object]:
         "hook_event_name": "PreToolUse",
         "tool_name": tool_name,
         "tool_input": {"subagent_type": role},
+        "cwd": "/fixture/worktree",
     }
 
 
@@ -56,6 +58,173 @@ def test_four_role_mapping_matrix(guard, role, mapping):
         assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
     else:
         assert result is None
+
+
+@pytest.mark.parametrize("role", ROLES)
+@pytest.mark.parametrize("mapping", ("self", "cross", "absent"))
+@pytest.mark.parametrize("enabled", (True, False))
+def test_neutral_core_decision_table_matrix(guard, role, mapping, enabled):
+    """4 roles × self/cross/unset × opt-in on/off follows rows ②~⑤."""
+    conf = {"delegate_enabled": "true" if enabled else "false"}
+    if mapping != "absent":
+        conf[f"delegate.{role}.harness"] = (
+            "opencode" if mapping == "self" else "claude"
+        )
+        conf[f"delegate.{role}.model"] = "fixture-model"
+
+    result = guard.decide(role, "normal", conf, "opencode")
+
+    expected = "deny" if enabled and mapping == "cross" else "allow"
+    assert result["verdict"] == expected
+    assert set(result) == {"verdict", "reason", "harness", "model"}
+
+
+@pytest.mark.parametrize("role", ROLES)
+@pytest.mark.parametrize("mapping", ("claude", "opencode", "", None))
+@pytest.mark.parametrize("enabled", (True, False))
+def test_claude_hook_is_core_specialization_equivalent(guard, role, mapping, enabled):
+    """The pre-T-0641 Claude truth table equals decide(..., self_harness='claude')."""
+    conf = {"delegate_enabled": "true" if enabled else "false"}
+    if mapping is not None:
+        conf[f"delegate.{role}.harness"] = mapping
+        conf[f"delegate.{role}.model"] = "fixture-model"
+
+    core = guard.decide(role, "normal", conf, "claude")
+    hook = guard.evaluate_hook(_payload(role), config_loader=lambda: conf)
+    legacy_denied = bool(enabled and mapping and mapping != "claude")
+
+    assert (core["verdict"] == "deny") is legacy_denied
+    assert (hook is not None) is legacy_denied
+
+
+@pytest.mark.parametrize(
+    ("agent_name", "harness", "tier", "expected"),
+    (
+        ("developer", "claude", None, ("developer", "normal")),
+        ("code-reviewer", "opencode", None, ("code-reviewer", "normal")),
+        ("developer-hard", "codex", None, ("developer", "hard")),
+        ("developer", "opencode", "hard", ("developer", "hard")),
+        ("researcher", "opencode", "hard", None),
+        ("unknown-agent", "opencode", None, None),
+    ),
+)
+def test_agent_name_role_tier_normalization(
+    guard, agent_name, harness, tier, expected
+):
+    assert guard.normalize_agent_name(agent_name, harness, tier) == expected
+
+
+def test_tier_mapping_matches_engine_base_or_hard_without_inheritance(guard):
+    conf = {
+        "delegate_enabled": "true",
+        "delegate.developer.harness": "opencode",
+        "delegate.developer.model": "normal-model",
+        # resolve_delegate does not define this legacy/nonstandard namespace.
+        "delegate.developer.normal.harness": "claude",
+        "delegate.developer.normal.model": "must-be-ignored",
+        "delegate.developer.hard.harness": "claude",
+        "delegate.developer.hard.model": "hard-model",
+    }
+    normal = guard.decide("developer", "normal", conf, "opencode")
+    assert normal["verdict"] == "allow"
+    assert (normal["harness"], normal["model"]) == (
+        "opencode", "normal-model"
+    )
+
+    hard = guard.decide("developer", "hard", conf, "opencode")
+    assert hard["verdict"] == "deny"
+    assert (hard["harness"], hard["model"]) == ("claude", "hard-model")
+
+    del conf["delegate.developer.hard.harness"]
+    del conf["delegate.developer.hard.model"]
+    missing = guard.decide("developer", "hard", conf, "opencode")
+    assert missing["verdict"] == "allow"
+    assert (missing["harness"], missing["model"]) == ("", "")
+    assert "hard 프로필 미설정" in missing["reason"]
+    assert "normal 강등 금지" in missing["reason"]
+    assert "--tier hard" not in missing["reason"]
+    assert "delegate-channel/record" in missing["reason"]
+    assert "delegate-channel/warn" not in missing["reason"]
+
+
+@pytest.mark.parametrize("tier", ("normal", "hard"))
+@pytest.mark.parametrize("configured", (False, True))
+@pytest.mark.parametrize("nonstandard_normal_keys", (False, True))
+@pytest.mark.parametrize("fallback_configured", (False, True))
+def test_mapping_resolution_matches_real_engine_full_boundary_matrix(
+    guard, tier, configured, nonstandard_normal_keys, fallback_configured
+):
+    """tier x 표준 설정 x 비표준 normal 키 x fallback 설정의 16셀을 엔진과 대조한다."""
+    conf = {"delegate_enabled": "true"}
+    key = "delegate.developer" + (".hard" if tier == "hard" else "")
+    if configured:
+        conf[f"{key}.harness"] = "opencode"
+        conf[f"{key}.model"] = f"{tier}-standard"
+    if nonstandard_normal_keys:
+        conf["delegate.developer.normal.harness"] = "claude"
+        conf["delegate.developer.normal.model"] = "must-be-ignored"
+    if fallback_configured:
+        conf[f"{key}.fallback.harness"] = "claude"
+        conf[f"{key}.fallback.model"] = f"{tier}-fallback-must-be-ignored"
+
+    pm_delegate = guard._load_pm_delegate()
+    try:
+        harness, model, _reasoning = pm_delegate.resolve_delegate(
+            conf, "developer", tier, None, None, None
+        )
+        expected = (harness, model, "")
+    except pm_delegate.DelegateError as exc:
+        expected = ("", "", str(exc))
+
+    assert guard._resolved_mapping("developer", tier, conf) == expected
+
+    judgment = guard.decide("developer", tier, conf, "opencode")
+    assert judgment["verdict"] == "allow"
+    assert (judgment["harness"], judgment["model"]) == expected[:2]
+    if configured:
+        assert expected[:2] == ("opencode", f"{tier}-standard")
+    else:
+        assert expected[0] == expected[1] == ""
+        assert expected[2]
+
+
+def test_mapping_resolution_calls_pm_delegate_single_truth(guard, monkeypatch):
+    calls = []
+
+    class FakeDelegateError(Exception):
+        pass
+
+    def resolve_delegate(conf, role, tier, cli_harness, cli_model, cli_reasoning):
+        calls.append(
+            (conf, role, tier, cli_harness, cli_model, cli_reasoning)
+        )
+        return "codex", "fixture-model", "high"
+
+    fake = SimpleNamespace(
+        DelegateError=FakeDelegateError,
+        resolve_delegate=resolve_delegate,
+    )
+    monkeypatch.setattr(guard, "_load_pm_delegate", lambda: fake)
+
+    conf = {"delegate.developer.harness": "codex"}
+    assert guard._resolved_mapping("developer", "normal", conf) == (
+        "codex", "fixture-model", ""
+    )
+    assert calls == [(conf, "developer", "normal", None, None, None)]
+
+
+def test_unknown_self_warns_but_unknown_agent_is_quietly_recorded(guard):
+    cross = {
+        "delegate_enabled": "true",
+        "delegate.developer.harness": "claude",
+    }
+    unknown_self = guard.decide("developer", "normal", cross, "")
+    unknown_role = guard.decide("not-an-agent", "normal", cross, "opencode")
+    assert unknown_self["verdict"] == unknown_role["verdict"] == "allow"
+    assert "self_harness" in unknown_self["reason"] and "warn" in unknown_self["reason"]
+    assert "정규화 실패" in unknown_role["reason"]
+    assert "delegate-channel/record" in unknown_role["reason"]
+    assert "delegate-channel/warn" not in unknown_role["reason"]
 
 
 @pytest.mark.parametrize(
@@ -152,11 +321,103 @@ def test_deny_json_schema_and_remediation(guard):
             "permissionDecision": "deny",
             "permissionDecisionReason": (
                 "[delegate-channel/deny] conf 는 opencode/qwen3-coder — "
-                "`pm_delegate.py --role researcher` 로 위임하라"
+                "/pm-dev-delegate 스킬로 위임하라 (실행형 처방: 1) 프롬프트를 "
+                "파일로 저장한 뒤(경로: "
+                "`.project_manager/.local/delegate/manual-researcher-normal-prompt.md`) "
+                "2) backbone `python3 .project_manager/tools/pm_delegate.py --role researcher "
+                "--prompt-file .project_manager/.local/delegate/manual-researcher-normal-prompt.md "
+                "--cwd /fixture/worktree`)"
             ),
         }
     }
     assert stderr.getvalue() == ""
+
+
+def test_hook_deny_remediation_materializes_payload_cwd(guard, tmp_path):
+    payload = _payload("developer")
+    payload["cwd"] = str(tmp_path)
+    conf = {
+        "delegate_enabled": "true",
+        "delegate.developer.harness": "codex",
+        "delegate.developer.model": "gpt",
+    }
+    result = guard.evaluate_hook(payload, config_loader=lambda: conf)
+    reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+    assert f"--cwd {tmp_path}" in reason
+    assert "프롬프트를 파일로 저장" in reason
+    assert (
+        "--prompt-file "
+        ".project_manager/.local/delegate/manual-developer-normal-prompt.md"
+    ) in reason
+    assert "<파일>" not in reason
+    assert "<worktree>" not in reason
+
+
+@pytest.mark.parametrize(
+    "argv",
+    (
+        ["decide", "--role", "developer", "--harness", "opencode"],
+        ["decide", "--bogus"],
+        ["unknown-command"],
+        ["decide", "--role", "developer", "--harness", "opencode", "--cwd", "relative"],
+    ),
+)
+def test_decide_cli_always_one_json_line_rc0_and_never_reads_stdin(
+    guard, argv
+):
+    class UnreadableInput(io.StringIO):
+        def read(self, *args, **kwargs):
+            raise AssertionError("decide CLI must not read stdin")
+
+    stdout = io.StringIO()
+    assert guard.main(
+        argv,
+        stdin=UnreadableInput("must-not-be-read"),
+        stdout=stdout,
+        config_loader=lambda: {},
+    ) == 0
+    assert stdout.getvalue().count("\n") == 1
+    payload = json.loads(stdout.getvalue())
+    assert set(payload) == {"verdict", "reason", "harness", "model"}
+    assert payload["verdict"] in {"allow", "deny"}
+
+
+def test_decide_cli_internal_error_is_one_line_allow_reason(guard):
+    def broken_config():
+        raise RuntimeError("broken\nconfig")
+
+    stdout = io.StringIO()
+    assert guard.main(
+        ["decide", "--role", "developer", "--harness", "opencode"],
+        stdout=stdout,
+        config_loader=broken_config,
+    ) == 0
+    assert stdout.getvalue().count("\n") == 1
+    payload = json.loads(stdout.getvalue())
+    assert payload["verdict"] == "allow"
+    assert "RuntimeError" in payload["reason"] and "fail-open" in payload["reason"]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    (
+        ["decide", "--bogus"],
+        ["decide", "--role", "developer", "--harness", "opencode", "--bogus"],
+        ["bogus"],
+    ),
+)
+def test_real_decide_process_usage_errors_are_rc0_one_line_json(argv):
+    proc = subprocess.run(
+        [sys.executable, str(GUARD_PY), *argv],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert proc.returncode == 0
+    assert proc.stdout.count("\n") == 1
+    assert json.loads(proc.stdout)["verdict"] == "allow"
 
 
 @pytest.mark.parametrize("enabled", (None, "false", "0"))

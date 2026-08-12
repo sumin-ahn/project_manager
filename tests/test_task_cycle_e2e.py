@@ -274,7 +274,7 @@ def test_task_cycle_create_incorporate_work_handoff_resume(tmp_path, capsys):
         worktree_pool=wp,
         # pm_state_file 미주입 — task 모드(task_mode=True)가 per-task pm_state 를 자체 해소.
     )
-    rc = handoff.run(session_num=1, wave_summary="사이클 e2e", dry_run=False,
+    rc = handoff.run(session_num=1, wave_summary="사이클 e2e", dry_run=False, user_ack="cyc",
                      skip_pytest=False, task=task)
     assert rc == 0, "핸드오프 실패"
     out3 = capsys.readouterr().out

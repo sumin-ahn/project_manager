@@ -933,7 +933,15 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   자신의 고장(사본 skew 포함)으로 정상 위임을 막지 않는 것이 계약이라, 등록 사유
     #   (`hook_fail_open`) 기반 recovery marker 로 흡수하고 skew 진단(pm-update 처방)은
     #   stderr 로 남긴다. 여기서 fail-loud 로 올리면 부분 동기 하나가 모든 Agent 호출을 막는다.
-    assert len(report.boundaries) == 184, "propagation sweep boundary ratchet changed"
+    # 186 = 184 + T-0635 opencode sandbox 내부 prompt-file의 정리 경계 둘. transport 준비 뒤
+    #   argv 조립 실패와 raw 예약/장부 시작 실패 모두 전달 사본을 지운 뒤 **같은 주 예외를
+    #   다시 올린다**. 일반 실패나 marked skew를 흡수하지 않는 정리 전용 경계다.
+    # 193 = 186 + 이번 wave 신설 경계 일곱. 라운드 장부 분리(review_rounds seam)·게이트 스냅샷
+    #   앵커·diff 귀속 스냅샷·codex 관측 append 가 각자 정리/부기 전용 경계를 두며, 관측 두
+    #   경계는 등록 사유(`observation_append_fail_open`) 기반 recovery marker 로 흡수한다 —
+    #   관측 append 는 부기일 뿐이라 장부 쓰기 실패로 이미 내려진 allow/deny 를 뒤집지 않고,
+    #   대신 matcher drift 관측이 불완전하다는 경고를 결과 envelope 에 실어 표면화한다.
+    assert len(report.boundaries) == 193, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

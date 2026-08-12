@@ -41,7 +41,8 @@ _RENDER_SCOPED_BY_HARNESS = {
     "claude": ("templates/claude_code/.claude/agents",     # T-0135
                "templates/claude_code/.claude/skills"),
     "opencode": ("templates/opencode/.opencode/agents",    # T-0136
-                 "templates/opencode/.claude/skills"),      # ADR-0065 단일 소비 미러(command 은퇴·T-0364)
+                 "templates/opencode/.claude/skills",
+                 "templates/opencode/.opencode/command"),  # T-0674 canonical @render 사본
     "codex": ("templates/codex/.codex/agents",             # T-0429 (codex agents = .toml)
               "templates/codex/.agents/skills"),
 }

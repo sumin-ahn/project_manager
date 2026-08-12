@@ -37,9 +37,10 @@ CODEX_MANIFEST = REPO / "templates" / "codex" / ".project_manager" / "engine.man
 
 # opencode 트리의 정당한 manifest 차이(harness-correct·화이트리스트). 임의 경로가 새로
 # 추가/누락되면 fail — 의도적 어댑터 비대칭만 통과시킨다(전파 채널 우발 drift 차단).
-#   opencode 가 추가: .opencode 어댑터 트리(claude 의 .claude 대응) — agents·lib·plugins·
-#     pm_orch_opencode.py(hook/driver). (`.opencode/command` 은 T-0364/ADR-0065 로 은퇴 — PM-workflow
-#     스킬은 `.claude/skills` 단일 소비로 전환돼 이제 opencode 도 등록·claude 와 공유 경로.)
+#   opencode 가 추가: .opencode 어댑터 트리(claude 의 .claude 대응) — agents·command·lib·plugins·
+#     pm_orch_opencode.py(hook/driver). `.opencode/command/`는 사람 슬래시 팔레트 진입 채널이며
+#     `.claude/skills/<name>/SKILL.md` canonical 에서 파생한 출하 사본이다(정합은
+#     tests/test_skill_command_parity.py 가 강제).
 #   opencode 가 제외: .claude/agents(opencode 는 .opencode/agents)·ctx 훅·회귀 훅·relay 드라이버.
 #     regression.yml 은 이제 어느 채택자 템플릿에도 출하하지 않는다. `.claude/skills` 는 **더 이상 제외 아님** — opencode
 #     (≥1.17.x)가 네이티브 스캔하는 canonical 스킬을 claude 와 동일 bare @render 로 공유한다(ADR-0065).
@@ -50,6 +51,21 @@ CODEX_MANIFEST = REPO / "templates" / "codex" / ".project_manager" / "engine.man
 #   settings.json·opencode.jsonc·루트 doc(CLAUDE/AGENTS)·local.conf 는 여전히 instance-owned(미등재).
 OPENCODE_ONLY_PATHS = {
     ".opencode/agents",
+    ".opencode/command/pm-adr.md",
+    ".opencode/command/pm-bootstrap.md",
+    ".opencode/command/pm-dev-delegate.md",
+    ".opencode/command/pm-env.md",
+    ".opencode/command/pm-handoff.md",
+    ".opencode/command/pm-qa.md",
+    ".opencode/command/pm-regression.md",
+    ".opencode/command/pm-release.md",
+    ".opencode/command/pm-review.md",
+    ".opencode/command/pm-ticket.md",
+    ".opencode/command/pm-update.md",
+    ".opencode/command/pm-wave-claim.md",
+    ".opencode/command/pm-wave-finish.md",
+    ".opencode/command/pm-worktree.md",
+    ".opencode/command/spike-new.md",
     # pm-instructions.md (ADR-0069·T-0401): AGENTS.md 공통 코어에서 이관한 opencode-고유 운영 지침
     #   (실행 모델·위임 규약). @render @source 전파 등록이라 claude_code 엔 없는 opencode-only 경로.
     ".opencode/pm-instructions.md",
@@ -234,16 +250,31 @@ def test_codex_manifest_diff_is_whitelisted_only():
 
 
 def test_codex_and_opencode_agents_md_differ_only_by_native_entry_notation():
-    """단일-harness AGENTS 코어는 실제 호출 표기 외 같은 내용을 유지한다."""
+    """단일-harness AGENTS 코어는 네이티브 진입 표기/의미 외 같은 내용을 유지한다."""
     oc_agents = REPO / "templates" / "opencode" / "AGENTS.md"
     cx_agents = REPO / "templates" / "codex" / "AGENTS.md"
     assert oc_agents.is_file(), f"opencode AGENTS.md 없음: {oc_agents}"
     assert cx_agents.is_file(), f"codex AGENTS.md 없음: {cx_agents}"
-    normalize = lambda text: re.sub(
-        r"(?<![A-Za-z0-9_.>/\-])[/\$](pm-[a-z][a-z0-9-]*)",
-        r"<ENTRY>\1",
-        text,
-    )
+    def normalize(text: str) -> str:
+        text = re.sub(
+            r"(?<![A-Za-z0-9_.>/\-])[/\$](pm-[a-z][a-z0-9-]*)",
+            r"<ENTRY>\1",
+            text,
+        )
+        # codex `$skill`은 멘션 진입, opencode `/command`는 사람 팔레트 진입이므로
+        # 해당 의미 한 문장만 harness-native 차이로 중립화한다. 나머지 코어 drift는 계속 red.
+        text = re.sub(
+            r"이 (?:표기는 스킬 진입 표기이며 자체 slash command를 뜻하지 않는다|"
+            r"`/…` 표기는 하네스 슬래시 팔레트 진입이며 인자를 그대로 전달한다"
+            r"\(팔레트 파일 위치는 어댑터 문서 소관\))\.",
+            "이 <NATIVE_ENTRY_SEMANTICS>이다.",
+            text,
+        )
+        return re.sub(
+            r"(?m)^\| PM-workflow (?:스킬|진입) \|.*$",
+            "| PM-workflow <NATIVE_ENTRY_SURFACES> |",
+            text,
+        )
     assert normalize(oc_agents.read_text(encoding="utf-8")) == normalize(
         cx_agents.read_text(encoding="utf-8")
     ), "codex/opencode AGENTS 코어가 실제 호출 표기 외 내용까지 drift"

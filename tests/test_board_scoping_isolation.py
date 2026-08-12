@@ -592,6 +592,7 @@ def test_new_repo_slot_user_unresolved_open_visible_in_own_session_view(board, c
     세션 뷰(`--repo alpha --slot 1`)에서 즉시 소실됐다(ADR-0067 "생성 세션 open" 위반). ⑥ 슬롯 세션
     예약 패턴 판별로 session 토큰으로 취급 → 자기 생성 open 이 보여야 한다.
     """
+    board.areas_append("al", "alpha", "owner", repo="alpha")
     # conf user= 없음 + git stub None → user 미해소 → created_by = 슬롯-only "alpha_1"(slash 없음).
     tid = _new(board, capsys, prefix="al", session="alpha_1", user=None, title="unresolved user open")
     path = next((board.TICKETS_DIR / "open").glob(f"{tid}-*.md"))
@@ -626,6 +627,7 @@ def test_claim_repo_slot_querying_user_unresolved_visible_in_own_session_view(bo
     을 숨겼다(cb_user!=None·my_user None → user 분기 실패·legacy 분기도 미발동). 세션 뷰 claim
     축은 session 라벨로 통일해 조회 user 미해소여도 세션(alpha_1)이 일치하면 보인다.
     """
+    board.areas_append("al", "alpha", "owner", repo="alpha")
     tid = _new(board, capsys, prefix="al", session="alpha_1", user="alice", title="wip")
     _claim(board, capsys, tid, session="alpha_1", user="alice")
     cpath = next((board.TICKETS_DIR / "claimed").glob(f"{tid}-*.md"))
@@ -641,6 +643,7 @@ def test_slot_view_claim_same_session_isolated_by_user_real_create(board, capsys
 
     바로 위 user 미해소 solo 가시성은 유지하되, user 해소 시에는 user ∧ session을
     strict 적용한다."""
+    board.areas_append("al", "alpha", "owner", repo="alpha")
     # alice·bob 둘 다 alpha_1 세션으로 실 claim (동명 세션·user 상이).
     a = _new(board, capsys, prefix="al", session="alpha_1", user="alice", title="alice wip")
     _claim(board, capsys, a, session="alpha_1", user="alice")

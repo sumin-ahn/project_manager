@@ -45,7 +45,7 @@ env prefix 없이 호출한다:
 
 ### 세션 식별
 
-- **task 사용자 경로** — 시작/재개는 `/pm-bootstrap --task <이름>`, 종료는 `/pm-handoff --task <이름>`만 쓴다. 이 표기는 스킬 진입 표기이며 자체 slash command를 뜻하지 않는다. 신규 task는 작업공간 0개로 시작하고 task 진입 시 pm_state를 즉시 만든 뒤 PM이 슬롯을 별도로 대여한다. 기존 task는 보유 슬롯 집합과 task pm_state를 수령한다. Python도 `pm_bootstrap.py --task <이름>`·`pm_handoff.py --task <이름>`만 사용하며 task와 repo/slot 혼합 진입은 엔진이 거부한다.
+- **task 사용자 경로** — 시작/재개는 `/pm-bootstrap --task <이름>`, 종료는 `/pm-handoff --task <이름>`만 쓴다. 이 `/…` 표기는 하네스 슬래시 팔레트 진입이며 인자를 그대로 전달한다(팔레트 파일 위치는 어댑터 문서 소관). 신규 task는 작업공간 0개로 시작하고 task 진입 시 pm_state를 즉시 만든 뒤 PM이 슬롯을 별도로 대여한다. 기존 task는 보유 슬롯 집합과 task pm_state를 수령한다. Python backbone은 `pm_bootstrap.py --task <이름>`·`pm_handoff.py --task <이름> --user-ack <값>`을 사용하며, 승인값은 사용자 발화에서 받아 그대로 전달하고 세션이 만들지 않는다. task와 repo/slot 혼합 진입은 엔진이 거부한다.
 - **PM 세션명 canonical=`<repo>_<N>`**(`<repo>`=프로젝트 repo, `<N>`=PM 슬롯). board 쓰기는 `--repo <repo> --slot <N>`을 전달한다:
   ```bash
   {{PY}} .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 예: --repo myproj --slot 1
@@ -126,8 +126,8 @@ PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비
 
 # 핸드오프 (세션 종료)
 {{PY}} .project_manager/tools/pm_handoff.py --dry-run
-# task 사용자 경로
-{{PY}} .project_manager/tools/pm_handoff.py --task <이름>
+# task 사용자 경로 — <값>은 사용자 발화에서 받은 승인값(세션 생성 금지)
+{{PY}} .project_manager/tools/pm_handoff.py --task <이름> --user-ack <값>
 
 # 엔진 동기화 (메인테이너 · 루트 → 이 타깃)
 {{PY}} .project_manager/tools/pm_update.py --from <upstream> --dry-run
@@ -143,7 +143,7 @@ ctx 정지 밴드(현행 의미 = 최종 checkpoint 넛지·키 이름은 호환
 |---|---|
 | `.project_manager/tools/` | board.py · ticket_finish.py · pm_bootstrap.py · pm_handoff.py · pm_log.py(공유 엔진 · 0 수정) |
 | `.project_manager/wiki/` | 비-코드 산출물(작업/결정/사양/상태/domain 지식 레이어(§10)/pm_role·pm_state·pm_playbook/log/raw) |
-| PM-workflow 스킬 | canonical `SKILL.md` 단일 소비. `/pm-bootstrap` 같은 진입 표기로 호출하며 스킬 스캔 비활성화 금지. |
+| PM-workflow 진입 | canonical 스킬 카드 = 모델 tool 표면, 하네스 슬래시 팔레트 사본 = 사람 진입. 사본은 canonical 에서 기계 생성하며 두 표면은 대체 관계가 아니다. |
 | 하네스 어댑터(하네스별 디렉토리) | subagent 정의 + 하네스별 실행 모델·위임 채널 |
 | `AGENTS.md` | 이 파일: PM 부트스트랩·공통 코어 |
 

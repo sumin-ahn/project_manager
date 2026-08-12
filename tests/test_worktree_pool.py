@@ -2881,6 +2881,8 @@ def test_create_slot_worktree_add_failure_trip_message(wp):
     assert "rc=1" in msg                       # rc 기반 진단(빈 out 에도)
     assert "PM_GIT_TIMEOUT" in msg             # env 노브 안내
     assert "pm-config worktree add A" in msg   # repo 이름 실린 직접-실행 안내
+    assert "먼저 사용자에게" in msg and "승인을 요청" in msg
+    assert "--user-ack A" in msg and "승인한 사용자만" in msg
     assert "PM_GIT_TIMEOUT=none" in msg        # 무제한 opt-in 안내
     # 실패 시 장부 미등록(기존 동작 유지).
     assert wp.list_leases() == []

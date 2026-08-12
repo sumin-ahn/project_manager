@@ -1994,7 +1994,8 @@ def test_plugin_injects_nudge_to_model():
     assert "pendingNudgeText" in src, "nudge 주입 대기 플래그 없음"
     assert "output.system.push" in src, "system[] 에 push 하는 주입 경로 없음"
     # nudge 분기가 pendingNudgeText 를 세팅한다(toast 와 함께).
-    assert "pendingNudgeText = buildNudgeGuidance" in src, "nudge 감지 시 주입 대기 세팅 누락"
+    assert 'buildEngineCtxGuidance(root, "nudge", state, t)' in src
+    assert "session.pendingNudgeText = guidance" in src, "nudge 감지 시 중앙 안내 세팅 누락"
 
 
 def test_js_build_nudge_guidance():
@@ -2023,6 +2024,30 @@ console.log("JS_NUDGE_GUIDANCE_OK");
     assert "JS_NUDGE_GUIDANCE_OK" in out, f"JS buildNudgeGuidance 검증 실패. out={out!r}"
 
 
+def test_js_engine_failure_fallback_keeps_continuity_policy_in_all_bands():
+    """중앙 pm_log 호출 실패 시 네 band fallback도 필수 정책 두 사실을 보존한다."""
+    if _NODE is None:
+        import pytest
+
+        pytest.skip("node 없음 — ctx fallback 순수 단위 skip")
+
+    script = r"""
+const m = require("./ctx-guard-core.cjs");
+const assert = require("node:assert");
+const state = {remainingPct:8, usedPct:92};
+const thresholds = {nudge_pct:30, stop_pct:20};
+for (const band of ["nudge", "nudge2", "final", "precompact"]) {
+  const guidance = m.buildEngineCtxGuidance(null, band, state, thresholds);
+  assert.ok(guidance.includes("압축은 자동이고 세션은 그대로 이어진다"), band + ": continuity missing");
+  assert.ok(guidance.includes("핸드오프는 사용자 명시 지시로만 한다"), band + ": handoff policy missing");
+  assert.ok(!guidance.includes("새 큰 작업보다 현재 서사 기록을 우선"), band + ": forbidden phrase present");
+}
+console.log("JS_CTX_FALLBACK_POLICY_OK");
+"""
+    out = _run_node_check(script)
+    assert "JS_CTX_FALLBACK_POLICY_OK" in out
+
+
 # ── checkpoint 2단(strong·compaction 임박) — 정적 + node 순수 검증 ────────────
 # 2단 임계는 min(stop_pct+3, nudge_pct) 파생. fired.nudge2 로 사이클당 1회·1단과 독립.
 
@@ -2041,7 +2066,8 @@ def test_plugin_injects_nudge2_to_model():
     assert '"nudge2"' in src, "computeCtxState 에 nudge2 레벨 없음"
     # 2단 안내 빌더 + 감지 시 주입 대기 세팅 + fired.nudge2 멱등.
     assert "buildNudge2Guidance" in src, "2단 안내 빌더(buildNudge2Guidance) 없음"
-    assert "pendingNudgeText = buildNudge2Guidance" in src, "nudge2 감지 시 주입 대기 세팅 누락"
+    assert 'buildEngineCtxGuidance(root, "nudge2", state, t)' in src
+    assert "session.pendingNudgeText = guidance" in src, "nudge2 감지 시 중앙 안내 세팅 누락"
     assert "fired.nudge2" in src, "2단 1회 가드(fired.nudge2) 없음"
     # 사람용 2단 toast.
     assert "notifyNudge2" in src, "2단 toast(notifyNudge2) 경로 없음"

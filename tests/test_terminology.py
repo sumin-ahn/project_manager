@@ -68,6 +68,7 @@ def _live_files() -> list[Path]:
         REPO / "templates/claude_code/.claude/skills/pm-bootstrap/SKILL.md",
         REPO / "templates/opencode/.project_manager/wiki/pm_role.md",
         REPO / "templates/opencode/.claude/skills/pm-bootstrap/SKILL.md",  # ADR-0065 단일 소비 미러
+        REPO / "templates/opencode/.opencode/command/pm-bootstrap.md",  # T-0674 슬래시 사본
         REPO / "templates/claude_code/pm-config.sh",
         REPO / "templates/opencode/pm-config.sh",
         # `.cmd` Windows 등가물 — `.sh` forwarder 의 짝(동형). manifest 밖 facade 라 `--target`
@@ -228,7 +229,8 @@ def test_no_carry_term_in_canonical_source():
 #
 # 스코프 = 사람이 읽는 가이드 문서와 출하 `.gitignore` 산문. 엔진 `.py` 는 제외 — 코드는 T-0298 소관이고
 # `pm_handoff.py` 의 `slots/<N>` 은 divergent-bare(`--slot 4` verbatim) 마이그(T-0201)를 *설명*하는
-# 정당한 등장이다. `.claude/skills/*/SKILL.md`(양 하네스 단일 소비·ADR-0065·opencode 미러 포함)도
+# 정당한 등장이다. `.claude/skills/*/SKILL.md`와 canonical에서 기계 생성한
+# opencode `.opencode/command/*.md`도
 # 포함 — 그 사본 편집은 PM 직접(harness: 백그라운드 subagent 는 `.claude/` 쓰기 불가). REPO(=① worktree)
 # 밖 사본(② live pm_role/SKILL·②-owned architecture.md)은 이 스코프 밖(별도 sweep).
 # 리터럴 분할("slots/<"+…): 이 가드 파일 자신이 자기 검사에 안 걸리게(_SELF 제외와 이중 방어).
@@ -248,7 +250,8 @@ def _slot_key_guide_docs() -> list[Path]:
     for g in (
         ".claude/skills/*/SKILL.md",
         "templates/claude_code/.claude/skills/*/SKILL.md",
-        "templates/opencode/.claude/skills/*/SKILL.md",  # ADR-0065 단일 소비 미러(command 은퇴)
+        "templates/opencode/.claude/skills/*/SKILL.md",
+        "templates/opencode/.opencode/command/*.md",  # T-0674 canonical 기계 사본
     ):
         files += [Path(p) for p in glob.glob(str(REPO / g))]
     return [f for f in files if f.is_file() and f.name != _SELF]

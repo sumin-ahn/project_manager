@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import multiprocessing as mp
 import os
@@ -71,6 +72,7 @@ def _load_board_bound(proj: Path):
         "LOCAL_CONF": pm / "local.conf",
         "AREAS_FILE": pm / "areas.md",
         "LOCAL_DIR": local,
+        "LEASES_FILE": local / "worktree-leases.json",
         "BOARD_LOCK": local / "board.lock",
     }
     for name, val in overrides.items():
@@ -146,6 +148,97 @@ def _worker_new(proj_str: str, ready, go, out_q) -> None:
     rc = board.cmd_new(_new_args(title="concurrent"))
     ids = sorted(p.name for p in (board.TICKETS_DIR / "open").glob("T-*.md"))
     out_q.put((rc, ids))
+
+
+def _worker_prefix_relabel_after_concurrent_case_write(
+    proj_str: str, ready, writer_done, out_q, bypass_fresh_recheck: bool,
+) -> None:
+    """선판정 뒤 실제 다른 프로세스 write를 기다렸다가 relabel을 계속한다."""
+    board = _load_board_bound(Path(proj_str))
+    board._board_git_enabled = lambda: False
+    real_lock = board.board_lock
+
+    @contextlib.contextmanager
+    def paused_before_lock():
+        # cmd_prefix_rename의 cache-backed 선판정/plan이 끝난 뒤, 실제 lock 취득 직전에
+        # writer를 풀어 다른 case prefix가 먼저 board_lock 아래 발행되게 한다.
+        ready.set()
+        if not writer_done.wait(timeout=SYNC_TIMEOUT):
+            raise RuntimeError("concurrent prefix writer timeout")
+        with real_lock():
+            yield
+
+    board.board_lock = paused_before_lock
+    if bypass_fresh_recheck:
+        # sensitivity control: 이 seam을 제거하면 번호가 겹치지 않는 case-split이 실제 생겨야
+        # 테스트가 유효하다. production 경로(False)는 원 함수를 그대로 쓴다.
+        board.revalidate_prefix_user_ack = (
+            lambda prefix, user_ack, expected, **kwargs: expected
+        )
+    rc = board.cmd_prefix_rename(_Args(
+        src="old", dst="fresh", user_ack="fresh", dry_run=False,
+    ))
+    ids = sorted(row["id"] for row in board._scan_prefix_tickets())
+    out_q.put((rc, ids))
+
+
+def _worker_write_concurrent_case_prefix(
+    proj_str: str, ready, writer_done,
+) -> None:
+    """relabel 선판정 뒤 `FRESH` 티켓을 실제 board_lock 아래 발행한다."""
+    board = _load_board_bound(Path(proj_str))
+    if not ready.wait(timeout=SYNC_TIMEOUT):
+        raise RuntimeError("prefix relabel precheck timeout")
+    with board.board_lock():
+        path = board.TICKETS_DIR / "open" / "T-FRESH-001-race.md"
+        board.dump_ticket(
+            path,
+            {"id": "T-FRESH-001", "title": "race", "status": "open",
+             "created": "2026-08-11"},
+            "# T-FRESH-001 — race\n",
+        )
+    writer_done.set()
+
+
+def _worker_new_task_prefix_after_concurrent_area_write(
+    proj_str: str, ready, writer_done, out_q, bypass_fresh_recheck: bool,
+) -> None:
+    """task prefix 선해소 뒤 다른 프로세스의 areas case 등록을 기다렸다가 발행한다."""
+    board = _load_board_bound(Path(proj_str))
+    board._board_git_enabled = lambda: False
+    real_lock = board.board_lock
+
+    @contextlib.contextmanager
+    def paused_before_lock():
+        ready.set()
+        if not writer_done.wait(timeout=SYNC_TIMEOUT):
+            raise RuntimeError("concurrent areas writer timeout")
+        with real_lock():
+            yield
+
+    board.board_lock = paused_before_lock
+    if bypass_fresh_recheck:
+        board.revalidate_prefix_user_ack = (
+            lambda prefix, user_ack, expected, **kwargs: expected
+        )
+    rc = board.cmd_new(_Args(
+        title="derived-race", prefix=None, user_ack=None,
+        touches=None, depends=None, tag=None, estimate="small", design=None,
+        task="job", repo=None, slot=None, user=None,
+    ))
+    ids = sorted(row["id"] for row in board._scan_prefix_tickets())
+    out_q.put((rc, ids))
+
+
+def _worker_write_concurrent_area_case(
+    proj_str: str, ready, writer_done,
+) -> None:
+    """task `fresh` 선해소 뒤 areas에 반대 case `FRESH`를 실제 lock 아래 등록한다."""
+    board = _load_board_bound(Path(proj_str))
+    if not ready.wait(timeout=SYNC_TIMEOUT):
+        raise RuntimeError("derived new precheck timeout")
+    board.areas_append("FRESH", "area", "owner", repo="svc")
+    writer_done.set()
 
 
 def _worker_claim(proj_str: str, tid: str, ready, go, out_q) -> None:
@@ -323,6 +416,112 @@ def test_concurrent_new_yields_unique_ids(proj):
     ids = [f.name[: f.name.index("-", 2)] for f in files]
     assert len(files) == n, f"기대 {n}개, 실제 {len(files)}: {[f.name for f in files]}"
     assert len(set(ids)) == n, f"ID 중복 발행: {ids}"
+
+
+@pytest.mark.parametrize(
+    "bypass_fresh_recheck, expected",
+    [
+        (True, (0, ["T-FRESH-001", "T-fresh-003"])),
+        (False, (1, ["T-FRESH-001", "T-old-003"])),
+    ],
+    ids=["sensitivity-without-recheck-splits", "lock-fresh-recheck-blocks"],
+)
+def test_prefix_relabel_rechecks_canonical_after_concurrent_process_write(
+    proj, bypass_fresh_recheck, expected,
+):
+    """두 실제 세션의 선판정→타 case 발행→lock 취득 interleaving을 전/후로 박제한다.
+
+    source 번호를 003으로 두고 concurrent `FRESH`는 001을 발행해, collision 가드가 우연히
+    막아주는 형상을 피한다. fresh 재검증이 없으면 `FRESH`/`fresh`가 공존하고, production
+    경계에서는 캐시를 버린 lock 안 판정이 rc1·쓰기 0으로 기존 source를 보존해야 한다.
+    """
+    board = _load_board_bound(proj)
+    board.dump_ticket(
+        board.TICKETS_DIR / "open" / "T-old-003-seed.md",
+        {"id": "T-old-003", "title": "seed", "status": "open",
+         "created": "2026-08-11"},
+        "# T-old-003 — seed\n",
+    )
+
+    ctx = mp.get_context("spawn")
+    ready = ctx.Event()
+    writer_done = ctx.Event()
+    out_q = ctx.Queue()
+    relabel = ctx.Process(
+        target=_worker_prefix_relabel_after_concurrent_case_write,
+        args=(str(proj), ready, writer_done, out_q, bypass_fresh_recheck),
+    )
+    writer = ctx.Process(
+        target=_worker_write_concurrent_case_prefix,
+        args=(str(proj), ready, writer_done),
+    )
+    relabel.start()
+    writer.start()
+    try:
+        result = out_q.get(timeout=SYNC_TIMEOUT)
+        relabel.join(timeout=SYNC_TIMEOUT)
+        writer.join(timeout=SYNC_TIMEOUT)
+    finally:
+        for proc in (relabel, writer):
+            if proc.is_alive():
+                proc.terminate()
+        for proc in (relabel, writer):
+            proc.join(timeout=SYNC_TIMEOUT)
+
+    assert (relabel.exitcode, writer.exitcode) == (0, 0)
+    assert result == expected
+
+
+@pytest.mark.parametrize(
+    "bypass_fresh_recheck, expected",
+    [
+        (True, (0, ["T-fresh-001"])),
+        (False, (1, [])),
+    ],
+    ids=["sensitivity-derived-prefix-splits", "derived-prefix-fresh-gate-blocks"],
+)
+def test_task_derived_new_rechecks_after_concurrent_area_case_write(
+    proj, bypass_fresh_recheck, expected,
+):
+    """task `fresh` 선해소→타 프로세스 areas `FRESH` 등록의 실제 case-split 경합.
+
+    fresh 재검증을 우회한 sensitivity control은 `T-fresh-001`을 발행해 areas `FRESH`와
+    case가 갈린다. production 경계는 두 프로세스가 모두 정상 종료해도 new만 rc1·쓰기 0이어야 한다.
+    """
+    board = _load_board_bound(proj)
+    board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    board.LEASES_FILE.write_text(
+        '{"leases": [], "tasks": [{"name": "job", "prefix": "fresh"}]}',
+        encoding="utf-8",
+    )
+
+    ctx = mp.get_context("spawn")
+    ready = ctx.Event()
+    writer_done = ctx.Event()
+    out_q = ctx.Queue()
+    new_proc = ctx.Process(
+        target=_worker_new_task_prefix_after_concurrent_area_write,
+        args=(str(proj), ready, writer_done, out_q, bypass_fresh_recheck),
+    )
+    writer = ctx.Process(
+        target=_worker_write_concurrent_area_case,
+        args=(str(proj), ready, writer_done),
+    )
+    new_proc.start()
+    writer.start()
+    try:
+        result = out_q.get(timeout=SYNC_TIMEOUT)
+        new_proc.join(timeout=SYNC_TIMEOUT)
+        writer.join(timeout=SYNC_TIMEOUT)
+    finally:
+        for proc in (new_proc, writer):
+            if proc.is_alive():
+                proc.terminate()
+        for proc in (new_proc, writer):
+            proc.join(timeout=SYNC_TIMEOUT)
+
+    assert (new_proc.exitcode, writer.exitcode) == (0, 0)
+    assert result == expected
 
 
 def test_unlocked_id_issuance_collides_deterministically(board, monkeypatch):

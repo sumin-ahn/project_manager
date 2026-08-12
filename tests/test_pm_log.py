@@ -47,6 +47,35 @@ def _redirect_paths(mod, monkeypatch, root: Path):
     return log_dir, archive_dir
 
 
+@pytest.mark.parametrize("band", ["nudge", "nudge2", "final", "precompact"])
+def test_ctx_guidance_all_bands_preserve_required_and_forbid_accident_phrase(band):
+    """중앙 정책 상수의 필수·금지 표현을 네 band 최종 출력 전체에 고정한다."""
+    mod = _load_module(f"pm_log_ctx_policy_{band}")
+    guidance = mod.build_ctx_guard_guidance(
+        band,
+        used_pct=92,
+        remaining_pct=8,
+        stop_pct=20,
+    )
+
+    for required in mod.CTX_GUARD_REQUIRED_EXPRESSIONS:
+        assert required in mod.CTX_GUARD_CONTINUITY_GUIDANCE
+        assert required in guidance
+    for forbidden in mod.CTX_GUARD_FORBIDDEN_EXPRESSIONS:
+        assert forbidden not in mod.CTX_GUARD_CONTINUITY_GUIDANCE
+        assert forbidden not in guidance
+
+
+def test_precompact_breadcrumb_is_continuation_not_handoff_completion_signal():
+    mod = _load_module("pm_log_precompact_breadcrumb_policy")
+    breadcrumb = mod._PRECOMPACT_BREADCRUMB
+
+    assert "auto-compact 발생" in breadcrumb
+    assert all(required in breadcrumb for required in mod.CTX_GUARD_REQUIRED_EXPRESSIONS)
+    assert "수동 핸드오프" not in breadcrumb
+    assert "미완" not in breadcrumb
+
+
 # 공통 fixture 본문 — preamble + 3 entry (날짜 오름차순).
 _HEADER = "# Project Log\n\n> append-only 설명.\n\n"
 _ENTRY_A = "## [2026-06-10] ticket | T-0001 첫 작업\n본문 A\n\n"
@@ -177,6 +206,40 @@ def test_build_checkpoint_entry_explicit_date_is_deterministic():
     ).startswith(
         "## [2026-08-06] checkpoint | (task:orch-dev-T0547) — compaction\n"
     )
+
+
+def test_build_checkpoint_entry_renders_ctx_window_mismatch_with_observation():
+    mod = _load_module()
+    entry = mod.build_checkpoint_entry(
+        "main",
+        "compaction",
+        "2026-08-11",
+        ctx_band_checked=True,
+        ctx_band_missed=True,
+        ctx_window_tokens=1_000_000,
+        ctx_observed_tokens=655_736,
+        harness="claude",
+    )
+    assert "[ctx-window-mismatch] 설정 창이 실 압축 지점보다 큼" in entry
+    assert "설정 1,000,000 tokens" in entry
+    assert "PreCompact 관측 655,736 tokens" in entry
+    assert "`ctx_window_tokens_claude`" in entry
+    assert "관측 사용량 655,736 tokens 이하" in entry
+
+
+def test_ctx_window_mismatch_without_observation_keeps_qualitative_remedy():
+    mod = _load_module()
+    advisory = mod.build_ctx_window_mismatch_advisory(
+        ctx_window_tokens=600_000,
+        ctx_observed_tokens=None,
+        harness="opencode",
+    )
+    assert "설정 600,000 tokens" in advisory
+    assert "PreCompact 관측" not in advisory
+    assert "관측 사용량 측정 불가" not in advisory
+    assert "실 auto-compact 지점 이하" in advisory
+    assert "`ctx_window_tokens_opencode`" in advisory
+    assert "ctx_window_tokens_claude" not in advisory
 
 
 def test_cmd_checkpoint_appends_explicit_compaction_trigger(tmp_path, monkeypatch):
@@ -501,6 +564,54 @@ def test_main_checkpoint_worktree_anchor_forwards_to_pm_home_engine(
     assert kwargs["timeout"] == 5.0
 
 
+@pytest.mark.parametrize(
+    ("hook_argv", "new_options"),
+    [
+        ([
+            "checkpoint", "--trigger", "compaction", "--phase", "pre",
+            "--ctx-band-checked", "--ctx-band-missed",
+            "--ctx-window-tokens", "600000",
+            "--ctx-observed-tokens", "30000", "--harness", "claude",
+        ], {
+            "--ctx-band-checked", "--ctx-band-missed", "--ctx-window-tokens",
+            "--ctx-observed-tokens", "--harness",
+        }),
+    ],
+)
+def test_main_hook_redispatch_retries_old_pm_home_engine_without_new_options(
+    tmp_path, monkeypatch, capsys, hook_argv, new_options,
+):
+    """worktree 신형 엔진→PM 홈 구형 엔진 skew에서도 snapshot/checkpoint를 한 번 재시도한다."""
+    mod = _load_module()
+    pm_home = tmp_path / "pm-home"
+    worktree = pm_home / "work" / "product_1"
+    worktree.mkdir(parents=True)
+    monkeypatch.setattr(mod, "REPO", worktree)
+    ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        '{"leases":[{"slot":"work/product_1","state":"leased","session":"main"}]}',
+        encoding="utf-8",
+    )
+    canonical = pm_home / ".project_manager" / "tools" / "pm_log.py"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text("# old canonical test probe\n", encoding="utf-8")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=2 if len(calls) == 1 else 0)
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+    assert mod.main([*hook_argv, "--cwd", str(worktree)]) == 0
+    assert len(calls) == 2
+    assert new_options & set(calls[0][0]) == new_options
+    assert new_options.isdisjoint(calls[1][0])
+    assert calls[0][1]["cwd"] == calls[1][1]["cwd"] == str(pm_home)
+    assert mod._CTX_DIAGNOSTIC_APPEND_FAILED_SIGNAL in capsys.readouterr().err
+
+
 def test_main_manual_checkpoint_forwards_pm_home_engine_rc(
     tmp_path, monkeypatch,
 ):
@@ -738,6 +849,39 @@ def test_snapshot_timeout_returns_identity_section_only(tmp_path):
     assert "## 장부 포인터" not in text and "## pm_state" not in text
 
 
+def test_snapshot_distinguishes_log_read_failure_and_explicit_retry_payload(
+    tmp_path, monkeypatch, capsys,
+):
+    """원장 판독 실패는 no-diagnostic이 아니며 CLI rc1, 명시 retry 진단은 원장 없이도 렌더한다."""
+    mod = _load_module("pm_log_snapshot_read_failure")
+    pm_home, cwd = _snapshot_home(tmp_path)
+    current = pm_home / ".project_manager" / "wiki" / "log" / "current.md"
+    current.mkdir(parents=True)  # file read에 IsADirectoryError를 내는 결정적 판독 실패 fixture.
+
+    assert mod._latest_ctx_window_mismatch_section(pm_home, "main") \
+        is mod._CTX_WINDOW_MISMATCH_READ_FAILED
+    text, warning = mod.build_snapshot(pm_home, cwd)
+    assert text is None and warning == mod._CTX_WINDOW_MISMATCH_READ_WARNING
+
+    monkeypatch.setattr(mod, "REPO", pm_home)
+    args = SimpleNamespace(cwd=str(cwd), state_lines=24, json=False)
+    assert mod.cmd_snapshot(args) == 1
+    captured = capsys.readouterr()
+    assert captured.out == "" and mod._CTX_WINDOW_MISMATCH_READ_WARNING in captured.err
+
+    retry, retry_warning = mod.build_snapshot(
+        pm_home,
+        cwd,
+        ctx_band_missed=True,
+        ctx_window_tokens=600_000,
+        ctx_observed_tokens=30_000,
+        harness="claude",
+    )
+    assert retry_warning is None
+    assert retry.count("[ctx-window-mismatch]") == 1
+    assert "설정 600,000 tokens" in retry and "PreCompact 관측 30,000 tokens" in retry
+
+
 def test_snapshot_caps_from_back_by_whole_section_under_char_and_byte_limits():
     mod = _load_module()
     identity = mod._SNAPSHOT_IDENTITY_HEADING + "\n- task: main\n"
@@ -746,6 +890,86 @@ def test_snapshot_caps_from_back_by_whole_section_under_char_and_byte_limits():
     assert "## keep" in text and "## drop" not in text
     assert len(text) <= mod.SNAPSHOT_MAX_CHARS
     assert len(text.encode("utf-8")) <= mod.SNAPSHOT_MAX_BYTES
+
+
+def test_snapshot_caps_keep_ctx_mismatch_ahead_of_oversized_lower_priority_sections(
+    tmp_path, monkeypatch,
+):
+    """상한 tail-drop에서도 loud mismatch 절은 장부·state·복구 절보다 먼저 보존된다."""
+    mod = _load_module()
+    pm_home, cwd = _snapshot_home(tmp_path)
+    monkeypatch.setattr(
+        mod, "_latest_ctx_window_mismatch_section",
+        lambda *_args: (
+            "## ctx 설정 진단 (compaction 경계)\n"
+            + mod.build_ctx_window_mismatch_advisory(
+                ctx_window_tokens=600_000,
+                ctx_observed_tokens=None,
+                harness="claude",
+            )
+        ),
+    )
+    monkeypatch.setattr(mod, "_ledger_section", lambda *_args: "## huge\n" + "한" * 9_000)
+
+    text, warning = mod.build_snapshot(pm_home, cwd)
+
+    assert warning is None
+    assert "## ctx 설정 진단 (compaction 경계)" in text
+    assert "[ctx-window-mismatch] 설정 창이 실 압축 지점보다 큼" in text
+    assert "실 auto-compact 지점 이하" in text
+    assert "## huge" not in text
+    assert len(text) <= mod.SNAPSHOT_MAX_CHARS
+    assert len(text.encode("utf-8")) <= mod.SNAPSHOT_MAX_BYTES
+
+
+def test_ctx_mismatch_checkpoint_snapshot_flow_is_durable_and_re_evaluated(
+    tmp_path, monkeypatch,
+):
+    """매 PreCompact append를 복구 원천으로 쓰고 다음 fired 평가가 앞 경고를 가린다."""
+    mod = _load_module()
+    pm_home, cwd = _snapshot_home(tmp_path)
+    wiki = pm_home / ".project_manager" / "wiki"
+    log_dir = wiki / "log"
+    log_dir.mkdir(parents=True)
+    current = log_dir / "current.md"
+    current.write_text(_HEADER, encoding="utf-8")
+    monkeypatch.setattr(mod, "REPO", pm_home)
+    monkeypatch.setattr(mod, "WIKI_DIR", wiki)
+    monkeypatch.setattr(mod, "LOG_DIR", log_dir)
+    monkeypatch.setattr(mod, "CURRENT_FILE", current)
+
+    common = dict(
+        task="main", trigger="compaction", cwd=str(cwd),
+        session_id="ctx-flow-session", boundary_id="ctx-flow-boundary",
+        breadcrumb=False, harness="claude",
+    )
+    pre = SimpleNamespace(
+        **common, phase="pre", ctx_band_checked=True, ctx_band_missed=True,
+        ctx_window_tokens=600_000, ctx_observed_tokens=30_000,
+    )
+    assert mod.cmd_checkpoint(pre) == 0
+    assert mod.cmd_checkpoint(pre) == 0
+    assert "[ctx-window-mismatch]" in current.read_text(encoding="utf-8")
+    assert current.read_text(encoding="utf-8").count("[ctx-window-mismatch]") == 2
+    state_dir = pm_home / ".project_manager" / ".local" / "ctx-stop"
+    assert list(state_dir.glob("ctx-window-mismatch.*")) == []
+
+    snapshot, warning = mod.build_snapshot(pm_home, cwd)
+    assert warning is None
+    assert "## ctx 설정 진단 (compaction 경계)" in snapshot
+    assert "설정 600,000 tokens" in snapshot
+    assert "PreCompact 관측 30,000 tokens" in snapshot
+    assert "`ctx_window_tokens_claude`" in snapshot
+
+    fired_common = common | {"boundary_id": "ctx-flow-boundary-2"}
+    fired = SimpleNamespace(
+        **fired_common, phase="pre", ctx_band_checked=True, ctx_band_missed=False,
+        ctx_window_tokens=None, ctx_observed_tokens=None,
+    )
+    assert mod.cmd_checkpoint(fired) == 0
+    restored, warning = mod.build_snapshot(pm_home, cwd)
+    assert warning is None
+    assert "ctx-window-mismatch" not in restored
 
 
 def test_snapshot_timeout_safely_caps_oversized_identity_on_early_return(

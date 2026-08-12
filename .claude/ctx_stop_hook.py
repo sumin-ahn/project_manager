@@ -33,6 +33,8 @@ import ctx_guard  # noqa: E402  (같은 디렉토리 공유 코어)
 _MARKER_DIR = Path(".project_manager") / ".local" / "ctx-stop"
 _SNAPSHOT_TIMEOUT_SECONDS = 3.0
 _CHECKPOINT_TIMEOUT_SECONDS = 5.0
+_PENDING_CHECKPOINT_DIAGNOSTIC = "<!-- ctx-checkpoint-pending: append-failed -->\n"
+_CHECKPOINT_DIAGNOSTIC_APPEND_FAILED_SIGNAL = "[pm-checkpoint] ctx-diagnostic-append-failed"
 
 
 def _session_id(stdin: dict) -> str:
@@ -94,6 +96,20 @@ def _arm_snapshot(root: Path, session_id: str, payload: str) -> bool:
     if not payload:
         return False
     marker = _snapshot_marker_path(root, session_id)
+    try:
+        existing = marker.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        existing = None
+    except (OSError, UnicodeError):
+        # 기존 marker 상태를 모르면 보수적으로 보존한다. replace가 성공해도 진단을 지울 수 있다.
+        return False
+    if (
+        existing is not None
+        and _PENDING_CHECKPOINT_DIAGNOSTIC in existing
+        and "[ctx-window-mismatch]" not in payload
+    ):
+        # PreCompact append 실패 시 만든 전달 payload는 원장에 아직 없는 진단의 유일한 사본이다.
+        return True
     temp = marker.with_name(f".{marker.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         marker.parent.mkdir(parents=True, exist_ok=True)
@@ -139,7 +155,75 @@ def _pm_log_path(root: Path) -> Path:
     return Path(root) / ".project_manager" / "tools" / "pm_log.py"
 
 
-def _build_snapshot(root: Path, stdin: dict) -> str | None:
+def _build_ctx_guidance(
+    root: Path,
+    *,
+    band: str,
+    used_pct: int,
+    thresholds: dict[str, int],
+) -> str:
+    """pm_log.py의 단일 ctx 정책 문구를 읽는다. 실패 시 비종료 fallback만 반환한다."""
+    engine = _pm_log_path(root)
+    remaining = ctx_guard.remaining_pct(used_pct)
+    labels = {
+        "nudge": "ctx-nudge",
+        "nudge2": "ctx-nudge/강화",
+        "final": "ctx-nudge/최종",
+    }
+    command = [
+        sys.executable,
+        str(engine),
+        "ctx-guidance",
+        "--band",
+        band,
+        "--used-pct",
+        str(used_pct),
+        "--remaining-pct",
+        str(remaining),
+        "--stop-pct",
+        str(thresholds["stop_pct"]),
+    ]
+    if engine.is_file():
+        try:
+            result = subprocess.run(
+                command,
+                cwd=str(root),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                timeout=_SNAPSHOT_TIMEOUT_SECONDS,
+                check=False,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    # 구 엔진/실행 실패에서도 winding-down 함의를 되살리지 않는다. 중앙 명령을 쓸 수 없는
+    # fail-soft 경계라 연속성 정책의 필수 두 사실만 최소 복제한다.
+    checkpoint = "python3 .project_manager/tools/pm_log.py checkpoint --task <이름>"
+    if band == "final":
+        checkpoint += " --trigger compaction"
+    return (
+        f"[{labels[band]}] 컨텍스트 사용 {used_pct}% (잔여 {remaining}%). "
+        f"auto-compact 관측 구간이다. `{checkpoint}` 기록을 사용할 수 있다. "
+        "`<이름>`에는 현재 task 이름을 사용한다. "
+        "압축은 자동이고 세션은 그대로 이어진다. "
+        "핸드오프는 사용자 명시 지시로만 한다. "
+        "상세 ctx 연속성 정책은 pm_log.py ctx-guidance 엔진에서 복구한다."
+    )
+
+
+def _build_snapshot(
+    root: Path,
+    stdin: dict,
+    *,
+    ctx_band_missed: bool = False,
+    ctx_window_tokens: int = 0,
+    ctx_observed_tokens: int = 0,
+    harness: str | None = None,
+) -> str | None:
     """엔진 builder stdout만 받는다. 렌더는 pm_log.py 단일 소유, stderr는 훅 프로토콜 밖으로 폐기.
 
     Builder command token: ``pm_log.py snapshot``.
@@ -147,9 +231,20 @@ def _build_snapshot(root: Path, stdin: dict) -> str | None:
     engine = _pm_log_path(root)
     if not engine.is_file():
         return None
+    command = [
+        sys.executable, str(engine), "snapshot", "--cwd", str(_hook_cwd(stdin, root)),
+    ]
+    if ctx_band_missed:
+        command.append("--ctx-band-missed")
+        if ctx_window_tokens > 0:
+            command.extend(("--ctx-window-tokens", str(ctx_window_tokens)))
+        if ctx_observed_tokens > 0:
+            command.extend(("--ctx-observed-tokens", str(ctx_observed_tokens)))
+        if isinstance(harness, str) and harness.strip():
+            command.extend(("--harness", harness.strip()))
     try:
         result = subprocess.run(
-            [sys.executable, str(engine), "snapshot", "--cwd", str(_hook_cwd(stdin, root))],
+            command,
             cwd=str(root),
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -194,11 +289,16 @@ def _create_checkpoint(
     *,
     phase: str,
     breadcrumb: bool = False,
-) -> None:
-    """compaction 골격 생성. stdout/stderr/rc를 모두 흡수해 Claude hook JSON을 오염시키지 않는다."""
+    ctx_band_checked: bool = False,
+    ctx_band_missed: bool = False,
+    ctx_window_tokens: int = 0,
+    ctx_observed_tokens: int = 0,
+    harness: str | None = None,
+) -> bool:
+    """compaction 골격 생성 성공 여부. 출력은 흡수하되 실패를 성공으로 합치지 않는다."""
     engine = _pm_log_path(root)
     if not engine.is_file():
-        return
+        return False
     command = [
         sys.executable, str(engine), "checkpoint", "--trigger", "compaction",
         "--cwd", str(_hook_cwd(stdin, root)), "--phase", phase,
@@ -211,17 +311,47 @@ def _create_checkpoint(
         command.extend(("--boundary-id", boundary_id))
     if breadcrumb:
         command.append("--breadcrumb")
+    legacy_command = list(command)
+    if ctx_band_checked:
+        command.append("--ctx-band-checked")
+    if ctx_band_missed:
+        command.append("--ctx-band-missed")
+        if ctx_window_tokens > 0:
+            command.extend(("--ctx-window-tokens", str(ctx_window_tokens)))
+        if ctx_observed_tokens > 0:
+            command.extend(("--ctx-observed-tokens", str(ctx_observed_tokens)))
+        if isinstance(harness, str) and harness.strip():
+            command.extend(("--harness", harness.strip()))
     try:
-        subprocess.run(
+        result = subprocess.run(
             command,
             cwd=str(root),
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
             timeout=_CHECKPOINT_TIMEOUT_SECONDS,
             check=False,
         )
+        succeeded = (
+            result.returncode == 0
+            and _CHECKPOINT_DIAGNOSTIC_APPEND_FAILED_SIGNAL
+            not in (getattr(result, "stderr", "") or "")
+        )
+        # 진단 capability가 없는 구 엔진이어도 compaction checkpoint 자체는 보존한다. 다만 신형
+        # 진단 append는 실패했으므로 False를 돌려 snapshot 전달 fallback도 함께 무장한다.
+        if result.returncode != 0 and command != legacy_command:
+            subprocess.run(
+                legacy_command,
+                cwd=str(root),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=_CHECKPOINT_TIMEOUT_SECONDS,
+                check=False,
+            )
+        return succeeded
     except (OSError, subprocess.TimeoutExpired):
-        pass
+        return False
 
 
 def capture_precompact(stdin: dict, root: Path) -> int:
@@ -229,7 +359,59 @@ def capture_precompact(stdin: dict, root: Path) -> int:
     transcript = stdin.get("transcript_path")
     if isinstance(transcript, str) and transcript and ctx_guard.transcript_is_sidechain(transcript):
         return 0
-    _create_checkpoint(root, stdin, phase="pre", breadcrumb=True)
+    session_id = _session_id(stdin)
+    # Claude PreCompact의 trigger가 auto라고 명시된 경우만 실제 auto-compact 지점의
+    # 관측으로 취급한다. manual /compact와 trigger 부재·미지값은 밴드 불일치에 대한
+    # 정보가 없으므로 breadcrumb/checkpoint만 남기고 진단은 보수적으로 침묵한다.
+    auto_compact = stdin.get("trigger") == "auto"
+    band_fired = False
+    observed_tokens = 0
+    window_tokens = 0
+    if auto_compact:
+        band_fired = any(
+            marker.is_file()
+            for marker in (
+                _nudge_marker_path(root, session_id),
+                _nudge2_marker_path(root, session_id),
+                _final_marker_path(root, session_id),
+            )
+        )
+        transcript_path = stdin.get("transcript_path")
+        observed_tokens = (
+            ctx_guard.context_tokens_from_transcript(transcript_path)
+            if isinstance(transcript_path, str) and transcript_path else 0
+        )
+        window_tokens = ctx_guard.resolve_budget(ctx_guard.load_local_config(root), "claude")
+    checkpointed = _create_checkpoint(
+        root,
+        stdin,
+        phase="pre",
+        breadcrumb=True,
+        ctx_band_checked=auto_compact,
+        ctx_band_missed=auto_compact and not band_fired,
+        ctx_window_tokens=window_tokens,
+        ctx_observed_tokens=observed_tokens,
+        harness="claude",
+    )
+    if auto_compact and not band_fired and not checkpointed:
+        # append 실패여도 세션은 막지 않는다. 엔진이 렌더한 동일 진단을 기존 snapshot 채널에 두어
+        # 다음 prompt 또는 쓰기 복구 뒤 경계가 전달/재시도할 수 있게 한다.
+        fallback = _build_snapshot(
+            root,
+            stdin,
+            ctx_band_missed=True,
+            ctx_window_tokens=window_tokens,
+            ctx_observed_tokens=observed_tokens,
+            harness="claude",
+        )
+        armed = bool(fallback) and _arm_snapshot(
+            root, session_id, _PENDING_CHECKPOINT_DIAGNOSTIC + fallback,
+        )
+        print(
+            "[ctx-checkpoint-append-failure] PreCompact checkpoint append 실패 — "
+            + ("pending 진단 payload로 보존" if armed else "pending 진단 payload 무장도 실패"),
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -281,14 +463,28 @@ def evaluate(stdin: dict, root: Path, conf: dict) -> tuple[int, dict | None]:
     event = stdin.get("hook_event_name") or stdin.get("hookEventName")
     if event == "PostCompact":
         # compaction 완료 경계가 새 상승 사이클의 정본 신호다. PostCompact 는 완료 후 발화하므로
-        # 압축 실패/차단 시에는 재무장하지 않는다. transcript 사용률을 판정하지 않고 marker 만
-        # best-effort 정리하고 엔진 최종 snapshot을 marker에 무장한다. 직접 PostCompact 주입 능력에
-        # 기대지 않으며 다음 실증 채널(PreToolUse/UserPromptSubmit)이 한 번 소비한다.
+        # 압축 실패/차단 시에는 재무장하지 않는다. transcript 사용률을 판정하지 않고 marker만
+        # best-effort 정리한다. 정상 경로에서 ctx-window-mismatch의 단일 진실은 append-only
+        # checkpoint log이고 snapshot은 그 최신 밴드 평가에서 매번 만드는 파생물이다. 원장 판독
+        # 실패는 pm_log가 무진단과 구분해 payload 생성을 거부하므로 기존 marker를 보존한다. append
+        # 실패 때만 snapshot 채널이 pending 진단의 임시 단일 진실이 된다(T-0661 subprocess 회귀).
         _rearm_cycle(root, session_id)
         snapshot = _build_snapshot(root, stdin)
-        if snapshot:
-            _arm_snapshot(root, session_id, snapshot)
-        _create_checkpoint(root, stdin, phase="post")
+        if snapshot and not _arm_snapshot(root, session_id, snapshot):
+            print(
+                "[ctx-snapshot-rearm-failure] snapshot 재무장 실패 — 기존 payload/append-only 진단을 다음 경계에 보존",
+                file=sys.stderr,
+            )
+        elif not snapshot and _snapshot_marker_path(root, session_id).exists():
+            print(
+                "[ctx-snapshot-rearm-failure] snapshot 재생성 불가 — 기존 armed payload를 다음 경계에 보존",
+                file=sys.stderr,
+            )
+        if not _create_checkpoint(root, stdin, phase="post"):
+            print(
+                "[ctx-checkpoint-append-failure] PostCompact checkpoint append 실패 — 다음 경계에서 재시도",
+                file=sys.stderr,
+            )
         return 0, None
 
     if event in {"PreToolUse", "UserPromptSubmit"}:
@@ -317,7 +513,12 @@ def evaluate(stdin: dict, root: Path, conf: dict) -> tuple[int, dict | None]:
     if state == "nudge":
         # 모델-facing 비차단 안내 주입. marker 는 채널과 무관하게 사이클당 1회이며,
         # PreToolUse/UserPromptSubmit 중 먼저 실제 주입한 채널이 소비한다.
-        output = nudge_output(stdin, ctx_guard.build_nudge_guidance(used, thresholds))
+        output = nudge_output(
+            stdin,
+            _build_ctx_guidance(
+                root, band="nudge", used_pct=used, thresholds=thresholds,
+            ),
+        )
         if output is None:
             return 0, None
         if not _claim_marker(
@@ -330,7 +531,12 @@ def evaluate(stdin: dict, root: Path, conf: dict) -> tuple[int, dict | None]:
         # 강화 넛지. 멱등(사이클 1회·.nudge2 marker). 1단(.nudge)과 독립이라 1단 창을
         # 건너뛴 세션도 2단은 발화한다.
         # nudge 와 동일하게 두 채널이 공유 marker 로 사이클당 1회만 소비한다.
-        output = nudge_output(stdin, ctx_guard.build_nudge2_guidance(used, thresholds))
+        output = nudge_output(
+            stdin,
+            _build_ctx_guidance(
+                root, band="nudge2", used_pct=used, thresholds=thresholds,
+            ),
+        )
         if output is None:
             return 0, None
         if not _claim_marker(
@@ -340,7 +546,12 @@ def evaluate(stdin: dict, root: Path, conf: dict) -> tuple[int, dict | None]:
         return 0, output
 
     # state == "stop" — 구 차단형 대신 최종 비차단 넛지(사이클당 1회·`.final`).
-    output = nudge_output(stdin, ctx_guard.build_final_guidance(used, thresholds))
+    output = nudge_output(
+        stdin,
+        _build_ctx_guidance(
+            root, band="final", used_pct=used, thresholds=thresholds,
+        ),
+    )
     if output is None:
         return 0, None
     if not _claim_marker(

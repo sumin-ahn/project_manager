@@ -6,11 +6,10 @@
 #
 # claude_code 타깃 대비 차이:
 #   - .claude/agents 제외 (opencode 는 agent 정의를 .opencode/agents 로 가진다 — T-0002~T-0004)
-#   - .claude/skills 는 **공유**(ADR-0065·단일 소비): opencode(≥1.17.x)가 Claude Code 스킬을
-#     네이티브 스캔·슬래시 호출하므로, PM-workflow 스킬은 canonical `.claude/skills/*/SKILL.md`
-#     하나를 양 하네스가 소비한다. opencode `.opencode/command/*` 수기 사본 채널은 은퇴(T-0364)
-#     — 갈라질 두 표면이 사라져 파리티가 구조적 자동. `.claude/skills` 는 claude_code 와 동일한
-#     bare @render(root-sourced) 로 등록돼 pm_update --target 이 root canonical 을 이 트리로 미러.
+#   - .claude/skills 스킬 채널과 .opencode/command 사람 슬래시 진입 채널을 둘 다 출하한다.
+#     canonical 은 root `.claude/skills/*/SKILL.md` 하나이며 command 파일은 각 canonical 파일에서
+#     @source 리맵으로 기계 생성한다(T-0674·ADR-0065 개정 대기). 스킬은 모델 `skill` tool 소비,
+#     command는 팔레트 `/pm-…` 사람 진입이며 두 표면은 서로 대체 관계가 아니다.
 #   - 어댑터 파일(.opencode/agents·lib·plugins·AGENTS.md)은 opencode-고유 어댑터층으로 잔존.
 
 # ── 도구 (순수 엔진) ─────────────────────────────────────────────
@@ -39,6 +38,7 @@
 .project_manager/tools/pm_relay.py
 # external_review: 추가 리뷰어 어댑터 (ADR-0004·기본 OFF). review_context.local.md·local.conf 는 인스턴스 소유(manifest 밖)
 .project_manager/tools/external_review.py
+.project_manager/tools/review_rounds.py
 .project_manager/tools/gate_snapshot.py
 # worktree_pool: repo별 worktree 풀 리스 엔진 (ADR-0013·multi-PM 모델). 순수 엔진(git DI seam)
 .project_manager/tools/worktree_pool.py
@@ -94,13 +94,10 @@
 .gitattributes
 # .github/workflows/* — 비출하: PM 홈에는 제품 테스트가 없어 예시 CI가 영구 red가 된다.
 
-# ── PM-workflow 스킬 (canonical 단일 소비·ADR-0065·claude_code 와 공유·bare @render root-sourced) ──
-# opencode(≥1.17.x)가 `.claude/skills/*/SKILL.md` 를 네이티브 스캔·슬래시(`--command <스킬명>`) 호출
-#   하므로 claude 와 **같은 canonical 스킬**을 소비한다(수기 command 사본 채널 은퇴·T-0364). claude_code
-#   타깃과 동일한 bare @render(root `.claude/skills` 소스)로 등록 — pm_update --target opencode 가 root
-#   canonical 을 이 트리로 미러(claude_code 미러와 byte-정합·별도 hand-drift 채널 없음). @render 는
-#   토큰-form(PROJECT_NAME 등)을 채택자 local.conf 값으로 치환(--target 은 copy2·토큰-form 보존).
-#   전제: opencode 스킬 스캔 미비활성(OPENCODE_DISABLE_CLAUDE_CODE_SKILLS 미설정·기본 on).
+# ── PM-workflow 스킬 (canonical 단일 진실·모델 skill tool 채널) ──
+# opencode 모델이 `.claude/skills/*/SKILL.md`를 스캔하는 채널은 그대로 유지한다. claude_code
+# 타깃과 동일한 bare @render(root `.claude/skills` 소스)로 등록하고, command 사본도 아래에서
+# 같은 canonical 파일을 읽는다. @render 는 토큰-form을 채택자 local.conf 값으로 치환한다.
 .claude/skills    @render
 
 # ── opencode 어댑터 (@render + @source — framework-owned 전파·ADR-0054·claude `.claude/*` 대칭) ──
@@ -114,9 +111,26 @@
 #    self-update=source=프레임워크 루트(templates/ 보유)·`--target opencode`=self-copy no-op 둘 다 정합.
 #    AGENTS.md/AGENTS.lite.md 는 제외 — root doc(CLAUDE.md 대칭·instance-owned·PROJECT_TAGLINE 보유)·
 #    @render 경로 밖 (PM 26/27 rescope·ADR-0030).
-# ⚠️ `.opencode/command` 는 은퇴(T-0364·ADR-0065) — PM-workflow 스킬은 위 `.claude/skills` 단일
-#    소비로 전환됐다(agent 정의만 `.opencode/agents` 로 잔존).
+# `.opencode/command/<name>.md` 는 사람이 보는 슬래시 팔레트 표면이다(opencode 1.18.16 실측·T-0674).
+# 수기 소스를 두지 않고 출하 스킬 15개를 root canonical SKILL.md에서 개별 @source 리맵한다.
+# 평탄 파일명(`<name>.md`)과 스킬 디렉터리(`<name>/SKILL.md`)의 레이아웃이 달라 directory
+# 리맵으로는 생성할 수 없으므로, 전건 개별 등록으로 신규 스킬 미등재를 가드가 loud 하게 잡도록 한다.
 .opencode/agents    @render @source=templates/opencode/.opencode/agents
+.opencode/command/pm-adr.md              @render @source=.claude/skills/pm-adr/SKILL.md
+.opencode/command/pm-bootstrap.md        @render @source=.claude/skills/pm-bootstrap/SKILL.md
+.opencode/command/pm-dev-delegate.md     @render @source=.claude/skills/pm-dev-delegate/SKILL.md
+.opencode/command/pm-env.md              @render @source=.claude/skills/pm-env/SKILL.md
+.opencode/command/pm-handoff.md          @render @source=.claude/skills/pm-handoff/SKILL.md
+.opencode/command/pm-qa.md               @render @source=.claude/skills/pm-qa/SKILL.md
+.opencode/command/pm-regression.md       @render @source=.claude/skills/pm-regression/SKILL.md
+.opencode/command/pm-release.md          @render @source=.claude/skills/pm-release/SKILL.md
+.opencode/command/pm-review.md           @render @source=.claude/skills/pm-review/SKILL.md
+.opencode/command/pm-ticket.md           @render @source=.claude/skills/pm-ticket/SKILL.md
+.opencode/command/pm-update.md           @render @source=.claude/skills/pm-update/SKILL.md
+.opencode/command/pm-wave-claim.md       @render @source=.claude/skills/pm-wave-claim/SKILL.md
+.opencode/command/pm-wave-finish.md      @render @source=.claude/skills/pm-wave-finish/SKILL.md
+.opencode/command/pm-worktree.md         @render @source=.claude/skills/pm-worktree/SKILL.md
+.opencode/command/spike-new.md           @render @source=.claude/skills/spike-new/SKILL.md
 # pm-instructions: opencode-고유 PM 운영 지침(실행 모델·위임 규약·config 캐싱). AGENTS.md 공통 코어
 #   (instance-owned·harness-neutral)에서 이관·opencode.jsonc `instructions` 배열로 함께 로드(ADR-0069·
 #   T-0401). 기존 instance-owned 진입 doc 과 달리 @source 전파 등록이라 방법론 갱신이 채택자에 도달한다.

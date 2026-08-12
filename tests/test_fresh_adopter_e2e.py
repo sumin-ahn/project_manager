@@ -537,8 +537,8 @@ def test_readme_axis_is_derived_and_covers_all_keyword():
 _OPERATIONAL_TOKENS = re.compile(r"\{\{(?:PY|PROJECT_NAME|PROJECT_TAGLINE|TEST_CMD)\}\}")
 
 # harness → (source 출하 스킬 트리, adopter 상대경로, 디렉토리형 여부[<name>/SKILL.md])
-# 양 하네스 모두 canonical `.claude/skills/<name>/SKILL.md` 를 소비한다(ADR-0065 단일 소비·opencode
-# `.opencode/command` 수기 사본 채널 은퇴·T-0364). opencode 출하 미러도 `.claude/skills` 디렉토리형.
+# 양 하네스 모두 canonical `.claude/skills/<name>/SKILL.md` 를 소비한다. opencode는
+# 모델 skill tool 미러와 canonical에서 생성한 `.opencode/command` 사람 진입 사본을 둘 다 출하한다(T-0674).
 #   codex 는 canonical 스킬을 `.agents/skills/<name>/SKILL.md` 로 remap 소비한다(ADR-0054/0065·@source).
 _RENDER_SKILL_SRC = {
     "claude": (REPO / "templates" / "claude_code" / ".claude" / "skills", ".claude/skills", True),
@@ -546,6 +546,7 @@ _RENDER_SKILL_SRC = {
     "codex": (REPO / "templates" / "codex" / ".agents" / "skills", ".agents/skills", True),
 }
 _NEW_SKILLS = {h: {"pm-update", "pm-env"} for h in _RENDER_SKILL_SRC}
+_OPENCODE_COMMAND_SRC = REPO / "templates" / "opencode" / ".opencode" / "command"
 
 # 하네스 축은 파생(HARNESSES)이되 스킬 소스 경로는 하네스별 config(트리 remap 이 달라 손으로 못 지움).
 #   신규 하네스가 _RENDER_SKILL_SRC 를 안 채우면 collection 이 loud 로 죽어 편입을 강제한다.
@@ -591,6 +592,21 @@ def test_fresh_adopter_render_skills_materialize(pm_import, tmp_path, harness):
         f = (dest / dest_rel / name / "SKILL.md") if is_dir else (dest / dest_rel / name)
         leaked = _OPERATIONAL_TOKENS.findall(f.read_text(encoding="utf-8"))
         assert not leaked, f"{harness}: {name} 에 미해소 operational 토큰 {set(leaked)} (렌더 실패)"
+
+    if harness == "opencode":
+        expected_commands = {p.name for p in _OPENCODE_COMMAND_SRC.glob("*.md")}
+        command_dir = dest / ".opencode" / "command"
+        materialized_commands = {p.name for p in command_dir.glob("*.md")}
+        assert len(expected_commands) == 15
+        assert materialized_commands == expected_commands, (
+            f"opencode: fresh import command 사본 누락/잉여 — "
+            f"누락={sorted(expected_commands - materialized_commands)}, "
+            f"잉여={sorted(materialized_commands - expected_commands)}")
+        for filename in expected_commands:
+            command = command_dir / filename
+            skill = dest / ".claude" / "skills" / command.stem / "SKILL.md"
+            assert command.read_bytes() == skill.read_bytes(), f"fresh import command drift: {filename}"
+            assert not _OPERATIONAL_TOKENS.findall(command.read_text(encoding="utf-8"))
 
 
 # ── adapter-drift lint real-file 발화 가드 (T-0141 — 실 local.conf 경로) ───────────
@@ -1071,7 +1087,7 @@ def _build_opencode_framework(tmp_path: Path) -> Path:
 
     opencode 채택자 engine.manifest 가 참조하는 root-상대 경로 전부를 담아 실 프레임워크 루트 레이아웃을
     재현한다: 엔진(`.project_manager/`·tools·wiki methodology + 템플릿·engine.manifest)·`.gitattributes` +
-    root `.claude/skills`(PM-workflow 스킬 canonical·bare @render root-sourced·ADR-0065 단일 소비) +
+    root `.claude/skills`(PM-workflow 스킬 canonical·bare @render root-sourced) +
     @source 어댑터 canonical(`templates/opencode/.opencode/*`·`templates/opencode/.project_manager/
     engine.manifest`). 이 트리면 pm_import(`templates/opencode/` 읽기)·pm_update self-update(root
     `.project_manager/` + root `.claude/skills` + @source remap 읽기) 둘 다 결정적으로 rc0 동작한다(엔진
@@ -1082,7 +1098,7 @@ def _build_opencode_framework(tmp_path: Path) -> Path:
     shutil.copytree(REPO / "templates" / "opencode",
                     framework / "templates" / "opencode", ignore=ignore)
     # root `.claude/skills` — opencode 매니페스트의 bare `.claude/skills @render` 소스(root-sourced·
-    #   claude_code 와 동일). 단일 소비(ADR-0065)라 opencode self-update 가 이 canonical 을 읽는다.
+    #   claude_code 와 동일). opencode self-update의 skill/command 두 채널이 이 canonical을 읽는다.
     shutil.copytree(REPO / ".claude" / "skills", framework / ".claude" / "skills", ignore=ignore)
     shutil.copy2(REPO / ".gitattributes", framework / ".gitattributes")
     return framework
@@ -1092,7 +1108,7 @@ def test_fresh_opencode_adopter_engine_mutate_propagates_and_render_drift0(
         pm_import, pm_update, tmp_path, monkeypatch):
     """fresh opencode import → 엔진 mutate → pm_update self-update 전파 + pm_import↔pm_update 렌더 drift-0.
 
-    (A) 엔진(프레임워크) PM-workflow 스킬(`.claude/skills` @render·ADR-0065 단일 소비) + lib 드라이버
+    (A) 엔진(프레임워크) PM-workflow canonical 스킬(`.claude/skills` @render) + lib 드라이버
         (byte-copy·engine-mirror) 를 mutate → 실 pm_update self-update 가 채택자로 전파(스킬→`.claude/skills`·
         driver→`.opencode/lib`). (B) mutate 전 self-update 는 전파 트리를 한 바이트도 안 바꾼다 = pm_import
         렌더 산출 == pm_update 렌더 산출(drift-0·같은 소스→같은 산출).
@@ -1126,16 +1142,18 @@ def test_fresh_opencode_adopter_engine_mutate_propagates_and_render_drift0(
     def _self_update() -> int:
         return pm_update.main(["--from", str(framework)])
 
-    # 전파 대상 스냅샷: `.opencode`(agents/lib/plugins/pm_orch) + `.claude/skills`(단일 소비 스킬·ADR-0065)
-    #   — 공허참 방지 sanity 포함. command 채널은 은퇴(T-0364)라 스냅샷 대상에서 빠진다.
+    # 전파 대상 스냅샷: `.opencode`(agents/command/lib/plugins/pm_orch) +
+    # `.claude/skills`(모델 skill tool) 두 채널 전부 — 공허참 방지 sanity 포함.
     before = _snapshot_tree(dest / ".opencode")
     before_skills = _snapshot_tree(dest / ".claude" / "skills")
     assert any(r.startswith("agents/") for r in before), \
         "opencode 어댑터 스냅샷에 agents 부재(공허 테스트?)"
     assert "lib/ctx-guard-core.cjs" in before, \
         "engine-mirror driver(ctx-guard-core.cjs) 스냅샷 부재 — T-0305 lib 전파 대상 확인 불가"
+    assert "command/pm-env.md" in before, \
+        "opencode 슬래시 command 스냅샷 부재(T-0674 전파 표면 확인 불가)"
     assert "pm-env/SKILL.md" in before_skills, \
-        "PM-workflow 스킬 스냅샷에 pm-env/SKILL.md 부재(단일 소비 스킬 미출하·공허 테스트?)"
+        "PM-workflow 스킬 스냅샷에 pm-env/SKILL.md 부재(skill tool 채널 미출하·공허 테스트?)"
 
     # (B) drift-0 — mutate 전 self-update 는 `.opencode/**`·`.claude/skills/**` 를 한 바이트도 안 바꾼다.
     #     같은 소스(framework)에서 pm_import 가 낸 산출과 pm_update 가 낸 산출이 byte-identical 이면 재기록 0.
@@ -1160,10 +1178,14 @@ def test_fresh_opencode_adopter_engine_mutate_propagates_and_render_drift0(
 
     assert _self_update() == 0, "엔진 mutate 후 self-update 가 rc0 아님"
     skill_dest = (dest / ".claude" / "skills" / "pm-env" / "SKILL.md").read_text(encoding="utf-8")
+    command_dest = (dest / ".opencode" / "command" / "pm-env.md").read_text(encoding="utf-8")
     lib_dest = (dest / ".opencode" / "lib" / "ctx-guard-core.cjs").read_text(encoding="utf-8")
     assert sentinel in skill_dest, (
-        "엔진 PM-workflow 스킬(`.claude/skills` @render·단일 소비) 변경이 채택자 `.claude/skills` 로 "
+        "엔진 PM-workflow canonical 스킬(`.claude/skills` @render) 변경이 채택자 `.claude/skills` 로 "
         "전파 안 됨 (전파 채널 끊김·ADR-0065)")
+    assert sentinel in command_dest and command_dest == skill_dest, (
+        "canonical 스킬 변경이 `.opencode/command/pm-env.md`로 갱신되지 않았거나 "
+        "skill↔command 렌더 산출이 drift(T-0674).")
     assert sentinel in lib_dest, (
         "엔진 lib 드라이버(engine-mirror·T-0305 hook/driver 전파화) 변경이 채택자 `.opencode/lib` 로 "
         "전파 안 됨 (hook/driver 미도달·frozen 재발)")

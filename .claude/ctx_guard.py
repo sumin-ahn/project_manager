@@ -348,5 +348,5 @@ def build_final_guidance(used_pct: int, thresholds: dict[str, int]) -> str:
         "`python3 .project_manager/tools/pm_log.py checkpoint --task <이름> --trigger compaction`"
         "(Windows는 `py -3`) 기록이 이 프로젝트의 규약이다. "
         "`<이름>`에는 현재 task 이름을 사용한다. auto-compact 가 임박한 상태이며, "
-        "새 큰 작업보다 현재 서사 기록을 우선하는 것이 권고된다."
+        "checkpoint는 압축 후 서사 복구 경계다."
     )

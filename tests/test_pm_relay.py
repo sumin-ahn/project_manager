@@ -44,6 +44,15 @@ def orch():
     return _load("pm_relay", TOOLS / "pm_relay.py")
 
 
+def test_opencode_prompt_guard_converts_cwd_symlink_loop(orch, tmp_path):
+    """resolve symlink loop는 RuntimeError traceback 대신 공용 하네스 계약 예외가 된다."""
+    cwd_loop = tmp_path / "cwd-loop"
+    cwd_loop.symlink_to(cwd_loop, target_is_directory=True)
+
+    with pytest.raises(orch.HarnessContractError, match="실경로 해소 실패"):
+        orch.assert_opencode_prompt_in_cwd(cwd_loop, cwd_loop / "prompt.md")
+
+
 # ── FakeDriver: 실 claude 없이 spawn/relay/respawn 을 기록하는 DI 더블 ──────────
 
 class FakeDriver:

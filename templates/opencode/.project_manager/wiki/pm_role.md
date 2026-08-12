@@ -36,7 +36,7 @@ PM 역할의 정적 운영 매뉴얼이다. PM 역할은 보드 운영·분할·
 
 기계 측정은 `/pm-bootstrap` skill(backbone `.project_manager/tools/pm_bootstrap.py`) 한 번으로 끝낸다.
 
-**task 계약:** 시작/재개는 `/pm-bootstrap --task <이름>`, 종료는 `/pm-handoff --task <이름>`만 쓴다. Python backbone의 task 진입도 각각 `pm_bootstrap.py --task <이름>`·`pm_handoff.py --task <이름>`뿐이다. 신규 task는 작업공간 0개여도 task pm_state를 즉시 만들고, 기존 task는 보유 슬롯 집합과 task pm_state를 자동 수령한다. task와 repo/slot 혼합 진입은 거부한다. 작업공간 대여·편입은 task-aware pm-env/worktree 명령의 책임이다. 단, alloc/release와 rebase 소유검사처럼 repo/slot이 **대상 자원**, task가 **소유 명의**인 자원 연산은 유지한다.
+**task 계약:** 시작/재개는 `/pm-bootstrap --task <이름>`, 종료는 `/pm-handoff --task <이름>`만 쓴다. Python backbone의 task 진입은 `pm_bootstrap.py --task <이름>`·`pm_handoff.py --task <이름> --user-ack <값>`이며, 승인값은 사용자 발화에서 받아 그대로 전달하고 세션이 만들지 않는다. 신규 task는 작업공간 0개여도 task pm_state를 즉시 만들고, 기존 task는 보유 슬롯 집합과 task pm_state를 자동 수령한다. task와 repo/slot 혼합 진입은 거부한다. 작업공간 대여·편입은 task-aware pm-env/worktree 명령의 책임이다. 단, alloc/release와 rebase 소유검사처럼 repo/slot이 **대상 자원**, task가 **소유 명의**인 자원 연산은 유지한다.
 
 `architecture.md`·`status.md`·`decisions/`·`roadmap.md`·전체 보드·타 슬롯 log는 시작 시 통독하지
 않고, 실제 필요가 생길 때 §찾아가는 법에 따라 해당 절만 읽는다.
@@ -103,6 +103,8 @@ PM wave의 claim·finish·qa·dev-delegate·handoff·regression은 **스킬/comm
 
 리뷰는 내부 code-reviewer(generate≠evaluate)와 **추가 리뷰어**(additional reviewer·엔진 이름 `external_review`)를 병행한다. 코드: `python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN`; 설계(ADR/spike): `--base <ref> --paths .project_manager/wiki/decisions/ ... --gate <T-NNNN|ADR-NNNN>`(회계 밖 자문만 `--no-gate` 명시). 전제는 `additional_reviewer_enabled=true`(opt-in), 상세·diff-only 한계는 [`pm_playbook.md`](pm_playbook.md) §"검토 루프". Claude Bash 도구 실행은 호출층 `timeout: 29300000`(ms)을 반드시 명시하며, 엔진 CLI `--timeout`은 이 호출층 상한을 대신하지 않는다.
 
+내부 루프의 라운드 비용 규율은 [`pm_playbook.md`](pm_playbook.md) §"라운드 프로토콜"이 단일 진실이다 — 지정 회귀만(전체 회귀는 릴리즈 절차 1단계 1회) · 검증 근거 지정 의무 · must-fix 장부(MF-n+probe·확인 전용 판정 선행) · 리뷰어 보고서 원문 전달 · 내부 라운드 상한 3.
+
 ## 위임 축 · PM=synthesis
 
 | 축 | agent | mandate |
@@ -152,6 +154,29 @@ PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비
 **자율+사후 `log/current.md` 기록:** 새 ticket, super-ticket 분할, `depends_on`·`blocks` 변경, `block`·`unblock`, spec 추출·갱신, 일상 ADR(`scope: internal-process`), 위임·세션 spawn, 추가 리뷰어 wave 예산 상한의 **같은 scope 정상 수렴 ack**(`--ack-wave` — 리뷰 라운드 축엔 재개 ack 자체가 없다).
 
 **사용자 게이트(사전 동의):** [[pm_role.local.md]] §사용자 게이트. 예: 미션·핵심 안전 경계, 유료/한도 API 대량 호출, 키 발급·외부 게시·배포, `scope:mission` ADR.
+
+**작업 중단 사유 판정.** 유효 집합 3항목만 작업 중단 사유로 인정한다. 무효 집합 5항목으로 중단하면 규약 위반이다. 각 항목은 조건과 결론을 함께 판정한다.
+
+**유효 집합.**
+
+- **사용자 명시 지시**: 조건: 사용자가 세션 종료 또는 작업 중단을 명시해 지시한 경우. 결론: 작업 중단 가능.
+- **사용자 결정 게이트**: 조건: 보호 영역·mission scope·외부 비가역 행위에 사용자 결정이 필요한 게이트에 도달한 경우. 결론: 작업 중단 가능.
+- **기술적 불가**: 조건: 필요한 자원이 부재하거나 권한이 거부되어 작업을 수행할 수 없는 경우. 결론: 작업 중단 가능.
+
+**무효 집합.**
+
+- **컨텍스트 잔량**: 조건: 컨텍스트 잔량을 작업 범위나 중단 결정과 함께 관측한 상태. 결론: 이를 이유로 작업을 중단하면 규약 위반이다.
+- **라운드·wave 상한**: 조건: 라운드·wave 상한에 도달한 상태. 결론: 이를 이유로 작업을 중단하면 규약 위반이다.
+- **티켓 미완**: 조건: 티켓이 아직 미완인 상태. 결론: 이를 이유로 작업을 중단하면 규약 위반이다.
+- **남은 작업량**: 조건: 남은 작업량이 많다고 평가한 상태. 결론: 이를 이유로 작업을 중단하면 규약 위반이다.
+- **세션 자기 판단**: 조건: 세션이 "정확한 상태만 남기겠다"고 자기 판단한 상태. 결론: 이를 이유로 작업을 중단하면 규약 위반이다.
+
+**미완 보고 판정.**
+
+- **다음 행동 명시**: 조건: 세션이 "여기까지"라고 알리면서 다음 행동을 명시하지 않은 미완 보고. 결론: 다음 행동 없는 미완 보고는 규약 위반이다.
+- **자기 수행 우선**: 조건: 세션이 직접 수행할 수 있는 다음 행동이 남은 상태. 결론: 수행 가능한 행동을 남긴 미완 보고는 규약 위반이다.
+- **상한 이후 계속**: 조건: 라운드·wave 상한 도달로 해당 루프가 정지한 상태. 결론: 재설계·분할·다음 티켓으로 계속한다.
+- **종료·축소 권한**: 조건: 세션 종료 또는 작업 축소를 결정하는 경우. 결론: 세션 종료·작업 축소는 사용자 지시로만 한다.
 
 비용 동의는 **켤 때 한 번**이다 — `additional_reviewer_enabled=true`(추가 리뷰어)·`delegate_enabled=true`(위임)는 설정된 외부 전송과 통상 과금에 대한 지속 의사표시이고, 그 뒤 호출마다 비용을 다시 묻지 않는다. 라운드/wave 상한은 비용 게이트가 아니라 기계적 anti-loop 정지다(§"검토 루프"). **리뷰 라운드 축은 연장 승인이 없다** — 상한 2회(`review_rounds_max`)·직전 라운드 대비 must-fix 증가(발산) 조기 차단에 걸리면 출구는 재설계·티켓 분할이고, 해소 확인만 필요할 때 게이트당 1회 `--confirm-fix`(확인 전용 라운드)를 쓴다. 사용자에게 올리는 경우는 중대 scope 확대·독립적 사용자 게이트 사유다.
 
@@ -247,10 +272,10 @@ CLI가 차수·인계 본문·남은작업을 이미 dump하므로 손 추출하
 
 ## 핸드오프 절차 (7단계)
 
-`/pm-handoff` skill(backbone `pm_handoff.py`)을 사용하고 dry-run을 권장한다(`--dry-run`). task 경로는 `/pm-handoff --task <이름>`만 쓰며 backbone도 `pm_handoff.py --task <이름>`으로 차수·기본 요약·보유 작업공간을 해소한다. 다음 트리거는 `/pm-bootstrap --task <이름>`이다.
+`/pm-handoff` skill(backbone `pm_handoff.py`)을 사용하고 dry-run을 권장한다(`--dry-run`). task 경로는 `/pm-handoff --task <이름>`만 쓰며 backbone은 사용자 발화의 승인값을 그대로 받은 `pm_handoff.py --task <이름> --user-ack <값>`으로 차수·기본 요약·보유 작업공간을 해소한다(세션의 승인값 생성·자동 부착 금지). 다음 트리거는 `/pm-bootstrap --task <이름>`이다.
 
 자동 처리:
-0. dirty-tree 게이트 — PM 홈 + 활성 worktree 전수의 미커밋 잔여(gitignored 제외)를 어떤 파일 mutation 보다 앞에서 판정. 잔여가 있으면 rc 1 차단 + 목록 열거이며 정상 해소는 세션 산출 선-커밋이다(불가피 시 `--ack-dirty "<사유>"` — 사유는 handoff entry 에 박제). 비대화 자동 실행은 `--auto-trigger`로 차단 대신 loud 경고+사유 자동 박제. 커밋 0 트리는 untracked 만으로 판정, 비-git 트리는 비차단 경고.
+0. dirty-tree 게이트 — PM 홈 + 활성 worktree 전수의 미커밋 잔여(gitignored 제외)를 어떤 파일 mutation 보다 앞에서 판정. 잔여가 있으면 rc 1 차단 + 목록 열거이며 정상 해소는 세션 산출 선-커밋이다(불가피 시 `--ack-dirty "<사유>"` — 사유는 handoff entry 에 박제). `--auto-trigger`는 사용자 명시 핸드오프 호출부의 호환 신호로 차단 대신 loud 경고+사유 자동 박제를 쓰지만, 독자 트리거나 승인이 아니며 `--user-ack`를 우회하지 않는다. 커밋 0 트리는 untracked 만으로 판정, 비-git 트리는 비차단 경고.
 1. local.conf·board regression이 해소한 test_cmd로 회귀 측정. red면 즉시 중단·핸드오프 불가.
 2. `log/current.md` handoff entry skeleton append.
 3. `pm_state.md` 세션 식별 sliding window에 신규 entry 추가·가장 오래된 entry 제거.

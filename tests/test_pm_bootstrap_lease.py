@@ -42,6 +42,19 @@ def handoff():
 
 
 @pytest.fixture(autouse=True)
+def _hermetic_dashboard(bootstrap, handoff, tmp_path, monkeypatch):
+    """slot 대시보드 렌더를 tmp 로 재앵커한다.
+
+    `_dashboard_file()` 은 모듈 `REPO` 를 따라가므로 재앵커 없이 부트스트랩/핸드오프를 돌리면
+    실 작업 트리의 `wiki/log/dashboard.md` 를 갱신한다(tests/conftest.py 의 live board 오염
+    가드가 teardown 에서 이를 잡는다)."""
+    target = tmp_path / "dashboard.md"
+    for module in (bootstrap, handoff):
+        if hasattr(module, "_dashboard_file"):
+            monkeypatch.setattr(module, "_dashboard_file", lambda t=target: t)
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_engine_anchor(bootstrap, monkeypatch):
     """0단계 엔진 앵커 검사(T-0351)를 hermetic 무력화한다.
 
@@ -829,7 +842,7 @@ def test_handoff_done_releases_slot(handoff, tmp_path, capsys):
     inst, _, _ = _make_handoff(handoff, tmp_path, worktree_pool=wp)
     rc = inst.run(
         session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
-        worktree_slot="work/A_2", branch="a5", done=True,
+        worktree_slot="work/A_2", user_ack="A_2", branch="a5", done=True,
     )
     assert rc == 0
     # release 가 정확히 슬롯과 함께 호출됐다 (require_clean=False 자동경로).
@@ -854,7 +867,7 @@ def test_handoff_no_done_does_not_release(handoff, tmp_path, capsys):
     inst, log_file, _ = _make_handoff(handoff, tmp_path, worktree_pool=wp)
     rc = inst.run(
         session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
-        worktree_slot="work/A_2", branch="a5", done=False,
+        worktree_slot="work/A_2", user_ack="A_2", branch="a5", done=False,
     )
     assert rc == 0
     # release 미호출 — 슬롯/브랜치는 handoff entry 에 기록만.
@@ -869,7 +882,7 @@ def test_handoff_done_dry_run_does_not_release(handoff, tmp_path, capsys):
     inst, _, _ = _make_handoff(handoff, tmp_path, worktree_pool=wp)
     inst.run(
         session_num=5, wave_summary="x", dry_run=True, skip_pytest=True,
-        worktree_slot="work/A_2", branch="a5", done=True,
+        worktree_slot="work/A_2", user_ack="A_2", branch="a5", done=True,
     )
     assert wp.release_calls == []
 
@@ -881,7 +894,7 @@ def test_handoff_done_release_keyerror_soft(handoff, tmp_path, capsys):
     inst, _, _ = _make_handoff(handoff, tmp_path, worktree_pool=wp)
     rc = inst.run(
         session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
-        worktree_slot="work/A_2", branch="a5", done=True,
+        worktree_slot="work/A_2", user_ack="A_2", branch="a5", done=True,
     )
     assert rc == 0
 
@@ -998,7 +1011,7 @@ def test_sensitivity_done_must_release(handoff, tmp_path, capsys):
     inst, _, _ = _make_handoff(handoff, tmp_path, worktree_pool=wp)
     inst.run(
         session_num=5, wave_summary="x", dry_run=False, skip_pytest=True,
-        worktree_slot="work/A_2", branch="a5", done=True,
+        worktree_slot="work/A_2", user_ack="A_2", branch="a5", done=True,
     )
     # 배선이 살아있으면 release 가 정확히 1회. (무력화 시 0회 → fail.)
     assert len(wp.release_calls) == 1

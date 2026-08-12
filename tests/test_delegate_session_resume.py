@@ -11,7 +11,7 @@
   ③ 세션 id 형식 가드 — `--` 로 시작하는 손상 값이 argv 에 실리지 않는다(플래그 오소비 0).
   ④ 성공 판정 = 회신 세션 id 일치. 불일치/미회신이면 fresh + **full payload** 재실행 + loud 1줄.
   ⑤ delta 조립 입력 = 장부 구조화 필드 + 호출자 원문뿐(raw .txt 재파싱 0).
-  ⑥ codex 축은 미검증 argv 미출하(fresh + loud)·opencode 무배선.
+  ⑥ codex exec resume JSONL/stdin 배선·opencode 무배선.
   ⑦ usage 4필드 분해(수집 불가 필드는 부재 — 0 채우기 금지).
   ⑧ 위임 회계는 기록만 — 새 상한/거부 rc 없음.
 """
@@ -226,11 +226,11 @@ def test_claude_argv_carries_resume_only_when_requested(relay):
 
 
 def test_resume_support_is_a_declaration_table(relay):
-    """지원 축은 분기가 아니라 선언표 — codex/opencode 는 미검증 argv 를 출하하지 않는다."""
+    """지원 축은 분기가 아니라 선언표 — codex는 실측 승격, opencode는 무배선이다."""
     assert relay.HARNESS_RESUME_SUPPORT == {
-        "claude": True, "codex": False, "opencode": False}
+        "claude": True, "codex": True, "opencode": False}
     assert relay.harness_supports_resume("claude") is True
-    assert relay.harness_supports_resume("codex") is False
+    assert relay.harness_supports_resume("codex") is True
     assert relay.harness_supports_resume("opencode") is False
     assert relay.harness_supports_resume("gemini") is False
 
@@ -936,11 +936,11 @@ def test_resume_dry_run_leaves_no_trace_on_a_fresh_tree(pd, monkeypatch, tmp_pat
     assert not out_dir.exists()
 
 
-# ══ ⑥ 하네스 축 (codex 미검증 argv 미출하·opencode 무배선) ═══════════════════
+# ══ ⑥ 하네스 축 (codex exec resume 실측·opencode 무배선) ═════════════════════
 
-@pytest.mark.parametrize("harness", ["codex", "opencode"])
-def test_unsupported_harness_stays_fresh_and_loud(pd, monkeypatch, tmp_path, capsys, harness):
+def test_unsupported_harness_stays_fresh_and_loud(pd, monkeypatch, tmp_path, capsys):
     """재개 미지원 축은 요청이 와도 fresh — 미검증 argv 를 만들지 않는다."""
+    harness = "opencode"
     out_dir, _ledger_path, _record_id = _resume_fixture(pd, tmp_path)
     prompt = _write_prompt(tmp_path)
     wire = {
@@ -972,7 +972,7 @@ def test_execute_attempt_refuses_resume_id_on_unsupported_harness(pd, tmp_path):
     """호출층이 잘못 넘겨도 미지원 축엔 재개 id 가 실리지 않는다(방어선 2중)."""
     with pytest.raises(pd.DelegateError, match="세션 재사용 미지원"):
         pd._execute_attempt(
-            harness="codex", model="gpt-x", reasoning=None, role="code-reviewer",
+            harness="opencode", model="prov/m", reasoning=None, role="code-reviewer",
             cwd=tmp_path, prompt="p", timeout=60, output_dir=tmp_path / "raw",
             run_fn=_FakeRun(_ok("")), attempt="primary",
             resume_session_id=SESSION_ID,

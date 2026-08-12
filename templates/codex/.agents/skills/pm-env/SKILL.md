@@ -51,11 +51,17 @@ sidecar는 파생 캐시다.
 ## worktree add
 
 ```bash
-./pm-config.sh worktree add <repo>              # 작업 슬롯(배타 대여·세션 바인딩)
-./pm-config.sh worktree add <repo> --readonly   # readonly 공유 슬롯(research 기준면)
+./pm-config.sh worktree add <repo> --user-ack <repo>              # 작업 슬롯(배타 대여·세션 바인딩)
+./pm-config.sh worktree add <repo> --readonly --user-ack <repo>   # readonly 공유 슬롯(research 기준면)
 ```
 
+물리 슬롯 생성은 사용자 승인 행위다. `--user-ack` 값이 대상 repo 와 정확히 같아야 통과하고,
+없거나 다른 값이면 rc=1 로 거부된다(`--readonly`·`--task` 변형 포함). **세션(LLM)은 이 플래그를
+스스로 부착하지 않는다** — 사용자에게 슬롯 생성 승인을 요청하는 것이 1순위다.
+
 추가 후 **"이제 `$pm-bootstrap <repo> --slot N` 으로 이 슬롯에 바인딩하세요"**라고 안내한다.
+이 바인딩 안내는 **사람(사용자) 대상**이며, 슬롯을 만든 세션이 자기 지시로 읽고 자동 실행하는
+용도가 아니다(생성 직후 자기-할당은 차단 대상 사고 클래스다).
 
 `--readonly`는 코드 읽기와 PM 홈 wiki(domain·architecture·status) 작성용 공유 기준면이다. detached
 HEAD(released base), role=readonly, session/pid·배타 대여가 없다. 무소유 공유 자산이므로
@@ -96,7 +102,8 @@ task는 슬롯과 직교하는 작업스트림 정체성이다.
 ```
 
 - `alloc`은 idle 최소 번호 슬롯을 task 명의(lease session)로 leased 전이한다. idle이 없으면 자동
-  생성하지 않고 `worktree add <repo>` 승인 요청으로 멈춘다. create/remove(물리층)는 사용자 승인,
+  생성하지 않고 사용자에게 슬롯 생성 승인을 요청하라는 처방으로 멈춘다(승인 후 실행 형태는
+  `worktree add <repo> --user-ack <repo>`). create/remove(물리층)는 사용자 승인,
   alloc/release(논리층)는 PM 자율. readonly는 대상이 아니다.
 - `release --task`는 슬롯 session이 해당 task 명의가 아니면 거부한다. dirty도 거부하며,
   `--force`는 stash 보존 강제·소유검사 우회 백스톱이다. clean이면 폴더를 유지한 채 idle 반납한다.
@@ -110,12 +117,19 @@ task는 슬롯과 직교하는 작업스트림 정체성이다.
 prefix는 task와 독립인 opt-in 분류 라벨이며 claim 경계가 아니다. 진행 중 지정·변경·해제할 수 있다.
 
 ```bash
-./pm-config.sh task prefix <이름> <p>       # task <이름> 의 board prefix 를 <p> 로 지정/변경
-./pm-config.sh task prefix <이름> none      # 해제(무prefix·T-NNNN 로 발행)
+./pm-config.sh task prefix <이름> <p>                    # 기존 카테고리 <p> 를 이 task 에 지정/변경
+./pm-config.sh task prefix <이름> <p> --user-ack <p>     # 신규 카테고리 신설(사용자 승인값 결속)
+./pm-config.sh task prefix <이름> none                   # 해제(무prefix·T-NNNN 로 발행)
 ```
 
 - 포맷은 `[a-z0-9_]`; 그 외 rc1, 소문자 권장. `none`은 해제 리터럴. task 미존재면 rc1이며 생성은
   `$pm-bootstrap --task`에서만 한다.
+- **신규 카테고리 신설은 사용자 명시 승인이 필요하다.** 대상 라벨이 기존 카테고리 4소스
+  (areas.md prefix · 기발행 티켓 prefix · task 지정 prefix · solo local.conf)에 없으면 rc=1 로 거부하고
+  현재 카테고리 목록과 승인 요청 처방을 낸다. 같은 게이트가 `board.py new --prefix`·
+  `board.py init --prefix`·`board.py prefix rename|merge` 의 새 라벨에도 걸린다. 기존 카테고리
+  사용(대소문자만 다른 표기 포함)은 무마찰이다. **세션이 스스로 `--user-ack` 을 붙여 카테고리를
+  신설하지 않는다** — 승인 주체는 사용자다.
 - `board.py new` 해소 순서: 명시 `--prefix` > task 지정 prefix > 기본 없음. task 명의
   (`--task <이름>`) 발행에 지정 prefix가 자동 적용되고 명시값이 1회 우선한다.
 - prefix 카테고리 list/rename/merge는 별도 `board.py prefix`.

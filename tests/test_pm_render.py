@@ -897,13 +897,13 @@ _ADAPTER_SURFACES = [
     REPO / "templates" / "claude_code" / ".claude" / "agents",
     REPO / "templates" / "claude_code" / ".claude" / "skills",
     REPO / "templates" / "opencode" / ".opencode" / "agents",
-    # ADR-0065(단일 소비·T-0364): opencode `.opencode/command` 은퇴 → canonical `.claude/skills` 미러.
     REPO / "templates" / "opencode" / ".claude" / "skills",
+    REPO / "templates" / "opencode" / ".opencode" / "command",  # T-0674 canonical 기계 사본
 ]
 
 
 def test_adapter_surfaces_no_machine_variant_tokens():
-    """어댑터 소스(렌더/sed 대상 6표면)에 {{PY}}·{{TEST_CMD}} 재도입 금지 (T-0219 (c) 불변식)."""
+    """어댑터 소스(렌더/sed 대상 7표면)에 {{PY}}·{{TEST_CMD}} 재도입 금지 (T-0219 (c) 불변식)."""
     offenders = []
     for surface in _ADAPTER_SURFACES:
         assert surface.is_dir(), f"어댑터 표면 부재: {surface}"

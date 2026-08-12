@@ -1027,7 +1027,8 @@ def test_relabel_proceeds_with_dirty_home_and_commits_only_touched(tmp_path, mon
     (board_dir / "notes.md").write_text("v2 — 남이 편집 중\n", encoding="utf-8")
     (board_dir / "scratch.md").write_text("남의 임시 파일\n", encoding="utf-8")
 
-    rc = board.cmd_prefix_rename(argparse.Namespace(src="foo", dst="bar", dry_run=False))
+    rc = board.cmd_prefix_rename(argparse.Namespace(
+        src="foo", dst="bar", dry_run=False, user_ack="bar"))
     assert rc == 0, capsys.readouterr().err
 
     out = capsys.readouterr().out

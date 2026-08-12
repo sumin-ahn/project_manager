@@ -6,11 +6,10 @@ WindowsApps 가짜 shim(Permission denied)·bash 부재에 걸려 진단·재시
 `./…​.sh` 파사드를 보이면 `.cmd` 등가를 **함께** 명시하는지 못박는다 — per-skill 명시성이 글로벌
 CLAUDE.md/AGENTS.md 노트 의존보다 강하다([[agent-guides-like-live-delegation]]).
 
-⚠️ **CANONICAL 소스만 스캔** — `.claude/skills/*/SKILL.md`(① root canonical·@render). opencode 는
-`.opencode/command` 수기 사본 채널을 은퇴하고(T-0364·ADR-0065) 이 canonical 스킬을 네이티브
-소비하므로, 별도 opencode 표면을 스캔할 필요가 없다(단일 소스). `templates/{claude_code,opencode}/
-.claude/skills` 는 **전파 미러**라 `pm_update --target` 전파 *전엔* canonical 뒤처져(stale) false-red
-를 낸다 → 스캔 제외(test_terminology 의 templates 제외 정신과 동일).
+⚠️ **저작 canonical + 실제 사람 진입 표면 스캔** — root
+`.claude/skills/*/SKILL.md`와 canonical에서 기계 생성한 opencode
+`.opencode/command/*.md`를 둘 다 검사한다(T-0674). 나머지 skill 템플릿 미러는 byte 정합
+가드가 별도로 강제하므로 중복 스캔하지 않는다.
 
 재발 교훈(메모리): 재발하는 표기/규칙은 지식이 아니라 테스트로 못박는다.
 """
@@ -28,6 +27,7 @@ REPO = Path(__file__).resolve().parents[1]
 # ── canonical 스캔 표면 (전파 미러 templates/claude_code 는 의도적 제외) ──────────
 _CANONICAL_GLOBS = (
     ".claude/skills/*/SKILL.md",
+    "templates/opencode/.opencode/command/*.md",
 )
 
 

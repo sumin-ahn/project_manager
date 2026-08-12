@@ -593,10 +593,10 @@ def test_mutation_reintroduced_append_write_in_converged_tool_is_red():
     """수렴 도구에 자체 O_APPEND write 를 되살리면 가드가 red 로 잡는다 (감도 실증)."""
     source = (TOOLS / "board.py").read_text(encoding="utf-8")
     mutated = source.replace(
-        "        file_lock.append_atomic(\n            af,",
-        "        _fd = os.open(str(af), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)\n"
-        "        os.close(_fd)\n"
-        "        file_lock.append_atomic(\n            af,",
+        "    file_lock.append_atomic(\n        af,",
+        "    _fd = os.open(str(af), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)\n"
+        "    os.close(_fd)\n"
+        "    file_lock.append_atomic(\n        af,",
         1,
     )
     assert mutated != source, "변이 앵커 소실"

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -47,8 +48,14 @@ def _load_board_bound(proj: Path):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     wiki = proj / ".project_manager" / "wiki"
+    # tickets_dir()는 import-time TICKETS_DIR가 아니라 REPO→board_root()를 따른다. REPO까지
+    # tmp로 묶지 않으면 `board` fixture의 티켓 쓰기가 라이브 worktree scaffold에 착지한다.
+    # BOARD_FILE은 import-time 상수라 같은 자리에서 별도로 묶어 refresh 파생 출력도 격리한다.
+    mod.REPO = proj
+    mod.BOARD_FILE = wiki / "board.md"
     mod.STATUS_FILE = wiki / "status.md"
     mod.LOG_FILE = wiki / "log" / "current.md"
+    mod.LOCAL_DIR = proj / ".project_manager" / ".local"
     return mod
 
 
@@ -82,6 +89,90 @@ def board(proj):
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def _write_internal_rounds(board, data: dict) -> None:
+    path = board._internal_review_rounds_ledger()
+    _write(path, json.dumps(data, ensure_ascii=False))
+
+
+def test_internal_review_absence_is_non_target_for_existing_tickets(board):
+    """장부/해당 entry/완료 rounds 부재는 소급 차단하지 않는다."""
+    assert board._complete_gate("T-9999", _gate_args()) == []
+    _write_internal_rounds(board, {
+        "T-OTHER-001": {"rounds": [{"sequence": 1, "verdict": 1}]},
+        "T-9999": {"records": [{"id": "reservation-only"}], "rounds": []},
+    })
+    assert board._complete_gate("T-9999", _gate_args()) == []
+
+
+@pytest.mark.parametrize("verdict", [1, None])
+def test_internal_review_recorded_nonpass_blocks_completion(board, verdict):
+    """라운드가 하나라도 있으면 반려·unknown 모두 완료 증거가 아니다."""
+    _write_internal_rounds(board, {
+        "T-PAY-001": {"rounds": [{"sequence": 1, "verdict": verdict}]},
+    })
+
+    problems = board._complete_gate("T-PAY-001", _gate_args())
+
+    assert len(problems) == 1
+    assert "internal code-reviewer" in problems[0]
+    assert "통과가 아닙니다" in problems[0]
+
+
+def test_internal_review_latest_sequence_pass_opens_completion(board):
+    """append 순서가 아니라 예약 sequence상 마지막 장부 라운드의 통과를 인정한다."""
+    _write_internal_rounds(board, {
+        "T-PAY-001": {"rounds": [
+            {"sequence": 2, "verdict": 0},
+            {"sequence": 1, "verdict": 1},
+        ]},
+    })
+
+    assert board._complete_gate("T-PAY-001", _gate_args()) == []
+
+
+@pytest.mark.parametrize(("round_count", "opens"), [(2, False), (4, True)])
+def test_internal_pm_fixed_completion_surface_revalidates_cap_and_names_nonpass_evidence(
+    board, capsys, round_count, opens,
+):
+    """손기입 resolution만으로는 못 열고, 정식 상한 형상은 pm-fixed를 통과와 구분해 출력한다."""
+    proof = board.REPO / "pm_fixed_proof.py"
+    _write(proof, "fixed = True\n")
+    rounds = [
+        {"sequence": sequence, "verdict": 1, "must_fix": 1}
+        for sequence in range(1, round_count + 1)
+    ]
+    entry = {
+        "count": round_count,
+        "confirm_fix": 1,
+        "pm_fixed": 1,
+        "rounds": rounds,
+        "resolution": {
+            "kind": board.GATE_RESOLUTION_PM_FIXED,
+            "pm_fixed_evidence": {
+                "change": "pm_fixed_proof.py:1",
+                "path": "pm_fixed_proof.py",
+                "line": 1,
+                "regression": "pytest tests/test_board_complete_gate.py -q",
+                "result": "rc=0 (targeted regression passed)",
+            },
+            "round_sequence": round_count,
+            "rounds": round_count,
+        },
+    }
+    gate = "T-PMF-101"
+    _write_internal_rounds(board, {gate: entry})
+
+    problems = board._complete_gate(gate, _gate_args())
+    output = capsys.readouterr().err
+
+    assert (not problems) is opens
+    if opens:
+        assert "리뷰 통과가 아니라 pm-fixed" in output
+    else:
+        assert "발동 조건 재검증 실패" in problems[0]
+        assert "상한이 미소진" in problems[0]
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -407,12 +498,13 @@ _TICKET_FRONTMATTER = (
 @pytest.fixture
 def live_board(tmp_path, monkeypatch):
     """실 파일 이동이 도는 hermetic board — legacy 형상(board-git 비활성·sync no-op)."""
-    mod = _load_board_bound(tmp_path / "proj")
-    monkeypatch.setattr(mod, "REPO", tmp_path)
+    root = tmp_path / "proj"
+    mod = _load_board_bound(root)
+    monkeypatch.setattr(mod, "REPO", root)
     monkeypatch.setattr(
-        mod, "BOARD_LOCK", tmp_path / ".project_manager" / ".local" / "board.lock")
+        mod, "BOARD_LOCK", root / ".project_manager" / ".local" / "board.lock")
     for status in ("open", "claimed", "blocked", "done"):
-        (tmp_path / ".project_manager" / "wiki" / "tickets" / status).mkdir(
+        (root / ".project_manager" / "wiki" / "tickets" / status).mkdir(
             parents=True, exist_ok=True)
     return mod
 
@@ -427,6 +519,35 @@ def _seed_ticket(board, tid: str, body: str, *, status: str = "claimed") -> Path
 def _complete_args(tid: str) -> argparse.Namespace:
     return argparse.Namespace(
         id=tid, tests_pass=True, allow_missing_log=True, allow_untested=False)
+
+
+def _internal_round(
+    sequence: int,
+    verdict: int,
+    must_fix: int,
+    *,
+    started_at: str,
+    ts: str,
+    target_rev: str,
+) -> dict:
+    return {
+        "sequence": sequence,
+        "verdict": verdict,
+        "must_fix": must_fix,
+        "started_at": started_at,
+        "ts": ts,
+        "target_rev": target_rev,
+    }
+
+
+def _internal_resolution(board, entry: dict, *, kind: str, target: str) -> dict:
+    return {
+        "kind": kind,
+        "ticket" if kind == board.GATE_RESOLUTION_INTO else "evidence_gate": target,
+        "ts": "2026-08-12T00:02:00+00:00",
+        "must_fix": board.gate_residual_must_fix(entry),
+        **board.gate_round_binding(entry),
+    }
 
 
 def test_cmd_complete_blocks_unchecked_dod_and_keeps_ticket_claimed(
@@ -457,6 +578,130 @@ def test_cmd_complete_passes_with_checked_and_deferred_dod(live_board):
 
     assert rc == 0
     assert list((live_board.tickets_dir() / "done").glob("T-9002*")), "done/ 이동 안 함"
+
+
+def test_cmd_complete_requires_last_recorded_internal_round_to_pass(
+    live_board, capsys,
+):
+    """실 complete 경로도 장부 반려를 막고, 후속 계측 통과 뒤에만 done으로 옮긴다."""
+    tid = "T-PAY-902"
+    claimed = _seed_ticket(live_board, tid, _dod_body("- [x] 코드"))
+    _write_internal_rounds(live_board, {
+        tid: {"rounds": [{"sequence": 1, "verdict": 1}]},
+    })
+
+    assert live_board.cmd_complete(_complete_args(tid)) == 1
+    assert claimed.exists()
+    assert "internal code-reviewer" in capsys.readouterr().err
+
+    _write_internal_rounds(live_board, {
+        tid: {"rounds": [
+            {"sequence": 1, "verdict": 1},
+            {"sequence": 2, "verdict": 0},
+        ]},
+    })
+    assert live_board.cmd_complete(_complete_args(tid)) == 0
+    assert list((live_board.tickets_dir() / "done").glob(f"{tid}*"))
+
+
+@pytest.mark.parametrize(
+    ("target_status", "expected_rc"),
+    [("claimed", 1), ("done", 0)],
+)
+def test_cmd_complete_internal_into_disposition_requires_target_done(
+    live_board, target_status, expected_rc,
+):
+    gate = "T-9201"
+    target = "T-9202"
+    claimed = _seed_ticket(live_board, gate, _dod_body("- [x] 코드"))
+    _seed_ticket(
+        live_board, target, _dod_body("- [x] 후속 소화"), status=target_status,
+    )
+    entry = {"rounds": [
+        _internal_round(
+            1, 1, 2,
+            started_at="2026-08-12T00:00:00+00:00",
+            ts="2026-08-12T00:01:00+00:00",
+            target_rev="a" * 40,
+        )
+    ]}
+    entry["resolution"] = _internal_resolution(
+        live_board, entry, kind=live_board.GATE_RESOLUTION_INTO, target=target,
+    )
+    _write_internal_rounds(live_board, {gate: entry})
+
+    assert live_board.cmd_complete(_complete_args(gate)) == expected_rc
+    if expected_rc == 0:
+        assert list((live_board.tickets_dir() / "done").glob(f"{gate}*"))
+    else:
+        assert claimed.exists()
+
+
+@pytest.mark.parametrize(("evidence_verdict", "expected_problem"), [(1, True), (0, False)])
+def test_internal_fixed_disposition_requires_later_changed_pass(
+    board, evidence_verdict, expected_problem,
+):
+    gate = "T-9301"
+    evidence = "T-9302"
+    entry = {"rounds": [
+        _internal_round(
+            1, 1, 1,
+            started_at="2026-08-12T00:00:00+00:00",
+            ts="2026-08-12T00:01:00+00:00",
+            target_rev="a" * 40,
+        )
+    ]}
+    entry["resolution"] = _internal_resolution(
+        board, entry, kind=board.GATE_RESOLUTION_FIXED, target=evidence,
+    )
+    evidence_entry = {"rounds": [
+        _internal_round(
+            1, evidence_verdict, 0 if evidence_verdict == 0 else 1,
+            started_at="2026-08-12T00:03:00+00:00",
+            ts="2026-08-12T00:04:00+00:00",
+            target_rev="b" * 40,
+        )
+    ]}
+    _write_internal_rounds(board, {gate: entry, evidence: evidence_entry})
+
+    problems = board._complete_gate(gate, _gate_args())
+
+    assert bool(problems) is expected_problem
+    if problems:
+        assert "근거 게이트" in problems[0]
+
+
+def test_internal_resolution_becomes_stale_after_new_rejection(board):
+    gate = "T-9401"
+    target = "T-9402"
+    ticket_dir = board.tickets_dir() / "done"
+    ticket_dir.mkdir(parents=True, exist_ok=True)
+    _write(
+        ticket_dir / f"{target}-후속.md",
+        _TICKET_FRONTMATTER.format(tid=target, status="done") + _dod_body("- [x] 소화"),
+    )
+    first = _internal_round(
+        1, 1, 2,
+        started_at="2026-08-12T00:00:00+00:00",
+        ts="2026-08-12T00:01:00+00:00",
+        target_rev="a" * 40,
+    )
+    entry = {"rounds": [first]}
+    entry["resolution"] = _internal_resolution(
+        board, entry, kind=board.GATE_RESOLUTION_INTO, target=target,
+    )
+    entry["rounds"].append(_internal_round(
+        2, 1, 1,
+        started_at="2026-08-12T00:03:00+00:00",
+        ts="2026-08-12T00:04:00+00:00",
+        target_rev="b" * 40,
+    ))
+    _write_internal_rounds(board, {gate: entry})
+
+    problems = board._complete_gate(gate, _gate_args())
+
+    assert problems
+    assert "새 라운드" in problems[0]
 
 
 def test_done_tickets_are_not_retroactively_checked(live_board):

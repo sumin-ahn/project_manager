@@ -561,7 +561,7 @@ def _make_handoff_production(
 def test_run_writes_to_per_slot_path_when_slot_resolved(hf):
     """run() 프로덕션 경로 — 단일 self-host + slot seeded → per-slot 경로에 sliding window write."""
     inst = _make_handoff_production(hf, slot_seeded=True)
-    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=True)
+    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=True, user_ack="project_manager_1")
     assert rc == 0
     sp = _slot_path(hf)
     assert sp.exists()
@@ -576,7 +576,7 @@ def test_run_migrates_legacy_then_writes_per_slot(hf):
     legacy = _legacy(hf)
     assert legacy.exists()  # 전제: legacy 존재.
 
-    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=True)
+    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=True, user_ack="project_manager_1")
     assert rc == 0
 
     sp = _slot_path(hf)
@@ -599,7 +599,7 @@ def test_run_solo_writes_legacy_unchanged(hf):
         run_git_fn=lambda args: (0, ""),
         log_file=log_file, pm_playbook_file=playbook_file,
     )
-    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=True)
+    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=True, user_ack="solo")
     assert rc == 0
     # 솔로 → legacy 에 써지고 slot 경로는 안 생긴다.
     assert "**4차**" in legacy.read_text(encoding="utf-8")
@@ -620,7 +620,7 @@ def test_run_explicit_pm_state_not_redirected_to_slot(hf, tmp_path):
         log_file=log_file, pm_playbook_file=playbook_file,
         pm_state_file=explicit,  # 명시 주입.
     )
-    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=True)
+    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=True, user_ack="solo")
     assert rc == 0
     # 명시 경로에 써지고 slot 경로로 redirect 안 됨.
     assert "**4차**" in explicit.read_text(encoding="utf-8")
@@ -675,7 +675,7 @@ def test_run_pytest_red_does_not_migrate_legacy(hf):
     legacy = _legacy(hf)
     assert legacy.exists()
 
-    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=False)
+    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=False, user_ack="project_manager_1")
     assert rc == 1, "회귀 red → 핸드오프 중단."
     # 중단 시 pm_state 무접촉 — legacy 그대로, slot 경로 미생성.
     assert legacy.exists(), "회귀 red 중단인데 legacy 가 이동됐다(트랜잭션 계약 위반)."
@@ -697,7 +697,7 @@ def test_run_gates_green_migrates_then_writes_per_slot(hf):
     legacy = _legacy(hf)
     assert legacy.exists()
 
-    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=False)
+    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=False, user_ack="project_manager_1")
     assert rc == 0
     sp = _slot_path(hf)
     assert sp.exists() and "**4차**" in sp.read_text(encoding="utf-8"), \
@@ -1284,7 +1284,7 @@ def test_single_self_host_roundtrip_handoff_write_bootstrap_read(hf, bs, tmp_pat
         log_file=log_file, pm_playbook_file=playbook,
         # pm_state_file 미주입 → per-slot 해소(프로덕션·slot-1 자동).
     )
-    assert hinst.run(session_num=52, wave_summary="라운드트립", dry_run=False, skip_pytest=True) == 0
+    assert hinst.run(session_num=52, wave_summary="라운드트립", dry_run=False, skip_pytest=True, user_ack="project_manager_1") == 0
 
     log_text = log_file.read_text(encoding="utf-8")
     # write 측: canonical 태그가 실제로 박혔다(handoff write 대칭 검증).

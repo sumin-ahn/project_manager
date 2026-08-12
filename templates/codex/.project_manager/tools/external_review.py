@@ -51,6 +51,10 @@ raw 파일 접두)에만 남는다. 설정 키는 `additional_reviewer_enabled`/
     (additional_reviewer_incomplete_round_limit)를 채우면 이후 실행을 기계 차단한다. 성격은
     **무한 루프 차단(anti-loop pause)**이다 — 연장 승인(`--ack-rounds`)은 폐지됐고, 호출하면
     아무것도 하지 않고 거부한다.
+  - 게이트 스냅샷 또는 미등록 linked worktree 자기 앵커 + 게이트 라운드 → exit 1 (실행 전
+    거부). 격리 스냅샷 안 `.local/review_rounds.json` 은 스냅샷 재생성과 함께 사라지므로,
+    스냅샷 마커가 있거나 PM 홈을 해소하지 못한 linked worktree에서는 실 전송 라운드를
+    기록하지 않는다. dry-run·조회·처분과 명시 `--no-gate` 자문은 이 차단 대상이 아니다.
   - wave 예산 소진 → exit 4 (같은 rc·같은 실행 전 거부). 게이트별 상한과 **별개로** wave 단위
     총 라운드 예산(local.conf additional_reviewer_wave_budget·기본 24)을 두어 티켓 수 × 라운드 상한
     으로 비용이 무한 확장되는 구조를 막는다 — 재개는 같은 규율의 `--ack-wave`(예산 리셋).
@@ -237,7 +241,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
 # baked 리터럴 — engine_rev.py --bump가 전 stamped 모듈과 함께 재작성한다.
-ENGINE_REV = "v1.7.3"
+ENGINE_REV = "v1.7.4"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -349,26 +353,143 @@ class PmHomeDemotion(NamedTuple):
     candidates: tuple[Path, ...]
 
 
+class PmHomeResolutionFacts(NamedTuple):
+    """한 번의 PM-home 해소가 가드에 넘기는 자기-앵커 판정 사실.
+
+    라운드 가드는 이 값을 통해서만 마커/git/lease 판정을 소비한다. 따라서 테스트나 채택자가
+    `resolve_pm_home_for_repo` seam을 고정하면 가드도 같은 해소 경계를 따르고, 호출 뒤 실제
+    checkout 형상을 독자적으로 재조회하지 않는다.
+    """
+
+    anchor: Path
+    pm_home: Path
+    snapshot_marker: Path | None
+    unregistered_linked_self_anchor: bool
+
+
 def _load_board():
     """형제 board 엔진을 위치로 로드해 worktree lease 재앵커 판정을 승계한다."""
     path = Path(__file__).resolve().with_name("board.py")
     return _load_module_from_path(path, "board.py", verifier=_verify_engine_rev)
 
 
+def _absolute_git_common_dir(board, anchor: Path) -> Path | None:
+    """Git이 증명한 ``anchor``의 공용 저장소 디렉터리를 절대경로로 반환한다."""
+    common = board._git_rev_parse(
+        anchor, "--path-format=absolute", "--git-common-dir",
+    )
+    if common is None:
+        # Git 2.31 미만 호환. 기존 해소 경로가 쓰던 상대경로 정규화와 같은 폴백이다.
+        common = board._git_rev_parse(anchor, "--git-common-dir")
+    if common is None:
+        return None
+    common_path = Path(common)
+    if not common_path.is_absolute():
+        common_path = anchor / common_path
+    return common_path.resolve()
+
+
+def _git_worktree_records(anchor: Path) -> tuple[tuple[Path, bool], ...]:
+    """``anchor``와 같은 저장소라고 Git이 열거한 worktree와 bare 여부를 반환한다."""
+    try:
+        result = subprocess.run(
+            [
+                "git", "-C", str(anchor), "worktree", "list",
+                "--porcelain", "-z",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ()
+    if result.returncode != 0:
+        return ()
+
+    records: list[tuple[Path, bool]] = []
+    for raw_record in result.stdout.split("\0\0"):
+        fields = [field for field in raw_record.split("\0") if field]
+        if not fields or not fields[0].startswith("worktree "):
+            continue
+        records.append((
+            Path(fields[0][len("worktree "):]).resolve(),
+            "bare" in fields[1:],
+        ))
+    return tuple(records)
+
+
+def _checkout_pm_home_matches(board, checkout: Path) -> tuple[Path, ...]:
+    """같은 저장소 checkout 하나의 기존 board/lease 축에서 소유 PM 홈을 찾는다.
+
+    일반 main worktree가 실 board 자체면 그 checkout이 소유자다. 그 밖에는 checkout의 경로와
+    git-common-dir 조상만 후보로 삼고 기존 strict lease point-read로 정확한 등록을 요구한다.
+    """
+    checkout = checkout.resolve()
+    if board._has_real_board(checkout / ".project_manager"):
+        return (checkout,)
+
+    search: list[Path] = [checkout, *checkout.parents]
+    common_path = _absolute_git_common_dir(board, checkout)
+    if common_path is not None:
+        search.extend((common_path, *common_path.parents))
+
+    matches: list[Path] = []
+    seen: set[Path] = set()
+    for path in search:
+        home = path.resolve()
+        if home in seen:
+            continue
+        seen.add(home)
+        if not (home / ".project_manager").is_dir():
+            continue
+        matched, _error = board._ledger_registration(home, checkout)
+        if matched:
+            matches.append(home)
+    return tuple(sorted(set(matches)))
+
+
+def _same_repo_checkout_pm_home_matches(
+    board, anchor: Path, common_path: Path,
+) -> tuple[Path, ...]:
+    """미등록 linked worktree를 같은 Git 저장소의 소유 checkout을 거쳐 재해소한다.
+
+    main worktree를 포함한 모든 non-bare checkout에서 기존 board/lease 소유자를 찾는다. 어느
+    후보든 common-dir을 다시 대조하고, 서로 다른 소유자가 나오면 호출부가 모호성으로 거부한다.
+    임의 경로/상위 디렉터리로 해소 축을 넓히지 않는다.
+    """
+    records = _git_worktree_records(anchor)
+    if not records:
+        return ()
+    roots = tuple(path for path, is_bare in records if not is_bare)
+    owners: list[Path] = []
+    for checkout in roots:
+        if checkout == anchor or not checkout.is_dir():
+            continue
+        if _absolute_git_common_dir(board, checkout) != common_path:
+            continue
+        owners.extend(_checkout_pm_home_matches(board, checkout))
+    return tuple(sorted(set(owners)))
+
+
 def resolve_pm_home_for_repo(
     anchor: Path, *, required: bool = False, warning_sink: list[str] | None = None,
     demotion_sink: list[PmHomeDemotion] | None = None,
+    resolution_sink: list[PmHomeResolutionFacts] | None = None,
 ) -> Path:
     """repo/worktree가 소속된 PM 홈을 lease 장부로 해소한다.
 
     실 board를 가진 repo는 자기 자신, 등록 linked worktree는 정확히 한 lease 소유 홈을
-    반환한다. 일반 standalone repo는 자기 local.conf를 쓰도록 자기 자신을 반환한다.
-    board가 필수면 장부 부재·손상·중복은 fail-loud다. board 불필요 실행은 한 줄 경고 후
-    자기 repo를 standalone 앵커로 사용한다.
+    반환한다. lease 미등록 gate snapshot은 Git이 증명한 같은 저장소의 main/등록 checkout을
+    거쳐 그 소유 홈을 반환한다. 일반 standalone repo는 자기 local.conf를 쓰도록 자기 자신을
+    반환한다. board가 필수면 장부 부재·손상·중복은 fail-loud다. board 불필요 실행은 한 줄
+    경고 후 자기 repo를 standalone 앵커로 사용한다.
 
     `demotion_sink` 를 주면 그 폴백(강등)의 근거를 `PmHomeDemotion` 으로 담는다 — 호출부가
     소유 PM 홈 필터 승계/차단을 판단하는 입력이다. standalone·실 board 소유처럼 폴백이 아닌
-    정상 해소는 아무것도 담지 않는다.
+    정상 해소는 아무것도 담지 않는다. `resolution_sink` 는 마커/linked/lease를 포함한 가드 판정
+    사실을 담아, 호출부가 이 resolver seam을 건너뛰고 실제 checkout을 다시 읽지 않게 한다.
     """
     anchor = anchor.resolve()
     board = _load_board()
@@ -377,16 +498,15 @@ def resolve_pm_home_for_repo(
     # worktree만 소유자 재해소가 필요하다. board._resolve_read_board()는 티켓이 실재하는 홈만
     # 후보로 삼으므로, 아직 티켓이 하나도 없는 등록 슬롯의 config 소유자 판정에는 쓸 수 없다.
     if board._has_real_board(anchor / ".project_manager"):
+        _publish_pm_home_resolution(resolution_sink, (), anchor=anchor, pm_home=anchor)
         return anchor
     if not board._is_linked_worktree(anchor):
+        _publish_pm_home_resolution(resolution_sink, (), anchor=anchor, pm_home=anchor)
         return anchor
 
     search: list[Path] = list(anchor.parents)
-    common = board._git_rev_parse(anchor, "--git-common-dir")
-    if common is not None:
-        common_path = Path(common)
-        if not common_path.is_absolute():
-            common_path = (anchor / common_path).resolve()
+    common_path = _absolute_git_common_dir(board, anchor)
+    if common_path is not None:
         search.extend((common_path, *common_path.parents))
 
     # config 소유자는 아직 ticket이 없는 PM 홈도 lease로 해소해야 한다. 다만 board.py보다
@@ -417,7 +537,9 @@ def resolve_pm_home_for_repo(
 
     unique = sorted(set(matches))
     if len(unique) == 1:
-        return unique[0]
+        pm_home = unique[0]
+        _publish_pm_home_resolution(resolution_sink, (), anchor=anchor, pm_home=pm_home)
+        return pm_home
     if len(unique) > 1:
         homes = ", ".join(str(home) for home in unique)
         resolution_error = (
@@ -431,9 +553,40 @@ def resolve_pm_home_for_repo(
             f"{detail}"
         )
     else:
-        resolution_error = (
-            "worktree lease 장부에서 소유 PM 홈을 찾지 못했습니다."
+        # `<pm-home>/work/<slot>`은 lease가 소유하는 정규 슬롯이다. 장부에서 빠진 정규 슬롯까지
+        # main-worktree 축으로 되살리면 lease 제거/손상의 fail-loud 계약이 무력화된다. 새 축은 그
+        # 관례 밖에 만들어지는 일회용 gate snapshot에만 적용한다.
+        managed_slot_without_lease = any(
+            anchor.parent.name == "work" and anchor.parent.parent == home
+            for home in candidates
         )
+        if managed_slot_without_lease:
+            resolution_error = (
+                "worktree lease 장부에서 소유 PM 홈을 찾지 못했습니다."
+            )
+        else:
+            same_repo_owners = (
+                _same_repo_checkout_pm_home_matches(board, anchor, common_path)
+                if common_path is not None else ()
+            )
+            if len(same_repo_owners) == 1:
+                pm_home = same_repo_owners[0]
+                _publish_pm_home_resolution(
+                    resolution_sink, (), anchor=anchor, pm_home=pm_home,
+                )
+                return pm_home
+            if len(same_repo_owners) > 1:
+                homes = ", ".join(str(home) for home in same_repo_owners)
+                resolution_error = (
+                    "같은 Git 저장소 checkout들이 여러 PM 홈의 worktree lease 장부에 "
+                    f"등록되어 소유자가 모호합니다: {homes}. 장부를 정리한 뒤 다시 "
+                    "실행하세요."
+                )
+            else:
+                resolution_error = (
+                    "worktree lease 장부와 같은 Git 저장소의 소유 checkout에서 PM 홈을 "
+                    "찾지 못했습니다."
+                )
 
     if required:
         raise AnchorResolutionError(f"{anchor}: {resolution_error}")
@@ -445,10 +598,12 @@ def resolve_pm_home_for_repo(
         print(warning, file=sys.stderr)
     else:
         warning_sink.append(warning)
+    demotion = PmHomeDemotion(anchor, resolution_error, tuple(candidates))
     if demotion_sink is not None:
-        demotion_sink.append(
-            PmHomeDemotion(anchor, resolution_error, tuple(candidates))
-        )
+        demotion_sink.append(demotion)
+    _publish_pm_home_resolution(
+        resolution_sink, (demotion,), anchor=anchor, pm_home=anchor,
+    )
     return anchor
 
 
@@ -590,6 +745,174 @@ def _conf_with_owner_filters(
         file=sys.stderr,
     )
     return merged
+
+
+_GATE_SNAPSHOT_MARKER = Path(
+    ".project_manager/.local/gate-snapshot.json"
+)
+
+
+def _gate_snapshot_marker(anchor: Path) -> Path | None:
+    """생성기가 남긴 스냅샷 사실 마커를 반환한다(내용 손상도 차단 쪽으로 fail-closed)."""
+    marker = anchor.resolve() / _GATE_SNAPSHOT_MARKER
+    try:
+        marker.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        # 접근 오류를 '마커 없음'으로 낮추면 손상만으로 가드가 열릴 수 있다.
+        return marker
+    # 생성기는 regular JSON file을 쓰지만, 이후 손상된 symlink/directory도 '없음'으로
+    # 강등하지 않는다. 내용 파싱이나 강등 사유 문자열은 차단 판정 입력이 아니다.
+    return marker
+
+
+def _is_unregistered_linked_self_anchor(
+    demotions: Sequence[PmHomeDemotion], *, diff_root: Path, pm_home: Path,
+) -> bool:
+    """라운드 장부 앵커가 lease 미등록 linked worktree 자신인지 단일 판정한다.
+
+    `resolve_pm_home_for_repo` 의 강등 기록은 판정 입력이 아니다. 스냅샷 안에 실 ticket이 있으면
+    resolver가 정상 board 자기 앵커로 조기 반환해 강등 기록이 생기지 않기 때문이다. 대신
+    git-dir/common-dir 차이로 linked worktree를 확인하고, 경로 조상과 common-dir 조상에 있는
+    PM 홈 lease 장부 중 하나라도 이 앵커를 등록하는지 직접 조회한다.
+
+    main checkout/standalone PM 홈은 linked worktree가 아니므로 False다. 정상 등록 worktree가
+    자기 ticket 때문에 self-anchor로 해소돼도 lease match가 있으므로 False다. 소유 PM 홈으로
+    재앵커된 정상 worktree도 `pm_home != diff_root`에서 False다. lease 장부가 손상돼
+    자기 앵커로 강등됐더라도 해소기가 남긴 단일 소유 후보가 있으면 관리 슬롯 복구 폴백으로
+    False다. 후보가 생긴 *이유 문자열*은 판정에 쓰지 않는다.
+    """
+    anchor = diff_root.resolve()
+    if pm_home.resolve() != anchor:
+        return False
+
+    board = _load_board()
+    if not board._is_linked_worktree(anchor):
+        return False
+
+    search: list[Path] = list(anchor.parents)
+    common = board._git_rev_parse(anchor, "--git-common-dir")
+    if common is not None:
+        common_path = Path(common)
+        if not common_path.is_absolute():
+            common_path = (anchor / common_path).resolve()
+        search.extend((common_path, *common_path.parents))
+
+    seen: set[Path] = set()
+    for path in search:
+        owner = path.resolve()
+        if owner in seen:
+            continue
+        seen.add(owner)
+        if not (owner / ".project_manager").is_dir():
+            continue
+        if not board._registers_worktree(owner, anchor):
+            continue
+        matched, error = board._ledger_registration(owner, anchor)
+        if matched or error is not None:
+            return False
+    # lease 장부 손상 시 exact match는 읽을 수 없다. 그래도 resolver가 경로/git common-dir
+    # 사실으로 단일 관리 후보를 남겼고 **그 후보의 strict point-read가 실제 오류를 반환**하면
+    # 종전 복구 폴백을 보존한다. 정상적으로 읽힌 장부의 non-match까지 후보 수만으로 허용하면
+    # 유효한 빈 장부 아래 미등록 worktree가 휘발 장부에 라운드를 기록할 수 있다.
+    # gate_snapshot 마커는 호출자가 이 술어보다 먼저 검사하므로 후보·경로와 무관하게 차단된다.
+    candidate_owners = {
+        candidate.resolve()
+        for demotion in demotions
+        if demotion.anchor.resolve() == anchor
+        for candidate in demotion.candidates
+    }
+    if len(candidate_owners) == 1:
+        candidate_owner = next(iter(candidate_owners))
+        _matched, error = board._ledger_registration(candidate_owner, anchor)
+        if error is not None:
+            return False
+    return True
+
+
+def _publish_pm_home_resolution(
+    sink: list[PmHomeResolutionFacts] | None,
+    demotions: Sequence[PmHomeDemotion],
+    *,
+    anchor: Path,
+    pm_home: Path,
+) -> None:
+    """resolver가 읽은 자기-앵커 사실을 선택적 sink에 한 번 게시한다."""
+    if sink is None:
+        return
+    resolved_anchor = anchor.resolve()
+    resolved_home = pm_home.resolve()
+    marker = _gate_snapshot_marker(resolved_anchor)
+    sink.append(PmHomeResolutionFacts(
+        anchor=resolved_anchor,
+        pm_home=resolved_home,
+        snapshot_marker=marker,
+        unregistered_linked_self_anchor=(
+            False
+            if marker is not None
+            else _is_unregistered_linked_self_anchor(
+                demotions, diff_root=resolved_anchor, pm_home=resolved_home,
+            )
+        ),
+    ))
+
+
+def _self_anchored_round_refusal(
+    demotions: Sequence[PmHomeDemotion],
+    resolutions: Sequence[PmHomeResolutionFacts],
+    *,
+    diff_root: Path,
+    pm_home: Path,
+    gate: str | None,
+) -> str | None:
+    """스냅샷/미등록 linked worktree의 휘발 장부에 라운드를 기록하면 차단 안내를 반환한다.
+
+    생성 마커는 경로·PM-home 후보·lease 상태보다 먼저 판정한다. 마커 없는 과거/수동 linked
+    worktree 판정까지 `resolve_pm_home_for_repo`가 게시한 facts만 소비한다. 이 seam이 고정된
+    하네스에서는 가드도 실제 checkout/git/lease/마커를 다시 읽지 않는다. 강등 사유 문자열은
+    안내에만 쓰며 판정 입력이 아니다. `gate is None` 인 명시 `--no-gate` 자문은 라운드 장부를
+    쓰지 않아 raw 자기 앵커 복구 채널의 기존 계약을 보존한다.
+
+    호출부는 dry-run·조회·처분과 비활성/egress/diff-cap 조기 종료가 끝난 뒤 이 함수를 부른다.
+    따라서 여기서 문자열이 나오면 바로 다음 단계가 라운드 예약인 **실 전송 확정 구간**이다.
+    """
+    if gate is None:
+        return None
+    resolved_diff = diff_root.resolve()
+    resolved_home = pm_home.resolve()
+    resolution = next((
+        fact for fact in resolutions
+        if fact.anchor == resolved_diff and fact.pm_home == resolved_home
+    ), None)
+    if resolution is None:
+        return None
+    marker = resolution.snapshot_marker
+    if marker is not None:
+        ledger = resolved_home / ".project_manager" / ".local" / "review_rounds.json"
+        return _GATE_SNAPSHOT_ROUND_GUIDANCE.format(
+            anchor=resolved_diff,
+            gate=gate,
+            ledger=ledger,
+            marker=marker,
+        )
+    if not resolution.unregistered_linked_self_anchor:
+        return None
+    reason = next(
+        (
+            demotion.reason
+            for demotion in demotions
+            if demotion.anchor.resolve() == resolved_diff
+        ),
+        "linked worktree 자기 앵커가 어떤 PM 홈 lease 장부에도 등록되지 않았습니다.",
+    )
+    ledger = resolved_diff / ".project_manager" / ".local" / "review_rounds.json"
+    return _SELF_ANCHORED_ROUND_GUIDANCE.format(
+        anchor=resolved_diff,
+        gate=gate,
+        ledger=ledger,
+        reason=reason,
+    )
 
 
 def _registered_worktrees(pm_home: Path) -> tuple[Path, ...]:
@@ -985,10 +1308,17 @@ DIFF_CAP_KEY_PREFIX = "diff_cap."
 # 의존성 크기만큼 부풀어 분할이 필요 없는 티켓을 서킷브레이커가 막는다. 제외는 **subtree 단위**라
 # templates 안의 manifest 밖 손편집 파일도 함께 빠지지만, 오차의 방향은 **측정 축소 = 가드 약화**라
 # 정당한 작업을 오차단하지 않는다. template subtree 자체의 정합은 drift-0 가드가 따로 지키고,
-# 리뷰가 보는 diff 폭은 그대로다(측정 축과 검토 축은 여기서 갈린다).
+# payload와 리뷰어 거울은 아래의 좁은 manifest 예외만 보존하고 나머지 측정 제외분을 함께 뺀다.
 _MACHINE_MIRROR_RE = re.compile(
     r"^templates/[^/]+/\.project_manager/|^\.opencode/node_modules/"
 )
+# 세 출하 타깃의 manifest는 pm_update 결과물이 아니라 사람이 전파 범위를 선언하는 입력 자산이다.
+# 측정 술어의 subtree 정책은 유지하되, 검토 누락이 false-green이 되는 이 세 실파일만 보존한다.
+_HAND_EDITED_REVIEW_PATHS = frozenset({
+    "templates/claude_code/.project_manager/engine.manifest",
+    "templates/codex/.project_manager/engine.manifest",
+    "templates/opencode/.project_manager/engine.manifest",
+})
 # 사람 표면에 측정 의미를 실어 두는 한 줄 — "왜 내 diff 보다 적게 세나"를 안내가 스스로 답한다.
 MEASURED_SCOPE_NOTE = "측정=손작업 스코프(기계 mirror 제외)"
 
@@ -1306,6 +1636,31 @@ _GATE_ACCOUNTING_REQUIRED_GUIDANCE = (
     "  · 라운드 회계에 넣으려면 `--ticket <T-NNNN>`(게이트 자동 유도) 또는 "
     "`--gate <게이트>` 를 지정하세요.\n"
     "  · 회계 밖 자문 실행이면 `--no-gate` 를 명시하세요."
+)
+
+# 게이트 장부는 **휘발하지 않는 PM 홈 또는 lease 등록 worktree**에 있어야 한다. linked worktree가
+# 자기 앵커로 해소됐지만 어떤 PM 홈 lease에도 등록되지 않은 실행에서 라운드를 허용하면, 격리
+# 스냅샷을 재생성할 때 그 안 `.local/review_rounds.json` 도 함께 사라져 수렴 상한·발산 차단·
+# livegate 기록이 조용히 초기화된다. 명시 `--paths` + `--no-gate`는 장부 없는 raw 송신 복구
+# 채널로 기존대로 열어 두되, **장부 기록이 생기는 실 전송**만 예약 직전 fail-loud 한다.
+_GATE_SNAPSHOT_ROUND_GUIDANCE = (
+    "오류: 게이트 스냅샷 마커가 있는 앵커에서는 실 전송 라운드를 기록할 수 없습니다 — "
+    "이 앵커는 경로·PM 홈 후보·lease 상태와 무관하게 reviewer 전용 일회용 산출물이라 외부로 "
+    "전송하지 않았습니다.\n"
+    "  · PM 홈 cwd에서 다시 실행하고, 등록 worktree를 가리키는 `--paths <경로>` 또는 "
+    "`--ticket <T-NNNN>`을 명시하세요.\n"
+    "  · 현재 스냅샷 앵커: {anchor} · gate={gate} · 장부={ledger} · 마커={marker}"
+)
+
+_SELF_ANCHORED_ROUND_GUIDANCE = (
+    "오류: 미등록 linked worktree 자기 앵커에서는 실 전송 라운드를 기록할 수 없습니다 — "
+    "휘발성 장부가 스냅샷 재생성 때 사라져 수렴 게이트를 우회하므로 외부로 전송하지 "
+    "않았습니다.\n"
+    "  · PM 홈 cwd에서 다시 실행하고, 등록 worktree를 가리키는 `--paths <경로>` 또는 "
+    "`--ticket <T-NNNN>`을 명시하세요.\n"
+    "  · worktree lease 장부에 등록되지 않은 linked worktree 전반에서 게이트 라운드를 "
+    "실행하지 마세요. 격리 스냅샷은 내부 reviewer 전용입니다.\n"
+    "  · 현재 자기 앵커: {anchor} · gate={gate} · 장부={ledger} · 판정 근거={reason}"
 )
 
 # 판정 블록의 게이트 줄 — 회계 밖 실행은 **끝난 뒤** 여기서 확정형으로 말한다. stderr 경고는 로그를
@@ -2053,11 +2408,7 @@ def _legacy_round_ledger_path() -> Path:
 
 def _read_round_ledger_at(path: Path) -> dict:
     """지정 경로의 라운드 장부를 읽는다 — 없거나 손상 시 빈 dict(fail-soft)."""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    return _load_review_rounds().read_ledger(path)
 
 
 def _load_round_ledger() -> dict:
@@ -2102,16 +2453,9 @@ def _save_round_ledger(ledger: dict) -> None:
     livegate_flag = path.with_name("livegate.json")
     if problems:
         board._write_release_must_fix_marker(livegate_flag, problems)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    try:
-        tmp.write_text(json.dumps(ledger, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(str(tmp), str(path))
-        if not problems:
-            board._write_release_must_fix_marker(livegate_flag, problems)
-    finally:
-        with contextlib.suppress(OSError):
-            if tmp.exists():
-                tmp.unlink()  # replace 성공 시 no-op·실패 시 잔재 제거
+    _load_review_rounds().write_ledger(path, ledger)
+    if not problems:
+        board._write_release_must_fix_marker(livegate_flag, problems)
 
 
 def _load_file_lock():
@@ -2131,6 +2475,15 @@ def _load_file_lock():
     _require_engine_sibling(lock_path, "file_lock.py")
     return _load_module_from_path(
         lock_path, "file_lock.py", verifier=_verify_engine_rev, cache=True,
+    )
+
+
+def _load_review_rounds():
+    """라운드 장부 read/write·예약·수렴 판정 공용 seam을 지연 로드한다."""
+    path = Path(__file__).resolve().parent / "review_rounds.py"
+    _require_engine_sibling(path, "review_rounds.py")
+    return _load_module_from_path(
+        path, "review_rounds.py", verifier=_verify_engine_rev, cache=True,
     )
 
 
@@ -2161,7 +2514,7 @@ def _round_ledger_lock() -> Iterator[None]:
 
 def _utc_now_iso() -> str:
     """장부 시각 표기 단일 소스 — UTC ISO-8601 (예약/마감/산출이 같은 형식을 쓴다)."""
-    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+    return _load_review_rounds().utc_now_iso()
 
 
 def _target_rev_fingerprint(diff: str) -> str:
@@ -2175,10 +2528,7 @@ def _target_rev_fingerprint(diff: str) -> str:
 
 def _as_int(value: object) -> int:
     """장부 필드를 int 로 강제 (손상/누락 → 0·fail-soft)."""
-    try:
-        return int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return 0
+    return _load_review_rounds().as_int(value)
 
 
 # ── wave 예산 절 (전 게이트 합계) ───────────────────────────────────────────
@@ -2376,46 +2726,9 @@ def _gate_entry(ledger: dict, gate: str) -> dict:
     예약 키(wave 절)를 게이트로 정규화하려는 호출은 **fail-loud** 다 — 그 자리에 게이트 항목을 쓰면
     같은 항목을 wave 예산이 덮어써 상한·예산이 둘 다 조용히 무력화된다. 정상 경로는 `_main` 이
     `--gate` 를 이미 거른 뒤라 여기 오지 않는다(불변식을 주석이 아니라 기계로 지킨다)."""
-    if gate in _RESERVED_LEDGER_KEYS:
-        raise ValueError(
-            f"라운드 장부 예약 키를 게이트로 쓸 수 없습니다: {gate!r} "
-            f"(예약 키: {', '.join(sorted(_RESERVED_LEDGER_KEYS))})"
-        )
-    entry = ledger.get(gate)
-    if not isinstance(entry, dict):
-        entry = {}
-    records = entry.get("records")
-    if not isinstance(records, list):
-        records = []
-    records = [row for row in records if isinstance(row, dict)]
-    rounds = entry.get("rounds")
-    if not isinstance(rounds, list):
-        rounds = []
-    rounds = [row for row in rounds if isinstance(row, dict)]
-    # 처분 선언(`resolution`)은 **구조만** 보존한다 — 어떤 처분인지·유효한지의 해석은 board 의
-    # 공용 seam(`gate_resolution`)이 소유한다. 여기서 한 번 더 해석하면 릴리즈 차단과 조회 표가
-    # 같은 값을 서로 다른 규칙으로 읽는다. 구세대 항목은 None(미처분)으로 정규화된다.
-    resolution = entry.get("resolution")
-    if not isinstance(resolution, dict):
-        resolution = None
-    normalized = {
-        "count": _as_int(entry.get("count")),
-        "acked_through": _as_int(entry.get("acked_through")),
-        "sequence": max(
-            _as_int(entry.get("sequence")),
-            *(_as_int(row.get("sequence", row.get("number"))) for row in records),
-            0,
-        ),
-        # 확인 전용 라운드(`--confirm-fix`) 사용 횟수 — 게이트당 1회 예외의 장부다. 구세대 항목은
-        # 0 으로 정규화된다(옛 장부를 그대로 읽고 새 축만 뒤에 쌓인다·마이그레이션 불요).
-        "confirm_fix": max(0, _as_int(entry.get("confirm_fix"))),
-        # 게이트 종결 시점의 처분 선언 — 미선언은 None. 릴리즈 게이트가 읽는 절이다.
-        "resolution": resolution,
-        "records": records,
-        "rounds": rounds,
-    }
-    ledger[gate] = normalized
-    return normalized
+    return _load_review_rounds().normalize_gate_entry(
+        ledger, gate, reserved_keys=tuple(_RESERVED_LEDGER_KEYS),
+    )
 
 
 def _unacked_round_counts(entry: dict) -> tuple[int, int, int]:
@@ -2458,30 +2771,15 @@ def _reserve_round(
     살아 있을 수 있는지는 그 예약을 만든 실행의 timeout 이 정하는 값이지, 나중에 장부를 읽는
     호출자의 timeout 이 아니다(짧은 timeout 의 후속 호출이 긴 timeout 으로 도는 라운드를 stale
     로 접으면 수렴 상한을 넘겨 예약할 수 있다). 백스톱이 없는 실행은 만료 시각도 없다(null)."""
-    entry["sequence"] = max(0, _as_int(entry.get("sequence"))) + 1
-    entry["count"] = max(0, _as_int(entry.get("count"))) + 1
-    record = {
-        "id": record_id,
-        "number": entry["sequence"],
-        "sequence": entry["sequence"],
-        "started_at": _utc_now_iso(),
-        # 실제 프롬프트에 실린 diff의 안정 fingerprint. HEAD 만으로는 staged/unstaged/untracked
-        # working diff를 식별하지 못하므로 content hash를 쓴다. 장부 밖 직접 helper 호출만 None.
-        "target_rev": target_rev,
-        "deadline": _reservation_deadline(wall_timeout_sec),
-    }
-    entry.setdefault("records", []).append(record)
-    return record
+    return _load_review_rounds().reserve_round(
+        entry, record_id, wall_timeout_sec=wall_timeout_sec,
+        target_rev=target_rev,
+    )
 
 
 def _reservation_deadline(wall_timeout_sec: int | None) -> str | None:
     """예약이 살아 있을 수 있는 마지막 시각 (백스톱 없으면 None) — 기록·판정 공용 산식."""
-    if not wall_timeout_sec or wall_timeout_sec <= 0:
-        return None
-    return (
-        datetime.datetime.now(datetime.timezone.utc)
-        + datetime.timedelta(seconds=wall_timeout_sec)
-    ).isoformat()
+    return _load_review_rounds().reservation_deadline(wall_timeout_sec)
 
 
 def _refund_round(entry: dict, record_id: str) -> bool:
@@ -2489,14 +2787,7 @@ def _refund_round(entry: dict, record_id: str) -> bool:
 
     반환값은 **실제로 환불했는지**다 — 같은 조건으로 wave 예산도 되돌려야 하는데, 되돌릴 예약이
     없는데 spent 만 깎으면 두 축의 소비가 갈린다."""
-    before = len(entry.get("records", []))
-    entry["records"] = [
-        row for row in entry.get("records", []) if row.get("id") != record_id
-    ]
-    refunded = len(entry["records"]) != before
-    if refunded and entry.get("count", 0) > 0:
-        entry["count"] -= 1
-    return refunded
+    return _load_review_rounds().refund_round(entry, record_id)
 
 
 # ── 라운드별 산출 기록 ──────────────────────────────────────────────────────
@@ -2568,8 +2859,7 @@ def _append_round_outcome(entry: dict, outcome: dict) -> dict:
 
     산출 **계산**(응답 파싱·시각)은 호출부가 락 밖에서 끝낸다 — 임계 구역은 장부 read-modify-write
     만 담당한다(파싱이 길어져도 다른 게이트 실행을 붙잡지 않는다)."""
-    entry.setdefault("rounds", []).append(outcome)
-    return outcome
+    return _load_review_rounds().append_round_outcome(entry, outcome)
 
 
 # ── 수렴-형상 게이트 (라운드 장부 위의 판정) ────────────────────────────────
@@ -2583,15 +2873,9 @@ def _recorded_must_fix_series(entry: dict) -> tuple[int | None, ...]:
 
     나열 순서는 조회 표와 **같은 정렬**(`_ordered_round_outcomes`)이다 — append 순서는 완료
     순서라 동시 실행이 역순으로 끝나면 추이가 뒤바뀐다."""
-    series: list[int | None] = []
-    for outcome in _ordered_round_outcomes(
-        [row for row in (entry.get("rounds") or []) if isinstance(row, dict)]
-    ):
-        value = outcome.get("must_fix")
-        series.append(
-            value if isinstance(value, int) and not isinstance(value, bool) else None
-        )
-    return tuple(series)
+    return _load_review_rounds().recorded_must_fix_series(
+        entry, order_key=_load_board().round_outcome_order_key,
+    )
 
 
 def _format_must_fix_series(series: Sequence[int | None]) -> str:
@@ -2625,39 +2909,18 @@ def _inflight_reservations(entry: dict, *, wall_timeout_sec: int | None = None) 
     있는* 라운드를 stale 로 접어 수렴 상한을 넘겨 예약한다. `deadline` 이 없는 구레코드만 종전
     규칙(호출자 백스톱 기준 `started_at` 대조)으로 보수 합산한다 — 시각을 못 읽는 레코드는 계속
     센다(판정 불능은 세는 쪽으로 틀린다)."""
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    legacy_cutoff = None
-    if wall_timeout_sec and wall_timeout_sec > 0:
-        legacy_cutoff = (
-            datetime.datetime.now(datetime.timezone.utc)
-            - datetime.timedelta(seconds=wall_timeout_sec)
-        ).isoformat()
-    total = 0
-    for row in entry.get("records") or []:
-        if not isinstance(row, dict) or row.get("finished_at"):
-            continue
-        # 같은 형식의 UTC ISO 문자열은 사전순 비교가 곧 시간순이다(`_recorded_round_outcomes` 동형).
-        deadline = row.get("deadline")
-        if isinstance(deadline, str) and deadline:
-            if deadline < now:
-                continue
-            total += 1
-            continue
-        started = row.get("started_at")
-        if (legacy_cutoff is not None and isinstance(started, str) and started
-                and started < legacy_cutoff):
-            continue
-        total += 1
-    return total
+    return _load_review_rounds().inflight_reservations(
+        entry, wall_timeout_sec=wall_timeout_sec,
+    )
 
 
 def _convergence_round_usage(
     entry: dict, *, wall_timeout_sec: int | None = None,
 ) -> tuple[int, int]:
     """(완료 산출 수, 미마감 예약 수) — 상한 판정과 차단 안내가 **같은 수**를 쓴다."""
-    return (
-        len(_recorded_must_fix_series(entry)),
-        _inflight_reservations(entry, wall_timeout_sec=wall_timeout_sec),
+    return _load_review_rounds().convergence_round_usage(
+        entry, wall_timeout_sec=wall_timeout_sec,
+        order_key=_load_board().round_outcome_order_key,
     )
 
 
@@ -2672,20 +2935,10 @@ def _convergence_refusal(
           마지막 must_fix 가 0 이 아니면(미해소·'미상' 포함) 사유를 나눠 표기한다. 미상을 해소로
           접지 않는 건 보수 방향이다 — 셀 수 없던 라운드를 '0건'으로 읽으면 발산 형상이 통과한다.
     """
-    series = _recorded_must_fix_series(entry)
-    if (
-        len(series) >= 2
-        and series[-1] is not None
-        and series[-2] is not None
-        and series[-1] > series[-2]
-    ):
-        return CONVERGENCE_DIVERGING
-    completed, inflight = _convergence_round_usage(
-        entry, wall_timeout_sec=wall_timeout_sec)
-    if completed + inflight >= limit:
-        last = series[-1] if series else None
-        return CONVERGENCE_CAP_REACHED if last == 0 else CONVERGENCE_CAP_UNRESOLVED
-    return None
+    return _load_review_rounds().convergence_refusal(
+        entry, limit, wall_timeout_sec=wall_timeout_sec,
+        order_key=_load_board().round_outcome_order_key,
+    )
 
 
 # ── 확인 전용 라운드의 자격·근거 (최신 반려 must_fix) ────────────────────────
@@ -2707,10 +2960,9 @@ def _latest_round_outcome(entry: dict) -> dict | None:
 
     순서는 조회 표·수렴 추이와 같은 정렬(`_ordered_round_outcomes`)이다 — append 순서는 완료
     순서라 동시 라운드가 역순으로 끝나면 '최신'이 뒤바뀐다."""
-    ordered = _ordered_round_outcomes(
-        [row for row in (entry.get("rounds") or []) if isinstance(row, dict)]
+    return _load_review_rounds().latest_round_outcome(
+        entry, order_key=_load_board().round_outcome_order_key,
     )
-    return ordered[-1] if ordered else None
 
 
 def _has_recorded_verdict(entry: dict, outcome: dict) -> bool:
@@ -3342,6 +3594,8 @@ def render_rounds_report(
     ledger_path: Path | str | None = None,
     gate: str | None = None,
     wave_budget: int = DEFAULT_WAVE_BUDGET,
+    title: str = "추가 리뷰 라운드 장부",
+    include_wave: bool = True,
 ) -> str:
     """라운드 장부를 조회 표로 렌더한다 (게이트별 라운드 수 · 라운드별 산출 · wave spent).
 
@@ -3353,13 +3607,17 @@ def render_rounds_report(
     snapshot = dict(ledger)                # 사본 정규화 — 조회가 장부를 고치지 않는다
     wave = _wave_state(snapshot)
     lines = [
-        f"추가 리뷰 라운드 장부: {ledger_path if ledger_path is not None else '(미해소)'}",
-        f"wave: spent={wave['spent']} / 예산 {wave_budget} · "
-        f"시작 {wave['started'] or '미시작'}",
+        f"{title}: {ledger_path if ledger_path is not None else '(미해소)'}",
         "범례: 판정 0=통과 · 1=비통과(반려·실패·불명확) · '미상'=판정이 무효했던 라운드",
         "처분: 미처분=잔여 must-fix 선언 없음(릴리즈 차단) · 재설계→티켓(그 티켓 done 이 조건) · "
-        "해소(근거 게이트) · 무대상=잔여 없음",
+        "해소(근거 게이트) · pm-fixed=PM 직접 해소(리뷰 통과 아님) · 무대상=잔여 없음",
     ]
+    if include_wave:
+        lines.insert(
+            1,
+            f"wave: spent={wave['spent']} / 예산 {wave_budget} · "
+            f"시작 {wave['started'] or '미시작'}",
+        )
     names = [name for name in _gate_names(snapshot) if gate is None or name == gate]
     if not names:
         lines.append(
@@ -3448,6 +3706,8 @@ def _describe_resolution(declared: dict) -> str:
     label = board.GATE_RESOLUTION_LABELS[declared["kind"]]
     if declared["kind"] == board.GATE_RESOLUTION_INTO:
         return f"{label}→{declared['ticket']}"
+    if declared["kind"] == board.GATE_RESOLUTION_PM_FIXED:
+        return _load_review_rounds().describe_pm_fixed_resolution(declared)
     return f"{label}(근거 {declared['evidence_gate']})"
 
 
@@ -3610,30 +3870,254 @@ def filter_secret_hunks(
 
     반환: (필터링된 diff 텍스트, 제외된 파일 경로 목록)
     """
+    return _filter_diff_hunks(
+        diff_text, lambda path: _is_secret_path(path, patterns),
+    )
+
+
+_DIFF_PATH_UNRESOLVED_PREFIX = "[diff 경로 확정 실패 · fail-closed] "
+_GIT_PATH_INVALID = object()
+_GIT_PATH_MISSING = object()
+_GIT_PATH_DEV_NULL = object()
+
+
+def _git_c_unquote(value: str) -> str:
+    """Git의 큰따옴표 C-quote 경로 하나를 UTF-8 문자열로 복원한다.
+
+    Git은 ``core.quotePath`` 기본값에서 비 ASCII 바이트를 ``\\ooo`` 8진 escape로 쓴다.
+    따라서 escape를 문자 단위로 치환하면 mojibake가 된다. 먼저 원래 바이트열을 복원한 뒤
+    UTF-8로 엄격하게 decode한다. 손상되거나 비 UTF-8인 표기는 호출자가 fail-closed 처리한다.
+    """
+    if len(value) < 2 or value[0] != '"' or value[-1] != '"':
+        raise ValueError("Git C-quote 경로가 큰따옴표로 닫히지 않았습니다")
+    decoded = bytearray()
+    named_escapes = {
+        "a": 0x07, "b": 0x08, "t": 0x09, "n": 0x0A,
+        "v": 0x0B, "f": 0x0C, "r": 0x0D,
+    }
+    index = 1
+    while index < len(value) - 1:
+        char = value[index]
+        if char != "\\":
+            decoded.extend(char.encode("utf-8"))
+            index += 1
+            continue
+        index += 1
+        if index >= len(value) - 1:
+            raise ValueError("Git C-quote 경로의 escape가 끝나지 않았습니다")
+        escaped = value[index]
+        if escaped in ('"', "\\"):
+            decoded.append(ord(escaped))
+            index += 1
+        elif escaped in named_escapes:
+            decoded.append(named_escapes[escaped])
+            index += 1
+        elif escaped in "01234567":
+            octal = value[index:index + 3]
+            if len(octal) != 3 or any(digit not in "01234567" for digit in octal):
+                raise ValueError("Git C-quote 경로의 8진 escape가 3자리가 아닙니다")
+            decoded.append(int(octal, 8))
+            index += 3
+        else:
+            raise ValueError(f"알 수 없는 Git C-quote escape: \\{escaped}")
+    return decoded.decode("utf-8", errors="strict")
+
+
+def _quoted_git_path_atom(value: str) -> tuple[str, str]:
+    """문자열 선두의 C-quoted atom과 나머지를 분리한다."""
+    if not value.startswith('"'):
+        raise ValueError("C-quoted atom이 아닙니다")
+    index = 1
+    while index < len(value):
+        if value[index] == "\\":
+            index += 2
+            continue
+        if value[index] == '"':
+            atom = value[:index + 1]
+            return _git_c_unquote(atom), value[index + 1:]
+        index += 1
+    raise ValueError("Git C-quote 경로가 닫히지 않았습니다")
+
+
+def _diff_header_paths(line: str) -> tuple[str, str] | None:
+    """구조적으로 명확한 ``diff --git`` 헤더의 old/new 경로만 복원한다.
+
+    공백 경로의 ``a/x y b/x y``는 헤더만으로 경계를 정할 수 없으므로 반환하지 않는다. 두 atom이
+    각각 공백 없는 값이거나 C-quote로 경계가 명시된 경우만 보조 근거로 쓴다.
+    """
+    value = line[len("diff --git "):].rstrip("\r\n")
+    atoms: list[str] = []
+    position = 0
+    try:
+        for _ in range(2):
+            while position < len(value) and value[position].isspace():
+                position += 1
+            if position >= len(value):
+                return None
+            if value[position] == '"':
+                atom, remainder = _quoted_git_path_atom(value[position:])
+                consumed = len(value[position:]) - len(remainder)
+                position += consumed
+            else:
+                end = position
+                while end < len(value) and not value[end].isspace():
+                    end += 1
+                atom = value[position:end]
+                position = end
+            atoms.append(atom)
+        if value[position:].strip():
+            return None
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not atoms[0].startswith("a/") or not atoms[1].startswith("b/"):
+        return None
+    return atoms[0][2:], atoms[1][2:]
+
+
+def _metadata_git_path(
+    line: str, marker: str, *, side_prefix: str | None = None,
+    tab_suffix: bool = False,
+) -> str | object:
+    """``---``/``+++``/rename 메타데이터 한 줄의 경로를 복원한다."""
+    value = line[len(marker):].rstrip("\r\n")
+    try:
+        if value.startswith('"'):
+            path, remainder = _quoted_git_path_atom(value)
+            if remainder and not (tab_suffix and remainder.startswith("\t")):
+                return _GIT_PATH_INVALID
+        else:
+            path = value.split("\t", 1)[0] if tab_suffix else value
+    except (UnicodeDecodeError, ValueError):
+        return _GIT_PATH_INVALID
+    if path == "/dev/null":
+        return _GIT_PATH_DEV_NULL
+    if side_prefix is not None:
+        prefix = side_prefix + "/"
+        if not path.startswith(prefix):
+            return _GIT_PATH_INVALID
+        path = path[len(prefix):]
+    return path if path else _GIT_PATH_INVALID
+
+
+def _unique_metadata_path(values: list[str | object]) -> str | object:
+    """한쪽 메타데이터가 가리키는 단 하나의 path/dev-null 상태를 확정한다."""
+    if _GIT_PATH_INVALID in values:
+        return _GIT_PATH_INVALID
+    paths = {value for value in values if isinstance(value, str)}
+    has_dev_null = _GIT_PATH_DEV_NULL in values
+    if len(paths) > 1 or (paths and has_dev_null):
+        return _GIT_PATH_INVALID
+    if paths:
+        return next(iter(paths))
+    if has_dev_null:
+        return _GIT_PATH_DEV_NULL
+    return _GIT_PATH_MISSING
+
+
+def _diff_block_path(block: list[str]) -> str | None:
+    """Git diff block의 판정 경로를 메타데이터 우선으로 유일하게 확정한다.
+
+    destination 경로를 우선하되 신규/삭제의 ``/dev/null``은 경로로 보지 않고 반대편을 쓴다.
+    헤더는 공백 없는 두 atom 또는 C-quoted 두 atom일 때, 해당 side의 구조화 메타데이터가 없을
+    때만 폴백한다. 공백 헤더를 임의 분할하지 않는다.
+    """
+    if not block or not block[0].startswith("diff --git "):
+        return None
+    old_values: list[str | object] = []
+    new_values: list[str | object] = []
+    for line in block[1:]:
+        if line.startswith("@@") or line.startswith("GIT binary patch"):
+            break
+        if line.startswith("--- "):
+            old_values.append(_metadata_git_path(
+                line, "--- ", side_prefix="a", tab_suffix=True,
+            ))
+        elif line.startswith("+++ "):
+            new_values.append(_metadata_git_path(
+                line, "+++ ", side_prefix="b", tab_suffix=True,
+            ))
+        elif line.startswith("rename from ") or line.startswith("copy from "):
+            marker = "rename from " if line.startswith("rename from ") else "copy from "
+            old_values.append(_metadata_git_path(line, marker))
+        elif line.startswith("rename to ") or line.startswith("copy to "):
+            marker = "rename to " if line.startswith("rename to ") else "copy to "
+            new_values.append(_metadata_git_path(line, marker))
+
+    header_paths = _diff_header_paths(block[0])
+    if not old_values and header_paths is not None:
+        old_values.append(header_paths[0])
+    if not new_values and header_paths is not None:
+        new_values.append(header_paths[1])
+    old_path = _unique_metadata_path(old_values)
+    new_path = _unique_metadata_path(new_values)
+    if _GIT_PATH_INVALID in (old_path, new_path):
+        return None
+    if isinstance(new_path, str):
+        return new_path
+    if new_path is _GIT_PATH_DEV_NULL and isinstance(old_path, str):
+        return old_path
+    if new_path is _GIT_PATH_MISSING and isinstance(old_path, str):
+        return old_path
+    return None
+
+
+def _unresolved_diff_exclusion(block: list[str]) -> str:
+    header = block[0].rstrip("\r\n") if block else "(diff 헤더 없음)"
+    return f"{_DIFF_PATH_UNRESOLVED_PREFIX}{header}"
+
+
+def _is_unresolved_diff_exclusion(value: str) -> bool:
+    return value.startswith(_DIFF_PATH_UNRESOLVED_PREFIX)
+
+
+def _filter_diff_hunks(
+    diff_text: str, excluded_by: Callable[[str], bool],
+) -> tuple[str, list[str]]:
+    """파일 경로 판정 하나로 diff block을 제외한다.
+
+    시크릿 denylist와 기계 mirror payload가 이 조립 기계를 공유한다. 정책 판정은 각각 기존
+    `_is_secret_path`와 `is_machine_mirror_path`가 소유하며, 여기에는 별도 제외 술어를 두지 않는다.
+    단 경로를 유일하게 복원하지 못한 block은 술어와 무관하게 fail-closed 제외하고 사유 표식을
+    제외 목록에 남긴다.
+    """
     if not diff_text:
         return diff_text, []
     excluded_files: list[str] = []
-    output_blocks: list[str] = []
-    current_block: list[str] = []
-    current_is_secret = False
+    prefix: list[str] = []
+    blocks: list[list[str]] = []
+    current_block: list[str] | None = None
     for line in diff_text.splitlines(keepends=True):
         if line.startswith("diff --git "):
-            if current_block and not current_is_secret:
-                output_blocks.extend(current_block)
+            if current_block is not None:
+                blocks.append(current_block)
             current_block = [line]
-            match = re.match(r"diff --git a/(\S+)\s+b/(\S+)", line)
-            if match:
-                file_path = match.group(2)
-                current_is_secret = _is_secret_path(file_path, patterns)
-                if current_is_secret:
-                    excluded_files.append(file_path)
-            else:
-                current_is_secret = False
+        elif current_block is None:
+            prefix.append(line)
         else:
             current_block.append(line)
-    if current_block and not current_is_secret:
-        output_blocks.extend(current_block)
+    if current_block is not None:
+        blocks.append(current_block)
+
+    output_blocks = list(prefix)
+    for block in blocks:
+        file_path = _diff_block_path(block)
+        if file_path is None:
+            excluded_files.append(_unresolved_diff_exclusion(block))
+        elif excluded_by(file_path):
+            excluded_files.append(file_path)
+        else:
+            output_blocks.extend(block)
     return "".join(output_blocks), excluded_files
+
+
+def _format_unresolved_diff_exclusion_block(excluded: list[str]) -> str:
+    """경로를 유일하게 확정하지 못해 fail-closed 제외한 diff block 안내."""
+    lines = [
+        "오류: diff block 경로를 유일하게 확정하지 못해 review payload에서 제외했습니다 ",
+        "  (fail-closed — 확정하지 못한 hunk를 조용히 남기지 않습니다).",
+    ]
+    lines.extend(f"  · {item}" for item in excluded)
+    return "\n".join(lines)
 
 
 def _format_explicit_exclusion_block(excluded: list[str], patterns: tuple[str, ...]) -> str:
@@ -3655,6 +4139,23 @@ def _format_explicit_exclusion_block(excluded: list[str], patterns: tuple[str, .
         "  우회는 새 플래그가 아니라 위 경로를 --paths 에서 빼고 재실행하세요 — 경로를 빼는 행위가")
     lines.append(
         "  '알고 있고 의도했다'는 표현이 됩니다. denylist 패턴은 시크릿 유출 방지를 위해 유지됩니다.")
+    return "\n".join(lines)
+
+
+def _format_machine_mirror_exclusion_block(excluded: list[str]) -> str:
+    """`--paths` 명시 지정분이 기계 mirror payload 제외에 걸렸을 때의 차단 안내."""
+    lines = [
+        "오류: --paths 로 명시 지정한 경로가 기계 mirror 판정에 걸려 review payload 에서 "
+        "제외됐습니다 —",
+        "  검증 안 한 것을 검증한 것처럼 보이는 가짜 통과(false-confidence)를 막기 위해 중단합니다.",
+    ]
+    for path in excluded:
+        lines.append(f"  · {path}  (is_machine_mirror_path=True 판정)")
+    lines.append(
+        "  위 경로는 pm_update 엔진 사본 또는 패키지 설치 산출물입니다. 직접 리뷰 대상으로 "
+        "지목하지 마세요.")
+    lines.append(
+        "  우회는 새 플래그가 아니라 위 경로를 --paths 에서 빼고 재실행하는 것입니다.")
     return "\n".join(lines)
 
 
@@ -3803,6 +4304,16 @@ def is_machine_mirror_path(path: str) -> bool:
     return _MACHINE_MIRROR_RE.match(_canonical_measure_path(path)) is not None
 
 
+def _is_review_machine_mirror_path(path: str) -> bool:
+    """payload·리뷰어 거울에서 제외할 기계 mirror인가.
+
+    측정 축의 단일 술어는 그대로 재사용하되, 사람이 직접 관리하는 세 출하 manifest만 검토 표면에
+    남긴다. 예외를 정확한 실파일 집합으로 고정해 다른 `.project_manager/**` 산출물까지 넓어지지
+    않게 한다."""
+    canonical = _canonical_measure_path(path)
+    return is_machine_mirror_path(canonical) and canonical not in _HAND_EDITED_REVIEW_PATHS
+
+
 def _sum_numstat(text: str) -> int:
     """`git diff --numstat` 출력의 추가+삭제 합계 (바이너리 `-`/깨진 줄은 제외).
 
@@ -3920,9 +4431,11 @@ def extract_diff(
 ) -> tuple[str, list[str]]:
     """git diff <base> -- <paths> 를 추출한다. 반환: (필터링된 diff, 제외된 경로 목록).
 
-    시크릿 denylist 매칭 파일은 diff 에서 제외하고 그 경로 목록을 함께 돌려준다 — 제외 사실을
-    호출자(main)가 차단/판정 병기에 반영할 수 있게 한다.
-    버려, 제외분이 조용히 빠진 채 '통과'가 나던 게이트 false-confidence 를 낳았다. 제외 메시징은
+    기계 mirror와 시크릿 denylist 매칭 파일은 diff 에서 제외하고 그 경로 목록을 함께 돌려준다 —
+    제외 사실을 호출자(main)가 차단/판정 병기에 반영할 수 있게 한다. 기계 mirror 판정은 측정 축의
+    기존 `is_machine_mirror_path`를 재사용하되, 손편집 출하 manifest는 검토에 남기는 좁은 예외를
+    적용한다. `_sum_numstat`·`diff_line_total`은 payload 조립과 별도 축이라 이 함수가 건드리지
+    않는다. 제외분이 조용히 빠진 채 '통과'가 나면 게이트 false-confidence를 낳으므로, 메시징은
     호출자(main)가 모드별(명시 --paths=차단 / 암묵 --ticket=병기)로 소유한다.
 
     폭은 `_diff_bases` 단계 표를 따른다(base 가 'HEAD' 면 스테이징+언스테이징, 비면 HEAD~1..HEAD).
@@ -3936,9 +4449,12 @@ def extract_diff(
         if raw_diff.strip():
             break
 
-    # 제외 목록을 삼키지 않고 그대로 반환한다 — 호출자(main)가 모드별 제외 보고(차단/병기)를
-    # 소유한다. stderr 경고도 main 으로 이관해 제외 메시징을 한곳에서 관장한다.
-    return filter_secret_hunks(raw_diff, denylist)
+    # 기계 mirror를 먼저 빼 이유 분류를 보존한다. 두 정책에 동시에 걸리는 경로도 payload에서 한 번만
+    # 제외되고 `is_machine_mirror_path` 판정으로 보고된다. 제외 목록은 호출자(main)가 명시/암묵
+    # 모드별 차단·병기를 소유하도록 그대로 반환한다.
+    filtered, machine_excluded = _filter_diff_hunks(raw_diff, _is_review_machine_mirror_path)
+    filtered, secret_excluded = filter_secret_hunks(filtered, denylist)
+    return filtered, [*machine_excluded, *secret_excluded]
 
 
 # ── ticket touches 파싱 ───────────────────────────────────────────────────
@@ -4323,10 +4839,11 @@ def _is_denied_mirror_path(relative: str) -> bool:
     """거울 복제 금지 경로인가 — gitignore 와 무관하게 이름으로 막는다.
 
     `.project_manager/.local/**` 이 추적되는 형상(채택자가 실수로 add 한 경우)에서도 옛 리뷰 raw 가
-    거울에 실리면 격리가 통째로 무의미해진다. ignore 규칙에 의존하지 않는 두 번째 자물쇠다.
+    거울에 실리면 격리가 통째로 무의미해진다. 기계 mirror도 payload와 같은 검토 제외 판정을 타서
+    손편집 출하 manifest만 보존하며, ignore 규칙에 의존하지 않는 두 번째 자물쇠다.
     """
     candidate = PurePosixPath(relative)
-    return any(
+    return _is_review_machine_mirror_path(relative) or any(
         candidate == denied or candidate.is_relative_to(denied)
         for denied in _MIRROR_DENIED_PREFIXES
     )
@@ -4796,6 +5313,20 @@ def _load_relay():
     path = Path(__file__).resolve().parent / "pm_relay.py"
     return _load_module_from_path(
         path, "pm_relay.py", verifier=_verify_engine_rev,
+    )
+
+
+def _load_delegate_transport():
+    """opencode sandbox 전달 사본 seam을 형제 pm_delegate에서 지연 로드한다.
+
+    위임 축이 확립한 O_EXCL·0600 생성, 자기-은닉 ignore, fd containment와 정리를 리뷰 축에서도
+    그대로 호출한다. pm_delegate가 external_review의 다른 판정을 지연 로드하는 반대 방향 seam을
+    갖지만, 이 로드는 두 모듈의 import 완료 뒤 opencode 실행 시점에만 일어나 순환 import를 만들지
+    않는다.
+    """
+    path = Path(__file__).resolve().parent / "pm_delegate.py"
+    return _load_module_from_path(
+        path, "pm_delegate.py", verifier=_verify_engine_rev, cache=True,
     )
 
 
@@ -5520,8 +6051,10 @@ def _structured_transport(
     """구조화 대상의 (argv, stdin) 을 준비하고 임시 자원을 **모든 종료 경로**에서 정리한다.
 
     codex/claude 는 프롬프트를 stdin 으로 받으므로 준비할 자원이 없다. opencode 만 `--file` 첨부라
-    0600 프롬프트 파일을 만들고(프롬프트에는 검토 대상 diff 원문이 들어간다 — 다른 사용자에게
-    읽히면 안 된다) 실행 성공·실패·예외 무관하게 지운다. legacy 대상은 이 경로를 타지 않는다."""
+    리뷰 sandbox 하위에 0600 프롬프트 파일을 만들고(프롬프트에는 검토 대상 diff 원문이 들어간다 —
+    다른 사용자에게 읽히면 안 된다) 실행 성공·실패·예외 무관하게 지운다. 생성·containment·
+    자기-은닉·정리는 위임 축 `pm_delegate`의 공용 seam을 그대로 쓴다. legacy 대상은 이 경로를
+    타지 않는다."""
     if not target.structured:
         yield None, None
         return
@@ -5532,30 +6065,20 @@ def _structured_transport(
             prompt_file=REVIEWER_PROMPT_FILE_PLACEHOLDER,
         ), None
         return
-    handle, raw_name = tempfile.mkstemp(prefix="external_review_prompt_", suffix=".md")
-    prompt_file = Path(raw_name)
+    sandbox = Path(cwd) if cwd is not None else Path.cwd()
+    delegate = _load_delegate_transport()
+    prompt_file = delegate._save_opencode_transport_prompt(sandbox, prompt)
     try:
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            stream.write(prompt)
-        os.chmod(prompt_file, 0o600)  # mkstemp 기본값 재확인(umask 무관 고정).
+        # 생성 뒤 argv 조립 직전에도 위임 축과 같은 containment guard를 다시 건다. 생성 seam이
+        # fd로 고정한 실 sandbox를 그대로 써 사용자 입력 cwd symlink 재해소 창을 열지 않는다.
+        delegate._assert_opencode_transport_path(prompt_file.sandbox, prompt_file)
         yield _structured_reviewer_argv(
             target.harness, target.model, target.reasoning,
-            cwd=str(cwd) if cwd is not None else str(Path.cwd()),
+            cwd=str(prompt_file.sandbox),
             prompt_file=str(prompt_file),
         ), ""
     finally:
-        try:
-            prompt_file.unlink()
-        except OSError as exc:
-            # 정리 실패는 **주 결과를 덮지 않는다** — 리뷰어 판정/예외는 그대로 위로 전파되고
-            # 여기서는 진단만 낸다. 그러나 조용히 삼키면 검토 대상 diff 원문이 담긴 임시 파일이
-            # 남은 사실이 아무 표면에도 남지 않아, 누출 흔적을 사람이 알 방법이 없다.
-            print(
-                "경고: 추가 리뷰어 프롬프트 파일 정리 실패 — 검토 대상 diff 원문이 담긴 0600 "
-                f"임시 파일이 남아 있습니다: {prompt_file} ({type(exc).__name__}: {exc}). "
-                "확인 후 직접 삭제하세요.",
-                file=sys.stderr,
-            )
+        delegate._cleanup_attempt_transport(prompt_file)
 
 
 # 스폰 전 중단으로 마감하는 raw 레코드의 rc — 리뷰를 하나도 받지 못한 실행이라 실패 축(1)이다
@@ -5844,11 +6367,11 @@ def _format_verdict(ok: bool, verdict: dict | None) -> str:
 
 
 def _exclusion_suffix(excluded: list[str] | None) -> str:
-    """종합 판정 라인에 붙일 시크릿 제외 병기 접미사.
+    """종합 판정 라인에 붙일 payload 제외 병기 접미사.
 
-    암묵 수집분(--ticket/기본)에서 diff 제외가 있었으면 건수·경로를 판정 라인에 남긴다 — stderr
-    경고는 로그를 안 읽으면 사라지지만 판정 라인은 PM 이 반드시 본다. 제외 0건이면 빈 문자열이라
-    출력은 종전과 완전 동일(기존 통과 경로 무변경)."""
+    암묵 수집분(--ticket/기본)에서 기계 mirror/시크릿 diff 제외가 있었으면 건수·경로를 판정 라인에
+    남긴다 — stderr 경고는 로그를 안 읽으면 사라지지만 판정 라인은 PM 이 반드시 본다. 제외 0건이면
+    빈 문자열이라 출력은 종전과 완전 동일(기존 통과 경로 무변경)."""
     if not excluded:
         return ""
     return f" (검토 제외 {len(excluded)}건 — {', '.join(excluded)})"
@@ -5858,8 +6381,8 @@ def print_summary(result: dict, gate: str | None = None,
                   excluded: list[str] | None = None) -> None:
     """결과 요약을 stdout 에 출력한다.
 
-    excluded — 시크릿 denylist 로 diff 에서 제외된 암묵 수집분 경로. 비어있지 않으면 종합 판정
-    라인에 제외 건수·경로를 병기한다(false-confidence 차단). 0건이면 종전과 동일 출력.
+    excluded — 기계 mirror 또는 시크릿 denylist로 diff에서 제외된 암묵 수집분 경로. 비어있지
+    않으면 종합 판정 라인에 제외 건수·경로를 병기한다(false-confidence 차단). 0건이면 종전과 동일.
 
     게이트 줄은 **항상** 나온다 — 게이트 없이 끝난 실행은 그 사실이 회계 상태(장부 미기록)라
     stderr 경고 하나에만 맡기지 않는다(오염 진단·실패 사유와 같은 근거: 판정 블록은 읽힌다).
@@ -6446,9 +6969,12 @@ def _main(argv: list[str] | None = None) -> int:
     explicit_paths = bool(args.paths)
     engine_demotions: list[PmHomeDemotion] = []
     diff_owner_demotions: list[PmHomeDemotion] = []
+    engine_resolutions: list[PmHomeResolutionFacts] = []
+    diff_owner_resolutions: list[PmHomeResolutionFacts] = []
     try:
         engine_pm_home = resolve_pm_home_for_repo(
             engine_repo, required=ticket_selected, demotion_sink=engine_demotions,
+            resolution_sink=engine_resolutions,
         )
         scope_from_initial_pm_home = _scope_from_initial_pm_home(
             ticket_selected=ticket_selected, explicit_paths=explicit_paths,
@@ -6493,6 +7019,7 @@ def _main(argv: list[str] | None = None) -> int:
             else resolve_pm_home_for_repo(
                 diff_root, required=ticket_selected,
                 demotion_sink=diff_owner_demotions,
+                resolution_sink=diff_owner_resolutions,
             )
         )
         if ticket_selected and pm_home != engine_pm_home:
@@ -6534,6 +7061,14 @@ def _main(argv: list[str] | None = None) -> int:
     # 박제하면 PM 홈 장부를 읽는 `pm_delegate raw` 통합 조회가 이 실행의 raw 를 못 본다.
     # 해소 실패 형상에서는 pm_home 자체가 loud 경고 뒤 diff_root 로 폴백해 있다.
     _PM_HOME_OVERRIDE = pm_home
+    selected_owner_demotions = (
+        engine_demotions if pm_home == engine_pm_home else diff_owner_demotions
+    )
+    selected_owner_resolutions = (
+        engine_resolutions
+        if diff_root.resolve() == engine_repo
+        else diff_owner_resolutions
+    )
     if args.rounds_report:
         # selector 를 준 조회 — 기록면이 쓸 장부(diff 소유 PM 홈)를 그대로 읽는다. 여기서 끝내
         # 전송 경로(conf 분기·denylist·diff 추출)는 타지 않는다.
@@ -6544,12 +7079,9 @@ def _main(argv: list[str] | None = None) -> int:
         # 이어도 diff 대상이 다른 소유자로 확정됐으면 그 손상은 이 송신과 무관하다(절대 --paths
         # 복구 채널 보존). 인자 없는 실행은 범위 파생 지점에서 이미 읽고 검사했고, 그 실행의 선택
         # 소유자는 정의상 최초 PM 홈이다(다르면 교차 소유 가드가 이미 차단).
-        selected_demotions = (
-            engine_demotions if pm_home == engine_pm_home else diff_owner_demotions
-        )
         try:
             conf = _conf_with_owner_filters(
-                _local_config_for_repo(pm_home), selected_demotions,
+                _local_config_for_repo(pm_home), selected_owner_demotions,
                 explicit_paths=explicit_paths,
             )
         except (OSError, UnicodeError) as exc:
@@ -6702,7 +7234,27 @@ def _main(argv: list[str] | None = None) -> int:
     print(f"검토 경로: {paths}", file=sys.stderr)
     print(f"base: {args.base}", file=sys.stderr)
 
-    # diff 추출 (시크릿 denylist 자동 제외 — 제외 경로 목록도 반환)
+    # `--paths`가 검토 제외 기계 mirror subtree 자체를 직접 지목한 실행은 diff 유무와 무관하게
+    # 차단한다. subtree 루트(`.opencode/node_modules`)는 trailing-slash 좌표로 넣어 같은 판정을
+    # 쓰고, 손편집 출하 manifest의 정확 경로는 payload 정책과 같이 허용한다. 넓은 부모
+    # (`templates/` 등) 안에서 발견되는 제외분은 아래 실 diff 필터가 보고한다.
+    if args.paths:
+        directly_selected_machine_paths = [
+            path for path in paths
+            if _canonical_measure_path(path) not in _HAND_EDITED_REVIEW_PATHS
+            and (
+                _is_review_machine_mirror_path(path)
+                or _is_review_machine_mirror_path(path.rstrip("/") + "/")
+            )
+        ]
+        if directly_selected_machine_paths:
+            print(
+                _format_machine_mirror_exclusion_block(directly_selected_machine_paths),
+                file=sys.stderr,
+            )
+            return 1
+
+    # diff 추출 (기계 mirror·시크릿 denylist 자동 제외 — 제외 경로 목록도 반환)
     denylist = content_resolution.denylist
     try:
         diff, excluded = extract_diff(args.base, paths, denylist=denylist)
@@ -6710,17 +7262,48 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"오류: {exc}", file=sys.stderr)
         return 1
 
-    # 시크릿 denylist 제외 보고. 제외된 경로가 판정에 전혀
-    # 안 남으면, 지정분이 조용히 빠진 채 '통과'가 나 게이트가 실제보다 넓게 검증한 것처럼 보인다.
+    # payload 제외 보고. 제외된 경로가 판정에 전혀 안 남으면, 지정분이 조용히 빠진 채 '통과'가 나
+    # 게이트가 실제보다 넓게 검증한 것처럼 보인다. 기계 mirror와 시크릿 denylist 모두 같은
+    # 명시/암묵 규율을 탄다.
     # 명시(--paths)와 암묵(--ticket/기본) 지정을 구분한다: 명시 지정분이 제외되면 차단(exit 1)하고
     # 어느 경로가 왜 빠졌는지 알린다 — 빈-diff 가드보다 앞서 두어, 단일 파일 전량 제외로 diff 가
     # 비어도 '변경 없음'이 아니라 denylist 가 원인임을 정확히 알린다. 암묵 수집분은 차단하지 않고
     # stderr 경고 + 종합 판정 라인 병기(아래 print_summary)로 남긴다. 제외 0건이면 no-op(종전 무변경).
     if excluded:
+        unresolved_excluded = [path for path in excluded if _is_unresolved_diff_exclusion(path)]
+        machine_excluded = [
+            path for path in excluded
+            if not _is_unresolved_diff_exclusion(path) and _is_review_machine_mirror_path(path)
+        ]
+        secret_excluded = [
+            path for path in excluded
+            if not _is_unresolved_diff_exclusion(path) and not _is_review_machine_mirror_path(path)
+        ]
         if args.paths:  # 명시 지정 → 차단 (우회는 그 경로를 빼고 재실행·새 플래그 없음)
-            print(_format_explicit_exclusion_block(excluded, denylist), file=sys.stderr)
+            if unresolved_excluded:
+                print(
+                    _format_unresolved_diff_exclusion_block(unresolved_excluded),
+                    file=sys.stderr,
+                )
+            if machine_excluded:
+                print(_format_machine_mirror_exclusion_block(machine_excluded), file=sys.stderr)
+            if secret_excluded:
+                print(_format_explicit_exclusion_block(secret_excluded, denylist), file=sys.stderr)
             return 1
-        for path in excluded:  # 암묵 수집 → 비차단·stderr 경고 (판정 병기는 print_summary)
+        # 암묵 수집 → 비차단·stderr 경고 (판정 병기는 아래 print_summary의 전체 excluded 목록).
+        for item in unresolved_excluded:
+            print(
+                f"경고: {item} — 경로를 유일하게 확정하지 못해 diff block을 review payload에서 "
+                "제외했습니다 (fail-closed).",
+                file=sys.stderr,
+            )
+        for path in machine_excluded:
+            print(
+                f"경고: 기계 mirror 경로 '{path}' 를 review payload 에서 제외했습니다 "
+                "(is_machine_mirror_path=True 판정).",
+                file=sys.stderr,
+            )
+        for path in secret_excluded:
             pattern = _matching_denylist_pattern(path, denylist)
             print(f"경고: 시크릿 denylist 경로 '{path}' 를 diff 에서 제외했습니다 "
                   f"(패턴 '{pattern}' 매칭).", file=sys.stderr)
@@ -6835,6 +7418,22 @@ def _main(argv: list[str] | None = None) -> int:
     # 리뷰어 스폰 전 부작용 0 지점에서 fail-loud 한다.
     if not args.gate and not args.no_gate:
         print(_GATE_ACCOUNTING_REQUIRED_GUIDANCE, file=sys.stderr)
+        return 1
+
+    # lease 미등록 임시 linked worktree의 자기 `.local` 에 라운드를 기록하면 스냅샷 재생성 때
+    # 장부도 사라진다. 강등 기록 유무와 무관하게 git/lease 단일 술어로 판정한다. 이 자리는
+    # dry-run·조회·처분·비활성 no-op·egress 차단·diff-cap 거부가 모두 반환한 뒤이고, 바로 아래
+    # 예약부터 장부 부작용이 시작되는 경계다. `--no-gate` 는 gate=None 이라 기존 raw 자기-앵커
+    # 복구 채널을 그대로 통과한다.
+    anchor_refusal = _self_anchored_round_refusal(
+        selected_owner_demotions,
+        selected_owner_resolutions,
+        diff_root=diff_root,
+        pm_home=pm_home,
+        gate=args.gate,
+    )
+    if anchor_refusal is not None:
+        print(anchor_refusal, file=sys.stderr)
         return 1
 
     budget = _reserve_round_budget(

@@ -1,0 +1,81 @@
+{
+  "evidence_kind": "installed Codex binary Responses registry extraction",
+  "captured_at": "2026-08-11T14:14:04Z",
+  "platform": "x86_64-unknown-linux-musl",
+  "binary": {
+    "requested_path": "/home/smahn/.local/bin/codex",
+    "resolved_path": "/home/smahn/.codex/packages/standalone/releases/0.147.0-x86_64-unknown-linux-musl/bin/codex",
+    "sha256": "cb0a15567e9a60a5820d54b0f6ae86d504dc3805c1eab21a47f70e3eb7b73a40",
+    "size_bytes": 258278208
+  },
+  "procedure": {
+    "commands": [
+      "command -v codex",
+      "codex --version",
+      "readlink -f \"$(command -v codex)\"",
+      "sha256sum \"$(readlink -f \"$(command -v codex)\")\"",
+      "wc -c \"$(readlink -f \"$(command -v codex)\")\"",
+      "AGENT_FILE=/home/smahn/workspace/reference/project_manager/work/project_manager_1/templates/codex/.codex/agents/developer.toml; CODEX_HOME=\"$(mktemp -d /tmp/codex-registry-home.XXXXXX)\" OPENAI_API_KEY=fixture RUST_LOG=trace codex exec --json --skip-git-repo-check --enable multi_agent -m fixture-model -c 'agents.developer.description=\"fixture developer\"' -c \"agents.developer.config_file=\\\"$AGENT_FILE\\\"\" -c 'model_provider=\"fixture\"' -c 'model_providers.fixture={name=\"fixture\",base_url=\"http://127.0.0.1:18765/v1\",env_key=\"OPENAI_API_KEY\",wire_api=\"responses\",request_max_retries=0,stream_max_retries=0}' 'registry extraction fixture' 2>&1 | rg 'POST to .*responses:'"
+    ],
+    "notes": [
+      "The final command intentionally uses an unreachable loopback endpoint; RUST_LOG=trace prints the serialized Responses request, including tools, before connect failure.",
+      "The agents.developer CLI overrides make the custom agent_type field reproducible without relying on ambient project trust.",
+      "No live PreToolUse payload was captured; the hook tool_input schema below is derived directly from the serialized spawn_agent registry schema, not from a hand-written test payload."
+    ]
+  },
+  "raw_results": {
+    "command_v_stdout": "/home/smahn/.local/bin/codex",
+    "version_stdout": "codex-cli 0.147.0",
+    "readlink_stdout": "/home/smahn/.codex/packages/standalone/releases/0.147.0-x86_64-unknown-linux-musl/bin/codex",
+    "sha256sum_stdout": "cb0a15567e9a60a5820d54b0f6ae86d504dc3805c1eab21a47f70e3eb7b73a40  /home/smahn/.codex/packages/standalone/releases/0.147.0-x86_64-unknown-linux-musl/bin/codex",
+    "wc_stdout": "258278208 /home/smahn/.codex/packages/standalone/releases/0.147.0-x86_64-unknown-linux-musl/bin/codex",
+    "spawn_agent_registry_excerpt": {
+      "type": "function",
+      "name": "spawn_agent",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "agent_type": {
+            "type": "string",
+            "description_excerpt": "Agent type override for the new agent. Omit to inherit the parent agent type with a full-history fork; otherwise, `default` is used."
+          }
+        },
+        "additionalProperties": false,
+        "excerpt_truncated_after_agent_type": true
+      },
+      "raw_trace_prefix": "{\"type\":\"function\",\"name\":\"spawn_agent\",\"parameters\":{\"type\":\"object\",\"properties\":{\"agent_type\":{\"type\":\"string\",\"description\":\"Agent type override for the new agent. Omit to inherit the parent agent type with a full-history fork; otherwise, `default` is used."
+    },
+    "pre_tool_use_input_schema_excerpt": {
+      "type": "object",
+      "properties": {
+        "hook_event_name": {
+          "const": "PreToolUse"
+        },
+        "tool_name": {
+          "const": "spawn_agent"
+        },
+        "tool_input": {
+          "type": "object",
+          "properties": {
+            "agent_type": {
+              "type": "string"
+            }
+          }
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "turn_id": {
+          "type": "string"
+        },
+        "tool_use_id": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "live_pre_tool_use_payload_captured": false
+}

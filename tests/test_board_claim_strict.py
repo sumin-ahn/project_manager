@@ -31,6 +31,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import anchor_board_module
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -146,9 +148,7 @@ def board(tmp_path, monkeypatch):
     함께 tmp 로 따라온다.
     """
     mod = _load_board()
-    monkeypatch.setattr(mod, "REPO", tmp_path)
-    monkeypatch.setattr(mod, "BOARD_LOCK",
-                        tmp_path / ".project_manager" / ".local" / "board.lock")
+    anchor_board_module(mod, tmp_path, monkeypatch)
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     return mod

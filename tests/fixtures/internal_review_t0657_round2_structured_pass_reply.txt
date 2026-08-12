@@ -1,0 +1,38 @@
+판정: 통과
+
+must-fix
+
+- 없음
+
+확인 결과
+
+- **MF-1 해소:** 동일 common-dir에서 `pm-a`, `pm-b`가 각각 checkout을 소유한 경우 임의 선택 없이 `AnchorResolutionError`가 발생했습니다. 진단에 두 PM 홈 경로가 모두 포함됐습니다.
+- **MF-2 해소:** `pm_delegate.py`가 `required=bool(args.ticket or args.gate)`로 동일 resolver를 호출합니다. 무관 linked repo 실측에서 `--gate`와 `--ticket` 모두 rc=1, stdout/stderr가 각각 동일했고 self-anchor 강등은 없었습니다.
+- **SF-1 해소:** A/B/B-bare/C, 다중-owner, gate/ticket 테스트 6개가 [test_external_review_linked_worktree_resolution.py](<repo>/tests/test_external_review_linked_worktree_resolution.py:16)에 수집됩니다. 전체 tests 검색 결과 중복 정의·사본은 없습니다.
+
+Probe 실측
+
+1. 다중-owner: fail-loud. 진단의 `pm-a=True`, `pm-b=True`.
+2. 단일-owner: 해소값과 예상 PM 홈이 동일(`P2_MATCH=True`).
+3. 무관 linked repo:
+   - `--gate`: rc=1
+   - `--ticket`: rc=1
+   - stderr 동일: `True`
+   - 공통 오류: `--cwd 소유 PM 홈 해소 실패`
+4. 라이브 `gate-T0655r1`: dry-run rc=0.  
+   `pm_home=<pm-home>`,  
+   `local_conf=<pm-home>/.project_manager/local.conf`
+5. SF-1: 지정 glob으로의 배치이며 사본 방식이 아닙니다.
+
+퇴행
+
+- 좁은 common-dir/lease 해소 규칙과 fail-loud 유지.
+- A/B/B-bare/C 기존 경로 통과.
+- 빈 diff rc=1, `--paths`/`--ticket` 복구 채널, 라운드 장부 앵커 회귀 모두 통과.
+- `external_review.py`와 `pm_delegate.py`의 세 템플릿 복제본은 각각 byte 동일했습니다.
+
+NEW
+
+- 없음
+
+지정 회귀: **1,139 passed, 2 skipped** (`1,141 collected`, 39.55초). 전체 스위트는 실행하지 않았고 worktree 파일도 수정하지 않았습니다.

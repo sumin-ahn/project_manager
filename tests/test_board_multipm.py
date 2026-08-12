@@ -400,20 +400,21 @@ def test_areas_append_is_append_only(board):
 # cmd_new 명시 prefix 정책 (ADR-0042 자유 입력 — 등록 제약 없음)
 # ════════════════════════════════════════════════════════════════════════
 
-def _new_args(title="t", prefix=None):
+def _new_args(title="t", prefix=None, user_ack=None):
     return argparse.Namespace(title=title, prefix=prefix, touches=None,
-                              depends=None, tag=None, estimate="small")
+                              depends=None, tag=None, estimate="small",
+                              user_ack=user_ack)
 
 
-def test_cmd_new_allows_unregistered_prefix_free_input(board):
-    """ADR-0042: 명시 prefix 는 자유 입력 — 미등록이어도 sanity 통과면 발행된다.
+def test_cmd_new_allows_user_approved_unregistered_prefix(board):
+    """ADR-0042 amend: 미등록 prefix도 사용자 값-결속 ack가 있으면 발행된다.
 
     구 모델(prefix=repo 네임스페이스)의 "미등록 prefix rc1" 가드를 폐지했다(ADR-0042 §3.1
     "등록 제약 없음"). prefix 는 이제 작업 카테고리라 새 카테고리를 즉석에서 붙일 수 있다 —
-    입력측 sanity(`_validate_prefix`)만 통과하면 등록 여부와 무관하게 `T-<p>-NNN` 발행.
+    입력측 sanity와 사용자 승인을 통과하면 등록 여부와 무관하게 `T-<p>-NNN` 발행.
     """
     board.areas_append("pay", "결제", "alice")  # pay 만 등록 — 그래도 미등록 acc 허용
-    rc = board.cmd_new(_new_args(prefix="acc"))
+    rc = board.cmd_new(_new_args(prefix="acc", user_ack="acc"))
     assert rc == 0
     created = list((board.TICKETS_DIR / "open").glob("T-acc-001-*.md"))
     assert len(created) == 1
@@ -432,7 +433,11 @@ def test_cmd_new_guard_rejects_missing_prefix_in_multi_mode(board, capsys):
     # override 없음·local.conf prefix 없음 → id_prefix None.
     rc = board.cmd_new(_new_args(prefix=None))
     assert rc != 0
-    assert "prefix 필요" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "prefix 필요" in err
+    assert "1순위로 사용자에게" in err and "승인을 요청" in err
+    assert "승인한 사용자만" in err and "--user-ack <PFX>" in err
+    assert "세션 자동 부착 금지" in err
 
 
 def test_cmd_new_guard_allows_registered_prefix(board):
@@ -507,9 +512,10 @@ def test_cmd_new_single_registered_repo_honors_explicit_prefix(board):
 # cmd_init team 경로
 # ════════════════════════════════════════════════════════════════════════
 
-def _init_args(prefix=None, area=None, owner=None, repo=None, slot=None, user=None):
+def _init_args(prefix=None, area=None, owner=None, repo=None, slot=None, user=None,
+               user_ack=None):
     return argparse.Namespace(prefix=prefix, area=area, owner=owner,
-                              repo=repo, slot=slot, user=user)
+                              repo=repo, slot=slot, user=user, user_ack=user_ack)
 
 
 @pytest.fixture
@@ -527,7 +533,8 @@ def init_board(board, monkeypatch):
 
 def test_cmd_init_team_registers_and_writes_conf(init_board):
     """init --prefix pay --area 결제 --owner alice → areas 등록행 1개 + local.conf prefix=pay."""
-    rc = init_board.cmd_init(_init_args(prefix="pay", area="결제", owner="alice"))
+    rc = init_board.cmd_init(_init_args(
+        prefix="pay", area="결제", owner="alice", user_ack="pay"))
     assert rc == 0
     # areas.md 등록행 (ADR-0014 신 스키마 — repo=prefix·git/test_cmd 빈 값).
     assert init_board.registered_prefixes() == {"pay"}
@@ -540,7 +547,8 @@ def test_cmd_init_team_registers_and_writes_conf(init_board):
 
 def test_cmd_init_team_rerun_no_duplicate_areas(init_board):
     """이미 등록된 prefix 로 재실행 → areas.md 중복행 없음, local.conf 만 갱신."""
-    init_board.cmd_init(_init_args(prefix="pay", area="결제", owner="alice"))
+    init_board.cmd_init(_init_args(
+        prefix="pay", area="결제", owner="alice", user_ack="pay"))
     # 재실행: --area 없이도 통과해야 한다 (이미 등록).
     rc = init_board.cmd_init(_init_args(prefix="pay", repo="pay", slot=2))
     assert rc == 0
@@ -557,7 +565,7 @@ def test_cmd_init_new_prefix_without_area_rejected(init_board):
     prefix 는 유효 형식(`new`)이라 sanity 를 통과하고, *그다음* --area 누락 가드에 걸린다
     (형식 reject 로 short-circuit 되지 않고 area-missing 경로를 실제로 탄다).
     """
-    rc = init_board.cmd_init(_init_args(prefix="new"))
+    rc = init_board.cmd_init(_init_args(prefix="new", user_ack="new"))
     assert rc != 0
     assert not init_board.AREAS_FILE.exists()
 
@@ -570,7 +578,7 @@ def test_cmd_init_owner_defaults_to_session_name(init_board, monkeypatch):
     env 를 고정해 그 값이 등록행 owner 로 들어가는지만 검증한다.
     """
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "ambient-sess")
-    rc = init_board.cmd_init(_init_args(prefix="acc", area="정산"))
+    rc = init_board.cmd_init(_init_args(prefix="acc", area="정산", user_ack="acc"))
     assert rc == 0
     areas = init_board.AREAS_FILE.read_text(encoding="utf-8")
     # 신 스키마(ADR-0014): repo=prefix·git/test_cmd 빈 값·owner=session_name() 해소값.
@@ -586,7 +594,8 @@ def test_cmd_init_area_owner_from_explicit_user(init_board, monkeypatch):
     # local.conf user= 와 git 폴백이 다른 값을 줘도 --user 가 이긴다.
     init_board.LOCAL_CONF.write_text("user=conf-user\n", encoding="utf-8")
     monkeypatch.setattr(init_board, "_git_config_email", lambda: "git@x.com")
-    rc = init_board.cmd_init(_init_args(prefix="pay", area="결제", owner="alice", user="carol"))
+    rc = init_board.cmd_init(_init_args(
+        prefix="pay", area="결제", owner="alice", user="carol", user_ack="pay"))
     assert rc == 0
     # 신 8칸 스키마 끝 칼럼 area_owner=carol → _repo_area_owner 로 확증(`--mine` 풀 입력).
     assert init_board._repo_area_owner("pay") == "carol"
@@ -596,7 +605,8 @@ def test_cmd_init_area_owner_falls_back_to_local_conf(init_board, monkeypatch):
     """--user 미지정 → local.conf user= 로 area_owner 해소 (git 폴백보다 우선)."""
     init_board.LOCAL_CONF.write_text("user=conf-user\n", encoding="utf-8")
     monkeypatch.setattr(init_board, "_git_config_email", lambda: "git@x.com")
-    rc = init_board.cmd_init(_init_args(prefix="acc", area="정산", owner="bob"))
+    rc = init_board.cmd_init(_init_args(
+        prefix="acc", area="정산", owner="bob", user_ack="acc"))
     assert rc == 0
     assert init_board._repo_area_owner("acc") == "conf-user"
 
@@ -607,7 +617,8 @@ def test_cmd_init_area_owner_falls_back_to_git_email(init_board, monkeypatch):
     # local.conf 를 미리 둬 그 경로(부재→git 폴백)를 결정적으로 탄다.
     init_board.LOCAL_CONF.write_text("session=acc-pm\n", encoding="utf-8")
     monkeypatch.setattr(init_board, "_git_config_email", lambda: "dev@example.com")
-    rc = init_board.cmd_init(_init_args(prefix="ord", area="주문", owner="carol"))
+    rc = init_board.cmd_init(_init_args(
+        prefix="ord", area="주문", owner="carol", user_ack="ord"))
     assert rc == 0
     assert init_board._repo_area_owner("ord") == "dev@example.com"
 
@@ -619,7 +630,8 @@ def test_cmd_init_area_owner_graceful_when_user_unknown(init_board, monkeypatch)
     """
     init_board.LOCAL_CONF.write_text("session=s\n", encoding="utf-8")
     monkeypatch.setattr(init_board, "_git_config_email", lambda: None)
-    rc = init_board.cmd_init(_init_args(prefix="inv", area="재고", owner="dave"))
+    rc = init_board.cmd_init(_init_args(
+        prefix="inv", area="재고", owner="dave", user_ack="inv"))
     assert rc == 0
     assert init_board._repo_area_owner("inv") is None
     # owner(registrant)는 정상 기록 — area_owner 만 빈 값(두 칼럼 독립·overload 금지).
@@ -641,7 +653,8 @@ def test_e2e_team_init_then_multi_and_solo_coexist(init_board):
     board = init_board
 
     # 1. team init — pay 등록 + local.conf prefix=pay.
-    assert board.cmd_init(_init_args(prefix="pay", area="결제", owner="alice")) == 0
+    assert board.cmd_init(_init_args(
+        prefix="pay", area="결제", owner="alice", user_ack="pay")) == 0
     assert board.registered_prefixes() == {"pay"}
 
     # 2. multi new — local.conf prefix=pay 로 해소되어 T-pay-001.
@@ -703,7 +716,8 @@ def test_init_namespaced_label_is_multi_repo_not_team(init_board, capsys):
     동작(areas 등록·prefix 네임스페이스)은 다른 테스트가 커버 — 여기선 *새 framing 라벨*만
     회귀 박제한다. ID 포맷 `T-<PFX>-NNN` 도 같이 출력되어야 한다.
     """
-    rc = init_board.cmd_init(_init_args(prefix="pay", area="결제", owner="alice"))
+    rc = init_board.cmd_init(_init_args(
+        prefix="pay", area="결제", owner="alice", user_ack="pay"))
     assert rc == 0
     out = capsys.readouterr().out
     assert "multi-repo · pay" in out          # 새 framing (N×M 네임스페이스)
@@ -744,13 +758,15 @@ def test_init_namespaced_registers_and_emits_namespaced_id(init_board):
     ID(`T-<PFX>-NNN`) 발행이 그대로 동작한다. 미등록 명시 prefix 도 ADR-0042 자유 입력이라
     sanity 통과 시 발행된다(구 "미등록 거부" 가드 폐지).
     """
-    assert init_board.cmd_init(_init_args(prefix="acc", area="정산", owner="bob")) == 0
+    assert init_board.cmd_init(_init_args(
+        prefix="acc", area="정산", owner="bob", user_ack="acc")) == 0
     assert init_board.registered_prefixes() == {"acc"}     # 레지스트리 등록
     # 등록 prefix → 세션/count 유도로 네임스페이스 발행.
     assert init_board.cmd_new(_new_args(title="acc ticket")) == 0
     assert list((init_board.TICKETS_DIR / "open").glob("T-acc-001-*.md"))
     # 미등록 명시 prefix(형식 정상) → ADR-0042 자유 입력으로 발행(등록 제약 없음).
-    assert init_board.cmd_new(_new_args(title="new cat", prefix="zzz")) == 0
+    assert init_board.cmd_new(_new_args(
+        title="new cat", prefix="zzz", user_ack="zzz")) == 0
     assert list((init_board.TICKETS_DIR / "open").glob("T-zzz-001-*.md"))
 
 
@@ -785,7 +801,7 @@ def test_cmd_new_rejects_reserved_prefix_none(board, capsys):
 
 def test_cmd_new_accepts_uppercase_prefix(board):
     """`new --prefix AAA`(대문자) → rc 0·`T-AAA-001` 발행 (ADR-0055·case 허용·DoD 1)."""
-    rc = board.cmd_new(_new_args(prefix="AAA"))
+    rc = board.cmd_new(_new_args(prefix="AAA", user_ack="AAA"))
     assert rc == 0
     created = list((board.TICKETS_DIR / "open").glob("T-AAA-001-*.md"))
     assert len(created) == 1
@@ -795,7 +811,7 @@ def test_cmd_new_accepts_uppercase_prefix(board):
 
 def test_cmd_new_accepts_valid_lowercase_prefix(board):
     """정상 소문자 prefix 는 통과 → prefixed ID 발행 (solo·레지스트리 부재)."""
-    rc = board.cmd_new(_new_args(prefix="pay"))
+    rc = board.cmd_new(_new_args(prefix="pay", user_ack="pay"))
     assert rc == 0
     assert list((board.TICKETS_DIR / "open").glob("T-pay-001-*.md"))
 
@@ -810,7 +826,8 @@ def test_cmd_init_rejects_reserved_prefix_none(init_board, capsys):
 
 def test_cmd_init_accepts_uppercase_prefix(init_board):
     """`init --prefix AAA`(대문자) → rc 0·areas 등록 (ADR-0055·case 허용)."""
-    rc = init_board.cmd_init(_init_args(prefix="AAA", area="x", owner="me"))
+    rc = init_board.cmd_init(_init_args(
+        prefix="AAA", area="x", owner="me", user_ack="AAA"))
     assert rc == 0
     assert init_board.registered_prefixes() == {"AAA"}     # 등록 case 보존
 
@@ -820,18 +837,11 @@ def test_cmd_init_accepts_uppercase_prefix(init_board):
 # + canonical case 보존. 단일 불변식: "prefix 비교는 case-insensitive, canonical case 보존".
 # ════════════════════════════════════════════════════════════════════════
 
-def test_fold_lookup_and_case_only_conflict_helpers(board):
-    """`_fold_lookup`(canonical 되찾기)·`_case_only_conflict`(case-only 근접중복) 단위 (ADR-0055)."""
+def test_fold_lookup_helper(board):
+    """`_fold_lookup`은 fold-매치 canonical을 결정적으로 되찾는다 (ADR-0055)."""
     assert board._fold_lookup("aaa", {"AAA"}) == "AAA"      # fold 로 등록 case 되찾기
     assert board._fold_lookup("AAA", {"AAA"}) == "AAA"      # 정확 매치
     assert board._fold_lookup("zzz", {"AAA"}) is None       # 무매치
-    assert board._case_only_conflict("aaa", {"AAA"}) == "AAA"   # case-only 근접중복
-    assert board._case_only_conflict("AAA", {"AAA"}) is None    # 정확 매치 = 중복 아님(멱등)
-    assert board._case_only_conflict("bbb", {"AAA"}) is None    # 무관
-    # 오염 pool (exact + case-only 공존) — 모든 fold 매치를 훑어 결정적으로 split 를 잡는다
-    # (codex must-fix: `_fold_lookup` 첫-매치가 exact 를 먼저 만나 놓치던 비결정 결함).
-    assert board._case_only_conflict("aaa", {"AAA", "aaa"}) == "AAA"   # exact 있어도 case-only 검출
-    assert board._case_only_conflict("AAA", {"AAA", "aaa"}) == "aaa"   # 반대 방향도 결정적
 
 
 def test_next_id_case_fold_continues_existing_series(board):
@@ -859,12 +869,13 @@ def test_id_prefix_override_resolves_registered_canonical_case(board):
     assert board.id_prefix("zzz") == "zzz"                # 미등록 → 입력 그대로
 
 
-def test_cmd_init_rejects_case_only_duplicate_prefix(init_board, capsys):
-    """`init --prefix aaa` 가 이미 등록된 `AAA` 와 case-only 중복 → rc 1·부작용 0 (DoD 3)."""
-    assert init_board.cmd_init(_init_args(prefix="AAA", area="x", owner="me")) == 0
+def test_cmd_init_fold_reuses_registered_canonical_prefix(init_board, capsys):
+    """`init --prefix aaa`는 등록 `AAA`를 canonical 재사용하고 중복행을 만들지 않는다."""
+    assert init_board.cmd_init(_init_args(
+        prefix="AAA", area="x", owner="me", user_ack="AAA")) == 0
     rc = init_board.cmd_init(_init_args(prefix="aaa", area="x", owner="me"))
-    assert rc == 1
-    assert "대소문자만 다르다" in capsys.readouterr().err
+    assert rc == 0
+    assert "이미 등록됨" in capsys.readouterr().out
     assert init_board.registered_prefixes() == {"AAA"}    # 새 `aaa` 행 안 생김(단일 등록 유지)
 
 
@@ -894,16 +905,15 @@ def test_fold_key_helper(board):
     assert board._fold_key("AB") != board._fold_key("ABC")   # substring 경계 보존
 
 
-def test_cmd_init_rejects_case_only_vs_unregistered_tickets(board, capsys):
-    """미등록 `T-aaa-*` 티켓이 있는데 `init --prefix AAA` → case-불일치 fail-loud (등록∪티켓 대칭·T-0311 fix 5).
+def test_cmd_init_fold_reuses_ticket_prefix_canonical_case(board, capsys):
+    """미등록 `T-aaa-*` 티켓이 있으면 `init --prefix AAA`가 그 canonical case를 재사용한다.
 
     `board` 픽스처(areas 부재)에 티켓만 심고 init 대칭 가드가 티켓 prefix 까지 본다는 걸 확증한다.
     """
     _seed_ticket(board, "T-aaa-001")                      # 미등록·소문자 시리즈만 존재
     rc = board.cmd_init(_init_args(prefix="AAA", area="x", owner="me"))
-    assert rc == 1
-    assert "대소문자만 다르다" in capsys.readouterr().err
-    assert not board.AREAS_FILE.exists()                  # 등록 안 함(부작용 0)
+    assert rc == 0
+    assert board.registered_prefixes() == {"aaa"}
 
 
 # ════════════════════════════════════════════════════════════════════════

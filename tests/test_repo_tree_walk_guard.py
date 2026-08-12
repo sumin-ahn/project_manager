@@ -52,6 +52,16 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "'*.md'",
     ): WalkException("출하 wiki 전 파일 링크 해소 검증 — 대상 열거 자체가 판정의 본질"),
     (
+        "tests/conftest.py",
+        "_snapshot_repo_board_outputs",
+        "rglob",
+        "'*'",
+    ): WalkException(
+        "라이브 board 소유 루트의 세션 전후 스냅샷 — 산출 파일명을 나열하지 않고 소유 루트를 "
+        "단일 진실로 두는 것이 오염 검출의 본질이다(T-0654 세션 가드). repo-owned seam 은 "
+        "git 추적분만 세어 테스트가 새로 만든 미추적 산출을 놓친다."
+    ),
+    (
         ".project_manager/tools/repo_owned_files.py",
         "list_repo_owned_entries",
         "rglob",

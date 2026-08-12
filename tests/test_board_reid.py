@@ -105,8 +105,12 @@ def _ids_on_disk(board) -> set[str]:
 
 
 def _ns(old_id: str, new_id: str, *, dry_run: bool = False,
-        repo: str | None = None, slot: int | None = None) -> argparse.Namespace:
-    return argparse.Namespace(old_id=old_id, new_id=new_id, dry_run=dry_run, repo=repo, slot=slot)
+        repo: str | None = None, slot: int | None = None,
+        user_ack: str | None = None) -> argparse.Namespace:
+    return argparse.Namespace(
+        old_id=old_id, new_id=new_id, dry_run=dry_run, repo=repo, slot=slot,
+        user_ack=user_ack,
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -147,14 +151,14 @@ def test_reid_number_change_renames_and_updates_frontmatter(board):
 
 def test_reid_adds_prefix(board):
     _seed_ticket(board, "T-0036")
-    rc = board.cmd_reid(_ns("T-0036", "T-finance-036"))
+    rc = board.cmd_reid(_ns("T-0036", "T-finance-036", user_ack="finance"))
     assert rc == 0
     assert _ids_on_disk(board) == {"T-finance-036"}
 
 
 def test_reid_changes_prefix(board):
     _seed_ticket(board, "T-PAY-001")
-    rc = board.cmd_reid(_ns("T-PAY-001", "T-ACC-001"))
+    rc = board.cmd_reid(_ns("T-PAY-001", "T-ACC-001", user_ack="ACC"))
     assert rc == 0
     assert _ids_on_disk(board) == {"T-ACC-001"}
 
@@ -167,12 +171,43 @@ def test_reid_strips_prefix_reverse(board):
     assert _ids_on_disk(board) == {"T-0036"}
 
 
-def test_reid_accepts_free_form_uppercase_prefix(board):
-    """prefix 는 자유 입력(ADR-0042) — 소문자 카테고리 검증(`_validate_prefix`)을 적용하지 않는다."""
+def test_reid_accepts_approved_uppercase_prefix(board):
+    """reid 소비 문법은 대문자 legacy prefix를 받고, 신설은 값-결속 승인을 요구한다."""
     _seed_ticket(board, "T-0036")
-    rc = board.cmd_reid(_ns("T-0036", "T-PAY-036"))
+    rc = board.cmd_reid(_ns("T-0036", "T-PAY-036", user_ack="PAY"))
     assert rc == 0
     assert _ids_on_disk(board) == {"T-PAY-036"}
+
+
+def test_reid_existing_prefix_fold_match_is_frictionless_and_canonical(board):
+    """기존 `PAY`에 `pay`로 reid하면 ack 없이 canonical case로 재사용한다."""
+    _seed_ticket(board, "T-PAY-002")
+    _seed_ticket(board, "T-0036")
+    rc = board.cmd_reid(_ns("T-0036", "T-pay-003"))
+    assert rc == 0
+    assert _ids_on_disk(board) == {"T-PAY-002", "T-PAY-003"}
+
+
+def test_reid_rejects_new_hyphen_prefix_even_with_user_ack(board, capsys):
+    _seed_ticket(board, "T-0036")
+
+    rc = board.cmd_reid(_ns(
+        "T-0036", "T-new-label-001", user_ack="new-label",
+    ))
+
+    assert rc == 1
+    assert _ids_on_disk(board) == {"T-0036"}
+    assert "신규 prefix 'new-label' 형식 위반" in capsys.readouterr().err
+
+
+def test_reid_reuses_existing_legacy_hyphen_prefix(board):
+    _seed_ticket(board, "T-new-label-002")
+    _seed_ticket(board, "T-0036")
+
+    rc = board.cmd_reid(_ns("T-0036", "T-new-label-001"))
+
+    assert rc == 0
+    assert _ids_on_disk(board) == {"T-new-label-001", "T-new-label-002"}
 
 
 def test_reid_preserves_slug_in_filename(board):
@@ -591,10 +626,13 @@ def test_reid_dry_run_takes_no_lock(board, monkeypatch, capsys):
 
 def test_cli_reid_dispatches_to_cmd_reid(board):
     parser = board.build_parser()
-    args = parser.parse_args(["reid", "T-0036", "T-finance-036", "--dry-run"])
+    args = parser.parse_args([
+        "reid", "T-0036", "T-finance-036", "--user-ack", "finance", "--dry-run",
+    ])
     assert args.fn is board.cmd_reid
     assert args.old_id == "T-0036"
     assert args.new_id == "T-finance-036"
+    assert args.user_ack == "finance"
     assert args.dry_run is True
 
 

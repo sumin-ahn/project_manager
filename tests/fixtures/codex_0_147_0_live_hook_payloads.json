@@ -1,0 +1,59 @@
+{
+  "evidence": "live capture · codex-cli 0.147.0 · isolated CODEX_HOME + --dangerously-bypass-hook-trust",
+  "captured_on_version": "codex-cli 0.147.0",
+  "events": [
+    {
+      "session_id": "019ff16d-f814-7561-9d2f-c27c626eb82f",
+      "turn_id": "019ff16d-f86d-7ff3-a17b-813805335d83",
+      "cwd": "<worktree>",
+      "hook_event_name": "PreToolUse",
+      "model": "gpt-5.6-sol",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "collaborationspawn_agent",
+      "tool_input": {
+        "task_name": "researcher",
+        "fork_turns": "all",
+        "message": "<opaque encrypted blob · elided>"
+      },
+      "tool_use_id": "call_doQ7IeqrazendUMHDFqIKerm"
+    },
+    {
+      "session_id": "019ff16d-f814-7561-9d2f-c27c626eb82f",
+      "turn_id": "019ff16d-f86d-7ff3-a17b-813805335d83",
+      "cwd": "<worktree>",
+      "hook_event_name": "PreToolUse",
+      "model": "gpt-5.6-sol",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "collaborationwait_agent",
+      "tool_input": {
+        "timeout_ms": 120000
+      },
+      "tool_use_id": "call_lW7kMGpFRl05gSjMwJQnIIQj"
+    },
+    {
+      "session_id": "019ff16d-f814-7561-9d2f-c27c626eb82f",
+      "turn_id": "019ff16e-19e7-7470-980d-e3045982370f",
+      "agent_id": "019ff16e-19af-7093-ac93-0146ae97466e",
+      "agent_type": "default",
+      "cwd": "<worktree>",
+      "hook_event_name": "PreToolUse",
+      "model": "gpt-5.6-sol",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "sed -n '1p' README.md"
+      },
+      "tool_use_id": "exec-539ac5a7-aeb8-4302-b20c-9ee57f49d60c"
+    },
+    {
+      "session_id": "019ff16d-f814-7561-9d2f-c27c626eb82f",
+      "turn_id": "019ff16e-19e7-7470-980d-e3045982370f",
+      "cwd": "<worktree>",
+      "hook_event_name": "SubagentStart",
+      "model": "gpt-5.6-sol",
+      "permission_mode": "bypassPermissions",
+      "agent_id": "019ff16e-19af-7093-ac93-0146ae97466e",
+      "agent_type": "default"
+    }
+  ]
+}

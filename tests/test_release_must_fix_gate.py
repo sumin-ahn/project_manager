@@ -480,6 +480,38 @@ def test_unresolved_must_fix_blocks_before_live_wave(release, capsys):
         encoding="ascii") == "blocked\n"
 
 
+def test_internal_pm_fixed_axis_is_not_opened_for_external_ledger(release, capsys):
+    """내부 복구 축을 외부 장부에 손기입해도 릴리즈 우회로 인정하지 않는다."""
+    rounds = [dict(row) for row in _REJECTED_ROUNDS]
+    rounds.extend([
+        {**_REJECTED_ROUNDS[-1], "sequence": 3, "must_fix": 3},
+        {**_REJECTED_ROUNDS[-1], "sequence": 4, "must_fix": 3},
+    ])
+    entry = {
+        "count": 4,
+        "confirm_fix": 1,
+        "pm_fixed": 1,
+        "rounds": rounds,
+        "resolution": {
+            "kind": "pm-fixed",
+            "pm_fixed_evidence": {
+                "change": "x.py:1",
+                "path": "x.py",
+                "line": 1,
+                "regression": "pytest tests/test_release_must_fix_gate.py -q",
+                "result": "rc=0",
+            },
+            "round_sequence": 4,
+            "rounds": 4,
+        },
+    }
+    _write_ledger(release.proj, {"T-0610": entry})
+
+    assert release.record() == 1
+    assert release.runner.calls == []
+    assert "이 장부에서는 pm-fixed 처분을 허용하지 않습니다" in capsys.readouterr().err
+
+
 def test_block_records_fail_so_push_hook_stays_closed(release):
     """차단은 fail 을 **기록**한다 — 같은 HEAD 의 옛 green 이 살아남아 훅을 통과하지 않게."""
     (release.proj / ".project_manager" / ".local" / "livegate.json").write_text(

@@ -4,11 +4,10 @@
 
 * claude: 하네스 슬래시 커맨드 ``/pm-bootstrap``
 * codex: 엔진 멘션 확장 ``$pm-bootstrap``
-* opencode: ``.claude/skills`` 소비 경로에서 동작하는 ``/pm-bootstrap`` 표기
+* opencode: ``.opencode/command`` 슬래시 팔레트 ``/pm-bootstrap``
 
-opencode 측정은 비대화형 ``opencode run`` 기준이다. 대화형 TUI의 팝업 거동까지
-확인했다는 뜻으로 넓히지 않는다. 다만 ``/pm-*``가 opencode 슬래시 커맨드가
-아니라는 점은 별도 미존재 커맨드 프로브로 확인됐다.
+opencode 1.18.16 측정에서 skill tool 채널과 command 팔레트은 별개 표면이다.
+command 파일은 canonical skill에서 기계 생성하며 빈 자리표시자일 때도 인자를 본문 끝에 추가한다.
 
 조건부 렌더 출하 표면은 다음 한 축이다. 파일 집합은 하네스별 실제 skills root에서
 ``*/SKILL.md``로 파생하며 현재 각 15개다. 이름 접두사와 무관하게 모든 카드를 포함한다.
@@ -18,7 +17,7 @@ template dir      render 대상                               호출 토큰 산�
 ================  ========================================  =========================
 claude_code       ``.claude/skills/*/SKILL.md``             ``/<card>``
 codex             ``.agents/skills/*/SKILL.md``             ``$<card>``
-opencode          ``.claude/skills/*/SKILL.md``             ``/<card>``
+opencode          ``.opencode/command/*.md``                ``/<card>``
 ================  ========================================  =========================
 
 본문 전체를 별도 템플릿으로 소유하지 않는다. canonical 카드의 호출 문맥 ``/pm-*``만
@@ -190,11 +189,15 @@ def _notation_issues(harness: str, text: str) -> list[str]:
     return issues
 
 
-def _skill_cards(harness: str) -> list[Path]:
+def _entry_cards(harness: str) -> list[Path]:
     root = _template_root(harness)
-    # opencode는 .opencode가 실행 어댑터지만 스킬은 .claude/skills를 단일 소비한다.
-    # 하네스별 디렉터리를 다시 손으로 열거하지 않고 실제 출하 카드 root를 찾는다.
+    if harness == "opencode":
+        return sorted(root.glob(".opencode/command/*.md"))
     return sorted(root.glob(".*/skills/*/SKILL.md"))
+
+
+def _entry_card_name(harness: str, path: Path) -> str:
+    return path.stem if harness == "opencode" else path.parent.name
 
 
 def test_measured_entry_notation_table_covers_derived_harness_axis():
@@ -212,7 +215,7 @@ def test_measured_entry_notation_table_covers_derived_harness_axis():
     assert set(_PM_RENDER.SKILL_ENTRY_NAMES) == canonical_names
     assert canonical_names
     assert {
-        harness: {path.parent.name for path in _skill_cards(harness)}
+        harness: {_entry_card_name(harness, path) for path in _entry_cards(harness)}
         for harness in HARNESSES
     } == {harness: canonical_names for harness in HARNESSES}
 
@@ -404,11 +407,11 @@ def test_every_shipping_text_rejects_other_harness_prefixes(harness):
 
 @pytest.mark.parametrize("harness", HARNESSES)
 def test_every_skill_card_heading_uses_native_entry_notation(harness):
-    cards = _skill_cards(harness)
+    cards = _entry_cards(harness)
     assert cards, f"{harness} skill card inventory is empty"
     failures = {}
     for path in cards:
-        skill_name = path.parent.name
+        skill_name = _entry_card_name(harness, path)
         heading = re.compile(
             rf"^# {re.escape(_ENTRY_PREFIX[harness] + skill_name)}(?:\s+.*?)? —",
             re.MULTILINE,
@@ -521,10 +524,16 @@ def test_guard_detects_bare_wrong_prefix_followed_by_sentence_period():
 
 
 def test_opencode_entry_doc_states_both_true_notation_facts():
-    """slash 표기는 동작하지만 OpenCode 자체 slash command라는 거짓 설명은 금지한다."""
-    text = (TEMPLATES / "opencode" / "AGENTS.md").read_text(encoding="utf-8")
+    """OpenCode slash 팔레트 진입·인자 전달 서술을 강제한다(T-0674).
+
+    서술 위치는 opencode 전용 채널(`pm-instructions.md`)이다 — AGENTS.md 는 codex 와 공유하는
+    harness-neutral 코어라 하네스 고유 경로를 담지 않는다(ADR-0069)."""
+    text = (TEMPLATES / "opencode" / ".opencode" / "pm-instructions.md").read_text(
+        encoding="utf-8")
     assert "`/pm-bootstrap" in text
-    assert "자체 slash command를 뜻하지 않는다" in text
+    assert ".opencode/command/*.md" in text
+    assert "인자를 그대로 전달한다" in text
+    assert "자체 slash command를 뜻하지 않는다" not in text
 
 
 def test_paths_and_python_backbones_are_not_classified_as_skill_entries():

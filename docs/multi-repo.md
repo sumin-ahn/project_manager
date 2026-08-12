@@ -10,11 +10,15 @@
 
 ```bash
 <manager>/pm-config.sh repo add <name> [--git <url>] [--test "<cmd>"]  # repo 등록 + .repos clone (신규=--git 필수 / 기등록 repo 는 --git 없이 areas URL 로 mirror hydrate)
-<manager>/pm-config.sh worktree add <repo>                         # 새 worktree 슬롯 + submodule init
+<manager>/pm-config.sh worktree add <repo> --user-ack <repo>       # 사용자 승인값에 결속된 새 worktree 슬롯 + submodule init
 <manager>/pm-config.sh status | whoami                             # 풀/리스 + 이 세션 repo/슬롯/branch
 <manager>/pm-config.sh release <slot> [--force]                    # 작업완료 반납 / 수동 강제(백스톱)
 <manager>/pm-config.sh update [--from <upstream>]                  # 엔진 갱신 (pm-update 흡수)
 ```
+
+`worktree add`는 `--readonly`·`--task` 변형을 포함해 물리 슬롯을 늘리므로 항상 사용자가 직접
+승인하고, `--user-ack` 값은 대상 repo와 정확히 같아야 한다. 세션은 풀 소진 시 이 플래그를
+자가 부착하지 말고 먼저 사용자에게 슬롯 생성 승인을 요청한다.
 
 셋업·조회·진단 전용이다 — 런타임 worktree alloc/release 자동화는 `pm-bootstrap`/handoff 가 하고,
 `pm-config release` 는 수동 반납/강제(백스톱)만. 브랜치 할당은 `pm-bootstrap <repo> --branch <B>`

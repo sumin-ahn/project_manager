@@ -3,6 +3,7 @@
 // 비-git 선필터 + opencode hook 배선만 소유한다. plugins/ 진입점은 팩토리 하나만 export한다.
 const path = require("node:path");
 const childProcess = require("node:child_process");
+const { createWarningChannel } = require("./warning-channel-core.cjs");
 
 const GIT_PREFILTER = /(^|[^A-Za-z0-9_.-])git(?=\s|$|[<>])/;
 
@@ -63,17 +64,7 @@ function judgeCommand(root, cwd, command, spawnSync = childProcess.spawnSync) {
 function makeGitAnchorPlugin(judge = judgeCommand) {
   return async ({ client, directory, worktree }) => {
   const root = findEngineRoot(directory || worktree || process.cwd());
-  const pending = new Map();
-
-  async function warnUser(text) {
-    try {
-      if (client && client.tui && client.tui.showToast) {
-        await client.tui.showToast({ body: { message: text, variant: "warning" } });
-      }
-    } catch {
-      // 모델-facing pending system context가 별도 채널이라 toast 실패는 비차단이다.
-    }
-  }
+  const warnings = createWarningChannel(client);
 
   return {
     "tool.execute.before": async (input, output) => {
@@ -101,18 +92,11 @@ function makeGitAnchorPlugin(judge = judgeCommand) {
       if (judgment.verdict === "deny") throw new Error(text);
       if (judgment.verdict === "warn") {
         const sessionID = (input && input.sessionID) || "__global__";
-        pending.set(sessionID, text);
-        await warnUser(text);
+        await warnings.publish(sessionID, text);
       }
     },
     "experimental.chat.system.transform": async (input, output) => {
-      const sessionID = (input && input.sessionID) || "__global__";
-      const text = pending.get(sessionID) || pending.get("__global__");
-      if (text && output && Array.isArray(output.system)) {
-        output.system.push(text);
-        pending.delete(sessionID);
-        if (sessionID !== "__global__") pending.delete("__global__");
-      }
+      warnings.inject(input, output);
     },
   };
   };

@@ -39,6 +39,7 @@
 .project_manager/tools/pm_relay.py
 # external_review: 추가 리뷰어 어댑터 (ADR-0004·기본 OFF). review_context.local.md·local.conf 는 인스턴스 소유(manifest 밖)
 .project_manager/tools/external_review.py
+.project_manager/tools/review_rounds.py
 .project_manager/tools/gate_snapshot.py
 # worktree_pool: repo별 worktree 풀 리스 엔진 (ADR-0013·multi-PM 모델). 순수 엔진(git DI seam)
 .project_manager/tools/worktree_pool.py

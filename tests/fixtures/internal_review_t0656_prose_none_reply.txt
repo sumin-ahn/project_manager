@@ -1,0 +1,49 @@
+## 판정: 통과
+
+must-fix 및 should-fix 없습니다.
+
+1. 완화 정확성 — 통과
+
+완화는 다음 조건이 모두 성립할 때만 적용됩니다.
+
+- frontmatter가 `repo: upstream`
+- 현재 checkout과 upstream checkout의 Git common-dir가 다름
+- covers의 literal 최상위 계층이 현재 checkout에 없음
+
+따라서 단순히 downstream이라는 이유로 넓게 skip하지 않습니다. 관련 구현: [_missing_foreign_hierarchy](.project_manager/tools/domain.py:819), [covers 분류 조건](.project_manager/tools/domain.py:895).
+
+Probe 실측:
+
+- A — downstream, `templates/` 부재: `findings == []`, 0건
+- B — 소유 repo에서 covers 파일 삭제:
+  - 삭제 전 `[]`
+  - 삭제 commit 후 `["domain-stale"]`, 1건
+- C — downstream에 `src/` 계층 존재, covers 파일 부재:
+  - `("upstream source", "domain-unverifiable", ... "src/removed.py" ...)`, 1건
+
+세 probe는 `3 passed`.
+
+2. 소유 판정 신호 — 통과
+
+[parse_page](.project_manager/tools/domain.py:997)가 기존 `repo:`를 `_PageCovers`에 보존합니다. `self`는 현재 repo, `upstream`은 기존 `local.conf upstream=` 경로로 해소됩니다. 새 설정 키는 없습니다.
+
+저장소 동일성은 이름이나 디렉터리 basename이 아니라 `git rev-parse --git-common-dir` 결과로 비교하므로, 같은 이름의 무관한 repo를 동일 저장소로 오인하지 않습니다. 명시적으로 잘못 설정된 `upstream=` 경로 자체는 기존 설정의 신뢰 경계입니다.
+
+3. finding 종류 보존 — 통과
+
+- pin 이후 삭제는 관찰 가능한 변경이므로 `domain-stale`이 맞습니다.
+- pin 이후 관찰할 수 없는 부재 경로는 `domain-unverifiable`로 유지됩니다.
+- C 형상도 완화되지 않고 `domain-unverifiable`이 남습니다.
+
+4. 판정 근거 주석 — 통과
+
+[domain.py:896](.project_manager/tools/domain.py:896)에 “다른 repo 소유 페이지의 이 checkout 비출하 계층은 여기서 영구 검증할 수 없다”는 이유가 남아 있습니다. 함수 docstring에도 보수적 3조건이 설명되어 있습니다.
+
+회귀 및 전파:
+
+- 지정 회귀 `tests/test_domain*.py`: **348 passed**, 176 warnings
+- warnings는 `.git`을 복제하지 않은 격리 사본에서 발생한 `RepoFilesFallbackWarning`입니다.
+- 원본 worktree 직접 실행은 **347 passed, 1건 환경 실패**였으며, 실패 원인은 기존 테스트가 read-only worktree의 `scratchpad/` 생성을 시도한 것이었습니다. 동일 파일을 임시 사본에서 실행해 최종 green을 확인했습니다.
+- root 및 claude_code/codex/opencode 3벌 `domain.py` SHA-256 동일, 전파 drift 0.
+
+Suggestion: 같은 basename을 가진 서로 다른 두 repo를 명시적으로 구성한 소유 판정 회귀를 추가하면 “이름 기반 판정 금지”가 더 직접적으로 고정됩니다. 현재 구현 결함은 아닙니다.

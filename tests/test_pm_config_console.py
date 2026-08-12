@@ -288,16 +288,18 @@ def test_console_w_routes_to_worktree_add(pc, monkeypatch):
     def fake_wt_add(args, *, worktree_pool=None, board=None, input_fn=None, is_tty=None):
         seen["repo"] = args.repo
         seen["test"] = args.test            # 콘솔은 --test 미지정(프롬프트 경로)
+        seen["user_ack"] = args.user_ack    # repo 재입력 확인을 값-결속 ack로 소비
         seen["tty"] = is_tty() if is_tty else None
         seen["board"] = board               # 콘솔이 로드한 board 전달(areas 표시값 재사용)
         return 0
 
     monkeypatch.setattr(pc, "cmd_worktree_add", fake_wt_add)
-    rc = pc.run_console(input_fn=_inputs("w", "svc", "q"),
+    rc = pc.run_console(input_fn=_inputs("w", "svc", "svc", "q"),
                         board=FakeBoardAreas(rows=[]), worktree_pool=FakeWorktreePool())
     assert rc == 0
     assert seen["repo"] == "svc"
     assert seen["test"] is None            # 빌드명령은 핸들러가 프롬프트(콘솔 [w] 경로)
+    assert seen["user_ack"] == "svc"
     assert seen["tty"] is True             # 콘솔 진입=tty 보장 → 핸들러 프롬프트 띄움
 
 
@@ -328,7 +330,7 @@ def test_console_w_marked_engine_skew_stops_the_loop(pc):
     `main` 이 CLI 와 같은 문구·rc 로 번역한다 — 루프 계속 0.
     """
     prompts: list[str] = []
-    lines = iter(["w", "svc", "s", "s", "q"])
+    lines = iter(["w", "svc", "svc", "s", "s", "q"])
 
     def reader(prompt=""):
         prompts.append(prompt)
@@ -364,8 +366,8 @@ def test_console_w_marked_engine_skew_ends_entry_with_guidance_and_rc1(
     monkeypatch.setattr(pc, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(pc, "_load_module", fake_load_module)
     # 무인자 tty 진입은 run_console 기본 input_fn(=builtin input)을 쓴다 — 메뉴 `w` · repo 이름 ·
-    # 빌드명령(Enter) 세 줄. stdin 대체는 pytest 캡처 하에서 builtin input 의 readline 경로다.
-    monkeypatch.setattr(sys, "stdin", io.StringIO("w\nsvc\n\n"))
+    # repo 재입력 승인 · 빌드명령(Enter) 네 줄. stdin 대체는 pytest 캡처 하에서 builtin input 경로다.
+    monkeypatch.setattr(sys, "stdin", io.StringIO("w\nsvc\nsvc\n\n"))
 
     rc = pc.main([])
 
@@ -606,7 +608,7 @@ def test_console_build_cmd_prompt_abort_graceful(pc, monkeypatch, capsys, exc):
     wp = FakeWorktreePool()
     # repo 입력 후 빌드명령 프롬프트서 중단 → _prompt_test_cmd 가 None 흡수 → create_slot(None).
     # 그 뒤 메뉴 'q' 로 종료.
-    reader = _inputs_then_exc_resume("w", "svc", build_exc=exc, after=("q",))
+    reader = _inputs_then_exc_resume("w", "svc", "svc", build_exc=exc, after=("q",))
     rc = pc.run_console(input_fn=reader,
                         board=FakeBoardAreas(rows=[]), worktree_pool=wp)
     assert rc == 0

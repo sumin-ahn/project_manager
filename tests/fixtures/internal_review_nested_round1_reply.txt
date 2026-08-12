@@ -1,0 +1,55 @@
+# 판정: 반려
+
+공용화된 external 라운드 로직 자체는 보존됐지만, 내부 게이트의 기계 강제·라운드 소비·fail-open 계약과 지정 회귀가 충족되지 않았습니다.
+
+## Must-fix
+
+1. 내부 리뷰 장부가 완료 게이트에 연결되지 않았습니다.
+
+   `board.py`의 `complete` 게이트는 log/tests/DoD만 검사하며 `internal_review_rounds.json`을 읽지 않습니다. repo 전체에서 장부 소비자는 `pm_delegate.py`와 테스트뿐입니다.
+
+   probe: 내부 장부가 전혀 없는 `T-9999`에 `_complete_gate(..., tests_pass=True, allow_missing_log=True)` → `[]`(완료 허용). 따라서 native 리뷰만 하고도 완료할 수 있어 채널 규칙이 운용 문구에 머뭅니다.
+
+2. 스폰 후 raw 박제 실패가 라운드를 환불합니다.
+
+   `pm_delegate.py`는 raw 쓰기·reply 관측 후에야 `any_spawned`를 갱신합니다.
+
+   probe: driver가 성공 반환한 직후 raw write를 `OSError`로 만들면 실제 송신·과금 뒤 환불되는 상한 우회입니다.
+
+3. 장부 락 실패가 reviewer 세션을 차단합니다.
+
+   `pm_delegate.py`는 예약 락/저장 `OSError`를 `refused_rc=1`로 바꿉니다.
+
+   probe:
+
+   - 손상 JSON 장부: `refused_rc=None`, 예약 `count=1` — fail-soft 정상
+   - 락 실패: `refused_rc=1`, `spawn_allowed=False` — 가드 고장이 작업을 멈추면 안 됨 위반
+
+   락 실패 시 loud 경고와 함께 비계측 자문으로 계속하되, 완료 증거로는 인정하지 않는 분리가 필요합니다.
+
+4. 표준 `- 없음` 통과 응답을 unknown으로 기록합니다.
+
+   must-fix 추출기는 목록 항목 `- 없음`을 건너뛴 뒤 `None`을 반환합니다.
+
+   probe:
+
+   - `판정: 통과` + `## must-fix\n- 없음` → `verdict=None, must_fix_items=None`
+   - 목록 기호 없는 `없음` → `verdict=0, must_fix_items=[]`
+   - must-fix 절 부재 통과 → unknown — 이 보수 판정은 정상
+   - 형식 없는 `reply_extracted=true` 문구 → unknown — 오용 없음
+
+5. namespaced ticket을 내부 게이트로 사용할 수 없습니다.
+
+   `pm_delegate.py`가 `T-\d+`만 허용합니다.
+
+   probe: `T-0651 → rc=0`, `T-PAY-001 → rc=2`. 프로젝트가 지원하는 prefix 티켓에 내부 리뷰 장부를 적용할 수 없습니다.
+
+6. 지정 회귀와 전파 drift가 red입니다.
+
+   - 새 fixture 누락: 내부 리뷰 6실패
+   - canonical `pm_delegate.py`와 템플릿 3벌 불일치
+   - `board.py`, `pm_playbook.md`, `pm-review` 카드 parity 불일치
+
+## 중점별 판정
+
+- external blast-radius는 통과했습니다.

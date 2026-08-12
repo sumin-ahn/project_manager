@@ -5,18 +5,19 @@
 opencode 표면)와 pm_role 카탈로그가 한동안 "CLI 가 status.md 스칼라 갱신" 이라는 *거짓 서술*을
 남겨 채택자를 오도했다(T-0108·이 세션 통합 메타 "redefine 후 기존 자산 갱신 누락" 클래스). 이
 가드는 그 정확한 stale 문구의 재발과 `--section` deprecated 문서화의 회귀를 차단한다.
-(ADR-0065·T-0364: opencode 표면은 `.opencode/command` 은퇴 후 `.claude/skills` 미러다.)
+opencode는 skill 미러와 canonical에서 생성한 command 사본을 모두 가드한다(T-0674).
 """
 
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 
-# pm-wave-finish 출하 문서 3종 (root dogfood + claude_code 템플릿 + opencode 스킬 미러·ADR-0065).
+# pm-wave-finish 출하 문서 4종(root + claude_code + opencode skill/command).
 WAVE_FINISH_DOCS = [
     REPO / ".claude" / "skills" / "pm-wave-finish" / "SKILL.md",
     REPO / "templates" / "claude_code" / ".claude" / "skills" / "pm-wave-finish" / "SKILL.md",
     REPO / "templates" / "opencode" / ".claude" / "skills" / "pm-wave-finish" / "SKILL.md",
+    REPO / "templates" / "opencode" / ".opencode" / "command" / "pm-wave-finish.md",
 ]
 
 TICKET_FINISH = REPO / ".project_manager" / "tools" / "ticket_finish.py"

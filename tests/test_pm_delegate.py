@@ -1,6 +1,7 @@
 """pm_delegate.py 엔진 코어 단위 테스트 — cross-harness 역할 위임 채널 (ADR-0075·sealed spike).
 
-전부 mock(run_fn DI) — 실 하네스 바이너리는 절대 호출하지 않는다(라이브는 T-0449). 검증 축(ticket DoD):
+대부분 mock(run_fn DI)이며, 권한 계약만 실제 codex sandbox opt-in과 무과금 opencode `agent list`
+통합으로 고정한다. 검증 축(ticket DoD):
   ① 3 드라이버 argv 정확성(3하네스×4역할·codex 전역옵션 위치·cwd 핀·reasoning 드라이버 매핑·§3.3).
   ② config 해소 원자성(§3.2) — CLI 완전지정 미참조·부분 override 거부·hard fail-loud·미매핑 fail-loud·
      티어 세트 통째·비-개발 tier usage error.
@@ -17,6 +18,8 @@
 """
 from __future__ import annotations
 
+import datetime as _datetime
+import hashlib
 import importlib.util
 import json as _json
 import os
@@ -334,6 +337,62 @@ def test_dry_run_outputs_argv_and_prompt(pd, monkeypatch, tmp_path, capsys):
     assert fake.calls == []  # 미실행
 
 
+def test_t0658_code_reviewer_dry_run_prompt_contains_parser_derived_contract(
+    pd, monkeypatch, tmp_path, capsys,
+):
+    """code-reviewer 실 합성 prompt가 판정 선언·목록 0건·허용 토큰 계약을 모두 싣는다."""
+    prompt = _write_prompt(tmp_path, "T-0658 리뷰 요청")
+    conf = {
+        "delegate_enabled": "false",
+        "delegate.code-reviewer.harness": "codex",
+        "delegate.code-reviewer.model": "gpt-review",
+    }
+    fake = _FakeRun(stdout=_codex_stdout())
+
+    rc = _run_main(
+        pd,
+        monkeypatch,
+        [
+            "--role", "code-reviewer", "--prompt-file", str(prompt),
+            "--cwd", str(tmp_path), "--ticket", "T-0658", "--dry-run",
+        ],
+        conf,
+        fake,
+    )
+    out = capsys.readouterr().out
+    external = pd._load_external_review()
+
+    assert rc == 0 and fake.calls == []
+    assert "행 선두" in out and "인용문·코드펜스" in out
+    assert "`판정: 통과` 또는 `판정: 반려`" in out
+    assert "must-fix 절은 markdown 제목 `## must-fix`" in out
+    assert "목록으로 쓴다" in out and "`- 없음` 한 항목" in out
+    assert "산문 `must-fix 없습니다`는 0건으로 읽히지 않는다" in out
+    assert "판정 낱말은 파서 허용 토큰 중 하나만" in out
+    for token in external._PASS_VERDICT_TOKENS | external._REJECT_VERDICT_TOKENS:
+        assert f"`판정: {token}`" in out
+    for token in pd._INTERNAL_NONE_ITEM_TOKENS:
+        assert f"`- {token}`" in out
+
+
+def test_t0658_review_contract_tracks_parser_token_sources_without_literal_copy(
+    pd, monkeypatch,
+):
+    """허용 토큰 원천을 바꾸면 preamble도 즉시 따라가며 0건 regex와 안내도 한 tuple을 읽는다."""
+    class _ContractProbe:
+        _PASS_VERDICT_TOKENS = frozenset({"PROBE_PASS"})
+        _REJECT_VERDICT_TOKENS = frozenset({"PROBE_REJECT"})
+
+    monkeypatch.setattr(pd, "_load_external_review", lambda: _ContractProbe)
+    preamble = pd._internal_review_format_preamble()
+
+    assert "`판정: PROBE_PASS`" in preamble
+    assert "`판정: PROBE_REJECT`" in preamble
+    for token in pd._INTERNAL_NONE_ITEM_TOKENS:
+        assert pd._INTERNAL_NONE_ITEM_RE.fullmatch(token)
+        assert f"`- {token}`" in preamble
+
+
 def test_successful_delegation_stdout_reply(pd, monkeypatch, tmp_path, capsys):
     """성공 위임 → 최종 reply 만 stdout·raw 박제·codex stdin 주입·§3.4."""
     prompt = _write_prompt(tmp_path)
@@ -394,6 +453,8 @@ def test_opencode_prompt_file_channel(pd, monkeypatch, tmp_path):
     def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
         seen["stdin_text"] = stdin_text
         file_arg = argv[argv.index("--file") + 1]
+        seen["prompt_file"] = Path(file_arg)
+        seen["prepared_prompt"] = Path(file_arg).resolve()
         seen["content"] = Path(file_arg).read_text(encoding="utf-8")
         return {"returncode": 0, "stdout": _opencode_stdout("oc답"), "stderr": "", "timed_out": False}
 
@@ -403,6 +464,1017 @@ def test_opencode_prompt_file_channel(pd, monkeypatch, tmp_path):
     assert rc == 0
     assert seen["stdin_text"] is None  # opencode 는 stdin 미사용
     assert seen["content"].startswith("너는 이 프로젝트의 developer")  # 합성 프롬프트 --file
+    assert seen["prepared_prompt"].is_relative_to(tmp_path.resolve())
+
+
+def test_opencode_transport_copy_non_repo_is_o_excl_0600(pd, monkeypatch, tmp_path):
+    """비-repo ``--cwd``에도 sandbox 내부 wire 디렉터리를 만들고 O_EXCL·0600을 지킨다."""
+    cwd = tmp_path / "plain-directory"
+    cwd.mkdir()
+    fixed_uuid = type("FixedUuid", (), {"hex": "fixed-transport-id"})()
+    monkeypatch.setattr(pd.uuid, "uuid4", lambda: fixed_uuid)
+
+    prompt_path = pd._save_opencode_transport_prompt(cwd, "합성 프롬프트")
+
+    assert prompt_path.parent.parent == cwd / ".project_manager" / ".local" / "delegate"
+    assert prompt_path.name == "prompt.md"
+    assert (prompt_path.parent / ".gitignore").read_text(encoding="utf-8") == "*\n"
+    assert prompt_path.read_text(encoding="utf-8") == "합성 프롬프트"
+    assert stat.S_IMODE(prompt_path.stat().st_mode) == 0o600
+    with pytest.raises(FileExistsError):
+        pd._save_opencode_transport_prompt(cwd, "덮어쓰기 금지")
+    assert prompt_path.read_text(encoding="utf-8") == "합성 프롬프트"
+    pd._cleanup_attempt_transport(prompt_path)
+    assert not (cwd / ".project_manager").exists()
+
+
+def test_opencode_unsupported_platform_fails_closed_before_create(
+        pd, monkeypatch, tmp_path, capsys):
+    """dir_fd/O_NOFOLLOW 미지원 시 경로 폴백 없이 cross 위임 rc=1과 처방을 낸다."""
+    prompt = _write_prompt(tmp_path)
+    conf = _enabled_conf(**{
+        "delegate.developer.harness": "opencode",
+        "delegate.developer.model": "prov/m",
+    })
+    fake = _FakeRun(stdout=_opencode_stdout("호출되면 안 됨"))
+    monkeypatch.setattr(pd, "_OPENCODE_TRANSPORT_FD_SUPPORTED", False)
+
+    rc = _run_main(
+        pd, monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path)],
+        conf, fake,
+    )
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "fail-closed" in err
+    assert "Linux/POSIX" in err and "codex/claude" in err
+    assert fake.calls == []
+    assert not (tmp_path / ".project_manager").exists()
+
+
+def test_opencode_transport_save_is_wired_to_containment_guard(
+        pd, monkeypatch, tmp_path):
+    """공용 containment 가드를 지우면 깨지도록 실제 save 진입점의 배선을 고정한다."""
+    cwd = tmp_path / "sandbox"
+    cwd.mkdir()
+    calls = []
+
+    class RejectingRelay:
+        class HarnessContractError(Exception):
+            pass
+
+        @staticmethod
+        def assert_opencode_prompt_in_cwd(cwd_arg, prompt_file):
+            calls.append((Path(cwd_arg), Path(prompt_file)))
+            raise RejectingRelay.HarnessContractError("배선 가드 거부")
+
+    monkeypatch.setattr(pd, "_load_relay", lambda: RejectingRelay)
+
+    with pytest.raises(pd.DelegateError, match="배선 가드 거부"):
+        pd._save_opencode_transport_prompt(cwd, "합성 프롬프트")
+
+    assert len(calls) == 1
+    assert calls[0][0] == cwd
+    assert not (cwd / ".project_manager").exists()
+
+
+def test_opencode_execute_checks_containment_again_immediately_before_send(
+        pd, monkeypatch, tmp_path):
+    """실행 진입점은 생성 전 검사에 더해 argv 조립 직전 2차 containment를 수행한다."""
+    cwd = tmp_path / "sandbox"
+    cwd.mkdir()
+    original_assert = pd._assert_opencode_transport_path
+    calls = []
+
+    def _counting_assert(cwd_arg, prompt_file):
+        calls.append((Path(cwd_arg), Path(prompt_file)))
+        original_assert(cwd_arg, prompt_file)
+
+    monkeypatch.setattr(pd, "_assert_opencode_transport_path", _counting_assert)
+
+    pd._execute_attempt(
+        harness="opencode",
+        model="prov/m",
+        reasoning=None,
+        role="developer",
+        cwd=cwd,
+        prompt="합성 프롬프트",
+        timeout=30,
+        output_dir=tmp_path / "raw",
+        run_fn=lambda *a, **k: {
+            "returncode": 0,
+            "stdout": _opencode_stdout("완료"),
+            "stderr": "",
+            "timed_out": False,
+        },
+        attempt="primary",
+    )
+
+    assert len(calls) == 2
+    assert calls[0] == calls[1]
+    assert not (cwd / ".project_manager").exists()
+
+
+def test_opencode_overlapping_transport_cleanup_removes_shared_skeleton_quietly(
+        pd, tmp_path, capsys):
+    """겹친 두 transport의 마지막 정리가 공유 골격을 회수하고 ENOTEMPTY를 경고하지 않는다."""
+    cwd = tmp_path / "sandbox"
+    cwd.mkdir()
+    first = pd._save_opencode_transport_prompt(cwd, "첫 번째 합성 프롬프트")
+    second = pd._save_opencode_transport_prompt(cwd, "두 번째 합성 프롬프트")
+
+    pd._cleanup_attempt_transport(first)
+    assert (cwd / ".project_manager" / ".local" / "delegate").is_dir()
+    pd._cleanup_attempt_transport(second)
+
+    assert not (cwd / ".project_manager").exists()
+    assert capsys.readouterr().err == ""
+
+
+def _track_transport_directory_fds(pd, monkeypatch):
+    """transport가 os.open으로 연 디렉터리 fd 중 아직 close되지 않은 집합을 돌려준다."""
+    live_fds = set()
+    original_open = pd.os.open
+    original_close = pd.os.close
+
+    def _tracked_open(path, flags, *args, **kwargs):
+        fd = original_open(path, flags, *args, **kwargs)
+        if flags & pd.os.O_DIRECTORY:
+            live_fds.add(fd)
+        return fd
+
+    def _tracked_close(fd):
+        result = original_close(fd)
+        live_fds.discard(fd)
+        return result
+
+    monkeypatch.setattr(pd.os, "open", _tracked_open)
+    monkeypatch.setattr(pd.os, "close", _tracked_close)
+    return live_fds
+
+
+def test_opencode_chain_open_retries_after_parent_skeleton_disappears(
+        pd, monkeypatch, tmp_path):
+    """열어 둔 상위 골격이 정리되면 fd를 되감고 새 chain으로 재시도해 성공한다."""
+    if not pd._OPENCODE_TRANSPORT_FD_SUPPORTED:
+        pytest.skip("dir_fd/O_NOFOLLOW 보장 플랫폼 전용")
+    cwd = tmp_path / "sandbox"
+    cwd.mkdir()
+    live_fds = _track_transport_directory_fds(pd, monkeypatch)
+    original_mkdir = pd.os.mkdir
+    original_rmdir = pd.os.rmdir
+    injected = 0
+
+    def _remove_parent_once(path, mode=0o777, *, dir_fd=None):
+        nonlocal injected
+        if path == ".local" and injected == 0:
+            # B가 .project_manager fd를 연 직후 A가 빈 골격을 이름 공간에서 제거한 형상.
+            original_rmdir(cwd / ".project_manager")
+            injected += 1
+        return original_mkdir(path, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(pd.os, "mkdir", _remove_parent_once)
+
+    transport = pd._save_opencode_transport_prompt(cwd, "재시도 뒤 저장")
+    assert injected == 1
+    assert transport.read_text(encoding="utf-8") == "재시도 뒤 저장"
+
+    pd._cleanup_attempt_transport(transport)
+    assert live_fds == set()
+    assert list(cwd.iterdir()) == []
+
+
+def test_opencode_chain_open_retry_exhaustion_is_delegate_error_without_residue(
+        pd, monkeypatch, tmp_path):
+    """매 chain-open의 상위 골격이 사라지면 유한 소진 뒤 번역하고 fd·디스크를 비운다."""
+    if not pd._OPENCODE_TRANSPORT_FD_SUPPORTED:
+        pytest.skip("dir_fd/O_NOFOLLOW 보장 플랫폼 전용")
+    cwd = tmp_path / "sandbox"
+    cwd.mkdir()
+    live_fds = _track_transport_directory_fds(pd, monkeypatch)
+    original_mkdir = pd.os.mkdir
+    original_rmdir = pd.os.rmdir
+    injected = 0
+
+    def _remove_parent_every_time(path, mode=0o777, *, dir_fd=None):
+        nonlocal injected
+        if path == ".local":
+            original_rmdir(cwd / ".project_manager")
+            injected += 1
+        return original_mkdir(path, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(pd.os, "mkdir", _remove_parent_every_time)
+
+    with pytest.raises(pd.DelegateError) as caught:
+        pd._save_opencode_transport_prompt(cwd, "저장되면 안 됨")
+
+    max_attempts = pd._OPENCODE_TRANSPORT_CHAIN_OPEN_MAX_ATTEMPTS
+    assert injected == max_attempts
+    assert "chain-open 경쟁(ENOENT)" in str(caught.value)
+    assert f"{max_attempts}회 시도" in str(caught.value)
+    assert live_fds == set()
+    assert list(cwd.iterdir()) == []
+
+
+def test_opencode_raw_reservation_failure_rolls_back_transport(
+        pd, monkeypatch, tmp_path):
+    """wire 준비 뒤 raw 예약 실패도 합성 프롬프트와 cwd 골격을 모두 되감는다."""
+    cwd = tmp_path / "sandbox"
+    cwd.mkdir()
+
+    def _fail_raw_reservation(*args, **kwargs):
+        raise OSError("의도한 raw 예약 실패")
+
+    monkeypatch.setattr(pd, "_reserve_raw_output", _fail_raw_reservation)
+
+    with pytest.raises(OSError, match="의도한 raw 예약 실패"):
+        pd._execute_attempt(
+            harness="opencode",
+            model="prov/m",
+            reasoning=None,
+            role="developer",
+            cwd=cwd,
+            prompt="남으면 안 되는 합성 프롬프트",
+            timeout=30,
+            output_dir=tmp_path / "raw",
+            run_fn=lambda *a, **k: pytest.fail("raw 예약 실패 뒤 실행되면 안 됨"),
+            attempt="primary",
+        )
+
+    assert list(cwd.iterdir()) == []
+
+
+def test_opencode_symlink_cwd_uses_same_lexical_dir_for_process_and_file(
+        pd, tmp_path):
+    """symlink cwd의 감사 argv는 lexical 값을 보존하고 spawn argv/cwd는 같은 고정 inode를 쓴다."""
+    real_cwd = tmp_path / "real-workspace"
+    linked_cwd = tmp_path / "workspace-link"
+    real_cwd.mkdir()
+    linked_cwd.symlink_to(real_cwd, target_is_directory=True)
+    seen = {}
+
+    def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
+        dir_arg = argv[argv.index("--dir") + 1]
+        file_arg = argv[argv.index("--file") + 1]
+        seen.update(
+            dir_arg=dir_arg,
+            file_arg=file_arg,
+            process_cwd=cwd,
+            resolved_dir=Path(dir_arg).resolve(),
+            resolved_file=Path(file_arg).resolve(),
+        )
+        assert cwd == dir_arg
+        assert Path(file_arg).read_text(encoding="utf-8") == "합성 프롬프트"
+        assert seen["resolved_file"].is_relative_to(seen["resolved_dir"])
+        return {
+            "returncode": 0,
+            "stdout": _opencode_stdout("완료"),
+            "stderr": "",
+            "timed_out": False,
+        }
+
+    result = pd._execute_attempt(
+        harness="opencode",
+        model="prov/m",
+        reasoning=None,
+        role="developer",
+        cwd=linked_cwd,
+        prompt="합성 프롬프트",
+        timeout=30,
+        output_dir=tmp_path / "raw",
+        run_fn=_capture,
+        attempt="primary",
+    )
+
+    assert seen["resolved_dir"] == real_cwd.resolve()
+    assert seen["resolved_file"].is_relative_to(real_cwd.resolve())
+    assert result.argv[result.argv.index("--dir") + 1] == seen["dir_arg"]
+    assert result.argv[result.argv.index("--file") + 1] == seen["file_arg"]
+    assert not (real_cwd / ".project_manager").exists()
+
+
+@pytest.mark.parametrize(
+    ("swap_point", "binding_label"),
+    [
+        pytest.param("sandbox", "sandbox", id="sandbox"),
+        pytest.param("prompt-parent", "prompt 부모", id="prompt-parent"),
+        pytest.param("prompt-file", "prompt 파일", id="prompt-file"),
+    ],
+)
+def test_opencode_rename_swap_after_prepare_is_rc1_and_cleanup_preserves_residue(
+        pd, monkeypatch, tmp_path, capsys, swap_point, binding_label):
+    """3개 결속 rename-swap은 spawn을 거부하고 cleanup도 replacement를 지우지 않는다."""
+    real_cwd = tmp_path / "real-workspace"
+    real_cwd.mkdir()
+    prompt = _write_prompt(real_cwd)
+    seen = {}
+    original_reserve = pd._reserve_raw_output
+
+    def _reserve_then_swap(*args, **kwargs):
+        raw_path = original_reserve(*args, **kwargs)
+        prepared_prompt = next(
+            real_cwd.glob(".project_manager/.local/delegate/*/prompt.md")
+        )
+        prepared_parent = prepared_prompt.parent
+        original_ignore = prepared_parent / ".gitignore"
+        if swap_point == "sandbox":
+            relative_prompt = prepared_prompt.relative_to(real_cwd)
+            parked_cwd = tmp_path / "prepared-workspace"
+            real_cwd.rename(parked_cwd)
+            real_cwd.mkdir()
+            attacker_prompt = real_cwd / relative_prompt
+            attacker_prompt.parent.mkdir(parents=True)
+            original_prompt = parked_cwd / relative_prompt
+            original_ignore = original_prompt.parent / ".gitignore"
+        elif swap_point == "prompt-parent":
+            parked_parent = prepared_parent.with_name(
+                f"{prepared_parent.name}-prepared"
+            )
+            prepared_parent.rename(parked_parent)
+            prepared_parent.mkdir()
+            attacker_prompt = None
+            replacement_path = prepared_parent
+            original_prompt = parked_parent / prepared_prompt.name
+            original_ignore = parked_parent / ".gitignore"
+        else:
+            original_prompt = prepared_prompt.with_name("prepared-prompt.md")
+            prepared_prompt.rename(original_prompt)
+            attacker_prompt = prepared_prompt
+        if attacker_prompt is not None:
+            attacker_prompt.write_text("공격자 프롬프트", encoding="utf-8")
+            replacement_path = attacker_prompt
+        seen.update(
+            attacker_prompt=attacker_prompt,
+            replacement_path=replacement_path,
+            original_prompt=original_prompt,
+            original_ignore=original_ignore,
+            raw_path=raw_path,
+        )
+        return raw_path
+
+    monkeypatch.setattr(pd, "_reserve_raw_output", _reserve_then_swap)
+    fake = _FakeRun(stdout=_opencode_stdout("호출되면 안 됨"))
+    rc = _run_main(
+        pd,
+        monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(real_cwd)],
+        _enabled_conf(**{
+            "delegate.developer.harness": "opencode",
+            "delegate.developer.model": "prov/m",
+        }),
+        fake,
+    )
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert f"spawn 직전 {binding_label}가 준비 뒤 교체됨" in err
+    assert "cleanup identity 재대조 실패" in err
+    assert "잔존 가능 경로" in err
+    assert "Traceback" not in err
+    assert fake.calls == []
+    assert seen["replacement_path"].exists()
+    if seen["attacker_prompt"] is not None:
+        assert seen["attacker_prompt"].read_text(encoding="utf-8") == "공격자 프롬프트"
+    assert seen["original_prompt"].is_file()
+    assert seen["original_ignore"].read_text(encoding="utf-8") == "*\n"
+
+
+def test_opencode_runner_boundary_swap_child_reads_prepared_prompt(
+        pd, tmp_path):
+    """최종 검사 뒤 rename+재배치돼도 실제 자식은 준비 때 고정한 prompt inode를 읽는다."""
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    seen = {}
+
+    def _swap_then_spawn(argv, *, stdin_text, cwd, env, timeout, harness):
+        prepared_prompt = next(
+            sandbox.glob(".project_manager/.local/delegate/*/prompt.md")
+        )
+        relative_prompt = prepared_prompt.relative_to(sandbox)
+        parked = tmp_path / "prepared-sandbox"
+        attacker = tmp_path / "attacker-sandbox"
+        sandbox.rename(parked)
+        sandbox.mkdir()
+        attacker_prompt = sandbox / relative_prompt
+        attacker_prompt.parent.mkdir(parents=True)
+        attacker_prompt.write_text("공격자 프롬프트", encoding="utf-8")
+        try:
+            child = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "from pathlib import Path; import sys; "
+                    "print(Path(sys.argv[1]).read_text(encoding='utf-8'), end='')",
+                    argv[argv.index("--file") + 1],
+                ],
+                cwd=cwd,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+            seen.update(
+                child_rc=child.returncode,
+                child_stdout=child.stdout,
+                child_stderr=child.stderr,
+                child_cwd=cwd,
+                child_file=argv[argv.index("--file") + 1],
+                child_dir=argv[argv.index("--dir") + 1],
+            )
+        finally:
+            sandbox.rename(attacker)
+            parked.rename(sandbox)
+        return {
+            "returncode": child.returncode,
+            "stdout": _opencode_stdout("완료") if child.returncode == 0 else "",
+            "stderr": child.stderr,
+            "timed_out": False,
+        }
+
+    pd._execute_attempt(
+        harness="opencode",
+        model="prov/m",
+        reasoning=None,
+        role="developer",
+        cwd=sandbox,
+        prompt="준비된 합성 프롬프트",
+        timeout=30,
+        output_dir=tmp_path / "raw",
+        run_fn=_swap_then_spawn,
+        attempt="primary",
+    )
+
+    assert seen["child_rc"] == 0, seen["child_stderr"]
+    assert seen["child_stdout"] == "준비된 합성 프롬프트"
+    assert seen["child_cwd"] == seen["child_dir"]
+    assert seen["child_file"].startswith(f"/proc/{os.getpid()}/fd/")
+    assert seen["child_dir"].startswith(f"/proc/{os.getpid()}/fd/")
+
+
+@pytest.mark.parametrize(
+    "role", ["developer", "researcher", "architect", "code-reviewer"],
+)
+def test_opencode_proc_fd_absent_owner_guarded_normal_path_all_roles(
+        pd, monkeypatch, tmp_path, role):
+    """procfs 없는 POSIX도 신뢰 owner/권한 체인이면 네 역할 모두 lexical 위임을 실행한다."""
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    sandbox.chmod(0o700)
+    binding_checks = 0
+    seen = {}
+    original_assert = pd._assert_opencode_transport_binding
+
+    def _counting_assert(transport):
+        nonlocal binding_checks
+        binding_checks += 1
+        return original_assert(transport)
+
+    monkeypatch.setattr(pd, "_opencode_proc_fd_root", lambda: None)
+    monkeypatch.setattr(pd, "_assert_opencode_transport_binding", _counting_assert)
+
+    def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
+        file_arg = argv[argv.index("--file") + 1]
+        seen.update(
+            cwd=cwd,
+            dir_arg=argv[argv.index("--dir") + 1],
+            file_arg=file_arg,
+            content=Path(file_arg).read_text(encoding="utf-8"),
+        )
+        return {
+            "returncode": 0,
+            "stdout": _opencode_stdout("완료"),
+            "stderr": "",
+            "timed_out": False,
+        }
+
+    result = pd._execute_attempt(
+        harness="opencode",
+        model="prov/m",
+        reasoning=None,
+        role=role,
+        cwd=sandbox,
+        prompt="정상 합성 프롬프트",
+        timeout=30,
+        output_dir=tmp_path / "raw",
+        run_fn=_capture,
+        attempt="primary",
+    )
+
+    raw_text = result.raw_path.read_text(encoding="utf-8")
+    assert result.result["returncode"] == 0
+    assert binding_checks == 1
+    assert seen["cwd"] == str(sandbox)
+    assert seen["dir_arg"] == str(sandbox)
+    assert seen["file_arg"].startswith(str(sandbox) + os.sep)
+    assert seen["content"].endswith("정상 합성 프롬프트")
+    assert "# transport_binding_mode: owner-guarded-lexical" in raw_text
+
+
+def test_opencode_proc_fd_absent_swap_is_rejected_before_runner(
+        pd, monkeypatch, tmp_path):
+    """procfs fd 경로가 없어도 전송 직전 inode 재대조가 교체 prompt를 fail-loud 한다."""
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    sandbox.chmod(0o700)
+    transport = pd._save_opencode_transport_prompt(sandbox, "준비된 합성 프롬프트")
+    argv = pd._build_target_argv(
+        "opencode", "prov/m", None, "developer", transport.sandbox, transport,
+    )
+    prepared = transport.path.with_name("prepared-prompt.md")
+    transport.path.rename(prepared)
+    transport.path.write_text("공격자 프롬프트", encoding="utf-8")
+    monkeypatch.setattr(pd, "_opencode_proc_fd_root", lambda: None)
+    try:
+        with pytest.raises(pd.DelegateError, match="prompt 파일.*준비 뒤 교체됨"):
+            pd._opencode_transport_launch_target(transport, argv)
+    finally:
+        transport.path.unlink()
+        prepared.rename(transport.path)
+        pd._cleanup_attempt_transport(transport)
+
+
+def test_opencode_proc_fd_absent_same_owner_after_final_check_residual_is_explicit(
+        pd, monkeypatch, tmp_path):
+    """허용된 같은-euid 잔여는 값과 raw binding mode로 숨김없이 표출한다."""
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    sandbox.chmod(0o700)
+    seen = {"runner_calls": 0}
+    original_assert = pd._assert_opencode_transport_binding
+
+    def _assert_then_swap(transport):
+        original_assert(transport)
+        prepared = transport.path.with_name("prepared-after-final-check.md")
+        transport.path.rename(prepared)
+        transport.path.write_text("ATTACKER_AFTER_FINAL_CHECK", encoding="utf-8")
+        seen.update(
+            prepared=prepared,
+            lexical=transport.path,
+            prepared_content=prepared.read_text(encoding="utf-8"),
+            attacker_content=transport.path.read_text(encoding="utf-8"),
+        )
+
+    def _runner(argv, *, stdin_text, cwd, env, timeout, harness):
+        seen["runner_calls"] += 1
+        child = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from pathlib import Path; import sys; "
+                "print(Path(sys.argv[1]).read_text(encoding='utf-8'), end='')",
+                argv[argv.index("--file") + 1],
+            ],
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        seen.update(child_rc=child.returncode, child_stdout=child.stdout)
+        return {
+            "returncode": child.returncode,
+            "stdout": _opencode_stdout("완료"),
+            "stderr": child.stderr,
+            "timed_out": False,
+        }
+
+    monkeypatch.setattr(pd, "_opencode_proc_fd_root", lambda: None)
+    monkeypatch.setattr(pd, "_assert_opencode_transport_binding", _assert_then_swap)
+
+    result = pd._execute_attempt(
+        harness="opencode",
+        model="prov/m",
+        reasoning=None,
+        role="developer",
+        cwd=sandbox,
+        prompt="ORIGINAL_AFTER_FINAL_CHECK",
+        timeout=30,
+        output_dir=tmp_path / "raw",
+        run_fn=_runner,
+        attempt="primary",
+    )
+
+    assert seen["prepared_content"] == "ORIGINAL_AFTER_FINAL_CHECK"
+    assert seen["attacker_content"] == "ATTACKER_AFTER_FINAL_CHECK"
+    assert seen["runner_calls"] == 1
+    assert seen["child_rc"] == 0
+    assert seen["child_stdout"] == "ATTACKER_AFTER_FINAL_CHECK"
+    assert (
+        "# transport_binding_mode: owner-guarded-lexical"
+        in result.raw_path.read_text(encoding="utf-8")
+    )
+
+
+@pytest.mark.parametrize(
+    "role", ["developer", "researcher", "architect", "code-reviewer"],
+)
+def test_opencode_proc_fd_absent_unsafe_parent_rejection_closes_raw_ledger(
+        pd, monkeypatch, tmp_path, capsys, role):
+    """다른 UID 쓰기 가능 부모의 네 역할 거부는 raw 사유+rc=1 마감이며 unfinished 0이다."""
+    shared = tmp_path / "shared"
+    sandbox = shared / "sandbox"
+    shared.mkdir()
+    shared.chmod(0o777)
+    sandbox.mkdir()
+    output_dir = tmp_path / "raw"
+    monkeypatch.setattr(pd, "_opencode_proc_fd_root", lambda: None)
+
+    with pytest.raises(pd.DelegateError, match="다른 UID가 교체할 수 있어"):
+        pd._execute_attempt(
+            harness="opencode",
+            model="prov/m",
+            reasoning=None,
+            role=role,
+            cwd=sandbox,
+            prompt="전송되면 안 됨",
+            timeout=30,
+            output_dir=output_dir,
+            run_fn=lambda *args, **kwargs: pytest.fail("runner must not start"),
+            attempt="primary",
+        )
+
+    rows = pd._load_relay().raw_records(output_dir / "raw_outputs.json")
+    assert len(rows) == 1
+    row = rows[0]
+    raw_path = Path(row["raw_path"])
+    raw_text = raw_path.read_text(encoding="utf-8")
+    assert raw_path.stat().st_size > 0
+    assert row["finished_at"] is not None
+    assert row["rc"] == 1
+    assert row["pre_spawn_rejected"] is True
+    assert row["finish_note"] == "pre-spawn rejection"
+    assert "pre-spawn rejection" in raw_text
+    assert "# transport_binding_mode: fail-closed" in raw_text
+
+    capsys.readouterr()
+    assert pd._cmd_raw([
+        "--unfinished", "--output-dir", str(output_dir),
+    ]) == 0
+    assert "미마감 raw 없음" in capsys.readouterr().out
+
+
+def _init_transport_test_repo(repo: Path, tracked_path: str = "seed.txt") -> None:
+    repo.mkdir()
+    target = repo / tracked_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("seed\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "add", tracked_path], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "base"],
+        cwd=repo, check=True, capture_output=True,
+    )
+
+
+def test_opencode_non_root_cwd_transport_is_hidden_while_running(pd, tmp_path):
+    """repo 하위 cwd의 wire 사본은 실행 중에도 git untracked 표면에 나타나지 않는다."""
+    repo = tmp_path / "repo"
+    _init_transport_test_repo(repo, "pkg/seed.txt")
+    cwd = repo / "pkg"
+
+    def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
+        status = subprocess.run(
+            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+            cwd=repo, check=True, capture_output=True, text=True,
+        ).stdout
+        assert status == ""
+        assert Path(argv[argv.index("--file") + 1]).is_file()
+        return {
+            "returncode": 0,
+            "stdout": _opencode_stdout("완료"),
+            "stderr": "",
+            "timed_out": False,
+        }
+
+    pd._execute_attempt(
+        harness="opencode",
+        model="prov/m",
+        reasoning=None,
+        role="developer",
+        cwd=cwd,
+        prompt="합성 프롬프트",
+        timeout=30,
+        output_dir=tmp_path / "raw",
+        run_fn=_capture,
+        attempt="primary",
+    )
+
+    assert not (cwd / ".project_manager").exists()
+    assert subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=repo, check=True, capture_output=True, text=True,
+    ).stdout == ""
+
+
+def test_opencode_pm_uninstalled_repo_leaves_no_marker_skeleton(pd, tmp_path):
+    """PM 미설치 repo에서 성공 정리 뒤 .project_manager 마커 골격을 남기지 않는다."""
+    repo = tmp_path / "plain-repo"
+    _init_transport_test_repo(repo)
+    assert not (repo / ".project_manager").exists()
+
+    pd._execute_attempt(
+        harness="opencode",
+        model="prov/m",
+        reasoning=None,
+        role="developer",
+        cwd=repo,
+        prompt="합성 프롬프트",
+        timeout=30,
+        output_dir=tmp_path / "raw",
+        run_fn=lambda *a, **k: {
+            "returncode": 0,
+            "stdout": _opencode_stdout("완료"),
+            "stderr": "",
+            "timed_out": False,
+        },
+        attempt="primary",
+    )
+
+    assert not (repo / ".project_manager").exists()
+    assert subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=repo, check=True, capture_output=True, text=True,
+    ).stdout == ""
+
+
+def test_opencode_external_symlink_prepare_is_main_rc1_without_traceback(
+        pd, monkeypatch, tmp_path, capsys):
+    """외부 symlink containment 거부는 DelegateError traceback 대신 main rc=1 진단으로 끝난다."""
+    cwd = tmp_path / "sandbox"
+    outside = tmp_path / "outside"
+    cwd.mkdir()
+    outside.mkdir()
+    (cwd / ".project_manager").symlink_to(outside, target_is_directory=True)
+    prompt = _write_prompt(cwd)
+    conf = _enabled_conf(**{
+        "delegate.developer.harness": "opencode",
+        "delegate.developer.model": "prov/m",
+    })
+    fake = _FakeRun(stdout=_opencode_stdout("호출되면 안 됨"))
+
+    rc = _run_main(
+        pd, monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(cwd)],
+        conf, fake,
+    )
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "sandbox 밖" in err
+    assert "Traceback" not in err
+    assert fake.calls == []
+
+
+def test_cwd_symlink_loop_is_main_rc1_without_traceback(
+        pd, monkeypatch, tmp_path, capsys):
+    """Python 3.11/3.12 resolve RuntimeError도 DelegateError 진단 rc로 마감한다."""
+    prompt = _write_prompt(tmp_path)
+    cwd_loop = tmp_path / "cwd-loop"
+    cwd_loop.symlink_to(cwd_loop, target_is_directory=True)
+    fake = _FakeRun(stdout=_opencode_stdout("호출되면 안 됨"))
+
+    rc = _run_main(
+        pd, monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(cwd_loop)],
+        _enabled_conf(**{
+            "delegate.developer.harness": "opencode",
+            "delegate.developer.model": "prov/m",
+        }),
+        fake,
+    )
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "--cwd 실경로 해소 실패" in err
+    assert "Traceback" not in err
+    assert fake.calls == []
+
+
+def test_opencode_external_symlink_fallback_prepare_is_main_rc1_without_traceback(
+        pd, monkeypatch, tmp_path, capsys):
+    """폴백 준비의 DelegateError도 primary raw 진단을 보존한 main rc=1로 번역한다."""
+    cwd = tmp_path / "sandbox"
+    outside = tmp_path / "outside"
+    cwd.mkdir()
+    outside.mkdir()
+    (cwd / ".project_manager").symlink_to(outside, target_is_directory=True)
+    prompt = _write_prompt(cwd)
+    conf = _enabled_conf(**{
+        "delegate.developer.fallback.harness": "opencode",
+        "delegate.developer.fallback.model": "prov/m",
+    })
+    calls = []
+
+    def _primary_launch_failure(argv, *, stdin_text, cwd, env, timeout, harness):
+        calls.append(harness)
+        return {
+            "returncode": 1,
+            "stdout": "",
+            "stderr": "codex executable missing",
+            "timed_out": False,
+            pd.RUN_RESULT_LAUNCH_FAILED: True,
+        }
+
+    rc = _run_main(
+        pd, monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(cwd)],
+        conf, _primary_launch_failure,
+    )
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "폴백 실행 준비/raw 박제 실패" in err
+    assert "sandbox 밖" in err
+    assert "primary raw:" in err
+    assert "Traceback" not in err
+    assert calls == ["codex"]
+
+
+def test_opencode_parent_swap_after_containment_cannot_create_outside(
+        pd, monkeypatch, tmp_path, capsys):
+    """containment 검사 직후 부모를 외부 symlink로 바꿔도 fd 순회가 거부하고 외부 생성은 0이다."""
+    if not pd._OPENCODE_TRANSPORT_FD_SUPPORTED:
+        pytest.skip("dir_fd/O_NOFOLLOW 보장 플랫폼 전용")
+    cwd = tmp_path / "sandbox"
+    local_dir = cwd / ".project_manager" / ".local"
+    outside = tmp_path / "outside"
+    local_dir.mkdir(parents=True)
+    outside.mkdir()
+    prompt = _write_prompt(cwd)
+    parked = cwd / ".project_manager" / ".local-before-swap"
+    original_assert = pd._assert_opencode_transport_path
+    calls = 0
+
+    def _assert_then_swap(cwd_arg, prompt_file):
+        nonlocal calls
+        original_assert(cwd_arg, prompt_file)
+        calls += 1
+        if calls == 1:
+            local_dir.rename(parked)
+            local_dir.symlink_to(outside, target_is_directory=True)
+
+    monkeypatch.setattr(pd, "_assert_opencode_transport_path", _assert_then_swap)
+    conf = _enabled_conf(**{
+        "delegate.developer.harness": "opencode",
+        "delegate.developer.model": "prov/m",
+    })
+    fake = _FakeRun(stdout=_opencode_stdout("호출되면 안 됨"))
+
+    rc = _run_main(
+        pd, monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(cwd)],
+        conf, fake,
+    )
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "안전한 디렉터리가 아님" in err
+    assert "Traceback" not in err
+    assert fake.calls == []
+    assert list(outside.iterdir()) == []
+
+
+def test_opencode_cleanup_failure_warns_and_preserves_main_result(
+        pd, monkeypatch, tmp_path, capsys):
+    """민감 사본 삭제 실패는 경로·오류를 경고하되 성공 reply/rc를 갈아치우지 않는다."""
+    if not pd._OPENCODE_TRANSPORT_FD_SUPPORTED:
+        pytest.skip("dir_fd unlink 경로 전용")
+    repo = tmp_path / "repo"
+    _init_transport_test_repo(repo, "prompt.md")
+    prompt = repo / "prompt.md"
+    conf = _enabled_conf(**{
+        "delegate.developer.harness": "opencode",
+        "delegate.developer.model": "prov/m",
+    })
+    seen = {}
+
+    def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
+        seen["prompt_path"] = Path(argv[argv.index("--file") + 1])
+        seen["prepared_path"] = seen["prompt_path"].resolve()
+        return {
+            "returncode": 0,
+            "stdout": _opencode_stdout("주 결과 보존"),
+            "stderr": "",
+            "timed_out": False,
+        }
+
+    original_unlink = pd.os.unlink
+
+    def _deny_transport_unlink(path, *args, **kwargs):
+        if Path(path).name == "prompt.md":
+            raise PermissionError("의도한 삭제 거부")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(pd.os, "unlink", _deny_transport_unlink)
+    rc = _run_main(
+        pd, monkeypatch,
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(repo)],
+        conf, _capture,
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "주 결과 보존" in captured.out
+    assert "합성 프롬프트 삭제 실패" in captured.err
+    assert str(seen["prepared_path"]) in captured.err
+    assert "의도한 삭제 거부" in captured.err
+    assert seen["prepared_path"].is_file()
+    assert (seen["prepared_path"].parent / ".gitignore").is_file()
+    assert subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=repo, check=True, capture_output=True, text=True,
+    ).stdout == ""
+
+
+def test_opencode_transport_guard_rejects_external_and_symlink_paths(pd, tmp_path):
+    """전송 전 가드는 lexical 외부 경로와 sandbox 안 symlink의 실제 외부 대상을 함께 거부한다."""
+    relay = pd._load_relay()
+    cwd = tmp_path / "sandbox"
+    outside = tmp_path / "outside"
+    cwd.mkdir()
+    outside.mkdir()
+    prompt = outside / "prompt.md"
+    prompt.write_text("지시", encoding="utf-8")
+
+    with pytest.raises(relay.HarnessContractError, match="sandbox 밖"):
+        relay.assert_opencode_prompt_in_cwd(cwd, prompt)
+
+    link = cwd / "linked-outside"
+    link.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(relay.HarnessContractError, match="sandbox 밖"):
+        relay.assert_opencode_prompt_in_cwd(cwd, link / "prompt.md")
+
+
+def test_opencode_pm_home_raw_and_cwd_transport_are_separate_and_cross_recorded(
+        pd, monkeypatch, tmp_path):
+    """PM 홈≠cwd 회귀: 감사 raw는 PM 홈, wire는 sandbox에 두고 장부 한 행에 두 좌표를 남긴다."""
+    pm_home = tmp_path / "pm-home"
+    cwd = tmp_path / "work" / "slot-1"
+    (pm_home / ".project_manager").mkdir(parents=True)
+    cwd.mkdir(parents=True)
+    monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", pm_home)
+    seen = {}
+
+    def _capture(argv, *, stdin_text, cwd: str, env, timeout, harness):
+        prompt_path = Path(argv[argv.index("--file") + 1])
+        prepared_path = prompt_path.resolve()
+        prepared_cwd = Path(cwd).resolve()
+        ledger_path = pm_home / ".project_manager" / ".local" / "raw_outputs.json"
+        row = _json.loads(ledger_path.read_text(encoding="utf-8"))["records"][0]
+        seen.update(
+            prompt_path=prompt_path,
+            prepared_path=prepared_path,
+            prepared_cwd=prepared_cwd,
+            row_during_run=row,
+        )
+        assert stdin_text is None
+        assert prepared_path.is_relative_to(prepared_cwd)
+        assert prepared_path.parent.parent == (
+            prepared_cwd / ".project_manager" / ".local" / "delegate"
+        )
+        assert prompt_path.read_text(encoding="utf-8") == "role preamble + task"
+        assert row[pd.OPENCODE_TRANSPORT_PROMPT_FIELD] == str(prepared_path)
+        assert Path(row["raw_path"]).parent == (
+            pm_home / ".project_manager" / ".local" / "delegate"
+        )
+        return {
+            "returncode": 0,
+            "stdout": _opencode_stdout("완료"),
+            "stderr": "",
+            "timed_out": False,
+        }
+
+    result = pd._execute_attempt(
+        harness="opencode",
+        model="prov/m",
+        reasoning=None,
+        role="developer",
+        cwd=cwd,
+        prompt="role preamble + task",
+        timeout=30,
+        output_dir=None,
+        run_fn=_capture,
+        attempt="primary",
+    )
+
+    ledger_path = pm_home / ".project_manager" / ".local" / "raw_outputs.json"
+    row = _json.loads(ledger_path.read_text(encoding="utf-8"))["records"][0]
+    assert result.raw_path.resolve() == Path(row["raw_path"])
+    assert row[pd.OPENCODE_TRANSPORT_PROMPT_FIELD] == str(seen["prepared_path"])
+    raw_text = result.raw_path.read_text(encoding="utf-8")
+    assert str(seen["prompt_path"]) in raw_text
+    assert (
+        f"# transport_sandbox_path_lexical: {cwd}" in raw_text
+    )
+    assert (
+        f"# transport_prompt_path_lexical: {seen['prepared_path']}" in raw_text
+    )
+    assert "# transport_binding_mode: procfd" in raw_text
+    assert row[pd.OPENCODE_TRANSPORT_PROMPT_FIELD] == str(seen["prepared_path"])
+    assert result.raw_path.is_file()
+    assert not seen["prompt_path"].exists()
 
 
 # ══ ⑤ 비-개발 tier / 부분 override usage error (rc=2·argparse) ════════════════
@@ -483,6 +1555,405 @@ def test_read_role_permission_axis(pd):
     # opencode reviewer: plan agent(권한 강제)
     assert pd.build_opencode_argv("m", None, "code-reviewer", "/w", "/p")[
         pd.build_opencode_argv("m", None, "code-reviewer", "/w", "/p").index("--agent") + 1] == "plan"
+
+
+def test_codex_read_attempt_reanchors_execution_root_env_preamble_and_cleanup(
+        pd, monkeypatch, tmp_path):
+    """Codex read attempt는 profile의 암묵 write root까지 tmp로 옮기고 잔여를 0으로 만든다."""
+    temp_root = tmp_path / "system-temp"
+    cwd = tmp_path / "worktree"
+    temp_root.mkdir()
+    cwd.mkdir()
+    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    seen = {}
+
+    def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
+        read_tmp = Path(env["TMPDIR"])
+        seen.update(
+            argv=argv, prompt=stdin_text, env=env, read_tmp=read_tmp,
+            process_cwd=Path(cwd),
+        )
+        assert read_tmp.is_dir()
+        assert stat.S_IMODE(read_tmp.stat().st_mode) == 0o700
+        (read_tmp / "pytest-artifact").mkdir()
+        (read_tmp / "pytest-artifact" / "result.txt").write_text("green")
+        return {
+            "returncode": 0, "stdout": _codex_stdout("검토 완료"),
+            "stderr": "", "timed_out": False,
+        }
+
+    pd._execute_attempt(
+        harness="codex", model="gpt-x", reasoning=None,
+        role="code-reviewer", cwd=cwd, prompt="role preamble + task",
+        timeout=30, output_dir=tmp_path / "raw", run_fn=_capture,
+        attempt="primary",
+    )
+
+    argv = seen["argv"]
+    assert "-s" not in argv and "workspace-write" not in argv
+    overrides = [argv[i + 1] for i, token in enumerate(argv[:-1]) if token == "-c"]
+    assert f'default_permissions="{pd._CODEX_READ_TMP_PROFILE}"' in overrides
+    profile = next(value for value in overrides if value.startswith("permissions."))
+    assert '":root"="read"' in profile
+    assert f'"{seen["read_tmp"]}"="write"' in profile
+    assert str(cwd) not in profile  # worktree write grant 0
+    assert argv[argv.index("-C") + 1] == str(seen["read_tmp"])
+    assert seen["process_cwd"] == seen["read_tmp"]
+    assert all(seen["env"][key] == str(seen["read_tmp"])
+               for key in pd._READ_TMP_ENV_KEYS)
+    assert seen["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert str(seen["read_tmp"]) in seen["prompt"]
+    assert "-p no:cacheprovider" in seen["prompt"]
+    assert f"cd {cwd}" in seen["prompt"]
+    assert "worktree" in seen["prompt"]
+    assert not seen["read_tmp"].exists()
+    assert pd.WRITE_ROLES == frozenset({"developer", "architect"})
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    os.environ.get("PM_DELEGATE_LIVE_SANDBOX") != "1" or not shutil.which("codex"),
+    reason=(
+        "Codex 실제 sandbox 권한 probe — PM_DELEGATE_LIVE_SANDBOX=1 + codex binary가 "
+        "필요(모델/API 호출 없음)"
+    ),
+)
+def test_codex_live_sandbox_tmp_write_and_worktree_open_denied(
+        pd, monkeypatch, tmp_path):
+    """실 Codex sandbox에서 0-byte write까지 tmp=성공/worktree=open 거부를 단언한다."""
+    system_temp = tmp_path / "system-temp"
+    worktree = tmp_path / "worktree"
+    system_temp.mkdir()
+    worktree.mkdir()
+    target = worktree / "tracked.py"
+    target.write_text("sentinel = 1\n", encoding="utf-8")
+    monkeypatch.setattr(pd, "_gettempdir", lambda: str(system_temp))
+    read_tmp = pd._create_read_role_temp("codex", worktree)
+    assert read_tmp is not None
+    temp_probe = read_tmp.path / "probe"
+    before = (
+        target.stat().st_size,
+        target.stat().st_mtime_ns,
+        hashlib.sha256(target.read_bytes()).hexdigest(),
+    )
+    probe_script = "\n".join([
+        "import errno, json, os",
+        "results = {}",
+        f"paths = [",
+        f"    ('worktree', {_json.dumps(str(target))}, os.O_WRONLY),",
+        f"    ('tmp', {_json.dumps(str(temp_probe))}, os.O_WRONLY | os.O_CREAT),",
+        "]",
+        "for label, path, flags in paths:",
+        "    try:",
+        "        fd = os.open(path, flags, 0o600)",
+        "        written = os.write(fd, b'')",
+        "        os.close(fd)",
+        "        results[label] = {'open': True, 'write': written}",
+        "    except OSError as exc:",
+        "        results[label] = {'open': False, 'errno': exc.errno, "
+        "name': errno.errorcode.get(exc.errno)}",
+        "print(json.dumps(results, sort_keys=True))",
+    ])
+    profile_override = (
+        f"permissions.{pd._CODEX_READ_TMP_PROFILE}="
+        f"{pd._codex_read_tmp_profile_value(read_tmp.path)}"
+    )
+    env = pd._apply_read_tmp_env(dict(os.environ), "codex", read_tmp)
+    try:
+        completed = subprocess.run(
+            [
+                "codex", "sandbox", "-c", profile_override,
+                "-P", pd._CODEX_READ_TMP_PROFILE,
+                "-C", str(read_tmp.path), "--", sys.executable, "-c", probe_script,
+            ],
+            cwd=read_tmp.path,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        observed = _json.loads(completed.stdout.strip().splitlines()[-1])
+        assert observed["tmp"] == {"open": True, "write": 0}
+        assert observed["worktree"]["open"] is False
+        assert observed["worktree"]["errno"] in {
+            getattr(os, "EROFS", 30), getattr(os, "EACCES", 13), getattr(os, "EPERM", 1),
+        }
+        after = (
+            target.stat().st_size,
+            target.stat().st_mtime_ns,
+            hashlib.sha256(target.read_bytes()).hexdigest(),
+        )
+        assert after == before
+    finally:
+        pd._cleanup_read_role_temp(read_tmp)
+    assert not read_tmp.path.exists()
+
+
+def test_claude_read_attempt_add_dir_and_cleanup(pd, monkeypatch, tmp_path):
+    """Claude 2.1.227 등가 수단은 같은 attempt tmp를 --add-dir와 env에 연결한다."""
+    temp_root = tmp_path / "system-temp"
+    cwd = tmp_path / "worktree"
+    temp_root.mkdir()
+    cwd.mkdir()
+    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    seen = {}
+
+    def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
+        read_tmp = Path(env["TMPDIR"])
+        seen.update(argv=argv, prompt=stdin_text, read_tmp=read_tmp)
+        (read_tmp / "pytest.tmp").write_text("ok")
+        return {
+            "returncode": 0, "stdout": _claude_stdout("검토 완료"),
+            "stderr": "", "timed_out": False,
+        }
+
+    pd._execute_attempt(
+        harness="claude", model="opus", reasoning=None,
+        role="code-reviewer", cwd=cwd, prompt="role preamble + task",
+        timeout=30, output_dir=tmp_path / "raw", run_fn=_capture,
+        attempt="primary",
+    )
+
+    assert seen["argv"][seen["argv"].index("--add-dir") + 1] == str(seen["read_tmp"])
+    assert str(seen["read_tmp"]) in seen["prompt"]
+    assert not seen["read_tmp"].exists()
+
+
+def test_opencode_read_attempt_uses_measured_allowed_tmp_and_shared_cleanup(
+        pd, monkeypatch, tmp_path):
+    """OpenCode plan의 실측 `${TMPDIR}/opencode/*`와 wire 사본을 한 cleanup seam이 회수한다."""
+    temp_root = tmp_path / "system-temp"
+    cwd = tmp_path / "worktree"
+    temp_root.mkdir()
+    cwd.mkdir()
+    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    seen = {}
+
+    def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
+        read_tmp = Path(env["TMPDIR"])
+        writable_tmp = Path(env["TMP"])
+        prompt_path = Path(argv[argv.index("--file") + 1])
+        seen.update(
+            read_tmp=read_tmp, writable_tmp=writable_tmp,
+            prompt_path=prompt_path,
+        )
+        assert read_tmp.parent == temp_root / pd._OPENCODE_READ_TMP_PARENT
+        assert writable_tmp == read_tmp / pd._OPENCODE_ALLOWED_TMP_COMPONENT
+        assert env["TEMP"] == str(writable_tmp)
+        prompt_text = prompt_path.read_text(encoding="utf-8")
+        assert str(writable_tmp) in prompt_text
+        assert '"$TMPDIR/opencode/pytest"' in prompt_text
+        (writable_tmp / "pytest-artifact").write_text("ok")
+        return {
+            "returncode": 0, "stdout": _opencode_stdout("검토 완료"),
+            "stderr": "", "timed_out": False,
+        }
+
+    pd._execute_attempt(
+        harness="opencode", model="prov/m", reasoning=None,
+        role="code-reviewer", cwd=cwd, prompt="role preamble + task",
+        timeout=30, output_dir=tmp_path / "raw", run_fn=_capture,
+        attempt="primary",
+    )
+
+    assert not seen["read_tmp"].exists()
+    assert not seen["prompt_path"].exists()
+    assert not (temp_root / pd._OPENCODE_READ_TMP_PARENT).exists()
+    assert not (cwd / ".project_manager").exists()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    not shutil.which("opencode"),
+    reason="opencode 실제 `${TMPDIR}/opencode/*` 권한 선언 계약 — binary 필요",
+)
+def test_opencode_binary_permission_tracks_child_tmpdir(tmp_path):
+    """OpenCode 1.18.12 실제 agent 선언은 고정 /tmp가 아니라 child TMPDIR 값을 보간한다."""
+    attempt = tmp_path / "attempt"
+    allowed = attempt / "opencode"
+    sandbox = tmp_path / "sandbox"
+    attempt.mkdir()
+    allowed.mkdir()
+    sandbox.mkdir()
+    env = dict(os.environ)
+    env.update({"TMPDIR": str(attempt), "TMP": str(allowed), "TEMP": str(allowed)})
+    for key, name in (
+        ("XDG_DATA_HOME", "xdg-data"),
+        ("XDG_CACHE_HOME", "xdg-cache"),
+        ("XDG_CONFIG_HOME", "xdg-config"),
+        ("XDG_STATE_HOME", "xdg-state"),
+    ):
+        path = tmp_path / name
+        path.mkdir()
+        env[key] = str(path)
+
+    completed = subprocess.run(
+        ["opencode", "agent", "list"],
+        cwd=sandbox,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert f'"pattern": "{attempt}/opencode/*"' in completed.stdout
+    assert '"pattern": "/tmp/opencode/*"' not in completed.stdout
+
+
+def test_read_tmp_unsupported_platform_preamble_is_explicit(
+        pd, monkeypatch, tmp_path):
+    """안전한 fd cleanup 불가 플랫폼은 회귀 숫자 인용·미실행 명시 문구를 wire에 강제한다."""
+    cwd = tmp_path / "worktree"
+    cwd.mkdir()
+    monkeypatch.setattr(pd, "_READ_TMP_FD_SUPPORTED", False)
+    seen = {}
+
+    def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
+        seen["prompt"] = stdin_text
+        return {
+            "returncode": 0, "stdout": _codex_stdout("검토 완료"),
+            "stderr": "", "timed_out": False,
+        }
+
+    pd._execute_attempt(
+        harness="codex", model="gpt-x", reasoning=None,
+        role="code-reviewer", cwd=cwd, prompt="role preamble + task",
+        timeout=30, output_dir=tmp_path / "raw", run_fn=_capture,
+        attempt="primary",
+    )
+
+    assert pd.READ_REGRESSION_UNAVAILABLE_NOTE in seen["prompt"]
+    assert "회귀 숫자는 developer 보고값을 인용" in seen["prompt"]
+    assert "직접 실행하지 못했다는 사실" in seen["prompt"]
+
+
+def test_read_tmp_identity_swap_refuses_wrong_tree_cleanup(
+        pd, monkeypatch, tmp_path, capsys):
+    """생성 뒤 root 교체는 다른 트리를 지우지 않고 loud residue 진단을 남긴다."""
+    temp_root = tmp_path / "system-temp"
+    cwd = tmp_path / "worktree"
+    temp_root.mkdir()
+    cwd.mkdir()
+    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    read_tmp = pd._create_read_role_temp("codex", cwd)
+    assert read_tmp is not None
+    # inode 재사용에 기대지 않고 정리 시점 identity 불일치를 결정적으로 주입한다.
+    read_tmp.identity = (-1, -1)
+
+    pd._cleanup_attempt_transport(None, read_tmp)
+
+    assert read_tmp.path.is_dir()
+    assert "정리 실패" in capsys.readouterr().err
+    read_tmp.path.rmdir()
+
+
+def test_opencode_created_parent_inode_swap_preserves_replacement(
+        pd, monkeypatch, tmp_path, capsys):
+    """공유 temp 부모 이름이 교체되면 생성 inode와 다른 빈 디렉터리를 rmdir하지 않는다."""
+    temp_root = tmp_path / "system-temp"
+    cwd = tmp_path / "worktree"
+    temp_root.mkdir()
+    cwd.mkdir()
+    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    read_tmp = pd._create_read_role_temp("opencode", cwd)
+    assert read_tmp is not None and read_tmp.created_parent is not None
+    owned_parent = temp_root / pd._OPENCODE_READ_TMP_PARENT
+    moved_parent = temp_root / "owned-parent-moved"
+    owned_parent.rename(moved_parent)
+    owned_parent.mkdir()
+
+    pd._cleanup_read_role_temp(read_tmp)
+
+    assert owned_parent.is_dir()  # 교체자가 만든 빈 디렉터리를 보존한다.
+    assert list(owned_parent.iterdir()) == []
+    assert list(moved_parent.iterdir()) == []  # fd로 고정한 원래 attempt만 회수했다.
+    assert "temp 부모 생성 identity" in capsys.readouterr().err
+    owned_parent.rmdir()
+    moved_parent.rmdir()
+
+
+def test_read_tmp_cleanup_on_runner_exception(pd, monkeypatch, tmp_path):
+    """runner가 예상 밖 예외를 올려도 finally가 read tmp 하위 산출물까지 잔여 0으로 만든다."""
+    temp_root = tmp_path / "system-temp"
+    cwd = tmp_path / "worktree"
+    temp_root.mkdir()
+    cwd.mkdir()
+    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+
+    def _explode(argv, *, stdin_text, cwd, env, timeout, harness):
+        read_tmp = Path(env["TMPDIR"])
+        (read_tmp / "runner-artifact").write_text("partial", encoding="utf-8")
+        raise RuntimeError("의도한 runner 예외")
+
+    with pytest.raises(RuntimeError, match="의도한 runner 예외"):
+        pd._execute_attempt(
+            harness="claude", model="opus", reasoning=None,
+            role="code-reviewer", cwd=cwd, prompt="review",
+            timeout=30, output_dir=tmp_path / "raw", run_fn=_explode,
+            attempt="primary",
+        )
+
+    assert list(temp_root.iterdir()) == []
+
+
+def test_read_tmp_cleanup_on_timeout_child_kill_result(pd, monkeypatch, tmp_path):
+    """watchdog timeout/child-kill 결과가 돌아온 뒤에도 read tmp 잔여는 0이다."""
+    temp_root = tmp_path / "system-temp"
+    cwd = tmp_path / "worktree"
+    temp_root.mkdir()
+    cwd.mkdir()
+    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+
+    def _timed_out(argv, *, stdin_text, cwd, env, timeout, harness):
+        read_tmp = Path(env["TMPDIR"])
+        (read_tmp / "child-partial").write_text("killed", encoding="utf-8")
+        return {
+            "returncode": 124, "stdout": "", "stderr": "watchdog killed child",
+            "timed_out": True,
+        }
+
+    result = pd._execute_attempt(
+        harness="claude", model="opus", reasoning=None,
+        role="code-reviewer", cwd=cwd, prompt="review",
+        timeout=1, output_dir=tmp_path / "raw", run_fn=_timed_out,
+        attempt="primary",
+    )
+
+    assert result.result["timed_out"] is True
+    assert list(temp_root.iterdir()) == []
+
+
+def test_read_tmp_cleanup_on_raw_reservation_failure(
+        pd, monkeypatch, tmp_path):
+    """transport 준비 뒤 raw 예약 실패도 runner 전에 read tmp를 잔여 0으로 되감는다."""
+    temp_root = tmp_path / "system-temp"
+    cwd = tmp_path / "worktree"
+    temp_root.mkdir()
+    cwd.mkdir()
+    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    monkeypatch.setattr(
+        pd, "_reserve_raw_output",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("raw reserve failed")),
+    )
+
+    with pytest.raises(OSError, match="raw reserve failed"):
+        pd._execute_attempt(
+            harness="claude", model="opus", reasoning=None,
+            role="code-reviewer", cwd=cwd, prompt="review",
+            timeout=30, output_dir=tmp_path / "raw",
+            run_fn=lambda *args, **kwargs: pytest.fail("runner must not start"),
+            attempt="primary",
+        )
+
+    assert list(temp_root.iterdir()) == []
 
 
 # ══ ⑧ 쓰기-타깃 axis 재앵커 (§4.6) ════════════════════════════════════════════
@@ -4993,3 +6464,477 @@ def test_help_documents_codex_egress_escalation_contract(pd):
     assert "--codex-egress-escalated" in help_text
     assert "require_escalated" in help_text
     assert _EGRESS_MARKER in help_text
+
+
+# ══ T-0650 위임 루프 기계 가드([R]·[P]·[A]·[C]) ═════════════════════════════
+
+_T0650_TICKET = "T-0650"
+_T0650_SESSION = "12345678-1234-4234-8234-123456789abc"
+
+
+def _t0650_codex_stdout(session_id: str, reply: str) -> str:
+    return "\n".join([
+        _json.dumps({"type": "thread.started", "thread_id": session_id}),
+        _json.dumps({
+            "type": "item.completed",
+            "item": {"type": "agent_message", "text": reply},
+        }),
+        _json.dumps({
+            "type": "turn.completed",
+            "usage": {"input_tokens": 10, "output_tokens": 2},
+        }),
+    ])
+
+
+def _seed_t0650_raw(
+    pd,
+    output_dir: Path,
+    *,
+    ticket: str = _T0650_TICKET,
+    role: str = "code-reviewer",
+    reply: str = "판정: 통과",
+    completed: bool = True,
+    started_offset_sec: int = 0,
+    session_id: str = _T0650_SESSION,
+) -> tuple[str, Path]:
+    """실 raw 파일+공유 장부 행을 엔진 공용 API로 만든다(T-0650 검증 권위 fixture)."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    started = (
+        _datetime.datetime.now(_datetime.timezone.utc)
+        + _datetime.timedelta(seconds=started_offset_sec)
+    )
+    raw_path = output_dir / f"seed_{role}_{abs(started_offset_sec)}_{len(reply)}.txt"
+    stdout = _t0650_codex_stdout(session_id, reply)
+    raw_path.write_text(
+        pd._format_meta(
+            ["codex", "exec", "--json"], 0, "codex", "gpt-x", 0.1,
+            stdout, "", attempt="primary",
+        ),
+        encoding="utf-8",
+    )
+    relay = pd._load_relay()
+    record_id = relay.start_raw_record(
+        output_dir / "raw_outputs.json",
+        surface=pd.DELEGATE_RAW_SURFACE,
+        harness="codex",
+        model="gpt-x",
+        role=role,
+        raw_path=raw_path,
+        attempt="primary",
+        now=started,
+        extra={pd.RESUME_FIELD_TICKET: ticket},
+    )
+    if completed:
+        relay.finish_raw_record(
+            output_dir / "raw_outputs.json",
+            record_id,
+            rc=0,
+            elapsed_sec=0.1,
+            silence_sec=None,
+            now=started + _datetime.timedelta(seconds=1),
+            extra={
+                pd.RESUME_FIELD_SESSION_ID: session_id,
+                pd.RESUME_FIELD_REPLY_EXTRACTED: True,
+            },
+        )
+    return record_id, raw_path
+
+
+@pytest.mark.parametrize("role", ["developer", "code-reviewer"])
+def test_t0650_regression_scope_is_in_both_execution_preambles(pd, role):
+    """[P] 두 실행 role의 합성 preamble에 전체 스위트 금지 상수가 글자 그대로 들어간다."""
+    preamble = pd._role_preamble(role, (".claude", ".opencode", ".codex", ".agents"))
+    assert pd.REGRESSION_SCOPE_PREAMBLE in preamble
+    assert "회귀는 프롬프트가 지정한 범위만" in preamble
+    assert "`pytest tests/` 무인자" in preamble
+    assert "PM 이 1회" in preamble
+
+
+@pytest.mark.parametrize(
+    ("shape", "blocked", "warning"),
+    [
+        ("completed", True, None),
+        ("unfinished", False, None),
+        ("corrupt", False, "fail-open"),
+        ("missing", False, "fail-open"),
+    ],
+)
+def test_t0650_cold_guard_uses_real_ledger_shapes(
+    pd, tmp_path, capsys, shape, blocked, warning,
+):
+    """[R] 실제 완료/미마감/손상/부재 장부에서 거부·통과·fail-open을 판정한다."""
+    output_dir = tmp_path / shape
+    if shape in {"completed", "unfinished"}:
+        _seed_t0650_raw(
+            pd, output_dir, role="developer", completed=(shape == "completed"),
+        )
+    elif shape == "corrupt":
+        output_dir.mkdir()
+        (output_dir / "raw_outputs.json").write_text("{broken", encoding="utf-8")
+
+    record = pd.cold_reinjection_record(
+        _T0650_TICKET, "developer", output_dir,
+    )
+    captured = capsys.readouterr()
+    assert (record is not None) is blocked
+    if warning is None:
+        assert "fail-open" not in captured.err
+    else:
+        assert warning in captured.err
+
+
+@pytest.mark.parametrize(
+    ("role", "has_completed", "fresh_reason", "expected_rc"),
+    [
+        pytest.param("developer", True, None, 1, id="developer-completed-blocked"),
+        pytest.param("architect", True, None, 1, id="architect-completed-blocked"),
+        pytest.param("code-reviewer", True, None, 0, id="reviewer-completed-passes"),
+        pytest.param("researcher", True, None, 0, id="researcher-completed-passes"),
+        pytest.param("developer", False, None, 0, id="developer-no-completed-passes"),
+        pytest.param(
+            "developer", True, "의도적으로 독립 구현 비교", 0,
+            id="developer-completed-fresh-passes",
+        ),
+    ],
+)
+def test_t0650_cold_write_role_matrix_uses_real_ledger(
+    pd, monkeypatch, tmp_path, capsys,
+    role, has_completed, fresh_reason, expected_rc,
+):
+    """[R] 실제 장부에서 write만 거부하고 read의 독립 cold 판정은 무마찰 통과시킨다."""
+    workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
+    output_dir = tmp_path / "raw"
+    if has_completed:
+        _seed_t0650_raw(pd, output_dir, ticket=TICKET_ID, role=role)
+    else:
+        # 장부 자체는 실물로 두되, 같은 ticket+developer 완료 행만 없는 셀이다.
+        _seed_t0650_raw(pd, output_dir, ticket="T-OTHER", role="developer")
+    fake = _FakeRun(stdout=_codex_stdout("fresh 완료"))
+    base = [
+        "--role", role, "--harness", "codex", "--model", "gpt-x",
+        "--prompt-file", str(prompt), "--cwd", str(workspace),
+        "--ticket", TICKET_ID, "--output-dir", str(output_dir),
+    ]
+    if fresh_reason is not None:
+        base += ["--fresh", fresh_reason]
+
+    assert _run_main(pd, monkeypatch, base, _enabled_conf(), fake) == expected_rc
+    captured = capsys.readouterr()
+    if expected_rc == 1:
+        assert "cold 재투입 거부" in captured.err
+        assert f"--resume-from {TICKET_ID}" in captured.err
+        assert "--fresh <사유>" in captured.err
+        assert fake.calls == []
+    else:
+        assert "cold 재투입 거부" not in captured.err
+        assert len(fake.calls) == 1
+    if fresh_reason is not None:
+        rows = pd._load_relay().raw_records(output_dir / "raw_outputs.json")
+        assert sum(
+            row.get(pd.FRESH_REASON_FIELD) == fresh_reason for row in rows
+        ) == 1
+
+
+def test_t0650_cold_dry_run_bypasses_completed_write_record(
+    pd, monkeypatch, tmp_path,
+):
+    """[R] 완료 write 레코드가 있어도 dry-run은 비용 가드 비대상이며 스폰도 없다."""
+    workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
+    output_dir = tmp_path / "raw"
+    _seed_t0650_raw(pd, output_dir, ticket=TICKET_ID, role="developer")
+    fake = _FakeRun(stdout=_codex_stdout("실행되지 않음"))
+    base = [
+        "--role", "developer", "--harness", "codex", "--model", "gpt-x",
+        "--prompt-file", str(prompt), "--cwd", str(workspace),
+        "--ticket", TICKET_ID, "--output-dir", str(output_dir), "--dry-run",
+    ]
+
+    assert _run_main(pd, monkeypatch, base, _enabled_conf(), fake) == 0
+    assert fake.calls == []
+
+
+def test_t0650_cold_rejection_omits_resume_for_unsupported_harness(pd):
+    """[R] 처방은 선언표 capability를 읽어 opencode에는 fresh 사유만 요구한다."""
+    message = pd.cold_reinjection_rejection(
+        _T0650_TICKET, "developer", "opencode", {"id": "record-1"},
+    )
+    assert "--resume-from" not in message
+    assert "--fresh <사유>" in message
+
+
+def test_t0650_attach_raw_selects_latest_completed_and_preserves_reply_in_prompt(
+    pd, monkeypatch, tmp_path,
+):
+    """[A] 실제 장부+raw의 최신 완료 reply가 발췌/요약 없이 합성 프롬프트 말미에 붙는다."""
+    output_dir = tmp_path / "raw"
+    _seed_t0650_raw(
+        pd, output_dir, reply="오래된 보고", started_offset_sec=-120,
+    )
+    exact_reply = "판정: 반려\n\n- 줄바꿈 보존\n- 원문 끝  "
+    latest_id, _raw_path = _seed_t0650_raw(
+        pd, output_dir, reply=exact_reply, started_offset_sec=-60,
+    )
+    prompt = _write_prompt(tmp_path, "수정 지시 원문")
+    fake = _FakeRun(stdout=_codex_stdout("수정 완료"))
+
+    rc = _run_main(
+        pd,
+        monkeypatch,
+        [
+            "--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path),
+            "--output-dir", str(output_dir), "--attach-raw", _T0650_TICKET,
+        ],
+        _enabled_conf(),
+        fake,
+    )
+    assert rc == 0
+    sent = fake.calls[0]["stdin_text"]
+    assert pd.ATTACH_RAW_SECTION_TITLE in sent
+    assert sent.endswith(exact_reply)
+    assert sent.count(exact_reply) == 1
+    assert "오래된 보고" not in sent
+    assert pd.resolve_attached_raw(
+        latest_id, output_dir=output_dir,
+    ).reply == exact_reply
+
+
+@pytest.mark.parametrize("selector_kind", ["missing", "unfinished"])
+def test_t0650_attach_raw_missing_or_unfinished_is_fail_loud(
+    pd, monkeypatch, tmp_path, capsys, selector_kind,
+):
+    """[A] 미존재·미마감 record id는 실제 장부 조회 뒤 rc=1이고 외부 호출은 없다."""
+    output_dir = tmp_path / "raw"
+    unfinished_id, _raw_path = _seed_t0650_raw(
+        pd, output_dir, completed=False,
+    )
+    selector = "record-does-not-exist" if selector_kind == "missing" else unfinished_id
+    prompt = _write_prompt(tmp_path)
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(
+        pd,
+        monkeypatch,
+        [
+            "--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path),
+            "--output-dir", str(output_dir), "--attach-raw", selector,
+        ],
+        _enabled_conf(),
+        fake,
+    )
+    assert rc == 1 and fake.calls == []
+    err = capsys.readouterr().err
+    assert ("미발견" in err) if selector_kind == "missing" else ("미마감" in err)
+
+
+def test_t0650_attached_raw_is_in_whole_prompt_secret_scan(
+    pd, monkeypatch, tmp_path, capsys,
+):
+    """[A] 첨부분도 기존 합성 프롬프트 전체 secret scan에서 외부 송신 전에 차단된다."""
+    output_dir = tmp_path / "raw"
+    record_id, _raw_path = _seed_t0650_raw(
+        pd,
+        output_dir,
+        reply="보고에 잘못 남은 값 ghp_abcdefghijklmnopqrstuvwxyz1234567890",
+    )
+    prompt = _write_prompt(tmp_path)
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(
+        pd,
+        monkeypatch,
+        [
+            "--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path),
+            "--output-dir", str(output_dir), "--attach-raw", record_id,
+        ],
+        _enabled_conf(),
+        fake,
+    )
+    assert rc == 1 and fake.calls == []
+    assert "시크릿 denylist" in capsys.readouterr().err
+
+
+def test_t0650_codex_resume_and_attach_raw_share_json_stdin_pipeline(
+    pd, monkeypatch, tmp_path,
+):
+    """[A][C] codex resume argv와 delta stdin에 reviewer 원문 첨부를 함께 배선한다."""
+    output_dir = tmp_path / "raw"
+    resume_id, _resume_raw = _seed_t0650_raw(
+        pd,
+        output_dir,
+        ticket="T-0600",
+        role="developer",
+        reply="직전 개발 라운드",
+        started_offset_sec=-120,
+    )
+    reviewer_reply = "판정: 반려\n- must-fix 원문"
+    reviewer_id, _review_raw = _seed_t0650_raw(
+        pd,
+        output_dir,
+        ticket="T-0601",
+        role="code-reviewer",
+        reply=reviewer_reply,
+        started_offset_sec=-60,
+    )
+    prompt = _write_prompt(tmp_path, "지적을 고쳐라")
+    fake = _FakeRun(stdout=_t0650_codex_stdout(_T0650_SESSION, "수정 완료"))
+
+    rc = _run_main(
+        pd,
+        monkeypatch,
+        [
+            "--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path),
+            "--output-dir", str(output_dir), "--resume-from", resume_id,
+            "--attach-raw", reviewer_id,
+        ],
+        _enabled_conf(),
+        fake,
+    )
+    assert rc == 0 and len(fake.calls) == 1
+    call = fake.calls[0]
+    argv = call["argv"]
+    assert argv[argv.index("exec") + 1] == "resume"
+    assert "--json" in argv
+    assert argv[-2:] == [_T0650_SESSION, "-"]
+    assert call["stdin_text"].endswith(reviewer_reply)
+    assert call["stdin_text"].count(reviewer_reply) == 1
+
+
+def test_t0650_codex_resume_capability_and_argv_are_measured_contract(pd):
+    """[C] 0.147.0 실측 선언표와 exec resume JSONL/stdin argv를 단위 가드한다."""
+    relay = pd._load_relay()
+    assert relay.HARNESS_RESUME_SUPPORT == {
+        "claude": True, "codex": True, "opencode": False,
+    }
+    argv = pd.build_codex_argv(
+        "gpt-x", "high", "developer", "/workspace", _T0650_SESSION,
+    )
+    assert argv[:5] == ["codex", "-a", "never", "-s", "workspace-write"]
+    assert argv.index("-C") < argv.index("exec")
+    assert argv[argv.index("exec"):argv.index("exec") + 2] == ["exec", "resume"]
+    assert "--json" in argv and argv[-2:] == [_T0650_SESSION, "-"]
+    with pytest.raises(relay.HarnessContractError, match="세션 id 형식"):
+        relay.build_codex_argv(
+            "gpt-x", None, "developer", "/workspace", "--not-a-session",
+        )
+
+
+@pytest.mark.parametrize("role", ["developer", "code-reviewer"])
+def test_t0650_codex_0147_missing_rollout_reruns_fresh_for_write_and_read(
+    pd, monkeypatch, tmp_path, capsys, role,
+):
+    """[C] 0.147.0 실측 세션-부재 오류는 delta 미소비라 write/read 모두 fresh 재실행한다."""
+    workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
+    output_dir = tmp_path / "raw"
+    record_id, _raw_path = _seed_t0650_raw(
+        pd, output_dir, ticket=TICKET_ID, role=role,
+    )
+    missing_result = {
+        "returncode": 1,
+        "stdout": "",
+        "stderr": "Error: no rollout found for thread id 12345678-1234-4234-8234-123456789abc (code -32600)",
+        "timed_out": False,
+    }
+    fake = _SequenceRun(
+        missing_result,
+        {
+            "returncode": 0,
+            "stdout": _t0650_codex_stdout(_T0650_SESSION, "fresh 완료"),
+            "stderr": "",
+            "timed_out": False,
+        },
+    )
+
+    rc = _run_main(
+        pd,
+        monkeypatch,
+        [
+            "--role", role, "--harness", "codex", "--model", "gpt-x",
+            "--prompt-file", str(prompt), "--cwd", str(workspace),
+            "--output-dir", str(output_dir), "--resume-from", record_id,
+        ],
+        _enabled_conf(),
+        fake,
+    )
+    err = capsys.readouterr().err
+
+    assert pd.is_resume_session_missing(missing_result) is True
+    assert pd.is_resume_session_missing({
+        **missing_result,
+        "stderr": "Error: no rollout found for thread id 12345678-1234-4234-8234-123456789abc (code -32601)",
+    }) is False
+    assert rc == 0 and len(fake.calls) == 2
+    assert fake.calls[0]["argv"][fake.calls[0]["argv"].index("exec") + 1] == "resume"
+    assert fake.calls[1]["argv"][fake.calls[1]["argv"].index("exec") + 1] == "--json"
+    assert "티켓 본문: 구현하라." in fake.calls[1]["stdin_text"]
+    assert "재개 대상 세션 없음" in err
+
+
+def test_t0650_codex_rc0_session_id_mismatch_still_blocks_write_fresh(
+    pd, monkeypatch, tmp_path, capsys,
+):
+    """[C] rc=0 ID 불일치는 turn/write 부작용 가능성이 있어 세션 부재와 달리 fresh를 막는다."""
+    workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
+    output_dir = tmp_path / "raw"
+    record_id, _raw_path = _seed_t0650_raw(
+        pd, output_dir, ticket=TICKET_ID, role="developer",
+    )
+    fake = _SequenceRun({
+        "returncode": 0,
+        "stdout": _t0650_codex_stdout(
+            "87654321-4321-4321-8321-cba987654321", "다른 세션에서 실행됨",
+        ),
+        "stderr": "",
+        "timed_out": False,
+    })
+
+    rc = _run_main(
+        pd,
+        monkeypatch,
+        [
+            "--role", "developer", "--harness", "codex", "--model", "gpt-x",
+            "--prompt-file", str(prompt), "--cwd", str(workspace),
+            "--output-dir", str(output_dir), "--resume-from", record_id,
+        ],
+        _enabled_conf(),
+        fake,
+    )
+    err = capsys.readouterr().err
+
+    assert rc == 1 and len(fake.calls) == 1
+    assert "회신 세션 id 불일치" in err
+    assert "트리를 이미 고쳤을 수 있어" in err
+
+
+@pytest.mark.skipif(
+    os.environ.get("PM_DELEGATE_LIVE_CODEX_RESUME") != "1"
+    or shutil.which("codex") is None,
+    reason="유료 Codex 2-turn 실측은 PM_DELEGATE_LIVE_CODEX_RESUME=1 opt-in",
+)
+def test_t0650_live_codex_exec_resume_json_round_trip(pd, tmp_path):
+    """[C] opt-in 라이브: fresh exec의 thread id를 exec resume --json으로 이어받는다."""
+    fresh = subprocess.run(
+        pd.build_codex_argv("", None, "researcher", str(tmp_path)),
+        input="Reply with only T0650_LIVE_CODE.",
+        text=True,
+        capture_output=True,
+        timeout=300,
+        check=False,
+    )
+    assert fresh.returncode == 0, fresh.stderr
+    session_id, first_reply, _usage = pd._load_relay().parse_codex_json(
+        fresh.stdout.splitlines()
+    )
+    assert session_id and "T0650_LIVE_CODE" in (first_reply or "")
+
+    resumed = subprocess.run(
+        pd.build_codex_argv("", None, "researcher", str(tmp_path), session_id),
+        input="Reply with only the code from the previous turn.",
+        text=True,
+        capture_output=True,
+        timeout=300,
+        check=False,
+    )
+    assert resumed.returncode == 0, resumed.stderr
+    resumed_id, reply, _usage = pd._load_relay().parse_codex_json(
+        resumed.stdout.splitlines()
+    )
+    assert resumed_id == session_id
+    assert "T0650_LIVE_CODE" in (reply or "")

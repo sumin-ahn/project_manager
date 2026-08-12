@@ -561,7 +561,11 @@ def _import_multipm_home(tmp_path: Path, harness: str,
             f"repo add {repo} 실패 (rc={added.returncode})\n"
             f"stdout={added.stdout[-600:]}\nstderr={added.stderr[-600:]}"
         )
-        slotted = _pm_config(home, "worktree", "add", repo)
+        # 이 helper는 사용자가 승인한 multi-PM 홈 셋업을 실제 CLI로 재현한다. 신규 슬롯
+        # 거부 테스트가 아니므로 대상 repo에 값-결속된 ack를 명시한다(T-0636 픽스처 정책).
+        slotted = _pm_config(
+            home, "worktree", "add", repo, "--user-ack", repo
+        )
         assert slotted.returncode == 0, (
             f"worktree add {repo} 실패 (rc={slotted.returncode})\n"
             f"stdout={slotted.stdout[-600:]}\nstderr={slotted.stderr[-600:]}"

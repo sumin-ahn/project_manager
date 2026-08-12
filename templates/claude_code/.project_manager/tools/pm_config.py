@@ -14,13 +14,13 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config repo add <name> [--git <url>] [--test "<cmd>"] [--protected "main,develop"] # repo 등록 + .repos clone (신규=--git 필수 / 기등록 hydrate=areas URL)
     pm-config repo protected <name> [<목록>|default]        # 보호 브랜치 목록 조회/설정 (areas → 훅 sidecar 정합화)
     pm-config repo list                                    # 등록 repo 표 (repo·prefix·base·protected·test_cmd·area_owner)
-    pm-config worktree add <repo>                          # 새 슬롯 생성 + submodule init
+    pm-config worktree add <repo> --user-ack <repo>        # 사용자 승인값 결속 + 새 슬롯 생성 + submodule init
     pm-config worktree prune-stale                         # worktree 사라진 dangling 장부 엔트리 정리
     pm-config worktree remove <slot> [--force]             # 슬롯 통째 제거 — worktree+브랜치+장부 (원자)
     pm-config status | whoami                              # 풀/리스 + 이 세션 repo/슬롯/branch
     pm-config alloc <repo> --task <이름>                    # task 명의로 idle 최소 번호 슬롯 대여 (자동 생성 안 함)
     pm-config release <slot> [--task <이름>] [--force]      # 작업완료 반납 (--task 소유검사) / 수동 강제(백스톱)
-    pm-config task prefix <이름> <p|none>                   # task 의 ticket prefix 지정/변경/해제 (중간 변경 자유·`none`=해제)
+    pm-config task prefix <이름> <p|none> [--user-ack <p>] # 신규 prefix 사용자 승인값 결속·변경/해제 (`none`=해제)
     pm-config task end <이름>                               # task 종료 — claimed 소진 게이트·dirty 게이트·일괄 반납 + _ended 아카이브
     pm-config update [--from <upstream>]                   # 엔진 갱신 (pm-update 흡수)
     pm-config upstream show | set <url|path>               # upstream 조회/전환 (검증·fail-closed)
@@ -35,7 +35,8 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
                 (설정) board.areas_set_cell(areas.md 단일 진실·board_lock in-place) →
                 worktree_pool.install_protected_hook(파생 sidecar·순서 고정) → board-git 동기.
   - repo list → board._parse_areas() 표 렌더(빈 셀은 폴백을 괄호로 명시).
-  - worktree add → worktree_pool.create_slot(새 슬롯 + `git submodule update --init`).
+  - worktree add → repo 값과 같은 `--user-ack` 사용자 승인 게이트 뒤
+                worktree_pool.create_slot(새 슬롯 + `git submodule update --init`).
                 `--task <이름>` 면 owner_task 로 넘겨 생성 직후 그 슬롯 task 명의 대여(ⓓB).
   - status|whoami → worktree_pool.list_leases() + 이 세션 식별(repo/슬롯/branch surface).
   - alloc    → worktree_pool.alloc(repo, owner_task=<task>) — 항상 신규 idle 최소 번호 대여(멱등
@@ -221,7 +222,7 @@ GitRunner = Callable[[list], "tuple[int, str]"]
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
-ENGINE_REV = "v1.7.3"
+ENGINE_REV = "v1.7.4"
 
 # rev 스탬프를 지닌 형제 파일만 대조 대상. pm_update는 복구 채널이라 의도적으로 제외한다.
 # deep-import AST 가드가 실제 호출 target에서 목록/검증 누락을 자동 적발한다.
@@ -2029,6 +2030,33 @@ def _prompt_test_cmd(input_fn: Callable[[str], str], *, default: str) -> str | N
     return cmd if cmd else None
 
 
+def _require_worktree_add_user_ack(args: argparse.Namespace) -> bool:
+    """물리 슬롯 생성에 repo 값-결속 사용자 승인 토큰을 요구한다.
+
+    CLI의 ``--user-ack <repo>``와 콘솔 ``[w]``의 repo 재입력 확인이 이 한 sink로
+    수렴한다. 토큰은 자가-증언형 감사/마찰 장치이며 raw git/장부 직접 편집 같은 적대적
+    우회까지 막는 보안 경계는 아니다.
+    """
+    repo = args.repo
+    user_ack = getattr(args, "user_ack", None)
+    if user_ack == repo:
+        print(f"[승인 감사] worktree add: 사용자 승인 토큰이 repo {repo!r}에 값-결속됨.")
+        return True
+    mismatch = (
+        f" 제공된 값 {user_ack!r}은 repo {repo!r}에 결속되지 않았다."
+        if user_ack is not None
+        else ""
+    )
+    print(
+        f"[중단] worktree add {repo!r}: 물리 슬롯 생성에는 사용자 명시 승인이 필요하다.{mismatch}\n"
+        f"  1순위: 사용자에게 repo {repo!r}의 새 슬롯 생성 승인을 요청하라.\n"
+        f"  부차 수단: 승인한 사용자만 `--user-ack {repo}`를 대상값 그대로 붙여 실행하라"
+        "(세션 자동 부착 금지).",
+        file=sys.stderr,
+    )
+    return False
+
+
 def cmd_worktree_add(
     args: argparse.Namespace,
     *,
@@ -2070,6 +2098,9 @@ def cmd_worktree_add(
     worktree_pool/board/input_fn/is_tty 주입으로 hermetic 테스트(실 worktree add·라이브 input
     없이 배선·분기 검증). board 는 프롬프트 표시값 areas 해소 재사용용(콘솔이 로드한 board 전달).
     """
+    if not _require_worktree_add_user_ack(args):
+        return 1
+
     wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
     if wp is None:
         print(
@@ -2166,6 +2197,7 @@ def cmd_worktree_add(
             f"(정체성 선언·자동 아님). 솔로/단일 슬롯이면 무인자 "
             f"`{_runtime_skill_entry('pm-bootstrap')}` 가 자동바인딩."
         )
+        print("  이 바인딩 안내는 사용자(사람) 대상 — 세션이 읽고 자동 실행하면 안 된다.")
     # 보호 브랜치 pre-push 훅 (재)설치 (멱등 자가치유) — 슬롯 op 마다 (재)설치해 엔진
     # update 후 기존 repo 도 다음 worktree add 에 훅을 얻는다(별도 명령 불요·회사 repo 무영향).
     # 설치 실패는 조용히 넘기지 않는다 — repo add·repo protected 와 **같은 공용 깔때기**
@@ -2571,7 +2603,9 @@ def cmd_set_test_cmd(
         lease = wp.set_test_cmd(slot, normalized)
     except KeyError:
         print(
-            f"[중단] 슬롯 {slot!r} 에 대한 리스가 없다 — 먼저 `worktree add` 로 슬롯을 만들라.",
+            f"[중단] 슬롯 {slot!r} 에 대한 리스가 없다 — 새 슬롯이 필요하면 먼저 사용자에게 "
+            "생성 승인을 요청하라. 승인한 사용자만 대상 repo와 같은 `--user-ack <repo>`로 "
+            "`worktree add`를 직접 실행한다(세션 자동 실행 금지).",
             file=sys.stderr,
         )
         return 1
@@ -2787,8 +2821,10 @@ def cmd_alloc(
         print(
             f"[중단] repo {args.repo!r} 에 대여 가능한 idle 슬롯이 없다 — 풀 소진. 새 슬롯은 "
             "디스크(코드 전체 사본×슬롯·clone 시간)라 자동 생성하지 않는다(물리층=사용자 승인). "
-            f"`pm-config worktree add {args.repo} --task {args.task}` 로 새 슬롯을 만들며 곧바로 "
-            "그 슬롯을 이 task 명의로 대여하라(생성+대여 한 흐름·ⓓB·오슬롯 없음).",
+            f"사용자에게 repo {args.repo!r} 슬롯 생성 승인을 요청하라. 승인한 사용자만 "
+            f"`pm-config worktree add {args.repo} --task {args.task} --user-ack {args.repo}` 를 "
+            "직접 실행해 새 슬롯을 만들며 곧바로 이 task 명의로 대여한다"
+            "(생성+대여 한 흐름·ⓓB·오슬롯 없음·세션 자동 실행 금지).",
             file=sys.stderr,
         )
         return 1
@@ -2954,8 +2990,10 @@ def cmd_task_prefix(
       3. **저장** — `worktree_pool.set_task_prefix`(장부 flock/스키마 단일 소유·직접 JSON write 금지)로
          atomic 갱신. task 부재면 rc1 안내(생성은 [bootstrap] 단일 지점).
 
-    worktree_pool/board 주입으로 hermetic 테스트. board 부재/헬퍼 부재는 registered_repos=None·형식
-    검증 graceful skip(traversal 검증은 엔진 validator 로 유지) — 순수 슬롯 정리와 동형 fail-soft.
+    worktree_pool/board 주입으로 hermetic 테스트. board 부재/헬퍼 부재는 prefix 형식·
+    신설 승인·락 안 fresh 재검증을 증명할 수 없으므로 저장 없이 fail-closed rc1이다.
+    단, task 예약명 검증에 넘기는 registered_repos 조회만 실패 시 None으로 완화하고
+    traversal 검증은 엔진 validator로 계속 강제한다.
     """
     wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
     if wp is None:
@@ -2997,10 +3035,55 @@ def cmd_task_prefix(
             if reason:
                 print(f"[중단] {reason}", file=sys.stderr)
                 return 1
-        new_prefix = value
+        require_ack = (
+            getattr(board_mod, "require_prefix_user_ack", None) if board_mod else None
+        )
+        if require_ack is None:
+            print(
+                "[중단] board prefix 승인 게이트를 찾을 수 없다 — 엔진 전체를 동기화한 뒤 "
+                "task prefix를 다시 실행하라.",
+                file=sys.stderr,
+            )
+            return 1
+        new_prefix = require_ack(
+            value,
+            getattr(args, "user_ack", None),
+            surface="pm-config task prefix",
+        )
+        if new_prefix is None:
+            return 1
 
-    # 3) 저장 — worktree_pool 헬퍼(장부 flock/스키마 단일 소유). task 부재 → rc1(생성은  단일 지점).
-    updated = wp.set_task_prefix(name, new_prefix)
+    # 3) 저장 — 신규/기존 prefix 지정은 board_lock 안 fresh 4소스 snapshot을 선판정과
+    # 대조한 직후 worktree_pool 장부 락으로 내려간다. lock 순서는 board→lease로 고정한다
+    # (worktree_pool은 board를 import/호출하지 않아 역순 경로 없음). 엔진 primitive의 직접
+    # 소비는 사용자 승인 CLI 표면이 아니므로 이 재검증을 성립시킬 수 없고, 설계대로 CLI 단일
+    # 깔때기에서만 강제한다. `none` 해제는 신규 생성 축이 아니어서 종전 경로 그대로다.
+    if new_prefix is not None:
+        board_lock_fn = getattr(board_mod, "board_lock", None) if board_mod else None
+        revalidate = (
+            getattr(board_mod, "revalidate_prefix_user_ack", None)
+            if board_mod else None
+        )
+        if board_lock_fn is None or revalidate is None:
+            print(
+                "[중단] board prefix fresh 재검증 경계를 찾을 수 없다 — 엔진 전체를 "
+                "동기화한 뒤 task prefix를 다시 실행하라.",
+                file=sys.stderr,
+            )
+            return 1
+        with board_lock_fn():
+            fresh = revalidate(
+                value,
+                getattr(args, "user_ack", None),
+                new_prefix,
+                surface="pm-config task prefix",
+            )
+            if fresh is None:
+                return 1
+            updated = wp.set_task_prefix(name, fresh)
+            new_prefix = fresh
+    else:
+        updated = wp.set_task_prefix(name, None)
     if updated is None:
         print(
             f"[중단] task {name!r} 이(가) 아직 없다 — prefix 설정은 기존 task 레코드를 갱신할 뿐 "
@@ -3009,6 +3092,13 @@ def cmd_task_prefix(
             file=sys.stderr,
         )
         return 1
+
+    invalidate = (
+        getattr(board_mod, "invalidate_known_prefixes_cache", None)
+        if board_mod else None
+    )
+    if invalidate is not None:
+        invalidate()
 
     if new_prefix is None:
         print(
@@ -3806,6 +3896,8 @@ def _console_worktree_add(input_fn, wp, board_mod=None):
     """`[w]` — repo 를 받아 cmd_worktree_add 위임. 빌드명령은 그 핸들러가 프롬프트(tty 경로).
 
     repo 프롬프트가 EOF/Ctrl-C 면 `_CONSOLE_ABORT` 반환(루프 우아 종료). 빈입력은 취소.
+    물리 슬롯 생성 전에 repo 이름을 한 번 더 입력하는 사용자-present 확인 프롬프트를
+    띄우고, 정확히 일치한 값만 CLI ``--user-ack <repo>``와 동치인 토큰으로 넘긴다.
     board_mod 를 cmd_worktree_add 에 전달해 빌드명령 프롬프트의 표시 기본값(areas 해소)을
     콘솔이 이미 로드한 board 로 재사용한다(중복 로드 0). 빌드명령 프롬프트 내부 중단은
     cmd_worktree_add → _prompt_test_cmd 가 None 으로 흡수(크래시 0·기존 폴백).
@@ -3821,9 +3913,18 @@ def _console_worktree_add(input_fn, wp, board_mod=None):
     if not repo:
         print("  (repo 이름 비어 있음 — 취소)")
         return None
+    confirmation = _console_input(
+        input_fn,
+        f"사용자 승인 확인 — 생성할 repo 이름 {repo!r}을 다시 입력: ",
+    )
+    if confirmation is _CONSOLE_ABORT:
+        return _CONSOLE_ABORT
+    if confirmation.strip() != repo:
+        print("  [중단] repo 재입력이 일치하지 않아 슬롯 생성을 취소했습니다.")
+        return None
     # 콘솔은 항상 대화형(tty 전제) → cmd_worktree_add 가 빌드명령 프롬프트를 띄우게
     # is_tty=lambda: True 로 강제(콘솔 진입 자체가 tty 보장·main 분기). --test 는 미지정.
-    args = argparse.Namespace(repo=repo, test=None)
+    args = argparse.Namespace(repo=repo, test=None, user_ack=repo)
     cmd_worktree_add(
         args, worktree_pool=wp, board=board_mod, input_fn=input_fn, is_tty=lambda: True
     )
@@ -4021,6 +4122,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="생성 직후 그 슬롯을 이 task 명의로 대여 (풀 소진 시 생성+대여 한 흐름·"
              "기바인딩 task 요구·`--readonly` 와 상호배타). 미지정=현행(생성만·세션 바인딩은 별도).",
     )
+    p_wt_add.add_argument(
+        "--user-ack", metavar="<repo>", default=None,
+        help="새 슬롯 생성에 대한 사용자 승인 토큰(대상 repo 값과 정확히 결속). "
+             "readonly/--task 변형에도 필수.",
+    )
     p_wt_add.set_defaults(func=cmd_worktree_add)
     # worktree prune-stale — worktree 가 사라진 dangling 장부 엔트리 안전 정리.
     # status reconcile 의 stale/incomplete(worktree 부재) 정리 진입점(조회-전용 reconcile 과 분리·
@@ -4107,6 +4213,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_task_prefix.add_argument(
         "value",
         help="설정할 prefix (`[a-z0-9_]` 형식·소문자 권장) 또는 `none`(해제·무prefix)",
+    )
+    p_task_prefix.add_argument(
+        "--user-ack", metavar="<prefix>", default=None,
+        help="새 prefix 신설에 대한 사용자 승인 토큰(대상 prefix 값과 정확히 결속)",
     )
     p_task_prefix.set_defaults(func=cmd_task_prefix)
 

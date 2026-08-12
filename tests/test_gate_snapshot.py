@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -144,6 +146,144 @@ def test_unrelated_live_edit_does_not_raise_or_enter_review_target(snapshot, tmp
     assert (output / "review" / "target.txt").read_text(encoding="utf-8") == \
         "ready-for-review\n"
     assert (output / "other.txt").read_text(encoding="utf-8") == "committed-other\n"
+
+
+def test_successful_snapshot_records_local_fact_marker(snapshot, tmp_path):
+    repo = _repo(tmp_path)
+    output = tmp_path / "gate"
+
+    created, _files = snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    marker = created / ".project_manager" / ".local" / "gate-snapshot.json"
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert set(payload) == {"created_at", "source_repo", "target_path"}
+    assert datetime.fromisoformat(payload["created_at"]).utcoffset() is not None
+    assert payload["source_repo"] == str(repo.resolve())
+    assert payload["target_path"] == str(output.resolve())
+
+
+def test_snapshot_marker_write_failure_rolls_back_registered_worktree(
+    snapshot, tmp_path, monkeypatch,
+):
+    repo = _repo(tmp_path)
+    output = tmp_path / "gate"
+    monkeypatch.setattr(
+        snapshot,
+        "_write_snapshot_marker",
+        lambda *args: (_ for _ in ()).throw(OSError("marker write denied")),
+    )
+
+    with pytest.raises(OSError, match="marker write denied"):
+        snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    assert not output.exists()
+    assert str(output) not in _git(repo, "worktree", "list", "--porcelain").stdout
+
+
+@pytest.mark.skipif(not _can_symlink(), reason="symlink 을 만들 수 없는 환경")
+@pytest.mark.parametrize(
+    ("symlink_parent", "outside_marker"),
+    [
+        (Path(".project_manager"), Path(".local/gate-snapshot.json")),
+        (Path(".project_manager/.local"), Path("gate-snapshot.json")),
+    ],
+)
+def test_snapshot_marker_rejects_symlink_parent_without_external_write(
+    snapshot, tmp_path, symlink_parent, outside_marker,
+):
+    """추적된 마커 부모 symlink는 외부 파일을 건드리지 않고 생성 전체를 rollback한다."""
+    repo = _repo(tmp_path)
+    outside = tmp_path / "outside-marker-parent"
+    outside.mkdir()
+    sentinel = outside / "sentinel.txt"
+    sentinel.write_text("unchanged\n", encoding="utf-8")
+    link = repo / symlink_parent
+    link.parent.mkdir(parents=True, exist_ok=True)
+    os.symlink(outside, link, target_is_directory=True)
+    _git(repo, "add", symlink_parent.as_posix())
+    _git(repo, "commit", "-qm", "track marker parent symlink")
+    output = tmp_path / "gate-with-marker-parent-link"
+
+    with pytest.raises(snapshot.SnapshotError, match="symlink"):
+        snapshot.create_snapshot(repo, output, ["review/target.txt"])
+
+    assert sentinel.read_text(encoding="utf-8") == "unchanged\n"
+    assert not (outside / outside_marker).exists()
+    assert not output.exists()
+    assert str(output) not in _git(repo, "worktree", "list", "--porcelain").stdout
+
+
+def test_pm_home_work_snapshot_marker_blocks_round_despite_corrupt_lease_candidate(
+    snapshot, tmp_path, monkeypatch, capsys,
+):
+    """bare + 관리 슬롯에서 `<PM 홈>/work/gate-*`를 만든 PM 37 체인을 rc1로 닫는다."""
+    seed_root = tmp_path / "seed"
+    seed_root.mkdir()
+    seed = _repo(seed_root)
+    pm_home = tmp_path / "pm-home"
+    bare = pm_home / ".repos" / "product.git"
+    bare.parent.mkdir(parents=True)
+    subprocess.run(
+        ["git", "clone", "--bare", "-q", str(seed), str(bare)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    slot = pm_home / "work" / "product_1"
+    slot.parent.mkdir()
+    _git(bare, "worktree", "add", "-q", "-b", "review-slot", str(slot))
+
+    tickets = pm_home / ".project_manager" / "wiki" / "tickets" / "open"
+    tickets.mkdir(parents=True)
+    (tickets / "T-0643-anchor.md").write_text(
+        "---\nid: T-0643\ntitle: marker fixture\nstatus: open\n---\n",
+        encoding="utf-8",
+    )
+    lease = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
+    lease.parent.mkdir(parents=True)
+    lease.write_text("{broken", encoding="utf-8")
+
+    target = slot / "review" / "target.txt"
+    target.write_text("ready-for-review\n", encoding="utf-8")
+    _git(slot, "add", "review/target.txt")
+    output = pm_home / "work" / "gate-T0643"
+    created, _files = snapshot.create_snapshot(
+        slot, output, ["review/target.txt"],
+    )
+
+    external = _load("external_review")
+    external.REPO = created
+    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
+    demotions = []
+    assert external.resolve_pm_home_for_repo(
+        created, demotion_sink=demotions,
+    ) == created.resolve()
+    assert len(demotions) == 1
+    assert demotions[0].candidates == (pm_home.resolve(),)
+
+    side_effects = []
+
+    def _forbidden(name):
+        def _fail(*args, **kwargs):
+            side_effects.append(name)
+            raise AssertionError(f"{name} must not run")
+        return _fail
+
+    monkeypatch.setattr(external, "_reserve_round_budget", _forbidden("round"))
+    monkeypatch.setattr(external, "_reserve_output", _forbidden("raw"))
+    monkeypatch.setattr(external, "reviewer_visibility_scope", _forbidden("spawn"))
+
+    assert external.main([
+        "--gate", "T-0643", "--paths", "review/target.txt", "--force",
+        "--output-dir", str(tmp_path / "raw"),
+    ]) == 1
+
+    err = capsys.readouterr().err
+    marker = created / ".project_manager" / ".local" / "gate-snapshot.json"
+    assert "게이트 스냅샷 마커가 있는 앵커" in err
+    assert str(marker) in err
+    assert side_effects == []
+    assert not (created / ".project_manager" / ".local" / "review_rounds.json").exists()
 
 
 def test_parallel_wave_directory_scope_blocks_tracked_wip_with_branch_guidance(
@@ -1256,3 +1396,113 @@ def test_cli_success_marks_paths_absent_from_the_snapshot(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "  - review/target.txt (스냅샷에 없음 — index 기준 삭제)" in result.stdout
     assert "  - review/kept.txt\n" in result.stdout
+
+
+def test_snapshot_recreation_keeps_pm_home_round_ledger_for_confirm_fix(
+    tmp_path, monkeypatch, capsys,
+):
+    """스냅샷 cwd 라운드는 막고 PM 홈 장부는 새 스냅샷 뒤 confirm-fix까지 존속한다."""
+    repo = _repo(tmp_path)
+    tickets = repo / ".project_manager" / "wiki" / "tickets" / "open"
+    tickets.mkdir(parents=True)
+    (tickets / "T-9999-anchor.md").write_text(
+        "---\nid: T-9999\ntitle: PM-home anchor fixture\nstatus: open\n---\n",
+        encoding="utf-8",
+    )
+    (repo / ".project_manager" / "local.conf").write_text(
+        "additional_reviewer_enabled=true\nreview_rounds_max=2\n",
+        encoding="utf-8",
+    )
+    target = repo / "review" / "target.txt"
+    target.write_text("changed\n", encoding="utf-8")
+    _git(repo, "add", "review/target.txt")
+
+    snapshot = _load("gate_snapshot")
+    first, _files = snapshot.create_snapshot(
+        repo, tmp_path / "gate-round-1", ["review/target.txt"],
+    )
+    external = _load("external_review")
+    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
+
+    workspace_calls = {"n": 0}
+
+    def _workspace(*args, **kwargs):
+        workspace_calls["n"] += 1
+        root = tmp_path / f"reviewer-workspace-{workspace_calls['n']}"
+        tree = root / "tree"
+        home = root / "home"
+        tree.mkdir(parents=True)
+        home.mkdir()
+        return external.ReviewerWorkspace(
+            root=root, tree=tree, home=home,
+            files=1, skipped_unsafe=0, git_repo=True,
+        )
+
+    answers = [
+        (
+            "판정: 반려\n\n**must-fix** (반드시 수정):\n- 장부 앵커를 고정한다\n",
+            True,
+        ),
+        (
+            "판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n",
+            False,
+        ),
+    ]
+    review_calls = {"n": 0}
+
+    def _review(*args, **kwargs):
+        answer, rejected = answers[review_calls["n"]]
+        review_calls["n"] += 1
+        return {
+            "reviewer": "x", "ok": True, "output": answer, "answer": answer,
+            "verdict": {"has_must_fix": rejected, "has_pass": not rejected},
+            "file": None, "failed": False, "started": True,
+            "any_must_fix": rejected, "all_pass": not rejected,
+        }
+
+    monkeypatch.setattr(external, "create_reviewer_workspace", _workspace)
+    monkeypatch.setattr(external, "run_review", _review)
+
+    # PM 37의 발단 형상: 격리 스냅샷 cwd(=엔진 자기 앵커)에서 장부 라운드를 열려 하면
+    # 전송·예약 전에 막히고 스냅샷 안에는 휘발 장부가 생기지 않는다.
+    external.REPO = first
+    assert external.main([
+        "--gate", "T-0634", "--paths", "review/target.txt", "--force",
+        "--output-dir", str(tmp_path / "snapshot-raw"),
+    ]) == 1
+    assert review_calls["n"] == 0
+    assert not (first / ".project_manager" / ".local" / "review_rounds.json").exists()
+    assert "게이트 스냅샷 마커가 있는 앵커" in capsys.readouterr().err
+
+    # 운영 표준인 PM 홈 앵커에서 반려 라운드를 기록한다.
+    external.REPO = repo
+    assert external.main([
+        "--gate", "T-0634", "--paths", "review/target.txt",
+        "--output-dir", str(tmp_path / "home-raw-round"),
+    ]) == 1
+    assert review_calls["n"] == 1
+    ledger_path = repo / ".project_manager" / ".local" / "review_rounds.json"
+    assert json.loads(ledger_path.read_text(encoding="utf-8"))["T-0634"]["count"] == 1
+    capsys.readouterr()
+
+    # 새 격리 스냅샷을 만들어도 장부는 PM 홈 소유라 사라지지 않고 confirm-fix 자격/근거가 산다.
+    second, _files = snapshot.create_snapshot(
+        repo, tmp_path / "gate-round-2", ["review/target.txt"],
+    )
+    assert (
+        second / ".project_manager" / ".local" / "gate-snapshot.json"
+    ).is_file()
+    assert second != first and not (
+        second / ".project_manager" / ".local" / "review_rounds.json"
+    ).exists()
+    external.REPO = repo
+    assert external.main([
+        "--gate", "T-0634", "--paths", "review/target.txt", "--confirm-fix",
+        "--output-dir", str(tmp_path / "home-raw-confirm"),
+    ]) == 0
+
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    assert ledger["T-0634"]["count"] == 2
+    assert ledger["T-0634"]["confirm_fix"] == 1
+    assert [row["verdict"] for row in ledger["T-0634"]["rounds"]] == [1, 0]
+    assert review_calls["n"] == 2

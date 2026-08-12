@@ -33,8 +33,12 @@ task 세션의 일반 사용자 종료 경로:
 backbone Python도 같은 task-only 계약:
 
 ```bash
-python3 .project_manager/tools/pm_handoff.py --task <이름>
+python3 .project_manager/tools/pm_handoff.py --task <이름> --user-ack <값>
 ```
+
+`<값>`은 사용자가 핸드오프를 명시 지시한 발화에서 승인한 task 이름을 그대로 받는다. 세션이나
+스킬이 승인값을 추론·생성·자동 부착하지 않는다. 승인 발화가 없으면 실행하지 않고 사용자에게
+핸드오프 여부와 대상값을 확인한다.
 
 엔진이 task pm_state에서 차수를 추론하고 기본 wave 요약과 task 보유 작업공간 집합을 해소한다. 사용자에게 repo/slot·session-seq를 받지 않으며, task와 repo/slot/branch/done의 혼합을 거부한다. 다음 세션 트리거는 `/pm-bootstrap --task <이름>` 하나다.
 
@@ -43,8 +47,12 @@ slot/솔로 모드에서 skill 내부 backbone 호출:
 ```bash
 python3 .project_manager/tools/pm_handoff.py \
   --session-seq <N> \
-  --wave-summary "<wave 1~3 한 줄 요약>"
+  --wave-summary "<wave 1~3 한 줄 요약>" \
+  --user-ack <값>
 ```
+
+slot 모드의 `<값>`도 사용자 발화에서 승인된 canonical `<repo>_<N>`(legacy solo는 `solo`)을
+그대로 전달한다. 세션이 slot 조회값으로 승인을 대신 만들거나 사용자 발화에 없던 값을 붙이지 않는다.
 
 > 아래 `--session-seq` 설명은 slot/솔로 호환 경로에만 해당한다. 숫자만(`19`) 주면 CLI 가
 > "차"를 붙여 `PM 19차`로 포맷한다.
@@ -56,7 +64,7 @@ python3 .project_manager/tools/pm_handoff.py \
 - `--dry-run` — log/current.md / pm_state.md 변경 미적용·stdout 미리보기만 (dirty 게이트도 판정 미리보기만·비차단).
 - `--no-pytest` — 회귀 측정 skip (직전 wave 종결 commit 의 숫자 신뢰 시·**비권장**).
 - `--ack-dirty "<사유>"` — [0/7] dirty-tree 게이트 명시 override. 사유 필수(개행은 공백으로 평탄화)·handoff entry 에 박제된다. 정상 경로는 override 가 아니라 **세션 산출을 먼저 커밋**하는 것이다.
-- `--auto-trigger` — 엔진 내부 비대화 자동 실행 전용 예약 플래그(현재 호출부 없음·향후 자동 배선용). dirty 게이트를 차단 대신 loud 경고+사유 자동 박제로 강등한다. 핸드오프는 사용자 명시 종료가 트리거라는 계약은 불변 — PM/사용자가 손으로 쓰는 플래그가 아니다.
+- `--auto-trigger` — 사용자 명시 핸드오프 호출부를 위한 호환 신호. dirty 게이트를 차단 대신 loud 경고+사유 자동 박제로 강등하지만, 독자 트리거나 승인값이 아니며 `--user-ack`를 우회하지 않는다. 자동 배선 대상으로 광고하거나 세션이 자의로 붙이지 않는다.
 - `--task <이름>` — task 모드의 **정상 사용자 경로**. 세션 종료 연속성 앵커를 slot→task로 이동하며, task 생성 시 만들어진 `.local/tasks/<이름>/pm_state.md`에 기록·dashboard 자기 섹션 `## <이름>`·log 헤더 태그 `(task:<이름>)`. lease는 유지한다(세션 종료 ≠ task 종료). 이름은 **공백·괄호·path 문자 없는 단일 토큰**(슬롯 예약 `<repo>_<N>` 불가)이다.
 
 ## CLI 자동 처리 단계

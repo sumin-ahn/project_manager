@@ -10,7 +10,7 @@
 생성 전후의 공유 working tree와 생성된 스냅샷에서 대상 파일의 종류, 실행 비트,
 Git 속성 정규화 blob OID를 대조한다. 대상 밖 변경은 비교하지 않는다. 생성된 격리
 worktree의 전용 index만 내용과 동기화하며, 입력 working tree의 공유 index는 수정하지
-않는다.
+않는다. 검증을 마친 스냅샷에는 생성 사실을 나타내는 로컬 JSON 마커를 남긴다.
 
 병렬 wave에서는 같은 디렉터리의 다른 dev WIP가 검토 범위에 섞이지 않도록 ``--paths``를
 파일 단위로 지정한다.
@@ -20,11 +20,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import shlex
 import stat
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple, Sequence
 
@@ -155,7 +157,12 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 
 # baked stamp. 소비처는 이 값을 자기 rev와 대조해 부분 동기된 구 사본을
 # SnapshotError 속성 접근 전에 명시적인 sibling-skew 오류로 막는다.
-ENGINE_REV = "v1.7.3"
+ENGINE_REV = "v1.7.4"
+
+
+_GATE_SNAPSHOT_MARKER = Path(
+    ".project_manager/.local/gate-snapshot.json"
+)
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -705,6 +712,104 @@ def _rollback(root: Path, output: Path) -> str | None:
     return f"생성 실패 후 격리 worktree 정리도 실패했습니다: {detail}"
 
 
+def _write_snapshot_marker(root: Path, destination: Path) -> Path:
+    """일회용 게이트 스냅샷 마커를 destination 내부의 symlink 없는 경로에 기록한다."""
+    marker = destination / _GATE_SNAPSHOT_MARKER
+    payload = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "source_repo": str(root.resolve()),
+        "target_path": str(destination.resolve()),
+    }
+    try:
+        destination_root = destination.resolve(strict=True)
+        marker_parent_real = marker.parent.resolve(strict=False)
+        try:
+            marker_parent_real.relative_to(destination_root)
+        except ValueError as exc:
+            raise SnapshotError(
+                "게이트 스냅샷 마커 부모가 destination 밖을 가리킵니다"
+                f"(symlink 추종 거부): {marker.parent} -> {marker_parent_real}"
+            ) from exc
+
+        # realpath가 destination 안을 가리키는 내부 symlink도 거부한다. 이 마커는 생성기가
+        # 소유하는 런타임 파일이므로, 추적된 `.project_manager`/`.local` 링크 아래에는 쓰지 않는다.
+        current = destination_root
+        for part in _GATE_SNAPSHOT_MARKER.parent.parts:
+            current /= part
+            try:
+                mode = current.lstat().st_mode
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(mode):
+                raise SnapshotError(
+                    f"게이트 스냅샷 마커 부모에 symlink 컴포넌트가 있습니다: {current}"
+                )
+            if not stat.S_ISDIR(mode):
+                raise SnapshotError(
+                    f"게이트 스냅샷 마커 부모 컴포넌트가 디렉터리가 아닙니다: {current}"
+                )
+
+        serialized = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+        secure_dir_fd = (
+            hasattr(os, "O_NOFOLLOW")
+            and hasattr(os, "O_DIRECTORY")
+            and os.open in getattr(os, "supports_dir_fd", frozenset())
+            and os.mkdir in getattr(os, "supports_dir_fd", frozenset())
+        )
+        if secure_dir_fd:
+            dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            current_fd = os.open(destination_root, dir_flags)
+            marker_fd: int | None = None
+            try:
+                for part in _GATE_SNAPSHOT_MARKER.parent.parts:
+                    try:
+                        next_fd = os.open(part, dir_flags, dir_fd=current_fd)
+                    except FileNotFoundError:
+                        try:
+                            os.mkdir(part, dir_fd=current_fd)
+                        except FileExistsError:
+                            pass
+                        next_fd = os.open(part, dir_flags, dir_fd=current_fd)
+                    os.close(current_fd)
+                    current_fd = next_fd
+                file_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                marker_fd = os.open(
+                    _GATE_SNAPSHOT_MARKER.name,
+                    file_flags,
+                    0o600,
+                    dir_fd=current_fd,
+                )
+                with os.fdopen(marker_fd, "w", encoding="utf-8") as handle:
+                    marker_fd = None
+                    handle.write(serialized)
+            finally:
+                if marker_fd is not None:
+                    os.close(marker_fd)
+                os.close(current_fd)
+        else:
+            # dir_fd/O_NOFOLLOW 미지원 플랫폼 폴백. 쓰기 직전에 부모를 만든 뒤 realpath와
+            # 각 컴포넌트를 다시 검증하고 exclusive-create로 marker 자체 symlink도 거부한다.
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            if marker.parent.resolve(strict=True) != marker_parent_real:
+                raise SnapshotError(
+                    f"게이트 스냅샷 마커 부모가 검증 중 변경됐습니다: {marker.parent}"
+                )
+            current = destination_root
+            for part in _GATE_SNAPSHOT_MARKER.parent.parts:
+                current /= part
+                if current.is_symlink() or not current.is_dir():
+                    raise SnapshotError(
+                        f"게이트 스냅샷 마커 부모 경로가 안전하지 않습니다: {current}"
+                    )
+            with marker.open("x", encoding="utf-8") as handle:
+                handle.write(serialized)
+    except SnapshotError:
+        raise
+    except (OSError, UnicodeError) as exc:
+        raise SnapshotError(f"게이트 스냅샷 마커 기록 실패: {marker} ({exc})") from exc
+    return marker
+
+
 def create_snapshot(
     repo: Path, output: Path, paths: Sequence[str]
 ) -> tuple[Path, tuple[str, ...]]:
@@ -798,6 +903,10 @@ def create_snapshot(
                 + changed
                 + _PARALLEL_WAVE_GUIDANCE
             )
+        # 내용·index·HEAD bookend가 모두 닫힌 성공 스냅샷에만 사실 마커를 남긴다. 마커는
+        # `.project_manager/.local/` 런타임 메타데이터라 검토 대상 overlay에는 섞이지 않는다.
+        # 기록 실패도 성공으로 강등하지 않고 아래 공통 rollback 경로를 탄다.
+        _write_snapshot_marker(root, destination)
     except Exception as exc:
         cleanup_error = _rollback(root, destination)
         if cleanup_error is not None:

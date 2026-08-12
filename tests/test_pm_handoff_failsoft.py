@@ -19,6 +19,18 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
 
+
+def _run_handoff(inst, **kw):
+    """핸드오프 실행 — 승인 게이트에 정식 승인값을 실어 통과시킨다.
+
+    이 모듈의 축은 승인 게이트가 아니다(그 축은 ``tests/test_pm_handoff_user_ack.py``가
+    소유한다). 승인 대상값은 task > 슬롯 이름 > legacy solo sentinel 순으로 정해진다.
+    """
+    if "user_ack" not in kw:
+        slot = kw.get("worktree_slot")
+        kw["user_ack"] = kw.get("task") or (slot.rsplit("/", 1)[-1] if slot else "solo")
+    return inst.run(**kw)
+
 def _load(name: str):
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
@@ -63,7 +75,7 @@ def test_handoff_skips_when_pm_state_absent(handoff, tmp_path):
     inst, _, missing_state = _make_handoff_missing_state(handoff, tmp_path)
     assert not missing_state.exists()  # 전제: pm_state 부재.
 
-    rc = inst.run(
+    rc = _run_handoff(inst, 
         session_num=5,
         wave_summary="x",
         dry_run=False,
@@ -79,7 +91,7 @@ def test_handoff_warns_on_stderr_when_pm_state_absent(handoff, tmp_path, capsys)
     """부재 시 명확한 경고를 stderr 로 낸다 (board.py init 미실행 clone 안내)."""
     inst, _, _ = _make_handoff_missing_state(handoff, tmp_path)
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
 
     assert rc == 0
     captured = capsys.readouterr()
@@ -92,7 +104,7 @@ def test_handoff_continues_remaining_steps_when_pm_state_absent(handoff, tmp_pat
     """3·4단계 skip 이후에도 후속 단계(log entry append·잔여 작업)는 진행한다."""
     inst, log_file, _ = _make_handoff_missing_state(handoff, tmp_path)
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
 
     assert rc == 0
     # step 2: log/current.md 에 handoff entry skeleton 이 실제 append 됐다.
@@ -108,7 +120,7 @@ def test_handoff_dry_run_skips_when_pm_state_absent(handoff, tmp_path):
     inst, log_file, _ = _make_handoff_missing_state(handoff, tmp_path)
     before_log = log_file.read_text(encoding="utf-8")
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=True, skip_pytest=True)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=True, skip_pytest=True)
 
     assert rc == 0
     # dry-run 은 log 도 건드리지 않는다.
@@ -227,7 +239,7 @@ def test_run_aborts_loud_on_ambiguous_multipm(handoff, tmp_path, monkeypatch, ca
     inst, log_file = _bare_handoff(handoff, tmp_path)
     before_log = log_file.read_text(encoding="utf-8")
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
 
     assert rc == 1  # fail-loud 중단.
     err = capsys.readouterr().err
@@ -245,7 +257,7 @@ def test_run_solo_not_aborted_no_multipm_setup(handoff, tmp_path, monkeypatch, c
     # areas/leases 를 *깔지 않음* → 등록 repo 0개 = solo.
     inst, log_file = _bare_handoff(handoff, tmp_path)
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
 
     assert rc == 0  # solo 는 중단 없이 진행.
     err = capsys.readouterr().err
@@ -295,7 +307,8 @@ def test_run_default_1_threads_slot_to_pm_state_cwd_and_entry(handoff, tmp_path,
     (tmp_path / "work" / "project_manager_1").mkdir(parents=True, exist_ok=True)
     inst, log_file, captured = _bare_handoff_capturing_cwd(handoff, tmp_path)
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=False,
+                        user_ack="project_manager_1")
 
     assert rc == 0
     # (1) 실행 슬롯이 work/project_manager_1 로 thread 됐다.
@@ -325,7 +338,8 @@ def test_run_idle_slot1_threads_to_leased_slot2(handoff, tmp_path, monkeypatch):
     (tmp_path / "work" / "project_manager_2").mkdir(parents=True, exist_ok=True)
     inst, log_file, captured = _bare_handoff_capturing_cwd(handoff, tmp_path)
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=False,
+                        user_ack="project_manager_2")
 
     assert rc == 0
     assert inst._worktree_slot == "work/project_manager_2"
@@ -342,7 +356,7 @@ def test_run_solo_no_slot_threaded_repo_cwd_unchanged(handoff, tmp_path, monkeyp
     # areas 미설치 → 등록 repo 0개 = solo.
     inst, log_file, captured = _bare_handoff_capturing_cwd(handoff, tmp_path)
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
 
     assert rc == 0
     assert inst._worktree_slot is None  # 미세팅(현행 유지).
@@ -401,7 +415,7 @@ def test_run_failsoft_skips_step3_when_anchor_absent(handoff, tmp_path, capsys):
     inst, _, pm_state = _make_handoff_with_state(handoff, tmp_path, _PM_STATE_NO_ANCHOR)
     before = pm_state.read_text(encoding="utf-8")
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
 
     assert rc == 0  # fail-soft — 전체 핸드오프가 죽지 않는다.
     err = capsys.readouterr().err
@@ -415,7 +429,7 @@ def test_run_failsoft_continues_remaining_steps_when_anchor_absent(handoff, tmp_
     """step3 스킵 이후에도 나머지 단계(log entry append·완료 메시지)는 진행한다."""
     inst, log_file, _ = _make_handoff_with_state(handoff, tmp_path, _PM_STATE_NO_ANCHOR)
 
-    rc = inst.run(session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
+    rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
 
     assert rc == 0
     # step 2: log/current.md handoff entry skeleton 이 실제 append 됐다.

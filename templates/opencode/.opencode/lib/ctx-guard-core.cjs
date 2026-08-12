@@ -166,17 +166,20 @@ function computeCtxState(used, limit, thresholds) {
   return { remainingPct, usedPct, level };
 }
 
-// ── 순수 함수: compaction 전 checkpoint 안내문 (모델-facing 비차단 주입) ────────
-// 잔여 nudge 밴드에서 온전한 컨텍스트로 ticket 경계를 정리하고 checkpoint 를 박제하게 한다.
-// experimental.chat.system.transform 이 이 문자열을 system[] 에 push 한다.
-// 두 builder의 thresholds 인자는 Claude 미러 시그니처를 보존하려고 남긴다(현재 문구에서는 미사용).
+// ── 순수 함수: 중앙 엔진 부재 시 비종료 fallback 안내 ────────────────────────
+// 실 안내는 pm_log.py ctx-guidance가 단일 소유한다. 다만 중앙 엔진을 읽을 수 없는 fail-soft
+// 경계에서도 정책이 뒤집히지 않도록 필수 두 사실만 최소 복제한다.
+const FALLBACK_CONTINUITY_GUIDANCE =
+  "압축은 자동이고 세션은 그대로 이어진다. 핸드오프는 사용자 명시 지시로만 한다.";
 function buildNudgeGuidance(state, thresholds) {
   const remaining = Math.round((state && state.remainingPct) || 0);
   const used = Math.round((state && state.usedPct) || 0);
   return (
-    `[ctx-nudge] 컨텍스트 사용 ${used}% (잔여 ${remaining}%) — 박제 준비 구간. ` +
-    `현재 ticket 경계까지만 마무리하고 complete entry 로 결과를 박제하라. 다음 구간에 들어가기 전에 ` +
-    `\`python3 .project_manager/tools/pm_log.py checkpoint --task <이름>\` 을 실행해 현재 서사를 보존하라.`
+    `[ctx-nudge] 컨텍스트 사용 ${used}% (잔여 ${remaining}%). ` +
+    `현재 ticket 경계의 결과와 진행 상태를 complete entry와 ` +
+    `\`python3 .project_manager/tools/pm_log.py checkpoint --task <이름>\`으로 기록할 수 있다. ` +
+    `${FALLBACK_CONTINUITY_GUIDANCE} ` +
+    `상세 ctx 연속성 정책은 pm_log.py ctx-guidance 엔진에서 복구한다.`
   );
 }
 
@@ -186,9 +189,11 @@ function buildNudge2Guidance(state, thresholds) {
   const remaining = Math.round((state && state.remainingPct) || 0);
   return (
     `[ctx-nudge/강화] 컨텍스트 사용 ${Math.round((state && state.usedPct) || 0)}% ` +
-    `(잔여 ${remaining}%) — 지금 ` +
-    `\`python3 .project_manager/tools/pm_log.py checkpoint --task <이름>\` 을 실행하고 ` +
-    `checkpoint entry 의 구간·서사를 채워 현재 상태를 즉시 박제하라.`
+    `(잔여 ${remaining}%). ` +
+    `\`python3 .project_manager/tools/pm_log.py checkpoint --task <이름>\`으로 ` +
+    `checkpoint entry의 구간·서사를 기록할 수 있다. ` +
+    `${FALLBACK_CONTINUITY_GUIDANCE} ` +
+    `상세 ctx 연속성 정책은 pm_log.py ctx-guidance 엔진에서 복구한다.`
   );
 }
 
@@ -225,6 +230,41 @@ function runPmLog(root, args, options = {}, spawnSync = childProcess.spawnSync) 
   return null;
 }
 
+function buildEngineCtxGuidance(
+  root, band, state, thresholds, spawnSync = childProcess.spawnSync,
+) {
+  const args = ["ctx-guidance", "--band", band];
+  if (state && Number.isFinite(Number(state.usedPct))) {
+    args.push("--used-pct", String(Math.round(Number(state.usedPct))));
+  }
+  if (state && Number.isFinite(Number(state.remainingPct))) {
+    args.push("--remaining-pct", String(Math.round(Number(state.remainingPct))));
+  }
+  if (thresholds && Number.isFinite(Number(thresholds.stop_pct))) {
+    args.push("--stop-pct", String(Math.round(Number(thresholds.stop_pct))));
+  }
+  const result = runPmLog(
+    root, args, { capture: true, timeout: SNAPSHOT_TIMEOUT_MS }, spawnSync,
+  );
+  if (result && result.status === 0 && typeof result.stdout === "string" && result.stdout.trim()) {
+    return result.stdout.trim();
+  }
+  if (band === "nudge") return buildNudgeGuidance(state, thresholds);
+  if (band === "nudge2") return buildNudge2Guidance(state, thresholds);
+  if (band === "final") {
+    const remaining = Math.round((state && state.remainingPct) || 0);
+    const used = Math.round((state && state.usedPct) || 0);
+    const stop = Math.round((thresholds && thresholds.stop_pct) || STOP_PCT_DEFAULT);
+    return (
+      `[ctx-nudge/최종] 컨텍스트 사용 ${used}% (잔여 ${remaining}% ≤ ${stop}%). ` +
+      `\`python3 .project_manager/tools/pm_log.py checkpoint --task <이름> --trigger compaction\` ` +
+      `기록을 사용할 수 있다. ${FALLBACK_CONTINUITY_GUIDANCE} ` +
+      `상세 ctx 연속성 정책은 pm_log.py ctx-guidance 엔진에서 복구한다.`
+    );
+  }
+  return buildCompactionFallbackGuidance();
+}
+
 function buildCompactionSnapshot(root, cwd, spawnSync = childProcess.spawnSync) {
   // Builder command token: pm_log.py snapshot. stdout payload는 변형 없이 system[]에 전달한다.
   const result = runPmLog(
@@ -240,8 +280,9 @@ function buildCompactionSnapshot(root, cwd, spawnSync = childProcess.spawnSync) 
 
 function buildCompactionFallbackGuidance() {
   return (
-    "[ctx-checkpoint] compaction이 방금 일어났지만 PM snapshot을 읽지 못했다. " +
-    "현재 task의 pm_state와 log/current.md를 확인하고, 필요하면 pm_log.py checkpoint로 경계를 보충하라."
+    "[ctx-checkpoint] compaction이 방금 일어남 — PM snapshot을 읽지 못했다. " +
+    "현재 task의 pm_state와 log/current.md를 확인하고, 필요하면 pm_log.py checkpoint로 경계를 보충하라. " +
+    FALLBACK_CONTINUITY_GUIDANCE
   );
 }
 
@@ -556,15 +597,12 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
   }
 
   // 넛지: 사이클당 1회 toast(없으면 무음 — fail-soft).
-  async function notifyNudge(state, t) {
+  async function notifyNudge(message) {
     try {
       if (client && client.tui && client.tui.showToast) {
         await client.tui.showToast({
           body: {
-            message:
-              `[ctx-guard] 잔여 컨텍스트 ~${Math.round(state.remainingPct)}% ` +
-              `(넛지 임계 ${t.nudge_pct}%). ticket/wave 경계를 마무리하고 checkpoint 박제를 ` +
-              `준비하라.`,
+            message,
             variant: "warning",
           },
         });
@@ -575,15 +613,12 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
   }
 
   // 2단 넛지: 사이클당 1회 강한 toast(compaction 임박). 사람용 2단 표시(없으면 무음).
-  async function notifyNudge2(state, t) {
+  async function notifyNudge2(message) {
     try {
       if (client && client.tui && client.tui.showToast) {
         await client.tui.showToast({
           body: {
-            message:
-              `[ctx-guard/임박] 잔여 컨텍스트 ~${Math.round(state.remainingPct)}% — ` +
-              `auto-compaction 임박. 지금 pm_log.py checkpoint 를 실행하고 새 큰 작업은 ` +
-              `시작하지 마라.`,
+            message,
             variant: "warning",
           },
         });
@@ -594,14 +629,12 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
   }
 
   // compaction 직후 사람용 toast. 모델 안내는 pendingNudgeText/system.transform 채널을 병행한다.
-  async function notifyCompacted() {
+  async function notifyCompacted(message) {
     try {
       if (client && client.tui && client.tui.showToast) {
         await client.tui.showToast({
           body: {
-            message:
-              `[ctx-guard] compaction이 방금 일어남 — ` +
-              `지금 pm_log.py checkpoint 로 상태를 보충 박제하라.`,
+            message,
             variant: "warning",
           },
         });
@@ -629,8 +662,11 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
         // 자식 세션은 snapshot/checkpoint 모두 면제다. 최대 3초 동기 subprocess 전에 판정해
         // 면제 대상 compaction 이벤트가 메인 세션용 snapshot 때문에 멈추지 않게 한다.
         if (await isChildSession(sessionID)) return;
+        const compactedGuidance = buildEngineCtxGuidance(
+          root, "precompact", null, null,
+        );
         const stagedSnapshot = buildCompactionSnapshot(root, hookCwd);
-        const stagedNotice = stagedSnapshot || buildCompactionFallbackGuidance();
+        const stagedNotice = stagedSnapshot || compactedGuidance;
         session.pendingNudgeText = stagedNotice;
         // 같은 payload를 프로세스 경계 너머에도 보존한다. 같은 프로세스의
         // 재-compaction은 새 generation stage 성공 후 자기 구 generation만 정리한다.
@@ -646,7 +682,7 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
         createCompactionCheckpoint(
           root, hookCwd, sessionID, createCompactionBoundaryID(sessionID),
         );
-        await notifyCompacted();
+        await notifyCompacted(compactedGuidance);
         return;
       }
 
@@ -676,15 +712,17 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
         // 2단(strong·compaction 임박) — 1단 발화 여부와 독립(1단 창을 건너뛴 세션도 발화).
         session.fired.nudge2 = true;
         // 2단 모델-주입 안내 대기 — 1단과 동일 채널(system.transform 1회 소비).
-        session.pendingNudgeText = buildNudge2Guidance(state, t);
+        const guidance = buildEngineCtxGuidance(root, "nudge2", state, t);
+        session.pendingNudgeText = guidance;
         session.pendingSnapshotMarker = null;
-        await notifyNudge2(state, t); // 2단 강한 toast (사람 UI·1회).
+        await notifyNudge2(guidance); // 2단 강한 toast (사람 UI·1회).
       } else if (state.level === "nudge" && !session.fired.nudge) {
         session.fired.nudge = true;
         // 다음 모델 호출의 system.transform 이 checkpoint 안내를 소비한다.
-        session.pendingNudgeText = buildNudgeGuidance(state, t);
+        const guidance = buildEngineCtxGuidance(root, "nudge", state, t);
+        session.pendingNudgeText = guidance;
         session.pendingSnapshotMarker = null;
-        await notifyNudge(state, t); // 넛지 toast (사람 UI·1회).
+        await notifyNudge(guidance); // 넛지 toast (사람 UI·1회).
       }
     },
 
@@ -741,6 +779,7 @@ module.exports = {
   buildNudge2Guidance,
   findEngineRoot,
   runPmLog,
+  buildEngineCtxGuidance,
   buildCompactionSnapshot,
   buildCompactionFallbackGuidance,
   safeCompactionSnapshotSessionKey,

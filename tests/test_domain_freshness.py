@@ -461,6 +461,94 @@ def _commit(root: Path, msg: str) -> str:
                           capture_output=True, text=True).stdout.strip()
 
 
+def test_downstream_omits_absent_upstream_only_hierarchy(
+        board, domain, monkeypatch, tmp_path):
+    """형상 A: downstream에 없는 templates 계층은 영구 unverifiable로 올리지 않는다."""
+    owner = tmp_path / "owner"
+    downstream = tmp_path / "downstream"
+    owner.mkdir()
+    downstream.mkdir()
+    _init_repo(owner)
+    _init_repo(downstream)
+    (owner / "seed.txt").write_text("owner\n", encoding="utf-8")
+    pin = _commit(owner, "owner pin")
+
+    # 라이브 재현처럼 소유 checkout에는 파일이 실재하지만 아직 HEAD 관찰 대상은 아니다.
+    covered = owner / "templates" / "opencode" / "plugin.js"
+    covered.parent.mkdir(parents=True)
+    covered.write_text("plugin\n", encoding="utf-8")
+    domain_dir = _wire(board, domain, monkeypatch, downstream)
+    monkeypatch.setattr(domain, "REPO", downstream)
+    _domain_page(domain_dir, "adapter.md", covers=["templates/opencode/plugin.js"],
+                 verified_at=pin, title="upstream adapter", repo="upstream")
+    local_conf = downstream / ".project_manager" / "local.conf"
+    local_conf.parent.mkdir(parents=True, exist_ok=True)
+    local_conf.write_text(f"upstream={owner}\n", encoding="utf-8")
+    _commit(downstream, "downstream page")
+
+    assert covered.exists()
+    assert not (downstream / "templates").exists()
+    assert board.lint_domain_freshness() == []
+
+
+def test_owner_repo_keeps_full_covers_validation(
+        board, domain, monkeypatch, tmp_path):
+    """형상 B: 소유 repo에서는 실재 경로가 clean이고 삭제 commit은 stale로 잡힌다."""
+    owner = tmp_path / "owner"
+    owner.mkdir()
+    _init_repo(owner)
+    covered = owner / "templates" / "opencode" / "plugin.js"
+    covered.parent.mkdir(parents=True)
+    covered.write_text("plugin\n", encoding="utf-8")
+    pin = _commit(owner, "owner pin")
+
+    domain_dir = _wire(board, domain, monkeypatch, owner)
+    monkeypatch.setattr(domain, "REPO", owner)
+    _domain_page(domain_dir, "adapter.md", covers=["templates/opencode/plugin.js"],
+                 verified_at=pin, title="owner adapter", repo="upstream")
+    local_conf = owner / ".project_manager" / "local.conf"
+    local_conf.parent.mkdir(parents=True, exist_ok=True)
+    local_conf.write_text(f"upstream={owner}\n", encoding="utf-8")
+    _commit(owner, "owner page")
+
+    assert board.lint_domain_freshness() == []
+    covered.unlink()
+    _commit(owner, "delete covered path")
+    findings = board.lint_domain_freshness()
+    assert [kind for _label, kind, _detail in findings] == ["domain-stale"]
+
+
+def test_downstream_existing_hierarchy_keeps_absent_finding(
+        board, domain, monkeypatch, tmp_path):
+    """형상 C: downstream에도 있는 계층의 사라진 covers는 완화하지 않는다."""
+    owner = tmp_path / "owner"
+    downstream = tmp_path / "downstream"
+    owner.mkdir()
+    downstream.mkdir()
+    _init_repo(owner)
+    _init_repo(downstream)
+    (owner / "seed.txt").write_text("owner\n", encoding="utf-8")
+    pin = _commit(owner, "owner pin")
+    existing = downstream / "src" / "existing.py"
+    existing.parent.mkdir()
+    existing.write_text("present hierarchy\n", encoding="utf-8")
+
+    domain_dir = _wire(board, domain, monkeypatch, downstream)
+    monkeypatch.setattr(domain, "REPO", downstream)
+    _domain_page(domain_dir, "source.md", covers=["src/removed.py"],
+                 verified_at=pin, title="upstream source", repo="upstream")
+    local_conf = downstream / ".project_manager" / "local.conf"
+    local_conf.parent.mkdir(parents=True, exist_ok=True)
+    local_conf.write_text(f"upstream={owner}\n", encoding="utf-8")
+    _commit(downstream, "downstream source page")
+
+    findings = board.lint_domain_freshness()
+    assert len(findings) == 1
+    label, kind, detail = findings[0]
+    assert (label, kind) == ("upstream source", "domain-unverifiable")
+    assert "src/removed.py" in detail
+
+
 def test_two_repo_owner_change_closes_unsynced_copy_window(
         board, domain, monkeypatch, tmp_path):
     """2-repo 재현: 원본 변경·PM import 사본 미동기여도 세 freshness 축이 원본 시계로 stale.

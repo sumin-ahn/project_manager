@@ -41,7 +41,8 @@ backbone `.project_manager/tools/pm_bootstrap.py` 호출은 skill 내부에서 �
 python3 .project_manager/tools/pm_bootstrap.py --repo <repo> --slot <N>
 ```
 
-이는 `<repo>_<N>` PM 정체성 선언 + 상태점검이다. 출력의 identity surface(세션=`<repo>_<N>`·슬롯·라이브 브랜치·보드 공유)와 다른 활성 PM 현황을 확인한다. 이후 보드/리스 조작에 `--repo <repo> --slot <N>`을 명시한다. 슬롯은 먼저 `pm-config worktree add <repo>`로 만든다. 솔로/무인자는 무인자 dump를 쓴다.
+이는 `<repo>_<N>` PM 정체성 선언 + 상태점검이다. 출력의 identity surface(세션=`<repo>_<N>`·슬롯·라이브 브랜치·보드 공유)와 다른 활성 PM 현황을 확인한다. 이후 보드/리스 조작에 `--repo <repo> --slot <N>`을 명시한다. 슬롯은 먼저 `pm-config worktree add <repo> --user-ack <repo>`로 만든다(물리 슬롯 생성은 사용자 승인
+행위 — 세션이 `--user-ack`을 스스로 붙이지 않는다). 솔로/무인자는 무인자 dump를 쓴다.
 
 ### task 모드 (일반 사용자 경로·작업 단위 정체성)
 

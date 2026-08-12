@@ -210,7 +210,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
 # Python 하한 probe보다 먼저 평가되므로 3.10에서도 파싱 가능한 문법만 쓴다.
-ENGINE_REV = "v1.7.3"
+ENGINE_REV = "v1.7.4"
 
 
 def _runtime_skill_entry(skill: str) -> str:
@@ -5361,7 +5361,7 @@ def _installed_harnesses_with_authority(
     하나 늘 뿐이라 **유실보다 안전하다**(비대칭 판단·거짓 양성 허용).
 
     ⚠ 폴백의 한계: 증거가 적은 하네스는 그 파일들이 다 지워지면 미검출된다 — opencode 는 증거가
-    `.opencode/pm-instructions.md`·`pm_orch_opencode.py` 둘뿐이라 둘 다 사라지면 구조 증거가 있어도
+    `.opencode/pm-instructions.md`·`pm_orch_opencode.py`·`command/` 뿐이라 그게 다 사라지면 구조 증거가 있어도
     설치로 안 본다. 이 한계는 **기록이 있는 인스턴스에는 없다**(기록이 추론을 대체한다).
 
     source_root 미지정/증거 파생 실패는 (a)만으로 판정한다(옛 동작·호출부는 항상 소스를 준다)."""

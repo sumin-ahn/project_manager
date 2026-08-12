@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "count": 550,
+  "count": 575,
   "paths": {
     ".claude/agents/code-reviewer.md": [
       {
@@ -145,6 +145,18 @@
         "count": 1
       }
     ],
+    ".project_manager/tools/delegate_channel_guard.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "2dd5c04b02963e52c64497bd1a82483777cc78e1260f0daf31fdb3534db08bd9",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "fdd211398f5053adda67c4159a5bbd3355639fd3cd297bbfe6aeb6d083313e3a",
+        "count": 1
+      }
+    ],
     ".project_manager/tools/domain.py": [
       {
         "kind": "circled_marker",
@@ -273,6 +285,11 @@
       },
       {
         "kind": "session_stamp",
+        "hash": "95b2df311d360edb8f1551e4fcf30f3fd7a4736aba53d65be275439b33eed757",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
         "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
         "count": 1
       }
@@ -394,6 +411,18 @@
         "kind": "circled_marker",
         "hash": "f8170f2b335993575aaf466444ca7f2334f2da138cf0611bf3da41475356f6a6",
         "count": 2
+      }
+    ],
+    ".project_manager/tools/pm_relay.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "15a391aea86092f5b93bef78169f0093959b7ec00dd7d1d81df3ed13a5b9bc3c",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "4605dff53280640ad69cf0f6110d5cbb540025b8f7fe51a34456381ccc9fb177",
+        "count": 1
       }
     ],
     ".project_manager/tools/pm_update.py": [
@@ -720,6 +749,18 @@
         "count": 1
       }
     ],
+    "templates/claude_code/.project_manager/tools/delegate_channel_guard.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "2dd5c04b02963e52c64497bd1a82483777cc78e1260f0daf31fdb3534db08bd9",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "fdd211398f5053adda67c4159a5bbd3355639fd3cd297bbfe6aeb6d083313e3a",
+        "count": 1
+      }
+    ],
     "templates/claude_code/.project_manager/tools/domain.py": [
       {
         "kind": "circled_marker",
@@ -848,6 +889,11 @@
       },
       {
         "kind": "session_stamp",
+        "hash": "95b2df311d360edb8f1551e4fcf30f3fd7a4736aba53d65be275439b33eed757",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
         "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
         "count": 1
       }
@@ -969,6 +1015,18 @@
         "kind": "circled_marker",
         "hash": "f8170f2b335993575aaf466444ca7f2334f2da138cf0611bf3da41475356f6a6",
         "count": 2
+      }
+    ],
+    "templates/claude_code/.project_manager/tools/pm_relay.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "15a391aea86092f5b93bef78169f0093959b7ec00dd7d1d81df3ed13a5b9bc3c",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "4605dff53280640ad69cf0f6110d5cbb540025b8f7fe51a34456381ccc9fb177",
+        "count": 1
       }
     ],
     "templates/claude_code/.project_manager/tools/pm_update.py": [
@@ -1323,6 +1381,18 @@
         "count": 1
       }
     ],
+    "templates/codex/.project_manager/tools/delegate_channel_guard.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "2dd5c04b02963e52c64497bd1a82483777cc78e1260f0daf31fdb3534db08bd9",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "fdd211398f5053adda67c4159a5bbd3355639fd3cd297bbfe6aeb6d083313e3a",
+        "count": 1
+      }
+    ],
     "templates/codex/.project_manager/tools/domain.py": [
       {
         "kind": "circled_marker",
@@ -1451,6 +1521,11 @@
       },
       {
         "kind": "session_stamp",
+        "hash": "95b2df311d360edb8f1551e4fcf30f3fd7a4736aba53d65be275439b33eed757",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
         "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
         "count": 1
       }
@@ -1572,6 +1647,18 @@
         "kind": "circled_marker",
         "hash": "f8170f2b335993575aaf466444ca7f2334f2da138cf0611bf3da41475356f6a6",
         "count": 2
+      }
+    ],
+    "templates/codex/.project_manager/tools/pm_relay.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "15a391aea86092f5b93bef78169f0093959b7ec00dd7d1d81df3ed13a5b9bc3c",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "4605dff53280640ad69cf0f6110d5cbb540025b8f7fe51a34456381ccc9fb177",
+        "count": 1
       }
     ],
     "templates/codex/.project_manager/tools/pm_update.py": [
@@ -1765,6 +1852,11 @@
         "kind": "session_stamp",
         "hash": "b052ed90297a1e25f2a8af852962c51a71ca178ee9ec7b1cd95f4fc49b997991",
         "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "e0f1103f11a011ebd7e56d4d3b842d50721073b773ac02c8bc6db6df2d84412f",
+        "count": 1
       }
     ],
     "templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md": [
@@ -1944,6 +2036,25 @@
         "count": 1
       }
     ],
+    "templates/opencode/.opencode/command/pm-dev-delegate.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "4ec29f256d50a263c9c2f4a68a59d0b5e45613b9011f70ecf34f89bd88be6d9b",
+        "count": 1
+      }
+    ],
+    "templates/opencode/.opencode/command/pm-handoff.md": [
+      {
+        "kind": "session_stamp",
+        "hash": "024e86f17246d31adf8706691920c6cc55b06669cfd6cd5d062e20285cf95cb3",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "f16dbbd40bac1a0ebd4ed37d28da4775427cd2a13341a3d738dd1aeb7bb0dc6d",
+        "count": 2
+      }
+    ],
     "templates/opencode/.opencode/pm-instructions.md": [
       {
         "kind": "session_stamp",
@@ -2098,6 +2209,18 @@
         "count": 1
       }
     ],
+    "templates/opencode/.project_manager/tools/delegate_channel_guard.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "2dd5c04b02963e52c64497bd1a82483777cc78e1260f0daf31fdb3534db08bd9",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "fdd211398f5053adda67c4159a5bbd3355639fd3cd297bbfe6aeb6d083313e3a",
+        "count": 1
+      }
+    ],
     "templates/opencode/.project_manager/tools/domain.py": [
       {
         "kind": "circled_marker",
@@ -2226,6 +2349,11 @@
       },
       {
         "kind": "session_stamp",
+        "hash": "95b2df311d360edb8f1551e4fcf30f3fd7a4736aba53d65be275439b33eed757",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
         "hash": "9c2c4efeb351040fe87c7050154bbb7fb82100f3977bd25fb84a58d0980c030b",
         "count": 1
       }
@@ -2347,6 +2475,18 @@
         "kind": "circled_marker",
         "hash": "f8170f2b335993575aaf466444ca7f2334f2da138cf0611bf3da41475356f6a6",
         "count": 2
+      }
+    ],
+    "templates/opencode/.project_manager/tools/pm_relay.py": [
+      {
+        "kind": "session_stamp",
+        "hash": "15a391aea86092f5b93bef78169f0093959b7ec00dd7d1d81df3ed13a5b9bc3c",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "4605dff53280640ad69cf0f6110d5cbb540025b8f7fe51a34456381ccc9fb177",
+        "count": 1
       }
     ],
     "templates/opencode/.project_manager/tools/pm_update.py": [
@@ -2508,7 +2648,7 @@
     "templates/opencode/AGENTS.lite.md": [
       {
         "kind": "session_stamp",
-        "hash": "b7149fcbaae4bfb1d2fb17f39f87e992a4832dd6df06f85a4ff6532638b59b9e",
+        "hash": "05d27f845ee22b51fe82c6fddcbf93ebabd06d0922d01a0a158612c54f5a2e79",
         "count": 1
       },
       {

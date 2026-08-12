@@ -409,7 +409,7 @@ def _dashboard_file() -> Path:
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
-ENGINE_REV = "v1.7.3"
+ENGINE_REV = "v1.7.4"
 
 # _load_tool(generic)이 이름으로 로드하는 stamped 형제. deep-import AST 가드는 클래스 메서드와
 # 중첩 함수까지 포함해 실제 호출 target을 측정하고, 그 집합이 이 리터럴에 포함되는지 단언한다.
@@ -3183,6 +3183,7 @@ class PmBootstrap:
                 return 1
 
         alloc_identity: dict | None = None
+        lean_identity: dict | None = None
         if multipm_lean:
             self._bound_slot = f"work/{repo}_{slot}"
         elif multipm_alloc:
@@ -3216,6 +3217,11 @@ class PmBootstrap:
             # None(graceful skip) — `git` dict 에 실어 빌더로 전달(시그니처 변경 최소화).
             git["board_git"] = self._collect_board_git()
             git["freshness"] = freshness
+            if multipm_lean:
+                # 첫 lean bootstrap도 아래 handoff context가 자기 slot state를 읽도록 bind를
+                # 컨텍스트 수집보다 먼저 확정한다. 출력은 하지 않고 identity만 보관했다가 기존
+                # JSON/markdown 위치에서 재사용해 출력 순서와 bind 1회 계약을 보존한다.
+                lean_identity = self._bind_and_identity(repo, slot)
             log_text = self._read_log_text()
             log_entry = self._collect_log_entry()
             # 재부착 단서 — 현 worktree 브랜치가 직전 handoff 의 worktree
@@ -3242,7 +3248,7 @@ class PmBootstrap:
                     board, pytest_result, git, log_entry, timestamp, handoff_ctx, dashboard_others
                 )
                 if multipm_lean:
-                    data["worktree"] = self._bind_and_identity(repo, slot)
+                    data["worktree"] = lean_identity
                 elif multipm_alloc:
                     data["worktree"] = alloc_identity  # 위 앞단 alloc 결과 재사용(재-alloc 금지).
                 if data.get("worktree") is not None:
@@ -3262,8 +3268,8 @@ class PmBootstrap:
                 print(markdown)
                 identity: dict | None = None
                 if multipm_lean:
-                    # lean 정체성 선언— bind + identity surface + 다른 활성 PM 상태점검.
-                    identity = self._bind_and_identity(repo, slot)
+                    # 앞에서 bind해 둔 lean 정체성을 기존 출력 위치에서 surface 한다.
+                    identity = lean_identity
                     # 슬롯 시대차 — freshness fetch 뒤라 origin/<base> 최신 재사용.
                     identity["slot_era"] = self._slot_era_info(repo, freshness)
                     print()
@@ -3358,7 +3364,9 @@ class PmBootstrap:
             print(
                 f"[중단·0단계] 슬롯 {slot_id} 이(가) 장부·폴더 어디에도 없습니다 — 미생성 슬롯을 "
                 f"바인딩하면 phantom 작업공간에 세션을 dump 합니다.\n"
-                f"  → 먼저 슬롯을 생성하세요:  {_CARD_TOOL_INVOKE}/pm_config.py worktree add {repo}\n"
+                f"  → 먼저 사용자에게 repo {repo!r} 슬롯 생성 승인을 요청하세요. 승인한 사용자만:\n"
+                f"    {_CARD_TOOL_INVOKE}/pm_config.py worktree add {repo} --user-ack {repo}\n"
+                f"    (사용자가 직접 실행·세션 자동 실행 금지)\n"
                 f"    (또는 `--slot` 번호를 실재하는 슬롯으로 맞추세요.)",
                 file=sys.stderr,
             )
@@ -3526,8 +3534,9 @@ class PmBootstrap:
             f"이 슬롯에서 작업하면 커밋이 canonical/보호 브랜치에 얹혀 ① 오염으로 이어집니다(방어를 "
             f"pre-push 훅에서 진입 시점으로 앞당김).\n"
             f"  → 해소 (택1):\n"
-            f"     (a) 코드 읽기 기준면이 필요하면 readonly 슬롯을 만드세요:\n"
-            f"         {_CARD_TOOL_INVOKE}/pm_config.py worktree add {repo} --readonly\n"
+            f"     (a) 코드 읽기 기준면이 필요하면 사용자에게 readonly 슬롯 생성 승인을 요청하세요.\n"
+            f"         승인한 사용자만 직접 실행: {_CARD_TOOL_INVOKE}/pm_config.py worktree add "
+            f"{repo} --readonly --user-ack {repo} (세션 자동 실행 금지)\n"
             f"     (b) 이 슬롯을 작업 브랜치로 전환하세요(전환+장부 스냅 재기록 원자 —\n"
             f"         raw `git switch` 는 스냅을 안 남겨 곧바로 diverged 2차 차단을 부릅니다):\n"
             f"         {remedy}",
@@ -4218,10 +4227,9 @@ class PmBootstrap:
             print(
                 f"\n[사용자 게이트] repo {exc.repo!r} worktree 풀 소진 — idle 슬롯이 없다.\n"
                 f"  자동 `git worktree add` 는 하지 않는다(fs 행위·사용자 게이트).\n"
-                f"  새 슬롯이 필요하면 수동으로 추가하라:\n"
-                f"    pm-config worktree add {exc.repo}"
-                f"{f' --branch {branch}' if branch else ''}\n"
-                f"  (또는 진행 중인 다른 슬롯을 작업완료 후 release.)",
+                f"  새 슬롯이 필요하면 사용자에게 생성 승인을 요청하라. 승인한 사용자만 직접 실행:\n"
+                f"    pm-config worktree add {exc.repo} --user-ack {exc.repo}\n"
+                f"  (세션 자동 실행 금지. 또는 진행 중인 다른 슬롯을 작업완료 후 release.)",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -4873,7 +4881,9 @@ class PmBootstrap:
         # 종료=/pm-wave-finish→ticket_finish 가 complete 를 내부 수행·중복 실행 말 것).
         lines.append("# 티켓 lifecycle 직접 (래핑 스킬 없음)")
         lines.append(cmd(
-            _C_BOARD_NEW, "draft 발행(본문은 board 밖에서 채움)",
+            _C_BOARD_NEW,
+            "draft 발행(본문은 board 밖에서 채움 · 미등록 prefix 는 사용자 승인값이 필요하다 — "
+            "`--user-ack <PFX>` 를 같이 준다)",
         ))
         lines.append(cmd(
             _C_BOARD_PROMOTE, "draft → open(본문 채운 뒤·claim 선행조건)",

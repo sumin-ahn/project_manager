@@ -7,6 +7,104 @@
 
 ## [Unreleased]
 
+## [1.7.4] - 2026-08-12
+
+### 업그레이드 노트
+
+- **위임 채널 기계 가드가 3하네스에 배선됐다 — 어댑터 이벤트 배선을 수용해야 발화한다.** 엔진·훅
+  스크립트는 `pm-update` 가 현행화하지만 이벤트 바인딩은 인스턴스 소유 config 에 있다. claude 는
+  `.claude/settings.json` 의 PreToolUse 배선을 수용하고(`./pm-config.sh sync-adapter-config --accept
+  .claude/settings.json` 또는 수동 병합), codex 는 세션에서 `/hooks` 로 새 훅 정의를 재승인한다.
+  opencode 는 플러그인 경로가 엔진 동기라 추가 조치가 없다. 배선 전에는 가드가 설치돼 있어도
+  발화하지 않는다.
+- **내부 dev→reviewer 루프에 라운드 장부가 생겼다 — 리뷰어 회신 형식이 기계 파싱 대상이다.**
+  판정은 줄머리 `판정: 통과|반려`, must-fix 는 `## must-fix` 제목 아래 마크다운 목록이며 0건은
+  `- 없음` 항목으로 명시한다. 형식 요구는 리뷰어 프리앰블에 기계로 실리므로 표준 경로는 조치가
+  없지만, 프리앰블을 우회해 자체 리뷰어 프롬프트를 쓰는 인스턴스는 형식을 맞춘다. 산문
+  "없습니다" 는 0건으로 세지 않는다(false-green 방지).
+- **codex read-only 역할 위임에 쓰기 가능한 임시 디렉터리가 주입된다.** `code-reviewer`·
+  `researcher` 가 read-only sandbox 에서도 회귀를 돌릴 수 있다. 인스턴스 조치는 없다.
+- (v1.7.2 이월 안내) **추가 리뷰어 구키 4종은 제거됐다 — 읽지 않는다.** 게이트
+  `external_review_enabled` 와 노브 `external_review_round_limit`·`external_review_wave_budget`·
+  `external_review_incomplete_round_limit` 가 대상이다. 구키만 있는 `local.conf` 는 추가 리뷰어가
+  꺼진 상태이므로, 키 이름을 신키(`additional_reviewer_*`)로 직접 바꾸거나 opt-in
+  질문(`board.py init`·`pm-update`)에 다시 답한다.
+- **Windows 에서 opencode 위임 채널 가드가 `py` 런처를 인식한다.** 이전에는 `python3`·`python`
+  만 탐색해 `py` 만 있는 환경에서 가드가 항상 fail-open 이었다.
+
+### Added
+- **opencode 슬래시 팔레트 진입 복원 (`/pm-…`)** — v1.7.0~v1.7.3 의 opencode 템플릿에는 사람이
+  타이핑하는 슬래시 진입(`/pm-bootstrap` 등)이 빠져 있었다. opencode 는 팔레트를
+  `{command,commands}/**/*.md` 에서만 만들고 `.claude/skills/**/SKILL.md` 는 모델의 `skill` 툴
+  표면이라, 두 표면이 서로를 대체하지 못한다(1.18.16 실측). `.opencode/command/` 15개를 출하
+  채널로 되돌렸다 — 저작 소스는 여전히 canonical `.claude/skills/<name>/SKILL.md` 하나이고
+  command 파일은 거기서 기계 생성하며, 누락·고아·내용 drift 를 회귀가 red 로 잡는다.
+  **opencode 채택자는 `pm-update` 후 팔레트에 `/pm-…` 15개가 다시 보인다.**
+- **위임 채널 기계 가드 (3하네스)** — PM(LLM)이 `local.conf` 매핑과 다른 하네스로 역할을 native
+  스폰하면 기계가 차단한다. 판정 코어는 하네스-중립(`decide(role, tier, conf, self_harness)` +
+  한 줄 JSON CLI)이고 표면은 claude PreToolUse 훅·opencode 플러그인·codex 훅 셋이다. codex 축은
+  라이브 payload 1회 실측으로 상수를 확정했고(스폰 tool `collaborationspawn_agent`·역할 필드
+  `tool_input.task_name`), 훅 신뢰가 미승인이면 조용히 무력화되던 축도 함께 닫았다. deny
+  envelope 는 격리 홈 3셀 실측으로 스폰 차단을 확인해 코드·문서에 박제했다.
+- **내부 리뷰 루프 라운드 장부** — external_review 게이트와 동형의 기계 판정을 내부
+  dev→reviewer 루프에 도입. 라운드 상한 3·발산 조기 차단·확인 전용 라운드 1회·must-fix 항목
+  장부(MF-n)를 엔진이 세고, `board.py complete` 가 미처분 잔여를 차단한다. 처분 축은 통과 라운드·
+  `--fixed <근거 게이트>`·`--into <T-NNNN>`·**`--pm-fixed "<근거>"`**(PM 직접 해소) 넷이며,
+  오계측 라운드가 게이트를 영구히 닫지 않도록 `rounds recalculate` 복구 경로를 둔다.
+- **세션 자의 행위 기계 차단 2종** — 세션이 사용자 명시 없이 ① 슬롯을 만들어 자기에게 할당하거나
+  prefix 를 신설하는 축(사용자-명시 ack 강제), ② 컨텍스트 잔량·상한 도달을 종료 신호로 읽어
+  핸드오프·작업 축소를 선언하는 축(ctx 가드 문구 정정 + 필수 표현 기계 검증)을 닫았다.
+- **ctx 설정창-실창 불일치 감지** — `ctx_window_tokens*` 가 하네스 실 auto-compact 지점보다 크면
+  넛지/정지 밴드가 한 번도 발화하지 못한 채 압축되는 형상을 기계가 감지해 loud 처방을 낸다.
+  `PostCompact` 중복 발화에서도 진단이 유실되지 않도록 marker·snapshot 수명주기를 경계 단위로
+  멱등화했다.
+- **슬롯 pm_state 자동 생성** — slot 모드 첫 세션이 연속성 앵커 없이 뜨던 구멍을 막았다(task 축의
+  `ensure_task_pm_state` 와 동형).
+- **위임 프롬프트 상수 2종** — 클래스 전수 열거(보고된 형상뿐 아니라 같은 클래스의 형제 경로를
+  모두 열거)와 역방향 확인(고침이 반대 방향 결함을 만들지 않았는지) 의무를 프롬프트 템플릿에
+  박아 PM 의 기억 의존을 없앴다.
+- **검토 루프 경량화 프로토콜** — wave 중 전체 회귀 폐지(지정 회귀만·전체는 릴리즈 1회), 리뷰어
+  보고서 원문 전달, 프롬프트 검증 근거 지정 의무를 방법론·스킬에 박아 출하. 엔진 판정으로는
+  cold 재투입 거부(`--resume-from`)·preamble 회귀 범위·`--attach-raw` 를 배선했다.
+
+### Fixed
+- **격리 스냅샷 cwd 의 앵커 붕괴 2건** — 게이트 격리 스냅샷에서 실행한 `external_review` 가 PM 홈
+  해소 실패 시 "repo 자기 앵커"로 강등돼 라운드 장부가 스냅샷 안에 기록되고 스냅샷 제거와 함께
+  소멸하던 클래스, 같은 cwd 에서 `pm_delegate` 가 스냅샷 자신의 `local.conf` 로 폴백해
+  `delegate_enabled=false` 로 위임이 거부되던 클래스를 닫았다. 자기-앵커 판정은 경로 관례
+  (`<owner>/work/...`) 탈출구를 없애고 마커 기반으로 바꿨다.
+- **opencode 전달 프롬프트가 sandbox 밖** — `pm_delegate`(위임 축)와 `external_review`(리뷰 축)
+  모두 프롬프트 파일을 sandbox(`--dir`) 밖에 만들어 non-interactive auto-reject 로 cost=0
+  무변경이 나던 경로를 닫았다. 전달 경로 조립·플랫폼 폴백을 경화하고, 준비한 fd 를 전달 경로까지
+  결속해 TOCTOU(준비 후 sandbox rename + 동일 절대경로 치환)를 막는다.
+- **diff 서킷브레이커의 타 티켓 diff 합산** — 여러 티켓이 같은 엔진 파일을 만지는 병렬 wave 에서
+  `ticket_finish` 가 `touches` 경로의 미커밋 diff 전체를 자기 스코프로 재 완료가 교착하던 형상을
+  티켓 귀속 측정으로 좁혔다.
+- **external_review payload 에 기계 미러 포함** — 기계 미러 제외 술어가 측정에만 걸리고 전송
+  payload 에는 안 걸려, 릴리즈 범위 리뷰가 런타임 산출물 삭제 diff 를 통째로 전송하던 구멍을
+  닫았다(실측 57.4MB 중 99.1% 가 `.opencode/`).
+- **prefix canonical case 비결정성·락 밖 TOCTOU** — 4소스 `set` 순회 첫 항목을 고르던 판정을
+  결정적으로 바꾸고 fail-loud 화했으며, rename/merge 의 canonical 판정을 `board_lock` 안에서
+  재검증한다.
+- **domain covers 의 upstream 전용 경로가 downstream 에서 영구 unverifiable** — 판정이 repo 소유
+  축을 읽도록 고쳐, 구조적으로 해소 불가능한 advisory 가 매 `lint` 마다 쌓여 실 finding 을 가리던
+  형상을 없앴다.
+- **핸드오프 dirty-tree 게이트의 draft 오탐** — board `.gitignore` 에 `tickets/.drafts/` 를 멱등
+  보강해(엔진 자동) 핸드오프마다 `--ack-dirty` 를 요구하던 오탐을 소멸시켰다.
+- **adopter#0 `.claude/` 훅 미등재 flavor** — 훅 9종이 어느 동기 채널에도 선언돼 있지 않아
+  `pm-update` 가 rc=2 경고를 내고 자동 자기치유가 막히던 형상 부채를 정비했다.
+
+### Changed
+- **`.opencode/` 런타임 산출물 git 추적 해제** — 제품 repo 루트에 커밋돼 있던
+  `.opencode/node_modules` 3,648 파일 + `package.json`·`package-lock.json` 을 untrack 하고
+  (파일 삭제 아님) `templates/opencode/.opencode/.gitignore` 와 동형의 자기-은닉 `.gitignore` 를
+  루트 `.opencode/` 에 신설했다.
+- **커밋 규율 문서 보강** — `git commit -- <pathspec>` 은 staged 가 아니라 워킹트리 내용을
+  커밋하므로 `git rm --cached` 류 index-only 변경이 조용히 무효화된다(실측 3,657건 untrack 증발).
+  index-only 변경은 단독 stage 확인 후 bare commit 으로 싣도록 출하 스킬에 명시했다.
+- **opencode ctx-guard 플러그인 코어 domain covers 편입** — 변경 시 dev 위임 domain 소환·stale
+  판정이 발동한다.
+
 ## [1.7.3] - 2026-08-11
 
 ### 업그레이드 노트

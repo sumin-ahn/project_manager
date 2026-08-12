@@ -307,7 +307,10 @@ def test_new_task_prefix_and_created_by(board, monkeypatch):
     monkeypatch.setattr(board, "refresh_board", lambda: None)
     monkeypatch.setattr(board, "_board_git_sync_best_effort",
                         lambda msg, paths=None: None)   # 스코프 인자(ADR-0073)
-    monkeypatch.setattr(board, "_next_id", lambda prefix: "PAY-0001")
+    # 발행 prefix 는 `_next_id` 인자가 관측점이다 — T-0660 이후 cmd_new 는 명시/task 값을
+    # `id_prefix` 로 canonical화하지 않고 4소스 funnel 로 바로 넘긴다(비결정 선택 제거).
+    monkeypatch.setattr(board, "_next_id",
+                        lambda prefix: seen.__setitem__("override", prefix) or "PAY-0001")
     # 티켓 파일 실쓰기는 tmp 로 격리 (tickets_dir/template_file 은 REPO 파생이라 tmp).
     (board.REPO / ".project_manager").mkdir(parents=True, exist_ok=True)
     tmpl = board.REPO / "tmpl.md"
@@ -338,7 +341,9 @@ def _stub_new_env(board, monkeypatch, *, tasks):
     monkeypatch.setattr(board, "refresh_board", lambda: None)
     monkeypatch.setattr(board, "_board_git_sync_best_effort",
                         lambda msg, paths=None: None)   # 스코프 인자(ADR-0073)
-    monkeypatch.setattr(board, "_next_id", lambda prefix: f"{prefix or 'T'}-0001")
+    monkeypatch.setattr(board, "_next_id",
+                        lambda prefix: seen.__setitem__("override", prefix)
+                        or f"{prefix or 'T'}-0001")
     (board.REPO / ".project_manager").mkdir(parents=True, exist_ok=True)
     tmpl = board.REPO / "tmpl.md"
     tmpl.write_text("---\nid: T-NNNN\ntitle: <제목>\n---\n본문\n", encoding="utf-8")
@@ -352,7 +357,8 @@ def test_new_explicit_prefix_wins_over_task(board, monkeypatch):
     """3단 해소 tier1 — 명시 `--prefix` 가 task 설정 prefix 를 이긴다(1회 오버라이드·F5)."""
     seen = _stub_new_env(board, monkeypatch, tasks=[{"name": "job5", "prefix": "PAY"}])
     ns = argparse.Namespace(title="X", touches=None, depends=None, tag=None,
-                            estimate="small", prefix="ACC", user="smahn", task="job5")
+                            estimate="small", prefix="ACC", user="smahn", task="job5",
+                            user_ack="ACC")
     assert board.cmd_new(ns) == 0
     assert seen["override"] == "ACC"                 # 명시 --prefix 가 task 설정(PAY)을 이김(tier1)
 

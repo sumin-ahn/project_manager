@@ -283,6 +283,10 @@ BOARD_LOCK = LOCAL_DIR / "board.lock"                       # OS file lock — b
 LEASES_FILE = LOCAL_DIR / "worktree-leases.json"            # worktree 리스 장부 (read-only here)
 DOMAIN_PY = REPO / ".project_manager" / "tools" / "domain.py"  # domain lint deep-import (순환 회피·아래 lint_domain)
 PM_DELEGATE_PY = REPO / ".project_manager" / "tools" / "pm_delegate.py"  # delegate lint deep-import (아래 lint_delegate)
+DELEGATE_CHANNEL_GUARD_PY = REPO / ".project_manager" / "tools" / "delegate_channel_guard.py"
+CODEX_DELEGATE_OBSERVATIONS = (
+    LOCAL_DIR / "delegate-channel" / "codex-observations.jsonl"
+)
 STATUS_DIRS: tuple[str, ...] = ("open", "claimed", "blocked", "done")
 # Ideas have a simpler lifecycle than tickets — no claim/complete middle
 # states, just `open → promoted|killed`.
@@ -1511,6 +1515,8 @@ _READ_PM_PATH_RELS: dict[str, str] = {
     "LEASES_FILE": ".local/worktree-leases.json",
     "DOMAIN_PY": "tools/domain.py",
     "PM_DELEGATE_PY": "tools/pm_delegate.py",
+    "DELEGATE_CHANNEL_GUARD_PY": "tools/delegate_channel_guard.py",
+    "CODEX_DELEGATE_OBSERVATIONS": ".local/delegate-channel/codex-observations.jsonl",
 }
 
 
@@ -1740,7 +1746,7 @@ def _set_conf_keys(text: str, updates: dict[str, str]) -> str:
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
-ENGINE_REV = "v1.7.3"
+ENGINE_REV = "v1.7.4"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -1830,6 +1836,15 @@ def _load_file_lock():
     _require_engine_sibling(lock_path, "file_lock.py")
     return _load_module_from_path(
         lock_path, "file_lock.py", verifier=_verify_engine_rev,
+    )
+
+
+def _load_review_rounds():
+    """PM 직접 해소 근거/쿼터를 소유하는 공용 라운드 모듈을 지연 로드한다."""
+    path = Path(__file__).resolve().parent / "review_rounds.py"
+    _require_engine_sibling(path, "review_rounds.py")
+    return _load_module_from_path(
+        path, "review_rounds.py", verifier=_verify_engine_rev, cache=True,
     )
 
 
@@ -2563,24 +2578,13 @@ def _fold_lookup(prefix: str, pool: set[str]) -> str | None:
     """`pool` 에서 `prefix` 와 case-insensitive fold 로 같은 항목을 찾아 반환·없으면 None.
 
     prefix 동일성은 소문자 fold 비교다 — 등록/발행된 canonical case 를 대소문자 무관하게 되찾는다
-    (`aaa` 입력 → 등록 `AAA` 반환). 첫 매치를 돌려준다(레지스트리는 fold-유일하므로 매치는 최대 1개).
+    (`aaa` 입력 → 등록 `AAA` 반환). 오염된 입력에서도 호출 결과 자체는 프로세스 hash seed에
+    흔들리지 않도록 exact case를 tie-break 키로 정렬한다. 신규-prefix 승인 게이트는 이 helper의
+    단일값 선택에 기대지 않고, fold 변형이 둘 이상이면 출처와 함께 fail-loud한다.
     """
     fold = prefix.lower()
-    return next((p for p in pool if p.lower() == fold), None)
-
-
-def _case_only_conflict(prefix: str, existing: set[str]) -> str | None:
-    """`prefix` 가 기존 항목에 *대소문자만 다르게* fold-매치되면 그 기존 항목, 아니면 None.
-
-    정확-case 일치는 None(멱등·같은 항목) — case 만 다른 근접 중복(`aaa` vs 기존 `AAA`)만 잡아
-    네임스페이스 분할을 fail-loud 로 막는 데 쓴다(등록·rename/merge dst·repo add). **모든 fold
-    매치를 훑는다**(codex must-fix): 이미 오염된 pool 에 exact `aaa` 와 case-only `AAA` 가 함께
-    있으면 `_fold_lookup` 의 첫-매치(set 순회·비결정)가 exact 를 먼저 만나 split 를 놓칠 수 있으므로,
-    case 가 다른 매치가 하나라도 있으면 결정적으로(정렬 첫) 그것을 충돌로 반환한다.
-    """
-    fold = prefix.lower()
-    conflicts = sorted(p for p in existing if p.lower() == fold and p != prefix)
-    return conflicts[0] if conflicts else None
+    return next((p for p in sorted(pool, key=lambda value: (value.lower(), value))
+                 if p.lower() == fold), None)
 
 
 def _fold_key(prefix: str | None) -> str | None:
@@ -3070,9 +3074,10 @@ def _in_default_view(status: str, fm: dict, my_user: str | None,
 def registered_prefixes() -> set[str]:
     """Prefixes registered in areas.md (shared registry). Empty set if no registry.
 
-    The registry's *existence* is the multi-repo (N×M·prefix 네임스페이스) mode
-    signal — when present, `board.py new` requires a registered prefix (see
-    cmd_new guard). solo(N=1·M=1)는 레지스트리 부재 → 가드 off.
+    등록 repo가 2개 이상이면 multi-repo(N×M) 신호로 쓰여 `board.py new`의
+    prefix 미해소를 막는다. 단, 명시 prefix는 레지스트리 등록 자체가 필수가 아니며
+    4소스에 없는 새 카테고리라면 값-결속 사용자 승인을 지난 뒤 사용할 수 있다.
+    등록 repo 0개인 solo는 legacy 무prefix를, 1개인 보드는 그 단일 prefix 유도를 허용한다.
 
     헤더-인식 파서(`_parse_areas`)로 `prefix` 칼럼을 읽는다 — 구 스키마
     (`| prefix | … |`)와 신 스키마(`| repo | prefix | … |`) 모두에서
@@ -3125,34 +3130,53 @@ def areas_append(prefix: str, area: str, owner: str,
     하위호환을 위해 유지(기존 `cmd_init`·테스트가 positional 로 area 를 넘김).
 
     **재진입 금지**(board_lock docstring) — board_lock 보유 중에는 부르지 않는다.
-    유일 호출자 `cmd_init` 은 락 밖에서 부른다.
+    이미 락을 보유한 `cmd_init` 은 ``_areas_append_locked`` 변형을 직접 쓴다.
     """
-    _repo = repo if repo is not None else prefix  # repo 미지정 시 prefix 를 repo 명으로
+    with board_lock():
+        _areas_append_locked(
+            prefix, owner, repo=repo, git=git, test_cmd=test_cmd, base=base,
+            protected=protected, area_owner=area_owner,
+        )
+    invalidate_known_prefixes_cache()
+
+
+def _areas_append_locked(
+    prefix: str,
+    owner: str,
+    *,
+    repo: str | None = None,
+    git: str | None = None,
+    test_cmd: str | None = None,
+    base: str | None = None,
+    protected: str | None = None,
+    area_owner: str | None = None,
+) -> None:
+    """``board_lock`` 보유 전제의 areas 행 append 변형(cmd_init fresh 판정용)."""
+    _repo = repo if repo is not None else prefix
     _git = git or ""
     _test = test_cmd or ""
     _base = base or ""
     _protected = protected or ""
     _area_owner = area_owner or ""
     af = areas_file()
-    with board_lock():
-        if not af.exists():
-            af.write_text(
-                "# Area Registry\n\n"
-                "> per-repo 레지스트리: repo → prefix → git → "
-                "test_cmd → owner → base → protected → area_owner. 멀티-PM ID 네임스페이스 + "
-                "per-repo 테스트 경로 + worktree base 브랜치 + 보호 브랜치 + user 소유의 단일 진실. "
-                "append-only (`merge=union`).\n"
-                "> `board.py init` / `pm-config repo add` 가 등록. "
-                "prefix 유일성 = race-free ID 의 전제.\n\n"
-                + _areas_header_line() + "\n"
-                + _areas_separator_line() + "\n",
-                encoding="utf-8")
-        # O_APPEND atomic append — areas 는 append-only 레지스트리이므로
-        # read-modify-write 가 아니라 OS 가 보장하는 원자 추가로 동시 등록 충돌을 없앤다.
-        file_lock.append_atomic(
-            af,
-            f"| {_repo} | {prefix} | {_git} | {_test} | {owner} | {_base} "
-            f"| {_protected} | {_area_owner} |\n")
+    if not af.exists():
+        af.write_text(
+            "# Area Registry\n\n"
+            "> per-repo 레지스트리: repo → prefix → git → "
+            "test_cmd → owner → base → protected → area_owner. 멀티-PM ID 네임스페이스 + "
+            "per-repo 테스트 경로 + worktree base 브랜치 + 보호 브랜치 + user 소유의 단일 진실. "
+            "append-only (`merge=union`).\n"
+            "> `board.py init` / `pm-config repo add` 가 등록. "
+            "prefix 유일성 = race-free ID 의 전제.\n\n"
+            + _areas_header_line() + "\n"
+            + _areas_separator_line() + "\n",
+            encoding="utf-8")
+    # O_APPEND atomic append — areas 는 append-only 레지스트리이므로
+    # read-modify-write 가 아니라 OS 가 보장하는 원자 추가로 동시 등록 충돌을 없앤다.
+    file_lock.append_atomic(
+        af,
+        f"| {_repo} | {prefix} | {_git} | {_test} | {owner} | {_base} "
+        f"| {_protected} | {_area_owner} |\n")
 
 
 # ── areas.md 셀 변경 ──────────────────────────────────────────────
@@ -3303,6 +3327,8 @@ def areas_set_cell(repo: str, column: str, value: str) -> tuple[str, str]:
             finally:
                 # 성공 시 os.replace 로 tmp 는 이미 사라졌다(missing_ok 로 no-op).
                 tmp.unlink(missing_ok=True)
+    if column == "prefix" and old_value != value:
+        invalidate_known_prefixes_cache()
     return old_value, value
 
 
@@ -5980,7 +6006,9 @@ _DELEGATE_CONF_SEED = (
     "# delegate.architect.harness=codex\n"
     "# delegate.architect.model=gpt-5.6-sol\n"
     "# delegate.architect.reasoning=high\n"
-    "# code-reviewer — generate≠evaluate 침식을 피하려면 dev 와 다른 모델 권장(하네스 무관 비교):\n"
+    "# code-reviewer — 위임은 매번 새 세션이라 전사 공유가 없어 generate≠evaluate 는 모델이 같아도\n"
+    "# 성립한다. 다만 다른 모델이면 맹점을 공유하지 않아 검출력이 는다 — 선택 가능하면 권장\n"
+    "# (하네스 무관 비교):\n"
     "# delegate.code-reviewer.harness=codex\n"
     "# delegate.code-reviewer.model=gpt-5.6-luna\n"
     "# delegate.code-reviewer.reasoning=high\n"
@@ -6143,12 +6171,18 @@ def _scope_args(touches: list[str]) -> str:
 # external_review 이고 여기서는 **읽기만** 한다 — deep-import 하지 않는 이유는 방향이다:
 # external_review 가 board 를 로드하므로(`_load_board`) 역방향 로드는 순환이 된다.
 REVIEW_ROUNDS_LEDGER_NAME = "review_rounds.json"
+INTERNAL_REVIEW_ROUNDS_LEDGER_NAME = "internal_review_rounds.json"
 _REVIEW_LEDGER_WAVE_KEY = "wave"       # 게이트가 아닌 예약 키 (external_review WAVE_SECTION_KEY)
 
 
 def _review_rounds_ledger() -> Path:
     """추가 리뷰 라운드 장부 경로 — 호출 시점 `LOCAL_DIR` 파생(테스트 격리 추종)."""
     return LOCAL_DIR / REVIEW_ROUNDS_LEDGER_NAME
+
+
+def _internal_review_rounds_ledger() -> Path:
+    """내부 code-reviewer per-clone 장부 경로(pm_delegate writer와 동일 앵커)."""
+    return LOCAL_DIR / INTERNAL_REVIEW_ROUNDS_LEDGER_NAME
 
 
 def round_outcome_order_key(outcome: dict) -> tuple[bool, int]:
@@ -6242,6 +6276,18 @@ def gate_residual_label(entry: dict) -> str:
     return "미상(판정 무효 라운드)" if residual is None else f"{residual}건"
 
 
+def internal_verdict_diagnostic(entry: dict) -> str | None:
+    """마지막 내부 라운드 writer가 보존한 판정 실패 원인+재리뷰 처방."""
+    outcome = gate_last_round(entry)
+    diagnostic = (
+        outcome.get("verdict_diagnostic")
+        if isinstance(outcome, dict)
+        else None
+    )
+    message = diagnostic.get("message") if isinstance(diagnostic, dict) else None
+    return message.strip() if isinstance(message, str) and message.strip() else None
+
+
 # ── 게이트 처분 선언 (장부 `resolution` 절) ────────────────────────────────
 # 라운드 상한으로 종결된 게이트의 **잔여 must-fix 를 어떻게 소화했는가**를 장부에 남기는 절이다.
 # 쓰는 쪽은 external_review(`--resolve-gate`)지만 **읽는 규칙은 여기 하나**다 — 릴리즈 차단과
@@ -6249,6 +6295,7 @@ def gate_residual_label(entry: dict) -> str:
 # external_review → board 라 공용 판정은 board 가 소유한다(`round_outcome_order_key` 와 같은 자리).
 GATE_RESOLUTION_INTO = "into"     # 후속 티켓 재설계 — 그 티켓이 done 이어야 릴리즈가 열린다.
 GATE_RESOLUTION_FIXED = "fixed"   # 코드로 해소 — 근거 게이트(통과로 끝난 게이트) 지목이 조건.
+GATE_RESOLUTION_PM_FIXED = "pm-fixed"  # 상한+confirm-fix 소진 뒤 PM 직접 해소(리뷰 통과 아님).
 # 처분 종류별 **대상 필드** — 재설계는 티켓 ID, 해소는 근거 게이트 이름을 싣는다.
 _GATE_RESOLUTION_TARGET_KEYS: dict[str, str] = {
     GATE_RESOLUTION_INTO: "ticket",
@@ -6256,7 +6303,9 @@ _GATE_RESOLUTION_TARGET_KEYS: dict[str, str] = {
 }
 # 처분 표기 어휘 — 선언 응답(external_review)과 차단 사유(여기)가 같은 말을 쓰게.
 GATE_RESOLUTION_LABELS: dict[str, str] = {
-    GATE_RESOLUTION_INTO: "재설계", GATE_RESOLUTION_FIXED: "해소",
+    GATE_RESOLUTION_INTO: "재설계",
+    GATE_RESOLUTION_FIXED: "해소",
+    GATE_RESOLUTION_PM_FIXED: "pm-fixed(PM 직접 해소·리뷰 통과 아님)",
 }
 # 처분이 결속하는 **라운드 좌표** 필드 — 선언 시점의 마지막 라운드 순번과 산출 수.
 _GATE_RESOLUTION_BINDING_KEYS: tuple[str, ...] = ("round_sequence", "rounds")
@@ -6305,17 +6354,31 @@ def gate_resolution(entry: dict) -> dict | None:
     읽을 수 없는 값은 처분이 아니다(fail-closed) — 손상된 한 줄이 릴리즈 차단을 **여는** 방향으로
     작동하면 그 게이트는 기계가 아니다. 라운드 좌표(`round_sequence`·`rounds`)도 같은 축이다:
     좌표 없는 선언은 어느 잔여를 처분했는지 확인할 수 없으므로 처분으로 인정하지 않는다.
-    반환은 정규화된 사본 `{kind, ticket|evidence_gate, round_sequence, rounds, ts?}`.
+    반환은 정규화된 사본
+    `{kind, ticket|evidence_gate|pm_fixed_evidence, round_sequence, rounds, ts?}`.
     """
     raw = entry.get("resolution")
     if not isinstance(raw, dict):
         return None
-    key = _GATE_RESOLUTION_TARGET_KEYS.get(raw.get("kind"))
-    if key is None:
-        return None
-    target = raw.get(key)
-    if not isinstance(target, str) or not target.strip():
-        return None
+    kind = raw.get("kind")
+    key = _GATE_RESOLUTION_TARGET_KEYS.get(kind)
+    pm_fixed_evidence = None
+    if kind == GATE_RESOLUTION_PM_FIXED:
+        common = _load_review_rounds()
+        if common.as_int(entry.get(common.PM_FIXED_USAGE_KEY)) != 1:
+            return None
+        try:
+            pm_fixed_evidence = common.parse_pm_fixed_evidence(
+                raw.get(common.PM_FIXED_EVIDENCE_KEY)
+            )
+        except ValueError:
+            return None
+    else:
+        if key is None:
+            return None
+        target = raw.get(key)
+        if not isinstance(target, str) or not target.strip():
+            return None
     sequence = raw.get("round_sequence", _MISSING_BINDING)
     count = raw.get("rounds")
     if sequence is _MISSING_BINDING:
@@ -6324,8 +6387,31 @@ def gate_resolution(entry: dict) -> dict | None:
         return None
     if isinstance(count, bool) or not isinstance(count, int):
         return None
-    declared = {"kind": raw["kind"], key: target.strip(),
-                "round_sequence": sequence, "rounds": count}
+    declared = {
+        "kind": kind,
+        "round_sequence": sequence,
+        "rounds": count,
+    }
+    if kind == GATE_RESOLUTION_PM_FIXED:
+        declared[_load_review_rounds().PM_FIXED_EVIDENCE_KEY] = pm_fixed_evidence
+    else:
+        declared[key] = target.strip()
+    # 내부 reviewer의 새 `fixed` 선언은 반려/근거 diff 지문을 함께 결속한다. 둘 중 하나만
+    # 있거나 형식이 손상된 선언은 처분이 아니다(fail-closed). 둘 다 없는 구 선언은 여기서
+    # 폐기하지 않는다 — `_gate_disposition_problem(..., allow_legacy_internal_fixed=True)`가
+    # 명시적으로 ``legacy-unverifiable``로 구분해 소급 안전만 제공한다.
+    proof_keys = ("blocked_diff_fingerprint", "evidence_diff_fingerprint")
+    proof_present = tuple(key in raw for key in proof_keys)
+    if any(proof_present):
+        if raw["kind"] != GATE_RESOLUTION_FIXED or not all(proof_present):
+            return None
+        proof = {key: raw.get(key) for key in proof_keys}
+        if any(
+            not isinstance(value, str) or _TARGET_REV_RE.fullmatch(value) is None
+            for value in proof.values()
+        ):
+            return None
+        declared.update(proof)
     ts = raw.get("ts")
     if isinstance(ts, str) and ts.strip():
         declared["ts"] = ts.strip()
@@ -6365,16 +6451,20 @@ def _round_target_rev(outcome: dict | None) -> str | None:
     return value if isinstance(value, str) and _TARGET_REV_RE.fullmatch(value) else None
 
 
-def gate_evidence_problem(entry: dict, evidence_entry: object) -> str | None:
-    """근거 게이트가 이 게이트의 잔여 해소를 뒷받침하는지 — 사유 1줄 (뒷받침하면 None·공용 seam).
+def _round_diff_fingerprint(outcome: dict | None) -> str | None:
+    """내부 reviewer가 실제 본 HEAD+dirty worktree 내용 지문 — 구/손상 라운드는 None."""
+    value = outcome.get("diff_fingerprint") if outcome is not None else None
+    return value if isinstance(value, str) and _TARGET_REV_RE.fullmatch(value) else None
 
-    조건을 장부 사실로만 본다: (1) 항목이 해석 가능하고, (2) 마지막 라운드가 통과(rc 0)이며,
-    (3) 반려·근거 양쪽의 시작≤완료가 정합하고, (4) 근거 라운드가 차단 반려의 **종료 뒤 시작**했고,
-    (5) 실제 검토한 diff fingerprint 가 반려 때와 다르다. 완료 시각만 뒤인 동시 리뷰는 반려 전에
-    같은 미수정 diff 로 이미 시작했을 수 있어 근거가 아니다. 시각·fingerprint 를 못 읽는 구
-    라운드는 통과로 추측하지 않고 "결속 불충분"으로 거부한다(fail-closed — 확인 못 함 ≠ 뒷받침함).
 
-    선언 시점(external_review)과 릴리즈 재검증(여기)이 **같은 한 술어**를 쓴다."""
+def _gate_evidence_problem_with_rev(
+    entry: dict,
+    evidence_entry: object,
+    *,
+    rev_reader: Callable[[dict | None], str | None] | None,
+    rev_label: str | None,
+) -> str | None:
+    """통과 근거의 선후·대상 변경 검증 공용 본체."""
     corruption = gate_entry_corruption(evidence_entry)
     if corruption is not None:
         return corruption
@@ -6387,14 +6477,14 @@ def gate_evidence_problem(entry: dict, evidence_entry: object) -> str | None:
     evidence_started = _round_timestamp(evidence_round, "started_at")
     blocked_ts = _round_timestamp(blocked_round)
     blocked_started = _round_timestamp(blocked_round, "started_at")
-    blocked_rev = _round_target_rev(blocked_round)
-    evidence_rev = _round_target_rev(evidence_round)
+    blocked_rev = rev_reader(blocked_round) if rev_reader is not None else None
+    evidence_rev = rev_reader(evidence_round) if rev_reader is not None else None
     if (evidence_ts is None or evidence_started is None
             or blocked_ts is None or blocked_started is None):
         return ("반려/근거 라운드 ts/started_at 이 엄격한 ISO 8601 UTC 형식이 아니거나 기록되지 않아 "
                 "반려 이후 시작을 확인할 수 없습니다 (결속 불충분 · 근거로 인정하지 않음)")
-    if blocked_rev is None or evidence_rev is None:
-        return ("라운드 대상 rev fingerprint(target_rev)가 없거나 형식이 손상돼 검토 대상을 "
+    if rev_reader is not None and (blocked_rev is None or evidence_rev is None):
+        return (f"라운드 대상 {rev_label}가 없거나 형식이 손상돼 검토 대상을 "
                 "확인할 수 없습니다 (결속 불충분 · 근거로 인정하지 않음)")
     if evidence_ts < evidence_started:
         return ("근거 라운드 완료 ts가 started_at 보다 앞서 장부 선후를 신뢰할 수 없습니다 "
@@ -6406,10 +6496,69 @@ def gate_evidence_problem(entry: dict, evidence_entry: object) -> str | None:
         return ("근거 라운드가 반려 이후에 시작되지 않았습니다 "
                 f"(시작 {evidence_started.isoformat()} ≤ 반려 {blocked_ts.isoformat()}) — "
                 "근거는 그 반려 **이후 시작한** 통과여야 합니다")
-    if evidence_rev == blocked_rev:
-        return (f"근거 라운드가 반려와 같은 대상 rev fingerprint({evidence_rev})를 검토했습니다 — "
+    if rev_reader is not None and evidence_rev == blocked_rev:
+        return (f"근거 라운드가 반려와 같은 대상 {rev_label}({evidence_rev})를 검토했습니다 — "
                 "코드 변경 뒤의 통과가 아니므로 근거로 인정하지 않습니다")
     return None
+
+
+def gate_evidence_problem(entry: dict, evidence_entry: object) -> str | None:
+    """근거 게이트가 이 게이트의 잔여 해소를 뒷받침하는지 — 사유 1줄 (뒷받침하면 None·공용 seam).
+
+    조건을 장부 사실로만 본다: (1) 항목이 해석 가능하고, (2) 마지막 라운드가 통과(rc 0)이며,
+    (3) 반려·근거 양쪽의 시작≤완료가 정합하고, (4) 근거 라운드가 차단 반려의 **종료 뒤 시작**했고,
+    (5) 실제 검토한 diff fingerprint 가 반려 때와 다르다. 완료 시각만 뒤인 동시 리뷰는 반려 전에
+    같은 미수정 diff 로 이미 시작했을 수 있어 근거가 아니다. 시각·fingerprint 를 못 읽는 구
+    라운드는 통과로 추측하지 않고 "결속 불충분"으로 거부한다(fail-closed — 확인 못 함 ≠ 뒷받침함).
+
+    선언 시점(external_review)과 릴리즈 재검증(여기)이 **같은 한 술어**를 쓴다."""
+    return _gate_evidence_problem_with_rev(
+        entry,
+        evidence_entry,
+        rev_reader=_round_target_rev,
+        rev_label="rev fingerprint(target_rev)",
+    )
+
+
+def internal_gate_evidence_problem(entry: dict, evidence_entry: object) -> str | None:
+    """내부 reviewer의 후속 통과가 반려 잔여의 코드 해소 근거인지 판정한다.
+
+    ``target_rev``(HEAD)만으로는 dirty worktree 변경을 식별할 수 없다. 내부 writer가 별도로
+    기록한 ``diff_fingerprint``(HEAD+dirty 내용)를 요구해, 반려와 같은 미수정 대상을 나중에
+    다시 통과시킨 라운드는 해소 근거로 인정하지 않는다. 지문을 만들지 못한 라운드도 새 처분의
+    근거로 추측하지 않는다(증명 불가·fail-closed).
+    """
+    return _gate_evidence_problem_with_rev(
+        entry,
+        evidence_entry,
+        rev_reader=_round_diff_fingerprint,
+        rev_label="diff fingerprint(diff_fingerprint)",
+    )
+
+
+def _legacy_internal_gate_evidence_problem(entry: dict, evidence_entry: object) -> str | None:
+    """지문 도입 전에 **이미 선언된** 내부 fixed 처분의 시각 결속만 재검증한다.
+
+    구 라운드는 내용 변경을 증명할 수 없으므로 새 `--fixed` 선언에는 절대 이 seam을 쓰지 않는다.
+    다만 과거 선언까지 소급 무효화하면 이번 릴리즈의 기존 처분 전체가 뒤집히므로, 선언 자체에
+    diff proof 필드가 없는 경우만 ``legacy-unverifiable``로 구분해 종전 시각 경계를 유지한다.
+    """
+    return _gate_evidence_problem_with_rev(
+        entry,
+        evidence_entry,
+        rev_reader=None,
+        rev_label=None,
+    )
+
+
+def internal_fixed_proof_status(declared: dict) -> str:
+    """내부 fixed 선언의 내용 증명 상태(보고/소급 분기 공용)."""
+    if all(
+        _TARGET_REV_RE.fullmatch(str(declared.get(key, ""))) is not None
+        for key in ("blocked_diff_fingerprint", "evidence_diff_fingerprint")
+    ):
+        return "verified"
+    return "legacy-unverifiable"
 
 
 def gate_resolution_is_stale(entry: dict, declared: dict) -> bool:
@@ -7392,18 +7541,41 @@ def _write_release_must_fix_marker(flag: Path, problems: Sequence[str]) -> Path:
     return marker
 
 
-def _release_gate_search_dirs(ledger: Path) -> list[tuple[str, Path]]:
-    """재설계 대상 티켓을 조회할 범위 — **장부와 같은 PM 홈**의 보드.
+class _ReleaseGateBoardResolutionError(RuntimeError):
+    """라운드 장부가 참조할 board 소유 PM 홈을 확정하지 못한 오류."""
 
-    `<root>/.project_manager/.local/review_rounds.json` 에서 `<root>` 를 되짚어 그 홈의 board
-    루트를 쓴다(board/ 분리 추종). 장부는 engine-root 로 정렬해 놓고 티켓만 호출된 사본의 board
-    에서 찾으면, worktree 사본으로 record 할 때 티켓을 못 찾아 정상 재설계까지 차단된다."""
-    pm_home = ledger.parent.parent.parent
-    return [(status, _board_root_at(pm_home) / "tickets" / status)
+
+def _release_gate_search_dirs(ledger: Path) -> list[tuple[str, Path]]:
+    """재설계 대상 티켓을 조회할 실제 소유 board 범위.
+
+    PM 홈 ``.local``의 추가 리뷰 장부처럼 장부 홈 자체가 실 board를 소유하면 종전 경로를
+    그대로 쓴다. 내부 리뷰 장부처럼 board 없는 linked worktree에 장부가 있으면 공용 read
+    해소 seam으로 lease 소유 PM 홈을 확정한다. 해소 실패는 빈 scaffold 검색으로 강등하지
+    않고 호출자가 사용자에게 원 사유를 표면화할 수 있도록 예외로 올린다.
+    """
+    ledger_home = ledger.parent.parent.parent
+    if _has_real_board(ledger_home / ".project_manager"):
+        board_root_path = _board_root_at(ledger_home)
+    else:
+        resolution = _resolve_read_board(ledger_home)
+        if resolution.error is not None:
+            raise _ReleaseGateBoardResolutionError(resolution.error)
+        if resolution.root is None:
+            raise _ReleaseGateBoardResolutionError(
+                f"{ledger_home}: 라운드 장부가 참조할 board 루트를 확정하지 못했습니다"
+            )
+        board_root_path = resolution.root
+    return [(status, board_root_path / "tickets" / status)
             for status in STATUS_DIRS]
 
 
-def _fixed_evidence_problem(ledger_data: dict, entry: dict, evidence: str) -> str | None:
+def _fixed_evidence_problem(
+    ledger_data: dict,
+    entry: dict,
+    evidence: str,
+    *,
+    evidence_problem: Callable[[dict, object], str | None] = gate_evidence_problem,
+) -> str | None:
     """`fixed` 근거 게이트가 **지금도** 통과인지 (뒷받침하면 None).
 
     근거는 선언 시점에 한 번 확인하고 끝낼 사실이 아니다 — 그 게이트가 뒤이어 반려로 뒤집히거나
@@ -7411,17 +7583,28 @@ def _fixed_evidence_problem(ledger_data: dict, entry: dict, evidence: str) -> st
     공용 seam(`gate_evidence_problem`)이 소유하고 여기서는 장부 조회만 얹는다."""
     if evidence not in ledger_data:
         return f"근거 게이트 {evidence} 의 기록이 장부에서 사라졌습니다"
-    problem = gate_evidence_problem(entry, ledger_data.get(evidence))
+    problem = evidence_problem(entry, ledger_data.get(evidence))
     return None if problem is None else f"근거 게이트 {evidence} — {problem}"
 
 
-def _gate_disposition_problem(gate: str, entry: object, ledger_data: dict,
-                              search_dirs: list[tuple[str, Path]]) -> str | None:
+def _gate_disposition_problem(
+    gate: str,
+    entry: object,
+    ledger_data: dict,
+    search_dirs: list[tuple[str, Path]],
+    *,
+    evidence_problem: Callable[
+        [dict, object], str | None
+    ] = gate_evidence_problem,
+    allow_legacy_internal_fixed: bool = False,
+    allow_pm_fixed: bool = False,
+) -> str | None:
     """게이트 하나의 처분 판정 — 차단 사유 1줄 (통과면 None).
 
     순서대로 본다: **항목 해석 가능성**(손상이면 잔여를 셀 수 없으니 차단) → 잔여 must_fix(0 이면
     비대상·suggestion 만 남은 게이트 포함·**미상은 대상**) → 처분 선언(미선언·좌표 stale 이면 차단)
-    → 갈래별 조건(`fixed` = 근거 게이트가 지금도 뒷받침 · `into` = 대상 티켓이 done)."""
+    → 갈래별 조건(`fixed` = 근거 게이트가 지금도 뒷받침 · `into` = 대상 티켓이 done ·
+    `pm-fixed` = 내부 장부에서만 허용하며 구조화 근거의 변경 지점을 현재 repo에서 재검증)."""
     corruption = gate_entry_corruption(entry)
     if corruption is not None:
         return f"  · {gate}: {corruption} — 잔여 must-fix 를 확인할 수 없어 차단합니다"
@@ -7437,8 +7620,37 @@ def _gate_disposition_problem(gate: str, entry: object, ledger_data: dict,
         return (f"{prefix} · {label} 이후 새 라운드가 기록됐습니다 "
                 f"(선언 시점 #{declared['round_sequence']}/{declared['rounds']}건 ≠ 현재 "
                 f"#{current['round_sequence']}/{current['rounds']}건) · 새 잔여로 다시 선언하세요")
+    if declared["kind"] == GATE_RESOLUTION_PM_FIXED:
+        if not allow_pm_fixed:
+            return f"{prefix} · {label} — 이 장부에서는 pm-fixed 처분을 허용하지 않습니다"
+        common = _load_review_rounds()
+        problem = common.recorded_pm_fixed_problem(
+            entry, common.PM_FIXED_INTERNAL_ROUNDS_LIMIT,
+        )
+        if problem is not None:
+            return f"{prefix} · {label} — 발동 조건 재검증 실패: {problem}"
+        try:
+            common.parse_pm_fixed_evidence(
+                declared[common.PM_FIXED_EVIDENCE_KEY], repo_root=REPO,
+            )
+        except ValueError as exc:
+            return f"{prefix} · {label} — 구조화 근거 재검증 실패: {exc}"
+        return None
     if declared["kind"] == GATE_RESOLUTION_FIXED:
-        problem = _fixed_evidence_problem(ledger_data, entry, declared["evidence_gate"])
+        selected_evidence_problem = evidence_problem
+        if (
+            allow_legacy_internal_fixed
+            and internal_fixed_proof_status(declared) == "legacy-unverifiable"
+        ):
+            # 지문 도입 전 **기선언**만 소급 보존한다. 새 선언 경로는 이 함수를 거치지 않고
+            # `internal_gate_evidence_problem`을 직접 호출하므로 증명 불가 라운드를 열 수 없다.
+            selected_evidence_problem = _legacy_internal_gate_evidence_problem
+        problem = _fixed_evidence_problem(
+            ledger_data,
+            entry,
+            declared["evidence_gate"],
+            evidence_problem=selected_evidence_problem,
+        )
         return None if problem is None else f"{prefix} · {label} — {problem}"
     ticket = declared["ticket"]
     found = find_ticket_exact(ticket, search_dirs=search_dirs)
@@ -7456,7 +7668,13 @@ def _unresolved_must_fix_data(data: object, ledger: Path) -> list[str]:
     if not isinstance(data, dict):
         return ["  · 라운드 장부 형식 오류(최상위가 매핑이 아님) — 잔여 must-fix 를 확인할 수 "
                 "없어 차단합니다"]
-    search_dirs = _release_gate_search_dirs(ledger)
+    try:
+        search_dirs = _release_gate_search_dirs(ledger)
+    except _ReleaseGateBoardResolutionError as exc:
+        return [
+            "  · 라운드 장부의 board 소유 PM 홈 해소 실패 — "
+            f"{exc} 처분 상태를 확인할 수 없어 차단합니다"
+        ]
     problems: list[str] = []
     for gate, entry in sorted(data.items()):
         if gate == _REVIEW_LEDGER_WAVE_KEY:
@@ -8119,6 +8337,61 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str) -> int:
     return 0
 
 
+def _internal_review_completion_problem(tid: str) -> str | None:
+    """내부 리뷰 대상 티켓이면 마지막 통과 또는 유효 처분인지 판정한다.
+
+    소급 차단을 피하려고 이 티켓의 ``rounds[]`` 산출이 하나도 없으면 무대상이다. 장부가
+    부재·손상돼 기록 존재를 확정할 수 없는 경우도 가드 고장으로 완료를 막지 않는다. 반대로
+    라운드 산출이 하나라도 있으면 native 자문이나 raw reply는 보지 않고 마지막 장부 판정 또는
+    그 라운드 좌표에 결속된 처분만 완료 증거로 인정한다.
+    """
+    ledger_path = _internal_review_rounds_ledger()
+    try:
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return None
+    if not isinstance(ledger, dict):
+        return None
+    entry = ledger.get(tid)
+    if not isinstance(entry, dict):
+        return None
+    rounds = entry.get("rounds")
+    if not isinstance(rounds, list) or not any(isinstance(row, dict) for row in rounds):
+        return None
+    if gate_passed(entry):
+        return None
+    disposition_problem = _gate_disposition_problem(
+        tid,
+        entry,
+        ledger,
+        _ticket_search_dirs(),
+        evidence_problem=internal_gate_evidence_problem,
+        allow_legacy_internal_fixed=True,
+        allow_pm_fixed=True,
+    )
+    if disposition_problem is None:
+        declared = gate_resolution(entry)
+        if (
+            declared is not None
+            and declared["kind"] == GATE_RESOLUTION_PM_FIXED
+        ):
+            print(
+                f"주의: internal code-reviewer 완료 증거는 리뷰 통과가 아니라 "
+                f"{_load_review_rounds().describe_pm_fixed_resolution(declared)} 입니다.",
+                file=sys.stderr,
+            )
+        return None
+    verdict = _last_round_verdict(entry)
+    label = "미상(판정 무효)" if verdict is None else f"반려(rc={verdict})"
+    diagnostic = internal_verdict_diagnostic(entry) if verdict is None else None
+    diagnostic_hint = f"\n판정 추출 진단: {diagnostic}" if diagnostic is not None else ""
+    return (
+        f"internal code-reviewer 마지막 장부 라운드가 통과가 아닙니다: {label} — "
+        "통과 라운드 또는 그 잔여에 결속된 유효 처분이 완료 증거로 필요합니다 "
+        f"({_rel_to_repo(ledger_path)}){diagnostic_hint}\n{disposition_problem}"
+    )
+
+
 def _complete_gate(tid: str, args: argparse.Namespace,
                    body: str | None = None) -> list[str]:
     """Verify completion housekeeping before a ticket may move to done/.
@@ -8155,6 +8428,12 @@ def _complete_gate(tid: str, args: argparse.Namespace,
     #    미체크 항목이 남은 채 done 이 되면 그 항목은 보드에서 증발한다.
     if body is not None:
         problems.extend(_dod_open_items(body))
+
+    # 4. 이 티켓에 내부 리뷰 라운드가 실제 기록된 뒤에는 마지막 계측 라운드 통과 또는 그 잔여에
+    #    결속된 유효 처분만 완료 증거다. 장부/entry/rounds 부재는 과거 티켓 무대상이다.
+    internal_review_problem = _internal_review_completion_problem(tid)
+    if internal_review_problem is not None:
+        problems.append(internal_review_problem)
 
     return problems
 
@@ -8752,7 +9031,9 @@ def cmd_init(args: argparse.Namespace) -> int:
     solo (N=1·M=1): areas.md 안 만듦 → 가드 off → legacy T-NNNN (오버헤드 0).
     """
     _reject_task_slot_identity_mix(args)
-    prefix = args.prefix
+    requested_prefix = args.prefix
+    prefix = requested_prefix
+    prefix_precheck: str | None = None
     # 명시 --prefix sanity (예약어 `none`·형식 [a-z0-9_]+) — 위반이면 areas 등록·
     # local.conf write 어떤 부작용보다 앞에서 부작용 0 으로 거부(cmd_init 첫 문장 뒤).
     if prefix:
@@ -8760,38 +9041,16 @@ def cmd_init(args: argparse.Namespace) -> int:
         if reason:
             print(f"[중단] {reason}", file=sys.stderr)
             return 1
-    namespaced = bool(prefix)  # prefix 있음 = multi-repo 네임스페이스 모드(협업 아님)
-    if namespaced:
-        registered = registered_prefixes()
-        # case-only 근접중복 검출은 등록 ∪ **티켓** prefix (`_validate_dst_prefix` 와 대칭) —
-        # 미등록 `T-aaa-*` 티켓이 있는데 `init --prefix AAA` 하는 case-불일치도 fail-loud 로 안내한다.
-        existing = registered | _existing_ticket_prefixes()
-        if prefix in registered:
-            print(f"prefix {prefix!r} 이미 등록됨 (areas.md) — local.conf 만 갱신.")
-        elif (conflict := _case_only_conflict(prefix, existing)) is not None:
-            # case-only 중복 거부 — 이미 있는 `AAA` 와 대소문자만 다른 `aaa` 등록은
-            # 레지스트리/티켓과 fold-충돌한다(네임스페이스 분할). 기존 canonical case 로 안내.
-            print(f"[중단] prefix {prefix!r} 은 기존 {conflict!r} 과 대소문자만 다르다 "
-                  f"(prefix 동일성은 case-insensitive). 기존 case {conflict!r} 를 "
-                  "그대로 쓰라 (areas 미변경·부작용 0).", file=sys.stderr)
+        canonical = require_prefix_user_ack(
+            prefix,
+            getattr(args, "user_ack", None),
+            surface="board init --prefix",
+        )
+        if canonical is None:
             return 1
-        else:
-            if not args.area:
-                print(f"새 prefix {prefix!r} 등록엔 --area <설명> 필요.", file=sys.stderr)
-                return 1
-            # owner = areas.md 등록 식별자(registrant) — 협업 소유자(다중-사람)가 아니라
-            # single user 의 등록 출처 표식이다. 기본 = 현 세션.
-            # 등록 owner 기본값 = 귀속 쓰기 — 세션 미해소면 fail-loud
-            # (`--owner`/`--repo`/`--slot` 명시 유도). --owner 명시면 session_name 미호출(short-circuit).
-            owner = args.owner or _actor_session_override(args) or session_name(required=True)
-            # area_owner = 그 area 의 *user* 소유(`--mine` 풀 입력) —
-            # registrant `owner`(슬롯/세션)와 별개 칼럼(overload 금지).
-            # cmd_repo_add 와 동형 해소: `--user` 명시 > local.conf user= > git config
-            # user.email > None(빈 칼럼·_repo_area_owner None 폴백·현행 `--mine` 미포함).
-            area_owner = user_name(getattr(args, "user", None))
-            areas_append(prefix, args.area, owner, area_owner=area_owner)
-            ao_surface = area_owner if area_owner else "(미상 — local.conf user= / git user.email 미설정)"
-            print(f"✓ areas.md 등록: {prefix} | {args.area} | owner={owner} | area_owner={ao_surface}")
+        prefix = canonical
+        prefix_precheck = canonical
+    namespaced = bool(prefix)  # prefix 있음 = multi-repo 네임스페이스 모드(협업 아님)
     # session=/prefix= write 는 **solo 형상 전용 legacy** — leased ≥2 인
     # multi 홈은 이 키를 무시하고 세션/prefix 를 lease 장부에서 유도한다(session_name·
     # id_prefix). solo 채택자 폴백(후방호환)을 위해 write 는 유지하되, multi 홈은 흡수 후
@@ -8800,8 +9059,44 @@ def cmd_init(args: argparse.Namespace) -> int:
     # --repo 단독이면 그 repo 의 활성 리스가 1개일 때만 해소(0개/무인자 → None → 아래 default).
     override = _actor_session_override(args)
     sess = override or (f"{prefix.lower()}-pm" if namespaced else "pm")
-    surface_sess = _write_init_local_conf(
-        prefix=prefix, namespaced=namespaced, sess=sess, override=override)
+    area_message: str | None = None
+    if namespaced:
+        # areas 등록과 local.conf prefix 쓰기는 같은 board_lock 안에서 fresh 4소스 판정을
+        # 선판정과 대조한 뒤 수행한다. 캐시된 선판정 뒤 다른 세션이 다른 case를 만들었으면
+        # areas/local.conf 모두 쓰기 전에 중단한다(TOCTOU·부분 init 0).
+        with board_lock():
+            fresh = revalidate_prefix_user_ack(
+                requested_prefix,
+                getattr(args, "user_ack", None),
+                prefix_precheck,
+                surface="board init --prefix",
+            )
+            if fresh is None:
+                return 1
+            prefix = fresh
+            registered = registered_prefixes()
+            if prefix in registered:
+                area_message = f"prefix {prefix!r} 이미 등록됨 (areas.md) — local.conf 만 갱신."
+            else:
+                if not args.area:
+                    print(f"새 prefix {prefix!r} 등록엔 --area <설명> 필요.", file=sys.stderr)
+                    return 1
+                # owner = areas.md 등록 식별자(registrant) — 협업 소유자가 아니라 등록 출처 표식.
+                owner = args.owner or override or session_name(required=True)
+                area_owner = user_name(getattr(args, "user", None))
+                _areas_append_locked(prefix, owner, area_owner=area_owner)
+                ao_surface = (area_owner if area_owner else
+                              "(미상 — local.conf user= / git user.email 미설정)")
+                area_message = (f"✓ areas.md 등록: {prefix} | {args.area} | owner={owner} | "
+                                f"area_owner={ao_surface}")
+            surface_sess = _write_init_local_conf(
+                prefix=prefix, namespaced=True, sess=sess, override=override)
+        invalidate_known_prefixes_cache()
+    else:
+        surface_sess = _write_init_local_conf(
+            prefix=prefix, namespaced=False, sess=sess, override=override)
+    if area_message:
+        print(area_message)
     print(f"✓ local.conf: {('prefix=' + prefix + ' · ') if namespaced else ''}session={surface_sess}")
     if not PM_STATE_FILE.exists() and PM_STATE_TEMPLATE.exists():
         # `{{DATE}}` 의 소유자는 **생성 시점**이다 — 템플릿은 채택자 디스크에 토큰-form
@@ -9165,7 +9460,8 @@ def cmd_new(args: argparse.Namespace) -> int:
     # `--task` → task 명(F5b) · `--repo/--slot`→ `<repo>_<N>` 슬롯 세션 · 무명시 → None.
     # 하나의 세션 override 문자열이지만 축이 둘(task vs slot)이라 아래 분기가 축을 명시 구분한다.
     actor_session = _actor_session_override(args)
-    override = getattr(args, "prefix", None)
+    requested_override = getattr(args, "prefix", None)
+    override = requested_override
     if override:
         reason = _validate_prefix(override)
         if reason:
@@ -9178,11 +9474,29 @@ def cmd_new(args: argparse.Namespace) -> int:
         task_pfx = identity_args.task_prefix(actor_session, LEASES_FILE)
         if task_pfx:
             override = task_pfx
-    # 해소한 세션(task/slot)을 id_prefix 유도에 thread — 안 넘기면 등록 repo ≥2 환경에서 `new "x"
-    # --repo alpha --slot 1` 이 전역 재해소(모호 None)로 prefix 유도 실패해 "prefix 필요" 로 거부된다
-    # (codex must-fix·`_test_cmd` L2207 의 `id_prefix(None, session=)` 동형). None(무명시)이면
-    # session=None → 기존 전역 session_name() 해소(거동 무변경).
-    prefix = id_prefix(override, session=actor_session)
+    # 명시/task 값은 우선순위상 이미 최종 후보다. areas-only fold lookup(`id_prefix(override)`)으로
+    # 먼저 canonical화하지 않고 아래 **공통 4소스 funnel**에 원 표기 그대로 넘긴다. 그래야
+    # 오염된 areas `AAA`/`aaa`의 set 순회가 명시 경로 진단 입력을 다시 비결정적으로 고르지 않는다.
+    # 둘 다 없을 때만 actor_session을 세션→count→solo 유도 체인에 thread한다 — 안 넘기면 등록
+    # repo ≥2 환경의 `new "x" --repo alpha --slot 1`이 전역 재해소(모호 None)되어 거부된다.
+    prefix = override if override else id_prefix(None, session=actor_session)
+    prefix_precheck: str | None = None
+    prefix_surface = "board new --prefix" if requested_override else "board new derived prefix"
+    if prefix is not None:
+        # 명시/유도 분기 **뒤의 최종 발행 prefix**가 canonical 판정의 단일 funnel이다.
+        # task·세션·단일 areas·solo-conf 유도값도 명시 --prefix와 같은 4소스 snapshot을
+        # 통과해야 한다. 여기서 복수 case면 같은 fail-loud 진단으로 막고, 단일 case면 그
+        # canonical 표기를 발행값으로 고정한다. 신규 명시값만 user_ack가 실제 의미를 가지며,
+        # 유도값은 자신을 제공한 4소스 중 하나에 이미 존재하므로 승인 없이 existing으로 통과한다.
+        canonical = require_prefix_user_ack(
+            prefix,
+            getattr(args, "user_ack", None),
+            surface=prefix_surface,
+        )
+        if canonical is None:
+            return 1
+        prefix = canonical
+        prefix_precheck = canonical
     # multi-repo 네임스페이스 가드는 **레지스트리 *존재*가 아니라 등록 repo *개수*** 기준이다.
     # 등록 prefix 가 ≥2 면 진짜 ID 충돌 가능성이 있으니 prefix 필수(namespace 강제). 등록이
     # ≤1(0=레지스트리 부재/빈·1=단일 self-host) 이면 충돌이 없으므로 solo legacy `T-NNNN` 을
@@ -9190,9 +9504,10 @@ def cmd_new(args: argparse.Namespace) -> int:
     # 않게(단일 등록 repo 케이스). 명시 prefix 가 *주어지면* 그건 그대로
     # 존중해 prefixed ID 를 발행한다 — ≤1 라도 사용자가 골랐으면 따른다.
     #
-    # **명시 prefix 의 "등록돼 있어야 한다" 가드는 없다** (자유 입력·"등록 제약
-    # 없음"). prefix 는 이제 repo 네임스페이스가 아니라 작업 카테고리 — 새 카테고리를 즉석에서
-    # 붙일 수 있어야 한다. 입력측 sanity 는 위 `_validate_prefix`(예약어+형식)만으로 끝난다.
+    # **명시 prefix 의 "등록돼 있어야 한다" 가드는 없다**. prefix 는 repo
+    # 네임스페이스가 아니라 작업 카테고리이므로 미등록 라벨도 사용자가 그 대상값을
+    # `--user-ack`으로 승인하면 즉석 신설할 수 있다. 입력측 sanity와 신설 승인은 위에서
+    # `_validate_prefix` + `require_prefix_user_ack` 두 단계로 닫히며, 기존 fold-매치는 무마찰이다.
     # 아래 ≥2 가드는 별개 — 등록 repo 가 ≥2 인데 prefix 를 *안* 준 implicit 모호성 방지다
     # (유도 체인·미해소 fail-loud).
     registered = registered_prefixes()
@@ -9201,7 +9516,10 @@ def cmd_new(args: argparse.Namespace) -> int:
             print("multi-repo 네임스페이스 모드(등록 repo ≥2) — prefix 필요(미해소). "
                   "`--prefix <PFX>` 로 명시하거나 세션을 바인딩하라"
                   "(`PM_SESSION_NAME=<repo>_<N>` env 또는 단일 활성 슬롯 lease → areas.md "
-                  "repo→prefix 유도). 미등록이면 먼저 `board.py init --prefix <PFX> --area <name>`.",
+                  "repo→prefix 유도). 새 카테고리가 필요하면 1순위로 사용자에게 "
+                  "그 prefix 승인을 요청하라. 승인한 사용자만 부차적으로 "
+                  "`board.py init --prefix <PFX> --area <name> --user-ack <PFX>`를 "
+                  "대상값에 결속해 실행한다(세션 자동 부착 금지).",
                   file=sys.stderr)
             return 1
 
@@ -9233,6 +9551,19 @@ def cmd_new(args: argparse.Namespace) -> int:
     # 락 안에서 ID 를 *읽고* 곧바로 파일을 만들어, 다른 세션이 같은 ID 를
     # 발행할 틈을 없앤다. board.md 재생성은 락 밖(별도 트랜잭션 — 파생물).
     with board_lock():
+        if prefix is not None:
+            # 모든 non-None 발행 prefix를 ID 발행 락 안에서 cache-free 4소스 snapshot으로
+            # 다시 확인한다. 명시/유도 어느 경로든 그사이 다른 case가 생기면 `_next_id`와
+            # 파일 write 전에 중단한다.
+            fresh = revalidate_prefix_user_ack(
+                prefix,
+                getattr(args, "user_ack", None),
+                prefix_precheck,
+                surface=prefix_surface,
+            )
+            if fresh is None:
+                return 1
+            prefix = fresh
         tid = _next_id(prefix)
         slug = _slugify(args.title)
         filename = f"{tid}-{slug}.md"
@@ -9275,6 +9606,7 @@ def cmd_new(args: argparse.Namespace) -> int:
         else:
             path = tickets_dir() / "open" / filename
         dump_ticket(path, fm, body)
+    invalidate_known_prefixes_cache()
 
     print(f"created {tid} ({_rel_to_repo(path)})")
     print("  → fill in 목표 / 완료 조건 / 참고, then `board.py lint` "
@@ -9807,14 +10139,314 @@ def _prefix_scan(op: str) -> tuple[list[dict[str, Any]] | None, int]:
     return None, 1
 
 
-def _existing_ticket_prefixes() -> set[str]:
-    """티켓 ID 에 실제로 쓰인 prefix 집합 (canonical case·fold 네임스페이스 판정용).
+class PrefixSourcesUnreadable(RuntimeError):
+    """prefix 승인 게이트의 4소스 중 하나를 신뢰할 수 없어 fail-loud 해야 함."""
 
-    `_scan_prefix_tickets` 의 canonical ID 해소(frontmatter id 우선·파일명 폴백)를 재사용해
-    숫자-slug 모호성 없이 실 prefix 만 모은다. rename/merge dst 의 case-only 중복 검출이 이
-    집합에 fold-비교한다(기존 `T-AAA-*` 가 있으면 dst `aaa` 를 fail-loud).
+
+@functools.lru_cache(maxsize=1)
+def _cheap_prefix_inventory() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """값싼 3소스(areas·task·solo-conf) prefix 재고를 한 번 읽는다.
+
+    4소스 합성의 입력이자 전체 티켓 inventory가 손상됐을 때의 진단 fallback이다.
+    값싼 소스 자체의 fold case 오염은 전부 보존해, 티켓 소스를 끝내 읽지 못해도
+    `_prefix_target_snapshot`이 이미 확인한 case 변형과 출처를 잃지 않게 한다.
     """
-    return {p for t in _scan_prefix_tickets() if (p := t["prefix"])}
+    try:
+        area_prefixes = set(registered_prefixes())
+
+        task_prefixes: set[str] = set()
+        if LEASES_FILE.exists():
+            try:
+                ledger = json.loads(LEASES_FILE.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise PrefixSourcesUnreadable(
+                    f"task 장부 {LEASES_FILE}를 읽을 수 없음: {exc}"
+                ) from exc
+            if not isinstance(ledger, dict):
+                raise PrefixSourcesUnreadable("task 장부 최상위 값이 object가 아님")
+            tasks = ledger.get("tasks", [])
+            if not isinstance(tasks, list):
+                raise PrefixSourcesUnreadable("task 장부의 tasks 값이 list가 아님")
+            for index, task in enumerate(tasks):
+                if not isinstance(task, dict) or not task.get("name"):
+                    raise PrefixSourcesUnreadable(
+                        f"task 장부 tasks[{index}]가 유효한 task object가 아님"
+                    )
+                prefix = task.get("prefix")
+                if prefix in (None, ""):
+                    continue
+                if not isinstance(prefix, str):
+                    raise PrefixSourcesUnreadable(
+                        f"task 장부 tasks[{index}].prefix가 문자열/null이 아님"
+                    )
+                reason = _validate_prefix(prefix)
+                if reason:
+                    raise PrefixSourcesUnreadable(
+                        f"task 장부 tasks[{index}].prefix 손상: {reason}"
+                    )
+                task_prefixes.add(prefix)
+
+        legacy_prefixes: set[str] = set()
+        if not area_prefixes:
+            legacy = local_config().get("prefix")
+            if legacy:
+                legacy_prefixes.add(legacy)
+
+        by_prefix: dict[str, set[str]] = {}
+        for source, prefixes in (
+            ("areas.md", area_prefixes),
+            ("task 장부", task_prefixes),
+            ("solo local.conf", legacy_prefixes),
+        ):
+            for prefix in prefixes:
+                by_prefix.setdefault(prefix, set()).add(source)
+        return tuple(
+            (prefix, tuple(sorted(sources)))
+            for prefix, sources in sorted(
+                by_prefix.items(), key=lambda item: (item[0].lower(), item[0])
+            )
+        )
+    except PrefixSourcesUnreadable:
+        raise
+    except (OSError, UnicodeError, yaml.YAMLError, ValueError) as exc:
+        raise PrefixSourcesUnreadable(f"prefix 소스를 읽을 수 없음: {exc}") from exc
+
+
+@functools.lru_cache(maxsize=1)
+def _known_prefix_inventory() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """4소스 prefix와 각 출처를 immutable·결정적 snapshot으로 한 번 읽는다.
+
+    소스는 (1) areas.md prefix, (2) 기발행 티켓 ID prefix, (3) worktree task 장부의
+    모든 ``Task.prefix``, (4) 등록 prefix가 0개일 때만 solo legacy local.conf
+    ``prefix=`` 이다. 소스 (4)의 조건은 ``id_prefix`` 해소 규칙과 같아서 multi-repo에서
+    도달 불가능한 clone-local 라벨을 whitelist하지 않는다.
+
+    board는 worktree_pool 엔진을 import하지 않는 기존 격리를 지킨다. worktree_pool이
+    atomic-replace하는 JSON 장부를 strict point-read하고, 손상은 빈 집합으로 완화하지 않는다.
+    case 충돌 판정은 값싼 소스의 fold-match 여부와 무관하게 항상 티켓까지 4소스를
+    확인한다. 첫 전수 스캔 결과는 이 함수의 프로세스 캐시에 보관해 후속 판정 비용을
+    회수하며, 티켓 손상은 빈 집합으로 완화하지 않고 fail-loud한다.
+    동일 문자열이 여러 소스에 있으면 출처를 합치고, case 변형은 서로 다른 항목으로 보존한다.
+    그래야 ``AAA``/``aaa`` 오염을 union 과정에서 숨기지 않고 발견된 변형과 소스를 전부
+    fail-loud할 수 있다. 반환 순서는 ``(lower, exact)``로 고정해 set/hash 순서와 무관하다.
+    """
+    try:
+        skipped: list[Path] = []
+        ticket_rows = _scan_prefix_tickets(skipped)
+        if skipped:
+            sample = ", ".join(_rel_to_repo(path) for path in skipped[:5])
+            if len(skipped) > 5:
+                sample += " …"
+            raise PrefixSourcesUnreadable(
+                f"읽지 못한 티켓 {len(skipped)}건({sample}) 때문에 기발행 prefix를 확정할 수 없음"
+                "(누락 판정은 신규 ID clobber 위험)"
+            )
+        ticket_prefixes = {
+            prefix for row in ticket_rows if (prefix := row.get("prefix"))
+        }
+
+        by_prefix = {
+            prefix: set(sources) for prefix, sources in _cheap_prefix_inventory()
+        }
+        for prefix in ticket_prefixes:
+            by_prefix.setdefault(prefix, set()).add("기발행 티켓")
+        return tuple(
+            (prefix, tuple(sorted(sources)))
+            for prefix, sources in sorted(
+                by_prefix.items(), key=lambda item: (item[0].lower(), item[0])
+            )
+        )
+    except PrefixSourcesUnreadable:
+        raise
+    except (OSError, UnicodeError, yaml.YAMLError, ValueError) as exc:
+        raise PrefixSourcesUnreadable(f"prefix 소스를 읽을 수 없음: {exc}") from exc
+
+
+@functools.lru_cache(maxsize=128)
+def known_prefixes(target: str | None = None) -> frozenset[str]:
+    """신규-prefix 판정의 단일 진실인 4소스 합집합(canonical case 보존).
+
+    ``target``은 기존 호출 호환용이며 판정 범위를 줄이지 않는다. 값싼 소스에
+    fold/exact match가 있어도 다른 case의 기발행 티켓이 있으면 canonical이 충돌하고,
+    `_next_prefixed_id`가 티켓 case를 이어 쓸 수 있으므로 반드시 4소스를 모두 읽는다.
+    전수 스캔은 `_known_prefix_inventory`의 프로세스 1회 캐시로 상쇄한다.
+    """
+    return frozenset(prefix for prefix, _sources in _known_prefix_inventory())
+
+
+def invalidate_known_prefixes_cache() -> None:
+    """이 프로세스가 prefix 소스를 변경한 뒤 1회 캐시를 무효화한다."""
+    known_prefixes.cache_clear()
+    _known_prefix_inventory.cache_clear()
+    _cheap_prefix_inventory.cache_clear()
+
+
+def _prefix_target_snapshot(
+    prefix: str,
+    *,
+    surface: str,
+) -> tuple[str | None, bool]:
+    """현재 snapshot에서 ``(canonical, is_new)``를 반환한다. 판정 불능이면 ``(None, False)``.
+
+    한 fold에 case 변형이 둘 이상이면 어느 항목도 canonical로 임의 선택하지 않는다. 발견된
+    모든 변형과 4소스 출처를 정렬 출력하고, 먼저 한 case로 수렴시키라는 처방과 함께 막는다.
+    """
+    try:
+        known = known_prefixes(prefix)
+    except PrefixSourcesUnreadable as exc:
+        # 전체 티켓 inventory가 손상됐어도 값싼 소스만으로 이미 case 충돌이 확정됐다면
+        # 그 출처를 버리지 않는다. 4번째 소스를 읽지 못한 사실도 함께 밝혀 쓰기는 계속 막는다.
+        try:
+            fallback_inventory = _cheap_prefix_inventory()
+        except PrefixSourcesUnreadable:
+            fallback_inventory = ()
+        fallback_matches = sorted(
+            (
+                candidate for candidate, _sources in fallback_inventory
+                if candidate.lower() == prefix.lower()
+            ),
+            key=lambda value: (value.lower(), value),
+        )
+        if len(fallback_matches) > 1:
+            _print_prefix_case_conflict(
+                prefix,
+                fallback_matches,
+                dict(fallback_inventory),
+                surface=surface,
+                inventory_error=exc,
+            )
+        else:
+            print(
+                f"[중단] {surface}: prefix 4소스 합집합을 신뢰할 수 없다 — {exc}. "
+                "소스 손상을 고친 뒤 다시 실행하라.",
+                file=sys.stderr,
+            )
+        return None, False
+
+    matches = sorted(
+        (candidate for candidate in known if candidate.lower() == prefix.lower()),
+        key=lambda value: (value.lower(), value),
+    )
+    if len(matches) > 1:
+        try:
+            source_map = dict(_known_prefix_inventory())
+            inventory_error = None
+        except PrefixSourcesUnreadable as exc:
+            # known_prefixes가 monkeypatch/동시 변경 등으로 먼저 값을 돌려준 뒤 full source
+            # map만 실패하는 경로에서도 확인된 값싼 출처를 진단 fallback으로 보존한다.
+            try:
+                source_map = dict(_cheap_prefix_inventory())
+            except PrefixSourcesUnreadable:
+                source_map = {}
+            inventory_error = exc
+        _print_prefix_case_conflict(
+            prefix,
+            matches,
+            source_map,
+            surface=surface,
+            inventory_error=inventory_error,
+        )
+        return None, False
+    if matches:
+        return matches[0], False
+    return prefix, True
+
+
+def _print_prefix_case_conflict(
+    prefix: str,
+    matches: list[str],
+    source_map: dict[str, tuple[str, ...]],
+    *,
+    surface: str,
+    inventory_error: PrefixSourcesUnreadable | None = None,
+) -> None:
+    """case 충돌을 출처 보존·결정적 순서로 출력한다."""
+    variants = "; ".join(
+        f"{candidate!r} ← {', '.join(source_map.get(candidate, ('소스 미상',)))}"
+        for candidate in matches
+    )
+    incomplete = (
+        f"\n  진단 보존: 티켓 inventory 오류({inventory_error})로 4소스 출처를 모두 "
+        "확정하지 못했지만, 위 값싼 소스 출처만으로도 case 충돌은 확정적이다."
+        if inventory_error is not None
+        else ""
+    )
+    print(
+        f"[중단] {surface}: prefix {prefix!r}의 case 변형이 2개 이상 존재해 canonical을 "
+        f"결정할 수 없다 — {variants}.{incomplete}\n"
+        "  정리 처방: 하나의 canonical case를 고른 뒤 areas.md·task 장부·solo local.conf를 "
+        "그 case로 맞추고, 기발행 티켓은 `board.py prefix rename/merge`로 같은 case에 "
+        "수렴시킨 다음 재실행하라. 임의 변형 선택은 새 ID 네임스페이스를 분할하므로 "
+        "수행하지 않는다.",
+        file=sys.stderr,
+    )
+
+
+def require_prefix_user_ack(
+    prefix: str,
+    user_ack: str | None,
+    *,
+    surface: str,
+) -> str | None:
+    """기존 prefix의 canonical case 또는 승인된 신규 prefix를 반환하고, 거부면 None.
+
+    prefix 동일성은 4소스 합집합에 case-insensitive fold로 대조한다. 신규 라벨은
+    ``--user-ack <prefix>`` 값이 대상과 정확히 결속될 때만 통과한다. 이 토큰은 적대적
+    우회 방지가 아니라 사용자 승인 마찰과 감사 surface이며, 승인 주체가 아닌 세션이
+    자가 부착할 수 있다는 위협 모델은 의도적으로 숨기지 않는다.
+    """
+    canonical, is_new = _prefix_target_snapshot(prefix, surface=surface)
+    if canonical is None:
+        return None
+    if not is_new:
+        return canonical
+    if user_ack == prefix:
+        print(
+            f"[승인 감사] {surface}: 사용자 승인 토큰이 새 prefix {prefix!r}에 값-결속됨."
+        )
+        return prefix
+
+    known = known_prefixes()
+    categories = ", ".join(
+        sorted(known, key=lambda value: (value.lower(), value))
+    ) or "(없음)"
+    mismatch = (
+        f" 제공된 값 {user_ack!r}은 대상에 결속되지 않았다."
+        if user_ack is not None
+        else ""
+    )
+    print(
+        f"[중단] {surface}: 새 prefix {prefix!r} 신설에는 사용자 명시 승인이 필요하다.{mismatch}\n"
+        f"  1순위: 사용자에게 새 카테고리 {prefix!r} 승인을 요청하라.\n"
+        f"  현재 카테고리(areas ∪ 티켓 ∪ task ∪ solo-conf): {categories}\n"
+        "  정상 등록 경로: areas.md prefix 칼럼 또는 `pm-config task prefix`로 먼저 등록한다. "
+        "두 경로도 신규 라벨이면 최초 1회 사용자 승인을 지나야 한다.\n"
+        f"  부차 수단: 승인한 사용자만 원 명령에 `--user-ack {prefix}`를 대상값 그대로 붙여 "
+        "실행하라(세션 자동 부착 금지).",
+        file=sys.stderr,
+    )
+    return None
+
+
+def revalidate_prefix_user_ack(
+    prefix: str,
+    user_ack: str | None,
+    expected: str,
+    *,
+    surface: str,
+) -> str | None:
+    """쓰기 락 안에서 캐시를 버리고 승인 판정을 다시 해 선판정과 같을 때만 반환한다."""
+    invalidate_known_prefixes_cache()
+    fresh = require_prefix_user_ack(prefix, user_ack, surface=f"{surface} (락 안 fresh 재검증)")
+    if fresh == expected:
+        return fresh
+    print(
+        f"[중단] {surface}: prefix canonical 판정이 선판정 {expected!r}에서 "
+        f"fresh snapshot {fresh!r}로 달라졌다 — 동시 세션이 prefix 소스를 변경했을 수 있어 "
+        "쓰기 0으로 중단한다. 현황을 정리·재확인한 뒤 원 명령을 다시 실행하라.",
+        file=sys.stderr,
+    )
+    return None
 
 
 def _rename_map(src: str | None, dst: str | None,
@@ -9823,7 +10455,8 @@ def _rename_map(src: str | None, dst: str | None,
 
     src 매칭은 **case-insensitive fold**(`_fold_key`) — `rename aaa bbb` 가 기존
     `T-AAA-*`(prefix `AAA`)를 잡아 relabel 한다(case 만 다르면 silent no-op 하던 갭 봉합). dst 는
-    `_validate_dst_prefix` 가 exact canonical case 를 강제하므로 그대로 발행 case 다.
+    호출자가 ``require_prefix_user_ack`` 공유 게이트에서 4소스 canonical case로
+    해소한 값이므로 그대로 발행 case다(`_validate_dst_prefix`는 형식 sanity만 담당).
     """
     src_key = _fold_key(src)
     id_map: dict[str, str] = {}
@@ -9846,8 +10479,9 @@ def _merge_append_map(sources: list[str | None], into: str | None,
     구세대(초기 도입 전) 산출물이라 최고령 배치가 자연스럽다(suggestion 채택·현행 유지).
 
     source membership 은 **case-insensitive fold**(`_fold_key`) — `merge aaa --into bbb`
-    가 기존 `T-AAA-*` source 를 모은다. into(대상) max 계산은 exact(`== into`) — `_validate_dst_prefix`
-    가 into 를 exact canonical case 로 강제하므로 case-혼동이 없다(source 측만 fold).
+    가 기존 `T-AAA-*` source 를 모은다. into(대상) max 계산은 exact(`== into`) — 호출자의
+    ``require_prefix_user_ack``가 into를 canonical case로 해소하므로 case-혼동이 없다
+    (source 측만 fold·`_validate_dst_prefix`는 형식 sanity만 담당).
     """
     src_index = {_fold_key(p): i for i, p in enumerate(sources)}
     src_tickets = [t for t in tickets if _fold_key(t["prefix"]) in src_index]
@@ -9870,7 +10504,7 @@ def _merge_reorder_map(sources: list[str | None], into: str | None,
     tiebreak: 대상 그룹 먼저(-1), 그다음 source 목록 순서, 그다음 기존 번호.
 
     source membership 은 case-insensitive fold(`_fold_key`)·into 그룹은 exact(`== into`·
-    `_validate_dst_prefix` 가 canonical case 강제) — `_merge_append_map` 과 동일 규율.
+    호출자의 ``require_prefix_user_ack``가 canonical case 해소) — `_merge_append_map`과 동일 규율.
     """
     src_index = {_fold_key(p): i for i, p in enumerate(sources)}
     involved = [t for t in tickets
@@ -10041,7 +10675,9 @@ def _home_git_status_porcelain() -> str | None:
 
 
 def _prefix_relabel(build_map, *, verb: str, label: str,
-                    dry_run: bool, noun: str = "prefix") -> int:
+                    dry_run: bool, noun: str = "prefix",
+                    pre_write_check: Callable[[], bool] | None = None,
+                    preview_notice: str | None = None) -> int:
     """검증된 old→new 맵을 적용하는 공통 파이프라인 (rename/merge/reid 공용).
 
     `noun` = 출력·commit 메시지의 op 접두어(카테고리 동사는 "prefix", 단건 재부여는 "reid" —
@@ -10065,7 +10701,9 @@ def _prefix_relabel(build_map, *, verb: str, label: str,
     스캔→맵→collision 검사를 *락 안 fresh snapshot* 에서 수행해, 검사와 적용 사이에 `cmd_new` 가
     같은 번호를 발행해 stale 검사를 통과하는 창을 없앤다. 추가 belt: stage1 전에 계획된 dst 가
     (계획 밖 파일로) 이미 존재하면 **아무것도 쓰기 전에 abort** 한다(덮어쓰기 원천 차단).
-    dry-run 은 read-only preview 라 락 없이 빌드한다(정확성보다 규모 감이 목적).
+    ``pre_write_check``가 있으면 락 안 fresh snapshot 판정을 맵 재생성보다 먼저 수행한다.
+    dry-run 은 read-only preview 라 락 없이 빌드하고 이 write-only check를 호출하지 않는다
+    (정확성보다 규모 감이 목적).
     """
     root = REPO / ".project_manager"
     op = f"{noun} {verb}".strip()   # "prefix rename" / "prefix merge" / "reid" (verb 빈 문자열이면 noun만)
@@ -10083,6 +10721,8 @@ def _prefix_relabel(build_map, *, verb: str, label: str,
         print(f"[dry-run] {op} {label} — "
               f"{_scale_line(len(id_map), scale, len(_plan_file_renames(id_map)))}")
         print("[dry-run] 쓰기 0 — 적용하려면 --dry-run 없이 재실행.")
+        if preview_notice:
+            print(preview_notice)
         return 0
 
     # 홈 git dirty 는 **차단하지 않고 보고**한다. 전면 abort 는 "공유
@@ -10106,6 +10746,8 @@ def _prefix_relabel(build_map, *, verb: str, label: str,
     # (락 순서 고정 — 역순 획득이 하나라도 있으면 claim 과 데드락). board-git 비활성이면
     # board_git_lock 은 no-op 이라 legacy 경로는 무변경.
     with board_git_lock(), board_lock():
+        if pre_write_check is not None and not pre_write_check():
+            return 1
         # 맵 생성+collision 검사도 락 안 fresh snapshot 으로 — 검사↔적용 사이 cmd_new 창 봉합.
         id_map, rc = build_map()
         if not id_map:
@@ -10131,6 +10773,8 @@ def _prefix_relabel(build_map, *, verb: str, label: str,
         if _board_git_enabled():
             _board_git_stage_and_commit(f"{op} {label}", touched)
 
+    invalidate_known_prefixes_cache()
+
     if _board_git_enabled():
         if backup_rev:
             print(f"  board-git 백업 rev(되돌리려면 "
@@ -10143,32 +10787,28 @@ def _prefix_relabel(build_map, *, verb: str, label: str,
 
 
 def _validate_dst_prefix(raw: str, parsed: str | None) -> str | None:
-    """대상 카테고리(dst/into) 형식 sanity + case-only 중복 거부 — 위반 메시지·정상이면 None.
+    """대상 카테고리(dst/into) 형식 sanity — 위반 메시지·정상이면 None.
 
     `none`(parsed=None)은 항상 허용(이름 지우기·무prefix). 실 prefix 는 새/재사용 카테고리
     이름이므로 `_validate_prefix`(예약어+`[A-Za-z0-9][A-Za-z0-9_]*`·대소문자 허용)로
     못박아 malformed ID 발행을 막는다. source prefix 는 *기존* 발행분이라 검증하지 않는다(하이픈
-    legacy 존중). 형식 통과 후 dst 가 기존 prefix(등록 ∪ 티켓)에 대소문자만 다르게 fold-매치되면
-    fail-loud — `_detect_collisions` 는 case-민감이라 `T-aaa-005` 와 `T-AAA-005` 를 다른 ID 로 봐
-    case-분할을 못 잡으므로, 여기서 기존 canonical case 로 안내해 분할을 원천 차단한다.
+    legacy 존중). 기존 prefix와의 fold 동일성 및 canonical case 해소는 네 표면이 공유하는
+    ``require_prefix_user_ack``가 4소스 합집합으로 맡는다.
     """
     if parsed is None:
         return None
     reason = _validate_prefix(raw)
     if reason:
         return reason
-    conflict = _case_only_conflict(raw, registered_prefixes() | _existing_ticket_prefixes())
-    if conflict is not None:
-        return (f"대상 prefix {raw!r} 은 기존 {conflict!r} 과 대소문자만 다르다 "
-                f"(prefix 동일성은 case-insensitive·네임스페이스 분할 방지). "
-                f"기존 case {conflict!r} 로 지정하라.")
     return None
 
 
 def cmd_prefix_rename(args: argparse.Namespace) -> int:
     """`prefix rename <A|none> <B|none>` — 무충돌=번호유지 교체·충돌=merge 안내."""
     src = _parse_prefix_arg(args.src)
-    dst = _parse_prefix_arg(args.dst)
+    requested_dst = _parse_prefix_arg(args.dst)
+    dst = requested_dst
+    dry_run = bool(getattr(args, "dry_run", False))
     if src == dst:
         print(f"[중단] src 와 dst 가 같다({args.src} → {args.dst}) — 변경 없음.",
               file=sys.stderr)
@@ -10177,6 +10817,15 @@ def cmd_prefix_rename(args: argparse.Namespace) -> int:
     if reason:
         print(f"[중단] {reason}", file=sys.stderr)
         return 1
+    dst_is_new = False
+    if requested_dst is not None:
+        candidate, dst_is_new = _prefix_target_snapshot(
+            requested_dst, surface="board prefix rename dst",
+        )
+        if candidate is None:
+            return 1
+        dst = candidate
+
     def build_map() -> "tuple[dict[str, str] | None, int]":
         # 락 안 fresh snapshot 에서 스캔→맵→collision (TOCTOU 봉합·dry-run 은 락 밖 호출).
         tickets, scan_rc = _prefix_scan("prefix rename")
@@ -10195,8 +10844,40 @@ def cmd_prefix_rename(args: argparse.Namespace) -> int:
             return None, 1
         return id_map, 0
 
-    return _prefix_relabel(build_map, verb="rename", label=f"{args.src} → {args.dst}",
-                           dry_run=bool(getattr(args, "dry_run", False)))
+    preview_notice = None
+    pre_write_check = None
+    if dry_run:
+        if dst_is_new:
+            preview_notice = (
+                f"[dry-run] 실행 시 새 prefix {requested_dst!r} 신설에는 사용자 승인이 필요하다 — "
+                f"승인한 사용자만 `--user-ack {requested_dst}`를 대상값 그대로 붙여 실행하라."
+            )
+    else:
+        # 승인 게이트는 실제 변경 맵이 있을 때만 연다. source 0건 no-op은 여기서 바로 끝나
+        # 쓰기·승인 모두 0이고, 실제 적용은 아래에서 같은 맵을 락 안 fresh scan으로 다시 만든다.
+        planned, rc = build_map()
+        if not planned:
+            return rc
+        if requested_dst is not None:
+            canonical = require_prefix_user_ack(
+                requested_dst,
+                getattr(args, "user_ack", None),
+                surface="board prefix rename dst",
+            )
+            if canonical is None:
+                return 1
+            dst = canonical
+            pre_write_check = lambda: revalidate_prefix_user_ack(
+                requested_dst,
+                getattr(args, "user_ack", None),
+                canonical,
+                surface="board prefix rename dst",
+            ) is not None
+
+    dst_label = dst if dst is not None else "none"
+    return _prefix_relabel(build_map, verb="rename", label=f"{args.src} → {dst_label}",
+                           dry_run=dry_run, pre_write_check=pre_write_check,
+                           preview_notice=preview_notice)
 
 
 def cmd_prefix_strip(args: argparse.Namespace) -> int:
@@ -10208,11 +10889,21 @@ def cmd_prefix_strip(args: argparse.Namespace) -> int:
 def cmd_prefix_merge(args: argparse.Namespace) -> int:
     """`prefix merge <A> [B...] --into <T|none>` — created 순 통합(기본 append)."""
     sources = [_parse_prefix_arg(s) for s in args.sources]
-    into = _parse_prefix_arg(args.into)
+    requested_into = _parse_prefix_arg(args.into)
+    into = requested_into
+    dry_run = bool(getattr(args, "dry_run", False))
     reason = _validate_dst_prefix(args.into, into)
     if reason:
         print(f"[중단] {reason}", file=sys.stderr)
         return 1
+    into_is_new = False
+    if requested_into is not None:
+        candidate, into_is_new = _prefix_target_snapshot(
+            requested_into, surface="board prefix merge --into",
+        )
+        if candidate is None:
+            return 1
+        into = candidate
     if _fold_key(into) in {_fold_key(s) for s in sources}:
         # 자기-merge 가드도 case-insensitive — `merge aaa --into AAA` 는 fold-동일
         # 네임스페이스라 자기 자신에 merge 다(source fold-매칭이 노출한 클래스).
@@ -10238,10 +10929,41 @@ def cmd_prefix_merge(args: argparse.Namespace) -> int:
             return None, 1
         return id_map, 0
 
+    preview_notice = None
+    pre_write_check = None
+    if dry_run:
+        if into_is_new:
+            preview_notice = (
+                f"[dry-run] 실행 시 새 prefix {requested_into!r} 신설에는 사용자 승인이 필요하다 — "
+                f"승인한 사용자만 `--user-ack {requested_into}`를 대상값 그대로 붙여 실행하라."
+            )
+    else:
+        # rename과 같은 정책: source 0건이면 승인 없이 no-op, 실제 변경 맵이 있을 때만 gate.
+        planned, rc = build_map()
+        if not planned:
+            return rc
+        if requested_into is not None:
+            canonical = require_prefix_user_ack(
+                requested_into,
+                getattr(args, "user_ack", None),
+                surface="board prefix merge --into",
+            )
+            if canonical is None:
+                return 1
+            into = canonical
+            pre_write_check = lambda: revalidate_prefix_user_ack(
+                requested_into,
+                getattr(args, "user_ack", None),
+                canonical,
+                surface="board prefix merge --into",
+            ) is not None
+
     mode = "reorder" if reorder else "append"
-    label = f"{'+'.join(args.sources)} → {args.into} [{mode}]"
+    into_label = into if into is not None else "none"
+    label = f"{'+'.join(args.sources)} → {into_label} [{mode}]"
     return _prefix_relabel(build_map, verb="merge", label=label,
-                           dry_run=bool(getattr(args, "dry_run", False)))
+                           dry_run=dry_run, pre_write_check=pre_write_check,
+                           preview_notice=preview_notice)
 
 
 def _areas_clear_prefix_cell(prefix: str) -> int:
@@ -10285,7 +11007,9 @@ def _areas_clear_prefix_cell(prefix: str) -> int:
                 out.append(line)
         if cleared:
             af.write_text("\n".join(out) + ("\n" if ends_nl else ""), encoding="utf-8")
-        return cleared
+    if cleared:
+        invalidate_known_prefixes_cache()
+    return cleared
 
 
 def cmd_prefix_delete(args: argparse.Namespace) -> int:
@@ -10315,7 +11039,9 @@ def cmd_prefix_delete(args: argparse.Namespace) -> int:
     if count > 0:
         print(f"[중단] prefix {args.prefix} 에 티켓 {count}개 — delete 는 빈(0티켓) prefix 전용"
               f"(무손실·물리삭제 없음). 개명은 `board.py prefix rename {args.prefix} <B|none>`, "
-              f"통합은 `board.py prefix merge {args.prefix} --into <T|none>` 로.",
+              f"통합은 `board.py prefix merge {args.prefix} --into <T|none>` 로. "
+              "B/T가 새 라벨이면 1순위로 사용자에게 승인을 요청하고, 승인한 "
+              "사용자만 대상값과 같은 `--user-ack <B|T>`를 붙인다(세션 자동 부착 금지).",
               file=sys.stderr)
         return 1
     registered = _areas_row_for_prefix(target) is not None
@@ -10345,13 +11071,15 @@ def cmd_reid(args: argparse.Namespace) -> int:
     고친다. 카테고리 일괄이 아니라 단건이므로 top-level 서브커맨드다(`prefix` 네임스페이스는 카테고리
     전용 유지).
 
-    가드(값싼 정적 → 상태 의존 순): NEW-ID 형식 sanity(발행 문법·prefix 자유 입력) → src≠dst → (락
-    안 fresh snapshot) OLD 실재 → 타 세션 claim abort(단일세션 op) → NEW collision(전 상태
+    가드(값싼 정적 → 상태 의존 순): NEW-ID 형식 sanity(발행 문법·legacy prefix 포함) →
+    NEW prefix 4소스 canonical/신설 승인 판정 → src≠dst → (락 안 fresh snapshot) OLD 실재 →
+    타 세션 claim abort(단일세션 op) → NEW collision(전 상태
     디렉토리+.drafts 에 이미 존재하면 abort). 번호 자동발급 카운터는 `_next_id` 가 max 기반이라 어느
     번호로 옮겨도 무충돌이다 — 다음 발급이 최대치를 자연히 이으므로 별도 조정 없이 확인만 한다(결정).
     """
     _reject_task_slot_identity_mix(args)
-    old_id, new_id = args.old_id, args.new_id
+    old_id, requested_new_id = args.old_id, args.new_id
+    new_id = requested_new_id
     dry_run = bool(getattr(args, "dry_run", False))
 
     # 정적 sanity(락·재조회 불요) — 값싼 거부 먼저. OLD/NEW 형식·자기 자신.
@@ -10361,10 +11089,33 @@ def cmd_reid(args: argparse.Namespace) -> int:
         print(f"[중단] OLD-ID {old_id!r} 형식 위반 — `T-NNNN`(무prefix) 또는 `T-<prefix>-NNN`"
               "(발행 문법) 이어야 한다.", file=sys.stderr)
         return 1
-    if not _is_valid_ticket_id(new_id):
-        print(f"[중단] NEW-ID {new_id!r} 형식 위반 — `T-NNNN`(무prefix) 또는 `T-<prefix>-NNN`"
-              "(발행 문법·prefix 자유 입력) 이어야 한다.", file=sys.stderr)
+    if not _is_valid_ticket_id(requested_new_id):
+        print(f"[중단] NEW-ID {requested_new_id!r} 형식 위반 — `T-NNNN`(무prefix) 또는 "
+              "`T-<prefix>-NNN`(발행 문법·legacy prefix 포함) 이어야 한다.",
+              file=sys.stderr)
         return 1
+
+    requested_new_prefix = _ticket_prefix(requested_new_id)
+    new_prefix_is_new = False
+    canonical_new_prefix: str | None = None
+    if requested_new_prefix is not None:
+        canonical_new_prefix, new_prefix_is_new = _prefix_target_snapshot(
+            requested_new_prefix, surface="board reid NEW-ID prefix",
+        )
+        if canonical_new_prefix is None:
+            return 1
+        if new_prefix_is_new:
+            reason = _validate_prefix(canonical_new_prefix)
+            if reason:
+                print(
+                    f"[중단] 신규 prefix {canonical_new_prefix!r} 형식 위반 — {reason}",
+                    file=sys.stderr,
+                )
+                return 1
+        # fold-매치 기존 prefix는 그 canonical case로 무마찰 재사용한다.
+        # 사용자가 쓴 번호 마디의 zero-pad 폭은 reid 기존 계약대로 보존한다.
+        new_id = f"T-{canonical_new_prefix}-{requested_new_id.rsplit('-', 1)[1]}"
+
     if old_id == new_id:
         print(f"[중단] OLD 와 NEW 가 같다({old_id}) — 변경 없음.", file=sys.stderr)
         return 1
@@ -10427,8 +11178,45 @@ def cmd_reid(args: argparse.Namespace) -> int:
             return None, 1
         return id_map, 0
 
-    return _prefix_relabel(build_map, verb="", label=f"{old_id} → {new_id}",
-                           dry_run=dry_run, noun="reid")
+    preview_notice = None
+    pre_write_check = None
+    if dry_run:
+        if new_prefix_is_new:
+            preview_notice = (
+                f"[dry-run] 실행 시 새 prefix {requested_new_prefix!r} 신설에는 사용자 "
+                f"승인이 필요하다 — 승인한 사용자만 `--user-ack {requested_new_prefix}`를 "
+                "대상값 그대로 붙여 실행하라."
+            )
+    else:
+        # rename/merge와 동형: OLD 미존재·NEW collision 등으로 실제 맵이 없으면
+        # 승인을 요구하지 않고, 쓰기 계획이 있을 때만 값-결속 게이트를 연다.
+        planned, rc = build_map()
+        if not planned:
+            return rc
+        if requested_new_prefix is not None:
+            canonical = require_prefix_user_ack(
+                requested_new_prefix,
+                getattr(args, "user_ack", None),
+                surface="board reid NEW-ID prefix",
+            )
+            if canonical is None:
+                return 1
+            pre_write_check = lambda: revalidate_prefix_user_ack(
+                requested_new_prefix,
+                getattr(args, "user_ack", None),
+                canonical,
+                surface="board reid NEW-ID prefix",
+            ) is not None
+
+    return _prefix_relabel(
+        build_map,
+        verb="",
+        label=f"{old_id} → {new_id}",
+        dry_run=dry_run,
+        noun="reid",
+        pre_write_check=pre_write_check,
+        preview_notice=preview_notice,
+    )
 
 
 def cmd_show(args: argparse.Namespace) -> int:
@@ -12285,6 +13073,10 @@ def _ticket_id_from_filename(filename: str) -> str | None:
 #   - design-estimate : `estimate=large` 인데 `design: n/a`(또는 필드 부재). 자동 required 는
 #     발행 시점 1회뿐이라 estimate 를 사후 교정한 티켓엔 설계 게이트가 영영 안 붙는다. 올릴지
 #     면제할지는 **사람 판정**이라 엔진은 재유도만 한다(never-block).
+#   - codex-delegate-matcher-miss : SubagentStart 는 `(session_id, turn_id, agent_id)`로 식별하고,
+#     같은 session 의 선행 allow-spawn을 FIFO 1:1 대조했을 때 대응 PreToolUse 처리 기록이 없는
+#     start를 가시화한다. 이미 시작된 native spawn의 사후 advisory라 push는 막지 않는다.
+#     (`SubagentStart.agent_type="default"`는 역할도 상관 키도 아니다 — 라이브 payload 실측)
 _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
     {"status-done-accum", "unstable-ref-advice", "scope-advice", "coverage",
      "stale", "orphan", "oversized", "history", "adr-lifecycle", "architecture-stale",
@@ -12292,7 +13084,8 @@ _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
      "architecture-unverifiable", "status-unverifiable",
      "dangling-wikilink-scaffold", "un-migrated-overlay", "adapter-drift",
      "adr-author", "areas-duplicate-repo", "areas-merge-union",
-     "delegate-same-model", "design-pending", "design-estimate"})
+     "delegate-same-model", "design-pending", "design-estimate",
+     "codex-delegate-matcher-miss"})
 
 
 def _adr_id_from_path(p: Path) -> str:
@@ -13533,6 +14326,62 @@ def lint_delegate() -> list[tuple[str, str, str]]:
     return [(label, "delegate-same-model", detail) for label, detail in findings]
 
 
+def _load_delegate_channel_guard_module():
+    """Load the guard's read-only Codex observation scanner (graceful)."""
+    if not DELEGATE_CHANNEL_GUARD_PY.exists():
+        return None
+    try:
+        return _load_module_from_path(
+            DELEGATE_CHANNEL_GUARD_PY,
+            "delegate_channel_guard.py",
+            verifier=_verify_engine_rev,
+        )
+    except Exception as exc:  # noqa: BLE001 — advisory loader is fail-soft.
+        if _is_engine_rev_skew(exc):
+            raise
+        return None
+
+
+def lint_codex_delegate_observations() -> list[tuple[str, str, str]]:
+    """Surface unmatched Codex SubagentStart observations once (never-block).
+
+    The guard owns JSONL rotation and the idempotent set comparison.  Board lint
+    only aggregates all retained misses into one PM-facing advisory line.
+    """
+    try:
+        guard = _load_delegate_channel_guard_module()
+        if guard is None:
+            return []
+        misses = guard.scan_codex_observation_misses(
+            observation_path=CODEX_DELEGATE_OBSERVATIONS
+        )
+    except Exception as exc:  # noqa: BLE001 — observation visibility never blocks lint.
+        if _is_engine_rev_skew(exc):
+            raise
+        return []
+    if not misses:
+        return []
+
+    identities: list[str] = []
+    for entry in misses:
+        identity = "/".join(
+            str(entry.get(field) or "?")
+            for field in ("session_id", "turn_id", "agent_id")
+        )
+        if identity not in identities:
+            identities.append(identity)
+    sample = ", ".join(identities[:3])
+    remainder = len(identities) - min(len(identities), 3)
+    suffix = f" 외 {remainder}개 identity" if remainder else ""
+    return [(
+        "Codex SubagentStart",
+        "codex-delegate-matcher-miss",
+        f"일치하는 PreToolUse 처리 기록이 없는 SubagentStart {len(misses)}건 — "
+        f"spawn matcher drift 또는 가드 미발화 가능({sample}{suffix}). "
+        "append-only 관측은 소비하지 않았으며 native spawn은 사후 관측만 한다.",
+    )]
+
+
 def lint_areas_duplicate_repo() -> list[tuple[str, str, str]]:
     """areas.md 에 같은 repo 행이 2개 이상이면 advisory (never-block).
 
@@ -13622,8 +14471,9 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     never-block) +
     areas-merge-union(areas.md 를 담은 git 에 merge=union 미배포 → 동시 등록 안전 상실 가시화·
     advisory·never-block) +
-    delegate-same-model(delegate dev/reviewer 동일-모델 해소 → generate≠evaluate 침식 가시화·
+    delegate-same-model(delegate dev/reviewer 동일-모델 해소 → 맹점 공유로 인한 검출력 저하 가시화·
     advisory·never-block) +
+    codex-delegate-matcher-miss(unmatched SubagentStart → PM 표면 1줄·advisory·never-block) +
     design-pending(티켓 설계 단계 `design: required` 미완 — 설계 절 미충전/필드 미승격 가시화·
     advisory·never-block·차단은 claim 게이트)."""
     return (lint_dependencies() + lint_bodies() + lint_ideas()
@@ -13634,7 +14484,7 @@ def lint_tickets() -> list[tuple[str, str, str]]:
             + lint_domain_freshness() + lint_adapter_drift()
             + lint_render_leak() + lint_unmigrated_overlay()
             + lint_areas_duplicate_repo() + lint_areas_merge_union()
-            + lint_delegate())
+            + lint_delegate() + lint_codex_delegate_observations())
 
 
 # ── board.md regeneration ──────────────────────────────────────────────
@@ -13817,6 +14667,8 @@ def build_parser() -> argparse.ArgumentParser:
                         f"전까지 claim 이 차단된다.")
     p.add_argument("--prefix", help="작업 카테고리 (자유 입력·배타 구획). "
                    "default: local.conf prefix / 없으면 none(무prefix 1급 → legacy T-NNNN)")
+    p.add_argument("--user-ack", metavar="<prefix>",
+                   help="새 prefix 신설에 대한 사용자 승인 토큰(대상 prefix 값과 정확히 결속)")
     p.add_argument("--user", help="user 식별자 — created_by 의 user 차원 (default: local.conf user= / "
                    "git config user.email)")
     p.add_argument("--task", help="task 이름 — task-mode 발행. `--prefix` 생략 시 task "
@@ -13839,6 +14691,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("init", help="clone 당 1회 setup (solo · multi-repo N×M) — pm_state·local.conf·pre-push 훅")
     p.add_argument("--prefix", help="multi-repo (N×M) ID 네임스페이스 (예: PAY). 생략 = solo(legacy T-NNNN)")
+    p.add_argument("--user-ack", metavar="<prefix>",
+                   help="새 prefix 등록에 대한 사용자 승인 토큰(대상 prefix 값과 정확히 결속)")
     p.add_argument("--area", help="영역 설명 (namespaced: 새 prefix 최초 등록 시 필요)")
     p.add_argument("--owner", help="등록 식별자(registrant·기본: session 이름)")
     p.add_argument("--user", help="area_owner = 그 area 의 user 소유 (`--mine` 풀 입력). "
@@ -13963,8 +14817,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="단일 티켓 ID 재부여 <OLD-ID> <NEW-ID> — 번호·prefix 변경 무손실 relabel + 전 참조 rewrite")
     p.add_argument("old_id", metavar="OLD-ID", help="재부여할 기존 티켓 ID (예: T-0036)")
     p.add_argument("new_id", metavar="NEW-ID",
-                   help="새 티켓 ID — T-NNNN 또는 T-<prefix>-NNN (발행 문법·prefix 자유 입력)")
+                   help="새 티켓 ID — T-NNNN 또는 T-<prefix>-NNN (발행 문법·legacy prefix 포함)")
     identity_args.add_identity_args(p)  # claim 중 티켓의 소유 세션 확인용
+    p.add_argument("--user-ack", metavar="<prefix>",
+                   help="NEW-ID가 새 prefix를 신설할 때 사용자 승인 토큰(대상 prefix 값과 정확히 결속)")
     p.add_argument("--dry-run", action="store_true", help="규모 preview(N ID·M refs·K 파일)·쓰기 0")
     p.set_defaults(fn=cmd_reid)
 
@@ -13980,6 +14836,8 @@ def build_parser() -> argparse.ArgumentParser:
         "rename", help="카테고리 개명 <A|none> <B|none> — 무충돌=번호유지 교체·충돌=merge 안내")
     pp.add_argument("src", help="원본 카테고리 (또는 none=무prefix)")
     pp.add_argument("dst", help="대상 카테고리 (또는 none=이름 지우기)")
+    pp.add_argument("--user-ack", metavar="<prefix>",
+                    help="dst가 새 prefix일 때 사용자 승인 토큰(대상값과 정확히 결속)")
     pp.add_argument("--dry-run", action="store_true", help="규모 preview(N ID·M refs·K 파일)·쓰기 0")
     pp.set_defaults(fn=cmd_prefix_rename)
 
@@ -13992,6 +14850,8 @@ def build_parser() -> argparse.ArgumentParser:
         "merge", help="통합 <A> [B...] --into <T|none> — created 순(기본 append·저위험)")
     pp.add_argument("sources", nargs="+", help="통합할 source 카테고리(들) (또는 none)")
     pp.add_argument("--into", required=True, help="대상 카테고리 (또는 none)")
+    pp.add_argument("--user-ack", metavar="<prefix>",
+                    help="--into가 새 prefix일 때 사용자 승인 토큰(대상값과 정확히 결속)")
     pp.add_argument("--reorder-chronological", action="store_true",
                     help="전체 interleave 재번호(opt-in·고위험 17k refs). 기본=append(대상 max 뒤·기존 번호 무변경)")
     pp.add_argument("--dry-run", action="store_true", help="규모 preview·쓰기 0")

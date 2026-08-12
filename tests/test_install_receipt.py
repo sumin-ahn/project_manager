@@ -22,6 +22,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import shutil
 from pathlib import Path
 
 import pytest
@@ -147,11 +148,16 @@ def _erase_exclusive_evidence(dest: Path, harness: str) -> list[str]:
     """그 하네스 **전용** PM 판별자를 전부 지운다 — 추론이 미검출로 떨어지는 형상."""
     erased = []
     for rel in {
-        "opencode": (".opencode/pm-instructions.md", ".opencode/pm_orch_opencode.py"),
+        # `.opencode/command` 는 T-0674 로 복원된 전용 증거다(팔레트 사본 채널).
+        "opencode": (".opencode/pm-instructions.md", ".opencode/pm_orch_opencode.py",
+                     ".opencode/command"),
         "claude": (".claude/pm_orch_claude.py",),
     }[harness]:
         target = dest / rel
-        if target.exists():
+        if target.is_dir():
+            shutil.rmtree(target)
+            erased.append(rel)
+        elif target.exists():
             target.unlink()
             erased.append(rel)
     return erased

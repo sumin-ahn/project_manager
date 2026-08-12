@@ -4453,7 +4453,7 @@ def test_add_harness_apply_claude_creates_adapter_and_preserves_devstate(pm_impo
     신규·기존 opencode 어댑터/wiki/엔진 불변. (DoD "양 harness apply" 문자 충족.)
 
     R17(T-0456·N×N 역방향): opencode host 가 소유하지 않는 `.claude/agents` 는 **복사된다**(claude-as-
-    guest·옛 flavor-native 오차감 수정). 단 ADR-0065 로 opencode 가 이미 소유한 `.claude/skills` 는
+    guest·옛 flavor-native 오차감 수정). opencode 가 이미 소유한 `.claude/skills` 는
     claude add-harness 가 재적재/변경하지 않는다(host 실소유 차감·byte-불변 preserve 로 확인).
     """
     dest = _build_live_instance(pm_import, tmp_path / "opencode_apply", "opencode")
@@ -4463,11 +4463,11 @@ def test_add_harness_apply_claude_creates_adapter_and_preserves_devstate(pm_impo
     opencode_doc = dest / "AGENTS.md"
     opencode_agent = dest / ".opencode" / "agents" / "pm.md"
     before = {p: p.read_bytes() for p in (wiki_role, engine_board, opencode_doc, opencode_agent)}
-    # `.claude/skills` 는 opencode 단일 소비(ADR-0065)로 인스턴스에 **이미 존재** — add-harness 가
+    # `.claude/skills`는 opencode 모델 skill tool 채널로 인스턴스에 **이미 존재** — add-harness 가
     #   건드리면 안 되므로(공유 canonical) apply 전 스냅샷에 넣어 byte-불변을 검증한다.
     skills_dir = dest / ".claude" / "skills"
     assert skills_dir.is_dir(), (
-        "opencode 인스턴스에 `.claude/skills` 부재 — 단일 소비 스킬 출하가 안 됨(ADR-0065 전제 붕괴).")
+        "opencode 인스턴스에 `.claude/skills` 부재 — 모델 skill tool 채널 출하 누락.")
     for f in skills_dir.rglob("SKILL.md"):
         before[f] = f.read_bytes()
 
