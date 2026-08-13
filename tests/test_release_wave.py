@@ -757,7 +757,11 @@ def _multiuser_wave_prompt(identities: tuple = _MULTIUSER_IDENTITIES) -> str:
     (ii) claim 티켓 (자기 뷰엔 열람) 을 남겨야 한다. 각 board 조작에 `--user <user>` 를 실어 티켓
     귀속(created_by/claimed_by user)을 distinct 2 user 로 스탬프한다 — 이게 `_distinct_ticket_users`
     다중사용자 신호(≥2)를 세워 세션 뷰가 strict-exclude(degrade 아님)로 돌게 한다. `--prefix` 로 ID
-    네임스페이스(T-al-*/T-be-*)를 가르고, claim 은 `--repo <repo> --slot 1` 로 슬롯을 박는다.
+    네임스페이스(T-al-*/T-be-*)를 가르고, 이 release-test 프롬프트 자체가 신규 테스트
+    prefix 승인 주체이므로 각 prefix의 **첫** `new` 원 명령에만 값-결속된
+    `--user-ack <prefix>`를 명시한다. 에이전트가 ack를 자동 추가하는 형상은 테스트하지
+    않으며(기계 가드가 금지), 두 번째 `new`는 이미 등록된 prefix를 쓴다. claim 은
+    `--repo <repo> --slot 1` 로 슬롯을 박는다.
     (`new` 는 `--repo`/`--slot` 인자가 없다 — created_by 슬롯은 무관하고 `--user` 가 귀속 user 를 정한다.)
     board.py 경로는 준다 — 새 위험축은 identity 귀속·뷰 격리이지 문서 운영성이 아니다(단일 full wave 커버).
     """
@@ -767,7 +771,7 @@ def _multiuser_wave_prompt(identities: tuple = _MULTIUSER_IDENTITIES) -> str:
         blocks.append(
             f"Person {user} (prefix {prefix}, session {session}) — do these 3 commands:\n"
             f'  1. python3 .project_manager/tools/board.py new "open probe {user}" '
-            f"--prefix {prefix} --user {user}\n"
+            f"--prefix {prefix} --user-ack {prefix} --user {user}\n"
             f"     (prints a ticket id like T-{prefix}-001 — this is {user}'s UNCLAIMED open; "
             f"do NOT claim it)\n"
             f'  2. python3 .project_manager/tools/board.py new "wip probe {user}" '
@@ -782,7 +786,9 @@ def _multiuser_wave_prompt(identities: tuple = _MULTIUSER_IDENTITIES) -> str:
         f"You operate ONE shared project-manager board used by {len(identities)} different "
         f"people: {people}. The board engine is .project_manager/tools/board.py. Act as EACH "
         "person in turn and create their tickets with THEIR identity flags EXACTLY as written — "
-        "the --user and --prefix flags decide who owns each ticket, so never omit them. Finish "
+        "this release-test instruction explicitly approves each first command's value-bound "
+        "--user-ack for its new test prefix; do not invent or alter acknowledgements. The --user "
+        "and --prefix flags decide who owns each ticket, so never omit them. Finish "
         "one person completely before starting the next.\n\n"
         f"{body}\n"
         "Substitute the EXACT ticket id printed by each `new` command into the matching `claim` "
@@ -1321,7 +1327,7 @@ def test_import_multiuser_home_sets_up_two_distinct_area_owners(tmp_path):
 
 
 def test_multiuser_wave_prompt_has_per_identity_mechanics():
-    """multiuser wave 프롬프트가 각 identity 의 귀속 mechanics(--user·--prefix·미claim open·claim --repo/--slot)를 담는다.
+    """multiuser wave 프롬프트가 귀속 mechanics와 사용자-명시 prefix ack를 담는다.
 
     라이브 미실행 시에도 프롬프트 구조를 가드 — `--user <user>`(귀속 user·multi_user 신호)·`--prefix`
     (ID 네임스페이스)·미claim open(유출 대상)·claim `--repo <repo> --slot 1`(슬롯)이 빠지면 잡힌다.
@@ -1331,6 +1337,9 @@ def test_multiuser_wave_prompt_has_per_identity_mechanics():
         slot = session.rsplit("_", 1)[-1]
         assert user in prompt, f"프롬프트에 user '{user}' 미언급"
         assert f"--prefix {prefix}" in prompt, f"프롬프트에 --prefix {prefix} 누락"
+        assert prompt.count(f"--user-ack {prefix}") == 1, (
+            f"프롬프트의 신규 prefix {prefix} 승인은 첫 원 명령에 정확히 1회여야 함"
+        )
         assert f"--user {user}" in prompt, f"프롬프트에 --user {user} 누락(귀속 user 미스탬프)"
         assert f"--repo {repo} --slot {slot}" in prompt, f"프롬프트에 --repo {repo} --slot {slot} 누락(claim 슬롯)"
     assert "board.py new" in prompt and "board.py claim" in prompt
