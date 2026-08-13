@@ -653,18 +653,25 @@ class _RenderDst:
     직접 호출)는 이 래퍼가 아니므로 `getattr(dst, "render", False)` 가 False → copy2(후방호환).
     """
 
-    __slots__ = ("_path", "render", "entry_notation_template", "guest_backfill_lines")
+    __slots__ = (
+        "_path", "render", "entry_notation_template", "flat_command_skill",
+        "codex_operational_skill", "guest_backfill_lines",
+    )
 
     def __init__(
         self,
         path: Path,
         render: bool = False,
         entry_notation_template: str | tuple[str, ...] | list[str] | None = None,
+        flat_command_skill: str | None = None,
+        codex_operational_skill: str | None = None,
         guest_backfill_lines: list[str] | None = None,
     ) -> None:
         self._path = Path(path)
         self.render = render
         self.entry_notation_template = entry_notation_template
+        self.flat_command_skill = flat_command_skill
+        self.codex_operational_skill = codex_operational_skill
         # engine.manifest self-prop 전용 — apply 의 guest 절 재부착에 함께 기록할 파생 엔진 행.
         #   change tuple 에 실어 나르므로 `apply` 시그니처가 바뀌지 않는다(`entry_notation_template`
         #   과 같은 운반 방식).
@@ -693,6 +700,8 @@ class _RenderDst:
         return (
             f"_RenderDst({self._path!r}, render={self.render}, "
             f"entry_notation_template={self.entry_notation_template!r}, "
+            f"flat_command_skill={self.flat_command_skill!r}, "
+            f"codex_operational_skill={self.codex_operational_skill!r}, "
             f"guest_backfill_lines={self.guest_backfill_lines!r})"
         )
 
@@ -3455,6 +3464,8 @@ def _render_text(
     source_path: Path,
     dest_root: Path,
     entry_notation_template: str | tuple[str, ...] | list[str] | None = None,
+    flat_command_skill: str | None = None,
+    codex_operational_skill: str | None = None,
 ) -> str:
     """source 템플릿을 채택자 local.conf(operational)로 렌더한 텍스트.
 
@@ -3465,13 +3476,20 @@ def _render_text(
     render_mod = _load_pm_render()
     operational, empty_keys = _operational_from_local_conf(dest_root)
     text = Path(source_path).read_text(encoding="utf-8")
-    return render_mod.render_adapter(
+    rendered = render_mod.render_adapter(
         text,
         operational=operational,
         empty_keys=empty_keys,
         template_dir=entry_notation_template,
         source=str(source_path),
     )
+    if flat_command_skill is not None:
+        rendered = _render_flat_command_reference(rendered, flat_command_skill)
+    if codex_operational_skill is not None:
+        rendered = _render_codex_operational_detail(
+            rendered, codex_operational_skill
+        )
+    return rendered
 
 
 def render_skill_entry_notation(
@@ -3498,6 +3516,94 @@ def _render_skill_entry_text(
     )
 
 
+_FLAT_COMMAND_DETAIL_LINK = (
+    "[references/operational-details.md](references/operational-details.md)"
+)
+
+
+def _flat_command_skill_name(relpath: str) -> str | None:
+    """OpenCode 사람 command의 평탄 dest 좌표에서 skill 이름을 파생한다."""
+    path = Path(str(relpath).replace("\\", "/"))
+    if path.parent.as_posix() != ".opencode/command" or path.suffix != ".md":
+        return None
+    return path.stem
+
+
+def _render_flat_command_reference(text: str, skill_name: str) -> str:
+    """평탄 command의 canonical detail 링크를 skill별 생성 경로로 rewrite한다.
+
+    모델 skill은 ``<skill>/SKILL.md`` 옆 ``references/``를 쓰지만 사람 command는
+    ``command/<skill>.md``라 같은 상대 링크가 한 공용 파일로 충돌한다. command 산출에만
+    skill 이름을 끼워 넣고 원본 카드와 모델 표면은 그대로 둔다.
+    """
+    count = text.count(_FLAT_COMMAND_DETAIL_LINK)
+    if count != 1:
+        raise ValueError(
+            f"OpenCode flat command {skill_name!r} operational detail 링크가 "
+            f"정확히 1개가 아니다: {count}"
+        )
+    target = (
+        "[references/operational-details.md]"
+        f"(../../.claude/skills/{skill_name}/references/operational-details.md)"
+    )
+    return text.replace(_FLAT_COMMAND_DETAIL_LINK, target)
+
+
+_CODEX_OPERATIONAL_PATHS = {
+    "pm-dev-delegate": (
+        ".agents/skills/pm-dev-delegate/references/operational-details.md"
+    ),
+    "pm-review": ".agents/skills/pm-review/references/operational-details.md",
+}
+
+
+def _codex_operational_skill_name(relpath: str) -> str | None:
+    normalized = str(relpath).replace("\\", "/").strip("/")
+    return next(
+        (skill for skill, path in _CODEX_OPERATIONAL_PATHS.items()
+         if normalized == path),
+        None,
+    )
+
+
+def _replace_exactly_once(text: str, old: str, new: str, *, label: str) -> str:
+    count = text.count(old)
+    if count != 1:
+        raise ValueError(f"{label} rewrite 입력이 정확히 1개가 아니다: {count}")
+    return text.replace(old, new)
+
+
+def _render_codex_operational_detail(text: str, skill_name: str) -> str:
+    """공유 operational detail을 Codex override 계약으로 최소 변환한다."""
+    if skill_name == "pm-dev-delegate":
+        text = _replace_exactly_once(
+            text,
+            "> 아래 절은 상시 카드에서 분리한 원문이다. 해당 상황에서만 읽는다.",
+            "> 아래 절은 Codex 상시 카드에서 분리한 원문이다. 해당 상황에서만 읽는다.",
+            label=skill_name,
+        )
+        text = _replace_exactly_once(
+            text, ".claude/agents/developer.md", ".codex/agents/developer.toml",
+            label=skill_name,
+        )
+        return _replace_exactly_once(
+            text, ".claude/agents/code-reviewer.md",
+            ".codex/agents/code-reviewer.toml", label=skill_name,
+        )
+    if skill_name == "pm-review":
+        old = (
+            "**Claude PM은 이 문서의 `external_review.py` 실 실행 커맨드를 Bash 툴로 호출할 때\n"
+            "`timeout: 29300000`(ms)을 반드시 명시한다.** 이는 CLI `--timeout`(리뷰어 벽시계)이 아니라\n"
+            "호출층 Bash 툴 파라미터다. Windows 진입 규약은 상시 `SKILL.md`에 남아 있다."
+        )
+        return _replace_exactly_once(
+            text, old,
+            "Codex 전용 실행·egress 승격 규율과 환경별 명령 문법은 상시 `SKILL.md`가 단일 진실이다.",
+            label=skill_name,
+        )
+    raise ValueError(f"미등록 Codex operational detail: {skill_name}")
+
+
 def _is_text_source(source_path: Path) -> bool:
     """source 가 UTF-8 텍스트로 읽히는가 — render 대상 판정의 유일한 형식 조건.
 
@@ -3518,6 +3624,8 @@ def _render_eq_dst(
     dst: Path,
     dest_root: Path,
     entry_notation_template: str | tuple[str, ...] | list[str] | None = None,
+    flat_command_skill: str | None = None,
+    codex_operational_skill: str | None = None,
 ) -> bool:
     """render path 의 '변경 없음' 정직 판정 — 렌더 산출물 == dst 현재 내용 ().
 
@@ -3527,7 +3635,10 @@ def _render_eq_dst(
     change 로 띄워 apply 가 실제 렌더에서 명확히 실패하게 한다(침묵 폴백 금지).
     """
     try:
-        rendered = _render_text(sp, dest_root, entry_notation_template)
+        rendered = _render_text(
+            sp, dest_root, entry_notation_template, flat_command_skill,
+            codex_operational_skill,
+        )
         # newline=None인 read_text는 CRLF를 LF로 정규화해 byte drift를 숨긴다. 산출물 encoding을
         # 명시해 결정적 bytes로 대조하면 LF/CRLF 차이와 비-UTF8 dest를 모두 update로 판정한다.
         return rendered.encode("utf-8") == dst.read_bytes()
@@ -3639,6 +3750,15 @@ def plan(
             # 두 채널을 함께 닫는다). 텍스트 아님(바이너리 리소스)은 여전히 byte-copy 로 남는다.
             text_source = _is_text_source(sp)
             file_render = render and text_source
+            # flat command rewrite는 canonical SKILL.md를 개별 command 파일로 remap한 행만 대상.
+            # `.opencode/command` 디렉터리 자체를 소스로 가진 기존 채택자/합성 어댑터 행은 이미
+            # command-native 내용이므로 재해석하지 않는다.
+            flat_command_skill = (
+                _flat_command_skill_name(r)
+                if str(rel).replace("\\", "/") == str(r).replace("\\", "/")
+                else None
+            )
+            codex_operational_skill = _codex_operational_skill_name(r)
             notation_template = None
             rendered_entry: str | None = None
             notation_managed = declared_render or (
@@ -3649,14 +3769,31 @@ def plan(
                 not file_render
                 and notation_managed
                 and text_source
-                and item_notation_template is not None
+                and (
+                    item_notation_template is not None
+                    or flat_command_skill is not None
+                    or codex_operational_skill is not None
+                )
             ):
                 # 변환 지점이 실제로 있는 파일만 생성 산출물로 표시한다. 토큰 부재 파일은 기존
                 # copy2 경로를 유지해 metadata/출력 churn을 만들지 않는다. 미등록 template 값은
                 # helper가 여기서 fail-loud한다(dry-run도 원문 복사 false-green 금지).
                 source_text = Path(sp).read_text(encoding="utf-8")
-                rendered_entry = _render_skill_entry_text(sp, item_notation_template)
-                if rendered_entry != source_text:
+                rendered_entry = source_text
+                if item_notation_template is not None:
+                    rendered_entry = _render_skill_entry_text(sp, item_notation_template)
+                if flat_command_skill is not None:
+                    rendered_entry = _render_flat_command_reference(
+                        rendered_entry, flat_command_skill
+                    )
+                if codex_operational_skill is not None:
+                    rendered_entry = _render_codex_operational_detail(
+                        rendered_entry, codex_operational_skill
+                    )
+                if (
+                    item_notation_template is not None
+                    and rendered_entry != source_text
+                ):
                     notation_template = item_notation_template
             dst = _RenderDst(
                 effective_dest / r,
@@ -3664,6 +3801,8 @@ def plan(
                 entry_notation_template=(
                     item_notation_template if file_render else notation_template
                 ),
+                flat_command_skill=flat_command_skill,
+                codex_operational_skill=codex_operational_skill,
                 # guest 절 기록은 self-prop 분기에서만 일어난다 — 전 change 에 실으면 낭비다.
                 guest_backfill_lines=(
                     guest_backfill_lines
@@ -3677,10 +3816,19 @@ def plan(
                 # render path: 템플릿이 산출물과 byte-equal 일 수 없으므로 filecmp 는 항상 오보.
                 # 렌더한 결과가 dst 와 다를 때만 update(정직 판정).
                 if not _render_eq_dst(
-                    sp, dst, effective_dest, item_notation_template
+                    sp, dst, effective_dest, item_notation_template,
+                    flat_command_skill,
+                    codex_operational_skill,
                 ):
                     changes.append((r, sp, dst, "update"))
-            elif notation_template is not None and rendered_entry is not None:
+            elif (
+                (
+                    notation_template is not None
+                    or flat_command_skill is not None
+                    or codex_operational_skill is not None
+                )
+                and rendered_entry is not None
+            ):
                 if rendered_entry.encode("utf-8") != dst.read_bytes():
                     changes.append((r, sp, dst, "update"))
             elif str(r).replace("\\", "/") == _MANIFEST_SELF_REL:
@@ -4105,16 +4253,38 @@ def apply(changes: list[tuple], *, is_hook_set_path=None) -> None:
                 template_dir=getattr(dst, "entry_notation_template", None),
                 source=str(sp),
             )
+            if getattr(dst, "flat_command_skill", None) is not None:
+                rendered = _render_flat_command_reference(
+                    rendered, dst.flat_command_skill
+                )
+            if getattr(dst, "codex_operational_skill", None) is not None:
+                rendered = _render_codex_operational_detail(
+                    rendered, dst.codex_operational_skill
+                )
             Path(dst).write_bytes(rendered.encode("utf-8"))
-        elif getattr(dst, "entry_notation_template", None) is not None:
+        elif (
+            getattr(dst, "entry_notation_template", None) is not None
+            or getattr(dst, "flat_command_skill", None) is not None
+            or getattr(dst, "codex_operational_skill", None) is not None
+        ):
             if render_mod is None:
                 render_mod = _load_pm_render()
             text = Path(sp).read_text(encoding="utf-8")
-            rendered = render_mod.render_skill_entry_notation(
-                text,
-                dst.entry_notation_template,
-                source=str(sp),
-            )
+            rendered = text
+            if getattr(dst, "entry_notation_template", None) is not None:
+                rendered = render_mod.render_skill_entry_notation(
+                    rendered,
+                    dst.entry_notation_template,
+                    source=str(sp),
+                )
+            if getattr(dst, "flat_command_skill", None) is not None:
+                rendered = _render_flat_command_reference(
+                    rendered, dst.flat_command_skill
+                )
+            if getattr(dst, "codex_operational_skill", None) is not None:
+                rendered = _render_codex_operational_detail(
+                    rendered, dst.codex_operational_skill
+                )
             Path(dst).write_bytes(rendered.encode("utf-8"))
         elif str(_r).replace("\\", "/") == _MANIFEST_SELF_REL:
             # engine.manifest self-prop — upstream 사본으로 덮되 guest 절 보존(+파생 행 기록).

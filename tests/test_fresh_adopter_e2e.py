@@ -50,6 +50,15 @@ _RAW_SLASH_ENTRY = re.compile(
 )
 
 
+def _expected_opencode_command(skill_text: str, skill_name: str) -> str:
+    canonical = "(references/operational-details.md)"
+    assert skill_text.count(canonical) == 1
+    return skill_text.replace(
+        canonical,
+        f"(../../.claude/skills/{skill_name}/references/operational-details.md)"
+    )
+
+
 def _codex_readable_text_paths(dest: Path) -> list[Path]:
     roots = [dest / "AGENTS.md", dest / "README.md", dest / ".agents", dest / ".codex",
              dest / ".project_manager" / "wiki"]
@@ -605,7 +614,13 @@ def test_fresh_adopter_render_skills_materialize(pm_import, tmp_path, harness):
         for filename in expected_commands:
             command = command_dir / filename
             skill = dest / ".claude" / "skills" / command.stem / "SKILL.md"
-            assert command.read_bytes() == skill.read_bytes(), f"fresh import command drift: {filename}"
+            assert command.read_text(encoding="utf-8") == _expected_opencode_command(
+                skill.read_text(encoding="utf-8"), command.stem
+            ), f"fresh import command drift: {filename}"
+            details = command.parent / (
+                f"../../.claude/skills/{command.stem}/references/operational-details.md"
+            )
+            assert details.is_file(), f"fresh import command detail missing: {filename}"
             assert not _OPERATIONAL_TOKENS.findall(command.read_text(encoding="utf-8"))
 
 
@@ -1183,7 +1198,9 @@ def test_fresh_opencode_adopter_engine_mutate_propagates_and_render_drift0(
     assert sentinel in skill_dest, (
         "엔진 PM-workflow canonical 스킬(`.claude/skills` @render) 변경이 채택자 `.claude/skills` 로 "
         "전파 안 됨 (전파 채널 끊김·ADR-0065)")
-    assert sentinel in command_dest and command_dest == skill_dest, (
+    assert sentinel in command_dest and command_dest == _expected_opencode_command(
+        skill_dest, "pm-env"
+    ), (
         "canonical 스킬 변경이 `.opencode/command/pm-env.md`로 갱신되지 않았거나 "
         "skill↔command 렌더 산출이 drift(T-0674).")
     assert sentinel in lib_dest, (

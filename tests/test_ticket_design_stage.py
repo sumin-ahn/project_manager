@@ -816,7 +816,9 @@ def test_shipped_ticket_templates_include_design_stage(shipped):
 
 def test_root_skill_card_documents_design_stage():
     """pm-ticket 스킬 카드가 설계 단계 운영 규칙(작성 주체·검토 상한·승격)을 명시한다."""
-    text = SKILL.read_text(encoding="utf-8")
+    text = SKILL.read_text(encoding="utf-8") + "\n" + (
+        SKILL.parent / "references" / "operational-details.md"
+    ).read_text(encoding="utf-8")
     for needle in ("## 설계", "design: required", "design: done",
                    "PM 인라인", "architect", "2라운드", "--design"):
         assert needle in text, f"스킬 카드에 설계 단계 규율 {needle!r} 누락."
@@ -825,6 +827,8 @@ def test_root_skill_card_documents_design_stage():
 @pytest.mark.parametrize("shipped", _SHIPPED_SKILLS, ids=lambda p: p.parents[3].name)
 def test_shipped_skill_cards_include_design_stage(shipped):
     """출하 스킬 3벌에도 설계 단계 절이 도달했다 (codex 는 `$` 커맨드 토큰만 다름)."""
-    text = shipped.read_text(encoding="utf-8")
+    text = shipped.read_text(encoding="utf-8") + "\n" + (
+        shipped.parent / "references" / "operational-details.md"
+    ).read_text(encoding="utf-8")
     for needle in ("## 설계", "design: required", "PM 인라인", "2라운드"):
         assert needle in text, f"{shipped} 에 설계 단계 규율 {needle!r} 누락."

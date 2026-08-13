@@ -2,7 +2,7 @@
 
 command는 사람 슬래시 팔레트, skill은 모델 tool 표면이지만 저작 소스는
 root ``.claude/skills/<name>/SKILL.md`` 하나다. 이 가드는 실 파일 전수 집합과
-byte 정합을 강제하고, 합성 픽스처로 누락·drift가 실제 red임을 못박는다.
+기계 생성 정합을 강제하고, 합성 픽스처로 누락·drift가 실제 red임을 못박는다.
 """
 from __future__ import annotations
 
@@ -25,6 +25,18 @@ def _commands(root: Path) -> dict[str, Path]:
     return {p.stem: p for p in sorted(root.glob("*.md"))}
 
 
+_DETAIL_LINK = "(references/operational-details.md)"
+
+
+def _expected_command(skill: Path, name: str) -> bytes:
+    text = skill.read_text(encoding="utf-8")
+    assert text.count(_DETAIL_LINK) == 1, f"{skill}: operational detail 링크 수 drift"
+    return text.replace(
+        _DETAIL_LINK,
+        f"(../../.claude/skills/{name}/references/operational-details.md)"
+    ).encode("utf-8")
+
+
 def _parity_errors(canonical: Path, commands: Path) -> list[str]:
     skills = _skills(canonical)
     copies = _commands(commands)
@@ -32,12 +44,12 @@ def _parity_errors(canonical: Path, commands: Path) -> list[str]:
     errors += [f"orphan-command:{name}" for name in sorted(copies.keys() - skills.keys())]
     errors += [
         f"drift:{name}" for name in sorted(skills.keys() & copies.keys())
-        if skills[name].read_bytes() != copies[name].read_bytes()
+        if _expected_command(skills[name], name) != copies[name].read_bytes()
     ]
     return errors
 
 
-def test_all_canonical_skills_have_byte_identical_command_copies():
+def test_all_canonical_skills_have_exact_rendered_command_copies():
     skills = _skills(CANONICAL)
     copies = _commands(COMMANDS)
     assert len(skills) == 15, f"출하 canonical 스킬 예상 15개, 실제 {len(skills)}개: {sorted(skills)}"
@@ -51,7 +63,7 @@ def test_parity_guard_reports_missing_copy(tmp_path):
     skill = canonical / "pm-new" / "SKILL.md"
     skill.parent.mkdir(parents=True)
     commands.mkdir()
-    skill.write_text("canonical\n", encoding="utf-8")
+    skill.write_text(f"canonical {_DETAIL_LINK}\n", encoding="utf-8")
     assert _parity_errors(canonical, commands) == ["missing-command:pm-new"]
 
 
@@ -70,7 +82,7 @@ def test_parity_guard_reports_content_drift(tmp_path):
     skill = canonical / "pm-x" / "SKILL.md"
     skill.parent.mkdir(parents=True)
     commands.mkdir()
-    skill.write_text("canonical\n", encoding="utf-8")
+    skill.write_text(f"canonical {_DETAIL_LINK}\n", encoding="utf-8")
     (commands / "pm-x.md").write_text("drifted\n", encoding="utf-8")
     assert _parity_errors(canonical, commands) == ["drift:pm-x"]
 
@@ -81,6 +93,6 @@ def test_parity_guard_accepts_exact_generated_copy(tmp_path):
     skill = canonical / "pm-x" / "SKILL.md"
     skill.parent.mkdir(parents=True)
     commands.mkdir()
-    skill.write_bytes(b"same\n")
-    (commands / "pm-x.md").write_bytes(skill.read_bytes())
+    skill.write_text(f"same {_DETAIL_LINK}\n", encoding="utf-8")
+    (commands / "pm-x.md").write_bytes(_expected_command(skill, "pm-x"))
     assert _parity_errors(canonical, commands) == []

@@ -72,6 +72,14 @@ SHARED_PM_REVIEW_CARDS = (
 )
 
 
+def _card_with_operational_details(path: Path) -> str:
+    text = path.read_text(encoding="utf-8")
+    details = path.parent / "references" / "operational-details.md"
+    if details.is_file():
+        text += "\n" + details.read_text(encoding="utf-8")
+    return text
+
+
 def _load(name: str):
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
@@ -745,7 +753,7 @@ def test_codex_pm_review_card_is_self_contained_for_egress():
 
 def test_codex_pm_review_card_states_durable_consent_and_mechanical_caps():
     """지속 동의 + 수렴 게이트 규율(3R·발산(증가) 차단·confirm-fix 1회)이 codex 카드에 명시된다."""
-    text = CODEX_PM_REVIEW.read_text(encoding="utf-8")
+    text = _card_with_operational_details(CODEX_PM_REVIEW)
     assert "additional_reviewer_enabled=true" in text
     assert "후속 호출마다 비용을 다시 묻지 않는다" in text
     assert "기계적 anti-loop 정지" in text

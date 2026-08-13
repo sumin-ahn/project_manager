@@ -8,10 +8,9 @@ audience: pm-internal
 
 Agent 툴 + `subagent_type: developer|code-reviewer` + `run_in_background` 옵션. ticket 본문이 self-contained 의무 충족 시 위임 프롬프트는 한 줄.
 
-> **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
-> 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
-> **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 대신 도구의 workdir
-> 파라미터나 명령 분리로 실행한다. (Linux/macOS 는 `python3` 그대로.)
+환경별 명령 문법은 부트스트랩의 "현재 환경" 표시에 맞춰 [Windows 안내](../references/environment-windows.md) 또는 [Linux/macOS 안내](../references/environment-posix.md)를 참조한다.
+
+상황별 운영 상세는 [references/operational-details.md](references/operational-details.md)를 해당 상황에서 읽는다.
 
 ## 사전 조건
 
@@ -46,9 +45,62 @@ python3 .project_manager/tools/board.py regression run --task <이름>
 - task가 슬롯 2개↑를 보유하면 에러(암묵 선택 금지). 잉여 슬롯을 `python3 .project_manager/tools/pm_config.py release <slot> --task <이름>`으로 반납하고 다시 해소한다.
 - 슬롯 세션(비-task)·솔로(M=1)는 종전대로이며 이 주입은 task-mode만 적용.
 
-## cross-harness 판정과 위임 (`pm_delegate`)
+## 위임 설정 조회와 transport 선택 (`pm_delegate`)
 
-위임 전 target이 PM과 같은 하네스(native)인지 다른 하네스(cross)인지 판정한다. 1차 판정은 이 카드이며 `pm_delegate.py` same-harness 경고는 never-block 백스톱. 매핑은 `local.conf`의 `delegate.<role>[.<tier>]`.
+`local.conf`의 `delegate.<role>[.<tier>]` 매핑은 native와 cross 모두가 읽는 위임 설정의 단일
+진실이다. 위임 전 target이 PM과 같은 하네스인지 판정해 같은 하네스면 native transport, 다른
+하네스면 `pm_delegate.py` cross transport를 선택한다. native agent 카드의 모델은 conf와 일치해야
+하며 가드가 불일치를 경고하되 spawn을 막거나 카드를 자동 수정하지 않는다. `delegate_enabled`는
+cross 외부 송신·과금 동의만 게이트하며 native 설정 조회와 실행에는 적용하지 않는다.
+1차 판정은 이 카드이며 `pm_delegate.py` same-harness 경고는 never-block 백스톱이다.
+
+### 성장 티켓 사본 — 모든 위임의 준비/회수
+
+developer·code-reviewer·architect는 PM 홈 티켓을 직접 편집하지 않는다. PM은 위임마다 그 시점
+티켓 전문을 slot 안 기계 소유 사본으로 새로 준비하고, 에이전트는 프롬프트에 주입된 절대경로의
+`pm-ticket-section:start/end role=<역할>` 자기 절만 채운다.
+
+- **native prepare → spawn → harvest**:
+
+  ```bash
+  python3 .project_manager/tools/pm_delegate.py ticket prepare \
+      --ticket T-NNNN --role <developer|code-reviewer|architect> \
+      --cwd <작업 worktree 절대경로>
+  # stdout JSON의 `copy`만 native Agent/spawn 프롬프트에 주입한다.
+  # `capability`는 PM이 harvest stdin용으로만 보관하며 agent prompt/파일/argv에 넣지 않는다.
+  # native 위임 종료 뒤(rc/판정과 무관):
+  python3 .project_manager/tools/pm_delegate.py ticket harvest \
+      --copy <prepare JSON의 copy> --cwd <작업 worktree 절대경로> \
+      --capability-stdin
+  # 위 프로세스 stdin 한 줄에 prepare JSON의 capability를 입력
+  ```
+
+  prepare가 실패하면 spawn하지 않는다. harvest가 실패하면 티켓을 다음 단계로 넘기지 않고 같은
+  `--copy`와 PM만 보관한 capability stdin으로 재실행한다. capability 값은 명령 argv·프롬프트·로그에
+  쓰지 않는다. 사본·읽기 전용 baseline·metadata·tag 복제본은 성공 뒤에도 보존되며
+  재호출마다 새 디렉터리를 쓰므로 서로 덮지 않는다.
+
+- **cross 자동 후처리**: 아래 실 실행에 `--ticket T-NNNN`을 주면 `pm_delegate.py`가 prepare,
+  사본 경로/자기 절 제한 preamble 합성, subprocess 실행, `finally` harvest를 한 호출에서 수행한다.
+  하네스 rc 비정상·runner 예외에도 harvest를 시도하며, harvest 실패는 원래 rc보다 강한 비정상 종료와
+  token 값 없는 진단을 stderr에 낸다. cross capability는 main 메모리에만 존재하고 raw·ledger·파일·
+  프롬프트·stderr에 남기지 않으므로 프로세스 종료 뒤 수동 재-harvest할 수 없다. 실패 시 보존 사본을
+  진단한 뒤 새 prepare/위임을 수행한다. resume delta, 세션 불일치 뒤 fresh retry, 인프라 fallback도
+  이번 호출에서 준비한 **같은 사본 경로** 지시를 매 wire에 다시 싣고, 전 시도가 끝난 뒤 한 번 회수한다.
+  `--dry-run`은 무부수효과라 사본을 만들지 않는다.
+
+- **실패 판정**: marker 밖 byte 변경, marker 누락·중복·중첩·역할 불일치, 준비 뒤 같은 역할 절의
+  PM 홈 변경은 stale overwrite 없이 rc=1. 원본과 사본을 보존한 채 원인을 고친 뒤 출력된
+  `ticket harvest --copy ... --cwd ... --capability-stdin`를 capability stdin과 함께 다시 실행한다.
+  사본 디렉터리는 repo-local
+  `.git/info/exclude`에 기계 등록되어 `git status --short`와 커밋 대상에 나타나지 않는다. baseline과
+  metadata·tag는 PM 홈 local trust 영역에도 복제한다. 어느 파일도 권위가 아니며, harvest는 파일에
+  저장하지 않은 per-run 256-bit capability의 domain-separated HMAC(metadata canonical bytes+
+  baseline)을 먼저 검증한 뒤에만 target/ordinal을 사용한다. 그 뒤 board lock 아래 canonical ticket
+  재조회와 stale 비교까지 모두 통과해야 반영한다. 이미 원하는 block이 반영된 재-harvest도 sync를
+  다시 시도하며 JSON의 `changed`와 `sync_ready`를 별도 반환한다. git ignore 등록은 linked
+  worktree의 common git dir `info/exclude` 정확 좌표만 dirfd/nofollow/single-hardlink 경계에서
+  append하며 이 안전 경계를 제공하지 못하면 외부 파일 write 없이 fail-closed한다.
 
 ### 1. 매핑 조회 (dry-run)
 
@@ -97,6 +149,7 @@ python3 .project_manager/tools/pm_delegate.py --role <역할> \
 - `--cwd`: 구현할 worktree **절대경로**. 모든 역할 필수(기본값 없음). task-mode 해소값을 실값으로 넣는다.
 - `--tier`: developer에만 사용.
 - role preamble(역할 정체성, commit/push 등 git 비가역·board 조작·어댑터 `.claude/.codex/.opencode` 수정 금지)은 엔진이 자동 합성한다. 프롬프트 파일에는 작업만 담고 금지 문구를 중복하지 않는다.
+- `--ticket`이 있는 developer·code-reviewer·architect 실 실행은 성장 사본을 자동 준비하고 그 절대경로와 자기 역할 절만 편집하라는 제한을 role preamble에 더한다. code-reviewer는 기존 worktree read-only·격리 temp 계약을 그대로 유지하며, 현재 검증된 단일-path write 경계는 Codex named permission profile뿐이다. Claude `--add-dir`는 접근 추가일 뿐 cwd write 축을 줄이지 않고 reviewer Bash도 유지하므로 Claude와 OpenCode의 code-reviewer+ticket-copy는 spawn 전에 fail-loud한다. ticket 없는 일반 Claude/OpenCode reviewer는 종전 read 계약 그대로다.
 - 병렬 wave는 호출측 PM 하네스의 background 실행(claude Bash `run_in_background` 등)으로 동기·stateless `pm_delegate` 호출을 병렬화한다.
 - 결과: `rc=0` 성공(stdout 첫 줄=실행 provenance, 폴백 시 실제 하네스 포함; 이후 최종 reply; raw 파일 박제), `rc=1` 실패(loud·raw 경로 stderr), `rc=3` opt-in OFF. PM이 reply를 검토하고 board를 갱신하며 위임 대상은 board를 조작하지 않는다.
 - `--ticket T-NNNN`은 해당 ticket `touches`를 허용 집합으로 전후 워크스페이스를 비교해 범위 밖 신규/변경/커밋을 stderr 경고한다(차단 아님·rc 불변). 생략 시 허용 0이라 모든 변경을 경고한다. **dev 위임에는 `--ticket`이 표준**.
@@ -170,9 +223,10 @@ Agent 툴 호출:
 > (`rc`·`elapsed_sec`·`silence_sec`)로 마감한다. 백그라운드 호출이 끊겨 stdout(그 안의 raw 경로)을
 > 잃어도 `python3 .project_manager/tools/pm_delegate.py raw [--unfinished]` 로 절대경로를 조회하라 —
 > **미마감 레코드 자체가 kill 증거**다. 재위임 전에 반드시 확인한다(완성분을 버리고 중복 과금하는 경로).
-> **native 위임은 장부에 남지 않는다** — 같은 하네스 안에서 도는 위임(각 하네스의 native
-> 서브에이전트 경로)은 `pm_delegate` 를 경유하지 않으므로 이 조회 대상이 아니다. native 산출은
-> 하네스 자체의 보고/전사에서 찾는다.
+> **native 위임은 raw 장부에는 남지 않지만 성장 사본에는 남는다** — 같은 하네스 안에서 도는 위임은
+> 위 native prepare→spawn→harvest를 수행한다. 하네스 보고/전사가 끊겨도 prepare가 출력한 사본을
+> 먼저 읽고, `ticket harvest --copy ... --cwd ... --capability-stdin`에 PM이 보관한 capability를
+> stdin으로 공급해 회수한 뒤에만 재위임한다.
 > **어느 장부를 봤는지 첫 줄로 확인한다** — `조회 장부: <절대경로>`. 장부는 **엔진 사본별**이라
 > `경고: 다른 엔진 사본 장부가 있습니다(이 조회에서는 읽지 않음): <경로>` 가 뜨면 자동 대체 조회가
 > 된 게 아니다 — 표시된 사본에서 **명시적으로 다시 조회**하라. `--output-dir DIR` 로 저장한 산출은
@@ -221,63 +275,3 @@ Agent 툴 호출:
 reviewer와 **병행해 추가 리뷰어(additional reviewer) 교차검증**을 실행한다:
 `python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN`
 ADR 본문 정합 필요 시 `--paths`에 **코드 경로+ADR을 함께 나열**한다. `--paths`는 `--ticket` touches를 대체한다. 전제: `additional_reviewer_enabled=true`. 상세: `pm_playbook.md` §"검토 루프".
-
-#### 게이트 격리 스냅샷 (병렬 wave · 내부 reviewer 전용)
-
-병렬 dev가 공유 트리를 라이브 편집 중이면 PM은 reviewer 위임 전에 검토 대상의 **staged** 상태를 격리 worktree로 스냅샷해 dev 편집·reviewer git 조작(sensitivity `git checkout` 등)의 경합을 막는다. 스냅샷 생성·신선도 검증은 엔진 도구 `gate_snapshot.py`가 수행한다 — 검토 대상 경로의 staged 내용이 working tree와 다르면(미-stage dev 산출 = stale index) 생성을 fail-loud로 거부해 stale 검토(false-green)를 기계로 차단한다. `<scratch>`는 repo 밖 경로(`/tmp` 또는 repo 상위 `..`), 최종 경로는 `<scratch>/gate-<T>`. 출력 경로는 공유 worktree·같은 저장소 git 공용 디렉터리·다른 등록 worktree 안이면 거부된다(prunable 등록 재사용은 `git worktree prune` 처방).
-
-1. **stage** — 검토 대상 dev 산출을 먼저 `git add <경로>` 한다. **다라운드 게이트는 라운드마다 다시** — 누락하면 도구가 불일치로 차단한다(그게 이 도구가 닫는 클래스다).
-2. **생성** —
-
-   ```bash
-   python3 .project_manager/tools/gate_snapshot.py \
-       --repo <공유 트리 절대경로> --output <scratch>/gate-<T> \
-       --paths <검토 파일1> <검토 파일2> ...
-   ```
-
-   - **병렬 wave에서는 `--paths`를 파일 단위로** 지정한다 — 디렉터리를 주면 같은 디렉터리의 타 dev WIP(tracked-unstaged·untracked)가 불일치로 검출돼 차단된다(설계 동작). 진단 안내대로 검토 대상이면 `git add`, 타 dev WIP면 파일 단위로 좁힌다.
-   - rc=0 = 스냅샷이 캡처 시점 index와 일치함을 도구가 검증(HEAD OID·index 엔트리·파일 집합 이중 bookend·submodule gitlink 원본 불변·eol 정규화 비교 포함). rc=1 = fail-loud — 자동 `git add` 해소는 하지 않는다(타 dev WIP 오염 금지).
-3. **주입** — reviewer 프롬프트 작업 위치에 `<scratch>/gate-<T>` **절대경로**를 넣고 그 스냅샷에서만 읽고 검토시킨다. 그 안의 git 조작(checkout·stash 등)은 공유 트리에 닿지 않는다.
-4. **제거** — 리뷰 후:
-
-   ```bash
-   git worktree remove --force <scratch>/gate-<T>
-   ```
-
-   `--force`는 오버레이가 미커밋이라 dirty인, 버려도 안전한 스냅샷 제거에 필요.
-
-- 내부 reviewer만 대상. codex `external_review`는 **staged diff** 기반이라 이미 스냅샷-안정 → 격리 **대상 아님**(라이브 working tree 를 읽지 않는다). 단 staged 가 최신인지는 같은 원칙이다 — 검토 파일을 재-`git add` 한 뒤 실행한다.
-- 솔로(비병렬)는 격리 선택.
-- 격리와 프롬프트의 *공유 트리 git 조작 금지* 완화는 **병행**한다(**이중 방어** — 절차가 경합을 구조적으로 막고, 프롬프트가 사고성 git 조작을 막는다).
-
-## 병렬 wave touches cross-check
-
-dev N 동시 spawn 전:
-
-- 모든 claimed ticket touches가 완전 disjoint(file 겹침 0)인지 확인. 공통 통합 파일의 함수 단위 추가는 완화 조건으로 허용.
-- 같은 함수·같은 줄 동시 수정은 차단.
-- baseline 회귀는 dev cycle 후 한 번에 측정(race 회피).
-
-## reviewer 후 처리
-
-- **PM 직접 fix**: 1줄·1패턴·dev가 작업하지 않는 영역.
-- **dev 재작업**: 여러 줄 또는 dev가 같은 file 작업 중.
-- **별도 ticket 후보 메모**: 본 ticket 범위 밖/후속 caller.
-- **suggestion 보류**: 운영 영향 0·기능 충분.
-
-reviewer 결과를 그대로 믿지 말고 should-fix 전 코드 흐름을 PM이 독립 점검한다. 부정확하면 변경하지 않고 `log/current.md`에 영구 기록. 다른 ticket 결함을 현재 ticket 영역으로 잘못 attribute할 수 있으므로 실제 영역 확인 후 분기한다.
-
-## 운용
-
-- board 조작은 PM, 서브에이전트는 구현/검토만.
-- dev 보고에는 변경 파일, 신규 테스트, 지정 회귀(범위 명시), DoD별 evidence를 강제. 전체 회귀는 릴리즈 절차 1단계 1회(PM)다.
-- background 우선. 다음 ticket이 결과에 의존하면 foreground.
-- 프롬프트가 길어지면 ticket 본문을 보강한다.
-- 같은 dev를 반복 resume하면 transcript 누적으로 컨텍스트 한도에 실패한다(14회 resume에서 "Prompt is too long"). 대략 5~6회↑면 새 에이전트에 자족 프롬프트로 재투입하고 현 코드 상태(신설 심볼·미커밋 변경)를 요약한다. 산출물은 워킹트리에 유지된다.
-
-## 참고
-
-- `.project_manager/wiki/pm_role.md` — wave 패턴·dev/reviewer cycle·must-fix 분기
-- `.project_manager/tools/pm_delegate.py` — cross-harness 위임
-- `.claude/agents/developer.md`
-- `.claude/agents/code-reviewer.md`

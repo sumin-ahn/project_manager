@@ -40,6 +40,7 @@ import argparse
 import datetime
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -205,26 +206,67 @@ LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"
 # ref 를 읽는 이유·worktree_pool._SYMREF_BRANCH_PREFIX 와 동일 규칙).
 _SYMREF_BRANCH_PREFIX = "refs/heads/"
 
-# 도구 호출 접두 리터럴. `python3` 는 머신-불변 doc 표면 관례(POSIX 에서 항상 유효)라 폴백으로
-# 안전하다. **커맨드 카드 렌더만** per-clone 설정의 검증 완료 인터프리터(`py=`)로 이 접두를
-# 대체하고(설정 부재·빈 값이면 이 리터럴 폴백), 카드 밖 안내/에러 문구의 소비처들은 아직 이
-# 리터럴 고정이다 — "이건 어디서나 폴백"으로 읽지 말 것(카드 밖 확장은 별도 판단).
+# 카드 밖 안내/에러 문구가 쓰는 기존 도구 호출 접두 리터럴. **커맨드 카드 렌더만** 아래
+# `_CommandEnvironment`가 per-clone 설정의 검증 완료 인터프리터(`py=`) 또는 OS 기본
+# (Windows=`py -3`, 그 외=`python3`)으로 대체한다. 카드 밖 소비처는 아직 이 리터럴 고정이다 —
+# "이건 어디서나 폴백"으로 읽지 말 것(카드 밖 확장은 별도 판단).
 # 경로는 multi-PM 공유 루트 기준 상대라 PM 이 공유 루트에서 board/wiki 를 조작한다.
 _CARD_TOOL_INVOKE = "python3 .project_manager/tools"
 
 
-def _resolve_card_tool_invoke(repo: Path | None = None) -> str:
-    """커맨드 카드 도구 접두를 per-clone `local.conf`의 `py=` 값으로 완성한다.
+class _CommandEnvironment(NamedTuple):
+    """OS-safe command rendering policy for the bootstrap dump and card.
 
-    설정 파일 부재·읽기 실패·키 부재·빈 값은 기존 리터럴로 조용히 폴백한다. 인터프리터의
-    실행 가능 여부와 지원 버전은 설정을 기록하는 초기화 단계가 검증하므로 여기서는 선택을
-    반복하지 않고 표기만 일치시킨다.
+    This deliberately models only the Python launcher as argv.  `platform` and
+    `os.name` cannot identify the active shell, so `chain_policy` is a safe
+    rendering policy, not a claim that bash/PowerShell was detected.
+    """
+
+    os_label: str
+    python_argv: tuple[str, ...]
+    python_source: str
+    chain_policy: str
+
+
+def _command_os_label(*, system: str | None = None, os_name: str | None = None) -> str:
+    """Resolve Windows/Linux/macOS/other without letting probes break bootstrap."""
+    if system is None:
+        try:
+            system = platform.system()
+        except Exception:  # noqa: BLE001 — environment probe is advisory/fail-soft.
+            system = ""
+    if os_name is None:
+        try:
+            os_name = os.name
+        except Exception:  # noqa: BLE001 — same fail-soft boundary as platform.system.
+            os_name = ""
+
+    normalized = str(system).strip().lower()
+    if str(os_name).strip().lower() == "nt" or normalized == "windows":
+        return "windows"
+    if normalized == "linux":
+        return "linux"
+    if normalized == "darwin":
+        return "macos"
+    return "other"
+
+
+def _resolve_python_argv(
+    repo: Path | None = None, os_label: str = "linux"
+) -> tuple[tuple[str, ...], str]:
+    """Resolve the launcher argv, preserving the existing final-`py=` contract.
+
+    A non-empty final `py=` wins verbatim as one configured executable token.
+    Missing/unreadable config, a missing key, or an empty final value uses the
+    OS default.  In particular, an earlier non-empty value followed by `py=` is
+    intentionally treated as empty and falls back, matching the previous card
+    resolver.
     """
     conf_path = (repo if repo is not None else REPO) / ".project_manager" / "local.conf"
     try:
         lines = conf_path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError):
-        return _CARD_TOOL_INVOKE
+        lines = ()
 
     interpreter = ""
     for line in lines:
@@ -234,9 +276,54 @@ def _resolve_card_tool_invoke(repo: Path | None = None) -> str:
         key, _, value = line.partition("=")
         if key.strip() == "py":
             interpreter = value.strip()
-    if not interpreter:
-        return _CARD_TOOL_INVOKE
-    return f"{interpreter} .project_manager/tools"
+    if interpreter:
+        return (interpreter,), "local-conf"
+    if os_label == "windows":
+        return ("py", "-3"), "os-default"
+    return ("python3",), "os-default"
+
+
+def _detect_command_environment(
+    repo: Path | None = None,
+    *,
+    system: str | None = None,
+    os_name: str | None = None,
+) -> _CommandEnvironment:
+    """Return one finite OS-safe policy; never inspect or infer the live shell."""
+    os_label = _command_os_label(system=system, os_name=os_name)
+    python_argv, python_source = _resolve_python_argv(repo, os_label)
+    # Unknown hosts take the conservative Windows-safe no-chain policy.
+    chain_policy = "and-if" if os_label in {"linux", "macos"} else "separate-lines"
+    return _CommandEnvironment(os_label, python_argv, python_source, chain_policy)
+
+
+def _render_python_argv(argv: tuple[str, ...]) -> str:
+    """Render already-resolved launcher argv only at the Markdown boundary."""
+    if not argv:
+        return "python3"  # Defensive fail-soft; normal resolvers never return empty argv.
+    return " ".join(argv)
+
+
+def _render_environment_line(environment: _CommandEnvironment) -> str:
+    """Human dump line; chain policy is explicitly OS-safe, not shell detection."""
+    return (
+        f"현재 환경: {environment.os_label} · "
+        f"python={_render_python_argv(environment.python_argv)} · "
+        f"chain_policy={environment.chain_policy} (OS-safe 표기 정책·실제 셸 감지 아님)"
+    )
+
+
+def _resolve_card_tool_invoke(
+    repo: Path | None = None, environment: _CommandEnvironment | None = None
+) -> str:
+    """커맨드 카드 도구 접두를 per-clone `local.conf`의 `py=` 값으로 완성한다.
+
+    설정 파일 부재·읽기 실패·키 부재·빈 값은 OS 기본으로 조용히 폴백한다. 인터프리터의 실행
+    가능 여부와 지원 버전은 설정을 기록하는 초기화 단계가 검증하므로 여기서는 선택을 반복하지
+    않고 표기만 일치시킨다.
+    """
+    resolved = environment or _detect_command_environment(repo)
+    return f"{_render_python_argv(resolved.python_argv)} .project_manager/tools"
 
 
 # ── 커맨드 카드 공용 정의서 (파서-생성화) ─────────────────────────
@@ -2799,6 +2886,7 @@ class PmBootstrap:
         timestamp: str,
         handoff_ctx: dict | None = None,
         dashboard_others: dict | None = None,
+        environment: _CommandEnvironment | None = None,
     ) -> str:
         counts = board["counts"]
         open_tickets = board["open_tickets"]
@@ -2814,6 +2902,9 @@ class PmBootstrap:
 
         lines: list[str] = []
         lines.append(f"## {session_label} 부트스트랩 ({timestamp})")
+        environment = environment or getattr(self, "_command_environment", None)
+        environment = environment or _detect_command_environment()
+        lines.append(_render_environment_line(environment))
         if fresh_slot:
             lines.append(_FRESH_SLOT_BANNER)
         # 차수 stale 교차검증 — pm_state 가 log 보다 뒤처졌으면(머신 간 미동기) 경고 1줄.
@@ -3000,11 +3091,22 @@ class PmBootstrap:
         timestamp: str,
         handoff_ctx: dict | None = None,
         dashboard_others: dict | None = None,
+        environment: _CommandEnvironment | None = None,
     ) -> dict:
         counts = board["counts"]
         counts_scope = board.get("counts_scope", "mine")
+        environment = environment or getattr(self, "_command_environment", None)
+        environment = environment or _detect_command_environment()
         return {
             "timestamp": timestamp,
+            "environment": {
+                "os": environment.os_label,
+                "python": _render_python_argv(environment.python_argv),
+                "python_argv": list(environment.python_argv),
+                "python_source": environment.python_source,
+                "chain_policy": environment.chain_policy,
+                "policy_basis": "os-safe-rendering-not-shell-detection",
+            },
             # 차수 + 인계 컨텍스트 — session_num(정수/`?`/None)·remaining_work(절 텍스트/
             # None)·state_path. log_last_entry 는 body(본문 전체) 포함. 미해소면 None.
             "session_num": handoff_ctx.get("session_num") if handoff_ctx else None,
@@ -3108,6 +3210,9 @@ class PmBootstrap:
         """
         now = datetime.datetime.now(tz=KST)
         timestamp = now.strftime("%Y-%m-%d %H:%M KST")
+        # One probe feeds JSON, Markdown, and the command card so a successful
+        # dump cannot report one environment while rendering commands for another.
+        self._command_environment = _detect_command_environment()
 
         # task 정체성은 slot 정체성과 혼합하지 않는다. task가 보유한 작업공간 집합은
         # worktree_pool.slots_for_task(task)로 자동 수령하며, 특정 slot 편입은 pm-env alloc/add의
@@ -3245,7 +3350,8 @@ class PmBootstrap:
 
             if output_json:
                 data = self._build_json(
-                    board, pytest_result, git, log_entry, timestamp, handoff_ctx, dashboard_others
+                    board, pytest_result, git, log_entry, timestamp, handoff_ctx,
+                    dashboard_others, self._command_environment
                 )
                 if multipm_lean:
                     data["worktree"] = lean_identity
@@ -3263,7 +3369,8 @@ class PmBootstrap:
                 print(json.dumps(data, ensure_ascii=False, indent=2))
             else:
                 markdown = self._build_markdown(
-                    board, pytest_result, git, log_entry, timestamp, handoff_ctx, dashboard_others
+                    board, pytest_result, git, log_entry, timestamp, handoff_ctx,
+                    dashboard_others, self._command_environment
                 )
                 print(markdown)
                 identity: dict | None = None
@@ -4761,7 +4868,9 @@ class PmBootstrap:
         줄은 정체성 보간·⚠ 인접·argparse 정합 가드를 위해 남긴다. 규칙·why 는 재설명하지 않고
         카드 상단 1줄 pointer 로 pm_role 규율 절을 가리킨다.
         """
-        tool_invoke = _resolve_card_tool_invoke()
+        environment = getattr(self, "_command_environment", None)
+        environment = environment or _detect_command_environment()
+        tool_invoke = _resolve_card_tool_invoke(environment=environment)
         session = identity.get("session") if identity else None
         repo_name = identity.get("repo") if identity else None
         # 슬롯 **번호**는 슬롯 식별자(`identity["slot"]`=`work/<repo>_<N>`)의 *마지막* `_` 로 분리한다

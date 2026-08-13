@@ -16,6 +16,7 @@ See `.project_manager/wiki/tickets/README.md` and
 from __future__ import annotations
 
 import argparse
+import ast
 import contextlib
 import datetime
 import fnmatch
@@ -324,6 +325,7 @@ IDEA_STATUS_DIRS: tuple[str, ...] = ("open", "promoted", "killed")
 # worktree 엔 그 문서가 없어 no-op 이나 PM 홈 실행이 설계 의도라 오실행 가드).
 _MUTATION_SUBCOMMANDS: frozenset[str] = frozenset({
     "new", "promote", "claim", "complete", "block", "unclaim", "unblock",
+    "section-add", "tier",
     "init", "migrate-identity", "promote-scope", "reid", "refresh",
     "verified-at-backfill", "verified-at-repin",
     "idea new", "idea promote", "idea kill",
@@ -331,7 +333,7 @@ _MUTATION_SUBCOMMANDS: frozenset[str] = frozenset({
 })
 # 조회(read-only·board 상태 미변경) — 게이트 없음.
 _READ_SUBCOMMANDS: frozenset[str] = frozenset({
-    "list", "show", "lint", "idea list", "prefix list",
+    "list", "show", "lint", "tier-signals", "idea list", "prefix list",
 })
 # read leaf별 PM-owned 입력 전수. dispatch 첫 줄이 이 값을 그대로 표시하므로, worktree에서
 # 어느 홈의 무엇을 읽는지 조용히 숨지 않는다. 제품 코드(REPO 루트 문서·adapter/template 및
@@ -340,6 +342,7 @@ _READ_PM_INPUTS_BY_SUBCOMMAND: dict[str, str] = {
     "list": "board·areas·local.conf·lease",
     "show": "board",
     "lint": "board·areas·wiki(decisions·ideas·specs·domain·current-truth)·hooks·local.conf",
+    "tier-signals": "board",
     "idea list": "ideas",
     "prefix list": "board",
 }
@@ -3337,10 +3340,11 @@ def areas_set_cell(repo: str, column: str, value: str) -> tuple[str, str]:
 #   - board_lock: OS 파일락 — ID 발행(new)·공유 단일파일 write(board.md) 직렬화.
 #     프로세스가 죽으면 OS 가 락을 자동 해제(stale-lock 없음).
 #   - file_lock.append_atomic: O_APPEND — log/areas 같은 append-only 파일의 원자 추가.
-#   - claim(`cmd_claim` 의 load→rename 임계구역)도 board_lock 으로 직렬화한다 — POSIX rename 은
-#     원자적이나 Windows os.rename 은 동시 프로세스에 배타적이지 않아
-#     락으로 배타성을 복원한다(패배자는 깨끗한 `claim race lost`). complete/block 같은 비경합
-#     전이(단일 소유 ticket)는 race 가 없어 락 없이 rename 만 쓴다.
+#   - ticket writer(`new/claim/complete/block/unclaim/unblock/promote/section-add/tier` 및
+#     `migrate-identity` ticket backfill)는 lookup→상태검증→load→move/write 전부를
+#     board_lock 으로 직렬화한다. POSIX rename 자체는 원자적이어도
+#     성장 write가 고정한 옛 path에 뒤늦게 replace하면 상태별 파일이 둘 생기므로 lifecycle과
+#     in-place 성장 write가 같은 배타 경계를 공유해야 한다.
 #
 # 크로스플랫폼(stdlib-only — 런타임 의존은 PyYAML 뿐): POSIX=fcntl.flock,
 # Windows=msvcrt.locking. 둘 다 없으면 단일-머신 전제의 무락 폴백(락 파일만 생성).
@@ -3358,8 +3362,10 @@ def board_lock() -> Iterator[None]:
     다른 이유). 읽기(list/show)는 락을 잡지 않는다 — *변경* 경로만 직렬화한다.
 
     **재진입 금지** — 같은 프로세스가 이 컨텍스트를 중첩하면 안 된다(flock 의 재진입
-    동작은 OS 별로 다름). `cmd_new` 의 ID 발행 트랜잭션과 `refresh_board` 의 board.md
-    write 는 *각자 독립* 락 구간으로 분리한다(중첩 아님).
+    동작은 OS 별로 다름). strict claim은 기존 `board_git_lock → board_lock` 순서로 confirm/
+    rollback까지 두 락을 유지하고, 파생 render는 `_refresh_board_locked`로 재진입 없이 끝낸다.
+    나머지 ticket writer는 board_lock 해제 뒤 refresh/best-effort board-git sync를 수행하므로
+    역순 중첩이 없다.
     """
     with file_lock.exclusive_file_lock(BOARD_LOCK):
         yield
@@ -4373,8 +4379,8 @@ def board_git_lock() -> Iterator[None]:
     claim 커밋을 내 rollback 이 되돌리는 창. 이 락이 그 트랜잭션을 통째로 직렬화한다.
 
     **락 순서 = board_git_lock → board_lock (전역 고정)**. claim 은 이 락을 잡은 채 board_lock
-    을 잡으므로, 역순 획득이 어디에도 없어야 데드락이 없다: best-effort sync 6곳은 board_lock
-    을 이미 놓은 뒤 불리고, `_prefix_relabel` 도 board_lock **밖**에서 이 락을 먼저 잡는다.
+    을 잡으므로, 역순 획득이 어디에도 없어야 데드락이 없다: best-effort sync 7 callsite는
+    board_lock을 이미 놓은 뒤 불리고, `_prefix_relabel`도 board_lock **밖**에서 이 락을 먼저 잡는다.
 
     board-git 비활성(legacy·솔로)이면 no-op — 락 파일조차 만들지 않는다(현 동작 무변경).
     **재진입 금지**(flock 관례·board_lock 과 동일) — 이 구간 안에서 이 컨텍스트를 다시 잡는
@@ -5073,7 +5079,7 @@ def _board_git_push() -> subprocess.CompletedProcess:
 
 def _board_git_sync_best_effort(message: str,
                                 paths: Sequence[Path] | None = None) -> bool:
-    """best-effort local-first sync (new/complete/block/unclaim/unblock/promote).
+    """best-effort local-first sync (new/promote/complete/block/unclaim/unblock/section-add/tier).
 
     board 가 별도 git 이 아니면 no-op(legacy·솔로). 별도 git 이면: 로컬 commit을 항상
     시도하고, **새 commit 사실(HEAD 전진)**을 확인한 뒤 → pull --rebase ; push 를 best-effort 로.
@@ -5082,8 +5088,8 @@ def _board_git_sync_best_effort(message: str,
     어떤 실패도 **작업을 차단하지 않는다** — stale 경고만 stderr 로 내고 계속한다. active
     retry 루프는 없다 — 밀린 commit 은 다음 mutation 의 pull-rebase+push 가 catch-up 한다.
 
-    `paths` = 그 mutation 이 만진 경로. claim 뿐 아니라 **ticket mutation 6곳
-    (new/promote/complete/block/unclaim/unblock)도 함께** 스코프화해 출하한다 — claim 차단을
+    `paths` = 그 mutation 이 만진 경로. claim 뿐 아니라 **ticket mutation 8개
+    (new/promote/complete/block/unclaim/unblock/section-add/tier)도 함께** 스코프화해 출하한다 — claim 차단을
     풀면 board 가 상시 dirty 가 되므로, best-effort 가 board 전체를 쓸어담는 채로 남으면 누출
     노출이 오늘보다 커진다(사용자 결정).
 
@@ -8114,17 +8120,361 @@ def dump_ticket_atomic(path: Path, fm: dict[str, Any], body: str) -> None:
     os.replace(str(tmp), str(path))
 
 
+# ── 티켓 성장 절 + 위임 티어 ────────────────────────────────────────
+# 성장 절은 후속 회수 도구가 사람이 쓴 제목 문구에 의존하지 않고 경계를 찾도록 시작/끝
+# marker 를 쌍으로 둔다. role 은 marker 와 사람용 heading 양쪽에 기록한다. 같은 role 재호출도
+# 별도 marker pair 를 append 하므로 라운드 이력이 덮이지 않는다.
+TICKET_GROWTH_SECTION_MARKER = "pm-ticket-section"
+TICKET_GROWTH_ROLE_LABELS: dict[str, str] = {
+    "architect": "설계",
+    "developer": "구현 보충",
+    "code-reviewer": "리뷰",
+}
+TICKET_TIERS: frozenset[str] = frozenset({"pm-direct", "normal", "hard"})
+
+
+class TierSignals(NamedTuple):
+    """touches에서 기계적으로 확정 가능한 tier 보조 신호."""
+
+    tool_modules: tuple[str, ...]
+    shared_code: tuple[str, ...]
+    docs_only: bool
+    unresolved_directories: tuple[str, ...] = ()
+
+    @property
+    def h1(self) -> bool:
+        """2개+ 모듈 또는 파일 수 미해소(상향 기본값)."""
+        return len(self.tool_modules) >= 2 or bool(self.unresolved_directories)
+
+
+class TouchFileExpansion(NamedTuple):
+    """directory touches를 repo 소유 파일로 펼 결과와 미해소 선언."""
+
+    paths: tuple[str, ...]
+    unresolved_directories: tuple[str, ...]
+
+
+def _list_owned_touch_files(repo: Path, subtree: Path, list_owned=None):
+    """repo-owned OWNED 열거 호출 단일 지점(제품/테스트 DI 공유)."""
+    if list_owned is not None:
+        return list_owned(repo, subtree)
+    seam = _TOOLS_BOOTSTRAP_MODULE
+    if seam is None or not hasattr(seam, "list_repo_owned_files"):
+        raise RuntimeError("repo_owned_files 열거 seam 부재")
+    return seam.list_repo_owned_files(repo, subtree, mode=seam.OWNED)
+
+
+def _canonical_tier_touch(value: str) -> str:
+    """touches 경로를 repo-relative POSIX 표기로 접는다."""
+    value = value.strip().replace("\\", "/")
+    while value.startswith("./"):
+        value = value[2:]
+    return value.rstrip("/")
+
+
+def _is_tool_test_file(path: str) -> bool:
+    """tools/ 안의 테스트 파일을 모듈 수에서 제외한다."""
+    parts = Path(path).parts
+    name = parts[-1] if parts else ""
+    return "tests" in parts or name.startswith("test_") or name.endswith("_test.py")
+
+
+def expand_owned_touch_files(
+    repo: Path,
+    touches: Sequence[str],
+    *,
+    list_owned=None,
+) -> TouchFileExpansion:
+    """touches directory를 공용 repo-owned 열거로 파일 단위 전개한다.
+
+    디렉터리를 열거할 수 없으면 빈 집합으로 축소하지 않고 미해소로
+    보존한다. 소비자는 tier 상향 기본값/경고에 이 신호를 쓴다.
+    """
+    repo = Path(repo)
+    paths: set[str] = set()
+    unresolved: set[str] = set()
+    for raw in touches:
+        canonical = _canonical_tier_touch(raw)
+        rel = Path(canonical)
+        if (not canonical or rel.is_absolute() or ".." in rel.parts):
+            unresolved.add(canonical or raw)
+            continue
+        target = repo / rel
+        is_directory = raw.rstrip().endswith(("/", "\\")) or target.is_dir()
+        if not is_directory:
+            paths.add(rel.as_posix())
+            continue
+        if not target.is_dir():
+            unresolved.add(rel.as_posix())
+            continue
+        try:
+            owned = _list_owned_touch_files(repo, rel, list_owned)
+        except Exception as exc:  # advisory caller가 미해소를 상향 신호로 쓴다.
+            if _is_engine_rev_skew(exc):
+                raise
+            unresolved.add(rel.as_posix())
+            continue
+        prefix = rel.as_posix().rstrip("/") + "/"
+        for item in owned:
+            candidate = Path(item).as_posix()
+            if candidate.startswith(prefix) and not (repo / candidate).is_dir():
+                paths.add(candidate)
+    return TouchFileExpansion(tuple(sorted(paths)), tuple(sorted(unresolved)))
+
+
+def _tier_tool_module_touches(touches: Sequence[str]) -> tuple[str, ...]:
+    prefix = ".project_manager/tools/"
+    modules = {
+        path for raw in touches
+        if (path := _canonical_tier_touch(raw)).startswith(prefix)
+        and path.endswith(".py")
+        and not _is_tool_test_file(path[len(prefix):])
+    }
+    return tuple(sorted(modules))
+
+
+def _shared_tool_code(tools_dir: Path, *, list_owned=None) -> tuple[str, ...]:
+    """tools/ import 구문을 AST로 스캔해 2개+ 도구가 import하는 파일을 산출.
+
+    목록은 파일명으로 굳히지 않고 현재 tools 트리와 import/import-from
+    구문만을 입력으로 삼는다. 파싱 불가 파일은 보조 신호에서만 제외한다.
+    """
+    repo = tools_dir.parent.parent
+    subtree = tools_dir.relative_to(repo)
+    prefix = subtree.as_posix().rstrip("/") + "/"
+    python_files = sorted({
+        repo / Path(path) for path in _list_owned_touch_files(repo, subtree, list_owned)
+        if Path(path).as_posix().startswith(prefix)
+        and Path(path).suffix == ".py"
+        and not _is_tool_test_file(Path(path).relative_to(subtree).as_posix())
+    })
+    by_stem: dict[str, list[Path]] = {}
+    for path in python_files:
+        by_stem.setdefault(path.stem, []).append(path)
+
+    importers: dict[Path, set[Path]] = {path: set() for path in python_files}
+    for importer in python_files:
+        try:
+            tree = ast.parse(importer.read_text(encoding="utf-8"), filename=str(importer))
+        except (OSError, UnicodeError, SyntaxError):
+            continue
+        names: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names.update(alias.name.rsplit(".", 1)[-1] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    names.add(node.module.rsplit(".", 1)[-1])
+                elif node.level:
+                    names.update(alias.name.rsplit(".", 1)[-1] for alias in node.names)
+            elif (isinstance(node, ast.Call)
+                  and isinstance(node.func, ast.Name)
+                  and node.func.id == "_load_module_from_path"):
+                # 생산 도구는 package import 대신 경로 로더를 쓴다. 두 번째
+                # expected_filename literal은 import 구문과 동등한 정적 의존성이다.
+                literal = None
+                if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
+                    literal = node.args[1].value
+                if literal is None:
+                    for keyword in node.keywords:
+                        if (keyword.arg == "expected_filename"
+                                and isinstance(keyword.value, ast.Constant)):
+                            literal = keyword.value.value
+                            break
+                if isinstance(literal, str) and literal.endswith(".py"):
+                    names.add(Path(literal).stem)
+        for name in names:
+            # 동일 stem이 여러 경로에 있으면 import 구문만으로 대상을
+            # 특정할 수 없다. 근거 없는 shared 과판정을 피해 제외한다.
+            candidates = by_stem.get(name, ())
+            if len(candidates) == 1 and candidates[0] != importer:
+                importers[candidates[0]].add(importer)
+
+    prefix = ".project_manager/tools"
+    return tuple(
+        f"{prefix}/{path.relative_to(tools_dir).as_posix()}"
+        for path in python_files if len(importers[path]) >= 2
+    )
+
+
+def _is_tier_document(path: str) -> bool:
+    path = _canonical_tier_touch(path)
+    if not path:
+        return False
+    parts = Path(path).parts
+    name = parts[-1].upper()
+    if name in {"README", "README.MD", "CHANGELOG", "CHANGELOG.MD"}:
+        return True
+    if path == ".project_manager/wiki" or path.startswith(".project_manager/wiki/"):
+        return True
+    if "skills" in parts and parts[-1] == "SKILL.md":
+        return True
+    if name == "AGENTS.MD":
+        return True
+    return "agents" in parts and Path(path).suffix.lower() in {".md", ".toml"}
+
+
+def tier_signals(
+    touches: Sequence[str], tools_dir: Path, *, list_owned=None,
+) -> TierSignals:
+    """PM 판정을 대체하지 않는 h1·h2·문서-전용 기계 신호."""
+    repo = tools_dir.parent.parent
+    # directory touches 전체와 tools AST 스캔이 repo OWNED 스냅샷 한 벌을 공유.
+    subtree = Path(".")
+    try:
+        owned = tuple(_list_owned_touch_files(repo, subtree, list_owned))
+        owned_error = None
+    except Exception as exc:
+        if _is_engine_rev_skew(exc):
+            raise
+        owned = ()
+        owned_error = exc
+
+    def inventory(_repo, _subtree):
+        if owned_error is not None:
+            raise owned_error
+        return owned
+
+    # h1 directory 전개와 h2 AST 스캔이 OWNED 스냅샷 한 벌을 공유한다.
+    expanded = expand_owned_touch_files(repo, touches, list_owned=inventory)
+    modules = _tier_tool_module_touches(expanded.paths)
+    shared = set(_shared_tool_code(tools_dir, list_owned=inventory)) if owned_error is None else set()
+    canonical_touches = tuple(_canonical_tier_touch(path) for path in touches)
+    touched_shared = tuple(sorted(
+        path for path in shared
+        if any(path == touch or path.startswith(touch + "/")
+               for touch in canonical_touches if touch)
+    ))
+    return TierSignals(
+        modules, touched_shared,
+        bool(expanded.paths) and not expanded.unresolved_directories
+        and all(_is_tier_document(path) for path in expanded.paths),
+        tuple(path for path in expanded.unresolved_directories
+              if path == ".project_manager/tools"
+              or path.startswith(".project_manager/tools/")),
+    )
+
+
+def _growth_ticket_path(tid: str, action: str) -> tuple[int, Path | None]:
+    """성장 mutation 대상 해소 — board_lock 보유 중 open/claimed 판정, 그 밖은 거부.
+
+    티켓 인터페이스가 허용 상태를 open/claimed 로 닫았으므로 blocked/done뿐 아니라 draft도 같은
+    경계에서 거부한다. directory 상태가 lifecycle 단일 진실인 기존 mutation 규약을 그대로 쓴다.
+    """
+    try:
+        status, path = find_ticket_for_mutation(tid)
+    except FileNotFoundError as exc:
+        print(exc, file=sys.stderr)
+        return 2, None
+    if status not in ("open", "claimed"):
+        print(f"cannot {action} {tid}: currently in {status}/ "
+              "(open/claimed 티켓만 허용)", file=sys.stderr)
+        return 1, None
+    return 0, path
+
+
+def _growth_mutation_sync(message: str, path: Path) -> bool:
+    """성장 mutation의 board 렌더 + 기존 best-effort board-git funnel 공용 경로."""
+    refresh_board()
+    return _board_git_sync_best_effort(message, (path,))
+
+
+def _section_label(role: str, override: str | None) -> str | None:
+    """사람용 절명 해소. 개행/빈 값만 거부해 Markdown heading injection을 막는다."""
+    label = override if override is not None else TICKET_GROWTH_ROLE_LABELS[role]
+    label = label.strip()
+    if not label or "\n" in label or "\r" in label:
+        return None
+    return label
+
+
+def cmd_section_add(args: argparse.Namespace) -> int:
+    """티켓 끝에 역할·날짜와 기계 경계를 가진 빈 성장 절을 원자 append한다."""
+    label = _section_label(args.role, args.label)
+    if label is None:
+        print("cannot section-add: --label 은 비어 있거나 개행을 포함할 수 없다", file=sys.stderr)
+        return 1
+    role = args.role
+    today = datetime.date.today().isoformat()
+    section = (
+        f"<!-- {TICKET_GROWTH_SECTION_MARKER}:start role={role} -->\n"
+        f"## {label} ({role} · {today})\n\n"
+        f"<!-- {TICKET_GROWTH_SECTION_MARKER}:end role={role} -->\n"
+    )
+    # load→append→replace 를 board lock 아래 묶어 동시 재호출도 서로의 절을 덮지 않는다. 원본
+    # text를 그대로 이어 붙여 section-add가 기존 frontmatter formatting/body bytes를 재직렬화하지
+    # 않는다. `_atomic_write_text`가 같은 directory temp+fsync+replace로 crash partial-write도 막는다.
+    with board_lock():
+        rc, path = _growth_ticket_path(args.id, "section-add")
+        if path is None:
+            return rc
+        load_ticket(path)  # 지정 mutation은 손상 YAML을 fail-loud하는 기존 계약 유지.
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            original = handle.read()
+        separator = "" if original.endswith("\n\n") else ("\n" if original.endswith("\n") else "\n\n")
+        _atomic_write_text(path, original + separator + section)
+
+    ready = _growth_mutation_sync(f"section-add {args.id} {role}", path)
+    print(f"section added {args.id}: {label} ({role} · {today})"
+          f"{_board_git_mutation_state_suffix(ready)}")
+    return 0
+
+
+def cmd_tier(args: argparse.Namespace) -> int:
+    """선택 frontmatter `tier`를 기록/갱신한다. 허용값 외 입력은 파일 읽기 전 rc=1."""
+    if args.tier not in TICKET_TIERS:
+        print(f"cannot tier: {args.tier!r} — 허용값: "
+              f"{', '.join(sorted(TICKET_TIERS))}", file=sys.stderr)
+        return 1
+    with board_lock():
+        rc, path = _growth_ticket_path(args.id, "tier")
+        if path is None:
+            return rc
+        fm, body = load_ticket(path)
+        fm["tier"] = args.tier
+        dump_ticket_atomic(path, fm, body)
+
+    ready = _growth_mutation_sync(f"tier {args.id} {args.tier}", path)
+    print(f"tier set {args.id}: {args.tier}{_board_git_mutation_state_suffix(ready)}")
+    return 0
+
+
+def cmd_tier_signals(args: argparse.Namespace) -> int:
+    """touches 기반 h1·h2·문서-전용 신호를 advisory로 표시한다."""
+    found = find_ticket_exact(args.id)
+    if found is None:
+        print(f"ticket not found: {args.id}", file=sys.stderr)
+        return 1
+    _status, path = found
+    fm, _body = load_ticket(path)
+    touches = fm.get("touches")
+    if not isinstance(touches, list):
+        touches = []
+    clean_touches = [item.strip() for item in touches
+                     if isinstance(item, str) and item.strip()]
+    signals = tier_signals(clean_touches, REPO / ".project_manager" / "tools")
+    modules = ", ".join(signals.tool_modules) or "(none)"
+    shared = ", ".join(signals.shared_code) or "(none)"
+    module_count = ("unknown" if signals.unresolved_directories
+                    else str(len(signals.tool_modules)))
+    unresolved = (f" · unresolved={', '.join(signals.unresolved_directories)}"
+                  if signals.unresolved_directories else "")
+    print(f"tier signals {args.id} (advisory; PM confirms tier)")
+    print(f"  h1 tool modules: {module_count} "
+          f"(2+={'yes' if signals.h1 else 'no'}) — {modules}{unresolved}")
+    print(f"  h2 shared code: {'yes' if signals.shared_code else 'no'} — {shared}")
+    print(f"  docs-only: {'yes' if signals.docs_only else 'no'}")
+    return 0
+
+
 def move_item(base_dir: Path, src: Path, dst_status: str) -> Path:
     """Atomic mv of an item file into a sibling status directory.
 
     On POSIX rename(2) is atomic and a lost race surfaces as FileNotFoundError
-    (the source is already gone). On Windows os.rename is NOT exclusive across
-    concurrent processes, so a caller that needs
-    mutual exclusion for a *contended* transition must serialize it itself —
-    `cmd_claim` wraps its load→rename in `board_lock` for exactly this reason.
-    Uncontended transitions (complete/block on a ticket a single session already
-    owns) never race, so this primitive stays lock-free. Generic over tickets
-    and ideas.
+    (the source is already gone). 이 primitive 자체는 generic ticket/idea 이동이라 lock-free다.
+    티켓 호출자는 lifecycle rename과 in-place 성장 write 사이 lookup→path 고정→replace TOCTOU를
+    막기 위해 전체 read/transform/move/write를 `board_lock`으로 감싼다. idea는 성장 writer
+    대상이 아니므로 별도 lifecycle의 현행 lock-free 호출을 유지한다.
     """
     dst_dir = base_dir / dst_status
     dst_dir.mkdir(parents=True, exist_ok=True)
@@ -8233,15 +8583,17 @@ def cmd_claim(args: argparse.Namespace) -> int:
     assignee = identity_tag(session_override=override,
                             user_override=getattr(args, "user", None))
 
-    # board-git 트랜잭션(prefetch → commit → push → rollback)을 통째로 직렬화한다 —
-    # 같은 clone 의 다른 슬롯이 그 사이에 끼어들어 서로의 커밋을 되돌리는 창을 없앤다. 락 순서는
-    # **board_git_lock → board_lock** 고정(아래 임계구역이 안쪽) — 역순 획득은 어디에도 없다.
+    # strict claim 전체(prefetch → local move/dump → commit/push → confirm/rollback)를 두 락으로
+    # 감싼다. 순서는 **board_git_lock → board_lock** 고정. board_lock은 network 동안도 유지해
+    # rollback이 동시 growth write를 옛 bytes로 덮는 창을 닫는다(짧은 전역 coordination 비용 수용).
+    # `_cmd_claim_locked`는 두 락 보유 전제라 내부에서 어느 락도 재진입하지 않는다.
     with board_git_lock():
-        return _cmd_claim_locked(args, assignee)
+        with board_lock():
+            return _cmd_claim_locked(args, assignee)
 
 
 def _cmd_claim_locked(args: argparse.Namespace, assignee: str) -> int:
-    """`cmd_claim` 본체 — board_git_lock 보유 전제 (재진입 금지)."""
+    """`cmd_claim` 본체 — board_git_lock + board_lock 보유 전제(둘 다 재진입 금지)."""
     # claim STRICT 1단계: 선점 감지는 **읽기 전용**(fetch + 원격 트리
     # 직접 조회)이고, `pull --rebase` 는 원격이 앞섰을 때만 시도한다. 차단은 "원격이 앞섰고
     # 통합 불가" 로만 남고, 사유(dirty/rebase 충돌/offline/upstream 없음)와 진단 재료(behind·
@@ -8252,74 +8604,69 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str) -> int:
         return 1
     orig_head = prefetch.anchor
 
-    try:
-        status, path = find_ticket_for_mutation(args.id)
-    except FileNotFoundError as e:
-        print(e, file=sys.stderr)
-        return 2
-    if status != "open":
-        print(f"cannot claim {args.id}: currently in {status}/", file=sys.stderr)
-        return 1
-
-    # The claim critical section (load → dependency check → open→claimed rename)
-    # runs under board_lock so the transition is *serialized* across sessions.
+    # 아래 local write뿐 아니라 이 함수 앞의 prefetch와 뒤의 confirm/rollback도 호출자가 잡은
+    # board_lock 안이다. 따라서 strict claim 전체가 다른 ticket writer에 하나의 순서로 관측된다.
     # On POSIX the atomic rename(2) alone was exclusive; on Windows os.rename is
     # NOT exclusive across concurrent processes, so without serialization every
     # concurrent claimer could "win" and duplicate the claim
     # the "rename is the lock" premise is Windows-invalid.
-    # Holding board_lock makes the rename effectively exclusive everywhere: once
+    # Holding board_lock makes the complete ticket write exclusive everywhere: once
     # the winner moves the ticket out of open/, every serialized loser's
-    # load_ticket/move_ticket hits the now-missing path → FileNotFoundError. The
-    # two race windows (the loser's `load_ticket(path)` read or its
-    # `move_ticket(path)` rename) both mean the same thing — we lost the claim
-    # race — so both surface as one clean "claim race lost" (rc=1), never an
+    # lookup/load/move hits the now-missing path → FileNotFoundError. Those windows
+    # all mean the same thing — we lost the claim
+    # race — so all surface as one clean "claim race lost" (rc=1), never an
     # unhandled traceback. board_lock is OS-flock
     # based, so a crash mid critical-section auto-releases the lock (no stale
     # lock). Note: a dependency's own FileNotFoundError is caught below and is a
     # *normal* rejection ("dependency not found"), distinct from a claim race.
     try:
-        with board_lock():
-            fm, body = load_ticket(path)
-            # Check dependencies
-            for dep in fm.get("depends_on") or []:
-                try:
-                    # 의존성 조회도 정확 일치만 — 이 판정이 claim 이동 여부를 정하므로, 폴백이
-                    # 답한 *다른* 티켓의 done 상태로 게이트가 열리면 안 된다(미해소 = 거부).
-                    dep_status, _ = find_ticket_for_mutation(dep)
-                except FileNotFoundError:
-                    print(f"dependency {dep} not found", file=sys.stderr)
-                    return 1
-                if dep_status != "done":
-                    print(f"dependency {dep} is {dep_status}/, not done",
-                          file=sys.stderr)
-                    return 1
-
-            # 설계 단계 게이트 — `design: required` 티켓은 설계 절을 완성하고
-            # 필드를 `done`(또는 `waived: <사유>`)으로 승격하기 전에는 집을 수 없다. 의존성
-            # 거부와 같은 자리(이동 *전*·board_lock 안)라 티켓은 open/ 에 그대로 남는다.
-            # `n/a`·`waived`·필드 부재(구세대 티켓)는 무영향 — 판정은 `_design_issues` 단일
-            # 깔때기(lint advisory·promote 게이트와 같은 규칙).
-            design_verdict = _design_issues(args.id, body, fm.get("design"))
-            if design_verdict:
-                print(f"cannot claim {args.id}: 설계 단계 미완 — "
-                      f"{design_verdict[0][2]}", file=sys.stderr)
-                print("  → 설계 절(경계 실측·불변식·표면 상한·테스트 전략)을 채우고 설계 "
-                      "검토를 마친 뒤 frontmatter 를 승격하라.", file=sys.stderr)
+        try:
+            status, path = find_ticket_for_mutation(args.id)
+        except FileNotFoundError as e:
+            print(e, file=sys.stderr)
+            return 2
+        if status != "open":
+            print(f"cannot claim {args.id}: currently in {status}/", file=sys.stderr)
+            return 1
+        fm, body = load_ticket(path)
+        # Check dependencies
+        for dep in fm.get("depends_on") or []:
+            try:
+                # 의존성 조회도 정확 일치만 — 이 판정이 claim 이동 여부를 정하므로, 폴백이
+                # 답한 *다른* 티켓의 done 상태로 게이트가 열리면 안 된다(미해소 = 거부).
+                dep_status, _ = find_ticket_for_mutation(dep)
+            except FileNotFoundError:
+                print(f"dependency {dep} not found", file=sys.stderr)
+                return 1
+            if dep_status != "done":
+                print(f"dependency {dep} is {dep_status}/, not done",
+                      file=sys.stderr)
                 return 1
 
-            # 롤백 복원 기준 = 이동 *전* 원본 바이트
-            # frontmatter 갱신(claimed_by/claimed_at)을 되돌릴 원본을 우리가 들고 있어야 한다.
-            original_bytes = path.read_bytes()
-            # board_lock (not the bare os.rename) is now the exclusive gate.
-            new_path = move_ticket(path, "claimed")
+        # 설계 단계 게이트 — `design: required` 티켓은 설계 절을 완성하고
+        # 필드를 `done`(또는 `waived: <사유>`)으로 승격하기 전에는 집을 수 없다. 의존성
+        # 거부와 같은 자리(이동 *전*·board_lock 안)라 티켓은 open/ 에 그대로 남는다.
+        # `n/a`·`waived`·필드 부재(구세대 티켓)는 무영향 — 판정은 `_design_issues` 단일
+        # 깔때기(lint advisory·promote 게이트와 같은 규칙).
+        design_verdict = _design_issues(args.id, body, fm.get("design"))
+        if design_verdict:
+            print(f"cannot claim {args.id}: 설계 단계 미완 — "
+                  f"{design_verdict[0][2]}", file=sys.stderr)
+            print("  → 설계 절(경계 실측·불변식·표면 상한·테스트 전략)을 채우고 설계 "
+                  "검토를 마친 뒤 frontmatter 를 승격하라.", file=sys.stderr)
+            return 1
+
+        # 롤백 복원 기준 = 이동 *전* 원본 바이트
+        # frontmatter 갱신(claimed_by/claimed_at)을 되돌릴 원본을 우리가 들고 있어야 한다.
+        original_bytes = path.read_bytes()
+        new_path = move_ticket(path, "claimed")
+        fm["status"] = "claimed"
+        fm["claimed_by"] = assignee
+        fm["claimed_at"] = now_utc()
+        dump_ticket(new_path, fm, body)
     except FileNotFoundError:
         print(f"claim race lost on {args.id}", file=sys.stderr)
         return 1
-
-    fm["status"] = "claimed"
-    fm["claimed_by"] = assignee
-    fm["claimed_at"] = now_utc()
-    dump_ticket(new_path, fm, body)
 
     # claim STRICT 3·4단계: 로컬 claim 을 **그 티켓 경로만** commit 하고
     # push 가 성공해야 *비로소* 소유 확정. push 실패(non-FF/거부)면 `reset --soft <anchor>` +
@@ -8330,10 +8677,12 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str) -> int:
     if not _board_git_claim_confirm(orig_head, claim_files):
         print(f"claim race lost on {args.id} (board push 충돌·소유 미확정·롤백됨)",
               file=sys.stderr)
-        refresh_board()
+        # board_lock 보유 중 public refresh_board()는 재진입이다. rollback까지 끝난 현재 상태를
+        # locked 본체로 render하고 두 락을 함께 해제한 뒤 반환한다.
+        _refresh_board_locked()
         return 1
     print(f"claimed {args.id} as {assignee}")
-    refresh_board()
+    _refresh_board_locked()
     return 0
 
 
@@ -8439,54 +8788,59 @@ def _complete_gate(tid: str, args: argparse.Namespace,
 
 
 def cmd_complete(args: argparse.Namespace) -> int:
-    try:
-        status, path = find_ticket_for_mutation(args.id)
-    except FileNotFoundError as e:
-        print(e, file=sys.stderr)
-        return 2
-    if status != "claimed":
-        print(f"cannot complete {args.id}: in {status}/, must be claimed",
-              file=sys.stderr)
-        return 1
+    with board_lock():
+        try:
+            status, path = find_ticket_for_mutation(args.id)
+        except FileNotFoundError as e:
+            print(e, file=sys.stderr)
+            return 2
+        if status != "claimed":
+            print(f"cannot complete {args.id}: in {status}/, must be claimed",
+                  file=sys.stderr)
+            return 1
 
-    # 본문은 게이트 **전**에 읽는다 — §3 DoD 체크의 입력이다(이동 전 읽기라 차단 시
-    # 티켓은 claimed/ 에 그대로 남는다).
-    fm, body = load_ticket(path)
+        # 본문은 게이트 **전**에 읽는다 — §3 DoD 체크의 입력이다(이동 전 읽기라 차단 시
+        # 티켓은 claimed/ 에 그대로 남는다). lookup부터 최종 dump까지 같은 lock이라 성장
+        # 절/tier가 이 body snapshot 뒤에 끼어들어 유실되지 않는다.
+        fm, body = load_ticket(path)
 
-    # Sync gate — refuse to mark done until housekeeping is verified.
-    problems = _complete_gate(args.id, args, body)
-    if problems:
-        print(f"cannot complete {args.id}: sync gate failed —", file=sys.stderr)
-        for msg in problems:
-            print(f"  ✗ {msg}", file=sys.stderr)
-        return 1
+        # Sync gate — refuse to mark done until housekeeping is verified.
+        problems = _complete_gate(args.id, args, body)
+        if problems:
+            print(f"cannot complete {args.id}: sync gate failed —", file=sys.stderr)
+            for msg in problems:
+                print(f"  ✗ {msg}", file=sys.stderr)
+            return 1
 
-    new_path = move_ticket(path, "done")
-    fm["status"] = "done"
-    fm["completed_at"] = now_utc()
-    dump_ticket(new_path, fm, body)
+        new_path = move_ticket(path, "done")
+        fm["status"] = "done"
+        fm["completed_at"] = now_utc()
+        dump_ticket(new_path, fm, body)
     refresh_board()
     # 스코프 = 이 mutation 이 만진 두 경로만 — 공유 board 의 무관한 미커밋 작업이
-    # 이 커밋에 실려 push 되지 않는다. 이하 best-effort 5곳 동일.
+    # 이 커밋에 실려 push 되지 않는다. best-effort sync는 기존 lifecycle 6 callsite
+    # (new/promote/complete/block/unclaim/unblock) + growth 공용 helper 1곳(section-add/tier 공유)이
+    # 모두 명시 path를 넘긴다(AST 메타가드가 7 callsite를 감사).
     ready = _board_git_sync_best_effort(f"complete {args.id}", (path, new_path))
     print(f"completed {args.id}{_board_git_mutation_state_suffix(ready)}")
     return 0
 
 
 def cmd_block(args: argparse.Namespace) -> int:
-    try:
-        status, path = find_ticket_for_mutation(args.id)
-    except FileNotFoundError as e:
-        print(e, file=sys.stderr)
-        return 2
-    if status not in ("open", "claimed"):
-        print(f"cannot block from {status}/", file=sys.stderr)
-        return 1
-    fm, body = load_ticket(path)
-    new_path = move_ticket(path, "blocked")
-    fm["status"] = "blocked"
-    note = f"\n## Blocked\n{args.reason} — {datetime.date.today().isoformat()}\n"
-    dump_ticket(new_path, fm, body + note)
+    with board_lock():
+        try:
+            status, path = find_ticket_for_mutation(args.id)
+        except FileNotFoundError as e:
+            print(e, file=sys.stderr)
+            return 2
+        if status not in ("open", "claimed"):
+            print(f"cannot block from {status}/", file=sys.stderr)
+            return 1
+        fm, body = load_ticket(path)
+        new_path = move_ticket(path, "blocked")
+        fm["status"] = "blocked"
+        note = f"\n## Blocked\n{args.reason} — {datetime.date.today().isoformat()}\n"
+        dump_ticket(new_path, fm, body + note)
     refresh_board()
     ready = _board_git_sync_best_effort(f"block {args.id}", (path, new_path))
     print(f"blocked {args.id}: {args.reason}{_board_git_mutation_state_suffix(ready)}")
@@ -8494,20 +8848,21 @@ def cmd_block(args: argparse.Namespace) -> int:
 
 
 def cmd_unclaim(args: argparse.Namespace) -> int:
-    try:
-        status, path = find_ticket_for_mutation(args.id)
-    except FileNotFoundError as e:
-        print(e, file=sys.stderr)
-        return 2
-    if status != "claimed":
-        print(f"cannot unclaim {args.id}: in {status}/", file=sys.stderr)
-        return 1
-    fm, body = load_ticket(path)
-    new_path = move_ticket(path, "open")
-    fm["status"] = "open"
-    fm["claimed_by"] = None
-    fm["claimed_at"] = None
-    dump_ticket(new_path, fm, body)
+    with board_lock():
+        try:
+            status, path = find_ticket_for_mutation(args.id)
+        except FileNotFoundError as e:
+            print(e, file=sys.stderr)
+            return 2
+        if status != "claimed":
+            print(f"cannot unclaim {args.id}: in {status}/", file=sys.stderr)
+            return 1
+        fm, body = load_ticket(path)
+        new_path = move_ticket(path, "open")
+        fm["status"] = "open"
+        fm["claimed_by"] = None
+        fm["claimed_at"] = None
+        dump_ticket(new_path, fm, body)
     refresh_board()
     ready = _board_git_sync_best_effort(f"unclaim {args.id}", (path, new_path))
     print(f"unclaimed {args.id}{_board_git_mutation_state_suffix(ready)}")
@@ -8515,19 +8870,20 @@ def cmd_unclaim(args: argparse.Namespace) -> int:
 
 
 def cmd_unblock(args: argparse.Namespace) -> int:
-    try:
-        status, path = find_ticket_for_mutation(args.id)
-    except FileNotFoundError as e:
-        print(e, file=sys.stderr)
-        return 2
-    if status != "blocked":
-        print(f"cannot unblock {args.id}: in {status}/, must be blocked",
-              file=sys.stderr)
-        return 1
-    fm, body = load_ticket(path)
-    new_path = move_ticket(path, "open")
-    fm["status"] = "open"
-    dump_ticket(new_path, fm, body)
+    with board_lock():
+        try:
+            status, path = find_ticket_for_mutation(args.id)
+        except FileNotFoundError as e:
+            print(e, file=sys.stderr)
+            return 2
+        if status != "blocked":
+            print(f"cannot unblock {args.id}: in {status}/, must be blocked",
+                  file=sys.stderr)
+            return 1
+        fm, body = load_ticket(path)
+        new_path = move_ticket(path, "open")
+        fm["status"] = "open"
+        dump_ticket(new_path, fm, body)
     refresh_board()
     ready = _board_git_sync_best_effort(f"unblock {args.id}", (path, new_path))
     print(f"unblocked {args.id}{_board_git_mutation_state_suffix(ready)}")
@@ -9282,7 +9638,7 @@ def _migrate_areas_apply(user: str) -> tuple[int, bool]:
     areas.md 는 `areas_append`가 *진짜* 공유 mutation 으로
     board_lock 을 잡고 쓰는 단일 파일이라, 본 RMW 의 write 도 같은 락으로 직렬화해야
     동시 repo-add 의 lost-update(전체 write_text 가 append 된 row 를 클로버)를 막는다.
-    이 락은 areas 구간 *한정* — 티켓 backfill 은 별개(아래 best-effort).
+    이 락은 areas 구간 *한정* — 티켓 backfill은 뒤의 독립 board_lock 구간에서 수행한다.
 
     **재진입 금지**: board_lock 은 OS flock(non-reentrant). 락 안에서 부르는 IO
     (`_migrate_areas_text`·AREAS_FILE read/write)는 락을 다시 잡지 않는다. 반환 `(total, wrote)`.
@@ -9307,72 +9663,61 @@ def _migrate_areas_apply(user: str) -> tuple[int, bool]:
 
 def _migrate_tickets_apply(
         user: str, slot: str, statuses: tuple[str, ...]) -> tuple[int, bool]:
-    """티켓 backfill — **best-effort**(하드 보장 아님). 글로벌 board_lock 을 잡지 않는다.
+    """티켓 backfill — scan/read/transform/relookup/atomic dump 전체를 board_lock으로 직렬화.
 
-    티켓 이동(`cmd_claim`·`cmd_complete`·`cmd_block`·`cmd_unclaim`)은 *설계상* board_lock
-    을 안 타고 lock-free atomic-rename(`move_ticket`)만 쓴다. 따라서 migration 이
-    board_lock 을 쥐어도 티켓 이동을 막지 못한다 — 락은 거짓 안전(차단만 유발)이라 안 잡는다.
-    일회성 backfill 도구를 위해 claim/complete 같은 코어 hot-path 를 락-직렬화로 재설계하는
-    것은 과설계다(PM 결정). 대신 정직한 best-effort 로 착지한다:
+    migrate는 status 이동 없이 frontmatter만 고치는 in-place ticket writer다. 성장 writer가 marker나
+    tier를 기록한 뒤 migration이 lock 밖의 옛 ``fm/body`` snapshot을 dump하면 그 성장이 유실된다.
+    따라서 lifecycle/growth 8종과 같은 board_lock을 후보 scan부터 마지막 dump까지 유지한다.
 
-      1. glob 으로 후보 ID 를 스캔한다(스냅샷·경로는 stale 될 수 있다).
-      2. 각 티켓을 *쓰기 직전* ID 로 현재 경로를 **재조회**(`find_ticket`)한다. 사라졌거나
-         스캔 경로와 다르면(다른 세션이 claim/complete 로 이동) **skip + stderr 경고** —
-         이동/완료된 티켓에 stale 쓰기를 하지 않는다.
-      3. 살아 있으면 현재 경로에 **atomic write**(temp + `os.replace`)로 backfill 한다
-         (부분쓰기 0).
-
-    재조회↔replace 사이의 미세 TOCTOU 는 *하드 보장하지 않는다* — migrate-identity 는
-    단일-세션 업그레이드 op(조용한 창에서 1회 실행) 전제로 이 잔여 창을 수용한다. 원자성·
-    이동-차단을 *주장하지 않는다*. 반환 `(total, wrote)`.
+    lock 안 재조회는 방어적으로 유지한다. 엔진 writer는 모두 같은 lock을 따르므로 정상 경합에서는
+    경로가 바뀌지 않지만, 수동/구버전 writer가 경로를 옮긴 경우 stale write 대신 skip+loud한다.
+    dump는 temp+``os.replace`` 원자 교체다. refresh는 호출자 ``cmd_migrate_identity``가 이 lock을
+    놓은 뒤 1회 수행한다(재진입 없음). board-git sync/다른 lock 호출은 이 함수에 없다.
+    반환 ``(total, wrote)``.
     """
     total = 0
     wrote = False
-    for status in statuses:
-        for p in sorted((tickets_dir() / status).glob("T-*.md")):
-            # 스캔 시점 frontmatter 로 변경 산출(읽기). ID 는 frontmatter 에서 얻는다.
-            try:
-                fm, body = load_ticket(p)
-            except FileNotFoundError:
-                # 스캔↔load 사이에 이동/완료됨 — best-effort skip.
-                print(f"  skip {p.name}: 스캔 후 사라짐(다른 세션이 이동) — backfill 안 함",
-                      file=sys.stderr)
-                continue
-            changes = _migrate_ticket_fm(fm, user, slot)
-            if not changes:
-                continue
-            tid = fm.get("id") or p.stem
-            # 쓰기 *직전* ID 로 현재 경로 재조회 — 스캔 경로와 다르거나 사라졌으면 stale
-            # 쓰기를 막는다(이동/완료된 티켓에 안 씀). 살아 있으면 현재 경로에 atomic write.
-            try:
-                cur_status, cur_path = find_ticket_for_mutation(tid)
-            except FileNotFoundError:
-                print(f"  skip {tid}: 재조회 시 없음(다른 세션이 완료/삭제) — backfill 안 함",
-                      file=sys.stderr)
-                continue
-            if cur_path != p:
-                print(f"  skip {tid}: {status}/ → {cur_status}/ 이동됨(쓰기 직전) — "
-                      f"stale 쓰기 안 함", file=sys.stderr)
-                continue
-            total += len(changes)
-            for c in changes:
-                print(f"  {tid} ({status}/): {c}")
-            dump_ticket_atomic(cur_path, fm, body)
-            wrote = True
+    with board_lock():
+        for status in statuses:
+            for p in sorted((tickets_dir() / status).glob("T-*.md")):
+                try:
+                    fm, body = load_ticket(p)
+                except FileNotFoundError:
+                    print(f"  skip {p.name}: 스캔 후 사라짐(수동/구버전 writer 이동) — "
+                          "backfill 안 함", file=sys.stderr)
+                    continue
+                changes = _migrate_ticket_fm(fm, user, slot)
+                if not changes:
+                    continue
+                tid = fm.get("id") or p.stem
+                try:
+                    cur_status, cur_path = find_ticket_for_mutation(tid)
+                except FileNotFoundError:
+                    print(f"  skip {tid}: 재조회 시 없음(수동/구버전 writer 완료/삭제) — "
+                          "backfill 안 함", file=sys.stderr)
+                    continue
+                if cur_path != p:
+                    print(f"  skip {tid}: {status}/ → {cur_status}/ 이동됨(쓰기 직전) — "
+                          f"stale 쓰기 안 함", file=sys.stderr)
+                    continue
+                total += len(changes)
+                for c in changes:
+                    print(f"  {tid} ({status}/): {c}")
+                dump_ticket_atomic(cur_path, fm, body)
+                wrote = True
     return total, wrote
 
 
 def _migrate_identity_apply(
         user: str, slot: str, statuses: tuple[str, ...]) -> tuple[int, bool]:
-    """비-dry-run 경로: areas(락 보호) + 티켓(best-effort) backfill 을 차례로 수행.
+    """비-dry-run 경로: areas + 티켓 backfill을 서로 독립된 board_lock 구간으로 수행.
 
     - **areas.md**: `_migrate_areas_apply` 가 board_lock 으로 RMW 를 보호한다(`areas_append`
       와의 lost-update 방지·진짜 공유 mutation).
-    - **티켓**: `_migrate_tickets_apply` 가 **best-effort** 로 backfill 한다(글로벌락 없음 —
-      티켓 이동이 락-free atomic-rename 이라 락이 이동을 못 막으므로 거짓 안전을 두지 않는다).
-      각 티켓은 쓰기 직전 재조회로 이동/완료 시 skip 한다.
+    - **티켓**: `_migrate_tickets_apply`가 scan/read/transform/relookup/dump 전체를 같은 board_lock으로
+      보호해 lifecycle/growth writer와 stale overwrite 없이 직렬화한다.
 
-    **재진입 금지**: areas 락 안에서 board_lock 을 다시 잡는 헬퍼는 부르지 않는다.
+    **재진입 금지**: areas와 ticket helper가 각각 락을 획득하고 반환한 뒤 다음 helper로 간다.
     board.md 재생성(`refresh_board` — 자체 board_lock)은 **호출자(`cmd_migrate_identity`)가
     락 밖에서 1회** 한다(데드락 방지). 반환 `(total, wrote)`.
     """
@@ -9393,18 +9738,10 @@ def cmd_migrate_identity(args: argparse.Namespace) -> int:
     슬롯 토큰을 보존*한다(`pm-1` → `<user>/pm-1`). `--repo`/`--slot` 은 부재 created_by 의
     표시값과 로그 표기에만 쓰이고, 이미 기록된 슬롯 토큰을 자신의 값으로 덮어쓰지 않는다(비파괴).
 
-    **단일-세션 업그레이드 op (동시성 모델)**: migrate-identity 는 *단일-세션* 업그레이드
-    op 다. 다른 세션이 claim/complete 로 보드를 변경하는 중엔 실행하지 말 것 — 조용한 창에서
-    1회 돌린다. 보드의 티켓 이동(claim/complete/block/unclaim)은 *설계상* board_lock 을 안
-    타고 lock-free atomic-rename 만 쓰므로, migration 이 락을 쥐어도 티켓 이동을
-    막지 못한다. 따라서:
-      - **areas write** 는 board_lock 으로 보호한다(`areas_append` 와의 lost-update 방지 —
-        areas 는 진짜 락-보호 공유 mutation).
-      - **티켓 backfill** 은 best-effort 다 — 각 티켓을 쓰기 직전 재조회해, 동시에 이동/완료
-        됐으면 해당 티켓을 skip(경고)하고 살아 있으면 atomic write 한다. 재조회↔쓰기 사이의
-        미세 TOCTOU 는 *하드 보장하지 않는다*(단일-세션 전제로 수용). 원자성·이동-차단을
-        주장하지 않는다.
-    board.md 재생성은 데드락 방지를 위해 (areas) 락 밖에서 1회 한다.
+    **단일-세션 업그레이드 op (동시성 모델)**: 일회성 전체 backfill이라는 운영 성격은 유지한다.
+    다만 areas와 티켓 모두 board_lock writer이며, 티켓 scan/read/transform/dump는 lifecycle/growth와
+    하나의 순서로 관측된다. 두 helper의 lock 구간은 중첩되지 않고 board.md 재생성은 모두 끝난 뒤
+    lock 밖에서 1회 한다.
     """
     _reject_task_slot_identity_mix(args)
     user = user_name(getattr(args, "user", None))
@@ -9648,34 +9985,39 @@ def cmd_promote(args: argparse.Namespace) -> int:
     기존처럼 no-op) — 이 경로에선 draft 개념 자체가 없으므로(`cmd_new` 가 legacy 에선 항상
     `open/` 에 발행) status 는 정상적으로 "open" 이다.
     """
-    try:
-        status, path = find_ticket_for_mutation(args.id)
-    except FileNotFoundError as e:
-        print(e, file=sys.stderr)
-        return 2
-    if status not in ("open", "draft"):
-        print(f"cannot promote {args.id}: currently in {status}/ (promote 는 open/draft 만)",
-              file=sys.stderr)
-        return 1
-    fm, body = load_ticket(path)
-    if _board_git_enabled():
-        remaining = _body_lint_issues(args.id, body, strict_sections=True,
-                                      design=fm.get("design"))
-        if remaining:
-            print(f"promote 거부 — {args.id} 에 아직 미충전 {len(remaining)}건:",
+    moved = False
+    with board_lock():
+        try:
+            status, path = find_ticket_for_mutation(args.id)
+        except FileNotFoundError as e:
+            print(e, file=sys.stderr)
+            return 2
+        if status not in ("open", "draft"):
+            print(f"cannot promote {args.id}: currently in {status}/ (promote 는 open/draft 만)",
                   file=sys.stderr)
-            for tid, kind, detail in remaining:
-                print(f"  ✗ [{kind}] {detail}", file=sys.stderr)
             return 1
-    # 스코프= 이 promote 가 만진 경로. draft 쪽 옛 경로는 `_board_git_scope_pathspec`
-    # 이 걸러낸다.
-    touched: list[Path] = [path]
-    if status == "draft":
-        # drafts_dir() → open/ 이동 — 이제서야 STATUS_DIRS 스캔·board-git 대상이 된다.
-        fm["status"] = "open"
-        dump_ticket(path, fm, body)  # status 갱신을 먼저 디스크에 반영한 뒤 이동.
-        new_path = move_ticket(path, "open")
-        touched.append(new_path)
+        fm, body = load_ticket(path)
+        if _board_git_enabled():
+            remaining = _body_lint_issues(args.id, body, strict_sections=True,
+                                          design=fm.get("design"))
+            if remaining:
+                print(f"promote 거부 — {args.id} 에 아직 미충전 {len(remaining)}건:",
+                      file=sys.stderr)
+                for tid, kind, detail in remaining:
+                    print(f"  ✗ [{kind}] {detail}", file=sys.stderr)
+                return 1
+        # 스코프= 이 promote 가 만진 경로. draft 쪽 옛 경로는 `_board_git_scope_pathspec`
+        # 이 걸러낸다.
+        touched: list[Path] = [path]
+        if status == "draft":
+            # drafts_dir() → open/ 이동 — 이제서야 STATUS_DIRS 스캔·board-git 대상이 된다.
+            # status dump와 rename도 같은 lock 안이라 claim/성장 writer가 중간 형상을 못 본다.
+            fm["status"] = "open"
+            dump_ticket(path, fm, body)
+            new_path = move_ticket(path, "open")
+            touched.append(new_path)
+            moved = True
+    if moved:
         refresh_board()
     ready = _board_git_sync_best_effort(f"promote {args.id}", touched)
     if ready:
@@ -10694,8 +11036,7 @@ def _prefix_relabel(build_map, *, verb: str, label: str,
     부르는 board.md 재생성은 `refresh_board`(자체 board_lock·재진입 데드락)가 아니라 락-보유 전제
     변형 `_refresh_board_locked` 를 직접 부른다. board-git 백업(`_board_git_*`)은 board_lock 이
     아니라 별도 git repo(subprocess)를 만지므로 재획득이 없다(구간 안이어도 데드락 없음).
-    complete/block/unclaim 은 설계상 board_lock 을 안 잡는 lock-free rename 이라 이 락이 못 막는다
-    (migrate-identity 와 같은 정직한 한계 — 단일-세션 admin op 전제).
+    ticket lifecycle/growth/migrate writer도 같은 board_lock을 쓰므로 relabel 적용 구간과 직렬화된다.
 
     **TOCTOU 봉합**: `build_map` 은 (id_map|None, rc) 를 반환하는 클로저다 —
     스캔→맵→collision 검사를 *락 안 fresh snapshot* 에서 수행해, 검사와 적용 사이에 `cmd_new` 가
@@ -11148,7 +11489,8 @@ def cmd_reid(args: argparse.Namespace) -> int:
         fm, _ = load_ticket(path)
         # 타 세션 claim 가드 — 단일세션 op(migrate-identity·prefix rename 동류). claim 중인
         # 티켓은 그 소유 세션만 reid 할 수 있다(다른 세션이 작업 중인 ID 를 바꿔 참조를 흔들지 않게).
-        # claim/complete/block 이 board_lock-free 라 미세 TOCTOU 는 하드 보장하지 않는다(정직한 한계).
+        # 적용 경로에서는 아래 `_prefix_relabel`이 fresh map/소유 검사를 board_lock 안에서 다시
+        # 수행한다. 이 선판정은 승인 안내를 위한 preview이며 쓰기 권위가 아니다.
         claimed_by = fm.get("claimed_by")
         if claimed_by:
             claimed_slot = str(claimed_by).rsplit("/", 1)[-1]   # `<user>/<slot>` → slot (또는 slot-only)
@@ -14500,8 +14842,9 @@ def refresh_board() -> None:
     board.md 가 항상 최신을 반영한다.
 
     **재진입 금지**(board_lock docstring) — board_lock 보유 중에는 부르지 않는다.
-    모든 호출자(cmd_new·claim·complete·block·unclaim·unblock·refresh)는 락 밖에서
-    부른다(cmd_new 는 ID-발행 락 블록이 끝난 뒤 호출).
+    일반 호출자(cmd_new·complete·block·unclaim·unblock·refresh)는 락 밖에서 부른다.
+    strict claim은 confirm/rollback까지 lock을 유지해야 하므로 public wrapper 대신
+    `_refresh_board_locked()`를 직접 호출한다.
     """
     with board_lock():
         _refresh_board_locked()
@@ -14585,6 +14928,9 @@ def _refresh_board_locked() -> None:
 
     # scan+render+write 가 모두 호출자(refresh_board)의 board_lock 구간 안이다 —
     # 마지막 writer 가 모든 선행 write 이후 상태를 scan 하므로 stale write 가 없다.
+    # claim은 재진입을 피하려 이 locked 본체를 직접 호출한다. fresh/부분 scaffold에서도 public
+    # wrapper에 기대지 않고 쓸 수 있게 destination parent 생성도 본체의 write 계약에 포함한다.
+    BOARD_FILE.parent.mkdir(parents=True, exist_ok=True)
     BOARD_FILE.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -14689,6 +15035,29 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("id", metavar="T-NNNN")
     p.set_defaults(fn=cmd_promote)
 
+    p = sub.add_parser(
+        "section-add",
+        help="open/claimed 티켓 끝에 역할·날짜·기계 marker가 붙은 빈 성장 절 append")
+    p.add_argument("id", metavar="T-NNNN")
+    p.add_argument("--role", required=True, choices=tuple(TICKET_GROWTH_ROLE_LABELS),
+                   help="절 작성 역할(기본 절명과 marker role을 함께 결정)")
+    p.add_argument("--label", help="사람용 절명 오버라이드(예: 재설계)")
+    p.set_defaults(fn=cmd_section_add)
+
+    p = sub.add_parser("tier", help="open/claimed 티켓의 위임 tier 기록·갱신")
+    p.add_argument("id", metavar="T-NNNN")
+    # choices를 쓰면 argparse가 rc=2로 선점한다. 계약의 인식 불가 값 rc=1을 cmd_tier가 직접
+    # 보장하도록 자유 문자열로 받고 허용집합은 런타임에서 검증한다.
+    p.add_argument("tier", metavar="pm-direct|normal|hard")
+    p.set_defaults(fn=cmd_tier)
+
+    p = sub.add_parser(
+        "tier-signals",
+        help="touches의 h1 모듈·h2 공용 코드·문서-전용 신호 표시(advisory)",
+    )
+    p.add_argument("id", metavar="T-NNNN")
+    p.set_defaults(fn=cmd_tier_signals)
+
     p = sub.add_parser("init", help="clone 당 1회 setup (solo · multi-repo N×M) — pm_state·local.conf·pre-push 훅")
     p.add_argument("--prefix", help="multi-repo (N×M) ID 네임스페이스 (예: PAY). 생략 = solo(legacy T-NNNN)")
     p.add_argument("--user-ack", metavar="<prefix>",
@@ -14703,9 +15072,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("migrate-identity",
                        help="이전 데이터 일회성 backfill — areas area_owner·ticket "
                             "created_by·슬롯-only claimed_by (멱등·비파괴·dry-run 선검토). "
-                            "단일-세션 op: 다른 세션이 claim/complete 중일 땐 실행 말 것"
-                            "(조용한 창에서 1회). areas write 는 락 보호·티켓 backfill 은 "
-                            "best-effort(동시 이동 시 해당 티켓 skip).")
+                            "일회성 전체 스캔 op. areas와 ticket RMW는 각각 board_lock으로 "
+                            "lifecycle/growth writer와 직렬화한다.")
     p.add_argument("--dry-run", action="store_true",
                    help="변경 미리보기(쓰기 0·per-file 요약). 먼저 실행 권장.")
     p.add_argument("--user", help="identity override (기본: local.conf user= / git config "

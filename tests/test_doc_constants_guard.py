@@ -24,8 +24,12 @@ def _load_board():
 def _read(rel: str) -> str:
     path = ROOT / rel
     text = path.read_text(encoding="utf-8")
-    details = path.parent / "references" / "operational-details.md"
-    if details.is_file():
+    match = re.search(
+        r"\[references/operational-details\.md\]\(([^)]+)\)", text
+    )
+    if match:
+        details = path.parent / match.group(1)
+        assert details.is_file(), f"{rel}: shipped operational detail 링크가 끊김: {match.group(1)}"
         text += "\n" + details.read_text(encoding="utf-8")
     return text
 

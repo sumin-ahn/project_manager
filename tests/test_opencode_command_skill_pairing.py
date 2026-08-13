@@ -50,7 +50,12 @@ def _skill_files(base: Path) -> "dict[str, Path]":
 
 
 def _neutralize_entry_notation(raw: bytes) -> bytes:
-    return re.sub(rb"(?<![A-Za-z0-9_.>/])[/\$](pm-[a-z][a-z0-9-]*)", rb"\1", raw)
+    raw = re.sub(rb"(?<![A-Za-z0-9_.>/])[/\$](pm-[a-z][a-z0-9-]*)", rb"\1", raw)
+    return re.sub(
+        rb"\.\./\.\./\.claude/skills/(?:pm-[a-z0-9-]+|spike-new)/references/operational-details\.md",
+        b"references/operational-details.md",
+        raw,
+    )
 
 
 def test_opencode_skill_mirror_matches_canonical_except_entry_notation():

@@ -28,6 +28,13 @@ tools: Read, Edit, Write, Bash, Glob, Grep
 
 위임 프롬프트가 **단일 진실**이다. 정보 부족으로 분석이 불가능하면 추측하지 말고 보고한다. `CLAUDE.md` §프로젝트 고유 제약의 안전 경계를 절대 위반하지 않는다.
 
+hard ticket 위임 프롬프트가 `pm-ticket-section:start/end role=architect` marker를 가진 slot 티켓
+사본 절대경로를 지정하면 PM 홈 티켓은 수정하지 않는다. 그 사본의 **해당 architect 절 안에만**
+경계 실측·불변식·표면 상한·테스트 전략과 구현 가능한 인터페이스 판단을 사실 중심으로 쓴다.
+리뷰가 설계 결함으로 판정한 재위임이면 이전 설계·구현 보충·리뷰를 대조해 이번에 준비된 최신
+architect 재설계 절에 결함과 바뀐 결정을 기록한다. marker·frontmatter·다른 절, 자기평가·장황한
+서사는 금지하며 결정·발행 권한은 계속 PM에 있다.
+
 ## 설계 spike 유형
 
 - **idea triage** — `ideas/open/` 후보의 promote / kill 권고와 근거. promote 권고면 ADR 초안 동봉.

@@ -30,6 +30,14 @@ def _command_entries(pm_update):
     ]
 
 
+def _expected_command(canonical: Path, name: str) -> bytes:
+    text = canonical.read_text(encoding="utf-8")
+    return text.replace(
+        "(references/operational-details.md)",
+        f"(../../.claude/skills/{name}/references/operational-details.md)",
+    ).encode("utf-8")
+
+
 def test_manifest_maps_every_command_to_root_canonical_skill():
     pm_update = _load_pm_update()
     entries = _command_entries(pm_update)
@@ -53,7 +61,7 @@ def test_pm_update_plan_generates_and_updates_flat_command_copies(tmp_path):
     pm_update.apply(changes)
     generated = tmp_path / ".opencode/command/pm-bootstrap.md"
     canonical = REPO / ".claude/skills/pm-bootstrap/SKILL.md"
-    assert generated.read_bytes() == canonical.read_bytes()
+    assert generated.read_bytes() == _expected_command(canonical, "pm-bootstrap")
 
     generated.write_text("stale\n", encoding="utf-8")
     changes, missing = pm_update.plan(REPO, entries, dest_root=tmp_path, render_enabled=False)

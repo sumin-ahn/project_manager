@@ -8,10 +8,9 @@ audience: pm-internal
 
 wave 종료 직전·시작 baseline 또는 사용자 `"qa·회귀 확인·통합 검증"` 요청 시 회귀+lint+git을 foreground로 합쳐 즉시 진행/중단을 판단한다.
 
-> **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
-> 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
-> **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 대신 도구의 workdir
-> 파라미터나 명령 분리로 실행한다. (Linux/macOS 는 `python3` 그대로.)
+환경별 명령 문법은 부트스트랩의 "현재 환경" 표시에 맞춰 [Windows 안내](../references/environment-windows.md) 또는 [Linux/macOS 안내](../references/environment-posix.md)를 참조한다.
+
+상황별 운영 상세는 [references/operational-details.md](references/operational-details.md)를 해당 상황에서 읽는다.
 
 ## 인접 스킬
 
@@ -49,33 +48,3 @@ git log --oneline -5
 ```
 
 working tree clean 여부·변경 파일 수·최근 commit 정합(핸드오프 commit 누락)을 확인한다.
-
-### 4. (선택) 프로젝트 evidence summary
-
-운영 데이터(cron 로그·paper-run audit 등)가 있으면 인스턴스 overlay로 최근 cycle 요약을 덧붙인다. 없으면 noise를 피하려 skip하며 구체 경로는 인스턴스 소유다.
-
-### 5. PM report
-
-호출자가 다음 markdown을 합산 출력한다.
-
-```
-## PM 통합 검증 report (YYYY-MM-DD HH:MM)
-- 회귀: N / N 통과 (또는 K failed — <첫 fail 1줄>)
-- lint: clean (또는 N advisory / 차단 M)
-- git: <clean | N files modified> · branch <name> · HEAD <SHA short>
-- 최근 commit: <SHA> <subject>
-- (선택) evidence: <last cycle summary>
-
-## 결정 (PM 손)
-- 회귀 통과 + lint 차단 0 + working tree clean → wave 종료/시작 OK.
-- 회귀 red → baseline fix 또는 dev 재작업.
-- working tree dirty → wave 종결 commit 누락·재확인.
-```
-
-## 불변
-
-- fail-soft가 아니다. red는 즉시 보고하고 후속 단계를 중단한다.
-- 1번 회귀와 3번 git은 독립이므로 multiple Bash 병렬 호출할 수 있다.
-- 비즈니스 로직 없는 thin 합성이며 실제 차단 검증은 push gate(pre-push hook)가 보증한다.
-- evidence는 선택·인스턴스 소유다.
-- 참고: [[pm-regression]] · [[pm-wave-finish]] · [[pm-bootstrap]]; backbone CLI `python3 .project_manager/tools/board.py {lint,regression}`.

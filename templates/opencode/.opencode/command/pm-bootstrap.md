@@ -8,10 +8,9 @@ audience: user-entrypoint
 
 `.project_manager/tools/pm_bootstrap.py`로 board·git·회귀, 차수(`PM N차`), 마지막 handoff 본문 전체, 현재 정체성의 pm_state 남은작업/사용자발의 절을 dump한다. PM은 결과를 요약·판단하고 옵션과 결정 요청을 제시한다.
 
-> **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
-> 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
-> **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 대신 도구의 workdir
-> 파라미터나 명령 분리로 실행한다. (Linux/macOS 는 `python3` 그대로.)
+환경별 명령 문법은 부트스트랩의 "현재 환경" 표시에 맞춰 [Windows 안내](../references/environment-windows.md) 또는 [Linux/macOS 안내](../references/environment-posix.md)를 참조한다.
+
+상황별 운영 상세는 [references/operational-details.md](../../.claude/skills/pm-bootstrap/references/operational-details.md)를 해당 상황에서 읽는다.
 
 ## 사전 부트스트랩 (skill 외부)
 
@@ -70,25 +69,3 @@ python3 .project_manager/tools/pm_bootstrap.py --task <이름>
 
 - `--json`: JSON 출력(다른 skill wrapper용).
 - `--with-pytest`: 회귀 opt-in(default skip). 직전 handoff 회귀 숫자가 의심되거나 baseline 재측정 때만 사용한다. 별도 QA skill이 wave 종료 회귀를 맡으면 default skip을 유지한다.
-
-## 출력 검증
-
-- **board**: `done / open / claimed / blocked`는 내 세션 스코프(open=내 세션 생성 스트림, claim=내 세션)다. 타 세션분은 기본 dump에 없다. 공유 풀 전체는 `board.py list --all`, 내 전 세션은 `--mine`으로 조회한다. 숫자는 스냅샷이므로 옵션 제시 전 `board.py list --mine`으로 claim 주체를 교차 확인한다(부분 push/오프라인 창).
-- **회귀**: default는 `(skip — handoff entry 참조 · --with-pytest 로 재측정)`. `--with-pytest`면 `N / N passed`; red면 즉시 baseline fix하고 wave 시작을 막는다.
-- **git**: 브랜치, 최근 5 commit, working tree clean 여부. task-only는 task 소유 작업공간만 수집하고 다중 슬롯 대표 cwd·전수 freshness 범위를 표시한다.
-- **차수**: `## PM N차 부트스트랩`. task pm_state 또는 bound slot pm_state의 세션식별 절에서 추론하며 미해소면 placeholder다.
-- **마지막 entry**: `log/current.md` 제목(date·type·title) + 본문 전체를 `<details>`로 dump한다. `handoff`면 직전 PM 종료 정합, `complete`면 wave 진행 중일 수 있다.
-- **pm_state**: 남은 작업/사용자발의 절을 surface한다.
-
-## PM 보고
-
-pm_role.md §인계 후 첫 turn template에 따라 CLI 출력 뒤 다음만 요약·판단한다:
-
-1. board 1줄: `done / open / claimed / blocked` + 회귀·lint·git.
-2. 직전 세션 3~5줄: dump된 handoff의 핵심 산출물·메타 학습.
-3. 다음 옵션 N개: surface된 pm_state 남은 작업 전체 그림의 우선순위.
-4. 결정 요청: *무엇부터 갈까요?* + 권장 시퀀스 1줄.
-
-CLI subprocess 실패는 fail-soft가 아니므로 즉시 중단·보고한다. 이 skill은 비즈니스 로직 없는 thin wrapper이며 자동 trigger는 frontmatter description의 한국어 명령(예: `"부트스트랩"`)으로 매칭한다.
-
-참고: `.project_manager/tools/pm_bootstrap.py`(backbone), `.project_manager/wiki/pm_role.md`(부트스트랩 절차 단일 진실).

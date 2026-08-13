@@ -669,6 +669,56 @@ def _clean_touches(value: object) -> list[str]:
     return []
 
 
+_PM_DIRECT_CODE_SUFFIXES: frozenset[str] = frozenset({
+    ".c", ".cc", ".cpp", ".cs", ".go", ".java", ".js", ".jsx", ".kt", ".kts",
+    ".php", ".py", ".rb", ".rs", ".sh", ".swift", ".ts", ".tsx",
+})
+
+
+def _is_changed_test_path(path: str) -> bool:
+    """repo-relative 변경 경로가 신규/수정 테스트인지 판정."""
+    canonical = path.strip().replace("\\", "/")
+    parts = tuple(part for part in canonical.split("/") if part and part != ".")
+    name = parts[-1] if parts else ""
+    return ("tests" in parts or "test" in parts or name.startswith("test_")
+            or name.endswith("_test.py") or name.endswith(".test.js")
+            or name.endswith(".test.ts") or name.endswith(".spec.js")
+            or name.endswith(".spec.ts"))
+
+
+def pm_direct_finish_warnings(
+    tier: object, touches: Sequence[str], changed_paths: Sequence[str], *,
+    touched_file_count: int | None = None,
+    unresolved_directories: Sequence[str] = (),
+) -> tuple[str, ...]:
+    """PM-direct 조건 a·b 재검 경고. 반환값은 오직 안내이며 차단은 없다."""
+    if tier != "pm-direct":
+        return ()
+    warnings: list[str] = []
+    file_count = len(touches) if touched_file_count is None else touched_file_count
+    if unresolved_directories:
+        warnings.append(
+            "PM-direct 조건 (a) 재확인: directory touches 파일 수를 해소하지 "
+            f"못했습니다(상향 기본값): {', '.join(unresolved_directories)}."
+        )
+    elif file_count > 2:
+        warnings.append(
+            f"PM-direct 조건 (a) 위반: touches가 {file_count}개 파일입니다"
+            "(2개 이하 필요)."
+        )
+    code_changed = any(
+        Path(path.replace("\\", "/")).suffix.lower() in _PM_DIRECT_CODE_SUFFIXES
+        for path in changed_paths
+    )
+    test_changed = any(_is_changed_test_path(path) for path in changed_paths)
+    if code_changed and not test_changed:
+        warnings.append(
+            "PM-direct 조건 (b) 재확인: 코드 파일 diff가 있지만 "
+            "신규/수정 테스트가 보이지 않습니다."
+        )
+    return tuple(warnings)
+
+
 class ClaimedTouchesSnapshot(NamedTuple):
     """claimed 티켓 touches 읽기 결과 — 정상 빈 목록과 읽기 실패를 분리한다."""
     tickets: dict[str, list[str]]
@@ -1855,6 +1905,46 @@ class TicketFinisher:
 
     # ── 메인 흐름 ────────────────────────────────────────────────────
 
+    def _warn_pm_direct_conditions(self, ticket_id: str) -> None:
+        """PM-direct a·b를 재검하되 finish 흐름/반환 코드는 막지 않는다."""
+        snapshot = _ticket_frontmatter_snapshot(self._board_py, ticket_id)
+        if snapshot.error is not None or snapshot.frontmatter.get("tier") != "pm-direct":
+            return
+        touches = _clean_touches(snapshot.frontmatter.get("touches"))
+        measured_touches = ([] if not touches else
+                            self._normalize_measured_touches(touches, warn=False))
+        if measured_touches is None:
+            print(
+                "  ⚠ PM-direct 재검 skip — touches 좌표를 컨텐츠 worktree로 "
+                "정규화하지 못했습니다. raw PM-home 경로로 판정하지 않습니다.",
+                file=sys.stderr,
+            )
+            return
+        try:
+            board = load_board_module(self._board_py)
+            expand = getattr(board, "expand_owned_touch_files", None) if board else None
+            if expand is None:
+                raise RuntimeError("board expand_owned_touch_files seam 부재")
+            expanded = expand(self._code_tree(), measured_touches)
+            entries = (self._status_entries_at_fn(self._task_workspace)
+                       if self._task_workspace is not None else self._status_entries_fn())
+            changed_paths = tuple(
+                path for _xy, path in entries
+                if any(self._touch_claims_path(touch, path) for touch in measured_touches)
+            )
+        except Exception as exc:  # noqa: BLE001 — advisory 재검은 never-block.
+            if _is_engine_rev_skew(exc):
+                raise
+            detail = " ".join(str(exc).split()) or type(exc).__name__
+            print(f"  ⚠ PM-direct 재검 skip — git 변경 경로를 읽지 못했습니다 ({detail}).",
+                  file=sys.stderr)
+            return
+        for warning in pm_direct_finish_warnings(
+                snapshot.frontmatter.get("tier"), touches, changed_paths,
+                touched_file_count=len(expanded.paths),
+                unresolved_directories=expanded.unresolved_directories):
+            print(f"  ⚠ {warning}", file=sys.stderr)
+
     def run(
         self,
         ticket_id: str,
@@ -1880,6 +1970,9 @@ class TicketFinisher:
             f"[ticket_finish] {ticket_id} 완료 부기 시작 "
             f"(dry_run={dry_run}, skip_pytest={skip_pytest})"
         )
+
+        # PM 판정은 권위를 유지한다. 이 재검은 경고만 보이고 이후 rc를 바꾸지 않는다.
+        self._warn_pm_direct_conditions(ticket_id)
 
         # ── 0. 진입 게이트(preflight) — diff 서킷브레이커 · DoD 부기 ─────
         # 둘 다 회귀보다 **앞**이고, 무엇보다 [2/5] log 스켈레톤 append 보다 앞이다: 여기서 막힐

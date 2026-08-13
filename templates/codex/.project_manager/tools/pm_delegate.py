@@ -55,6 +55,7 @@ import json
 import math
 import os
 import re
+import secrets
 import shlex
 import shutil
 import stat
@@ -658,6 +659,752 @@ ROLE_PREAMBLES: Mapping[str, str] = _LazyRolePreambles()
 
 class DelegateError(Exception):
     """config 해소·검증·containment·재앵커 등의 fail-loud 오류 (main 이 rc=1 로 변환)."""
+
+
+TICKET_COPY_ROLES: frozenset[str] = frozenset(
+    {"developer", "code-reviewer", "architect"}
+)
+TICKET_COPY_REL_ROOT = Path(".project_manager") / ".local" / "delegate-ticket-copies"
+TICKET_COPY_TRUST_REL_ROOT = (
+    Path(".project_manager") / ".local" / "delegate-ticket-copy-trust"
+)
+TICKET_COPY_IGNORE_PATTERN = "/.project_manager/.local/delegate-ticket-copies/"
+TICKET_COPY_BASELINE_NAME = "baseline.md"
+TICKET_COPY_METADATA_NAME = "metadata.json"
+TICKET_COPY_TAG_NAME = "auth.tag"
+TICKET_COPY_METADATA_VERSION = 1
+TICKET_COPY_HMAC_DOMAIN = b"project-manager/ticket-copy/v1\x00"
+_TICKET_COPY_FD_SUPPORTED = (
+    hasattr(os, "O_NOFOLLOW")
+    and hasattr(os, "O_DIRECTORY")
+    and os.open in getattr(os, "supports_dir_fd", frozenset())
+    and os.mkdir in getattr(os, "supports_dir_fd", frozenset())
+)
+_TICKET_SECTION_MARKER = "pm-ticket-section"
+_TICKET_SECTION_LINE_RE = re.compile(
+    r"\A<!-- pm-ticket-section:(start|end) role=([a-z][a-z0-9-]*) -->\r?\n?\Z"
+)
+
+
+class TicketGrowthSection(NamedTuple):
+    role: str
+    ordinal: int
+    marker_start: int
+    content_start: int
+    content_end: int
+    marker_end: int
+
+
+class TicketCopyPlan(NamedTuple):
+    path: Path
+    baseline_path: Path
+    metadata_path: Path
+    cwd: Path
+    pm_home: Path
+    ticket: str
+    role: str
+    capability: bytes = b""
+
+
+class TicketHarvestResult(NamedTuple):
+    changed: bool
+    sync_ready: bool
+
+
+def _ticket_copy_metadata_bytes(metadata: dict) -> bytes:
+    """HMAC/복제본이 공유하는 canonical metadata serialization."""
+    return json.dumps(
+        metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _ticket_copy_tag(capability: bytes, metadata_bytes: bytes, baseline: bytes) -> bytes:
+    if len(capability) != 32:
+        raise DelegateError("ticket-copy capability 형식 불일치")
+    payload = (
+        TICKET_COPY_HMAC_DOMAIN
+        + len(metadata_bytes).to_bytes(8, "big")
+        + metadata_bytes
+        + len(baseline).to_bytes(8, "big")
+        + baseline
+    )
+    return hmac.new(capability, payload, hashlib.sha256).digest()
+
+
+def _ticket_growth_sections(text: str) -> list[TicketGrowthSection]:
+    """성장 marker 문법을 전수 검증하고 marker 쌍의 byte 범위를 반환한다.
+
+    같은 역할의 여러 *완전한* 쌍은 라운드 누적 계약이라 허용한다. 누락·중첩·역할 불일치와
+    marker 토큰을 포함하지만 정확 문법이 아닌 줄은 모두 loud 실패다.
+    """
+    sections: list[TicketGrowthSection] = []
+    open_marker: tuple[str, int, int, int] | None = None
+    ordinals: dict[str, int] = {}
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        # 본문이 marker 문법을 설명하는 평문/backtick(`pm-ticket-section:start/end`)은
+        # 데이터가 아니다. 실제 HTML comment 후보만 엄격 파싱한다.
+        if f"<!-- {_TICKET_SECTION_MARKER}:" not in line:
+            offset += len(line)
+            continue
+        match = _TICKET_SECTION_LINE_RE.fullmatch(line)
+        if match is None:
+            raise DelegateError(
+                "티켓 성장 marker 손상/중복 문법 — marker 줄은 정확히 "
+                "`<!-- pm-ticket-section:start|end role=<role> -->` 하나여야 합니다"
+            )
+        kind, role = match.groups()
+        if role not in TICKET_COPY_ROLES:
+            raise DelegateError(f"티켓 성장 marker 역할 불일치/미지원: {role}")
+        line_end = offset + len(line)
+        if kind == "start":
+            if open_marker is not None:
+                raise DelegateError(
+                    f"티켓 성장 marker 중첩: role={open_marker[0]} 안에 role={role} start"
+                )
+            ordinal = ordinals.get(role, 0)
+            ordinals[role] = ordinal + 1
+            open_marker = (role, ordinal, offset, line_end)
+        else:
+            if open_marker is None:
+                raise DelegateError(f"티켓 성장 end marker 중복/짝 없음: role={role}")
+            start_role, ordinal, marker_start, content_start = open_marker
+            if role != start_role:
+                raise DelegateError(
+                    f"티켓 성장 marker 역할 불일치: start={start_role} · end={role}"
+                )
+            sections.append(TicketGrowthSection(
+                role, ordinal, marker_start, content_start, offset, line_end,
+            ))
+            open_marker = None
+        offset = line_end
+    if open_marker is not None:
+        raise DelegateError(f"티켓 성장 start marker의 end 누락: role={open_marker[0]}")
+    return sections
+
+
+def _ticket_role_section(
+    text: str, role: str, *, ordinal: int | None = None,
+) -> TicketGrowthSection:
+    matches = [section for section in _ticket_growth_sections(text)
+               if section.role == role]
+    if not matches:
+        raise DelegateError(
+            f"티켓에 role={role} 성장 절이 없습니다 — 먼저 `board.py section-add "
+            f"<TICKET> --role {role}`로 빈 절을 만드세요"
+        )
+    if ordinal is None:
+        return matches[-1]
+    for section in matches:
+        if section.ordinal == ordinal:
+            return section
+    raise DelegateError(
+        f"준비 당시 role={role} 성장 절 ordinal={ordinal}이 PM 홈 최신 티켓에 없습니다"
+    )
+
+
+def _write_exclusive_file(
+    path: Path, data: bytes, mode: int, *, parent_fd: int | None = None,
+) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    target = path.name if parent_fd is not None else str(path)
+    open_kwargs = {"dir_fd": parent_fd} if parent_fd is not None else {}
+    fd = os.open(target, flags, mode, **open_kwargs)
+    try:
+        with os.fdopen(fd, "wb", closefd=False) as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+    finally:
+        os.close(fd)
+
+
+def _secure_machine_dir(
+    root: Path, relative_parts: tuple[str, ...], *, label: str,
+) -> tuple[Path, int | None]:
+    """root 아래 기계 디렉터리를 no-symlink chain으로 만들고 0700으로 고정한다."""
+    root = root.resolve()
+    current = root
+    if _TICKET_COPY_FD_SUPPORTED:
+        try:
+            current_fd = os.open(
+                str(root), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            )
+        except OSError as exc:
+            raise DelegateError(f"slot cwd를 안전하게 열 수 없음: {root}: {exc}") from exc
+        try:
+            for part in relative_parts:
+                if part in ("", ".", "..") or "/" in part or "\\" in part:
+                    raise DelegateError(f"{label} 경로 성분 거부: {part!r}")
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=current_fd)
+                except FileExistsError:
+                    pass
+                try:
+                    child_fd = os.open(
+                        part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=current_fd,
+                    )
+                except OSError as exc:
+                    raise DelegateError(
+                        f"{label} 경로 symlink/비-directory 거부: {current / part}: {exc}"
+                    ) from exc
+                os.close(current_fd)
+                current_fd = child_fd
+                current = current / part
+            _assert_attempt_child_path(root, current, label=label)
+            return current, current_fd
+        except BaseException:
+            os.close(current_fd)
+            raise
+    for part in relative_parts:
+        if part in ("", ".", "..") or "/" in part or "\\" in part:
+            raise DelegateError(f"{label} 경로 성분 거부: {part!r}")
+        candidate = current / part
+        try:
+            candidate.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        try:
+            observed = candidate.lstat()
+        except OSError as exc:
+            raise DelegateError(f"{label} 검사 실패: {candidate}: {exc}") from exc
+        if stat.S_ISLNK(observed.st_mode) or not stat.S_ISDIR(observed.st_mode):
+            raise DelegateError(f"{label} symlink/비-directory 거부: {candidate}")
+        resolved = candidate.resolve()
+        if resolved.parent != current.resolve():
+            raise DelegateError(f"{label} escape/교체 거부: {candidate}")
+        current = candidate
+    _assert_attempt_child_path(root, current, label=label)
+    return current, None
+
+
+def _secure_ticket_copy_dir(
+    cwd: Path, ticket: str, role: str, run_id: str,
+) -> tuple[Path, int | None]:
+    return _secure_machine_dir(
+        cwd,
+        (*TICKET_COPY_REL_ROOT.parts, ticket, role, run_id),
+        label="티켓 사본 디렉터리",
+    )
+
+
+def _secure_ticket_trust_dir(
+    pm_home: Path, run_id: str,
+) -> tuple[Path, int | None]:
+    return _secure_machine_dir(
+        pm_home,
+        (*TICKET_COPY_TRUST_REL_ROOT.parts, run_id),
+        label="PM 신뢰 ticket-copy 디렉터리",
+    )
+
+
+def _git_lexical_path(cwd: Path, *args: str) -> Path:
+    result = subprocess.run(
+        ["git", "-C", str(cwd), "rev-parse", "--path-format=absolute", *args],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    value = result.stdout.strip()
+    if result.returncode != 0 or not value or "\n" in value or "\r" in value:
+        raise DelegateError(
+            f"slot git path 해소 실패(rc={result.returncode}): {result.stderr.strip()}"
+        )
+    if not os.path.isabs(value):
+        raise DelegateError(f"slot git path가 절대경로가 아님: {value}")
+    return Path(os.path.abspath(value))
+
+
+def _ensure_ticket_copy_ignored(cwd: Path) -> None:
+    """git common/info fd 안에서만 exclude를 잠그고 append한다."""
+    required = (
+        hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_DIRECTORY")
+        and os.open in getattr(os, "supports_dir_fd", frozenset())
+        and os.stat in getattr(os, "supports_dir_fd", frozenset())
+        and os.stat in getattr(os, "supports_follow_symlinks", frozenset())
+    )
+    if not required:
+        raise DelegateError("git exclude dirfd/nofollow 안전 경계 미지원")
+    file_lock = _load_file_lock()
+    supported = getattr(file_lock, "exclusive_lock_supported", None)
+    if not callable(supported):
+        raise DelegateError(
+            "중앙 file_lock 사본에 exclusive_lock_supported API가 없음 — pm-update로 "
+            "엔진 전체를 동기화하세요"
+        )
+    if not supported():
+        raise DelegateError(
+            "git exclude 안전 append에 필요한 OS 배타락 primitive가 없어 fail-closed합니다"
+        )
+    common = _git_lexical_path(cwd, "--git-common-dir")
+    exclude = _git_lexical_path(cwd, "--git-path", "info/exclude")
+    expected = Path(os.path.abspath(os.path.join(str(common), "info", "exclude")))
+    if exclude != expected:
+        raise DelegateError(
+            f"git exclude lexical 좌표 불일치: expected={expected} · observed={exclude}"
+        )
+    common_fd: int | None = None
+    info_fd: int | None = None
+    lock_fd: int | None = None
+    exclude_fd: int | None = None
+    lock_held = False
+    lock_name = "exclude.pm-delegate.lock"
+    try:
+        common_fd = os.open(str(common), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        info_fd = os.open(
+            "info", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=common_fd,
+        )
+        # symlink/non-regular exclude 또는 lock이면 lock 파일 생성/append 전에 fail-closed.
+        existing_identity: dict[str, tuple[int, int]] = {}
+        for name in ("exclude", lock_name):
+            try:
+                observed = os.stat(name, dir_fd=info_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
+                raise DelegateError(
+                    f"git info/{name}이 단일-link regular file이 아님"
+                )
+            existing_identity[name] = (observed.st_dev, observed.st_ino)
+        lock_fd = os.open(
+            lock_name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=info_fd,
+        )
+        opened_lock = os.fstat(lock_fd)
+        if (
+            not stat.S_ISREG(opened_lock.st_mode)
+            or opened_lock.st_nlink != 1
+            or (
+                lock_name in existing_identity
+                and existing_identity[lock_name] != (opened_lock.st_dev, opened_lock.st_ino)
+            )
+        ):
+            raise DelegateError("git info/exclude lock이 단일-link 고정 regular file이 아님")
+        file_lock.acquire_exclusive(lock_fd)
+        lock_held = True
+        exclude_fd = os.open(
+            "exclude", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=info_fd,
+        )
+        observed = os.fstat(exclude_fd)
+        if (
+            not stat.S_ISREG(observed.st_mode)
+            or observed.st_nlink != 1
+            or (
+                "exclude" in existing_identity
+                and existing_identity["exclude"] != (observed.st_dev, observed.st_ino)
+            )
+        ):
+            raise DelegateError("git info/exclude가 단일-link 고정 regular file이 아님")
+        os.lseek(exclude_fd, 0, os.SEEK_SET)
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(exclude_fd, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        existing_bytes = b"".join(chunks)
+        try:
+            existing = existing_bytes.decode("utf-8")
+        except UnicodeError as exc:
+            raise DelegateError("git info/exclude UTF-8 읽기 실패") from exc
+        if TICKET_COPY_IGNORE_PATTERN in existing.splitlines():
+            return
+        prefix = b"" if not existing_bytes or existing_bytes.endswith((b"\n", b"\r")) else b"\n"
+        addition = (
+            prefix
+            + b"# pm_delegate machine-owned ticket growth copies\n"
+            + TICKET_COPY_IGNORE_PATTERN.encode("utf-8")
+            + b"\n"
+        )
+        os.lseek(exclude_fd, 0, os.SEEK_END)
+        view = memoryview(addition)
+        while view:
+            written = os.write(exclude_fd, view)
+            view = view[written:]
+        os.fsync(exclude_fd)
+    except OSError as exc:
+        raise DelegateError(f"git exclude 안전 append 실패: {exc}") from exc
+    finally:
+        try:
+            if lock_held and lock_fd is not None:
+                file_lock.release_exclusive(lock_fd)
+        finally:
+            for fd in (exclude_fd, lock_fd, info_fd, common_fd):
+                if fd is not None:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
+
+def _load_board_for_repo(repo: Path):
+    repo = repo.resolve()
+    path = repo / ".project_manager" / "tools" / "board.py"
+    if not path.is_file():
+        # 등록 worktree fixture/채택자처럼 PM 홈은 board 데이터만 소유하고 실행 엔진은 별도
+        # checkout에 있는 형상을 지원한다. 코드 권위는 현재 stamped engine, 데이터 권위는 repo다.
+        path = Path(__file__).resolve().with_name("board.py")
+    if not path.is_file():
+        raise DelegateError(f"실행 가능한 board.py가 없습니다: {path}")
+    board = _load_module_from_path(path, "board.py", verifier=_verify_engine_rev)
+    # 동적 import의 REPO는 파일 깊이로 파생되지만 hermetic fixture처럼 tools만 옮긴 형상도
+    # 명시된 PM 홈 좌표가 권위다. board의 기존 함수는 모두 module REPO에서 경로를 해소한다.
+    board.REPO = repo
+    board.LOCAL_DIR = board.REPO / ".project_manager" / ".local"
+    board.BOARD_LOCK = board.LOCAL_DIR / "board.lock"
+    board.BOARD_FILE = board.REPO / ".project_manager" / "wiki" / "board.md"
+    return board
+
+
+def prepare_ticket_copy(
+    *, ticket: str, role: str, cwd: Path, pm_home: Path,
+) -> TicketCopyPlan:
+    """PM 홈 현재 티켓 전문을 slot 내부 기계 사본으로 원자 materialize한다."""
+    if role not in TICKET_COPY_ROLES:
+        raise DelegateError(f"티켓 성장 사본 미지원 역할: {role}")
+    board = _load_board_for_repo(pm_home)
+    # lifecycle/growth writer와 같은 board_lock 아래 lookup→read를 고정한다. path를 찾은 뒤
+    # claim/block이 옮기면 옛 경로 read가 실패하거나 다른 상태의 snapshot을 만드는 TOCTOU를 닫는다.
+    with board.board_lock():
+        candidates: list[tuple[str, Path]] = []
+        for status in ("open", "claimed", "blocked", "done"):
+            directory = board.tickets_dir() / status
+            for path in sorted(directory.glob(f"{ticket}-*.md")):
+                # 성장 사본은 손상 ticket에서도 외부 실행/adapter audit의 기존 fail-soft를
+                # 죽이지 않아야 한다. filename ID가 요청과 맞으면 전문을 그대로 보존하고,
+                # frontmatter 의미 검증은 scope/board 각 기존 축에 맡긴다.
+                if board._ticket_id_from_filename(path.name) == ticket:
+                    candidates.append((status, path))
+        if len(candidates) != 1:
+            raise DelegateError(
+                f"ticket copy source는 canonical filename 정확 1건이어야 합니다: "
+                f"{ticket} · found={len(candidates)}"
+            )
+        status, source = candidates[0]
+        if status not in ("open", "claimed"):
+            raise DelegateError(
+                f"티켓 성장 사본은 open/claimed만 허용: {ticket} currently in {status}/"
+            )
+        try:
+            source_bytes = source.read_bytes()
+            source_text = source_bytes.decode("utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise DelegateError(f"PM 홈 티켓 읽기 실패: {source}: {exc}") from exc
+    target = _ticket_role_section(source_text, role)
+    run_id = uuid.uuid4().hex
+    capability = secrets.token_bytes(32)
+    _ensure_ticket_copy_ignored(cwd)
+    metadata = {
+        "version": TICKET_COPY_METADATA_VERSION,
+        "run_id": run_id,
+        "ticket": ticket,
+        "role": role,
+        "ordinal": target.ordinal,
+        "cwd": str(cwd.resolve()),
+        "pm_home": str(pm_home.resolve()),
+        "source_relpath": source.relative_to(pm_home.resolve()).as_posix(),
+        "baseline_sha256": hashlib.sha256(source_bytes).hexdigest(),
+    }
+    metadata_bytes = _ticket_copy_metadata_bytes(metadata)
+    tag = _ticket_copy_tag(capability, metadata_bytes, source_bytes)
+    # slot sealed bundle과 PM-home trust는 복구/탐지용 복제본일 뿐 권위가 아니다. 권위는 어떤
+    # 파일에도 기록하지 않는 per-run capability와 이 canonical metadata+baseline MAC 검증이다.
+    trust_dir, trust_dir_fd = _secure_ticket_trust_dir(pm_home, run_id)
+    try:
+        _write_exclusive_file(
+            trust_dir / TICKET_COPY_BASELINE_NAME,
+            source_bytes,
+            0o400,
+            parent_fd=trust_dir_fd,
+        )
+        _write_exclusive_file(
+            trust_dir / TICKET_COPY_METADATA_NAME,
+            metadata_bytes,
+            0o400,
+            parent_fd=trust_dir_fd,
+        )
+        _write_exclusive_file(
+            trust_dir / TICKET_COPY_TAG_NAME, tag, 0o400, parent_fd=trust_dir_fd,
+        )
+    except OSError as exc:
+        raise DelegateError(f"PM 신뢰 ticket-copy 상태 생성 실패: {trust_dir}: {exc}") from exc
+    finally:
+        if trust_dir_fd is not None:
+            os.close(trust_dir_fd)
+    run_dir, run_dir_fd = _secure_ticket_copy_dir(cwd, ticket, role, run_id)
+    copy_path = run_dir / f"ticket-{ticket}.md"
+    baseline_path = run_dir / TICKET_COPY_BASELINE_NAME
+    metadata_path = run_dir / TICKET_COPY_METADATA_NAME
+    try:
+        _write_exclusive_file(copy_path, source_bytes, 0o600, parent_fd=run_dir_fd)
+        _write_exclusive_file(baseline_path, source_bytes, 0o400, parent_fd=run_dir_fd)
+        _write_exclusive_file(
+            metadata_path,
+            metadata_bytes,
+            0o400,
+            parent_fd=run_dir_fd,
+        )
+        _write_exclusive_file(
+            run_dir / TICKET_COPY_TAG_NAME, tag, 0o400, parent_fd=run_dir_fd,
+        )
+    except OSError as exc:
+        raise DelegateError(f"티켓 사본 원자 생성 실패: {run_dir}: {exc}") from exc
+    finally:
+        if run_dir_fd is not None:
+            os.close(run_dir_fd)
+    return TicketCopyPlan(
+        copy_path, baseline_path, metadata_path, cwd.resolve(), pm_home.resolve(), ticket, role,
+        capability,
+    )
+
+
+def _read_machine_files(
+    root: Path, parent: Path, names: tuple[str, ...],
+) -> tuple[bytes, ...]:
+    """root-relative parent의 파일들을 같은 nofollow directory fd에서 읽는다."""
+    if not _TICKET_COPY_FD_SUPPORTED:
+        return tuple((parent / name).read_bytes() for name in names)
+    relative_parent = parent.relative_to(root)
+    fd = os.open(str(root), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in relative_parent.parts:
+            next_fd = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd,
+            )
+            os.close(fd)
+            fd = next_fd
+
+        def read_name(name: str) -> bytes:
+            file_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+            with os.fdopen(file_fd, "rb") as handle:
+                return handle.read()
+
+        return tuple(read_name(name) for name in names)
+    finally:
+        os.close(fd)
+
+
+def _load_ticket_copy_plan(
+    copy_path: Path, *, cwd: Path, pm_home: Path, capability: bytes,
+) -> tuple[TicketCopyPlan, dict, bytes, bytes]:
+    cwd = cwd.resolve()
+    if not copy_path.is_absolute():
+        raise DelegateError("티켓 사본 경로는 절대경로여야 합니다")
+    lexical_copy = copy_path
+    lexical_root = cwd / TICKET_COPY_REL_ROOT
+    try:
+        relative = lexical_copy.relative_to(lexical_root)
+    except ValueError as exc:
+        raise DelegateError(
+            f"티켓 사본 containment 위반: {lexical_copy} 는 {lexical_root} 밖입니다"
+        ) from exc
+    current = cwd
+    for part in TICKET_COPY_REL_ROOT.parts:
+        current = current / part
+        try:
+            observed = current.lstat()
+        except OSError as exc:
+            raise DelegateError(f"티켓 사본 경로 검사 실패: {current}: {exc}") from exc
+        if stat.S_ISLNK(observed.st_mode) or not stat.S_ISDIR(observed.st_mode):
+            raise DelegateError(f"티켓 사본 경로 symlink/비-directory 거부: {current}")
+    if len(relative.parts) != 4:
+        raise DelegateError(f"티켓 사본 경로 구조 불일치: {lexical_copy}")
+    ticket, role, run_id, filename = relative.parts
+    if (
+        not _load_board()._is_valid_ticket_id(ticket)
+        or role not in TICKET_COPY_ROLES
+        or re.fullmatch(r"[0-9a-f]{32}", run_id) is None
+        or filename != f"ticket-{ticket}.md"
+    ):
+        raise DelegateError(f"티켓 사본 경로 ticket/role/run 불일치: {lexical_copy}")
+    trust_dir = pm_home.resolve() / TICKET_COPY_TRUST_REL_ROOT / run_id
+    try:
+        copy_bytes, bundle_baseline, bundle_metadata, bundle_tag = _read_machine_files(
+            cwd,
+            lexical_copy.parent,
+            (
+                filename, TICKET_COPY_BASELINE_NAME, TICKET_COPY_METADATA_NAME,
+                TICKET_COPY_TAG_NAME,
+            ),
+        )
+        trusted_baseline, trusted_metadata, trusted_tag = _read_machine_files(
+            pm_home.resolve(),
+            trust_dir,
+            (TICKET_COPY_BASELINE_NAME, TICKET_COPY_METADATA_NAME, TICKET_COPY_TAG_NAME),
+        )
+    except OSError as exc:
+        raise DelegateError(
+            f"티켓 사본/PM 신뢰 상태 nofollow 읽기 실패: {lexical_copy}: {exc}"
+        ) from exc
+    valid_replicas: list[tuple[str, bytes, bytes]] = []
+    for label, baseline, metadata_bytes, tag in (
+        ("slot", bundle_baseline, bundle_metadata, bundle_tag),
+        ("PM-home", trusted_baseline, trusted_metadata, trusted_tag),
+    ):
+        expected_tag = _ticket_copy_tag(capability, metadata_bytes, baseline)
+        if hmac.compare_digest(expected_tag, tag):
+            valid_replicas.append((label, baseline, metadata_bytes))
+    if not valid_replicas:
+        raise DelegateError(
+            "ticket-copy capability MAC 검증 실패 — sealed 복제본의 target/ordinal을 "
+            "사용하지 않고 반영을 거부합니다"
+        )
+    _label, baseline_bytes, metadata_bytes = valid_replicas[0]
+    if any(
+        baseline != baseline_bytes or metadata != metadata_bytes
+        for _replica, baseline, metadata in valid_replicas[1:]
+    ):
+        raise DelegateError("유효 MAC ticket-copy 복제본끼리 내용 불일치")
+    copy_path = lexical_copy.resolve()
+    expected_root = lexical_root.resolve()
+    _assert_attempt_child_path(expected_root, copy_path, label="티켓 사본")
+    metadata_path = copy_path.with_name(TICKET_COPY_METADATA_NAME)
+    baseline_path = copy_path.with_name(TICKET_COPY_BASELINE_NAME)
+    try:
+        metadata = json.loads(metadata_bytes.decode("utf-8"))
+    except (UnicodeError, ValueError) as exc:
+        raise DelegateError(f"티켓 사본 metadata 읽기 실패: {metadata_path}: {exc}") from exc
+    required = {
+        "version", "run_id", "ticket", "role", "ordinal", "cwd", "pm_home",
+        "source_relpath", "baseline_sha256",
+    }
+    if not isinstance(metadata, dict) or set(metadata) != required:
+        raise DelegateError("티켓 사본 metadata schema 불일치")
+    if metadata["version"] != TICKET_COPY_METADATA_VERSION:
+        raise DelegateError(f"티켓 사본 metadata version 불일치: {metadata['version']!r}")
+    if metadata["ticket"] != ticket or metadata["role"] != role or metadata["run_id"] != run_id:
+        raise DelegateError("PM 신뢰 metadata와 사본 경로 ticket/role/run 불일치")
+    if not isinstance(metadata["ordinal"], int) or metadata["ordinal"] < 0:
+        raise DelegateError("티켓 사본 metadata role/ordinal 불일치")
+    if Path(str(metadata["cwd"])).resolve() != cwd or Path(str(metadata["pm_home"])).resolve() != pm_home.resolve():
+        raise DelegateError("티켓 사본 metadata cwd/PM 홈 좌표 불일치")
+    if _ticket_copy_metadata_bytes(metadata) != metadata_bytes:
+        raise DelegateError("ticket-copy metadata canonical serialization 불일치")
+    plan = TicketCopyPlan(
+        copy_path, baseline_path, metadata_path, cwd, pm_home.resolve(), ticket, role,
+        capability,
+    )
+    return plan, metadata, copy_bytes, baseline_bytes
+
+
+def harvest_ticket_copy(
+    *, copy_path: Path, cwd: Path, pm_home: Path, capability: bytes,
+) -> TicketHarvestResult:
+    """역할 절을 반영하고 매 호출 sync를 재시도한다. result=(changed, sync_ready)."""
+    plan, metadata, copy_bytes, baseline_bytes = _load_ticket_copy_plan(
+        copy_path, cwd=cwd, pm_home=pm_home, capability=capability,
+    )
+    try:
+        baseline_text = baseline_bytes.decode("utf-8")
+        copy_text = copy_bytes.decode("utf-8")
+    except UnicodeError as exc:
+        raise DelegateError(f"티켓 사본/baseline 읽기 실패: {exc}") from exc
+    if hashlib.sha256(baseline_bytes).hexdigest() != metadata["baseline_sha256"]:
+        raise DelegateError("티켓 사본 baseline hash 불일치 — 원본/사본을 보존하고 반영하지 않습니다")
+    ordinal = metadata["ordinal"]
+    baseline_section = _ticket_role_section(baseline_text, plan.role, ordinal=ordinal)
+    copy_section = _ticket_role_section(copy_text, plan.role, ordinal=ordinal)
+    baseline_outside = baseline_text[:baseline_section.content_start] + baseline_text[baseline_section.content_end:]
+    copy_outside = copy_text[:copy_section.content_start] + copy_text[copy_section.content_end:]
+    if copy_outside != baseline_outside:
+        raise DelegateError(
+            "티켓 사본의 자기 역할 절 밖 bytes가 준비 당시 원본과 달라 반영하지 않습니다 — "
+            f"원본={plan.baseline_path} · 사본={plan.path}"
+        )
+    desired_content = copy_text[copy_section.content_start:copy_section.content_end]
+    board = _load_board_for_repo(plan.pm_home)
+    source_rel = PurePosixPath(str(metadata["source_relpath"]))
+    if source_rel.is_absolute() or ".." in source_rel.parts:
+        raise DelegateError("티켓 사본 metadata source_relpath escape 거부")
+    expected_source = (plan.pm_home / Path(*source_rel.parts)).resolve()
+    wrote = False
+    with board.board_lock():
+        candidates: list[tuple[str, Path]] = []
+        for status in ("open", "claimed", "blocked", "done"):
+            directory = board.tickets_dir() / status
+            for candidate in sorted(directory.glob(f"{plan.ticket}-*.md")):
+                if board._ticket_id_from_filename(candidate.name) == plan.ticket:
+                    candidates.append((status, candidate.resolve()))
+        if len(candidates) != 1:
+            raise DelegateError(
+                "harvest 중 canonical ticket 재조회가 정확 1건이 아님: "
+                f"{plan.ticket} · found={len(candidates)}"
+            )
+        status, current_path = candidates[0]
+        if current_path != expected_source:
+            raise DelegateError(
+                "harvest 중 prepared source와 canonical ticket 경로 drift 거부: "
+                f"prepared={expected_source} · current={current_path}"
+            )
+        if status not in ("open", "claimed"):
+            raise DelegateError(
+                f"harvest 중 티켓 상태 변경 거부: {plan.ticket} in {status}/"
+            )
+        # Path.read_text/newline=None은 CRLF를 LF로 정규화해 byte-preserving stale 비교를
+        # 깨뜨린다. prepare의 read_bytes와 같은 newline 원형을 유지한다.
+        with current_path.open("r", encoding="utf-8", newline="") as handle:
+            current_text = handle.read()
+        current_section = _ticket_role_section(current_text, plan.role, ordinal=ordinal)
+        latest_section = _ticket_role_section(current_text, plan.role)
+        if latest_section.ordinal != ordinal:
+            raise DelegateError(
+                "PM 홈에 준비 뒤 같은 ticket/role의 새 성장 절이 생겨 이전 절 overwrite를 "
+                f"거부합니다: prepared ordinal={ordinal} · latest={latest_section.ordinal}"
+            )
+        baseline_block = baseline_text[baseline_section.marker_start:baseline_section.marker_end]
+        current_block = current_text[current_section.marker_start:current_section.marker_end]
+        desired_block = (
+            current_text[current_section.marker_start:current_section.content_start]
+            + desired_content
+            + current_text[current_section.content_end:current_section.marker_end]
+        )
+        if current_block == desired_block:
+            wrote = False
+        elif current_block != baseline_block:
+            raise DelegateError(
+                "PM 홈의 같은 ticket/role 절이 준비 뒤 별도로 바뀌어 stale overwrite를 거부합니다 — "
+                f"원본={plan.baseline_path} · 사본={plan.path} · PM 홈={current_path}"
+            )
+        else:
+            updated = current_text[:current_section.content_start] + desired_content + current_text[current_section.content_end:]
+            board._atomic_write_text(current_path, updated)
+            wrote = True
+    # atomic replace 뒤 프로세스 종료/sync 예외가 있었던 재호출도 current==desired 경로에서
+    # render/board-git을 다시 시도한다. False는 로컬 반영 실패가 아니라 board-git 미준비 상태다.
+    message = f"ticket-harvest {plan.ticket} {plan.role}"
+    growth_sync = getattr(board, "_growth_mutation_sync", None)
+    if callable(growth_sync):
+        sync_ready = growth_sync(message, current_path)
+    else:
+        # 성장 helper를 PM 홈에 흡수하기 전 최신 worktree CLI를 먼저 dogfood하는 한 세대
+        # 호환 경계. 구 board에도 존재하는 두 primitive를 같은 순서로 조합하며, 다음 pm_update 뒤엔
+        # 위 공용 helper로 자동 수렴한다. helper 부재를 atomic write 뒤 AttributeError로 터뜨리면
+        # 절은 반영됐는데 CLI만 실패하는 전환기 부분 성공이 된다.
+        board.refresh_board()
+        sync_ready = board._board_git_sync_best_effort(message, (current_path,))
+    return TicketHarvestResult(wrote, bool(sync_ready))
+
+
+def _ticket_copy_preamble(plan: TicketCopyPlan) -> str:
+    return (
+        "성장 문서 기록: PM 홈 티켓 대신 다음 slot 사본만 편집하라: "
+        f"{plan.path}. `pm-ticket-section:start/end role={plan.role}` marker 쌍 안의 "
+        "자기 역할 절만 채우고 marker·다른 절·frontmatter는 수정하지 마라. "
+        "사본은 응답과 별개로 종료 시 기계 회수된다."
+    )
+
+
+def _with_ticket_copy_preamble(
+    prompt: str, ticket_copy: TicketCopyPlan | None,
+) -> str:
+    """full/resume delta/fallback/fresh 모든 wire가 이번 run의 같은 사본 지시를 받는 seam."""
+    if ticket_copy is None:
+        return prompt
+    note = _ticket_copy_preamble(ticket_copy)
+    if note in prompt:
+        return prompt
+    return note + "\n\n" + prompt
 
 
 # ── 형제 모듈 deep-import seam (pm_import._load_watchdog 관례·PYTHONPATH 무의존) ─────
@@ -4609,7 +5356,9 @@ def _build_target_argv(
         )
     if harness == "claude":
         return build_claude_argv(model, reasoning, role, resume_session_id)
-    return build_opencode_argv(model, reasoning, role, str(cwd), str(prompt_file))
+    return build_opencode_argv(
+        model, reasoning, role, str(cwd), str(prompt_file),
+    )
 
 
 def _assert_opencode_transport_path(cwd: Path, prompt_file: Path) -> None:
@@ -5538,25 +6287,38 @@ def _opencode_transport_launch_target(
     return adjusted, str(fd_paths["sandbox"])
 
 
-def _codex_read_tmp_profile_value(read_tmp: Path) -> str:
+def _codex_read_tmp_profile_value(
+    read_tmp: Path, ticket_copy_dir: Path | None = None,
+) -> str:
     """CLI `-c permissions.<name>=<TOML>`의 동적 최소권한 profile 값."""
     import json
 
     path_key = json.dumps(str(read_tmp), ensure_ascii=False)
+    entries = [f'":root"="read"', f'{path_key}="write"']
+    if ticket_copy_dir is not None:
+        entries.append(
+            f'{json.dumps(str(ticket_copy_dir), ensure_ascii=False)}="write"'
+        )
     return (
-        '{description="pm_delegate read role: root read + isolated tmp write",'
-        f'filesystem={{":root"="read",{path_key}="write"}}}}'
+        '{description="pm_delegate read role: root read + isolated writes",'
+        f'filesystem={{{",".join(entries)}}}}}'
     )
 
 
 def _apply_read_tmp_argv(
     argv: list[str], harness: str, role: str, read_tmp: _ReadRoleTemp | None,
+    ticket_copy_path: Path | None = None,
 ) -> list[str]:
     """하네스 실측 수단으로 read tmp 하나만 실행 권한 표면에 연결한다."""
     if role not in READ_ROLES or read_tmp is None:
         return argv
     adjusted = list(argv)
     mode = _READ_TMP_ARGV_MODE_BY_HARNESS[harness]
+    if ticket_copy_path is not None and mode != "permission-profile":
+        raise DelegateError(
+            f"{harness} code-reviewer는 worktree read-only를 유지하며 ticket 사본 한 경로만 "
+            "쓸 검증된 permission seam이 없어 이 위임을 실행하지 않습니다"
+        )
     if mode == "permission-profile":
         try:
             sandbox_index = adjusted.index("-s")
@@ -5588,7 +6350,10 @@ def _apply_read_tmp_argv(
             "-c", f'default_permissions="{_CODEX_READ_TMP_PROFILE}"',
             "-c", (
                 f"permissions.{_CODEX_READ_TMP_PROFILE}="
-                f"{_codex_read_tmp_profile_value(read_tmp.path)}"
+                f"{_codex_read_tmp_profile_value(
+                    read_tmp.path,
+                    ticket_copy_path.parent if ticket_copy_path is not None else None,
+                )}"
             ),
         ]
     elif mode == "add-dir":
@@ -5648,15 +6413,22 @@ def _apply_read_tmp_env(
 def _prepare_attempt_transport(
     harness: str, model: str, reasoning: str | None, role: str, cwd: Path,
     prompt: str, resume_session_id: str | None = None,
+    ticket_copy_path: Path | None = None,
 ) -> tuple[
     list[str], str | None, _OpenCodeTransportPrompt | None, _ReadRoleTemp | None,
 ]:
     """하네스 wire + read tmp를 attempt 단위로 함께 준비한다(timeout/판정은 미소유)."""
-    read_tmp = _create_read_role_temp(harness, cwd) if role in READ_ROLES else None
+    read_role = role in READ_ROLES
+    read_tmp = _create_read_role_temp(harness, cwd) if read_role else None
+    if role == "code-reviewer" and ticket_copy_path is not None and read_tmp is None:
+        raise DelegateError(
+            "code-reviewer ticket 사본 단일-path write에 필요한 격리 temp를 안전하게 "
+            "생성할 수 없어 실행하지 않습니다"
+        )
     prompt_path: _OpenCodeTransportPrompt | None = None
     outgoing_prompt = (
         _read_tmp_prompt_note(harness, cwd, read_tmp) + "\n\n" + prompt
-        if role in READ_ROLES else prompt
+        if read_role else prompt
     )
     try:
         if harness == "opencode":
@@ -5669,15 +6441,15 @@ def _prepare_attempt_transport(
             return (
                 _apply_read_tmp_argv(_build_target_argv(
                     harness, model, reasoning, role, prompt_path.sandbox, prompt_path,
-                ), harness, role, read_tmp),
+                ), harness, role, read_tmp, ticket_copy_path),
                 None,
                 prompt_path,
                 read_tmp,
             )
         return (
             _apply_read_tmp_argv(_build_target_argv(
-            harness, model, reasoning, role, cwd, Path(), resume_session_id,
-            ), harness, role, read_tmp),
+                harness, model, reasoning, role, cwd, Path(), resume_session_id,
+            ), harness, role, read_tmp, ticket_copy_path),
             outgoing_prompt,
             None,
             read_tmp,
@@ -5711,6 +6483,7 @@ def _execute_attempt(
     fresh_reason: str | None = None,
     base_rev: str | None = None,
     internal_trace: InternalRoundTrace | None = None,
+    ticket_copy_path: Path | None = None,
 ) -> DelegateAttempt:
     """하네스 1회를 실행하고 raw를 박제한다.
 
@@ -5735,6 +6508,7 @@ def _execute_attempt(
         )
     argv, stdin_text, prompt_path, read_tmp = _prepare_attempt_transport(
         harness, model, reasoning, role, cwd, prompt, resume_session_id,
+        ticket_copy_path,
     )
     env = _apply_read_tmp_env(build_env(harness), harness, read_tmp)
 
@@ -6559,6 +7333,99 @@ def _cmd_lint(argv: list[str]) -> int:
     return 0
 
 
+def _ticket_cli_owner(cwd: Path) -> Path:
+    if not cwd.is_absolute():
+        raise DelegateError("--cwd 는 절대경로여야 합니다")
+    resolved = cwd.resolve()
+    if resolved == resolved.parent or not _cwd_in_git_repo(resolved):
+        raise DelegateError(f"--cwd 는 파일시스템 루트가 아닌 git 작업공간이어야 합니다: {resolved}")
+    er = _load_external_review()
+    cwd_repo = er.repo_root_from_cwd(resolved) or resolved
+    try:
+        owner = Path(er.resolve_pm_home_for_repo(cwd_repo, required=True)).resolve()
+    except er.AnchorResolutionError as exc:
+        raise DelegateError(f"--cwd 소유 PM 홈 해소 실패: {exc}") from exc
+    if er._owns_real_board(REPO / ".project_manager") and REPO.resolve() != owner:
+        raise DelegateError(
+            "실행 엔진 board와 --cwd 소유 PM 홈이 달라 ticket 사본 좌표를 확정할 수 없습니다: "
+            f"engine={REPO.resolve()} · owner={owner}"
+        )
+    return owner
+
+
+def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
+    """flat delegate parser 밖 special command의 실제 argparse 표면을 introspection에 공개한다.
+
+    문서↔CLI 존재 가드는 `main()`의 선행 dispatch를 실행하지 않고 parser만 읽어야 한다. 실행과
+    검사가 다른 parser를 만들면 문서의 중첩 flag가 실재해도 미등록으로 오판하거나, 반대로 검사만
+    green인 가짜 표면이 생긴다. 현재 공개 대상은 성장 사본 `ticket`이고 소비자는 반환 parser에
+    command 뒤 argv를 그대로 넣는다.
+    """
+    if command != "ticket":
+        return None
+    parser = argparse.ArgumentParser(
+        prog="pm_delegate.py ticket",
+        description="slot 티켓 성장 사본 준비·PM 홈 역할 절 회수",
+    )
+    sub = parser.add_subparsers(dest="ticket_command", required=True)
+    prepare = sub.add_parser("prepare", help="PM 홈 현재 티켓을 slot 내부 사본으로 준비")
+    prepare.add_argument("--ticket", required=True, metavar="T-NNNN")
+    prepare.add_argument("--role", required=True, choices=tuple(sorted(TICKET_COPY_ROLES)))
+    prepare.add_argument("--cwd", required=True, metavar="ABSPATH")
+    harvest = sub.add_parser("harvest", help="보존된 사본의 자기 역할 절을 PM 홈 최신 티켓에 회수")
+    harvest.add_argument("--copy", required=True, metavar="ABSPATH")
+    harvest.add_argument("--cwd", required=True, metavar="ABSPATH")
+    harvest.add_argument(
+        "--capability-stdin", action="store_true", required=True,
+        help="prepare JSON의 capability를 argv가 아닌 stdin 한 줄로 입력",
+    )
+    return parser
+
+
+def _cmd_ticket(argv: list[str]) -> int:
+    """native 위임도 cross와 같은 사본 helper를 쓰는 prepare/harvest CLI."""
+    parser = build_subcommand_parser("ticket")
+    assert parser is not None  # 같은 모듈의 literal command — introspection/실행 단일 parser.
+    args = parser.parse_args(argv)
+    try:
+        cwd = Path(args.cwd)
+        owner = _ticket_cli_owner(cwd)
+        if args.ticket_command == "prepare":
+            if not _load_board()._is_valid_ticket_id(args.ticket):
+                parser.error("--ticket은 board 발행 ticket ID 형식이어야 합니다")
+            plan = prepare_ticket_copy(
+                ticket=args.ticket, role=args.role, cwd=cwd.resolve(), pm_home=owner,
+            )
+            print(json.dumps({
+                "copy": str(plan.path),
+                "capability": plan.capability.hex(),
+            }, sort_keys=True))
+            return 0
+        copy = Path(args.copy)
+        if not copy.is_absolute():
+            parser.error("--copy 는 prepare가 출력한 절대경로여야 합니다")
+        capability_text = sys.stdin.readline().strip()
+        try:
+            capability = bytes.fromhex(capability_text)
+        except ValueError as exc:
+            raise DelegateError("stdin capability 형식 불일치") from exc
+        if len(capability) != 32:
+            raise DelegateError("stdin capability 형식 불일치")
+        result = harvest_ticket_copy(
+            copy_path=copy, cwd=cwd.resolve(), pm_home=owner,
+            capability=capability,
+        )
+        print(json.dumps({
+            "copy": str(copy.resolve()),
+            "changed": result.changed,
+            "sync_ready": result.sync_ready,
+        }, sort_keys=True))
+        return 0
+    except DelegateError as exc:
+        print(f"오류: ticket {args.ticket_command} 실패: {exc}", file=sys.stderr)
+        return 1
+
+
 def _activate_internal_rounds_cli_owner() -> Path:
     """현재 엔진 사본에서 소유 PM 홈을 해소해 내부/공유 raw 장부 좌표를 맞춘다."""
     global _CONFIG_REPO_OVERRIDE
@@ -6767,7 +7634,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "(기본 .project_manager/.local/delegate, PM 홈 미해소 시 tempdir)")
     parser.add_argument("--ticket", default=None, metavar="T-NNNN",
                         help="위임 대상 ticket — touches 로 범위 밖 변경을 경고 판정"
-                             "(생략 시 허용 경로 0·차단 아님)")
+                             "(생략 시 허용 경로 0·차단 아님). code-reviewer 성장 사본 write는 "
+                             "검증된 Codex permission profile만 지원하며 Claude/OpenCode는 "
+                             "spawn 전 fail-loud")
     parser.add_argument("--gate", default=None, metavar="T-NNNN",
                         help="내부 code-reviewer 라운드 게이트(기본 --ticket에서 유도). "
                              "게이트 없는 reviewer 호출은 자문이며 완료 증거가 아니다")
@@ -6993,6 +7862,8 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         return _cmd_raw(resolved[1:])
     if resolved and resolved[0] == "rounds":
         return _cmd_rounds(resolved[1:])
+    if resolved and resolved[0] == "ticket":
+        return _cmd_ticket(resolved[1:])
     parser = build_arg_parser()
     args = parser.parse_args(resolved)
     try:
@@ -7156,10 +8027,24 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         # 재대조하므로, 이 read 뒤 동시 라운드가 끝나면 stale 근거를 보내지 않고 재실행을 요구한다.
         task_text = internal_confirm_evidence + task_text
 
+    # cross 실위임의 성장 사본. dry-run은 미전송/무부수효과 계약이라 만들지 않고, ticket 성장
+    # 역할 3종의 실제 실행만 prepare한다. researcher와 ticket 없는 legacy 호출은 종전 형상 유지.
+    ticket_copy: TicketCopyPlan | None = None
+    if not args.dry_run and args.ticket and args.role in TICKET_COPY_ROLES:
+        try:
+            ticket_copy = prepare_ticket_copy(
+                ticket=args.ticket, role=args.role, cwd=cwd, pm_home=config_repo,
+            )
+        except DelegateError as exc:
+            return fail_loud(f"오류: 위임 티켓 사본 준비 실패: {exc}")
+
     # 프롬프트 합성과 회수 판정이 같은 실행-전 등록부 스냅샷을 쓴다. 위임 중 pm_import.py가
     # 바뀌어도 전달한 금지 루트와 다른 현재값으로 재판정하지 않는다.
     adapter_roots = _resolved_adapter_directories()
-    prompt = _role_preamble(args.role, adapter_roots) + "\n\n" + task_text
+    preamble = _role_preamble(args.role, adapter_roots)
+    if ticket_copy is not None:
+        preamble += "\n" + _ticket_copy_preamble(ticket_copy)
+    prompt = preamble + "\n\n" + task_text
 
     # 세션 재사용 해소 — **전송 전 게이트보다 앞**이다. 재사용 라운드가 실제로 내보내는 건 delta
     # payload 라, 게이트(재앵커·시크릿 스캔)가 그걸 못 보면 검사받지 않은 본문이 나간다. 재사용
@@ -7462,11 +8347,47 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
                 # 이 위임의 기준 rev — 이미 캡처한 실행-전 worktree 상태를 그대로 쓴다(추가 git 호출 0).
                 base_rev=target_rev,
                 internal_trace=internal_trace,
+                ticket_copy=ticket_copy,
             )
         finally:
             _finish_internal_review_round(internal_budget, internal_trace)
     finally:
+        pending_exception = sys.exception()
         report_scope_audit(scope_audit, args.role)
+        if ticket_copy is not None:
+            try:
+                result = harvest_ticket_copy(
+                    copy_path=ticket_copy.path, cwd=cwd, pm_home=config_repo,
+                    capability=ticket_copy.capability,
+                )
+                print(
+                    "[pm-delegate] ticket harvest: "
+                    f"{'applied' if result.changed else 'unchanged'} · "
+                    f"sync_ready={str(result.sync_ready).lower()} · copy={ticket_copy.path}",
+                    file=sys.stderr,
+                )
+            except Exception as exc:
+                # 정상 return rc에는 harvest 실패 rc=1이 더 강하다. 반면 runner/실행 예외가 이미
+                # 전파 중이면 finally return으로 삼키지 않고 원 예외를 그대로 보존하며 두 원인을
+                # 모두 stderr에 남긴다.
+                recovery = (
+                    "오류: 위임 종료 ticket harvest 실패 — 원본/사본을 보존했습니다. "
+                    "cross capability는 메모리 전용이라 값은 출력하지 않습니다. 보존 사본을 "
+                    "진단한 뒤 새 prepare/위임으로 복구하세요. "
+                    f"copy={ticket_copy.path} · "
+                    f"{exc}"
+                )
+                if pending_exception is not None:
+                    print(
+                        "오류: 위임 실행 예외도 그대로 전파합니다: "
+                        f"{type(pending_exception).__name__}: {pending_exception}",
+                        file=sys.stderr,
+                    )
+                    fail_loud(recovery)
+                else:
+                    if _is_engine_rev_skew(exc):
+                        raise
+                    return fail_loud(recovery)
 
 
 def _execute_and_collect(
@@ -7493,6 +8414,7 @@ def _execute_and_collect(
     fresh_reason: str | None = None,
     base_rev: str | None = None,
     internal_trace: InternalRoundTrace | None = None,
+    ticket_copy: TicketCopyPlan | None = None,
 ) -> int:
     """primary(+선택적 폴백) 실행과 결과 회수 — main 의 종료 rc 를 그대로 낸다.
 
@@ -7516,7 +8438,9 @@ def _execute_and_collect(
             reasoning=reasoning,
             role=args.role,
             cwd=cwd,
-            prompt=prompt if resume is None else resume.delta_prompt,
+            prompt=_with_ticket_copy_preamble(
+                prompt if resume is None else resume.delta_prompt, ticket_copy,
+            ),
             timeout=timeout,
             output_dir=output_dir,
             run_fn=run_fn,
@@ -7532,6 +8456,11 @@ def _execute_and_collect(
             fresh_reason=fresh_reason,
             base_rev=base_rev,
             internal_trace=internal_trace,
+            ticket_copy_path=(
+                ticket_copy.path
+                if ticket_copy is not None and args.role == "code-reviewer"
+                else None
+            ),
         )
         # 재실행은 **재사용 축의 확정된 실패에만** 쓴다(`resume_rerun_reason`) — 깨끗한 완료의
         # 명시적 세션 id 불일치, 또는 확정된 "세션 없음" 오류. 미분류 `rc≠0` 은 **전송 후** 죽은
@@ -7576,7 +8505,7 @@ def _execute_and_collect(
                 reasoning=reasoning,
                 role=args.role,
                 cwd=cwd,
-                prompt=prompt,
+                prompt=_with_ticket_copy_preamble(prompt, ticket_copy),
                 timeout=timeout,
                 output_dir=output_dir,
                 run_fn=run_fn,
@@ -7592,6 +8521,11 @@ def _execute_and_collect(
                 fresh_reason=fresh_reason,
                 base_rev=base_rev,
                 internal_trace=internal_trace,
+                ticket_copy_path=(
+                    ticket_copy.path
+                    if ticket_copy is not None and args.role == "code-reviewer"
+                    else None
+                ),
             )
     except (OSError, DelegateError) as exc:
         return fail_loud(f"오류: 위임 실행 준비/raw 박제 실패: {exc}")
@@ -7650,7 +8584,7 @@ def _execute_and_collect(
                 reasoning=fallback_reasoning,
                 role=args.role,
                 cwd=cwd,
-                prompt=prompt,
+                prompt=_with_ticket_copy_preamble(prompt, ticket_copy),
                 timeout=fallback_timeout if fallback_timeout is not None else timeout,
                 output_dir=output_dir,
                 run_fn=run_fn,
@@ -7665,6 +8599,11 @@ def _execute_and_collect(
                 fresh_reason=fresh_reason,
                 base_rev=base_rev,
                 internal_trace=internal_trace,
+                ticket_copy_path=(
+                    ticket_copy.path
+                    if ticket_copy is not None and args.role == "code-reviewer"
+                    else None
+                ),
             )
         except (OSError, DelegateError) as exc:
             return fail_loud(

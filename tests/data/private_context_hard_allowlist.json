@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "count": 405,
+  "count": 389,
   "surface_counts": {
-    "markdown": 165,
+    "markdown": 149,
     "python-non-prose": 16,
     "python-prose": 224
   },
@@ -38,54 +38,6 @@
       "surface": "markdown",
       "hash": "a46ff5b4bb1cd7a90e9e522aa1b7a9f16fd2cef2de24443935a1df0beda15deb",
       "count": 2
-    },
-    {
-      "path": ".claude/skills/references/environment-posix.md",
-      "kind": "work_item",
-      "match": "T-0679",
-      "surface": "markdown",
-      "hash": "7c198ce9a168b3a3a4138e71cf3f48fabd8f33ab70eff3e6d03beb833a196311",
-      "count": 1
-    },
-    {
-      "path": ".claude/skills/references/environment-posix.md",
-      "kind": "work_item",
-      "match": "T-0681",
-      "surface": "markdown",
-      "hash": "19db32629c56b1f535453a7bcdef04d1677503529764309df5def4083c536375",
-      "count": 1
-    },
-    {
-      "path": ".claude/skills/references/environment-posix.md",
-      "kind": "work_item",
-      "match": "T-0681",
-      "surface": "markdown",
-      "hash": "7c198ce9a168b3a3a4138e71cf3f48fabd8f33ab70eff3e6d03beb833a196311",
-      "count": 1
-    },
-    {
-      "path": ".claude/skills/references/environment-windows.md",
-      "kind": "work_item",
-      "match": "T-0679",
-      "surface": "markdown",
-      "hash": "6f1e487df36a00ca28551e53c68531973fd86a60770fa815a5b38d2979d5023c",
-      "count": 1
-    },
-    {
-      "path": ".claude/skills/references/environment-windows.md",
-      "kind": "work_item",
-      "match": "T-0681",
-      "surface": "markdown",
-      "hash": "19db32629c56b1f535453a7bcdef04d1677503529764309df5def4083c536375",
-      "count": 1
-    },
-    {
-      "path": ".claude/skills/references/environment-windows.md",
-      "kind": "work_item",
-      "match": "T-0681",
-      "surface": "markdown",
-      "hash": "3f5b9a7c6ba6e9909bf06b24d82edf4121f33dbfaf3b9e1da10f4b3bd7befbeb",
-      "count": 1
     },
     {
       "path": ".project_manager/tools/board.py",
@@ -568,7 +520,7 @@
       "count": 1
     },
     {
-      "path": "templates/claude_code/.claude/skills/pm-handoff/SKILL.md",
+      "path": "templates/claude_code/.claude/skills/pm-handoff/references/operational-details.md",
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
@@ -576,7 +528,7 @@
       "count": 2
     },
     {
-      "path": "templates/claude_code/.claude/skills/pm-handoff/SKILL.md",
+      "path": "templates/claude_code/.claude/skills/pm-handoff/references/operational-details.md",
       "kind": "work_item",
       "match": "T-0002",
       "surface": "markdown",
@@ -1218,14 +1170,6 @@
     {
       "path": "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
       "kind": "work_item",
-      "match": "ADR-0075",
-      "surface": "markdown",
-      "hash": "1fa7abc0d38dce2eabdf4f300f43443bba8fd3079abd4bc813b44f2068eaaba7",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
-      "kind": "work_item",
       "match": "T-0081",
       "surface": "markdown",
       "hash": "6f1d1ac21120f03f3ece7f202005f80c91fb39b2733c1a3f83d4a1ad29608042",
@@ -1244,47 +1188,7 @@
       "kind": "work_item",
       "match": "T-0355",
       "surface": "markdown",
-      "hash": "50cdde9bc62f24145d9fd4ea73b406080a701b894d542f9d27c37c299e8e1f35",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
-      "kind": "work_item",
-      "match": "T-0355",
-      "surface": "markdown",
       "hash": "db0cc907f0c47a647350014be2bd2335ddfc36fffc08fd3955deacbc93b3bce6",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
-      "kind": "work_item",
-      "match": "T-0362",
-      "surface": "markdown",
-      "hash": "50cdde9bc62f24145d9fd4ea73b406080a701b894d542f9d27c37c299e8e1f35",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
-      "kind": "work_item",
-      "match": "T-0389",
-      "surface": "markdown",
-      "hash": "81269c61a63abd4b040dab0b0bd97b1dd32a392ee589a38349776b378e92d98f",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
-      "kind": "work_item",
-      "match": "T-0402",
-      "surface": "markdown",
-      "hash": "81269c61a63abd4b040dab0b0bd97b1dd32a392ee589a38349776b378e92d98f",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
-      "kind": "work_item",
-      "match": "T-0409",
-      "surface": "markdown",
-      "hash": "81269c61a63abd4b040dab0b0bd97b1dd32a392ee589a38349776b378e92d98f",
       "count": 1
     },
     {
@@ -1296,7 +1200,7 @@
       "count": 1
     },
     {
-      "path": "templates/codex/.agents/skills/pm-handoff/SKILL.md",
+      "path": "templates/codex/.agents/skills/pm-handoff/references/operational-details.md",
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
@@ -1304,7 +1208,7 @@
       "count": 2
     },
     {
-      "path": "templates/codex/.agents/skills/pm-handoff/SKILL.md",
+      "path": "templates/codex/.agents/skills/pm-handoff/references/operational-details.md",
       "kind": "work_item",
       "match": "T-0002",
       "surface": "markdown",
@@ -1960,7 +1864,7 @@
       "count": 1
     },
     {
-      "path": "templates/opencode/.claude/skills/pm-handoff/SKILL.md",
+      "path": "templates/opencode/.claude/skills/pm-handoff/references/operational-details.md",
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
@@ -1968,7 +1872,7 @@
       "count": 2
     },
     {
-      "path": "templates/opencode/.claude/skills/pm-handoff/SKILL.md",
+      "path": "templates/opencode/.claude/skills/pm-handoff/references/operational-details.md",
       "kind": "work_item",
       "match": "T-0002",
       "surface": "markdown",
@@ -2134,22 +2038,6 @@
       "surface": "markdown",
       "hash": "12d8c16e1213a2909e98674f879fa2692769a1e3a54e31394259adff1f3b80b7",
       "count": 1
-    },
-    {
-      "path": "templates/opencode/.opencode/command/pm-handoff.md",
-      "kind": "work_item",
-      "match": "T-0001",
-      "surface": "markdown",
-      "hash": "a46ff5b4bb1cd7a90e9e522aa1b7a9f16fd2cef2de24443935a1df0beda15deb",
-      "count": 2
-    },
-    {
-      "path": "templates/opencode/.opencode/command/pm-handoff.md",
-      "kind": "work_item",
-      "match": "T-0002",
-      "surface": "markdown",
-      "hash": "a46ff5b4bb1cd7a90e9e522aa1b7a9f16fd2cef2de24443935a1df0beda15deb",
-      "count": 2
     },
     {
       "path": "templates/opencode/.opencode/pm-instructions.md",

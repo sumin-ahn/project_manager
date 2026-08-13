@@ -185,7 +185,7 @@ def test_pm_instructions_lists_researcher_subagent_type():
 
 
 # ── pm-dev-delegate 출하 표면(skill tool + slash command·T-0674) ─────────────
-# 두 표면은 모두 root canonical 에서 기계 생성되며 byte-정합해야 한다.
+# 두 표면은 모두 root canonical 에서 기계 생성되며 command는 평탄 좌표 링크만 기계 rewrite한다.
 
 
 def test_opencode_pm_dev_delegate_ships_as_canonical_skill_mirror():
@@ -199,7 +199,11 @@ def test_opencode_pm_dev_delegate_ships_as_canonical_skill_mirror():
         "opencode pm-dev-delegate 미러가 canonical 과 byte drift — 출하 무결성 위반 "
         "(`pm_update --target opencode` 재전파).")
     assert PM_DEV_DELEGATE_COMMAND.is_file(), "opencode pm-dev-delegate 슬래시 command 누락"
-    assert PM_DEV_DELEGATE_COMMAND.read_bytes() == PM_DEV_DELEGATE_CANONICAL.read_bytes(), (
+    expected_command = PM_DEV_DELEGATE_CANONICAL.read_text(encoding="utf-8").replace(
+        "(references/operational-details.md)",
+        "(../../.claude/skills/pm-dev-delegate/references/operational-details.md)",
+    ).encode("utf-8")
+    assert PM_DEV_DELEGATE_COMMAND.read_bytes() == expected_command, (
         "opencode pm-dev-delegate command가 canonical과 byte drift(T-0674).")
 
 

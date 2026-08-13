@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "count": 575,
+  "count": 573,
   "paths": {
     ".claude/agents/code-reviewer.md": [
       {
@@ -12,7 +12,7 @@
     ".claude/skills/pm-dev-delegate/SKILL.md": [
       {
         "kind": "session_stamp",
-        "hash": "4ec29f256d50a263c9c2f4a68a59d0b5e45613b9011f70ecf34f89bd88be6d9b",
+        "hash": "7480ac4f2b224593a64a50b322b0fcb01ba18b12dff4e1408149d236f38fdecb",
         "count": 1
       }
     ],
@@ -616,7 +616,7 @@
     "templates/claude_code/.claude/skills/pm-dev-delegate/SKILL.md": [
       {
         "kind": "session_stamp",
-        "hash": "4ec29f256d50a263c9c2f4a68a59d0b5e45613b9011f70ecf34f89bd88be6d9b",
+        "hash": "7480ac4f2b224593a64a50b322b0fcb01ba18b12dff4e1408149d236f38fdecb",
         "count": 1
       }
     ],
@@ -1204,16 +1204,6 @@
       {
         "kind": "circled_marker",
         "hash": "e7e328994702722c0d9ba94db3f9cdba24896adeb3be2414e90619582f03e2d5",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "f7f7b890d32cf6a171733c964536e5bfe15595f266e1dd1c17bcbdd4b1636f74",
-        "count": 1
-      },
-      {
-        "kind": "decision_label",
-        "hash": "09be4ef0459710fcfaa4aec7cab8a8ed5477ee2f132b676da903bcdbf08d096e",
         "count": 1
       },
       {
@@ -1862,7 +1852,7 @@
     "templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md": [
       {
         "kind": "session_stamp",
-        "hash": "4ec29f256d50a263c9c2f4a68a59d0b5e45613b9011f70ecf34f89bd88be6d9b",
+        "hash": "7480ac4f2b224593a64a50b322b0fcb01ba18b12dff4e1408149d236f38fdecb",
         "count": 1
       }
     ],
@@ -2039,7 +2029,7 @@
     "templates/opencode/.opencode/command/pm-dev-delegate.md": [
       {
         "kind": "session_stamp",
-        "hash": "4ec29f256d50a263c9c2f4a68a59d0b5e45613b9011f70ecf34f89bd88be6d9b",
+        "hash": "7480ac4f2b224593a64a50b322b0fcb01ba18b12dff4e1408149d236f38fdecb",
         "count": 1
       }
     ],

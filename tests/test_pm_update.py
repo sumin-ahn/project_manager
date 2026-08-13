@@ -7060,3 +7060,29 @@ def test_pm_update_partial_managed_dest_blocks_zero_change_revision_convergence(
     assert "sync-adapter-config --accept" in captured.err
     assert "최신 — 변경 없음" not in captured.out
     assert conf.read_bytes() == before_conf
+
+
+def test_flat_opencode_command_rewrites_only_operational_detail_target(pm_update):
+    source = (
+        "before [references/operational-details.md]"
+        "(references/operational-details.md) after\n"
+    )
+    assert pm_update._flat_command_skill_name(
+        ".opencode/command/pm-review.md"
+    ) == "pm-review"
+    assert pm_update._flat_command_skill_name(
+        ".claude/skills/pm-review/SKILL.md"
+    ) is None
+    assert pm_update._render_flat_command_reference(source, "pm-review") == (
+        "before [references/operational-details.md]"
+        "(../../.claude/skills/pm-review/references/operational-details.md) after\n"
+    )
+
+
+@pytest.mark.parametrize("source", ["no link\n", """
+[references/operational-details.md](references/operational-details.md)
+[references/operational-details.md](references/operational-details.md)
+"""])
+def test_flat_opencode_command_rewrite_fails_loud_on_link_count(pm_update, source):
+    with pytest.raises(ValueError, match="정확히 1개"):
+        pm_update._render_flat_command_reference(source, "pm-x")

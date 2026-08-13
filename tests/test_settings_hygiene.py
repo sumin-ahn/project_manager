@@ -58,6 +58,10 @@ _TIMEOUT_CONTRACT_PATH_EXEMPTIONS = {
     # 적용되지 않는다. 면제 근거는 mirror 여부가 아니라 호출 하네스의 실제 timeout 계약이다.
     "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md":
         "Codex native spawn_agent override에는 Claude Bash DEFAULT 1800초가 적용되지 않음",
+    "templates/codex/.agents/skills/pm-review/SKILL.md":
+        "Codex exec_command override에는 Claude Bash DEFAULT 1800초가 적용되지 않음",
+    "templates/codex/.agents/skills/pm-review/references/operational-details.md":
+        "Codex operational detail에도 Claude Bash DEFAULT 1800초가 적용되지 않음",
 }
 _TOOLS = _REPO / ".project_manager" / "tools"
 

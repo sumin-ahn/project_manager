@@ -10,10 +10,9 @@ audience: pm-internal
 > `agent_type="developer|code-reviewer"`로 고르고, spawn 이 반환한 thread 는 비동기로 진행된다.
 > ticket 본문이 self-contained 의무를 충족하면 위임 프롬프트는 한 줄이다.
 
-> **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
-> 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
-> **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 대신 도구의 workdir
-> 파라미터나 명령 분리로 실행한다. (Linux/macOS 는 `python3` 그대로.)
+환경별 명령 문법은 부트스트랩의 "현재 환경" 표시에 맞춰 [Windows 안내](../references/environment-windows.md) 또는 [Linux/macOS 안내](../references/environment-posix.md)를 참조한다.
+
+상황별 운영 상세는 [references/operational-details.md](references/operational-details.md)를 해당 상황에서 읽는다.
 
 ## 사전 조건
 
@@ -298,77 +297,3 @@ spawn_agent(
 > (ADR 본문 정합 필요 시 `--paths` 에 **코드 경로+ADR 함께 나열** — `--paths` 는
 > `--ticket` touches 를 *대체*함). 전제
 > `additional_reviewer_enabled=true`. 상세는 `pm_playbook.md` §"검토 루프".
-
-#### 게이트 격리 스냅샷 (병렬 wave · 내부 reviewer 전용)
-
-병렬 wave(dev 가 공유 트리를 **라이브 편집 중**)에서 **내부 reviewer** 를 위임할 땐, 위임 *전* PM
-이 리뷰 대상(= 미리 `git add` 한 **staged** 상태)을 격리 worktree 로 스냅샷한다 — 리뷰가 읽는 트리
-가 dev 편집·리뷰 자신의 git 조작(sensitivity `git checkout` 등)으로 흔들리지 않게 **절차 자체가
-경합 불가능**해진다(2회 실측: T-0389 리뷰 false-red · T-0402 리뷰 ↔ T-0409 dev 편집 실경합).
-
-`<scratch>` = **repo 트리 밖** 경로(예: OS 임시 디렉토리 `/tmp`, 또는 repo 상위 `..` — 최종 경로는
-`<scratch>/gate-<T>`).
-
-1. **생성** — staged(index)만 격리 스냅샷(unstaged 병렬 WIP 는 자동 제외). ⚠ **두 커맨드 모두
-   공유(메인) 트리 cwd 에서 실행 — gate 디렉토리로 `cd` 후 실행 금지**: `checkout-index` 는 cwd 가
-   해소하는 worktree 의 index 를 읽으므로, gate 안에서 돌리면 staged 가 빠진 HEAD-only 스냅샷이
-   조용히 만들어져 리뷰가 옛 코드를 통과시킨다(false-green).
-   ```bash
-   git worktree add --detach <scratch>/gate-<T>
-   git checkout-index -a -f --prefix=<scratch>/gate-<T>/
-   ```
-2. **주입** — reviewer 위임 프롬프트의 «작업 위치» 에 `<scratch>/gate-<T>` **절대경로**를 박아
-   넣는다(위 code-reviewer 프롬프트 참조). reviewer 는 그 격리 스냅샷에서만 읽고 검토하며, 그 안의
-   git 조작(checkout·stash 등)도 공유 트리에 닿지 않는다.
-3. **제거** — 리뷰 종료 후:
-   ```bash
-   git worktree remove --force <scratch>/gate-<T>
-   ```
-   (`--force` = 오버레이가 미커밋이라 스냅샷 worktree 가 dirty — 버려도 안전한 스냅샷이라 강제 제거.)
-
-- **대상 = 내부 reviewer 뿐.** codex `external_review` 는 **staged diff** 기반이라 이미 스냅샷-안정
-  → 격리 **대상 아님**(라이브 working tree 를 읽지 않는다).
-- **솔로(비병렬) 리뷰는 격리 선택** — 경합할 병렬 dev 가 없으면 종전대로 공유 트리에서 검토해도 된다.
-- 이 격리와 프롬프트의 *공유 트리 git 조작 금지* 완화는 **병행**한다(**이중 방어** — 절차가 경합을
-  구조적으로 막고, 프롬프트가 사고성 git 조작을 막는다).
-
-## touches disjoint 안전성 cross-check (병렬 wave)
-
-병렬 wave (dev N 동시 spawn) 시 PM 이 위임 전 검증:
-
-- 모든 claimed ticket 의 touches 가 *완전 disjoint* (file 겹침 0)? — *공통 통합 파일 함수 단위 추가* 는 완화 조건으로 OK.
-- 같은 함수·같은 줄 동시 수정은 차단.
-- baseline 회귀 측정은 *dev cycle 끝난 후 한 번에* (race 회피).
-
-## must-fix 분기 (reviewer 후)
-
-reviewer 보고 후 PM 처리:
-
-- **PM 직접 fix** — 1줄·1패턴·dev 안 도는 영역. cycle 시간 절약.
-- **dev 재작업** — 여러 줄 또는 dev 가 같은 file 작업 중.
-- **별도 ticket 후보 메모** — 본 ticket 범위 외 / 후속 caller 추가 시.
-- **suggestion 보류** — 운영 영향 0·기능 충분.
-
-## reviewer 분석 cross-check
-
-reviewer 도 항상 옳지 않다. PM 가 should-fix 처리 전 *코드 흐름 자체* 독립
-점검·부정확이면 변경 불필요 + log/current.md 영구 기록. 특히 *reviewer 영역 attribute
-부정확* — reviewer 가 *다른 ticket 영역의 결함을 현재 ticket 영역으로 잘못
-attribute* 가능. PM 이 진짜 영역 확인 후 fix 분기 결정.
-
-## 결정
-
-- **board.py 조작은 orchestrator(PM)** — 위임 프롬프트에 명시. 서브에이전트는 구현/검토만.
-- **dev 자기 보고 표준 형식 강제** — 위임 프롬프트에 *DoD 각 항목별 충족 evidence* 명시 요구.
-- **background 우선** — 병렬 wave 효율 ↑. 단 검토 결과에 다음 ticket 의존 시 foreground.
-- **위임 프롬프트는 한 줄** — ticket 본문이 self-contained 의무 → 추가 컨텍스트 불필요. 길어지면 ticket 본문 보강.
-- **해소 절대경로 주입** — task-mode dev 위임은 F6 로 해소한 worktree 절대경로 실값을 프롬프트에 명시(짐작 제거·cwd 비참여·T-0355). ⑰ 카드 생성화(T-0362) 전이라 현 wave 는 프롬프트 명시 주입까지.
-- **native 단락 판정 = 이 카드** — target 하네스 == 내 하네스(codex)면 `spawn_agent` 네이티브 위임(외부 송신 0),
-  cross 면 `pm_delegate.py` 채널(외부 송신·opt-in 필요). `pm_delegate` same-harness 경고는 백스톱(never-block).
-
-## 참고
-
-- `.project_manager/wiki/pm_role.md` — wave 패턴·dev/reviewer cycle·must-fix 분기 단일 진실
-- `.project_manager/tools/pm_delegate.py` — cross-harness 위임 채널 엔진(매핑 해소·argv·role preamble·opt-in 게이트·ADR-0075)
-- `.claude/agents/developer.md` — developer 서브에이전트 정의
-- `.claude/agents/code-reviewer.md` — code-reviewer 서브에이전트 정의

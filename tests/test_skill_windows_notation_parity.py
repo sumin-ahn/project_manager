@@ -122,23 +122,27 @@ def test_guide_matches_final_py_assignment_semantics(guide: Path):
     assert "마지막 non-empty `py=`" not in text
 
 
-def test_t0681_flat_opencode_derived_reference_handoff_is_explicit_not_shipped_now():
-    """T-0679 records T-0681's four derived targets without editing templates now."""
+def test_t0681_environment_guides_ship_to_all_model_and_opencode_command_channels():
+    """T-0681 ships both guides to three model roots and the OpenCode command root."""
     text = WINDOWS_GUIDE.read_text(encoding="utf-8")
     for token in (
-        "[[T-0681]]",
         ".claude/skills/references/",
         ".agents/skills/references/",
         ".opencode/references/",
         ".opencode/command/<skill>.md",
         "../references/environment-*.md",
         ".opencode/references/environment-*.md",
-        "템플릿 파생 사본은 만들지 않는다",
     ):
         assert token in text
-    derived = [
+    derived = sorted([
         *REPO.glob("templates/*/.claude/skills/references/environment-*.md"),
         *REPO.glob("templates/*/.agents/skills/references/environment-*.md"),
         *REPO.glob("templates/*/.opencode/references/environment-*.md"),
-    ]
-    assert not derived, f"T-0681 전인데 파생 템플릿을 수정함: {derived}"
+    ])
+    assert len(derived) == 8, f"환경 guide 2벌 × (모델 3 + OpenCode command 1) 필요: {derived}"
+    for copy in derived:
+        canonical = GUIDES / copy.name
+        expected = canonical.read_text(encoding="utf-8")
+        if "/.agents/skills/" in copy.as_posix():
+            expected = expected.replace("`/pm-update`", "`$pm-update`")
+        assert copy.read_text(encoding="utf-8") == expected, f"환경 guide 파생 사본 drift: {copy}"

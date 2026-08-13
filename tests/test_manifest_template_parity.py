@@ -66,6 +66,8 @@ OPENCODE_ONLY_PATHS = {
     ".opencode/command/pm-wave-finish.md",
     ".opencode/command/pm-worktree.md",
     ".opencode/command/spike-new.md",
+    ".opencode/references/environment-posix.md",
+    ".opencode/references/environment-windows.md",
     # pm-instructions.md (ADR-0069·T-0401): AGENTS.md 공통 코어에서 이관한 opencode-고유 운영 지침
     #   (실행 모델·위임 규약). @render @source 전파 등록이라 claude_code 엔 없는 opencode-only 경로.
     ".opencode/pm-instructions.md",
