@@ -44,6 +44,15 @@ _CLAUDE_DELEGATE_CARDS = (
     _REPO / "templates" / "opencode" / ".claude" / "skills"
     / "pm-dev-delegate" / "SKILL.md",
 )
+
+
+def _card_with_operational_details(path: Path) -> str:
+    """상시 카드와 T-0678 sibling 상황별 참조를 하나의 문서 표면으로 읽는다."""
+    text = path.read_text(encoding="utf-8")
+    details = path.parent / "references" / "operational-details.md"
+    if details.is_file():
+        text += "\n" + details.read_text(encoding="utf-8")
+    return text
 _TIMEOUT_CONTRACT_PATH_EXEMPTIONS = {
     # 이 카드 안 cross pm_delegate 블록은 존재하지만 Codex 실행 표면에는 Claude Bash DEFAULT가
     # 적용되지 않는다. 면제 근거는 mirror 여부가 아니라 호출 하네스의 실제 timeout 계약이다.
@@ -245,8 +254,8 @@ def test_all_long_engine_command_markdown_declares_explicit_bash_timeout():
             f"{path}: 호출층 Bash timeout과 엔진 CLI timeout 구분 소실")
 
     # 짧은 pytest 카드는 장시간 엔진 실행 커맨드가 아니므로 계약 강제 대상이 아님을 실제 분류로 잠근다.
-    regression = (_REPO / ".claude/skills/pm-regression/SKILL.md").read_text(
-        encoding="utf-8")
+    regression = _card_with_operational_details(
+        _REPO / ".claude/skills/pm-regression/SKILL.md")
     assert "pytest" in regression and _execution_command_budget_seconds(regression) == []
 
 
@@ -269,7 +278,7 @@ def test_all_pm_env_cards_match_shipped_harness_caps():
     default_ms, max_ms = _claude_bash_timeouts_ms()
     assert int(_opencode_bash_cap_sec() * 1000) == max_ms
     for path in _PM_ENV_CARDS:
-        text = path.read_text(encoding="utf-8")
+        text = _card_with_operational_details(path)
         assert f"`BASH_DEFAULT_TIMEOUT_MS`(ms·출하 기본 {default_ms}=30분)" in text, path
         assert f"`BASH_MAX_TIMEOUT_MS`(ms·출하 기본 {max_ms}=8시간 8분 20초)" in text, path
         assert f"OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS={max_ms}" in text, path

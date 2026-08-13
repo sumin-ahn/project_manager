@@ -1797,6 +1797,9 @@ def test_seeded_values_match_engine_declarations(board, relay):
     )
     for card in cards:
         text = card.read_text(encoding="utf-8")
+        details = card.parent / "references" / "operational-details.md"
+        if details.is_file():
+            text += "\n" + details.read_text(encoding="utf-8")
         assert f"출하 기본 {cap_ms}=" in text, card
         assert f"OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS={cap_ms}" in text, card
 

@@ -22,7 +22,12 @@ def _load_board():
 
 
 def _read(rel: str) -> str:
-    return (ROOT / rel).read_text(encoding="utf-8")
+    path = ROOT / rel
+    text = path.read_text(encoding="utf-8")
+    details = path.parent / "references" / "operational-details.md"
+    if details.is_file():
+        text += "\n" + details.read_text(encoding="utf-8")
+    return text
 
 
 # ── ② pm-wave-claim: lint 차단 섹션 수 = _REQUIRED_SECTIONS 길이 ────────────────

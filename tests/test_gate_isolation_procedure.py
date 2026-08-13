@@ -24,6 +24,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 SKILL = REPO / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md"
+DETAILS = SKILL.parent / "references" / "operational-details.md"
 
 # 절 슬라이스 앵커 — 실 SKILL.md 헤딩과 byte-정확히 일치해야 함(드리프트 시 region 빔 → fail-loud).
 ISOLATION_MARKER = "#### 게이트 격리 스냅샷 (병렬 wave · 내부 reviewer 전용)"
@@ -33,13 +34,13 @@ REVIEWER_MARKER = "### code-reviewer 위임"
 _FRAMEWORK_WIKILINK = re.compile(r"\[\[(ADR-\d+|T-\d+|idea-\d+)\]\]")
 
 
-def _region(marker: str) -> str:
+def _region(marker: str, source: Path = SKILL) -> str:
     """SKILL.md 에서 `marker` 헤딩 ~ 다음 '## ' 섹션 헤딩 직전까지 슬라이스.
 
     마커 부재면 빈 문자열(→ 호출측 assert fail-loud). '## '(2-hash) 헤딩에서 종료하므로 하위
     '#### ' 서브섹션은 삼키고 다음 최상위 섹션에서 멈춘다.
     """
-    text = SKILL.read_text(encoding="utf-8")
+    text = source.read_text(encoding="utf-8")
     idx = text.find(marker)
     if idx == -1:
         return ""
@@ -49,7 +50,7 @@ def _region(marker: str) -> str:
 
 
 def _isolation_region() -> str:
-    return _region(ISOLATION_MARKER)
+    return _region(ISOLATION_MARKER, DETAILS)
 
 
 def _reviewer_region() -> str:
@@ -62,6 +63,7 @@ def _reviewer_region() -> str:
 def test_skill_has_gate_isolation_section():
     """SKILL.md code-reviewer 절에 게이트 격리 스냅샷 표준 절차 절이 존재한다."""
     assert SKILL.is_file(), f"누락: {SKILL}"
+    assert DETAILS.is_file(), f"누락: {DETAILS}"
     region = _isolation_region()
     assert region, (
         f"{SKILL.relative_to(REPO)} 에 격리 스냅샷 절 마커가 없음 — "

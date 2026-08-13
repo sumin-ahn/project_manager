@@ -15,6 +15,8 @@ audience: pm-internal
 > **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 대신 도구의 workdir
 > 파라미터나 명령 분리로 실행한다. (Linux/macOS 는 `python3` 그대로.)
 
+상황별 운영 상세는 [references/operational-details.md](references/operational-details.md)를 해당 상황에서 읽는다.
+
 ## 실행 절차 (순서 고정)
 
 ### 1. adopter#0 sync 선행 ([[pm-update]])
@@ -95,11 +97,3 @@ record 는 라이브 wave 를 돌리기 **전에** 추가 리뷰 라운드 장�
 ### 5. audience 라벨
 
 신설/변경한 스킬·커맨드 frontmatter의 `audience: user-entrypoint | pm-internal`를 확정한다(청중=binary, 명령어化로 늘어나는 것은 대개 `pm-internal`).
-
-## 불변·보고
-
-- 공개 main push는 대화 승인 + 보호훅/livegate 이중 안전을 유지한다(private만 자율). `PM_ALLOW_PROTECTED_PUSH=1`·`PM_SKIP_LIVE_GATE=1`은 PM이 스스로 쓰지 않는다(사용자 명시 OK의 escape hatch이며 환경 문제는 우회 사유가 아니다).
-- livegate record는 `pytest -m release`(claude·opencode·codex 3 하네스)를 실측·기록하고 보호훅은 push HEAD의 green을 `livegate check`로 재확인한다(record=기록·check=소비).
-- PM은 각 단계 stdout, 특히 livegate 수집 N과 `gh release view` 결과를 읽어 보고한다.
-- main push 실행·CHANGELOG 문안·GitHub Release 노트는 PM/사용자가 확정·승인한다.
-- backbone: `board.py livegate record`/`livegate check` · `pm_update`([[pm-update]]) · `git`/`gh`; 라이브 하네스 테스트는 `tests/test_pm_release_live.py`; 보호훅은 보호 브랜치 push 차단 + `livegate check` green을 요구한다(pm_role §릴리즈 절차).

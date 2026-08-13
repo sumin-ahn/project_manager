@@ -15,6 +15,8 @@ audience: pm-internal
 > **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 대신 도구의 workdir
 > 파라미터나 명령 분리로 실행한다. (Linux/macOS 는 `python3` 그대로.)
 
+상황별 운영 상세는 [references/operational-details.md](references/operational-details.md)를 해당 상황에서 읽는다.
+
 ## 청중 (audience)
 
 **pm-internal** — PM 에이전트가 세션 중 자동 invoke(dev-delegate 류)하는 운영중-관리 스킬이며
@@ -50,13 +52,6 @@ audience: pm-internal
 직접 지정한다. `status`/`rebase`의 `--task <이름>`은 그 task의 전 슬롯을 지칭한다. `rebase <slot>
 --task <이름>`은 대상 자원(`<slot>`)과 소유 명의(`--task`)를 함께 주는 단일 연산이므로 두 인자는
 배타가 아니다. submodule 경로·슬롯은 형식/목록 검증하며 절대경로·`..` 등 슬롯 경계 밖은 거부한다.
-
-## ⚠ rebase 선행조건 (활성 위임 중 금지)
-
-**활성 백그라운드 위임(dev 서브에이전트)이 돌고 있는 슬롯은 rebase 하지 마라.** 하네스 안 프로세스라
-엔진이 감지하지 못하며 working tree 이동이 위임 작업을 깨뜨린다. PM은 실행 전 활성 위임이 없는지
-확인하고, 대여 슬롯이 dev 위임 중이면 종료 후 rebase한다. 엔진은 dirty·rebase-진행중만 기계로
-스킵한다.
 
 ## 실행
 
@@ -154,32 +149,3 @@ python3 .project_manager/tools/worktree_pool.py switch <slot> <branch>
   `@{-1}` → `main` 으로 해소됨"을 loud 표시한다. 전환 후 장부 IO/권한/락 오류 등으로 스냅 재기록이
   실패하면 성공으로 위장하지 않고 loud 안내하며, `record <slot>`으로 스냅만 맞춘다. 그대로 두면
   다음 0단계가 diverged로 막힌다.
-
-## 결정 (모델)
-
-- submodule 역할은 live git HEAD로 판별한다: on-branch=dev(보호), detached=consume(재동기 대상).
-- 전역 `submodule.recurse=true`를 쓰지 않고 selective resync와 dirty 가드로 작업을 보호한다.
-- base는 rebase로만 바뀌는 기대 축이다. 미기록이면 추론하지 말고 사용자에게 확인해 `set-base`한다.
-- rebase는 base가 없으면 거부한다. `--onto`의 base 기록과 base·head·recorded_at 원자 갱신은 성공
-  시에만 하며, 충돌 상태는 abort하지 않고 사용자가 해소한다.
-- readonly 공유 슬롯은 detached·배타 대여 없음·session/pid 없음이며 읽기 기준면이다. 소비자는 슬롯을
-  읽고 쓰기는 PM 홈 wiki에 한다. 슬롯 git mutation은 거부하고 `refresh`(fetch→detach 이동,
-  dirty=거부)만 허용한다.
-
-## 잔여 PM 손
-
-- 각 backbone 명령의 stdout(실행·skip 사유·경고·조회·rebase 요약·재기록 branch/head·전환 형태)을
-  읽고 사용자에게 보고한다.
-- `dev` 지정 뒤 실제 submodule 편집·커밋은 PM/사용자가 한다.
-- 부트스트랩 0단계의 base 후보를 사용자에게 전달하고, 선택된 기준만 `set-base`로 기록한다.
-- rebase 전 활성 dev 위임이 없는지 확인한다. 충돌 시 상태를 그대로 두었음을 알리고
-  continue/abort 해소를 사용자에게 위임한다.
-- readonly 슬롯 생성(`/pm-env worktree add <repo> --readonly`)은 코드 전체 사본을 만드는 사용자
-  승인 flow이므로 PM이 자율 생성하지 않는다.
-
-## 참고
-
-- backbone: `.project_manager/tools/worktree_pool.py`(`dev`/`sync`/`_resync_submodules_selective`/
-  `set_base`/`slot_git_status`/`status`/`resolve_rebase_base`/`rebase`/`refresh`/`create_slot(readonly=)`/
-  `record_git_snapshot`/`switch`).
-- 라이브 하네스 테스트 = (실 LLM 시나리오 → 실 git 단언).

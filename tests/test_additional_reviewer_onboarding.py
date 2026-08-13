@@ -783,6 +783,9 @@ def test_shared_pm_review_cards_use_active_role_and_durable_consent():
     """공용 카드도 추가 리뷰어 역할·지속 동의·수렴 게이트 규율을 고정한다."""
     for path in SHARED_PM_REVIEW_CARDS:
         text = path.read_text(encoding="utf-8")
+        details = path.parent / "references" / "operational-details.md"
+        if details.is_file():
+            text += "\n" + details.read_text(encoding="utf-8")
         assert "# /pm-review — 추가 리뷰어 교차검증 게이트" in text, path
         assert "additional reviewer" in text, path
         for key, value in EXPECTED_DEFAULTS:

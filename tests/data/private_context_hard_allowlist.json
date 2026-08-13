@@ -24,7 +24,7 @@
       "count": 1
     },
     {
-      "path": ".claude/skills/pm-handoff/SKILL.md",
+      "path": ".claude/skills/pm-handoff/references/operational-details.md",
       "kind": "work_item",
       "match": "T-0001",
       "surface": "markdown",
@@ -32,7 +32,7 @@
       "count": 2
     },
     {
-      "path": ".claude/skills/pm-handoff/SKILL.md",
+      "path": ".claude/skills/pm-handoff/references/operational-details.md",
       "kind": "work_item",
       "match": "T-0002",
       "surface": "markdown",

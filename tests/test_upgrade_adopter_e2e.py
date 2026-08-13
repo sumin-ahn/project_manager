@@ -49,6 +49,15 @@ from test_fresh_adopter_e2e import _load_pm_import, _snapshot_tree
 
 REPO = Path(__file__).resolve().parents[1]
 
+
+def _card_with_operational_details(path: Path) -> str:
+    """상시 카드와 T-0678 sibling 상황별 참조를 함께 읽는다."""
+    text = path.read_text(encoding="utf-8")
+    details = path.parent / "references" / "operational-details.md"
+    if details.is_file():
+        text += "\n" + details.read_text(encoding="utf-8")
+    return text
+
 # 제보 채택자 형상(claude host + add-harness guest)을 그대로 재현한다. host 축을 곱하지 않는 이유:
 #   이 파일이 검증하는 건 *업그레이드 상태 처리*(마커 세대·치환 잔재·절차 안전)라 host 하네스와
 #   독립이고, guest 방향별 동기 채널 축은 T-0574 게이트(`test_fresh_adopter_e2e`)가 전 순서쌍으로
@@ -937,7 +946,7 @@ def test_update_release_skill_cards_pin_zero_change_and_adapter_gate_contract():
         REPO / "templates/opencode/.claude/skills/pm-release/SKILL.md",
     ]
     for card in update_cards:
-        text = card.read_text(encoding="utf-8")
+        text = _card_with_operational_details(card)
         assert "`--changes`는 미리보기" in text, card
         assert "zero-change RUN2" in text, card
         assert "sync-adapter-config --check" in text, card
