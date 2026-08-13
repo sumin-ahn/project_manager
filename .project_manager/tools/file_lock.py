@@ -58,6 +58,24 @@ DEFAULT_LOCK_MODE = 0o644
 DEFAULT_APPEND_MODE = 0o644
 
 
+def exclusive_lock_supported() -> bool:
+    """현재 플랫폼에 실제 OS 배타락 primitive가 있는지 부수효과 없이 판정한다.
+
+    락 파일 open/acquire는 하지 않는다. 기존 ``acquire_exclusive``의 희귀 플랫폼 무락 폴백은
+    그대로 두고, 배타성 없이는 진행하면 안 되는 보안 경계가 사전에 fail-closed할 때 쓴다.
+    """
+    try:
+        import fcntl
+        return callable(getattr(fcntl, "flock", None))
+    except ImportError:
+        pass
+    try:
+        import msvcrt
+        return callable(getattr(msvcrt, "locking", None))
+    except ImportError:
+        return False
+
+
 def acquire_exclusive(fd: int) -> None:
     """열린 fd 에 OS 배타락을 건다 (블로킹).
 

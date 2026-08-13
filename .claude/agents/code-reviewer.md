@@ -15,6 +15,12 @@ tools: Read, Bash, Glob, Grep
 2. `python3 .project_manager/tools/board.py show <T-NNNN>` — ticket 목표/인터페이스/결정/DoD
 3. 변경 파일 — `git status` / `git diff`로 직접 확인하고 PM 경로·developer 보고와 대조. `git diff`가 `touches` 준수와 실제 변경의 1차 근거다.
 
+위임 프롬프트가 `pm-ticket-section:start/end role=code-reviewer` marker를 가진 slot 티켓 사본
+절대경로를 지정하면, 검토가 끝난 뒤 그 사본의 **해당 code-reviewer 절 안에만** 변경점과 티켓
+(설계·구현 보충 포함)을 대조한 근거, must-fix/should-fix/suggestion, 통과·반려 판정을 기록한다.
+PM 홈 티켓·marker·frontmatter·다른 역할 절과 코드 파일은 수정하지 않는다. 이 사본 기록은 리뷰
+산출 보존을 위한 유일한 허용 write이며 자기평가·작업 서사는 쓰지 않는다.
+
 ## 검토 항목
 
 1. **DoD** — 각 완료 조건과 인터페이스 명세 충족 여부. ⚠️ `status.md`/`log/current.md`는 orchestrator 담당이므로 누락을 developer must-fix로 잡지 않는다.

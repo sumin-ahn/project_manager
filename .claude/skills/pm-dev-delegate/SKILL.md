@@ -50,6 +50,54 @@ python3 .project_manager/tools/board.py regression run --task <이름>
 
 위임 전 target이 PM과 같은 하네스(native)인지 다른 하네스(cross)인지 판정한다. 1차 판정은 이 카드이며 `pm_delegate.py` same-harness 경고는 never-block 백스톱. 매핑은 `local.conf`의 `delegate.<role>[.<tier>]`.
 
+### 성장 티켓 사본 — 모든 위임의 준비/회수
+
+developer·code-reviewer·architect는 PM 홈 티켓을 직접 편집하지 않는다. PM은 위임마다 그 시점
+티켓 전문을 slot 안 기계 소유 사본으로 새로 준비하고, 에이전트는 프롬프트에 주입된 절대경로의
+`pm-ticket-section:start/end role=<역할>` 자기 절만 채운다.
+
+- **native prepare → spawn → harvest**:
+
+  ```bash
+  python3 .project_manager/tools/pm_delegate.py ticket prepare \
+      --ticket T-NNNN --role <developer|code-reviewer|architect> \
+      --cwd <작업 worktree 절대경로>
+  # stdout JSON의 `copy`만 native Agent/spawn 프롬프트에 주입한다.
+  # `capability`는 PM이 harvest stdin용으로만 보관하며 agent prompt/파일/argv에 넣지 않는다.
+  # native 위임 종료 뒤(rc/판정과 무관):
+  python3 .project_manager/tools/pm_delegate.py ticket harvest \
+      --copy <prepare JSON의 copy> --cwd <작업 worktree 절대경로> \
+      --capability-stdin
+  # 위 프로세스 stdin 한 줄에 prepare JSON의 capability를 입력
+  ```
+
+  prepare가 실패하면 spawn하지 않는다. harvest가 실패하면 티켓을 다음 단계로 넘기지 않고 같은
+  `--copy`와 PM만 보관한 capability stdin으로 재실행한다. capability 값은 명령 argv·프롬프트·로그에
+  쓰지 않는다. 사본·읽기 전용 baseline·metadata·tag 복제본은 성공 뒤에도 보존되며
+  재호출마다 새 디렉터리를 쓰므로 서로 덮지 않는다.
+
+- **cross 자동 후처리**: 아래 실 실행에 `--ticket T-NNNN`을 주면 `pm_delegate.py`가 prepare,
+  사본 경로/자기 절 제한 preamble 합성, subprocess 실행, `finally` harvest를 한 호출에서 수행한다.
+  하네스 rc 비정상·runner 예외에도 harvest를 시도하며, harvest 실패는 원래 rc보다 강한 비정상 종료와
+  token 값 없는 진단을 stderr에 낸다. cross capability는 main 메모리에만 존재하고 raw·ledger·파일·
+  프롬프트·stderr에 남기지 않으므로 프로세스 종료 뒤 수동 재-harvest할 수 없다. 실패 시 보존 사본을
+  진단한 뒤 새 prepare/위임을 수행한다. resume delta, 세션 불일치 뒤 fresh retry, 인프라 fallback도
+  이번 호출에서 준비한 **같은 사본 경로** 지시를 매 wire에 다시 싣고, 전 시도가 끝난 뒤 한 번 회수한다.
+  `--dry-run`은 무부수효과라 사본을 만들지 않는다.
+
+- **실패 판정**: marker 밖 byte 변경, marker 누락·중복·중첩·역할 불일치, 준비 뒤 같은 역할 절의
+  PM 홈 변경은 stale overwrite 없이 rc=1. 원본과 사본을 보존한 채 원인을 고친 뒤 출력된
+  `ticket harvest --copy ... --cwd ... --capability-stdin`를 capability stdin과 함께 다시 실행한다.
+  사본 디렉터리는 repo-local
+  `.git/info/exclude`에 기계 등록되어 `git status --short`와 커밋 대상에 나타나지 않는다. baseline과
+  metadata·tag는 PM 홈 local trust 영역에도 복제한다. 어느 파일도 권위가 아니며, harvest는 파일에
+  저장하지 않은 per-run 256-bit capability의 domain-separated HMAC(metadata canonical bytes+
+  baseline)을 먼저 검증한 뒤에만 target/ordinal을 사용한다. 그 뒤 board lock 아래 canonical ticket
+  재조회와 stale 비교까지 모두 통과해야 반영한다. 이미 원하는 block이 반영된 재-harvest도 sync를
+  다시 시도하며 JSON의 `changed`와 `sync_ready`를 별도 반환한다. git ignore 등록은 linked
+  worktree의 common git dir `info/exclude` 정확 좌표만 dirfd/nofollow/single-hardlink 경계에서
+  append하며 이 안전 경계를 제공하지 못하면 외부 파일 write 없이 fail-closed한다.
+
 ### 1. 매핑 조회 (dry-run)
 
 실 스폰·외부 송신 없이 하네스·모델을 확인한다(rc=0):
@@ -97,6 +145,7 @@ python3 .project_manager/tools/pm_delegate.py --role <역할> \
 - `--cwd`: 구현할 worktree **절대경로**. 모든 역할 필수(기본값 없음). task-mode 해소값을 실값으로 넣는다.
 - `--tier`: developer에만 사용.
 - role preamble(역할 정체성, commit/push 등 git 비가역·board 조작·어댑터 `.claude/.codex/.opencode` 수정 금지)은 엔진이 자동 합성한다. 프롬프트 파일에는 작업만 담고 금지 문구를 중복하지 않는다.
+- `--ticket`이 있는 developer·code-reviewer·architect 실 실행은 성장 사본을 자동 준비하고 그 절대경로와 자기 역할 절만 편집하라는 제한을 role preamble에 더한다. code-reviewer는 기존 worktree read-only·격리 temp 계약을 그대로 유지하며, 현재 검증된 단일-path write 경계는 Codex named permission profile뿐이다. Claude `--add-dir`는 접근 추가일 뿐 cwd write 축을 줄이지 않고 reviewer Bash도 유지하므로 Claude와 OpenCode의 code-reviewer+ticket-copy는 spawn 전에 fail-loud한다. ticket 없는 일반 Claude/OpenCode reviewer는 종전 read 계약 그대로다.
 - 병렬 wave는 호출측 PM 하네스의 background 실행(claude Bash `run_in_background` 등)으로 동기·stateless `pm_delegate` 호출을 병렬화한다.
 - 결과: `rc=0` 성공(stdout 첫 줄=실행 provenance, 폴백 시 실제 하네스 포함; 이후 최종 reply; raw 파일 박제), `rc=1` 실패(loud·raw 경로 stderr), `rc=3` opt-in OFF. PM이 reply를 검토하고 board를 갱신하며 위임 대상은 board를 조작하지 않는다.
 - `--ticket T-NNNN`은 해당 ticket `touches`를 허용 집합으로 전후 워크스페이스를 비교해 범위 밖 신규/변경/커밋을 stderr 경고한다(차단 아님·rc 불변). 생략 시 허용 0이라 모든 변경을 경고한다. **dev 위임에는 `--ticket`이 표준**.
@@ -170,9 +219,10 @@ Agent 툴 호출:
 > (`rc`·`elapsed_sec`·`silence_sec`)로 마감한다. 백그라운드 호출이 끊겨 stdout(그 안의 raw 경로)을
 > 잃어도 `python3 .project_manager/tools/pm_delegate.py raw [--unfinished]` 로 절대경로를 조회하라 —
 > **미마감 레코드 자체가 kill 증거**다. 재위임 전에 반드시 확인한다(완성분을 버리고 중복 과금하는 경로).
-> **native 위임은 장부에 남지 않는다** — 같은 하네스 안에서 도는 위임(각 하네스의 native
-> 서브에이전트 경로)은 `pm_delegate` 를 경유하지 않으므로 이 조회 대상이 아니다. native 산출은
-> 하네스 자체의 보고/전사에서 찾는다.
+> **native 위임은 raw 장부에는 남지 않지만 성장 사본에는 남는다** — 같은 하네스 안에서 도는 위임은
+> 위 native prepare→spawn→harvest를 수행한다. 하네스 보고/전사가 끊겨도 prepare가 출력한 사본을
+> 먼저 읽고, `ticket harvest --copy ... --cwd ... --capability-stdin`에 PM이 보관한 capability를
+> stdin으로 공급해 회수한 뒤에만 재위임한다.
 > **어느 장부를 봤는지 첫 줄로 확인한다** — `조회 장부: <절대경로>`. 장부는 **엔진 사본별**이라
 > `경고: 다른 엔진 사본 장부가 있습니다(이 조회에서는 읽지 않음): <경로>` 가 뜨면 자동 대체 조회가
 > 된 게 아니다 — 표시된 사본에서 **명시적으로 다시 조회**하라. `--output-dir DIR` 로 저장한 산출은

@@ -651,6 +651,9 @@ def test_resume_round_record_inherits_the_ticket(pd, monkeypatch, tmp_path):
 def test_explicit_ticket_wins_over_the_inherited_one(pd, monkeypatch, tmp_path):
     """명시 `--ticket` 이 우선이다 — 계승은 미지정일 때의 폴백이다."""
     other = "T-" + "0888"
+    # 이 테스트의 축은 resume record ticket 우선순위다. 성장 transport는 별도 회귀가
+    # 소유하므로 prepare seam을 no-copy로 격리해 Claude resume wire를 그대로 관측한다.
+    monkeypatch.setattr(pd, "prepare_ticket_copy", lambda **_kw: None)
     out_dir, ledger_path, _record_id = _resume_fixture(pd, tmp_path)
     prompt = _write_prompt(tmp_path)
     fake = _FakeRun(_ok(_claude_wire("판정: 통과")))

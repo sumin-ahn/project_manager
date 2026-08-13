@@ -5260,7 +5260,16 @@ def _scope_workspace(tmp_path: Path, monkeypatch, pd, touches=("work/demo_1/src"
         "status: open\n"
         f"touches:\n{touches_block}\n"
         "---\n\n"
-        f"# {TICKET_ID} — 범위 훅 e2e\n",
+        f"# {TICKET_ID} — 범위 훅 e2e\n\n"
+        "<!-- pm-ticket-section:start role=developer -->\n"
+        "## 구현 보충 (developer · 2026-08-13)\n\n"
+        "<!-- pm-ticket-section:end role=developer -->\n"
+        "<!-- pm-ticket-section:start role=code-reviewer -->\n"
+        "## 리뷰 (code-reviewer · 2026-08-13)\n\n"
+        "<!-- pm-ticket-section:end role=code-reviewer -->\n"
+        "<!-- pm-ticket-section:start role=architect -->\n"
+        "## 설계 (architect · 2026-08-13)\n\n"
+        "<!-- pm-ticket-section:end role=architect -->\n",
         encoding="utf-8",
     )
     ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
@@ -5422,8 +5431,11 @@ def test_corrupt_ticket_degrades_only_generic_axis_and_adapter_warning_survives(
         "title: 손상 ticket\n"
         "status: open\n"
         "touches:\n"
-        f"- work/demo_1/{adapter_root}\n"
-        "---\n",
+            f"- work/demo_1/{adapter_root}\n"
+            "---\n\n"
+            "<!-- pm-ticket-section:start role=developer -->\n"
+            "## 구현 보충 (developer · 2026-08-13)\n\n"
+            "<!-- pm-ticket-section:end role=developer -->\n",
         encoding="utf-8",
     )
     fake = _WritingRun(workspace, ([relative], _ok_result()))
@@ -5436,7 +5448,7 @@ def test_corrupt_ticket_degrades_only_generic_axis_and_adapter_warning_survives(
     )
     err = capsys.readouterr().err
 
-    assert rc == 0 and fake.calls == ["codex"]
+    assert rc == 0 and fake.calls == ["codex"], err
     assert SCOPE_DEGRADED_HEADER in err
     assert "generic 범위 축만 판정할 수 없습니다" in err
     assert WARNING_HEADER not in err
@@ -5455,7 +5467,10 @@ def test_corrupt_ticket_isolation_oracle_is_sensitive_to_coupled_none(
         / f"{TICKET_ID}-scope.md"
     )
     ticket_path.write_text(
-        "---\nid: T-CORRUPTED\ntitle: 손상\nstatus: open\ntouches: []\n---\n",
+            "---\nid: T-CORRUPTED\ntitle: 손상\nstatus: open\ntouches: []\n---\n\n"
+            "<!-- pm-ticket-section:start role=developer -->\n"
+            "## 구현 보충 (developer · 2026-08-13)\n\n"
+            "<!-- pm-ticket-section:end role=developer -->\n",
         encoding="utf-8",
     )
     real_begin = pd.begin_scope_audit

@@ -1145,6 +1145,9 @@ def test_main_derives_gate_from_ticket_and_links_the_real_raw_record(
     pd, monkeypatch, tmp_path,
 ):
     owner = pd._CONFIG_REPO_OVERRIDE
+    # 이 테스트의 축은 internal raw record linkage다. 성장 transport는 별도 회귀가
+    # 소유하므로 prepare seam을 no-copy로 격리한다.
+    monkeypatch.setattr(pd, "prepare_ticket_copy", lambda **_kw: None)
     prompt = owner / ".project_manager" / "review-prompt.md"
     prompt.write_text("구현을 검토하라.", encoding="utf-8")
     conf = {

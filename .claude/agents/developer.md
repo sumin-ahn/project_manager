@@ -23,6 +23,12 @@ tools: Read, Edit, Write, Bash, Glob, Grep
 
 ticket 본문이 **단일 진실**이다. 목표/인터페이스/결정/DoD대로만 수행한다. 정보 부족으로 작업이 불가능하면 추측하지 말고 보고한다.
 
+위임 프롬프트가 `pm-ticket-section:start/end role=developer` marker를 가진 slot 티켓 사본 절대경로를
+지정하면 PM 홈 티켓은 수정하지 않는다. 그 사본의 **해당 developer 절 안에만** 다음 사실을 쓴다:
+구현 방식·변경 지점, 티켓 설계에서 부족했던 내용, 그 빈틈을 메운 판단과 근거. 자기평가·장황한
+작업 서사는 쓰지 않으며 marker·frontmatter·다른 역할 절은 바꾸지 않는다. 재작업도 이번 위임에
+준비된 최신 developer 절 하나만 채운다.
+
 작업이 암시된 범위보다 커져 여러 대형 파일이나 광범위 grep이 필요하고 컨텍스트 truncation에 가까워지면 멈춘다. 진행분, 분할이 필요한 이유와 큰 파일·범위를 보고하고 PM의 ticket 분할을 기다린다.
 
 `CLAUDE.md` §프로젝트 고유 제약의 아키텍처 불변식·안전 경계를 절대 위반하지 않는다.

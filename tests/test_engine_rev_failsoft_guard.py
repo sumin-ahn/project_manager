@@ -941,7 +941,9 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   경계는 등록 사유(`observation_append_fail_open`) 기반 recovery marker 로 흡수한다 —
     #   관측 append 는 부기일 뿐이라 장부 쓰기 실패로 이미 내려진 allow/deny 를 뒤집지 않고,
     #   대신 matcher drift 관측이 불완전하다는 경고를 결과 envelope 에 실어 표면화한다.
-    assert len(report.boundaries) == 193, "propagation sweep boundary ratchet changed"
+    # 194 = 193 + T-0676 cross ticket harvest 후처리 한 경계. 단독 marked engine skew는
+    # 즉시 재전파하고, runner 원예외가 이미 pending이면 그 원예외를 보존하면서 skew도 진단한다.
+    assert len(report.boundaries) == 194, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

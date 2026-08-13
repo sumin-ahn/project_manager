@@ -195,6 +195,34 @@ def test_acquire_release_close_wrap_the_critical_section(
     assert calls == ["acquire", "release", "close"]
 
 
+def test_exclusive_lock_supported_is_pure_and_matches_available_backend(
+        file_lock, monkeypatch):
+    """지원 판정은 fd/open/acquire 없이 backend 존재만 보고한다."""
+    calls = []
+    monkeypatch.setattr(
+        file_lock.os, "open",
+        lambda *_a, **_kw: calls.append("open") or pytest.fail("support probe opened fd"),
+    )
+    assert file_lock.exclusive_lock_supported() is True
+    assert calls == []
+
+
+def test_exclusive_lock_supported_reports_no_backend_without_changing_fallback(
+        file_lock, monkeypatch):
+    """두 stdlib backend 부재는 False지만 기존 acquire 무락 폴백 계약은 유지한다."""
+    real_import = __import__
+
+    def no_lock_import(name, *args, **kwargs):
+        if name in {"fcntl", "msvcrt"}:
+            raise ImportError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", no_lock_import)
+    assert file_lock.exclusive_lock_supported() is False
+    assert file_lock.acquire_exclusive(12345) is None
+    assert file_lock.release_exclusive(12345) is None
+
+
 def test_primitive_failure_is_raised_instead_of_progressing_lockless(
     file_lock, tmp_path, monkeypatch,
 ):
