@@ -412,7 +412,7 @@ def test_internal_rounds_owner_resolution_failure_is_loud_and_release_closed(
 def _read_argv(subcommand: str) -> list[str]:
     """각 read leaf의 최소 실행 argv. 새 read leaf는 이 표가 아니라 parametrize에 먼저 잡힌다."""
     argv = subcommand.split()
-    if subcommand == "show":
+    if subcommand in {"show", "tier-signals"}:
         argv.append("T-0100")
     return argv
 

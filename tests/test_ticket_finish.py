@@ -1936,3 +1936,128 @@ def test_ticket_estimate_reads_frontmatter(tf, tmp_path):
     assert tf.get_ticket_estimate(board_py, "T-1") == "medium"
     assert tf.get_ticket_estimate(board_py, "T-2") is None
     assert tf.get_ticket_estimate(board_py, "T-3") is None
+
+
+# ── PM-direct 완료 재검 (T-0677) ───────────────────────────────────────────────
+
+def test_pm_direct_warns_when_touches_exceed_two_files(tf):
+    warnings = tf.pm_direct_finish_warnings(
+        "pm-direct", ["a.py", "b.py", "c.py"], [],
+    )
+    assert len(warnings) == 1
+    assert "(a)" in warnings[0] and "3개" in warnings[0]
+
+
+def test_pm_direct_directory_touch_uses_expanded_file_count(tf):
+    warnings = tf.pm_direct_finish_warnings(
+        "pm-direct", ["src/"], [], touched_file_count=3,
+    )
+    assert len(warnings) == 1
+    assert "(a)" in warnings[0] and "3개 파일" in warnings[0]
+
+
+def test_pm_direct_unresolved_directory_warns_conservatively(tf):
+    warnings = tf.pm_direct_finish_warnings(
+        "pm-direct", ["src/"], [], touched_file_count=0,
+        unresolved_directories=["src"],
+    )
+    assert len(warnings) == 1
+    assert "(a)" in warnings[0] and "상향 기본값" in warnings[0]
+
+
+def test_pm_direct_warns_for_code_diff_without_changed_test(tf):
+    warnings = tf.pm_direct_finish_warnings(
+        "pm-direct", ["src/app.py"], ["src/app.py"],
+    )
+    assert len(warnings) == 1
+    assert "(b)" in warnings[0] and "테스트" in warnings[0]
+
+
+def test_pm_direct_recheck_normal_pass_and_non_pm_direct_are_silent(tf):
+    assert tf.pm_direct_finish_warnings(
+        "pm-direct", ["src/app.py", "tests/test_app.py"],
+        ["src/app.py", "tests/test_app.py"],
+    ) == ()
+    assert tf.pm_direct_finish_warnings(
+        "normal", ["a.py", "b.py", "c.py"], ["a.py"],
+    ) == ()
+
+
+def test_pm_direct_warning_is_never_block_and_preserves_finish_rc(
+        tf, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        tf, "_ticket_frontmatter_snapshot",
+        lambda _board, _tid: tf.TicketFrontmatterSnapshot({
+            "tier": "pm-direct", "touches": ["src/app.py"],
+        }, None),
+    )
+    finisher = tf.TicketFinisher(
+        run_pytest_fn=_green_pytest(7),
+        run_board_fn=lambda _args: (0, "board ok"),
+        run_git_fn=lambda _args: (0, ""),
+        board_count_fn=lambda: 3,
+        ticket_title_fn=lambda _tid: "PM direct",
+        affected_domain_fn=lambda _tid: [],
+        status_entries_fn=lambda: ((" M", "src/app.py"),),
+        stage_scope_fn=lambda _tid: tf.StageScope((), None),
+        diff_cap_block_fn=lambda _tid: None,
+        dod_block_fn=lambda _tid: None,
+        log_file=tmp_path / "log.md",
+    )
+
+    assert finisher.run("T-0677", section=None, dry_run=False) == 0
+    captured = capsys.readouterr()
+    assert "PM-direct 조건 (b)" in captured.err
+    assert "[완료] T-0677" in captured.out
+
+
+def test_pm_direct_task_coordinate_failure_is_loud_and_never_uses_raw_touches(
+        tf, tmp_path, monkeypatch, capsys):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(
+        tf, "_ticket_frontmatter_snapshot",
+        lambda _board, _tid: tf.TicketFrontmatterSnapshot({
+            "tier": "pm-direct",
+            "touches": ["work/project_manager_1/src/app.py"],
+        }, None),
+    )
+    monkeypatch.setattr(tf, "_load_repo_coordinates", lambda: None)
+    finisher = tf.TicketFinisher(
+        board_py=tf.BOARD_PY,
+        task_workspace=workspace,
+        status_entries_at_fn=lambda _cwd: ((" M", "src/app.py"),),
+    )
+
+    finisher._warn_pm_direct_conditions("T-0677")
+    err = capsys.readouterr().err
+    assert "PM-direct 재검 skip" in err
+    assert "raw PM-home 경로로 판정하지 않습니다" in err
+    assert "조건 (b)" not in err
+
+
+def test_pm_direct_finish_wires_directory_expansion_into_condition_a(
+        tf, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        tf, "_ticket_frontmatter_snapshot",
+        lambda _board, _tid: tf.TicketFrontmatterSnapshot({
+            "tier": "pm-direct", "touches": ["src/"],
+        }, None),
+    )
+    expansion = tf.load_board_module(tf.BOARD_PY).TouchFileExpansion(
+        ("src/a.py", "src/b.py", "src/c.py"), (),
+    )
+    fake_board = type("Board", (), {
+        "expand_owned_touch_files": staticmethod(lambda _repo, _touches: expansion),
+    })()
+    monkeypatch.setattr(tf, "load_board_module", lambda _path: fake_board)
+    finisher = tf.TicketFinisher(
+        board_py=tf.BOARD_PY,
+        task_workspace=tmp_path,
+        status_entries_at_fn=lambda _cwd: (),
+    )
+
+    finisher._warn_pm_direct_conditions("T-0677")
+    err = capsys.readouterr().err
+    assert "PM-direct 조건 (a) 위반" in err
+    assert "3개 파일" in err

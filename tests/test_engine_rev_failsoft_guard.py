@@ -943,7 +943,13 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   대신 matcher drift 관측이 불완전하다는 경고를 결과 envelope 에 실어 표면화한다.
     # 194 = 193 + T-0676 cross ticket harvest 후처리 한 경계. 단독 marked engine skew는
     # 즉시 재전파하고, runner 원예외가 이미 pending이면 그 원예외를 보존하면서 skew도 진단한다.
-    assert len(report.boundaries) == 194, "propagation sweep boundary ratchet changed"
+    # 195 = 194 + T-0677 PM-direct finish advisory 한 경계. git 변경 조회 실패는
+    # never-block 경고로 내리되 marked engine skew는 종전 불변식대로 재전파한다.
+    # 196 = 195 + T-0677 directory touches repo-owned 전개 한 경계. 일반 열거
+    # 실패는 미해소 상향 신호로 보존하고 marked skew는 재전파한다.
+    # 197 = 196 + T-0677 h1/h2/docs-only 공유 OWNED 스냅샷 해소 한 경계.
+    # 일반 열거 실패는 unresolved로 내리되 marked skew는 재전파한다.
+    assert len(report.boundaries) == 197, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

@@ -16,6 +16,7 @@ See `.project_manager/wiki/tickets/README.md` and
 from __future__ import annotations
 
 import argparse
+import ast
 import contextlib
 import datetime
 import fnmatch
@@ -332,7 +333,7 @@ _MUTATION_SUBCOMMANDS: frozenset[str] = frozenset({
 })
 # 조회(read-only·board 상태 미변경) — 게이트 없음.
 _READ_SUBCOMMANDS: frozenset[str] = frozenset({
-    "list", "show", "lint", "idea list", "prefix list",
+    "list", "show", "lint", "tier-signals", "idea list", "prefix list",
 })
 # read leaf별 PM-owned 입력 전수. dispatch 첫 줄이 이 값을 그대로 표시하므로, worktree에서
 # 어느 홈의 무엇을 읽는지 조용히 숨지 않는다. 제품 코드(REPO 루트 문서·adapter/template 및
@@ -341,6 +342,7 @@ _READ_PM_INPUTS_BY_SUBCOMMAND: dict[str, str] = {
     "list": "board·areas·local.conf·lease",
     "show": "board",
     "lint": "board·areas·wiki(decisions·ideas·specs·domain·current-truth)·hooks·local.conf",
+    "tier-signals": "board",
     "idea list": "ideas",
     "prefix list": "board",
 }
@@ -8131,6 +8133,228 @@ TICKET_GROWTH_ROLE_LABELS: dict[str, str] = {
 TICKET_TIERS: frozenset[str] = frozenset({"pm-direct", "normal", "hard"})
 
 
+class TierSignals(NamedTuple):
+    """touches에서 기계적으로 확정 가능한 tier 보조 신호."""
+
+    tool_modules: tuple[str, ...]
+    shared_code: tuple[str, ...]
+    docs_only: bool
+    unresolved_directories: tuple[str, ...] = ()
+
+    @property
+    def h1(self) -> bool:
+        """2개+ 모듈 또는 파일 수 미해소(상향 기본값)."""
+        return len(self.tool_modules) >= 2 or bool(self.unresolved_directories)
+
+
+class TouchFileExpansion(NamedTuple):
+    """directory touches를 repo 소유 파일로 펼 결과와 미해소 선언."""
+
+    paths: tuple[str, ...]
+    unresolved_directories: tuple[str, ...]
+
+
+def _list_owned_touch_files(repo: Path, subtree: Path, list_owned=None):
+    """repo-owned OWNED 열거 호출 단일 지점(제품/테스트 DI 공유)."""
+    if list_owned is not None:
+        return list_owned(repo, subtree)
+    seam = _TOOLS_BOOTSTRAP_MODULE
+    if seam is None or not hasattr(seam, "list_repo_owned_files"):
+        raise RuntimeError("repo_owned_files 열거 seam 부재")
+    return seam.list_repo_owned_files(repo, subtree, mode=seam.OWNED)
+
+
+def _canonical_tier_touch(value: str) -> str:
+    """touches 경로를 repo-relative POSIX 표기로 접는다."""
+    value = value.strip().replace("\\", "/")
+    while value.startswith("./"):
+        value = value[2:]
+    return value.rstrip("/")
+
+
+def _is_tool_test_file(path: str) -> bool:
+    """tools/ 안의 테스트 파일을 모듈 수에서 제외한다."""
+    parts = Path(path).parts
+    name = parts[-1] if parts else ""
+    return "tests" in parts or name.startswith("test_") or name.endswith("_test.py")
+
+
+def expand_owned_touch_files(
+    repo: Path,
+    touches: Sequence[str],
+    *,
+    list_owned=None,
+) -> TouchFileExpansion:
+    """touches directory를 공용 repo-owned 열거로 파일 단위 전개한다.
+
+    디렉터리를 열거할 수 없으면 빈 집합으로 축소하지 않고 미해소로
+    보존한다. 소비자는 tier 상향 기본값/경고에 이 신호를 쓴다.
+    """
+    repo = Path(repo)
+    paths: set[str] = set()
+    unresolved: set[str] = set()
+    for raw in touches:
+        canonical = _canonical_tier_touch(raw)
+        rel = Path(canonical)
+        if (not canonical or rel.is_absolute() or ".." in rel.parts):
+            unresolved.add(canonical or raw)
+            continue
+        target = repo / rel
+        is_directory = raw.rstrip().endswith(("/", "\\")) or target.is_dir()
+        if not is_directory:
+            paths.add(rel.as_posix())
+            continue
+        if not target.is_dir():
+            unresolved.add(rel.as_posix())
+            continue
+        try:
+            owned = _list_owned_touch_files(repo, rel, list_owned)
+        except Exception as exc:  # advisory caller가 미해소를 상향 신호로 쓴다.
+            if _is_engine_rev_skew(exc):
+                raise
+            unresolved.add(rel.as_posix())
+            continue
+        prefix = rel.as_posix().rstrip("/") + "/"
+        for item in owned:
+            candidate = Path(item).as_posix()
+            if candidate.startswith(prefix) and not (repo / candidate).is_dir():
+                paths.add(candidate)
+    return TouchFileExpansion(tuple(sorted(paths)), tuple(sorted(unresolved)))
+
+
+def _tier_tool_module_touches(touches: Sequence[str]) -> tuple[str, ...]:
+    prefix = ".project_manager/tools/"
+    modules = {
+        path for raw in touches
+        if (path := _canonical_tier_touch(raw)).startswith(prefix)
+        and path.endswith(".py")
+        and not _is_tool_test_file(path[len(prefix):])
+    }
+    return tuple(sorted(modules))
+
+
+def _shared_tool_code(tools_dir: Path, *, list_owned=None) -> tuple[str, ...]:
+    """tools/ import 구문을 AST로 스캔해 2개+ 도구가 import하는 파일을 산출.
+
+    목록은 파일명으로 굳히지 않고 현재 tools 트리와 import/import-from
+    구문만을 입력으로 삼는다. 파싱 불가 파일은 보조 신호에서만 제외한다.
+    """
+    repo = tools_dir.parent.parent
+    subtree = tools_dir.relative_to(repo)
+    prefix = subtree.as_posix().rstrip("/") + "/"
+    python_files = sorted({
+        repo / Path(path) for path in _list_owned_touch_files(repo, subtree, list_owned)
+        if Path(path).as_posix().startswith(prefix)
+        and Path(path).suffix == ".py"
+        and not _is_tool_test_file(Path(path).relative_to(subtree).as_posix())
+    })
+    by_stem: dict[str, list[Path]] = {}
+    for path in python_files:
+        by_stem.setdefault(path.stem, []).append(path)
+
+    importers: dict[Path, set[Path]] = {path: set() for path in python_files}
+    for importer in python_files:
+        try:
+            tree = ast.parse(importer.read_text(encoding="utf-8"), filename=str(importer))
+        except (OSError, UnicodeError, SyntaxError):
+            continue
+        names: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names.update(alias.name.rsplit(".", 1)[-1] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    names.add(node.module.rsplit(".", 1)[-1])
+                elif node.level:
+                    names.update(alias.name.rsplit(".", 1)[-1] for alias in node.names)
+            elif (isinstance(node, ast.Call)
+                  and isinstance(node.func, ast.Name)
+                  and node.func.id == "_load_module_from_path"):
+                # 생산 도구는 package import 대신 경로 로더를 쓴다. 두 번째
+                # expected_filename literal은 import 구문과 동등한 정적 의존성이다.
+                literal = None
+                if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
+                    literal = node.args[1].value
+                if literal is None:
+                    for keyword in node.keywords:
+                        if (keyword.arg == "expected_filename"
+                                and isinstance(keyword.value, ast.Constant)):
+                            literal = keyword.value.value
+                            break
+                if isinstance(literal, str) and literal.endswith(".py"):
+                    names.add(Path(literal).stem)
+        for name in names:
+            # 동일 stem이 여러 경로에 있으면 import 구문만으로 대상을
+            # 특정할 수 없다. 근거 없는 shared 과판정을 피해 제외한다.
+            candidates = by_stem.get(name, ())
+            if len(candidates) == 1 and candidates[0] != importer:
+                importers[candidates[0]].add(importer)
+
+    prefix = ".project_manager/tools"
+    return tuple(
+        f"{prefix}/{path.relative_to(tools_dir).as_posix()}"
+        for path in python_files if len(importers[path]) >= 2
+    )
+
+
+def _is_tier_document(path: str) -> bool:
+    path = _canonical_tier_touch(path)
+    if not path:
+        return False
+    parts = Path(path).parts
+    name = parts[-1].upper()
+    if name in {"README", "README.MD", "CHANGELOG", "CHANGELOG.MD"}:
+        return True
+    if path == ".project_manager/wiki" or path.startswith(".project_manager/wiki/"):
+        return True
+    if "skills" in parts and parts[-1] == "SKILL.md":
+        return True
+    if name == "AGENTS.MD":
+        return True
+    return "agents" in parts and Path(path).suffix.lower() in {".md", ".toml"}
+
+
+def tier_signals(
+    touches: Sequence[str], tools_dir: Path, *, list_owned=None,
+) -> TierSignals:
+    """PM 판정을 대체하지 않는 h1·h2·문서-전용 기계 신호."""
+    repo = tools_dir.parent.parent
+    # directory touches 전체와 tools AST 스캔이 repo OWNED 스냅샷 한 벌을 공유.
+    subtree = Path(".")
+    try:
+        owned = tuple(_list_owned_touch_files(repo, subtree, list_owned))
+        owned_error = None
+    except Exception as exc:
+        if _is_engine_rev_skew(exc):
+            raise
+        owned = ()
+        owned_error = exc
+
+    def inventory(_repo, _subtree):
+        if owned_error is not None:
+            raise owned_error
+        return owned
+
+    # h1 directory 전개와 h2 AST 스캔이 OWNED 스냅샷 한 벌을 공유한다.
+    expanded = expand_owned_touch_files(repo, touches, list_owned=inventory)
+    modules = _tier_tool_module_touches(expanded.paths)
+    shared = set(_shared_tool_code(tools_dir, list_owned=inventory)) if owned_error is None else set()
+    canonical_touches = tuple(_canonical_tier_touch(path) for path in touches)
+    touched_shared = tuple(sorted(
+        path for path in shared
+        if any(path == touch or path.startswith(touch + "/")
+               for touch in canonical_touches if touch)
+    ))
+    return TierSignals(
+        modules, touched_shared,
+        bool(expanded.paths) and not expanded.unresolved_directories
+        and all(_is_tier_document(path) for path in expanded.paths),
+        tuple(path for path in expanded.unresolved_directories
+              if path == ".project_manager/tools"
+              or path.startswith(".project_manager/tools/")),
+    )
+
+
 def _growth_ticket_path(tid: str, action: str) -> tuple[int, Path | None]:
     """성장 mutation 대상 해소 — board_lock 보유 중 open/claimed 판정, 그 밖은 거부.
 
@@ -8212,6 +8436,34 @@ def cmd_tier(args: argparse.Namespace) -> int:
 
     ready = _growth_mutation_sync(f"tier {args.id} {args.tier}", path)
     print(f"tier set {args.id}: {args.tier}{_board_git_mutation_state_suffix(ready)}")
+    return 0
+
+
+def cmd_tier_signals(args: argparse.Namespace) -> int:
+    """touches 기반 h1·h2·문서-전용 신호를 advisory로 표시한다."""
+    found = find_ticket_exact(args.id)
+    if found is None:
+        print(f"ticket not found: {args.id}", file=sys.stderr)
+        return 1
+    _status, path = found
+    fm, _body = load_ticket(path)
+    touches = fm.get("touches")
+    if not isinstance(touches, list):
+        touches = []
+    clean_touches = [item.strip() for item in touches
+                     if isinstance(item, str) and item.strip()]
+    signals = tier_signals(clean_touches, REPO / ".project_manager" / "tools")
+    modules = ", ".join(signals.tool_modules) or "(none)"
+    shared = ", ".join(signals.shared_code) or "(none)"
+    module_count = ("unknown" if signals.unresolved_directories
+                    else str(len(signals.tool_modules)))
+    unresolved = (f" · unresolved={', '.join(signals.unresolved_directories)}"
+                  if signals.unresolved_directories else "")
+    print(f"tier signals {args.id} (advisory; PM confirms tier)")
+    print(f"  h1 tool modules: {module_count} "
+          f"(2+={'yes' if signals.h1 else 'no'}) — {modules}{unresolved}")
+    print(f"  h2 shared code: {'yes' if signals.shared_code else 'no'} — {shared}")
+    print(f"  docs-only: {'yes' if signals.docs_only else 'no'}")
     return 0
 
 
@@ -14798,6 +15050,13 @@ def build_parser() -> argparse.ArgumentParser:
     # 보장하도록 자유 문자열로 받고 허용집합은 런타임에서 검증한다.
     p.add_argument("tier", metavar="pm-direct|normal|hard")
     p.set_defaults(fn=cmd_tier)
+
+    p = sub.add_parser(
+        "tier-signals",
+        help="touches의 h1 모듈·h2 공용 코드·문서-전용 신호 표시(advisory)",
+    )
+    p.add_argument("id", metavar="T-NNNN")
+    p.set_defaults(fn=cmd_tier_signals)
 
     p = sub.add_parser("init", help="clone 당 1회 setup (solo · multi-repo N×M) — pm_state·local.conf·pre-push 훅")
     p.add_argument("--prefix", help="multi-repo (N×M) ID 네임스페이스 (예: PAY). 생략 = solo(legacy T-NNNN)")
