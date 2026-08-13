@@ -956,7 +956,7 @@ def test_push_timeout_without_remote_effect_rolls_back(board, tmp_path, monkeypa
 
 
 # ════════════════════════════════════════════════════════════════════════
-# best-effort 6곳 — 같은 스코프 불변식 (claim 과 함께 출하)
+# best-effort 7 callsite / 8 mutation surface — 같은 스코프 불변식
 # ════════════════════════════════════════════════════════════════════════
 
 def _new_args(title: str) -> argparse.Namespace:
@@ -967,7 +967,7 @@ def _new_args(title: str) -> argparse.Namespace:
 @requires_git
 @pytest.mark.parametrize("mutation", ["complete", "block", "unclaim", "unblock"])
 def test_best_effort_transitions_commit_only_their_paths(board, tmp_path, mutation):
-    """complete/block/unclaim/unblock 커밋도 **그 전이 두 경로만** 담는다 (D2 를 6곳 전부에).
+    """complete/block/unclaim/unblock 커밋도 **그 전이 두 경로만** 담는다.
 
     claim 차단을 풀면 board 는 상시 dirty 가 된다 — best-effort 가 board 전체를 쓸어담는 채로
     남으면 누출 노출이 오늘보다 커지므로 같은 티켓에서 함께 스코프화했다."""
@@ -1094,8 +1094,8 @@ def test_ticket_mutations_pass_scoped_paths():
     calls = [node for node in ast.walk(tree)
              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
              and node.func.id == "_board_git_sync_best_effort"]
-    assert len(calls) == 6, \
-        f"best-effort sync 호출이 6곳이 아님(신규/삭제 시 이 가드를 함께 갱신): {len(calls)}"
+    assert len(calls) == 7, \
+        f"best-effort sync 호출이 7곳이 아님(신규/삭제 시 이 가드를 함께 갱신): {len(calls)}"
     for call in calls:
         has_paths = len(call.args) >= 2 or any(kw.arg == "paths" for kw in call.keywords)
         assert has_paths, \

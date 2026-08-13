@@ -783,6 +783,8 @@ _MUTATION_ARGVS = [
     ["block", "T-0100", "--reason", "r"],
     ["unclaim", "T-0100"],
     ["unblock", "T-0100"],
+    ["section-add", "T-0100", "--role", "developer"],
+    ["tier", "T-0100", "hard"],
     ["init"],
     ["migrate-identity"],
     ["promote-scope", "somedoc.md", "--to", "shared"],

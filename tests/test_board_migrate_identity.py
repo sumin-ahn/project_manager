@@ -648,25 +648,16 @@ def test_areas_noop_does_not_write_in_lock(board, capsys, monkeypatch):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 동시성 모델 — areas=락 보호(참)·티켓=best-effort 재조회 skip (T-0168 교정·r4 override)
+# 동시성 모델 — areas/ticket RMW 모두 board_lock writer
 # ════════════════════════════════════════════════════════════════════════
 #
-# r4 의 "변경 단계 전체를 단일 board_lock 으로 원자화하면 티켓 이동이 막힌다"는 거짓 전제였다
-# (codex 실증): cmd_claim/complete/block/unclaim 은 board_lock 을 *안* 잡고 lock-free
-# atomic-rename(`move_ticket`)만 쓴다(ADR-0012). migration 이 board_lock 을 쥐어도 티켓 이동을
-# 못 막는다 — 그 락은 거짓 보장이고 차단만 유발한다. 그래서:
-#   - areas write 는 board_lock 보호(`areas_append` 와의 lost-update 방지·진짜 공유 mutation).
-#   - 티켓 backfill 은 글로벌락 *없이* best-effort — 각 티켓을 쓰기 직전 ID 로 재조회해
-#     이동/완료됐으면 skip(stale 쓰기 0), 살아 있으면 atomic write(부분쓰기 0).
-# 잔여 미세 TOCTOU(재조회↔replace)는 *하드 보장 아님* — migrate-identity 는 단일-세션 op 다.
+# lifecycle/growth writer가 모두 board_lock을 공유하므로 migration도 ticket scan/read/transform/
+# relookup/dump 전체를 같은 lock으로 감싼다. stale snapshot이 marker/tier를 덮는 창이 없어야 한다.
+# areas와 ticket helper는 서로 독립 lock 구간이고 refresh는 둘 다 끝난 뒤 lock 밖에서 돈다.
 
 
-def test_tickets_do_not_acquire_global_lock(board, capsys, monkeypatch):
-    """티켓 backfill 은 글로벌 board_lock 을 잡지 않는다(areas 없으면 락 0회).
-
-    티켓 이동이 lock-free atomic-rename 이라 락은 이동을 못 막는다 → 거짓 안전을 두지 않고
-    티켓 루프를 락 밖에 둔다. areas.md 가 없으면(솔로) 어떤 board_lock 도 진입하지 않는다.
-    """
+def test_ticket_backfill_acquires_one_global_lock(board, capsys, monkeypatch):
+    """areas 없는 ticket-only migration도 scan→dump 전체에 board_lock을 정확히 1회 잡는다."""
     real_lock = board.board_lock
     count = {"n": 0}
 
@@ -686,8 +677,7 @@ def test_tickets_do_not_acquire_global_lock(board, capsys, monkeypatch):
     _seed(board, "T-0005", "claimed", fm_extra={"claimed_by": "pm-1"})
     rc, _, _ = _run(board, capsys)
     assert rc == 0
-    # 티켓이 backfill 됐는데도 board_lock 은 한 번도 안 잡힘(락-free 티켓 경로).
-    assert count["n"] == 0, "티켓 backfill 이 글로벌 board_lock 을 잡았다(거짓 안전)"
+    assert count["n"] == 1, "ticket migration의 scan→dump board_lock 경계 누락/중복"
     assert board.load_ticket(
         board.TICKETS_DIR / "open" / "T-0001-seed.md")[0]["created_by"] == "alice"
 
@@ -695,10 +685,10 @@ def test_tickets_do_not_acquire_global_lock(board, capsys, monkeypatch):
 def test_ticket_moved_before_write_is_skipped(board, capsys, monkeypatch):
     """쓰기 직전 티켓이 *이동*되면 재조회→skip — stale 쓰기 0(이동된 파일 안 건드림).
 
-    best-effort 동시성: 다른 세션이 claim 으로 open/→claimed/ 이동시킨 상황을 모사한다.
+    방어적 재조회: 수동/구버전 writer가 open/→claimed/ 이동시킨 상황을 모사한다.
     `find_ticket_for_mutation`(쓰기 직전 재조회)을 래핑해 스캔 경로(open/)가 아닌 새 경로(claimed/)를
     돌려주면, 경로 불일치로 skip 되고 스캔 경로엔 절대 쓰지 않는다. (하드 보장 아님 — 재조회와
-    replace 사이 미세 창은 단일-세션 전제로 수용. 여기선 *재조회가 잡는* 케이스를 검증.)
+    엔진 writer는 lock 때문에 이 형상에 못 끼지만, 재조회가 외부 이동도 stale write 없이 잡는다.)
     """
     _write_conf(board, user="alice", session="pm-1")
     scan_path = _seed(board, "T-0001", "open")  # 스캔이 보는 open/ 경로.
@@ -749,7 +739,7 @@ def test_ticket_gone_before_write_is_skipped(board, capsys, monkeypatch):
 def test_surviving_ticket_atomic_write(board, capsys, monkeypatch):
     """정상 경로(이동 없음)는 atomic write 로 backfill 된다(`dump_ticket_atomic` 경유).
 
-    best-effort 가 정상 케이스를 막지 않음 + 쓰기가 temp+os.replace 의 원자 교체임을 확인한다
+    lock 직렬화가 정상 케이스를 막지 않음 + 쓰기가 temp+os.replace 의 원자 교체임을 확인한다
     (`dump_ticket_atomic` 가 정확히 1회 호출되고, 결과 파일이 정상 backfill 됨).
     """
     calls = []
@@ -857,7 +847,7 @@ def test_full_run_completes_without_deadlock(board, capsys):
 
 
 def test_surviving_ticket_still_backfilled(board, capsys):
-    """정상 경로(아무것도 안 움직임)는 backfill 된다(best-effort 가 정상 케이스를 막지 않음)."""
+    """정상 경로(아무것도 안 움직임)는 lock 안에서 backfill 된다."""
     _write_conf(board, user="alice", session="pm-1")
     _seed(board, "T-0001", "open")
     rc, _, err = _run(board, capsys)
