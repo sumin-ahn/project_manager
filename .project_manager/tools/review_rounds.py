@@ -25,7 +25,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 
-ENGINE_REV = "v1.7.4"
+ENGINE_REV = "v1.7.5"
 
 CONVERGENCE_DIVERGING = "diverging"
 CONVERGENCE_CAP_UNRESOLVED = "cap-unresolved"

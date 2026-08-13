@@ -7,6 +7,55 @@
 
 ## [Unreleased]
 
+## [1.7.5] - 2026-08-14
+
+### 업그레이드 노트
+
+- **위임 작업은 티켓의 역할별 성장 절을 사본으로 전달하고 회수할 수 있다.**
+  Codex native 위임은 `pm_delegate.py ticket prepare|harvest`를 사용하며, reviewer 사본
+  쓰기는 검증된 Codex named permission profile에서만 활성화된다. Claude·OpenCode
+  reviewer에 `--ticket`을 주면 workspace 전체 쓰기로 광역 승격하지 않고 spawn 전에
+  fail-loud한다.
+- **스킬 카드의 상황별 운영 상세가 sibling `references/operational-details.md`로
+  분리됐다.** `pm-update`가 카드와 reference를 함께 배송하므로 수동 복사는
+  필요 없다. OpenCode 평면 command도 실제 model-skill reference로 링크를 해소한다.
+- **bootstrap 명령 표기가 실행 환경을 따른다.** `local.conf` 의 마지막 `py=`
+  assignment를 우선하고, 미설정 시 Windows는 `py -3`, Linux/macOS는 `python3`를
+  표시한다. PowerShell 5.x 비호환 `&&`를 생성 명령에 사용하지 않는다.
+
+### Added
+
+- **성장 티켓 절** — `board.py section-add` 가 architect·developer·code-reviewer 역할
+  marker를 누적하고, `pm_delegate.py ticket prepare|harvest`가 그 역할의 최신 절만
+  별도 사본으로 안전하게 왕복시킨다. 파일 밖 per-run capability·HMAC, canonical
+  재조회, stale/marker-밖 변경 거부, CRLF 보존, 동시 lifecycle writer 직렬화를
+  포함한다.
+- **티어 판별 보조** — `board.py tier-signals` 가 도구 모듈 수, 공유 코드 소비,
+  docs-only 여부를 repo-owned 인벤토리에서 산출한다. `ticket_finish.py`는
+  `pm-direct`의 파일 상한·테스트 동반을 완료 직전 never-block 경고로 재검한다.
+- **native 위임 model drift 표면** — `delegate.<role>[.<tier>]`를 native/cross 공통
+  라우팅 진실로 삼고, Claude native 카드의 `model:` 불일치·손상을 spawn 차단
+  없이 `additionalContext`로 경고한다.
+
+### Changed
+
+- **15개 PM 스킬 카드를 상시 절차와 상황별 상세로 분리**했다. 상시 카드
+  합계는 142,710→92,071 bytes로 줄었으며 trigger·backbone·필수 명령은 그대로
+  남았다.
+- **환경별 실행 안내를 공통 Windows/POSIX guide 두 벌로 수렴**했다.
+  Claude·Codex·OpenCode 템플릿과 OpenCode 사람 command 표면까지 동일 계약을 배송한다.
+
+### Fixed
+
+- 티켓 성장 write와 claim/block/complete/migration의 경합으로 상태 파일이 중복되거나
+  strict claim rollback이 성장 데이터를 잃던 경합을 공용 lock 순서로 닫았다.
+- ticket-copy trust 위조·cross-ticket overwrite·same-ticket stale 우회, git exclude
+  symlink/hardlink 외부 쓰기, runner/harvest 이중 예외 마스킹을 fail-closed 경계와
+  회귀로 막았다.
+- OpenCode command 15개의 operational reference가 루트 canonical에서만 우연히
+  해소되고 fresh adopter에서 끊기던 출하 결함을 실배송 상대경로 가드로
+  닫았다.
+
 ## [1.7.4] - 2026-08-12
 
 ### 업그레이드 노트
