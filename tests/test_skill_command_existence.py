@@ -76,6 +76,7 @@ _SLASH = re.compile(r"(?<![.\w])/((?:pm|spike)-[a-z0-9-]+)(?![.\w])")
 
 # 파서 로드 캐시(도구당 1회). 도구는 패키지가 아니므로 importlib 경로 로드.
 _parser_cache: "dict[str, argparse.ArgumentParser | None]" = {}
+_module_cache: "dict[str, object]" = {}
 
 
 class _ParserCaptured(Exception):
@@ -83,9 +84,12 @@ class _ParserCaptured(Exception):
 
 
 def _load_module(stem: str):
+    if stem in _module_cache:
+        return _module_cache[stem]
     spec = importlib.util.spec_from_file_location(stem, TOOLS / f"{stem}.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    _module_cache[stem] = mod
     return mod
 
 
@@ -124,6 +128,24 @@ def _load_parser(stem: str) -> "argparse.ArgumentParser | None":
         parser = captured.get("parser")
     _parser_cache[stem] = parser
     return parser
+
+
+def _parser_for_command(
+    stem: str, tokens: "list[str]"
+) -> "tuple[argparse.ArgumentParser | None, list[str]]":
+    """main 선행-dispatch command면 실제 공개 parser와 command 뒤 argv를 돌려준다.
+
+    일부 CLI는 기존 flat required 옵션을 흩지 않기 위해 `main()`에서 첫 토큰을 먼저 분기한다.
+    모듈이 `build_subcommand_parser(command)`를 공개하면 그 parser가 실행 단일 진실이므로 존재
+    검사도 같은 표면을 쓴다. 미지원 command/모듈은 종전 root parser로 그대로 퇴화한다.
+    """
+    if tokens and not _flag_of(tokens[0]):
+        builder = getattr(_load_module(stem), "build_subcommand_parser", None)
+        if callable(builder):
+            parser = builder(tokens[0])
+            if parser is not None:
+                return parser, tokens[1:]
+    return _load_parser(stem), tokens
 
 
 def _subparsers_action(parser: argparse.ArgumentParser):
@@ -329,14 +351,14 @@ def test_skill_bash_commands_reference_existing_cli():
         for stem, tokens in _extract_bash_commands(md.read_text(encoding="utf-8")):
             total += 1
             surfaces_with_targets.add(surface)
-            parser = _load_parser(stem)
+            parser, command_tokens = _parser_for_command(stem, tokens)
             if parser is None:
                 offenders.append(
                     f"{md.relative_to(REPO).as_posix()}: {stem}.py 파서를 얻지 못함"
                     " (build_parser 부재·main 캡처 실패) — 존재 검사 불가"
                 )
                 continue
-            for reason in check_command(parser, tokens):
+            for reason in check_command(parser, command_tokens):
                 offenders.append(f"{md.relative_to(REPO).as_posix()}: {stem} — {reason}")
 
     # sensitivity: 스캔 대상 0 = 공허 가드 → 실패.
@@ -368,8 +390,12 @@ def test_existence_classifier_catches_drift():
     handoff = _load_parser("pm_handoff")
     worktree = _load_parser("worktree_pool")
     config = _load_parser("pm_config")
+    delegate_ticket, delegate_tokens = _parser_for_command(
+        "pm_delegate", _tokenize("ticket harvest --copy /tmp/c --cwd /tmp/w --capability-stdin")
+    )
     assert board is not None and handoff is not None
     assert worktree is not None and config is not None
+    assert delegate_ticket is not None
 
     # catch — 미등록 서브커맨드.
     assert check_command(board, _tokenize("claimm T-1 --repo <repo>")) == [
@@ -377,6 +403,11 @@ def test_existence_classifier_catches_drift():
     ]
     # catch — 미등록 플래그.
     assert check_command(board, _tokenize("claim T-1 --nonexistent x")) == [
+        "미등록 플래그 '--nonexistent'"
+    ]
+    # catch/pass — main 선행 dispatch의 중첩 parser도 실행과 같은 표면을 검사한다.
+    assert check_command(delegate_ticket, delegate_tokens) == []
+    assert check_command(delegate_ticket, _tokenize("harvest --nonexistent x")) == [
         "미등록 플래그 '--nonexistent'"
     ]
     # catch — constrained positional(regression action) 오타.

@@ -7345,8 +7345,16 @@ def _ticket_cli_owner(cwd: Path) -> Path:
     return owner
 
 
-def _cmd_ticket(argv: list[str]) -> int:
-    """native 위임도 cross와 같은 사본 helper를 쓰는 prepare/harvest CLI."""
+def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
+    """flat delegate parser 밖 special command의 실제 argparse 표면을 introspection에 공개한다.
+
+    문서↔CLI 존재 가드는 `main()`의 선행 dispatch를 실행하지 않고 parser만 읽어야 한다. 실행과
+    검사가 다른 parser를 만들면 문서의 중첩 flag가 실재해도 미등록으로 오판하거나, 반대로 검사만
+    green인 가짜 표면이 생긴다. 현재 공개 대상은 성장 사본 `ticket`이고 소비자는 반환 parser에
+    command 뒤 argv를 그대로 넣는다.
+    """
+    if command != "ticket":
+        return None
     parser = argparse.ArgumentParser(
         prog="pm_delegate.py ticket",
         description="slot 티켓 성장 사본 준비·PM 홈 역할 절 회수",
@@ -7363,6 +7371,13 @@ def _cmd_ticket(argv: list[str]) -> int:
         "--capability-stdin", action="store_true", required=True,
         help="prepare JSON의 capability를 argv가 아닌 stdin 한 줄로 입력",
     )
+    return parser
+
+
+def _cmd_ticket(argv: list[str]) -> int:
+    """native 위임도 cross와 같은 사본 helper를 쓰는 prepare/harvest CLI."""
+    parser = build_subcommand_parser("ticket")
+    assert parser is not None  # 같은 모듈의 literal command — introspection/실행 단일 parser.
     args = parser.parse_args(argv)
     try:
         cwd = Path(args.cwd)
