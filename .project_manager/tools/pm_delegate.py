@@ -1372,9 +1372,17 @@ def harvest_ticket_copy(
             wrote = True
     # atomic replace 뒤 프로세스 종료/sync 예외가 있었던 재호출도 current==desired 경로에서
     # render/board-git을 다시 시도한다. False는 로컬 반영 실패가 아니라 board-git 미준비 상태다.
-    sync_ready = board._growth_mutation_sync(
-        f"ticket-harvest {plan.ticket} {plan.role}", current_path,
-    )
+    message = f"ticket-harvest {plan.ticket} {plan.role}"
+    growth_sync = getattr(board, "_growth_mutation_sync", None)
+    if callable(growth_sync):
+        sync_ready = growth_sync(message, current_path)
+    else:
+        # T-0675 board를 PM 홈에 흡수하기 전 T-0676 worktree CLI를 먼저 dogfood하는 한 세대
+        # 호환 경계. 구 board에도 존재하는 두 primitive를 같은 순서로 조합하며, 다음 pm_update 뒤엔
+        # 위 공용 helper로 자동 수렴한다. helper 부재를 atomic write 뒤 AttributeError로 터뜨리면
+        # 절은 반영됐는데 CLI만 실패하는 전환기 부분 성공이 된다.
+        board.refresh_board()
+        sync_ready = board._board_git_sync_best_effort(message, (current_path,))
     return TicketHarvestResult(wrote, bool(sync_ready))
 
 

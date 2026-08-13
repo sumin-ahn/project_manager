@@ -382,6 +382,37 @@ def test_idempotent_reharvest_retries_sync_after_atomic_write_crash(
     assert len(calls) == 2 and "crash-recovery facts" in source.read_text(encoding="utf-8")
 
 
+def test_harvest_pre_growth_helper_board_uses_legacy_sync_primitives(
+        growth_env, pd, monkeypatch):
+    """T-0675 PM-home 흡수 전에도 절 반영 뒤 AttributeError 부분 성공을 만들지 않는다."""
+    pm_home, slot, tickets = growth_env
+    source = _write_ticket(tickets, "T-1019", [("developer", "")])
+    plan = pd.prepare_ticket_copy(
+        ticket="T-1019", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    _replace_content(pd, plan.path, "developer", 0, "transition-compatible facts\n")
+    board = pd._load_board_for_repo(pm_home)
+    delattr(board, "_growth_mutation_sync")
+    calls = []
+    board.refresh_board = lambda: calls.append("refresh")
+    board._board_git_sync_best_effort = (
+        lambda message, paths: calls.append((message, tuple(paths))) or True
+    )
+    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
+
+    result = pd.harvest_ticket_copy(
+        copy_path=plan.path, cwd=slot, pm_home=pm_home,
+        capability=plan.capability,
+    )
+
+    assert result == pd.TicketHarvestResult(True, True)
+    assert calls == [
+        "refresh",
+        ("ticket-harvest T-1019 developer", (source.resolve(),)),
+    ]
+    assert "transition-compatible facts" in source.read_text(encoding="utf-8")
+
+
 def test_plain_marker_discussion_is_not_data(pd):
     text = "문서의 `pm-ticket-section:start/end role=<role>` 문법 설명\n"
     assert pd._ticket_growth_sections(text) == []
