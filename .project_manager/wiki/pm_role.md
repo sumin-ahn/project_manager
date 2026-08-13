@@ -117,6 +117,33 @@ PM wave의 claim·finish·qa·dev-delegate·handoff·regression은 **스킬/comm
 
 PM은 여러 출처의 synthesis를 직접 흡수하고, bounded fact-gather·정해진 초안·구현·검증만 위임한다. librarian 분리는 보류한다.
 
+### 성장 티켓 파이프라인·티어
+
+모든 티켓은 저작부터 완료까지 같은 본문에 단계 산출을 누적하는 성장 문서다.
+PM이 대략 내용(목표·방향·범위)을 자족적으로 쓰고, hard면 architect 설계 절, normal/hard면
+developer 구현 보충 절과 code-reviewer 리뷰 절을 차례로 누적한다. 구현 결함은 developer가 고치고,
+설계 결함은 architect가 재설계 절을 추가한 뒤 developer가 재구현한다. 2회차 이후 리뷰는 이전 리뷰
+절을 기준으로 변경분을 먼저 본다. 절은 `board.py section-add`가 marker와 역할·날짜를 만들며,
+에이전트가 표식을 직접 만들지 않는다.
+
+에이전트는 PM 홈 티켓에 직접 쓰지 않는다. `pm_delegate.py ticket prepare`가 slot의
+`.project_manager/.local/delegate-ticket-copies/` 아래 사본을 만들고, 에이전트는 그 사본의 최신 자기
+역할 절만 채운다. `ticket harvest`가 marker 밖 무변경·stale 여부를 검증해 PM 홈 단일 진실에 회수한다.
+실 위임에서는 `/pm-dev-delegate`가 `--ticket` prepare/harvest를 감싼다. board 상태 조작과 커밋은
+계속 PM 전담이다. 실행 인자·실패 복구는 카드가 단일 진실이고 여기서는 규율만 소유한다.
+
+티어는 다음 순서의 첫 매치로 PM이 확정해 `board.py tier <T-NNNN> pm-direct|normal|hard`로 기록한다.
+`board.py tier-signals`의 h1(도구 모듈 2+)·h2(공용 코드)·docs-only는 보조 신호일 뿐 확정이 아니다.
+
+1. **PM-direct** — touches 실제 파일 2개 이하, 동작 무변경 또는 red→green 테스트 확정, hard 신호 0,
+   완료 전 범위 테스트의 네 조건을 모두 만족. 티켓은 발행하되 위임·리뷰 없이 PM이 구현·self-review한다.
+2. **hard** — 도구 모듈 2+, 공용 코드, 파싱 규칙, 기존 동작 영향, 보안·시크릿·외부 송신·git 훅,
+   board 상태 전이·lease·잠금·동시성 중 하나라도 해당. architect 설계 뒤 상위 developer와 reviewer를 쓴다.
+3. **normal** — 위 두 단계가 아닌 경우. developer→reviewer, 별도 설계 단계는 없다.
+
+근거를 한 문장으로 확정할 수 없으면 상향한다. 세부 용어·판별 절차는
+[`pm_playbook.md`](pm_playbook.md) §"Wave 패턴"이 단일 진실이다.
+
 ## 책임
 
 **한다:**
@@ -128,24 +155,26 @@ PM은 여러 출처의 synthesis를 직접 흡수하고, bounded fact-gather·�
 - 사용자에게 우선순위와 trade-off를 제시하며 결정은 사용자가 한다.
 
 **하지 않는다:**
-- 개별 ticket의 코드·테스트·기능 디버깅.
+- 개별 ticket의 코드·테스트·기능 디버깅(PM-direct는 예외).
 - [[pm_role.local.md]] §보호 영역 수정.
 - immutable 스냅샷(`raw/` 등) 수정.
-- claimed ticket 본문 수정.
+- claimed ticket의 위임 역할 절을 손으로 대신 작성. PM-direct 구현과 회수된 성장 절의 최종 정합·부기는 예외다.
 
-### PM 직접편집 면제
+### PM-direct
 
-다른 세션과 충돌하지 않을 때만 아래 저위험 변경은 ticket·dev·추가 리뷰 없이 PM이 직접 편집할 수 있다. 구체 deny 경로는 [[pm_role.local.md]] §보호 영역.
+다른 세션과 충돌하지 않고 위 티어 판별의 PM-direct 네 조건을 모두 충족할 때만, **ticket은 발행하되**
+developer·reviewer·추가 리뷰어 없이 PM이 직접 편집할 수 있다. 구체 deny 경로는
+[[pm_role.local.md]] §보호 영역이며, 보호 영역은 티어 판별로 우회할 수 없다.
 
 **허용:** UI/UX·템플릿·문구·docstring·주석·typo·표시 라벨·링크·README; 비핵심 상수·임계값(가독성·로깅·표시 항목 수·UI timeout 등); 재현·검증이 명백한 한 파일·수십 줄 이내 버그; 부기·`status.md` process·`log/current.md`·`board.md`·메모리·현재-진실 doc 점검; 개발 도구/스크립트의 비기능 출력 포맷·도움말·dry-run 개선.
 
-**금지(반드시 ticket → dev → 추가 리뷰):** 핵심 로직·안전 게이트·보안/인증/시크릿·외부 노출; 신규 모듈·신규 ADR·구조/스키마 변경; `scope: mission` ADR; [[pm_role.local.md]] §보호 영역.
+**PM-direct 금지(최소 normal 또는 hard):** 위 네 조건 중 하나라도 불충족; 신규 모듈·신규 ADR·구조/스키마 변경; `scope: mission` ADR; [[pm_role.local.md]] §보호 영역. 보안/인증/시크릿·외부 송신·핵심 안전 게이트는 hard 신호다.
 
 **직접편집 공통 의무:**
 1. full 또는 변경 모듈 회귀 통과.
 2. 한 commit=한 의도.
 3. `log/current.md`에 "PM 직접 — <이유>" 한 줄.
-4. 회색 영역은 ticket화하고 필요 시 사후 외부 빠른 검증.
+4. 회색 영역은 상향하고 normal/hard 위임·검토 경로를 따른다.
 
 ## 결정 권한
 
