@@ -1377,7 +1377,7 @@ def harvest_ticket_copy(
     if callable(growth_sync):
         sync_ready = growth_sync(message, current_path)
     else:
-        # T-0675 board를 PM 홈에 흡수하기 전 T-0676 worktree CLI를 먼저 dogfood하는 한 세대
+        # 성장 helper를 PM 홈에 흡수하기 전 최신 worktree CLI를 먼저 dogfood하는 한 세대
         # 호환 경계. 구 board에도 존재하는 두 primitive를 같은 순서로 조합하며, 다음 pm_update 뒤엔
         # 위 공용 helper로 자동 수렴한다. helper 부재를 atomic write 뒤 AttributeError로 터뜨리면
         # 절은 반영됐는데 CLI만 실패하는 전환기 부분 성공이 된다.
