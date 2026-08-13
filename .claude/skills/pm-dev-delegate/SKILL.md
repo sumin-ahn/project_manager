@@ -45,9 +45,14 @@ python3 .project_manager/tools/board.py regression run --task <이름>
 - task가 슬롯 2개↑를 보유하면 에러(암묵 선택 금지). 잉여 슬롯을 `python3 .project_manager/tools/pm_config.py release <slot> --task <이름>`으로 반납하고 다시 해소한다.
 - 슬롯 세션(비-task)·솔로(M=1)는 종전대로이며 이 주입은 task-mode만 적용.
 
-## cross-harness 판정과 위임 (`pm_delegate`)
+## 위임 설정 조회와 transport 선택 (`pm_delegate`)
 
-위임 전 target이 PM과 같은 하네스(native)인지 다른 하네스(cross)인지 판정한다. 1차 판정은 이 카드이며 `pm_delegate.py` same-harness 경고는 never-block 백스톱. 매핑은 `local.conf`의 `delegate.<role>[.<tier>]`.
+`local.conf`의 `delegate.<role>[.<tier>]` 매핑은 native와 cross 모두가 읽는 위임 설정의 단일
+진실이다. 위임 전 target이 PM과 같은 하네스인지 판정해 같은 하네스면 native transport, 다른
+하네스면 `pm_delegate.py` cross transport를 선택한다. native agent 카드의 모델은 conf와 일치해야
+하며 가드가 불일치를 경고하되 spawn을 막거나 카드를 자동 수정하지 않는다. `delegate_enabled`는
+cross 외부 송신·과금 동의만 게이트하며 native 설정 조회와 실행에는 적용하지 않는다.
+1차 판정은 이 카드이며 `pm_delegate.py` same-harness 경고는 never-block 백스톱이다.
 
 ### 성장 티켓 사본 — 모든 위임의 준비/회수
 

@@ -61,6 +61,12 @@ ticket 본문은 저작→(hard) 설계→구현 보충→리뷰→(설계 결�
 
 > **harness 노트:** 아래 예시는 **claude(`Agent` 툴·`run_in_background`·`.claude/agents/`)** 기준. **opencode 는 네이티브 `task` 툴**(자식 세션)로 위임한다 — `.opencode/pm-instructions.md`(위임 규약·`AGENTS.md` 공통 코어와 함께 자동 로드)·`.opencode/agents/` 참조. **codex 는 `.codex/agents/`(TOML 카드)** 를 쓰고 위임 채널은 하네스 네이티브다(`AGENTS.md` 공통 코어 + 하네스 운영 지침이 단일 진실). 역할 카드 경로는 하네스마다 다르므로(디렉토리·확장자 모두) 아래 목록은 카드를 `subagent_type` 이름으로만 가리킨다. 축 분리·touches disjoint·single-source 프롬프트·PM 산출 비준 원칙은 동일하다.
 
+`local.conf`의 `delegate.<role>[.<tier>].{harness,model,reasoning}`은 native/cross 공통 위임
+설정이다. target이 현재 PM 하네스면 native agent transport, 다르면 `pm_delegate.py` cross
+transport를 고른다. `delegate_enabled`는 cross 외부 송신·과금 동의만 게이트하고 native 설정
+조회·실행은 막지 않는다. Claude native 카드의 `model:` drift는 가드가 비차단 경고로 표면화하며
+설정·카드를 자동 수정하지 않는다.
+
 ### 방식 A — orchestrator 서브에이전트 (Agent 툴, 권장)
 
 PM 이 `Agent` 툴로 spawn 하고 `subagent_type` 으로 전용 정의를 쓴다:

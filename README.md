@@ -525,6 +525,13 @@ cd <project> && ./pm-update.sh
 이 절차 뒤 manifest에는 두 flavor의 `@source` provenance가 들어가므로, 이후 `pm-update`는
 `@render`뿐 아니라 `lib`/`plugins`를 포함한 두 flavor 전체를 갱신한다.
 
+**위임 설정** `delegate.<role>[.<tier>].{harness,model,reasoning}`은 native와 cross 위임이 함께
+읽는 라우팅 단일 진실이다. target harness가 현재 PM 하네스와 같으면 각 하네스의 native agent
+transport를 쓰고, 다르면 `pm_delegate.py` cross transport를 쓴다. `delegate_enabled=true`는
+cross transport의 외부 송신과 통상 과금에 대한 지속 동의일 뿐이며 native 설정 조회·실행을
+게이트하지 않는다. Claude native agent 카드의 `model:`이 설정과 어긋나거나 카드가 손상되면
+가드가 비차단 경고를 내며, 설정이나 카드를 자동으로 고치지 않는다.
+
 **추가 리뷰어**(additional reviewer) 는 기본적으로 꺼져 있다. 켜면 코드 diff 가 외부로 전송되므로
 프로젝트가 직접 opt-in 을 결정한다. 질문은 첫 init/update 에서 **한 번**뿐이고, "예" 는
 `local.conf` 에 아래 튜플을 원자적으로 기록한다.

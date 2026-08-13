@@ -14,7 +14,9 @@ import datetime as dt
 import io
 import json
 import os
+import re
 import shlex
+import stat
 import sys
 import time
 from collections.abc import Callable, Mapping
@@ -196,6 +198,18 @@ AGENT_NAME_PROFILES: dict[str, dict[str, tuple[str, str]]] = {
         "developer-hard": ("developer", "hard"),
     },
 }
+
+# Claude's native normal-agent surface is finite.  Keep explicit paths instead
+# of deriving a filename from hook input: an unknown role/tier must never make
+# this guard read an attacker-selected or merely guessed card.
+_ENGINE_ROOT = Path(__file__).resolve().parents[2]
+CLAUDE_NATIVE_AGENT_CARDS: dict[tuple[str, str], Path] = {
+    ("developer", "normal"): Path(".claude/agents/developer.md"),
+    ("code-reviewer", "normal"): Path(".claude/agents/code-reviewer.md"),
+    ("researcher", "normal"): Path(".claude/agents/researcher.md"),
+    ("architect", "normal"): Path(".claude/agents/architect.md"),
+}
+_FRONTMATTER_MODEL_RE = re.compile(r"^model\s*:\s*(.*)$")
 
 
 # 사본 불일치를 **의도적으로 흡수**하는 경계의 등록부 (경계 이름 → 사유). 등록되지 않은 경계는
@@ -383,6 +397,315 @@ def _mapping_is_unset(
     )
 
 
+def _delegate_mapping_config_is_absent(conf: Mapping[str, object]) -> bool:
+    """Whether this clone has no primary/fallback delegation mapping at all."""
+    return not any(str(key).startswith("delegate.") for key in conf)
+
+
+def _frontmatter_model_scalar(value: str) -> str:
+    """Parse one model scalar with the project's PyYAML frontmatter grammar."""
+    # Hook interpreters may lack the optional runtime dependency even though
+    # project management commands normally install it.  Keep module/CLI/hook
+    # startup alive; the caller converts this local import failure to the same
+    # allow+loud warning as any other native-card inspection failure.
+    import yaml
+
+    parsed = yaml.safe_load(f"model: {value}\n")
+    if not isinstance(parsed, dict) or set(parsed) != {"model"}:
+        raise ValueError("model frontmatter 파싱 결과가 mapping 하나가 아님")
+    candidate = parsed["model"]
+    if candidate is None:
+        raise ValueError("model 값이 비어 있음")
+    if not isinstance(candidate, str):
+        raise ValueError("model 값이 string scalar가 아님")
+    candidate = candidate.strip()
+    if not candidate:
+        raise ValueError("model 값이 비어 있음")
+    return candidate
+
+
+def _metadata_is_linklike(metadata: os.stat_result) -> bool:
+    """Recognize POSIX symlinks and Windows reparse points without following."""
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    attributes = getattr(metadata, "st_file_attributes", 0)
+    return stat.S_ISLNK(metadata.st_mode) or bool(attributes & reparse_flag)
+
+
+def _secure_dir_fd_supported() -> bool:
+    """Whether the interpreter exposes every primitive used by the strong path."""
+    supports_dir_fd = getattr(os, "supports_dir_fd", set())
+    supports_follow = getattr(os, "supports_follow_symlinks", set())
+    return (
+        os.open in supports_dir_fd
+        and os.stat in supports_dir_fd
+        and os.stat in supports_follow
+        and hasattr(os, "O_DIRECTORY")
+        and hasattr(os, "O_NOFOLLOW")
+    )
+
+
+def _read_fd_bytes(file_fd: int) -> str:
+    """Decode only after the caller has completed every metadata check."""
+    chunks: list[bytes] = []
+    while True:
+        chunk = os.read(file_fd, 64 * 1024)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return b"".join(chunks).decode("utf-8")
+
+
+def _root_directory_identity(
+    root: Path,
+    expected: tuple[int, int] | None = None,
+) -> tuple[int, int]:
+    """Bind a lexical engine root to one non-link directory identity."""
+    metadata = root.lstat()
+    if _metadata_is_linklike(metadata) or not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError("agent card engine root symlink/reparse/비-directory 거부")
+    identity = (metadata.st_dev, metadata.st_ino)
+    if expected is not None and identity != expected:
+        raise ValueError("agent card engine root 교체 거부")
+    return identity
+
+
+def _read_known_regular_file_dir_fd(
+    root: Path,
+    relative: Path,
+    root_identity: tuple[int, int],
+) -> str:
+    """Strong POSIX path: component-wise dir-fd traversal with ``O_NOFOLLOW``."""
+    directory_flag = os.O_DIRECTORY
+    nofollow_flag = os.O_NOFOLLOW
+    nonblock_flag = getattr(os, "O_NONBLOCK", 0)
+    cloexec_flag = getattr(os, "O_CLOEXEC", 0)
+    current_fd = os.open(
+        os.fspath(root), os.O_RDONLY | directory_flag | nofollow_flag
+    )
+    try:
+        opened_root = os.fstat(current_fd)
+        if (
+            not stat.S_ISDIR(opened_root.st_mode)
+            or (opened_root.st_dev, opened_root.st_ino) != root_identity
+        ):
+            raise ValueError("agent card engine root 교체 거부")
+        for part in relative.parts[:-1]:
+            before = os.stat(part, dir_fd=current_fd, follow_symlinks=False)
+            if _metadata_is_linklike(before) or not stat.S_ISDIR(before.st_mode):
+                raise ValueError(
+                    f"agent card 경로 symlink/reparse/비-directory 거부: {relative.as_posix()}"
+                )
+            child_fd = os.open(
+                part,
+                os.O_RDONLY | directory_flag | nofollow_flag | cloexec_flag,
+                dir_fd=current_fd,
+            )
+            after = os.fstat(child_fd)
+            if (
+                not stat.S_ISDIR(after.st_mode)
+                or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+            ):
+                os.close(child_fd)
+                raise ValueError(
+                    f"agent card 경로 교체 거부: {relative.as_posix()}"
+                )
+            os.close(current_fd)
+            current_fd = child_fd
+
+        leaf = relative.parts[-1]
+        before = os.stat(leaf, dir_fd=current_fd, follow_symlinks=False)
+        if (
+            _metadata_is_linklike(before)
+            or not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+        ):
+            raise ValueError(
+                f"agent card symlink/reparse/hardlink/비-regular 거부: {relative.as_posix()}"
+            )
+        file_fd = os.open(
+            leaf,
+            os.O_RDONLY | nofollow_flag | nonblock_flag | cloexec_flag,
+            dir_fd=current_fd,
+        )
+        try:
+            after = os.fstat(file_fd)
+            if (
+                not stat.S_ISREG(after.st_mode)
+                or after.st_nlink != 1
+                or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+            ):
+                raise ValueError(
+                    f"agent card inode 교체/비-regular 거부: {relative.as_posix()}"
+                )
+            return _read_fd_bytes(file_fd)
+        finally:
+            os.close(file_fd)
+    finally:
+        os.close(current_fd)
+
+
+def _read_known_regular_file_portable(
+    root: Path,
+    relative: Path,
+    lexical_root: Path,
+    root_identity: tuple[int, int],
+) -> str:
+    """Portable path for Windows/interpreters without dir-fd traversal.
+
+    All components are lstat'd before open.  Parent identities and the leaf's
+    regular/single-link identity are checked again after open but before the
+    first content read, so a path replacement cannot redirect bytes into the
+    warning channel.
+    """
+    _root_directory_identity(lexical_root, root_identity)
+    _root_directory_identity(root, root_identity)
+    parent_identities: list[tuple[Path, tuple[int, int]]] = []
+    current = root
+    for part in relative.parts[:-1]:
+        current = current / part
+        observed = current.lstat()
+        if _metadata_is_linklike(observed) or not stat.S_ISDIR(observed.st_mode):
+            raise ValueError(
+                f"agent card 경로 symlink/reparse/비-directory 거부: {relative.as_posix()}"
+            )
+        parent_identities.append((current, (observed.st_dev, observed.st_ino)))
+
+    target = root / relative
+    before = target.lstat()
+    if (
+        _metadata_is_linklike(before)
+        or not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+    ):
+        raise ValueError(
+            f"agent card symlink/reparse/hardlink/비-regular 거부: {relative.as_posix()}"
+        )
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    file_fd = os.open(os.fspath(target), flags)
+    try:
+        after = os.fstat(file_fd)
+        if (
+            not stat.S_ISREG(after.st_mode)
+            or after.st_nlink != 1
+            or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+        ):
+            raise ValueError(
+                f"agent card inode 교체/비-regular 거부: {relative.as_posix()}"
+            )
+        for parent, identity in parent_identities:
+            observed = parent.lstat()
+            if (
+                _metadata_is_linklike(observed)
+                or not stat.S_ISDIR(observed.st_mode)
+                or (observed.st_dev, observed.st_ino) != identity
+            ):
+                raise ValueError(
+                    f"agent card 경로 교체 거부: {relative.as_posix()}"
+                )
+        current_leaf = target.lstat()
+        if (
+            _metadata_is_linklike(current_leaf)
+            or not stat.S_ISREG(current_leaf.st_mode)
+            or current_leaf.st_nlink != 1
+            or (current_leaf.st_dev, current_leaf.st_ino)
+            != (after.st_dev, after.st_ino)
+        ):
+            raise ValueError(
+                f"agent card inode 교체/비-regular 거부: {relative.as_posix()}"
+            )
+        _root_directory_identity(lexical_root, root_identity)
+        _root_directory_identity(root, root_identity)
+        return _read_fd_bytes(file_fd)
+    finally:
+        os.close(file_fd)
+
+
+def _read_known_regular_file(root: Path, relative: Path) -> str:
+    """Read a known repo-relative regular file without following links.
+
+    Capable POSIX interpreters use component-wise dir-fd traversal.  Portable
+    interpreters lstat every lexical component and recheck parent/leaf identity
+    after open.  Both paths require a single-link regular leaf and complete all
+    checks before the first content read.
+    """
+    if relative.is_absolute() or not relative.parts or any(
+        part in {"", ".", ".."} for part in relative.parts
+    ):
+        raise ValueError(f"agent card 상대경로 거부: {relative.as_posix()}")
+    lexical_root = Path(os.path.abspath(os.fspath(root)))
+    root_identity = _root_directory_identity(lexical_root)
+    resolved_root = lexical_root.resolve(strict=True)
+    _root_directory_identity(resolved_root, root_identity)
+    _root_directory_identity(lexical_root, root_identity)
+    target = resolved_root.joinpath(*relative.parts)
+    try:
+        target.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError(
+            f"agent card repo containment 밖: {relative.as_posix()}"
+        ) from exc
+
+    if _secure_dir_fd_supported():
+        return _read_known_regular_file_dir_fd(
+            resolved_root, relative, root_identity
+        )
+    return _read_known_regular_file_portable(
+        resolved_root, relative, lexical_root, root_identity
+    )
+
+
+def _read_claude_native_agent_model(
+    role: str,
+    tier: str,
+) -> tuple[str, Path]:
+    """Read one explicitly mapped Claude card and return its strict model scalar."""
+    relative = CLAUDE_NATIVE_AGENT_CARDS.get((role, tier))
+    if relative is None:
+        raise ValueError(f"명시 agent card 매핑 없음({role}/{tier})")
+    text = _read_known_regular_file(_ENGINE_ROOT, relative)
+    lines = text.splitlines()
+    if not lines or lines[0] != "---":
+        raise ValueError("frontmatter 시작 fence 없음")
+    try:
+        end = lines.index("---", 1)
+    except ValueError as exc:
+        raise ValueError("frontmatter 종료 fence 없음") from exc
+
+    values: list[str] = []
+    for line in lines[1:end]:
+        match = _FRONTMATTER_MODEL_RE.fullmatch(line)
+        if match is not None:
+            values.append(match.group(1))
+    if not values:
+        raise ValueError("frontmatter model 없음")
+    if len(values) != 1:
+        raise ValueError("frontmatter model 중복")
+    return _frontmatter_model_scalar(values[0]), relative
+
+
+def _claude_native_model_warning(role: str, tier: str, model: str) -> str:
+    """Return an allow+loud warning for card drift, otherwise an empty string."""
+    relative = CLAUDE_NATIVE_AGENT_CARDS.get((role, tier))
+    shown_path = relative.as_posix() if relative is not None else "(명시 매핑 없음)"
+    try:
+        card_model, relative = _read_claude_native_agent_model(role, tier)
+    except Exception as exc:
+        detail = " ".join(str(exc).split()) or type(exc).__name__
+        return (
+            f"[delegate-channel/warn] Claude native model 검사 실패"
+            f"(role={role}, tier={tier}, conf_model={model}, card={shown_path}, "
+            f"error={type(exc).__name__}: {detail}) — native 통과(fail-open)"
+        )
+    if card_model != model:
+        return (
+            f"[delegate-channel/warn] Claude native model 불일치"
+            f"(role={role}, tier={tier}, conf_model={model}, "
+            f"card={relative.as_posix()}, card_model={card_model}) — "
+            "native 통과(fail-open)"
+        )
+    return ""
+
+
 def decide(
     role: object,
     tier: object,
@@ -419,13 +742,15 @@ def decide(
     if not isinstance(conf, Mapping):
         raise TypeError("delegate config must be a mapping")
 
-    # Row 2: opt-in off; denying native would make remediation return rc3.
+    # Mapping is the truth for both native and cross delegation.  Resolve it
+    # independently of the cross-only opt-in so native card drift remains
+    # observable even when external sending is disabled.
     enabled = str(conf.get("delegate_enabled", "false")).strip().lower() in (
         "true", "1", "yes", "on",
     )
-    if not enabled:
-        return _result("allow", "[delegate-channel/allow] delegate_enabled off")
 
+    if _delegate_mapping_config_is_absent(conf):
+        return _result("allow", "[delegate-channel/allow] 역할 매핑 미설정")
     mapping_unset = _mapping_is_unset(role_name, tier_name, conf)
     harness, model, resolution_error = _resolved_mapping(role_name, tier_name, conf)
 
@@ -447,6 +772,12 @@ def decide(
 
     # Row 4: the native surface matches configuration.
     if harness == self_name:
+        if self_name == "claude":
+            warning = _claude_native_model_warning(role_name, tier_name, model)
+            if warning:
+                return _result(
+                    "allow", warning, harness=harness, model=model
+                )
         return _result(
             "allow",
             f"[delegate-channel/allow] conf 와 native harness 일치({harness})",
@@ -454,7 +785,18 @@ def decide(
             model=model,
         )
 
-    # Row 5: cross-harness native spawn redirects to the ledgered CLI.
+    # Row 5: delegate_enabled gates only cross-harness external sending.  With
+    # opt-in off the native call remains available; redirecting it to an rc3
+    # command would deadlock the remediation path.
+    if not enabled:
+        return _result(
+            "allow",
+            "[delegate-channel/allow] cross 매핑이나 delegate_enabled off",
+            harness=harness,
+            model=model,
+        )
+
+    # Cross-harness native spawn redirects to the ledgered CLI.
     shown_model = model or "(model 미설정)"
     return _result(
         "deny",
@@ -483,7 +825,7 @@ def evaluate_hook(
     *,
     config_loader: Callable[[], Mapping[str, str]] = load_local_config,
 ) -> dict[str, object] | None:
-    """Return a Claude deny envelope, or ``None`` for an unblocked call."""
+    """Return a Claude deny/warning envelope, or ``None`` for a quiet allow."""
     tool_name = payload.get("tool_name")
     if tool_name != "Agent":
         return None
@@ -498,9 +840,18 @@ def evaluate_hook(
 
     conf = config_loader()
     result = decide(role, tier, conf, "claude")
-    if result["verdict"] != "deny":
+    if result["verdict"] != "deny" and not result["reason"].startswith(
+        "[delegate-channel/warn]"
+    ):
         return None
     result = _materialize_cwd(result, payload.get("cwd"))
+    if result["verdict"] != "deny":
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": result["reason"],
+            }
+        }
     return {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
