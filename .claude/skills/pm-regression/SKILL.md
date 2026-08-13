@@ -6,10 +6,7 @@ audience: pm-internal
 
 # /pm-regression — 비차단 백그라운드 회귀
 
-> **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
-> 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
-> **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 대신 도구의 workdir
-> 파라미터나 명령 분리로 실행한다. (Linux/macOS 는 `python3` 그대로.)
+환경별 명령 문법은 부트스트랩의 "현재 환경" 표시에 맞춰 [Windows 안내](../references/environment-windows.md) 또는 [Linux/macOS 안내](../references/environment-posix.md)를 참조한다.
 
 - 회귀는 전체 suite 이며 green 만 push한다(pre-push 훅: `board.py regression check`).
 - full 회귀는 이 skill로 백그라운드 pre-warm하고, dev 루프는 `--ticket` 스코프(advisory)를 쓴다.

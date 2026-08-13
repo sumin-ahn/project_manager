@@ -41,11 +41,14 @@ def test_detail_documents_are_nonempty_preserved_sections_not_stubs():
         assert len(text.encode("utf-8")) >= 500, detail
 
 
-def test_windows_entry_notes_remain_on_all_always_loaded_cards():
-    """T-0679 직렬 전에 Windows 블록을 참조 문서로 옮기지 않았음을 고정."""
+def test_environment_guides_replace_windows_blocks_without_moving_operational_details():
+    """T-0679 환경 공통화와 T-0678 상황별 상세 분리를 서로 섞지 않는다."""
     for card in _cards():
         text = card.read_text(encoding="utf-8")
-        assert "**Windows 노트:**" in text or "**Windows 진입**:" in text, card
+        assert "**Windows 노트:**" not in text
+        assert "**Windows 진입**:" not in text
+        assert text.count("../references/environment-windows.md") == 1
+        assert text.count("../references/environment-posix.md") == 1
         detail = (card.parent / REFERENCE).read_text(encoding="utf-8")
         assert "**Windows 노트:**" not in detail
         assert "**Windows 진입**:" not in detail

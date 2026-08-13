@@ -11,10 +11,7 @@ PM 에이전트가 사용자 지시로 ADR을 발행·개정할 때 `.project_ma
 (`--scope internal-process`)일 때 기록한다. 기존 결정을 부분 수정하면 `--amends`, 완전 대체하면
 `--supersedes`, 대상 불변 확장이면 `--refines`를 쓴다.
 
-> **Windows 노트:** 아래 `python3 …` 커맨드는 Windows 에서 런처 **`py`**(예: `py -3.12 …`)를 1순위로
-> 쓴다 — `python3`/`python` 은 WindowsApps 가짜 shim(Git Bash 에선 Permission denied)일 수 있다.
-> **PowerShell 5.x 는 `&&` 체이닝 미지원**(ParseError·실측) — `cd X && cmd` 대신 도구의 workdir
-> 파라미터나 명령 분리로 실행한다. (Linux/macOS 는 `python3` 그대로.)
+환경별 명령 문법은 부트스트랩의 "현재 환경" 표시에 맞춰 [Windows 안내](../references/environment-windows.md) 또는 [Linux/macOS 안내](../references/environment-posix.md)를 참조한다.
 
 > **mission scope 게이트:** 미션·scope·핵심 안전 경계를 바꾸는 결정(`--scope mission`)은 **사용자
 > 사전 동의 필수** — PM 자율 발행 금지. 이 스킬은 문서 산출을 원자화할 뿐, mission 결정의 승인 게이트를
