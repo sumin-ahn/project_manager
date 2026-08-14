@@ -30,6 +30,13 @@
 
 ### Added
 
+- **리뷰 finding의 PM 판정·승인 delta** — Architect 설계, developer 구현 판단,
+  reviewer finding을 같은 성장 티켓에 남기되 PM 판정 전에는 다음 단계의 명령으로 쓰지 않는다.
+  `pm-review-v1`/`pm-review-disposition-v1`의 엄격한 구조와
+  `pm_delegate.py review delta --ticket T-NNNN`으로 accepted finding만 재작업 입력에 넣고,
+  rejected·resolved·finding 0은 빈 delta로 끝낸다. 미판정·decision-required·동일 finding 2회
+  미해소는 Architect 재설계나 티켓 분할로 돌린다. draft 티켓도 Architect만 역할 절을 안전하게
+  작성·회수할 수 있어 설계부터 구현·리뷰·확인까지 한 티켓의 추적성을 유지한다.
 - **성장 티켓 절** — `board.py section-add` 가 architect·developer·code-reviewer 역할
   marker를 누적하고, `pm_delegate.py ticket prepare|harvest`가 그 역할의 최신 절만
   별도 사본으로 안전하게 왕복시킨다. 파일 밖 per-run capability·HMAC, canonical
