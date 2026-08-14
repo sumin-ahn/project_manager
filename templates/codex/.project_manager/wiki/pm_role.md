@@ -103,7 +103,7 @@ PM wave의 claim·finish·qa·dev-delegate·handoff·regression은 **스킬/comm
 
 리뷰는 내부 code-reviewer(generate≠evaluate)와 **추가 리뷰어**(additional reviewer·엔진 이름 `external_review`)를 병행한다. 코드: `python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN`; 설계(ADR/spike): `--base <ref> --paths .project_manager/wiki/decisions/ ... --gate <T-NNNN|ADR-NNNN>`(회계 밖 자문만 `--no-gate` 명시). 전제는 `additional_reviewer_enabled=true`(opt-in), 상세·diff-only 한계는 [`pm_playbook.md`](pm_playbook.md) §"검토 루프". Claude Bash 도구 실행은 호출층 `timeout: 29300000`(ms)을 반드시 명시하며, 엔진 CLI `--timeout`은 이 호출층 상한을 대신하지 않는다.
 
-내부 루프의 라운드 비용 규율은 [`pm_playbook.md`](pm_playbook.md) §"라운드 프로토콜"이 단일 진실이다 — 지정 회귀만(전체 회귀는 릴리즈 절차 1단계 1회) · 검증 근거 지정 의무 · must-fix 장부(MF-n+probe·확인 전용 판정 선행) · 리뷰어 보고서 원문 전달 · 내부 라운드 상한 3.
+내부 루프의 라운드 비용 규율은 [`pm_playbook.md`](pm_playbook.md) §"라운드 프로토콜"이 단일 진실이다 — 지정 회귀만(전체 회귀는 릴리즈 절차 1단계 1회) · 검증 근거 지정 의무 · versioned finding/PM disposition · accepted-only delta · 내부 라운드 상한 3.
 
 ## 위임 축 · PM=synthesis
 
@@ -123,13 +123,19 @@ PM은 여러 출처의 synthesis를 직접 흡수하고, bounded fact-gather·�
 PM이 대략 내용(목표·방향·범위)을 자족적으로 쓰고, hard면 architect 설계 절, normal/hard면
 developer 구현 보충 절과 code-reviewer 리뷰 절을 차례로 누적한다. 구현 결함은 developer가 고치고,
 설계 결함은 architect가 재설계 절을 추가한 뒤 developer가 재구현한다. 2회차 이후 리뷰는 이전 리뷰
-절을 기준으로 변경분을 먼저 본다. 절은 `board.py section-add`가 marker와 역할·날짜를 만들며,
+절을 기준으로 변경분을 먼저 본다. reviewer finding은 PM 판정 전 증거·제안이며 developer 명령이
+아니다. PM은 versioned disposition으로 전수 판정하고 `pm_delegate.py review delta --ticket`이 낸
+accepted-only delta만 재작업에 쓴다. decision-required는 권위 개정 전 차단하며 같은 accepted ID의
+2회 연속 미해소는 재설계·분할로 전환한다. 절은 `board.py section-add`가 marker와 역할·날짜를 만들며,
 에이전트가 표식을 직접 만들지 않는다.
 
 에이전트는 PM 홈 티켓에 직접 쓰지 않는다. `pm_delegate.py ticket prepare`가 slot의
 `.project_manager/.local/delegate-ticket-copies/` 아래 사본을 만들고, 에이전트는 그 사본의 최신 자기
 역할 절만 채운다. `ticket harvest`가 marker 밖 무변경·stale 여부를 검증해 PM 홈 단일 진실에 회수한다.
-실 위임에서는 `/pm-dev-delegate`가 `--ticket` prepare/harvest를 감싼다. board 상태 조작과 커밋은
+draft에서는 architect 역할만 `section-add`와 prepare/harvest가 허용되며 이 로컬 authoring 경로는
+board-git sync를 0회 수행한다. developer/code-reviewer draft 실행과 blocked/done 전 역할은 trust/copy
+상태 생성 전에 거부되고, promote/claim 게이트는 그대로다. 실 위임에서는 `/pm-dev-delegate`가
+`--ticket` prepare/harvest를 감싼다. board 상태 조작과 커밋은
 계속 PM 전담이다. 실행 인자·실패 복구는 카드가 단일 진실이고 여기서는 규율만 소유한다.
 
 티어는 다음 순서의 첫 매치로 PM이 확정해 `board.py tier <T-NNNN> pm-direct|normal|hard`로 기록한다.

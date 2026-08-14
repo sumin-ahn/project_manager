@@ -29,6 +29,11 @@ ticket 본문이 **단일 진실**이다. 목표/인터페이스/결정/DoD대�
 작업 서사는 쓰지 않으며 marker·frontmatter·다른 역할 절은 바꾸지 않는다. 재작업도 이번 위임에
 준비된 최신 developer 절 하나만 채운다.
 
+리뷰 재작업은 PM이 `pm_delegate.py review delta --ticket T-NNNN`으로 렌더한 accepted-only delta만
+명령으로 인정한다. reviewer 원문만 있거나 PM disposition이 없거나 `rejected`/`decision-required`인
+finding은 구현하지 않는다. delta의 finding ID·PM 허용 scope를 벗어나지 않으며, 빈 delta면 코드 변경을
+만들지 않고 PM에 보고한다.
+
 작업이 암시된 범위보다 커져 여러 대형 파일이나 광범위 grep이 필요하고 컨텍스트 truncation에 가까워지면 멈춘다. 진행분, 분할이 필요한 이유와 큰 파일·범위를 보고하고 PM의 ticket 분할을 기다린다.
 
 `CLAUDE.md` §프로젝트 고유 제약의 아키텍처 불변식·안전 경계를 절대 위반하지 않는다.

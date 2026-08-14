@@ -174,6 +174,68 @@ def test_prepare_edit_harvest_round_trip_and_git_hidden(growth_env, pd, role):
     assert second == pd.TicketHarvestResult(False, True)
 
 
+def test_draft_architect_prepare_harvest_round_trip_never_syncs(
+        growth_env, pd, monkeypatch, capsys):
+    pm_home, slot, _tickets = growth_env
+    drafts = pm_home / ".project_manager" / "wiki" / "tickets" / ".drafts"
+    drafts.mkdir()
+    source = _write_ticket(drafts, "T-1020", [("architect", "")])
+    board = pd._load_board_for_repo(pm_home)
+    sync_calls = []
+    board._growth_mutation_sync = lambda *_args: sync_calls.append(_args) or True
+    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
+
+    plan = pd.prepare_ticket_copy(
+        ticket="T-1020", role="architect", cwd=slot, pm_home=pm_home,
+    )
+    metadata = json.loads(plan.metadata_path.read_text(encoding="utf-8"))
+    assert "/tickets/.drafts/" in ("/" + metadata["source_relpath"])
+    _replace_content(pd, plan.path, "architect", 0, "draft 설계 사실\n")
+    result = pd.harvest_ticket_copy(
+        copy_path=plan.path, cwd=slot, pm_home=pm_home,
+        capability=plan.capability,
+    )
+    assert result == pd.TicketHarvestResult(True, True)
+    assert sync_calls == [] and "draft 설계 사실" in source.read_text(encoding="utf-8")
+    assert "board-git 동기화 0회" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("role", ["developer", "code-reviewer"])
+def test_draft_prepare_rejects_non_architect_before_trust_state(
+        growth_env, pd, role):
+    pm_home, slot, _tickets = growth_env
+    drafts = pm_home / ".project_manager" / "wiki" / "tickets" / ".drafts"
+    drafts.mkdir()
+    _write_ticket(drafts, "T-1021", [(role, "")])
+    trust = pm_home / pd.TICKET_COPY_TRUST_REL_ROOT
+
+    with pytest.raises(pd.DelegateError, match="draft×architect"):
+        pd.prepare_ticket_copy(
+            ticket="T-1021", role=role, cwd=slot, pm_home=pm_home,
+        )
+    assert not trust.exists() or not any(trust.iterdir())
+
+
+def test_draft_harvest_refuses_intermediate_promote_path_drift(growth_env, pd):
+    pm_home, slot, tickets = growth_env
+    drafts = pm_home / ".project_manager" / "wiki" / "tickets" / ".drafts"
+    drafts.mkdir()
+    source = _write_ticket(drafts, "T-1022", [("architect", "")])
+    plan = pd.prepare_ticket_copy(
+        ticket="T-1022", role="architect", cwd=slot, pm_home=pm_home,
+    )
+    _replace_content(pd, plan.path, "architect", 0, "late draft 설계\n")
+    promoted = tickets / source.name
+    source.rename(promoted)
+
+    with pytest.raises(pd.DelegateError, match="경로 drift"):
+        pd.harvest_ticket_copy(
+            copy_path=plan.path, cwd=slot, pm_home=pm_home,
+            capability=plan.capability,
+        )
+    assert "late draft 설계" not in promoted.read_text(encoding="utf-8")
+
+
 def test_same_role_recall_targets_latest_and_preserves_pm_home_drift(growth_env, pd):
     pm_home, slot, tickets = growth_env
     source = _write_ticket(
@@ -983,6 +1045,8 @@ def test_role_docs_and_delegate_card_pin_growth_contract():
     assert "ticket prepare" in card and "ticket harvest" in card
     assert "finally" in card and "--dry-run`은 무부수효과" in card
     assert "단일 경로 쓰기 격리를 보장하지 못해도 경고 후" in card
+    assert "pm-review-v1" in reviewer and "review delta --ticket" in developer
+    assert "pm-review-disposition-v1" in card and "accepted ID" in card
     engine = _load_pd()
     rendered_help = engine.build_arg_parser().format_help()
     assert all(term in rendered_help for term in (
@@ -990,3 +1054,41 @@ def test_role_docs_and_delegate_card_pin_growth_contract():
     ))
     for text in (developer, reviewer, architect):
         assert "자기평가" in text and "marker" in text and "PM 홈 티켓" in text
+
+
+def test_three_harness_cards_and_roles_share_review_delta_contract():
+    skills = [path.read_text(encoding="utf-8") for path in NATIVE_CARDS.values()]
+    for text in skills:
+        assert "pm-review-v1" in text
+        assert "pm-review-disposition-v1" in text
+        assert "review delta --ticket T-NNNN" in text
+        assert "accepted ID" in text and "rejected/decision-required" in text
+
+    reviewers = [
+        REPO / ".claude" / "agents" / "code-reviewer.md",
+        REPO / "templates" / "codex" / ".codex" / "agents" / "code-reviewer.toml",
+        REPO / "templates" / "opencode" / ".opencode" / "agents" / "code-reviewer.md",
+    ]
+    developers = [
+        REPO / ".claude" / "agents" / "developer.md",
+        REPO / "templates" / "codex" / ".codex" / "agents" / "developer.toml",
+        REPO / "templates" / "opencode" / ".opencode" / "agents" / "developer.md",
+    ]
+    for path in reviewers:
+        text = path.read_text(encoding="utf-8")
+        assert all(term in text for term in (
+            "pm-review-v1", "authority", "design_change", "resolved|unresolved|regressed",
+        ))
+    for path in developers:
+        text = path.read_text(encoding="utf-8")
+        assert "accepted-only delta" in text and "review delta --ticket T-NNNN" in text
+
+    ticket_cards = [
+        REPO / ".claude" / "skills" / "pm-ticket" / "SKILL.md",
+        REPO / "templates" / "codex" / ".agents" / "skills" / "pm-ticket" / "SKILL.md",
+        REPO / "templates" / "opencode" / ".claude" / "skills" / "pm-ticket" / "SKILL.md",
+    ]
+    for path in ticket_cards:
+        text = path.read_text(encoding="utf-8")
+        assert "draft의 developer/code-reviewer" in text
+        assert "board-git sync 0회" in text and "--role architect" in text

@@ -228,10 +228,10 @@ def test_growth_commands_allow_each_active_state(board_env, status, command):
 
 
 @requires_git
-@pytest.mark.parametrize("status", ["draft", "blocked", "done"])
+@pytest.mark.parametrize("status", ["blocked", "done"])
 @pytest.mark.parametrize("command", ["section-add", "tier"])
 def test_growth_commands_reject_non_active_states_without_writes(board_env, capsys, status, command):
-    """active allowlist 밖 draft/blocked/done은 rc=1이며 파일과 Git HEAD를 바꾸지 않는다."""
+    """active allowlist 밖 blocked/done은 rc=1이며 파일과 Git HEAD를 바꾸지 않는다."""
     board, board_dir, _bare = board_env
     if status == "draft":
         path = _write_ticket(board_dir, "T-1004", status)
@@ -244,6 +244,49 @@ def test_growth_commands_reject_non_active_states_without_writes(board_env, caps
     assert board.main(argv) == 1
     assert path.read_text(encoding="utf-8") == before_text
     assert _head(board_dir) == before_head
+    error = capsys.readouterr().err
+    assert "open/claimed 티켓" in error
+    if command == "section-add":
+        assert "draft×architect" in error
+    else:
+        assert "draft×architect" not in error
+
+
+@requires_git
+def test_draft_section_add_allows_only_architect_and_never_syncs(board_env, monkeypatch, capsys):
+    board, board_dir, _bare = board_env
+    path = _write_ticket(board_dir, "T-1011", "draft")
+    before_head = _head(board_dir)
+    sync_calls = []
+    monkeypatch.setattr(
+        board, "_growth_mutation_sync",
+        lambda *_args: sync_calls.append(_args) or True,
+    )
+
+    assert board.main(["section-add", "T-1011", "--role", "architect"]) == 0
+    assert "role=architect" in path.read_text(encoding="utf-8")
+    assert sync_calls == [] and _head(board_dir) == before_head
+    assert "local draft; promote가 출하 소유" in capsys.readouterr().out
+
+
+@requires_git
+@pytest.mark.parametrize("role", ["developer", "code-reviewer"])
+def test_draft_section_add_rejects_non_architect_before_write(board_env, capsys, role):
+    board, board_dir, _bare = board_env
+    path = _write_ticket(board_dir, "T-1012", "draft")
+    before = path.read_bytes()
+    assert board.main(["section-add", "T-1012", "--role", role]) == 1
+    assert path.read_bytes() == before
+    assert "draft×architect" in capsys.readouterr().err
+
+
+@requires_git
+def test_draft_tier_remains_rejected(board_env, capsys):
+    board, board_dir, _bare = board_env
+    path = _write_ticket(board_dir, "T-1013", "draft")
+    before = path.read_bytes()
+    assert board.main(["tier", "T-1013", "hard"]) == 1
+    assert path.read_bytes() == before
     assert "open/claimed 티켓만 허용" in capsys.readouterr().err
 
 

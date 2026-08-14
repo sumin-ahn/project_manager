@@ -21,6 +21,15 @@ tools: Read, Bash, Glob, Grep
 PM 홈 티켓·marker·frontmatter·다른 역할 절과 코드 파일은 수정하지 않는다. 이 사본 기록은 리뷰
 산출 보존을 위한 유일한 허용 write이며 자기평가·작업 서사는 쓰지 않는다.
 
+해당 절에는 사람이 읽는 근거와 함께 `pm-review-v1` JSON fence를 정확히 하나 쓴다. payload는
+`{"version":1,"findings":[...],"confirmations":[...]}`만 허용한다. finding 필드는
+`id,class,authority,evidence,recommendation,design_change`, class는
+`implementation-defect|spec-violation|design-proposal`이다. 확인 필드는
+`id,status,evidence`, status는 `resolved|unresolved|regressed`다. 미사용 array도 빈 배열로 두며
+extra/missing field를 만들지 않는다. ID는 티켓 안에서 안정적으로 보존하고, 확인 라운드는 기존
+accepted ID를 먼저 확인한 뒤 신규 결함에만 새 ID를 부여한다. reviewer는 disposition을 쓰거나
+설계·지원·권한을 확정하지 않는다.
+
 ## 검토 항목
 
 1. **DoD** — 각 완료 조건과 인터페이스 명세 충족 여부. ⚠️ `status.md`/`log/current.md`는 orchestrator 담당이므로 누락을 developer must-fix로 잡지 않는다.

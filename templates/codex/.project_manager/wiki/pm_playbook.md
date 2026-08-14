@@ -89,8 +89,9 @@ T-NNNN 의 변경을 검토하라. 변경 파일: <경로>. (code-reviewer)
 
 ⚠️ code-reviewer 프롬프트에 "`status.md`/`log/current.md` 갱신은 orchestrator 담당 — 그 누락은 developer must-fix 아님" 을 덧붙인다.
 
-**검토 루프(normal/hard):** dev → **내부 code-reviewer + 추가 리뷰어 (둘 다)** → must-fix 처리 →
-PM 회귀 verify → `board.py complete`. 구현 결함은 dev가 재작업한다. 설계 결함은 reviewer 절을 포함한
+**검토 루프(normal/hard):** dev → **내부 code-reviewer + 추가 리뷰어 (둘 다)** → PM finding 판정 →
+승인 delta 재작업 → PM 회귀 verify → `board.py complete`. reviewer 산출은 구현 명령이 아니라
+증거·제안이다. 구현 결함은 PM이 accepted한 범위만 dev가 재작업한다. 설계 결함은 reviewer 절을 포함한
 최신 ticket 사본으로 architect를 다시 투입해 재설계 절을 추가한 뒤 dev가 재구현한다. 2회차 이후
 reviewer는 이전 reviewer 절의 must-fix 해소 여부와 그 뒤 변경분을 먼저 보는 델타 리뷰를 한다.
 루프를 생략하지 않는다. git 도입 후 code-reviewer는 `git diff`로 변경 범위·내용을 직접 검증한다.
@@ -104,8 +105,8 @@ PM-direct는 이 루프 대신 PM 구현·self-review·범위 테스트를 거�
 2. **검증 근거 지정 의무.** 위임 프롬프트는 "무엇으로 재는지"를 명시한다 — 실제 git 이 만든 산출물, 설치 바이너리에서 추출한 fixture, fake runner 아닌 층의 동작 단언. cold dev 는 트리 기억이 없어 검증 근거를 지정하지 않으면 픽스처를 지어내고(조립 문자열·순환 단언·문자열만 검사), 그 결함이 라운드를 늘린다.
 3. **클래스 전수 열거 의무.** dev 는 구현 전에 결함 클래스의 인스턴스를 진입점·플랫폼·실패 모드·호출 경로 축으로 전수 나열해 보고하고 전부 처리한다. 보고된 형상만 처리한 결과는 미완이다. 전수 열거가 불가능하면 그 사실과 열거 경계를 보고한다. 클래스는 해당 결함의 클래스에 한정하며 티켓 밖 기능으로 스코프를 확대하지 않는다. 완료 보고에는 열거한 인스턴스 목록과 각각의 처리를 포함하며, 목록이 없으면 PM 이 반려한다.
 4. **역방향 확인 의무.** dev 는 고침이 반대 방향 실패를 만들지 않았는지 단언한다. 느슨함을 조인 fix 는 과결속을, 조임을 푼 fix 는 누락을, 차단을 추가한 fix 는 정상 사용 차단을 각각 확인한다.
-5. **must-fix 장부(MF-n).** 반려가 오면 PM 이 항목별 MF-n ID 를 채번하고 각 항목에 **probe**(무엇을 돌리면 미해소가 드러나는가)를 붙인다 — probe 없는 must-fix 는 리뷰어에게 요구한다. fix 라운드 보고는 MF-n 별 변경 지점(file:line)+probe 재실행 결과("다 고쳤습니다" 금지). 다음 리뷰 라운드는 이전 reviewer 절을 입력으로 한 **델타·확인 전용 판정 선행**: MF-n 별 해소/미해소/퇴행 → 그 다음에야 신규 발견(NEW 라벨 분리). 같은 MF 2연속 미해소 또는 reviewer가 설계 결함으로 분류한 항목은 dev 반복이 아니라 architect 재설계 절→dev 재구현으로 전환한다.
-6. **보고서 원문 전달 + 세션 재사용.** fix 프롬프트는 리뷰어 보고서 must-fix 원문을 그대로 싣고 PM 판단(기각·처분 재정의)만 몇 줄 덧붙인다 — PM 재작성은 전달 손실+토큰 낭비다. fix 라운드는 `pm_delegate --resume-from <T-NNNN>` 으로 **직전 dev 세션을 재사용**하는 것이 기본이다(cold 재투입은 티켓+코드 재섭취 비용을 라운드마다 다시 낸다 — fresh 는 resume 미일치 폴백·전사 과대 시에만). 리뷰어 직접 수정은 채택하지 않는다(WRITE_ROLES 권한축·generate≠evaluate 독립성).
+5. **finding/disposition 장부.** reviewer는 `pm-review-v1` JSON fence에 안정 ID와 `class`(`implementation-defect|spec-violation|design-proposal`), `authority`, `evidence`, `recommendation`, `design_change`를 쓴다. 확인 라운드는 accepted ID별 `resolved|unresolved|regressed`를 먼저 쓰고 신규 결함만 새 ID로 분리한다. PM은 역할 절 밖 `pm-review-disposition-v1`에 reviewer ordinal과 ID별 `accepted|rejected|decision-required`, `reason`, developer 허용 `scope`, 선행 `prerequisite`를 전수 기록한다. `design-proposal`/`design_change=true`는 권위 ticket/spec/ADR를 먼저 개정하지 않으면 decision-required다. finding 0은 reviewer 통과+0건 선언과 PM `finding_zero: accepted` 한 건으로 끝낸다.
+6. **accepted-only delta + 세션 재사용.** `python3 .project_manager/tools/pm_delegate.py review delta --ticket T-NNNN` 출력만 fix 프롬프트에 붙인다. renderer는 accepted ID의 원문 필드와 PM scope만 내며 rejected는 제외한다. 미판정·decision-required는 전체 delta를 차단하고, 같은 accepted ID가 2회 연속 unresolved/regressed면 추가 loop 대신 architect 재설계 또는 티켓 분할을 처방한다. accepted 0/finding 0은 성공+빈 stdout이라 developer를 재투입하지 않는다. fix 라운드는 이 delta를 `pm_delegate --resume-from <T-NNNN>` 으로 **직전 dev 세션에 재사용**하는 것이 기본이다. reviewer 전문·rejected/decision-required 원문을 developer에게 다시 보내지 않는다.
 7. **내부 라운드 상한 3.** 추가 리뷰어 게이트와 동형 — 3라운드에 수렴하지 않으면 라운드 추가가 아니라 재설계·티켓 분할로 전환한다.
 8. **작업 중단 사유 판정.** 유효 집합 3항목만 작업 중단 사유로 인정한다. 무효 집합 5항목으로 중단하면 규약 위반이다. 각 항목은 조건과 결론을 함께 판정한다.
 

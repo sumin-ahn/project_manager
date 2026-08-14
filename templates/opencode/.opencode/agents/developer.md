@@ -74,6 +74,10 @@ ticket 본문이 **단일 진실**이다. 본문의 목표/인터페이스/결�
 
 ## 워크플로
 
+리뷰 재작업은 PM이 `pm_delegate.py review delta --ticket T-NNNN`으로 렌더한 accepted-only delta만
+명령으로 인정한다. reviewer 원문만 있거나 PM disposition이 없거나 rejected/decision-required인
+finding은 구현하지 않는다. finding ID와 PM 허용 scope를 벗어나지 않으며 빈 delta면 변경하지 않는다.
+
 ### 1. 이해
 ticket 의 목표·DoD 를 정확히 파싱. `touches` 에 명시된 파일이 작업 범위.
 

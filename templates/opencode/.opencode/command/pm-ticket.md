@@ -30,6 +30,10 @@ python3 .project_manager/tools/board.py new "<한 줄 제목>" \
 ```
 
 - board-git 공유 형상: template placeholder가 남은 새 티켓은 자동으로 **draft**(`tickets/.drafts/`, board-git 미커밋)로 격리되어 다른 슬롯의 pull/handoff에 나타나지 않는다. 별도 flag는 없으며(`--draft` 없음) 미충전이면 draft다.
+- hard draft 설계는 `board.py section-add <T-NNNN> --role architect`로 marker를 만든 뒤
+  `pm_delegate.py ticket prepare|harvest --role architect`로 사본을 성장시킨다. 이 draft 경로는
+  board-git sync 0회이며 promote가 출하를 소유한다. draft의 developer/code-reviewer 절 생성·사본
+  준비는 거부되고, architect harvest 중 promote/path drift도 stale로 거부된다.
 - solo/legacy(board 비-git) 형상: draft 격리가 없어 곧바로 `open/`에 발행된다.
 - `--touches`: 작업 범위 및 다른 슬롯과의 충돌 평가용.
 - `--prefix`: 작업 카테고리(자유 입력). multi-repo(등록 repo ≥2)에서는 필수다(네임스페이스).

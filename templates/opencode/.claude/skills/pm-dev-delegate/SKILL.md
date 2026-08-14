@@ -262,9 +262,12 @@ task tool 호출:
      판정하라 — probe 재실행 실측값 포함. 신규 발견은 그 뒤에 NEW 라벨로 분리해 보고하라.
 
      완료 시 보고:
-     - (2라운드 이후) MF-n 별 해소/미해소/퇴행 + probe 실측값
-     - must-fix (수정 필수·프로젝트 고유 제약 위반·결함 — probe 를 함께 명시하라: 무엇을 돌리면
-       미해소가 드러나는가)
+     - 같은 reviewer 절에 `pm-review-v1` JSON fence 정확히 1개. `version: 1`, `findings` 각 항목은
+       `id,class,authority,evidence,recommendation,design_change`, `confirmations` 각 항목은
+       `id,status(resolved|unresolved|regressed),evidence`; 미사용 array도 빈 배열, extra field 금지.
+     - (2라운드 이후) accepted ID를 보존한 confirmations를 먼저 쓰고 신규 결함만 새 finding ID.
+     - finding class는 implementation-defect|spec-violation|design-proposal 중 하나. 설계 변경 제안은
+       확정하지 말고 design-proposal/design_change=true로 보고.
      - should-fix (권장·운영 영향 있음)
      - suggestion (개선 옵션·운영 영향 없음)
      - 통과/반려 명시"
@@ -293,10 +296,15 @@ architect도 위 native `ticket prepare` 뒤 `task`를 호출하고 종료 뒤 `
 --capability-stdin`을 실행한다. 재설계는 새 prepare가 지정한 최신 ordinal을 성장시키며 harvest의
 stale·ticket·role·ordinal·HMAC 검증을 그대로 통과해야 한다.
 
-> **fix 라운드 프롬프트는 리뷰어 보고서 원문으로 만든다** — must-fix 원문을 그대로 싣고 PM 판단
-> (기각·처분 재정의)만 몇 줄 덧붙인다. PM 재작성은 전달 손실+토큰 낭비다. cross fix 라운드는
+> **fix 라운드 프롬프트는 PM 승인 delta만 쓴다.** PM은 reviewer 절 밖
+> `pm-review-disposition-v1` block에 reviewer ordinal과 ID별 `decision(accepted|rejected|decision-required)`,
+> `reason`, `scope`, `prerequisite`를 전수 기록한 뒤
+> `python3 .project_manager/tools/pm_delegate.py review delta --ticket T-NNNN`을 실행한다. 출력된
+> accepted ID·원문 필드·PM scope만 developer에게 전달하고 rejected/decision-required/보고서 전문은
+> 전달하지 않는다. 비성공이면 표시된 판정·재설계 처방을 먼저 수행하고, 빈 성공이면 재투입하지 않는다.
+> cross fix 라운드는
 > `pm_delegate --resume-from <T-NNNN>` 으로 **직전 dev 세션을 재사용**한다(cold 재투입은 티켓+코드
-> 재섭취를 라운드마다 다시 낸다 — fresh 는 resume 미일치 폴백·전사 과대 시에만). 같은 MF 가 2라운드
+> 재섭취를 라운드마다 다시 낸다 — fresh 는 resume 미일치 폴백·전사 과대 시에만). 같은 accepted ID가 2라운드
 > 연속 미해소면 라운드 추가가 아니라 재설계·분할로 전환한다(내부 라운드 상한 3 — `pm_playbook.md`
 > §"라운드 프로토콜").
 

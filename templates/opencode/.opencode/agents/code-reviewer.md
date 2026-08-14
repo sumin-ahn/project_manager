@@ -98,6 +98,13 @@ test_cmd 를 직접 실행해 전체 통과를 확인한다 (env prefix 없이 �
 
 ## 산출 — 검토 보고
 
+같은 reviewer 절에 `pm-review-v1` JSON fence를 정확히 하나 쓴다. payload는 version=1과
+findings/confirmations 배열만 두며 finding 필드는 id,class,authority,evidence,recommendation,
+design_change, confirmation 필드는 id,status,evidence다. class는
+implementation-defect|spec-violation|design-proposal, status는 resolved|unresolved|regressed만 허용한다. 미사용 배열도
+빈 배열로 두고 extra/missing field를 만들지 않는다. 확인 라운드는 accepted ID를 보존하고 신규
+결함만 새 ID다. reviewer는 PM disposition이나 설계·지원·권한 결정을 쓰지 않는다.
+
 1차 task tool 위임이면 이 보고가 task 결과로 PM 에 반환된다 · 폴백 프로세스 위임이면 stdout/`--format json` 으로 전달된다.
 
 ```markdown

@@ -8355,20 +8355,31 @@ def tier_signals(
     )
 
 
-def _growth_ticket_path(tid: str, action: str) -> tuple[int, Path | None]:
-    """성장 mutation 대상 해소 — board_lock 보유 중 open/claimed 판정, 그 밖은 거부.
+def _growth_ticket_path(
+    tid: str, action: str, *, role: str | None = None,
+) -> tuple[int, Path | None]:
+    """성장 mutation 대상 해소 — open/claimed와 section-add의 draft×architect만 허용.
 
-    티켓 인터페이스가 허용 상태를 open/claimed 로 닫았으므로 blocked/done뿐 아니라 draft도 같은
-    경계에서 거부한다. directory 상태가 lifecycle 단일 진실인 기존 mutation 규약을 그대로 쓴다.
+    tier는 계속 open/claimed로 닫고 section-add만 draft 설계 bootstrap을 연다. blocked/done 및
+    draft×developer|code-reviewer는 같은 경계에서 거부한다. directory 상태가 lifecycle 단일 진실인
+    기존 mutation 규약을 그대로 쓴다.
     """
     try:
         status, path = find_ticket_for_mutation(tid)
     except FileNotFoundError as exc:
         print(exc, file=sys.stderr)
         return 2, None
-    if status not in ("open", "claimed"):
+    draft_architect = (
+        action == "section-add" and status == "draft" and role == "architect"
+    )
+    if status not in ("open", "claimed") and not draft_architect:
+        allowed = (
+            "open/claimed 티켓 또는 draft×architect"
+            if action == "section-add"
+            else "open/claimed 티켓"
+        )
         print(f"cannot {action} {tid}: currently in {status}/ "
-              "(open/claimed 티켓만 허용)", file=sys.stderr)
+              f"({allowed}만 허용)", file=sys.stderr)
         return 1, None
     return 0, path
 
@@ -8405,7 +8416,7 @@ def cmd_section_add(args: argparse.Namespace) -> int:
     # text를 그대로 이어 붙여 section-add가 기존 frontmatter formatting/body bytes를 재직렬화하지
     # 않는다. `_atomic_write_text`가 같은 directory temp+fsync+replace로 crash partial-write도 막는다.
     with board_lock():
-        rc, path = _growth_ticket_path(args.id, "section-add")
+        rc, path = _growth_ticket_path(args.id, "section-add", role=role)
         if path is None:
             return rc
         load_ticket(path)  # 지정 mutation은 손상 YAML을 fail-loud하는 기존 계약 유지.
@@ -8414,9 +8425,17 @@ def cmd_section_add(args: argparse.Namespace) -> int:
         separator = "" if original.endswith("\n\n") else ("\n" if original.endswith("\n") else "\n\n")
         _atomic_write_text(path, original + separator + section)
 
-    ready = _growth_mutation_sync(f"section-add {args.id} {role}", path)
-    print(f"section added {args.id}: {label} ({role} · {today})"
-          f"{_board_git_mutation_state_suffix(ready)}")
+    if path.resolve().parent == drafts_dir().resolve():
+        # draft는 board-git 미커밋 authoring 영역이다. marker 생성도 같은 로컬 파일 안에서
+        # 끝내며 refresh/pull/commit/push는 promote가 소유한다.
+        print(
+            f"section added {args.id}: {label} ({role} · {today}) "
+            "(local draft; promote가 출하 소유)"
+        )
+    else:
+        ready = _growth_mutation_sync(f"section-add {args.id} {role}", path)
+        print(f"section added {args.id}: {label} ({role} · {today})"
+              f"{_board_git_mutation_state_suffix(ready)}")
     return 0
 
 
