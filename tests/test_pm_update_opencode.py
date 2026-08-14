@@ -288,7 +288,8 @@ def test_main_target_unknown_returns_error(pm_update, tmp_path):
 def test_opencode_manifest_excludes_claude_adapter(pm_update):
     """opencode engine.manifest 는 `.claude/` 어댑터 중 agent 정의/훅 계열을 포함하지 않는다.
 
-    `.claude/skills`는 모델 skill tool 채널로 계속 출하한다. 사람 slash 진입은
+    `.claude/skills`는 모델 skill tool 채널로 계속 출하하고, 실행 도구 계약이 다른
+    pm-dev-delegate는 그 아래 target-specific source를 더 긴 destination override로 선언한다. 사람 slash 진입은
     별도 `.opencode/command` 사본으로 복원됐으며(T-0674), 그 매핑은 전용 가드가 강제한다.
     그 외 `.claude/*`(agents·ctx 훅·회귀 훅·relay 드라이버)는 여전히 claude-scoped 라 opencode
     manifest 에서 제외된다 — opencode 는 그 자리를 `.opencode/*` 어댑터로 갖는다."""
@@ -298,11 +299,19 @@ def test_opencode_manifest_excludes_claude_adapter(pm_update):
     assert opencode_manifest.exists(), "templates/opencode/.project_manager/engine.manifest 없음"
 
     entries = pm_update.read_manifest(opencode_manifest)
-    claude_entries = [str(e) for e in entries if e.startswith(".claude/")]
-    # `.claude/skills` 만 허용(모델 skill tool 채널) — 그 외 `.claude/*` 는 금지.
-    assert claude_entries == [".claude/skills"], (
-        f"opencode manifest 의 .claude/ 항목은 정확히 [.claude/skills](skill tool 채널) 여야 함 — "
+    claude_entries = [e for e in entries if e.startswith(".claude/")]
+    expected_paths = [
+        ".claude/skills",
+        ".claude/skills/pm-dev-delegate/SKILL.md",
+    ]
+    assert [str(e) for e in claude_entries] == expected_paths, (
+        f"opencode manifest 의 .claude/ 항목은 공용 skill 채널+명시 override여야 함 — "
         f"실제: {claude_entries}. .claude/agents·ctx 훅 등은 claude-scoped(제외)."
+    )
+    override = claude_entries[1]
+    assert override.render is True
+    assert override.source_rel == (
+        "templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md"
     )
 
 

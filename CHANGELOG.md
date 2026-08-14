@@ -11,11 +11,16 @@
 
 ### 업그레이드 노트
 
+- **추가 리뷰어 구키 4종은 더 이상 읽지 않는다.** `external_review_enabled`와
+  `external_review_{round_limit,incomplete_round_limit,wave_budget}`만 남은 `local.conf`는 추가
+  리뷰어가 꺼진 상태다. 대응하는 `additional_reviewer_*` 키로 직접 바꾸거나 `board.py init`·
+  `pm-update`의 opt-in 질문에 다시 답한다. 엔진은 인스턴스 소유 `local.conf`를 대신 고치지 않는다.
 - **위임 작업은 티켓의 역할별 성장 절을 사본으로 전달하고 회수할 수 있다.**
-  Codex native 위임은 `pm_delegate.py ticket prepare|harvest`를 사용하며, reviewer 사본
-  쓰기는 검증된 Codex named permission profile에서만 활성화된다. Claude·OpenCode
-  reviewer에 `--ticket`을 주면 workspace 전체 쓰기로 광역 승격하지 않고 spawn 전에
-  fail-loud한다.
+  Claude·Codex·OpenCode native 위임은 각 하네스의 `Agent`·`spawn_agent`·`task` 앞뒤에서
+  `pm_delegate.py ticket prepare|harvest`를 사용한다. cross Codex reviewer의 좁은 named permission
+  profile은 유지하고, Claude·OpenCode는 단일-path write 격리 미보장을 warning으로 알린 뒤에도
+  사용자가 고른 target으로 실행한다. PM 홈에는 HMAC·ticket/role/ordinal·marker 밖·stale 검증을
+  통과한 자기 역할 절만 회수한다.
 - **스킬 카드의 상황별 운영 상세가 sibling `references/operational-details.md`로
   분리됐다.** `pm-update`가 카드와 reference를 함께 배송하므로 수동 복사는
   필요 없다. OpenCode 평면 command도 실제 model-skill reference로 링크를 해소한다.

@@ -6315,9 +6315,11 @@ def _apply_read_tmp_argv(
     adjusted = list(argv)
     mode = _READ_TMP_ARGV_MODE_BY_HARNESS[harness]
     if ticket_copy_path is not None and mode != "permission-profile":
-        raise DelegateError(
-            f"{harness} code-reviewer는 worktree read-only를 유지하며 ticket 사본 한 경로만 "
-            "쓸 검증된 permission seam이 없어 이 위임을 실행하지 않습니다"
+        print(
+            f"경고: {harness} code-reviewer ticket 사본은 단일-path write 격리를 "
+            "보장하지 못합니다. 역할 규약과 위임 전후 git/touches 감사로 변경 범위를 "
+            f"표면화하며 선택한 {harness} target으로 계속 실행합니다.",
+            file=sys.stderr,
         )
     if mode == "permission-profile":
         try:
@@ -6421,9 +6423,11 @@ def _prepare_attempt_transport(
     read_role = role in READ_ROLES
     read_tmp = _create_read_role_temp(harness, cwd) if read_role else None
     if role == "code-reviewer" and ticket_copy_path is not None and read_tmp is None:
-        raise DelegateError(
-            "code-reviewer ticket 사본 단일-path write에 필요한 격리 temp를 안전하게 "
-            "생성할 수 없어 실행하지 않습니다"
+        print(
+            f"경고: {harness} code-reviewer용 격리 temp를 준비하지 못해 ticket 사본의 "
+            "단일-path write 격리를 보장하지 못합니다. 역할 규약과 위임 전후 git/touches "
+            f"감사로 변경 범위를 표면화하며 선택한 {harness} target으로 계속 실행합니다.",
+            file=sys.stderr,
         )
     prompt_path: _OpenCodeTransportPrompt | None = None
     outgoing_prompt = (
@@ -7634,9 +7638,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "(기본 .project_manager/.local/delegate, PM 홈 미해소 시 tempdir)")
     parser.add_argument("--ticket", default=None, metavar="T-NNNN",
                         help="위임 대상 ticket — touches 로 범위 밖 변경을 경고 판정"
-                             "(생략 시 허용 경로 0·차단 아님). code-reviewer 성장 사본 write는 "
-                             "검증된 Codex permission profile만 지원하며 Claude/OpenCode는 "
-                             "spawn 전 fail-loud")
+                             "(생략 시 허용 경로 0·차단 아님). code-reviewer 성장 사본의 "
+                             "단일-path write 격리를 보장하지 못하는 target도 경고 후 선택한 "
+                             "target으로 계속 실행")
     parser.add_argument("--gate", default=None, metavar="T-NNNN",
                         help="내부 code-reviewer 라운드 게이트(기본 --ticket에서 유도). "
                              "게이트 없는 reviewer 호출은 자문이며 완료 증거가 아니다")

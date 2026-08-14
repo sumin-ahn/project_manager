@@ -2255,7 +2255,13 @@ def test_legacy_single_harness_partial_stray_never_promotes_adapter(
         paths for path, paths in candidate_paths.items()
         if path != stray_manifest
     ))
-    evidence_paths = candidate_paths[stray_manifest] - other_paths - local_core_paths
+    evidence_paths = set(pm_update._flavor_exclusive_paths(
+        pm_update.read_manifest(stray_manifest), other_paths
+    )) - local_core_paths
+    if stray_flavor == "opencode":
+        assert ".claude/skills/pm-dev-delegate/SKILL.md" not in evidence_paths, (
+            "공용 .claude/skills 아래 target override를 배타 opencode evidence로 오판함"
+        )
     assert re.search(
         rf"\(1/{len(evidence_paths)}: {re.escape(observed_rel)}\)", combined
     ), f"진단에 관측 형상(n/m: 경로)이 없음: {combined!r}"

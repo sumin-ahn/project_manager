@@ -11,8 +11,8 @@ absence·opencode 의 `pm.md` primary 에 해당하는 파일 부재).
   (b) 각 TOML 이 `tomllib` 로 파싱된다(포맷 유효·triple-quote developer_instructions 안전).
   (c) 필수 필드 3종 `name`/`description`/`developer_instructions` 존재 + `name` == 파일 stem.
   (d) `model` 키 **부재**(D5 — 사용자 config 기본 상속·harness-특수 모델 분기 0).
-  (e) `sandbox_mode` 존재 + 역할별 값(쓰기 축 developer/architect=`workspace-write`·읽기 축
-      code-reviewer/researcher=`read-only`).
+  (e) `sandbox_mode` 존재 + 역할별 값(성장 사본 쓰기 축 developer/architect/code-reviewer=
+      `workspace-write`·순수 읽기 축 researcher=`read-only`).
   (f) `{{PROJECT_NAME}}` 토큰이 있어 pm_import/pm_update(@render)의 결정적 치환 타깃이 된다.
   (g) developer_instructions 가 공통 코어 `AGENTS.md` 를 부트스트랩 진입으로 참조(D3 C-v2 — codex
       전용 정적 진입 doc 없음·방법론은 공통 코어 + TOML + 스킬로 전달).
@@ -48,11 +48,11 @@ TIER_PROFILE_NAMES = ("developer-hard",)
 REQUIRED_FIELDS = ("name", "description", "developer_instructions")
 PROJECT_NAME_TOKEN = "{{PROJECT_NAME}}"
 
-# 역할별 sandbox_mode — 쓰기 필요(코드 편집·설계 초안) vs 읽기 전용(검토·조사). (ADR-0070 인터페이스)
+# 역할별 sandbox_mode — code-reviewer도 성장 티켓 사본 자기 절 write가 필요하다(코드 write는 역할 금지).
 SANDBOX_BY_AGENT = {
     "developer": "workspace-write",     # 코드 + 테스트 쓰기
     "architect": "workspace-write",     # 설계 초안 문서 쓰기
-    "code-reviewer": "read-only",       # 검토 = 읽기·회귀 실행 (generate ≠ evaluate)
+    "code-reviewer": "workspace-write", # 성장 사본 자기 절 write; 코드·board·git은 역할 계약으로 금지
     "researcher": "read-only",          # gather = 읽기 전용
 }
 
@@ -183,8 +183,8 @@ def test_developer_hard_tier_profile_valid_and_overrides_model():
 def test_sandbox_mode_present_and_role_correct():
     """각 agent 에 `sandbox_mode` 존재 + 역할별 값 정합(쓰기 축 vs 읽기 축).
 
-    developer/architect = workspace-write(코드·설계 초안 쓰기)·code-reviewer/researcher = read-only
-    (검토·조사 = 읽기). 잘못 매핑되면 폴백 시 쓰기가 막히거나(모순) 읽기 축이 과권한을 얻는다."""
+    developer/architect/code-reviewer = workspace-write(코드·설계 초안·성장 리뷰 절 쓰기)·
+    researcher = read-only. reviewer의 넓은 sandbox는 지정 사본 쓰기 역할 계약과 git 감사로 제한한다."""
     for name in AGENT_NAMES:
         data = _load(name)
         assert "sandbox_mode" in data, f"{name}.toml 에 sandbox_mode 없음"
@@ -305,7 +305,7 @@ def test_developer_instructions_reference_common_core():
 # ── (h) pm-dev-delegate native spawn 계약 (T-0435) ──────────────────────────
 
 _NATIVE_SPAWN_FIELDS = ("agent_type", "fork_turns", "task_name", "message")
-_CUSTOM_ROLES = ("developer", "code-reviewer")
+_CUSTOM_ROLES = ("developer", "code-reviewer", "architect")
 _FULL_HISTORY_CUSTOM_ROLE_REJECTION = (
     "Full-history forked agents inherit the parent agent type; omit agent_type, or spawn without "
     "a full-history fork."
@@ -341,19 +341,32 @@ def _documented_native_spawns(text: str) -> list[dict[str, str]]:
 
 
 def test_pm_dev_delegate_documents_only_native_codex_spawn_fields():
-    """Codex 출하 스킬이 developer/reviewer native spawn 4필드를 정확히 안내한다.
+    """Codex 출하 스킬이 3개 성장 역할의 native spawn 4필드를 정확히 안내한다.
 
     `subagent_type`/`run_in_background`는 다른 harness의 필드라 Codex 실행 예시에 존재하면 첫 위임이
     schema 단계에서 거부된다. spawn 자체가 비동기 thread를 반환한다는 운영 규칙도 문서화해야 한다.
     """
     text = PM_DEV_DELEGATE.read_text(encoding="utf-8")
     calls = _documented_native_spawns(text)
-    assert len(calls) == 2, "developer/reviewer 각각 하나의 native spawn_agent 예시가 필요"
+    assert len(calls) == 3, "architect/developer/reviewer 각각 하나의 native spawn_agent 예시가 필요"
     assert {call.get("agent_type") for call in calls} == set(_CUSTOM_ROLES)
     assert all(_native_spawn_is_accepted(call) for call in calls)
     for stale_field in ("subagent_type", "run_in_background"):
         assert stale_field not in text, f"Codex pm-dev-delegate에 타 harness 필드 잔존: {stale_field}"
     assert "비동기로 진행" in text, "spawn 반환 thread의 비동기 운영 규칙 누락"
+
+
+def test_codex_native_reviewer_can_write_only_ticket_section_by_role_contract():
+    reviewer = _load("code-reviewer")
+    assert reviewer["sandbox_mode"] == "workspace-write"
+    contract = reviewer["description"] + "\n" + reviewer["developer_instructions"]
+    for term in (
+        "pm-ticket-section:start/end role=code-reviewer",
+        "코드·board·git 수정 권한이 아니다",
+        "PM은 위임 전후 git 상태를 감사",
+        "지정 사본 밖 파일 수정",
+    ):
+        assert term in contract
 
 
 def test_pm_dev_delegate_custom_roles_never_use_full_history_fork():

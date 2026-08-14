@@ -95,10 +95,12 @@
 # .github/workflows/* — 비출하: PM 홈에는 제품 테스트가 없어 예시 CI가 영구 red가 된다.
 
 # ── PM-workflow 스킬 (canonical 단일 진실·모델 skill tool 채널) ──
-# opencode 모델이 `.claude/skills/*/SKILL.md`를 스캔하는 채널은 그대로 유지한다. claude_code
-# 타깃과 동일한 bare @render(root `.claude/skills` 소스)로 등록하고, command 사본도 아래에서
-# 같은 canonical 파일을 읽는다. @render 는 토큰-form을 채택자 local.conf 값으로 치환한다.
+# opencode 모델이 `.claude/skills/*/SKILL.md`를 스캔하는 채널은 그대로 유지한다. 대부분은 claude_code
+# 타깃과 동일한 bare @render(root `.claude/skills` 소스)다. pm-dev-delegate만 native `task` tool 계약이
+# 달라 더 구체적인 target override를 쓰고 command 사본도 그 같은 override를 읽는다.
+# @render 는 토큰-form을 채택자 local.conf 값으로 치환한다.
 .claude/skills    @render
+.claude/skills/pm-dev-delegate/SKILL.md    @render @source=templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md
 
 # ── opencode 어댑터 (@render + @source — framework-owned 전파·ADR-0054·claude `.claude/*` 대칭) ──
 # free-form 0 (T-0136 제거) → pm_update/pm_import 가 채택자 트리에서 operational 토큰 재유도(copy2 면 leak).
@@ -118,7 +120,7 @@
 .opencode/agents    @render @source=templates/opencode/.opencode/agents
 .opencode/command/pm-adr.md              @render @source=.claude/skills/pm-adr/SKILL.md
 .opencode/command/pm-bootstrap.md        @render @source=.claude/skills/pm-bootstrap/SKILL.md
-.opencode/command/pm-dev-delegate.md     @render @source=.claude/skills/pm-dev-delegate/SKILL.md
+.opencode/command/pm-dev-delegate.md     @render @source=templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md
 .opencode/command/pm-env.md              @render @source=.claude/skills/pm-env/SKILL.md
 .opencode/command/pm-handoff.md          @render @source=.claude/skills/pm-handoff/SKILL.md
 .opencode/command/pm-qa.md               @render @source=.claude/skills/pm-qa/SKILL.md

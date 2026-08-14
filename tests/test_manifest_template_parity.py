@@ -50,6 +50,8 @@ CODEX_MANIFEST = REPO / "templates" / "codex" / ".project_manager" / "engine.man
 #   update 로 *전파*된다(engine-mirror·frozen 근절). 대칭으로 claude 는 ctx 훅·relay 드라이버를 등재.
 #   settings.json·opencode.jsonc·루트 doc(CLAUDE/AGENTS)·local.conf 는 여전히 instance-owned(미등재).
 OPENCODE_ONLY_PATHS = {
+    # native task tool schema가 Claude Agent와 달라 shared directory 위에 얹는 file override.
+    ".claude/skills/pm-dev-delegate/SKILL.md",
     ".opencode/agents",
     ".opencode/command/pm-adr.md",
     ".opencode/command/pm-bootstrap.md",
@@ -152,6 +154,10 @@ _IMPORT_MERGED_EXCEPTIONS = {
     # 단일 설치에서는 각 실제 진입 표기를 갖고, 다중 설치에서는 pm_import의 선언된 중립-source
     # override + 선택 flavor 병기가 충돌을 해소한다. 다른 공유 relpath는 계속 byte-identity 대상이다.
     "AGENTS.md",
+    # OpenCode native 위임은 task(description/subagent_type/prompt), Claude는
+    # Agent(.../run_in_background)라 같은 relpath의 target override가 의도적이다. 각 flavor manifest의
+    # 구체적 @source와 adapter contract 테스트가 소유하며 shared byte-parity로 되돌리면 안 된다.
+    ".claude/skills/pm-dev-delegate/SKILL.md",
 }
 
 

@@ -13,6 +13,9 @@ DOCS = (
     REPO / "templates" / "opencode" / "AGENTS.lite.md",
     REPO / "templates" / "opencode" / "README.md",
 )
+PM_DEV_DELEGATE_SOURCE = (
+    "templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md"
+)
 
 
 def _load_pm_update():
@@ -46,10 +49,14 @@ def test_manifest_maps_every_command_to_root_canonical_skill():
     actual = {str(entry): (entry.render, entry.source_rel) for entry in entries}
     expected = {
         f".opencode/command/{name}.md": (
-            True, f".claude/skills/{name}/SKILL.md"
+            True,
+            PM_DEV_DELEGATE_SOURCE if name == "pm-dev-delegate"
+            else f".claude/skills/{name}/SKILL.md",
         ) for name in skills
     }
     assert actual == expected
+    assert sum(source == PM_DEV_DELEGATE_SOURCE for _render, source in actual.values()) == 1
+    assert sum(source.startswith(".claude/skills/") for _render, source in actual.values()) == 14
 
 
 def test_pm_update_plan_generates_and_updates_flat_command_copies(tmp_path):
@@ -62,6 +69,9 @@ def test_pm_update_plan_generates_and_updates_flat_command_copies(tmp_path):
     generated = tmp_path / ".opencode/command/pm-bootstrap.md"
     canonical = REPO / ".claude/skills/pm-bootstrap/SKILL.md"
     assert generated.read_bytes() == _expected_command(canonical, "pm-bootstrap")
+    override = REPO / PM_DEV_DELEGATE_SOURCE
+    delegated = tmp_path / ".opencode/command/pm-dev-delegate.md"
+    assert delegated.read_bytes() == _expected_command(override, "pm-dev-delegate")
 
     generated.write_text("stale\n", encoding="utf-8")
     changes, missing = pm_update.plan(REPO, entries, dest_root=tmp_path, render_enabled=False)

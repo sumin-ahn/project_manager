@@ -5,6 +5,7 @@ import importlib.util
 import contextlib
 import hashlib
 import io
+import itertools
 import json
 import os
 import shutil
@@ -17,6 +18,20 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 PM_DELEGATE = TOOLS / "pm_delegate.py"
+
+GROWTH_ROLES = ("architect", "developer", "code-reviewer")
+GROWTH_MATRIX = tuple(itertools.product(("claude", "codex", "opencode"), repeat=2))
+GROWTH_MATRIX = tuple(
+    (main, target, role)
+    for main, target in GROWTH_MATRIX
+    for role in GROWTH_ROLES
+)
+NATIVE_CARDS = {
+    "claude": REPO / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md",
+    "codex": REPO / "templates" / "codex" / ".agents" / "skills" / "pm-dev-delegate" / "SKILL.md",
+    "opencode": REPO / "templates" / "opencode" / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md",
+}
+NATIVE_TOOL = {"claude": "Agent 툴 호출", "codex": "spawn_agent(", "opencode": "task tool 호출"}
 
 
 def _load_pd():
@@ -108,6 +123,34 @@ def _replace_content(pd, path: Path, role: str, ordinal: int, content: str) -> N
         text[:section.content_start] + content + text[section.content_end:],
         encoding="utf-8",
     )
+
+
+@pytest.mark.parametrize(
+    ("main_harness", "target_harness", "role"),
+    GROWTH_MATRIX,
+    ids=lambda value: value,
+)
+def test_ticket_growth_main_target_role_matrix_27_cells(
+        pd, main_harness, target_harness, role):
+    """3 main × 3 target × 3 성장 역할을 실패 클래스와 곱하지 않고 한 표로 고정한다."""
+    assert len(GROWTH_MATRIX) == 27 and len(set(GROWTH_MATRIX)) == 27
+    if main_harness == target_harness:
+        card = NATIVE_CARDS[main_harness].read_text(encoding="utf-8")
+        assert "prepare →" in card and "→ harvest" in card
+        assert NATIVE_TOOL[main_harness] in card
+        assert f"role={role}" in card
+        assert "<prepare JSON의 copy>" in card
+        return
+
+    # cross는 main에 따라 target을 바꾸지 않는다. 실제 argv의 첫 프로그램과 카드의 warning 계약을
+    # 함께 고정하고, 실패 클래스(HMAC/stale/marker 등)는 기존 공용 역방향 테스트로 분리한다.
+    argv = pd._build_target_argv(
+        target_harness, "model-x", None, role, Path("/worktree"), Path("/prompt.md")
+    )
+    assert argv[0] == target_harness
+    card = NATIVE_CARDS[main_harness].read_text(encoding="utf-8")
+    assert "사용자가 고른 target으로 계속 실행" in card
+    assert "target 자동 대체" in card or "자동 대체" in card
 
 
 @pytest.mark.parametrize("role", ["developer", "code-reviewer", "architect"])
@@ -432,6 +475,25 @@ def test_prepare_uses_filename_identity_when_frontmatter_is_corrupt(growth_env, 
     assert plan.path.read_bytes() == source.read_bytes()
 
 
+def test_numeric_leading_legacy_slug_prepare_and_harvest(growth_env, pd):
+    """`T-0683-3...`의 `3`은 prefix ID 일부가 아니라 legacy slug 첫 문자다."""
+    pm_home, slot, tickets = growth_env
+    source = tickets / "T-0683-3하네스-ticket-growth.md"
+    source.write_text(_ticket_text("T-0683", [("developer", "")]), encoding="utf-8")
+
+    plan = pd.prepare_ticket_copy(
+        ticket="T-0683", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    _replace_content(pd, plan.path, "developer", 0, "numeric slug facts\n")
+    result = pd.harvest_ticket_copy(
+        copy_path=plan.path, cwd=slot, pm_home=pm_home,
+        capability=plan.capability,
+    )
+
+    assert result == pd.TicketHarvestResult(True, True)
+    assert "numeric slug facts" in source.read_text(encoding="utf-8")
+
+
 def test_prepare_lookup_and_read_share_board_lock(pd, monkeypatch, tmp_path):
     pm_home = tmp_path / "pm"
     slot = tmp_path / "slot"
@@ -504,8 +566,8 @@ def test_reviewer_codex_keeps_worktree_read_only_and_grants_only_copy_dir(
 
 
 @pytest.mark.parametrize("harness,model", [("claude", "sonnet"), ("opencode", "prov/m")])
-def test_reviewer_non_codex_ticket_copy_fails_closed(
-        pd, monkeypatch, tmp_path, harness, model):
+def test_reviewer_non_codex_ticket_copy_warns_and_keeps_selected_target(
+        pd, monkeypatch, tmp_path, capsys, harness, model):
     temp_root = tmp_path / "system-temp"
     cwd = tmp_path / "worktree"
     copy = cwd / pd.TICKET_COPY_REL_ROOT / "T-2002" / "code-reviewer" / ("b" * 32) / "ticket-T-2002.md"
@@ -513,15 +575,31 @@ def test_reviewer_non_codex_ticket_copy_fails_closed(
     copy.parent.mkdir(parents=True)
     copy.write_text("copy", encoding="utf-8")
     monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
-    with pytest.raises(pd.DelegateError, match="검증된 permission seam"):
-        pd._prepare_attempt_transport(
+    argv, _stdin, prompt_path, read_tmp = pd._prepare_attempt_transport(
             harness, model, None, "code-reviewer", cwd, "review",
             ticket_copy_path=copy,
-        )
+    )
+    try:
+        assert argv[0] == harness
+        warning = capsys.readouterr().err
+        assert "단일-path write 격리" in warning
+        assert f"선택한 {harness} target으로 계속 실행" in warning
+    finally:
+        pd._cleanup_attempt_transport(prompt_path, read_tmp)
 
 
-def test_claude_reviewer_ticket_copy_rejects_before_runner_spawn(
-        pd, monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("harness", "model", "stdout"),
+    [
+        ("claude", "sonnet", json.dumps({"type": "result", "result": "reviewed", "session_id": "s1"})),
+        ("opencode", "prov/m", json.dumps({
+            "type": "text", "sessionID": "ses_1",
+            "part": {"type": "text", "text": "reviewed"},
+        })),
+    ],
+)
+def test_non_codex_reviewer_ticket_copy_warns_then_spawns_runner_once(
+        pd, monkeypatch, tmp_path, capsys, harness, model, stdout):
     temp_root = tmp_path / "system-temp"
     cwd = tmp_path / "worktree"
     copy = cwd / pd.TICKET_COPY_REL_ROOT / "T-2020" / "code-reviewer" / ("c" * 32) / "ticket-T-2020.md"
@@ -532,17 +610,37 @@ def test_claude_reviewer_ticket_copy_rejects_before_runner_spawn(
     spawned = []
 
     def runner(*_args, **_kwargs):
-        spawned.append(True)
-        raise AssertionError("Claude reviewer ticket-copy must fail before runner")
+        spawned.append(_args[0][0])
+        return {
+            "returncode": 0,
+            "stdout": stdout,
+            "stderr": "", "timed_out": False,
+        }
 
-    with pytest.raises(pd.DelegateError, match="검증된 permission seam"):
-        pd._execute_attempt(
-            harness="claude", model="sonnet", reasoning=None,
-            role="code-reviewer", cwd=cwd, prompt="review", timeout=30,
-            output_dir=tmp_path / "raw", run_fn=runner, attempt="primary",
-            ticket_copy_path=copy,
-        )
-    assert spawned == []
+    pd._execute_attempt(
+        harness=harness, model=model, reasoning=None,
+        role="code-reviewer", cwd=cwd, prompt="review", timeout=30,
+        output_dir=tmp_path / "raw", run_fn=runner, attempt="primary",
+        ticket_copy_path=copy,
+    )
+    assert spawned == [harness]
+    assert f"선택한 {harness} target으로 계속 실행" in capsys.readouterr().err
+
+
+def test_reviewer_missing_read_temp_warns_and_continues(pd, monkeypatch, tmp_path, capsys):
+    cwd = tmp_path / "worktree"
+    copy = cwd / pd.TICKET_COPY_REL_ROOT / "T-2021" / "code-reviewer" / ("d" * 32) / "ticket-T-2021.md"
+    copy.parent.mkdir(parents=True)
+    copy.write_text("copy", encoding="utf-8")
+    monkeypatch.setattr(pd, "_create_read_role_temp", lambda *_args: None)
+
+    argv, _stdin, prompt_path, read_tmp = pd._prepare_attempt_transport(
+        "claude", "sonnet", None, "code-reviewer", cwd, "review",
+        ticket_copy_path=copy,
+    )
+
+    assert argv[0] == "claude" and read_tmp is None
+    assert "격리 temp를 준비하지 못해" in capsys.readouterr().err
 
 
 def test_resume_fallback_and_fresh_prompts_share_same_copy_preamble(pd, tmp_path):
@@ -884,11 +982,11 @@ def test_role_docs_and_delegate_card_pin_growth_contract():
     assert "경계 실측·불변식·표면 상한·테스트 전략" in architect and "재설계 절" in architect
     assert "ticket prepare" in card and "ticket harvest" in card
     assert "finally" in card and "--dry-run`은 무부수효과" in card
-    assert "Claude와 OpenCode의 code-reviewer+ticket-copy는 spawn 전에 fail-loud" in card
+    assert "단일 경로 쓰기 격리를 보장하지 못해도 경고 후" in card
     engine = _load_pd()
     rendered_help = engine.build_arg_parser().format_help()
     assert all(term in rendered_help for term in (
-        "검증된 Codex", "permission profile만 지원", "Claude/OpenCode", "fail-loud",
+        "단일-path write 격리", "경고 후", "선택한 target", "계속 실행",
     ))
     for text in (developer, reviewer, architect):
         assert "자기평가" in text and "marker" in text and "PM 홈 티켓" in text

@@ -41,7 +41,8 @@ RESEARCHER_MD = OPENCODE / ".opencode" / "agents" / "researcher.md"
 # T-0674: opencode는 canonical skill 미러와 기계 생성 command 사본을 모두 출하한다.
 PM_DEV_DELEGATE_MIRROR = OPENCODE / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md"
 PM_DEV_DELEGATE_COMMAND = OPENCODE / ".opencode" / "command" / "pm-dev-delegate.md"
-PM_DEV_DELEGATE_CANONICAL = REPO / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md"
+PM_DEV_DELEGATE_CANONICAL = OPENCODE / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md"
+OPENCODE_MANIFEST = OPENCODE / ".project_manager" / "engine.manifest"
 
 
 def _load_agent_frontmatter(path: Path) -> dict:
@@ -189,15 +190,13 @@ def test_pm_instructions_lists_researcher_subagent_type():
 
 
 def test_opencode_pm_dev_delegate_ships_as_canonical_skill_mirror():
-    """opencode pm-dev-delegate skill/command 두 출하 표면이 canonical 과 byte-정합한다."""
+    """opencode pm-dev-delegate target override와 command가 같은 canonical source를 쓴다."""
     assert PM_DEV_DELEGATE_MIRROR.is_file(), (
         f"opencode pm-dev-delegate 출하 스킬 미러 없음: {PM_DEV_DELEGATE_MIRROR} "
         "(`pm_update --target opencode` 로 전파).")
     assert PM_DEV_DELEGATE_CANONICAL.is_file(), (
         f"canonical pm-dev-delegate 스킬 없음: {PM_DEV_DELEGATE_CANONICAL}")
-    assert PM_DEV_DELEGATE_MIRROR.read_bytes() == PM_DEV_DELEGATE_CANONICAL.read_bytes(), (
-        "opencode pm-dev-delegate 미러가 canonical 과 byte drift — 출하 무결성 위반 "
-        "(`pm_update --target opencode` 재전파).")
+    assert PM_DEV_DELEGATE_MIRROR.resolve() == PM_DEV_DELEGATE_CANONICAL.resolve()
     assert PM_DEV_DELEGATE_COMMAND.is_file(), "opencode pm-dev-delegate 슬래시 command 누락"
     expected_command = PM_DEV_DELEGATE_CANONICAL.read_text(encoding="utf-8").replace(
         "(references/operational-details.md)",
@@ -205,6 +204,25 @@ def test_opencode_pm_dev_delegate_ships_as_canonical_skill_mirror():
     ).encode("utf-8")
     assert PM_DEV_DELEGATE_COMMAND.read_bytes() == expected_command, (
         "opencode pm-dev-delegate command가 canonical과 byte drift(T-0674).")
+    manifest = OPENCODE_MANIFEST.read_text(encoding="utf-8")
+    source = "templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md"
+    assert f".claude/skills/pm-dev-delegate/SKILL.md    @render @source={source}" in manifest
+    assert f".opencode/command/pm-dev-delegate.md     @render @source={source}" in manifest
+
+
+def test_opencode_native_ticket_growth_uses_task_contract_only():
+    """3개 성장 역할은 OpenCode task의 실제 3필드로 prepare→spawn→harvest한다."""
+    text = PM_DEV_DELEGATE_CANONICAL.read_text(encoding="utf-8")
+    blocks = re.findall(r"task tool 호출:\n(.*?)(?=\n```)", text, flags=re.DOTALL)
+    assert len(blocks) == 3
+    for role, block in zip(("developer", "code-reviewer", "architect"), blocks):
+        assert f"subagent_type: {role}" in block
+        assert "description:" in block and "prompt:" in block
+        assert f"role={role}" in block and "<prepare JSON의 copy>" in block
+    assert "ticket prepare" in text and "ticket harvest" in text
+    assert "Agent 툴 호출" not in text
+    assert "run_in_background" not in text
+    assert "최신 architect" in text and "절을 직접 성장" in text
 
 
 def test_opencode_pm_dev_delegate_no_framework_wikilink():

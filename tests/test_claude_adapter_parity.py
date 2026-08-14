@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -129,6 +130,21 @@ def test_adapter_artifacts_byte_identical():
             f"{relpath} 가 root↔templates byte-identical 아님 (전파 드리프트) — "
             "엔진/어댑터 변경 후 pm_update 로 전파 필요"
         )
+
+
+def test_claude_native_ticket_growth_uses_agent_contract_for_three_roles():
+    """Agent의 실제 필드와 3역할 copy marker를 prepare→harvest 사이에 고정한다."""
+    text = (ROOT_CLAUDE / "skills" / "pm-dev-delegate" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    blocks = re.findall(r"Agent 툴 호출:\n(.*?)(?=\n```)", text, flags=re.DOTALL)
+    assert len(blocks) == 3
+    for role, block in zip(("developer", "code-reviewer", "architect"), blocks):
+        assert f"subagent_type: {role}" in block
+        assert "description:" in block and "run_in_background:" in block and "prompt:" in block
+        assert f"role={role}" in block and "<prepare JSON의 copy>" in block
+    assert "ticket prepare" in text and "ticket harvest" in text
+    assert "최신 architect" in text and "절을 직접 성장" in text
 
 
 # ── T-0202: settings.json portable-by-construction 가드 (manifest-out·render 미탑승) ──

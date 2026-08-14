@@ -184,6 +184,26 @@ def test_ticket_id_from_filename_legacy(board):
     assert board._ticket_id_from_filename("not-a-ticket.md") is None
 
 
+@pytest.mark.parametrize(
+    ("filename", "expected"),
+    [
+        ("T-0683-3하네스.md", "T-0683"),
+        ("T-0036-foo.md", "T-0036"),
+        ("T-PAY-001-결제.md", "T-PAY-001"),
+        ("T-P0-001-우선순위.md", "T-P0-001"),
+        ("T-service-a-001-서비스.md", "T-service-a-001"),
+        ("T-123-001-숫자-prefix.md", "T-123-001"),
+        ("T-0683.md", "T-0683"),
+        ("T-0683slug.md", None),
+        ("T-PAY-001slug.md", None),
+        ("T-0683.md.bak", None),
+    ],
+)
+def test_ticket_id_from_filename_slug_boundary(board, filename, expected):
+    """공용 ID 문법은 유지하고 filename의 `-slug`/정확 `.md` 경계만 요구한다."""
+    assert board._ticket_id_from_filename(filename) == expected
+
+
 def test_ticket_area_owner_via_prefix_to_repo(board):
     """ID prefix → areas.md repo → area_owner 해소."""
     _write_areas(board)

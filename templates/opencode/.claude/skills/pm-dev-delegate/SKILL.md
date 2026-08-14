@@ -1,12 +1,12 @@
 ---
 name: pm-dev-delegate
-description: "orchestrator dev/code-reviewer 위임 표준 프롬프트 + touches disjoint 안전성 cross-check + background 옵션. claim 은 별도 (pm-wave-claim). reviewer 위임 시 status.md/log/current.md 갱신 책임 명시. Triggers: 'dev 위임', 'reviewer 위임', 'T-NNNN 위임', 'pm-dev-delegate'."
+description: "OpenCode task 기반 architect/developer/code-reviewer 위임 표준 프롬프트 + touches disjoint 안전성 cross-check. claim 은 별도 (pm-wave-claim). reviewer 위임 시 status.md/log/current.md 갱신 책임 명시. Triggers: 'dev 위임', 'reviewer 위임', 'T-NNNN 위임', 'pm-dev-delegate'."
 audience: pm-internal
 ---
 
-# /pm-dev-delegate T-NNNN [--role developer|code-reviewer] [--background] — orchestrator 위임
+# /pm-dev-delegate T-NNNN [--role architect|developer|code-reviewer] — orchestrator 위임
 
-Agent 툴 + `subagent_type: developer|code-reviewer` + `run_in_background` 옵션. ticket 본문이 self-contained 의무 충족 시 위임 프롬프트는 한 줄.
+OpenCode native `task` tool + `description`·`subagent_type: architect|developer|code-reviewer`·`prompt` 필드. ticket 본문이 self-contained 의무 충족 시 위임 프롬프트는 한 줄.
 
 환경별 명령 문법은 부트스트랩의 "현재 환경" 표시에 맞춰 [Windows 안내](../references/environment-windows.md) 또는 [Linux/macOS 안내](../references/environment-posix.md)를 참조한다.
 
@@ -66,7 +66,7 @@ developer·code-reviewer·architect는 PM 홈 티켓을 직접 편집하지 않�
   python3 .project_manager/tools/pm_delegate.py ticket prepare \
       --ticket T-NNNN --role <developer|code-reviewer|architect> \
       --cwd <작업 worktree 절대경로>
-  # stdout JSON의 `copy`만 native Agent/spawn 프롬프트에 주입한다.
+  # stdout JSON의 `copy`만 native task prompt에 주입한다.
   # `capability`는 PM이 harvest stdin용으로만 보관하며 agent prompt/파일/argv에 넣지 않는다.
   # native 위임 종료 뒤(rc/판정과 무관):
   python3 .project_manager/tools/pm_delegate.py ticket harvest \
@@ -129,7 +129,7 @@ cross는 **`--tier hard`**, native는 hard 프로필(codex `developer-hard` agen
 
 ### 2. native/cross
 
-- **target harness == PM 하네스**: 아래 실행 패턴대로 native 위임(claude=Agent 툴 `subagent_type`, codex=`spawn_agent`, opencode=subagent). `pm_delegate`를 호출하지 않는다.
+- **target harness == PM 하네스**: 아래 실행 패턴대로 OpenCode native `task` tool을 호출한다. 실행 필드는 `description`·`subagent_type`·`prompt` 세 가지이며 다른 하네스의 background 필드를 요구하지 않는다. `pm_delegate`를 호출하지 않는다.
 - **target harness != PM 하네스**: 아래 `pm_delegate` 호출.
 
 ### 3. cross 실행
@@ -149,8 +149,8 @@ python3 .project_manager/tools/pm_delegate.py --role <역할> \
 - `--cwd`: 구현할 worktree **절대경로**. 모든 역할 필수(기본값 없음). task-mode 해소값을 실값으로 넣는다.
 - `--tier`: developer에만 사용.
 - role preamble(역할 정체성, commit/push 등 git 비가역·board 조작·어댑터 `.claude/.codex/.opencode` 수정 금지)은 엔진이 자동 합성한다. 프롬프트 파일에는 작업만 담고 금지 문구를 중복하지 않는다.
-- `--ticket`이 있는 developer·code-reviewer·architect 실 실행은 성장 사본을 자동 준비하고 그 절대경로와 자기 역할 절만 편집하라는 제한을 role preamble에 더한다. code-reviewer는 기존 worktree read-only·격리 temp 계약을 그대로 유지하며, 현재 검증된 단일-path write 경계는 Codex named permission profile뿐이다. Claude `--add-dir`는 접근 추가일 뿐 cwd write 축을 줄이지 않고 reviewer Bash도 유지하므로 Claude와 OpenCode의 code-reviewer+ticket-copy는 spawn 전에 fail-loud한다. ticket 없는 일반 Claude/OpenCode reviewer는 종전 read 계약 그대로다.
-- 병렬 wave는 호출측 PM 하네스의 background 실행(claude Bash `run_in_background` 등)으로 동기·stateless `pm_delegate` 호출을 병렬화한다.
+- `--ticket`이 있는 developer·code-reviewer·architect 실 실행은 성장 사본을 자동 준비하고 그 절대경로와 자기 역할 절만 편집하라는 제한을 role preamble에 더한다. Codex named permission profile은 더 강한 기존 격리를 보존한다. Claude·OpenCode처럼 단일 경로 쓰기 격리를 보장하지 못해도 경고 후 사용자가 고른 target으로 계속 실행하며, 역할 규약과 위임 전후 git/touches 감사가 범위 밖 변경을 loud하게 표면화한다. target 자동 대체·새 reviewer opt-in·새 sandbox는 추가하지 않고 ticket 없는 reviewer의 종전 read 계약도 유지한다.
+- 병렬 cross wave는 OpenCode가 제공하는 호출측 동시 실행으로 동기·stateless `pm_delegate` 호출을 병렬화한다.
 - 결과: `rc=0` 성공(stdout 첫 줄=실행 provenance, 폴백 시 실제 하네스 포함; 이후 최종 reply; raw 파일 박제), `rc=1` 실패(loud·raw 경로 stderr), `rc=3` opt-in OFF. PM이 reply를 검토하고 board를 갱신하며 위임 대상은 board를 조작하지 않는다.
 - `--ticket T-NNNN`은 해당 ticket `touches`를 허용 집합으로 전후 워크스페이스를 비교해 범위 밖 신규/변경/커밋을 stderr 경고한다(차단 아님·rc 불변). 생략 시 허용 0이라 모든 변경을 경고한다. **dev 위임에는 `--ticket`이 표준**.
 - secret scan이 막으면 전 탐지 목록(발췌·판정·축), 승인 토큰, `--secret-scan-ack <digest>` 재실행 커맨드를 출력한다. **PM(LLM)이 반사적으로 재실행하지 않는다.** 모든 발췌를 읽고 시크릿을 논하는 텍스트(오탐)인지 실 크리덴셜(정탐)인지 판단한다. 조금이라도 모호하면 발췌를 사용자에게 제시하고 승인받은 뒤에만 ack한다. 정탐이면 ack 금지, 해당 내용을 제거해 프롬프트를 재작성한다. 승인은 프롬프트 전문+해소 수신자(harness:model)에 결속된 건별 1회이며 1자나 수신자 변경 시 재승인. ack로 통과한 실행은 **폴백이 억제**되므로(위 §매핑 조회 참조) 인프라 실패가 폴백 없이 `rc=1`로 끝난다 — 그 조합을 기대하지 말고 수신자를 명시해 재실행한다.
@@ -171,12 +171,14 @@ delegate_enabled = true
 ### developer 위임
 
 ```
-Agent 툴 호출:
+task tool 호출:
   description: "T-NNNN implement"
   subagent_type: developer
-  run_in_background: true (병렬 wave 시) | false (직렬·이 결과에 의존 시)
   prompt:
     "T-NNNN 을 구현하라.
+
+     성장 티켓 사본(절대경로): <prepare JSON의 copy>. 이 파일의 최신
+     `pm-ticket-section:start/end role=developer` 내부만 채우고 capability는 요구·기록하지 마라.
 
      세션명: orch-dev-TNNNN (board.py 조작은 orchestrator(PM) 담당·dev 는 코드+테스트만).
      작업 위치(worktree 절대경로): <해소 절대경로 — task-mode 시·슬롯/솔로는 생략>.
@@ -235,12 +237,15 @@ Agent 툴 호출:
 ### code-reviewer 위임
 
 ```
-Agent 툴 호출:
+task tool 호출:
   description: "T-NNNN review"
   subagent_type: code-reviewer
-  run_in_background: true (병렬 reviewer 시) | false (단일 reviewer 시)
   prompt:
     "T-NNNN 의 변경을 검토하라.
+
+     성장 티켓 사본(절대경로): <prepare JSON의 copy>. 코드·board·git은 수정하지 말고, OpenCode
+     reviewer의 허용된 Bash write로 이 파일의 최신 `pm-ticket-section:start/end role=code-reviewer`
+     내부에만 판정 근거를 기록하라. edit/write 도구 금지는 코드와 다른 파일에 그대로 적용된다.
 
      변경 파일: <touches 인자 그대로 인용>.
      작업 위치(병렬 wave 시 격리 스냅샷): <아래 §게이트 격리 스냅샷으로 만든 gate worktree
@@ -264,6 +269,29 @@ Agent 툴 호출:
      - suggestion (개선 옵션·운영 영향 없음)
      - 통과/반려 명시"
 ```
+
+reviewer task 직전과 종료 직후 `git status --short`·`git diff --name-only`를 같은 worktree에서
+대조한다. 역할 밖 변경이 있으면 회수 범위를 넓히지 말고 loud하게 보고한다. 단일 경로 쓰기 격리를
+강제하지 못한다는 warning은 이 감사를 생략하거나 선택 target을 바꾸는 근거가 아니다.
+
+### architect 위임·재설계
+
+```
+task tool 호출:
+  description: "T-NNNN design"
+  subagent_type: architect
+  prompt:
+    "T-NNNN 의 설계 또는 재설계를 수행하라.
+
+     성장 티켓 사본(절대경로): <prepare JSON의 copy>. 이 파일의 최신
+     `pm-ticket-section:start/end role=architect` 내부에만 경계 실측·불변식·표면 상한·테스트 전략을
+     기록하라. 재투입이면 이전 설계·developer·code-reviewer 절을 대조하고, 새로 준비된 최신 architect
+     절을 직접 성장시켜 결함과 변경 결정을 남겨라. capability는 요구·기록하지 마라."
+```
+
+architect도 위 native `ticket prepare` 뒤 `task`를 호출하고 종료 뒤 `ticket harvest
+--capability-stdin`을 실행한다. 재설계는 새 prepare가 지정한 최신 ordinal을 성장시키며 harvest의
+stale·ticket·role·ordinal·HMAC 검증을 그대로 통과해야 한다.
 
 > **fix 라운드 프롬프트는 리뷰어 보고서 원문으로 만든다** — must-fix 원문을 그대로 싣고 PM 판단
 > (기각·처분 재정의)만 몇 줄 덧붙인다. PM 재작성은 전달 손실+토큰 낭비다. cross fix 라운드는

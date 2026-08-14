@@ -13370,7 +13370,11 @@ def _ticket_id_from_filename(filename: str) -> str | None:
     prefixed(`T-PAY-001-foo.md` → `T-PAY-001`·`T-service-a-001-…`)도 추출 — 발행측
     `_next_id` 가 prefixed 파일을 만드므로. grammar 는 `_TICKET_ID_BODY` 공유.
     """
-    m = re.match(rf"({_TICKET_ID_BODY})", filename)
+    # ID 뒤에는 filename slug 구분자(`-`) 또는 정확한 `.md` 종료만 올 수 있다. 이 경계가
+    # 없으면 숫자로 시작하는 legacy slug(`T-0683-3하네스.md`)를 prefixed ID
+    # `T-0683-3`으로 탐욕 소비한다. 공용 ID/prefix 문법은 그대로 두고 filename 소비처에서만
+    # backtrack을 허용한다.
+    m = re.match(rf"({_TICKET_ID_BODY})(?=-|\.md\Z)", filename)
     return m.group(1) if m else None
 
 

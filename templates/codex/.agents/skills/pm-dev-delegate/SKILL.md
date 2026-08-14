@@ -1,13 +1,13 @@
 ---
 name: pm-dev-delegate
-description: "Codex native spawn_agent 기반 dev/code-reviewer 위임 표준 프롬프트 + touches disjoint 안전성 cross-check. claim 은 별도 (pm-wave-claim). reviewer 위임 시 status.md/log/current.md 갱신 책임 명시. Triggers: 'dev 위임', 'reviewer 위임', 'T-NNNN 위임', 'pm-dev-delegate'."
+description: "Codex native spawn_agent 기반 architect/developer/code-reviewer 위임 표준 프롬프트 + touches disjoint 안전성 cross-check. claim 은 별도 (pm-wave-claim). reviewer 위임 시 status.md/log/current.md 갱신 책임 명시. Triggers: 'dev 위임', 'reviewer 위임', 'T-NNNN 위임', 'pm-dev-delegate'."
 audience: pm-internal
 ---
 
-# $pm-dev-delegate T-NNNN [--role developer|code-reviewer] — orchestrator 위임
+# $pm-dev-delegate T-NNNN [--role architect|developer|code-reviewer] — orchestrator 위임
 
 > {{PROJECT_NAME}} PM 의 Codex native `spawn_agent` 위임 표준 프롬프트. 역할은
-> `agent_type="developer|code-reviewer"`로 고르고, spawn 이 반환한 thread 는 비동기로 진행된다.
+> `agent_type="architect|developer|code-reviewer"`로 고르고, spawn 이 반환한 thread 는 비동기로 진행된다.
 > ticket 본문이 self-contained 의무를 충족하면 위임 프롬프트는 한 줄이다.
 
 환경별 명령 문법은 부트스트랩의 "현재 환경" 표시에 맞춰 [Windows 안내](../references/environment-windows.md) 또는 [Linux/macOS 안내](../references/environment-posix.md)를 참조한다.
@@ -47,6 +47,29 @@ python3 .project_manager/tools/board.py regression run --task <이름>
 - task 가 슬롯을 2개↑ 보유해 모호하면 F6 이 **에러**(⑦·암묵 선택 금지) — 쓰지 않는 잉여 슬롯을
   `python3 .project_manager/tools/pm_config.py release <slot> --task <이름>`으로 반납한 뒤 다시 해소한다.
 - 슬롯 세션(비-task)·솔로(M=1)는 종전대로 — 이 주입은 task-mode 에서만.
+
+## 성장 티켓 사본 — Codex native prepare → spawn_agent → harvest
+
+architect·developer·code-reviewer는 PM 홈 티켓을 직접 편집하지 않는다. native 위임마다 먼저 사본을
+준비하고, `copy` 절대경로만 agent message에 넣은 뒤 종료 결과와 무관하게 harvest한다.
+
+```bash
+python3 .project_manager/tools/pm_delegate.py ticket prepare \
+    --ticket T-NNNN --role <architect|developer|code-reviewer> \
+    --cwd <작업 worktree 절대경로>
+# stdout JSON의 capability는 PM 메모리에만 보관. message/argv/파일/log에 넣지 않는다.
+
+# 아래 역할별 spawn_agent 종료 뒤
+python3 .project_manager/tools/pm_delegate.py ticket harvest \
+    --copy <prepare JSON의 copy> --cwd <작업 worktree 절대경로> \
+    --capability-stdin
+# stdin 한 줄에 prepare JSON의 capability를 입력한다.
+```
+
+prepare 실패 시 spawn하지 않는다. harvest 실패 시 같은 copy와 capability stdin으로 재실행하고 다음
+단계로 넘기지 않는다. 에이전트는 지정 copy의 최신 자기 role marker 내부만 쓰며 capability를 알거나
+요구할 필요가 없다. code-reviewer native profile은 사본을 쓰도록 `workspace-write`지만 코드·board·git
+수정은 금지이며, spawn 전후 `git status --short`·`git diff --name-only` 감사가 위반을 loud 표면화한다.
 
 ## cross-harness 위임 판정 (native 단락 · pm_delegate 채널 · ADR-0075)
 
@@ -107,7 +130,7 @@ target 이 다른 하네스면 `--dry-run` 을 떼고 실행한다 (opt-in 필�
 
 ```bash
 python3 .project_manager/tools/pm_delegate.py --role <역할> \
-    --prompt-file <프롬프트 파일 절대경로> --cwd <작업 worktree 절대경로> [--tier normal|hard]
+    --prompt-file <프롬프트 파일 절대경로> --cwd <작업 worktree 절대경로> [--tier normal|hard] [--ticket T-NNNN]
 ```
 
 #### Codex egress 건별 승격 (load-bearing)
@@ -154,6 +177,11 @@ Windows의 동일 좁은 prefix는 `prefix_rule=["py", ".project_manager/tools/p
 - **role preamble 은 엔진이 합성**한다 — 역할 정체성·금지사항(commit/push 등 git 비가역·board 조작·
   어댑터 디렉토리 `.claude/.codex/.opencode` 수정 금지)은 `pm_delegate.py` 의 role preamble 이 프롬프트
   앞에 자동 주입한다. 프롬프트 파일엔 **작업 내용만** 담고 금지 문구를 중복 서술하지 않는다.
+- `--ticket`이 있는 architect·developer·code-reviewer 실 실행은 성장 사본을 자동 준비하고 그
+  절대경로와 자기 역할 절만 편집하라는 제한을 role preamble에 더한 뒤 `finally`에서 harvest한다.
+  Codex cross named permission profile은 기존 격리를 보존한다. Claude·OpenCode처럼 단일 경로 쓰기
+  격리를 보장하지 못해도 경고 후 사용자가 고른 target으로 계속 실행하며, 역할 규약과 위임 전후
+  git/touches 감사가 범위 밖 변경을 loud하게 표면화한다. target 자동 대체나 reviewer 추가 opt-in은 없다.
 - **병렬 wave** = PM 이 자기 하네스의 백그라운드 실행으로 pm_delegate 호출 자체를 병렬화한다.
   pm_delegate 는 동기·stateless — 병렬은 호출측 책임이다.
 - 결과: `rc=0` 성공(최종 reply = stdout·raw 는 파일 박제) / `rc=1` 실패(loud·raw 경로 stderr) /
@@ -192,6 +220,9 @@ spawn_agent(
   fork_turns="none",
   task_name="orch_dev_tnnnn",
   message="""T-NNNN 을 구현하라.
+
+     성장 티켓 사본(절대경로): <prepare JSON의 copy>. 이 파일의 최신
+     `pm-ticket-section:start/end role=developer` 내부만 채우고 capability는 요구·기록하지 마라.
 
      세션명: orch-dev-TNNNN (board.py 조작은 orchestrator(PM) 담당·dev 는 코드+테스트만).
      작업 위치(worktree 절대경로): <F6 해소 절대경로 — task-mode 시·슬롯/솔로는 생략>.
@@ -261,6 +292,9 @@ spawn_agent(
   task_name="orch_review_tnnnn",
   message="""T-NNNN 의 변경을 검토하라.
 
+     성장 티켓 사본(절대경로): <prepare JSON의 copy>. 코드·board·git은 수정하지 말고 이 파일의 최신
+     `pm-ticket-section:start/end role=code-reviewer` 내부에만 판정 근거를 기록하라.
+
      변경 파일: <touches 인자 그대로 인용>.
      작업 위치(병렬 wave 시 격리 스냅샷): <아래 §게이트 격리 스냅샷으로 만든 gate worktree
      절대경로>. 그 격리 스냅샷에서만 읽고 검토하라 — **공유 트리(dev 라이브 편집 중) 및 그 안에서의
@@ -284,6 +318,30 @@ spawn_agent(
      - 통과/반려 명시""",
 )
 ```
+
+reviewer spawn 직전과 종료 직후 `git status --short`·`git diff --name-only`를 같은 worktree에서
+대조한다. 역할 밖 변경이 있으면 회수 범위를 넓히지 말고 loud하게 보고한다. native reviewer의
+`workspace-write`는 지정 사본 자기 절을 쓰기 위한 것이며 코드·board·git 수정 허가가 아니다.
+
+### architect 위임·재설계
+
+```
+spawn_agent(
+  agent_type="architect",
+  fork_turns="none",
+  task_name="orch_arch_tnnnn",
+  message="""T-NNNN 의 설계 또는 재설계를 수행하라.
+
+     성장 티켓 사본(절대경로): <prepare JSON의 copy>. 이 파일의 최신
+     `pm-ticket-section:start/end role=architect` 내부에만 경계 실측·불변식·표면 상한·테스트 전략을
+     기록하라. 재투입이면 이전 설계·developer·code-reviewer 절을 대조하고, 새로 준비된 최신 architect
+     절을 직접 성장시켜 결함과 변경 결정을 남겨라. capability는 요구·기록하지 마라.""",
+)
+```
+
+architect도 위 native `ticket prepare` 뒤 `spawn_agent`를 호출하고 종료 뒤 `ticket harvest
+--capability-stdin`을 실행한다. 재설계는 새 prepare가 지정한 최신 ordinal을 성장시키며 harvest의
+stale·ticket·role·ordinal·HMAC 검증을 그대로 통과해야 한다.
 
 > **fix 라운드 프롬프트는 리뷰어 보고서 원문으로 만든다** — must-fix 원문을 그대로 싣고 PM 판단
 > (기각·처분 재정의)만 몇 줄 덧붙인다. PM 재작성은 전달 손실+토큰 낭비다. cross fix 라운드는

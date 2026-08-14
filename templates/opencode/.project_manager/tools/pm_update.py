@@ -2788,11 +2788,18 @@ def _flavor_exclusive_paths(entries: list, other_candidate_paths: set[str]) -> l
     두 소비자가 공유한다(판정 사본 금지): frozen evidence(`_frozen_flavor_evidence`)와 legacy
     guest 절의 flavor provenance 추론(`_infer_guest_flavors`). 배타성이 판정의 핵심이라 단순
     namespace 매칭으로 대체할 수 없다 — 여러 flavor 가 함께 선언하는 cross-ns 경로(opencode 의
-    `.claude/skills`)를 배타 증거로 세면 없던 flavor 를 인스턴스에 만들어 낸다."""
+    `.claude/skills`)를 배타 증거로 세면 없던 flavor 를 인스턴스에 만들어 낸다. manifest destination은
+    파일과 디렉터리 양쪽이므로 exact 문자열뿐 아니라 상·하위 포함도 중첩이다. 예를 들어 공용
+    `.claude/skills`와 flavor override `.claude/skills/pm-dev-delegate/SKILL.md`는 같은 설치 표면이라
+    후자를 배타 증거로 세지 않는다."""
+    other_paths = {
+        str(path).replace("\\", "/") for path in other_candidate_paths
+    }
+    paths = [str(entry).replace("\\", "/") for entry in entries]
     return [
-        str(entry).replace("\\", "/")
-        for entry in entries
-        if str(entry).replace("\\", "/") not in other_candidate_paths
+        rel
+        for rel in paths
+        if not any(_paths_overlap(rel, other) for other in other_paths)
     ]
 
 
@@ -4417,12 +4424,18 @@ def _split_guest_channels(
         # manifest 경로(사본 0·같은 대조 기준). --target 은 selfheal 미실행이나 guest 절도 없어 무해.
         upstream_core_paths = _selected_upstream_core_paths(selfheal or {})
         if upstream_core_paths:
-            refresh_owned -= upstream_core_paths
+            # guest destination 자체(또는 그 상위)가 core로 승격된 때만 refresh 소유를 해제한다.
+            # core의 단일 override 파일이 guest 디렉터리 아래에 있다는 이유로 디렉터리 전체를
+            # 승격하면, diverged/legacy manifest에서도 그 child를 update가 덮는다.
+            refresh_owned = {
+                guest for guest in refresh_owned
+                if not _path_owned_by(guest, upstream_core_paths)
+            }
     # 아래 합류가 append 하므로 **항상 새 리스트**로 뜬다 — 입력이 selfheal 승격분 그 자체일 수
     #   있어(같은 객체) 제자리 변경하면 selfheal 산출이 오염된다.
     planned = [
         entry for entry in entries
-        if str(entry).replace("\\", "/") not in refresh_owned
+        if not _path_owned_by(str(entry).replace("\\", "/"), refresh_owned)
     ]
     # 엔진 행 합류 — 파생분 우선, 그 뒤 절에만 남은 행(상류에서 폐기된 경로는 `@target-owned` 라
     #   loud `[skip]` + rc0). selfheal 이 upstream 을 승격한 run 은 계획 manifest 가 upstream 전용
