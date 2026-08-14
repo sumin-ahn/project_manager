@@ -143,16 +143,16 @@ def test_claude_argv_effort(pd):
 
 
 def test_opencode_argv_agent_and_dir(pd):
-    """opencode `--file`·`--dir <cwd>`(cwd 무시 대응)·`--agent build|plan`(권한 강제·§3.3·D2)."""
+    """opencode는 native와 같은 custom 역할 agent를 직접 선택하고 cwd/file을 고정한다."""
     dev = pd.build_opencode_argv("prov/m", None, "developer", "/w/t", "/tmp/p.md")
     assert dev[:2] == ["opencode", "run"]
     assert dev[dev.index("--file") + 1] == "/tmp/p.md"
     assert dev[dev.index("--dir") + 1] == "/w/t"
-    assert dev[dev.index("--agent") + 1] == "build"
+    assert dev[dev.index("--agent") + 1] == "developer"
     assert dev[dev.index("-m") + 1] == "prov/m"
 
     res = pd.build_opencode_argv("prov/m", None, "researcher", "/w", "/tmp/p.md")
-    assert res[res.index("--agent") + 1] == "plan"
+    assert res[res.index("--agent") + 1] == "researcher"
 
 
 def test_opencode_argv_variant(pd):
@@ -1531,6 +1531,31 @@ def test_build_env_allowlist_excludes_foreign_creds(pd, monkeypatch):
     assert env.get("CODEX_HOME") == "/iso/codex"
 
 
+def test_opencode_execution_injects_exact_runtime_role_after_env_sanitizing(
+        pd, monkeypatch, tmp_path):
+    """카드 없는 cross adopter도 exact role을 받고 사용자 inline config는 상속되지 않는다."""
+    monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", "UNTRUSTED_SECRET_CONFIG")
+    seen = {}
+
+    def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
+        seen.update(argv=argv, env=env)
+        return {"returncode": 0, "stdout": _opencode_stdout("DONE"),
+                "stderr": "", "timed_out": False}
+
+    pd._execute_attempt(
+        harness="opencode", model="provider/model", reasoning="high",
+        role="code-reviewer", cwd=tmp_path, prompt="review", timeout=30,
+        output_dir=tmp_path / "raw", run_fn=_capture, attempt="primary",
+    )
+    assert seen["argv"][seen["argv"].index("--agent") + 1] == "code-reviewer"
+    content = seen["env"]["OPENCODE_CONFIG_CONTENT"]
+    assert "UNTRUSTED_SECRET_CONFIG" not in content
+    agent = _json.loads(content)["agent"]["code-reviewer"]
+    assert agent["mode"] == "all"
+    assert agent["permission"]["edit"] == "allow"
+    assert agent["permission"]["task"] == "deny"
+
+
 def test_env_allowlist_applied_in_main(pd, monkeypatch, tmp_path):
     """main 이 정제된 env 를 run_fn 에 넘긴다 — 실행 경로에서도 leak 차단."""
     monkeypatch.setenv("SECRET_TOKEN", "xyz")
@@ -1545,21 +1570,21 @@ def test_env_allowlist_applied_in_main(pd, monkeypatch, tmp_path):
 # ══ ⑦ 권한 역할축 매핑 (read 역할 write 차단·mock 범위·§3.5) ═════════════════
 
 def test_read_role_permission_axis(pd):
-    """read 역할(researcher/code-reviewer) argv 가 write 권한을 부여하지 않음(mock 범위 검증)."""
+    """각 하네스 read 역할이 자기 권한 계약을 선택한다(mock 범위 검증)."""
     # codex: read-only sandbox
     assert pd.build_codex_argv("m", None, "researcher", "/w")[4] == "read-only"
     # claude researcher: Write/Edit/Bash 부재(기계적)
     rt = pd.build_claude_argv("m", None, "researcher")
     tools = rt[rt.index("--tools") + 1]
     assert not any(t in tools for t in ("Write", "Edit", "Bash"))
-    # opencode reviewer: plan agent(권한 강제)
+    # opencode reviewer: build/plan 축약 없이 custom 역할 카드 선택.
     assert pd.build_opencode_argv("m", None, "code-reviewer", "/w", "/p")[
-        pd.build_opencode_argv("m", None, "code-reviewer", "/w", "/p").index("--agent") + 1] == "plan"
+        pd.build_opencode_argv("m", None, "code-reviewer", "/w", "/p").index("--agent") + 1] == "code-reviewer"
 
 
 def test_codex_read_attempt_reanchors_execution_root_env_preamble_and_cleanup(
         pd, monkeypatch, tmp_path):
-    """Codex read attempt는 profile의 암묵 write root까지 tmp로 옮기고 잔여를 0으로 만든다."""
+    """Codex read attempt는 workspace root를 tmp로 옮겨 원 worktree write를 열지 않는다."""
     temp_root = tmp_path / "system-temp"
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
@@ -1590,13 +1615,10 @@ def test_codex_read_attempt_reanchors_execution_root_env_preamble_and_cleanup(
     )
 
     argv = seen["argv"]
-    assert "-s" not in argv and "workspace-write" not in argv
+    assert argv[argv.index("-s") + 1] == "workspace-write"
     overrides = [argv[i + 1] for i, token in enumerate(argv[:-1]) if token == "-c"]
-    assert f'default_permissions="{pd._CODEX_READ_TMP_PROFILE}"' in overrides
-    profile = next(value for value in overrides if value.startswith("permissions."))
-    assert '":root"="read"' in profile
-    assert f'"{seen["read_tmp"]}"="write"' in profile
-    assert str(cwd) not in profile  # worktree write grant 0
+    assert not any(value.startswith("permissions.") for value in overrides)
+    assert "--add-dir" not in argv  # ticket 없는 read role은 tmp workspace 하나만 writable.
     assert argv[argv.index("-C") + 1] == str(seen["read_tmp"])
     assert seen["process_cwd"] == seen["read_tmp"]
     assert all(seen["env"][key] == str(seen["read_tmp"])
@@ -1725,7 +1747,7 @@ def test_claude_read_attempt_add_dir_and_cleanup(pd, monkeypatch, tmp_path):
 
 def test_opencode_read_attempt_uses_measured_allowed_tmp_and_shared_cleanup(
         pd, monkeypatch, tmp_path):
-    """OpenCode plan의 실측 `${TMPDIR}/opencode/*`와 wire 사본을 한 cleanup seam이 회수한다."""
+    """OpenCode read 역할의 실측 `${TMPDIR}/opencode/*`와 wire 사본을 한 cleanup seam이 회수한다."""
     temp_root = tmp_path / "system-temp"
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
@@ -2203,7 +2225,7 @@ def test_default_run_fn_timeout_all_drivers(pd, monkeypatch, harness):
 @pytest.mark.parametrize("role", ["developer", "researcher", "architect", "code-reviewer"])
 @pytest.mark.parametrize("harness", ["codex", "claude", "opencode"])
 def test_argv_matrix_permission_axis(pd, harness, role):
-    """3하네스×4역할 12조합 전수 — 권한축(write=developer/architect·read=나머지)이 argv 에 정확 반영."""
+    """3하네스×4역할 12조합 전수 — 각 드라이버의 역할 선택이 정확히 반영된다."""
     write = role in ("developer", "architect")
     if harness == "codex":
         argv = pd.build_codex_argv("m", None, role, "/w")
@@ -2220,7 +2242,7 @@ def test_argv_matrix_permission_axis(pd, harness, role):
             assert ("Bash" in tools) == (role == "code-reviewer")  # reviewer 만 Bash(pytest)
     else:  # opencode
         argv = pd.build_opencode_argv("m", None, role, "/w", "/p")
-        assert argv[argv.index("--agent") + 1] == ("build" if write else "plan")
+        assert argv[argv.index("--agent") + 1] == role
 
 
 # ══ suggestion: --timeout / delegate_timeout 양의 정수 검증 ═══════════════════
@@ -6032,12 +6054,29 @@ def test_default_run_fn_midrun_oserror_is_not_launch(pd, monkeypatch):
 
 
 def test_help_documents_ticket_scope_flag(pd):
-    """--ticket 은 범위 판정 입력이고 생략 시 허용 0 임을 §help 가 알린다."""
+    """reviewer ticket 귀속과 그 밖 역할의 생략 의미를 §help가 알린다."""
     # argparse 가 줄바꿈하므로 wrap 에 안전한 토큰으로 본다.
     help_text = " ".join(pd.build_arg_parser().format_help().split())
     assert "--ticket T-NNNN" in help_text
     assert "범위 밖 변경을 경고 판정" in help_text
-    assert "생략 시 허용 경로 0" in help_text
+    assert "code-reviewer는 --ticket 또는 --gate 필수" in help_text
+    assert "그 밖 역할은 생략 시 허용 경로 0" in help_text
+
+
+def test_code_reviewer_requires_ticket_for_persistent_review(
+        pd, monkeypatch, tmp_path):
+    """T-0684 이후 reviewer는 자문 무기록 경로 없이 항상 ticket 성장 절에 귀속된다."""
+    prompt = _write_prompt(tmp_path, "review")
+    monkeypatch.setattr(pd, "local_config", lambda: _enabled_conf(**{
+        "delegate.code-reviewer.harness": "codex",
+        "delegate.code-reviewer.model": "gpt-r",
+    }))
+    with pytest.raises(SystemExit) as exc:
+        pd.main([
+            "--role", "code-reviewer", "--prompt-file", str(prompt),
+            "--cwd", str(tmp_path), "--dry-run",
+        ])
+    assert exc.value.code == 2
 
 
 # ══ native advisory 하네스 마커 (T-0497) ══════════════════════════════════
@@ -6861,10 +6900,11 @@ def test_t0650_codex_0147_missing_rollout_reruns_fresh_for_write_and_read(
         pd,
         monkeypatch,
         [
-            "--role", role, "--harness", "codex", "--model", "gpt-x",
-            "--prompt-file", str(prompt), "--cwd", str(workspace),
-            "--output-dir", str(output_dir), "--resume-from", record_id,
-        ],
+                "--role", role, "--harness", "codex", "--model", "gpt-x",
+                "--prompt-file", str(prompt), "--cwd", str(workspace),
+                "--output-dir", str(output_dir), "--resume-from", record_id,
+                *(["--ticket", TICKET_ID] if role == "code-reviewer" else []),
+            ],
         _enabled_conf(),
         fake,
     )

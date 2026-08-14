@@ -31,6 +31,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import codex_auth_available, drop_codex_auth, make_codex_home, run_codex_exec
+
 # 런타임 smoke 와 헬퍼 공유(같은 tests/ 디렉토리·import) — adopter import·LLM env 격리·ticket 조회.
 # `_load_pm_import`(pm_import 모듈 로드)·`_real_models_runner` 스텁은 multi-repo 셋업 헬퍼에서도 재사용.
 from test_fresh_adopter_runtime_smoke import (
@@ -50,18 +52,26 @@ CLAUDE_MODEL = os.environ.get("PM_ORCH_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
 # 릴리즈 wave). runtime_smoke[lite·sync-gate 없음]는 gemma 로 충분 — 거긴 별도 default.
 # env override 로 교체 가능.
 LIVE_MODEL = os.environ.get("PM_ORCH_LIVE_MODEL", "ollama/glm-5.2:cloud")
+CODEX_MODEL = os.environ.get("PM_ORCH_LIVE_CODEX_MODEL")
 
 # full wave probe 가 작성하도록 지시하는 산출 파일·내용 — side-effect 단언의 기준(단일 진실).
 PROBE_FILE = "probe.txt"
 PROBE_TEXT = "hello from dev"
 
-# 위임 단언 대상 서브에이전트 — full wave 가 developer(구현)·code-reviewer(리뷰) 둘 다 거쳐야 통과.
+# 위임 단언 대상 서브에이전트 — full wave 가 성장 역할 3종을 모두 거쳐야 통과.
+_ARCH_SUBAGENT = "architect"
 _DEV_SUBAGENT = "developer"
 _REVIEWER_SUBAGENT = "code-reviewer"
+_GROWTH_SENTINELS = {
+    _ARCH_SUBAGENT: "LIVE_TICKET_ARCHITECT_PERSISTED",
+    _DEV_SUBAGENT: "LIVE_TICKET_DEVELOPER_PERSISTED",
+    _REVIEWER_SUBAGENT: "LIVE_TICKET_REVIEWER_PERSISTED",
+}
 
 # opencode 는 gemma 가 느리고 변동 커 1800s, claude 는 probe 실측 145s 여유분 600s.
 _OPENCODE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_TIMEOUT", "1800"))
 _CLAUDE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_CLAUDE_TIMEOUT", "600"))
+_CODEX_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_CODEX_TIMEOUT", "900"))
 
 # T-0621 compaction boundary probe. 신규 @release 함수를 더하지 않고 기존 harness full-wave
 # 항목에 결합해 전역 livegate 수 pin/board 소유 표면은 그대로 둔다.
@@ -208,12 +218,12 @@ def _run_opencode_live(argv, *, cwd, env, timeout):
 
 
 def _full_wave_prompt(entry_doc: str) -> str:
-    """PM 세션이 full wave(new→claim→**developer 위임**→**code-reviewer 위임**→complete)를 운영하라는 프롬프트.
+    """PM 세션이 full wave와 native 3역할 ticket-copy 왕복을 운영하라는 프롬프트.
 
     board.py 경로를 *주지 않는다* — adopter 가 `entry_doc` 만으로 도구를 찾아 운영해야 통과(= 문서 운영성).
-    developer 위임 단계에서 `probe.txt`(='hello from dev')를 작성하게 지시 → side-effect 로 위임 *결과*를
-    관측(서브에이전트가 실제로 구현했음). 5단계(new/claim/delegate developer/delegate code-reviewer/complete)
-    키워드를 포함하므로 hermetic 단위테스트가 구조를 가드한다.
+    같은 claimed ticket에 architect/developer/code-reviewer marker를 만들고, 역할마다 prepare→native
+    subagent→harvest를 수행한다. 역할 절의 고유 sentinel과 developer의 probe.txt를 side-effect로
+    관측한다. 기존 Claude/OpenCode full-wave 호출을 재사용해 별도 native 중복 테스트를 만들지 않는다.
     """
     return (
         f"You are the PM for this project. Read {entry_doc} to learn how the project board "
@@ -221,10 +231,19 @@ def _full_wave_prompt(entry_doc: str) -> str:
         "(1) create exactly one ticket titled 'release wave probe' (touches README.md) with the "
         "board tool, "
         "(2) claim it, "
-        f"(3) delegate the implementation to the '{_DEV_SUBAGENT}' subagent using the Task tool — "
-        f"instruct the {_DEV_SUBAGENT} to create a file named {PROBE_FILE} in the project root "
-        f"containing the text '{PROBE_TEXT}', "
-        f"(4) delegate a review to the '{_REVIEWER_SUBAGENT}' subagent using the Task tool, "
+        "(3) for EACH role architect, developer, and code-reviewer, use board.py section-add for that role, "
+        "then use pm_delegate.py ticket prepare, pass the returned absolute copy path to the harness-native "
+        "subagent tool, and always run ticket harvest afterward. Each subagent must edit ONLY its own latest "
+        "role section in that copy and write this exact role sentinel: "
+        f"architect={_GROWTH_SENTINELS[_ARCH_SUBAGENT]}, "
+        f"developer={_GROWTH_SENTINELS[_DEV_SUBAGENT]}, "
+        f"code-reviewer={_GROWTH_SENTINELS[_REVIEWER_SUBAGENT]}. "
+        "Use the native role/subagent name matching each role; do not edit the canonical ticket directly. "
+        f"The {_DEV_SUBAGENT} must ALSO create {PROBE_FILE} in the project root containing exactly "
+        f"'{PROBE_TEXT}'. The code-reviewer final reply must contain '판정: 통과', a '## must-fix' heading, "
+        "and '- 없음'. "
+        "(4) after all three harvests, start a fresh board.py show process and verify all three sentinels are "
+        "present in the canonical ticket, "
         "(5) mark the ticket complete/done (satisfy the complete sync gate however the docs say — "
         "e.g. a log entry and the tests-pass / untested flag). "
         "Reply with the ticket id when the ticket is done."
@@ -285,6 +304,16 @@ def _assert_wave_side_effects(dest: Path, proc: subprocess.CompletedProcess, har
         f"실 {harness} 가 ticket 을 done/ 까지 운영하지 못함 — full wave 미완주.\n"
         f"open={_tickets_in(dest, 'open')} claimed={_tickets_in(dest, 'claimed')}\n" + tail
     )
+    ticket_name = sorted(done_tickets)[-1]
+    ticket_path = dest / ".project_manager" / "wiki" / "tickets" / "done" / ticket_name
+    ticket_text = ticket_path.read_text(encoding="utf-8")
+    for role, sentinel in _GROWTH_SENTINELS.items():
+        assert sentinel in ticket_text, (
+            f"실 {harness} done ticket에 {role} harvest sentinel 부재 — native prepare→subagent→harvest "
+            f"영속 왕복 미성립: {ticket_path}\n" + tail
+        )
+        assert ticket_text.count(f"<!-- pm-ticket-section:start role={role} -->") >= 1
+        assert ticket_text.count(f"<!-- pm-ticket-section:end role={role} -->") >= 1
 
 
 @pytest.mark.release
@@ -316,15 +345,15 @@ def test_release_wave_claude_full_wave(tmp_path):
         env=_live_env(CLAUDE_MODEL), timeout=_CLAUDE_TIMEOUT,
     )
 
-    # 위임 관측(hard) — stream-json 에서 developer·code-reviewer 둘 다 등장해야 통과(probe 검증됨).
+    # 위임 관측(hard) — stream-json 에서 성장 역할 3종이 모두 등장해야 통과(probe 검증됨).
     subagent_types = _collect_subagent_types(proc.stdout)
     tail = (
         f"--- claude stdout(tail) ---\n{proc.stdout[-2500:]}\n"
         f"--- stderr(tail) ---\n{proc.stderr[-1000:]}"
     )
-    assert _DEV_SUBAGENT in subagent_types and _REVIEWER_SUBAGENT in subagent_types, (
+    assert all(role in subagent_types for role in _GROWTH_SENTINELS), (
         f"claude full wave 에서 위임 미관측 — subagent_type={subagent_types} "
-        f"({_DEV_SUBAGENT}·{_REVIEWER_SUBAGENT} 둘 다 필요).\n" + tail
+        f"(architect·developer·code-reviewer 모두 필요).\n" + tail
     )
 
     # side-effect(hard) — developer 위임 결과(probe.txt)·done 전이.
@@ -366,6 +395,25 @@ def test_release_wave_claude_full_wave(tmp_path):
         "claude compaction snapshot이 모델 context에 도달하지 않음.\n"
         f"stdout={recovered.stdout[-1200:]!r}\nstderr={recovered.stderr[-800:]!r}"
     )
+
+
+@pytest.mark.release
+@pytest.mark.skipif(
+    not _RELEASE_LIVE or not shutil.which("codex") or not codex_auth_available(),
+    reason="release wave native codex — PM_ORCH_LIVE_RELEASE=1 + codex auth 필요.",
+)
+def test_release_wave_codex_native_ticket_growth(tmp_path):
+    """실 Codex main이 spawn_agent 3역할로 같은 ticket copy를 성장·harvest하고 done까지 완주한다."""
+    dest = _import_adopter(tmp_path, "codex")
+    home = make_codex_home(tmp_path)
+    try:
+        proc = run_codex_exec(
+            _full_wave_prompt("AGENTS.md"), dest, home,
+            model=CODEX_MODEL, timeout=_CODEX_TIMEOUT,
+        )
+    finally:
+        drop_codex_auth(home)
+    _assert_wave_side_effects(dest, proc, "codex")
 
 
 @pytest.mark.release
@@ -1148,18 +1196,20 @@ def test_release_wave_claude_final_nudge_driver_marker_contract(tmp_path):
 # 샘플에서 값을 정확히 추출하는지 — 라이브 미실행 시에도 mechanics 구조를 가드한다(회귀가 잡음).
 
 
-def test_full_wave_prompt_has_all_five_stages():
-    """full wave 프롬프트가 5단계(new·claim·delegate developer·delegate code-reviewer·complete)를 담는다."""
+def test_full_wave_prompt_has_ticket_growth_stages():
+    """full wave 프롬프트가 claim 뒤 native 3역할 prepare→harvest와 complete를 담는다."""
     prompt = _full_wave_prompt("CLAUDE.md")
     # (1) new — 정확히 1개 ticket 발행 지시.
     assert "create exactly one ticket" in prompt
     # (2) claim.
     assert "claim it" in prompt
-    # (3) developer 위임 + probe.txt 산출 지시(side-effect 단언 대상).
-    assert f"delegate the implementation to the '{_DEV_SUBAGENT}' subagent" in prompt
+    # (3) 성장 역할 3종 + prepare/harvest + developer probe.
+    for role, sentinel in _GROWTH_SENTINELS.items():
+        assert role in prompt and sentinel in prompt
+    assert "ticket prepare" in prompt and "ticket harvest" in prompt
     assert PROBE_FILE in prompt and PROBE_TEXT in prompt
-    # (4) code-reviewer 위임.
-    assert f"delegate a review to the '{_REVIEWER_SUBAGENT}' subagent" in prompt
+    # (4) 새 프로세스 canonical 재조회.
+    assert "fresh board.py show process" in prompt
     # (5) complete + sync gate.
     assert "mark the ticket complete/done" in prompt
     # 진입문서가 프롬프트에 박힌다(harness 별 CLAUDE.md/AGENTS.md).
@@ -1390,7 +1440,8 @@ _RELEASE_TEST_FILES = (
     Path(__file__).parent / "test_pm_delegate_live.py",
 )
 # 마커 소실/개명을 잡는 안전망 — 라이브 테스트를 의도적으로 추가할 때만 함께 올린다.
-# 6(이 파일: full/multirepo × claude/opencode + final-nudge + multiuser-composite opencode·T-0309)
+# 7(이 파일: full/multirepo × claude/opencode + Codex native ticket growth + final-nudge +
+#     multiuser-composite opencode·T-0309)
 # + 2(runtime_smoke: pm_update opencode/claude)
 # + 2(command_card_usability: claude/opencode 카드 사용성·ADR-0046·T-0255)
 # + 2(pm_worktree_live: claude/opencode 스킬 라이브 하네스·ADR-0050·T-0278)
@@ -1401,13 +1452,13 @@ _RELEASE_TEST_FILES = (
 #     기계·릴리즈마다 rev bump 를 강제·bump 누락을 릴리즈 게이트에서 red).
 # + 1(test_pm_relay_codex: codex relay 라이브 smoke·spawn→resume·tid==marker·usage 누적·ADR-0070 D7·
 #     T-0407 — codex 라이브 green 을 릴리즈 pin 에 편입·codex green 없이 v1.4.0 push 차단).
-# + 1(test_pm_delegate_live: pm_delegate cross 위임 codex smoke·ADR-0075·T-0449 — cross 위임
-#     green 없이 관련 릴리즈 push 차단).
+# + 4(test_pm_delegate_live: 기존 Codex smoke 1 + 선택 cross Claude→Codex·Claude→OpenCode·
+#     Codex→Claude ticket growth 3·T-0685).
 # ⚠ 커플드-pin: 이 값을 올리면 touches 밖의 전역 pin 도 함께 정합돼야 `livegate record`(수집
 #   N==pin)가 통과한다(orchestrator 가 갱신·test_command_card_usability.py 주석 참조):
 #   board.LIVEGATE_RELEASE_PIN · tests/test_board_livegate.py(하드코딩 fake/assert) ·
 #   tests/test_worktree_pool.py(_LIVEGATE_RELEASE_PIN 미러) · templates/*/board.py(pm_update 전파).
-_EXPECTED_RELEASE_TESTS = 18
+_EXPECTED_RELEASE_TESTS = 22
 
 
 def _pytest_marker_name(decorator) -> str | None:

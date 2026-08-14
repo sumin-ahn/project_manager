@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "count": 573,
+  "count": 571,
   "paths": {
     ".claude/agents/code-reviewer.md": [
       {
@@ -1891,7 +1891,7 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "5efc663a1bc5790ed7675387a3dcbe79fde70cf506163768621f7490e0f9bd95",
+        "hash": "2b10d2b40f562299e592bf3940da4879f85e2314ba54b8c5450e404c6f5a84fa",
         "count": 1
       },
       {
@@ -1906,7 +1906,7 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "f7017ba63a8b3f36833fdd4326a2af6af4edb1dff796c299028a955c2c3a3db8",
+        "hash": "c2b7628474676c3b4a22e29cdbf3b51eb07aad695426932276cc7d3062a0091c",
         "count": 1
       }
     ],
@@ -1933,7 +1933,7 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "6b97e57673aa40347022114e6f34fd29cd6037bc3fba89aacc8210b4d00a4f7f",
+        "hash": "43b5393fef973ca7f7476f0eeea833a188b5095ec1fd3e83ee8a31789b7c2bfa",
         "count": 1
       },
       {
@@ -1943,7 +1943,7 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "bbc316cf41d447e1557194112cf4137fb1b3d28c60dcaaccf81fdb4a1ca86715",
+        "hash": "c2b7628474676c3b4a22e29cdbf3b51eb07aad695426932276cc7d3062a0091c",
         "count": 1
       },
       {
@@ -1965,7 +1965,7 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "6b73b8c09ce5357d46533b2d61cec85d18ee16e65a3654d95d1cf1e1e312daae",
+        "hash": "fbb9d43193b54ca78011afca5aca283edcf2557e52c795f1d798e195dc025f47",
         "count": 1
       },
       {
@@ -1985,7 +1985,7 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "f7017ba63a8b3f36833fdd4326a2af6af4edb1dff796c299028a955c2c3a3db8",
+        "hash": "c2b7628474676c3b4a22e29cdbf3b51eb07aad695426932276cc7d3062a0091c",
         "count": 1
       }
     ],
@@ -2002,7 +2002,7 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "6b97e57673aa40347022114e6f34fd29cd6037bc3fba89aacc8210b4d00a4f7f",
+        "hash": "11f5a5e7a0c262dae16b09b46d13de96f13afe82356fe86d6463ac97590d33ec",
         "count": 1
       },
       {
@@ -2017,7 +2017,7 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "cbc0220bc133de35c4b95df3abeed12b3a3a72ad9bb4d24dc8249468e47c4ad9",
+        "hash": "c2b7628474676c3b4a22e29cdbf3b51eb07aad695426932276cc7d3062a0091c",
         "count": 1
       },
       {
@@ -2058,11 +2058,6 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "47316b6aaf9a25ce6a20e4d8e9b77c441c689c1d39abfc7b3060d96400984eed",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
         "hash": "4db5ba8f97028199f463d3c3e97218c6d1bbc0234507eec24dbde53274b89932",
         "count": 1
       },
@@ -2074,11 +2069,6 @@
       {
         "kind": "session_stamp",
         "hash": "c8e967003e2e44ac412dd3814469e0b0768ceab9d467908415cc96198a30da0a",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "d66d831e7efd96d51a17e9f0d9687c0b171f056631aa5c3b6010070805f7a0e5",
         "count": 1
       }
     ],
@@ -2643,7 +2633,7 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "dfca67d8140a9c692b859333d4602558a99c1d299d652be5aacbf53d690319bd",
+        "hash": "4450304bb23605921ee64a6c26edc2089fc1bebd8d6fea23d74be40588203554",
         "count": 1
       },
       {

@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "count": 397,
+  "count": 395,
   "surface_counts": {
-    "markdown": 149,
+    "markdown": 147,
     "python-non-prose": 16,
     "python-prose": 232
   },
@@ -2089,14 +2089,6 @@
     },
     {
       "path": "templates/opencode/.opencode/pm-instructions.md",
-      "kind": "private_section",
-      "match": "spike §6",
-      "surface": "markdown",
-      "hash": "ad71e98d9c7f2386be9d6149198e9e2b61f5d306288ba13fd43d650028c02496",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.opencode/pm-instructions.md",
       "kind": "work_item",
       "match": "ADR-0006",
       "surface": "markdown",
@@ -2109,14 +2101,6 @@
       "match": "ADR-0006",
       "surface": "markdown",
       "hash": "d125472c47a2131bef35e3887af2f7045e9442353a08b48e48b346c2893e9e4a",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.opencode/pm-instructions.md",
-      "kind": "work_item",
-      "match": "ADR-0006",
-      "surface": "markdown",
-      "hash": "e34bf5298c9586880eb83d25ddb83e1399cd4254c65c4dd1b1214f953e16b145",
       "count": 1
     },
     {

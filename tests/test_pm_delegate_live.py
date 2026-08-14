@@ -61,8 +61,18 @@ _OPENCODE_TIMEOUT = int(os.environ.get("PM_DELEGATE_LIVE_TIMEOUT", "1800"))
 # 지시한다. reply 에 이 marker 가 있으면 위임이 실제로 파일을 읽고 완주했다는 증거(에코/빈-reply 차단).
 _MARKER = "QZX4242DELEGATE"
 
+# T-0685 선택 cross 3경로의 실제 target×role 티켓 영속성. main 차원은 cross CLI의 argv/driver를
+# 바꾸지 않으므로 기존 27셀 기계표가 맡고, live는 사용 경로별 실제 target transport를 1회씩 친다.
+_GROWTH_ROLES = ("architect", "developer", "code-reviewer")
+_CROSS_MAIN_FOR_TARGET = {"codex": "claude", "opencode": "claude", "claude": "codex"}
+_GROWTH_SENTINELS = {
+    "architect": "LIVE_CROSS_ARCHITECT_PERSISTED",
+    "developer": "LIVE_CROSS_DEVELOPER_PERSISTED",
+    "code-reviewer": "LIVE_CROSS_REVIEWER_PERSISTED",
+}
+
 # 이 파일 release 마커 수(file-local pin·마커 소실/개명 방어). 전역 커플드-pin 등재는 orchestrator 소유.
-_EXPECTED_RELEASE_TESTS = 1
+_EXPECTED_RELEASE_TESTS = 4
 
 _GIT = shutil.which("git")
 
@@ -107,19 +117,118 @@ def _seed_repo(tmp_path: Path) -> tuple[Path, Path]:
 
 # ── 위임 실행 (in-process main·실 subprocess 스폰) ────────────────────────────────
 def _delegate(pd, monkeypatch, capsys, repo: Path, prompt: Path, harness: str, model: str,
-              reasoning: str | None, output_dir: Path, timeout: int) -> tuple[int, str, str]:
+              reasoning: str | None, output_dir: Path, timeout: int, *,
+              role: str = "researcher", ticket: str | None = None) -> tuple[int, str, str]:
     """pm_delegate.main() 을 in-process 로 호출(local_config=enabled monkeypatch·실 run_fn 스폰).
 
     reply 는 stdout(print)로 나오므로 capsys 로 회수한다. rc·reply·stderr 반환."""
     monkeypatch.setattr(pd, "local_config", lambda: {"delegate_enabled": "true"})
-    argv = ["--role", "researcher", "--prompt-file", str(prompt), "--cwd", str(repo),
+    argv = ["--role", role, "--prompt-file", str(prompt), "--cwd", str(repo),
             "--harness", harness, "--model", model, "--output-dir", str(output_dir),
             "--timeout", str(timeout)]
     if reasoning:
         argv += ["--reasoning", reasoning]
+    if ticket:
+        argv += ["--ticket", ticket]
     rc = pd.main(argv)
     captured = capsys.readouterr()
     return rc, captured.out, captured.err
+
+
+def _growth_ticket_text(ticket: str) -> str:
+    labels = {"architect": "설계", "developer": "구현", "code-reviewer": "리뷰"}
+    text = (
+        "---\n"
+        f"id: {ticket}\n"
+        "title: live cross growth\n"
+        "status: claimed\n"
+        "created: '2026-08-14'\n"
+        "created_by: live\n"
+        "claimed_by: live/slot\n"
+        "claimed_at: '2026-08-14T00:00:00+00:00'\n"
+        "completed_at: null\n"
+        "depends_on: []\nblocks: []\ntouches: []\nestimate: small\n"
+        "design: 'waived: live transport fixture'\ntags: []\n---\n"
+        f"# {ticket} — live cross growth\n\n## 목표\nrole copy persistence\n"
+        "\nOUTSIDE_MARKER_MUST_STAY\n"
+    )
+    for role in _GROWTH_ROLES:
+        text += (
+            f"\n<!-- pm-ticket-section:start role={role} -->\n"
+            f"## {labels[role]} ({role} · 2026-08-14)\n\n"
+            f"<!-- pm-ticket-section:end role={role} -->\n"
+        )
+    return text
+
+
+def _seed_growth_repo(tmp_path: Path, ticket: str) -> tuple[Path, Path]:
+    """실 cross target이 편집할 slot+canonical PM-home을 한 throwaway git repo로 세운다."""
+    repo, _unused = _seed_repo(tmp_path)
+    tools = repo / ".project_manager" / "tools"
+    tools.mkdir(parents=True)
+    for source in TOOLS.glob("*.py"):
+        shutil.copy2(source, tools / source.name)
+    tickets = repo / ".project_manager" / "wiki" / "tickets" / "claimed"
+    tickets.mkdir(parents=True)
+    (repo / ".project_manager" / ".local").mkdir(parents=True)
+    source = tickets / f"{ticket}-live-cross-growth.md"
+    source.write_text(_growth_ticket_text(ticket), encoding="utf-8")
+    return repo, source
+
+
+def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
+                            target: str, model: str, reasoning: str,
+                            timeout: int) -> None:
+    """선택 main→target 한 경로에서 역할 3종을 실제 CLI로 실행하고 canonical 재조회를 단언한다."""
+    ticket = {"codex": "T-9101", "opencode": "T-9102", "claude": "T-9103"}[target]
+    repo, source = _seed_growth_repo(tmp_path, ticket)
+    er = pd._load_external_review()
+    monkeypatch.setattr(pd, "check_local_conf_divergence", lambda *_a, **_k: (repo, None, er))
+    monkeypatch.setattr(pd, "_cwd_in_git_repo", lambda *_a, **_k: True)
+    output_dir = tmp_path / "raw"
+
+    for role in _GROWTH_ROLES:
+        sentinel = _GROWTH_SENTINELS[role]
+        prompt = repo / f"growth-{target}-{role}.md"
+        final_contract = (
+            "After the edit, reply exactly with:\n판정: 통과\n## must-fix\n- 없음\n"
+            if role == "code-reviewer" else "After the edit, reply with exactly DONE.\n"
+        )
+        prompt.write_text(
+            "The delegation preamble gives an absolute mutable ticket-copy path. Open that copy, find the "
+            f"latest role={role} pm-ticket-section, and write exactly {sentinel} on its own line inside that "
+            "section. Do not edit outside that section and do not modify any other file. " + final_contract,
+            encoding="utf-8",
+        )
+        rc, reply, err = _delegate(
+            pd, monkeypatch, capsys, repo, prompt, target, model, reasoning,
+            output_dir, timeout, role=role, ticket=ticket,
+        )
+        tail = f"\n--- stderr ---\n{err[-1800:]}\n--- reply ---\n{reply[-1000:]}"
+        assert rc == 0, (
+            f"{_CROSS_MAIN_FOR_TARGET[target]}→{target} {role} rc={rc}" + tail
+        )
+        if target == "opencode":
+            assert "Falling back to default agent" not in err + reply, (
+                "OpenCode custom 역할이 default agent로 강등됨" + tail
+            )
+        current = source.read_text(encoding="utf-8")
+        assert sentinel in current, (
+            f"{_CROSS_MAIN_FOR_TARGET[target]}→{target} {role} harvest sentinel 부재" + tail
+        )
+        assert current.count("OUTSIDE_MARKER_MUST_STAY") == 1
+        assert current.count(f"<!-- pm-ticket-section:start role={role} -->") == 1
+        assert list(output_dir.glob(f"pm_delegate_{target}_*.txt")), "raw 감사 산출물 부재"
+
+    # 새 Python 프로세스가 canonical 파일을 다시 읽어 세 역할 결과를 모두 관측해야 영속 증거다.
+    probe = subprocess.run(
+        [shutil.which("python3") or "python3", "-c",
+         "from pathlib import Path; print(Path(r'%s').read_text(encoding='utf-8'))" % source],
+        cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    assert probe.returncode == 0
+    assert all(sentinel in probe.stdout for sentinel in _GROWTH_SENTINELS.values())
+    assert probe.stdout.count("OUTSIDE_MARKER_MUST_STAY") == 1
 
 
 def _assert_delegate_ok(rc: int, reply: str, err: str, output_dir: Path, harness: str) -> None:
@@ -166,7 +275,8 @@ def test_delegate_live_codex(tmp_path, monkeypatch, capsys):
 def test_delegate_live_opencode(tmp_path, monkeypatch, capsys):
     """claude/codex PM → **opencode**(glm-5.2:cloud·$0) researcher 위임 1회 — reply marker + rc0 + raw.
 
-    `--file` 프롬프트 채널·`--dir` cwd 핀·`--agent plan`(read=쓰기차단)·`--variant high`(passthrough)."""
+    `--file` 프롬프트 채널·`--dir` cwd 핀·`--agent researcher`(런타임 role config로
+    edit/bash deny)·`--variant high`(passthrough)."""
     pd = _load_pd()
     repo, prompt = _seed_repo(tmp_path)
     out_dir = tmp_path / "raw"
@@ -275,6 +385,51 @@ def test_delegate_live_codex_release(tmp_path, monkeypatch, capsys):
     finally:
         drop_codex_auth(home)
     _assert_delegate_ok(rc, reply, err, out_dir, "codex")
+
+
+@pytest.mark.release
+@pytest.mark.skipif(
+    not _RELEASE_LIVE or not shutil.which("codex") or not codex_auth_available(),
+    reason="선택 cross Claude→Codex 성장 — PM_ORCH_LIVE_RELEASE=1 + codex auth 필요.",
+)
+def test_ticket_growth_cross_claude_to_codex_release(tmp_path, monkeypatch, capsys):
+    """Claude main이 쓰는 cross Codex transport에서 성장 역할 3종을 실제 왕복한다."""
+    pd = _load_pd()
+    home = make_codex_home(tmp_path)
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    try:
+        _run_cross_growth_route(
+            pd, monkeypatch, capsys, tmp_path, target="codex", model=CODEX_MODEL,
+            reasoning="low", timeout=_CODEX_TIMEOUT,
+        )
+    finally:
+        drop_codex_auth(home)
+
+
+@pytest.mark.release
+@pytest.mark.skipif(
+    not _RELEASE_LIVE or not shutil.which("opencode"),
+    reason="선택 cross Claude→OpenCode 성장 — PM_ORCH_LIVE_RELEASE=1 + opencode 필요.",
+)
+def test_ticket_growth_cross_claude_to_opencode_release(tmp_path, monkeypatch, capsys):
+    """Claude main이 쓰는 cross OpenCode transport에서 성장 역할 3종을 실제 왕복한다."""
+    _run_cross_growth_route(
+        _load_pd(), monkeypatch, capsys, tmp_path, target="opencode", model=LIVE_MODEL,
+        reasoning="high", timeout=_OPENCODE_TIMEOUT,
+    )
+
+
+@pytest.mark.release
+@pytest.mark.skipif(
+    not _RELEASE_LIVE or not shutil.which("claude"),
+    reason="선택 cross Codex→Claude 성장 — PM_ORCH_LIVE_RELEASE=1 + claude 필요.",
+)
+def test_ticket_growth_cross_codex_to_claude_release(tmp_path, monkeypatch, capsys):
+    """Codex main이 쓰는 cross Claude transport에서 성장 역할 3종을 실제 왕복한다."""
+    _run_cross_growth_route(
+        _load_pd(), monkeypatch, capsys, tmp_path, target="claude", model=CLAUDE_MODEL,
+        reasoning="low", timeout=_CLAUDE_TIMEOUT,
+    )
 
 
 # ── always-run 가드 (라이브 없이·매 회귀) ─────────────────────────────────────────

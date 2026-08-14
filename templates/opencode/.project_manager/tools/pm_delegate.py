@@ -278,22 +278,22 @@ _PM_REVIEW_AUTHORITY_REF_RE = re.compile(
 # 권한 역할축 — write=저장소 파일 쓰기·read=저장소 read-only(+reviewer 는 테스트 실행).
 WRITE_ROLES: frozenset[str] = frozenset({"developer", "architect"})
 READ_ROLES: frozenset[str] = frozenset({"researcher", "code-reviewer"})
+# 하네스의 기본 권한축과 resume 재실행 안전성은 같은 분류가 아니다. code-reviewer는 제품
+# worktree에는 read 역할이지만 성장 ticket-copy의 reviewer 절은 edit한다. 세션 불일치 뒤 fresh
+# 재실행하면 같은 절을 두 번 쓸 수 있으므로 resume 축에서는 mutating으로 다룬다.
+RESUME_MUTATING_ROLES: frozenset[str] = WRITE_ROLES | frozenset({"code-reviewer"})
 
 # read 역할의 회귀용 임시 쓰기 표면 — 아래 설치본에서 **직접 실측한 값**이다.
-#   · codex-cli 0.147.0: 생성 app-server JSON schema의 `readOnly`는
-#     `{type, networkAccess}`뿐이고 `writableRoots`는 `workspaceWrite`에만 있다. write 항목 하나를
-#     가진 profile은 `extends=":read-only"`나 worktree 절대경로=`read`를 더해도 항상
-#     `workspaceWrite`로 낮아진다. profile을 worktree cwd에 적용한 thread/start 실측값은
-#     `runtimeWorkspaceRoots=[<worktree>]`, `writableRoots=[<tmp>]`였고 O_WRONLY+0-byte write가
-#     worktree/tmp 양쪽에서 성공했다. 같은 profile의 Codex `-C`와 프로세스 cwd를 tmp로 옮기면
-#     `runtimeWorkspaceRoots=[<tmp>]`, `writableRoots=[]`(중복 제거)가 된다. 중첩 bwrap 실행을 위해
-#     networkAccess만 true로 바꾸고 같은 filesystem policy를 직접 잰 값은
-#     tmp open/write=0·worktree errno=30(EROFS)이었다. 따라서 `:root=read`의 값이 틀린 게 아니라
-#     workspaceWrite가 **현재 실행 root를 암묵적으로 쓰기 root로 추가하는 적용 시점**이 원인이다.
-#     `-s` sandbox policy와 named permissions는 app-server 계약상 함께 쓸 수 없으므로 read-only
-#     플래그를 profile로 치환하되, 반드시 실행 root도 attempt tmp로 재앵커한다.
+#   · codex-cli 0.147.0 실 CLI: 동적 `default_permissions`/`permissions.<name>` override는
+#     argv에 실려도 `codex exec`의 patch 도구가 read-only로 남아 ticket-copy write를 거부했다.
+#     공개 CLI 계약인 `-s workspace-write` + `--add-dir <ticket-copy-dir>`는 attempt tmp를 `-C`로
+#     재앵커했을 때 tmp와 정확한 copy run-dir만 writable로 만들고 원 worktree는 read-only로 남긴다.
+#     named profile 문자열의 존재가 아니라 실제 모델 edit→harvest를 release live가 단언한다.
 #   · claude 2.1.227: `--help`의 `--add-dir <directories...>`가 추가 tool-access 루트를 받는다.
-#   · opencode 1.18.12: `run --help`에는 추가-dir 플래그가 없지만 `agent list`의 plan 권한에
+#   · opencode 1.18.16: `run --help`에는 추가-dir 플래그가 없다. custom 역할 카드를 `mode: all`로
+#     출하해 native task와 cross `run --agent <role>`가 같은 정의를 쓰며, code-reviewer 카드는
+#     ticket-copy 절 기록을 위해 edit 가능하다. repo 쓰기 표면은 경고와 위임 전후 감사로 관리한다.
+#     researcher 카드의 read-only 권한에는
 #     TMPDIR=/tmp/pm_delegate_probe일 때
 #     `external_directory /tmp/pm_delegate_probe/opencode/* = allow`, `edit * = deny`가 나왔다.
 #     즉 고정 `/tmp/opencode/*`가 아니라 `${TMPDIR}/opencode/*`이므로 attempt의 그 하위만 안내한다.
@@ -310,9 +310,9 @@ _READ_TMP_PARENT_COMPONENT_BY_HARNESS: dict[str, str | None] = {
     "opencode": _OPENCODE_READ_TMP_PARENT,
 }
 _READ_TMP_ARGV_MODE_BY_HARNESS: dict[str, str] = {
-    "codex": "permission-profile",
+    "codex": "workspace-add-dir",
     "claude": "add-dir",
-    "opencode": "tmpdir-relative-allow",
+    "opencode": "role-agent",
 }
 _READ_TMP_WRITABLE_COMPONENT_BY_HARNESS: dict[str, str | None] = {
     "codex": None,
@@ -6822,14 +6822,14 @@ def _apply_read_tmp_argv(
         return argv
     adjusted = list(argv)
     mode = _READ_TMP_ARGV_MODE_BY_HARNESS[harness]
-    if ticket_copy_path is not None and mode != "permission-profile":
+    if ticket_copy_path is not None and mode != "workspace-add-dir":
         print(
             f"경고: {harness} code-reviewer ticket 사본은 단일-path write 격리를 "
             "보장하지 못합니다. 역할 규약과 위임 전후 git/touches 감사로 변경 범위를 "
             f"표면화하며 선택한 {harness} target으로 계속 실행합니다.",
             file=sys.stderr,
         )
-    if mode == "permission-profile":
+    if mode == "workspace-add-dir":
         try:
             sandbox_index = adjusted.index("-s")
         except ValueError as exc:
@@ -6838,37 +6838,37 @@ def _apply_read_tmp_argv(
             ) from exc
         if adjusted[sandbox_index + 1:sandbox_index + 2] != ["read-only"]:
             raise DelegateError(
-                "codex read 역할 argv의 sandbox가 read-only가 아님 — permission profile로 "
+                "codex read 역할 argv의 sandbox가 read-only가 아님 — workspace/add-dir로 "
                 "안전하게 치환하지 않는다"
             )
-        del adjusted[sandbox_index:sandbox_index + 2]
+        adjusted[sandbox_index + 1] = "workspace-write"
         try:
             cwd_index = adjusted.index("-C")
         except ValueError as exc:
             raise DelegateError("codex read 역할 argv에 -C 실행 root가 없음") from exc
         if cwd_index + 1 >= len(adjusted):
             raise DelegateError("codex read 역할 argv의 -C 실행 root 값이 없음")
-        # permission profile의 write 항목은 sandbox를 workspaceWrite로 내리고 현재 -C를 암묵적
-        # writable root로 추가한다. 따라서 profile 문자열만 바꾸지 않고 실행 root도 같은 attempt
-        # temp로 옮겨야 원래 worktree가 root-read 아래에 남는다.
+        # workspace-write는 현재 -C를 암묵적 writable root로 추가하므로 실행 root를 attempt tmp로
+        # 옮긴다. ticket이 있으면 공개 CLI의 --add-dir로 정확한 copy run-dir 하나만 더 연다.
         adjusted[cwd_index + 1] = str(read_tmp.path)
-        try:
-            exec_index = adjusted.index("exec")
-        except ValueError as exc:
-            raise DelegateError("codex argv에 exec 경계가 없음") from exc
-        adjusted[exec_index:exec_index] = [
-            "-c", f'default_permissions="{_CODEX_READ_TMP_PROFILE}"',
-            "-c", (
-                f"permissions.{_CODEX_READ_TMP_PROFILE}="
-                f"{_codex_read_tmp_profile_value(
-                    read_tmp.path,
-                    ticket_copy_path.parent if ticket_copy_path is not None else None,
-                )}"
-            ),
-        ]
+        if ticket_copy_path is not None:
+            adjusted += ["--add-dir", str(ticket_copy_path.parent)]
     elif mode == "add-dir":
         adjusted += ["--add-dir", str(read_tmp.path)]
-    # opencode plan은 1.18.12 내장 `${TMPDIR}/opencode/*` allow를 쓰므로 argv 추가 표면이 없다.
+    elif mode == "role-agent":
+        try:
+            agent_index = adjusted.index("--agent")
+        except ValueError as exc:
+            raise DelegateError(
+                "opencode read 역할 argv에 기대한 --agent <role> 계약이 없음"
+            ) from exc
+        if adjusted[agent_index + 1:agent_index + 2] != [role]:
+            raise DelegateError(
+                "opencode read 역할 argv가 custom 역할 agent와 불일치함 — default agent로 "
+                "강등하지 않는다"
+            )
+    # opencode는 추가-dir 기능이 없어 custom 역할 agent를 그대로 쓰고, ticket-copy reviewer의
+    # repo 쓰기 표면은 위 경고와 실행 전후 감사로 loud하게 관리한다.
     return adjusted
 
 
@@ -7022,7 +7022,9 @@ def _execute_attempt(
         harness, model, reasoning, role, cwd, prompt, resume_session_id,
         ticket_copy_path,
     )
-    env = _apply_read_tmp_env(build_env(harness), harness, read_tmp)
+    env = relay.with_harness_runtime_role(
+        _apply_read_tmp_env(build_env(harness), harness, read_tmp), harness, role,
+    )
 
     # raw 경로와 미마감 장부는 외부 프로세스 실행 전에 확정한다. 이 순서가 하네스 Bash/stdout
     # 유실 시에도 경로를 남기는 핵심 계약이다. 이후 BaseException으로 마감 경로를 건너뛰면
@@ -8208,12 +8210,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "(기본 .project_manager/.local/delegate, PM 홈 미해소 시 tempdir)")
     parser.add_argument("--ticket", default=None, metavar="T-NNNN",
                         help="위임 대상 ticket — touches 로 범위 밖 변경을 경고 판정"
-                             "(생략 시 허용 경로 0·차단 아님). code-reviewer 성장 사본의 "
+                             "(code-reviewer는 --ticket 또는 --gate 필수; 그 밖 역할은 생략 시 "
+                             "허용 경로 0·차단 아님). "
+                             "code-reviewer 성장 사본의 "
                              "단일-path write 격리를 보장하지 못하는 target도 경고 후 선택한 "
                              "target으로 계속 실행")
     parser.add_argument("--gate", default=None, metavar="T-NNNN",
                         help="내부 code-reviewer 라운드 게이트(기본 --ticket에서 유도). "
-                             "게이트 없는 reviewer 호출은 자문이며 완료 증거가 아니다")
+                             "code-reviewer는 항상 --ticket 성장 절에 결과를 기록한다")
     parser.add_argument("--confirm-fix", action="store_true",
                         help="직전 유효 반려 must-fix만 확인하는 게이트당 1회 확인 전용 라운드")
     parser.add_argument("--resume-from", default=None, metavar="T-NNNN|RECORD-ID",
@@ -8260,6 +8264,10 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--cwd 는 파일시스템 루트일 수 없다(작업공간 절대경로 요구·containment 우회 차단).")
     if args.tier is not None and args.role != "developer":
         parser.error("--tier 는 developer 전용이다(비-개발 역할 지정 = usage error·무시 아님).")
+    if args.role == INTERNAL_REVIEW_ROLE and args.ticket is None and args.gate is None:
+        parser.error(
+            "code-reviewer는 티켓 리뷰 절 영속화를 위해 --ticket 또는 --gate가 필수다."
+        )
     if args.gate is not None and args.role != INTERNAL_REVIEW_ROLE:
         parser.error("--gate 는 code-reviewer 역할 전용이다.")
     if args.confirm_fix and args.role != INTERNAL_REVIEW_ROLE:
@@ -8448,6 +8456,12 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         print(f"오류: {exc}", file=sys.stderr)
         return 1
 
+    # code-reviewer의 --gate는 내부 라운드 식별자이면서 같은 canonical ticket이다. 중복
+    # --ticket을 요구하지 않고 성장 사본·touches·raw ticket 필드가 모두 이 한 값으로 수렴한다.
+    effective_ticket = args.ticket or (
+        args.gate if args.role == INTERNAL_REVIEW_ROLE else None
+    )
+
     tier = args.tier if (args.role == "developer" and args.tier) else "normal"
     profile_source = "cli-override" if (args.harness and args.model) else "local-conf"
 
@@ -8479,7 +8493,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     )
     board_repo = config_repo
     if (
-        args.ticket
+        effective_ticket
         and er._owns_real_board(REPO / ".project_manager")
         and REPO.resolve() != config_repo.resolve()
     ):
@@ -8528,16 +8542,16 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     # resume/dry-run은 대상이 아니고, `--fresh <사유>`는 명시 우회다.
     # 장부 부재·손상은 이 가드만 fail-open하며, 안전 경계인 raw 기록 자체를 복구/초기화하지 않는다.
     if (
-        args.ticket
+        effective_ticket
         and args.role in WRITE_ROLES
         and args.resume_from is None
         and not args.dry_run
         and args.fresh is None
     ):
-        completed = cold_reinjection_record(args.ticket, args.role, output_dir)
+        completed = cold_reinjection_record(effective_ticket, args.role, output_dir)
         if completed is not None:
             return fail_loud(cold_reinjection_rejection(
-                args.ticket, args.role, harness, completed,
+                effective_ticket, args.role, harness, completed,
             ))
 
     # 폴백 **비발동** 판정(loud skip·설정은 그대로 두고 이번 실행만 끈다). 설정 자체는 위에서 해소해
@@ -8606,10 +8620,10 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     # cross 실위임의 성장 사본. dry-run은 미전송/무부수효과 계약이라 만들지 않고, ticket 성장
     # 역할 3종의 실제 실행만 prepare한다. researcher와 ticket 없는 legacy 호출은 종전 형상 유지.
     ticket_copy: TicketCopyPlan | None = None
-    if not args.dry_run and args.ticket and args.role in TICKET_COPY_ROLES:
+    if not args.dry_run and effective_ticket and args.role in TICKET_COPY_ROLES:
         try:
             ticket_copy = prepare_ticket_copy(
-                ticket=args.ticket, role=args.role, cwd=cwd, pm_home=config_repo,
+                ticket=effective_ticket, role=args.role, cwd=cwd, pm_home=config_repo,
             )
         except DelegateError as exc:
             return fail_loud(f"오류: 위임 티켓 사본 준비 실패: {exc}")
@@ -8855,7 +8869,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     # attempt 마다 재캡처하지 않는다(PM 이 회수 시점에 "이 위임이 범위 밖을 만졌나"를 본다). 아래
     # 실행·회수 블록의 모든 종료 경로(성공·폴백·fail-loud·예외)에서 finally 가 정확히 1회 보고한다.
     scope_audit = begin_scope_audit(
-        args.ticket, cwd, pm_root=board_repo, adapter_roots=adapter_roots,
+        effective_ticket, cwd, pm_root=board_repo, adapter_roots=adapter_roots,
     )
     try:
         target_rev = (
@@ -8896,12 +8910,6 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
             )
             if advisory is not None:
                 print(advisory, file=sys.stderr)
-            if args.role == INTERNAL_REVIEW_ROLE and not internal_gate:
-                print(
-                    "[pm-delegate] code-reviewer 자문 실행 — --gate/--ticket 부재로 내부 라운드 "
-                    "장부에 기록되지 않으며 게이트 완료 증거로 인정되지 않습니다.",
-                    file=sys.stderr,
-                )
             return _execute_and_collect(
                 args=args, harness=harness, model=model, reasoning=reasoning,
                 fallback=fallback, fallback_skip=fallback_skip, cwd=cwd, prompt=prompt,
@@ -8918,7 +8926,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
                 # 재개의 티켓 지시자 선택(최신 1건)에서 빠지고, 재개 사슬이 한 라운드 만에 끊긴다.
                 # 범위 판정(scope audit)은 계승하지 않는다 — 그건 선언 touches 의 축이라 이 실행이
                 # 무엇을 선언했는지가 기준이다.
-                ticket=args.ticket or (resume.ticket if resume is not None else None),
+                ticket=effective_ticket or (resume.ticket if resume is not None else None),
                 fresh_reason=(args.fresh.strip() if args.fresh is not None else None),
                 # 이 위임의 기준 rev — 이미 캡처한 실행-전 worktree 상태를 그대로 쓴다(추가 git 호출 0).
                 base_rev=target_rev,
@@ -9056,7 +9064,7 @@ def _execute_and_collect(
             # fresh가 안전하다. 별개 정책인 rc=0 세션-id 불일치는 turn이 이미 쓰기 권한으로
             # 돌았을 수 있으므로 write만 재실행을 막는다. read는 두 경우 모두 트리를 안 만진다.
             if (
-                args.role in WRITE_ROLES
+                args.role in RESUME_MUTATING_ROLES
                 and rerun_reason == RESUME_RERUN_ID_MISMATCH
             ):
                 return fail_loud(

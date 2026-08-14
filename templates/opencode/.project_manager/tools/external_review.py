@@ -6247,10 +6247,16 @@ def run_review(
         )
         metrics: dict[str, object] = {"rc": 1, "silence_sec": None}
         started_at = time.monotonic()
+        run_env = env
+        if target.structured:
+            # 공용 표가 OpenCode 카드 부재의 runtime role을 주입하고 다른 하네스는 env만 복사한다.
+            run_env = relay.with_harness_runtime_role(
+                env, target.harness, REVIEWER_ROLE,
+            )
         with _structured_transport(target, prompt, cwd) as (argv, stdin_text):
             ok, output, started = _run_reviewer_ex(
                 prompt, reviewer_cmd, timeout, run_fn, idle_timeout, metrics,
-                cwd=cwd, env=env, argv=argv, stdin_text=stdin_text,
+                cwd=cwd, env=run_env, argv=argv, stdin_text=stdin_text,
                 on_spawn_attempt=_spawn_attempt,
             )
             if not started:

@@ -7375,7 +7375,7 @@ def cmd_regression(args: argparse.Namespace) -> int:
 # (실행=기록·손기록 없음), 보호훅이 `livegate check --rev <sha>` 로 push HEAD 가 green 인지
 # 소비한다. false-green 방어를 위해 rc0 만으로는 부족하고 수집 N==pin 을 함께 요구한다
 # (수집 pin·rc5 vacuous-pass 근절의 원칙을 라이브 채널로 확장).
-LIVEGATE_RELEASE_PIN = 18  # `pytest -m release` 로 돌아야 하는 라이브/사이클 케이스 수.
+LIVEGATE_RELEASE_PIN = 22  # `pytest -m release` 로 돌아야 하는 라이브/사이클 케이스 수.
                            # tests/test_release_wave.py `_EXPECTED_RELEASE_TESTS` 와 값 공유.
 LIVEGATE_TEST_CMD = "pytest -m release -q"   # 라이브 릴리즈 wave selection.
 

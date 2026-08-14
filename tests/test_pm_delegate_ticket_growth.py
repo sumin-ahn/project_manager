@@ -26,6 +26,19 @@ GROWTH_MATRIX = tuple(
     for main, target in GROWTH_MATRIX
     for role in GROWTH_ROLES
 )
+SELECTED_RELEASE_ROUTES = (
+    ("claude", "claude"),
+    ("codex", "codex"),
+    ("opencode", "opencode"),
+    ("claude", "codex"),
+    ("claude", "opencode"),
+    ("codex", "claude"),
+)
+SELECTED_RELEASE_CELLS = tuple(
+    (main, target, role)
+    for main, target in SELECTED_RELEASE_ROUTES
+    for role in GROWTH_ROLES
+)
 NATIVE_CARDS = {
     "claude": REPO / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md",
     "codex": REPO / "templates" / "codex" / ".agents" / "skills" / "pm-dev-delegate" / "SKILL.md",
@@ -151,6 +164,29 @@ def test_ticket_growth_main_target_role_matrix_27_cells(
     card = NATIVE_CARDS[main_harness].read_text(encoding="utf-8")
     assert "사용자가 고른 target으로 계속 실행" in card
     assert "target 자동 대체" in card or "자동 대체" in card
+
+
+def test_selected_release_ticket_growth_manifest_is_exactly_18_cells():
+    """T-0685 사용자 선택: native 3경로 + 실제 사용 cross 3경로만 release live evidence를 가진다."""
+    assert len(SELECTED_RELEASE_CELLS) == 18
+    assert len(set(SELECTED_RELEASE_CELLS)) == 18
+    assert set(SELECTED_RELEASE_CELLS).issubset(set(GROWTH_MATRIX))
+    assert set(SELECTED_RELEASE_ROUTES) == {
+        ("claude", "claude"), ("codex", "codex"), ("opencode", "opencode"),
+        ("claude", "codex"), ("claude", "opencode"), ("codex", "claude"),
+    }
+
+    wave = (REPO / "tests" / "test_release_wave.py").read_text(encoding="utf-8")
+    cross = (REPO / "tests" / "test_pm_delegate_live.py").read_text(encoding="utf-8")
+    assert "test_release_wave_claude_full_wave" in wave
+    assert "test_release_wave_opencode_full_wave" in wave
+    assert "test_release_wave_codex_native_ticket_growth" in wave
+    for name in (
+        "test_ticket_growth_cross_claude_to_codex_release",
+        "test_ticket_growth_cross_claude_to_opencode_release",
+        "test_ticket_growth_cross_codex_to_claude_release",
+    ):
+        assert name in cross
 
 
 @pytest.mark.parametrize("role", ["developer", "code-reviewer", "architect"])
@@ -614,14 +650,12 @@ def test_reviewer_codex_keeps_worktree_read_only_and_grants_only_copy_dir(
         ticket_copy_path=copy,
     )
     try:
-        assert "-s" not in argv and "workspace-write" not in argv
-        profile = next(
-            argv[index + 1] for index, token in enumerate(argv[:-1])
-            if token == "-c" and argv[index + 1].startswith("permissions.")
+        assert argv[argv.index("-s") + 1] == "workspace-write"
+        assert argv[argv.index("--add-dir") + 1] == str(copy.parent)
+        assert not any(
+            token == "-c" and argv[index + 1].startswith("permissions.")
+            for index, token in enumerate(argv[:-1])
         )
-        assert '":root"="read"' in profile
-        assert f'"{copy.parent}"="write"' in profile
-        assert f'"{cwd}"="write"' not in profile
         assert argv[argv.index("-C") + 1] == str(read_tmp.path)
     finally:
         pd._cleanup_attempt_transport(prompt_path, read_tmp)
@@ -643,6 +677,8 @@ def test_reviewer_non_codex_ticket_copy_warns_and_keeps_selected_target(
     )
     try:
         assert argv[0] == harness
+        if harness == "opencode":
+            assert argv[argv.index("--agent") + 1] == "code-reviewer"
         warning = capsys.readouterr().err
         assert "단일-path write 격리" in warning
         assert f"선택한 {harness} target으로 계속 실행" in warning
@@ -672,7 +708,7 @@ def test_non_codex_reviewer_ticket_copy_warns_then_spawns_runner_once(
     spawned = []
 
     def runner(*_args, **_kwargs):
-        spawned.append(_args[0][0])
+        spawned.append(_args[0])
         return {
             "returncode": 0,
             "stdout": stdout,
@@ -685,7 +721,9 @@ def test_non_codex_reviewer_ticket_copy_warns_then_spawns_runner_once(
         output_dir=tmp_path / "raw", run_fn=runner, attempt="primary",
         ticket_copy_path=copy,
     )
-    assert spawned == [harness]
+    assert [argv[0] for argv in spawned] == [harness]
+    if harness == "opencode":
+        assert spawned[0][spawned[0].index("--agent") + 1] == "code-reviewer"
     assert f"선택한 {harness} target으로 계속 실행" in capsys.readouterr().err
 
 

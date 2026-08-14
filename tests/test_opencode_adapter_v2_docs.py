@@ -144,29 +144,16 @@ def test_opencode_researcher_exists():
 
 
 def test_opencode_researcher_is_read_only():
-    """opencode researcher frontmatter 가 read-only 다 (edit/write false).
-
-    researcher 는 gather(조사·사실수집) 전용 — 파일을 만들거나 고치지 않는다. tools 의
-    edit/write 가 false 여야 하고 permission.edit 도 deny 여야 한다 (T-0106).
-    """
+    """researcher는 native/cross 공용 custom agent이며 Bash·edit를 기계적으로 거부한다."""
     fm = _load_agent_frontmatter(RESEARCHER_MD)
-    assert fm.get("mode") == "subagent", "researcher mode 가 subagent 가 아님 (T-0106)"
-    tools = fm.get("tools", {})
-    assert tools.get("edit") is False, (
-        f"researcher tools.edit 가 false 가 아님: {tools.get('edit')!r} (read-only 위반 · T-0106)"
-    )
-    assert tools.get("write") is False, (
-        f"researcher tools.write 가 false 가 아님: {tools.get('write')!r} (read-only 위반 · T-0106)"
-    )
-    # 읽기/조사 도구는 켜져 있어야 gather 가 가능.
-    for read_tool in ("read", "glob", "grep", "bash"):
-        assert tools.get(read_tool) is True, (
-            f"researcher tools.{read_tool} 가 true 가 아님: {tools.get(read_tool)!r} "
-            f"(gather 에 읽기/조사 도구 필요 · T-0106)"
-        )
-    assert fm.get("permission", {}).get("edit") == "deny", (
-        "researcher permission.edit 가 deny 가 아님 — read-only 가드 (T-0106)"
-    )
+    assert fm.get("mode") == "all", "researcher가 native task와 cross run을 함께 지원하지 않음"
+    assert "tools" not in fm, "deprecated tools 설정을 권위 permission과 중복하면 안 됨"
+    permission = fm.get("permission", {})
+    for read_tool in ("read", "glob", "grep", "list"):
+        assert permission.get(read_tool) == "allow"
+    assert permission.get("edit") == "deny"
+    assert permission.get("bash") == "deny"
+    assert permission.get("task") == "deny"
 
 
 def test_pm_instructions_lists_researcher_subagent_type():
@@ -325,7 +312,7 @@ def test_pm_instructions_has_execution_model_and_delegation():
     for marker in (
         "실행 모델",         # §1 opencode 실행 모델
         "task tool",         # 위임 1차 채널
-        "build primary",     # PM 실행 모델
+        "pm primary",        # PM 실행 모델
         "재시작",            # config 1회 로드 캐싱 노트
         "위임 규약",         # §2 위임 규약
         "subagent_type",     # role 매핑

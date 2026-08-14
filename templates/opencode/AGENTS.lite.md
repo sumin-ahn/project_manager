@@ -51,12 +51,12 @@
 
 `claim → 위임(dev) → 검토(reviewer) → finish`. PM은 직접 구현하지 않는다.
 
-- **1차=`task` tool** — `subagent_type`(=`developer`|`code-reviewer`|`architect`)·`description`(한 줄)·`prompt`(role 프롬프트)를 전달한다. opencode가 `.opencode/agents/*.md` subagent를 별도 자식 세션(fresh ctx·200K)에서 실행한다. 권한·모델은 subagent `tools:`/`permission:`/`model:`이 정하므로 `--agent`/`-m` 분기 불필요.
-- role: developer=쓰기(코드+테스트), code-reviewer=읽기(generate≠evaluate), architect=설계(읽기+문서 쓰기).
+- **1차=`task` tool** — `subagent_type`(=`developer`|`code-reviewer`|`architect`)·`description`(한 줄)·`prompt`(role 프롬프트)를 전달한다. opencode가 `.opencode/agents/*.md` subagent를 별도 자식 세션(fresh ctx·200K)에서 실행한다. 권한·모델은 subagent `permission:`/`model:`이 정하므로 `--agent`/`-m` 분기 불필요.
+- role: developer=쓰기(코드+테스트), code-reviewer=독립 검토+티켓 사본 reviewer 절 쓰기(제품 코드 수정 금지), architect=설계+티켓 사본 architect 절 쓰기.
 - **사전조건:** ticket claim(canonical `<repo>_<N>`, 솔로 M=1 생략 가능), depends_on done, touches 명시, 검증 가능한 DoD. **병렬은 touches가 disjoint일 때만** 한다.
 - dev prompt: "T-NNNN 구현. 본문 단일진실(`board.py show T-NNNN`). board/status/log 는 PM — 너는 코드+테스트. 보고: 변경파일·테스트수·회귀결과·DoD evidence."
 - reviewer 후 PM 직접 fix(1줄·1패턴)/dev 재작업(여러 줄)/별도 ticket(범위 외). reviewer의 should-fix도 흐름 cross-check한다.
-- **폴백**(headless·CI·task tool 미노출): `opencode run --agent build|plan --format json "<프롬프트>"`(dev·architect=build 쓰기, reviewer=plan 읽기). 내장 primary인 `--agent build/plan`은 subagent `model:`을 읽지 않으므로 opencode 기본 모델을 쓰며 Pro 강제는 `-m`. 병렬 폴백은 세션 DB 락 가능성이 있어 순차가 안전하다.
+- **폴백**(headless·CI·task tool 미노출): `opencode run --agent <developer|architect|code-reviewer> --format json "<프롬프트>"`. 역할 카드는 `mode: all`이라 primary 실행에서도 같은 `model:`/`permission:`을 쓰며 build/plan으로 축약하지 않는다. `pm_delegate.py` cross 실행은 카드가 없는 타 하네스 adopter에서도 같은 역할을 런타임 config로 주입한다. 병렬 폴백은 세션 DB 락 가능성이 있어 순차가 안전하다.
 
 ## 4. ticket 발행 계약 (PM 자족 — board.py new)
 

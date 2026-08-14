@@ -53,6 +53,39 @@ def test_opencode_prompt_guard_converts_cwd_symlink_loop(orch, tmp_path):
         orch.assert_opencode_prompt_in_cwd(cwd_loop, cwd_loop / "prompt.md")
 
 
+@pytest.mark.parametrize("role", ("developer", "architect", "code-reviewer", "researcher"))
+def test_opencode_runtime_role_config_is_self_contained_and_exact(orch, role):
+    """Cross adopter에 agent 카드가 없어도 선택 역할 하나의 mode/permission이 완결된다."""
+    first = orch.opencode_runtime_role_config(role)
+    assert first == orch.opencode_runtime_role_config(role)  # stable wire/audit bytes
+    config = json.loads(first)
+    assert set(config) == {"agent"}
+    assert set(config["agent"]) == {role}
+    agent = config["agent"][role]
+    assert agent["mode"] == "all"
+    assert agent["permission"]["task"] == "deny"
+    assert agent["permission"]["webfetch"] == "deny"
+    if role == "researcher":
+        assert agent["permission"]["edit"] == "deny"
+        assert agent["permission"]["bash"] == "deny"
+    else:
+        assert agent["permission"]["edit"] == "allow"
+        assert agent["permission"]["bash"]["*"] == "allow"
+        assert agent["permission"]["bash"]["rm *"] == "deny"
+
+
+def test_opencode_runtime_role_overrides_untrusted_incoming_content_without_mutation(orch):
+    """사용자 runtime JSON은 plugin/secret 표면이라 병합하지 않고 입력 dict도 변경하지 않는다."""
+    original = {"PATH": "/bin", "OPENCODE_CONFIG_CONTENT": "SECRET_PLUGIN_CONFIG"}
+    resolved = orch.with_opencode_runtime_role(original, "code-reviewer")
+    assert original["OPENCODE_CONFIG_CONTENT"] == "SECRET_PLUGIN_CONFIG"
+    assert resolved["PATH"] == "/bin"
+    assert "SECRET_PLUGIN_CONFIG" not in resolved["OPENCODE_CONFIG_CONTENT"]
+    assert set(json.loads(resolved["OPENCODE_CONFIG_CONTENT"])["agent"]) == {
+        "code-reviewer"
+    }
+
+
 # ── FakeDriver: 실 claude 없이 spawn/relay/respawn 을 기록하는 DI 더블 ──────────
 
 class FakeDriver:

@@ -1158,14 +1158,14 @@ def test_all_orchestration_functions_never_branch_on_harness_name_without_reason
             "run_review",
             "ok, output, started = _run_reviewer_ex(\n"
             "                prompt, reviewer_cmd, timeout, run_fn, idle_timeout, metrics,\n"
-            "                cwd=cwd, env=env, argv=argv, stdin_text=stdin_text,\n"
+            "                cwd=cwd, env=run_env, argv=argv, stdin_text=stdin_text,\n"
             "                on_spawn_attempt=_spawn_attempt,\n"
             "            )",
             'ok, output, started = _run_reviewer_ex(\n'
             '                prompt, reviewer_cmd, timeout, run_fn,\n'
             '                None if reviewer_name(reviewer_cmd) == "claude" else idle_timeout,\n'
             '                metrics,\n'
-            '                cwd=cwd, env=env, argv=argv, stdin_text=stdin_text,\n'
+            '                cwd=cwd, env=run_env, argv=argv, stdin_text=stdin_text,\n'
             '                on_spawn_attempt=_spawn_attempt,\n'
             '            )',
         ),

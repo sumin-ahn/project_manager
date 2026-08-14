@@ -30,6 +30,10 @@
 
 ### Added
 
+- **선택 18셀 릴리즈 라이브 게이트** — 사용자가 실제 쓰는 native Claude·Codex·OpenCode와
+  cross Claude→Codex·Claude→OpenCode·Codex→Claude의 Architect·Developer·Reviewer를
+  실제 하네스로 실행한다. 각 역할은 ticket-copy 자기 절에 고유 marker를 쓰고 harvest 뒤 새
+  프로세스가 canonical 티켓에서 다시 읽어 영속성·역할·marker 밖 byte 보존을 확인한다.
 - **리뷰 finding의 PM 판정·승인 delta** — Architect 설계, developer 구현 판단,
   reviewer finding을 같은 성장 티켓에 남기되 PM 판정 전에는 다음 단계의 명령으로 쓰지 않는다.
   `pm-review-v1`/`pm-review-disposition-v1`의 엄격한 구조와
@@ -51,6 +55,9 @@
 
 ### Changed
 
+- **Reviewer 위임은 항상 canonical 티켓에 귀속**된다. `--ticket` 또는 같은 canonical ID인
+  `--gate`가 필수이며, resume mismatch 뒤 fresh 재실행으로 같은 reviewer 절을 중복 쓰지 않는다.
+  큰 리뷰 상세도 별도 임시 산출물 대신 ticket-copy reviewer 절에 남는다.
 - **15개 PM 스킬 카드를 상시 절차와 상황별 상세로 분리**했다. 상시 카드
   합계는 142,710→92,071 bytes로 줄었으며 trigger·backbone·필수 명령은 그대로
   남았다.
@@ -59,6 +66,10 @@
 
 ### Fixed
 
+- OpenCode native/cross 위임이 더 이상 내장 `build`/`plan`이나 default agent로 강등되지 않는다.
+  네 역할 카드는 `mode: all`과 역할별 permission을 사용하고, cardless cross 실행도 엔진이 같은
+  exact-role 런타임 설정을 주입한다. PM은 허용된 네 역할만 task로 호출하며 researcher는
+  bash/edit를 갖지 않고 reviewer는 제품 코드를 바꾸지 않은 채 ticket-copy 절만 기록한다.
 - 티켓 성장 write와 claim/block/complete/migration의 경합으로 상태 파일이 중복되거나
   strict claim rollback이 성장 데이터를 잃던 경합을 공용 lock 순서로 닫았다.
 - ticket-copy trust 위조·cross-ticket overwrite·same-ticket stale 우회, git exclude

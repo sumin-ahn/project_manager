@@ -149,7 +149,7 @@ python3 .project_manager/tools/pm_delegate.py --role <역할> \
 - `--cwd`: 구현할 worktree **절대경로**. 모든 역할 필수(기본값 없음). task-mode 해소값을 실값으로 넣는다.
 - `--tier`: developer에만 사용.
 - role preamble(역할 정체성, commit/push 등 git 비가역·board 조작·어댑터 `.claude/.codex/.opencode` 수정 금지)은 엔진이 자동 합성한다. 프롬프트 파일에는 작업만 담고 금지 문구를 중복하지 않는다.
-- `--ticket`이 있는 developer·code-reviewer·architect 실 실행은 성장 사본을 자동 준비하고 그 절대경로와 자기 역할 절만 편집하라는 제한을 role preamble에 더한다. Codex named permission profile은 더 강한 기존 격리를 보존한다. Claude·OpenCode처럼 단일 경로 쓰기 격리를 보장하지 못해도 경고 후 사용자가 고른 target으로 계속 실행하며, 역할 규약과 위임 전후 git/touches 감사가 범위 밖 변경을 loud하게 표면화한다. target 자동 대체·새 reviewer opt-in·새 sandbox는 추가하지 않고 ticket 없는 reviewer의 종전 read 계약도 유지한다.
+- developer·code-reviewer·architect의 정식 실행은 `--ticket`을 받아 성장 사본을 자동 준비하고 그 절대경로와 자기 역할 절만 편집한다. OpenCode 네 역할 카드는 `mode: all`이며 native `task(subagent_type=<role>)`와 cross `opencode run --agent <role>`가 정확한 역할명을 쓴다. 타 하네스 adopter처럼 역할 카드가 없는 cross는 엔진이 이번 역할 하나의 mode/permission을 정제된 env에 주입하고 모델을 CLI로 명시해 default build/plan 폴백을 막는다. code-reviewer는 제품 코드를 고치지 않지만 ticket-copy의 자기 절은 반드시 기록한다. OpenCode처럼 단일 경로 쓰기 격리를 보장하지 못해도 경고 후 사용자가 고른 target으로 계속 실행하며, 역할 규약과 위임 전후 git/touches 감사가 범위 밖 변경을 loud하게 표면화한다. target 자동 대체·새 reviewer opt-in·새 sandbox는 추가하지 않는다.
 - 병렬 cross wave는 OpenCode가 제공하는 호출측 동시 실행으로 동기·stateless `pm_delegate` 호출을 병렬화한다.
 - 결과: `rc=0` 성공(stdout 첫 줄=실행 provenance, 폴백 시 실제 하네스 포함; 이후 최종 reply; raw 파일 박제), `rc=1` 실패(loud·raw 경로 stderr), `rc=3` opt-in OFF. PM이 reply를 검토하고 board를 갱신하며 위임 대상은 board를 조작하지 않는다.
 - `--ticket T-NNNN`은 해당 ticket `touches`를 허용 집합으로 전후 워크스페이스를 비교해 범위 밖 신규/변경/커밋을 stderr 경고한다(차단 아님·rc 불변). 생략 시 허용 0이라 모든 변경을 경고한다. **dev 위임에는 `--ticket`이 표준**.
@@ -244,7 +244,7 @@ task tool 호출:
     "T-NNNN 의 변경을 검토하라.
 
      성장 티켓 사본(절대경로): <prepare JSON의 copy>. 코드·board·git은 수정하지 말고, OpenCode
-     reviewer의 허용된 Bash write로 이 파일의 최신 `pm-ticket-section:start/end role=code-reviewer`
+     reviewer의 edit 권한으로 이 파일의 최신 `pm-ticket-section:start/end role=code-reviewer`
      내부에만 판정 근거를 기록하라. edit/write 도구 금지는 코드와 다른 파일에 그대로 적용된다.
 
      변경 파일: <touches 인자 그대로 인용>.

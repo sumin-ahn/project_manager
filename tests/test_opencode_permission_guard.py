@@ -2,8 +2,10 @@
 
 opencode 어댑터의 위험 명령 차단 가드를 두 곳에서 단언한다:
   1. project config  — templates/opencode/.opencode/opencode.jsonc (단일 진실)
-  2. agent frontmatter — templates/opencode/.opencode/agents/{developer,architect,code-reviewer}.md
+  2. agent frontmatter — 실행 역할 developer/architect/code-reviewer/pm
      (coarse `bash: allow` override 차단 — 두 곳 모두 패턴맵이어야 머지 후 deny 가 보존된다)
+
+researcher는 진짜 read-only라 bash 전체를 deny하며 별도 단언한다. PM은 네 역할 task만 허용한다.
 
 claude 어댑터(.claude/settings.json·settings.local.json)의 permissions.deny 와 항목 정합도 단언한다.
 
@@ -28,13 +30,15 @@ OPENCODE = REPO / "templates" / "opencode" / ".opencode"
 CLAUDE = REPO / "templates" / "claude_code" / ".claude"
 
 PROJECT_CONFIG = OPENCODE / "opencode.jsonc"
-AGENT_FILES = [
+EXEC_AGENT_FILES = [
     OPENCODE / "agents" / "developer.md",
     OPENCODE / "agents" / "architect.md",
     OPENCODE / "agents" / "code-reviewer.md",
-    # researcher 는 read-only(edit/write false)지만 `bash: true`(조사용)라 위험명령 실행
-    # surface 가 실재 — deny 패턴맵을 다른 agent·project config 와 동일하게 박았으므로
-    # 그 deny 보존도 여기서 못박는다 (T-0106 reviewer should-fix · feature-ship-needs-fresh-adopter-gate).
+    OPENCODE / "agents" / "pm.md",
+]
+RESEARCHER = OPENCODE / "agents" / "researcher.md"
+AGENT_FILES = [
+    *EXEC_AGENT_FILES,
     OPENCODE / "agents" / "researcher.md",
 ]
 
@@ -144,7 +148,7 @@ def test_agents_bash_permission_is_pattern_map_not_coarse():
     coarse 문자열 `bash: allow` 면 opencode 머지 시 deny 룰 뒤에 `allow *` 가 누적돼
     매칭 규칙에 따라 우회 가능 — 패턴맵으로 명시해야 머지 후 deny 가 보존된다.
     """
-    for path in AGENT_FILES:
+    for path in EXEC_AGENT_FILES:
         fm = _load_agent_frontmatter(path)
         bash = fm.get("permission", {}).get("bash")
         assert isinstance(bash, dict), (
@@ -155,7 +159,7 @@ def test_agents_bash_permission_is_pattern_map_not_coarse():
 
 def test_agents_deny_required_patterns():
     """각 agent frontmatter 가 위험 패턴을 모두 deny 한다 (project config 와 동일)."""
-    for path in AGENT_FILES:
+    for path in EXEC_AGENT_FILES:
         fm = _load_agent_frontmatter(path)
         bash = fm["permission"]["bash"]
         for pattern in REQUIRED_DENY_PATTERNS:
@@ -166,7 +170,7 @@ def test_agents_deny_required_patterns():
 
 def test_agents_ask_required_patterns():
     """각 agent frontmatter 가 reset --hard 를 ask 한다."""
-    for path in AGENT_FILES:
+    for path in EXEC_AGENT_FILES:
         fm = _load_agent_frontmatter(path)
         bash = fm["permission"]["bash"]
         for pattern in REQUIRED_ASK_PATTERNS:
@@ -178,13 +182,47 @@ def test_agents_ask_required_patterns():
 def test_agents_match_project_config():
     """agent frontmatter 의 bash 패턴맵이 project config 와 정확히 일치한다 (단일 진실 정합)."""
     project_bash = _load_project_bash_permission()
-    for path in AGENT_FILES:
+    for path in EXEC_AGENT_FILES:
         fm = _load_agent_frontmatter(path)
         agent_bash = fm["permission"]["bash"]
         assert agent_bash == project_bash, (
             f"{path.name} 의 bash 패턴맵이 project config 와 불일치.\n"
             f"  agent:   {agent_bash}\n  project: {project_bash}"
         )
+
+
+def test_researcher_is_mechanically_read_only_without_deprecated_tools():
+    """edit deny만 두고 bash allow로 우회하던 false read-only를 금지한다."""
+    fm = _load_agent_frontmatter(RESEARCHER)
+    assert "tools" not in fm
+    permission = fm["permission"]
+    assert permission["edit"] == "deny"
+    assert permission["bash"] == "deny"
+    assert permission["task"] == "deny"
+    for key in ("read", "glob", "grep", "list"):
+        assert permission[key] == "allow"
+
+
+def test_pm_can_delegate_only_the_four_framework_roles():
+    """PM은 운영 쓰기를 유지하되 task 표면은 architect/dev/reviewer/researcher로 제한한다."""
+    fm = _load_agent_frontmatter(OPENCODE / "agents" / "pm.md")
+    assert "tools" not in fm
+    assert fm["permission"]["edit"] == "allow"
+    assert fm["permission"]["task"] == {
+        "*": "deny",
+        "architect": "allow",
+        "developer": "allow",
+        "code-reviewer": "allow",
+        "researcher": "allow",
+    }
+
+
+def test_worker_agents_cannot_redelegate_and_use_permission_only():
+    """역할 agent는 중첩 위임하지 않으며 deprecated tools/permission 이중 진실을 두지 않는다."""
+    for path in [p for p in AGENT_FILES if p.name != "pm.md"]:
+        fm = _load_agent_frontmatter(path)
+        assert "tools" not in fm, path
+        assert fm["permission"]["task"] == "deny", path
 
 
 # ── claude 어댑터와의 정합 ──────────────────────────────────────────────────

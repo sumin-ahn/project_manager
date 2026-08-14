@@ -101,16 +101,22 @@ def _write_prompt(directory: Path, text: str = "직전 지적을 해소했다. �
 def _run_main(pd, monkeypatch, argv, run_fn=None, conf=None):
     monkeypatch.setattr(pd, "local_config", lambda: dict(conf or {"delegate_enabled": "true"}))
     monkeypatch.setattr(pd, "_cwd_in_git_repo", lambda *a, **k: True)
+    # 이 파일은 resume wire/ledger 축을 검증한다. code-reviewer의 실 ticket-copy 왕복은 전용
+    # growth 회귀가 소유하므로 여기서는 필수 --ticket을 유지하되 copy transport만 격리한다.
+    monkeypatch.setattr(pd, "prepare_ticket_copy", lambda **_kw: None)
     return pd.main(list(argv), run_fn=run_fn)
 
 
 def _argv(prompt: Path, cwd: Path, out_dir: Path, *extra: str,
           role: str = "code-reviewer", harness: str = "claude") -> list[str]:
-    return [
+    argv = [
         "--role", role, "--prompt-file", str(prompt), "--cwd", str(cwd),
         "--harness", harness, "--model", "opus",
-        "--output-dir", str(out_dir), *extra,
+        "--output-dir", str(out_dir),
     ]
+    if role == "code-reviewer" and "--ticket" not in extra and "--gate" not in extra:
+        argv += ["--ticket", TICKET_ID]
+    return [*argv, *extra]
 
 
 # ── 장부 시드 (실 엔진 경로로 기록 — 대역 장부를 만들지 않는다) ────────────────────
@@ -534,7 +540,8 @@ def test_review_round_ledger_is_never_touched(pd, monkeypatch, tmp_path, capsys)
 # ══ ④⑤ resume 라운드 실행 (delta 송신·일치 판정·폴백) ════════════════════════
 
 def _resume_fixture(pd, tmp_path, *, must_fix=("직전 지적 A", "직전 지적 B"),
-                    base_rev="cafebabe", session_id=SESSION_ID):
+                    base_rev="cafebabe", session_id=SESSION_ID,
+                    role="code-reviewer"):
     out_dir = tmp_path / "raw"
     out_dir.mkdir()
     ledger_path = out_dir / "raw_outputs.json"
@@ -545,7 +552,7 @@ def _resume_fixture(pd, tmp_path, *, must_fix=("직전 지적 A", "직전 지적
     relay = pd._load_relay()
     record_id = relay.start_raw_record(
         ledger_path, surface="delegate", harness="claude", model="opus",
-        role="code-reviewer", raw_path=raw_path, attempt="primary",
+        role=role, raw_path=raw_path, attempt="primary",
         now=datetime.datetime(2026, 8, 8, 9, 0, tzinfo=datetime.timezone.utc),
         extra={"ticket": TICKET_ID, "base_rev": base_rev},
     )
@@ -583,8 +590,8 @@ def test_resume_round_sends_delta_on_the_reused_session(pd, monkeypatch, tmp_pat
 
 
 def test_resume_success_is_session_identity_not_rc(pd, monkeypatch, tmp_path, capsys):
-    """rc=0 이어도 **다른 세션**이 답하면 재사용 실패다 — fresh + full payload 로 다시 돈다."""
-    out_dir, _ledger_path, _record_id = _resume_fixture(pd, tmp_path)
+    """순수읽기 researcher는 rc=0 다른 세션이면 fresh + full payload로 다시 돈다."""
+    out_dir, _ledger_path, _record_id = _resume_fixture(pd, tmp_path, role="researcher")
     prompt = _write_prompt(tmp_path, "해소 주장 본문")
     fake = _FakeRun(
         _ok(_claude_wire("맥락 없는 답", session_id=OTHER_SESSION_ID)),
@@ -592,7 +599,8 @@ def test_resume_success_is_session_identity_not_rc(pd, monkeypatch, tmp_path, ca
     )
 
     rc = _run_main(pd, monkeypatch,
-                   _argv(prompt, tmp_path, out_dir, "--resume-from", TICKET_ID), fake)
+                   _argv(prompt, tmp_path, out_dir, "--resume-from", TICKET_ID,
+                         role="researcher"), fake)
     err = capsys.readouterr().err
 
     assert rc == 0 and len(fake.calls) == 2
@@ -628,23 +636,24 @@ def test_resume_failure_without_reply_falls_back_to_full_payload(
 
 
 def test_resume_round_record_inherits_the_ticket(pd, monkeypatch, tmp_path):
-    """`--ticket` 없는 재개 라운드도 레코드에 티켓을 남긴다 — 다음 재개의 선택이 유지된다.
+    """ticket-copy 비대상 researcher 재개도 레코드의 티켓을 계승해 선택 사슬을 유지한다.
 
     안 남기면 이 라운드 레코드가 티켓 지시자 선택(최신 1건)에서 빠지고, 다음 `--resume-from
     T-NNNN` 이 **직전 라운드가 아닌 그 앞 라운드**를 이어받아 사슬이 끊긴다."""
-    out_dir, ledger_path, _record_id = _resume_fixture(pd, tmp_path)
+    out_dir, ledger_path, _record_id = _resume_fixture(pd, tmp_path, role="researcher")
     prompt = _write_prompt(tmp_path, "해소했다.")
     fake = _FakeRun(_ok(_claude_wire("판정: 통과", session_id=SESSION_ID)))
 
     rc = _run_main(pd, monkeypatch,
-                   _argv(prompt, tmp_path, out_dir, "--resume-from", TICKET_ID), fake)
+                   _argv(prompt, tmp_path, out_dir, "--resume-from", TICKET_ID,
+                         role="researcher"), fake)
 
     assert rc == 0
     latest = max(_rows(ledger_path), key=lambda row: row["started_at"])
     assert latest["ticket"] == TICKET_ID
     # 그리고 그 레코드가 다음 재개의 후보로 실제 선택된다(사슬 유지의 진짜 관측치).
     assert pd.select_resume_record(
-        _rows(ledger_path), selector=TICKET_ID, role="code-reviewer",
+        _rows(ledger_path), selector=TICKET_ID, role="researcher",
         harness="claude")["id"] == latest["id"]
 
 
@@ -670,12 +679,13 @@ def test_explicit_ticket_wins_over_the_inherited_one(pd, monkeypatch, tmp_path):
 
 def test_record_id_selector_resume_also_inherits_the_ticket(pd, monkeypatch, tmp_path):
     """레코드 id 로 재개해도 그 레코드의 티켓을 계승한다 (지시자 형태와 무관한 규칙)."""
-    out_dir, ledger_path, record_id = _resume_fixture(pd, tmp_path)
+    out_dir, ledger_path, record_id = _resume_fixture(pd, tmp_path, role="researcher")
     prompt = _write_prompt(tmp_path)
     fake = _FakeRun(_ok(_claude_wire("판정: 통과")))
 
     rc = _run_main(pd, monkeypatch,
-                   _argv(prompt, tmp_path, out_dir, "--resume-from", record_id), fake)
+                   _argv(prompt, tmp_path, out_dir, "--resume-from", record_id,
+                         role="researcher"), fake)
 
     assert rc == 0
     latest = max(_rows(ledger_path), key=lambda row: row["started_at"])
@@ -708,10 +718,10 @@ def _write_role_fixture(pd, tmp_path, role: str):
     return out_dir, ledger_path
 
 
-@pytest.mark.parametrize("role", sorted({"developer", "architect"}))
+@pytest.mark.parametrize("role", sorted({"developer", "architect", "code-reviewer"}))
 def test_write_role_resume_mismatch_fails_loud(pd, monkeypatch, tmp_path, capsys, role):
     """write 역할 불일치 → rc 1 · fresh 재실행 0 · 트리 확인 안내 (중복·충돌 편집 차단)."""
-    assert role in pd.WRITE_ROLES                      # 분류표는 기존 권한축 그대로다
+    assert role in pd.RESUME_MUTATING_ROLES
     out_dir, _ledger_path = _write_role_fixture(pd, tmp_path, role)
     prompt = _write_prompt(tmp_path, "구현했다.")
     fake = _FakeRun(_ok(_claude_wire("다른 세션의 답", session_id=OTHER_SESSION_ID)))
@@ -728,7 +738,7 @@ def test_write_role_resume_mismatch_fails_loud(pd, monkeypatch, tmp_path, capsys
     assert "재위임은 명시 재호출만" in err              # 무음 대체 금지 안내(단일 깔때기)
 
 
-@pytest.mark.parametrize("role", sorted({"researcher", "code-reviewer"}))
+@pytest.mark.parametrize("role", ["researcher"])
 def test_read_role_resume_mismatch_still_reruns(pd, monkeypatch, tmp_path, capsys, role):
     """read 역할은 현행 유지 — 트리를 안 만지므로 fresh + full payload 재실행이 안전하다."""
     assert role in pd.READ_ROLES
@@ -783,7 +793,8 @@ def _mapped_argv(prompt: Path, cwd: Path, out_dir: Path, *extra: str) -> list[st
     """config 매핑으로 해소되는 argv(--harness/--model 미지정) + 고정 timeout."""
     return [
         "--role", "code-reviewer", "--prompt-file", str(prompt), "--cwd", str(cwd),
-        "--output-dir", str(out_dir), "--timeout", "600", *extra,
+        "--output-dir", str(out_dir), "--timeout", "600", "--ticket", TICKET_ID,
+        *extra,
     ]
 
 

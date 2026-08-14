@@ -36,21 +36,22 @@ AGENT_FILES = [
     OPENCODE / ".opencode" / "agents" / "developer.md",
     OPENCODE / ".opencode" / "agents" / "code-reviewer.md",
     OPENCODE / ".opencode" / "agents" / "architect.md",
+    OPENCODE / ".opencode" / "agents" / "researcher.md",
 ]
 
 # 위임마다 모델을 명시하던 강등 대상 패턴 — task tool 1차는 인자 없음, opencode run 폴백도
-# `-m {{OPENCODE_PRO_MODEL}}` 을 생략한다(폴백 모델 = opencode 기본; `--agent build/plan` 은
-# 내장 primary 라 subagent `model:` 을 안 읽음 — Pro 강제는 `-m <model>`). 어댑터 어디에도 남으면 안 된다.
+# `-m {{OPENCODE_PRO_MODEL}}` 을 생략한다. 폴백도 `mode: all` custom 역할 카드를 직접 선택해
+# 카드의 `model:`을 읽으며 build/plan으로 강등하지 않는다. 어댑터 어디에도 수기 모델 pin이 남으면 안 된다.
 DASH_M_PIN = "-m {{OPENCODE_PRO_MODEL}}"
 PRO_MODEL_TOKEN = "{{OPENCODE_PRO_MODEL}}"
 
-# 각 agent 정의의 `opencode run --agent {build|plan}` 폴백은 쓰기/읽기 필요와 일치해야 한다.
-# architect 는 설계 초안 문서 **쓰기** 권한이 필요 → build(쓰기). plan(읽기 전용)으로 적으면
-# 폴백 시 쓰기가 막혀 모순 (codex must-fix·T-0032).
+# cross 폴백도 custom 역할명을 직접 선택한다. 네 카드는 mode: all이라 native task와
+# `opencode run --agent <role>` 양쪽에서 동일한 prompt/model/permission을 쓴다.
 FALLBACK_AGENT = {
-    "developer.md": "build",     # 쓰기 (코드 + 테스트)
-    "architect.md": "build",     # 쓰기 (설계 초안 문서) — plan 아님
-    "code-reviewer.md": "plan",  # 읽기 전용 (generate ≠ evaluate)
+    "developer.md": "developer",
+    "architect.md": "architect",
+    "code-reviewer.md": "code-reviewer",
+    "researcher.md": "researcher",
 }
 
 # agents/*.md frontmatter 에 pin 으로 유지돼야 할 model 줄.
@@ -148,21 +149,15 @@ def test_pm_instructions_demotes_opencode_run_to_fallback():
 
 
 def test_agent_fallback_run_mapping_matches_permission():
-    """각 agent 정의의 `opencode run --agent {build|plan}` 폴백이 쓰기/읽기 필요와 일치한다.
-
-    architect 는 설계 초안 문서 **쓰기** 권한이 필요 → build(쓰기). plan(읽기 전용)으로 적으면
-    폴백 시 쓰기가 막혀 모순 (codex must-fix·T-0032). AGENTS.md §3.7 의 build 그룹과도 일치.
-    """
+    """각 역할은 cross에서도 build/plan이 아니라 자기 custom agent를 직접 선택한다."""
     for path in AGENT_FILES:
         text = path.read_text(encoding="utf-8")
         want = FALLBACK_AGENT[path.name]
-        wrong = "plan" if want == "build" else "build"
         assert f"opencode run --agent {want}" in text, (
             f"{path.name} 폴백이 `opencode run --agent {want}` 가 아님 (T-0032 권한 매핑)"
         )
-        assert f"opencode run --agent {wrong}" not in text, (
-            f"{path.name} 가 폴백을 `opencode run --agent {wrong}` 로 잘못 매핑 "
-            f"(codex must-fix·T-0032 — 쓰기/읽기 권한 불일치)"
+        assert _load_frontmatter(path).get("mode") == "all", (
+            f"{path.name}가 native subagent와 cross primary를 함께 지원하지 않음"
         )
 
 

@@ -5,24 +5,21 @@
 > 가드) 위에 opencode 실행 모델과 위임 규약을 얹는다.
 >
 > 대응 관계: 이 파일 = Claude Code 타깃 CLAUDE.md 의 opencode-고유 부분. 그대로 번역이 아니라
-> opencode 실행 모델(build primary + 네이티브 `task` tool 위임)에 맞게 재서술했다.
+> opencode 실행 모델(pm primary + 네이티브 `task` tool 위임)에 맞게 재서술했다.
 > **@source 전파** — 이 지침의 방법론 갱신은 pm_update 로 채택자에 도달한다(instance-owned
 > AGENTS.md 와 대비). (ADR-0006 · amended by ADR-0069 — 진입 doc 공통 코어 + 하네스별 전달 채널)
 
 ## 1. opencode 실행 모델 (PM 멘탈 모델)
 
-- **PM(orchestrator) = `pm` primary agent (1차) · build primary (폴백).**
+- **PM(orchestrator) = `pm` primary agent.**
   - **1차 = `pm` primary** (`.opencode/agents/pm.md` · `mode: primary`). relay(ADR-0009·세션 회전
     supervisor·ADR-0020 개명)가 PM 세션을 **deterministic 하게 spawn** 하는 타깃이다 — `opencode run --agent pm` 으로 올바른
     모델(Pro)·풀권한·안전 가드가 박힌 PM 세션이 뜬다. pm.md 본문은 thin — 공통 코어 AGENTS.md +
     이 지침으로 부트스트랩하라고 가리킨다.
-  - **폴백 = build primary.** 회사판 opencode 가 custom primary(`mode: primary`)를 노출/허용하는지
-    **미검증**(opencode-pm-adapter spike §6)이므로, `pm` primary agent 가 안 떠도 PM 부트스트랩이 안 깨지게 한다 —
-    공통 코어 + 이 지침을 읽은 build 세션도 곧 PM 이다(plan/build 두 타입만 노출해도 무관). **PM 동작의
-    단일 진실은 AGENTS.md 공통 코어 + 이 지침**이므로 어느 진입점이든 동일하게 PM 으로 구동된다.
-    (additive — ADR-0006 amendment, 비준은 PM)
+  - OpenCode 1.18.16 실측에서 custom primary가 직접 기동된다. PM 카드의 `permission.task`는
+    architect/developer/code-reviewer/researcher 네 역할만 허용하며 임의 subagent 위임은 막는다.
 - **위임 = 네이티브 `task` tool.** PM 은 dev/reviewer/architect 역할을 내장 `task` tool 로
-  위임한다 — opencode 가 `.opencode/agents/*.md` (mode: subagent) 를 **별도 자식 세션**에서
+  위임한다 — opencode 가 `.opencode/agents/*.md` (`mode: all`) 를 **별도 자식 세션**에서
   구동한다 (fresh 컨텍스트 = 200K 격리 · 자식 model/권한이 subagent 정의대로 — PM 9차 실증).
   **폴백 = `opencode run` 외부 프로세스** (headless·CI·task tool 미노출 빌드). §2 위임 규약.
 - **엔진 = 공유 python.** PM 운영 로직은 `.project_manager/tools/*.py` (board.py·pm_*.py)에
@@ -48,8 +45,8 @@ PM 은 ticket 구현/검토/설계를 직접 하지 않고 **내장 `task` tool 
 
 ### 2.1 위임 = `task` tool 호출
 
-PM(build primary)이 내장 `task` tool 을 호출한다 — opencode 가 `.opencode/agents/*.md`
-(mode: subagent) 를 **별도 자식 세션**에서 구동하고 결과를 task 결과로 PM 에 돌려준다
+PM(primary)이 내장 `task` tool 을 호출한다 — opencode 가 `.opencode/agents/*.md`
+(`mode: all`) 를 **별도 자식 세션**에서 구동하고 결과를 task 결과로 PM 에 돌려준다
 (PM 9차 deciding test 실증 — opencode agent list 등록 + task tool json `"subagent_type"`/
 `"output"` + 자식이 부모와 다른 sessionId·subagent `model:` 대로 구동).
 
@@ -61,8 +58,8 @@ task tool 인자:
 
 특성:
 
-- subagent 의 `tools:`/`permission:`/`model:` (`.opencode/agents/*.md` frontmatter) 가 그대로
-  권한·모델을 정한다 — `--agent build/plan` 분기·`-m` 모델 명시 **불필요**. 자식 세션이
+- subagent 의 `permission:`/`model:` (`.opencode/agents/*.md` frontmatter) 가 그대로
+  권한·모델을 정한다. 자식 세션이
   fresh 컨텍스트(200K 격리)에서 subagent 정의대로 구동한다 (실증). **단 frontmatter 를 고쳤으면
   opencode 를 재시작해야 반영된다** — config 는 프로세스 시작 시 캐싱된다(§1 config 캐싱).
 - PM 은 task 결과로 위임 완료를 인지한다. 순차 위임(dev → reviewer)은 opencode 가 자식
@@ -72,11 +69,11 @@ task tool 인자:
 
 | PM role | task `subagent_type` | 권한 (agent 정의가 강제) |
 |---|---|---|
-| orchestrator(PM) | (위임 안 함 — build primary 자신) | — |
+| orchestrator(PM) | (위임 안 함 — pm primary 자신) | board/status/log 쓰기 + 아래 네 역할 task만 허용 |
 | developer | `developer` | 쓰기 (read/edit/write/bash/glob/grep) |
-| code-reviewer | `code-reviewer` | 읽기 (edit/write false — generate ≠ evaluate) |
+| code-reviewer | `code-reviewer` | 검토+테스트+ticket-copy reviewer 절 기록(제품 코드 변경 금지) |
 | architect | `architect` | 설계 (읽기 + 문서 쓰기) |
-| researcher | `researcher` | 읽기 (read/glob/grep/bash·edit/write false — gather, 조사·사실수집) |
+| researcher | `researcher` | 기계적 읽기(read/glob/grep, bash/edit deny — gather) |
 
 > **위임 가이드** — researcher = bounded fact-gathering(여러 파일·로그·레퍼런스를 훑어 사실·인용·목록 추출).
 > *결론만* 돌려받고, 여러 출처를 가로지르는 synthesis(교차 통찰)는 PM 이 직접 흡수한다(degrade 방지).
@@ -137,14 +134,13 @@ status.md / log 갱신은 PM 담당 — 그 누락은 dev must-fix 아님.
 인터페이스를 외부 프로세스로 띄운다:
 
 ```bash
-opencode run --agent build --format json "<dev/architect 프롬프트>"   # 쓰기
-opencode run --agent plan  --format json "<reviewer 프롬프트>"        # 읽기
+opencode run --agent developer    --format json "<developer 프롬프트>"
+opencode run --agent architect    --format json "<architect 프롬프트>"
+opencode run --agent code-reviewer --format json "<reviewer 프롬프트>"
+opencode run --agent researcher   --format json "<researcher 프롬프트>"
 ```
 
-- `--agent build` — 쓰기 권한 (dev·**architect** — 설계 초안 문서 쓰기 필요). `--agent plan` — 읽기 전용 (reviewer).
-- **모델 = opencode 기본.** `--agent build/plan` 은 opencode **내장 primary** 라 우리 subagent
-  (`.opencode/agents/*.md`)의 `model:` 필드를 읽지 않는다 (native task 1차와 다른 점 — 거긴 정의대로 구동).
-  폴백서 Pro/특정 모델을 강제하려면 `-m <model>` 을 명시한다.
+- 네 역할 카드는 `mode: all`이므로 `run --agent <role>`도 native task와 같은 custom prompt·model·permission을 쓴다. build/plan으로 축약하거나 default agent로 강등하지 않는다.
 - `--format json` — ANSI escape 회피, 결과를 PM 이 파싱 가능하게.
 - 컨텍스트는 프로세스마다 fresh → 200K 한도를 위임으로 격리. PM 은 exit code + json 결과로
   완료를 인지한다. **병렬 `opencode run` 은 세션 DB 락 가능성 — 미검증·순차 안전**

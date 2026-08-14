@@ -3,15 +3,18 @@ description: "{{PROJECT_NAME}} 프로젝트의 PM(Project Manager) primary agent
 mode: primary
 model: "{{OPENCODE_PRO_MODEL}}"
 temperature: 0.2
-tools:
-  read: true
-  edit: true
-  write: true
-  bash: true
-  glob: true
-  grep: true
 permission:
+  read: allow
   edit: allow
+  glob: allow
+  grep: allow
+  list: allow
+  task:
+    "*": deny
+    architect: allow
+    developer: allow
+    code-reviewer: allow
+    researcher: allow
   # 위험 bash 명령 기본 가드 — project .opencode/opencode.jsonc 패턴맵과 동일하게 명시.
   # coarse `bash: allow` 면 deny 룰 뒤에 `allow *` 가 누적돼 매칭 규칙에 따라 우회될 수
   # 있으므로 agent 레벨에도 패턴맵을 박아 어떤 매칭에서도 deny 가 보존되게 한다.
@@ -29,7 +32,7 @@ permission:
 
 > 이 정의 = Claude Code 타깃의 `.claude/agents/orchestrator` 등가물(opencode 측 PM primary).
 > orchestrator(ADR-0009)가 PM 세션을 **deterministic 하게 spawn** 할 때의 타깃이다 —
-> `opencode run --agent pm` 으로 이 정의의 `model:`(Pro)·`tools:`(풀권한)·`permission:`(가드)이
+> `opencode run --agent pm` 으로 이 정의의 `model:`(Pro)·`permission:`(PM 쓰기 + 네 역할 task)이
 > 박힌 PM 세션이 뜬다. (회사판이 custom primary 를 안 띄우면 build primary 폴백 — 실행 모델은
 > `.opencode/pm-instructions.md` §1.)
 

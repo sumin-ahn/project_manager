@@ -179,7 +179,9 @@ Windows의 동일 좁은 prefix는 `prefix_rule=["py", ".project_manager/tools/p
   앞에 자동 주입한다. 프롬프트 파일엔 **작업 내용만** 담고 금지 문구를 중복 서술하지 않는다.
 - `--ticket`이 있는 architect·developer·code-reviewer 실 실행은 성장 사본을 자동 준비하고 그
   절대경로와 자기 역할 절만 편집하라는 제한을 role preamble에 더한 뒤 `finally`에서 harvest한다.
-  Codex cross named permission profile은 기존 격리를 보존한다. Claude·OpenCode처럼 단일 경로 쓰기
+  Codex cross named permission profile은 기존 격리를 보존한다. OpenCode target은 역할 카드가 없는
+  adopter에서도 엔진 소유 런타임 role config와 `--agent <role>`로 exact 역할을 보존하며 default
+  build/plan으로 강등하지 않는다. Claude·OpenCode처럼 단일 경로 쓰기
   격리를 보장하지 못해도 경고 후 사용자가 고른 target으로 계속 실행하며, 역할 규약과 위임 전후
   git/touches 감사가 범위 밖 변경을 loud하게 표면화한다. target 자동 대체나 reviewer 추가 opt-in은 없다.
 - **병렬 wave** = PM 이 자기 하네스의 백그라운드 실행으로 pm_delegate 호출 자체를 병렬화한다.

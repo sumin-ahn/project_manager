@@ -431,11 +431,11 @@ def test_resolution_failure_precedes_every_side_effect(
         "--model", "claude-opus-5", "--tools", "Read,Glob,Grep,Bash",
         "--effort", "high",
     ]),
-    ("opencode", "zai/glm-4.6", "medium", [
-        "opencode", "run", "<msg>", "--file", "<prompt-file>",
-        "--agent", "plan", "--format", "json", "--dir", "<isolated-cwd>",
-        "-m", "zai/glm-4.6", "--variant", "medium",
-    ]),
+        ("opencode", "zai/glm-4.6", "medium", [
+            "opencode", "run", "<msg>", "--file", "<prompt-file>",
+            "--agent", "code-reviewer", "--format", "json", "--dir", "<isolated-cwd>",
+            "-m", "zai/glm-4.6", "--variant", "medium",
+        ]),
 ])
 def test_structured_argv_pins_model_and_reasoning(
         external, relay, harness, model, reasoning, expected):
@@ -460,11 +460,11 @@ def test_structured_argv_pins_model_and_reasoning(
     ("codex", ("workspace-write",), ("-a", "never", "-s", "read-only")),
     ("claude", ("Write", "Edit", "--permission-mode", "acceptEdits"),
      ("--tools", "Read,Glob,Grep,Bash")),
-    ("opencode", ("build",), ("--agent", "plan")),
+    ("opencode", ("build", "plan"), ("--agent", "code-reviewer")),
 ])
-def test_reviewer_permission_axis_is_immutable_read(
+def test_reviewer_role_cannot_be_overridden_by_config(
         external, harness, forbidden, required):
-    """추가 리뷰어의 권한축은 읽기 권위(code-reviewer) 고정 — 설정으로 올릴 수 없다."""
+    """추가 리뷰어는 code-reviewer 고정 — 설정으로 developer/build/plan에 바꿀 수 없다."""
     assert external.REVIEWER_ROLE == "code-reviewer"
     conf = {"additional_reviewer.harness": harness, "additional_reviewer.model": "m",
             # 역할/권한을 올리려는 설정 시도는 해소에 아무 영향이 없다(축이 코드 상수다).
@@ -2193,6 +2193,38 @@ def test_delegate_public_wrappers_still_speak_the_shared_contract():
     # egress 브리지는 위임 진입점을 유지한다(표면별 인자는 진입점·동의 키뿐).
     assert delegate._codex_egress_entrypoint()[1] == shared.DELEGATE_ENTRYPOINT
     assert shared.DELEGATE_ENTRYPOINT != shared.EXTERNAL_REVIEW_ENTRYPOINT
+
+
+def test_structured_opencode_reviewer_receives_shared_runtime_role_config(
+        external, tmp_path):
+    """추가 리뷰도 카드 없는 adopter에서 default build가 아닌 code-reviewer로 실행한다."""
+    target = external.resolve_reviewer_target({
+        "additional_reviewer.harness": "opencode",
+        "additional_reviewer.model": "provider/model",
+    })
+
+    class Capture:
+        def __init__(self):
+            self.env = None
+
+        def __call__(self, argv, **kwargs):
+            self.env = kwargs["env"]
+            wire = json.dumps({
+                "type": "text", "sessionID": "ses-runtime-role",
+                "part": {"type": "text", "text": "판정: 통과\n## must-fix\n- 없음"},
+            }, ensure_ascii=False)
+            return subprocess.CompletedProcess(argv, 0, stdout=wire, stderr="")
+
+    runner = Capture()
+    result = external.run_review(
+        "review", timeout=30, output_dir=tmp_path / "raw", target=target,
+        run_fn=runner, cwd=tmp_path, env={"PATH": os.environ.get("PATH", "")},
+    )
+    assert result["all_pass"] is True
+    config = json.loads(runner.env["OPENCODE_CONFIG_CONTENT"])
+    assert set(config["agent"]) == {"code-reviewer"}
+    assert config["agent"]["code-reviewer"]["mode"] == "all"
+    assert config["agent"]["code-reviewer"]["permission"]["edit"] == "allow"
 
 
 def test_delegate_and_reviewer_reject_the_same_misconfiguration_wording():

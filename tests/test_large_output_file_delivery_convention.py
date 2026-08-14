@@ -1,17 +1,17 @@
-"""T-0337 — 대형 산출물 파일-전달 규약 회귀 가드 (양 하네스 × 4 서브에이전트 카드).
+"""T-0337 — 대형 산출물 파일-전달 규약 회귀 가드 (양 하네스 쓰기 역할).
 
 모델 응답(서브에이전트 최종 보고 포함)은 출력 상한(opencode 32k 토큰)에서 **조용히** 잘린다
 (PM 70 라이브 확증 — 수신자는 절단을 감지하지 못한다). 그 잔여 축을 우회하는 파일-전달 규약 —
-*대형 산출은 파일로 쓰고 응답엔 절대경로 + 요약 몇 줄만* — 이 출하 8 카드(claude·opencode ×
-researcher/developer/architect/code-reviewer)에 실려 있는지 기계로 못박는다.
+*대형 산출은 파일로 쓰고 응답엔 절대경로 + 요약 몇 줄만* — developer/architect 카드에 실려
+있는지 기계로 못박는다. researcher는 파일 생성 없이 조사 분할, code-reviewer는 티켓 절에 기록한다.
 
 생성 자체는 tool 훅으로 인터셉트 불가(구조)하므로 가드는 "출하 문서에 규약이 실려 있음"만
 durable 하게 검증한다 (결정: 규약이지 강제가 아니다).
 
 검사 축 (T-0266 4어휘 패턴 동형 — 얕은 단일 문자열이 아니라 규약 절 안의 어휘 클래스 검증):
-  (1) 8 카드 모두 규약 절 마커 + 4 핵심 어휘(파일·경로·요약·절단) + 임계(200줄/8KB).
-  (2) opencode 4 카드는 safe_write(8KB 청크)·write 16KB deny 를 추가 명시(하네스 관용·T-0334 연계),
-      claude 4 카드는 opencode 전용 safe_write 를 섞지 않는다.
+  (1) 쓰기 산출 역할 4 카드가 규약 절 마커 + 4 핵심 어휘 + 임계(200줄/8KB)를 가진다.
+  (2) opencode 2 카드는 safe_write(8KB 청크)·write 16KB deny 를 추가 명시하고,
+      claude 2 카드는 opencode 전용 safe_write 를 섞지 않는다.
   (3) 규약 절에 미충전 placeholder({{…}})·framework wikilink([[…]]) 0.
 
 ⚠️ '요약'·'파일' 은 카드 다른 곳(researcher 산출 형식 등)에도 등장하므로 whole-file 검사는
@@ -30,11 +30,17 @@ REPO = Path(__file__).resolve().parents[1]
 CLAUDE_AGENTS = REPO / "templates" / "claude_code" / ".claude" / "agents"
 OPENCODE_AGENTS = REPO / "templates" / "opencode" / ".opencode" / "agents"
 
-# 출하 4축 서브에이전트 카드 (양 하네스 대칭).
-_ROLES = ("researcher", "developer", "architect", "code-reviewer")
+# 독립 파일 산출이 허용된 역할만 이 규약 대상이다. researcher와 reviewer는 아래 별도 계약.
+_ROLES = ("developer", "architect")
 CLAUDE_CARDS = [(f"claude {r}", CLAUDE_AGENTS / f"{r}.md") for r in _ROLES]
 OPENCODE_CARDS = [(f"opencode {r}", OPENCODE_AGENTS / f"{r}.md") for r in _ROLES]
 ALL_CARDS = CLAUDE_CARDS + OPENCODE_CARDS
+REPORT_ONLY_CARDS = [
+    ("claude researcher", CLAUDE_AGENTS / "researcher.md", "researcher"),
+    ("opencode researcher", OPENCODE_AGENTS / "researcher.md", "researcher"),
+    ("claude code-reviewer", CLAUDE_AGENTS / "code-reviewer.md", "code-reviewer"),
+    ("opencode code-reviewer", OPENCODE_AGENTS / "code-reviewer.md", "code-reviewer"),
+]
 
 # 규약 절 슬라이스 앵커 — 8 카드 공통(각 카드 본문은 역할 결에 맞게 다르지만 마커는 공유).
 CONVENTION_MARKER = "**대형 산출물은 파일로 — 응답(보고) 절단 우회.**"
@@ -182,3 +188,16 @@ def test_card_convention_no_placeholder_or_wikilink(label, path):
         f"{label} ({path.relative_to(REPO)}) 규약 절에 framework wikilink {hits} 잔존 — "
         f"plain text 로 (T-0090 · T-0337)"
     )
+
+
+@pytest.mark.parametrize("label,path,role", REPORT_ONLY_CARDS)
+def test_report_only_roles_do_not_create_standalone_delivery_files(label, path, role):
+    """read-only 조사와 ticket-backed 리뷰는 별도 artifact로 권한을 우회하지 않는다."""
+    text = path.read_text(encoding="utf-8")
+    assert CONVENTION_MARKER not in text
+    if role == "researcher":
+        assert "파일 산출로 우회하지 않는다" in text
+        assert "200줄/8KB" in text
+    else:
+        assert "ticket-copy" in text
+        assert "별도 산출 파일" in text

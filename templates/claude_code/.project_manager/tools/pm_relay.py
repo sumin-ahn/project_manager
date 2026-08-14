@@ -976,8 +976,93 @@ REASONING_ALLOWED: dict[str, frozenset[str]] = {
 # 실행이 필요한 리뷰는 workspace-write 상향 필요). `-a never` 하 `git push` 는 승인 deadlock 없이
 # git 레벨에서 실패한다 — push 방어선은 sandbox 가 아니라 role prompt 다.
 CODEX_SANDBOX: dict[str, str] = {"write": "workspace-write", "read": "read-only"}
-# opencode 권한 agent — write=build·read=plan.
-OPENCODE_AGENT: dict[str, str] = {"write": "build", "read": "plan"}
+# opencode 역할 agent — 네이티브 task와 cross `run --agent`가 같은 custom 정의를 쓴다.
+# 네 역할 카드는 `mode: all`이라 subagent/primary 양쪽에서 유효하다. build/plan으로 축약하면
+# 역할 prompt·모델·권한을 잃고(특히 reviewer가 Plan Mode로 사본을 못 씀) default agent로 오동작한다.
+OPENCODE_AGENT: dict[str, str] = {
+    "developer": "developer",
+    "researcher": "researcher",
+    "architect": "architect",
+    "code-reviewer": "code-reviewer",
+}
+# Cross-harness 실행은 수신 저장소가 OpenCode adopter라고 가정할 수 없다. 예를 들어 Claude
+# adopter에서 `opencode run --agent code-reviewer`를 호출하면 프로젝트 `.opencode/agents/`가
+# 없으므로 OpenCode가 default build agent로 조용히 폴백한다. argv의 역할 이름만 정확해도 역할은
+# 보존되지 않는 이유다. 따라서 공용 relay가 **이번 역할 하나**의 mode/permission을 런타임 config로
+# 만든다. 역할 지시는 pm_delegate가 첨부 prompt의 preamble으로 이미 싣고, 여기서는 하네스가 역할을
+# 실제 선택하고 그 권한으로 실행하는 데 필요한 최소 기계 계약만 소유한다.
+_OPENCODE_DANGEROUS_BASH_PERMISSION: dict[str, str] = {
+    "*": "allow",
+    "rm *": "deny",
+    "git push --force*": "deny",
+    "git push -f*": "deny",
+    "git clean -f*": "deny",
+    "git reset --hard*": "ask",
+}
+
+
+def opencode_runtime_role_config(role: str) -> str:
+    """Return deterministic inline config that makes ``--agent <role>`` self-contained.
+
+    The caller places this engine-owned value in ``OPENCODE_CONFIG_CONTENT`` *after* environment
+    allowlisting. Incoming content is intentionally not merged or inherited: it is an arbitrary runtime
+    override surface and may contain plugins, commands, or secrets. Normal user/project config files still
+    load through the separately allowlisted ``OPENCODE_CONFIG``/``OPENCODE_CONFIG_DIR`` anchors; this
+    highest-precedence fragment only pins the delegated role's identity and permissions.
+    """
+    perm_axis(role)  # shared role allowlist and wording
+    permission: dict[str, object] = {
+        "read": "allow",
+        "edit": "deny" if role == "researcher" else "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "task": "deny",
+        "bash": (
+            "deny" if role == "researcher"
+            else dict(_OPENCODE_DANGEROUS_BASH_PERMISSION)
+        ),
+        "webfetch": "deny",
+    }
+    config = {
+        "agent": {
+            OPENCODE_AGENT[role]: {
+                "description": f"project-manager runtime {role} delegation role",
+                "mode": "all",
+                "permission": permission,
+            },
+        },
+    }
+    return json.dumps(config, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def with_opencode_runtime_role(env: dict[str, str] | None, role: str) -> dict[str, str]:
+    """Copy ``env`` and bind the engine-owned OpenCode role fragment without mutating the caller."""
+    configured = dict(env or {})
+    configured["OPENCODE_CONFIG_CONTENT"] = opencode_runtime_role_config(role)
+    return configured
+
+
+_RUNTIME_ROLE_CONFIG_BUILDERS = {
+    "claude": None,
+    "codex": None,
+    "opencode": opencode_runtime_role_config,
+}
+
+
+def with_harness_runtime_role(
+    env: dict[str, str] | None, harness: str, role: str,
+) -> dict[str, str]:
+    """Apply the declared harness runtime-role fragment without caller-side branching."""
+    validate_harness(harness)
+    perm_axis(role)
+    configured = dict(env or {})
+    builder = _RUNTIME_ROLE_CONFIG_BUILDERS[harness]
+    if builder is not None:
+        configured["OPENCODE_CONFIG_CONTENT"] = builder(role)
+    return configured
+
+
 # opencode `run` 은 첨부 `--file` 이 있어도 **비어있지 않은 positional message 를 요구**한다(실측·
 # message 부재 시 rc=1). 실 지시는 `--file` 프롬프트에 있으므로 고정 안내 message 를 준다.
 OPENCODE_ATTACHED_MSG = "첨부된 프롬프트 파일(--file)의 지시를 그대로 수행하라."
@@ -1114,8 +1199,9 @@ def build_opencode_argv(
     model: str, reasoning: str | None, role: str, cwd: str, prompt_file: str,
 ) -> list[str]:
     """opencode argv. 프롬프트는 `--file`(실존 인터페이스·길이/ps 노출 회피)·cwd 는 `--dir`
-    로 핀(opencode 는 subprocess cwd 를 무시한다). `--agent build|plan` 으로 권한 강제."""
-    agent = OPENCODE_AGENT[perm_axis(role)]
+    로 핀하고, `--agent <role>`로 네이티브와 같은 custom 역할 정의를 선택한다."""
+    perm_axis(role)  # 공용 역할 allowlist 검증(예외 문구 단일 진실).
+    agent = OPENCODE_AGENT[role]
     argv = ["opencode", "run", OPENCODE_ATTACHED_MSG, "--file", str(prompt_file),
             "--agent", agent, "--format", "json", "--dir", str(cwd)]
     if model:
