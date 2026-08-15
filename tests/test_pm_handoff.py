@@ -1114,6 +1114,21 @@ def test_collect_session_entries_solo_uses_last_untagged_handoff(hf):
     ]
 
 
+def test_solo_collection_excludes_slot_checkpoints_from_mixed_log(hf):
+    """T-0686 F-001: solo 수집은 행 중간 slot 태그 checkpoint를 흡수하지 않는다."""
+    log_text = """\
+## [2026-08-05] handoff | PM 9차 → 다음 PM 세션
+## [2026-08-05] checkpoint | (task:alpha) — compaction
+## [2026-08-05] checkpoint | (project_manager_1) — manual
+## [2026-08-05] checkpoint | (project_manager_2) — compaction
+## [2026-08-05] checkpoint | legacy boundary — manual
+"""
+
+    assert hf.collect_session_entries(log_text, None) == [
+        "## [2026-08-05] checkpoint | legacy boundary — manual",
+    ]
+
+
 def test_collect_session_entries_unresolved_boundary_caps_old_red_104(hf):
     """자기/임의 handoff가 전혀 없는 adopter#0 로그도 최근 10건만 박제한다."""
     log_text = "\n".join(

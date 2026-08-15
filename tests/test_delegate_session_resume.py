@@ -121,13 +121,19 @@ def _argv(prompt: Path, cwd: Path, out_dir: Path, *extra: str,
 
 # ── 장부 시드 (실 엔진 경로로 기록 — 대역 장부를 만들지 않는다) ────────────────────
 
+def _recent_seed_time() -> datetime.datetime:
+    """prune 창(완료 7일·미마감 30일) 안에 항상 머무는 시드 기준 시각(고정 달력 날짜 금지)."""
+    return datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
+
+
 def _seed_record(relay, ledger_path: Path, *, role: str = "code-reviewer",
                  rc: int = 0, started: datetime.datetime | None = None,
                  surface: str = "delegate", harness: str = "claude",
                  finish: bool = True, extra: dict | None = None,
                  start_extra: dict | None = None) -> str:
-    started = started or datetime.datetime(
-        2026, 8, 8, 12, 0, tzinfo=datetime.timezone.utc)
+    # 장부 prune(pm_relay.RAW_LEDGER_COMPLETED_DAYS=7·UNFINISHED_DAYS=30) 창 안에 항상 머무는
+    # 상대 시각. 고정 달력 날짜를 쓰면 그 날짜 + 7일이 지나는 순간 시드가 prune 되는 시간폭탄이 된다.
+    started = started or _recent_seed_time()
     record_id = relay.start_raw_record(
         ledger_path,
         surface=surface, harness=harness, model="opus", role=role,
@@ -553,12 +559,12 @@ def _resume_fixture(pd, tmp_path, *, must_fix=("직전 지적 A", "직전 지적
     record_id = relay.start_raw_record(
         ledger_path, surface="delegate", harness="claude", model="opus",
         role=role, raw_path=raw_path, attempt="primary",
-        now=datetime.datetime(2026, 8, 8, 9, 0, tzinfo=datetime.timezone.utc),
+        now=_recent_seed_time(),
         extra={"ticket": TICKET_ID, "base_rev": base_rev},
     )
     relay.finish_raw_record(
         ledger_path, record_id, rc=0, elapsed_sec=1.0, silence_sec=None,
-        now=datetime.datetime(2026, 8, 8, 9, 1, tzinfo=datetime.timezone.utc),
+        now=_recent_seed_time() + datetime.timedelta(minutes=1),
         extra={"session_id": session_id, "must_fix_items": list(must_fix)},
     )
     return out_dir, ledger_path, record_id
@@ -707,12 +713,12 @@ def _write_role_fixture(pd, tmp_path, role: str):
     record_id = relay.start_raw_record(
         ledger_path, surface="delegate", harness="claude", model="opus",
         role=role, raw_path=out_dir / "seed_raw.txt", attempt="primary",
-        now=datetime.datetime(2026, 8, 8, 9, 0, tzinfo=datetime.timezone.utc),
+        now=_recent_seed_time(),
         extra={"ticket": TICKET_ID, "base_rev": "cafebabe"},
     )
     relay.finish_raw_record(
         ledger_path, record_id, rc=0, elapsed_sec=1.0, silence_sec=None,
-        now=datetime.datetime(2026, 8, 8, 9, 1, tzinfo=datetime.timezone.utc),
+        now=_recent_seed_time() + datetime.timedelta(minutes=1),
         extra={"session_id": SESSION_ID, "must_fix_items": ["직전 지적 A"]},
     )
     return out_dir, ledger_path

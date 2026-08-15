@@ -1018,7 +1018,7 @@ _ANY_HANDOFF_RE = re.compile(
     r"(?: \(.+\))? → 다음 PM 세션$"
 )
 _TASK_ENTRY_TAG_RE = re.compile(r"(?: \(|\| \()task:[^)]+\)")
-_SLOT_ENTRY_TAG_RE = re.compile(r" \([^()\s]+_\d+\)$")
+_SLOT_ENTRY_TAG_RE = re.compile(r" \([^()\s]+_\d+\)(?:$| — )")
 
 
 def _log_entry_headers(log_text: str) -> list[str]:

@@ -24,6 +24,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 PM_LOG_PY = TOOLS / "pm_log.py"
+PM_HANDOFF_PY = TOOLS / "pm_handoff.py"
 
 
 def _load_module(name: str = "pm_log"):
@@ -208,6 +209,168 @@ def test_build_checkpoint_entry_explicit_date_is_deterministic():
     )
 
 
+def test_checkpoint_task_header_remains_byte_compatible():
+    """T-0686: task 형상의 기존 헤더는 행 바이트까지 동일하다."""
+    mod = _load_module("pm_log_t0686_task_header")
+
+    entry = mod.build_checkpoint_entry(
+        "orch-dev-T0547", "compaction", date="2026-08-06",
+    )
+
+    assert entry.splitlines()[0] == (
+        "## [2026-08-06] checkpoint | (task:orch-dev-T0547) — compaction"
+    )
+
+
+def _slot_checkpoint_fixture(mod, monkeypatch, tmp_path):
+    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir.mkdir(parents=True)
+    mod.CURRENT_FILE.write_text(_HEADER, encoding="utf-8")
+    cwd = tmp_path / "work" / "project_manager_1" / "nested"
+    cwd.mkdir(parents=True)
+    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        json.dumps({
+            "leases": [{
+                "slot": "work/project_manager_1",
+                "state": "leased",
+                "session": "project_manager_1",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    return cwd
+
+
+def test_checkpoint_slot_identity_appends_canonical_header(tmp_path, monkeypatch):
+    """T-0686: cwd lease의 canonical slot은 task validator에 거부되지 않고 append된다."""
+    mod = _load_module("pm_log_t0686_slot_append")
+    cwd = _slot_checkpoint_fixture(mod, monkeypatch, tmp_path)
+
+    rc = mod.cmd_checkpoint(SimpleNamespace(
+        task=None, trigger="manual", cwd=str(cwd), breadcrumb=False,
+    ))
+
+    entries = mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]
+    assert rc == 0 and len(entries) == 1
+    assert entries[0][1].splitlines()[0] == (
+        f"## [{mod.datetime.date.today().isoformat()}] checkpoint | "
+        "(project_manager_1) — manual"
+    )
+
+
+def test_checkpoint_slot_header_round_trips_through_handoff_collector(
+    tmp_path, monkeypatch,
+):
+    """T-0686: pm_log 생산 slot entry를 pm_handoff가 같은 세션 기록으로 수집한다."""
+    mod = _load_module("pm_log_t0686_handoff_producer")
+    cwd = _slot_checkpoint_fixture(mod, monkeypatch, tmp_path)
+    args = SimpleNamespace(
+        task=None, trigger="manual", cwd=str(cwd), breadcrumb=False,
+    )
+    assert mod.cmd_checkpoint(args) == 0
+    log_text = mod.CURRENT_FILE.read_text(encoding="utf-8")
+
+    spec = importlib.util.spec_from_file_location(
+        "pm_handoff_t0686_consumer", PM_HANDOFF_PY,
+    )
+    handoff = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(handoff)
+
+    produced_header = mod.split_entries(log_text)[1][0][1].splitlines()[0]
+    assert handoff.collect_session_entries(log_text, None, "project_manager_1") == [
+        produced_header
+    ]
+
+    diagnostic = mod.build_checkpoint_entry(
+        None, "compaction", date="2026-08-15", session="project_manager_1",
+        ctx_band_checked=True, ctx_band_missed=True,
+        ctx_window_tokens=600_000, ctx_observed_tokens=30_000, harness="claude",
+    )
+    diagnostic_log = (
+        tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
+    )
+    diagnostic_log.parent.mkdir(parents=True)
+    diagnostic_log.write_text(_HEADER + diagnostic, encoding="utf-8")
+    mismatch = mod._latest_ctx_window_mismatch_section(
+        tmp_path, None, "project_manager_1",
+    )
+    assert mismatch is not None and "[ctx-window-mismatch]" in mismatch
+
+
+def test_checkpoint_parser_unresolved_compaction_warns_without_failing(
+    tmp_path, monkeypatch, capsys,
+):
+    """T-0686: 훅 CLI 계약은 rc 0을 유지하며 무기록을 stderr로 관측시킨다."""
+    mod = _load_module("pm_log_t0686_unresolved")
+    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir.mkdir(parents=True)
+    mod.CURRENT_FILE.write_text(_HEADER, encoding="utf-8")
+    args = mod.build_parser().parse_args([
+        "checkpoint", "--trigger", "compaction", "--phase", "pre",
+        "--cwd", str(tmp_path),
+    ])
+
+    rc = args.fn(args)
+
+    captured = capsys.readouterr()
+    assert rc == 0 and captured.out == ""
+    assert "checkpoint 정체성 미해소" in captured.err and "기록 생략" in captured.err
+    assert mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1] == []
+
+
+def test_checkpoint_slot_compaction_dedups_same_boundary(tmp_path, monkeypatch):
+    """T-0686: slot 형상도 같은 compaction boundary를 중복 append하지 않는다."""
+    mod = _load_module("pm_log_t0686_slot_dedup")
+    cwd = _slot_checkpoint_fixture(mod, monkeypatch, tmp_path)
+    args = SimpleNamespace(
+        task=None, trigger="compaction", cwd=str(cwd),
+        session_id="harness-session", boundary_id="boundary-1", phase="pre",
+        breadcrumb=False,
+    )
+
+    assert mod.cmd_checkpoint(args) == 0
+    assert mod.cmd_checkpoint(args) == 0
+
+    entries = mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]
+    assert len(entries) == 1
+    assert "checkpoint | (project_manager_1) — compaction" in entries[0][1]
+
+
+def test_checkpoint_lease_freeform_task_name_is_not_misclassified_as_slot(
+    tmp_path, monkeypatch,
+):
+    """T-0686 F-003: ``_N`` task는 lease slot basename과 다르면 task 태그를 쓴다."""
+    mod = _load_module("pm_log_t0686_freeform_task")
+    log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
+    log_dir.mkdir(parents=True)
+    mod.CURRENT_FILE.write_text(_HEADER, encoding="utf-8")
+    cwd = tmp_path / "work" / "project_manager_1" / "nested"
+    cwd.mkdir(parents=True)
+    ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        json.dumps({
+            "leases": [{
+                "slot": "work/project_manager_1",
+                "state": "leased",
+                "session": "foo_1",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mod, "_registered_repos", lambda: set())
+
+    rc = mod.cmd_checkpoint(SimpleNamespace(
+        task=None, trigger="manual", cwd=str(cwd), breadcrumb=False,
+    ))
+
+    entries = mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]
+    assert rc == 0 and len(entries) == 1
+    assert "checkpoint | (task:foo_1) — manual" in entries[0][1]
+
+
 def test_build_checkpoint_entry_renders_ctx_window_mismatch_with_observation():
     mod = _load_module()
     entry = mod.build_checkpoint_entry(
@@ -332,10 +495,10 @@ def test_cmd_checkpoint_missing_identity_manual_fails_loud(
     assert mod.CURRENT_FILE.read_text(encoding="utf-8") == original
 
 
-def test_cmd_checkpoint_missing_identity_compaction_skips_silently(
+def test_cmd_checkpoint_missing_identity_compaction_warns_and_skips(
     tmp_path, monkeypatch, capsys,
 ):
-    """같은 identity 실패도 compaction 훅은 rc 0·무음·무기록이다."""
+    """같은 identity 실패도 compaction 훅은 rc 0·진단·무기록이다."""
     mod = _load_module()
     log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
     log_dir.mkdir(parents=True)
@@ -347,7 +510,7 @@ def test_cmd_checkpoint_missing_identity_compaction_skips_silently(
     ))
 
     captured = capsys.readouterr()
-    assert rc == 0 and captured.out == captured.err == ""
+    assert rc == 0 and captured.out == "" and "정체성 미해소" in captured.err
     assert mod.CURRENT_FILE.read_text(encoding="utf-8") == original
 
 

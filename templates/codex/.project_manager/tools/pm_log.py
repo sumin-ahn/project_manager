@@ -532,19 +532,25 @@ def cmd_migrate(args: argparse.Namespace) -> int:
 
 
 def build_checkpoint_entry(
-    task: str,
+    task: str | None,
     trigger: str = "manual",
     date: str | None = None,
     *,
+    session: str | None = None,
     ctx_band_checked: bool = False,
     ctx_band_missed: bool = False,
     ctx_window_tokens: int | None = None,
     ctx_observed_tokens: int | None = None,
     harness: str | None = None,
 ) -> str:
-    """task의 compaction/manual 경계 보충 박제 골격을 만든다."""
+    """task/slot/solo의 compaction/manual 경계 보충 박제 골격을 만든다."""
     if date is None:
         date = datetime.date.today().isoformat()
+    identity_tag = (
+        f" | ({_TASK_TAG_PREFIX}{task})" if task
+        else f" | ({session})" if session
+        else ""
+    )
     ctx_advisory = (
         build_ctx_window_mismatch_advisory(
             ctx_window_tokens=ctx_window_tokens,
@@ -558,7 +564,7 @@ def build_checkpoint_entry(
         if ctx_band_checked else ""
     )
     return (
-        f"## [{date}] checkpoint | ({_TASK_TAG_PREFIX}{task}) — {trigger}\n\n"
+        f"## [{date}] checkpoint{identity_tag} — {trigger}\n\n"
         f"{ctx_check}"
         f"{ctx_advisory}"
         "- 구간: <직전 박제 경계 이후>\n"
@@ -796,6 +802,43 @@ def resolve_snapshot_identity(pm_home: Path, cwd: Path) -> tuple[str | None, str
     return None, "정체성 미해소"
 
 
+def _checkpoint_identity_axes(
+    pm_home: Path,
+    cwd: Path,
+    identity: str,
+    source: str,
+) -> tuple[str | None, str | None]:
+    """snapshot 해소값을 checkpoint의 task/session 2축으로 분리한다.
+
+    cwd lease의 session이 그 lease slot의 canonical basename과 같을 때만 slot으로
+    인정한다. task가 우연히 ``foo_1`` 형상인 경우를 일반 정규식으로 slot으로
+    오분류하지 않고, lease 귀속과 slot 형상을 한 번에 검증한다.
+    """
+    if source in {"solo local.conf", "legacy pm_state"}:
+        return identity, None
+    if source != "cwd→lease":
+        return identity, None
+
+    matches: list[tuple[int, bool]] = []
+    for row in _lease_rows(pm_home):
+        if row.get("state") != "leased" or row.get("session") != identity:
+            continue
+        slot = _lease_slot_path(pm_home, row)
+        if slot is None or not _is_within(cwd, slot):
+            continue
+        is_canonical_slot = (
+            slot.name == identity
+            and re.fullmatch(r"[^()\s/\\]+_[1-9]\d*", identity) is not None
+        )
+        matches.append((len(slot.resolve(strict=False).parts), is_canonical_slot))
+    if matches:
+        deepest = max(depth for depth, _is_slot in matches)
+        kinds = {is_slot for depth, is_slot in matches if depth == deepest}
+        if kinds == {True}:
+            return None, identity
+    return identity, None
+
+
 def _pm_state_path(pm_home: Path, task: str, source: str) -> Path:
     """해소 층에 맞는 task 또는 legacy solo pm_state 경로를 반환한다."""
     if source in {"solo local.conf", "legacy pm_state"}:
@@ -981,7 +1024,11 @@ def cap_snapshot_sections(identity: str, sections: list[str]) -> str:
     return _truncate_snapshot_text(identity.rstrip() + "\n")
 
 
-def _latest_ctx_window_mismatch_section(pm_home: Path, task: str) -> str | None | object:
+def _latest_ctx_window_mismatch_section(
+    pm_home: Path,
+    task: str | None,
+    session: str | None = None,
+) -> str | None | object:
     """append-only log의 최신 PreCompact 밴드 평가에서 복구용 진단을 읽는다.
 
     진단 전용 marker나 consume 상태를 만들지 않는다. 같은 사이클 재호출은 같은 평가를
@@ -997,10 +1044,20 @@ def _latest_ctx_window_mismatch_section(pm_home: Path, task: str) -> str | None 
         # ``None``은 판독에 성공했고 활성 진단이 없다는 뜻이다. 판독 실패까지 None으로 합치면
         # PostCompact가 기존 진단 payload를 무진단 snapshot으로 덮어쓸 수 있다.
         return _CTX_WINDOW_MISMATCH_READ_FAILED
-    task_tag = f"({_TASK_TAG_PREFIX}{task})"
     for _date, entry in reversed(entries):
         first_line = entry.partition("\n")[0]
-        if task_tag not in first_line or " checkpoint | " not in first_line:
+        if task is not None:
+            owns_entry = (
+                f"({_TASK_TAG_PREFIX}{task})" in first_line
+                and " checkpoint | " in first_line
+            )
+        elif session is not None:
+            owns_entry = (
+                f"({session})" in first_line and " checkpoint | " in first_line
+            )
+        else:
+            owns_entry = " checkpoint — " in first_line
+        if not owns_entry:
             continue
         state = re.search(r"<!-- ctx-band-check: (fired|missed) -->", entry)
         if state is None:
@@ -1029,10 +1086,11 @@ def build_snapshot(
 ) -> tuple[str | None, str | None]:
     """주입 최종 텍스트를 조립한다. 반환은 ``(text, warning)``이며 외부 호출·lock은 0이다."""
     started = monotonic()
-    task, source = resolve_snapshot_identity(pm_home, cwd)
-    if task is None:
+    identity_name, source = resolve_snapshot_identity(pm_home, cwd)
+    if identity_name is None:
         return None, "[pm-snapshot] 정체성 미해소 — cwd lease 불일치·활성 task 비단일; 재주입 생략"
-    identity = _identity_section(pm_home, cwd, task, source)
+    task, session = _checkpoint_identity_axes(pm_home, cwd, identity_name, source)
+    identity = _identity_section(pm_home, cwd, identity_name, source)
     sections: list[str] = []
     mismatch = (
         "## ctx 설정 진단 (compaction 경계)\n"
@@ -1042,7 +1100,7 @@ def build_snapshot(
             harness=harness,
         ).rstrip()
         + "\n"
-        if ctx_band_missed else _latest_ctx_window_mismatch_section(pm_home, task)
+        if ctx_band_missed else _latest_ctx_window_mismatch_section(pm_home, task, session)
     )
     if mismatch is _CTX_WINDOW_MISMATCH_READ_FAILED:
         # 무진단 snapshot을 만들지 않아 hook의 기존 armed payload가 그대로 남게 한다.
@@ -1053,13 +1111,13 @@ def build_snapshot(
     if monotonic() - started >= SNAPSHOT_TIMEOUT_SECONDS:
         return cap_snapshot_sections(identity, sections), None
 
-    sections.append(_ledger_section(pm_home, task))
+    sections.append(_ledger_section(pm_home, identity_name))
     if monotonic() - started >= SNAPSHOT_TIMEOUT_SECONDS:
         return cap_snapshot_sections(identity, sections[:1] if mismatch is not None else []), None
-    sections.append(_pm_state_section(pm_home, task, source, line_limit))
+    sections.append(_pm_state_section(pm_home, identity_name, source, line_limit))
     if monotonic() - started >= SNAPSHOT_TIMEOUT_SECONDS:
         return cap_snapshot_sections(identity, sections[:1] if mismatch is not None else []), None
-    sections.append(_recovery_section(task, source))
+    sections.append(_recovery_section(identity_name, source))
     return cap_snapshot_sections(identity, sections), None
 
 
@@ -1300,11 +1358,18 @@ def _resolve_compaction_boundary(
 def cmd_checkpoint(args: argparse.Namespace) -> int:
     """checkpoint 골격 append. compaction은 boundary/phase marker로 경계당 1건만 허용한다."""
     task = getattr(args, "task", None)
+    session = None
+    identity_name = task
     if not task:
         cwd = Path(getattr(args, "cwd", None) or Path.cwd()).resolve(strict=False)
-        task, _source = resolve_snapshot_identity(REPO, cwd)
-        if task is None:
+        identity_name, source = resolve_snapshot_identity(REPO, cwd)
+        if identity_name is None:
             if getattr(args, "trigger", None) == "compaction":
+                print(
+                    "[pm-checkpoint] checkpoint 정체성 미해소 — "
+                    "cwd lease 불일치·활성 task 비단일; 기록 생략",
+                    file=sys.stderr,
+                )
                 return 0
             print(
                 "[중단] checkpoint 정체성 미해소 — cwd lease 불일치·활성 task 비단일; "
@@ -1312,16 +1377,18 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-    identity_args = _load_identity_args()
-    try:
-        identity_args.validate_task_name(task, _registered_repos())
-    except identity_args.InvalidTaskName as exc:
-        print(
-            f"[중단] {exc} — `--task` 는 안전한 단일 이름이어야 하고 슬롯 예약패턴"
-            "(`<repo>_<N>`·⑥)은 쓸 수 없다.",
-            file=sys.stderr,
-        )
-        return 1
+        task, session = _checkpoint_identity_axes(REPO, cwd, identity_name, source)
+    if task is not None:
+        identity_args = _load_identity_args()
+        try:
+            identity_args.validate_task_name(task, _registered_repos())
+        except identity_args.InvalidTaskName as exc:
+            print(
+                f"[중단] {exc} — `--task` 는 안전한 단일 이름이어야 하고 슬롯 예약패턴"
+                "(`<repo>_<N>`·⑥)은 쓸 수 없다.",
+                file=sys.stderr,
+            )
+            return 1
     if not CURRENT_FILE.exists():
         print(f"(current.md 없음: {_rel(CURRENT_FILE)} — migrate 먼저)", file=sys.stderr)
         return 2
@@ -1339,6 +1406,7 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
     entry = build_checkpoint_entry(
         task,
         args.trigger,
+        session=session,
         ctx_band_checked=ctx_band_checked,
         ctx_band_missed=ctx_band_missed,
         ctx_window_tokens=getattr(args, "ctx_window_tokens", None),
@@ -1351,7 +1419,7 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
     # 이미 LF로 끝난 파일에는 빈 줄 하나가 추가될 뿐이며, 전체 payload는 단일 원자 write다.
     if args.trigger != "compaction":
         append_log(CURRENT_FILE, payload)
-        print(f"✓ checkpoint append: task={task} · trigger={args.trigger}")
+        print(f"✓ checkpoint append: task={identity_name} · trigger={args.trigger}")
         return 0
 
     marker = None
@@ -1360,18 +1428,20 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
     with log_write_lock(CURRENT_FILE):
         current_text = CURRENT_FILE.read_text(encoding="utf-8")
         boundary_id, phase, implicit_state = _resolve_compaction_boundary(
-            args, task=task, current_text=current_text,
+            args, task=identity_name, current_text=current_text,
         )
         reevaluated_precompact = phase == "pre" and ctx_band_checked
         if boundary_id is not None and phase is not None and not reevaluated_precompact:
             marker = _compaction_marker_path(
-                task, getattr(args, "session_id", None), boundary_id,
+                identity_name, getattr(args, "session_id", None), boundary_id,
             )
             claimed = claim_compaction_checkpoint(marker, phase=phase)
             if claimed is False:
                 if phase == "post":
                     _clear_implicit_boundary_state(implicit_state, boundary_id)
-                print(f"✓ checkpoint dedup skip: task={task} · trigger=compaction")
+                print(
+                    f"✓ checkpoint dedup skip: task={identity_name} · trigger=compaction"
+                )
                 return 0
             if claimed is None:
                 print(
@@ -1395,7 +1465,7 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
             # 진단은 먼저 durable append한다. 과거 호출이 claim 직후 죽여 둔 marker가 있어도
             # 재평가 결과를 억제하지 않으며, 이 후속 claim은 기존 checkpoint dedup만 보존한다.
             marker = _compaction_marker_path(
-                task, getattr(args, "session_id", None), boundary_id,
+                identity_name, getattr(args, "session_id", None), boundary_id,
             )
             claimed = claim_compaction_checkpoint(marker, phase=phase)
             if claimed is None:
@@ -1405,7 +1475,7 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
                 )
         if phase == "post":
             _clear_implicit_boundary_state(implicit_state, boundary_id)
-    print(f"✓ checkpoint append: task={task} · trigger={args.trigger}")
+    print(f"✓ checkpoint append: task={identity_name} · trigger={args.trigger}")
     return 0
 
 
