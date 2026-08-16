@@ -67,17 +67,18 @@ developer·code-reviewer·architect는 PM 홈 티켓을 직접 편집하지 않�
       --ticket T-NNNN --role <developer|code-reviewer|architect> \
       --cwd <작업 worktree 절대경로>
   # stdout JSON의 `copy`만 native Agent 프롬프트에 주입한다.
-  # `capability`는 PM이 harvest stdin용으로만 보관하며 agent prompt/파일/argv에 넣지 않는다.
+  # `capability`는 PM 홈 장부가 보관한다 — agent prompt/파일/argv에 넣지 않고 PM이 손으로 옮겨
+  # 적지도 않는다(prepare가 등록·harvest가 해소).
   # native 위임 종료 뒤(rc/판정과 무관):
   python3 .project_manager/tools/pm_delegate.py ticket harvest \
-      --copy <prepare JSON의 copy> --cwd <작업 worktree 절대경로> \
-      --capability-stdin
-  # 위 프로세스 stdin 한 줄에 prepare JSON의 capability를 입력
+      --copy <prepare JSON의 copy> --cwd <작업 worktree 절대경로>
+  # 미회수 사본 조회(컴팩션·세션 교체 뒤 복구 진입점):
+  #   python3 .project_manager/tools/pm_delegate.py ticket copies --unharvested
   ```
 
   prepare가 실패하면 spawn하지 않는다. harvest가 실패하면 티켓을 다음 단계로 넘기지 않고 같은
-  `--copy`와 PM만 보관한 capability stdin으로 재실행한다. capability 값은 명령 argv·프롬프트·로그에
-  쓰지 않는다. 사본·읽기 전용 baseline·metadata·tag 복제본은 성공 뒤에도 보존되며
+  `--copy`로 재실행한다. capability 값은 명령 argv·프롬프트·로그에 쓰지 않는다. 명시 공급이 필요한
+  경우에만 `--capability-stdin`을 쓰며(그때는 stdin 한 줄), 무-stdin + 장부 미등록만 fail-loud다. 사본·읽기 전용 baseline·metadata·tag 복제본은 성공 뒤에도 보존되며
   재호출마다 새 디렉터리를 쓰므로 서로 덮지 않는다.
 
 - **cross 자동 후처리**: 아래 실 실행에 `--ticket T-NNNN`을 주면 `pm_delegate.py`가 prepare,
@@ -91,7 +92,9 @@ developer·code-reviewer·architect는 PM 홈 티켓을 직접 편집하지 않�
 
 - **실패 판정**: marker 밖 byte 변경, marker 누락·중복·중첩·역할 불일치, 준비 뒤 같은 역할 절의
   PM 홈 변경은 stale overwrite 없이 rc=1. 원본과 사본을 보존한 채 원인을 고친 뒤 출력된
-  `ticket harvest --copy ... --cwd ... --capability-stdin`를 capability stdin과 함께 다시 실행한다.
+  `ticket harvest --copy ... --cwd ...`를 다시 실행한다. 준비 뒤 PM 홈 절이 바뀐 경우는
+  `ticket prepare --ticket ... --role ... --transfer-from <구 사본>`이 같은 role·ordinal 절을 새
+  사본으로 옮겨 준다 — **PM이 역할 절 bytes를 손으로 옮겨 적지 않는다**(봉인 취지).
   사본 디렉터리 `.project_manager/.local/delegate-ticket-copies/`는 tracked
   `.project_manager/.gitignore`의 `.local/` 규칙으로 무시되어 `git status --short`와 커밋 대상에
   나타나지 않는다(prepare가 `git check-ignore`로 확인하고 규칙 부재 시 fail-loud). baseline과
@@ -227,8 +230,8 @@ Agent 툴 호출:
 > **미마감 레코드 자체가 kill 증거**다. 재위임 전에 반드시 확인한다(완성분을 버리고 중복 과금하는 경로).
 > **native 위임은 raw 장부에는 남지 않지만 성장 사본에는 남는다** — 같은 하네스 안에서 도는 위임은
 > 위 native prepare→spawn→harvest를 수행한다. 하네스 보고/전사가 끊겨도 prepare가 출력한 사본을
-> 먼저 읽고, `ticket harvest --copy ... --cwd ... --capability-stdin`에 PM이 보관한 capability를
-> stdin으로 공급해 회수한 뒤에만 재위임한다.
+> 먼저 읽고, `ticket harvest --copy ... --cwd ...`로 회수한 뒤에만 재위임한다. 사본 경로마저
+> 잃었으면 `ticket copies --unharvested`가 미회수 사본을 열거한다.
 > **어느 장부를 봤는지 첫 줄로 확인한다** — `조회 장부: <절대경로>`. 장부는 **엔진 사본별**이라
 > `경고: 다른 엔진 사본 장부가 있습니다(이 조회에서는 읽지 않음): <경로>` 가 뜨면 자동 대체 조회가
 > 된 게 아니다 — 표시된 사본에서 **명시적으로 다시 조회**하라. `--output-dir DIR` 로 저장한 산출은
@@ -293,8 +296,8 @@ Agent 툴 호출:
      절을 직접 성장시켜 결함과 변경 결정을 남겨라. capability는 요구·기록하지 마라."
 ```
 
-architect도 위 native `ticket prepare` 뒤 Agent를 호출하고 종료 뒤 `ticket harvest
---capability-stdin`을 실행한다. 재설계는 새 prepare가 지정한 최신 ordinal을 성장시키며 harvest의
+architect도 위 native `ticket prepare` 뒤 Agent를 호출하고 종료 뒤 `ticket harvest --copy ...`를
+실행한다(capability는 장부에서 해소된다). 재설계는 새 prepare가 지정한 최신 ordinal을 성장시키며 harvest의
 stale·ticket·role·ordinal·HMAC 검증을 그대로 통과해야 한다.
 
 > **fix 라운드 프롬프트는 PM 승인 delta만 쓴다.** PM은 reviewer 절 밖

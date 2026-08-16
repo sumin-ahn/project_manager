@@ -57,17 +57,22 @@ architect·developer·code-reviewer는 PM 홈 티켓을 직접 편집하지 않�
 python3 .project_manager/tools/pm_delegate.py ticket prepare \
     --ticket T-NNNN --role <architect|developer|code-reviewer> \
     --cwd <작업 worktree 절대경로>
-# stdout JSON의 capability는 PM 메모리에만 보관. message/argv/파일/log에 넣지 않는다.
+# stdout JSON의 capability는 PM 홈 장부가 보관한다. message/argv/파일/log에 넣지 않고 PM이 손으로
+# 옮겨 적지도 않는다(prepare가 등록·harvest가 해소).
 
 # 아래 역할별 spawn_agent 종료 뒤
 python3 .project_manager/tools/pm_delegate.py ticket harvest \
-    --copy <prepare JSON의 copy> --cwd <작업 worktree 절대경로> \
-    --capability-stdin
-# stdin 한 줄에 prepare JSON의 capability를 입력한다.
+    --copy <prepare JSON의 copy> --cwd <작업 worktree 절대경로>
+
+# 미회수 사본 조회(컴팩션·세션 교체 뒤 복구 진입점)
+python3 .project_manager/tools/pm_delegate.py ticket copies --unharvested
 ```
 
-prepare 실패 시 spawn하지 않는다. harvest 실패 시 같은 copy와 capability stdin으로 재실행하고 다음
-단계로 넘기지 않는다. 에이전트는 지정 copy의 최신 자기 role marker 내부만 쓰며 capability를 알거나
+prepare 실패 시 spawn하지 않는다. harvest 실패 시 같은 copy로 재실행하고 다음 단계로 넘기지 않는다.
+명시 공급이 필요한 경우에만 `--capability-stdin`을 쓰며(그때는 stdin 한 줄), 무-stdin + 장부 미등록만
+fail-loud다. 준비 뒤 PM 홈 절이 바뀌어 stale로 막히면 `ticket prepare --ticket ... --role ...
+--transfer-from <구 사본>`이 같은 role·ordinal 절을 새 사본으로 옮겨 준다 — **PM이 역할 절 bytes를
+손으로 옮겨 적지 않는다**(봉인 취지). 에이전트는 지정 copy의 최신 자기 role marker 내부만 쓰며 capability를 알거나
 요구할 필요가 없다. code-reviewer native profile은 사본을 쓰도록 `workspace-write`지만 코드·board·git
 수정은 금지이며, spawn 전후 `git status --short`·`git diff --name-only` 감사가 위반을 loud 표면화한다.
 
@@ -345,7 +350,7 @@ spawn_agent(
 ```
 
 architect도 위 native `ticket prepare` 뒤 `spawn_agent`를 호출하고 종료 뒤 `ticket harvest
---capability-stdin`을 실행한다. 재설계는 새 prepare가 지정한 최신 ordinal을 성장시키며 harvest의
+--copy ...`를 실행한다(capability는 장부에서 해소된다). 재설계는 새 prepare가 지정한 최신 ordinal을 성장시키며 harvest의
 stale·ticket·role·ordinal·HMAC 검증을 그대로 통과해야 한다.
 
 > **fix 라운드 프롬프트는 PM 승인 delta만 쓴다.** PM은 reviewer 절 밖

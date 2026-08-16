@@ -1,16 +1,22 @@
-// opencode raw git cwd-anchor 가드 core (T-0587).
+// opencode raw git/engine cwd-anchor 가드 core (T-0587, T-0697).
 // 판정은 Python board.judge_git_anchor_command 단일 진실을 subprocess로 호출하고, 이 모듈은
-// 비-git 선필터 + opencode hook 배선만 소유한다. plugins/ 진입점은 팩토리 하나만 export한다.
+// 선필터 + opencode hook 배선만 소유한다. plugins/ 진입점은 팩토리 하나만 export한다.
 const path = require("node:path");
 const childProcess = require("node:child_process");
 const { createWarningChannel } = require("./warning-channel-core.cjs");
 
-const GIT_PREFILTER = /(^|[^A-Za-z0-9_.-])git(?=\s|$|[<>])/;
+const GIT_PREFILTER = [
+  /(^|[^A-Za-z0-9_.-])git(?=\s|$|[<>])/,
+  /\.project_manager\/tools\//,
+  /(^|[^A-Za-z0-9_.-])pytest(?=\s|$)/,
+  /(^|[;&|])\s*cd(?=\s)/,
+];
 
 function containsGitCommand(command) {
-  return typeof command === "string" && GIT_PREFILTER.test(
-    command.replace(/\\\r?\n/g, "").replace(/["']/g, ""),
-  );
+  if (typeof command !== "string") return false;
+  const prefilter = command.replace(/\\\r?\n/g, "").replace(/["']/g, "");
+  const normalized = prefilter.replace(/\\/g, "/").replace(/\/+/g, "/");
+  return GIT_PREFILTER.some((pattern, index) => pattern.test(index === 1 ? normalized : prefilter));
 }
 
 function findEngineRoot(startDir, fs = require("node:fs")) {

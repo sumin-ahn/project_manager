@@ -61,6 +61,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from collections.abc import Mapping, Sequence
@@ -689,6 +690,9 @@ TICKET_COPY_REL_ROOT = Path(".project_manager") / ".local" / "delegate-ticket-co
 TICKET_COPY_TRUST_REL_ROOT = (
     Path(".project_manager") / ".local" / "delegate-ticket-copy-trust"
 )
+TICKET_COPY_LEDGER_REL_PATH = (
+    Path(".project_manager") / ".local" / "ticket_copies.jsonl"
+)
 TICKET_COPY_BASELINE_NAME = "baseline.md"
 TICKET_COPY_METADATA_NAME = "metadata.json"
 TICKET_COPY_TAG_NAME = "auth.tag"
@@ -1110,6 +1114,301 @@ def _write_exclusive_file(
         os.close(fd)
 
 
+def _ticket_copy_ledger_path(pm_home: Path) -> Path:
+    return pm_home.resolve() / TICKET_COPY_LEDGER_REL_PATH
+
+
+def _posix_mode_supported(directory: Path) -> bool:
+    """directory filesystem이 chmod mode를 stat으로 왕복하는지 실제 probe한다."""
+    probe: Path | None = None
+    try:
+        fd, raw_path = tempfile.mkstemp(prefix=".ticket-copy-mode-", dir=directory)
+        os.close(fd)
+        probe = Path(raw_path)
+        probe.chmod(0o600)
+        return stat.S_IMODE(probe.stat().st_mode) == 0o600
+    except (OSError, NotImplementedError):
+        return False
+    finally:
+        if probe is not None:
+            try:
+                probe.unlink()
+            except OSError:
+                pass
+
+
+def _ticket_copy_ledger_row(row: object, *, line_number: int) -> dict:
+    required = {
+        "ticket", "role", "ordinal", "run_id", "copy", "capability",
+        "prepared_at", "harvested_at",
+    }
+    if not isinstance(row, dict) or set(row) != required:
+        raise DelegateError(
+            f"ticket-copy 장부 schema 불일치: line={line_number}"
+        )
+    if (
+        not isinstance(row["ticket"], str)
+        or not _load_board()._is_valid_ticket_id(row["ticket"])
+        or row["role"] not in TICKET_COPY_ROLES
+        or not isinstance(row["ordinal"], int)
+        or row["ordinal"] < 0
+        or not isinstance(row["run_id"], str)
+        or re.fullmatch(r"[0-9a-f]{32}", row["run_id"]) is None
+        or not isinstance(row["copy"], str)
+        or not Path(row["copy"]).is_absolute()
+        or not isinstance(row["capability"], str)
+        or re.fullmatch(r"[0-9a-f]{64}", row["capability"]) is None
+        or not isinstance(row["prepared_at"], str)
+        or not row["prepared_at"]
+        or not (
+            row["harvested_at"] is None
+            or isinstance(row["harvested_at"], str) and row["harvested_at"]
+        )
+    ):
+        raise DelegateError(
+            f"ticket-copy 장부 값 형식 불일치: line={line_number}"
+        )
+    return dict(row)
+
+
+def _ticket_copy_ledger_records(
+    pm_home: Path,
+    *,
+    target_copy: Path | None = None,
+    warning_sink: Callable[[str], None] | None = None,
+) -> list[dict]:
+    """append-only snapshot을 읽되 손상 판정을 식별 가능한 copy에만 귀속한다."""
+    path = _ticket_copy_ledger_path(pm_home)
+    target_resolved = str(target_copy.resolve()) if target_copy is not None else None
+
+    def reject_or_skip(message: str, damaged_copy: object = None) -> None:
+        damaged_resolved: str | None = None
+        if isinstance(damaged_copy, str) and Path(damaged_copy).is_absolute():
+            damaged_resolved = str(Path(damaged_copy).resolve())
+        if target_resolved is not None and damaged_resolved == target_resolved:
+            raise DelegateError(message)
+        if warning_sink is not None and (
+            target_resolved is None or damaged_resolved is None
+        ):
+            warning_sink(message)
+
+    try:
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise DelegateError(f"ticket-copy 장부 읽기 실패: {path}: {exc}") from exc
+    try:
+        observed = os.fstat(fd)
+        if not stat.S_ISREG(observed.st_mode):
+            raise DelegateError(f"ticket-copy 장부가 regular file이 아님: {path}")
+        if (
+            _posix_mode_supported(path.parent)
+            and stat.S_IMODE(observed.st_mode) != 0o600
+        ):
+            raise DelegateError(
+                f"ticket-copy 장부 권한 불일치(0600 필요): {path}"
+            )
+        with os.fdopen(fd, "r", encoding="utf-8", newline="", closefd=False) as handle:
+            lines = handle.readlines()
+    except (OSError, UnicodeError) as exc:
+        raise DelegateError(f"ticket-copy 장부 읽기 실패: {path}: {exc}") from exc
+    finally:
+        os.close(fd)
+    rows: list[dict] = []
+    immutable_by_copy: dict[str, tuple[object, ...]] = {}
+    immutable_keys = ("ticket", "role", "ordinal", "run_id", "copy", "prepared_at")
+    for line_number, line in enumerate(lines, 1):
+        try:
+            decoded = json.loads(line)
+        except ValueError:
+            reject_or_skip(
+                f"ticket-copy 장부 JSON 손상 건너뜀: {path}: line={line_number}"
+            )
+            continue
+        damaged_copy = decoded.get("copy") if isinstance(decoded, dict) else None
+        try:
+            row = _ticket_copy_ledger_row(decoded, line_number=line_number)
+        except DelegateError as exc:
+            reject_or_skip(f"{exc} · 손상 행 건너뜀", damaged_copy)
+            continue
+        identity = tuple(row[key] for key in immutable_keys)
+        previous = immutable_by_copy.setdefault(row["copy"], identity)
+        if previous != identity:
+            reject_or_skip(
+                f"ticket-copy 장부 동일 copy 불변 필드 불일치: {row['copy']} · "
+                "손상 행 건너뜀",
+                row["copy"],
+            )
+            continue
+        rows.append(row)
+    return rows
+
+
+def _append_ticket_copy_ledger(pm_home: Path, row: dict) -> None:
+    """공유 atomic-append seam으로 0600 장부의 기존 bytes를 덮지 않는다."""
+    _ticket_copy_ledger_row(row, line_number=0)
+    local_dir, local_fd = _secure_machine_dir(
+        pm_home, (".project_manager", ".local"), label="PM ticket-copy 장부 디렉터리",
+    )
+    path = local_dir / TICKET_COPY_LEDGER_REL_PATH.name
+    try:
+        try:
+            observed = path.lstat()
+        except FileNotFoundError:
+            observed = None
+        if observed is not None and not stat.S_ISREG(observed.st_mode):
+            raise DelegateError(f"ticket-copy 장부가 regular file이 아님: {path}")
+        payload = (
+            json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            + "\n"
+        )
+        file_lock = _load_file_lock()
+        file_lock.append_atomic(path, payload, mode=0o600)
+        if hasattr(os, "chmod"):
+            path.chmod(0o600)
+        observed = path.stat()
+        if not stat.S_ISREG(observed.st_mode):
+            raise DelegateError(f"ticket-copy 장부가 regular file이 아님: {path}")
+        if (
+            _posix_mode_supported(path.parent)
+            and stat.S_IMODE(observed.st_mode) != 0o600
+        ):
+            raise DelegateError(f"ticket-copy 장부 권한 불일치(0600 필요): {path}")
+        sync_fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(sync_fd)
+        finally:
+            os.close(sync_fd)
+    except OSError as exc:
+        raise DelegateError(f"ticket-copy 장부 append 실패: {path}: {exc}") from exc
+    finally:
+        if local_fd is not None:
+            os.close(local_fd)
+
+
+def ticket_copy_records(
+    pm_home: Path, *, ticket: str | None = None, unharvested: bool = False,
+) -> list[dict]:
+    """copy별 최신 append snapshot을 prepare 최신순으로 반환한다."""
+    latest: dict[str, dict] = {}
+    for row in _ticket_copy_ledger_records(
+        pm_home,
+        warning_sink=lambda message: print(f"경고: {message}", file=sys.stderr),
+    ):
+        latest[row["copy"]] = row
+    rows = [
+        row for row in latest.values()
+        if (ticket is None or row["ticket"] == ticket)
+        and (not unharvested or row["harvested_at"] is None)
+    ]
+    return sorted(rows, key=lambda row: row["prepared_at"], reverse=True)
+
+
+def _ticket_copy_ledger_record(
+    pm_home: Path, copy_path: Path, *, required: bool = True,
+) -> dict | None:
+    resolved = str(copy_path.resolve())
+    damage_warnings: list[str] = []
+    matches = [
+        row for row in _ticket_copy_ledger_records(
+            pm_home, target_copy=copy_path, warning_sink=damage_warnings.append,
+        )
+        if str(Path(row["copy"]).resolve()) == resolved
+    ]
+    if not matches:
+        if damage_warnings and required:
+            raise DelegateError(
+                "ticket-copy 장부 대상 사본 등록 여부를 확인할 수 없습니다 — "
+                f"손상 행 존재: copy={resolved} · {damage_warnings[0]}"
+            )
+        for warning in damage_warnings:
+            print(
+                "경고: ticket-copy 장부 대상 사본 조회 중 손상 행이 "
+                f"잔존합니다: copy={resolved} · {warning}",
+                file=sys.stderr,
+            )
+        if not required:
+            return None
+        raise DelegateError(
+            f"ticket-copy 장부에 사본 등록이 없습니다: {resolved}"
+        )
+    row = matches[-1]
+    if row["copy"] != resolved:
+        raise DelegateError(
+            f"ticket-copy 장부 copy 좌표 불일치: ledger={row['copy']} · requested={resolved}"
+        )
+    return row
+
+
+def _resolve_ticket_copy_capability(pm_home: Path, copy_path: Path) -> bytes:
+    row = _ticket_copy_ledger_record(pm_home, copy_path)
+    assert row is not None
+    return bytes.fromhex(row["capability"])
+
+
+def _assert_ticket_copy_ledger_identity(plan: TicketCopyPlan, row: dict) -> None:
+    expected = (
+        plan.ticket, plan.role, int(row["ordinal"]), plan.path.parent.name,
+        str(plan.path.resolve()),
+    )
+    observed = (
+        row["ticket"], row["role"], row["ordinal"], row["run_id"], row["copy"],
+    )
+    if observed != expected:
+        raise DelegateError("ticket-copy 장부와 검증된 사본 identity 불일치")
+
+
+def _mark_ticket_copy_harvested(
+    plan: TicketCopyPlan,
+    metadata: dict,
+    capability: bytes,
+    ledger_row: dict | None,
+) -> None:
+    if ledger_row is None:
+        # 장부 도입 전 사본은 성공한 MAC 검증을 근거로 완료 snapshot 한 행을 backfill한다.
+        row = {
+            "ticket": plan.ticket,
+            "role": plan.role,
+            "ordinal": metadata["ordinal"],
+            "run_id": plan.path.parent.name,
+            "copy": str(plan.path.resolve()),
+            "capability": capability.hex(),
+            "prepared_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "harvested_at": None,
+        }
+    else:
+        row = dict(ledger_row)
+        _assert_ticket_copy_ledger_identity(plan, row)
+    # stdin capability가 있으면 그것이 우선이며, 성공한 MAC 검증 결과로 최신 snapshot도
+    # 복구한다. capability는 role agent가 보는 사본 metadata/auth.tag에는 기록하지 않는다.
+    row["capability"] = capability.hex()
+    row["harvested_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    _append_ticket_copy_ledger(plan.pm_home, row)
+
+
+def _mark_ticket_copy_harvested_best_effort(
+    plan: TicketCopyPlan,
+    metadata: dict,
+    capability: bytes,
+    ledger_row: dict | None,
+) -> None:
+    try:
+        _mark_ticket_copy_harvested(plan, metadata, capability, ledger_row)
+    except DelegateError as exc:
+        # 티켓 atomic write/sync가 끝난 뒤 append 실패를 rc=1로 올리면 호출자는 반영 실패로
+        # 오인하고 장부와 티켓의 부분 성공을 더 키운다. 완료 결과는 유지하고 loud warning을
+        # 남긴다. 사본은 보존되므로 같은 harvest 재호출이 idempotent하게 장부를 복구할 수 있다.
+        print(
+            f"경고: ticket harvest 반영은 완료됐지만 장부 완료 기록에 실패했습니다; "
+            f"같은 사본으로 harvest를 재시도하세요: {exc}",
+            file=sys.stderr,
+        )
+
+
 def _secure_machine_dir(
     root: Path, relative_parts: tuple[str, ...], *, label: str,
 ) -> tuple[Path, int | None]:
@@ -1238,6 +1537,7 @@ def _load_board_for_repo(repo: Path):
 
 def prepare_ticket_copy(
     *, ticket: str, role: str, cwd: Path, pm_home: Path,
+    transfer_from: Path | None = None,
 ) -> TicketCopyPlan:
     """PM 홈 현재 티켓 전문을 slot 내부 기계 사본으로 원자 materialize한다."""
     if role not in TICKET_COPY_ROLES:
@@ -1295,6 +1595,47 @@ def prepare_ticket_copy(
                 "ticket prepare 거부: 대상 역할 절의 기존 seal sha256이 현재 본문과 "
                 "불일치합니다 — " + "; ".join(target_hash_problems)
             )
+    copy_bytes = source_bytes
+    transferred_from: str | None = None
+    if transfer_from is not None:
+        if not transfer_from.is_absolute():
+            raise DelegateError("--transfer-from은 구 사본의 절대경로여야 합니다")
+        transfer_capability = _resolve_ticket_copy_capability(pm_home, transfer_from)
+        old_plan, old_metadata, old_copy_bytes, _old_baseline = _load_ticket_copy_plan(
+            transfer_from, cwd=cwd, pm_home=pm_home, capability=transfer_capability,
+        )
+        if old_plan.ticket != ticket:
+            raise DelegateError(
+                f"--transfer-from ticket 불일치: old={old_plan.ticket} · new={ticket}"
+            )
+        if old_plan.role != role:
+            raise DelegateError(
+                f"--transfer-from 역할 불일치: old={old_plan.role} · new={role}"
+            )
+        if old_metadata["ordinal"] != target.ordinal:
+            raise DelegateError(
+                "--transfer-from ordinal 불일치: "
+                f"old={old_metadata['ordinal']} · new={target.ordinal}"
+            )
+        try:
+            old_copy_text = old_copy_bytes.decode("utf-8")
+        except UnicodeError as exc:
+            raise DelegateError(
+                f"--transfer-from 구 사본 UTF-8 손상: {transfer_from}"
+            ) from exc
+        old_section = _ticket_role_section(
+            old_copy_text, role, ordinal=target.ordinal,
+        )
+        transferred_content = old_copy_text[
+            old_section.content_start:old_section.content_end
+        ]
+        copy_text = (
+            source_text[:target.content_start]
+            + transferred_content
+            + source_text[target.content_end:]
+        )
+        copy_bytes = copy_text.encode("utf-8")
+        transferred_from = str(old_plan.path.resolve())
     run_id = uuid.uuid4().hex
     capability = secrets.token_bytes(32)
     _assert_ticket_copy_root_ignored(
@@ -1311,10 +1652,13 @@ def prepare_ticket_copy(
         "source_relpath": source.relative_to(pm_home.resolve()).as_posix(),
         "baseline_sha256": hashlib.sha256(source_bytes).hexdigest(),
     }
+    if transferred_from is not None:
+        metadata["transferred_from"] = transferred_from
     metadata_bytes = _ticket_copy_metadata_bytes(metadata)
     tag = _ticket_copy_tag(capability, metadata_bytes, source_bytes)
-    # slot sealed bundle과 PM-home trust는 복구/탐지용 복제본일 뿐 권위가 아니다. 권위는 어떤
-    # 파일에도 기록하지 않는 per-run capability와 이 canonical metadata+baseline MAC 검증이다.
+    # slot sealed bundle과 PM-home trust는 복구/탐지용 복제본일 뿐 권위가 아니다. capability는
+    # PM 홈 .local 장부에만 둔다. role agent의 작업 위치인 worktree 사본에는 노출하지 않고,
+    # harvest 자체도 PM 홈 board 쓰기 경로이므로 agent가 스스로 회수하지 못하는 경계는 유지된다.
     trust_dir, trust_dir_fd = _secure_ticket_trust_dir(pm_home, run_id)
     try:
         _write_exclusive_file(
@@ -1342,7 +1686,7 @@ def prepare_ticket_copy(
     baseline_path = run_dir / TICKET_COPY_BASELINE_NAME
     metadata_path = run_dir / TICKET_COPY_METADATA_NAME
     try:
-        _write_exclusive_file(copy_path, source_bytes, 0o600, parent_fd=run_dir_fd)
+        _write_exclusive_file(copy_path, copy_bytes, 0o600, parent_fd=run_dir_fd)
         _write_exclusive_file(baseline_path, source_bytes, 0o400, parent_fd=run_dir_fd)
         _write_exclusive_file(
             metadata_path,
@@ -1358,10 +1702,21 @@ def prepare_ticket_copy(
     finally:
         if run_dir_fd is not None:
             os.close(run_dir_fd)
-    return TicketCopyPlan(
+    plan = TicketCopyPlan(
         copy_path, baseline_path, metadata_path, cwd.resolve(), pm_home.resolve(), ticket, role,
         capability,
     )
+    _append_ticket_copy_ledger(pm_home, {
+        "ticket": ticket,
+        "role": role,
+        "ordinal": target.ordinal,
+        "run_id": run_id,
+        "copy": str(copy_path.resolve()),
+        "capability": capability.hex(),
+        "prepared_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "harvested_at": None,
+    })
+    return plan
 
 
 def _read_machine_files(
@@ -1474,7 +1829,8 @@ def _load_ticket_copy_plan(
         "version", "run_id", "ticket", "role", "ordinal", "cwd", "pm_home",
         "source_relpath", "baseline_sha256",
     }
-    if not isinstance(metadata, dict) or set(metadata) != required:
+    allowed = required | {"transferred_from"}
+    if not isinstance(metadata, dict) or not required.issubset(metadata) or not set(metadata) <= allowed:
         raise DelegateError("티켓 사본 metadata schema 불일치")
     if metadata["version"] != TICKET_COPY_METADATA_VERSION:
         raise DelegateError(f"티켓 사본 metadata version 불일치: {metadata['version']!r}")
@@ -1482,6 +1838,11 @@ def _load_ticket_copy_plan(
         raise DelegateError("PM 신뢰 metadata와 사본 경로 ticket/role/run 불일치")
     if not isinstance(metadata["ordinal"], int) or metadata["ordinal"] < 0:
         raise DelegateError("티켓 사본 metadata role/ordinal 불일치")
+    if "transferred_from" in metadata and (
+        not isinstance(metadata["transferred_from"], str)
+        or not Path(metadata["transferred_from"]).is_absolute()
+    ):
+        raise DelegateError("티켓 사본 metadata transferred_from 형식 불일치")
     if Path(str(metadata["cwd"])).resolve() != cwd or Path(str(metadata["pm_home"])).resolve() != pm_home.resolve():
         raise DelegateError("티켓 사본 metadata cwd/PM 홈 좌표 불일치")
     if _ticket_copy_metadata_bytes(metadata) != metadata_bytes:
@@ -1494,12 +1855,26 @@ def _load_ticket_copy_plan(
 
 
 def harvest_ticket_copy(
-    *, copy_path: Path, cwd: Path, pm_home: Path, capability: bytes,
+    *, copy_path: Path, cwd: Path, pm_home: Path, capability: bytes | None = None,
 ) -> TicketHarvestResult:
     """역할 절을 반영하고 매 호출 sync를 재시도한다. result=(changed, sync_ready)."""
+    if capability is None:
+        ledger_row = _ticket_copy_ledger_record(pm_home, copy_path)
+        assert ledger_row is not None
+        capability = bytes.fromhex(ledger_row["capability"])
+    else:
+        ledger_row = None
     plan, metadata, copy_bytes, baseline_bytes = _load_ticket_copy_plan(
         copy_path, cwd=cwd, pm_home=pm_home, capability=capability,
     )
+    if ledger_row is None:
+        # 명시 capability의 MAC이 검증됐다면 장부 도입 전 사본도 회수한다. 장부가 있으면
+        # identity를 계속 fail-closed 검증하고, 없으면 성공 뒤 완료 snapshot으로 backfill한다.
+        ledger_row = _ticket_copy_ledger_record(pm_home, copy_path, required=False)
+    if ledger_row is not None:
+        _assert_ticket_copy_ledger_identity(plan, ledger_row)
+        if ledger_row["ordinal"] != metadata["ordinal"]:
+            raise DelegateError("ticket-copy 장부와 검증된 metadata ordinal 불일치")
     try:
         baseline_text = baseline_bytes.decode("utf-8")
         copy_text = copy_bytes.decode("utf-8")
@@ -1593,6 +1968,7 @@ def harvest_ticket_copy(
         if current_block != desired_block and current_block != baseline_block:
             raise DelegateError(
                 "PM 홈의 같은 ticket/role 절이 준비 뒤 별도로 바뀌어 stale overwrite를 거부합니다 — "
+                f"새 사본을 `ticket prepare --transfer-from {plan.path}`로 준비하세요 · "
                 f"원본={plan.baseline_path} · 사본={plan.path} · PM 홈={current_path}"
             )
         updated = (
@@ -1614,6 +1990,9 @@ def harvest_ticket_copy(
             "promote가 출하를 소유합니다.",
             file=sys.stderr,
         )
+        _mark_ticket_copy_harvested_best_effort(
+            plan, metadata, capability, ledger_row,
+        )
         return TicketHarvestResult(wrote, True)
     message = f"ticket-harvest {plan.ticket} {plan.role}"
     growth_sync = getattr(board, "_growth_mutation_sync", None)
@@ -1626,7 +2005,11 @@ def harvest_ticket_copy(
         # 절은 반영됐는데 CLI만 실패하는 전환기 부분 성공이 된다.
         board.refresh_board()
         sync_ready = board._board_git_sync_best_effort(message, (current_path,))
-    return TicketHarvestResult(wrote, bool(sync_ready))
+    result = TicketHarvestResult(wrote, bool(sync_ready))
+    _mark_ticket_copy_harvested_best_effort(
+        plan, metadata, capability, ledger_row,
+    )
+    return result
 
 
 def _ticket_copy_preamble(plan: TicketCopyPlan) -> str:
@@ -7656,12 +8039,21 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
     prepare.add_argument("--ticket", required=True, metavar="T-NNNN")
     prepare.add_argument("--role", required=True, choices=tuple(sorted(TICKET_COPY_ROLES)))
     prepare.add_argument("--cwd", required=True, metavar="ABSPATH")
+    prepare.add_argument(
+        "--transfer-from", default=None, metavar="ABSPATH",
+        help="구 사본의 같은 role/ordinal 절 본문을 새 baseline 사본에 이월",
+    )
     harvest = sub.add_parser("harvest", help="보존된 사본의 자기 역할 절을 PM 홈 최신 티켓에 회수")
     harvest.add_argument("--copy", required=True, metavar="ABSPATH")
     harvest.add_argument("--cwd", required=True, metavar="ABSPATH")
     harvest.add_argument(
-        "--capability-stdin", action="store_true", required=True,
-        help="prepare JSON의 capability를 argv가 아닌 stdin 한 줄로 입력",
+        "--capability-stdin", action="store_true",
+        help="장부 대신 stdin 한 줄의 capability를 우선 사용",
+    )
+    copies = sub.add_parser("copies", help="PM 홈 ticket-copy 장부 조회")
+    copies.add_argument("--ticket", default=None, metavar="T-NNNN")
+    copies.add_argument(
+        "--unharvested", action="store_true", help="미회수 사본만 표시",
     )
     backfill = sub.add_parser(
         "seal-backfill",
@@ -7733,6 +8125,31 @@ def _cmd_ticket(argv: list[str]) -> int:
     try:
         if args.ticket_command == "seal-backfill":
             return _cmd_ticket_seal_backfill(args.ticket)
+        if args.ticket_command == "copies":
+            if args.ticket is not None and not _load_board()._is_valid_ticket_id(args.ticket):
+                parser.error("--ticket은 board 발행 ticket ID 형식이어야 합니다")
+            owner = _activate_internal_rounds_cli_owner()
+            ledger = _ticket_copy_ledger_path(owner)
+            print(f"조회 장부: {ledger}")
+            rows = ticket_copy_records(
+                owner, ticket=args.ticket, unharvested=args.unharvested,
+            )
+            label = "미회수 ticket copies" if args.unharvested else "최근 ticket copies"
+            if not rows:
+                print(f"{label} 없음")
+                return 0
+            print(f"{label} {len(rows)}건")
+            for row in rows:
+                status = (
+                    f"회수({row['harvested_at']})"
+                    if row["harvested_at"] is not None else "미회수"
+                )
+                print(
+                    f"{row['prepared_at']} · {status} · {row['ticket']} · "
+                    f"role={row['role']} · ordinal={row['ordinal']} · "
+                    f"run_id={row['run_id']} · copy={row['copy']}"
+                )
+            return 0
         cwd = Path(args.cwd)
         cwd_repo = _repo_root_for_cwd(cwd)
         owner = _ticket_cli_owner(cwd_repo)
@@ -7741,6 +8158,9 @@ def _cmd_ticket(argv: list[str]) -> int:
                 parser.error("--ticket은 board 발행 ticket ID 형식이어야 합니다")
             plan = prepare_ticket_copy(
                 ticket=args.ticket, role=args.role, cwd=cwd_repo, pm_home=owner,
+                transfer_from=(
+                    Path(args.transfer_from) if args.transfer_from is not None else None
+                ),
             )
             print(json.dumps({
                 "copy": str(plan.path),
@@ -7750,13 +8170,15 @@ def _cmd_ticket(argv: list[str]) -> int:
         copy = Path(args.copy)
         if not copy.is_absolute():
             parser.error("--copy 는 prepare가 출력한 절대경로여야 합니다")
-        capability_text = sys.stdin.readline().strip()
-        try:
-            capability = bytes.fromhex(capability_text)
-        except ValueError as exc:
-            raise DelegateError("stdin capability 형식 불일치") from exc
-        if len(capability) != 32:
-            raise DelegateError("stdin capability 형식 불일치")
+        capability = None
+        if args.capability_stdin:
+            capability_text = sys.stdin.readline().strip()
+            try:
+                capability = bytes.fromhex(capability_text)
+            except ValueError as exc:
+                raise DelegateError("stdin capability 형식 불일치") from exc
+            if len(capability) != 32:
+                raise DelegateError("stdin capability 형식 불일치")
         result = harvest_ticket_copy(
             copy_path=copy, cwd=cwd_repo, pm_home=owner,
             capability=capability,

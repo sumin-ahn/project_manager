@@ -53,6 +53,39 @@ def stop_hook():
     return _load("ctx_stop_hook")
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python3 .project_manager/tools/board.py list",
+        "python3 -m pytest tests/ -q",
+        "cd /tmp && python3 build.py",
+    ],
+    ids=["engine-tool", "pytest", "persistent-cd"],
+)
+def test_git_anchor_prefilter_routes_new_command_classes_to_board(
+    monkeypatch, tmp_path, command,
+):
+    """T-0697 선필터 세 분기는 모두 중앙 board 판정 seam까지 도달한다."""
+    driver = _load("pm_orch_claude")
+    calls = []
+
+    class FakeBoard:
+        @staticmethod
+        def judge_git_anchor_command(cwd, shell_command):
+            calls.append((cwd, shell_command))
+            return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "fixture"}
+
+    monkeypatch.setattr(driver, "_load_board", lambda _root: FakeBoard)
+    payload = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "cwd": str(tmp_path),
+        "tool_input": {"command": command},
+    }
+    assert driver.git_anchor_hook_evaluate(payload, tmp_path) is None
+    assert calls == [(str(tmp_path), command)]
+
+
 # ── transcript JSONL fixture 헬퍼 ──────────────────────────────────────────
 
 def _write_transcript(tmp_path: Path, messages, *, sidechain=None) -> Path:

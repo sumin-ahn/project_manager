@@ -21,6 +21,7 @@ import contextlib
 import datetime
 import fnmatch
 import functools
+import hashlib
 import json
 import os
 import re
@@ -688,6 +689,218 @@ def judge_git_anchor(
     }
 
 
+class _EngineInvocation(NamedTuple):
+    kind: str
+    script: str | None
+    args: tuple[str, ...]
+
+
+def _engine_invocation_details(
+    _cwd: str | os.PathLike[str], argv: Sequence[str],
+) -> _EngineInvocation | None:
+    """pytest 또는 ``.project_manager/tools/*.py`` 호출 모양을 정규화한다."""
+    values = [str(value) for value in argv]
+    if not values:
+        return None
+    executable = Path(values[0]).name.lower()
+    if executable.endswith(".exe"):
+        executable = executable[:-4]
+    if executable == "pytest":
+        return _EngineInvocation("pytest", None, tuple(values[1:]))
+    is_python = re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", executable) is not None
+    if is_python and len(values) >= 3 and values[1:3] == ["-m", "pytest"]:
+        return _EngineInvocation("pytest", None, tuple(values[3:]))
+    script_index = 1 if is_python and len(values) >= 2 else 0
+    script = values[script_index]
+    path = Path(script)
+    parts = path.parts
+    if (
+        path.suffix == ".py"
+        and len(parts) >= 3
+        and parts[-3:-1] == (".project_manager", "tools")
+    ):
+        return _EngineInvocation("engine", script, tuple(values[script_index + 1:]))
+    return None
+
+
+def _pytest_targets_tests(args: Sequence[str]) -> bool:
+    """pytest argv가 상대 ``tests/`` tree를 명시하는지 판정한다."""
+    for raw in args:
+        if not raw or raw.startswith("-"):
+            continue
+        normalized = raw.replace("\\", "/")
+        while normalized.startswith("./"):
+            normalized = normalized[2:]
+        if normalized.rstrip("/") == "tests" or normalized.startswith("tests/"):
+            return True
+    return False
+
+
+def _unexpanded_shell_parameters(value: str) -> tuple[str, ...]:
+    """경로 token에 셸이 아직 확장하지 않은 parameter 표기를 찾는다."""
+    pattern = re.compile(
+        r"\$(?:\{[^}\r\n]+\}|[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!_-])"
+    )
+    return tuple(dict.fromkeys(match.group(0) for match in pattern.finditer(value)))
+
+
+def _file_sha256(path: Path) -> str | None:
+    """사본 파일 내용을 sha256으로 비교하되 읽기 실패는 advisory로 남긴다."""
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _board_mutation_subcommand(args: Sequence[str]) -> str:
+    """기존 board mutation 분류 키와 같은 점표기 subcommand를 argv에서 얻는다."""
+    if not args:
+        return ""
+    command = args[0]
+    if command in {"idea", "prefix"} and len(args) >= 2:
+        command = f"{command} {args[1]}"
+    return command if command in _MUTATION_SUBCOMMANDS else ""
+
+
+def _engine_other_copy(
+    cwd_root: Path | None, script_root: Path, script_identity: str,
+    pm_home: Path | None, relative_script: Path, *, runner: Any,
+) -> tuple[Path, Path] | None:
+    """함께 존재하는 반대편(PM import/canonical) 엔진 사본 하나를 찾는다."""
+    candidates: list[Path] = []
+    if script_identity == "pm-home" and pm_home is not None:
+        if cwd_root is not None and cwd_root != script_root:
+            candidates.append(cwd_root)
+        candidates.extend(_registered_slot_paths(pm_home, runner=runner))
+    elif script_identity in {"slot", "worktree"} and pm_home is not None:
+        candidates.append(pm_home)
+    for root in candidates:
+        root = root.resolve()
+        candidate = root / relative_script
+        if root != script_root and candidate.is_file():
+            return root, candidate
+    return None
+
+
+def judge_engine_invocation(
+    cwd: str, argv: list[str], *, runner: Any = subprocess.run
+) -> dict[str, str]:
+    """엔진/pytest 호출의 사본·소유 앵커를 판정한다.
+
+    deny는 PM 홈에 대상 ``tests/``가 없는 pytest 호출과 non-PM 엔진 사본의 board
+    mutation 두 축뿐이다. 상대 엔진 경로는 실행 사본의 절대경로와 반대편 사본의
+    도구 파일 sha256 비교를 warn으로 주입한다.
+    """
+    cwd_path = Path(cwd).expanduser().resolve()
+    identity, cwd_root, cwd_pm_home = _git_anchor_identity(cwd_path, runner=runner)
+    details = _engine_invocation_details(cwd, argv)
+    if details is None:
+        return {
+            "verdict": "ok", "cwd_identity": identity,
+            "reason": "엔진/pytest 호출이 아님",
+        }
+    if details.kind == "pytest":
+        if (
+            identity == "pm-home"
+            and _pytest_targets_tests(details.args)
+            and not (cwd_path / "tests").is_dir()
+        ):
+            return {
+                "verdict": "deny", "cwd_identity": identity,
+                "reason": (
+                    "PM 홈 cwd에서 pytest tests/를 실행하려 하나 cwd의 tests/ 디렉터리가 "
+                    "실재하지 않음 — 대상 worktree의 workdir에서 실행하라"
+                ),
+            }
+        return {
+            "verdict": "ok", "cwd_identity": identity,
+            "reason": "pytest 호출은 PM 홈 tests/ 오앵커 패턴이 아님",
+        }
+
+    assert details.script is not None
+    unexpanded = _unexpanded_shell_parameters(details.script)
+    unresolved_reason = (
+        f"엔진 호출 경로의 미확장 토큰={', '.join(unexpanded)} — "
+        "확장 불가 — 실제 사본 미상; 이 사본의 repo 앵커도 미상"
+    ) if unexpanded else ""
+    unresolved_script_name = Path(details.script.replace("\\", "/")).name
+    unresolved_mutation = (
+        _board_mutation_subcommand(details.args)
+        if unresolved_script_name == "board.py" else ""
+    )
+    if unexpanded:
+        if unresolved_mutation and identity in {"slot", "worktree"}:
+            return {
+                "verdict": "deny", "cwd_identity": identity,
+                "reason": (
+                    f"board mutation '{unresolved_mutation}'이 non-PM cwd에서 감지됨 — "
+                    f"{unresolved_reason}; board mutation은 PM 홈 사본으로 실행하라"
+                ),
+            }
+        return {
+            "verdict": "warn", "cwd_identity": identity,
+            "reason": f"{unresolved_reason}; board mutation은 PM 홈 사본으로 실행하라",
+        }
+
+    script_token = Path(details.script).expanduser()
+    relative = not script_token.is_absolute()
+    script_path = (
+        (cwd_path / script_token).resolve() if relative else script_token.resolve()
+    )
+    script_root = script_path.parents[2]
+    script_identity, _resolved_root, script_pm_home = _git_anchor_identity(
+        script_root, runner=runner,
+    )
+    relative_script = Path(".project_manager") / "tools" / script_path.name
+    mutation = (
+        _board_mutation_subcommand(details.args)
+        if script_path.name == "board.py" else ""
+    )
+    if mutation and script_identity in {"slot", "worktree"}:
+        return {
+            "verdict": "deny", "cwd_identity": identity,
+            "reason": (
+                f"board mutation '{mutation}'이 non-PM 엔진 사본 {script_path}를 선택함 — "
+                f"이 사본의 repo 앵커={script_root} ({script_identity}); board mutation은 "
+                "PM 홈 사본 "
+                f"{(script_pm_home / relative_script) if script_pm_home else relative_script} "
+                "로 실행하라"
+            ),
+        }
+    if not relative:
+        return {
+            "verdict": "ok", "cwd_identity": identity,
+            "reason": (
+                f"절대경로 엔진 사본={script_path}; 이 사본의 repo 앵커={script_root} "
+                f"({script_identity})"
+            ),
+        }
+
+    reason = (
+        f"상대경로 엔진 호출의 실행 사본={script_path}; 이 사본의 repo 앵커={script_root} "
+        f"({script_identity}); board mutation은 PM 홈 사본으로 실행하라"
+    )
+    other = _engine_other_copy(
+        cwd_root, script_root, script_identity, script_pm_home or cwd_pm_home,
+        relative_script, runner=runner,
+    )
+    if other is not None:
+        _other_root, other_path = other
+        current_hash = _file_sha256(script_path)
+        other_hash = _file_sha256(other_path)
+        if current_hash is not None and other_hash is not None:
+            hash_state = (
+                f"도구 파일 sha256 동일({current_hash})"
+                if current_hash == other_hash else
+                f"도구 파일 sha256 다름({current_hash} != {other_hash}) — "
+                "stale import 사본 — 게이트 판정은 canonical 로"
+            )
+        else:
+            hash_state = "도구 파일 sha256 비교 불가(파일 읽기 실패) — 사본 경로를 직접 확인"
+        reason += f"; 함께 존재하는 다른 사본={other_path}; {hash_state}"
+    return {"verdict": "warn", "cwd_identity": identity, "reason": reason}
+
+
 class _ShellGitInvocation(NamedTuple):
     cwd: str
     argv: tuple[str, ...]
@@ -696,6 +909,8 @@ class _ShellGitInvocation(NamedTuple):
 
 class _ShellParseResult(NamedTuple):
     invocations: tuple[_ShellGitInvocation, ...]
+    engine_invocations: tuple[_ShellGitInvocation, ...]
+    persistent_cd: bool
     uncertain: bool
     reason: str
 
@@ -898,6 +1113,86 @@ def _shell_git_command(segment: Sequence[str]) -> _ShellGitCommand | None:
     return None
 
 
+def _shell_engine_command(segment: Sequence[str]) -> tuple[str, ...] | None:
+    """지원 wrapper 뒤의 엔진/pytest command argv를 반환한다.
+
+    git 파서와 같은 simple-command 토큰을 소비하되, 여기서는 deny를 만들 수 있는 모양만
+    확정한다. 미지원 wrapper option은 fail-open(None)해 일반 argv의 ``python3``를 실행으로
+    오인하지 않는다.
+    """
+    values = list(segment)
+    index = 0
+
+    def _assignment(value: str) -> bool:
+        return re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_]*=.*", value, flags=re.DOTALL,
+        ) is not None
+
+    while index < len(values) and _assignment(values[index]):
+        index += 1
+    while index < len(values):
+        wrapper = Path(values[index]).name
+        if wrapper == "env":
+            index += 1
+            option_phase = True
+            while index < len(values):
+                token = values[index]
+                if option_phase and token == "--":
+                    option_phase = False
+                    index += 1
+                    continue
+                if _assignment(token):
+                    index += 1
+                    continue
+                if option_phase and token in {
+                    "-i", "--ignore-environment", "-0", "--null", "--debug",
+                }:
+                    index += 1
+                    continue
+                if option_phase and token in {"-u", "--unset", "-a", "--argv0"}:
+                    if index + 1 >= len(values):
+                        return None
+                    index += 2
+                    continue
+                if option_phase and token in {"-C", "--chdir"}:
+                    return None
+                if option_phase and token.startswith(
+                    ("--unset=", "--argv0=")
+                ):
+                    index += 1
+                    continue
+                if option_phase and (token.startswith("--chdir=") or token.startswith("-")):
+                    return None
+                break
+            continue
+        if wrapper == "command":
+            index += 1
+            while index < len(values) and values[index] in {"--", "-p"}:
+                index += 1
+            if index < len(values) and values[index].startswith("-"):
+                return None
+            continue
+        if wrapper == "exec":
+            index += 1
+            while index < len(values):
+                token = values[index]
+                if token in {"--", "-c", "-l"}:
+                    index += 1
+                    continue
+                if token == "-a":
+                    if index + 1 >= len(values):
+                        return None
+                    index += 2
+                    continue
+                if token.startswith("-"):
+                    return None
+                break
+            continue
+        break
+    candidate = tuple(values[index:])
+    return candidate if _engine_invocation_details(".", candidate) is not None else None
+
+
 def _normalize_shell_line_continuations(command: str) -> str:
     """quote/heredoc data 밖의 backslash-newline만 POSIX continuation으로 접는다.
 
@@ -943,6 +1238,11 @@ def _git_prefilter_text(command: str) -> str:
     되어도 차단으로 승격되지 않는다.
     """
     return command.replace("'", "").replace('"', "")
+
+
+def _persistent_cd_prefilter(text: str) -> bool:
+    """top-level simple-command 경계의 ``cd`` 후보만 값싼 선필터로 찾는다."""
+    return re.search(r"(?:^|[;&|])\s*cd(?=\s)", text) is not None
 
 
 def _strip_shell_comments(command: str) -> str:
@@ -1121,13 +1421,16 @@ def _shell_gate(operator: str | None, status: bool | None) -> bool | None:
 def _shell_simple_command(
     anchors: set[Path], cwd_certain: bool, segment: Sequence[str], execute: bool | None,
     *, globally_certain: bool,
-) -> tuple[set[Path], bool, bool | None, list[_ShellGitInvocation]]:
+) -> tuple[
+    set[Path], bool, bool | None,
+    list[_ShellGitInvocation], list[_ShellGitInvocation],
+]:
     """simple command 하나의 cwd/status를 추상 실행한다. ``execute=None``은 조건부 실행이다."""
     if execute is False or not segment:
-        return set(anchors), cwd_certain, None, []
+        return set(anchors), cwd_certain, None, [], []
     command, redirected = _shell_without_redirections(segment)
     if not command:
-        return set(anchors), cwd_certain, None, []
+        return set(anchors), cwd_certain, None, [], []
     git_command = _shell_git_command(command)
     if git_command is not None:
         # 조건부 실행 여부와 cwd 확정성은 별개다. ``git status && git add …``에서
@@ -1141,29 +1444,46 @@ def _shell_simple_command(
             _ShellGitInvocation(str(anchor), tuple(command[git_command.index:]), certain)
             for anchor in sorted(anchors, key=str)
         ]
-        return set(anchors), cwd_certain, None, calls
+        return set(anchors), cwd_certain, None, calls, []
+
+    engine_command = _shell_engine_command(command)
+    engine_calls = []
+    if engine_command is not None:
+        details = _engine_invocation_details(".", engine_command)
+        unresolved_script = bool(
+            details is not None and details.script is not None
+            and _unexpanded_shell_parameters(details.script)
+        )
+        certain = (
+            (globally_certain or unresolved_script)
+            and cwd_certain and len(anchors) == 1
+        )
+        engine_calls = [
+            _ShellGitInvocation(str(anchor), engine_command, certain)
+            for anchor in sorted(anchors, key=str)
+        ]
 
     name = command[0]
     if name == "false":
-        return set(anchors), cwd_certain, (False if execute is True else None), []
+        return set(anchors), cwd_certain, (False if execute is True else None), [], engine_calls
     if name == "true":
-        return set(anchors), cwd_certain, (True if execute is True else None), []
+        return set(anchors), cwd_certain, (True if execute is True else None), [], engine_calls
     if name in {"echo", "printf", ":"}:
         # 셸 builtin의 정상 simple-command 형태는 status 0이다. 이 증명이 있어야
         # ``echo … && git …``의 실제 실행 경로를 불필요하게 uncertain으로 낮추지 않는다.
-        return set(anchors), cwd_certain, (True if execute is True else None), []
+        return set(anchors), cwd_certain, (True if execute is True else None), [], engine_calls
     if name in {"pushd", "popd"}:
         # directory stack을 모델링하지 않는다. 실행 가능성이 있으면 이후 cwd는 unknown이며,
         # false gate로 실행되지 않은 경우만 함수 상단에서 certainty를 보존한다.
-        return set(anchors), False, None, []
+        return set(anchors), False, None, [], engine_calls
     if name != "cd":
-        return set(anchors), cwd_certain, None, []
+        return set(anchors), cwd_certain, None, [], engine_calls
 
     operands = [value for value in command[1:] if value != "--"]
     if (redirected or len(operands) != 1 or operands[0].startswith("-")
             or any(ch in operands[0] for ch in "$`")):
         # cd가 실행될 수 있으나 지원 문법으로 target을 단일 증명하지 못했다.
-        return set(anchors), False, None, []
+        return set(anchors), False, None, [], engine_calls
     target_arg = Path(operands[0]).expanduser()
     successes: set[Path] = set()
     failures: set[Path] = set()
@@ -1171,18 +1491,18 @@ def _shell_simple_command(
         target = (target_arg if target_arg.is_absolute() else anchor / target_arg).resolve()
         (successes if target.is_dir() else failures).add(target if target.is_dir() else anchor)
     if execute is None:
-        return set(anchors) | successes | failures, False, None, []
+        return set(anchors) | successes | failures, False, None, [], engine_calls
     if successes and not failures:
-        return successes, cwd_certain, True, []
+        return successes, cwd_certain, True, [], engine_calls
     if failures and not successes:
-        return failures, cwd_certain, False, []
-    return successes | failures, False, None, []
+        return failures, cwd_certain, False, [], engine_calls
+    return successes | failures, False, None, [], engine_calls
 
 
 def _git_invocations_from_shell(
     cwd: str, command: str
 ) -> _ShellParseResult:
-    """shell 제어연산과 ``cd``를 보수적으로 추상 실행해 git 호출 좌표를 반환한다.
+    """shell 제어연산과 ``cd``를 보수적으로 추상 실행해 git/엔진 호출 좌표를 반환한다.
 
     ``&&``/``||``는 직전 status, ``;``는 무조건 순차, ``|``는 각 pipeline command가 원래 cwd의
     subshell에서 실행되는 의미를 구분한다. ``true``/``false``/실재 여부가 확정된 ``cd``만 status를
@@ -1190,19 +1510,31 @@ def _git_invocations_from_shell(
     강등한다. ``if …; then …; fi``의 단순형은 condition cwd를 body로 전달한다.
     """
     if not isinstance(command, str):
-        return _ShellParseResult((), False, "")
+        return _ShellParseResult((), (), False, False, "")
     executable, heredoc_uncertain = _strip_shell_heredoc_bodies(command)
     command = _normalize_shell_line_continuations(executable)
-    if not _GIT_COMMAND_PREFILTER.search(_git_prefilter_text(command)):
-        reason = "shell heredoc을 정적으로 완전히 소비할 수 없음" if heredoc_uncertain else ""
-        return _ShellParseResult((), heredoc_uncertain, reason)
+    prefilter = _git_prefilter_text(command)
+    normalized_prefilter = re.sub(r"/+", "/", prefilter.replace("\\", "/"))
+    engine_candidate = (
+        ".project_manager/tools/" in normalized_prefilter
+        or re.search(r"(?<![A-Za-z0-9_.-])pytest(?=\s|$)", prefilter) is not None
+        or _persistent_cd_prefilter(prefilter)
+    )
+    if not _GIT_COMMAND_PREFILTER.search(prefilter) and not engine_candidate:
+        reason = (
+            "shell heredoc을 정적으로 완전히 소비할 수 없음"
+            if heredoc_uncertain else ""
+        )
+        return _ShellParseResult((), (), False, heredoc_uncertain, reason)
     parsed = _shell_segments(command)
     if parsed is None:
-        return _ShellParseResult((), True, "shell 구문을 정적으로 해석할 수 없음")
+        return _ShellParseResult((), (), False, True, "shell 구문을 정적으로 해석할 수 없음")
     segments, operators = parsed
+    persistent_cd = False
     anchors = {Path(cwd).expanduser().resolve()}
     cwd_certain = True
     found: list[_ShellGitInvocation] = []
+    engine_found: list[_ShellGitInvocation] = []
     last_status: bool | None = None
     in_if_condition = False
     if_status: bool | None = None
@@ -1270,11 +1602,20 @@ def _git_invocations_from_shell(
 
             command_anchors = base_anchors if pipeline else anchors
             command_cwd_certain = base_cwd_certain if pipeline else cwd_certain
-            new_anchors, new_cwd_certain, status, calls = _shell_simple_command(
+            new_anchors, new_cwd_certain, status, calls, engine_calls = _shell_simple_command(
                 command_anchors, command_cwd_certain, segment, gate,
                 globally_certain=globally_certain,
             )
+            command_without_redirections, _redirected = _shell_without_redirections(segment)
+            if (
+                not pipeline and not starts_if
+                and gate is not False and status is not False
+                and command_without_redirections
+                and command_without_redirections[0] == "cd"
+            ):
+                persistent_cd = True
             found.extend(calls)
+            engine_found.extend(engine_calls)
             group_status = status
             if not pipeline and gate is not False:
                 anchors = new_anchors
@@ -1290,22 +1631,17 @@ def _git_invocations_from_shell(
         i = end + 1
     uncertain = heredoc_uncertain or unsupported_control
     reason = "shell 구문/cwd를 정적으로 단일 증명할 수 없음" if uncertain else ""
-    return _ShellParseResult(tuple(found), uncertain, reason)
+    return _ShellParseResult(
+        tuple(found), tuple(engine_found), persistent_cd, uncertain, reason,
+    )
 
 
 def judge_git_anchor_command(
     cwd: str, command: str, *, runner: Any = subprocess.run
 ) -> dict[str, str]:
-    """셸 command의 모든 git 호출을 중앙 파싱하고 가장 강한 판정을 반환한다."""
+    """셸 command의 모든 git/엔진 호출을 중앙 파싱하고 가장 강한 판정을 반환한다."""
     parsed = _git_invocations_from_shell(cwd, command)
     invocations = parsed.invocations
-    if not invocations and parsed.uncertain:
-        return {
-            "verdict": "warn", "cwd_identity": "non-repo",
-            "reason": f"{parsed.reason} — 차단하지 않음; cwd를 직접 확인",
-        }
-    if not invocations:
-        return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "git mutation 없음"}
     judgments: list[dict[str, str]] = []
     for call in invocations:
         judgment = judge_git_anchor(call.cwd, list(call.argv), runner=runner)
@@ -1316,11 +1652,33 @@ def judge_git_anchor_command(
                 "reason": f"조건/cwd를 정적으로 단일 증명할 수 없음 — 차단하지 않음; {judgment['reason']}",
             }
         judgments.append(judgment)
+    for call in parsed.engine_invocations:
+        judgment = judge_engine_invocation(call.cwd, list(call.argv), runner=runner)
+        if not call.certain and judgment["verdict"] != "warn":
+            judgment = {
+                **judgment,
+                "verdict": "warn",
+                "reason": f"조건/cwd를 정적으로 단일 증명할 수 없음 — 차단하지 않음; {judgment['reason']}",
+            }
+        judgments.append(judgment)
+    if parsed.persistent_cd:
+        judgments.append({
+            "verdict": "warn", "cwd_identity": "non-repo",
+            "reason": (
+                "cd는 셸 cwd를 호출 뒤에도 잔존시킬 수 있음 — 대상을 절대경로로 지정하라; "
+                "cd가 꼭 필요하면 이 호출 안에서만 사용하고, 다음 호출은 cwd를 가정하지 마라"
+            ),
+        })
     if parsed.uncertain:
         judgments.append({
             "verdict": "warn", "cwd_identity": "non-repo",
             "reason": f"{parsed.reason} — 차단하지 않음; cwd를 직접 확인",
         })
+    if not judgments:
+        return {
+            "verdict": "ok", "cwd_identity": "non-repo",
+            "reason": "git mutation/엔진 호출 없음",
+        }
     rank = {"ok": 0, "warn": 1, "deny": 2}
     strongest = max(judgments, key=lambda item: rank[item["verdict"]])
     if len(judgments) == 1:

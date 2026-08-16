@@ -235,6 +235,400 @@ def test_prepare_edit_harvest_round_trip_and_git_hidden(growth_env, pd, role):
     assert second == pd.TicketHarvestResult(False, True)
 
 
+def test_ticket_copy_ledger_registers_and_harvest_resolves_without_stdin(
+        growth_env, pd, monkeypatch, capsys):
+    pm_home, slot, tickets = growth_env
+    ticket = "T-1100"
+    source = _write_ticket(tickets, ticket, [("developer", "")])
+    plan = pd.prepare_ticket_copy(
+        ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
+    )
+    ledger = pm_home / pd.TICKET_COPY_LEDGER_REL_PATH
+    first = pd.ticket_copy_records(pm_home)
+    assert len(first) == 1
+    assert first[0] == {
+        "ticket": ticket,
+        "role": "developer",
+        "ordinal": 0,
+        "run_id": plan.path.parent.name,
+        "copy": str(plan.path.resolve()),
+        "capability": plan.capability.hex(),
+        "prepared_at": first[0]["prepared_at"],
+        "harvested_at": None,
+    }
+    assert set(first[0]) == {
+        "ticket", "role", "ordinal", "run_id", "copy", "capability",
+        "prepared_at", "harvested_at",
+    }
+    _replace_content(pd, plan.path, "developer", 0, "ledger-resolved\n")
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+    assert pd.main([
+        "ticket", "harvest", "--copy", str(plan.path), "--cwd", str(slot),
+    ]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["changed"] is True
+    assert "ledger-resolved" in source.read_text(encoding="utf-8")
+    latest = pd.ticket_copy_records(pm_home)[0]
+    assert latest["harvested_at"] is not None
+    assert len(ledger.read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_ticket_copy_stdin_precedes_capability_but_ledger_mismatch_is_loud(
+        growth_env, pd):
+    pm_home, slot, tickets = growth_env
+    source = _write_ticket(tickets, "T-1101", [("developer", "")])
+    plan = pd.prepare_ticket_copy(
+        ticket="T-1101", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    _replace_content(pd, plan.path, "developer", 0, "stdin wins\n")
+    wrong_capability = dict(pd.ticket_copy_records(pm_home)[0])
+    wrong_capability["capability"] = (b"x" * 32).hex()
+    pd._append_ticket_copy_ledger(pm_home, wrong_capability)
+
+    result = pd.harvest_ticket_copy(
+        copy_path=plan.path, cwd=slot, pm_home=pm_home,
+        capability=plan.capability,
+    )
+    assert result.changed and "stdin wins" in source.read_text(encoding="utf-8")
+    assert pd.ticket_copy_records(pm_home)[0]["capability"] == plan.capability.hex()
+
+    corrupt = dict(pd.ticket_copy_records(pm_home)[0])
+    corrupt["role"] = "architect"
+    pd._append_ticket_copy_ledger(pm_home, corrupt)
+    before = source.read_bytes()
+    with pytest.raises(pd.DelegateError, match="장부 동일 copy 불변 필드 불일치"):
+        pd.harvest_ticket_copy(
+            copy_path=plan.path, cwd=slot, pm_home=pm_home,
+            capability=plan.capability,
+        )
+    assert source.read_bytes() == before
+
+
+def test_explicit_capability_harvests_pre_ledger_copy_and_backfills(
+        growth_env, pd):
+    pm_home, slot, tickets = growth_env
+    source = _write_ticket(tickets, "T-1110", [("developer", "")])
+    plan = pd.prepare_ticket_copy(
+        ticket="T-1110", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    ledger = pm_home / pd.TICKET_COPY_LEDGER_REL_PATH
+    ledger.rename(ledger.with_suffix(".pre-ledger"))
+    _replace_content(pd, plan.path, "developer", 0, "legacy capability harvest\n")
+
+    result = pd.harvest_ticket_copy(
+        copy_path=plan.path, cwd=slot, pm_home=pm_home,
+        capability=plan.capability,
+    )
+
+    assert result == pd.TicketHarvestResult(True, True)
+    assert "legacy capability harvest" in source.read_text(encoding="utf-8")
+    rows = pd.ticket_copy_records(pm_home)
+    assert len(rows) == 1
+    assert rows[0]["copy"] == str(plan.path.resolve())
+    assert rows[0]["capability"] == plan.capability.hex()
+    assert rows[0]["harvested_at"] is not None
+
+
+def test_no_stdin_corrupt_target_ledger_row_reports_damage(
+        growth_env, pd, monkeypatch, capsys):
+    pm_home, slot, tickets = growth_env
+    source = _write_ticket(tickets, "T-1117", [("developer", "")])
+    plan = pd.prepare_ticket_copy(
+        ticket="T-1117", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    ledger = pm_home / pd.TICKET_COPY_LEDGER_REL_PATH
+    payload = ledger.read_text(encoding="utf-8")
+    assert payload.endswith("}\n")
+    ledger.write_text(payload[:-2] + "\n", encoding="utf-8")
+    _replace_content(pd, plan.path, "developer", 0, "must not harvest\n")
+    before = source.read_bytes()
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+
+    assert pd.main([
+        "ticket", "harvest", "--copy", str(plan.path), "--cwd", str(slot),
+    ]) == 1
+
+    error = capsys.readouterr().err
+    assert "장부 대상 사본 등록 여부를 확인할 수 없습니다 — 손상 행 존재" in error
+    assert "ticket-copy 장부 JSON 손상 건너뜀" in error
+    assert "line=1" in error
+    assert "장부에 사본 등록이 없습니다" not in error
+    assert source.read_bytes() == before
+
+
+def test_explicit_capability_warns_about_retained_corrupt_target_row(
+        growth_env, pd, monkeypatch, capsys):
+    pm_home, slot, tickets = growth_env
+    source = _write_ticket(tickets, "T-1118", [("developer", "")])
+    plan = pd.prepare_ticket_copy(
+        ticket="T-1118", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    ledger = pm_home / pd.TICKET_COPY_LEDGER_REL_PATH
+    payload = ledger.read_text(encoding="utf-8")
+    assert payload.endswith("}\n")
+    ledger.write_text(payload[:-2] + "\n", encoding="utf-8")
+    _replace_content(pd, plan.path, "developer", 0, "explicit recovery\n")
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+    monkeypatch.setattr(pd.sys, "stdin", io.StringIO(plan.capability.hex() + "\n"))
+
+    assert pd.main([
+        "ticket", "harvest", "--copy", str(plan.path), "--cwd", str(slot),
+        "--capability-stdin",
+    ]) == 0
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["changed"] is True
+    assert "장부 대상 사본 조회 중 손상 행이 잔존합니다" in captured.err
+    assert "ticket-copy 장부 JSON 손상 건너뜀" in captured.err
+    assert "line=1" in captured.err
+    assert "explicit recovery" in source.read_text(encoding="utf-8")
+    lines = ledger.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    with pytest.raises(ValueError):
+        json.loads(lines[0])
+    assert json.loads(lines[1])["copy"] == str(plan.path.resolve())
+
+
+def test_no_stdin_unregistered_copy_fails_loud(
+        growth_env, pd, monkeypatch, capsys):
+    pm_home, slot, tickets = growth_env
+    source = _write_ticket(tickets, "T-1119", [("developer", "")])
+    plan = pd.prepare_ticket_copy(
+        ticket="T-1119", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    ledger = pm_home / pd.TICKET_COPY_LEDGER_REL_PATH
+    ledger.rename(ledger.with_suffix(".pre-ledger"))
+    _replace_content(pd, plan.path, "developer", 0, "must remain unharvested\n")
+    before = source.read_bytes()
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+
+    assert pd.main([
+        "ticket", "harvest", "--copy", str(plan.path), "--cwd", str(slot),
+    ]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        "오류: ticket harvest 실패: ticket-copy 장부에 사본 등록이 없습니다: "
+        f"{plan.path.resolve()}\n"
+    )
+    assert source.read_bytes() == before
+
+
+def test_ticket_copies_cli_lists_and_filters_unharvested(
+        growth_env, pd, monkeypatch, capsys):
+    pm_home, slot, tickets = growth_env
+    _write_ticket(tickets, "T-1102", [("developer", "")])
+    _write_ticket(tickets, "T-1103", [("developer", "")])
+    harvested = pd.prepare_ticket_copy(
+        ticket="T-1102", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    pending = pd.prepare_ticket_copy(
+        ticket="T-1103", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    pd.harvest_ticket_copy(
+        copy_path=harvested.path, cwd=slot, pm_home=pm_home,
+    )
+    monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: pm_home)
+
+    assert pd.main(["ticket", "copies", "--unharvested"]) == 0
+    output = capsys.readouterr().out
+    assert f"조회 장부: {pm_home / pd.TICKET_COPY_LEDGER_REL_PATH}" in output
+    assert "미회수 ticket copies 1건" in output
+    assert str(pending.path) in output and str(harvested.path) not in output
+    assert "role=developer · ordinal=0 · run_id=" in output
+
+    assert pd.main(["ticket", "copies", "--ticket", "T-1102"]) == 0
+    filtered = capsys.readouterr().out
+    assert str(harvested.path) in filtered and str(pending.path) not in filtered
+    assert "회수(" in filtered
+
+
+def test_prepare_transfer_from_preserves_new_baseline_outside_and_harvests(
+        growth_env, pd):
+    pm_home, slot, tickets = growth_env
+    source = _write_ticket(tickets, "T-1104", [("developer", "")])
+    old = pd.prepare_ticket_copy(
+        ticket="T-1104", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    _replace_content(pd, old.path, "developer", 0, "first harvest\n")
+    pd.harvest_ticket_copy(copy_path=old.path, cwd=slot, pm_home=pm_home)
+    _replace_content(pd, old.path, "developer", 0, "amended old copy\r\n")
+    current = source.read_text(encoding="utf-8")
+    source.write_text(current.replace("## 목표\n", "## 최신 baseline 밖 변경\n\n## 목표\n"), encoding="utf-8")
+
+    transferred = pd.prepare_ticket_copy(
+        ticket="T-1104", role="developer", cwd=slot, pm_home=pm_home,
+        transfer_from=old.path,
+    )
+    metadata = json.loads(transferred.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["transferred_from"] == str(old.path.resolve())
+    assert old.capability.hex() not in json.dumps(metadata)
+    with transferred.baseline_path.open("r", encoding="utf-8", newline="") as handle:
+        baseline = handle.read()
+    with transferred.path.open("r", encoding="utf-8", newline="") as handle:
+        copy = handle.read()
+    baseline_section = pd._ticket_role_section(baseline, "developer", ordinal=0)
+    copy_section = pd._ticket_role_section(copy, "developer", ordinal=0)
+    assert copy[copy_section.content_start:copy_section.content_end] == "amended old copy\r\n"
+    assert (
+        baseline[:baseline_section.content_start] + baseline[baseline_section.content_end:]
+        == copy[:copy_section.content_start] + copy[copy_section.content_end:]
+    )
+    result = pd.harvest_ticket_copy(
+        copy_path=transferred.path, cwd=slot, pm_home=pm_home,
+    )
+    with source.open("r", encoding="utf-8", newline="") as handle:
+        final = handle.read()
+    assert result.changed and "amended old copy\r\n" in final
+    assert "최신 baseline 밖 변경" in final
+
+
+def test_prepare_transfer_from_rejects_missing_section_and_role_mismatch(
+        growth_env, pd):
+    pm_home, slot, tickets = growth_env
+    _write_ticket(
+        tickets, "T-1105", [("developer", ""), ("architect", "")],
+    )
+    old = pd.prepare_ticket_copy(
+        ticket="T-1105", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    with pytest.raises(pd.DelegateError, match="--transfer-from 역할 불일치"):
+        pd.prepare_ticket_copy(
+            ticket="T-1105", role="architect", cwd=slot, pm_home=pm_home,
+            transfer_from=old.path,
+        )
+    old_text = old.path.read_text(encoding="utf-8")
+    old_section = pd._ticket_role_section(old_text, "developer", ordinal=0)
+    old.path.write_text(
+        old_text[:old_section.marker_start] + old_text[old_section.marker_end:],
+        encoding="utf-8",
+    )
+    with pytest.raises(pd.DelegateError, match="role=developer 성장 절이 없습니다"):
+        pd.prepare_ticket_copy(
+            ticket="T-1105", role="developer", cwd=slot, pm_home=pm_home,
+            transfer_from=old.path,
+        )
+
+
+def test_prepare_transfer_from_rejects_cross_ticket_before_creating_copy(
+        growth_env, pd, monkeypatch, capsys):
+    pm_home, slot, tickets = growth_env
+    _write_ticket(tickets, "T-1111", [("developer", "foreign output\n")])
+    _write_ticket(tickets, "T-1112", [("developer", "")])
+    old = pd.prepare_ticket_copy(
+        ticket="T-1111", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    trust_root = pm_home / pd.TICKET_COPY_TRUST_REL_ROOT
+    trust_before = sorted(path.name for path in trust_root.iterdir())
+    rows_before = pd.ticket_copy_records(pm_home)
+    monkeypatch.setattr(pd, "_repo_root_for_cwd", lambda _cwd: slot)
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+
+    assert pd.main([
+        "ticket", "prepare", "--ticket", "T-1112", "--role", "developer",
+        "--cwd", str(slot), "--transfer-from", str(old.path),
+    ]) == 1
+
+    assert capsys.readouterr().err == (
+        "오류: ticket prepare 실패: --transfer-from ticket 불일치: "
+        "old=T-1111 · new=T-1112\n"
+    )
+    assert sorted(path.name for path in trust_root.iterdir()) == trust_before
+    assert pd.ticket_copy_records(pm_home) == rows_before
+
+
+def test_ticket_copy_ledger_mode_is_0600(growth_env, pd):
+    pm_home, slot, tickets = growth_env
+    _write_ticket(tickets, "T-1106", [("developer", "")])
+    pd.prepare_ticket_copy(
+        ticket="T-1106", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    ledger = pm_home / pd.TICKET_COPY_LEDGER_REL_PATH
+    if posix_mode_supported():
+        assert stat.S_IMODE(ledger.stat().st_mode) == 0o600
+
+
+def test_ticket_copy_lifecycle_without_posix_mode_capability(
+        growth_env, pd, monkeypatch):
+    pm_home, slot, tickets = growth_env
+    source = _write_ticket(tickets, "T-1113", [("developer", "")])
+    monkeypatch.setattr(pd, "_posix_mode_supported", lambda _directory: False)
+    monkeypatch.delattr(pd.os, "fchmod", raising=False)
+
+    plan = pd.prepare_ticket_copy(
+        ticket="T-1113", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    ledger = pm_home / pd.TICKET_COPY_LEDGER_REL_PATH
+    ledger.chmod(0o666)
+    assert pd.ticket_copy_records(pm_home)[0]["copy"] == str(plan.path.resolve())
+    _replace_content(pd, plan.path, "developer", 0, "non-posix lifecycle\n")
+    result = pd.harvest_ticket_copy(
+        copy_path=plan.path, cwd=slot, pm_home=pm_home,
+    )
+
+    assert result == pd.TicketHarvestResult(True, True)
+    assert "non-posix lifecycle" in source.read_text(encoding="utf-8")
+
+
+def test_harvest_ledger_completion_failure_warns_but_returns_success(
+        growth_env, pd, monkeypatch, capsys):
+    pm_home, slot, tickets = growth_env
+    source = _write_ticket(tickets, "T-1114", [("developer", "")])
+    plan = pd.prepare_ticket_copy(
+        ticket="T-1114", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    _replace_content(pd, plan.path, "developer", 0, "ticket write survives ledger failure\n")
+    real_append = pd._append_ticket_copy_ledger
+
+    def fail_completion(owner, row):
+        if row["harvested_at"] is not None:
+            raise pd.DelegateError("injected ledger append failure")
+        return real_append(owner, row)
+
+    monkeypatch.setattr(pd, "_append_ticket_copy_ledger", fail_completion)
+    result = pd.harvest_ticket_copy(
+        copy_path=plan.path, cwd=slot, pm_home=pm_home,
+    )
+
+    assert result == pd.TicketHarvestResult(True, True)
+    assert "ticket write survives ledger failure" in source.read_text(encoding="utf-8")
+    assert pd.ticket_copy_records(pm_home)[0]["harvested_at"] is None
+    warning = capsys.readouterr().err
+    assert "반영은 완료됐지만 장부 완료 기록에 실패" in warning
+    assert "injected ledger append failure" in warning
+
+
+def test_corrupt_copy_ledger_row_is_scoped_and_copies_warns(
+        growth_env, pd, capsys):
+    pm_home, slot, tickets = growth_env
+    _write_ticket(tickets, "T-1115", [("developer", "")])
+    second_source = _write_ticket(tickets, "T-1116", [("developer", "")])
+    damaged = pd.prepare_ticket_copy(
+        ticket="T-1115", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    healthy = pd.prepare_ticket_copy(
+        ticket="T-1116", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    corrupt = dict(pd.ticket_copy_records(pm_home)[-1])
+    assert corrupt["copy"] == str(damaged.path.resolve())
+    corrupt["role"] = "architect"
+    pd._append_ticket_copy_ledger(pm_home, corrupt)
+
+    rows = pd.ticket_copy_records(pm_home)
+    warning = capsys.readouterr().err
+    assert len(rows) == 2
+    assert "동일 copy 불변 필드 불일치" in warning
+    assert "손상 행 건너뜀" in warning
+    _replace_content(pd, healthy.path, "developer", 0, "healthy harvest\n")
+    result = pd.harvest_ticket_copy(
+        copy_path=healthy.path, cwd=slot, pm_home=pm_home,
+    )
+
+    assert result == pd.TicketHarvestResult(True, True)
+    assert "healthy harvest" in second_source.read_text(encoding="utf-8")
+
+
 def test_prepare_requires_legacy_backfill_then_succeeds(growth_env, pd):
     pm_home, slot, tickets = growth_env
     source = _write_ticket(tickets, "T-1030", [("developer", "legacy\n")])
@@ -511,8 +905,9 @@ def test_stale_same_section_refuses_without_overwrite(growth_env, pd):
         pd._upsert_ticket_seal(current, "developer", 0, by="harvest"),
         encoding="utf-8",
     )
-    with pytest.raises(pd.DelegateError, match="stale overwrite"):
+    with pytest.raises(pd.DelegateError, match="stale overwrite") as caught:
         pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home, capability=plan.capability)
+    assert f"ticket prepare --transfer-from {plan.path}" in str(caught.value)
     assert "parallel PM content" in source.read_text(encoding="utf-8")
     assert plan.path.exists() and plan.baseline_path.exists()
 

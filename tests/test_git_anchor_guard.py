@@ -48,6 +48,18 @@ def _seed_repo(root: Path) -> None:
     _git(root, "commit", "-qm", "seed")
 
 
+def _seed_engine_copy(root: Path, rev: str) -> None:
+    tools = root / ".project_manager" / "tools"
+    tools.mkdir(parents=True, exist_ok=True)
+    (tools / "engine_rev.py").write_text(
+        f'ENGINE_REV = "{rev}"\n', encoding="utf-8",
+    )
+    for name in ("board.py", "pm_delegate.py"):
+        (tools / name).write_text(
+            f'ENGINE_REV = "{rev}"\n', encoding="utf-8",
+        )
+
+
 @pytest.fixture
 def topology(tmp_path):
     """서로 다른 git인 PM 홈 + 그 아래 등록 linked slot(양쪽 tests/templates 실재)."""
@@ -69,6 +81,14 @@ def topology(tmp_path):
     ledger.parent.mkdir(parents=True)
     ledger.write_text(json.dumps({"leases": [{"slot": "work/product_1", "repo": "product",
                                                "state": "leased"}]}) + "\n", encoding="utf-8")
+    return home, slot
+
+
+@pytest.fixture
+def topology_without_home_tests(topology):
+    """PM 홈 정체는 유지하되 pytest 대상 ``tests/``만 실재하지 않는 형상."""
+    home, slot = topology
+    shutil.rmtree(home / "tests")
     return home, slot
 
 
@@ -114,11 +134,263 @@ def test_shell_parser_uses_worst_git_judgment(topology):
     )
     assert got["verdict"] == "deny"
     assert board.judge_git_anchor_command(str(home), "python3 build.py")["verdict"] == "ok"
-    # 명시 cd를 안 따르면 PM 홈 tests로 오인해 정상 slot 작업을 false-deny한다.
+    # git 자체는 정상 slot 판정이지만 cwd 잔존 패턴은 별도 warn으로 승격한다.
     changed = board.judge_git_anchor_command(
         str(home), f"cd {slot} && git add -- tests/shared.txt"
     )
-    assert changed["verdict"] == "ok" and changed["cwd_identity"] == "slot"
+    assert changed["verdict"] == "warn"
+    assert "대상을 절대경로로 지정하라" in changed["reason"]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["pytest", "tests/"],
+        ["python3", "-m", "pytest", "tests/"],
+    ],
+)
+def test_engine_guard_allows_pm_home_pytest_when_tests_exist(topology, argv):
+    """(a) 임베드 채택자의 PM 홈에 tests/가 실재하면 출하 회귀 명령은 ok."""
+    board = _load(f"engine_anchor_home_pytest_{len(argv)}", BOARD_PY)
+    home, _slot = topology
+    got = board.judge_engine_invocation(str(home), argv)
+    assert got["verdict"] == "ok"
+    assert got["cwd_identity"] == "pm-home"
+    assert "오앵커 패턴이 아님" in got["reason"]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["pytest", "tests/"],
+        ["python3", "-m", "pytest", "tests/"],
+    ],
+)
+def test_engine_guard_denies_pm_home_pytest_when_tests_missing(
+    topology_without_home_tests, argv,
+):
+    """(a) PM 홈 cwd에 명시 대상 tests/가 없을 때만 기계 확정 deny."""
+    board = _load(f"engine_anchor_missing_home_pytest_{len(argv)}", BOARD_PY)
+    home, _slot = topology_without_home_tests
+    got = board.judge_engine_invocation(str(home), argv)
+    assert got["verdict"] == "deny"
+    assert got["cwd_identity"] == "pm-home"
+    assert "cwd의 tests/ 디렉터리가 실재하지 않음" in got["reason"]
+
+
+def test_engine_guard_denies_worktree_board_mutation(topology):
+    """(b) board mutation 소유자는 PM 홈이며 canonical 사본 선택은 deny."""
+    board = _load("engine_anchor_slot_board_mutation", BOARD_PY)
+    home, slot = topology
+    _seed_engine_copy(home, "v-old")
+    _seed_engine_copy(slot, "v-new")
+    got = board.judge_engine_invocation(
+        str(slot), ["python3", ".project_manager/tools/board.py", "complete", "T-0001"],
+    )
+    assert got["verdict"] == "deny"
+    assert got["cwd_identity"] == "slot"
+    assert "board mutation 'complete'" in got["reason"]
+    assert str(slot / ".project_manager" / "tools" / "board.py") in got["reason"]
+    assert "board mutation은 PM 홈 사본" in got["reason"]
+    via_shell = board.judge_git_anchor_command(
+        str(slot), "python3 .project_manager/tools/board.py complete T-0001",
+    )
+    assert via_shell["verdict"] == "deny"
+    repeated_slash = board.judge_git_anchor_command(
+        str(slot), "python3 .project_manager//tools/board.py claim T-1",
+    )
+    assert repeated_slash["verdict"] == "deny"
+
+    # cwd가 아니라 선택한 script 사본이 엔진 repo 앵커를 정한다.
+    slot_script = slot / ".project_manager" / "tools" / "board.py"
+    from_home = board.judge_engine_invocation(
+        str(home), ["python3", str(slot_script), "complete", "T-0001"],
+    )
+    assert from_home["verdict"] == "deny"
+    home_script = home / ".project_manager" / "tools" / "board.py"
+    pm_owned = board.judge_engine_invocation(
+        str(slot), ["python3", str(home_script), "complete", "T-0001"],
+    )
+    assert pm_owned["verdict"] == "ok"
+
+
+def test_relative_engine_call_warns_on_same_rev_different_bytes(topology):
+    """(c) 같은 release rev여도 도구 bytes가 다르면 stale import를 검출한다."""
+    board = _load("engine_anchor_relative_copy", BOARD_PY)
+    home, slot = topology
+    _seed_engine_copy(home, "v1.7.5")
+    _seed_engine_copy(slot, "v1.7.5")
+    home_script = home / ".project_manager" / "tools" / "pm_delegate.py"
+    slot_script = slot / ".project_manager" / "tools" / "pm_delegate.py"
+    home_script.write_text('ENGINE_REV = "v1.7.5"\nIMPORT_COPY = True\n', encoding="utf-8")
+    assert (
+        (home / ".project_manager" / "tools" / "engine_rev.py").read_bytes()
+        == (slot / ".project_manager" / "tools" / "engine_rev.py").read_bytes()
+    )
+    assert home_script.read_bytes() != slot_script.read_bytes()
+    got = board.judge_engine_invocation(
+        str(slot), ["python3", ".project_manager/tools/pm_delegate.py", "status"],
+    )
+    assert got["verdict"] == "warn"
+    assert str(slot / ".project_manager" / "tools" / "pm_delegate.py") in got["reason"]
+    assert str(home / ".project_manager" / "tools" / "pm_delegate.py") in got["reason"]
+    assert "이 사본의 repo 앵커=" in got["reason"]
+    assert "도구 파일 sha256 다름(" in got["reason"]
+    assert board._file_sha256(slot_script) in got["reason"]
+    assert board._file_sha256(home_script) in got["reason"]
+    assert "stale import 사본 — 게이트 판정은 canonical 로" in got["reason"]
+    via_shell = board.judge_git_anchor_command(
+        str(slot), "python3 .project_manager/tools/pm_delegate.py status",
+    )
+    assert via_shell == got
+
+
+def test_unexpanded_engine_path_reports_unknown_without_changing_deny_axis(topology):
+    """F-008: 미확장 parameter로 사본·앵커를 조립하지 않고 deny 강도는 보존한다."""
+    board = _load("engine_anchor_unexpanded_path", BOARD_PY)
+    home, slot = topology
+
+    for token in ("$PMH", "${PMH}", "$1"):
+        got = board.judge_git_anchor_command(
+            str(home),
+            f"python3 {token}/.project_manager/tools/pm_delegate.py status",
+        )
+        assert got["verdict"] == "warn"
+        assert f"미확장 토큰={token}" in got["reason"]
+        assert "확장 불가 — 실제 사본 미상" in got["reason"]
+        assert "실행 사본=" not in got["reason"]
+        assert "repo 앵커=" not in got["reason"]
+
+    denied = board.judge_git_anchor_command(
+        str(slot), "python3 $PMH/.project_manager/tools/board.py claim T-0001",
+    )
+    assert denied["verdict"] == "deny"
+    assert denied["cwd_identity"] == "slot"
+    assert "확장 불가 — 실제 사본 미상" in denied["reason"]
+    assert "실행 사본=" not in denied["reason"]
+    assert "repo 앵커=" not in denied["reason"]
+
+
+def test_relative_engine_copy_hash_read_failure_is_fail_soft(
+    monkeypatch, topology, capsys,
+):
+    """도구 사본을 읽지 못해도 판정 seam은 warn dict를 반환해 훅 rc0을 보존한다."""
+    board = _load("engine_anchor_copy_hash_failure", BOARD_PY)
+    home, slot = topology
+    _seed_engine_copy(home, "v1.7.5")
+    _seed_engine_copy(slot, "v1.7.5")
+
+    def unreadable(_path):
+        raise OSError("fixture unreadable")
+
+    monkeypatch.setattr(board.Path, "read_bytes", unreadable)
+    got = board.judge_engine_invocation(
+        str(slot), ["python3", ".project_manager/tools/pm_delegate.py", "status"],
+    )
+    assert got["verdict"] == "warn"
+    assert "sha256 비교 불가(파일 읽기 실패)" in got["reason"]
+
+    driver = _load("engine_anchor_copy_hash_failure_hook", CLAUDE_DRIVER)
+    monkeypatch.setattr(driver, "_load_board", lambda _root: board)
+    payload = {
+        "hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": str(slot),
+        "tool_input": {
+            "command": "python3 .project_manager/tools/pm_delegate.py status",
+        },
+    }
+    monkeypatch.setattr(driver.sys, "stdin", io.StringIO(json.dumps(payload)))
+    rc = driver.run_git_anchor_hook(home)
+    hook_output = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert "sha256 비교 불가(파일 읽기 실패)" in (
+        hook_output["hookSpecificOutput"]["additionalContext"]
+    )
+
+
+def test_absolute_engine_call_is_ok(topology):
+    """(d) 명시 사본의 비-mutation 엔진 호출은 정체가 확정되므로 ok."""
+    board = _load("engine_anchor_absolute_copy", BOARD_PY)
+    home, slot = topology
+    _seed_engine_copy(home, "v1")
+    _seed_engine_copy(slot, "v1")
+    script = slot / ".project_manager" / "tools" / "pm_delegate.py"
+    got = board.judge_engine_invocation(str(home), ["python3", str(script), "status"])
+    assert got["verdict"] == "ok"
+    assert f"절대경로 엔진 사본={script}" in got["reason"]
+    assert f"repo 앵커={slot} (slot)" in got["reason"]
+
+
+def test_mixed_git_and_engine_calls_use_strongest_judgment(topology):
+    """(e) PM 홈에 tests/가 실재하면 혼합 호출에서도 false-deny가 없다."""
+    board = _load("engine_anchor_mixed_rank", BOARD_PY)
+    home, _slot = topology
+    got = board.judge_git_anchor_command(
+        str(home), "git status && python3 -m pytest tests/",
+    )
+    assert got["verdict"] == "ok"
+    assert "호출 1 [pm-home/ok]" in got["reason"]
+    assert "호출 2 [pm-home/ok]" in got["reason"]
+
+
+def test_mixed_git_and_engine_calls_promote_missing_tests_deny(
+    topology_without_home_tests,
+):
+    """(e) tests/ 부재가 실측된 형상에서는 혼합 호출의 deny가 최강 판정이다."""
+    board = _load("engine_anchor_mixed_missing_rank", BOARD_PY)
+    home, _slot = topology_without_home_tests
+    got = board.judge_git_anchor_command(
+        str(home), "git status && python3 -m pytest tests/",
+    )
+    assert got["verdict"] == "deny"
+    assert "호출 1 [pm-home/ok]" in got["reason"]
+    assert "호출 2 [pm-home/deny]" in got["reason"]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cd "{slot}" && python3 build.py',
+        "cd {slot}; python3 build.py",
+        "python3 build.py && cd {slot}",
+    ],
+)
+def test_persistent_cd_pattern_warns_with_executable_prescription(topology, command):
+    """(f) 셸 cwd 잔존 패턴은 실행 종류와 무관하게 warn한다."""
+    board = _load(f"engine_anchor_persistent_cd_{abs(hash(command))}", BOARD_PY)
+    home, slot = topology
+    got = board.judge_git_anchor_command(str(home), command.format(slot=slot))
+    assert got["verdict"] == "warn"
+    assert "대상을 절대경로로 지정하라" in got["reason"]
+    assert "cd가 꼭 필요하면 이 호출 안에서만 사용" in got["reason"]
+    assert "다음 호출은 cwd를 가정하지 마라" in got["reason"]
+    assert "workdir 파라미터" not in got["reason"]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "docker run img pytest tests/",
+        "npm test -- --grep 'cd foo && bar'",
+        "(cd /tmp && ls)",
+        "cat <<'EOF'\ncd /tmp && ls\nEOF",
+    ],
+    ids=["docker", "npm", "subshell", "heredoc"],
+)
+def test_prefilter_false_positive_candidates_remain_ok(topology, command):
+    """넓어진 선필터가 argv data·서브셸·heredoc을 cwd 잔존으로 오판하지 않는다."""
+    board = _load(f"engine_anchor_prefilter_false_positive_{abs(hash(command))}", BOARD_PY)
+    home, _slot = topology
+    assert board.judge_git_anchor_command(str(home), command)["verdict"] == "ok"
+
+
+def test_existing_git_mutation_deny_is_unchanged(topology):
+    """(g) 엔진 합류 뒤에도 기존 PM 홈 cross-pathspec git deny는 불변."""
+    board = _load("engine_anchor_git_regression", BOARD_PY)
+    home, _slot = topology
+    direct = board.judge_git_anchor(str(home), ["git", "add", "tests/shared.txt"])
+    shell = board.judge_git_anchor_command(str(home), "git add tests/shared.txt")
+    assert shell == direct
+    assert shell["verdict"] == "deny"
 
 
 @pytest.mark.parametrize(
@@ -702,6 +974,80 @@ def test_codex_execpolicy_records_capability_gap_without_overbroad_rule():
     assert "cwd predicate" in text and "false-deny 0" in text
 
 
+def test_claude_and_opencode_prefilter_target_sets_match(monkeypatch, topology):
+    """R2 26명령과 F-006 4명령의 양 어댑터 선필터 집합은 동형이어야 한다."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node 없음")
+    driver = _load("git_anchor_prefilter_parity", CLAUDE_DRIVER)
+    home, _slot = topology
+    cases = [
+        ("python3 build.py", False),
+        ("echo x && git status", True),
+        ("/usr/bin/git>out status", True),
+        ("g''it add tests/shared.txt", True),
+        ("git\\\n add tests/shared.txt", True),
+        ('echo \\"; git\\\n add tests/shared.txt', True),
+        ("$WRAPPER git add tests/shared.txt", True),
+        ("python3 .project_manager/tools/board.py list", True),
+        (r"python .project_manager\tools\board.py list", True),
+        ("python3 -m pytest tests/ -q", True),
+        ("pytest tests/", True),
+        ("cd /tmp && python3 build.py", True),
+        ("sed -n '1,5p' .project_manager/tools/board.py", True),
+        ("find . -name '*.py' | xargs grep -l pytest", True),
+        ("docker run img pytest tests/", True),
+        ("npm test -- --grep 'cd foo && bar'", False),
+        ("echo '.project_manager/tools/'", True),
+        ("(cd /tmp && ls)", False),
+        ("cat <<'EOF'\ncd /tmp && ls\nEOF", False),
+        ("cat <<'EOF'\ngit status\nEOF", True),
+        ("env -C /elsewhere pytest tests/", True),
+        ("command git status", True),
+        ("echo git status", True),
+        ("legit status", False),
+        ('python3 ".project_manager/tools/board.py" list', True),
+        ("printf cd", False),
+        # F-006: R2의 26명령 대조에 추가한 과소 매칭 네 형태.
+        ("python3 .project_manager//tools/board.py claim T-1", True),
+        ('cd "/tmp/my dir" && ls', True),
+        ("cd X; cmd", True),
+        ("cmd && cd X", True),
+    ]
+    commands = [command for command, _expected in cases]
+    expected_matches = [expected for _command, expected in cases]
+    calls = []
+
+    class FakeBoard:
+        @staticmethod
+        def judge_git_anchor_command(cwd, command):
+            calls.append((cwd, command))
+            return {"verdict": "ok", "cwd_identity": "pm-home", "reason": "fixture"}
+
+    monkeypatch.setattr(driver, "_load_board", lambda _root: FakeBoard)
+    claude_matches = []
+    for command in commands:
+        before = len(calls)
+        payload = {
+            "hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": str(home),
+            "tool_input": {"command": command},
+        }
+        assert driver.git_anchor_hook_evaluate(payload, home) is None
+        claude_matches.append(len(calls) == before + 1)
+
+    script = r'''
+const m = require("./git-anchor-core.cjs");
+const commands = JSON.parse(process.argv[1]);
+process.stdout.write(JSON.stringify(commands.map((command) => m.containsGitCommand(command))));
+'''
+    result = subprocess.run(
+        [node, "-e", script, json.dumps(commands)], cwd=OPEN_CORE.parent, check=True,
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    opencode_matches = json.loads(result.stdout)
+    assert claude_matches == opencode_matches == expected_matches
+
+
 def test_opencode_thin_plugin_and_core_node_selfcheck():
     assert OPEN_PLUGIN.is_file() and OPEN_CORE.is_file()
     plugin = OPEN_PLUGIN.read_text(encoding="utf-8")
@@ -719,6 +1065,13 @@ assert.strictEqual(m.containsGitCommand("g''it add tests/shared.txt"), true);
 assert.strictEqual(m.containsGitCommand("git\\\n add tests/shared.txt"), true);
 assert.strictEqual(m.containsGitCommand('echo \\"; git\\\n add tests/shared.txt'), true);
 assert.strictEqual(m.containsGitCommand('$WRAPPER git add tests/shared.txt'), true);
+assert.strictEqual(m.containsGitCommand("python3 .project_manager/tools/board.py list"), true);
+assert.strictEqual(m.containsGitCommand("python3 -m pytest tests/ -q"), true);
+assert.strictEqual(m.containsGitCommand("cd /tmp && python3 build.py"), true);
+assert.strictEqual(m.containsGitCommand("python3 .project_manager//tools/board.py claim T-1"), true);
+assert.strictEqual(m.containsGitCommand('cd "/tmp/my dir" && ls'), true);
+assert.strictEqual(m.containsGitCommand("cd X; cmd"), true);
+assert.strictEqual(m.containsGitCommand("cmd && cd X"), true);
 let calls = 0;
 const fake = (py, argv, opts) => {
   calls += 1;
@@ -728,6 +1081,10 @@ assert.strictEqual(m.judgeCommand("/r", "/r", "python3 build.py", fake).verdict,
 assert.strictEqual(calls, 0);
 assert.strictEqual(m.judgeCommand("/r", "/r", "git commit -m x", fake).verdict, "warn");
 assert.strictEqual(calls, 1);
+assert.strictEqual(m.judgeCommand("/r", "/r", "python3 .project_manager/tools/board.py list", fake).verdict, "warn");
+assert.strictEqual(m.judgeCommand("/r", "/r", "python3 -m pytest tests/ -q", fake).verdict, "warn");
+assert.strictEqual(m.judgeCommand("/r", "/r", "cd /tmp && python3 build.py", fake).verdict, "warn");
+assert.strictEqual(calls, 4);
 assert.strictEqual(typeof m.GitAnchorPlugin, "function");
 assert.strictEqual(typeof m.makeGitAnchorPlugin, "function");
 

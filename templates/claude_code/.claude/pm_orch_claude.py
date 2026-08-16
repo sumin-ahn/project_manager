@@ -65,11 +65,18 @@ def git_anchor_hook_evaluate(stdin: dict, root: Path) -> dict | None:
     tool = stdin.get("tool_name") or stdin.get("toolName")
     tool_input = stdin.get("tool_input") or stdin.get("toolInput") or {}
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
-    # 매 Bash 호출에 훅이 떠도 git 비포함은 board import조차 하지 않는 선필터(핫패스 비용 0).
+    # 매 Bash 호출에 훅이 떠도 판정 대상 비포함은 board import조차 하지 않는 선필터(핫패스 비용 0).
+    # 대상은 넷이다 — git 호출(앵커) · 엔진 도구 호출(사본 정체) · pytest(트리 정체) · cd 잔존.
     if event != "PreToolUse" or tool != "Bash" or not isinstance(command, str):
         return None
     prefilter = command.replace("\\\n", "").replace("'", "").replace('"', "")
-    if not re.search(r"(?<![A-Za-z0-9_.-])git(?=\s|$|[<>])", prefilter):
+    normalized = re.sub(r"/+", "/", prefilter.replace("\\", "/"))
+    if not (
+        re.search(r"(?<![A-Za-z0-9_.-])git(?=\s|$|[<>])", prefilter)
+        or ".project_manager/tools/" in normalized
+        or re.search(r"(?<![A-Za-z0-9_.-])pytest(?=\s|$)", prefilter)
+        or re.search(r"(?:^|[;&|])\s*cd(?=\s)", prefilter)
+    ):
         return None
     cwd = stdin.get("cwd")
     anchor = cwd if isinstance(cwd, str) and cwd else str(root)
