@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 from _pytest_summary import pytest_summary
+from _textio import utf8_child_env
 
 requires_git = pytest.mark.skipif(
     shutil.which("git") is None,
@@ -599,7 +600,7 @@ def test_run_regression_cmd_with_real_child_splits_streams(board, tmp_path, caps
         "sys.stderr.write('노이즈 8000 passed\\n')\n"
         "sys.exit(3)\n", encoding="utf-8")
     cmd = f'"{sys.executable}" "{script}"'
-    rc, out, err = board._run_regression_cmd(cmd, str(tmp_path), dict(os.environ))
+    rc, out, err = board._run_regression_cmd(cmd, str(tmp_path), utf8_child_env())
     assert rc == 3
     assert "12 passed in 0.30s" in out
     assert "노이즈 8000 passed" in err

@@ -149,7 +149,7 @@ def test_generation_provenance_matches_git(pm_update, idx, git_ref):
     try:
         git = subprocess.run(
             ["git", "-C", str(REPO), "show", git_ref],
-            capture_output=True, text=True, check=True, timeout=15,
+            capture_output=True, text=True, encoding="utf-8", check=True, timeout=15,
         ).stdout
     except (subprocess.SubprocessError, OSError, FileNotFoundError):
         pytest.skip("git 미가용 — provenance 대조 skip (자산 무결성은 decode 로만 검증)")
@@ -420,7 +420,9 @@ def test_scenario_unmodified_auto_migrate_no_markers(pm_update, old_gen_text, tm
     src = _make_source(tmp_path)
     result = pm_update.migrate_entry_doc(dest, src, write=True)
     assert result["status"] == "migrated"
-    assert pm_update._ENTRY_DOC_OLD_GEN_MARKER not in (dest / "AGENTS.md").read_text()
+    assert pm_update._ENTRY_DOC_OLD_GEN_MARKER not in (
+        dest / "AGENTS.md"
+    ).read_text(encoding="utf-8")
 
 
 def test_scenario_modified_loud_no_touch(pm_update, old_gen_text, tmp_path):

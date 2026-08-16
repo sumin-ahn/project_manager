@@ -28,6 +28,8 @@ from pathlib import Path
 
 import pytest
 
+from _textio import utf8_child_env
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 REAL_LOCAL_DIR = REPO / ".project_manager" / ".local"
@@ -427,7 +429,7 @@ def test_concurrent_new_yields_unique_ids(proj):
     ids=["sensitivity-without-recheck-splits", "lock-fresh-recheck-blocks"],
 )
 def test_prefix_relabel_rechecks_canonical_after_concurrent_process_write(
-    proj, bypass_fresh_recheck, expected,
+    proj, monkeypatch, bypass_fresh_recheck, expected,
 ):
     """두 실제 세션의 선판정→타 case 발행→lock 취득 interleaving을 전/후로 박제한다.
 
@@ -442,6 +444,9 @@ def test_prefix_relabel_rechecks_canonical_after_concurrent_process_write(
          "created": "2026-08-11"},
         "# T-old-003 — seed\n",
     )
+
+    for name, value in utf8_child_env({}).items():
+        monkeypatch.setenv(name, value)
 
     ctx = mp.get_context("spawn")
     ready = ctx.Event()

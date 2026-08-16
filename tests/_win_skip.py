@@ -7,10 +7,14 @@
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
 _CAN_SYMLINK: bool | None = None  # 1회 탐지 결과 캐시.
+_POSIX_MODE_SUPPORTED: bool | None = None
+_GIT_SYMLINK_SUPPORTED: bool | None = None
 
 
 def _can_symlink() -> bool:
@@ -37,3 +41,65 @@ def _can_symlink() -> bool:
 
     _CAN_SYMLINK = can
     return can
+
+
+def posix_mode_supported() -> bool:
+    """chmod(0600)가 stat mode로 실제 왕복되는지 능력 기반으로 탐지한다."""
+    global _POSIX_MODE_SUPPORTED
+    if _POSIX_MODE_SUPPORTED is not None:
+        return _POSIX_MODE_SUPPORTED
+
+    supported = False
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = Path(tmp) / "mode-probe"
+            probe.write_bytes(b"probe")
+            probe.chmod(0o600)
+            supported = probe.stat().st_mode & 0o777 == 0o600
+    except (OSError, NotImplementedError):
+        supported = False
+    _POSIX_MODE_SUPPORTED = supported
+    return supported
+
+
+def posix_bash_supported() -> bool:
+    """POSIX bash wrapper를 그대로 실행할 수 있는 환경인지 판정한다."""
+    return os.name != "nt" and shutil.which("bash") is not None
+
+
+def posix_filenames_supported() -> bool:
+    """개행·별표 등 POSIX 파일명 회귀를 실행할 수 있는 환경인지 판정한다."""
+    return os.name != "nt"
+
+
+def git_symlink_supported() -> bool:
+    """git checkout이 symlink index entry를 실제 symlink로 왕복하는지 탐지한다."""
+    global _GIT_SYMLINK_SUPPORTED
+    if _GIT_SYMLINK_SUPPORTED is not None:
+        return _GIT_SYMLINK_SUPPORTED
+    git = shutil.which("git")
+    if git is None or not _can_symlink():
+        _GIT_SYMLINK_SUPPORTED = False
+        return False
+    supported = False
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            clone = root / "clone"
+            source.mkdir()
+            subprocess.run([git, "-C", str(source), "init", "-q"], check=True)
+            (source / "target").write_text("target\n", encoding="utf-8")
+            os.symlink("target", source / "link")
+            subprocess.run([git, "-C", str(source), "add", "target", "link"], check=True)
+            subprocess.run([
+                git, "-C", str(source),
+                "-c", "user.name=t", "-c", "user.email=t@x.invalid",
+                "commit", "-qm", "symlink probe",
+            ], check=True)
+            subprocess.run([git, "clone", "-q", str(source), str(clone)], check=True)
+            supported = (clone / "link").is_symlink()
+    except (OSError, subprocess.SubprocessError):
+        supported = False
+    _GIT_SYMLINK_SUPPORTED = supported
+    return supported

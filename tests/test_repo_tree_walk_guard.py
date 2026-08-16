@@ -38,6 +38,15 @@ MIGRATION_EXCEPTIONS: dict[WalkKey, WalkException] = {
 # 원장에 사유와 기대 개수를 명시하지 않는 한 red다.
 REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
     (
+        "tests/test_tests_text_io_discipline.py",
+        "test_path_read_write_text_calls_declare_encoding",
+        "rglob",
+        "'*.py'",
+    ): WalkException(
+        "닫힌 tests/ Python 소스의 encoding 규율 전수 검사 — repo 소유 인벤토리가 아니라 "
+        "정적 테스트 소스 자체가 판정 대상"
+    ),
+    (
         "tests/test_pm_update_opencode.py",
         "test_templates_do_not_ship_github_workflows",
         "rglob",

@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from _textio import utf8_child_env
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PM_LOG = ROOT / ".project_manager" / "tools" / "pm_log.py"
@@ -71,7 +73,8 @@ def test_required_expression_matrix_matches_direct_renderer_and_raw_cli(pm_log, 
             sys.executable, str(PM_LOG), "ctx-guidance", "--band", band,
             "--used-pct", "82", "--remaining-pct", "18", "--stop-pct", "20",
         ],
-        cwd=ROOT, capture_output=True, text=True, check=True,
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
+        env=utf8_child_env(), check=True,
     )
     cli = result.stdout.rstrip("\n")
 
@@ -139,7 +142,7 @@ def test_opencode_consumes_pm_log_guidance_verbatim(pm_log):
     )
     result = subprocess.run(
         [node, "-e", script], cwd=OPENCODE.parent,
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, encoding="utf-8", check=True,
     )
     expected = pm_log.build_ctx_guard_guidance(
         "nudge", used_pct=82, remaining_pct=18, stop_pct=20,
@@ -150,7 +153,8 @@ def test_opencode_consumes_pm_log_guidance_verbatim(pm_log):
 def test_codex_json_payload_is_engine_owned_shared_value(pm_log):
     result = subprocess.run(
         [sys.executable, str(PM_LOG), "ctx-guidance", "--band", "precompact", "--json"],
-        cwd=ROOT, capture_output=True, text=True, check=True,
+        cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
+        env=utf8_child_env(), check=True,
     )
     payload = json.loads(result.stdout)
     assert payload == {

@@ -27,6 +27,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -456,7 +457,7 @@ def test_pm_update_dry_run_preserves_codex_native_delegate_override():
     """shared skill render 뒤에도 Codex file override가 update 대상으로 되돌아가지 않는다."""
     result = subprocess.run(
         [
-            "python3", str(REPO / ".project_manager" / "tools" / "pm_update.py"),
+            sys.executable, str(REPO / ".project_manager" / "tools" / "pm_update.py"),
             "--from", str(REPO), "--target", "codex", "--dry-run",
         ],
         cwd=REPO, capture_output=True, text=True, encoding="utf-8", errors="replace",

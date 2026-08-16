@@ -13,7 +13,12 @@ from pathlib import Path
 
 import pytest
 
-from _win_skip import _can_symlink
+from _win_skip import (
+    _can_symlink,
+    git_symlink_supported,
+    posix_filenames_supported,
+    posix_mode_supported,
+)
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -180,7 +185,9 @@ def test_snapshot_marker_write_failure_rolls_back_registered_worktree(
     assert str(output) not in _git(repo, "worktree", "list", "--porcelain").stdout
 
 
-@pytest.mark.skipif(not _can_symlink(), reason="symlink 을 만들 수 없는 환경")
+@pytest.mark.skipif(
+    not git_symlink_supported(), reason="git checkout symlink 왕복을 지원하지 않는 환경"
+)
 @pytest.mark.parametrize(
     ("symlink_parent", "outside_marker"),
     [
@@ -642,7 +649,16 @@ def test_working_tree_stability_check_is_independently_sensitive(
     assert not output.exists()
 
 
-@pytest.mark.parametrize("change", ["blob", "mode"])
+@pytest.mark.parametrize("change", [
+    "blob",
+    pytest.param(
+        "mode",
+        marks=pytest.mark.skipif(
+            not posix_mode_supported(),
+            reason="chmod 실행 비트 왕복을 지원하지 않는 filesystem",
+        ),
+    ),
+])
 def test_index_stage_entry_change_is_caught_even_when_file_set_is_stable(
     snapshot, tmp_path, monkeypatch, change
 ):
@@ -941,7 +957,9 @@ def test_absolute_path_through_symlinked_repo_prefix_is_accepted(snapshot, tmp_p
     assert files == ("review/target.txt",)
 
 
-@pytest.mark.skipif(not _can_symlink(), reason="symlink 을 만들 수 없는 환경")
+@pytest.mark.skipif(
+    not git_symlink_supported(), reason="git checkout symlink 왕복을 지원하지 않는 환경"
+)
 def test_symlinked_repo_prefix_does_not_resolve_the_selector_leaf(snapshot, tmp_path):
     """prefix 만 해소하고 leaf 는 그대로 둔다 — 선택자가 링크 대상으로 바뀌면 안 된다 (T-0544 ①).
 
@@ -1038,6 +1056,10 @@ def test_stale_worktree_registration_does_not_block_other_output_paths(
     assert files == ("review/target.txt",)
 
 
+@pytest.mark.skipif(
+    not posix_filenames_supported(),
+    reason="개행 포함 worktree 경로는 Windows 파일명 규칙에서 표현 불가",
+)
 def test_registered_worktree_paths_are_parsed_as_nul_records(snapshot, tmp_path):
     """개행·후행 공백이 든 worktree 경로도 거부 목록에 온전히 들어간다 (`-z` 파싱).
 

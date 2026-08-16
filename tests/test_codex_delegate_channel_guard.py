@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from _win_skip import posix_bash_supported
+
 
 REPO = Path(__file__).resolve().parents[1]
 GUARD_PY = REPO / ".project_manager" / "tools" / "delegate_channel_guard.py"
@@ -562,6 +564,9 @@ def _run_posix_hook(
     return json.loads(completed.stdout), elapsed
 
 
+@pytest.mark.skipif(
+    not posix_bash_supported(), reason="POSIX bash wrapper 실행 환경이 아님"
+)
 def test_posix_hook_wrapper_missing_guard_emits_valid_allow_json(tmp_path):
     result, elapsed = _run_posix_hook(_pretooluse_handler()["command"], tmp_path)
 
@@ -588,6 +593,9 @@ def test_posix_hook_wrapper_missing_guard_emits_valid_allow_json(tmp_path):
     ),
     ids=("empty-allow", "measured-deny"),
 )
+@pytest.mark.skipif(
+    not posix_bash_supported(), reason="POSIX bash wrapper 실행 환경이 아님"
+)
 def test_posix_hook_wrapper_preserves_supported_envelope_exactly(
     tmp_path, candidate
 ):
@@ -602,6 +610,9 @@ def test_posix_hook_wrapper_preserves_supported_envelope_exactly(
     assert result == candidate
 
 
+@pytest.mark.skipif(
+    not posix_bash_supported(), reason="POSIX bash wrapper 실행 환경이 아님"
+)
 def test_posix_hook_wrapper_times_out_guard_before_outer_hook_timeout(tmp_path):
     guard_path = tmp_path / ".project_manager" / "tools" / "delegate_channel_guard.py"
     guard_path.parent.mkdir(parents=True)

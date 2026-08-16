@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from _win_skip import posix_filenames_supported
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -2147,6 +2149,9 @@ def test_directory_expansion_failure_is_consistent_then_next_query_retries(
     assert calls == 2
 
 
+@pytest.mark.skipif(
+    not posix_filenames_supported(), reason="개행 포함 파일명은 NTFS에서 만들 수 없음"
+)
 def test_directory_touch_git_path_collects_tracked_and_nonignored_untracked(
         dm, tmp_path, monkeypatch):
     """실 git 경로는 tracked+untracked를 NUL 분해하고 gitignored 산출물은 제외한다."""
@@ -2233,6 +2238,9 @@ def test_directory_touch_git_special_entries_remain_coverage_gaps(
     ]
 
 
+@pytest.mark.skipif(
+    not posix_filenames_supported(), reason="별표 포함 파일명은 NTFS에서 만들 수 없음"
+)
 def test_directory_touch_git_pathspec_treats_glob_magic_as_literal(
         dm, tmp_path, monkeypatch):
     """글롭 문자가 든 디렉토리 touch는 다른 pathspec 매치가 아닌 리터럴 subtree만 전개한다."""

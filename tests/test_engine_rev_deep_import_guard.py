@@ -29,6 +29,9 @@ from pathlib import Path, PureWindowsPath
 
 import pytest
 
+from _textio import utf8_child_env
+from _win_skip import _can_symlink
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 _CENTRAL_LOADER = ("repo_owned_files.py", "load_module")
@@ -1345,6 +1348,7 @@ def test_interrupted_update_new_pm_update_with_unusable_seam_recovers(
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env=utf8_child_env(),
         timeout=60,
     )
 
@@ -1355,6 +1359,10 @@ def test_interrupted_update_new_pm_update_with_unusable_seam_recovers(
     ).read_text(encoding="utf-8")
 
 
+@pytest.mark.skipif(
+    not _can_symlink(),
+    reason="symlink 생성 권한/기능이 없는 플랫폼",
+)
 def test_recovery_first_rejects_symlink_source(tmp_path):
     source = tmp_path / "source"
     dest = tmp_path / "dest"
@@ -1372,7 +1380,10 @@ def test_recovery_first_rejects_symlink_source(tmp_path):
             manifest_text, encoding="utf-8"
         )
     payload = tmp_path / "external_payload.py"
-    payload.write_text((TOOLS / "repo_owned_files.py").read_text(encoding="utf-8"))
+    payload.write_text(
+        (TOOLS / "repo_owned_files.py").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     (source_tools / "repo_owned_files.py").symlink_to(payload)
     for name in ("pm_update.py", "console_encoding.py"):
         shutil.copy2(TOOLS / name, source_tools / name)
@@ -1391,6 +1402,7 @@ def test_recovery_first_rejects_symlink_source(tmp_path):
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env=utf8_child_env(),
         timeout=60,
     )
 

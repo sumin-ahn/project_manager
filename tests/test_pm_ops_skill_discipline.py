@@ -165,7 +165,9 @@ def _parse_catalog(text: str) -> dict[str, set[str]]:
 # 강등 backbone 줄 = engine() 이 2-space 들여쓴 `python3 …/tools/<tool>` 줄. 직접 sibling
 # (external_review 등 cmd() 산출)은 들여쓰기가 없어 제외된다 — 이 구분이 must-fix #1
 # (external_review 오귀속) 클래스를 닫는다.
-_DEMOTION_RE = re.compile(r"python3 \.project_manager/tools/(\S+\.py)(.*)")
+_DEMOTION_RE = re.compile(
+    r"(?:python3|py -3(?:\.\d+)?) \.project_manager/tools/(\S+\.py)(.*)"
+)
 
 
 def _card_skill_block(card_lines: list[str], skill_token: str) -> list[str] | None:

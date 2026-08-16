@@ -460,7 +460,7 @@ def test_rewrite_is_idempotent(stripper):
 
 def test_process_python_preserves_crlf_newlines_for_modified_files(stripper, tmp_path):
     path = tmp_path / "sample.py"
-    path.write_text('"""reason (T-1111)"""\r\n# retained\r\n', encoding="utf-8")
+    path.write_bytes(b'"""reason (T-1111)"""\r\n# retained\r\n')
     result = stripper.process_python(path, tmp_path, write=True)
     assert result.replacements == 1
     with path.open("r", encoding="utf-8", newline="") as stream:

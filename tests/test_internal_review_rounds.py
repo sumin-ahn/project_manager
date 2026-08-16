@@ -1124,16 +1124,20 @@ def test_driver_return_before_raw_write_failure_still_consumes_round(
     assert entry["rounds"][0]["verdict"] is None
 
 
-def test_namespaced_gate_reuses_board_ticket_id_grammar(pd):
+def test_namespaced_gate_reuses_board_ticket_id_grammar(pd, tmp_path):
     parser = pd.build_arg_parser()
+    prompt = tmp_path / "p"
+    cwd = tmp_path / "w"
+    prompt.write_text("review\n", encoding="utf-8")
+    cwd.mkdir()
     valid = parser.parse_args([
-        "--role", "code-reviewer", "--prompt-file", "/tmp/p", "--cwd", "/tmp/w",
+        "--role", "code-reviewer", "--prompt-file", str(prompt), "--cwd", str(cwd),
         "--gate", "T-PAY-001",
     ])
-    assert pd._validate_args(parser, valid) == Path("/tmp/w")
+    assert pd._validate_args(parser, valid) == cwd
 
     invalid = parser.parse_args([
-        "--role", "code-reviewer", "--prompt-file", "/tmp/p", "--cwd", "/tmp/w",
+        "--role", "code-reviewer", "--prompt-file", str(prompt), "--cwd", str(cwd),
         "--gate", "T-PAY",
     ])
     with pytest.raises(SystemExit) as exc:

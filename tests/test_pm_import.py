@@ -24,6 +24,7 @@ import yaml
 
 from _win_skip import _can_symlink
 from _harness_matrix import HARNESSES, HARNESS_ADAPTER_DIRS, HARNESS_ROOT_DOC
+from _textio import write_lf
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -2191,7 +2192,7 @@ def test_legacy_single_harness_partial_stray_never_promotes_adapter(
     legacy_text = re.sub(
         r"\s+@source=\S+", "", dest_manifest.read_text(encoding="utf-8")
     )
-    dest_manifest.write_text(legacy_text, encoding="utf-8")
+    write_lf(dest_manifest, legacy_text)
 
     stray = dest / stray_rel
     stray.parent.mkdir(parents=True, exist_ok=True)
@@ -2499,7 +2500,7 @@ def test_legacy_frozen_both_full_reimport_makes_next_update_refresh_both_flavors
     claude_manifest = (
         REPO / "templates" / "claude_code" / ".project_manager" / "engine.manifest")
     legacy_text = re.sub(r"\s+@source=\S+", "", claude_manifest.read_text(encoding="utf-8"))
-    dest_manifest.write_text(legacy_text, encoding="utf-8")
+    write_lf(dest_manifest, legacy_text)
     victim_rels = (
         Path(".claude/ctx_guard.py"),
         Path(".opencode/lib/safe-write-core.cjs"),

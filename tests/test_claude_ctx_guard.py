@@ -24,6 +24,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from _textio import utf8_child_env, write_lf
+from _win_skip import posix_mode_supported
+
 REPO = Path(__file__).resolve().parents[1]
 CLAUDE = REPO / "templates" / "claude_code" / ".claude"
 
@@ -946,22 +949,19 @@ def _postcompact_durable_mismatch_subprocess_probe(
     log_dir = manager / "wiki" / "log"
     log_dir.mkdir(parents=True)
     current = log_dir / "current.md"
-    current.write_text("# Project Log\n\n> T-0661 subprocess probe\n\n", encoding="utf-8")
-    (manager / "local.conf").write_text(
-        "ctx_window_tokens_claude=600000\n", encoding="utf-8",
-    )
+    write_lf(current, "# Project Log\n\n> T-0661 subprocess probe\n\n")
+    write_lf(manager / "local.conf", "ctx_window_tokens_claude=600000\n")
     state = manager / ".local" / "tasks" / "main" / "pm_state.md"
     state.parent.mkdir(parents=True)
-    state.write_text("# main state\n- T-0661 probe\n", encoding="utf-8")
+    write_lf(state, "# main state\n- T-0661 probe\n")
     cwd = root / "work" / "project_1"
     cwd.mkdir(parents=True)
-    (manager / ".local" / "worktree-leases.json").write_text(
+    write_lf(manager / ".local" / "worktree-leases.json",
         json.dumps({
             "leases": [{
                 "slot": "work/project_1", "state": "leased", "session": "main",
             }],
         }),
-        encoding="utf-8",
     )
 
     def run_hook(payload: dict, *args: str) -> dict | None:
@@ -973,6 +973,7 @@ def _postcompact_durable_mismatch_subprocess_probe(
             stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
+            env=utf8_child_env(),
             timeout=10,
             check=False,
         )
@@ -981,11 +982,11 @@ def _postcompact_durable_mismatch_subprocess_probe(
 
     marker_dir = manager / ".local" / "ctx-stop"
     transcript = root / "missed.jsonl"
-    transcript.write_text(json.dumps({
+    write_lf(transcript, json.dumps({
         "type": "assistant",
         "message": {"role": "assistant", "usage": {"input_tokens": 30_000}},
         "isSidechain": False,
-    }) + "\n", encoding="utf-8")
+    }) + "\n")
     base = {
         "session_id": "probe-missed", "transcript_path": str(transcript), "cwd": str(cwd),
     }
@@ -1060,11 +1061,11 @@ def _postcompact_durable_mismatch_subprocess_probe(
     after_consume_refire = snapshot_marker.read_bytes()
 
     clean_transcript = root / "clean.jsonl"
-    clean_transcript.write_text(json.dumps({
+    write_lf(clean_transcript, json.dumps({
         "type": "assistant",
         "message": {"role": "assistant", "usage": {"input_tokens": 30_000}},
         "isSidechain": False,
-    }) + "\n", encoding="utf-8")
+    }) + "\n")
     clean_sid = "probe-clean"
     (marker_dir / f"{clean_sid}.final").write_text("fired\n", encoding="utf-8")
     clean_base = {
@@ -1198,6 +1199,10 @@ def _assert_marker_write_failure_retries_from_durable_log(result: dict) -> None:
     )
 
 
+@pytest.mark.skipif(
+    not posix_mode_supported(),
+    reason="directory chmod 기반 marker 쓰기 거부는 POSIX mode 의미론 필요",
+)
 def test_marker_write_failure_retries_from_durable_log_subprocess(tmp_path):
     """marker 쓰기 불능은 rc0·무출력, 권한 복구 뒤 같은 원장 진단으로 전달을 재시도한다."""
     _assert_marker_write_failure_retries_from_durable_log(
@@ -1205,6 +1210,10 @@ def test_marker_write_failure_retries_from_durable_log_subprocess(tmp_path):
     )
 
 
+@pytest.mark.skipif(
+    not posix_mode_supported(),
+    reason="directory chmod 기반 marker 쓰기 거부는 POSIX mode 의미론 필요",
+)
 def test_marker_write_failure_regression_detects_consumed_retry_source(tmp_path):
     """원장 진단까지 소비하는 임시 engine은 marker 권한 복구 뒤 진단 전달이 red다."""
     result = _postcompact_durable_mismatch_subprocess_probe(
@@ -1297,6 +1306,7 @@ elif args and args[0] == "snapshot":
             stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
+            env=utf8_child_env(),
             timeout=15,
             check=False,
         )
@@ -1339,7 +1349,13 @@ elif args and args[0] == "snapshot":
 @pytest.mark.parametrize(
     ("canonical_mode", "expected_fallback", "expected_ledger_diagnostic"),
     [
-        ("write-failure", True, 0),
+        pytest.param(
+            "write-failure", True, 0,
+            marks=pytest.mark.skipif(
+                not posix_mode_supported(),
+                reason="chmod 기반 쓰기 거부 시뮬레이션은 POSIX mode 의미론 필요",
+            ),
+        ),
         ("old-engine", True, 0),
         ("normal", False, 1),
     ],

@@ -36,6 +36,9 @@ from pathlib import Path
 
 import pytest
 
+from _git import commit_env
+from _win_skip import posix_mode_supported
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 SYNC_TIMEOUT = 60
@@ -2152,10 +2155,7 @@ _git_required = pytest.mark.skipif(_GIT is None, reason="git 바이너리 없음
 def _git(cwd, *argv, env=None):
     """테스트용 실 git 헬퍼 — check=True·UTF-8 캡처."""
     e = _protection_env()
-    e.update({
-        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
-        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
-    })
+    e = commit_env(e)
     if env:
         e.update(env)
     return subprocess.run([_GIT, "-C", str(cwd), *argv], check=True,
@@ -4029,7 +4029,8 @@ def test_install_protected_hook_atomically_replaces_every_hook_and_sidecar(wp, m
         assert src.parent == dst.parent, "원자 rename과 다른 filesystem의 임시파일"
         assert dst.read_text(encoding="utf-8") == old[dst], "replace 전 기존 산출물을 제자리 변경"
         expected_mode = 0o755 if next(a for a in expected if a.path == dst).executable else 0o644
-        assert src.stat().st_mode & 0o777 == expected_mode, "권한 설정 전 산출물 노출"
+        if posix_mode_supported():
+            assert src.stat().st_mode & 0o777 == expected_mode, "권한 설정 전 산출물 노출"
         replaced.append(dst)
         real_replace(src, dst)
 
@@ -5115,7 +5116,8 @@ def test_install_protected_hook_writes_pre_commit_too(wp):
     assert commit_hook.exists(), "pre-commit 훅이 설치되지 않음(T-0415 미배포)"
     assert commit_hook.read_text(encoding="utf-8").startswith("#!/bin/sh")
     # 실행권한 없으면 git 이 훅을 조용히 건너뛴다(침묵 무력화) — pre-push 와 같은 0755.
-    assert commit_hook.stat().st_mode & 0o111, "pre-commit 훅에 실행권한 없음"
+    if posix_mode_supported():
+        assert commit_hook.stat().st_mode & 0o111, "pre-commit 훅에 실행권한 없음"
     # sidecar 는 두 훅 공용(별도 목록 파일 신설 0).
     assert (wp.REPO_HOOKS_DIR / "A" / "protected").read_text(
         encoding="utf-8").splitlines() == ["main"]
@@ -5155,7 +5157,7 @@ def test_installed_artifact_contents_and_modes_match_spec(wp):
         assert artifact.path.read_text(encoding="utf-8") == artifact.content, \
             f"{artifact.path.name} 내용이 명세와 다름"
         is_executable = bool(artifact.path.stat().st_mode & 0o111)
-        if artifact.executable:
+        if artifact.executable and posix_mode_supported():
             assert is_executable, \
                 f"{artifact.path.name} 실행권한 없음 — git 이 훅을 조용히 건너뛴다"
         # sidecar 는 0644로 설치되며 실행권한을 *요구하지 않는다* — 명세 flag 와 일치.
@@ -7929,7 +7931,7 @@ def test_validate_task_name_is_load_bearing_before_writes(wp):
     """검증이 write/mkdir *이전* — 거부 시 장부·디렉토리 흔적 0(부작용 순서 핀)."""
     with _pytest_task.raises(wp.InvalidTaskName):
         wp.bind_task("../escape")
-    assert not (wp.LOCAL_DIR / "tasks" / "..").exists()
+    assert not (wp.LOCAL_DIR / "tasks").exists()
     assert wp.list_tasks() == []
 
 

@@ -187,10 +187,10 @@ def test_card_uses_local_interpreter_for_every_tool_reference(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize("conf_text", [None, "session=demo\n", "py=\n"])
-def test_card_interpreter_missing_or_empty_keeps_python3(
+def test_card_interpreter_missing_or_empty_uses_platform_default(
     tmp_path, monkeypatch, conf_text
 ):
-    """설정·키가 없거나 값이 비면 모든 모드가 기존 `python3` 표기를 유지한다."""
+    """설정·키가 없거나 값이 비면 모든 모드가 플랫폼 기본 표기를 유지한다."""
     bootstrap = _load(_TREES["root"], "pm_bootstrap")
     if conf_text is not None:
         conf_dir = tmp_path / ".project_manager"
@@ -201,11 +201,12 @@ def test_card_interpreter_missing_or_empty_keeps_python3(
     cards = _render_all_mode_cards(bootstrap)
     references = _tool_reference_lines(cards)
     assert references, "카드의 Python 도구 참조가 비어 폴백 검사가 공허함"
-    assert all("python3 .project_manager/tools/" in line for line in references)
+    expected = bootstrap._resolve_card_tool_invoke(tmp_path)
+    assert all(expected in line for line in references)
 
 
-def test_card_interpreter_read_failure_keeps_python3(tmp_path, monkeypatch):
-    """설정 읽기가 실패해도 카드 렌더를 깨뜨리지 않고 기존 접두로 폴백한다."""
+def test_card_interpreter_read_failure_uses_platform_default(tmp_path, monkeypatch):
+    """설정 읽기가 실패해도 카드 렌더를 깨뜨리지 않고 플랫폼 접두로 폴백한다."""
     bootstrap = _load(_TREES["root"], "pm_bootstrap")
     conf_dir = tmp_path / ".project_manager"
     conf_dir.mkdir()
@@ -220,7 +221,11 @@ def test_card_interpreter_read_failure_keeps_python3(tmp_path, monkeypatch):
         return original_read_text(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", fail_for_local_conf)
-    assert bootstrap._resolve_card_tool_invoke() == bootstrap._CARD_TOOL_INVOKE
+    expected = bootstrap._detect_command_environment(tmp_path)
+    assert expected.python_source == "os-default"
+    assert bootstrap._resolve_card_tool_invoke() == bootstrap._resolve_card_tool_invoke(
+        environment=expected
+    )
 
 
 # ── 1. 정의서 → 파서 (카드 토큰이 실 CLI 에 있나·양방향 forward) ────────────────

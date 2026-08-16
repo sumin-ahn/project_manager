@@ -218,7 +218,7 @@ def surfaces() -> list[tuple[str, str]]:
     assert len(files) >= _MIN_SURFACE_FILES, (
         f"스캔 표면이 {len(files)}개뿐 — 글롭이 어긋났거나 트리가 바뀌었다(false-green 방지 하한 "
         f"{_MIN_SURFACE_FILES}). 글롭: {_SURFACE_GLOBS}")
-    return [(str(p.relative_to(REPO)), p.read_text(encoding="utf-8")) for p in files]
+    return [(p.relative_to(REPO).as_posix(), p.read_text(encoding="utf-8")) for p in files]
 
 
 # ── 표면 커버리지 ─────────────────────────────────────────────────────────
@@ -252,7 +252,7 @@ def test_surface_scans_non_skill_md_inside_skill_dirs(tmp_path):
         path = tmp_path / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("x\n", encoding="utf-8")
-    found = {str(p.relative_to(tmp_path)) for p in surface_files(tmp_path)}
+    found = {p.relative_to(tmp_path).as_posix() for p in surface_files(tmp_path)}
     assert ".claude/skills/pm-fake/reference.md" in found, found
     assert "templates/codex/.agents/skills/pm-fake/examples.md" in found, found
 

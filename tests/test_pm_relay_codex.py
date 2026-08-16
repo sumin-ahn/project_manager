@@ -854,7 +854,9 @@ def test_codex_main_forwards_task_budget_and_engine_seams(driver_mod, monkeypatc
 def test_codex_driver_repo_root_finds_engine(driver_mod, tmp_path):
     """repo_root 가 pm_handoff.py 가 있는 조상을 엔진 루트로 찾는다(opencode findEngineRoot 동형)."""
     (tmp_path / ".project_manager" / "tools").mkdir(parents=True)
-    (tmp_path / ".project_manager" / "tools" / "pm_handoff.py").write_text("x")
+    (tmp_path / ".project_manager" / "tools" / "pm_handoff.py").write_text(
+        "x", encoding="utf-8"
+    )
     nested = tmp_path / ".codex"
     nested.mkdir()
     assert driver_mod.repo_root(nested) == tmp_path.resolve()

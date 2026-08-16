@@ -313,7 +313,7 @@ def test_card_navigation_pointer_section(bootstrap):
 
 
 def _command_lines(card: str) -> list[str]:
-    """카드에서 실행 커맨드 줄만(`python3 .project_manager/tools/…` 로 시작) 추린다.
+    """카드에서 플랫폼 Python 실행 커맨드 줄만 추린다.
 
     헤더 산문(솔로 안내의 "`--repo`/`--slot` 명시 불요" 등)은 커맨드가 아니므로 제외한다 —
     "커맨드에 정체성 인자가 붙나" 판정은 실행 줄만 봐야 정확하다. trailing `# 주석`도 잘라내
@@ -322,7 +322,7 @@ def _command_lines(card: str) -> list[str]:
     out: list[str] = []
     for ln in card.splitlines():
         s = ln.strip()
-        if s.startswith("python3 .project_manager/tools/"):
+        if re.match(r"^(?:python(?:3)?|py -3(?:\.\d+)?) \.project_manager/tools/", s):
             out.append(s.split("  #", 1)[0].rstrip())
     return out
 
@@ -421,7 +421,10 @@ def test_safe_command_card_success_returns_card(bootstrap):
 
 # ── 8. drift 가드 (durable·DoD ②·ADR-0045 §Decision 5) ───────────────────────
 
-_TOOL_RE = re.compile(r"python3 \.project_manager/tools/(board\.py|pm_handoff\.py)\s+(.+)")
+_TOOL_RE = re.compile(
+    r"(?:python(?:3)?|py -3(?:\.\d+)?) "
+    r"\.project_manager/tools/(board\.py|pm_handoff\.py)\s+(.+)"
+)
 
 
 def _iter_card_cli_commands(card: str):

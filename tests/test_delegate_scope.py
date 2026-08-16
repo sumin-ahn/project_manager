@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from _win_skip import posix_mode_supported
+
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -361,6 +363,9 @@ def test_head_unmoved_skips_commit_diff(scope, delegated_repo):
     assert calls == []
 
 
+@pytest.mark.skipif(
+    not posix_mode_supported(), reason="chmod 실행 비트 왕복을 지원하지 않는 filesystem"
+)
 def test_mode_change_on_already_dirty_file_is_detected(scope, delegated_repo):
     """chmod(+x)는 내용이 그대로라 상태코드도 해시도 안 움직인다 — mode 지문이 유일한 신호."""
     pm_root, workspace = delegated_repo

@@ -26,8 +26,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from _textio import write_lf
+from _win_skip import posix_filenames_supported
+
 # 리터럴 `?`/`[]` 파일명은 Windows 에서 불법이라 실 git 이스케이프 테스트는 POSIX 전용 (codex R7).
-_posix_only = pytest.mark.skipif(os.name != "posix",
+_posix_only = pytest.mark.skipif(not posix_filenames_supported(),
                                  reason="리터럴 ?/[] 파일명은 POSIX 전용(Windows 비호환)")
 
 
@@ -585,7 +588,9 @@ def test_two_repo_owner_change_closes_unsynced_copy_window(
     # Canonical owner만 변경. PM import copy는 VERSION=1 그대로다.
     engine.write_text("VERSION = 2\n", encoding="utf-8")
     _commit(owner, "owner engine change")
-    assert (pm_home / ".project_manager" / "tools" / "engine.py").read_text() == "VERSION = 1\n"
+    assert (pm_home / ".project_manager" / "tools" / "engine.py").read_text(
+        encoding="utf-8"
+    ) == "VERSION = 1\n"
 
     monkeypatch.setattr(board, "REPO", pm_home)
     monkeypatch.setattr(board, "LOCAL_CONF", local_conf)
@@ -1391,7 +1396,7 @@ def test_repin_write_failure_reports_changed_prefix_and_stops(
     paths = [tmp_path / name for name in ("a.md", "b.md", "c.md")]
     original = "---\ntitle: page\nverified_at: deadbeef\n---\n"
     for path in paths:
-        path.write_text(original, encoding="utf-8")
+        write_lf(path, original)
     monkeypatch.setattr(board, "_verified_at_backfill_targets",
                         lambda **_kwargs: paths)
     real_fsync = board.os.fsync
@@ -1421,7 +1426,7 @@ def test_repin_cli_write_failure_is_nonzero_and_names_changed_files(
     paths = [tmp_path / name for name in ("a.md", "b.md", "c.md")]
     original = "---\ntitle: page\nverified_at: deadbeef\n---\n"
     for path in paths:
-        path.write_text(original, encoding="utf-8")
+        write_lf(path, original)
     full = "cafe0001" + "0" * 32
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(board, "_repo_head_sha", lambda _repo=None: full)
@@ -1546,7 +1551,7 @@ def test_literal_question_mark_not_treated_as_wildcard(domain, tmp_path):
     # 리터럴 `?` 든 covers 는 다른 파일(fooX.py)에 오매칭 안 함.
     _init_repo(tmp_path)
     (tmp_path / "src").mkdir()
-    (tmp_path / "src" / "fooX.py").write_text("x\n")   # ? 자리 다른 문자 — 오매칭 후보
+    (tmp_path / "src" / "fooX.py").write_text("x\n", encoding="utf-8")
     pin = _commit(tmp_path, "init")
     # red-첫: escape 안 한 :(glob)src/foo?.py 는 fooX.py 에 오매칭(? 와일드카드).
     assert "src/fooX.py" in _ls(tmp_path, ":(glob)src/foo?.py")
@@ -1561,7 +1566,7 @@ def test_literal_question_mark_not_treated_as_wildcard(domain, tmp_path):
 def test_literal_brackets_not_treated_as_charclass(domain, tmp_path):
     _init_repo(tmp_path)
     (tmp_path / "src").mkdir()
-    (tmp_path / "src" / "a.py").write_text("x\n")   # [ab] char-class 라면 a.py 오매칭
+    (tmp_path / "src" / "a.py").write_text("x\n", encoding="utf-8")
     pin = _commit(tmp_path, "init")
     assert "src/a.py" in _ls(tmp_path, ":(glob)src/[ab].py")            # red-첫: 오매칭
     assert _ls(tmp_path, domain.covers_glob_pathspec("src/[ab].py")).strip() == ""
@@ -1574,7 +1579,7 @@ def test_literal_special_char_file_matched_when_present(domain, tmp_path):
     # 과-이스케이프 아님 대조군: 리터럴 `?` 파일이 실재하면 escaped 글롭이 그 파일을 매칭 → present.
     _init_repo(tmp_path)
     (tmp_path / "src").mkdir()
-    (tmp_path / "src" / "q?.py").write_text("x\n")   # 리터럴 ? 파일 실재(POSIX)
+    (tmp_path / "src" / "q?.py").write_text("x\n", encoding="utf-8")
     pin = _commit(tmp_path, "init")
     present, absent, _u = domain.covers_pathspecs(["src/q?.py"], repo=tmp_path, verified_at=pin)
     assert present == ["src/q?.py"] and absent == []
@@ -1642,7 +1647,7 @@ def test_supported_globs_match_git_equivalently(domain, tmp_path):
     for f in _PROP_FILES:
         p = tmp_path / f
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text("x\n")
+        p.write_text("x\n", encoding="utf-8")
     _commit(tmp_path, "init")
     for glob in _PROP_EQUIVALENT_GLOBS:
         spec = domain.covers_glob_pathspec(glob)
@@ -1666,7 +1671,7 @@ def test_wildcard_prefix_trailing_starstar_divergence_refused(domain, tmp_path):
     for f in ["top.py", "axb", "src/foo", "src/b.py", "src/nested/c.py"]:
         p = tmp_path / f
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text("x\n")
+        p.write_text("x\n", encoding="utf-8")
     files = ["top.py", "axb", "src/foo", "src/b.py", "src/nested/c.py"]
     _commit(tmp_path, "init")
     for glob, our_only_expected in _PROP_DIVERGENT_GLOBS.items():
@@ -1693,7 +1698,7 @@ def test_bare_dir_exact_path_git_subtree(domain, tmp_path):
     # over-warn 이라 안전(false-green 아님). 동작 명시(codex R8).
     _init_repo(tmp_path)
     (tmp_path / "src").mkdir()
-    (tmp_path / "src" / "b.py").write_text("x\n")
+    (tmp_path / "src" / "b.py").write_text("x\n", encoding="utf-8")
     _commit(tmp_path, "init")
     git_set = {l for l in _ls(tmp_path, domain.covers_glob_pathspec("src")).splitlines() if l}
     assert git_set == {"src/b.py"}                                   # git: subtree
@@ -1706,8 +1711,8 @@ def test_bare_dir_exact_path_git_subtree(domain, tmp_path):
 def test_non_boundary_starstar_mistranslation_refused(domain, tmp_path):
     _init_repo(tmp_path)
     (tmp_path / "src" / "nested").mkdir(parents=True)
-    (tmp_path / "src" / "nested" / "deep.py").write_text("x\n")   # 중첩 .py
-    (tmp_path / "top.py").write_text("x\n")
+    (tmp_path / "src" / "nested" / "deep.py").write_text("x\n", encoding="utf-8")
+    (tmp_path / "top.py").write_text("x\n", encoding="utf-8")
     _commit(tmp_path, "init")
     # 우리 matcher: `**.py` ⊇ 중첩 파일.
     assert domain._path_matches_covers("src/nested/deep.py", ["**.py"])
@@ -1735,9 +1740,9 @@ def test_staged_add_not_in_head_is_absent(domain, tmp_path):
     # staged-추가(HEAD 미포함)만으로는 present 아님 — 종전 ls-files 면 present=순간 false-green(red-첫).
     _init_repo(tmp_path)
     (tmp_path / "src").mkdir()
-    (tmp_path / "src" / "committed.py").write_text("x\n")
+    (tmp_path / "src" / "committed.py").write_text("x\n", encoding="utf-8")
     pin = _commit(tmp_path, "init")
-    (tmp_path / "src" / "staged.py").write_text("n\n")
+    (tmp_path / "src" / "staged.py").write_text("n\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(tmp_path), "add", "src/staged.py"], check=True)  # stage only
     # 대조: ls-files(index)=staged.py 봄(종전 present 오판) / HEAD 트리는 안 봄.
     assert "src/staged.py" in _ls(tmp_path, ":(glob)src/*.py")
@@ -1750,7 +1755,7 @@ def test_staged_delete_stays_present(domain, tmp_path):
     # staged-삭제(index 서 빠져도 HEAD 엔 있음) → present 유지(HEAD 트리 기준·codex R9).
     _init_repo(tmp_path)
     (tmp_path / "src").mkdir()
-    (tmp_path / "src" / "keep.py").write_text("x\n")
+    (tmp_path / "src" / "keep.py").write_text("x\n", encoding="utf-8")
     pin = _commit(tmp_path, "init")
     subprocess.run(["git", "-C", str(tmp_path), "rm", "-q", "--cached", "src/keep.py"], check=True)
     # 대조: ls-files(index)=keep.py 안 봄 / HEAD 트리는 있음.
@@ -1767,14 +1772,14 @@ def test_sha256_repo_head_tree_judgment(domain, tmp_path):
     # SHA-256 repo — 종전 SHA-1 하드코딩이면 diff rc≠0 → 전축 silent skip. R10 은 포맷 감지로 정상.
     _init_repo(tmp_path, object_format="sha256")
     (tmp_path / "src").mkdir()
-    (tmp_path / "src" / "committed.py").write_text("x\n")
+    (tmp_path / "src" / "committed.py").write_text("x\n", encoding="utf-8")
     pin = _commit(tmp_path, "init")
     # tracked(HEAD 트리) → present.
     present, absent, _u = domain.covers_pathspecs(
         ["src/committed.py"], repo=tmp_path, verified_at=pin)
     assert present == ["src/committed.py"] and absent == []
     # staged-add → HEAD 미포함 → absent (staged 무관·HEAD-tree 일관).
-    (tmp_path / "src" / "staged.py").write_text("n\n")
+    (tmp_path / "src" / "staged.py").write_text("n\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(tmp_path), "add", "src/staged.py"], check=True)
     present, absent, _u = domain.covers_pathspecs(
         ["src/staged.py"], repo=tmp_path, verified_at=pin)

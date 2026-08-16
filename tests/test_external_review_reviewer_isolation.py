@@ -805,7 +805,7 @@ def test_visibility_scope_opt_out_is_explicit_and_loud(external, tmp_path, capsy
 # ── env: 호출 세션 포인터 제거 · 인증 앵커 보존 ────────────────────────────
 
 
-def test_reviewer_env_is_an_allowlist_full_snapshot(external):
+def test_reviewer_env_is_an_allowlist_full_snapshot(external, tmp_path):
     """잔존 env **전수** 스냅샷 — allowlist 밖 이름은 모양과 무관하게 전부 빠진다.
 
     제거-list 였을 때의 실제 반례를 입력에 넣는다: 인증 예외어(PATH/CONFIG)를 품은 세션·원본
@@ -838,7 +838,8 @@ def test_reviewer_env_is_an_allowlist_full_snapshot(external):
         "PWD": "/home/user/workspace/repo",
         "SOME_UNKNOWN_TOOL_STATE": "x",
     }
-    resolved = external.reviewer_env(Path("/tmp/ws"), env=env)
+    workspace = tmp_path / "ws"
+    resolved = external.reviewer_env(workspace, env=env)
     assert resolved == {
         "PATH": "/usr/bin",
         "HOME": "/home/user",
@@ -850,7 +851,7 @@ def test_reviewer_env_is_an_allowlist_full_snapshot(external):
         "CLAUDE_CONFIG_DIR": "/home/user/.claude",
         "OPENCODE_CONFIG_DIR": "/home/user/.config/opencode",
         "ANTHROPIC_API_KEY": "a",
-        "PWD": "/tmp/ws",  # cwd 를 무시하고 PWD 로 해석하는 하네스까지 닫는다.
+        "PWD": str(workspace),  # cwd 를 무시하고 PWD 로 해석하는 하네스까지 닫는다.
     }
 
 
@@ -866,15 +867,16 @@ def test_reviewer_env_covers_relay_declared_session_markers(external):
     assert markers and not (markers & set(resolved))
 
 
-def test_reviewer_env_keep_extra_opens_declared_names_only(external):
+def test_reviewer_env_keep_extra_opens_declared_names_only(external, tmp_path):
     """배포별 인증 이름이 allowlist 에 없어 게이트가 죽는 자기잠김을 막는 탈출구."""
     conf = {"reviewer_env_keep_extra": "OPENROUTER_API_KEY, my_vendor_token"}
     extra = external.reviewer_env_keep_extra(conf)
     env = {"OPENROUTER_API_KEY": "r", "MY_VENDOR_TOKEN": "v", "OTHER_STATE": "x"}
-    resolved = external.reviewer_env(Path("/tmp/ws"), env=env, extra_keep=extra)
+    workspace = tmp_path / "ws"
+    resolved = external.reviewer_env(workspace, env=env, extra_keep=extra)
     assert resolved == {"OPENROUTER_API_KEY": "r", "MY_VENDOR_TOKEN": "v",
-                        "PWD": "/tmp/ws"}
-    assert external.reviewer_env(Path("/tmp/ws"), env=env) == {"PWD": "/tmp/ws"}
+                        "PWD": str(workspace)}
+    assert external.reviewer_env(workspace, env=env) == {"PWD": str(workspace)}
 
 
 def test_reviewer_env_is_none_when_not_isolated(external):
@@ -995,18 +997,20 @@ def test_default_runner_forwards_isolation_to_relay_watchdog(external, monkeypat
     assert seen["cwd"] == "/tmp/ws" and seen["env"] == {"PWD": "/tmp/ws"}
 
 
-def test_isolation_kwargs_reach_injected_runner(external):
+def test_isolation_kwargs_reach_injected_runner(external, tmp_path):
     seen: dict[str, object] = {}
 
     def _runner(argv, **kwargs):
         seen.update(kwargs)
         return subprocess.CompletedProcess(argv, 0, "판정: 통과\n", "")
 
+    workspace = tmp_path / "ws"
+    isolated_env = {"PWD": str(workspace)}
     ok, _out, started = external._run_reviewer_ex(
-        "p", "codex", 5, _runner, cwd=Path("/tmp/ws"), env={"PWD": "/tmp/ws"},
+        "p", "codex", 5, _runner, cwd=workspace, env=isolated_env,
     )
     assert (ok, started) == (True, True)
-    assert seen["cwd"] == "/tmp/ws" and seen["env"] == {"PWD": "/tmp/ws"}
+    assert seen["cwd"] == str(workspace) and seen["env"] == isolated_env
 
 
 def test_unisolated_call_keeps_legacy_runner_kwargs(external):

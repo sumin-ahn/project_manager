@@ -29,6 +29,11 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+import pytest
+
+from _textio import utf8_child_env
+from _win_skip import posix_bash_supported
+
 REPO = Path(__file__).resolve().parents[1]
 CODEX = REPO / "templates" / "codex" / ".codex"
 CONFIG_TOML = CODEX / "config.toml"
@@ -219,6 +224,9 @@ def test_postcompact_wires_snapshot_checkpoint_and_windows_symmetry():
         assert "&&" not in handler["commandWindows"]
 
 
+@pytest.mark.skipif(
+    not posix_bash_supported(), reason="POSIX shell wrapper 실행 환경이 아님"
+)
 def test_posix_precompact_discards_checkpoint_noise_and_emits_one_json(tmp_path):
     tools = tmp_path / ".project_manager" / "tools"
     tools.mkdir(parents=True)
@@ -244,6 +252,9 @@ def test_posix_precompact_discards_checkpoint_noise_and_emits_one_json(tmp_path)
         assert result.stderr == ""
 
 
+@pytest.mark.skipif(
+    not posix_bash_supported(), reason="POSIX shell wrapper 실행 환경이 아님"
+)
 def test_posix_postcompact_injects_builder_json_without_checkpoint_noise(tmp_path):
     tools = tmp_path / ".project_manager" / "tools"
     tools.mkdir(parents=True)
@@ -279,21 +290,26 @@ def test_hooks_windows_commands_parse_and_execute_for_pre_and_postcompact_when_a
         "import json, sys\n"
         "if 'snapshot' in sys.argv:\n"
         "    print(json.dumps({'systemMessage':'SNAPSHOT-WINDOWS','suppressOutput':False}))\n"
+        "elif 'ctx-guidance' in sys.argv:\n"
+        "    print(json.dumps({'systemMessage':'ENGINE-GUIDANCE','suppressOutput':False}))\n"
         "else:\n"
         "    print('checkpoint-noise')\n"
         "    print('checkpoint-error', file=sys.stderr)\n",
         encoding="utf-8",
     )
-    payloads = _precompact_payloads_by_matcher()
     for event in ("PreCompact", "PostCompact"):
         for group in _load_hooks()["hooks"][event]:
             raw_command = group["hooks"][0]["commandWindows"]
             result = subprocess.run(
                 [executable, "-NoProfile", "-NonInteractive", "-Command", raw_command],
                 cwd=tmp_path, check=True, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", env=utf8_child_env(),
             )
-            expected = payloads[group["matcher"]][1] if event == "PreCompact" else {
-                "systemMessage": "SNAPSHOT-WINDOWS", "suppressOutput": False,
+            expected = {
+                "systemMessage": (
+                    "ENGINE-GUIDANCE" if event == "PreCompact" else "SNAPSHOT-WINDOWS"
+                ),
+                "suppressOutput": False,
             }
             assert json.loads(result.stdout.strip()) == expected
             assert result.stderr == ""

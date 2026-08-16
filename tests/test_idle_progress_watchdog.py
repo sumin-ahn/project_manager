@@ -36,6 +36,8 @@ from pathlib import Path
 
 import pytest
 
+from _textio import normalize_newlines, utf8_child_env
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -567,10 +569,11 @@ def test_real_process_progressing_on_stderr_survives_idle_threshold(relay):
     result = relay.run_with_first_event_watchdog(
         argv, first_event_timeout=None, overall_timeout=60.0, retries=0,
         idle_timeout=1.0, poll_interval=0.05,
+        env=utf8_child_env(),
     )
     assert result.returncode == 0
-    assert "판정: 통과" in result.stdout
-    assert result.stderr.count("tick") == 12
+    assert "판정: 통과" in normalize_newlines(result.stdout)
+    assert normalize_newlines(result.stderr).count("tick") == 12
 
 
 def test_real_process_unterminated_stdout_chunks_survive_idle_threshold(relay):

@@ -22,6 +22,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from _win_skip import posix_mode_supported
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -5873,7 +5875,7 @@ def test_drift_axes_are_derived_from_install_artifact_spec(pm_update, tmp_path):
             f"{name} 내용 훼손이 drift 로 안 잡힘(미검사 축)"
         assert artifact.path.read_text(encoding="utf-8") == artifact.content
         # ② 실행권한 상실 → drift → 0755 복구 (실행권한을 요구하는 산출물만).
-        if artifact.executable:
+        if artifact.executable and posix_mode_supported():
             artifact.path.chmod(0o644)
             assert pm_update.reinstall_protected_hooks(dest, write=True)["drifted"] == ["svc"], \
                 f"{name} 실행권한 상실이 drift 로 안 잡힘 — git 이 훅을 조용히 건너뛴다"
@@ -5883,6 +5885,9 @@ def test_drift_axes_are_derived_from_install_artifact_spec(pm_update, tmp_path):
 
 
 @_git_required
+@pytest.mark.skipif(
+    not posix_mode_supported(), reason="chmod 실행 비트 왕복을 지원하지 않는 filesystem"
+)
 @pytest.mark.parametrize("hook_name", ["pre-commit", "pre-push"])
 def test_reinstall_protected_hooks_missing_exec_bit_is_drift(pm_update, tmp_path, hook_name):
     """실행 비트만 빠진 훅(본문 동일·`chmod 0644`)도 drift → 재설치 후 0755 복구 (T-0415).

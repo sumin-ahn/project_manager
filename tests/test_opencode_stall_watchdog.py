@@ -29,6 +29,8 @@ import threading
 import time
 from pathlib import Path
 
+from _textio import normalize_newlines
+
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
@@ -266,8 +268,9 @@ def test_real_popen_stderr_only_drains_nonblocking():
     )
     assert result.returncode == 0
     assert result.stdout == ""                       # stdout 무출력.
-    assert "ERR0\n" in result.stderr                 # stderr 드레인 성공(비블로킹).
-    assert result.stderr.count("ERR") == 4000        # 전량 수집(버퍼 데드락 없음).
+    stderr = normalize_newlines(result.stderr)
+    assert "ERR0\n" in stderr                        # stderr 드레인 성공(비블로킹).
+    assert stderr.count("ERR") == 4000               # 전량 수집(버퍼 데드락 없음).
 
 
 # ── ② env 노브 해소기 ──────────────────────────────────────────────────────────

@@ -48,9 +48,12 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+
+from _textio import utf8_child_env
 
 # release_wave/runtime_smoke/command_card 헬퍼 재사용(중복 인프라 금지·같은 tests/ 디렉토리 import) —
 # adopter import(hermetic·models 조회 차단)·LLM env 격리(화이트리스트)·claude stream-json Bash 파싱.
@@ -563,11 +566,11 @@ def _run_livegate_record(home: Path, *, live_env: bool) -> subprocess.CompletedP
     만들고(달성 가능성 증명) negative-control 은 env 를 벗겨 fail 을 확인한다(prefix 가 판정을 가름)."""
     board_py = home / ".project_manager" / "tools" / "board.py"
     env = {k: v for k, v in os.environ.items() if k != "PM_ORCH_LIVE_RELEASE"}
-    env.update({"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
+    env = utf8_child_env(env)
     if live_env:
         env["PM_ORCH_LIVE_RELEASE"] = "1"
     return subprocess.run(
-        ["python3", str(board_py), "livegate", "record"],
+        [sys.executable, str(board_py), "livegate", "record"],
         cwd=str(home), capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
     )
 

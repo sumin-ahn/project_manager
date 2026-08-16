@@ -20,7 +20,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from _win_skip import _can_symlink
+from _win_skip import _can_symlink, posix_mode_supported
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -638,7 +638,8 @@ def test_fill_runner_failure_saves_complete_private_raw(pm_import, tmp_path):
     relative = result.note.split("부분/오류 출력 원문 보존: ", 1)[1]
     raw_path = dest / relative
     assert raw_path.read_text(encoding="utf-8") == output
-    assert raw_path.stat().st_mode & 0o777 == 0o600
+    if posix_mode_supported():
+        assert raw_path.stat().st_mode & 0o777 == 0o600
     assert "E" * 100 not in result.note, "raw가 note에 중복 노출됨"
 
 
@@ -696,7 +697,8 @@ def test_fill_failure_raw_rechecks_containment_after_file_creation(
 
     assert swapped
     assert list(outside_fill.iterdir()) == []
-    assert stat.S_IMODE(outside_fill.stat().st_mode) == 0o755
+    if posix_mode_supported():
+        assert stat.S_IMODE(outside_fill.stat().st_mode) == 0o755
 
 
 def test_fill_runner_failure_exposes_full_output_if_raw_save_fails(
@@ -743,7 +745,8 @@ def test_fill_failure_raw_rejects_symlink_component_without_touching_target(
     assert "raw 저장 실패" in result.note
     assert output in result.note, "symlink 거부 폴백이 원문을 절단함"
     assert list(outside.iterdir()) == [], "repo 밖 symlink 대상에 raw 파일을 생성함"
-    assert outside.stat().st_mode & 0o777 == 0o755, "repo 밖 디렉터리 권한을 변경함"
+    if posix_mode_supported():
+        assert outside.stat().st_mode & 0o777 == 0o755, "repo 밖 디렉터리 권한을 변경함"
 
 
 # ── 비파괴 (MF·T-0009 반려 수정): fill 은 이번 import 가 복사한 파일만 건드린다 ──────
@@ -863,6 +866,10 @@ def test_harness_binary_available_uses_shutil_which(pm_import, monkeypatch):
         pm_import._harness_binary_available("nope")
 
 
+@pytest.mark.skipif(
+    not posix_mode_supported(),
+    reason="확장 바이너리 fixture의 shebang/exec-bit 탐지는 POSIX 전용",
+)
 def test_real_fourth_registry_tree_drives_help_and_binary_resolution(
         pm_import, tmp_path, capsys):
     """소스 registry에 실제 4번째 트리를 등록하면 help와 가용 바이너리 선택이 자동 추종한다.

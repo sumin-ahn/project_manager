@@ -1867,7 +1867,10 @@ def test_symlink_backup_preserves_the_link_itself(pm_import, tmp_path):
 
     backed_up = backup_root / rel
     assert backed_up.is_symlink(), "링크가 아니라 내용이 백업됐다(복원 불가)"
-    assert os.readlink(backed_up) == str(target)
+    backed_up_target = Path(os.readlink(backed_up))
+    if not backed_up_target.is_absolute():
+        backed_up_target = backed_up.parent / backed_up_target
+    assert backed_up_target.resolve() == target.resolve()
     assert target.read_text(encoding="utf-8") == "사용자 대상\n", "링크 대상이 변경됨"
     assert not (dest / rel).is_symlink()
     assert (dest / rel).read_text(encoding="utf-8") == "TEMPLATE\n"

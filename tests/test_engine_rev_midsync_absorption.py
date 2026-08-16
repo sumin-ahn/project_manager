@@ -32,6 +32,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from _textio import utf8_child_env
+
 # 판정 사본 금지 — "verifier 를 쓰는 로드인가" 는 fail-soft 가드가 이미 소유한 규칙이다.
 from test_engine_rev_failsoft_guard import _call_uses_verifier, _called_name
 
@@ -813,7 +815,8 @@ def test_midsync_mixed_rev_sync_completes_and_converges(tmp_path):
 
     proc = subprocess.run(
         [sys.executable, str(dest_tools / "pm_update.py"), "--from", str(source)],
-        cwd=str(dest), capture_output=True, text=True, timeout=600,
+        cwd=str(dest), capture_output=True, text=True, encoding="utf-8",
+        env=utf8_child_env(), timeout=600,
     )
     combined = proc.stdout + proc.stderr
     assert "Traceback" not in combined, combined
@@ -847,7 +850,8 @@ def test_mixed_source_tree_fails_loud_instead_of_silently_copying(tmp_path):
 
     proc = subprocess.run(
         [sys.executable, str(dest_tools / "pm_update.py"), "--from", str(source)],
-        cwd=str(dest), capture_output=True, text=True, timeout=600,
+        cwd=str(dest), capture_output=True, text=True, encoding="utf-8",
+        env=utf8_child_env(), timeout=600,
     )
     combined = proc.stdout + proc.stderr
     assert proc.returncode != 0, combined

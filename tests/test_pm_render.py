@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from _repo_owned_inventory import OWNED, repo_owned_paths
+from _textio import write_lf
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -444,11 +445,11 @@ def test_plan_render_path_compares_rendered_output(pm_update, tmp_path):
     dst = tmp_path / "dst"
     rel = ".claude/agents/developer.md"
     (src / ".claude/agents").mkdir(parents=True)
-    (src / rel).write_text("- {{PROJECT_NAME}}\nbody\n", encoding="utf-8")
+    write_lf(src / rel, "- {{PROJECT_NAME}}\nbody\n")
     _seed_render_dest(dst, local_conf="project_name=acme\n")
     # dst 에 *렌더 산출물* 을 미리 둔다 — 같으면 change 없어야.
     (dst / ".claude/agents").mkdir(parents=True)
-    (dst / rel).write_text("- acme\nbody\n", encoding="utf-8")
+    write_lf(dst / rel, "- acme\nbody\n")
 
     manifest = pm_update.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
@@ -466,10 +467,10 @@ def test_plan_render_path_update_when_output_differs(pm_update, tmp_path):
     dst = tmp_path / "dst"
     rel = ".claude/agents/developer.md"
     (src / ".claude/agents").mkdir(parents=True)
-    (src / rel).write_text("- {{PROJECT_NAME}}\nbody\n", encoding="utf-8")
+    write_lf(src / rel, "- {{PROJECT_NAME}}\nbody\n")
     _seed_render_dest(dst, local_conf="project_name=acme\n")
     (dst / ".claude/agents").mkdir(parents=True)
-    (dst / rel).write_text("- STALE\nbody\n", encoding="utf-8")
+    write_lf(dst / rel, "- STALE\nbody\n")
 
     manifest = pm_update.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
