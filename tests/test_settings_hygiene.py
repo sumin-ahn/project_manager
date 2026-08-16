@@ -214,11 +214,24 @@ def _execution_command_budget_seconds(card_text: str) -> list[tuple[str, int]]:
 
 
 def _long_engine_command_markdown(root: Path = _REPO) -> dict[Path, list[tuple[str, int]]]:
-    """root 아래 PM 엔진 커맨드 보유 Markdown을 내용으로 자동 판정한다.
+    """root 아래 PM 실행 카드 중 엔진 커맨드 보유 Markdown을 내용으로 판정한다.
 
-    카드/위키 이름이나 디렉터리를 열거하지 않는다. 테스트 fixture와 VCS 내부만 제외하고, 새 출하
-    Markdown이 두 엔진 커맨드를 담는 순간 자동 대상이 된다.
+    호출층 timeout 계약은 PM이 Bash로 실행하는 스킬·역할 매뉴얼 계열에만 적용한다. 릴리즈 노트나
+    설계 문서의 채택자용 명령 예시는 실행 카드가 아니므로 대상이 아니다.
     """
+    def is_execution_card(relative: Path) -> bool:
+        parts = relative.parts
+        pairs = set(zip(parts, parts[1:]))
+        return (
+            (".claude", "skills") in pairs
+            or (".agents", "skills") in pairs
+            or (".opencode", "command") in pairs
+            or (
+                (".project_manager", "wiki") in pairs
+                and relative.name.startswith("pm_")
+            )
+        )
+
     targets: dict[Path, list[tuple[str, int]]] = {}
     for path in repo_owned_paths(root, ".", mode=OWNED):
         if path.suffix != ".md":
@@ -228,24 +241,27 @@ def _long_engine_command_markdown(root: Path = _REPO) -> dict[Path, list[tuple[s
             continue
         if relative.parts[:2] == (".project_manager", ".local"):
             continue
+        if not is_execution_card(relative):
+            continue
         budgets = _execution_command_budget_seconds(path.read_text(encoding="utf-8"))
         if budgets:
             targets[path] = budgets
     return targets
 
 
-def test_all_long_engine_command_markdown_declares_explicit_bash_timeout():
-    """엔진 예산 > Bash DEFAULT인 모든 PM-facing Markdown이 명시 timeout을 가진다."""
+def _assert_long_engine_cards_declare_explicit_bash_timeout(
+        root: Path = _REPO) -> None:
+    """장시간 엔진 실행 카드가 호출층 timeout 계약을 빠뜨리면 fail-loud."""
     default_ms, max_ms = _claude_bash_timeouts_ms()
     default_sec = default_ms // 1000
     contract = f"`timeout: {max_ms}`(ms)을 반드시"
-    targets = _long_engine_command_markdown()
+    targets = _long_engine_command_markdown(root)
     assert targets, "장시간 엔진 커맨드 카드 분류가 비었음(vacuous pass)"
     for path, budgets in targets.items():
         over_default = [(script, budget) for script, budget in budgets if budget > default_sec]
         if not over_default:
             continue
-        relative = path.relative_to(_REPO).as_posix()
+        relative = path.relative_to(root).as_posix()
         exemption = _TIMEOUT_CONTRACT_PATH_EXEMPTIONS.get(relative)
         if exemption is not None:
             assert exemption.strip(), f"{relative}: timeout 계약 면제 사유가 비었음"
@@ -257,6 +273,11 @@ def test_all_long_engine_command_markdown_declares_explicit_bash_timeout():
         assert "CLI `--timeout`" in text, (
             f"{path}: 호출층 Bash timeout과 엔진 CLI timeout 구분 소실")
 
+
+def test_all_long_engine_command_markdown_declares_explicit_bash_timeout():
+    """엔진 예산 > Bash DEFAULT인 모든 PM 실행 카드가 명시 timeout을 가진다."""
+    _assert_long_engine_cards_declare_explicit_bash_timeout()
+
     # 짧은 pytest 카드는 장시간 엔진 실행 커맨드가 아니므로 계약 강제 대상이 아님을 실제 분류로 잠근다.
     regression = _card_with_operational_details(
         _REPO / ".claude/skills/pm-regression/SKILL.md")
@@ -264,9 +285,9 @@ def test_all_long_engine_command_markdown_declares_explicit_bash_timeout():
 
 
 def test_new_markdown_with_engine_command_is_automatically_classified(tmp_path):
-    """새 파일명을 가드에 등록하지 않아도 커맨드 보유 여부만으로 대상이 된다."""
-    new_doc = tmp_path / "future" / "new_surface.md"
-    new_doc.parent.mkdir()
+    """새 실행 카드의 파일명을 가드에 등록하지 않아도 내용으로 대상이 된다."""
+    new_doc = tmp_path / ".claude" / "skills" / "future" / "SKILL.md"
+    new_doc.parent.mkdir(parents=True)
     new_doc.write_text(
         "```bash\npython3 .project_manager/tools/external_review.py --ticket T-9999\n```\n",
         encoding="utf-8",
@@ -275,6 +296,19 @@ def test_new_markdown_with_engine_command_is_automatically_classified(tmp_path):
         targets = _long_engine_command_markdown(tmp_path)
     assert list(targets) == [new_doc]
     assert targets[new_doc][0][0] == "external_review.py"
+
+
+def test_real_command_card_without_timeout_contract_is_red(tmp_path):
+    """실행 카드 분류를 좁혀도 timeout 계약 누락 민감도는 유지한다."""
+    new_doc = tmp_path / ".claude" / "skills" / "future" / "SKILL.md"
+    new_doc.parent.mkdir(parents=True)
+    new_doc.write_text(
+        "```bash\npython3 .project_manager/tools/pm_delegate.py run developer\n```\n",
+        encoding="utf-8",
+    )
+    with pytest.warns(RepoFilesFallbackWarning, match="filesystem 전수 순회"):
+        with pytest.raises(AssertionError, match="호출층 명시 timeout"):
+            _assert_long_engine_cards_declare_explicit_bash_timeout(tmp_path)
 
 
 def test_all_pm_env_cards_match_shipped_harness_caps():

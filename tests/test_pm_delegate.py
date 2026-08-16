@@ -31,7 +31,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from _win_skip import _can_symlink
+from _win_skip import _can_symlink, posix_mode_supported
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -481,7 +481,8 @@ def test_opencode_transport_copy_non_repo_is_o_excl_0600(pd, monkeypatch, tmp_pa
     assert prompt_path.name == "prompt.md"
     assert (prompt_path.parent / ".gitignore").read_text(encoding="utf-8") == "*\n"
     assert prompt_path.read_text(encoding="utf-8") == "합성 프롬프트"
-    assert stat.S_IMODE(prompt_path.stat().st_mode) == 0o600
+    if posix_mode_supported():
+        assert stat.S_IMODE(prompt_path.stat().st_mode) == 0o600
     with pytest.raises(FileExistsError):
         pd._save_opencode_transport_prompt(cwd, "덮어쓰기 금지")
     assert prompt_path.read_text(encoding="utf-8") == "합성 프롬프트"
@@ -583,7 +584,9 @@ def test_opencode_transport_directory_creation_oserror_is_delegate_error(
         pd._save_opencode_transport_prompt(cwd, "합성 프롬프트")
 
 
-@pytest.mark.skipif(os.name != "posix", reason="POSIX mode 비트 단언")
+@pytest.mark.skipif(
+    not posix_mode_supported(), reason="chmod mode 비트 왕복을 지원하지 않는 filesystem"
+)
 def test_opencode_transport_parent_and_files_have_private_modes(pd, tmp_path):
     """POSIX 생성 경계는 모든 신규 부모 0700과 prompt/ignore 0600을 고정한다."""
     cwd = tmp_path / "sandbox"
@@ -1247,9 +1250,12 @@ def test_codex_read_attempt_reanchors_execution_root_env_preamble_and_cleanup(
             process_cwd=Path(cwd),
         )
         assert read_tmp.is_dir()
-        assert stat.S_IMODE(read_tmp.stat().st_mode) == 0o700
+        if posix_mode_supported():
+            assert stat.S_IMODE(read_tmp.stat().st_mode) == 0o700
         (read_tmp / "pytest-artifact").mkdir()
-        (read_tmp / "pytest-artifact" / "result.txt").write_text("green")
+        (read_tmp / "pytest-artifact" / "result.txt").write_text(
+            "green", encoding="utf-8"
+        )
         return {
             "returncode": 0, "stdout": _codex_stdout("검토 완료"),
             "stderr": "", "timed_out": False,
@@ -1375,7 +1381,7 @@ def test_claude_read_attempt_add_dir_and_cleanup(pd, monkeypatch, tmp_path):
     def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
         read_tmp = Path(env["TMPDIR"])
         seen.update(argv=argv, prompt=stdin_text, read_tmp=read_tmp)
-        (read_tmp / "pytest.tmp").write_text("ok")
+        (read_tmp / "pytest.tmp").write_text("ok", encoding="utf-8")
         return {
             "returncode": 0, "stdout": _claude_stdout("검토 완료"),
             "stderr": "", "timed_out": False,
@@ -1417,7 +1423,7 @@ def test_opencode_read_attempt_uses_measured_allowed_tmp_and_shared_cleanup(
         prompt_text = prompt_path.read_text(encoding="utf-8")
         assert str(writable_tmp) in prompt_text
         assert '"$TMPDIR/opencode/pytest"' in prompt_text
-        (writable_tmp / "pytest-artifact").write_text("ok")
+        (writable_tmp / "pytest-artifact").write_text("ok", encoding="utf-8")
         return {
             "returncode": 0, "stdout": _opencode_stdout("검토 완료"),
             "stderr": "", "timed_out": False,
@@ -1680,7 +1686,8 @@ def test_save_raw_output_o_excl_0600(pd, tmp_path):
     assert dest.exists()
     assert dest.name.startswith("pm_delegate_codex_")
     mode = stat.S_IMODE(os.stat(dest).st_mode)
-    assert mode == 0o600
+    if posix_mode_supported():
+        assert mode == 0o600
 
 
 def test_extract_reply_parsers(pd):
@@ -4884,7 +4891,7 @@ def _scope_workspace(tmp_path: Path, monkeypatch, pd, touches=("work/demo_1/src"
     tickets = pm_home / ".project_manager" / "wiki" / "tickets" / "open"
     tickets.mkdir(parents=True)
     touches_block = "\n".join(f"- {item}" for item in touches) or "[]"
-    (tickets / f"{TICKET_ID}-scope.md").write_text(
+    ticket_text = (
         "---\n"
         f"id: {TICKET_ID}\n"
         "title: 범위 훅 e2e\n"
@@ -4900,7 +4907,14 @@ def _scope_workspace(tmp_path: Path, monkeypatch, pd, touches=("work/demo_1/src"
         "<!-- pm-ticket-section:end role=code-reviewer -->\n"
         "<!-- pm-ticket-section:start role=architect -->\n"
         "## 설계 (architect · 2026-08-13)\n\n"
-        "<!-- pm-ticket-section:end role=architect -->\n",
+        "<!-- pm-ticket-section:end role=architect -->\n"
+    )
+    ticket_text, changed = pd.backfill_ticket_seals(ticket_text)
+    assert changed == [
+        ("developer", 0), ("code-reviewer", 0), ("architect", 0),
+    ]
+    (tickets / f"{TICKET_ID}-scope.md").write_text(
+        ticket_text,
         encoding="utf-8",
     )
     ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
@@ -5056,17 +5070,20 @@ def test_corrupt_ticket_degrades_only_generic_axis_and_adapter_warning_survives(
         tmp_path / "pm_home" / ".project_manager" / "wiki" / "tickets" / "open"
         / f"{TICKET_ID}-scope.md"
     )
-    ticket_path.write_text(
+    corrupt_text = (
         "---\n"
         "id: T-CORRUPTED\n"
         "title: 손상 ticket\n"
         "status: open\n"
         "touches:\n"
-            f"- work/demo_1/{adapter_root}\n"
-            "---\n\n"
-            "<!-- pm-ticket-section:start role=developer -->\n"
-            "## 구현 보충 (developer · 2026-08-13)\n\n"
-            "<!-- pm-ticket-section:end role=developer -->\n",
+        f"- work/demo_1/{adapter_root}\n"
+        "---\n\n"
+        "<!-- pm-ticket-section:start role=developer -->\n"
+        "## 구현 보충 (developer · 2026-08-13)\n\n"
+        "<!-- pm-ticket-section:end role=developer -->\n"
+    )
+    ticket_path.write_text(
+        pd.backfill_ticket_seals(corrupt_text)[0],
         encoding="utf-8",
     )
     fake = _WritingRun(workspace, ([relative], _ok_result()))
@@ -5097,11 +5114,14 @@ def test_corrupt_ticket_isolation_oracle_is_sensitive_to_coupled_none(
         tmp_path / "pm_home" / ".project_manager" / "wiki" / "tickets" / "open"
         / f"{TICKET_ID}-scope.md"
     )
+    corrupt_text = (
+        "---\nid: T-CORRUPTED\ntitle: 손상\nstatus: open\ntouches: []\n---\n\n"
+        "<!-- pm-ticket-section:start role=developer -->\n"
+        "## 구현 보충 (developer · 2026-08-13)\n\n"
+        "<!-- pm-ticket-section:end role=developer -->\n"
+    )
     ticket_path.write_text(
-            "---\nid: T-CORRUPTED\ntitle: 손상\nstatus: open\ntouches: []\n---\n\n"
-            "<!-- pm-ticket-section:start role=developer -->\n"
-            "## 구현 보충 (developer · 2026-08-13)\n\n"
-            "<!-- pm-ticket-section:end role=developer -->\n",
+        pd.backfill_ticket_seals(corrupt_text)[0],
         encoding="utf-8",
     )
     real_begin = pd.begin_scope_audit

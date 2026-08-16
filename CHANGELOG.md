@@ -9,6 +9,25 @@
 
 ### 업그레이드 노트
 
+- **티켓의 역할 절은 이제 엔진 경로로만 쓰인다(봉인).** `section-add`·`harvest`·`seal-backfill` 이
+  각 역할 절 뒤에 봉인 줄(`<!-- pm-ticket-seal role=… ordinal=… sha256=… by=… -->`)을 같은 원자
+  쓰기로 남기고, `review delta`·`board complete`·`lint` 가 절 본문과 봉인의 sha256 일치를 확인한다.
+  손편집·절 이동·고아 봉인·중복 봉인은 loud RED 이며 우회 플래그는 없다. **업그레이드 직후 1회**,
+  기존 open/claimed/blocked/draft 티켓의 미봉인 역할 절을 정합화해야 한다:
+
+  ```bash
+  python3 .project_manager/tools/pm_delegate.py ticket seal-backfill --ticket T-NNNN
+  ```
+
+  이 명령을 돌리기 전에는 그 티켓의 `prepare`·`harvest`·`section-add` 가 처방과 함께 거부된다
+  (done 티켓은 소급 검증 대상이 아니라 조치 불요). 성장 절이 없는 티켓은 영향이 없다.
+
+  봉인된 절과 미봉인 절이 **섞인** 티켓(업그레이드 뒤 구 엔진 사본으로 절을 한 번 더 만든 경우)은
+  `seal-backfill` 대상이 아니다 — 그 명령은 대필을 막기 위해 mixed 를 거부한다. 이때는 거부 메시지가
+  해당 절의 role·ordinal·본문 유무를 짚어 실행 가능한 복구를 안내한다: 빈 절이면 제거 후
+  `section-add` 재생성, 내용이 있으면 제거·재생성한 뒤 사본을 다시 `prepare` 해 역할이 재기록하게
+  한다. 역할 산출을 사람이 옮겨 적거나 봉인을 손으로 만드는 경로는 없다.
+
 - **Windows native 에서 티켓 성장 위임(prepare→역할 실행→harvest)이 다시 동작한다.** v1.7.5 는 사본 루트를
   `info/exclude` 에 등록하는 단계가 POSIX 전용 안전 경계(dirfd/nofollow)를 필수로 요구해 Windows 에서
   rc=1 로 거부됐다. 사본 루트 `.project_manager/.local/delegate-ticket-copies/` 는 tracked
@@ -16,7 +35,21 @@
   제거하고 `git check-ignore` 확인만 남겼다. 채택자가 `.gitignore` 의 `.local/` 규칙을 지운 형상은
   prepare 가 복구 처방과 함께 fail-loud 한다. 인스턴스 조치는 없다.
 
+### Added
+
+- **추가 리뷰어가 diff 와 함께 게이트 티켓 본문을 받는다.** `external_review --ticket T-NNNN` 이 그 티켓의
+  §목표·§인터페이스·§결정·§설계·§완료 조건과 성장 절·PM 판정을 프롬프트에 함께 싣고, 리뷰 맥락에 "티켓
+  §결정·§설계·PM 판정 블록은 권위 있는 확정 사항" 임을 명시한다. 확정된 설계를 되돌리라는 지적은
+  `design-proposal` 로 분류되고 must-fix 로 올라오지 않는다. 본문이 `review_ticket_body_max_bytes`
+  (기본 65536)를 넘으면 **자르지 않고 전송을 거부**하며, 상한은 `--ticket-body-max <bytes>` 로 올린다.
+
 ### Fixed
+
+- **핸드오프가 이 세션의 checkpoint 를 다시 수집한다.** checkpoint 를 쓰는 쪽은 항상 정체성 태그를 달아
+  기록하는데 핸드오프는 무태그 헤더를 찾고 있어, solo·`local.conf`·legacy 형상에서 handoff entry 의
+  "이 세션 박제 entries" 가 비어 나왔다. 두 축을 같은 정체성 해소 체인으로 맞췄다. 정체성을 해소하지
+  못하는 형상(등록되지 않은 task, 장부 조회 실패, 구 엔진)에서는 중단하지 않고 수집 전용으로 내려가며
+  그 사유를 한 줄로 표시한다 — 기존 차수·window·rc 는 그대로다.
 
 - **Windows 에서 opencode 위임과 import fill raw 저장이 다시 동작한다.** opencode 전송 파일 생성·삭제와
   `pm-import` fill 실패 원문 저장이 POSIX 전용 능력(dir_fd·O_NOFOLLOW·geteuid·procfs)이 없으면 위임/저장을

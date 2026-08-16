@@ -824,9 +824,16 @@ def _fallback_ticket_frontmatter(
     if len(candidates) != 1:
         return {}
     path, text = candidates[0]
+    parser_error = getattr(external, "AnchorResolutionError", None)
+    parser_errors = (AttributeError, OSError, UnicodeError)
+    if isinstance(parser_error, type) and issubclass(parser_error, Exception):
+        # external_review의 원문 frontmatter parser는 손상된 opener를 이 타입으로
+        # 알린다. 이 fallback은 측정 가드용 입력 복구라 그 경우에도 가드 off로
+        # 접어 완료 부기를 막지 않는다. 다른 예외는 삼키지 않는다.
+        parser_errors += (parser_error,)
     try:
         touches = external._parse_touches_from_file(path)
-    except (AttributeError, OSError, UnicodeError):
+    except parser_errors:
         return {}
     estimate = _fallback_frontmatter_scalar(text, "estimate")
     if estimate not in {"small", "medium", "large"}:

@@ -1626,6 +1626,55 @@ def test_diff_cap_pass_completes_normally(tf, tmp_path, capsys):
     assert "[완료] T-1234 부기 완료." in capsys.readouterr().out
 
 
+def test_unterminated_frontmatter_fallback_keeps_finish_flow_open(
+        tf, tmp_path, monkeypatch):
+    """손상 ticket + board 불능은 측정 가드 off라 완료 부기를 막지 않는다."""
+    repo = tmp_path / "repo"
+    board_py = repo / ".project_manager" / "tools" / "board.py"
+    board_py.parent.mkdir(parents=True)
+    board_py.write_text("# board unavailable fixture\n", encoding="utf-8")
+    ticket = repo / ".project_manager" / "board" / "tickets" / "claimed" / "T-9001.md"
+    ticket.parent.mkdir(parents=True)
+    ticket.write_text(
+        "---\nid: T-9001\nestimate: small\ntouches:\n- src/app.py\n",
+        encoding="utf-8",
+    )
+    external = tf._load_external_review()
+    assert external is not None
+    assert hasattr(external, "AnchorResolutionError")
+    monkeypatch.setattr(
+        tf, "_ticket_frontmatter_snapshot",
+        lambda _board, _ticket: tf.TicketFrontmatterSnapshot(
+            {}, "board fixture unavailable",
+        ),
+    )
+
+    class _Log:
+        @staticmethod
+        def append_log(path, text):
+            path.write_text(text, encoding="utf-8")
+
+    completed: list[list[str]] = []
+    monkeypatch.setattr(tf, "_load_pm_log", lambda: _Log)
+    finisher = tf.TicketFinisher(
+        run_pytest_fn=_green_pytest(100),
+        run_board_fn=lambda args: (completed.append(args), (0, "board ok"))[1],
+        run_git_fn=lambda args: (0, ""),
+        board_count_fn=lambda: 10,
+        ticket_title_fn=lambda tid: "손상 ticket",
+        affected_domain_fn=lambda tid: [],
+        stage_scope_fn=lambda tid: tf.StageScope((), None),
+        status_entries_fn=lambda: (),
+        dod_block_fn=lambda tid: None,
+        log_file=tmp_path / "log.md",
+        board_py=board_py,
+    )
+
+    assert finisher.run("T-9001", section=None, dry_run=False) == 0
+    assert completed == [["complete", "T-9001", "--tests-pass"]]
+    assert "T-9001" in (tmp_path / "log.md").read_text(encoding="utf-8")
+
+
 def test_default_diff_cap_seam_consumes_the_external_review_policy(
         tf, tmp_path, monkeypatch):
     """기본 seam 은 external_review 의 상한 표·측정식을 그대로 쓴다 (사본 0·배선 고정)."""

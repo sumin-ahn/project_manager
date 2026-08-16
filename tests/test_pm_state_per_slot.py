@@ -1493,7 +1493,12 @@ def test_main_normalize_noop_on_clean_file(hf, capsys):
 
 def test_main_normalize_missing_file_is_noop(hf, capsys):
     """대상 pm_state 부재(솔로·미생성) — 명시 안내 후 no-op(rc0·크래시 0)."""
-    assert hf.main(["--normalize-session-anchors"]) == 0
+    assert hf.main(
+        ["--normalize-session-anchors"],
+        identity_resolver=lambda: (_ for _ in ()).throw(
+            AssertionError("normalize early-return보다 identity 해소가 먼저 실행됨")
+        ),
+    ) == 0
     assert "대상 파일이 없다" in capsys.readouterr().out
 
 
@@ -1522,5 +1527,4 @@ def test_main_normalize_finance_all_malformed_not_silent_noop(hf, capsys):
     content = p.read_text(encoding="utf-8")
     assert "**89차**" in content and "차차" not in content, "window 절 실제 교체."
     assert "정규화 적용 완료" in capsys.readouterr().out
-
 

@@ -21,6 +21,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from _textio import normalize_newlines, write_lf
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 PM_LOG_PY = TOOLS / "pm_log.py"
@@ -166,11 +168,11 @@ def test_cmd_tail_prints_last_entry(tmp_path, monkeypatch, capsys):
     mod = _load_module()
     log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
     log_dir.mkdir(parents=True)
-    (log_dir / "current.md").write_text(_HEADER + _ENTRY_A + _ENTRY_C, encoding="utf-8")
+    write_lf(log_dir / "current.md", _HEADER + _ENTRY_A + _ENTRY_C)
 
     rc = mod.cmd_tail(SimpleNamespace())
     assert rc == 0
-    out = capsys.readouterr().out
+    out = normalize_newlines(capsys.readouterr().out)
     # 마지막 entry 만 (rstrip). 이전 entry·preamble 은 안 나온다.
     assert "board lint clean" in out
     assert "첫 작업" not in out
@@ -1342,7 +1344,7 @@ def test_cmd_archive_seals_old_keeps_recent(tmp_path, monkeypatch, capsys):
     log_dir, archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
     log_dir.mkdir(parents=True)
     current = log_dir / "current.md"
-    current.write_text(_HEADER + _ENTRY_A + _ENTRY_B + _ENTRY_C, encoding="utf-8")
+    write_lf(current, _HEADER + _ENTRY_A + _ENTRY_B + _ENTRY_C)
 
     # 2026-06-13 미만 = ENTRY_A(06-10)·ENTRY_B(06-12) 봉인, ENTRY_C(06-14) 유지.
     rc = mod.cmd_archive(SimpleNamespace(before="2026-06-13", dry_run=False))
@@ -1553,7 +1555,7 @@ def test_cmd_archive_keep_last_seals_old_keeps_recent(tmp_path, monkeypatch, cap
     log_dir, archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
     log_dir.mkdir(parents=True)
     current = log_dir / "current.md"
-    current.write_text(_HEADER + _ENTRY_A + _ENTRY_B + _ENTRY_C, encoding="utf-8")
+    write_lf(current, _HEADER + _ENTRY_A + _ENTRY_B + _ENTRY_C)
 
     # 최근 1개(ENTRY_C)만 유지 → ENTRY_A·ENTRY_B 봉인.
     rc = mod.cmd_archive(SimpleNamespace(before=None, keep_last=1, dry_run=False))
@@ -1625,7 +1627,7 @@ def test_cmd_archive_keep_last_lossless_preserves_all_entries(tmp_path, monkeypa
     log_dir, archive_dir = _redirect_paths(mod, monkeypatch, tmp_path)
     log_dir.mkdir(parents=True)
     current = log_dir / "current.md"
-    current.write_text(_HEADER + _ENTRY_A + _ENTRY_B + _ENTRY_C, encoding="utf-8")
+    write_lf(current, _HEADER + _ENTRY_A + _ENTRY_B + _ENTRY_C)
 
     rc = mod.cmd_archive(SimpleNamespace(before=None, keep_last=2, dry_run=False))
     assert rc == 0

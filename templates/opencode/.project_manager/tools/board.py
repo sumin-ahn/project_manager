@@ -8407,11 +8407,7 @@ def cmd_section_add(args: argparse.Namespace) -> int:
         return 1
     role = args.role
     today = datetime.date.today().isoformat()
-    section = (
-        f"<!-- {TICKET_GROWTH_SECTION_MARKER}:start role={role} -->\n"
-        f"## {label} ({role} · {today})\n\n"
-        f"<!-- {TICKET_GROWTH_SECTION_MARKER}:end role={role} -->\n"
-    )
+    content = f"## {label} ({role} · {today})\n\n"
     # load→append→replace 를 board lock 아래 묶어 동시 재호출도 서로의 절을 덮지 않는다. 원본
     # text를 그대로 이어 붙여 section-add가 기존 frontmatter formatting/body bytes를 재직렬화하지
     # 않는다. `_atomic_write_text`가 같은 directory temp+fsync+replace로 crash partial-write도 막는다.
@@ -8422,6 +8418,34 @@ def cmd_section_add(args: argparse.Namespace) -> int:
         load_ticket(path)  # 지정 mutation은 손상 YAML을 fail-loud하는 기존 계약 유지.
         with path.open("r", encoding="utf-8", newline="") as handle:
             original = handle.read()
+        delegate = _load_pm_delegate_module()
+        if delegate is None:
+            print("cannot section-add: pm_delegate seal 엔진을 로드할 수 없다", file=sys.stderr)
+            return 1
+        try:
+            delegate.require_sealed_growth_before_write(
+                original, args.id, action="section-add",
+            )
+            ordinal = sum(
+                item.role == role for item in delegate._ticket_growth_sections(original)
+            )
+            existing_seals = delegate.parse_ticket_seals(original)
+            if (role, ordinal) in existing_seals:
+                raise delegate.DelegateError(
+                    f"새 절과 충돌하는 고아 seal 존재: role={role} ordinal={ordinal}"
+                )
+            seal_line = delegate._ticket_seal_line(
+                role, ordinal, content.encode("utf-8"), by="section-add",
+            )
+        except Exception as exc:  # noqa: BLE001 — seal/marker 문제는 write 전에 loud 실패.
+            print(f"cannot section-add: growth seal failed — {exc}", file=sys.stderr)
+            return 1
+        section = (
+            f"<!-- {TICKET_GROWTH_SECTION_MARKER}:start role={role} -->\n"
+            + content
+            + f"<!-- {TICKET_GROWTH_SECTION_MARKER}:end role={role} -->\n"
+            + seal_line
+        )
         separator = "" if original.endswith("\n\n") else ("\n" if original.endswith("\n") else "\n\n")
         _atomic_write_text(path, original + separator + section)
 
@@ -8761,7 +8785,7 @@ def _internal_review_completion_problem(tid: str) -> str | None:
 
 
 def _complete_gate(tid: str, args: argparse.Namespace,
-                   body: str | None = None) -> list[str]:
+                   body: str | None = None, *, seal_text: str | None = None) -> list[str]:
     """Verify completion housekeeping before a ticket may move to done/.
 
     Returns a list of *blocking* problems (empty = gate passes). Non-blocking
@@ -8797,7 +8821,53 @@ def _complete_gate(tid: str, args: argparse.Namespace,
     if body is not None:
         problems.extend(_dod_open_items(body))
 
-    # 4. 이 티켓에 내부 리뷰 라운드가 실제 기록된 뒤에는 마지막 계측 라운드 통과 또는 그 잔여에
+        growth_text = body if seal_text is None else seal_text
+        has_growth = any(
+            line.startswith(f"<!-- {TICKET_GROWTH_SECTION_MARKER}:")
+            or line.startswith("<!-- pm-ticket-seal")
+            for line in growth_text.splitlines()
+        )
+        if not has_growth:
+            delegate = None
+        else:
+            delegate = _load_pm_delegate_module()
+        if has_growth and delegate is None:
+            problems.append(
+                "growth seal 검증 엔진을 로드할 수 없다 — pm_delegate.py 형상을 복구하라"
+            )
+        elif delegate is not None:
+            seal_problems = delegate.verify_ticket_seals(growth_text)
+            if seal_problems:
+                try:
+                    recovery = delegate.ticket_growth_seal_recovery_guidance(
+                        growth_text, tid,
+                    )
+                except delegate.DelegateError:
+                    # 손상 문법·중복처럼 누락 형상까지 안전하게 파싱할 수 없는 문제는
+                    # 기존 일반 처방을 유지한다. 복구 분기는 정상 파싱된 누락 seal 전용이다.
+                    recovery = None
+                prescription = recovery or (
+                    "역할 절은 harvest 로만 쓴다; 리뷰어/개발자에게 사본 "
+                    "재기록·재회수를 요청하라. PM 손편집 금지"
+                )
+                problems.extend(
+                    "unsealed: " + problem + " — " + prescription
+                    for problem in seal_problems
+                )
+            else:
+                backfilled = [
+                    f"{seal.role}[{seal.ordinal}]"
+                    for seal in delegate.parse_ticket_seals(growth_text).values()
+                    if seal.by == "backfill"
+                ]
+                if backfilled:
+                    print(
+                        "⚠️  growth-seal: by=backfill 봉인 존재 — "
+                        + ", ".join(backfilled),
+                        file=sys.stderr,
+                    )
+
+    # 5. 이 티켓에 내부 리뷰 라운드가 실제 기록된 뒤에는 마지막 계측 라운드 통과 또는 그 잔여에
     #    결속된 유효 처분만 완료 증거다. 장부/entry/rounds 부재는 과거 티켓 무대상이다.
     internal_review_problem = _internal_review_completion_problem(tid)
     if internal_review_problem is not None:
@@ -8821,10 +8891,12 @@ def cmd_complete(args: argparse.Namespace) -> int:
         # 본문은 게이트 **전**에 읽는다 — §3 DoD 체크의 입력이다(이동 전 읽기라 차단 시
         # 티켓은 claimed/ 에 그대로 남는다). lookup부터 최종 dump까지 같은 lock이라 성장
         # 절/tier가 이 body snapshot 뒤에 끼어들어 유실되지 않는다.
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            seal_text = handle.read()
         fm, body = load_ticket(path)
 
         # Sync gate — refuse to mark done until housekeeping is verified.
-        problems = _complete_gate(args.id, args, body)
+        problems = _complete_gate(args.id, args, body, seal_text=seal_text)
         if problems:
             print(f"cannot complete {args.id}: sync gate failed —", file=sys.stderr)
             for msg in problems:
@@ -13450,7 +13522,7 @@ _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
      "dangling-wikilink-scaffold", "un-migrated-overlay", "adapter-drift",
      "adr-author", "areas-duplicate-repo", "areas-merge-union",
      "delegate-same-model", "design-pending", "design-estimate",
-     "codex-delegate-matcher-miss"})
+     "codex-delegate-matcher-miss", "growth-seal"})
 
 
 def _adr_id_from_path(p: Path) -> str:
@@ -14691,6 +14763,53 @@ def lint_delegate() -> list[tuple[str, str, str]]:
     return [(label, "delegate-same-model", detail) for label, detail in findings]
 
 
+def lint_growth_seals() -> list[tuple[str, str, str]]:
+    """open/claimed 역할 절 봉인 문제를 한 advisory 축으로 집계한다(never-block)."""
+    try:
+        mod = _load_pm_delegate_module()
+        if mod is None:
+            return []
+        broken: list[str] = []
+        backfilled: list[str] = []
+        for status in ("open", "claimed"):
+            for path in sorted((tickets_dir() / status).glob("T-*.md")):
+                with path.open("r", encoding="utf-8", newline="") as handle:
+                    text = handle.read()
+                problems = mod.verify_ticket_seals(text)
+                ticket = _ticket_id_from_filename(path.name) or path.stem
+                if problems:
+                    broken.append(f"{ticket}({'; '.join(problems)})")
+                else:
+                    legacy = [
+                        f"{seal.role}[{seal.ordinal}]"
+                        for seal in mod.parse_ticket_seals(text).values()
+                        if seal.by == "backfill"
+                    ]
+                    if legacy:
+                        backfilled.append(f"{ticket}({', '.join(legacy)})")
+    # fail-soft 사유: growth-seal은 전역 board lint의 visibility-only/never-block 축이다. 한 active
+    # ticket의 읽기·문법 문제나 optional delegate 로드 실패가 무관한 board 조회를 죽이지 않게
+    # advisory를 생략하되, 엔진 rev skew만은 부분 동기를 숨기지 않고 그대로 재전파한다.
+    except Exception as exc:  # noqa: BLE001 — 위 등록 사유의 advisory fail-soft 경계.
+        if _is_engine_rev_skew(exc):
+            raise
+        return []
+    if not broken and not backfilled:
+        return []
+    details: list[str] = []
+    if broken:
+        details.append(f"미봉인/불일치 {len(broken)}개 — " + " · ".join(broken))
+    if backfilled:
+        details.append(
+            f"by=backfill 봉인 {len(backfilled)}개 — " + " · ".join(backfilled)
+        )
+    return [(
+        "active ticket growth",
+        "growth-seal",
+        " | ".join(details),
+    )]
+
+
 def _load_delegate_channel_guard_module():
     """Load the guard's read-only Codex observation scanner (graceful)."""
     if not DELEGATE_CHANNEL_GUARD_PY.exists():
@@ -14849,7 +14968,8 @@ def lint_tickets() -> list[tuple[str, str, str]]:
             + lint_domain_freshness() + lint_adapter_drift()
             + lint_render_leak() + lint_unmigrated_overlay()
             + lint_areas_duplicate_repo() + lint_areas_merge_union()
-            + lint_delegate() + lint_codex_delegate_observations())
+            + lint_delegate() + lint_growth_seals()
+            + lint_codex_delegate_observations())
 
 
 # ── board.md regeneration ──────────────────────────────────────────────

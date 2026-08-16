@@ -1248,6 +1248,11 @@ EXTERNAL_TIMEOUT_KEY = "external_review_timeout"
 EXTERNAL_IDLE_TIMEOUT_KEY = "external_review_idle_timeout"
 EXTERNAL_PROGRESS_SIGNAL_KEY = "external_review_progress_signal"
 
+# 게이트 티켓 본문 입력 상한 — 잘린 티켓은 이미 확정된 설계/판정을 뒤집는 오지적을 다시 만들므로
+# 초과분을 절단하지 않고 실행 자체를 거부한다. 채택자는 local.conf 또는 일회성 CLI로 명시 상향한다.
+REVIEW_TICKET_BODY_MAX_BYTES_KEY = "review_ticket_body_max_bytes"
+DEFAULT_REVIEW_TICKET_BODY_MAX_BYTES = 64 * 1024
+
 # 알려진 reviewer CLI의 **실행 파일 + 옵션 계약**. 함수 밖 선언이라 새 CLI/형식 추가가 판정 코드
 # 분기로 번지지 않는다. attr 값은 동적 로드한 pm_relay의 공개 상수명이다.
 _REVIEWER_PROGRESS_CONTRACTS = {
@@ -1417,11 +1422,19 @@ _MUST_FIX_SECTION_RE = re.compile(
 _NONE_ITEM_RE = re.compile(r"^(?:없음|n/?a|none)\s*$", re.IGNORECASE)
 
 # generic 맥락 헤더 (review_context.local.md 부재 시)
-_DEFAULT_CONTEXT_HEADER = """\
+_AUTHORITATIVE_TICKET_CONTEXT = (
+    "티켓 §결정·§설계·PM 판정 블록은 **권위 있는 확정 사항**이다 — 그 결정을 되돌리라는 지적은 "
+    "`design-proposal` 로 분류하고 must-fix 로 내지 마라. must-fix 는 티켓 목표·결정 안에서의 "
+    "결함에 한한다."
+)
+
+_DEFAULT_CONTEXT_HEADER = f"""\
 ## 리뷰 맥락
 
 아래 diff 를 코드리뷰하라. 프로젝트 고유 맥락(`.project_manager/review_context.local.md`)이
 설정돼 있으면 그 기준을 우선한다.
+
+{_AUTHORITATIVE_TICKET_CONTEXT}
 """
 
 # 출력 형식 블록 (parse_verdict 가 의존 — 리뷰어 무관 공통)
@@ -2254,6 +2267,17 @@ def _timeout_seconds_arg(raw: str) -> int:
     value = _load_relay().normalize_timeout_seconds(raw)
     if value is None:
         raise argparse.ArgumentTypeError("유한한 정수 초(최소 1)여야 합니다")
+    return value
+
+
+def _positive_bytes_arg(raw: str) -> int:
+    """CLI byte 상한은 1 이상의 정수만 허용한다(명시 우회가 상한 해제가 되지 않게)."""
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("양의 정수 bytes여야 합니다") from exc
+    if value < 1:
+        raise argparse.ArgumentTypeError("양의 정수 bytes여야 합니다")
     return value
 
 
@@ -4495,13 +4519,82 @@ def _find_ticket_file(ticket_id: str, *, pm_home: Path | None = None) -> Path:
     )
 
 
+class _TicketTouches(list[str]):
+    """실 ticket 파일에서 읽은 touches와 그 파일 provenance.
+
+    list 하위형이라 기존 소비자/테스트 seam은 그대로 동작한다. main은 이 provenance가 있을 때
+    활성화·egress·빈-diff 게이트를 지난 뒤 같은 파일의 본문을 읽는다. plain list가 주입된 테스트
+    seam은 실제 ticket 파일을 약속하지 않은 fixture라 본문 조회 실패를 hard-fail로 승격하지 않는다.
+    """
+
+    def __init__(self, values: list[str], source: Path):
+        super().__init__(values)
+        self.source = source
+
+
 def parse_ticket_touches(ticket_id: str, *, pm_home: Path | None = None) -> list[str]:
     """board ticket frontmatter 의 touches 필드를 파싱해 경로 목록을 반환한다.
 
     touches 값 파싱은 이 파일의 YAML 리더가 하고, **어느 파일이 그 티켓인가**는 board 의 정확-일치
     seam 이 정한다(`_find_ticket_file`). 못 찾으면 fail-loud.
     """
-    return _parse_touches_from_file(_find_ticket_file(ticket_id, pm_home=pm_home))
+    source = _find_ticket_file(ticket_id, pm_home=pm_home)
+    return _TicketTouches(_parse_touches_from_file(source), source)
+
+
+def _split_ticket_frontmatter(text: str, *, source: Path) -> tuple[str | None, str]:
+    """frontmatter 원문과 본문을 한 경계에서 분리한다(None이면 frontmatter 없음).
+
+    board.load_ticket을 재사용하지 않는 이유는 본문을 YAML 재직렬화나 strip 없이 byte-for-byte
+    보존해야 하고, touches의 경량 파서도 YAML 의존 없이 같은 원문을 소비하기 때문이다. opener가
+    있으면 closer도 반드시 있어야 하며 두 소비자 모두 같은 AnchorResolutionError로 fail-loud 한다.
+    """
+    if not text.startswith("---\n"):
+        return None, text
+    after_open = text[4:]
+    end = after_open.find("\n---\n")
+    if end == -1:
+        raise AnchorResolutionError(f"ticket frontmatter가 닫히지 않았습니다: {source}")
+    return after_open[:end], after_open[end + 5:]
+
+
+def _load_ticket_body_from_file(path: Path) -> str:
+    """이미 정확-일치 해소된 ticket 파일의 frontmatter만 벗긴 본문 원문."""
+    _frontmatter, body = _split_ticket_frontmatter(
+        path.read_text(encoding="utf-8"), source=path,
+    )
+    return body
+
+
+def _load_ticket_body(ticket_id: str, *, pm_home: Path | None = None) -> str:
+    """정확-일치 ticket 파일에서 frontmatter만 벗긴 본문 원문을 반환한다.
+
+    본문은 7절·성장 절·PM 판정 marker까지 모두 리뷰 입력이므로 strip/재직렬화하지 않는다.
+    frontmatter opener가 있는데 closer가 없으면 전체 파일을 본문으로 오인해 메타데이터를 외부로
+    보내지 않고 fail-loud 한다.
+    """
+    return _load_ticket_body_from_file(_find_ticket_file(ticket_id, pm_home=pm_home))
+
+
+def _ticket_body_max_bytes(conf: dict[str, str], cli_override: int | None = None) -> int:
+    """티켓 본문 UTF-8 byte 상한. 명시 CLI > local.conf > 안전 기본값(64KB)."""
+    if cli_override is not None:
+        return cli_override
+    raw = conf.get(REVIEW_TICKET_BODY_MAX_BYTES_KEY, "").strip()
+    if not raw:
+        return DEFAULT_REVIEW_TICKET_BODY_MAX_BYTES
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        print(
+            f"경고: local.conf `{REVIEW_TICKET_BODY_MAX_BYTES_KEY}={raw}` 는 양의 정수가 "
+            f"아니라 기본 {DEFAULT_REVIEW_TICKET_BODY_MAX_BYTES} bytes를 적용합니다.",
+            file=sys.stderr,
+        )
+        return DEFAULT_REVIEW_TICKET_BODY_MAX_BYTES
+    return value
 
 
 def parse_ticket_estimate(ticket_id: str, *, pm_home: Path | None = None) -> str | None:
@@ -4540,14 +4633,11 @@ def _parse_estimate_from_file(path: Path) -> str | None:
 
 def _parse_touches_from_file(path: Path) -> list[str]:
     """ticket 파일에서 frontmatter touches 를 추출한다."""
-    text = path.read_text(encoding="utf-8")
-    if not text.startswith("---\n"):
+    fm_text, _body = _split_ticket_frontmatter(
+        path.read_text(encoding="utf-8"), source=path,
+    )
+    if fm_text is None:
         return []
-    after_open = text[4:]
-    end = after_open.find("\n---\n")
-    if end == -1:
-        return []
-    fm_text = after_open[:end]
     touches: list[str] = []
     in_touches = False
     for line in fm_text.splitlines():
@@ -4581,10 +4671,13 @@ def _parse_touches_from_file(path: Path) -> list[str]:
 
 
 def _load_review_context() -> str:
-    """review_context.local.md (인스턴스 overlay) 가 있으면 그 내용, 없으면 generic 헤더."""
+    """인스턴스 overlay 또는 기본 헤더에 티켓 결정 권위 규약을 빠짐없이 결합한다."""
     if REVIEW_CONTEXT_FILE.exists():
         try:
-            return REVIEW_CONTEXT_FILE.read_text(encoding="utf-8").strip() + "\n"
+            context = REVIEW_CONTEXT_FILE.read_text(encoding="utf-8").strip() + "\n"
+            if _AUTHORITATIVE_TICKET_CONTEXT not in context:
+                context += "\n" + _AUTHORITATIVE_TICKET_CONTEXT + "\n"
+            return context
         except OSError:
             pass
     return _DEFAULT_CONTEXT_HEADER
@@ -4592,13 +4685,15 @@ def _load_review_context() -> str:
 
 def build_prompt(
     diff: str,
-    dod: str | None = None,
+    ticket_body: str | None = None,
     adr_refs: list[str] | None = None,
     gate: str | None = None,
     confirm_fix: bool = False,
     confirm_fix_evidence: str | None = None,
+    *,
+    ticket_id: str | None = None,
 ) -> str:
-    """맥락 헤더 + 출력 형식 + diff 를 결합해 표준 리뷰 프롬프트를 생성한다.
+    """맥락 헤더 + 티켓 본문 + diff 를 결합해 표준 리뷰 프롬프트를 생성한다.
 
     `confirm_fix` 면 확인 전용 라운드 헌장을 앞에 얹는다 — 이 라운드는 라운드의 연장이 아니라
     직전 지적의 해소 확인이고, 새로 발견한 것은 다음 라운드 거리가 아니라 **재설계 신호**다.
@@ -4613,8 +4708,14 @@ def build_prompt(
         parts.append(f"관련 ADR: {', '.join(adr_refs)}\n\n")
     if gate:
         parts.append(f"게이트 ticket: {gate}\n\n")
-    if dod:
-        parts.append(f"### 완료 조건 (DoD)\n{dod}\n\n")
+    if ticket_body is not None:
+        ticket_label_value = ticket_id or gate
+        ticket_label = f" ({ticket_label_value})" if ticket_label_value else ""
+        parts.append(f"### 게이트 티켓 본문{ticket_label}\n")
+        parts.append(ticket_body)
+        if not ticket_body.endswith("\n"):
+            parts.append("\n")
+        parts.append("\n")
     parts.append("### 리뷰 대상 diff\n")
     if diff.strip():
         parts.append("```diff\n")
@@ -6512,6 +6613,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ticket", default=None, metavar="T-NNNN",
                         help="ticket ID — touches 로 검토 경로 결정. --gate 미지정이면 이 값이 "
                              "게이트로 자동 유도돼 라운드가 장부에 기록·집계된다")
+    parser.add_argument("--ticket-body-max", type=_positive_bytes_arg, default=None,
+                        metavar="BYTES",
+                        help=("게이트 티켓 본문 UTF-8 byte 상한 일회성 상향 "
+                              f"(기본/local.conf: {REVIEW_TICKET_BODY_MAX_BYTES_KEY}, "
+                              f"기본값 {DEFAULT_REVIEW_TICKET_BODY_MAX_BYTES})"))
     parser.add_argument("--gate", default=None, metavar="T-NNNN",
                         help="게이트 ticket 표식 (로깅 + 라운드 상한 장부 키) — 미지정이면 "
                              "--ticket 에서 자동 유도한다(명시 값이 항상 우선)")
@@ -6977,6 +7083,10 @@ def _main(argv: list[str] | None = None) -> int:
     diff_owner_demotions: list[PmHomeDemotion] = []
     engine_resolutions: list[PmHomeResolutionFacts] = []
     diff_owner_resolutions: list[PmHomeResolutionFacts] = []
+    ticket_body_source: Path | None = None
+    # plain list는 production parser가 만들지 않는다. 기존 회귀 fixture가 touches seam만 주입하고
+    # 실 ticket 파일은 제공하지 않은 형상을 명시적으로 식별하는 테스트 전용 호환 축이다.
+    ticket_scope_fixture_injected = False
     try:
         engine_pm_home = resolve_pm_home_for_repo(
             engine_repo, required=ticket_selected, demotion_sink=engine_demotions,
@@ -6994,7 +7104,10 @@ def _main(argv: list[str] | None = None) -> int:
         # 로드 조건이 따로 놀 수 없게.
         conf: dict[str, str] | None = None
         if ticket_selected:
-            raw_paths = tuple(parse_ticket_touches(args.ticket, pm_home=engine_pm_home))
+            parsed_touches = parse_ticket_touches(args.ticket, pm_home=engine_pm_home)
+            ticket_body_source = getattr(parsed_touches, "source", None)
+            ticket_scope_fixture_injected = ticket_body_source is None
+            raw_paths = tuple(parsed_touches)
             if not raw_paths:
                 raise AnchorResolutionError(
                     f"board anchor {engine_pm_home}: ticket {args.ticket} 의 touches가 비어 있어 "
@@ -7156,6 +7269,7 @@ def _main(argv: list[str] | None = None) -> int:
     deferred_warnings = resolution_warnings.getvalue()
     if deferred_warnings:
         print(deferred_warnings, end="", file=sys.stderr)
+
     try:
         divergence = local_conf_divergence(
             engine_repo=pm_home,
@@ -7322,21 +7436,65 @@ def _main(argv: list[str] | None = None) -> int:
         print(_empty_diff_guidance(paths, root=diff_root), file=sys.stderr)
         return 1
 
+    # 티켓 본문은 실제 프롬프트가 필요한 dry-run 또는 외부 전송 확정 구간에서만 읽는다. 비활성
+    # no-op·egress/diff-cap/앵커 차단은 본문 파일이나 byte 상한을 건드리지 않는다. ticket touches를
+    # 실제 파일에서 읽은 경우 그 exact source를 재사용하고, 명시 --paths 또는 테스트 fixture의
+    # plain-list touches seam은 ticket 파일 부재가 scope 해소를 자기잠그지 않게 본문 없이 진행한다.
+    ticket_body: str | None = None
+    ticket_body_bytes = 0
+    ticket_body_max_bytes: int | None = None
+
+    def prepare_ticket_body() -> bool:
+        nonlocal ticket_body, ticket_body_bytes, ticket_body_max_bytes
+        if not args.ticket:
+            return True
+        try:
+            ticket_body = (
+                _load_ticket_body_from_file(ticket_body_source)
+                if ticket_body_source is not None
+                else _load_ticket_body(args.ticket, pm_home=pm_home)
+            )
+        except (AnchorResolutionError, OSError, UnicodeError) as exc:
+            if args.paths:
+                print(
+                    "경고: 명시 --paths가 검토 범위를 소유해 "
+                    f"{args.ticket} 본문을 읽지 못했지만 본문 없이 계속합니다: {exc}",
+                    file=sys.stderr,
+                )
+                ticket_body = None
+                return True
+            if ticket_scope_fixture_injected:
+                print(
+                    "경고: 테스트 fixture가 ticket touches seam만 주입하고 본문 provenance는 "
+                    f"제공하지 않아 {args.ticket} 본문 없이 계속합니다: {exc}",
+                    file=sys.stderr,
+                )
+                ticket_body = None
+                return True
+            print(f"오류: 게이트 티켓 본문 로딩 실패 — {exc}", file=sys.stderr)
+            return False
+        ticket_body_bytes = len(ticket_body.encode("utf-8"))
+        ticket_body_max_bytes = _ticket_body_max_bytes(conf, args.ticket_body_max)
+        if ticket_body_bytes > ticket_body_max_bytes:
+            print(
+                "오류: 게이트 티켓 본문이 review 입력 상한을 초과했습니다 — "
+                f"ticket={args.ticket} · {ticket_body_bytes} bytes > "
+                f"{REVIEW_TICKET_BODY_MAX_BYTES_KEY}={ticket_body_max_bytes} bytes.\n"
+                "  · 본문을 자르지 않았고 외부로 전송하지 않습니다. 티켓을 분할하거나 "
+                "`--ticket-body-max <bytes>`를 명시해 상한을 올리세요.",
+                file=sys.stderr,
+            )
+            return False
+        return True
+
     def compose_prompt(confirm_fix_evidence: str | None) -> str:
         """이번 실행의 프롬프트 — 확인 전용 라운드 근거만 호출 시점에 따라 다르다."""
         return build_prompt(
-            diff=diff, adr_refs=args.adr, gate=args.gate, confirm_fix=args.confirm_fix,
+            diff=diff, ticket_body=ticket_body, ticket_id=args.ticket,
+            adr_refs=args.adr, gate=args.gate,
+            confirm_fix=args.confirm_fix,
             confirm_fix_evidence=confirm_fix_evidence,
         )
-
-    # 실 전송의 근거는 **예약 임계 구역**이 만든다(자격을 판정한 그 스냅샷·아래 재조립). 여기서
-    # 만드는 건 **미리보기 표시용**이다 — dry-run 은 예약을 하지 않아 그 스냅샷이 없고, 게이트
-    # 판정도 하지 않으므로 읽기 전용 조회로 같은 블록을 보여 준다(미리보기를 막지 않는 규율은
-    # 서킷브레이커와 같다).
-    prompt = compose_prompt(
-        _gate_confirm_fix_evidence(args.gate)
-        if getattr(args, "confirm_fix", False) and args.gate else None
-    )
 
     # 구키 deprecation — 미리보기·실행 **양쪽**에서 같은 자리에 안내. 게이트 판정 앞이라 꺼져 있는
     # conf 도 안내를 받는다(구키로 `false` 를 적어 둔 채택자가 켜려 할 때 신키를 알아야 한다).
@@ -7345,6 +7503,13 @@ def _main(argv: list[str] | None = None) -> int:
         print(warning, file=sys.stderr)
 
     if args.dry_run:
+        if not prepare_ticket_body():
+            return 1
+        # dry-run은 예약 스냅샷이 없으므로 읽기 전용 장부 조회 근거로 미리보기를 조립한다.
+        prompt = compose_prompt(
+            _gate_confirm_fix_evidence(args.gate)
+            if getattr(args, "confirm_fix", False) and args.gate else None
+        )
         # 미리보기는 **부작용 0**이다(외부 송신·raw 예약·라운드 예약·격리 거울·`--output-dir`
         # 생성 모두 없음). 여기까지의 준비는 전부 읽기 전용이고(conf 해소·denylist·git diff),
         # 그 diff 는 아래 프롬프트 미리보기가 **실제 나갈 내용**을 보여주기 위해 필요하다.
@@ -7354,6 +7519,11 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"local_conf: {conf_path}")
         print(f"resolved_profile: {profile}")
         print(f"command: {target.command}")
+        if ticket_body is not None:
+            print(
+                f"ticket_body_bytes: {ticket_body_bytes} / "
+                f"{ticket_body_max_bytes} (included / max)"
+            )
         print(relay.dry_run_codex_egress_line(
             escalation_required=codex_egress_required,
             attested=args.codex_egress_escalated,
@@ -7441,6 +7611,17 @@ def _main(argv: list[str] | None = None) -> int:
     if anchor_refusal is not None:
         print(anchor_refusal, file=sys.stderr)
         return 1
+
+    # 모든 무전송 조기 종료를 지난 뒤, 라운드 예약(부작용) 전 마지막 입력 경계에서 본문을 읽고
+    # 상한을 판정한다. 여기서 실패하면 외부 전송·라운드/wave 소비 모두 0이다.
+    if not prepare_ticket_body():
+        return 1
+    # 예약 전 조회는 미리보기 성격일 뿐 자격 근거가 아니다. confirm-fix 예약이 반환한 eligibility
+    # snapshot evidence로 아래에서 반드시 재조립한다(동시 마감 라운드와 두 read가 갈려도 한 스냅샷).
+    prompt = compose_prompt(
+        _gate_confirm_fix_evidence(args.gate)
+        if getattr(args, "confirm_fix", False) and args.gate else None
+    )
 
     budget = _reserve_round_budget(
         args, conf, wall_timeout_sec=timeout,

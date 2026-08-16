@@ -49,6 +49,41 @@ def external():
     return _load("external_review")
 
 
+def test_build_prompt_ticket_body_header_order_snapshot(external, monkeypatch, tmp_path):
+    """게이트 ID 다음·diff 앞에 전체 티켓 본문이 놓이는 프롬프트 형상을 고정한다."""
+    monkeypatch.setattr(external, "REVIEW_CONTEXT_FILE", tmp_path / "missing-context.md")
+    prompt = external.build_prompt(
+        "@@ -1 +1 @@\n-old\n+new\n",
+        ticket_body="## 결정\n확정 설계\n",
+        ticket_id="T-0695",
+        adr_refs=["ADR-0088"],
+        gate="T-0695",
+    )
+    landmarks = (
+        "관련 ADR: ADR-0088",
+        "게이트 ticket: T-0695",
+        "### 게이트 티켓 본문 (T-0695)",
+        "## 결정\n확정 설계",
+        "### 리뷰 대상 diff",
+    )
+    assert all(item in prompt for item in landmarks)
+    assert [prompt.index(item) for item in landmarks] == sorted(
+        prompt.index(item) for item in landmarks
+    )
+
+
+def test_build_prompt_preserves_legacy_positional_argument_order(
+    external, monkeypatch, tmp_path,
+):
+    """ticket_id 추가가 기존 diff/body/ADR/gate positional 호출을 한 칸씩 밀지 않는다."""
+    monkeypatch.setattr(external, "REVIEW_CONTEXT_FILE", tmp_path / "missing-context.md")
+    prompt = external.build_prompt("D", "BODY", ["ADR-1"], "T-1")
+    assert "관련 ADR: ADR-1" in prompt
+    assert "게이트 ticket: T-1" in prompt
+    assert "### 게이트 티켓 본문 (T-1)\nBODY" in prompt
+    assert "관련 ADR: T, -, 1" not in prompt
+
+
 # ── PM 하네스 세션 마커 / 호출층 상한 진단 ──────────────────────────────────
 
 

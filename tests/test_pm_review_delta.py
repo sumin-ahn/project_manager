@@ -20,6 +20,9 @@ def _load_pd():
     return module
 
 
+_SEAL_FOR = _load_pd().seal_for
+
+
 @pytest.fixture(scope="module")
 def pd():
     return _load_pd()
@@ -30,12 +33,19 @@ def _review_section(payload: dict, *, pass_zero: bool = False) -> str:
         "판정: 통과\n\n## must-fix\n- 없음\n"
         if pass_zero else "판정: 반려\n\n## must-fix\n- 구조화 finding 참조\n"
     )
-    return (
-        "<!-- pm-ticket-section:start role=code-reviewer -->\n"
+    content = (
         "## 리뷰 (code-reviewer · 2026-08-14)\n\n"
         f"{verdict}\n```pm-review-v1\n"
         + json.dumps(payload, ensure_ascii=False, indent=2)
-        + "\n```\n<!-- pm-ticket-section:end role=code-reviewer -->\n"
+        + "\n```\n"
+    )
+    digest = _SEAL_FOR(content.encode("utf-8"))
+    return (
+        "<!-- pm-ticket-section:start role=code-reviewer -->\n"
+        + content
+        + "<!-- pm-ticket-section:end role=code-reviewer -->\n"
+        + f"<!-- pm-ticket-seal role=code-reviewer ordinal=0 sha256={digest} "
+          "by=backfill -->\n"
     )
 
 

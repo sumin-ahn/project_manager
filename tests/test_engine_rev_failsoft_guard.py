@@ -41,6 +41,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from _textio import utf8_child_env
+
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -949,7 +951,12 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 실패는 미해소 상향 신호로 보존하고 marked skew는 재전파한다.
     # 197 = 196 + T-0677 h1/h2/docs-only 공유 OWNED 스냅샷 해소 한 경계.
     # 일반 열거 실패는 unresolved로 내리되 marked skew는 재전파한다.
-    assert len(report.boundaries) == 197, "propagation sweep boundary ratchet changed"
+    # 198 = 197 + growth-seal 전역 lint advisory 한 경계. active ticket 한 건의 읽기·문법
+    # 실패나 optional delegate 로드 실패는 visibility-only/never-block 축을 생략해 board 조회를
+    # 보존하되, marked engine skew는 부분 동기를 숨기지 않고 그대로 재전파한다.
+    # 199 = 198 + T-0698 lease 실경로 보강 한 경계. 해소 실패는 canonical `work/<name>`으로
+    # 폴백하되, marked engine skew는 부분 동기를 숨기지 않고 그대로 재전파한다.
+    assert len(report.boundaries) == 199, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1644,7 +1651,9 @@ def test_entrypoint_translates_marked_skew_to_korean_guidance_and_rc(
         [sys.executable, str(tools / filename), *arguments],
         cwd=tmp_path,
         text=True,
+        encoding="utf-8",
         capture_output=True,
+        env=utf8_child_env(),
         timeout=20,
         check=False,
     )

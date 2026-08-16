@@ -65,6 +65,10 @@ class _RegisteredTaskPool:
     def find_task(self, name):
         return type("_T", (), {"name": name, "pid": self.pid})()
 
+    @staticmethod
+    def _validate_task_name(_name, _registered_repos=None):
+        return None
+
     def slots_for_task(self, name):
         return []
 
@@ -1114,6 +1118,252 @@ def test_collect_session_entries_solo_uses_last_untagged_handoff(hf):
     ]
 
 
+def test_solo_collection_accepts_producer_checkpoints_and_excludes_tagged_entries(hf):
+    """Solo 대시 checkpoint만 수집하고 task/slot 귀속 entry는 배제한다."""
+    pm_log = _load_tool("pm_log")
+    solo_compaction = pm_log.build_checkpoint_entry(
+        None, "compaction", date="2026-08-05",
+    )
+    task_compaction = pm_log.build_checkpoint_entry(
+        "alpha", "compaction", date="2026-08-05",
+    )
+    slot_manual = pm_log.build_checkpoint_entry(
+        None, "manual", date="2026-08-05", session="project_manager_1",
+    )
+    solo_manual = pm_log.build_checkpoint_entry(None, "manual", date="2026-08-05")
+    legacy_untagged_pipe = "## [2026-08-05] checkpoint | legacy boundary — manual"
+    log_text = (
+        "## [2026-08-05] handoff | PM 9차 → 다음 PM 세션\n"
+        + solo_compaction
+        + "## [2026-08-05] complete | T-0006 — solo 완료\n"
+        + task_compaction
+        + "## [2026-08-05] complete | T-0007 — task 완료 (task:alpha)\n"
+        + slot_manual
+        + "## [2026-08-05] verify | T-0008 — slot 완료 (project_manager_1)\n"
+        + legacy_untagged_pipe + "\n"
+        + solo_manual
+    )
+
+    collected = hf.collect_session_entries(log_text, None)
+    assert collected == [
+        solo_compaction.splitlines()[0],
+        "## [2026-08-05] complete | T-0006 — solo 완료",
+        solo_manual.splitlines()[0],
+    ]
+    assert legacy_untagged_pipe not in collected
+
+
+@pytest.mark.parametrize(
+    ("shape", "expected_task", "expected_source"),
+    [
+        ("local-conf", "solo", "solo local.conf"),
+        ("legacy-state", "pm", "legacy pm_state"),
+    ],
+)
+def test_implicit_handoff_identity_round_trips_real_checkpoint_producer(
+    hf, tmp_path, monkeypatch, shape, expected_task, expected_source,
+):
+    """pm_log 해소 축과 생산 헤더를 그대로 handoff task 소비에 round-trip한다."""
+    pm_log = _load_tool("pm_log")
+    manager = tmp_path / ".project_manager"
+    if shape == "local-conf":
+        manager.mkdir(parents=True)
+        (manager / "local.conf").write_text("session=solo\n", encoding="utf-8")
+    else:
+        wiki = manager / "wiki"
+        wiki.mkdir(parents=True)
+        (wiki / "pm_state.md").write_text("# legacy state\n", encoding="utf-8")
+    monkeypatch.setattr(hf, "REPO", tmp_path)
+
+    task, session, source, slot_path = hf._resolve_implicit_handoff_identity(
+        cwd=tmp_path, pm_log_module=pm_log,
+    )
+    checkpoint = pm_log.build_checkpoint_entry(
+        task, "manual", date="2026-08-05", session=session,
+    )
+
+    assert (task, session, source, slot_path) == (
+        expected_task, None, expected_source, None,
+    )
+    assert hf.collect_session_entries(checkpoint, task, session) == [
+        checkpoint.splitlines()[0],
+    ]
+
+
+def test_identity_source_contract_is_complete_and_fails_on_producer_drift(
+    hf, monkeypatch,
+):
+    """pm_log 해소 층 추가/역할 누락은 handoff가 조용히 강등하지 않고 red다."""
+    pm_log = _load_tool("pm_log")
+    roles = hf._handoff_identity_source_contract(pm_log)
+    assert roles["task_mode"] == pm_log.HANDOFF_TASK_MODE_IDENTITY_SOURCES
+    assert roles["collection_only"] == pm_log.HANDOFF_COLLECTION_ONLY_IDENTITY_SOURCES
+    assert set().union(*roles.values()) == set(pm_log.SNAPSHOT_IDENTITY_SOURCES)
+    assert {value for name, value in vars(pm_log).items() if name.startswith("IDENTITY_SOURCE_")} <= set(pm_log.SNAPSHOT_IDENTITY_SOURCES)
+
+    monkeypatch.setattr(
+        pm_log, "SNAPSHOT_IDENTITY_SOURCES",
+        pm_log.SNAPSHOT_IDENTITY_SOURCES | {"future producer layer"},
+    )
+    with pytest.raises(RuntimeError, match="정체성 해소 층 계약 불일치"):
+        hf._handoff_identity_source_contract(pm_log)
+
+
+def test_explicit_task_checkpoint_producer_round_trips_handoff_collection(hf):
+    pm_log = _load_tool("pm_log")
+    checkpoint = pm_log.build_checkpoint_entry(
+        "main", "manual", date="2026-08-05",
+    )
+
+    assert hf.collect_session_entries(checkpoint, "main") == [
+        checkpoint.splitlines()[0],
+    ]
+
+
+def test_fresh_solo_keeps_head_handoff_fallback_when_checkpoint_producer_stops(
+    hf, tmp_path, monkeypatch, captured_run, capsys,
+):
+    """fresh solo 생산자는 중단하되 handoff는 HEAD의 legacy fallback rc0을 유지한다."""
+    pm_log = _load_tool("pm_log")
+    monkeypatch.setattr(hf, "REPO", tmp_path)
+    monkeypatch.setattr(hf, "_load_pm_log", lambda: pm_log)
+    monkeypatch.setattr(pm_log, "REPO", tmp_path)
+
+    assert pm_log.resolve_snapshot_identity(tmp_path, tmp_path) == (
+        None, "정체성 미해소",
+    )
+    assert pm_log.cmd_checkpoint(types.SimpleNamespace(
+        task=None, trigger="manual", cwd=str(tmp_path),
+    )) == 1
+    assert "checkpoint 정체성 미해소" in capsys.readouterr().err
+    assert hf.main(
+        ["--session-seq", "7", "--wave-summary", "x", "--no-pytest"],
+        identity_resolver=lambda: (None, None, "정체성 미해소"),
+    ) == 0
+    assert captured_run["task"] is None
+    assert captured_run["collection_task"] is None
+    assert captured_run["session_num"] == "7"
+    assert "legacy solo fallback 유지" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("shape", "expected_task", "expected_collection_task", "expected_session_num"),
+    [
+        ("fresh", None, None, "7"),
+        ("local-conf", None, "solo", "7"),
+        ("legacy-state", None, "pm", "7"),
+        ("directory-only-task", None, "main", "7"),
+        ("explicit-task", "main", "main", None),
+    ],
+)
+def test_handoff_cli_five_shapes_preserve_head_rc_hermetically(
+    hf, tmp_path, monkeypatch, captured_run, shape,
+    expected_task, expected_collection_task, expected_session_num,
+):
+    """R4 A/B: 다섯 생산 형상의 handoff rc0과 연속성/수집 축을 HEAD와 맞춘다."""
+    pm_log = _load_tool("pm_log")
+    manager = tmp_path / ".project_manager"
+    if shape == "local-conf":
+        manager.mkdir(parents=True)
+        (manager / "local.conf").write_text("session=solo\n", encoding="utf-8")
+    elif shape == "legacy-state":
+        wiki = manager / "wiki"
+        wiki.mkdir(parents=True)
+        (wiki / "pm_state.md").write_text("# legacy state\n", encoding="utf-8")
+    elif shape == "directory-only-task":
+        (manager / ".local" / "tasks" / "main").mkdir(parents=True)
+        current = manager / "wiki" / "log" / "current.md"
+        current.parent.mkdir(parents=True)
+        current.write_text("# log\n", encoding="utf-8")
+        monkeypatch.setattr(pm_log, "REPO", tmp_path)
+        monkeypatch.setattr(pm_log, "CURRENT_FILE", current)
+        monkeypatch.setattr(hf, "_load_worktree_pool", lambda: types.SimpleNamespace(
+            find_task_strict=lambda _name: None,
+            _validate_task_name=lambda _name, _repos=None: None,
+        ))
+        assert pm_log.cmd_checkpoint(types.SimpleNamespace(
+            task=None, trigger="manual", cwd=str(tmp_path),
+        )) == 0
+        assert "checkpoint | (task:main) — manual" in current.read_text(encoding="utf-8")
+    monkeypatch.setattr(hf, "REPO", tmp_path)
+
+    if shape == "explicit-task":
+        argv = ["--task", "main", "--no-pytest"]
+        resolver = lambda: (_ for _ in ()).throw(
+            AssertionError("explicit task에서 implicit resolver 호출 금지")
+        )
+    else:
+        argv = ["--session-seq", "7", "--wave-summary", "x", "--no-pytest"]
+        resolver = lambda: hf._resolve_implicit_handoff_identity(
+            cwd=tmp_path, pm_log_module=pm_log,
+        )
+
+    assert hf.main(argv, identity_resolver=resolver) == 0
+    assert captured_run["task"] == expected_task
+    assert captured_run["collection_task"] == expected_collection_task
+    assert captured_run["session_num"] == expected_session_num
+
+
+def test_collection_only_demotion_reports_three_registration_causes_without_rc_change(
+    hf, tmp_path, monkeypatch, captured_run, capsys,
+):
+    """F-018: 미등록·손상 조회 실패·엔진 부재를 구분하되 모두 legacy rc0을 유지한다."""
+    spec = importlib.util.spec_from_file_location(
+        "wp_handoff_corrupt_collection", TOOLS / "worktree_pool.py"
+    )
+    corrupt_pool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(corrupt_pool)
+    local = tmp_path / ".project_manager" / ".local"
+    ledger = local / "worktree-leases.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text('{"leases": [', encoding="utf-8")
+    for name, value in {
+        "LEASES_FILE": ledger,
+        "LEASES_LOCK": local / "worktree-leases.lock",
+        "TASKS_DIR": local / "tasks",
+        "WORK_DIR": tmp_path / "work",
+    }.items():
+        setattr(corrupt_pool, name, value)
+
+    cases = [
+        (
+            types.SimpleNamespace(
+                find_task_strict=lambda _name: None,
+                _validate_task_name=lambda _name, _repos=None: None,
+            ),
+            "task 장부 미등록",
+        ),
+        (corrupt_pool, "task 장부 조회 실패 —"),
+        (
+            types.SimpleNamespace(
+                _validate_task_name=lambda _name, _repos=None: None,
+            ),
+            "task 장부 엔진 부재 — worktree_pool.find_task 부재",
+        ),
+    ]
+    argv = ["--session-seq", "7", "--wave-summary", "x", "--no-pytest"]
+    for pool, expected_reason in cases:
+        monkeypatch.setattr(hf, "_load_worktree_pool", lambda pool=pool: pool)
+        assert hf.main(
+            argv,
+            identity_resolver=lambda: ("main", None, "단일 활성 task"),
+        ) == 0
+        output = capsys.readouterr().out
+        assert expected_reason in output
+        assert "legacy 연속성 유지" in output
+
+
+def test_implicit_slot_identity_does_not_preempt_guarded_resolution(
+    hf, captured_run,
+):
+    """cwd lease identity는 CLI에서 관례 경로로 선-결속하지 않고 run() 가드에 맡긴다."""
+    assert hf.main(
+        ["--session-seq", "7", "--wave-summary", "x", "--no-pytest"],
+        identity_resolver=lambda: (None, "project_manager_1", "cwd→lease"),
+    ) == 0
+    assert captured_run["worktree_slot"] is None
+
+
 def test_solo_collection_excludes_slot_checkpoints_from_mixed_log(hf):
     """T-0686 F-001: solo 수집은 행 중간 slot 태그 checkpoint를 흡수하지 않는다."""
     log_text = """\
@@ -1121,11 +1371,11 @@ def test_solo_collection_excludes_slot_checkpoints_from_mixed_log(hf):
 ## [2026-08-05] checkpoint | (task:alpha) — compaction
 ## [2026-08-05] checkpoint | (project_manager_1) — manual
 ## [2026-08-05] checkpoint | (project_manager_2) — compaction
-## [2026-08-05] checkpoint | legacy boundary — manual
+## [2026-08-05] checkpoint — manual
 """
 
     assert hf.collect_session_entries(log_text, None) == [
-        "## [2026-08-05] checkpoint | legacy boundary — manual",
+        "## [2026-08-05] checkpoint — manual",
     ]
 
 
@@ -1320,6 +1570,84 @@ def test_regression_cwd_two_slots_ambiguous_falls_back(hf, tmp_path):
     assert hf._regression_cwd(areas_file=areas, leases_file=leases) == str(hf.REPO)
 
 
+def test_session_slot_ambiguous_two_repos_stays_fail_loud(hf, tmp_path):
+    """F-011: cwd identity 선-해소와 무관하게 등록 repo 2개는 HEAD처럼 rc1 축이다."""
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_areas(areas, ["A", "B"])
+    _write_leases(leases, [
+        {"slot": "work/A_1", "repo": "A", "session": "A_1", "state": "leased"},
+    ])
+
+    slot, error = hf._resolve_session_worktree_slot(
+        None, areas_file=areas, leases_file=leases,
+    )
+    assert slot is None
+    assert error is not None and "repo 2개" in error
+
+
+def test_ambiguous_implicit_slot_handoff_returns_head_rc1(
+    hf, tmp_path, monkeypatch, capsys,
+):
+    """5번째 A/B 형상: cwd lease가 있어도 repo≥2 모호성은 실제 run에서 rc1이다."""
+    manager = tmp_path / ".project_manager"
+    areas = manager / "wiki" / "areas.md"
+    leases = manager / ".local" / "worktree-leases.json"
+    areas.parent.mkdir(parents=True)
+    leases.parent.mkdir(parents=True)
+    _write_areas(areas, ["A", "B"])
+    _write_leases(leases, [
+        {"slot": "work/A_1", "repo": "A", "session": "A_1", "state": "leased"},
+    ])
+    playbook = tmp_path / "playbook.md"
+    playbook.write_text(_playbook_with_prompt(), encoding="utf-8")
+    monkeypatch.setattr(hf, "REPO", tmp_path)
+    monkeypatch.setattr(hf, "_areas_file", lambda: areas)
+    handoff = hf.PmHandoff(
+        run_pytest_fn=lambda: (0, "1 passed\n"),
+        run_git_fn=lambda args: (0, ""),
+        log_file=tmp_path / "current.md",
+        pm_playbook_file=playbook,
+        dashboard_file=tmp_path / "dashboard.md",
+        worktree_pool=_SnapPool(),
+        raw_ledger_file=tmp_path / "absent.json",
+        peer_raw_ledger_files=(),
+    )
+
+    assert handoff.run(
+        session_num=7,
+        wave_summary="ambiguous",
+        dry_run=True,
+        skip_pytest=True,
+        implicit_worktree_slot="work/A_1",
+    ) == 1
+    assert "슬롯 해소 모호" in capsys.readouterr().err
+
+
+def test_implicit_identity_uses_actual_relative_lease_path(
+    hf, tmp_path, monkeypatch,
+):
+    """F-013: work/<name> 관례 대신 pm_log._lease_slot_path의 실제 경로를 쓴다."""
+    manager = tmp_path / ".project_manager"
+    leases = manager / ".local" / "worktree-leases.json"
+    leases.parent.mkdir(parents=True)
+    slot_dir = tmp_path / "nested" / "project_manager_1"
+    slot_dir.mkdir(parents=True)
+    _write_leases(leases, [
+        {"slot": "nested/project_manager_1", "repo": "project_manager",
+         "session": "project_manager_1", "state": "leased"},
+    ])
+    monkeypatch.setattr(hf, "REPO", tmp_path)
+    pm_log = _load_tool("pm_log")
+
+    task, session, source, slot = hf._resolve_implicit_handoff_identity(
+        cwd=slot_dir, pm_log_module=pm_log,
+    )
+    assert (task, session, source) == (None, "project_manager_1", "cwd→lease")
+    assert slot == "nested/project_manager_1"
+    assert hf._parse_worktree_slot(slot) == ("project_manager", 1)
+
+
 def test_regression_cwd_missing_leases_falls_back(hf, tmp_path):
     # lease 장부 부재 → str(REPO) 폴백 (fail-soft).
     areas = tmp_path / "areas.md"
@@ -1378,17 +1706,23 @@ def captured_run(hf, monkeypatch):
 # --- 차수 인자: --session-seq(정체성과 무관·유지) ---
 
 def test_session_seq_canonical_accepted(hf, captured_run):
-    assert hf.main([
-        "--session-seq", "42", "--wave-summary", "x", "--no-pytest",
-        "--user-ack", "solo",
-    ]) == 0
+    assert hf.main(
+        [
+            "--session-seq", "42", "--wave-summary", "x", "--no-pytest",
+            "--user-ack", "project_manager_1",
+        ],
+        identity_resolver=lambda: (None, "project_manager_1", "cwd→lease"),
+    ) == 0
     assert captured_run["session_num"] == "42"
 
 
 def test_session_seq_missing_rejected(hf, captured_run):
     # 미지정 → 필수 누락 거부(대화형 경로).
     with pytest.raises(SystemExit):
-        hf.main(["--wave-summary", "x", "--no-pytest"])
+        hf.main(
+            ["--wave-summary", "x", "--no-pytest"],
+            identity_resolver=lambda: (None, "project_manager_1", "cwd→lease"),
+        )
     assert captured_run == {}
 
 
@@ -1471,13 +1805,55 @@ def test_slot_without_repo_rejected(hf, captured_run):
     assert captured_run == {}
 
 
-def test_solo_unspecified_worktree_slot_none(hf, captured_run):
-    # 솔로(정체성 미지정) 현행 경로 무변경 — worktree_slot None 로 run 진입.
-    assert hf.main([
-        "--session-seq", "7", "--wave-summary", "x", "--no-pytest",
-        "--user-ack", "solo",
-    ]) == 0
+def test_implicit_local_conf_identity_only_changes_collection_axis(hf, captured_run):
+    """solo/local.conf는 legacy 차수·state를 유지하고 task 태그만 수집한다."""
+    assert hf.main(
+        [
+            "--session-seq", "7", "--wave-summary", "x", "--no-pytest",
+            "--user-ack", "solo",
+        ],
+        identity_resolver=lambda: ("solo", None, "solo local.conf"),
+    ) == 0
     assert captured_run["worktree_slot"] is None
+    assert captured_run["task"] is None
+    assert captured_run["collection_task"] == "solo"
+    assert captured_run["session_num"] == "7"
+
+
+@pytest.mark.parametrize("source", ["cwd→lease", "단일 활성 task"])
+def test_registered_identity_sources_enter_task_mode(
+    hf, captured_run, monkeypatch, source,
+):
+    """등록 task를 내놓는 두 pm_log 층만 실행 task 축까지 승격한다."""
+    monkeypatch.setattr(hf, "_load_worktree_pool", lambda: _RegisteredTaskPool())
+    assert hf.main(
+        ["--no-pytest"],
+        identity_resolver=lambda: ("main", None, source),
+    ) == 0
+    assert captured_run["task"] == "main"
+    assert captured_run["collection_task"] == "main"
+    assert captured_run["session_num"] is None
+
+
+def test_implicit_task_promotion_rejects_explicit_session_seq(
+    hf, captured_run, monkeypatch,
+):
+    """암묵 task 승격도 명시 task와 같이 사용자 차수를 조용히 폐기하지 않는다."""
+    monkeypatch.setattr(hf, "_load_worktree_pool", lambda: _RegisteredTaskPool())
+    with pytest.raises(SystemExit):
+        hf.main(
+            ["--session-seq", "9", "--wave-summary", "x", "--no-pytest"],
+            identity_resolver=lambda: ("main", None, "단일 활성 task"),
+        )
+    assert captured_run == {}
+
+
+def test_slot_resolution_docstrings_describe_actual_path_contract(hf):
+    """F-017: docstring이 basename canonical 키와 실제 lease 경로 반환을 반대로 쓰지 않는다."""
+    state_doc = hf._resolve_state_slot.__doc__ or ""
+    session_doc = hf._resolve_session_worktree_slot.__doc__ or ""
+    assert "basename" in state_doc and "비정형 basename이면 **None**" in state_doc
+    assert "nested/A_1" in session_doc and "absolute 경로" in session_doc
 
 
 # --- `_resolve_explicit_identity_slot` 직접 단위 (M3 라이더 핵심 로직) ---
@@ -2055,6 +2431,71 @@ def _hermetic_handoff(hf, tmp_path, pool, *, run_git_fn=None, raw_ledger_file=No
         raw_ledger_file=raw_ledger_file or (tmp_path / "absent_raw_outputs.json"),
         peer_raw_ledger_files=peer_raw_ledger_files,
     )
+
+
+@pytest.mark.parametrize("collection_task", ["solo", "pm"])
+def test_legacy_identity_collects_tagged_checkpoint_without_task_mode(
+    hf, tmp_path, capsys, collection_task,
+):
+    """local.conf/legacy identity는 legacy state·차수를 유지한 채 task 태그만 수집한다."""
+    pm_log = _load_tool("pm_log")
+    checkpoint = pm_log.build_checkpoint_entry(
+        collection_task, "manual", date="2026-08-16",
+    )
+    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool())
+    handoff._log_file.write_text(checkpoint, encoding="utf-8")
+
+    rc = handoff.run(
+        session_num=7,
+        wave_summary="legacy continuity",
+        dry_run=True,
+        skip_pytest=True,
+        task=None,
+        collection_task=collection_task,
+    )
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert checkpoint.splitlines()[0] in out
+    assert "handoff | PM 7차 → 다음 PM 세션" in out
+    assert "task-state 자동 추론" not in out
+
+
+def test_collection_only_identity_two_handoffs_do_not_recollect_prior_checkpoint(
+    hf, tmp_path, capsys,
+):
+    """F-009: entry task와 무태그 boundary를 분리해 두 번째 세션의 오귀속을 막는다."""
+    pm_log = _load_tool("pm_log")
+    first = pm_log.build_checkpoint_entry("solo", "manual", date="2026-08-16")
+    second = pm_log.build_checkpoint_entry("solo", "compaction", date="2026-08-17")
+    handoff = _hermetic_handoff(hf, tmp_path, _SnapPool())
+    handoff._log_file.write_text(first, encoding="utf-8")
+
+    assert handoff.run(
+        session_num=7,
+        wave_summary="first",
+        dry_run=False,
+        skip_pytest=True,
+        task=None,
+        collection_task="solo",
+        user_ack="solo",
+    ) == 0
+    capsys.readouterr()
+    with handoff._log_file.open("a", encoding="utf-8") as stream:
+        stream.write(second)
+
+    assert handoff.run(
+        session_num=8,
+        wave_summary="second",
+        dry_run=True,
+        skip_pytest=True,
+        task=None,
+        collection_task="solo",
+    ) == 0
+    out = capsys.readouterr().out
+    assert second.splitlines()[0] in out
+    assert first.splitlines()[0] not in out
+    assert "경계 미해소" not in out
 
 
 # ── 같은-차수 handoff 재실행 멱등성 (T-0588) ───────────────────────────────

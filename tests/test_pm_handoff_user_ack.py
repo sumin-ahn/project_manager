@@ -97,9 +97,14 @@ def test_legacy_solo_cli_only_passes_ack_surface(monkeypatch):
     calls = _capture_run(monkeypatch, handoff)
     argv = ["--session-seq", "3", "--wave-summary", "x", "--no-pytest"]
 
-    assert handoff.main(argv) == 0
-    assert handoff.main([*argv, "--user-ack", "solo"]) == 0
+    resolver = lambda: ("solo", None, "solo local.conf")
+    assert handoff.main(argv, identity_resolver=resolver) == 0
+    assert handoff.main(
+        [*argv, "--user-ack", "solo"], identity_resolver=resolver,
+    ) == 0
     assert [call["worktree_slot"] for call in calls] == [None, None]
+    assert [call["task"] for call in calls] == [None, None]
+    assert [call["collection_task"] for call in calls] == ["solo", "solo"]
     assert [call["user_ack"] for call in calls] == [None, "solo"]
 
 

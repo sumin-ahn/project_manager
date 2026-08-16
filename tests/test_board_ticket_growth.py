@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from _git import commit_env
 from conftest import anchor_board_module
 
 REPO = Path(__file__).resolve().parents[1]
@@ -49,7 +50,7 @@ def _load_board():
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["git", *args], cwd=str(cwd), text=True, encoding="utf-8",
-        errors="replace", capture_output=True, check=False,
+        errors="replace", capture_output=True, check=False, env=commit_env(),
     )
 
 
@@ -712,10 +713,13 @@ def test_growth_section_is_not_a_promote_placeholder(board_env):
     board, board_dir, bare = board_env
     path = _write_ticket(board_dir, "T-1007", "draft")
     original = path.read_text(encoding="utf-8")
+    content = f"## 구현 보충 (developer · {datetime.date.today().isoformat()})\n\n"
+    digest = board._load_pm_delegate_module().seal_for(content.encode("utf-8"))
     growth = (
         "\n<!-- pm-ticket-section:start role=developer -->\n"
-        f"## 구현 보충 (developer · {datetime.date.today().isoformat()})\n\n"
-        "<!-- pm-ticket-section:end role=developer -->\n"
+        + content
+        + "<!-- pm-ticket-section:end role=developer -->\n"
+        + f"<!-- pm-ticket-seal role=developer ordinal=0 sha256={digest} by=backfill -->\n"
     )
     path.write_text(original + growth, encoding="utf-8")
 

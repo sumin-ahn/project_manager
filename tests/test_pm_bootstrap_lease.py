@@ -988,8 +988,13 @@ def test_handoff_branch_without_slot_rejected(handoff):
     없이 정상 종료하게 한다 — 그러면 parser.error 미발생이 단언 실패로 즉시 드러난다.
     """
     with pytest.raises(SystemExit):
-        handoff.main(["--session-seq", "5", "--wave-summary", "x",
-                      "--branch", "a5", "--no-pytest", "--dry-run"])
+        handoff.main(
+            ["--session-seq", "5", "--wave-summary", "x",
+             "--branch", "a5", "--no-pytest", "--dry-run"],
+            identity_resolver=lambda: (_ for _ in ()).throw(
+                AssertionError("--branch 오류보다 identity 해소가 먼저 실행됨")
+            ),
+        )
 
 
 def test_handoff_branch_with_slot_accepted_by_parser(handoff):

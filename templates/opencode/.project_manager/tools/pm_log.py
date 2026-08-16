@@ -564,6 +564,8 @@ def build_checkpoint_entry(
         if ctx_band_checked else ""
     )
     return (
+        # Consumer grammar: pm_handoff.collect_session_entries()의 task/slot/solo
+        # 분기와 동기화한다.
         f"## [{date}] checkpoint{identity_tag} — {trigger}\n\n"
         f"{ctx_check}"
         f"{ctx_advisory}"
@@ -750,6 +752,30 @@ def _active_tasks(pm_home: Path) -> list[str]:
         return []
 
 
+# 정체성 해소 층은 사람이 읽는 진단 문구이면서 pm_handoff의 실행/수집 축 분류 계약이다.
+# 소비자가 문자열 리터럴을 복제하지 않도록 생산자가 집합까지 함께 노출한다.
+IDENTITY_SOURCE_CWD_LEASE = "cwd→lease"
+IDENTITY_SOURCE_SINGLE_ACTIVE_TASK = "단일 활성 task"
+IDENTITY_SOURCE_SOLO_LOCAL_CONF = "solo local.conf"
+IDENTITY_SOURCE_LEGACY_PM_STATE = "legacy pm_state"
+IDENTITY_SOURCE_UNRESOLVED = "정체성 미해소"
+SNAPSHOT_IDENTITY_SOURCES = frozenset({
+    IDENTITY_SOURCE_CWD_LEASE,
+    IDENTITY_SOURCE_SINGLE_ACTIVE_TASK,
+    IDENTITY_SOURCE_SOLO_LOCAL_CONF,
+    IDENTITY_SOURCE_LEGACY_PM_STATE,
+    IDENTITY_SOURCE_UNRESOLVED,
+})
+HANDOFF_TASK_MODE_IDENTITY_SOURCES = frozenset({
+    IDENTITY_SOURCE_CWD_LEASE,
+    IDENTITY_SOURCE_SINGLE_ACTIVE_TASK,
+})
+HANDOFF_COLLECTION_ONLY_IDENTITY_SOURCES = frozenset({
+    IDENTITY_SOURCE_SOLO_LOCAL_CONF,
+    IDENTITY_SOURCE_LEGACY_PM_STATE,
+})
+
+
 def _local_conf_session(pm_home: Path) -> str | None:
     """solo/legacy ``local.conf``의 ``session=``을 board 파서와 같은 의미로 읽는다."""
     conf = Path(pm_home) / ".project_manager" / "local.conf"
@@ -785,21 +811,21 @@ def resolve_snapshot_identity(pm_home: Path, cwd: Path) -> tuple[str | None, str
         deepest = max(depth for depth, _session in matches)
         sessions = sorted({session for depth, session in matches if depth == deepest})
         if len(sessions) == 1:
-            return sessions[0], "cwd→lease"
+            return sessions[0], IDENTITY_SOURCE_CWD_LEASE
 
     active = _active_tasks(pm_home)
     if len(active) == 1:
-        return active[0], "단일 활성 task"
+        return active[0], IDENTITY_SOURCE_SINGLE_ACTIVE_TASK
     # task 장부가 없는 신규 solo 채택자와 legacy solo만 마지막에 받는다. cwd와 무관한
     # leased 행이 하나라도 있으면 multi/worktree 오귀속 가능성이 있으므로 local.conf를 쓰지 않는다.
     if not active and not any(row.get("state") == "leased" for row in lease_rows):
         session = _local_conf_session(pm_home)
         if session:
-            return session, "solo local.conf"
+            return session, IDENTITY_SOURCE_SOLO_LOCAL_CONF
         legacy_state = Path(pm_home) / ".project_manager" / "wiki" / "pm_state.md"
         if legacy_state.is_file():
-            return "pm", "legacy pm_state"
-    return None, "정체성 미해소"
+            return "pm", IDENTITY_SOURCE_LEGACY_PM_STATE
+    return None, IDENTITY_SOURCE_UNRESOLVED
 
 
 def _checkpoint_identity_axes(
@@ -814,9 +840,9 @@ def _checkpoint_identity_axes(
     인정한다. task가 우연히 ``foo_1`` 형상인 경우를 일반 정규식으로 slot으로
     오분류하지 않고, lease 귀속과 slot 형상을 한 번에 검증한다.
     """
-    if source in {"solo local.conf", "legacy pm_state"}:
+    if source in HANDOFF_COLLECTION_ONLY_IDENTITY_SOURCES:
         return identity, None
-    if source != "cwd→lease":
+    if source != IDENTITY_SOURCE_CWD_LEASE:
         return identity, None
 
     matches: list[tuple[int, bool]] = []
@@ -839,9 +865,26 @@ def _checkpoint_identity_axes(
     return identity, None
 
 
+def resolved_lease_slot_path(pm_home: Path, session: str) -> Path | None:
+    """활성 lease의 ``session``이 가리키는 실제 slot 경로를 반환한다.
+
+    상대 경로는 ``pm_home`` 기준으로 해소하고 absolute slot은 그대로 보존한다. 같은 session의
+    활성 행이 정확히 하나일 때만 권위값을 내어 중복 장부를 임의 선택하지 않는다.
+    """
+    matches = [
+        slot
+        for row in _lease_rows(pm_home)
+        if row.get("state") == "leased" and row.get("session") == session
+        for slot in [_lease_slot_path(pm_home, row)]
+        if slot is not None
+    ]
+    unique = {str(slot.resolve(strict=False)): slot for slot in matches}
+    return next(iter(unique.values())) if len(unique) == 1 else None
+
+
 def _pm_state_path(pm_home: Path, task: str, source: str) -> Path:
     """해소 층에 맞는 task 또는 legacy solo pm_state 경로를 반환한다."""
-    if source in {"solo local.conf", "legacy pm_state"}:
+    if source in HANDOFF_COLLECTION_ONLY_IDENTITY_SOURCES:
         return Path(pm_home) / ".project_manager" / "wiki" / "pm_state.md"
     return (
         Path(pm_home) / ".project_manager" / ".local" / "tasks" / task / "pm_state.md"
@@ -909,7 +952,7 @@ def _pm_state_section(pm_home: Path, task: str, source: str, line_limit: int) ->
 
 def _recovery_section(task: str, source: str) -> str:
     bootstrap = "python3 .project_manager/tools/pm_bootstrap.py"
-    if source not in {"solo local.conf", "legacy pm_state"}:
+    if source not in HANDOFF_COLLECTION_ONLY_IDENTITY_SOURCES:
         bootstrap += f" --task {task}"
     return (
         "## 복구 포인터\n"

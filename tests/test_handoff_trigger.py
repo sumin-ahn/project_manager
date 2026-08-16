@@ -102,14 +102,14 @@ def test_interactive_skeleton_lists_session_entries(handoff):
 ## [2026-06-14] complete | T-0547 — 로그 entry 박제
 본문은 목록에 복제하지 않는다.
 
-## [2026-06-14] checkpoint | compaction 전
+## [2026-06-14] checkpoint — compaction 전
 """
     sk = handoff.build_handoff_log_skeleton(
         session_num=9, date="2026-06-14", log_text=log_text,
     )
     assert "- 이 세션 박제 entries:\n" in sk
     assert "  - ## [2026-06-14] complete | T-0547 — 로그 entry 박제" in sk
-    assert "  - ## [2026-06-14] checkpoint | compaction 전" in sk
+    assert "  - ## [2026-06-14] checkpoint — compaction 전" in sk
     assert "본문은 목록에 복제하지 않는다." not in sk
 
 
@@ -210,9 +210,12 @@ def test_interactive_skeleton_lean_schema(handoff):
 
 
 def test_interactive_main_requires_session_num(handoff):
-    """--session-num/--wave-summary 누락 시 대화형 경로는 parser.error 로 종료한다."""
+    """slot/호환 대화형 경로는 --session-seq 누락을 parser.error로 종료한다."""
     with pytest.raises(SystemExit):
-        handoff.main(["--no-pytest"])  # 둘 다 누락 → 종료.
+        handoff.main(
+            ["--no-pytest"],
+            identity_resolver=lambda: (None, "project_manager_1", "cwd→lease"),
+        )  # 둘 다 누락 → 종료.
 
 
 def test_interactive_run_prompt_goes_to_stdout_not_log(handoff, tmp_path, capsys):

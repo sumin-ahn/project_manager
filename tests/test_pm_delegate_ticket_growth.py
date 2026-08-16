@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from _win_skip import posix_mode_supported
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 PM_DELEGATE = TOOLS / "pm_delegate.py"
@@ -76,12 +78,18 @@ def _ticket_text(ticket: str, sections: list[tuple[str, str]]) -> str:
         f"# {ticket}\n\n## 목표\n성장 marker 평문 `pm-ticket-section:start/end role=<role>` 설명.\n",
     ]
     labels = {"developer": "구현 보충", "code-reviewer": "리뷰", "architect": "설계"}
+    ordinals: dict[str, int] = {}
     for role, content in sections:
+        ordinal = ordinals.get(role, 0)
+        ordinals[role] = ordinal + 1
+        section_content = f"## {labels[role]} ({role} · 2026-08-13)\n\n" + content
+        digest = _load_pd().seal_for(section_content.encode("utf-8"))
         body += [
             f"\n<!-- pm-ticket-section:start role={role} -->\n",
-            f"## {labels[role]} ({role} · 2026-08-13)\n\n",
-            content,
+            section_content,
             f"<!-- pm-ticket-section:end role={role} -->\n",
+            f"<!-- pm-ticket-seal role={role} ordinal={ordinal} sha256={digest} "
+            "by=backfill -->\n",
         ]
     return "".join(body)
 
@@ -130,6 +138,17 @@ def _write_ticket(tickets: Path, ticket: str, sections: list[tuple[str, str]]) -
     path = tickets / f"{ticket}-growth.md"
     path.write_text(_ticket_text(ticket, sections), encoding="utf-8")
     return path
+
+
+def _without_ticket_seals(pd, text: str) -> str:
+    seals = sorted(
+        pd.parse_ticket_seals(text).values(),
+        key=lambda seal: seal.line_start,
+        reverse=True,
+    )
+    for seal in seals:
+        text = text[:seal.line_start] + text[seal.line_end:]
+    return text
 
 
 def _replace_content(pd, path: Path, role: str, ordinal: int, content: str) -> None:
@@ -200,9 +219,12 @@ def test_prepare_edit_harvest_round_trip_and_git_hidden(growth_env, pd, role):
     plan = pd.prepare_ticket_copy(ticket=ticket, role=role, cwd=slot, pm_home=pm_home)
 
     assert plan.path.is_relative_to(slot)
-    assert stat.S_IMODE(plan.path.stat().st_mode) == 0o600
-    assert stat.S_IMODE(plan.baseline_path.stat().st_mode) == 0o400
-    assert stat.S_IMODE(plan.path.with_name(pd.TICKET_COPY_TAG_NAME).stat().st_mode) == 0o400
+    if posix_mode_supported():
+        assert stat.S_IMODE(plan.path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(plan.baseline_path.stat().st_mode) == 0o400
+        assert stat.S_IMODE(
+            plan.path.with_name(pd.TICKET_COPY_TAG_NAME).stat().st_mode
+        ) == 0o400
     assert _git(slot, "status", "--short").stdout == ""
     _replace_content(pd, plan.path, role, 0, f"{role} 사실 기록\n")
     first = pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home, capability=plan.capability)
@@ -211,6 +233,156 @@ def test_prepare_edit_harvest_round_trip_and_git_hidden(growth_env, pd, role):
     assert plan.path.exists() and plan.baseline_path.exists()
     second = pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home, capability=plan.capability)
     assert second == pd.TicketHarvestResult(False, True)
+
+
+def test_prepare_requires_legacy_backfill_then_succeeds(growth_env, pd):
+    pm_home, slot, tickets = growth_env
+    source = _write_ticket(tickets, "T-1030", [("developer", "legacy\n")])
+    legacy = _without_ticket_seals(pd, source.read_text(encoding="utf-8"))
+    source.write_text(legacy, encoding="utf-8")
+
+    with pytest.raises(
+        pd.DelegateError,
+        match=r"ticket prepare.*seal-backfill --ticket T-1030",
+    ) as caught:
+        pd.prepare_ticket_copy(
+            ticket="T-1030", role="developer", cwd=slot, pm_home=pm_home,
+        )
+    assert "role=developer ordinal=0 비었는지=아니오" in str(caught.value)
+
+    backfilled, changed = pd.backfill_ticket_seals(legacy)
+    assert changed == [("developer", 0)]
+    source.write_text(backfilled, encoding="utf-8")
+    plan = pd.prepare_ticket_copy(
+        ticket="T-1030", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    assert plan.path.exists()
+
+
+@pytest.mark.parametrize(
+    ("content", "empty_label", "specific_guidance"),
+    [
+        ("", "예", "빈 미봉인 절"),
+        ("architect 산출\n", "아니오", "기계 복구 경로가 없습니다"),
+    ],
+)
+def test_prepare_mixed_seals_prescribes_recreate_or_role_rerecord(
+        growth_env, pd, content, empty_label, specific_guidance):
+    pm_home, slot, tickets = growth_env
+    ticket = "T-1034"
+    source = _write_ticket(
+        tickets, ticket, [("developer", "sealed\n"), ("architect", content)],
+    )
+    mixed = source.read_text(encoding="utf-8")
+    missing_seal = pd.parse_ticket_seals(mixed)[("architect", 0)]
+    mixed = mixed[:missing_seal.line_start] + mixed[missing_seal.line_end:]
+    source.write_text(mixed, encoding="utf-8")
+
+    guidance = pd.ticket_growth_seal_recovery_guidance(mixed, ticket)
+    assert guidance is not None
+    assert "seal-backfill" not in guidance
+    assert f"role=architect ordinal=0 비었는지={empty_label}" in guidance
+    assert specific_guidance in guidance
+    assert (
+        "python3 .project_manager/tools/board.py section-add "
+        "T-1034 --role architect"
+    ) in guidance
+    if content:
+        assert "사본을 재prepare해 역할이 재기록·harvest" in guidance
+    else:
+        assert "재prepare" not in guidance
+
+    with pytest.raises(pd.DelegateError) as caught:
+        pd.prepare_ticket_copy(
+            ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
+        )
+    assert guidance in str(caught.value)
+    assert "seal-backfill" not in str(caught.value)
+    assert not (slot / pd.TICKET_COPY_REL_ROOT / ticket).exists()
+
+
+def test_draft_architect_requires_backfill_then_prepare_succeeds(
+        growth_env, pd, monkeypatch, capsys):
+    pm_home, slot, _tickets = growth_env
+    drafts = pm_home / ".project_manager" / "wiki" / "tickets" / ".drafts"
+    drafts.mkdir()
+    source = _write_ticket(drafts, "T-1032", [("architect", "legacy draft\n")])
+    legacy = _without_ticket_seals(pd, source.read_text(encoding="utf-8"))
+    source.write_text(legacy, encoding="utf-8")
+
+    with pytest.raises(
+        pd.DelegateError,
+        match=r"ticket prepare.*seal-backfill --ticket T-1032",
+    ):
+        pd.prepare_ticket_copy(
+            ticket="T-1032", role="architect", cwd=slot, pm_home=pm_home,
+        )
+
+    monkeypatch.setattr(
+        pd, "_load_board",
+        lambda: type("IdBoard", (), {"_is_valid_ticket_id": staticmethod(lambda _tid: True)})(),
+    )
+    monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: pm_home)
+    log = pm_home / ".project_manager" / "wiki" / "log" / "current.md"
+    log.parent.mkdir(parents=True)
+    log.write_text("", encoding="utf-8")
+    assert pd._cmd_ticket(["seal-backfill", "--ticket", "T-1032"]) == 0
+    assert "seal-backfill T-1032" in capsys.readouterr().out
+    assert pd.verify_ticket_seals(source.read_text(encoding="utf-8")) == []
+
+    plan = pd.prepare_ticket_copy(
+        ticket="T-1032", role="architect", cwd=slot, pm_home=pm_home,
+    )
+    assert plan.path.exists()
+
+
+def test_prepare_rejects_target_role_sha_mismatch_before_copy(growth_env, pd):
+    pm_home, slot, tickets = growth_env
+    source = _write_ticket(tickets, "T-1033", [("developer", "sealed body\n")])
+    tampered = source.read_text(encoding="utf-8").replace(
+        "sealed body\n", "hand-edited body\n", 1,
+    )
+    source.write_text(tampered, encoding="utf-8")
+    assert any("sha256 불일치" in problem for problem in pd.verify_ticket_seals(tampered))
+
+    with pytest.raises(
+        pd.DelegateError,
+        match=r"ticket prepare.*sha256.*불일치",
+    ):
+        pd.prepare_ticket_copy(
+            ticket="T-1033", role="developer", cwd=slot, pm_home=pm_home,
+        )
+    assert not (slot / pd.TICKET_COPY_REL_ROOT / "T-1033").exists()
+
+
+def test_harvest_requires_legacy_backfill_then_succeeds(growth_env, pd):
+    pm_home, slot, tickets = growth_env
+    source = _write_ticket(tickets, "T-1031", [("developer", "legacy\n")])
+    plan = pd.prepare_ticket_copy(
+        ticket="T-1031", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    legacy = _without_ticket_seals(pd, source.read_text(encoding="utf-8"))
+    source.write_text(legacy, encoding="utf-8")
+
+    with pytest.raises(
+        pd.DelegateError,
+        match=r"ticket harvest.*seal-backfill --ticket T-1031",
+    ):
+        pd.harvest_ticket_copy(
+            copy_path=plan.path, cwd=slot, pm_home=pm_home,
+            capability=plan.capability,
+        )
+    assert source.read_text(encoding="utf-8") == legacy
+
+    backfilled, changed = pd.backfill_ticket_seals(legacy)
+    assert changed == [("developer", 0)]
+    source.write_text(backfilled, encoding="utf-8")
+    result = pd.harvest_ticket_copy(
+        copy_path=plan.path, cwd=slot, pm_home=pm_home,
+        capability=plan.capability,
+    )
+    assert result == pd.TicketHarvestResult(True, True)
+    assert pd.verify_ticket_seals(source.read_text(encoding="utf-8")) == []
 
 
 def test_draft_architect_prepare_harvest_round_trip_never_syncs(
@@ -296,7 +468,10 @@ def test_same_role_recall_targets_latest_and_preserves_pm_home_drift(growth_env,
 def test_crlf_prepare_edit_harvest_and_idempotent_preserve_newlines(growth_env, pd):
     pm_home, slot, tickets = growth_env
     source = tickets / "T-1019-growth.md"
-    original = _ticket_text("T-1019", [("developer", "")]).replace("\n", "\r\n")
+    lf = _ticket_text("T-1019", [("developer", "")])
+    seal = pd.parse_ticket_seals(lf)[("developer", 0)]
+    unsealed = lf[:seal.line_start] + lf[seal.line_end:]
+    original = pd.backfill_ticket_seals(unsealed.replace("\n", "\r\n"))[0]
     source.write_bytes(original.encode("utf-8"))
     plan = pd.prepare_ticket_copy(
         ticket="T-1019", role="developer", cwd=slot, pm_home=pm_home,
@@ -331,6 +506,11 @@ def test_stale_same_section_refuses_without_overwrite(growth_env, pd):
     plan = pd.prepare_ticket_copy(ticket="T-1003", role="developer", cwd=slot, pm_home=pm_home)
     _replace_content(pd, plan.path, "developer", 0, "agent content\n")
     _replace_content(pd, source, "developer", 0, "parallel PM content\n")
+    current = source.read_text(encoding="utf-8")
+    source.write_text(
+        pd._upsert_ticket_seal(current, "developer", 0, by="harvest"),
+        encoding="utf-8",
+    )
     with pytest.raises(pd.DelegateError, match="stale overwrite"):
         pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home, capability=plan.capability)
     assert "parallel PM content" in source.read_text(encoding="utf-8")
@@ -342,13 +522,18 @@ def test_newer_same_role_section_refuses_old_round_harvest(growth_env, pd):
     source = _write_ticket(tickets, "T-1006", [("developer", "")])
     plan = pd.prepare_ticket_copy(ticket="T-1006", role="developer", cwd=slot, pm_home=pm_home)
     _replace_content(pd, plan.path, "developer", 0, "late old agent\n")
+    new_content = "## 재구현 (developer · 2026-08-13)\n\n"
     source.write_text(
         source.read_text(encoding="utf-8")
         + "\n<!-- pm-ticket-section:start role=developer -->\n"
-        + "## 재구현 (developer · 2026-08-13)\n\n"
-        + "<!-- pm-ticket-section:end role=developer -->\n",
+        + new_content
+        + "<!-- pm-ticket-section:end role=developer -->\n"
+        + pd._ticket_seal_line(
+            "developer", 1, new_content.encode("utf-8"), by="section-add",
+        ),
         encoding="utf-8",
     )
+    assert pd.verify_ticket_seals(source.read_text(encoding="utf-8")) == []
     with pytest.raises(pd.DelegateError, match="새 성장 절"):
         pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home, capability=plan.capability)
     assert "late old agent" not in source.read_text(encoding="utf-8")

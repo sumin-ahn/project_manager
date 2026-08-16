@@ -682,6 +682,9 @@ class DelegateError(Exception):
 TICKET_COPY_ROLES: frozenset[str] = frozenset(
     {"developer", "code-reviewer", "architect"}
 )
+_SEAL_BACKFILL_STATUSES: frozenset[str] = frozenset(
+    {"open", "claimed", "blocked", "draft"}
+)
 TICKET_COPY_REL_ROOT = Path(".project_manager") / ".local" / "delegate-ticket-copies"
 TICKET_COPY_TRUST_REL_ROOT = (
     Path(".project_manager") / ".local" / "delegate-ticket-copy-trust"
@@ -701,6 +704,11 @@ _TICKET_SECTION_MARKER = "pm-ticket-section"
 _TICKET_SECTION_LINE_RE = re.compile(
     r"\A<!-- pm-ticket-section:(start|end) role=([a-z][a-z0-9-]*) -->\r?\n?\Z"
 )
+_TICKET_SEAL_MARKER = "pm-ticket-seal"
+_TICKET_SEAL_LINE_RE = re.compile(
+    r"\A<!-- pm-ticket-seal role=([a-z][a-z0-9-]*) ordinal=(\d+) "
+    r"sha256=([0-9a-f]{64}) by=(section-add|harvest|backfill) -->\r?\n?\Z"
+)
 
 
 class TicketGrowthSection(NamedTuple):
@@ -710,6 +718,15 @@ class TicketGrowthSection(NamedTuple):
     content_start: int
     content_end: int
     marker_end: int
+
+
+class Seal(NamedTuple):
+    role: str
+    ordinal: int
+    sha256: str
+    by: str
+    line_start: int
+    line_end: int
 
 
 class TicketCopyPlan(NamedTuple):
@@ -798,6 +815,261 @@ def _ticket_growth_sections(text: str) -> list[TicketGrowthSection]:
     if open_marker is not None:
         raise DelegateError(f"티켓 성장 start marker의 end 누락: role={open_marker[0]}")
     return sections
+
+
+def seal_for(section_bytes: bytes) -> str:
+    """역할 절 content bytes의 canonical sha256 hex digest를 반환한다."""
+    if not isinstance(section_bytes, bytes):
+        raise TypeError("section_bytes는 bytes여야 합니다")
+    return hashlib.sha256(section_bytes).hexdigest()
+
+
+def parse_ticket_seals(text: str) -> dict[tuple[str, int], Seal]:
+    """봉인 줄을 엄격 파싱한다. 손상 문법·미지원 역할·중복 key는 loud 실패다."""
+    seals: dict[tuple[str, int], Seal] = {}
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        # 엔진은 seal comment를 항상 column 0에 쓴다. marker parser와 같이 그 실제 comment
+        # 후보만 엄격 파싱하고, 산문/backtick 안의 문법 설명은 데이터로 오인하지 않는다.
+        if not line.startswith(f"<!-- {_TICKET_SEAL_MARKER}"):
+            offset += len(line)
+            continue
+        match = _TICKET_SEAL_LINE_RE.fullmatch(line)
+        if match is None:
+            raise DelegateError(
+                "티켓 성장 seal 손상 문법 — seal 줄은 정확히 `<!-- pm-ticket-seal "
+                "role=<role> ordinal=<n> sha256=<hex64> "
+                "by=<section-add|harvest|backfill> -->` 하나여야 합니다"
+            )
+        role, ordinal_text, digest, writer = match.groups()
+        if role not in TICKET_COPY_ROLES:
+            raise DelegateError(f"티켓 성장 seal 역할 불일치/미지원: {role}")
+        ordinal = int(ordinal_text)
+        key = (role, ordinal)
+        if key in seals:
+            raise DelegateError(
+                f"티켓 성장 seal 중복: role={role} ordinal={ordinal}"
+            )
+        line_end = offset + len(line)
+        seals[key] = Seal(role, ordinal, digest, writer, offset, line_end)
+        offset = line_end
+    return seals
+
+
+def _ticket_seal_line(
+    role: str, ordinal: int, section_bytes: bytes, *, by: str, newline: str = "\n",
+) -> str:
+    if role not in TICKET_COPY_ROLES or ordinal < 0:
+        raise DelegateError(f"티켓 성장 seal 대상 불일치: role={role} ordinal={ordinal}")
+    if by not in {"section-add", "harvest", "backfill"}:
+        raise DelegateError(f"티켓 성장 seal writer 불일치: {by}")
+    if newline not in {"\n", "\r\n"}:
+        raise DelegateError("티켓 성장 seal newline 불일치")
+    return (
+        f"<!-- pm-ticket-seal role={role} ordinal={ordinal} "
+        f"sha256={seal_for(section_bytes)} by={by} -->{newline}"
+    )
+
+
+def verify_ticket_seals(text: str) -> list[str]:
+    """모든 성장 절과 봉인의 1:1·위치·sha256 정합 문제를 반환한다."""
+    try:
+        sections = _ticket_growth_sections(text)
+        seals = parse_ticket_seals(text)
+    except DelegateError as exc:
+        return [str(exc)]
+
+    problems: list[str] = []
+    section_by_key = {(section.role, section.ordinal): section for section in sections}
+    for key, section in section_by_key.items():
+        seal = seals.get(key)
+        label = f"role={section.role} ordinal={section.ordinal}"
+        if seal is None:
+            problems.append(f"티켓 성장 seal 누락: {label}")
+            continue
+        if seal.line_start != section.marker_end:
+            problems.append(f"티켓 성장 seal 위치 불일치(end marker 바로 다음 줄 아님): {label}")
+        content = text[section.content_start:section.content_end].encode("utf-8")
+        expected = seal_for(content)
+        if not hmac.compare_digest(seal.sha256, expected):
+            problems.append(f"티켓 성장 seal sha256 불일치: {label}")
+
+    for key, seal in seals.items():
+        if key not in section_by_key:
+            problems.append(
+                f"티켓 성장 고아 seal: role={seal.role} ordinal={seal.ordinal}"
+            )
+        for section in sections:
+            if section.content_start <= seal.line_start < section.content_end:
+                problems.append(
+                    "티켓 성장 seal이 역할 절 본문 안에 있음: "
+                    f"role={seal.role} ordinal={seal.ordinal}"
+                )
+                break
+    return problems
+
+
+def _ticket_growth_section_is_empty(
+    text: str, section: TicketGrowthSection,
+) -> bool:
+    """절에 역할 산출이 없는가 — marker-only 또는 section-add 초기 heading만 빈 절이다."""
+    content = text[section.content_start:section.content_end]
+    if not content.strip():
+        return True
+    lines = content.splitlines()
+    heading = re.fullmatch(
+        rf"## [^\r\n]+ \({re.escape(section.role)} · \d{{4}}-\d{{2}}-\d{{2}}\)",
+        lines[0],
+    )
+    return heading is not None and not any(line.strip() for line in lines[1:])
+
+
+def ticket_growth_seal_recovery_guidance(text: str, ticket: str) -> str | None:
+    """누락 seal 형상을 한 곳에서 판정해 실행 가능한 복구 안내를 반환한다."""
+    sections = _ticket_growth_sections(text)
+    seals = parse_ticket_seals(text)
+    missing = [
+        section for section in sections
+        if (section.role, section.ordinal) not in seals
+    ]
+    if not missing:
+        return None
+    if not seals:
+        labels = ", ".join(
+            f"role={section.role} ordinal={section.ordinal} "
+            f"비었는지={'예' if _ticket_growth_section_is_empty(text, section) else '아니오'}"
+            for section in missing
+        )
+        return (
+            f"미봉인 legacy 역할 절이 남아 있습니다. 미봉인 절 진단: {labels}. 먼저 "
+            "`python3 .project_manager/tools/pm_delegate.py ticket seal-backfill "
+            f"--ticket {ticket}`을 실행하세요"
+        )
+
+    diagnosed = [
+        (section, _ticket_growth_section_is_empty(text, section))
+        for section in missing
+    ]
+    max_ordinal_by_role: dict[str, int] = {}
+    for section in sections:
+        max_ordinal_by_role[section.role] = max(
+            section.ordinal, max_ordinal_by_role.get(section.role, -1),
+        )
+    diagnostics = ", ".join(
+        f"role={section.role} ordinal={section.ordinal} "
+        f"비었는지={'예' if empty else '아니오'}"
+        for section, empty in diagnosed
+    )
+    instructions: list[str] = []
+    for section, empty in diagnosed:
+        label = f"role={section.role} ordinal={section.ordinal}"
+        max_ordinal = max_ordinal_by_role[section.role]
+        if section.ordinal != max_ordinal:
+            instructions.append(
+                f"비말단 미봉인 절({label}, 해당 역할의 최대 ordinal={max_ordinal})은 "
+                "뒤 절의 ordinal을 보존해야 합니다. 이 형상은 기계 복구 경로가 없어 "
+                "장부 기반 판정이 필요하며 여기서는 복구 처방을 제공하지 않습니다"
+            )
+            continue
+        recreate = (
+            "`python3 .project_manager/tools/board.py section-add "
+            f"{ticket} --role {section.role}`"
+        )
+        if empty:
+            instructions.append(
+                f"빈 미봉인 절({label})을 제거한 뒤 {recreate}로 재생성하세요"
+            )
+        else:
+            prepare = (
+                "`python3 .project_manager/tools/pm_delegate.py ticket prepare "
+                f"--ticket {ticket} --role {section.role} --cwd <ABS_WORKTREE>`"
+            )
+            instructions.append(
+                f"내용 있는 미봉인 절({label})은 기계 복구 경로가 없습니다. "
+                f"그 산출을 해당 역할에게 다시 기록시키려면 절을 제거한 뒤 {recreate}로 "
+                f"재생성하고 {prepare}로 사본을 재prepare해 역할이 재기록·harvest하게 하세요"
+            )
+    return (
+        "봉인된 절과 미봉인 절이 섞인 mixed 티켓입니다. "
+        f"미봉인 절 진단: {diagnostics}. "
+        + "; ".join(instructions)
+        + ". PM이 역할 산출을 옮겨 적거나 봉인을 손으로 만들면 안 됩니다"
+    )
+
+
+def require_sealed_growth_before_write(text: str, ticket: str, *, action: str) -> None:
+    """성장 write 전에 누락 seal 형상에 맞는 복구를 안내하고 쓰기를 거부한다."""
+    guidance = ticket_growth_seal_recovery_guidance(text, ticket)
+    if guidance is None:
+        return
+    raise DelegateError(f"{action} 거부: {guidance}")
+
+
+def _upsert_ticket_seal(text: str, role: str, ordinal: int, *, by: str) -> str:
+    """한 절의 seal을 end marker 바로 뒤로 재배치한다. 호출자는 atomic write로 쓴다."""
+    seals = parse_ticket_seals(text)
+    existing = seals.get((role, ordinal))
+    if existing is not None:
+        old_line = text[existing.line_start:existing.line_end]
+        newline = "\r\n" if old_line.endswith("\r\n") else "\n"
+        base = text[:existing.line_start] + text[existing.line_end:]
+    else:
+        base = text
+        section = _ticket_role_section(base, role, ordinal=ordinal)
+        marker = text[section.marker_start:section.marker_end]
+        newline = "\r\n" if marker.endswith("\r\n") else (
+            "\r\n" if "\r\n" in text else "\n"
+        )
+    # 기존 seal이 역할 절 안/앞/뒤 어디에 있든 제거 후 좌표와 content hash를 다시 계산한다.
+    section = _ticket_role_section(base, role, ordinal=ordinal)
+    line = _ticket_seal_line(
+        role, ordinal,
+        base[section.content_start:section.content_end].encode("utf-8"),
+        by=by, newline=newline,
+    )
+    separator = "" if base[:section.marker_end].endswith(("\n", "\r")) else newline
+    return base[:section.marker_end] + separator + line + base[section.marker_end:]
+
+
+def backfill_ticket_seals(
+    text: str, *, ticket: str = "<TICKET>",
+) -> tuple[str, list[tuple[str, int]]]:
+    """기존 seal은 보존하고 누락 절만 by=backfill로 채운다."""
+    sections = _ticket_growth_sections(text)
+    seals = parse_ticket_seals(text)
+    existing_problems = [
+        problem for problem in verify_ticket_seals(text)
+        if "seal 누락:" not in problem
+    ]
+    if existing_problems:
+        raise DelegateError(
+            "seal-backfill은 기존 봉인 문제를 고치지 않습니다 — "
+            + "; ".join(existing_problems)
+        )
+    missing = [
+        section for section in sections
+        if (section.role, section.ordinal) not in seals
+    ]
+    if seals and missing:
+        guidance = ticket_growth_seal_recovery_guidance(text, ticket)
+        assert guidance is not None
+        raise DelegateError(f"mixed 티켓 소급 봉인 거부: {guidance}")
+    updated = text
+    # 원래 좌표 뒤쪽부터 삽입하면 앞 절 좌표가 이동하지 않아 모든 hash 입력이 그대로다.
+    for section in reversed(missing):
+        content = text[section.content_start:section.content_end].encode("utf-8")
+        marker = text[section.marker_start:section.marker_end]
+        newline = "\r\n" if marker.endswith("\r\n") else (
+            "\r\n" if "\r\n" in text else "\n"
+        )
+        line = _ticket_seal_line(
+            section.role, section.ordinal, content, by="backfill", newline=newline,
+        )
+        separator = "" if text[:section.marker_end].endswith(("\n", "\r")) else newline
+        updated = (
+            updated[:section.marker_end] + separator + line + updated[section.marker_end:]
+        )
+    return updated, [(section.role, section.ordinal) for section in missing]
 
 
 def _ticket_role_section(
@@ -1009,7 +1281,20 @@ def prepare_ticket_copy(
             source_text = source_bytes.decode("utf-8")
         except (OSError, UnicodeError) as exc:
             raise DelegateError(f"PM 홈 티켓 읽기 실패: {source}: {exc}") from exc
-    target = _ticket_role_section(source_text, role)
+        require_sealed_growth_before_write(
+            source_text, ticket, action="ticket prepare",
+        )
+        target = _ticket_role_section(source_text, role)
+        target_label = f"role={target.role} ordinal={target.ordinal}"
+        target_hash_problems = [
+            problem for problem in verify_ticket_seals(source_text)
+            if "seal sha256 불일치:" in problem and target_label in problem
+        ]
+        if target_hash_problems:
+            raise DelegateError(
+                "ticket prepare 거부: 대상 역할 절의 기존 seal sha256이 현재 본문과 "
+                "불일치합니다 — " + "; ".join(target_hash_problems)
+            )
     run_id = uuid.uuid4().hex
     capability = secrets.token_bytes(32)
     _assert_ticket_copy_root_ignored(
@@ -1275,7 +1560,23 @@ def harvest_ticket_copy(
         # 깨뜨린다. prepare의 read_bytes와 같은 newline 원형을 유지한다.
         with current_path.open("r", encoding="utf-8", newline="") as handle:
             current_text = handle.read()
+        require_sealed_growth_before_write(
+            current_text, plan.ticket, action="ticket harvest",
+        )
         current_section = _ticket_role_section(current_text, plan.role, ordinal=ordinal)
+        current_seals = parse_ticket_seals(current_text)
+        current_seal = current_seals.get((plan.role, ordinal))
+        if current_seal is not None:
+            current_digest = seal_for(
+                current_text[
+                    current_section.content_start:current_section.content_end
+                ].encode("utf-8")
+            )
+            if not hmac.compare_digest(current_seal.sha256, current_digest):
+                raise DelegateError(
+                    "PM 홈의 기존 ticket/role seal이 현재 본문과 불일치해 harvest 재발급을 "
+                    f"거부합니다: role={plan.role} ordinal={ordinal}"
+                )
         latest_section = _ticket_role_section(current_text, plan.role)
         if latest_section.ordinal != ordinal:
             raise DelegateError(
@@ -1289,17 +1590,22 @@ def harvest_ticket_copy(
             + desired_content
             + current_text[current_section.content_end:current_section.marker_end]
         )
-        if current_block == desired_block:
-            wrote = False
-        elif current_block != baseline_block:
+        if current_block != desired_block and current_block != baseline_block:
             raise DelegateError(
                 "PM 홈의 같은 ticket/role 절이 준비 뒤 별도로 바뀌어 stale overwrite를 거부합니다 — "
                 f"원본={plan.baseline_path} · 사본={plan.path} · PM 홈={current_path}"
             )
-        else:
-            updated = current_text[:current_section.content_start] + desired_content + current_text[current_section.content_end:]
+        updated = (
+            current_text[:current_section.content_start]
+            + desired_content
+            + current_text[current_section.content_end:]
+        )
+        updated = _upsert_ticket_seal(updated, plan.role, ordinal, by="harvest")
+        if updated != current_text:
             board._atomic_write_text(current_path, updated)
             wrote = True
+        else:
+            wrote = False
     # atomic replace 뒤 프로세스 종료/sync 예외가 있었던 재호출도 current==desired 경로에서
     # render/board-git을 다시 시도한다. False는 로컬 반영 실패가 아니라 board-git 미준비 상태다.
     if status == "draft":
@@ -7357,7 +7663,66 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
         "--capability-stdin", action="store_true", required=True,
         help="prepare JSON의 capability를 argv가 아닌 stdin 한 줄로 입력",
     )
+    backfill = sub.add_parser(
+        "seal-backfill",
+        help="PM 전용: active/draft 티켓의 미봉인 역할 절 1회 정합화",
+    )
+    backfill.add_argument("--ticket", required=True, metavar="T-NNNN")
     return parser
+
+
+def _cmd_ticket_seal_backfill(ticket: str) -> int:
+    """봉인 도입 이전 active/draft 티켓의 누락 seal만 채우고 감사 log를 남긴다."""
+    board = _load_board()
+    if not board._is_valid_ticket_id(ticket):
+        raise DelegateError("--ticket은 board 발행 ticket ID 형식이어야 합니다")
+    owner = _activate_internal_rounds_cli_owner()
+    owner_board = _load_board_for_repo(owner)
+    log_path = owner / ".project_manager" / "wiki" / "log" / "current.md"
+    changed: list[tuple[str, int]] = []
+    path: Path | None = None
+    with owner_board.board_lock():
+        found = owner_board.find_ticket_exact(ticket)
+        if found is None:
+            raise DelegateError(f"ticket not found: {ticket}")
+        status, path = found
+        if status not in _SEAL_BACKFILL_STATUSES:
+            raise DelegateError(
+                "seal-backfill은 open/claimed/blocked/draft 티켓만 허용: "
+                f"{ticket} in {status}/"
+            )
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            original = handle.read()
+        updated, changed = backfill_ticket_seals(original, ticket=ticket)
+        if changed:
+            owner_board._atomic_write_text(path, updated)
+            labels = ", ".join(f"{role}[{ordinal}]" for role, ordinal in changed)
+            try:
+                with log_path.open("r", encoding="utf-8", newline="") as handle:
+                    log_text = handle.read()
+            except FileNotFoundError:
+                log_text = ""
+            separator = "" if not log_text or log_text.endswith("\n") else "\n"
+            entry = (
+                f"{separator}\n## [{datetime.date.today().isoformat()}] ticket | "
+                f"{ticket} seal-backfill\n"
+                f"- 소급 봉인: {labels}\n"
+                "- 사유: 성장 절 봉인 도입 이전 절 정합화; 기존 본문과 이미 봉인된 절은 변경하지 않음.\n"
+            )
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            owner_board._atomic_write_text(log_path, log_text + entry)
+
+    if changed and path is not None:
+        sync = getattr(owner_board, "_board_git_sync_best_effort", None)
+        if callable(sync):
+            sync(f"ticket seal-backfill {ticket}", (path, log_path))
+    if changed:
+        print("seal-backfill " + ticket + ": " + ", ".join(
+            f"role={role} ordinal={ordinal}" for role, ordinal in changed
+        ))
+    else:
+        print(f"seal-backfill {ticket}: 이미 모든 역할 절이 봉인됨")
+    return 0
 
 
 def _cmd_ticket(argv: list[str]) -> int:
@@ -7366,6 +7731,8 @@ def _cmd_ticket(argv: list[str]) -> int:
     assert parser is not None  # 같은 모듈의 literal command — introspection/실행 단일 parser.
     args = parser.parse_args(argv)
     try:
+        if args.ticket_command == "seal-backfill":
+            return _cmd_ticket_seal_backfill(args.ticket)
         cwd = Path(args.cwd)
         cwd_repo = _repo_root_for_cwd(cwd)
         owner = _ticket_cli_owner(cwd_repo)
@@ -7422,6 +7789,7 @@ def _cmd_review(argv: list[str]) -> int:
     board = _load_board()
     if not board._is_valid_ticket_id(args.ticket):
         parser.error("--ticket은 board 발행 ticket ID 형식이어야 합니다")
+    ticket_text: str | None = None
     try:
         owner = _activate_internal_rounds_cli_owner()
         owner_board = _load_board_for_repo(owner)
@@ -7435,16 +7803,34 @@ def _cmd_review(argv: list[str]) -> int:
                     f"review delta는 open/claimed 티켓만 허용: {args.ticket} in {status}/"
                 )
             try:
-                ticket_text = path.read_text(encoding="utf-8")
+                with path.open("r", encoding="utf-8", newline="") as handle:
+                    ticket_text = handle.read()
             except (OSError, UnicodeError) as exc:
                 raise DelegateError(f"티켓 읽기 실패: {path}: {exc}") from exc
+        seal_problems = verify_ticket_seals(ticket_text)
+        if seal_problems:
+            raise PMReviewError("unsealed", "; ".join(seal_problems))
         delta = parse_pm_review_delta(ticket_text)
         rendered = render_pm_review_delta(args.ticket, delta)
         if rendered:
             sys.stdout.write(rendered)
         return 0
     except PMReviewError as exc:
+        unsealed_prescription = (
+            "역할 절은 harvest 로만 쓴다 — 리뷰어/개발자에게 사본 재기록·재회수를 "
+            "요청하라. PM 손편집 금지"
+        )
+        if exc.code == "unsealed" and ticket_text is not None:
+            try:
+                recovery = ticket_growth_seal_recovery_guidance(
+                    ticket_text, args.ticket,
+                )
+            except DelegateError:
+                recovery = None
+            if recovery is not None:
+                unsealed_prescription = recovery
         prescriptions = {
+            "unsealed": unsealed_prescription,
             "malformed": "reviewer 형식을 versioned block 계약에 맞춰 보정한 뒤 다시 판정하세요",
             "pending": "PM이 finding ID를 전수 disposition한 뒤 다시 실행하세요",
             "decision-required": (

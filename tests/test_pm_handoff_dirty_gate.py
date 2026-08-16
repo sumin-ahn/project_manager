@@ -620,7 +620,12 @@ def test_blank_ack_reason_aborts_engine_path(hf, tmp_path, monkeypatch, blank, c
 def test_cli_rejects_blank_ack_reason(hf, capsys):
     """CLI `--ack-dirty ""` → usage error(rc 2) — 사유 없는 override 를 파서에서 닫는다."""
     with pytest.raises(SystemExit) as excinfo:
-        hf.main(["--session-seq", "5", "--wave-summary", "x", "--ack-dirty", ""])
+        hf.main(
+            ["--session-seq", "5", "--wave-summary", "x", "--ack-dirty", ""],
+            identity_resolver=lambda: (_ for _ in ()).throw(
+                AssertionError("인자 오류보다 identity 해소가 먼저 실행됨")
+            ),
+        )
     assert excinfo.value.code == 2
     assert "--ack-dirty 는 사유가 필수" in capsys.readouterr().err
 
