@@ -416,7 +416,7 @@ def _write_raw_ledger(ledger_path: Path, ledger: dict) -> None:
     payload = json.dumps(ledger, ensure_ascii=False, indent=2) + "\n"
     try:
         fd = os.open(str(tmp), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(payload)
         os.replace(str(tmp), str(ledger_path))
     finally:
@@ -670,7 +670,7 @@ def write_post_turn_marker(root: Path, session_id: str) -> bool:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            "post-turn rotation requested\n", encoding="utf-8"
+            "post-turn rotation requested\n", encoding="utf-8", newline="\n"
         )
         return True
     except OSError:

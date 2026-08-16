@@ -91,7 +91,8 @@ def write_ledger(path: Path | str, ledger: dict) -> None:
     )
     try:
         tmp.write_text(
-            json.dumps(ledger, ensure_ascii=False, indent=2), encoding="utf-8"
+            json.dumps(ledger, ensure_ascii=False, indent=2),
+            encoding="utf-8", newline="\n"
         )
         os.replace(str(tmp), str(target))
     finally:

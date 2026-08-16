@@ -841,7 +841,7 @@ def _append_local_conf_atomic(conf_path: Path, block: str, lock) -> None:
     if lock is not None:
         lock.append_atomic(conf_path, text)
         return
-    with Path(conf_path).open("a", encoding="utf-8") as f:
+    with Path(conf_path).open("a", encoding="utf-8", newline="\n") as f:
         f.write(text)
 
 
@@ -4223,7 +4223,11 @@ def _copy_manifest_preserving_guest(
     if not guest_block and isinstance(sp, Path):
         shutil.copy2(sp, dst)  # 비-add-harness 또는 전량 승격 — copy2(바이트/메타 무변경).
         return
-    dst.write_text(_reattach_guest_block(new_text, guest_block), encoding="utf-8")
+    dst.write_text(
+        _reattach_guest_block(new_text, guest_block),
+        encoding="utf-8",
+        newline="\n",
+    )
 
 
 def apply(changes: list[tuple], *, is_hook_set_path=None) -> None:
@@ -5016,9 +5020,9 @@ def migrate_entry_doc(effective_dest: Path, source_root: Path, *, write: bool) -
             _entry_doc_backup(dest, "AGENTS.md", backup_root)
             if jsonc_changed:
                 _entry_doc_backup(dest, ".opencode/opencode.jsonc", backup_root)
-            agents_path.write_text(new_text, encoding="utf-8")
+            agents_path.write_text(new_text, encoding="utf-8", newline="\n")
             if jsonc_changed:
-                jsonc_path.write_text(new_jsonc, encoding="utf-8")
+                jsonc_path.write_text(new_jsonc, encoding="utf-8", newline="\n")
             result["backup_rel"] = (
                 f"{_ENTRY_DOC_BACKUP_DIR}/{datetime.date.today().isoformat()}")
         return result
@@ -5036,7 +5040,7 @@ def migrate_entry_doc(effective_dest: Path, source_root: Path, *, write: bool) -
     if jsonc_changed and write:
         backup_root = _entry_doc_backup_root(dest)
         _entry_doc_backup(dest, ".opencode/opencode.jsonc", backup_root)
-        jsonc_path.write_text(new_jsonc, encoding="utf-8")
+        jsonc_path.write_text(new_jsonc, encoding="utf-8", newline="\n")
         result["backup_rel"] = f"{_ENTRY_DOC_BACKUP_DIR}/{datetime.date.today().isoformat()}"
     return result
 

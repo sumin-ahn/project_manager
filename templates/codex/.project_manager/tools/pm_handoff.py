@@ -3634,7 +3634,7 @@ class PmHandoff:
             updated = upsert_dashboard_section(existing, session_identity, section)
             dash_file.parent.mkdir(parents=True, exist_ok=True)
             tmp = dash_file.with_suffix(dash_file.suffix + ".tmp")
-            tmp.write_text(updated, encoding="utf-8")
+            tmp.write_text(updated, encoding="utf-8", newline="\n")
             os.replace(str(tmp), str(dash_file))
         return dash_file
 
@@ -4139,7 +4139,8 @@ class PmHandoff:
                             "세션 window 미반영분 복구 예고."
                         )
                     else:
-                        self._pm_state_file.write_text(new_state_text, encoding="utf-8")
+                        self._pm_state_file.write_text(
+                            new_state_text, encoding="utf-8", newline="\n")
                         print(
                             f"  ✓ 같은 차수({normalized_session_num}) log 선행 반쪽 상태 — "
                             "세션 window 미반영분 복구."
@@ -4156,7 +4157,8 @@ class PmHandoff:
                     for line in added[:5]:
                         print(f"  + {line}")
                 else:
-                    self._pm_state_file.write_text(new_state_text, encoding="utf-8")
+                    self._pm_state_file.write_text(
+                        new_state_text, encoding="utf-8", newline="\n")
                     print(
                         f"  ✓ pm_state.md 세션 식별 sliding window 정리 완료 "
                         f"(PM {session_num}차 추가·최근 최대 3개 유지)"
@@ -4347,7 +4349,7 @@ def _run_normalize_session_anchors(worktree_slot: str | None, dry_run: bool) -> 
         )
         return 0
 
-    target.write_text(normalized, encoding="utf-8")
+    target.write_text(normalized, encoding="utf-8", newline="\n")
     print(f"  ✓ 정규화 적용 완료 — {target} 교체 (멱등: 재실행 시 무변화).")
     return 0
 

@@ -4819,7 +4819,7 @@ def save_raw_output(
     name = f"pm_delegate_{harness}_{os.getpid()}_{uuid.uuid4().hex}.txt"
     dest = base_dir / name
     fd = os.open(str(dest), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
         handle.write(content)
     return dest
 
@@ -5050,7 +5050,7 @@ def _reserve_raw_output(harness: str, output_dir: Path | None = None) -> Path:
 
 def _write_reserved_raw(dest: Path, content: str) -> None:
     """선점한 raw 파일 내용을 교체한다(파일 정체성과 0600 권한 유지)."""
-    with dest.open("w", encoding="utf-8") as handle:
+    with dest.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(content)
 
 
@@ -6458,7 +6458,7 @@ def _portable_exclusive_write(path: Path, content: str) -> None:
     try:
         fd = os.open(path, flags, 0o600)
         created = True
-        handle = os.fdopen(fd, "w", encoding="utf-8")
+        handle = os.fdopen(fd, "w", encoding="utf-8", newline="\n")
         fd = None
         with handle:
             handle.write(content)

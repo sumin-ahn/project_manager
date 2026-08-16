@@ -5171,7 +5171,7 @@ def _build_reviewer_home(
         if payload is None:
             shutil.copy2(source, target)
         else:
-            target.write_text(payload, encoding="utf-8")
+            target.write_text(payload, encoding="utf-8", newline="\n")
         os.chmod(target, 0o600)
         copied.append(relative)
     return ReviewerHomeBuild(tuple(copied), tuple(scrub_failed))
@@ -6123,7 +6123,7 @@ def _write_reserved_output(
     target: ReviewerTarget | None = None,
     codex_egress: str | None = None,
 ) -> None:
-    with dest.open("w", encoding="utf-8") as handle:
+    with dest.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(_review_raw_content(
             content, local_conf_path, resolved_profile, target, codex_egress))
 

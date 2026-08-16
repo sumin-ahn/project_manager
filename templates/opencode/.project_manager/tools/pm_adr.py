@@ -684,7 +684,8 @@ class AdrIssuer:
         최악의 부분 실패에서도 결정 본문 자체는 디스크에 보존되게 한다(주 산출물 우선)."""
         self._decisions_dir.mkdir(parents=True, exist_ok=True)
         steps: list[tuple[str, "callable"]] = [
-            ("신규 ADR 파일", lambda: plan["adr_path"].write_text(plan["adr_text"], encoding="utf-8")),
+            ("신규 ADR 파일", lambda: plan["adr_path"].write_text(
+                plan["adr_text"], encoding="utf-8", newline="\n")),
             ("대상 back-ref", lambda: self._write_targets(plan)),
             ("README 색인", lambda: self._write_readme(plan)),
             ("log decide entry", lambda: self._append_log(plan)),
@@ -705,11 +706,12 @@ class AdrIssuer:
 
     def _write_targets(self, plan: dict) -> None:
         for tpath, edited in plan["target_edits"]:
-            tpath.write_text(edited, encoding="utf-8")
+            tpath.write_text(edited, encoding="utf-8", newline="\n")
 
     def _write_readme(self, plan: dict) -> None:
         if plan["readme_text"] is not None:
-            self._readme_file.write_text(plan["readme_text"], encoding="utf-8")
+            self._readme_file.write_text(
+                plan["readme_text"], encoding="utf-8", newline="\n")
 
     def _append_log(self, plan: dict) -> None:
         pm_log = _load_pm_log()

@@ -2551,7 +2551,8 @@ def write_draft_page(title: str, *, ptype: str = DEFAULT_DRAFT_TYPE,
     # 코드 생성 경로(capture-draft)는 못 받던 갭을 같은 문구 한 벌로 닫는다.
     body = _draft_body(title, covers, prose,
                        guide=current_truth_guide_block(domain_dir))
-    path.write_text(f"---\n{frontmatter}---\n{body}", encoding="utf-8")
+    path.write_text(
+        f"---\n{frontmatter}---\n{body}", encoding="utf-8", newline="\n")
     return path
 
 

@@ -954,7 +954,7 @@ def _write_ledger_raw(data: dict) -> None:
     LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(data, ensure_ascii=False, indent=2)
     tmp = LEASES_FILE.with_suffix(".json.tmp")
-    tmp.write_text(payload + "\n", encoding="utf-8")
+    tmp.write_text(payload + "\n", encoding="utf-8", newline="\n")
     os.replace(str(tmp), str(LEASES_FILE))
 
 
@@ -2164,7 +2164,7 @@ def ensure_task_pm_state(name: str) -> Path:
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(target.suffix + ".tmp")
-    tmp.write_text(rendered, encoding="utf-8")
+    tmp.write_text(rendered, encoding="utf-8", newline="\n")
     os.replace(str(tmp), str(target))
     return target
 
@@ -2241,7 +2241,7 @@ def _ensure_slot_pm_state_locked(
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(target.suffix + ".tmp")
-    tmp.write_text(rendered, encoding="utf-8")
+    tmp.write_text(rendered, encoding="utf-8", newline="\n")
     os.replace(str(tmp), str(target))
     return target
 

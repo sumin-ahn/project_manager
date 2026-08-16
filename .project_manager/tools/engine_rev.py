@@ -298,7 +298,7 @@ def bump(new_rev: str, *, dry_run: bool = False) -> list[str]:
         if new_text != text:
             changed.append(filename)
             if not dry_run:
-                path.write_text(new_text, encoding="utf-8")
+                path.write_text(new_text, encoding="utf-8", newline="\n")
     return changed
 
 

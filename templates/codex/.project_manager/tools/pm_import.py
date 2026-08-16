@@ -1870,7 +1870,7 @@ def _install_selected_manifest_union(merged: dict | None, dest_root: Path) -> in
     if merged is None:
         return 0
     target = Path(dest_root) / ".project_manager" / "engine.manifest"
-    target.write_text(merged["text"], encoding="utf-8")
+    target.write_text(merged["text"], encoding="utf-8", newline="\n")
     return len(merged["entries"])
 
 
@@ -2428,8 +2428,8 @@ def _open_dest_relative_nofollow(
 def _fdopen_text(fd: int, mode: str, newline: str | None = ""):
     """fd 소유권을 넘긴 텍스트 핸들 — 실패 시 fd 를 흘리지 않는다.
 
-    `newline=""` = 줄끝 미번역(재렌더 채널·왕복 byte 보존), `newline=None` = universal
-    (`Path.read_text`/`write_text` 와 **동일 의미** — 복사분 채널이 옛 동작을 그대로 유지한다)."""
+    `newline=""` = 줄끝 미번역(재렌더 채널·왕복 byte 보존), `newline=None` = 읽기 전용
+    universal newline(`Path.read_text` 와 동일 의미)."""
     try:
         return os.fdopen(fd, mode, encoding="utf-8", newline=newline)
     except BaseException:
@@ -2466,7 +2466,7 @@ def write_dest_text_keeping_newlines(
     with _fdopen_text(
             _open_dest_relative_nofollow(
                 dest_root, rel, os.O_WRONLY | os.O_TRUNC,
-                root_identity=root_identity, regular_only=True), "w") as handle:
+                root_identity=root_identity, regular_only=True), "w", newline="") as handle:
         handle.write(text)
 
 
@@ -2486,12 +2486,12 @@ def read_dest_text(dest_root: Path, rel: Path, root_identity: tuple | None = Non
 
 def write_dest_text(dest_root: Path, rel: Path, text: str,
                     root_identity: tuple | None = None) -> None:
-    """`Path.write_text(encoding="utf-8")` 의 TOCTOU 안전 짝 — 제자리 덮어쓰기 전용(생성 안 함)."""
+    """LF 고정 텍스트 쓰기의 TOCTOU 안전 짝 — 제자리 덮어쓰기 전용(생성 안 함)."""
     with _fdopen_text(
             _open_dest_relative_nofollow(
                 dest_root, rel, os.O_WRONLY | os.O_TRUNC, root_identity=root_identity,
                 regular_only=True),
-            "w", newline=None) as handle:
+            "w", newline="\n") as handle:
         handle.write(text)
 
 
@@ -3140,7 +3140,7 @@ def _write_conf_keys_locked(path: Path, updates: dict[str, str]) -> bool:
     changed = new_text != text
     if changed:
         tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(new_text, encoding="utf-8")
+        tmp.write_text(new_text, encoding="utf-8", newline="\n")
         os.replace(tmp, path)
     effective = _parse_conf_keys(path.read_text(encoding="utf-8"))
     mismatches = {
@@ -3876,7 +3876,8 @@ def _save_fill_failure_output(dest_root: Path, harness: str, output: str) -> Pat
         except OSError:
             pass
         raise
-    with os.fdopen(fd, "w", encoding="utf-8", errors="replace") as handle:
+    with os.fdopen(
+            fd, "w", encoding="utf-8", errors="replace", newline="\n") as handle:
         handle.write(output)
     return dest_root.joinpath(*raw_parts, raw_basename)
 
@@ -4491,7 +4492,7 @@ def ensure_pm_playbook_local_stub(dest_root: Path, backup_root: Path | None,
                 _open_dest_relative_nofollow(
                     dest_root, rel, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
                     root_identity=root_identity, regular_only=True),
-                "w", newline=None) as handle:
+                "w", newline="\n") as handle:
             handle.write(PM_PLAYBOOK_LOCAL_STUB)
     except (OSError, UnsafeDestPathError) as exc:
         print(f"  ⚠️ pm_playbook.local.md 스텁을 만들지 못했습니다 "
@@ -5283,7 +5284,7 @@ def record_install_receipt(dest_root: Path, harnesses,
                     dest_root, INSTALL_RECEIPT_RELPATH,
                     os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
                     root_identity=root_identity, regular_only=True),
-                "w", newline=None) as handle:
+                "w", newline="\n") as handle:
             handle.write(text)
     except (OSError, UnsafeDestPathError) as exc:
         print(f"경고: 설치 기록을 남기지 못했습니다 "
@@ -5845,7 +5846,7 @@ def _write_adapter_baseline(dest_root: Path, document: dict,
                     Path(dest_root), ADAPTER_BASELINE_RELPATH,
                     os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
                     root_identity=root_identity, regular_only=True),
-                "w", newline=None) as handle:
+                "w", newline="\n") as handle:
             handle.write(text)
     except (OSError, UnsafeDestPathError) as exc:
         print(f"경고: 어댑터 config 원장을 남기지 못했습니다 "
@@ -7333,9 +7334,12 @@ def _append_guest_render_to_manifest(
     if plan["new_block"]:
         if stripped and not stripped.endswith("\n"):
             stripped += "\n"
-        manifest.write_text(stripped + "\n" + plan["new_block"] + "\n", encoding="utf-8")
+        manifest.write_text(
+            stripped + "\n" + plan["new_block"] + "\n",
+            encoding="utf-8", newline="\n")
     else:
-        manifest.write_text(stripped, encoding="utf-8")  # this-ns guest 전량 폐기·타 하네스도 0 → 절 제거.
+        manifest.write_text(
+            stripped, encoding="utf-8", newline="\n")  # this-ns guest 전량 폐기·타 하네스도 0 → 절 제거.
     # read_manifest 왕복 검증 (fail-loud·추가분 반영). 대조는 **등재 경로 전량**이다 —
     #   `@render` 로 좁히면 guest 절의 엔진 행(비-render·update 채널)이 매번 미반영으로 오판된다.
     after = {str(e).replace("\\", "/") for e in pu.read_manifest(manifest)}
@@ -7892,11 +7896,12 @@ def setup_board_submodule(dest_root: Path, remote_url: str) -> int:
                 sd = tmp_clone / "tickets" / status
                 sd.mkdir(parents=True, exist_ok=True)
                 (sd / ".gitkeep").touch(exist_ok=True)  # 빈 status dir git 추적(합류 유저 checkout).
-            (tmp_clone / "areas.md").write_text(_board_areas_scaffold(), encoding="utf-8")
+            (tmp_clone / "areas.md").write_text(
+                _board_areas_scaffold(), encoding="utf-8", newline="\n")
             # areas.md merge=union 은 **이 git**(board)에 선언돼야 유효하다 — 루트 선언은 다른
             # git 이라 닿지 않는다. 신규 clone 이라 기존 파일 없음(비파괴 판단 불요).
             (tmp_clone / ".gitattributes").write_text(
-                _BOARD_GITATTRIBUTES_SCAFFOLD, encoding="utf-8")
+                _BOARD_GITATTRIBUTES_SCAFFOLD, encoding="utf-8", newline="\n")
             for step in (["add", "-A"],
                          ["commit", "-m", "board scaffold (pm-import --new --board-submodule)"],
                          ["push", "origin", "HEAD"]):
@@ -8015,7 +8020,7 @@ def ensure_backup_dir_gitignored(
     # 방어: 위생 write 실패(권한 등)가 *복사·치환이 끝난* import 말미를
     #   깨뜨리지 않게 한다 — gitignore 위생은 should 부가단계라 실패해도 import 자체는 성공으로 둔다.
     try:
-        gitignore.write_text(new_text, encoding="utf-8")
+        gitignore.write_text(new_text, encoding="utf-8", newline="\n")
     except OSError:
         return "noop"
     return status

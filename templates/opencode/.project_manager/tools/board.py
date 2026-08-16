@@ -3173,7 +3173,7 @@ def _areas_append_locked(
             "prefix 유일성 = race-free ID 의 전제.\n\n"
             + _areas_header_line() + "\n"
             + _areas_separator_line() + "\n",
-            encoding="utf-8")
+            encoding="utf-8", newline="\n")
     # O_APPEND atomic append — areas 는 append-only 레지스트리이므로
     # read-modify-write 가 아니라 OS 가 보장하는 원자 추가로 동시 등록 충돌을 없앤다.
     file_lock.append_atomic(
@@ -3484,7 +3484,7 @@ def _write_hook_atomic(hook: Path, body: str) -> None:
     올린다(호출부가 판정)."""
     tmp = hook.with_name(f"{hook.name}.{os.getpid()}.tmp")
     try:
-        tmp.write_text(body, encoding="utf-8")
+        tmp.write_text(body, encoding="utf-8", newline="\n")
         tmp.chmod(0o755)
         os.replace(str(tmp), str(hook))
     except OSError:
@@ -7324,7 +7324,7 @@ def cmd_regression(args: argparse.Namespace) -> int:
         REGRESSION_FLAG.write_text(json.dumps(
             {"head": _git_head(), "status": status, "rc": recorded_rc, "scope": "full",
              "collected": collected, "floor": floor, "conf_anchor": cwd,
-             "ts": now_utc()}), encoding="utf-8")
+             "ts": now_utc()}), encoding="utf-8", newline="\n")
         print(f"regression: {detail} @ {_git_head()[:8] or '?'}")
         return 0 if status == "pass" else 1
     # action == "check" — pre-push 게이트
@@ -7406,7 +7406,7 @@ def _write_json_atomic(path: Path, data: dict) -> None:
     `dump_ticket_atomic` 과 동형 — 같은 디렉토리 안 tmp 에 전체를 쓰고 atomic rename.
     """
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data), encoding="utf-8")
+    tmp.write_text(json.dumps(data), encoding="utf-8", newline="\n")
     os.replace(str(tmp), str(path))
 
 
@@ -7538,7 +7538,7 @@ def _write_release_must_fix_marker(flag: Path, problems: Sequence[str]) -> Path:
         f"{marker.name}.{os.getpid()}.{threading.get_ident()}.tmp"
     )
     try:
-        tmp.write_text(state + "\n", encoding="ascii")
+        tmp.write_text(state + "\n", encoding="ascii", newline="\n")
         os.replace(str(tmp), str(marker))
     finally:
         with contextlib.suppress(OSError):
@@ -8103,7 +8103,8 @@ def dump_ticket(path: Path, fm: dict[str, Any], body: str) -> None:
     # contract, including `new`'s initial open/ ticket.
     path.parent.mkdir(parents=True, exist_ok=True)
     fm_text = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).rstrip()
-    path.write_text(f"---\n{fm_text}\n---\n{body}", encoding="utf-8")
+    path.write_text(
+        f"---\n{fm_text}\n---\n{body}", encoding="utf-8", newline="\n")
 
 
 def dump_ticket_atomic(path: Path, fm: dict[str, Any], body: str) -> None:
@@ -8116,7 +8117,8 @@ def dump_ticket_atomic(path: Path, fm: dict[str, Any], body: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fm_text = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).rstrip()
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(f"---\n{fm_text}\n---\n{body}", encoding="utf-8")
+    tmp.write_text(
+        f"---\n{fm_text}\n---\n{body}", encoding="utf-8", newline="\n")
     os.replace(str(tmp), str(path))
 
 
@@ -9412,7 +9414,7 @@ def _write_init_local_conf(*, prefix: str | None, namespaced: bool,
                 "# ctx_window_tokens_opencode=200000\n"
                 "# ctx_window_tokens_codex=200000\n"
                 + _DELEGATE_CONF_SEED + _HARNESS_BUDGET_CONF_SEED)
-            LOCAL_CONF.write_text(conf, encoding="utf-8")
+            LOCAL_CONF.write_text(conf, encoding="utf-8", newline="\n")
             return sess
         # 존재 시 — 비파괴 병합. init 이 안 쓰는 사용자/operational 키
         # (additional_reviewer_enabled·additional_reviewer.*·레거시 reviewer_cmd·upstream·
@@ -9460,7 +9462,7 @@ def _write_init_local_conf(*, prefix: str | None, namespaced: bool,
         if not _example_seed_is_redundant(
                 merged, existing, _HARNESS_BUDGET_SEED_MARKER, _HARNESS_BUDGET_AXIS_KEYS):
             merged += _HARNESS_BUDGET_CONF_SEED
-        LOCAL_CONF.write_text(merged, encoding="utf-8")
+        LOCAL_CONF.write_text(merged, encoding="utf-8", newline="\n")
         if override:
             return override
         return existing.get("session") or sess
@@ -9552,7 +9554,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         #   task pm_state 렌더와 같은 규칙·소유 선언은 pm_import.CONSUMPTION_TIME_TOKENS).
         seed = PM_STATE_TEMPLATE.read_text(encoding="utf-8").replace(
             "{{DATE}}", datetime.date.today().isoformat())
-        PM_STATE_FILE.write_text(seed, encoding="utf-8")
+        PM_STATE_FILE.write_text(seed, encoding="utf-8", newline="\n")
         print(f"✓ pm_state.md 생성 ({_rel_to_repo(PM_STATE_TEMPLATE)} 에서)")
     if install_pre_push_hook():
         print("✓ pre-push 회귀 게이트 훅 설치 (green 회귀만 push)")
@@ -9747,7 +9749,7 @@ def _migrate_areas_apply(user: str) -> tuple[int, bool]:
         if area_changes:
             total += len(area_changes)
             if new_text != text:
-                af.write_text(new_text, encoding="utf-8")
+                af.write_text(new_text, encoding="utf-8", newline="\n")
                 wrote = True
     return total, wrote
 
@@ -11438,7 +11440,9 @@ def _areas_clear_prefix_cell(prefix: str) -> int:
             else:
                 out.append(line)
         if cleared:
-            af.write_text("\n".join(out) + ("\n" if ends_nl else ""), encoding="utf-8")
+            af.write_text(
+                "\n".join(out) + ("\n" if ends_nl else ""),
+                encoding="utf-8", newline="\n")
     if cleared:
         invalidate_known_prefixes_cache()
     return cleared
@@ -14274,7 +14278,7 @@ def backfill_verified_at(
             results.append((path, "skip:already" if has_fm else "skip:no-frontmatter"))
             continue
         if not dry_run:
-            path.write_text(new_text, encoding="utf-8")
+            path.write_text(new_text, encoding="utf-8", newline="\n")
         results.append((path, "added"))
     return results
 
@@ -15074,7 +15078,7 @@ def _refresh_board_locked() -> None:
     # claim은 재진입을 피하려 이 locked 본체를 직접 호출한다. fresh/부분 scaffold에서도 public
     # wrapper에 기대지 않고 쓸 수 있게 destination parent 생성도 본체의 write 계약에 포함한다.
     BOARD_FILE.parent.mkdir(parents=True, exist_ok=True)
-    BOARD_FILE.write_text("\n".join(lines), encoding="utf-8")
+    BOARD_FILE.write_text("\n".join(lines), encoding="utf-8", newline="\n")
 
 
 # ── argparse ───────────────────────────────────────────────────────────

@@ -779,7 +779,8 @@ def _write_snapshot_marker(root: Path, destination: Path) -> Path:
                     0o600,
                     dir_fd=current_fd,
                 )
-                with os.fdopen(marker_fd, "w", encoding="utf-8") as handle:
+                with os.fdopen(
+                        marker_fd, "w", encoding="utf-8", newline="\n") as handle:
                     marker_fd = None
                     handle.write(serialized)
             finally:
@@ -801,7 +802,7 @@ def _write_snapshot_marker(root: Path, destination: Path) -> Path:
                     raise SnapshotError(
                         f"게이트 스냅샷 마커 부모 경로가 안전하지 않습니다: {current}"
                     )
-            with marker.open("x", encoding="utf-8") as handle:
+            with marker.open("x", encoding="utf-8", newline="\n") as handle:
                 handle.write(serialized)
     except SnapshotError:
         raise

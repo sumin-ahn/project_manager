@@ -488,7 +488,7 @@ def cmd_archive(args: argparse.Namespace) -> int:
             return 0
 
         ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
-        slice_path.write_text(slice_body, encoding="utf-8")
+        slice_path.write_text(slice_body, encoding="utf-8", newline="\n")
         _replace_atomic(CURRENT_FILE, new_current)
         print(f"✓ {len(old)} entry → {_rel(slice_path)} 봉인. "
               f"current.md {len(keep)} entry 유지.")
@@ -519,13 +519,13 @@ def cmd_migrate(args: argparse.Namespace) -> int:
             "이후 새 entry 는 `log/current.md`.\n\n"
             + legacy_text
         )
-        legacy_dst.write_text(sealed, encoding="utf-8")
+        legacy_dst.write_text(sealed, encoding="utf-8", newline="\n")
         LEGACY_LOG.unlink()
         print(f"✓ {_rel(LEGACY_LOG)} → {_rel(legacy_dst)} 봉인.")
     else:
         print("기존 log.md 없음 — 빈 current.md 만 생성.")
 
-    CURRENT_FILE.write_text(CURRENT_HEADER, encoding="utf-8")
+    CURRENT_FILE.write_text(CURRENT_HEADER, encoding="utf-8", newline="\n")
     (ARCHIVE_DIR / ".gitkeep").touch()
     print(f"✓ {_rel(CURRENT_FILE)} 생성.")
     return 0

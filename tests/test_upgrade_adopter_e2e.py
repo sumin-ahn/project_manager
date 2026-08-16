@@ -676,7 +676,11 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   판정자 주입)를 통째로 걷어내므로, 이제 이 합성본은 "codex 훅 세트 판정이 늘 빈 결과" 인지와
 #   무관하다(T-0585 세대엔 그 개념이 없었다는 사실만 남는다). 부재는 아래 부재 단언이 기계로
 #   지킨다 — 위 문단들의 전제 서술은 그 시점 근거의 기록이고, 현재 구속력은 그 단언에 있다.
-_T0585_PM_UPDATE_SHA256 = "d992be80a03c7e05d01241be2ebf05348018dbdd470b1f45167aae506f89697b"
+#   T-0691 이 엔진 텍스트 쓰기에 `newline="\n"` 을 명시하며 또 이동했다. 배달 경계는 불변이다:
+#   키워드 추가는 write 호출의 인자만 늘리고 anchor·슬라이스 범위·훅 세트 판정 어디에도 닿지
+#   않으며, 채택자 트리에 배달되는 파일 집합도 그대로다 — 현재화한 것은 기대 SHA 하나뿐이다.
+#   T-0691 R2가 Path.open 폴백에도 같은 키워드를 보강해 SHA만 다시 현재화했다.
+_T0585_PM_UPDATE_SHA256 = "756429ffa6277f9d05aa06faa75594bcafc383fc484ec7fe0f8e24b1a1c31d8e"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
