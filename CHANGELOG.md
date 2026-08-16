@@ -18,6 +18,14 @@
 
 ### Fixed
 
+- **Windows PowerShell 캡처에서 엔진 출력 한글 깨짐 해소.** 한국어 Windows(콘솔 코드페이지 949)에서
+  PowerShell 이 엔진 stdout 을 캡처하면(에이전트 쉘·`$x = py -3 …`) UTF-8 출력이 cp949 로 해석돼 깨졌다.
+  엔진이 조상 프로세스(`py` 런처 건너뜀)와 스트림 파이프 여부를 판정해 **PowerShell 부모 + 파이프 + 비 UTF-8
+  콘솔**일 때만 그 코드페이지로 맞춰 내보내고(코드페이지에 없는 문자는 `?` 대신 대체표 변환), stderr 에
+  UTF-8 프로필 설정 안내를 1회 남긴다. 콘솔 직행·Git Bash·cmd·UTF-8 로 캡처하는 Python 부모
+  (`PYTHONUTF8`/`PYTHONIOENCODING`)는 종전대로 UTF-8. 엔진이 바꾼 콘솔 코드페이지는 종료 시 원복한다
+  (같은 창의 후속 cp949 도구 역깨짐 방지). 인스턴스 조치는 없다 — `[Console]::OutputEncoding=UTF8` 을
+  프로필에 두면 안내가 사라진다.
 - **slot 세션 compaction checkpoint 복원.** `pm_log.py checkpoint` 가 slot 정체성(`<repo>_<N>`)을 예약
   패턴으로 거부하거나 정체성 미해소 시 조용히 no-op 하던 회귀를 닫았다. slot 헤더 `(<repo>_<N>)` 을
   추가하고, 정체성 미해소+compaction 은 rc=0 을 유지하되 stderr 진단을 남긴다. `pm_handoff` 의 slot 태그

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import builtins
 import importlib.util
 import io
 import os
@@ -75,9 +76,17 @@ def pm_config():
     return _load("pm_config", TOOLS)
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def console_encoding():
-    return _load("console_encoding", TOOLS)
+    state_key = "_project_manager_console_encoding_state_v1"
+    if hasattr(builtins, state_key):
+        delattr(builtins, state_key)
+    module = _load("console_encoding", TOOLS)
+    try:
+        yield module
+    finally:
+        if hasattr(builtins, state_key):
+            delattr(builtins, state_key)
 
 
 class _Recorder:
@@ -313,11 +322,19 @@ def test_regression_run_child_forces_utf8_env(board, monkeypatch):
 
 
 class _FakeKernel32:
-    """ctypes.windll.kernel32 대역 — SetConsole*CP 호출 인자를 기록한다."""
+    """ctypes.windll.kernel32 대역 — 원 codepage와 Set 호출을 기록한다."""
 
-    def __init__(self):
+    def __init__(self, output_cp=949, input_cp=949):
+        self.output_cp = output_cp
+        self.input_cp = input_cp
         self.output_cp_calls: list[int] = []
         self.input_cp_calls: list[int] = []
+
+    def GetConsoleOutputCP(self):  # noqa: N802 (WinAPI 이름 보존)
+        return self.output_cp
+
+    def GetConsoleCP(self):  # noqa: N802 (WinAPI 이름 보존)
+        return self.input_cp
 
     def SetConsoleOutputCP(self, cp):  # noqa: N802 (WinAPI 이름 보존)
         self.output_cp_calls.append(cp)
@@ -328,26 +345,17 @@ class _FakeKernel32:
         return 1
 
 
-def _install_fake_ctypes(monkeypatch):
-    """함수 내부의 `import ctypes` 가 받을 fake ctypes 모듈을 sys.modules 에 주입.
-
-    POSIX 에는 ctypes.windll 이 없으므로(실 API 부재), windll.kernel32 만 흉내내는
-    가짜 모듈로 갈아끼워 OS 무관하게 SetConsole*CP 호출을 관측한다.
-    """
-    import sys
-    import types
-
+def _install_fake_ctypes(monkeypatch, console_encoding):
+    """kernel32 조회 seam에 대역을 주입해 OS 무관하게 SetConsole*CP를 관측한다."""
     kernel32 = _FakeKernel32()
-    fake = types.ModuleType("ctypes")
-    fake.windll = types.SimpleNamespace(kernel32=kernel32)
-    monkeypatch.setitem(sys.modules, "ctypes", fake)
+    monkeypatch.setattr(console_encoding, "_get_kernel32", lambda: kernel32)
     return kernel32
 
 
 def test_common_codepage_set_on_windows(console_encoding, monkeypatch):
     """os.name=='nt' 에서 _set_console_codepage_utf8 가 65001 두 codepage 를 설정."""
     monkeypatch.setattr(console_encoding.os, "name", "nt")
-    kernel32 = _install_fake_ctypes(monkeypatch)
+    kernel32 = _install_fake_ctypes(monkeypatch, console_encoding)
     console_encoding._set_console_codepage_utf8()
     assert kernel32.output_cp_calls == [65001], "SetConsoleOutputCP(65001) 누락/오인자"
     assert kernel32.input_cp_calls == [65001], "SetConsoleCP(65001) 누락/오인자"
@@ -356,7 +364,7 @@ def test_common_codepage_set_on_windows(console_encoding, monkeypatch):
 def test_common_codepage_noop_on_posix(console_encoding, monkeypatch):
     """os.name!='nt'(POSIX) 에서는 분기에 진입하지 않아 SetConsole*CP 미호출."""
     monkeypatch.setattr(console_encoding.os, "name", "posix")
-    kernel32 = _install_fake_ctypes(monkeypatch)
+    kernel32 = _install_fake_ctypes(monkeypatch, console_encoding)
     console_encoding._set_console_codepage_utf8()
     assert kernel32.output_cp_calls == [], "POSIX 에서 SetConsoleOutputCP 가 호출됨"
     assert kernel32.input_cp_calls == [], "POSIX 에서 SetConsoleCP 가 호출됨"
@@ -364,9 +372,6 @@ def test_common_codepage_noop_on_posix(console_encoding, monkeypatch):
 
 def test_codepage_best_effort_swallows_exception(console_encoding, monkeypatch):
     """ctypes 호출이 예외(콘솔 핸들 없음 등)를 던져도 조용히 통과(best-effort)."""
-    import sys
-    import types
-
     monkeypatch.setattr(console_encoding.os, "name", "nt")
 
     class _Boom:
@@ -376,9 +381,7 @@ def test_codepage_best_effort_swallows_exception(console_encoding, monkeypatch):
         def SetConsoleCP(self, cp):  # noqa: N802
             raise OSError("no console handle")
 
-    fake = types.ModuleType("ctypes")
-    fake.windll = types.SimpleNamespace(kernel32=_Boom())
-    monkeypatch.setitem(sys.modules, "ctypes", fake)
+    monkeypatch.setattr(console_encoding, "_get_kernel32", lambda: _Boom())
     # 예외가 새어나오면 이 호출이 raise — pytest 가 실패로 잡는다.
     console_encoding._set_console_codepage_utf8()
 
