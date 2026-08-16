@@ -8760,14 +8760,13 @@ def _section_label(role: str, override: str | None) -> str | None:
 
 
 def cmd_section_add(args: argparse.Namespace) -> int:
-    """티켓 끝에 역할·날짜와 기계 경계를 가진 빈 성장 절을 원자 append한다."""
+    """티켓 끝에 역할·날짜, 역할별 골격, 기계 경계를 원자 append한다."""
     label = _section_label(args.role, args.label)
     if label is None:
         print("cannot section-add: --label 은 비어 있거나 개행을 포함할 수 없다", file=sys.stderr)
         return 1
     role = args.role
     today = datetime.date.today().isoformat()
-    content = f"## {label} ({role} · {today})\n\n"
     # load→append→replace 를 board lock 아래 묶어 동시 재호출도 서로의 절을 덮지 않는다. 원본
     # text를 그대로 이어 붙여 section-add가 기존 frontmatter formatting/body bytes를 재직렬화하지
     # 않는다. `_atomic_write_text`가 같은 directory temp+fsync+replace로 crash partial-write도 막는다.
@@ -8785,6 +8784,10 @@ def cmd_section_add(args: argparse.Namespace) -> int:
         try:
             delegate.require_sealed_growth_before_write(
                 original, args.id, action="section-add",
+            )
+            content = (
+                f"## {label} ({role} · {today})\n\n"
+                + delegate.render_ticket_growth_section_seed(role, original)
             )
             ordinal = sum(
                 item.role == role for item in delegate._ticket_growth_sections(original)

@@ -317,12 +317,11 @@ spawn_agent(
      판정하라 — probe 재실행 실측값 포함. 신규 발견은 그 뒤에 NEW 라벨로 분리해 보고하라.
 
      완료 시 보고:
-     - 같은 reviewer 절에 `pm-review-v1` JSON fence 정확히 1개. `version: 1`, `findings` 각 항목은
-       `id,class,authority,evidence,recommendation,design_change`, `confirmations` 각 항목은
-       `id,status(resolved|unresolved|regressed),evidence`; 미사용 array도 빈 배열, extra field 금지.
-     - (2라운드 이후) accepted ID를 보존한 confirmations를 먼저 쓰고 신규 결함만 새 finding ID.
-     - finding class는 implementation-defect|spec-violation|design-proposal 중 하나. 설계 변경 제안은
-       확정하지 말고 design-proposal/design_change=true로 보고.
+     - 같은 reviewer 절에 `section-add` 가 시드한 `pm-review-v1` 골격을 그대로 채운다. 필드 이름·
+       분류·상태 낱말을 스스로 만들거나 골격 밖 형식을 쓰지 않는다(스키마 단일 진실 = 엔진 파서).
+       미사용 array 도 빈 배열로 둔다.
+     - (2라운드 이후) 골격이 프리필한 확인 ID 를 먼저 채우고 신규 결함만 새 finding ID.
+     - 설계 변경 제안은 확정하지 말고 골격의 설계-제안 분류로 보고한다.
      - should-fix (권장·운영 영향 있음)
      - suggestion (개선 옵션·운영 영향 없음)
      - 통과/반려 명시""",

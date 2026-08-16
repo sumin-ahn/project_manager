@@ -174,6 +174,7 @@ def test_section_add_cli_roles_markers_round_trip_and_recall_accumulates(board_e
     sections = re.findall(
         rf"<!-- {marker}:start role=([^ ]+) -->\n"
         rf"## ([^\n]+) \(([^ ]+) · (\d{{4}}-\d{{2}}-\d{{2}})\)\n\n"
+        rf"(?s:.*?)"
         rf"<!-- {marker}:end role=([^ ]+) -->",
         text,
     )

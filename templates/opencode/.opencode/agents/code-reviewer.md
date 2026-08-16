@@ -97,12 +97,10 @@ test_cmd 를 직접 실행해 전체 통과를 확인한다 (env prefix 없이 �
 
 ## 산출 — 검토 보고
 
-같은 reviewer 절에 `pm-review-v1` JSON fence를 정확히 하나 쓴다. payload는 version=1과
-findings/confirmations 배열만 두며 finding 필드는 id,class,authority,evidence,recommendation,
-design_change, confirmation 필드는 id,status,evidence다. class는
-implementation-defect|spec-violation|design-proposal, status는 resolved|unresolved|regressed만 허용한다. 미사용 배열도
-빈 배열로 두고 extra/missing field를 만들지 않는다. 확인 라운드는 accepted ID를 보존하고 신규
-결함만 새 ID다. reviewer는 PM disposition이나 설계·지원·권한 결정을 쓰지 않는다.
+같은 reviewer 절에 `section-add`가 시드한 `pm-review-v1` 골격을 그대로 채운다. 필드 이름·분류·상태
+낱말을 스스로 만들거나 골격 밖 형식을 쓰지 않는다 — 스키마의 단일 진실은 엔진 파서이고 골격이 그
+값을 공급한다. 미사용 배열도 빈 배열로 둔다. 확인 라운드는 골격이 프리필한 ID를 먼저 확인하고
+신규 결함만 새 ID다. reviewer는 PM disposition이나 설계·지원·권한 결정을 쓰지 않는다.
 
 1차 task tool 위임이면 이 보고가 task 결과로 PM 에 반환된다 · 폴백 프로세스 위임이면 stdout/`--format json` 으로 전달된다.
 

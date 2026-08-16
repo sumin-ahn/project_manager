@@ -1721,9 +1721,7 @@ def test_three_harness_cards_and_roles_share_review_delta_contract():
     ]
     for path in reviewers:
         text = path.read_text(encoding="utf-8")
-        assert all(term in text for term in (
-            "pm-review-v1", "authority", "design_change", "resolved|unresolved|regressed",
-        ))
+        assert "pm-review-v1" in text and "section-add" in text and "시드한" in text
     for path in developers:
         text = path.read_text(encoding="utf-8")
         assert "accepted-only delta" in text and "review delta --ticket T-NNNN" in text
