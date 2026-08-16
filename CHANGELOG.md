@@ -7,6 +7,27 @@
 
 ## [Unreleased]
 
+### 업그레이드 노트
+
+- **Windows native 에서 티켓 성장 위임(prepare→역할 실행→harvest)이 다시 동작한다.** v1.7.5 는 사본 루트를
+  `info/exclude` 에 등록하는 단계가 POSIX 전용 안전 경계(dirfd/nofollow)를 필수로 요구해 Windows 에서
+  rc=1 로 거부됐다. 사본 루트 `.project_manager/.local/delegate-ticket-copies/` 는 tracked
+  `.project_manager/.gitignore` 의 `.local/` 규칙으로 이미 무시되므로 그 등록 단계와 안전 경계를
+  제거하고 `git check-ignore` 확인만 남겼다. 채택자가 `.gitignore` 의 `.local/` 규칙을 지운 형상은
+  prepare 가 복구 처방과 함께 fail-loud 한다. 인스턴스 조치는 없다.
+
+### Fixed
+
+- **slot 세션 compaction checkpoint 복원.** `pm_log.py checkpoint` 가 slot 정체성(`<repo>_<N>`)을 예약
+  패턴으로 거부하거나 정체성 미해소 시 조용히 no-op 하던 회귀를 닫았다. slot 헤더 `(<repo>_<N>)` 을
+  추가하고, 정체성 미해소+compaction 은 rc=0 을 유지하되 stderr 진단을 남긴다. `pm_handoff` 의 slot 태그
+  판정이 checkpoint 형 헤더를 못 잡아 solo 세션이 타 slot checkpoint 를 오수집하던 교차 오염도 정합했다.
+  task·solo 형상은 byte 불변.
+- 위임 raw 장부 테스트의 고정 날짜 시드가 prune 창(완료 7일)을 지나며 결정적 red 가 되던 시간폭탄을
+  상대 시각으로 수리했다(엔진 무접촉).
+- 티켓 사본 prepare/harvest 가 하위 디렉토리 `--cwd` 에서도 git 최상위 기준으로 동작한다
+  (cross·native 양 경로 단일 seam).
+
 ## [1.7.5] - 2026-08-14
 
 ### 업그레이드 노트

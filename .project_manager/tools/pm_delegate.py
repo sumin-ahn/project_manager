@@ -686,7 +686,6 @@ TICKET_COPY_REL_ROOT = Path(".project_manager") / ".local" / "delegate-ticket-co
 TICKET_COPY_TRUST_REL_ROOT = (
     Path(".project_manager") / ".local" / "delegate-ticket-copy-trust"
 )
-TICKET_COPY_IGNORE_PATTERN = "/.project_manager/.local/delegate-ticket-copies/"
 TICKET_COPY_BASELINE_NAME = "baseline.md"
 TICKET_COPY_METADATA_NAME = "metadata.json"
 TICKET_COPY_TAG_NAME = "auth.tag"
@@ -902,9 +901,10 @@ def _secure_machine_dir(
 def _secure_ticket_copy_dir(
     cwd: Path, ticket: str, role: str, run_id: str,
 ) -> tuple[Path, int | None]:
+    relative_copy = _ticket_copy_relative_path(ticket, role, run_id)
     return _secure_machine_dir(
         cwd,
-        (*TICKET_COPY_REL_ROOT.parts, ticket, role, run_id),
+        relative_copy.parent.parts,
         label="티켓 사본 디렉터리",
     )
 
@@ -919,141 +919,30 @@ def _secure_ticket_trust_dir(
     )
 
 
-def _git_lexical_path(cwd: Path, *args: str) -> Path:
+def _ticket_copy_relative_path(ticket: str, role: str, run_id: str) -> Path:
+    return TICKET_COPY_REL_ROOT / ticket / role / run_id / f"ticket-{ticket}.md"
+
+
+def _assert_ticket_copy_root_ignored(
+    cwd: Path, *, ticket: str, role: str, run_id: str,
+) -> None:
+    """ignore 규칙이 실제 ticket-copy 경로 형상을 숨기는지 fail-loud 확인한다."""
     result = subprocess.run(
-        ["git", "-C", str(cwd), "rev-parse", "--path-format=absolute", *args],
+        [
+            "git", "-C", str(cwd), "check-ignore", "-q",
+            _ticket_copy_relative_path(ticket, role, run_id).as_posix(),
+        ],
         capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
     )
-    value = result.stdout.strip()
-    if result.returncode != 0 or not value or "\n" in value or "\r" in value:
+    if result.returncode == 0:
+        return
+    if result.returncode == 1:
         raise DelegateError(
-            f"slot git path 해소 실패(rc={result.returncode}): {result.stderr.strip()}"
+            "사본 루트가 git 무시 대상이 아님 — `.project_manager/.gitignore` 의 "
+            "`.local/` 규칙을 복원하라"
         )
-    if not os.path.isabs(value):
-        raise DelegateError(f"slot git path가 절대경로가 아님: {value}")
-    return Path(os.path.abspath(value))
-
-
-def _ensure_ticket_copy_ignored(cwd: Path) -> None:
-    """git common/info fd 안에서만 exclude를 잠그고 append한다."""
-    required = (
-        hasattr(os, "O_NOFOLLOW")
-        and hasattr(os, "O_DIRECTORY")
-        and os.open in getattr(os, "supports_dir_fd", frozenset())
-        and os.stat in getattr(os, "supports_dir_fd", frozenset())
-        and os.stat in getattr(os, "supports_follow_symlinks", frozenset())
-    )
-    if not required:
-        raise DelegateError("git exclude dirfd/nofollow 안전 경계 미지원")
-    file_lock = _load_file_lock()
-    supported = getattr(file_lock, "exclusive_lock_supported", None)
-    if not callable(supported):
-        raise DelegateError(
-            "중앙 file_lock 사본에 exclusive_lock_supported API가 없음 — pm-update로 "
-            "엔진 전체를 동기화하세요"
-        )
-    if not supported():
-        raise DelegateError(
-            "git exclude 안전 append에 필요한 OS 배타락 primitive가 없어 fail-closed합니다"
-        )
-    common = _git_lexical_path(cwd, "--git-common-dir")
-    exclude = _git_lexical_path(cwd, "--git-path", "info/exclude")
-    expected = Path(os.path.abspath(os.path.join(str(common), "info", "exclude")))
-    if exclude != expected:
-        raise DelegateError(
-            f"git exclude lexical 좌표 불일치: expected={expected} · observed={exclude}"
-        )
-    common_fd: int | None = None
-    info_fd: int | None = None
-    lock_fd: int | None = None
-    exclude_fd: int | None = None
-    lock_held = False
-    lock_name = "exclude.pm-delegate.lock"
-    try:
-        common_fd = os.open(str(common), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        info_fd = os.open(
-            "info", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=common_fd,
-        )
-        # symlink/non-regular exclude 또는 lock이면 lock 파일 생성/append 전에 fail-closed.
-        existing_identity: dict[str, tuple[int, int]] = {}
-        for name in ("exclude", lock_name):
-            try:
-                observed = os.stat(name, dir_fd=info_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                continue
-            if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
-                raise DelegateError(
-                    f"git info/{name}이 단일-link regular file이 아님"
-                )
-            existing_identity[name] = (observed.st_dev, observed.st_ino)
-        lock_fd = os.open(
-            lock_name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=info_fd,
-        )
-        opened_lock = os.fstat(lock_fd)
-        if (
-            not stat.S_ISREG(opened_lock.st_mode)
-            or opened_lock.st_nlink != 1
-            or (
-                lock_name in existing_identity
-                and existing_identity[lock_name] != (opened_lock.st_dev, opened_lock.st_ino)
-            )
-        ):
-            raise DelegateError("git info/exclude lock이 단일-link 고정 regular file이 아님")
-        file_lock.acquire_exclusive(lock_fd)
-        lock_held = True
-        exclude_fd = os.open(
-            "exclude", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=info_fd,
-        )
-        observed = os.fstat(exclude_fd)
-        if (
-            not stat.S_ISREG(observed.st_mode)
-            or observed.st_nlink != 1
-            or (
-                "exclude" in existing_identity
-                and existing_identity["exclude"] != (observed.st_dev, observed.st_ino)
-            )
-        ):
-            raise DelegateError("git info/exclude가 단일-link 고정 regular file이 아님")
-        os.lseek(exclude_fd, 0, os.SEEK_SET)
-        chunks: list[bytes] = []
-        while True:
-            chunk = os.read(exclude_fd, 65536)
-            if not chunk:
-                break
-            chunks.append(chunk)
-        existing_bytes = b"".join(chunks)
-        try:
-            existing = existing_bytes.decode("utf-8")
-        except UnicodeError as exc:
-            raise DelegateError("git info/exclude UTF-8 읽기 실패") from exc
-        if TICKET_COPY_IGNORE_PATTERN in existing.splitlines():
-            return
-        prefix = b"" if not existing_bytes or existing_bytes.endswith((b"\n", b"\r")) else b"\n"
-        addition = (
-            prefix
-            + b"# pm_delegate machine-owned ticket growth copies\n"
-            + TICKET_COPY_IGNORE_PATTERN.encode("utf-8")
-            + b"\n"
-        )
-        os.lseek(exclude_fd, 0, os.SEEK_END)
-        view = memoryview(addition)
-        while view:
-            written = os.write(exclude_fd, view)
-            view = view[written:]
-        os.fsync(exclude_fd)
-    except OSError as exc:
-        raise DelegateError(f"git exclude 안전 append 실패: {exc}") from exc
-    finally:
-        try:
-            if lock_held and lock_fd is not None:
-                file_lock.release_exclusive(lock_fd)
-        finally:
-            for fd in (exclude_fd, lock_fd, info_fd, common_fd):
-                if fd is not None:
-                    try:
-                        os.close(fd)
-                    except OSError:
-                        pass
+    cause = result.stderr.strip() or result.stdout.strip() or "원인 미상"
+    raise DelegateError(f"git check-ignore 실패(rc={result.returncode}): {cause}")
 
 
 def _load_board_for_repo(repo: Path):
@@ -1123,7 +1012,9 @@ def prepare_ticket_copy(
     target = _ticket_role_section(source_text, role)
     run_id = uuid.uuid4().hex
     capability = secrets.token_bytes(32)
-    _ensure_ticket_copy_ignored(cwd)
+    _assert_ticket_copy_root_ignored(
+        cwd, ticket=ticket, role=role, run_id=run_id,
+    )
     metadata = {
         "version": TICKET_COPY_METADATA_VERSION,
         "run_id": run_id,
@@ -7854,9 +7745,8 @@ def _ticket_cli_owner(cwd: Path) -> Path:
     if resolved == resolved.parent or not _cwd_in_git_repo(resolved):
         raise DelegateError(f"--cwd 는 파일시스템 루트가 아닌 git 작업공간이어야 합니다: {resolved}")
     er = _load_external_review()
-    cwd_repo = er.repo_root_from_cwd(resolved) or resolved
     try:
-        owner = Path(er.resolve_pm_home_for_repo(cwd_repo, required=True)).resolve()
+        owner = Path(er.resolve_pm_home_for_repo(resolved, required=True)).resolve()
     except er.AnchorResolutionError as exc:
         raise DelegateError(f"--cwd 소유 PM 홈 해소 실패: {exc}") from exc
     if er._owns_real_board(REPO / ".project_manager") and REPO.resolve() != owner:
@@ -7865,6 +7755,15 @@ def _ticket_cli_owner(cwd: Path) -> Path:
             f"engine={REPO.resolve()} · owner={owner}"
         )
     return owner
+
+
+def _repo_root_for_cwd(cwd: Path, er=None) -> Path:
+    """명시 cwd를 prepare/harvest가 공유하는 git 최상위 좌표로 정규화한다."""
+    if not cwd.is_absolute():
+        raise DelegateError("--cwd 는 절대경로여야 합니다")
+    resolved = cwd.resolve()
+    external_review = er if er is not None else _load_external_review()
+    return Path(external_review.repo_root_from_cwd(resolved) or resolved).resolve()
 
 
 def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
@@ -7914,12 +7813,13 @@ def _cmd_ticket(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     try:
         cwd = Path(args.cwd)
-        owner = _ticket_cli_owner(cwd)
+        cwd_repo = _repo_root_for_cwd(cwd)
+        owner = _ticket_cli_owner(cwd_repo)
         if args.ticket_command == "prepare":
             if not _load_board()._is_valid_ticket_id(args.ticket):
                 parser.error("--ticket은 board 발행 ticket ID 형식이어야 합니다")
             plan = prepare_ticket_copy(
-                ticket=args.ticket, role=args.role, cwd=cwd.resolve(), pm_home=owner,
+                ticket=args.ticket, role=args.role, cwd=cwd_repo, pm_home=owner,
             )
             print(json.dumps({
                 "copy": str(plan.path),
@@ -7937,7 +7837,7 @@ def _cmd_ticket(argv: list[str]) -> int:
         if len(capability) != 32:
             raise DelegateError("stdin capability 형식 불일치")
         result = harvest_ticket_copy(
-            copy_path=copy, cwd=cwd.resolve(), pm_home=owner,
+            copy_path=copy, cwd=cwd_repo, pm_home=owner,
             capability=capability,
         )
         print(json.dumps({
@@ -8475,7 +8375,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         )
         return 1
     er = _load_external_review()
-    cwd_repo = er.repo_root_from_cwd(cwd) or cwd.resolve()
+    cwd_repo = _repo_root_for_cwd(cwd, er)
     try:
         config_repo = er.resolve_pm_home_for_repo(
             cwd_repo, required=bool(args.ticket or args.gate),
@@ -8623,7 +8523,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     if not args.dry_run and effective_ticket and args.role in TICKET_COPY_ROLES:
         try:
             ticket_copy = prepare_ticket_copy(
-                ticket=effective_ticket, role=args.role, cwd=cwd, pm_home=config_repo,
+                ticket=effective_ticket, role=args.role, cwd=cwd_repo, pm_home=config_repo,
             )
         except DelegateError as exc:
             return fail_loud(f"오류: 위임 티켓 사본 준비 실패: {exc}")
@@ -8941,7 +8841,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         if ticket_copy is not None:
             try:
                 result = harvest_ticket_copy(
-                    copy_path=ticket_copy.path, cwd=cwd, pm_home=config_repo,
+                    copy_path=ticket_copy.path, cwd=cwd_repo, pm_home=config_repo,
                     capability=ticket_copy.capability,
                 )
                 print(

@@ -99,8 +99,11 @@ def growth_env(tmp_path, pd, monkeypatch):
     (pm_home / ".project_manager" / ".local").mkdir(parents=True)
     slot.mkdir()
     assert _git(slot, "init", "-q").returncode == 0
+    slot_ignore = slot / ".project_manager" / ".gitignore"
+    slot_ignore.parent.mkdir()
+    slot_ignore.write_text(".local/\n", encoding="utf-8")
     (slot / "tracked.txt").write_text("seed\n", encoding="utf-8")
-    assert _git(slot, "add", "tracked.txt").returncode == 0
+    assert _git(slot, "add", "tracked.txt", ".project_manager/.gitignore").returncode == 0
     monkeypatch.setenv("GIT_AUTHOR_NAME", "growth")
     monkeypatch.setenv("GIT_AUTHOR_EMAIL", "growth@test.invalid")
     monkeypatch.setenv("GIT_COMMITTER_NAME", "growth")
@@ -466,6 +469,7 @@ def test_solo_same_uid_full_replica_forgery_fails_before_pm_drift_overwrite(
     (solo / ".project_manager" / ".local").mkdir(parents=True)
     source = _write_ticket(tickets, "T-1018", [("code-reviewer", "")])
     assert _git(solo, "init", "-q").returncode == 0
+    (solo / ".project_manager" / ".gitignore").write_text(".local/\n", encoding="utf-8")
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: _fixture_board(pd, solo))
     plan = pd.prepare_ticket_copy(
         ticket="T-1018", role="code-reviewer", cwd=solo, pm_home=solo,
@@ -600,6 +604,9 @@ def test_prepare_lookup_and_read_share_board_lock(pd, monkeypatch, tmp_path):
     source.write_text(_ticket_text("T-1010", [("developer", "")]), encoding="utf-8")
     slot.mkdir()
     assert _git(slot, "init", "-q").returncode == 0
+    slot_ignore = slot / ".project_manager" / ".gitignore"
+    slot_ignore.parent.mkdir()
+    slot_ignore.write_text(".local/\n", encoding="utf-8")
     state = {"locked": False, "lookup_locked": False, "read_locked": False}
 
     class FakeBoard:
@@ -766,7 +773,7 @@ def test_symlink_copy_root_and_outside_copy_are_rejected(growth_env, pd, tmp_pat
     outside = tmp_path / "outside"
     outside.mkdir()
     machine_root.symlink_to(outside, target_is_directory=True)
-    with pytest.raises(pd.DelegateError, match="symlink"):
+    with pytest.raises(pd.DelegateError, match=r"git check-ignore 실패\(rc="):
         pd.prepare_ticket_copy(ticket="T-1005", role="architect", cwd=slot, pm_home=pm_home)
     rogue = outside / "ticket-T-1005.md"
     rogue.write_text("x", encoding="utf-8")
@@ -774,102 +781,90 @@ def test_symlink_copy_root_and_outside_copy_are_rejected(growth_env, pd, tmp_pat
         pd.harvest_ticket_copy(copy_path=rogue, cwd=slot, pm_home=pm_home, capability=b"x" * 32)
 
 
-def test_linked_worktree_git_common_exclude_preserves_no_newline(pd, tmp_path):
-    primary = tmp_path / "primary"
-    linked = tmp_path / "linked"
-    primary.mkdir()
-    assert _git(primary, "init", "-q").returncode == 0
-    (primary / "tracked").write_text("x\n", encoding="utf-8")
-    assert _git(primary, "add", "tracked").returncode == 0
+def test_prepare_keeps_ticket_copy_root_out_of_git_status(growth_env, pd):
+    pm_home, slot, tickets = growth_env
+    _write_ticket(tickets, "T-1023", [("developer", "")])
+
+    plan = pd.prepare_ticket_copy(
+        ticket="T-1023", role="developer", cwd=slot, pm_home=pm_home,
+    )
+
+    assert plan.path.exists()
+    assert _git(slot, "status", "--porcelain").stdout == ""
+
+
+def test_prepare_fails_loud_without_local_ignore_before_copy(growth_env, pd):
+    pm_home, slot, tickets = growth_env
+    _write_ticket(tickets, "T-1024", [("developer", "")])
+    # `.project_manager/.gitignore` 기준 상대 앵커. 옛 가짜 `probe` 좌표만 무시하고 실사본 경로는
+    # 무시하지 않는 형상 — check-ignore 가 실사본 좌표를 보지 않으면 이 규칙에 속아 통과한다.
+    (slot / ".project_manager" / ".gitignore").write_text(
+        ".local/delegate-ticket-copies/probe\n",
+        encoding="utf-8",
+    )
     assert _git(
-        primary, "-c", "user.name=test", "-c", "user.email=test@example.invalid",
-        "commit", "-qm", "seed",
+        slot, "check-ignore", "-q", ".project_manager/.local/delegate-ticket-copies/probe",
     ).returncode == 0
-    assert _git(primary, "worktree", "add", "-q", "-b", "linked", str(linked)).returncode == 0
-    common = Path(_git(linked, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip())
-    exclude = common / "info" / "exclude"
+    assert _git(
+        slot, "check-ignore", "-q",
+        ".project_manager/.local/delegate-ticket-copies/T-1024/developer/x/ticket-T-1024.md",
+    ).returncode == 1
+
+    with pytest.raises(
+        pd.DelegateError,
+        match=r"사본 루트가 git 무시 대상이 아님.*\.project_manager/\.gitignore.*\.local/.*복원",
+    ):
+        pd.prepare_ticket_copy(
+            ticket="T-1024", role="developer", cwd=slot, pm_home=pm_home,
+        )
+
+    assert not (slot / pd.TICKET_COPY_REL_ROOT).exists()
+
+
+def test_prepare_succeeds_with_empty_dir_fd_support(growth_env, pd, monkeypatch):
+    pm_home, slot, tickets = growth_env
+    _write_ticket(tickets, "T-1025", [("developer", "")])
+    monkeypatch.setattr(os, "supports_dir_fd", frozenset())
+
+    plan = pd.prepare_ticket_copy(
+        ticket="T-1025", role="developer", cwd=slot, pm_home=pm_home,
+    )
+
+    assert plan.path.exists()
+
+
+def test_prepare_leaves_git_info_exclude_byte_identical(growth_env, pd):
+    pm_home, slot, tickets = growth_env
+    _write_ticket(tickets, "T-1026", [("developer", "")])
+    exclude = Path(
+        _git(
+            slot, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude",
+        ).stdout.strip()
+    )
     exclude.write_bytes(b"existing-without-newline")
-    pd._ensure_ticket_copy_ignored(linked)
-    content = exclude.read_bytes()
-    assert content.startswith(b"existing-without-newline\n")
-    assert content.endswith(pd.TICKET_COPY_IGNORE_PATTERN.encode() + b"\n")
-    pd._ensure_ticket_copy_ignored(linked)
-    assert exclude.read_bytes() == content
-
-
-def test_git_exclude_symlink_fails_before_external_append(pd, tmp_path):
-    repo = tmp_path / "repo"
-    outside = tmp_path / "outside"
-    repo.mkdir()
-    assert _git(repo, "init", "-q").returncode == 0
-    common = Path(_git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip())
-    exclude = common / "info" / "exclude"
-    before = outside.read_bytes() if outside.exists() else None
-    exclude.unlink()
-    exclude.symlink_to(outside)
-    with pytest.raises(pd.DelegateError, match="lexical 좌표 불일치|regular file"):
-        pd._ensure_ticket_copy_ignored(repo)
-    assert not outside.exists() and before is None
-
-
-def test_git_exclude_hardlink_victim_is_not_written(pd, tmp_path):
-    repo = tmp_path / "repo"
-    victim = tmp_path / "victim"
-    repo.mkdir()
-    victim.write_bytes(b"external-victim")
-    assert _git(repo, "init", "-q").returncode == 0
-    common = Path(_git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip())
-    exclude = common / "info" / "exclude"
-    exclude.unlink()
-    try:
-        os.link(victim, exclude)
-    except OSError as exc:
-        pytest.skip(f"hardlink unsupported on this filesystem: {exc}")
-    before = victim.read_bytes()
-    with pytest.raises(pd.DelegateError, match="단일-link"):
-        pd._ensure_ticket_copy_ignored(repo)
-    assert victim.read_bytes() == before
-
-
-def test_git_exclude_unsupported_fd_boundary_writes_nothing(pd, monkeypatch, tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    assert _git(repo, "init", "-q").returncode == 0
-    common = Path(_git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip())
-    exclude = common / "info" / "exclude"
     before = exclude.read_bytes()
-    monkeypatch.setattr(pd.os, "supports_dir_fd", frozenset())
-    with pytest.raises(pd.DelegateError, match="안전 경계 미지원"):
-        pd._ensure_ticket_copy_ignored(repo)
+
+    pd.prepare_ticket_copy(
+        ticket="T-1026", role="developer", cwd=slot, pm_home=pm_home,
+    )
+
     assert exclude.read_bytes() == before
 
 
-def test_git_exclude_no_lock_backend_seam_writes_nothing(pd, monkeypatch, tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    assert _git(repo, "init", "-q").returncode == 0
-    common = Path(_git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip())
-    exclude = common / "info" / "exclude"
-    before = exclude.read_bytes()
+def test_linked_worktree_prepare_is_hidden_with_empty_dir_fd_support(
+        growth_env, pd, monkeypatch, tmp_path):
+    pm_home, primary, tickets = growth_env
+    linked = tmp_path / "linked"
+    _write_ticket(tickets, "T-1027", [("developer", "")])
+    assert _git(primary, "worktree", "add", "-q", "-b", "linked", str(linked)).returncode == 0
+    monkeypatch.setattr(os, "supports_dir_fd", frozenset())
 
-    class NoLock:
-        @staticmethod
-        def exclusive_lock_supported():
-            return False
+    plan = pd.prepare_ticket_copy(
+        ticket="T-1027", role="developer", cwd=linked, pm_home=pm_home,
+    )
 
-        @staticmethod
-        def acquire_exclusive(_fd):
-            raise AssertionError("unsupported seam must reject before lock acquire")
-
-        @staticmethod
-        def release_exclusive(_fd):
-            raise AssertionError("unsupported seam never acquired")
-
-    monkeypatch.setattr(pd, "_load_file_lock", lambda: NoLock())
-    with pytest.raises(pd.DelegateError, match="배타락 primitive"):
-        pd._ensure_ticket_copy_ignored(repo)
-    assert exclude.read_bytes() == before
-    assert not exclude.with_name("exclude.pm-delegate.lock").exists()
+    assert plan.path.exists()
+    assert _git(linked, "status", "--porcelain").stdout == ""
 
 
 def test_ticket_cli_parser_help_and_dispatch(pd, monkeypatch, capsys, tmp_path):
@@ -914,6 +909,38 @@ def test_ticket_cli_parser_help_and_dispatch(pd, monkeypatch, capsys, tmp_path):
     help_text = capsys.readouterr().out
     assert "prepare" in help_text and "harvest" in help_text
     assert "capability" not in help_text.lower() or "stdin" in help_text.lower()
+
+
+def test_ticket_cli_subdirectory_cwd_prepare_and_harvest_use_repo_root(
+        growth_env, pd, monkeypatch, capsys):
+    pm_home, slot, tickets = growth_env
+    source = _write_ticket(tickets, "T-2001", [("developer", "before\n")])
+    nested = slot / "src" / "nested"
+    nested.mkdir(parents=True)
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+
+    assert pd.main([
+        "ticket", "prepare", "--ticket", "T-2001", "--role", "developer",
+        "--cwd", str(nested),
+    ]) == 0
+    prepared = json.loads(capsys.readouterr().out)
+    copy = Path(prepared["copy"])
+    capability = prepared["capability"]
+    assert copy.is_relative_to(slot / pd.TICKET_COPY_REL_ROOT)
+    assert not copy.is_relative_to(nested)
+    copy.write_text(
+        copy.read_text(encoding="utf-8").replace("before\n", "after\n"),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(pd.sys, "stdin", io.StringIO(capability + "\n"))
+    assert pd.main([
+        "ticket", "harvest", "--copy", str(copy), "--cwd", str(nested),
+        "--capability-stdin",
+    ]) == 0
+    harvested = json.loads(capsys.readouterr().out)
+    assert harvested["changed"] is True
+    assert "after\n" in source.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(

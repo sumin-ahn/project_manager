@@ -92,15 +92,14 @@ developer·code-reviewer·architect는 PM 홈 티켓을 직접 편집하지 않�
 - **실패 판정**: marker 밖 byte 변경, marker 누락·중복·중첩·역할 불일치, 준비 뒤 같은 역할 절의
   PM 홈 변경은 stale overwrite 없이 rc=1. 원본과 사본을 보존한 채 원인을 고친 뒤 출력된
   `ticket harvest --copy ... --cwd ... --capability-stdin`를 capability stdin과 함께 다시 실행한다.
-  사본 디렉터리는 repo-local
-  `.git/info/exclude`에 기계 등록되어 `git status --short`와 커밋 대상에 나타나지 않는다. baseline과
+  사본 디렉터리 `.project_manager/.local/delegate-ticket-copies/`는 tracked
+  `.project_manager/.gitignore`의 `.local/` 규칙으로 무시되어 `git status --short`와 커밋 대상에
+  나타나지 않는다(prepare가 `git check-ignore`로 확인하고 규칙 부재 시 fail-loud). baseline과
   metadata·tag는 PM 홈 local trust 영역에도 복제한다. 어느 파일도 권위가 아니며, harvest는 파일에
   저장하지 않은 per-run 256-bit capability의 domain-separated HMAC(metadata canonical bytes+
   baseline)을 먼저 검증한 뒤에만 target/ordinal을 사용한다. 그 뒤 board lock 아래 canonical ticket
   재조회와 stale 비교까지 모두 통과해야 반영한다. 이미 원하는 block이 반영된 재-harvest도 sync를
-  다시 시도하며 JSON의 `changed`와 `sync_ready`를 별도 반환한다. git ignore 등록은 linked
-  worktree의 common git dir `info/exclude` 정확 좌표만 dirfd/nofollow/single-hardlink 경계에서
-  append하며 이 안전 경계를 제공하지 못하면 외부 파일 write 없이 fail-closed한다.
+  다시 시도하며 JSON의 `changed`와 `sync_ready`를 별도 반환한다.
 
 ### 1. 매핑 조회 (dry-run)
 

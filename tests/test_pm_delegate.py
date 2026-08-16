@@ -5261,8 +5261,14 @@ def _scope_workspace(tmp_path: Path, monkeypatch, pd, touches=("work/demo_1/src"
     workspace = pm_home / "work" / "demo_1"
     pm_home.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=pm_home, check=True, capture_output=True)
+    ignore = pm_home / ".project_manager" / ".gitignore"
+    ignore.parent.mkdir()
+    ignore.write_text(".local/\n", encoding="utf-8")
     (pm_home / "seed.txt").write_text("seed\n", encoding="utf-8")
-    subprocess.run(["git", "add", "seed.txt"], cwd=pm_home, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "add", "seed.txt", ".project_manager/.gitignore"],
+        cwd=pm_home, check=True, capture_output=True,
+    )
     subprocess.run(
         ["git", "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "seed"],
         cwd=pm_home, check=True, capture_output=True,
