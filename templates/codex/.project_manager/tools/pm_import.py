@@ -3825,55 +3825,60 @@ def _fill_failure_with_partial(head: str, exc: BaseException) -> str:
 
 
 def _save_fill_failure_output(dest_root: Path, harness: str, output: str) -> Path:
-    """fill 실패 원문을 repo 안 private raw 파일로 박제한다(symlink 추종 금지)."""
+    """fill 실패 원문을 repo 안 private raw 파일로 이식 가능하게 박제한다."""
     dest_root = Path(dest_root)
     repo_root = dest_root.resolve(strict=True)
     if not repo_root.is_dir():
         raise NotADirectoryError(f"fill raw 대상 repo가 디렉터리가 아님: {dest_root}")
     raw_parts = (".project_manager", ".local", "fill")
     raw_dir = repo_root.joinpath(*raw_parts)
-    try:
-        raw_dir.resolve(strict=False).relative_to(repo_root)
-    except ValueError as exc:
-        raise OSError(f"fill raw 경로가 대상 repo 밖을 가리킴: {raw_dir}") from exc
 
-    # 경로 검사 뒤 symlink로 바뀌는 TOCTOU도 닫기 위해, 해소된 repo FD에서 각 컴포넌트를
-    # O_NOFOLLOW로 열고 dir_fd 상대 생성만 한다. 이 플랫폼에 안전 플래그가 없으면 저장을
-    # 포기해 호출부의 전문 표시 폴백으로 보낸다.
-    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
-        raise OSError("fill raw 안전 저장에 O_NOFOLLOW/O_DIRECTORY 지원 필요")
-    dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    current_fd = os.open(str(repo_root), dir_flags)
+    def _assert_raw_dir_contained() -> None:
+        try:
+            raw_dir.resolve(strict=False).relative_to(repo_root)
+        except ValueError as exc:
+            raise OSError(
+                f"fill raw 경로가 대상 repo 밖을 가리킴: {raw_dir}"
+            ) from exc
+
+    _assert_raw_dir_contained()
+
+    os.makedirs(raw_dir, mode=0o700, exist_ok=True)
+    _assert_raw_dir_contained()
+    raw_dir_stat = os.lstat(raw_dir)
+    if stat.S_ISLNK(raw_dir_stat.st_mode):
+        raise OSError(f"fill raw 부모가 symlink라 거부: {raw_dir}")
+    if not stat.S_ISDIR(raw_dir_stat.st_mode):
+        raise NotADirectoryError(f"fill raw 부모가 디렉터리가 아님: {raw_dir}")
+    os.chmod(raw_dir, 0o700)
+
     prefix = f"pm_import_fill_{harness}_{datetime.datetime.now():%Y%m%d_%H%M%S}_"
+    file_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    file_flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd = None
+    raw_basename = ""
+    for _attempt in range(100):
+        raw_basename = f"{prefix}{secrets.token_hex(4)}.txt"
+        try:
+            fd = os.open(raw_dir / raw_basename, file_flags, 0o600)
+            break
+        except FileExistsError:
+            continue
+    if fd is None:
+        raise FileExistsError("fill raw 고유 파일명 생성 100회 충돌")
+    raw_path = raw_dir / raw_basename
     try:
-        for index, part in enumerate(raw_parts):
-            try:
-                next_fd = os.open(part, dir_flags, dir_fd=current_fd)
-            except FileNotFoundError:
-                os.mkdir(part, 0o700 if index == len(raw_parts) - 1 else 0o777,
-                         dir_fd=current_fd)
-                next_fd = os.open(part, dir_flags, dir_fd=current_fd)
-            os.close(current_fd)
-            current_fd = next_fd
-        os.fchmod(current_fd, 0o700)
-
-        file_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-        fd = None
-        raw_basename = ""
-        for _attempt in range(100):
-            raw_basename = f"{prefix}{secrets.token_hex(4)}.txt"
-            try:
-                fd = os.open(raw_basename, file_flags, 0o600, dir_fd=current_fd)
-                break
-            except FileExistsError:
-                continue
-        if fd is None:
-            raise FileExistsError("fill raw 고유 파일명 생성 100회 충돌")
-        with os.fdopen(fd, "w", encoding="utf-8", errors="replace") as handle:
-            handle.write(output)
-        return dest_root.joinpath(*raw_parts, raw_basename)
-    finally:
-        os.close(current_fd)
+        _assert_raw_dir_contained()
+    except BaseException:
+        os.close(fd)
+        try:
+            os.unlink(raw_path)
+        except OSError:
+            pass
+        raise
+    with os.fdopen(fd, "w", encoding="utf-8", errors="replace") as handle:
+        handle.write(output)
+    return dest_root.joinpath(*raw_parts, raw_basename)
 
 
 def _real_harness_runner(

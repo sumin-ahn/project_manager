@@ -5775,40 +5775,15 @@ def _assert_opencode_transport_path(cwd: Path, prompt_file: Path) -> None:
 _OPENCODE_TRANSPORT_REL_DIR = Path(".project_manager") / ".local" / "delegate"
 _OPENCODE_TRANSPORT_IGNORE = ".gitignore"
 _OPENCODE_TRANSPORT_IGNORE_BODY = "*\n"
-_OPENCODE_TRANSPORT_CHAIN_OPEN_MAX_ATTEMPTS = 3
-_OPENCODE_TRANSPORT_FD_SUPPORTED = (
-    hasattr(os, "O_NOFOLLOW")
-    and hasattr(os, "O_DIRECTORY")
-    and os.open in getattr(os, "supports_dir_fd", frozenset())
-    and os.mkdir in getattr(os, "supports_dir_fd", frozenset())
-    and os.stat in getattr(os, "supports_dir_fd", frozenset())
-    and os.stat in getattr(os, "supports_follow_symlinks", frozenset())
-    and os.unlink in getattr(os, "supports_dir_fd", frozenset())
-    and os.rmdir in getattr(os, "supports_dir_fd", frozenset())
-)
 
 
 class _OpenCodeTransportPrompt:
-    """opencode wire 경로와 fd 고정 생성물의 소유권 묶음."""
+    """opencode wire 경로와 이번 attempt가 만든 생성물의 소유권 묶음."""
 
     def __init__(self, path: Path, sandbox: Path):
         self.path = path
-        # argv의 --dir/--file과 subprocess cwd는 같은 미해소 lexical sandbox를 공유한다. 실제
-        # containment와 생성은 별도로 resolve한 디렉터리를 fd로 열어 고정한다.
         self.sandbox = sandbox
-        self.sandbox_fd: int | None = None
-        self.sandbox_identity: tuple[int, int] | None = None
-        self.parent_fd: int | None = None
-        self.prompt_fd: int | None = None
-        self.prompt_identity: tuple[int, int] | None = None
-        self.ignore_identity: tuple[int, int] | None = None
         self.launch_binding_mode: str | None = None
-        self.owned_fds: list[int] = []
-        # (고정한 부모 fd, 자식 basename, 진단 경로, 저장 identity) — 생성 순서로 쌓고
-        # cleanup 전 현재 entry와 모두 재대조한 뒤 역순 rmdir 한다.
-        self.created_dirs: list[tuple[int, str, Path, tuple[int, int]]] = []
-        # 전체 부모가 열린 성공 transport는 생성자와 무관하게 이 고정 경로만 빈 골격 정리한다.
-        self.cleanup_dirs: list[tuple[int, str, Path, tuple[int, int]]] = []
         self.ignore_created = False
         self.prompt_created = False
 
@@ -6096,83 +6071,6 @@ def _warn_transport_cleanup_failure(
     )
 
 
-def _assert_transport_cleanup_identity(
-    *,
-    label: str,
-    path: Path,
-    expected_identity: tuple[int, int] | None,
-    name: str | None = None,
-    dir_fd: int | None = None,
-    follow_symlinks: bool = False,
-) -> None:
-    """cleanup 대상 basename이 준비 때 저장한 inode 그대로인지 삭제 전에 확인한다."""
-    if expected_identity is None:
-        raise RuntimeError(f"{label} 저장 identity가 없음: {path}")
-    try:
-        if name is None:
-            current = os.stat(path, follow_symlinks=follow_symlinks)
-        else:
-            current = os.stat(
-                name,
-                dir_fd=dir_fd,
-                follow_symlinks=follow_symlinks,
-            )
-    except FileNotFoundError as exc:
-        raise RuntimeError(
-            f"{label} entry가 cleanup 전 사라짐: {path} "
-            f"(저장 identity={expected_identity})"
-        ) from exc
-    current_identity = (current.st_dev, current.st_ino)
-    if current_identity != expected_identity:
-        raise RuntimeError(
-            f"{label} entry가 cleanup 전 교체됨: {path} "
-            f"(저장 identity={expected_identity}, 현재 identity={current_identity})"
-        )
-
-
-def _assert_opencode_transport_cleanup_bindings(
-    prompt: _OpenCodeTransportPrompt,
-    parent_fd: int | None,
-    cleanup_dirs: list[tuple[int, str, Path, tuple[int, int]]],
-) -> None:
-    """prompt·ignore·디렉터리 전부를 선검증해 부분 삭제 뒤 불일치를 막는다."""
-    if parent_fd is None and (prompt.ignore_created or prompt.prompt_created):
-        raise RuntimeError(
-            f"prompt 부모 fd가 cleanup 전에 사라짐: {prompt.path.parent}"
-        )
-    if prompt.sandbox_fd is not None:
-        _assert_transport_cleanup_identity(
-            label="sandbox 디렉터리",
-            path=prompt.sandbox,
-            expected_identity=prompt.sandbox_identity,
-            follow_symlinks=True,
-        )
-    for ancestor_fd, name, cleanup_path, identity in cleanup_dirs:
-        _assert_transport_cleanup_identity(
-            label="전달 디렉터리",
-            path=cleanup_path,
-            expected_identity=identity,
-            name=name,
-            dir_fd=ancestor_fd,
-        )
-    if prompt.ignore_created:
-        _assert_transport_cleanup_identity(
-            label="자기-은닉 ignore",
-            path=prompt.path.parent / _OPENCODE_TRANSPORT_IGNORE,
-            expected_identity=prompt.ignore_identity,
-            name=_OPENCODE_TRANSPORT_IGNORE,
-            dir_fd=parent_fd,
-        )
-    if prompt.prompt_created:
-        _assert_transport_cleanup_identity(
-            label="합성 프롬프트",
-            path=prompt.path,
-            expected_identity=prompt.prompt_identity,
-            name=prompt.path.name,
-            dir_fd=parent_fd,
-        )
-
-
 def _close_transport_fd(fd: int | None) -> None:
     """보조 fd close 실패가 생성/전송의 주 예외를 덮지 않게 한다."""
     if fd is None:
@@ -6187,12 +6085,11 @@ def _cleanup_attempt_transport(
     prompt: _OpenCodeTransportPrompt | None,
     read_tmp: _ReadRoleTemp | None = None,
 ) -> None:
-    """attempt wire 사본·read tmp를 한 소유권 seam에서 fd 기준으로 되감는다.
+    """attempt wire 사본·read tmp를 한 소유권 seam에서 되감는다.
 
     prompt 삭제가 실패하면 자기-은닉 ignore를 보존해 민감 사본이 untracked로 노출되지 않게 한다.
     정상 삭제 뒤에는 ignore→고유 attempt 디렉터리→delegate/.local/.project_manager를 역순
-    제거한다. 성공 transport의 빈 상위 골격은 생성자와 무관하게 회수하며, 준비 도중 실패한
-    transport는 이번 호출이 만든 디렉터리만 되감는다.
+    제거한다. 겹친 attempt가 사용하는 공유 골격은 ENOTEMPTY로 자연스럽게 보존된다.
     """
     # read tmp는 pytest가 만든 임의 하위 트리까지 회수한다. prompt 정리 실패와 서로 독립적으로
     # 시도해야 둘 중 하나가 다른 하나의 잔여 0 보장을 가리지 않는다.
@@ -6200,174 +6097,76 @@ def _cleanup_attempt_transport(
     if prompt is None:
         return
     prompt_path = prompt.path
-    parent_fd = prompt.parent_fd
-    prompt.parent_fd = None
+    cleanup_structure = True
     try:
-        cleanup_dirs = prompt.cleanup_dirs or prompt.created_dirs
+        if prompt.prompt_created:
+            os.unlink(prompt_path)
+            prompt.prompt_created = False
+    except OSError as exc:
+        _warn_transport_cleanup_failure(prompt_path, exc)
+        cleanup_structure = False
+
+    if cleanup_structure and prompt.ignore_created:
         try:
-            _assert_opencode_transport_cleanup_bindings(
-                prompt, parent_fd, cleanup_dirs,
-            )
-        except (OSError, RuntimeError) as exc:
-            # 하나라도 준비 identity와 다르면 replacement는 물론 원본 prompt/ignore도 건드리지
-            # 않는다. 구조 전체를 남겨 민감 사본의 자기-은닉을 유지하고 운영자가 회수하게 한다.
-            _warn_transport_cleanup_failure(
-                prompt_path.parent,
-                exc,
-                action="cleanup identity 재대조",
-            )
-            return
-        cleanup_structure = True
-        try:
-            if prompt.prompt_created and parent_fd is not None:
-                os.unlink(prompt_path.name, dir_fd=parent_fd)
-                prompt.prompt_created = False
+            os.unlink(prompt_path.parent / _OPENCODE_TRANSPORT_IGNORE)
+            prompt.ignore_created = False
         except OSError as exc:
-            _warn_transport_cleanup_failure(prompt_path, exc)
+            _warn_transport_cleanup_failure(
+                prompt_path.parent / _OPENCODE_TRANSPORT_IGNORE,
+                exc,
+                action="자기-은닉 ignore 삭제",
+            )
             cleanup_structure = False
 
-        if cleanup_structure and prompt.ignore_created and parent_fd is not None:
+    if cleanup_structure:
+        for cleanup_path in prompt_path.parents:
+            if cleanup_path == prompt.sandbox:
+                break
+            if not cleanup_path.is_relative_to(prompt.sandbox):
+                break
             try:
-                os.unlink(_OPENCODE_TRANSPORT_IGNORE, dir_fd=parent_fd)
-                prompt.ignore_created = False
+                os.rmdir(cleanup_path)
             except OSError as exc:
-                _warn_transport_cleanup_failure(
-                    prompt_path.parent / _OPENCODE_TRANSPORT_IGNORE, exc,
-                    action="자기-은닉 ignore 삭제",
-                )
-                cleanup_structure = False
-
-        if cleanup_structure:
-            for ancestor_fd, name, cleanup_path, _identity in reversed(cleanup_dirs):
-                try:
-                    os.rmdir(name, dir_fd=ancestor_fd)
-                except OSError as exc:
-                    # 겹친 attempt가 아직 있거나 다른 cleanup이 먼저 지운 정상 경쟁은 조용히
-                    # 통과한다. 그 외 실패만 전용 골격 잔존 가능성 진단으로 올린다.
-                    if exc.errno in {errno.ENOENT, errno.ENOTEMPTY, errno.EEXIST}:
-                        continue
+                if exc.errno not in {errno.ENOENT, errno.ENOTEMPTY, errno.EEXIST}:
                     _warn_transport_cleanup_failure(
                         cleanup_path, exc, action="전달 디렉터리 정리",
                     )
-    finally:
-        for fd in reversed(prompt.owned_fds):
-            _close_transport_fd(fd)
-        prompt.owned_fds.clear()
-        prompt.sandbox_fd = None
-        prompt.sandbox_identity = None
-        prompt.prompt_fd = None
-        prompt.prompt_identity = None
-        prompt.ignore_identity = None
-        prompt.created_dirs.clear()
-        prompt.cleanup_dirs.clear()
 
 
-def _open_opencode_transport_parent_once(
-    resolved_sandbox: Path,
-    transport: _OpenCodeTransportPrompt,
-    attempt_dir_name: str,
-) -> None:
-    """실 sandbox와 호출별 wire 부모의 nofollow fd 체인을 한 번 연다."""
+def _assert_path_entry_not_symlink(path: Path, *, label: str) -> None:
+    """경로 기반 생성/전송 직전 entry가 symlink가 아닌지 best-effort로 확인한다."""
     try:
-        expected = resolved_sandbox.stat()
-        current = os.open(
-            str(resolved_sandbox),
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-        )
-    except FileNotFoundError:
-        raise
+        entry = os.lstat(path)
     except OSError as exc:
-        raise DelegateError(
-            f"opencode --dir sandbox를 안전하게 열 수 없음: {resolved_sandbox}: {exc}"
-        ) from exc
-    transport.owned_fds.append(current)
-    transport.sandbox_fd = current
-    opened = os.fstat(current)
-    sandbox_identity = (opened.st_dev, opened.st_ino)
-    if sandbox_identity != (expected.st_dev, expected.st_ino):
-        raise DelegateError(
-            f"opencode --dir sandbox가 검사 뒤 교체됨: {resolved_sandbox}"
-        )
-    transport.sandbox_identity = sandbox_identity
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    parts = (*_OPENCODE_TRANSPORT_REL_DIR.parts, attempt_dir_name)
-    opened_dirs: list[tuple[int, str, Path, tuple[int, int]]] = []
-    for index, part in enumerate(parts):
-        is_attempt_dir = index == len(parts) - 1
-        created = False
-        try:
-            child = os.open(part, flags, dir_fd=current)
-        except FileNotFoundError:
-            try:
-                os.mkdir(part, 0o700, dir_fd=current)
-                created = True
-            except FileExistsError:
-                if is_attempt_dir:
-                    raise
-                # 경쟁 생성은 아래 nofollow 재-open이 판정한다.
-            try:
-                child = os.open(part, flags, dir_fd=current)
-            except FileNotFoundError:
-                # 열린 상위 골격을 다른 성공 attempt가 rmdir한 경쟁은 전체 chain을 다시 연다.
-                raise
-            except OSError as exc:
-                raise DelegateError(
-                    "opencode prompt 전달 부모가 검사 뒤 교체되었거나 안전한 "
-                    f"디렉터리가 아님: {transport.sandbox / _OPENCODE_TRANSPORT_REL_DIR}: {exc}"
-                ) from exc
-        except OSError as exc:
-            raise DelegateError(
-                "opencode prompt 전달 부모가 sandbox 밖 symlink로 교체되었거나 안전한 "
-                f"디렉터리가 아님: {transport.sandbox / _OPENCODE_TRANSPORT_REL_DIR}: {exc}"
-            ) from exc
-        if is_attempt_dir and not created:
-            _close_transport_fd(child)
-            raise FileExistsError(
-                f"opencode prompt 전달 attempt 디렉터리가 이미 존재함: "
-                f"{transport.path.parent}"
-            )
-        transport.owned_fds.append(child)
-        opened_child = os.fstat(child)
-        child_identity = (opened_child.st_dev, opened_child.st_ino)
-        opened_path = transport.sandbox.joinpath(*parts[:index + 1])
-        opened_dirs.append((current, part, opened_path, child_identity))
+        raise DelegateError(f"{label} 경로 재검증 실패: {path}: {exc}") from exc
+    if stat.S_ISLNK(entry.st_mode):
+        raise DelegateError(f"{label}가 symlink라 거부: {path}")
+
+
+def _portable_exclusive_write(path: Path, content: str) -> None:
+    """O_EXCL·0600으로 새 파일을 쓰고, 지원 플랫폼에서 O_NOFOLLOW를 더한다."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd: int | None = None
+    created = False
+    try:
+        fd = os.open(path, flags, 0o600)
+        created = True
+        handle = os.fdopen(fd, "w", encoding="utf-8")
+        fd = None
+        with handle:
+            handle.write(content)
+    except BaseException:
+        _close_transport_fd(fd)
+        fd = None
         if created:
-            transport.created_dirs.append(
-                (current, part, opened_path, child_identity)
-            )
-        current = child
-    # 전체 전용 경로가 fd로 고정된 뒤에만 기존 상위 골격까지 성공 정리 대상으로 승격한다.
-    transport.cleanup_dirs = opened_dirs
-    transport.parent_fd = current
-
-
-def _open_opencode_transport_parent(
-    resolved_sandbox: Path,
-    transport: _OpenCodeTransportPrompt,
-    attempt_dir_name: str,
-) -> None:
-    """ENOENT 정리 경쟁을 유한 재시도하며 안전한 wire 부모 fd 체인을 연다."""
-    max_attempts = _OPENCODE_TRANSPORT_CHAIN_OPEN_MAX_ATTEMPTS
-    for chain_attempt in range(1, max_attempts + 1):
-        try:
-            _open_opencode_transport_parent_once(
-                resolved_sandbox, transport, attempt_dir_name,
-            )
-            return
-        except FileNotFoundError as exc:
-            # 성공 transport의 빈 상위 골격 회수와 겹쳤다. 다음 시도 전에 이번 시도의
-            # 생성물과 열린 fd를 모두 되감아 unlinked-dir fd도 남기지 않는다.
-            _cleanup_attempt_transport(transport)
-            if chain_attempt == max_attempts:
-                retries = max_attempts - 1
-                raise DelegateError(
-                    "opencode prompt 전달 부모 chain-open 경쟁(ENOENT)을 "
-                    f"{max_attempts}회 시도(재시도 {retries}회)했으나 해소하지 못함: "
-                    f"{transport.sandbox / _OPENCODE_TRANSPORT_REL_DIR}"
-                ) from exc
-        except BaseException:
-            _cleanup_attempt_transport(transport)
-            raise
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        raise
+    finally:
+        _close_transport_fd(fd)
 
 
 def _save_opencode_transport_prompt(
@@ -6381,7 +6180,6 @@ def _save_opencode_transport_prompt(
     """
     # argv 문자열은 사용자 cwd의 미해소 절대경로를 보존한다. --dir과 --file이 같은 lexical
     # prefix를 공유해야 opencode의 문자열 containment가 symlink cwd를 auto-reject하지 않는다.
-    # 실제 containment/생성만 아래 resolved_sandbox + fd chain으로 고정한다.
     sandbox = Path(os.path.abspath(cwd))
     try:
         resolved_sandbox = sandbox.resolve()
@@ -6394,296 +6192,52 @@ def _save_opencode_transport_prompt(
     attempt_id = f"pm_delegate_{os.getpid()}_{uuid.uuid4().hex}"
     dest = sandbox / _OPENCODE_TRANSPORT_REL_DIR / attempt_id / "prompt.md"
     _assert_opencode_transport_path(sandbox, dest)
-    if not _OPENCODE_TRANSPORT_FD_SUPPORTED:
-        raise DelegateError(
-            "이 플랫폼은 dir_fd/O_NOFOLLOW 기반 opencode prompt 보안 생성·삭제를 "
-            "지원하지 않아 위임을 중단합니다(fail-closed). Linux/POSIX 지원 환경에서 "
-            "재실행하거나 codex/claude 하네스를 선택하세요."
-        )
     transport = _OpenCodeTransportPrompt(dest, sandbox)
-    _open_opencode_transport_parent(resolved_sandbox, transport, attempt_id)
-    parent_fd = transport.parent_fd
-    if parent_fd is None:  # 방어적 불변식 — fd 없는 경로 기반 생성으로 조용히 강등하지 않는다.
-        _cleanup_attempt_transport(transport)
-        raise DelegateError("opencode prompt 전달 부모 fd 확보 실패 — 위임을 중단합니다.")
-    file_fd: int | None = None
-    binding_fd: int | None = None
+    # 호출별 UUID 디렉터리는 반드시 새로 만든다. 이미 존재하면 충돌을 숨기거나 재사용하지 않고
+    # FileExistsError를 그대로 올린다.
+    current = sandbox
+    for part in (*_OPENCODE_TRANSPORT_REL_DIR.parts, attempt_id):
+        current /= part
+        try:
+            current.mkdir(mode=0o700)
+        except FileExistsError:
+            if current == dest.parent:
+                raise
+        except OSError as exc:
+            raise DelegateError(
+                f"opencode prompt 전달 디렉터리 생성 실패: {current}: {exc}"
+            ) from exc
     try:
-        file_fd = os.open(
-            _OPENCODE_TRANSPORT_IGNORE,
-            os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
-            0o600,
-            dir_fd=parent_fd,
+        _assert_path_entry_not_symlink(
+            dest.parent, label="opencode prompt 전달 부모",
+        )
+        _portable_exclusive_write(
+            dest.parent / _OPENCODE_TRANSPORT_IGNORE,
+            _OPENCODE_TRANSPORT_IGNORE_BODY,
         )
         transport.ignore_created = True
-        ignore_stat = os.fstat(file_fd)
-        transport.ignore_identity = (ignore_stat.st_dev, ignore_stat.st_ino)
-        ignore_handle = os.fdopen(file_fd, "w", encoding="utf-8")
-        file_fd = None
-        with ignore_handle:
-            ignore_handle.write(_OPENCODE_TRANSPORT_IGNORE_BODY)
-        file_fd = os.open(
-            dest.name,
-            os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
-            0o600,
-            dir_fd=parent_fd,
-        )
+        _portable_exclusive_write(dest, prompt)
         transport.prompt_created = True
-        prompt_stat = os.fstat(file_fd)
-        transport.prompt_identity = (prompt_stat.st_dev, prompt_stat.st_ino)
-        handle = os.fdopen(file_fd, "w", encoding="utf-8")
-        file_fd = None  # fd 소유권은 handle에 넘어갔다.
-        with handle:
-            handle.write(prompt)
-        binding_fd = os.open(
-            dest.name,
-            os.O_RDONLY | os.O_NOFOLLOW,
-            dir_fd=parent_fd,
-        )
-        binding_stat = os.fstat(binding_fd)
-        binding_identity = (binding_stat.st_dev, binding_stat.st_ino)
-        if binding_identity != transport.prompt_identity:
-            raise DelegateError(
-                f"opencode prompt 전달 사본이 생성 뒤 교체됨: {dest}"
-            )
-        transport.prompt_fd = binding_fd
-        transport.owned_fds.append(binding_fd)
-        binding_fd = None
     except BaseException:
-        _close_transport_fd(file_fd)
-        _close_transport_fd(binding_fd)
         _cleanup_attempt_transport(transport)
         raise
     return transport
-
-
-def _assert_opencode_transport_binding(
-    transport: _OpenCodeTransportPrompt,
-) -> None:
-    """준비 때 고정한 inode가 runner 직전 lexical argv 경로에도 그대로 있는지 대조한다.
-
-    이 원시 검사의 마지막 path ``stat`` 뒤에도 child open까지 사용자 공간 창은 남는다.
-    호출자 ``_opencode_transport_launch_target``은 procfs가 있으면 그 창을 fd 경로로 닫고,
-    없는 플랫폼에서는 이 검사를 lexical runner 호출과 맞닿은 마지막 작업으로 둔다.
-    """
-    bindings = (
-        ("sandbox", transport.sandbox_fd, transport.sandbox, True),
-        ("prompt 부모", transport.parent_fd, transport.path.parent, True),
-        ("prompt 파일", transport.prompt_fd, transport.path, False),
-    )
-    for label, fd, path, follow_symlinks in bindings:
-        if fd is None:
-            raise DelegateError(
-                f"opencode spawn 직전 {label} fd 결속 정보가 없음 — 위임을 중단합니다."
-            )
-        try:
-            fixed = os.fstat(fd)
-            current = os.stat(path, follow_symlinks=follow_symlinks)
-        except OSError as exc:
-            raise DelegateError(
-                f"opencode spawn 직전 {label} 경로 재검증 실패: {path}: {exc}"
-            ) from exc
-        fixed_identity = (fixed.st_dev, fixed.st_ino)
-        current_identity = (current.st_dev, current.st_ino)
-        if current_identity != fixed_identity:
-            raise DelegateError(
-                f"opencode spawn 직전 {label}가 준비 뒤 교체됨: {path} "
-                f"(고정 inode={fixed_identity}, 현재 inode={current_identity})"
-            )
-
-
-def _opencode_proc_fd_root() -> Path | None:
-    """현재 pm_delegate 프로세스의 fd를 자식도 열 수 있는 procfs 루트."""
-    if os.name != "posix":
-        return None
-    root = Path("/proc") / str(os.getpid()) / "fd"
-    try:
-        if root.is_dir():
-            return root
-    except OSError:
-        pass
-    return None
-
-
-def _assert_opencode_owner_guarded_lexical_path(
-    transport: _OpenCodeTransportPrompt,
-) -> None:
-    """procfs 부재 fallback의 다른-UID 경로 교체 가능성을 권한 체인으로 배제한다.
-
-    lexical prompt와 그 resolved target의 root→파일 모든 edge를 검사한다. 부모 소유자는
-    filesystem root owner/현재 euid여야 하고 group/other 쓰기 가능 부모는
-    sticky이며 다음 entry도 root/현재 euid 소유일 때만 허용한다. 따라서 다른 UID는 검사 뒤
-    sandbox 또는 그 안 경로 구성요소를 rename/replace할 수 없다. prompt 자체도 root/현재 euid
-    소유이고 group/other 쓰기 불가여야 in-place 변조가 막힌다. filesystem root owner를 신뢰
-    주체로 쓰는 이유는 user-namespace 컨테이너에서 root inode가 overflow uid(예: 65534)로
-    보일 수 있기 때문이다. 숫자 0만 고정하면 안전한 `/proc` 미마운트 컨테이너를 모두 오거부한다.
-
-    같은 euid 프로세스와 root는 이 경계의 신뢰 주체다. 그 프로세스가 검사 직후 교체하는 잔여
-    창은 PM이 명시적으로 허용한 범위이며 raw의 ``owner-guarded-lexical`` mode로 표출한다.
-    Windows는 이 fallback에 오기 전에 secure dir-fd capability gate에서 fail-closed 한다.
-    """
-    if not hasattr(os, "geteuid"):
-        raise DelegateError(
-            "opencode procfs 부재 lexical 전달의 euid를 확인할 수 없어 "
-            "거부합니다(fail-closed)."
-        )
-    euid = os.geteuid()
-    prompt_path = Path(os.path.abspath(transport.path))
-    try:
-        filesystem_root_owner = os.stat(prompt_path.anchor).st_uid
-    except OSError as exc:
-        raise DelegateError(
-            "opencode procfs 부재 lexical 전달 filesystem root 소유자를 확인할 수 없어 "
-            f"거부합니다(fail-closed): {type(exc).__name__}: {exc}"
-        ) from exc
-    trusted_owners = {filesystem_root_owner, euid}
-
-    def assert_edge(parent: Path, child: Path) -> None:
-        parent_stat = os.stat(parent, follow_symlinks=True)
-        child_stat = os.lstat(child)
-        if not stat.S_ISDIR(parent_stat.st_mode):
-            raise DelegateError(
-                f"opencode lexical 전달 부모가 디렉터리가 아님: {parent}"
-            )
-        if parent_stat.st_uid not in trusted_owners:
-            raise DelegateError(
-                "opencode procfs 부재 lexical 전달 부모 소유자를 신뢰할 수 없어 "
-                f"거부합니다(fail-closed): path={parent} · "
-                f"owner={parent_stat.st_uid} · euid={euid}"
-            )
-        shared_write = parent_stat.st_mode & 0o022
-        if shared_write and not (
-            parent_stat.st_mode & stat.S_ISVTX
-            and child_stat.st_uid in trusted_owners
-        ):
-            raise DelegateError(
-                "opencode procfs 부재 lexical 전달 부모를 다른 UID가 교체할 수 있어 "
-                f"거부합니다(fail-closed): path={parent} · "
-                f"mode={stat.S_IMODE(parent_stat.st_mode):04o} · "
-                f"sticky={bool(parent_stat.st_mode & stat.S_ISVTX)} · "
-                f"child_owner={child_stat.st_uid} · euid={euid}"
-            )
-
-    def assert_path_edges(path: Path) -> None:
-        current = Path(path.anchor)
-        for part in path.parts[1:]:
-            child = current / part
-            assert_edge(current, child)
-            current = child
-
-    try:
-        # lexical chain은 symlink entry 자체의 교체를, resolved chain은 symlink target 조상의
-        # 교체를 각각 막는다. 둘 중 하나라도 증명하지 못하면 lexical 전달을 쓰지 않는다.
-        assert_path_edges(prompt_path)
-        assert_path_edges(Path(os.path.realpath(prompt_path)))
-
-        if transport.prompt_fd is None:
-            raise DelegateError(
-                "opencode procfs 부재 lexical 전달 prompt fd가 없어 "
-                "거부합니다(fail-closed)."
-            )
-        prompt_stat = os.fstat(transport.prompt_fd)
-        if (
-            prompt_stat.st_uid not in trusted_owners
-            or prompt_stat.st_mode & 0o022
-        ):
-            raise DelegateError(
-                "opencode procfs 부재 lexical prompt를 다른 UID가 변조할 수 있어 "
-                f"거부합니다(fail-closed): path={transport.path} · "
-                f"owner={prompt_stat.st_uid} · "
-                f"mode={stat.S_IMODE(prompt_stat.st_mode):04o} · euid={euid}"
-            )
-    except DelegateError:
-        raise
-    except OSError as exc:
-        raise DelegateError(
-            "opencode procfs 부재 lexical 전달 권한 체인을 검증할 수 없어 "
-            f"거부합니다(fail-closed): path={prompt_path} · "
-            f"{type(exc).__name__}: {exc}"
-        ) from exc
-
-
-def _opencode_owner_guarded_lexical_target(
-    transport: _OpenCodeTransportPrompt,
-    argv: list[str],
-) -> tuple[list[str], str]:
-    """다른 UID 교체 불가를 증명하고 마지막 inode 재대조 뒤 lexical target을 반환한다."""
-    try:
-        _assert_opencode_owner_guarded_lexical_path(transport)
-        _assert_opencode_transport_binding(transport)
-    except DelegateError:
-        transport.launch_binding_mode = "fail-closed"
-        raise
-    transport.launch_binding_mode = "owner-guarded-lexical"
-    # 잔여 창을 raw 에만 남기면 실행자가 그 사실을 모른다(확인 라운드 지적). procfs fd
-    # 결속이 없어 같은 euid 프로세스의 교체 창이 남는다는 사실은 실행 시점에 표출한다.
-    print(
-        "[pm-delegate] transport 결속: owner-guarded-lexical "
-        "(procfs fd 경로 부재 — 다른 UID 교체는 소유권·모드로 차단됨. "
-        "같은 euid 프로세스에 의한 교체 창은 남는다)",
-        file=sys.stderr,
-    )
-    return argv, str(transport.sandbox)
 
 
 def _opencode_transport_launch_target(
     transport: _OpenCodeTransportPrompt,
     argv: list[str],
 ) -> tuple[list[str], str]:
-    """runner 직전 inode 재대조 뒤 argv/cwd를 fd에 직접 결속하거나 fail-closed 한다.
-
-    ``/proc/<pm_delegate-pid>/fd/<n>``은 자식의 ``/proc/self``와 달리 runner가 새
-    프로세스를 만들더라도 준비 때 연 fd를 계속 가리킨다. fd는 runner 반환 뒤 cleanup까지
-    열려 있으므로 lexical sandbox/prompt가 그 사이 rename·재배치돼도 자식은 원 inode를 연다.
-    procfs fd 경로가 없으면 owner/mode/sticky 체인으로 다른 UID의 경로 교체가 불가능함을 먼저
-    증명한 뒤 lexical 경로를 쓴다. 같은 euid 프로세스 잔여는 허용·raw mode로 표출한다. 조건을
-    증명할 수 없으면 fail-closed 한다. Windows처럼 secure dir-fd 준비 자체가 불가능한 환경은
-    이 함수보다 앞의 ``_OPENCODE_TRANSPORT_FD_SUPPORTED`` gate가 이미 fail-closed 한다.
-    """
-    root = _opencode_proc_fd_root()
-    if root is None:
-        return _opencode_owner_guarded_lexical_target(transport, argv)
-
-    fixed_fds = (
-        ("sandbox", transport.sandbox_fd),
-        ("prompt 파일", transport.prompt_fd),
+    """runner 직전에 lexical containment와 symlink 아닌 경로 entry를 재검사한다."""
+    _assert_opencode_transport_path(transport.sandbox, transport.path)
+    _assert_path_entry_not_symlink(
+        transport.path.parent, label="opencode prompt 전달 부모",
     )
-    fd_paths: dict[str, Path] = {}
-    for label, fd in fixed_fds:
-        if fd is None:
-            raise DelegateError(
-                f"opencode spawn 직전 {label} fd 결속 정보가 없음 — 위임을 중단합니다."
-            )
-        candidate = root / str(fd)
-        try:
-            fixed = os.fstat(fd)
-            exposed = candidate.stat()
-        except OSError:
-            # procfs root만 있고 개별 fd가 노출되지 않은 Linux 컨테이너도 같은 권한 증명 fallback을
-            # 탄다. 권한 체인이 불안전하면 helper가 fail-closed 한다.
-            return _opencode_owner_guarded_lexical_target(transport, argv)
-        fixed_identity = (fixed.st_dev, fixed.st_ino)
-        exposed_identity = (exposed.st_dev, exposed.st_ino)
-        if exposed_identity != fixed_identity:
-            raise DelegateError(
-                f"opencode spawn 직전 {label} fd 경로가 다른 inode를 가리킴: {candidate} "
-                f"(고정 inode={fixed_identity}, fd 경로 inode={exposed_identity})"
-            )
-        fd_paths[label] = candidate
-
-    # 준비 이후 이미 끝난 교체는 procfd로 원본을 보낼 수 있어도 fail-loud 한다. 이 뒤 실제
-    # 전송 경로는 고정 fd뿐이므로 lexical 이름의 새 교체는 전달 대상을 바꾸지 못한다.
-    _assert_opencode_transport_binding(transport)
-    transport.launch_binding_mode = "procfd"
-    adjusted = list(argv)
-    try:
-        adjusted[adjusted.index("--dir") + 1] = str(fd_paths["sandbox"])
-        adjusted[adjusted.index("--file") + 1] = str(fd_paths["prompt 파일"])
-    except (ValueError, IndexError) as exc:
-        raise DelegateError(
-            "opencode spawn 직전 --dir/--file argv 결속 지점을 찾지 못함"
-        ) from exc
-    return adjusted, str(fd_paths["sandbox"])
+    _assert_path_entry_not_symlink(
+        transport.path, label="opencode prompt 전달 사본",
+    )
+    transport.launch_binding_mode = "lexical"
+    return argv, str(transport.sandbox)
 
 
 def _codex_read_tmp_profile_value(
@@ -6838,8 +6392,8 @@ def _prepare_attempt_transport(
             # PM 홈 감사 raw와 별개로 wire 사본은 opencode ``--dir`` sandbox 안에 둔다.
             wire_cwd = Path(os.path.abspath(cwd))
             prompt_path = _save_opencode_transport_prompt(wire_cwd, outgoing_prompt)
-            # 파일 생성 뒤 argv 조립 직전의 resolve containment 가드. lexical argv 경로와 준비 때
-            # 고정한 fd identity의 일치는 runner 직전 _assert_opencode_transport_binding이 맡는다.
+            # 파일 생성 뒤 argv 조립 직전에도 containment를 재검사한다. runner 직전에는 같은
+            # lexical 경로와 부모/파일 entry의 symlink 여부를 한 번 더 확인한다.
             _assert_opencode_transport_path(prompt_path.sandbox, prompt_path)
             return (
                 _apply_read_tmp_argv(_build_target_argv(
@@ -7035,8 +6589,8 @@ def _execute_attempt(
                 else cwd
             )
             if prompt_path is not None:
-                # raw 예약/장부 시작처럼 준비 뒤 실행 전에 낀 작업까지 포함해 rename-swap을 다시
-                # 판정한다. procfs가 있으면 이 경계에서 argv/cwd를 준비 fd 자체에 결속한다.
+                # raw 예약/장부 시작처럼 준비 뒤 실행 전에 낀 작업까지 포함해 lexical
+                # containment와 symlink 아닌 entry를 다시 확인한다.
                 try:
                     launch_argv, launch_cwd = _opencode_transport_launch_target(
                         prompt_path, argv,

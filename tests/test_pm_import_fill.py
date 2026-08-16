@@ -15,10 +15,12 @@ from __future__ import annotations
 import importlib.util
 import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
 import pytest
+from _win_skip import _can_symlink
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -640,6 +642,63 @@ def test_fill_runner_failure_saves_complete_private_raw(pm_import, tmp_path):
     assert "E" * 100 not in result.note, "raw가 note에 중복 노출됨"
 
 
+def test_fill_failure_raw_without_dir_fd_or_o_nofollow_saves_path(
+        pm_import, monkeypatch, tmp_path):
+    """dir_fd/O_NOFOLLOW가 없는 형상에서도 raw 원문과 반환 경로를 보존한다."""
+    dest = _make_imported_tree(
+        pm_import, tmp_path, harness="claude", name="PortableRaw",
+    )
+    monkeypatch.setattr(pm_import.os, "supports_dir_fd", frozenset())
+    monkeypatch.delattr(pm_import.os, "O_NOFOLLOW", raising=False)
+
+    raw_path = pm_import._save_fill_failure_output(
+        dest, "claude", "portable raw output",
+    )
+
+    assert raw_path.is_relative_to(dest)
+    assert raw_path.read_text(encoding="utf-8") == "portable raw output"
+
+
+@pytest.mark.skipif(not _can_symlink(), reason="symlink 생성 능력 필요")
+def test_fill_failure_raw_rechecks_containment_after_file_creation(
+        pm_import, monkeypatch, tmp_path):
+    """파일 open 직전 중간 경로가 바뀌어도 repo 밖 raw를 삭제하고 chmod하지 않는다."""
+    dest = _make_imported_tree(
+        pm_import, tmp_path, harness="claude", name="RawPostCreateSwap",
+    )
+    local = dest / ".project_manager" / ".local"
+    fill = local / "fill"
+    fill.mkdir(parents=True)
+    parked = local.with_name(".local-parked")
+    outside = tmp_path / "outside-post-create"
+    outside_fill = outside / "fill"
+    outside_fill.mkdir(parents=True, mode=0o755)
+    outside_fill.chmod(0o755)
+    original_open = pm_import.os.open
+    swapped = False
+
+    def _open_then_swap(path, flags, mode=0o777, *args, **kwargs):
+        nonlocal swapped
+        if not swapped and Path(path).parent == fill:
+            local.rename(parked)
+            local.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return original_open(path, flags, mode, *args, **kwargs)
+
+    monkeypatch.setattr(pm_import.os, "open", _open_then_swap)
+    try:
+        with pytest.raises(OSError, match="대상 repo 밖"):
+            pm_import._save_fill_failure_output(dest, "claude", "must be removed")
+    finally:
+        if local.is_symlink():
+            local.unlink()
+            parked.rename(local)
+
+    assert swapped
+    assert list(outside_fill.iterdir()) == []
+    assert stat.S_IMODE(outside_fill.stat().st_mode) == 0o755
+
+
 def test_fill_runner_failure_exposes_full_output_if_raw_save_fails(
         pm_import, tmp_path, monkeypatch):
     """raw 박제 실패도 fail-soft이며 preview 절단 없이 stderr 끝까지 화면 note에 싣는다."""
@@ -657,6 +716,7 @@ def test_fill_runner_failure_exposes_full_output_if_raw_save_fails(
     assert output in result.note
 
 
+@pytest.mark.skipif(not _can_symlink(), reason="symlink 생성 능력 필요")
 @pytest.mark.parametrize("linked_component", [".local", "fill"])
 def test_fill_failure_raw_rejects_symlink_component_without_touching_target(
         pm_import, tmp_path, linked_component):

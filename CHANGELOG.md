@@ -18,6 +18,13 @@
 
 ### Fixed
 
+- **Windows 에서 opencode 위임과 import fill raw 저장이 다시 동작한다.** opencode 전송 파일 생성·삭제와
+  `pm-import` fill 실패 원문 저장이 POSIX 전용 능력(dir_fd·O_NOFOLLOW·geteuid·procfs)이 없으면 위임/저장을
+  거부하던 fail-closed 3겹을 제거했다. 방어 대상(작업 폴더 안 경로 바꿔치기)은 이미 작업 폴더 쓰기 권한자만
+  가능한 경합이라 추가 이득이 없었다. 남는 경계는 플랫폼 무관하게 같다: 경로 lexical containment · `O_EXCL`
+  신규 생성(기존 파일 덮어쓰기 0·충돌 시 선존재 파일 보존) · POSIX 0600/0700 · 생성 후 containment 재확인 ·
+  정리 실패 loud. 능력이 있으면 강화(O_NOFOLLOW)하고 없으면 같은 기능을 이식 경로로 수행한다. 인스턴스 조치는
+  없다.
 - **Windows PowerShell 캡처에서 엔진 출력 한글 깨짐 해소.** 한국어 Windows(콘솔 코드페이지 949)에서
   PowerShell 이 엔진 stdout 을 캡처하면(에이전트 쉘·`$x = py -3 …`) UTF-8 출력이 cp949 로 해석돼 깨졌다.
   엔진이 조상 프로세스(`py` 런처 건너뜀)와 스트림 파이프 여부를 판정해 **PowerShell 부모 + 파이프 + 비 UTF-8
