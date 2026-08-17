@@ -1528,3 +1528,125 @@ def test_snapshot_recreation_keeps_pm_home_round_ledger_for_confirm_fix(
     assert ledger["T-0634"]["confirm_fix"] == 1
     assert [row["verdict"] for row in ledger["T-0634"]["rounds"]] == [1, 0]
     assert review_calls["n"] == 2
+
+
+# ══ T-0701: --paths 가 staged 변경 집합보다 좁을 때 (경고 / --strict-scope 차단) ══
+# 리뷰어가 dev 산출을 못 보면 이미 해소된 것을 must-fix 로 내는 false-finding 이 난다
+# (PM 41차 실측 2건). 그 입력 누락을 계산으로 표면화한다.
+
+SCOPE_GAP_MESSAGE = "staged 변경인데 --paths 에 없음"
+
+
+def test_staged_change_outside_paths_warns_without_changing_rc(
+    snapshot, tmp_path, capsys,
+):
+    """(g) staged ⊃ --paths → 경로 나열 + 처방 경고, rc 는 그대로 0."""
+    repo = _repo(tmp_path)
+    (repo / "review" / "target.txt").write_text("staged-target\n", encoding="utf-8")
+    (repo / "other.txt").write_text("staged-other\n", encoding="utf-8")
+    _git(repo, "add", "review/target.txt", "other.txt")
+
+    rc = snapshot.main([
+        "--repo", str(repo), "--output", str(tmp_path / "gate"),
+        "--paths", "review/target.txt",
+    ])
+    captured = capsys.readouterr()
+
+    assert rc == 0
+    assert SCOPE_GAP_MESSAGE in captured.err
+    assert "other.txt" in captured.err
+    assert "리뷰어가 HEAD 판을 본다" in captured.err
+    assert "타 티켓 산출이면 그대로 진행" in captured.err
+    assert (tmp_path / "gate").is_dir()               # 경고는 생성을 막지 않는다
+
+
+def test_strict_scope_blocks_when_staged_change_is_outside_paths(
+    snapshot, tmp_path, capsys,
+):
+    """(h) `--strict-scope` 는 같은 판정을 rc≠0 차단으로 올린다(스냅샷 미생성)."""
+    repo = _repo(tmp_path)
+    (repo / "review" / "target.txt").write_text("staged-target\n", encoding="utf-8")
+    (repo / "other.txt").write_text("staged-other\n", encoding="utf-8")
+    _git(repo, "add", "review/target.txt", "other.txt")
+
+    rc = snapshot.main([
+        "--repo", str(repo), "--output", str(tmp_path / "gate"),
+        "--paths", "review/target.txt", "--strict-scope",
+    ])
+    captured = capsys.readouterr()
+
+    assert rc != 0
+    assert SCOPE_GAP_MESSAGE in captured.err and "other.txt" in captured.err
+    assert not (tmp_path / "gate").exists()           # 차단은 worktree 를 남기지 않는다
+
+
+def test_staged_set_equal_to_paths_has_no_scope_warning(snapshot, tmp_path, capsys):
+    """(i) staged == --paths → 무경고 (디렉터리 선택자도 그 아래를 덮는다)."""
+    repo = _repo(tmp_path)
+    (repo / "review" / "target.txt").write_text("staged-target\n", encoding="utf-8")
+    _git(repo, "add", "review/target.txt")
+
+    rc = snapshot.main([
+        "--repo", str(repo), "--output", str(tmp_path / "gate"),
+        "--paths", "review",
+    ])
+    captured = capsys.readouterr()
+
+    assert rc == 0
+    assert SCOPE_GAP_MESSAGE not in captured.err
+
+
+def test_scope_check_excludes_untracked_and_other_repositories(
+    snapshot, tmp_path, capsys,
+):
+    """(j) untracked 와 타 repo staged 는 이 저장소 index diff 가 아니라 계산 밖이다."""
+    repo = _repo(tmp_path)
+    (repo / "review" / "target.txt").write_text("staged-target\n", encoding="utf-8")
+    _git(repo, "add", "review/target.txt")
+    (repo / "untracked-wip.txt").write_text("wip\n", encoding="utf-8")
+
+    neighbor = tmp_path / "neighbor"
+    neighbor.mkdir()
+    _git(neighbor, "init", "-q")
+    _git(neighbor, "config", "user.email", "test@example.invalid")
+    _git(neighbor, "config", "user.name", "Test User")
+    (neighbor / "neighbor-staged.txt").write_text("staged\n", encoding="utf-8")
+    _git(neighbor, "add", "neighbor-staged.txt")
+
+    rc = snapshot.main([
+        "--repo", str(repo), "--output", str(tmp_path / "gate"),
+        "--paths", "review/target.txt",
+    ])
+    captured = capsys.readouterr()
+
+    assert rc == 0
+    assert SCOPE_GAP_MESSAGE not in captured.err
+    assert "untracked-wip.txt" not in captured.err
+    assert "neighbor-staged.txt" not in captured.err
+
+
+def test_staged_rename_reports_both_sides_of_the_move(snapshot, tmp_path, capsys):
+    """rename 은 옛/새 경로 둘 다 알린다 — 검출 설정에 따라 한쪽이 사라지면 안 된다."""
+    repo = _repo(tmp_path)
+    _git(repo, "mv", "other.txt", "moved.txt")
+    (repo / "review" / "target.txt").write_text("staged-target\n", encoding="utf-8")
+    _git(repo, "add", "review/target.txt")
+
+    rc = snapshot.main([
+        "--repo", str(repo), "--output", str(tmp_path / "gate"),
+        "--paths", "review/target.txt",
+    ])
+    captured = capsys.readouterr()
+
+    assert rc == 0
+    assert "other.txt" in captured.err and "moved.txt" in captured.err
+
+
+def test_strict_scope_is_opt_in_and_documented(snapshot):
+    """기본값은 경고(rc 불변)다 — 차단은 명시 opt-in 이어야 게이트가 계속 돈다."""
+    action = next(
+        action for action in snapshot.build_parser()._actions
+        if action.dest == "strict_scope"
+    )
+    assert action.default is False
+    assert "차단" in action.help
