@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import importlib.util
+import inspect
 import json
 import re
 import shutil
@@ -798,9 +799,13 @@ def test_prose_item_enumeration_is_optional_for_the_block_truth(
 
 
 def test_finding_zero_round_must_agree_with_the_prose_pass_declaration(
-    external, pd, monkeypatch, tmp_path,
+    external, pd, monkeypatch, tmp_path, capsys,
 ):
-    """(l) finding 0건 라운드가 산문 통과 선언과 어긋나면 종전대로 malformed 다."""
+    """(l) finding 0건 라운드가 산문 통과 선언과 어긋나면 **회수 거부**다(표면 잠금 없음).
+
+    이 모순은 판정 표면 규칙이라 종전에는 절이 봉인된 **뒤에** delta 가 malformed 로 막았다.
+    봉인 절은 손수정 경로가 없어 그 잠금이 영구였다 — 이제 차등 술어가 회수 자리에서 잡는다.
+    """
     ticket_path = _seed_board(tmp_path)
     contradiction = (
         "판정: 반려\n\n**must-fix** (반드시 수정):\n- 산문만 반려\n\n"
@@ -808,9 +813,16 @@ def test_finding_zero_round_must_agree_with_the_prose_pass_declaration(
     )
     _wire(external, monkeypatch, tmp_path, contradiction)
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
-    with pytest.raises(pd.PMReviewError, match="통과\\+must-fix 0건 선언과 모순") as caught:
-        pd.parse_pm_review_delta(ticket_path.read_text(encoding="utf-8"))
-    assert caught.value.code == "malformed"
+    err = capsys.readouterr().err
+    assert "회수 문제" in err and "통과+must-fix 0건 선언과 모순" in err
+
+    text = ticket_path.read_text(encoding="utf-8")
+    section = _sections(pd, text, "external-reviewer")[0]
+    assert section.splitlines()[2] == pd.EXTERNAL_REVIEW_REFUSED_LINE
+    assert pd.verify_ticket_seals(text) == []
+    assert pd._pm_review_refused_section_keys(
+        text, pd._ticket_growth_sections(text),
+    ) == {("external-reviewer", 0)}
 
 
 def test_finding_zero_pass_round_needs_only_the_compact_pm_acceptance(
@@ -850,7 +862,8 @@ def test_prompt_requires_the_versioned_block_rendered_from_parser_constants(
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
 
     prompt = calls["prompt"]
-    assert pd.render_pm_review_block_skeleton("external-reviewer") in prompt
+    # 첫 라운드는 확인할 finding 이 없다 — 골격의 confirmations 도 실값(빈 목록)이다.
+    assert pd.render_pm_review_block_skeleton("external-reviewer", []) in prompt
     assert "X-001" in prompt and "severity" in prompt
 
     monkeypatch.setattr(
@@ -1356,6 +1369,214 @@ def test_confirm_fix_evidence_keeps_items_that_are_on_the_surface(external):
     assert external._confirm_fix_offsurface_ids(entry, set()) == ["X-001"]
     # 대조 입력이 없는 실행(회수 대상 없음)은 종전 그대로다.
     assert external._confirm_fix_evidence(entry) is not None
+
+
+# ── F-020 차등 술어: 표면을 malformed 로 바꾸는 절은 사유 불문 거부 ──────
+
+
+@pytest.mark.parametrize(
+    "second_reply,reason,pm_rejected",
+    [
+        pytest.param(
+            _prose("- X-002") + _block(_payload()),
+            "통과+must-fix 0건 선언과 모순",
+            False,
+            id="prose-reject-with-zero-findings",
+        ),
+        pytest.param(
+            _confirm_reply({
+                "id": "X-001", "status": "resolved", "evidence": "PM 이 반려한 지적",
+            }),
+            "rejected finding ID가 확인 라운드에 재등장",
+            True,
+            id="confirmation-of-a-pm-rejected-finding",
+        ),
+    ],
+)
+def test_a_round_that_would_lock_the_delta_surface_is_refused(
+    external, pd, monkeypatch, tmp_path, capsys, second_reply, reason, pm_rejected,
+):
+    """(F-020) 표면을 malformed 로 바꾸는 라운드는 사유 불문 회수 자리에서 접힌다.
+
+    두 사유 모두 종전에는 절이 봉인된 **뒤** delta 에서만 막혀(손수정 경로 없음) 티켓이 영구
+    잠겼다. 라운드3 이 정상 착지하는지까지 본다.
+    """
+    rounds = {"review_rounds_max": "9"}
+    ticket_path = _seed_board(tmp_path)
+    _wire(external, monkeypatch, tmp_path,
+          _reject_reply(_finding("X-001")), conf=rounds)
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+    if pm_rejected:
+        # PM 이 X-001 을 rejected 로 판정한 티켓 — 확인 라운드가 그 ID 를 다시 들면 표면이 막는다.
+        ticket_path.write_text(
+            ticket_path.read_text(encoding="utf-8")
+            + _disposition("X-001", decision="rejected"),
+            encoding="utf-8", newline="",
+        )
+
+    _wire(external, monkeypatch, tmp_path, second_reply, conf=rounds)
+    assert _run(external, tmp_path, "--ticket", TICKET) != 0
+    err = capsys.readouterr().err
+    assert "회수 문제" in err and "판정 표면 malformed 유발" in err and reason in err
+
+    text = ticket_path.read_text(encoding="utf-8")
+    sections = _sections(pd, text, "external-reviewer")
+    assert len(sections) == 2                       # 산출은 절에 평문으로 남는다.
+    assert re.search(r"^`{3,}pm-review", sections[1], re.M) is None
+    assert pd.verify_ticket_seals(text) == []
+    assert pd._pm_review_refused_section_keys(
+        text, pd._ticket_growth_sections(text),
+    ) == {("external-reviewer", 1)}
+
+    # 라운드3 이 정상 착지하고 delta 는 green 이다(잠금 없음).
+    _wire(external, monkeypatch, tmp_path,
+          _reject_reply(_finding("X-003")), conf=rounds)
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+    text = ticket_path.read_text(encoding="utf-8")
+    if not pm_rejected:
+        text += _disposition("X-001")
+    delta = pd.parse_pm_review_delta(text + _disposition("X-003", ordinal=2))
+    assert [finding.id for finding, _row in delta.accepted] == (
+        ["X-003"] if pm_rejected else ["X-001", "X-003"]
+    )
+
+
+def test_the_gate_reads_the_surface_parser_not_a_copied_rule_list(
+    external, pd, monkeypatch, tmp_path,
+):
+    """(F-020) 게이트 시야 == 표면 — 규칙 목록을 옮겨 적지 않고 표면 파서를 그대로 태운다.
+
+    시야가 같은 함수 하나라 표면에 malformed 규칙이 늘어도 게이트가 자동으로 따라온다. 옮겨 적으면
+    규칙이 늘 때마다 두 시야가 조용히 갈린다(그 갈림이 이 티켓에서 두 번 재현됐다).
+    """
+    gate_source = inspect.getsource(pd._external_review_delta_regression)
+    reason_source = inspect.getsource(pd._pm_review_delta_malformed_reason)
+    assert "_pm_review_delta_malformed_reason(" in gate_source
+    assert "parse_pm_review_delta(" in reason_source
+    # 예정 본문 조립도 실제 쓰기와 같은 helper 다(게이트가 다른 문자열을 판정하지 않는다).
+    assert "_append_external_review_section(" in gate_source
+    assert "_append_external_review_section(" in inspect.getsource(
+        pd.write_external_reviewer_section,
+    )
+
+    # 표면이 malformed 라고 말하는 산출은 사유 문자열을 몰라도 그대로 접힌다.
+    base = _seed_board(tmp_path).read_text(encoding="utf-8")
+    content, problem = pd.build_external_review_section_content(
+        _prose("- X-002") + _block(_payload()),
+        today="2026-08-18", ticket_text=base + _sealed_external_section(
+            pd, _payload([_finding("X-001")]), ordinal=0,
+        ),
+    )
+    assert problem is not None and "판정 표면 malformed 유발" in problem
+    assert pd.EXTERNAL_REVIEW_REFUSED_LINE in content
+
+
+def test_an_already_malformed_ticket_does_not_block_new_rounds(pd, tmp_path):
+    """(F-020) 차등이라 이미 malformed 인 티켓이 다음 라운드를 영구 거부하지 않는다."""
+    broken = _sealed_external_section(
+        pd, {}, ordinal=0,
+        raw_block=_block(_payload([_finding("X-001", classification="style")])),
+    )
+    assert pd._pm_review_delta_malformed_reason(broken) is not None
+    _content, problem = pd.build_external_review_section_content(
+        _reject_reply(_finding("X-002")), today="2026-08-18", ticket_text=broken,
+    )
+    assert problem is None                       # 이 라운드가 원인이 아니다.
+
+
+def test_normal_rounds_pass_the_differential_predicate(pd, tmp_path):
+    """(F-020) 정상 라운드는 차등 술어를 통과한다 — pending·판정 완료 둘 다."""
+    empty = "# T-9601\n\n## 목표\n프로브.\n"
+    _content, problem = pd.build_external_review_section_content(
+        _reject_reply(_finding("X-001")), today="2026-08-18", ticket_text=empty,
+    )
+    assert problem is None                       # 빈 티켓 → pending
+
+    landed = empty + _sealed_external_section(
+        pd, _payload([_finding("X-001")]), ordinal=0,
+    )
+    _content, problem = pd.build_external_review_section_content(
+        _reject_reply(_finding("X-002")), today="2026-08-18", ticket_text=landed,
+    )
+    assert problem is None                       # pending → pending
+
+    judged = landed + _disposition("X-001")
+    _content, problem = pd.build_external_review_section_content(
+        _confirm_reply({"id": "X-001", "status": "resolved", "evidence": "회귀 rc=0"}),
+        today="2026-08-18", ticket_text=judged,
+    )
+    assert problem is None                       # OK → OK
+
+
+def test_ticket_text_is_a_required_gate_input(pd):
+    """(F-022) 대조 스냅샷은 필수 인자다 — 빠뜨린 호출이 조용히 전량 거부가 되지 않는다."""
+    with pytest.raises(TypeError):
+        pd.build_external_review_section_content(
+            _reject_reply(_finding("X-001")), today="2026-08-18",
+        )
+
+
+def test_confirm_fix_after_a_pm_rejected_finding_is_refused_with_the_knob(
+    external, pd, monkeypatch, tmp_path, capsys,
+):
+    """(F-020·F-023) PM 이 rejected 로 판정한 지적은 확인 근거가 아니다 — 처방에 노브까지 붙는다."""
+    ticket_path = _seed_board(tmp_path)
+    _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-001")))
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+    ticket_path.write_text(
+        ticket_path.read_text(encoding="utf-8")
+        + _disposition("X-001", decision="rejected"),
+        encoding="utf-8", newline="",
+    )
+    capsys.readouterr()
+
+    calls = _wire(external, monkeypatch, tmp_path, _confirm_reply({
+        "id": "X-001", "status": "resolved", "evidence": "PM 이 반려한 지적",
+    }))
+    assert _run(external, tmp_path, "--ticket", TICKET, "--confirm-fix") == \
+        external.EXIT_ROUND_LIMIT_EXCEEDED
+    assert calls["n"] == 0                          # 외부 전송·과금 0
+    err = capsys.readouterr().err
+    assert "판정 표면에 없습니다" in err and "X-001" in err
+    assert external.REVIEW_ROUNDS_MAX_KEY in err    # 수렴 상한에서 처방이 끊기지 않는다.
+
+
+# ── F-021 프롬프트 골격: 확인 가능한 ID 실값 ───────────────────────────
+
+
+def test_prompt_skeleton_carries_the_confirmable_ids(
+    external, pd, monkeypatch, tmp_path,
+):
+    """(F-021) 골격의 confirmations 는 티켓에서 읽은 실값이다(거부 절·PM rejected 제외)."""
+    rounds = {"review_rounds_max": "9"}
+    ticket_path = _seed_board(tmp_path)
+    calls = _wire(external, monkeypatch, tmp_path,
+                  _reject_reply(_finding("X-001")), conf=rounds)
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+    assert pd.render_pm_review_block_skeleton("external-reviewer", []) in calls["prompt"]
+
+    calls = _wire(external, monkeypatch, tmp_path,
+                  _reject_reply(_finding("X-002")), conf=rounds)
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+    assert pd.render_pm_review_block_skeleton(
+        "external-reviewer", ["X-001"],
+    ) in calls["prompt"]
+
+    # PM 이 rejected 로 판정한 ID 는 확인 대상에서 빠진다(리뷰 절 시드와 같은 배제).
+    ticket_path.write_text(
+        ticket_path.read_text(encoding="utf-8")
+        + _disposition("X-001", decision="rejected"),
+        encoding="utf-8", newline="",
+    )
+    calls = _wire(external, monkeypatch, tmp_path,
+                  _reject_reply(_finding("X-003")), conf=rounds)
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+    assert pd.render_pm_review_block_skeleton(
+        "external-reviewer", ["X-002"],
+    ) in calls["prompt"]
+    assert pd.collect_confirmable_finding_ids(
+        ticket_path.read_text(encoding="utf-8"), "external-reviewer",
+    ) == ["X-002", "X-003"]
 
 
 # ── F-018 무해화: 라벨만 낮추고 뒤 텍스트는 보존 ────────────────────────
