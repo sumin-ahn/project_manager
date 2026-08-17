@@ -290,25 +290,39 @@ def _guard_payload(role: str = "developer") -> dict[str, object]:
     }
 
 
+def _codex_hook_payload(worktree: Path) -> dict[str, object]:
+    """codex 훅 페이로드 — cwd 는 **이 플랫폼 규칙의 절대경로**여야 한다.
+
+    가드는 절대경로가 아닌 cwd 를 fail-open 으로 통과시키므로(never-block 백스톱), POSIX 표기를
+    리터럴로 박으면 Windows 에서 판정이 빈 엔벨로프가 되고 이 테스트가 검증할 페이로드 자체가
+    사라진다. `tmp_path` 는 두 OS 모두에서 절대경로다.
+    """
+    return {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "collaborationspawn_agent",
+        "tool_input": {"task_name": "developer"},
+        "cwd": str(worktree),
+    }
+
+
 @pytest.mark.parametrize(
-    ("argv", "stdin_payload"),
+    ("argv", "build_stdin_payload"),
     (
         (["decide", "--role", "developer", "--harness", "claude"], None),
-        (["codex-hook"], {
-            "hook_event_name": "PreToolUse",
-            "tool_name": "collaborationspawn_agent",
-            "tool_input": {"task_name": "developer"},
-            "cwd": "/repo",
-        }),
-        ([], _guard_payload()),
+        (["codex-hook"], _codex_hook_payload),
+        ([], lambda _worktree: _guard_payload()),
     ),
+    ids=("decide-cli", "codex-hook", "claude-hook"),
 )
 def test_delegate_channel_guard_hook_payloads_are_utf8(
-    capture_console, tmp_path, argv, stdin_payload
+    capture_console, tmp_path, argv, build_stdin_payload
 ):
     """decide CLI · codex 훅 · Claude 훅 판정 페이로드가 모두 UTF-8 한 줄로 나간다."""
     guard = _load("delegate_channel_guard")
     stream = capture_console()
+    stdin_payload = (
+        build_stdin_payload(tmp_path) if build_stdin_payload is not None else None
+    )
 
     assert guard.main(
         argv or None,

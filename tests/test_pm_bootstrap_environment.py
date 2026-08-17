@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -160,6 +161,21 @@ def test_configured_launcher_is_one_argv_token_not_shell_parsed(tmp_path):
     assert source == "local-conf"
 
 
+def test_os_name_probe_seam_is_what_the_label_resolver_reads(monkeypatch):
+    """os_name 판정은 모듈 seam 하나를 지난다 — 전역 변이 없이 양쪽 분기를 태운다.
+
+    seam 을 소비하지 않으면 주입한 `nt` 가 무시되고 호스트 값이 그대로 나오므로, 이 단언이
+    "주입이 실제로 판정에 닿는다"의 근거가 된다(두 OS 에서 같은 성질).
+    """
+    mod = _load()
+    assert mod._probe_os_name() == os.name, "기본 프로브가 인터프리터 값과 다르다"
+
+    monkeypatch.setattr(mod, "_probe_os_name", lambda: "nt")
+    assert mod._command_os_label(system="") == "windows"
+    monkeypatch.setattr(mod, "_probe_os_name", lambda: "posix")
+    assert mod._command_os_label(system="") == "other"
+
+
 def test_platform_probe_exception_fails_soft_to_other(monkeypatch, tmp_path):
     mod = _load()
 
@@ -167,7 +183,9 @@ def test_platform_probe_exception_fails_soft_to_other(monkeypatch, tmp_path):
         raise RuntimeError("probe failed")
 
     monkeypatch.setattr(mod.platform, "system", _boom)
-    monkeypatch.setattr(mod.os, "name", "posix")
+    # 엔진의 os_name 프로브 seam 에 건다 — 전역 `os.name` 을 바꾸면 이 프로세스의 pathlib 이
+    # 그 값으로 flavour 를 고르느라 Windows 호스트에서 경로 연산 자체가 무너진다.
+    monkeypatch.setattr(mod, "_probe_os_name", lambda: "posix")
     environment = mod._detect_command_environment(tmp_path)
     assert environment == mod._CommandEnvironment(
         "other", ("python3",), "os-default", "separate-lines"
@@ -186,7 +204,8 @@ def test_real_platform_seam_is_mockable(monkeypatch, tmp_path, system, expected)
     """The production no-argument probe consumes stdlib platform, without subprocess."""
     mod = _load()
     monkeypatch.setattr(mod.platform, "system", lambda: system)
-    monkeypatch.setattr(mod.os, "name", "posix")
+    # 같은 이유로 전역 `os.name` 이 아니라 엔진 seam 을 갈아끼운다(Windows 에서 pathlib 보존).
+    monkeypatch.setattr(mod, "_probe_os_name", lambda: "posix")
     environment = mod._detect_command_environment(tmp_path)
     assert (
         environment.os_label,

@@ -89,13 +89,18 @@ def _force_windows_branch(module, monkeypatch, api: FakeWindowsLockApi) -> None:
 
 # ── 주입이 실제로 걸리는가 (선-단언의 근거) ─────────────────────────────────
 
-def test_the_real_platform_takes_the_posix_branch_without_injection(file_lock):
-    """주입 전 baseline — 이 개발기는 POSIX backend 다(=Windows 분기는 주입으로만 실행된다).
+def _host_lock_backend(module) -> str:
+    """주입 없는 이 호스트의 backend — OS 계열이 고른다(`os.name == "nt"` 면 Windows)."""
+    return module.WINDOWS_LOCK_BACKEND if os.name == "nt" else module.POSIX_LOCK_BACKEND
 
-    이 단언이 없으면 "Windows 분기를 태웠다"는 나머지 케이스가 사실은 POSIX 분기를 태우고도
-    통과할 수 있다.
+
+def test_the_real_platform_takes_its_host_branch_without_injection(file_lock):
+    """주입 전 baseline — 판정이 호스트 OS 계열을 따른다(=다른 분기는 주입으로만 실행된다).
+
+    이 단언이 없으면 "Windows 분기를 태웠다"는 나머지 케이스가 사실은 호스트 기본 분기를 태우고도
+    통과할 수 있다. 한쪽 OS 표기를 baseline 으로 박으면 다른 OS 에서 이 근거가 red 로 뒤집힌다.
     """
-    assert file_lock.lock_backend() == file_lock.POSIX_LOCK_BACKEND
+    assert file_lock.lock_backend() == _host_lock_backend(file_lock)
     assert file_lock.exclusive_lock_supported() is True
 
 
