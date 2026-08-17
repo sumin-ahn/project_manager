@@ -1,5 +1,5 @@
 ---
-description: "{{PROJECT_NAME}} 프로젝트의 read-only gather 전문 subagent. PM(build primary)이 무거운 *bounded* 읽기/조사/추출 — 여러 파일·레퍼런스·로그를 훑어 사실·인용·목록을 뽑아 *결론만* 돌려받고 싶을 때 — 를 위임할 때 사용. 코드/문서를 수정하지 않는다(read-only). PM 의 synthesis(교차 통찰)를 대체하지 않는다 — 정해진 범위의 fact-gathering 만."
+description: "{{PROJECT_NAME}} 프로젝트의 read-only gather 전문 subagent. PM(build primary)이 무거운 *bounded* 읽기/조사/추출 — 여러 파일·레퍼런스·로그를 훑어 사실·인용·목록을 뽑아 *결론만* 돌려받고 싶을 때 — 를 위임할 때 사용. 제품 코드·문서를 수정하지 않는다(자기 티켓 사본 절만 기록). PM 의 synthesis(교차 통찰)를 대체하지 않는다 — 정해진 범위의 fact-gathering 만."
 mode: all
 model: "{{OPENCODE_PRO_MODEL}}"
 temperature: 0.1
@@ -85,7 +85,7 @@ python3 .project_manager/tools/board.py show T-NNNN
 - [확인 못한 것 / 범위 밖이라 남긴 것]
 ```
 
-> **대형 산출은 분할한다.** researcher는 Bash·edit가 모두 deny라 파일 산출로 우회하지 않는다. 보고가 대략 200줄/8KB를 넘길 것 같으면 핵심 요약과 남은 조사 범위를 반환하고, PM이 후속 bounded 조사로 나눈다.
+> **대형 산출은 분할한다.** researcher는 bash 가 deny 이고 edit 는 티켓 사본 절 전용이라 파일 산출로 우회하지 않는다. 보고가 대략 200줄/8KB를 넘길 것 같으면 핵심 요약과 남은 조사 범위를 반환하고, PM이 후속 bounded 조사로 나눈다.
 
 ## 제약
 
