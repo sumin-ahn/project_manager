@@ -1661,12 +1661,19 @@ def _ticket_copy_relative_path(ticket: str, role: str, run_id: str) -> Path:
 def _parse_check_ignore_verbose_line(line: str) -> tuple[str, str, str] | None:
     """`git check-ignore -v` 한 줄을 (source, linenum, pattern) 으로 분해한다.
 
-    비-`-z` 출력 형식은 `소스:줄번호:패턴` 다음에 탭 하나, 그리고 pathname 이 온다. pathname 은
-    호출부가 구성한 알려진 상대경로라 마지막 탭 분리로 안전하게 떼어낸다. 남는 `소스:줄번호:패턴`
-    은 그리디 정규식으로 오른쪽에서부터 역추적해 최우측 콜론-숫자-콜론 구분자를 찾는다 — Windows
-    절대경로 출처(드라이브 문자 뒤 콜론)의 콜론이 숫자로 이어지지 않아 구분자로 오인되지 않는다.
+    비-`-z` 출력 형식은 `소스:줄번호:패턴` 다음에 탭 하나, 그리고 pathname 이 온다([[T-0704]] F-005 —
+    대안으로 `git check-ignore -v -z --stdin` 에 pathname 하나를 stdin 으로 주면 rc=0 에 소스·줄번호·
+    패턴·pathname 4필드가 NUL 로 구분돼 나와 모호성이 0 이지만(실측), 위임 호출은 pathname 1건
+    고정값이라 stdin 배관을 더할 이득이 낮아 채택하지 않았다 — 단일 인자에 `-vz`(`--stdin` 없이)는
+    "fatal: -z 옵션은 --stdin 옵션과 같이 써야만 의미가 있습니다" 로 즉시 실패한다(git 2.43 실측)).
+    pathname 은 호출부가 구성한 알려진 상대경로라 마지막 탭 분리(`rpartition`)로 안전하게 떼어낸다 —
+    패턴 문자열 자체에 탭이 들어 있어도 pathname 은 안 잘린다. 남는 `소스:줄번호:패턴`은 그리디
+    정규식으로 오른쪽에서부터 역추적해 최우측 콜론-숫자-콜론 구분자를 찾는다 — Windows 절대경로
+    출처(드라이브 문자 뒤 콜론, 확장경로 접두 표기의 백슬래시 두 개·물음표·백슬래시)의 콜론이
+    숫자로 이어지지 않아 구분자로 오인되지 않고, source 경로 내부에 콜론이 더 있어도 줄번호와
+    가장 가까운(최우측) 매치를 고른다.
     """
-    prefix, tab, _pathname = line.partition("\t")
+    prefix, tab, _pathname = line.rpartition("\t")
     if not tab:
         return None
     match = re.match(r"^(.*):(\d+):(.*)$", prefix)
@@ -1675,16 +1682,50 @@ def _parse_check_ignore_verbose_line(line: str) -> tuple[str, str, str] | None:
     return match.group(1), match.group(2), match.group(3)
 
 
+def _ignore_source_definitely_untracked(source: str) -> bool:
+    """`ls-files` 호출 없이도 tracked 일 수 없다고 판정 가능한 출처 형태([[T-0704]] F-001/F-002).
+
+    절대경로 출처(전역 `core.excludesFile`, linked worktree 의 `.git/info/exclude` 는 공유 gitdir
+    바깥 절대경로로 보고된다 — 실측)와 `.git/` 내부 경로(`.git/info/exclude`)는 git 인덱스가 원천
+    추적할 수 없는 위치다. 이런 값을 `ls-files` 에 그대로 넘기면 "저장소 밖" 류 fatal 로 엉뚱하게
+    실패하므로, 호출 전에 이 형태를 걸러 바로 untracked 로 판정한다.
+    """
+    candidate = Path(source)
+    return candidate.is_absolute() or candidate.parts[:1] == (".git",)
+
+
+def _check_ignore_source_is_tracked(cwd: Path, source: str) -> bool:
+    """`source`(check-ignore 가 보고한 -C cwd 상대경로)가 git 인덱스에 tracked 인지 확인한다.
+
+    rc=0 tracked · rc=1 untracked · 그 외는 도구 실패로 fail-loud(board.py:4405 `ls-files
+    --error-unmatch` 와 같은 seam).
+    """
+    if _ignore_source_definitely_untracked(source):
+        return False
+    result = subprocess.run(
+        ["git", "-C", str(cwd), "ls-files", "--error-unmatch", "--", source],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    cause = result.stderr.strip() or result.stdout.strip() or "원인 미상"
+    raise DelegateError(f"git ls-files 실패(rc={result.returncode}): {cause}")
+
+
 def _assert_ticket_copy_root_ignored(
     cwd: Path, *, ticket: str, role: str, run_id: str,
 ) -> None:
     """ignore 규칙이 실제 ticket-copy 경로 형상을 숨기는지, 그 규칙이 tracked
     `.project_manager/.gitignore` 유래인지 fail-loud 확인한다([[T-0704]]).
 
-    로컬 전용 소스(`.git/info/exclude`·전역 `core.excludesFile`·untracked 상위 `.gitignore`)만으로
-    무시되면 이 클론에서는 사본이 숨어도 다른 클론·채택자 트리에는 그 규칙이 없어 사본이 그대로
-    노출된다. `-z` 는 `--stdin` 조합에서만 의미가 있어(단일 인자 호출과 맞지 않아) 채택하지
-    않았다 — pathname 이 이미 알려진 값이라 위 파싱으로 충분하다(실측: T-0704 조사).
+    경로가 정본 위치와 같아도 그 파일 자체가 untracked 면(예: fresh import 직후 아직 `git add`
+    하지 않은 형상) 다른 클론에는 없는 로컬 산출물일 수 있어 별도로 `ls-files --error-unmatch` 로
+    확인한다(F-001). 정본 위치가 아닌 출처는 그 출처 자신이 tracked 인지에 따라 진단 문구를
+    가른다(F-002) — tracked 비정본 위치(예: 루트 `.gitignore`)는 다른 클론에도 있으므로 "이
+    클론에만 있다"는 말은 거짓이고, untracked 출처(`.git/info/exclude`·전역 `core.excludesFile`·
+    untracked 상위 `.gitignore`)만 그 말이 사실이다.
     """
     result = subprocess.run(
         [
@@ -1712,11 +1753,21 @@ def _assert_ticket_copy_root_ignored(
     expected = (cwd / TICKET_COPY_IGNORE_TRACKED_SOURCE).resolve()
     observed = (cwd / source).resolve()
     if observed != expected:
+        if _check_ignore_source_is_tracked(cwd, source):
+            reason = "tracked 비정본 위치 유래 — 다른 클론에도 있지만 정본 위치가 아님"
+        else:
+            reason = "로컬 전용 소스 유래 — 다른 클론·채택자 트리에는 이 규칙이 없음"
         raise DelegateError(
-            "사본 루트를 숨기는 ignore 규칙이 로컬 전용 소스 유래 — "
-            f"출처={source}:{linenum} 패턴={pattern!r} · 이 규칙은 이 클론에만 있어 다른 "
-            "클론·채택자 트리에서는 사본이 노출됩니다 — `.project_manager/.gitignore` 에 "
-            "`.local/` 규칙을 복원하라"
+            "사본 루트를 숨기는 ignore 규칙이 정본 위치(`.project_manager/.gitignore`) 밖 출처 — "
+            f"{reason} — 출처={source}:{linenum} 패턴={pattern!r} · `.project_manager/.gitignore` "
+            "에 `.local/` 규칙을 복원하라"
+        )
+    if not _check_ignore_source_is_tracked(cwd, TICKET_COPY_IGNORE_TRACKED_SOURCE.as_posix()):
+        raise DelegateError(
+            "사본 루트를 숨기는 `.project_manager/.gitignore` 규칙이 untracked 상태 — "
+            f"출처={source}:{linenum} 패턴={pattern!r} · 이 클론에만 있는 파일이라 다른 "
+            "클론·채택자 트리에는 없어 사본이 노출됩니다 — `.project_manager/.gitignore` 를 "
+            "git add 로 커밋 이력에 넣어라"
         )
 
 

@@ -1315,6 +1315,8 @@ def test_solo_same_uid_full_replica_forgery_fails_before_pm_drift_overwrite(
     source = _write_ticket(tickets, "T-1018", [("code-reviewer", "")])
     assert _git(solo, "init", "-q").returncode == 0
     (solo / ".project_manager" / ".gitignore").write_text(".local/\n", encoding="utf-8", newline="\n")
+    # T-0704 (F-001) — ignore 규칙 출처 검증이 tracked 여부까지 보므로 이 fixture 도 add 해야 한다.
+    assert _git(solo, "add", ".project_manager/.gitignore").returncode == 0
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: _fixture_board(pd, solo))
     plan = pd.prepare_ticket_copy(
         ticket="T-1018", role="code-reviewer", cwd=solo, pm_home=solo,
@@ -1453,6 +1455,8 @@ def test_prepare_lookup_and_read_share_board_lock(pd, monkeypatch, tmp_path):
     slot_ignore = slot / ".project_manager" / ".gitignore"
     slot_ignore.parent.mkdir()
     slot_ignore.write_text(".local/\n", encoding="utf-8", newline="\n")
+    # T-0704 (F-001) — ignore 규칙 출처 검증이 tracked 여부까지 보므로 add 해야 통과한다.
+    assert _git(slot, "add", ".project_manager/.gitignore").returncode == 0
     state = {"locked": False, "lookup_locked": False, "read_locked": False}
 
     class FakeBoard:
@@ -1744,7 +1748,11 @@ def test_check_ignore_source_local_only_exclude_fails_loud(growth_env, pd):
 
 
 def test_check_ignore_source_not_ignored_keeps_current_message(growth_env, pd):
-    """T-0704 (c) — 사본 경로가 애초에 무시되지 않으면 기존 안내 메시지를 유지한다."""
+    """T-0704 (c) — 사본 경로가 애초에 무시되지 않으면 기존 안내 메시지를 유지한다.
+
+    F-004: `test_prepare_fails_loud_without_local_ignore_before_copy` 와 같은 rc==1 분기·같은
+    정규식을 검증하는 중복 커버리지다 — probe 패턴 없는 최소형만 남긴다.
+    """
     pm_home, slot, tickets = growth_env
     _write_ticket(tickets, "T-1042", [("developer", "")])
     (slot / ".project_manager" / ".gitignore").write_text(
@@ -1779,6 +1787,101 @@ def test_check_ignore_tool_failure_keeps_current_message(growth_env, pd, monkeyp
         pd.prepare_ticket_copy(
             ticket="T-1043", role="developer", cwd=slot, pm_home=pm_home,
         )
+
+
+def test_check_ignore_source_untracked_canonical_fails_loud(growth_env, pd):
+    """T-0704 (e) — 정본 위치와 경로는 같지만 untracked 면 fail-loud(F-001)."""
+    pm_home, slot, tickets = growth_env
+    _write_ticket(tickets, "T-1044", [("developer", "")])
+    # fresh import 직후 아직 git add 하지 않은 형상을 재현 — 작업 트리 파일은 그대로 두고
+    # 인덱스에서만 뺀다(패턴 자체는 여전히 check-ignore 에 읽힌다).
+    assert _git(slot, "rm", "--cached", "-q", ".project_manager/.gitignore").returncode == 0
+
+    with pytest.raises(
+        pd.DelegateError,
+        match=r"untracked 상태.*\.project_manager/\.gitignore.*git add",
+    ):
+        pd.prepare_ticket_copy(
+            ticket="T-1044", role="developer", cwd=slot, pm_home=pm_home,
+        )
+
+    assert not (slot / pd.TICKET_COPY_REL_ROOT).exists()
+
+
+def test_check_ignore_multiple_lines_output_fails_loud(growth_env, pd, monkeypatch):
+    """T-0704 (F-004) — check-ignore -v 가 예상 밖으로 여러 줄을 돌려주면 해석 실패로 fail-loud."""
+    pm_home, slot, tickets = growth_env
+    _write_ticket(tickets, "T-1045", [("developer", "")])
+    real_run = subprocess.run
+
+    def fake_run(argv, *args, **kwargs):
+        if "check-ignore" in argv:
+            return subprocess.CompletedProcess(
+                argv, 0,
+                stdout=(
+                    ".project_manager/.gitignore:1:.local/\tfirst\n"
+                    ".project_manager/.gitignore:1:.local/\tsecond\n"
+                ),
+                stderr="",
+            )
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(pd.subprocess, "run", fake_run)
+
+    with pytest.raises(pd.DelegateError, match=r"출력을 해석하지 못함"):
+        pd.prepare_ticket_copy(
+            ticket="T-1045", role="developer", cwd=slot, pm_home=pm_home,
+        )
+
+
+def test_check_ignore_empty_stdout_fails_loud(growth_env, pd, monkeypatch):
+    """T-0704 (F-004) — check-ignore -v 가 rc=0 인데 stdout 이 비면 해석 실패로 fail-loud."""
+    pm_home, slot, tickets = growth_env
+    _write_ticket(tickets, "T-1046", [("developer", "")])
+    real_run = subprocess.run
+
+    def fake_run(argv, *args, **kwargs):
+        if "check-ignore" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(pd.subprocess, "run", fake_run)
+
+    with pytest.raises(pd.DelegateError, match=r"출력을 해석하지 못함"):
+        pd.prepare_ticket_copy(
+            ticket="T-1046", role="developer", cwd=slot, pm_home=pm_home,
+        )
+
+
+def test_parse_check_ignore_verbose_line_windows_drive_absolute_source(pd):
+    """T-0704 (F-004) — Windows 드라이브 절대경로 출처의 콜론이 linenum 구분자로 오인되지 않는다."""
+    parsed = pd._parse_check_ignore_verbose_line(
+        "C:/Users/foo/.gitignore:12:.local/\t.project_manager/.local/x"
+    )
+    assert parsed == ("C:/Users/foo/.gitignore", "12", ".local/")
+
+
+def test_parse_check_ignore_verbose_line_windows_extended_length_prefix(pd):
+    """T-0704 (F-004) — 확장 길이 경로 접두(두 백슬래시·물음표·백슬래시)가 붙은 절대경로도 분해된다."""
+    prefix = chr(92) + chr(92) + "?" + chr(92)
+    line = prefix + "C:" + chr(92) + "Users" + chr(92) + "foo" + chr(92) + ".gitignore:7:.local/\t.project_manager/.local/x"
+    parsed = pd._parse_check_ignore_verbose_line(line)
+    assert parsed == (
+        prefix + "C:" + chr(92) + "Users" + chr(92) + "foo" + chr(92) + ".gitignore", "7", ".local/",
+    )
+
+
+def test_parse_check_ignore_verbose_line_colon_in_source_path(pd):
+    """T-0704 (F-004) — source 경로 자체에 콜론이 더 있어도 최우측 linenum 구분자를 고른다."""
+    parsed = pd._parse_check_ignore_verbose_line(
+        "/tmp/weird:dir/.gitignore:3:.local/\t.project_manager/.local/x"
+    )
+    assert parsed == ("/tmp/weird:dir/.gitignore", "3", ".local/")
+
+
+def test_parse_check_ignore_verbose_line_without_tab_returns_none(pd):
+    """T-0704 (F-004) — 탭이 없는 줄(예상 밖 형식)은 판정 불능으로 None 을 돌려준다."""
+    assert pd._parse_check_ignore_verbose_line(".project_manager/.gitignore:1:.local/") is None
 
 
 def test_prepare_succeeds_with_empty_dir_fd_support(growth_env, pd, monkeypatch):
