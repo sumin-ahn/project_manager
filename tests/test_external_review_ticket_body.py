@@ -317,3 +317,173 @@ def test_unterminated_frontmatter_fails_loud_for_body_and_touches(
         external._load_ticket_body("T-9001")
     with pytest.raises(external.AnchorResolutionError, match="frontmatter가 닫히지"):
         external._parse_touches_from_file(broken)
+
+
+# ── T-0703 — 절 선별 (권위 절 전량 · 성장 절 최근 라운드만 · 생략 표기) ──────────────────
+
+
+def _multi_round_body(rounds: int) -> str:
+    """developer/code-reviewer 각 `rounds`라운드 + 라운드별 PM 판정 절을 가진 성장 절 본문.
+
+    권위 절(목표·인터페이스·결정·설계·완료 조건·참고·메모)을 앞에 한 번 두고, 라운드마다
+    `pm-ticket-section` marker 쌍 + 봉인 줄 + marker 밖 PM finding 판정 절을 이어 붙인다(실
+    board 티켓의 marker/seal 배치와 동형 — `_ticket_growth_sections`·`parse_ticket_seals` 형제
+    파서가 그대로 소비한다)."""
+    parts = [
+        "## 목표\n목표 내용\n\n"
+        "## 인터페이스\n인터페이스 내용\n\n"
+        "## 결정\n결정 내용\n\n"
+        "## 설계\n설계 내용\n\n"
+        "## 완료 조건 (Definition of Done)\n- [ ] 항목\n\n"
+        "## 참고\n참고 내용\n\n"
+        "## 메모\n메모 내용\n\n"
+    ]
+    for i in range(rounds):
+        parts.append(
+            "<!-- pm-ticket-section:start role=developer -->\n"
+            f"## 구현 보충 (developer · round{i})\n라운드{i} developer 본문\n"
+            "<!-- pm-ticket-section:end role=developer -->\n"
+            f"<!-- pm-ticket-seal role=developer ordinal={i} sha256={'a' * 64} by=backfill -->\n\n"
+            "<!-- pm-ticket-section:start role=code-reviewer -->\n"
+            f"## 리뷰 (code-reviewer · round{i})\n라운드{i} reviewer 본문\n"
+            "<!-- pm-ticket-section:end role=code-reviewer -->\n"
+            f"<!-- pm-ticket-seal role=code-reviewer ordinal={i} sha256={'b' * 64} by=backfill -->\n\n"
+            f"## PM finding 판정 (round{i})\n"
+            "```pm-review-disposition-v1\n"
+            f"판정 round{i}\n"
+            "```\n\n"
+        )
+    return "".join(parts)
+
+
+def _multi_round_ticket(path: Path, *, rounds: int) -> Path:
+    path.write_text(
+        "---\n"
+        "id: T-9001\n"
+        "title: 다라운드 절 선별 픽스처\n"
+        "touches:\n"
+        "- x.py\n"
+        "estimate: medium\n"
+        "---\n"
+        + _multi_round_body(rounds),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_ticket_body_selection_includes_all_authoritative_sections(
+    external, monkeypatch, tmp_path, capsys,
+):
+    """(a) 권위 절(목표·인터페이스·결정·설계·완료 조건·참고·메모)이 전부 실린다."""
+    ticket = _multi_round_ticket(tmp_path / "T-9001-multi.md", rounds=2)
+    _wire(external, monkeypatch, tmp_path, ticket)
+
+    assert external.main(["--ticket", "T-9001", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    for heading, content in (
+        ("## 목표", "목표 내용"),
+        ("## 인터페이스", "인터페이스 내용"),
+        ("## 결정", "결정 내용"),
+        ("## 설계", "설계 내용"),
+        ("## 완료 조건 (Definition of Done)", "- [ ] 항목"),
+        ("## 참고", "참고 내용"),
+        ("## 메모", "메모 내용"),
+    ):
+        assert heading in out
+        assert content in out
+
+
+def test_ticket_body_selection_keeps_only_last_round_per_role(
+    external, monkeypatch, tmp_path, capsys,
+):
+    """(b) 역할별 최근 라운드 성장 절만 실리고 앞 라운드는 생략 표기로 대체된다."""
+    ticket = _multi_round_ticket(tmp_path / "T-9001-multi.md", rounds=3)
+    _wire(external, monkeypatch, tmp_path, ticket)
+
+    assert external.main(["--ticket", "T-9001", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+
+    # 최근 라운드(ordinal=2)는 전량 유지.
+    assert "라운드2 developer 본문" in out
+    assert "라운드2 reviewer 본문" in out
+    assert "<!-- pm-ticket-section:start role=developer -->" in out
+
+    # 앞 라운드(ordinal=0·1)는 원문이 사라지고 생략 표기로 대체된다.
+    for i in (0, 1):
+        assert f"라운드{i} developer 본문" not in out
+        assert f"라운드{i} reviewer 본문" not in out
+        assert f"(생략: role=developer ordinal={i} · " in out
+        assert f"(생략: role=code-reviewer ordinal={i} · " in out
+
+    assert "생략 라운드: 4개" in out
+
+
+def test_ticket_body_selection_keeps_all_pm_disposition_sections(
+    external, monkeypatch, tmp_path, capsys,
+):
+    """(c) `## PM finding 판정` 절은 라운드 수와 무관하게 전량 실린다(marker 밖이라 미선별)."""
+    ticket = _multi_round_ticket(tmp_path / "T-9001-multi.md", rounds=3)
+    _wire(external, monkeypatch, tmp_path, ticket)
+
+    assert external.main(["--ticket", "T-9001", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+
+    for i in range(3):
+        assert f"## PM finding 판정 (round{i})" in out
+        assert f"판정 round{i}" in out
+
+
+def test_ticket_body_selection_still_over_limit_fails_loud_without_sending(
+    external, monkeypatch, tmp_path, capsys,
+):
+    """(d) 선별 후에도 상한을 넘으면 fail-loud 이고 어떤 바이트도 전송되지 않는다."""
+    ticket = _multi_round_ticket(tmp_path / "T-9001-multi.md", rounds=3)
+    _wire(
+        external, monkeypatch, tmp_path, ticket,
+        conf={"review_ticket_body_max_bytes": "50"},
+    )
+
+    assert external.main(["--ticket", "T-9001", "--dry-run"]) == 1
+    captured = capsys.readouterr()
+    assert "상한을 초과" in captured.err
+    assert "선별 전" in captured.err
+    assert "선별 후" in captured.err
+    assert "본문을 자르지 않았고 외부로 전송하지 않습니다" in captured.err
+    assert "라운드2 developer 본문" not in captured.out
+    assert "프롬프트 미리보기" not in captured.out
+
+
+def test_ticket_body_selection_zero_growth_sections_is_byte_identical(
+    external, monkeypatch, tmp_path, capsys,
+):
+    """(e) 성장 절 0개 티켓은 선별 도입 전후로 출력이 동일하다(회귀 불변) — byte 비교."""
+    body = _multi_round_body(rounds=0)
+    ticket = _ticket(tmp_path / "T-9001-zero-growth.md", body=body)
+    _wire(external, monkeypatch, tmp_path, ticket)
+
+    assert external.main(["--ticket", "T-9001", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+
+    assert f"ticket_body_bytes: {len(body.encode('utf-8'))} / 65536" in out
+    assert "생략 라운드: 0개" in out
+    # 선별이 실제로 일어나지 않아 새 요약 헤더가 붙지 않는다 — 원문 그대로.
+    assert "id=T-9001 · title=" not in out
+    assert "(생략:" not in out
+
+
+def test_select_ticket_body_for_review_is_pure_and_deterministic(external):
+    """selection 함수 단위 — 순수 함수로 같은 입력에 같은 결과(부수효과 없음)."""
+    body = _multi_round_body(rounds=2)
+    first = external._select_ticket_body_for_review(body)
+    second = external._select_ticket_body_for_review(body)
+    assert first == second
+    assert first.omitted_rounds == 2
+    assert "라운드0 developer 본문" not in first.text
+    assert "라운드1 developer 본문" in first.text
+
+
+def test_select_ticket_body_for_review_reports_malformed_growth_markers(external):
+    """손상된 성장 절 marker 문법은 형제 파서를 그대로 통해 fail-loud 한다(새 문법 사본 없음)."""
+    body = "## 결정\n결정 내용\n\n<!-- pm-ticket-section:start role=developer -->\n미종결 절\n"
+    with pytest.raises(external.AnchorResolutionError, match="티켓 성장 절 marker"):
+        external._select_ticket_body_for_review(body)

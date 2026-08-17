@@ -4673,6 +4673,126 @@ def _load_ticket_body(ticket_id: str, *, pm_home: Path | None = None) -> str:
     return _load_ticket_body_from_file(_find_ticket_file(ticket_id, pm_home=pm_home))
 
 
+class TicketBodySelection(NamedTuple):
+    """게이트 티켓 본문 절 선별 결과(T-0703) — 최근 라운드만 남긴 본문과 생략한 라운드 수."""
+
+    text: str
+    omitted_rounds: int
+
+
+# 생략 표기 한 줄 — role·ordinal·생략된 byte 크기를 명시한다(§결정 "생략은 표시한다").
+_TICKET_BODY_OMISSION_LINE = "(생략: role={role} ordinal={ordinal} · {n} bytes)\n"
+
+
+def _select_ticket_body_for_review(body: str) -> TicketBodySelection:
+    """역할별 **마지막 라운드만** 남기고 앞선 성장 절을 생략 표기로 접는다(T-0703).
+
+    권위 절(목표·인터페이스·결정·설계·완료 조건·참고·메모)과 역할 절 **밖**의 `## PM finding
+    판정` 절은 `pm-ticket-section` marker 로 감싸이지 않아 원문 위치 그대로 전량 남는다 — 건드리는
+    대상은 marker 로 감싸인 role 성장 절의 byte 범위뿐이다. 새 파싱 문법을 만들지 않고 pm_delegate
+    의 기존 marker 파서(`_ticket_growth_sections`·`parse_ticket_seals`)를 형제 로드로 재사용한다.
+
+    봉인 줄(`pm-ticket-seal`)은 실측상 절의 일부가 아니라 절 바로 다음 줄이다
+    (`seal.line_start == section.marker_end`). 생략하는 라운드는 내용 없는 해시만 남으면
+    리뷰어를 오도하므로 그 봉인 줄도 함께 생략하고, 전량 남기는 마지막 ordinal 의 봉인은 절이
+    그대로 남아 검증 가능하므로 유지한다.
+
+    역할마다 라운드가 하나뿐이면(생략 대상 없음) 원문을 바이트 그대로 반환한다 — 성장 절이
+    없거나 전부 최근 라운드인 티켓의 출력이 이 선별 도입 전후로 동일해야 하기 때문이다(DoD (e)).
+    """
+    delegate = _load_delegate_transport()
+    try:
+        sections = delegate._ticket_growth_sections(body)
+        seals = delegate.parse_ticket_seals(body)
+    except delegate.DelegateError as exc:
+        raise AnchorResolutionError(
+            f"티켓 성장 절 marker 문법이 손상돼 리뷰 입력 절 선별을 할 수 없습니다: {exc}"
+        ) from exc
+    if not sections:
+        return TicketBodySelection(body, 0)
+
+    last_ordinal_by_role: dict[str, int] = {}
+    for section in sections:
+        last_ordinal_by_role[section.role] = max(
+            section.ordinal, last_ordinal_by_role.get(section.role, -1),
+        )
+
+    # marker 파서는 문서를 top-to-bottom 훑어 순서대로 절을 반환한다 — 정렬 없이 그 순서를 그대로
+    # byte-range 대체에 쓴다.
+    replacements: list[tuple[int, int, str]] = []
+    for section in sections:
+        if section.ordinal == last_ordinal_by_role[section.role]:
+            continue  # 역할별 최근 라운드 — 전량 유지
+        removal_end = section.marker_end
+        seal = seals.get((section.role, section.ordinal))
+        if seal is not None and seal.line_start == section.marker_end:
+            removal_end = seal.line_end
+        omitted_bytes = len(body[section.marker_start:removal_end].encode("utf-8"))
+        replacements.append((
+            section.marker_start, removal_end,
+            _TICKET_BODY_OMISSION_LINE.format(
+                role=section.role, ordinal=section.ordinal, n=omitted_bytes,
+            ),
+        ))
+
+    if not replacements:
+        return TicketBodySelection(body, 0)
+
+    parts: list[str] = []
+    cursor = 0
+    for start, end, replacement in replacements:
+        parts.append(body[cursor:start])
+        parts.append(replacement)
+        cursor = end
+    parts.append(body[cursor:])
+    return TicketBodySelection("".join(parts), len(replacements))
+
+
+def _parse_title_from_file(path: Path) -> str | None:
+    """ticket 파일에서 frontmatter title 스칼라를 추출한다(선별 헤더 요약 전용).
+
+    표시용 요약이라 완료 게이트 estimate 해석이 요구하는 YAML 주석-꼬리 정밀도는 필요 없다 —
+    touches 와 같은 경량 스캐너를 그대로 쓴다."""
+    fm_text, _body = _split_ticket_frontmatter(
+        _read_text_shared(path, encoding="utf-8"), source=path,
+    )
+    if fm_text is None:
+        return None
+    for line in fm_text.splitlines():
+        match = re.match(r"^title\s*:\s*(.+)$", line)
+        if match:
+            return match.group(1).strip().strip("\"'")
+    return None
+
+
+def _parse_estimate_display_from_file(path: Path) -> str | None:
+    """ticket 파일에서 frontmatter estimate 스칼라를 추출한다(선별 헤더 요약 전용).
+
+    diff 서킷브레이커의 `_parse_estimate_from_file`(board YAML 로더)과 값이 다를 수 있는 경량
+    스캐너다 — 여기서는 상한을 지어내지 않고 리뷰어에게 보여줄 표시 문자열만 만든다."""
+    fm_text, _body = _split_ticket_frontmatter(
+        _read_text_shared(path, encoding="utf-8"), source=path,
+    )
+    if fm_text is None:
+        return None
+    for line in fm_text.splitlines():
+        match = re.match(r"^estimate\s*:\s*(.+)$", line)
+        if match:
+            return match.group(1).strip().strip("\"'")
+    return None
+
+
+def _ticket_body_selection_header(path: Path, ticket_id: str) -> str:
+    """절 선별이 실제로 일어난 티켓 본문 앞에 붙는 frontmatter 요약 1줄(T-0703 §인터페이스 1)."""
+    title = _parse_title_from_file(path)
+    touches = _parse_touches_from_file(path)
+    estimate = _parse_estimate_display_from_file(path)
+    return (
+        f"id={ticket_id} · title={title or '(미상)'} · "
+        f"touches=[{', '.join(touches)}] · estimate={estimate or '(미상)'}"
+    )
+
+
 def _ticket_body_max_bytes(conf: dict[str, str], cli_override: int | None = None) -> int:
     """티켓 본문 UTF-8 byte 상한. 명시 CLI > local.conf > 안전 기본값(64KB)."""
     if cli_override is not None:
@@ -7627,17 +7747,28 @@ def _main(argv: list[str] | None = None) -> int:
     ticket_body: str | None = None
     ticket_body_bytes = 0
     ticket_body_max_bytes: int | None = None
+    ticket_body_raw_bytes = 0
+    ticket_body_omitted_rounds = 0
 
     def prepare_ticket_body() -> bool:
         nonlocal ticket_body, ticket_body_bytes, ticket_body_max_bytes
+        nonlocal ticket_body_raw_bytes, ticket_body_omitted_rounds
         if not args.ticket:
             return True
         try:
-            ticket_body = (
-                _load_ticket_body_from_file(ticket_body_source)
-                if ticket_body_source is not None
-                else _load_ticket_body(args.ticket, pm_home=pm_home)
+            ticket_file = (
+                ticket_body_source if ticket_body_source is not None
+                else _find_ticket_file(args.ticket, pm_home=pm_home)
             )
+            raw_body = _load_ticket_body_from_file(ticket_file)
+            # 절 선별(T-0703) — 권위 절·PM 판정은 전량, 성장 절은 역할별 마지막 라운드만.
+            selection = _select_ticket_body_for_review(raw_body)
+            if selection.omitted_rounds > 0:
+                header = _ticket_body_selection_header(ticket_file, args.ticket)
+                composed_body = f"{header}\n\n{selection.text}"
+            else:
+                # 생략된 라운드가 없으면 요약 헤더 없이 원문 그대로 — 회귀 불변(DoD (e)).
+                composed_body = selection.text
         except (AnchorResolutionError, OSError, UnicodeError) as exc:
             if args.paths:
                 print(
@@ -7657,13 +7788,18 @@ def _main(argv: list[str] | None = None) -> int:
                 return True
             print(f"오류: 게이트 티켓 본문 로딩 실패 — {exc}", file=sys.stderr)
             return False
+        ticket_body = composed_body
         ticket_body_bytes = len(ticket_body.encode("utf-8"))
+        ticket_body_raw_bytes = len(raw_body.encode("utf-8"))
+        ticket_body_omitted_rounds = selection.omitted_rounds
         ticket_body_max_bytes = _ticket_body_max_bytes(conf, args.ticket_body_max)
         if ticket_body_bytes > ticket_body_max_bytes:
             print(
                 "오류: 게이트 티켓 본문이 review 입력 상한을 초과했습니다 — "
-                f"ticket={args.ticket} · {ticket_body_bytes} bytes > "
-                f"{REVIEW_TICKET_BODY_MAX_BYTES_KEY}={ticket_body_max_bytes} bytes.\n"
+                f"ticket={args.ticket} · 선별 후 {ticket_body_bytes} bytes > "
+                f"{REVIEW_TICKET_BODY_MAX_BYTES_KEY}={ticket_body_max_bytes} bytes "
+                f"(선별 전 {ticket_body_raw_bytes} bytes · 생략 {ticket_body_omitted_rounds}개 "
+                "라운드).\n"
                 "  · 본문을 자르지 않았고 외부로 전송하지 않습니다. 티켓을 분할하거나 "
                 "`--ticket-body-max <bytes>`를 명시해 상한을 올리세요.",
                 file=sys.stderr,
@@ -7706,7 +7842,8 @@ def _main(argv: list[str] | None = None) -> int:
         if ticket_body is not None:
             print(
                 f"ticket_body_bytes: {ticket_body_bytes} / "
-                f"{ticket_body_max_bytes} (included / max)"
+                f"{ticket_body_max_bytes} (included / max) · "
+                f"생략 라운드: {ticket_body_omitted_rounds}개"
             )
         print(relay.dry_run_codex_egress_line(
             escalation_required=codex_egress_required,
