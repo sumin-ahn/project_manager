@@ -1224,7 +1224,7 @@ def test_areas_set_cell_idempotent_same_value_does_not_write(board, monkeypatch)
 
 
 def test_areas_set_cell_write_is_atomic_and_leaves_no_temp(board):
-    """temp + `os.replace` 로 교체하고 `.tmp` 잔재를 남기지 않는다 (ADR-0012)."""
+    """temp + 원자 교체 seam(`atomic_replace`)으로 교체하고 `.tmp` 잔재를 남기지 않는다 (ADR-0012)."""
     board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
     board.areas_set_cell("service-a", "protected", "release")
     leftovers = list(board.AREAS_FILE.parent.glob("*.tmp"))
