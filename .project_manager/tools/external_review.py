@@ -1492,15 +1492,16 @@ _VERSIONED_BLOCK_RULES = """\
 """
 
 
-def _versioned_block_requirement(ticket_body: str | None = None) -> str:
+def _versioned_block_requirement(next_finding_id: str | None = None) -> str:
     """추가 리뷰어 채널의 구조화 블록 요구 — 골격·접두·다음 ID 를 엔진에서 렌더한다.
 
-    리뷰어 세션은 라운드마다 fresh 라 이전 라운드의 ID 를 모른다. 티켓 본문(프롬프트에 이미
-    실린 입력)에서 이 채널의 최대 번호를 읽어 **다음 ID 실값**을 규칙에 싣는다.
+    리뷰어 세션은 라운드마다 fresh 라 이전 라운드의 ID 를 모른다. 회수 대상 티켓에서 읽어 온
+    **다음 ID 실값**(`_next_external_finding_id`)을 규칙에 싣는다. 실값이 없으면(회수 대상 없는
+    실행) 이 채널의 첫 ID 로 돌려준다.
     """
     delegate = _load_pm_delegate()
     role = delegate.EXTERNAL_REVIEW_ROLE
-    next_id = delegate.next_review_finding_id(ticket_body or "", role)
+    next_id = next_finding_id or delegate.next_review_finding_id("", role)
     return (
         _VERSIONED_BLOCK_HEADER
         + delegate.render_pm_review_block_skeleton(role)
@@ -4951,17 +4952,19 @@ def build_prompt(
     confirm_fix_evidence: str | None = None,
     *,
     ticket_id: str | None = None,
+    next_finding_id: str | None = None,
 ) -> str:
     """맥락 헤더 + 티켓 본문 + diff 를 결합해 표준 리뷰 프롬프트를 생성한다.
 
     `confirm_fix` 면 확인 전용 라운드 헌장을 앞에 얹는다 — 이 라운드는 라운드의 연장이 아니라
     직전 지적의 해소 확인이고, 새로 발견한 것은 다음 라운드 거리가 아니라 **재설계 신호**다.
     `confirm_fix_evidence`(라운드 장부가 만든 직전 must-fix 근거 블록)가 있으면 헌장 **바로
-    뒤**에 싣는다 — 임무 선언과 그 임무의 대상이 붙어 있어야 fresh 세션이 무엇을 확인하는지 안다."""
+    뒤**에 싣는다 — 임무 선언과 그 임무의 대상이 붙어 있어야 fresh 세션이 무엇을 확인하는지 안다.
+    `next_finding_id` 는 회수 대상 티켓에서 읽은 이 채널의 다음 ID 실값이다."""
     parts: list[str] = [
         _load_review_context().rstrip() + "\n\n",
         _OUTPUT_FORMAT_BLOCK,
-        _versioned_block_requirement(ticket_body),
+        _versioned_block_requirement(next_finding_id),
     ]
     if confirm_fix:
         parts.append(_CONFIRM_FIX_CHARTER)
@@ -7860,6 +7863,7 @@ def _main(argv: list[str] | None = None) -> int:
             adr_refs=args.adr, gate=args.gate,
             confirm_fix=args.confirm_fix,
             confirm_fix_evidence=confirm_fix_evidence,
+            next_finding_id=_next_external_finding_id(args, pm_home=pm_home),
         )
 
     # 구키 deprecation — 미리보기·실행 **양쪽**에서 같은 자리에 안내. 게이트 판정 앞이라 꺼져 있는
@@ -8060,6 +8064,31 @@ def _harvest_target_ticket(
     except AnchorResolutionError as exc:
         return None, f"게이트 {gate} 를 보드에서 찾지 못해 회수하지 않았습니다: {exc}"
     return gate, None
+
+
+def _next_external_finding_id(args, *, pm_home: Path | None) -> str | None:
+    """회수 대상 티켓 파일에서 이 채널의 다음 finding ID 실값을 읽는다(대상 없으면 None).
+
+    프롬프트에 실린 티켓 본문에서 파생하면 문서화된 설계 리뷰 형상(`--paths … --gate T-NNNN`)은
+    본문이 실리지 않아 매 라운드 첫 번호를 지시하게 되고, 2라운드가 같은 ID 를 재선언해 회수가
+    거부된다. 대상 해소는 회수 경로와 **같은 함수**를 써서 두 표면이 갈리지 않게 한다.
+    """
+    ticket, _problem = _harvest_target_ticket(args, pm_home=pm_home)
+    if not ticket:
+        return None
+    delegate = _load_pm_delegate()
+    try:
+        body = _load_ticket_body_from_file(
+            _find_ticket_file(ticket, pm_home=pm_home)
+        )
+    except (AnchorResolutionError, OSError, UnicodeError) as exc:
+        print(
+            f"경고: {ticket} 본문을 읽지 못해 다음 finding ID 실값을 프롬프트에 싣지 "
+            f"못했습니다({exc}) — 이 라운드는 첫 ID 로 안내합니다.",
+            file=sys.stderr,
+        )
+        return None
+    return delegate.next_review_finding_id(body, delegate.EXTERNAL_REVIEW_ROLE)
 
 
 def _harvest_external_review_section(
