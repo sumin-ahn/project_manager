@@ -251,7 +251,7 @@ def _absorb_engine_rev_skew_for_recovery(exc, boundary: str) -> bool:
 
 
 def _write_machine_line(text: str) -> None:
-    """기계 판독 한 줄(JSON 페이로드)을 콘솔 코덱 전환과 무관하게 UTF-8 로 내보낸다 (T-0693).
+    """기계 판독 한 줄(JSON 페이로드)을 콘솔 코덱 전환과 무관하게 UTF-8 로 내보낸다.
 
     사람 출력(``print``)은 PowerShell 캡처에서 콘솔 codepage(cp949 등)로 강등될 수 있고 그
     치환은 되돌릴 수 없다 — 다른 프로세스가 파싱하는 출력은 공용 seam 으로 UTF-8 bytes 를
@@ -1259,7 +1259,7 @@ def backfill_ticket_seals(
 
 # ── 티켓 성장 장부 (권위 기록·티켓 파일 밖) ─────────────────────────────────
 # 마지막 역할 절을 봉인과 함께 통째로 지우면 티켓 안에는 검증할 대상이 남지 않는다. 그래서 절
-# 개수·체인의 권위 기록을 티켓 밖 append-only sidecar 에 둔다(T-0699). 위치는 두 형상(board-git
+# 개수·체인의 권위 기록을 티켓 밖 append-only sidecar 에 둔다. 위치는 두 형상(board-git
 # 공유·solo/legacy)에서 같은 상대 경로인 `tickets/.growth/T-NNNN.jsonl` 이다.
 TICKET_GROWTH_LEDGER_DIRNAME = ".growth"
 TICKET_GROWTH_LEDGER_SUFFIX = ".jsonl"
@@ -1839,7 +1839,7 @@ def _posix_mode_supported(directory: Path) -> bool:
             try:
                 probe.unlink()
             except OSError as exc:
-                # probe 는 진단용이라 실패가 위임을 막지 않는다 — 대신 잔여 파일을 loud 로 남긴다(T-0734).
+                # probe 는 진단용이라 실패가 위임을 막지 않는다 — 대신 잔여 파일을 loud 로 남긴다.
                 _warn_probe_cleanup_failure(probe, exc)
 
 
@@ -6622,7 +6622,7 @@ def _prompt_file_denylist_pattern(prompt_file: Path) -> str | None:
     except OSError:
         # resolve() 실패(끊긴 symlink·권한·긴 경로)는 해소 경로 후보만 잃는다 — 원본 경로 후보는 이미
         # 목록에 있어 이름·디렉토리 성분 스캔이 계속되고, 파일 자체는 뒤 읽기 단계에서 다시 실패한다
-        # (fail-closed 방향). 그래서 사유 있는 fail-soft 로 둔다(T-0734).
+        # (fail-closed 방향). 그래서 사유 있는 fail-soft 로 둔다.
         pass
     for cand in candidates:
         # 이름은 **소문자 정규화** 후 판정한다 — `.ENV`·`DEPLOY.PEM`·`Credentials.env` 가 내용을 읽기도

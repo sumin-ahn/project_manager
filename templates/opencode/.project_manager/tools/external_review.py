@@ -277,6 +277,11 @@ _ENGINE_REV_SKEW_RECOVERY_REASONS = {
         "부재/손상/혼합 사본을 흡수하되 조용하지 않게 사유를 stderr 로 남기고 종전 읽기로 "
         "진행한다(잃는 것은 Windows 에서 이 판독 중의 원자 교체 한 번)"
     ),
+    "ticket_harvest": (
+        "회수는 이미 **끝나고 과금된** 라운드의 부기다 — 여기서 사본 불일치로 traceback 을 내면 "
+        "리뷰 판정과 요약이 이미 출력된 뒤 실행이 죽어, 채택자에게는 '리뷰가 실패했다'로만 보인다. "
+        "설계된 회수 실패 처방(재동기 안내 + rc≠0 + raw 경로)으로 접고 산출은 raw 에 남긴다"
+    ),
     "partial_container_cleanup": (
         "구성 실패로 남은 부분 격리 컨테이너 정리는 **원래 실패를 덮지 않는 것**이 계약이다 — "
         "여기서 갈아타면 격리가 왜 실패했는지가 사라진다. 삭제 수단이 형제 모듈이라 사본 불일치도 "
@@ -1474,25 +1479,36 @@ _VERSIONED_BLOCK_HEADER = """\
 
 """
 _VERSIONED_BLOCK_RULES = """\
-- `id` 는 이 채널 전용 접두 `{prefix}-` 를 쓴다(`{prefix}-001` 부터 · 티켓 전역 유일).
-- `severity` 가 "반드시 고쳐야 하는가"의 단일 진실이다(`must-fix` 는 산문 must-fix 절과 같은 건수).
+- `id` 는 이 채널 전용 접두 `{prefix}-` 를 쓰고 **이번 라운드는 `{next_id}` 부터** 매긴다 —
+  티켓 전역 유일이라 본문에 이미 있는 ID 를 다시 쓰면 이 라운드는 회수되지 않는다.
+- `severity` 가 "반드시 고쳐야 하는가"의 단일 진실이다(가장 높은 값 `{top_severity}` 는 산문
+  must-fix 절과 같은 건수여야 한다).
 - `authority` 는 티켓 §목표/§결정 또는 `[[T-NNNN]]`·`[[ADR-NNNN]]` 같은 권위 근거를 적는다.
 - 직전 라운드 지적의 해소 확인 라운드는 그 `{prefix}-` ID 를 `confirmations` 에 싣는다.
+- 위 티켓 본문에 이미 있는 블록(지난 라운드 산출·시드 골격)을 회신에 **재인용하지 마라** —
+  이 회신에는 네가 이번에 낸 블록 하나만 있어야 한다.
 - 블록이 없거나 스키마를 어기면 이 라운드는 회수 실패로 종료코드가 0 이 아니다.
 
 """
 
 
-def _versioned_block_requirement() -> str:
-    """추가 리뷰어 채널의 구조화 블록 요구 — 골격·접두를 엔진 상수에서 렌더한다."""
+def _versioned_block_requirement(ticket_body: str | None = None) -> str:
+    """추가 리뷰어 채널의 구조화 블록 요구 — 골격·접두·다음 ID 를 엔진에서 렌더한다.
+
+    리뷰어 세션은 라운드마다 fresh 라 이전 라운드의 ID 를 모른다. 티켓 본문(프롬프트에 이미
+    실린 입력)에서 이 채널의 최대 번호를 읽어 **다음 ID 실값**을 규칙에 싣는다.
+    """
     delegate = _load_pm_delegate()
     role = delegate.EXTERNAL_REVIEW_ROLE
+    next_id = delegate.next_review_finding_id(ticket_body or "", role)
     return (
         _VERSIONED_BLOCK_HEADER
         + delegate.render_pm_review_block_skeleton(role)
         + "\n"
         + _VERSIONED_BLOCK_RULES.format(
             prefix=delegate.PM_REVIEW_FINDING_ID_PREFIXES[role],
+            next_id=next_id,
+            top_severity=delegate.PM_REVIEW_SEVERITIES[0],
         )
     )
 
@@ -4719,7 +4735,7 @@ def _load_ticket_body(ticket_id: str, *, pm_home: Path | None = None) -> str:
 
 
 class TicketBodySelection(NamedTuple):
-    """게이트 티켓 본문 절 선별 결과(T-0703) — 최근 라운드만 남긴 본문과 생략한 라운드 수."""
+    """게이트 티켓 본문 절 선별 결과 — 최근 라운드만 남긴 본문과 생략한 라운드 수."""
 
     text: str
     omitted_rounds: int
@@ -4730,7 +4746,7 @@ _TICKET_BODY_OMISSION_LINE = "(생략: role={role} ordinal={ordinal} · {n} byte
 
 
 def _select_ticket_body_for_review(body: str) -> TicketBodySelection:
-    """역할별 **마지막 라운드만** 남기고 앞선 성장 절을 생략 표기로 접는다(T-0703).
+    """역할별 **마지막 라운드만** 남기고 앞선 성장 절을 생략 표기로 접는다.
 
     권위 절(목표·인터페이스·결정·설계·완료 조건·참고·메모)과 역할 절 **밖**의 `## PM finding
     판정` 절은 `pm-ticket-section` marker 로 감싸이지 않아 원문 위치 그대로 전량 남는다 — 건드리는
@@ -4945,7 +4961,7 @@ def build_prompt(
     parts: list[str] = [
         _load_review_context().rstrip() + "\n\n",
         _OUTPUT_FORMAT_BLOCK,
-        _versioned_block_requirement(),
+        _versioned_block_requirement(ticket_body),
     ]
     if confirm_fix:
         parts.append(_CONFIRM_FIX_CHARTER)
@@ -7791,7 +7807,7 @@ def _main(argv: list[str] | None = None) -> int:
                 else _find_ticket_file(args.ticket, pm_home=pm_home)
             )
             raw_body = _load_ticket_body_from_file(ticket_file)
-            # 절 선별(T-0703) — 권위 절·PM 판정은 전량, 성장 절은 역할별 마지막 라운드만.
+            # 절 선별 — 권위 절·PM 판정은 전량, 성장 절은 역할별 마지막 라운드만.
             selection = _select_ticket_body_for_review(raw_body)
             if selection.omitted_rounds > 0:
                 header = _ticket_body_selection_header(ticket_file, args.ticket)
@@ -8016,8 +8032,38 @@ def _main(argv: list[str] | None = None) -> int:
             isolation.close()
 
 
+# 회수 경계에서 사본 불일치를 접을 때의 단일 문구 — 두 로드/쓰기 지점이 같은 처방을 낸다.
+_HARVEST_ENGINE_SKEW_PROBLEM = (
+    "엔진 사본 불일치로 회수를 중단했습니다 — {detail} "
+    "(`pm-update` 로 재동기한 뒤 같은 티켓으로 라운드를 다시 돌리세요)"
+)
+
+
+def _harvest_target_ticket(
+    args, *, pm_home: Path | None,
+) -> tuple[str | None, str | None]:
+    """회수 대상 티켓과 (대상이 없을 때의) 사유 — `--ticket` 우선, 없으면 ticket 형상 `--gate`.
+
+    문서화된 설계 리뷰 형상은 `--paths … --gate T-NNNN` 이라 `--ticket` 이 비어 있다. 그 실행의
+    산출도 그 티켓의 것이므로 같은 회수 규칙을 탄다(자유 문자열 게이트는 대상이 아니다).
+    """
+    if args.ticket:
+        return args.ticket, None
+    gate = getattr(args, "gate", None)
+    if not gate:
+        return None, None
+    board = _load_board()
+    if not board._is_valid_ticket_id(gate):
+        return None, None                     # 자유 문자열 게이트 — 회수 대상 아님(조용).
+    try:
+        _find_ticket_file(gate, pm_home=pm_home)
+    except AnchorResolutionError as exc:
+        return None, f"게이트 {gate} 를 보드에서 찾지 못해 회수하지 않았습니다: {exc}"
+    return gate, None
+
+
 def _harvest_external_review_section(
-    args, result: dict, *, pm_home: Path | None,
+    ticket: str, result: dict, *, pm_home: Path | None,
 ) -> str | None:
     """추가 리뷰어 산출을 게이트 티켓의 `external-reviewer` 절로 회수한다.
 
@@ -8025,28 +8071,40 @@ def _harvest_external_review_section(
     회신 전문(그 안에 versioned 블록 하나)이고, 봉인·도착지·판정 표면은 내부 리뷰어 harvest 와
     같다(writer 만 `by=external-review`). 문제가 있으면 사유 문자열을 돌려주고(호출부가 rc 로
     표면화), 정상이면 None 이다.
+
+    쓰기 엔진은 **이 실행의 형제 사본**이고 데이터 좌표만 PM 홈이다 — PM 홈의 import 사본을
+    로드하면 stale 엔진이 회수를 쓰게 된다(문서화된 실행 형상은 worktree canonical + PM 홈 데이터).
     """
     reply = result.get("answer") or result.get("output") or ""
     if not reply.strip():
         return "리뷰어 회신이 비어 회수할 산출이 없습니다"
-    # 로더 실패(사본 skew 포함)는 흡수하지 않는다 — 스키마가 갈린 엔진으로 티켓을 쓰지 않는다.
-    delegate = _load_pm_delegate()
-    content, problem = delegate.build_external_review_section_content(
-        reply, today=datetime.date.today().isoformat(),
-    )
+    home = pm_home or REPO
+    try:
+        delegate = _load_pm_delegate()
+        board = delegate.anchor_board_to_repo(_load_board(), home)
+    except RuntimeError as exc:
+        if not _absorb_engine_rev_skew_for_recovery(exc, "ticket_harvest"):
+            raise
+        return _HARVEST_ENGINE_SKEW_PROBLEM.format(detail=exc)
     try:
         write = delegate.write_external_reviewer_section(
-            ticket=args.ticket, content=content, pm_home=pm_home or REPO,
+            ticket=ticket, reply_text=reply,
+            today=datetime.date.today().isoformat(),
+            pm_home=home, board=board,
         )
+    except RuntimeError as exc:
+        if not _absorb_engine_rev_skew_for_recovery(exc, "ticket_harvest"):
+            raise
+        return _HARVEST_ENGINE_SKEW_PROBLEM.format(detail=exc)
     except (delegate.DelegateError, OSError, UnicodeError) as exc:
         return f"티켓 절 기록 실패: {exc}"
     print(
-        f"[external-review] 티켓 회수: {args.ticket} "
+        f"[external-review] 티켓 회수: {ticket} "
         f"{delegate.EXTERNAL_REVIEW_ROLE}[{write.ordinal}] → {write.path}"
         + ("" if write.sync_ready else " (board-git 동기 미준비)"),
         file=sys.stderr,
     )
-    return problem
+    return write.problem
 
 
 def _run_isolated_review(
@@ -8253,10 +8311,22 @@ def _run_isolated_review(
 
     rc = determine_exit_code(result)
     # 라운드 장부 마감 **뒤**에 회수한다 — 장부는 종전대로 기록되고, 회수 실패는 판정 rc 를
-    # 덮지 않고 rc=0 인 실행만 실패로 올린다. `--ticket` 없는 실행(자유 게이트·`--paths` 단독)과
-    # 회신 없이 끝난 실행은 회수 대상이 아니다.
-    if started and args.ticket and not result.get("failed"):
-        problem = _harvest_external_review_section(args, result, pm_home=pm_home)
+    # 덮지 않고 rc=0 인 실행만 실패로 올린다. 대상은 `--ticket` 또는 보드에 실재하는 ticket
+    # 형상 `--gate` 이고, 대상이 있는데 회수하지 않은 실행은 사유를 반드시 말한다(조용한 누락 금지).
+    harvest_ticket, target_problem = _harvest_target_ticket(args, pm_home=pm_home)
+    if target_problem is not None:
+        print(f"경고: 추가 리뷰어 산출 미회수 — {target_problem}", file=sys.stderr)
+    elif harvest_ticket and not (started and not result.get("failed")):
+        print(
+            f"경고: 추가 리뷰어 산출 미회수 — {harvest_ticket}: 이번 라운드는 "
+            "리뷰어 회신을 받지 못했습니다(전송 실패·타임아웃). 산출 없음이라 절을 만들지 "
+            f"않습니다 · raw={result.get('file')}",
+            file=sys.stderr,
+        )
+    if harvest_ticket and started and not result.get("failed"):
+        problem = _harvest_external_review_section(
+            harvest_ticket, result, pm_home=pm_home,
+        )
         if problem is not None:
             print(
                 f"오류: 추가 리뷰어 산출 회수 문제 — {problem}\n"

@@ -386,7 +386,7 @@ def _flush_quietly(stream: Any) -> None:
 
 
 def write_machine_line(text: str, *, stream: Any = None) -> None:
-    """기계 판독 한 줄을 콘솔 코덱 전환과 무관하게 UTF-8 로 내보낸다 (T-0693).
+    """기계 판독 한 줄을 콘솔 코덱 전환과 무관하게 UTF-8 로 내보낸다.
 
     ``configure_console_utf8`` 은 PowerShell 캡처(非tty)에서 텍스트 스트림을 콘솔 codepage
     (cp949 등)로 되돌리고 인코딩 불가 문자를 ``pm_translit`` 로 치환한다. 그 치환은 되돌릴 수
@@ -397,6 +397,10 @@ def write_machine_line(text: str, *, stream: Any = None) -> None:
     그 경로는 콘솔 코덱을 타지 않으므로 손실 표면이 아니다.
     """
     target = sys.stdout if stream is None else stream
+    if target is None:
+        # ``pythonw``/``pyw`` 기동은 표준 스트림이 없다 — 종전 ``print`` 처럼 무출력이 맞다
+        # (여기서 AttributeError 로 죽으면 그 형상에서 CLI 전체가 실패한다).
+        return
     line = text + "\n"
     buffer = getattr(target, "buffer", None)
     if buffer is None:

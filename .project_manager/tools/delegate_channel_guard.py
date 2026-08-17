@@ -1628,7 +1628,7 @@ def _cli_fail_open(reason: str) -> dict[str, str]:
 
 
 def _write_machine_line(text: str, stream: TextIO, seam) -> None:
-    """호스트가 파싱하는 한 줄을 콘솔 코덱 전환과 무관하게 UTF-8 로 내보낸다 (T-0693).
+    """호스트가 파싱하는 한 줄을 콘솔 코덱 전환과 무관하게 UTF-8 로 내보낸다.
 
     ``seam`` 은 ``main`` 이 진입에서 로드한 ``console_encoding`` 모듈이다. 가드 자신이 죽은
     fail-open 경계는 ``None`` 을 받는다 — 그 자리는 ``configure_console_utf8`` 이 아예 돌지

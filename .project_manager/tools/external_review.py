@@ -4735,7 +4735,7 @@ def _load_ticket_body(ticket_id: str, *, pm_home: Path | None = None) -> str:
 
 
 class TicketBodySelection(NamedTuple):
-    """게이트 티켓 본문 절 선별 결과(T-0703) — 최근 라운드만 남긴 본문과 생략한 라운드 수."""
+    """게이트 티켓 본문 절 선별 결과 — 최근 라운드만 남긴 본문과 생략한 라운드 수."""
 
     text: str
     omitted_rounds: int
@@ -4746,7 +4746,7 @@ _TICKET_BODY_OMISSION_LINE = "(생략: role={role} ordinal={ordinal} · {n} byte
 
 
 def _select_ticket_body_for_review(body: str) -> TicketBodySelection:
-    """역할별 **마지막 라운드만** 남기고 앞선 성장 절을 생략 표기로 접는다(T-0703).
+    """역할별 **마지막 라운드만** 남기고 앞선 성장 절을 생략 표기로 접는다.
 
     권위 절(목표·인터페이스·결정·설계·완료 조건·참고·메모)과 역할 절 **밖**의 `## PM finding
     판정` 절은 `pm-ticket-section` marker 로 감싸이지 않아 원문 위치 그대로 전량 남는다 — 건드리는
@@ -7807,7 +7807,7 @@ def _main(argv: list[str] | None = None) -> int:
                 else _find_ticket_file(args.ticket, pm_home=pm_home)
             )
             raw_body = _load_ticket_body_from_file(ticket_file)
-            # 절 선별(T-0703) — 권위 절·PM 판정은 전량, 성장 절은 역할별 마지막 라운드만.
+            # 절 선별 — 권위 절·PM 판정은 전량, 성장 절은 역할별 마지막 라운드만.
             selection = _select_ticket_body_for_review(raw_body)
             if selection.omitted_rounds > 0:
                 header = _ticket_body_selection_header(ticket_file, args.ticket)
