@@ -127,6 +127,20 @@ def wp(proj):
     return _load_wp_bound(proj)
 
 
+def _patch_atomic_replace(monkeypatch, module, fake):
+    """엔진이 원자 교체에 **실제로 부르는** seam(`file_lock.atomic_replace`)을 대역으로 바꾼다.
+
+    `os.replace` 는 그 seam 의 POSIX 분기 구현 세부다 — Windows 분기는 Win32 rename 이라
+    `os.replace` 에 건 주입을 지나지 않는다. 관측 지점이 엔진의 호출 지점과 같아야 두 OS 에서
+    같은 성질이 고정된다. worktree_pool 은 seam 을 import 시점에 전역(`file_lock`)으로 받으므로
+    그 객체에 건다. 반환값은 seam 모듈 — 실패 주입이 Windows 분기와 같은 예외 클래스
+    (`AtomicReplaceError`·`OSError` 서브클래스)를 쓸 수 있다.
+    """
+    seam = module.file_lock
+    monkeypatch.setattr(seam, "atomic_replace", fake)
+    return seam
+
+
 # ── mock git runner (단위테스트용 DI seam) ───────────────────────────────────
 
 
@@ -4156,7 +4170,7 @@ def test_install_protected_hook_atomically_replaces_every_hook_and_sidecar(wp, m
     expected = wp.protected_hook_artifacts(
         "A", ["main", "release"], gate_mode="self-test", test_cmd="go test ./...")
     replaced = []
-    real_replace = wp.os.replace
+    real_replace = wp.file_lock.atomic_replace
 
     def inspect_then_replace(src, dst):
         src, dst = Path(src), Path(dst)
@@ -4168,7 +4182,7 @@ def test_install_protected_hook_atomically_replaces_every_hook_and_sidecar(wp, m
         replaced.append(dst)
         real_replace(src, dst)
 
-    monkeypatch.setattr(wp.os, "replace", inspect_then_replace)
+    _patch_atomic_replace(monkeypatch, wp, inspect_then_replace)
     assert wp.install_protected_hook(
         "A", ["main", "release"], gate_mode="self-test",
         test_cmd="go test ./...", git_runner=FakeGit()) is True
@@ -4196,14 +4210,16 @@ def test_install_protected_hook_contract_remains_whole_on_intermediate_failure(
         "A", ["main"], gate_mode="self-test", test_cmd="old-test",
         git_runner=FakeGit()) is True
     contract = wp.REPO_HOOKS_DIR / "A" / "gate-contract"
-    real_replace = wp.os.replace
+    seam = wp.file_lock
+    real_replace = seam.atomic_replace
 
     def fail_once(src, dst):
         if Path(dst).name == fail_at:
-            raise OSError(f"injected failure at {fail_at}")
+            # Windows 분기가 실패에서 내는 클래스 그대로(OSError 서브클래스).
+            raise seam.AtomicReplaceError(f"injected failure at {fail_at}")
         real_replace(src, dst)
 
-    monkeypatch.setattr(wp.os, "replace", fail_once)
+    _patch_atomic_replace(monkeypatch, wp, fail_once)
     with pytest.raises(OSError, match="injected failure"):
         wp.install_protected_hook(
             "A", ["main"], gate_mode="release", test_cmd="new-test",
