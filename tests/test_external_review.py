@@ -50,6 +50,19 @@ def external():
     return _load("external_review")
 
 
+def _patch_atomic_replace(monkeypatch, module, fake):
+    """`module` 이 원자 교체에 **실제로 부르는** seam(`file_lock.atomic_replace`)을 대역으로 바꾼다.
+
+    `os.replace` 는 그 seam 의 POSIX 분기 구현 세부다 — Windows 분기는 Win32 rename 이라
+    `os.replace` 에 건 주입을 지나지 않는다. 엔진 모듈이 seam 을 받는 형상은 둘이다: import
+    시점 전역(`board.file_lock`)과 쓰기 경로 지연 로더(`review_rounds._load_file_lock()`·
+    프로세스 캐시). 그 실제 지점에 걸어야 두 OS 에서 같은 관측이 선다.
+    """
+    seam = getattr(module, "file_lock", None) or module._load_file_lock()
+    monkeypatch.setattr(seam, "atomic_replace", fake)
+    return seam
+
+
 def test_build_prompt_ticket_body_header_order_snapshot(external, monkeypatch, tmp_path):
     """게이트 ID 다음·diff 앞에 전체 티켓 본문이 놓이는 프롬프트 형상을 고정한다."""
     monkeypatch.setattr(external, "REVIEW_CONTEXT_FILE", tmp_path / "missing-context.md")
@@ -928,11 +941,21 @@ def test_ledger_written_to_local_scratch(external, monkeypatch, tmp_path):
 def test_save_ledger_uses_unique_tmp_names(external, tmp_path, monkeypatch):
     """저장 tmp 는 pid+uuid 로 unique — 고정 `.tmp` 충돌(카운트 유실·write 예외) 없음 (MF-B).
 
-    os.replace 를 가로채 tmp 경로를 캡처한다. 두 번 저장하면 서로 다른 tmp 이름(pid 포함)이라
+    원자 교체 seam 을 가로채 tmp 경로를 캡처한다. 두 번 저장하면 서로 다른 tmp 이름(pid 포함)이라
     동시 실행이 같은 임시 파일을 밟지 않는다 — 순차 호출로 충돌 부재를 단언(실 동시성 스트레스 불요)."""
     monkeypatch.setattr(external, "REPO", tmp_path)
     seen: list[str] = []
-    monkeypatch.setattr(external.os, "replace", lambda src, dst: seen.append(str(src)))
+
+    def capture(src, dst):
+        seen.append(str(src))
+
+    # 장부는 review_rounds 가, shell 소비 잔여 표식은 board 가 각자 자기 seam 으로 교체한다 —
+    # 두 지점 모두 건다. `_load_board` 는 호출마다 새 모듈을 만들므로 인스턴스를 고정한 뒤 건다
+    # (고정하지 않으면 두 번째 저장이 패치 안 된 새 모듈로 쓴다).
+    _patch_atomic_replace(monkeypatch, external._load_review_rounds(), capture)
+    board = external._load_board()
+    monkeypatch.setattr(external, "_load_board", lambda: board)
+    _patch_atomic_replace(monkeypatch, board, capture)
     external._save_round_ledger({"a": 1})
     external._save_round_ledger({"b": 2})
     ledger_tmps = [s for s in seen if "review_rounds.json." in s]

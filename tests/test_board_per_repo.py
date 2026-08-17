@@ -63,6 +63,20 @@ def board(tmp_path, monkeypatch):
     return mod
 
 
+def _patch_atomic_replace(monkeypatch, module, fake):
+    """엔진이 원자 교체에 **실제로 부르는** seam(`file_lock.atomic_replace`)을 대역으로 바꾼다.
+
+    `os.replace` 는 그 seam 의 POSIX 분기 구현 세부다 — Windows 분기는 Win32 rename 이라
+    `os.replace` 에 건 주입을 지나지 않는다. 관측 지점이 엔진의 호출 지점과 같아야 두 OS 에서
+    같은 성질이 고정된다. board 는 seam 을 import 시점에 전역(`board.file_lock`)으로 받으므로
+    그 객체에 건다. 반환값은 seam 모듈 — 실패 주입이 Windows 분기와 같은 예외 클래스
+    (`AtomicReplaceError`·`OSError` 서브클래스)를 쓸 수 있다.
+    """
+    seam = module.file_lock
+    monkeypatch.setattr(seam, "atomic_replace", fake)
+    return seam
+
+
 # per-repo 스키마 (ADR-0014·base 없음 — T-0075 이전): | repo | prefix | git | test_cmd | owner |
 _NEW_SCHEMA = (
     "# Area Registry\n\n"
@@ -1194,12 +1208,13 @@ def test_areas_set_cell_absent_registry_fail_loud(board):
 
 
 def test_areas_set_cell_idempotent_same_value_does_not_write(board, monkeypatch):
-    """같은 값 재설정은 no-op — `os.replace`(atomic write)를 아예 부르지 않는다(멱등)."""
+    """같은 값 재설정은 no-op — 원자 교체(atomic write)를 아예 부르지 않는다(멱등)."""
     board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
     calls: list = []
-    real_replace = board.os.replace
-    monkeypatch.setattr(board.os, "replace",
-                        lambda src, dst: (calls.append((src, dst)), real_replace(src, dst))[1])
+    real_replace = board.file_lock.atomic_replace
+    _patch_atomic_replace(
+        monkeypatch, board,
+        lambda src, dst: (calls.append((src, dst)), real_replace(src, dst))[1])
     assert board.areas_set_cell("service-a", "protected", "main") == ("main", "main")
     assert calls == []
     assert board.AREAS_FILE.read_text(encoding="utf-8") == _AREA_OWNER_SCHEMA
@@ -1209,7 +1224,7 @@ def test_areas_set_cell_idempotent_same_value_does_not_write(board, monkeypatch)
 
 
 def test_areas_set_cell_write_is_atomic_and_leaves_no_temp(board):
-    """temp + `os.replace` 로 교체하고 `.tmp` 잔재를 남기지 않는다 (ADR-0012)."""
+    """temp + 원자 교체 seam(`atomic_replace`)으로 교체하고 `.tmp` 잔재를 남기지 않는다 (ADR-0012)."""
     board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
     board.areas_set_cell("service-a", "protected", "release")
     leftovers = list(board.AREAS_FILE.parent.glob("*.tmp"))
@@ -1225,13 +1240,15 @@ def test_areas_set_cell_strips_value(board):
 
 
 def test_areas_set_cell_removes_temp_on_write_failure(board, monkeypatch):
-    """쓰기 실패로 `os.replace` 에 못 가도 `.tmp` 잔재를 남기지 않는다(try/finally)."""
+    """쓰기 실패로 원자 교체에 못 가도 `.tmp` 잔재를 남기지 않는다(try/finally)."""
     board.AREAS_FILE.write_text(_AREA_OWNER_SCHEMA, encoding="utf-8")
+    seam = board.file_lock
 
     def boom(src, dst):
-        raise OSError("disk full")
+        # Windows 분기가 실패에서 내는 클래스 그대로(OSError 서브클래스).
+        raise seam.AtomicReplaceError("disk full")
 
-    monkeypatch.setattr(board.os, "replace", boom)
+    _patch_atomic_replace(monkeypatch, board, boom)
     with pytest.raises(OSError):
         board.areas_set_cell("service-a", "protected", "release")
     assert list(board.AREAS_FILE.parent.glob("*.tmp")) == []
@@ -1270,9 +1287,10 @@ def test_areas_set_cell_holds_board_lock(board, monkeypatch):
         events.append("unlock")
 
     monkeypatch.setattr(board, "board_lock", spy_lock)
-    real_replace = board.os.replace
-    monkeypatch.setattr(board.os, "replace",
-                        lambda src, dst: (events.append("write"), real_replace(src, dst))[1])
+    real_replace = board.file_lock.atomic_replace
+    _patch_atomic_replace(
+        monkeypatch, board,
+        lambda src, dst: (events.append("write"), real_replace(src, dst))[1])
     board.areas_set_cell("service-a", "protected", "release")
     assert events == ["lock", "write", "unlock"]
 

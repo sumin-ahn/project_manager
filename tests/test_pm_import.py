@@ -87,6 +87,19 @@ def pm_import():
     return _load_pm_import()
 
 
+def _patch_atomic_replace(monkeypatch, module, fake):
+    """엔진이 원자 교체에 **실제로 부르는** seam(`file_lock.atomic_replace`)을 대역으로 바꾼다.
+
+    `os.replace` 는 그 seam 의 POSIX 분기 구현 세부다 — Windows 분기는 Win32 rename 이라
+    `os.replace` 에 건 주입을 지나지 않는다. pm_import 는 복구 채널이라 seam 을 import 시점이
+    아니라 쓰기 경로에서 캐시 로더(`_load_file_lock()`·프로세스 1회)로 받으므로, 그 로더가
+    돌려주는 모듈 객체에 건다.
+    """
+    seam = module._load_file_lock()
+    monkeypatch.setattr(seam, "atomic_replace", fake)
+    return seam
+
+
 @pytest.fixture(scope="module")
 def pm_config():
     return _load_pm_config()
@@ -542,14 +555,14 @@ def test_general_conf_writer_normalizes_every_key_atomically_for_all_readers(
         f"# header\n{key}=first\nsession=keep\n{key}=stale\n{key}=\n",
         encoding="utf-8",
     )
-    real_replace = os.replace
+    real_replace = pm_import._load_file_lock().atomic_replace
     replacements = []
 
     def recording_replace(src, dst):
         replacements.append((Path(src), Path(dst)))
         real_replace(src, dst)
 
-    monkeypatch.setattr(pm_import.os, "replace", recording_replace)
+    _patch_atomic_replace(monkeypatch, pm_import, recording_replace)
     assert pm_import._write_conf_keys(local_conf, {key: value}) is True
 
     text = local_conf.read_text(encoding="utf-8")

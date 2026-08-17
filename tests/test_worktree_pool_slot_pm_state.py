@@ -73,6 +73,20 @@ def wp(project: Path):
     return module
 
 
+def _patch_atomic_replace(monkeypatch, module, fake):
+    """엔진이 원자 교체에 **실제로 부르는** seam(`file_lock.atomic_replace`)을 대역으로 바꾼다.
+
+    `os.replace` 는 그 seam 의 POSIX 분기 구현 세부다 — Windows 분기는 Win32 rename 이라
+    `os.replace` 에 건 주입을 지나지 않는다. 관측 지점이 엔진의 호출 지점과 같아야 두 OS 에서
+    같은 성질이 고정된다. worktree_pool 은 seam 을 import 시점에 전역(`file_lock`)으로 받으므로
+    그 객체에 건다. 반환값은 seam 모듈 — 실패 주입이 Windows 분기와 같은 예외 클래스
+    (`AtomicReplaceError`·`OSError` 서브클래스)를 쓸 수 있다.
+    """
+    seam = module.file_lock
+    monkeypatch.setattr(seam, "atomic_replace", fake)
+    return seam
+
+
 def _lease(wp, *, slot="work/A_1", session="A_1", state="leased", role="work"):
     return wp.Lease(
         slot=slot,
@@ -122,14 +136,14 @@ def test_ensure_slot_pm_state_renders_first_session_with_atomic_replace(
 ):
     _seed(wp, _lease(wp))
     target = wp.slot_pm_state_file("work/A_1")
-    real_replace = wp.os.replace
+    real_replace = wp.file_lock.atomic_replace
     replacements: list[tuple[Path, Path]] = []
 
     def replace(src, dst):
         replacements.append((Path(src), Path(dst)))
         real_replace(src, dst)
 
-    monkeypatch.setattr(wp.os, "replace", replace)
+    _patch_atomic_replace(monkeypatch, wp, replace)
     result = wp.ensure_slot_pm_state("A_1")
 
     assert result == target

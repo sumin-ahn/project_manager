@@ -75,6 +75,20 @@ def board(tmp_path, monkeypatch):
     return mod
 
 
+def _patch_atomic_replace(monkeypatch, module, fake):
+    """엔진이 원자 교체에 **실제로 부르는** seam(`file_lock.atomic_replace`)을 대역으로 바꾼다.
+
+    `os.replace` 는 그 seam 의 POSIX 분기 구현 세부다 — Windows 분기는 Win32 rename 이라
+    `os.replace` 에 건 주입을 지나지 않는다. 관측 지점이 엔진의 호출 지점과 같아야 두 OS 에서
+    같은 성질이 고정된다. board 는 seam 을 import 시점에 전역(`board.file_lock`)으로 받으므로
+    그 객체에 건다. 반환값은 seam 모듈 — 실패 주입이 Windows 분기와 같은 예외 클래스
+    (`AtomicReplaceError`·`OSError` 서브클래스)를 쓸 수 있다.
+    """
+    seam = module.file_lock
+    monkeypatch.setattr(seam, "atomic_replace", fake)
+    return seam
+
+
 class _FakeProc:
     """`subprocess.Popen` 반환 대역 — 줄 단위로 읽히는 stdout/stderr + 고정 rc."""
 
@@ -1574,9 +1588,11 @@ def test_failed_replace_leaves_no_tmp_residue(board, monkeypatch, tmp_path):
     잔재는 git 이 실행하지 않는 이름이라 무해했지만, 실패마다 훅 디렉토리에 쌓인다.
     """
     hook = _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
-    monkeypatch.setattr(
-        board.os, "replace",
-        lambda *a, **k: (_ for _ in ()).throw(OSError("교체 실패")),
+    seam = board.file_lock
+    _patch_atomic_replace(
+        monkeypatch, board,
+        # Windows 분기가 실패에서 내는 클래스 그대로(OSError 서브클래스).
+        lambda *a, **k: (_ for _ in ()).throw(seam.AtomicReplaceError("교체 실패")),
     )
 
     with pytest.raises(OSError):
