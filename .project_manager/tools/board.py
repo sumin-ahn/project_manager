@@ -9262,8 +9262,19 @@ def cmd_section_add(args: argparse.Namespace) -> int:
         # 복구 불가능한 `절 삭제 검출` false-RED 를 남긴다(장부는 append-only).
         touched: list[Path] = [path]
         if not is_draft:
-            if delegate.append_ticket_growth_records(
-                    growth_dir, args.id, written, by="section-add"):
+            try:
+                appended = delegate.append_ticket_growth_records(
+                    growth_dir, args.id, written, by="section-add")
+            except delegate.DelegateError as exc:
+                # 티켓은 이미 써졌다. traceback 대신 사유와 자기치유 경로를 알린다(직전 판정이
+                # 손상을 걸러 도달은 드물다). 광의 `except` 로 넓히지 않는다 — 그러면 엔진 rev
+                # skew 같은 marked 예외까지 rc1 로 접혀 부분 동기를 숨긴다.
+                print(f"cannot section-add: growth ledger failed — {exc}\n"
+                      "  · 절과 봉인은 이미 기록됐다. 남은 것은 장부 기재뿐이라 판정은 "
+                      "`장부 미기재`(처방: seal-backfill 또는 재-harvest)로 복구된다",
+                      file=sys.stderr)
+                return 1
+            if appended:
                 touched.append(delegate.ticket_growth_ledger_path(growth_dir, args.id))
             stamp = delegate.ticket_growth_stamp_path(growth_dir)
             if stamp.exists():
