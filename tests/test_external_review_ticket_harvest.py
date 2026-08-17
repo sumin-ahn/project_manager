@@ -440,6 +440,10 @@ def _researcher_env(pd, tmp_path, monkeypatch):
     slot_ignore.parent.mkdir()
     slot_ignore.write_text(".local/\n", encoding="utf-8", newline="\n")
     subprocess.run(["git", "-C", str(slot), "init", "-q"], check=True)
+    # T-0704: 사본 루트 ignore 규칙은 tracked 정본 `.project_manager/.gitignore` 유래여야 통과한다.
+    subprocess.run(
+        ["git", "-C", str(slot), "add", ".project_manager/.gitignore"], check=True,
+    )
 
     board = pd._load_module_from_path(
         pm_tools / "board.py", "board.py", verifier=pd._verify_engine_rev,

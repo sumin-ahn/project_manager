@@ -93,6 +93,19 @@ def test_seam_writes_utf8_bytes_under_a_cp949_console(console_encoding):
     assert json.loads(raw.decode("utf-8")) == payload
 
 
+def _neutralize_engine_anchor_guard(bootstrap, monkeypatch):
+    """0단계 엔진 앵커 검사를 hermetic 무력화한다(`tests/test_pm_bootstrap.py` 의 autouse 픽스처와
+    동형). 이 파일의 엔진은 등록 슬롯 worktree 에서 로드될 수 있어 실 REPO 가 PM 홈 등록 worktree
+    사본으로 보이면 `[중단·0단계]` 로 dump 전에 끝난다 — 이 테스트의 축은 seam(bytes) 이지 앵커가
+    아니다. 실 board 를 로드해 `_pm_home_worktree_misanchor`→None 만 패치하고 board=None 경로가
+    그 패치본을 받게 한다."""
+    real_board = bootstrap._load_board()
+    if real_board is not None:
+        monkeypatch.setattr(real_board, "_pm_home_worktree_misanchor",
+                            lambda anchor, **_kw: None, raising=False)
+    monkeypatch.setattr(bootstrap, "_load_board", lambda: real_board)
+
+
 def _hermetic_bootstrap(bootstrap, tmp_path, log_text: str):
     """board/git/pytest 는 stub, log/pm_state 는 tmp 파일인 PmBootstrap (실 자산 미접촉)."""
     log_file = tmp_path / "current.md"
@@ -131,6 +144,7 @@ _LOG_TEXT = (
 def test_pm_bootstrap_json_payload_is_utf8(console_encoding, monkeypatch, tmp_path):
     """`--json` 부트스트랩 페이로드(로그 본문 포함)가 cp949 콘솔에서도 무손실이다."""
     bootstrap = _load("pm_bootstrap")
+    _neutralize_engine_anchor_guard(bootstrap, monkeypatch)
     inst = _hermetic_bootstrap(bootstrap, tmp_path, _LOG_TEXT)
     stream = _capture_console(console_encoding)
     monkeypatch.setattr(sys, "stdout", stream)
@@ -323,6 +337,7 @@ def test_human_markdown_path_still_goes_through_the_console_codec(
 ):
     """같은 부트스트랩의 markdown(사람) 출력은 cp949 로 나간다 — 분리 축은 스트림이 아니라 seam."""
     bootstrap = _load("pm_bootstrap")
+    _neutralize_engine_anchor_guard(bootstrap, monkeypatch)
     inst = _hermetic_bootstrap(bootstrap, tmp_path, _LOG_TEXT)
     stream = _capture_console(console_encoding)
     monkeypatch.setattr(sys, "stdout", stream)

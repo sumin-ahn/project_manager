@@ -17,6 +17,10 @@
 
    - **병렬 wave에서는 `--paths`를 파일 단위로** 지정한다 — 디렉터리를 주면 같은 디렉터리의 타 dev WIP(tracked-unstaged·untracked)가 불일치로 검출돼 차단된다(설계 동작). 진단 안내대로 검토 대상이면 `git add`, 타 dev WIP면 파일 단위로 좁힌다.
    - rc=0 = 스냅샷이 캡처 시점 index와 일치함을 도구가 검증(HEAD OID·index 엔트리·파일 집합 이중 bookend·submodule gitlink 원본 불변·eol 정규화 비교 포함). rc=1 = fail-loud — 자동 `git add` 해소는 하지 않는다(타 dev WIP 오염 금지).
+   - rc=0 이어도 `경고: staged 변경인데 --paths 에 없음(리뷰어가 HEAD 판을 본다): <경로>` 가
+     나오면 그 경로가 이번 검토 대상인지 확인한다 — 대상이면 `--paths` 에 넣어 재생성하고(빠지면
+     리뷰어가 HEAD 판을 보고 이미 해소된 것을 must-fix 로 낸다), 타 티켓 산출이면 그대로 진행한다.
+     범위를 확정해 두려면 `--strict-scope` 로 rc≠0 차단을 켠다.
 3. **주입** — reviewer 프롬프트 작업 위치에 `<scratch>/gate-<T>` **절대경로**를 넣고 그 스냅샷에서만 읽고 검토시킨다. 그 안의 git 조작(checkout·stash 등)은 공유 트리에 닿지 않는다.
 4. **제거** — 리뷰 후:
 
@@ -32,10 +36,19 @@
 
 ## 병렬 wave touches cross-check
 
-dev N 동시 spawn 전:
+dev N 동시 spawn 전 disjoint 확인은 **엔진이 계산한다** — 손으로 대조하지 않는다.
 
-- 모든 claimed ticket touches가 완전 disjoint(file 겹침 0)인지 확인. 공통 통합 파일의 함수 단위 추가는 완화 조건으로 허용.
-- 같은 함수·같은 줄 동시 수정은 차단.
+- `pm_delegate --role developer --ticket T-NNNN`(dry-run 포함)은 전송 전에 **같은 세션이 claim
+  중인 다른 ticket** 의 touches 와의 교집합을 stderr 1블록으로 낸다:
+  `=== ⚠ 병렬 위임 touches 겹침 ===` + `- T-XXXX(<상대 선언>) ∩ T-NNNN: <겹친 경로>`.
+  차단하지 않으므로 그 블록을 읽고 PM 이 판정한다.
+  - 겹치면: 순차 실행하거나 `pm-config worktree add <repo>` 로 슬롯을 분리한다. 공통 통합
+    파일의 함수 단위 추가는 완화 조건으로 허용하고, 같은 함수·같은 줄 동시 수정은 차단한다.
+  - 블록이 없으면 겹침 0이다. `경고: 병렬 위임 touches 교집합 계산 실패 …` 1줄이 보이면
+    판정 불능이므로 그때만 손으로 대조한다.
+  - 판정 축은 `claimed_by` 값 일치다 — 다른 사용자/다른 task 의 claim 은 계산에서 빠진다.
+- 위임 회수 시 `경고: 겹친 파일 변경됨 — 다른 dev 산출 공존 여부를 확인하라: <경로>` 가 나오면
+  그 파일에 두 dev 산출이 공존하는지 확인한 뒤 리뷰/커밋한다.
 - baseline 회귀는 dev cycle 후 한 번에 측정(race 회피).
 
 ## reviewer 후 처리
