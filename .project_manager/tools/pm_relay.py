@@ -1939,13 +1939,60 @@ def _kill_process_group(proc, process_group_id: int | None = None) -> None:
             ) from exc
 
 
+# 부모가 쥔 파이프 래퍼는 kill·wait 로 닫히지 않는다. 자식이 죽어도 래퍼가 살아 있는 동안 그
+# 핸들은 열려 있고, Windows 는 열린 핸들이 있는 파일·디렉터리 삭제를 계속 거부한다(자식이 쓰던
+# 작업 트리를 지우는 `force_rmtree` 재시도가 그 자리에서 소진된다). POSIX 는 GC 가 늦게라도
+# 회수하지만 kill 경로는 예외 traceback 이 프레임(=proc)을 붙잡고 있어 그 회수도 늦다.
+_CHILD_PIPE_ATTRS = ("stdout", "stderr", "stdin")
+
+
+def _close_child_pipes(proc, *, argv) -> None:
+    """자식 파이프 래퍼(stdout/stderr/stdin)를 **명시적으로** 닫는다 — 실패는 삼키지 않는다.
+
+    호출 조건은 하나다: **그 파이프를 읽는 스레드가 더는 없을 때**. 남의 blocking read 밑에서
+    핸들을 뽑는 대신, 리더가 살아 있는 형상(드레인 타임아웃)은 호출부가 loud 로 올린다.
+
+    닫히지 않은 래퍼는 조용히 사라지지 않고 남은 핸들로 다음 단계(작업 트리 삭제)를 깨뜨리므로
+    close 실패는 부분 성공으로 감추지 않고 `ProcessCleanupError` 로 올린다. 유일한 예외는 **stdin
+    의 `BrokenPipeError`** 다 — kill 뒤 읽는 쪽이 이미 사라진 정상 형상이고(버퍼를 비우다 파손을
+    만난다) 래퍼 자체는 그 자리에서 닫힌다.
+    """
+    failures: list[str] = []
+    for name in _CHILD_PIPE_ATTRS:
+        stream = getattr(proc, name, None)
+        if stream is None or getattr(stream, "closed", False):
+            continue
+        try:
+            stream.close()
+        except BrokenPipeError as exc:
+            if name != "stdin":
+                failures.append(f"{name}: {exc!r}")
+        except (OSError, ValueError) as exc:
+            failures.append(f"{name}: {exc!r}")
+    if failures:
+        raise ProcessCleanupError(
+            f"자식 파이프 래퍼 close 실패({', '.join(failures)}): {argv!r}"
+        )
+
+
 def _cleanup_failed_watched_spawn(proc, process_group_id: int | None, *, argv,
                                   threads: list[threading.Thread]) -> None:
-    """`Popen` 성공 뒤 어댑터 초기화 실패를 그룹 kill + pipe drain으로 롤백한다."""
+    """`Popen` 성공 뒤 어댑터 초기화 실패를 그룹 kill + pipe drain + pipe close 로 롤백한다.
+
+    드레인(`communicate`)이 파이프를 닫아 주는 것은 **그 드레인이 끝까지 돈 경우뿐**이다. Windows
+    의 `Popen._communicate` 는 스트림마다 리더 **스레드**를 만들어 돌리므로, 스레드/시그널 축이
+    깨진 초기화 실패(이 함수를 부른 그 실패)에서는 드레인이 스레드 생성 자리에서 그대로 터져
+    파이프가 열린 채 남는다(POSIX 의 selector 드레인엔 없는 형상). 그래서 드레인이 어떤 예외로
+    끝나든 래퍼는 이 함수가 직접 닫는다 — 리더가 아직 읽고 있는 타임아웃만 예외다.
+    """
     _kill_process_group(proc, process_group_id)
+    drain_timed_out = False
     try:
         proc.communicate(timeout=_KILL_GRACE_SEC)
     except subprocess.TimeoutExpired as exc:
+        # 타임아웃 = 리더가 **아직 파이프를 읽고 있다**(CPython 은 재호출을 위해 fd 를 연 채 둔다).
+        # 그 밑에서 핸들을 닫지 않고 정리 실패를 그대로 올린다.
+        drain_timed_out = True
         raise ProcessCleanupError(
             f"프로세스 생성 후 초기화 실패 정리 중 파이프가 "
             f"{_KILL_GRACE_SEC:g}s 안에 닫히지 않음: {argv!r}",
@@ -1955,6 +2002,9 @@ def _cleanup_failed_watched_spawn(proc, process_group_id: int | None, *, argv,
         raise ProcessCleanupError(
             f"프로세스 생성 후 초기화 실패 정리 중 파이프 drain 실패: {argv!r}: {exc}"
         ) from exc
+    finally:
+        if not drain_timed_out:
+            _close_child_pipes(proc, argv=argv)
 
     # Thread.start()가 성공한 뒤 다음 초기화 단계가 실패한 경우 reader/writer까지 회수한다.
     # 시작 전 Thread.join()은 RuntimeError이므로 ident가 생긴 스레드만 기다린다.
@@ -2261,7 +2311,12 @@ class _WatchedPopen:
         _kill_process_group(self._proc, self._process_group_id)
 
     def communicate(self, timeout=None):
-        """전체 deadline 동안 부모 **및 파이프 EOF**를 기다린다."""
+        """전체 deadline 동안 부모 **및 파이프 EOF**를 기다리고, 끝나면 래퍼를 닫는다.
+
+        리더가 EOF 를 본 뒤에도 래퍼는 열려 있다 — 그 핸들이 남는 동안 Windows 는 자식이 쓰던
+        작업 트리 삭제를 거부한다(`force_rmtree` 재시도 소진). 드레인이 끝났다는 것은 그 파이프를
+        읽는 스레드가 없다는 뜻이라, 닫는 자리는 여기다(타임아웃은 리더가 살아 있어 닫지 않는다).
+        """
         deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
 
         def remaining() -> float | None:
@@ -2281,6 +2336,7 @@ class _WatchedPopen:
             raise subprocess.TimeoutExpired(
                 self._argv, timeout, output=stdout, stderr=stderr
             )
+        _close_child_pipes(self._proc, argv=self._argv)
         return self.partial_output()
 
     @property

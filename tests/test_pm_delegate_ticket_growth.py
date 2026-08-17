@@ -1,7 +1,9 @@
 """T-0676 — slot 티켓 성장 사본 prepare/harvest 경계."""
 from __future__ import annotations
 
+import argparse
 import ast
+import errno
 import importlib.util
 import contextlib
 import hashlib
@@ -110,8 +112,8 @@ def growth_env(tmp_path, pd, monkeypatch):
     assert _git(slot, "init", "-q").returncode == 0
     slot_ignore = slot / ".project_manager" / ".gitignore"
     slot_ignore.parent.mkdir()
-    slot_ignore.write_text(".local/\n", encoding="utf-8")
-    (slot / "tracked.txt").write_text("seed\n", encoding="utf-8")
+    slot_ignore.write_text(".local/\n", encoding="utf-8", newline="\n")
+    (slot / "tracked.txt").write_text("seed\n", encoding="utf-8", newline="\n")
     assert _git(slot, "add", "tracked.txt", ".project_manager/.gitignore").returncode == 0
     monkeypatch.setenv("GIT_AUTHOR_NAME", "growth")
     monkeypatch.setenv("GIT_AUTHOR_EMAIL", "growth@test.invalid")
@@ -137,7 +139,7 @@ def _fixture_board(pd, pm_home: Path):
 
 def _write_ticket(tickets: Path, ticket: str, sections: list[tuple[str, str]]) -> Path:
     path = tickets / f"{ticket}-growth.md"
-    path.write_text(_ticket_text(ticket, sections), encoding="utf-8")
+    path.write_text(_ticket_text(ticket, sections), encoding="utf-8", newline="\n")
     return path
 
 
@@ -158,6 +160,7 @@ def _replace_content(pd, path: Path, role: str, ordinal: int, content: str) -> N
     path.write_text(
         text[:section.content_start] + content + text[section.content_end:],
         encoding="utf-8",
+        newline="\n",
     )
 
 
@@ -382,7 +385,7 @@ def test_no_stdin_corrupt_target_ledger_row_reports_damage(
     ledger = pm_home / pd.TICKET_COPY_LEDGER_REL_PATH
     payload = ledger.read_text(encoding="utf-8")
     assert payload.endswith("}\n")
-    ledger.write_text(payload[:-2] + "\n", encoding="utf-8")
+    ledger.write_text(payload[:-2] + "\n", encoding="utf-8", newline="\n")
     _replace_content(pd, plan.path, "developer", 0, "must not harvest\n")
     before = source.read_bytes()
     monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
@@ -409,7 +412,7 @@ def test_explicit_capability_warns_about_retained_corrupt_target_row(
     ledger = pm_home / pd.TICKET_COPY_LEDGER_REL_PATH
     payload = ledger.read_text(encoding="utf-8")
     assert payload.endswith("}\n")
-    ledger.write_text(payload[:-2] + "\n", encoding="utf-8")
+    ledger.write_text(payload[:-2] + "\n", encoding="utf-8", newline="\n")
     _replace_content(pd, plan.path, "developer", 0, "explicit recovery\n")
     monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
     monkeypatch.setattr(pd.sys, "stdin", io.StringIO(plan.capability.hex() + "\n"))
@@ -498,7 +501,7 @@ def test_prepare_transfer_from_preserves_new_baseline_outside_and_harvests(
     pd.harvest_ticket_copy(copy_path=old.path, cwd=slot, pm_home=pm_home)
     _replace_content(pd, old.path, "developer", 0, "amended old copy\r\n")
     current = source.read_text(encoding="utf-8")
-    source.write_text(current.replace("## 목표\n", "## 최신 baseline 밖 변경\n\n## 목표\n"), encoding="utf-8")
+    source.write_text(current.replace("## 목표\n", "## 최신 baseline 밖 변경\n\n## 목표\n"), encoding="utf-8", newline="\n")
 
     transferred = pd.prepare_ticket_copy(
         ticket="T-1104", role="developer", cwd=slot, pm_home=pm_home,
@@ -546,6 +549,7 @@ def test_prepare_transfer_from_rejects_missing_section_and_role_mismatch(
     old.path.write_text(
         old_text[:old_section.marker_start] + old_text[old_section.marker_end:],
         encoding="utf-8",
+        newline="\n",
     )
     with pytest.raises(pd.DelegateError, match="role=developer 성장 절이 없습니다"):
         pd.prepare_ticket_copy(
@@ -590,6 +594,95 @@ def test_ticket_copy_ledger_mode_is_0600(growth_env, pd):
     ledger = pm_home / pd.TICKET_COPY_LEDGER_REL_PATH
     if posix_mode_supported():
         assert stat.S_IMODE(ledger.stat().st_mode) == 0o600
+
+
+def _ledger_row(slot: Path, ticket: str) -> dict:
+    return {
+        "ticket": ticket,
+        "role": "developer",
+        "ordinal": 0,
+        "run_id": "0" * 32,
+        "copy": str((slot / f"{ticket}-developer-0.md").resolve()),
+        "capability": "a" * 64,
+        "prepared_at": "2026-08-17T00:00:00+00:00",
+        "harvested_at": None,
+    }
+
+
+def test_ticket_copy_ledger_append_syncs_on_the_writable_fd(
+        growth_env, pd, monkeypatch):
+    """장부 내구성은 공용 append seam이 연 쓰기 fd 위에서 수행된다 (재-open sync 0·T-0716)."""
+    pm_home, slot, _tickets = growth_env
+    ledger = pm_home / pd.TICKET_COPY_LEDGER_REL_PATH
+    row = _ledger_row(slot, "T-1120")
+    # fd 번호는 close 뒤 재사용되므로 열림 시점 좌표를 sync 시점에 확정한다.
+    live: dict[int, tuple[str, int]] = {}
+    opens: list[tuple[str, int]] = []
+    synced: list[tuple[str, int]] = []
+    real_open, real_fsync = os.open, os.fsync
+
+    def _record_open(path, flags, mode=0o777, **kwargs):
+        fd = real_open(path, flags, mode, **kwargs)
+        live[fd] = (str(path), flags)
+        opens.append((str(path), flags))
+        return fd
+
+    def _record_fsync(fd):
+        synced.append(live[fd])
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "open", _record_open)
+    monkeypatch.setattr(os, "fsync", _record_fsync)
+    pd._append_ticket_copy_ledger(pm_home, row)
+
+    assert json.loads(ledger.read_text(encoding="utf-8").splitlines()[0]) == row
+    assert len(synced) == 1
+    synced_path, synced_flags = synced[0]
+    assert synced_path == str(ledger)
+    assert synced_flags & os.O_WRONLY == os.O_WRONLY
+    ledger_flags = [flags for path, flags in opens if path == str(ledger)]
+    assert ledger_flags and all(
+        flags & os.O_WRONLY == os.O_WRONLY for flags in ledger_flags
+    ), "장부를 읽기 전용으로 다시 열어 sync하면 Windows에서 EBADF다"
+
+
+def test_ticket_copy_prepare_survives_windows_readonly_fsync_rejection(
+        growth_env, pd, monkeypatch):
+    """Windows `_commit()` 형상 — 읽기 전용 fd fsync를 EBADF로 거부해도 prepare가 성공한다."""
+    pm_home, slot, tickets = growth_env
+    _write_ticket(tickets, "T-1121", [("developer", "")])
+    # fd 번호는 재사용되므로 열림 시점 파일 정체성(dev·ino)까지 함께 박아 대조한다.
+    opened_by_fd: dict[int, tuple[int, tuple[int, int]]] = {}
+    rejected: list[int] = []
+    real_open, real_fsync = os.open, os.fsync
+
+    def _identity(fd: int) -> tuple[int, int]:
+        observed = os.fstat(fd)
+        return observed.st_dev, observed.st_ino
+
+    def _record_open(path, flags, mode=0o777, **kwargs):
+        fd = real_open(path, flags, mode, **kwargs)
+        opened_by_fd[fd] = (flags, _identity(fd))
+        return fd
+
+    def _windows_fsync(fd):
+        # 추적하지 못한 fd는 쓰기 가능으로 본다 (거부는 관측된 읽기 전용 open에만).
+        flags, identity = opened_by_fd.get(fd, (os.O_WRONLY, None))
+        if identity is not None and identity != _identity(fd):
+            flags = os.O_WRONLY
+        if not flags & (os.O_WRONLY | os.O_RDWR):
+            rejected.append(fd)
+            raise OSError(errno.EBADF, "Bad file descriptor")
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "open", _record_open)
+    monkeypatch.setattr(os, "fsync", _windows_fsync)
+    plan = pd.prepare_ticket_copy(
+        ticket="T-1121", role="developer", cwd=slot, pm_home=pm_home,
+    )
+
+    assert rejected == [], "읽기 전용 fd에 fsync를 걸었다 (Windows에서 EBADF)"
+    assert pd.ticket_copy_records(pm_home)[0]["copy"] == str(plan.path.resolve())
 
 
 def test_ticket_copy_lifecycle_without_posix_mode_capability(
@@ -676,7 +769,7 @@ def test_prepare_requires_legacy_backfill_then_succeeds(growth_env, pd):
     pm_home, slot, tickets = growth_env
     source = _write_ticket(tickets, "T-1030", [("developer", "legacy\n")])
     legacy = _without_ticket_seals(pd, source.read_text(encoding="utf-8"))
-    source.write_text(legacy, encoding="utf-8")
+    source.write_text(legacy, encoding="utf-8", newline="\n")
 
     with pytest.raises(
         pd.DelegateError,
@@ -689,7 +782,7 @@ def test_prepare_requires_legacy_backfill_then_succeeds(growth_env, pd):
 
     backfilled, changed = pd.backfill_ticket_seals(legacy)
     assert changed == [("developer", 0)]
-    source.write_text(backfilled, encoding="utf-8")
+    source.write_text(backfilled, encoding="utf-8", newline="\n")
     plan = pd.prepare_ticket_copy(
         ticket="T-1030", role="developer", cwd=slot, pm_home=pm_home,
     )
@@ -713,7 +806,7 @@ def test_prepare_mixed_seals_prescribes_recreate_or_role_rerecord(
     mixed = source.read_text(encoding="utf-8")
     missing_seal = pd.parse_ticket_seals(mixed)[("architect", 0)]
     mixed = mixed[:missing_seal.line_start] + mixed[missing_seal.line_end:]
-    source.write_text(mixed, encoding="utf-8")
+    source.write_text(mixed, encoding="utf-8", newline="\n")
 
     guidance = pd.ticket_growth_seal_recovery_guidance(mixed, ticket)
     assert guidance is not None
@@ -745,7 +838,7 @@ def test_draft_architect_requires_backfill_then_prepare_succeeds(
     drafts.mkdir()
     source = _write_ticket(drafts, "T-1032", [("architect", "legacy draft\n")])
     legacy = _without_ticket_seals(pd, source.read_text(encoding="utf-8"))
-    source.write_text(legacy, encoding="utf-8")
+    source.write_text(legacy, encoding="utf-8", newline="\n")
 
     with pytest.raises(
         pd.DelegateError,
@@ -762,7 +855,7 @@ def test_draft_architect_requires_backfill_then_prepare_succeeds(
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: pm_home)
     log = pm_home / ".project_manager" / "wiki" / "log" / "current.md"
     log.parent.mkdir(parents=True)
-    log.write_text("", encoding="utf-8")
+    log.write_text("", encoding="utf-8", newline="\n")
     assert pd._cmd_ticket(["seal-backfill", "--ticket", "T-1032"]) == 0
     assert "seal-backfill T-1032" in capsys.readouterr().out
     assert pd.verify_ticket_seals(source.read_text(encoding="utf-8")) == []
@@ -779,7 +872,7 @@ def test_prepare_rejects_target_role_sha_mismatch_before_copy(growth_env, pd):
     tampered = source.read_text(encoding="utf-8").replace(
         "sealed body\n", "hand-edited body\n", 1,
     )
-    source.write_text(tampered, encoding="utf-8")
+    source.write_text(tampered, encoding="utf-8", newline="\n")
     assert any("sha256 불일치" in problem for problem in pd.verify_ticket_seals(tampered))
 
     with pytest.raises(
@@ -799,7 +892,7 @@ def test_harvest_requires_legacy_backfill_then_succeeds(growth_env, pd):
         ticket="T-1031", role="developer", cwd=slot, pm_home=pm_home,
     )
     legacy = _without_ticket_seals(pd, source.read_text(encoding="utf-8"))
-    source.write_text(legacy, encoding="utf-8")
+    source.write_text(legacy, encoding="utf-8", newline="\n")
 
     with pytest.raises(
         pd.DelegateError,
@@ -813,7 +906,7 @@ def test_harvest_requires_legacy_backfill_then_succeeds(growth_env, pd):
 
     backfilled, changed = pd.backfill_ticket_seals(legacy)
     assert changed == [("developer", 0)]
-    source.write_text(backfilled, encoding="utf-8")
+    source.write_text(backfilled, encoding="utf-8", newline="\n")
     result = pd.harvest_ticket_copy(
         copy_path=plan.path, cwd=slot, pm_home=pm_home,
         capability=plan.capability,
@@ -895,7 +988,7 @@ def test_same_role_recall_targets_latest_and_preserves_pm_home_drift(growth_env,
     _replace_content(pd, plan.path, "developer", 1, "new round facts\n")
     # 준비 뒤 다른 역할 절 append/drift는 그대로 보존되어야 한다.
     current = source.read_text(encoding="utf-8")
-    source.write_text(current + "\nPM parallel note outside prepared section\n", encoding="utf-8")
+    source.write_text(current + "\nPM parallel note outside prepared section\n", encoding="utf-8", newline="\n")
     assert pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home, capability=plan.capability).changed
     final = source.read_text(encoding="utf-8")
     assert "old round" in final and "new round facts" in final
@@ -1014,6 +1107,48 @@ def test_crlf_prepare_edit_harvest_and_idempotent_preserve_newlines(growth_env, 
     assert source.read_bytes() == after
 
 
+def test_crlf_ticket_survives_engine_rewrite_between_prepare_and_harvest(growth_env, pd):
+    """CRLF 티켓의 prepare → **엔진 재작성** → harvest 가 stale 오판 없이 통과한다 (T-0709).
+
+    harvest 는 준비 시점 baseline 과 현재 절을 **bytes 로** 대조해 "준비 뒤 외부 편집"을 판정한다.
+    그 사이 board lifecycle writer(`dump_ticket*`)나 성장 절 append 가 CRLF 티켓을 LF 로 되쓰면
+    내용이 한 글자도 안 바뀌었는데 stale 로 읽혀 회수가 거부된다(Windows 실측 클래스). 재작성
+    쪽이 표기를 보존해야 하고, 덧붙이는 절도 같은 표기로 렌더돼 혼재가 없어야 한다."""
+    pm_home, slot, tickets = growth_env
+    source = tickets / "T-1021-growth.md"
+    source.write_bytes(
+        _ticket_text("T-1021", [("developer", "")]).replace("\n", "\r\n").encode("utf-8"))
+    plan = pd.prepare_ticket_copy(
+        ticket="T-1021", role="developer", cwd=slot, pm_home=pm_home)
+
+    # PM 홈에서 엔진이 같은 티켓을 재작성한다 — frontmatter 갱신(dump_ticket_atomic)과
+    #   다른 역할의 성장 절 append(_atomic_write_text) 두 경로 모두.
+    board = pd._load_board_for_repo(pm_home)
+    assert board.cmd_tier(argparse.Namespace(id="T-1021", tier="normal")) == 0
+    assert board.cmd_section_add(
+        argparse.Namespace(id="T-1021", role="code-reviewer", label=None)) == 0
+    rewritten = source.read_bytes()
+    assert b"tier: normal" in rewritten, "엔진 재작성이 실제로 없었다(공허 게이트)"
+    assert b"role=code-reviewer" in rewritten, "성장 절 append 가 없었다(공허 게이트)"
+    assert b"\n" not in rewritten.replace(b"\r\n", b""), (
+        "엔진 재작성이 CRLF 티켓을 LF 로 뒤집거나 표기를 혼재시켰다")
+
+    copy_text = plan.path.read_bytes().decode("utf-8")
+    section = pd._ticket_role_section(copy_text, "developer")
+    plan.path.write_bytes((
+        copy_text[:section.content_start]
+        + "CRLF facts\r\n"
+        + copy_text[section.content_end:]
+    ).encode("utf-8"))
+    assert pd.harvest_ticket_copy(
+        copy_path=plan.path, cwd=slot, pm_home=pm_home, capability=plan.capability,
+    ) == pd.TicketHarvestResult(True, True)
+    after = source.read_bytes()
+    assert b"CRLF facts\r\n" in after
+    assert b"\n" not in after.replace(b"\r\n", b"")
+    assert pd.verify_ticket_seals(after.decode("utf-8")) == []
+
+
 def test_stale_same_section_refuses_without_overwrite(growth_env, pd):
     pm_home, slot, tickets = growth_env
     source = _write_ticket(tickets, "T-1003", [("developer", "")])
@@ -1024,6 +1159,7 @@ def test_stale_same_section_refuses_without_overwrite(growth_env, pd):
     source.write_text(
         pd._upsert_ticket_seal(current, "developer", 0, by="harvest"),
         encoding="utf-8",
+        newline="\n",
     )
     with pytest.raises(pd.DelegateError, match="stale overwrite") as caught:
         pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home, capability=plan.capability)
@@ -1047,6 +1183,7 @@ def test_newer_same_role_section_refuses_old_round_harvest(growth_env, pd):
             "developer", 1, new_content.encode("utf-8"), by="section-add",
         ),
         encoding="utf-8",
+        newline="\n",
     )
     assert pd.verify_ticket_seals(source.read_text(encoding="utf-8")) == []
     with pytest.raises(pd.DelegateError, match="새 성장 절"):
@@ -1067,7 +1204,7 @@ def test_tamper_and_marker_damage_fail_loud_preserving_files(growth_env, pd, mut
     pm_home, slot, tickets = growth_env
     source = _write_ticket(tickets, "T-1004", [("developer", "")])
     plan = pd.prepare_ticket_copy(ticket="T-1004", role="developer", cwd=slot, pm_home=pm_home)
-    plan.path.write_text(mutator(plan.path.read_text(encoding="utf-8")), encoding="utf-8")
+    plan.path.write_text(mutator(plan.path.read_text(encoding="utf-8")), encoding="utf-8", newline="\n")
     before = source.read_bytes()
     with pytest.raises(pd.DelegateError, match=pattern):
         pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home, capability=plan.capability)
@@ -1100,6 +1237,7 @@ def test_forged_bundle_cannot_redirect_harvest_to_another_ticket(growth_env, pd)
     plan.metadata_path.write_text(
         pd._ticket_copy_metadata_bytes(metadata).decode("utf-8"),
         encoding="utf-8",
+        newline="\n",
     )
     trust_dir = pm_home / pd.TICKET_COPY_TRUST_REL_ROOT / metadata["run_id"]
     for target, payload in (
@@ -1108,7 +1246,7 @@ def test_forged_bundle_cannot_redirect_harvest_to_another_ticket(growth_env, pd)
     ):
         target.chmod(0o600)
         target.write_bytes(payload)
-    plan.path.write_text(forged_copy, encoding="utf-8")
+    plan.path.write_text(forged_copy, encoding="utf-8", newline="\n")
     first_before, second_before = first.read_bytes(), second.read_bytes()
     with pytest.raises(pd.DelegateError, match="capability MAC 검증 실패"):
         pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home, capability=plan.capability)
@@ -1169,7 +1307,7 @@ def test_solo_same_uid_full_replica_forgery_fails_before_pm_drift_overwrite(
     (solo / ".project_manager" / ".local").mkdir(parents=True)
     source = _write_ticket(tickets, "T-1018", [("code-reviewer", "")])
     assert _git(solo, "init", "-q").returncode == 0
-    (solo / ".project_manager" / ".gitignore").write_text(".local/\n", encoding="utf-8")
+    (solo / ".project_manager" / ".gitignore").write_text(".local/\n", encoding="utf-8", newline="\n")
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: _fixture_board(pd, solo))
     plan = pd.prepare_ticket_copy(
         ticket="T-1018", role="code-reviewer", cwd=solo, pm_home=solo,
@@ -1270,6 +1408,7 @@ def test_prepare_uses_filename_identity_when_frontmatter_is_corrupt(growth_env, 
     source.write_text(
         source.read_text(encoding="utf-8").replace("id: T-1011", "id: T-CORRUPTED"),
         encoding="utf-8",
+        newline="\n",
     )
     plan = pd.prepare_ticket_copy(
         ticket="T-1011", role="developer", cwd=slot, pm_home=pm_home,
@@ -1281,7 +1420,7 @@ def test_numeric_leading_legacy_slug_prepare_and_harvest(growth_env, pd):
     """`T-0683-3...`의 `3`은 prefix ID 일부가 아니라 legacy slug 첫 문자다."""
     pm_home, slot, tickets = growth_env
     source = tickets / "T-0683-3하네스-ticket-growth.md"
-    source.write_text(_ticket_text("T-0683", [("developer", "")]), encoding="utf-8")
+    source.write_text(_ticket_text("T-0683", [("developer", "")]), encoding="utf-8", newline="\n")
 
     plan = pd.prepare_ticket_copy(
         ticket="T-0683", role="developer", cwd=slot, pm_home=pm_home,
@@ -1301,12 +1440,12 @@ def test_prepare_lookup_and_read_share_board_lock(pd, monkeypatch, tmp_path):
     slot = tmp_path / "slot"
     source = pm_home / ".project_manager" / "wiki" / "tickets" / "claimed" / "T-1010-x.md"
     source.parent.mkdir(parents=True)
-    source.write_text(_ticket_text("T-1010", [("developer", "")]), encoding="utf-8")
+    source.write_text(_ticket_text("T-1010", [("developer", "")]), encoding="utf-8", newline="\n")
     slot.mkdir()
     assert _git(slot, "init", "-q").returncode == 0
     slot_ignore = slot / ".project_manager" / ".gitignore"
     slot_ignore.parent.mkdir()
-    slot_ignore.write_text(".local/\n", encoding="utf-8")
+    slot_ignore.write_text(".local/\n", encoding="utf-8", newline="\n")
     state = {"locked": False, "lookup_locked": False, "read_locked": False}
 
     class FakeBoard:
@@ -1350,7 +1489,7 @@ def test_reviewer_codex_keeps_worktree_read_only_and_grants_only_copy_dir(
     copy = cwd / pd.TICKET_COPY_REL_ROOT / "T-2001" / "code-reviewer" / ("a" * 32) / "ticket-T-2001.md"
     temp_root.mkdir()
     copy.parent.mkdir(parents=True)
-    copy.write_text("copy", encoding="utf-8")
+    copy.write_text("copy", encoding="utf-8", newline="\n")
     monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
     argv, _stdin, prompt_path, read_tmp = pd._prepare_attempt_transport(
         "codex", "gpt-x", None, "code-reviewer", cwd, "review",
@@ -1368,6 +1507,36 @@ def test_reviewer_codex_keeps_worktree_read_only_and_grants_only_copy_dir(
         pd._cleanup_attempt_transport(prompt_path, read_tmp)
 
 
+def test_acl_platform_reviewer_codex_grants_copy_dir_without_fd_binding(
+        pd, monkeypatch, tmp_path):
+    """fd 결속 primitive 가 없는 ACL 플랫폼(Windows)도 같은 권한 형상을 낸다.
+
+    5차 Windows 측정의 `assert 'read-only' == 'workspace-write'` 는 이 수단 부재가 원인이었다 —
+    수단이 없다고 권한을 낮추지 않는다. 플랫폼 축을 여기서 주입해 Linux 에서 태운다."""
+    monkeypatch.setattr(pd, "_READ_TMP_FD_SUPPORTED", False)
+    monkeypatch.setattr(pd, "_read_tmp_owner_acl_platform", lambda: True)
+    temp_root = tmp_path / "system-temp"
+    cwd = tmp_path / "worktree"
+    copy = cwd / pd.TICKET_COPY_REL_ROOT / "T-2003" / "code-reviewer" / ("e" * 32) / "ticket-T-2003.md"
+    temp_root.mkdir()
+    copy.parent.mkdir(parents=True)
+    copy.write_text("copy", encoding="utf-8", newline="\n")
+    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    argv, _stdin, prompt_path, read_tmp = pd._prepare_attempt_transport(
+        "codex", "gpt-x", None, "code-reviewer", cwd, "review",
+        ticket_copy_path=copy,
+    )
+    try:
+        assert read_tmp is not None and read_tmp.parent_fd is None
+        assert argv[argv.index("-s") + 1] == "workspace-write"
+        assert argv[argv.index("--add-dir") + 1] == str(copy.parent)
+        assert argv[argv.index("-C") + 1] == str(read_tmp.path)
+    finally:
+        pd._cleanup_attempt_transport(prompt_path, read_tmp)
+    assert not read_tmp.path.exists()
+    assert list(temp_root.iterdir()) == []
+
+
 @pytest.mark.parametrize("harness,model", [("claude", "sonnet"), ("opencode", "prov/m")])
 def test_reviewer_non_codex_ticket_copy_warns_and_keeps_selected_target(
         pd, monkeypatch, tmp_path, capsys, harness, model):
@@ -1376,7 +1545,7 @@ def test_reviewer_non_codex_ticket_copy_warns_and_keeps_selected_target(
     copy = cwd / pd.TICKET_COPY_REL_ROOT / "T-2002" / "code-reviewer" / ("b" * 32) / "ticket-T-2002.md"
     temp_root.mkdir()
     copy.parent.mkdir(parents=True)
-    copy.write_text("copy", encoding="utf-8")
+    copy.write_text("copy", encoding="utf-8", newline="\n")
     monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
     argv, _stdin, prompt_path, read_tmp = pd._prepare_attempt_transport(
             harness, model, None, "code-reviewer", cwd, "review",
@@ -1410,7 +1579,7 @@ def test_non_codex_reviewer_ticket_copy_warns_then_spawns_runner_once(
     copy = cwd / pd.TICKET_COPY_REL_ROOT / "T-2020" / "code-reviewer" / ("c" * 32) / "ticket-T-2020.md"
     temp_root.mkdir()
     copy.parent.mkdir(parents=True)
-    copy.write_text("copy", encoding="utf-8")
+    copy.write_text("copy", encoding="utf-8", newline="\n")
     monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
     spawned = []
 
@@ -1438,7 +1607,7 @@ def test_reviewer_missing_read_temp_warns_and_continues(pd, monkeypatch, tmp_pat
     cwd = tmp_path / "worktree"
     copy = cwd / pd.TICKET_COPY_REL_ROOT / "T-2021" / "code-reviewer" / ("d" * 32) / "ticket-T-2021.md"
     copy.parent.mkdir(parents=True)
-    copy.write_text("copy", encoding="utf-8")
+    copy.write_text("copy", encoding="utf-8", newline="\n")
     monkeypatch.setattr(pd, "_create_read_role_temp", lambda *_args: None)
 
     argv, _stdin, prompt_path, read_tmp = pd._prepare_attempt_transport(
@@ -1476,7 +1645,7 @@ def test_symlink_copy_root_and_outside_copy_are_rejected(growth_env, pd, tmp_pat
     with pytest.raises(pd.DelegateError, match=r"git check-ignore 실패\(rc="):
         pd.prepare_ticket_copy(ticket="T-1005", role="architect", cwd=slot, pm_home=pm_home)
     rogue = outside / "ticket-T-1005.md"
-    rogue.write_text("x", encoding="utf-8")
+    rogue.write_text("x", encoding="utf-8", newline="\n")
     with pytest.raises(pd.DelegateError, match="containment"):
         pd.harvest_ticket_copy(copy_path=rogue, cwd=slot, pm_home=pm_home, capability=b"x" * 32)
 
@@ -1501,6 +1670,7 @@ def test_prepare_fails_loud_without_local_ignore_before_copy(growth_env, pd):
     (slot / ".project_manager" / ".gitignore").write_text(
         ".local/delegate-ticket-copies/probe\n",
         encoding="utf-8",
+        newline="\n",
     )
     assert _git(
         slot, "check-ignore", "-q", ".project_manager/.local/delegate-ticket-copies/probe",
@@ -1631,6 +1801,7 @@ def test_ticket_cli_subdirectory_cwd_prepare_and_harvest_use_repo_root(
     copy.write_text(
         copy.read_text(encoding="utf-8").replace("before\n", "after\n"),
         encoding="utf-8",
+        newline="\n",
     )
 
     monkeypatch.setattr(pd.sys, "stdin", io.StringIO(capability + "\n"))
@@ -1657,10 +1828,10 @@ def test_cross_main_always_harvests_and_preserves_copy(
     cwd = tmp_path / "slot"
     cwd.mkdir()
     prompt = cwd / "prompt.md"
-    prompt.write_text("단일 티켓 작업", encoding="utf-8")
+    prompt.write_text("단일 티켓 작업", encoding="utf-8", newline="\n")
     copy = cwd / ".project_manager" / ".local" / "delegate-ticket-copies" / "T-3000" / "developer" / "run" / "ticket-T-3000.md"
     copy.parent.mkdir(parents=True)
-    copy.write_text("preserved", encoding="utf-8")
+    copy.write_text("preserved", encoding="utf-8", newline="\n")
     plan = pd.TicketCopyPlan(
         copy, copy.with_name("baseline.md"), copy.with_name("metadata.json"),
         cwd, cwd, "T-3000", "developer", b"k" * 32,
@@ -1761,7 +1932,7 @@ def test_cross_prepare_failure_is_loud_before_primary_or_fallback_spawn(
     cwd = tmp_path / "slot"
     cwd.mkdir()
     prompt = cwd / "prompt.md"
-    prompt.write_text("단일 티켓 작업", encoding="utf-8")
+    prompt.write_text("단일 티켓 작업", encoding="utf-8", newline="\n")
     real_er = pd._load_external_review()
     monkeypatch.setattr(real_er, "repo_root_from_cwd", lambda _cwd: cwd)
     monkeypatch.setattr(real_er, "resolve_pm_home_for_repo", lambda *_a, **_k: cwd)

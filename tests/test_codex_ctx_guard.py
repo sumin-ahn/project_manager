@@ -26,6 +26,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -33,6 +34,7 @@ import pytest
 
 from _textio import utf8_child_env
 from _win_skip import posix_bash_supported
+from _hook_commands import inline_script_payloads, powershell_native_arguments
 
 REPO = Path(__file__).resolve().parents[1]
 CODEX = REPO / "templates" / "codex" / ".codex"
@@ -207,6 +209,113 @@ def test_hooks_warning_is_inline_and_only_calls_engine_script():
         assert "pm_log.py' checkpoint" in windows and "pm_log.py' ctx-guidance" in windows
         assert "Write-Output '" in windows
         assert "&&" not in windows and ";" in windows
+
+
+def _all_windows_commands() -> list[tuple[str, str]]:
+    """모든 이벤트의 commandWindows — Windows에서 실제로 실행되는 커맨드 전량."""
+    commands = []
+    for event, groups in _load_hooks()["hooks"].items():
+        for group in groups:
+            for handler in group["hooks"]:
+                commands.append((event, handler["commandWindows"]))
+    assert commands
+    return commands
+
+
+def test_windows_interpreter_resolution_prefers_launcher_and_probes_execution():
+    """T-0715 — Windows `python3`/`python`은 실행 시 rc 9009로 죽는 WindowsApps shim일 수 있다.
+
+    존재만 확인하고 쓰면 엔진이 한 번도 실행되지 않은 채 fail-soft 폴백(`suppressOutput`)만
+    나가 ctx 안내와 위임 차단 사유가 사라진다. 런처 `py`를 먼저 보고 후보를 실제 실행해
+    확인한 뒤에만 채택한다 (CLAUDE.md Windows 노트).
+    """
+    for event, windows in _all_windows_commands():
+        assert "@('py','python3','python')" in windows, event
+        assert "$probe = & $cand -c" in windows, event
+        assert "sys.version_info >= (3, 11)" in windows, event
+        assert "if ($probe -eq 'True') { $py = $cand" in windows, event
+        # PowerShell 5.x는 native 인자의 큰따옴표를 삼킨다 — 프로브는 따옴표 없이 쓴다.
+        loop = windows[windows.index("foreach ($cand"):windows.index("break } } }")]
+        assert '"' not in loop, event
+        # 존재 확인만으로 채택하던 옛 형태가 남아 있으면 shim을 그대로 고른다.
+        assert "if (Get-Command python3" not in windows, event
+        assert "&&" not in windows, event
+
+
+def _claude_hook_commands() -> list[tuple[str, str]]:
+    settings = json.loads(
+        (REPO / "templates" / "claude_code" / ".claude" / "settings.json")
+        .read_text(encoding="utf-8")
+    )
+    commands = []
+    for event, groups in (settings.get("hooks") or {}).items():
+        for group in groups:
+            for handler in group.get("hooks", []):
+                for key in ("command", "commandWindows"):
+                    if isinstance(handler.get(key), str):
+                        commands.append((f"claude/{event}/{key}", handler[key]))
+    assert commands
+    return commands
+
+
+def test_hook_commands_pass_no_double_quoted_argument_to_a_native_command():
+    """T-0720 — PowerShell 5.x 는 native 인자의 큰따옴표를 삼킨다 (Windows 11 실측).
+
+    ``py -3.12 -c 'print("quoted")'`` 가 ``NameError: name 'quoted' is not defined`` 로
+    떨어졌다. 큰따옴표를 담은 인라인 스크립트를 native 인자로 넘기면 그 호스트에서 훅은
+    **항상** 실패해 폴백으로 빠지고 가드가 무음 통과한다. 셸 안에서만 쓰이는 문자열
+    (``Write-Output $fallback``)은 이 축이 아니므로 native 인자 표면만 본다.
+    """
+    for event, windows in _all_windows_commands():
+        for segment in powershell_native_arguments(windows):
+            assert '"' not in segment, f"{event}: {segment}"
+    for label, command in (
+        [(f"codex/{event}", command) for event, command in _all_windows_commands()]
+        + [(f"codex/{event}/posix", handler["command"])
+           for event, groups in _load_hooks()["hooks"].items()
+           for group in groups for handler in group["hooks"]]
+        + _claude_hook_commands()
+    ):
+        for payload in inline_script_payloads(command):
+            assert '"' not in payload, f"{label}: {payload}"
+
+
+def test_powershell_native_argument_scanner_sees_the_regressed_shape():
+    """가드 자신의 시야 검증 — 옛 형태(인라인 스크립트 인자)를 실제로 잡아내는가."""
+    regressed = (
+        "$py = 'py'; $fallback = '{\"systemMessage\":\"x\",\"suppressOutput\":false}'; "
+        "$out = & $py -c 'import json; json.loads(\"{}\")' pre; Write-Output $fallback"
+    )
+    segments = powershell_native_arguments(regressed)
+
+    assert len(segments) == 1
+    assert '"' in segments[0]
+    assert inline_script_payloads(regressed) == ['import json; json.loads("{}")']
+    # 셸 전용 리터럴($fallback)은 native 인자 표면에 들지 않는다.
+    assert "systemMessage" not in segments[0]
+
+
+def test_windows_probe_snippet_runs_and_reports_this_interpreter():
+    """출하된 프로브 스니펫을 실 인터프리터로 태운다 (셸 밖 Python 부분의 red 재현 지점)."""
+    for event, windows in _all_windows_commands():
+        snippet = windows.split("$probe = & $cand -c '", 1)[1].split("'", 1)[0]
+        completed = subprocess.run(
+            [sys.executable, "-c", snippet],
+            capture_output=True, text=True, check=True, env=utf8_child_env(),
+        )
+        # 엔진 하한(3.11) 이상인 이 인터프리터는 채택 판정을 받아야 한다.
+        assert completed.stdout == "True", f"{event}: {completed.stdout!r}"
+        assert completed.stderr == "", event
+
+
+def test_windows_interpreter_is_never_adopted_without_a_probe():
+    """실행 확인 없이 후보를 그대로 채택하는 배선이 남아 있으면 shim이 다시 선택된다."""
+    for event, windows in _all_windows_commands():
+        for literal in ("$py = 'py'", "$py = 'python3'", "$py = 'python'"):
+            assert literal not in windows, f"{event}: {literal}"
+        # 엔진 호출(`& $py`)은 반드시 해소 루프 뒤에 온다.
+        assert windows.index("$py = $cand") < windows.index("& $py"), event
+        assert windows.index("if ($null -eq $py)") < windows.index("& $py"), event
 
 
 def test_postcompact_wires_snapshot_checkpoint_and_windows_symmetry():

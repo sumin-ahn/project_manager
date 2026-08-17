@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
-import stat
 import subprocess
 from pathlib import Path
 
@@ -368,6 +367,11 @@ def test_reviewer_mirror_preserves_hand_edited_manifest(
     assert external._is_denied_mirror_path(hand_edited_manifest) is False
 
 
+def _owner_only(external, path: Path) -> bool:
+    """`path` 가 소유자 전용 접근인가 — 엔진 공용 seam(플랫폼 수단 소유)으로 실측한다."""
+    return external._load_file_lock().owner_only_access(path)
+
+
 def _opencode_target(external):
     return external.resolve_reviewer_target({
         "additional_reviewer.harness": "opencode",
@@ -387,14 +391,42 @@ def test_opencode_transport_is_inside_review_sandbox_and_self_hidden(external, t
         assert prompt_file.resolve().is_relative_to(sandbox.resolve())
         assert wire_dir == sandbox.resolve()
         assert prompt_file.read_text(encoding="utf-8") == "검토 diff"
-        assert stat.S_IMODE(prompt_file.stat().st_mode) == 0o600
+        # 접근 제한 판정은 퍼미션 비트가 아니라 **OS 되묻기**다 — Windows 의 `chmod` 는 아무
+        # 제한도 걸지 않아(`S_IMODE`=0o666 실측) 비트 단언이 그 플랫폼에서 항상 거짓이 된다.
+        # 보장(다른 사용자가 못 읽는다)은 같고 수단만 다르므로 수단을 아는 seam 에 묻는다.
+        assert _owner_only(external, prompt_file) is True
         assert ignore.read_text(encoding="utf-8") == "*\n"
-        assert stat.S_IMODE(ignore.stat().st_mode) == 0o600
+        assert _owner_only(external, ignore) is True
         assert stdin_text == ""
 
     assert not prompt_file.exists()
     assert not ignore.exists()
     assert not (sandbox / ".project_manager").exists()
+
+
+def test_opencode_transport_restriction_goes_through_the_platform_seam(
+        external, monkeypatch, tmp_path):
+    """전달 파일의 접근 제한은 **공용 seam** 을 지난다 — `chmod` 직접 호출은 Windows 에서 무효다.
+
+    이 배선이 없으면 그 플랫폼에서는 diff 원문이 든 프롬프트가 아무 제한 없이 남는다(생성 seam 의
+    `0600` 은 read-only 속성만 만진다). 판정 대상 파일 자신이 POSIX 에서는 이미 0600 이라
+    결과만 봐서는 배선 유무가 구분되지 않으므로 **호출**을 본다.
+    """
+    target = _opencode_target(external)
+    sandbox = tmp_path / "mirror-tree"
+    sandbox.mkdir()
+    restricted: list[Path] = []
+    real_restrict = external._restrict_to_owner
+    monkeypatch.setattr(
+        external, "_restrict_to_owner",
+        lambda path: (restricted.append(Path(path)), real_restrict(path))[1])
+
+    with external._structured_transport(target, "검토 diff", sandbox) as (argv, _stdin):
+        prompt_file = Path(argv[argv.index("--file") + 1])
+
+    assert set(restricted) == {
+        prompt_file, prompt_file.parent, prompt_file.parent / ".gitignore",
+    }, f"전달 산출물 중 접근 제한을 안 건 자리가 있다: {restricted}"
 
 
 def test_opencode_post_create_containment_failure_cleans_transport(

@@ -15,11 +15,11 @@ import io
 import json
 import os
 import re
-import shlex
 import stat
+import subprocess
 import sys
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TextIO
 
@@ -185,6 +185,43 @@ _CODEX_PROMPT_DIR = Path(".project_manager/.local/delegate")
 CODEX_SPAWN_TOOL_NAME = "collaborationspawn_agent"
 CODEX_ROLE_INPUT_FIELD = "task_name"
 CODEX_CORRELATION_FIELDS = ("session_id", "turn_id", "agent_id")
+
+# Host envelope shapes.  The hook must never emit a partially built
+# object: a consumer that reads ``hookSpecificOutput``/``reason`` gets a
+# ``KeyError`` and the block reason never reaches the operator.  These sets are
+# the single truth for both the emitters and their regression guards.
+CODEX_DENY_ENVELOPE_KEYS = frozenset({
+    "decision", "reason", "hookSpecificOutput", "systemMessage", "suppressOutput",
+})
+CODEX_DENY_HOOK_OUTPUT_KEYS = frozenset({
+    "hookEventName", "permissionDecision", "permissionDecisionReason",
+})
+CODEX_WARNING_ENVELOPE_KEYS = frozenset({"systemMessage", "suppressOutput"})
+CODEX_OBSERVATION_ENVELOPE_KEYS = frozenset({"suppressOutput"})
+# ``suppressOutput`` is decided by the measured host protocol, not by the
+# operating system: the deny/warning envelopes set ``False`` everywhere, and
+# only the quiet SubagentStart observation carries ``True``.  The Windows
+# measurement that showed ``{"suppressOutput": true}`` alone was the adapter's
+# fail-soft fallback firing because no interpreter had been resolved (the
+# ``python3`` WindowsApps shim exits rc 9009), not a platform-dependent value.
+CODEX_DENY_SUPPRESS_OUTPUT = False
+CODEX_WARNING_SUPPRESS_OUTPUT = False
+CODEX_OBSERVATION_SUPPRESS_OUTPUT = True
+
+# Hook supervision.  The adapter used to inline this as a ``python -c``
+# script, but PowerShell 5.1 does not preserve double quotes in native command
+# arguments (measured on Windows 11: ``py -3.12 -c 'print("quoted")'`` raises
+# ``NameError: name 'quoted' is not defined``), so every quoted literal in that
+# script was destroyed and the wrapper fell back on every single call — the deny
+# guard never fired.  Supervision therefore lives here, in an already-shipped
+# file that the hook invokes by path, and the adapter carries no quoted script.
+CODEX_SUPERVISOR_TIMEOUT_SECONDS = 8
+CODEX_SUPERVISOR_EVENTS = ("PreToolUse", "SubagentStart")
+# Which layer answered is part of the answer: a fallback envelope must never be
+# indistinguishable from a guard that actually ran (that is how T-0720 hid).
+CODEX_SUPERVISOR_FALLBACK_MARKER = "supervisor-fallback"
+CODEX_ADAPTER_FALLBACK_MARKER = "adapter-fallback"
+CODEX_SUPERVISOR_FALLBACK_STATUS = "wrapper_fallback"
 
 # Agent names are harness-owned surface literals.  Keep their translation in
 # this Python truth rather than duplicating the role set in JavaScript adapters.
@@ -425,10 +462,39 @@ def _frontmatter_model_scalar(value: str) -> str:
 
 
 def _metadata_is_linklike(metadata: os.stat_result) -> bool:
-    """Recognize POSIX symlinks and Windows reparse points without following."""
+    """Recognize POSIX symlinks and Windows reparse points without following.
+
+    ``st_file_attributes`` is a Windows-only *optional* structseq field: POSIX
+    builds do not expose the name at all, and a ``stat_result`` assembled from a
+    bare 10-tuple exposes the name with the value ``None`` on Windows.  Both
+    shapes expose no attribute bits, so the value is normalized before the
+    bitwise test — applying ``&`` to ``None`` raised ``TypeError`` and leaked a
+    code defect into the same warning channel as a genuine judgment failure.
+    Every real ``os.stat``/``os.lstat``/``os.fstat`` result on Windows still
+    carries the integer attributes, so the reparse-point check is unweakened.
+    """
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-    attributes = getattr(metadata, "st_file_attributes", 0)
+    attributes = getattr(metadata, "st_file_attributes", None)
+    if not isinstance(attributes, int):
+        attributes = 0
     return stat.S_ISLNK(metadata.st_mode) or bool(attributes & reparse_flag)
+
+
+def _file_identity(metadata: os.stat_result, label: str) -> tuple[int, int]:
+    """One filesystem object's identity for the pre-read replacement judgment.
+
+    POSIX uses ``(st_dev, st_ino)``; CPython fills the same two fields on Windows
+    from ``GetFileInformationByHandle`` (volume serial number + 128-bit file
+    index), so the swap judgment is one implementation on both platforms.  A
+    volume that reports no index (``st_ino == 0``: FAT/exFAT and some network
+    mounts) cannot express identity at all — comparing zeros would silently
+    accept a replacement, so this is a loud judgment failure, not a fallback.
+    """
+    if not metadata.st_ino:
+        raise ValueError(
+            f"파일 정체성(st_ino) 미제공 볼륨 — 교체 판정 불능 거부: {label}"
+        )
+    return (metadata.st_dev, metadata.st_ino)
 
 
 def _secure_dir_fd_supported() -> bool:
@@ -463,7 +529,7 @@ def _root_directory_identity(
     metadata = root.lstat()
     if _metadata_is_linklike(metadata) or not stat.S_ISDIR(metadata.st_mode):
         raise ValueError("agent card engine root symlink/reparse/비-directory 거부")
-    identity = (metadata.st_dev, metadata.st_ino)
+    identity = _file_identity(metadata, "agent card engine root")
     if expected is not None and identity != expected:
         raise ValueError("agent card engine root 교체 거부")
     return identity
@@ -486,7 +552,7 @@ def _read_known_regular_file_dir_fd(
         opened_root = os.fstat(current_fd)
         if (
             not stat.S_ISDIR(opened_root.st_mode)
-            or (opened_root.st_dev, opened_root.st_ino) != root_identity
+            or _file_identity(opened_root, "agent card engine root") != root_identity
         ):
             raise ValueError("agent card engine root 교체 거부")
         for part in relative.parts[:-1]:
@@ -500,15 +566,19 @@ def _read_known_regular_file_dir_fd(
                 os.O_RDONLY | directory_flag | nofollow_flag | cloexec_flag,
                 dir_fd=current_fd,
             )
-            after = os.fstat(child_fd)
-            if (
-                not stat.S_ISDIR(after.st_mode)
-                or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
-            ):
+            try:
+                after = os.fstat(child_fd)
+                if (
+                    not stat.S_ISDIR(after.st_mode)
+                    or _file_identity(before, part) != _file_identity(after, part)
+                ):
+                    raise ValueError(
+                        f"agent card 경로 교체 거부: {relative.as_posix()}"
+                    )
+            except BaseException:
+                # 판정 실패(교체·정체성 미제공)도 새로 연 fd 를 남기지 않는다.
                 os.close(child_fd)
-                raise ValueError(
-                    f"agent card 경로 교체 거부: {relative.as_posix()}"
-                )
+                raise
             os.close(current_fd)
             current_fd = child_fd
 
@@ -532,7 +602,7 @@ def _read_known_regular_file_dir_fd(
             if (
                 not stat.S_ISREG(after.st_mode)
                 or after.st_nlink != 1
-                or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+                or _file_identity(before, leaf) != _file_identity(after, leaf)
             ):
                 raise ValueError(
                     f"agent card inode 교체/비-regular 거부: {relative.as_posix()}"
@@ -568,7 +638,7 @@ def _read_known_regular_file_portable(
             raise ValueError(
                 f"agent card 경로 symlink/reparse/비-directory 거부: {relative.as_posix()}"
             )
-        parent_identities.append((current, (observed.st_dev, observed.st_ino)))
+        parent_identities.append((current, _file_identity(observed, part)))
 
     target = root / relative
     before = target.lstat()
@@ -581,13 +651,15 @@ def _read_known_regular_file_portable(
             f"agent card symlink/reparse/hardlink/비-regular 거부: {relative.as_posix()}"
         )
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    leaf_label = relative.as_posix()
     file_fd = os.open(os.fspath(target), flags)
     try:
         after = os.fstat(file_fd)
         if (
             not stat.S_ISREG(after.st_mode)
             or after.st_nlink != 1
-            or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+            or _file_identity(before, leaf_label)
+            != _file_identity(after, leaf_label)
         ):
             raise ValueError(
                 f"agent card inode 교체/비-regular 거부: {relative.as_posix()}"
@@ -597,7 +669,7 @@ def _read_known_regular_file_portable(
             if (
                 _metadata_is_linklike(observed)
                 or not stat.S_ISDIR(observed.st_mode)
-                or (observed.st_dev, observed.st_ino) != identity
+                or _file_identity(observed, parent.name) != identity
             ):
                 raise ValueError(
                     f"agent card 경로 교체 거부: {relative.as_posix()}"
@@ -607,8 +679,8 @@ def _read_known_regular_file_portable(
             _metadata_is_linklike(current_leaf)
             or not stat.S_ISREG(current_leaf.st_mode)
             or current_leaf.st_nlink != 1
-            or (current_leaf.st_dev, current_leaf.st_ino)
-            != (after.st_dev, after.st_ino)
+            or _file_identity(current_leaf, leaf_label)
+            != _file_identity(after, leaf_label)
         ):
             raise ValueError(
                 f"agent card inode 교체/비-regular 거부: {relative.as_posix()}"
@@ -807,15 +879,48 @@ def decide(
     )
 
 
+def _running_on_windows() -> bool:
+    """Injectable platform seam so the Windows prescription renders under test."""
+    return os.name == "nt"
+
+
+def _is_absolute_path(value: str) -> bool:
+    """Whether the hook-supplied cwd is absolute **by the running platform's rules**.
+
+    The payload comes from the host process on this machine, so the rule is the
+    local one: POSIX needs a leading ``/`` while Windows needs a drive or UNC
+    root (``C:\\work`` is absolute there, ``/work`` is drive-relative and
+    ``C:\\work`` is not absolute on POSIX).  Anything else keeps the caller on
+    the measured fail-open path instead of prescribing an unpastable cwd.  Kept
+    as one injectable seam so the other platform's branch is testable here.
+    """
+    return Path(value).is_absolute()
+
+
+def _rendered_prescription_token(value: str) -> str:
+    """Quote one prescription argument with the engine's single shell-render seam.
+
+    The prescription is pasted into the operator's shell, so POSIX quoting on
+    Windows turns ``--cwd`` and its path into literal arguments and the command
+    fails.  ``pm_delegate`` owns the platform rules; this guard never
+    assembles quoting of its own.
+    """
+    return _load_pm_delegate().render_shell_token(
+        value, windows=_running_on_windows()
+    )
+
+
 def _materialize_cwd(result: Mapping[str, str], cwd: object | None) -> dict[str, str]:
     """Replace only the known worktree placeholder with a concrete adapter cwd."""
     materialized = dict(result)
     if not isinstance(cwd, str) or not cwd.strip():
         return materialized
-    value = cwd.strip()
-    rendered = shlex.quote(value)
-    materialized["reason"] = materialized["reason"].replace(
-        _WORKTREE_PLACEHOLDER, rendered
+    reason = materialized["reason"]
+    if _WORKTREE_PLACEHOLDER not in reason:
+        # Allow rows have no prescription; keep the engine load off that path.
+        return materialized
+    materialized["reason"] = reason.replace(
+        _WORKTREE_PLACEHOLDER, _rendered_prescription_token(cwd.strip())
     )
     return materialized
 
@@ -861,6 +966,75 @@ def evaluate_hook(
     }
 
 
+def _validated_codex_envelope(envelope: Mapping[str, object]) -> dict[str, object]:
+    """Fail loud on a partial host envelope instead of emitting it silently.
+
+    Every emitter routes its return value through here, so a missing key is a
+    guard failure (absorbed by the fail-open boundary into a complete warning
+    envelope) instead of a host-side ``KeyError`` that drops the block reason.
+    """
+    if not isinstance(envelope, Mapping):
+        raise ValueError(
+            f"Codex 훅 엔벨로프가 mapping 이 아님: {type(envelope).__name__}"
+        )
+    keys = set(envelope)
+    if not keys:
+        # The measured allow shape is an empty object; the tool proceeds untouched.
+        return {}
+
+    deny_markers = CODEX_DENY_ENVELOPE_KEYS - CODEX_WARNING_ENVELOPE_KEYS
+    if keys & deny_markers:
+        missing = sorted(CODEX_DENY_ENVELOPE_KEYS - keys)
+        unknown = sorted(keys - CODEX_DENY_ENVELOPE_KEYS)
+        hook_output = envelope.get("hookSpecificOutput")
+        hook_keys = set(hook_output) if isinstance(hook_output, Mapping) else set()
+        hook_missing = sorted(CODEX_DENY_HOOK_OUTPUT_KEYS - hook_keys)
+        hook_unknown = sorted(hook_keys - CODEX_DENY_HOOK_OUTPUT_KEYS)
+        if missing or unknown or hook_missing or hook_unknown:
+            raise ValueError(
+                "Codex deny 엔벨로프 필드 불일치 — 누락 "
+                f"{missing or hook_missing}, 예상 밖 {unknown or hook_unknown}"
+            )
+        reason = envelope["reason"]
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("Codex deny 엔벨로프 reason 이 비었다")
+        if (
+            envelope["decision"] != "block"
+            or hook_output["hookEventName"] != "PreToolUse"
+            or hook_output["permissionDecision"] != "deny"
+        ):
+            raise ValueError("Codex deny 엔벨로프 판정 필드가 measured 값과 다르다")
+        if (
+            hook_output["permissionDecisionReason"] != reason
+            or envelope["systemMessage"] != reason
+        ):
+            raise ValueError("Codex deny 엔벨로프 사유 3필드가 서로 다르다")
+        if envelope["suppressOutput"] is not CODEX_DENY_SUPPRESS_OUTPUT:
+            raise ValueError(
+                "Codex deny 엔벨로프 suppressOutput 이 measured 값과 다르다: "
+                f"{envelope['suppressOutput']!r}"
+            )
+        return dict(envelope)
+
+    if keys == set(CODEX_WARNING_ENVELOPE_KEYS):
+        message = envelope["systemMessage"]
+        if not isinstance(message, str) or not message.strip():
+            raise ValueError("Codex 경고 엔벨로프 systemMessage 가 비었다")
+        if envelope["suppressOutput"] is not CODEX_WARNING_SUPPRESS_OUTPUT:
+            raise ValueError(
+                "Codex 경고 엔벨로프 suppressOutput 이 measured 값과 다르다: "
+                f"{envelope['suppressOutput']!r}"
+            )
+        return dict(envelope)
+
+    if keys == set(CODEX_OBSERVATION_ENVELOPE_KEYS):
+        if not isinstance(envelope["suppressOutput"], bool):
+            raise ValueError("Codex 관측 엔벨로프 suppressOutput 이 bool 이 아니다")
+        return dict(envelope)
+
+    raise ValueError(f"알 수 없는 Codex 훅 엔벨로프 형태: {sorted(keys)}")
+
+
 def _codex_decision_envelope(result: Mapping[str, str]) -> dict[str, object]:
     """Render the exact host-verified Codex 0.147.0 PreToolUse deny envelope.
 
@@ -899,7 +1073,7 @@ def _codex_decision_envelope(result: Mapping[str, str]) -> dict[str, object]:
     if result["verdict"] != "deny":
         return {}
     reason = result["reason"]
-    return {
+    return _validated_codex_envelope({
         "decision": "block",
         "reason": reason,
         "hookSpecificOutput": {
@@ -908,8 +1082,8 @@ def _codex_decision_envelope(result: Mapping[str, str]) -> dict[str, object]:
             "permissionDecisionReason": reason,
         },
         "systemMessage": reason,
-        "suppressOutput": False,
-    }
+        "suppressOutput": CODEX_DENY_SUPPRESS_OUTPUT,
+    })
 
 
 def _codex_spawn_role(payload: Mapping[str, object]) -> str:
@@ -1126,24 +1300,22 @@ def _codex_observation_failure(
         f"[delegate-channel/warn] Codex 관측 기록 실패({type(exc).__name__}: {detail}); "
         "차단 판정은 유지하고 matcher drift 관측은 불완전함"
     )
-    visible = dict(result)
+    # A recording failure must not be the moment a partial envelope slips out:
+    # validate the block shape first so the deny keys are preserved as a set.
+    visible = _validated_codex_envelope(result)
     hook_output = visible.get("hookSpecificOutput")
-    if (
-        visible.get("decision") == "block"
-        and isinstance(hook_output, Mapping)
-        and hook_output.get("permissionDecision") == "deny"
-    ):
+    if visible.get("decision") == "block" and isinstance(hook_output, Mapping):
         combined = f"{visible.get('reason') or ''}; {warning}".lstrip("; ")
         hook = dict(hook_output)
         hook["permissionDecisionReason"] = combined
         visible["reason"] = combined
         visible["hookSpecificOutput"] = hook
         visible["systemMessage"] = combined
-        visible["suppressOutput"] = False
-        return visible
+        visible["suppressOutput"] = CODEX_DENY_SUPPRESS_OUTPUT
+        return _validated_codex_envelope(visible)
     visible["systemMessage"] = warning
-    visible["suppressOutput"] = False
-    return visible
+    visible["suppressOutput"] = CODEX_WARNING_SUPPRESS_OUTPUT
+    return _validated_codex_envelope(visible)
 
 
 def observe_codex_pretooluse(
@@ -1178,7 +1350,7 @@ def observe_codex_pretooluse(
     except BaseException as exc:
         _absorb_engine_rev_skew_for_recovery(exc, "observation_append_fail_open")
         return _codex_observation_failure(result, exc)
-    return dict(result)
+    return _validated_codex_envelope(result)
 
 
 def observe_codex_subagent_start(
@@ -1189,7 +1361,9 @@ def observe_codex_subagent_start(
         "[delegate-channel/record] SubagentStart 관측 기록 — "
         "PreToolUse 대조는 board.py lint의 멱등 스캔이 수행"
     )
-    result: dict[str, object] = {"suppressOutput": True}
+    result: dict[str, object] = {
+        "suppressOutput": CODEX_OBSERVATION_SUPPRESS_OUTPUT
+    }
 
     try:
         _append_codex_observation(
@@ -1202,7 +1376,103 @@ def observe_codex_subagent_start(
     except BaseException as exc:
         _absorb_engine_rev_skew_for_recovery(exc, "observation_append_fail_open")
         return _codex_observation_failure(result, exc)
-    return result
+    return _validated_codex_envelope(result)
+
+
+def _codex_supervisor_fallback(event: str, detail: str) -> dict[str, object]:
+    """The complete warning envelope a failed/absent guard run is replaced with."""
+    reason = (
+        f"[delegate-channel/warn] Codex {event} 가드 실행 실패({detail}) — "
+        f"{CODEX_SUPERVISOR_FALLBACK_MARKER}: native 통과(fail-open)"
+    )
+    return _validated_codex_envelope({
+        "systemMessage": reason,
+        "suppressOutput": CODEX_WARNING_SUPPRESS_OUTPUT,
+    })
+
+
+def _record_supervisor_fallback(
+    event: str, payload_bytes: bytes, detail: str, state_dir: Path | None
+) -> None:
+    """Leave a durable trace that this hook answered without running the guard.
+
+    stdout alone disappears with the turn, and a fallback that looks like a normal
+    pass is what let a permanently-failing wrapper hide.  The row also makes the
+    unpaired spawn visible to the existing ``board.py lint`` miss scan, because no
+    ``decision_allow`` was ever recorded for it.
+    """
+    try:
+        payload = json.loads(payload_bytes.decode("utf-8"))
+        if not isinstance(payload, Mapping):
+            payload = {}
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
+        payload = {}
+    try:
+        _append_codex_observation(
+            payload,
+            hook_event_name=event,
+            status=CODEX_SUPERVISOR_FALLBACK_STATUS,
+            reason=(
+                f"[delegate-channel/warn] {CODEX_SUPERVISOR_FALLBACK_MARKER}: "
+                f"{detail} — 가드 판정 없이 통과(fail-open)"
+            ),
+            state_dir=state_dir,
+        )
+    except BaseException as exc:
+        # The audit trail is best effort; a failing ledger must not turn the
+        # fail-open answer into a hook crash.
+        _absorb_engine_rev_skew_for_recovery(exc, "observation_append_fail_open")
+
+
+def supervise_codex_hook(
+    event: str,
+    child_argv: Sequence[str],
+    *,
+    payload_bytes: bytes,
+    runner: Callable[..., object] = subprocess.run,
+    state_dir: Path | None = None,
+) -> dict[str, object]:
+    """Run the guard as a bounded child and answer with a valid envelope either way.
+
+    The guard owns the decision; this layer only bounds its runtime, checks the
+    envelope against the engine's own key sets, and substitutes a complete
+    warning envelope when the child cannot answer.  Nothing here re-types the
+    envelope schema, and nothing here needs shell quoting.
+
+    ``child_argv`` comes from the adapter hook config, which the host already
+    executes verbatim, so this adds no authority beyond that trust boundary.
+    """
+    if event not in CODEX_SUPERVISOR_EVENTS:
+        return _codex_supervisor_fallback(
+            CODEX_SUPERVISOR_EVENTS[0], f"미지 hook 이벤트 {event!r}"
+        )
+    argv = [str(token) for token in child_argv]
+    if not argv:
+        detail = "가드 실행 커맨드 없음"
+        _record_supervisor_fallback(event, payload_bytes, detail, state_dir)
+        return _codex_supervisor_fallback(event, detail)
+    try:
+        completed = runner(
+            argv,
+            input=payload_bytes,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=CODEX_SUPERVISOR_TIMEOUT_SECONDS,
+        )
+        returncode = getattr(completed, "returncode", None)
+        if returncode != 0:
+            raise ValueError(f"가드 rc={returncode}")
+        stdout = getattr(completed, "stdout", b"") or b""
+        candidate = json.loads(stdout.decode("utf-8"))
+        if not isinstance(candidate, dict):
+            raise ValueError("가드 stdout 이 JSON 객체가 아님")
+        envelope = _validated_codex_envelope(candidate)
+    except BaseException as exc:
+        detail = " ".join(str(exc).splitlines()).strip() or type(exc).__name__
+        detail = f"{type(exc).__name__}: {detail}"
+        _record_supervisor_fallback(event, payload_bytes, detail, state_dir)
+        return _codex_supervisor_fallback(event, detail)
+    return envelope
 
 
 def _evaluate_codex_decision(
@@ -1225,7 +1495,7 @@ def _evaluate_codex_decision(
         "decide", "--role", agent_name if isinstance(agent_name, str) else "",
         "--harness", "codex",
     ]
-    if isinstance(cwd, str) and cwd.strip() and Path(cwd).is_absolute():
+    if isinstance(cwd, str) and cwd.strip() and _is_absolute_path(cwd.strip()):
         cli_argv.extend(("--cwd", cwd.strip()))
     cli_stdout = io.StringIO()
     _run_decide_cli(
@@ -1236,7 +1506,11 @@ def _evaluate_codex_decision(
     result = json.loads(cli_stdout.getvalue())
 
     if result["verdict"] == "deny":
-        if not isinstance(cwd, str) or not cwd.strip() or not Path(cwd).is_absolute():
+        if (
+            not isinstance(cwd, str)
+            or not cwd.strip()
+            or not _is_absolute_path(cwd.strip())
+        ):
             result = _result(
                 "allow",
                 "[delegate-channel/warn] Codex PreToolUse cwd 절대경로 누락 — 통과(fail-open)",
@@ -1278,7 +1552,7 @@ def _parse_decide_args(argv: list[str]) -> argparse.Namespace:
         raise _CliUsageError(
             "usage: delegate_channel_guard.py decide --role ROLE --harness HARNESS [--tier TIER] [--cwd ABS]"
         )
-    if args.cwd and not Path(args.cwd).is_absolute():
+    if args.cwd and not _is_absolute_path(args.cwd):
         raise _CliUsageError("--cwd 는 절대경로여야 한다")
     return args
 
@@ -1338,14 +1612,32 @@ def _report_fail_open(exc: BaseException, stderr: TextIO) -> None:
 def _codex_hook_fail_open(
     exc: BaseException, hook_event_name: str = "PreToolUse"
 ) -> dict[str, object]:
+    """Emit a complete warning envelope whose reason names the failure.
+
+    Both hook events share the shape: an unrunnable guard is reported, never
+    degraded into a partial object that the host cannot read.
+    """
     detail = " ".join(str(exc).splitlines()).strip() or type(exc).__name__
     reason = (
         f"[delegate-channel/warn] Codex 가드 판정 실패({type(exc).__name__}: {detail}) "
-        "— 통과(fail-open)"
+        f"— {hook_event_name} 통과(fail-open)"
     )
-    if hook_event_name == "SubagentStart":
-        return {"systemMessage": reason, "suppressOutput": False}
-    return {"systemMessage": reason, "suppressOutput": False}
+    return _validated_codex_envelope({
+        "systemMessage": reason,
+        "suppressOutput": CODEX_WARNING_SUPPRESS_OUTPUT,
+    })
+
+
+def _read_stdin_bytes(stream: TextIO) -> bytes:
+    """Read the hook payload as the exact bytes the child guard must receive."""
+    buffer = getattr(stream, "buffer", None)
+    if buffer is not None:
+        try:
+            return buffer.read()
+        except (AttributeError, ValueError, OSError):
+            pass
+    data = stream.read()
+    return data.encode("utf-8") if isinstance(data, str) else bytes(data)
 
 
 def main(
@@ -1369,6 +1661,25 @@ def main(
         # ``None`` preserves the historical direct-call hook seam used by tests
         # and wrappers; the module entry point passes process argv explicitly.
         cli_argv = list(argv or [])
+        if cli_argv and cli_argv[0] == "supervise":
+            # ``supervise <event> <child argv…>`` — 어댑터가 인용 없는 토큰만 넘긴다.
+            if len(cli_argv) < 2:
+                raise _CliUsageError(
+                    "supervise 는 <event> 와 가드 실행 커맨드를 받는다"
+                )
+            input_stream = sys.stdin if stdin is None else stdin
+            payload_bytes = _read_stdin_bytes(input_stream)
+            result = supervise_codex_hook(
+                cli_argv[1],
+                cli_argv[2:],
+                payload_bytes=payload_bytes,
+                state_dir=state_dir,
+            )
+            # 콘솔 코드페이지(cp949 등)를 타지 않게 ASCII 로 이스케이프해 내보낸다 —
+            # 이 줄은 PowerShell/bash 캡처를 거쳐 호스트로 간다.
+            json.dump(result, output_stream, separators=(",", ":"))
+            output_stream.write("\n")
+            return 0
         if cli_argv and cli_argv[0] == "codex-hook":
             if cli_argv != ["codex-hook"]:
                 raise _CliUsageError("codex-hook 는 추가 인자를 받지 않는다")
@@ -1385,7 +1696,7 @@ def main(
                     payload, result, decision=decision, state_dir=state_dir
                 )
                 json.dump(
-                    result,
+                    _validated_codex_envelope(result),
                     output_stream,
                     ensure_ascii=False,
                     separators=(",", ":"),
@@ -1400,7 +1711,9 @@ def main(
             if not isinstance(payload, Mapping):
                 raise TypeError("hook input JSON must be an object")
             result = observe_codex_subagent_start(payload, state_dir=state_dir)
-            json.dump(result, output_stream, ensure_ascii=False)
+            json.dump(
+                _validated_codex_envelope(result), output_stream, ensure_ascii=False
+            )
             output_stream.write("\n")
             return 0
         if cli_argv:
@@ -1422,6 +1735,20 @@ def main(
         _absorb_engine_rev_skew_for_recovery(exc, "hook_fail_open")
         output_stream = sys.stdout if stdout is None else stdout
         cli_argv = list(argv or [])
+        if cli_argv and cli_argv[0] == "supervise":
+            # supervisor 자신이 죽어도 호스트는 완전한 엔벨로프 한 줄을 받는다.
+            event = cli_argv[1] if len(cli_argv) > 1 else CODEX_SUPERVISOR_EVENTS[0]
+            if event not in CODEX_SUPERVISOR_EVENTS:
+                event = CODEX_SUPERVISOR_EVENTS[0]
+            detail = " ".join(str(exc).splitlines()).strip() or type(exc).__name__
+            json.dump(
+                _codex_supervisor_fallback(event, f"{type(exc).__name__}: {detail}"),
+                output_stream,
+                separators=(",", ":"),
+            )
+            output_stream.write("\n")
+            _report_fail_open(exc, sys.stderr if stderr is None else stderr)
+            return 0
         if cli_argv and cli_argv[0] in {"codex-hook", "codex-subagent-observe"}:
             hook_event_name = (
                 "SubagentStart"

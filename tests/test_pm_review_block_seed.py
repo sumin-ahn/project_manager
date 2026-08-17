@@ -178,10 +178,10 @@ def _run_harvest(
     slot = tmp_path / "slot"
     source = pm_home / "board" / "tickets" / "claimed" / "T-0700-seed.md"
     source.parent.mkdir(parents=True)
-    source.write_text(ticket_text, encoding="utf-8")
+    source.write_text(ticket_text, encoding="utf-8", newline="\n")
     copy = slot / "copies" / "T-0700" / role / ("a" * 32) / "ticket-T-0700.md"
     copy.parent.mkdir(parents=True)
-    copy.write_text(copy_text, encoding="utf-8")
+    copy.write_text(copy_text, encoding="utf-8", newline="\n")
     plan = pd.TicketCopyPlan(
         copy, copy.with_name("baseline.md"), copy.with_name("meta.json"),
         slot, pm_home, "T-0700", role, b"x" * 32,
@@ -216,7 +216,7 @@ def _run_harvest(
 
         @staticmethod
         def _atomic_write_text(path, text):
-            path.write_text(text, encoding="utf-8")
+            path.write_text(text, encoding="utf-8", newline="\n")
 
         @staticmethod
         def _growth_mutation_sync(_message, _path):
@@ -239,7 +239,7 @@ def test_section_add_seeds_all_three_roles_from_delegate_renderer(
     pd, board, tmp_path, monkeypatch,
 ):
     path = tmp_path / "T-0700-seed.md"
-    path.write_text("---\nid: T-0700\nstatus: claimed\n---\n# ticket\n", encoding="utf-8")
+    path.write_text("---\nid: T-0700\nstatus: claimed\n---\n# ticket\n", encoding="utf-8", newline="\n")
 
     @contextlib.contextmanager
     def unlocked():
@@ -353,7 +353,7 @@ def test_legacy_reviewer_prefill_degrades_and_section_add_stays_available(
         + _legacy_reviewer_section(pd, 0)
         + _legacy_reviewer_section(pd, 1)
     )
-    path.write_text(original, encoding="utf-8")
+    path.write_text(original, encoding="utf-8", newline="\n")
 
     @contextlib.contextmanager
     def unlocked():
@@ -486,7 +486,7 @@ def test_disposition_template_rejects_confirmation_only_round(
         pd.render_pm_review_disposition_template(first + second, 1)
 
     ticket_path = tmp_path / "T-0700-confirmation-only.md"
-    ticket_path.write_text(first + second, encoding="utf-8")
+    ticket_path.write_text(first + second, encoding="utf-8", newline="\n")
 
     class FakeBoard:
         @staticmethod
@@ -523,6 +523,7 @@ def test_disposition_template_cli_and_pending_error_prescribe_same_command(
     ticket_path = tmp_path / "T-0700-review.md"
     ticket_path.write_text(
         _sealed_reviewer_section(pd, _review_payload("F-007")), encoding="utf-8",
+        newline="\n",
     )
 
     class FakeBoard:

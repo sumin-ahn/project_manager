@@ -219,6 +219,37 @@ def _is_engine_rev_skew(exc) -> bool:
     return getattr(exc, "_engine_rev_skew", False)
 
 
+# 사본 불일치를 **의도적으로 흡수**하는 경계의 등록부 (경계 이름 → 사유). 등록되지 않은 경계는
+# 흡수 자격이 없다 — 기본 규율은 여전히 "marked skew 는 재-raise" 다.
+_ENGINE_REV_SKEW_RECOVERY_REASONS = {
+    "read_role_temp_cleanup": (
+        "read 역할 temp 회수는 **주 결과를 덮지 않는 것**이 계약이다 — 위임이 이미 끝난 뒤의 "
+        "정리이므로 여기서 예외를 올리면 성공한 실행이 정리 실패로 뒤집힌다. 삭제 수단이 형제 "
+        "모듈(`file_lock.force_rmtree`)이라 사본 불일치가 이 경계에 도달할 수 있는데, 그것도 "
+        "정리 실패의 한 형태로 흡수하되 원인을 문구로 구분해 '잔존 경로'와 '엔진 사본 불일치'가 "
+        "같은 경고로 뭉개지지 않게 한다"
+    ),
+    "read_role_temp_rollback": (
+        "생성 실패 롤백의 정리는 **주 예외를 덮지 않는 것**이 계약이다 — 여기서 갈아타면 temp 를 "
+        "왜 못 만들었는지가 사라진다. 형제 모듈 삭제 수단이 낸 사본 불일치도 같은 이유로 흡수하되, "
+        "경고 한 줄로 남겨 재동기 처방이 함께 사라지지 않게 한다"
+    ),
+}
+
+
+def _absorb_engine_rev_skew_for_recovery(exc, boundary: str) -> bool:
+    """정리 경계가 marked skew 를 의도적으로 흡수했음을 표시한다 (True=흡수·사유 등록 필수).
+
+    반환값으로 일반 정리 실패와 사본 불일치를 구분해 호출부가 진단 문구를 달리한다 — 흡수는
+    하되 조용하지는 않다. 사유가 등재되지 않은 경계는 fail-loud(ValueError) — 흡수는 장부에
+    남은 판단이어야 감사 가능하다.
+    """
+    reason = _ENGINE_REV_SKEW_RECOVERY_REASONS.get(boundary, "").strip()
+    if not reason:
+        raise ValueError(f"등록되지 않았거나 사유가 빈 복구 경계: {boundary!r}")
+    return _is_engine_rev_skew(exc)
+
+
 # ── REPO 앵커 (external_review 동형·상향 탐색·hermetic 테스트 monkeypatch seam) ────────
 # 하드코딩 parents[2] 대신 `.project_manager` 를 품은 첫 조상을 REPO 로 삼는다(채택자/worktree 등
 # 다른 깊이여도 견고). module-level 상수라 테스트가 monkeypatch 할 수 있다.
@@ -366,6 +397,13 @@ _READ_TMP_FD_SUPPORTED = (
     and bool(getattr(shutil.rmtree, "avoids_symlink_attacks", False))
 )
 
+# read tmp 생성/회수 수단 — 위 primitive 가 없다고 **권한을 강등하지 않는다**. ACL 플랫폼
+# (Windows)은 같은 보장을 다른 수단으로 낸다: 예측 불가 이름의 배타 생성(존재하면 실패) +
+# 소유자 전용 ACL(`file_lock.restrict_to_owner`) + 생성 identity 재검증 + 잔재를 남기지 않는
+# 회수(`file_lock.force_rmtree`). 두 수단이 **모두** 없는 플랫폼만 회귀-불가 경로로 간다.
+_READ_TMP_STRATEGY_FD = "fd"
+_READ_TMP_STRATEGY_OWNER_ACL = "owner-acl"
+
 READ_REGRESSION_UNAVAILABLE_NOTE = (
     "이 read 역할 실행은 격리된 쓰기 가능 임시 디렉터리를 안전하게 만들 수 없어 회귀를 "
     "직접 돌릴 수 없다. 회귀 숫자는 developer 보고값을 인용하고, 직접 실행하지 못했다는 "
@@ -484,11 +522,36 @@ SECRET_SCAN_HIT_DISPLAY_LIMIT = 20
 # `_validate_*`/`build_*_argv` 는 그 계약을 부르는 얇은 wrapper 다.
 
 # subprocess env allowlist — PM 세션 환경을 통째 상속시키지 않고 최소 키만 전달(타 크리덴셜
-# 미상속). base + LC_* 접두 + 하네스별 인증 키. 가능하게 상수로 둔다.
+# 미상속). base + 플랫폼 키 + LC_* 접두 + 하네스별 인증 키. 가능하게 상수로 둔다.
 _ENV_ALLOWLIST_BASE: tuple[str, ...] = (
     "PATH", "HOME", "LANG", "TERM", "USER", "LOGNAME", "TMPDIR",
 )
+# Windows 에서만 추가로 흘리는 키. base 는 POSIX 이름만 담고 있어서, 이 목록이 없으면 정제 env 가
+# 하네스 실행에 필요한 값을 **통째로 떨군다**(Windows 실측: opencode 자식 env 에 `TMP` 부재).
+#   · TEMP/TMP — Windows 에는 POSIX 의 `/tmp` 같은 규약 기본값이 없다. 없으면 세 하네스와 그
+#     자식(pytest·node)이 임시 파일 위치를 잃는다.
+#   · SystemRoot/SystemDrive/windir/ComSpec/PATHEXT — 프로세스 스폰·시스템 DLL 로딩·실행 확장자
+#     해소의 최소 집합(Node 기반 CLI 가 SystemRoot 없이는 뜨지 않는다).
+#   · USERPROFILE/HOMEDRIVE/HOMEPATH/APPDATA/LOCALAPPDATA/USERNAME — 세 하네스의 **파일 auth**
+#     (POSIX HOME 앵커의 Windows 등가)와 설정/캐시 위치.
+_ENV_ALLOWLIST_WINDOWS: tuple[str, ...] = (
+    "TEMP", "TMP", "SystemRoot", "SystemDrive", "windir", "ComSpec", "PATHEXT",
+    "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "USERNAME",
+)
 _ENV_ALLOWLIST_PREFIXES: tuple[str, ...] = ("LC_",)
+# 정제 env 가 자식에게 **반드시** 넘겨야 하는 키(플랫폼 축). 누락은 조용히 통과시키지 않는다 —
+# 빈 값으로 스폰한 하네스는 원인 불명으로 죽고, 그 실패는 위임 실패로만 보인다.
+_REQUIRED_CHILD_ENV_KEYS_POSIX: tuple[str, ...] = ("PATH",)
+_REQUIRED_CHILD_ENV_KEYS_WINDOWS: tuple[str, ...] = ("PATH", "SystemRoot", "ComSpec")
+# 임시 디렉터리 축은 플랫폼마다 **이름이 다르다**. 이 중 최소 하나가 자식 env 에 있어야 하고,
+# 부모 env 에 하나도 없으면 실측 temp 디렉터리(`_gettempdir`)로 선두 키를 채운다.
+_TEMP_ENV_KEYS_POSIX: tuple[str, ...] = ("TMPDIR",)
+_TEMP_ENV_KEYS_WINDOWS: tuple[str, ...] = ("TEMP", "TMP")
+# read 역할 preamble 이 부르는 임시 디렉터리 **변수 표기** — 셸마다 전개 문법이 다르다.
+# PowerShell 5.x 에서 `$TMPDIR` 은 env 가 아니라 빈 PowerShell 변수라, 그대로 두면 처방된
+# `--basetemp` 가 드라이브 루트로 튄다.
+_TEMP_ENV_REFERENCE_POSIX = "$TMPDIR"
+_TEMP_ENV_REFERENCE_WINDOWS = "$env:TMPDIR"
 # 하네스별 인증/구동 필수 env(하네스-필수 마커만 명시 통과). 실 API key 는 각 하네스
 # config/auth 파일(HOME 앵커 격리 홈)로 흐르므로 여기엔 경로/토글 키 위주로 최소 둔다.
 # 세 하네스 모두 **HOME 기반 파일 auth**(~/.codex·~/.claude·opencode
@@ -1288,7 +1351,11 @@ def _ticket_copy_ledger_records(
 
 
 def _append_ticket_copy_ledger(pm_home: Path, row: dict) -> None:
-    """공유 atomic-append seam으로 0600 장부의 기존 bytes를 덮지 않는다."""
+    """공유 atomic-append seam으로 0600 장부의 기존 bytes를 덮지 않는다.
+
+    내구성 sync 는 그 seam이 자기 쓰기 fd 위에서 수행한다— 여기서 장부를 다시 열어
+    sync하지 않는다.
+    """
     _ticket_copy_ledger_row(row, line_number=0)
     local_dir, local_fd = _secure_machine_dir(
         pm_home, (".project_manager", ".local"), label="PM ticket-copy 장부 디렉터리",
@@ -1317,11 +1384,6 @@ def _append_ticket_copy_ledger(pm_home: Path, row: dict) -> None:
             and stat.S_IMODE(observed.st_mode) != 0o600
         ):
             raise DelegateError(f"ticket-copy 장부 권한 불일치(0600 필요): {path}")
-        sync_fd = os.open(path, os.O_RDONLY)
-        try:
-            os.fsync(sync_fd)
-        finally:
-            os.close(sync_fd)
     except OSError as exc:
         raise DelegateError(f"ticket-copy 장부 append 실패: {path}: {exc}") from exc
     finally:
@@ -4814,14 +4876,45 @@ def _format_secret_scan_hits(hits: tuple[PromptSecretHit, ...]) -> str:
     return "\n".join(lines)
 
 
-def _windows_retry_command(command: list[str]) -> str:
-    """cmd.exe/PowerShell 어느 쪽에서도 메타문자 재해석 없는 Windows 재실행 줄을 만든다.
+# 처방 커맨드 렌더 규칙. 처방은 사람이 붙여넣어 **실제로 실행**하는 줄이므로 장부
+# 직렬화(POSIX 표기)와 달리 실행 셸의 인용 규칙을 따른다. Windows argv 인용(공백·따옴표)은
+# `subprocess.list2cmdline` 이 그대로 담당하고, 아래 상수는 그 규칙 밖의 셸 축만 다룬다.
+#   · argv 규칙엔 인용이 불필요해도 셸이 먼저 재해석하는 문자 — 큰따옴표로 중화된다
+#     (cmd.exe·PowerShell 공통).
+_WINDOWS_SHELL_METACHARACTERS = frozenset("&|<>^()")
+#   · 어느 인용으로도 cmd.exe와 PowerShell 양쪽에서 동시에 리터럴화할 수 없는 문자.
+#     cmd.exe는 큰따옴표 안에서도 `%VAR%`를 전개하고, PowerShell은 큰따옴표 안에서 `$`/백틱을
+#     전개한다. 이 문자가 있으면 재해석 없는 EncodedCommand 형태로 올린다.
+_WINDOWS_UNQUOTABLE_CHARACTERS = frozenset("%$`'\r\n")
+#   · PowerShell 인자 위치에서 인용 없이 그대로 읽히는 토큰 (그 외는 단일따옴표 리터럴).
+_POWERSHELL_BARE_TOKEN_PATTERN = re.compile(r"\A[A-Za-z0-9_%+=:./\\-]+\Z")
 
-    argv를 PowerShell 단일따옴표 리터럴로 만든 뒤 UTF-16LE `-EncodedCommand`로 감싼다. 복사용 줄은
+
+def _windows_argv_token(token: str) -> str:
+    """Windows argv 규칙으로 토큰 하나를 렌더한다 — 불필요한 인용은 붙이지 않는다."""
+    rendered = subprocess.list2cmdline([token])
+    if rendered != token:
+        # list2cmdline이 공백/따옴표 규칙으로 이미 인용·이스케이프했다.
+        return rendered
+    if _WINDOWS_SHELL_METACHARACTERS.intersection(token):
+        trailing_backslashes = len(token) - len(token.rstrip("\\"))
+        return '"' + token + "\\" * trailing_backslashes + '"'
+    return token
+
+
+def _powershell_literal(token: str) -> str:
+    """PowerShell 인자 하나 — 인용이 필요한 토큰만 단일따옴표 리터럴로 감싼다."""
+    if _POWERSHELL_BARE_TOKEN_PATTERN.match(token):
+        return token
+    return "'" + token.replace("'", "''") + "'"
+
+
+def _windows_encoded_command(command: Sequence[str]) -> str:
+    """cmd.exe/PowerShell 어느 쪽에서도 메타문자 재해석 없는 Windows 실행 줄을 만든다.
+
+    argv를 PowerShell 인자로 렌더한 뒤 UTF-16LE `-EncodedCommand`로 감싼다. 복사용 줄은
     인코딩본을 유지하고, 사람이 실제 승인 대상을 확인할 수 있도록 바로 아래에 디코드된 줄도 표시한다."""
-    script = "& " + " ".join(
-        "'" + token.replace("'", "''") + "'" for token in command
-    )
+    script = "& " + " ".join(_powershell_literal(token) for token in command)
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     encoded_command = (
         f"powershell.exe -NoProfile -NonInteractive -EncodedCommand {encoded}"
@@ -4832,8 +4925,68 @@ def _windows_retry_command(command: list[str]) -> str:
     )
 
 
+def _windows_command_is_paste_safe(tokens: Sequence[str]) -> bool:
+    """평문 한 줄이 cmd.exe와 PowerShell 양쪽에 그대로 붙여넣어지는지 판정한다."""
+    if any(_WINDOWS_UNQUOTABLE_CHARACTERS.intersection(token) for token in tokens):
+        return False
+    # PowerShell은 인용된 첫 토큰을 명령이 아니라 문자열 식으로 읽어 호출 연산자 `&`가 필요하고,
+    # cmd.exe는 그 `&`를 못 받는다. 프로그램 토큰에 인용이 붙는 순간 공통 평문 줄은 없다.
+    return not tokens or _windows_argv_token(tokens[0]) == tokens[0]
+
+
+def render_shell_token(value: str, *, windows: bool | None = None) -> str:
+    """처방 커맨드에 끼워 넣는 인자 하나를 실행 셸의 인용 규칙으로 렌더한다.
+
+    문장 안에 이미 조립된 커맨드의 한 자리(예: 훅 처방의 `--cwd <경로>`)를 채울 때 쓴다.
+    전체 커맨드를 새로 만들 수 있으면 `render_shell_command`를 쓴다 — 그쪽만 재해석 불가
+    토큰을 EncodedCommand로 올릴 수 있다."""
+    if windows is None:
+        windows = _running_on_windows()
+    text = str(value)
+    return _windows_argv_token(text) if windows else shlex.quote(text)
+
+
+def render_shell_command(
+    argv: Sequence[str], *, windows: bool | None = None
+) -> str:
+    """처방 커맨드 한 줄을 실행 셸 규칙으로 렌더한다 (붙여넣으면 그대로 실행돼야 한다).
+
+    POSIX는 `shlex.join`, Windows는 `subprocess.list2cmdline` 등가 argv 규칙 + 셸 메타문자
+    인용이다. 두 Windows 셸 공통 평문이 불가능한 입력만 EncodedCommand 한 줄로 올린다
+    (`_windows_command_is_paste_safe`). 어느 경로도 `&&` 체이닝을 만들지 않는다 —
+    PowerShell 5.x가 지원하지 않는다."""
+    if windows is None:
+        windows = _running_on_windows()
+    tokens = [str(token) for token in argv]
+    if not windows:
+        return shlex.join(tokens)
+    if not _windows_command_is_paste_safe(tokens):
+        return _windows_encoded_command(tokens)
+    return " ".join(_windows_argv_token(token) for token in tokens)
+
+
 def _running_on_windows() -> bool:
     return os.name == "nt"
+
+
+def _prescribed_interpreter() -> str:
+    """처방 커맨드가 쓰는 인터프리터 표기 — 진입점 prefix 와 **같은 규칙**을 쓴다.
+
+    Windows 의 `python3`/`python` 은 WindowsApps 가짜 shim 일 수 있어 런처가 1순위다. 그 판정은
+    `pm_relay.codex_egress_entrypoint` 하나가 소유하고, 여기서는 해소값의 인터프리터 토큰만 꺼내
+    쓴다 — 표기가 두 군데면 규칙이 둘이 된다."""
+    relay = _load_relay()
+    interpreter, _entry = relay.codex_egress_entrypoint(
+        relay.DELEGATE_ENTRYPOINT, windows=_running_on_windows(),
+    )
+    return interpreter
+
+
+def _temp_env_reference(windows: bool | None = None) -> str:
+    """처방 문구가 임시 디렉터리를 가리킬 때 쓰는 셸 변수 표기."""
+    if windows is None:
+        windows = _running_on_windows()
+    return _TEMP_ENV_REFERENCE_WINDOWS if windows else _TEMP_ENV_REFERENCE_POSIX
 
 
 def _secret_scan_retry_command(argv: list[str], digest: str) -> str:
@@ -4857,26 +5010,109 @@ def _secret_scan_retry_command(argv: list[str], digest: str) -> str:
         "--secret-scan-ack",
         digest,
     ]
-    return _windows_retry_command(command) if _running_on_windows() else shlex.join(command)
+    return render_shell_command(command)
 
 
-def build_env(harness: str) -> dict[str, str]:
+def _temp_env_keys(windows: bool) -> tuple[str, ...]:
+    """이 플랫폼에서 임시 디렉터리를 해소하는 env 키 이름들(우선순위 순)."""
+    return _TEMP_ENV_KEYS_WINDOWS if windows else _TEMP_ENV_KEYS_POSIX
+
+
+def _required_child_env_keys(windows: bool) -> tuple[str, ...]:
+    """이 플랫폼의 하네스 필수 env 키 집합."""
+    return (
+        _REQUIRED_CHILD_ENV_KEYS_WINDOWS if windows else _REQUIRED_CHILD_ENV_KEYS_POSIX
+    )
+
+
+def _env_source_value(
+    source: Mapping[str, str], key: str, *, windows: bool,
+) -> str | None:
+    """부모 env 에서 키 하나를 읽는다(Windows 는 이름 대소문자를 구분하지 않는다).
+
+    `os.environ` 자체는 Windows 에서 대소문자 무시 매핑이지만, 사본 dict 로 넘어오면 그 성질이
+    사라진다 — 그 자리에서 `SystemRoot` 를 못 찾아 필수 키를 떨구는 일이 없게 여기서 흡수한다.
+    """
+    if key in source:
+        return source[key]
+    if not windows:
+        return None
+    folded = key.casefold()
+    for name, value in source.items():
+        if name.casefold() == folded:
+            return value
+    return None
+
+
+def _with_resolved_child_env(
+    env: dict[str, str], *, harness: str, windows: bool, source: Mapping[str, str],
+) -> dict[str, str]:
+    """정제 env 의 임시 디렉터리 축을 해소하고 필수 키 누락을 fail-loud 로 세운다.
+
+    임시 디렉터리는 **이름이 플랫폼마다 다르다** — 부모 env 에 그 이름이 하나도 없으면 자식을
+    빈 채로 보내지 않고 실측값(`_gettempdir`)으로 채운다. 필수 키가 그래도 없으면 실행하지 않는다:
+    정제가 떨어뜨린 것(부모엔 있었다)인지 환경 자체가 비어 있는 것인지를 사유에 함께 남긴다.
+    """
+    adjusted = dict(env)
+    temp_keys = _temp_env_keys(windows)
+    if not any(key in adjusted for key in temp_keys):
+        measured = _gettempdir()
+        if not measured:
+            raise DelegateError(
+                f"{harness} 위임의 임시 디렉터리를 해소하지 못했습니다 — 후보 키="
+                f"{', '.join(temp_keys)} · 실측 temp 디렉터리도 비어 있습니다. "
+                "빈 임시 경로로 스폰하지 않습니다."
+            )
+        adjusted[temp_keys[0]] = measured
+    missing = [key for key in _required_child_env_keys(windows) if key not in adjusted]
+    if missing:
+        detail = ", ".join(
+            "{}(부모 env {})".format(
+                key,
+                "있음 — 정제가 떨굼"
+                if _env_source_value(source, key, windows=windows) is not None
+                else "없음",
+            )
+            for key in missing
+        )
+        raise DelegateError(
+            f"{harness} 위임의 정제 env 에 하네스 필수 키가 없습니다: {detail} · "
+            f"플랫폼={'windows' if windows else 'posix'}. 빈 값으로 스폰하면 하네스가 "
+            "원인 불명으로 죽으므로 여기서 중단합니다."
+        )
+    return adjusted
+
+
+def build_env(
+    harness: str, *, windows: bool | None = None,
+    source: Mapping[str, str] | None = None,
+) -> dict[str, str]:
     """subprocess env 를 allowlist 로 정제한다 — PM 세션 환경 통째 상속 금지(타 크리덴셜 미상속).
 
-    base 키 + LC_* 접두 + 하네스별 인증 키만 전달한다. 존재하는 키만 담아 새 env dict 를 구성한다
-    (os.environ 미상속). 목록은 상수(_ENV_ALLOWLIST_*·_HARNESS_AUTH_ENV)로 조정 가능."""
-    src = os.environ
+    base 키 + 플랫폼 키 + LC_* 접두 + 하네스별 인증 키만 전달한다. 존재하는 키만 담아 새 env dict 를
+    구성한다(os.environ 미상속). 목록은 상수(_ENV_ALLOWLIST_*·_HARNESS_AUTH_ENV)로 조정 가능.
+
+    `windows`/`source` 는 주입 지점이다 — 플랫폼별 키 집합과 필수 키 판정을 실제 실행 플랫폼과
+    무관하게 태울 수 있어야 회귀가 두 축을 모두 검증한다(기본은 실제 플랫폼·실제 os.environ)."""
+    if windows is None:
+        windows = _running_on_windows()
+    src = os.environ if source is None else source
+    allowlist = _ENV_ALLOWLIST_BASE + (_ENV_ALLOWLIST_WINDOWS if windows else ())
     out: dict[str, str] = {}
-    for key in _ENV_ALLOWLIST_BASE:
-        if key in src:
-            out[key] = src[key]
+    for key in allowlist:
+        value = _env_source_value(src, key, windows=windows)
+        if value is not None:
+            out[key] = value
     for key, value in src.items():
         if any(key.startswith(prefix) for prefix in _ENV_ALLOWLIST_PREFIXES):
             out[key] = value
     for key in _HARNESS_AUTH_ENV.get(harness, ()):
-        if key in src:
-            out[key] = src[key]
-    return out
+        value = _env_source_value(src, key, windows=windows)
+        if value is not None:
+            out[key] = value
+    return _with_resolved_child_env(
+        out, harness=harness, windows=windows, source=src,
+    )
 
 
 def _prompt_file_contained(
@@ -6836,17 +7072,21 @@ class _OpenCodeTransportPrompt:
 
 
 class _ReadRoleTemp:
-    """read attempt 하나가 소유한 fd 고정 임시 디렉터리."""
+    """read attempt 하나가 소유한 임시 디렉터리.
+
+    `parent_fd` 는 fd 결속 수단(POSIX)에서만 값이 있고, 소유자 ACL 수단(Windows)에서는 None 이다 —
+    회수/재검증이 그 축을 보고 같은 보장을 내는 다른 수단을 고른다.
+    """
 
     def __init__(
         self,
         path: Path,
         *,
-        parent_fd: int,
+        parent_fd: int | None,
         identity: tuple[int, int],
         owned_fds: list[int],
         writable_path: Path | None = None,
-        created_parent: tuple[int, str, Path, tuple[int, int]] | None = None,
+        created_parent: tuple[int | None, str, Path, tuple[int, int]] | None = None,
     ):
         self.path = path
         self.writable_path = writable_path or path
@@ -6908,14 +7148,157 @@ def _read_tmp_parent(harness: str) -> tuple[Path, str | None]:
     )
 
 
+def _read_tmp_owner_acl_platform() -> bool:
+    """소유자 전용 ACL 로 fd 결속과 등가인 격리를 낼 수 있는 플랫폼인가(주입 가능 seam)."""
+    return bool(_load_file_lock().windows_acl_platform())
+
+
+def _read_tmp_strategy() -> str | None:
+    """이 플랫폼에서 read tmp 를 **안전하게** 만들 수단을 고른다(둘 다 없으면 None)."""
+    if _READ_TMP_FD_SUPPORTED:
+        return _READ_TMP_STRATEGY_FD
+    if _read_tmp_owner_acl_platform():
+        return _READ_TMP_STRATEGY_OWNER_ACL
+    return None
+
+
+def _remove_read_tmp_tree(path: Path, *, parent_fd: int | None) -> None:
+    """attempt 트리를 회수한다 — fd 결속이 있으면 그 위에서, 없으면 공용 삭제 seam 으로.
+
+    `shutil.rmtree(dir_fd=...)` 는 `os.supports_dir_fd` 가 있는 플랫폼 전용이라 Windows 에서
+    NotImplementedError 로 끝난다. 그 자리를 `file_lock.force_rmtree` 가 대신한다 — read-only
+    속성을 풀고 재시도하되 끝내 남으면 예외를 올려 **같은 보장**(잔여 0 또는 loud)을 낸다.
+    """
+    if parent_fd is not None and bool(
+        getattr(shutil.rmtree, "avoids_symlink_attacks", False)
+    ):
+        shutil.rmtree(path.name, dir_fd=parent_fd)
+        return
+    _load_file_lock().force_rmtree(path)
+
+
+def _restrict_read_tmp_to_owner(path: Path) -> None:
+    """생성한 temp 디렉터리를 소유자 전용 접근으로 만든다(ACL 플랫폼은 mode 비트가 무효)."""
+    file_lock = _load_file_lock()
+    try:
+        file_lock.restrict_to_owner(path)
+    except file_lock.AccessRestrictionError as exc:
+        raise DelegateError(
+            f"read 역할 temp 소유자 전용 제한 실패: {path}: {exc} — 격리되지 않은 "
+            "디렉터리를 쓰기 대상으로 넘기지 않습니다."
+        ) from exc
+
+
+def _create_read_role_temp_owner_acl(harness: str, cwd: Path) -> _ReadRoleTemp:
+    """dir_fd 가 없는 플랫폼의 등가 경로 — 배타 생성 + 소유자 ACL + identity 재검증.
+
+    fd 결속 대신 (a) 예측 불가 이름의 배타 mkdir(선점된 이름이면 FileExistsError 로 끝난다),
+    (b) 생성 직후 symlink/reparse 아님 확인, (c) 소유자 전용 ACL, (d) 회수 시 생성 identity 재대조로
+    같은 보장을 낸다. 어느 단계든 실패하면 권한을 낮춰 계속하지 않고 loud 로 끝낸다.
+    """
+    temp_parent, optional_parent_name = _read_tmp_parent(harness)
+    temp_root = (
+        temp_parent.parent if optional_parent_name is not None else temp_parent
+    )
+    if not temp_root.is_dir():
+        raise DelegateError(f"read 역할 시스템 temp 루트가 없음: {temp_root}")
+
+    created_parent: tuple[int | None, str, Path, tuple[int, int]] | None = None
+    attempt_created = False
+    attempt_name = f"{_READ_TMP_PREFIX}{os.getpid()}_{uuid.uuid4().hex}"
+    attempt_path = temp_parent / attempt_name
+    try:
+        _assert_path_entry_not_symlink(temp_root, label="read 역할 시스템 temp 루트")
+        if optional_parent_name is not None:
+            try:
+                temp_parent.mkdir(mode=0o700)
+            except FileExistsError:
+                pass
+            except OSError as exc:
+                raise DelegateError(
+                    f"read 역할 temp 부모 생성 실패: {temp_parent}: {exc}"
+                ) from exc
+            else:
+                _restrict_read_tmp_to_owner(temp_parent)
+                parent_stat = os.stat(temp_parent, follow_symlinks=False)
+                created_parent = (
+                    None,
+                    optional_parent_name,
+                    temp_parent,
+                    (parent_stat.st_dev, parent_stat.st_ino),
+                )
+            _assert_path_entry_not_symlink(temp_parent, label="read 역할 temp 부모")
+
+        try:
+            attempt_path.mkdir(mode=0o700)
+        except OSError as exc:
+            raise DelegateError(
+                f"read 역할 temp 생성 실패: {attempt_path}: {exc}"
+            ) from exc
+        attempt_created = True
+        _assert_path_entry_not_symlink(attempt_path, label="read 역할 temp")
+        _restrict_read_tmp_to_owner(attempt_path)
+        attempt_stat = os.stat(attempt_path, follow_symlinks=False)
+        attempt_identity = (attempt_stat.st_dev, attempt_stat.st_ino)
+        _assert_attempt_child_path(temp_parent, attempt_path, label="read 역할 temp")
+        try:
+            resolved_cwd = cwd.resolve()
+        except (OSError, RuntimeError) as exc:
+            raise DelegateError(
+                f"read 역할 worktree 실경로 해소 실패: {cwd}: {exc}"
+            ) from exc
+        if _is_relative_to(attempt_path.resolve(), resolved_cwd):
+            raise DelegateError(
+                f"read 역할 temp가 worktree 안으로 해소되어 거부: {attempt_path} "
+                f"(worktree={resolved_cwd})"
+            )
+        writable_path = attempt_path
+        writable_component = _READ_TMP_WRITABLE_COMPONENT_BY_HARNESS[harness]
+        if writable_component is not None:
+            writable_path = attempt_path / writable_component
+            try:
+                writable_path.mkdir(mode=0o700)
+            except OSError as exc:
+                raise DelegateError(
+                    f"read 역할 쓰기 하위 디렉터리 생성 실패: {writable_path}: {exc}"
+                ) from exc
+            _restrict_read_tmp_to_owner(writable_path)
+        return _ReadRoleTemp(
+            attempt_path,
+            parent_fd=None,
+            identity=attempt_identity,
+            owned_fds=[],
+            writable_path=writable_path,
+            created_parent=created_parent,
+        )
+    except BaseException:
+        if attempt_created:
+            try:
+                _remove_read_tmp_tree(attempt_path, parent_fd=None)
+            except (OSError, RuntimeError) as cleanup_exc:
+                # 롤백 정리 실패는 주 예외를 덮지 않는다(아래 `raise`). 다만 침묵하지도 않는다 —
+                # 삭제 수단이 형제 모듈이라 사본 불일치가 여기 닿을 수 있다.
+                skew = _absorb_engine_rev_skew_for_recovery(
+                    cleanup_exc, "read_role_temp_rollback")
+                _warn_read_tmp_cleanup_failure(
+                    attempt_path, cleanup_exc, engine_rev_skew=skew)
+        if created_parent is not None:
+            _cleanup_owned_read_tmp_parent(created_parent)
+        raise
+
+
 def _create_read_role_temp(harness: str, cwd: Path) -> _ReadRoleTemp | None:
     """read attempt 전용 0700 tmp를 mkdir(dir_fd)로 만들고 parent fd에 결속한다.
 
-    fd/nofollow/race 규율은 바로 아래 opencode 전달 사본 seam과 동일하다. 플랫폼이 그 규율을
-    제공하지 않으면 넓은 경로 기반 삭제로 강등하지 않고 preamble의 명시적 회귀-불가 경로를 탄다.
+    fd/nofollow/race 규율은 바로 아래 opencode 전달 사본 seam과 동일하다. 그 primitive 가 없는
+    플랫폼은 넓은 경로 기반 삭제로 강등하지 않고 소유자 ACL 등가 경로를 탄다. 두 수단이 모두
+    없을 때만 preamble의 명시적 회귀-불가 경로를 탄다.
     """
-    if not _READ_TMP_FD_SUPPORTED:
+    strategy = _read_tmp_strategy()
+    if strategy is None:
         return None
+    if strategy == _READ_TMP_STRATEGY_OWNER_ACL:
+        return _create_read_role_temp_owner_acl(harness, cwd)
     temp_parent, optional_parent_name = _read_tmp_parent(harness)
     temp_root = (
         temp_parent.parent if optional_parent_name is not None else temp_parent
@@ -7023,9 +7406,15 @@ def _create_read_role_temp(harness: str, cwd: Path) -> _ReadRoleTemp | None:
                     attempt_name, dir_fd=parent_fd, follow_symlinks=False,
                 )
                 if attempt_identity == (current.st_dev, current.st_ino):
-                    shutil.rmtree(attempt_name, dir_fd=parent_fd)
-            except OSError:
-                pass
+                    _remove_read_tmp_tree(attempt_path, parent_fd=parent_fd)
+            except (OSError, RuntimeError) as cleanup_exc:
+                # 롤백 정리 실패는 주 예외를 덮지 않는다(아래 `raise` 가 원인을 그대로 올린다).
+                # 다만 침묵하지도 않는다 — 삭제 수단이 형제 모듈이라 사본 불일치가 여기 닿을 수
+                # 있고, 그게 조용히 사라지면 재동기 처방이 함께 사라진다.
+                skew = _absorb_engine_rev_skew_for_recovery(
+                    cleanup_exc, "read_role_temp_rollback")
+                _warn_read_tmp_cleanup_failure(
+                    attempt_path, cleanup_exc, engine_rev_skew=skew)
         if created_parent is not None:
             _cleanup_owned_read_tmp_parent(created_parent)
         for fd in reversed(owned_fds):
@@ -7033,22 +7422,33 @@ def _create_read_role_temp(harness: str, cwd: Path) -> _ReadRoleTemp | None:
         raise
 
 
-def _warn_read_tmp_cleanup_failure(path: Path, exc: OSError | RuntimeError) -> None:
-    """read tmp 정리 실패를 주 결과를 덮지 않고 loud 하게 남긴다."""
+def _warn_read_tmp_cleanup_failure(
+    path: Path, exc: OSError | RuntimeError, *, engine_rev_skew: bool = False,
+) -> None:
+    """read tmp 정리 실패를 주 결과를 덮지 않고 loud 하게 남긴다.
+
+    `engine_rev_skew` 면 원인을 사본 불일치로 명시한다 — 삭제 수단이 형제 모듈이라 이 경계에
+    도달할 수 있는데, 일반 정리 실패와 같은 문구로 뭉개면 재동기 처방이 사라진다.
+    """
+    cause = f"엔진 사본 불일치 — {exc}" if engine_rev_skew else f"{exc}"
     print(
-        f"경고: read 역할 임시 디렉터리 정리 실패 — 잔존 가능 경로: {path} · 오류: {exc}",
+        f"경고: read 역할 임시 디렉터리 정리 실패 — 잔존 가능 경로: {path} · 오류: {cause}",
         file=sys.stderr,
     )
 
 
 def _cleanup_owned_read_tmp_parent(
-    created_parent: tuple[int, str, Path, tuple[int, int]],
+    created_parent: tuple[int | None, str, Path, tuple[int, int]],
 ) -> None:
     """생성 때 고정한 inode가 이름 공간에 그대로 있을 때만 공유 temp 부모를 rmdir한다."""
     ancestor_fd, name, parent_path, expected_identity = created_parent
     try:
         try:
-            current = os.stat(name, dir_fd=ancestor_fd, follow_symlinks=False)
+            current = (
+                os.stat(name, dir_fd=ancestor_fd, follow_symlinks=False)
+                if ancestor_fd is not None
+                else os.stat(parent_path, follow_symlinks=False)
+            )
         except FileNotFoundError:
             return
         current_identity = (current.st_dev, current.st_ino)
@@ -7057,7 +7457,10 @@ def _cleanup_owned_read_tmp_parent(
                 f"temp 부모 생성 identity={expected_identity}, "
                 f"정리 identity={current_identity}"
             )
-        os.rmdir(name, dir_fd=ancestor_fd)
+        if ancestor_fd is not None:
+            os.rmdir(name, dir_fd=ancestor_fd)
+        else:
+            os.rmdir(parent_path)
     except OSError as exc:
         if exc.errno not in {errno.ENOENT, errno.ENOTEMPTY, errno.EEXIST}:
             _warn_read_tmp_cleanup_failure(parent_path, exc)
@@ -7071,10 +7474,14 @@ def _cleanup_read_role_temp(read_tmp: _ReadRoleTemp | None) -> None:
         return
     try:
         try:
-            current = os.stat(
-                read_tmp.path.name,
-                dir_fd=read_tmp.parent_fd,
-                follow_symlinks=False,
+            current = (
+                os.stat(
+                    read_tmp.path.name,
+                    dir_fd=read_tmp.parent_fd,
+                    follow_symlinks=False,
+                )
+                if read_tmp.parent_fd is not None
+                else os.stat(read_tmp.path, follow_symlinks=False)
             )
         except FileNotFoundError:
             current = None
@@ -7084,11 +7491,12 @@ def _cleanup_read_role_temp(read_tmp: _ReadRoleTemp | None) -> None:
                 raise RuntimeError(
                     f"생성 identity={read_tmp.identity}, 정리 identity={identity}"
                 )
-            shutil.rmtree(read_tmp.path.name, dir_fd=read_tmp.parent_fd)
+            _remove_read_tmp_tree(read_tmp.path, parent_fd=read_tmp.parent_fd)
         if read_tmp.created_parent is not None:
             _cleanup_owned_read_tmp_parent(read_tmp.created_parent)
     except (OSError, RuntimeError) as exc:
-        _warn_read_tmp_cleanup_failure(read_tmp.path, exc)
+        skew = _absorb_engine_rev_skew_for_recovery(exc, "read_role_temp_cleanup")
+        _warn_read_tmp_cleanup_failure(read_tmp.path, exc, engine_rev_skew=skew)
     finally:
         for fd in reversed(read_tmp.owned_fds):
             _close_transport_fd(fd)
@@ -7181,7 +7589,11 @@ def _assert_path_entry_not_symlink(path: Path, *, label: str) -> None:
 
 
 def _portable_exclusive_write(path: Path, content: str) -> None:
-    """O_EXCL·0600으로 새 파일을 쓰고, 지원 플랫폼에서 O_NOFOLLOW를 더한다."""
+    """O_EXCL·0600으로 새 파일을 쓰고, 지원 플랫폼에서 O_NOFOLLOW를 더한다.
+
+    `os.open` 의 mode 인자는 **ACL 플랫폼에서 무효**라 0600 만으로는 소유자 전용이 되지 않는다
+    (Windows 는 부모 디렉터리의 상속 ACL 을 그대로 받는다). 쓰기 직후 공용 소유자-제한
+    seam(`file_lock.restrict_to_owner`)이 두 플랫폼에서 같은 보장을 낸다."""
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= getattr(os, "O_NOFOLLOW", 0)
     fd: int | None = None
@@ -7193,6 +7605,7 @@ def _portable_exclusive_write(path: Path, content: str) -> None:
         fd = None
         with handle:
             handle.write(content)
+        _load_file_lock().restrict_to_owner(path)
     except BaseException:
         _close_transport_fd(fd)
         fd = None
@@ -7295,6 +7708,76 @@ def _codex_read_tmp_profile_value(
     )
 
 
+# 쓰기 대상 실측 프로브. mode 비트는 ACL 플랫폼에서 권한을 말해 주지 않고 `os.access` 도 ACL 을
+# 반영하지 않으므로, 0바이트 파일을 실제로 만들어 본 결과만 근거로 쓴다.
+#
+# 이름은 **짧게** 유지한다 — 프로브가 경로 예산을 엔진 자신의 산출물보다 더 먹으면 안 된다.
+# Windows 실측: ticket 사본 디렉터리 199자 + `pm_delegate_write_probe_<pid>_<32hex>`
+# 61자 = 260자로 MAX_PATH(259) 를 **프로브만** 넘겨 `FileNotFoundError` 가 났다. 같은 디렉터리의
+# 실제 산출물(`metadata.json` 213자·`ticket-T-2001.md` 216자)은 모두 들어간다 — 즉 쓸 수 있는
+# 디렉터리를 "못 쓴다"고 잘못 판정했다. 이름 길이 예산은 회귀가 못박는다.
+_WRITE_PROBE_PREFIX = ".pmw"
+_WRITE_PROBE_SUFFIX_HEX = 8
+# 짧은 이름이라 이론상 충돌 가능 — O_EXCL 실패를 "쓰기 불가"로 오판하지 않게 유한 재시도한다.
+_WRITE_PROBE_NAME_ATTEMPTS = 3
+
+
+def _write_probe_name() -> str:
+    """프로브 파일 이름 하나 — 짧고 고유하다(길이 예산은 `_probe_writable_target` 주석 참조)."""
+    return f"{_WRITE_PROBE_PREFIX}{uuid.uuid4().hex[:_WRITE_PROBE_SUFFIX_HEX]}"
+
+
+def _probe_writable_target(path: Path, *, label: str) -> None:
+    """권한을 올리기 전에 그 경로가 **실제로** 쓰기 가능한지 실측한다.
+
+    실패는 `read-only` 강등이 아니라 사유와 함께 loud 다 — 강등하면 "실행은 됐는데 아무것도
+    못 쓰는" 위임이 되고, 그 실패는 위임 실패로만 보인다([[no-green-by-disabling]]).
+    """
+    if not path.is_dir():
+        raise DelegateError(
+            f"{label} 쓰기 대상이 디렉터리가 아님: {path} — 권한을 강등하지 않고 중단합니다."
+        )
+    probe: Path | None = None
+    fd: int | None = None
+    last_exists: FileExistsError | None = None
+    for _attempt in range(_WRITE_PROBE_NAME_ATTEMPTS):
+        candidate = path / _write_probe_name()
+        try:
+            fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError as exc:
+            last_exists = exc
+            continue
+        except OSError as exc:
+            raise DelegateError(
+                f"{label} 쓰기 대상 실측 실패: {path}: {type(exc).__name__}: {exc} — "
+                "권한을 read-only 로 강등하지 않고 중단합니다."
+            ) from exc
+        probe = candidate
+        break
+    if probe is None:
+        raise DelegateError(
+            f"{label} 쓰기 대상 실측 실패: {path}: 프로브 이름이 "
+            f"{_WRITE_PROBE_NAME_ATTEMPTS}회 연속 선점됨: {last_exists} — "
+            "권한을 read-only 로 강등하지 않고 중단합니다."
+        )
+    _close_transport_fd(fd)
+    try:
+        os.unlink(probe)
+    except OSError as exc:
+        # 프로브 잔재는 attempt tmp 회수가 함께 걷어간다 — 주 결과를 덮지 않고 알리기만 한다.
+        _warn_read_tmp_cleanup_failure(probe, exc)
+
+
+def _read_tmp_write_targets(
+    mode: str, read_tmp: _ReadRoleTemp, ticket_copy_path: Path | None,
+) -> tuple[tuple[str, Path], ...]:
+    """이 실행이 실제로 여는 쓰기 대상 — 샌드박스 권한 결정의 근거다."""
+    targets: list[tuple[str, Path]] = [("read 역할 임시", read_tmp.writable_path)]
+    if mode == "workspace-add-dir" and ticket_copy_path is not None:
+        targets.append(("ticket 사본", ticket_copy_path.parent))
+    return tuple(targets)
+
+
 def _apply_read_tmp_argv(
     argv: list[str], harness: str, role: str, read_tmp: _ReadRoleTemp | None,
     ticket_copy_path: Path | None = None,
@@ -7304,6 +7787,8 @@ def _apply_read_tmp_argv(
         return argv
     adjusted = list(argv)
     mode = _READ_TMP_ARGV_MODE_BY_HARNESS[harness]
+    for label, target in _read_tmp_write_targets(mode, read_tmp, ticket_copy_path):
+        _probe_writable_target(target, label=label)
     if ticket_copy_path is not None and mode != "workspace-add-dir":
         print(
             f"경고: {harness} code-reviewer ticket 사본은 단일-path write 격리를 "
@@ -7360,7 +7845,9 @@ def _read_tmp_prompt_note(
     """실 경로·회귀 실행법·worktree 금지를 read role이 놓치지 않게 한다."""
     if read_tmp is None:
         return READ_REGRESSION_UNAVAILABLE_NOTE
-    pytest_temp = f'"$TMPDIR/{_READ_TMP_PYTEST_REL_BY_HARNESS[harness]}"'
+    pytest_temp = (
+        f'"{_temp_env_reference()}/{_READ_TMP_PYTEST_REL_BY_HARNESS[harness]}"'
+    )
     env_note = (
         f"TMPDIR은 권한 glob 기준인 {read_tmp.path}, TMP/TEMP는 실제 쓰기 가능한 "
         f"{read_tmp.writable_path}를 가리킨다"
@@ -7369,7 +7856,7 @@ def _read_tmp_prompt_note(
     )
     codex_note = (
         f" Codex 실행 root도 {read_tmp.path}로 옮겼으므로 worktree 명령은 절대경로를 쓰거나 "
-        f"`cd {shlex.quote(str(cwd))}` 뒤 실행하라."
+        f"`cd {render_shell_token(str(cwd))}` 뒤 실행하라."
         if _READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS[harness]
         else ""
     )
@@ -7377,7 +7864,8 @@ def _read_tmp_prompt_note(
         f"read 역할 실행용 격리 임시 디렉터리: {read_tmp.writable_path}. "
         f"실행 환경의 {env_note}. 회귀 산출물은 이 경로에만 "
         f"쓰고 worktree({cwd})에는 어떤 파일도 만들거나 수정하지 마라. pytest는 예를 들어 "
-        f"`python3 -m pytest -p no:cacheprovider --basetemp {pytest_temp} ...`처럼 "
+        f"`{_prescribed_interpreter()} -m pytest -p no:cacheprovider "
+        f"--basetemp {pytest_temp} ...`처럼 "
         "cacheprovider를 끄고 basetemp를 지정하라. PYTHONDONTWRITEBYTECODE=1도 설정되어 있다. "
         f"하네스 권한 근거: {harness}.{codex_note}"
     )
@@ -7504,9 +7992,15 @@ def _execute_attempt(
         harness, model, reasoning, role, cwd, prompt, resume_session_id,
         ticket_copy_path,
     )
-    env = relay.with_harness_runtime_role(
-        _apply_read_tmp_env(build_env(harness), harness, read_tmp), harness, role,
-    )
+    # env 해소도 실패할 수 있다(하네스 필수 키 누락은 fail-loud) — 그 실패가 attempt 사본과
+    # read tmp 를 남기지 않도록 준비 산출물과 같은 소유권 seam 에서 되감는다.
+    try:
+        env = relay.with_harness_runtime_role(
+            _apply_read_tmp_env(build_env(harness), harness, read_tmp), harness, role,
+        )
+    except BaseException:
+        _cleanup_attempt_transport(prompt_path, read_tmp)
+        raise
 
     # raw 경로와 미마감 장부는 외부 프로세스 실행 전에 확정한다. 이 순서가 하네스 Bash/stdout
     # 유실 시에도 경로를 남기는 핵심 계약이다. 이후 BaseException으로 마감 경로를 건너뛰면

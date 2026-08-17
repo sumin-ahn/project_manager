@@ -24,6 +24,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import multiprocessing
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -505,9 +506,16 @@ def test_strict_legacy_runner_does_not_receive_idle_timeout(external):
 
 
 def test_real_subprocess_run_remains_a_valid_injected_runner(external):
-    """대표 strict 기존 러너 subprocess.run 을 실제로 태워 호출 전 TypeError 회귀를 막는다."""
-    ok, _out, started = external._run_reviewer_ex(
-        "prompt", f"{sys.executable} -c pass", 5, subprocess.run)
+    """대표 strict 기존 러너 subprocess.run 을 실제로 태워 호출 전 TypeError 회귀를 막는다.
+
+    커맨드는 엔진이 실제로 만드는 형상(`shlex.join`)으로 조립한다 — 인터프리터 경로에 공백이 있는
+    플랫폼(Windows `C:\\Program Files\\...`)에서 인용 없는 조립은 실행 파일이 두 토큰으로 갈려
+    이 회귀가 러너가 아니라 픽스처 때문에 red 가 된다.
+    """
+    command = shlex.join([sys.executable, "-c", "pass"])
+    assert " " not in sys.executable or command != f"{sys.executable} -c pass", (
+        "공백 있는 인터프리터 경로가 인용되지 않았다 — 이 회귀의 전제가 성립하지 않는다")
+    ok, _out, started = external._run_reviewer_ex("prompt", command, 5, subprocess.run)
     assert (ok, started) == (True, True)
 
 
@@ -778,6 +786,29 @@ def test_spawn_failure_refunds_reservation(external, monkeypatch, tmp_path):
         assert external.main(["--gate", "T-0114", "--paths", "x.py"]) == 1
     assert calls["n"] == 6                       # 전송은 시도됨(리뷰어 호출)
     assert _ledger(external, tmp_path)["T-0114"]["count"] == 0  # 예약 환불 → never blocked
+
+
+def test_spawn_failure_refund_is_announced_not_silent(
+    external, monkeypatch, tmp_path, capsys,
+):
+    """전송 0 으로 되돌린 라운드는 **말하고** 되돌린다 (무음 환불 0 · T-0722).
+
+    조용히 환불하면 채택자에게 남는 사실이 "장부가 그대로다" 뿐이라, 교차검증이 한 번도 돌지 않은
+    실행과 리뷰어를 선언하지 않은 실행이 같은 모양이 된다 — Windows 경로 분해 결함이 30여 릴리즈
+    숨어 있던 경로다. 스폰된 실행(전송됐을 수 있음)에는 이 경고가 붙지 않음을 같이 못 박는다."""
+    _wire(external, monkeypatch, tmp_path, result=_FAIL_UNSTARTED)
+    assert external.main(["--gate", "T-0722", "--paths", "x.py"]) == 1
+    err = capsys.readouterr().err
+
+    assert "라운드 환불" in err
+    assert "실행되지 않았습니다" in err
+    assert _FAIL_UNSTARTED["output"] in err       # 사유가 그 자리에 실린다
+    assert _ledger(external, tmp_path)["T-0722"]["count"] == 0
+
+    _wire(external, monkeypatch, tmp_path, result=_FAIL_STARTED)
+    assert external.main(["--gate", "T-0723", "--paths", "x.py"]) == 1
+    assert "라운드 환불" not in capsys.readouterr().err
+    assert _ledger(external, tmp_path)["T-0723"]["count"] == 1
 
 
 def test_killed_main_leaves_machine_counted_unfinished_record(

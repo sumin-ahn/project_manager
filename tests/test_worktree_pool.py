@@ -28,6 +28,7 @@ import io
 import json
 import multiprocessing as mp
 import os
+import queue
 import shutil
 import shlex
 import subprocess
@@ -37,6 +38,7 @@ from pathlib import Path
 import pytest
 
 from _git import commit_env
+from _textio import write_crlf, write_lf
 from _win_skip import posix_mode_supported
 
 REPO = Path(__file__).resolve().parents[1]
@@ -2090,11 +2092,23 @@ def test_create_slot_default_session_uses_local_conf(wp, proj, monkeypatch):
 
 
 def _worker_create(proj_str, idx, ready, go, out_q):
-    """각 워커가 고유 repo(R{idx}) 슬롯을 create_slot — 동시 장부 write 안전 검증."""
-    proj = Path(proj_str)
-    wp = _load_wp_bound(proj)
-    _mk_bare_placeholder(wp, f"R{idx}")  # bare 부재 가드 통과(ADR-0011 §31)
-    git = FakeGit()
+    """각 워커가 고유 repo(R{idx}) 슬롯을 create_slot — 동시 장부 write 안전 검증.
+
+    **준비 단계(모듈 로드·bare 자리 생성)의 실패도 보고한다.** 그 구간에서 그냥 죽으면 부모는
+    내용 없는 `queue.Empty` 만 받고 사유를 한 줄도 읽지 못한다 — 판정 불능은 통과가 아니라
+    진단 실패다([[guard-must-cover-its-own-surface]]). 준비 실패 시에도 `ready` 를 채워 부모가
+    준비 대기에서 멈추지 않고 사유가 실린 결과로 넘어가게 한다.
+    """
+    try:
+        proj = Path(proj_str)
+        wp = _load_wp_bound(proj)
+        _mk_bare_placeholder(wp, f"R{idx}")  # bare 부재 가드 통과(ADR-0011 §31)
+        git = FakeGit()
+    except BaseException as e:  # noqa: BLE001
+        import traceback
+        out_q.put(("EXC", f"워커 준비 단계 실패: {e!r}\n{traceback.format_exc()}"))
+        ready.put(idx)
+        return
     ready.put(idx)
     go.wait()
     try:
@@ -2103,6 +2117,27 @@ def _worker_create(proj_str, idx, ready, go, out_q):
     except BaseException as e:  # noqa: BLE001
         import traceback
         out_q.put(("EXC", f"{e!r}\n{traceback.format_exc()}"))
+
+
+def _collect_from_workers(source, count, procs, label):
+    """자식 큐에서 `count` 개를 받는다 — 못 받으면 자식 상태를 실은 진단으로 실패한다.
+
+    `queue.Empty` 는 "자식이 결과를 못 냈다"만 말하고 왜인지는 말하지 않는다(Windows 실측이
+    그 침묵에 막혔다). exitcode·생존 여부를 진단에 실어 "락 대기 데드락"과 "자식이 죽음"을
+    부모 쪽에서 바로 가른다.
+    """
+    received = []
+    for _ in range(count):
+        try:
+            received.append(source.get(timeout=SYNC_TIMEOUT))
+        except queue.Empty:
+            states = ", ".join(
+                f"pid={p.pid} alive={p.is_alive()} exitcode={p.exitcode}" for p in procs)
+            raise AssertionError(
+                f"{label}: {len(received)}/{count} 만 수신 — 자식 상태: {states} · "
+                f"수신분: {received}"
+            ) from None
+    return received
 
 
 def test_concurrent_create_slot_no_lost_ledger_writes(proj):
@@ -2120,13 +2155,10 @@ def test_concurrent_create_slot_no_lost_ledger_writes(proj):
              for i in range(n)]
     for p in procs:
         p.start()
-    for _ in range(n):
-        ready.get(timeout=SYNC_TIMEOUT)
-    go.set()
-    results = []
     try:
-        for _ in range(n):
-            results.append(out_q.get(timeout=SYNC_TIMEOUT))
+        _collect_from_workers(ready, n, procs, "워커 준비 신호")
+        go.set()
+        results = _collect_from_workers(out_q, n, procs, "워커 결과")
     finally:
         for p in procs:
             if p.is_alive():
@@ -2144,6 +2176,49 @@ def test_concurrent_create_slot_no_lost_ledger_writes(proj):
     assert slots == expected, f"lost ledger writes: {expected - slots}"
 
 
+# 대역이 fd 대신 돌려주는 가짜 OS 핸들의 기준값 — fd 와 구분돼야 "핸들로 변환해 넘긴다"를
+# 판정할 수 있다.
+_FAKE_OS_HANDLE_BASE = 9000
+
+
+def test_lease_lock_burns_the_windows_branch_through_the_real_consumer(
+    wp, proj, monkeypatch,
+):
+    """리스 장부 락이 **Windows 분기**를 지나는지 POSIX 개발기에서 태운다 (T-0725).
+
+    seam 단위 회귀(`tests/test_file_lock_windows_branch.py`)는 분기 자체를 고정하고, 이 케이스는
+    *소비자* 경로가 그 분기에 실제로 닿는지를 고정한다 — 장부 op 가 락을 우회하면 seam 이 아무리
+    옳아도 멀티-PM 형상에서 lost update 가 난다. 주입이 no-op 이면 아무것도 시험되지 않으므로
+    대역 호출 여부를 먼저 단언한다.
+    """
+    lock_module = wp.file_lock
+    acquired: list[tuple[int, int, int]] = []
+    released: list[tuple[int, int]] = []
+    api = lock_module.WindowsLockApi(
+        lambda fd: _FAKE_OS_HANDLE_BASE + fd,
+        lambda handle, flags, length: acquired.append((handle, flags, length)) or 0,
+        lambda handle, length: released.append((handle, length)) or 0,
+    )
+    monkeypatch.setattr(
+        lock_module, "lock_backend", lambda: lock_module.WINDOWS_LOCK_BACKEND)
+    monkeypatch.setattr(lock_module, "_windows_lock_api", lambda: api)
+
+    _mk_bare_placeholder(wp, "W")
+    lease = wp.create_slot("W", session="sW", git_runner=FakeGit())
+
+    assert acquired, "주입이 no-op — 장부 락이 Windows 분기를 지나지 않았다"
+    assert len(acquired) == len(released), "획득/해제 짝이 안 맞는다(락 누수)"
+    assert {flags for _handle, flags, _length in acquired} == {
+        lock_module.LOCKFILE_EXCLUSIVE_LOCK
+    }, "배타·블로킹(FAIL_IMMEDIATELY 없음)이 아닌 플래그로 장부 락을 걸었다"
+    assert {length for _handle, _flags, length in acquired} == {
+        lock_module.LOCK_REGION_BYTES
+    }
+    assert all(handle >= _FAKE_OS_HANDLE_BASE for handle, _flags, _length in acquired), \
+        "fd 를 OS 핸들로 변환하지 않고 원시 호출에 넘겼다"
+    assert lease.slot in {l.slot for l in wp.list_leases()}
+
+
 # ════════════════════════════════════════════════════════════════════════
 # 실 git 통합 (hermetic·임시 git repo) — DI seam 미주입·실 git 경로
 # ════════════════════════════════════════════════════════════════════════
@@ -2152,15 +2227,37 @@ _GIT = shutil.which("git")
 _git_required = pytest.mark.skipif(_GIT is None, reason="git 바이너리 없음")
 
 
+class GitCommandError(subprocess.CalledProcessError):
+    """실 git 헬퍼의 실패 — 명령 출력(stdout·stderr)을 진단 본문에 싣는다.
+
+    `subprocess.run(check=True)` 가 던지는 기본 `CalledProcessError` 는 캡처한 출력을 속성으로만
+    들고 있고 `str()` 에는 rc 와 명령줄만 넣는다. 그래서 실 git e2e 가 rc≠0 로 죽으면 pytest
+    트레이스백에 사유가 한 줄도 안 남아 원인 미상으로 남는다(Windows 보호 push 실측 — 훅이
+    거부했는지 push 자체가 실패했는지조차 구분 불가). 여기서 출력을 진단에 실어 그 침묵을 닫는다.
+    """
+
+    def __str__(self) -> str:
+        parts = [super().__str__()]
+        for label, stream in (("stdout", self.stdout), ("stderr", self.stderr)):
+            text = (stream or "").strip()
+            if text:
+                parts.append(f"--- git {label} ---\n{text}")
+        return "\n".join(parts)
+
+
 def _git(cwd, *argv, env=None):
-    """테스트용 실 git 헬퍼 — check=True·UTF-8 캡처."""
+    """테스트용 실 git 헬퍼 — 실패는 rc·출력을 실은 `GitCommandError`·UTF-8 캡처."""
     e = _protection_env()
     e = commit_env(e)
     if env:
         e.update(env)
-    return subprocess.run([_GIT, "-C", str(cwd), *argv], check=True,
-                          capture_output=True, text=True, encoding="utf-8",
-                          errors="replace", env=e)
+    completed = subprocess.run([_GIT, "-C", str(cwd), *argv], check=False,
+                               capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", env=e)
+    if completed.returncode != 0:
+        raise GitCommandError(completed.returncode, completed.args,
+                              output=completed.stdout, stderr=completed.stderr)
+    return completed
 
 
 def _init_repo(path):
@@ -2188,6 +2285,25 @@ def _mk_real_bare(wp, repo: str, tmp_path: Path, *, marker: str = "FAMILY") -> P
     bare.parent.mkdir(parents=True, exist_ok=True)
     _git(tmp_path, "clone", "--bare", "-q", str(origin), str(bare))
     return bare
+
+
+@_git_required
+def test_real_git_helper_failure_carries_command_output(tmp_path):
+    """실 git 헬퍼가 실패하면 그 git 의 stdout/stderr 를 진단 본문에 싣는다 (T-0721).
+
+    옛 헬퍼는 `check=True` 가 던지는 기본 `CalledProcessError` 를 그대로 올려 rc 와 명령줄만
+    남겼다 — 실 git e2e 가 rc≠0 로 죽었을 때 훅이 막은 것인지 push 자체가 실패한 것인지조차
+    구분할 수 없어 Windows 실패가 원인 미상으로 이월됐다. 사유 문구가 아니라 **그때 캡처한
+    stderr 가 진단에 포함되는지**를 단언한다(로케일 무관·값 대조)."""
+    repo = _init_repo(tmp_path / "diagnosis")
+
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        _git(repo, "rev-parse", "--verify", "no-such-ref-for-diagnosis")
+
+    captured = (caught.value.stderr or "").strip()
+    assert captured, "git 이 stderr 를 내지 않아 이 케이스로는 진단 전달을 시험할 수 없다"
+    assert captured in str(caught.value), \
+        f"실패 진단이 git stderr 를 삼켰다: {str(caught.value)!r}"
 
 
 @_git_required
@@ -2533,7 +2649,6 @@ def test_real_git_create_slot_base_fetch_offline_falls_back_to_local(proj, tmp_p
     로컬 develop(동결 head)에서 슬롯을 파 — 슬롯이 실제로 생성되고 로컬 develop 내용을 갖는지
     고정한다(네트워크 실패가 슬롯 생성을 막지 않는다).
     """
-    import shutil as _sh
     _init_repo(proj)
     wp = _load_wp_bound(proj)
 
@@ -2548,7 +2663,9 @@ def test_real_git_create_slot_base_fetch_offline_falls_back_to_local(proj, tmp_p
     _git(tmp_path, "clone", "--bare", "-q", str(origin), str(bare))
 
     # origin 삭제 → `git fetch origin` 이 실패한다(오프라인/소실 시뮬).
-    _sh.rmtree(origin)
+    # git object·packfile 은 read-only 라 맨 rmtree 는 Windows 에서 `[WinError 5]` 로 실패한다 —
+    # 엔진 공용 삭제 seam 을 그대로 쓴다(속성 해제 후 재시도·못 지우면 loud).
+    wp._load_file_lock().force_rmtree(origin)
 
     lease = wp.create_slot("A", base="develop", session="me", init_submodules=False)
     assert lease.slot == "work/A_1"           # fetch 실패해도 슬롯 생성 계속(fail-soft)
@@ -3989,6 +4106,23 @@ def _isolated_command_path(root: Path, *commands: str) -> Path:
     return root
 
 
+def _write_must_fix_marker(engine_root: Path, state: str = "clear") -> Path:
+    """훅이 shell 단독으로 읽는 must-fix 잔여 표식을 **장부 writer 와 같은 바이트로** 심는다.
+
+    엔진 writer(board.py)는 `newline="\\n"` 로 `clear`/`blocked` 정확 한 줄을 원자 기록한다.
+    픽스처가 맨 `write_text` 로 쓰면 Windows 에서 `\\n` 이 `os.linesep`(=`\\r\\n`)으로 번역돼
+    훅이 `clear\\r` 를 읽고 형식 오류로 fail-closed 한다 — 보호 push e2e 가 Windows 에서만 rc1 로
+    죽던 실측 원인이다. 표식 픽스처는 이 seam 만 쓴다(플랫폼 개행이 섞일 자리를 없앤다).
+    """
+    marker = engine_root / ".project_manager" / ".local" / "release-must-fix"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    write_lf(marker, f"{state}\n", encoding="ascii")
+    # 바이트로 확인한다 — `read_text` 는 universal newline 이라 CRLF 도 같아 보인다(판정 무력화).
+    assert marker.read_bytes() == f"{state}\n".encode("ascii"), \
+        f"표식 픽스처가 플랫폼 개행으로 번역됨: {marker.read_bytes()!r}"
+    return marker
+
+
 def test_install_protected_hook_writes_hook_sidecar_and_sets_hookspath(wp):
     """install_protected_hook — 훅+sidecar write + bare core.hooksPath set (T-0076)."""
     _mk_bare_placeholder(wp, "A")
@@ -4230,12 +4364,34 @@ def test_generated_hook_pm_allow_with_skip_passes_protected(wp):
     """
     _mk_bare_placeholder(wp, "A")
     wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
-    marker = wp.REPO / ".project_manager" / ".local" / "release-must-fix"
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text("clear\n", encoding="ascii")
+    _write_must_fix_marker(wp.REPO)
     hook = wp.REPO_HOOKS_DIR / "A" / "pre-push"
     assert _run_hook(hook, _push_line("refs/heads/main"),
                      env_override=True, skip_live_gate=True) == 0
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 직접 실행 불가)")
+def test_generated_hook_rejects_crlf_must_fix_marker(wp):
+    """CRLF 로 끝나는 표식은 `clear` 로 오인하지 않고 형식 오류로 거부한다 (T-0721).
+
+    장부 writer 는 표식을 LF 정확 한 줄로만 쓴다 — CRLF 표식은 그 writer 의 산출이 아니므로
+    우회를 열어 주지 않는다(부재·손상과 같은 fail-closed 축). 이 판정이 Windows 실패의 형상
+    자체였다: 픽스처가 플랫폼 개행으로 표식을 써 훅이 `clear\\r` 를 읽고 보호 push 를 rc1 로
+    막았다. LF 환경에서도 그 축을 태워, 판정을 개행 관용으로 푸는 변경이나 픽스처 개행 퇴행이
+    조용히 통과하지 못하게 한다."""
+    _mk_bare_placeholder(wp, "A")
+    wp.install_protected_hook("A", ["main"], git_runner=FakeGit())
+    marker = wp.REPO / ".project_manager" / ".local" / "release-must-fix"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    write_crlf(marker, "clear\n", encoding="ascii")
+    assert marker.read_bytes() == b"clear\r\n", "CRLF 축 주입 실패(이 형상을 시험 못 함)"
+
+    result = _run_hook_result(
+        wp.REPO_HOOKS_DIR / "A" / "pre-push", _push_line("refs/heads/main"),
+        env_override=True, skip_live_gate=True)
+
+    assert result.returncode != 0, "CRLF 표식을 clear 로 받아들여 보호 push 를 통과시킴"
+    assert "형식 오류" in result.stderr, result.stderr
 
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh 부재(훅 직접 실행 불가)")
@@ -5550,9 +5706,7 @@ def test_real_git_protected_push_pm_allow_with_skip_allowed(proj, tmp_path):
     _git(slot_dir, "commit", "-q", "-m", "skip change on main",
          env={"PM_ALLOW_PROTECTED_COMMIT": "1"})
     slot_main = _git(slot_dir, "rev-parse", "main").stdout.strip()
-    marker = proj / ".project_manager" / ".local" / "release-must-fix"
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text("clear\n", encoding="ascii")
+    _write_must_fix_marker(proj)
 
     # PM_ALLOW + PM_SKIP — _git 헬퍼가 env 를 merge 한다(check=True·통과 기대).
     _git(slot_dir, "push", "server", "main",

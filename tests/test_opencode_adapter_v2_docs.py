@@ -28,6 +28,7 @@ from pathlib import Path
 import yaml
 
 from _repo_owned_inventory import OWNED, repo_owned_paths
+from _skill_command import command_matches_skill
 
 REPO = Path(__file__).resolve().parents[1]
 OPENCODE = REPO / "templates" / "opencode"
@@ -177,7 +178,10 @@ def test_pm_instructions_lists_researcher_subagent_type():
 
 
 def test_opencode_pm_dev_delegate_ships_as_canonical_skill_mirror():
-    """opencode pm-dev-delegate target override와 command가 같은 canonical source를 쓴다."""
+    """opencode pm-dev-delegate target override와 command가 같은 canonical source를 쓴다.
+
+    command 사본 판정은 개행 표기를 정규화한 **내용 동일성**이다(바이트 표기 동일성이 아니다·T-0708).
+    """
     assert PM_DEV_DELEGATE_MIRROR.is_file(), (
         f"opencode pm-dev-delegate 출하 스킬 미러 없음: {PM_DEV_DELEGATE_MIRROR} "
         "(`pm_update --target opencode` 로 전파).")
@@ -185,12 +189,11 @@ def test_opencode_pm_dev_delegate_ships_as_canonical_skill_mirror():
         f"canonical pm-dev-delegate 스킬 없음: {PM_DEV_DELEGATE_CANONICAL}")
     assert PM_DEV_DELEGATE_MIRROR.resolve() == PM_DEV_DELEGATE_CANONICAL.resolve()
     assert PM_DEV_DELEGATE_COMMAND.is_file(), "opencode pm-dev-delegate 슬래시 command 누락"
-    expected_command = PM_DEV_DELEGATE_CANONICAL.read_text(encoding="utf-8").replace(
-        "(references/operational-details.md)",
-        "(../../.claude/skills/pm-dev-delegate/references/operational-details.md)",
-    ).encode("utf-8")
-    assert PM_DEV_DELEGATE_COMMAND.read_bytes() == expected_command, (
-        "opencode pm-dev-delegate command가 canonical과 byte drift(T-0674).")
+    # 판정 층은 공용 seam(LF 정규화 bytes 내용 동일성·T-0708) — 기대·실측을 한 곳에서 읽어
+    # 체크아웃 개행 표기와 무관하게, 내용 1자 차이는 red로 판정한다.
+    assert command_matches_skill(
+        PM_DEV_DELEGATE_CANONICAL, "pm-dev-delegate", PM_DEV_DELEGATE_COMMAND,
+    ), "opencode pm-dev-delegate command가 canonical과 내용 drift(T-0674)."
     manifest = OPENCODE_MANIFEST.read_text(encoding="utf-8")
     source = "templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md"
     assert f".claude/skills/pm-dev-delegate/SKILL.md    @render @source={source}" in manifest

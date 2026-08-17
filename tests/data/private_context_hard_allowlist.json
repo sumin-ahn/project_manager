@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "count": 396,
+  "count": 411,
   "surface_counts": {
     "markdown": 147,
-    "python-non-prose": 17,
-    "python-prose": 232
+    "python-non-prose": 20,
+    "python-prose": 244
   },
   "entries": [
     {
@@ -84,7 +84,7 @@
       "kind": "work_item",
       "match": "T-0000",
       "surface": "python-non-prose",
-      "hash": "d35af29f9496efd5fc28615eda906297b3f09d47ae53ebd17144d4e33e139bd8",
+      "hash": "4f745a21118f4e13b55c77ca166f222337701fbaf7e5a348746809f9fd35d41b",
       "count": 1
     },
     {
@@ -304,6 +304,14 @@
       "count": 1
     },
     {
+      "path": ".project_manager/tools/delegate_channel_guard.py",
+      "kind": "work_item",
+      "match": "T-0720",
+      "surface": "python-prose",
+      "hash": "541e89787f8122f873310e4daf9ad860d36667ed9e6c51698fbfe52f6ac85e32",
+      "count": 1
+    },
+    {
       "path": ".project_manager/tools/domain.py",
       "kind": "work_item",
       "match": "ADR-0018",
@@ -333,6 +341,14 @@
       "match": "T-0597",
       "surface": "python-prose",
       "hash": "a508a02c8a4d4de3f709265395cc803953f46e8006213f18175f1a2340a8cddf",
+      "count": 1
+    },
+    {
+      "path": ".project_manager/tools/file_lock.py",
+      "kind": "work_item",
+      "match": "T-0711",
+      "surface": "python-prose",
+      "hash": "511f6000963fe7cd30fd84d89dfab954f38d1db9d32481c175219b64dfa6ecf5",
       "count": 1
     },
     {
@@ -421,6 +437,14 @@
       "match": "T-0472",
       "surface": "python-prose",
       "hash": "b28a29a3fb04704aa735ebed4db2c89d07a330b1e38c2254bbf3d9c9baa7978a",
+      "count": 1
+    },
+    {
+      "path": ".project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-2001",
+      "surface": "python-prose",
+      "hash": "6019f5fc5c4035d227d9a64fcf5357d954d71806c831c075b9903f34f1093b10",
       "count": 1
     },
     {
@@ -618,6 +642,14 @@
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
       "kind": "work_item",
+      "match": "T-0000",
+      "surface": "python-non-prose",
+      "hash": "4f745a21118f4e13b55c77ca166f222337701fbaf7e5a348746809f9fd35d41b",
+      "count": 1
+    },
+    {
+      "path": "templates/claude_code/.project_manager/tools/board.py",
+      "kind": "work_item",
       "match": "T-0001",
       "surface": "python-prose",
       "hash": "0487aec7121da0bf9d6572556eacbd6c66e976714e689eb5d6df31e7a6f8e4ae",
@@ -832,6 +864,14 @@
       "count": 1
     },
     {
+      "path": "templates/claude_code/.project_manager/tools/delegate_channel_guard.py",
+      "kind": "work_item",
+      "match": "T-0720",
+      "surface": "python-prose",
+      "hash": "541e89787f8122f873310e4daf9ad860d36667ed9e6c51698fbfe52f6ac85e32",
+      "count": 1
+    },
+    {
       "path": "templates/claude_code/.project_manager/tools/domain.py",
       "kind": "work_item",
       "match": "ADR-0018",
@@ -861,6 +901,14 @@
       "match": "T-0597",
       "surface": "python-prose",
       "hash": "a508a02c8a4d4de3f709265395cc803953f46e8006213f18175f1a2340a8cddf",
+      "count": 1
+    },
+    {
+      "path": "templates/claude_code/.project_manager/tools/file_lock.py",
+      "kind": "work_item",
+      "match": "T-0711",
+      "surface": "python-prose",
+      "hash": "511f6000963fe7cd30fd84d89dfab954f38d1db9d32481c175219b64dfa6ecf5",
       "count": 1
     },
     {
@@ -949,6 +997,14 @@
       "match": "T-0472",
       "surface": "python-prose",
       "hash": "b28a29a3fb04704aa735ebed4db2c89d07a330b1e38c2254bbf3d9c9baa7978a",
+      "count": 1
+    },
+    {
+      "path": "templates/claude_code/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-2001",
+      "surface": "python-prose",
+      "hash": "6019f5fc5c4035d227d9a64fcf5357d954d71806c831c075b9903f34f1093b10",
       "count": 1
     },
     {
@@ -1298,6 +1354,14 @@
     {
       "path": "templates/codex/.project_manager/tools/board.py",
       "kind": "work_item",
+      "match": "T-0000",
+      "surface": "python-non-prose",
+      "hash": "4f745a21118f4e13b55c77ca166f222337701fbaf7e5a348746809f9fd35d41b",
+      "count": 1
+    },
+    {
+      "path": "templates/codex/.project_manager/tools/board.py",
+      "kind": "work_item",
       "match": "T-0001",
       "surface": "python-prose",
       "hash": "0487aec7121da0bf9d6572556eacbd6c66e976714e689eb5d6df31e7a6f8e4ae",
@@ -1512,6 +1576,14 @@
       "count": 1
     },
     {
+      "path": "templates/codex/.project_manager/tools/delegate_channel_guard.py",
+      "kind": "work_item",
+      "match": "T-0720",
+      "surface": "python-prose",
+      "hash": "541e89787f8122f873310e4daf9ad860d36667ed9e6c51698fbfe52f6ac85e32",
+      "count": 1
+    },
+    {
       "path": "templates/codex/.project_manager/tools/domain.py",
       "kind": "work_item",
       "match": "ADR-0018",
@@ -1541,6 +1613,14 @@
       "match": "T-0597",
       "surface": "python-prose",
       "hash": "a508a02c8a4d4de3f709265395cc803953f46e8006213f18175f1a2340a8cddf",
+      "count": 1
+    },
+    {
+      "path": "templates/codex/.project_manager/tools/file_lock.py",
+      "kind": "work_item",
+      "match": "T-0711",
+      "surface": "python-prose",
+      "hash": "511f6000963fe7cd30fd84d89dfab954f38d1db9d32481c175219b64dfa6ecf5",
       "count": 1
     },
     {
@@ -1629,6 +1709,14 @@
       "match": "T-0472",
       "surface": "python-prose",
       "hash": "b28a29a3fb04704aa735ebed4db2c89d07a330b1e38c2254bbf3d9c9baa7978a",
+      "count": 1
+    },
+    {
+      "path": "templates/codex/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-2001",
+      "surface": "python-prose",
+      "hash": "6019f5fc5c4035d227d9a64fcf5357d954d71806c831c075b9903f34f1093b10",
       "count": 1
     },
     {
@@ -2194,6 +2282,14 @@
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
       "kind": "work_item",
+      "match": "T-0000",
+      "surface": "python-non-prose",
+      "hash": "4f745a21118f4e13b55c77ca166f222337701fbaf7e5a348746809f9fd35d41b",
+      "count": 1
+    },
+    {
+      "path": "templates/opencode/.project_manager/tools/board.py",
+      "kind": "work_item",
       "match": "T-0001",
       "surface": "python-prose",
       "hash": "0487aec7121da0bf9d6572556eacbd6c66e976714e689eb5d6df31e7a6f8e4ae",
@@ -2408,6 +2504,14 @@
       "count": 1
     },
     {
+      "path": "templates/opencode/.project_manager/tools/delegate_channel_guard.py",
+      "kind": "work_item",
+      "match": "T-0720",
+      "surface": "python-prose",
+      "hash": "541e89787f8122f873310e4daf9ad860d36667ed9e6c51698fbfe52f6ac85e32",
+      "count": 1
+    },
+    {
       "path": "templates/opencode/.project_manager/tools/domain.py",
       "kind": "work_item",
       "match": "ADR-0018",
@@ -2437,6 +2541,14 @@
       "match": "T-0597",
       "surface": "python-prose",
       "hash": "a508a02c8a4d4de3f709265395cc803953f46e8006213f18175f1a2340a8cddf",
+      "count": 1
+    },
+    {
+      "path": "templates/opencode/.project_manager/tools/file_lock.py",
+      "kind": "work_item",
+      "match": "T-0711",
+      "surface": "python-prose",
+      "hash": "511f6000963fe7cd30fd84d89dfab954f38d1db9d32481c175219b64dfa6ecf5",
       "count": 1
     },
     {
@@ -2525,6 +2637,14 @@
       "match": "T-0472",
       "surface": "python-prose",
       "hash": "b28a29a3fb04704aa735ebed4db2c89d07a330b1e38c2254bbf3d9c9baa7978a",
+      "count": 1
+    },
+    {
+      "path": "templates/opencode/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-2001",
+      "surface": "python-prose",
+      "hash": "6019f5fc5c4035d227d9a64fcf5357d954d71806c831c075b9903f34f1093b10",
       "count": 1
     },
     {

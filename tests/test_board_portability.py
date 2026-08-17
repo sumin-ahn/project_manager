@@ -62,23 +62,28 @@ def test_dump_load_round_trip_em_dash_and_emoji(board, tmp_path):
     assert body2 == body
 
 
-def test_dump_ticket_passes_utf8_encoding(board, tmp_path, monkeypatch):
-    """dump_ticket 이 write_text 에 encoding='utf-8' 를 명시하는지 직접 검증.
+def test_dump_ticket_passes_utf8_encoding_and_untranslated_newlines(
+        board, tmp_path, monkeypatch):
+    """dump_ticket 의 쓰기 핸들이 encoding='utf-8' + newline='' 를 명시하는지 직접 검증.
 
     ambient PYTHONUTF8 가 cp949 버그를 가려도 이 단언은 통과하지 못한다 —
     수정 전 코드(encoding 누락)에서 captured['encoding'] 은 None.
+    `newline=''`(줄끝 미번역)은 표기 보존 축이다 — 본문이 담은 개행이 그대로 bytes 가 돼야
+    CRLF 티켓이 lifecycle 재작성에서 LF 로 뒤집히지 않는다(T-0709).
     """
     captured: dict = {}
-    orig = Path.write_text
+    orig = Path.open
 
-    def spy(self, data, *args, **kwargs):
-        if self.name.endswith(".md") and "T-9999" in self.name:
+    def spy(self, mode="r", *args, **kwargs):
+        if self.name.endswith(".md") and "T-9999" in self.name and "w" in mode:
             captured["encoding"] = kwargs.get("encoding")
-        return orig(self, data, *args, **kwargs)
+            captured["newline"] = kwargs.get("newline")
+        return orig(self, mode, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "write_text", spy)
+    monkeypatch.setattr(Path, "open", spy)
     board.dump_ticket(tmp_path / "T-9999-x.md", {"id": "T-9999"}, "body")
     assert captured.get("encoding") == "utf-8"
+    assert captured.get("newline") == ""
 
 
 def test_load_ticket_passes_utf8_encoding(board, tmp_path, monkeypatch):

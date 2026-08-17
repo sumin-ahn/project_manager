@@ -20,6 +20,7 @@ import importlib.util
 import inspect
 import json
 import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -388,6 +389,34 @@ def test_reviewer_home_carries_auth_but_no_sessions(external, tmp_path):
     assert survivors == set(copied)
 
 
+def test_reviewer_home_restriction_goes_through_the_platform_seam(
+        external, tmp_path, monkeypatch):
+    """임시 홈과 인증 사본의 접근 제한은 **공용 seam** 을 지난다 (수단은 플랫폼이 정한다).
+
+    `os.chmod(0o600)` 직접 호출은 Windows 에서 아무 제한도 걸지 않아(실측 `S_IMODE`=0o666)
+    인증 파일 사본이 그 기기의 다른 사용자에게 열린다. POSIX 에서는 결과가 같아 보이므로
+    (이미 0600) 결과가 아니라 **호출**을 본다.
+    """
+    home = tmp_path / "reviewer-home"
+    restricted: list[Path] = []
+    real_restrict = external._restrict_to_owner
+    monkeypatch.setattr(
+        external, "_restrict_to_owner",
+        lambda path: (restricted.append(Path(path)), real_restrict(path))[1])
+
+    copied = external._build_reviewer_home(
+        home, external.reviewer_home_artifacts(), _user_home_with_history(tmp_path),
+    ).copied
+
+    assert home in restricted, "임시 홈 자체가 소유자 전용으로 제한되지 않았다"
+    for relative in copied:
+        target = home / Path(relative)
+        assert target in restricted, f"복제한 인증/설정 사본이 제한되지 않았다: {relative}"
+        assert target.parent in restricted, f"사본의 부모 디렉터리가 제한되지 않았다: {relative}"
+    for path in restricted:
+        assert external._load_file_lock().owner_only_access(path) is True
+
+
 def test_reviewer_home_scrubs_session_traces_from_onboarding_state(external, tmp_path):
     """온보딩/신뢰 상태 파일에 세션 흔적이 섞여 있으면 그 키만 떼고 복제한다.
 
@@ -698,17 +727,73 @@ def test_visibility_scope_removes_workspace_after_use(external, tmp_path):
 
 def test_cleanup_failure_is_loud(external, tmp_path, monkeypatch, capsys):
     """정리 실패를 삼키면 저장소 사본과 인증 파일 사본이 조용히 남는다."""
-    def _boom(path):
+    def _boom(path, **kwargs):
         raise PermissionError(13, "삭제 불가")
 
     monkeypatch.setattr(external.shutil, "rmtree", _boom)
+    container = tmp_path / "container"
+    container.mkdir()            # 지울 대상이 실재해야 정리 경로가 공허하지 않다.
     workspace = external.ReviewerWorkspace(
-        root=tmp_path / "container", tree=tmp_path / "container" / "tree",
-        home=tmp_path / "container" / "home", files=1, skipped_unsafe=0, git_repo=True,
+        root=container, tree=container / "tree",
+        home=container / "home", files=1, skipped_unsafe=0, git_repo=True,
     )
     external._remove_reviewer_workspace(workspace)
     err = capsys.readouterr().err
     assert "정리 실패" in err and str(workspace.root) in err
+    assert container.exists(), "판정 대상이 사라져 단언이 공허해졌다"
+
+
+def _read_only_git_objects(root: Path) -> Path:
+    """git 이 만드는 형상 그대로 — read-only object 파일 + 쓰기 권한 없는 디렉터리.
+
+    파일만 read-only 로 만들면 POSIX 는 부모 디렉터리 권한만 보므로 그냥 지워진다. 디렉터리
+    조합까지 넣어야 이 축이 Linux 에서도 red 로 재현된다(Windows 는 파일 속성만으로도 red).
+    """
+    objects = root / ".git" / "objects" / "10"
+    objects.mkdir(parents=True, exist_ok=True)
+    blob = objects / "a9500e"
+    blob.write_bytes(b"packed object\n")
+    os.chmod(blob, stat.S_IREAD)
+    os.chmod(objects, stat.S_IREAD | stat.S_IEXEC)
+    return objects
+
+
+def test_workspace_removal_survives_read_only_git_objects(external, tmp_path):
+    """거울 안의 read-only git object 가 있어도 컨테이너가 **실제로** 사라진다.
+
+    거울에는 `git init` 한 저장소가 들어 있고 git 은 object·packfile 을 read-only 로 만든다 —
+    맨 `shutil.rmtree` 는 그 속성에 막혀(Windows 실측 `[WinError 5]`) 검토 대상 사본과 홈 인증
+    사본을 통째로 남긴다. 정리는 속성을 풀고 끝까지 지운다.
+    """
+    repo = _standalone_adopter(tmp_path)
+    workspace = external.create_reviewer_workspace(repo, base_dir=_jail(tmp_path))
+    objects = _read_only_git_objects(workspace.tree)
+    assert objects.exists()
+
+    external._remove_reviewer_workspace(workspace)
+
+    assert not workspace.root.exists(), "read-only object 때문에 격리 컨테이너가 남음"
+
+
+def test_partial_workspace_cleanup_survives_read_only_git_objects(
+        external, tmp_path, monkeypatch, capsys):
+    """구성 실패 경로의 정리도 같다 — 부분 컨테이너를 read-only 잔재째 지운다."""
+    repo = _standalone_adopter(tmp_path)
+    real_init = external._init_workspace_git
+
+    def _fail_after_mirror(tree):
+        _read_only_git_objects(Path(tree))
+        raise OSError("워크스페이스 git 초기화 실패")
+
+    monkeypatch.setattr(external, "_init_workspace_git", _fail_after_mirror)
+    assert real_init is not external._init_workspace_git
+
+    with pytest.raises(external.ReviewerWorkspaceError):
+        external.create_reviewer_workspace(repo, base_dir=_jail(tmp_path))
+
+    leftovers = list(_jail(tmp_path).iterdir())
+    assert leftovers == [], f"구성 실패 뒤 부분 컨테이너가 남음: {leftovers}"
+    assert "정리 실패" not in capsys.readouterr().err
 
 
 def _blocked_gate_repo(external, monkeypatch, tmp_path) -> Path:
@@ -779,6 +864,44 @@ def test_workspace_is_removed_when_the_review_raises(external, monkeypatch, tmp_
         external.main(["--gate", "T-9999", "--paths", str(repo / "src"),
                        "--output-dir", str(tmp_path / "raw")])
     assert created and not created["root"].exists()
+
+
+def test_access_restriction_failure_fails_closed_before_any_send(
+        external, monkeypatch, tmp_path, capsys):
+    """접근 제한을 못 걸면 **전송 전에** 차단된다 — 그 실패의 파생 증상까지 함께 못박는다.
+
+    격리 산출물의 접근 경계(임시 홈의 인증 사본·전달 프롬프트)는 격리의 일부다. 제한이 실패한
+    채로 진행하면 그 기기의 다른 사용자에게 열린 자리에 인증 사본과 검토 대상 diff 를 쓰는 것과
+    같으므로 fail-closed 가 맞다. 다만 그 차단은 **원인이 보이는 형태**여야 한다 — Windows 실측
+    에서 이 실패는 `rc=1`(assert 1 == 0)과 "리뷰어 예외 미발생" 이라는 *증상*으로만 나타나
+    원인(icacls 실패)이 두 겹 뒤에 숨었다. 이 테스트가 그 인과를 이름으로 고정한다.
+    """
+    repo = _standalone_adopter(tmp_path)
+    monkeypatch.setattr(external, "REPO", repo)
+    monkeypatch.setattr(external, "extract_diff",
+                        lambda *a, **k: ("diff --git a/x b/x\n+n\n", []))
+    monkeypatch.setattr(external, "local_config", lambda repo=None: {
+        "additional_reviewer_enabled": "true"})
+    lock = external._load_file_lock()
+
+    def _refuse(path):
+        raise lock.AccessRestrictionError(f"접근 제한 실패 — icacls rc=1332: {path}")
+
+    monkeypatch.setattr(external, "_restrict_to_owner", _refuse)
+
+    def _never(**kwargs):
+        raise AssertionError("격리 실패 실행이 리뷰어를 호출했다 — 전송 전 차단 위반")
+
+    monkeypatch.setattr(external, "run_review", _never)
+
+    rc = external.main(["--paths", str(repo / "src"), "--no-gate",
+                        "--output-dir", str(tmp_path / "raw")])
+
+    err = capsys.readouterr().err
+    assert rc == 1, "접근 제한 실패인데 실행이 계속됐다"
+    assert "격리" in err and "icacls rc=1332" in err, \
+        f"차단 사유가 원인(접근 제한 실패)까지 드러나지 않는다: {err}"
+    assert not list(_jail(tmp_path).iterdir()), "차단됐는데 부분 컨테이너가 남았다"
 
 
 def test_visibility_scope_fails_closed_by_default(external, tmp_path):

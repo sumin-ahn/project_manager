@@ -130,7 +130,7 @@ def test_section_add_requires_legacy_backfill_then_succeeds(
         _frontmatter("T-2014", "open")
         + _unsealed_block("developer", "## legacy\n\n")
     )
-    ticket.write_text(legacy, encoding="utf-8")
+    ticket.write_text(legacy, encoding="utf-8", newline="\n")
     monkeypatch.setattr(board, "_growth_ticket_path", lambda *_a, **_k: (0, ticket))
     monkeypatch.setattr(board, "_load_pm_delegate_module", lambda: pd)
     monkeypatch.setattr(board, "_growth_mutation_sync", lambda *_a: True)
@@ -143,7 +143,7 @@ def test_section_add_requires_legacy_backfill_then_succeeds(
 
     backfilled, changed = pd.backfill_ticket_seals(legacy)
     assert changed == [("developer", 0)]
-    ticket.write_text(backfilled, encoding="utf-8")
+    ticket.write_text(backfilled, encoding="utf-8", newline="\n")
     assert board.cmd_section_add(args) == 0
     assert pd.verify_ticket_seals(ticket.read_text(encoding="utf-8")) == []
 
@@ -179,7 +179,7 @@ def test_prepare_edit_harvest_refreshes_seal_hash_atomically(
         pd, "developer", 0, "## 구현\n\nold\n", by="backfill",
     )
     edited = baseline.replace("old\n", "new\n")
-    ticket.write_text(baseline, encoding="utf-8")
+    ticket.write_text(baseline, encoding="utf-8", newline="\n")
     copy = tmp_path / "copy.md"
     plan = pd.TicketCopyPlan(
         copy, tmp_path / "baseline.md", tmp_path / "metadata.json",
@@ -250,7 +250,7 @@ def test_harvest_rejects_reissuing_a_mismatched_existing_seal(
         pd, "developer", 0, "## 구현\n\ntrusted=0\n",
     )
     tampered = sealed.replace("trusted=0", "trusted=1", 1)
-    ticket.write_text(tampered, encoding="utf-8")
+    ticket.write_text(tampered, encoding="utf-8", newline="\n")
     copy = tmp_path / "copy.md"
     plan = pd.TicketCopyPlan(
         copy, tmp_path / "baseline.md", tmp_path / "metadata.json",
@@ -317,7 +317,7 @@ def test_harvest_relocates_a_valid_but_misplaced_seal(
     seal_line = sealed[seal.line_start:seal.line_end]
     misplaced = sealed[:seal.line_start] + sealed[seal.line_end:] + "\n" + seal_line
     assert any("위치 불일치" in p for p in pd.verify_ticket_seals(misplaced))
-    ticket.write_text(misplaced, encoding="utf-8")
+    ticket.write_text(misplaced, encoding="utf-8", newline="\n")
     copy = tmp_path / "copy.md"
     plan = pd.TicketCopyPlan(
         copy, tmp_path / "baseline.md", tmp_path / "metadata.json",
@@ -381,7 +381,7 @@ def test_tamper_is_red_at_review_and_complete_but_green_with_guard_disabled(
     else:
         seal = pd.parse_ticket_seals(text)[("code-reviewer", 0)]
         text = text[:seal.line_start] + text[seal.line_end:]
-    ticket.write_text(text, encoding="utf-8")
+    ticket.write_text(text, encoding="utf-8", newline="\n")
 
     owner_board = SimpleNamespace(
         board_lock=lambda: contextlib.nullcontext(),
@@ -533,7 +533,7 @@ def test_seal_backfill_only_fills_missing_and_done_cli_is_rejected(
     assert "role=architect ordinal=0 비었는지=아니오" in str(caught.value)
 
     done = tmp_path / "T-2004-seal.md"
-    done.write_text(_frontmatter("T-2004", "done") + text, encoding="utf-8")
+    done.write_text(_frontmatter("T-2004", "done") + text, encoding="utf-8", newline="\n")
     monkeypatch.setattr(
         pd, "_load_board", lambda: SimpleNamespace(_is_valid_ticket_id=lambda _tid: True),
     )
@@ -594,7 +594,7 @@ def test_review_delta_uses_shared_mixed_recovery_guidance(
     guidance = pd.ticket_growth_seal_recovery_guidance(growth, ticket_id)
     assert guidance is not None
     ticket = tmp_path / f"{ticket_id}-seal.md"
-    ticket.write_text(_frontmatter(ticket_id) + growth, encoding="utf-8")
+    ticket.write_text(_frontmatter(ticket_id) + growth, encoding="utf-8", newline="\n")
     owner_board = SimpleNamespace(
         board_lock=lambda: contextlib.nullcontext(),
         find_ticket_exact=lambda _tid: ("claimed", ticket),
@@ -651,6 +651,7 @@ def test_seal_backfill_cli_writes_ticket_and_reason_log(
         _frontmatter("T-2006", "open")
         + _unsealed_block("developer", "legacy body\n"),
         encoding="utf-8",
+        newline="\n",
     )
     sync_calls = []
 
@@ -736,16 +737,19 @@ def test_growth_seal_lint_is_one_never_block_advisory(
     (tickets / "open" / "T-2005-seal.md").write_text(
         _frontmatter("T-2005", "open") + _unsealed_block("developer", "body\n"),
         encoding="utf-8",
+        newline="\n",
     )
     (tickets / "claimed" / "T-2007-backfill.md").write_text(
         _frontmatter("T-2007") + _block(
             pd, "developer", 0, "legacy\n", by="backfill",
         ),
         encoding="utf-8",
+        newline="\n",
     )
     (tickets / "done" / "T-1999-old.md").write_text(
         _frontmatter("T-1999", "done") + _unsealed_block("developer", "legacy\n"),
         encoding="utf-8",
+        newline="\n",
     )
     monkeypatch.setattr(board, "tickets_dir", lambda: tickets)
     monkeypatch.setattr(board, "_load_pm_delegate_module", lambda: pd)

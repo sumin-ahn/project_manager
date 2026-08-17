@@ -72,9 +72,14 @@ def board(tmp_path, monkeypatch):
 # ── 티켓/참조 심기 헬퍼 ────────────────────────────────────────────────────
 
 def _seed_ticket(board, tid: str, *, created: str = "2026-07-01",
-                 status: str = "open", body: str = "") -> Path:
-    """`{tid}-slug.md` 티켓을 심는다 (created 지정 가능 — merge 정렬용)."""
-    path = board.TICKETS_DIR / status / f"{tid}-slug.md"
+                 status: str = "open", body: str = "", slug: str = "slug") -> Path:
+    """`{tid}-{slug}.md` 티켓을 심는다 (created 지정 가능 — merge 정렬용).
+
+    `slug` 는 **case 만 다른 ID 두 건**을 심을 때 필요하다 — 대소문자 무시 파일시스템에서는
+    `T-AAA-001-slug.md` 와 `T-aaa-001-slug.md` 가 같은 파일이라 두 번째 쓰기가 첫 번째를 덮어
+    오염 형상 자체가 재현되지 않는다(Windows 실측). slug 를 갈라 두 파일로 심는다.
+    """
+    path = board.TICKETS_DIR / status / f"{tid}-{slug}.md"
     board.dump_ticket(
         path,
         {"id": tid, "title": "t", "status": status, "created": created},
@@ -94,6 +99,21 @@ def _ids_on_disk(board) -> set[str]:
     for status in board.STATUS_DIRS:
         for p in (board.TICKETS_DIR / status).glob("T-*.md"):
             tid = board._ticket_id_from_filename(p.name)
+            if tid:
+                out.add(tid)
+    return out
+
+
+def _issued_ids(board) -> set[str]:
+    """디스크의 모든 티켓 **발행 ID**(frontmatter) 집합 — 파일명 case 에 의존하지 않는 판정.
+
+    case 만 다른 ID 를 다루는 검증은 파일명으로 대조할 수 없다 — 파일명 case 는 대소문자 무시
+    파일시스템에서 첫 생성 이름으로 접히기 때문이다(`_seed_ticket` 의 `slug` 참고).
+    """
+    out = set()
+    for status in board.STATUS_DIRS:
+        for p in (board.TICKETS_DIR / status).glob("T-*.md"):
+            tid = board._issued_ticket_id(p)
             if tid:
                 out.add(tid)
     return out
@@ -340,13 +360,14 @@ def test_rename_source_is_case_insensitive(board):
 
 def test_rename_polluted_fold_namespace_collides(board, capsys):
     """오염 보드(`T-AAA-001`+`T-aaa-001` 공존) rename → collision abort·무변경 (ADR-0055·collision fold·T-0311 fix 3)."""
-    _seed_ticket(board, "T-AAA-001")
-    _seed_ticket(board, "T-aaa-001")   # 같은 fold+번호 = 이미 case-split 오염
+    _seed_ticket(board, "T-AAA-001", slug="upper")
+    _seed_ticket(board, "T-aaa-001", slug="lower")   # 같은 fold+번호 = 이미 case-split 오염
+    assert _issued_ids(board) == {"T-AAA-001", "T-aaa-001"}   # 오염이 실제로 심겼다
     rc = board.cmd_prefix_rename(_ns(
         src="aaa", dst="ccc", user_ack=None, dry_run=False))
     assert rc == 1
     assert "충돌" in capsys.readouterr().err
-    assert _ids_on_disk(board) == {"T-AAA-001", "T-aaa-001"}   # 무손실 abort
+    assert _issued_ids(board) == {"T-AAA-001", "T-aaa-001"}   # 무손실 abort
 
 
 # ════════════════════════════════════════════════════════════════════════

@@ -416,6 +416,54 @@ def test_hook_deny_remediation_materializes_payload_cwd(guard, tmp_path):
     assert "<worktree>" not in reason
 
 
+def test_deny_remediation_uses_windows_quoting_when_running_on_windows(
+    guard, monkeypatch
+):
+    """T-0714 — 처방은 실행 셸 인용 규칙을 따른다 (Windows 렌더러 직접 주입).
+
+    POSIX 단일따옴표를 Windows 셸에 붙여넣으면 `'--cwd'`가 리터럴 인자로 들어가 실행이 깨진다.
+    """
+    monkeypatch.setattr(guard, "_running_on_windows", lambda: True)
+    conf = {
+        "delegate_enabled": "true",
+        "delegate.developer.harness": "codex",
+        "delegate.developer.model": "gpt",
+    }
+    payload = _payload("developer")
+    payload["cwd"] = r"C:\Users\ci\work\project_manager_1"
+    spaced = _payload("developer")
+    spaced["cwd"] = r"C:\Users\ci\work tree\project_manager_1"
+
+    reason = guard.evaluate_hook(payload, config_loader=lambda: conf)[
+        "hookSpecificOutput"
+    ]["permissionDecisionReason"]
+    spaced_reason = guard.evaluate_hook(spaced, config_loader=lambda: conf)[
+        "hookSpecificOutput"
+    ]["permissionDecisionReason"]
+
+    assert r"--cwd C:\Users\ci\work\project_manager_1" in reason
+    assert "'" not in reason.split("--cwd ", 1)[1]
+    assert r'--cwd "C:\Users\ci\work tree\project_manager_1"' in spaced_reason
+    assert "&&" not in reason
+
+
+def test_deny_remediation_keeps_posix_quoting_off_windows(guard, monkeypatch):
+    monkeypatch.setattr(guard, "_running_on_windows", lambda: False)
+    conf = {
+        "delegate_enabled": "true",
+        "delegate.developer.harness": "codex",
+        "delegate.developer.model": "gpt",
+    }
+    payload = _payload("developer")
+    payload["cwd"] = "/work tree/project_manager_1"
+
+    reason = guard.evaluate_hook(payload, config_loader=lambda: conf)[
+        "hookSpecificOutput"
+    ]["permissionDecisionReason"]
+
+    assert "--cwd '/work tree/project_manager_1'" in reason
+
+
 @pytest.mark.parametrize(
     "argv",
     (
@@ -719,10 +767,23 @@ def test_claude_agent_card_mapping_cannot_escape_repo(
     assert "containment-secret" not in reason
 
 
+@pytest.mark.parametrize("interpreter", ("native", "no_dir_fd", "windows_like"))
 def test_claude_agent_card_inode_swap_is_rejected_before_read(
-    guard, monkeypatch, tmp_path
+    guard, monkeypatch, tmp_path, interpreter
 ):
-    """The lstat/open inode recheck closes a leaf replacement race."""
+    """The lstat/open identity recheck closes a leaf replacement race on every reader.
+
+    `_secure_dir_fd_supported()` 를 참으로 **위조하면** dir-fd 원시연산이 없는 인터프리터
+    (Windows: `os.O_DIRECTORY` 부재·`supports_dir_fd` 공집합)에서 파일을 열기도 전에
+    AttributeError 로 죽어 교체 판정이 아예 돌지 않는다. 능력을 위조하지 않고 이 인터프리터가
+    실제로 고르는 reader 를 태운다 — 판정은 세 형상 모두에서 성립해야 한다.
+    """
+    if interpreter != "native":
+        monkeypatch.setattr(guard.os, "supports_dir_fd", set())
+    if interpreter == "windows_like":
+        # Windows CPython 에 없는 POSIX 상수 — 부재 자체가 reader 선택의 입력이다.
+        monkeypatch.delattr(guard.os, "O_DIRECTORY", raising=False)
+        monkeypatch.delattr(guard.os, "O_NOFOLLOW", raising=False)
     monkeypatch.setattr(guard, "_ENGINE_ROOT", tmp_path)
     relative = guard.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
     _write_agent_card(tmp_path, relative, b"---\nmodel: opus\n---\n")
@@ -734,13 +795,16 @@ def test_claude_agent_card_inode_swap_is_rejected_before_read(
 
     def swapping_open(path, flags, *args, **kwargs):
         nonlocal swapped
-        if path == target.name and kwargs.get("dir_fd") is not None and not swapped:
+        dir_fd = kwargs.get("dir_fd")
+        opening_leaf = (
+            path == target.name if dir_fd is not None else Path(path) == target
+        )
+        if opening_leaf and not swapped:
             swapped = True
             replacement.replace(target)
         return real_open(path, flags, *args, **kwargs)
 
     monkeypatch.setattr(guard.os, "open", swapping_open)
-    monkeypatch.setattr(guard, "_secure_dir_fd_supported", lambda: True)
     conf = {
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
@@ -749,6 +813,60 @@ def test_claude_agent_card_inode_swap_is_rejected_before_read(
     assert swapped
     assert "inode 교체" in reason
     assert "race-secret" not in reason
+
+
+def test_file_identity_rejects_volumes_without_a_file_index(guard, tmp_path):
+    """st_ino 를 안 주는 볼륨(FAT/exFAT·일부 네트워크)에서는 교체를 구분할 수 없다.
+
+    0 끼리 비교하면 바꿔치기가 **조용히 통과**하므로 판정 불능은 loud 거부여야 한다.
+    """
+    probe = tmp_path / "probe.md"
+    probe.write_text("x\n", encoding="utf-8")
+    real = probe.stat()
+    degenerate = guard.os.stat_result((
+        real.st_mode, 0, real.st_dev, real.st_nlink, real.st_uid,
+        real.st_gid, real.st_size, 0, 0, 0,
+    ))
+
+    assert guard._file_identity(real, "probe.md") == (real.st_dev, real.st_ino)
+    with pytest.raises(ValueError) as exc:
+        guard._file_identity(degenerate, "probe.md")
+    assert "판정 불능" in str(exc.value)
+
+
+def test_zero_file_index_card_read_fails_loud_instead_of_matching(
+    guard, monkeypatch, tmp_path
+):
+    """정체성 미제공 볼륨의 card 는 조용한 일치가 아니라 loud 경고로 나간다 (fail-open 유지)."""
+    monkeypatch.setattr(guard.os, "supports_dir_fd", set())
+    monkeypatch.setattr(guard, "_ENGINE_ROOT", tmp_path)
+    relative = guard.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
+    _write_agent_card(tmp_path, relative, b"---\nmodel: opus\n---\n")
+    target = tmp_path / relative
+    real_lstat = Path.lstat
+
+    def zero_index_lstat(self, *args, **kwargs):
+        observed = real_lstat(self, *args, **kwargs)
+        if self == target:
+            return guard.os.stat_result((
+                observed.st_mode, 0, observed.st_dev, observed.st_nlink,
+                observed.st_uid, observed.st_gid, observed.st_size, 0, 0, 0,
+            ))
+        return observed
+
+    monkeypatch.setattr(Path, "lstat", zero_index_lstat)
+    assert target.lstat().st_ino == 0        # 주입 확인: 실제로 정체성 없는 형상이 관측된다
+    conf = {
+        "delegate.developer.harness": "claude",
+        "delegate.developer.model": "opus",
+    }
+    result = guard.decide("developer", "normal", conf, "claude")
+
+    assert result["verdict"] == "allow"
+    assert "[delegate-channel/warn]" in result["reason"]
+    assert "판정 불능" in result["reason"]
+    assert "TypeError" not in result["reason"]   # 코드 결함이 같은 문구로 덮이지 않는다
+    assert "native 통과(fail-open)" in result["reason"]
 
 
 @pytest.mark.parametrize("role", ROLES)
@@ -804,6 +922,78 @@ def test_windows_reparse_metadata_is_linklike(guard):
         st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT,
     )
     assert guard._metadata_is_linklike(metadata) is True
+
+
+def _windows_shaped_metadata(observed: object, *, st_ino: int) -> SimpleNamespace:
+    """10-tuple 로 만든 Windows ``stat_result`` 형상을 POSIX 에서 재현한다.
+
+    Windows CPython 의 ``st_file_attributes`` 는 structseq 의 **선택 필드**라, 10-tuple 로 만든
+    ``stat_result`` 는 그 이름을 가지되 값이 ``None`` 이다(POSIX 빌드는 이름 자체가 없다). 이
+    형상을 POSIX 에서 만들려면 stat_result 로는 안 되고 필드를 직접 세운 객체가 필요하다.
+    """
+    return SimpleNamespace(
+        st_mode=observed.st_mode,
+        st_ino=st_ino,
+        st_dev=observed.st_dev,
+        st_nlink=observed.st_nlink,
+        st_file_attributes=None,
+    )
+
+
+def test_metadata_without_attribute_value_is_judged_not_type_error(guard):
+    """값이 없는 Windows 속성 필드에 비트 연산을 걸어 `TypeError` 로 새지 않는다.
+
+    Windows 실측에서 이 연산이 `TypeError: unsupported operand type(s) for &: 'NoneType' and
+    'int'` 를 냈고, 그 타입 오류가 카드 검사 실패 문구를 타고 나가 진짜 판정 불능과 섞였다.
+    """
+    metadata = SimpleNamespace(
+        st_mode=stat.S_IFREG, st_ino=7, st_dev=1, st_nlink=1,
+        st_file_attributes=None,
+    )
+    # 주입 확인: 필드가 **있고** 값이 없는 형상이어야 이 회귀가 그 연산을 태운다.
+    assert hasattr(metadata, "st_file_attributes")
+    assert metadata.st_file_attributes is None
+
+    assert guard._metadata_is_linklike(metadata) is False
+
+
+def test_zero_file_index_windows_shaped_card_reports_the_identity_reason(
+    guard, monkeypatch, tmp_path
+):
+    """Windows 형상(속성 값 없음 + st_ino 0)에서도 사유는 정체성 판정 불능 하나다.
+
+    타입 오류가 같은 경고 채널로 새면 코드 결함과 진짜 판정 불능이 한 문구로 덮인다.
+    """
+    monkeypatch.setattr(guard.os, "supports_dir_fd", set())
+    monkeypatch.setattr(guard, "_ENGINE_ROOT", tmp_path)
+    relative = guard.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
+    _write_agent_card(tmp_path, relative, b"---\nmodel: opus\n---\n")
+    target = tmp_path / relative
+    real_lstat = Path.lstat
+
+    def windows_shaped_lstat(self, *args, **kwargs):
+        observed = real_lstat(self, *args, **kwargs)
+        if self == target:
+            return _windows_shaped_metadata(observed, st_ino=0)
+        return observed
+
+    monkeypatch.setattr(Path, "lstat", windows_shaped_lstat)
+    # 주입 확인: 카드 경로만 Windows 형상이고 부모 디렉터리는 실 metadata 그대로다.
+    injected = target.lstat()
+    assert injected.st_ino == 0 and injected.st_file_attributes is None
+    assert isinstance(target.parent.lstat(), guard.os.stat_result)
+
+    conf = {
+        "delegate.developer.harness": "claude",
+        "delegate.developer.model": "opus",
+    }
+    result = guard.decide("developer", "normal", conf, "claude")
+
+    assert result["verdict"] == "allow"
+    assert "[delegate-channel/warn]" in result["reason"]
+    assert "파일 정체성(st_ino) 미제공 볼륨" in result["reason"]
+    assert "TypeError" not in result["reason"]
+    assert "native 통과(fail-open)" in result["reason"]
 
 
 def test_portable_reader_symlink_rejects_before_any_content_read(

@@ -3467,6 +3467,61 @@ def _operational_from_local_conf(dest_root: Path) -> tuple[dict[str, str], list[
     return operational, empty_keys
 
 
+# ── 렌더 산출의 개행 표기 ─────────────────────────────────────────────────────
+# 렌더 소스는 universal-newline 으로 읽어 LF 본문이 되지만, **dest 는 채택자 체크아웃 표기**다
+# (Windows `core.autocrlf=true` 면 CRLF). pm_import 의 재렌더는 사본 표기를 보존하는데
+# (`read/write_text_keeping_newlines`) self-update 가 같은 산출을 LF 로 되쓰면 같은 소스인데
+# 전파 트리가 매 sync 전면 재기록된다(pm_import↔pm_update 렌더 drift). 그래서 **판정은 개행
+# 정규화 후, 쓰기는 dest 의 현재 표기**로 한다. 플랫폼 분기는 쓰지 않는다 — 진실은 그 파일이다.
+_DEFAULT_TEXT_NEWLINE = "\n"
+
+
+def _normalize_newlines(text: str) -> str:
+    """개행 표기 차이를 지운 판정용 본문 (CRLF → LF)."""
+    return text.replace("\r\n", "\n")
+
+
+def _dominant_newline(text: str, default: str = _DEFAULT_TEXT_NEWLINE) -> str:
+    """번역 없이 읽은 본문의 지배 개행 — 다수결, 동수면 첫 등장, 개행 0 이면 `default`.
+
+    `pm_import.dominant_newline` 과 같은 규칙이다(테스트가 두 구현의 일치를 못박는다). 엔진
+    모듈 간 import 를 늘리지 않으려고 각자 이 작은 원시 함수만 둔다."""
+    crlf = text.count("\r\n")
+    lf = text.count("\n") - crlf
+    if crlf == 0 and lf == 0:
+        return default
+    if crlf != lf:
+        return "\r\n" if crlf > lf else "\n"
+    first = text.find("\n")
+    return "\r\n" if first > 0 and text[first - 1] == "\r" else "\n"
+
+
+def _path_newline(path: Path, default: str = _DEFAULT_TEXT_NEWLINE) -> str:
+    """그 파일의 현재 지배 개행 — 부재·읽기 실패·비-UTF8 은 `default`."""
+    try:
+        with Path(path).open("r", encoding="utf-8", newline="") as handle:
+            return _dominant_newline(handle.read(), default)
+    except (OSError, UnicodeError):
+        return default
+
+
+def _write_rendered_text(dst: Path, source, rendered: str) -> None:
+    """LF 렌더 산출물을 **dest 의 현재 표기**로 쓴다 (신규 파일은 소스 표기 = byte-copy 동형).
+
+    신규는 소스 표기를 따른다 — pm_import 는 소스를 byte-copy 한 뒤 그 사본을 표기 보존으로
+    재렌더하므로, 같은 파일을 sync 가 처음 깔 때도 같은 bytes 가 나와야 두 채널이 안 갈린다.
+    `source` 가 파일이 아닌 인메모리 소스(`_ManifestTextSource`)면 표기 근거가 없어 LF 다."""
+    dst = Path(dst)
+    if dst.exists():
+        newline = _path_newline(dst)
+    elif isinstance(source, Path):
+        newline = _path_newline(source)
+    else:
+        newline = _DEFAULT_TEXT_NEWLINE
+    payload = rendered if newline == "\n" else rendered.replace("\n", newline)
+    dst.write_bytes(payload.encode("utf-8"))
+
+
 def _render_text(
     source_path: Path,
     dest_root: Path,
@@ -3626,6 +3681,28 @@ def _is_text_source(source_path: Path) -> bool:
     return True
 
 
+def _rendered_text_matches_dest(rendered: str, dst) -> bool:
+    """렌더 산출물이 dest 현재 내용과 같은가 — **표기만 다르면 같고, 1자라도 다르면 다르다**.
+
+    render 계열 '변경 없음' 판정의 **단일 대조 규칙**이다: 전면 렌더(`@render`)와 호출 표기·flat
+    command·codex operational 최소 렌더가 같은 축을 쓴다. 한쪽만 raw bytes 로 보면 CRLF
+    체크아웃(Windows)에서 그 분기가 **수렴을 보고하지 못한다** — 대조는 raw 인데 쓰기
+    (`_write_rendered_text`)는 dest 표기를 보존하므로, 내용이 같은 파일이 매 계획에서 `update` 로
+    올라오고 재기록 후에도 bytes 가 그대로다. 내용이 상하진 않지만 dry-run 이 상시 오탐이고
+    mtime/diff 가 흔들리며 실제 drift 가 그 소음에 묻힌다. 실측 두 계층: `--target`
+    /`--all-targets` 전파(`render_enabled=False` → `@render` 선언도 이 분기로 온다·flat command
+    사본 14건)와 채택자 `--from` 경로의 비-render 엔트리(공유 wiki 4건·zero-change 경계 붕괴).
+
+    정규화는 **개행 표기에만** 적용한다. 그 밖의 차이는 그대로 살아 있어 한 글자 변경도 update 다
+    (판정을 무디게 만들지 않는다). 읽기 실패·비-UTF8 dest 는 보수적으로 '다름'(False) — plan 이
+    그 path 를 change 로 띄워 apply 가 명확히 실패하게 한다(침묵 폴백 금지)."""
+    try:
+        current = dst.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return _normalize_newlines(rendered) == _normalize_newlines(current)
+
+
 def _render_eq_dst(
     sp: Path,
     dst: Path,
@@ -3639,18 +3716,17 @@ def _render_eq_dst(
     filecmp.cmp(템플릿, dst) 는 render path 에 *틀림*(템플릿은 렌더 산출물과 byte-equal 일 수
     없어 항상 update 오보). 대신 source 를 dest 의 local.conf(operational)로 렌더해 dst 와 비교한다.
     렌더 실패(렌더러 부재·assertion)는 보수적으로 '다름'(False) 취급 — plan 이 그 path 를
-    change 로 띄워 apply 가 실제 렌더에서 명확히 실패하게 한다(침묵 폴백 금지).
+    change 로 띄워 apply 가 실제 렌더에서 명확히 실패하게 한다(침묵 폴백 금지). 대조 규칙 자체는
+    `_rendered_text_matches_dest` 하나뿐이다(최소 렌더 분기와 판정 사본 0).
     """
     try:
         rendered = _render_text(
             sp, dest_root, entry_notation_template, flat_command_skill,
             codex_operational_skill,
         )
-        # newline=None인 read_text는 CRLF를 LF로 정규화해 byte drift를 숨긴다. 산출물 encoding을
-        # 명시해 결정적 bytes로 대조하면 LF/CRLF 차이와 비-UTF8 dest를 모두 update로 판정한다.
-        return rendered.encode("utf-8") == dst.read_bytes()
-    except Exception:  # noqa: BLE001 — 렌더/IO 실패는 '다름'으로 보수 처리.
+    except Exception:  # noqa: BLE001 — 렌더 실패는 '다름'으로 보수 처리.
         return False
+    return _rendered_text_matches_dest(rendered, dst)
 
 
 def plan(
@@ -3836,7 +3912,10 @@ def plan(
                 )
                 and rendered_entry is not None
             ):
-                if rendered_entry.encode("utf-8") != dst.read_bytes():
+                # 대조 축은 전면 렌더 분기와 **같은 헬퍼**다 — 여기만 raw bytes 로 보면 CRLF
+                #   체크아웃에서 내용 동일 파일이 매 실행 update 로 계획된다(쓰기는 표기 보존이라
+                #   수렴 불가).
+                if not _rendered_text_matches_dest(rendered_entry, dst):
                     changes.append((r, sp, dst, "update"))
             elif str(r).replace("\\", "/") == _MANIFEST_SELF_REL:
                 # engine.manifest self-prop — 판정(guest 절 차감 core 비교 + 옛 세대 마커)은
@@ -4210,7 +4289,7 @@ def _copy_manifest_preserving_guest(
     try:
         if dst.is_file():
             dst_text, migrated = _migrate_legacy_guest_markers(
-                dst.read_text(encoding="utf-8"))
+                _normalize_newlines(dst.read_text(encoding="utf-8")))
             if migrated:
                 print("✓ guest 절 마커 세대 마이그레이션 (구 리터럴 → 현행)")
             guest_block = _extract_guest_manifest_block(dst_text)
@@ -4218,16 +4297,14 @@ def _copy_manifest_preserving_guest(
         guest_block = None
     # 세대 마이그레이션 → 파생 백필 순서(치환된 현행 절 위에 기록·조합 시 절 소실 0).
     guest_block = _merge_guest_backfill_lines(guest_block, backfill_lines or [])
-    new_text = sp.read_text(encoding="utf-8")
+    new_text = _normalize_newlines(sp.read_text(encoding="utf-8"))
     guest_block = _prune_guest_block_owned_by_core(guest_block, new_text)
     if not guest_block and isinstance(sp, Path):
         shutil.copy2(sp, dst)  # 비-add-harness 또는 전량 승격 — copy2(바이트/메타 무변경).
         return
-    dst.write_text(
-        _reattach_guest_block(new_text, guest_block),
-        encoding="utf-8",
-        newline="\n",
-    )
+    # 표기는 dest 의 현재 것을 유지한다(부재면 소스) — 재부착은 guest 절만 바꾸는 것이지
+    # 채택자 manifest 전체를 다른 bytes 로 되쓰는 게 아니다(CRLF 체크아웃 전면 diff·churn 방지).
+    _write_rendered_text(dst, sp, _reattach_guest_block(new_text, guest_block))
 
 
 def apply(changes: list[tuple], *, is_hook_set_path=None) -> None:
@@ -4272,7 +4349,7 @@ def apply(changes: list[tuple], *, is_hook_set_path=None) -> None:
                 rendered = _render_codex_operational_detail(
                     rendered, dst.codex_operational_skill
                 )
-            Path(dst).write_bytes(rendered.encode("utf-8"))
+            _write_rendered_text(Path(dst), Path(sp), rendered)
         elif (
             getattr(dst, "entry_notation_template", None) is not None
             or getattr(dst, "flat_command_skill", None) is not None
@@ -4296,7 +4373,7 @@ def apply(changes: list[tuple], *, is_hook_set_path=None) -> None:
                 rendered = _render_codex_operational_detail(
                     rendered, dst.codex_operational_skill
                 )
-            Path(dst).write_bytes(rendered.encode("utf-8"))
+            _write_rendered_text(Path(dst), Path(sp), rendered)
         elif str(_r).replace("\\", "/") == _MANIFEST_SELF_REL:
             # engine.manifest self-prop — upstream 사본으로 덮되 guest 절 보존(+파생 행 기록).
             _copy_manifest_preserving_guest(

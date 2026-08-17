@@ -24,7 +24,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from _textio import utf8_child_env, write_lf
+from _textio import normalize_newline_bytes, utf8_child_env, write_lf
 from _win_skip import posix_mode_supported
 
 REPO = Path(__file__).resolve().parents[1]
@@ -1126,13 +1126,21 @@ def _postcompact_durable_mismatch_subprocess_probe(
 
 
 def _assert_postcompact_durable_mismatch_matrix(result: dict) -> None:
+    """marker끼리는 바이트 동일성, marker↔전달 payload는 내용 동일성으로 본다(T-0708).
+
+    marker(`first`·`duplicate_unconsumed`·`after_consume_refire`)는 모두 같은 디스크 읽기라 바이트
+    그대로 대조한다. `consumed`는 훅이 marker를 universal-newline으로 읽어 전달한 payload라 CRLF
+    플랫폼에서 표기가 다르다 — 층을 맞춰 내용으로 판정하고, 내용 1자 drift는 여전히 red다.
+    """
     diagnostic = b"[ctx-window-mismatch]"
     assert result["first"].count(diagnostic) == 1
     assert result["duplicate_unconsumed"].count(diagnostic) == 1, (
         "duplicate-unconsumed PostCompact lost durable ctx-window-mismatch"
     )
     assert result["duplicate_unconsumed"] == result["first"]
-    assert result["consumed"] == result["first"]
+    assert normalize_newline_bytes(result["consumed"]) == normalize_newline_bytes(
+        result["first"]
+    ), "consumed payload content diverged from the armed snapshot"
     assert result["marker_after_take"] is False
     # 소비 후 같은 경계 재발화는 현행대로 다시 무장한다. 단일 진실이 log라 payload/log 모두 누적 0.
     assert result["after_consume_refire"] == result["first"]
@@ -1158,6 +1166,51 @@ def test_postcompact_durable_mismatch_regression_detects_consuming_source(tmp_pa
     assert result["duplicate_unconsumed"].count(diagnostic) == 0
     with pytest.raises(AssertionError, match="duplicate-unconsumed"):
         _assert_postcompact_durable_mismatch_matrix(result)
+
+
+# ── snapshot 표기 축(T-0708) ────────────────────────────────────────────────────
+# 디스크 marker는 훅의 텍스트 쓰기라 플랫폼 개행을 따르고(Windows=CRLF), 전달 payload는 훅의
+# universal-newline 읽기라 항상 LF다. 두 값을 원본 bytes로 맞대면 CRLF 플랫폼에서 내용이 같아도
+# 항상 불일치한다. 아래 합성 결과가 그 형상을 LF 환경에서도 재현한다.
+
+_MISMATCH_SNAPSHOT_LF = (
+    "## PM 정체성 (compaction 복구)\n"
+    "- task: main\n"
+    "- [ctx-window-mismatch] 관측 window가 설정과 다르다\n"
+)
+
+
+def _durable_mismatch_matrix_result(marker: bytes, delivered: bytes) -> dict:
+    """실 probe 산출과 같은 형태의 합성 결과 — 디스크 marker bytes와 전달 payload를 따로 준다."""
+    return {
+        "first": marker,
+        "duplicate_unconsumed": marker,
+        "consumed": delivered,
+        "marker_after_take": False,
+        "after_consume_refire": marker,
+        "clean": "## PM 정체성 (compaction 복구)\n- task: main\n".encode("utf-8"),
+        "log": "## [2026-08-17] checkpoint — [ctx-window-mismatch] 관측 window\n".encode("utf-8"),
+    }
+
+
+def test_durable_mismatch_matrix_accepts_crlf_marker_with_lf_delivery():
+    """T-0708 — 디스크 marker가 CRLF여도 전달 payload 내용이 같으면 불변식은 green이다."""
+    marker = _MISMATCH_SNAPSHOT_LF.replace("\n", "\r\n").encode("utf-8")
+    delivered = _MISMATCH_SNAPSHOT_LF.encode("utf-8")
+    assert marker != delivered, "픽스처가 표기 차이를 못 만들었다"
+    _assert_postcompact_durable_mismatch_matrix(
+        _durable_mismatch_matrix_result(marker, delivered),
+    )
+
+
+def test_durable_mismatch_matrix_detects_single_character_delivery_drift():
+    """개행 정규화가 전달 payload의 실 내용 1자 drift를 가리지 않는다 — 여전히 red다."""
+    marker = _MISMATCH_SNAPSHOT_LF.replace("\n", "\r\n").encode("utf-8")
+    delivered = _MISMATCH_SNAPSHOT_LF.replace("task: main", "task: main2").encode("utf-8")
+    with pytest.raises(AssertionError, match="consumed payload"):
+        _assert_postcompact_durable_mismatch_matrix(
+            _durable_mismatch_matrix_result(marker, delivered),
+        )
 
 
 def _assert_ledger_read_failure_preserves_mismatch(result: dict) -> None:

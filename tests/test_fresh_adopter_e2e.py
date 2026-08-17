@@ -107,7 +107,7 @@ def _check_off_dod(dest: Path, tid: str) -> Path:
     claimed = dest / ".project_manager" / "wiki" / "tickets" / "claimed"
     (path,) = list(claimed.glob(f"{tid}-*.md"))
     path.write_text(
-        path.read_text(encoding="utf-8").replace("- [ ] ", "- [x] "), encoding="utf-8")
+        path.read_text(encoding="utf-8").replace("- [ ] ", "- [x] "), encoding="utf-8", newline="\n")
     return path
 
 
@@ -658,7 +658,7 @@ def test_fresh_adopter_drift_lint_fires_on_real_local_conf(pm_import, tmp_path, 
     # seen≠baseline 주입 → 실 drift 발화(관찰불가 아닌 **방향-중립 불일치** 메시지·T-0413).
     #   lint 는 git 을 안 하므로 두 rev 의 선후를 모른다 — "이후 변경됨" 단정은 관찰값이 baseline 의
     #   조상일 때 거짓이라 폐기됐다(② 실측). 불일치 사실 + 양쪽 rev 만 알린다.
-    conf.write_text(conf_txt + "upstream_seen_rev=ffff0000baselinedifferent\n", encoding="utf-8")
+    conf.write_text(conf_txt + "upstream_seen_rev=ffff0000baselinedifferent\n", encoding="utf-8", newline="\n")
     fired = _board(dest, "lint")
     assert "adapter-drift" in fired.stdout, f"{harness}: 인위 drift 인데 adapter-drift 미발화\n{fired.stdout}"
     assert "불일치" in fired.stdout and "관찰불가" not in fired.stdout, \
@@ -942,6 +942,57 @@ def test_fresh_adopter_add_harness_adds_only_adapter_namespace(pm_import, tmp_pa
             f"{base}→{added}: engine.manifest 변경이 append-only 아님(기존 내용 훼손·T-0456 위반)")
 
 
+# Windows 체크아웃(`core.autocrlf=true`)이 CRLF 로 바꾸는 텍스트 확장자 — 이 게이트가 그 형상을
+# Linux 에서 재현할 때 상류·채택자 **양쪽**에 같은 집합을 적용한다(한쪽만 바꾸면 byte-copy 채널이
+# 정상 동작으로 diff 를 내 판정이 흐려진다).
+_CRLF_CHECKOUT_SUFFIXES = (
+    ".md", ".py", ".cjs", ".js", ".json", ".jsonc", ".toml", ".txt", ".manifest", ".conf")
+
+
+def _to_crlf(path: Path) -> bytes:
+    """그 파일을 CRLF 체크아웃 형상으로 바꾸고 bytes 를 돌려준다 (Windows `core.autocrlf=true`)."""
+    raw = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    path.write_bytes(raw)
+    return raw
+
+
+def _stray_lf(payload: bytes) -> int:
+    """CRLF 를 걷어낸 뒤 남는 LF 개수 — 0 이면 그 파일은 CRLF 단일 표기다."""
+    return payload.replace(b"\r\n", b"").count(b"\n")
+
+
+def test_add_harness_preserves_crlf_manifest_notation(pm_import, tmp_path):
+    """CRLF 체크아웃 manifest 도 **append-only + 표기 보존** (T-0709).
+
+    Windows 채택자는 `core.autocrlf=true` + `.gitattributes` 무규칙이라 워킹트리 전 파일이 CRLF 다
+    (`git ls-files --eol` = `i/lf w/crlf`). 옛 코드는 guest 절 등재에서 manifest 를 universal-newline
+    으로 읽고 `newline="\\n"` 으로 되써, 우리가 append 한 절 말고 **파일 전체**가 LF 로 뒤집혔다 —
+    `after.startswith(before)`(T-0456 append-only 바이트 불변식)가 그 자리에서 깨지고 채택자
+    워킹트리엔 손대지 않은 줄까지 전면 diff 가 났다. 이 게이트는 그 형상을 Linux 에서 재현한다.
+
+    claude→opencode 는 실측 clobber 시나리오이자 guest 절이 실제로 등재되는 쌍이다(등재 0 이면
+    표기 판정이 공허해지므로 아래에서 변경 자체를 단언한다)."""
+    dest = tmp_path / "adopter-crlf-manifest"
+    assert pm_import.main(
+        ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual"]
+    ) == 0, "claude import 실패"
+
+    manifest = dest / ".project_manager" / "engine.manifest"
+    before = _to_crlf(manifest)
+    assert _stray_lf(before) == 0, "픽스처가 CRLF 단일 표기를 못 만들었다(공허 게이트)"
+
+    assert pm_import.add_harness(dest, "opencode", dry_run=False, source_root=REPO), \
+        "add-harness plan 이 비어 있다"
+
+    after = manifest.read_bytes()
+    assert after != before, "guest 절 등재가 아예 없다 — 표기 판정이 공허해진다"
+    assert after.startswith(before), (
+        "CRLF manifest 의 변경이 append-only 아님(기존 bytes 훼손·T-0456 위반)")
+    assert _stray_lf(after) == 0, (
+        "add-harness 가 CRLF manifest 를 LF 로 뒤집었다(표기 비보존 재발) — "
+        "덧붙이는 guest 절도 그 파일 표기로 렌더돼야 한다")
+
+
 def _guest_engine_rows(pm_update, dest: Path) -> dict[str, object]:
     """dest guest 절의 **엔진 행**(비-`@render`) → {경로: ManifestEntry}."""
     return {
@@ -989,7 +1040,7 @@ def test_add_harness_guest_engine_files_sync_on_pm_update(
             if not mirror.is_file():
                 continue
             compared[mirror.relative_to(dest).as_posix()] = source
-            mirror.write_text(stale_marker, encoding="utf-8")
+            mirror.write_text(stale_marker, encoding="utf-8", newline="\n")
     assert compared, f"{base}->{added}: 대조 가능한 guest 엔진 파일 0(공허 게이트)"
 
     # 불변이어야 할 축 — 어댑터 렌더물(guest `@render`)과 instance-owned 설정. 전 트리 스냅샷
@@ -1002,7 +1053,7 @@ def test_add_harness_guest_engine_files_sync_on_pm_update(
     for rel in (".claude/settings.json", ".opencode/opencode.jsonc"):
         target = dest / rel
         if target.is_file():
-            target.write_text(local_config_marker, encoding="utf-8")
+            target.write_text(local_config_marker, encoding="utf-8", newline="\n")
             planted.append(rel)
     assert planted, f"{base}->{added}: instance-owned 설정 심기 0(공허 축)"
     render_paths = sorted(pm_update._dest_guest_manifest_paths(dest))
@@ -1188,8 +1239,8 @@ def test_fresh_opencode_adopter_engine_mutate_propagates_and_render_drift0(
     sentinel = "SENTINEL_T0308_ENGINE_MUTATE"
     skill_src = framework / ".claude" / "skills" / "pm-env" / "SKILL.md"
     lib_src = framework / "templates" / "opencode" / ".opencode" / "lib" / "ctx-guard-core.cjs"
-    skill_src.write_text(skill_src.read_text(encoding="utf-8") + f"\n<!-- {sentinel} -->\n", encoding="utf-8")
-    lib_src.write_text(lib_src.read_text(encoding="utf-8") + f"\n// {sentinel}\n", encoding="utf-8")
+    skill_src.write_text(skill_src.read_text(encoding="utf-8") + f"\n<!-- {sentinel} -->\n", encoding="utf-8", newline="\n")
+    lib_src.write_text(lib_src.read_text(encoding="utf-8") + f"\n// {sentinel}\n", encoding="utf-8", newline="\n")
 
     assert _self_update() == 0, "엔진 mutate 후 self-update 가 rc0 아님"
     skill_dest = (dest / ".claude" / "skills" / "pm-env" / "SKILL.md").read_text(encoding="utf-8")
@@ -1206,3 +1257,32 @@ def test_fresh_opencode_adopter_engine_mutate_propagates_and_render_drift0(
     assert sentinel in lib_dest, (
         "엔진 lib 드라이버(engine-mirror·T-0305 hook/driver 전파화) 변경이 채택자 `.opencode/lib` 로 "
         "전파 안 됨 (hook/driver 미도달·frozen 재발)")
+
+    # (D) CRLF 체크아웃 채택자에서도 drift-0 (T-0709). Windows 는 `core.autocrlf=true` 라 상류
+    #     checkout 과 채택자 트리가 **둘 다** CRLF 다(`git ls-files --eol` = `i/lf w/crlf`).
+    #     옛 코드는 렌더 판정을 bytes 로 재고(표기만 달라도 '변경') LF 로 되써, 같은 소스인데
+    #     매 sync 가 전파 트리를 통째로 재기록했다(채택자 워킹트리 전면 diff). 판정은 개행
+    #     정규화 후, 쓰기는 표기 보존이어야 byte-copy 채널과 렌더 채널이 함께 무변경이 된다.
+    # `.local/` 은 per-clone 런타임 산출(읽기전용 사본 포함)이라 체크아웃 표기 축이 아니다.
+    crlf_skip = (*_SNAPSHOT_EXCLUDE_PARTS, ".local")
+    for root in (framework, dest):
+        for path in sorted(root.rglob("*")):
+            if (path.is_file() and path.suffix in _CRLF_CHECKOUT_SUFFIXES
+                    and not any(part in crlf_skip for part in path.parts)):
+                _to_crlf(path)
+    crlf_before = {
+        path: path.read_bytes()
+        for root in (dest / ".opencode", dest / ".claude" / "skills")
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+    assert crlf_before, "CRLF 로 바꾼 전파 파일 0 — 공허 게이트"
+    assert any(_stray_lf(payload) == 0 and b"\r\n" in payload
+               for payload in crlf_before.values()), "픽스처가 CRLF 를 못 만들었다(공허 게이트)"
+    assert _self_update() == 0, "CRLF 채택자 self-update 가 rc0 아님"
+    crlf_drift = sorted(
+        path.relative_to(dest).as_posix()
+        for path, payload in crlf_before.items() if path.read_bytes() != payload)
+    assert crlf_drift == [], (
+        "CRLF 채택자에서 self-update 가 전파 트리를 되썼다(표기만 다른 파일을 '변경'으로 판정 "
+        f"또는 LF 로 되쓰기): {crlf_drift}")

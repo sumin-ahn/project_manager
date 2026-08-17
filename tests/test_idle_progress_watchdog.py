@@ -33,6 +33,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -893,6 +894,180 @@ def test_thread_start_failure_during_post_spawn_initialization_kills_and_drains(
     assert excinfo.value is start_error
     assert len(spawned) == 1 and spawned[0].poll() is not None
     assert spawned[0].stdout.closed and spawned[0].stderr.closed
+
+
+# ── T-0717: kill·drain 뒤 파이프 래퍼 수명 (Windows 실측 · Linux 에서 태움) ──────────
+#
+# `kill()`/`wait()` 는 부모가 쥔 파이프 래퍼를 닫지 않는다. Windows 는 열린 핸들이 있는 파일·
+# 디렉터리 삭제를 거부하므로, 남은 래퍼가 자식 작업 트리 정리(T-0711 `force_rmtree` 재시도)를
+# 그대로 소진시킨다. 아래 케이스들은 **드레인이 파이프를 닫아 줄 것**이라는 전제가 깨지는 자리를
+# 주입해 Linux 에서 그 축을 태운다 — Windows 의 `Popen._communicate` 는 스트림마다 리더 스레드를
+# 만들어 돌리기 때문에 스레드 축이 깨진 초기화 실패에선 드레인 자체가 터진다(POSIX selector
+# 드레인엔 없는 형상이라, 주입 없이는 Linux 회귀가 이 축을 영원히 못 본다).
+
+def _real_pipe_child():
+    """정리 경로 검증용 실 자식 — `_WatchedPopen` 과 같은 파이프·프로세스그룹 형상으로 띄운다.
+
+    그룹을 분리하지 않으면 정리의 `killpg` 가 테스트 러너 자신의 그룹을 덮는다.
+    반환은 `(proc, process_group_id)` — 정리 함수가 받는 그 두 값이다.
+    """
+    kwargs = dict(stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE,
+                  text=True, encoding="utf-8", errors="replace")
+    if os.name == "posix":
+        kwargs["start_new_session"] = True
+    else:                                    # pragma: no cover — POSIX 회귀 환경
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(999)"], **kwargs)
+    return proc, (proc.pid if os.name == "posix" else None)
+
+
+def _reap(proc):
+    """테스트가 띄운 실 자식과 그 래퍼를 남기지 않는다(정리 실패로 다음 테스트를 오염시키지 않게)."""
+    try:
+        proc.kill()
+        proc.wait(timeout=10)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    for stream in (proc.stdout, proc.stderr, proc.stdin):
+        if stream is not None and not stream.closed:
+            try:
+                stream.close()
+            except (OSError, ValueError):
+                pass
+
+
+def test_spawn_rollback_closes_pipes_when_the_drain_cannot_close_them(relay):
+    """드레인이 파이프를 못 닫고 터져도 롤백이 래퍼를 닫는다 — 남은 핸들 0.
+
+    주입 축은 Windows 실측 형상 그대로다: 리더 스레드를 못 만든 `communicate` 가 파이프를 연 채
+    예외로 빠져나간다. 수정 전에는 이 자리에서 stdout/stderr/stdin 이 전부 열린 채 남는다.
+    """
+    proc, process_group_id = _real_pipe_child()
+    drain_timeouts: list[float | None] = []
+
+    def thread_starved_communicate(timeout=None):
+        drain_timeouts.append(timeout)
+        raise RuntimeError("can't start new thread")     # 파이프는 열린 채로 남는다
+
+    proc.communicate = thread_starved_communicate
+    try:
+        # 주입 선-단언 — 닫힘을 볼 파이프가 실제로 열려 있는 상태에서 시작한다.
+        assert not proc.stdout.closed and not proc.stderr.closed and not proc.stdin.closed
+        with pytest.raises(RuntimeError, match="can't start new thread"):
+            relay._cleanup_failed_watched_spawn(
+                proc, process_group_id, argv=["drv"], threads=[])
+        assert drain_timeouts == [relay._KILL_GRACE_SEC], (
+            "주입한 드레인이 실제로 걸리지 않았다 — 가드가 아무것도 시험하지 않는다")
+        assert (proc.stdout.closed, proc.stderr.closed, proc.stdin.closed) == (
+            True, True, True), "kill·drain 뒤 파이프 래퍼가 열린 채 남았다(핸들 잔존)"
+    finally:
+        _reap(proc)
+
+
+def test_spawn_rollback_drain_timeout_leaves_pipes_to_the_live_reader(relay):
+    """드레인 타임아웃은 **리더가 아직 읽는 중**이라는 뜻이라 그 밑에서 핸들을 닫지 않는다.
+
+    CPython 은 타임아웃 시 재호출을 위해 리더 스레드와 fd 를 그대로 둔다. 그 자리에서 래퍼를
+    닫으면 남의 blocking read 밑에서 핸들을 뽑는 것이라, 정리 실패를 loud 로 올리는 쪽을 택했다.
+    """
+    proc, process_group_id = _real_pipe_child()
+
+    def timing_out_communicate(timeout=None):
+        raise subprocess.TimeoutExpired(cmd="drv", timeout=timeout, output="부분", stderr="")
+
+    proc.communicate = timing_out_communicate
+    try:
+        with pytest.raises(relay.ProcessCleanupError) as excinfo:
+            relay._cleanup_failed_watched_spawn(
+                proc, process_group_id, argv=["drv"], threads=[])
+        assert "닫히지 않음" in str(excinfo.value) and excinfo.value.output == "부분"
+        assert not proc.stdout.closed and not proc.stderr.closed
+    finally:
+        _reap(proc)
+
+
+def test_watched_popen_communicate_closes_pipes_after_drain(relay):
+    """드레인 완료 뒤 `_WatchedPopen.communicate` 가 래퍼를 닫는다 — 산출물 회수는 그대로.
+
+    kill·드레인이 정상으로 끝난 실행이 핸들을 남기면, 그 자식이 쓰던 작업 트리를 지우는 쪽이
+    Windows 에서 계속 거부당한다(예외 traceback 이 프레임째 proc 을 붙잡아 GC 회수도 늦다).
+    """
+    argv = [sys.executable, "-c", "import sys; sys.stdout.write(sys.stdin.read().upper())"]
+    proc = relay._WatchedPopen(argv, cwd=None, env=None, text=True, input_text="prompt-body")
+    raw = proc._proc
+    try:
+        assert not raw.stdout.closed and not raw.stderr.closed   # 닫힘을 볼 대상이 열려 있다
+        stdout, _stderr = proc.communicate(timeout=15)
+        assert stdout == "PROMPT-BODY"          # 닫기가 부분 산출물 회수를 깨뜨리지 않는다
+        assert proc.partial_output()[0] == "PROMPT-BODY"
+        assert raw.stdout.closed and raw.stderr.closed, "드레인 완료 뒤 파이프 래퍼가 남았다"
+        assert raw.stdin is None or raw.stdin.closed
+    finally:
+        _reap(raw)
+
+
+def test_real_idle_kill_leaves_no_open_pipe_handle(relay):
+    """실 무진행 kill 경로(kill → 드레인)가 끝나면 자식 파이프 래퍼가 남지 않는다.
+
+    주입은 proc 참조를 잡는 popen 하나뿐이고 kill·드레인은 실 경로 그대로다 — 남은 핸들이
+    자식 작업 트리 삭제를 막는 자리가 이 경로다.
+    """
+    argv = [sys.executable, "-c", "import time; print('FIRST', flush=True); time.sleep(999)"]
+    captured: list = []
+
+    def watched(command):
+        proc = relay._WatchedPopen(command, cwd=None, env=None, text=True)
+        captured.append(proc)
+        return proc
+
+    with pytest.raises(relay.IdleTimeoutExpired):
+        relay.run_with_first_event_watchdog(
+            argv, first_event_timeout=None, overall_timeout=60.0, retries=0,
+            idle_timeout=1.0, popen=watched, log=[].append, poll_interval=0.05,
+        )
+    raw = captured[0]._proc
+    assert raw.stdout.closed and raw.stderr.closed, (
+        "무진행 kill·드레인 뒤 파이프 래퍼가 열린 채 남았다(작업 트리 삭제가 막힌다)")
+
+
+class _UnclosableStream:
+    """close 가 실패하는 파이프 래퍼 대역 — 정리 실패가 조용히 넘어가는지 본다."""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+        self.closed = False
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+        raise self._error
+
+
+def test_pipe_close_failure_is_loud(relay):
+    """래퍼 close 실패는 `try/except` 로 삼키지 않는다 — 어느 스트림인지까지 실어 올린다."""
+    stdout = _UnclosableStream(OSError("EBADF"))
+    stderr = _UnclosableStream(ValueError("이미 분리됨"))
+    proc = SimpleNamespace(stdout=stdout, stderr=stderr, stdin=None)
+    with pytest.raises(relay.ProcessCleanupError) as excinfo:
+        relay._close_child_pipes(proc, argv=["drv"])
+    message = str(excinfo.value)
+    assert "stdout" in message and "stderr" in message
+    assert (stdout.close_calls, stderr.close_calls) == (1, 1), (
+        "한 스트림이 실패했다고 나머지 close 를 건너뛰면 그쪽 핸들이 남는다")
+
+
+def test_stdin_broken_pipe_on_close_is_not_a_cleanup_failure(relay):
+    """kill 뒤 stdin 의 `BrokenPipeError` 는 읽는 쪽이 사라진 정상 형상 — 정리 실패가 아니다."""
+    stdin = _UnclosableStream(BrokenPipeError("자식이 이미 종료"))
+    proc = SimpleNamespace(stdout=None, stderr=None, stdin=stdin)
+    relay._close_child_pipes(proc, argv=["drv"])          # 예외 없음
+    assert stdin.close_calls == 1
+    # 같은 예외가 읽기 파이프에서 오면 그건 정리 실패다(관용은 stdin 한 자리뿐).
+    read_pipe = _UnclosableStream(BrokenPipeError("stdout"))
+    with pytest.raises(relay.ProcessCleanupError):
+        relay._close_child_pipes(
+            SimpleNamespace(stdout=read_pipe, stderr=None, stdin=None), argv=["drv"])
 
 
 def test_keyboard_interrupt_kills_and_drains_real_process_group(relay):

@@ -20,17 +20,21 @@
 from __future__ import annotations
 
 import ast
+import errno
 import importlib.util
 import multiprocessing as mp
 import os
 import re
 import shutil
+import stat
 import sys
 import time
 import types
 from pathlib import Path
 
 import pytest
+
+from _win_skip import posix_mode_supported
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -323,28 +327,54 @@ def _probe_lock_free(lock_path: Path) -> bool:
         os.close(fd)
 
 
-def _worker_hold_lock(module_path: str, lock_path: str, acquired) -> None:
-    """락을 잡은 채 멈춘다(부모가 terminate) — 크래시-시-자동해제 검증용."""
-    spec = importlib.util.spec_from_file_location("file_lock_worker", module_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    cm = module.exclusive_file_lock(Path(lock_path))
-    cm.__enter__()
+def _worker_hold_lock(
+    module_path: str, lock_path: str, acquired, report_path: str,
+) -> None:
+    """락을 잡은 채 멈춘다(부모가 terminate) — 크래시-시-자동해제 검증용.
+
+    로드·획득이 실패하면 사유를 `report_path` 에 남긴다 — 그냥 죽으면 부모는 `wait()` 타임아웃
+    (False) 만 보고 *왜* 못 잡았는지 한 줄도 읽지 못한다. 판정 불능은 통과가 아니라 진단
+    실패다([[guard-must-cover-its-own-surface]]).
+    """
+    try:
+        spec = importlib.util.spec_from_file_location("file_lock_worker", module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        cm = module.exclusive_file_lock(Path(lock_path))
+        cm.__enter__()
+    except BaseException as exc:  # noqa: BLE001 — 사유 보고 후 그대로 죽는다.
+        import traceback
+        Path(report_path).write_text(
+            f"{exc!r}\n{traceback.format_exc()}", encoding="utf-8", newline="\n")
+        raise
     acquired.set()
     time.sleep(3600)
+
+
+def _child_failure_report(report_path: Path, child) -> str:
+    """자식이 남긴 실패 사유 + 프로세스 상태 (진단 문구용)."""
+    reason = (
+        report_path.read_text(encoding="utf-8").strip()
+        if report_path.exists() else "(자식이 사유를 남기지 않음)"
+    )
+    return f"exitcode={child.exitcode} alive={child.is_alive()} · 자식 보고: {reason}"
 
 
 def test_second_process_is_excluded_and_crash_releases_the_lock(tmp_path):
     """다른 프로세스가 보유 중이면 비차단 획득이 실패하고, 그 프로세스가 죽으면 풀린다."""
     lock_path = tmp_path / "cross-process.lock"
+    report_path = tmp_path / "child-failure.txt"
     ctx = mp.get_context("spawn")
     acquired = ctx.Event()
     child = ctx.Process(
-        target=_worker_hold_lock, args=(str(FILE_LOCK_PY), str(lock_path), acquired)
+        target=_worker_hold_lock,
+        args=(str(FILE_LOCK_PY), str(lock_path), acquired, str(report_path)),
     )
     child.start()
     try:
-        assert acquired.wait(timeout=SYNC_TIMEOUT), "자식이 락을 획득하지 못함"
+        assert acquired.wait(timeout=SYNC_TIMEOUT), (
+            "자식이 락을 획득하지 못함 — " + _child_failure_report(report_path, child)
+        )
         # skip 판정은 *능력* 탐지 하나로만 좁힌다 — "지금 락이 free 인가"로 skip 하면
         # 배타성이 실제로 깨진 회귀(프리미티브는 있는데 획득 실패)가 green 으로 통과한다.
         if not _has_lock_primitive():
@@ -378,7 +408,7 @@ def test_append_atomic_creates_the_file_and_appends_without_truncating(
 def test_append_atomic_uses_one_o_append_write_with_requested_mode(
     file_lock, tmp_path, monkeypatch,
 ):
-    """RMW 없이 O_APPEND 단일 write — open/write/close 3콜·권한은 호출자 소유."""
+    """RMW 없이 O_APPEND 단일 write — open/write/fsync/close 4콜·권한은 호출자 소유."""
     calls: list[tuple] = []
     monkeypatch.setattr(
         file_lock.os,
@@ -388,6 +418,7 @@ def test_append_atomic_uses_one_o_append_write_with_requested_mode(
     monkeypatch.setattr(
         file_lock.os, "write", lambda fd, payload: calls.append(("write", fd, payload))
     )
+    monkeypatch.setattr(file_lock.os, "fsync", lambda fd: calls.append(("fsync", fd)))
     monkeypatch.setattr(file_lock.os, "close", lambda fd: calls.append(("close", fd)))
 
     target = tmp_path / "current.md"
@@ -398,8 +429,73 @@ def test_append_atomic_uses_one_o_append_write_with_requested_mode(
     assert calls[0][2] & os.O_APPEND and calls[0][2] & os.O_CREAT
     assert calls[0][2] & os.O_WRONLY == os.O_WRONLY
     assert calls[0][3] == file_lock.DEFAULT_APPEND_MODE == 0o644
-    assert calls[1:3] == [("write", 41, b"\nentry"), ("close", 41)]
-    assert calls[3][3] == 0o600
+    assert calls[1:4] == [
+        ("write", 41, b"\nentry"), ("fsync", 41), ("close", 41),
+    ]
+    assert calls[4][3] == 0o600
+
+
+def test_append_atomic_syncs_the_writable_descriptor_it_opened(
+    file_lock, tmp_path, monkeypatch,
+):
+    """내구성은 append 가 연 **쓰기** fd 위에서 수행된다 (읽기 전용 재-open sync 아님·T-0716).
+
+    호출부가 append 뒤에 파일을 다시 열어 sync 하면 그 fd 는 읽기 전용이고, Windows 는 그
+    fsync 를 `[Errno 9] Bad file descriptor` 로 거부한다.
+    """
+    opened_flags: dict[int, int] = {}
+    synced: list[int] = []
+    real_open, real_fsync = os.open, os.fsync
+
+    def _record_open(path, flags, mode=0o777, **kwargs):
+        fd = real_open(path, flags, mode, **kwargs)
+        opened_flags[fd] = flags
+        return fd
+
+    def _record_fsync(fd):
+        synced.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr(file_lock.os, "open", _record_open)
+    monkeypatch.setattr(file_lock.os, "fsync", _record_fsync)
+
+    target = tmp_path / "areas.md"
+    file_lock.append_atomic(target, "line\n")
+
+    assert len(synced) == 1
+    assert opened_flags[synced[0]] & os.O_WRONLY == os.O_WRONLY
+    assert target.read_text(encoding="utf-8") == "line\n"
+
+
+def test_append_atomic_propagates_a_failing_sync_and_closes_the_descriptor(
+    file_lock, tmp_path, monkeypatch,
+):
+    """sync 실패는 삼키지 않는다 (내구성의 조용한 소실 금지)·fd 는 닫는다."""
+    closed: list[int] = []
+    real_close = os.close
+    monkeypatch.setattr(
+        file_lock.os, "close", lambda fd: closed.append(fd) or real_close(fd)
+    )
+
+    def boom(fd):
+        raise OSError(errno.EBADF, "Bad file descriptor")
+
+    monkeypatch.setattr(file_lock.os, "fsync", boom)
+    with pytest.raises(OSError):
+        file_lock.append_atomic(tmp_path / "a.md", "x")
+    assert len(closed) == 1
+
+
+def test_append_atomic_opt_out_skips_the_sync(file_lock, tmp_path, monkeypatch):
+    """`fsync=False` 는 sync 만 끄고 write 는 그대로다 (기본값은 sync 수행)."""
+    synced: list[int] = []
+    monkeypatch.setattr(file_lock.os, "fsync", lambda fd: synced.append(fd))
+
+    target = tmp_path / "a.md"
+    file_lock.append_atomic(target, "x", fsync=False)
+
+    assert synced == []
+    assert target.read_text(encoding="utf-8") == "x"
 
 
 def test_append_atomic_closes_the_descriptor_when_the_write_fails(
@@ -788,3 +884,395 @@ def test_missing_seam_diagnosis_is_absent_when_the_check_is_removed(tmp_path):
     module = _load(tools / "pm_log.py", "pm_log_missing_seam_unguarded")
     with pytest.raises(FileNotFoundError):
         module._load_file_lock()
+
+
+# ── append 바이트 보존 (플랫폼 줄끝 번역 차단·T-0711) ────────────────────────
+# Windows 의 `os.open` 은 텍스트 모드가 기본이라 `os.O_BINARY` 없이 열면 CRT 가 `\n` 을
+# `\r\n` 으로 번역한다. board 루트 파일 backfill 은 append 한 바이트를 롤백 때 그대로 되계산해
+# 대조하므로, 번역이 끼면 "engine 이 쓴 것"과 "engine 이 썼다고 계산한 것"이 갈려 롤백이
+# 제3자 변경으로 보고 잔재를 남긴다(Windows 실측). POSIX 에는 `os.O_BINARY` 자체가 없어 그
+# 분기를 **주입해** 태운다.
+
+_INJECTED_O_BINARY = 0x8000
+
+
+def _record_open_flags(file_lock, monkeypatch) -> list[int]:
+    """`file_lock` 이 `os.open` 에 넘긴 flags 를 기록한다 (주입 비트는 실 호출에서 뗀다)."""
+    seen: list[int] = []
+    real_open = os.open
+
+    def _spy(path, flags, mode=0o777, **kwargs):
+        seen.append(flags)
+        return real_open(path, flags & ~_INJECTED_O_BINARY, mode, **kwargs)
+
+    monkeypatch.setattr(file_lock.os, "open", _spy)
+    return seen
+
+
+def test_append_atomic_opens_binary_where_the_platform_translates_newlines(
+    file_lock, tmp_path, monkeypatch,
+):
+    """append 는 `os.O_BINARY` 를 얹어 연다 — 그 플랫폼의 텍스트 모드 줄끝 번역을 막는다.
+
+    주입은 **플랫폼 인지형**이다. POSIX 에는 이 상수가 없으므로 상수를 주입해 Windows 분기를
+    여기서 태우고(주입 없이는 이 축이 개발기에서 영원히 안 보인다·
+    [[guard-must-cover-its-own-surface]]), 상수가 **실재하는** 플랫폼에서는 주입하지 않고 엔진의
+    실제 동작을 본다. 거기서 부재/치환을 주입하면 기록 spy 가 실제 `O_BINARY` 비트를 떼어내
+    **테스트가 만든** 텍스트 모드 쓰기를 엔진 결함으로 보고한다(T-0724 Windows 실측: 엔진 산출은
+    LF·`b"a\\nb\\n"`, 비트를 뗀 `os.write` 만 `b"a\\r\\nb\\r\\n"`).
+    """
+    native_binary = getattr(os, "O_BINARY", None)
+    if native_binary is None:
+        monkeypatch.setattr(file_lock.os, "O_BINARY", _INJECTED_O_BINARY, raising=False)
+        # 주입이 실제로 걸렸는지 선-단언 — no-op 주입은 아무것도 태우지 않는 초록이다.
+        assert getattr(file_lock.os, "O_BINARY", None) == _INJECTED_O_BINARY, \
+            "O_BINARY 주입이 걸리지 않았다 — 이 가드는 Windows 분기를 태우지 못한다"
+        required = _INJECTED_O_BINARY
+        seen = _record_open_flags(file_lock, monkeypatch)  # 주입 비트는 실 호출에서 뗀다
+    else:
+        # 상수 실재 플랫폼 — 요구 비트를 기록만 하고 flags 는 손대지 않는다(엔진 실동작 판정).
+        required = native_binary
+        assert required, "이 플랫폼의 `os.O_BINARY` 가 0 이라 비트 단언이 무의미하다"
+        seen = []
+        real_open = os.open
+
+        def _passthrough_spy(path, flags, mode=0o777, **kwargs):
+            seen.append(flags)
+            return real_open(path, flags, mode, **kwargs)
+
+        monkeypatch.setattr(file_lock.os, "open", _passthrough_spy)
+
+    target = tmp_path / "current.md"
+    file_lock.append_atomic(target, "a\nb\n")
+
+    assert seen and seen[0] & required, \
+        f"append 가 바이너리 모드를 요구하지 않음 — 줄끝이 번역될 수 있다: {seen}"
+    assert target.read_bytes() == b"a\nb\n"
+    # 판정은 byte 그대로다 — 정규화를 끼워 넣으면 번역 자체를 못 본다. CRLF 를 준 append 도
+    # 준 bytes 로 남아야 한다(텍스트 모드면 `\r\n` 이 `\r\r\n` 으로 부푼다).
+    file_lock.append_atomic(target, "c\r\nd\n")
+    assert target.read_bytes() == b"a\nb\nc\r\nd\n"
+
+
+def test_append_atomic_writes_the_exact_bytes_it_was_given(file_lock, tmp_path):
+    """append 는 준 문자열의 bytes 를 그대로 남긴다 (호출부의 바이트 계산과 갈리지 않는다)."""
+    target = tmp_path / ".gitattributes"
+    target.write_bytes(b"*.md text eol=lf\n")
+
+    file_lock.append_atomic(target, "\n# block\nareas.md merge=union\n")
+
+    assert target.read_bytes() == (
+        b"*.md text eol=lf\n\n# block\nareas.md merge=union\n")
+
+
+# ── 강제 삭제 (read-only·잔재 금지·T-0711) ──────────────────────────────────
+
+
+def _read_only_tree(root: Path) -> Path:
+    """git object 트리와 같은 형상 — read-only 파일 + **쓰기 권한 없는 디렉토리**.
+
+    파일만 read-only 로 만들면 POSIX 에서는 여전히 지워진다(부모 디렉토리 권한만 보므로).
+    디렉토리 조합까지 넣어야 이 축이 Linux 에서도 red 로 재현된다.
+    """
+    objects = root / "objects" / "10"
+    objects.mkdir(parents=True)
+    blob = objects / "a9500e"
+    blob.write_bytes(b"packed object\n")
+    os.chmod(blob, stat.S_IREAD)
+    os.chmod(objects, stat.S_IREAD | stat.S_IEXEC)
+    return root
+
+
+def test_force_rmtree_removes_a_read_only_tree_that_ignore_errors_leaves_behind(
+    file_lock, tmp_path,
+):
+    """read-only 트리를 실제로 지운다 — 옛 관용구(`ignore_errors=True`)는 잔재를 남긴다."""
+    swallowed = _read_only_tree(tmp_path / "swallowed")
+    shutil.rmtree(swallowed, ignore_errors=True)
+    assert swallowed.exists(), \
+        "픽스처가 read-only 를 재현하지 못했다 — 이 트리는 맨 rmtree 로도 지워진다"
+
+    target = _read_only_tree(tmp_path / "target")
+    file_lock.force_rmtree(target)
+
+    assert not target.exists(), "force_rmtree 뒤에도 트리가 남음"
+
+
+def test_force_rmtree_treats_absence_as_success(file_lock, tmp_path):
+    """부재는 성공이다 — 정리의 목적은 '없다' 이고 경쟁 삭제도 그 목적을 이룬다."""
+    file_lock.force_rmtree(tmp_path / "never-existed")
+
+
+def test_force_rmtree_raises_instead_of_leaving_a_silent_leftover(file_lock, tmp_path):
+    """지우지 못하면 예외 — 삼키면 잔재가 있어도 rc=0 이 된다."""
+    not_a_tree = tmp_path / "regular.txt"
+    not_a_tree.write_text("x", encoding="utf-8")
+
+    with pytest.raises(OSError) as exc:
+        file_lock.force_rmtree(not_a_tree)
+
+    assert str(not_a_tree) in str(exc.value)
+    assert not_a_tree.exists(), "판정 대상이 사라져 단언이 공허해졌다"
+
+
+def test_force_rmtree_retries_then_gives_up_with_the_last_error(
+    file_lock, tmp_path, monkeypatch,
+):
+    """열린 핸들처럼 속성 해제로 안 풀리는 실패는 상한까지 재시도하고 그 뒤 예외다."""
+    target = tmp_path / "locked"
+    target.mkdir()
+    attempts: list[int] = []
+    naps: list[float] = []
+    boom = PermissionError(errno.EACCES, "다른 프로세스가 파일을 사용 중")
+
+    def _always_fail(path, **kwargs):
+        attempts.append(1)
+        raise boom
+
+    monkeypatch.setattr(file_lock.shutil, "rmtree", _always_fail)
+    monkeypatch.setattr(file_lock.time, "sleep", naps.append)
+
+    with pytest.raises(OSError) as exc:
+        file_lock.force_rmtree(target, retries=3)
+
+    assert len(attempts) == 3, f"재시도 상한이 지켜지지 않음: {len(attempts)}"
+    assert len(naps) == 2, f"재시도 사이 대기가 없거나 마지막 뒤에도 잔다: {naps}"
+    assert exc.value.__cause__ is boom
+    assert "다른 프로세스가 파일을 사용 중" in str(exc.value)
+
+
+def test_force_unlink_removes_a_file_a_plain_unlink_cannot(file_lock, tmp_path):
+    """쓰기 권한 없는 디렉토리 안의 read-only 파일도 지운다 (맨 unlink 는 거부된다)."""
+    tree = _read_only_tree(tmp_path / "tree")
+    blob = tree / "objects" / "10" / "a9500e"
+    with pytest.raises(OSError):
+        blob.unlink()
+
+    file_lock.force_unlink(blob)
+
+    assert not blob.exists()
+
+
+def test_force_unlink_absence_follows_the_caller_declaration(file_lock, tmp_path):
+    """부재를 성공으로 볼지는 호출부의 뜻이다 — 기본은 `Path.unlink` 와 같은 raise."""
+    missing = tmp_path / "gone.md"
+    file_lock.force_unlink(missing, missing_ok=True)
+    with pytest.raises(FileNotFoundError):
+        file_lock.force_unlink(missing)
+
+
+def test_force_unlink_raises_when_the_target_cannot_be_removed(file_lock, tmp_path):
+    """지우지 못하면 예외 — 파일 축도 조용한 잔재를 만들지 않는다."""
+    directory = tmp_path / "dir"
+    directory.mkdir()
+
+    with pytest.raises(OSError) as exc:
+        file_lock.force_unlink(directory)
+
+    assert str(directory) in str(exc.value)
+    assert directory.exists()
+
+
+def _delete_call_keywords(source: str, name: str) -> list[ast.Call]:
+    """소스에서 `<name>=True` 키워드를 넘기는 호출만 모은다 (주석·문자열 아님·AST 판정)."""
+    found: list[ast.Call] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        for keyword in node.keywords:
+            if (keyword.arg == name and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value is True):
+                found.append(node)
+    return found
+
+
+def test_engine_cleanup_never_swallows_delete_failures():
+    """엔진 어디에도 `ignore_errors=True` 호출이 없다 — 잔재는 loud 하거나 없거나다.
+
+    산문(주석·docstring)에 그 관용구를 *설명* 하는 것은 판정 대상이 아니다(AST 로만 센다).
+    """
+    offenders = {
+        path.name: len(_delete_call_keywords(path.read_text(encoding="utf-8"), "ignore_errors"))
+        for path in sorted(TOOLS.glob("*.py"))
+        if _delete_call_keywords(path.read_text(encoding="utf-8"), "ignore_errors")
+    }
+    assert offenders == {}, f"삭제 실패를 삼키는 호출이 남음: {offenders}"
+
+
+# ── 소유자 전용 접근 제한 (POSIX 퍼미션 / Windows ACL·T-0711) ────────────────
+
+
+@pytest.mark.skipif(
+    not posix_mode_supported(),
+    reason="POSIX 퍼미션이 무효인 환경 — 그 플랫폼의 수단(ACL)은 아래 분기 테스트가 본다.")
+def test_restrict_to_owner_applies_posix_owner_only_permissions(file_lock, tmp_path):
+    """POSIX 수단은 퍼미션 — 파일 0600·디렉토리 0700 이고 판정도 그것을 되읽는다."""
+    target = tmp_path / "auth.json"
+    target.write_text("{}", encoding="utf-8")
+    directory = tmp_path / "home"
+    directory.mkdir()
+
+    file_lock.restrict_to_owner(target)
+    file_lock.restrict_to_owner(directory)
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+    assert file_lock.owner_only_access(target) is True
+    assert file_lock.owner_only_access(directory) is True
+    os.chmod(target, 0o644)
+    assert file_lock.owner_only_access(target) is False, \
+        "그룹/타인 읽기가 열렸는데 소유자 전용으로 판정됨"
+
+
+# 한국어 Windows 11 실측 형상 — `whoami /user /fo csv /nh` 한 줄과 계정 SID.
+_PROBE_SID = "S-1-5-21-1111111111-2222222222-3333333333-1001"
+_PROBE_WHOAMI = f'"DESKTOP-A1B2C3\\smahn","{_PROBE_SID}"\n'
+
+
+class _FakeAcl:
+    """`whoami`/`icacls` 를 갈아끼우는 주입 runner — 호출 argv 를 그대로 기록한다.
+
+    `whoami_rc` 를 비0 으로 두면 **SID 조회 실패** 형상이 되고, 그때 주체가 계정 이름으로
+    폴백하는지까지 같은 도구로 본다.
+    """
+
+    def __init__(self, *, whoami_rc: int = 0, icacls_rc: int = 0,
+                 icacls_output: str = "", query_output: str | None = None):
+        self.whoami_rc, self.icacls_rc = whoami_rc, icacls_rc
+        self.icacls_output, self.query_output = icacls_output, query_output
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv):
+        self.calls.append(list(argv))
+        if argv[0] == "whoami":
+            return self.whoami_rc, (_PROBE_WHOAMI if self.whoami_rc == 0 else "")
+        if len(argv) == 2 and self.query_output is not None:   # 조회(`icacls <path>`)
+            return self.icacls_rc, self.query_output
+        return self.icacls_rc, self.icacls_output
+
+    @property
+    def icacls_calls(self) -> list[list[str]]:
+        return [argv for argv in self.calls if argv[0] == "icacls"]
+
+
+def test_restrict_to_owner_grants_by_sid_on_platforms_where_chmod_is_inert(
+    file_lock, tmp_path,
+):
+    """ACL 플랫폼(Windows)에서는 `icacls` 로 같은 보장을 낸다 — 주체는 **SID** 다.
+
+    `chmod 0600` 은 그 플랫폼에서 아무 제한도 걸지 않으므로(실측 `S_IMODE`=0o666) 단언을
+    지우거나 skip 하는 대신 수단을 갈아끼운다. 계정 *이름*으로 주면 로케일·계정 표기에 따라
+    icacls 가 해소에 실패한다(한국어 Windows 11 실측 `rc=1332` = `ERROR_NONE_MAPPED`) — SID 는
+    그 표기에 무관하다. 디렉토리는 상속 ACE 로 줘 이후 생기는 항목도 소유자 전용이 되게 한다.
+    """
+    target = tmp_path / "prompt.md"
+    target.write_text("검토 diff", encoding="utf-8")
+    directory = tmp_path / "transport"
+    directory.mkdir()
+    acl = _FakeAcl()
+
+    file_lock.restrict_to_owner(target, runner=acl, acl_platform=True)
+    file_lock.restrict_to_owner(directory, runner=acl, acl_platform=True)
+
+    assert acl.icacls_calls == [
+        ["icacls", str(target), "/inheritance:r", "/grant:r", f"*{_PROBE_SID}:(F)"],
+        ["icacls", str(directory), "/inheritance:r", "/grant:r",
+         f"*{_PROBE_SID}:(OI)(CI)(F)"],
+    ], f"ACL 적용 명령이 SID 기반 소유자 전용 부여가 아님: {acl.icacls_calls}"
+    assert acl.calls[0][0] == "whoami", "SID 조회 없이 이름으로 부여했다"
+
+
+def test_restrict_to_owner_falls_back_to_the_account_name_without_a_sid(
+    file_lock, tmp_path,
+):
+    """SID 조회가 실패하면 계정 이름으로라도 건다 — 제한 없이 지나가지 않는다."""
+    target = tmp_path / "prompt.md"
+    target.write_text("검토 diff", encoding="utf-8")
+    acl = _FakeAcl(whoami_rc=1)
+
+    file_lock.restrict_to_owner(target, runner=acl, acl_platform=True)
+
+    owner = file_lock.current_owner_principal()
+    assert acl.icacls_calls == [[
+        "icacls", str(target), "/inheritance:r", "/grant:r", f"{owner}:(F)",
+    ]]
+
+
+def test_restrict_to_owner_raises_when_the_acl_tool_fails(file_lock, tmp_path):
+    """제한을 못 걸었으면 loud — 조용히 넘어가면 호출부가 격리를 믿고 비밀을 쓴다.
+
+    실패 진단에는 **쓴 주체**가 함께 실린다 — `rc=1332`(계정 해소 실패)처럼 주체 표기가 원인인
+    실패를 rc 숫자만 보고는 못 가른다(실측).
+    """
+    target = tmp_path / "prompt.md"
+    target.write_text("검토 diff", encoding="utf-8")
+
+    with pytest.raises(file_lock.AccessRestrictionError) as exc:
+        file_lock.restrict_to_owner(
+            target,
+            runner=_FakeAcl(icacls_rc=1332, icacls_output="계정 이름과 보안 ID 간에 매핑이..."),
+            acl_platform=True)
+
+    assert str(target) in str(exc.value)
+    assert "계정 이름과 보안 ID" in str(exc.value)
+    assert f"*{_PROBE_SID}" in str(exc.value), "실패 진단에 쓴 주체가 없다"
+
+    with pytest.raises(file_lock.AccessRestrictionError):
+        file_lock.restrict_to_owner(
+            target, runner=_raise_missing_tool, acl_platform=True)
+
+
+def _raise_missing_tool(argv):
+    raise FileNotFoundError(errno.ENOENT, "icacls 없음")
+
+
+def test_owner_only_access_reads_the_acl_back_and_fails_closed(file_lock, tmp_path):
+    """판정은 OS 에 되묻는다 — 현재 계정 ACE 하나뿐일 때만 참, 판정 불가는 거짓.
+
+    되읽은 ACE 는 SID 가 이름으로 해소되면 이름으로, 아니면 SID 그대로 찍힌다 — 둘 다 현재
+    계정으로 인정하되 다른 주체는 그대로 거부한다.
+    """
+    target = tmp_path / "prompt.md"
+    target.write_text("검토 diff", encoding="utf-8")
+    owner = file_lock.current_owner_principal()
+
+    def _query(output: str, rc: int = 0):
+        return _FakeAcl(icacls_rc=rc, query_output=output)
+
+    assert file_lock.owner_only_access(
+        target, runner=_query(f"{target} {owner}:(F)\n\n1개 파일을 처리했습니다\n"),
+        acl_platform=True) is True
+    assert file_lock.owner_only_access(
+        target, runner=_query(f"{target} {_PROBE_SID}:(F)\n"),
+        acl_platform=True) is True, "이름으로 해소되지 않은 SID ACE 를 남으로 판정했다"
+    assert file_lock.owner_only_access(
+        target,
+        runner=_query(f"{target} {owner}:(F)\n              BUILTIN\\Users:(RX)\n"),
+        acl_platform=True) is False, "다른 주체의 ACE 가 있는데 소유자 전용으로 판정됨"
+    assert file_lock.owner_only_access(
+        target, runner=_query(f"{target} S-1-5-21-9-9-9-500:(F)\n"),
+        acl_platform=True) is False, "다른 계정 SID 를 현재 계정으로 판정했다"
+    assert file_lock.owner_only_access(
+        target, runner=_query("", rc=5), acl_platform=True) is False
+    assert file_lock.owner_only_access(
+        target, runner=_query("형식 밖 출력\n"), acl_platform=True) is False
+
+
+def test_owner_sid_lookup_is_cached_for_the_real_runner(file_lock, monkeypatch):
+    """실 조회는 프로세스당 한 번 — 파일마다 `whoami` 를 띄우지 않는다.
+
+    주입 runner 는 캐시를 오염시키지도, 캐시에 오염되지도 않는다(테스트 소유 값).
+    """
+    monkeypatch.setattr(file_lock, "_CACHED_OWNER_SID", None, raising=False)
+    spawns: list[list[str]] = []
+
+    def _real(argv):
+        spawns.append(list(argv))
+        return 0, _PROBE_WHOAMI
+
+    monkeypatch.setattr(file_lock, "_run_acl_command", _real)
+
+    assert file_lock.current_owner_sid() == _PROBE_SID
+    assert file_lock.current_owner_sid() == _PROBE_SID
+    assert len(spawns) == 1, f"SID 조회가 매번 프로세스를 띄운다: {spawns}"
+    assert file_lock.current_owner_sid(runner=_FakeAcl(whoami_rc=1)) is None

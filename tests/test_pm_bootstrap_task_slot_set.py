@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import importlib.util
 import json as _json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 from _pytest_summary import pytest_summary
@@ -403,7 +403,8 @@ def test_task_only_first_turn_uses_current_task_pm_state_path(
 
     assert inst.run(task="mytask") == 0
     first_turn = capsys.readouterr().out.split("### 권장 첫 turn", 1)[1]
-    task_state = str(pool.task_dir("mytask") / "pm_state.md")
+    # 표기는 엔진 직렬화(POSIX 단일)로 만든다 — `str(Path)` 로 만들면 Windows 에서만 갈린다.
+    task_state = bootstrap._display_path_text(pool.task_dir("mytask") / "pm_state.md")
 
     assert task_state in first_turn
     assert ".project_manager/.local/slots/other_task_repo_9/pm_state.md" not in first_turn
@@ -609,15 +610,49 @@ def test_task_pytest_rechecks_owner_before_execution(bootstrap, tmp_path, capsys
     assert "소유권 재검증" in capsys.readouterr().err
 
 
-def test_task_pull_rechecks_owner_before_mutation(bootstrap, tmp_path, capsys):
-    """fetch 뒤 release/realloc되어도 pull은 새 소유자 슬롯에서 실행하지 않고 loud 중단한다."""
+def _git_call_targets_slot(args, slot: str) -> bool:
+    """git 호출(`-C <dir> …`)이 그 슬롯 worktree 를 가리키는가 — 경로 구분자 무관 판정.
+
+    엔진은 `-C` 인자에 **플랫폼 native** 표기(`str(Path)`)를 넘긴다(git 에 그대로 들어가는 실경로라
+    표시 경로처럼 POSIX 로 고정하지 않는다). Windows 에선 그 값이 `…\\work\\A_1` 이라 `slot in arg`
+    같은 POSIX 전용 부분문자열 판정은 어떤 호출도 못 잡고, 그 판정에 얹은 주입·단언이 조용히 no-op
+    이 된다(소유권 차단이 발화하지 않는 게 아니라 **테스트가 그 상황을 못 만든다**·T-0718 축 C).
+    """
+    return any(slot in str(arg).replace("\\", "/") for arg in args)
+
+
+def _windows_flavour_worktree_cwd(inst):
+    """슬롯 cwd 산출(`_worktree_cwd`)을 Windows 표기로 바꾸는 주입 seam.
+
+    경로 구분자는 OS 가 정하므로 Linux 회귀는 그대로면 Windows 분기를 못 태운다. 슬롯 cwd 는
+    엔진의 단일 지점에서 나오므로 여기만 바꾸면 freshness scope → git `-C` 인자까지 Windows 표기가
+    흐르고, 그 표기에서도 소유권 재검증이 발화하는지 Linux 에서 확인할 수 있다."""
+    base = PureWindowsPath("C:/pmhome")
+
+    def _cwd(slot=None, _inst=inst):
+        target = slot or (
+            _inst._task_workspace_slots[0] if _inst._task_workspace_slots else None
+        )
+        return str(base / target) if target else str(base)
+
+    return _cwd
+
+
+@pytest.mark.parametrize("path_flavour", ["native", "windows"])
+def test_task_pull_rechecks_owner_before_mutation(
+    bootstrap, tmp_path, capsys, path_flavour
+):
+    """fetch 뒤 release/realloc되어도 pull은 새 소유자 슬롯에서 실행하지 않고 loud 중단한다.
+
+    슬롯 cwd 표기(native·Windows)는 이 판정의 축이 아니다 — 두 표기 모두에서 같은 차단이
+    발화해야 다중 창 동시 push 방어가 OS 를 건너 살아 있다(T-0718 축 C)."""
     slot = "work/A_1"
     pool = _TaskPool(slot_root=tmp_path / "wt", task_slots=(slot,), branches={slot: "a5"})
     calls = []
 
     def git_fn(args):
         calls.append(args)
-        if args[-2:] == ["fetch", "origin"] and any(slot in arg for arg in args):
+        if args[-2:] == ["fetch", "origin"] and _git_call_targets_slot(args, slot):
             pool._task_name = "new-owner"  # probe와 pull 실행 사이의 release/realloc 주입.
             return 0, ""
         if args[-2:] == ["symbolic-ref", "HEAD"]:
@@ -629,11 +664,19 @@ def test_task_pull_rechecks_owner_before_mutation(bootstrap, tmp_path, capsys):
         return 0, ""
 
     inst = _make(bootstrap, tmp_path, pool, git_fn=git_fn)
+    if path_flavour == "windows":
+        inst._worktree_cwd = _windows_flavour_worktree_cwd(inst)
     with pytest.raises(SystemExit) as exc:
         inst.run(task="mytask")
     assert exc.value.code == 1
+    # 주입이 실제로 걸렸는지(=fetch 가 그 슬롯을 탔는지) 먼저 단언한다 — 안 걸리면 소유자가
+    # 그대로라 차단 없이 통과하는데, 그건 "가드 통과" 가 아니라 "가드 미시험" 이다.
+    assert any(
+        args[-2:] == ["fetch", "origin"] and _git_call_targets_slot(args, slot)
+        for args in calls
+    )
     assert not any(
-        args[-2:] == ["pull", "--ff-only"] and any(slot in arg for arg in args)
+        args[-2:] == ["pull", "--ff-only"] and _git_call_targets_slot(args, slot)
         for args in calls
     )
     assert "소유권 재검증" in capsys.readouterr().err

@@ -1230,6 +1230,74 @@ def _normalize_shell_line_continuations(command: str) -> str:
     return "".join(output)
 
 
+_SHELL_COMMAND_SEPARATORS = frozenset({"&&", "||", ";", "\n", "|"})
+_SHELL_WINDOWS_PATH_SEPARATOR = "\ue000"
+_SHELL_WINDOWS_ABSOLUTE_PATH = re.compile(
+    r"(?<![A-Za-z0-9_])(?:[A-Za-z]:\\|\\\\)[^ \t\r\n;&|<>\"']+"
+)
+
+
+def _protect_shell_windows_path_separators(command: str) -> str:
+    """POSIX shlex가 Windows 절대경로의 ``\\``를 escape로 소비하지 않게 표식한다.
+
+    이 단계는 정규화하지 않는다. 경로형 토큰임이 드러난 drive/UNC 표기의 구분자만 보존하고,
+    실제 ``/`` 변환은 shlex 토큰화 뒤 simple-command가 토큰을 소비할 때 수행한다.
+    """
+    return _SHELL_WINDOWS_ABSOLUTE_PATH.sub(
+        lambda match: match.group(0).replace("\\", _SHELL_WINDOWS_PATH_SEPARATOR),
+        command,
+    )
+
+
+def _normalize_shell_path_notation(token: str) -> str:
+    """토큰화가 끝난 Windows 절대경로 토큰만 POSIX 표기로 정규화한다."""
+    windows_path = (
+        _SHELL_WINDOWS_PATH_SEPARATOR in token
+        or re.match(r"^(?:[A-Za-z]:\\|\\\\)", token) is not None
+    )
+    if not windows_path:
+        return token
+    return re.sub(
+        r"/+", "/",
+        token.replace(_SHELL_WINDOWS_PATH_SEPARATOR, "/").replace("\\", "/"),
+    )
+
+
+def restore_shell_windows_path_separators(token: str) -> str:
+    """보호 표식을 원래 ``\\``로 되돌린다 — **실행용** argv 복원 경로.
+
+    판정용 경로는 `_normalize_shell_path_notation` 이 ``/`` 표기로 접지만, 실행 argv 는 채택자가
+    선언한 바이트 그대로여야 한다(표식이 남으면 그 자체가 실행 불가 경로다).
+    """
+    return token.replace(_SHELL_WINDOWS_PATH_SEPARATOR, "\\")
+
+
+def split_command_argv(command: str, *, windows: bool | None = None) -> list[str]:
+    """command 문자열을 **실행 플랫폼 규칙**으로 argv 로 분해한다 (엔진 공용 seam).
+
+    POSIX 규칙에서 ``\\`` 는 escape 라 `shlex.split` 만 쓰면 Windows 실행 경로의 구분자가 통째로
+    사라진다 — ``C:\\Users\\pm\\codex.exe`` 가 ``C:Userspmcodex.exe`` 가 되어 실행이 `FileNotFoundError`
+    로 끝난다. Windows 에서는 board 의 shell 판정 경로와 **같은 보호 규칙**
+    (`_SHELL_WINDOWS_ABSOLUTE_PATH`)으로 절대경로 토큰의 구분자를 표식으로 바꾼 뒤 shlex 인용
+    규칙을 적용하고, 토큰화가 끝난 다음 표식을 원래 ``\\`` 로 되돌린다. 인용 의미(따옴표·공백)는
+    그대로 두고 경로 구분자만 살린다.
+
+    POSIX 실행 플랫폼에서는 종전 `shlex.split` 그대로다 — 그쪽에서 ``\\`` 는 실제로 escape 이므로
+    보호를 걸면 채택자가 의도한 escape 를 바꾼다.
+
+    `windows=None` 이면 실행 플랫폼(`os.name == "nt"`)을 본다. 명시 인자는 POSIX 개발기에서
+    Windows 분해를 그대로 태우는 주입 seam 이다(회귀가 실행 플랫폼에 의존하지 않게).
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    if not windows:
+        return shlex.split(command)
+    return [
+        restore_shell_windows_path_separators(token)
+        for token in shlex.split(_protect_shell_windows_path_separators(command))
+    ]
+
+
 def _git_prefilter_text(command: str) -> str:
     """성능 선필터용 완화 text. quote fragment false-negative만 제거한다.
 
@@ -1241,7 +1309,11 @@ def _git_prefilter_text(command: str) -> str:
 
 def _persistent_cd_prefilter(text: str) -> bool:
     """top-level simple-command 경계의 ``cd`` 후보만 값싼 선필터로 찾는다."""
-    return re.search(r"(?:^|[;&|])\s*cd(?=\s)", text) is not None
+    separators = "|".join(
+        re.escape(value)
+        for value in sorted(_SHELL_COMMAND_SEPARATORS, key=len, reverse=True)
+    )
+    return re.search(rf"(?:^|(?:{separators}))\s*cd(?=\s)", text) is not None
 
 
 def _strip_shell_comments(command: str) -> str:
@@ -1347,9 +1419,15 @@ def _strip_shell_heredoc_bodies(command: str) -> tuple[str, bool]:
 
 def _shell_segments(command: str) -> tuple[list[list[str]], list[str]] | None:
     """shell 문자열을 simple-command segment와 그 사이 operator로 나눈다."""
+    separator_chars = "".join(sorted({
+        char for separator in _SHELL_COMMAND_SEPARATORS for char in separator
+    }))
     try:
         lexer = shlex.shlex(
-            _strip_shell_comments(command), posix=True, punctuation_chars=";&|\n<>",
+            _protect_shell_windows_path_separators(
+                _strip_shell_comments(command),
+            ), posix=True,
+            punctuation_chars=separator_chars + "<>",
         )
         lexer.whitespace_split = True
         # unquoted newline은 ``;``와 같은 순차 command 경계다. 기본 shlex whitespace로
@@ -1364,12 +1442,12 @@ def _shell_segments(command: str) -> tuple[list[list[str]], list[str]] | None:
     current: list[str] = []
     for token in tokens:
         if token and set(token) == {"\n"}:
-            token = ";"
-        if token in {"&&", "||", ";", "|"}:
+            token = "\n"
+        if token in _SHELL_COMMAND_SEPARATORS:
             segments.append(current)
             operators.append(token)
             current = []
-        elif token and all(ch in ";&|\n" for ch in token):
+        elif token and all(ch in separator_chars for ch in token):
             # case/and-or 확장 연산자 등 미지원 shell 문법은 해석하지 않는다(never-block).
             return None
         else:
@@ -1408,7 +1486,7 @@ def _shell_without_redirections(segment: Sequence[str]) -> tuple[list[str], bool
 
 
 def _shell_gate(operator: str | None, status: bool | None) -> bool | None:
-    if operator in {None, ";"}:
+    if operator is None or operator in _SHELL_COMMAND_SEPARATORS - {"&&", "||", "|"}:
         return True
     if operator == "&&":
         return status
@@ -1430,6 +1508,9 @@ def _shell_simple_command(
     command, redirected = _shell_without_redirections(segment)
     if not command:
         return set(anchors), cwd_certain, None, [], []
+    # shlex가 quote/POSIX escape 의미를 먼저 확정한 뒤, 보존된 Windows 절대경로 토큰만
+    # 판정용 표기로 접는다. 일반 ``t\\ests``는 shlex 결과 ``tests`` 그대로 남는다.
+    command = [_normalize_shell_path_notation(value) for value in command]
     git_command = _shell_git_command(command)
     if git_command is not None:
         # 조건부 실행 여부와 cwd 확정성은 별개다. ``git status && git add …``에서
@@ -1503,19 +1584,18 @@ def _git_invocations_from_shell(
 ) -> _ShellParseResult:
     """shell 제어연산과 ``cd``를 보수적으로 추상 실행해 git/엔진 호출 좌표를 반환한다.
 
-    ``&&``/``||``는 직전 status, ``;``는 무조건 순차, ``|``는 각 pipeline command가 원래 cwd의
-    subshell에서 실행되는 의미를 구분한다. ``true``/``false``/실재 여부가 확정된 ``cd``만 status를
-    증명한다. 조건·cwd가 여러 가능성이면 call을 ``certain=False``로 표시해 후단 deny를 warn으로
-    강등한다. ``if …; then …; fi``의 단순형은 condition cwd를 body로 전달한다.
+    ``&&``/``||``는 직전 status, ``;``/개행은 무조건 순차, ``|``는 각 pipeline command가 원래
+    cwd의 subshell에서 실행되는 의미를 구분한다. ``true``/``false``/실재 여부가 확정된 ``cd``만
+    status를 증명한다. 조건·cwd가 여러 가능성이면 call을 ``certain=False``로 표시해 후단 deny를
+    warn으로 강등한다. ``if …; then …; fi``의 단순형은 condition cwd를 body로 전달한다.
     """
     if not isinstance(command, str):
         return _ShellParseResult((), (), False, False, "")
     executable, heredoc_uncertain = _strip_shell_heredoc_bodies(command)
     command = _normalize_shell_line_continuations(executable)
     prefilter = _git_prefilter_text(command)
-    normalized_prefilter = re.sub(r"/+", "/", prefilter.replace("\\", "/"))
     engine_candidate = (
-        ".project_manager/tools/" in normalized_prefilter
+        re.search(r"\.project_manager[\\/]+tools[\\/]+", prefilter) is not None
         or re.search(r"(?<![A-Za-z0-9_.-])pytest(?=\s|$)", prefilter) is not None
         or _persistent_cd_prefilter(prefilter)
     )
@@ -2043,6 +2123,38 @@ def _guard_worktree_misanchor(action: str, *, runner: Any = subprocess.run) -> b
 
 
 # ── utilities ──────────────────────────────────────────────────────────
+
+def _expanduser_path(path: Path) -> Path:
+    """`~`/`~user` 확장의 플랫폼 seam — 회귀가 Windows 확장 동작을 주입해 태울 수 있게 연 자리."""
+    return path.expanduser()
+
+
+def _expanded_user_path(value: str) -> Path:
+    """`~`/`~user` 를 확장한다 — **없는 사용자는 플랫폼과 무관하게 해소 실패**(RuntimeError).
+
+    POSIX 의 `expanduser()` 는 `pwd` 조회 실패를 RuntimeError 로 올리지만, Windows 는 존재하지
+    않는 사용자도 `C:\\Users\\<name>` 으로 조립해 준다. 그래서 같은 입력이 한쪽에서만 해소되고
+    뒤 단계가 다른 분기를 탄다 — 소유 repo 해소는 "해소 실패"에서 멈춰야 하는데 Windows 에서는
+    phantom 홈 경로로 내려가 "경로 부재/이동" 같은 **다른 사유**로 갈렸다. `~user` 형태는 **그
+    사용자 홈의 실재**를 판정에 넣어 두 플랫폼이 같은 결론에 도달하게 한다.
+
+    `~`(현재 사용자)는 두 플랫폼이 같은 환경변수 축(HOME/USERPROFILE)으로 확장하므로 분기가
+    갈리지 않는다 — 실재 검사를 걸지 않는다(홈 디렉터리가 아직 없는 정상 형상까지 막지 않게).
+
+    **같은 규칙의 사본이 `pm_config._expanded_user_path` 에 있다**(보호 훅 설치 경로). board 는
+    pm_config 를 로드하지 않아(의존 방향 반대) 호출로 합칠 수 없으므로, 두 사본이 갈라지지 않게
+    `tests/test_user_home_expansion_parity.py` 가 같은 케이스 표로 두 구현을 대조한다.
+    """
+    path = Path(value)
+    expanded = _expanduser_path(path)
+    first = path.parts[0] if path.parts else ""
+    if first.startswith("~") and len(first) > 1:
+        home = _expanduser_path(Path(first))
+        if not home.is_dir():
+            raise RuntimeError(
+                f"`{first}` 사용자 홈을 해소하지 못했다(없는 사용자 또는 홈 부재): {home}")
+    return expanded
+
 
 def local_config(repo: Path | None = None) -> dict[str, str]:
     """Per-clone local config (`.project_manager/local.conf`, git-ignored).
@@ -3750,15 +3862,40 @@ def _git_head() -> str:
     return _git_head_at(str(REPO))
 
 
-def _hooks_dir() -> Path | None:
+def _hooks_dir_resolution() -> tuple[Path | None, str | None]:
+    """git 이 해소한 훅 디렉토리와 **판정 불능 사유** — 훅 위치 질의의 단일 git 호출 지점.
+
+    반환은 세 형상뿐이고, 사유 유무가 곧 호출부의 방향을 가른다:
+      · `(Path, None)`  — 해소 성공.
+      · `(None, 사유)`  — **git 은 있는데 답을 못 했다**(rc≠0). 이 저장소의 훅 위치를 확정할 수
+        없다는 뜻이라 판정 불능이다. 실측 클래스: global config 에 Windows 경로가 이스케이프
+        없이 적혀(`hooksPath = C:\\Users\\…`) git 이 파싱에 실패하는 형상 — 그 repo 의 **모든**
+        git 호출이 rc=128 이 되고, 종전 침묵 None 은 이 형상에서 훅 세대 판정을 통째로 no-op 으로
+        만들었다(가드가 없는 것과 같다).
+      · `(None, None)` — **git 을 부르지 못했다**(바이너리 부재·spawn 실패). 이 트리에서는 훅
+        자체가 실행되지 않으므로 판정 대상이 없다(종전 '위치 해소 불가 = 무영향'과 같은 결론).
+    """
     # encoding 명시 — git path 출력(Korean 경로 가능)을 cp949 로 디코딩하지 않도록 utf-8 고정.
-    r = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--git-path", "hooks"],
-                       capture_output=True, text=True,
-                       encoding="utf-8", errors="replace")
+    try:
+        r = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--git-path", "hooks"],
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+    except OSError:
+        return None, None                      # git 부재·spawn 실패 — 훅 실행도 없는 환경.
     if r.returncode != 0:
-        return None
+        detail = (r.stderr or r.stdout or "").strip().splitlines()
+        first = detail[0] if detail else "사유 출력 없음"
+        return None, f"git rev-parse --git-path hooks rc={r.returncode}: {first}"
     d = Path(r.stdout.strip())
-    return d if d.is_absolute() else REPO / d
+    return (d if d.is_absolute() else REPO / d), None
+
+
+def _hooks_dir() -> Path | None:
+    """훅 디렉토리 (해소 실패는 None) — 설치 경로(`install_pre_push_hook`)가 쓰는 얇은 표면.
+
+    사유가 필요한 판정 경로는 `_hooks_dir_resolution` 을 직접 쓴다.
+    """
+    return _hooks_dir_resolution()[0]
 
 
 # 엔진이 설치한 훅임을 알아보는 서명 — 세대 판정이 남의 pre-push 훅까지 막지 않게 한다.
@@ -3966,10 +4103,13 @@ def _pure_hooks_dir() -> Path | None:
     (권위 해소는 이 자리에서 훅을 못 찾았을 때만·`_stale_pre_push_hook_refusal`). 규칙:
       · `REPO/.git`(디렉토리·linked worktree 파일) → 공용 git 디렉토리 아래 `hooks/`.
       · repo config 에 `core.hooksPath` 선언이 있으면 **그 값을 파싱해** 훅 위치로 쓴다. 상대
-        경로는 git 과 같이 worktree 루트(`REPO`) 기준이고 `~` 는 확장한다. 존재-only 로 보고
+        경로는 git 과 같이 worktree 루트(`REPO`) 기준이고 `~` 는 확장한다(확장 규칙은
+        `_expanded_user_path` — 없는 `~user` 는 플랫폼 무관 해소 실패). 존재-only 로 보고
         포기하면 *기본 위치를 가리키는 선언*까지 세대 관리 밖에 남는다.
       · include/includeIf 가 있거나 값이 비면 **None** — 포함 파일의 선언이 최종 값을 뒤집을 수
         있어 git 없이 확정할 수 없다(그 형상은 권위 해소가 받는다).
+      · `~user` 미확장도 **None** — 이 순수 해소로는 위치를 확정할 수 없다는 뜻이라 권위 해소가
+        그 자리를 받는다(POSIX 만 RuntimeError 로 터지던 비대칭 제거).
     """
     git_dir = _repo_git_dir()
     if git_dir is None:
@@ -3981,11 +4121,11 @@ def _pure_hooks_dir() -> Path | None:
             if declared is _HOOKS_PATH_UNRESOLVED:
                 return None
             if isinstance(declared, str):
-                hooks = Path(declared).expanduser()
+                hooks = _expanded_user_path(declared)
                 # 상대 `core.hooksPath` 는 git 이 worktree 루트 기준으로 해소한다(프로세스 cwd 아님).
                 return (hooks if hooks.is_absolute() else (REPO / hooks)).resolve()
         return (git_dir / "hooks").resolve()
-    except (OSError, UnicodeError, ValueError):
+    except (OSError, UnicodeError, ValueError, RuntimeError):
         return None
 
 
@@ -3997,8 +4137,8 @@ def _has_pre_push(hooks: Path) -> bool:
         return False
 
 
-def _authoritative_hooks_dir() -> Path | None:
-    """git 자신이 해소한 훅 디렉토리 (`rev-parse --git-path hooks`) — 확정 못 하면 None.
+def _authoritative_hooks_resolution() -> tuple[Path | None, str | None]:
+    """git 권위 해소 `(훅 디렉토리, 판정 불능 사유)` — `_hooks_dir_resolution` 의 판정용 표면.
 
     저장소 config 직접 파싱(`_pure_hooks_dir`)은 **repo config 의 선언만** 본다. `core.hooksPath`
     는 global(`~/.gitconfig`)·system·명령행(`-c`)·worktree 범위에서도 선언되고, 훅을 실행하는
@@ -4008,13 +4148,21 @@ def _authoritative_hooks_dir() -> Path | None:
 
     subprocess 1회를 쓴다 — 회귀 진입은 hot path 지만 이 축은 push 게이트 차단이라 "위치를 잘못
     봐서 안 막는 것"이 비용보다 크다. 그래서 **언제 묻는지**는 호출부가 정한다
-    (`_stale_pre_push_hook_refusal` — 순수 해소가 훅을 못 찾았을 때만). 실패(git 부재·비-repo·
-    대역 subprocess)는 None 이고 호출부가 현행 순수 해소 결과를 그대로 쓴다(기존 판정 유지).
+    (`_stale_pre_push_hook_refusal` — 순수 해소가 훅을 못 찾았을 때만).
+
+    사유 유무가 호출부의 방향이다(`_hooks_dir_resolution` 서술과 같은 규칙): 사유가 있으면
+    **git 이 답을 못 한 판정 불능**이라 차단 방향이고, 사유 없는 None(git 부재·대역 subprocess의
+    예외)은 종전대로 순수 해소 결과를 그대로 쓴다.
     """
     try:
-        return _hooks_dir()
-    except Exception:  # noqa: BLE001 — git 부재/대역 subprocess/비-repo 는 순수 해소로 폴백.
-        return None
+        return _hooks_dir_resolution()
+    except Exception:  # noqa: BLE001 — 대역 subprocess/스텁 예외는 순수 해소로 폴백.
+        return None, None
+
+
+def _authoritative_hooks_dir() -> Path | None:
+    """git 자신이 해소한 훅 디렉토리 (`rev-parse --git-path hooks`) — 확정 못 하면 None."""
+    return _authoritative_hooks_resolution()[0]
 
 
 def _installed_hook_interpreter(body: str) -> str | None:
@@ -4034,6 +4182,20 @@ _UNREADABLE_HOOK_REFUSAL = (
     "regression: 설치된 pre-push 훅을 읽지 못해 세대를 판정할 수 없습니다 ({hook}: {error}) — "
     "`python3 .project_manager/tools/board.py init` 재실행 후 다시 시도(Windows 는 py -3)."
 )
+# git 이 훅 위치 자체를 답하지 못한 경우 — **사유를 실어 알린다**(침묵 no-op 금지). 차단이
+# 아니라 경고인 이유는 이 rc≠0 이 두 형상을 합치기 때문이다: (1) config 파싱 실패(실측 원인 —
+# git config 는 값의 백슬래시를 이스케이프로 읽으므로 `C:\path\to\hooks` 는 파싱 실패고
+# `C:/path/to/hooks` 또는 `\\` 이스케이프로 적어야 한다), (2) git 이 보기엔 저장소가 아닌 트리·dubious ownership
+# 등 **환경적 판정불가**. 둘은 rc·문구(로케일 의존)로 갈리지 않는데, 후자를 차단하면 훅을 쓰지
+# 않는 정상 형상의 `regression run` 까지 멈춘다. 두 형상 모두 그 git 으로는 push 자체가 서지
+# 않으므로 push 게이트가 이 침묵으로 우회되지도 않는다 — 잃던 것은 **관측성**이었다(판정이 돌아
+# 통과한 것인지 아예 안 돈 것인지 구분 불가). 그 관측성만 되돌린다.
+# (`_sha_anchor_status` 의 rc≥2 fatal = 환경적 판정불가 규약과 같은 방향이다.)
+_UNRESOLVED_HOOKS_NOTICE = (
+    "regression: 훅 디렉토리를 해소하지 못해 pre-push 훅 세대 판정을 생략합니다 ({reason}) — "
+    "훅을 쓰는 형상이면 git 설정(core.hooksPath 등)을 확인하십시오"
+    "(Windows 경로는 `C:/path/to/hooks` 표기 또는 백슬래시 이스케이프)."
+)
 
 
 def _stale_pre_push_hook_refusal() -> str | None:
@@ -4046,6 +4208,11 @@ def _stale_pre_push_hook_refusal() -> str | None:
 
     **무영향으로 두는 형상 셋**: 훅 미설치 · 서명 없는 남의 훅 · 훅 위치 해소 불가. 셋 다
     "이 트리에 엔진 push 게이트가 없다"는 뜻이라, 차단하면 훅을 안 쓰는 정상 형상까지 막는다.
+    다만 셋째는 **조용히 두지 않는다** — git 이 훅 위치를 답하지 못하면(rc≠0) 사유를 stderr 에
+    남기고 판정을 생략한다(`_UNRESOLVED_HOOKS_NOTICE`). 침묵하면 "판정이 돌아서 통과"와 "판정이
+    아예 안 돎"이 호출부에서 같은 값(None)이라, 가드가 통째로 no-op 인 형상이 green 으로 보인다
+    (Windows 실측: global config 의 `hooksPath = C:\\Users\\…` 미이스케이프 → 그 repo 의 모든
+    git 호출 rc=128 → 세대 판정 전면 no-op).
 
     나머지 판정 실패는 **차단 방향**이다: 훅 파일이 있는데 읽지 못하면 세대를 확정할 수 없고,
     확정 못 한 훅을 통과시키는 것이 곧 옛 게이트가 조용히 사는 채널이다(git 도 읽지 못하는 훅은
@@ -4058,10 +4225,11 @@ def _stale_pre_push_hook_refusal() -> str | None:
       1. 순수 해소(`_pure_hooks_dir`)가 찾은 자리에 `pre-push` 가 **실재하면** 그 파일로 판정한다
          — 이미 판정 대상을 손에 쥐었으므로 git 을 부를 이유가 없다(회귀 진입에 subprocess 0).
       2. 그 자리에 훅이 없거나 순수 해소가 확정에 실패하면 **git 의 권위 해소**
-         (`_authoritative_hooks_dir`)를 묻는다. repo config 밖(global/system/worktree)에서
+         (`_authoritative_hooks_resolution`)를 묻는다. repo config 밖(global/system/worktree)에서
          `core.hooksPath` 가 선언된 형상이 정확히 이 경우다 — 훅은 그 경로에 설치돼 실행되는데
-         순수 해소는 `.git/hooks` 를 보고 "미설치"로 읽어 세대 차단이 우회됐다. git 호출이
-         실패하면(부재·비-repo) 현행 순수 해소 결과를 그대로 쓴다(기존 판정 유지).
+         순수 해소는 `.git/hooks` 를 보고 "미설치"로 읽어 세대 차단이 우회됐다. git 이 **답을
+         못 하면 사유를 stderr 에 남기고**, 부르지 못하면(부재·대역) 조용히 — 어느 쪽이든 현행
+         순수 해소 결과를 그대로 쓴다(기존 판정 유지).
 
     `REPO` 가 repo 루트가 아닌 트리(`.git` 부재)는 그 앞에서 끝낸다 — 조상 repo 의 훅을 이 트리의
     판정으로 끌어오지 않는다(종전 '위치 해소 불가 = 무영향'과 같은 결론·git 호출 0).
@@ -4074,7 +4242,13 @@ def _stale_pre_push_hook_refusal() -> str | None:
         return None                                   # 비-repo 트리 — 판정 대상 밖(git 호출 0).
     hooks = _pure_hooks_dir()
     if hooks is None or not _has_pre_push(hooks):
-        hooks = _authoritative_hooks_dir() or hooks
+        authoritative, unresolved_reason = _authoritative_hooks_resolution()
+        if unresolved_reason is not None:
+            # git 이 훅 위치를 답하지 못했다 — 판정을 생략하되 **사유를 남긴다**. 침묵하면
+            # "판정이 돌아서 통과"와 "판정이 아예 안 돎"이 같은 결과로 보인다(Windows 실측에서
+            # 가드가 통째로 no-op 이었는데도 green 이던 자리).
+            print(_UNRESOLVED_HOOKS_NOTICE.format(reason=unresolved_reason), file=sys.stderr)
+        hooks = authoritative or hooks
     if hooks is None:
         return None                                   # 위치 해소 불가 — 비-훅 형상 차단 금지.
     hook = hooks / "pre-push"
@@ -4165,10 +4339,17 @@ _AREAS_UNION_DRIVER = "union"
 # 형상별 areas.md 경로 표기(그 git 의 `.gitattributes` 기준 상대). 선언 줄의 패턴을 이 표기들에
 # 맞춰본다 — git slash anchoring + `*`·`**` 의미의 보수적 matcher를 공유한다.
 _BOARD_AREAS_ATTR_TARGETS: tuple[str, ...] = ("areas.md", "/areas.md")
-_BOARD_MARKDOWN_ATTR_TARGETS: tuple[str, ...] = tuple(
-    f"tickets/{status}/T-0000-ticket.md"
+# board git 에 **엔진이 넣는 텍스트 파일**의 확장자. 지금 실재하는 건 티켓·areas 의 `.md` 뿐이지만
+# 표기 고정을 한 확장자에 매달 이유가 없다 — 엔진이 board 에 넣는 어떤 텍스트도 같은 표기로
+# 체크아웃돼야 봉인 입력(LF 정규화 해시)과 byte 판정이 개행으로 갈리지 않는다.
+# 채택자가 board 에 둔 다른 형식은 대상이 아니다(우리 소유 확장자만 선언한다).
+_BOARD_TEXT_ATTR_EXTENSIONS: tuple[str, ...] = ("md", "json", "txt")
+# 커버리지 판정 대상 — 상태 디렉토리 × 확장자(중첩 경로) ∪ board 루트 직계(앵커드 선언 탐지).
+_BOARD_TEXT_ATTR_TARGETS: tuple[str, ...] = tuple(
+    f"tickets/{status}/T-0000-ticket.{extension}"
     for status in (*STATUS_DIRS, ".drafts")
-)
+    for extension in _BOARD_TEXT_ATTR_EXTENSIONS
+) + tuple(f"board-root-file.{extension}" for extension in _BOARD_TEXT_ATTR_EXTENSIONS)
 _INLINE_AREAS_ATTR_TARGETS: tuple[str, ...] = (
     ".project_manager/areas.md", "/.project_manager/areas.md")
 _BOARD_GITATTRIBUTES_BLOCK = (
@@ -4176,8 +4357,10 @@ _BOARD_GITATTRIBUTES_BLOCK = (
     "# git 내장 union merge 드라이버로 양쪽 행을 모두 보존한다.\n"
     "# board 는 별도 git 이라 superproject 루트의 같은 선언이 닿지 않는다 — 여기가 그 배포처다.\n"
     f"areas.md merge={_AREAS_UNION_DRIVER}\n"
-    "# Windows checkout에서도 티켓 봉인 입력의 논리 개행을 LF로 유지한다.\n"
-    "*.md text eol=lf\n"
+    "# Windows checkout에서도 엔진-소유 텍스트의 논리 개행을 LF로 유지한다(티켓 봉인 입력·\n"
+    "# 재작성 byte 판정). 엔진의 표기 보존이 근본이고 이 선언은 그 위의 방어층이다.\n"
+    + "".join(
+        f"*.{extension} text eol=lf\n" for extension in _BOARD_TEXT_ATTR_EXTENSIONS)
 )
 # board 루트에 엔진이 배포하는 파일들. ensure/판정/snapshot/pathspec 이 모두 이 seam 을 공유해
 # 한 파일만 WIP 보호에서 빠지는 drift 를 막는다. 순서는 pathspec·복구 안내의 나열 순서다.
@@ -4386,24 +4569,33 @@ def _gitattributes_text_eol_attrs(
     return text_attr, eol_attr
 
 
-def _board_markdown_lf_declared(text: str) -> bool:
-    """모든 상태 경로의 board 티켓 Markdown에 ``text eol=lf``가 유효한가."""
-    return all(
-        _gitattributes_text_eol_attrs(text, (target,)) == ("set", "lf")
-        for target in _BOARD_MARKDOWN_ATTR_TARGETS
-    )
+# `text` 를 켜는 표기 두 가지 — 명시 set(`text`)과 자동 판정(`text=auto`). 후자도 텍스트로
+# 판정된 파일엔 `eol` 이 그대로 적용되므로(git 실측) 이미 배포된 것으로 인정한다. 인정하지
+# 않으면 `* text=auto eol=lf` 를 쓴 채택자 board 에 같은 규칙을 매번 덧붙인다.
+_GITATTRIBUTES_TEXT_ENABLED: frozenset[str] = frozenset({"set", "auto"})
+
+
+def _target_lf_declared(text: str, target: str) -> bool:
+    """한 경로에 ``text``(set·auto)와 ``eol=lf``가 함께 유효한가."""
+    text_attr, eol_attr = _gitattributes_text_eol_attrs(text, (target,))
+    return text_attr in _GITATTRIBUTES_TEXT_ENABLED and eol_attr == "lf"
+
+
+def _board_text_lf_declared(text: str) -> bool:
+    """모든 상태 경로 × 엔진-소유 확장자에 ``text``+``eol=lf``가 유효한가."""
+    return all(_target_lf_declared(text, target) for target in _BOARD_TEXT_ATTR_TARGETS)
 
 
 def _board_gitattributes_declared(text: str) -> bool:
-    """board git에 엔진 소유 union·Markdown LF 규칙이 모두 배포됐는가."""
+    """board git에 엔진 소유 union·엔진-소유 텍스트 LF 규칙이 모두 배포됐는가."""
     return (
         _areas_union_declared(text, _BOARD_AREAS_ATTR_TARGETS)
-        and _board_markdown_lf_declared(text)
+        and _board_text_lf_declared(text)
     )
 
 
 def _ensure_board_gitattributes() -> bool:
-    """board git 의 union·Markdown LF 규칙을 `.gitattributes` 에 **멱등 보강**.
+    """board git 의 union·엔진-소유 텍스트 LF 규칙을 `.gitattributes` 에 **멱등 보강**.
 
     board 분리 형상에서 areas.md 는 board submodule 안에 살고 루트 선언이 닿지 않아 union 이
     조용히 사라진다. 신규 board 는 `pm_import.setup_board_submodule` 의 seed 가 이 파일을
@@ -4419,7 +4611,7 @@ def _ensure_board_gitattributes() -> bool:
     규칙은 그 이유로 유지된다.) 스코프 커밋의 pathspec 에 `.gitattributes` 를 포함하는 것도
     같은 이유다 — 빠지면 이 backfill 이 영구 미커밋으로 남아 배포가 죽는다.
 
-    **비파괴**: 파일이 있으면 덮어쓰지 않고, union·Markdown LF 선언 중 하나라도 *없을 때만*
+    **비파괴**: 파일이 있으면 덮어쓰지 않고, union·텍스트 LF 선언 중 하나라도 *없을 때만*
     블록을 append 한다(채택자 규칙 보존). 둘 다 선언돼 있으면 no-write(멱등). 기존 파일에 append
     하려면 regular file 이고 git 추적 상태가 clean 이어야 한다 — symlink/비정규 파일이나
     untracked·staged·unstaged·삭제 WIP 면 loud 하게 알리고 쓰지 않는다. append 는
@@ -4685,7 +4877,9 @@ def _board_git_restore_root_files(
                 assert before.contents is not None
                 path.write_bytes(before.contents)
             else:
-                path.unlink()
+                # 맨 `unlink` 는 read-only 속성 파일을 Windows 에서 거부한다 — 공용 seam 이
+                #   속성을 풀고 재시도해 backfill 잔재가 워킹트리에 눌러앉지 않게 한다.
+                file_lock.force_unlink(path, missing_ok=True)
             restored.append(name)
         except OSError as exc:
             print(f"  ⚠ board rollback 루트 파일 복원 실패: {path} ({exc})", file=sys.stderr)
@@ -8487,6 +8681,50 @@ def find_idea(iid: str) -> tuple[str, Path]:
     return find_item(IDEAS_DIR, IDEA_STATUS_DIRS, iid, "idea")
 
 
+# ── 개행 표기 보존 ───────────────────────────────────────────────────────────
+# 티켓 파일을 **읽어서 다시 쓰는** 경로(lifecycle 이동·frontmatter 갱신·성장 절 append)는 본문을
+# LF 로 다루지만, 되쓸 때 표기를 뒤집으면 안 된다. CRLF 체크아웃(Windows `core.autocrlf=true`)
+# 채택자에선 손대지 않은 줄까지 전면 diff 가 되고, 위임 사본 harvest 가 byte 로 재는 "준비 뒤
+# 외부 편집" 판정(pm_delegate)이 내용은 같은데 stale 로 오판해 회수를 거부한다.
+# 진실은 OS 가 아니라 **그 파일의 현재 표기**다 — 플랫폼 분기를 쓰지 않는다.
+DEFAULT_TEXT_NEWLINE = "\n"
+
+
+def _dominant_newline(text: str, default: str = DEFAULT_TEXT_NEWLINE) -> str:
+    """번역 없이 읽은 본문의 지배 개행 — 다수결, 동수면 첫 등장, 개행 0 이면 `default`.
+
+    `pm_import.dominant_newline` 과 같은 규칙이다(두 구현의 일치는 테스트가 못박는다). board 는
+    엔진 모듈을 import 하지 않으므로 이 작은 원시 함수만 각자 둔다."""
+    crlf = text.count("\r\n")
+    lf = text.count("\n") - crlf
+    if crlf == 0 and lf == 0:
+        return default
+    if crlf != lf:
+        return "\r\n" if crlf > lf else "\n"
+    first = text.find("\n")
+    return "\r\n" if first > 0 and text[first - 1] == "\r" else "\n"
+
+
+def ticket_newline(path: Path, default: str = DEFAULT_TEXT_NEWLINE) -> str:
+    """그 티켓 파일의 현재 지배 개행 — 부재·읽기 실패·비-UTF8 은 `default`(신규 발행 = LF)."""
+    try:
+        with Path(path).open("r", encoding="utf-8", newline="") as handle:
+            return _dominant_newline(handle.read(), default)
+    except (OSError, UnicodeError):
+        return default
+
+
+def _with_newline(text: str, newline: str) -> str:
+    """LF 본문을 주어진 표기로 되돌린다 (삽입 블록도 같은 표기 — 혼재 금지)."""
+    return text if newline == "\n" else text.replace("\n", newline)
+
+
+def _write_text_keeping_newlines(path: Path, text: str) -> None:
+    """줄끝을 **번역하지 않고** 쓴다 — 본문이 담은 표기가 그대로 bytes 가 된다."""
+    with Path(path).open("w", encoding="utf-8", newline="") as handle:
+        handle.write(text)
+
+
 def _parse_ticket_text(text: str, source: Path | str) -> tuple[dict[str, Any], str]:
     """`load_ticket`의 실제 frontmatter 문법으로 문자열을 파싱한다.
 
@@ -8542,14 +8780,47 @@ def load_ticket_soft(path: Path) -> tuple[dict[str, Any], str] | None:
     return fm, body
 
 
+def _issued_ticket_id(path: Path, fm: dict[str, Any] | None = None) -> str | None:
+    """그 파일이 **발행한 티켓 ID** — frontmatter `id` 가 진실, 미기재/읽기 실패만 파일명 폴백.
+
+    **파일명은 ID 의 진실이 아니다.** 대소문자 무시 파일시스템(Windows·macOS)에서 `T-AAA-001`
+    과 `T-aaa-001` 은 같은 이름이라, 파일명을 진실로 쓰면 발행 ID 의 case 가 그 파일이 어느
+    이름으로 먼저 만들어졌는지(또는 체크아웃 때 어떻게 접혔는지)에 따라 뒤집힌다. frontmatter
+    는 파일 내용이라 어느 파일시스템에서도 접히지 않는다.
+
+    폴백을 남기는 이유는 clobber 안전이다 — 티켓의 ID 를 통째로 버리면 유일성 판정과 번호
+    이어붙이기가 그 ID 를 모른 채 전진해 그 위에 다른 티켓을 덮어쓴다. 그래서 폴백 조건은 둘이다:
+    읽기 실패/`id` 부재 · **ID 문법이 아닌 `id` 값**(파일명은 문법을 만족하는데 frontmatter 만
+    깨진 형상에서 번호가 통째로 사라지지 않게). 값은 문자열로 정규화한다(YAML 이 `id: 123` 을
+    int 로 파싱하는 형상 포함).
+
+    `fm` 을 이미 읽었으면 넘겨서 재파싱을 피한다(`_scan_prefix_tickets` 순회).
+    """
+    if fm is None:
+        loaded = load_ticket_soft(path)
+        fm = loaded[0] if loaded is not None else None
+    raw = (fm or {}).get("id")
+    tid = str(raw).strip() if raw is not None else ""
+    if tid and _ticket_id_number(tid) is None:
+        tid = ""                       # ID 문법 아님 — 진실로 쓸 수 없다(파일명 폴백).
+    return tid or _ticket_id_from_filename(path.name)
+
+
+def _ticket_document(fm: dict[str, Any], body: str, newline: str) -> str:
+    """티켓 파일 전체 본문 — frontmatter 직렬화 + body 를 그 파일의 표기로 되돌린 결과."""
+    fm_text = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).rstrip()
+    return _with_newline(f"---\n{fm_text}\n---\n{body}", newline)
+
+
 def dump_ticket(path: Path, fm: dict[str, Any], body: str) -> None:
     # A partial fresh-adopter scaffold must not turn a valid lifecycle write
     # into FileNotFoundError.  The destination directory is part of the write
     # contract, including `new`'s initial open/ ticket.
     path.parent.mkdir(parents=True, exist_ok=True)
-    fm_text = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).rstrip()
-    path.write_text(
-        f"---\n{fm_text}\n---\n{body}", encoding="utf-8", newline="\n")
+    # 표기는 **대상 파일의 현재 것**을 유지한다(부재 = 신규 발행이라 LF). 상태 이동 call site 도
+    # `move_ticket`(rename·bytes 무변경) 뒤에 부르므로 대상은 이미 원본 파일이다.
+    _write_text_keeping_newlines(
+        path, _ticket_document(fm, body, ticket_newline(path)))
 
 
 def dump_ticket_atomic(path: Path, fm: dict[str, Any], body: str) -> None:
@@ -8560,10 +8831,9 @@ def dump_ticket_atomic(path: Path, fm: dict[str, Any], body: str) -> None:
     *기존* 티켓을 제자리 갱신할 때 쓴다 — 같은 status 디렉토리 안 rename 이라 원자적이다.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    fm_text = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).rstrip()
+    document = _ticket_document(fm, body, ticket_newline(path))
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
-        f"---\n{fm_text}\n---\n{body}", encoding="utf-8", newline="\n")
+    _write_text_keeping_newlines(tmp, document)
     os.replace(str(tmp), str(path))
 
 
@@ -8896,8 +9166,13 @@ def cmd_section_add(args: argparse.Namespace) -> int:
             + f"<!-- {TICKET_GROWTH_SECTION_MARKER}:end role={role} -->\n"
             + seal_line
         )
-        separator = "" if original.endswith("\n\n") else ("\n" if original.endswith("\n") else "\n\n")
-        _atomic_write_text(path, original + separator + section)
+        # 기존 bytes(`original`)는 그대로 두고 **덧붙이는 블록만** 그 파일의 표기로 렌더한다 —
+        #   CRLF 티켓에 LF 절을 섞으면 이후 lifecycle 재작성이 지배 표기로 접으면서 우리가
+        #   건드리지 않은 절의 bytes 까지 바뀐다(혼재 금지).
+        newline = _dominant_newline(original)
+        tail = original.replace("\r\n", "\n")  # 빈 줄 판정은 표기와 무관하게(정규화 후).
+        separator = "" if tail.endswith("\n\n") else ("\n" if tail.endswith("\n") else "\n\n")
+        _atomic_write_text(path, original + _with_newline(separator + section, newline))
 
     if path.resolve().parent == drafts_dir().resolve():
         # draft는 board-git 미커밋 authoring 영역이다. marker 생성도 같은 로컬 파일 안에서
@@ -9014,26 +9289,39 @@ def _next_prefixed_id(prefix: str) -> str:
     """Next `T-<canonical>-NNN` for `prefix`, matched **case-insensitively**.
 
     prefix 동일성은 case-insensitive fold 이되 발행 ID 는 *기존 시리즈* case(canonical)를 이어쓴다
-    — `--prefix aaa` 가 case-분할 `T-aaa-*` 를 새로 파지 않고 기존 `T-AAA-*` 를 잇게 한다. 파일명을
-    LITERAL prefix + `re.IGNORECASE` 로 매치(하이픈 포함 prefix 도 번호 경계 모호성 0·현행
-    `T-{prefix}-(\\d+)-` 규칙과 동형)해 prefix 가 fold-일치하는 모든 case 변종의 최대 번호+1 을
-    센다(case-insensitive 카운트). canonical case = 최저 번호 티켓의 실제 case(결정적). fold-일치
-    티켓이 없으면 입력 case 그대로(최초 사용이 canonical case 확립)·번호 1.
+    — `--prefix aaa` 가 case-분할 `T-aaa-*` 를 새로 파지 않고 기존 `T-AAA-*` 를 잇게 한다. fold
+    일치하는 모든 case 변종의 최대 번호+1 을 세고(case-insensitive 카운트), canonical case 는
+    최저 번호 티켓의 실제 case 다. fold-일치 티켓이 없으면 입력 case 그대로(최초 사용이 canonical
+    case 확립)·번호 1.
+
+    **시리즈 판정의 입력은 파일명이 아니라 발행 ID(frontmatter `id`)** 다(`_issued_ticket_id`).
+    파일명으로 세면 대소문자 무시 파일시스템(Windows·macOS)에서 판정이 무너진다 — `T-aaa-001`
+    로 쓴 티켓이 기존 `T-AAA-001-*.md` 파일에 그대로 얹혀 파일명은 `AAA`, 내용은 `aaa` 로
+    갈리고, 그러면 다음 발행 case 가 *파일이 어느 이름으로 먼저 만들어졌는가*로 결정된다.
+    같은 이유로 최저 번호가 동률이면 ID 문자열 자체로 tie-break 해(`(num, tid)` 최소) 파일
+    순회 순서·파일시스템에 결과가 흔들리지 않게 한다.
+
+    prefix 경계는 `_ticket_prefix`(ID 문법 단일 진실)로 뗀 마디를 fold 비교한다 — 하이픈 포함
+    prefix(`service-a`)도 번호 경계 모호성 0 이고, `AB` 와 `ABC` 는 서로 다른 네임스페이스다.
     """
-    fold_re = re.compile(rf"^T-({re.escape(prefix)})-(\d+)-", re.IGNORECASE)
+    fold = prefix.lower()
     max_num = 0
-    canonical = prefix                 # 최초 사용: 입력 case 가 canonical.
-    anchor_num: int | None = None      # 최저 번호(그 티켓 case 를 canonical 로·결정적).
+    anchor: tuple[int, str] | None = None   # (최저 번호, 그 ID) — canonical case 의 결정적 출처.
     for d in _ID_SCAN_STATUSES:
         for p in (tickets_dir() / d).glob("T-*.md"):
-            m = fold_re.match(p.name)
-            if not m:
+            tid = _issued_ticket_id(p)
+            if not tid:
                 continue
-            num = int(m.group(2))
+            tid_prefix = _ticket_prefix(tid)
+            if tid_prefix is None or tid_prefix.lower() != fold:
+                continue
+            num = _ticket_id_number(tid)
+            if num is None:
+                continue
             max_num = max(max_num, num)
-            if anchor_num is None or num < anchor_num:
-                anchor_num = num
-                canonical = m.group(1)   # 파일명에 쓰인 실제 case (예 `AAA`).
+            if anchor is None or (num, tid) < anchor:
+                anchor = (num, tid)
+    canonical = _ticket_prefix(anchor[1]) if anchor else prefix   # 최초 사용: 입력 case.
     return f"T-{canonical}-{max_num + 1:03d}"
 
 
@@ -10908,7 +11196,7 @@ def cmd_prefix_list(args: argparse.Namespace) -> int:
             if loaded is None:
                 continue
             fm, _ = loaded
-            tid = fm.get("id") or _ticket_id_from_filename(p.name)
+            tid = _issued_ticket_id(p, fm)
             if not tid:
                 continue
             num = _ticket_id_number(tid)
@@ -10979,7 +11267,7 @@ def _scan_prefix_tickets(skipped: list[Path] | None = None) -> list[dict[str, An
                     skipped.append(p)
                 continue
             fm, _ = loaded
-            tid = fm.get("id") or _ticket_id_from_filename(p.name)
+            tid = _issued_ticket_id(p, fm)
             if not tid:
                 continue
             num = _ticket_id_number(tid)
@@ -14349,11 +14637,14 @@ def _freshness_owner_repo(owner) -> tuple[Path | None, str | None]:
                   ("://" in upstream or bool(_SCP_STYLE_UPSTREAM_RE.match(upstream))))
         if is_url:
             return (None, "local.conf upstream 이 URL이라 로컬 소유 repo 미해소")
-        candidate = Path(upstream).expanduser()
+        # `~`/`~user` 확장은 `_expanded_user_path` 단일 규칙 — 없는 `~user` 는 플랫폼 무관하게
+        # 여기서 해소 실패로 끝난다. 종전 `Path.expanduser()` 는 POSIX 만 RuntimeError 였고
+        # Windows 는 phantom `C:\\Users\\<name>` 을 조립해 아래 "경로 부재/이동" 으로 갈렸다.
+        candidate = _expanded_user_path(upstream)
         if not candidate.is_absolute():
             candidate = REPO / candidate
         candidate = candidate.resolve()
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         return (None, f"upstream 경로 해소 실패({upstream})")
     if not candidate.is_dir():
         return (None, f"upstream 경로 부재/이동({candidate})")

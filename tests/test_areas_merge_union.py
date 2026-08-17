@@ -123,25 +123,41 @@ def test_union_detected_for_board_pattern(board):
         "areas.md merge=union\n", board._BOARD_AREAS_ATTR_TARGETS) is True
 
 
-def test_markdown_lf_rule_uses_last_matching_attributes(board):
-    assert board._board_markdown_lf_declared("*.md text eol=lf\n") is True
-    assert board._board_markdown_lf_declared(
-        "*.md text eol=lf\n*.md eol=crlf\n",
+def _lf_declaration(board, pattern: str = "*.{extension}", attrs: str = "text eol=lf") -> str:
+    """엔진-소유 확장자 **전부**에 같은 속성을 거는 본문 — 확장자 집합은 엔진에서 파생한다.
+
+    리터럴을 손으로 베끼면 대상 집합이 넓어질 때 이 파일만 구세대로 남는다."""
+    return "".join(
+        f"{pattern.format(extension=extension)} {attrs}\n"
+        for extension in board._BOARD_TEXT_ATTR_EXTENSIONS)
+
+
+def test_text_lf_rule_uses_last_matching_attributes(board):
+    assert board._board_text_lf_declared(_lf_declaration(board)) is True
+    assert board._board_text_lf_declared(
+        _lf_declaration(board) + _lf_declaration(board, attrs="eol=crlf"),
     ) is False
-    assert board._board_markdown_lf_declared(
-        "*.md text eol=crlf\n*.md eol=lf\n",
+    assert board._board_text_lf_declared(
+        _lf_declaration(board, attrs="text eol=crlf") + _lf_declaration(board, attrs="eol=lf"),
     ) is True
 
 
-def test_markdown_lf_requires_every_status_and_draft_path(board):
-    """상태 한 곳만 덮는 규칙을 전체 board Markdown 배포로 오판하지 않는다."""
+def test_text_lf_requires_every_status_draft_path_and_extension(board):
+    """상태·확장자 한 축만 덮는 규칙을 전체 board 텍스트 배포로 오판하지 않는다."""
     storage_dirs = (*board.STATUS_DIRS, ".drafts")
-    assert board._BOARD_MARKDOWN_ATTR_TARGETS == tuple(
-        f"tickets/{status}/T-0000-ticket.md" for status in storage_dirs
-    )
+    extensions = board._BOARD_TEXT_ATTR_EXTENSIONS
+    assert "md" in extensions, "티켓 Markdown 이 대상에서 빠졌다(공허 판정)"
+    assert board._BOARD_TEXT_ATTR_TARGETS == tuple(
+        f"tickets/{status}/T-0000-ticket.{extension}"
+        for status in storage_dirs
+        for extension in extensions
+    ) + tuple(f"board-root-file.{extension}" for extension in extensions)
     for status in storage_dirs:
-        partial = f"tickets/{status}/*.md text eol=lf\n"
-        assert board._board_markdown_lf_declared(partial) is False, status
+        partial = _lf_declaration(board, pattern=f"tickets/{status}/*.{{extension}}")
+        assert board._board_text_lf_declared(partial) is False, status
+    for extension in extensions:
+        partial = f"*.{extension} text eol=lf\n"
+        assert board._board_text_lf_declared(partial) is (len(extensions) == 1), extension
 
 
 @pytest.mark.parametrize(
@@ -174,24 +190,30 @@ def test_gitattributes_pattern_coverage_matches_git_path_semantics(
 @pytest.mark.parametrize(
     ("pattern", "all_storage_paths_covered"),
     [
-        ("*.md", True),
-        ("tickets/*.md", False),
-        ("tickets/**/*.md", True),
-        ("tickets/open/*.md", False),
-        ("/tickets/open/*.md", False),
+        ("*.{extension}", True),
+        ("tickets/*.{extension}", False),
+        ("tickets/**/*.{extension}", False),   # board 루트 직계는 못 덮는다.
+        ("tickets/open/*.{extension}", False),
+        ("/tickets/open/*.{extension}", False),
     ],
 )
-def test_markdown_lf_pattern_must_cover_every_storage_path(
+def test_text_lf_pattern_must_cover_every_storage_path(
         board, pattern, all_storage_paths_covered):
-    text = f"{pattern} text eol=lf\n"
-    assert board._board_markdown_lf_declared(text) is all_storage_paths_covered
+    text = _lf_declaration(board, pattern=pattern)
+    assert board._board_text_lf_declared(text) is all_storage_paths_covered
 
 
-def test_markdown_lf_negative_pattern_forces_conservative_backfill(board):
+def test_text_lf_accepts_auto_detection_form(board):
+    """`text=auto eol=lf`(git 이 텍스트로 판정한 파일에 LF 적용)도 배포된 것으로 인정한다."""
+    assert board._board_text_lf_declared("* text=auto eol=lf\n") is True
+    assert board._board_text_lf_declared("* text=auto\n") is False
+
+
+def test_text_lf_negative_pattern_forces_conservative_backfill(board):
     """전역 LF 뒤 특정 상태 부정 선언이 있으면 전체 배포 완료로 인정하지 않는다."""
-    text = "*.md text eol=lf\n!tickets/done/*.md -text\n"
-    assert board._board_markdown_lf_declared(text) is False
-    assert board._board_markdown_lf_declared(text + "*.md text eol=lf\n") is True
+    text = _lf_declaration(board) + "!tickets/done/*.md -text\n"
+    assert board._board_text_lf_declared(text) is False
+    assert board._board_text_lf_declared(text + _lf_declaration(board)) is True
 
 
 def test_union_detected_for_rooted_board_pattern(board):
@@ -312,7 +334,7 @@ def test_ensure_creates_gitattributes_in_board_git(board, tmp_path):
     assert board._ensure_board_gitattributes() is True
     text = (board_dir / ".gitattributes").read_text(encoding="utf-8")
     assert board._areas_union_declared(text, board._BOARD_AREAS_ATTR_TARGETS) is True
-    assert board._board_markdown_lf_declared(text) is True
+    assert board._board_text_lf_declared(text) is True
 
 
 @requires_git
@@ -360,10 +382,10 @@ def test_ensure_appends_cleanly_when_file_lacks_trailing_newline(board, tmp_path
     assert board._areas_union_declared(text, board._BOARD_AREAS_ATTR_TARGETS) is True
 
 
-def test_ensure_respects_existing_union_and_markdown_lf_declarations(board, tmp_path):
+def test_ensure_respects_existing_union_and_text_lf_declarations(board, tmp_path):
     """두 선언이 이미 있으면 bytes를 쓰지 않는다."""
     board_dir = _make_board_dir(board, tmp_path)
-    custom = "/areas.md merge=union\n*.md text eol=lf\n"
+    custom = "/areas.md merge=union\n" + _lf_declaration(board)
     (board_dir / ".gitattributes").write_text(custom, encoding="utf-8")
 
     assert board._ensure_board_gitattributes() is False
@@ -371,7 +393,7 @@ def test_ensure_respects_existing_union_and_markdown_lf_declarations(board, tmp_
 
 
 @requires_git
-def test_ensure_backfills_markdown_lf_into_union_only_board_idempotently(
+def test_ensure_backfills_text_lf_into_union_only_board_idempotently(
         board, tmp_path):
     """기존 board의 union-only 파일에 LF 규칙을 append하고 두 번째 호출은 no-write다."""
     board_dir = _make_board_dir(board, tmp_path, real_git=True)
@@ -402,26 +424,70 @@ def test_check_attr_resolves_union_after_backfill(board, tmp_path):
     assert _check_attr_merge(board_dir) == "union"
 
 
+def _check_attr_text_eol(board_dir: Path, targets: tuple[str, ...]) -> dict[str, tuple[str, str]]:
+    """`git check-attr text eol -- <targets>` 실측 → {경로: (text, eol)}."""
+    out = _git(["check-attr", "text", "eol", "--", *targets], board_dir).stdout
+    resolved: dict[str, dict[str, str]] = {target: {} for target in targets}
+    for line in out.splitlines():
+        target, attr, value = line.rsplit(": ", 2)[0], *line.rsplit(": ", 2)[1:]
+        resolved[target][attr] = value
+    return {target: (attrs["text"], attrs["eol"]) for target, attrs in resolved.items()}
+
+
 @requires_git
-def test_check_attr_resolves_markdown_lf_after_backfill(board, tmp_path):
-    """실 git 판정도 board 티켓 Markdown을 text+LF checkout으로 해소한다."""
+def test_check_attr_resolves_engine_text_lf_after_backfill(board, tmp_path):
+    """실 git 판정도 board 의 엔진-소유 텍스트 전부를 text+LF checkout으로 해소한다."""
     board_dir = _make_board_dir(board, tmp_path, real_git=True)
-    ticket_paths = board._BOARD_MARKDOWN_ATTR_TARGETS
-    before = _git(
-        ["check-attr", "text", "eol", "--", *ticket_paths], board_dir,
-    ).stdout
-    for ticket_path in ticket_paths:
-        assert f"{ticket_path}: text: unspecified" in before
-        assert f"{ticket_path}: eol: unspecified" in before
+    targets = board._BOARD_TEXT_ATTR_TARGETS
+    assert targets, "커버리지 대상 0 — 공허 게이트"
+    before = _check_attr_text_eol(board_dir, targets)
+    assert set(before.values()) == {("unspecified", "unspecified")}
 
     assert board._ensure_board_gitattributes() is True
 
-    after = _git(
-        ["check-attr", "text", "eol", "--", *ticket_paths], board_dir,
-    ).stdout
-    for ticket_path in ticket_paths:
-        assert f"{ticket_path}: text: set" in after
-        assert f"{ticket_path}: eol: lf" in after
+    after = _check_attr_text_eol(board_dir, targets)
+    assert set(after.values()) == {("set", "lf")}
+
+
+@requires_git
+def test_engine_pattern_judgment_matches_check_attr_on_widened_targets(board, tmp_path):
+    """넓힌 대상 집합 위에서 **내용 판정 == git 실측** (파서가 git 의미를 벗어나지 않는다).
+
+    엔진은 런타임에 `check-attr` 를 부르지 않고 파일 내용으로 판정한다 — 그 판정이 git 과
+    갈리면 배포됐다고 오판(거짓 정상)하거나 매번 중복 backfill 한다."""
+    board_dir = _make_board_dir(board, tmp_path, real_git=True)
+    targets = board._BOARD_TEXT_ATTR_TARGETS
+    # 정확 대조 대상 — 이 파서가 확실히 판정하는 부분집합(부정 `!` 줄 없음).
+    exact = (
+        board._BOARD_GITATTRIBUTES_BLOCK,
+        _lf_declaration(board),
+        _lf_declaration(board, pattern="tickets/**/*.{extension}"),
+        _lf_declaration(board, pattern="/tickets/open/*.{extension}"),
+        "* text=auto eol=lf\n",
+        _lf_declaration(board) + _lf_declaration(board, attrs="eol=crlf"),
+    )
+    # 보수 판정만 요구하는 대상 — git 은 `.gitattributes` 의 부정 패턴을 무시하지만, 우리는
+    #   판정 불능으로 접는다(거짓 정상 대신 중복 backfill·`_gitattributes_pattern_matches` 계약).
+    conservative = (_lf_declaration(board) + "!tickets/done/*.md -text\n",)
+    for declaration in (*exact, *conservative):
+        (board_dir / ".gitattributes").write_text(
+            declaration, encoding="utf-8", newline="\n")
+        actual = _check_attr_text_eol(board_dir, targets)
+        for target in targets:
+            parsed_text, parsed_eol = board._gitattributes_text_eol_attrs(
+                declaration, (target,))
+            git_text, git_eol = actual[target]
+            parsed_as_git = (
+                {None: "unspecified", "": "unset", "set": "set"}.get(parsed_text, parsed_text),
+                {None: "unspecified", "": "unset"}.get(parsed_eol, parsed_eol),
+            )
+            if declaration in exact:
+                assert parsed_as_git == (git_text, git_eol), (
+                    f"판정과 git 실측 불일치: {target} · 선언={declaration!r}")
+            elif board._target_lf_declared(declaration, target):
+                # 거짓 정상 금지 — 배포됐다고 읽었으면 git 도 그래야 한다(반대 방향은 허용).
+                assert (git_text, git_eol) in (("set", "lf"), ("auto", "lf")), (
+                    f"배포 오판(거짓 정상): {target} · 선언={declaration!r} · git={git_text}/{git_eol}")
 
 
 @requires_git
@@ -618,7 +684,7 @@ def test_import_scaffold_mirrors_board_block(board):
     assert pm_import._BOARD_GITATTRIBUTES_SCAFFOLD == board._BOARD_GITATTRIBUTES_BLOCK
     assert board._areas_union_declared(
         pm_import._BOARD_GITATTRIBUTES_SCAFFOLD, board._BOARD_AREAS_ATTR_TARGETS) is True
-    assert board._board_markdown_lf_declared(
+    assert board._board_text_lf_declared(
         pm_import._BOARD_GITATTRIBUTES_SCAFFOLD) is True
 
 

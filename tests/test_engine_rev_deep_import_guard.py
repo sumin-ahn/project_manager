@@ -2582,7 +2582,12 @@ def test_external_review_failsoft_consumer_reraises_only_skew(monkeypatch):
 
 
 def test_sensitivity_removing_external_review_reraise_swallows_skew(tmp_path, monkeypatch):
-    tools = _copy_tools(tmp_path, "external_review")
+    # reviewer_cmd argv 분해가 board 공용 seam(`split_command_argv`)을 타므로(T-0722) 그 형제와
+    # board 자신이 import 시점에 바인딩하는 형제까지 함께 복사한다 — 이 tmp 트리에서도 실행 경로가
+    # 실제 엔진과 같은 모듈을 지나게 한다.
+    tools = _copy_tools(
+        tmp_path, "external_review", "board", "identity_args", "file_lock", "engine_rev",
+    )
     path = tools / "external_review.py"
     source = path.read_text(encoding="utf-8")
     block = (

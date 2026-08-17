@@ -533,6 +533,7 @@ def test_append_atomic_uses_one_o_append_write(tmp_path, monkeypatch):
     monkeypatch.setattr(
         lock_mod.os, "write", lambda fd, payload: calls.append(("write", fd, payload))
     )
+    monkeypatch.setattr(lock_mod.os, "fsync", lambda fd: calls.append(("fsync", fd)))
     monkeypatch.setattr(lock_mod.os, "close", lambda fd: calls.append(("close", fd)))
 
     target = tmp_path / "current.md"
@@ -541,7 +542,9 @@ def test_append_atomic_uses_one_o_append_write(tmp_path, monkeypatch):
     assert calls[0][0:2] == ("open", str(target))
     assert calls[0][2] & lock_mod.os.O_APPEND
     assert calls[0][2] & lock_mod.os.O_CREAT
-    assert calls[1:] == [("write", 41, b"\nentry"), ("close", 41)]
+    assert calls[1:] == [
+        ("write", 41, b"\nentry"), ("fsync", 41), ("close", 41),
+    ]
 
 
 def test_append_log_delegates_the_write_to_the_shared_seam(tmp_path, monkeypatch):

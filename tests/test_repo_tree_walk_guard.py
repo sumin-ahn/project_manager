@@ -131,6 +131,17 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "'*'",
     ): WalkException("tmp_path에 생성한 adopter fixture의 add-harness 전후 바이트 스냅샷"),
     (
+        "tests/test_fresh_adopter_e2e.py",
+        "test_fresh_opencode_adopter_engine_mutate_propagates_and_render_drift0",
+        "rglob",
+        "'*'",
+    ): WalkException(
+        "tmp_path adopter fixture를 CRLF 체크아웃 등가로 재표기하고(1회) 전파 트리 바이트를 "
+        "재기록 여부 대조용으로 스냅샷한다(1회). repo 소유 인벤토리가 아니라 그 fixture 트리 "
+        "자체가 판정 대상이라 seam이 답할 수 있는 질문이 아니다",
+        expected_count=2,
+    ),
+    (
         "tests/test_board_lint.py",
         "_old_collect",
         "rglob",

@@ -1747,6 +1747,18 @@ def _real_git_repo(board, monkeypatch, tmp_path) -> Path:
     return board.REPO
 
 
+def _declare_global_hooks_path(tmp_path: Path, hooks: Path) -> None:
+    """global config 에 `core.hooksPath` 를 **git 이 파싱할 수 있는 표기**로 선언한다.
+
+    git config 는 값의 백슬래시를 이스케이프로 읽으므로 Windows 표기(`C:\\Users\\…`)를 그대로
+    쓰면 `fatal: bad config line` 으로 **그 repo 의 모든 git 호출이 rc≠0** 이 된다 — 그러면 훅
+    위치 해소가 통째로 실패해 아래 판정들이 무엇도 검증하지 못한다(Windows 실측 false-green).
+    `as_posix()` 는 두 플랫폼 모두에서 git 이 받는 표기다.
+    """
+    (tmp_path / "global.gitconfig").write_text(
+        f"[core]\n\thooksPath = {hooks.as_posix()}\n", encoding="utf-8")
+
+
 @requires_git
 def test_a_global_hooks_path_is_covered_by_the_authoritative_resolution(
         board, monkeypatch, tmp_path):
@@ -1757,8 +1769,7 @@ def test_a_global_hooks_path_is_covered_by_the_authoritative_resolution(
     _real_git_repo(board, monkeypatch, tmp_path)
     hooks = tmp_path / "company-hooks"
     hooks.mkdir()
-    (tmp_path / "global.gitconfig").write_text(
-        f"[core]\n\thooksPath = {hooks}\n", encoding="utf-8")
+    _declare_global_hooks_path(tmp_path, hooks)
     hook = hooks / "pre-push"
     hook.write_text(_legacy_hook(), encoding="utf-8")
     hook.chmod(0o755)
@@ -1774,20 +1785,74 @@ def test_a_global_hooks_path_is_covered_by_the_authoritative_resolution(
 
 @requires_git
 def test_a_current_hook_under_a_global_hooks_path_passes(board, monkeypatch, tmp_path):
-    """같은 형상의 **현행 세대** 훅은 무소음 통과다 — 위치 확장이 과차단을 만들지 않는다."""
+    """같은 형상의 **현행 세대** 훅은 무소음 통과다 — 위치 확장이 과차단을 만들지 않는다.
+
+    통과(`None`)만 단언하면 **판정이 아예 안 돌아도 같은 값**이라(위치 해소 실패 → 무영향) 가드가
+    없는 상태와 구분되지 않는다 — Windows 실측에서 이 테스트가 정확히 그렇게 통과했다. 그래서
+    판정이 이 위치를 실제로 봤음을 값으로 확인한다: (1) 권위 해소가 그 훅 디렉토리를 짚고
+    (2) 같은 자리의 본문을 구세대로 바꾸면 차단이 선다([[guard-must-cover-its-own-surface]])."""
     _real_git_repo(board, monkeypatch, tmp_path)
     hooks = tmp_path / "company-hooks"
     hooks.mkdir()
-    (tmp_path / "global.gitconfig").write_text(
-        f"[core]\n\thooksPath = {hooks}\n", encoding="utf-8")
-    (hooks / "pre-push").write_text(board.pre_push_hook_body("python3"), encoding="utf-8")
+    _declare_global_hooks_path(tmp_path, hooks)
+    hook = hooks / "pre-push"
+    hook.write_text(board.pre_push_hook_body("python3"), encoding="utf-8")
 
+    # 판정이 돌았음의 근거 — 해소가 실패하면 아래 통과는 아무 것도 뜻하지 않는다.
+    assert board._authoritative_hooks_dir() == hooks.resolve()
     assert board._stale_pre_push_hook_refusal() is None
+    # 같은 자리의 구세대 본문은 차단된다 — 통과가 '판정 부재'가 아니라 '현행 판정'임을 가른다.
+    hook.write_text(_legacy_hook(), encoding="utf-8")
+    assert "구버전" in (board._stale_pre_push_hook_refusal() or "")
+
+
+@requires_git
+def test_an_unanswerable_git_hooks_query_is_loud_instead_of_silent(
+        board, monkeypatch, tmp_path, capsys):
+    """git 이 훅 위치를 답하지 못하면 **사유를 남기고** 판정을 생략한다 (침묵 no-op 금지).
+
+    재현(Linux 에서 Windows 표기를 직접 주입): global config 의 `hooksPath` 를 백슬래시 표기로
+    적으면 git config 파서가 값의 `\\U` 를 이스케이프로 읽어 파싱에 실패하고, 그 repo 의 **모든**
+    git 호출이 rc≠0 이 된다. 종전엔 그 실패가 `None` 으로 삼켜져 훅 세대 판정이 전면 no-op 이
+    됐는데도 호출부는 '통과'와 구분할 수 없었다(Windows 실측 false-green 의 뿌리)."""
+    _real_git_repo(board, monkeypatch, tmp_path)
+    (tmp_path / "global.gitconfig").write_text(
+        "[core]\n\thooksPath = C:\\Users\\pm\\company-hooks\n", encoding="utf-8")
+
+    # 재현 축 — git 이 답을 못 한다(rc≠0). 사유는 침묵 대신 값으로 나온다.
+    hooks_dir, reason = board._hooks_dir_resolution()
+    assert hooks_dir is None
+    assert reason and "rc=" in reason
+    assert board._authoritative_hooks_dir() is None
+
+    # 관측성 축 — 판정 생략이 사유와 함께 stderr 에 남는다(판정 부재를 통과로 읽지 않게).
+    assert board._stale_pre_push_hook_refusal() is None
+    err = capsys.readouterr().err
+    assert "훅 디렉토리를 해소하지 못해" in err
+    assert "rc=" in err
+
+
+def test_an_uncallable_git_stays_silent_and_keeps_the_pure_verdict(board, monkeypatch, capsys):
+    """git 을 **부르지 못하는** 환경은 사유 없이 조용하다 — 훅이 실행되지 않는 형상은 판정 대상 밖.
+
+    `(None, None)` 은 '판정 불능'이 아니라 '판정 대상 없음'이다. 여기까지 시끄러우면 git 없는
+    트리의 모든 회귀 실행에 경고가 붙는다."""
+    def _no_git(*_args, **_kwargs):
+        raise FileNotFoundError("git 없음")
+
+    monkeypatch.setattr(board.subprocess, "run", _no_git)
+    assert board._hooks_dir_resolution() == (None, None)
+    assert board._hooks_dir() is None
+    assert board._authoritative_hooks_dir() is None
+    assert capsys.readouterr().err == ""
 
 
 def test_a_failed_git_resolution_keeps_the_pure_verdict(board, monkeypatch, tmp_path):
-    """git 호출이 실패해도 판정은 현행 순수 해소 그대로다 (무간섭 아님·폴백)."""
-    monkeypatch.setattr(board, "_hooks_dir",
+    """git 호출이 실패해도 판정은 현행 순수 해소 그대로다 (무간섭 아님·폴백).
+
+    스텁 대상은 **git 을 부르는 그 지점**(`_hooks_dir_resolution`)이다 — 얇은 wrapper 만 막으면
+    실제 호출 경로가 스텁을 지나쳐 이 테스트가 아무 것도 주입하지 못한다."""
+    monkeypatch.setattr(board, "_hooks_dir_resolution",
                         lambda: (_ for _ in ()).throw(OSError("git 없음")))
     _write_git_config(board, "[core]\n\thooksPath = .githooks\n")
     custom = board.REPO / ".githooks"
@@ -1800,8 +1865,11 @@ def test_a_failed_git_resolution_keeps_the_pure_verdict(board, monkeypatch, tmp_
 
 def test_a_tree_without_git_never_asks_git(board, monkeypatch):
     """`.git` 없는 트리는 권위 해소도 묻지 않는다 — 판정 대상 밖(조상 repo 를 끌어오지 않는다)."""
-    monkeypatch.setattr(board, "_hooks_dir",
-                        lambda: (_ for _ in ()).throw(AssertionError("git 조회 금지")))
+    def _forbidden():
+        raise AssertionError("git 조회 금지")
+
+    monkeypatch.setattr(board, "_hooks_dir", _forbidden)
+    monkeypatch.setattr(board, "_hooks_dir_resolution", _forbidden)   # 실 git 호출 지점
     assert board._repo_git_dir() is None
     assert board._stale_pre_push_hook_refusal() is None
 

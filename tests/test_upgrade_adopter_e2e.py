@@ -236,7 +236,7 @@ def _inject_legacy_guest_section(dest: Path) -> None:
     assert block is not None, "픽스처 오류 — add-harness 직후인데 guest 절이 없다"
     legacy_block = "\n".join([_LEGACY_GUEST_BEGIN, *_guest_render_rows(block), _GUEST_END_MARKER])
     text = _manifest_text(dest)
-    _manifest_path(dest).write_text(text.replace(block, legacy_block), encoding="utf-8")
+    _manifest_path(dest).write_text(text.replace(block, legacy_block), encoding="utf-8", newline="\n")
     assert _LEGACY_GUEST_BEGIN in _manifest_text(dest)
     assert _CURRENT_GUEST_BEGIN not in _manifest_text(dest)
 
@@ -250,7 +250,7 @@ def _freeze_guest_engine_files(dest: Path, block: str) -> list[str]:
     frozen = []
     for row in _guest_engine_rows(block):
         for rel in _files_under(snapshot, _row_path(row)):
-            (dest / rel).write_text(_STALE_GUEST_BODY, encoding="utf-8")
+            (dest / rel).write_text(_STALE_GUEST_BODY, encoding="utf-8", newline="\n")
             frozen.append(rel)
     return sorted(frozen)
 
@@ -266,14 +266,14 @@ def _inject_substituted_documents(dest: Path) -> None:
     assert _SUBSTITUTED_README_LINE not in text, "픽스처 오류 — 주입 문장이 이미 상류 본문에 있다"
     lines = text.splitlines()
     readme.write_text(
-        "\n".join([lines[0], "", _SUBSTITUTED_README_LINE, *lines[1:]]) + "\n", encoding="utf-8")
+        "\n".join([lines[0], "", _SUBSTITUTED_README_LINE, *lines[1:]]) + "\n", encoding="utf-8", newline="\n")
 
     for rel in ("pm_state.template.md", "domain/_template.md"):
         path = dest / ".project_manager" / "wiki" / rel
         text = path.read_text(encoding="utf-8")
         frozen = text.replace("{{DATE}}", _FROZEN_INSTALL_DATE)
         assert frozen != text, f"픽스처 오류 — {rel} 에 굳힐 {{{{DATE}}}} 가 없다(공허 주입)"
-        path.write_text(frozen, encoding="utf-8")
+        path.write_text(frozen, encoding="utf-8", newline="\n")
 
 
 def _build_upgraded_adopter(
@@ -563,8 +563,8 @@ def test_upgrade_adopter_engine_reconciles_stale_manifest_without_manual_copy(tm
     text = _manifest_text(dest)
     dropped = "\n".join(line for line in text.splitlines() if line.strip() != victim) + "\n"
     assert dropped != text, f"{victim} 행 제거가 무효(공허 픽스처)"
-    _manifest_path(dest).write_text(dropped, encoding="utf-8")
-    (dest / victim).write_text(_STALE_GUEST_BODY, encoding="utf-8")
+    _manifest_path(dest).write_text(dropped, encoding="utf-8", newline="\n")
+    (dest / victim).write_text(_STALE_GUEST_BODY, encoding="utf-8", newline="\n")
 
     _run_pm_update(dest)
 
@@ -680,7 +680,18 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   키워드 추가는 write 호출의 인자만 늘리고 anchor·슬라이스 범위·훅 세트 판정 어디에도 닿지
 #   않으며, 채택자 트리에 배달되는 파일 집합도 그대로다 — 현재화한 것은 기대 SHA 하나뿐이다.
 #   T-0691 R2가 Path.open 폴백에도 같은 키워드를 보강해 SHA만 다시 현재화했다.
-_T0585_PM_UPDATE_SHA256 = "756429ffa6277f9d05aa06faa75594bcafc383fc484ec7fe0f8e24b1a1c31d8e"
+#   T-0709 가 렌더 판정을 개행 정규화 후로, 렌더/manifest 쓰기를 dest 표기 보존으로 바꾸며 또
+#   이동했다. 새로 들어온 것은 개행 원시 함수 3개와 쓰기 헬퍼(`_write_rendered_text`)이고,
+#   `_render_is_unchanged`·`apply` 의 렌더 분기·`_copy_manifest_preserving_guest` 가 그것을 쓴다.
+#   역적용 delta 의 네 anchor 는 그대로 유일 해소되고(새 함수는 anchor 밖), 배달 경계도 불변이다:
+#   이 fixture 트리는 개행이 LF 단일이라 정규화 판정 == byte 판정이고 쓰기 표기도 LF 그대로다
+#   (CRLF 체크아웃에서만 갈라진다) — 현재화한 것은 기대 SHA 하나뿐이다.
+#   T-0723 이 T-0709 가 남긴 마지막 raw 대조를 같은 축으로 맞추며 또 이동했다. 들어온 것은 대조
+#   헬퍼(`_rendered_text_matches_dest`) 하나와 그 호출 2곳(`_render_eq_dst`·`plan` 의 최소 렌더
+#   분기)뿐이다. 역적용 delta 의 anchor 는 전부 `_main`/`sync_adapter_configs` 쪽이라 그대로
+#   유일 해소되고, 배달 경계(planning → apply → self-update 순서)와 배달 파일 집합도 불변이다.
+#   LF 단일 트리에서는 판정 결과가 종전과 같다 — 현재화한 것은 기대 SHA 하나뿐이다.
+_T0585_PM_UPDATE_SHA256 = "228a95286d5b2b4d1292c5eca89862064bc649fddaa741886e0452121f164ba6"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
@@ -882,7 +893,7 @@ def _t0585_pm_update_source() -> str:
 
 def _install_t0585_updater(dest: Path) -> None:
     (dest / ".project_manager" / "tools" / "pm_update.py").write_text(
-        _t0585_pm_update_source(), encoding="utf-8")
+        _t0585_pm_update_source(), encoding="utf-8", newline="\n")
 
 
 def test_upgrade_adopter_zero_change_run2_blocks_until_adapter_accept(tmp_path):
@@ -896,7 +907,7 @@ def test_upgrade_adopter_zero_change_run2_blocks_until_adapter_accept(tmp_path):
     _prime_engine_to_canonical(dest)
 
     hooks = dest / _ADAPTER_HOOKS_REL
-    hooks.write_text(_LEGACY_BLOCKING_HOOKS, encoding="utf-8")
+    hooks.write_text(_LEGACY_BLOCKING_HOOKS, encoding="utf-8", newline="\n")
     ledger = dest / ".project_manager" / "adapter_baseline.json"
     ledger.unlink(missing_ok=True)  # 구세대 설치: durable 원장 부재.
     _install_t0585_updater(dest)
@@ -933,6 +944,82 @@ def test_upgrade_adopter_zero_change_run2_blocks_until_adapter_accept(tmp_path):
         dest, "pm_config.py", "sync-adapter-config", "--check", "--from", str(REPO))
     assert green_check.returncode == 0, green_check.stderr
     assert "수렴 확인" in green_check.stdout
+
+
+# ── S6 CRLF 표기 dest 의 zero-change 수렴 (T-0723) ────────────────────────────
+# Windows 채택자(`core.autocrlf=true`)의 dest 는 내용이 상류와 같아도 표기가 CRLF 다. 계획의 최소
+# 렌더 분기가 raw bytes 로 대조하던 동안 그 파일들은 매 실행 `update` 로 올라왔다 — 재기록 후에도
+# bytes 는 그대로라(쓰기가 dest 표기 보존) 내용이 상하진 않지만, dry-run 이 상시 오탐이고 실제
+# drift 가 그 소음에 묻히며 zero-change 경계(RUN2 완료 게이트)를 아예 통과하지 못한다.
+# LF 환경(Linux)에서 그 형상을 태우려면 dest 표기를 직접 뒤집어야 한다 — 아래 헬퍼가 그 자리다.
+
+_NOTATION_MANAGED_WIKI = (
+    ".project_manager/wiki/pm_role.md",
+    ".project_manager/wiki/pm_playbook.md",
+    ".project_manager/wiki/README.md",
+    ".project_manager/wiki/pm_state.template.md",
+)
+
+
+def _renotate_dest_to_crlf(dest: Path, relpaths) -> list[str]:
+    """dest 사본을 **내용 그대로** CRLF 표기로 되쓴다 — 축이 실제로 실렸는지 함께 단언한다.
+
+    선-단언은 "bytes 가 바뀌었나" 가 아니라 **"지금 dest 가 CRLF 인가"** 다. CRLF 체크아웃
+    (Windows)에서는 설치 사본이 이미 CRLF 라 변환이 no-op 이고, 그때도 이 게이트가 재려는 축
+    (LF 렌더 산출물 ↔ CRLF dest)은 그대로 실려 있다. 'bytes 가 바뀌었나' 로 단언하면 정작 결함이
+    나는 그 플랫폼에서만 픽스처가 스스로 red 가 된다."""
+    converted: list[str] = []
+    for rel in relpaths:
+        path = dest / rel
+        raw = path.read_bytes()
+        crlf = raw.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+        assert crlf.replace(b"\r\n", b"\n") == raw.replace(b"\r\n", b"\n"), \
+            f"{rel}: 표기 변환이 내용을 바꿨다"
+        path.write_bytes(crlf)
+        after = path.read_bytes()
+        assert b"\r\n" in after, f"{rel}: CRLF 주입 실패(공허 픽스처)"
+        assert after != after.replace(b"\r\n", b"\n"), \
+            f"{rel}: dest 가 LF 렌더층과 byte 동일하다 — 이 축이 시험되지 않는다"
+        converted.append(rel)
+    assert len(converted) == len(tuple(relpaths)) and converted, "변환 대상 0(공허 픽스처)"
+    return converted
+
+
+def test_upgrade_adopter_crlf_dest_reaches_zero_change_and_keeps_notation(tmp_path):
+    """표기만 CRLF 인 dest 는 zero-change 로 수렴하고 표기가 보존된다 — 내용 차이는 여전히 update."""
+    dest = tmp_path / "crlf-dest-adopter"
+    assert _PM_IMPORT.main([
+        "--new", str(dest), "--harness", "codex", "--name", _ADOPTER_NAME,
+        "--fill", "manual",
+    ]) == 0
+    _prime_engine_to_canonical(dest)
+    # 대조군: 승격 직후는 변경 0 이어야 이 게이트가 **CRLF 변환분만** 재는 측정기가 된다.
+    settled = _run_pm_update(dest)
+    assert "최신 — 변경 없음." in settled.stdout, (
+        f"픽스처 전제 붕괴 — 승격 직후 변경이 남아 있다\n{settled.stdout}")
+
+    converted = _renotate_dest_to_crlf(dest, _NOTATION_MANAGED_WIKI)
+    before = {rel: (dest / rel).read_bytes() for rel in converted}
+
+    run = _run_pm_update(dest)
+
+    assert "최신 — 변경 없음." in run.stdout, (
+        "표기만 CRLF 인 dest 를 변경으로 계획했다 — 내용 무변경 churn 이라 수렴을 영영 보고하지 "
+        f"못한다\n{run.stdout}")
+    for rel in converted:
+        assert (dest / rel).read_bytes() == before[rel], (
+            f"{rel}: 동기가 채택자 체크아웃 표기를 LF 로 되썼다(표기 보존 위반)")
+    # 멱등 — 다음 실행에서 되살아나지 않는다.
+    again = _run_pm_update(dest)
+    assert "최신 — 변경 없음." in again.stdout, again.stdout
+
+    # 판정이 무뎌지지 않았음을 같은 자리에서 본다: CRLF dest 라도 내용이 다르면 update 다.
+    victim = converted[0]
+    (dest / victim).write_bytes(
+        before[victim] + "<!-- 채택자 한 줄 -->\r\n".encode("utf-8"))
+    dirty = _run_pm_update(dest, "--dry-run")
+    assert victim in dirty.stdout and "최신 — 변경 없음." not in dirty.stdout, (
+        f"CRLF dest 의 내용 차이를 놓쳤다(정규화가 판정을 무디게 만듦)\n{dirty.stdout}")
 
 
 def test_update_release_skill_cards_pin_zero_change_and_adapter_gate_contract():

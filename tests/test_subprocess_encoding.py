@@ -29,6 +29,8 @@ from pathlib import Path
 
 import pytest
 
+from _textio import write_lf
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 SCRIPTS = REPO / "scripts"
@@ -294,12 +296,40 @@ class _RcRecorder:
         return self._Proc()
 
 
-def test_regression_run_child_forces_utf8_env(board, monkeypatch):
+def _regression_child_call(calls: list[dict]) -> dict:
+    """기록된 자식 호출 중 **회귀 러너의 것**을 고른다 — test_cmd 를 `shell` 로 띄우는 그 자식.
+
+    `cmd_regression` 진입이 띄우는 자식은 회귀 러너 하나가 아니다: 훅이 순수 해소 위치에 없으면
+    훅 위치 **권위 해소**(`git rev-parse --git-path hooks`)가 그 앞에서 돈다. 훅을 안 깐 채택자
+    체크아웃이 정확히 그 형상이라(Windows 실측), 첫 호출을 무조건 회귀 자식으로 보면 가드가
+    엉뚱한 자식의 kwargs(`env` 없는 git 질의)를 판정해 상시 red 가 된다.
+    """
+    shell_calls = [call for call in calls if call.get("shell")]
+    assert len(shell_calls) == 1, f"회귀 자식(shell) 호출을 특정하지 못함: {calls!r}"
+    return shell_calls[0]
+
+
+@pytest.mark.parametrize("pre_push_hook_installed", [True, False],
+                         ids=["hook-resolved", "hook-unresolved"])
+def test_regression_run_child_forces_utf8_env(board, monkeypatch, tmp_path,
+                                              pre_push_hook_installed):
     """cmd_regression(run, scoped) 이 pytest 자식 env 에 UTF-8 강제·os.environ 보존.
 
-    scoped 경로(touches 지정)는 subprocess.run 직후 반환 → 플래그 파일/_git_head 미경유.
+    scoped 경로(touches 지정)는 자식 실행 직후 반환 → 플래그 파일/_git_head 미경유.
     수정 전(env 미전달)에서는 이 단언이 깨진다.
+
+    **두 형상을 모두 태운다**: 훅 위치가 순수 해소되는 트리(회귀 자식이 유일한 자식)와, 훅이
+    없어 권위 해소 git 질의가 **먼저** 도는 트리(채택자 fresh clone·Windows VM 실측). 후자에서
+    가드가 부수 자식을 판정하지 않는지까지 잠근다.
     """
+    if pre_push_hook_installed:
+        hooks = tmp_path / "h"
+        hooks.mkdir()
+        write_lf(hooks / "pre-push", "#!/bin/sh\nexit 0\n")   # 서명 없는 남의 훅 = 무영향
+        monkeypatch.setattr(board, "_pure_hooks_dir", lambda: hooks)
+    else:
+        # 순수 해소가 위치를 확정 못 하는 형상 — 엔진이 git 에 훅 위치를 묻는다(부수 자식).
+        monkeypatch.setattr(board, "_pure_hooks_dir", lambda: None)
     rec = _RcRecorder()
     monkeypatch.setattr(board.subprocess, "Popen", rec)
     # os.environ 보존 검증용 마커 키.
@@ -309,8 +339,17 @@ def test_regression_run_child_forces_utf8_env(board, monkeypatch):
     rc = board.cmd_regression(args)
     assert rc == 0
     assert rec.calls, "pytest 자식 subprocess 호출이 일어나지 않음"
-    env = rec.calls[0].get("env")
-    assert env is not None, f"자식에 env 미전달: {rec.calls[0]!r}"
+    # 주입 선-단언 — 의도한 형상이 **실제로** 태워졌는지 먼저 못박는다(형상이 안 서면 가드가
+    # 아무것도 시험하지 않는다).
+    incidental = [call for call in rec.calls if not call.get("shell")]
+    if pre_push_hook_installed:
+        assert incidental == [], f"부수 자식이 없어야 하는 형상인데 떴다: {incidental!r}"
+    else:
+        assert incidental, "훅 위치 권위 해소(git) 자식이 안 떴다 — 형상이 서지 않음"
+        assert not rec.calls[0].get("shell"), "부수 자식이 회귀 자식보다 먼저여야 형상이 맞다"
+    child = _regression_child_call(rec.calls)
+    env = child.get("env")
+    assert env is not None, f"자식에 env 미전달: {child!r}"
     assert env.get("PYTHONUTF8") == "1", f"PYTHONUTF8=1 누락: {env!r}"
     assert env.get("PYTHONIOENCODING") == "utf-8", f"PYTHONIOENCODING=utf-8 누락: {env!r}"
     # 기존 os.environ 키 보존(병합이지 치환 아님).

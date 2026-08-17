@@ -956,7 +956,21 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 보존하되, marked engine skew는 부분 동기를 숨기지 않고 그대로 재전파한다.
     # 199 = 198 + T-0698 lease 실경로 보강 한 경계. 해소 실패는 canonical `work/<name>`으로
     # 폴백하되, marked engine skew는 부분 동기를 숨기지 않고 그대로 재전파한다.
-    assert len(report.boundaries) == 199, "propagation sweep boundary ratchet changed"
+    # 209 = 199 + v1.7.6 Windows 이식의 열 경계. 종전 POSIX 전용 원시 호출(`shutil.rmtree(dir_fd=)`
+    # · `os.chmod` · `fcntl`)이 Windows 등가 수단으로 갈리면서, 그 수단을 **형제 모듈**
+    # (`file_lock.force_rmtree`·`restrict_to_owner`)이 갖게 돼 정리·생성 경로가 새로 사본 불일치
+    # 표면을 얻었다. 내역:
+    #   · `pm_delegate._create_read_role_temp_owner_acl` 두 경계 — ACL 제한 실패는 격리 미성립이라
+    #     재-raise 하고, 조회 실패만 흡수한다.
+    #   · `pm_delegate._portable_exclusive_write` · `_save_opencode_transport_prompt` 재-raise 두 경계.
+    #   · `pm_delegate._create_read_role_temp` · `_cleanup_read_role_temp` 흡수 두 경계 — 둘 다
+    #     `_ENGINE_REV_SKEW_RECOVERY_REASONS` 에 사유를 등록하고 경고 문구로 원인을 구분한다
+    #     (정리 실패가 성공한 실행을 뒤집지 않는다는 계약).
+    #   · `external_review.create_reviewer_workspace` 재-raise · `_remove_partial_container` 흡수.
+    #   · `pm_config._protected_push_gate_config` 재-raise 한 경계.
+    #   · `delegate_channel_guard._record_supervisor_fallback` 흡수 한 경계 — PowerShell 인용
+    #     삼킴으로 래퍼가 폴백할 때 그 사실 기록이 판정을 막지 않는다.
+    assert len(report.boundaries) == 209, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

@@ -9,18 +9,19 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 from pathlib import Path
 
 
 _ALLOWED: set[tuple[str, int, str]] = {
     (
         "pm_import.py",
-        2434,
+        2485,
         "_fdopen_text는 mode/newline을 호출자에게서 받아 전달하는 공용 래퍼다.",
     ),
     (
         "pm_import.py",
-        2443,
+        2494,
         "_fdopen_binary는 binary mode 전용 공용 래퍼다.",
     ),
 }
@@ -211,3 +212,51 @@ def test_engine_text_writes_declare_newline():
         '텍스트 쓰기의 newline은 리터럴 "\\n" 또는 ""여야 한다:\n'
         + "\n".join(missing)
     )
+
+
+def _load_engine_module(name: str):
+    spec = importlib.util.spec_from_file_location(f"_newline_probe_{name}", TOOLS / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# 개행 **표기 판정**은 엔진 세 모듈에 각자 작은 원시 함수로 있다(모듈 간 import 를 늘리지 않으려는
+# 선택). 규칙이 갈리면 같은 파일을 pm_import 는 CRLF 로, pm_update 는 LF 로 되써 표기 보존이
+# 반쪽이 되므로, 규칙 일치를 이 가드가 못박는다 — 다수결, 동수면 첫 등장, 개행 0 이면 LF.
+_NEWLINE_CASES = {
+    "": "\n",
+    "개행 없는 한 줄": "\n",
+    "a\nb\n": "\n",
+    "a\r\nb\r\n": "\r\n",
+    "a\r\nb\nc\r\n": "\r\n",
+    "a\nb\r\nc\n": "\n",
+    "a\r\nb\n": "\r\n",   # 동수 → 첫 등장이 CRLF
+    "a\nb\r\n": "\n",     # 동수 → 첫 등장이 LF
+    "a\rb\r": "\n",       # lone CR 은 개행 표기로 세지 않는다
+}
+
+
+def test_newline_notation_primitives_agree_across_engine_modules():
+    implementations = {
+        "pm_import.dominant_newline": _load_engine_module("pm_import").dominant_newline,
+        "pm_update._dominant_newline": _load_engine_module("pm_update")._dominant_newline,
+        "board._dominant_newline": _load_engine_module("board")._dominant_newline,
+    }
+    for text, expected in _NEWLINE_CASES.items():
+        for label, implementation in implementations.items():
+            assert implementation(text) == expected, (
+                f"{label} 이 표기 규칙에서 갈렸다: {text!r} → {implementation(text)!r} "
+                f"(기대 {expected!r})")
+
+
+def test_newline_preserving_round_trip_keeps_bytes(tmp_path):
+    """`read_text_preserving_newline` → `write_text_preserving_newline` 왕복은 bytes 를 보존한다."""
+    pm_import = _load_engine_module("pm_import")
+    for payload in (b"a\r\nb\r\n", b"a\nb\n", b"a\r\nb\r\nc", b""):
+        path = tmp_path / "sample.txt"
+        path.write_bytes(payload)
+        text, newline = pm_import.read_text_preserving_newline(path)
+        assert "\r\n" not in text, "판정용 본문은 LF 정규화여야 한다"
+        pm_import.write_text_preserving_newline(path, text, newline)
+        assert path.read_bytes() == payload, f"왕복이 bytes 를 바꿨다: {payload!r}"

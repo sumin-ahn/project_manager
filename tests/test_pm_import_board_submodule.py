@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -294,6 +295,42 @@ def test_submodule_add_failure_cleans_partial_board(pm_import, tmp_path, monkeyp
         ".git/modules 잔재"
     # step4(wiki/tickets 제거)는 submodule add 성공 후라 — 실패 시 미도달(트리 복사분 보존).
     assert (dest / ".project_manager" / "wiki" / "tickets" / "_template.md").is_file()
+
+
+def _read_only_object_tree(root: Path) -> Path:
+    """git object 캐시 형상 — read-only object 파일 + 쓰기 권한 없는 디렉터리.
+
+    git 은 object·packfile 을 read-only 로 만든다. 파일만 read-only 로 두면 POSIX 는 부모
+    디렉터리 권한만 보므로 그냥 지워진다 — 디렉터리 조합까지 넣어야 이 축이 Linux 에서도 red 로
+    재현된다(Windows 는 파일 속성만으로도 삭제가 거부된다·`[WinError 5]`).
+    """
+    objects = root / "objects" / "10"
+    objects.mkdir(parents=True, exist_ok=True)
+    blob = objects / "a9500e"
+    blob.write_bytes(b"packed object\n")
+    os.chmod(blob, stat.S_IREAD)
+    os.chmod(objects, stat.S_IREAD | stat.S_IEXEC)
+    return objects
+
+
+def test_partial_board_cleanup_removes_read_only_git_objects(pm_import, tmp_path, capsys):
+    """부분 board 정리가 read-only git object 에 막히지 않는다 (`.git/modules` 잔재 폐쇄).
+
+    옛 정리는 `shutil.rmtree(..., ignore_errors=True)` 라 실패가 흔적 없이 사라졌다 — Windows
+    에서는 그래서 `.git/modules/.project_manager/board` 가 통째로 남고, 그 잔재가 fresh dest
+    재시도까지 막는다(실측).
+    """
+    dest = tmp_path / "home"
+    modules_board = dest / ".git" / "modules" / ".project_manager" / "board"
+    board_dir = dest / ".project_manager" / "board"
+    _read_only_object_tree(modules_board)
+    _read_only_object_tree(board_dir / ".git")
+
+    pm_import._cleanup_partial_board(dest)
+
+    assert not modules_board.exists(), ".git/modules 잔재 — 정리 실패가 삼켜졌다"
+    assert not board_dir.exists(), "board/ 잔재 — 정리 실패가 삼켜졌다"
+    assert "정리 실패" not in capsys.readouterr().err
 
 
 # ════════════════════════════════════════════════════════════════════════════

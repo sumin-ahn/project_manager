@@ -3139,7 +3139,15 @@ def test_target_export_wiring_sensitivity_identity_renderer_leaves_wrong_prefix(
     assert "/pm-bootstrap" in rendered and "$pm-bootstrap" not in rendered
 
 
-def test_render_comparison_detects_crlf_byte_drift(pm_update, tmp_path):
+def test_render_comparison_ignores_newline_notation_and_write_preserves_it(
+        pm_update, tmp_path):
+    """개행 표기만 다른 dest 는 '변경 없음'이고, 실제 변경은 dest 표기 그대로 기록된다 (T-0709).
+
+    Windows 채택자 체크아웃(`core.autocrlf=true`)의 전파 트리는 CRLF 다. 표기 차이를 '다름'으로
+    읽으면 self-update 가 같은 소스인데 트리를 통째로 되쓰고(pm_import↔pm_update 렌더 drift),
+    LF 로 되쓰면 채택자가 손대지 않은 줄까지 전면 diff 가 된다. 판정은 정규화 후, 쓰기는 표기
+    보존이다. 내용 변경 탐지력은 아래 후반부와
+    `test_render_comparison_treats_non_utf8_destination_as_update` 가 지킨다."""
     source = tmp_path / "source"
     src = source / "card.md"
     src.parent.mkdir(parents=True)
@@ -3156,11 +3164,44 @@ def test_render_comparison_detects_crlf_byte_drift(pm_update, tmp_path):
         dest_root=dest,
         entry_notation_template="claude_code",
     )
+    assert not missing and changes == []
+    assert dst.read_bytes() == b"/pm-bootstrap\r\n", "표기만 다른 dest 를 되썼다(churn)"
+
+    # 내용이 실제로 바뀌면 update 로 잡히고, 기록은 dest 의 CRLF 표기를 유지한다.
+    src.write_bytes(b"/pm-bootstrap\nsecond line\n")
+    changes, missing = pm_update.plan(
+        source,
+        [pm_update.ManifestEntry("card.md", render=True)],
+        dest_root=dest,
+        entry_notation_template="claude_code",
+    )
     assert not missing and [(rel, kind) for rel, _, _, kind in changes] == [
         ("card.md", "update")
     ]
     pm_update.apply(changes)
-    assert dst.read_bytes() == b"/pm-bootstrap\n"
+    assert dst.read_bytes() == b"/pm-bootstrap\r\nsecond line\r\n"
+
+
+def test_render_write_uses_source_notation_for_new_destination(pm_update, tmp_path):
+    """dest 부재(첫 배달)면 소스 표기를 따른다 — pm_import 의 byte-copy+표기보존 렌더와 동형."""
+    source = tmp_path / "source"
+    src = source / "card.md"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"/pm-bootstrap\r\ncard\r\n")
+    _track_source_tree(source)
+    dest = tmp_path / "dest"
+
+    changes, missing = pm_update.plan(
+        source,
+        [pm_update.ManifestEntry("card.md", render=True)],
+        dest_root=dest,
+        entry_notation_template="claude_code",
+    )
+    assert not missing and [(rel, kind) for rel, _, _, kind in changes] == [
+        ("card.md", "new")
+    ]
+    pm_update.apply(changes)
+    assert (dest / "card.md").read_bytes() == b"/pm-bootstrap\r\ncard\r\n"
 
 
 def test_render_comparison_treats_non_utf8_destination_as_update(pm_update, tmp_path):

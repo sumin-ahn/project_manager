@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -1625,13 +1625,16 @@ def test_bootstrap_task_prefix_surface_shows_value(bootstrap, tmp_path, capsys):
 
 
 def test_bootstrap_task_resume_reads_pm_state_pointer(bootstrap, tmp_path, capsys):
-    """resume — 서술 pm_state 포인터 surface(읽기 경로·쓰기는 T-0356)."""
+    """resume — 서술 pm_state 포인터 surface(읽기 경로·쓰기는 T-0356).
+
+    포인터 줄은 엔진 렌더(`_render_task_pm_state_pointer`)로 대조한다 — 문구/경로 표기를 손으로
+    재타이핑하면 렌더가 바뀔 때 테스트만 옛 형식에 남는다."""
     wp = FakeWorktreePool(task_dir_root=tmp_path / "tasks", task_action="resumed")
     inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
     inst.run(task="job1")
     out = capsys.readouterr().out
-    assert "pm_state (이 task" in out
-    assert "tasks/job1/pm_state.md" in out
+    assert bootstrap._render_task_pm_state_pointer(
+        tmp_path / "tasks" / "job1" / "pm_state.md") in out
 
 
 def test_bootstrap_task_active_elsewhere_rejects_before_dump(bootstrap, tmp_path, capsys):
@@ -1788,7 +1791,8 @@ def test_task_first_session_has_state_and_announces_session_one(bootstrap, tmp_p
     rc = inst.run(task="job1")
     assert rc == 0
     out = capsys.readouterr().out
-    assert "pm_state (이 task" in out and "tasks/job1/pm_state.md" in out
+    assert bootstrap._render_task_pm_state_pointer(
+        tmp_path / "tasks" / "job1" / "pm_state.md") in out
     assert "🆕 첫 바인딩 슬롯" not in out
     assert "## PM 1차 부트스트랩" in out
 
@@ -1852,3 +1856,79 @@ def test_task_ignores_untagged_and_slot_tagged_log(bootstrap, tmp_path, capsys):
     assert "## PM 5차 부트스트랩" not in out
     assert "무태그-타슬롯-표식" not in out
     assert "슬롯태그-표식" not in out
+
+
+# ── task pm_state 포인터의 경로 표기 (Windows 분기를 Linux 에서 태운다·T-0718) ──────
+# 구분자는 OS 가 정하므로(`str(WindowsPath)` → `\`) Linux 회귀는 그대로면 Windows 분기를 못 태운다.
+# `PureWindowsPath` 대역을 pool 에 주입해 그 표기만 재현하고, 포인터 surface 가 POSIX 단일
+# (`_display_path_text`)로 나오는지 본다 — 표기가 갈리면 세션 정체성 복구 앵커가 OS 를 건너
+# 다른 문자열로 읽힌다(축 A·B).
+
+_WINDOWS_TASK_ROOT = "C:/pmhome/.project_manager/.local/tasks"
+
+
+class _WindowsFlavourPath(PureWindowsPath):
+    """Linux 에서 `WindowsPath` 표기(역슬래시 `str()`)를 태우는 경로 대역 — 실 IO 는 없다.
+
+    부트스트랩이 task 경로에 거는 실 IO 는 bind 뒤 존재 확인뿐이라(`pm_state.exists()`) 그것만
+    True 로 고정하고, pool 대역이 부르는 `mkdir` 은 no-op 로 흡수한다."""
+
+    def exists(self) -> bool:
+        return True
+
+    def mkdir(self, *args, **kwargs) -> None:
+        return None
+
+
+class _WindowsFlavourTaskPool(FakeWorktreePool):
+    """`task_dir` 만 Windows 표기로 돌려주는 pool 대역 — 나머지 bind/resume 동작은 공용 mock."""
+
+    def task_dir(self, name):
+        return _WindowsFlavourPath(_WINDOWS_TASK_ROOT) / name
+
+
+def _windows_task_pm_state(name: str) -> _WindowsFlavourPath:
+    return _WindowsFlavourPath(_WINDOWS_TASK_ROOT) / name / "pm_state.md"
+
+
+def test_display_path_text_serializes_windows_path_as_posix(bootstrap):
+    """`_display_path_text` = POSIX 단일 직렬화 — 이미 문자열인 경로는 추측 치환하지 않는다."""
+    assert bootstrap._display_path_text(
+        _windows_task_pm_state("job1")
+    ) == f"{_WINDOWS_TASK_ROOT}/job1/pm_state.md"
+    assert bootstrap._display_path_text(Path("/pmhome/tasks/job1")) == "/pmhome/tasks/job1"
+    # POSIX 파일명엔 `\` 가 정당하게 들어갈 수 있다 — 문자열 입력을 구분자로 해석하지 않는다.
+    assert bootstrap._display_path_text("weird\\name") == "weird\\name"
+
+
+def test_task_pm_state_pointer_is_posix_on_windows_path(bootstrap, tmp_path, capsys):
+    """축 A — Windows 표기 경로에서도 pm_state 포인터가 POSIX 단일 표기로 나온다."""
+    wp = _WindowsFlavourTaskPool(task_dir_root=tmp_path / "tasks", task_action="resumed")
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+
+    rc = inst.run(task="job1")
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert bootstrap._render_task_pm_state_pointer(_windows_task_pm_state("job1")) in out
+    assert "tasks/job1/pm_state.md" in out
+    assert "tasks\\job1" not in out   # 첫-turn 안내 포함 전 surface 가 native 표기로 새지 않는다.
+
+
+def test_task_first_session_pointer_announced_on_windows_path(bootstrap, tmp_path, capsys):
+    """축 B — 신규 task 첫 진입 안내(포인터 줄)가 Windows 표기 경로에서도 뜬다.
+
+    `_pm_state_file` 주입을 우회해 task 서술 pm_state 해소 경로(F7)를 태운다."""
+    wp = _WindowsFlavourTaskPool(task_dir_root=tmp_path / "tasks", task_action="created")
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
+    inst._pm_state_file = None
+
+    rc = inst.run(task="job1")
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert bootstrap._TASK_PM_STATE_POINTER_LABEL in out
+    assert bootstrap._render_task_pm_state_pointer(_windows_task_pm_state("job1")) in out
+    # 첫-turn 안내(`_pm_state_display_path` 소비 2줄)도 같은 POSIX 표기를 쓴다.
+    assert inst._pm_state_display_path() == f"{_WINDOWS_TASK_ROOT}/job1/pm_state.md"
+    assert "tasks\\job1" not in out

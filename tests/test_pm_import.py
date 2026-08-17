@@ -24,7 +24,9 @@ import yaml
 
 from _win_skip import _can_symlink
 from _harness_matrix import HARNESSES, HARNESS_ADAPTER_DIRS, HARNESS_ROOT_DOC
-from _textio import write_lf
+from _textio import (
+    dominant_newline_bytes, write_crlf, write_lf, write_matching_newlines,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -2126,7 +2128,14 @@ def test_arbitrary_selection_manifest_union_survives_pm_update(
         # @render 파일은 source token-form이 아니라 채택자 local.conf로 렌더된 byte가 정답이다.
         # 같은 conf의 pm_update 뒤에는 import 직후 byte로 되돌아와야 한다.
         expected[rel] = (dest / rel).read_bytes()
-        (dest / rel).write_text(f"stale {rel}\n", encoding="utf-8")
+        # 손상은 **내용만** 바꾼다. 플랫폼 기본 텍스트 쓰기는 Windows에서 표기까지 CRLF로 바꾸고,
+        # 엔진은 그 dest 표기를 충실히 보존하므로(T-0709) 되돌아온 byte가 표기만 달라 "갱신
+        # 실패"로 보였다(T-0724 실측). 갱신 축을 표기 축과 섞지 않는다.
+        write_matching_newlines(dest / rel, f"stale {rel}\n", like=expected[rel])
+        stale = (dest / rel).read_bytes()
+        assert stale != expected[rel], f"픽스처가 {rel} 손상을 만들지 못했다"
+        assert dominant_newline_bytes(stale) == dominant_newline_bytes(expected[rel]), \
+            f"픽스처가 {rel}의 개행 표기까지 바꿨다 — 손상 축이 표기 축과 섞인다"
 
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
@@ -5602,7 +5611,10 @@ def test_install_records_adapter_baseline_for_laid_down_configs(pm_import, tmp_p
     """최초 import 가 레이다운한 instance-owned config 의 template 해시를 원장에 기록한다.
 
     기록이 곧 다음 동기의 판정 기준이다 — 없으면 그 인스턴스는 영구 보고 모드(상류 동작 fix 미도달).
-    루트 진입 문서(`none` 분류)는 채널이 없으므로 기록 대상이 아니다."""
+    루트 진입 문서(`none` 분류)는 채널이 없으므로 기록 대상이 아니다.
+
+    대조 축은 **판정이 쓰는 축**(`content_sha256`)이다 — 여기서 raw 해시를 손으로 재타이핑하면
+    CRLF 체크아웃(Windows manager)에서 정상 기록을 불일치로 읽는다(기록↔판정 축 분리)."""
     dest = tmp_path / "baseline-install"
     assert pm_import.main([
         "--new", str(dest), "--harness", "codex", "--name", "Ledger Adopter",
@@ -5613,8 +5625,11 @@ def test_install_records_adapter_baseline_for_laid_down_configs(pm_import, tmp_p
         f"원장 기록 집합이 채널 대상과 다름: {sorted(files)}")
     template_root = REPO / "templates" / "codex"
     for rel, entry in files.items():
-        assert entry["sha256"] == pm_import.file_sha256(template_root / rel), \
+        assert entry["sha256"] == pm_import.content_sha256(template_root / rel), \
             f"{rel}: 원장 해시가 template 과 다름(레이다운 시점 기록이 아니다)"
+        # 기록 축 == 판정 축: 같은 값이 레이다운한 dest 에서도 나와야 다음 동기가 수렴한다.
+        assert entry["sha256"] == pm_import.content_sha256(dest / rel), \
+            f"{rel}: 원장 해시가 레이다운한 dest 와 다름(판정 축이 갈렸다)"
         assert entry["recorded_at"] and "template_rev" in entry
 
 
@@ -5674,9 +5689,10 @@ def test_adapter_config_partial_managed_regular_file_read_failure_is_unavailable
     candidate = dest / ".codex" / "hooks.json"
     candidate.parent.mkdir(parents=True)
     candidate.write_text('{"hooks": {"old": true}}\n', encoding="utf-8")
-    original_sha = pm_import.file_sha256
+    # 주입 지점은 **판정이 쓰는 다이제스트**다(T-0710 이후 `content_sha256` — 개행 정규화 축).
+    original_sha = pm_import.content_sha256
     monkeypatch.setattr(
-        pm_import, "file_sha256",
+        pm_import, "content_sha256",
         lambda path: None if Path(path) == candidate else original_sha(path))
 
     with pytest.raises(pm_import.AdapterConfigChannelUnavailable, match="dest를 읽을 수 없다"):
@@ -5770,8 +5786,10 @@ def test_sync_adapter_config_list_and_accept_via_pm_config(
 
     upstream_bytes = (REPO / "templates" / "codex" / ".codex" / "hooks.json").read_bytes()
     assert (dest / ".codex" / "hooks.json").read_bytes() == upstream_bytes
+    # 원장은 **판정 축**(`content_sha256`)으로 기록한다 — raw 해시를 손으로 재타이핑하면 CRLF
+    #   체크아웃에서 정상 수용을 불일치로 읽는다.
     assert _ledger_files(dest)[".codex/hooks.json"]["sha256"] == \
-        pm_import.file_sha256(REPO / "templates" / "codex" / ".codex" / "hooks.json")
+        pm_import.content_sha256(REPO / "templates" / "codex" / ".codex" / "hooks.json")
     backup = (dest / ".pm_import_backups" / datetime.date.today().isoformat()
               / ".codex" / "hooks.json")
     assert backup.is_file() and backup.read_text(encoding="utf-8") == edited, \
@@ -5823,13 +5841,16 @@ def test_sync_adapter_config_list_label_reflects_mode_not_status_alone(
         "--new", str(dest), "--harness", "codex", "--name", "Label Adopter",
     ]) == 0
     # 두 파일 모두 "무편집(원장 일치)인데 template 과 다름" 상태로 만든다 — mode 만 다르다.
+    #   픽스처 bytes 는 `write_lf` 로 고정하고 원장은 **판정 축**(`content_sha256`)으로 심는다 —
+    #   플랫폼 기본 개행 + raw 해시로 만들면 Windows 에서만 구 원장(raw 축) 상태가 되어, 이 게이트가
+    #   재려는 라벨 축 대신 마이그레이션 축을 재게 된다(그 축은 아래 전용 회귀가 본다).
     ledger_path = dest / ".project_manager" / "adapter_baseline.json"
     ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
     for rel, body in ((".codex/hooks.json", '{"hooks": {}}\n'),
                       (".codex/config.toml", 'sandbox_mode = "read-only"\n')):
-        (dest / rel).write_text(body, encoding="utf-8")
-        ledger["files"][rel]["sha256"] = pm_import.file_sha256(dest / rel)
-    ledger_path.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
+        write_lf(dest / rel, body)
+        ledger["files"][rel]["sha256"] = pm_import.content_sha256(dest / rel)
+    write_lf(ledger_path, json.dumps(ledger, indent=2) + "\n")
     capsys.readouterr()
 
     args = argparse.Namespace(list=True, accept=None, source=str(REPO))
@@ -5842,6 +5863,154 @@ def test_sync_adapter_config_list_label_reflects_mode_not_status_alone(
     assert "보고 전용" in lines[".codex/config.toml"], lines[".codex/config.toml"]
     assert "다음 동기가 자동 갱신" not in lines[".codex/config.toml"], \
         "보고-전용 대상에 자동 갱신 안내(거짓)"
+
+
+# ── 구 원장(raw bytes 축) 무변경 마이그레이션 (T-0723) ────────────────────────
+# 상류 체크아웃까지 CRLF 인 Windows manager 로 설치한 채택자는 원장에 **CRLF raw 다이제스트**가
+# 들어갔다(판정을 내용 축으로 옮기기 전 엔진). 그 파일의 template 이 그 뒤 바뀌면 dest 가 template
+# 과 달라 in-sync backfill 이 닿지 않고, 설치 이후 아무것도 안 한 채택자가 영구히 `edited`
+# (채택자 편집 — 보존)로 오판된다. 아래 픽스처는 그 상류 CRLF 형상을 LF 환경(Linux)에서 그대로
+# 재현한다 — `write_crlf` 가 없으면 두 축이 같은 값이라 가드가 시험조차 되지 않는다.
+
+_LEGACY_CRLF_HOOKS = '{\n  "hooks": {\n    "PreCompact": ["레이다운 시점 값"]\n  }\n}\n'
+_CURRENT_HOOKS = '{\n  "hooks": {\n    "PreCompact": ["상류 동작 fix"]\n  }\n}\n'
+
+
+def _legacy_raw_digest_instance(pm_import, root: Path) -> tuple[Path, Path, Path]:
+    """구 원장(raw 축) + 상류가 그 뒤 바뀐 형상 — (source, dest, ledger_path).
+
+    dest 는 **레이다운 시점 bytes 그대로**(CRLF)이고 원장에는 그 bytes 의 raw 해시가 들어 있다.
+    상류 template 만 새 내용으로 전진해 있다(= 그 채택자가 받아야 할 동작 fix).
+    """
+    source = root / "source"
+    template = source / "templates" / "codex" / ".codex" / "hooks.json"
+    template.parent.mkdir(parents=True)
+    write_crlf(template, _CURRENT_HOOKS)
+    dest = root / "legacy-ledger"
+    hooks = dest / ".codex" / "hooks.json"
+    hooks.parent.mkdir(parents=True)
+    write_crlf(hooks, _LEGACY_CRLF_HOOKS)
+    ledger_path = dest / ".project_manager" / "adapter_baseline.json"
+    ledger_path.parent.mkdir(parents=True)
+    write_lf(ledger_path, json.dumps({
+        "schema": 1,
+        "files": {
+            ".codex/hooks.json": {
+                "sha256": pm_import.file_sha256(hooks),
+                "recorded_at": "2025-11-03T09:00:00+09:00",
+                "template_rev": "0" * 40,
+            },
+        },
+    }, indent=2) + "\n")
+    # 주입이 실제로 걸렸는가 — 두 축이 갈린 상태여야 이 회귀가 마이그레이션을 시험한다.
+    assert pm_import.file_sha256(hooks) != pm_import.content_sha256(hooks), \
+        "픽스처가 CRLF 축을 싣지 못했다(구 원장 상태 재현 실패·공허 회귀)"
+    assert pm_import.content_sha256(template) != pm_import.content_sha256(hooks), \
+        "픽스처 상류가 전진하지 않았다(in-sync backfill 이 닿는 상태·공허 회귀)"
+    return source, dest, ledger_path
+
+
+def test_legacy_raw_digest_ledger_is_judged_unedited_not_adopter_edit(
+        pm_import, tmp_path):
+    """구 원장(raw 축) 항목은 `edited` 가 아니라 `unedited` 다 — 그 bytes 가 기록 그대로다.
+
+    저장 값이 dest **raw** 해시와 같다는 건 기록 시점 이후 아무도 손대지 않았다는 뜻이라,
+    내용 동일성보다 강한 무편집 증거다. `edited` 로 접으면 채택자에게 "네가 편집했다" 는 거짓을
+    말하고 상류 동작 fix 를 `--accept` 1회 수동 조작 뒤로 미룬다."""
+    source, dest, _ledger = _legacy_raw_digest_instance(pm_import, tmp_path)
+
+    judgments = pm_import.judge_adapter_configs(dest, source)
+
+    assert [(item.relpath, item.status) for item in judgments] == [
+        (".codex/hooks.json", "unedited")]
+
+
+def test_record_adapter_baseline_migrates_legacy_raw_digest_without_touching_file(
+        pm_import, tmp_path):
+    """구 원장 항목을 현재 축으로 재기록한다 — 채택자 파일 bytes 와 레이다운 메타는 불변.
+
+    바뀌는 건 같은 사실의 표현(원장 값)뿐이다. `recorded_at`·`template_rev` 까지 현재로 밀면
+    이번 실행이 관측하지 않은 세대를 주장하게 되고, 세대 델타 보고가 침묵한다."""
+    source, dest, ledger_path = _legacy_raw_digest_instance(pm_import, tmp_path)
+    hooks = dest / ".codex" / "hooks.json"
+    before_bytes = hooks.read_bytes()
+    before_entry = json.loads(ledger_path.read_text(encoding="utf-8"))["files"][
+        ".codex/hooks.json"]
+
+    assert pm_import.record_adapter_baseline(dest, source) == [".codex/hooks.json"]
+
+    entry = json.loads(ledger_path.read_text(encoding="utf-8"))["files"][
+        ".codex/hooks.json"]
+    assert entry["sha256"] == pm_import.content_sha256(hooks), \
+        "재기록 값이 판정 축(content_sha256)이 아니다"
+    assert entry["recorded_at"] == before_entry["recorded_at"]
+    assert entry["template_rev"] == before_entry["template_rev"], \
+        "마이그레이션이 관측하지 않은 세대를 주장했다(세대 델타 침묵)"
+    assert hooks.read_bytes() == before_bytes, \
+        "무변경 마이그레이션이 채택자 파일 bytes 를 바꿨다"
+    # 재기록 뒤에는 구 축 없이도 같은 판정이 나온다(마이그레이션 수렴 · 축 누적 0).
+    judgment = pm_import.judge_adapter_configs(dest, source)[0]
+    assert (judgment.status, judgment.baseline_sha256) == (
+        "unedited", judgment.dest_sha256)
+
+
+def test_record_adapter_baseline_records_content_digest_for_crlf_upstream_laydown(
+        pm_import, tmp_path):
+    """CRLF 상류를 그대로 내려놓은 직후의 기록 값도 **판정 축**이다 (기록↔판정 축 일치).
+
+    레이다운 시점 기록이 raw 축으로 남으면 그 인스턴스는 설치 직후부터 구 원장 상태가 된다."""
+    source = tmp_path / "source"
+    template = source / "templates" / "codex" / ".codex" / "hooks.json"
+    template.parent.mkdir(parents=True)
+    write_crlf(template, _CURRENT_HOOKS)
+    dest = tmp_path / "crlf-laydown"
+    hooks = dest / ".codex" / "hooks.json"
+    hooks.parent.mkdir(parents=True)
+    hooks.write_bytes(template.read_bytes())  # 레이다운 = byte-copy.
+    (dest / ".project_manager").mkdir()  # 원장이 앉을 자리(설치 트리 형상).
+    assert pm_import.file_sha256(template) != pm_import.content_sha256(template), \
+        "픽스처가 CRLF 축을 싣지 못했다(공허 회귀)"
+
+    assert pm_import.record_adapter_baseline(dest, source) == [".codex/hooks.json"]
+
+    entry = json.loads(
+        (dest / ".project_manager" / "adapter_baseline.json").read_text(
+            encoding="utf-8"))["files"][".codex/hooks.json"]
+    assert entry["sha256"] == pm_import.content_sha256(template) \
+        == pm_import.content_sha256(hooks), \
+        "레이다운 시점 기록이 template 내용 다이제스트와 다르다"
+    assert pm_import.judge_adapter_configs(dest, source)[0].status == "in-sync"
+
+
+def test_sync_updates_legacy_raw_digest_managed_config_without_requiring_accept(
+        pm_import, pm_update, tmp_path):
+    """실 sync 가 구 원장 managed config 를 자동 갱신하고 원장을 수렴시킨다 — `--accept` 불요.
+
+    합성 판정이 아니라 pm_update 의 동기 채널을 태운다. 이 경로가 `preserved`(채택자 편집)로
+    떨어지면 채택자는 상류 동작 fix 를 받으려고 거짓 안내대로 수동 수용을 해야 한다."""
+    dest = tmp_path / "legacy-sync"
+    assert pm_import.main([
+        "--new", str(dest), "--harness", "codex", "--name", "Legacy Ledger Adopter",
+    ]) == 0
+    hooks = dest / ".codex" / "hooks.json"
+    write_crlf(hooks, _LEGACY_CRLF_HOOKS)
+    ledger_path = dest / ".project_manager" / "adapter_baseline.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger["files"][".codex/hooks.json"]["sha256"] = pm_import.file_sha256(hooks)
+    write_lf(ledger_path, json.dumps(ledger, indent=2) + "\n")
+    assert pm_import.file_sha256(hooks) != pm_import.content_sha256(hooks), \
+        "픽스처가 CRLF 축을 싣지 못했다(구 원장 상태 재현 실패·공허 회귀)"
+
+    result = pm_update.sync_adapter_configs(dest, REPO, write=True)
+
+    assert result["status"] == "ok"
+    assert [item["relpath"] for item in result["updated"]] == [".codex/hooks.json"], \
+        f"구 원장 무편집 파일이 자동 갱신 대상이 아니다: {result}"
+    assert result["preserved"] == [], \
+        f"무편집 파일을 채택자 편집으로 보존했다(거짓 --accept 처방): {result['preserved']}"
+    assert result["managed_converged"], f"동기 후에도 미수렴: {result['blocking']}"
+    assert hooks.read_bytes() == (
+        REPO / "templates" / "codex" / ".codex" / "hooks.json").read_bytes()
 
 
 def test_build_parser_routes_sync_adapter_config(pm_config):

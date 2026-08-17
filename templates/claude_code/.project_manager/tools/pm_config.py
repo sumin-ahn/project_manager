@@ -641,6 +641,34 @@ def _classify_upstream(value: str) -> str | None:
         return None
 
 
+def _expanduser_path(path: Path) -> Path:
+    """`~`/`~user` 확장의 플랫폼 seam — 회귀가 Windows 확장 동작을 주입해 태울 수 있게 연 자리."""
+    return path.expanduser()
+
+
+def _expanded_user_path(value: str) -> Path:
+    """`~`/`~user` 를 확장한다 — **없는 사용자는 플랫폼과 무관하게 해소 실패**(RuntimeError).
+
+    POSIX 의 `expanduser()` 는 `pwd` 조회 실패를 RuntimeError 로 올리지만, Windows 는 존재하지
+    않는 사용자도 `C:\\Users\\<name>` 으로 조립해 준다. 그래서 같은 입력이 한쪽에서만 해소되고
+    뒤 단계가 다른 분기를 탄다 — 보호 훅 설치는 "해소 실패"에서 멈춰야 하는데 Windows 에서는
+    phantom 홈 경로로 raw installer 까지 갔다(안전 경계가 열린다). `~user` 형태는 **그 사용자
+    홈의 실재**를 판정에 넣어 두 플랫폼이 같은 결론에 도달하게 한다.
+
+    `~`(현재 사용자)는 두 플랫폼이 같은 환경변수 축(HOME/USERPROFILE)으로 확장하므로 분기가
+    갈리지 않는다 — 실재 검사를 걸지 않는다(홈 디렉터리가 아직 없는 정상 형상까지 막지 않게).
+    """
+    path = Path(value)
+    expanded = _expanduser_path(path)
+    first = path.parts[0] if path.parts else ""
+    if first.startswith("~") and len(first) > 1:
+        home = _expanduser_path(Path(first))
+        if not home.is_dir():
+            raise RuntimeError(
+                f"`{first}` 사용자 홈을 해소하지 못했다(없는 사용자 또는 홈 부재): {home}")
+    return expanded
+
+
 def _protected_push_gate_config(
     repo: str, *, board=None, report_downgrade: bool = True,
 ) -> tuple[str, str]:
@@ -692,10 +720,19 @@ def _protected_push_gate_config(
             )
         return _PROTECTED_GATE_SELF_TEST, test_cmd
 
-    candidate = Path(upstream).expanduser()
-    if not candidate.is_absolute():
-        candidate = REPO / candidate
-    candidate = candidate.resolve()
+    # 경로 해소 실패는 **어떤 값이** 안 풀렸는지와 함께 올린다 — 호출부(`_install_protected_hook`)
+    # 는 원인만 기록하고 fail-soft 하는데, 플랫폼마다 문구가 달라(POSIX "embedded null byte" /
+    # Windows "stat: embedded null character in path") 입력을 안 실으면 진단이 남지 않는다.
+    try:
+        candidate = _expanded_user_path(upstream)
+        if not candidate.is_absolute():
+            candidate = REPO / candidate
+        candidate = candidate.resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        if _is_engine_rev_skew(exc):
+            raise
+        raise RuntimeError(
+            f"upstream 경로 해소 실패({upstream}) — {type(exc).__name__}: {exc}") from exc
     work_root = (REPO / "work").resolve()
     name, sep, slot_no = candidate.name.rpartition("_")
     if candidate.parent == work_root and sep and name == repo and slot_no.isdigit():
@@ -3717,7 +3754,7 @@ def cmd_sync_adapter_config(
         if not unconverged:
             if hook_set_failed:
                 return _finish_sync_adapter_config(1, check=True)
-            print("✓ managed 어댑터 config 수렴 확인 (template byte + 원장 dest hash).")
+            print("✓ managed 어댑터 config 수렴 확인 (template 내용 + 원장 dest hash).")
             return _finish_sync_adapter_config(0, check=True)
         print("[중단] managed 어댑터 config 미수렴:", file=sys.stderr)
         for judgment, status in unconverged:
@@ -4258,7 +4295,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync_cfg_mode.add_argument(
         "--check", action="store_true",
-        help="managed 대상의 template byte + 원장 dest hash 수렴을 읽기 전용으로 검사한다 "
+        help="managed 대상의 template 내용 + 원장 dest hash 수렴을 읽기 전용으로 검사한다 "
              "(미수렴/판정 unavailable rc 1·report-only 차이는 비차단).",
     )
     sync_cfg_mode.add_argument(

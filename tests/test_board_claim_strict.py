@@ -26,6 +26,7 @@ import ast
 import importlib.util
 import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -96,6 +97,11 @@ def _load_board():
     return mod
 
 
+# "이미 배포된 board" 형상 = **엔진이 쓰는 그 블록 그대로**. 리터럴을 손으로 베끼면 규칙이
+# 넓어질 때 픽스처만 구세대로 남아, 커밋 스코프 단언에 backfill 잡음이 섞인다(T-0709 실측).
+_DEPLOYED_BOARD_GITATTRIBUTES = _load_board()._BOARD_GITATTRIBUTES_BLOCK
+
+
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True,
                           text=True, encoding="utf-8", errors="replace",
@@ -124,7 +130,7 @@ def _make_board_git(root: Path, *, remote: Path, tid: str = "T-0001",
     (board / "notes.md").write_text("original\n", encoding="utf-8")
     if gitattributes:
         (board / ".gitattributes").write_text(
-            "areas.md merge=union\n*.md text eol=lf\n", encoding="utf-8")
+            _DEPLOYED_BOARD_GITATTRIBUTES, encoding="utf-8", newline="\n")
     if gitignore:
         (board / ".gitignore").write_text("tickets/.drafts/\n", encoding="utf-8")
     _git(["init", "-q", "-b", "main"], board)
@@ -461,6 +467,69 @@ def test_rollback_restores_preexisting_clean_gitattributes(
     assert attrs.read_bytes() == original, "rollback 뒤 engine append 가 워킹트리에 남음."
     assert ".gitattributes" not in _porcelain(board_dir), \
         f"rollback 뒤 선재 루트 파일 index 상태가 dirty: {_porcelain(board_dir)}"
+
+
+@requires_git
+@pytest.mark.parametrize("preexisting", [None, b"*.md text eol=lf\n"])
+def test_backfill_writes_exactly_the_bytes_rollback_expects(
+        board, tmp_path, preexisting):
+    """backfill 이 **쓴 바이트**와 롤백이 되계산하는 바이트가 같다 (플랫폼 번역 금지).
+
+    롤백은 워킹트리 bytes 가 `_board_git_expected_backfill_state` 와 정확히 같을 때만 원복한다.
+    append 가 플랫폼 텍스트 모드로 열려 `\\n` 이 `\\r\\n` 으로 번역되면 이 대조가 어긋나
+    "제3자 변경" 으로 판정돼 backfill 잔재가 워킹트리에 눌러앉는다(Windows 실측). 선재 파일
+    유무 두 갈래(separator 분기)를 함께 못박는다.
+    """
+    bare = _bare(tmp_path, f"bare-backfill-bytes-{'pre' if preexisting else 'new'}")
+    board_dir = _make_board_git(
+        tmp_path, remote=bare, gitattributes=False, gitignore=False)
+    if preexisting is not None:
+        attrs = board_dir / ".gitattributes"
+        attrs.write_bytes(preexisting)
+        _git(["add", "--", ".gitattributes"], board_dir)
+        _git(["commit", "-qm", "seed custom attributes"], board_dir)
+
+    snapshot = board._board_git_root_files_snapshot()
+    written = board._ensure_board_root_files()
+
+    assert set(written) == {".gitattributes", ".gitignore"}, written
+    for name in written:
+        expected = board._board_git_expected_backfill_state(name, snapshot.states[name])
+        assert expected is not None
+        assert (board_dir / name).read_bytes() == expected.contents, \
+            f"{name} backfill 바이트가 롤백 기대와 다름 — 개행 번역/추가 write 의심."
+
+
+@requires_git
+def test_rollback_removes_a_read_only_backfill_file(board, tmp_path, capsys):
+    """부재였던 루트 파일은 read-only 여도 워킹트리에서 **실제로** 걷힌다.
+
+    맨 `unlink` 는 read-only 속성 파일을 Windows 가 거부하고, 쓰기 권한 없는 디렉터리 안에서는
+    POSIX 도 거부한다 — 그 실패를 경고로만 흘리면 backfill 파일이 잔재로 남아 다음 mutation 의
+    ensure 가 no-write 한다.
+    """
+    bare = _bare(tmp_path, "bare-root-rb-readonly")
+    board_dir = _make_board_git(
+        tmp_path, remote=bare, gitattributes=False, gitignore=False)
+    snapshot = board._board_git_root_files_snapshot()
+    attrs = board_dir / ".gitattributes"
+    expected = board._board_git_expected_backfill_state(
+        ".gitattributes", snapshot.states[".gitattributes"])
+    attrs.write_bytes(expected.contents)
+    snapshot.backfilled.append(".gitattributes")
+    os.chmod(attrs, stat.S_IREAD)
+    os.chmod(board_dir, stat.S_IREAD | stat.S_IEXEC)
+    try:
+        with pytest.raises(OSError):
+            attrs.unlink()          # 픽스처가 실제로 삭제를 막는지 먼저 확인.
+
+        restored = board._board_git_restore_root_files(snapshot)
+    finally:
+        os.chmod(board_dir, 0o700)
+
+    assert restored == (".gitattributes",)
+    assert not attrs.exists(), "rollback 뒤 read-only backfill 파일이 워킹트리에 남음."
+    assert "복원 실패" not in capsys.readouterr().err
 
 
 @requires_git

@@ -31,6 +31,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from _textio import normalize_newline_bytes
 from _win_skip import _can_symlink, posix_mode_supported
 
 REPO = Path(__file__).resolve().parents[1]
@@ -1182,6 +1183,86 @@ def test_build_env_allowlist_excludes_foreign_creds(pd, monkeypatch):
     assert env.get("CODEX_HOME") == "/iso/codex"
 
 
+def _windows_env_sample(**extra) -> dict[str, str]:
+    """Windows 부모 env 표본 — 정제가 무엇을 떨구는지 Linux 에서 그대로 태우는 주입값."""
+    sample = {
+        "PATH": r"C:\Windows\system32;C:\Python312",
+        "TEMP": r"C:\Users\pm\AppData\Local\Temp",
+        "TMP": r"C:\Users\pm\AppData\Local\Temp",
+        "SystemRoot": r"C:\Windows",
+        "SystemDrive": "C:",
+        "ComSpec": r"C:\Windows\system32\cmd.exe",
+        "PATHEXT": ".COM;.EXE;.BAT;.CMD;.PY",
+        "USERPROFILE": r"C:\Users\pm",
+        "APPDATA": r"C:\Users\pm\AppData\Roaming",
+        "LOCALAPPDATA": r"C:\Users\pm\AppData\Local",
+        "FOO_API_KEY": "leak-me",
+    }
+    sample.update(extra)
+    return sample
+
+
+def test_build_env_windows_keeps_harness_required_temp_and_system_keys(pd):
+    """Windows 축 정제가 임시 디렉터리·시스템 키를 떨구지 않는다(5차 측정 `KeyError: 'TMP'`)."""
+    source = _windows_env_sample()
+    env = pd.build_env("opencode", windows=True, source=source)
+    for key in ("TEMP", "TMP", "SystemRoot", "ComSpec", "PATHEXT",
+                "USERPROFILE", "APPDATA", "LOCALAPPDATA"):
+        assert env[key] == source[key], key
+    assert "FOO_API_KEY" not in env          # 타 크리덴셜 미상속 계약은 그대로
+
+
+def test_build_env_windows_env_names_are_case_insensitive(pd):
+    """Windows env 이름은 대소문자를 구분하지 않는다 — 사본 dict 로 넘어와도 필수 키를 찾는다."""
+    source = {key.upper(): value for key, value in _windows_env_sample().items()}
+    env = pd.build_env("codex", windows=True, source=source)
+    assert env["SystemRoot"] == source["SYSTEMROOT"]
+    assert env["ComSpec"] == source["COMSPEC"]
+    assert env["TEMP"] == source["TEMP"]
+
+
+def test_build_env_platform_key_declarations_stay_consistent(pd):
+    """필수/임시 키 선언이 그 플랫폼 allowlist 안에 있다 — 선언만 늘고 전달은 안 되는 drift 차단."""
+    windows_allowlist = set(pd._ENV_ALLOWLIST_BASE) | set(pd._ENV_ALLOWLIST_WINDOWS)
+    assert set(pd._TEMP_ENV_KEYS_WINDOWS) <= windows_allowlist
+    assert set(pd._REQUIRED_CHILD_ENV_KEYS_WINDOWS) <= windows_allowlist
+    assert set(pd._TEMP_ENV_KEYS_POSIX) <= set(pd._ENV_ALLOWLIST_BASE)
+    assert set(pd._REQUIRED_CHILD_ENV_KEYS_POSIX) <= set(pd._ENV_ALLOWLIST_BASE)
+    # POSIX 정제는 Windows 전용 키를 새로 흘리지 않는다(경계 유지).
+    assert not set(pd._ENV_ALLOWLIST_WINDOWS) & set(pd._ENV_ALLOWLIST_BASE)
+
+
+def test_build_env_absent_required_key_is_loud_with_reason(pd):
+    """부모 env 에 필수 키가 없으면 빈 값으로 스폰하지 않고 사유와 함께 멈춘다."""
+    source = _windows_env_sample()
+    source.pop("SystemRoot")
+    with pytest.raises(pd.DelegateError) as ei:
+        pd.build_env("claude", windows=True, source=source)
+    message = str(ei.value)
+    assert "SystemRoot" in message and "부모 env 없음" in message
+
+
+def test_build_env_dropped_required_key_names_the_sanitizer(pd, monkeypatch):
+    """부모엔 있는데 정제가 떨군 경우는 사유가 원인을 가른다(환경 문제와 구분)."""
+    monkeypatch.setattr(pd, "_ENV_ALLOWLIST_WINDOWS", ("TEMP", "TMP", "ComSpec"))
+    with pytest.raises(pd.DelegateError, match="정제가 떨굼"):
+        pd.build_env("codex", windows=True, source=_windows_env_sample())
+
+
+def test_build_env_fills_temp_from_measurement_when_parent_has_no_temp_name(
+        pd, monkeypatch):
+    """임시 디렉터리 이름이 부모 env 에 하나도 없으면 실측값으로 채운다(빈 채로 스폰 금지)."""
+    monkeypatch.setattr(pd, "_gettempdir", lambda: "/measured/tmp")
+    posix = pd.build_env("codex", windows=False, source={"PATH": "/usr/bin"})
+    assert posix[pd._TEMP_ENV_KEYS_POSIX[0]] == "/measured/tmp"
+    windows = pd.build_env("codex", windows=True, source={
+        "PATH": r"C:\Windows",
+        "SystemRoot": r"C:\Windows",
+        "ComSpec": r"C:\Windows\system32\cmd.exe",
+    })
+    assert windows[pd._TEMP_ENV_KEYS_WINDOWS[0]] == "/measured/tmp"
+
+
 def test_opencode_execution_injects_exact_runtime_role_after_env_sanitizing(
         pd, monkeypatch, tmp_path):
     """카드 없는 cross adopter도 exact role을 받고 사용자 inline config는 상속되지 않는다."""
@@ -1422,7 +1503,12 @@ def test_opencode_read_attempt_uses_measured_allowed_tmp_and_shared_cleanup(
         assert env["TEMP"] == str(writable_tmp)
         prompt_text = prompt_path.read_text(encoding="utf-8")
         assert str(writable_tmp) in prompt_text
-        assert '"$TMPDIR/opencode/pytest"' in prompt_text
+        # 임시 디렉터리 변수 표기는 실행 셸을 따른다(PowerShell 은 `$env:` 접두) — 기대값을
+        # 엔진 렌더에서 만들고 리터럴로 박지 않는다. 두 표기는 전용 회귀가 모두 태운다.
+        assert (
+            f'"{pd._temp_env_reference()}/'
+            f'{pd._READ_TMP_PYTEST_REL_BY_HARNESS["opencode"]}"'
+        ) in prompt_text
         (writable_tmp / "pytest-artifact").write_text("ok", encoding="utf-8")
         return {
             "returncode": 0, "stdout": _opencode_stdout("검토 완료"),
@@ -1440,6 +1526,326 @@ def test_opencode_read_attempt_uses_measured_allowed_tmp_and_shared_cleanup(
     assert not seen["prompt_path"].exists()
     assert not (temp_root / pd._OPENCODE_READ_TMP_PARENT).exists()
     assert not (cwd / ".project_manager").exists()
+
+
+# ── ACL 플랫폼(Windows) 등가 수단 — fd 결속 primitive 없이 같은 쓰기 표면 ──────────
+# 5차 Windows 측정에서 세 하네스가 모두 `read-only`/`--add-dir 부재`/`KeyError: 'TMP'` 로 끝난
+# 원인은 이 수단 부재였다. 아래 fixture 가 그 플랫폼 축을 Linux 에서 그대로 태운다.
+
+@pytest.fixture
+def acl_platform(pd, monkeypatch):
+    """fd 결속 primitive 가 없는 ACL 플랫폼을 주입한다(실제 실행 플랫폼과 무관하게 태운다)."""
+    monkeypatch.setattr(pd, "_READ_TMP_FD_SUPPORTED", False)
+    monkeypatch.setattr(pd, "_read_tmp_owner_acl_platform", lambda: True)
+
+
+def _acl_read_attempt(pd, monkeypatch, tmp_path, harness, model, stdout_fn):
+    """ACL 수단으로 read 역할 attempt 1회를 돌리고 관측값을 돌려준다."""
+    temp_root = tmp_path / "system-temp"
+    cwd = tmp_path / "worktree"
+    temp_root.mkdir()
+    cwd.mkdir()
+    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    seen = {}
+
+    def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
+        read_tmp = Path(env["TMPDIR"])
+        seen.update(argv=argv, prompt=stdin_text, env=env, read_tmp=read_tmp,
+                    process_cwd=Path(cwd))
+        assert read_tmp.is_dir()
+        if posix_mode_supported():
+            # ACL 플랫폼의 `restrict_to_owner` 등가 — POSIX 에서는 0700 으로 왕복한다.
+            assert stat.S_IMODE(read_tmp.stat().st_mode) == 0o700
+        (read_tmp / "pytest-artifact").write_text("ok", encoding="utf-8")
+        return {"returncode": 0, "stdout": stdout_fn("검토 완료"),
+                "stderr": "", "timed_out": False}
+
+    pd._execute_attempt(
+        harness=harness, model=model, reasoning=None, role="code-reviewer",
+        cwd=cwd, prompt="role preamble + task", timeout=30,
+        output_dir=tmp_path / "raw", run_fn=_capture, attempt="primary",
+    )
+    seen.update(temp_root=temp_root, cwd=cwd)
+    return seen
+
+
+def test_acl_platform_codex_read_attempt_grants_workspace_write_not_read_only(
+        pd, monkeypatch, tmp_path, acl_platform):
+    """ACL 플랫폼도 실행 root 를 tmp 로 옮기고 workspace-write 를 연다(`read-only` 강등 금지)."""
+    seen = _acl_read_attempt(pd, monkeypatch, tmp_path, "codex", "gpt-x", _codex_stdout)
+
+    argv = seen["argv"]
+    assert argv[argv.index("-s") + 1] == "workspace-write"
+    assert argv[argv.index("-C") + 1] == str(seen["read_tmp"])
+    assert seen["process_cwd"] == seen["read_tmp"]
+    assert all(seen["env"][key] == str(seen["read_tmp"])
+               for key in pd._READ_TMP_ENV_KEYS)
+    assert seen["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert not seen["read_tmp"].exists()
+    assert list(seen["temp_root"].iterdir()) == []
+
+
+def test_acl_platform_claude_read_attempt_attaches_add_dir(
+        pd, monkeypatch, tmp_path, acl_platform):
+    """ACL 플랫폼의 claude argv 에도 `--add-dir` 이 붙는다(측정 `ValueError: '--add-dir'`)."""
+    seen = _acl_read_attempt(pd, monkeypatch, tmp_path, "claude", "opus", _claude_stdout)
+
+    assert seen["argv"][seen["argv"].index("--add-dir") + 1] == str(seen["read_tmp"])
+    assert str(seen["read_tmp"]) in seen["prompt"]
+    assert not seen["read_tmp"].exists()
+    assert list(seen["temp_root"].iterdir()) == []
+
+
+def test_acl_platform_opencode_read_attempt_keeps_measured_allowed_tmp(
+        pd, monkeypatch, tmp_path, acl_platform):
+    """ACL 플랫폼도 `${TMPDIR}/opencode/*` 실측 권한 형상과 공유 골격 회수를 그대로 낸다."""
+    seen = _acl_read_attempt(
+        pd, monkeypatch, tmp_path, "opencode", "prov/m", _opencode_stdout)
+
+    read_tmp = seen["read_tmp"]
+    assert seen["env"]["TMP"] == str(read_tmp / pd._OPENCODE_ALLOWED_TMP_COMPONENT)
+    assert seen["env"]["TEMP"] == seen["env"]["TMP"]
+    assert read_tmp.parent == seen["temp_root"] / pd._OPENCODE_READ_TMP_PARENT
+    assert not read_tmp.exists()
+    assert list(seen["temp_root"].iterdir()) == []      # 공유 opencode 골격까지 회수
+
+
+def test_acl_platform_read_tmp_uses_shared_owner_and_delete_seams(
+        pd, monkeypatch, tmp_path, acl_platform):
+    """소유자 제한·회수를 공용 seam(file_lock)에 위임한다 — mode 인자 무효 플랫폼 등가 보장."""
+    temp_root = tmp_path / "system-temp"
+    cwd = tmp_path / "worktree"
+    temp_root.mkdir()
+    cwd.mkdir()
+    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    file_lock = pd._load_file_lock()
+    restricted: list[Path] = []
+    removed: list[Path] = []
+    real_rmtree = file_lock.force_rmtree
+    monkeypatch.setattr(
+        file_lock, "restrict_to_owner",
+        lambda path, **kwargs: restricted.append(Path(path)))
+
+    def _tracked_rmtree(path, **kwargs):
+        removed.append(Path(path))
+        real_rmtree(path, **kwargs)
+
+    monkeypatch.setattr(file_lock, "force_rmtree", _tracked_rmtree)
+
+    read_tmp = pd._create_read_role_temp("opencode", cwd)
+    assert read_tmp is not None
+    assert read_tmp.parent_fd is None and read_tmp.owned_fds == []
+    (read_tmp.writable_path / "artifact").write_text("ok", encoding="utf-8")
+    pd._cleanup_read_role_temp(read_tmp)
+
+    assert read_tmp.path in restricted and read_tmp.writable_path in restricted
+    assert removed == [read_tmp.path]                 # dir_fd rmtree 대신 공용 삭제 seam
+    assert not read_tmp.path.exists()
+
+
+def test_acl_platform_read_tmp_cleanup_on_runner_exception(
+        pd, monkeypatch, tmp_path, acl_platform):
+    """runner 예외 뒤에도 ACL 수단의 잔여는 0이다(부분 산출물 포함)."""
+    temp_root = tmp_path / "system-temp"
+    cwd = tmp_path / "worktree"
+    temp_root.mkdir()
+    cwd.mkdir()
+    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+
+    def _explode(argv, *, stdin_text, cwd, env, timeout, harness):
+        (Path(env["TMP"]) / "runner-artifact").write_text("partial", encoding="utf-8")
+        raise RuntimeError("의도한 runner 예외")
+
+    with pytest.raises(RuntimeError, match="의도한 runner 예외"):
+        pd._execute_attempt(
+            harness="claude", model="opus", reasoning=None,
+            role="code-reviewer", cwd=cwd, prompt="review", timeout=30,
+            output_dir=tmp_path / "raw", run_fn=_explode, attempt="primary",
+        )
+
+    assert list(temp_root.iterdir()) == []
+
+
+@pytest.mark.parametrize("harness,argv_fn", [
+    ("codex", lambda pd: pd.build_codex_argv("m", None, "code-reviewer", "/w")),
+    ("claude", lambda pd: pd.build_claude_argv("m", None, "code-reviewer")),
+    ("opencode", lambda pd: pd.build_opencode_argv(
+        "m", None, "code-reviewer", "/w", "/p")),
+])
+def test_unresolved_write_target_is_loud_not_read_only_degrade(
+        pd, tmp_path, harness, argv_fn):
+    """쓰기 대상 해소 실패는 `read-only` 강등이 아니라 사유와 함께 멈춘다."""
+    missing = tmp_path / "gone"
+    read_tmp = pd._ReadRoleTemp(
+        missing, parent_fd=None, identity=(0, 0), owned_fds=[])
+    with pytest.raises(pd.DelegateError, match="강등하지 않고"):
+        pd._apply_read_tmp_argv(argv_fn(pd), harness, "code-reviewer", read_tmp)
+
+
+def test_unresolved_ticket_copy_write_target_is_loud(pd, tmp_path):
+    """codex 가 `--add-dir` 로 여는 ticket 사본 디렉터리도 권한 결정 전에 실측한다."""
+    attempt = tmp_path / "attempt"
+    attempt.mkdir()
+    read_tmp = pd._ReadRoleTemp(
+        attempt, parent_fd=None, identity=(0, 0), owned_fds=[])
+    copy = tmp_path / "gone" / "ticket-T-1.md"
+    with pytest.raises(pd.DelegateError, match="ticket 사본 쓰기 대상"):
+        pd._apply_read_tmp_argv(
+            pd.build_codex_argv("m", None, "code-reviewer", "/w"),
+            "codex", "code-reviewer", read_tmp, copy)
+
+
+def test_write_probe_name_stays_within_engine_artifact_budget(pd):
+    """프로브 이름이 엔진 자신의 산출물보다 경로 예산을 더 먹으면 안 된다.
+
+    Windows 실측: 사본 디렉터리 199자에 61자 프로브가 붙어 MAX_PATH(259)를 프로브만 넘겼다
+    (같은 자리 `metadata.json`·`ticket-*.md` 는 모두 들어간다)."""
+    budget = max(
+        len(pd.TICKET_COPY_METADATA_NAME),
+        len(pd.TICKET_COPY_BASELINE_NAME),
+        len(pd.TICKET_COPY_TAG_NAME),
+    )
+    first, second = pd._write_probe_name(), pd._write_probe_name()
+    assert len(first) <= budget
+    assert first != second                      # 겹친 attempt 가 서로를 선점하지 않는다
+
+
+def _deep_directory_with_remaining_budget(root: Path, remaining: int) -> Path:
+    """경로 예산이 `remaining` 자만 남은 디렉터리를 만든다(구성 요소는 NAME_MAX 안)."""
+    target_length = os.pathconf(str(root), "PC_PATH_MAX") - 1 - remaining
+    deep = root
+    while len(str(deep)) < target_length:
+        component = min(200, target_length - len(str(deep)) - 1)
+        if component < 1:
+            break
+        deep = deep / ("d" * component)
+        deep.mkdir()
+    return deep
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "pathconf"), reason="POSIX 경로 예산(PC_PATH_MAX) 조회 필요",
+)
+def test_write_probe_fits_wherever_engine_artifacts_fit(pd, tmp_path):
+    """엔진 산출물이 들어가는 디렉터리면 프로브도 들어간다 — 이름 길이로 오판정하지 않는다.
+
+    Windows 의 MAX_PATH(259) 실패와 **같은 클래스**를 Linux 의 PATH_MAX 예산으로 태운다:
+    `metadata.json` 은 딱 들어가고 그보다 긴 이름은 못 들어가는 디렉터리를 만든다."""
+    budget = len(pd.TICKET_COPY_METADATA_NAME)
+    deep = _deep_directory_with_remaining_budget(tmp_path, budget + 1)
+    (deep / pd.TICKET_COPY_METADATA_NAME).write_text("{}", encoding="utf-8")
+
+    pd._probe_writable_target(deep, label="ticket 사본")     # 예외 없이 통과해야 한다
+
+    assert not any(
+        entry.name.startswith(pd._WRITE_PROBE_PREFIX) for entry in deep.iterdir()
+    )
+
+
+@pytest.mark.skipif(
+    not posix_mode_supported() or getattr(os, "geteuid", lambda: 1)() == 0,
+    reason="쓰기 거부를 mode 로 만들 수 있는 비-root POSIX 환경 필요",
+)
+def test_write_target_probe_measures_actual_write_not_existence(pd, tmp_path):
+    """프로브는 존재가 아니라 **실제 쓰기**를 잰다 — 읽기 전용 디렉터리는 통과하지 않는다."""
+    target = tmp_path / "read-only-dir"
+    target.mkdir(mode=0o500)
+    try:
+        with pytest.raises(pd.DelegateError, match="쓰기 대상 실측 실패"):
+            pd._probe_writable_target(target, label="read 역할 임시")
+    finally:
+        target.chmod(0o700)
+
+
+@pytest.mark.parametrize("windows", [False, True])
+@pytest.mark.parametrize("harness", ["codex", "claude", "opencode"])
+def test_read_tmp_preamble_prescribes_platform_shell_and_interpreter(
+        pd, monkeypatch, tmp_path, harness, windows):
+    """회귀 처방의 임시 디렉터리 변수·인터프리터 표기가 실행 셸을 따른다.
+
+    PowerShell 5.x 의 `$TMPDIR` 은 env 가 아니라 빈 변수라 basetemp 가 드라이브 루트로 튀고,
+    Windows 의 `python3` 는 WindowsApps 가짜 shim 일 수 있다. 세 하네스 × 두 표기를 모두 태운다."""
+    monkeypatch.setattr(pd, "_running_on_windows", lambda: windows)
+    attempt = tmp_path / "attempt"
+    attempt.mkdir()
+    read_tmp = pd._ReadRoleTemp(
+        attempt, parent_fd=None, identity=(0, 0), owned_fds=[])
+
+    note = pd._read_tmp_prompt_note(harness, tmp_path / "worktree", read_tmp)
+
+    expected_reference = pd._temp_env_reference()
+    other_reference = pd._temp_env_reference(windows=not windows)
+    assert (
+        f'--basetemp "{expected_reference}/'
+        f'{pd._READ_TMP_PYTEST_REL_BY_HARNESS[harness]}"'
+    ) in note
+    assert other_reference not in note
+    assert f"`{pd._prescribed_interpreter()} -m pytest" in note
+
+
+# 부모 env 에 절대 존재하지 않는 필수 키 이름 — env 해소 실패를 주입하는 sentinel.
+_NEVER_SET_ENV_KEY = "NEVER_SET_KEY"
+
+
+@pytest.mark.parametrize("windows", [False, True])
+def test_env_resolution_failure_leaves_no_attempt_residue(
+        pd, monkeypatch, tmp_path, windows):
+    """env 해소 실패(필수 키 누락)도 attempt 사본·read tmp 를 남기지 않는다.
+
+    필수 키 목록은 **플랫폼마다 다른 tuple** 이라 한쪽에만 누락 키를 주입하면 다른 플랫폼에서
+    주입이 no-op 이 되고, env 해소가 성공해 스폰이 실제로 돈다(Windows 실측). 두 축을 모두 태우고
+    주입이 이 실행 경로에 실제로 걸렸는지 먼저 단언한다."""
+    temp_root = tmp_path / "system-temp"
+    cwd = tmp_path / "worktree"
+    temp_root.mkdir()
+    cwd.mkdir()
+    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    monkeypatch.setattr(pd, "_running_on_windows", lambda: windows)
+    # Windows 축을 POSIX 에서도 재현: 이 플랫폼 필수 키가 부모 env 에 실재해야 주입한 누락 키
+    # 하나만으로 해소가 실패한다(그 키들까지 없으면 다른 사유로 멈춰 이 회귀가 시험되지 않는다).
+    for key in ("SystemRoot", "ComSpec"):
+        monkeypatch.setenv(key, str(tmp_path / key))
+    monkeypatch.setattr(
+        pd, "_REQUIRED_CHILD_ENV_KEYS_POSIX",
+        pd._REQUIRED_CHILD_ENV_KEYS_POSIX + (_NEVER_SET_ENV_KEY,))
+    monkeypatch.setattr(
+        pd, "_REQUIRED_CHILD_ENV_KEYS_WINDOWS",
+        pd._REQUIRED_CHILD_ENV_KEYS_WINDOWS + (_NEVER_SET_ENV_KEY,))
+    # 주입이 실제로 걸렸는가 — 실행 플랫폼 축의 목록에 없으면 해소가 성공해 가드가 시험되지 않는다.
+    assert _NEVER_SET_ENV_KEY in pd._required_child_env_keys(pd._running_on_windows())
+    assert _NEVER_SET_ENV_KEY not in os.environ
+
+    def _never_called(*_args, **_kwargs):
+        raise AssertionError("env 해소 실패 뒤에는 스폰하지 않는다")
+
+    with pytest.raises(pd.DelegateError, match=_NEVER_SET_ENV_KEY):
+        pd._execute_attempt(
+            harness="opencode", model="prov/m", reasoning=None,
+            role="code-reviewer", cwd=cwd, prompt="review", timeout=30,
+            output_dir=tmp_path / "raw", run_fn=_never_called, attempt="primary",
+        )
+
+    raw_dir = tmp_path / "raw"
+    assert list(temp_root.iterdir()) == []
+    assert not (cwd / ".project_manager").exists()
+    assert not raw_dir.exists() or not list(raw_dir.glob("*"))   # raw 예약 전에 끝난다
+
+
+def test_transport_prompt_write_restricts_owner_access_via_shared_seam(
+        pd, monkeypatch, tmp_path):
+    """`os.open` 의 0600 mode 인자는 ACL 플랫폼에서 무효 — 공용 소유자-제한 seam 이 배선돼 있다."""
+    file_lock = pd._load_file_lock()
+    restricted: list[Path] = []
+    monkeypatch.setattr(
+        file_lock, "restrict_to_owner",
+        lambda path, **kwargs: restricted.append(Path(path)))
+
+    transport = pd._save_opencode_transport_prompt(tmp_path, "합성 프롬프트")
+    try:
+        assert transport.path in restricted
+        assert transport.path.parent / pd._OPENCODE_TRANSPORT_IGNORE in restricted
+    finally:
+        pd._cleanup_attempt_transport(transport)
 
 
 @pytest.mark.integration
@@ -1486,10 +1892,14 @@ def test_opencode_binary_permission_tracks_child_tmpdir(tmp_path):
 
 def test_read_tmp_unsupported_platform_preamble_is_explicit(
         pd, monkeypatch, tmp_path):
-    """안전한 fd cleanup 불가 플랫폼은 회귀 숫자 인용·미실행 명시 문구를 wire에 강제한다."""
+    """격리 temp 수단이 **하나도** 없는 플랫폼은 회귀 숫자 인용·미실행 명시 문구를 wire에 강제한다.
+
+    정본 분기는 "fd 결속도 소유자 ACL 도 없음"이다 — fd 만 없는 플랫폼(Windows)은 ACL 등가 수단으로
+    실제 격리 temp 를 받으므로 이 문구가 아니라 실 경로 preamble 이 정본이다(T-0713)."""
     cwd = tmp_path / "worktree"
     cwd.mkdir()
     monkeypatch.setattr(pd, "_READ_TMP_FD_SUPPORTED", False)
+    monkeypatch.setattr(pd, "_read_tmp_owner_acl_platform", lambda: False)
     seen = {}
 
     def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
@@ -1509,6 +1919,31 @@ def test_read_tmp_unsupported_platform_preamble_is_explicit(
     assert pd.READ_REGRESSION_UNAVAILABLE_NOTE in seen["prompt"]
     assert "회귀 숫자는 developer 보고값을 인용" in seen["prompt"]
     assert "직접 실행하지 못했다는 사실" in seen["prompt"]
+
+
+def test_acl_platform_preamble_is_the_real_path_not_the_unavailable_note(
+        pd, monkeypatch, tmp_path, acl_platform):
+    """fd 결속만 없는 플랫폼(Windows)의 정본은 실 경로 preamble 이다 — 회귀-불가 문구가 아니다."""
+    temp_root = tmp_path / "system-temp"
+    cwd = tmp_path / "worktree"
+    temp_root.mkdir()
+    cwd.mkdir()
+    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+    seen = {}
+
+    def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
+        seen.update(prompt=stdin_text, read_tmp=Path(env["TMPDIR"]))
+        return {"returncode": 0, "stdout": _codex_stdout("검토 완료"),
+                "stderr": "", "timed_out": False}
+
+    pd._execute_attempt(
+        harness="codex", model="gpt-x", reasoning=None, role="code-reviewer",
+        cwd=cwd, prompt="role preamble + task", timeout=30,
+        output_dir=tmp_path / "raw", run_fn=_capture, attempt="primary",
+    )
+
+    assert pd.READ_REGRESSION_UNAVAILABLE_NOTE not in seen["prompt"]
+    assert str(seen["read_tmp"]) in seen["prompt"]
 
 
 def test_read_tmp_cleanup_on_runner_exception(pd, monkeypatch, tmp_path):
@@ -1955,16 +2390,42 @@ def test_pm_delegate_registered_in_root_manifest():
     assert ".project_manager/tools/pm_delegate.py" in manifest
 
 
+def _engine_copy_matches_canonical(copy: Path, canonical: Path) -> bool:
+    """출하 사본이 canonical 엔진 파일과 **내용** 동일한가.
+
+    양쪽을 같은 층(원본 bytes → LF 정규화)에서 읽는다(T-0708 판정 층). 체크아웃 개행 표기는
+    채택자의 `core.autocrlf`·`.gitattributes` 소관이라 표기만 달라 red 가 되면 안 되고, 내용이 한
+    글자라도 다르면 red 다.
+    """
+    return (
+        normalize_newline_bytes(copy.read_bytes())
+        == normalize_newline_bytes(canonical.read_bytes())
+    )
+
+
+def test_engine_copy_judgment_catches_content_drift_not_newline_notation(tmp_path):
+    """정규화가 판정을 무디게 만들지 않는다 — 표기만 다르면 통과, 내용이 다르면 red."""
+    canonical = tmp_path / "canonical.py"
+    canonical.write_bytes(b"x = 1\ny = 2\n")
+    same_content_crlf = tmp_path / "crlf.py"
+    same_content_crlf.write_bytes(b"x = 1\r\ny = 2\r\n")
+    drifted = tmp_path / "drift.py"
+    drifted.write_bytes(b"x = 1\r\ny = 3\r\n")
+
+    assert _engine_copy_matches_canonical(same_content_crlf, canonical)
+    assert not _engine_copy_matches_canonical(drifted, canonical)
+
+
 @pytest.mark.parametrize("target", ["claude_code", "opencode", "codex"])
 def test_pm_delegate_registered_and_synced_in_template(target):
-    """3종 템플릿 manifest 에 등록 + 파일이 canonical 과 byte-identical(전파 채널 정합·pm_update --target)."""
+    """3종 템플릿 manifest 에 등록 + 파일이 canonical 과 내용 동일(전파 채널 정합·pm_update --target)."""
     base = REPO / "templates" / target / ".project_manager"
     manifest = (base / "engine.manifest").read_text(encoding="utf-8")
     assert ".project_manager/tools/pm_delegate.py" in manifest
     tmpl_file = base / "tools" / "pm_delegate.py"
     assert tmpl_file.is_file()
-    canonical = (REPO / ".project_manager" / "tools" / "pm_delegate.py").read_bytes()
-    assert tmpl_file.read_bytes() == canonical  # byte-identical(공유 엔진 파일 정합 가드)
+    canonical = REPO / ".project_manager" / "tools" / "pm_delegate.py"
+    assert _engine_copy_matches_canonical(tmpl_file, canonical)
 
 
 # ══ R3 must-fix 1: symlink 해소 순서 — 원본+해소 경로 양쪽 denylist ═══════════
@@ -5888,7 +6349,9 @@ def test_network_disabled_block_prescribes_escalation_and_flag(
         "--dry-run",
         f"{_EGRESS_MARKER}=true",
         "sandbox_workspace_write.network_access=true",
-        'prefix_rule=["python3", ".project_manager/tools/pm_delegate.py"]',
+        # 인터프리터 표기는 플랫폼마다 다르다(Windows 는 런처) — 기대값은 엔진 해소 심볼에서
+        # 만들고 리터럴로 박지 않는다. 존재/내용 판정은 그대로 유지한다.
+        pd._codex_egress_prefix_rule_text(),
         "delegate_enabled=true",
         "후속 호출마다 비용을 다시 묻지 마세요",
         "재실행: ",
@@ -5897,7 +6360,7 @@ def test_network_disabled_block_prescribes_escalation_and_flag(
     # 처방된 재실행 줄은 같은 호출에 플래그 하나만 더한 형태다(다른 수신자로 갈아타지 않는다).
     retry_line = next(line for line in err.splitlines() if "재실행: " in line)
     assert retry_line.strip().startswith(
-        "· 재실행: python3 .project_manager/tools/pm_delegate.py "
+        f"· 재실행: {' '.join(pd._codex_egress_entrypoint())} "
     )
     assert "--codex-egress-escalated" in retry_line
     assert str(prompt) in retry_line or "prompt.md" in retry_line
@@ -5917,6 +6380,32 @@ def test_codex_egress_windows_retry_matches_windows_reusable_prefix(pd, monkeypa
     assert pd._codex_egress_prefix_rule_text() == (
         'prefix_rule=["py", ".project_manager/tools/pm_delegate.py"]'
     )
+
+
+@pytest.mark.parametrize("windows", [False, True])
+def test_dry_run_prefix_rule_follows_engine_interpreter_resolution(
+        pd, monkeypatch, tmp_path, capsys, windows):
+    """처방의 인터프리터 표기는 엔진 해소를 따른다 — 두 플랫폼 표기를 여기서 모두 태운다.
+
+    기대값은 엔진 심볼로 만든다(리터럴 `python3` 하드코딩 0). 반대 플랫폼 표기가 출력에 없다는
+    단언이 "플랫폼 축이 실제로 갈리는가"까지 판정한다 — 한쪽으로 고정되면 red 다."""
+    monkeypatch.setenv(_EGRESS_MARKER, "1")
+    monkeypatch.setattr(pd, "_running_on_windows", lambda: windows)
+    prompt = _write_prompt(tmp_path)
+    fake = _FakeRun(stdout=_codex_stdout())
+    rc = _run_main(pd, monkeypatch,
+                   _egress_argv(prompt, tmp_path, "--dry-run"),
+                   _enabled_conf(), fake)
+    out = capsys.readouterr().out
+    relay = pd._load_relay()
+
+    assert rc == 0 and fake.calls == []
+    assert pd._codex_egress_prefix_rule_text() in out        # 존재 + 내용 일치
+    assert relay.DELEGATE_ENTRYPOINT in out
+    assert relay.codex_egress_prefix_rule_text(
+        relay.DELEGATE_ENTRYPOINT, windows=not windows) not in out
+    # 처방의 인터프리터 표기 소유자는 하나다 — read 역할 preamble 의 pytest 처방도 같은 값을 쓴다.
+    assert pd._codex_egress_entrypoint()[0] == pd._prescribed_interpreter()
 
 
 def test_attested_run_keeps_existing_codex_driver_and_env_marker(
@@ -5993,7 +6482,7 @@ def test_dry_run_reports_escalation_required_without_side_effects(
     assert not list(outdir.glob("*"))
     assert "Codex egress: escalation required" in out
     assert 'sandbox_permissions="require_escalated"' in out
-    assert 'prefix_rule=["python3", ".project_manager/tools/pm_delegate.py"]' in out
+    assert pd._codex_egress_prefix_rule_text() in out
     assert "delegate_enabled=true 후속 호출의 비용은 재질문하지 않습니다" in out
     assert "--codex-egress-escalated 없이는 스폰 전 rc=1" in out
 

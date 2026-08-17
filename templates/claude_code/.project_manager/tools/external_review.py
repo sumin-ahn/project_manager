@@ -270,6 +270,12 @@ _ENGINE_REV_SKEW_RECOVERY_REASONS = {
         "갈아타면 이 실행이 왜 죽었는지가 사라지고 라운드 환불 판정의 근거도 함께 사라진다. "
         "불일치는 경고 한 줄로 남기고 중단 사유(주 예외)를 그대로 전파한다"
     ),
+    "partial_container_cleanup": (
+        "구성 실패로 남은 부분 격리 컨테이너 정리는 **원래 실패를 덮지 않는 것**이 계약이다 — "
+        "여기서 갈아타면 격리가 왜 실패했는지가 사라진다. 삭제 수단이 형제 모듈이라 사본 불일치도 "
+        "이 경계에 닿는데, 그것도 정리 실패의 한 형태로 흡수하되 잔존 경로 안내와 함께 원인을 "
+        "문구로 구분해 남긴다"
+    ),
 }
 
 
@@ -2147,8 +2153,21 @@ def resolve_reviewer_target(conf: dict[str, str]) -> ReviewerTarget:
 
 
 def _running_on_windows() -> bool:
-    """진입점 인터프리터 표기 판정(Windows 는 런처 `py`) — 주입 가능한 좁은 seam."""
+    """실행 플랫폼 판정(진입점 인터프리터 표기·argv 분해 규칙) — 주입 가능한 좁은 seam."""
     return os.name == "nt"
+
+
+def _split_reviewer_argv(reviewer_cmd: str) -> list[str]:
+    """`reviewer_cmd` 를 **실행 플랫폼 규칙**으로 argv 분해한다 (분해 규칙은 board 공용 seam 소유).
+
+    `shlex.split` 를 직접 부르면 POSIX 규칙이라 Windows 실행 경로의 ``\\`` 가 escape 로 소비된다 —
+    ``C:\\Users\\pm\\codex.exe`` 가 ``C:Userspmcodex.exe`` 로 뭉개져 확정 기동 실패로 끝나고, 그
+    실행은 "리뷰어를 찾을 수 없음"으로 흡수돼 교차검증이 조용히 환불된다. 분해 규칙 사본을 여기
+    만들지 않고 `board.split_command_argv` 하나를 쓴다(같은 보호 규칙·같은 복원).
+    """
+    return _load_board().split_command_argv(
+        reviewer_cmd, windows=_running_on_windows(),
+    )
 
 
 def _normalized_reviewer_key(argv: list[str]) -> str:
@@ -2187,7 +2206,7 @@ def _reviewer_progress_signal(
             file=sys.stderr,
         )
     try:
-        argv = shlex.split(reviewer_cmd)
+        argv = _split_reviewer_argv(reviewer_cmd)
     except ValueError:
         return relay.PROGRESS_SIGNAL_NONE
     if not argv:
@@ -2486,10 +2505,10 @@ def _load_file_lock():
     """공용 배타 파일락 seam(`file_lock.py`)을 같은 tools/ 에서 경로 로드한다.
 
     `_load_relay`·`_load_board` 와 같은 경로-앵커 로더이고, 그 둘처럼 **쓰는 경로에서만** 지연
-    로드한다 — 라운드 락을 잡는 건 `--gate` 실행의 예약/마감 두 구간뿐이라 나머지 경로(진단·
-    denylist·재앵커를 deep-import 로 재사용하는 pm_delegate 포함)를 seam 부재로 무너뜨리지
-    않는다. 로드 실패는 흡수하지 않고(fail-loud) 캐시하되, 중앙 loader 가 소비 때마다 baked rev
-    를 재검증하므로 사본 skew 는 계속 표출된다.
+    로드한다 — 이 seam 이 필요한 구간은 `--gate` 실행의 라운드 장부 예약/마감과 격리 산출물의
+    접근 제한·정리뿐이라 나머지 경로(진단·denylist·재앵커를 deep-import 로 재사용하는
+    pm_delegate 포함)를 seam 부재로 무너뜨리지 않는다. 로드 실패는 흡수하지 않고(fail-loud)
+    캐시하되, 중앙 loader 가 소비 때마다 baked rev 를 재검증하므로 사본 skew 는 계속 표출된다.
 
     (지연/import-시점 선택의 근거는 **기능 축**이다 — "seam 없이도 살아야 하는 경로가 있나".
     board·worktree_pool 은 모든 변경 경로가 락을 지나 import 바인딩이 맞고, 여기는 아니다.
@@ -2500,6 +2519,22 @@ def _load_file_lock():
     return _load_module_from_path(
         lock_path, "file_lock.py", verifier=_verify_engine_rev, cache=True,
     )
+
+
+def _restrict_to_owner(path: Path) -> None:
+    """격리 산출물을 소유자 전용 접근으로 제한한다 (플랫폼 수단은 공용 seam 소유).
+
+    `os.chmod(0o600/0o700)` 을 직접 부르지 않는 이유는 그 호출이 **Windows 에서 아무 제한도
+    걸지 않기 때문**이다(실측 `S_IMODE`=0o666). 임시 홈에는 인증 파일 사본이, 샌드박스에는
+    검토 대상 diff 원문이 들어가므로 "다른 사용자에게 읽히지 않는다" 는 이 도구의 보안 경계다 —
+    수단(퍼미션/ACL)은 `file_lock` 이 소유하고 여기서는 보장만 요구한다.
+    """
+    _load_file_lock().restrict_to_owner(path)
+
+
+def _force_rmtree(path: Path) -> None:
+    """트리를 실제로 지운다 — 실패는 `OSError` 로 올라온다(공용 seam·조용한 잔재 금지)."""
+    _load_file_lock().force_rmtree(path)
 
 
 def _load_review_rounds():
@@ -5142,7 +5177,7 @@ def _build_reviewer_home(
     base = Path(source_home if source_home is not None else Path.home())
     resolved_env = dict(os.environ if env is None else env)
     home.mkdir(parents=True, exist_ok=True)
-    os.chmod(home, 0o700)
+    _restrict_to_owner(home)
     copied: list[str] = []
     scrub_failed: list[str] = []
     for relative in artifacts:
@@ -5167,12 +5202,12 @@ def _build_reviewer_home(
                 continue  # 정화 실패 — 흔적이 든 채로 홈에 두느니 없는 게 낫다.
         target = home / Path(*candidate.parts)
         target.parent.mkdir(parents=True, exist_ok=True)
-        os.chmod(target.parent, 0o700)
+        _restrict_to_owner(target.parent)
         if payload is None:
             shutil.copy2(source, target)
         else:
             target.write_text(payload, encoding="utf-8", newline="\n")
-        os.chmod(target, 0o600)
+        _restrict_to_owner(target)
         copied.append(relative)
     return ReviewerHomeBuild(tuple(copied), tuple(scrub_failed))
 
@@ -5226,6 +5261,29 @@ def _scrubbed_toml_text(source: Path, drop_tables: Sequence[str]) -> str | None:
     return scrubbed
 
 
+def _remove_partial_container(container: Path) -> None:
+    """구성 실패로 남은 부분 컨테이너를 지운다 — **원래 실패를 덮지 않되 침묵하지도 않는다**.
+
+    이 자리의 정리는 실패 처리 도중이라 예외를 새로 올리면 진짜 원인(격리 실패 사유)이 가려진다.
+    그렇다고 `ignore_errors=True` 로 삼키면 검토 대상 저장소 사본과 홈 인증 사본이 디스크에
+    남는데도 아무도 모른다(Windows 의 read-only git object 가 실제로 그렇게 만든다). 그래서
+    **지우되, 못 지웠으면 경로를 loud 하게 알린다**.
+    """
+    try:
+        _force_rmtree(container)
+    except Exception as exc:  # noqa: BLE001 — 정리 실패가 원래 실패를 대체하면 안 된다.
+        # 삭제 수단이 형제 모듈(`file_lock.force_rmtree`)이라 사본 불일치도 이 경계에 닿는다.
+        # 등록된 사유로 흡수하되 원인을 문구로 구분한다 — 잔존 경로 안내와 재동기 처방이 같은
+        # 경고로 뭉개지면 둘 다 실행되지 않는다.
+        skew = _absorb_engine_rev_skew_for_recovery(exc, "partial_container_cleanup")
+        cause = f"엔진 사본 불일치 — {exc}" if skew else f"{exc}"
+        print(
+            "[external-review] 경고: 부분 격리 컨테이너 정리 실패 — 저장소 사본과 인증 파일 "
+            f"사본이 남아 있을 수 있습니다. 직접 지우세요: {container} ({cause})",
+            file=sys.stderr,
+        )
+
+
 def create_reviewer_workspace(
     diff_root: Path, *, base_dir: Path | None = None,
     conf: dict[str, str] | None = None, source_home: Path | None = None,
@@ -5274,13 +5332,13 @@ def create_reviewer_workspace(
             )
         git_repo = _init_workspace_git(tree)
     except ReviewerWorkspaceError:
-        shutil.rmtree(container, ignore_errors=True)
+        _remove_partial_container(container)
         raise
     except OSError as exc:
-        shutil.rmtree(container, ignore_errors=True)
+        _remove_partial_container(container)
         raise ReviewerWorkspaceError(f"격리 작업 루트 구성 실패: {exc}") from exc
     except Exception:
-        shutil.rmtree(container, ignore_errors=True)
+        _remove_partial_container(container)
         raise
     return ReviewerWorkspace(
         root=container, tree=tree, home=home, files=copied,
@@ -5357,9 +5415,14 @@ _UNISOLATED_GUIDANCE = (
 
 
 def _remove_reviewer_workspace(workspace: ReviewerWorkspace) -> None:
-    """격리 컨테이너 정리 — 실패를 조용히 삼키지 않는다(저장소 사본이 남는다는 뜻이다)."""
+    """격리 컨테이너 정리 — 실패를 조용히 삼키지 않는다(저장소 사본이 남는다는 뜻이다).
+
+    거울에는 `git init` 한 저장소가 들어 있고 git 은 object·packfile 을 read-only 로 만든다 —
+    맨 `shutil.rmtree` 는 Windows 에서 그 속성에 막혀 컨테이너를 통째로 남긴다(실측). 공용
+    seam 이 속성을 풀고 재시도하며, 그러고도 남으면 아래 경고가 사용자에게 자리를 알린다.
+    """
     try:
-        shutil.rmtree(workspace.root)
+        _force_rmtree(workspace.root)
     except OSError as exc:
         print(
             "[external-review] 경고: 리뷰어 격리 컨테이너 정리 실패 — 저장소 사본과 인증 파일 "
@@ -5704,13 +5767,53 @@ def _started_after(exc: BaseException, seam_reached: bool) -> bool:
     return seam_reached
 
 
-def _launch_failure_output(argv: list[str], exc: BaseException) -> str:
-    """확정 기동 실패의 사람 진단 1줄 — 원인축(부재 vs 실행 불가)을 구분해 말한다."""
+# 두 사건의 진단 표식 — 흡수되면 안 되는 경계다. "설정상 리뷰어 없음"(채택자가 리뷰어를 아예
+# 선언하지 않음)은 정상 형상이지만, "실행 파일 해소 실패"(선언은 있는데 그 실행 파일로 자식을
+# 띄우지 못함)는 **교차검증이 돌지 않은 결함**이다. 한 문구로 합치면 후자가 전자로 흡수돼
+# 조용히 환불된다 — Windows 실행 경로 분해 결함이 여러 릴리즈 동안 숨어 있던 경로다.
+NO_REVIEWER_CONFIGURED_MARKER = "추가 리뷰어 미설정"
+REVIEWER_LAUNCH_FAILURE_MARKER = "리뷰어 실행 파일 해소 실패"
+NO_REVIEWER_CONFIGURED_OUTPUT = (
+    f"[{NO_REVIEWER_CONFIGURED_MARKER} — reviewer_cmd 에 실행할 명령이 없습니다"
+    " (local.conf 확인). 외부 전송은 일어나지 않았습니다]"
+)
+
+
+def _launch_failure_output(
+    argv: list[str], exc: BaseException, reviewer_cmd: str | None = None,
+) -> str:
+    """확정 기동 실패의 사람 진단 1줄 — 원인축(해소 실패 vs 실행 불가)을 구분해 말한다.
+
+    "설정상 리뷰어 없음"(`NO_REVIEWER_CONFIGURED_OUTPUT`)과 갈라진 문구를 쓴다 — 이 실행은 리뷰어가
+    선언돼 있는데도 교차검증이 돌지 않은 실행이다. 선언 문자열과 실제로 시도한 실행 파일이 다르면
+    (분해·인용 사고) 그 대조를 같이 낸다: Windows 채택자가 본 증상이 "설치 또는 PATH 확인"뿐이라,
+    엔진이 경로를 뭉갠 실행과 리뷰어를 안 깐 실행을 구분할 수 없었다.
+    """
+    attempted = argv[0] if argv else ""
     if isinstance(exc, FileNotFoundError):
-        return f"[리뷰어 명령 '{argv[0]}' 를 찾을 수 없음 — 설치 또는 PATH 확인]"
+        return (
+            f"[{REVIEWER_LAUNCH_FAILURE_MARKER}: '{attempted}' 로 자식을 띄우지 못했습니다 — "
+            f"설치·PATH·경로 표기 확인{_declared_command_mismatch(attempted, reviewer_cmd)}. "
+            "추가 리뷰어 교차검증은 실행되지 않았습니다(외부 전송 없음)]"
+        )
     return (
-        f"[리뷰어 명령 '{argv[0]}' 를 실행할 수 없음 ({type(exc).__name__}: {exc}) — "
-        "실행 권한·경로 확인. 외부 전송은 일어나지 않았습니다]"
+        f"[리뷰어 명령 '{attempted}' 를 실행할 수 없음 ({type(exc).__name__}: {exc}) — "
+        f"실행 권한·경로 확인{_declared_command_mismatch(attempted, reviewer_cmd)}. "
+        "외부 전송은 일어나지 않았습니다]"
+    )
+
+
+def _declared_command_mismatch(attempted: str, reviewer_cmd: str | None) -> str:
+    """시도한 실행 파일이 선언 문자열에 없으면 그 대조를 진단에 덧붙인다 (빈 문자열 = 일치).
+
+    분해가 경로를 훼손하면 argv[0] 은 채택자가 local.conf 에 적은 어떤 부분문자열도 아니다 —
+    "설치 안 됨"과 "엔진이 커맨드를 잘못 분해함"을 사람이 그 자리에서 가를 수 있는 유일한 사실이다.
+    """
+    if not reviewer_cmd or not attempted or attempted in reviewer_cmd:
+        return ""
+    return (
+        f" · 선언한 커맨드에 없는 실행 파일로 분해됐습니다(local.conf: '{reviewer_cmd}') — "
+        "경로 구분자·인용을 확인하세요"
     )
 
 
@@ -5747,8 +5850,8 @@ def _run_reviewer_ex(
     삼키지 않고 seam 오류로 loud 구분한다.
 
     `argv`/`stdin_text` = 구조화 대상의 wire transport 주입. 미지정이면 종전대로
-    `shlex.split(reviewer_cmd)` + 프롬프트 stdin 이라, legacy 자유 문자열 커맨드의 실행 형상은
-    바이트 단위로 동일하다(구조화 플래그/파서로 다시 쓰지 않는다).
+    `_split_reviewer_argv(reviewer_cmd)`(실행 플랫폼 규칙 분해) + 프롬프트 stdin 이라, legacy 자유
+    문자열 커맨드의 실행 형상은 바이트 단위로 동일하다(구조화 플래그/파서로 다시 쓰지 않는다).
 
     `on_spawn_attempt` = **실제 자식 생성 직전** 1회 호출되는 seam(기본 None = 종전 동작). 라운드
     예약 소유권 이전(`_PreSpawnReservation.hand_off`)이 이 콜백을 탄다. 호출 지점은 러너가 스폰
@@ -5777,9 +5880,10 @@ def _run_reviewer_ex(
         metrics.clear()
         metrics.update({"rc": 1, "silence_sec": None})
     _run = run_fn or _watchdog_reviewer_run
-    argv = list(argv) if argv is not None else shlex.split(reviewer_cmd)
+    argv = list(argv) if argv is not None else _split_reviewer_argv(reviewer_cmd)
     if not argv:
-        return False, ReviewerOutput("[reviewer_cmd 가 비어 있음 — local.conf 확인]"), False
+        # "설정상 리뷰어 없음" — 실행 파일 해소 실패(`_launch_failure_output`)와 **다른 사건**이다.
+        return False, ReviewerOutput(NO_REVIEWER_CONFIGURED_OUTPUT), False
     if timeout is None:  # 미지정 호출(공개 facade) — 리뷰어 프로필의 벽시계 백스톱.
         timeout = int(reviewer_profile(reviewer_cmd).wall_timeout)
     # 스폰 경계를 실제로 지났는가 — 확실치 않은 실패의 started 판정 입력이다. 경계 전이면 자식이
@@ -5841,7 +5945,9 @@ def _run_reviewer_ex(
             return False, ReviewerOutput(f"[리뷰어 실행 오류: {exc}]"), True
         if metrics is not None:
             metrics["rc"] = 127 if isinstance(exc, FileNotFoundError) else 126
-        return False, ReviewerOutput(_launch_failure_output(argv, exc)), False
+        return (False,
+                ReviewerOutput(_launch_failure_output(argv, exc, reviewer_cmd)),
+                False)
     except ReviewerRunSeamError as exc:
         # 호출 전 bind 실패 — 외부 프로세스는 확실히 시작되지 않았다. 라운드 환불 가능.
         return False, ReviewerOutput(
@@ -5870,7 +5976,9 @@ def _run_reviewer_ex(
             # relay 가 스폰 경계에서 "자식 없음"으로 표식한 실패 — 종류는 exec `OSError` 만이
             # 아니다(argv NUL 의 `ValueError` 처럼 `Popen` 이 fork 전에 거절한 형상도 여기 온다).
             # 자식이 없었으므로 전송 0·과금 0 이고 환불 대상이다.
-            return False, ReviewerOutput(_launch_failure_output(argv, exc)), False
+            return (False,
+                    ReviewerOutput(_launch_failure_output(argv, exc, reviewer_cmd)),
+                    False)
         # 스폰 경계 뒤의 실패는 시작 여부가 불확실하다 — 보수적으로 started=True (상한 우회 방지 >
         # 과잉 카운트). 경계 **전**의 실패는 자식이 아직 없었다는 사실이 확정이라 False 다. 단
         # relay 가 '자식 있었음'(False)으로 못박은 예외는 경계 콜백이 아직 안 돌았어도 True 다 —
@@ -5896,7 +6004,7 @@ def run_reviewer(
 
 def reviewer_name(reviewer_cmd: str) -> str:
     """reviewer_cmd 의 공유 정규화 키(시간 프로필·진행신호·파일명/요약 공통)."""
-    argv = shlex.split(reviewer_cmd)
+    argv = _split_reviewer_argv(reviewer_cmd)
     return _normalized_reviewer_key(argv)
 
 
@@ -5905,7 +6013,7 @@ def _reviewer_model(reviewer_cmd: str) -> str:
 
     이 값은 **정체가 아니다**. 임의 실행기 문자열의 옵션 의미를 엔진이 보증할 수 없으므로 실제
     provenance는 `ReviewerTarget.ledger_model == unpinned-model`을 사용한다."""
-    argv = shlex.split(reviewer_cmd)
+    argv = _split_reviewer_argv(reviewer_cmd)
     for flag in ("--model", "-m"):
         if flag in argv:
             index = argv.index(flag)
@@ -6173,6 +6281,14 @@ def _structured_transport(
         # 생성 뒤 argv 조립 직전에도 위임 축과 같은 containment guard를 다시 건다. 생성 seam이
         # fd로 고정한 실 sandbox를 그대로 써 사용자 입력 cwd symlink 재해소 창을 열지 않는다.
         delegate._assert_opencode_transport_path(prompt_file.sandbox, prompt_file)
+        # 생성 seam의 `0600`은 **Windows에서 아무 제한도 걸지 않는다**(실측 `S_IMODE`=0o666).
+        # 이 파일에는 검토 대상 diff 원문이 들어가므로 플랫폼 등가 수단(ACL)으로 소유자 전용
+        # 접근을 실제로 건다 — containment 재확인과 같은 자리에서 접근 경계도 재확인한다.
+        transport_dir = Path(prompt_file.path).parent
+        for artifact in (transport_dir, Path(prompt_file.path),
+                         transport_dir / delegate._OPENCODE_TRANSPORT_IGNORE):
+            if artifact.exists():
+                _restrict_to_owner(artifact)
         yield _structured_reviewer_argv(
             target.harness, target.model, target.reasoning,
             cwd=str(prompt_file.sandbox),
@@ -6484,6 +6600,12 @@ def _exclusion_suffix(excluded: list[str] | None) -> str:
     return f" (검토 제외 {len(excluded)}건 — {', '.join(excluded)})"
 
 
+def _first_output_line(result: dict) -> str:
+    """실패 사유 1줄(없으면 빈 문자열) — 판정 블록과 환불 경고가 같은 문장을 쓰게 하는 공용 seam."""
+    head = str(result.get("output") or "").strip().splitlines()
+    return head[0][:200] if head else ""
+
+
 def print_summary(result: dict, gate: str | None = None,
                   excluded: list[str] | None = None) -> None:
     """결과 요약을 stdout 에 출력한다.
@@ -6522,14 +6644,14 @@ def print_summary(result: dict, gate: str | None = None,
     if result["failed"]:
         # 실패 사유 1줄을 판정 라인에 병기 — 타임아웃 안내(`--timeout`/conf 키) 같은 실패
         # 본문이 원문 파일에만 남으면 PM 이 못 본다(판정 라인은 반드시 읽힌다).
-        head = str(result.get("output") or "").strip().splitlines()
+        reason = _first_output_line(result)
         if result.get("reply_extraction_failed"):
             # 이 실패의 출력은 wire 원문이라 첫 줄(이벤트 JSON)이 사유가 되지 못한다 — 사유를
             # 직접 말한다.
             print("  사유: 하네스 wire 에서 최종 회신 텍스트를 추출하지 못했습니다 "
                   "(회신 이벤트 부재 · 비-문자열 회신 · 형식 붕괴) — 원문 파일에 wire 전문 보존.")
-        elif head:
-            print(f"  사유: {head[0][:200]}")
+        elif reason:
+            print(f"  사유: {reason}")
         print(f"종합 판정: {name} 실패{suffix}")
         print("FALLBACK_INTERNAL")  # 내부 code-reviewer 서브에이전트로 폴백 신호
     elif result["any_must_fix"]:
@@ -7795,6 +7917,7 @@ def _run_isolated_review(
         # fresh 세션이 대상을 모른다). 산출 파싱과 같은 자리·같은 함수라 건수와 텍스트가 갈리지
         # 않고, 저장 지점은 예약 레코드 안이라 정규화(`_gate_entry`)에서 살아남는다.
         must_fix_items = _round_must_fix_items(result) if started else None
+        refunded_round = False
         try:
             with _round_ledger_lock():
                 ledger = _load_round_ledger()
@@ -7802,7 +7925,7 @@ def _run_isolated_review(
                     # 전송이 확실히 없던 라운드 — 두 예산(게이트 count·wave spent)을 같은 조건으로
                     # 되돌린다(격리 생성 실패 환불과 **같은 기계**). 산출도 남기지 않는다
                     # (리뷰어가 아무 말도 하지 않았다).
-                    _refund_reserved_round(ledger, budget)
+                    refunded_round = _refund_reserved_round(ledger, budget)
                 elif outcome is not None:
                     entry = _gate_entry(ledger, budget.gate)
                     matching = next(
@@ -7821,6 +7944,16 @@ def _run_isolated_review(
                     _append_round_outcome(entry, outcome)
                 _save_round_ledger(ledger)
             if not started:
+                # 되돌린 라운드는 **말하고** 되돌린다 — 조용히 환불하면 채택자에게 남는 사실이
+                # "장부가 그대로다" 뿐이라, 교차검증이 아예 돌지 않은 실행과 리뷰어를 선언하지
+                # 않은 실행이 같은 모양이 된다(Windows 경로 분해 결함이 30여 릴리즈 숨은 경로).
+                if refunded_round:
+                    print(
+                        f"라운드 환불: 게이트 {budget.gate} — 리뷰어 프로세스가 시작되지 않아 "
+                        "추가 리뷰어 교차검증이 **실행되지 않았습니다**(전송 0·상한/wave 예산 "
+                        f"미소진). 사유: {_first_output_line(result) or '미상'}",
+                        file=sys.stderr,
+                    )
                 # 환불이 **저장까지 끝난** 뒤에야 소유권을 반납한다 — 이 줄 앞에서 죽으면 바깥
                 # seam 이 아직 소유자라 한 번 되돌리고, 이 줄 뒤에는 되돌릴 것이 없다. 저장이
                 # 실패한 경로(아래 OSError)는 반납하지 않는다: 되돌리지 못한 예약의 소유자는

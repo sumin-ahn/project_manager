@@ -135,6 +135,16 @@ def _seed_ticket(board, tid: str, status: str = "open") -> Path:
     return path
 
 
+def _issued_ids(board, status: str = "open") -> set[str]:
+    """그 status 디렉토리 티켓들의 **발행 ID**(frontmatter) 집합.
+
+    파일명 glob 으로 case 를 판정하지 않는다 — Windows·macOS 의 대소문자 무시 파일시스템에서
+    `glob("T-aaa-*")` 는 `T-AAA-001-seed.md` 까지 매치해 case-분할 여부를 증명하지 못한다.
+    """
+    return {board._issued_ticket_id(p)
+            for p in (board.TICKETS_DIR / status).glob("T-*.md")}
+
+
 # ════════════════════════════════════════════════════════════════════════
 # 단위: _next_id 네임스페이싱
 # ════════════════════════════════════════════════════════════════════════
@@ -853,12 +863,46 @@ def test_next_id_case_fold_continues_existing_series(board):
 
 
 def test_cmd_new_lowercase_input_continues_uppercase_series(board):
-    """실 명령 경로: `T-AAA-*` 보드에 `new --prefix aaa` → `T-AAA-002`(신규 `T-aaa-*` 없음·DoD 2)."""
+    """실 명령 경로: `T-AAA-*` 보드에 `new --prefix aaa` → `T-AAA-002`(신규 `T-aaa-*` 없음·DoD 2).
+
+    판정은 **발행 ID(frontmatter)** 로 한다 — 파일명 glob 은 대소문자 무시 파일시스템
+    (Windows·macOS)에서 `T-aaa-*` 가 `T-AAA-*` 파일까지 매치해 "case-분할 없음"을 증명하지
+    못한다(Windows 실측 실패 지점)."""
     _seed_ticket(board, "T-AAA-001")
     rc = board.cmd_new(_new_args(prefix="aaa", title="lower input"))
     assert rc == 0
-    assert list((board.TICKETS_DIR / "open").glob("T-AAA-002-*.md"))     # 등록 case 로 이어감
-    assert list((board.TICKETS_DIR / "open").glob("T-aaa-*.md")) == []   # case-분할 없음
+    assert _issued_ids(board) == {"T-AAA-001", "T-AAA-002"}   # 등록 case 로 이어감·case-분할 없음
+
+
+def test_next_prefixed_id_follows_frontmatter_not_the_filename_case(board):
+    """시리즈 판정의 진실은 frontmatter ID 다 — 파일명 case 가 갈려도 발행 case 가 안 뒤집힌다.
+
+    대소문자 무시 파일시스템에서는 `T-aaa-001-x.md` 쓰기가 기존 `T-AAA-001-x.md` **파일 안으로**
+    들어가 파일명(`AAA`)과 내용(`aaa`)이 갈린다. 파일명으로 세면 발행 case 가 "그 파일이 어느
+    이름으로 먼저 만들어졌는가"로 결정된다 — Linux 에서 그 형상을 직접 주입해 재현한다."""
+    path = board.TICKETS_DIR / "open" / "T-AAA-001-seed.md"      # 파일명 case = AAA
+    board.dump_ticket(path, {"id": "T-aaa-001", "title": "seed", "status": "open"},
+                      "# seed\n")                               # 발행 ID case = aaa
+    assert board._next_id("aaa") == "T-aaa-002"
+    assert board._next_id("AAA") == "T-aaa-002"                 # fold 는 같은 시리즈
+
+
+def test_next_prefixed_id_falls_back_to_the_filename_for_a_broken_id(board):
+    """frontmatter `id` 가 ID 문법이 아니면 파일명으로 폴백한다 — 번호 누락은 곧 clobber."""
+    board.dump_ticket(board.TICKETS_DIR / "open" / "T-AAA-007-seed.md",
+                      {"id": "쓰레기값", "title": "seed", "status": "open"}, "# seed\n")
+    assert board._next_id("AAA") == "T-AAA-008"
+
+
+def test_next_prefixed_id_is_stable_across_case_split_pollution(board):
+    """같은 번호의 case 오염(`T-AAA-001`+`T-aaa-001`)에서도 발행 case 가 결정적이다.
+
+    canonical 은 최저 번호 티켓의 case 인데 동률이면 tie-break 가 필요하다 — 파일 순회 순서에
+    맡기면 같은 보드가 실행마다 다른 case 를 발행한다(파일시스템 의존)."""
+    _seed_ticket(board, "T-AAA-001")
+    board.dump_ticket(board.TICKETS_DIR / "open" / "T-aaa-001-other.md",
+                      {"id": "T-aaa-001", "title": "seed", "status": "open"}, "# seed\n")
+    assert board._next_id("aaa") == board._next_id("AAA") == "T-AAA-002"
 
 
 def test_id_prefix_override_resolves_registered_canonical_case(board):

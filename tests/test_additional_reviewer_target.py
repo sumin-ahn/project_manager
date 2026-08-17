@@ -32,7 +32,6 @@ import inspect
 import json
 import os
 import shlex
-import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -56,6 +55,16 @@ def _load(name: str):
 @pytest.fixture
 def external():
     return _load("external_review")
+
+
+def _owner_only(path: Path) -> bool:
+    """전달 파일이 **소유자 전용 접근**인가 — 엔진 공용 seam 으로 OS 에 되물어 실측한다.
+
+    퍼미션 비트(`S_IMODE == 0o600`)를 직접 재면 그 판정이 Windows 에서 항상 거짓이다 — 그 플랫폼의
+    `chmod` 는 read-only 속성만 만져 `S_IMODE` 가 0o666 으로 남는다(실측). 보장("다른 사용자에게
+    읽히지 않는다")은 같고 수단만 다르므로(POSIX 퍼미션 / Windows ACL) 수단을 아는 seam 에 묻는다.
+    """
+    return _load("file_lock").owner_only_access(path)
 
 
 @pytest.fixture
@@ -156,8 +165,8 @@ class _FakeReviewer:
             call["prompt_exists"] = prompt_file.exists()
             call["prompt_text"] = (
                 prompt_file.read_text(encoding="utf-8") if prompt_file.exists() else None)
-            call["prompt_mode"] = (
-                stat.S_IMODE(prompt_file.stat().st_mode) if prompt_file.exists() else None)
+            call["prompt_owner_only"] = (
+                _owner_only(prompt_file) if prompt_file.exists() else None)
         self.calls.append(call)
         return subprocess.CompletedProcess(argv, self.rc, self.stdout, self.stderr)
 
@@ -563,7 +572,11 @@ def test_legacy_ledger_model_is_the_unpinned_identity_not_the_placeholder(extern
 @pytest.mark.parametrize("rc", [0, 1])
 def test_opencode_prompt_file_is_0600_and_removed_after_success_and_failure(
         external, monkeypatch, tmp_path, capsys, rc):
-    """`--file` 프롬프트에는 diff 원문이 들어간다 — 0600 으로 만들고 rc 무관 지운다."""
+    """`--file` 프롬프트에는 diff 원문이 들어간다 — 소유자 전용으로 만들고 rc 무관 지운다.
+
+    "소유자 전용" 의 수단은 플랫폼마다 다르다(POSIX 퍼미션 0600 / Windows ACL) — 판정은
+    퍼미션 비트가 아니라 `file_lock.owner_only_access` 로 OS 에 되묻는다(`_owner_only`).
+    """
     repo = _repo(tmp_path / "repo", _conf(harness="opencode", model="zai/glm-4.6",
                                           reasoning="medium"))
     reviewer = _FakeReviewer(stdout=_wire("opencode"), rc=rc)
@@ -574,7 +587,7 @@ def test_opencode_prompt_file_is_0600_and_removed_after_success_and_failure(
 
     call = reviewer.calls[0]
     assert call["prompt_exists"] is True                  # 실행 시점엔 존재
-    assert call["prompt_mode"] == 0o600                   # 다른 사용자에게 읽히지 않는다
+    assert call["prompt_owner_only"] is True               # 다른 사용자에게 읽히지 않는다
     assert "diff --git a/x.py b/x.py" in call["prompt_text"]
     assert call["input"] == ""                            # 지시는 파일에 있다(stdin 아님)
     assert not call["prompt_file"].exists()               # 실행 후 정리(성공·실패 무관)
@@ -2043,8 +2056,20 @@ def test_permitted_run_still_creates_the_requested_output_dir(
     assert not (repo / ".project_manager" / ".local" / "review").exists()
 
 
+def _resolved_prefix_rule(external, relay, *, windows: bool | None = None) -> str:
+    """이 표면의 dry-run·차단 처방이 낼 prefix 규칙 표기 — 엔진 해소로 구성한다.
+
+    인터프리터 표기는 플랫폼마다 다르다(Windows 는 런처). 기대값을 리터럴로 박으면 테스트가
+    플랫폼을 박제하므로, 렌더 소유자(pm_relay)와 이 표면의 판정 seam(`_running_on_windows`)에서
+    같은 값을 만들어 쓴다."""
+    return relay.codex_egress_prefix_rule_text(
+        relay.EXTERNAL_REVIEW_ENTRYPOINT,
+        windows=external._running_on_windows() if windows is None else windows,
+    )
+
+
 def test_dry_run_under_network_off_is_side_effect_free_and_prints_the_prefix_rule(
-        external, monkeypatch, tmp_path, capsys):
+        external, relay, monkeypatch, tmp_path, capsys):
     """미리보기는 차단 환경에서도 그대로 돈다(외부 송신 0) — 처방만 정확히 낸다."""
     monkeypatch.setenv(_EGRESS_MARKER, "1")
     repo = _repo(tmp_path / "repo", _conf())
@@ -2065,9 +2090,29 @@ def test_dry_run_under_network_off_is_side_effect_free_and_prints_the_prefix_rul
     assert "=== [dry-run] 프롬프트 미리보기 (외부 전송 없음) ===" in out
     assert "diff --git a/x.py b/x.py" in out                  # 실제 나갈 내용 그대로
     assert f"Codex egress: escalation required ({_EGRESS_MARKER}=true)" in out
-    assert ('prefix_rule=["python3", ".project_manager/tools/external_review.py"]'
-            in out)
+    assert _resolved_prefix_rule(external, relay) in out
     assert f"실 실행은 {external.CODEX_EGRESS_FLAG} 없이는 스폰 전 rc=1 로 중단됩니다." in out
+
+
+@pytest.mark.parametrize("windows", [False, True])
+def test_dry_run_prefix_rule_follows_engine_interpreter_resolution(
+        external, relay, monkeypatch, tmp_path, capsys, windows):
+    """처방의 인터프리터 표기는 엔진 해소를 따른다 — 두 플랫폼 표기를 여기서 모두 태운다.
+
+    반대 플랫폼 표기가 출력에 없다는 단언이 "플랫폼 축이 실제로 갈리는가"까지 판정한다."""
+    monkeypatch.setenv(_EGRESS_MARKER, "1")
+    monkeypatch.setattr(external, "_running_on_windows", lambda: windows)
+    repo = _repo(tmp_path / "repo", _conf())
+    reviewer = _FakeReviewer(stdout=_wire("codex"))
+    _wire_main(external, monkeypatch, repo, reviewer)
+
+    rc = external.main(["--gate", "T-0590", "--paths", "x.py", "--dry-run"])
+    out = capsys.readouterr().out
+
+    assert rc == 0 and reviewer.calls == []
+    assert _resolved_prefix_rule(external, relay) in out          # 존재 + 내용 일치
+    assert relay.EXTERNAL_REVIEW_ENTRYPOINT in out
+    assert _resolved_prefix_rule(external, relay, windows=not windows) not in out
 
 
 def test_attested_run_proceeds_and_labels_the_boundary_everywhere(

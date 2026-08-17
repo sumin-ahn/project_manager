@@ -2194,6 +2194,50 @@ def write_text_keeping_newlines(path: Path, text: str) -> None:
         handle.write(text)
 
 
+# ── 개행 표기 보존 왕복 ───────────────────────────────────────────────────────
+# 엔진이 자기 소유 파일을 **읽어서 다시 쓰는** 경로(engine.manifest guest 절 동기 등)는 본문을
+# LF 로 다뤄야 판정이 단순한데, 그대로 되쓰면 CRLF 체크아웃 채택자의 파일 전체가 LF 로 뒤집힌다
+# (engine.manifest 의 append-only byte 불변식 위반·손대지 않은 줄까지 전면 diff).
+# 그래서 **판정은 LF 정규화 후, 쓰기는 원본 표기 복원**으로 두 축을 분리한다.
+# 표기의 진실은 **그 파일의 현재 내용**이다 — 플랫폼(os.linesep)이 아니다. "Windows 면 CRLF" 로
+# 분기하면 `core.autocrlf=false` 로 LF 체크아웃한 Windows 채택자를 반대로 깨뜨린다.
+DEFAULT_TEXT_NEWLINE = "\n"
+
+
+def dominant_newline(text: str, default: str = DEFAULT_TEXT_NEWLINE) -> str:
+    """번역 없이 읽은 본문의 지배 개행 (`"\\r\\n"` 또는 `"\\n"`).
+
+    다수결로 정하고 동수면 **첫 등장** 표기를 쓴다. 개행이 하나도 없으면 `default`.
+    """
+    crlf = text.count("\r\n")
+    lf = text.count("\n") - crlf
+    if crlf == 0 and lf == 0:
+        return default
+    if crlf != lf:
+        return "\r\n" if crlf > lf else "\n"
+    first = text.find("\n")
+    return "\r\n" if first > 0 and text[first - 1] == "\r" else "\n"
+
+
+def read_text_preserving_newline(path: Path) -> tuple[str, str]:
+    """`(LF 정규화 본문, 지배 개행)` — 번역 없이 읽고 판정용 본문만 LF 로 접는다.
+
+    쌍인 `write_text_preserving_newline` 에 그 지배 개행을 그대로 넘기면 우리가 바꾸지 않은
+    줄의 bytes 가 보존된다(왕복 무변경)."""
+    raw = read_text_keeping_newlines(path)
+    return raw.replace("\r\n", "\n"), dominant_newline(raw)
+
+
+def write_text_preserving_newline(path: Path, text: str, newline: str) -> None:
+    """LF 본문을 `newline` 표기로 되돌려 쓴다 (파일 부재 등 미해소 표기는 LF).
+
+    `text` 는 LF 정규화 본문이어야 한다 — 삽입하는 새 블록도 같은 표기로 렌더돼 혼재가 생기지
+    않는다(호출부가 블록을 LF 로 만들어 붙이고 여기서 한 번에 변환)."""
+    newline = newline or DEFAULT_TEXT_NEWLINE
+    write_text_keeping_newlines(
+        path, text if newline == "\n" else text.replace("\n", newline))
+
+
 # ── 계획-적용 사이 TOCTOU 창 ─────────────────────────────────────────────────
 # 경로 안전은 `_is_safe_dest_path` 가 **계획 시점**에 판정한다(symlink·조상 symlink·`..` 거부).
 # 그 판정과 실제 쓰기 사이에 대상 경로가 symlink 로 교체되면 판정이 무력해지고, 경로로 다시 여는
@@ -2371,14 +2415,21 @@ def _open_dest_relative_nofollow(
         if not _is_safe_dest_path(dest_root, rel):
             raise UnsafeDestPathError(
                 f"경로가 안전하지 않습니다(symlink·조상 symlink·repo 밖): {rel.as_posix()}")
-        if root_identity is not None:
-            try:
-                current_identity = dest_root_identity(dest_root)
-            except UnsafeDestPathError as exc:  # 루트 자체 이상 = 루트 클래스로 승격.
-                raise DestRootSwappedError(str(exc)) from exc
-            if current_identity != root_identity:
-                raise DestRootSwappedError(
-                    f"계획 검증 뒤 dest 루트가 다른 디렉토리로 바뀌었습니다: {dest_root}")
+        # **루트 관문은 고정 신원 유무와 무관하다.** fd 순회 플랫폼은 `_open_dest_root_fd` 가 매
+        #   호출 루트를 strict 해소하므로(부재·깨진 링크·비-디렉토리 = `UnsafeDestPathError`),
+        #   이 폴백만 관문을 건너뛰면 같은 상황에서 raw `FileNotFoundError` 가 새 나가 호출부의
+        #   흡수 클래스가 플랫폼마다 갈린다(Windows 실측·`_is_safe_dest_path` 는 부재 경로를
+        #   lexical 로 통과시킨다). 신원이 있으면 그 계열을 루트 교체 클래스로 승격하고, 없으면
+        #   옛 경로 오류 클래스를 그대로 유지한다(질의성 호출 규약).
+        try:
+            current_identity = dest_root_identity(dest_root)
+        except UnsafeDestPathError as exc:  # 루트 자체 이상.
+            if root_identity is None:
+                raise
+            raise DestRootSwappedError(str(exc)) from exc
+        if root_identity is not None and current_identity != root_identity:
+            raise DestRootSwappedError(
+                f"계획 검증 뒤 dest 루트가 다른 디렉토리로 바뀌었습니다: {dest_root}")
         target = Path(dest_root) / rel
         if create_parents:
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -3049,6 +3100,29 @@ def _load_file_lock():
         lock_py, "file_lock.py", verifier=_verify_engine_rev, cache=True,
         cache_key=f"_project_manager_file_lock:{lock_py}",
     )
+
+
+def _force_rmtree(path: Path) -> None:
+    """트리를 **실제로** 지운다 — 공용 seam(`file_lock.force_rmtree`) 우선·실패는 올린다.
+
+    `shutil.rmtree(..., ignore_errors=True)` 를 쓰지 않는다: git object·packfile 은 read-only 라
+    Windows 에서 삭제가 거부되는데, 그 실패를 삼키면 부분 board·임시 clone 이 채택자 트리에 남고도
+    rc=0 이 된다(`.git/modules` 잔재 실측). 부재는 성공이다(정리의 목적은 "없다").
+
+    형제 로드 실패/구세대 사본은 **맨 `shutil.rmtree`** 로 물러난다 — pm_import 는 복구/도입
+    채널이라 형제 부재로 죽으면 자기 자신을 못 고친다(`_local_conf_lock_path` 와 같은 폴백 규율).
+    폴백도 실패를 삼키지 않는다(재시도가 없을 뿐).
+    """
+    target = Path(path)
+    if not os.path.lexists(target):
+        return
+    seam = None
+    with contextlib.suppress(Exception):
+        seam = getattr(_load_file_lock(), "force_rmtree", None)
+    if seam is not None:
+        seam(target)
+        return
+    shutil.rmtree(target)
 
 
 def _local_conf_lock_path(conf_path: Path) -> Path:
@@ -5433,9 +5507,13 @@ class AdapterConfigJudgment(NamedTuple):
 
     status:
       `in-sync`    dest == template (할 일 없음·원장만 backfill 대상)
-      `unedited`   dest != template 이고 dest 해시 == 원장 해시 → 상류가 바뀐 것(무편집)
-      `edited`     dest != template 이고 dest 해시 != 원장 해시 → 채택자 편집(보존)
+      `unedited`   dest != template 인데 원장이 지금 dest 를 기록한 값 → 상류가 바뀐 것(무편집)
+      `edited`     dest != template 이고 원장이 다른 내용을 기록 → 채택자 편집(보존)
       `unrecorded` dest != template 이고 원장 항목 없음 → 판정 불가(보존·안전 기본값)
+
+    `==`/`!=` 와 두 해시 필드는 전부 **내용**(`content_sha256` — 개행 정규화 후) 축이다. 체크아웃이
+    개행만 바꾼 파일은 같은 내용이므로 `in-sync` 다. 원장 대조만 예외로 구 축(raw bytes)을 함께
+    인정한다(`_baseline_attests_dest` — 무편집 증거가 더 강한 축이고, 기록은 현재 축으로 수렴).
     """
     relpath: str
     harness: str
@@ -5481,7 +5559,10 @@ def _existing_managed_adapter_harnesses(dest_root: Path) -> list[str]:
 
 
 def file_sha256(path: Path) -> str | None:
-    """파일 내용의 sha256 hex — 읽을 수 없으면 None(원장 판정은 fail-soft)."""
+    """파일 **raw bytes** 의 sha256 hex — 읽을 수 없으면 None(fail-soft).
+
+    bytes 결속(판정한 그 bytes 를 쓰기 직전에 재확인)·쓰기 검증 전용이다. **내용 동일성 판정은
+    `content_sha256`** 을 쓴다 — 이 다이제스트는 개행 표기까지 내용으로 세기 때문이다."""
     digest = hashlib.sha256()
     try:
         with Path(path).open("rb") as handle:
@@ -5490,6 +5571,61 @@ def file_sha256(path: Path) -> str | None:
     except OSError:
         return None
     return digest.hexdigest()
+
+
+# ── 내용 동일성 판정 다이제스트 ───────────────────────────────────────────────
+# 어댑터 config 원장은 "엔진이 이 **내용**을 깔았다" 를 기록한다. 그 판정을 raw bytes 해시로 하면
+# `core.autocrlf=true` 체크아웃이 개행만 바꾼 파일을 채택자 손편집으로 오판하고, Windows 채택자는
+# 어댑터 config 전량이 `edited` 로 분류돼 자동 갱신 궤도에서 이탈한다(`--check` 영구 red).
+# 그래서 **판정은 개행 정규화 후**, **쓰기는 bytes verbatim**(`_atomic_write_dest_bytes`)으로 축을
+# 나눈다 — 위 "개행 표기 보존 왕복" 절의 판정/쓰기 축 분리와 같은 원칙이다.
+def content_sha256(path_or_bytes) -> str | None:
+    """내용 동일성 판정용 sha256 hex — 텍스트는 개행을 LF 로 접은 뒤 해시한다.
+
+    인자는 경로 또는 이미 읽은 bytes 다(설치할 payload 를 그대로 넘길 수 있다). 경로를 읽을 수
+    없으면 None(`file_sha256` 과 같은 fail-soft). UTF-8 로 디코딩되지 않는 바이너리는 정규화
+    대상이 아니므로 raw bytes 를 해시한다(`\\r\\n` 이 개행이 아니라 데이터일 수 있다).
+
+    LF 파일에서는 값이 `file_sha256` 과 같다(유효 UTF-8 은 디코드/인코드 왕복이 bytes 보존).
+    구 원장 항목이 그대로 유효한 이유이자, 달라진 항목이 무변경 backfill 로 재기록되는 근거다.
+    대상은 config 크기 파일이라 통째로 읽는다(스트리밍이 필요한 큰 파일은 `file_sha256`)."""
+    if isinstance(path_or_bytes, (bytes, bytearray)):
+        raw = bytes(path_or_bytes)
+    else:
+        try:
+            raw = Path(path_or_bytes).read_bytes()
+        except OSError:
+            return None
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return hashlib.sha256(raw).hexdigest()
+    return hashlib.sha256(text.replace("\r\n", "\n").encode("utf-8")).hexdigest()
+
+
+def _baseline_attests_dest(recorded, dest_path: Path,
+                           dest_content_sha256: str) -> bool:
+    """원장 값이 **지금 dest 그대로**를 기록한 것인가 (= 기록 시점 이후 무편집).
+
+    인정하는 축은 둘이고 둘 다 "편집이 없었다" 의 증거다:
+      · **현재 축**(`content_sha256`) — 개행 표기와 무관한 내용 동일.
+      · **구 축**(`file_sha256` — raw bytes) — 판정을 내용 축으로 옮기기 전 엔진이 기록한 값.
+        저장 값이 dest **raw** 해시와 같다는 건 그 파일의 bytes 가 기록 시점 그대로라는 뜻이라,
+        내용 동일성보다 오히려 강한 증거다(채택자가 손댔다면 raw 해시부터 달라진다).
+
+    구 축이 살아 있는 형상은 **상류 체크아웃까지 CRLF 인 Windows manager 로 설치한 채택자**다 —
+    그 원장에는 CRLF raw 다이제스트가 들어갔고, 그 파일의 template 이 그 뒤 바뀌면 dest 가
+    template 과 달라 in-sync backfill 이 닿지 않는다. 이 판정이 없으면 설치 이후 아무것도 안 한
+    채택자가 영구히 `edited`(채택자 편집 — 보존)로 오판돼 상류 동작 fix 를 못 받는다.
+
+    `record_adapter_baseline` 이 **같은 판정**으로 그 항목을 현재 축으로 재기록한다(무변경
+    마이그레이션·판정 사본 0). 판정만 두 축을 보고 기록은 한 축으로 수렴하므로 구 축은 원장에
+    누적되지 않는다."""
+    if not isinstance(recorded, str):
+        return False
+    if recorded == dest_content_sha256:
+        return True
+    return recorded == file_sha256(dest_path)
 
 
 class AdapterBaselineDocument(NamedTuple):
@@ -5894,6 +6030,8 @@ def adapter_config_targets(dest_root: Path, source_root: Path,
                 continue
             template = template_root / relpath
             dest_path = dest_root / relpath
+            # 여기 `file_sha256` 은 내용 판정이 아니라 **가독성 probe** 다 — 값을 비교하지 않고
+            #   None(읽기 실패)만 본다. 정규화 여부와 무관하므로 raw 스트리밍 해시를 그대로 쓴다.
             if not template.is_file() or file_sha256(template) is None:
                 if (mode == ADAPTER_CONFIG_MANAGED
                         and _adapter_config_path_exists(dest_path)):
@@ -5909,14 +6047,18 @@ def judge_adapter_configs(dest_root: Path, source_root: Path,
                           harnesses=None) -> list[AdapterConfigJudgment]:
     """instance-owned config 전수의 현재 판정 (읽기 전용·부작용 0).
 
-    pm_update 의 동기 채널과 `sync-adapter-config --list` 가 같은 판정을 본다(판정 사본 0)."""
+    pm_update 의 동기 채널과 `sync-adapter-config --list` 가 같은 판정을 본다(판정 사본 0).
+
+    세 축(dest·template·원장) 모두 `content_sha256` 으로 본다 — 개행 표기만 다른 파일은 같은
+    내용이다(체크아웃 변환을 채택자 편집으로 오판하지 않는다). 원장 대조는 구 축(raw bytes)으로
+    기록된 항목까지 `_baseline_attests_dest` 로 함께 인정한다(마이그레이션은 기록 쪽 담당)."""
     dest_root = Path(dest_root)
     recorded = read_adapter_baseline(dest_root).get("files", {})
     out: list[AdapterConfigJudgment] = []
     for relpath, harness, mode, template in adapter_config_targets(
             dest_root, source_root, harnesses):
         dest_path = dest_root / relpath
-        dest_hash = file_sha256(dest_path)
+        dest_hash = content_sha256(dest_path)
         if dest_hash is None:
             if (mode == ADAPTER_CONFIG_MANAGED
                     and _adapter_config_path_exists(dest_path)):
@@ -5926,11 +6068,11 @@ def judge_adapter_configs(dest_root: Path, source_root: Path,
             continue  # dest 에 없거나 못 읽음 — 이 채널의 관심사가 아니다.
         entry = recorded.get(relpath)
         baseline = entry.get("sha256") if isinstance(entry, dict) else None
-        if _same_bytes(template, dest_path):
+        if content_sha256(template) == dest_hash:
             status = "in-sync"
         elif baseline is None:
             status = "unrecorded"
-        elif baseline == dest_hash:
+        elif _baseline_attests_dest(baseline, dest_path, dest_hash):
             status = "unedited"
         else:
             status = "edited"
@@ -5942,7 +6084,7 @@ def judge_adapter_configs(dest_root: Path, source_root: Path,
 def adapter_config_convergence_status(judgment: AdapterConfigJudgment) -> str:
     """managed config 한 건의 완료 판정 — ``converged`` 또는 실행 가능한 red 상태.
 
-    byte 가 template 과 같다는 사실만으로는 미래 자동 갱신 궤도에 들어간 게 아니다. 원장에도
+    내용이 template 과 같다는 사실만으로는 미래 자동 갱신 궤도에 들어간 게 아니다. 원장에도
     **그 dest 해시**가 있어야 완료다. ``judge_adapter_configs`` 의 원시 판정은 표시/3-way 갱신에
     그대로 쓰고, 완료 게이트만 이 helper가 정규화한다(판정 사본 0).
 
@@ -6068,8 +6210,13 @@ def _upstream_hook_set_declarations(
         except Exception as exc:  # noqa: BLE001 — 상류 사본 손상은 사유로 내리고 호출부가 판정한다.
             return None, f"상류 pm_import 로드 실패({type(exc).__name__}: {exc})", None
         finally:
-            with contextlib.suppress(OSError):
-                shutil.rmtree(staging, ignore_errors=True)
+            try:
+                _force_rmtree(Path(staging))
+            except OSError as exc:
+                # 정리 실패를 로드 실패로 승격하지 않되(위 주석), 침묵하지도 않는다 —
+                #   남은 스테이징은 사용자가 지울 수 있게 자리를 알린다.
+                print(f"경고: 훅 세트 스테이징 정리 실패 — 임시 디렉토리가 남았습니다: "
+                      f"{staging} ({type(exc).__name__}: {exc})", file=sys.stderr)
     table = getattr(module, "ADAPTER_HOOK_SET", None)
     if not isinstance(table, dict) or not table:
         return None, "상류 pm_import 에 훅 세트 선언 부재(그 세대는 이 개념이 없다)", None
@@ -6466,6 +6613,8 @@ def hook_set_accept_decision(dest_root: Path, source_root: Path, relpath: str, *
                in adapter_config_targets(dest_root, source_root)}
     template_path = targets.get(relpath)
     if template_path is not None:
+        # 여기 `file_sha256` 은 내용 판정이 아니라 **설치할 상류 bytes 의 스냅샷 결속**이다 —
+        #   수용 직전 재대조(`expected_template_sha256`)와 같은 raw 축이어야 결속이 성립한다.
         template_sha256 = file_sha256(template_path)
     if generation.declarations is None:
         blocker = AdapterHookSetFinding(
@@ -6617,10 +6766,21 @@ def record_adapter_baseline(dest_root: Path, source_root: Path, harnesses=None, 
                             root_identity: tuple | None = None) -> list[str]:
     """template 과 **일치가 확인된** config 의 해시를 원장에 기록 — 기록한 relpath 목록 반환.
 
-    기록 조건이 곧 판정의 전제다: dest 가 template 과 byte 일치할 때만 "이 내용이 상류가 준
-    그대로" 라고 말할 수 있다. 편집분·보존분은 기록하지 않는다(원장 부재 = 보고 모드 = 안전
-    기본값). 설치·add-harness 의 레이다운 시점과, 동기 시점의 in-sync backfill 이 같은 규칙을 쓴다
-    — backfill 이 없으면 원장 도입 전 채택자는 손댄 적이 없어도 영구히 보고 모드에 갇힌다."""
+    기록 조건이 곧 판정의 전제다: dest 가 template 과 **내용 일치**(개행 정규화 후)일 때만 "이
+    내용이 상류가 준 그대로" 라고 말할 수 있다. 편집분·보존분은 기록하지 않는다(원장 부재 =
+    보고 모드 = 안전 기본값). 설치·add-harness 의 레이다운 시점과, 동기 시점의 in-sync backfill 이
+    같은 규칙을 쓴다 — backfill 이 없으면 원장 도입 전 채택자는 손댄 적이 없어도 영구히 보고
+    모드에 갇힌다.
+
+    구 원장(raw bytes 다이제스트)이 정규화 다이제스트와 다른 항목도 이 backfill 이 재기록한다.
+    **파일은 건드리지 않는다** — 바뀌는 건 같은 사실의 표현(원장 값)뿐이다.
+
+    그 재기록은 dest 가 template 과 다른 항목에도 닿는다(무변경 마이그레이션). in-sync 조건만
+    걸면 상류가 바뀐 뒤의 구 축 항목은 backfill 이 영영 닿지 않아, 설치 이후 아무것도 안 한
+    채택자가 `edited` 오판에 갇힌 채 `--accept` 를 강요받는다. 마이그레이션 항목은 `sha256` 만
+    현재 축으로 바꾸고 `recorded_at`·`template_rev` 는 **보존**한다 — 이번 실행이 관측한 건
+    "그때 기록한 그 bytes 그대로" 라는 사실 하나뿐이고, 세대 스탬프를 현재로 밀면
+    `instance_owned_template_delta_lines` 가 실제 세대 델타를 침묵시킨다."""
     dest_root = Path(dest_root)
     document = read_adapter_baseline(dest_root)
     files = dict(document.get("files") or {})
@@ -6630,13 +6790,23 @@ def record_adapter_baseline(dest_root: Path, source_root: Path, harnesses=None, 
     for relpath, _harness, _mode, template in adapter_config_targets(
             dest_root, source_root, harnesses):
         dest_path = dest_root / relpath
-        if not dest_path.is_file() or not _same_bytes(template, dest_path):
+        if not dest_path.is_file():
             continue
-        digest = file_sha256(dest_path)
+        digest = content_sha256(dest_path)
         if digest is None:
             continue
         existing = files.get(relpath)
-        if isinstance(existing, dict) and existing.get("sha256") == digest:
+        recorded = existing.get("sha256") if isinstance(existing, dict) else None
+        if content_sha256(template) != digest:
+            # template 과 다른 파일은 in-sync backfill 대상이 아니다. 단 **구 축(raw bytes)으로
+            #   기록된 같은 파일**이면 표현만 현재 축으로 옮긴다 — 파일 bytes 도, 레이다운 시점
+            #   메타(`recorded_at`·`template_rev`)도 그대로다.
+            if (recorded is not None and recorded != digest
+                    and _baseline_attests_dest(recorded, dest_path, digest)):
+                files[relpath] = {**existing, "sha256": digest}
+                changed.append(relpath)
+            continue
+        if recorded == digest:
             continue  # 같은 해시 재기록 — 타임스탬프만 흔들지 않는다(byte 안정).
         files[relpath] = {
             "sha256": digest,
@@ -6730,7 +6900,7 @@ def accept_adapter_config(dest_root: Path, source_root: Path, relpath: str, *,
             f"원장 schema 가 이 엔진(지원 상한 {ADAPTER_BASELINE_SCHEMA})보다 새로워 기록할 수 "
             "없다 — 파일을 바꾸지 않았다(엔진을 갱신한 뒤 다시 실행하라)")
 
-    current = file_sha256(dest_path)
+    current = content_sha256(dest_path)
     if expected_sha256 is not None and current != expected_sha256:
         return AdapterConfigAcceptResult(
             "raced", relpath, None, None,
@@ -6739,13 +6909,15 @@ def accept_adapter_config(dest_root: Path, source_root: Path, relpath: str, *,
         dest_root, Path(relpath),
         Path(BACKUP_DIR_NAME) / datetime.date.today().isoformat() / relpath,
         root_identity=root_identity)
-    if file_sha256(backup) != current:
+    if content_sha256(backup) != current:
         return AdapterConfigAcceptResult(
             "raced", relpath, backup, None,
             "백업 시점 내용이 판정 내용과 달랐다(동시 편집) — 덮지 않았다")
 
     if expected_generation_sha256 is not None:
         # 선언 소스는 **파일 bytes 를 다시 읽어** 대조한다(모듈 캐시를 태우면 결속이 무력해진다).
+        #   여기 `file_sha256` 은 내용 판정이 아니라 **bytes 결속**이다 — 게이트가 판정에 쓴 그
+        #   파일이 그대로인지만 보므로 정규화하면 안 된다(같은 축을 만든 게이트도 raw 다).
         current_generation = file_sha256(_hook_set_declaration_source(source_root))
         if current_generation != expected_generation_sha256:
             return AdapterConfigAcceptResult(
@@ -6753,7 +6925,12 @@ def accept_adapter_config(dest_root: Path, source_root: Path, relpath: str, *,
                 "판정 뒤 상류 세대 선언(pm_import)이 바뀌었다 — 구 선언으로 낸 판정 위에 새 세대를 "
                 "설치하지 않는다. 다시 실행해 새 판정을 받아라")
     payload = template.read_bytes()
+    # 두 다이제스트의 축이 다르다. `digest` 는 **설치할 raw bytes** — 게이트가 검사한 template 과의
+    #   결속·교체 후 write 검증용이다. `ledger_digest` 는 **내용** — 원장이 기록하는 값이고
+    #   판정(`judge_adapter_configs`)이 대조하는 값이다. 섞으면 CRLF template 을 깐 트리에서
+    #   원장 확인이 영구 실패한다.
     digest = hashlib.sha256(payload).hexdigest()
+    ledger_digest = content_sha256(payload)
     if expected_template_sha256 is not None and digest != expected_template_sha256:
         return AdapterConfigAcceptResult(
             "raced", relpath, backup, None,
@@ -6764,6 +6941,8 @@ def accept_adapter_config(dest_root: Path, source_root: Path, relpath: str, *,
         return AdapterConfigAcceptResult(
             "write-failed", relpath, backup, None,
             "원자 교체에 실패했다 — 기존 내용은 그대로다(백업도 남아 있다)")
+    # write 검증은 **raw** 다 — 심은 bytes 가 그대로 착지했는지를 보는 자리라 정규화하면 부분
+    #   write·개행 변조를 통과시킨다(판정이 아니라 쓰기 결과 확인).
     if file_sha256(dest_path) != digest:
         return AdapterConfigAcceptResult(
             "write-failed", relpath, backup, None,
@@ -6771,12 +6950,12 @@ def accept_adapter_config(dest_root: Path, source_root: Path, relpath: str, *,
 
     record_adapter_baseline(dest_root, source_root, root_identity=root_identity)
     entry = read_adapter_baseline(dest_root).get("files", {}).get(relpath)
-    if not isinstance(entry, dict) or entry.get("sha256") != digest:
+    if not isinstance(entry, dict) or entry.get("sha256") != ledger_digest:
         return AdapterConfigAcceptResult(
-            "ledger-failed", relpath, backup, digest,
+            "ledger-failed", relpath, backup, ledger_digest,
             "파일은 갱신됐으나 원장 기록을 확인하지 못했다 — 다음 동기는 이 파일을 보고 모드로 "
             "본다(원장 경로의 쓰기 권한을 확인하라)")
-    return AdapterConfigAcceptResult("accepted", relpath, backup, digest)
+    return AdapterConfigAcceptResult("accepted", relpath, backup, ledger_digest)
 
 
 def _atomic_write_dest_bytes(dest_root: Path, rel: Path, payload: bytes, *,
@@ -7083,6 +7262,76 @@ def _backup_open_fd_nofollow(
     raise OSError(f"백업 경로 순번 100회 충돌: {label or target_base_rel}")
 
 
+# ── 경로 표기 정규화 (Windows 확장 길이 prefix) ───────────────────────────────
+# Windows 의 `os.readlink`/`Path.resolve()` 는 확장 길이 경로 prefix `\\?\`(UNC 는 `\\?\UNC\`)를
+# 붙여 돌려준다 — 커널이 symlink 대상을 `\??\C:\…` 로 저장하고 CPython 이 그것을 `\\?\C:\…` 로
+# 번역하기 때문이다(`Path.resolve()` 는 입력에 그 prefix 가 있으면 산출에도 유지한다). 그 표기가
+# **값**에 실리면 두 자리에서 샌다:
+#   기록값 — 백업이 다시 심는 링크 대상. 원본 링크의 사용자-가시 대상은 `C:\…` 인데 백업만
+#            `\\?\C:\…` 를 갖게 되어 채택자 백업 트리에 플랫폼 표기가 노출된다.
+#   비교값 — "링크 대상 자체를 보존했는가" 판정. 같은 파일을 가리키는 두 경로가 문자열로 갈린다.
+# 그래서 규칙을 **여기 한 곳**에 두고 두 자리가 같은 함수를 부른다 — 한쪽만 벗기면 같은 결함이
+# 자리만 옮긴다.
+#
+# 정규화 대상은 **표기뿐**이다. 파일시스템 호출에 넘기는 경로(dest 루트·조상 순회·열기)는 `Path`
+# 그대로 둔다 — MAX_PATH 를 넘는 경로에서 `\\?\` 는 표기가 아니라 *기능*이라 벗기면 열리지 않는다.
+_EXTENDED_PATH_PREFIX = "\\\\?\\"          # 실제 문자열: \\?\
+_EXTENDED_UNC_PREFIX = "\\\\?\\UNC\\"      # 실제 문자열: \\?\UNC\
+# 같은 prefix 의 슬래시 표기 — `PurePath.as_posix()` 산출과 `//?/…` 로 주어진 입력이 이 형태다.
+_EXTENDED_PATH_PREFIX_SLASH = "//?/"
+_EXTENDED_UNC_PREFIX_SLASH = "//?/UNC/"
+# 확장 prefix 없이 다룰 수 있는 경로 길이 상한(Windows MAX_PATH).
+_WINDOWS_MAX_PATH_CHARS = 260
+# 확장 prefix 제거는 **Windows 표기 축**이다 — POSIX 에서는 `\` 가 정당한 파일명 문자라 같은
+# 문자열을 벗기면 실재하는 파일명을 망가뜨린다(링크 대상이라면 백업이 다른 곳을 가리킨다).
+# 플랫폼 판정을 모듈 상수로 두어 테스트가 Windows 표기를 다른 플랫폼에서 **주입해** 규칙을 실제로
+# 태울 수 있게 한다(능력 플래그 `_DEST_FD_WALK_SUPPORTED` 와 같은 주입 seam).
+_WINDOWS_PATH_NOTATION = os.name == "nt"
+
+
+def _strip_extended_path_prefix(text: str) -> str:
+    """확장 길이 prefix 를 벗긴 경로 표기를 돌려준다(순수 문자열 규칙·플랫폼 판정 없음).
+
+    UNC 변형은 루트 표기까지 되돌린다 — `\\\\?\\UNC\\server\\share` 에서 prefix 만 잘라내면
+    `UNC\\server\\share` 라는 **다른 경로**가 되므로 `\\\\server\\share` 로 복원한다. 슬래시
+    표기(`//?/…`)도 같은 규칙으로 받는다(`as_posix()` 산출이 그 형태다).
+    """
+    for extended, root in (
+            (_EXTENDED_UNC_PREFIX, "\\\\"),
+            (_EXTENDED_UNC_PREFIX_SLASH, "//"),
+            (_EXTENDED_PATH_PREFIX, ""),
+            (_EXTENDED_PATH_PREFIX_SLASH, "")):
+        if text.startswith(extended):
+            return root + text[len(extended):]
+    return text
+
+
+def _path_notation_text(path) -> str:
+    """경로를 **비교·기록 표기**로 직렬화한다 — Windows 확장 길이 prefix 를 남기지 않는다.
+
+    Windows 표기 축이 아닌 플랫폼에서는 입력 표기를 그대로 둔다(위 `_WINDOWS_PATH_NOTATION`).
+    구분자는 건드리지 않는다 — 이 함수의 축은 prefix 하나이고, POSIX 단일 직렬화가 필요한 자리는
+    `as_posix()` 를 함께 쓴다(장부 표기 축은 pm_handoff·pm_bootstrap 소관).
+    """
+    text = path if isinstance(path, str) else os.fspath(path)
+    if not _WINDOWS_PATH_NOTATION:
+        return text
+    return _strip_extended_path_prefix(text)
+
+
+def _preserved_link_target(link_target: str) -> str:
+    """백업 링크가 **기록**할 대상 표기 — 표기 정규화 + 긴 경로 안전 가드.
+
+    `os.readlink` 가 돌려준 `\\\\?\\C:\\…` 를 그대로 다시 심으면 백업 링크만 원본에 없던 표기를
+    갖는다. 다만 MAX_PATH 를 넘는 대상에서는 그 prefix 가 있어야 링크 생성·해소가 되므로 그때는
+    **벗기지 않는다** — 표기 통일보다 링크가 실제로 대상을 가리키는 것이 우선이다.
+    """
+    normalized = _path_notation_text(link_target)
+    if normalized != link_target and len(normalized) >= _WINDOWS_MAX_PATH_CHARS:
+        return link_target
+    return normalized
+
+
 def _backup_symlink_nofollow(
         dest_root: Path, src_rel: Path, target_base_rel: Path,
         root_identity: tuple | None = None) -> Path:
@@ -7106,15 +7355,23 @@ def _backup_symlink_nofollow(
         target = _free_backup_path(Path(dest_root) / target_base_rel)
         _ensure_dest_dir_nofollow(
             dest_root, target.relative_to(dest_root).parent, root_identity=root_identity)
-        shutil.copy2(Path(dest_root) / src_rel, target, follow_symlinks=False)
+        # 옛 `shutil.copy2(follow_symlinks=False)` 와 같은 동작(대상 문자열 재심기 + copystat)을
+        #   펼쳐 쓴다 — 그 안의 `os.readlink` 산출이 곧 기록값이라, 표기 정규화를 끼울 자리가
+        #   copy2 안에는 없다(이 폴백 분기가 곧 Windows 경로다).
+        source = Path(dest_root) / src_rel
+        os.symlink(_preserved_link_target(os.readlink(source)), target)
+        shutil.copystat(source, target, follow_symlinks=False)
         return target
     src_dir_fd = _open_dest_dir_nofollow(
         dest_root, src_rel.parent, root_identity=root_identity)
     try:
         try:
-            link_target = os.readlink(src_rel.name, dir_fd=src_dir_fd)
+            raw_link_target = os.readlink(src_rel.name, dir_fd=src_dir_fd)
         except OSError as exc:
             _raise_dest_path_refusal(src_rel, exc)
+        # 아래 `os.symlink` 가 심는 값이 곧 채택자가 보는 백업 링크의 대상 표기다 — 기록 직전에
+        #   확장 길이 prefix 를 벗긴다(비교 표기와 같은 규칙·`_path_notation_text`).
+        link_target = _preserved_link_target(raw_link_target)
         for _attempt in range(100):
             target = _free_backup_path(Path(dest_root) / target_base_rel)
             try:
@@ -7329,17 +7586,19 @@ def _append_guest_render_to_manifest(
     plan = _guest_render_sync_plan(dest_root, guest_lines, adapter_dirs)
     if not plan["changed"]:
         return {"added": [], "removed": []}  # 멱등 — 이미 동기(재실행 refresh)
-    text = manifest.read_text(encoding="utf-8")
+    # 판정(절 스트립·블록 조립)은 LF 본문으로, 쓰기는 **이 manifest 의 현재 표기**로 한다 —
+    #   CRLF 체크아웃(Windows `core.autocrlf=true`)에서 LF 로 되쓰면 우리가 append 한 guest 절
+    #   말고도 파일 전체가 뒤집혀 append-only byte 불변식이 깨진다.
+    text, newline = read_text_preserving_newline(manifest)
     stripped = pu._strip_guest_manifest_block(text)
     if plan["new_block"]:
         if stripped and not stripped.endswith("\n"):
             stripped += "\n"
-        manifest.write_text(
-            stripped + "\n" + plan["new_block"] + "\n",
-            encoding="utf-8", newline="\n")
+        write_text_preserving_newline(
+            manifest, stripped + "\n" + plan["new_block"] + "\n", newline)
     else:
-        manifest.write_text(
-            stripped, encoding="utf-8", newline="\n")  # this-ns guest 전량 폐기·타 하네스도 0 → 절 제거.
+        # this-ns guest 전량 폐기·타 하네스도 0 → 절 제거.
+        write_text_preserving_newline(manifest, stripped, newline)
     # read_manifest 왕복 검증 (fail-loud·추가분 반영). 대조는 **등재 경로 전량**이다 —
     #   `@render` 로 좁히면 guest 절의 엔진 행(비-render·update 채널)이 매번 미반영으로 오판된다.
     after = {str(e).replace("\\", "/") for e in pu.read_manifest(manifest)}
@@ -7786,8 +8045,11 @@ _BOARD_GITATTRIBUTES_SCAFFOLD = (
     "# git 내장 union merge 드라이버로 양쪽 행을 모두 보존한다.\n"
     "# board 는 별도 git 이라 superproject 루트의 같은 선언이 닿지 않는다 — 여기가 그 배포처다.\n"
     "areas.md merge=union\n"
-    "# Windows checkout에서도 티켓 봉인 입력의 논리 개행을 LF로 유지한다.\n"
+    "# Windows checkout에서도 엔진-소유 텍스트의 논리 개행을 LF로 유지한다(티켓 봉인 입력·\n"
+    "# 재작성 byte 판정). 엔진의 표기 보존이 근본이고 이 선언은 그 위의 방어층이다.\n"
     "*.md text eol=lf\n"
+    "*.json text eol=lf\n"
+    "*.txt text eol=lf\n"
 )
 
 
@@ -7845,9 +8107,17 @@ def _cleanup_partial_board(dest_root: Path) -> None:
     board_dir = dest_root / ".project_manager" / "board"
     _board_setup_git(["rm", "-f", "--cached", _BOARD_SUBMODULE_PATH], cwd=dest_root)
     _board_setup_git(["submodule", "deinit", "-f", _BOARD_SUBMODULE_PATH], cwd=dest_root)
-    shutil.rmtree(board_dir, ignore_errors=True)
-    shutil.rmtree(dest_root / ".git" / "modules" / ".project_manager" / "board",
-                  ignore_errors=True)
+    # `.git/modules` 캐시는 git object·packfile 이라 read-only 다 — 맨 rmtree 는 Windows 에서
+    #   실패하고, 그 실패를 삼키면 잔재 때문에 fresh dest 재시도까지 막힌다(실측). 공용 seam 이
+    #   속성을 풀고 재시도하며, 그래도 남으면 자리를 알린다(정리 실패로 죽지는 않는다 —
+    #   호출부는 이미 fail-loud 중이다).
+    for leftover in (board_dir,
+                     dest_root / ".git" / "modules" / ".project_manager" / "board"):
+        try:
+            _force_rmtree(leftover)
+        except OSError as exc:
+            print(f"경고: 부분 board 정리 실패 — 직접 지우세요: {leftover} "
+                  f"({type(exc).__name__}: {exc})", file=sys.stderr)
     gitmodules = dest_root / ".gitmodules"
     if gitmodules.exists():
         gitmodules.unlink()
@@ -7926,7 +8196,13 @@ def setup_board_submodule(dest_root: Path, remote_url: str) -> int:
                     file=sys.stderr)
                 return 1
     finally:
-        shutil.rmtree(tmp_clone, ignore_errors=True)
+        try:
+            _force_rmtree(tmp_clone)
+        except OSError as exc:
+            # clone 사본(read-only git object 포함)이 tempdir 에 남는다 — 셋업 결과를 뒤집지
+            #   않지만 침묵하지 않는다.
+            print(f"경고: board seed 임시 clone 정리 실패 — 직접 지우세요: {tmp_clone} "
+                  f"({type(exc).__name__}: {exc})", file=sys.stderr)
 
     # ── 2. submodule add (remote 는 이제 non-empty — checkout 성공) ──
     rc, out = _board_setup_git(
@@ -7953,7 +8229,13 @@ def setup_board_submodule(dest_root: Path, remote_url: str) -> int:
 
     # ── 4. dormant wiki/tickets 제거 (board 는 submodule 에 산다) ──
     if copied_tickets.is_dir():
-        shutil.rmtree(copied_tickets, ignore_errors=True)
+        try:
+            _force_rmtree(copied_tickets)
+        except OSError as exc:
+            # 남으면 board 는 submodule 로 정상 동작하지만 잉여 트리가 채택자를 헷갈리게 한다 —
+            #   셋업을 실패로 뒤집지는 않되 자리를 알린다.
+            print(f"경고: dormant wiki/tickets 제거 실패 — 직접 지우세요: {copied_tickets} "
+                  f"({type(exc).__name__}: {exc})", file=sys.stderr)
 
     label = "신규 스캐폴드 seed+push" if seeded else "기존 board 재사용(합류)"
     print(f"✓ board submodule 셋업: {_BOARD_SUBMODULE_PATH} "

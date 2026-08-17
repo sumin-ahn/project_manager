@@ -60,6 +60,28 @@ def _load_module(name: str, path: Path):
     return mod
 
 
+def _windows_expanduser(path: Path) -> Path:
+    """Windows `Path.expanduser()` 대역 — **없는 사용자도** `C:/Users/<name>` 으로 조립한다.
+
+    POSIX 는 `pwd` 조회 실패를 RuntimeError 로 올리지만 Windows 는 프로필 루트에 이름을 붙여
+    돌려준다(실재 확인 없음). 이 차이가 `~user` 미확장을 플랫폼마다 다른 판정으로 갈랐다.
+    """
+    first = path.parts[0] if path.parts else ""
+    if not first.startswith("~"):
+        return path
+    return Path("C:/Users") / (first[1:] or "pmuser") / Path(*path.parts[1:])
+
+
+def _use_windows_expanduser(monkeypatch) -> None:
+    """`Path.expanduser` **자체**에 Windows 동작을 주입한다 — 엔진 seam 유무와 무관한 경계.
+
+    엔진 쪽 확장 seam 에 주입하면 "seam 이 있는 구현"만 태우게 된다(그 seam 이 곧 이번 수정의
+    일부라 수정 전 red 가 성립하지 않는다). 플랫폼 API 를 직접 갈아끼워 Windows 분기를 Linux
+    에서 있는 그대로 태운다.
+    """
+    monkeypatch.setattr(Path, "expanduser", _windows_expanduser)
+
+
 @pytest.fixture
 def board():
     return _load_module("board", TOOLS / "board.py")
@@ -733,8 +755,17 @@ def test_unusable_upstream_paths_stay_advisory(
     assert detail_fragment in detail
 
 
+@pytest.mark.parametrize("expansion", ["posix", "windows"])
 def test_unexpandable_upstream_user_stays_advisory(
-        board, domain, monkeypatch, tmp_path):
+        board, domain, monkeypatch, tmp_path, expansion):
+    """없는 `~user` upstream 은 **두 플랫폼 모두** '경로 해소 실패' 로 수렴한다.
+
+    POSIX `expanduser()` 는 `pwd` 조회 실패를 RuntimeError 로 올리지만 Windows 는 없는 사용자도
+    `C:\\Users\\<name>` 으로 조립해 준다 — 그러면 해소가 성공한 척 다음 단계로 내려가 "경로
+    부재/이동" 이라는 **다른 사유**로 갈렸다(Windows 실측). 확장 seam 에 Windows 동작을 주입해
+    그 분기를 Linux 에서 태운다."""
+    if expansion == "windows":
+        _use_windows_expanduser(monkeypatch)
     domain_dir = _wire(board, domain, monkeypatch, tmp_path)
     _domain_page(domain_dir, "p.md", covers=["src/**"], verified_at="cafe0001",
                  title="외부소유", repo="upstream")
@@ -748,6 +779,28 @@ def test_unexpandable_upstream_user_stays_advisory(
     _label, kind, detail = findings[0]
     assert kind == "domain-unverifiable"
     assert "경로 해소 실패" in detail
+
+
+def test_current_user_home_expansion_keeps_resolving(
+        board, domain, monkeypatch, tmp_path):
+    """`~`(현재 사용자)에는 실재 검사를 걸지 않는다 — `~user` 판정이 정상 형상을 막지 않는다.
+
+    홈 디렉터리가 아직 없는 형상까지 해소 실패로 접으면 판정이 과차단이다. `~` 확장 결과는
+    그대로 다음 단계(경로 실재)로 내려가고, 사유도 그 단계의 것이어야 한다."""
+    _use_windows_expanduser(monkeypatch)
+    domain_dir = _wire(board, domain, monkeypatch, tmp_path)
+    _domain_page(domain_dir, "p.md", covers=["src/**"], verified_at="cafe0001",
+                 title="외부소유", repo="upstream")
+    local_conf = tmp_path / ".project_manager" / "local.conf"
+    local_conf.parent.mkdir(parents=True)
+    local_conf.write_text("upstream=~/owner\n", encoding="utf-8")
+
+    findings = board.lint_domain_freshness(runner=_raising_git)
+    assert len(findings) == 1
+    _label, kind, detail = findings[0]
+    assert kind == "domain-unverifiable"
+    assert "경로 해소 실패" not in detail        # 확장 자체는 성립
+    assert "부재/이동" in detail                # 다음 단계(경로 실재)의 사유
 
 
 def test_solo_self_owner_naturally_uses_same_repo(
@@ -1455,9 +1508,15 @@ def test_repin_cli_write_failure_is_nonzero_and_names_changed_files(
     assert paths[1].read_bytes() == original.encode()
 
 
+@pytest.mark.parametrize("expansion", ["posix", "windows"])
 def test_repin_cli_unexpandable_upstream_user_fails_before_writing(
-        board, monkeypatch, tmp_path, capsys):
-    """`~없는사용자` upstream은 CLI에서 명시 실패하고 대상 파일을 건드리지 않는다."""
+        board, monkeypatch, tmp_path, capsys, expansion):
+    """`~없는사용자` upstream은 CLI에서 명시 실패하고 대상 파일을 건드리지 않는다.
+
+    Windows 확장(`C:\\Users\\<없는사용자>` 조립)을 주입해도 **같은 판정**에 도달해야 한다 —
+    종전엔 phantom 홈 경로로 내려가 다른 사유로 갈렸다(Windows 실측)."""
+    if expansion == "windows":
+        _use_windows_expanduser(monkeypatch)
     wiki = tmp_path / ".project_manager" / "wiki"
     wiki.mkdir(parents=True)
     architecture = wiki / "architecture.md"

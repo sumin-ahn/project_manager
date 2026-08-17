@@ -44,7 +44,7 @@ import platform
 import re
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Callable, NamedTuple
 
 _TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
@@ -801,6 +801,37 @@ def _resolve_session_slot(
         f"({', '.join(f'work/{repo}_{n}' for n in sorted(slot_nums))}) 중 slot 1 부재 — "
         f"어느 슬롯인지 모호하다. `--slot <N>` 으로 명시하라."
     )
+
+
+# ── 경로 표기 직렬화 (POSIX 단일) ─────────
+def _display_path_text(path) -> str:
+    """경로를 사람/비교용 표기(**POSIX 단일**)로 직렬화한다 — 문자열화 지점만 고정한다.
+
+    Windows 에서 `str(WindowsPath(...))` 는 `\\` 구분자를 만들어 같은 경로가 OS 를 건너 다른
+    문자열로 읽힌다. task pm_state 포인터는 부트스트랩 dump 를 읽는 쪽(PM·스킬·`--json` 소비자)이
+    문자열로 대조하는 값이라 표기가 갈리면 안 된다. 파일시스템 호출에 넘기는 자리는 `Path` 를
+    그대로 두고 **문자열화 지점만** POSIX 로 고정한다.
+
+    같은 규칙의 lease 슬롯 축 구현이 `pm_handoff._lease_slot_path_text`다. 그쪽은
+    repo 상대화(장부 슬롯 키 산출)까지 하는 lease 전용 해소라 여기(표시 경로 직렬화)와 스코프가
+    다르고, 재사용하면 표시 경로가 repo 상대로 바뀐다 — 규칙(POSIX 단일)만 공유한다.
+
+    `PurePath` 가 아닌 값(이미 문자열화된 경로)은 그대로 돌려준다 — 구분자를 추측해 치환하면
+    POSIX 파일명에 정당하게 들어간 `\\` 를 망가뜨린다.
+    """
+    if isinstance(path, PurePath):
+        return path.as_posix()
+    return str(path)
+
+
+# task 서술 pm_state 포인터 줄 — 세션 정체성 복구(컴팩션·세션 교체 뒤 진입)의 읽기 앵커다.
+# 문구·경로 표기의 단일 진실을 여기 두고 렌더/테스트가 이 함수만 참조한다(문구 손 재타이핑 금지).
+_TASK_PM_STATE_POINTER_LABEL = "pm_state (이 task·서술)"
+
+
+def _render_task_pm_state_pointer(path) -> str:
+    """task 서술 pm_state 포인터 줄을 렌더한다 — 경로 표기는 POSIX 단일."""
+    return f"- {_TASK_PM_STATE_POINTER_LABEL}: `{_display_path_text(path)}`"
 
 
 # ── per-slot pm_state 경로 안내 (multi-PM 연속성) ─────────
@@ -1984,7 +2015,7 @@ class PmBootstrap:
         """
         if self._task_name is not None:
             if self._task_pm_state_file is not None:
-                return str(self._task_pm_state_file)
+                return _display_path_text(self._task_pm_state_file)
             return f".project_manager/.local/tasks/{self._task_name}/pm_state.md"
         bound = None
         if self._bound_slot and self._bound_slot.startswith("work/"):
@@ -2699,7 +2730,10 @@ class PmBootstrap:
             "session_stale": session_stale,
             "state_session_num": state_num,
             "remaining_work": remaining_work,
-            "state_path": str(state_path) if state_path is not None else "pm_state.md",
+            # 표기는 POSIX 단일 — 이 값은 dump/`--json` 을 읽는 쪽이 문자열로 대조한다.
+            "state_path": (
+                _display_path_text(state_path) if state_path is not None else "pm_state.md"
+            ),
             "fresh_slot": fresh_slot,
         }
 
@@ -4017,7 +4051,10 @@ class PmBootstrap:
             "started": getattr(record, "started", None),
             # 회수한 이전 pid(>0 이면 loud notice — 다른 창이 아직 작업 중일 수 있음).
             "reclaimed_from_pid": reclaimed_from,
-            "pm_state_path": str(pm_state),
+            # 표기는 POSIX 단일(`_display_path_text`) — 이 값은 identity surface·`--json` 으로
+            # 나가 문자열로 대조된다. 파일시스템 소비자는 `Path(...)` 로 되읽는데, Windows 의
+            # `Path("C:/…")` 는 `WindowsPath` 로 정상 해석되므로 read 경로는 무변경이다.
+            "pm_state_path": _display_path_text(pm_state),
             "pm_state_exists": True,
         }
 
@@ -4071,7 +4108,7 @@ class PmBootstrap:
                 "  작업공간(슬롯): alloc에서 연결 — 신규 task 는 슬롯 0개로 시작 가능."
             )
         if pm_state_path:
-            lines.append(f"- pm_state (이 task·서술): `{pm_state_path}`")
+            lines.append(_render_task_pm_state_pointer(pm_state_path))
         return "\n".join(lines)
 
     # ── task 보유 슬롯 집합 — 진입 전수 검증 + 열거 행렬 ──

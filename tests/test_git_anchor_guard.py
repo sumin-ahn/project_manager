@@ -60,6 +60,23 @@ def _seed_engine_copy(root: Path, rev: str) -> None:
         )
 
 
+def _shell_slot_path(home: Path, slot: Path, notation: str) -> str:
+    """같은 slot을 POSIX/Windows 셸 경로 표기로 반환한다.
+
+    POSIX CI에서도 실제 ``C:\\Users\\x\\slot`` 표기를 판정부까지 통과시키기 위해
+    drive-like 상대 alias를 실제 slot symlink로 연결한다. Windows에서는 실제 절대경로의
+    native 표기를 그대로 사용한다.
+    """
+    if notation == "posix":
+        return slot.as_posix()
+    if os.name == "nt":
+        return str(slot)
+    windows_alias = home / "C:" / "Users" / "x" / "slot"
+    windows_alias.parent.mkdir(parents=True, exist_ok=True)
+    windows_alias.symlink_to(slot, target_is_directory=True)
+    return r"C:\Users\x\slot"
+
+
 @pytest.fixture
 def topology(tmp_path):
     """서로 다른 git인 PM 홈 + 그 아래 등록 linked slot(양쪽 tests/templates 실재)."""
@@ -126,17 +143,23 @@ def test_read_git_is_ok_and_git_dash_c_changes_anchor(topology):
     assert got["verdict"] == "ok" and got["cwd_identity"] == "slot"
 
 
-def test_shell_parser_uses_worst_git_judgment(topology):
+@pytest.mark.parametrize("path_notation", ["posix", "windows"])
+def test_shell_parser_uses_worst_git_judgment(topology, path_notation):
     board = _load("git_anchor_board_shell", BOARD_PY)
     home, slot = topology
+    shell_slot = _shell_slot_path(home, slot, path_notation)
     got = board.judge_git_anchor_command(
         str(home), "echo pre && git status && git add -- tests/shared.txt"
     )
     assert got["verdict"] == "deny"
+    reversed_calls = board.judge_git_anchor_command(
+        str(home), "git add -- tests/shared.txt && git status"
+    )
+    assert reversed_calls["verdict"] == "deny"
     assert board.judge_git_anchor_command(str(home), "python3 build.py")["verdict"] == "ok"
     # git 자체는 정상 slot 판정이지만 cwd 잔존 패턴은 별도 warn으로 승격한다.
     changed = board.judge_git_anchor_command(
-        str(home), f"cd {slot} && git add -- tests/shared.txt"
+        str(home), f"cd {shell_slot} && git add -- tests/shared.txt"
     )
     assert changed["verdict"] == "warn"
     assert "대상을 절대경로로 지정하라" in changed["reason"]
@@ -347,23 +370,33 @@ def test_mixed_git_and_engine_calls_promote_missing_tests_deny(
 
 
 @pytest.mark.parametrize(
-    "command",
-    [
-        'cd "{slot}" && python3 build.py',
-        "cd {slot}; python3 build.py",
-        "python3 build.py && cd {slot}",
-    ],
+    ("separator", "separator_id"),
+    [(" && ", "and"), ("; ", "semicolon"), ("\n", "newline")],
+    ids=["and", "semicolon", "newline"],
 )
-def test_persistent_cd_pattern_warns_with_executable_prescription(topology, command):
+@pytest.mark.parametrize("path_notation", ["posix", "windows"])
+def test_persistent_cd_pattern_warns_with_executable_prescription(
+    topology, path_notation, separator, separator_id,
+):
     """(f) 셸 cwd 잔존 패턴은 실행 종류와 무관하게 warn한다."""
-    board = _load(f"engine_anchor_persistent_cd_{abs(hash(command))}", BOARD_PY)
+    board = _load(
+        f"engine_anchor_persistent_cd_{path_notation}_{separator_id}", BOARD_PY,
+    )
     home, slot = topology
-    got = board.judge_git_anchor_command(str(home), command.format(slot=slot))
+    shell_slot = _shell_slot_path(home, slot, path_notation)
+    command = f"echo pre{separator}cd {shell_slot}{separator}python3 build.py"
+    got = board.judge_git_anchor_command(str(home), command)
     assert got["verdict"] == "warn"
     assert "대상을 절대경로로 지정하라" in got["reason"]
     assert "cd가 꼭 필요하면 이 호출 안에서만 사용" in got["reason"]
     assert "다음 호출은 cwd를 가정하지 마라" in got["reason"]
     assert "workdir 파라미터" not in got["reason"]
+
+    contextual = board.judge_git_anchor_command(
+        str(home), f"echo pre{separator}cd {shell_slot}{separator}git status",
+    )
+    assert contextual["verdict"] == "warn"
+    assert "호출 1 [slot/ok]" in contextual["reason"]
 
 
 @pytest.mark.parametrize(
@@ -393,6 +426,17 @@ def test_existing_git_mutation_deny_is_unchanged(topology):
     assert shell["verdict"] == "deny"
 
 
+def test_posix_escaped_path_operand_keeps_shell_meaning(topology):
+    """Windows 표기 정규화가 POSIX ``\\`` escape를 경로 구분자로 바꾸지 않는다."""
+    board = _load("engine_anchor_posix_escaped_path", BOARD_PY)
+    home, _slot = topology
+    got = board.judge_git_anchor_command(
+        str(home), r"git add t\ests/shared.txt",
+    )
+    assert got["verdict"] == "deny"
+    assert "tests/shared.txt" in got["reason"]
+
+
 @pytest.mark.parametrize(
     ("command", "identity"),
     [
@@ -412,21 +456,30 @@ def test_shell_control_flow_preserves_actual_git_cwd(topology, command, identity
     assert got["cwd_identity"] == identity
 
 
-def test_shell_if_and_multiple_git_calls_keep_context(topology):
+@pytest.mark.parametrize("path_notation", ["posix", "windows"])
+def test_shell_if_and_multiple_git_calls_keep_context(topology, path_notation):
     board = _load("git_anchor_shell_if_multi", BOARD_PY)
     home, slot = topology
+    shell_slot = _shell_slot_path(home, slot, path_notation)
     conditional = board.judge_git_anchor_command(
-        str(home), f"if cd {slot}; then git add tests/shared.txt; fi"
+        str(home), f"if cd {shell_slot}; then git add tests/shared.txt; fi"
     )
     assert conditional["verdict"] == "ok"
     assert conditional["cwd_identity"] == "slot"
 
     multiple = board.judge_git_anchor_command(
-        str(home), f"git -C {slot} commit -m slot && git commit -m home"
+        str(home), f"git -C {shell_slot} commit -m slot && git commit -m home"
     )
     assert multiple["verdict"] == "warn"
     assert "호출 1 [slot/ok]" in multiple["reason"]
     assert "호출 2 [pm-home/warn]" in multiple["reason"]
+
+    reversed_calls = board.judge_git_anchor_command(
+        str(home), f"git commit -m home && git -C {shell_slot} commit -m slot"
+    )
+    assert reversed_calls["verdict"] == "warn"
+    assert "호출 1 [pm-home/warn]" in reversed_calls["reason"]
+    assert "호출 2 [slot/ok]" in reversed_calls["reason"]
 
 
 def test_dynamic_cd_is_ambiguous_and_never_blocks(topology):
@@ -552,11 +605,13 @@ def test_unsupported_loop_control_is_ambiguity_warn(topology, command):
     assert "정적으로 단일 증명할 수 없음" in got["reason"]
 
 
-def test_newline_is_a_sequential_shell_boundary(topology):
+@pytest.mark.parametrize("path_notation", ["posix", "windows"])
+def test_newline_is_a_sequential_shell_boundary(topology, path_notation):
     board = _load("git_anchor_shell_newline", BOARD_PY)
     home, slot = topology
+    shell_slot = _shell_slot_path(home, slot, path_notation)
     got = board.judge_git_anchor_command(
-        str(home), f"git -C {slot} status\ngit add tests/shared.txt"
+        str(home), f"git -C {shell_slot} status\ngit add tests/shared.txt"
     )
     assert got["verdict"] == "deny"
     assert "호출 1 [slot/ok]" in got["reason"]

@@ -347,9 +347,117 @@ def test_windows_retry_command_uses_encoded_powershell_for_shell_metacharacters(
     script = base64.b64decode(encoded).decode("utf-16-le")
     assert script.startswith("& ")
     assert "'/repo/a&b%PATH%''quoted'" in script
-    assert "'--secret-scan-ack' '" + "b" * 24 + "'" in script
+    # 인용이 필요한 토큰만 PowerShell 리터럴로 감싼다 — 승인 토큰은 그대로 읽혀야 한다.
+    assert "--secret-scan-ack " + "b" * 24 in script
     assert "PowerShell 디코드(검토용·복사는 위 인코딩본):" in decoded_display
     assert script in decoded_display
+
+
+# ── T-0714: 처방 커맨드 셸 인용 seam (POSIX/Windows 렌더러 직접 주입) ──────────
+
+_WINDOWS_ACK_ARGV = [
+    r"C:\Users\ci\AppData\Local\Programs\Python\Python312\python.exe",
+    r"C:\repo\.project_manager\tools\pm_delegate.py",
+    "--role",
+    "developer",
+    "--secret-scan-ack",
+    "c" * 24,
+]
+
+
+def test_render_shell_command_posix_quotes_only_tokens_that_need_it(pd):
+    rendered = pd.render_shell_command(
+        ["python3", "pm_delegate.py", "--role", "developer"], windows=False
+    )
+
+    assert rendered == "python3 pm_delegate.py --role developer"
+    assert pd.render_shell_command(
+        ["--cwd", "/work tree/repo"], windows=False
+    ) == "--cwd '/work tree/repo'"
+
+
+def test_render_shell_command_windows_uses_native_quoting_not_posix(pd):
+    rendered = pd.render_shell_command(_WINDOWS_ACK_ARGV, windows=True)
+
+    assert rendered == " ".join(_WINDOWS_ACK_ARGV)
+    assert "'" not in rendered
+    assert pd.render_shell_command(
+        ["--cwd", r"C:\work tree\repo"], windows=True
+    ) == '--cwd "C:\\work tree\\repo"'
+
+
+def test_render_shell_token_follows_the_same_platform_rules(pd):
+    assert pd.render_shell_token("/work tree/repo", windows=False) == "'/work tree/repo'"
+    assert pd.render_shell_token(r"C:\ci\repo", windows=True) == r"C:\ci\repo"
+    assert pd.render_shell_token(r"C:\work tree\repo", windows=True) == (
+        '"C:\\work tree\\repo"'
+    )
+    # 셸 메타문자는 argv 규칙상 인용이 불필요해도 셸이 먼저 재해석한다.
+    assert pd.render_shell_token("a&b", windows=True) == '"a&b"'
+
+
+def test_render_shell_command_windows_escalates_unquotable_tokens(pd):
+    """인용만으로 두 Windows 셸에서 리터럴화 못 하는 토큰은 EncodedCommand로 올린다."""
+    rendered = pd.render_shell_command(
+        ["python.exe", "run.py", "--cwd", r"C:\a%PATH%b"], windows=True
+    )
+
+    assert rendered.startswith(
+        "powershell.exe -NoProfile -NonInteractive -EncodedCommand "
+    )
+    assert "%PATH%" not in rendered.splitlines()[0]
+
+
+def test_render_shell_command_windows_escalates_quoted_program_token(pd):
+    """PowerShell은 인용된 첫 토큰을 명령이 아닌 문자열로 읽는다 — 붙여넣기 안전형으로 올린다."""
+    rendered = pd.render_shell_command(
+        [r"C:\Program Files\Python312\python.exe", "run.py", "--role", "developer"],
+        windows=True,
+    )
+    encoded_command, decoded_display = rendered.splitlines()
+    script = base64.b64decode(encoded_command.rsplit(" ", 1)[1]).decode("utf-16-le")
+
+    assert script.startswith("& 'C:\\Program Files\\Python312\\python.exe' run.py")
+    assert "--role developer" in script
+    assert "PowerShell 디코드" in decoded_display
+
+
+@pytest.mark.parametrize("windows", (False, True))
+def test_rendered_prescriptions_never_chain_commands(pd, windows):
+    rendered = pd.render_shell_command(_WINDOWS_ACK_ARGV, windows=windows)
+
+    assert "&&" not in rendered
+    assert ";" not in rendered
+
+
+def test_secret_scan_retry_command_on_windows_is_pasteable(pd, monkeypatch):
+    """Windows 재실행 처방은 POSIX 인용 없이 붙여넣어 실행되는 줄이어야 한다."""
+    monkeypatch.setattr(pd, "_running_on_windows", lambda: True)
+    monkeypatch.setattr(
+        pd.sys, "executable", r"C:\ci\Python312\python.exe", raising=False
+    )
+    digest = "d" * 24
+
+    command = pd._secret_scan_retry_command(
+        ["--role", "developer", "--cwd", r"C:\ci\repo"], digest
+    )
+
+    assert f"--secret-scan-ack {digest}" in command
+    assert f"'--secret-scan-ack' '{digest}'" not in command
+    assert r"--cwd C:\ci\repo" in command
+    assert "&&" not in command
+
+
+def test_secret_scan_retry_command_on_posix_keeps_shlex_rules(pd, monkeypatch):
+    monkeypatch.setattr(pd, "_running_on_windows", lambda: False)
+    digest = "e" * 24
+
+    command = pd._secret_scan_retry_command(
+        ["--role", "developer", "--cwd", "/work tree/repo"], digest
+    )
+
+    assert f"--secret-scan-ack {digest}" in command
+    assert "--cwd '/work tree/repo'" in command
 
 
 def test_ack_digest_cannot_be_reused_for_different_resolved_recipient(

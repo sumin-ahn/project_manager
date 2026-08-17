@@ -25,7 +25,7 @@ import threading
 import types
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 from _pytest_summary import pytest_summary
@@ -1646,6 +1646,104 @@ def test_implicit_identity_uses_actual_relative_lease_path(
     assert (task, session, source) == (None, "project_manager_1", "cwd→lease")
     assert slot == "nested/project_manager_1"
     assert hf._parse_worktree_slot(slot) == ("project_manager", 1)
+
+
+# ── lease 상대경로 직렬화 = POSIX 표기 단일 (T-0712 축 A) ─────────────────────
+# Windows 에서 `str(WindowsPath("nested/project_manager_1"))` 는 `nested\project_manager_1` 이라
+# 장부·pm_state·다음 세션 인자가 OS 마다 다른 문자열이 됐다(5차 Windows 측정
+# `assert 'nested\project_manager_1' == 'nested/project_manager_1'`). 표기 축만 주입 가능한
+# 대역으로 재현해 **Linux 에서 red** 가 되게 한다 — 플랫폼 skip 으로 비우지 않는다.
+
+
+class _WindowsFlavourLeasePath:
+    """Windows 표기 lease 경로 대역 — `str()` 이 백슬래시를 내는 자리를 Linux 에서 태운다.
+
+    실 `WindowsPath` 처럼 `resolve()` 는 자기 자신을, `relative_to()` 는 Windows 표기 상대
+    경로를 돌려준다. 표기 축만 재현하므로 파일시스템은 건드리지 않는다.
+    """
+
+    def __init__(self, path: str):
+        self._path = PureWindowsPath(path)
+
+    def resolve(self, strict: bool = False):
+        return self
+
+    def relative_to(self, base):
+        return self._path.relative_to(PureWindowsPath(str(base).replace("/", "\\")))
+
+    def as_posix(self) -> str:
+        return self._path.as_posix()
+
+    def __str__(self) -> str:
+        return str(self._path)
+
+
+def _windows_slot_under(repo: Path, relative: str) -> _WindowsFlavourLeasePath:
+    """`repo` 아래 `relative` 슬롯을 가리키는 Windows 표기 lease 경로 대역."""
+    root = str(repo.resolve(strict=False)).replace("/", "\\")
+    return _WindowsFlavourLeasePath(f"{root}\\{relative.replace('/', chr(92))}")
+
+
+def _fake_pm_log_for_slot(slot_path, session: str = "project_manager_1"):
+    """implicit identity 체인 3함수만 답하는 pm_log 대역 — 슬롯 경로 표기 축 전용."""
+    return types.SimpleNamespace(
+        resolve_snapshot_identity=lambda _repo, _cwd: (session, "cwd→lease"),
+        _checkpoint_identity_axes=lambda _repo, _cwd, _identity, _source: (None, session),
+        resolved_lease_slot_path=lambda _repo, _session: slot_path,
+    )
+
+
+def test_implicit_identity_serializes_windows_lease_path_as_posix(
+    hf, tmp_path, monkeypatch,
+):
+    """Windows 표기 lease 경로도 downstream 인자로는 POSIX 표기 하나로만 나간다."""
+    monkeypatch.setattr(hf, "REPO", tmp_path)
+    windows_slot = _windows_slot_under(tmp_path, "nested/project_manager_1")
+    assert str(windows_slot).endswith("nested\\project_manager_1")   # 대역이 실제로 백슬래시
+
+    task, session, source, slot = hf._resolve_implicit_handoff_identity(
+        cwd=tmp_path, pm_log_module=_fake_pm_log_for_slot(windows_slot),
+    )
+    assert (task, session, source) == (None, "project_manager_1", "cwd→lease")
+    assert slot == "nested/project_manager_1"
+    assert "\\" not in slot
+    assert hf._parse_worktree_slot(slot) == ("project_manager", 1)
+
+
+def test_session_slot_resolution_serializes_windows_lease_path_as_posix(
+    hf, tmp_path, monkeypatch,
+):
+    """session-entry 슬롯 해소도 같은 규칙 — 실행 슬롯 thread 값이 백슬래시를 안 싣는다."""
+    areas = tmp_path / "areas.md"
+    leases = tmp_path / "worktree-leases.json"
+    _write_areas(areas, ["project_manager"])
+    _write_leases(leases, [
+        {"slot": "work/project_manager_1", "repo": "project_manager",
+         "session": "project_manager_1", "state": "leased"},
+    ])
+    monkeypatch.setattr(hf, "REPO", tmp_path)
+    # 장부 canonical 이름과 별개로, 실제 슬롯 경로는 `nested/...` 처럼 다른 자리일 수 있다
+    # (`resolved_lease_slot_path` 가 그 실경로를 권위로 준다) — 표기 축은 그 값에 걸린다.
+    windows_slot = _windows_slot_under(tmp_path, "nested/project_manager_1")
+    monkeypatch.setattr(
+        hf, "_load_pm_log", lambda: _fake_pm_log_for_slot(windows_slot))
+
+    slot, error = hf._resolve_session_worktree_slot(None, areas, leases)
+    assert error is None
+    assert slot == "nested/project_manager_1"
+    assert "\\" not in slot
+
+
+def test_lease_path_outside_repo_keeps_posix_notation(hf, tmp_path, monkeypatch):
+    """REPO 밖 absolute 슬롯(상대화 실패 폴백)도 같은 POSIX 표기로 직렬화된다."""
+    monkeypatch.setattr(hf, "REPO", tmp_path)
+    outside = _WindowsFlavourLeasePath("D:\\external\\A_1")
+
+    _task, _session, _source, slot = hf._resolve_implicit_handoff_identity(
+        cwd=tmp_path, pm_log_module=_fake_pm_log_for_slot(outside, session="A_1"),
+    )
+    assert slot == "D:/external/A_1"
+    assert hf._parse_worktree_slot(slot) == ("A", 1)
 
 
 def test_regression_cwd_missing_leases_falls_back(hf, tmp_path):

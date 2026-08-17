@@ -1762,6 +1762,123 @@ def test_install_protected_hook_gate_resolution_error_is_fail_soft(
             or "embedded null byte" in reason)
 
 
+# ── `~user` 확장 판정 = 플랫폼 무관 (T-0712 축 C) ────────────────────────────
+# POSIX 의 `expanduser()` 는 없는 사용자를 RuntimeError 로 거절하지만 Windows 는 존재하지 않는
+# 사용자도 `C:\Users\<name>` 으로 조립해 준다 — 그 형상에서만 gate resolver 가 성공해 raw
+# installer 까지 갔다(5차 Windows 측정: `'RuntimeError' in 'AssertionError: resolver 실패 뒤 raw
+# installer를 호출함'`). 확장 동작을 seam 에 주입해 **Linux 에서 그 분기를 태운다**.
+
+
+def _windows_style_expanduser(users_root: Path):
+    """Windows `Path.expanduser()` 대역 — 없는 사용자도 `<users_root>/<name>` 으로 조립한다.
+
+    ntpath 는 `~name` 을 현재 사용자 홈의 부모에 이어 붙일 뿐 그 사용자의 실재를 보지 않는다.
+    POSIX 확장기로는 이 분기가 안 서므로 확장 seam 에 주입한다(플랫폼 skip 대신 재현).
+    """
+
+    def expand(path: Path) -> Path:
+        parts = path.parts
+        if parts and parts[0].startswith("~"):
+            name = parts[0][1:] or "current"
+            return Path(users_root, name, *parts[1:])
+        return path
+
+    return expand
+
+
+def _adopter_home_with_upstream(tmp_path: Path, upstream: str) -> Path:
+    """`upstream=` 만 다른 PM 홈 형상 — gate resolver 입력을 한 줄로 세팅한다."""
+    home = tmp_path / "adopter-home"
+    conf = home / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True)
+    conf.write_text(f"upstream={upstream}\ntest_cmd=pytest -q\n", encoding="utf-8")
+    return home
+
+
+class _RecordingInstaller:
+    """raw installer 대역 — 실제로 호출됐는지와 전달된 증거 계약을 기록한다."""
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def install_protected_hook(self, repo, protected, *, gate_mode, test_cmd):
+        self.calls.append((repo, list(protected), gate_mode, test_cmd))
+        return True
+
+
+def test_install_protected_hook_rejects_phantom_user_home_from_windows_expanduser(
+        pc, tmp_path, monkeypatch):
+    """없는 사용자를 조립해 주는 확장 동작에서도 해소 실패 판정이 서고 설치로 못 넘어간다."""
+    upstream = "~pm_user_that_cannot_exist_0524/repo"
+    monkeypatch.setattr(pc, "REPO", _adopter_home_with_upstream(tmp_path, upstream))
+    monkeypatch.setattr(pc, "_expanduser_path",
+                        _windows_style_expanduser(tmp_path / "Users"))
+
+    class _MustNotInstall:
+        def install_protected_hook(self, *args, **kwargs):
+            raise AssertionError("resolver 실패 뒤 raw installer를 호출함")
+
+    assert pc._install_protected_hook(
+        "svc", board=FakeBoard(), worktree_pool=_MustNotInstall()) is False
+    reason = pc.protected_hook_install_failure_reason("svc")
+    assert reason is not None
+    assert "RuntimeError" in reason
+    assert upstream in reason          # 어떤 입력이 안 풀렸는지 진단에 남는다
+
+
+def test_install_protected_hook_keeps_existing_user_home_resolving(
+        pc, tmp_path, monkeypatch):
+    """같은 확장 동작이라도 **실재하는** 사용자 홈은 그대로 해소된다 — 과차단 아님."""
+    users = tmp_path / "Users"
+    (users / "pm_user").mkdir(parents=True)
+    monkeypatch.setattr(pc, "REPO", _adopter_home_with_upstream(tmp_path, "~pm_user/repo"))
+    monkeypatch.setattr(pc, "_expanduser_path", _windows_style_expanduser(users))
+    installer = _RecordingInstaller()
+
+    assert pc._install_protected_hook(
+        "svc", board=FakeBoard(), worktree_pool=installer) is True
+    assert pc.protected_hook_install_failure_reason("svc") is None
+    assert [(repo, gate_mode) for repo, _protected, gate_mode, _cmd in installer.calls] == [
+        ("svc", "self-test")]
+
+
+def test_gate_resolution_failure_names_the_input_whatever_the_platform_text(
+        pc, tmp_path, monkeypatch):
+    """예외 문구가 플랫폼마다 달라도 진단에는 **어떤 입력이** 안 풀렸는지가 남는다.
+
+    같은 NUL 입력이 POSIX 에선 "embedded null byte", Windows 에선 "stat: embedded null
+    character in path" 다 — 문구에 기대면 한쪽에서 식별 정보가 통째로 사라진다. Windows 문구를
+    주입해 그 자리를 Linux 에서 태운다.
+    """
+    upstream = "bad\0path"
+    monkeypatch.setattr(pc, "REPO", _adopter_home_with_upstream(tmp_path, upstream))
+
+    def _windows_null_character_failure(_path):
+        raise ValueError("stat: embedded null character in path")
+
+    monkeypatch.setattr(pc, "_expanduser_path", _windows_null_character_failure)
+
+    class _MustNotInstall:
+        def install_protected_hook(self, *args, **kwargs):
+            raise AssertionError("resolver 실패 뒤 raw installer를 호출함")
+
+    assert pc._install_protected_hook(
+        "svc", board=FakeBoard(), worktree_pool=_MustNotInstall()) is False
+    reason = pc.protected_hook_install_failure_reason("svc")
+    assert reason is not None
+    assert upstream in reason
+    assert "ValueError" in reason      # 원인 예외 문구도 잃지 않는다
+
+
+def test_expanded_user_path_does_not_gate_the_current_user_home(pc, tmp_path, monkeypatch):
+    """`~`(현재 사용자)는 실재 검사 축이 아니다 — 분기는 `~user` 자리에만 둔다."""
+    monkeypatch.setattr(pc, "_expanduser_path",
+                        _windows_style_expanduser(tmp_path / "Users"))
+
+    assert pc._expanded_user_path("~/work/repo") == (
+        tmp_path / "Users" / "current" / "work" / "repo")
+
+
 def test_protected_push_gate_config_keeps_framework_self_repo_release_gate(
         pc, tmp_path, monkeypatch):
     """upstream이 이 PM 홈의 canonical repo 슬롯이면 기존 release gate를 그대로 선택한다."""

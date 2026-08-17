@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest
 
+from _textio import write_crlf, write_lf
 from _win_skip import _can_symlink
 
 REPO = Path(__file__).resolve().parents[1]
@@ -1870,10 +1871,104 @@ def test_symlink_backup_preserves_the_link_itself(pm_import, tmp_path):
     backed_up_target = Path(os.readlink(backed_up))
     if not backed_up_target.is_absolute():
         backed_up_target = backed_up.parent / backed_up_target
-    assert backed_up_target.resolve() == target.resolve()
+    # Windows 의 `os.readlink`/`Path.resolve()` 는 확장 길이 prefix(`\\?\`)를 붙여 돌려준다 —
+    #   같은 파일을 가리키는 두 경로가 표기만으로 갈리므로 **양쪽을 엔진의 표기 규칙**으로
+    #   정규화해 비교한다(판정 완화 아님: 정규화 뒤 해소 경로가 한 글자라도 다르면 red).
+    assert (pm_import._path_notation_text(backed_up_target.resolve())
+            == pm_import._path_notation_text(target.resolve()))
     assert target.read_text(encoding="utf-8") == "사용자 대상\n", "링크 대상이 변경됨"
     assert not (dest / rel).is_symlink()
     assert (dest / rel).read_text(encoding="utf-8") == "TEMPLATE\n"
+
+
+# ── 백업 링크 **기록값**의 확장 길이 prefix (T-0712) ──────────────────────────
+# 위 판정(링크 대상 자체 보존)은 *비교값*만 정규화해도 통과한다 — 그러면 결함이 자리를 옮길 뿐이다.
+# 백업이 다시 심는 대상 문자열(=채택자가 보는 기록값)도 같은 규칙을 타야 한다. Windows 커널은 절대
+# 대상에 `\??\` 를 다시 붙여 저장하므로 *기록된 표기*는 `os.readlink` 로 되읽을 수 없다(관측 상한).
+# 그래서 이 축의 실측은 **Windows 표기를 주입한 POSIX** 에서 한다 — 링크 대상 문자열과 플랫폼
+# 표기 판정을 직접 넣어 규칙이 실제로 도는지 태운다([[guard-must-cover-its-own-surface]]).
+_WINDOWS_LINK_TARGET = "\\\\?\\C:\\pm\\user_target.md"   # Windows readlink 산출 표기
+_PREFIX_FREE_LINK_TARGET = "C:\\pm\\user_target.md"      # 원본 링크의 사용자-가시 대상
+
+records_stored_link_text = pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows 는 저장 표기를 커널이 재조립해 기록값을 되읽을 수 없다 — 주입 실측은 POSIX")
+
+
+@requires_symlink
+@records_stored_link_text
+@pytest.mark.parametrize("fd_walk", [True, False], ids=["fd-walk", "path-fallback"])
+@pytest.mark.parametrize("windows_notation", [True, False],
+                         ids=["windows-notation", "posix-notation"])
+def test_symlink_backup_records_the_link_target_without_the_extended_prefix(
+        pm_import, tmp_path, monkeypatch, fd_walk, windows_notation):
+    """백업 링크가 심는 대상 표기에서 확장 prefix 를 벗긴다 — 두 백업 전략 모두.
+
+    `windows_notation=False`(POSIX 표기 플랫폼)는 **주입이 load-bearing 임을 못박는 축**이다:
+    같은 문자열이 POSIX 에서는 정당한 파일명이라 그대로 보존돼야 한다(벗기면 백업 링크가 다른
+    곳을 가리킨다). 두 기대값이 갈리므로 규칙을 끄면 한쪽이 반드시 red 다.
+    """
+    if fd_walk and not pm_import._DEST_FD_WALK_SUPPORTED:
+        pytest.skip("이 플랫폼에 fd 순회 능력이 없다 — 폴백 전략만 실측 대상.")
+    monkeypatch.setattr(pm_import, "_DEST_FD_WALK_SUPPORTED", fd_walk)
+    monkeypatch.setattr(pm_import, "_WINDOWS_PATH_NOTATION", windows_notation)
+    dest = tmp_path / "inst"
+    (dest / "adapter").mkdir(parents=True)
+    src = tmp_path / "template_card.md"
+    src.write_text("TEMPLATE\n", encoding="utf-8")
+    rel = Path("adapter/card.md")
+    (dest / rel).symlink_to(_WINDOWS_LINK_TARGET)
+    assert os.readlink(dest / rel) == _WINDOWS_LINK_TARGET, "주입 전제(링크 대상이 확장 표기)"
+    backup_root = dest / pm_import.BACKUP_DIR_NAME / "2026-01-01"
+
+    pm_import.CopyAction(src, dest / rel, backup_root / rel, dest_root=dest).run(
+        root_identity=pm_import.dest_root_identity(dest))
+
+    backed_up = backup_root / rel
+    assert backed_up.is_symlink(), "링크가 아니라 내용이 백업됐다(복원 불가)"
+    assert os.readlink(backed_up) == (
+        _PREFIX_FREE_LINK_TARGET if windows_notation else _WINDOWS_LINK_TARGET)
+    assert (dest / rel).read_text(encoding="utf-8") == "TEMPLATE\n"
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("\\\\?\\C:\\pm\\a.md", "C:\\pm\\a.md"),                  # 기본 확장 prefix
+    ("\\\\?\\UNC\\server\\share\\a.md", "\\\\server\\share\\a.md"),   # UNC 변형 → UNC 루트
+    ("//?/C:/pm/a.md", "C:/pm/a.md"),                          # as_posix() 표기
+    ("//?/UNC/server/share/a.md", "//server/share/a.md"),
+    ("C:\\pm\\a.md", "C:\\pm\\a.md"),                          # prefix 없는 값은 불변
+    ("/home/pm/a.md", "/home/pm/a.md"),
+    ("relative/a.md", "relative/a.md"),
+])
+def test_extended_prefix_stripping_rule_value_table(pm_import, text, expected):
+    """규칙 자체의 값 표 — UNC 는 prefix 만 잘라내면 다른 경로가 되므로 루트까지 되돌린다."""
+    assert pm_import._strip_extended_path_prefix(text) == expected
+
+
+@pytest.mark.parametrize("windows_notation", [True, False])
+def test_path_notation_text_is_gated_on_windows_notation(
+        pm_import, monkeypatch, windows_notation):
+    """표기 정규화는 Windows 축에서만 돈다 — POSIX 의 `\\` 는 정당한 파일명 문자다."""
+    monkeypatch.setattr(pm_import, "_WINDOWS_PATH_NOTATION", windows_notation)
+    assert pm_import._path_notation_text(_WINDOWS_LINK_TARGET) == (
+        _PREFIX_FREE_LINK_TARGET if windows_notation else _WINDOWS_LINK_TARGET)
+
+
+def test_a_long_link_target_keeps_the_prefix_that_makes_it_usable(pm_import, monkeypatch):
+    r"""MAX_PATH 를 넘는 대상에서 `\\?\` 는 표기가 아니라 기능이다 — 기록값에서 벗기지 않는다.
+
+    표기 통일을 이유로 이 자리까지 벗기면 백업 링크가 대상을 가리키지 못한다(동작 > 표기).
+    비교 표기(`_path_notation_text`)는 파일시스템 호출에 안 쓰이므로 길이와 무관하게 벗긴다.
+    """
+    monkeypatch.setattr(pm_import, "_WINDOWS_PATH_NOTATION", True)
+    deep = "C:\\pm\\" + "\\".join(["directory_component"] * 14) + "\\a.md"
+    assert len(deep) >= pm_import._WINDOWS_MAX_PATH_CHARS, "픽스처 전제(MAX_PATH 초과 대상)"
+    long_target = "\\\\?\\" + deep
+    short_target = "\\\\?\\C:\\pm\\a.md"
+
+    assert pm_import._preserved_link_target(long_target) == long_target
+    assert pm_import._preserved_link_target(short_target) == "C:\\pm\\a.md"
+    assert pm_import._path_notation_text(long_target) == deep
 
 
 # ── 루트 교체 계열은 형상과 무관하게 전체 중단 클래스 ────────────────────────
@@ -1905,6 +2000,58 @@ def test_root_open_failure_without_identity_keeps_path_error_class(pm_import, tm
     """고정 신원이 없는 질의성 호출은 옛 경로 오류를 유지한다(회귀 보존·오버리치 방지)."""
     with pytest.raises(pm_import.UnsafeDestPathError):
         pm_import.read_dest_text_keeping_newlines(tmp_path / "absent", Path("a.md"))
+
+
+@pytest.mark.parametrize("fd_walk", [True, False], ids=["fd-walk", "path-fallback"])
+@pytest.mark.parametrize("shape", ["absent", "regular_file"])
+def test_root_gate_error_class_is_the_same_on_both_open_strategies(
+        pm_import, tmp_path, monkeypatch, fd_walk, shape):
+    """루트 관문의 오류 **클래스**가 두 열기 전략에서 같다 (플랫폼별로 갈리지 않는다).
+
+    fd 순회(POSIX)는 `_open_dest_root_fd` 가 매 호출 루트를 strict 해소해 부재·비-디렉토리를
+    `UnsafeDestPathError` 로 낸다. dir_fd/`O_NOFOLLOW` 미지원 플랫폼(Windows)의 경로 폴백은 그
+    관문이 없어 raw `FileNotFoundError` 를 흘렸다 — 호출부의 흡수 클래스가 플랫폼마다 갈리면
+    파일 단위 핸들러가 루트 이상을 삼키는 창이 그 플랫폼에서만 열린다(실측). 능력 플래그를
+    **주입해** 두 전략을 같은 자리에서 태운다([[guard-must-cover-its-own-surface]] 규율).
+    """
+    if fd_walk and not pm_import._DEST_FD_WALK_SUPPORTED:
+        pytest.skip("이 플랫폼에 fd 순회 능력이 없다 — 폴백 전략만 실측 대상.")
+    monkeypatch.setattr(pm_import, "_DEST_FD_WALK_SUPPORTED", fd_walk)
+    root = tmp_path / "root"
+    if shape == "regular_file":
+        root.write_text("루트 자리에 일반 파일\n", encoding="utf-8")
+
+    with pytest.raises(pm_import.UnsafeDestPathError):
+        pm_import.read_dest_text_keeping_newlines(root, Path("a.md"))
+
+
+@pytest.mark.parametrize("notation", ["lf", "crlf"])
+@pytest.mark.parametrize("fd_walk", [True, False], ids=["fd-walk", "path-fallback"])
+def test_root_gate_does_not_block_a_healthy_root(
+        pm_import, tmp_path, monkeypatch, fd_walk, notation):
+    """관문이 정상 루트를 막지 않는다 — 거부 방향으로만 기울지 않았음을 함께 못박는다.
+
+    픽스처는 표기를 **명시해** 쓴다(`write_lf`/`write_crlf`). 플랫폼 기본 텍스트 쓰기는 Windows
+    에서 `\\n` 을 `\\r\\n` 으로 번역하는데 이 읽기 seam 은 표기를 보존하는 게 일이라, 기대값만 LF
+    리터럴로 손으로 적으면 그 플랫폼에서만 상시 red 가 된다(층 혼합·T-0724 실측 `'본문\\r\\n' ==
+    '본문\\n'`). 기대값을 디스크 bytes 에서 만들고 두 표기를 다 태워 CRLF 축이 LF 개발기에서도
+    실제로 돌게 한다 — 읽기가 표기를 정규화하면 여기서 red 다.
+    """
+    if fd_walk and not pm_import._DEST_FD_WALK_SUPPORTED:
+        pytest.skip("이 플랫폼에 fd 순회 능력이 없다 — 폴백 전략만 실측 대상.")
+    monkeypatch.setattr(pm_import, "_DEST_FD_WALK_SUPPORTED", fd_walk)
+    root = tmp_path / "inst"
+    root.mkdir()
+    write = write_crlf if notation == "crlf" else write_lf
+    write(root / "a.md", "본문\n둘째 줄\n")
+    on_disk = (root / "a.md").read_bytes()
+    assert (b"\r\n" in on_disk) == (notation == "crlf"), \
+        f"픽스처가 {notation} 표기를 만들지 못했다: {on_disk!r}"
+
+    read = pm_import.read_dest_text_keeping_newlines(root, Path("a.md"))
+
+    assert read == on_disk.decode("utf-8"), \
+        f"정상 루트 읽기가 디스크 bytes 와 갈렸다({notation}): {read!r}"
 
 
 # ── 적용 단계 삭제 경쟁도 loud 제외(무요약 축 폐쇄) ──────────────────────────
@@ -2190,34 +2337,70 @@ def test_backup_and_write_are_bound_to_one_leaf_identity(
 
     옛 흐름은 백업과 쓰기가 leaf 를 각각 다시 열어, 그 사이 교체된 **백업 없는** 파일을 truncate
     했다. 이제 fd 하나가 계획이 본 inode 에 묶여 있어 그 창 자체가 없다 — 교체는 손상 0 이고,
-    우리가 쓴 내용이 그 자리에 안 보이므로 제외로 **보고**된다(없는 성공을 말하지 않는다)."""
+    우리가 쓴 내용이 그 자리에 안 보이므로 제외로 **보고**된다(없는 성공을 말하지 않는다).
+
+    경쟁은 **열린 leaf 를 지우는 방식으로 주입하지 않는다**: Windows 는 열린 파일을 가리키는
+    디렉토리 엔트리의 삭제·이름변경을 공유 위반(`WinError 32`)으로 거부하므로 그 기법은 POSIX
+    전용이고, 그 거부는 엔진의 핸들 누수가 아니라 같은 결속을 OS 가 강제하는 것이다. 대신 두
+    단계로 **같은 상태**를 만든다 — ① 엔진이 leaf 를 열기 직전, 계획 대상 파일을 다른 이름으로
+    옮겨 두고 그 파일을 열어 준다(엔진이 쥔 fd = 계획이 본 inode · 경로에는 아직 열린 핸들 0).
+    ② 백업 직후 그 경로에 **백업 없는 다른 파일**을 `os.replace` 로 갈아끼운다. 결과(fd=계획
+    inode · 경로=백업 없는 남의 파일)는 원래 경쟁이 만드는 상태와 같고, 두 조작 모두 열린 핸들을
+    건드리지 않아 두 플랫폼에서 성립한다. 주입이 no-op 이면(경로가 여전히 백업한 그 파일이면)
+    창을 시험하지 못하므로 그 자리에서 red 로 만든다."""
     dest = tmp_path / "inst"
     dest.mkdir()
     template = tmp_path / "tree"
     template.mkdir()
     rel = Path("card.md")
+    planned_rel = Path("card.planned.md")  # 계획이 본 inode 의 두 번째 이름(주입 전용).
     (template / rel).write_text("TEMPLATE\n", encoding="utf-8")
     (dest / rel).write_text("사용자 원본\n", encoding="utf-8")
+    intruder = tmp_path / "intruder.md"
+    intruder.write_text("백업 안 된 새 파일\n", encoding="utf-8")
     backup_root = dest / pm_import.BACKUP_DIR_NAME / "2026-01-01"
     action = pm_import.CopyAction(
         template / rel, dest / rel, backup_root / rel, dest_root=dest)
+    original_open = pm_import._open_dest_relative_nofollow
     original_backup = pm_import._backup_open_fd_nofollow
+    injected: list[str] = []
+
+    def open_planned_leaf(dest_root, open_rel, flags, *args, **kwargs):
+        """엔진이 계획 leaf 를 **처음 여는** 순간 그 inode 를 다른 이름으로 넘긴다.
+
+        첫 열기만 바꾼다 — 백업과 쓰기가 leaf 를 각각 다시 여는 퇴행이면 두 번째 열기가 그대로
+        경로를 타므로, 교체된 백업 없는 파일이 실제로 잘려 damage 단언이 red 가 된다."""
+        if Path(open_rel) != rel or "open" in injected:
+            return original_open(dest_root, open_rel, flags, *args, **kwargs)
+        os.replace(Path(dest_root) / rel, Path(dest_root) / planned_rel)
+        injected.append("open")
+        return original_open(dest_root, planned_rel, flags, *args, **kwargs)
 
     def swap_after_backup(dest_root, src_fd, target_base_rel, **kwargs):
+        """백업 직후 같은 자리를 **다른 파일**로 교체하고, 실제로 갈렸는지 그 자리에서 확인한다."""
         target = original_backup(dest_root, src_fd, target_base_rel, **kwargs)
-        (Path(dest_root) / rel).unlink()  # 백업 직후 같은 자리를 **다른 파일**로 교체.
-        (Path(dest_root) / rel).write_text("백업 안 된 새 파일\n", encoding="utf-8")
+        os.replace(intruder, Path(dest_root) / rel)
+        backed_up = os.fstat(src_fd)
+        now_at_path = os.lstat(Path(dest_root) / rel)
+        assert (now_at_path.st_dev, now_at_path.st_ino) != \
+            (backed_up.st_dev, backed_up.st_ino), \
+            "경쟁 주입이 no-op — 경로가 아직 백업한 그 파일이라 백업↔쓰기 창을 시험하지 못한다"
+        injected.append("swap")
         return target
 
+    monkeypatch.setattr(pm_import, "_open_dest_relative_nofollow", open_planned_leaf)
     monkeypatch.setattr(pm_import, "_backup_open_fd_nofollow", swap_after_backup)
     capsys.readouterr()
 
     outcome = pm_import.apply_copy_plan([action], dest)
     pm_import.report_copy_apply_anomalies(outcome)
 
+    assert injected == ["open", "swap"], f"경쟁 주입이 걸리지 않음: {injected}"
     assert (dest / rel).read_text(encoding="utf-8") == "백업 안 된 새 파일\n", \
         "백업 없는 교체 파일을 덮어씀(백업↔쓰기 창)"
     assert (backup_root / rel).read_text(encoding="utf-8") == "사용자 원본\n"
+    assert (dest / planned_rel).read_text(encoding="utf-8") == "TEMPLATE\n", \
+        "쓰기가 백업한 fd(=계획이 본 inode)로 가지 않았다"
     assert outcome.copied == [] and outcome.changed == [rel.as_posix()]
     assert "계획 뒤 대상 상태가 달라져" in capsys.readouterr().err
 

@@ -7,8 +7,23 @@
 # areas.md = 멀티-PM prefix 레지스트리 (append-only 등록) — 동시 등록이 충돌하지 않게 union.
 .project_manager/areas.md merge=union
 
+# 엔진-소유 트리의 체크아웃 표기를 LF 로 고정한다 (T-0709 방어층). Windows 의
+# core.autocrlf=true 체크아웃은 이 트리를 CRLF 로 바꾸고, 엔진이 자기 파일을 재작성할 때
+# 표기가 뒤집히면 engine.manifest 의 append-only 불변식(T-0456)과 티켓 봉인 입력이 깨진다.
+# 근본 수정은 엔진의 표기 보존(읽기 정규화 / 쓰기 표기 복원)이고 이 선언은 그 위의 방어층이다.
+# 이 파일은 engine.manifest 로 채택자에도 배포되므로 **엔진-소유 네임스페이스에만** 건다 —
+# 채택자 소유 소스에 우리 표기 정책을 강요하지 않는다. text=auto 라 바이너리는 그대로 둔다.
+# 선두 `**/` 는 깊이 무관 — 출하 사본(`templates/<flavor>/.project_manager/**`)까지 같은 규칙이
+# 걸린다(git check-attr 실측). 슬래시를 포함한 앵커드 표기면 루트 직계만 걸려 사본이 샌다.
+**/.project_manager/** text=auto eol=lf
+**/.claude/** text=auto eol=lf
+**/.codex/** text=auto eol=lf
+**/.agents/** text=auto eol=lf
+**/.opencode/** text=auto eol=lf
+
 # Forwarder 줄바꿈 강제 (T-0068) — Windows 배치(.cmd/.bat)는 CRLF 여야 cp949 cmd.exe 가
 # 오파싱하지 않는다. POSIX shell(.sh)은 LF 유지. 체크아웃 시 강제해 LF 회귀를 차단한다.
+# 위 엔진-소유 선언보다 **뒤**에 둬야 last-match-wins 로 배치의 CRLF 가 살아남는다.
 *.cmd text eol=crlf
 *.bat text eol=crlf
 *.sh text eol=lf

@@ -732,6 +732,24 @@ def _resolve_state_slot(
     return f"{repo}_{n}"
 
 
+def _lease_slot_path_text(actual, repo: Path) -> str:
+    """lease 실제 슬롯 경로를 downstream/장부 표기(**POSIX 단일**)로 직렬화한다.
+
+    `repo` 안이면 그 상대 경로를, 밖이면 주어진 경로 자체를 쓴다(기존 우선순위 유지). 표기만
+    `str(path)` 가 아니라 `path.as_posix()` 다 — Windows 의 `str(WindowsPath("nested/A_1"))` 은
+    `nested\\A_1` 을 만들고, 그 값이 pm_state·handoff entry·다음 세션 인자로 흘러 같은 슬롯이
+    OS 를 건너 다른 문자열로 읽힌다(implicit identity 해소가 이 값을 문자열 비교한다). 경로를
+    파일시스템 호출에 넘기는 자리는 `Path` 그대로 두고 문자열화 지점만 POSIX 로 고정한다.
+
+    해소 실패(`resolve`/`relative_to` 오류)는 종전처럼 원본 경로 표기로 폴백한다(fail-soft).
+    """
+    try:
+        relative = actual.resolve(strict=False).relative_to(repo.resolve(strict=False))
+    except (OSError, ValueError):
+        return actual.as_posix()
+    return relative.as_posix()
+
+
 # ── session-entry guarded 슬롯해소 (멀티-PM 모호 → fail-loud + 실행 슬롯 threading) ──
 # bare handoff(`--repo`/`--slot` 미지정)는 *어느 슬롯의* 연속성을 이어야 하는지 명확해야 한다.
 # 멀티-PM 셋업이 모호(등록 repo ≥2·한 repo 슬롯 ≥2 중 slot1 부재)하면, 없는 legacy `wiki/pm_state.md`
@@ -801,10 +819,7 @@ def _resolve_session_worktree_slot(
             raise
         actual = None
     if actual is not None:
-        try:
-            return str(actual.resolve(strict=False).relative_to(REPO.resolve(strict=False))), None
-        except (OSError, ValueError):
-            return str(actual), None
+        return _lease_slot_path_text(actual, REPO), None
     return f"work/{canonical}", None
 
 
@@ -4730,12 +4745,7 @@ def _resolve_implicit_handoff_identity(
     if session is not None:
         actual = pm_log.resolved_lease_slot_path(REPO, session)
         if actual is not None:
-            try:
-                slot_arg = str(
-                    actual.resolve(strict=False).relative_to(REPO.resolve(strict=False))
-                )
-            except (OSError, ValueError):
-                slot_arg = str(actual)
+            slot_arg = _lease_slot_path_text(actual, REPO)
     return task, session, source, slot_arg
 
 
