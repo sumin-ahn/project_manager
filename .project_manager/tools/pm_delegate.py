@@ -2850,6 +2850,33 @@ def collect_review_finding_declarations(
     return declared
 
 
+def collect_confirmable_finding_ids(
+    ticket_text: str, reviewer_role: str,
+) -> list[str]:
+    """확인 라운드가 `confirmations` 에 실을 수 있는 그 채널 ID (정렬).
+
+    배제는 둘이고 리뷰 절 시드 프리필(`render_ticket_growth_section_seed`)과 **같은 규칙**이다:
+    회수 거부 절(판정 표면 밖)과 PM 이 `rejected` 로 판정한 ID(재등장을 표면이 malformed 로 막는다).
+    두 채널이 서로 다른 목록을 보면 한쪽 리뷰어가 표면이 거부할 ID 를 확인 대상으로 받는다.
+    """
+    declared = collect_review_finding_declarations(ticket_text, reviewer_role)
+    if not declared:
+        return []
+    ordinals = sorted({
+        section.ordinal for section in _ticket_growth_sections(ticket_text)
+        if section.role == reviewer_role
+    })
+    rejected: set[str] = set()
+    for ordinal in ordinals:
+        try:
+            rejected |= _pm_review_rejected_finding_ids(
+                ticket_text, reviewer_role=reviewer_role, reviewer_ordinal=ordinal,
+            )
+        except DelegateError:
+            continue        # 읽을 수 없는 판정 블록은 표면 파서가 loud 하게 잡는다.
+    return sorted(declared - rejected)
+
+
 def _neutralize_review_fence(body: str) -> str:
     """회수 거부된 산출의 review fence 라벨을 평문으로 낮춘다(내용은 절에 그대로 남긴다).
 
@@ -2932,24 +2959,123 @@ def _external_review_missing_confirmation_targets(
     return sorted(missing)
 
 
+def _append_external_review_section(ticket_text: str, content: str) -> str:
+    """새 external-reviewer 절을 붙인 **예정 본문**(봉인 주석 전).
+
+    회수 게이트의 차등 판정과 실제 쓰기가 **같은 조립**을 봐야 "게이트가 통과시킨 본문"과 "절에
+    들어가는 본문"이 갈리지 않는다.
+
+    조립은 LF 한 표기로 하고 지배 개행을 **한 번만** 입힌다. 이미 CRLF 인 회신을 그대로 치환하면
+    `\r\r\n` 이 되고, 봉인 해시는 개행 정규화 입력이라 손상이 조용히 통과한다.
+    """
+    newline = _dominant_ticket_newline(ticket_text)
+    block = (
+        f"<!-- {_TICKET_SECTION_MARKER}:start role={EXTERNAL_REVIEW_ROLE} -->\n"
+        + content
+        + f"<!-- {_TICKET_SECTION_MARKER}:end role={EXTERNAL_REVIEW_ROLE} -->\n"
+    )
+    normalized_tail = ticket_text.replace("\r\n", "\n")
+    separator = (
+        "" if normalized_tail.endswith("\n\n")
+        else ("\n" if normalized_tail.endswith("\n") else "\n\n")
+    )
+    addition = (separator + block).replace("\r\n", "\n").replace("\r", "\n")
+    return ticket_text + addition.replace("\n", newline)
+
+
+def _pm_review_delta_malformed_reason(ticket_text: str) -> str | None:
+    """판정 표면이 malformed 면 그 사유, 아니면 None (PM 미판정 pending 은 정상 상태다)."""
+    try:
+        parse_pm_review_delta(ticket_text)
+    except PMReviewError as exc:
+        return str(exc) if exc.code == "malformed" else None
+    except DelegateError as exc:
+        return str(exc)
+    return None
+
+
+def _pm_review_surface_was_clean(ticket_text: str) -> bool:
+    """차등 판정의 기준선 — 이 라운드 **전** 판정 표면이 malformed 가 아니었는가.
+
+    리뷰 절이 아직 없는 티켓은 파서가 "블록 없음"으로 malformed 를 내지만 그건 기존 결함이 아니라
+    **빈 상태**다. 빈 상태를 기존 결함으로 세면 첫 라운드가 표면을 잠가도 게이트가 침묵한다.
+    """
+    try:
+        sections = _ticket_growth_sections(ticket_text)
+        refused = _pm_review_refused_section_keys(ticket_text, sections)
+    except DelegateError:
+        return False              # 기준선을 읽을 수 없으면 이 라운드를 원인으로 몰지 않는다.
+    if not any(
+        section.role in REVIEW_ROLES
+        and (section.role, section.ordinal) not in refused
+        for section in sections
+    ):
+        return True
+    return _pm_review_delta_malformed_reason(ticket_text) is None
+
+
+def _external_review_delta_regression(
+    ticket_text: str, content: str,
+) -> str | None:
+    """이 절을 붙이면 판정 표면이 malformed 로 **바뀌는가** — 바뀌면 거부 사유, 아니면 None.
+
+    표면 규칙(스키마·ID·판정 정합)을 게이트로 하나씩 옮겨 적지 않는다 — 규칙이 늘 때마다 두 시야가
+    조용히 갈린다. 표면 파서를 **예정 본문에 그대로 태워** 차등으로 본다: 붙이면 malformed 인데
+    붙이기 전에는 아니었다면 이 라운드가 원인이다. 이미 malformed 인 티켓은 이 라운드 탓이 아니고
+    거부해도 회복되지 않으므로 통과시킨다(거부가 영구 차단이 되지 않게).
+    """
+    if not _pm_review_surface_was_clean(ticket_text):
+        return None
+    reason = _pm_review_delta_malformed_reason(
+        _append_external_review_section(ticket_text, content)
+    )
+    if reason is None:
+        return None
+    return (
+        f"판정 표면 malformed 유발: {reason} — 이 산출을 절에 올리면 이 티켓의 review delta 가 "
+        "복구 불가로 잠깁니다(다음 라운드에서 규칙에 맞는 블록으로 다시 내십시오)"
+    )
+
+
+def _render_external_review_section(
+    body: str, *, today: str, label: str, neutralized: int, problem: str | None,
+) -> str:
+    """절 본문 렌더 — 거부 사유가 있으면 머리에 기계 표식과 경고를 얹는다."""
+    lines = [f"## {label} ({EXTERNAL_REVIEW_ROLE} · {today})", ""]
+    if problem is not None:
+        lines.extend([
+            EXTERNAL_REVIEW_REFUSED_LINE, "",
+            f"{EXTERNAL_REVIEW_BLOCK_WARNING_PREFIX}{problem}", "",
+        ])
+    if neutralized:
+        lines.extend([
+            f"⚠ 성장 marker 표기 {neutralized}줄을 무해화했습니다(절 경계 보호).", "",
+        ])
+    content = "".join(f"{line}\n" for line in lines) + body
+    return content if content.endswith("\n") else content + "\n"
+
+
 def build_external_review_section_content(
-    reply_text: str, *, today: str, label: str = EXTERNAL_REVIEW_SECTION_LABEL,
-    ticket_text: str = "",
+    reply_text: str, *, today: str, ticket_text: str,
+    label: str = EXTERNAL_REVIEW_SECTION_LABEL,
 ) -> tuple[str, str | None]:
     """추가 리뷰어 산출을 역할 절 본문으로 만든다 — (본문, 위반 사유 또는 None).
 
     본문은 산문 답변 전문이다(그 안에 `pm-review-v1` 블록이 하나 들어 있다). 회수를 거부할
     사유(스키마 위반·블록 중복·severity 부재·JSON 손상·티켓에 이미 있는 finding ID 재선언·티켓
-    판정 표면에 없는 confirmation 대상)가 있으면 **종류를 가리지 않고 같은 처리**를 한다 — 절
-    머리에 기계 표식과 경고를 남기고, 위반 블록은 fence 를 평문으로 낮춰 산출을 절에 보존한다.
-    사유는 함께 돌려준다(조용히 장부에만 남기지 않는다 — 호출부가 rc≠0 로 표면화한다).
+    판정 표면에 없는 confirmation 대상·이 절이 유발하는 판정 표면 malformed)가 있으면 **종류를
+    가리지 않고 같은 처리**를 한다 — 절 머리에 기계 표식과 경고를 남기고, 위반 블록은 fence 를
+    평문으로 낮춰 산출을 절에 보존한다. 사유는 함께 돌려준다(조용히 장부에만 남기지 않는다 —
+    호출부가 rc≠0 로 표면화한다).
 
     거부한 라운드가 봉인된 절을 판정 표면에 올리면 그 티켓의 delta 가 영구 malformed 로 잠긴다
     ([[ADR-0089]] 손수정 차단). 표식으로 그 절만 표면에서 빼 다음 라운드가 정상 착지하게 둔다.
 
-    티켓 대조는 두 축이고 시야가 다르다 — 신규 finding ID 는 **넓은** 스캔(산문 인용·거부 절
-    포함)과, confirmation 대상은 **판정 표면 선언**(거부 절 제외)과 맞춘다. 두 집합은 넘겨받은
-    한 스냅샷(`ticket_text`)에서 함께 파생한다(호출부가 서로 다른 시점을 섞지 못하게).
+    대조는 세 축이고 시야가 다르다. 신규 finding ID 는 **넓은** 스캔(산문 인용·거부 절 포함)과,
+    confirmation 대상은 **판정 표면 선언**(거부 절 제외)과 맞춘다. 마지막이 포괄 축이다 — 표면
+    파서를 예정 본문에 태우는 **차등 판정**이라, 규칙을 게이트에 다시 적지 않아도 표면이 새로
+    막는 형상이 그대로 따라온다. 세 축 모두 넘겨받은 한 스냅샷(`ticket_text`)에서 파생한다
+    (호출부가 서로 다른 시점을 섞지 못하게 · 인자는 필수다).
     """
     body, neutralized = neutralize_ticket_growth_markup(reply_text)
     problem = validate_external_review_block(body)
@@ -2973,21 +3099,18 @@ def build_external_review_section_content(
                 "ID 라 이 블록을 올리지 않았습니다(회수 거부된 라운드의 ID 이거나 존재하지 않는 "
                 "ID 입니다 · 다음 라운드에서 실재하는 ID 로 다시 내십시오)"
             )
-    lines = [f"## {label} ({EXTERNAL_REVIEW_ROLE} · {today})", ""]
-    if problem is not None:
-        body = _neutralize_review_fence(body)
-        lines.extend([
-            EXTERNAL_REVIEW_REFUSED_LINE, "",
-            f"{EXTERNAL_REVIEW_BLOCK_WARNING_PREFIX}{problem}", "",
-        ])
-    if neutralized:
-        lines.extend([
-            f"⚠ 성장 marker 표기 {neutralized}줄을 무해화했습니다(절 경계 보호).", "",
-        ])
-    content = "".join(f"{line}\n" for line in lines) + body
-    if not content.endswith("\n"):
-        content += "\n"
-    return content, problem
+    if problem is None:
+        problem = _external_review_delta_regression(
+            ticket_text,
+            _render_external_review_section(
+                body, today=today, label=label,
+                neutralized=neutralized, problem=None,
+            ),
+        )
+    return _render_external_review_section(
+        _neutralize_review_fence(body) if problem is not None else body,
+        today=today, label=label, neutralized=neutralized, problem=problem,
+    ), problem
 
 
 def write_external_reviewer_section(
@@ -3046,21 +3169,9 @@ def write_external_reviewer_section(
             migrated=stamp_before,
             action="external-review 절 기록",
         )
-        # 조립은 LF 한 표기로 하고 지배 개행을 **한 번만** 입힌다. 이미 CRLF 인 회신을 그대로
-        # 치환하면 `\r\r\n` 이 되고, 봉인 해시는 개행 정규화 입력이라 손상이 조용히 통과한다.
-        newline = _dominant_ticket_newline(current_text)
-        block = (
-            f"<!-- {_TICKET_SECTION_MARKER}:start role={role} -->\n"
-            + content
-            + f"<!-- {_TICKET_SECTION_MARKER}:end role={role} -->\n"
-        )
-        normalized_tail = current_text.replace("\r\n", "\n")
-        separator = (
-            "" if normalized_tail.endswith("\n\n")
-            else ("\n" if normalized_tail.endswith("\n") else "\n\n")
-        )
-        addition = (separator + block).replace("\r\n", "\n").replace("\r", "\n")
-        appended = current_text + addition.replace("\n", newline)
+        # 절 조립은 회수 게이트의 차등 판정과 **같은 helper** 를 쓴다 — 게이트가 본 예정 본문과
+        # 실제로 쓰는 본문이 갈리면 통과 판정이 다른 문자열에 대한 판정이 된다.
+        appended = _append_external_review_section(current_text, content)
         write = upsert_ticket_seal_with_ledger(
             board, ticket_path, appended, role, ordinal,
             by=EXTERNAL_REVIEW_SEAL_WRITER, ticket=ticket, ledger=True,
@@ -3893,6 +4004,20 @@ def _pm_review_section_ids(
     return ids
 
 
+def _pm_review_rejected_finding_ids(
+    ticket_text: str, *, reviewer_role: str, reviewer_ordinal: int,
+) -> set[str]:
+    """그 채널·ordinal 에서 PM 이 `rejected` 로 판정한 finding ID.
+
+    확인 라운드가 참조하면 안 되는 ID 다 — 판정 표면이 재등장을 malformed 로 막는다. 시드 프리필과
+    추가 리뷰어 골격·확인 근거 필터가 이 한 함수를 봐야 배제 규칙이 채널마다 갈리지 않는다.
+    """
+    _block, rows = _pm_review_disposition_rows_for_ordinal(
+        ticket_text, reviewer_ordinal, reviewer_role=reviewer_role,
+    )
+    return {parsed.id for parsed, _raw in rows if parsed.decision == "rejected"}
+
+
 def _pm_review_disposition_rows_for_ordinal(
     ticket_text: str, reviewer_ordinal: int,
     *, reviewer_role: str = INTERNAL_REVIEW_ROLE,
@@ -4037,13 +4162,9 @@ def render_ticket_growth_section_seed(role: str, ticket_text: str) -> str:
         previous = previous_sections[-1]
         try:
             confirmation_ids = _pm_review_section_ids(ticket_text, previous)
-            _block, disposition_rows = _pm_review_disposition_rows_for_ordinal(
-                ticket_text, previous.ordinal, reviewer_role=role,
+            rejected_ids = _pm_review_rejected_finding_ids(
+                ticket_text, reviewer_role=role, reviewer_ordinal=previous.ordinal,
             )
-            rejected_ids = {
-                parsed.id for parsed, _raw in disposition_rows
-                if parsed.decision == "rejected"
-            }
             confirmation_ids = [
                 finding_id for finding_id in confirmation_ids
                 if finding_id not in rejected_ids
