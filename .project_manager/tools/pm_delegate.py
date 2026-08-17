@@ -1032,41 +1032,13 @@ def _ticket_seal_line(
 
 
 def verify_ticket_seals(text: str) -> list[str]:
-    """모든 성장 절과 봉인의 1:1·위치·sha256 정합 문제를 반환한다."""
-    try:
-        sections = _ticket_growth_sections(text)
-        seals = parse_ticket_seals(text)
-    except DelegateError as exc:
-        return [str(exc)]
+    """모든 성장 절과 봉인의 1:1·위치·sha256 정합 문제를 반환한다.
 
-    problems: list[str] = []
-    section_by_key = {(section.role, section.ordinal): section for section in sections}
-    for key, section in section_by_key.items():
-        seal = seals.get(key)
-        label = f"role={section.role} ordinal={section.ordinal}"
-        if seal is None:
-            problems.append(f"티켓 성장 seal 누락: {label}")
-            continue
-        if seal.line_start != section.marker_end:
-            problems.append(f"티켓 성장 seal 위치 불일치(end marker 바로 다음 줄 아님): {label}")
-        content = text[section.content_start:section.content_end]
-        expected = seal_for(content)
-        if not hmac.compare_digest(seal.sha256, expected):
-            problems.append(f"티켓 성장 seal sha256 불일치: {label}")
-
-    for key, seal in seals.items():
-        if key not in section_by_key:
-            problems.append(
-                f"티켓 성장 고아 seal: role={seal.role} ordinal={seal.ordinal}"
-            )
-        for section in sections:
-            if section.content_start <= seal.line_start < section.content_end:
-                problems.append(
-                    "티켓 성장 seal이 역할 절 본문 안에 있음: "
-                    f"role={seal.role} ordinal={seal.ordinal}"
-                )
-                break
-    return problems
+    시그니처는 고정이다 — `backfill_ticket_seals` 가 이 축으로 "기존 봉인 문제" 를 거르므로
+    장부 축을 여기 합치면 backfill 이 자기가 고칠 상태에서 죽는다. 장부까지 합성한 판정은
+    `verify_ticket_growth` 다.
+    """
+    return [problem.message for problem in _verify_ticket_seal_problems(text)]
 
 
 def _ticket_growth_section_is_empty(
@@ -1191,21 +1163,51 @@ def _upsert_ticket_seal(text: str, role: str, ordinal: int, *, by: str) -> str:
     return base[:section.marker_end] + separator + line + base[section.marker_end:]
 
 
+def ticket_growth_misplaced_seal_keys(text: str) -> list[tuple[str, int]]:
+    """봉인 값은 본문과 일치하는데 위치만 어긋난 키 — 위치-only 치유 대상.
+
+    판정은 구조적이다 — 절 content 의 `seal_for` 를 다시 계산해 기존 digest 와 직접 비교한다
+    (검증 메시지 문자열에 결속하지 않는다).
+    """
+    try:
+        sections = _ticket_growth_sections(text)
+        seals = parse_ticket_seals(text)
+    except DelegateError:
+        return []
+    keys: list[tuple[str, int]] = []
+    for section in sections:
+        key = (section.role, section.ordinal)
+        seal = seals.get(key)
+        if seal is None or seal.line_start == section.marker_end:
+            continue
+        digest = seal_for(text[section.content_start:section.content_end])
+        if hmac.compare_digest(seal.sha256, digest):
+            keys.append(key)
+    return keys
+
+
 def backfill_ticket_seals(
     text: str, *, ticket: str = "<TICKET>",
 ) -> tuple[str, list[tuple[str, int]]]:
-    """기존 seal은 보존하고 누락 절만 by=backfill로 채운다."""
-    sections = _ticket_growth_sections(text)
-    seals = parse_ticket_seals(text)
-    existing_problems = [
-        problem for problem in verify_ticket_seals(text)
-        if "seal 누락:" not in problem
+    """기존 seal 값은 보존하고 누락 절만 by=backfill 로 채우며, 위치-only 어긋남을 치유한다.
+
+    "기존 봉인 문제" 판정은 **구조적 코드**로 한다 — 메시지 문자열 대조는 문구가 바뀌면 조용히
+    통과 범위가 바뀐다(T-0694 F-021 이관). 위치-only 치유는 harvest 가 역할별 최신 ordinal 만
+    대상이라 비최신 절의 위치 어긋남에 복구 경로가 없던 구멍을 닫는다(F-020·F-023 이관) —
+    봉인 값(sha·writer)은 그대로 두고 end marker 바로 뒤로 되돌리기만 한다.
+    """
+    problems = _verify_ticket_seal_problems(text)
+    blocking = [
+        problem for problem in problems
+        if problem.code not in ("seal-missing", "seal-misplaced")
     ]
-    if existing_problems:
+    if blocking:
         raise DelegateError(
             "seal-backfill은 기존 봉인 문제를 고치지 않습니다 — "
-            + "; ".join(existing_problems)
+            + "; ".join(problem.message for problem in blocking)
         )
+    sections = _ticket_growth_sections(text)
+    seals = parse_ticket_seals(text)
     missing = [
         section for section in sections
         if (section.role, section.ordinal) not in seals
@@ -1215,21 +1217,543 @@ def backfill_ticket_seals(
         assert guidance is not None
         raise DelegateError(f"mixed 티켓 소급 봉인 거부: {guidance}")
     updated = text
-    # 원래 좌표 뒤쪽부터 삽입하면 앞 절 좌표가 이동하지 않아 모든 hash 입력이 그대로다.
-    for section in reversed(missing):
-        content = text[section.content_start:section.content_end]
-        marker = text[section.marker_start:section.marker_end]
+    for role, ordinal in ticket_growth_misplaced_seal_keys(text):
+        updated = _upsert_ticket_seal(
+            updated, role, ordinal, by=seals[(role, ordinal)].by,
+        )
+    # 위치 치유는 절 본문을 바꾸지 않으므로 누락 삽입 좌표만 다시 잡는다. 원래 좌표 뒤쪽부터
+    # 삽입하면 앞 절 좌표가 이동하지 않아 모든 hash 입력이 그대로다.
+    healed_sections = _ticket_growth_sections(updated)
+    healed_seals = parse_ticket_seals(updated)
+    healed_missing = [
+        section for section in healed_sections
+        if (section.role, section.ordinal) not in healed_seals
+    ]
+    for section in reversed(healed_missing):
+        content = updated[section.content_start:section.content_end]
+        marker = updated[section.marker_start:section.marker_end]
         newline = "\r\n" if marker.endswith("\r\n") else (
-            "\r\n" if "\r\n" in text else "\n"
+            "\r\n" if "\r\n" in updated else "\n"
         )
         line = _ticket_seal_line(
             section.role, section.ordinal, content, by="backfill", newline=newline,
         )
-        separator = "" if text[:section.marker_end].endswith(("\n", "\r")) else newline
+        separator = "" if updated[:section.marker_end].endswith(("\n", "\r")) else newline
         updated = (
             updated[:section.marker_end] + separator + line + updated[section.marker_end:]
         )
     return updated, [(section.role, section.ordinal) for section in missing]
+
+
+# ── 티켓 성장 장부 (권위 기록·티켓 파일 밖) ─────────────────────────────────
+# 마지막 역할 절을 봉인과 함께 통째로 지우면 티켓 안에는 검증할 대상이 남지 않는다. 그래서 절
+# 개수·체인의 권위 기록을 티켓 밖 append-only sidecar 에 둔다(T-0699). 위치는 두 형상(board-git
+# 공유·solo/legacy)에서 같은 상대 경로인 `tickets/.growth/T-NNNN.jsonl` 이다.
+TICKET_GROWTH_LEDGER_DIRNAME = ".growth"
+TICKET_GROWTH_LEDGER_SUFFIX = ".jsonl"
+TICKET_GROWTH_MIGRATION_STAMP_NAME = ".migrated"
+# 장부 레코드의 `by` 허용 집합. 봉인 줄의 `by` 정규식과 **다르다** — promote 는 봉인을 쓰지 않고
+# 레코드만 쓰며, external-review 회수는 봉인 writer 로도 합류한다. 손상 판정이 봉인 쪽 집합을
+# 재사용하면 자기 엔진이 쓴 레코드를 스스로 거부한다.
+TICKET_GROWTH_LEDGER_WRITERS: frozenset[str] = frozenset(TICKET_SEAL_WRITERS) | {"promote"}
+TICKET_GROWTH_LEDGER_FIELDS: frozenset[str] = frozenset(
+    {"ticket", "role", "ordinal", "sha256", "by", "at"}
+)
+# 마이그레이션 sweep·잔여 판정 대상 상태. draft 는 장부에 쓰지 않으므로(promote 가 1회 기록)
+# 제외한다 — 넣으면 draft 하나가 남는 한 stamp 가 영원히 안 찍힌다. blocked 는 **넣는다**:
+# 빼면 미마이그레이션 blocked 티켓이 남은 채 stamp 가 찍혀, 그 티켓이 open 으로 돌아오는 순간
+# 처방 없는 `장부 삭제 의심` 으로 떨어진다.
+TICKET_GROWTH_LEDGER_STATUSES: tuple[str, ...] = ("open", "claimed", "blocked")
+_TICKET_GROWTH_SEAL_CODES: frozenset[str] = frozenset(
+    {"seal-syntax", "seal-missing", "seal-misplaced", "seal-mismatch",
+     "seal-orphan", "seal-inside"}
+)
+_TICKET_GROWTH_LEDGER_CODES: frozenset[str] = frozenset(
+    {"section-deleted", "ledger-sha-mismatch", "ledger-unrecorded",
+     "ledger-file-missing", "ledger-file-deleted", "ledger-corrupt"}
+)
+# 쓰기 주체가 자기 write 로 치유하는 형상 — 티켓 write 뒤 장부 append 전 crash 가 남기는
+# "봉인 있음·레코드 없음" 이다. 이것까지 차단하면 재-harvest 자기복구 경로가 막힌다.
+TICKET_GROWTH_WRITER_HEALABLE_CODES: frozenset[str] = frozenset({"ledger-unrecorded"})
+TICKET_GROWTH_SEAL_PRESCRIPTION = (
+    "역할 절은 harvest 로만 쓴다 — 리뷰어/개발자에게 사본 재기록·재회수를 요청하라. "
+    "PM 손편집 금지"
+)
+
+
+class TicketGrowthProblem(NamedTuple):
+    """성장 판정 1건 — 코드로 종류를, prescription 으로 그 종류의 처방을 함께 나른다.
+
+    소비자가 메시지 문자열을 다시 파싱하거나 고정 접미사를 붙이면 `절 삭제 검출`(절 복원)·
+    `장부 미기재`(seal-backfill)·`장부 삭제 의심`(처방 없음)이 모두 오처방된다.
+    """
+    code: str
+    message: str
+    prescription: str | None = None
+
+
+class TicketGrowthLedger(NamedTuple):
+    """한 티켓 장부의 판정 입력 — 파일 존재·키별 최신 레코드·손상 사유."""
+    present: bool
+    latest: dict[tuple[str, int], dict]
+    count: int
+    error: str | None = None
+
+
+def ticket_growth_dir(tickets_dir: Path | str) -> Path:
+    """`tickets/.growth/` — 두 형상에서 같은 상대 위치다(`tickets_dir()` 추종)."""
+    return Path(tickets_dir) / TICKET_GROWTH_LEDGER_DIRNAME
+
+
+def ticket_growth_dir_for_ticket_path(ticket_path: Path | str) -> Path:
+    """대상 티켓 파일이 사는 status 디렉토리의 형제 `.growth/`.
+
+    `tickets_dir()` 재해소 대신 만지는 티켓 경로에서 유도한다 — 같은 mutation 이 만진 티켓과
+    장부가 같은 보드에 있음을 경로로 보장한다(open/claimed 는 `tickets/<status>/`,
+    draft 는 `tickets/.drafts/` 라 두 형상 모두 부모의 부모가 `tickets/`).
+    """
+    return ticket_growth_dir(Path(ticket_path).resolve().parent.parent)
+
+
+def ticket_growth_ledger_path(growth_dir: Path | str, ticket: str) -> Path:
+    return Path(growth_dir) / f"{ticket}{TICKET_GROWTH_LEDGER_SUFFIX}"
+
+
+def ticket_growth_stamp_path(growth_dir: Path | str) -> Path:
+    return Path(growth_dir) / TICKET_GROWTH_MIGRATION_STAMP_NAME
+
+
+def ticket_growth_migration_stamped(growth_dir: Path | str) -> bool:
+    """보드 단위 마이그레이션 stamp 존재 — 판정의 '이전/이후' 분기 입력."""
+    return ticket_growth_stamp_path(growth_dir).exists()
+
+
+def ticket_growth_record_line(
+    ticket: str, role: str, ordinal: int, sha256: str, *, by: str,
+    at: str | None = None,
+) -> str:
+    """장부 1줄 — 직렬화를 고정해 같은 상태가 같은 bytes 로 남는다(개행은 LF 명시)."""
+    if role not in TICKET_COPY_ROLES or not isinstance(ordinal, int) or ordinal < 0:
+        raise DelegateError(
+            f"성장 장부 레코드 대상 불일치: role={role} ordinal={ordinal}"
+        )
+    if by not in TICKET_GROWTH_LEDGER_WRITERS:
+        raise DelegateError(f"성장 장부 writer 불일치: {by}")
+    if re.fullmatch(r"[0-9a-f]{64}", sha256) is None:
+        raise DelegateError("성장 장부 sha256 형식 불일치")
+    record = {
+        "ticket": ticket,
+        "role": role,
+        "ordinal": ordinal,
+        "sha256": sha256,
+        "by": by,
+        "at": at or datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    return json.dumps(
+        record, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ) + "\n"
+
+
+def parse_ticket_growth_ledger(
+    text: str, ticket: str,
+) -> tuple[dict[tuple[str, int], dict], int]:
+    """장부 본문을 엄격 파싱해 (키별 **최신** 레코드, 전체 레코드 수)를 반환한다.
+
+    손상(JSON 실패·schema 불일치·미지원 role/by·비정수 ordinal·`ticket` 불일치·잘린 마지막
+    줄)은 전부 loud 실패다. 차단 소비자는 그 예외를 fail-closed 로, advisory 는 기존 fail-soft
+    로 처분한다(비대칭은 의도된 것이다).
+    """
+    if text and not text.endswith("\n"):
+        raise DelegateError("성장 장부 마지막 줄이 잘렸습니다(개행 없음)")
+    latest: dict[tuple[str, int], dict] = {}
+    count = 0
+    for number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            raise DelegateError(f"성장 장부 빈 줄: line={number}")
+        try:
+            row = json.loads(line)
+        except ValueError as exc:
+            raise DelegateError(
+                f"성장 장부 JSON 파싱 실패: line={number}: {exc}"
+            ) from exc
+        if not isinstance(row, dict) or set(row) != TICKET_GROWTH_LEDGER_FIELDS:
+            raise DelegateError(f"성장 장부 schema 불일치: line={number}")
+        if row["ticket"] != ticket:
+            raise DelegateError(
+                f"성장 장부 ticket 불일치(오배치 의심): line={number} "
+                f"record={row['ticket']} file={ticket}"
+            )
+        if row["role"] not in TICKET_COPY_ROLES:
+            raise DelegateError(f"성장 장부 미지원 role: line={number}")
+        if not isinstance(row["ordinal"], int) or isinstance(row["ordinal"], bool) \
+                or row["ordinal"] < 0:
+            raise DelegateError(f"성장 장부 ordinal 불일치: line={number}")
+        if not isinstance(row["sha256"], str) or re.fullmatch(
+                r"[0-9a-f]{64}", row["sha256"]) is None:
+            raise DelegateError(f"성장 장부 sha256 형식 불일치: line={number}")
+        if row["by"] not in TICKET_GROWTH_LEDGER_WRITERS:
+            raise DelegateError(f"성장 장부 미지원 by: line={number}")
+        if not isinstance(row["at"], str) or not row["at"]:
+            raise DelegateError(f"성장 장부 at 불일치: line={number}")
+        latest[(row["role"], row["ordinal"])] = row
+        count += 1
+    return latest, count
+
+
+def read_ticket_growth_ledger(
+    growth_dir: Path | str, ticket: str,
+) -> TicketGrowthLedger:
+    """장부 파일을 읽어 판정 입력으로 만든다 — 손상은 예외가 아니라 `error` 로 실어 보낸다."""
+    path = ticket_growth_ledger_path(growth_dir, ticket)
+    try:
+        raw = _load_file_lock().read_bytes_shared(path)
+    except FileNotFoundError:
+        return TicketGrowthLedger(False, {}, 0, None)
+    except OSError as exc:
+        return TicketGrowthLedger(True, {}, 0, f"성장 장부 읽기 실패: {exc}")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeError as exc:
+        return TicketGrowthLedger(True, {}, 0, f"성장 장부 비-UTF8: {exc}")
+    try:
+        latest, count = parse_ticket_growth_ledger(text, ticket)
+    except DelegateError as exc:
+        return TicketGrowthLedger(True, {}, 0, str(exc))
+    return TicketGrowthLedger(True, latest, count, None)
+
+
+def _verify_ticket_seal_problems(text: str) -> list[TicketGrowthProblem]:
+    """봉인 축을 **구조적으로** 판정한다 — 종류가 코드로 남아 소비자가 문자열을 재파싱하지 않는다."""
+    try:
+        sections = _ticket_growth_sections(text)
+        seals = parse_ticket_seals(text)
+    except DelegateError as exc:
+        return [TicketGrowthProblem("seal-syntax", str(exc))]
+
+    problems: list[TicketGrowthProblem] = []
+    section_by_key = {(section.role, section.ordinal): section for section in sections}
+    for key, section in section_by_key.items():
+        seal = seals.get(key)
+        label = f"role={section.role} ordinal={section.ordinal}"
+        if seal is None:
+            problems.append(
+                TicketGrowthProblem("seal-missing", f"티켓 성장 seal 누락: {label}")
+            )
+            continue
+        if seal.line_start != section.marker_end:
+            problems.append(TicketGrowthProblem(
+                "seal-misplaced",
+                f"티켓 성장 seal 위치 불일치(end marker 바로 다음 줄 아님): {label}",
+            ))
+        content = text[section.content_start:section.content_end]
+        expected = seal_for(content)
+        if not hmac.compare_digest(seal.sha256, expected):
+            problems.append(TicketGrowthProblem(
+                "seal-mismatch", f"티켓 성장 seal sha256 불일치: {label}",
+            ))
+
+    for key, seal in seals.items():
+        if key not in section_by_key:
+            problems.append(TicketGrowthProblem(
+                "seal-orphan",
+                f"티켓 성장 고아 seal: role={seal.role} ordinal={seal.ordinal}",
+            ))
+        for section in sections:
+            if section.content_start <= seal.line_start < section.content_end:
+                problems.append(TicketGrowthProblem(
+                    "seal-inside",
+                    "티켓 성장 seal이 역할 절 본문 안에 있음: "
+                    f"role={seal.role} ordinal={seal.ordinal}",
+                ))
+                break
+    return problems
+
+
+def _ticket_growth_ledger_prescription(code: str, ticket: str) -> str | None:
+    """문제 종류별 처방 — 종류를 따라가지 않으면 전부 '사본 재기록·재회수' 로 오안내된다."""
+    if code == "ledger-unrecorded":
+        return (
+            "부분 쓰기(봉인은 있고 레코드가 없음)입니다. "
+            "`python3 .project_manager/tools/pm_delegate.py ticket seal-backfill "
+            f"--ticket {ticket}`을 실행하거나 같은 역할 절을 재-harvest 하세요"
+        )
+    if code == "ledger-file-missing":
+        return (
+            "봉인 도입 이전 상태입니다. 보드 단위 1회 sweep "
+            "`python3 .project_manager/tools/pm_delegate.py ticket seal-backfill --all`"
+            "로 봉인·장부를 함께 정리하세요"
+        )
+    if code == "section-deleted":
+        return (
+            "지워진 역할 절과 봉인을 복원하세요 — 장부는 append-only 라 소급 봉인이나 장부 "
+            "삭제로 해소되지 않습니다. 절 본문은 board-git 이력 또는 역할 사본에서 되살립니다"
+        )
+    if code == "ledger-sha-mismatch":
+        return TICKET_GROWTH_SEAL_PRESCRIPTION
+    # ledger-file-deleted(삭제 의심)·ledger-corrupt 는 기계 처방이 없다 — 잘못된 처방을 실어
+    # 보내는 대신 처방 없음을 그대로 알린다.
+    return None
+
+
+def verify_ticket_growth(
+    text: str, records: TicketGrowthLedger | None, *,
+    ticket: str = "<TICKET>", migrated: bool = False,
+) -> list[TicketGrowthProblem]:
+    """봉인 축과 장부 축을 합성한 성장 판정 — `review delta`·`complete`·`lint`·write 주체 공용.
+
+    `records=None` 은 **장부 축 미판정**이다(draft 는 장부에 쓰지 않으므로 봉인 축만 본다).
+    순수 봉인 함수 `verify_ticket_seals` 는 시그니처를 바꾸지 않는다 — `backfill_ticket_seals`
+    가 그 함수로 "기존 봉인 문제" 를 거르므로 장부 문제를 거기 합치면 backfill 이 자기가 고칠
+    상태에서 죽는다.
+    """
+    problems = _verify_ticket_seal_problems(text)
+    recovery: str | None = None
+    if any(problem.code == "seal-missing" for problem in problems):
+        try:
+            recovery = ticket_growth_seal_recovery_guidance(text, ticket)
+        except DelegateError:
+            recovery = None
+    resolved: list[TicketGrowthProblem] = []
+    for problem in problems:
+        prescription = (
+            recovery if problem.code == "seal-missing" and recovery
+            else TICKET_GROWTH_SEAL_PRESCRIPTION
+        )
+        resolved.append(problem._replace(prescription=prescription))
+    if records is None:
+        return resolved
+    if records.error is not None:
+        resolved.append(TicketGrowthProblem(
+            "ledger-corrupt", f"티켓 성장 장부 손상: {records.error}",
+        ))
+        return resolved
+    try:
+        sections = _ticket_growth_sections(text)
+        seals = parse_ticket_seals(text)
+    except DelegateError:
+        return resolved  # 봉인 축이 이미 문법 손상을 loud 했다 — 장부 축은 판정 불가.
+
+    section_by_key = {(section.role, section.ordinal): section for section in sections}
+    for key in sorted(records.latest):
+        role, ordinal = key
+        label = f"role={role} ordinal={ordinal}"
+        seal = seals.get(key)
+        if seal is None:
+            detail = "" if key not in section_by_key else "(절은 남고 봉인만 사라짐)"
+            resolved.append(TicketGrowthProblem(
+                "section-deleted",
+                f"티켓 성장 절 삭제 검출{detail}: {label}",
+                _ticket_growth_ledger_prescription("section-deleted", ticket),
+            ))
+            continue
+        if not hmac.compare_digest(seal.sha256, records.latest[key]["sha256"]):
+            resolved.append(TicketGrowthProblem(
+                "ledger-sha-mismatch",
+                f"티켓 성장 장부 sha256 불일치: {label}",
+                _ticket_growth_ledger_prescription("ledger-sha-mismatch", ticket),
+            ))
+    if not seals:
+        return resolved
+    if not records.present:
+        code = "ledger-file-deleted" if migrated else "ledger-file-missing"
+        message = (
+            "티켓 성장 장부 삭제 의심(마이그레이션 stamp 이후인데 장부 파일이 없음): "
+            if migrated else "티켓 성장 장부 부재(봉인은 있는데 장부 파일이 없음): "
+        )
+        resolved.append(TicketGrowthProblem(
+            code, message + ticket,
+            _ticket_growth_ledger_prescription(code, ticket),
+        ))
+        return resolved
+    for key in sorted(seals):
+        if key in records.latest or key not in section_by_key:
+            continue
+        resolved.append(TicketGrowthProblem(
+            "ledger-unrecorded",
+            f"티켓 성장 장부 미기재: role={key[0]} ordinal={key[1]}",
+            _ticket_growth_ledger_prescription("ledger-unrecorded", ticket),
+        ))
+    return resolved
+
+
+def format_ticket_growth_problems(
+    problems: Sequence[TicketGrowthProblem],
+) -> list[str]:
+    """소비자 공용 표시 형식 — 축 접두어 + 문제 + 그 종류의 처방."""
+    rendered: list[str] = []
+    for problem in problems:
+        prefix = "unsealed" if problem.code in _TICKET_GROWTH_SEAL_CODES else "growth-ledger"
+        tail = f" — {problem.prescription}" if problem.prescription else ""
+        rendered.append(f"{prefix}: {problem.message}{tail}")
+    return rendered
+
+
+def ticket_growth_ledger_block_problems(
+    problems: Sequence[TicketGrowthProblem],
+) -> list[TicketGrowthProblem]:
+    """성장 write 주체가 차단해야 하는 장부 축 문제(자기 write 가 치유하는 미기재는 제외)."""
+    return [
+        problem for problem in problems
+        if problem.code in _TICKET_GROWTH_LEDGER_CODES
+        and problem.code not in TICKET_GROWTH_WRITER_HEALABLE_CODES
+    ]
+
+
+def require_ticket_growth_ledger_before_write(
+    text: str, records: TicketGrowthLedger | None, *,
+    ticket: str, migrated: bool = False, action: str,
+) -> None:
+    """성장 write 전에 장부 축을 fail-closed 로 막는다(draft 는 `records=None` 이라 무판정)."""
+    problems = ticket_growth_ledger_block_problems(
+        verify_ticket_growth(text, records, ticket=ticket, migrated=migrated)
+    )
+    if problems:
+        raise DelegateError(
+            f"{action} 거부: " + "; ".join(format_ticket_growth_problems(problems))
+        )
+
+
+def append_ticket_growth_records(
+    growth_dir: Path | str, ticket: str, text: str, *, by: str,
+    at: str | None = None, stamp: bool = True,
+) -> list[tuple[str, int]]:
+    """봉인과 본문이 일치하는 키만 장부에 append 하는 **유일한** 레코드 쓰기 seam.
+
+    멱등 조건은 "그 키의 최신 레코드 sha ≠ 현재 봉인 sha" 하나다 — 재-harvest·재-promote 가
+    중복 레코드를 쌓지 않고, 부분 쓰기(봉인 있음·레코드 없음)를 스스로 복구한다. 봉인이 본문과
+    불일치하거나 절이 없는(고아) 봉인은 기록하지 않는다 — 기록하면 손편집이 장부로 세탁된다.
+    호출자는 티켓 파일을 **먼저** 쓰고 같은 `board_lock` 안에서 이 함수를 부른다.
+    """
+    if by not in TICKET_GROWTH_LEDGER_WRITERS:
+        raise DelegateError(f"성장 장부 writer 불일치: {by}")
+    sections = _ticket_growth_sections(text)
+    seals = parse_ticket_seals(text)
+    section_by_key = {(section.role, section.ordinal): section for section in sections}
+    ledger = read_ticket_growth_ledger(growth_dir, ticket)
+    if ledger.error is not None:
+        raise DelegateError(
+            f"성장 장부 손상으로 레코드 추가를 거부합니다: {ledger.error}"
+        )
+    lines: list[str] = []
+    appended: list[tuple[str, int]] = []
+    for key in sorted(seals):
+        section = section_by_key.get(key)
+        if section is None:
+            continue
+        seal = seals[key]
+        digest = seal_for(text[section.content_start:section.content_end])
+        if not hmac.compare_digest(seal.sha256, digest):
+            continue
+        current = ledger.latest.get(key)
+        if current is not None and hmac.compare_digest(current["sha256"], digest):
+            continue
+        lines.append(ticket_growth_record_line(
+            ticket, key[0], key[1], digest, by=by, at=at,
+        ))
+        appended.append(key)
+    growth_path = ticket_growth_ledger_path(growth_dir, ticket)
+    if lines:
+        Path(growth_dir).mkdir(parents=True, exist_ok=True)
+        _load_file_lock().append_atomic(growth_path, "".join(lines))
+    if stamp:
+        maybe_stamp_ticket_growth_migration(Path(growth_dir).parent)
+    return appended
+
+
+class TicketGrowthSealWrite(NamedTuple):
+    text: str
+    wrote: bool
+    appended: list[tuple[str, int]]
+    ledger_path: Path | None
+
+
+def upsert_ticket_seal_with_ledger(
+    board, path: Path, text: str, role: str, ordinal: int, *,
+    by: str, ticket: str, ledger: bool = True,
+) -> TicketGrowthSealWrite:
+    """봉인 upsert → 티켓 원자 write → 장부 append 를 한 임계구역에서 수행하는 공용 쓰기 seam.
+
+    호출자는 `board_lock` 을 보유해야 한다. 어떤 봉인 쓰기 주체(harvest·external-review 회수
+    등)든 이 seam 을 지나면 봉인과 레코드가 함께 남는다 — 주체마다 append 를 호출부에 흩뿌리면
+    새 주체가 조용히 장부를 비켜 간다. `ledger=False` 는 draft 전용이다(promote 가 1회 기록).
+    """
+    updated = _upsert_ticket_seal(text, role, ordinal, by=by)
+    wrote = updated != text
+    if wrote:
+        board._atomic_write_text(path, updated)
+    if not ledger:
+        return TicketGrowthSealWrite(updated, wrote, [], None)
+    growth_dir = ticket_growth_dir_for_ticket_path(path)
+    appended = append_ticket_growth_records(growth_dir, ticket, updated, by=by)
+    return TicketGrowthSealWrite(
+        updated, wrote, appended, ticket_growth_ledger_path(growth_dir, ticket),
+    )
+
+
+def ticket_growth_migration_pending(tickets_dir: Path | str) -> list[str]:
+    """봉인은 있는데 그 키의 레코드가 없는 open/claimed 티켓 목록(마이그레이션 잔여).
+
+    stamp 의 유일한 조건이다 — 잔여 0 이면 이 보드의 장부 축은 시작됐고, 그 이후의 장부 파일
+    부재는 무해한 상태가 아니라 삭제 의심이다.
+    """
+    tickets = Path(tickets_dir)
+    growth_dir = ticket_growth_dir(tickets)
+    board = _load_board()
+    pending: list[str] = []
+    for status in TICKET_GROWTH_LEDGER_STATUSES:
+        for path in sorted((tickets / status).glob("T-*.md")):
+            ticket = board._ticket_id_from_filename(path.name) or path.stem
+            try:
+                with _load_file_lock().open_shared(
+                        path, binary=False, encoding="utf-8", newline="") as handle:
+                    text = handle.read()
+            except (OSError, UnicodeError):
+                pending.append(ticket)     # 읽을 수 없는 티켓은 판정 불가 — stamp 를 미룬다.
+                continue
+            try:
+                seals = parse_ticket_seals(text)
+            except DelegateError:
+                pending.append(ticket)
+                continue
+            if not seals:
+                continue
+            ledger = read_ticket_growth_ledger(growth_dir, ticket)
+            if ledger.error is not None or not ledger.present:
+                pending.append(ticket)
+                continue
+            if any(
+                key not in ledger.latest
+                or ledger.latest[key]["sha256"] != seal.sha256
+                for key, seal in seals.items()
+            ):
+                pending.append(ticket)
+    return pending
+
+
+def maybe_stamp_ticket_growth_migration(tickets_dir: Path | str) -> bool:
+    """마이그레이션 대상 0 일 때만 stamp 를 남긴다 (이미 있으면 no-op).
+
+    sweep 만 stamp 를 쓰면 마이그레이션할 것이 없는 신규 채택자는 영구히 "stamp 이전" 이라
+    `장부 삭제 의심` 판정이 한 번도 켜지지 않는다. 조건 없이 쓰면 반대로 업그레이드 채택자가
+    sweep 전 성장 mutation 한 번으로 기존 티켓 전부를 처방 없는 RED 로 떨어뜨린다.
+    """
+    growth_dir = ticket_growth_dir(tickets_dir)
+    stamp = ticket_growth_stamp_path(growth_dir)
+    if stamp.exists():
+        return False
+    if ticket_growth_migration_pending(tickets_dir):
+        return False
+    body = (
+        "# 티켓 성장 장부 마이그레이션 완료 표식 (T-0699).\n"
+        "# 이 표식 이후의 '봉인 있음 + 장부 파일 부재' 는 삭제 의심으로 판정한다.\n"
+        f"migrated_at={datetime.datetime.now(datetime.timezone.utc).isoformat()}\n"
+    )
+    try:
+        growth_dir.mkdir(parents=True, exist_ok=True)
+        _write_exclusive_file(stamp, body.encode("utf-8"), 0o644)
+    except FileExistsError:
+        return False       # 동시 writer 가 먼저 남겼다 — 결과 상태는 같다.
+    return True
 
 
 def _ticket_role_section(
@@ -2121,22 +2645,6 @@ EXTERNAL_REVIEW_SECTION_LABEL = "추가 리뷰"
 EXTERNAL_REVIEW_BLOCK_WARNING_PREFIX = "⚠ versioned block 부재/위반: "
 
 
-def seal_and_replace_ticket_text(
-    board, path: Path, *, current_text: str, updated_text: str,
-    role: str, ordinal: int, by: str,
-) -> bool:
-    """역할 절 write 의 **단일 지점** — 봉인 재발급 + 원자 교체(변경 없으면 False).
-
-    harvest(사본 회수)와 external-reviewer 절 기록이 같은 함수를 지난다. 봉인 발급 규칙이 두
-    군데면 규칙이 둘이 되고, 성장 장부 같은 부기도 호출 지점마다 갈린다.
-    """
-    sealed = _upsert_ticket_seal(updated_text, role, ordinal, by=by)
-    if sealed == current_text:
-        return False
-    board._atomic_write_text(path, sealed)
-    return True
-
-
 def _dominant_ticket_newline(text: str) -> str:
     """본문의 지배 개행 — 덧붙이는 블록도 같은 표기로 쓴다(혼재 금지·board 규칙 동형)."""
     crlf = text.count("\r\n")
@@ -2281,14 +2789,22 @@ def write_external_reviewer_section(
             else ("\n" if normalized_tail.endswith("\n") else "\n\n")
         )
         appended = current_text + (separator + block).replace("\n", newline)
-        seal_and_replace_ticket_text(
-            board, ticket_path,
-            current_text=current_text, updated_text=appended,
-            role=role, ordinal=ordinal, by=EXTERNAL_REVIEW_SEAL_WRITER,
+        write = upsert_ticket_seal_with_ledger(
+            board, ticket_path, appended, role, ordinal,
+            by=EXTERNAL_REVIEW_SEAL_WRITER, ticket=ticket, ledger=True,
         )
+        ledger_path = write.ledger_path
     message = f"external-review {ticket} {role}"
+    # 티켓 + 성장 장부를 같은 부분 커밋에 싣는다(신규 helper → 기존 단일 경로 → 폴백 3단).
+    sync_paths = getattr(board, "_growth_mutation_sync_paths", None)
     growth_sync = getattr(board, "_growth_mutation_sync", None)
-    sync_ready = bool(growth_sync(message, ticket_path)) if callable(growth_sync) else False
+    paths = [ticket_path] + ([ledger_path] if ledger_path is not None else [])
+    if callable(sync_paths):
+        sync_ready = bool(sync_paths(message, paths))
+    elif callable(growth_sync):
+        sync_ready = bool(growth_sync(message, ticket_path))
+    else:
+        sync_ready = False
     return ExternalReviewSectionWrite(ticket_path, ordinal, sync_ready)
 
 
@@ -2382,6 +2898,17 @@ def harvest_ticket_copy(
         require_sealed_growth_before_write(
             current_text, plan.ticket, action="ticket harvest",
         )
+        growth_dir = ticket_growth_dir_for_ticket_path(current_path)
+        # draft는 장부에 쓰지 않으므로(promote가 1회 기록) 장부 축 자체를 판정하지 않는다.
+        harvest_ledger = (
+            None if status == "draft"
+            else read_ticket_growth_ledger(growth_dir, plan.ticket)
+        )
+        require_ticket_growth_ledger_before_write(
+            current_text, harvest_ledger, ticket=plan.ticket,
+            migrated=ticket_growth_migration_stamped(growth_dir),
+            action="ticket harvest",
+        )
         current_section = _ticket_role_section(current_text, plan.role, ordinal=ordinal)
         current_seals = parse_ticket_seals(current_text)
         current_seal = current_seals.get((plan.role, ordinal))
@@ -2420,11 +2947,13 @@ def harvest_ticket_copy(
             + desired_content
             + current_text[current_section.content_end:]
         )
-        wrote = seal_and_replace_ticket_text(
-            board, current_path,
-            current_text=current_text, updated_text=updated,
-            role=plan.role, ordinal=ordinal, by="harvest",
+        # 봉인 write와 장부 append를 같은 임계구역의 한 seam에 둔다 — 티켓 먼저, 장부 다음.
+        seal_write = upsert_ticket_seal_with_ledger(
+            board, current_path, updated, plan.role, ordinal,
+            by="harvest", ticket=plan.ticket, ledger=status != "draft",
         )
+        wrote = seal_write.wrote
+        ledger_path = seal_write.ledger_path
     # atomic replace 뒤 프로세스 종료/sync 예외가 있었던 재호출도 current==desired 경로에서
     # render/board-git을 다시 시도한다. False는 로컬 반영 실패가 아니라 board-git 미준비 상태다.
     if status == "draft":
@@ -2438,8 +2967,19 @@ def harvest_ticket_copy(
         )
         return TicketHarvestResult(wrote, True)
     message = f"ticket-harvest {plan.ticket} {plan.role}"
+    synced_paths = [current_path]
+    if ledger_path is not None and ledger_path.exists():
+        synced_paths.append(ledger_path)
+    stamp_path = ticket_growth_stamp_path(ticket_growth_dir_for_ticket_path(current_path))
+    if stamp_path.exists():
+        synced_paths.append(stamp_path)
+    growth_sync_paths = getattr(board, "_growth_mutation_sync_paths", None)
     growth_sync = getattr(board, "_growth_mutation_sync", None)
-    if callable(growth_sync):
+    if callable(growth_sync_paths):
+        sync_ready = growth_sync_paths(message, tuple(synced_paths))
+    elif callable(growth_sync):
+        # 복수 경로 helper를 아직 흡수하지 못한 PM 홈 사본 — 시그니처를 바꾸지 않은 기존
+        # 단일 경로 helper로 내려간다(장부는 다음 mutation의 스코프 커밋이 데려간다).
         sync_ready = growth_sync(message, current_path)
     else:
         # 성장 helper를 PM 홈에 흡수하기 전 최신 worktree CLI를 먼저 dogfood하는 한 세대
@@ -9731,62 +10271,184 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
         "seal-backfill",
         help="PM 전용: active/draft 티켓의 미봉인 역할 절 1회 정합화",
     )
-    backfill.add_argument("--ticket", required=True, metavar="T-NNNN")
+    backfill.add_argument("--ticket", default=None, metavar="T-NNNN")
+    backfill.add_argument(
+        "--all", action="store_true",
+        help="보드 단위 1회 sweep — open/claimed 전수 봉인·장부 정합화 후 마이그레이션 stamp",
+    )
     return parser
 
 
-def _cmd_ticket_seal_backfill(ticket: str) -> int:
-    """봉인 도입 이전 active/draft 티켓의 누락 seal만 채우고 감사 log를 남긴다."""
+def _seal_backfill_log_entry(ticket: str, labels: str, recorded: str) -> str:
+    axes = [f"- 소급 봉인: {labels}" if labels else None,
+            f"- 장부 기재: {recorded}" if recorded else None]
+    body = "\n".join(axis for axis in axes if axis) + "\n"
+    return (
+        f"\n## [{datetime.date.today().isoformat()}] ticket | "
+        f"{ticket} seal-backfill\n"
+        + body
+        + "- 사유: 성장 절 봉인·장부 정합화; 기존 본문과 이미 봉인된 절은 변경하지 않음.\n"
+    )
+
+
+class _SealBackfillOutcome(NamedTuple):
+    """한 티켓의 두 축 결과 — 텍스트 축(봉인)과 장부 축은 서로 독립이다."""
+    sealed: list[tuple[str, int]]
+    recorded: list[tuple[str, int]]
+    paths: list[Path]
+    error: str | None
+
+
+def _seal_backfill_one(owner_board, ticket: str, path: Path) -> _SealBackfillOutcome:
+    """봉인 축과 장부 축을 각각 수행한다 (호출자가 `board_lock` 을 보유한다).
+
+    장부 append 는 `backfill_ticket_seals` 의 텍스트 변환과 **독립된 축**이며 봉인 변경이
+    0 건이어도 실행된다 — `장부 미기재`·`성장 장부 부재` 의 처방이 바로 이 명령이라, 텍스트
+    변경이 없다고 아무 것도 쓰지 않으면 처방이 막다른 길이 된다.
+    """
+    with _load_file_lock().open_shared(
+            path, binary=False, encoding="utf-8", newline="") as handle:
+        original = handle.read()
+    sealed: list[tuple[str, int]] = []
+    paths: list[Path] = []
+    error: str | None = None
+    text = original
+    growth_dir = ticket_growth_dir_for_ticket_path(path)
+    # 판정 입력은 **텍스트 축 이전** 상태다. 이 명령이 방금 만든 봉인까지 세면, 봉인 도입 이후
+    # 손으로 붙은 미봉인 절을 정합화하는 정상 경로가 "삭제 의심" 으로 잘못 막힌다.
+    suspected_deletion = (
+        ticket_growth_migration_stamped(growth_dir)
+        and not read_ticket_growth_ledger(growth_dir, ticket).present
+        and bool(parse_ticket_seals(original))
+    )
+    try:
+        updated, sealed = backfill_ticket_seals(original, ticket=ticket)
+        if updated != original:
+            owner_board._atomic_write_text(path, updated)
+            text = updated
+            paths.append(path)
+    except DelegateError as exc:
+        # mixed 티켓은 텍스트 축이 거부한다. 그래도 이미 봉인된 절의 장부 축은 정합화한다 —
+        # 두 축을 묶으면 한쪽 실패가 다른 쪽 복구까지 막는다.
+        error = str(exc)
+    recorded: list[tuple[str, int]] = []
+    try:
+        if suspected_deletion:
+            # `장부 삭제 의심` 은 backfill 처방이 없는 상태다. 여기서 파일을 다시 만들면
+            # "장부 삭제 → backfill → GREEN" 세탁이 성립해 stamp 가 세운 판정이 무력해진다.
+            raise DelegateError(
+                "마이그레이션 stamp 이후 장부 파일이 없습니다(삭제 의심) — "
+                f"seal-backfill 로 복구하지 않습니다: {ticket}"
+            )
+        recorded = append_ticket_growth_records(
+            growth_dir, ticket, text, by="backfill", stamp=False,
+        )
+    except DelegateError as exc:
+        error = error or str(exc)
+    if recorded:
+        paths.append(ticket_growth_ledger_path(growth_dir, ticket))
+    return _SealBackfillOutcome(sealed, recorded, paths, error)
+
+
+def _cmd_ticket_seal_backfill(ticket: str | None, *, sweep: bool = False) -> int:
+    """봉인 도입 이전 티켓의 누락 seal·장부 미기재를 1회 정합화하고 감사 log를 남긴다."""
     board = _load_board()
-    if not board._is_valid_ticket_id(ticket):
+    if sweep == (ticket is not None):
+        raise DelegateError("--ticket 과 --all 중 정확히 하나를 지정하세요")
+    if ticket is not None and not board._is_valid_ticket_id(ticket):
         raise DelegateError("--ticket은 board 발행 ticket ID 형식이어야 합니다")
     owner = _activate_internal_rounds_cli_owner()
     owner_board = _load_board_for_repo(owner)
     log_path = owner / ".project_manager" / "wiki" / "log" / "current.md"
-    changed: list[tuple[str, int]] = []
-    path: Path | None = None
+    outcomes: list[tuple[str, _SealBackfillOutcome]] = []
+    stamped = False
+    tickets_root: Path | None = None
     with owner_board.board_lock():
-        found = owner_board.find_ticket_exact(ticket)
-        if found is None:
-            raise DelegateError(f"ticket not found: {ticket}")
-        status, path = found
-        if status not in _SEAL_BACKFILL_STATUSES:
-            raise DelegateError(
-                "seal-backfill은 open/claimed/blocked/draft 티켓만 허용: "
-                f"{ticket} in {status}/"
+        targets: list[tuple[str, Path]] = []
+        if sweep:
+            tickets_root = owner_board.tickets_dir()
+            for status in TICKET_GROWTH_LEDGER_STATUSES:
+                for candidate in sorted((tickets_root / status).glob("T-*.md")):
+                    found_id = owner_board._ticket_id_from_filename(candidate.name)
+                    if found_id:
+                        targets.append((found_id, candidate))
+        else:
+            found = owner_board.find_ticket_exact(ticket)
+            if found is None:
+                raise DelegateError(f"ticket not found: {ticket}")
+            status, path = found
+            if status not in _SEAL_BACKFILL_STATUSES:
+                raise DelegateError(
+                    "seal-backfill은 open/claimed/blocked/draft 티켓만 허용: "
+                    f"{ticket} in {status}/"
+                )
+            targets.append((ticket, path))
+            # 단건 경로는 대상 티켓 경로에서 `tickets/` 를 유도한다 — 형상 해소를 한 번 더
+            # 하지 않고 만지는 보드와 stamp 가 같은 트리임을 경로로 보장한다.
+            tickets_root = ticket_growth_dir_for_ticket_path(path).parent
+        for target_id, target_path in targets:
+            outcomes.append((target_id, _seal_backfill_one(
+                owner_board, target_id, target_path)))
+        entries = "".join(
+            _seal_backfill_log_entry(
+                target_id,
+                ", ".join(f"{role}[{ordinal}]" for role, ordinal in outcome.sealed),
+                ", ".join(f"{role}[{ordinal}]" for role, ordinal in outcome.recorded),
             )
-        with _load_file_lock().open_shared(path, binary=False, encoding="utf-8", newline="") as handle:
-            original = handle.read()
-        updated, changed = backfill_ticket_seals(original, ticket=ticket)
-        if changed:
-            owner_board._atomic_write_text(path, updated)
-            labels = ", ".join(f"{role}[{ordinal}]" for role, ordinal in changed)
+            for target_id, outcome in outcomes
+            if outcome.sealed or outcome.recorded
+        )
+        if entries:
             try:
-                with _load_file_lock().open_shared(log_path, binary=False, encoding="utf-8", newline="") as handle:
+                with _load_file_lock().open_shared(
+                        log_path, binary=False, encoding="utf-8", newline="") as handle:
                     log_text = handle.read()
             except FileNotFoundError:
                 log_text = ""
             separator = "" if not log_text or log_text.endswith("\n") else "\n"
-            entry = (
-                f"{separator}\n## [{datetime.date.today().isoformat()}] ticket | "
-                f"{ticket} seal-backfill\n"
-                f"- 소급 봉인: {labels}\n"
-                "- 사유: 성장 절 봉인 도입 이전 절 정합화; 기존 본문과 이미 봉인된 절은 변경하지 않음.\n"
-            )
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            owner_board._atomic_write_text(log_path, log_text + entry)
+            # log 는 append-only 다. 전체 재작성(`_atomic_write_text`)은 기존 파일 mode 복제를
+            # 위해 `stat()` 을 먼저 불러 **부재 파일을 만들지 못한다**(log 가 없는 채택자에서
+            # 처방이 crash 로 끝난다).
+            _load_file_lock().append_atomic(log_path, separator + entries)
+        # stamp 는 두 축이 끝난 **뒤** 같은 락 안에서 한 번만 판정한다(잔여 0 일 때만).
+        if tickets_root is not None:
+            stamped = maybe_stamp_ticket_growth_migration(tickets_root)
 
-    if changed and path is not None:
+    touched: list[Path] = [
+        path for _target_id, outcome in outcomes for path in outcome.paths
+    ]
+    if touched:
+        touched.append(log_path)
+    if stamped and tickets_root is not None:
+        touched.append(ticket_growth_stamp_path(ticket_growth_dir(tickets_root)))
+    if touched:
         sync = getattr(owner_board, "_board_git_sync_best_effort", None)
         if callable(sync):
-            sync(f"ticket seal-backfill {ticket}", (path, log_path))
-    if changed:
-        print("seal-backfill " + ticket + ": " + ", ".join(
-            f"role={role} ordinal={ordinal}" for role, ordinal in changed
-        ))
-    else:
-        print(f"seal-backfill {ticket}: 이미 모든 역할 절이 봉인됨")
-    return 0
+            label = "--all" if sweep else ticket
+            sync(f"ticket seal-backfill {label}", tuple(touched))
+    failures = 0
+    for target_id, outcome in outcomes:
+        if outcome.sealed or outcome.recorded:
+            axes = []
+            if outcome.sealed:
+                axes.append("봉인 " + ", ".join(
+                    f"role={role} ordinal={ordinal}"
+                    for role, ordinal in outcome.sealed))
+            if outcome.recorded:
+                axes.append("장부 " + ", ".join(
+                    f"role={role} ordinal={ordinal}"
+                    for role, ordinal in outcome.recorded))
+            print(f"seal-backfill {target_id}: " + " · ".join(axes))
+        elif outcome.error is None:
+            print(f"seal-backfill {target_id}: 이미 모든 역할 절이 봉인·기재됨")
+        if outcome.error is not None:
+            failures += 1
+            print(f"오류: seal-backfill {target_id} 실패: {outcome.error}",
+                  file=sys.stderr)
+    if stamped:
+        print("seal-backfill: 성장 장부 마이그레이션 stamp 기록(잔여 0)")
+    return 1 if failures else 0
 
 
 def _cmd_ticket(argv: list[str]) -> int:
@@ -9796,7 +10458,7 @@ def _cmd_ticket(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     try:
         if args.ticket_command == "seal-backfill":
-            return _cmd_ticket_seal_backfill(args.ticket)
+            return _cmd_ticket_seal_backfill(args.ticket, sweep=args.all)
         if args.ticket_command == "copies":
             if args.ticket is not None and not _load_board()._is_valid_ticket_id(args.ticket):
                 parser.error("--ticket은 board 발행 ticket ID 형식이어야 합니다")
@@ -9896,14 +10558,23 @@ def _cmd_review(argv: list[str]) -> int:
                 raise DelegateError(
                     f"review delta는 open/claimed 티켓만 허용: {args.ticket} in {status}/"
                 )
+            # 판정 소비자는 장부를 **먼저**(또는 같은 락 아래) 읽는다 — 티켓을 먼저 읽으면 그
+            # 사이 section-add 가 끼어들 때 처방 없는 `절 삭제 검출` 로 오판한다.
+            growth_dir = ticket_growth_dir_for_ticket_path(path)
+            growth_ledger = read_ticket_growth_ledger(growth_dir, args.ticket)
+            growth_migrated = ticket_growth_migration_stamped(growth_dir)
             try:
                 with _load_file_lock().open_shared(path, binary=False, encoding="utf-8", newline="") as handle:
                     ticket_text = handle.read()
             except (OSError, UnicodeError) as exc:
                 raise DelegateError(f"티켓 읽기 실패: {path}: {exc}") from exc
-        seal_problems = verify_ticket_seals(ticket_text)
-        if seal_problems:
-            raise PMReviewError("unsealed", "; ".join(seal_problems))
+        growth_problems = verify_ticket_growth(
+            ticket_text, growth_ledger, ticket=args.ticket, migrated=growth_migrated,
+        )
+        if growth_problems:
+            raise PMReviewError(
+                "unsealed", "; ".join(format_ticket_growth_problems(growth_problems)),
+            )
         if args.review_command == "disposition-template":
             rendered = render_pm_review_disposition_template(
                 ticket_text, args.ordinal, reviewer_role=args.reviewer_role,
@@ -9915,21 +10586,10 @@ def _cmd_review(argv: list[str]) -> int:
             sys.stdout.write(rendered)
         return 0
     except PMReviewError as exc:
-        unsealed_prescription = (
-            "역할 절은 harvest 로만 쓴다 — 리뷰어/개발자에게 사본 재기록·재회수를 "
-            "요청하라. PM 손편집 금지"
-        )
-        if exc.code == "unsealed" and ticket_text is not None:
-            try:
-                recovery = ticket_growth_seal_recovery_guidance(
-                    ticket_text, args.ticket,
-                )
-            except DelegateError:
-                recovery = None
-            if recovery is not None:
-                unsealed_prescription = recovery
         prescriptions = {
-            "unsealed": unsealed_prescription,
+            # 성장 축의 처방은 문제 종류를 따라 이미 메시지에 실려 있다(절 복원·seal-backfill·
+            # 처방 없음이 서로 다르다). 여기서 고정 접미사를 덧붙이면 전부 오처방된다.
+            "unsealed": "위 각 문제에 실린 처방을 그 문제에만 적용하라",
             "malformed": "reviewer 형식을 versioned block 계약에 맞춰 보정한 뒤 다시 판정하세요",
             "pending": (
                 "다음 골격을 생성해 PM이 finding ID를 전수 disposition한 뒤 다시 실행하세요: "

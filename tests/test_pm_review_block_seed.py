@@ -156,6 +156,14 @@ def _seeded_section(pd, role: str, ticket_prefix: str = "") -> str:
     )
 
 
+def _seed_growth_ledger(pd, path: Path, ticket: str = "T-0700") -> None:
+    """봉인 도입 이후 형상 — 현재 봉인들을 그 티켓 장부에 기재한다(sweep 등가·T-0699)."""
+    pd.append_ticket_growth_records(
+        pd.ticket_growth_dir_for_ticket_path(path), ticket,
+        path.read_text(encoding="utf-8"), by="backfill", stamp=False,
+    )
+
+
 def _legacy_reviewer_section(pd, ordinal: int) -> str:
     content = (
         "## 리뷰 (code-reviewer · 2026-08-17)\n\n"
@@ -180,6 +188,7 @@ def _run_harvest(
     source = pm_home / "board" / "tickets" / "claimed" / "T-0700-seed.md"
     source.parent.mkdir(parents=True)
     source.write_text(ticket_text, encoding="utf-8", newline="\n")
+    _seed_growth_ledger(pd, source)
     copy = slot / "copies" / "T-0700" / role / ("a" * 32) / "ticket-T-0700.md"
     copy.parent.mkdir(parents=True)
     copy.write_text(copy_text, encoding="utf-8", newline="\n")
@@ -239,7 +248,8 @@ def _run_harvest(
 def test_section_add_seeds_every_growth_role_from_delegate_renderer(
     pd, board, tmp_path, monkeypatch,
 ):
-    path = tmp_path / "T-0700-seed.md"
+    path = tmp_path / "tickets" / "claimed" / "T-0700-seed.md"
+    path.parent.mkdir(parents=True)
     path.write_text("---\nid: T-0700\nstatus: claimed\n---\n# ticket\n", encoding="utf-8", newline="\n")
 
     @contextlib.contextmanager
@@ -250,7 +260,7 @@ def test_section_add_seeds_every_growth_role_from_delegate_renderer(
     monkeypatch.setattr(board, "_growth_ticket_path", lambda *_a, **_k: (0, path))
     monkeypatch.setattr(board, "load_ticket", lambda _path: ({}, ""))
     monkeypatch.setattr(board, "_load_pm_delegate_module", lambda: pd)
-    monkeypatch.setattr(board, "_growth_mutation_sync", lambda *_a, **_k: True)
+    monkeypatch.setattr(board, "_growth_mutation_sync_paths", lambda *_a, **_k: True)
     monkeypatch.setattr(board, "drafts_dir", lambda: tmp_path / "drafts")
 
     # 성장 역할 집합의 단일 권위는 pm_delegate 이고 board 는 사람용 절명만 소유한다.
@@ -359,13 +369,15 @@ def test_harvest_warns_loudly_when_seed_was_not_edited(pd, tmp_path, monkeypatch
 def test_legacy_reviewer_prefill_degrades_and_section_add_stays_available(
     pd, board, tmp_path, monkeypatch, capsys,
 ):
-    path = tmp_path / "T-0700-legacy.md"
+    path = tmp_path / "tickets" / "claimed" / "T-0700-legacy.md"
+    path.parent.mkdir(parents=True)
     original = (
         "---\nid: T-0700\nstatus: claimed\n---\n"
         + _legacy_reviewer_section(pd, 0)
         + _legacy_reviewer_section(pd, 1)
     )
     path.write_text(original, encoding="utf-8", newline="\n")
+    _seed_growth_ledger(pd, path)
 
     @contextlib.contextmanager
     def unlocked():
@@ -375,7 +387,7 @@ def test_legacy_reviewer_prefill_degrades_and_section_add_stays_available(
     monkeypatch.setattr(board, "_growth_ticket_path", lambda *_a, **_k: (0, path))
     monkeypatch.setattr(board, "load_ticket", lambda _path: ({}, ""))
     monkeypatch.setattr(board, "_load_pm_delegate_module", lambda: pd)
-    monkeypatch.setattr(board, "_growth_mutation_sync", lambda *_a, **_k: True)
+    monkeypatch.setattr(board, "_growth_mutation_sync_paths", lambda *_a, **_k: True)
     monkeypatch.setattr(board, "drafts_dir", lambda: tmp_path / "drafts")
 
     args = argparse.Namespace(role="code-reviewer", label=None, id="T-0700")
@@ -497,8 +509,10 @@ def test_disposition_template_rejects_confirmation_only_round(
     with pytest.raises(pd.DelegateError, match="confirmation-only.*신규 finding이 없습니다"):
         pd.render_pm_review_disposition_template(first + second, 1)
 
-    ticket_path = tmp_path / "T-0700-confirmation-only.md"
+    ticket_path = tmp_path / "tickets" / "claimed" / "T-0700-confirmation-only.md"
+    ticket_path.parent.mkdir(parents=True)
     ticket_path.write_text(first + second, encoding="utf-8", newline="\n")
+    _seed_growth_ledger(pd, ticket_path)
 
     class FakeBoard:
         @staticmethod
@@ -532,11 +546,13 @@ def test_disposition_template_defaults_latest_and_honors_explicit_ordinal(pd):
 def test_disposition_template_cli_and_pending_error_prescribe_same_command(
     pd, tmp_path, monkeypatch, capsys,
 ):
-    ticket_path = tmp_path / "T-0700-review.md"
+    ticket_path = tmp_path / "tickets" / "claimed" / "T-0700-review.md"
+    ticket_path.parent.mkdir(parents=True)
     ticket_path.write_text(
         _sealed_reviewer_section(pd, _review_payload("F-007")), encoding="utf-8",
         newline="\n",
     )
+    _seed_growth_ledger(pd, ticket_path)
 
     class FakeBoard:
         @staticmethod

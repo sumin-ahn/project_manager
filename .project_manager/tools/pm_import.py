@@ -8182,6 +8182,10 @@ _BOARD_GITATTRIBUTES_SCAFFOLD = (
     "*.md text eol=lf\n"
     "*.json text eol=lf\n"
     "*.txt text eol=lf\n"
+    "*.jsonl text eol=lf\n"
+    "# 티켓 성장 장부 = append-only 권위 기록 — 서로 다른 PM 의 append 가 merge 에서 서로를\n"
+    "# 지우지 않도록 같은 union 드라이버로 양쪽 줄을 모두 보존한다.\n"
+    "tickets/.growth/*.jsonl merge=union\n"
 )
 
 

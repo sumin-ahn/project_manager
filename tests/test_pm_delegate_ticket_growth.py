@@ -134,12 +134,29 @@ def _fixture_board(pd, pm_home: Path):
     board.LOCAL_DIR = pm_home / ".project_manager" / ".local"
     board.BOARD_LOCK = board.LOCAL_DIR / "board.lock"
     board._growth_mutation_sync = lambda _message, _path: True
+    board._growth_mutation_sync_paths = lambda _message, _paths: True
     return board
+
+
+def _seed_growth_ledger(ticket: str, path: Path) -> Path:
+    """봉인 도입 이후 형상 — 현재 봉인들을 그 티켓 장부에 기재한다(sweep 등가·T-0699).
+
+    장부 축은 봉인 축과 함께 도입됐다. 봉인만 있고 장부가 없는 상태는 마이그레이션 대상이라
+    성장 write 가 loud 거부하므로, 성장 왕복 fixture 는 마이그레이션이 끝난 보드를 만든다.
+    """
+    pd = _load_pd()
+    growth_dir = pd.ticket_growth_dir_for_ticket_path(path)
+    pd.append_ticket_growth_records(
+        growth_dir, ticket, path.read_text(encoding="utf-8"),
+        by="backfill", stamp=False,
+    )
+    return pd.ticket_growth_ledger_path(growth_dir, ticket)
 
 
 def _write_ticket(tickets: Path, ticket: str, sections: list[tuple[str, str]]) -> Path:
     path = tickets / f"{ticket}-growth.md"
     path.write_text(_ticket_text(ticket, sections), encoding="utf-8", newline="\n")
+    _seed_growth_ledger(ticket, path)
     return path
 
 
@@ -195,12 +212,22 @@ def _missing_ticket_seal_seam_edges(
         "_ticket_seal_hash_input": {"replace", "encode"},
         "seal_for": {"_ticket_seal_hash_input", "sha256"},
         "_ticket_seal_line": {"seal_for"},
-        "verify_ticket_seals": {"seal_for"},
+        # 봉인 축 판정은 구조적 함수가 hash seam 을 직접 재계산하고, 공개 문자열 축은 그
+        # 구조 판정을 그대로 옮긴다(T-0699 F-021 이관).
+        "_verify_ticket_seal_problems": {"seal_for"},
+        "verify_ticket_seals": {"_verify_ticket_seal_problems"},
+        "verify_ticket_growth": {"_verify_ticket_seal_problems"},
         "_upsert_ticket_seal": {"_ticket_seal_line"},
         "backfill_ticket_seals": {"_ticket_seal_line"},
-        "seal_and_replace_ticket_text": {"_upsert_ticket_seal"},
-        "harvest_ticket_copy": {"seal_for", "seal_and_replace_ticket_text"},
-        "write_external_reviewer_section": {"seal_and_replace_ticket_text"},
+        # 장부 레코드의 sha 도 같은 seam 으로 계산해야 봉인과 장부가 같은 값을 든다.
+        "append_ticket_growth_records": {"seal_for"},
+        "ticket_growth_misplaced_seal_keys": {"seal_for"},
+        # 봉인 write 와 장부 append 는 한 seam 안에서 함께 일어난다(쓰기 주체가 늘어도
+        # 그 seam 을 지나면 레코드가 남는다) — harvest 와 external-reviewer 회수가 모두 지난다.
+        "upsert_ticket_seal_with_ledger": {"_upsert_ticket_seal",
+                                           "append_ticket_growth_records"},
+        "harvest_ticket_copy": {"seal_for", "upsert_ticket_seal_with_ledger"},
+        "write_external_reviewer_section": {"upsert_ticket_seal_with_ledger"},
     }
     missing = {
         f"pm_delegate.{function}->{callee}"
@@ -1075,9 +1102,18 @@ def test_ticket_seal_hash_writers_and_verifier_have_static_seam_guard():
         "expected = hashlib.sha256(content).hexdigest()",
         1,
     )
-    assert "pm_delegate.verify_ticket_seals->seal_for" in (
+    assert "pm_delegate._verify_ticket_seal_problems->seal_for" in (
         _missing_ticket_seal_seam_edges(bypassed, board_source)
     )
+    # 장부 레코드 sha 가 seam 을 우회하면 봉인과 장부가 서로 다른 값을 들 수 있다.
+    ledger_bypassed = delegate_source.replace(
+        "digest = seal_for(text[section.content_start:section.content_end])",
+        "digest = hashlib.sha256(b\"\").hexdigest()",
+    )
+    assert {
+        "pm_delegate.append_ticket_growth_records->seal_for",
+        "pm_delegate.ticket_growth_misplaced_seal_keys->seal_for",
+    } <= _missing_ticket_seal_seam_edges(ledger_bypassed, board_source)
 
 
 def test_crlf_prepare_edit_harvest_and_idempotent_preserve_newlines(growth_env, pd):
@@ -1087,6 +1123,7 @@ def test_crlf_prepare_edit_harvest_and_idempotent_preserve_newlines(growth_env, 
     # LF에서 발급된 기존 seal을 그대로 둔 채 Git-for-Windows checkout 형상만 CRLF로 바꾼다.
     original = lf.replace("\n", "\r\n")
     source.write_bytes(original.encode("utf-8"))
+    _seed_growth_ledger("T-1019", source)
     plan = pd.prepare_ticket_copy(
         ticket="T-1019", role="developer", cwd=slot, pm_home=pm_home,
     )
@@ -1125,6 +1162,7 @@ def test_crlf_ticket_survives_engine_rewrite_between_prepare_and_harvest(growth_
     source = tickets / "T-1021-growth.md"
     source.write_bytes(
         _ticket_text("T-1021", [("developer", "")]).replace("\n", "\r\n").encode("utf-8"))
+    _seed_growth_ledger("T-1021", source)
     plan = pd.prepare_ticket_copy(
         ticket="T-1021", role="developer", cwd=slot, pm_home=pm_home)
 
@@ -1168,6 +1206,9 @@ def test_stale_same_section_refuses_without_overwrite(growth_env, pd):
         encoding="utf-8",
         newline="\n",
     )
+    # 실제 별도 변경은 엔진 write 라 장부 레코드도 함께 남는다 — 장부 축은 정합이고 거부는
+    # stale overwrite 축이 낸다.
+    _seed_growth_ledger("T-1003", source)
     with pytest.raises(pd.DelegateError, match="stale overwrite") as caught:
         pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home, capability=plan.capability)
     assert f"ticket prepare --transfer-from {plan.path}" in str(caught.value)
@@ -1358,13 +1399,13 @@ def test_idempotent_reharvest_retries_sync_after_atomic_write_crash(
     _replace_content(pd, plan.path, "developer", 0, "crash-recovery facts\n")
     board = pd._load_board_for_repo(pm_home)
     calls = []
-    board._growth_mutation_sync = lambda *_args: calls.append(True) or False
+    board._growth_mutation_sync_paths = lambda *_args: calls.append(True) or False
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
     first = pd.harvest_ticket_copy(
         copy_path=plan.path, cwd=slot, pm_home=pm_home,
         capability=plan.capability,
     )
-    board._growth_mutation_sync = lambda *_args: calls.append(True) or True
+    board._growth_mutation_sync_paths = lambda *_args: calls.append(True) or True
     second = pd.harvest_ticket_copy(
         copy_path=plan.path, cwd=slot, pm_home=pm_home,
         capability=plan.capability,
@@ -1385,6 +1426,7 @@ def test_harvest_pre_growth_helper_board_uses_legacy_sync_primitives(
     _replace_content(pd, plan.path, "developer", 0, "transition-compatible facts\n")
     board = pd._load_board_for_repo(pm_home)
     delattr(board, "_growth_mutation_sync")
+    delattr(board, "_growth_mutation_sync_paths")
     calls = []
     board.refresh_board = lambda: calls.append("refresh")
     board._board_git_sync_best_effort = (
@@ -1430,6 +1472,7 @@ def test_numeric_leading_legacy_slug_prepare_and_harvest(growth_env, pd):
     pm_home, slot, tickets = growth_env
     source = tickets / "T-0683-3하네스-ticket-growth.md"
     source.write_text(_ticket_text("T-0683", [("developer", "")]), encoding="utf-8", newline="\n")
+    _seed_growth_ledger("T-0683", source)
 
     plan = pd.prepare_ticket_copy(
         ticket="T-0683", role="developer", cwd=slot, pm_home=pm_home,
@@ -1450,6 +1493,7 @@ def test_prepare_lookup_and_read_share_board_lock(pd, monkeypatch, tmp_path):
     source = pm_home / ".project_manager" / "wiki" / "tickets" / "claimed" / "T-1010-x.md"
     source.parent.mkdir(parents=True)
     source.write_text(_ticket_text("T-1010", [("developer", "")]), encoding="utf-8", newline="\n")
+    _seed_growth_ledger("T-1010", source)
     slot.mkdir()
     assert _git(slot, "init", "-q").returncode == 0
     slot_ignore = slot / ".project_manager" / ".gitignore"

@@ -397,12 +397,18 @@ def test_internal_round_projection_prefers_structured_ids_and_hashes_legacy(pd):
 
 def test_review_delta_cli_dispatch_renders_success_and_prescribes_pending(
         pd, monkeypatch, tmp_path, capsys):
-    ticket_path = tmp_path / "T-0684-review.md"
+    ticket_path = tmp_path / "tickets" / "claimed" / "T-0684-review.md"
+    ticket_path.parent.mkdir(parents=True)
     ticket_path.write_text(_review_section({
         "version": 1,
         "findings": [_finding("implementation-defect")],
         "confirmations": [],
     }) + _disposition(0, [_decision("accepted")]), encoding="utf-8")
+    # 봉인 도입 이후 형상 — 성장 절의 봉인이 장부에 기재된 보드(T-0699).
+    pd.append_ticket_growth_records(
+        pd.ticket_growth_dir_for_ticket_path(ticket_path), "T-0684",
+        ticket_path.read_text(encoding="utf-8"), by="backfill", stamp=False,
+    )
 
     class FakeBoard:
         @staticmethod
