@@ -236,6 +236,22 @@ def _load_file_lock():
     )
 
 
+def _write_machine_line(text: str) -> None:
+    """기계 판독 한 줄(JSON 페이로드)을 콘솔 코덱 전환과 무관하게 UTF-8 로 내보낸다 (T-0693).
+
+    사람 출력(``print``)은 PowerShell 캡처에서 콘솔 codepage(cp949 등)로 강등될 수 있고 그
+    치환은 되돌릴 수 없다 — 다른 프로세스가 파싱하는 출력은 공용 seam 으로 UTF-8 bytes 를
+    직접 쓴다(콘솔 코덱 전환과 독립).
+    """
+    console_encoding = _load_module_from_path(
+        Path(__file__).resolve().with_name("console_encoding.py"),
+        "console_encoding.py",
+        verifier=_verify_engine_rev,
+        cache=True,
+    )
+    console_encoding.write_machine_line(text)
+
+
 # ── 공유 읽기 (등재 예외 · 형제 없이도 떠야 하는 판독) ──────────────────────
 # 원자 교체 대상을 읽는 지점은 공용 seam 을 지난다([[T-0729]]) — 일반 `open` 리더가 하나라도
 # 잡고 있으면 Windows 는 그 교체를 WinError 32 로 막는다. 다만 이 모듈의 판독은 위 로더 주석의
@@ -1126,7 +1142,7 @@ def cmd_ctx_guidance(args: argparse.Namespace) -> int:
         stop_pct=args.stop_pct,
     )
     if args.json:
-        print(json.dumps(
+        _write_machine_line(json.dumps(
             {"systemMessage": text, "suppressOutput": False},
             ensure_ascii=False,
             separators=(",", ":"),
@@ -1281,7 +1297,9 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
         payload = {"suppressOutput": True}
         if text:
             payload = {"systemMessage": text, "suppressOutput": False}
-        print(json.dumps(payload, ensure_ascii=True, separators=(",", ":")))
+        _write_machine_line(
+            json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+        )
     elif text:
         sys.stdout.write(text)
     return 1 if warning == _CTX_WINDOW_MISMATCH_READ_WARNING else 0

@@ -250,6 +250,22 @@ def _absorb_engine_rev_skew_for_recovery(exc, boundary: str) -> bool:
     return _is_engine_rev_skew(exc)
 
 
+def _write_machine_line(text: str) -> None:
+    """기계 판독 한 줄(JSON 페이로드)을 콘솔 코덱 전환과 무관하게 UTF-8 로 내보낸다 (T-0693).
+
+    사람 출력(``print``)은 PowerShell 캡처에서 콘솔 codepage(cp949 등)로 강등될 수 있고 그
+    치환은 되돌릴 수 없다 — 다른 프로세스가 파싱하는 출력은 공용 seam 으로 UTF-8 bytes 를
+    직접 쓴다(콘솔 코덱 전환과 독립).
+    """
+    console_encoding = _load_module_from_path(
+        Path(__file__).resolve().with_name("console_encoding.py"),
+        "console_encoding.py",
+        verifier=_verify_engine_rev,
+        cache=True,
+    )
+    console_encoding.write_machine_line(text)
+
+
 # ── REPO 앵커 (external_review 동형·상향 탐색·hermetic 테스트 monkeypatch seam) ────────
 # 하드코딩 parents[2] 대신 `.project_manager` 를 품은 첫 조상을 REPO 로 삼는다(채택자/worktree 등
 # 다른 깊이여도 견고). module-level 상수라 테스트가 monkeypatch 할 수 있다.
@@ -9013,7 +9029,7 @@ def _cmd_ticket(argv: list[str]) -> int:
                     Path(args.transfer_from) if args.transfer_from is not None else None
                 ),
             )
-            print(json.dumps({
+            _write_machine_line(json.dumps({
                 "copy": str(plan.path),
                 "capability": plan.capability.hex(),
             }, sort_keys=True))
@@ -9034,7 +9050,7 @@ def _cmd_ticket(argv: list[str]) -> int:
             copy_path=copy, cwd=cwd_repo, pm_home=owner,
             capability=capability,
         )
-        print(json.dumps({
+        _write_machine_line(json.dumps({
             "copy": str(copy.resolve()),
             "changed": result.changed,
             "sync_ready": result.sync_ready,
