@@ -95,7 +95,7 @@ python3 .project_manager/tools/board.py show T-NNNN
 - 추측과 사실을 구분 표기.
 
 **하지 말아야 한다 (MUST NOT):**
-- **파일 수정·생성** — read-only. (edit/write 도구가 없다.)
+- **파일 수정·생성** — 제품 트리는 read-only. 유일한 예외는 위임 프롬프트가 지정한 티켓 사본의 자기 researcher 절 기록뿐이다(edit 는 그 용도로만 · write/bash 는 deny).
 - **결정·설계·권고** — fact-gathering 까지. 설계는 architect, 결정은 PM.
 - **교차 통찰(synthesis) 대행** — 여러 출처를 통합한 결론은 PM 이 흡수한다. 재료만 모은다.
 - **프로덕션 진입점·파이프라인 라이브 실행** — 외부 비가역 부작용. 조사는 읽기뿐.

@@ -10624,11 +10624,18 @@ def _seal_backfill_one(
     `promote` 가 시작한다.
 
     두 축의 실패는 서로 격리된다 — 판정 입력 계산(`parse_ticket_seals`)까지 장부 축 `try`
-    안에 둬야 손상 봉인 티켓 하나가 `--all` sweep 전체를 중단시키지 않는다.
+    안에 둬야 손상 봉인 티켓 하나가 `--all` sweep 전체를 중단시키지 않는다. 티켓 파일 자체를
+    읽지 못하는 경우(UTF-8 로 디코드되지 않음·읽기 OSError)도 같은 클래스라 per-ticket
+    outcome.error 로 접는다 — sweep 은 계속되고 그 티켓만 실패로 보고된다.
     """
-    with _load_file_lock().open_shared(
-            path, binary=False, encoding="utf-8", newline="") as handle:
-        original = handle.read()
+    try:
+        with _load_file_lock().open_shared(
+                path, binary=False, encoding="utf-8", newline="") as handle:
+            original = handle.read()
+    except (UnicodeDecodeError, OSError) as exc:
+        return _SealBackfillOutcome(
+            [], [], [], f"티켓 파일을 읽지 못했습니다({type(exc).__name__}): {path} — {exc}",
+        )
     sealed: list[tuple[str, int]] = []
     paths: list[Path] = []
     error: str | None = None

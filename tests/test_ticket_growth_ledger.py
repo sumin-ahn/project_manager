@@ -424,6 +424,34 @@ def test_sweep_isolates_a_corrupt_ticket_and_keeps_migrating_the_rest(
         "손상 티켓의 장부는 만들지 않는다")
 
 
+def test_sweep_isolates_an_unreadable_ticket_and_keeps_migrating_the_rest(
+        board, pd, monkeypatch):
+    """(F-012 · R2 확인) UTF-8 로 디코드되지 않는 티켓 하나가 `--all` sweep 전체를 중단시키지
+    않는다 — 읽기 실패는 per-ticket outcome.error 로 접히고 뒤 티켓은 계속 처리된다."""
+    healthy = board.seed("T-9037")
+    assert board.section_add("T-9037") == 0
+
+    unreadable = board.seed("T-9038")
+    unreadable.write_bytes(unreadable.read_bytes() + b"\n\xff\xfe broken bytes\n")
+
+    trailing = board.seed("T-9039")
+    trailing.write_text(
+        trailing.read_text(encoding="utf-8")
+        + "\n<!-- pm-ticket-section:start role=developer -->\n"
+        "## 구현 보충 (developer · 2026-08-17)\n\n미봉인 legacy\n"
+        "<!-- pm-ticket-section:end role=developer -->\n",
+        encoding="utf-8", newline="\n")
+
+    monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: board.root)
+    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _owner: board.module)
+    assert pd._cmd_ticket_seal_backfill(None, sweep=True) == 1, "읽기 실패 티켓은 rc1 로 남는다"
+
+    assert board.codes(pd, "T-9039", trailing) == [], "뒤 티켓이 미처리로 남으면 안 된다"
+    assert board.codes(pd, "T-9037", healthy) == []
+    assert not pd.ticket_growth_ledger_path(board.growth, "T-9038").exists(), (
+        "읽지 못한 티켓의 장부는 만들지 않는다")
+
+
 def test_missing_ledger_after_the_stamp_is_suspected_deletion(board, pd, monkeypatch):
     """(s) stamp 이후의 장부 파일 부재는 처방 없는 `장부 삭제 의심` 이고 어떤 명령으로도
     되살아나지 않는다 — 되살아나면 stamp 가 세운 판정이 무력해진다."""
