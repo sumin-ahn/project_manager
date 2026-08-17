@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "count": 596,
+  "count": 592,
   "surface_counts": {
     "markdown": 148,
     "python-non-prose": 32,
-    "python-prose": 416
+    "python-prose": 412
   },
   "entries": [
     {
@@ -405,14 +405,6 @@
       "match": "T-0703",
       "surface": "python-prose",
       "hash": "51df568fe0c4482564d4a5d4ddc832e91aadbd917434404aef80feecdffcad81",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/external_review.py",
-      "kind": "work_item",
-      "match": "T-0703",
-      "surface": "python-prose",
-      "hash": "dc99cf95dfc1684f61258cd2f16dd631be3d743cebad795473faacd3416467b5",
       "count": 1
     },
     {
@@ -1333,14 +1325,6 @@
       "match": "T-0703",
       "surface": "python-prose",
       "hash": "51df568fe0c4482564d4a5d4ddc832e91aadbd917434404aef80feecdffcad81",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/external_review.py",
-      "kind": "work_item",
-      "match": "T-0703",
-      "surface": "python-prose",
-      "hash": "dc99cf95dfc1684f61258cd2f16dd631be3d743cebad795473faacd3416467b5",
       "count": 1
     },
     {
@@ -2413,14 +2397,6 @@
       "match": "T-0703",
       "surface": "python-prose",
       "hash": "51df568fe0c4482564d4a5d4ddc832e91aadbd917434404aef80feecdffcad81",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/external_review.py",
-      "kind": "work_item",
-      "match": "T-0703",
-      "surface": "python-prose",
-      "hash": "dc99cf95dfc1684f61258cd2f16dd631be3d743cebad795473faacd3416467b5",
       "count": 1
     },
     {
@@ -3717,14 +3693,6 @@
       "match": "T-0703",
       "surface": "python-prose",
       "hash": "51df568fe0c4482564d4a5d4ddc832e91aadbd917434404aef80feecdffcad81",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/external_review.py",
-      "kind": "work_item",
-      "match": "T-0703",
-      "surface": "python-prose",
-      "hash": "dc99cf95dfc1684f61258cd2f16dd631be3d743cebad795473faacd3416467b5",
       "count": 1
     },
     {

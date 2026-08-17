@@ -4814,7 +4814,7 @@ def _parse_title_from_file(path: Path) -> str | None:
 
     board 의 YAML frontmatter 로더(`_parse_estimate_from_file` 과 같은 seam)를 재사용한다 —
     자체 정규식은 estimate 축에서 이미 확인된 결함(YAML 주석 꼬리가 값에 붙는 오독)을 title 에서
-    반복할 뿐이라 두지 않는다(T-0703 R1 리뷰 F-001)."""
+    반복할 뿐이라 두지 않는다."""
     board = _load_board()
     fm, _body = board.load_ticket(path)
     title = fm.get("title") if isinstance(fm, dict) else None
