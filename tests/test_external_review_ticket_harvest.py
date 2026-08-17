@@ -37,6 +37,13 @@ def _load(name: str):
     return module
 
 
+# 세대·값 enum 은 엔진 상수에서 읽는다 — 테스트가 리터럴로 적으면 승격 때 조용히 갈린다.
+PD = _load("pm_delegate")
+BLOCK_VERSION = PD.PM_REVIEW_VERSION
+LEGACY_BLOCK_VERSION = PD.PM_REVIEW_LEGACY_VERSION
+DISPOSITION_VERSION = PD.PM_REVIEW_DISPOSITION_VERSION
+
+
 @pytest.fixture
 def external():
     return _load("external_review")
@@ -81,10 +88,11 @@ def _seed_board(pm_home: Path, *, status: str = "claimed", body: str = "") -> Pa
 
 
 def _finding(
-    finding_id: str = "X-001", *, severity: str = "must-fix",
+    finding_id: str = "X-001", *, severity: str | None = "must-fix",
     classification: str = "implementation-defect", design_change: bool = False,
 ) -> dict:
-    return {
+    """현행 세대 finding. `severity=None` 이면 severity 이전(v1) 스키마 형상이다."""
+    finding = {
         "id": finding_id,
         "class": classification,
         "severity": severity,
@@ -92,6 +100,20 @@ def _finding(
         "evidence": f"{finding_id} probe rc=1",
         "recommendation": f"{finding_id}만 수정",
         "design_change": design_change,
+    }
+    if severity is None:
+        del finding["severity"]
+    return finding
+
+
+def _payload(
+    findings: list[dict] | None = None, confirmations: list[dict] | None = None,
+    *, version: int = BLOCK_VERSION,
+) -> dict:
+    return {
+        "version": version,
+        "findings": list(findings or []),
+        "confirmations": list(confirmations or []),
     }
 
 
@@ -111,9 +133,7 @@ def _reject_reply(*findings: dict, prose_items: bool = True) -> str:
         "판정: 반려\n\n"
         f"**must-fix** (반드시 수정):\n{listed}\n\n"
         "**suggestion** (권장):\n- 없음\n\n"
-        + _block({
-            "version": 1, "findings": list(findings), "confirmations": [],
-        })
+        + _block(_payload(list(findings)))
     )
 
 
@@ -122,16 +142,14 @@ def _confirm_reply(*confirmations: dict) -> str:
         "판정: 통과\n\n"
         "**must-fix** (반드시 수정):\n- 없음\n\n"
         "**suggestion** (권장):\n- 없음\n\n"
-        + _block({
-            "version": 1, "findings": [], "confirmations": list(confirmations),
-        })
+        + _block(_payload(confirmations=list(confirmations)))
     )
 
 
 def _disposition(finding_id: str, *, ordinal: int = 0, role: str = "external-reviewer",
                  decision: str = "accepted") -> str:
     payload = {
-        "version": 1,
+        "version": DISPOSITION_VERSION,
         "reviewer_role": role,
         "reviewer_ordinal": ordinal,
         "dispositions": [{
@@ -149,12 +167,14 @@ def _disposition(finding_id: str, *, ordinal: int = 0, role: str = "external-rev
     )
 
 
-def _wire(external, monkeypatch, pm_home: Path, reply: str) -> dict:
+def _wire(
+    external, monkeypatch, pm_home: Path, reply: str, *, conf: dict | None = None,
+) -> dict:
     """main() 을 tmp PM 홈으로 배선한다 — 반환 dict['n'] = 리뷰어 호출 수(외부 전송 시도)."""
+    resolved_conf = {"additional_reviewer_enabled": "true", **(conf or {})}
     monkeypatch.setattr(external, "REPO", pm_home)
     monkeypatch.setattr(
-        external, "local_config",
-        lambda repo=None: {"additional_reviewer_enabled": "true"},
+        external, "local_config", lambda repo=None: dict(resolved_conf),
     )
     monkeypatch.setattr(external, "extract_diff", lambda *a, **k: (DIFF, []))
 
@@ -264,53 +284,33 @@ def test_second_round_appends_a_new_sealed_section(
         ),
         pytest.param(
             "판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n\n"
-            + _block({"version": 1, "findings": [], "confirmations": []})
-            + _block({"version": 1, "findings": [], "confirmations": []}),
+            + _block(_payload()) + _block(_payload()),
             "block 이 정확히 하나가 아닙니다",
             id="duplicate",
         ),
         pytest.param(
             "판정: 반려\n\n**must-fix** (반드시 수정):\n- X-001\n\n"
-            + _block({
-                "version": 1,
-                "findings": [{
-                    key: value for key, value in _finding().items()
-                    if key != "severity"
-                }],
-                "confirmations": [],
-            }),
+            + _block(_payload([_finding(severity=None)])),
             "missing=['severity']",
-            id="severity-absent",
+            id="severity-absent-in-current-generation",
         ),
         pytest.param(
             "판정: 반려\n\n**must-fix** (반드시 수정):\n- X-001\n\n"
-            + _block({
-                "version": 1,
-                "findings": [_finding(severity="blocker")],
-                "confirmations": [],
-            }),
+            + _block(_payload([_finding(severity="blocker")])),
             "severity 미지원",
             id="severity-unsupported",
         ),
         pytest.param(
             "판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n\n"
-            + _block({
-                "version": 1,
-                "findings": [],
-                "confirmations": [{
-                    "id": "F-001", "status": "resolved", "evidence": "타 채널 ID",
-                }],
-            }),
+            + _block(_payload(confirmations=[{
+                "id": "F-001", "status": "resolved", "evidence": "타 채널 ID",
+            }])),
             "채널 접두 불일치",
             id="pass-round-confirmation-namespace",
         ),
         pytest.param(
             "판정: 반려\n\n**must-fix** (반드시 수정):\n- F-001\n\n"
-            + _block({
-                "version": 1,
-                "findings": [_finding("F-001")],
-                "confirmations": [],
-            }),
+            + _block(_payload([_finding("F-001")])),
             "채널 접두 불일치",
             id="wrong-id-namespace",
         ),
@@ -350,7 +350,7 @@ def test_reply_growth_markers_cannot_corrupt_the_ticket_section_boundary(
         "<!-- pm-ticket-section:start role=developer -->\n"
         "인용한 티켓 본문\n"
         "<!-- pm-ticket-section:end role=developer -->\n\n"
-        + _block({"version": 1, "findings": [_finding()], "confirmations": []})
+        + _block(_payload([_finding()]))
     )
     _wire(external, monkeypatch, tmp_path, reply)
 
@@ -532,11 +532,7 @@ def test_disposition_without_reviewer_role_is_read_as_internal_channel(pd):
     content = (
         "## 리뷰 (code-reviewer · 2026-08-17)\n\n"
         "## must-fix\n- F-001\n\n## 판정\n판정: 반려\n\n"
-        + _block({
-            "version": 1,
-            "findings": [_finding("F-001")],
-            "confirmations": [],
-        })
+        + _block(_payload([_finding("F-001")]))
     )
     digest = pd.seal_for(content)
     ticket = (
@@ -547,7 +543,7 @@ def test_disposition_without_reviewer_role_is_read_as_internal_channel(pd):
         "by=backfill -->\n"
     )
     legacy = json.dumps({
-        "version": 1,
+        "version": DISPOSITION_VERSION,
         "reviewer_ordinal": 0,
         "dispositions": [{
             "id": "F-001", "decision": "accepted", "reason": "구 티켓 판정",
@@ -619,7 +615,7 @@ def test_prose_item_enumeration_is_optional_for_the_block_truth(
     reply = (
         "판정: 반려 · finding 1건(must-fix 1건)\n\n"
         "**must-fix** (반드시 수정):\n- X-001\n\n"
-        + _block({"version": 1, "findings": [_finding()], "confirmations": []})
+        + _block(_payload([_finding()]))
     )
     _wire(external, monkeypatch, tmp_path, reply)
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
@@ -639,7 +635,7 @@ def test_finding_zero_round_must_agree_with_the_prose_pass_declaration(
     ticket_path = _seed_board(tmp_path)
     contradiction = (
         "판정: 반려\n\n**must-fix** (반드시 수정):\n- 산문만 반려\n\n"
-        + _block({"version": 1, "findings": [], "confirmations": []})
+        + _block(_payload())
     )
     _wire(external, monkeypatch, tmp_path, contradiction)
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
@@ -655,14 +651,14 @@ def test_finding_zero_pass_round_needs_only_the_compact_pm_acceptance(
     ticket_path = _seed_board(tmp_path)
     passing = (
         "판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n\n"
-        + _block({"version": 1, "findings": [], "confirmations": []})
+        + _block(_payload())
     )
     _wire(external, monkeypatch, tmp_path, passing)
     assert _run(external, tmp_path, "--ticket", TICKET) == 0
 
     text = ticket_path.read_text(encoding="utf-8")
     zero = json.dumps({
-        "version": 1,
+        "version": DISPOSITION_VERSION,
         "reviewer_role": "external-reviewer",
         "reviewer_ordinal": 0,
         "finding_zero": "accepted",
@@ -710,3 +706,407 @@ def test_disposition_template_targets_the_external_channel(
     )
     assert payload["reviewer_role"] == "external-reviewer"
     assert [row["id"] for row in payload["dispositions"]] == ["X-001"]
+
+
+# ── F-002 세대 승격: 봉인된 v1 블록(실 보드 형상)을 legacy 로 계속 읽는다 ──────
+
+
+LEGACY_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "legacy_review_blocks_v1.json"
+
+
+def _legacy_fixture_tickets() -> list[dict]:
+    return json.loads(LEGACY_FIXTURE.read_text(encoding="utf-8"))["tickets"]
+
+
+def _rebuild_legacy_ticket(pd, entry: dict) -> str:
+    """픽스처(실 보드 v1 블록 형상)를 봉인된 티켓 본문으로 되살린다(값은 축약본)."""
+    parts = [f"---\nid: {entry['ticket']}\nstatus: claimed\n---\n# {entry['ticket']}\n"]
+    for section in entry["sections"]:
+        role = section["role"]
+        content = (
+            f"## 리뷰 ({role} · 2026-08-17)\n\n"
+            f"{section['verdict_prose']}\n\n## must-fix\n- 구조화 finding 참조\n\n"
+            + _block(section["payload"])
+        )
+        digest = pd.seal_for(content)
+        parts.append(
+            f"\n<!-- pm-ticket-section:start role={role} -->\n" + content
+            + f"<!-- pm-ticket-section:end role={role} -->\n"
+            + f"<!-- pm-ticket-seal role={role} ordinal={section['ordinal']} "
+            f"sha256={digest} by=backfill -->\n"
+        )
+    for disposition in entry["dispositions"]:
+        parts.append(
+            "\n```pm-review-disposition-v1\n"
+            + json.dumps(disposition, ensure_ascii=False, separators=(",", ":"))
+            + "\n```\n"
+        )
+    return "".join(parts)
+
+
+@pytest.mark.parametrize(
+    "entry", _legacy_fixture_tickets(), ids=lambda entry: entry["ticket"],
+)
+def test_sealed_v1_blocks_from_the_live_board_stay_readable(pd, entry):
+    """진행 중 티켓의 봉인된 v1 블록은 severity 없이도 delta 를 낸다(자산을 잠그지 않는다).
+
+    픽스처는 실 보드 7건(T-0691·T-0693·T-0701·T-0703·T-0704·T-0705·T-0735)의 블록 형상을 값만
+    축약해 굳힌 것이다 — 그 파일들은 봉인돼 손수정 경로가 없으므로([[ADR-0089]]) 파서가 계속
+    읽어야 fix 루프가 돌아간다.
+    """
+    text = _rebuild_legacy_ticket(pd, entry)
+    assert pd.verify_ticket_seals(text) == []
+    assert all(
+        section["payload"]["version"] == LEGACY_BLOCK_VERSION
+        for section in entry["sections"]
+    )
+    assert not any(
+        "severity" in finding
+        for section in entry["sections"]
+        for finding in section["payload"]["findings"]
+    )
+
+    delta = pd.parse_pm_review_delta(text)          # malformed 면 fix 루프가 막힌다.
+    rendered = pd.render_pm_review_delta(entry["ticket"], delta)
+    if delta.accepted:
+        assert f"- 심각도: {pd.PM_REVIEW_SEVERITY_UNSPECIFIED_LABEL}" in rendered
+    summary_rows = [
+        row for row in pd.render_pm_review_summary(text).splitlines()
+        if "severity=" in row
+    ]
+    assert summary_rows, "구 블록 티켓의 요약이 통째로 접혔다"
+    assert all(
+        f"severity={pd.PM_REVIEW_SEVERITY_UNSPECIFIED_LABEL}" in row
+        for row in summary_rows
+    )
+
+
+def test_current_generation_block_still_requires_severity(pd):
+    """세대 경계는 블록 payload 의 `version` 이다 — 현행 세대는 부재를 계속 거부한다."""
+    ticket = _sealed_external_section(
+        pd, _payload([_finding(severity=None)]),
+    )
+    with pytest.raises(pd.PMReviewError, match=r"missing=\['severity'\]") as caught:
+        pd.parse_pm_review_delta(ticket)
+    assert caught.value.code == "malformed"
+
+
+def test_engine_written_skeleton_and_prompt_use_the_current_generation(pd):
+    """엔진이 새로 시드·요구하는 블록은 현행 세대다(구 세대는 읽기 전용 수용)."""
+    for role in pd.REVIEW_ROLES:
+        skeleton = json.loads(
+            pd.render_pm_review_block_skeleton(role)
+            .split("```pm-review-v1\n", 1)[1].split("\n```", 1)[0]
+        )
+        assert skeleton["version"] == BLOCK_VERSION
+        assert "severity" in skeleton["findings"][0]
+    assert LEGACY_BLOCK_VERSION < BLOCK_VERSION
+    assert set(pd.PM_REVIEW_SUPPORTED_VERSIONS) == {
+        LEGACY_BLOCK_VERSION, BLOCK_VERSION,
+    }
+
+
+# ── F-001 혼재 티켓: 절 단위 관용 요약 ──────────────────────────────────
+
+
+def _sealed_external_section(pd, payload: dict, *, ordinal: int = 0,
+                             role: str = "external-reviewer",
+                             raw_block: str | None = None) -> str:
+    content = (
+        f"## 추가 리뷰 ({role} · 2026-08-17)\n\n판정: 반려\n\n"
+        "## must-fix\n- 구조화 finding 참조\n\n"
+        + (raw_block if raw_block is not None else _block(payload))
+    )
+    digest = pd.seal_for(content)
+    return (
+        f"<!-- pm-ticket-section:start role={role} -->\n" + content
+        + f"<!-- pm-ticket-section:end role={role} -->\n"
+        + f"<!-- pm-ticket-seal role={role} ordinal={ordinal} sha256={digest} "
+        "by=external-review -->\n"
+    )
+
+
+def test_summary_folds_only_the_broken_section_of_a_mixed_ticket(pd):
+    """(F-001) 구 세대·현행·손상 블록이 섞여도 나머지 절 요약은 살아 있다."""
+    legacy = _sealed_external_section(
+        pd, _payload([_finding("X-001", severity=None)],
+                     version=LEGACY_BLOCK_VERSION), ordinal=0,
+    )
+    current = _sealed_external_section(
+        pd, _payload([_finding("X-002", severity="should-fix")]), ordinal=1,
+    )
+    broken = _sealed_external_section(
+        pd, {}, ordinal=2,
+        raw_block=_block(_payload([_finding("X-003", classification="style")])),
+    )
+    summary = pd.render_pm_review_summary(legacy + current + broken)
+
+    rows = summary.splitlines()
+    assert f"external-reviewer[0] X-001 severity={pd.PM_REVIEW_SEVERITY_UNSPECIFIED_LABEL}" \
+        in "\n".join(rows)
+    assert "external-reviewer[1] X-002 severity=should-fix" in "\n".join(rows)
+    folded = [row for row in rows if "요약 불가" in row]
+    assert len(folded) == 1 and "external-reviewer[2]" in folded[0]
+    assert "class 미지원" in folded[0]
+
+
+# ── F-003 ticket 형상 게이트 회수 ───────────────────────────────────────
+
+
+def test_ticket_shaped_gate_without_ticket_flag_is_harvested(
+    external, pd, monkeypatch, tmp_path,
+):
+    """문서화된 `--paths … --gate T-NNNN` 설계 리뷰 형상도 같은 회수 규칙을 탄다."""
+    ticket_path = _seed_board(tmp_path)
+    _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
+
+    assert _run(external, tmp_path, "--gate", TICKET, "--paths", "x.py") == 1
+    text = ticket_path.read_text(encoding="utf-8")
+    assert len(_sections(pd, text, "external-reviewer")) == 1
+    assert pd.verify_ticket_seals(text) == []
+    delta = pd.parse_pm_review_delta(text + _disposition("X-001"))
+    assert [finding.id for finding, _row in delta.accepted] == ["X-001"]
+
+
+def test_ticket_shaped_gate_missing_from_the_board_says_why(
+    external, monkeypatch, tmp_path, capsys,
+):
+    """보드에 없는 ticket 형상 게이트는 조용히 지나가지 않는다 — 사유를 말한다."""
+    _seed_board(tmp_path)
+    _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
+
+    assert _run(external, tmp_path, "--gate", "T-9999", "--paths", "x.py") == 1
+    err = capsys.readouterr().err
+    assert "미회수" in err and "T-9999" in err
+
+
+def test_reviewer_failure_reports_that_nothing_was_harvested(
+    external, monkeypatch, tmp_path, capsys,
+):
+    """회신이 없어 회수하지 않은 실행도 사유를 남긴다(조용한 누락 금지)."""
+    ticket_path = _seed_board(tmp_path)
+    before = ticket_path.read_text(encoding="utf-8")
+    _wire(external, monkeypatch, tmp_path, "")
+    monkeypatch.setattr(external, "run_review", lambda *a, **k: {
+        "reviewer": "fixture", "ok": False, "output": "", "answer": "",
+        "verdict": {"has_must_fix": False, "has_pass": False},
+        "file": tmp_path / "raw" / "fixture.md", "failed": True, "started": True,
+        "any_must_fix": False, "all_pass": False,
+    })
+
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+    err = capsys.readouterr().err
+    assert "미회수" in err and "회신을 받지 못했습니다" in err
+    assert ticket_path.read_text(encoding="utf-8") == before
+
+
+# ── F-004 finding ID 네임스페이스: 실값 프롬프트 + 재선언 거부 ──────────
+
+
+def test_prompt_carries_the_next_finding_id_from_the_ticket_body(
+    external, pd, monkeypatch, tmp_path,
+):
+    """엔진이 티켓의 기존 최대 번호를 읽어 이번 라운드의 시작 ID 를 실값으로 싣는다."""
+    _seed_board(tmp_path)
+    calls = _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+    assert "`X-001` 부터" in calls["prompt"]
+
+    calls = _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-002")))
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+    assert "`X-002` 부터" in calls["prompt"]        # 티켓의 기존 최대 번호 + 1
+
+    calls = _wire(external, monkeypatch, tmp_path, _confirm_reply({
+        "id": "X-002", "status": "resolved", "evidence": "회귀 rc=0",
+    }))
+    assert _run(external, tmp_path, "--ticket", TICKET, "--confirm-fix") == 0
+    assert "`X-003` 부터" in calls["prompt"]
+    assert pd.next_review_finding_id("본문에 X-007 과 X-002 가 있다", "external-reviewer") \
+        == "X-008"
+    assert pd.next_review_finding_id("빈 티켓", "external-reviewer") == "X-001"
+
+
+def test_reused_finding_id_is_refused_and_the_next_round_can_land(
+    external, pd, monkeypatch, tmp_path, capsys,
+):
+    """(F-004) 같은 ID 재선언은 판정 표면에 올리지 않는다 — 티켓은 계속 판정 가능하다."""
+    # 이 케이스는 3라운드(초기·재선언·재시도)를 태운다 — 수렴 상한 축은 별도 테스트가 소유한다.
+    rounds = {"review_rounds_max": "9"}
+    ticket_path = _seed_board(tmp_path)
+    _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-001")), conf=rounds)
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+
+    _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-001")), conf=rounds)
+    assert _run(external, tmp_path, "--ticket", TICKET) != 0
+    err = capsys.readouterr().err
+    assert "회수 문제" in err and "재선언" in err
+
+    text = ticket_path.read_text(encoding="utf-8")
+    sections = _sections(pd, text, "external-reviewer")
+    assert len(sections) == 2                       # 산출은 절로 남는다(증거 보존).
+    assert pd.EXTERNAL_REVIEW_BLOCK_WARNING_PREFIX in sections[1]
+    assert "```pm-review-v1" not in sections[1]     # 판정 표면에는 올리지 않는다.
+    assert pd.verify_ticket_seals(text) == []
+    delta = pd.parse_pm_review_delta(text + _disposition("X-001"))
+    assert [finding.id for finding, _row in delta.accepted] == ["X-001"]
+
+    # 재시도 라운드가 새 ID 로 정상 착지한다.
+    _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-002")), conf=rounds)
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+    text = ticket_path.read_text(encoding="utf-8")
+    delta = pd.parse_pm_review_delta(
+        text + _disposition("X-001") + _disposition("X-002", ordinal=2)
+    )
+    assert sorted(finding.id for finding, _row in delta.accepted) == ["X-001", "X-002"]
+
+
+def test_confirmation_round_may_reference_existing_ids(
+    external, pd, monkeypatch, tmp_path,
+):
+    """확인 라운드는 기존 ID 를 참조해야 한다 — 재선언 판정이 그것까지 막지 않는다."""
+    ticket_path = _seed_board(tmp_path)
+    _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-001")))
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+
+    _wire(external, monkeypatch, tmp_path, _confirm_reply({
+        "id": "X-001", "status": "resolved", "evidence": "회귀 rc=0",
+    }))
+    assert _run(external, tmp_path, "--ticket", TICKET, "--confirm-fix") == 0
+    text = ticket_path.read_text(encoding="utf-8")
+    assert pd.EXTERNAL_REVIEW_BLOCK_WARNING_PREFIX not in text
+    delta = pd.parse_pm_review_delta(text + _disposition("X-001"))
+    assert delta.accepted == ()
+
+
+# ── F-005 개행: 지배 표기를 한 번만 입힌다 ──────────────────────────────
+
+
+def test_crlf_ticket_and_crlf_reply_keep_a_single_newline_encoding(
+    external, pd, monkeypatch, tmp_path,
+):
+    """CRLF 티켓 × CRLF 회신도 `\\r\\r\\n`·혼재 없이 기록된다(봉인은 정규화라 못 잡는다)."""
+    ticket_path = _seed_board(tmp_path)
+    ticket_path.write_bytes(
+        ticket_path.read_text(encoding="utf-8").replace("\n", "\r\n").encode("utf-8")
+    )
+    reply = _reject_reply(_finding()).replace("\n", "\r\n")
+    _wire(external, monkeypatch, tmp_path, reply)
+
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+    raw = ticket_path.read_bytes()
+    assert b"\r\r\n" not in raw
+    assert raw.replace(b"\r\n", b"") .count(b"\n") == 0      # LF 혼재 없음
+    assert raw.replace(b"\r\n", b"").count(b"\r") == 0
+    text = ticket_path.read_text(encoding="utf-8")
+    assert pd.verify_ticket_seals(text) == []
+    delta = pd.parse_pm_review_delta(text + _disposition("X-001"))
+    assert [finding.id for finding, _row in delta.accepted] == ["X-001"]
+
+
+def test_lf_ticket_and_crlf_reply_normalize_to_the_ticket_encoding(
+    external, pd, monkeypatch, tmp_path,
+):
+    """LF 티켓에 CRLF 회신을 회수해도 티켓 표기가 섞이지 않는다."""
+    ticket_path = _seed_board(tmp_path)
+    _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()).replace("\n", "\r\n"))
+
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+    raw = ticket_path.read_bytes()
+    assert b"\r" not in raw
+    assert pd.verify_ticket_seals(raw.decode("utf-8")) == []
+
+
+# ── F-006 쓰기 엔진: 형제 canonical + 사본 불일치 처방 ──────────────────
+
+
+def _skew_delegate_after_prompt(external, monkeypatch, *, marked: bool) -> None:
+    """프롬프트 조립까지는 정상 로더로 두고 **회수 구간부터** 로더 실패를 주입한다."""
+    real_loader = external._load_pm_delegate
+    state = {"prompt_done": False}
+    real_run_review = external.run_review
+
+    def _run_review(*args, **kwargs):
+        state["prompt_done"] = True
+        return real_run_review(*args, **kwargs)
+
+    def _loader():
+        if not state["prompt_done"]:
+            return real_loader()
+        error = RuntimeError(
+            "엔진 사본 버전 불일치 — 로더 external_review.py" if marked
+            else "표시 없는 실패"
+        )
+        if marked:
+            error._engine_rev_skew = True
+        raise error
+
+    monkeypatch.setattr(external, "run_review", _run_review)
+    monkeypatch.setattr(external, "_load_pm_delegate", _loader)
+
+
+def test_harvest_writes_with_the_running_engine_not_a_stale_pm_home_copy(
+    external, pd, monkeypatch, tmp_path,
+):
+    """PM 홈에 stale board 사본이 있어도 회수는 이 실행의 형제 엔진으로 쓴다."""
+    ticket_path = _seed_board(tmp_path)
+    stale = tmp_path / ".project_manager" / "tools" / "board.py"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text(
+        "ENGINE_REV = 'stale'\n"
+        "def find_ticket_exact(*args, **kwargs):\n"
+        "    raise AssertionError('stale PM 홈 사본이 회수 쓰기를 수행했다')\n",
+        encoding="utf-8", newline="\n",
+    )
+    _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
+
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+    text = ticket_path.read_text(encoding="utf-8")
+    assert len(_sections(pd, text, "external-reviewer")) == 1
+    assert pd.verify_ticket_seals(text) == []
+
+
+def test_engine_copy_skew_becomes_a_harvest_problem_with_a_resync_prescription(
+    external, monkeypatch, tmp_path, capsys,
+):
+    """사본 불일치는 traceback 이 아니라 회수 실패 처방(재동기·rc≠0)으로 접힌다."""
+    ticket_path = _seed_board(tmp_path)
+    before = ticket_path.read_text(encoding="utf-8")
+    _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
+
+    _skew_delegate_after_prompt(external, monkeypatch, marked=True)
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+    err = capsys.readouterr().err
+    assert "회수 문제" in err and "재동기" in err
+    assert ticket_path.read_text(encoding="utf-8") == before
+
+
+def test_non_skew_runtime_error_is_not_swallowed(external, monkeypatch, tmp_path):
+    """표시 없는 RuntimeError 는 흡수 대상이 아니다(진단을 삼키지 않는다)."""
+    _seed_board(tmp_path)
+    _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
+
+    _skew_delegate_after_prompt(external, monkeypatch, marked=False)
+    with pytest.raises(RuntimeError, match="표시 없는 실패"):
+        _run(external, tmp_path, "--ticket", TICKET)
+
+
+# ── F-008·F-009 출력 형식 규칙 ─────────────────────────────────────────
+
+
+def test_prompt_rules_ban_requoting_and_derive_severity_from_constants(
+    external, pd, monkeypatch, tmp_path,
+):
+    """티켓 본문 블록 재인용 금지 + severity 값은 엔진 상수에서 포맷한다."""
+    _seed_board(tmp_path)
+    calls = _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+
+    prompt = calls["prompt"]
+    assert "재인용하지 마라" in prompt
+    assert pd.PM_REVIEW_SEVERITIES[0] in prompt
+
+    monkeypatch.setattr(
+        pd, "PM_REVIEW_SEVERITIES", ("blocker-probe", *pd.PM_REVIEW_SEVERITIES),
+    )
+    monkeypatch.setattr(external, "_load_pm_delegate", lambda: pd)
+    assert "blocker-probe" in external._versioned_block_requirement("")

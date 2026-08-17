@@ -1,0 +1,927 @@
+{
+ "note": "실 보드 진행 중 티켓의 v1 블록 형상(값 축약·스키마 보존)",
+ "tickets": [
+  {
+   "ticket": "T-0691",
+   "sections": [
+    {
+     "role": "code-reviewer",
+     "ordinal": 0,
+     "verdict_prose": "판정: 반려",
+     "payload": {
+      "version": 1,
+      "findings": [
+       {
+        "id": "F-001",
+        "class": "implementation-defect",
+        "authority": "T-0691 목표 및 완료 조건 (엔진 텍스트 쓰기 전량 LF · newline 명시)",
+        "evidence": "스냅샷 독립 AST 집계: .project_manager/tools/*.py 의 텍스트 쓰기 58곳 중 4곳",
+        "recommendation": "네 지점에 newline=\"\\n\" 을 명시하고, gate_snapshot 의 두 분기가 같은 개행 동작을 갖",
+        "design_change": false
+       },
+       {
+        "id": "F-002",
+        "class": "implementation-defect",
+        "authority": "T-0691 목표 (정적 가드로 재발을 막는다)",
+        "evidence": "tests/test_engine_text_write_newline.py 의 _call_name 은 bare",
+        "recommendation": "수신자 이름과 무관하게 attr == \"open\" 호출을 스캔에 포함하고 mode 를 첫 위치 인자에서 해소",
+        "design_change": false
+       },
+       {
+        "id": "F-003",
+        "class": "implementation-defect",
+        "authority": "T-0691 결정 (정책은 엔진이 쓰는 텍스트는 항상 LF)",
+        "evidence": "가드는 any(keyword.arg == \"newline\") 로 존재만 본다. sensitivity 실측:",
+        "recommendation": "newline 인자가 리터럴 \"\\n\" 또는 \"\" 인지까지 단언하고, 그 밖의 값(None 포함)은 실패로 처",
+        "design_change": false
+       },
+       {
+        "id": "F-004",
+        "class": "implementation-defect",
+        "authority": "T-0691 인터페이스 (mode 에 w/a/x 가 있는데 newline 없으면 실패)",
+        "evidence": "_literal_mode 는 ast.literal_eval 실패 시 None 을 돌려주고 호출자가 그 호출을",
+        "recommendation": "mode 해소 실패를 skip 이 아니라 실패로 두거나, newline 키워드가 있을 때만 통과시키고 나머지",
+        "design_change": false
+       }
+      ],
+      "confirmations": []
+     }
+    },
+    {
+     "role": "code-reviewer",
+     "ordinal": 1,
+     "verdict_prose": "판정: 반려",
+     "payload": {
+      "version": 1,
+      "findings": [
+       {
+        "id": "F-005",
+        "class": "implementation-defect",
+        "authority": "T-0691 목표 (정적 가드로 재발을 막는다) — 비차단 should-fix",
+        "evidence": "가드 헬퍼 직접 태움: _call_name(ast.parse('tempfile.NamedTemporaryFi",
+        "recommendation": "차단 사유는 아니다. 필요하면 tempfile 텍스트 모드와 별칭 fdopen 을 스캔에 추가하고 r+ 를",
+        "design_change": false
+       },
+       {
+        "id": "F-006",
+        "class": "implementation-defect",
+        "authority": "R1 should-fix 이월 (문서와 코드 정합) — 비차단",
+        "evidence": "pm_import.py:2428-2432 _fdopen_text docstring 이 여전히 `newline",
+        "recommendation": "쓰기 쪽 서술을 지우거나 읽기 채널 한정으로 좁혀라.",
+        "design_change": false
+       }
+      ],
+      "confirmations": [
+       {
+        "id": "F-001",
+        "status": "resolved",
+        "evidence": "독립 AST 재집계에서 텍스트 쓰기 58곳 전부 newline 명시(미지정 0·비허용값 0). 네 지점 실측"
+       },
+       {
+        "id": "F-002",
+        "status": "resolved",
+        "evidence": "독립 스캐너(58곳)와 가드 _scan_text_writes()(58곳)의 (파일, 줄번호) 집합이 완전 일"
+       },
+       {
+        "id": "F-003",
+        "status": "resolved",
+        "evidence": "_valid_newline 이 리터럴 \"\\n\"/\"\" 만 통과시킨다. R1 에서 green 이던 newline"
+       },
+       {
+        "id": "F-004",
+        "status": "resolved",
+        "evidence": "비리터럴 mode 가 skip 이 아니라 전용 red 다(unresolved_modes 단언). 민감도 C:"
+       }
+      ]
+     }
+    },
+    {
+     "role": "code-reviewer",
+     "ordinal": 2,
+     "verdict_prose": "판정: 반려",
+     "payload": {
+      "version": 1,
+      "findings": [
+       {
+        "id": "F-008",
+        "class": "implementation-defect",
+        "authority": "T-0691 목표 (정적 가드로 재발을 막는다) · R2 처분 F-005 scope(검출 어려운 형태는 가드",
+        "evidence": "가드 상단 주석(tests/test_engine_text_write_newline.py:5-7)은 미대상을",
+        "recommendation": "차단 사유는 아니다. 대입 별칭과 attribute 형태 래퍼 호출을 스캔에 넣거나, 최소한 가드 상단 주석",
+        "design_change": false
+       }
+      ],
+      "confirmations": [
+       {
+        "id": "F-005",
+        "status": "resolved",
+        "evidence": "가드가 별칭 fdopen 과 r+ 를 잡는다. 라이브 트리를 건드리지 않고 tools/ 사본(scratchp"
+       },
+       {
+        "id": "F-006",
+        "status": "resolved",
+        "evidence": "pm_import.py:2479-2483 의 _fdopen_text docstring 이 `newline=\""
+       }
+      ]
+     }
+    }
+   ],
+   "dispositions": [
+    {
+     "version": 1,
+     "reviewer_ordinal": 0,
+     "dispositions": [
+      {
+       "id": "F-001",
+       "decision": "accepted",
+       "reason": "Windows 가 유일하게 타는 gate_snapshot 폴백 분기를 포함해 네 지점이 미지정으로 남았다.",
+       "scope": "네 지점에 newline=\"\\n\" 명시 · gate_snapshot 의 POSIX/폴백 두 분기가 같은 개행",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-002",
+       "decision": "accepted",
+       "reason": "가드가 Path.open 클래스를 스캔하지 않아 자기 sweep 의 누락을 검출하지 못했다(시야 51 vs",
+       "scope": "수신자 이름과 무관하게 attr == \"open\" 호출을 스캔에 포함하고 mode 를 첫 위치 인자에서 해소",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-003",
+       "decision": "accepted",
+       "reason": "키워드 존재만 검사해 newline=None 이 통과한다 — 쓰기에서 미지정과 동작이 같으므로 가드가 수정",
+       "scope": "newline 인자가 리터럴 \"\\n\" 또는 \"\" 인지까지 단언하고 그 밖의 값(None 포함)은 실패 처리.",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-004",
+       "decision": "accepted",
+       "reason": "비-리터럴 mode 를 조용히 skip 하면 그 자체가 우회로다. 이 가드는 '엔진이 쓰는 텍스트는 항상 L",
+       "scope": "mode 해소 실패를 skip 이 아니라 실패로 두거나, newline 키워드가 있을 때만 통과시키고 나머지",
+       "prerequisite": ""
+      }
+     ]
+    },
+    {
+     "version": 1,
+     "reviewer_ordinal": 1,
+     "dispositions": [
+      {
+       "id": "F-005",
+       "decision": "accepted",
+       "reason": "엔진 사용 0건이라 현행 위반은 없지만, 가드의 값은 '무엇을 놓치지 않느냐' 다. 잡기 쉬운 형태는 지금",
+       "scope": "별칭 import 된 fdopen·`r+` 등 잡을 수 있는 형태를 스캔에 포함하고, NamedTempora",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-006",
+       "decision": "accepted",
+       "reason": "`_fdopen_text` docstring 이 `newline=None` 을 '복사분 채널이 옛 동작을 그",
+       "scope": "docstring 의 `newline=None` 서술을 읽기 전용 설명으로 바로잡거나 제거. 코드 동작 변경",
+       "prerequisite": ""
+      }
+     ]
+    },
+    {
+     "version": 1,
+     "reviewer_ordinal": 2,
+     "dispositions": [
+      {
+       "id": "F-008",
+       "decision": "accepted",
+       "reason": "가드 주석이 미대상을 두 형태로 못박아 '주석에 없으면 잡힌다' 오독을 부른다(리뷰어 실측 3형태 조용히 통",
+       "scope": "PM 직접 처리(1파일·주석+`_call_name` attribute 형태 1분기): 가드 상단 주석에 대입",
+       "prerequisite": ""
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "ticket": "T-0693",
+   "sections": [
+    {
+     "role": "code-reviewer",
+     "ordinal": 0,
+     "verdict_prose": "판정: 반려",
+     "payload": {
+      "version": 1,
+      "findings": [
+       {
+        "id": "F-001",
+        "class": "implementation-defect",
+        "authority": "tests/test_machine_output_encoding.py:60-66 (_capture_consol",
+        "evidence": "seam 이 bytes 를 쓰기 전에 텍스트 레이어를 먼저 flush 하는 순서 불변식에 커버리지가 0 이다",
+        "recommendation": "픽스처를 실 configure_console_utf8 경유로 만든다 — 실 TextIOWrapper(Byte",
+        "design_change": false
+       },
+       {
+        "id": "F-002",
+        "class": "implementation-defect",
+        "authority": "tests/test_machine_output_encoding.py:436-452 (_shape_of)",
+        "evidence": "정적 가드 (d) 의 시야는 3형태(print(json.dumps)·json.dump(any)·sys.std",
+        "recommendation": "수신자 이름이 {sys.stdout, stdout, output_stream} 인 .write(json.du",
+        "design_change": false
+       },
+       {
+        "id": "F-003",
+        "class": "implementation-defect",
+        "authority": "tests/test_machine_output_encoding.py:456-470 (scan_console_",
+        "evidence": "가드 시야는 .project_manager/tools/*.py 뿐인데, 살아 있는 하네스 훅 기계 JSON",
+        "recommendation": "(a) 어댑터 훅 스크립트가 console_encoding 을 로드하지 않음을 단언하는 한 줄을 가드에 추가",
+        "design_change": false
+       },
+       {
+        "id": "F-004",
+        "class": "design-proposal",
+        "authority": ".project_manager/tools/delegate_channel_guard.py:1725-1745 (",
+        "evidence": "machine_seam 을 공개 kwarg 로 두었으나 호출자는 0 이고(엔진·테스트 전수), 성공 경로에서",
+        "recommendation": "main 의 kwarg 를 제거하고 try 앞 지역 초기화로 대체한다(내부 _run_decide_cli(ma",
+        "design_change": false
+       },
+       {
+        "id": "F-005",
+        "class": "implementation-defect",
+        "authority": ".project_manager/tools/delegate_channel_guard.py:1630-1641 (",
+        "evidence": "seam 로드 실패 경계의 폴백이 텍스트 레이어로 내려앉는다. 그 경계는 configure_console_u",
+        "recommendation": "폴백도 seam 없이 buffer = getattr(stream, 'buffer', None) 을 먼저 시도",
+        "design_change": false
+       },
+       {
+        "id": "F-006",
+        "class": "spec-violation",
+        "authority": "tests/test_private_context_guard.py::test_hard_private_conte",
+        "evidence": "이번 변경이 엔진 산문에 넣은 (T-0693) 참조 6건(board·console_encoding·deleg",
+        "recommendation": "developer 재작업 대상이 아니다(대장 파일은 touches 밖·재생성은 사람 검토 게이트). PM 이",
+        "design_change": false
+       },
+       {
+        "id": "F-007",
+        "class": "design-proposal",
+        "authority": ".project_manager/tools/console_encoding.py:400-409 · delegat",
+        "evidence": "바이트 표기 변화 2건을 확인했다 — (1) 텍스트 레이어를 건너뛰므로 Windows 에서 기계 줄 종결자가",
+        "recommendation": "코드 수정 불요. CHANGELOG/티켓에 'Windows 기계 줄 종결자 CRLF→LF · legacy C",
+        "design_change": false
+       },
+       {
+        "id": "F-008",
+        "class": "design-proposal",
+        "authority": ".project_manager/tools/console_encoding.py:396-409",
+        "evidence": "sys.stdout is None(pythonw/pyw 기동) 에서 종전 print 는 무동작이었으나 sea",
+        "recommendation": "target is None 이면 조용히 반환하는 한 줄을 둘지 PM 판단(선택).",
+        "design_change": false
+       }
+      ],
+      "confirmations": []
+     }
+    }
+   ],
+   "dispositions": [
+    {
+     "version": 1,
+     "reviewer_ordinal": 0,
+     "dispositions": [
+      {
+       "id": "F-001",
+       "decision": "accepted",
+       "reason": "순서 불변식(텍스트 선-flush)이 회귀 0건 — 제거해도 21 green(민감도 실측). 픽스처가 wri",
+       "scope": "실 `configure_console_utf8` 경유 픽스처(TextIOWrapper(BytesIO)+`_p",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-002",
+       "decision": "accepted",
+       "reason": "가드가 `output_stream.write(json.dumps(...))` 별칭 형태를 못 본다(현 0건)",
+       "scope": "수신자 이름 {sys.stdout, stdout, output_stream} 의 `.write(json.du",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-003",
+       "decision": "accepted",
+       "reason": "어댑터 훅 방출부(pm_orch_claude.py)가 가드 시야 밖·console_encoding 미로드 —",
+       "scope": "(a) 가드에 어댑터 훅이 console_encoding 을 로드하지 않음(=이 seam 대상 아님) 단언",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-004",
+       "decision": "accepted",
+       "reason": "공개 kwarg 확장 없이 같은 fail-open 성질을 얻는다.",
+       "scope": "`main(machine_seam=)` 제거 → try 앞 지역 초기화. `_run_decide_cli(ma",
+       "prerequisite": "[[T-0693]] §인터페이스(seam 1개·호출부 교체·공개 시그니처 확장 없음) [[T-0693]]"
+      },
+      {
+       "id": "F-005",
+       "decision": "accepted",
+       "reason": "seam 로드 실패 경계의 폴백이 텍스트 write 라 docstring 의 UTF-8 보장과 어긋난다.",
+       "scope": "폴백에서도 `getattr(stream, 'buffer', None)` 우선 UTF-8 bytes, buff",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-006",
+       "decision": "accepted",
+       "reason": "대장 재생성은 PM 단계 게이트(사람 검토).",
+       "scope": "PM: `pm_update --all-targets` → `test_private_context_guard.",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-007",
+       "decision": "accepted",
+       "reason": "동작 변경(legacy Claude 훅 LF 종결·Windows 기계 줄 종결자)을 채택자 표면에 남긴다.",
+       "scope": "PM 부기: CHANGELOG 항목 + Windows VM 실측 항목에 세 하네스 훅 왕복 포함.",
+       "prerequisite": "[[T-0693]] §인터페이스(seam 1개·호출부 교체·공개 시그니처 확장 없음) [[T-0693]]"
+      },
+      {
+       "id": "F-008",
+       "decision": "accepted",
+       "reason": "pythonw 등 `sys.stdout is None` 형상에서 AttributeError 대신 조용한 무출",
+       "scope": "seam 에 `target is None → return` 1줄 + 테스트 1건.",
+       "prerequisite": "[[T-0693]] §인터페이스(seam 1개·호출부 교체·공개 시그니처 확장 없음) [[T-0693]]"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "ticket": "T-0701",
+   "sections": [
+    {
+     "role": "code-reviewer",
+     "ordinal": 0,
+     "verdict_prose": "판정: 반려",
+     "payload": {
+      "version": 1,
+      "findings": [
+       {
+        "id": "F-001",
+        "class": "implementation-defect",
+        "authority": "[[T-0701]] 인터페이스(같은 세션 claimed touches 교집합) · repo_coordinat [[T-0701]]",
+        "evidence": "사전 교집합은 표기 정규화(canonicalize_path_notation)만 하고 slot 접두를 접지 않",
+        "recommendation": "사전 축도 사후 축과 같은 normalizer 를 지나게 한다 — 두 ticket 의 touches 를 de",
+        "design_change": false
+       },
+       {
+        "id": "F-002",
+        "class": "implementation-defect",
+        "authority": "report_scope_audit 자신의 문서화된 불변식(pm_delegate.py:8709 \"한 축의 판정",
+        "evidence": "교집합 사후 계산이 기존 touches 축과 같은 try 안으로 들어가 있어(pm_delegate.py:87",
+        "recommendation": "warning 을 계산 직후(교집합 계산 전에) 출력하거나, 교집합 계산을 별도 try 로 분리한다 — 새",
+        "design_change": false
+       },
+       {
+        "id": "F-003",
+        "class": "design-proposal",
+        "authority": "[[T-0701]] 인터페이스(status=claimed 전수) — 스펙대로 구현됐으므로 판정은 PM 몫 [[T-0701]]",
+        "evidence": "라이브 board 실측: claimed 9건이 모두 같은 세션(sumin.ahn.89@gmail.com/ma",
+        "recommendation": "PM 결정 사항 — (a) 스펙 유지(전수 claimed), (b) 실제 진행 중 위임만(raw 장부·lea",
+        "design_change": true
+       },
+       {
+        "id": "F-004",
+        "class": "implementation-defect",
+        "authority": "gate_snapshot._DISPLAY_PATH_LIMIT(=8) 의 기존 진단 표시 관례",
+        "evidence": "format_touch_overlap_warning(pm_delegate.py:8395)은 겹친 ticket",
+        "recommendation": "같은 상한 관례를 적용하거나(경로 8개 + 잔여 건수), 최소한 ticket 목록에 상한을 둔다.",
+        "design_change": false
+       },
+       {
+        "id": "F-005",
+        "class": "implementation-defect",
+        "authority": "[[T-0701]] 인터페이스(사전 경고는 위임을 띄우기 전 미리보기 신호) [[T-0701]]",
+        "evidence": "사전 경고 출력 지점(pm_delegate.py:10120)은 dry-run 블록보다 앞이라 미리보기에는 정",
+        "recommendation": "선택 — 미리보기 요구와 양립하려면 dry-run 분기 안과 egress 게이트 뒤 두 곳에서 출력하거나,",
+        "design_change": false
+       },
+       {
+        "id": "F-006",
+        "class": "implementation-defect",
+        "authority": "[[T-0701]] 테스트 항목 (a)~(f) 이외의 판정 경로 커버리지 [[T-0701]]",
+        "evidence": "_touch_notations 의 '형식 불명 → 판정 보류'(pm_delegate.py:8306, boar",
+        "recommendation": "스칼라 touches ticket 1건(경고 0·비차단 확인)과 slot-only claimed_by 형상",
+        "design_change": false
+       }
+      ],
+      "confirmations": []
+     }
+    }
+   ],
+   "dispositions": [
+    {
+     "version": 1,
+     "reviewer_ordinal": 0,
+     "dispositions": [
+      {
+       "id": "F-001",
+       "decision": "accepted",
+       "reason": "같은 기능(교집합)에 좌표 규칙 2개(사전=board 표기·사후=allowed_paths 접기)라 혼합 표기",
+       "scope": "사전 축도 사후 축과 같은 normalizer(`delegate_scope.allowed_paths(pm_r",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-002",
+       "decision": "accepted",
+       "reason": "새 축 예외가 이미 계산된 기존 범위-밖 경고를 지운다 — `report_scope_audit` 의 '한 축",
+       "scope": "교집합 사후 계산을 별도 try 로 분리(또는 기존 경고 선출력) + 재현 테스트 1건.",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-003",
+       "decision": "rejected",
+       "reason": "스펙(전수 claimed 교집합)이 곧 의도 — 병렬 wave 에서 같은 세션 claim 전부가 잠재 충돌",
+       "scope": "",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-004",
+       "decision": "accepted",
+       "reason": "gate_snapshot 과 같은 표시 상한 관례(8 + 잔여 건수)가 없어 블록이 무한히 자란다.",
+       "scope": "경로·ticket 목록에 상한(8 + `… 외 N건`).",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-005",
+       "decision": "accepted",
+       "reason": "egress 차단 실행에도 정보성 경고가 먼저 나가는 현행은 rc·상태 불변이라 수용 — 문서화만.",
+       "scope": "코드 주석 1줄(사전 경고는 정보성·차단 게이트와 독립) — 출력 위치 변경 없음.",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-006",
+       "decision": "accepted",
+       "reason": "스칼라 touches·slot-only claimed_by 형상이 회귀 0건.",
+       "scope": "픽스처 2건 추가(경고 0·비차단 / slot-only 세션 일치 판정).",
+       "prerequisite": ""
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "ticket": "T-0703",
+   "sections": [
+    {
+     "role": "code-reviewer",
+     "ordinal": 0,
+     "verdict_prose": "판정: 반려",
+     "payload": {
+      "version": 1,
+      "findings": [
+       {
+        "id": "F-001",
+        "class": "implementation-defect",
+        "authority": "[[T-0703]] §설계 '새 파싱 문법을 만들지 않고 기존 파서를 재사용' · `external_revi [[T-0703]]",
+        "evidence": "신설 `_parse_estimate_display_from_file`(external_review.py:47",
+        "recommendation": "표시용 estimate 는 `_parse_estimate_from_file` 을 그대로 호출한다(None 이",
+        "design_change": false
+       },
+       {
+        "id": "F-002",
+        "class": "spec-violation",
+        "authority": "[[T-0703]] §인터페이스 1(‘frontmatter 요약 1줄’을 조립 1순위로 무조건 명시) vs [[T-0703]]",
+        "evidence": "external_review.py `prepare_ticket_body` 는 `selection.omitte",
+        "recommendation": "PM 이 문구를 확정한다 — 권고: '요약 헤더는 선별이 실제로 일어난 본문에만 붙인다'로 §인터페이스 1",
+        "design_change": false
+       },
+       {
+        "id": "F-003",
+        "class": "implementation-defect",
+        "authority": "[[T-0703]] §인터페이스 1 · 테스트 품질(가드는 값 존재가 아니라 값 자체를 단언) [[T-0703]]",
+        "evidence": "민감도: `_ticket_body_selection_header` 를 상수 문자열 반환으로 gut → `py",
+        "recommendation": "선별이 일어나는 픽스처에서 헤더 한 줄의 실제 값을 단언한다(`id=T-9001 · title=다라운드 절",
+        "design_change": false
+       },
+       {
+        "id": "F-004",
+        "class": "implementation-defect",
+        "authority": "[[T-0694]] 봉인 권위 · `_select_ticket_body_for_review` docstrin [[T-0694]]",
+        "evidence": "민감도: 생략 라운드의 봉인 줄 접기(`seal.line_start == section.marker_end`",
+        "recommendation": "(b) 픽스처에 `pm-ticket-seal role=developer ordinal=0` 부재와 `ordi",
+        "design_change": false
+       },
+       {
+        "id": "F-005",
+        "class": "spec-violation",
+        "authority": "[[T-0703]] §설계 테스트 전략 '상한 초과 경로는 … 전송 0을 단언한다' · 불변식 (3) [[T-0703]]",
+        "evidence": "신규 (d) 테스트는 `--dry-run` 으로만 rc=1 을 단언한다. dry-run 은 애초에 전송 경로",
+        "recommendation": "(d) 에 `_stub_real_send` 를 쓴 비-dry-run 케이스를 추가해 rc=1 이면서 `pro",
+        "design_change": false
+       }
+      ],
+      "confirmations": []
+     }
+    }
+   ],
+   "dispositions": [
+    {
+     "version": 1,
+     "reviewer_ordinal": 0,
+     "dispositions": [
+      {
+       "id": "F-001",
+       "decision": "accepted",
+       "reason": "같은 파일에 board YAML 로더 기반 estimate 파서가 이미 있는데 표시용 정규식을 새로 둬 값이",
+       "scope": "`_parse_estimate_display_from_file`·`_parse_title_from_file`",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-002",
+       "decision": "accepted",
+       "reason": "§인터페이스 1('요약 1줄') 과 불변식 (4)/DoD (e)(성장 절 0 티켓 출력 byte 동일)가 충",
+       "scope": "코드 변경 없음(현 구현 유지). PM 이 §인터페이스 문구를 '선별이 일어난 본문에만 요약 헤더 부착' 으",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-003",
+       "decision": "accepted",
+       "reason": "헤더 내용을 단언하는 테스트가 0건이라 헤더 gut 에도 green(민감도 실측).",
+       "scope": "선별 픽스처에서 헤더 한 줄의 id·title·touches·estimate 실값 단언 추가.",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-004",
+       "decision": "accepted",
+       "reason": "생략 라운드의 봉인 줄 접기가 무단언(제거해도 green) — 고아 봉인 해시가 리뷰 입력에 남는 회귀를 못",
+       "scope": "(b) 픽스처에 생략 라운드 봉인 부재 + 유지 라운드 봉인 존재 단언 추가.",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-005",
+       "decision": "accepted",
+       "reason": "'전송 0' 을 dry-run 으로만 단언하면 전송 경로 순서 회귀를 못 잡는다 — 같은 파일의 `_stub",
+       "scope": "(d) 에 비-dry-run 케이스(`_stub_real_send`) 추가: rc=1 · prompts ==",
+       "prerequisite": ""
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "ticket": "T-0704",
+   "sections": [
+    {
+     "role": "code-reviewer",
+     "ordinal": 0,
+     "verdict_prose": "판정: 반려",
+     "payload": {
+      "version": 1,
+      "findings": [
+       {
+        "id": "F-001",
+        "class": "spec-violation",
+        "authority": "[[T-0704]] 제목·인터페이스(\"출처가 tracked `.project_manager/.gitignor [[T-0704]]",
+        "evidence": "임시 repo 실측: `.project_manager/.gitignore` 에 `.local/` 을 쓰고 g",
+        "recommendation": "경로 일치 뒤 `git -C <cwd> ls-files --error-unmatch -- .project_m",
+        "design_change": false
+       },
+       {
+        "id": "F-002",
+        "class": "implementation-defect",
+        "authority": "[[T-0704]] 인터페이스(\"진단에 실제 출처와 처방\") · 진단은 사실이어야 한다 [[T-0704]]",
+        "evidence": "루트 `.gitignore`(tracked)로 `.project_manager/.local/` 를 숨긴 임시",
+        "recommendation": "사유를 `정본 위치(.project_manager/.gitignore) 밖 출처` 로 쓰고, F-001 의",
+        "design_change": false
+       },
+       {
+        "id": "F-003",
+        "class": "implementation-defect",
+        "authority": "[[T-0704]] 인터페이스(진단의 패턴 표기) · docstring 은 코드와 일치해야 한다 [[T-0704]]",
+        "evidence": "pm_delegate.py:1605 docstring 은 \"pathname 은 ... 마지막 탭 분리로 안전",
+        "recommendation": "`rpartition(\"\\t\")` 로 바꾼다. pathname 은 엔진이 조립한 값(ticket ID·역할·",
+        "design_change": false
+       },
+       {
+        "id": "F-004",
+        "class": "implementation-defect",
+        "authority": "[[T-0704]] 완료 조건 2 · CLAUDE.md \"테스트 없이는 끝난 게 아니다\" [[T-0704]]",
+        "evidence": "테스트 (a)~(d) 는 모두 실 git 실행 경로만 태우고 `_parse_check_ignore_verbo",
+        "recommendation": "`_parse_check_ignore_verbose_line` 단위 테스트를 추가한다(Windows 드라이브",
+        "design_change": false
+       },
+       {
+        "id": "F-005",
+        "class": "implementation-defect",
+        "authority": "[[T-0704]] 인터페이스(-v 출력 파싱) · 근거 문장은 실측과 결론이 같아야 한다 [[T-0704]]",
+        "evidence": "docstring 1626-1628 의 사실 진술은 맞다(단일 인자 `git check-ignore -vz`",
+        "recommendation": "docstring 에 `-v -z --stdin` 대안과 채택하지 않은 이유(입력 1건에 stdin 배관을",
+        "design_change": false
+       }
+      ],
+      "confirmations": []
+     }
+    },
+    {
+     "role": "code-reviewer",
+     "ordinal": 1,
+     "verdict_prose": "판정: 반려",
+     "payload": {
+      "version": 1,
+      "findings": [
+       {
+        "id": "F-006",
+        "class": "implementation-defect",
+        "authority": "[[T-0704]] 인터페이스(\"진단에 실제 출처(파일:줄·패턴)와 처방\") · `_ignore_source [[T-0704]]",
+        "evidence": "임시 repo 실측(git 2.43): `git config core.excludesFile ../outsi",
+        "recommendation": "`is_absolute()` 대신 `(cwd / source).resolve()` 가 `cwd.resolve",
+        "design_change": false
+       },
+       {
+        "id": "F-007",
+        "class": "implementation-defect",
+        "authority": "[[T-0704]] 완료 조건 2 · CLAUDE.md \"테스트 없이는 끝난 게 아니다\" · F-002 처분 [[T-0704]]",
+        "evidence": "F-002 로 새로 생긴 두 갈래(pm_delegate.py:1696-1699) 중 `tracked 비정본",
+        "recommendation": "tracked 루트 `.gitignore` 가 `.project_manager/.local/` 를 숨기는 형",
+        "design_change": false
+       },
+       {
+        "id": "F-008",
+        "class": "implementation-defect",
+        "authority": "[[T-0704]] F-003 처분 · 가드는 자기 표면을 덮어야 한다 [[T-0704]]",
+        "evidence": "민감도 실측: `rpartition(\"\\t\")` 를 `partition(\"\\t\")` 로 되돌려도 `tests",
+        "recommendation": "파서 단위 테스트에 패턴 안에 탭이 든 줄 1건(`...:1:pat\\tter\\t<pathname>` → pa",
+        "design_change": false
+       },
+       {
+        "id": "F-009",
+        "class": "implementation-defect",
+        "authority": "[[T-0704]] §결정 · PM 처분(F-001 scope: `ls-files --error-unmatc [[T-0704]]",
+        "evidence": "staged-only 형상(작업 트리에 쓰고 `git add` 만 한 상태·커밋 없음) 실측: `ls-fil",
+        "recommendation": "`_assert_ticket_copy_root_ignored` docstring 에 '인덱스 등록(stage",
+        "design_change": false
+       },
+       {
+        "id": "F-010",
+        "class": "implementation-defect",
+        "authority": "가독성 관례",
+        "evidence": "tests/test_pm_delegate_ticket_growth.py:1859-1865 의 확장 길이 경로",
+        "recommendation": "`\"\\\\\\\\?\\\\\"` 같은 명시 이스케이프나 raw 문자열 + 주석 1줄로 바꾸면 같은 값을 유지하면서 읽힌",
+        "design_change": false
+       }
+      ],
+      "confirmations": [
+       {
+        "id": "F-001",
+        "status": "resolved",
+        "evidence": "pm_delegate.py:1705-1712 가 경로 일치 뒤 `_check_ignore_source_is_"
+       },
+       {
+        "id": "F-002",
+        "status": "resolved",
+        "evidence": "pm_delegate.py:1694-1704 가 사유를 '정본 위치 밖 출처' 로 바꾸고 출처 자신의 tra"
+       },
+       {
+        "id": "F-003",
+        "status": "resolved",
+        "evidence": "pm_delegate.py:1616 이 `rpartition(\"\\t\")` 이고 docstring 1609 도"
+       },
+       {
+        "id": "F-004",
+        "status": "resolved",
+        "evidence": "`_parse_check_ignore_verbose_line` 단위 4건(Windows 드라이브 절대경로·확"
+       },
+       {
+        "id": "F-005",
+        "status": "resolved",
+        "evidence": "pm_delegate.py:1604-1608 docstring 에 `-v -z --stdin` 대안(4필드"
+       }
+      ]
+     }
+    }
+   ],
+   "dispositions": [
+    {
+     "version": 1,
+     "reviewer_ordinal": 0,
+     "dispositions": [
+      {
+       "id": "F-001",
+       "decision": "accepted",
+       "reason": "untracked 정본 파일로 통과하면 다른 클론에서 사본이 그대로 노출된다 — 티켓 목표의 정확한 반례이고",
+       "scope": "경로 일치 뒤 `git -C <cwd> ls-files --error-unmatch -- .project_m",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-002",
+       "decision": "accepted",
+       "reason": "tracked 비정본 위치(루트 .gitignore)에서 '이 클론에만 있어' 는 거짓 진술 — 진단 문구는",
+       "scope": "사유 문구를 '정본 위치 밖 출처' 로 쓰고 tracked 판정 결과에 따라 로컬 전용/tracked 비정본",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-003",
+       "decision": "accepted",
+       "reason": "docstring(마지막 탭)과 코드(첫 탭)가 어긋나 패턴에 탭이 들면 진단이 잘린다.",
+       "scope": "`rpartition(\"\\t\")` 로 교체.",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-004",
+       "decision": "accepted",
+       "reason": "파서의 Windows 안전성 주장과 해석 실패 분기가 회귀 0건 — 가드 시야가 표면을 못 덮는다.",
+       "scope": "`_parse_check_ignore_verbose_line` 단위 테스트(드라이브 문자·`\\\\?\\` 접두·",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-005",
+       "decision": "accepted",
+       "reason": "다음 사람이 `-z --stdin` 대안을 재조사하지 않게 결정 근거를 남긴다.",
+       "scope": "docstring 1~2줄.",
+       "prerequisite": ""
+      }
+     ]
+    },
+    {
+     "version": 1,
+     "reviewer_ordinal": 1,
+     "dispositions": [
+      {
+       "id": "F-006",
+       "decision": "accepted",
+       "reason": "저장소 밖 상대경로 excludesFile 이 필터를 빠져 ls-files rc=128 진단으로 나온다(차단",
+       "scope": "`(cwd/source).resolve()` 가 `cwd.resolve()` 아래인지로 로컬 전용 판정 +",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-007",
+       "decision": "accepted",
+       "reason": "tracked 비정본 위치 갈래가 회귀 0건.",
+       "scope": "tracked 루트 .gitignore 시나리오 1건.",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-008",
+       "decision": "accepted",
+       "reason": "rpartition→partition 되돌려도 green — 파서 민감도 부재.",
+       "scope": "탭 든 패턴 파서 단위 1건.",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-009",
+       "decision": "accepted",
+       "reason": "staged-only 통과 의도를 명시.",
+       "scope": "docstring 1줄.",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-010",
+       "decision": "rejected",
+       "reason": "픽스처 조립 가독성 — 동작 무관.",
+       "scope": "",
+       "prerequisite": ""
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "ticket": "T-0705",
+   "sections": [
+    {
+     "role": "code-reviewer",
+     "ordinal": 0,
+     "verdict_prose": "판정: 반려",
+     "payload": {
+      "version": 1,
+      "findings": [
+       {
+        "id": "F-001",
+        "class": "implementation-defect",
+        "authority": "[[T-0705]] §인터페이스 — \"원래 예외를 삼키거나 정리 실패로 바꿔치기하지 않는다(예외 chaini [[T-0705]]",
+        "evidence": "민감도 실측: `_portable_exclusive_write` 를 `except BaseException",
+        "recommendation": "테스트 (b)에서 주입 예외를 sentinel 로 잡아 `excinfo.value is sentinel` 과",
+        "design_change": false
+       },
+       {
+        "id": "F-002",
+        "class": "implementation-defect",
+        "authority": "`.project_manager/tools/pm_delegate.py:7535` `_cleanup_attem [[T-0689]]",
+        "evidence": "실측 probe(prompt.md 쓰기 실패 + 롤백 unlink 거부): 잔여 `…/delegate/pm_",
+        "recommendation": "T-0705 범위 밖이므로 후속 티켓으로 분리한다. 잔여 사실을 호출자에 되돌려(예: 롤백 실패 시 `pro",
+        "design_change": false
+       }
+      ],
+      "confirmations": []
+     }
+    }
+   ],
+   "dispositions": [
+    {
+     "version": 1,
+     "reviewer_ordinal": 0,
+     "dispositions": [
+      {
+       "id": "F-001",
+       "decision": "accepted",
+       "reason": "chaining 축을 테스트가 안 보면 `raise … from unlink_exc` 회귀에 green —",
+       "scope": "PM 직접: 테스트 (b) 에 sentinel identity + `__cause__ is None and",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-002",
+       "decision": "rejected",
+       "reason": "이 diff 가 만든 결함이 아니고 T-0705 범위(롤백 실패 loud) 밖이다 — 잔여 prompt.md",
+       "scope": "",
+       "prerequisite": ""
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "ticket": "T-0735",
+   "sections": [
+    {
+     "role": "code-reviewer",
+     "ordinal": 0,
+     "verdict_prose": "판정: 반려",
+     "payload": {
+      "version": 1,
+      "findings": [
+       {
+        "id": "F-001",
+        "class": "implementation-defect",
+        "authority": "[[T-0735]] §인터페이스 — `__cause__/__context__` 는 None 유지 · [[T- [[T-0735]] [[T-0705]]",
+        "evidence": "이 diff 는 `_portable_exclusive_write` 의 except handler 안에서 원",
+        "recommendation": "test_portable_exclusive_write_rollback_failure_warns_and_kee",
+        "design_change": false
+       },
+       {
+        "id": "F-002",
+        "class": "implementation-defect",
+        "authority": "[[T-0735]] §인터페이스 — 호출부 잔여 표식 분기 [[T-0735]]",
+        "evidence": "새 분기 `elif residual_path == ignore_path: transport.ignore_cr",
+        "recommendation": "fdopen 1번째 호출을 실패시키고 .gitignore unlink 를 거부하는 케이스를 (a)(b) 옆에",
+        "design_change": false
+       },
+       {
+        "id": "F-003",
+        "class": "implementation-defect",
+        "authority": "[[T-0689]] §결정 — 정리 실패는 loud, 주 결과는 보존 [[T-0689]]",
+        "evidence": "롤백 `os.unlink` 가 ENOENT 로 실패해도 표식이 붙는다(pm_delegate.py:7615-7",
+        "recommendation": "`unlink_exc.errno == errno.ENOENT` 이면 표식을 생략한다(errno 는 이미 im",
+        "design_change": false
+       },
+       {
+        "id": "F-004",
+        "class": "implementation-defect",
+        "authority": "[[T-0705]] §결정 — 원 예외 그대로 전파·chaining 오염 없음 [[T-0705]]",
+        "evidence": "표식 이름이 무접두 `residual_path` 이고 setattr 실패를 고려하지 않는다(pm_delega",
+        "recommendation": "`_pm_residual_path` 처럼 접두 붙인 이름으로 좁히고, 안전성이 '경로 등가비교' 에 의존한다",
+        "design_change": false
+       },
+       {
+        "id": "F-005",
+        "class": "design-proposal",
+        "authority": "[[T-0735]] §결정 — 민감 사본 노출 방지가 디렉터리 청결보다 우선 [[T-0735]]",
+        "evidence": "충돌 경로 실측(O_EXCL 직전 경쟁자가 prompt.md 선점): 남의 prompt.md 는 보존되지만(",
+        "recommendation": "필요하다면 후속 ticket 에서 `dest.exists()` 일 때 ignore 를 보존하는 규칙으로 일반",
+        "design_change": false
+       }
+      ],
+      "confirmations": []
+     }
+    }
+   ],
+   "dispositions": [
+    {
+     "version": 1,
+     "reviewer_ordinal": 0,
+     "dispositions": [
+      {
+       "id": "F-001",
+       "decision": "accepted",
+       "reason": "chaining/identity 불변식 단언 부재는 이 diff 가 예외 객체를 handler 안에서 변형해",
+       "scope": "PM 직접 — task/main 커밋 a6f83bd(T-0705 테스트 (b) sentinel identit",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-002",
+       "decision": "accepted",
+       "reason": "`elif residual == ignore_path` 분기가 테스트 0.",
+       "scope": "PM 직접 — ignore 쓰기 실패+롤백 실패 픽스처 1건 추가(cleanup 재시도로 잔여 0).",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-003",
+       "decision": "accepted",
+       "reason": "ENOENT 롤백은 잔여가 없는데 표식이 붙어 cleanup 오탐 경고·ignore 잔존.",
+       "scope": "PM 직접 — `unlink_exc.errno != ENOENT` 일 때만 표식 + 테스트 1건.",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-004",
+       "decision": "accepted",
+       "reason": "무접두 속성명·재사용 예외 잔존은 호출부 등가비교 덕에만 안전 — 그 근거를 코드에 남긴다.",
+       "scope": "PM 직접 — `_pm_residual_path` 로 개명 + 주석.",
+       "prerequisite": ""
+      },
+      {
+       "id": "F-005",
+       "decision": "rejected",
+       "reason": "충돌 경로(남의 prompt.md 가 attempt uuid 경로에 선존재)는 실현 가능성이 사실상 0 이고",
+       "scope": "",
+       "prerequisite": ""
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

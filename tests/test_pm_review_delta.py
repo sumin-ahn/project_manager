@@ -21,6 +21,10 @@ def _load_pd():
 
 
 _SEAL_FOR = _load_pd().seal_for
+# 리뷰 블록 세대는 엔진 상수에서 읽는다 — 승격이 있으면 픽스처가 자동으로 따라간다.
+BLOCK_VERSION = _load_pd().PM_REVIEW_VERSION
+LEGACY_BLOCK_VERSION = _load_pd().PM_REVIEW_LEGACY_VERSION
+DISPOSITION_VERSION = _load_pd().PM_REVIEW_DISPOSITION_VERSION
 
 
 @pytest.fixture(scope="module")
@@ -51,9 +55,11 @@ def _review_section(payload: dict, *, pass_zero: bool = False) -> str:
 
 def _disposition(ordinal: int, rows: list[dict] | None = None, *, zero=False) -> str:
     value = (
-        {"version": 1, "reviewer_ordinal": ordinal, "finding_zero": "accepted"}
+        {"version": DISPOSITION_VERSION, "reviewer_ordinal": ordinal,
+         "finding_zero": "accepted"}
         if zero else
-        {"version": 1, "reviewer_ordinal": ordinal, "dispositions": rows or []}
+        {"version": DISPOSITION_VERSION, "reviewer_ordinal": ordinal,
+         "dispositions": rows or []}
     )
     return "\n```pm-review-disposition-v1\n" + json.dumps(
         value, ensure_ascii=False, indent=2,
@@ -96,7 +102,7 @@ def _decision(decision: str, *, finding_id="F-001", prerequisite="") -> dict:
 def test_classification_disposition_table_3x3(pd, classification, decision):
     design = classification == "design-proposal"
     ticket = _review_section({
-        "version": 1,
+        "version": BLOCK_VERSION,
         "findings": [_finding(classification, design_change=design)],
         "confirmations": [],
     }) + _disposition(0, [_decision(
@@ -129,7 +135,11 @@ def test_classification_disposition_table_3x3(pd, classification, decision):
     ],
 )
 def test_strict_review_schema_rejects_missing_duplicate_extra_and_unknown(pd, mutator, pattern):
-    value = {"version": 1, "findings": [_finding("implementation-defect")], "confirmations": []}
+    value = {
+        "version": BLOCK_VERSION,
+        "findings": [_finding("implementation-defect")],
+        "confirmations": [],
+    }
     mutator(value)
     ticket = _review_section(value) + _disposition(0, [_decision("accepted")])
     with pytest.raises(pd.PMReviewError, match=pattern) as caught:
@@ -139,20 +149,21 @@ def test_strict_review_schema_rejects_missing_duplicate_extra_and_unknown(pd, mu
 
 def _duplicate_member_tickets() -> list[pytest.param]:
     review = _review_section({
-        "version": 1,
+        "version": BLOCK_VERSION,
         "findings": [_finding("implementation-defect")],
         "confirmations": [],
     })
     disposition = _disposition(0, [_decision("accepted")])
     confirmation = _review_section({
-        "version": 1,
+        "version": BLOCK_VERSION,
         "findings": [],
         "confirmations": [{"id": "F-001", "status": "resolved", "evidence": "probe rc=0"}],
     })
     return [
         pytest.param(
             review.replace(
-                '  "version": 1,', '  "version": 0,\n  "version": 1,', 1,
+                f'  "version": {BLOCK_VERSION},',
+                f'  "version": 0,\n  "version": {BLOCK_VERSION},', 1,
             ) + disposition,
             id="top-level",
         ),
@@ -196,7 +207,11 @@ def _duplicate_member_tickets() -> list[pytest.param]:
 )
 def test_severity_is_required_with_a_closed_value_set(pd, mutator, pattern):
     """심각도는 블록의 단일 진실이라 부재·허용 밖 값·빈 값을 모두 malformed 로 닫는다."""
-    value = {"version": 1, "findings": [_finding("implementation-defect")], "confirmations": []}
+    value = {
+        "version": BLOCK_VERSION,
+        "findings": [_finding("implementation-defect")],
+        "confirmations": [],
+    }
     mutator(value)
     ticket = _review_section(value) + _disposition(0, [_decision("accepted")])
     with pytest.raises(pd.PMReviewError, match=pattern) as caught:
@@ -204,36 +219,54 @@ def test_severity_is_required_with_a_closed_value_set(pd, mutator, pattern):
     assert caught.value.code == "malformed"
 
 
-def test_severity_strictness_boundary_is_the_parsed_block_not_the_ordinal(pd):
-    """엄격 판정 경계는 "파싱하는 블록"이다 — ordinal 로 소급 면제하지 않는다.
+def _without_severity(finding: dict) -> dict:
+    return {key: value for key, value in finding.items() if key != "severity"}
 
-    완료(done) 티켓의 옛 블록은 delta/disposition 파서가 다시 읽지 않으므로 소급 대상이 아니고,
-    진행 중 티켓의 라운드는 ordinal 과 무관하게 같은 규칙을 받는다.
+
+def test_severity_boundary_is_the_block_generation_not_the_ticket_state(pd):
+    """severity 요구의 경계는 **블록 payload 세대**다 — 티켓 상태·ordinal 이 아니다.
+
+    이미 봉인된 v1 블록(진행 중 티켓의 옛 라운드)은 부재를 그대로 읽어 '미기재'로 표기하고,
+    현행 세대 블록은 부재를 거부한다. 두 세대가 한 티켓에 섞여 있어도 각자 규칙을 받는다.
     """
-    first = _review_section({
-        "version": 1,
-        "findings": [_finding("implementation-defect", finding_id="F-001")],
+    legacy = _review_section({
+        "version": LEGACY_BLOCK_VERSION,
+        "findings": [_without_severity(
+            _finding("implementation-defect", finding_id="F-001")
+        )],
+        "confirmations": [],
+    }) + _disposition(0, [_decision("accepted", finding_id="F-001")])
+    delta = pd.parse_pm_review_delta(legacy)
+    rendered = pd.render_pm_review_delta("T-0696", delta)
+    assert f"- 심각도: {pd.PM_REVIEW_SEVERITY_UNSPECIFIED_LABEL}" in rendered
+
+    current_without_severity = _review_section({
+        "version": BLOCK_VERSION,
+        "findings": [_without_severity(
+            _finding("implementation-defect", finding_id="F-002")
+        )],
         "confirmations": [],
     })
-    legacy_second = _review_section({
-        "version": 1,
-        "findings": [{
-            key: value
-            for key, value in _finding(
-                "implementation-defect", finding_id="F-002",
-            ).items()
-            if key != "severity"
-        }],
+    with pytest.raises(pd.PMReviewError, match="missing=\\['severity'\\]") as caught:
+        pd.parse_pm_review_delta(current_without_severity)
+    assert caught.value.code == "malformed"
+
+
+def test_legacy_block_may_also_carry_severity_from_the_transition_window(pd):
+    """전환기 v1 산출이 severity 를 실었어도 읽는다(두 key 집합 중 하나와 정확 일치)."""
+    ticket = _review_section({
+        "version": LEGACY_BLOCK_VERSION,
+        "findings": [_finding("implementation-defect", severity="should-fix")],
         "confirmations": [],
-    })
-    with pytest.raises(pd.PMReviewError, match="missing=\\['severity'\\]"):
-        pd.parse_pm_review_delta(first + legacy_second)
+    }) + _disposition(0, [_decision("accepted")])
+    delta = pd.parse_pm_review_delta(ticket)
+    assert "- 심각도: should-fix" in pd.render_pm_review_delta("T-0696", delta)
 
 
 def test_delta_render_exposes_severity_and_channel(pd):
     """dev 는 산문을 다시 읽지 않고 delta 렌더에서 우선순위와 채널을 안다."""
     ticket = _review_section({
-        "version": 1,
+        "version": BLOCK_VERSION,
         "findings": [_finding("implementation-defect", severity="should-fix")],
         "confirmations": [],
     }) + _disposition(0, [_decision("accepted")])
@@ -254,13 +287,17 @@ def test_pending_and_decision_required_block_all_accepted_delta(pd):
         _finding("implementation-defect", finding_id="F-001"),
         _finding("spec-violation", finding_id="F-002"),
     ]
-    pending = _review_section({"version": 1, "findings": findings, "confirmations": []})
+    pending = _review_section(
+        {"version": BLOCK_VERSION, "findings": findings, "confirmations": []}
+    )
     pending += _disposition(0, [_decision("accepted", finding_id="F-001")])
     with pytest.raises(pd.PMReviewError) as caught:
         pd.parse_pm_review_delta(pending)
     assert caught.value.code == "pending"
 
-    required = _review_section({"version": 1, "findings": findings, "confirmations": []})
+    required = _review_section(
+        {"version": BLOCK_VERSION, "findings": findings, "confirmations": []}
+    )
     required += _disposition(0, [
         _decision("accepted", finding_id="F-001"),
         _decision("decision-required", finding_id="F-002"),
@@ -272,7 +309,7 @@ def test_pending_and_decision_required_block_all_accepted_delta(pd):
 
 def test_duplicate_blocks_extra_disposition_and_finding_zero_mixture_fail_closed(pd):
     review = _review_section({
-        "version": 1,
+        "version": BLOCK_VERSION,
         "findings": [_finding("implementation-defect")],
         "confirmations": [],
     })
@@ -299,7 +336,7 @@ def test_duplicate_blocks_extra_disposition_and_finding_zero_mixture_fail_closed
 
 def test_accepted_only_filter_and_confirmation_state_transitions(pd):
     first = _review_section({
-        "version": 1,
+        "version": BLOCK_VERSION,
         "findings": [
             _finding("implementation-defect", finding_id="F-001"),
             _finding("implementation-defect", finding_id="F-002"),
@@ -311,7 +348,7 @@ def test_accepted_only_filter_and_confirmation_state_transitions(pd):
         _decision("rejected", finding_id="F-002"),
     ])
     one_unresolved = _review_section({
-        "version": 1,
+        "version": BLOCK_VERSION,
         "findings": [],
         "confirmations": [{"id": "F-001", "status": "unresolved", "evidence": "probe rc=1"}],
     })
@@ -321,7 +358,7 @@ def test_accepted_only_filter_and_confirmation_state_transitions(pd):
     assert "F-002" not in rendered and "PM rejected" not in rendered
 
     two_unresolved = _review_section({
-        "version": 1,
+        "version": BLOCK_VERSION,
         "findings": [],
         "confirmations": [{"id": "F-001", "status": "regressed", "evidence": "probe rc=2"}],
     })
@@ -330,7 +367,7 @@ def test_accepted_only_filter_and_confirmation_state_transitions(pd):
     assert caught.value.code == "repeated-unresolved"
 
     resolved = _review_section({
-        "version": 1,
+        "version": BLOCK_VERSION,
         "findings": [],
         "confirmations": [{"id": "F-001", "status": "resolved", "evidence": "probe rc=0"}],
     })
@@ -338,7 +375,7 @@ def test_accepted_only_filter_and_confirmation_state_transitions(pd):
     assert pd.render_pm_review_delta("T-0684", delta) == ""
 
     rejected_confirmation = _review_section({
-        "version": 1,
+        "version": BLOCK_VERSION,
         "findings": [],
         "confirmations": [{"id": "F-002", "status": "resolved", "evidence": "재등장"}],
     })
@@ -348,7 +385,7 @@ def test_accepted_only_filter_and_confirmation_state_transitions(pd):
 
 def test_indented_or_overlong_review_fence_cannot_hide_a_duplicate(pd):
     ticket = _review_section({
-        "version": 1,
+        "version": BLOCK_VERSION,
         "findings": [_finding("implementation-defect")],
         "confirmations": [],
     }) + _disposition(0, [_decision("accepted")])
@@ -362,7 +399,7 @@ def test_indented_or_overlong_review_fence_cannot_hide_a_duplicate(pd):
 
 def test_finding_zero_requires_cross_checked_pass_and_compact_pm_acceptance(pd):
     zero = _review_section(
-        {"version": 1, "findings": [], "confirmations": []}, pass_zero=True,
+        {"version": BLOCK_VERSION, "findings": [], "confirmations": []}, pass_zero=True,
     )
     with pytest.raises(pd.PMReviewError) as caught:
         pd.parse_pm_review_delta(zero)
@@ -374,7 +411,7 @@ def test_finding_zero_requires_cross_checked_pass_and_compact_pm_acceptance(pd):
 
 def test_design_acceptance_without_authority_reference_is_decision_required(pd):
     ticket = _review_section({
-        "version": 1,
+        "version": BLOCK_VERSION,
         "findings": [_finding("design-proposal", design_change=True)],
         "confirmations": [],
     }) + _disposition(0, [_decision("accepted", prerequisite="plain prose")])
@@ -385,7 +422,7 @@ def test_design_acceptance_without_authority_reference_is_decision_required(pd):
 
 def test_internal_round_projection_prefers_structured_ids_and_hashes_legacy(pd):
     structured = _review_section({
-        "version": 1,
+        "version": BLOCK_VERSION,
         "findings": [_finding("implementation-defect", finding_id="F-101")],
         "confirmations": [],
     })
@@ -400,7 +437,7 @@ def test_review_delta_cli_dispatch_renders_success_and_prescribes_pending(
     ticket_path = tmp_path / "tickets" / "claimed" / "T-0684-review.md"
     ticket_path.parent.mkdir(parents=True)
     ticket_path.write_text(_review_section({
-        "version": 1,
+        "version": BLOCK_VERSION,
         "findings": [_finding("implementation-defect")],
         "confirmations": [],
     }) + _disposition(0, [_decision("accepted")]), encoding="utf-8")
@@ -427,7 +464,7 @@ def test_review_delta_cli_dispatch_renders_success_and_prescribes_pending(
     assert "F-001" in output and "허용 수정 범위" in output
 
     ticket_path.write_text(_review_section({
-        "version": 1,
+        "version": BLOCK_VERSION,
         "findings": [_finding("implementation-defect")],
         "confirmations": [],
     }), encoding="utf-8")

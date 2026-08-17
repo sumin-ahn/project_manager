@@ -25,10 +25,11 @@ TEMPLATE_AGENTS = REPO / "templates" / "claude_code" / ".claude" / "agents"
 AGENT_NAMES = ["architect.md", "code-reviewer.md", "developer.md", "researcher.md"]
 REQUIRED_KEYS = ("name", "description", "tools")
 
-# researcher = 조사 전용 에이전트 — 저장소를 고치지 않는다(ADR-0018·T-0086).
-# `Edit` 는 그 규약의 등재된 예외다: 조사 산출도 티켓 절로 남아야 한다는 결정(T-0696)의 최소
-# 수단이고 범위는 slot 안 티켓 사본의 자기 역할 절 하나다(code-reviewer 선례와 동형). 제품 트리를
-# 고칠 수 있는 `Write` 와 임의 명령을 실행하는 `Bash` 는 계속 금지다.
+# researcher = 조사 전용 에이전트 — 제품 트리를 고치지 않는다(카드 가드 T-0086).
+# `Edit` 는 "모든 참여 역할이 자기 산출을 티켓 절로 남긴다"(ADR-0089·T-0696)의 최소 수단이다.
+# claude `tools` 는 가용성 축이라 대상 경로까지 좁히지는 못한다 — 범위 규율은 카드 문구와 위임
+# 전후 감사가 지고, 경로 격리는 codex(`--add-dir`)·opencode(permission) 축이 기계로 건다.
+# 제품 트리를 새로 쓰는 `Write` 와 임의 명령을 실행하는 `Bash` 는 계속 금지다.
 RESEARCHER_FORBIDDEN_TOOLS = ("Write", "Bash")
 RESEARCHER_REQUIRED_TOOLS = ("Read", "Glob", "Grep")
 RESEARCHER_ALLOWED_WRITE_TOOLS = ("Edit",)

@@ -114,6 +114,12 @@ def _wire(external, monkeypatch, tmp_path, *, series: list[int] | None = None, c
             files=1, skipped_unsafe=0, git_repo=True,
         ))
     monkeypatch.setattr(external, "_diff_cap_refusal", lambda *a, **k: None)
+    # 이 파일의 스코프는 회계 축 하나다. 리뷰 뒤 게이트 티켓에 external-reviewer 절을 기록하는
+    # 회수(T-0696)는 실 보드 왕복이 필요한 별도 축이라 여기서는 격리한다 — 그 회귀는
+    # tests/test_external_review_ticket_harvest.py 가 소유한다(run_review stub 과 같은 결).
+    monkeypatch.setattr(
+        external, "_harvest_external_review_section", lambda *_a, **_k: None,
+    )
     reviewer = _Reviewer(series if series is not None else [0])
     monkeypatch.setattr(external, "run_review", reviewer)
     real_main = external.main

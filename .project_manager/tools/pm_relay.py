@@ -1069,12 +1069,15 @@ OPENCODE_ATTACHED_MSG = "첨부된 프롬프트 파일(--file)의 지시를 그�
 
 # claude 가용 도구셋 — `--tools`(가용성 제한, `--allowedTools` 아님). 역할축:
 #   write(developer/architect) = 편집 도구 포함 · researcher = 읽기 + 티켓 사본 자기 절 기록용
-#   Edit(Write/Bash 없음) · code-reviewer = 읽기+Bash(pytest·Write 제외). 콤마-구분 단일 인자.
+#   Edit(Write/Bash 없음) · code-reviewer = 읽기+Bash(pytest·Write/Edit 제외). 콤마-구분 단일 인자.
 #
-# researcher 의 Edit 는 ADR-0018 read-only 규약의 **등재된 예외**다 — 조사 산출도 티켓 절로 남아야
-# 한다는 결정([[T-0696]])의 최소 수단이고, 범위는 slot 안 티켓 사본의 자기 역할 절 하나다.
-# code-reviewer 가 같은 이유로 read 역할이면서 사본 절을 편집하는 선례와 동형이며, 저장소 쓰기
-# 표면은 하네스 권한(codex `--add-dir <copy dir>`·opencode 역할 agent)이 계속 좁힌다.
+# researcher 의 Edit 는 "모든 참여 역할이 자기 산출을 티켓 절로 남긴다"([[ADR-0089]]·[[T-0696]])의
+# 최소 수단이다. **보장 수준을 정확히 적는다**: `--tools` 는 도구 *가용성* 축이라 claude 축에서는
+# 편집 대상 경로를 좁히지 못한다(규율은 역할 카드 문구와 위임 전후 git/touches 감사가 든다).
+# 경로를 기계로 좁히는 것은 다른 두 축이다 — codex 는 read-only sandbox + `--add-dir <copy dir>`,
+# opencode 는 역할 agent 의 permission. code-reviewer 도 같은 사본 절을 쓰지만 수단이 다르다:
+# `--tools` 에 Edit 가 없고 Bash 로 쓴다. 조사 역할의 도구 축소 근거는 [[T-0086]] 카드 가드다
+# (ADR-0018 은 이 PM 홈에서 domain 지식 레이어라 read-only 근거가 아니다).
 CLAUDE_TOOLS_WRITE = "Read,Glob,Grep,Bash,Write,Edit"
 CLAUDE_TOOLS_RESEARCHER = "Read,Glob,Grep,Edit"
 CLAUDE_TOOLS_REVIEWER = "Read,Glob,Grep,Bash"

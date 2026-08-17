@@ -205,7 +205,7 @@ def _missing_ticket_seal_seam_edges(
     """봉인 writer 전주체와 verifier가 canonical hash seam을 우회했는지 판정.
 
     성장 절을 쓰는 두 주체(사본 harvest·external-reviewer 절 기록)는 봉인 재발급을 공용
-    seam(`seal_and_replace_ticket_text`) 하나로만 지난다 — 지점이 늘면 봉인 규칙과 그 위에
+    seam(`upsert_ticket_seal_with_ledger`) 하나로만 지난다 — 지점이 늘면 봉인 규칙과 그 위에
     붙는 부기가 호출부마다 갈린다.
     """
     required = {
@@ -1089,6 +1089,46 @@ def test_crlf_seal_backfill_writes_canonical_hash_without_rewriting_bytes(
     assert pd.parse_ticket_seals(updated)[("developer", 0)].sha256 == (
         pd.parse_ticket_seals(lf)[("developer", 0)].sha256
     )
+
+
+def _function_callers(source: str, callee: str) -> set[str]:
+    """모듈의 top-level 함수 중 `callee` 를 직접 호출하는 함수 이름 전수."""
+    tree = ast.parse(source)
+    callers: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if callee in _function_calls(source, node.name):
+            callers.add(node.name)
+    return callers
+
+
+def test_seal_upsert_has_exactly_one_caller_seam():
+    """`_upsert_ticket_seal` 호출자는 장부까지 함께 쓰는 공용 seam **하나뿐**이다.
+
+    edge 존재 단언(위 가드)은 "새 이름의 writer 함수가 seam 을 우회한다"는 형상을 못 본다 —
+    호출자 집합을 전수로 고정해 그 우회를 red 로 만든다(봉인만 쓰고 장부는 비켜 가는 주체 차단).
+    """
+    delegate_source = PM_DELEGATE.read_text(encoding="utf-8")
+    # `backfill_ticket_seals` 는 파일을 쓰지 않는 **순수 텍스트 변환**(위치 치유)이라 이 집합에
+    # 남는다 — 그 결과를 파일로 쓰는 CLI 는 같은 임계구역에서 장부를 따로 append 한다.
+    assert _function_callers(delegate_source, "_upsert_ticket_seal") == {
+        "upsert_ticket_seal_with_ledger", "backfill_ticket_seals",
+    }
+    assert "_atomic_write_text" not in _function_calls(
+        delegate_source, "backfill_ticket_seals",
+    )
+
+    bypassed = delegate_source.replace(
+        "def write_external_reviewer_section(",
+        "def rogue_seal_writer(text, role, ordinal):\n"
+        "    return _upsert_ticket_seal(text, role, ordinal, by='harvest')\n\n\n"
+        "def write_external_reviewer_section(",
+        1,
+    )
+    assert _function_callers(bypassed, "_upsert_ticket_seal") == {
+        "upsert_ticket_seal_with_ledger", "backfill_ticket_seals", "rogue_seal_writer",
+    }
 
 
 def test_ticket_seal_hash_writers_and_verifier_have_static_seam_guard():
