@@ -397,6 +397,10 @@ def write_machine_line(text: str, *, stream: Any = None) -> None:
     그 경로는 콘솔 코덱을 타지 않으므로 손실 표면이 아니다.
     """
     target = sys.stdout if stream is None else stream
+    if target is None:
+        # ``pythonw``/``pyw`` 기동은 표준 스트림이 없다 — 종전 ``print`` 처럼 무출력이 맞다
+        # (여기서 AttributeError 로 죽으면 그 형상에서 CLI 전체가 실패한다).
+        return
     line = text + "\n"
     buffer = getattr(target, "buffer", None)
     if buffer is None:
