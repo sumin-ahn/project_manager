@@ -7444,6 +7444,9 @@ def test_fresh_adopter_card_model_follows_delegate_conf_across_updates(
     decided = subprocess.run(
         [sys.executable, str(guard), "decide", "--role", "developer", "--harness", "claude"],
         cwd=str(dest), capture_output=True, text=True,
+        # 자식은 기계 판정을 UTF-8 로 낸다 — 코덱을 명시하지 않으면 부모가 콘솔 코덱(Windows
+        # cp949)으로 디코드하다 리더 스레드가 죽고 stdout 이 None 이 된다(엔진 호출부 관례).
+        encoding="utf-8", errors="replace",
     )
     assert decided.returncode == 0, f"guard rc={decided.returncode}\n{decided.stderr}"
     assert "불일치" not in decided.stdout + decided.stderr, \

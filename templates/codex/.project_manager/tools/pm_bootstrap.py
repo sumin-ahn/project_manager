@@ -228,6 +228,18 @@ class _CommandEnvironment(NamedTuple):
     chain_policy: str
 
 
+def _probe_os_name() -> str:
+    """Read the interpreter OS family through one injectable seam.
+
+    The other platform's branch has to be reachable from either host, and the
+    only global that carries the family (`os.name`) is also what `pathlib`
+    consults to pick its flavour — rebinding it breaks every path operation in
+    the process.  Routing the read through this function keeps the injection
+    point inside this module.
+    """
+    return os.name
+
+
 def _command_os_label(*, system: str | None = None, os_name: str | None = None) -> str:
     """Resolve Windows/Linux/macOS/other without letting probes break bootstrap."""
     if system is None:
@@ -237,7 +249,7 @@ def _command_os_label(*, system: str | None = None, os_name: str | None = None) 
             system = ""
     if os_name is None:
         try:
-            os_name = os.name
+            os_name = _probe_os_name()
         except Exception:  # noqa: BLE001 — same fail-soft boundary as platform.system.
             os_name = ""
 
