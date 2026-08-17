@@ -1693,6 +1693,87 @@ def test_prepare_fails_loud_without_local_ignore_before_copy(growth_env, pd):
     assert not (slot / pd.TICKET_COPY_REL_ROOT).exists()
 
 
+def test_check_ignore_source_tracked_gitignore_passes(growth_env, pd):
+    """T-0704 (a) — 무시 규칙 출처가 tracked `.project_manager/.gitignore` 면 통과한다."""
+    pm_home, slot, tickets = growth_env
+    _write_ticket(tickets, "T-1040", [("developer", "")])
+
+    plan = pd.prepare_ticket_copy(
+        ticket="T-1040", role="developer", cwd=slot, pm_home=pm_home,
+    )
+
+    assert plan.path.exists()
+
+
+def test_check_ignore_source_local_only_exclude_fails_loud(growth_env, pd):
+    """T-0704 (b) — `.git/info/exclude` 로만 무시되면 fail-loud, 진단에 실제 출처가 보인다."""
+    pm_home, slot, tickets = growth_env
+    _write_ticket(tickets, "T-1041", [("developer", "")])
+    # tracked `.gitignore` 는 무관한 패턴만 남겨, 사본 경로를 숨기는 규칙이 로컬 전용
+    # `.git/info/exclude` 유래가 되게 한다.
+    (slot / ".project_manager" / ".gitignore").write_text(
+        "unrelated-pattern-only\n", encoding="utf-8", newline="\n",
+    )
+    exclude = Path(
+        _git(
+            slot, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude",
+        ).stdout.strip()
+    )
+    exclude.write_text(".local/\n", encoding="utf-8", newline="\n")
+    assert _git(
+        slot, "check-ignore", "-q",
+        ".project_manager/.local/delegate-ticket-copies/T-1041/developer/x/ticket-T-1041.md",
+    ).returncode == 0
+
+    with pytest.raises(
+        pd.DelegateError,
+        match=r"로컬 전용 소스.*출처=\.git/info/exclude.*\.project_manager/\.gitignore.*복원",
+    ):
+        pd.prepare_ticket_copy(
+            ticket="T-1041", role="developer", cwd=slot, pm_home=pm_home,
+        )
+
+    assert not (slot / pd.TICKET_COPY_REL_ROOT).exists()
+
+
+def test_check_ignore_source_not_ignored_keeps_current_message(growth_env, pd):
+    """T-0704 (c) — 사본 경로가 애초에 무시되지 않으면 기존 안내 메시지를 유지한다."""
+    pm_home, slot, tickets = growth_env
+    _write_ticket(tickets, "T-1042", [("developer", "")])
+    (slot / ".project_manager" / ".gitignore").write_text(
+        "", encoding="utf-8", newline="\n",
+    )
+
+    with pytest.raises(
+        pd.DelegateError,
+        match=r"사본 루트가 git 무시 대상이 아님.*\.project_manager/\.gitignore.*\.local/.*복원",
+    ):
+        pd.prepare_ticket_copy(
+            ticket="T-1042", role="developer", cwd=slot, pm_home=pm_home,
+        )
+
+
+def test_check_ignore_tool_failure_keeps_current_message(growth_env, pd, monkeypatch):
+    """T-0704 (d) — `check-ignore` 자체가 비정상 종료하면 기존 rc>=2 fail-loud 를 유지한다."""
+    pm_home, slot, tickets = growth_env
+    _write_ticket(tickets, "T-1043", [("developer", "")])
+    real_run = subprocess.run
+
+    def fake_run(argv, *args, **kwargs):
+        if "check-ignore" in argv:
+            return subprocess.CompletedProcess(argv, 2, stdout="", stderr="fatal: 강제 실패")
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(pd.subprocess, "run", fake_run)
+
+    with pytest.raises(
+        pd.DelegateError, match=r"git check-ignore 실패\(rc=2\): fatal: 강제 실패",
+    ):
+        pd.prepare_ticket_copy(
+            ticket="T-1043", role="developer", cwd=slot, pm_home=pm_home,
+        )
+
+
 def test_prepare_succeeds_with_empty_dir_fd_support(growth_env, pd, monkeypatch):
     pm_home, slot, tickets = growth_env
     _write_ticket(tickets, "T-1025", [("developer", "")])

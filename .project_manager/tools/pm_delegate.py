@@ -771,6 +771,9 @@ _SEAL_BACKFILL_STATUSES: frozenset[str] = frozenset(
     {"open", "claimed", "blocked", "draft"}
 )
 TICKET_COPY_REL_ROOT = Path(".project_manager") / ".local" / "delegate-ticket-copies"
+# 사본 루트를 숨기는 ignore 규칙의 정본 위치([[T-0704]]) — 이 파일 유래가 아니면 로컬 전용
+# 소스(`.git/info/exclude`·전역 excludesFile 등)로 보고 fail-loud 한다.
+TICKET_COPY_IGNORE_TRACKED_SOURCE = Path(".project_manager") / ".gitignore"
 TICKET_COPY_TRUST_REL_ROOT = (
     Path(".project_manager") / ".local" / "delegate-ticket-copy-trust"
 )
@@ -1595,26 +1598,66 @@ def _ticket_copy_relative_path(ticket: str, role: str, run_id: str) -> Path:
     return TICKET_COPY_REL_ROOT / ticket / role / run_id / f"ticket-{ticket}.md"
 
 
+def _parse_check_ignore_verbose_line(line: str) -> tuple[str, str, str] | None:
+    """`git check-ignore -v` 한 줄을 (source, linenum, pattern) 으로 분해한다.
+
+    비-`-z` 출력 형식은 `소스:줄번호:패턴` 다음에 탭 하나, 그리고 pathname 이 온다. pathname 은
+    호출부가 구성한 알려진 상대경로라 마지막 탭 분리로 안전하게 떼어낸다. 남는 `소스:줄번호:패턴`
+    은 그리디 정규식으로 오른쪽에서부터 역추적해 최우측 콜론-숫자-콜론 구분자를 찾는다 — Windows
+    절대경로 출처(드라이브 문자 뒤 콜론)의 콜론이 숫자로 이어지지 않아 구분자로 오인되지 않는다.
+    """
+    prefix, tab, _pathname = line.partition("\t")
+    if not tab:
+        return None
+    match = re.match(r"^(.*):(\d+):(.*)$", prefix)
+    if match is None:
+        return None
+    return match.group(1), match.group(2), match.group(3)
+
+
 def _assert_ticket_copy_root_ignored(
     cwd: Path, *, ticket: str, role: str, run_id: str,
 ) -> None:
-    """ignore 규칙이 실제 ticket-copy 경로 형상을 숨기는지 fail-loud 확인한다."""
+    """ignore 규칙이 실제 ticket-copy 경로 형상을 숨기는지, 그 규칙이 tracked
+    `.project_manager/.gitignore` 유래인지 fail-loud 확인한다([[T-0704]]).
+
+    로컬 전용 소스(`.git/info/exclude`·전역 `core.excludesFile`·untracked 상위 `.gitignore`)만으로
+    무시되면 이 클론에서는 사본이 숨어도 다른 클론·채택자 트리에는 그 규칙이 없어 사본이 그대로
+    노출된다. `-z` 는 `--stdin` 조합에서만 의미가 있어(단일 인자 호출과 맞지 않아) 채택하지
+    않았다 — pathname 이 이미 알려진 값이라 위 파싱으로 충분하다(실측: T-0704 조사).
+    """
     result = subprocess.run(
         [
-            "git", "-C", str(cwd), "check-ignore", "-q",
+            "git", "-C", str(cwd), "check-ignore", "-v",
             _ticket_copy_relative_path(ticket, role, run_id).as_posix(),
         ],
         capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
     )
-    if result.returncode == 0:
-        return
     if result.returncode == 1:
         raise DelegateError(
             "사본 루트가 git 무시 대상이 아님 — `.project_manager/.gitignore` 의 "
             "`.local/` 규칙을 복원하라"
         )
-    cause = result.stderr.strip() or result.stdout.strip() or "원인 미상"
-    raise DelegateError(f"git check-ignore 실패(rc={result.returncode}): {cause}")
+    if result.returncode != 0:
+        cause = result.stderr.strip() or result.stdout.strip() or "원인 미상"
+        raise DelegateError(f"git check-ignore 실패(rc={result.returncode}): {cause}")
+    lines = [entry for entry in (result.stdout or "").splitlines() if entry]
+    parsed = _parse_check_ignore_verbose_line(lines[0]) if len(lines) == 1 else None
+    if parsed is None:
+        raise DelegateError(
+            "git check-ignore -v 출력을 해석하지 못함(source:linenum:pattern 형식 아님): "
+            f"{result.stdout!r}"
+        )
+    source, linenum, pattern = parsed
+    expected = (cwd / TICKET_COPY_IGNORE_TRACKED_SOURCE).resolve()
+    observed = (cwd / source).resolve()
+    if observed != expected:
+        raise DelegateError(
+            "사본 루트를 숨기는 ignore 규칙이 로컬 전용 소스 유래 — "
+            f"출처={source}:{linenum} 패턴={pattern!r} · 이 규칙은 이 클론에만 있어 다른 "
+            "클론·채택자 트리에서는 사본이 노출됩니다 — `.project_manager/.gitignore` 에 "
+            "`.local/` 규칙을 복원하라"
+        )
 
 
 def _load_board_for_repo(repo: Path):
