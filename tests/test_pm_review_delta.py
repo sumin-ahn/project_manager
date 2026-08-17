@@ -60,10 +60,14 @@ def _disposition(ordinal: int, rows: list[dict] | None = None, *, zero=False) ->
     ) + "\n```\n"
 
 
-def _finding(classification: str, *, finding_id="F-001", design_change=False) -> dict:
+def _finding(
+    classification: str, *, finding_id="F-001", design_change=False,
+    severity="must-fix",
+) -> dict:
     return {
         "id": finding_id,
         "class": classification,
+        "severity": severity,
         "authority": "[[ADR-0001]] §경계",
         "evidence": f"{finding_id} probe rc=1",
         "recommendation": f"{finding_id}만 수정",
@@ -177,6 +181,65 @@ def _duplicate_member_tickets() -> list[pytest.param]:
             id="disposition",
         ),
     ]
+
+
+@pytest.mark.parametrize(
+    "mutator,pattern",
+    [
+        (lambda value: value["findings"][0].pop("severity"), "missing=\\['severity'\\]"),
+        (lambda value: value["findings"][0].update(severity="blocker"),
+         "severity 미지원"),
+        (lambda value: value["findings"][0].update(severity=""),
+         "severity는 비어 있지 않은 문자열"),
+    ],
+    ids=("absent", "unsupported-value", "empty"),
+)
+def test_severity_is_required_with_a_closed_value_set(pd, mutator, pattern):
+    """심각도는 블록의 단일 진실이라 부재·허용 밖 값·빈 값을 모두 malformed 로 닫는다."""
+    value = {"version": 1, "findings": [_finding("implementation-defect")], "confirmations": []}
+    mutator(value)
+    ticket = _review_section(value) + _disposition(0, [_decision("accepted")])
+    with pytest.raises(pd.PMReviewError, match=pattern) as caught:
+        pd.parse_pm_review_delta(ticket)
+    assert caught.value.code == "malformed"
+
+
+def test_severity_strictness_boundary_is_the_parsed_block_not_the_ordinal(pd):
+    """엄격 판정 경계는 "파싱하는 블록"이다 — ordinal 로 소급 면제하지 않는다.
+
+    완료(done) 티켓의 옛 블록은 delta/disposition 파서가 다시 읽지 않으므로 소급 대상이 아니고,
+    진행 중 티켓의 라운드는 ordinal 과 무관하게 같은 규칙을 받는다.
+    """
+    first = _review_section({
+        "version": 1,
+        "findings": [_finding("implementation-defect", finding_id="F-001")],
+        "confirmations": [],
+    })
+    legacy_second = _review_section({
+        "version": 1,
+        "findings": [{
+            key: value
+            for key, value in _finding(
+                "implementation-defect", finding_id="F-002",
+            ).items()
+            if key != "severity"
+        }],
+        "confirmations": [],
+    })
+    with pytest.raises(pd.PMReviewError, match="missing=\\['severity'\\]"):
+        pd.parse_pm_review_delta(first + legacy_second)
+
+
+def test_delta_render_exposes_severity_and_channel(pd):
+    """dev 는 산문을 다시 읽지 않고 delta 렌더에서 우선순위와 채널을 안다."""
+    ticket = _review_section({
+        "version": 1,
+        "findings": [_finding("implementation-defect", severity="should-fix")],
+        "confirmations": [],
+    }) + _disposition(0, [_decision("accepted")])
+    rendered = pd.render_pm_review_delta("T-0696", pd.parse_pm_review_delta(ticket))
+    assert "- 심각도: should-fix" in rendered
+    assert f"- 채널: {pd.INTERNAL_REVIEW_ROLE}" in rendered
 
 
 @pytest.mark.parametrize("ticket", _duplicate_member_tickets())

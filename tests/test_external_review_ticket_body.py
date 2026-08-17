@@ -71,6 +71,11 @@ def _stub_real_send(external, monkeypatch, tmp_path, prompts: list[str]):
 
     monkeypatch.setattr(external, "create_reviewer_workspace", _workspace)
     monkeypatch.setattr(external, "run_review", _run_review)
+    # 이 파일은 프롬프트 입력 축(T-0695)을 소유한다. 산출 회수(T-0696)는 실 board 왕복이 필요한
+    # 별도 축이라 tests/test_external_review_ticket_harvest.py가 소유하고 여기서는 격리한다.
+    monkeypatch.setattr(
+        external, "_harvest_external_review_section", lambda *_a, **_k: None,
+    )
 
 
 def test_ticket_dry_run_prompt_includes_full_body_without_frontmatter(

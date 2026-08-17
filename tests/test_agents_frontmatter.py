@@ -5,7 +5,8 @@
 4 에이전트(architect/code-reviewer/developer/researcher) 정의를 자동 검증한다:
   - 전부 `---\n` 로 시작·종료 구분자 존재·YAML 파싱 OK.
   - `name`/`description`/`tools` 키 존재.
-  - researcher = read-only — tools 에 `Edit`/`Write` 없음·`Read`/`Glob`/`Grep` 포함.
+  - researcher = 조사 전용 — `Write`/`Bash` 없음·`Read`/`Glob`/`Grep` 필수·`Edit` 허용
+    (티켓 사본 자기 절 기록 전용·[[T-0696]]).
   - root(.claude/) ↔ templates(claude_code/.claude/) 4파일 byte-identical(전파 무드리프트).
 
 본보기: `tests/test_opencode_adapter_delegation.py::_load_frontmatter`. stdlib + pyyaml
@@ -24,9 +25,13 @@ TEMPLATE_AGENTS = REPO / "templates" / "claude_code" / ".claude" / "agents"
 AGENT_NAMES = ["architect.md", "code-reviewer.md", "developer.md", "researcher.md"]
 REQUIRED_KEYS = ("name", "description", "tools")
 
-# researcher = read-only gather 에이전트 — 쓰기 도구 금지·읽기 도구 필수(ADR-0018·T-0086).
-RESEARCHER_FORBIDDEN_TOOLS = ("Edit", "Write")
+# researcher = 조사 전용 에이전트 — 저장소를 고치지 않는다(ADR-0018·T-0086).
+# `Edit` 는 그 규약의 등재된 예외다: 조사 산출도 티켓 절로 남아야 한다는 결정(T-0696)의 최소
+# 수단이고 범위는 slot 안 티켓 사본의 자기 역할 절 하나다(code-reviewer 선례와 동형). 제품 트리를
+# 고칠 수 있는 `Write` 와 임의 명령을 실행하는 `Bash` 는 계속 금지다.
+RESEARCHER_FORBIDDEN_TOOLS = ("Write", "Bash")
 RESEARCHER_REQUIRED_TOOLS = ("Read", "Glob", "Grep")
+RESEARCHER_ALLOWED_WRITE_TOOLS = ("Edit",)
 
 
 def _load_frontmatter(path: Path) -> dict:
@@ -74,19 +79,24 @@ def test_agent_frontmatter_parses_and_has_required_keys():
 
 # ── researcher read-only (쓰기 도구 없음·읽기 도구 있음) ─────────────────────
 
-def test_researcher_is_read_only():
-    """researcher = read-only — tools 에 Edit/Write 없음·Read/Glob/Grep 포함(양 트리)."""
+def test_researcher_writes_only_its_ticket_section():
+    """researcher tools = 읽기 필수 · Write/Bash 금지 · Edit 만 허용(양 트리·T-0696)."""
     for tree in (ROOT_AGENTS, TEMPLATE_AGENTS):
         fm = _load_frontmatter(tree / "researcher.md")
         tools = _tools_set(fm)
         for forbidden in RESEARCHER_FORBIDDEN_TOOLS:
             assert forbidden not in tools, (
-                f"researcher({tree.name}) 가 쓰기 도구 {forbidden!r} 보유 — read-only 위반 "
+                f"researcher({tree.name}) 가 {forbidden!r} 보유 — 조사 역할 경계 위반 "
                 f"(tools={sorted(tools)})"
             )
         for required in RESEARCHER_REQUIRED_TOOLS:
             assert required in tools, (
                 f"researcher({tree.name}) tools 에 {required!r} 누락 (tools={sorted(tools)})"
+            )
+        for allowed in RESEARCHER_ALLOWED_WRITE_TOOLS:
+            assert allowed in tools, (
+                f"researcher({tree.name}) tools 에 {allowed!r} 누락 — 티켓 사본 자기 절을 "
+                f"기록할 수 없다 (tools={sorted(tools)})"
             )
 
 

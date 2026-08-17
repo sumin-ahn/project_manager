@@ -89,6 +89,7 @@ def _review_payload(*ids: str) -> dict:
             {
                 "id": finding_id,
                 "class": "implementation-defect",
+                "severity": "must-fix",
                 "authority": "[[T-0700]] §완료 조건",
                 "evidence": f"{finding_id} probe",
                 "recommendation": f"{finding_id} fix",
@@ -235,7 +236,7 @@ def _run_harvest(
     return result, source.read_text(encoding="utf-8")
 
 
-def test_section_add_seeds_all_three_roles_from_delegate_renderer(
+def test_section_add_seeds_every_growth_role_from_delegate_renderer(
     pd, board, tmp_path, monkeypatch,
 ):
     path = tmp_path / "T-0700-seed.md"
@@ -252,9 +253,11 @@ def test_section_add_seeds_all_three_roles_from_delegate_renderer(
     monkeypatch.setattr(board, "_growth_mutation_sync", lambda *_a, **_k: True)
     monkeypatch.setattr(board, "drafts_dir", lambda: tmp_path / "drafts")
 
-    for role in ("architect", "developer", "code-reviewer"):
+    # 성장 역할 집합의 단일 권위는 pm_delegate 이고 board 는 사람용 절명만 소유한다.
+    assert set(board.TICKET_GROWTH_ROLE_LABELS) == set(pd.TICKET_COPY_ROLES)
+    for role in sorted(pd.TICKET_COPY_ROLES):
         args = argparse.Namespace(role=role, label=None, id="T-0700")
-        assert board.cmd_section_add(args) == 0
+        assert board.cmd_section_add(args) == 0, role
 
     text = path.read_text(encoding="utf-8")
     assert "검토 판정: <설계 통과|수정 후 통과|반려>" in text
@@ -262,8 +265,13 @@ def test_section_add_seeds_all_three_roles_from_delegate_renderer(
         "## 변경 파일", "## 신규 테스트", "## 회귀", "## DoD evidence", "## 민감도",
     ))
     assert all(term in text for term in (
-        "## must-fix", "## should-fix", "## suggestion", "## 판정", "```pm-review-v1",
+        "## 조사 질문", "## 실측", "## 판단", "## 미해소",
     ))
+    assert all(term in text for term in (
+        "## must-fix", "## 판정", "```pm-review-v1",
+    ))
+    # 두 리뷰 채널이 각자 접두의 골격을 받는다(판정 표면은 하나·ID 네임스페이스는 분리).
+    assert '"id":"F-NNN"' in text and '"id":"X-NNN"' in text
     assert pd.verify_ticket_seals(text) == []
 
 
@@ -299,11 +307,15 @@ def test_review_seed_pins_current_parser_schema_contract(pd):
     assert payload["findings"][0]["class"] == (
         "<implementation-defect|spec-violation|design-proposal>"
     )
+    assert payload["findings"][0]["severity"] == (
+        "<must-fix|should-fix|suggestion>"
+    )
     assert payload["confirmations"][0]["status"] == (
         "<resolved|unresolved|regressed>"
     )
     assert list(payload["findings"][0]) == [
-        "id", "class", "authority", "evidence", "recommendation", "design_change",
+        "id", "class", "severity", "authority", "evidence", "recommendation",
+        "design_change",
     ]
 
 

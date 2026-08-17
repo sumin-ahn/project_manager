@@ -8858,10 +8858,15 @@ def dump_ticket_atomic(path: Path, fm: dict[str, Any], body: str) -> None:
 # marker 를 쌍으로 둔다. role 은 marker 와 사람용 heading 양쪽에 기록한다. 같은 role 재호출도
 # 별도 marker pair 를 append 하므로 라운드 이력이 덮이지 않는다.
 TICKET_GROWTH_SECTION_MARKER = "pm-ticket-section"
+# key 집합 = `pm_delegate.TICKET_COPY_ROLES`(성장 marker/seal 이 허용하는 역할의 단일 권위)이고
+# board 는 사람용 절명만 소유한다. 두 집합의 일치는 테스트가 못박는다 — board 는 엔진 모듈을
+# import 하지 않으므로(deep-import 는 지연 로드) argparse 선택지는 이 표에서 나온다.
 TICKET_GROWTH_ROLE_LABELS: dict[str, str] = {
     "architect": "설계",
     "developer": "구현 보충",
     "code-reviewer": "리뷰",
+    "researcher": "조사",
+    "external-reviewer": "추가 리뷰",
 }
 TICKET_TIERS: frozenset[str] = frozenset({"pm-direct", "normal", "hard"})
 
@@ -12415,7 +12420,16 @@ def cmd_show(args: argparse.Namespace) -> int:
         print(e, file=sys.stderr)
         return 2
     print(f"-- {args.id} ({status}/) --\n")
-    print(file_lock.read_text_shared(path, encoding="utf-8"))
+    body = file_lock.read_text_shared(path, encoding="utf-8")
+    print(body)
+    # 사람이 읽는 finding 요약은 versioned 블록에서만 파생한다 — 산문에 같은 항목을 다시 적지
+    # 않기 위한 표시면이다. 엔진 사본이 없거나 구세대면 본문만 출력한다(표시면은 조회를 막지 않는다).
+    delegate = _load_pm_delegate_module()
+    render_summary = getattr(delegate, "render_pm_review_summary", None)
+    if callable(render_summary):
+        summary = render_summary(body)
+        if summary:
+            print(summary)
     return 0
 
 

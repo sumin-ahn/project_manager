@@ -293,7 +293,8 @@ def test_delegate_live_opencode(tmp_path, monkeypatch, capsys):
 def test_delegate_live_claude(tmp_path, monkeypatch, capsys):
     """codex/opencode PM → **claude** researcher 위임 1회 — reply marker + rc0 + raw 박제.
 
-    `--tools Read,Glob,Grep`(researcher=Bash/Write 제외·기계적)·`--effort low`(drive)·cwd 존중."""
+    `--tools Read,Glob,Grep,Edit`(researcher=Bash/Write 제외·Edit 는 티켓 사본 자기 절
+    기록 전용·T-0696)·`--effort low`(drive)·cwd 존중."""
     pd = _load_pd()
     repo, prompt = _seed_repo(tmp_path)
     out_dir = tmp_path / "raw"

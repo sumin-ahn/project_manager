@@ -144,15 +144,22 @@ def test_opencode_researcher_exists():
     )
 
 
-def test_opencode_researcher_is_read_only():
-    """researcher는 native/cross 공용 custom agent이며 Bash·edit를 기계적으로 거부한다."""
+def test_opencode_researcher_writes_only_its_ticket_section():
+    """researcher는 native/cross 공용 custom agent이며 Bash를 기계적으로 거부한다.
+
+    `edit: allow` 는 ADR-0018 조사 read-only 규약의 등재된 예외다 — 조사 산출도 티켓 절로
+    남아야 한다는 결정(T-0696)의 최소 수단이고, 범위는 slot 안 티켓 사본의 자기 역할 절이다
+    (code-reviewer 선례와 동형). bash·task 는 계속 deny 다.
+    """
     fm = _load_agent_frontmatter(RESEARCHER_MD)
     assert fm.get("mode") == "all", "researcher가 native task와 cross run을 함께 지원하지 않음"
     assert "tools" not in fm, "deprecated tools 설정을 권위 permission과 중복하면 안 됨"
     permission = fm.get("permission", {})
     for read_tool in ("read", "glob", "grep", "list"):
         assert permission.get(read_tool) == "allow"
-    assert permission.get("edit") == "deny"
+    assert permission.get("edit") == "allow", (
+        "researcher가 티켓 사본 자기 절을 기록할 수 없음(T-0696) — permission.edit=allow 필요"
+    )
     assert permission.get("bash") == "deny"
     assert permission.get("task") == "deny"
 
