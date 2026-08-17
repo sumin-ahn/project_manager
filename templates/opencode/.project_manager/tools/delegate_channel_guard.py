@@ -1627,11 +1627,26 @@ def _cli_fail_open(reason: str) -> dict[str, str]:
     )
 
 
+def _write_machine_line(text: str, stream: TextIO, seam) -> None:
+    """호스트가 파싱하는 한 줄을 콘솔 코덱 전환과 무관하게 UTF-8 로 내보낸다 (T-0693).
+
+    ``seam`` 은 ``main`` 이 진입에서 로드한 ``console_encoding`` 모듈이다. 가드가 그 로드
+    전에 죽은 경계(사본 skew·형제 부재)는 ``None`` 을 받는데, 그 원인은 이미 같은 호출의
+    fail-open 보고(stderr 한 줄 또는 allow JSON 사유)로 표면화돼 있으므로 여기서는 "호스트는
+    완전한 한 줄을 받는다" 를 지키는 텍스트 write 로 내려앉는다.
+    """
+    if seam is None:
+        stream.write(text + "\n")
+        return
+    seam.write_machine_line(text, stream=stream)
+
+
 def _run_decide_cli(
     argv: list[str],
     *,
     stdout: TextIO,
     config_loader: Callable[[], Mapping[str, str]],
+    machine_seam=None,
 ) -> int:
     """Run the non-stdin CLI; every path writes exactly one JSON line and rc0."""
     args = _parse_decide_args(argv)
@@ -1649,8 +1664,11 @@ def _run_decide_cli(
         role, tier = normalized
         result = decide(role, tier, config_loader(), args.harness)
     result = _materialize_cwd(result, args.cwd)
-    json.dump(result, stdout, ensure_ascii=False, separators=(",", ":"))
-    stdout.write("\n")
+    _write_machine_line(
+        json.dumps(result, ensure_ascii=False, separators=(",", ":")),
+        stdout,
+        machine_seam,
+    )
     return 0
 
 
@@ -1710,15 +1728,22 @@ def main(
     stderr: TextIO | None = None,
     config_loader: Callable[[], Mapping[str, str]] = load_local_config,
     state_dir: Path | None = None,
+    machine_seam=None,
 ) -> int:
-    """Run decide CLI when argv is non-empty, otherwise the legacy Claude hook."""
+    """Run decide CLI when argv is non-empty, otherwise the legacy Claude hook.
+
+    ``machine_seam`` 은 진입에서 로드하는 ``console_encoding`` 을 담는 자리다. 파라미터로
+    두는 이유는 fail-open 경계 때문이다 — 그 로드 자체가 실패해도(사본 skew·형제 부재) 아래
+    except 절이 호스트에 완전한 한 줄을 내보내야 하므로, 미해소 상태를 ``None`` 으로 읽을 수
+    있어야 한다.
+    """
     try:
-        _console_encoding = _load_module_from_path(
+        machine_seam = _load_module_from_path(
             Path(__file__).resolve().with_name("console_encoding.py"),
             "console_encoding.py",
             verifier=_verify_engine_rev,
         )
-        _console_encoding.configure_console_utf8()
+        machine_seam.configure_console_utf8()
         output_stream = sys.stdout if stdout is None else stdout
         # ``None`` preserves the historical direct-call hook seam used by tests
         # and wrappers; the module entry point passes process argv explicitly.
@@ -1737,10 +1762,13 @@ def main(
                 payload_bytes=payload_bytes,
                 state_dir=state_dir,
             )
-            # 콘솔 코드페이지(cp949 등)를 타지 않게 ASCII 로 이스케이프해 내보낸다 —
-            # 이 줄은 PowerShell/bash 캡처를 거쳐 호스트로 간다.
-            json.dump(result, output_stream, separators=(",", ":"))
-            output_stream.write("\n")
+            # 이 줄은 PowerShell/bash 캡처를 거쳐 호스트로 간다 — seam 이 콘솔 코덱과
+            # 무관하게 UTF-8 로 쓰고, ASCII 이스케이프는 종전 바이트를 유지한다.
+            _write_machine_line(
+                json.dumps(result, separators=(",", ":")),
+                output_stream,
+                machine_seam,
+            )
             return 0
         if cli_argv and cli_argv[0] == "codex-hook":
             if cli_argv != ["codex-hook"]:
@@ -1757,13 +1785,15 @@ def main(
                 result = observe_codex_pretooluse(
                     payload, result, decision=decision, state_dir=state_dir
                 )
-                json.dump(
-                    _validated_codex_envelope(result),
+                _write_machine_line(
+                    json.dumps(
+                        _validated_codex_envelope(result),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
                     output_stream,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
+                    machine_seam,
                 )
-                output_stream.write("\n")
             return 0
         if cli_argv and cli_argv[0] == "codex-subagent-observe":
             if cli_argv != ["codex-subagent-observe"]:
@@ -1773,14 +1803,18 @@ def main(
             if not isinstance(payload, Mapping):
                 raise TypeError("hook input JSON must be an object")
             result = observe_codex_subagent_start(payload, state_dir=state_dir)
-            json.dump(
-                _validated_codex_envelope(result), output_stream, ensure_ascii=False
+            _write_machine_line(
+                json.dumps(_validated_codex_envelope(result), ensure_ascii=False),
+                output_stream,
+                machine_seam,
             )
-            output_stream.write("\n")
             return 0
         if cli_argv:
             return _run_decide_cli(
-                cli_argv, stdout=output_stream, config_loader=config_loader
+                cli_argv,
+                stdout=output_stream,
+                config_loader=config_loader,
+                machine_seam=machine_seam,
             )
 
         input_stream = sys.stdin if stdin is None else stdin
@@ -1789,7 +1823,11 @@ def main(
             raise TypeError("hook input JSON must be an object")
         result = evaluate_hook(payload, config_loader=config_loader)
         if result is not None:
-            json.dump(result, output_stream, ensure_ascii=False)
+            _write_machine_line(
+                json.dumps(result, ensure_ascii=False),
+                output_stream,
+                machine_seam,
+            )
         return 0
     except BaseException as exc:
         # The shared hook/CLI boundary intentionally absorbs marked engine skew:
@@ -1803,12 +1841,16 @@ def main(
             if event not in CODEX_SUPERVISOR_EVENTS:
                 event = CODEX_SUPERVISOR_EVENTS[0]
             detail = " ".join(str(exc).splitlines()).strip() or type(exc).__name__
-            json.dump(
-                _codex_supervisor_fallback(event, f"{type(exc).__name__}: {detail}"),
+            _write_machine_line(
+                json.dumps(
+                    _codex_supervisor_fallback(
+                        event, f"{type(exc).__name__}: {detail}"
+                    ),
+                    separators=(",", ":"),
+                ),
                 output_stream,
-                separators=(",", ":"),
+                machine_seam,
             )
-            output_stream.write("\n")
             _report_fail_open(exc, sys.stderr if stderr is None else stderr)
             return 0
         if cli_argv and cli_argv[0] in {"codex-hook", "codex-subagent-observe"}:
@@ -1817,23 +1859,27 @@ def main(
                 if cli_argv[0] == "codex-subagent-observe"
                 else "PreToolUse"
             )
-            json.dump(
-                _codex_hook_fail_open(exc, hook_event_name),
+            _write_machine_line(
+                json.dumps(
+                    _codex_hook_fail_open(exc, hook_event_name),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
                 output_stream,
-                ensure_ascii=False,
-                separators=(",", ":"),
+                machine_seam,
             )
-            output_stream.write("\n")
             _report_fail_open(exc, sys.stderr if stderr is None else stderr)
             return 0
         if cli_argv:
-            json.dump(
-                _cli_fail_open(f"{type(exc).__name__}: {exc}"),
+            _write_machine_line(
+                json.dumps(
+                    _cli_fail_open(f"{type(exc).__name__}: {exc}"),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
                 output_stream,
-                ensure_ascii=False,
-                separators=(",", ":"),
+                machine_seam,
             )
-            output_stream.write("\n")
             return 0
         _report_fail_open(exc, sys.stderr if stderr is None else stderr)
         return 0

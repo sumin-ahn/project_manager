@@ -14,6 +14,9 @@ worktree의 전용 index만 내용과 동기화하며, 입력 working tree의 �
 
 병렬 wave에서는 같은 디렉터리의 다른 dev WIP가 검토 범위에 섞이지 않도록 ``--paths``를
 파일 단위로 지정한다.
+
+``--paths``가 그 저장소의 staged 변경 집합보다 좁으면 경고한다(리뷰어가 빠진 경로의 HEAD
+판을 보게 되는 false-finding 입력). 기본은 rc를 바꾸지 않으며 ``--strict-scope``로 차단한다.
 """
 
 from __future__ import annotations
@@ -430,6 +433,60 @@ _PARALLEL_WAVE_GUIDANCE = (
     " 이 경로가 검토 대상이면 `git add`로 index를 갱신하고, "
     "다른 dev의 WIP이면 `--paths`를 파일 단위로 좁히십시오."
 )
+
+
+def _staged_paths(root: Path) -> tuple[str, ...]:
+    """그 저장소의 staged 변경 경로 — HEAD 대비 index diff (정렬·중복 제거).
+
+    ``--no-renames``로 rename 을 삭제+추가로 편다. rename 검출은 설정(`diff.renames`)에 따라
+    켜지고 꺼져 같은 index 가 실행마다 다른 목록이 되며, 켜졌을 때는 **옛 경로**가 목록에서
+    빠져 그 경로의 범위 누락을 못 본다. untracked 는 index 에 없어 애초에 이 집합 밖이고,
+    다른 저장소는 이 ``root`` 로만 실행하므로 계산 입력이 되지 않는다.
+    """
+    listed = _checked_git(
+        root, "diff", "--cached", "--name-only", "-z", "--no-renames",
+    ).stdout
+    return tuple(sorted({path for path in listed.split("\0") if path}))
+
+
+def _uncovered_staged_paths(root: Path, selectors: Sequence[str]) -> tuple[str, ...]:
+    """staged 변경 중 ``--paths`` 선택 범위가 덮지 않는 경로들."""
+    covered = tuple(_normalize_selector(root, raw) for raw in selectors)
+    return tuple(
+        path for path in _staged_paths(root)
+        if not any(
+            path == selector or path.startswith(selector + "/")
+            for selector in covered
+        )
+    )
+
+
+def _scope_gap_message(paths: Sequence[str]) -> str:
+    """범위 누락 진단 본문 — 경고와 `--strict-scope` 차단이 같은 문장을 쓴다."""
+    return (
+        "staged 변경인데 --paths 에 없음(리뷰어가 HEAD 판을 본다): "
+        + _format_paths(paths)
+        + " · 검토 대상이면 --paths 에 추가하고, 타 티켓 산출이면 그대로 진행"
+    )
+
+
+def check_staged_scope(
+    root: Path, selectors: Sequence[str], *, strict: bool = False
+) -> tuple[str, ...]:
+    """``--paths``가 staged 변경 집합보다 좁으면 알린다(기본 경고·strict 면 차단).
+
+    리뷰어가 dev 산출을 못 보면 이미 고쳐진 것을 must-fix 로 내는 false-finding 이 난다 —
+    그 입력 누락을 계산으로 표면화한다. 기본은 rc 를 바꾸지 않는다(타 티켓 산출이 섞인
+    공유 트리는 정상 형상이라 차단하면 게이트가 못 돈다). 확실히 좁혀 두고 싶은 호출만
+    ``strict``로 차단한다.
+    """
+    uncovered = _uncovered_staged_paths(root, selectors)
+    if not uncovered:
+        return ()
+    if strict:
+        raise SnapshotError(_scope_gap_message(uncovered))
+    print("경고: " + _scope_gap_message(uncovered), file=sys.stderr)
+    return uncovered
 
 
 def _ignored_paths(index_checkout: Path, paths: Sequence[str]) -> set[str]:
@@ -929,6 +986,11 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="검토 대상 파일 또는 디렉터리(병렬 wave에서는 파일 단위로 지정)",
     )
+    parser.add_argument(
+        "--strict-scope",
+        action="store_true",
+        help="staged 변경이 --paths 밖에 있으면 경고 대신 차단(rc=1)",
+    )
     return parser
 
 
@@ -943,6 +1005,9 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         root = _repo_root(args.repo)
+        # 범위 누락 판정은 스냅샷 생성 **전**이다 — strict 차단이 worktree 를 남기지 않고,
+        # 경고도 리뷰어에게 무엇을 더 stage 할지 생성 결과보다 먼저 알려준다.
+        check_staged_scope(root, args.paths, strict=args.strict_scope)
         output, files = create_snapshot(root, args.output, args.paths)
     except SnapshotError as exc:
         print(f"오류: {exc}", file=sys.stderr)

@@ -1458,12 +1458,44 @@ _OUTPUT_FORMAT_BLOCK = """\
 판정: [통과 | 반려]
 
 **must-fix** (반드시 수정):
-- (없으면 "없음"으로 표기)
+- (없으면 "없음" · 있으면 아래 블록의 finding ID 만 나열한다)
 
 **suggestion** (권장):
-- (없으면 "없음"으로 표기)
+- (없으면 "없음" · 있으면 아래 블록의 finding ID 만 나열한다)
 
 """
+
+# 구조화 블록 요구 — 스키마는 엔진 파서 상수에서만 파생한다(여기서 다시 적지 않는다).
+_VERSIONED_BLOCK_HEADER = """\
+### 구조화 판정 블록 (필수)
+위 산문 뒤에 아래 스키마의 블록을 **정확히 하나** 출력하라. 엔진이 이 회신 전문을 게이트 티켓의
+`external-reviewer` 역할 절로 회수하고, PM 은 이 블록으로 판정한다 — 증거·권고·심각도는 블록이
+단일 진실이므로 산문에 같은 항목을 다시 서술하지 마라.
+
+"""
+_VERSIONED_BLOCK_RULES = """\
+- `id` 는 이 채널 전용 접두 `{prefix}-` 를 쓴다(`{prefix}-001` 부터 · 티켓 전역 유일).
+- `severity` 가 "반드시 고쳐야 하는가"의 단일 진실이다(`must-fix` 는 산문 must-fix 절과 같은 건수).
+- `authority` 는 티켓 §목표/§결정 또는 `[[T-NNNN]]`·`[[ADR-NNNN]]` 같은 권위 근거를 적는다.
+- 직전 라운드 지적의 해소 확인 라운드는 그 `{prefix}-` ID 를 `confirmations` 에 싣는다.
+- 블록이 없거나 스키마를 어기면 이 라운드는 회수 실패로 종료코드가 0 이 아니다.
+
+"""
+
+
+def _versioned_block_requirement() -> str:
+    """추가 리뷰어 채널의 구조화 블록 요구 — 골격·접두를 엔진 상수에서 렌더한다."""
+    delegate = _load_pm_delegate()
+    role = delegate.EXTERNAL_REVIEW_ROLE
+    return (
+        _VERSIONED_BLOCK_HEADER
+        + delegate.render_pm_review_block_skeleton(role)
+        + "\n"
+        + _VERSIONED_BLOCK_RULES.format(
+            prefix=delegate.PM_REVIEW_FINDING_ID_PREFIXES[role],
+        )
+    )
+
 
 # 확인 전용 라운드(`--confirm-fix`) 헌장 — 이 라운드의 임무를 프롬프트에서 좁힌다. 좁히지 않으면
 # 예외 라운드가 그냥 한 라운드 더가 되어 상한이 무의미해진다(실측 12라운드의 형상).
@@ -2597,6 +2629,19 @@ def _restrict_to_owner(path: Path) -> None:
 def _force_rmtree(path: Path) -> None:
     """트리를 실제로 지운다 — 실패는 `OSError` 로 올라온다(공용 seam·조용한 잔재 금지)."""
     _load_file_lock().force_rmtree(path)
+
+
+def _load_pm_delegate():
+    """리뷰 블록 스키마와 티켓 성장 절 쓰기의 단일 진실(`pm_delegate.py`)을 경로 로드한다.
+
+    `_load_relay`·`_load_board` 와 같은 경로-앵커 로더다. 스키마를 이 모듈이 다시 적으면 파서와
+    프롬프트가 갈리고, 회수 쓰기를 여기서 따로 구현하면 봉인 규칙이 둘이 된다.
+    """
+    path = Path(__file__).resolve().parent / "pm_delegate.py"
+    _require_engine_sibling(path, "pm_delegate.py")
+    return _load_module_from_path(
+        path, "pm_delegate.py", verifier=_verify_engine_rev, cache=True,
+    )
 
 
 def _load_review_rounds():
@@ -4673,6 +4718,107 @@ def _load_ticket_body(ticket_id: str, *, pm_home: Path | None = None) -> str:
     return _load_ticket_body_from_file(_find_ticket_file(ticket_id, pm_home=pm_home))
 
 
+class TicketBodySelection(NamedTuple):
+    """게이트 티켓 본문 절 선별 결과(T-0703) — 최근 라운드만 남긴 본문과 생략한 라운드 수."""
+
+    text: str
+    omitted_rounds: int
+
+
+# 생략 표기 한 줄 — role·ordinal·생략된 byte 크기를 명시한다(§결정 "생략은 표시한다").
+_TICKET_BODY_OMISSION_LINE = "(생략: role={role} ordinal={ordinal} · {n} bytes)\n"
+
+
+def _select_ticket_body_for_review(body: str) -> TicketBodySelection:
+    """역할별 **마지막 라운드만** 남기고 앞선 성장 절을 생략 표기로 접는다(T-0703).
+
+    권위 절(목표·인터페이스·결정·설계·완료 조건·참고·메모)과 역할 절 **밖**의 `## PM finding
+    판정` 절은 `pm-ticket-section` marker 로 감싸이지 않아 원문 위치 그대로 전량 남는다 — 건드리는
+    대상은 marker 로 감싸인 role 성장 절의 byte 범위뿐이다. 새 파싱 문법을 만들지 않고 pm_delegate
+    의 기존 marker 파서(`_ticket_growth_sections`·`parse_ticket_seals`)를 형제 로드로 재사용한다.
+
+    봉인 줄(`pm-ticket-seal`)은 실측상 절의 일부가 아니라 절 바로 다음 줄이다
+    (`seal.line_start == section.marker_end`). 생략하는 라운드는 내용 없는 해시만 남으면
+    리뷰어를 오도하므로 그 봉인 줄도 함께 생략하고, 전량 남기는 마지막 ordinal 의 봉인은 절이
+    그대로 남아 검증 가능하므로 유지한다.
+
+    역할마다 라운드가 하나뿐이면(생략 대상 없음) 원문을 바이트 그대로 반환한다 — 성장 절이
+    없거나 전부 최근 라운드인 티켓의 출력이 이 선별 도입 전후로 동일해야 하기 때문이다(DoD (e)).
+    """
+    delegate = _load_delegate_transport()
+    try:
+        sections = delegate._ticket_growth_sections(body)
+        seals = delegate.parse_ticket_seals(body)
+    except delegate.DelegateError as exc:
+        raise AnchorResolutionError(
+            f"티켓 성장 절 marker 문법이 손상돼 리뷰 입력 절 선별을 할 수 없습니다: {exc}"
+        ) from exc
+    if not sections:
+        return TicketBodySelection(body, 0)
+
+    last_ordinal_by_role: dict[str, int] = {}
+    for section in sections:
+        last_ordinal_by_role[section.role] = max(
+            section.ordinal, last_ordinal_by_role.get(section.role, -1),
+        )
+
+    # marker 파서는 문서를 top-to-bottom 훑어 순서대로 절을 반환한다 — 정렬 없이 그 순서를 그대로
+    # byte-range 대체에 쓴다.
+    replacements: list[tuple[int, int, str]] = []
+    for section in sections:
+        if section.ordinal == last_ordinal_by_role[section.role]:
+            continue  # 역할별 최근 라운드 — 전량 유지
+        removal_end = section.marker_end
+        seal = seals.get((section.role, section.ordinal))
+        if seal is not None and seal.line_start == section.marker_end:
+            removal_end = seal.line_end
+        omitted_bytes = len(body[section.marker_start:removal_end].encode("utf-8"))
+        replacements.append((
+            section.marker_start, removal_end,
+            _TICKET_BODY_OMISSION_LINE.format(
+                role=section.role, ordinal=section.ordinal, n=omitted_bytes,
+            ),
+        ))
+
+    if not replacements:
+        return TicketBodySelection(body, 0)
+
+    parts: list[str] = []
+    cursor = 0
+    for start, end, replacement in replacements:
+        parts.append(body[cursor:start])
+        parts.append(replacement)
+        cursor = end
+    parts.append(body[cursor:])
+    return TicketBodySelection("".join(parts), len(replacements))
+
+
+def _parse_title_from_file(path: Path) -> str | None:
+    """ticket 파일에서 frontmatter title 스칼라를 추출한다(선별 헤더 요약 전용).
+
+    board 의 YAML frontmatter 로더(`_parse_estimate_from_file` 과 같은 seam)를 재사용한다 —
+    자체 정규식은 estimate 축에서 이미 확인된 결함(YAML 주석 꼬리가 값에 붙는 오독)을 title 에서
+    반복할 뿐이라 두지 않는다(T-0703 R1 리뷰 F-001)."""
+    board = _load_board()
+    fm, _body = board.load_ticket(path)
+    title = fm.get("title") if isinstance(fm, dict) else None
+    return title.strip() or None if isinstance(title, str) else None
+
+
+def _ticket_body_selection_header(path: Path, ticket_id: str) -> str:
+    """절 선별이 실제로 일어난 티켓 본문 앞에 붙는 frontmatter 요약 1줄(T-0703 §인터페이스 1).
+
+    estimate 는 diff 서킷브레이커와 같은 board YAML 파서(`_parse_estimate_from_file`)를 그대로
+    호출한다 — 표시용이라고 값이 갈리는 경량 스캐너를 따로 두지 않는다(F-001)."""
+    title = _parse_title_from_file(path)
+    touches = _parse_touches_from_file(path)
+    estimate = _parse_estimate_from_file(path)
+    return (
+        f"id={ticket_id} · title={title or '(미상)'} · "
+        f"touches=[{', '.join(touches)}] · estimate={estimate or '(미상)'}"
+    )
+
+
 def _ticket_body_max_bytes(conf: dict[str, str], cli_override: int | None = None) -> int:
     """티켓 본문 UTF-8 byte 상한. 명시 CLI > local.conf > 안전 기본값(64KB)."""
     if cli_override is not None:
@@ -4796,7 +4942,11 @@ def build_prompt(
     직전 지적의 해소 확인이고, 새로 발견한 것은 다음 라운드 거리가 아니라 **재설계 신호**다.
     `confirm_fix_evidence`(라운드 장부가 만든 직전 must-fix 근거 블록)가 있으면 헌장 **바로
     뒤**에 싣는다 — 임무 선언과 그 임무의 대상이 붙어 있어야 fresh 세션이 무엇을 확인하는지 안다."""
-    parts: list[str] = [_load_review_context().rstrip() + "\n\n", _OUTPUT_FORMAT_BLOCK]
+    parts: list[str] = [
+        _load_review_context().rstrip() + "\n\n",
+        _OUTPUT_FORMAT_BLOCK,
+        _versioned_block_requirement(),
+    ]
     if confirm_fix:
         parts.append(_CONFIRM_FIX_CHARTER)
         if confirm_fix_evidence:
@@ -7627,17 +7777,28 @@ def _main(argv: list[str] | None = None) -> int:
     ticket_body: str | None = None
     ticket_body_bytes = 0
     ticket_body_max_bytes: int | None = None
+    ticket_body_raw_bytes = 0
+    ticket_body_omitted_rounds = 0
 
     def prepare_ticket_body() -> bool:
         nonlocal ticket_body, ticket_body_bytes, ticket_body_max_bytes
+        nonlocal ticket_body_raw_bytes, ticket_body_omitted_rounds
         if not args.ticket:
             return True
         try:
-            ticket_body = (
-                _load_ticket_body_from_file(ticket_body_source)
-                if ticket_body_source is not None
-                else _load_ticket_body(args.ticket, pm_home=pm_home)
+            ticket_file = (
+                ticket_body_source if ticket_body_source is not None
+                else _find_ticket_file(args.ticket, pm_home=pm_home)
             )
+            raw_body = _load_ticket_body_from_file(ticket_file)
+            # 절 선별(T-0703) — 권위 절·PM 판정은 전량, 성장 절은 역할별 마지막 라운드만.
+            selection = _select_ticket_body_for_review(raw_body)
+            if selection.omitted_rounds > 0:
+                header = _ticket_body_selection_header(ticket_file, args.ticket)
+                composed_body = f"{header}\n\n{selection.text}"
+            else:
+                # 생략된 라운드가 없으면 요약 헤더 없이 원문 그대로 — 회귀 불변(DoD (e)).
+                composed_body = selection.text
         except (AnchorResolutionError, OSError, UnicodeError) as exc:
             if args.paths:
                 print(
@@ -7657,13 +7818,18 @@ def _main(argv: list[str] | None = None) -> int:
                 return True
             print(f"오류: 게이트 티켓 본문 로딩 실패 — {exc}", file=sys.stderr)
             return False
+        ticket_body = composed_body
         ticket_body_bytes = len(ticket_body.encode("utf-8"))
+        ticket_body_raw_bytes = len(raw_body.encode("utf-8"))
+        ticket_body_omitted_rounds = selection.omitted_rounds
         ticket_body_max_bytes = _ticket_body_max_bytes(conf, args.ticket_body_max)
         if ticket_body_bytes > ticket_body_max_bytes:
             print(
                 "오류: 게이트 티켓 본문이 review 입력 상한을 초과했습니다 — "
-                f"ticket={args.ticket} · {ticket_body_bytes} bytes > "
-                f"{REVIEW_TICKET_BODY_MAX_BYTES_KEY}={ticket_body_max_bytes} bytes.\n"
+                f"ticket={args.ticket} · 선별 후 {ticket_body_bytes} bytes > "
+                f"{REVIEW_TICKET_BODY_MAX_BYTES_KEY}={ticket_body_max_bytes} bytes "
+                f"(선별 전 {ticket_body_raw_bytes} bytes · 생략 {ticket_body_omitted_rounds}개 "
+                "라운드).\n"
                 "  · 본문을 자르지 않았고 외부로 전송하지 않습니다. 티켓을 분할하거나 "
                 "`--ticket-body-max <bytes>`를 명시해 상한을 올리세요.",
                 file=sys.stderr,
@@ -7706,7 +7872,8 @@ def _main(argv: list[str] | None = None) -> int:
         if ticket_body is not None:
             print(
                 f"ticket_body_bytes: {ticket_body_bytes} / "
-                f"{ticket_body_max_bytes} (included / max)"
+                f"{ticket_body_max_bytes} (included / max) · "
+                f"생략 라운드: {ticket_body_omitted_rounds}개"
             )
         print(relay.dry_run_codex_egress_line(
             escalation_required=codex_egress_required,
@@ -7843,15 +8010,50 @@ def _main(argv: list[str] | None = None) -> int:
                 timeout=timeout, idle_timeout=idle_timeout, output_dir=output_dir,
                 conf_path=conf_path, profile=profile, excluded=excluded,
                 target=target, codex_egress=codex_egress, reservation=reservation,
+                pm_home=pm_home,
             )
         finally:
             isolation.close()
+
+
+def _harvest_external_review_section(
+    args, result: dict, *, pm_home: Path | None,
+) -> str | None:
+    """추가 리뷰어 산출을 게이트 티켓의 `external-reviewer` 절로 회수한다.
+
+    회수 주체는 **엔진**이다 — 리뷰어에게 티켓/사본 편집 권한을 주지 않는다. 절 본문은 산문
+    회신 전문(그 안에 versioned 블록 하나)이고, 봉인·도착지·판정 표면은 내부 리뷰어 harvest 와
+    같다(writer 만 `by=external-review`). 문제가 있으면 사유 문자열을 돌려주고(호출부가 rc 로
+    표면화), 정상이면 None 이다.
+    """
+    reply = result.get("answer") or result.get("output") or ""
+    if not reply.strip():
+        return "리뷰어 회신이 비어 회수할 산출이 없습니다"
+    # 로더 실패(사본 skew 포함)는 흡수하지 않는다 — 스키마가 갈린 엔진으로 티켓을 쓰지 않는다.
+    delegate = _load_pm_delegate()
+    content, problem = delegate.build_external_review_section_content(
+        reply, today=datetime.date.today().isoformat(),
+    )
+    try:
+        write = delegate.write_external_reviewer_section(
+            ticket=args.ticket, content=content, pm_home=pm_home or REPO,
+        )
+    except (delegate.DelegateError, OSError, UnicodeError) as exc:
+        return f"티켓 절 기록 실패: {exc}"
+    print(
+        f"[external-review] 티켓 회수: {args.ticket} "
+        f"{delegate.EXTERNAL_REVIEW_ROLE}[{write.ordinal}] → {write.path}"
+        + ("" if write.sync_ready else " (board-git 동기 미준비)"),
+        file=sys.stderr,
+    )
+    return problem
 
 
 def _run_isolated_review(
     args, workspace, *, conf, prompt, reviewer_cmd, timeout, idle_timeout,
     output_dir, conf_path, profile, excluded, target=None, codex_egress=None,
     reservation: "_PreSpawnReservation | None" = None,
+    pm_home: Path | None = None,
 ) -> int:
     """격리 컨테이너 수명 **안**에서 도는 구간 — 리뷰 실행·장부 마감.
 
@@ -8049,7 +8251,22 @@ def _run_isolated_review(
                 file=sys.stderr,
             )
 
-    return determine_exit_code(result)
+    rc = determine_exit_code(result)
+    # 라운드 장부 마감 **뒤**에 회수한다 — 장부는 종전대로 기록되고, 회수 실패는 판정 rc 를
+    # 덮지 않고 rc=0 인 실행만 실패로 올린다. `--ticket` 없는 실행(자유 게이트·`--paths` 단독)과
+    # 회신 없이 끝난 실행은 회수 대상이 아니다.
+    if started and args.ticket and not result.get("failed"):
+        problem = _harvest_external_review_section(args, result, pm_home=pm_home)
+        if problem is not None:
+            print(
+                f"오류: 추가 리뷰어 산출 회수 문제 — {problem}\n"
+                f"  · 산출 원문은 raw 에 보존됩니다: {result.get('file')}\n"
+                "  · 절이 기록됐다면 본문 첫 줄의 경고를 확인하고, PM 판정 전에 리뷰어에게 "
+                "구조화 블록을 갖춘 회신을 다시 받으세요.",
+                file=sys.stderr,
+            )
+            rc = rc or 1
+    return rc
 
 
 def main(argv: list[str] | None = None) -> int:

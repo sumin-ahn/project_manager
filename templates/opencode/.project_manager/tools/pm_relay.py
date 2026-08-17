@@ -1068,10 +1068,15 @@ def with_harness_runtime_role(
 OPENCODE_ATTACHED_MSG = "첨부된 프롬프트 파일(--file)의 지시를 그대로 수행하라."
 
 # claude 가용 도구셋 — `--tools`(가용성 제한, `--allowedTools` 아님). 역할축:
-#   write(developer/architect) = 편집 도구 포함 · researcher = 순수읽기(Bash 제외·기계적) ·
-#   code-reviewer = 읽기+Bash(pytest·Write/Edit 제외). 콤마-구분 단일 인자로 전달.
+#   write(developer/architect) = 편집 도구 포함 · researcher = 읽기 + 티켓 사본 자기 절 기록용
+#   Edit(Write/Bash 없음) · code-reviewer = 읽기+Bash(pytest·Write 제외). 콤마-구분 단일 인자.
+#
+# researcher 의 Edit 는 ADR-0018 read-only 규약의 **등재된 예외**다 — 조사 산출도 티켓 절로 남아야
+# 한다는 결정([[T-0696]])의 최소 수단이고, 범위는 slot 안 티켓 사본의 자기 역할 절 하나다.
+# code-reviewer 가 같은 이유로 read 역할이면서 사본 절을 편집하는 선례와 동형이며, 저장소 쓰기
+# 표면은 하네스 권한(codex `--add-dir <copy dir>`·opencode 역할 agent)이 계속 좁힌다.
 CLAUDE_TOOLS_WRITE = "Read,Glob,Grep,Bash,Write,Edit"
-CLAUDE_TOOLS_RESEARCHER = "Read,Glob,Grep"
+CLAUDE_TOOLS_RESEARCHER = "Read,Glob,Grep,Edit"
 CLAUDE_TOOLS_REVIEWER = "Read,Glob,Grep,Bash"
 
 

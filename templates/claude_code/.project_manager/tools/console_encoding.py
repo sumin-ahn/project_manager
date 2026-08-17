@@ -375,3 +375,35 @@ def configure_console_utf8() -> None:
     )
     if capture_applied:
         _show_powershell_hint_once()
+
+
+def _flush_quietly(stream: Any) -> None:
+    """스트림 flush 를 best-effort 로 시도한다 (닫힌/미지원 스트림도 출력을 막지 않는다)."""
+    try:
+        stream.flush()
+    except Exception:
+        pass
+
+
+def write_machine_line(text: str, *, stream: Any = None) -> None:
+    """기계 판독 한 줄을 콘솔 코덱 전환과 무관하게 UTF-8 로 내보낸다 (T-0693).
+
+    ``configure_console_utf8`` 은 PowerShell 캡처(非tty)에서 텍스트 스트림을 콘솔 codepage
+    (cp949 등)로 되돌리고 인코딩 불가 문자를 ``pm_translit`` 로 치환한다. 그 치환은 되돌릴 수
+    없으므로 다른 프로세스가 파싱하는 출력(하네스 훅 엔벨로프·``--json`` 페이로드)은 텍스트
+    레이어를 건너뛰고 UTF-8 bytes 를 직접 쓴다. 사람이 읽는 ``print`` 경로는 종전대로 둔다.
+
+    ``.buffer`` 가 없는 스트림(테스트 캡처·``io.StringIO``)은 텍스트 write 로 폴백한다 —
+    그 경로는 콘솔 코덱을 타지 않으므로 손실 표면이 아니다.
+    """
+    target = sys.stdout if stream is None else stream
+    line = text + "\n"
+    buffer = getattr(target, "buffer", None)
+    if buffer is None:
+        target.write(line)
+        _flush_quietly(target)
+        return
+    # 텍스트 레이어에 남아 있는 사람 출력이 bytes 뒤로 밀리지 않게 먼저 비운다(Windows 실측 축).
+    _flush_quietly(target)
+    buffer.write(line.encode("utf-8"))
+    buffer.flush()

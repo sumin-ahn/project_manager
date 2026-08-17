@@ -539,6 +539,22 @@ def _report_engine_rev_skew_at_terminal(exc) -> int:
     return 1
 
 
+def _write_machine_line(text: str) -> None:
+    """기계 판독 한 줄(JSON 페이로드)을 콘솔 코덱 전환과 무관하게 UTF-8 로 내보낸다 (T-0693).
+
+    사람 출력(``print``)은 PowerShell 캡처에서 콘솔 codepage(cp949 등)로 강등될 수 있고 그
+    치환은 되돌릴 수 없다 — 다른 프로세스가 파싱하는 출력은 공용 seam 으로 UTF-8 bytes 를
+    직접 쓴다(콘솔 코덱 전환과 독립).
+    """
+    console_encoding = _load_module_from_path(
+        Path(__file__).resolve().with_name("console_encoding.py"),
+        "console_encoding.py",
+        verifier=_verify_engine_rev,
+        cache=True,
+    )
+    console_encoding.write_machine_line(text)
+
+
 # ── worktree_pool import seam (multi-PM 모드) ───────────────────────────
 # multi-PM 인자(--repo)를 받았을 때만 alloc 경로에 진입한다. 솔로 무인자 경로는 이
 # 모듈을 전혀 쓰지 않으므로 import 실패가 무해(fail-soft) — 단 --repo 를 줬는데
@@ -3417,7 +3433,7 @@ class PmBootstrap:
                         task_info["name"], leases=task_slot_leases
                     )
                     data["task"] = task_info  # task identity(신규/resume·prefix 상태).
-                print(json.dumps(data, ensure_ascii=False, indent=2))
+                _write_machine_line(json.dumps(data, ensure_ascii=False, indent=2))
             else:
                 markdown = self._build_markdown(
                     board, pytest_result, git, log_entry, timestamp, handoff_ctx,
