@@ -191,12 +191,14 @@ def test_agents_match_project_config():
         )
 
 
-def test_researcher_is_mechanically_read_only_without_deprecated_tools():
-    """edit deny만 두고 bash allow로 우회하던 false read-only를 금지한다."""
+def test_researcher_writes_only_its_ticket_copy_section_without_bash_bypass():
+    """researcher 는 성장 티켓 사본의 자기 절을 edit 한다(ADR-0089 전원 참여) — 저장소 read-only 는
+    역할 계약 + harvest 의 자기 절 밖 bytes 일치 강제로 지키고, bash/task 는 deny 로 두어 edit 밖의
+    쓰기 우회(bash 로 파일 쓰기·중첩 위임)를 기계로 막는다."""
     fm = _load_agent_frontmatter(RESEARCHER)
     assert "tools" not in fm
     permission = fm["permission"]
-    assert permission["edit"] == "deny"
+    assert permission["edit"] == "allow"
     assert permission["bash"] == "deny"
     assert permission["task"] == "deny"
     for key in ("read", "glob", "grep", "list"):

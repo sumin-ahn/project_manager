@@ -28,14 +28,57 @@
   `section-add` 재생성, 내용이 있으면 제거·재생성한 뒤 사본을 다시 `prepare` 해 역할이 재기록하게
   한다. 역할 산출을 사람이 옮겨 적거나 봉인을 손으로 만드는 경로는 없다.
 
+- **역할 절의 개수·이력이 티켓 파일 밖 장부에도 남는다 — 절을 통째로 지우는 손편집이 검출된다.**
+  봉인은 절 *본문*의 변조를 잡지만 마지막 절을 봉인째 지우면 남는 흔적이 없었다. 이제 엔진이 절을
+  쓸 때마다 `<board>/tickets/.growth/T-NNNN.jsonl` 에 (역할, 차수, sha256, 쓴 주체) 레코드를
+  append-only 로 함께 남기고, `review delta`·`board complete`·`section-add`·`harvest`·`prepare` 가 티켓의
+  봉인과 장부를 대조한다 — 장부에는 있는데 티켓에 없는 절은 "절 삭제 검출" 로 loud RED 이며 backfill
+  로도 지워지지 않는다(레코드 제거 경로가 없다). 쓰는 주체는 엔진 경로뿐이다(`section-add`·`harvest`·
+  `seal-backfill`·`promote`·추가 리뷰어 절 기록). draft 티켓은 장부에 쓰지 않고 `promote` 시점에 1회
+  기록한다. board-git 형상에서는 장부 파일이 티켓과 같은 부분 커밋에 실리고 `.gitattributes` 에
+  `merge=union` 이 선언된다. **업그레이드 직후 1회, 보드 단위로 sweep 한다:**
+
+  ```bash
+  python3 .project_manager/tools/pm_delegate.py ticket seal-backfill --all
+  ```
+
+  이 명령은 위 봉인 backfill 과 장부 생성을 함께 처리하고(봉인은 이미 있고 장부만 없는 티켓도 대상)
+  잔여 0 이 되면 마이그레이션 stamp(`tickets/.growth/.migrated`)를 남긴다. sweep 전에는 봉인은 있고
+  장부가 없는 티켓의 `prepare`·`harvest`·`section-add` 가 이 처방과 함께 거부되고, stamp **이후** 같은
+  상태는 마이그레이션 잔여가 아니라 장부 파일 삭제 의심으로 판정된다(backfill 로 되살리지 않는다).
+  done 티켓은 소급 대상이 아니다.
+
 - **Windows native 에서 티켓 성장 위임(prepare→역할 실행→harvest)이 다시 동작한다.** v1.7.5 는 사본 루트를
   `info/exclude` 에 등록하는 단계가 POSIX 전용 안전 경계(dirfd/nofollow)를 필수로 요구해 Windows 에서
   rc=1 로 거부됐다. 사본 루트 `.project_manager/.local/delegate-ticket-copies/` 는 tracked
   `.project_manager/.gitignore` 의 `.local/` 규칙으로 이미 무시되므로 그 등록 단계와 안전 경계를
-  제거하고 `git check-ignore` 확인만 남겼다. 채택자가 `.gitignore` 의 `.local/` 규칙을 지운 형상은
-  prepare 가 복구 처방과 함께 fail-loud 한다. 인스턴스 조치는 없다.
+  제거하고 `git check-ignore` 확인만 남겼다. 그 확인은 무시 여부만이 아니라 **규칙의 출처**도 본다 —
+  출처가 tracked `.project_manager/.gitignore` 여야 통과하고, 이 클론에만 있는 로컬 규칙(`.git/info/exclude`·
+  전역 `core.excludesFile`·untracked 상위 `.gitignore`)만으로 무시되는 형상은 다른 클론·채택자 트리에서
+  사본이 그대로 노출되므로 그 사실을 짚어 거부한다(첫 커밋 전 트리는 인덱스 등록으로 충분하다).
+  채택자가 `.gitignore` 의 `.local/` 규칙을 지운 형상은 prepare 가 복구 처방과 함께 fail-loud 한다.
+  인스턴스 조치는 없다.
 
 ### Added
+
+- **추가 리뷰어(codex) 산출이 티켓 절로 회수되고 내부 리뷰어와 같은 판정 표면에 오른다.**
+  `external_review --ticket T-NNNN` 이 끝나면 엔진이 회신 전문을 그 티켓의 `external-reviewer` 역할 절로
+  기록한다(봉인·장부·게이트는 내부 리뷰어 harvest 와 같고, 리뷰어에게 티켓/사본 편집 권한을 주지
+  않는다). 회신 안의 `pm-review-v1` 블록은 결함 ID 에 `X-` 접두가 붙어 내부 리뷰어 ID 와 섞이지 않고,
+  `review delta`·PM 판정 블록이 두 채널을 한 표면에서 다룬다. 블록에 **심각도**(`must-fix`/`should-fix`/
+  `suggestion`) 필드가 생겨 리뷰어 산문·블록·PM 판정 3중 기재 없이 블록만으로 "반드시 고쳐야 하는가"
+  가 기계로 읽히며, `board show T-NNNN` 이 본문 뒤에 라운드별 판정 요약을 붙인다. researcher 도 같은
+  티켓 사본 왕복을 타서 조사 산출이 티켓 절로 남는다 — 그래서 researcher 카드는 저장소는 읽기 전용
+  계약을 유지한 채 자기 사본 절만 편집할 수 있는 최소 권한(claude `Edit`·opencode `edit: allow`·codex
+  `workspace-write`)으로 바뀌고, 세션 불일치 뒤 자동 재실행은 code-reviewer 와 같이 하지 않는다(절 이중
+  기록 방지). 옛 심각도 없는 블록(v1)은 계속 읽힌다.
+
+- **병렬 위임의 touches 겹침을 엔진이 계산해 경고한다.** `pm_delegate.py --ticket T-NNNN` 이 같은 세션이
+  claim 중인 다른 티켓들의 touches 와 이 티켓의 교집합(디렉터리 접두·`<repo>_<N>/` 슬롯 표기·Windows
+  구분자 정규화 포함)을 stderr `=== ⚠ 병렬 위임 touches 겹침 ===` 블록으로 낸다 — 차단하지 않으며 위임
+  뒤에는 실제로 바뀐 겹침 경로를 다시 표시한다. `gate_snapshot` 은 `--paths` 가 staged 변경의 부분집합일
+  때 그 사실을 경고하고 `--strict-scope` 로 차단할 수 있다. PM 이 손으로 하던 disjoint 확인이 기계
+  산출로 옮겨졌다.
 
 - **리뷰 블록 형식을 엔진이 공급한다 — 사람이 스키마를 옮겨 적지 않는다.** `section-add` 가 역할별
   본문 골격을 시드하고(리뷰어는 `must-fix`/`should-fix`/`suggestion`/판정 머리와 채워진 리뷰 블록
@@ -51,8 +94,10 @@
 - **추가 리뷰어가 diff 와 함께 게이트 티켓 본문을 받는다.** `external_review --ticket T-NNNN` 이 그 티켓의
   §목표·§인터페이스·§결정·§설계·§완료 조건과 성장 절·PM 판정을 프롬프트에 함께 싣고, 리뷰 맥락에 "티켓
   §결정·§설계·PM 판정 블록은 권위 있는 확정 사항" 임을 명시한다. 확정된 설계를 되돌리라는 지적은
-  `design-proposal` 로 분류되고 must-fix 로 올라오지 않는다. 본문이 `review_ticket_body_max_bytes`
-  (기본 65536)를 넘으면 **자르지 않고 전송을 거부**하며, 상한은 `--ticket-body-max <bytes>` 로 올린다.
+  `design-proposal` 로 분류되고 must-fix 로 올라오지 않는다. 성장 절은 **역할별 마지막 라운드만** 싣고
+  앞선 라운드는 생략 표기로 접는다(권위 절·PM 판정은 전량) — 다라운드 티켓이 상한 때문에 교차검증을 못
+  받던 형상이 사라진다. 그래도 본문이 `review_ticket_body_max_bytes`(기본 65536)를 넘으면 **자르지 않고
+  전송을 거부**하며, 상한은 `--ticket-body-max <bytes>` 로 올린다.
 
 - **어느 엔진 사본이 실행되는지 판정 시점에 알려준다.** PM 홈과 작업 트리에 엔진 사본이 함께 있는
   형상에서, 상대경로로 엔진 도구를 부르면 실제 실행될 사본의 절대경로·그 사본의 저장소 앵커·다른
@@ -68,6 +113,22 @@
   역할 산출을 옮겨 적는 경로가 사라졌다. 장부는 PM 홈에만 두고 사본 쪽에는 자격 값을 남기지 않는다.
 
 ### Fixed
+
+- **기계 판독 출력(하네스 훅 JSON·`--json` 페이로드·capability JSON)이 콘솔 코덱과 무관하게 UTF-8 로
+  나간다.** PowerShell 캡처 보정이 사람이 읽는 출력의 코덱을 cp949 로 바꾸면 같은 스트림을 쓰던 기계
+  판독 한 줄까지 대체표 변환을 타서 되돌릴 수 없는 손실이 났다. 기계 판독 한 줄은 이제 단일 seam 으로
+  stdout 의 바이트 레이어에 UTF-8 + LF 종결로 직접 쓰고(`sys.stdout is None` 형상은 무출력), 훅 host 가
+  읽는 응답 종결자도 플랫폼과 무관하게 LF 다. claude 어댑터의 git-anchor 훅(`pm_orch_claude.py`)도 같은
+  방식으로 JSON 을 내보내 Windows 파이프 stdout 의 기본 코덱에서 훅이 죽거나 빈 응답을 내던 경로를 닫았다.
+  재발은 정적 가드가 막는다(엔진 `tools/*.py` 와 어댑터 훅의 JSON 텍스트 write 형태 전수 검사).
+
+- **opencode 전송 파일 정리 실패가 더 이상 무음이 아니다.** 프롬프트 전송 파일의 쓰기 실패 뒤 롤백
+  삭제가 실패하면 조용히 넘어가 부분 전송 프롬프트가 디스크에 남아도 표시가 없었고, 그 잔여를 모르는
+  cleanup 이 같은 디렉터리의 자기-은닉 `.gitignore` 만 지워 민감 사본이 untracked 로 노출될 수 있었다.
+  정리 실패는 경로와 함께 loud 로 올라오고(주 결과는 보존), 잔여가 남은 경우 cleanup 이 자기-은닉 ignore
+  를 보존한 채 삭제를 재시도하며 그마저 실패하면 남은 경로를 알린다. 같은 판정으로 남아 있던 사유 없는
+  무음 fail-soft 2곳(권한 probe 임시파일 삭제 실패·프롬프트 파일 denylist 경로 해소 실패)도 경고 또는
+  사유 주석으로 바꿨다.
 
 - **Windows checkout에서도 티켓 성장 봉인이 유지된다.** 역할 절 seal의 sha256 입력에서
   `CRLF`·lone `CR`을 `LF`로 정규화해, LF에서 발급된 기존 봉인이 Git for Windows의 CRLF

@@ -54,7 +54,7 @@ SANDBOX_BY_AGENT = {
     "developer": "workspace-write",     # 코드 + 테스트 쓰기
     "architect": "workspace-write",     # 설계 초안 문서 쓰기
     "code-reviewer": "workspace-write", # 성장 사본 자기 절 write; 코드·board·git은 역할 계약으로 금지
-    "researcher": "read-only",          # gather = 읽기 전용
+    "researcher": "workspace-write",    # 성장 사본 자기 절 write(ADR-0089 전원 참여); 저장소는 읽기 전용 계약
 }
 
 
@@ -184,8 +184,9 @@ def test_developer_hard_tier_profile_valid_and_overrides_model():
 def test_sandbox_mode_present_and_role_correct():
     """각 agent 에 `sandbox_mode` 존재 + 역할별 값 정합(쓰기 축 vs 읽기 축).
 
-    developer/architect/code-reviewer = workspace-write(코드·설계 초안·성장 리뷰 절 쓰기)·
-    researcher = read-only. reviewer의 넓은 sandbox는 지정 사본 쓰기 역할 계약과 git 감사로 제한한다."""
+    developer/architect = workspace-write(코드·설계 초안 쓰기)· code-reviewer/researcher =
+    workspace-write(성장 티켓 사본의 자기 절만 쓰는 역할 — 저장소 read-only 는 역할 계약·harvest 의
+    자기 절 밖 bytes 일치 강제·git 감사로 제한한다). 순수 read-only sandbox 역할은 남지 않는다."""
     for name in AGENT_NAMES:
         data = _load(name)
         assert "sandbox_mode" in data, f"{name}.toml 에 sandbox_mode 없음"

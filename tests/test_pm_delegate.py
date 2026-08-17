@@ -737,11 +737,13 @@ def test_opencode_transport_prompt_residual_retry_fails_preserves_ignore(
         pd._save_opencode_transport_prompt(cwd, "민감 프롬프트")
 
     captured = capsys.readouterr()
-    residual_prompt = cwd / ".project_manager" / ".local" / "delegate"
-    prompt_paths = list(residual_prompt.rglob("prompt.md"))
-    ignore_paths = list(residual_prompt.rglob(".gitignore"))
+    # 전송 디렉터리 형상은 엔진 상수로 고정돼 있다(`<sandbox>/<REL_DIR>/<attempt_id>/prompt.md` ·
+    # ignore 는 같은 attempt 디렉터리) — 재귀 tree-walk 없이 한 단계 glob 으로 잔여를 센다.
+    residual_prompt = cwd / pd._OPENCODE_TRANSPORT_REL_DIR
+    prompt_paths = sorted(residual_prompt.glob("*/prompt.md"))
     assert len(prompt_paths) == 1 and prompt_paths[0].exists()  # 잔여 프롬프트 보존(재시도 실패)
-    assert len(ignore_paths) == 1 and ignore_paths[0].exists()  # 자기-은닉 ignore 보존(노출 방지)
+    ignore_paths = [prompt_paths[0].parent / pd._OPENCODE_TRANSPORT_IGNORE]
+    assert ignore_paths[0].exists()  # 자기-은닉 ignore 보존(노출 방지)
     assert "쓰기 실패 롤백 삭제 실패" in captured.err  # T-0705 1차 실패 경고
     assert "합성 프롬프트 삭제 실패" in captured.err  # cleanup 재시도 실패도 loud
     assert str(prompt_paths[0]) in captured.err
