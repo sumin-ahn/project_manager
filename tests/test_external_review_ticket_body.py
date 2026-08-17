@@ -397,6 +397,12 @@ def test_ticket_body_selection_includes_all_authoritative_sections(
         assert heading in out
         assert content in out
 
+    # F-003 — 선별 헤더 한 줄의 실제 값(값 존재가 아니라 값 자체를 단언).
+    assert (
+        "id=T-9001 · title=다라운드 절 선별 픽스처 · "
+        "touches=[x.py] · estimate=medium"
+    ) in out
+
 
 def test_ticket_body_selection_keeps_only_last_round_per_role(
     external, monkeypatch, tmp_path, capsys,
@@ -419,6 +425,13 @@ def test_ticket_body_selection_keeps_only_last_round_per_role(
         assert f"라운드{i} reviewer 본문" not in out
         assert f"(생략: role=developer ordinal={i} · " in out
         assert f"(생략: role=code-reviewer ordinal={i} · " in out
+        # F-004 — 생략된 라운드의 봉인 줄은 절과 함께 사라진다(고아 해시로 남지 않는다).
+        assert f"<!-- pm-ticket-seal role=developer ordinal={i} sha256={'a' * 64}" not in out
+        assert f"<!-- pm-ticket-seal role=code-reviewer ordinal={i} sha256={'b' * 64}" not in out
+
+    # F-004 — 전량 유지하는 마지막 라운드(ordinal=2)의 봉인은 그대로 남는다(절이 검증 가능).
+    assert f"<!-- pm-ticket-seal role=developer ordinal=2 sha256={'a' * 64}" in out
+    assert f"<!-- pm-ticket-seal role=code-reviewer ordinal=2 sha256={'b' * 64}" in out
 
     assert "생략 라운드: 4개" in out
 
@@ -456,6 +469,21 @@ def test_ticket_body_selection_still_over_limit_fails_loud_without_sending(
     assert "본문을 자르지 않았고 외부로 전송하지 않습니다" in captured.err
     assert "라운드2 developer 본문" not in captured.out
     assert "프롬프트 미리보기" not in captured.out
+
+    # F-005 — dry-run 은 애초에 전송 경로가 아니다. 실 전송 경로(`_stub_real_send`)에서도
+    # rc=1 이고 리뷰어가 아예 호출되지 않는지(prompts == [])까지 단언해 순서 회귀를 잡는다.
+    prompts: list[str] = []
+    _stub_real_send(external, monkeypatch, tmp_path, prompts)
+    real_send_conf = {
+        "review_ticket_body_max_bytes": "50",
+        "additional_reviewer_enabled": "true",
+    }
+    _wire(external, monkeypatch, tmp_path, ticket, conf=real_send_conf)
+
+    assert external.main([
+        "--ticket", "T-9001", "--output-dir", str(tmp_path / "raw"),
+    ]) == 1
+    assert prompts == []
 
 
 def test_ticket_body_selection_zero_growth_sections_is_byte_identical(

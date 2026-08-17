@@ -4796,42 +4796,23 @@ def _select_ticket_body_for_review(body: str) -> TicketBodySelection:
 def _parse_title_from_file(path: Path) -> str | None:
     """ticket 파일에서 frontmatter title 스칼라를 추출한다(선별 헤더 요약 전용).
 
-    표시용 요약이라 완료 게이트 estimate 해석이 요구하는 YAML 주석-꼬리 정밀도는 필요 없다 —
-    touches 와 같은 경량 스캐너를 그대로 쓴다."""
-    fm_text, _body = _split_ticket_frontmatter(
-        _read_text_shared(path, encoding="utf-8"), source=path,
-    )
-    if fm_text is None:
-        return None
-    for line in fm_text.splitlines():
-        match = re.match(r"^title\s*:\s*(.+)$", line)
-        if match:
-            return match.group(1).strip().strip("\"'")
-    return None
-
-
-def _parse_estimate_display_from_file(path: Path) -> str | None:
-    """ticket 파일에서 frontmatter estimate 스칼라를 추출한다(선별 헤더 요약 전용).
-
-    diff 서킷브레이커의 `_parse_estimate_from_file`(board YAML 로더)과 값이 다를 수 있는 경량
-    스캐너다 — 여기서는 상한을 지어내지 않고 리뷰어에게 보여줄 표시 문자열만 만든다."""
-    fm_text, _body = _split_ticket_frontmatter(
-        _read_text_shared(path, encoding="utf-8"), source=path,
-    )
-    if fm_text is None:
-        return None
-    for line in fm_text.splitlines():
-        match = re.match(r"^estimate\s*:\s*(.+)$", line)
-        if match:
-            return match.group(1).strip().strip("\"'")
-    return None
+    board 의 YAML frontmatter 로더(`_parse_estimate_from_file` 과 같은 seam)를 재사용한다 —
+    자체 정규식은 estimate 축에서 이미 확인된 결함(YAML 주석 꼬리가 값에 붙는 오독)을 title 에서
+    반복할 뿐이라 두지 않는다(T-0703 R1 리뷰 F-001)."""
+    board = _load_board()
+    fm, _body = board.load_ticket(path)
+    title = fm.get("title") if isinstance(fm, dict) else None
+    return title.strip() or None if isinstance(title, str) else None
 
 
 def _ticket_body_selection_header(path: Path, ticket_id: str) -> str:
-    """절 선별이 실제로 일어난 티켓 본문 앞에 붙는 frontmatter 요약 1줄(T-0703 §인터페이스 1)."""
+    """절 선별이 실제로 일어난 티켓 본문 앞에 붙는 frontmatter 요약 1줄(T-0703 §인터페이스 1).
+
+    estimate 는 diff 서킷브레이커와 같은 board YAML 파서(`_parse_estimate_from_file`)를 그대로
+    호출한다 — 표시용이라고 값이 갈리는 경량 스캐너를 따로 두지 않는다(F-001)."""
     title = _parse_title_from_file(path)
     touches = _parse_touches_from_file(path)
-    estimate = _parse_estimate_display_from_file(path)
+    estimate = _parse_estimate_from_file(path)
     return (
         f"id={ticket_id} · title={title or '(미상)'} · "
         f"touches=[{', '.join(touches)}] · estimate={estimate or '(미상)'}"
