@@ -1636,6 +1636,20 @@ _CONFIRM_FIX_NO_REJECTION_GUIDANCE = (
     "  (장부: {ledger})"
 )
 
+# `--confirm-fix` 자격 미달 안내(회수 거부 라운드) — 최신 반려는 실재하지만 그 산출이 티켓 회수에서
+# 거부돼 판정 표면에 없다. 그 지적을 확인 대상으로 실으면 확인 라운드가 표면 밖 ID 를
+# `confirmations` 에 담아 회수 게이트에 다시 걸린다(과금만 소비하는 왕복).
+_CONFIRM_FIX_REFUSED_HARVEST_GUIDANCE = (
+    "오류: `--confirm-fix` 의 확인 대상이 판정 표면에 없습니다 — 게이트 {gate} 의 최신 반려 "
+    "라운드는 티켓 회수에서 거부됐습니다 (표면 밖 finding: {ids}).\n"
+    "  · 거부된 라운드의 산출은 절에 평문으로 보존되지만 `review delta` 표면에는 없습니다 — "
+    "그 ID 를 확인해도 회수가 다시 거부됩니다.\n"
+    "  · 그 지적은 **일반 라운드**로 다시 받으세요 (`--confirm-fix` 없이 실행).\n"
+    "  · 거부 사유는 티켓의 external-reviewer 절 머리 경고와 `--rounds-report --gate {gate}` 로 "
+    "확인하세요.\n"
+    "  (장부: {ledger})"
+)
+
 # `--ack-rounds` 폐지 안내 — 플래그는 인자표에 남겨 두고(모르는 인자 오류 대신 처방을 낸다)
 # 호출 자체를 거부한다. 연장 승인 경로가 남아 있으면 상한이 상한이 아니게 된다.
 _ACK_ROUNDS_REMOVED_GUIDANCE = (
@@ -3216,9 +3230,60 @@ def _recorded_must_fix_texts(entry: dict, outcome: dict) -> list[str]:
     return []
 
 
-def _confirm_fix_evidence(entry: dict) -> str | None:
+def _must_fix_items_on_surface(
+    items: Sequence[str], surface_finding_ids: set[str],
+) -> list[str]:
+    """must-fix 항목 중 **판정 표면에 실재하는** finding 을 가리키는 것만 남긴다.
+
+    항목의 ID 표기 해석은 회수 엔진과 같은 함수(`collect_review_finding_ids`)를 쓴다 — 두 자리가
+    다른 규칙으로 읽으면 근거에 실린 ID 와 회수 게이트가 받는 ID 가 갈린다. ID 를 하나도 담지
+    않은 항목(구세대 자유 산문)은 판정할 근거가 없어 그대로 둔다.
+    """
+    delegate = _load_pm_delegate()
+    kept: list[str] = []
+    for item in items:
+        ids = delegate.collect_review_finding_ids(
+            item, delegate.EXTERNAL_REVIEW_ROLE,
+        )
+        if not ids or (ids & set(surface_finding_ids)):
+            kept.append(item)
+    return kept
+
+
+def _confirm_fix_offsurface_ids(
+    entry: dict, surface_finding_ids: set[str] | None,
+) -> list[str]:
+    """최신 반려 라운드 must_fix 가 가리키는 ID 중 판정 표면 **밖**의 것 (거부 라운드 진단).
+
+    자격 거부 안내가 "확인할 반려가 없다"가 아니라 "그 라운드 산출이 회수 거부돼 판정 표면에
+    없다"고 정확히 말하게 하는 입력이다.
+    """
+    if surface_finding_ids is None:
+        return []
+    outcome = _latest_round_outcome(entry)
+    if outcome is None or not _is_rejection(entry, outcome):
+        return []
+    delegate = _load_pm_delegate()
+    referenced: set[str] = set()
+    for item in _recorded_must_fix_texts(entry, outcome):
+        referenced |= delegate.collect_review_finding_ids(
+            item, delegate.EXTERNAL_REVIEW_ROLE,
+        )
+    return sorted(referenced - set(surface_finding_ids))
+
+
+def _confirm_fix_evidence(
+    entry: dict, *, surface_finding_ids: set[str] | None = None,
+) -> str | None:
     """확인 전용 라운드 프롬프트에 실을 근거 블록 — **최신 완료 라운드가 반려가 아니면
-    None(자격 없음)**. 근거는 그 최신 반려 라운드의 must_fix 다(자격과 같은 산출 1건)."""
+    None(자격 없음)**. 근거는 그 최신 반려 라운드의 must_fix 다(자격과 같은 산출 1건).
+
+    `surface_finding_ids`(회수 대상 티켓이 있는 실행)가 주어지면 **회수 거부된 라운드의
+    지적을 근거에서 뺀다** — 그 ID 는 판정 표면에 없어서, 확인 라운드가 규칙대로 그 ID 를
+    `confirmations` 에 실으면 회수 게이트가 다시 거부한다(엔진이 스스로 함정을 지시하는 경로).
+    출처 규칙은 내부 시드(`render_ticket_growth_section_seed` 의 거부 절 제외)와 같다. 남는
+    지적이 없으면 자격 없음이다 — 과금 라운드는 못 세우는 쪽이 보수 방향이다.
+    """
     outcome = _latest_round_outcome(entry)
     if outcome is None or not _is_rejection(entry, outcome):
         return None
@@ -3226,6 +3291,10 @@ def _confirm_fix_evidence(entry: dict) -> str | None:
     header = _CONFIRM_FIX_EVIDENCE_HEADER.format(
         round=f"#{sequence}" if sequence is not None else "직전 반려 라운드")
     items = _recorded_must_fix_texts(entry, outcome)
+    if items and surface_finding_ids is not None:
+        items = _must_fix_items_on_surface(items, surface_finding_ids)
+        if not items:
+            return None
     if not items:
         return header + _CONFIRM_FIX_EVIDENCE_UNRECORDED.format(
             count=_format_round_field(outcome.get("must_fix")))
@@ -3233,7 +3302,9 @@ def _confirm_fix_evidence(entry: dict) -> str | None:
     return f"{header}{listed}\n\n"
 
 
-def _gate_confirm_fix_evidence(gate: str) -> str | None:
+def _gate_confirm_fix_evidence(
+    gate: str, *, surface_finding_ids: set[str] | None = None,
+) -> str | None:
     """게이트 장부를 **읽기 전용**으로 열어 확인 전용 라운드 근거 블록을 만든다 (없으면 None).
 
     프롬프트 조립은 예약(임계 구역)보다 앞이라 여기서 한 번 더 읽는다 — 장부를 고치지 않으므로
@@ -3248,7 +3319,9 @@ def _gate_confirm_fix_evidence(gate: str) -> str | None:
             legacy = _read_round_ledger_at(legacy_path)
             if gate in legacy:
                 ledger = legacy
-    return _confirm_fix_evidence(_gate_entry(dict(ledger), gate))
+    return _confirm_fix_evidence(
+        _gate_entry(dict(ledger), gate), surface_finding_ids=surface_finding_ids,
+    )
 
 
 def _spend_confirm_fix(entry: dict) -> None:
@@ -3377,7 +3450,7 @@ def _derive_gate_from_ticket(args) -> GateDerivation:
 
 def _reserve_round_budget(
     args, conf: dict[str, str], *, wall_timeout_sec: int | None = None,
-    target_rev: str | None = None,
+    target_rev: str | None = None, surface_finding_ids: set[str] | None = None,
 ) -> RoundBudget:
     """라운드 상한·wave 예산을 한 임계 구역에서 확인하고 이번 전송을 예약한다.
 
@@ -3471,7 +3544,11 @@ def _reserve_round_budget(
             # 확인 전용 라운드의 자격과 근거를 **이 스냅샷에서 한 번** 읽는다 — 자격은 여기서
             # 보고 근거는 프롬프트가 따로 읽으면, 두 read 사이에 끼어든 라운드가 "자격 통과 ·
             # 근거 없음"(또는 그 반대)을 만든다.
-            confirm_fix_evidence = _confirm_fix_evidence(entry) if confirm_fix else None
+            confirm_fix_evidence = (
+                _confirm_fix_evidence(
+                    entry, surface_finding_ids=surface_finding_ids,
+                ) if confirm_fix else None
+            )
             if confirm_fix and entry["confirm_fix"] >= 1:
                 if approved or wave_repaired:
                     _save_round_ledger(ledger)
@@ -3486,10 +3563,18 @@ def _reserve_round_budget(
                 if approved or wave_repaired:
                     _save_round_ledger(ledger)
                 announce(resumed=False)
-                print(_CONFIRM_FIX_NO_REJECTION_GUIDANCE.format(
-                    gate=args.gate, rounds=len(entry["rounds"]),
-                    verdict=_latest_verdict_label(entry),
-                    ledger=_round_ledger_path()), file=sys.stderr)
+                # 자격이 없는 사유는 둘이고 처방이 다르다 — 반려 자체가 없거나(첫 라운드·전건
+                # 통과), 반려는 있는데 그 산출이 회수 거부돼 판정 표면에 없거나.
+                offsurface = _confirm_fix_offsurface_ids(entry, surface_finding_ids)
+                if offsurface:
+                    print(_CONFIRM_FIX_REFUSED_HARVEST_GUIDANCE.format(
+                        gate=args.gate, ids=", ".join(offsurface),
+                        ledger=_round_ledger_path()), file=sys.stderr)
+                else:
+                    print(_CONFIRM_FIX_NO_REJECTION_GUIDANCE.format(
+                        gate=args.gate, rounds=len(entry["rounds"]),
+                        verdict=_latest_verdict_label(entry),
+                        ledger=_round_ledger_path()), file=sys.stderr)
                 return RoundBudget(refused_rc=EXIT_ROUND_LIMIT_EXCEEDED)
             if convergence is not None and not confirm_fix:
                 if approved or wave_repaired:
@@ -7866,6 +7951,14 @@ def _main(argv: list[str] | None = None) -> int:
             next_finding_id=_next_external_finding_id(args, pm_home=pm_home),
         )
 
+    # 확인 전용 라운드 근거는 티켓 **판정 표면**과 대조해 고른다(회수 대상이 있는 실행만 · 읽기
+    # 전용). 회수 거부된 라운드의 지적을 근거로 실으면 그 확인 라운드가 표면 밖 ID 를
+    # `confirmations` 에 담아 회수 게이트에 다시 걸린다 — 미리보기·자격 판정이 같은 입력을 쓴다.
+    surface_finding_ids = (
+        _harvest_surface_finding_ids(args, pm_home=pm_home)
+        if getattr(args, "confirm_fix", False) else None
+    )
+
     # 구키 deprecation — 미리보기·실행 **양쪽**에서 같은 자리에 안내. 게이트 판정 앞이라 꺼져 있는
     # conf 도 안내를 받는다(구키로 `false` 를 적어 둔 채택자가 켜려 할 때 신키를 알아야 한다).
     # 게이트와 노브를 한 깔때기에서 받아 축마다 다른 자리에 찍히지 않게 한다.
@@ -7877,7 +7970,9 @@ def _main(argv: list[str] | None = None) -> int:
             return 1
         # dry-run은 예약 스냅샷이 없으므로 읽기 전용 장부 조회 근거로 미리보기를 조립한다.
         prompt = compose_prompt(
-            _gate_confirm_fix_evidence(args.gate)
+            _gate_confirm_fix_evidence(
+                args.gate, surface_finding_ids=surface_finding_ids,
+            )
             if getattr(args, "confirm_fix", False) and args.gate else None
         )
         # 미리보기는 **부작용 0**이다(외부 송신·raw 예약·라운드 예약·격리 거울·`--output-dir`
@@ -7990,13 +8085,16 @@ def _main(argv: list[str] | None = None) -> int:
     # 예약 전 조회는 미리보기 성격일 뿐 자격 근거가 아니다. confirm-fix 예약이 반환한 eligibility
     # snapshot evidence로 아래에서 반드시 재조립한다(동시 마감 라운드와 두 read가 갈려도 한 스냅샷).
     prompt = compose_prompt(
-        _gate_confirm_fix_evidence(args.gate)
+        _gate_confirm_fix_evidence(
+            args.gate, surface_finding_ids=surface_finding_ids,
+        )
         if getattr(args, "confirm_fix", False) and args.gate else None
     )
 
     budget = _reserve_round_budget(
         args, conf, wall_timeout_sec=timeout,
         target_rev=_target_rev_fingerprint(diff),
+        surface_finding_ids=surface_finding_ids,
     )
     if budget.refused_rc is not None:
         return budget.refused_rc
@@ -8089,6 +8187,37 @@ def _next_external_finding_id(args, *, pm_home: Path | None) -> str | None:
         )
         return None
     return delegate.next_review_finding_id(body, delegate.EXTERNAL_REVIEW_ROLE)
+
+
+def _harvest_surface_finding_ids(args, *, pm_home: Path | None) -> set[str] | None:
+    """회수 대상 티켓의 **판정 표면에 실재하는** 이 채널 finding ID (대상 없으면 None).
+
+    확인 전용 라운드의 근거를 고르는 입력이다 — 회수 거부된 라운드의 지적을 확인 대상으로 실으면
+    그 라운드는 표면 밖 ID 를 `confirmations` 에 담아 회수 게이트에 다시 걸린다. 대상 해소·본문
+    읽기는 프롬프트의 다음 ID 실값 경로(`_next_external_finding_id`)와 **같은 함수**를 쓴다.
+
+    읽지 못한 티켓은 None(대조 없음)이다 — 회수가 없는 실행(`--paths` 단독)과 같은 취급이고,
+    사유는 loud 하게 남긴다(조용히 옛 동작으로 내려가지 않는다).
+    """
+    ticket, _problem = _harvest_target_ticket(args, pm_home=pm_home)
+    if not ticket:
+        return None
+    delegate = _load_pm_delegate()
+    try:
+        body = _load_ticket_body_from_file(
+            _find_ticket_file(ticket, pm_home=pm_home)
+        )
+        return delegate.collect_review_finding_declarations(
+            body, delegate.EXTERNAL_REVIEW_ROLE,
+        )
+    except (AnchorResolutionError, OSError, UnicodeError,
+            delegate.DelegateError) as exc:
+        print(
+            f"경고: {ticket} 의 판정 표면 finding 을 읽지 못해 확인 전용 라운드 근거를 "
+            f"티켓과 대조하지 못했습니다({exc}) — 장부 기록 그대로 싣습니다.",
+            file=sys.stderr,
+        )
+        return None
 
 
 def _harvest_external_review_section(

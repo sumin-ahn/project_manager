@@ -1217,6 +1217,166 @@ def test_confirmation_round_may_reference_existing_ids(
     assert delta.accepted == ()
 
 
+# ── F-016 회수 게이트 시야 == 판정 표면(confirmation 대상 대조) ──────────
+
+
+def _confirming_reject_reply(finding: dict, *confirmations: dict) -> str:
+    """신규 finding 과 confirmations 를 함께 담은 반려 회신(확인 라운드 형상)."""
+    return (
+        _prose(f"- {finding['id']}")
+        + _block(_payload([finding], list(confirmations)))
+    )
+
+
+def test_confirmation_of_a_refused_round_is_refused_and_the_next_round_can_land(
+    external, pd, monkeypatch, tmp_path, capsys,
+):
+    """(F-016) 거부된 라운드의 ID 를 확인해도 회수는 거부되고 다음 라운드가 착지한다.
+
+    거부 절의 finding 은 판정 표면에 없다. 그 ID 를 confirmations 로 실은 블록을 봉인하면
+    `parse_pm_review_delta` 가 '선행 finding 미참조' 로 그 티켓을 영구 malformed 로 잠근다 —
+    회수 게이트가 판정 표면과 같은 시야로 그 자리에서 거부한다.
+    """
+    rounds = {"review_rounds_max": "9"}
+    ticket_path = _seed_board(tmp_path)
+    _wire(external, monkeypatch, tmp_path, _BROKEN_JSON_REPLY, conf=rounds)
+    assert _run(external, tmp_path, "--ticket", TICKET) != 0     # 라운드1 회수 거부
+
+    _wire(external, monkeypatch, tmp_path, _confirming_reject_reply(
+        _finding("X-002"),
+        {"id": "X-001", "status": "resolved", "evidence": "거부 라운드의 ID"},
+    ), conf=rounds)
+    assert _run(external, tmp_path, "--ticket", TICKET) != 0
+    err = capsys.readouterr().err
+    assert "회수 문제" in err and "confirmation 대상 finding 부재: X-001" in err
+
+    text = ticket_path.read_text(encoding="utf-8")
+    sections = _sections(pd, text, "external-reviewer")
+    assert len(sections) == 2
+    assert '"id":"X-002"' in sections[1]              # 산출은 평문으로 보존된다.
+    assert re.search(r"^`{3,}pm-review", sections[1], re.M) is None
+    assert pd.verify_ticket_seals(text) == []
+    assert pd._pm_review_refused_section_keys(
+        text, pd._ticket_growth_sections(text),
+    ) == {("external-reviewer", 0), ("external-reviewer", 1)}
+
+    # 라운드3 이 정상 착지하고 delta 가 green 이다(거부 라운드가 티켓을 잠그지 않는다).
+    _wire(external, monkeypatch, tmp_path,
+          _reject_reply(_finding("X-003")), conf=rounds)
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+    text = ticket_path.read_text(encoding="utf-8")
+    delta = pd.parse_pm_review_delta(text + _disposition("X-003", ordinal=2))
+    assert [finding.id for finding, _row in delta.accepted] == ["X-003"]
+
+
+def test_hallucinated_confirmation_target_is_refused_the_same_way(
+    external, pd, monkeypatch, tmp_path, capsys,
+):
+    """(F-016) 티켓에 없는 ID(하네스 환각)를 확인해도 같은 거부 경로다."""
+    rounds = {"review_rounds_max": "9"}
+    ticket_path = _seed_board(tmp_path)
+    _wire(external, monkeypatch, tmp_path,
+          _reject_reply(_finding("X-001")), conf=rounds)
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+
+    _wire(external, monkeypatch, tmp_path, _confirming_reject_reply(
+        _finding("X-002"),
+        {"id": "X-099", "status": "resolved", "evidence": "존재하지 않는 ID"},
+    ), conf=rounds)
+    assert _run(external, tmp_path, "--ticket", TICKET) != 0
+    assert "confirmation 대상 finding 부재: X-099" in capsys.readouterr().err
+
+    # 정상 절(라운드1)은 그대로 판정 대상이고 delta 는 계속 읽힌다.
+    text = ticket_path.read_text(encoding="utf-8")
+    delta = pd.parse_pm_review_delta(text + _disposition("X-001"))
+    assert [finding.id for finding, _row in delta.accepted] == ["X-001"]
+
+
+def test_declarations_count_only_the_surface_sections(pd):
+    """(F-016) 표면 선언 집합은 거부 절·산문 인용을 세지 않는다(재사용 방지 스캔과 시야가 다르다)."""
+    normal = _sealed_external_section(pd, _payload([_finding("X-001")]), ordinal=0)
+    refused = _sealed_external_section(
+        pd, {}, ordinal=1,
+        raw_block=(
+            f"{pd.EXTERNAL_REVIEW_REFUSED_LINE}\n\n"
+            f"{pd.EXTERNAL_REVIEW_BLOCK_WARNING_PREFIX}JSON 파싱 실패\n\n"
+            "```text\n" + json.dumps(_payload([_finding("X-002")]),
+                                     ensure_ascii=False) + "\n```\n"
+        ),
+    )
+    text = normal + refused + "\n산문에서 X-050 을 인용한다.\n"
+
+    assert pd.collect_review_finding_declarations(text, "external-reviewer") == {"X-001"}
+    # 재사용 방지 스캔은 거부 절·산문까지 넓게 본다 — 두 시야는 의도적으로 다르다.
+    assert {"X-001", "X-002", "X-050"} <= pd.collect_review_finding_ids(
+        text, "external-reviewer",
+    )
+    assert pd.next_review_finding_id(text, "external-reviewer") == "X-051"
+
+
+def test_confirm_fix_after_a_refused_round_is_refused_before_any_spawn(
+    external, pd, monkeypatch, tmp_path, capsys,
+):
+    """(F-016) 회수 거부된 라운드는 확인 전용 라운드의 근거가 되지 않는다(전송 0).
+
+    엔진이 그 라운드의 must-fix 를 근거로 실으면 출력 규칙이 '그 X- ID 를 confirmations 에
+    실어라'고 지시해, 확인 라운드가 회수 게이트에 다시 걸린다 — 엔진이 스스로 함정을 지시한다.
+    """
+    ticket_path = _seed_board(tmp_path)
+    _wire(external, monkeypatch, tmp_path, _BROKEN_JSON_REPLY)
+    assert _run(external, tmp_path, "--ticket", TICKET) != 0
+    capsys.readouterr()
+
+    calls = _wire(external, monkeypatch, tmp_path, _confirm_reply({
+        "id": "X-001", "status": "resolved", "evidence": "거부 라운드의 ID",
+    }))
+    assert _run(external, tmp_path, "--ticket", TICKET, "--confirm-fix") == \
+        external.EXIT_ROUND_LIMIT_EXCEEDED
+    assert calls["n"] == 0                       # 외부 전송·과금 0
+    err = capsys.readouterr().err
+    assert "판정 표면에 없습니다" in err and "X-001" in err
+    assert "일반 라운드" in err
+    # 절은 하나(거부 라운드)뿐이고 티켓은 그대로다.
+    assert len(_sections(pd, ticket_path.read_text(encoding="utf-8"),
+                         "external-reviewer")) == 1
+
+
+def test_confirm_fix_evidence_keeps_items_that_are_on_the_surface(external):
+    """표면에 있는 지적은 근거에 그대로 남는다(대조가 정상 확인 라운드를 막지 않는다)."""
+    entry = {
+        "rounds": [{"id": "r1", "verdict": 1, "must_fix": 1, "sequence": 1}],
+        "records": [{"id": "r1", "verdict": 1, "must_fix_items": ["X-001 미해소"]}],
+    }
+    assert external._confirm_fix_evidence(
+        entry, surface_finding_ids={"X-001"},
+    ) is not None
+    assert external._confirm_fix_evidence(
+        entry, surface_finding_ids=set(),
+    ) is None
+    assert external._confirm_fix_offsurface_ids(entry, set()) == ["X-001"]
+    # 대조 입력이 없는 실행(회수 대상 없음)은 종전 그대로다.
+    assert external._confirm_fix_evidence(entry) is not None
+
+
+# ── F-018 무해화: 라벨만 낮추고 뒤 텍스트는 보존 ────────────────────────
+
+
+def test_neutralized_fence_keeps_the_text_after_the_label(pd):
+    """(F-018) fence 라벨 뒤 같은 줄 설명은 버리지 않는다(산출 보존)."""
+    body = (
+        "  ```pm-review-v1 (다음은 내가 참조한 지난 라운드 블록이다)\r\n"
+        "{}\r\n```\r\n"
+    )
+    neutralized = pd._neutralize_review_fence(body)
+    assert neutralized == (
+        "  ```text (다음은 내가 참조한 지난 라운드 블록이다)\r\n{}\r\n```\r\n"
+    )
+    # 라벨만 있는 줄은 종전대로 `text` 한 단어로 낮춘다.
+    assert pd._neutralize_review_fence("````pm-review-v1\n{}\n````\n") == (
+        "````text\n{}\n````\n"
+    )
+
+
 # ── F-005 개행: 지배 표기를 한 번만 입힌다 ──────────────────────────────
 
 
