@@ -314,8 +314,8 @@ INTERNAL_FINDING_IDS_FIELD = "finding_ids"
 PM_REVIEW_BLOCK = "pm-review-v1"
 PM_REVIEW_DISPOSITION_BLOCK = "pm-review-disposition-v1"
 # versioned fence 후보를 찾는 유일한 정규식 — 스캐너(`_pm_review_json_blocks`)와 회수 거부
-# 무해화(`_neutralize_review_fence`)가 **같은 시야**를 쓴다. 무해화가 스캐너보다 좁으면
-# 남은 손상 fence 하나가 티켓 전역 스캔을 fail-loud 시킨다.
+# 무해화(`_neutralize_review_fence`)가 **이 상수 하나만** 쓴다(리터럴 재기재 없음). 무해화가
+# 스캐너보다 좁으면 남은 손상 fence 하나가 티켓 전역 스캔을 fail-loud 시킨다.
 _PM_REVIEW_FENCE_CANDIDATE_RE = re.compile(r"`{3,}(pm-review[^\s`]*)")
 # fence 이름(`…-v1`)은 블록 **종류** 라벨이고, payload 의 `version` 이 스키마 세대다. severity 를
 # 필수로 올리면서 세대를 2 로 승격했다 — 이미 봉인돼 손댈 수 없는 v1 블록(진행 중 티켓 실측
@@ -2807,6 +2807,49 @@ def next_review_finding_id(ticket_text: str, reviewer_role: str) -> str:
     return f"{prefix}-{(max(numbers) + 1 if numbers else 1):03d}"
 
 
+def collect_review_finding_declarations(
+    ticket_text: str, reviewer_role: str,
+) -> set[str]:
+    """판정 표면에 **실재하는** 그 채널 finding ID — 회수 거부되지 않은 절의 블록 선언만.
+
+    `collect_review_finding_ids` 와 시야가 다르다. 저쪽은 ID 재사용을 막으려고 산문 인용·거부
+    절까지 넓게 잡지만(다음 번호가 커질 뿐이다), 이쪽은 confirmation 이 참조할 수 있는 finding
+    만 센다 — 판정 표면 규칙(`parse_pm_review_delta` 의 "confirmation이 선행 finding ID를
+    참조")과 **같은 시야**여야 회수 게이트가 통과시킨 블록이 delta 에서 malformed 가 되지 않는다.
+    거부 절 제외 규칙은 내부 시드(`render_ticket_growth_section_seed`)와 같은 출처다.
+
+    블록 스캔은 절 범위 관용 판정이다 — 다른 절의 손상이 이 대조를 눈멀게 하면 안 되고, 읽지
+    못한 절은 선언으로 세지 않는다(대조는 fail-closed 쪽으로 기운다·다음 라운드 재시도 가능).
+    """
+    prefix = _pm_review_finding_id_prefix(reviewer_role)
+    sections = _ticket_growth_sections(ticket_text)
+    refused = _pm_review_refused_section_keys(ticket_text, sections)
+    declared: set[str] = set()
+    for section in sections:
+        if section.role != reviewer_role:
+            continue
+        if (section.role, section.ordinal) in refused:
+            continue
+        try:
+            blocks = _pm_review_section_review_blocks(ticket_text, section)
+        except PMReviewError:
+            continue
+        for block in blocks:
+            findings = block.value.get("findings")
+            if not isinstance(findings, list):
+                continue
+            for item in findings:
+                if not isinstance(item, dict):
+                    continue
+                finding_id = item.get("id")
+                if not isinstance(finding_id, str):
+                    continue
+                if (finding_id.startswith(f"{prefix}-")
+                        and _PM_REVIEW_ID_RE.fullmatch(finding_id) is not None):
+                    declared.add(finding_id)
+    return declared
+
+
 def _neutralize_review_fence(body: str) -> str:
     """회수 거부된 산출의 review fence 라벨을 평문으로 낮춘다(내용은 절에 그대로 남긴다).
 
@@ -2817,17 +2860,22 @@ def _neutralize_review_fence(body: str) -> str:
 
     스캐너와 **같은 정규식**을 써서 손상 fence(들여쓰기·4중 backtick·미지원 라벨)도 남기지
     않는다 — 하나라도 남으면 그 티켓의 전역 블록 스캔이 fail-loud 한다.
+
+    치환 구간은 **라벨까지**다. fence 줄 뒤에 붙은 같은 줄 텍스트(리뷰어의 괄호 설명 등)를 함께
+    버리면 "산출을 절에 보존한다"는 처리와 어긋난다.
     """
     lines: list[str] = []
     for line in body.splitlines(keepends=True):
-        stripped = line.lstrip()
+        content = line.rstrip("\r\n")
+        newline = line[len(content):]
+        stripped = content.lstrip()
         match = _PM_REVIEW_FENCE_CANDIDATE_RE.match(stripped)
         if match is not None:
-            indent = line[:len(line) - len(stripped)]
-            newline = line[len(line.rstrip("\r\n")):]
+            indent = content[:len(content) - len(stripped)]
             # backtick 개수는 그대로 둔다 — 닫는 fence 와 짝이 어긋나면 뒤 본문까지 코드로 읽힌다.
             ticks = "`" * (len(match.group(0)) - len(match.group(1)))
-            lines.append(f"{indent}{ticks}text{newline}")
+            trailing = stripped[match.end():]
+            lines.append(f"{indent}{ticks}text{trailing}{newline}")
             continue
         lines.append(line)
     return "".join(lines)
@@ -2857,29 +2905,73 @@ def _external_review_id_collisions(
     return sorted(collided)
 
 
+def _external_review_missing_confirmation_targets(
+    body: str, declared_finding_ids: Sequence[str],
+) -> list[str]:
+    """회신 블록의 confirmation ID 중 티켓 판정 표면에 **없는** 것.
+
+    판정 표면은 confirmation 이 선행 finding 을 참조할 것을 요구한다. 회수 게이트가 그 대조를
+    빼면 표면에 없는 ID(회수 거부된 라운드의 ID·환각 ID)를 실은 블록이 봉인돼 그 티켓의 delta 가
+    영구 malformed 로 잠긴다 — 두 시야를 같게 맞춰 그 자리에서 거부하고 라운드를 다시 열어 둔다.
+    """
+    declared = set(declared_finding_ids)
+    blocks = [
+        block for block in _pm_review_json_blocks(body)
+        if block.kind == PM_REVIEW_BLOCK
+    ]
+    if len(blocks) != 1:
+        return []
+    confirmations = blocks[0].value.get("confirmations")
+    if not isinstance(confirmations, list):
+        return []
+    missing = {
+        item["id"] for item in confirmations
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+        and item["id"] not in declared
+    }
+    return sorted(missing)
+
+
 def build_external_review_section_content(
     reply_text: str, *, today: str, label: str = EXTERNAL_REVIEW_SECTION_LABEL,
-    existing_finding_ids: Sequence[str] = (),
+    ticket_text: str = "",
 ) -> tuple[str, str | None]:
     """추가 리뷰어 산출을 역할 절 본문으로 만든다 — (본문, 위반 사유 또는 None).
 
     본문은 산문 답변 전문이다(그 안에 `pm-review-v1` 블록이 하나 들어 있다). 회수를 거부할
-    사유(스키마 위반·블록 중복·severity 부재·JSON 손상·`existing_finding_ids` 와 겹치는 finding
-    ID 재선언)가 있으면 **종류를 가리지 않고 같은 처리**를 한다 — 절 머리에 기계 표식과 경고를
-    남기고, 위반 블록은 fence 를 평문으로 낮춰 산출을 절에 보존한다. 사유는 함께 돌려준다(조용히
-    장부에만 남기지 않는다 — 호출부가 rc≠0 로 표면화한다).
+    사유(스키마 위반·블록 중복·severity 부재·JSON 손상·티켓에 이미 있는 finding ID 재선언·티켓
+    판정 표면에 없는 confirmation 대상)가 있으면 **종류를 가리지 않고 같은 처리**를 한다 — 절
+    머리에 기계 표식과 경고를 남기고, 위반 블록은 fence 를 평문으로 낮춰 산출을 절에 보존한다.
+    사유는 함께 돌려준다(조용히 장부에만 남기지 않는다 — 호출부가 rc≠0 로 표면화한다).
 
     거부한 라운드가 봉인된 절을 판정 표면에 올리면 그 티켓의 delta 가 영구 malformed 로 잠긴다
     ([[ADR-0089]] 손수정 차단). 표식으로 그 절만 표면에서 빼 다음 라운드가 정상 착지하게 둔다.
+
+    티켓 대조는 두 축이고 시야가 다르다 — 신규 finding ID 는 **넓은** 스캔(산문 인용·거부 절
+    포함)과, confirmation 대상은 **판정 표면 선언**(거부 절 제외)과 맞춘다. 두 집합은 넘겨받은
+    한 스냅샷(`ticket_text`)에서 함께 파생한다(호출부가 서로 다른 시점을 섞지 못하게).
     """
     body, neutralized = neutralize_ticket_growth_markup(reply_text)
     problem = validate_external_review_block(body)
     if problem is None:
-        collisions = _external_review_id_collisions(body, existing_finding_ids)
+        collisions = _external_review_id_collisions(
+            body, collect_review_finding_ids(ticket_text, EXTERNAL_REVIEW_ROLE),
+        )
         if collisions:
             problem = (
                 f"finding ID 재선언: {', '.join(collisions)} — 티켓에 이미 있는 ID 라 이 블록을 "
                 "판정 표면에 올리지 않았습니다(다음 라운드에서 새 ID 로 다시 내십시오)"
+            )
+    if problem is None:
+        missing = _external_review_missing_confirmation_targets(
+            body,
+            collect_review_finding_declarations(ticket_text, EXTERNAL_REVIEW_ROLE),
+        )
+        if missing:
+            problem = (
+                f"confirmation 대상 finding 부재: {', '.join(missing)} — 티켓 판정 표면에 없는 "
+                "ID 라 이 블록을 올리지 않았습니다(회수 거부된 라운드의 ID 이거나 존재하지 않는 "
+                "ID 입니다 · 다음 라운드에서 실재하는 ID 로 다시 내십시오)"
             )
     lines = [f"## {label} ({EXTERNAL_REVIEW_ROLE} · {today})", ""]
     if problem is not None:
@@ -2929,8 +3021,7 @@ def write_external_reviewer_section(
         growth_dir = ticket_growth_dir_for_ticket_path(ticket_path)
         ledger = read_ticket_growth_ledger(growth_dir, ticket)
         content, problem = build_external_review_section_content(
-            reply_text, today=today,
-            existing_finding_ids=collect_review_finding_ids(current_text, role),
+            reply_text, today=today, ticket_text=current_text,
         )
         ordinal = sum(
             section.role == role
@@ -3506,7 +3597,7 @@ def _pm_review_json_blocks(text: str) -> list[_PMReviewBlock]:
     while index < len(lines):
         line = lines[index].rstrip("\r\n")
         stripped = line.lstrip()
-        fence_candidate = re.match(r"`{3,}(pm-review[^\s`]*)", stripped)
+        fence_candidate = _PM_REVIEW_FENCE_CANDIDATE_RE.match(stripped)
         if fence_candidate is None:
             index += 1
             continue
