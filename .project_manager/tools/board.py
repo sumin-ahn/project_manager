@@ -2320,6 +2320,22 @@ def _load_review_rounds():
     )
 
 
+def _write_machine_line(text: str) -> None:
+    """기계 판독 한 줄(JSON 페이로드)을 콘솔 코덱 전환과 무관하게 UTF-8 로 내보낸다 (T-0693).
+
+    사람 출력(``print``)은 PowerShell 캡처에서 콘솔 codepage(cp949 등)로 강등될 수 있고 그
+    치환은 되돌릴 수 없다 — 다른 프로세스가 파싱하는 출력은 공용 seam 으로 UTF-8 bytes 를
+    직접 쓴다(콘솔 코덱 전환과 독립).
+    """
+    console_encoding = _load_module_from_path(
+        Path(__file__).resolve().with_name("console_encoding.py"),
+        "console_encoding.py",
+        verifier=_verify_engine_rev,
+        cache=True,
+    )
+    console_encoding.write_machine_line(text)
+
+
 try:
     identity_args = _load_identity_args()
     file_lock = _load_file_lock()
@@ -12540,7 +12556,9 @@ def cmd_refresh(_args: argparse.Namespace) -> int:
 
 def cmd_git_anchor(args: argparse.Namespace) -> int:
     """하네스 훅용 JSON 판정 표면. 외부 상태 mutation 없이 한 줄 JSON만 출력한다."""
-    print(json.dumps(judge_git_anchor_command(args.cwd, args.command), ensure_ascii=False))
+    _write_machine_line(
+        json.dumps(judge_git_anchor_command(args.cwd, args.command), ensure_ascii=False)
+    )
     return 0
 
 
