@@ -370,3 +370,159 @@ def test_git_call_count_does_not_scale_with_claimed_ticket_count(
     assert measured.total == 1
     assert measured.excluded_total == claimed_count - 1
     assert len(git_calls) == 3
+
+
+# ── 분리 PM 홈 + 슬롯 worktree — 회귀 skip 과 코드 트리 해소의 분리 ──────────
+#
+# `--no-pytest` 가 슬롯 해소까지 우회하던 동안, 측정 root 는 PM 홈으로 폴백했다. 분리 형상의
+# PM 홈에는 엔진 import 사본이 있어 그 사본이 dirty 하면 상한을 훌쩍 넘고, 코드 트리(worktree)가
+# clean 이어도 완료 부기가 false-block 됐다. 아래 두 형상은 같은 호출에서 측정 root 가 슬롯
+# worktree 라는 것을 차단/통과라는 관측 가능한 결과로 고정한다.
+
+
+def _seed_git_tree(root: Path, files: dict[str, int], *,
+                   extra_paths: tuple[str, ...] = ()) -> None:
+    """root 를 실 git 저장소로 만들고 커밋한 뒤 파일마다 지정 줄 수의 미커밋 변경을 남긴다."""
+    root.mkdir(parents=True, exist_ok=True)
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "ticket-finish-test@example.invalid")
+    _git(root, "config", "user.name", "ticket finish test")
+    (root / "seed.txt").write_text("seed\n", encoding="utf-8")
+    for relative in files:
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("", encoding="utf-8")
+    _git(root, "add", "seed.txt", *extra_paths, *files)
+    _git(root, "commit", "-q", "-m", "seed")
+    for relative, lines in files.items():
+        (root / relative).write_text("x\n" * lines, encoding="utf-8")
+
+
+def _split_home_shape(
+    tmp_path: Path, *, ticket_id: str, touches: list[str],
+    home_lines: int, worktree_lines: int, slot: str = "work/myrepo_1",
+):
+    """분리 PM 홈(엔진 사본 보유)과 슬롯 worktree 를 각각 실 git 저장소로 만든다.
+
+    두 트리가 같은 touches 파일을 갖고 서로 다른 크기의 미커밋 변경을 두므로, 측정 root 가
+    어느 트리인지에 따라 diff 총량(=차단 여부)이 갈린다.
+    """
+    home = tmp_path / "pm-home"
+    tools = home / ".project_manager" / "tools"
+    tools.parent.mkdir(parents=True)
+    shutil.copytree(TOOLS, tools)
+    _write_claimed_ticket(home, ticket_id, touches)
+    log_dir = home / ".project_manager" / "wiki" / "log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "current.md").write_text("# log\n", encoding="utf-8")
+    _seed_git_tree(
+        home, {touch: home_lines for touch in touches},
+        extra_paths=(".project_manager",),
+    )
+    worktree = home / slot
+    _seed_git_tree(worktree, {touch: worktree_lines for touch in touches})
+
+    spec = importlib.util.spec_from_file_location(
+        f"ticket_finish_split_{tmp_path.name}", tools / "ticket_finish.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return home, worktree, module
+
+
+def _probe_code_tree(tf, monkeypatch) -> list[Path]:
+    """main() 이 만드는 finisher 의 코드 트리 해소값을 관찰한다.
+
+    board.py subprocess 만 대역으로 막는다 — 이 형상이 검증하는 것은 measurement/stage 트리이고,
+    부기 자체(claimed→done 이동)는 별도 테스트가 소유한다. git·stage 경로는 실물 그대로다.
+    """
+    trees: list[Path] = []
+    original = tf.TicketFinisher
+
+    class _CodeTreeProbe(original):
+        def _code_tree(self):
+            tree = super()._code_tree()
+            trees.append(tree)
+            return tree
+
+        def _default_run_board(self, args):
+            return 0, "board ok"
+
+    monkeypatch.setattr(tf, "TicketFinisher", _CodeTreeProbe)
+    return trees
+
+
+def _staged_paths(root: Path) -> list[str]:
+    """root 의 index 에 올라간 경로들 (실 git 조회)."""
+    result = subprocess.run(
+        ["git", "-C", str(root), "diff", "--cached", "--name-only"],
+        check=True, capture_output=True, text=True, encoding="utf-8",
+    )
+    return sorted(line for line in result.stdout.splitlines() if line)
+
+
+def test_no_pytest_measures_slot_worktree_not_pm_home(tmp_path, monkeypatch, capsys):
+    """--no-pytest + 명시 슬롯 → PM 홈 사본이 상한을 넘게 dirty 해도 clean worktree 를 재 통과.
+
+    옛 규칙(회귀 skip = 슬롯 해소 skip)에서는 측정 root 가 PM 홈으로 폴백해 이 형상이
+    false-block 이었다.
+    """
+    _home, worktree, tf = _split_home_shape(
+        tmp_path, ticket_id="T-6701", touches=["src/engine.py"],
+        home_lines=2000, worktree_lines=0,
+    )
+    trees = _probe_code_tree(tf, monkeypatch)
+
+    rc = tf.main(
+        ["T-6701", "--repo", "myrepo", "--slot", "1", "--no-pytest", "--dry-run"]
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert trees and set(trees) == {worktree}   # PM 홈이 아니라 슬롯 worktree 를 잰다
+    assert "diff 서킷브레이커 차단" not in captured.err
+    assert "회귀 측정 skip" in captured.out      # [1/5] 만 skip
+
+
+def test_no_pytest_blocks_when_slot_worktree_exceeds_cap(tmp_path, monkeypatch, capsys):
+    """반대 형상 — worktree 가 상한 초과면 PM 홈이 clean 이어도 차단된다(가드 유지)."""
+    _home, worktree, tf = _split_home_shape(
+        tmp_path, ticket_id="T-6702", touches=["src/engine.py"],
+        home_lines=0, worktree_lines=2000,
+    )
+    trees = _probe_code_tree(tf, monkeypatch)
+
+    rc = tf.main(
+        ["T-6702", "--repo", "myrepo", "--slot", "1", "--no-pytest", "--dry-run"]
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert trees and set(trees) == {worktree}
+    assert "diff 서킷브레이커 차단" in captured.err
+    assert "diff 2000줄 > 상한 300줄" in captured.err
+
+
+def test_no_pytest_stages_touches_in_slot_worktree_not_pm_home(tmp_path, monkeypatch, capsys):
+    """--no-pytest + 명시 슬롯 → [4/5] 가 코드 touches 를 슬롯 worktree 에, log 산출물을 PM 홈에.
+
+    PM 홈에도 같은 좌표의 사본이 dirty 하지만 stage 되지 않아야 한다 — 계획의 분기 축은 코드
+    트리 위치이지 `--task` 유무가 아니다. [5/5] 커밋 안내도 같은 계획을 따라 repo별로 나온다.
+    """
+    home, worktree, tf = _split_home_shape(
+        tmp_path, ticket_id="T-6703", touches=["src/engine.py"],
+        home_lines=5, worktree_lines=10,
+    )
+    trees = _probe_code_tree(tf, monkeypatch)
+
+    rc = tf.main(["T-6703", "--repo", "myrepo", "--slot", "1", "--no-pytest"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert trees and set(trees) == {worktree}
+    assert _staged_paths(worktree) == ["src/engine.py"]          # 코드는 worktree 에만
+    assert _staged_paths(home) == [".project_manager/wiki/log/current.md"]  # 홈은 산출물만
+    assert f"[PM 홈 산출물] cwd={home}" in out
+    assert f"[slot worktree touches] cwd={worktree}" in out
+    assert (f"[slot worktree touches] cwd={worktree}: "
+            '`git commit -m "<메시지>" -- src/engine.py`') in out

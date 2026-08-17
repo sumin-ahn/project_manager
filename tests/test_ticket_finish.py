@@ -1087,8 +1087,9 @@ def test_default_python_venv_absent_falls_back_to_sys_executable(tf, tmp_path, m
 # ADR-0027 다중슬롯 형상(PM 홈 ② + worktree 슬롯 여럿)에선 `_regression_cwd(None)` 자동해소가
 # 모호해져 ② 홈(tests/ 부재)으로 폴백 → 회귀 red("no tests ran") → finish 가 *조용히* 차단됐다
 # (라이브 발견·PM 59차). `--repo`/`--slot`(ADR-0057 decomposed) 은 그 슬롯을 disambiguate 하고,
-# `--no-pytest` 는 회귀를 skip 한다. 다중슬롯인데 미지정+진짜 모호면 조용한 false-red 대신
-# fail-loud 로 중단한다. pm_handoff `_resolve_explicit_identity_slot`(M3 조인검증)·
+# `--no-pytest` 는 **회귀 실행만** skip 한다(코드 트리 해소는 그대로 — diff 서킷브레이커·stage 가
+# 같은 트리를 쓴다). 다중슬롯인데 미지정+진짜 모호면 조용한 false-red 대신 fail-loud 로 중단한다.
+# pm_handoff `_resolve_explicit_identity_slot`(M3 조인검증)·
 # `_resolve_session_worktree_slot` 재사용(DRY).
 
 
@@ -1230,8 +1231,9 @@ def test_run_skip_pytest_bypasses_regression_keeps_tests_pass(tf, tmp_path, caps
 def test_main_multislot_ambiguous_fails_loud_before_regression(tf, monkeypatch, capsys):
     """(c) 다중슬롯 모호 + --repo/--slot 부재 → 친화 에러·rc 1·회귀 미시작(조용한 ② false-red 제거).
 
-    fail-loud 는 run() 진입 *전*이라 회귀가 시작조차 안 된다([1/5] 미출력). 에러는 --repo/
-    --no-pytest 안내를 담는다.
+    fail-loud 는 run() 진입 *전*이라 회귀가 시작조차 안 된다([1/5] 미출력). 처방은 `--repo
+    <name> [--slot <N>]` 또는 `--task <이름>` 이다 — 회귀 skip 은 처방이 아니다(같은 코드 트리를
+    diff 서킷브레이커·stage 가 함께 쓴다).
     """
     monkeypatch.setattr(
         tf, "_load_pm_handoff",
@@ -1241,7 +1243,8 @@ def test_main_multislot_ambiguous_fails_loud_before_regression(tf, monkeypatch, 
     captured = capsys.readouterr()
     assert rc == 1
     assert "모호" in captured.err
-    assert "--repo" in captured.err and "--no-pytest" in captured.err
+    assert "--repo" in captured.err and "--task" in captured.err
+    assert "--no-pytest" not in captured.err   # 회귀 skip 은 트리 해소 우회 수단이 아니다
     assert "[1/5]" not in captured.out  # run()/회귀 진입 전 중단
 
 
@@ -1268,17 +1271,18 @@ def test_main_repo_slot_forwards_resolved_regression_cwd(tf, monkeypatch):
     assert captured["session"] == "project_manager_1"
 
 
-def test_main_no_pytest_bypasses_ambiguity_gate(tf, monkeypatch):
-    """(must-fix) --no-pytest → 다중슬롯 모호여도 게이트 우회·슬롯 해소 미호출·rc 0(self-contradiction 제거).
+def test_main_no_pytest_still_gates_ambiguity(tf, monkeypatch, capsys):
+    """--no-pytest + 진짜 모호 → 슬롯 해소는 수행하고 rc 1 + --repo/--slot·--task 처방.
 
-    이전엔 모호 게이트가 args.no_pytest 앞에서 돌아, 에러가 "--no-pytest 로 skip 하라"를 remedy 로
-    광고하면서 정작 --no-pytest 를 준 사용자를 rc 1 로 막는 dead-end 였다(codex+reviewer 동일 포착).
-    게이트를 `if not args.no_pytest:` 뒤로 옮겨, --no-pytest 면 회귀가 안 도므로 슬롯 해소 자체를
-    호출조차 안 하고 regression_cwd=None·skip 로 진행한다.
+    옛 규칙은 `--no-pytest` 면 슬롯 해소 자체를 건너뛰었다 — 회귀 cwd 가 pytest 전용 값이던
+    시점의 결정이다. 그 뒤 같은 해소 결과(코드 트리)를 diff 서킷브레이커·[4/5] stage·PM-direct
+    재검이 소비하게 됐으므로, 회귀 skip 이 해소를 우회하면 그 소비자들이 PM 홈(분리 형상에선
+    엔진 import 사본)을 잰다. 그래서 회귀 skip 과 트리 해소를 분리했고, 모호를 푸는 수단은
+    `--repo/--slot`·`--task` 명시뿐이다.
     """
     resolve_calls: list = []
 
-    def _spy_resolve(repo, slot):  # 호출되면 모호 반환 — 하지만 --no-pytest 면 호출조차 안 돼야.
+    def _spy_resolve(repo, slot):  # --no-pytest 여도 반드시 호출돼야 한다.
         resolve_calls.append((repo, slot))
         return None, "등록 repo 2개(A, B) — 어느 repo 인지 모호하다."
 
@@ -1296,8 +1300,60 @@ def test_main_no_pytest_bypasses_ambiguity_gate(tf, monkeypatch):
 
     monkeypatch.setattr(tf, "TicketFinisher", _SpyFinisher)
     rc = tf.main(["T-1234", "--no-pytest"])
-    assert rc == 0                          # 모호여도 우회(rc 1 아님·remedy dead-end 제거)
-    assert resolve_calls == []              # --no-pytest → 슬롯 해소 자체를 skip(회귀 cwd 무의미)
+    err = capsys.readouterr().err
+    assert rc == 1                          # 모호는 회귀 skip 으로 풀리지 않는다
+    assert resolve_calls == [(None, None)]  # 회귀 skip 여부와 무관하게 해소 수행
+    assert captured == {}                   # TicketFinisher 생성 전에 중단(부작용 0)
+    assert "--repo" in err and "--task" in err
+    assert "--no-pytest" not in err         # 우회 처방 문구 없음
+
+
+def test_main_no_pytest_forwards_resolved_code_tree(tf, monkeypatch):
+    """--no-pytest + 슬롯 해소 성공 → 해소된 worktree 를 코드 트리로 forward(회귀만 skip).
+
+    diff 서킷브레이커·stage 가 이 값을 쓰므로 회귀를 안 돌려도 주입돼야 한다.
+    """
+    monkeypatch.setattr(
+        tf, "_load_pm_handoff",
+        lambda: _FakeHandoff(("work/project_manager_1", None)),
+    )
+    captured: dict = {}
+
+    class _SpyFinisher(tf.TicketFinisher):
+        def __init__(self, **kw):
+            captured["regression_cwd"] = kw.get("regression_cwd")
+            super().__init__(**kw)
+
+        def run(self, **kw):
+            captured["skip_pytest"] = kw.get("skip_pytest")
+            captured["session"] = kw.get("session")
+            return 0
+
+    monkeypatch.setattr(tf, "TicketFinisher", _SpyFinisher)
+    rc = tf.main(["T-1234", "--no-pytest"])
+    assert rc == 0
+    assert captured["regression_cwd"].replace(os.sep, "/").endswith("work/project_manager_1")
+    assert captured["skip_pytest"] is True   # [1/5] 회귀만 skip
+    assert captured["session"] == "project_manager_1"
+
+
+def test_main_no_pytest_solo_keeps_repo_fallback(tf, monkeypatch):
+    """--no-pytest + 솔로/미해소 → 모호 아님·regression_cwd 미주입(현행 REPO 런타임 폴백 보존)."""
+    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff((None, None)))
+    captured: dict = {}
+
+    class _SpyFinisher(tf.TicketFinisher):
+        def __init__(self, **kw):
+            captured["regression_cwd"] = kw.get("regression_cwd")
+            super().__init__(**kw)
+
+        def run(self, **kw):
+            captured["skip_pytest"] = kw.get("skip_pytest")
+            return 0
+
+    monkeypatch.setattr(tf, "TicketFinisher", _SpyFinisher)
+    rc = tf.main(["T-1234", "--no-pytest"])
+    assert rc == 0
     assert captured["regression_cwd"] is None
     assert captured["skip_pytest"] is True
 
@@ -1466,7 +1522,7 @@ def test_task_machine_parsers_use_stdout_only_not_mutation_stderr(tf, tmp_path, 
         task_workspace=worktree,
     )
 
-    assert finisher._task_stage_scope("T-0437") == tf.StageScope(("tests/new.py",), None)
+    assert finisher._code_stage_scope("T-0437", worktree) == tf.StageScope(("tests/new.py",), None)
     assert finisher._default_status_entries_at(worktree) == (("??", "tests/new.py"),)
     assert [args[0] for _, args in parser_calls] == ["ls-files", "status"]
 
@@ -1506,7 +1562,7 @@ def test_task_stage_scope_normalizes_pm_home_touch_and_stages_real_file(
         run_git_stdout_at_fn=lambda cwd, args: (0, ""),
     )
 
-    assert finisher._task_stage_scope("T-0473") == tf.StageScope(("src/change.py",), None)
+    assert finisher._code_stage_scope("T-0473", workspace) == tf.StageScope(("src/change.py",), None)
 
 
 def test_task_stage_scope_worktree_slot_mismatch_fails_loud(
@@ -1526,7 +1582,7 @@ def test_task_stage_scope_worktree_slot_mismatch_fails_loud(
         run_git_stdout_at_fn=lambda cwd, args: (0, ""),
     )
 
-    scope = finisher._task_stage_scope("T-0473")
+    scope = finisher._code_stage_scope("T-0473", workspace)
     assert scope.pathspec == ()
     assert "좌표 정규화 실패" in scope.error
     assert "slot 불일치" in scope.error
@@ -1554,7 +1610,7 @@ def test_task_stage_scope_normalizes_coordinate_notation_variants(
         task_workspace=workspace,
         run_git_stdout_at_fn=lambda cwd, args: (0, ""),
     )
-    assert finisher._task_stage_scope("T-0473") == tf.StageScope(("src/change.py",), None)
+    assert finisher._code_stage_scope("T-0473", workspace) == tf.StageScope(("src/change.py",), None)
 
 
 def test_task_stage_scope_rejects_traversal_fails_loud(
@@ -1570,7 +1626,7 @@ def test_task_stage_scope_rejects_traversal_fails_loud(
         task_workspace=workspace,
         run_git_stdout_at_fn=lambda cwd, args: (0, ""),
     )
-    scope = finisher._task_stage_scope("T-0473")
+    scope = finisher._code_stage_scope("T-0473", workspace)
     assert scope.pathspec == ()
     assert "traversal" in scope.error
 
