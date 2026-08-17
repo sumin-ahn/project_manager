@@ -185,6 +185,11 @@ def _run_main(external, monkeypatch, anchor: Path, conf: dict, argv: list[str]):
                 "file": None, "failed": False, "any_must_fix": False, "all_pass": True}
 
     monkeypatch.setattr(external, "run_review", _fake_run_review)
+    # 이 파일은 PM 홈/diff 앵커 파생 축을 소유한다. 산출 회수(T-0696)는 별도 축이라
+    # tests/test_external_review_ticket_harvest.py 가 소유하고 여기서는 격리한다.
+    monkeypatch.setattr(
+        external, "_harvest_external_review_section", lambda *_a, **_k: None,
+    )
     return external.main(argv), called["reviewer"]
 
 

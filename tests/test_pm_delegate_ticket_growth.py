@@ -185,7 +185,12 @@ def _function_calls(source: str, function: str) -> set[str]:
 
 def _missing_ticket_seal_seam_edges(
         delegate_source: str, board_source: str) -> set[str]:
-    """봉인 writer 3주체와 verifier가 canonical hash seam을 우회했는지 판정."""
+    """봉인 writer 전주체와 verifier가 canonical hash seam을 우회했는지 판정.
+
+    성장 절을 쓰는 두 주체(사본 harvest·external-reviewer 절 기록)는 봉인 재발급을 공용
+    seam(`seal_and_replace_ticket_text`) 하나로만 지난다 — 지점이 늘면 봉인 규칙과 그 위에
+    붙는 부기가 호출부마다 갈린다.
+    """
     required = {
         "_ticket_seal_hash_input": {"replace", "encode"},
         "seal_for": {"_ticket_seal_hash_input", "sha256"},
@@ -193,7 +198,9 @@ def _missing_ticket_seal_seam_edges(
         "verify_ticket_seals": {"seal_for"},
         "_upsert_ticket_seal": {"_ticket_seal_line"},
         "backfill_ticket_seals": {"_ticket_seal_line"},
-        "harvest_ticket_copy": {"seal_for", "_upsert_ticket_seal"},
+        "seal_and_replace_ticket_text": {"_upsert_ticket_seal"},
+        "harvest_ticket_copy": {"seal_for", "seal_and_replace_ticket_text"},
+        "write_external_reviewer_section": {"seal_and_replace_ticket_text"},
     }
     missing = {
         f"pm_delegate.{function}->{callee}"
@@ -1058,7 +1065,7 @@ def test_crlf_seal_backfill_writes_canonical_hash_without_rewriting_bytes(
 
 
 def test_ticket_seal_hash_writers_and_verifier_have_static_seam_guard():
-    """writer 3주체·verify가 canonical seam을 우회하면 AST 가드가 red가 된다."""
+    """writer 전주체·verify가 canonical seam을 우회하면 AST 가드가 red가 된다."""
     delegate_source = PM_DELEGATE.read_text(encoding="utf-8")
     board_source = (TOOLS / "board.py").read_text(encoding="utf-8")
     assert _missing_ticket_seal_seam_edges(delegate_source, board_source) == set()

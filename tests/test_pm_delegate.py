@@ -120,7 +120,8 @@ def test_codex_argv_reasoning_flag(pd):
 
 
 def test_claude_argv_tools_by_role(pd):
-    """claude `--tools` 역할별 도구셋(§3.5): write=편집포함·researcher=Bash 제외·reviewer=Bash 포함."""
+    """claude `--tools` 역할별 도구셋(§3.5): write=편집포함·researcher=Write/Bash 제외(Edit 만
+    티켓 사본 절 기록용)·reviewer=Bash 포함."""
     dev = pd.build_claude_argv("opus", None, "developer")
     # 출력 형식 = stream-json(+CLI 강제 `--verbose`) — 진행 신호 축 승격(T-0489 ④).
     assert dev[:7] == ["claude", "-p", "--output-format", "stream-json", "--verbose",
@@ -131,7 +132,8 @@ def test_claude_argv_tools_by_role(pd):
 
     res_tools = pd.build_claude_argv("opus", None, "researcher")
     rt = res_tools[res_tools.index("--tools") + 1]
-    assert "Bash" not in rt and "Write" not in rt and "Edit" not in rt  # 순수읽기·기계적
+    # 티켓 사본 자기 절 기록용 Edit 만 허용(T-0696)·Write/Bash 는 계속 기계적 차단.
+    assert "Bash" not in rt and "Write" not in rt and "Edit" in rt
 
     rev = pd.build_claude_argv("opus", None, "code-reviewer")
     rvt = rev[rev.index("--tools") + 1]
@@ -1305,10 +1307,10 @@ def test_read_role_permission_axis(pd):
     """각 하네스 read 역할이 자기 권한 계약을 선택한다(mock 범위 검증)."""
     # codex: read-only sandbox
     assert pd.build_codex_argv("m", None, "researcher", "/w")[4] == "read-only"
-    # claude researcher: Write/Edit/Bash 부재(기계적)
+    # claude researcher: Write/Bash 부재(기계적)·Edit 는 티켓 사본 자기 절 전용(T-0696)
     rt = pd.build_claude_argv("m", None, "researcher")
     tools = rt[rt.index("--tools") + 1]
-    assert not any(t in tools for t in ("Write", "Edit", "Bash"))
+    assert not any(t in tools for t in ("Write", "Bash")) and "Edit" in tools
     # opencode reviewer: build/plan 축약 없이 custom 역할 카드 선택.
     assert pd.build_opencode_argv("m", None, "code-reviewer", "/w", "/p")[
         pd.build_opencode_argv("m", None, "code-reviewer", "/w", "/p").index("--agent") + 1] == "code-reviewer"
@@ -2282,7 +2284,10 @@ def test_argv_matrix_permission_axis(pd, harness, role):
             assert "Write" in tools and "Edit" in tools
             assert "--permission-mode" in argv
         else:
-            assert "Write" not in tools and "Edit" not in tools
+            # read 역할은 제품 트리를 새로 쓰지 않는다(Write 없음). researcher 의 Edit 만
+            # 등재된 예외다 — 티켓 사본 자기 절 기록 전용(T-0696).
+            assert "Write" not in tools
+            assert ("Edit" in tools) == (role == "researcher")
             assert "--permission-mode" not in argv
             assert ("Bash" in tools) == (role == "code-reviewer")  # reviewer 만 Bash(pytest)
     else:  # opencode
@@ -5373,10 +5378,14 @@ def _scope_workspace(tmp_path: Path, monkeypatch, pd, touches=("work/demo_1/src"
         "<!-- pm-ticket-section:start role=architect -->\n"
         "## 설계 (architect · 2026-08-13)\n\n"
         "<!-- pm-ticket-section:end role=architect -->\n"
+        # researcher 도 티켓 성장 역할이라 위임 전에 자기 절이 있어야 한다(T-0696).
+        "<!-- pm-ticket-section:start role=researcher -->\n"
+        "## 조사 (researcher · 2026-08-13)\n\n"
+        "<!-- pm-ticket-section:end role=researcher -->\n"
     )
     ticket_text, changed = pd.backfill_ticket_seals(ticket_text)
     assert changed == [
-        ("developer", 0), ("code-reviewer", 0), ("architect", 0),
+        ("developer", 0), ("code-reviewer", 0), ("architect", 0), ("researcher", 0),
     ]
     (tickets / f"{TICKET_ID}-scope.md").write_text(
         ticket_text,
