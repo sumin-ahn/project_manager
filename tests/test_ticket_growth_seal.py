@@ -69,6 +69,15 @@ def _unsealed_block(role: str, content: str) -> str:
     )
 
 
+def _seed_growth_ledger(pd, path: Path, ticket: str, *, by: str = "backfill") -> Path:
+    """봉인 도입 이후 형상 — 현재 봉인들을 그 티켓 장부에 기재한다(sweep 등가·T-0699)."""
+    growth_dir = pd.ticket_growth_dir_for_ticket_path(path)
+    pd.append_ticket_growth_records(
+        growth_dir, ticket, path.read_text(encoding="utf-8"), by=by, stamp=False,
+    )
+    return pd.ticket_growth_ledger_path(growth_dir, ticket)
+
+
 def _review_ticket(pd, ticket: str = "T-2003") -> str:
     payload = {"version": 1, "findings": [], "confirmations": []}
     content = (
@@ -100,7 +109,7 @@ def test_section_add_writes_seal_and_verifies(tmp_path, monkeypatch, board, pd):
     )
     monkeypatch.setattr(board, "_growth_ticket_path", lambda *_a, **_k: (0, ticket))
     monkeypatch.setattr(board, "_load_pm_delegate_module", lambda: pd)
-    monkeypatch.setattr(board, "_growth_mutation_sync", lambda *_a: True)
+    monkeypatch.setattr(board, "_growth_mutation_sync_paths", lambda *_a: True)
     monkeypatch.setattr(board, "drafts_dir", lambda: tmp_path / "drafts")
     calls = []
     real_line = pd._ticket_seal_line
@@ -133,7 +142,7 @@ def test_section_add_requires_legacy_backfill_then_succeeds(
     ticket.write_text(legacy, encoding="utf-8", newline="\n")
     monkeypatch.setattr(board, "_growth_ticket_path", lambda *_a, **_k: (0, ticket))
     monkeypatch.setattr(board, "_load_pm_delegate_module", lambda: pd)
-    monkeypatch.setattr(board, "_growth_mutation_sync", lambda *_a: True)
+    monkeypatch.setattr(board, "_growth_mutation_sync_paths", lambda *_a: True)
     monkeypatch.setattr(board, "drafts_dir", lambda: tmp_path / "drafts")
     args = argparse.Namespace(id="T-2014", role="code-reviewer", label=None)
 
@@ -144,6 +153,9 @@ def test_section_add_requires_legacy_backfill_then_succeeds(
     backfilled, changed = pd.backfill_ticket_seals(legacy)
     assert changed == [("developer", 0)]
     ticket.write_text(backfilled, encoding="utf-8", newline="\n")
+    assert board.cmd_section_add(args) == 1, "장부 미기재 상태에서는 여전히 거부"
+    assert "seal-backfill --all" in capsys.readouterr().err
+    _seed_growth_ledger(pd, ticket, "T-2014")
     assert board.cmd_section_add(args) == 0
     assert pd.verify_ticket_seals(ticket.read_text(encoding="utf-8")) == []
 
@@ -180,6 +192,7 @@ def test_prepare_edit_harvest_refreshes_seal_hash_atomically(
     )
     edited = baseline.replace("old\n", "new\n")
     ticket.write_text(baseline, encoding="utf-8", newline="\n")
+    _seed_growth_ledger(pd, ticket, "T-2002")
     copy = tmp_path / "copy.md"
     plan = pd.TicketCopyPlan(
         copy, tmp_path / "baseline.md", tmp_path / "metadata.json",
@@ -250,6 +263,10 @@ def test_harvest_rejects_reissuing_a_mismatched_existing_seal(
         pd, "developer", 0, "## 구현\n\ntrusted=0\n",
     )
     tampered = sealed.replace("trusted=0", "trusted=1", 1)
+    # 장부는 손편집 **전** 봉인을 기재한 상태다 — 봉인 줄 자체는 그대로라 장부 축은 정합이고,
+    # 거부는 봉인↔본문 불일치 축이 낸다.
+    ticket.write_text(sealed, encoding="utf-8", newline="\n")
+    _seed_growth_ledger(pd, ticket, "T-2010", by="harvest")
     ticket.write_text(tampered, encoding="utf-8", newline="\n")
     copy = tmp_path / "copy.md"
     plan = pd.TicketCopyPlan(
@@ -318,6 +335,7 @@ def test_harvest_relocates_a_valid_but_misplaced_seal(
     misplaced = sealed[:seal.line_start] + sealed[seal.line_end:] + "\n" + seal_line
     assert any("위치 불일치" in p for p in pd.verify_ticket_seals(misplaced))
     ticket.write_text(misplaced, encoding="utf-8", newline="\n")
+    _seed_growth_ledger(pd, ticket, "T-2016", by="harvest")
     copy = tmp_path / "copy.md"
     plan = pd.TicketCopyPlan(
         copy, tmp_path / "baseline.md", tmp_path / "metadata.json",
@@ -374,13 +392,16 @@ def test_harvest_relocates_a_valid_but_misplaced_seal(
 @pytest.mark.parametrize("mutation", ["one-byte-edit", "delete-seal"])
 def test_tamper_is_red_at_review_and_complete_but_green_with_guard_disabled(
         mutation, tmp_path, monkeypatch, pd, board, capsys):
-    ticket = tmp_path / "T-2003-seal.md"
-    text = _review_ticket(pd)
+    ticket = tmp_path / "tickets" / "claimed" / "T-2003-seal.md"
+    ticket.parent.mkdir(parents=True)
+    clean = _review_ticket(pd)
+    ticket.write_text(clean, encoding="utf-8", newline="\n")
+    _seed_growth_ledger(pd, ticket, "T-2003", by="harvest")
     if mutation == "one-byte-edit":
-        text = text.replace("probe=0", "probe=1", 1)
+        text = clean.replace("probe=0", "probe=1", 1)
     else:
-        seal = pd.parse_ticket_seals(text)[("code-reviewer", 0)]
-        text = text[:seal.line_start] + text[seal.line_end:]
+        seal = pd.parse_ticket_seals(clean)[("code-reviewer", 0)]
+        text = clean[:seal.line_start] + clean[seal.line_end:]
     ticket.write_text(text, encoding="utf-8", newline="\n")
 
     owner_board = SimpleNamespace(
@@ -393,12 +414,12 @@ def test_tamper_is_red_at_review_and_complete_but_green_with_guard_disabled(
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _owner: owner_board)
 
-    real_verify = pd.verify_ticket_seals
+    real_verify = pd.verify_ticket_growth
     assert pd._cmd_review(["delta", "--ticket", "T-2003"]) == 1
     assert "unsealed" in capsys.readouterr().err
-    monkeypatch.setattr(pd, "verify_ticket_seals", lambda _text: [])
+    monkeypatch.setattr(pd, "verify_ticket_growth", lambda *_a, **_k: [])
     assert pd._cmd_review(["delta", "--ticket", "T-2003"]) == 0
-    monkeypatch.setattr(pd, "verify_ticket_seals", real_verify)
+    monkeypatch.setattr(pd, "verify_ticket_growth", real_verify)
 
     monkeypatch.setattr(board, "board_lock", lambda: contextlib.nullcontext())
     monkeypatch.setattr(
@@ -414,16 +435,23 @@ def test_tamper_is_red_at_review_and_complete_but_green_with_guard_disabled(
     monkeypatch.setattr(
         board, "_load_pm_delegate_module",
         lambda: SimpleNamespace(
-            verify_ticket_seals=lambda _text: [],
+            verify_ticket_growth=lambda *_a, **_k: [],
+            format_ticket_growth_problems=lambda problems: list(problems),
+            read_ticket_growth_ledger=lambda *_a: None,
+            ticket_growth_dir_for_ticket_path=lambda _path: tmp_path,
+            ticket_growth_dir=lambda _tickets: tmp_path,
+            ticket_growth_migration_stamped=lambda _dir: False,
             parse_ticket_seals=lambda _text: {},
         ),
     )
-    assert board._complete_gate("T-2003", args, board.load_ticket(ticket)[1]) == []
+    assert board._complete_gate(
+        "T-2003", args, board.load_ticket(ticket)[1], ticket_path=ticket) == []
 
 
 def test_crlf_complete_verifies_the_exact_file_bytes(
         tmp_path, monkeypatch, pd, board):
-    ticket = tmp_path / "T-2011-crlf.md"
+    ticket = tmp_path / "tickets" / "claimed" / "T-2011-crlf.md"
+    ticket.parent.mkdir(parents=True)
     lf_content = "## 구현 (developer · 2026-08-16)\n\nCRLF facts\n"
     lf_growth = (
         "<!-- pm-ticket-section:start role=developer -->\n"
@@ -441,21 +469,22 @@ def test_crlf_complete_verifies_the_exact_file_bytes(
         + growth
     )
     ticket.write_bytes(raw.encode("utf-8"))
+    _seed_growth_ledger(pd, ticket, "T-2011", by="harvest")
     observed = []
-    real_verify = pd.verify_ticket_seals
+    real_verify = pd.verify_ticket_growth
 
-    def recording_verify(text):
+    def recording_verify(text, records, **kwargs):
         observed.append(text)
-        return real_verify(text)
+        return real_verify(text, records, **kwargs)
 
-    monkeypatch.setattr(pd, "verify_ticket_seals", recording_verify)
+    monkeypatch.setattr(pd, "verify_ticket_growth", recording_verify)
     monkeypatch.setattr(board, "board_lock", lambda: contextlib.nullcontext())
     monkeypatch.setattr(
         board, "find_ticket_for_mutation", lambda _tid: ("claimed", ticket),
     )
     monkeypatch.setattr(board, "_load_pm_delegate_module", lambda: pd)
     monkeypatch.setattr(board, "_internal_review_completion_problem", lambda _tid: None)
-    done = tmp_path / "done" / ticket.name
+    done = tmp_path / "tickets" / "done" / ticket.name
     monkeypatch.setattr(board, "move_ticket", lambda _path, _status: done)
     monkeypatch.setattr(board, "dump_ticket", lambda *_a, **_k: None)
     monkeypatch.setattr(board, "refresh_board", lambda: None)
@@ -466,8 +495,11 @@ def test_crlf_complete_verifies_the_exact_file_bytes(
 
     assert board.cmd_complete(args) == 0
     assert observed and "\r\n" in observed[0]
-    assert real_verify(observed[0]) == []
-    assert real_verify(board.load_ticket(ticket)[1]) == []
+    growth_dir = pd.ticket_growth_dir_for_ticket_path(ticket)
+    ledger = pd.read_ticket_growth_ledger(growth_dir, "T-2011")
+    assert real_verify(observed[0], ledger, ticket="T-2011") == []
+    assert real_verify(
+        board.load_ticket(ticket)[1], ledger, ticket="T-2011") == []
 
 
 def test_complete_without_growth_does_not_require_delegate_module(
@@ -645,8 +677,11 @@ def test_mixed_recovery_guidance_distinguishes_terminal_ordinal(
 
 
 def test_seal_backfill_cli_writes_ticket_and_reason_log(
-        tmp_path, monkeypatch, pd, capsys):
-    ticket = tmp_path / "T-2006-seal.md"
+        tmp_path, monkeypatch, pd, board, capsys):
+    tickets = tmp_path / ".project_manager" / "wiki" / "tickets"
+    for status in ("open", "claimed", "blocked", "done"):
+        (tickets / status).mkdir(parents=True)
+    ticket = tickets / "open" / "T-2006-seal.md"
     ticket.write_text(
         _frontmatter("T-2006", "open")
         + _unsealed_block("developer", "legacy body\n"),
@@ -675,17 +710,27 @@ def test_seal_backfill_cli_writes_ticket_and_reason_log(
             return True
 
     monkeypatch.setattr(
-        pd, "_load_board", lambda: SimpleNamespace(_is_valid_ticket_id=lambda _tid: True),
+        pd, "_load_board",
+        lambda: SimpleNamespace(
+            _is_valid_ticket_id=lambda _tid: True,
+            _ticket_id_from_filename=board._ticket_id_from_filename,
+        ),
     )
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _owner: OwnerBoard)
 
     assert pd._cmd_ticket(["seal-backfill", "--ticket", "T-2006"]) == 0
     assert pd.verify_ticket_seals(ticket.read_text(encoding="utf-8")) == []
+    # 봉인 축과 장부 축이 한 명령으로 함께 정리된다(v1.7.5 이하 채택자의 표준 업그레이드 경로).
+    growth_dir = pd.ticket_growth_dir_for_ticket_path(ticket)
+    ledger = pd.read_ticket_growth_ledger(growth_dir, "T-2006")
+    assert ledger.present and set(ledger.latest) == {("developer", 0)}
+    assert ledger.latest[("developer", 0)]["by"] == "backfill"
+    assert pd.ticket_growth_migration_stamped(growth_dir), "잔여 0 이면 stamp 를 남긴다"
     log = tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
     log_text = log.read_text(encoding="utf-8")
     assert "T-2006 seal-backfill" in log_text
-    assert "성장 절 봉인 도입 이전" in log_text and "T-0694 발행 이전" not in log_text
+    assert "성장 절 봉인·장부 정합화" in log_text and "T-0694 발행 이전" not in log_text
     pm_log = _load(PM_LOG, "pm_log_seal_test")
     entries = pm_log.split_entries(log_text)[1]
     assert len(entries) == 1
@@ -713,7 +758,7 @@ def test_three_rounds_have_independent_ordinal_seals(pd):
 
 
 def test_complete_surfaces_backfill_seal_as_one_advisory(
-        monkeypatch, board, pd, capsys):
+        tmp_path, monkeypatch, board, pd, capsys):
     monkeypatch.setattr(board, "_load_pm_delegate_module", lambda: pd)
     monkeypatch.setattr(board, "_internal_review_completion_problem", lambda _tid: None)
     args = argparse.Namespace(
@@ -723,7 +768,11 @@ def test_complete_surfaces_backfill_seal_as_one_advisory(
         "# T-2013\n\n## 완료 조건 (Definition of Done)\n- [x] migrated\n\n"
         + _block(pd, "developer", 0, "legacy\n", by="backfill")
     )
-    assert board._complete_gate("T-2013", args, body) == []
+    ticket = tmp_path / "tickets" / "claimed" / "T-2013-seal.md"
+    ticket.parent.mkdir(parents=True)
+    ticket.write_text(_frontmatter("T-2013") + body, encoding="utf-8", newline="\n")
+    _seed_growth_ledger(pd, ticket, "T-2013")
+    assert board._complete_gate("T-2013", args, body, ticket_path=ticket) == []
     lines = [line for line in capsys.readouterr().err.splitlines() if "growth-seal" in line]
     assert len(lines) == 1 and "by=backfill" in lines[0]
 
@@ -752,10 +801,19 @@ def test_growth_seal_lint_is_one_never_block_advisory(
         newline="\n",
     )
     monkeypatch.setattr(board, "tickets_dir", lambda: tickets)
+    monkeypatch.setattr(board, "drafts_dir", lambda: tickets / ".drafts")
+    (tickets / ".drafts").mkdir()
     monkeypatch.setattr(board, "_load_pm_delegate_module", lambda: pd)
+    _seed_growth_ledger(pd, tickets / "claimed" / "T-2007-backfill.md", "T-2007")
     findings = board.lint_growth_seals()
     assert len(findings) == 1
     assert findings[0][1] == "growth-seal" and "T-2005" in findings[0][2]
     assert "T-2007" in findings[0][2] and "by=backfill" in findings[0][2]
     assert "T-1999" not in findings[0][2]
+
+    # 장부 축도 같은 advisory 한 줄에 합류한다(never-block).
+    (tickets / ".growth" / "T-2007.jsonl").unlink()
+    ledger_findings = board.lint_growth_seals()
+    assert len(ledger_findings) == 1
+    assert "장부 부재" in ledger_findings[0][2]
     assert "growth-seal" in board._ADVISORY_LINT_KINDS

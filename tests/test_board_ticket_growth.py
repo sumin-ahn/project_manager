@@ -664,6 +664,9 @@ def test_ticket_writer_lock_inventory_and_claim_lock_order_are_ast_guarded():
         "_transition_idea",   # ideas/ open→promoted|killed.
         "cmd_promote_scope",  # decisions/specs frontmatter writer.
         "repin_verified_at",  # current-truth 문서 freshness writer.
+        # 성장 장부(.jsonl) 의 ID 라벨 재기록 — ticket 파일 sink 가 아니며 relabel 파이프라인의
+        # board_lock 구간 안에서만 불린다(T-0699).
+        "_relabel_growth_ledger_records",
     }
     discovered_ticket_writers = direct_sink_callers - reviewed_non_ticket_exceptions
     expected_ticket_sink_callers = {
