@@ -1928,6 +1928,87 @@ def test_parse_check_ignore_verbose_line_without_tab_returns_none(pd):
     assert pd._parse_check_ignore_verbose_line(".project_manager/.gitignore:1:.local/") is None
 
 
+def test_parse_check_ignore_verbose_line_tab_inside_pattern(pd):
+    """T-0704 (F-008) — 패턴 안에 탭이 들어 있어도 rpartition 이 pathname 만 정확히 떼어낸다."""
+    parsed = pd._parse_check_ignore_verbose_line(
+        ".project_manager/.gitignore:1:pat\tter\t.project_manager/.local/x"
+    )
+    assert parsed == (".project_manager/.gitignore", "1", "pat\tter")
+
+
+def test_check_ignore_source_relative_outside_repo_excludesfile_treated_as_local(growth_env, pd):
+    """T-0704 (F-006) — 저장소 밖 상대경로 core.excludesFile 출처를 ls-files 호출 없이 로컬 전용으로 판정한다."""
+    pm_home, slot, tickets = growth_env
+    _write_ticket(tickets, "T-1047", [("developer", "")])
+    (slot / ".project_manager" / ".gitignore").write_text(
+        "unrelated-pattern-only\n", encoding="utf-8", newline="\n",
+    )
+    outside_name = "outside_ignore"
+    outside = slot.parent / outside_name
+    outside.write_text(".local/\n", encoding="utf-8", newline="\n")
+    assert _git(slot, "config", "core.excludesFile", f"../{outside_name}").returncode == 0
+    assert _git(
+        slot, "check-ignore", "-q",
+        ".project_manager/.local/delegate-ticket-copies/T-1047/developer/x/ticket-T-1047.md",
+    ).returncode == 0
+
+    with pytest.raises(
+        pd.DelegateError,
+        match=rf"로컬 전용 소스.*출처=\.\./{outside_name}.*\.project_manager/\.gitignore.*복원",
+    ):
+        pd.prepare_ticket_copy(
+            ticket="T-1047", role="developer", cwd=slot, pm_home=pm_home,
+        )
+
+    assert not (slot / pd.TICKET_COPY_REL_ROOT).exists()
+
+
+def test_check_ignore_source_tracked_non_canonical_location_fails_loud(growth_env, pd):
+    """T-0704 (F-007) — tracked 비정본 위치(루트 .gitignore) 유래는 그 문구로 고정된다."""
+    pm_home, slot, tickets = growth_env
+    _write_ticket(tickets, "T-1048", [("developer", "")])
+    (slot / ".project_manager" / ".gitignore").write_text(
+        "unrelated-pattern-only\n", encoding="utf-8", newline="\n",
+    )
+    (slot / ".gitignore").write_text(
+        ".project_manager/.local/\n", encoding="utf-8", newline="\n",
+    )
+    assert _git(slot, "add", ".gitignore").returncode == 0
+
+    with pytest.raises(
+        pd.DelegateError,
+        match=r"tracked 비정본 위치 유래.*출처=\.gitignore.*\.project_manager/\.gitignore.*복원",
+    ):
+        pd.prepare_ticket_copy(
+            ticket="T-1048", role="developer", cwd=slot, pm_home=pm_home,
+        )
+
+    assert not (slot / pd.TICKET_COPY_REL_ROOT).exists()
+
+
+def test_check_ignore_source_untracked_non_canonical_location_fails_loud(growth_env, pd):
+    """T-0704 (F-007) — untracked 비정본 위치(루트 .gitignore) 유래는 로컬 전용 문구로 고정된다."""
+    pm_home, slot, tickets = growth_env
+    _write_ticket(tickets, "T-1049", [("developer", "")])
+    (slot / ".project_manager" / ".gitignore").write_text(
+        "unrelated-pattern-only\n", encoding="utf-8", newline="\n",
+    )
+    # git add 하지 않는다 — ls-files --error-unmatch rc=1(untracked) 경로를 비정본 축에서 고정한다.
+    (slot / ".gitignore").write_text(
+        ".project_manager/.local/\n", encoding="utf-8", newline="\n",
+    )
+
+    with pytest.raises(
+        pd.DelegateError,
+        match=r"로컬 전용 소스 유래.*출처=\.gitignore.*\.project_manager/\.gitignore.*복원",
+    ):
+        pd.prepare_ticket_copy(
+            ticket="T-1049", role="developer", cwd=slot, pm_home=pm_home,
+        )
+
+    assert not (slot / pd.TICKET_COPY_REL_ROOT).exists()
+
+
 def test_prepare_succeeds_with_empty_dir_fd_support(growth_env, pd, monkeypatch):
     pm_home, slot, tickets = growth_env
     _write_ticket(tickets, "T-1025", [("developer", "")])

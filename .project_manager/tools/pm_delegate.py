@@ -2206,16 +2206,20 @@ def _parse_check_ignore_verbose_line(line: str) -> tuple[str, str, str] | None:
     return match.group(1), match.group(2), match.group(3)
 
 
-def _ignore_source_definitely_untracked(source: str) -> bool:
-    """`ls-files` 호출 없이도 tracked 일 수 없다고 판정 가능한 출처 형태([[T-0704]] F-001/F-002).
+def _ignore_source_definitely_untracked(cwd: Path, source: str) -> bool:
+    """`ls-files` 호출 없이도 tracked 일 수 없다고 판정 가능한 출처 형태([[T-0704]] F-001/F-002/F-006).
 
-    절대경로 출처(전역 `core.excludesFile`, linked worktree 의 `.git/info/exclude` 는 공유 gitdir
-    바깥 절대경로로 보고된다 — 실측)와 `.git/` 내부 경로(`.git/info/exclude`)는 git 인덱스가 원천
-    추적할 수 없는 위치다. 이런 값을 `ls-files` 에 그대로 넘기면 "저장소 밖" 류 fatal 로 엉뚱하게
-    실패하므로, 호출 전에 이 형태를 걸러 바로 untracked 로 판정한다.
+    저장소 밖 출처(전역 `core.excludesFile` — 절대경로뿐 아니라 `../outside_ignore` 처럼 저장소
+    밖을 가리키는 상대경로도 있다·실측 — 와 linked worktree 의 `.git/info/exclude` 는 공유 gitdir
+    바깥 절대경로로 보고된다)와 `.git/` 내부 경로(`.git/info/exclude`)는 git 인덱스가 원천 추적할
+    수 없는 위치다. 이런 값을 `ls-files` 에 그대로 넘기면 "저장소 밖" 류 fatal 로 엉뚱하게 실패하므로,
+    호출 전에 `(cwd/source).resolve()` 가 `cwd.resolve()` 아래인지로 절대·상대 두 형태를 한 규칙으로
+    걸러 바로 untracked 로 판정한다.
     """
-    candidate = Path(source)
-    return candidate.is_absolute() or candidate.parts[:1] == (".git",)
+    resolved_source = (cwd / source).resolve()
+    if not _is_relative_to(resolved_source, cwd.resolve()):
+        return True
+    return Path(source).parts[:1] == (".git",)
 
 
 def _check_ignore_source_is_tracked(cwd: Path, source: str) -> bool:
@@ -2224,7 +2228,7 @@ def _check_ignore_source_is_tracked(cwd: Path, source: str) -> bool:
     rc=0 tracked · rc=1 untracked · 그 외는 도구 실패로 fail-loud(board.py:4405 `ls-files
     --error-unmatch` 와 같은 seam).
     """
-    if _ignore_source_definitely_untracked(source):
+    if _ignore_source_definitely_untracked(cwd, source):
         return False
     result = subprocess.run(
         ["git", "-C", str(cwd), "ls-files", "--error-unmatch", "--", source],
@@ -2249,7 +2253,9 @@ def _assert_ticket_copy_root_ignored(
     확인한다(F-001). 정본 위치가 아닌 출처는 그 출처 자신이 tracked 인지에 따라 진단 문구를
     가른다(F-002) — tracked 비정본 위치(예: 루트 `.gitignore`)는 다른 클론에도 있으므로 "이
     클론에만 있다"는 말은 거짓이고, untracked 출처(`.git/info/exclude`·전역 `core.excludesFile`·
-    untracked 상위 `.gitignore`)만 그 말이 사실이다.
+    untracked 상위 `.gitignore`)만 그 말이 사실이다. tracked 판정은 `ls-files --error-unmatch`
+    그대로라 인덱스 등록(staged)까지를 tracked 로 본다 — 커밋 여부는 보지 않는다(F-009: 첫 커밋
+    전 채택자 트리를 오차단하지 않기 위해서다).
     """
     result = subprocess.run(
         [
