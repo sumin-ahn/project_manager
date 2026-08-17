@@ -9423,16 +9423,20 @@ def _finished_ledger_fields(
 
 # ── 병렬 위임 touches 교집합 (같은 세션 claimed ticket·never-block) ─────────
 # 같은 트리에서 dev 를 동시에 띄우면 touches 가 겹치는 두 위임이 서로의 WIP 를 덮는다. PM 이
-# 손으로 하던 disjoint 확인을 계산으로 옮긴다 — 차단하지 않고 표면화만 한다.
+# 손으로 하던 disjoint 확인을 계산으로 옮긴다 — 차단하지 않고 표면화만 한다([[T-0701]]).
 #
-# 좌표계: 두 ticket 의 touches 는 **같은 PM 홈 board** 의 선언이라 그대로 비교 가능한 한 좌표다
-# (표기 변형만 정규화). workspace 로 해소하지 않기 때문에 dry-run 에서도 git 호출 0으로 돈다.
+# 좌표계는 **이 기능 전체에 하나**다 — 사전(교집합)·사후(겹친 파일 변경) 두 축 모두 board 선언을
+# `_folded_touch_pairs` 로 이 workspace 좌표(repo-relative)까지 접은 뒤 비교한다. 실 보드에는 같은
+# 파일이 slot 접두형(`work/<repo>_<N>/x`)과 무접두형(`x`) 두 표기로 공존하므로, 표기 정규화만 하고
+# 비교하면 접두/무접두 혼합 선언에서 교집합이 조용히 0이 된다.
 
 _TOUCH_OVERLAP_HEADER = "=== ⚠ 병렬 위임 touches 겹침 ==="
 _TOUCH_OVERLAP_PRESCRIPTION = (
     "  · 같은 트리 동시 편집은 WIP 를 덮을 수 있다 — 차단하지 않으며 PM 이 판정한다.\n"
     "  · 처방: 순차 실행 또는 `pm-config worktree add <repo>` 로 슬롯 분리"
 )
+# 진단 목록 표시 상한 — gate_snapshot._DISPLAY_PATH_LIMIT 과 같은 관례(넘치면 잔여 건수 병기).
+_TOUCH_OVERLAP_DISPLAY_LIMIT = 8
 
 
 class TicketTouchOverlap(NamedTuple):
@@ -9440,18 +9444,49 @@ class TicketTouchOverlap(NamedTuple):
 
     ticket: str                      # 상대 ticket id
     claimed_by: str                  # 두 ticket 이 공유하는 claim 주체(= "같은 세션" 근거)
-    declarations: tuple[str, ...]    # 상대 ticket 이 선언한, 겹치는 touches 항목
-    paths: tuple[str, ...]           # 두 선언이 공유하는 **좁은 쪽** 경로(디렉토리∩파일=파일)
+    declarations: tuple[str, ...]    # 상대 ticket 의 **원 선언**(board 에서 그대로 grep 되는 표기)
+    paths: tuple[str, ...]           # 접힌 좌표의 **좁은 쪽** 공유 경로(디렉토리∩파일=파일·트리 기준)
 
 
-def _touch_notation(item: str, coordinates) -> str | None:
-    """touches 항목을 접두 비교용 POSIX 표기로 정규화한다(빈 항목은 None)."""
-    value = coordinates.canonicalize_path_notation(item.strip()).rstrip("/")
+def _touch_notation(item: str) -> str | None:
+    """접힌 경로를 접두 비교용 표기로 마무리한다(빈 항목은 None)."""
+    value = str(item).strip().rstrip("/")
     return value or None
 
 
-def _touch_notations(raw: object, board, coordinates) -> tuple[str, ...] | None:
-    """frontmatter touches → 정규화 표기 tuple. **형식 불명이면 None**(판정 보류).
+def _folded_touch_pairs(
+    items: Sequence[str], *, pm_root: Path | str, workspace: Path | str, coordinates,
+    on_drop: Callable[[str, str], None] | None = None,
+) -> tuple[tuple[str, str], ...]:
+    """touches 를 `(원 선언, 이 workspace 좌표)` 쌍으로 접는다 — **사전·사후 공용 좌표 규칙**.
+
+    검증된 slot 접두만 벗기는 규칙은 repo_coordinates 단일 진실이다(`delegate_scope.allowed_paths`
+    가 쓰는 것과 같은 primitive). 이 workspace 로 해소되지 않는 선언(다른 슬롯·traversal)은 항목
+    단위로 드롭한다 — 여기서는 정상 입력이라 기본은 조용하다(선언 축의 드롭은 `_warn_dropped_touch`
+    가 이미 알린다). 정규화 예외 타입은 좁게 잡는다: 엔진 사본 skew 등 marked 예외는 이 경계에서
+    삼키지 않고 그대로 올린다.
+    """
+    pairs: list[tuple[str, str]] = []
+    for item in items:
+        try:
+            normalized = coordinates.normalize_repo_paths(
+                [item], pm_root=Path(pm_root), workspace=Path(workspace),
+            )
+        except (ValueError, OSError) as exc:   # RepoCoordinateError(ValueError) = 타 슬롯/미실재
+            if on_drop is not None:
+                on_drop(item, str(exc))
+            continue
+        for path in normalized:
+            value = _touch_notation(coordinates.canonicalize_path_notation(str(path)))
+            if value is not None and value != ".":
+                pairs.append((item, value))
+    return tuple(dict.fromkeys(pairs))
+
+
+def _touch_notations(
+    raw: object, board, coordinates, *, pm_root: Path | str, workspace: Path | str,
+) -> tuple[tuple[str, str], ...] | None:
+    """frontmatter touches → 접힌 `(원 선언, 좌표)` 쌍. **형식 불명이면 None**(판정 보류).
 
     형식 판정은 board 의 단일 진실(`_normalized_touches`)을 쓴다 — 스칼라/비문자열 원소를
     여기서 다시 해석하면 같은 frontmatter 를 두 문법으로 읽게 된다.
@@ -9459,11 +9494,9 @@ def _touch_notations(raw: object, board, coordinates) -> tuple[str, ...] | None:
     items = board._normalized_touches(raw)
     if items is None:
         return None
-    normalized = [
-        value for item in items
-        if (value := _touch_notation(item, coordinates)) is not None
-    ]
-    return tuple(dict.fromkeys(normalized))
+    return _folded_touch_pairs(
+        items, pm_root=pm_root, workspace=workspace, coordinates=coordinates,
+    )
 
 
 def _touch_paths_overlap(left: str, right: str) -> bool:
@@ -9481,7 +9514,7 @@ def _narrower_touch_path(left: str, right: str) -> str:
 
 
 def claimed_touch_overlaps(
-    ticket: str, *, pm_root: Path | str,
+    ticket: str, *, pm_root: Path | str, workspace: Path | str,
 ) -> tuple[TicketTouchOverlap, ...]:
     """대상 ticket 과 **같은 세션**이 claim 중인 다른 ticket 들의 touches 교집합.
 
@@ -9489,9 +9522,10 @@ def claimed_touch_overlaps(
     비교한다 — 다른 사용자/다른 task 의 동시 claim 은 이 트리를 공유하지 않는다). 대상 ticket
     자신과 `claimed_by` 가 없는 ticket 은 제외한다.
 
-    board 형상 둘(board-git 분리 `.project_manager/board/tickets/` · legacy `wiki/tickets/`)은
-    board 자신의 `tickets_dir()` 해소를 그대로 타므로 여기서 갈라 보지 않는다. 손상 frontmatter
-    는 board 의 순회 로더(`load_ticket_soft`)가 경고 1줄과 함께 그 ticket 만 건너뛴다.
+    비교 좌표는 `workspace`(= 이 위임의 git 최상위) 기준으로 접은 값이라 접두/무접두 혼합 선언도
+    같은 파일로 만난다. board 형상 둘(board-git 분리 `.project_manager/board/tickets/` · legacy
+    `wiki/tickets/`)은 board 자신의 `tickets_dir()` 해소를 그대로 타므로 여기서 갈라 보지 않는다.
+    손상 frontmatter 는 board 의 순회 로더(`load_ticket_soft`)가 경고 1줄과 함께 건너뛴다.
     """
     board = _load_board_for_repo(Path(pm_root))
     coordinates = _load_repo_coordinates()
@@ -9503,8 +9537,11 @@ def claimed_touch_overlaps(
         return ()
     target_fm = target[0]
     claimed_by = str(target_fm.get("claimed_by") or "").strip()
-    target_touches = _touch_notations(target_fm.get("touches"), board, coordinates)
-    if not claimed_by or not target_touches:
+    target_pairs = _touch_notations(
+        target_fm.get("touches"), board, coordinates,
+        pm_root=pm_root, workspace=workspace,
+    )
+    if not claimed_by or not target_pairs:
         return ()
 
     overlaps: list[TicketTouchOverlap] = []
@@ -9518,17 +9555,20 @@ def claimed_touch_overlaps(
             continue
         if str(other_fm.get("claimed_by") or "").strip() != claimed_by:
             continue
-        other_touches = _touch_notations(other_fm.get("touches"), board, coordinates)
-        if not other_touches:
+        other_pairs = _touch_notations(
+            other_fm.get("touches"), board, coordinates,
+            pm_root=pm_root, workspace=workspace,
+        )
+        if not other_pairs:
             continue
         declarations: list[str] = []
         shared: list[str] = []
-        for other_touch in other_touches:
-            for target_touch in target_touches:
-                if not _touch_paths_overlap(other_touch, target_touch):
+        for other_raw, other_folded in other_pairs:
+            for _target_raw, target_folded in target_pairs:
+                if not _touch_paths_overlap(other_folded, target_folded):
                     continue
-                declarations.append(other_touch)
-                shared.append(_narrower_touch_path(other_touch, target_touch))
+                declarations.append(other_raw)
+                shared.append(_narrower_touch_path(other_folded, target_folded))
         if shared:
             overlaps.append(TicketTouchOverlap(
                 other_id,
@@ -9537,6 +9577,14 @@ def claimed_touch_overlaps(
                 tuple(dict.fromkeys(shared)),
             ))
     return tuple(overlaps)
+
+
+def _format_overlap_items(items: Sequence[str]) -> str:
+    """진단 목록 1줄 — 상한 초과분은 개수로 접는다(gate_snapshot 표시 관례와 동형)."""
+    listed = tuple(items)
+    head = ", ".join(listed[:_TOUCH_OVERLAP_DISPLAY_LIMIT])
+    remainder = len(listed) - _TOUCH_OVERLAP_DISPLAY_LIMIT
+    return head + (f" … 외 {remainder}건" if remainder > 0 else "")
 
 
 def format_touch_overlap_warning(
@@ -9551,10 +9599,13 @@ def format_touch_overlap_warning(
         f"ticket 과 {ticket} 의 범위가 겹칩니다.",
     ]
     lines.extend(
-        f"  - {overlap.ticket}({', '.join(overlap.declarations)}) ∩ {ticket}: "
-        f"{', '.join(overlap.paths)}"
-        for overlap in overlaps
+        f"  - {overlap.ticket}({_format_overlap_items(overlap.declarations)}) ∩ {ticket}: "
+        f"{_format_overlap_items(overlap.paths)}"
+        for overlap in overlaps[:_TOUCH_OVERLAP_DISPLAY_LIMIT]
     )
+    hidden = len(overlaps) - _TOUCH_OVERLAP_DISPLAY_LIMIT
+    if hidden > 0:
+        lines.append(f"  - … 외 {hidden}건의 ticket 이 더 겹칩니다")
     lines.append(_TOUCH_OVERLAP_PRESCRIPTION)
     return "\n".join(lines)
 
@@ -9572,18 +9623,10 @@ def _changed_overlap_paths(
 ) -> tuple[str, ...]:
     """교집합 경로 중 이 위임 시간창에 **실제로 바뀐** workspace 경로들.
 
-    선언은 PM 홈 좌표라 변경 경로(workspace 상대)와 직접 비교할 수 없다 — 범위 축이 쓰는 같은
-    normalizer(`allowed_paths`)로 이 workspace 좌표로 접는다. 이 workspace 로 해소되지 않는
-    항목(다른 슬롯 touch)은 그대로 드롭한다 — 여기서는 정상 입력이라 loud 대상이 아니다
-    (선언 축의 드롭은 `_warn_dropped_touch` 가 이미 알린다).
+    `ScopeAudit.overlap_paths` 는 사전 축이 이미 이 workspace 좌표로 접어 둔 값이라(같은
+    `_folded_touch_pairs` 규칙) 여기서 좌표를 다시 만들지 않는다 — 한 기능에 좌표 규칙 하나.
     """
     if not audit.overlap_paths or role not in WRITE_ROLES:
-        return ()
-    allowed = audit.scope.allowed_paths(
-        audit.overlap_paths, role=role, pm_root=audit.pm_root,
-        workspace=audit.workspace, write_roles=WRITE_ROLES,
-    )
-    if not allowed:
         return ()
     changed = set(audit.scope.changed_status_paths(audit.before, after))
     changed.update(audit.scope.committed_paths(
@@ -9591,7 +9634,7 @@ def _changed_overlap_paths(
     ))
     return tuple(sorted(
         path for path in changed
-        if any(_touch_paths_overlap(path, root) for root in allowed)
+        if any(_touch_paths_overlap(path, root) for root in audit.overlap_paths)
     ))
 
 
@@ -9601,7 +9644,7 @@ def format_changed_overlap_warning(paths: Sequence[str]) -> str:
         return ""
     return (
         "경고: 겹친 파일 변경됨 — 다른 dev 산출 공존 여부를 확인하라: "
-        + ", ".join(paths)
+        + _format_overlap_items(paths)
     )
 
 
@@ -9885,7 +9928,6 @@ def report_scope_audit(audit: ScopeAudit | None, role: str) -> None:
 
     if audit.touches is not None or audit.overlap_paths:
         try:
-            warning = ""
             if audit.touches is not None:
                 paths = audit.scope.out_of_scope_changes(
                     audit.before, after,
@@ -9894,20 +9936,21 @@ def report_scope_audit(audit: ScopeAudit | None, role: str) -> None:
                     write_roles=WRITE_ROLES, on_drop=_warn_dropped_touch,
                 )
                 warning = audit.scope.format_warning(paths)
-            # 교집합 축은 같은 전후 캡처를 소비하므로 같은 판정 경계 안에서 계산한다 — 두 축이
-            # 같은 실패(git/좌표 해소)로 죽고 같은 비차단 경고 하나를 낸다.
+                # **계산 직후 즉시** 출력한다 — 뒤따르는 교집합 계산이 실패해도 이미 확정된
+                # 범위-밖 신호가 함께 사라지면 "한 축 실패가 다른 축을 지우지 않는다"가 깨진다.
+                if warning:
+                    print(warning, file=sys.stderr)
+            # 교집합 축은 같은 전후 캡처를 소비하므로 같은 판정 경계 안에서 계산한다(같은
+            # 비차단 경고 하나). 위 출력이 선행하므로 이 축의 실패는 기존 신호를 못 지운다.
             overlap_warning = format_changed_overlap_warning(
                 _changed_overlap_paths(audit, after, role)
             )
+            if overlap_warning:
+                print(overlap_warning, file=sys.stderr)
         except Exception as exc:  # noqa: BLE001 — 일반 판정 실패만 비차단, 엔진 skew는 fail-loud.
             if _is_engine_rev_skew(exc):
                 raise
             print(f"경고: 위임 범위 판정 실패({exc}) — 비차단 진행.", file=sys.stderr)
-        else:
-            if warning:
-                print(warning, file=sys.stderr)
-            if overlap_warning:
-                print(overlap_warning, file=sys.stderr)
 
     try:
         adapter_paths = _adapter_edit_paths(
@@ -11395,11 +11438,13 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     # 병렬 위임 touches 교집합 사전 경고 — 전송-전 게이트를 모두 통과한 뒤, **dry-run 미리보기
     # 에도** 낸다(띄우기 전에 보는 것이 이 경고의 값이다). rc 는 바꾸지 않는다. 리뷰어는 격리
     # 스냅샷을 읽기 전용으로 보므로 쓰기 역할만 대상이다.
+    # 이 경고는 **정보성**이다 — 차단 게이트(egress·시크릿·재앵커)와 독립이라 뒤따르는 게이트가
+    # 실행을 막아도 출력은 그대로 남는다(rc·상태 불변). 출력 위치는 미리보기 요구가 정한다.
     touch_overlaps: tuple[TicketTouchOverlap, ...] = ()
     if effective_ticket and args.role in WRITE_ROLES:
         try:
             touch_overlaps = claimed_touch_overlaps(
-                effective_ticket, pm_root=board_repo,
+                effective_ticket, pm_root=board_repo, workspace=cwd_repo,
             )
         except (DelegateError, OSError, UnicodeError, ValueError) as exc:
             # 조용히 삼키지 않는다 — 계산이 죽으면 "겹침 0" 과 구분되지 않는다. 엔진 사본 skew
