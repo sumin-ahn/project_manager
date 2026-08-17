@@ -842,11 +842,28 @@ def _ticket_growth_sections(text: str) -> list[TicketGrowthSection]:
     return sections
 
 
-def seal_for(section_bytes: bytes) -> str:
-    """역할 절 content bytes의 canonical sha256 hex digest를 반환한다."""
-    if not isinstance(section_bytes, bytes):
-        raise TypeError("section_bytes는 bytes여야 합니다")
-    return hashlib.sha256(section_bytes).hexdigest()
+def _ticket_seal_hash_input(section_text: str) -> bytes:
+    """역할 절 문자열 개행을 LF로 정규화한 뒤 UTF-8 bytes로 만든다."""
+    if not isinstance(section_text, str):
+        raise TypeError("section_text는 str이어야 합니다")
+    return section_text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+
+
+def seal_for(section_content: str | bytes) -> str:
+    """역할 절 content의 개행을 LF로 정규화한 canonical sha256을 반환한다.
+
+    봉인은 논리 내용의 무결성 표식이다. Git checkout/editor가 정하는 CRLF·lone CR 표기는
+    봉인 값에 포함하지 않되, 그 밖의 bytes는 그대로 보존한다. 모든 seal writer와 verifier는
+    이 seam을 경유해야 한다. ``bytes`` 입력은 기존 내부/테스트 호출 호환용이며 UTF-8로 해석한
+    뒤 같은 문자열 seam을 지난다.
+    """
+    if isinstance(section_content, bytes):
+        section_text = section_content.decode("utf-8")
+    elif isinstance(section_content, str):
+        section_text = section_content
+    else:
+        raise TypeError("section_content는 str 또는 bytes여야 합니다")
+    return hashlib.sha256(_ticket_seal_hash_input(section_text)).hexdigest()
 
 
 def parse_ticket_seals(text: str) -> dict[tuple[str, int], Seal]:
@@ -882,7 +899,8 @@ def parse_ticket_seals(text: str) -> dict[tuple[str, int], Seal]:
 
 
 def _ticket_seal_line(
-    role: str, ordinal: int, section_bytes: bytes, *, by: str, newline: str = "\n",
+    role: str, ordinal: int, section_content: str | bytes, *, by: str,
+    newline: str = "\n",
 ) -> str:
     if role not in TICKET_COPY_ROLES or ordinal < 0:
         raise DelegateError(f"티켓 성장 seal 대상 불일치: role={role} ordinal={ordinal}")
@@ -892,7 +910,7 @@ def _ticket_seal_line(
         raise DelegateError("티켓 성장 seal newline 불일치")
     return (
         f"<!-- pm-ticket-seal role={role} ordinal={ordinal} "
-        f"sha256={seal_for(section_bytes)} by={by} -->{newline}"
+        f"sha256={seal_for(section_content)} by={by} -->{newline}"
     )
 
 
@@ -914,7 +932,7 @@ def verify_ticket_seals(text: str) -> list[str]:
             continue
         if seal.line_start != section.marker_end:
             problems.append(f"티켓 성장 seal 위치 불일치(end marker 바로 다음 줄 아님): {label}")
-        content = text[section.content_start:section.content_end].encode("utf-8")
+        content = text[section.content_start:section.content_end]
         expected = seal_for(content)
         if not hmac.compare_digest(seal.sha256, expected):
             problems.append(f"티켓 성장 seal sha256 불일치: {label}")
@@ -1049,7 +1067,7 @@ def _upsert_ticket_seal(text: str, role: str, ordinal: int, *, by: str) -> str:
     section = _ticket_role_section(base, role, ordinal=ordinal)
     line = _ticket_seal_line(
         role, ordinal,
-        base[section.content_start:section.content_end].encode("utf-8"),
+        base[section.content_start:section.content_end],
         by=by, newline=newline,
     )
     separator = "" if base[:section.marker_end].endswith(("\n", "\r")) else newline
@@ -1082,7 +1100,7 @@ def backfill_ticket_seals(
     updated = text
     # 원래 좌표 뒤쪽부터 삽입하면 앞 절 좌표가 이동하지 않아 모든 hash 입력이 그대로다.
     for section in reversed(missing):
-        content = text[section.content_start:section.content_end].encode("utf-8")
+        content = text[section.content_start:section.content_end]
         marker = text[section.marker_start:section.marker_end]
         newline = "\r\n" if marker.endswith("\r\n") else (
             "\r\n" if "\r\n" in text else "\n"
@@ -1972,7 +1990,7 @@ def harvest_ticket_copy(
             current_digest = seal_for(
                 current_text[
                     current_section.content_start:current_section.content_end
-                ].encode("utf-8")
+                ]
             )
             if not hmac.compare_digest(current_seal.sha256, current_digest):
                 raise DelegateError(

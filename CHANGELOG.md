@@ -69,6 +69,12 @@
 
 ### Fixed
 
+- **Windows checkout에서도 티켓 성장 봉인이 유지된다.** 역할 절 seal의 sha256 입력에서
+  `CRLF`·lone `CR`을 `LF`로 정규화해, LF에서 발급된 기존 봉인이 Git for Windows의 CRLF
+  워킹카피에서도 재발급이나 마이그레이션 없이 검증된다. 파일 bytes는 재작성하지 않는다. 별도
+  board git의 `.gitattributes`에도 `*.md text eol=lf`를 멱등 backfill/seed해 이후 checkout의
+  유입도 함께 막는다. 인스턴스 조치는 없다.
+
 - **Windows 에서 엔진이 쓰는 텍스트가 더 이상 CRLF 로 변환되지 않는다.** 엔진의 텍스트 파일 쓰기가
   개행을 명시하지 않아 Windows 에서 `\n` 이 `\r\n` 으로 바뀌었고, LF 기준으로 byte 를 비교하는 지점
   (어댑터 config 채택 판정·`engine.manifest` 추가 기록·render/drift 판정·로그 tail)이 어긋났다. 엔진의

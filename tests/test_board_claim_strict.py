@@ -123,7 +123,8 @@ def _make_board_git(root: Path, *, remote: Path, tid: str = "T-0001",
     (board / "areas.md").write_text("# Area Registry\n", encoding="utf-8")
     (board / "notes.md").write_text("original\n", encoding="utf-8")
     if gitattributes:
-        (board / ".gitattributes").write_text("areas.md merge=union\n", encoding="utf-8")
+        (board / ".gitattributes").write_text(
+            "areas.md merge=union\n*.md text eol=lf\n", encoding="utf-8")
     if gitignore:
         (board / ".gitignore").write_text("tickets/.drafts/\n", encoding="utf-8")
     _git(["init", "-q", "-b", "main"], board)
@@ -443,6 +444,14 @@ def test_rollback_restores_preexisting_clean_gitattributes(
     _git(["add", "--", ".gitattributes"], board_dir)
     _git(["commit", "-qm", "seed custom attributes"], board_dir)
     _git(["push", "-q", "origin", "main"], board_dir)
+    expected = board._board_git_expected_backfill_state(
+        ".gitattributes", board._BoardGitRootFileState(True, original),
+    )
+    assert expected is not None
+    assert expected.contents == (
+        original + b"\n" + board._BOARD_GITATTRIBUTES_BLOCK.encode("utf-8")
+    )
+    assert b"*.md text eol=lf\n" in expected.contents
     monkeypatch.setattr(
         board, "_board_git_push",
         _racing_push(board, tmp_path, bare, name="root-rb-existing-other"))

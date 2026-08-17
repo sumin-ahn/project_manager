@@ -19,7 +19,6 @@ import argparse
 import ast
 import contextlib
 import datetime
-import fnmatch
 import functools
 import hashlib
 import json
@@ -4164,8 +4163,12 @@ def _board_submodule_name() -> str | None:
 # 판정은 전부 **파일 내용**으로 한다 — 런타임 `git check-attr` 호출을 늘리지 않는다(비용·이식성).
 _AREAS_UNION_DRIVER = "union"
 # 형상별 areas.md 경로 표기(그 git 의 `.gitattributes` 기준 상대). 선언 줄의 패턴을 이 표기들에
-# 맞춰본다 — 리터럴 일치 + 단순 glob(`_gitattributes_pattern_matches`).
+# 맞춰본다 — git slash anchoring + `*`·`**` 의미의 보수적 matcher를 공유한다.
 _BOARD_AREAS_ATTR_TARGETS: tuple[str, ...] = ("areas.md", "/areas.md")
+_BOARD_MARKDOWN_ATTR_TARGETS: tuple[str, ...] = tuple(
+    f"tickets/{status}/T-0000-ticket.md"
+    for status in (*STATUS_DIRS, ".drafts")
+)
 _INLINE_AREAS_ATTR_TARGETS: tuple[str, ...] = (
     ".project_manager/areas.md", "/.project_manager/areas.md")
 _BOARD_GITATTRIBUTES_BLOCK = (
@@ -4173,6 +4176,8 @@ _BOARD_GITATTRIBUTES_BLOCK = (
     "# git 내장 union merge 드라이버로 양쪽 행을 모두 보존한다.\n"
     "# board 는 별도 git 이라 superproject 루트의 같은 선언이 닿지 않는다 — 여기가 그 배포처다.\n"
     f"areas.md merge={_AREAS_UNION_DRIVER}\n"
+    "# Windows checkout에서도 티켓 봉인 입력의 논리 개행을 LF로 유지한다.\n"
+    "*.md text eol=lf\n"
 )
 # board 루트에 엔진이 배포하는 파일들. ensure/판정/snapshot/pathspec 이 모두 이 seam 을 공유해
 # 한 파일만 WIP 보호에서 빠지는 drift 를 막는다. 순서는 pathspec·복구 안내의 나열 순서다.
@@ -4247,25 +4252,59 @@ def _board_git_root_file_backfill_target(
     return _BoardGitRootFileBackfillTarget(path, text)
 
 
-def _gitattributes_pattern_matches(pattern: str, targets: tuple[str, ...]) -> bool:
-    """`.gitattributes` 선언 줄의 패턴이 areas.md 경로(targets)에 걸리는가.
-
-    리터럴 일치 + **단순 glob**(`fnmatch`) — `*.md`·`*`·`areas.*` 처럼 실제 `.gitattributes` 에
-    흔한 형태를 판정한다. 선행 `/`(그 `.gitattributes` 디렉토리 기준 앵커)는 양쪽에서 벗기고,
-    슬래시 없는 패턴은 git 처럼 **basename** 에도 맞춰본다(`areas.*` 가 하위 경로의 areas.md 에
-    걸리는 규칙). 판정 불가/불일치는 항상 False = *거짓 경보* 방향으로 기운다(advisory 1줄 +
-    중복 선언 append 는 무해하고, 거짓 정상은 union 보호 상실이라 훨씬 비싸다).
-    """
-    pat = pattern.lstrip("/")
+def _gitattributes_positive_pattern_matches(
+        pattern: str, targets: tuple[str, ...]) -> bool:
+    """부정 없는 git-attributes 패턴을 확실히 해석할 수 있을 때만 match한다."""
+    anchored = pattern.startswith("/")
+    pat = pattern[1:] if anchored else pattern
+    # 디렉토리 패턴·escape·문자 클래스는 이 보수적 부분집합 밖이다. 거짓 정상보다 중복
+    # backfill이 안전하므로 판정 불능은 False다.
+    if not pat or pat.endswith("/") or any(char in pat for char in "\\[]"):
+        return False
+    has_slash = anchored or "/" in pat
+    regex: list[str] = []
+    index = 0
+    while index < len(pat):
+        char = pat[index]
+        if char == "*" and index + 1 < len(pat) and pat[index + 1] == "*":
+            boundary_before = index == 0 or pat[index - 1] == "/"
+            after = index + 2
+            if not boundary_before or (after < len(pat) and pat[after] != "/"):
+                return False
+            if after < len(pat):
+                regex.append("(?:.*/)?")
+                index = after + 1
+            else:
+                regex.append(".*")
+                index = after
+        elif char == "*":
+            regex.append("[^/]*")
+            index += 1
+        elif char == "?":
+            regex.append("[^/]")
+            index += 1
+        else:
+            regex.append(re.escape(char))
+            index += 1
+    compiled = re.compile("".join(regex) + r"\Z")
     for target in targets:
         candidate = target.lstrip("/")
-        if candidate == pat:
-            return True
-        if fnmatch.fnmatchcase(candidate, pat):
-            return True
-        if "/" not in pat and fnmatch.fnmatchcase(candidate.rsplit("/", 1)[-1], pat):
+        subject = candidate if has_slash else candidate.rsplit("/", 1)[-1]
+        if compiled.fullmatch(subject):
             return True
     return False
+
+
+def _gitattributes_pattern_matches(pattern: str, targets: tuple[str, ...]) -> bool:
+    """`.gitattributes` 패턴이 target을 덮는가 (git slash/`*`/`**` 의미의 보수적 부분집합).
+
+    slash 없는 패턴은 어느 깊이의 basename에도 적용된다. slash가 있으면 파일 기준으로 앵커되고
+    단일 ``*``는 slash를 넘지 않으며 ``**``만 디렉토리 경계를 넘는다. 선행 ``!`` 부정과
+    escape·문자 클래스처럼 이 함수가 확실히 판정하지 않는 표면은 False로 둔다.
+    """
+    if pattern.startswith("!"):
+        return False
+    return _gitattributes_positive_pattern_matches(pattern, targets)
 
 
 def _gitattributes_merge_attr(text: str, targets: tuple[str, ...]) -> str | None:
@@ -4278,18 +4317,13 @@ def _gitattributes_merge_attr(text: str, targets: tuple[str, ...]) -> str | None
     필드에 `#` 이 섞인 줄은 git 과 동일하게 **무효** 취급한다 — 그렇지 않으면 실제로는
     unspecified 인 파일을 "선언됨" 으로 읽어 union 상실이 조용히 굳는다(거짓 정상).
 
-    패턴 매칭은 **단순 glob 까지 처리**한다(`_gitattributes_pattern_matches`) — 리터럴 경로,
-    `*.md`·`*`·`areas.*` 형태가 대상이다. 그래서 union 선언 **뒤에 오는 glob unset**
+    패턴 매칭은 git의 slash anchoring과 `*`·`**` 의미를 처리한다
+    (`_gitattributes_pattern_matches`) — 리터럴 경로, `*.md`·`tickets/**/*.md` 형태가 대상이다.
+    그래서 union 선언 **뒤에 오는 glob unset**
     (`areas.md merge=union` 다음 줄 `*.md -merge` → git 은 unset·실측)도 잡는다.
 
-    **남는 한계(git 패턴 규칙과 완전 일치를 주장하지 않는다)**: `**/areas.md` 같은 `**` 형태·
-    디렉토리 한정·이스케이프 등 복합 패턴은 판정하지 못한다. 어긋나는 방향은 둘인데 무게가
-    다르다 —
-      - 못 알아본 것이 *선언*(`**/areas.md merge=union`)이면 **거짓 경보**: advisory 1줄 +
-        backfill 이 리터럴 줄을 한 번 더 append 할 뿐이라 무해하다(안전 방향).
-      - 못 알아본 것이 *unset*(`**/areas.md -merge`)이면 **거짓 정상**이 남는다 — 이 잔여만
-        진짜 위험이지만, 완전 해소는 git 패턴 엔진 재구현 또는 금지된 런타임 `check-attr`
-        호출을 요구하므로 범위를 명시하고 둔다(채택자가 손으로 얹은 복합 unset 한정).
+    escape·문자 클래스처럼 보수적 부분집합 밖의 패턴은 match로 인정하지 않는다. 그 결과는
+    advisory+중복 backfill인 거짓 경보 방향이며, LF/union 보호가 빠지는 거짓 정상은 만들지 않는다.
     반환: `"union"`(우리 선언) · 다른 드라이버명 · `""`(unset/`-merge`) · None(선언 없음).
     """
     found: str | None = None
@@ -4300,7 +4334,11 @@ def _gitattributes_merge_attr(text: str, targets: tuple[str, ...]) -> str | None
         fields = line.split()
         if any("#" in field for field in fields):
             continue  # git 이 줄 전체를 무시하는 형태 — 우리도 무효로 본다(거짓 정상 방지).
-        if not _gitattributes_pattern_matches(fields[0], targets):
+        pattern = fields[0]
+        if pattern.startswith("!"):
+            found = None
+            continue
+        if not _gitattributes_pattern_matches(pattern, targets):
             continue
         for attr in fields[1:]:
             if attr.startswith("merge="):
@@ -4315,8 +4353,57 @@ def _areas_union_declared(text: str, targets: tuple[str, ...]) -> bool:
     return _gitattributes_merge_attr(text, targets) == _AREAS_UNION_DRIVER
 
 
+def _gitattributes_text_eol_attrs(
+        text: str, targets: tuple[str, ...]) -> tuple[str | None, str | None]:
+    """대상 경로에 적용되는 마지막 ``text``·``eol`` 속성 값을 반환한다."""
+    text_attr: str | None = None
+    eol_attr: str | None = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split()
+        if any("#" in field for field in fields):
+            continue
+        pattern = fields[0]
+        if pattern.startswith("!"):
+            text_attr = None
+            eol_attr = None
+            continue
+        if not _gitattributes_pattern_matches(pattern, targets):
+            continue
+        for attr in fields[1:]:
+            if attr == "text":
+                text_attr = "set"
+            elif attr in ("-text", "!text"):
+                text_attr = ""
+            elif attr.startswith("text="):
+                text_attr = attr[len("text="):]
+            elif attr.startswith("eol="):
+                eol_attr = attr[len("eol="):]
+            elif attr in ("-eol", "!eol"):
+                eol_attr = ""
+    return text_attr, eol_attr
+
+
+def _board_markdown_lf_declared(text: str) -> bool:
+    """모든 상태 경로의 board 티켓 Markdown에 ``text eol=lf``가 유효한가."""
+    return all(
+        _gitattributes_text_eol_attrs(text, (target,)) == ("set", "lf")
+        for target in _BOARD_MARKDOWN_ATTR_TARGETS
+    )
+
+
+def _board_gitattributes_declared(text: str) -> bool:
+    """board git에 엔진 소유 union·Markdown LF 규칙이 모두 배포됐는가."""
+    return (
+        _areas_union_declared(text, _BOARD_AREAS_ATTR_TARGETS)
+        and _board_markdown_lf_declared(text)
+    )
+
+
 def _ensure_board_gitattributes() -> bool:
-    """board git 의 `.gitattributes` 에 `areas.md merge=union` 을 **멱등 보강**.
+    """board git 의 union·Markdown LF 규칙을 `.gitattributes` 에 **멱등 보강**.
 
     board 분리 형상에서 areas.md 는 board submodule 안에 살고 루트 선언이 닿지 않아 union 이
     조용히 사라진다. 신규 board 는 `pm_import.setup_board_submodule` 의 seed 가 이 파일을
@@ -4332,8 +4419,8 @@ def _ensure_board_gitattributes() -> bool:
     규칙은 그 이유로 유지된다.) 스코프 커밋의 pathspec 에 `.gitattributes` 를 포함하는 것도
     같은 이유다 — 빠지면 이 backfill 이 영구 미커밋으로 남아 배포가 죽는다.
 
-    **비파괴**: 파일이 있으면 덮어쓰지 않고, union 선언이 *없을 때만* 블록을 append 한다(채택자
-    가 자기 규칙을 가진 경우 보존). 이미 선언돼 있으면 no-write(멱등). 기존 파일에 append
+    **비파괴**: 파일이 있으면 덮어쓰지 않고, union·Markdown LF 선언 중 하나라도 *없을 때만*
+    블록을 append 한다(채택자 규칙 보존). 둘 다 선언돼 있으면 no-write(멱등). 기존 파일에 append
     하려면 regular file 이고 git 추적 상태가 clean 이어야 한다 — symlink/비정규 파일이나
     untracked·staged·unstaged·삭제 WIP 면 loud 하게 알리고 쓰지 않는다. append 는
     `file_lock.append_atomic`(O_APPEND) — 동시 writer 가 서로를 덮지 않는다.
@@ -4346,7 +4433,7 @@ def _ensure_board_gitattributes() -> bool:
         return False  # board 미분리(legacy·솔로) 또는 areas 가 이 git 밖 — no-op.
     target = _board_git_root_file_backfill_target(
         ".gitattributes",
-        lambda text: _areas_union_declared(text, _BOARD_AREAS_ATTR_TARGETS),
+        _board_gitattributes_declared,
     )
     if target is None:
         return False
@@ -4430,7 +4517,7 @@ def _drafts_ignore_declared(text: str) -> bool:
 def _board_git_root_file_rule_declared(name: str, text: str) -> bool:
     """루트 배포 파일별 내용 규칙 — `_BOARD_GIT_ROOT_FILES` lockstep dispatcher."""
     if name == ".gitattributes":
-        return _areas_union_declared(text, _BOARD_AREAS_ATTR_TARGETS)
+        return _board_gitattributes_declared(text)
     if name == ".gitignore":
         return _drafts_ignore_declared(text)
     raise ValueError(f"board 루트 배포 파일 seam 밖의 이름: {name}")
@@ -8798,7 +8885,7 @@ def cmd_section_add(args: argparse.Namespace) -> int:
                     f"새 절과 충돌하는 고아 seal 존재: role={role} ordinal={ordinal}"
                 )
             seal_line = delegate._ticket_seal_line(
-                role, ordinal, content.encode("utf-8"), by="section-add",
+                role, ordinal, content, by="section-add",
             )
         except Exception as exc:  # noqa: BLE001 — seal/marker 문제는 write 전에 loud 실패.
             print(f"cannot section-add: growth seal failed — {exc}", file=sys.stderr)

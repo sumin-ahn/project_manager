@@ -94,9 +94,9 @@ def _review_ticket(pd, ticket: str = "T-2003") -> str:
 def test_section_add_writes_seal_and_verifies(tmp_path, monkeypatch, board, pd):
     ticket = tmp_path / "claimed" / "T-2001-seal.md"
     ticket.parent.mkdir()
-    ticket.write_text(
-        _frontmatter("T-2001", "open") + "# T-2001\n\n## 목표\nseal\n",
-        encoding="utf-8",
+    ticket.write_bytes(
+        (_frontmatter("T-2001", "open") + "# T-2001\n\n## 목표\nseal\n")
+        .replace("\n", "\r\n").encode("utf-8")
     )
     monkeypatch.setattr(board, "_growth_ticket_path", lambda *_a, **_k: (0, ticket))
     monkeypatch.setattr(board, "_load_pm_delegate_module", lambda: pd)
@@ -114,8 +114,9 @@ def test_section_add_writes_seal_and_verifies(tmp_path, monkeypatch, board, pd):
     assert board.cmd_section_add(argparse.Namespace(
         id="T-2001", role="developer", label=None,
     )) == 0
-    text = ticket.read_text(encoding="utf-8")
+    text = ticket.read_bytes().decode("utf-8")
     assert pd.verify_ticket_seals(text) == []
+    assert "\r\n" in text, "section-add가 기존 CRLF bytes를 먼저 재작성하면 안 된다"
     seal = pd.parse_ticket_seals(text)[("developer", 0)]
     assert seal.by == "section-add"
     assert len(calls) == 1 and calls[0][1] == {"by": "section-add"}
@@ -423,15 +424,16 @@ def test_tamper_is_red_at_review_and_complete_but_green_with_guard_disabled(
 def test_crlf_complete_verifies_the_exact_file_bytes(
         tmp_path, monkeypatch, pd, board):
     ticket = tmp_path / "T-2011-crlf.md"
-    content = "## 구현 (developer · 2026-08-16)\r\n\r\nCRLF facts\r\n"
-    growth = (
-        "<!-- pm-ticket-section:start role=developer -->\r\n"
-        + content
-        + "<!-- pm-ticket-section:end role=developer -->\r\n"
+    lf_content = "## 구현 (developer · 2026-08-16)\n\nCRLF facts\n"
+    lf_growth = (
+        "<!-- pm-ticket-section:start role=developer -->\n"
+        + lf_content
+        + "<!-- pm-ticket-section:end role=developer -->\n"
         + pd._ticket_seal_line(
-            "developer", 0, content.encode("utf-8"), by="harvest", newline="\r\n",
+            "developer", 0, lf_content.encode("utf-8"), by="harvest",
         )
     )
+    growth = lf_growth.replace("\n", "\r\n")
     raw = (
         _frontmatter("T-2011").replace("\n", "\r\n")
         + "# T-2011\r\n\r\n## 완료 조건 (Definition of Done)\r\n"
@@ -465,7 +467,7 @@ def test_crlf_complete_verifies_the_exact_file_bytes(
     assert board.cmd_complete(args) == 0
     assert observed and "\r\n" in observed[0]
     assert real_verify(observed[0]) == []
-    assert any("sha256 불일치" in p for p in real_verify(board.load_ticket(ticket)[1]))
+    assert real_verify(board.load_ticket(ticket)[1]) == []
 
 
 def test_complete_without_growth_does_not_require_delegate_module(

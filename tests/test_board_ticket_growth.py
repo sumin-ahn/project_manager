@@ -88,7 +88,7 @@ def _make_board_git(root: Path, remote: Path) -> Path:
     (board_dir / "tickets" / ".drafts").mkdir(parents=True)
     (board_dir / "areas.md").write_text("# Area Registry\n", encoding="utf-8")
     (board_dir / ".gitattributes").write_text(
-        "areas.md merge=union\n", encoding="utf-8")
+        "areas.md merge=union\n*.md text eol=lf\n", encoding="utf-8")
     (board_dir / ".gitignore").write_text(
         "tickets/.drafts/\n", encoding="utf-8")
     assert _git(["init", "-q", "-b", "main"], board_dir).returncode == 0

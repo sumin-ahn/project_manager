@@ -1,9 +1,9 @@
 {
   "version": 2,
-  "count": 395,
+  "count": 396,
   "surface_counts": {
     "markdown": 147,
-    "python-non-prose": 16,
+    "python-non-prose": 17,
     "python-prose": 232
   },
   "entries": [
@@ -77,6 +77,14 @@
       "match": "ADR-0011",
       "surface": "python-prose",
       "hash": "bb452f502c85232bbd4442ab6c975d4ed020d1fce4f5d22267d79bd2771e8eb9",
+      "count": 1
+    },
+    {
+      "path": ".project_manager/tools/board.py",
+      "kind": "work_item",
+      "match": "T-0000",
+      "surface": "python-non-prose",
+      "hash": "d35af29f9496efd5fc28615eda906297b3f09d47ae53ebd17144d4e33e139bd8",
       "count": 1
     },
     {

@@ -216,6 +216,31 @@ def test_second_draft_with_deployed_root_rules_never_contacts_remote(
 
 
 @requires_git
+def test_union_only_board_first_draft_backfills_markdown_lf(
+        board, tmp_path):
+    """union-only attrs도 draft-only sync를 열어 새 Markdown LF 블록을 배포한다."""
+    bare = tmp_path / "bare-union-only-draft"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    board_dir = _make_board_git(tmp_path, remote=bare)
+    attrs = board_dir / ".gitattributes"
+    ignore = board_dir / ".gitignore"
+    attrs.write_bytes(b"areas.md merge=union\n")
+    ignore.write_bytes(b"tickets/.drafts/\n")
+    _git(["add", "--", ".gitattributes", ".gitignore"], board_dir)
+    _git(["commit", "-qm", "seed legacy root rules"], board_dir)
+    _git(["push", "-q", "origin", "main"], board_dir)
+
+    assert board._board_git_root_files_need_backfill() is True
+    assert board.cmd_new(_new_args("LF backfill draft")) == 0
+
+    local = _git(["show", "HEAD:.gitattributes"], board_dir).stdout
+    remote = _git(["show", "main:.gitattributes"], bare).stdout
+    assert "*.md text eol=lf" in local
+    assert remote == local
+    assert board._board_git_root_files_need_backfill() is False
+
+
+@requires_git
 def test_promote_rejects_still_placeholder(board, tmp_path):
     """본문이 여전히 미충전이면 `promote` 가 거부(rc=1)한다(파일은 drafts_dir() 에 잔류)."""
     bare = tmp_path / "bare2"

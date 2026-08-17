@@ -7,8 +7,8 @@ submodule(별도 git) 안으로 옮겨졌는데 그 git 엔 `.gitattributes` 가
 사라졌다(`git -C .project_manager/board check-attr merge -- areas.md` = unspecified·실측).
 
 여기서 검증하는 것:
-  - **판정은 파일 내용으로** — `_gitattributes_merge_attr` last-match-wins 파싱(런타임
-    `git check-attr` 호출 0·비용/이식성).
+  - **판정은 파일 내용으로** — `_gitattributes_merge_attr` last-match-wins 및 git의
+    slash anchoring·`*`·`**` 의미를 파싱(런타임 `git check-attr` 호출 0·비용/이식성).
   - **seed**: `pm_import.setup_board_submodule` 이 신규 board 에 `.gitattributes` 를 만든다.
   - **backfill**: 이미 만들어진 board 는 `board._ensure_board_gitattributes` 가 **멱등 보강**
     (기존 내용·채택자 커스텀 줄 보존·덮어쓰기 없음) — board git commit funnel + `init` 에서.
@@ -123,6 +123,77 @@ def test_union_detected_for_board_pattern(board):
         "areas.md merge=union\n", board._BOARD_AREAS_ATTR_TARGETS) is True
 
 
+def test_markdown_lf_rule_uses_last_matching_attributes(board):
+    assert board._board_markdown_lf_declared("*.md text eol=lf\n") is True
+    assert board._board_markdown_lf_declared(
+        "*.md text eol=lf\n*.md eol=crlf\n",
+    ) is False
+    assert board._board_markdown_lf_declared(
+        "*.md text eol=crlf\n*.md eol=lf\n",
+    ) is True
+
+
+def test_markdown_lf_requires_every_status_and_draft_path(board):
+    """상태 한 곳만 덮는 규칙을 전체 board Markdown 배포로 오판하지 않는다."""
+    storage_dirs = (*board.STATUS_DIRS, ".drafts")
+    assert board._BOARD_MARKDOWN_ATTR_TARGETS == tuple(
+        f"tickets/{status}/T-0000-ticket.md" for status in storage_dirs
+    )
+    for status in storage_dirs:
+        partial = f"tickets/{status}/*.md text eol=lf\n"
+        assert board._board_markdown_lf_declared(partial) is False, status
+
+
+@pytest.mark.parametrize(
+    ("pattern", "target", "covered"),
+    [
+        ("*.md", "tickets/open/T-1-x.md", True),
+        ("tickets/*.md", "tickets/open/T-1-x.md", False),
+        ("tickets/**/*.md", "tickets/open/T-1-x.md", True),
+        ("tickets/open/*.md", "tickets/open/T-1-x.md", True),
+        ("tickets/open/*.md", "tickets/claimed/T-1-x.md", False),
+        ("/tickets/open/*.md", "tickets/open/T-1-x.md", True),
+        ("/tickets/open/*.md", "tickets/blocked/T-1-x.md", False),
+        ("/T-1-x.md", "tickets/open/T-1-x.md", False),
+        ("!tickets/done/*.md", "tickets/done/T-1-x.md", False),
+    ],
+)
+def test_gitattributes_pattern_coverage_matches_git_path_semantics(
+        board, tmp_path, pattern, target, covered):
+    """slash anchoring·segment `*`·cross-directory `**`를 git 의미로 판정한다."""
+    assert board._gitattributes_pattern_matches(pattern, (target,)) is covered
+    board_dir = _make_board_dir(board, tmp_path, real_git=True)
+    (board_dir / ".gitattributes").write_bytes(
+        f"{pattern} text eol=lf\n".encode("utf-8")
+    )
+    actual = _git(["check-attr", "eol", "--", target], board_dir).stdout.strip()
+    expected = "lf" if covered else "unspecified"
+    assert actual == f"{target}: eol: {expected}"
+
+
+@pytest.mark.parametrize(
+    ("pattern", "all_storage_paths_covered"),
+    [
+        ("*.md", True),
+        ("tickets/*.md", False),
+        ("tickets/**/*.md", True),
+        ("tickets/open/*.md", False),
+        ("/tickets/open/*.md", False),
+    ],
+)
+def test_markdown_lf_pattern_must_cover_every_storage_path(
+        board, pattern, all_storage_paths_covered):
+    text = f"{pattern} text eol=lf\n"
+    assert board._board_markdown_lf_declared(text) is all_storage_paths_covered
+
+
+def test_markdown_lf_negative_pattern_forces_conservative_backfill(board):
+    """전역 LF 뒤 특정 상태 부정 선언이 있으면 전체 배포 완료로 인정하지 않는다."""
+    text = "*.md text eol=lf\n!tickets/done/*.md -text\n"
+    assert board._board_markdown_lf_declared(text) is False
+    assert board._board_markdown_lf_declared(text + "*.md text eol=lf\n") is True
+
+
 def test_union_detected_for_rooted_board_pattern(board):
     """선두 `/` 형(`/areas.md`)도 같은 파일을 가리키므로 인정한다."""
     assert board._areas_union_declared(
@@ -198,18 +269,13 @@ def test_unrelated_glob_does_not_match(board):
         board._BOARD_AREAS_ATTR_TARGETS) is True   # git 실측도 union 유지.
 
 
-def test_known_limitation_double_star_pattern(board):
-    """**남는 한계 박제**: `**` 복합 패턴은 판정하지 못한다 (git 패턴 엔진 재구현 없이는 불가).
-
-    - `**/areas.md -merge` 후행 unset → git 은 `unset` 이지만 우리는 True (거짓 정상·잔여 위험).
-    - `**/areas.md merge=union` 선언 → 우리는 False (거짓 경보·안전 방향·중복 append 뿐).
-    현재 동작을 고정해 한계 범위를 명시적으로 남긴다 — 넓히려면 판정기를 바꿔야 한다.
-    """
+def test_double_star_pattern_crosses_directories_like_git(board):
+    """`**`는 0개 이상의 디렉토리를 넘어 선언·후행 unset 모두에 적용된다."""
     assert board._areas_union_declared(
         "areas.md merge=union\n**/areas.md -merge\n",
-        board._BOARD_AREAS_ATTR_TARGETS) is True
+        board._BOARD_AREAS_ATTR_TARGETS) is False
     assert board._areas_union_declared(
-        "**/areas.md merge=union\n", board._BOARD_AREAS_ATTR_TARGETS) is False
+        "**/areas.md merge=union\n", board._BOARD_AREAS_ATTR_TARGETS) is True
 
 
 def test_inline_pattern_uses_project_manager_path(board):
@@ -246,6 +312,7 @@ def test_ensure_creates_gitattributes_in_board_git(board, tmp_path):
     assert board._ensure_board_gitattributes() is True
     text = (board_dir / ".gitattributes").read_text(encoding="utf-8")
     assert board._areas_union_declared(text, board._BOARD_AREAS_ATTR_TARGETS) is True
+    assert board._board_markdown_lf_declared(text) is True
 
 
 @requires_git
@@ -258,6 +325,7 @@ def test_ensure_is_idempotent_no_duplicate_line(board, tmp_path):
     second = (board_dir / ".gitattributes").read_text(encoding="utf-8")
     assert second == first
     assert second.count("areas.md merge=union") == 1
+    assert second.count("*.md text eol=lf") == 1
 
 
 @requires_git
@@ -292,14 +360,31 @@ def test_ensure_appends_cleanly_when_file_lacks_trailing_newline(board, tmp_path
     assert board._areas_union_declared(text, board._BOARD_AREAS_ATTR_TARGETS) is True
 
 
-def test_ensure_respects_existing_custom_union_declaration(board, tmp_path):
-    """채택자가 이미 (다른 표기로) union 을 선언했으면 아무 것도 쓰지 않는다."""
+def test_ensure_respects_existing_union_and_markdown_lf_declarations(board, tmp_path):
+    """두 선언이 이미 있으면 bytes를 쓰지 않는다."""
     board_dir = _make_board_dir(board, tmp_path)
-    custom = "/areas.md merge=union\n"
+    custom = "/areas.md merge=union\n*.md text eol=lf\n"
     (board_dir / ".gitattributes").write_text(custom, encoding="utf-8")
 
     assert board._ensure_board_gitattributes() is False
     assert (board_dir / ".gitattributes").read_text(encoding="utf-8") == custom
+
+
+@requires_git
+def test_ensure_backfills_markdown_lf_into_union_only_board_idempotently(
+        board, tmp_path):
+    """기존 board의 union-only 파일에 LF 규칙을 append하고 두 번째 호출은 no-write다."""
+    board_dir = _make_board_dir(board, tmp_path, real_git=True)
+    attrs = board_dir / ".gitattributes"
+    attrs.write_bytes(b"areas.md merge=union\n")
+    _git(["add", "--", ".gitattributes"], board_dir)
+    _git(["commit", "-qm", "seed legacy attributes"], board_dir)
+
+    assert board._ensure_board_gitattributes() is True
+    first = attrs.read_bytes()
+    assert b"*.md text eol=lf\n" in first
+    assert board._ensure_board_gitattributes() is False
+    assert attrs.read_bytes() == first
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -315,6 +400,28 @@ def test_check_attr_resolves_union_after_backfill(board, tmp_path):
     assert board._ensure_board_gitattributes() is True
 
     assert _check_attr_merge(board_dir) == "union"
+
+
+@requires_git
+def test_check_attr_resolves_markdown_lf_after_backfill(board, tmp_path):
+    """실 git 판정도 board 티켓 Markdown을 text+LF checkout으로 해소한다."""
+    board_dir = _make_board_dir(board, tmp_path, real_git=True)
+    ticket_paths = board._BOARD_MARKDOWN_ATTR_TARGETS
+    before = _git(
+        ["check-attr", "text", "eol", "--", *ticket_paths], board_dir,
+    ).stdout
+    for ticket_path in ticket_paths:
+        assert f"{ticket_path}: text: unspecified" in before
+        assert f"{ticket_path}: eol: unspecified" in before
+
+    assert board._ensure_board_gitattributes() is True
+
+    after = _git(
+        ["check-attr", "text", "eol", "--", *ticket_paths], board_dir,
+    ).stdout
+    for ticket_path in ticket_paths:
+        assert f"{ticket_path}: text: set" in after
+        assert f"{ticket_path}: eol: lf" in after
 
 
 @requires_git
@@ -511,6 +618,8 @@ def test_import_scaffold_mirrors_board_block(board):
     assert pm_import._BOARD_GITATTRIBUTES_SCAFFOLD == board._BOARD_GITATTRIBUTES_BLOCK
     assert board._areas_union_declared(
         pm_import._BOARD_GITATTRIBUTES_SCAFFOLD, board._BOARD_AREAS_ATTR_TARGETS) is True
+    assert board._board_markdown_lf_declared(
+        pm_import._BOARD_GITATTRIBUTES_SCAFFOLD) is True
 
 
 @requires_git

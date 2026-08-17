@@ -7786,6 +7786,8 @@ _BOARD_GITATTRIBUTES_SCAFFOLD = (
     "# git 내장 union merge 드라이버로 양쪽 행을 모두 보존한다.\n"
     "# board 는 별도 git 이라 superproject 루트의 같은 선언이 닿지 않는다 — 여기가 그 배포처다.\n"
     "areas.md merge=union\n"
+    "# Windows checkout에서도 티켓 봉인 입력의 논리 개행을 LF로 유지한다.\n"
+    "*.md text eol=lf\n"
 )
 
 

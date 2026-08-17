@@ -1,6 +1,7 @@
 """T-0676 — slot 티켓 성장 사본 prepare/harvest 경계."""
 from __future__ import annotations
 
+import ast
 import importlib.util
 import contextlib
 import hashlib
@@ -158,6 +159,48 @@ def _replace_content(pd, path: Path, role: str, ordinal: int, content: str) -> N
         text[:section.content_start] + content + text[section.content_end:],
         encoding="utf-8",
     )
+
+
+def _function_calls(source: str, function: str) -> set[str]:
+    """정적 seam 가드용 함수별 직접 호출 이름 집합."""
+    tree = ast.parse(source)
+    owner = next(
+        node for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == function
+    )
+    calls: set[str] = set()
+    for node in ast.walk(owner):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name):
+            calls.add(node.func.id)
+        elif isinstance(node.func, ast.Attribute):
+            calls.add(node.func.attr)
+    return calls
+
+
+def _missing_ticket_seal_seam_edges(
+        delegate_source: str, board_source: str) -> set[str]:
+    """봉인 writer 3주체와 verifier가 canonical hash seam을 우회했는지 판정."""
+    required = {
+        "_ticket_seal_hash_input": {"replace", "encode"},
+        "seal_for": {"_ticket_seal_hash_input", "sha256"},
+        "_ticket_seal_line": {"seal_for"},
+        "verify_ticket_seals": {"seal_for"},
+        "_upsert_ticket_seal": {"_ticket_seal_line"},
+        "backfill_ticket_seals": {"_ticket_seal_line"},
+        "harvest_ticket_copy": {"seal_for", "_upsert_ticket_seal"},
+    }
+    missing = {
+        f"pm_delegate.{function}->{callee}"
+        for function, callees in required.items()
+        for callee in callees
+        if callee not in _function_calls(delegate_source, function)
+    }
+    if "_ticket_seal_line" not in _function_calls(board_source, "cmd_section_add"):
+        missing.add("board.cmd_section_add->_ticket_seal_line")
+    return missing
 
 
 @pytest.mark.parametrize(
@@ -859,13 +902,90 @@ def test_same_role_recall_targets_latest_and_preserves_pm_home_drift(growth_env,
     assert "PM parallel note outside prepared section" in final
 
 
+def test_ticket_seal_hash_normalizes_lf_crlf_and_lone_cr(pd):
+    """(a) 같은 논리 내용의 세 개행 표기는 같은 seal hash다."""
+    logical = "## 구현 (developer · 2026-08-17)\n\n첫 줄\n둘째 줄\n"
+    digests = {
+        pd.seal_for(logical.replace("\n", newline).encode("utf-8"))
+        for newline in ("\n", "\r\n", "\r")
+    }
+    assert digests == {hashlib.sha256(logical.encode("utf-8")).hexdigest()}
+
+
+def test_lf_seal_verifies_unchanged_crlf_checkout_and_detects_edit(
+        tmp_path, pd):
+    """LF로 발급한 실형상 봉인은 CRLF checkout에서 무마이그레이션 통과하되 편집은 red다."""
+    lf = _ticket_text("T-1034", [("developer", "sealed body\n")])
+    ticket = tmp_path / "T-1034-growth.md"
+    ticket.write_bytes(lf.replace("\n", "\r\n").encode("utf-8"))
+    crlf = ticket.read_bytes().decode("utf-8")
+    assert pd.verify_ticket_seals(crlf) == []
+
+    ticket.write_bytes(crlf.replace("sealed body", "sealed Body", 1).encode("utf-8"))
+    assert any(
+        "sha256 불일치" in problem
+        for problem in pd.verify_ticket_seals(ticket.read_bytes().decode("utf-8"))
+    )
+
+
+def test_mixed_newlines_per_growth_section_verify_stably(tmp_path, pd):
+    """(d) 역할 절별 LF·CRLF·lone CR 혼합 표기도 LF 봉인 그대로 안정 판정한다."""
+    mixed = _ticket_text("T-1035", [
+        ("architect", "LF design\n"),
+        ("developer", "CRLF implementation\n"),
+        ("code-reviewer", "CR review\n"),
+    ])
+    for role, newline in (("developer", "\r\n"), ("code-reviewer", "\r")):
+        section = pd._ticket_role_section(mixed, role)
+        seal = pd.parse_ticket_seals(mixed)[(role, 0)]
+        block = mixed[section.marker_start:seal.line_end].replace("\n", newline)
+        mixed = mixed[:section.marker_start] + block + mixed[seal.line_end:]
+    ticket = tmp_path / "T-1035-growth.md"
+    ticket.write_bytes(mixed.encode("utf-8"))
+    assert pd.verify_ticket_seals(ticket.read_bytes().decode("utf-8")) == []
+
+
+def test_crlf_seal_backfill_writes_canonical_hash_without_rewriting_bytes(
+        tmp_path, pd):
+    """(b) seal-backfill은 CRLF 본문을 보존하면서 LF와 같은 봉인을 쓴다."""
+    lf = _ticket_text("T-1036", [("developer", "backfill facts\n")])
+    unsealed = _without_ticket_seals(pd, lf)
+    ticket = tmp_path / "T-1036-growth.md"
+    ticket.write_bytes(unsealed.replace("\n", "\r\n").encode("utf-8"))
+    original = ticket.read_bytes().decode("utf-8")
+    updated, changed = pd.backfill_ticket_seals(original, ticket="T-1036")
+    ticket.write_bytes(updated.encode("utf-8"))
+
+    assert changed == [("developer", 0)]
+    assert b"\n" not in ticket.read_bytes().replace(b"\r\n", b"")
+    assert pd.verify_ticket_seals(ticket.read_bytes().decode("utf-8")) == []
+    assert pd.parse_ticket_seals(updated)[("developer", 0)].sha256 == (
+        pd.parse_ticket_seals(lf)[("developer", 0)].sha256
+    )
+
+
+def test_ticket_seal_hash_writers_and_verifier_have_static_seam_guard():
+    """writer 3주체·verify가 canonical seam을 우회하면 AST 가드가 red가 된다."""
+    delegate_source = PM_DELEGATE.read_text(encoding="utf-8")
+    board_source = (TOOLS / "board.py").read_text(encoding="utf-8")
+    assert _missing_ticket_seal_seam_edges(delegate_source, board_source) == set()
+
+    bypassed = delegate_source.replace(
+        "expected = seal_for(content)",
+        "expected = hashlib.sha256(content).hexdigest()",
+        1,
+    )
+    assert "pm_delegate.verify_ticket_seals->seal_for" in (
+        _missing_ticket_seal_seam_edges(bypassed, board_source)
+    )
+
+
 def test_crlf_prepare_edit_harvest_and_idempotent_preserve_newlines(growth_env, pd):
     pm_home, slot, tickets = growth_env
     source = tickets / "T-1019-growth.md"
     lf = _ticket_text("T-1019", [("developer", "")])
-    seal = pd.parse_ticket_seals(lf)[("developer", 0)]
-    unsealed = lf[:seal.line_start] + lf[seal.line_end:]
-    original = pd.backfill_ticket_seals(unsealed.replace("\n", "\r\n"))[0]
+    # LF에서 발급된 기존 seal을 그대로 둔 채 Git-for-Windows checkout 형상만 CRLF로 바꾼다.
+    original = lf.replace("\n", "\r\n")
     source.write_bytes(original.encode("utf-8"))
     plan = pd.prepare_ticket_copy(
         ticket="T-1019", role="developer", cwd=slot, pm_home=pm_home,
