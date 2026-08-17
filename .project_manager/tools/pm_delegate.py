@@ -8758,7 +8758,11 @@ def _portable_exclusive_write(path: Path, content: str) -> None:
                 # 원래 쓰기 예외를 롤백 실패로 덮지 않는다 — 아래 bare raise가 그대로 전파한다.
                 # 정리 실패는 관측만 loud 하게 남긴다([[T-0705]]). 잔여 파일 경로는 원 예외에
                 # 실어 둔다 — 호출자가 cleanup 재시도·자기-은닉 ignore 보존 판단에 쓴다([[T-0735]]).
-                write_exc.residual_path = path
+                # ENOENT 는 잔여가 없다(누가 먼저 지웠다) — 표식을 붙이면 cleanup 이 오탐 경고를 낸다.
+                # 표식은 예외 객체에 붙어 재사용 예외에서도 남을 수 있어, 호출자는 attempt 고유(uuid)
+                # 경로와 등가비교로만 소비한다(무접두 이름 충돌 방지 위해 `_pm_` 접두).
+                if unlink_exc.errno != errno.ENOENT:
+                    write_exc._pm_residual_path = path
                 _warn_transport_cleanup_failure(
                     path, unlink_exc, action="쓰기 실패 롤백 삭제",
                 )
@@ -8819,7 +8823,7 @@ def _save_opencode_transport_prompt(
         # False라 cleanup이 그 존재를 몰랐다 — 원 예외의 잔여 경로 표식으로 해당 플래그를 세워
         # 기존 cleanup 순서(프롬프트 재시도 → 성공 시만 ignore 삭제 → 실패 시 ignore 보존+loud)를
         # 타게 한다([[T-0735]]).
-        residual_path = getattr(exc, "residual_path", None)
+        residual_path = getattr(exc, "_pm_residual_path", None)
         if residual_path == dest:
             transport.prompt_created = True
         elif residual_path == ignore_path:

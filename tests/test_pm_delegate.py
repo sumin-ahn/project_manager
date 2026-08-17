@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import datetime as _datetime
+import errno
 import hashlib
 import importlib.util
 import json as _json
@@ -644,6 +645,66 @@ def test_opencode_transport_prompt_residual_retry_succeeds_cleans_everything(
     assert "쓰기 실패 롤백 삭제 실패" in captured.err  # T-0705 1차 실패 경고(불변)
     assert "합성 프롬프트 삭제 실패" not in captured.err  # cleanup 재시도는 성공 — 2차 경고 없음
     assert not (cwd / ".project_manager").exists()  # 잔여 0 · ignore·디렉터리까지 정리
+
+
+def test_opencode_transport_ignore_residual_marks_ignore_created_for_retry(
+        pd, monkeypatch, tmp_path, capsys):
+    """(F-002) 자기-은닉 ignore 쓰기 실패+롤백 unlink 실패 → 잔여 표식이 ignore 쪽 플래그를 세워
+    cleanup 재시도가 ignore 를 지운다([[T-0735]] 리뷰 F-002 — `elif` 분기 커버)."""
+    cwd = tmp_path / "sandbox"
+    cwd.mkdir()
+
+    real_fdopen = pd.os.fdopen
+    fdopen_calls = {"n": 0}
+
+    def _fdopen(fd, *args, **kwargs):
+        fdopen_calls["n"] += 1
+        if fdopen_calls["n"] == 1:  # 1번째=ignore 쓰기(실패시킴)
+            return _FailingWriteHandle(fd)
+        return real_fdopen(fd, *args, **kwargs)
+
+    monkeypatch.setattr(pd.os, "fdopen", _fdopen)
+
+    real_unlink = pd.os.unlink
+    unlink_calls = {"n": 0}
+
+    def _unlink(path, *args, **kwargs):
+        if Path(path).name == ".gitignore":
+            unlink_calls["n"] += 1
+            if unlink_calls["n"] == 1:  # 롤백 1차만 거부 — cleanup 재시도는 통과
+                raise PermissionError("의도한 ignore 롤백 삭제 거부")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(pd.os, "unlink", _unlink)
+
+    with pytest.raises(OSError, match="의도한 쓰기 실패"):
+        pd._save_opencode_transport_prompt(cwd, "민감 프롬프트")
+
+    captured = capsys.readouterr()
+    assert unlink_calls["n"] == 2                          # 1차 거부 + cleanup 재시도
+    assert "의도한 ignore 롤백 삭제 거부" in captured.err   # T-0705 경고
+    assert not (cwd / ".project_manager").exists()          # 잔여 0
+
+
+def test_opencode_transport_rollback_enoent_leaves_no_residual_marker(
+        pd, monkeypatch, tmp_path, capsys):
+    """(F-003) 롤백 unlink 가 ENOENT 면 잔여가 없으므로 표식이 붙지 않아 cleanup 이 오탐 재시도·경고를
+    내지 않는다([[T-0735]] 리뷰 F-003)."""
+    target = tmp_path / "enoent.txt"
+    monkeypatch.setattr(pd.os, "fdopen", lambda fd, *a, **kw: _FailingWriteHandle(fd))
+    real_unlink = pd.os.unlink
+
+    def _unlink(path, *args, **kwargs):
+        if Path(path) == target:
+            real_unlink(path)                                  # 누가 먼저 지운 형상
+            raise FileNotFoundError(errno.ENOENT, "already gone", str(path))
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(pd.os, "unlink", _unlink)
+    with pytest.raises(OSError, match="의도한 쓰기 실패") as excinfo:
+        pd._portable_exclusive_write(target, "content")
+    assert not hasattr(excinfo.value, "_pm_residual_path")
+    assert not target.exists()
 
 
 def test_opencode_transport_prompt_residual_retry_fails_preserves_ignore(
