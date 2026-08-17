@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "count": 592,
+  "count": 596,
   "surface_counts": {
     "markdown": 148,
     "python-non-prose": 32,
-    "python-prose": 412
+    "python-prose": 416
   },
   "entries": [
     {
@@ -588,7 +588,15 @@
       "kind": "work_item",
       "match": "ADR-0089",
       "surface": "python-prose",
-      "hash": "6eaa054ee30c524d566e0a651eb099f8105d00c15248d210bfc03287bc24d3b8",
+      "hash": "0f4e864cd774f5755052b5e9493f0f4092d01a6154ea2a953231a845fac25c46",
+      "count": 1
+    },
+    {
+      "path": ".project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "ADR-0089",
+      "surface": "python-prose",
+      "hash": "8eea0bf222e50774cd9ac51f2cab01d0213575818bd64c394a0ab3deb4c01143",
       "count": 1
     },
     {
@@ -1508,7 +1516,15 @@
       "kind": "work_item",
       "match": "ADR-0089",
       "surface": "python-prose",
-      "hash": "6eaa054ee30c524d566e0a651eb099f8105d00c15248d210bfc03287bc24d3b8",
+      "hash": "0f4e864cd774f5755052b5e9493f0f4092d01a6154ea2a953231a845fac25c46",
+      "count": 1
+    },
+    {
+      "path": "templates/claude_code/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "ADR-0089",
+      "surface": "python-prose",
+      "hash": "8eea0bf222e50774cd9ac51f2cab01d0213575818bd64c394a0ab3deb4c01143",
       "count": 1
     },
     {
@@ -2580,7 +2596,15 @@
       "kind": "work_item",
       "match": "ADR-0089",
       "surface": "python-prose",
-      "hash": "6eaa054ee30c524d566e0a651eb099f8105d00c15248d210bfc03287bc24d3b8",
+      "hash": "0f4e864cd774f5755052b5e9493f0f4092d01a6154ea2a953231a845fac25c46",
+      "count": 1
+    },
+    {
+      "path": "templates/codex/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "ADR-0089",
+      "surface": "python-prose",
+      "hash": "8eea0bf222e50774cd9ac51f2cab01d0213575818bd64c394a0ab3deb4c01143",
       "count": 1
     },
     {
@@ -3876,7 +3900,15 @@
       "kind": "work_item",
       "match": "ADR-0089",
       "surface": "python-prose",
-      "hash": "6eaa054ee30c524d566e0a651eb099f8105d00c15248d210bfc03287bc24d3b8",
+      "hash": "0f4e864cd774f5755052b5e9493f0f4092d01a6154ea2a953231a845fac25c46",
+      "count": 1
+    },
+    {
+      "path": "templates/opencode/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "ADR-0089",
+      "surface": "python-prose",
+      "hash": "8eea0bf222e50774cd9ac51f2cab01d0213575818bd64c394a0ab3deb4c01143",
       "count": 1
     },
     {

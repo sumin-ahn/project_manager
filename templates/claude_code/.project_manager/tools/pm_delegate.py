@@ -313,6 +313,10 @@ INTERNAL_FINDING_IDS_FIELD = "finding_ids"
 
 PM_REVIEW_BLOCK = "pm-review-v1"
 PM_REVIEW_DISPOSITION_BLOCK = "pm-review-disposition-v1"
+# versioned fence 후보를 찾는 유일한 정규식 — 스캐너(`_pm_review_json_blocks`)와 회수 거부
+# 무해화(`_neutralize_review_fence`)가 **같은 시야**를 쓴다. 무해화가 스캐너보다 좁으면
+# 남은 손상 fence 하나가 티켓 전역 스캔을 fail-loud 시킨다.
+_PM_REVIEW_FENCE_CANDIDATE_RE = re.compile(r"`{3,}(pm-review[^\s`]*)")
 # fence 이름(`…-v1`)은 블록 **종류** 라벨이고, payload 의 `version` 이 스키마 세대다. severity 를
 # 필수로 올리면서 세대를 2 로 승격했다 — 이미 봉인돼 손댈 수 없는 v1 블록(진행 중 티켓 실측
 # 8건·라운드 산출)을 파서가 legacy 로 계속 읽어야 판정 표면이 현존 자산을 잠그지 않는다.
@@ -2686,6 +2690,16 @@ class ExternalReviewSectionWrite(NamedTuple):
 
 EXTERNAL_REVIEW_SECTION_LABEL = "추가 리뷰"
 EXTERNAL_REVIEW_BLOCK_WARNING_PREFIX = "⚠ versioned block 부재/위반: "
+# 회수를 거부한 절에 **엔진만** 남기는 기계 판독 표식. 판정 표면 제외는 산문 휴리스틱이
+# 아니라 이 표식으로만 판정한다 — 외부 산출이 같은 문장을 담아도 표식은 무해화된다.
+EXTERNAL_REVIEW_REFUSED_MARKER = "pm-review-refused"
+EXTERNAL_REVIEW_REFUSED_LINE = (
+    f"<!-- {EXTERNAL_REVIEW_REFUSED_MARKER} role={EXTERNAL_REVIEW_ROLE} -->"
+)
+# 판정 기준은 엔진이 **발행하는 그 줄**에서 만든다 — 표식과 판독이 갈리지 않게.
+_EXTERNAL_REVIEW_REFUSED_LINE_RE = re.compile(
+    rf"\A{re.escape(EXTERNAL_REVIEW_REFUSED_LINE)}\Z"
+)
 
 
 def _dominant_ticket_newline(text: str) -> str:
@@ -2701,17 +2715,20 @@ def _dominant_ticket_newline(text: str) -> str:
 
 
 def neutralize_ticket_growth_markup(text: str) -> tuple[str, int]:
-    """회수 본문의 성장 marker/seal comment 표기를 무해화한다((본문, 무해화 줄 수)).
+    """회수 본문의 성장 marker/seal/회수 거부 표식 표기를 무해화한다((본문, 무해화 줄 수)).
 
     추가 리뷰어 산출은 티켓 본문(성장 marker 포함)을 입력으로 받은 외부 텍스트다. 그 안의
     marker 문법이 그대로 티켓에 들어가면 절 경계 파서가 손상 marker 로 fail-loud 해 티켓 전체
     조작이 막힌다. comment opener 만 HTML escape 해 사람은 읽고 파서는 데이터로 보지 않게 한다.
+    회수 거부 표식도 같이 무해화한다 — 그 표식은 엔진만 발행해야 판정 표면 제외가 외부 산출의
+    자기 선언이 되지 않는다.
     """
     neutralized = 0
     lines: list[str] = []
     for line in text.splitlines(keepends=True):
         if (f"<!-- {_TICKET_SECTION_MARKER}" in line
-                or f"<!-- {_TICKET_SEAL_MARKER}" in line):
+                or f"<!-- {_TICKET_SEAL_MARKER}" in line
+                or f"<!-- {EXTERNAL_REVIEW_REFUSED_MARKER}" in line):
             line = line.replace("<!--", "&lt;!--")
             neutralized += 1
         lines.append(line)
@@ -2791,21 +2808,26 @@ def next_review_finding_id(ticket_text: str, reviewer_role: str) -> str:
 
 
 def _neutralize_review_fence(body: str) -> str:
-    """회수 거부된 블록의 fence 라벨만 무해화한다(내용은 절에 그대로 남긴다).
+    """회수 거부된 산출의 review fence 라벨을 평문으로 낮춘다(내용은 절에 그대로 남긴다).
 
     거부 사유가 있는 블록을 versioned fence 그대로 티켓에 넣으면 그 티켓의 `review delta` 가
-    영구 malformed 가 되고, 절은 봉인돼 손수정 경로도 없다([[ADR-0089]]). 라벨을 평문 fence 로
-    낮춰 산출은 보존하고 판정 표면은 다음 라운드로 열어 둔다.
+    영구 malformed 가 되고, 절은 봉인돼 손수정 경로도 없다([[ADR-0089]]). 사유 종류를 가리지
+    않고(스키마 위반·블록 중복·severity 부재·JSON 손상·ID 재선언) 라벨만 낮춰 산출은 보존하고
+    판정 표면은 다음 라운드로 열어 둔다.
+
+    스캐너와 **같은 정규식**을 써서 손상 fence(들여쓰기·4중 backtick·미지원 라벨)도 남기지
+    않는다 — 하나라도 남으면 그 티켓의 전역 블록 스캔이 fail-loud 한다.
     """
     lines: list[str] = []
     for line in body.splitlines(keepends=True):
         stripped = line.lstrip()
-        if stripped.startswith("```") and stripped[3:].strip() in {
-            PM_REVIEW_BLOCK, PM_REVIEW_DISPOSITION_BLOCK,
-        }:
+        match = _PM_REVIEW_FENCE_CANDIDATE_RE.match(stripped)
+        if match is not None:
             indent = line[:len(line) - len(stripped)]
             newline = line[len(line.rstrip("\r\n")):]
-            lines.append(f"{indent}```text{newline}")
+            # backtick 개수는 그대로 둔다 — 닫는 fence 와 짝이 어긋나면 뒤 본문까지 코드로 읽힌다.
+            ticks = "`" * (len(match.group(0)) - len(match.group(1)))
+            lines.append(f"{indent}{ticks}text{newline}")
             continue
         lines.append(line)
     return "".join(lines)
@@ -2841,16 +2863,17 @@ def build_external_review_section_content(
 ) -> tuple[str, str | None]:
     """추가 리뷰어 산출을 역할 절 본문으로 만든다 — (본문, 위반 사유 또는 None).
 
-    본문은 산문 답변 전문이다(그 안에 `pm-review-v1` 블록이 하나 들어 있다). 블록이 없거나
-    스키마를 어기면 본문 첫 줄에 경고를 남기고 사유를 함께 돌려준다 — 조용히 장부에만 남기지
-    않는다(호출부가 rc≠0 로 표면화한다).
+    본문은 산문 답변 전문이다(그 안에 `pm-review-v1` 블록이 하나 들어 있다). 회수를 거부할
+    사유(스키마 위반·블록 중복·severity 부재·JSON 손상·`existing_finding_ids` 와 겹치는 finding
+    ID 재선언)가 있으면 **종류를 가리지 않고 같은 처리**를 한다 — 절 머리에 기계 표식과 경고를
+    남기고, 위반 블록은 fence 를 평문으로 낮춰 산출을 절에 보존한다. 사유는 함께 돌려준다(조용히
+    장부에만 남기지 않는다 — 호출부가 rc≠0 로 표면화한다).
 
-    `existing_finding_ids`(회수 직전 티켓 스냅샷)와 겹치는 신규 finding ID 는 재선언이라 거부
-    한다 — 산출은 절에 남기되 fence 라벨을 낮춰 판정 표면을 다음 라운드로 열어 둔다.
+    거부한 라운드가 봉인된 절을 판정 표면에 올리면 그 티켓의 delta 가 영구 malformed 로 잠긴다
+    ([[ADR-0089]] 손수정 차단). 표식으로 그 절만 표면에서 빼 다음 라운드가 정상 착지하게 둔다.
     """
     body, neutralized = neutralize_ticket_growth_markup(reply_text)
     problem = validate_external_review_block(body)
-    collisions: list[str] = []
     if problem is None:
         collisions = _external_review_id_collisions(body, existing_finding_ids)
         if collisions:
@@ -2858,10 +2881,13 @@ def build_external_review_section_content(
                 f"finding ID 재선언: {', '.join(collisions)} — 티켓에 이미 있는 ID 라 이 블록을 "
                 "판정 표면에 올리지 않았습니다(다음 라운드에서 새 ID 로 다시 내십시오)"
             )
-            body = _neutralize_review_fence(body)
     lines = [f"## {label} ({EXTERNAL_REVIEW_ROLE} · {today})", ""]
     if problem is not None:
-        lines.extend([f"{EXTERNAL_REVIEW_BLOCK_WARNING_PREFIX}{problem}", ""])
+        body = _neutralize_review_fence(body)
+        lines.extend([
+            EXTERNAL_REVIEW_REFUSED_LINE, "",
+            f"{EXTERNAL_REVIEW_BLOCK_WARNING_PREFIX}{problem}", "",
+        ])
     if neutralized:
         lines.extend([
             f"⚠ 성장 marker 표기 {neutralized}줄을 무해화했습니다(절 경계 보호).", "",
@@ -3707,30 +3733,26 @@ def _pm_review_seed_object(
 def _pm_review_refused_section_keys(
     ticket_text: str, sections: Sequence[TicketGrowthSection],
 ) -> set[tuple[str, int]]:
-    """엔진이 **회수 거부**로 표시한 절(경고만 있고 판정 블록이 없는 절)의 키 집합.
+    """엔진이 **회수 거부 표식**을 남긴 절의 키 집합(판정 표면 제외 대상).
 
-    finding ID 재선언처럼 판정 표면에 올릴 수 없는 산출은 절 경고와 함께 평문으로만 남는다.
+    스키마 위반·ID 재선언처럼 판정 표면에 올릴 수 없는 산출은 절 경고와 함께 평문으로만 남는다.
     그 절을 판정 대상으로 세면 "최신 리뷰 절에 블록이 없다"로 티켓 전체 delta 가 막혀,
     거부한 라운드가 오히려 봉인된 자산을 잠근다. 판정 표면에서만 제외하고 산출은 보존한다.
+
+    판정 기준은 산문 문자열이 아니라 **엔진이 발행한 표식 줄**이다(회수 본문에서는 같은 표기가
+    무해화된다). 표식을 쓰는 회수 경로가 추가 리뷰 채널뿐이라 내부 code-reviewer 절은 산문에
+    무엇을 담아도 제외 대상이 되지 않는다 — "최신 리뷰 절 블록 필수" 가드가 우회되지 않는다.
     """
-    block_owners = {
-        (section.role, section.ordinal)
-        for block in _pm_review_json_blocks(ticket_text)
-        if block.kind == PM_REVIEW_BLOCK
-        for section in sections
-        if section.marker_start <= block.start and block.end <= section.marker_end
-    }
     refused: set[tuple[str, int]] = set()
     for section in sections:
-        key = (section.role, section.ordinal)
-        if key in block_owners:
+        if section.role != EXTERNAL_REVIEW_ROLE:
             continue
         content = ticket_text[section.content_start:section.content_end]
         if any(
-            line.startswith(EXTERNAL_REVIEW_BLOCK_WARNING_PREFIX)
+            _EXTERNAL_REVIEW_REFUSED_LINE_RE.match(line) is not None
             for line in content.splitlines()
         ):
-            refused.add(key)
+            refused.add((section.role, section.ordinal))
     return refused
 
 
@@ -4130,6 +4152,10 @@ def parse_pm_review_delta(ticket_text: str) -> PMReviewDelta:
             if section.marker_start <= block.start and block.end <= section.marker_end
         ]
         if block.kind == PM_REVIEW_BLOCK:
+            if len(containing) == 1 and (
+                containing[0].role, containing[0].ordinal,
+            ) in refused:
+                continue          # 거부 표식이 있는 절의 잔여 블록은 판정 표면 밖이다.
             if len(containing) != 1 or containing[0].role not in REVIEW_ROLES:
                 raise PMReviewError(
                     "malformed",
@@ -4367,12 +4393,50 @@ def render_pm_review_delta(ticket: str, delta: PMReviewDelta) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _pm_review_section_review_blocks(
+    ticket_text: str, section: TicketGrowthSection,
+) -> list[_PMReviewBlock]:
+    """절 범위 안에서만 review block 을 스캔한다 — 다른 절의 손상이 이 절 판정에 새지 않는다."""
+    section_text = ticket_text[section.marker_start:section.marker_end]
+    return [
+        block for block in _pm_review_json_blocks(section_text)
+        if block.kind == PM_REVIEW_BLOCK
+    ]
+
+
+def _pm_review_outside_sections_text(
+    ticket_text: str, sections: Sequence[TicketGrowthSection],
+) -> str:
+    """역할 절 밖 PM 영역 텍스트만 이어 붙인다 — disposition 은 정의상 절 밖에만 있다.
+
+    요약이 판정 상태를 읽을 때 절 안 손상 블록을 PM 영역 스캔까지 끌고 들어가지 않게 한다.
+    """
+    parts: list[str] = []
+    cursor = 0
+    for start, end in sorted(
+        (section.marker_start, section.marker_end) for section in sections
+    ):
+        if start > cursor:
+            parts.append(ticket_text[cursor:start])
+        cursor = max(cursor, end)
+    parts.append(ticket_text[cursor:])
+    return "".join(parts)
+
+
 def _pm_review_summary_section_rows(
-    ticket_text: str, section: TicketGrowthSection, label: str,
+    ticket_text: str, section: TicketGrowthSection, label: str, *, pm_area: str,
 ) -> list[str]:
-    """한 리뷰 절의 요약 줄 — 이 절의 파싱 실패는 이 절 안에서만 접힌다."""
-    block = _pm_review_block_for_section(ticket_text, section)
-    value = block.value
+    """한 리뷰 절의 요약 줄 — 이 절의 파싱 실패(JSON 손상 포함)는 이 절 안에서만 접힌다."""
+    blocks = _pm_review_section_review_blocks(ticket_text, section)
+    if not blocks:
+        return [f"  {label} versioned block 없음"]   # versioned block 도입 전 절.
+    if len(blocks) != 1:
+        raise PMReviewError(
+            "malformed",
+            f"reviewer ordinal={section.ordinal}에는 {PM_REVIEW_BLOCK} block이 "
+            "정확히 하나여야 합니다",
+        )
+    value = blocks[0].value
     _pm_review_exact_keys(value, PM_REVIEW_PAYLOAD_KEYS, PM_REVIEW_BLOCK)
     version = _pm_review_version(value, PM_REVIEW_BLOCK)
     if not isinstance(value["findings"], list) or not isinstance(
@@ -4392,7 +4456,7 @@ def _pm_review_summary_section_rows(
         for item in value["confirmations"]
     ]
     _block, disposition_rows = _pm_review_disposition_rows_for_ordinal(
-        ticket_text, section.ordinal, reviewer_role=section.role,
+        pm_area, section.ordinal, reviewer_role=section.role,
     )
     decisions = {parsed.id: parsed.decision for parsed, _raw in disposition_rows}
     if not findings and not confirmations:
@@ -4414,36 +4478,29 @@ def _pm_review_summary_section_rows(
 def _pm_review_summary_rows(ticket_text: str) -> list[str]:
     """리뷰 절별 finding 을 (채널·ordinal·심각도·분류·판정 상태) 한 줄로 축약한다.
 
-    표시면이라 관용 판정이다 — 한 절의 블록이 옛 스키마이거나 손상돼도 그 절 한 줄만 경고로
-    접고 나머지 절의 요약은 그대로 낸다(구 블록 하나가 티켓 전체 요약을 잠그지 않는다).
+    표시면이라 관용 판정이다 — 한 절의 블록이 옛 스키마이거나 JSON 이 깨져도 그 절 한 줄만
+    경고로 접고 나머지 절의 요약은 그대로 낸다(손상 블록 하나가 티켓 전체 요약을 잠그지 않는다).
+    블록 스캔도 절 범위로 내려 잡는다 — 티켓 단위로 훑으면 깨진 블록 하나가 다른 절의 요약까지
+    끌고 나간다.
     """
     all_sections = _ticket_growth_sections(ticket_text)
     sections = [
         section for section in all_sections if section.role in REVIEW_ROLES
     ]
     refused = _pm_review_refused_section_keys(ticket_text, all_sections)
+    pm_area = _pm_review_outside_sections_text(ticket_text, all_sections)
     rows: list[str] = []
-    blocks = [
-        block for block in _pm_review_json_blocks(ticket_text)
-        if block.kind == PM_REVIEW_BLOCK
-    ]
     for section in sections:
         label = f"{section.role}[{section.ordinal}]"
-        contained = [
-            block for block in blocks
-            if section.marker_start <= block.start and block.end <= section.marker_end
-        ]
-        if not contained:
-            # 엔진이 거부한 절과 versioned block 도입 전 절을 구분해 표기한다(둘 다 조회는 연다).
-            rows.append(
-                f"  {label} 회수 거부(판정 표면 제외)"
-                if (section.role, section.ordinal) in refused
-                else f"  {label} versioned block 없음"
-            )
+        if (section.role, section.ordinal) in refused:
+            # 엔진이 거부한 절은 산출 조회만 열고 판정 표면에서는 뺀다.
+            rows.append(f"  {label} 회수 거부(판정 표면 제외)")
             continue
         try:
             rows.extend(
-                _pm_review_summary_section_rows(ticket_text, section, label)
+                _pm_review_summary_section_rows(
+                    ticket_text, section, label, pm_area=pm_area,
+                )
             )
         except DelegateError as exc:
             rows.append(f"  {label} ⚠ 요약 불가: {exc}")
@@ -4454,8 +4511,8 @@ def render_pm_review_summary(ticket_text: str) -> str:
     """`board.py show` 가 붙이는 리뷰 블록 요약(사람용 렌더는 블록에서만 파생).
 
     표시면이라 파싱 실패로 티켓 조회를 깨지 않는다 — 사유를 그 자리에 loud 하게 남긴다.
-    절 단위 실패는 그 절 한 줄로 접히고, 여기서 접는 것은 marker/fence 손상처럼 티켓 전체를
-    읽을 수 없게 하는 형상뿐이다.
+    절 안 블록의 실패(옛 스키마·JSON 손상·개수 위반)는 그 절 한 줄로 접히고, 여기서 접는 것은
+    절 경계 marker 손상처럼 **절 목록 자체**를 읽을 수 없게 하는 형상뿐이다.
     """
     try:
         rows = _pm_review_summary_rows(ticket_text)
@@ -10624,11 +10681,18 @@ def _seal_backfill_one(
     `promote` 가 시작한다.
 
     두 축의 실패는 서로 격리된다 — 판정 입력 계산(`parse_ticket_seals`)까지 장부 축 `try`
-    안에 둬야 손상 봉인 티켓 하나가 `--all` sweep 전체를 중단시키지 않는다.
+    안에 둬야 손상 봉인 티켓 하나가 `--all` sweep 전체를 중단시키지 않는다. 티켓 파일 자체를
+    읽지 못하는 경우(UTF-8 로 디코드되지 않음·읽기 OSError)도 같은 클래스라 per-ticket
+    outcome.error 로 접는다 — sweep 은 계속되고 그 티켓만 실패로 보고된다.
     """
-    with _load_file_lock().open_shared(
-            path, binary=False, encoding="utf-8", newline="") as handle:
-        original = handle.read()
+    try:
+        with _load_file_lock().open_shared(
+                path, binary=False, encoding="utf-8", newline="") as handle:
+            original = handle.read()
+    except (UnicodeDecodeError, OSError) as exc:
+        return _SealBackfillOutcome(
+            [], [], [], f"티켓 파일을 읽지 못했습니다({type(exc).__name__}): {path} — {exc}",
+        )
     sealed: list[tuple[str, int]] = []
     paths: list[Path] = []
     error: str | None = None
