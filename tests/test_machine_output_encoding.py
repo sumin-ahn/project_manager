@@ -173,7 +173,7 @@ _LOG_TEXT = (
 )
 
 
-def test_pm_bootstrap_json_payload_is_utf8(capture_console, tmp_path):
+def test_pm_bootstrap_json_payload_is_utf8(capture_console, tmp_path, monkeypatch):
     """`--json` 부트스트랩 페이로드(로그 본문 포함)가 cp949 콘솔에서도 무손실이다."""
     bootstrap = _load("pm_bootstrap")
     _neutralize_engine_anchor_guard(bootstrap, monkeypatch)
@@ -385,7 +385,7 @@ def test_missing_seam_fallback_still_writes_utf8_bytes(
 # ── (b) 사람 출력은 종전대로 콘솔 코덱 · 순서 보존 ───────────────────────────
 
 def test_human_markdown_path_still_goes_through_the_console_codec(
-    capture_console, tmp_path
+    capture_console, tmp_path, monkeypatch
 ):
     """같은 부트스트랩의 markdown(사람) 출력은 cp949 로 나간다 — 분리 축은 스트림이 아니라 seam."""
     bootstrap = _load("pm_bootstrap")
