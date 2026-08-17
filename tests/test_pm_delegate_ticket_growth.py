@@ -205,8 +205,10 @@ def _missing_ticket_seal_seam_edges(
     """봉인 writer 전주체와 verifier가 canonical hash seam을 우회했는지 판정.
 
     성장 절을 쓰는 두 주체(사본 harvest·external-reviewer 절 기록)는 봉인 재발급을 공용
-    seam(`seal_and_replace_ticket_text`) 하나로만 지난다 — 지점이 늘면 봉인 규칙과 그 위에
-    붙는 부기가 호출부마다 갈린다.
+    seam(`upsert_ticket_seal_with_ledger`) 하나로만 지난다 — 지점이 늘면 봉인 규칙과 그 위에
+    붙는 장부 부기가 호출부마다 갈린다. 그 주체들이 장부 **게이트**(`require_ticket_growth_
+    ledger_before_write`)를 지나는지도 같은 자리에서 본다 — 한 writer 만 게이트 밖이면 절
+    삭제 세탁이 그 문에서 재현된다.
     """
     required = {
         "_ticket_seal_hash_input": {"replace", "encode"},
@@ -227,7 +229,10 @@ def _missing_ticket_seal_seam_edges(
         "upsert_ticket_seal_with_ledger": {"_upsert_ticket_seal",
                                            "append_ticket_growth_records"},
         "harvest_ticket_copy": {"seal_for", "upsert_ticket_seal_with_ledger"},
-        "write_external_reviewer_section": {"upsert_ticket_seal_with_ledger"},
+        "write_external_reviewer_section": {
+            "upsert_ticket_seal_with_ledger",
+            "require_ticket_growth_ledger_before_write",
+        },
     }
     missing = {
         f"pm_delegate.{function}->{callee}"
@@ -1114,6 +1119,17 @@ def test_ticket_seal_hash_writers_and_verifier_have_static_seam_guard():
         "pm_delegate.append_ticket_growth_records->seal_for",
         "pm_delegate.ticket_growth_misplaced_seal_keys->seal_for",
     } <= _missing_ticket_seal_seam_edges(ledger_bypassed, board_source)
+    # 봉인 writer 하나가 장부 게이트를 비켜 가면 절 삭제 세탁이 그 문에서 재현된다.
+    gate_bypassed = delegate_source.replace(
+        "require_ticket_growth_ledger_before_write(\n"
+        "            current_text, ledger, ticket=ticket,",
+        "_growth_gate_skipped(\n            current_text, ledger, ticket=ticket,",
+        1,
+    )
+    assert (
+        "pm_delegate.write_external_reviewer_section->"
+        "require_ticket_growth_ledger_before_write"
+    ) in _missing_ticket_seal_seam_edges(gate_bypassed, board_source)
 
 
 def test_crlf_prepare_edit_harvest_and_idempotent_preserve_newlines(growth_env, pd):

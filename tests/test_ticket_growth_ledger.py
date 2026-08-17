@@ -223,6 +223,57 @@ def test_disabling_the_ledger_axis_makes_the_three_probes_green(board, pd):
 
 
 # ════════════════════════════════════════════════════════════════════════
+# external-review 절 기록도 같은 장부 게이트를 지난다 (봉인 writer 5주체)
+# ════════════════════════════════════════════════════════════════════════
+
+def _external_review_content(pd) -> str:
+    content, problem = pd.build_external_review_section_content(
+        "판정: 통과\n\n## must-fix\n- 없음\n", today="2026-08-18",
+    )
+    assert problem is None or isinstance(problem, str)
+    return content
+
+
+def _write_external_review(board, pd, ticket: str):
+    return pd.write_external_reviewer_section(
+        ticket=ticket, content=_external_review_content(pd),
+        pm_home=board.root, board=board.module,
+    )
+
+
+def test_external_review_write_refuses_recreating_a_deleted_section(board, pd):
+    """절+봉인을 지운 뒤 external-review 재기록으로 세탁되지 않는다(재현 1)."""
+    path = board.seed("T-9080")
+    write = _write_external_review(board, pd, "T-9080")
+    assert write.ordinal == 0
+    assert board.codes(pd, "T-9080", path) == []
+    assert set(board.ledger(pd, "T-9080").latest) == {("external-reviewer", 0)}
+
+    _delete_section_and_seal(pd, path, "external-reviewer", 0)
+    assert board.codes(pd, "T-9080", path) == ["section-deleted"]
+    with pytest.raises(pd.DelegateError, match="성장 장부에 이미 있는 절 재생성 거부"):
+        _write_external_review(board, pd, "T-9080")
+    assert board.codes(pd, "T-9080", path) == ["section-deleted"], (
+        "재기록이 통과하면 절 삭제가 정상 명령 1회로 세탁된다")
+
+
+def test_external_review_write_refuses_a_suspected_ledger_deletion(board, pd):
+    """stamp 이후 장부 파일을 지운 뒤의 external-review 재기록도 fail-closed 다(재현 2)."""
+    path = board.seed("T-9081")
+    _write_external_review(board, pd, "T-9081")
+    assert pd.ticket_growth_migration_stamped(board.growth)
+
+    ledger_path = pd.ticket_growth_ledger_path(board.growth, "T-9081")
+    ledger_path.unlink()
+    assert board.codes(pd, "T-9081", path) == ["ledger-file-deleted"]
+    before = path.read_bytes()
+    with pytest.raises(pd.DelegateError, match="삭제 의심"):
+        _write_external_review(board, pd, "T-9081")
+    assert not ledger_path.exists(), "재기록이 장부를 되살리면 stamp 판정이 무력해진다"
+    assert path.read_bytes() == before, "거부는 write 전에 난다"
+
+
+# ════════════════════════════════════════════════════════════════════════
 # (c)(q) 정상 왕복 · 멱등
 # ════════════════════════════════════════════════════════════════════════
 
@@ -337,6 +388,47 @@ def test_partial_write_is_unrecorded_and_recovers_both_ways(board, pd, monkeypat
     assert pd._cmd_ticket_seal_backfill("T-9009") == 0
     assert board.codes(pd, "T-9009", path) == []
     assert board.ledger(pd, "T-9009").latest[("developer", 0)]["by"] == "backfill"
+
+
+def test_sweep_isolates_a_corrupt_ticket_and_keeps_migrating_the_rest(
+        board, pd, monkeypatch):
+    """(F-004) 손상 봉인 티켓 하나가 `--all` sweep 전체를 중단시키지 않는다.
+
+    stamp 이후 + 장부 파일 부재 + 봉인 문법 손상 조합에서 판정 입력 계산이 per-ticket try
+    밖에 있으면 그 티켓에서 sweep 이 예외로 끝나고 뒤 티켓이 통째로 미처리로 남는다.
+    """
+    healthy = board.seed("T-9034")
+    assert board.section_add("T-9034") == 0
+    assert pd.ticket_growth_migration_stamped(board.growth), "stamp 이후 형상을 만든다"
+
+    corrupt = board.seed("T-9035")
+    text = corrupt.read_text(encoding="utf-8") + (
+        "\n<!-- pm-ticket-section:start role=developer -->\n"
+        "## 구현 보충 (developer · 2026-08-17)\n\n산출\n"
+        "<!-- pm-ticket-section:end role=developer -->\n")
+    sealed, _changed = pd.backfill_ticket_seals(text, ticket="T-9035")
+    seal_line = sealed[
+        pd.parse_ticket_seals(sealed)[("developer", 0)].line_start:
+        pd.parse_ticket_seals(sealed)[("developer", 0)].line_end]
+    corrupt.write_text(sealed + seal_line, encoding="utf-8", newline="\n")  # seal 중복.
+    assert not pd.ticket_growth_ledger_path(board.growth, "T-9035").exists()
+
+    trailing = board.seed("T-9036")
+    trailing.write_text(
+        trailing.read_text(encoding="utf-8")
+        + "\n<!-- pm-ticket-section:start role=developer -->\n"
+        "## 구현 보충 (developer · 2026-08-17)\n\n미봉인 legacy\n"
+        "<!-- pm-ticket-section:end role=developer -->\n",
+        encoding="utf-8", newline="\n")
+
+    monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: board.root)
+    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _owner: board.module)
+    assert pd._cmd_ticket_seal_backfill(None, sweep=True) == 1, "손상 티켓은 rc1 로 남는다"
+
+    assert board.codes(pd, "T-9036", trailing) == [], "뒤 티켓이 미처리로 남으면 안 된다"
+    assert board.codes(pd, "T-9034", healthy) == []
+    assert not pd.ticket_growth_ledger_path(board.growth, "T-9035").exists(), (
+        "손상 티켓의 장부는 만들지 않는다")
 
 
 def test_missing_ledger_after_the_stamp_is_suspected_deletion(board, pd, monkeypatch):
@@ -549,6 +641,44 @@ def test_discarded_draft_number_reuse_is_not_polluted(board, pd):
     assert board.section_add("T-9026", "architect") == 0
 
 
+def test_draft_seal_backfill_seals_text_only_and_writes_no_ledger(
+        board, pd, monkeypatch):
+    """(m 확장) draft 의 seal-backfill 은 **봉인 축만** 실행한다 — 장부는 promote 가 시작한다.
+
+    draft 장부는 draft 격리(`tickets/.drafts/`) 밖 `tickets/.growth/` 에 생겨 board-git 부기
+    대상이 되고(핸드오프 dirty 오탐), 폐기 draft 번호가 재발급되면 새 티켓이 남의 레코드를
+    물려받는다.
+    """
+    draft = board.seed("T-9033", status="draft")
+    draft.write_text(
+        draft.read_text(encoding="utf-8")
+        + "\n<!-- pm-ticket-section:start role=architect -->\n"
+        "## 설계 (architect · 2026-08-17)\n\n미봉인 legacy 설계\n"
+        "<!-- pm-ticket-section:end role=architect -->\n",
+        encoding="utf-8", newline="\n")
+    synced: list[tuple] = []
+    monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: board.root)
+    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _owner: board.module)
+    monkeypatch.setattr(
+        board.module, "_board_git_sync_best_effort",
+        lambda message, paths: synced.append((message, tuple(paths))) or True)
+
+    assert pd._cmd_ticket_seal_backfill("T-9033") == 0
+    assert pd.verify_ticket_seals(draft.read_text(encoding="utf-8")) == [], (
+        "봉인 축 처방은 draft 에서도 실행 가능해야 한다")
+    draft_ledger = pd.ticket_growth_ledger_path(board.growth, "T-9033")
+    assert not draft_ledger.exists(), "draft 장부는 만들지 않는다(불변식 8)"
+    for _message, paths in synced:
+        assert draft_ledger not in paths, "draft 장부를 board-git 부기에 실으면 안 된다"
+
+    # 폐기 → 같은 번호 재발급에도 물려받을 레코드가 없다.
+    draft.unlink()
+    reused = board.seed("T-9033")
+    assert board.ledger(pd, "T-9033").present is False
+    assert board.codes(pd, "T-9033", reused) == []
+    assert board.section_add("T-9033", "architect") == 0
+
+
 def test_draft_round_trip_records_only_at_promote(board, pd):
     """(u) draft 전 구간 장부 축 RED 0 · promote 가 1회 기록하고 재-promote 는 0 이다."""
     draft = board.seed("T-9027", status="draft")
@@ -611,7 +741,8 @@ def test_mixed_ticket_prescription_excludes_backfill_and_splits_by_emptiness(boa
         problems = board.problems(pd, "T-9029", path)
         assert [problem.code for problem in problems] == ["seal-missing"]
         prescription = problems[0].prescription
-        assert "봉인 도입 이후" not in prescription or True
+        assert "봉인된 절과 미봉인 절이 섞인 mixed 티켓" in prescription, (
+            "mixed 확정 문구가 빠지면 전체 미봉인(legacy·seal-backfill 대상)과 구분되지 않는다")
         assert "seal-backfill" not in prescription, (
             "mixed 는 그 명령이 거부하는 상태라 처방으로 실을 수 없다")
         assert expected in prescription
