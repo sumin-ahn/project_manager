@@ -525,10 +525,13 @@ def test_portable_exclusive_write_collision_preserves_existing_file(pd, tmp_path
 
 
 class _FailingWriteHandle:
-    """`os.fdopen` 대역 — 실제 fd를 열어 두되 `write` 호출만 실패시킨다([[T-0705]])."""
+    """`os.fdopen` 대역 — 실제 fd를 열어 두되 `write` 호출만 실패시킨다([[T-0705]]).
 
-    def __init__(self, fd):
+    `sentinel` 을 주면 그 예외 객체를 그대로 던져 호출자가 identity 를 단언할 수 있다."""
+
+    def __init__(self, fd, sentinel: BaseException | None = None):
         self._fd = fd
+        self._sentinel = sentinel
 
     def __enter__(self):
         return self
@@ -538,6 +541,8 @@ class _FailingWriteHandle:
         return False
 
     def write(self, data):
+        if self._sentinel is not None:
+            raise self._sentinel
         raise OSError("의도한 쓰기 실패")
 
 
@@ -561,8 +566,9 @@ def test_portable_exclusive_write_rollback_failure_warns_and_keeps_original_exce
         pd, monkeypatch, tmp_path, capsys):
     """(b) 쓰기 실패 + unlink 실패 → 원래 예외 그대로 전파 + stderr에 잔여 경로·원인."""
     target = tmp_path / "write-fails-unlink-fails.txt"
+    sentinel = OSError("의도한 쓰기 실패")
     monkeypatch.setattr(
-        pd.os, "fdopen", lambda fd, *a, **kw: _FailingWriteHandle(fd),
+        pd.os, "fdopen", lambda fd, *a, **kw: _FailingWriteHandle(fd, sentinel),
     )
 
     original_unlink = pd.os.unlink
@@ -574,9 +580,13 @@ def test_portable_exclusive_write_rollback_failure_warns_and_keeps_original_exce
 
     monkeypatch.setattr(pd.os, "unlink", _deny_rollback_unlink)
 
-    with pytest.raises(OSError, match="의도한 쓰기 실패"):
+    with pytest.raises(OSError, match="의도한 쓰기 실패") as excinfo:
         pd._portable_exclusive_write(target, "content")
 
+    # 원래 예외 *그 객체* 가 chaining 오염 없이 전파된다(리뷰 F-001 — `raise … from unlink_exc` 회귀 차단).
+    assert excinfo.value is sentinel
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
     captured = capsys.readouterr()
     assert str(target) in captured.err
     assert "의도한 롤백 삭제 거부" in captured.err
