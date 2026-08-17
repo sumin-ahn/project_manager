@@ -252,7 +252,7 @@ def test_severity_boundary_is_the_block_generation_not_the_ticket_state(pd):
     assert caught.value.code == "malformed"
 
 
-def test_legacy_block_may_also_carry_severity_from_the_transition_window(pd):
+def test_legacy_block_may_also_include_severity_from_the_transition_window(pd):
     """전환기 v1 산출이 severity 를 실었어도 읽는다(두 key 집합 중 하나와 정확 일치)."""
     ticket = _review_section({
         "version": LEGACY_BLOCK_VERSION,

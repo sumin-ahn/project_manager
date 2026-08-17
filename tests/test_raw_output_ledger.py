@@ -705,6 +705,13 @@ def _stub_reviewer(external, monkeypatch) -> None:
         return True, "판정: 통과\n\n## must-fix\n- 없음\n", True
 
     monkeypatch.setattr(external, "_run_reviewer_ex", _fake_run_reviewer_ex)
+    # 이 파일의 축은 raw·라운드 장부다. 게이트가 ticket 형상이면 엔진이 리뷰 뒤 그 티켓의
+    # external-reviewer 절 회수를 시도하는데, 여기 픽스처의 `T-0001.md` 는 장부 축용 빈 파일이라
+    # board 의 티켓 해소를 통과하지 못한다 — 회수 축은 `test_external_review_ticket_harvest.py`
+    # 가 소유하므로 여기서는 격리한다.
+    monkeypatch.setattr(
+        external, "_harvest_external_review_section", lambda *args, **kwargs: None,
+    )
 
 
 def test_external_raw_storage_anchor_is_resolved_pm_home_owner(
