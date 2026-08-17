@@ -5600,9 +5600,12 @@ def _scope_workspace(tmp_path: Path, monkeypatch, pd, touches=("work/demo_1/src"
     assert changed == [
         ("developer", 0), ("code-reviewer", 0), ("architect", 0), ("researcher", 0),
     ]
-    (tickets / f"{TICKET_ID}-scope.md").write_text(
-        ticket_text,
-        encoding="utf-8",
+    ticket_path = tickets / f"{TICKET_ID}-scope.md"
+    ticket_path.write_text(ticket_text, encoding="utf-8")
+    # T-0699: 봉인이 있는 open 티켓은 성장 장부 레코드도 있어야 harvest 가 통과한다(봉인 도입 이전
+    # 형상은 sweep 대상이라 거부) — 실물 보드처럼 backfill 레코드를 함께 세운다.
+    pd.append_ticket_growth_records(
+        pd.ticket_growth_dir_for_ticket_path(ticket_path), TICKET_ID, ticket_text, by="backfill",
     )
     ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.parent.mkdir(parents=True)
@@ -5768,6 +5771,18 @@ def test_corrupt_ticket_degrades_only_generic_axis_and_adapter_warning_survives(
         "<!-- pm-ticket-section:start role=developer -->\n"
         "## 구현 보충 (developer · 2026-08-13)\n\n"
         "<!-- pm-ticket-section:end role=developer -->\n"
+        # 손상 축은 frontmatter(id 불일치·touches)뿐이다 — 역할 절 4개는 원본과 같게 둔다.
+        # T-0699 성장 장부가 원본의 4 절 레코드를 들고 있어, 절을 빼면 '절 삭제 검출' 이라는
+        # 별개의 정당한 RED 가 harvest 를 막아 이 테스트의 축(scope 감사 강등)을 가린다.
+        "<!-- pm-ticket-section:start role=code-reviewer -->\n"
+        "## 리뷰 (code-reviewer · 2026-08-13)\n\n"
+        "<!-- pm-ticket-section:end role=code-reviewer -->\n"
+        "<!-- pm-ticket-section:start role=architect -->\n"
+        "## 설계 (architect · 2026-08-13)\n\n"
+        "<!-- pm-ticket-section:end role=architect -->\n"
+        "<!-- pm-ticket-section:start role=researcher -->\n"
+        "## 조사 (researcher · 2026-08-13)\n\n"
+        "<!-- pm-ticket-section:end role=researcher -->\n"
     )
     ticket_path.write_text(
         pd.backfill_ticket_seals(corrupt_text)[0],
@@ -5806,6 +5821,18 @@ def test_corrupt_ticket_isolation_oracle_is_sensitive_to_coupled_none(
         "<!-- pm-ticket-section:start role=developer -->\n"
         "## 구현 보충 (developer · 2026-08-13)\n\n"
         "<!-- pm-ticket-section:end role=developer -->\n"
+        # 손상 축은 frontmatter(id 불일치·touches)뿐이다 — 역할 절 4개는 원본과 같게 둔다.
+        # T-0699 성장 장부가 원본의 4 절 레코드를 들고 있어, 절을 빼면 '절 삭제 검출' 이라는
+        # 별개의 정당한 RED 가 harvest 를 막아 이 테스트의 축(scope 감사 강등)을 가린다.
+        "<!-- pm-ticket-section:start role=code-reviewer -->\n"
+        "## 리뷰 (code-reviewer · 2026-08-13)\n\n"
+        "<!-- pm-ticket-section:end role=code-reviewer -->\n"
+        "<!-- pm-ticket-section:start role=architect -->\n"
+        "## 설계 (architect · 2026-08-13)\n\n"
+        "<!-- pm-ticket-section:end role=architect -->\n"
+        "<!-- pm-ticket-section:start role=researcher -->\n"
+        "## 조사 (researcher · 2026-08-13)\n\n"
+        "<!-- pm-ticket-section:end role=researcher -->\n"
     )
     ticket_path.write_text(
         pd.backfill_ticket_seals(corrupt_text)[0],
