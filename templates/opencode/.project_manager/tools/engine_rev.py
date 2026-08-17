@@ -214,6 +214,14 @@ EXEMPT_FROM_STAMP = {
 # 코드 소유·빈 사유 금지라 새 미검증 loader가 자동으로 섞이지 않는다.
 EXEMPT_UNVERIFIED_DEEP_IMPORTS = {
     ("board.py", "_run_lint_hooks"): "채택자 소유 .project_manager/hooks/lint_*.py 확장점",
+    ("identity_args.py", "_read_text_shared"):
+        "리스 장부 판독을 공유 읽기 seam 으로 올리는 지연 로드다([[T-0729]]). 이 모듈은 board 가 "
+        "**import 시점**에 로드하는 leaf point-reader 라 형제 판정 계층을 갖지 않는 것이 설계이고, "
+        "여기서 빌려 오는 것은 판정이 아니라 '열기 방식' 하나뿐이다 — 구세대 사본은 함수 부재로 "
+        "드러나 loud 강등되고, 강등해도 읽는 바이트는 같다",
+    ("repo_coordinates.py", "_read_text_shared"):
+        "같은 리스 장부 판독의 지연 로드 — 이 모듈도 다른 도구가 import 시점에 로드하는 leaf "
+        "좌표 모듈이라 같은 근거다(빌리는 것은 열기 방식뿐·구세대는 loud 강등·바이트 동일)",
     ("pm_import.py", "_upstream_hook_set_declarations"):
         "훅 세트 세대 선언을 읽으려 **다른 세대**의 상류 pm_import 를 의도적으로 로드한다 — "
         "rev 대조로 거르면 이 판정의 목적(세대 차 확인) 자체가 불가능해진다. 읽는 것은 선언 "
@@ -237,7 +245,15 @@ class EngineRevSkew(RuntimeError):
 
 
 def read_literal(module_path: Path) -> str | None:
-    """모듈 소스에서 baked `ENGINE_REV` 리터럴을 읽는다 (없으면 None). 가드/도구 공용 스캐너."""
+    """모듈 소스에서 baked `ENGINE_REV` 리터럴을 읽는다 (없으면 None). 가드/도구 공용 스캐너.
+
+    **공유 읽기 seam 의 등재 예외다**([[T-0729]] 가드 등재부). 읽는 대상(엔진 모듈 소스)은
+    `pm_update` 가 원자 교체하는 파일이 맞지만, 이 모듈은 **rev 검증자 자신**이다 — 형제
+    `file_lock` 을 로드하려면 그 사본의 rev 를 대조해야 하고 그 대조를 하는 곳이 여기라
+    부트스트랩 순환이 된다. `--bump` 는 그 위에서 자기 rev 를 다시 쓰는 경로라 순환이 한 번 더
+    겹친다. 잃는 것은 "Windows 에서 이 스캔이 열려 있는 동안의 교체 한 번" 이고, 얻는 것은
+    "rev 판정이 형제 로드에 의존하지 않는다" 다.
+    """
     m = _LITERAL_RE.search(module_path.read_text(encoding="utf-8"))
     return m.group(1) if m else None
 
@@ -289,6 +305,8 @@ def bump(new_rev: str, *, dry_run: bool = False) -> list[str]:
     changed: list[str] = []
     for filename in ("engine_rev.py", *STAMPED_MODULES):
         path = tools / filename
+        # `read_literal` 과 같은 등재 예외다 — 이 루프는 자기 rev 를 포함해 전 모듈 리터럴을
+        # 다시 쓰는 부트스트랩이라 형제 seam 에 기댈 수 없다([[T-0729]]).
         text = path.read_text(encoding="utf-8")
         new_text, n = _LITERAL_RE.subn(f'ENGINE_REV = "{new_rev}"', text, count=1)
         if n == 0:

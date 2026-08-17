@@ -5334,7 +5334,7 @@ def test_install_protected_hook_writes_only_through_artifact_spec():
     writer = src.split("def _atomic_write_protected_artifact(", 1)[1].split("\ndef ", 1)[0]
     assert "tempfile.mkstemp(" in writer and "dir=artifact.path.parent" in writer
     assert "tmp.chmod(" in writer
-    assert "os.replace(tmp, artifact.path)" in writer
+    assert "file_lock.atomic_replace(tmp, artifact.path)" in writer
 
 
 @_git_required

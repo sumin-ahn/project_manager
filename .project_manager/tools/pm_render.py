@@ -23,11 +23,12 @@ post-render assertion 이 emission 순간 hard-fail(allow-list 없음). operatio
 `{{FOO}}`·미배선 토큰을 침묵 출하 대신 큰소리로 표면화한다. board.py `render-leak` lint 가
 상시 backstop(2중 차단).
 
-**단 하나의 예외 = intentional-TODO placeholder**: `{{OPENCODE_PRO_MODEL}}` 은 채택자가
-opencode 없이 import 하면 결정적 해소가 불가능한 토큰이라, 미해소 시 leak(자족 위반)이 아니라
-`# model: "<provider/model>"  # TODO: …` 로 graceful 중화한다(pm_import --fill manual 과 대칭·
-채택자-fill 대기). 이건 자족 산출물 위반이 아니다 — 리터럴 `{{...}}` 토큰이 제거되고(자족 유지)
-채택자가 나중에 채우는 지점만 남는다. neutralize_model_todo 참조. 그 밖의 미해소 토큰은
+**유일한 예외 = intentional-TODO placeholder(모델 토큰)**: `{{OPENCODE_PRO_MODEL}}`(채택자가
+opencode 없이 import)과 `{{DELEGATE_MODEL_<ROLE>}}`(local.conf 에 `delegate.<role>.model` 부재)은
+결정적 해소가 불가능한 토큰이라, 미해소 시 leak(자족 위반)이 아니라 `# model: …  # TODO: …` 로
+graceful 중화한다(pm_import --fill manual 과 대칭·채택자-fill 대기). 이건 자족 산출물 위반이 아니다
+— 리터럴 `{{...}}` 토큰이 제거되고(자족 유지) 채택자가 나중에 채우는 지점만 남는다.
+neutralize_model_todo·neutralize_delegate_model_todo 참조. 그 밖의 미해소 토큰은
 여전히 fail-loud(false-green 근절 유지).
 
 순수 함수 중심(stdlib). pm_update(재렌더)·pm_import(최초) 양쪽이 호출한다.
@@ -64,6 +65,15 @@ OPERATIONAL_KEYS: tuple[str, ...] = (
     # opencode 없이 import·TODO 폴백)면 leak 이 아니라 intentional-TODO 로 graceful 중화한다
     # (neutralize_model_todo·import 대칭) — 아래 render_adapter 참조.
     "OPENCODE_PRO_MODEL",
+    # claude native agent 카드 전용 — 역할별 위임 모델(`delegate.<role>.model` 해소값).
+    # native 스폰의 실효 모델은 카드 frontmatter 라, 카드가 리터럴이면 `delegate.*` 선언이
+    # 실행면에 닿지 못한다(채택자 제보 — 선언 sonnet ↔ 실행 opus). 역할별 개별 토큰이라야
+    # 역할마다 다른 모델을 표현할 수 있다. 미해소(local.conf 키 부재)면 OPENCODE_PRO_MODEL 과
+    # 같은 intentional-TODO 중화(neutralize_delegate_model_todo) — rc-fail 하지 않는다.
+    "DELEGATE_MODEL_DEVELOPER",
+    "DELEGATE_MODEL_RESEARCHER",
+    "DELEGATE_MODEL_ARCHITECT",
+    "DELEGATE_MODEL_CODE_REVIEWER",
 )
 
 # 잔여 leak 스캔 — 대문자/언더스코어 토큰 (post-render assertion·잔존 시 무조건 raise).
@@ -88,6 +98,33 @@ _STRAY_MARKER_RE = re.compile(r"<!--\s*/?pm:omit-if-empty\b[^>]*-->")
 OPENCODE_MODEL_TOKEN = "{{OPENCODE_PRO_MODEL}}"
 _OPENCODE_MODEL_KEY = "OPENCODE_PRO_MODEL"  # bare operational key — all_empty 판정용(빈값 vs 부재)
 _MODEL_TODO_PLACEHOLDER = "<provider/model>"
+
+# claude native agent 카드의 역할별 모델 토큰 → local.conf 해소 키(normal 프로필).
+# 카드는 normal 프로필이라 `delegate.<role>.model` 만 읽는다(hard 는 별도 세트·혼합 상속 없음).
+# pm_update._LOCAL_CONF_TO_OPERATIONAL 이 같은 쌍을 operational 채널에 배선하고, 여기 값은
+# 미해소 시 TODO 안내에 실릴 **채택자가 채울 키 이름**이다(단일 진실).
+DELEGATE_MODEL_CONF_KEYS: dict[str, str] = {
+    "DELEGATE_MODEL_DEVELOPER": "delegate.developer.model",
+    "DELEGATE_MODEL_RESEARCHER": "delegate.researcher.model",
+    "DELEGATE_MODEL_ARCHITECT": "delegate.architect.model",
+    "DELEGATE_MODEL_CODE_REVIEWER": "delegate.code-reviewer.model",
+}
+_DELEGATE_MODEL_TODO_PLACEHOLDER = "<model>"
+
+
+def _local_conf_key(token_key: str) -> str:
+    """operational token-key → local.conf 키 — 진단 힌트가 실재하지 않는 키를 제시하지 않게.
+
+    대부분은 lowercase 동형(`PROJECT_NAME`→`project_name`)이나 역할별 모델 토큰의 해소 키는
+    dotted(`DELEGATE_MODEL_DEVELOPER`→`delegate.developer.model`)라 규칙이 성립하지 않는다.
+    """
+    return DELEGATE_MODEL_CONF_KEYS.get(token_key, token_key.lower())
+
+
+def _delegate_model_todo_tail(conf_key: str) -> str:
+    """중화된 `# model:` 줄 꼬리의 TODO 안내 — 채울 local.conf 키와 재렌더 경로를 명시한다."""
+    return (f"  # TODO: local.conf `{conf_key}=` 를 채우고 pm-update 를 다시 실행하면 "
+            "이 줄이 그 값으로 렌더된다")
 
 
 def _model_todo_tail(available: list[str] | None = None) -> str:
@@ -120,21 +157,66 @@ def neutralize_model_todo(
     반환: (중화된 text, 중화 발생 여부). import(_mark_model_todos)·self-update(render_adapter)
     양쪽이 공유하는 단일 진실 — 같은 입력에 같은 산출.
     """
-    if OPENCODE_MODEL_TOKEN not in text:
+    return _comment_out_model_line(
+        text, OPENCODE_MODEL_TOKEN, _MODEL_TODO_PLACEHOLDER, _model_todo_tail(available))
+
+
+def _comment_out_model_line(
+    text: str, token: str, placeholder: str, tail: str
+) -> tuple[str, bool]:
+    """`model:` 필드 줄의 미해소 `token` 을 주석화·중화하는 공유 줄-변환 (판정 사본 금지).
+
+    모델 토큰이 여럿(opencode 어댑터·claude 역할 카드)이라도 **줄 판정은 하나**여야 import 와
+    self-update 가 같은 산출을 낸다. 대상은 `model:` 로 시작하는 줄뿐이고, 이미 주석이거나
+    `TODO` 가 붙은 줄은 비파괴·멱등으로 건너뛴다.
+    """
+    if token not in text:
         return text, False
-    tail = _model_todo_tail(available)
     out: list[str] = []
     marked = False
     for line in text.splitlines(keepends=True):
-        if (OPENCODE_MODEL_TOKEN in line and "TODO" not in line
+        if (token in line and "TODO" not in line
                 and line.lstrip().startswith("model:")):
             eol = "\n" if line.endswith("\n") else ""
-            body = line.rstrip("\n").replace(OPENCODE_MODEL_TOKEN, _MODEL_TODO_PLACEHOLDER)
+            body = line.rstrip("\n").replace(token, placeholder)
             out.append("# " + body + tail + eol)
             marked = True
         else:
             out.append(line)
     return "".join(out), marked
+
+
+def neutralize_delegate_model_todo(
+    text: str, skip_keys: list[str] | tuple[str, ...] | None = None
+) -> tuple[str, bool]:
+    """미해소 `{{DELEGATE_MODEL_<ROLE>}}` 이 있는 `model:` 줄을 주석화·토큰 중화한다.
+
+    변환: `model: {{DELEGATE_MODEL_DEVELOPER}}` → `# model: <model>  # TODO: …`. 줄 전체를
+    주석화해 frontmatter 에서 `model` 키를 부재시키면 claude 가 세션 기본 모델로 스폰한다
+    (graceful degradation) — 활성 리터럴 토큰을 모델명으로 출하하는 것보다 안전하다.
+
+    미해소 사유는 **local.conf 에 `delegate.<role>.model` 키가 없는 것**(위임 매핑 미설정
+    채택자)이다. 이건 오설정이 아니라 정상 형상이라 leak 으로 rc-fail 하지 않는다 — 한 토큰
+    미해소가 엔진/타 어댑터 update 전체를 막지 않는다(OPENCODE_PRO_MODEL 선례와 동형).
+    ``skip_keys``(빈값이라 호출자가 제외한 token-key)는 중화하지 않고 토큰을 남겨
+    `_assert_no_leak` 가 "값을 채우라" 로 표면화하게 한다.
+
+    반환: (중화된 text, 중화 발생 여부). import(render_managed_files)·self-update(pm_update 의
+    @render 재렌더) 양쪽이 같은 함수를 타 byte-동일 산출을 낸다(재렌더 왕복 0).
+    """
+    skipped = set(skip_keys or ())
+    marked = False
+    for token_key, conf_key in DELEGATE_MODEL_CONF_KEYS.items():
+        if token_key in skipped:
+            continue
+        text, changed = _comment_out_model_line(
+            text,
+            "{{" + token_key + "}}",
+            _DELEGATE_MODEL_TODO_PLACEHOLDER,
+            _delegate_model_todo_tail(conf_key),
+        )
+        marked = marked or changed
+    return text, marked
 
 
 class RenderLeakError(RuntimeError):
@@ -386,6 +468,10 @@ def render_adapter(
     # 그 밖의 미해소 토큰(다른 위치·다른 `{{...}}`)도 계속 fail-loud(불변식 c).
     if _OPENCODE_MODEL_KEY not in all_empty:
         result, _ = neutralize_model_todo(result)
+    # 같은 intentional-TODO 규약 — claude 역할 카드의 `{{DELEGATE_MODEL_<ROLE>}}` 는 local.conf 에
+    # `delegate.<role>.model` 이 없는 채택자(위임 매핑 미설정)에서 결정적으로 해소되지 않는다.
+    # 빈값(present-but-empty) 키는 all_empty 로 넘겨 중화에서 빼고 leak 으로 표면화한다(오설정 신호).
+    result, _ = neutralize_delegate_model_todo(result, all_empty)
     _assert_no_leak(result, source=source, empty_keys=all_empty)
     return result
 
@@ -419,10 +505,10 @@ def _assert_no_leak(
             f"미해소 토큰 잔존: {toks} — 자족 산출물은 토큰 0 이어야 한다. "
             f"템플릿 저자가 새 토큰을 넣었거나 local.conf 채널 배선이 누락됐다.")
         # 빈값(local.conf `<key>=`)이 원인인 leak 은 값을 채우라는 실행가능 힌트를 더한다.
-        # empty_keys·leaked 는 둘 다 uppercase token-key → `.lower()` 로 local.conf key 를 제시.
+        # empty_keys·leaked 는 둘 다 uppercase token-key → `_local_conf_key` 로 local.conf key 제시.
         empty_leaked = [k for k in (empty_keys or []) if k in leaked]
         if empty_leaked:
-            conf_keys = ", ".join("`" + k.lower() + "=`" for k in empty_leaked)
+            conf_keys = ", ".join("`" + _local_conf_key(k) + "=`" for k in empty_leaked)
             parts.append(
                 f"위 토큰은 local.conf {conf_keys} 가 빈값이라 미해소 — 값을 채우라.")
     if stray:
@@ -436,6 +522,12 @@ def render_file(
     template_path: Path,
     operational: dict | None = None,
 ) -> str:
-    """템플릿 파일 → 렌더 텍스트 (편의 래퍼·source 를 leak 에러에 명시)."""
+    """템플릿 파일 → 렌더 텍스트 (편의 래퍼·source 를 leak 에러에 명시).
+
+    **공유 읽기 seam 의 등재 예외다**([[T-0729]] 가드 등재부). 인자는 상류 체크아웃의 템플릿
+    *원본*(원자 교체 대상 아님)일 수도, 같은 상대경로의 목적지 사본(`pm_import` 가 원자 교체)일
+    수도 있어 **정적으로 구분되지 않는다**. 렌더는 순수 변환이라 이 판독이 상태를 만들지 않고,
+    호출부(`pm_update`·`pm_import`)의 목적지 판독은 이미 각자 seam 경로를 지난다.
+    """
     text = Path(template_path).read_text(encoding="utf-8")
     return render_adapter(text, operational, source=str(template_path))

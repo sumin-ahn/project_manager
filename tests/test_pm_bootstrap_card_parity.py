@@ -213,14 +213,16 @@ def test_card_interpreter_read_failure_uses_platform_default(tmp_path, monkeypat
     conf_path = conf_dir / "local.conf"
     conf_path.write_text("py=python\n", encoding="utf-8")
     monkeypatch.setattr(bootstrap, "REPO", tmp_path)
-    original_read_text = Path.read_text
+    # conf 판독은 공유 읽기 seam 을 지난다([[T-0729]]) — 주입도 그 자리에 건다.
+    seam = bootstrap._load_file_lock()
+    original_read_text = seam.read_text_shared
 
     def fail_for_local_conf(path, *args, **kwargs):
-        if path == conf_path:
+        if Path(path) == conf_path:
             raise OSError("unreadable")
         return original_read_text(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_text", fail_for_local_conf)
+    monkeypatch.setattr(seam, "read_text_shared", fail_for_local_conf)
     expected = bootstrap._detect_command_environment(tmp_path)
     assert expected.python_source == "os-default"
     assert bootstrap._resolve_card_tool_invoke() == bootstrap._resolve_card_tool_invoke(

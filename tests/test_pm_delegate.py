@@ -3466,7 +3466,11 @@ def test_role_preambles_include_prohibition_phrases(pd):
 def _isolated_delegate(tmp_path: Path, registry_source: str):
     tools = tmp_path / ".project_manager" / "tools"
     tools.mkdir(parents=True)
-    for filename in ("pm_delegate.py", "repo_owned_files.py", "console_encoding.py"):
+    # `file_lock.py` 도 함께 둔다 — 엔진 소스 판독이 공유 읽기 seam 을 지나므로(T-0729)
+    # 그 형제가 없으면 registry 해소가 skew 이전에 부재로 죽어 회귀가 다른 것을 잰다.
+    for filename in (
+        "pm_delegate.py", "repo_owned_files.py", "console_encoding.py", "file_lock.py",
+    ):
         shutil.copy2(TOOLS / filename, tools / filename)
     (tools / "pm_import.py").write_text(
         f'ENGINE_REV = "{_load("pm_delegate_rev", TOOLS / "pm_delegate.py").ENGINE_REV}"\n'

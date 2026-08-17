@@ -614,7 +614,7 @@ def _adapter_directories_from_engine_source() -> tuple[str, ...]:
     source = Path(__file__).resolve().parent / "pm_import.py"
     if not source.is_file():
         return ()
-    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    tree = ast.parse(_load_file_lock().read_text_shared(source, encoding="utf-8"), filename=str(source))
 
     try:
         rev_node = _module_assignment_value(tree, "ENGINE_REV", source)
@@ -1678,7 +1678,7 @@ def prepare_ticket_copy(
                 f"{ticket} role={role} currently in {status}/"
             )
         try:
-            source_bytes = source.read_bytes()
+            source_bytes = _load_file_lock().read_bytes_shared(source)
             source_text = source_bytes.decode("utf-8")
         except (OSError, UnicodeError) as exc:
             raise DelegateError(f"PM 홈 티켓 읽기 실패: {source}: {exc}") from exc
@@ -1825,7 +1825,7 @@ def _read_machine_files(
 ) -> tuple[bytes, ...]:
     """root-relative parent의 파일들을 같은 nofollow directory fd에서 읽는다."""
     if not _TICKET_COPY_FD_SUPPORTED:
-        return tuple((parent / name).read_bytes() for name in names)
+        return tuple(_load_file_lock().read_bytes_shared(parent / name) for name in names)
     relative_parent = parent.relative_to(root)
     fd = os.open(str(root), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
@@ -2040,7 +2040,7 @@ def harvest_ticket_copy(
             )
         # Path.read_text/newline=None은 CRLF를 LF로 정규화해 byte-preserving stale 비교를
         # 깨뜨린다. prepare의 read_bytes와 같은 newline 원형을 유지한다.
-        with current_path.open("r", encoding="utf-8", newline="") as handle:
+        with _load_file_lock().open_shared(current_path, binary=False, encoding="utf-8", newline="") as handle:
             current_text = handle.read()
         require_sealed_growth_before_write(
             current_text, plan.ticket, action="ticket harvest",
@@ -5937,7 +5937,7 @@ def _external_review_raw_answer(content: str) -> str:
 def _attached_record_reply(record: Mapping[str, object], raw_path: Path) -> str:
     """장부가 가리키는 실제 raw에서 최종 reply를 추출한다(요약·발췌 없음)."""
     try:
-        content = raw_path.read_text(encoding="utf-8")
+        content = _load_file_lock().read_text_shared(raw_path, encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         raise DelegateError(
             f"첨부 raw 읽기 실패: {raw_path} ({type(exc).__name__}: {exc})"
@@ -8934,14 +8934,14 @@ def _cmd_ticket_seal_backfill(ticket: str) -> int:
                 "seal-backfill은 open/claimed/blocked/draft 티켓만 허용: "
                 f"{ticket} in {status}/"
             )
-        with path.open("r", encoding="utf-8", newline="") as handle:
+        with _load_file_lock().open_shared(path, binary=False, encoding="utf-8", newline="") as handle:
             original = handle.read()
         updated, changed = backfill_ticket_seals(original, ticket=ticket)
         if changed:
             owner_board._atomic_write_text(path, updated)
             labels = ", ".join(f"{role}[{ordinal}]" for role, ordinal in changed)
             try:
-                with log_path.open("r", encoding="utf-8", newline="") as handle:
+                with _load_file_lock().open_shared(log_path, binary=False, encoding="utf-8", newline="") as handle:
                     log_text = handle.read()
             except FileNotFoundError:
                 log_text = ""
@@ -9076,7 +9076,7 @@ def _cmd_review(argv: list[str]) -> int:
                     f"review delta는 open/claimed 티켓만 허용: {args.ticket} in {status}/"
                 )
             try:
-                with path.open("r", encoding="utf-8", newline="") as handle:
+                with _load_file_lock().open_shared(path, binary=False, encoding="utf-8", newline="") as handle:
                     ticket_text = handle.read()
             except (OSError, UnicodeError) as exc:
                 raise DelegateError(f"티켓 읽기 실패: {path}: {exc}") from exc
@@ -9723,7 +9723,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     except OSError:
         read_target = prompt_file
     try:
-        task_text = read_target.read_text(encoding="utf-8")
+        task_text = _load_file_lock().read_text_shared(read_target, encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         print(f"오류: --prompt-file 읽기 실패: {exc}", file=sys.stderr)
         return 1

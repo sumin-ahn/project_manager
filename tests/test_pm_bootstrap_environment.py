@@ -29,7 +29,7 @@ CONFIG_CASES = ("valid", "absent", "empty", "read-error")
 MODES = ("slot", "solo", "task", "readonly")
 
 
-def _configure(tmp_path: Path, monkeypatch, state: str) -> None:
+def _configure(tmp_path: Path, monkeypatch, state: str, mod=None) -> None:
     if state == "absent":
         return
     conf_dir = tmp_path / ".project_manager"
@@ -41,14 +41,17 @@ def _configure(tmp_path: Path, monkeypatch, state: str) -> None:
         conf.write_text("py=ignored\npy=\n", encoding="utf-8")
     elif state == "read-error":
         conf.write_text("py=ignored\n", encoding="utf-8")
-        original = Path.read_text
+        # conf 판독은 공유 읽기 seam 을 지난다([[T-0729]]) — 주입도 그 자리에 건다.
+        # `Path.read_text` 에 걸면 엔진이 그 호출을 더는 하지 않아 이 케이스가 공허해진다.
+        seam = mod._load_file_lock()
+        original = seam.read_text_shared
 
         def _read_text(path, *args, **kwargs):
-            if path == conf:
+            if Path(path) == conf:
                 raise OSError("unreadable local.conf")
             return original(path, *args, **kwargs)
 
-        monkeypatch.setattr(Path, "read_text", _read_text)
+        monkeypatch.setattr(seam, "read_text_shared", _read_text)
     else:  # pragma: no cover - parametrization is closed above.
         raise AssertionError(state)
 
@@ -84,7 +87,7 @@ def test_environment_matrix_64(
 ):
     """4 OS × 4 config states × 4 card modes = the complete finite surface."""
     mod = _load()
-    _configure(tmp_path, monkeypatch, config_state)
+    _configure(tmp_path, monkeypatch, config_state, mod)
     system, os_name, label, default_argv, policy = OS_CASES[os_case]
     environment = mod._detect_command_environment(
         tmp_path, system=system, os_name=os_name

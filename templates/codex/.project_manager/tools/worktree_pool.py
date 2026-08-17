@@ -928,7 +928,7 @@ def _read_ledger_raw() -> dict:
     if not LEASES_FILE.exists():
         return {}
     try:
-        data = json.loads(LEASES_FILE.read_text(encoding="utf-8"))
+        data = json.loads(file_lock.read_text_shared(LEASES_FILE, encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -943,19 +943,19 @@ def _read_ledger_raw_strict() -> dict:
     """
     if not LEASES_FILE.exists():
         return {}
-    data = json.loads(LEASES_FILE.read_text(encoding="utf-8"))
+    data = json.loads(file_lock.read_text_shared(LEASES_FILE, encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError("worktree lease 장부 최상위 값이 object가 아님")
     return data
 
 
 def _write_ledger_raw(data: dict) -> None:
-    """최상위 dict 를 atomic replace 로 쓴다 (tmp→os.replace·부분쓰기 방지). **_lease_lock 보유 전제**."""
+    """최상위 dict 를 atomic replace 로 쓴다 (tmp→원자 교체·부분쓰기 방지). **_lease_lock 보유 전제**."""
     LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(data, ensure_ascii=False, indent=2)
     tmp = LEASES_FILE.with_suffix(".json.tmp")
     tmp.write_text(payload + "\n", encoding="utf-8", newline="\n")
-    os.replace(str(tmp), str(LEASES_FILE))
+    file_lock.atomic_replace(tmp, LEASES_FILE)
 
 
 def _read_ledger() -> list[Lease]:
@@ -1248,7 +1248,7 @@ def _slot_branch_exists(runner: GitRunner, branch: str) -> bool:
 #
 # 훅은 *generic* 이다 — 보호목록은 `protected`, repo 형상별 증거 계약은
 # `gate-contract` sidecar에서 읽는다. 계약 파일의 1행은 mode(release/self-test),
-# 2행은 self-test 명령이며 둘은 하나의 `os.replace`로 원자 교체된다. 따라서
+# 2행은 self-test 명령이며 둘은 하나의 원자 교체로 갈린다. 따라서
 # 재설치 중 push가 겹쳐도 서로 다른 세대의 mode/command가 결합하지 않는다.
 # 설치(install_protected_hook)가 sidecar를 채우며, 훅 본문 자체는 repo 무관하게
 # 동일하다. POSIX sh — Windows git 번들 sh 로도 동작.
@@ -1807,7 +1807,7 @@ def _atomic_write_protected_artifact(artifact: ProtectedHookArtifact) -> None:
         tmp.chmod(
             _PROTECTED_HOOK_EXECUTABLE_MODE
             if artifact.executable else _PROTECTED_SIDECAR_MODE)
-        os.replace(tmp, artifact.path)
+        file_lock.atomic_replace(tmp, artifact.path)
     except BaseException:
         # fdopen 전/중 실패도 descriptor와 임시파일을 남기지 않는다. 원래 산출물은 replace
         # 전까지 건드리지 않았으므로 그대로 유효하다.
@@ -1872,7 +1872,7 @@ def install_protected_hook(
       2. sidecar 3종 + `pre-push`·`pre-commit`훅(generic·POSIX sh·LF):
          `protected`(보호목록·줄당 1브랜치·**두 훅 공용**)와 `engine-root`(PM 홈 REPO 절대경로
          1줄·라이브 게이트 board.py 해소용), `gate-contract`(1행 mode,
-         2행 adopter 자기 검증 명령). mode/command는 **한 파일·한 `os.replace`**로
+         2행 adopter 자기 검증 명령). mode/command는 **한 파일·한 번의 원자 교체**로
          교체되어 재설치 중에도 서로 다른 세대가 결합하지 않는다.
       3. bare(`.repos/<repo>.git`)의 `core.hooksPath` 를 그 디렉토리(절대경로)로 set
          → 슬롯 push/commit 이 이 훅들에 게이트된다.
@@ -2159,13 +2159,13 @@ def ensure_task_pm_state(name: str) -> Path:
             f"task pm_state template 부재: {template} — task state를 만들 수 없다"
         )
     rendered = _render_initial_task_pm_state(
-        template.read_text(encoding="utf-8"),
+        file_lock.read_text_shared(template, encoding="utf-8"),
         datetime.date.today().isoformat(),
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(target.suffix + ".tmp")
     tmp.write_text(rendered, encoding="utf-8", newline="\n")
-    os.replace(str(tmp), str(target))
+    file_lock.atomic_replace(tmp, target)
     return target
 
 
@@ -2236,13 +2236,13 @@ def _ensure_slot_pm_state_locked(
             f"slot pm_state template 부재: {template} — slot state를 만들 수 없다"
         )
     rendered = _render_initial_task_pm_state(
-        template.read_text(encoding="utf-8"),
+        file_lock.read_text_shared(template, encoding="utf-8"),
         datetime.date.today().isoformat(),
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(target.suffix + ".tmp")
     tmp.write_text(rendered, encoding="utf-8", newline="\n")
-    os.replace(str(tmp), str(target))
+    file_lock.atomic_replace(tmp, target)
     return target
 
 
@@ -5312,7 +5312,7 @@ def _local_conf_session() -> str | None:
     """
     conf_file = REPO / ".project_manager" / "local.conf"
     try:
-        text = conf_file.read_text(encoding="utf-8")
+        text = file_lock.read_text_shared(conf_file, encoding="utf-8")
     except OSError:
         return None
     for line in text.splitlines():
@@ -5330,14 +5330,14 @@ def _leased_sessions() -> list[str]:
 
     `_default_session` 이 lease 취득 *전*(lock 밖)에 호출하므로 lock 없는 point-read 로 장부
     파일(`LEASES_FILE`)을 직접 읽는다 — `_read_ledger`(lock 보유 전제)와 별도. 리스는
-    atomic-replace(`os.replace`)로 쓰므로 lock 없는 read 도 일관 스냅샷을 본다(board.py
+    원자 교체(`file_lock.atomic_replace`)로 쓰므로 lock 없는 read 도 일관 스냅샷을 본다(board.py
     `_leased_sessions` 와 *동형*). 장부 부재/파싱실패/손상은 빈 리스트(fail-soft). session 이
     빈/None 인 행은 제외.
     """
     if not LEASES_FILE.exists():
         return []
     try:
-        data = json.loads(LEASES_FILE.read_text(encoding="utf-8"))
+        data = json.loads(file_lock.read_text_shared(LEASES_FILE, encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return []
     if not isinstance(data, dict):

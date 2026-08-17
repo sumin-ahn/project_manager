@@ -263,6 +263,11 @@ _ENGINE_REV_SKEW_RECOVERY_REASONS = {
         "내려진 allow/deny 를 뒤집거나 훅을 죽이면 정상 위임이 막힌다. 흡수하되 조용하지 않게 "
         "경고 문구(matcher drift 관측 불완전)를 결과 envelope 에 실어 표면화한다"
     ),
+    "prescription_interpreter_fail_open": (
+        "처방 줄의 인터프리터 표기 해소는 deny 판정의 부속이지 판정 자체가 아니다 — 형제 로드 "
+        "실패(사본 skew 포함)로 엔벨로프 키가 무너지거나 훅이 죽으면 차단 판정 자체가 사라진다. "
+        "흡수하되 조용하지 않게 stderr 로 사유를 남기고 종전 표기로 내려앉는다"
+    ),
 }
 
 
@@ -333,6 +338,41 @@ def _runtime_skill_entry(skill: str) -> str:
     if not callable(helper):
         raise TypeError("pm_relay._runtime_skill_entry must be callable")
     return helper(skill)
+
+
+# 처방 줄이 해소에 실패했을 때 쓰는 표기. POSIX 에서는 정확하고 Windows 에서는 shim 위험이 있으나,
+# 훅 경로에서 형제 로드 실패가 deny 판정 자체를 무너뜨리는 것보다 낫다 — 대신 침묵하지 않는다.
+_PRESCRIBED_INTERPRETER_FALLBACK = "python3"
+
+
+def _prescribed_interpreter() -> str:
+    """처방 커맨드가 쓰는 인터프리터 표기 — 진입점 prefix 와 **같은 규칙**을 쓴다.
+
+    Windows 의 ``python3``/``python`` 은 WindowsApps 가짜 shim 일 수 있어(이 파일이 위에서 rc 9009
+    로 기록해 둔 그 표기다) 런처가 1순위다. 그 판정은 ``pm_relay.codex_egress_entrypoint`` 하나가
+    소유한다 — 여기에 규칙 사본을 만들면 표기가 둘이 되어 반드시 갈린다.
+
+    이 함수는 **훅 경로**에서 불린다. 형제 모듈 로드가 실패해도 deny 판정과 엔벨로프 키를 무너뜨리면
+    안 되므로 종전 표기로 내려앉되, 그 사실을 stderr 로 남겨 조용한 강등이 되지 않게 한다.
+    """
+    try:
+        relay = _load_pm_relay()
+        interpreter, _entry = relay.codex_egress_entrypoint(
+            relay.DELEGATE_ENTRYPOINT, windows=_running_on_windows(),
+        )
+    except Exception as exc:  # noqa: BLE001 — 훅 fail-open: 판정을 막지 않는다.
+        skew = _absorb_engine_rev_skew_for_recovery(
+            exc, "prescription_interpreter_fail_open")
+        cause = f"엔진 사본 불일치 — {exc}" if skew else f"{type(exc).__name__}: {exc}"
+        print(
+            "[delegate-channel/warn] 처방 인터프리터 표기를 해소하지 못해 "
+            f"`{_PRESCRIBED_INTERPRETER_FALLBACK}` 로 표기합니다 ({cause}) — "
+            "Windows 라면 그 줄의 인터프리터를 런처(`py -3`)로 바꿔 실행하십시오.",
+            file=sys.stderr,
+        )
+        return _PRESCRIBED_INTERPRETER_FALLBACK
+    token = str(interpreter).strip()
+    return token or _PRESCRIBED_INTERPRETER_FALLBACK
 
 
 def _result(
@@ -415,7 +455,7 @@ def _remediation(role: str, tier: str) -> str:
         f"{_runtime_skill_entry('pm-dev-delegate')} 스킬로 위임하라 "
         f"(실행형 처방: 1) 프롬프트를 파일로 저장한 뒤"
         f"(경로: `{prompt_file.as_posix()}`) "
-        f"2) backbone `python3 .project_manager/tools/pm_delegate.py "
+        f"2) backbone `{_prescribed_interpreter()} .project_manager/tools/pm_delegate.py "
         f"--role {role}{tier_arg} --prompt-file {prompt_file.as_posix()} "
         f"--cwd {_WORKTREE_PLACEHOLDER}`)"
     )
@@ -768,6 +808,17 @@ def _claude_native_model_warning(role: str, tier: str, model: str) -> str:
             f"(role={role}, tier={tier}, conf_model={model}, card={shown_path}, "
             f"error={type(exc).__name__}: {detail}) — native 통과(fail-open)"
         )
+    if _is_unrendered_model_token(card_model):
+        # 카드가 아직 렌더되지 않았다 — 렌더 소스 트리(프레임워크 루트·templates)이거나 채택자
+        # 렌더가 실패한 상태다. 이건 conf 를 고칠 일이 아니라 `pm-update` 로 카드를 다시 렌더할
+        # 일이므로 "불일치" 와 다른 처방을 낸다. 판정은 여전히 fail-open.
+        return (
+            f"[delegate-channel/warn] Claude native model 카드 미렌더"
+            f"(role={role}, tier={tier}, conf_model={model}, "
+            f"card={relative.as_posix()}, card_model={card_model}) — "
+            "카드가 렌더 소스 상태다: 채택자 트리면 `pm-update` 로 카드를 다시 렌더하라. "
+            "native 통과(fail-open)"
+        )
     if card_model != model:
         return (
             f"[delegate-channel/warn] Claude native model 불일치"
@@ -776,6 +827,17 @@ def _claude_native_model_warning(role: str, tier: str, model: str) -> str:
             "native 통과(fail-open)"
         )
     return ""
+
+
+# 렌더 토큰 형태. 카드 소스(프레임워크 루트·templates)는 `model: "{{DELEGATE_MODEL_<ROLE>}}"` 이고
+# 채택자 트리는 pm_import/pm_update 가 이를 conf 해소값으로 렌더한다. 미해소면 `# model: "<model>"
+# # TODO: …` 로 중화되어 `model` 키 자체가 사라진다(그때는 "frontmatter model 없음" 경로).
+_UNRENDERED_MODEL_TOKEN_RE = re.compile(r"^\{\{[A-Z][A-Z0-9_]*\}\}$")
+
+
+def _is_unrendered_model_token(value: str) -> bool:
+    """카드 model 값이 렌더되지 않은 operational 토큰인지."""
+    return _UNRENDERED_MODEL_TOKEN_RE.fullmatch(value.strip()) is not None
 
 
 def decide(
@@ -1205,7 +1267,7 @@ def _append_codex_observation(
             rotated = target.with_name(
                 f"{target.stem}.{time.time_ns()}.{os.getpid()}{target.suffix}"
             )
-            os.replace(target, rotated)
+            file_lock.atomic_replace(target, rotated)
         file_lock.append_atomic(target, line, mode=0o600)
         _prune_codex_observation_logs(
             target, max_bytes=max_bytes, max_files=max_files
@@ -1251,7 +1313,7 @@ def scan_codex_observation_misses(
         misses: list[dict[str, object]] = []
         for path in _codex_audit_paths(target):
             try:
-                lines = path.read_text(encoding="utf-8").splitlines()
+                lines = _load_file_lock().read_text_shared(path, encoding="utf-8").splitlines()
             except (FileNotFoundError, OSError, UnicodeError):
                 continue
             for raw in lines:

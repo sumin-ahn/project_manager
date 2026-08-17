@@ -218,17 +218,45 @@ def _verifier_load_functions(source: str) -> set[str]:
     return owners
 
 
+def _absorbing_functions(source: str) -> set[str]:
+    """등록된 흡수 마커(`_absorb_engine_rev_skew_for_recovery`)를 소비하는 함수 집합.
+
+    이 함수를 지나는 호출 경로에서는 marked skew 가 **밖으로 나오지 않는다** — 흡수가 옳은지는
+    사유 등록(호출 시 강제)과 fail-soft 경계 가드가 따로 판정하므로, 여기서는 "skew 표면인가" 만
+    본다. 이 가지를 계속 따라가면 호출부가 볼 수 없는 skew 를 도달로 세게 된다.
+    """
+    absorbing = set()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for sub in ast.walk(node):
+            if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+                    and sub.func.id == "_absorb_engine_rev_skew_for_recovery"):
+                absorbing.add(node.name)
+                break
+    return absorbing
+
+
 def _reaches_verified_load(source: str, entry: str) -> list[str] | None:
-    """`entry` 에서 verifier 로드까지의 호출 경로(없으면 None). 정적 하한(간접 호출 제외)."""
+    """`entry` 에서 verifier 로드까지의 호출 경로(없으면 None). 정적 하한(간접 호출 제외).
+
+    등록된 흡수 경계를 지나는 가지는 잘라낸다 — 그 너머의 로드는 호출부에 skew 를 내보내지
+    않으므로 "흡수 없이 남긴 API 가 skew 표면인가" 라는 이 판정의 대상이 아니다.
+    """
     graph = _call_graph(source)
     seeds = _verifier_load_functions(source)
+    absorbing = _absorbing_functions(source)
     if entry in seeds:
         return [entry]
+    if entry in absorbing:
+        return None
     seen = {entry}
     queue = collections.deque([(entry, [entry])])
     while queue:
         current, path = queue.popleft()
         for callee in graph.get(current, ()):
+            if callee in absorbing:
+                continue
             if callee in seeds:
                 return [*path, callee]
             if callee in graph and callee not in seen:
@@ -820,7 +848,14 @@ def test_midsync_mixed_rev_sync_completes_and_converges(tmp_path):
     )
     combined = proc.stdout + proc.stderr
     assert "Traceback" not in combined, combined
-    assert "엔진 사본 버전 불일치" not in combined, combined
+    # 사본 불일치는 **흡수된 강등 알림**으로만 나타난다 — 미흡수 실패로 새어 나오면 red 다.
+    # 판독 seam(T-0729)은 구세대 형제에서 강등할 때 사유로 원문 진단을 싣는다: 그 줄은 흡수의
+    # 증거지 실패가 아니므로, 판정은 "그 문구를 가진 줄이 강등 알림인가" 로 한다.
+    unabsorbed = [
+        line for line in combined.splitlines()
+        if "엔진 사본 버전 불일치" in line and "일반 읽기로 진행합니다" not in line
+    ]
+    assert not unabsorbed, combined
     assert proc.returncode == 0, combined
     # 혼합이 실제로 해소됐다 — 수렴 검증도 조용하다(경고 없음).
     engine = _load_tool("pm_update")

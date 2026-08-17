@@ -402,7 +402,7 @@ def _read_raw_ledger(ledger_path: Path) -> dict:
     """장부 부재만 빈 장부로 보고 손상은 fail-loud한다."""
     if not ledger_path.exists():
         return {"version": RAW_LEDGER_VERSION, "records": []}
-    data = json.loads(ledger_path.read_text(encoding="utf-8"))
+    data = json.loads(_load_file_lock().read_text_shared(ledger_path, encoding="utf-8"))
     if not isinstance(data, dict) or not isinstance(data.get("records"), list):
         raise ValueError(f"raw 장부 형식 오류: {ledger_path}")
     return data
@@ -418,7 +418,7 @@ def _write_raw_ledger(ledger_path: Path, ledger: dict) -> None:
         fd = os.open(str(tmp), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(payload)
-        os.replace(str(tmp), str(ledger_path))
+        _load_file_lock().atomic_replace(tmp, ledger_path)
     finally:
         with contextlib.suppress(OSError):
             tmp.unlink()

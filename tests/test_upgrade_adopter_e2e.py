@@ -691,7 +691,14 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   분기)뿐이다. 역적용 delta 의 anchor 는 전부 `_main`/`sync_adapter_configs` 쪽이라 그대로
 #   유일 해소되고, 배달 경계(planning → apply → self-update 순서)와 배달 파일 집합도 불변이다.
 #   LF 단일 트리에서는 판정 결과가 종전과 같다 — 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "228a95286d5b2b4d1292c5eca89862064bc649fddaa741886e0452121f164ba6"
+#   T-0729 가 판독을 공유 읽기 seam 으로 올리며 또 이동했다. 들어온 것은 **새 최상위 함수 넷**
+#   (`_warn_shared_read_degraded`·`_shared_read_api`·`_read_text_shared`·`_read_bytes_shared`·
+#   `_open_shared`)과 등록 사유 한 항목이고, 종전 판독 호출이 그 헬퍼 호출로 바뀌었다. 역적용
+#   delta 의 anchor 는 전부 `_main`/`sync_adapter_configs` 쪽이라 그대로 유일 해소되고, 배달
+#   경계(planning → apply → self-update 순서)와 배달 파일 집합도 불변이다. 헬퍼는 seam 이 있으면
+#   그것을, 없으면 종전 읽기를 쓰므로 이 fixture 트리에서 읽는 바이트가 같다 — 현재화한 것은
+#   기대 SHA 하나뿐이다.
+_T0585_PM_UPDATE_SHA256 = "54ce6c27a4c384fae8231e844493be7388dc13c0186fec57642b2481fe88bd03"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).

@@ -226,7 +226,7 @@ ENGINE_REV = "v1.7.5"
 
 # rev 스탬프를 지닌 형제 파일만 대조 대상. pm_update는 복구 채널이라 의도적으로 제외한다.
 # deep-import AST 가드가 실제 호출 target에서 목록/검증 누락을 자동 적발한다.
-_STAMPED_SIBLINGS = frozenset({
+_STAMPED_SIBLINGS = frozenset({"file_lock.py", 
     "identity_args.py", "board.py", "worktree_pool.py", "pm_import.py",
 })
 
@@ -294,6 +294,19 @@ def _load_module(name: str, filename: str):
     return mod
 
 
+def _load_file_lock():
+    """공용 파일 프리미티브 seam(`file_lock.py`)을 같은 tools/ 에서 경로 로드한다.
+
+    원자 교체 대상 파일을 읽는 지점은 이 seam 의 공유 읽기를 지난다([[T-0729]]) — 일반 `open`
+    리더가 하나라도 잡고 있으면 Windows 는 그 파일의 원자 교체를 WinError 32 로 막는다. 부재/
+    손상/rev 불일치는 엔진 사본 손상이므로 흡수하지 않는다(fail-loud·재동기 안내).
+    """
+    return _load_module_from_path(
+        Path(__file__).resolve().parent / "file_lock.py", "file_lock.py",
+        verifier=_verify_engine_rev, cache=True,
+    )
+
+
 def _runtime_skill_entry(skill: str) -> str:
     """현재 실행 하네스의 사용자 호출 표기(Codex env marker 외 slash)."""
     prefix = "$" if os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_CI") else "/"
@@ -337,7 +350,7 @@ def _local_conf_session() -> str | None:
     """
     conf_file = REPO / ".project_manager" / "local.conf"
     try:
-        text = conf_file.read_text(encoding="utf-8")
+        text = _load_file_lock().read_text_shared(conf_file, encoding="utf-8")
     except OSError:
         return None
     for line in text.splitlines():
@@ -402,7 +415,7 @@ def _local_conf_user() -> str | None:
     """
     conf_file = REPO / ".project_manager" / "local.conf"
     try:
-        text = conf_file.read_text(encoding="utf-8")
+        text = _load_file_lock().read_text_shared(conf_file, encoding="utf-8")
     except OSError:
         return None
     for line in text.splitlines():
@@ -474,7 +487,7 @@ def _distinct_area_owners() -> int:
     """
     af = REPO / ".project_manager" / "areas.md"
     try:
-        lines = af.read_text(encoding="utf-8").splitlines()
+        lines = _load_file_lock().read_text_shared(af, encoding="utf-8").splitlines()
     except (OSError, UnicodeError):
         return 0    # 부재/읽기실패/손상 UTF-8 → 0(solo 취급·크래시 0·docstring fail-soft 계약).
     owners: set[str] = set()
@@ -530,7 +543,7 @@ def _local_conf_value(key: str) -> str | None:
     """
     conf_file = REPO / ".project_manager" / "local.conf"
     try:
-        lines = conf_file.read_text(encoding="utf-8").splitlines()
+        lines = _load_file_lock().read_text_shared(conf_file, encoding="utf-8").splitlines()
     except OSError:
         return None
     value: str | None = None
@@ -957,7 +970,7 @@ def _read_protected_sidecar(repo: str, *, worktree_pool=None) -> list[str] | Non
     if path is None or not path.is_file():
         return None
     try:
-        text = path.read_text(encoding="utf-8")
+        text = _load_file_lock().read_text_shared(path, encoding="utf-8")
     except OSError:
         return None
     return [line.strip() for line in text.splitlines() if line.strip()]
@@ -2942,7 +2955,9 @@ def cmd_task_end(
     if scanner is not None:
         try:
             scan = scanner(_default_user(), name, prefix)
-        except Exception:  # noqa: BLE001 — board 스캔 실패는 claimed 게이트 graceful skip(엔진은 진행).
+        except Exception as exc:  # noqa: BLE001 — board 스캔 실패는 claimed 게이트 skip.
+            if _is_engine_rev_skew(exc):
+                raise  # 스캔이 판독 seam 까지 들어가므로 형제 skew 만은 삼키지 않는다.
             scan = None
     if scan and scan.get("claimed"):
         print(
@@ -3267,7 +3282,7 @@ def cmd_upstream(
         if not local_conf.is_file():
             print(f"upstream: (local.conf 없음 — {local_conf})")
             return 0
-        conf = pm_import_mod._parse_conf_keys(local_conf.read_text(encoding="utf-8"))
+        conf = pm_import_mod._parse_conf_keys(_load_file_lock().read_text_shared(local_conf, encoding="utf-8"))
         value = conf.get("upstream", "").strip()
         if not value:
             print("upstream: (미등록) — `pm-config upstream set <url|path>` 로 설정하라.")

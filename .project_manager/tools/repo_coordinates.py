@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 
@@ -146,10 +147,191 @@ def _workspace_slot(workspace: Path | str, pm_root: Path) -> tuple[str, Path]:
     return slot, candidate
 
 
+# ── 엔진 중앙 로더 부트스트랩 (형제 로드는 이 한 경로만·`repo_owned_files.load_module`) ──
+# 공유 읽기 seam 을 지연 로드하기 위해 필요하다([[T-0729]]) — 엔진 전체가 `spec_from_file_location`
+# 을 중앙 로더 한 곳에서만 부르는 불변식(deep-import 가드)이라 여기서도 그 경로를 쓴다.
+_TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
+_TOOLS_BOOTSTRAP_FILE = os.path.realpath(
+    os.path.join(_TOOLS_BOOTSTRAP, "repo_owned_files.py")
+)
+_TOOLS_BOOTSTRAP_KEY = f"_project_manager_repo_owned_files_bootstrap:{_TOOLS_BOOTSTRAP_FILE}"
+_TOOLS_BOOTSTRAP_MODULE = sys.modules.get(_TOOLS_BOOTSTRAP_KEY)
+_TOOLS_BOOTSTRAP_SENTINEL = object()
+try:
+    if (
+        _TOOLS_BOOTSTRAP_MODULE is not None
+        and os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
+        != _TOOLS_BOOTSTRAP_FILE
+    ):
+        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
+        _TOOLS_BOOTSTRAP_MODULE = None
+    if _TOOLS_BOOTSTRAP_MODULE is None:
+        _TOOLS_BOOTSTRAP_PREVIOUS = sys.modules.pop(
+            "repo_owned_files", _TOOLS_BOOTSTRAP_SENTINEL
+        )
+        _TOOLS_BOOTSTRAP_ADDED = not sys.path or sys.path[0] != _TOOLS_BOOTSTRAP
+        if _TOOLS_BOOTSTRAP_ADDED:
+            sys.path.insert(0, _TOOLS_BOOTSTRAP)
+        try:
+            import repo_owned_files as _TOOLS_BOOTSTRAP_MODULE
+            if (
+                os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
+                != _TOOLS_BOOTSTRAP_FILE
+            ):
+                raise ImportError(
+                    "repo_owned_files 형제 경로 불일치: "
+                    f"{getattr(_TOOLS_BOOTSTRAP_MODULE, '__file__', None)!r}"
+                )
+            sys.modules[_TOOLS_BOOTSTRAP_KEY] = _TOOLS_BOOTSTRAP_MODULE
+        finally:
+            # 엔진 import bootstrap은 메인 스레드 전용이다. 그래도 위치를 가정한 pop(0)은
+            # 피하고, 우리가 넣은 값이 남아 있을 때 그 값만 제거한다.
+            if _TOOLS_BOOTSTRAP_ADDED:
+                try:
+                    sys.path.remove(_TOOLS_BOOTSTRAP)
+                except ValueError:
+                    pass
+            if sys.modules.get("repo_owned_files") is _TOOLS_BOOTSTRAP_MODULE:
+                sys.modules.pop("repo_owned_files", None)
+            if _TOOLS_BOOTSTRAP_PREVIOUS is not _TOOLS_BOOTSTRAP_SENTINEL:
+                sys.modules["repo_owned_files"] = _TOOLS_BOOTSTRAP_PREVIOUS
+    _load_module_from_path = _TOOLS_BOOTSTRAP_MODULE.load_module
+except Exception as _TOOLS_BOOTSTRAP_ERROR:
+    if sys.modules.get(_TOOLS_BOOTSTRAP_KEY) is _TOOLS_BOOTSTRAP_MODULE:
+        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
+
+    def _load_module_from_path(
+        path,
+        expected_filename,
+        *,
+        verifier=None,
+        allow_unverified=False,
+        cache=False,
+        cache_key=None,
+    ):
+        """구형/손상 중앙 seam에서 복구 명령까지 띄우는 import-by-name 폴백."""
+        target = os.path.realpath(os.fspath(path))
+        if os.path.basename(target) != expected_filename:
+            raise ValueError(
+                f"module filename mismatch: expected {expected_filename!r}, "
+                f"got {os.path.basename(target)!r}"
+            )
+        if verifier is not None and allow_unverified:
+            raise ValueError("choose verifier or allow_unverified=True, not both")
+        if verifier is None and not allow_unverified:
+            raise ValueError(
+                "module load requires verifier or explicit allow_unverified=True"
+            )
+        module_key = cache_key or f"_project_manager_legacy_loaded:{target}"
+        module = sys.modules.get(module_key) if cache else None
+        inserted = False
+        try:
+            if module is None:
+                if (
+                    target == _TOOLS_BOOTSTRAP_FILE
+                    and _TOOLS_BOOTSTRAP_MODULE is not None
+                ):
+                    module = _TOOLS_BOOTSTRAP_MODULE
+                else:
+                    import_name = os.path.splitext(expected_filename)[0]
+                    previous = sys.modules.pop(
+                        import_name, _TOOLS_BOOTSTRAP_SENTINEL
+                    )
+                    parent = os.path.dirname(target)
+                    added = not sys.path or sys.path[0] != parent
+                    if added:
+                        sys.path.insert(0, parent)
+                    try:
+                        module = __import__(import_name)
+                        if os.path.realpath(getattr(module, "__file__", "")) != target:
+                            raise ImportError(
+                                f"{expected_filename} 형제 경로 불일치"
+                            )
+                    finally:
+                        if added:
+                            try:
+                                sys.path.remove(parent)
+                            except ValueError:
+                                pass
+                        if sys.modules.get(import_name) is module:
+                            sys.modules.pop(import_name, None)
+                        if previous is not _TOOLS_BOOTSTRAP_SENTINEL:
+                            sys.modules[import_name] = previous
+                if cache:
+                    sys.modules[module_key] = module
+                    inserted = True
+            if verifier is not None:
+                verifier(module, expected_filename)
+            return module
+        except Exception as exc:
+            if cache and (inserted or sys.modules.get(module_key) is module):
+                sys.modules.pop(module_key, None)
+            if target == _TOOLS_BOOTSTRAP_FILE:
+                raise RuntimeError(
+                    f"엔진 공용 로더 {target}를 불러올 수 없음; "
+                    "pm-update로 .project_manager/tools 전체를 재동기화하라."
+                ) from exc
+            raise
+
+# REPO = 스크립트 위치 기반(cwd 무관) — board.py·worktree_pool.py·pm_config.py 와 동일
+# 앵커 관례(어느 worktree cwd 에서 호출돼도 multi-PM 루트 .project_manager 를 자동 타깃).
+
+
+# ── 공유 읽기 (원자 교체 대상 장부·[[T-0729]]) ────────────────────────────
+# 이 모듈이 읽는 리스 장부(`worktree-leases.json`)는 `worktree_pool` 이 **원자 교체**하는
+# 파일이다. 일반 `open` 리더가 하나라도 잡고 있으면 Windows 는 그 교체를 WinError 32 로 막으므로,
+# 판독도 공용 seam 의 공유 읽기를 지난다.
+#
+# seam 로드는 **호출 시점 지연**이다 — board·domain 이 이 모듈을 *import 시점*에 로드하므로
+# 모듈 최상단에서 형제를 끌어오면 그 import 경계가 형제 하나만큼 넓어진다. seam 을 못 쓰는
+# 형상은 **종전 읽기로 강등**한다(등재 예외 · 조용하지 않게 프로세스당 한 번 사유를 남긴다) —
+# 여기서 올리면 실재하는 장부를 "읽을 수 없다" 로 위장해 좌표 해소 전체가 막힌다.
+
+_shared_read_degraded = False
+
+
+def _warn_shared_read_degraded(cause: str) -> None:
+    """강등 사유를 **프로세스당 한 번** 알린다 (판독마다 찍으면 진단이 자기 소음에 묻힌다)."""
+    global _shared_read_degraded
+    if _shared_read_degraded:
+        return
+    _shared_read_degraded = True
+    print(
+        f"경고: 공유 읽기 seam 을 쓸 수 없어 일반 읽기로 진행합니다 ({cause}) — Windows "
+        "에서는 이 판독이 열려 있는 동안 리스 장부의 원자 교체가 실패할 수 있습니다. "
+        "`pm-update` 로 .project_manager/tools/ 전체를 재동기하십시오.",
+        file=sys.stderr,
+    )
+
+
+def _read_text_shared(path: Path, *, encoding: str) -> str:
+    """리스 장부를 공유 읽기로 읽는다 — seam 을 못 쓰면 종전 읽기로 강등한다.
+
+    이 모듈은 rev 검증자를 두지 않는다(다른 도구가 import 시점에 로드하는 leaf 좌표 모듈이라
+    형제 판정 계층을 갖지 않는 것이 설계다 — 그래서 중앙 로더에 `allow_unverified=True` 로
+    묻는다). 구세대 사본은 함수 부재로 드러나므로 `getattr` 로 함께 받는다 — 쓰기 축 등재 예외와
+    같은 규칙이다.
+    """
+    api = None
+    try:
+        module = _load_module_from_path(
+            Path(__file__).resolve().with_name("file_lock.py"), "file_lock.py",
+            allow_unverified=True, cache=True,
+        )
+        api = getattr(module, "read_text_shared", None)
+        if api is None:
+            _warn_shared_read_degraded("구세대 file_lock 사본에 read_text_shared 가 없음")
+    except Exception as exc:  # noqa: BLE001 — 부재/손상 사본은 이 point-read 의 정상 입력이다.
+        _warn_shared_read_degraded(f"{type(exc).__name__}: {exc}")
+    if api is not None:
+        return api(path, encoding=encoding)
+    return path.read_text(encoding=encoding)
+
+
 def _registered_lease_slot(slot: str, repo: str, leases_file: Path) -> bool:
     """장부에서 state와 무관한 지속 slot↔repo 소유 매핑이 정확히 존재하는지 조회한다."""
     try:
-        data = json.loads(leases_file.read_text(encoding="utf-8"))
+        data = json.loads(_read_text_shared(leases_file, encoding="utf-8"))
     except FileNotFoundError as exc:
         raise RepoCoordinateError(f"worktree lease 장부가 없다: {leases_file}") from exc
     except (OSError, json.JSONDecodeError) as exc:

@@ -2141,6 +2141,93 @@ def test_frozen_evidence_drops_only_guest_owned_paths(pm_update):
         "고유 경로 전부가 guest 소유(상위 포함)면 None이어야 한다"
 
 
+def test_frozen_evidence_drops_paths_covered_by_host_core_directory(pm_update):
+    """evidence 계산 유닛: host core **디렉터리 등재**가 덮는 파일은 제외, 진짜 stray는 남는다.
+
+    manifest 등재는 파일과 디렉터리 양쪽이라 exact 문자열 대조는 `.claude/skills` 디렉터리 등재가
+    이미 덮고 실제로 render 되는 `.claude/skills/pm-dev-delegate/SKILL.md`를 '어느 동기 채널도
+    선언하지 않은 출하 파일'로 분류했다(claude 단독 채택자 오탐)."""
+    entries = [
+        pm_update.ManifestEntry(".claude/skills/pm-dev-delegate/SKILL.md"),
+        pm_update.ManifestEntry(".second/stray"),
+    ]
+
+    assert pm_update._frozen_flavor_evidence(
+        entries, set(), {".claude/skills"}, set()) == [".second/stray"], \
+        "host core 디렉터리 등재가 덮는 파일이 evidence에 남았다(오탐) — stray만 남아야 한다"
+    assert pm_update._frozen_flavor_evidence(
+        entries, set(),
+        {".claude/skills/pm-dev-delegate/SKILL.md"}, set()) == [".second/stray"], \
+        "exact 등재 제외는 그대로 유지돼야 한다"
+    assert pm_update._frozen_flavor_evidence(
+        entries, set(), set(), set()) == [
+            ".claude/skills/pm-dev-delegate/SKILL.md", ".second/stray"], \
+        "어느 core 등재로도 안 덮이면 둘 다 evidence다(판정이 무뎌지면 red)"
+
+
+def test_frozen_warning_silent_for_core_directory_covered_flavor_file(
+        pm_update, tmp_path, capsys):
+    """host core 디렉터리 등재가 덮는 타 flavor 파일은 경고 0 · 안 덮이는 stray는 여전히 경고.
+
+    채택자 실형상(claude host + `.agents/skills` 디렉터리 등재)에서 codex manifest의 파일 단위
+    override(`.agents/skills/pm-dev-delegate/SKILL.md`)가 그 디렉터리 등재로 이미 동기되는데도
+    '어느 동기 채널도 선언하지 않은 출하 파일'로 경고됐다. 같은 실행에서 core가 안 덮는
+    `.codex/pm_orch_codex.py`는 경고 대상으로 남아, 오탐 제거가 탐지 무력화가 아님을 고정한다."""
+    claude = REPO / "templates" / "claude_code" / ".project_manager" / "engine.manifest"
+    dest = tmp_path / "dest"
+    manifest = _write_dest_manifest(dest, [])
+    manifest.write_text(
+        claude.read_text(encoding="utf-8")
+        + "\n.agents/skills    @render @source=.claude/skills\n",
+        encoding="utf-8",
+    )
+    shared_skill = dest / ".agents" / "skills" / "pm-dev-delegate" / "SKILL.md"
+    shared_skill.parent.mkdir(parents=True)
+    shared_skill.write_text("# rendered by .agents/skills\n", encoding="utf-8")
+
+    pm_update.resolve_manifest_selfheal(dest, REPO)
+
+    err = capsys.readouterr().err
+    assert "미등재 flavor 파일 관측" not in err, \
+        f"core 디렉터리 등재가 덮는 파일을 '채널 없음'으로 경고(오탐): {err!r}"
+
+    stray = dest / ".codex" / "pm_orch_codex.py"
+    stray.parent.mkdir(parents=True)
+    stray.write_text("# stray\n", encoding="utf-8")
+
+    pm_update.resolve_manifest_selfheal(dest, REPO)
+
+    err = capsys.readouterr().err
+    assert "미등재 flavor 파일 관측" in err, \
+        "어느 등재로도 안 덮이는 타 flavor 파일은 여전히 경고여야 한다"
+    assert ".codex/pm_orch_codex.py" in err
+    assert ".agents/skills/pm-dev-delegate/SKILL.md" not in err, \
+        "디렉터리 등재가 덮는 파일이 관측 목록에 섞였다"
+
+
+def test_claude_only_adopter_shape_stays_quiet_across_repeat_runs(
+        pm_update, tmp_path, capsys):
+    """claude 단독 채택자(순정 host manifest) — 초회·수렴 두 실행 모두 frozen 경고 0.
+
+    제보 형상: opencode manifest가 `.claude/skills/pm-dev-delegate/SKILL.md`에 파일 단위 override를
+    두는데 그 경로는 host `.claude/skills @render`가 덮는다. opencode를 설치한 적 없는 채택자가 매
+    실행 경고를 받았고, 처방이 `add-harness opencode`/전체 재-import라 무해한 형상에 파괴적이었다."""
+    claude = REPO / "templates" / "claude_code" / ".project_manager" / "engine.manifest"
+    dest = tmp_path / "dest"
+    manifest = _write_dest_manifest(dest, [])
+    manifest.write_text(claude.read_text(encoding="utf-8"), encoding="utf-8")
+    skill = dest / ".claude" / "skills" / "pm-dev-delegate" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("# rendered by .claude/skills\n", encoding="utf-8")
+
+    for run in ("초회", "수렴"):
+        result = pm_update.resolve_manifest_selfheal(dest, REPO)
+        assert result["upstream_manifests"] == [claude]
+        err = capsys.readouterr().err
+        assert "미등재 flavor 파일 관측" not in err, \
+            f"{run} 실행에서 claude 단독 채택자 오탐: {err!r}"
+
+
 def test_declared_single_flavor_without_other_tree_has_no_frozen_warning(
         pm_update, tmp_path, capsys):
     """순정 단일-flavor 선언 채택자는 자기 flavor만 선택하며 frozen 경고가 없다."""
@@ -7132,3 +7219,233 @@ def test_flat_opencode_command_rewrites_only_operational_detail_target(pm_update
 def test_flat_opencode_command_rewrite_fails_loud_on_link_count(pm_update, source):
     with pytest.raises(ValueError, match="정확히 1개"):
         pm_update._render_flat_command_reference(source, "pm-x")
+
+
+# ── claude native agent 카드 model = delegate conf 해소값 (T-0731) ────────────
+# native 스폰의 실효 모델은 카드 frontmatter 다. 카드가 리터럴이면 `delegate.<role>` 선언이
+# 실행면에 닿지 못하고(채택자 실측: conf sonnet ↔ 카드 opus 상시 경고), `.claude/agents @render`
+# 라 채택자가 고쳐도 다음 pm-update 가 되돌린다. 카드를 역할별 operational 토큰으로 렌더해
+# local.conf 단일 진실이 실행면에 반영되게 한다.
+
+CARD_MODEL_TOKENS = {
+    "developer.md": "DELEGATE_MODEL_DEVELOPER",
+    "researcher.md": "DELEGATE_MODEL_RESEARCHER",
+    "architect.md": "DELEGATE_MODEL_ARCHITECT",
+    "code-reviewer.md": "DELEGATE_MODEL_CODE_REVIEWER",
+}
+# 카드는 **두 트리 모두** 소스다: fresh import 는 templates 사본을 복사하고, 채택자 self-update 는
+# manifest 의 bare `.claude/agents @render`(=<source-root>/.claude/agents)를 읽어 루트 사본을
+# 렌더한다. 한쪽만 토큰-form 이면 그 채널만 정합해진다(byte-identical 가드가 둘을 묶는다).
+CARD_TREES = (
+    REPO / ".claude" / "agents",
+    REPO / "templates" / "claude_code" / ".claude" / "agents",
+)
+
+CARD_ROLE_CONF_KEYS = {
+    "DELEGATE_MODEL_DEVELOPER": "delegate.developer.model",
+    "DELEGATE_MODEL_RESEARCHER": "delegate.researcher.model",
+    "DELEGATE_MODEL_ARCHITECT": "delegate.architect.model",
+    "DELEGATE_MODEL_CODE_REVIEWER": "delegate.code-reviewer.model",
+}
+
+
+def _card_model_line(text: str) -> str:
+    """카드 frontmatter 의 model 줄(해소·중화 양쪽) — 없으면 빈 문자열."""
+    for line in text.splitlines():
+        if line.lstrip("# ").startswith("model:"):
+            return line
+    return ""
+
+
+def test_delegate_model_tokens_wired_in_both_channels(pm_update):
+    """4토큰이 render 채널(OPERATIONAL_KEYS)과 local.conf 채널 양쪽에 배선.
+
+    한쪽만 있으면 (a) 토큰이 영영 미해소 leak 이거나 (b) conf 값이 아무 산출도 안 바꾼다."""
+    pm_render = pm_update._load_pm_render()
+    for token_key, conf_key in CARD_ROLE_CONF_KEYS.items():
+        assert token_key in pm_render.OPERATIONAL_KEYS, \
+            f"{token_key} 가 render operational 채널에 미등재 — 재렌더가 토큰을 leak 시킨다"
+        assert pm_update._LOCAL_CONF_TO_OPERATIONAL.get(conf_key) == token_key, \
+            f"local.conf `{conf_key}` → {token_key} 매핑 부재 — 선언이 실행면에 닿지 않는다"
+    assert pm_render.DELEGATE_MODEL_CONF_KEYS == CARD_ROLE_CONF_KEYS, \
+        "TODO 안내가 제시하는 conf 키가 실제 해소 키와 갈렸다"
+
+
+def test_agent_cards_use_role_model_tokens_and_no_literal_model():
+    """카드 4장 × 두 소스 트리 — `model:` 이 역할별 토큰이고 리터럴 `opus` 0."""
+    for tree in CARD_TREES:
+        for name, token_key in CARD_MODEL_TOKENS.items():
+            text = (tree / name).read_text(encoding="utf-8")
+            assert _card_model_line(text) == 'model: "{{' + token_key + '}}"', (
+                f"{tree.name}/{name} 의 model 이 역할 토큰이 아니다 — 카드가 리터럴이면 "
+                f"delegate.* 선언이 native 스폰에 반영되지 않는다 (tree={tree})"
+            )
+            assert "opus" not in _card_model_line(text), (
+                f"{tree}/{name} 에 리터럴 model 잔존 — 두 트리 모두 소스다"
+                "(import=templates · self-update=루트 bare @render)"
+            )
+
+
+def test_agent_card_renders_conf_model_through_local_conf(pm_update, tmp_path):
+    """dest local.conf 의 `delegate.<role>.model` 이 카드 렌더 결과가 된다(역할별 개별)."""
+    pm_render = pm_update._load_pm_render()
+    dest = tmp_path / "dest"
+    _write_local_conf(dest, "\n".join([
+        "delegate.developer.model=sonnet",
+        "delegate.researcher.model=haiku",
+        "delegate.architect.model=opus",
+        "delegate.code-reviewer.model=gpt-5.6-sol",
+        "project_name=Acme",
+        "",
+    ]))
+
+    operational, empty_keys = pm_update._operational_from_local_conf(dest)
+
+    assert empty_keys == []
+    expected = {
+        "developer.md": 'model: "sonnet"',
+        "researcher.md": 'model: "haiku"',
+        "architect.md": 'model: "opus"',
+        "code-reviewer.md": 'model: "gpt-5.6-sol"',
+    }
+    template_tree = REPO / "templates" / "claude_code" / ".claude" / "agents"
+    for name, model_line in expected.items():
+        rendered = pm_render.render_adapter(
+            (template_tree / name).read_text(encoding="utf-8"),
+            operational,
+            source=name,
+        )
+        assert _card_model_line(rendered) == model_line, \
+            f"{name} 이 conf 해소값으로 렌더되지 않았다"
+
+
+def test_agent_card_unset_delegate_model_is_graceful_todo(pm_update, tmp_path):
+    """위임 매핑 미설정 채택자 — rc-fail 0·TODO 표기·다른 토큰은 정상 렌더(부분-graceful).
+
+    미설정은 오설정이 아니라 정상 형상이다(local.conf 시드는 delegate.* 를 전부 주석으로 낸다).
+    한 토큰 미해소가 어댑터 update 전체를 막으면 채택자가 엔진 fix 를 받을 수 없다
+    (`{{OPENCODE_PRO_MODEL}}` 선례와 동형)."""
+    pm_render = pm_update._load_pm_render()
+    dest = tmp_path / "dest"
+    _write_local_conf(dest, "project_name=Acme\ndelegate.researcher.model=haiku\n")
+
+    operational, empty_keys = pm_update._operational_from_local_conf(dest)
+    template_tree = REPO / "templates" / "claude_code" / ".claude" / "agents"
+    rendered = pm_render.render_adapter(
+        (template_tree / "developer.md").read_text(encoding="utf-8"),
+        operational, source="developer.md", empty_keys=empty_keys,
+    )
+
+    line = _card_model_line(rendered)
+    assert line.startswith('# model: "<model>"'), \
+        f"미해소 토큰이 중화되지 않았다(leak 또는 활성 리터럴 출하): {line!r}"
+    assert "delegate.developer.model=" in line, "TODO 가 채울 conf 키를 지목하지 않는다"
+    assert "{{" not in rendered, "중화 산출물에 리터럴 토큰 잔존(자족 위반)"
+    # 해소된 역할은 같은 실행에서 정상 렌더 — 미해소 하나가 전체를 끌어내리지 않는다.
+    resolved = pm_render.render_adapter(
+        (template_tree / "researcher.md").read_text(encoding="utf-8"),
+        operational, source="researcher.md", empty_keys=empty_keys,
+    )
+    assert _card_model_line(resolved) == 'model: "haiku"'
+    # 멱등 — 중화된 산출물을 다시 렌더해도 같은 bytes(재렌더 왕복 0).
+    assert pm_render.render_adapter(
+        rendered, operational, source="developer.md", empty_keys=empty_keys) == rendered
+
+
+def test_agent_card_empty_delegate_model_is_loud_leak(pm_update, tmp_path):
+    """`delegate.<role>.model=` 빈값(오설정)은 중화하지 않고 leak 으로 표면화한다."""
+    pm_render = pm_update._load_pm_render()
+    dest = tmp_path / "dest"
+    _write_local_conf(dest, "project_name=Acme\ndelegate.developer.model=\n")
+
+    operational, empty_keys = pm_update._operational_from_local_conf(dest)
+
+    assert empty_keys == ["DELEGATE_MODEL_DEVELOPER"]
+    template_tree = REPO / "templates" / "claude_code" / ".claude" / "agents"
+    with pytest.raises(pm_render.RenderLeakError, match="delegate.developer.model"):
+        pm_render.render_adapter(
+            (template_tree / "developer.md").read_text(encoding="utf-8"),
+            operational, source="developer.md", empty_keys=empty_keys,
+        )
+
+
+def _import_claude_adopter(pm_import, dest: Path) -> None:
+    """fresh claude 채택자 설치 (출력 삼킴·라이브 하네스 미호출)."""
+    import io
+    from contextlib import redirect_stdout
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = pm_import.main([
+            "--new", str(dest), "--harness", "claude",
+            "--name", "Acme", "--fill", "manual",
+        ])
+    assert rc == 0, f"fresh import 실패(rc={rc}):\n{buf.getvalue()[-2000:]}"
+
+
+def test_fresh_adopter_card_model_follows_delegate_conf_across_updates(
+        pm_update, tmp_path, monkeypatch):
+    """fresh-adopter e2e — conf 모델 ≠ opus 케이스로 도그푸딩 사각을 닫는다.
+
+    adopter#0 은 conf 가 opus 라 카드 리터럴과 우연히 일치해 이 결함을 못 봤다
+    ([[dogfooding-blind-spot-adopter-shape]]). 체인: fresh import(위임 미설정 → graceful TODO)
+    → local.conf 에 sonnet/haiku 기록 → pm-update 초회·수렴 두 실행 모두 그 값으로 렌더 →
+    delegate_channel_guard 경고 0.
+    """
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "_real_models_runner", lambda: (False, []))
+    dest = tmp_path / "adopter"
+    _import_claude_adopter(pm_import, dest)
+    card = dest / ".claude" / "agents" / "developer.md"
+
+    # ① 위임 미설정 fresh import — 활성 리터럴 대신 TODO 중화, 어댑터 토큰 leak 0.
+    assert _card_model_line(card.read_text(encoding="utf-8")).startswith(
+        '# model: "<model>"'), "위임 미설정 import 가 model 줄을 중화하지 않았다"
+    leaked = [
+        p for p in (dest / ".claude").rglob("*")
+        if p.is_file() and "{{" in p.read_text(encoding="utf-8", errors="ignore")
+    ]
+    assert not leaked, f"import 산출물에 미해소 토큰 잔존: {leaked}"
+
+    # ② 채택자가 위임 매핑을 기록한다(선언 = local.conf 단일 진실).
+    conf = dest / ".project_manager" / "local.conf"
+    conf.write_text(
+        conf.read_text(encoding="utf-8")
+        + "delegate_enabled=true\n"
+        + "delegate.developer.harness=claude\n"
+        + "delegate.developer.model=sonnet\n"
+        + "delegate.researcher.model=haiku\n",
+        encoding="utf-8", newline="\n",
+    )
+
+    # ③ self-update 소스는 manifest 의 bare `.claude/agents @render` = <source-root>/.claude/agents.
+    assert _card_model_line(
+        (REPO / ".claude" / "agents" / "developer.md").read_text(encoding="utf-8")
+    ) == 'model: "{{DELEGATE_MODEL_DEVELOPER}}"', (
+        "self-update 소스인 루트 카드가 토큰-form 이 아니다 — templates 사본만 고치면 "
+        "채택자 재동기가 리터럴을 되돌린다"
+    )
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    for run in ("초회", "수렴"):
+        assert pm_update.main(["--from", str(REPO)]) == 0, f"{run} pm-update rc≠0"
+        assert _card_model_line(card.read_text(encoding="utf-8")) == 'model: "sonnet"', \
+            f"{run} 실행 후 카드가 conf 해소값이 아니다"
+        assert _card_model_line(
+            (dest / ".claude" / "agents" / "researcher.md").read_text(encoding="utf-8")
+        ) == 'model: "haiku"', f"{run} 실행에서 역할별 개별 해소가 깨졌다"
+        assert _card_model_line(
+            (dest / ".claude" / "agents" / "architect.md").read_text(encoding="utf-8")
+        ).startswith('# model: "<model>"'), \
+            f"{run}: 미설정 역할이 다른 역할의 값을 물려받았다"
+
+    # ④ 렌더가 맞으면 native 카드 불일치 경고가 자연히 사라진다(가드 변경 없이).
+    guard = dest / ".project_manager" / "tools" / "delegate_channel_guard.py"
+    decided = subprocess.run(
+        [sys.executable, str(guard), "decide", "--role", "developer", "--harness", "claude"],
+        cwd=str(dest), capture_output=True, text=True,
+    )
+    assert decided.returncode == 0, f"guard rc={decided.returncode}\n{decided.stderr}"
+    assert "불일치" not in decided.stdout + decided.stderr, \
+        f"카드가 conf 와 같은데 불일치 경고:\n{decided.stdout}\n{decided.stderr}"
+    assert json.loads(decided.stdout)["model"] == "sonnet"

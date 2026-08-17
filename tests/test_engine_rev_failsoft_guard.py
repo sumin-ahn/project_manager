@@ -970,7 +970,41 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   · `pm_config._protected_push_gate_config` 재-raise 한 경계.
     #   · `delegate_channel_guard._record_supervisor_fallback` 흡수 한 경계 — PowerShell 인용
     #     삼킴으로 래퍼가 폴백할 때 그 사실 기록이 판정을 막지 않는다.
-    assert len(report.boundaries) == 209, "propagation sweep boundary ratchet changed"
+    # 210 = 209 + T-0728 처방 인터프리터 해소의 흡수 한 경계
+    #   (`delegate_channel_guard._prescribed_interpreter`). 처방 표기는 deny 판정의 부속이라
+    #   형제 로드 실패(skew 포함)로 엔벨로프 키가 무너지면 안 된다 — 등록 사유
+    #   `prescription_interpreter_fail_open` 으로 흡수하되 stderr 로 원인을 구분해 남긴다.
+    # 212 = 210 + T-0729 원자 교체 seam 의 **등재된 부트스트랩 예외** 두 경계. 두 곳 모두 교체
+    #   프리미티브를 형제 `file_lock` 에서 가져오는데, 그 형제가 없거나 손상인 트리가 정확히
+    #   이 두 경로의 정상 입력이다(§결정 · 선택지 A).
+    #   · `pm_update._atomic_replace_or_degrade` 흡수 한 경계 — `_predeploy_central_loader` 의
+    #     부트스트랩 쓰기가 여기를 지나므로 이 쓰기는 **그 형제를 설치하는 쪽**이다. 등록 사유
+    #     `atomic_copy_replace_seam` 으로 흡수하고 강등을 stderr 로 남긴다(여기서 올리면 중단된
+    #     업데이트를 채택자가 스스로 못 고친다).
+    #   · `pm_import._atomic_replace_conf` 재-raise 한 경계 — 부재/손상 사본은 무락 복구 계약대로
+    #     loud 강등으로 흡수하되, rev 자체가 갈린 사본은 조용한 오작동이 아니라 재동기 안내로
+    #     표출해야 하므로 종전 규칙대로 그대로 올린다.
+    # 213 = 212 + T-0730 회귀 게이트 해소 위임의 한 경계. `ticket_finish._resolve_per_repo_test_cmd`
+    #   는 해소 체인 사본을 두지 않고 형제 `pm_handoff._resolve_gate_cmd` 에 위임한다(체인 단일
+    #   사본 — 해소 함수가 한쪽에만 있던 미러 이탈이 무prefix 채택자 결함의 절반이었다). 그
+    #   형제가 없거나 손상이면 게이트를 해소하지 못해도 솔로 `pytest tests/ -q` 폴백으로 완주해야
+    #   하므로 흡수하되(`_regression_cwd`·`_resolve_finish_slot` 의 같은 위임과 동형), 마킹된
+    #   skew 는 그대로 올린다 — 사본이 갈린 사실이 "게이트 미해소"로 위장되면 안 된다.
+    # 218 = 213 + T-0729 **공유 읽기 강등**의 다섯 경계(`_shared_read_api` — external_review ·
+    #   pm_import · pm_log · pm_update · review_rounds). 판독이 공용 seam 을 지나게 되면서 그
+    #   형제 로드가 판독 경로에 닿는데, 이 다섯은 "판독은 형제 없이도 떠야 한다" 를 각자 로더
+    #   주석에 명시한 채널이다(복구/도입 채널 둘 · pm_bootstrap 이 재사용하는 로그 판독 ·
+    #   부분 동기 트리에서도 살아야 하는 라운드 판정 · `--gate` 밖 진단 경로). 판독은 아무것도
+    #   커밋하지 않고 종전 읽기와 바이트가 같아 흡수 비용이 "Windows 에서 그 판독 중의 원자 교체
+    #   한 번" 뿐이고, 올리면 복구 채널 자신이 막힌다. 다섯 모두 등록 사유 `shared_read_seam` +
+    #   프로세스당 1회 stderr 강등 알림과 짝이다([[T-0729]] §결정 선택지 A 의 판독 쪽 확장).
+    # 222 = 218 + T-0729 B조(로더 없던 모듈)의 판독 전환이 만든 재-raise 네 경계. 판독이 공용
+    #   seam 을 지나면서 종전에 형제를 안 건드리던 fail-soft 자리가 형제 로드 경로를 얻었다 —
+    #   `pm_bootstrap._collect_handoff_context`·`_read_log_text`·`_safe_command_card` 와
+    #   `pm_config.cmd_task_end`. 넷 다 그 모듈의 기존 규칙(`_load_tool`·`_load_module` 의
+    #   "중첩 로드 형제 skew 는 fail-loud")을 그대로 따라 marked skew 만 재전파하고 나머지는
+    #   종전대로 접는다(surface 생략·게이트 graceful skip).
+    assert len(report.boundaries) == 222, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

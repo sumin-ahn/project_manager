@@ -277,6 +277,19 @@ def _load_board():
     return mod
 
 
+def _load_file_lock():
+    """공용 파일 프리미티브 seam(`file_lock.py`)을 같은 tools/ 에서 경로 로드한다.
+
+    원자 교체 대상 파일을 읽는 지점은 이 seam 의 공유 읽기를 지난다([[T-0729]]) — 일반 `open`
+    리더가 하나라도 잡고 있으면 Windows 는 그 파일의 원자 교체를 WinError 32 로 막는다. 부재/
+    손상/rev 불일치는 엔진 사본 손상이므로 흡수하지 않는다(fail-loud·재동기 안내).
+    """
+    return _load_module_from_path(
+        Path(__file__).resolve().parent / "file_lock.py", "file_lock.py",
+        verifier=_verify_engine_rev, cache=True,
+    )
+
+
 def _wikilink_re() -> re.Pattern[str]:
     """wikilink 문법 — board `_WIKILINK_RE` 재사용(자체 regex 금지), 실패 시 동일 폴백 복제."""
     board = _load_board()
@@ -332,7 +345,7 @@ def collect_reference_scope(
     if not targets:
         return []
     wl_re = wikilink_re or _wikilink_re()
-    _read = read or (lambda p: p.read_text(encoding="utf-8"))
+    _read = read or (lambda p: _load_file_lock().read_text_shared(p, encoding="utf-8"))
     base = repo or REPO
 
     hits: list[ScopeHit] = []
@@ -504,7 +517,7 @@ def _load_adr(decisions_dir: Path, num: int) -> tuple[str, str]:
     matches = sorted(decisions_dir.glob(f"{num:04d}-*.md"))
     if not matches:
         return "", ""
-    text = matches[0].read_text(encoding="utf-8")
+    text = _load_file_lock().read_text_shared(matches[0], encoding="utf-8")
     m = re.search(r"^title:\s*(.+)$", text, re.MULTILINE)
     title = m.group(1).strip().strip("'\"") if m else ""
     return title, text

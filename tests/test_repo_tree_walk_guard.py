@@ -131,6 +131,15 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "'*'",
     ): WalkException("tmp_path에 생성한 adopter fixture의 add-harness 전후 바이트 스냅샷"),
     (
+        "tests/test_pm_update.py",
+        "test_fresh_adopter_card_model_follows_delegate_conf_across_updates",
+        "rglob",
+        "'*'",
+    ): WalkException(
+        "tmp_path fresh import 산출물(`.claude/`)에 미해소 `{{…}}` 토큰이 남았는지 전수 검사 — "
+        "repo 소유 인벤토리가 아니라 그 fixture 트리 자체가 판정 대상(T-0731 카드 model 토큰 leak 0)"
+    ),
+    (
         "tests/test_fresh_adopter_e2e.py",
         "test_fresh_opencode_adopter_engine_mutate_propagates_and_render_drift0",
         "rglob",

@@ -413,6 +413,19 @@ _ENGINE_REV_SKEW_RECOVERY_REASONS = {
         "재사용한다 — best-effort 단계라 혼합 트리에서는 기록을 건너뛰고(다음 실행이 기록) 이미 "
         "적용된 엔진 파일을 traceback 으로 덮지 않는다"
     ),
+    "shared_read_seam": (
+        "판독도 같은 형제(`file_lock`)를 지나는데 pm_update 는 **복구 채널**이라 엔진 사본이 "
+        "깨진 채택자에게도 떠야 한다 — 여기서 올리면 중단된 업데이트를 진단할 판독조차 못 해 "
+        "자기 자신을 못 고친다(`atomic_copy_replace_seam` 과 같은 근거의 판독 쪽 짝). 강등은 "
+        "loud(stderr·프로세스당 1회)이고, 잃는 것은 Windows 에서 그 판독이 열려 있는 동안의 "
+        "원자 교체뿐이다"
+    ),
+    "atomic_copy_replace_seam": (
+        "원자 교체 프리미티브를 형제 file_lock 에서 가져오는데, 이 쓰기(`_predeploy_central_loader` "
+        "부트스트랩 포함)는 **그 형제를 설치하는 경로**라 형제가 아직 없거나 손상일 수 있다 — "
+        "여기서 올리면 중단된 업데이트로 반쯤 복사된 트리를 채택자가 스스로 고칠 수 없다. "
+        "강등은 loud(stderr)이고, 잃는 것은 Windows 에서 대상이 열려 있을 때 그 한 번의 교체뿐이다"
+    ),
 }
 
 
@@ -498,7 +511,7 @@ def baked_engine_revs(dest_root: Path, inventory) -> tuple[dict[str, str], list[
     for name in inventory:
         path = tools / name
         try:
-            text = path.read_text(encoding="utf-8")
+            text = _read_text_shared(path, encoding="utf-8")
         except (OSError, UnicodeError):
             continue                   # 부재·읽기 실패 — 다른 축 소관.
         match = _ENGINE_REV_LITERAL_RE.search(text)
@@ -766,6 +779,81 @@ def _load_file_lock():
     )
 
 
+# ── 공유 읽기 (등재 예외 · 복구 채널의 판독) ────────────────────────────────
+# 원자 교체 대상을 읽는 지점은 공용 seam 을 지난다([[T-0729]]) — 일반 `open` 리더가 하나라도
+# 잡고 있으면 Windows 는 그 교체를 WinError 32 로 막는다. 다만 pm_update 는 **복구 채널**이라
+# 형제 사본이 없거나 깨진 트리에서도 떠야 한다(위 로더 주석과 같은 근거·`_atomic_replace_or_degrade`
+# 의 판독 쪽 짝). 그래서 여기는 **등재된 예외**다 — seam 이 있으면 쓰고, 없으면 사유를 남기고
+# 종전 읽기로 진행한다.
+
+
+# 강등 사유는 프로세스당 한 번만 알린다 — 판독마다 찍으면 진단이 자기 소음에 묻힌다.
+_shared_read_degraded = False
+
+
+def _warn_shared_read_degraded(cause: str) -> None:
+    """강등 사유를 **프로세스당 한 번** 알린다 (판독마다 찍으면 진단이 자기 소음에 묻힌다)."""
+    global _shared_read_degraded
+    if _shared_read_degraded:
+        return
+    _shared_read_degraded = True
+    print(
+        f"경고: 공유 읽기 seam 을 쓸 수 없어 일반 읽기로 진행합니다 ({cause}) — Windows "
+        "에서는 이 판독이 열려 있는 동안 원자 교체가 실패할 수 있습니다. `pm-update` 로 "
+        ".project_manager/tools/ 전체를 재동기하십시오.",
+        file=sys.stderr,
+    )
+
+
+def _shared_read_api(name: str):
+    """공유 읽기 seam 의 함수 하나 — 없거나 못 쓰면 `None` (등재 예외의 강등 분기·loud).
+
+    **부재/손상 로드**와 **구세대 사본**(로드는 되는데 그 함수가 없는 형상)을 함께 본다 — 쓰기
+    축의 등재 예외가 `getattr(..., "atomic_replace", None)` 로 두 형상을 같이 받는 것과 같다.
+    한쪽만 보면 부분 업그레이드 트리에서 AttributeError 로 죽는다.
+    """
+    global _shared_read_degraded
+    try:
+        seam = _load_file_lock()
+    except Exception as exc:  # noqa: BLE001 — 부재/손상/혼합은 이 판독의 정상 입력이다.
+        skew = _absorb_engine_rev_skew_for_recovery(exc, "shared_read_seam")
+        cause = f"엔진 사본 불일치 — {exc}" if skew else f"{type(exc).__name__}: {exc}"
+        _warn_shared_read_degraded(cause)
+        return None
+    api = getattr(seam, name, None)
+    if api is None:
+        _warn_shared_read_degraded(f"구세대 file_lock 사본에 {name} 이(가) 없음")
+    return api
+
+
+def _read_text_shared(path, *, encoding=None, errors=None, newline=None) -> str:
+    """`file_lock.read_text_shared` — seam 을 못 쓰면 같은 의미의 종전 읽기로 강등한다."""
+    api = _shared_read_api("read_text_shared")
+    if api is not None:
+        return api(path, encoding=encoding, errors=errors, newline=newline)
+    with open(path, "r", encoding=encoding, errors=errors, newline=newline) as handle:
+        return handle.read()
+
+
+def _read_bytes_shared(path) -> bytes:
+    """`file_lock.read_bytes_shared` — seam 을 못 쓰면 같은 의미의 종전 읽기로 강등한다."""
+    api = _shared_read_api("read_bytes_shared")
+    if api is not None:
+        return api(path)
+    with open(path, "rb") as handle:
+        return handle.read()
+
+
+def _open_shared(path, *, binary, encoding=None, errors=None, newline=None):
+    """`file_lock.open_shared` — seam 을 못 쓰면 같은 의미의 종전 열기로 강등한다."""
+    api = _shared_read_api("open_shared")
+    if api is not None:
+        return api(path, binary=binary, encoding=encoding, errors=errors, newline=newline)
+    if binary:
+        return open(path, "rb")
+    return open(path, "r", encoding=encoding, errors=errors, newline=newline)
+
+
 def _local_conf_lock_path(conf_path: Path) -> Path:
     """local.conf writer 직렬화 락 경로 — 공용 seam 의 유도 규칙을 그대로 쓴다.
 
@@ -834,7 +922,7 @@ def _append_local_conf_atomic(conf_path: Path, block: str, lock) -> None:
     stdlib append 로 물러난다.
     """
     try:
-        raw = Path(conf_path).read_bytes()
+        raw = _read_bytes_shared(Path(conf_path))
     except OSError:
         raw = b""
     text = ("\n" if raw and not raw.endswith(b"\n") else "") + block
@@ -1029,7 +1117,7 @@ def read_manifest(path: Path) -> list[ManifestEntry]:
     미주석=render/target_owned False·source_rel None → 오늘과 동일(순수 copy2·전파 대상·후방호환).
     """
     out: list[ManifestEntry] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in _read_text_shared(path, encoding="utf-8").splitlines():
         entry = _parse_manifest_line(line)
         if entry is not None:
             out.append(entry)
@@ -1096,7 +1184,7 @@ def merge_manifest_sources(manifest_paths: list[Path]) -> dict:
     if not manifest_paths:
         raise ValueError("합칠 engine.manifest가 없습니다.")
     paths = [Path(p) for p in manifest_paths]
-    first_text = paths[0].read_text(encoding="utf-8")
+    first_text = _read_text_shared(paths[0], encoding="utf-8")
     merged: list[ManifestEntry] = []
     seen: dict[str, ManifestEntry] = {}
     additions: list[tuple[str, list[ManifestEntry]]] = []
@@ -1174,7 +1262,7 @@ def _read_local_conf(path: Path) -> dict[str, str]:
     conf: dict[str, str] = {}
     if not path.exists():
         return conf
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in _read_text_shared(path, encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -1228,10 +1316,43 @@ def _missing_repo_owned_files_api(module) -> list[str]:
     ]
 
 
+def _atomic_replace_or_degrade(tmp: Path, dest: Path) -> None:
+    """원자 교체 — 공용 seam(`file_lock.atomic_replace`) 우선, 못 쓰면 **loud** 강등한다.
+
+    엔진의 다른 교체 지점과 달리 여기는 seam 을 **설치하는 쪽**이다(`_predeploy_central_loader`
+    가 중앙 로더를 내려놓는 부트스트랩 쓰기가 이 함수를 지난다). 그 시점의 목적지 트리는
+    중단된 업데이트로 `file_lock.py` 가 없거나 손상일 수 있고, 여기서 예외를 올리면 채택자는
+    깨진 트리를 **스스로 고칠 수단을 잃는다** — 복구 채널이 자기 잠금하는 형상이다.
+
+    그래서 이 한 지점만 등재된 예외다([[T-0729]] §결정 · 가드 등재부에 사유 필수). 강등은
+    조용하지 않다 — 사유를 stderr 로 남겨 채택자가 "복구 경로에서 옛 방식이 발동했다"를 안다.
+    정상 트리에서는 항상 seam 을 타므로, 잃는 보장은 "Windows 에서 대상이 열려 있으면 그 한 번의
+    교체가 실패한다" 뿐이고 그것도 이미 고장난 트리에 한정된다.
+    """
+    degrade_reason = ""
+    try:
+        replace = getattr(_load_file_lock(), "atomic_replace", None)
+        if replace is None:
+            degrade_reason = "구세대 file_lock 사본에 atomic_replace 가 없음"
+    except Exception as exc:  # noqa: BLE001 — 부재/손상/혼합 전부 이 부트스트랩의 정상 입력이다.
+        # 등록된 복구 경계: marked skew(혼합 트리)도 여기서는 흡수한다 — 올리면 복구가 죽는다.
+        _absorb_engine_rev_skew_for_recovery(exc, "atomic_copy_replace_seam")
+        replace, degrade_reason = None, f"{type(exc).__name__}: {exc}"
+    if replace is not None:
+        replace(tmp, dest)
+        return
+    print(
+        f"경고: 원자 교체 공용 seam 을 쓸 수 없어 os.replace 로 진행합니다 ({degrade_reason}) — "
+        f"Windows 에서는 대상이 열려 있으면 이 교체가 실패할 수 있습니다: {dest}",
+        file=sys.stderr,
+    )
+    os.replace(tmp, dest)
+
+
 def _atomic_copy2(source: Path, dest: Path) -> None:
     """같은 디렉토리의 완성된 임시 사본을 원자적으로 dest에 교체한다.
 
-    dest 가 symlink 면 `os.replace` 는 **링크 자체를 대체**한다(일반 copy2 는 링크 너머 타깃에
+    dest 가 symlink 면 원자 교체는 **링크 자체를 대체**한다(일반 copy2 는 링크 너머 타깃에
     쓴다) — 의도된 동작이다. 엔진이 관리하는 훅 세트 파일은 manifest 소유 실파일이고, 그 자리를
     링크로 바꿔 둔 트리에 링크 너머로 쓰면 엔진이 자기 관리 밖 경로를 갱신하게 된다."""
     fd, tmp_name = tempfile.mkstemp(
@@ -1241,7 +1362,7 @@ def _atomic_copy2(source: Path, dest: Path) -> None:
     tmp = Path(tmp_name)
     try:
         shutil.copy2(source, tmp)
-        os.replace(tmp, dest)
+        _atomic_replace_or_degrade(tmp, dest)
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -1925,7 +2046,7 @@ def _dest_guest_manifest_entries(effective_dest: Path) -> list[ManifestEntry]:
     `_parse_manifest_line` 공유)."""
     manifest_file = Path(effective_dest) / ".project_manager" / "engine.manifest"
     try:
-        block = _extract_guest_manifest_block(manifest_file.read_text(encoding="utf-8"))
+        block = _extract_guest_manifest_block(_read_text_shared(manifest_file, encoding="utf-8"))
     except (OSError, UnicodeDecodeError):
         return []
     if not block:
@@ -2043,7 +2164,7 @@ def _guest_engine_backfill_entries(
         return [], []
     dest_manifest = Path(effective_dest) / ".project_manager" / "engine.manifest"
     try:
-        dest_owned = _core_manifest_paths(dest_manifest.read_text(encoding="utf-8"))
+        dest_owned = _core_manifest_paths(_read_text_shared(dest_manifest, encoding="utf-8"))
         pm_import = _load_pm_import()
         harness_by_flavor = {
             template_dir: harness
@@ -2816,12 +2937,17 @@ def _frozen_flavor_evidence(
     그 밖의 guest 밖 고유 경로는 남겨 frozen 판정에 쓴다. ``add_harness``는 항상 guest 행을
     등재하므로, guest 소유 하나로 flavor 전체를 버리면 frozen 상태에 도달하는 유일한 경로가 곧
     탐지기를 끈다(add-harness 채택자에게 경고가 구조적으로 발화하지 못함).
+
+    host core 등재도 guest 와 **같은 소유권 판정**(`_path_owned_by`·경로-포함)으로 뺀다. manifest
+    등재는 파일과 디렉터리 양쪽이라 exact 문자열 대조는 `.claude/skills` 디렉터리 등재가 이미 덮는
+    `.claude/skills/pm-dev-delegate/SKILL.md` 를 "어느 동기 채널도 선언하지 않은 출하 파일" 로
+    분류한다(claude 단독 채택자 오탐). 어느 core 등재로도 안 덮이는 진짜 stray 는 그대로 남는다.
     """
     unique_paths = _flavor_exclusive_paths(entries, other_candidate_paths)
     unique_paths = [rel for rel in unique_paths if not _path_owned_by(rel, guest_paths)]
     if not unique_paths:
         return None
-    return [rel for rel in unique_paths if rel not in local_core_paths]
+    return [rel for rel in unique_paths if not _path_owned_by(rel, local_core_paths)]
 
 
 def _print_legacy_nonmatch_warning(
@@ -3139,7 +3265,7 @@ def resolve_manifest_selfheal(
                 "upstream_manifests": [root_manifest], "manifest_text": None,
                 "merge_conflicts": []}
     local_entries = read_manifest(dest_manifest)
-    local_text = dest_manifest.read_text(encoding="utf-8")
+    local_text = _read_text_shared(dest_manifest, encoding="utf-8")
     if guest_backfill_paths is None:
         # 호출부가 이미 해소했으면 넘긴다(중복 IO·pm_import 재로드 회피). 안 넘기면 여기서 해소해
         #   진단 판정이 호출 경로마다 갈리지 않게 한다.
@@ -3435,6 +3561,16 @@ _LOCAL_CONF_TO_OPERATIONAL = {
     # (pm_render.neutralize_model_todo·import 대칭) — 한 토큰 미해소가 엔진/타 어댑터 update
     # 전체를 막지 않는다(부분-graceful). claude tree 엔 토큰 부재 → no-op.
     "opencode_pro_model": "OPENCODE_PRO_MODEL",
+    # claude native agent 카드 전용 — `.claude/agents @render` 재렌더가 카드 frontmatter 의
+    # `model:` 을 이 매핑으로 local.conf 에서 재유도한다. native 스폰의 실효 모델은 카드라,
+    # 이 배선이 없으면 `delegate.<role>` 선언이 실행면에 닿지 못한다(선언↔실행 불일치 경고).
+    # 카드는 normal 프로필이므로 `delegate.<role>.model` 만 읽는다(hard 세트는 카드 밖).
+    # **미해소**(위임 매핑 미설정 채택자)면 render_adapter 가 leak 으로 rc-fail 하지 않고
+    # intentional-TODO 로 graceful 중화한다(pm_render.neutralize_delegate_model_todo).
+    "delegate.developer.model": "DELEGATE_MODEL_DEVELOPER",
+    "delegate.researcher.model": "DELEGATE_MODEL_RESEARCHER",
+    "delegate.architect.model": "DELEGATE_MODEL_ARCHITECT",
+    "delegate.code-reviewer.model": "DELEGATE_MODEL_CODE_REVIEWER",
 }
 
 
@@ -3499,7 +3635,7 @@ def _dominant_newline(text: str, default: str = _DEFAULT_TEXT_NEWLINE) -> str:
 def _path_newline(path: Path, default: str = _DEFAULT_TEXT_NEWLINE) -> str:
     """그 파일의 현재 지배 개행 — 부재·읽기 실패·비-UTF8 은 `default`."""
     try:
-        with Path(path).open("r", encoding="utf-8", newline="") as handle:
+        with _open_shared(Path(path), binary=False, encoding="utf-8", newline="") as handle:
             return _dominant_newline(handle.read(), default)
     except (OSError, UnicodeError):
         return default
@@ -3537,7 +3673,7 @@ def _render_text(
     """
     render_mod = _load_pm_render()
     operational, empty_keys = _operational_from_local_conf(dest_root)
-    text = Path(source_path).read_text(encoding="utf-8")
+    text = _read_text_shared(Path(source_path), encoding="utf-8")
     rendered = render_mod.render_adapter(
         text,
         operational=operational,
@@ -3572,7 +3708,7 @@ def _render_skill_entry_text(
     template_dir: str | tuple[str, ...] | list[str],
 ) -> str:
     """--target export용 파일 wrapper — operational은 건드리지 않고 호출 표기만 치환."""
-    text = Path(source_path).read_text(encoding="utf-8")
+    text = _read_text_shared(Path(source_path), encoding="utf-8")
     return render_skill_entry_notation(
         text, template_dir, source=str(source_path)
     )
@@ -3675,7 +3811,7 @@ def _is_text_source(source_path: Path) -> bool:
     IO 실패도 보수적으로 False(byte-copy·기존 동작).
     """
     try:
-        Path(source_path).read_text(encoding="utf-8")
+        _read_text_shared(Path(source_path), encoding="utf-8")
     except (UnicodeDecodeError, OSError):
         return False
     return True
@@ -3697,7 +3833,7 @@ def _rendered_text_matches_dest(rendered: str, dst) -> bool:
     (판정을 무디게 만들지 않는다). 읽기 실패·비-UTF8 dest 는 보수적으로 '다름'(False) — plan 이
     그 path 를 change 로 띄워 apply 가 명확히 실패하게 한다(침묵 폴백 금지)."""
     try:
-        current = dst.read_bytes().decode("utf-8")
+        current = _read_bytes_shared(dst).decode("utf-8")
     except (OSError, UnicodeDecodeError):
         return False
     return _normalize_newlines(rendered) == _normalize_newlines(current)
@@ -3791,7 +3927,7 @@ def plan(
                     # 판정은 단일 flavor 분기와 **같은 헬퍼**다 — guest 절 차감 core 비교 + 옛 세대
                     #   마커. 여기만 마커 축이 빠지면 다중-harness 형상에서 마커 세대가 영구 잔존한다.
                     if _manifest_self_prop_needs_update(
-                            Path(dst).read_text(encoding="utf-8"), manifest_source_text,
+                            _read_text_shared(Path(dst), encoding="utf-8"), manifest_source_text,
                             guest_backfill_lines):
                         changes.append((rel, source, dst, "update"))
                 except (OSError, UnicodeDecodeError):
@@ -3861,7 +3997,7 @@ def plan(
                 # 변환 지점이 실제로 있는 파일만 생성 산출물로 표시한다. 토큰 부재 파일은 기존
                 # copy2 경로를 유지해 metadata/출력 churn을 만들지 않는다. 미등록 template 값은
                 # helper가 여기서 fail-loud한다(dry-run도 원문 복사 false-green 금지).
-                source_text = Path(sp).read_text(encoding="utf-8")
+                source_text = _read_text_shared(Path(sp), encoding="utf-8")
                 rendered_entry = source_text
                 if item_notation_template is not None:
                     rendered_entry = _render_skill_entry_text(sp, item_notation_template)
@@ -3922,8 +4058,8 @@ def plan(
                 #   다중-harness 합집합 분기와 **같은 헬퍼**를 쓴다(사유·근거는 그 docstring).
                 try:
                     if _manifest_self_prop_needs_update(
-                            Path(dst).read_text(encoding="utf-8"),
-                            Path(sp).read_text(encoding="utf-8"),
+                            _read_text_shared(Path(dst), encoding="utf-8"),
+                            _read_text_shared(Path(sp), encoding="utf-8"),
                             guest_backfill_lines):
                         changes.append((r, sp, dst, "update"))
                 except (OSError, UnicodeDecodeError):
@@ -4289,7 +4425,7 @@ def _copy_manifest_preserving_guest(
     try:
         if dst.is_file():
             dst_text, migrated = _migrate_legacy_guest_markers(
-                _normalize_newlines(dst.read_text(encoding="utf-8")))
+                _normalize_newlines(_read_text_shared(dst, encoding="utf-8")))
             if migrated:
                 print("✓ guest 절 마커 세대 마이그레이션 (구 리터럴 → 현행)")
             guest_block = _extract_guest_manifest_block(dst_text)
@@ -4297,7 +4433,12 @@ def _copy_manifest_preserving_guest(
         guest_block = None
     # 세대 마이그레이션 → 파생 백필 순서(치환된 현행 절 위에 기록·조합 시 절 소실 0).
     guest_block = _merge_guest_backfill_lines(guest_block, backfill_lines or [])
-    new_text = _normalize_newlines(sp.read_text(encoding="utf-8"))
+    # `sp` 는 파일 경로이거나 **인메모리 소스**(`_ManifestTextSource`·합집합 manifest)다. 공유
+    # 읽기는 실제 파일에만 의미가 있으므로 경로일 때만 seam 을 지난다(아래 `isinstance` 분기와
+    # 같은 판정).
+    new_text = _normalize_newlines(
+        _read_text_shared(sp, encoding="utf-8") if isinstance(sp, Path)
+        else sp.read_text(encoding="utf-8"))
     guest_block = _prune_guest_block_owned_by_core(guest_block, new_text)
     if not guest_block and isinstance(sp, Path):
         shutil.copy2(sp, dst)  # 비-add-harness 또는 전량 승격 — copy2(바이트/메타 무변경).
@@ -4333,7 +4474,7 @@ def apply(changes: list[tuple], *, is_hook_set_path=None) -> None:
             if render_mod is None:
                 render_mod = _load_pm_render()
             operational, empty_keys = _operational_from_local_conf(dest_root)
-            text = Path(sp).read_text(encoding="utf-8")
+            text = _read_text_shared(Path(sp), encoding="utf-8")
             rendered = render_mod.render_adapter(
                 text,
                 operational=operational,
@@ -4357,7 +4498,7 @@ def apply(changes: list[tuple], *, is_hook_set_path=None) -> None:
         ):
             if render_mod is None:
                 render_mod = _load_pm_render()
-            text = Path(sp).read_text(encoding="utf-8")
+            text = _read_text_shared(Path(sp), encoding="utf-8")
             rendered = text
             if getattr(dst, "entry_notation_template", None) is not None:
                 rendered = render_mod.render_skill_entry_notation(
@@ -5055,7 +5196,7 @@ def migrate_entry_doc(effective_dest: Path, source_root: Path, *, write: bool) -
         result["status"] = "no_agents"
         return result
 
-    adopter_agents = agents_path.read_text(encoding="utf-8")
+    adopter_agents = _read_text_shared(agents_path, encoding="utf-8")
     operational_keys = _entry_doc_operational_keys()
 
     # 세대 clean-match 탐색 (구형 미수정?).
@@ -5082,13 +5223,13 @@ def migrate_entry_doc(effective_dest: Path, source_root: Path, *, write: bool) -
         local_op, _empty = _operational_from_local_conf(dest)
         operational = {**captured, **local_op}
         new_text = _render_new_entry_doc(
-            new_tmpl_path.read_text(encoding="utf-8"), operational, operational_keys)
+            _read_text_shared(new_tmpl_path, encoding="utf-8"), operational, operational_keys)
         if new_text is None:
             # operational 재렌더 미완 — 무손·loud 로 낙하(미완 파일을 쓰지 않는다).
             result["status"] = "loud_manual"
             result["matched_generation"] = matched_gen
             return result
-        adopter_jsonc = jsonc_path.read_text(encoding="utf-8")
+        adopter_jsonc = _read_text_shared(jsonc_path, encoding="utf-8")
         new_jsonc, jsonc_changed = _ensure_jsonc_instructions(adopter_jsonc)
         result.update(status="migrated", matched_generation=matched_gen,
                       agents_replaced=True, jsonc_updated=jsonc_changed)
@@ -5110,7 +5251,7 @@ def migrate_entry_doc(effective_dest: Path, source_root: Path, *, write: bool) -
         result["status"] = "loud_manual"
         return result
     # 신형/무관 — AGENTS.md 미터치. opencode.jsonc instructions 만 idempotent 보장(부분 전환 복구·멱등).
-    adopter_jsonc = jsonc_path.read_text(encoding="utf-8")
+    adopter_jsonc = _read_text_shared(jsonc_path, encoding="utf-8")
     new_jsonc, jsonc_changed = _ensure_jsonc_instructions(adopter_jsonc)
     result["jsonc_updated"] = jsonc_changed
     result["status"] = "recovered" if jsonc_changed else "noop"
@@ -5688,7 +5829,7 @@ def _read_hook_artifact(path: Path) -> str | None:
     아니다" 라는 같은 결론이고, 따라서 같은 해소(재설치)로 가야 한다. 예외를 밖으로 내면 호출부의
     fail-soft 가 그걸 `unavailable`(=재설치 안 함)로 처리해 **깨진 훅이 영영 복구되지 않는다**."""
     try:
-        return path.read_text(encoding="utf-8")
+        return _read_text_shared(path, encoding="utf-8")
     except OSError:
         return None            # 부재·권한·IO — 재설치 대상.
     except UnicodeDecodeError:

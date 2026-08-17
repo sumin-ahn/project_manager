@@ -20,7 +20,9 @@ slot/solo 호환 경로:
      **어떤 mutation 보다 먼저·회귀보다도 먼저** 중단(판정은 git 조회 몇 번). override =
      `--ack-dirty "<사유>"`(사유는 entry 에 박제). `--auto-trigger`는 사용자 명시 핸드오프
      호출부의 호환 신호일 뿐 독자 실행 권한이 아니며, ack 계약을 우회하지 않는다.
-  1. 회귀 측정 — pytest tests/ -q. red 면 즉시 중단·핸드오프 불가.
+  1. 회귀 측정 — 게이트는 areas.md(prefix 행 > repo 행) > local.conf test_cmd 로 해소하고,
+     해소 실패면 pytest tests/ -q. red 면 즉시 중단·핸드오프 불가(비-pytest 게이트는 exit
+     code 로 판정 — §회귀 게이트 해소).
   2. log/current.md handoff entry skeleton append — 세션 중 박제 entry 자동 목록+메타학습·pending intent+회귀/incident.
   3. pm_state.md 세션 식별 표 sliding window 정리 — 신규 entry 추가 + 가장 오래된 entry 제거.
   4. pm_state.md 길이 검증 — wc -l 기준 700 라인 초과 시 warning.
@@ -1374,7 +1376,7 @@ _NESTED_SESSION_ENTRY_RE = re.compile(r"^  - (## \[[^\n]+)$", re.MULTILINE)
 
 def _read_log_text_exact(path: Path) -> str:
     """UTF-8 log를 universal-newline 변환 없이 읽어 원문 bytes를 보존한다."""
-    return Path(path).read_bytes().decode("utf-8")
+    return file_lock.read_bytes_shared(Path(path)).decode("utf-8")
 
 
 def _handoff_header_belongs_to_session(header: str, session: str | None) -> bool:
@@ -2193,6 +2195,149 @@ def parse_pytest_summary(output: str) -> str:
     return output.strip()[-200:] if output.strip() else ""
 
 
+# ── 회귀 게이트 해소 (per-repo test_cmd) — 두 도구 공용 단일 사본 ─────────
+#
+# 회귀 게이트가 `pytest tests/ -q` 라는 보장은 없다. 채택자 repo 는 `go test ./...`·커스텀 CLI
+# 일 수 있고 `tests/` 자체가 없을 수 있다. 해소를 areas.md **prefix** 칼럼으로만 하면 현행
+# `pm-config repo add`(prefix 를 **빈 값**으로 등록 — prefix=작업 카테고리이지 repo 명이 아님)
+# 로 등록한 채택자에서 `id_prefix()` 가 None 이라, 올바른 `test_cmd` 를 담은 행이 areas.md 에
+# 실재하는데도 도달하지 못하고 하드코딩 pytest 로 폴백한다. 그 형상(=`repo add` 의 기본 등록
+# 형상)에서 회귀는 **항상 red** 로 오판되고 핸드오프가 통째로 막힌다(→ `--no-pytest` 상시 우회
+# → 진짜 red 를 놓친다).
+#
+# 이 절이 해소 체인의 **단일 사본**이다 — `ticket_finish._resolve_per_repo_test_cmd` 는 자기
+# board seam 으로 모듈만 얻어 `_resolve_gate_cmd(board_module)` 에 위임한다(`_regression_cwd`
+# 위임과 같은 방향). 해소 함수가 이 도구엔 없고 저쪽에만 있던 미러 이탈이 이 결함의 절반이었다.
+
+
+def _active_repo_name(board_module) -> str | None:
+    """활성 repo 명 — 세션 유도가 1순위, 없으면 등록 repo 가 정확히 1개일 때만 그것.
+
+    board 의 `id_prefix` 해소 체인과 **같은 순서**를 repo 축에서 되풀이한다. 바인딩된 세션명
+    `<repo>_<N>` 에서 repo 를 떼는 것(`_repo_from_session`)이 1순위이고, 세션이 없거나 그
+    형태가 아니면 등록 repo 가 정확히 1개일 때만(모호성 0) 그것을 활성 repo 로 본다. 2개
+    이상이면 어느 쪽인지 알 수 없으므로 None 이라 호출부가 다음 층으로 내려간다(추측 금지).
+    """
+    try:
+        session = board_module.session_name()
+    except Exception:  # noqa: BLE001 — 세션 미해소는 다음 유도층으로(fail-soft).
+        session = None
+    if session:
+        repo = board_module._repo_from_session(session)
+        if repo:
+            return repo
+    repos = board_module.registered_repos()
+    if len(repos) == 1:
+        return next(iter(repos))
+    return None
+
+
+def _areas_test_cmd_by_repo(board_module) -> str | None:
+    """areas.md 활성 **repo** 행의 `test_cmd`. 미해소/미등록/빈 값 → None.
+
+    prefix 칼럼이 **빈** 무prefix 형상을 위한 층이다. 행 매칭은 `_repo_base`·`_areas_git_url`
+    과 동형이다 — `repo` 칼럼 일치 first-match.
+    """
+    repo = _active_repo_name(board_module)
+    if not repo:
+        return None
+    _header, rows = board_module._parse_areas()
+    for row in rows:
+        if row.get("repo") == repo and row.get("test_cmd"):
+            return row["test_cmd"]
+    return None
+
+
+def _resolve_gate_cmd(board_module) -> str | None:
+    """활성 회귀 게이트 명령(문자열)을 해소한다. 해소 실패면 None(솔로 폴백).
+
+    해소 체인 — 앞선 층이 비어 있지 않은 값을 주면 거기서 멈춘다:
+
+      1. areas.md 활성 **prefix** 행의 `test_cmd`   (multi-repo 네임스페이스 형상)
+      2. areas.md 활성 **repo** 행의 `test_cmd`     (prefix 칼럼이 빈 무prefix 형상)
+      3. `local.conf` 의 `test_cmd`                 (per-clone 명시 설정)
+      4. None → 호출부가 솔로 `pytest tests/ -q` venv argv (도그푸딩 불변)
+
+    areas.md 존재 가드는 board 의 `areas_file()`(board_root 추종)에 위임한다 — board/ 분리 시
+    areas.md 가 board/ 안(submodule)으로 옮겨가므로 legacy 위치를 보면 stale 이다. **3층은 그
+    가드 밖**이다 — 채택자 진입문서가 게이트의 단일 진실로 선언하는 레이어라 areas.md 가 아예
+    없는 형상에서도 읽혀야 한다.
+
+    해소 중 예외는 삼켜 솔로 폴백(None)으로 흘린다 — 게이트 해소 실패가 도구를 죽이지 않는다
+    (현행 보존).
+    """
+    try:
+        if board_module.areas_file().exists():
+            # 1층 — 활성 prefix 행 (multi-repo 네임스페이스).
+            prefix = board_module.id_prefix()
+            if prefix:
+                row = board_module._areas_row_for_prefix(prefix)
+                if row and row.get("test_cmd"):
+                    return row["test_cmd"]
+            # 2층 — 활성 repo 행 (prefix 칼럼이 빈 무prefix 형상).
+            by_repo = _areas_test_cmd_by_repo(board_module)
+            if by_repo:
+                return by_repo
+        # 3층 — local.conf 명시 설정 (areas.md 부재 형상에서도 유효·가드 밖).
+        conf_cmd = board_module.local_config().get("test_cmd")
+        if conf_cmd:
+            return conf_cmd
+    except Exception:  # noqa: BLE001 — 해소 실패는 솔로 폴백(현행 보존).
+        return None
+    return None
+
+
+def _resolve_per_repo_test_cmd() -> str | None:
+    """이 도구의 board seam(`_load_board`)으로 회귀 게이트를 해소한다.
+
+    체인은 `_resolve_gate_cmd` 가 소유한다(단일 사본). board 로드 실패(None)는 예외가 아니라
+    솔로 폴백이다.
+    """
+    board_module = _load_board()
+    if board_module is None:
+        return None
+    return _resolve_gate_cmd(board_module)
+
+
+# ── 게이트 종류 (pytest 스위트인가 임의 명령인가) ────────────────────────
+#
+# 해소된 test_cmd 가 pytest 스위트라는 보장은 없다. green 판정을 pytest 요약행(`N passed`)에만
+# 걸어 두면 비-pytest 게이트는 **항상 red** 로 오판된다. 그래서 판정 기준을 게이트 종류로
+# 가른다. **fail-soft 가 아니다** — 비-pytest 게이트도 rc != 0 이면 그대로 중단한다.
+#
+# 이 세 wrapper 는 `ticket_finish` 와 **동형 미러**다 — 각 도구가 자기 `is_pytest_green`
+# (요약행 seam 을 자기 board 로드로 묶는 기존 미러)을 쓰기 때문이다. 두 미러가 갈리면
+# `tests/test_regression_gate_resolution.py` 의 파리티 가드가 red 를 낸다.
+_PYTEST_GATE_TOKEN = "pytest"
+
+# 솔로/프레임워크 자기 회귀가 실제로 실행하는 argv 의 표시용 라벨 (안내 문구).
+_SOLO_GATE_LABEL = "pytest tests/ -q"
+
+
+def _gate_is_pytest(gate_cmd: str | None) -> bool:
+    """해소된 회귀 명령이 pytest 스위트면 True.
+
+    `None`(해소 실패) = 솔로/프레임워크 자기 회귀 = venv pytest argv 이므로 True.
+    """
+    return gate_cmd is None or _PYTEST_GATE_TOKEN in gate_cmd
+
+
+def _gate_label(gate_cmd: str | None) -> str:
+    """회귀 게이트를 사람이 읽는 한 줄로 (안내 출력용)."""
+    return gate_cmd if gate_cmd else _SOLO_GATE_LABEL
+
+
+def _regression_is_green(output: str, returncode: int, gate_cmd: str | None) -> bool:
+    """회귀가 green 이면 True — 판정 기준은 게이트 종류가 정한다(`_gate_is_pytest`).
+
+    - pytest 게이트 — 기존 요약행 판정(`is_pytest_green`) 100% 불변.
+    - 비-pytest 게이트 — exit code 0 만 green(요약행 개념이 없다).
+    """
+    if _gate_is_pytest(gate_cmd):
+        return is_pytest_green(output, returncode)
+    return returncode == 0
+
+
 # ── 출하 테스트 출하 변경 발동 ──────────────────────────────
 
 # baseline 기준 ref 후보 — push 대상 기준(미push diff). 첫 해소 가능한 것을 쓴다.
@@ -2614,7 +2759,7 @@ def _claimed_tickets_for_session(
         result: list[str] = []
         for f in candidates:
             try:
-                head = f.read_text(encoding="utf-8")[:2000]  # frontmatter 만 필요.
+                head = file_lock.read_text_shared(f, encoding="utf-8")[:2000]  # frontmatter 만 필요.
             except OSError:
                 continue
             if require_status_claimed:
@@ -3063,19 +3208,40 @@ class PmHandoff:
     # ── 기본 subprocess 구현 (실제 실행) ──────────────────────────────────────
 
     def _default_run_pytest(self) -> tuple[int, str]:
-        """pytest tests/ -q 를 실행해 (returncode, stdout+stderr) 반환.
+        """회귀를 실행해 (returncode, stdout+stderr) 반환.
+
+        명령 해소(ticket_finish `_default_run_pytest` 와 동형):
+          - **해소 성공** — `_resolve_per_repo_test_cmd()` 가 준 문자열을 shell 로 실행
+            (board.py 회귀와 동형·비-Python repo 수용).
+          - **해소 실패** — 현행 그대로 `[venv_python, -m, pytest, tests/, -q]` venv argv
+            (도그푸딩 불변·하위호환).
 
         cwd 는 _regression_cwd 가 해소한다— 분리된 PM 홈엔 tests/ 가 없으므로
         활성 worktree 슬롯에서 돌린다. 솔로/미해소면 REPO 폴백(현행 보존).
         """
-        result = subprocess.run(
-            [str(self._venv_python), "-m", "pytest", "tests/", "-q"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            cwd=self._run_regression_cwd(self._worktree_slot),
-        )
+        cwd = self._run_regression_cwd(self._worktree_slot)
+        gate_cmd = _resolve_per_repo_test_cmd()
+        if gate_cmd:
+            # 해소된 게이트 — test_cmd 문자열을 shell 로(board.py regression run 과 동형).
+            result = subprocess.run(
+                gate_cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=cwd,
+            )
+        else:
+            # 솔로/프레임워크 자기 회귀 — 현행 venv pytest argv 보존(불변).
+            result = subprocess.run(
+                [str(self._venv_python), "-m", "pytest", "tests/", "-q"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=cwd,
+            )
         output = result.stdout + result.stderr
         return result.returncode, output
 
@@ -3174,6 +3340,9 @@ class PmHandoff:
         red → 호출부가 핸드오프 차단). 변경 슬롯 전부 green 이어야 통과. push 게이트는 pre-push 훅
         전체 회귀가 별도 재검증(이중 안전·무변경 슬롯 부담 제거)."""
         ran: list[str] = []
+        # 게이트 종류를 루프 밖에서 한 번 해소한다 — green 판정 기준과 안내 문구가 여기서
+        # 갈린다(`_gate_is_pytest`). 슬롯마다 같은 repo 게이트라 재해소는 낭비다.
+        gate_cmd = _resolve_per_repo_test_cmd()
         for slot, reason in changed:
             # stale 슬롯(장부엔 있으나 worktree dir 부재) = fail-loud(REPO 폴백 vacuous-pass 금지·
             # 그 슬롯을 red 로 차단하고 해소 커맨드를 안내한다.
@@ -3192,15 +3361,20 @@ class PmHandoff:
                 return None
             print(f"  ▷ {slot} 회귀 ({reason})...")
             if dry_run:
-                print("    [dry-run] pytest tests/ -q 실행 중 (파일 편집만 생략)...")
+                print(f"    [dry-run] {_gate_label(gate_cmd)} 실행 중 (파일 편집만 생략)...")
             returncode, output = self._run_regression_for_slot(slot)
             print(output.rstrip())
-            if not is_pytest_green(output, returncode):
+            if not _regression_is_green(output, returncode, gate_cmd):
                 print(
                     f"\n[중단] {slot} 회귀 red — 핸드오프 불가. "
                     "log/current.md·pm_state.md 어떤 것도 건드리지 않는다.",
                     file=sys.stderr,
                 )
+                if not _gate_is_pytest(gate_cmd):
+                    print(
+                        f"원인: 회귀 명령이 실패했다 — `{gate_cmd}` (exit {returncode}).",
+                        file=sys.stderr,
+                    )
                 return None
             summ = parse_pytest_summary(output)
             print(f"  ✓ green: {slot} — {summ}")
@@ -3642,15 +3816,15 @@ class PmHandoff:
         )
         # read-modify-write 전체를 락 안에서 — 다른 슬롯이 사이에 write 해도 최신 파일을 다시
         # 읽어 그 슬롯 섹션을 보존한다(직렬화·lost update 0·타 슬롯 byte 불변). write 는
-        # tmp 파일 → `os.replace` 원자 교체 — crash/동시 read 시 빈·부분 파일 노출 차단
+        # tmp 파일 → `file_lock.atomic_replace` 원자 교체 — crash/동시 read 시 빈·부분 파일 노출 차단
         # (worktree_pool `_write_ledger` 동형·codex suggestion).
         with _dashboard_lock():
-            existing = dash_file.read_text(encoding="utf-8") if dash_file.exists() else ""
+            existing = file_lock.read_text_shared(dash_file, encoding="utf-8") if dash_file.exists() else ""
             updated = upsert_dashboard_section(existing, session_identity, section)
             dash_file.parent.mkdir(parents=True, exist_ok=True)
             tmp = dash_file.with_suffix(dash_file.suffix + ".tmp")
             tmp.write_text(updated, encoding="utf-8", newline="\n")
-            os.replace(str(tmp), str(dash_file))
+            file_lock.atomic_replace(tmp, dash_file)
         return dash_file
 
     # ── 메인 흐름 ─────────────────────────────────────────────────────────────
@@ -3904,13 +4078,21 @@ class PmHandoff:
             task_shipping_slots = ran_slots
             pytest_summary = "(task 슬롯별 회귀·위 참조)"
         else:
+            # 게이트 종류(pytest 스위트 / 해소된 임의 명령)를 먼저 해소한다 — green 판정
+            # 기준이 여기서 갈린다(`_gate_is_pytest`).
+            gate_cmd = _resolve_per_repo_test_cmd()
             returncode, output = self._run_pytest_fn()
             print(output.rstrip())
-            if not is_pytest_green(output, returncode):
+            if not _regression_is_green(output, returncode, gate_cmd):
                 print(
                     "\n[중단] 회귀 red — 핸드오프 불가. log/current.md·pm_state.md 어떤 것도 건드리지 않는다.",
                     file=sys.stderr,
                 )
+                if not _gate_is_pytest(gate_cmd):
+                    print(
+                        f"원인: 회귀 명령이 실패했다 — `{gate_cmd}` (exit {returncode}).",
+                        file=sys.stderr,
+                    )
                 return 1
             pytest_summary = parse_pytest_summary(output)
             print(f"  ✓ green: {pytest_summary}")
@@ -3946,7 +4128,7 @@ class PmHandoff:
                 )
                 return 1
             inferred = infer_next_task_session_num(
-                self._pm_state_file.read_text(encoding="utf-8"),
+                file_lock.read_text_shared(self._pm_state_file, encoding="utf-8"),
                 _read_log_text_exact(self._log_file) if self._log_file.exists() else "",
                 task,
                 task_released=(
@@ -4118,7 +4300,7 @@ class PmHandoff:
         else:
             # ── 3. pm_state.md sliding window 정리 ─────────────────────────────
             print("\n[3/7] pm_state.md 세션 식별 sliding window 정리...")
-            state_text = self._pm_state_file.read_text(encoding="utf-8")
+            state_text = file_lock.read_text_shared(self._pm_state_file, encoding="utf-8")
 
             try:
                 # update_session_window 자체가 같은 차수면 byte no-op이다. 재실행에서도 이
@@ -4198,7 +4380,7 @@ class PmHandoff:
         # ── 5. 인계 프롬프트 stdout 출력 ───────────────────────────────────────
         # 템플릿(정적)은 pm_playbook.md 에서 추출한다 — sliding window 편집 대상(pm_state.md)과 분리.
         print("\n[5/7] 인계 프롬프트 출력...")
-        playbook_text = self._pm_playbook_file.read_text(encoding="utf-8")
+        playbook_text = file_lock.read_text_shared(self._pm_playbook_file, encoding="utf-8")
         prompt_output = build_handoff_prompt_output(
             pm_playbook_text=playbook_text,
             session_num=_normalize_session_num(session_num),
@@ -4339,7 +4521,7 @@ def _run_normalize_session_anchors(worktree_slot: str | None, dry_run: bool) -> 
         print("  대상 파일이 없다 — 정규화할 것이 없다(no-op).")
         return 0
 
-    original = target.read_text(encoding="utf-8")
+    original = file_lock.read_text_shared(target, encoding="utf-8")
     normalized = normalize_session_anchors(original)
     if normalized == original:
         print("  오형식 `**N차차+**` 없음 — 이미 정합(변경 없음·멱등 no-op).")

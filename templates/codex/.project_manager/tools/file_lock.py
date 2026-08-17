@@ -41,6 +41,14 @@ seam 의 관심사가 아니다. 이 모듈은 "주어진 경로에 배타락을
     는 Windows 가 `[Errno 9] Bad file descriptor` 로 거부한다).
   - append 는 **바이트 그대로** 쓴다 — Windows 의 `os.open` 은 텍스트 모드가 기본이라
     `os.O_BINARY` 를 얹지 않으면 CRT 가 LF 를 CRLF 로 번역한다(T-0711 실측 클래스).
+  - **원자 교체도 이 seam 이 소유한다**(`atomic_replace`) — POSIX 는 `os.replace`, Windows 는
+    POSIX 의미 rename(`FileRenameInfoEx`)으로 *같은 의미*를 낸다. 열린 리더가 있어도 교체가
+    성공하고, 그 리더는 옛 내용을 끝까지 읽는다. 수단을 못 쓰는 환경은 조용히 `os.replace` 로
+    내려앉지 않고 사유와 함께 실패한다(`AtomicReplaceError`).
+  - **그 짝인 공유 읽기도 이 seam 이 소유한다**(`open_shared`·`read_text_shared`·
+    `read_bytes_shared`) — 원자 교체 대상 파일을 읽는 지점이 일반 `open` 이면 Windows 는 그
+    교체를 WinError 32 로 막아, 쓰기만 바꾼 개선이 0 이 된다(둘은 세트다). POSIX 에서는 내장
+    호출과 **글자 그대로 같은 동작**이라 인코딩·개행 인자의 의미가 하나도 바뀌지 않는다.
   - **삭제도 이 seam 이 소유한다**(`force_rmtree`·`force_unlink`) — read-only 속성을 풀고
     재시도하되, 끝내 남으면 예외를 올린다. 조용한 잔재를 만들지 않는다.
   - **소유자 전용 접근 제한도 이 seam 이 소유한다**(`restrict_to_owner`·`owner_only_access`) —
@@ -55,6 +63,7 @@ baked `ENGINE_REV` 로 사본 skew 를 대조한다.
 from __future__ import annotations
 
 import contextlib
+import errno
 import os
 import re
 import shutil
@@ -321,7 +330,7 @@ def local_conf_write_lock(
     """`conf_path` 의 **모든** writer(전체 write·RMW 교체·opt-in append)가 공유하는 배타 구간.
 
     append 만 서로 직렬화해서는 부족하다 — 커밋 전 내용을 읽고 나중에 통째 교체하는 writer
-    (`board init` 병합·`pm_import._write_conf_keys` 의 temp+`os.replace`)가 그 사이의 append 를
+    (`board init` 병합·`pm_import._write_conf_keys` 의 temp+원자 교체)가 그 사이의 append 를
     읽지 못하면, 원자적으로 쓴 append 도 교체에 덮여 사라진다(lost update). 그래서 락의 단위는
     "append" 가 아니라 "이 conf 를 쓰는 구간" 이고, 읽기→판정→쓰기→(검증)까지 한 구간 안에 든다.
 
@@ -362,6 +371,379 @@ def append_atomic(
             os.fsync(fd)
     finally:
         os.close(fd)
+
+
+# ── 원자 교체 (플랫폼 공용 seam) ─────────────────────────────────────────────
+# 엔진의 원자 쓰기 관용구는 "같은 디렉토리 임시 파일에 전체를 쓰고 이름을 바꾼다" 다. 그 관용구가
+# 내는 보장은 둘이다 — (1) 디스크에는 옛 내용 아니면 새 내용만 있고 중간 상태가 없다,
+# (2) 그래서 **락 없는 리더**도 일관 스냅샷을 본다(board 보드 파일·worktree_pool 리스 장부의
+# 락-free 읽기가 그 성질에 명시적으로 기대 있다).
+#
+# `os.replace` 는 POSIX 에서 그 의미를 그대로 내지만 **Windows 에서는 대상이 열려 있으면
+# 실패한다**. 그 플랫폼의 `os.replace` 는 `MoveFileExW(MOVEFILE_REPLACE_EXISTING)` 이고, 리더가
+# 어떤 방식으로 열려 있든(일반 `open()`·`os.open`·`FILE_SHARE_DELETE` 까지) `ERROR_ACCESS_DENIED`
+# (WinError 5) 로 막힌다(Windows 11 build 26200 · Python 3.12.10 실측). 즉 그 플랫폼에서는 위
+# 보장 (2) 가 성립하지 않고, 여러 PM 이 같은 장부를 쓰는 형상에서 리더가 열려 있는 순간의 쓰기가
+# 실패한다.
+#
+# 같은 의미를 내는 Windows 수단은 **POSIX 의미 rename** 하나다 —
+# `SetFileInformationByHandle` + `FileRenameInfoEx` +
+# `FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS`(Windows 10 1709+).
+# 실측에서 share-delete 리더와 공존해 교체가 성공했고, 교체 시점에 열려 있던 핸들은 옛 내용을
+# 끝까지 읽었다(같은 순간 디스크는 새 내용). 쓰기 수단과 읽기 수단은 **한 쌍**이다 — 리더가
+# share-delete 로 열지 않으면 이 rename 도 `ERROR_SHARING_VIOLATION`(WinError 32) 로 막히므로,
+# 원자 교체 대상은 이 모듈의 읽기 seam 으로 읽어야 보장이 닫힌다.
+#
+# **유한 재시도 폴백은 두지 않는다.** 재시도는 외부 보유자(편집기·백신)에 대한 완화일 뿐 엔진
+# 자신의 리더 문제를 고치지 못하고, 그 자체가 이 축의 결함을 가린다. 수단을 못 쓰는 환경도
+# 조용히 `os.replace` 로 내려앉지 않는다 — 그 강등은 이 seam 이 닫으려는 결함을 그대로 되살리면서
+# 초록으로 보이게 만든다.
+
+# `FILE_INFO_BY_HANDLE_CLASS` 의 `FileRenameInfoEx`(winbase.h). 구 `FileRenameInfo`(=3)는 POSIX
+# 의미 플래그를 받지 않으므로 이 클래스여야 한다.
+FILE_RENAME_INFO_EX_CLASS = 22
+
+# rename 플래그(winbase.h) — 기존 대상 교체 + POSIX 의미(열린 핸들과 공존).
+FILE_RENAME_FLAG_REPLACE_IF_EXISTS = 0x00000001
+FILE_RENAME_FLAG_POSIX_SEMANTICS = 0x00000002
+ATOMIC_REPLACE_RENAME_FLAGS = (
+    FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS
+)
+
+# 교체할 **원본**을 여는 접근 권한 — rename 은 `DELETE` 권한을 요구한다(winnt.h).
+DELETE_ACCESS = 0x00010000
+SYNCHRONIZE_ACCESS = 0x00100000
+ATOMIC_REPLACE_ACCESS = DELETE_ACCESS | SYNCHRONIZE_ACCESS
+
+# 공유 모드 — 남의 핸들과 공존하기 위해 셋을 모두 연다(읽기·쓰기·삭제).
+FILE_SHARE_READ = 0x00000001
+FILE_SHARE_WRITE = 0x00000002
+FILE_SHARE_DELETE = 0x00000004
+SHARE_ALL_MODES = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+
+# `CreateFileW` 인자(winbase.h) — 원본은 반드시 존재한다(교체할 것이 없으면 호출부 오류).
+OPEN_EXISTING = 3
+FILE_ATTRIBUTE_NORMAL = 0x00000080
+
+# POSIX 의미 rename 을 모르는 세대(Windows 10 1709 미만·구 파일시스템)가 내는 코드.
+ERROR_INVALID_PARAMETER = 87
+
+
+class AtomicReplaceError(OSError):
+    """원자 교체를 POSIX 의미로 수행하지 못했다 — 조용한 강등 대신 loud 신호."""
+
+
+class WindowsRenameApi(NamedTuple):
+    """POSIX 의미 rename 의 최소 표면 — 정책과 원시 호출을 가르는 **주입 지점**.
+
+    `WindowsLockApi` 와 같은 이유다 — 어떤 권한/공유 모드로 원본을 열고 어떤 플래그로 이름을
+    바꾸며 실패를 어떻게 올리는가는 순수 파이썬 정책이라 POSIX 개발기에서도 그대로 태울 수 있어야
+    한다([[guard-must-cover-its-own-surface]]). ctypes/kernel32 원시 호출만 이 세 콜러블 뒤로
+    밀어낸다.
+
+    `rename` 은 예외가 아니라 **Win32 에러코드**를 돌려준다(0=성공) — 대역이 실패면을 값으로
+    재현할 수 있어야 하기 때문이다. 반대로 `open_handle` 은 열기 실패를 `OSError` 로 올린다
+    (열지 못하면 교체 자체가 시작되지 않으므로 그 자리에서 끝나는 게 맞다).
+    """
+
+    open_handle: Callable[[str, int, int], int]   # (경로, 접근권한, 공유모드) → OS 핸들
+    rename: Callable[[int, str, int], int]        # (핸들, 대상 경로, 플래그) → Win32 error
+    close_handle: Callable[[int], None]           # 핸들 반환
+
+
+def windows_replace_platform() -> bool:
+    """이 플랫폼이 원자 교체에 POSIX 의미 rename 을 따로 요구하는가 (**주입 지점**).
+
+    `windows_acl_platform` 과 같은 이유로 판정을 함수 하나에 모은다 — POSIX 개발기에서 Windows
+    분기를 실제로 태우려면 한 곳만 갈아끼울 수 있어야 한다.
+    """
+    return os.name == "nt"
+
+
+# 프로세스 상수라 한 번만 만든다(교체할 때마다 ctypes 시그니처를 다시 세우지 않는다).
+_CACHED_WINDOWS_RENAME_API: WindowsRenameApi | None = None
+
+
+def _build_windows_rename_api() -> WindowsRenameApi:
+    """`CreateFileW`/`SetFileInformationByHandle` ctypes 바인딩을 세운다 (Windows 전용).
+
+    `FILE_RENAME_INFO` 의 `FileName` 은 가변 길이 배열이라 대상 경로마다 구조체를 다시 만든다
+    (고정 길이로 잡아 두면 긴 경로가 잘린다). `RootDirectory=None` 이면 `FileName` 은 완전
+    수식 경로여야 한다.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    try:
+        set_file_information = kernel32.SetFileInformationByHandle
+    except AttributeError as exc:      # 이 API 자체가 없는 세대 — 조용히 강등하지 않는다.
+        raise AtomicReplaceError(
+            "원자 교체 수단 부재 — 이 Windows 세대에는 SetFileInformationByHandle 이 없어 "
+            "POSIX 의미 rename 을 쓸 수 없다. `os.replace` 로 내려앉지 않는다: 그 수단은 열린 "
+            "리더가 있으면 WinError 5 로 막혀 락-free 읽기 보장을 내지 못한다"
+        ) from exc
+
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+        ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    create_file.restype = ctypes.c_void_p
+    set_file_information.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+    ]
+    set_file_information.restype = wintypes.BOOL
+    invalid_handle = ctypes.c_void_p(-1).value
+
+    def open_handle(path: str, access: int, share: int) -> int:
+        handle = create_file(
+            path, access, share, None, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, None)
+        if handle == invalid_handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        return handle
+
+    def rename(handle: int, target: str, flags: int) -> int:
+        name = ctypes.create_unicode_buffer(target)
+
+        class _RenameInfo(ctypes.Structure):
+            _fields_ = [
+                ("Flags", wintypes.DWORD),
+                ("RootDirectory", wintypes.HANDLE),
+                ("FileNameLength", wintypes.DWORD),
+                ("FileName", ctypes.c_wchar * len(name)),
+            ]
+
+        info = _RenameInfo()
+        info.Flags = flags
+        info.RootDirectory = None
+        # 길이는 종단 NUL 을 뺀 **바이트** 수다(문자 수가 아니다).
+        info.FileNameLength = (len(name) - 1) * ctypes.sizeof(ctypes.c_wchar)
+        info.FileName = target
+        if set_file_information(
+            handle, FILE_RENAME_INFO_EX_CLASS, ctypes.byref(info), ctypes.sizeof(info),
+        ):
+            return 0
+        return ctypes.get_last_error()
+
+    def close_handle(handle: int) -> None:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+
+    return WindowsRenameApi(open_handle, rename, close_handle)
+
+
+def _windows_rename_api() -> WindowsRenameApi:
+    """Windows rename API 묶음 (프로세스당 1회 생성·테스트가 갈아끼우는 **주입 지점**)."""
+    global _CACHED_WINDOWS_RENAME_API
+    if _CACHED_WINDOWS_RENAME_API is None:
+        _CACHED_WINDOWS_RENAME_API = _build_windows_rename_api()
+    return _CACHED_WINDOWS_RENAME_API
+
+
+def _atomic_replace_failure(source: str, target: str, error: int) -> AtomicReplaceError:
+    """Win32 실패코드를 조치 가능한 loud 진단으로 번역한다 (강등 없음)."""
+    message = (
+        f"원자 교체 실패 — SetFileInformationByHandle(FileRenameInfoEx) "
+        f"WinError {error}: {source} → {target}"
+    )
+    if error == ERROR_INVALID_PARAMETER:
+        message += (
+            " (POSIX 의미 rename 미지원 환경 — Windows 10 1709 미만 또는 그 의미를 모르는 "
+            "파일시스템). `os.replace` 로 내려앉지 않는다: 그 수단은 열린 리더가 있으면 "
+            "WinError 5 로 막혀 락-free 읽기 보장을 내지 못한다"
+        )
+    # Win32 코드를 속성으로도 싣는다 — 호출부·프로브가 문자열이 아니라 `winerror`/`errno` 로
+    # 분기할 수 있어야 하고, 원시 `PermissionError` 와 같은 표면(`errno`·`winerror`)을 낸다.
+    exc = AtomicReplaceError(_errno_for_winerror(error), message)
+    exc.winerror = error
+    return exc
+
+
+def _errno_for_winerror(error: int) -> int:
+    """Win32 오류코드 → errno (CPython `PyErr_SetFromWindowsErr` 와 같은 표) — 알 수 없으면 EINVAL."""
+    return {5: errno.EACCES, 32: errno.EACCES, 87: errno.EINVAL, 2: errno.ENOENT,
+            3: errno.ENOENT, 183: errno.EEXIST}.get(int(error), errno.EINVAL)
+
+
+def atomic_replace(src: Path | str, dst: Path | str) -> None:
+    """`src` 를 `dst` 자리로 **원자 교체**한다 (`os.replace` 의 의미를 모든 플랫폼에서).
+
+    POSIX 는 `os.replace` 그대로다. Windows 는 POSIX 의미 rename 으로 같은 의미를 낸다 —
+    교체 시점에 대상을 열고 있던 리더가 있어도 성공하고(그 리더는 옛 내용을 끝까지 읽는다),
+    대상이 없으면 새로 만든다.
+
+    실패는 **삼키지 않는다** — 유한 재시도도, `os.replace` 강등도 없다(`AtomicReplaceError`).
+    """
+    source = os.fspath(src)
+    target = os.fspath(dst)
+    if not windows_replace_platform():
+        os.replace(source, target)
+        return
+    api = _windows_rename_api()
+    # `RootDirectory=None` 이므로 대상은 완전 수식 경로여야 한다. `abspath` 는 symlink 를 따라가지
+    # 않아 `os.replace` 와 같은 대상(링크 자체)을 가리킨다.
+    absolute_target = os.path.abspath(target)
+    handle = api.open_handle(source, ATOMIC_REPLACE_ACCESS, SHARE_ALL_MODES)
+    try:
+        error = api.rename(handle, absolute_target, ATOMIC_REPLACE_RENAME_FLAGS)
+    finally:
+        api.close_handle(handle)
+    if error:
+        raise _atomic_replace_failure(source, absolute_target, error)
+
+
+# ── 공유 읽기 (플랫폼 공용 seam) ─────────────────────────────────────────────
+# 원자 교체와 **세트다**. 쓰기만 POSIX 의미 rename 으로 바꿔도 읽는 쪽이 일반 `open()` 이면
+# Windows 는 그 rename 을 WinError 32 로 막는다(실측 표 · [[T-0729]]) — 리더가 공유 삭제를
+# 허용해야 교체가 성공하고, 그 리더는 옛 내용을 끝까지 읽는다. POSIX 의 `open` 은 이미 그
+# 의미라(rename 은 리더를 신경 쓰지 않는다) 이 seam 은 그 플랫폼에서 **내장 호출 그대로**다.
+#
+# 그래서 이 seam 의 제1 계약은 "POSIX 에서 기존 호출과 글자 그대로 같은 동작" 이다. 인코딩·개행
+# 인자를 흘리거나 기본값을 바꾸면 v1.7.6 이 막 닫은 축([[T-0709]]·[[T-0710]])이 되살아난다 —
+# 전환 대상이 100지점 단위라 의미가 1mm 만 어긋나도 그만큼 곱해진다.
+
+# 읽기 핸들 접근 권한(winnt.h) — 내용만 읽는다.
+GENERIC_READ = 0x80000000
+
+# CRT 텍스트 모드가 붙은 fd 는 읽기 자체가 CRLF→LF 로 번역되고 Ctrl-Z 에서 끊긴다. 내장 `open`
+# 은 Windows 에서도 **항상 바이너리 fd** 위에 TextIOWrapper 를 얹어 개행을 파이썬 층에서만
+# 처리하므로(`newline=` 의 의미), 우리가 직접 만든 fd 도 같은 규칙으로 맞춘다.
+
+
+class WindowsSharedOpenApi(NamedTuple):
+    """공유 읽기의 최소 원시 표면 — 정책과 원시 호출을 가르는 **주입 지점**.
+
+    `WindowsRenameApi` 와 같은 이유다 — 어떤 접근권한·공유 모드로 열고 그 핸들을 어떤 플래그로
+    fd 에 넘기는가는 순수 파이썬 정책이라 POSIX 개발기에서도 그대로 태울 수 있어야 한다.
+
+    `open_osfhandle` 은 **핸들 소유권을 fd 로 옮긴다** — 성공하면 이후 핸들을 따로 닫지 않는다
+    (fd 를 닫을 때 함께 닫힌다). 그 전에 실패하면 핸들이 새므로 그 자리에서 반환한다.
+    """
+
+    open_handle: Callable[[str, int, int], int]   # (경로, 접근권한, 공유모드) → OS 핸들
+    open_osfhandle: Callable[[int, int], int]     # (핸들, 열기 플래그) → fd
+    close_handle: Callable[[int], None]           # 핸들 반환(fd 로 넘기기 전 실패 경로 전용)
+
+
+def windows_shared_read_platform() -> bool:
+    """이 플랫폼이 공유 읽기에 별도 열기 수단을 요구하는가 (**주입 지점**).
+
+    `windows_replace_platform` 과 따로 둔다 — 읽기 분기를 주입해 태우는 회귀가 쓰기 분기까지
+    함께 뒤집으면 두 축이 서로를 가린다(한 함수로 묶으면 그 사고가 구조적으로 가능해진다).
+    """
+    return os.name == "nt"
+
+
+# 프로세스 상수라 한 번만 만든다(읽을 때마다 ctypes 시그니처를 다시 세우지 않는다).
+_CACHED_WINDOWS_SHARED_OPEN_API: WindowsSharedOpenApi | None = None
+
+
+def _build_windows_shared_open_api() -> WindowsSharedOpenApi:
+    """`CreateFileW` + `msvcrt.open_osfhandle` 바인딩을 세운다 (Windows 전용)."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+        ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    create_file.restype = ctypes.c_void_p
+    invalid_handle = ctypes.c_void_p(-1).value
+
+    def open_handle(path: str, access: int, share: int) -> int:
+        handle = create_file(
+            path, access, share, None, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, None)
+        if handle == invalid_handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        return handle
+
+    def close_handle(handle: int) -> None:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+
+    return WindowsSharedOpenApi(open_handle, msvcrt.open_osfhandle, close_handle)
+
+
+def _windows_shared_open_api() -> WindowsSharedOpenApi:
+    """Windows 공유 읽기 API 묶음 (프로세스당 1회 생성·테스트가 갈아끼우는 **주입 지점**)."""
+    global _CACHED_WINDOWS_SHARED_OPEN_API
+    if _CACHED_WINDOWS_SHARED_OPEN_API is None:
+        _CACHED_WINDOWS_SHARED_OPEN_API = _build_windows_shared_open_api()
+    return _CACHED_WINDOWS_SHARED_OPEN_API
+
+
+def _shared_read_flags() -> int:
+    """공유 읽기 fd 열기 플래그 — 읽기 전용 + (있으면) 바이너리.
+
+    `os.O_BINARY` 는 Windows 에만 있다. `append_atomic` 과 같은 관용구로 조회한다(POSIX 에서는
+    0 이라 아무 영향이 없고, 그 분기를 주입으로 태울 때는 주입한 값이 그대로 실린다).
+    """
+    return os.O_RDONLY | getattr(os, "O_BINARY", 0)
+
+
+def open_shared(
+    path: Path | str, *, binary: bool, encoding: str | None = None,
+    errors: str | None = None, newline: str | None = None,
+):
+    """`path` 를 **열린 writer/rename 과 공존하는 방식**으로 읽기 전용으로 연다.
+
+    POSIX 는 내장 `open` 그대로다 — 인자 의미도, 반환 객체도, 예외도 같다. Windows 는
+    `CreateFileW` 에 읽기/쓰기/삭제 공유를 모두 걸어 연 핸들을 fd 로 넘기고 그 위에 같은 파일
+    객체를 얹는다. 두 플랫폼 모두 개행 번역은 **파이썬 층**(TextIOWrapper)만 한다.
+
+    `binary=True` 는 `open(path, "rb")` 와 같아 `encoding`/`errors`/`newline` 을 받지 않는다
+    (내장 `open` 과 같은 규칙 — 텍스트 인자를 바이너리 모드에 주는 것은 호출 오류다).
+    """
+    if binary and (encoding is not None or errors is not None or newline is not None):
+        raise ValueError(
+            "binary=True 에는 encoding/errors/newline 을 줄 수 없다 (내장 open 과 같은 규칙)")
+    target = os.fspath(path)
+    if not windows_shared_read_platform():
+        if binary:
+            return open(target, "rb")
+        return open(target, "r", encoding=encoding, errors=errors, newline=newline)
+    api = _windows_shared_open_api()
+    handle = api.open_handle(target, GENERIC_READ, SHARE_ALL_MODES)
+    try:
+        descriptor = api.open_osfhandle(handle, _shared_read_flags())
+    except BaseException:
+        api.close_handle(handle)   # fd 로 넘어가기 전이라 소유권이 아직 여기 있다.
+        raise
+    try:
+        if binary:
+            return os.fdopen(descriptor, "rb")
+        return os.fdopen(descriptor, "r",
+                         encoding=encoding, errors=errors, newline=newline)
+    except BaseException:
+        os.close(descriptor)       # fd 가 핸들을 소유하므로 fd 를 닫으면 핸들도 닫힌다.
+        raise
+
+
+def read_bytes_shared(path: Path | str) -> bytes:
+    """`Path.read_bytes()` 와 같은 값 — 공유 읽기로 연다."""
+    with open_shared(path, binary=True) as handle:
+        return handle.read()
+
+
+def read_text_shared(
+    path: Path | str, *, encoding: str | None = None,
+    errors: str | None = None, newline: str | None = None,
+) -> str:
+    """`path.read_text(encoding=...)` / `open(path, newline=...).read()` 와 같은 값.
+
+    `newline` 의 기본값 `None` 은 내장 `open` 그대로 **universal newlines**(`\r\n`·`\r` 를
+    `\n` 으로 번역)이고, `newline=""` 은 번역 없이 원문 개행을 보존한다 — 엔진이 파일의 개행
+    관례를 보존해 되쓰는 지점들이 그 구분에 기대고 있다([[T-0709]]·[[T-0710]]).
+
+    `errors` 도 내장 그대로다 — 엔진의 진단 읽기(`errors="replace"`)가 깨진 바이트를 만나도
+    죽지 않고 대체 문자로 읽는 그 동작을 보존한다.
+    """
+    with open_shared(
+        path, binary=False, encoding=encoding, errors=errors, newline=newline,
+    ) as handle:
+        return handle.read()
 
 
 # ── 강제 삭제 (플랫폼 공용 seam) ─────────────────────────────────────────────

@@ -1,7 +1,7 @@
 ---
 name: code-reviewer
 description: "{{PROJECT_NAME}} 프로젝트에서 developer 서브에이전트의 변경을 독립 검토하는 서브에이전트. generate ≠ evaluate — 구현하지 않은 주체가 검토한다. DoD 충족/ADR·spec 정합/회귀/프로젝트 제약/테스트 품질을 점검하고 must-fix·suggestion·통과/반려를 낸다. 코드를 수정하지 않는다."
-model: opus
+model: "{{DELEGATE_MODEL_CODE_REVIEWER}}"
 tools: Read, Bash, Glob, Grep
 ---
 

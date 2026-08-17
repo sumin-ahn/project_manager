@@ -19,6 +19,28 @@ GUARD_PY = REPO / ".project_manager" / "tools" / "delegate_channel_guard.py"
 ROLES = ("developer", "code-reviewer", "researcher", "architect")
 
 
+@pytest.fixture
+def rendered_cards(guard, monkeypatch, tmp_path):
+    """출하 카드는 T-0731 이후 `model: "{{DELEGATE_MODEL_<ROLE>}}"` 토큰 **소스**다 — pm_import/pm_update 가
+    conf 해소값으로 렌더한 채택자 트리가 가드의 실 입력이다. 이 픽스처가 그 렌더본을 만들어 `_ENGINE_ROOT`
+    를 거기 묶는다. `model` 인자로 렌더값을 정한다.
+    """
+    def _render(model: str = "opus") -> Path:
+        root = tmp_path / "rendered"
+        cards = root / ".claude" / "agents"
+        cards.mkdir(parents=True, exist_ok=True)
+        for role in ROLES:
+            src = (REPO / ".claude" / "agents" / f"{role}.md").read_text(encoding="utf-8")
+            token = "{{DELEGATE_MODEL_" + role.upper().replace("-", "_") + "}}"
+            # 주입 선-단언 — 소스 카드가 실제로 토큰이어야 이 픽스처가 렌더를 흉내낸다.
+            assert f'model: "{token}"' in src, f"소스 카드가 토큰이 아니다: {role}"
+            (cards / f"{role}.md").write_text(
+                src.replace(f'model: "{token}"', f'model: "{model}"'), encoding="utf-8")
+        monkeypatch.setattr(guard, "_ENGINE_ROOT", root)
+        return root
+    return _render
+
+
 @pytest.fixture(scope="module")
 def guard():
     spec = importlib.util.spec_from_file_location("delegate_channel_guard", GUARD_PY)
@@ -38,7 +60,8 @@ def _payload(role: str, tool_name: str = "Agent") -> dict[str, object]:
 
 @pytest.mark.parametrize("role", ROLES)
 @pytest.mark.parametrize("mapping", ("claude", "other", "absent"))
-def test_four_role_mapping_matrix(guard, role, mapping):
+def test_four_role_mapping_matrix(guard, rendered_cards, role, mapping):
+    rendered_cards("opus")  # 채택자 트리(렌더본)를 가드 입력으로 — 소스 트리는 토큰이라 미렌더 경고가 난다.
     conf = {"delegate_enabled": "true"}
     if mapping == "claude":
         conf = {
@@ -387,7 +410,8 @@ def test_deny_json_schema_and_remediation(guard):
                 "/pm-dev-delegate 스킬로 위임하라 (실행형 처방: 1) 프롬프트를 "
                 "파일로 저장한 뒤(경로: "
                 "`.project_manager/.local/delegate/manual-researcher-normal-prompt.md`) "
-                "2) backbone `python3 .project_manager/tools/pm_delegate.py --role researcher "
+                f"2) backbone `{guard._prescribed_interpreter()} "
+                ".project_manager/tools/pm_delegate.py --role researcher "
                 "--prompt-file .project_manager/.local/delegate/manual-researcher-normal-prompt.md "
                 "--cwd /fixture/worktree`)"
             ),
@@ -445,6 +469,75 @@ def test_deny_remediation_uses_windows_quoting_when_running_on_windows(
     assert "'" not in reason.split("--cwd ", 1)[1]
     assert r'--cwd "C:\Users\ci\work tree\project_manager_1"' in spaced_reason
     assert "&&" not in reason
+
+
+def test_deny_remediation_interpreter_follows_the_execution_platform(
+    guard, monkeypatch
+):
+    """T-0728 — 처방의 인터프리터 표기가 실행 플랫폼을 따른다 (두 표기를 여기서 다 태운다).
+
+    Windows 의 `python3`/`python` 은 WindowsApps 가짜 shim 일 수 있어(가드 자신이 rc 9009 로
+    기록해 둔 표기다) 사람이 붙여넣어도 실행되지 않는다. 표기 판정은 `pm_relay` 하나가 소유하므로
+    여기서는 그 해소가 처방까지 도달하는지만 고정한다.
+    """
+    conf = {
+        "delegate_enabled": "true",
+        "delegate.developer.harness": "codex",
+        "delegate.developer.model": "gpt",
+    }
+    relay = guard._load_pm_relay()
+
+    def _reason(windows: bool, cwd: str) -> str:
+        monkeypatch.setattr(guard, "_running_on_windows", lambda: windows)
+        payload = _payload("developer")
+        payload["cwd"] = cwd
+        return guard.evaluate_hook(payload, config_loader=lambda: conf)[
+            "hookSpecificOutput"
+        ]["permissionDecisionReason"]
+
+    windows_token, _entry = relay.codex_egress_entrypoint(
+        relay.DELEGATE_ENTRYPOINT, windows=True)
+    posix_token, _entry = relay.codex_egress_entrypoint(
+        relay.DELEGATE_ENTRYPOINT, windows=False)
+    # 주입 선-단언 — 두 표기가 실제로 갈리지 않으면 이 회귀는 아무것도 검사하지 못한다.
+    assert windows_token != posix_token, (
+        "플랫폼별 인터프리터 표기가 같다 — 이 회귀가 공허해진다")
+
+    windows_reason = _reason(True, r"C:\Users\ci\work\project_manager_1")
+    posix_reason = _reason(False, "/fixture/worktree")
+
+    assert f"backbone `{windows_token} .project_manager/tools/pm_delegate.py" in windows_reason
+    assert f"backbone `{posix_token} .project_manager/tools/pm_delegate.py" in posix_reason
+    assert f"`{posix_token} " not in windows_reason
+
+
+def test_deny_remediation_survives_interpreter_resolution_failure(
+    guard, monkeypatch, capsys
+):
+    """T-0728 — 형제 모듈 해소 실패가 deny 판정이나 엔벨로프 키를 무너뜨리지 않는다.
+
+    훅 경로라 fail-open 이 계약이다. 다만 조용히 강등되지는 않는다 — 사유가 stderr 로 남고
+    채택자가 그 줄의 인터프리터를 손으로 바꿀 수 있어야 한다.
+    """
+    def _boom():
+        raise RuntimeError("사본 불일치 주입")
+
+    monkeypatch.setattr(guard, "_load_pm_relay", _boom)
+    conf = {
+        "delegate_enabled": "true",
+        "delegate.developer.harness": "codex",
+        "delegate.developer.model": "gpt",
+    }
+    # 주입 선-단언 — 해소 경로가 실제로 끊겼는지.
+    with pytest.raises(RuntimeError):
+        guard._load_pm_relay()
+
+    interpreter = guard._prescribed_interpreter()
+    captured = capsys.readouterr()
+
+    assert interpreter == guard._PRESCRIBED_INTERPRETER_FALLBACK
+    assert "처방 인터프리터 표기를 해소하지 못해" in captured.err
+    assert "사본 불일치 주입" in captured.err
 
 
 def test_deny_remediation_keeps_posix_quoting_off_windows(guard, monkeypatch):
@@ -558,13 +651,19 @@ def test_tracked_claude_native_card_map_is_finite_and_nonempty(guard):
     for role in ROLES:
         model, relative = guard._read_claude_native_agent_model(role, "normal")
         assert relative == Path(f".claude/agents/{role}.md")
-        assert model == "opus"
+        # T-0731 — 출하 카드는 렌더 **소스**라 model 이 operational 토큰이다. 리터럴 모델을 여기서
+        # 기대하면 채택자가 conf 로 모델을 못 바꾸던 결함이 되살아난다.
+        assert guard._is_unrendered_model_token(model), model
+        assert model == "{{DELEGATE_MODEL_" + role.upper().replace("-", "_") + "}}"
         assert (REPO / relative).read_bytes()
 
 
 @pytest.mark.parametrize("role", ROLES)
 @pytest.mark.parametrize("enabled", (True, False))
-def test_claude_four_native_cards_match_is_quiet_allow(guard, role, enabled):
+def test_claude_four_native_cards_match_is_quiet_allow(
+    guard, rendered_cards, role, enabled
+):
+    rendered_cards("opus")
     conf = {
         "delegate_enabled": str(enabled).lower(),
         f"delegate.{role}.harness": "claude",
@@ -579,8 +678,9 @@ def test_claude_four_native_cards_match_is_quiet_allow(guard, role, enabled):
 @pytest.mark.parametrize("role", ROLES)
 @pytest.mark.parametrize("enabled", (True, False))
 def test_claude_four_native_model_mismatches_are_nonblocking_hook_warnings(
-    guard, role, enabled
+    guard, rendered_cards, role, enabled
 ):
+    rendered_cards("opus")
     conf = {
         "delegate_enabled": str(enabled).lower(),
         f"delegate.{role}.harness": "claude",
@@ -871,9 +971,10 @@ def test_zero_file_index_card_read_fails_loud_instead_of_matching(
 
 @pytest.mark.parametrize("role", ROLES)
 def test_portable_reader_normal_tracked_cards_are_quiet_match(
-    guard, monkeypatch, role
+    guard, rendered_cards, monkeypatch, role
 ):
     """MF3: Windows/no-dir-fd must not degrade every healthy card to warning."""
+    rendered_cards("opus")
     monkeypatch.setattr(guard.os, "supports_dir_fd", set())
     conf = {
         f"delegate.{role}.harness": "claude",
@@ -882,6 +983,35 @@ def test_portable_reader_normal_tracked_cards_are_quiet_match(
     result = guard.decide(role, "normal", conf, "claude")
     assert result["verdict"] == "allow"
     assert result["reason"].startswith("[delegate-channel/allow]")
+
+
+@pytest.mark.parametrize("role", ROLES)
+def test_unrendered_source_card_is_diagnosed_as_unrendered_not_mismatch(guard, role):
+    """T-0731 — 소스 트리(프레임워크 루트·templates)나 렌더가 실패한 채택자 트리에서 카드 model 이
+    `{{DELEGATE_MODEL_*}}` 토큰이면 "불일치(conf 를 고쳐라)" 가 아니라 "미렌더(pm-update 로 다시
+    렌더하라)" 로 진단해야 처방이 맞다. 판정은 여전히 fail-open allow.
+    """
+    conf = {
+        f"delegate.{role}.harness": "claude",
+        f"delegate.{role}.model": "sonnet",
+    }
+    result = guard.decide(role, "normal", conf, "claude")
+    assert result["verdict"] == "allow"
+    assert "카드 미렌더" in result["reason"]
+    assert "pm-update" in result["reason"]
+    assert "불일치" not in result["reason"]
+    assert "{{DELEGATE_MODEL_" in result["reason"]
+
+
+def test_rendered_card_with_wrong_model_is_still_a_mismatch(guard, rendered_cards):
+    """렌더된 카드의 리터럴 모델이 conf 와 다르면 종전 '불일치' 진단 그대로 — 미렌더 분기가 그것을
+    삼키지 않는다(감도 유지)."""
+    rendered_cards("opus")
+    conf = {"delegate.developer.harness": "claude", "delegate.developer.model": "sonnet"}
+    result = guard.decide("developer", "normal", conf, "claude")
+    assert "불일치" in result["reason"]
+    assert "card_model=opus" in result["reason"]
+    assert "미렌더" not in result["reason"]
 
 
 def test_secure_reader_capability_uses_os_support_sets(guard, monkeypatch):

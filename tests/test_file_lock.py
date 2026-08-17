@@ -148,6 +148,152 @@ def _modules_with_append_writes() -> dict[str, int]:
     return {name: refs for name, refs in found.items() if refs}
 
 
+# 원자 교체 프리미티브 — 이 이름을 *호출*하는 모듈이 곧 교체 사본 보유자다(T-0729).
+_REPLACE_PRIMITIVE = "replace"
+
+# `os.replace` → `file_lock.atomic_replace` 로 전환한 도구들(19지점·9파일). 이 목록은 가드의
+# 판정 대상이 아니라 **위임이 실제로 있는지**를 보는 소비 확인용이다 — 재복제 판정 자체는
+# `tools/*.py` 전수 스캔이라 사람이 목록을 관리하지 않는다.
+_ATOMIC_REPLACE_CONSUMERS = (
+    "board.py", "delegate_channel_guard.py", "pm_handoff.py", "pm_import.py",
+    "pm_log.py", "pm_relay.py", "pm_update.py", "review_rounds.py",
+    "worktree_pool.py",
+)
+
+
+# **등재된 예외** — 원자 교체 seam 을 *설치·복구하는* 경로 둘. `(모듈, 함수)` → 사유.
+# seam 을 설치하는 쓰기가 그 seam 에 의존할 수는 없다(어떤 설계로도 없앨 수 없는 성질). 두 곳은
+# `atomic_replace` 가 있으면 그것을 쓰고, 없거나 로드가 실패할 때만 loud 강등한다. 등재 밖 직접
+# 호출도, 사유가 빈 등재도 red 다 — 예외가 조용히 늘어나지 못하게 한다([[T-0729]] §결정).
+ATOMIC_REPLACE_BOOTSTRAP_EXCEPTIONS: dict[tuple[str, str], str] = {
+    ("pm_update.py", "_atomic_replace_or_degrade"): (
+        "`_predeploy_central_loader` 가 중앙 로더를 내려놓는 부트스트랩 쓰기가 이 함수를 지난다 — "
+        "그 시점 목적지 트리에는 file_lock.py 가 아직 없거나 손상일 수 있고, 여기서 올리면 중단된 "
+        "업데이트를 채택자가 스스로 못 고친다"
+    ),
+    ("pm_import.py", "_atomic_replace_conf"): (
+        "복구 채널의 conf writer — 구세대·손상 사본에서도 키 기록이 성립한다는 기존 보장"
+        "(lockless recovery 계약)을 형제 의존으로 깨지 않는다"
+    ),
+}
+
+# 공용 seam 안에서 프리미티브를 직접 부르는 **유일한** 자리 (POSIX 분기).
+_SEAM_REPLACE_SITE = ("file_lock.py", "atomic_replace")
+
+# seam 함수 이름 — 위임 확인이 보는 유일한 토큰.
+_SEAM_REPLACE_NAME = "atomic_replace"
+
+
+def _os_replace_call_sites(source: str) -> list[tuple[str, int]]:
+    """소스 한 벌의 `os.replace(...)` 호출 위치 `(감싼 함수명, 줄번호)` 목록.
+
+    호출 수만 세면 "어느 함수가 예외인가" 를 등재부로 고정할 수 없다 — 가드가 곧 목록이므로
+    귀속까지 기계가 판정한다. 감싼 함수는 **가장 안쪽** 정의를 쓴다(중첩 정의도 그 자리로 귀속).
+    """
+    tree = ast.parse(source)
+    enclosing: dict[ast.AST, str] = {}
+    for node in ast.walk(tree):
+        name = node.name if isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef)) else enclosing.get(node, "")
+        for child in ast.iter_child_nodes(node):
+            enclosing[child] = name
+    # 바인딩 해소는 모듈당 **한 번**이다. 호출마다 다시 훑으면 board.py 규모(1.5만 줄)에서
+    # 스캔이 호출수×노드수로 불어나 가드가 사실상 멈춘다(실측: 이 파일 회귀 996초 → 3초).
+    bindings = _os_replace_bindings(tree)
+    return [
+        (enclosing.get(node, ""), node.lineno)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _is_os_replace_call(node, bindings)
+    ]
+
+
+def _os_replace_bindings(tree: ast.Module) -> tuple[set[str], set[str]]:
+    """import 로 묶인 이름을 해소한다 → (`os` 별칭 집합, `replace` 직접-이름 집합)."""
+    os_aliases = {"os"}
+    direct_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            os_aliases.update(
+                alias.asname or alias.name
+                for alias in node.names if alias.name == "os"
+            )
+        elif isinstance(node, ast.ImportFrom) and node.module == "os":
+            direct_names.update(
+                alias.asname or alias.name
+                for alias in node.names if alias.name == _REPLACE_PRIMITIVE
+            )
+    return os_aliases, direct_names
+
+
+def _is_os_replace_call(node: ast.Call, bindings: tuple[set[str], set[str]]) -> bool:
+    """이 호출이 `os.replace(...)` 인가 (별칭·from-import 해소·동명 메서드 제외).
+
+    바인딩은 호출부가 **모듈당 한 번** 해소해 넘긴다(`_os_replace_bindings`).
+    """
+    os_aliases, direct_names = bindings
+    func = node.func
+    if (
+        isinstance(func, ast.Attribute)
+        and func.attr == _REPLACE_PRIMITIVE
+        and isinstance(func.value, ast.Name)
+        and func.value.id in os_aliases
+    ):
+        return True
+    return isinstance(func, ast.Name) and func.id in direct_names
+
+
+def _os_replace_call_count(source: str) -> int:
+    """소스 한 벌의 `os.replace(...)` 호출 수 (별칭·from-import 해소·주석/문자열 제외).
+
+    `_lock_call_count` 와 같은 규칙이다 — 이름 그대로만 보면 `import os as _sys_os` /
+    `from os import replace` 형태의 재복제가 가드를 그냥 통과한다. 동명 메서드
+    (`text.replace(...)`)는 수신자가 `os` 별칭이 아니므로 세지 않는다.
+    """
+    return len(_os_replace_call_sites(source))
+
+
+def _modules_with_os_replace_calls() -> dict[str, int]:
+    """tools/ 에서 원자 교체 프리미티브를 *직접* 호출하는 모듈 → 호출 수."""
+    found = {
+        path.name: _os_replace_call_count(path.read_text(encoding="utf-8"))
+        for path in sorted(TOOLS.glob("*.py"))
+    }
+    return {name: calls for name, calls in found.items() if calls}
+
+
+def _os_replace_sites_by_module() -> dict[str, list[tuple[str, int]]]:
+    """tools/ 전수 → 모듈별 `os.replace` 호출 위치 `(감싼 함수, 줄번호)`."""
+    found = {
+        path.name: _os_replace_call_sites(path.read_text(encoding="utf-8"))
+        for path in sorted(TOOLS.glob("*.py"))
+    }
+    return {name: sites for name, sites in found.items() if sites}
+
+
+def _delegates_to_atomic_replace(source: str) -> bool:
+    """이 소스가 공용 seam 의 원자 교체에 위임하는가 (AST 판정).
+
+    문자열 포함으로 보면 등재된 예외 두 곳을 놓친다 — 그 둘은 형제 사본이 구세대일 수 있어
+    `getattr(seam, "atomic_replace", None)` 으로 **있는지 물어본 뒤** 부르므로 소스에
+    `atomic_replace(` 형태가 나타나지 않는다. 두 표기를 모두 위임으로 센다.
+    """
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == _SEAM_REPLACE_NAME:
+            return True
+        if (
+            isinstance(func, ast.Name) and func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value == _SEAM_REPLACE_NAME
+        ):
+            return True
+    return False
+
+
 # ── 1. seam 자체 ──────────────────────────────────────────────────────────
 
 def test_lock_file_and_parent_directory_are_created_with_requested_mode(
@@ -963,6 +1109,1421 @@ def test_append_atomic_writes_the_exact_bytes_it_was_given(file_lock, tmp_path):
 
     assert target.read_bytes() == (
         b"*.md text eol=lf\n\n# block\nareas.md merge=union\n")
+
+
+# ── 원자 교체 (열린 리더와 공존·T-0729) ─────────────────────────────────────
+# 엔진의 원자 쓰기 관용구(임시 파일 → 이름 바꾸기)는 **락 없는 리더도 일관 스냅샷을 본다**는
+# 보장을 낸다(board 보드 파일·worktree_pool 리스 장부가 그 성질에 명시적으로 기대 있다).
+# `os.replace` 는 POSIX 에서 그 보장을 그대로 내지만 Windows 에서는 대상이 열려 있으면
+# `ERROR_ACCESS_DENIED` 로 실패한다(리더가 share-delete 여도 마찬가지·Windows 11 실측). 그래서
+# 그 플랫폼만 POSIX 의미 rename(`FileRenameInfoEx`)으로 **같은 의미**를 낸다.
+#
+# 검증 축은 두 층이다 — 정책층(어떤 권한/플래그로 무엇을 부르고 실패를 어떻게 올리는가)은
+# 주입으로 POSIX 개발기에서 그대로 태우고, 원시층(ctypes 커널 호출)은 Windows 실측이 덮는다
+# (`WindowsLockApi` 선례와 같은 구조·[[guard-must-cover-its-own-surface]]).
+
+# 대역이 돌려주는 가짜 핸들 — 경로/fd 와 구분되는 값이어야 "핸들을 닫았는가"를 단언할 수 있다.
+_FAKE_RENAME_HANDLE = 4242
+
+# 대역이 흉내내는 Win32 에러코드 (winerror.h `ERROR_SHARING_VIOLATION`).
+_ERROR_SHARING_VIOLATION = 32
+
+
+class FakeWindowsRenameApi:
+    """`WindowsRenameApi` 대역 — 호출을 기록하고 지정한 Win32 에러코드를 돌려준다.
+
+    실제 커널 동작(리더와의 공존)은 흉내내지 않는다 — 그건 Windows 실측 몫이다. 이 대역이
+    고정하는 것은 정책층이 **무엇을 어떤 인자로 부르는가**와 **실패를 어떻게 올리는가** 둘이다.
+    """
+
+    def __init__(self, *, rename_error: int = 0, open_error: OSError | None = None) -> None:
+        self.rename_error = rename_error
+        self.open_error = open_error
+        self.open_calls: list[tuple[str, int, int]] = []
+        self.rename_calls: list[tuple[int, str, int]] = []
+        self.closed: list[int] = []
+
+    def open_handle(self, path: str, access: int, share: int) -> int:
+        self.open_calls.append((path, access, share))
+        if self.open_error is not None:
+            raise self.open_error
+        return _FAKE_RENAME_HANDLE
+
+    def rename(self, handle: int, target: str, flags: int) -> int:
+        self.rename_calls.append((handle, target, flags))
+        return self.rename_error
+
+    def close_handle(self, handle: int) -> None:
+        self.closed.append(handle)
+
+    def as_named_tuple(self, module):
+        return module.WindowsRenameApi(
+            self.open_handle, self.rename, self.close_handle)
+
+
+def _force_windows_replace_branch(module, monkeypatch, api: FakeWindowsRenameApi) -> None:
+    """플랫폼 판정과 원시 API 를 Windows 쪽으로 갈아끼운다 (주입 지점 두 곳 모두)."""
+    monkeypatch.setattr(module, "windows_replace_platform", lambda: True)
+    monkeypatch.setattr(
+        module, "_windows_rename_api", lambda: api.as_named_tuple(module))
+
+
+def _forbid_os_replace(module, monkeypatch) -> list[tuple]:
+    """`os.replace` 강등 여부를 감시한다 — 불리면 그 호출을 기록한다(조용한 폴백 탐지)."""
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        module.os, "replace", lambda src, dst: calls.append((src, dst)))
+    return calls
+
+
+def _pair(root: Path, tag: str, *, old: bytes | None = b"OLD", new: bytes = b"NEW"):
+    """(임시 파일, 대상) 한 쌍 — `old=None` 이면 대상 부재(신규 생성) 형상."""
+    target = root / f"{tag}.json"
+    tmp = root / f"{tag}.json.tmp"
+    if old is not None:
+        target.write_bytes(old)
+    tmp.write_bytes(new)
+    return tmp, target
+
+
+# ── 불변식 1·2·3 (POSIX 에서 실제로 성립하는 것을 실동작으로 고정) ───────────
+
+def test_atomic_replace_leaves_the_new_content_and_removes_the_temporary(
+    file_lock, tmp_path,
+):
+    """교체 후 디스크는 새 내용이고 임시 파일은 사라진다 (중간 상태 없음·불변식 1)."""
+    tmp, target = _pair(tmp_path, "ledger")
+
+    file_lock.atomic_replace(tmp, target)
+
+    assert target.read_bytes() == b"NEW"
+    assert not tmp.exists(), "임시 파일이 남았다 — 이름 바꾸기가 아니라 복사가 됐다"
+
+
+def test_atomic_replace_creates_the_target_when_it_is_absent(file_lock, tmp_path):
+    """대상이 없으면 새로 만든다 (`os.replace` 와 같은 경계 동작)."""
+    tmp, target = _pair(tmp_path, "fresh", old=None)
+
+    file_lock.atomic_replace(tmp, target)
+
+    assert target.read_bytes() == b"NEW"
+
+
+def test_atomic_replace_accepts_paths_and_strings_like_the_primitive(
+    file_lock, tmp_path,
+):
+    """인자는 `Path`·`str` 둘 다 받는다 (호출부 19지점이 섞여 쓰던 표기 보존)."""
+    tmp, target = _pair(tmp_path, "strings")
+
+    file_lock.atomic_replace(str(tmp), str(target))
+
+    assert target.read_bytes() == b"NEW"
+
+
+def test_atomic_replace_succeeds_while_a_reader_holds_the_target_open(
+    file_lock, tmp_path,
+):
+    """리더가 열고 있어도 교체가 성공하고, 그 핸들은 옛 내용을 끝까지 읽는다 (불변식 2·3).
+
+    이게 이 seam 이 지키는 의미 자체다 — Windows 의 `os.replace` 는 바로 이 형상에서
+    WinError 5 로 실패한다(그래서 그 플랫폼만 POSIX 의미 rename 을 쓴다).
+
+    리더는 **엔진 읽기 seam** 으로 연다 — 쓰기 seam 과 읽기 seam 은 세트다. 내장 `open` 으로 열면
+    Windows 에서 공유 삭제가 빠져 교체가 WinError 32 로 막히고(실측표), Linux 에서만 통과하는 잘못된
+    전제가 된다.
+    """
+    tmp, target = _pair(tmp_path, "held", old=b"OLD-CONTENT", new=b"NEW-CONTENT")
+
+    with file_lock.open_shared(target, binary=True) as reader:
+        head = reader.read(3)
+        file_lock.atomic_replace(tmp, target)
+        seen = head + reader.read()
+
+    assert seen == b"OLD-CONTENT", "교체가 열린 핸들의 내용을 바꿨다"
+    assert target.read_bytes() == b"NEW-CONTENT"
+
+
+def _worker_hold_reader(target_path: str, opened, release, seen_path: str) -> None:
+    """대상 파일을 **엔진 읽기 seam** 으로 연 채 부모의 교체를 기다렸다가 읽은 내용을 남긴다.
+
+    타 프로세스 리더는 seam(`open_shared`)으로 열어야 한다 — 그것이 T-0729 가 읽기 축을 전환한 이유다.
+    내장 `open` 으로 열면 Windows 에서 공유 삭제가 빠져 교체가 WinError 32 로 막히고(실측표), Linux 에선
+    차이가 안 보여 이 회귀가 잘못된 전제로 통과한다. spawn 자식이라 모듈을 다시 로드한다.
+    """
+    lock = _load(FILE_LOCK_PY, "file_lock_child_reader")
+    with lock.open_shared(Path(target_path), binary=True) as reader:
+        head = reader.read(3)
+        opened.set()
+        release.wait(timeout=SYNC_TIMEOUT)
+        Path(seen_path).write_bytes(head + reader.read())
+
+
+def test_atomic_replace_succeeds_while_another_process_holds_the_target_open(
+    file_lock, tmp_path,
+):
+    """타 프로세스 리더가 열고 있어도 교체가 성립한다 (불변식 3 의 프로세스 간 형상)."""
+    tmp, target = _pair(tmp_path, "cross", old=b"OLD-CONTENT", new=b"NEW-CONTENT")
+    seen_path = tmp_path / "child-seen.bin"
+    ctx = mp.get_context("spawn")
+    opened, release = ctx.Event(), ctx.Event()
+    child = ctx.Process(
+        target=_worker_hold_reader,
+        args=(str(target), opened, release, str(seen_path)),
+    )
+    child.start()
+    try:
+        assert opened.wait(timeout=SYNC_TIMEOUT), "자식이 대상을 열지 못했다"
+
+        file_lock.atomic_replace(tmp, target)
+
+        release.set()
+        child.join(timeout=SYNC_TIMEOUT)
+        assert child.exitcode == 0, f"자식 비정상 종료: exitcode={child.exitcode}"
+        assert seen_path.read_bytes() == b"OLD-CONTENT", \
+            "타 프로세스 핸들이 교체 뒤 내용을 봤다"
+        assert target.read_bytes() == b"NEW-CONTENT"
+    finally:
+        release.set()
+        if child.is_alive():
+            child.terminate()
+        child.join(timeout=10)
+
+
+# ── 플랫폼 분기: POSIX 는 프리미티브 그대로 ──────────────────────────────────
+
+def test_this_development_platform_takes_the_posix_branch(file_lock):
+    """주입 전 baseline — 플랫폼 판정이 실행 OS 와 일치한다.
+
+    POSIX 개발기에서는 False(=Windows 분기는 주입으로만 실행된다) 라야 아래 "Windows 분기를 태웠다"
+    케이스들이 사실은 POSIX 분기를 태우고도 통과하는 일이 없다. Windows VM 에서는 True 라야 실 API
+    분기가 실제로 도는 것이다 — 어느 쪽이든 OS 를 잘못 읽으면 red.
+    """
+    assert file_lock.windows_replace_platform() is (os.name == "nt")
+
+
+def test_posix_branch_delegates_to_the_rename_primitive_unchanged(
+    file_lock, tmp_path, monkeypatch,
+):
+    """POSIX 는 `os.replace` 를 인자 그대로 부른다 (의미를 덧입히지 않는다).
+
+    분기를 명시 주입해 POSIX 경로를 태운다 — Windows VM 에서도 같은 것을 재기 위해서다(Windows 분기를
+    Linux 에서 주입으로 태우는 것과 대칭). 실행 OS 를 가정하지 않는다.
+    """
+    monkeypatch.setattr(file_lock, "windows_replace_platform", lambda: False)
+    calls = _forbid_os_replace(file_lock, monkeypatch)
+    tmp, target = _pair(tmp_path, "posix")
+
+    file_lock.atomic_replace(tmp, target)
+
+    assert calls == [(str(tmp), str(target))]
+
+
+# ── 플랫폼 분기: Windows 정책층을 주입으로 태운다 ────────────────────────────
+
+def test_windows_replace_injection_actually_reaches_the_primitive(
+    file_lock, tmp_path, monkeypatch,
+):
+    """주입 선-단언 — 갈아끼운 대역이 실제 교체 경로에서 불린다(no-op 주입 차단)."""
+    api = FakeWindowsRenameApi()
+    _force_windows_replace_branch(file_lock, monkeypatch, api)
+    forbidden = _forbid_os_replace(file_lock, monkeypatch)
+    tmp, target = _pair(tmp_path, "injected")
+
+    file_lock.atomic_replace(tmp, target)
+
+    assert api.rename_calls, "주입이 no-op — Windows 분기가 실행되지 않았다"
+    assert not forbidden, "Windows 분기인데 `os.replace` 로 내려앉았다"
+
+
+def test_windows_branch_opens_the_source_with_delete_access_and_full_sharing(
+    file_lock, tmp_path, monkeypatch,
+):
+    """원본은 `DELETE|SYNCHRONIZE` 권한 + 읽기/쓰기/삭제 공유로 연다.
+
+    rename 은 `DELETE` 권한을 요구하고, 공유 셋을 다 열지 않으면 그 순간 남이 연 핸들과
+    공존하지 못해 이 seam 이 고치려는 실패를 스스로 재현한다.
+    """
+    api = FakeWindowsRenameApi()
+    _force_windows_replace_branch(file_lock, monkeypatch, api)
+    tmp, target = _pair(tmp_path, "access")
+
+    file_lock.atomic_replace(tmp, target)
+
+    assert api.open_calls, "주입이 no-op — 접근/공유 모드를 판정할 수 없다"
+    path, access, share = api.open_calls[0]
+    assert path == str(tmp), "원본이 아닌 대상을 열었다"
+    assert access == file_lock.ATOMIC_REPLACE_ACCESS
+    assert access & file_lock.DELETE_ACCESS, "rename 에 필요한 DELETE 권한 없음"
+    assert share == file_lock.SHARE_ALL_MODES
+    for mode in (
+        file_lock.FILE_SHARE_READ, file_lock.FILE_SHARE_WRITE,
+        file_lock.FILE_SHARE_DELETE,
+    ):
+        assert share & mode, f"공유 모드 누락: {mode:#x}"
+
+
+def test_windows_branch_renames_with_posix_semantics_and_replace_if_exists(
+    file_lock, tmp_path, monkeypatch,
+):
+    """rename 플래그 = 기존 대상 교체 + **POSIX 의미**.
+
+    POSIX 의미 플래그가 빠지면 열린 리더와 공존하지 못해(WinError) 이 티켓이 닫는 결함이
+    그대로 남고, REPLACE_IF_EXISTS 가 빠지면 기존 대상이 있을 때 교체 자체가 실패한다.
+    """
+    api = FakeWindowsRenameApi()
+    _force_windows_replace_branch(file_lock, monkeypatch, api)
+    tmp, target = _pair(tmp_path, "flags")
+
+    file_lock.atomic_replace(tmp, target)
+
+    assert api.rename_calls, "주입이 no-op — 플래그를 판정할 수 없다"
+    handle, _target, flags = api.rename_calls[0]
+    assert handle == _FAKE_RENAME_HANDLE, "열어 둔 핸들이 아닌 값을 rename 에 넘겼다"
+    assert flags == file_lock.ATOMIC_REPLACE_RENAME_FLAGS
+    assert flags & file_lock.FILE_RENAME_FLAG_POSIX_SEMANTICS, \
+        "POSIX 의미 없음 — 열린 리더와 공존하지 못한다"
+    assert flags & file_lock.FILE_RENAME_FLAG_REPLACE_IF_EXISTS, \
+        "기존 대상 교체 플래그 없음"
+    assert file_lock.FILE_RENAME_INFO_EX_CLASS == 22, \
+        "구 FileRenameInfo(3) 는 POSIX 의미 플래그를 받지 않는다"
+
+
+def test_windows_branch_passes_a_fully_qualified_target(
+    file_lock, tmp_path, monkeypatch,
+):
+    """대상은 완전 수식 경로로 넘긴다 — `RootDirectory=None` 이면 상대 경로는 해소되지 않는다."""
+    api = FakeWindowsRenameApi()
+    _force_windows_replace_branch(file_lock, monkeypatch, api)
+    tmp, target = _pair(tmp_path, "relative")
+    monkeypatch.chdir(tmp_path)
+
+    file_lock.atomic_replace(tmp.name, target.name)
+
+    assert api.rename_calls, "주입이 no-op — 대상 표기를 판정할 수 없다"
+    _handle, passed, _flags = api.rename_calls[0]
+    assert os.path.isabs(passed), f"상대 경로를 그대로 넘겼다: {passed!r}"
+    assert Path(passed) == target
+
+
+def test_windows_branch_closes_the_handle_on_success_and_on_failure(
+    file_lock, tmp_path, monkeypatch,
+):
+    """열어 둔 핸들은 성공 경로와 실패 경로 모두에서 닫는다 (핸들 누수 0)."""
+    api = FakeWindowsRenameApi()
+    _force_windows_replace_branch(file_lock, monkeypatch, api)
+    tmp, target = _pair(tmp_path, "ok")
+    file_lock.atomic_replace(tmp, target)
+    assert api.closed == [_FAKE_RENAME_HANDLE], "성공 경로에서 핸들이 샜다"
+
+    failing = FakeWindowsRenameApi(rename_error=_ERROR_SHARING_VIOLATION)
+    _force_windows_replace_branch(file_lock, monkeypatch, failing)
+    tmp, target = _pair(tmp_path, "boom")
+    with pytest.raises(file_lock.AtomicReplaceError):
+        file_lock.atomic_replace(tmp, target)
+    assert failing.closed == [_FAKE_RENAME_HANDLE], "실패 경로에서 핸들이 샜다"
+
+
+# ── 불변식 4: 못 쓰는 수단은 조용히 강등하지 않는다 ──────────────────────────
+
+def test_windows_rename_failure_is_loud_instead_of_falling_back(
+    file_lock, tmp_path, monkeypatch,
+):
+    """rename 이 Win32 에러로 실패하면 `os.replace` 로 내려앉지 않고 사유와 함께 올린다.
+
+    강등하면 이 seam 이 닫으려던 결함(열린 리더에서 WinError 5)이 그대로 되살아나면서
+    호출부에는 성공으로 보인다([[no-green-by-disabling]]).
+    """
+    api = FakeWindowsRenameApi(rename_error=_ERROR_SHARING_VIOLATION)
+    _force_windows_replace_branch(file_lock, monkeypatch, api)
+    forbidden = _forbid_os_replace(file_lock, monkeypatch)
+    tmp, target = _pair(tmp_path, "denied")
+
+    with pytest.raises(file_lock.AtomicReplaceError) as raised:
+        file_lock.atomic_replace(tmp, target)
+
+    assert api.rename_calls, "주입이 no-op — 실패 번역을 판정할 수 없다"
+    assert not forbidden, "실패를 `os.replace` 로 조용히 대체했다"
+    assert str(_ERROR_SHARING_VIOLATION) in str(raised.value), "진단에 WinError 가 없다"
+    assert "FileRenameInfoEx" in str(raised.value)
+    assert target.read_bytes() == b"OLD", "실패했는데 대상이 바뀌었다"
+
+
+def test_unsupported_generation_fails_with_its_reason(
+    file_lock, tmp_path, monkeypatch,
+):
+    """수단 미지원 세대(`ERROR_INVALID_PARAMETER`)는 **사유**를 담아 실패한다 (불변식 4).
+
+    Windows 10 1709 미만은 POSIX 의미 rename 을 모른다. 그 환경에서 `os.replace` 로 내려앉는
+    것은 "동작하는 것처럼 보이지만 리더가 있으면 실패한다"는 원래 상태로 되돌리는 것이다.
+    """
+    api = FakeWindowsRenameApi(rename_error=file_lock.ERROR_INVALID_PARAMETER)
+    _force_windows_replace_branch(file_lock, monkeypatch, api)
+    forbidden = _forbid_os_replace(file_lock, monkeypatch)
+    tmp, target = _pair(tmp_path, "legacy")
+
+    with pytest.raises(file_lock.AtomicReplaceError) as raised:
+        file_lock.atomic_replace(tmp, target)
+
+    assert api.rename_calls, "주입이 no-op — 미지원 진단을 판정할 수 없다"
+    assert not forbidden, "미지원 환경을 `os.replace` 로 조용히 대체했다"
+    message = str(raised.value)
+    assert "1709" in message, "미지원 세대라는 사유가 진단에 없다"
+    assert str(file_lock.ERROR_INVALID_PARAMETER) in message
+
+
+def test_source_open_failure_propagates_without_attempting_a_rename(
+    file_lock, tmp_path, monkeypatch,
+):
+    """원본을 열지 못하면 그대로 올린다 — 교체를 시작하지도 않는다(대상 불변)."""
+    api = FakeWindowsRenameApi(open_error=PermissionError(13, "denied"))
+    _force_windows_replace_branch(file_lock, monkeypatch, api)
+    forbidden = _forbid_os_replace(file_lock, monkeypatch)
+    tmp, target = _pair(tmp_path, "unopenable")
+
+    with pytest.raises(PermissionError):
+        file_lock.atomic_replace(tmp, target)
+
+    assert api.open_calls, "주입이 no-op — 열기 실패 경로를 판정할 수 없다"
+    assert not api.rename_calls, "열지도 못했는데 rename 을 시도했다"
+    assert not forbidden, "열기 실패를 `os.replace` 로 조용히 대체했다"
+    assert target.read_bytes() == b"OLD"
+
+
+def test_atomic_replace_error_is_an_oserror_subclass(file_lock):
+    """실패 타입은 `OSError` 계열 — 기존 호출부의 IO 실패 처리 경로를 그대로 탄다."""
+    assert issubclass(file_lock.AtomicReplaceError, OSError)
+
+
+@pytest.mark.parametrize(
+    ("winerror", "expected_errno"),
+    (
+        (_ERROR_SHARING_VIOLATION, errno.EACCES),   # 32 — 공유 위반(일반 리더 보유)
+        (5, errno.EACCES),                          # 5  — 접근 거부
+        (87, errno.EINVAL),                         # 87 — POSIX 의미 rename 미지원 세대
+    ),
+)
+def test_atomic_replace_error_carries_the_win32_code_as_attributes(
+    file_lock, tmp_path, monkeypatch, winerror, expected_errno,
+):
+    """실패는 Win32 코드를 **속성으로도** 싣는다 (`winerror`·`errno`).
+
+    코드가 메시지에만 있으면 호출부와 진단 도구가 문자열을 파싱해야 하고, 원시
+    `PermissionError` 를 잡던 자리(`except OSError as exc: exc.winerror`)가 조용히 `None` 을
+    본다 — Windows 실측에서 대조군 두 케이스가 그 이유로 갈렸다. 종전 실패 표면과 같은 모양을
+    낸다.
+    """
+    api = FakeWindowsRenameApi(rename_error=winerror)
+    _force_windows_replace_branch(file_lock, monkeypatch, api)
+    tmp, target = _pair(tmp_path, f"code{winerror}")
+
+    with pytest.raises(file_lock.AtomicReplaceError) as raised:
+        file_lock.atomic_replace(tmp, target)
+
+    assert api.rename_calls, "주입이 no-op — 실패 속성을 판정할 수 없다"
+    assert raised.value.winerror == winerror
+    assert raised.value.errno == expected_errno
+    assert str(winerror) in str(raised.value), "메시지의 Win32 코드가 사라졌다"
+
+
+# ── 감도 (변이가 실제로 red 가 되는가) ───────────────────────────────────────
+
+def _mutated_seam(tmp_path: Path, old: str, new: str, name: str):
+    """`file_lock.py` 한 곳을 변이시킨 사본을 로드한다 (변이 앵커 소실은 즉시 실패)."""
+    source = FILE_LOCK_PY.read_text(encoding="utf-8")
+    mutated = source.replace(old, new, 1)
+    assert mutated != source, "변이 앵커 소실"
+    path = tmp_path / f"{name}.py"
+    path.write_text(mutated, encoding="utf-8", newline="\n")
+    return _load(path, f"file_lock_{name}_under_test")
+
+
+def test_dropping_posix_semantics_is_caught_by_the_flag_guard(tmp_path, monkeypatch):
+    """POSIX 의미 플래그를 떼면 플래그 가드가 red 로 잡는다 (가드 감도 실증)."""
+    module = _mutated_seam(
+        tmp_path,
+        "ATOMIC_REPLACE_RENAME_FLAGS = (\n"
+        "    FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS\n"
+        ")",
+        "ATOMIC_REPLACE_RENAME_FLAGS = FILE_RENAME_FLAG_REPLACE_IF_EXISTS",
+        "no_posix_semantics",
+    )
+    api = FakeWindowsRenameApi()
+    _force_windows_replace_branch(module, monkeypatch, api)
+    tmp, target = _pair(tmp_path, "mutated_flags")
+
+    module.atomic_replace(tmp, target)
+
+    assert api.rename_calls, "주입이 no-op — 변이를 판정할 수 없다"
+    assert not api.rename_calls[0][2] & module.FILE_RENAME_FLAG_POSIX_SEMANTICS, \
+        "변이가 실제로 POSIX 의미를 떼지 않았다"
+
+
+def test_a_silent_fallback_mutation_is_caught_by_the_loud_failure_guard(
+    tmp_path, monkeypatch,
+):
+    """실패를 `os.replace` 강등으로 바꾼 사본은 fail-loud 가드에 걸린다 (가드 감도 실증)."""
+    module = _mutated_seam(
+        tmp_path,
+        "    if error:\n        raise _atomic_replace_failure(source, absolute_target, error)",
+        "    if error:\n        os.replace(source, target)",
+        "silent_fallback",
+    )
+    api = FakeWindowsRenameApi(rename_error=_ERROR_SHARING_VIOLATION)
+    _force_windows_replace_branch(module, monkeypatch, api)
+    tmp, target = _pair(tmp_path, "mutated_fallback")
+
+    module.atomic_replace(tmp, target)      # 변이본은 조용히 성공한다(그게 결함이다)
+
+    assert api.rename_calls, "주입이 no-op — 변이를 판정할 수 없다"
+    assert target.read_bytes() == b"NEW", "변이가 실제로 강등 폴백이 아니다"
+
+
+# ── 재복제 차단 (원자 교체 프리미티브는 seam 한 곳뿐) ────────────────────────
+
+def test_os_replace_lives_only_in_the_seam_and_the_registered_exceptions():
+    """`os.replace` 직접 호출 = 공용 seam 한 곳 + **등재된 부트스트랩 예외 두 곳**뿐이다.
+
+    목록을 사람이 관리하지 않는다 — `tools/*.py` 전수를 AST 로 훑어 호출을 **감싼 함수까지**
+    귀속시키고, 등재부 밖에서 되살아나면 그 자리가 곧 red 다. 등재부가 사라지거나 늘어나도
+    red 이므로 예외는 조용히 증식하지 못한다([[T-0729]] §결정).
+    """
+    measured = {
+        (module, function)
+        for module, sites in _os_replace_sites_by_module().items()
+        for function, _line in sites
+    }
+    expected = {_SEAM_REPLACE_SITE} | set(ATOMIC_REPLACE_BOOTSTRAP_EXCEPTIONS)
+    assert measured == expected, (
+        f"등재 밖 직접 호출: {sorted(measured - expected)} / "
+        f"사라진 등재(목록 정리 필요): {sorted(expected - measured)}"
+    )
+    per_site = [
+        (module, function)
+        for module, sites in _os_replace_sites_by_module().items()
+        for function, _line in sites
+    ]
+    assert len(per_site) == len(measured), f"한 함수 안 중복 호출: {per_site}"
+
+
+def test_every_registered_exception_carries_a_reason():
+    """등재된 예외는 사유가 있어야 한다 — 빈 사유는 등재가 아니라 구멍이다."""
+    assert ATOMIC_REPLACE_BOOTSTRAP_EXCEPTIONS, "등재부가 비었다(예외 0이면 가드가 더 좁아야 한다)"
+    for site, reason in ATOMIC_REPLACE_BOOTSTRAP_EXCEPTIONS.items():
+        assert reason.strip(), f"사유 없는 등재: {site}"
+
+
+def test_atomic_replace_consumers_delegate_to_the_seam():
+    """전환 대상 9개 도구는 seam 위임을 쓴다 (등재 예외 밖 직접 호출 0)."""
+    exempt_modules = {module for module, _function in ATOMIC_REPLACE_BOOTSTRAP_EXCEPTIONS}
+    for tool in _ATOMIC_REPLACE_CONSUMERS:
+        source = (TOOLS / tool).read_text(encoding="utf-8")
+        assert _delegates_to_atomic_replace(source), f"{tool}: seam 위임이 없다"
+        allowed = 1 if tool in exempt_modules else 0
+        assert _os_replace_call_count(source) == allowed, (
+            f"{tool}: `os.replace` 직접 호출이 등재({allowed}개)와 다르다")
+
+
+@pytest.mark.parametrize(
+    ("label", "snippet"),
+    (
+        ("plain", "import os\nos.replace(tmp, path)\n"),
+        ("module-alias", "import os as _sys_os\n_sys_os.replace(tmp, path)\n"),
+        ("from-import", "from os import replace\nreplace(tmp, path)\n"),
+        ("from-import-alias", "from os import replace as _mv\n_mv(tmp, path)\n"),
+    ),
+)
+def test_os_replace_guard_counts_aliased_and_from_imported_calls(label, snippet):
+    """별칭·from-import 로 우회한 재복제도 가드가 센다 (이름 그대로 보는 판정의 사각)."""
+    assert _os_replace_call_count(snippet) == 1, label
+
+
+def test_os_replace_guard_ignores_the_name_in_comments_and_strings():
+    """주석·문자열의 `os.replace` 언급은 세지 않는다 (문서화 자유·AST 판정).
+
+    seam 전환으로 도구들의 *산문*에는 옛 이름이 남을 수 있고(왜 그 관용구인지 설명), 그건
+    재복제가 아니다. `str.replace` 같은 동명 메서드도 대상이 아니다.
+    """
+    prose = (
+        '"""temp + `os.replace` 로 원자 교체한다."""\n'
+        "# os.replace(str(tmp), str(path))\n"
+        'DOC = "os.replace"\n'
+        'text = body.replace("a", "b")\n'
+    )
+    assert _os_replace_call_count(prose) == 0
+
+
+def test_a_new_unregistered_exception_is_red():
+    """등재 없는 새 예외는 가드가 red 로 잡는다 (등재부가 곧 상한·감도 실증)."""
+    source = (TOOLS / "pm_log.py").read_text(encoding="utf-8")
+    mutated = source.replace(
+        "        _load_file_lock().atomic_replace(tmp, path)",
+        "        os.replace(str(tmp), str(path))",
+        1,
+    )
+    assert mutated != source, "변이 앵커 소실"
+    sites = _os_replace_call_sites(mutated)
+    assert sites, "변이가 실제로 직접 호출을 만들지 않았다"
+    assert all(
+        ("pm_log.py", function) not in ATOMIC_REPLACE_BOOTSTRAP_EXCEPTIONS
+        for function, _line in sites
+    ), "이 변이 지점이 이미 등재돼 있다 — 감도 실증이 성립하지 않는다"
+
+
+# ── 등재된 예외 두 곳: 양쪽 분기를 다 태운다 ─────────────────────────────────
+# 이 두 지점은 "seam 이 있으면 seam, 없으면 loud 강등" 이다. **정상 분기를 안 태우면** 강등이
+# 상시 경로가 돼도 초록이고, **강등 분기를 안 태우면** 복구 계약이 깨져도 초록이다. 둘 다 태우고
+# 각 케이스에 주입 선-단언을 붙인다.
+
+_LEGACY_SEAM_WITHOUT_ATOMIC_REPLACE = "구세대 file_lock 사본에 atomic_replace 가 없음"
+
+
+def _recording_seam(recorded: list[tuple]) -> types.SimpleNamespace:
+    """`atomic_replace` 만 기록하는 seam 대역 (실제 교체까지 수행)."""
+    def _replace(src, dst):
+        recorded.append((Path(src), Path(dst)))
+        os.replace(src, dst)
+
+    return types.SimpleNamespace(atomic_replace=_replace)
+
+
+def _legacy_seam() -> types.SimpleNamespace:
+    """`atomic_replace` 가 없는 구세대 사본 대역 (부분 업그레이드 형상)."""
+    legacy = types.SimpleNamespace(ENGINE_REV="v0.0.0-legacy")
+    assert not hasattr(legacy, "atomic_replace"), "대역이 구세대 형상이 아니다"
+    return legacy
+
+
+@pytest.mark.parametrize(
+    ("tool", "entry"),
+    (
+        ("pm_update.py", "_atomic_replace_or_degrade"),
+        ("pm_import.py", "_atomic_replace_conf"),
+    ),
+)
+def test_registered_exception_uses_the_seam_when_it_is_available(
+    tool, entry, tmp_path, monkeypatch,
+):
+    """정상 트리에서는 **항상 seam 을 탄다** — 강등은 예비 경로일 뿐이다."""
+    module = _load(TOOLS / tool, f"{tool[:-3]}_atomic_replace_normal")
+    recorded: list[tuple] = []
+    monkeypatch.setattr(module, "_load_file_lock", lambda: _recording_seam(recorded))
+    tmp, target = _pair(tmp_path, "normal")
+
+    getattr(module, entry)(tmp, target)
+
+    assert recorded == [(tmp, target)], "seam 을 타지 않았다(주입이 no-op 이거나 강등했다)"
+    assert target.read_bytes() == b"NEW"
+
+
+@pytest.mark.parametrize(
+    ("tool", "entry"),
+    (
+        ("pm_update.py", "_atomic_replace_or_degrade"),
+        ("pm_import.py", "_atomic_replace_conf"),
+    ),
+)
+@pytest.mark.parametrize("failure", ("missing", "broken"))
+def test_registered_exception_degrades_loudly_without_the_seam(
+    tool, entry, failure, tmp_path, monkeypatch, capsys,
+):
+    """seam 부재/손상에서는 교체를 **완주하되 사유를 stderr 로 남긴다** (조용한 강등 0).
+
+    복구 채널이 자기 잠금하면 채택자가 깨진 트리를 못 고친다. 그렇다고 침묵하면 옛 방식이
+    상시 경로가 돼도 아무도 모른다 — 그래서 완주 + loud 다.
+    """
+    module = _load(TOOLS / tool, f"{tool[:-3]}_atomic_replace_{failure}")
+    seen: list[str] = []
+
+    def _unusable():
+        seen.append(failure)
+        raise ModuleNotFoundError("No module named 'file_lock'")
+
+    if failure == "missing":
+        monkeypatch.setattr(module, "_load_file_lock", _unusable)
+    else:
+        monkeypatch.setattr(
+            module, "_load_file_lock", lambda: seen.append(failure) or _legacy_seam())
+    tmp, target = _pair(tmp_path, failure)
+
+    getattr(module, entry)(tmp, target)
+
+    assert seen == [failure], "주입이 no-op — 강등 분기를 태우지 못했다"
+    assert target.read_bytes() == b"NEW", "강등 경로가 교체를 완주하지 못했다"
+    message = capsys.readouterr().err
+    assert "os.replace" in message, f"강등이 조용하다: {message!r}"
+    expected_reason = (
+        "ModuleNotFoundError" if failure == "missing"
+        else _LEGACY_SEAM_WITHOUT_ATOMIC_REPLACE
+    )
+    assert expected_reason in message, f"강등 사유가 없다: {message!r}"
+
+
+def test_conf_writer_exception_still_refuses_to_absorb_a_marked_skew(
+    tmp_path, monkeypatch,
+):
+    """구세대 호환 강등이 **marked skew** 까지 삼키지는 않는다 (기존 경계 보존).
+
+    같은 rev 안의 API 형상 차이는 물러날 근거지만, rev 자체가 다른 사본은 조용한 오작동이 아니라
+    재동기 안내로 표출해야 한다 — pm_import 락 경로 유도와 같은 규칙이다.
+    """
+    pm_import = _load(TOOLS / "pm_import.py", "pm_import_atomic_replace_skew")
+    raised: list[str] = []
+
+    def _skew():
+        raised.append("skew")
+        error = RuntimeError("엔진 사본 버전 불일치 — file_lock.py")
+        error._engine_rev_skew = True
+        raise error
+
+    monkeypatch.setattr(pm_import, "_load_file_lock", _skew)
+    tmp, target = _pair(tmp_path, "skew")
+
+    with pytest.raises(RuntimeError) as error:
+        pm_import._atomic_replace_conf(tmp, target)
+
+    assert raised == ["skew"], "주입이 no-op — skew 경계를 태우지 못했다"
+    assert getattr(error.value, "_engine_rev_skew", False) is True
+    assert target.read_bytes() == b"OLD", "skew 인데 교체가 진행됐다"
+
+
+def test_bootstrap_exception_absorbs_a_marked_skew_through_the_registered_boundary(
+    tmp_path, monkeypatch,
+):
+    """pm_update 부트스트랩은 반대다 — 혼합 트리의 marked skew 도 **등록된 경계**로 흡수한다.
+
+    동기 실행 중 rev 혼합은 정상 과도 상태라, 여기서 올리면 이미 착지한 엔진 파일 위에서 복구가
+    죽는다(pm_update 의 기존 흡수 규칙과 같다). 흡수는 장부에 남고 강등은 loud 다.
+    """
+    pm_update = _load(TOOLS / "pm_update.py", "pm_update_atomic_replace_skew")
+    raised: list[str] = []
+
+    def _skew():
+        raised.append("skew")
+        error = RuntimeError("엔진 사본 버전 불일치 — file_lock.py")
+        error._engine_rev_skew = True
+        raise error
+
+    monkeypatch.setattr(pm_update, "_load_file_lock", _skew)
+    tmp, target = _pair(tmp_path, "bootstrap_skew")
+
+    pm_update._atomic_replace_or_degrade(tmp, target)
+
+    assert raised == ["skew"], "주입이 no-op — 흡수 경계를 태우지 못했다"
+    assert target.read_bytes() == b"NEW"
+    assert "atomic_copy_replace_seam" in pm_update._ABSORBED_ENGINE_REV_SKEW, \
+        "흡수가 장부에 남지 않았다(감사 불가)"
+    assert pm_update._ENGINE_REV_SKEW_RECOVERY_REASONS[
+        "atomic_copy_replace_seam"].strip(), "등록 사유가 비어 있다"
+
+
+def test_mutation_reintroduced_os_replace_in_a_converged_tool_is_red():
+    """수렴 도구에 직접 호출을 되살리면 가드가 red 로 잡는다 (감도 실증)."""
+    source = (TOOLS / "worktree_pool.py").read_text(encoding="utf-8")
+    mutated = source.replace(
+        "    file_lock.atomic_replace(tmp, LEASES_FILE)",
+        "    os.replace(str(tmp), str(LEASES_FILE))",
+        1,
+    )
+    assert mutated != source, "변이 앵커 소실"
+    assert _os_replace_call_count(source) == 0, "worktree_pool 은 수렴 상태여야 한다"
+    assert _os_replace_call_count(mutated) == 1
+
+
+# ── 공유 읽기 (원자 교체의 짝·T-0729) ────────────────────────────────────────
+# 쓰기만 POSIX 의미 rename 으로 바꾸면 Windows 에서 실질 개선이 0 이다 — 일반 `open()` 리더가
+# 하나라도 잡고 있으면 그 rename 이 WinError 32 로 막힌다(실측 표). 리더가 공유 삭제를 허용해야
+# 교체가 성공하고 그 리더는 옛 내용을 끝까지 읽는다. 두 축은 세트로만 성립한다.
+#
+# 이 seam 의 제1 계약은 **POSIX 에서 내장 호출과 글자 그대로 같은 동작**이다. 전환 대상이
+# 100지점 단위라 인코딩·개행 의미가 1mm 어긋나면 그만큼 곱해진다([[T-0709]]·[[T-0710]] 축).
+# 그래서 아래 동치 회귀는 "그럴듯한 값" 이 아니라 **내장 호출의 결과와 직접 대조**한다.
+
+# 개행 축의 경계값 — LF·CRLF·CR·혼합·마지막 줄 개행 없음. universal newlines 는 셋을 모두
+# `\n` 으로 접고, `newline=""` 은 원문을 보존한다.
+_NEWLINE_PAYLOADS = (
+    ("lf", b"a\nb\n"),
+    ("crlf", b"a\r\nb\r\n"),
+    ("cr", b"a\rb\r"),
+    ("mixed", b"a\r\nb\nc\rd"),
+    ("no-trailing", b"a\nb"),
+)
+
+# 텍스트 축의 경계값 — 비-ASCII 가 인코딩별로 다른 바이트가 되는 쌍.
+_ENCODING_PAYLOADS = (
+    ("utf-8", "티켓 본문 — 인용부호 “값”\n"),
+    ("cp949", "티켓 본문 한글\n"),
+    ("latin-1", "café résumé\n"),
+)
+
+
+@pytest.mark.parametrize(("label", "payload"), _NEWLINE_PAYLOADS)
+@pytest.mark.parametrize("newline", (None, "", "\n"))
+def test_shared_text_read_matches_the_builtin_open_exactly(
+    file_lock, tmp_path, label, payload, newline
+):
+    """`read_text_shared` 는 같은 인자의 내장 `open().read()` 와 **같은 문자열**이다.
+
+    개행 인자의 의미가 보존되는지를 값으로 고정한다 — `None`(universal)·`""`(원문 보존)·
+    `"\\n"`(번역 없음)이 서로 다른 결과를 내는 payload 로 태운다.
+    """
+    target = tmp_path / f"{label}.md"
+    target.write_bytes(payload)
+    with open(target, "r", encoding="utf-8", newline=newline) as handle:
+        expected = handle.read()
+
+    assert file_lock.read_text_shared(
+        target, encoding="utf-8", newline=newline) == expected
+
+
+def test_newline_argument_actually_changes_the_result(file_lock, tmp_path):
+    """선-단언 — 개행 인자가 결과를 실제로 가르는가.
+
+    가르지 않으면 위 동치 회귀는 인자를 흘려도 초록이라 아무것도 지키지 못한다.
+    """
+    target = tmp_path / "crlf.md"
+    target.write_bytes(b"a\r\nb\r\n")
+
+    universal = file_lock.read_text_shared(target, encoding="utf-8", newline=None)
+    verbatim = file_lock.read_text_shared(target, encoding="utf-8", newline="")
+
+    assert universal == "a\nb\n"
+    assert verbatim == "a\r\nb\r\n"
+    assert universal != verbatim, "개행 축이 무의미하다 — 회귀가 공허해진다"
+
+
+@pytest.mark.parametrize(("encoding", "text"), _ENCODING_PAYLOADS)
+def test_shared_text_read_honours_the_requested_encoding(
+    file_lock, tmp_path, encoding, text
+):
+    """인코딩 인자는 내장 호출과 같은 의미다 (locale 기본으로 새지 않는다)."""
+    target = tmp_path / "encoded.md"
+    target.write_bytes(text.encode(encoding))
+
+    assert file_lock.read_text_shared(target, encoding=encoding) == text
+    assert file_lock.read_text_shared(
+        target, encoding=encoding) == target.read_text(encoding=encoding)
+
+
+def test_shared_text_read_honours_the_error_policy(file_lock, tmp_path):
+    """`errors` 도 내장 그대로다 — 깨진 바이트를 진단용으로 읽는 지점이 죽지 않는다.
+
+    엔진은 사본 대조·진단 출력에서 `errors="replace"` 로 읽는다(그 자리에서 죽으면 진단 자체가
+    사라진다). 기본값(`None`=strict)과 결과가 갈리는 payload 로 두 축을 함께 태운다.
+    """
+    target = tmp_path / "broken.md"
+    target.write_bytes(b"ok \xff\xfe tail\n")
+
+    with pytest.raises(UnicodeDecodeError):
+        file_lock.read_text_shared(target, encoding="utf-8")
+    assert file_lock.read_text_shared(
+        target, encoding="utf-8", errors="replace",
+    ) == target.read_text(encoding="utf-8", errors="replace")
+
+
+def test_binary_mode_refuses_the_error_policy(file_lock, tmp_path):
+    """바이너리 모드에 `errors` 를 주는 것도 호출 오류다 (내장 `open` 과 같은 규칙)."""
+    target = tmp_path / "bytes.bin"
+    target.write_bytes(b"x")
+
+    with pytest.raises(ValueError):
+        file_lock.open_shared(target, binary=True, errors="replace")
+
+
+def test_shared_text_read_defaults_match_the_builtin_default(file_lock, tmp_path):
+    """인자를 안 주면 내장 `open` 의 기본(locale 인코딩·universal newlines)과 같다.
+
+    엔진은 인코딩을 명시하는 관례지만, seam 이 **기본값을 몰래 바꾸면** 명시하지 않은 전환
+    지점의 의미가 조용히 달라진다. 기본값도 내장과 대조해 고정한다.
+    """
+    target = tmp_path / "plain.txt"
+    target.write_bytes(b"ascii-only\r\nline\r\n")
+    with open(target, "r") as handle:
+        expected = handle.read()
+
+    assert file_lock.read_text_shared(target) == expected
+
+
+@pytest.mark.parametrize(("label", "payload"), _NEWLINE_PAYLOADS)
+def test_shared_binary_read_returns_the_exact_bytes(file_lock, tmp_path, label, payload):
+    """`read_bytes_shared` 는 `Path.read_bytes()` 와 **바이트 그대로** 같다 (번역 0)."""
+    target = tmp_path / f"{label}.bin"
+    target.write_bytes(payload)
+
+    assert file_lock.read_bytes_shared(target) == payload == target.read_bytes()
+
+
+def test_open_shared_returns_a_readable_handle_in_both_modes(file_lock, tmp_path):
+    """`open_shared` 는 내장 `open` 처럼 컨텍스트 매니저로 쓰는 파일 객체를 돌려준다."""
+    target = tmp_path / "ledger.json"
+    target.write_bytes(b'{"a": 1}\n')
+
+    with file_lock.open_shared(target, binary=True) as handle:
+        assert handle.read() == b'{"a": 1}\n'
+    with file_lock.open_shared(target, binary=False, encoding="utf-8") as handle:
+        assert handle.read() == '{"a": 1}\n'
+
+
+def test_open_shared_accepts_paths_and_strings_like_the_builtin(file_lock, tmp_path):
+    """경로 표기(`Path`/`str`)를 내장 호출과 같게 받는다 (전환이 표기를 강요하지 않는다)."""
+    target = tmp_path / "either.md"
+    target.write_bytes(b"same\n")
+
+    assert file_lock.read_bytes_shared(str(target)) == b"same\n"
+    assert file_lock.read_text_shared(Path(target), encoding="utf-8") == "same\n"
+
+
+def test_binary_mode_refuses_text_arguments(file_lock, tmp_path):
+    """바이너리 모드에 텍스트 인자를 주면 호출 오류다 (내장 `open` 과 같은 규칙)."""
+    target = tmp_path / "bytes.bin"
+    target.write_bytes(b"x")
+
+    with pytest.raises(ValueError):
+        file_lock.open_shared(target, binary=True, encoding="utf-8")
+    with pytest.raises(ValueError):
+        file_lock.open_shared(target, binary=True, newline="")
+
+
+def test_missing_target_raises_the_same_error_as_the_builtin(file_lock, tmp_path):
+    """부재 파일은 내장 호출과 **같은 예외 타입**이다 (호출부 except 절이 그대로 산다)."""
+    missing = tmp_path / "absent.md"
+
+    with pytest.raises(FileNotFoundError):
+        file_lock.read_text_shared(missing, encoding="utf-8")
+    with pytest.raises(FileNotFoundError):
+        file_lock.read_bytes_shared(missing)
+
+
+def test_shared_reader_keeps_the_old_content_across_an_atomic_replace(
+    file_lock, tmp_path
+):
+    """불변식 2 — 교체 시점에 열려 있던 공유 리더는 **옛 내용**을 끝까지 읽는다.
+
+    락-free 읽기가 일관 스냅샷을 본다는 보장이 바로 이 성질이다(board·worktree_pool 이 명시로
+    기대 있다). 읽기 seam 을 얹은 뒤에도 그 성질이 남는지 실동작으로 고정한다.
+    """
+    target = tmp_path / "leases.json"
+    target.write_bytes(b"OLD-CONTENT")
+    tmp = tmp_path / "leases.json.tmp"
+    tmp.write_bytes(b"NEW-CONTENT")
+
+    with file_lock.open_shared(target, binary=True) as reader:
+        file_lock.atomic_replace(tmp, target)
+        assert reader.read() == b"OLD-CONTENT"
+    assert target.read_bytes() == b"NEW-CONTENT"
+
+
+# ── 읽기 플랫폼 분기: POSIX 는 내장 호출 그대로 ──────────────────────────────
+
+def test_this_development_platform_takes_the_posix_read_branch(file_lock):
+    """선-단언 — 플랫폼 판정이 실행 OS 와 일치한다.
+
+    POSIX 개발기에서 False 여야 위 동치 회귀들이 실제로 POSIX 분기를 태운 것이고(Windows 분기가 켜진
+    채였다면 "내장과 같다" 는 단언이 다른 것을 재고 있었던 셈), Windows VM 에서 True 여야 실 API 분기가
+    도는 것이다. 어느 쪽이든 OS 를 잘못 읽으면 red.
+    """
+    assert file_lock.windows_shared_read_platform() is (os.name == "nt")
+
+
+def test_posix_read_branch_never_touches_the_windows_primitive(
+    file_lock, tmp_path, monkeypatch
+):
+    """POSIX 분기는 Windows 원시 API 를 **부르지 않는다** (분기 판정이 실제로 갈린다).
+
+    분기를 명시 주입해 POSIX 경로를 태운다 — Windows VM 에서도 같은 것을 재기 위해서다.
+    """
+    monkeypatch.setattr(file_lock, "windows_shared_read_platform", lambda: False)
+
+    def _forbidden():
+        raise AssertionError("POSIX 분기가 Windows 원시 API 를 불렀다")
+
+    monkeypatch.setattr(file_lock, "_windows_shared_open_api", _forbidden)
+    target = tmp_path / "posix.md"
+    target.write_bytes(b"plain\n")
+
+    assert file_lock.read_text_shared(target, encoding="utf-8") == "plain\n"
+
+
+# ── 읽기 플랫폼 분기: Windows 정책층을 주입으로 태운다 ───────────────────────
+# 대역은 실제 fd 를 돌려준다 — 정책층이 "핸들을 fd 로 넘기고 그 위에 파일 객체를 얹는다" 까지
+# 끝까지 가야 개행·인코딩 의미가 그 분기에서도 같은지 값으로 대조할 수 있다.
+
+# 대역이 흉내내는 CRT 바이너리 플래그 (Windows `os.O_BINARY`·POSIX 에는 없다).
+_INJECTED_READ_O_BINARY = 0x8000
+
+
+class FakeWindowsSharedOpenApi:
+    """`WindowsSharedOpenApi` 대역 — 인자를 기록하되 **진짜 fd** 로 이어 준다.
+
+    `open_handle` 은 POSIX `os.open` 으로 연 fd 를 '핸들' 로 쓰고, `open_osfhandle` 은 그 값을
+    그대로 fd 로 넘긴다(Windows 의 소유권 이전과 같은 모양). 그래서 이 대역으로도 읽기 결과가
+    실제 파일 내용이며, 정책층의 인자와 소유권 처리를 함께 단언할 수 있다.
+    """
+
+    def __init__(self, *, open_error: OSError | None = None,
+                 osfhandle_error: OSError | None = None) -> None:
+        self.open_error = open_error
+        self.osfhandle_error = osfhandle_error
+        self.open_calls: list[tuple[str, int, int]] = []
+        self.osfhandle_calls: list[tuple[int, int]] = []
+        self.closed: list[int] = []
+
+    def open_handle(self, path: str, access: int, share: int) -> int:
+        self.open_calls.append((path, access, share))
+        if self.open_error is not None:
+            raise self.open_error
+        return os.open(path, os.O_RDONLY)
+
+    def open_osfhandle(self, handle: int, flags: int) -> int:
+        self.osfhandle_calls.append((handle, flags))
+        if self.osfhandle_error is not None:
+            raise self.osfhandle_error
+        return handle
+
+    def close_handle(self, handle: int) -> None:
+        self.closed.append(handle)
+        os.close(handle)
+
+    def as_named_tuple(self, module):
+        return module.WindowsSharedOpenApi(
+            self.open_handle, self.open_osfhandle, self.close_handle)
+
+
+def _force_windows_read_branch(
+    module, monkeypatch, api: FakeWindowsSharedOpenApi
+) -> None:
+    """플랫폼 판정과 원시 API 를 Windows 쪽으로 갈아끼운다 (주입 지점 두 곳 모두).
+
+    `os.O_BINARY` 도 함께 심는다 — POSIX 에는 그 이름이 없어 플래그 축을 태울 수 없다.
+    """
+    monkeypatch.setattr(module, "windows_shared_read_platform", lambda: True)
+    monkeypatch.setattr(
+        module, "_windows_shared_open_api", lambda: api.as_named_tuple(module))
+    monkeypatch.setattr(module.os, "O_BINARY", _INJECTED_READ_O_BINARY, raising=False)
+
+
+def test_windows_read_injection_actually_reaches_the_primitive(
+    file_lock, tmp_path, monkeypatch
+):
+    """선-단언 — 주입이 no-op 이 아니다 (원시 대역이 실제로 불린다).
+
+    이 단언 없이는 아래 Windows 회귀들이 POSIX 분기를 재면서 초록일 수 있다
+    ([[guard-must-cover-its-own-surface]]).
+    """
+    api = FakeWindowsSharedOpenApi()
+    _force_windows_read_branch(file_lock, monkeypatch, api)
+    target = tmp_path / "probe.md"
+    target.write_bytes(b"probe\n")
+
+    assert file_lock.read_bytes_shared(target) == b"probe\n"
+    assert api.open_calls, "주입이 no-op — Windows 읽기 분기를 태우지 못했다"
+    assert api.osfhandle_calls, "핸들이 fd 로 넘어가지 않았다"
+
+
+def test_windows_read_opens_with_read_access_and_full_sharing(
+    file_lock, tmp_path, monkeypatch
+):
+    """Windows 분기는 **읽기 권한 + 읽기/쓰기/삭제 공유**로 연다.
+
+    공유 삭제가 빠지면 그 리더가 POSIX 의미 rename 을 WinError 32 로 막는다 — 이 seam 이
+    존재하는 이유 자체가 사라진다.
+    """
+    api = FakeWindowsSharedOpenApi()
+    _force_windows_read_branch(file_lock, monkeypatch, api)
+    target = tmp_path / "ledger.json"
+    target.write_bytes(b"{}")
+
+    file_lock.read_bytes_shared(target)
+
+    path, access, share = api.open_calls[0]
+    assert path == str(target)
+    assert access == file_lock.GENERIC_READ
+    assert share == (
+        file_lock.FILE_SHARE_READ | file_lock.FILE_SHARE_WRITE
+        | file_lock.FILE_SHARE_DELETE
+    )
+    assert share == file_lock.SHARE_ALL_MODES
+
+
+def test_windows_read_hands_the_descriptor_a_binary_flag(
+    file_lock, tmp_path, monkeypatch
+):
+    """fd 는 **바이너리**로 넘긴다 — CRT 텍스트 모드가 붙으면 읽기가 번역된다.
+
+    내장 `open` 은 Windows 에서도 바이너리 fd 위에 TextIOWrapper 를 얹어 개행을 파이썬 층에서만
+    처리한다. 우리가 만든 fd 가 텍스트 모드면 CRLF 가 fd 층에서 한 번 더 접혀 `newline=""`
+    (원문 보존)이 의미를 잃는다.
+    """
+    api = FakeWindowsSharedOpenApi()
+    _force_windows_read_branch(file_lock, monkeypatch, api)
+    target = tmp_path / "crlf.md"
+    target.write_bytes(b"a\r\nb\r\n")
+
+    file_lock.read_bytes_shared(target)
+
+    _handle, flags = api.osfhandle_calls[0]
+    assert flags & _INJECTED_READ_O_BINARY, f"바이너리 플래그가 없다: {flags}"
+    assert flags & os.O_RDONLY == os.O_RDONLY or os.O_RDONLY == 0
+
+
+@pytest.mark.parametrize(("label", "payload"), _NEWLINE_PAYLOADS)
+@pytest.mark.parametrize("newline", (None, ""))
+def test_windows_read_yields_the_same_text_as_the_posix_branch(
+    file_lock, tmp_path, monkeypatch, label, payload, newline
+):
+    """두 분기가 **같은 문자열**을 낸다 — 이식이 의미를 바꾸지 않았다.
+
+    같은 파일을 POSIX 분기로 한 번, 주입한 Windows 분기로 한 번 읽어 직접 대조한다.
+    """
+    target = tmp_path / f"{label}.md"
+    target.write_bytes(payload)
+    posix_text = file_lock.read_text_shared(
+        target, encoding="utf-8", newline=newline)
+
+    api = FakeWindowsSharedOpenApi()
+    _force_windows_read_branch(file_lock, monkeypatch, api)
+    windows_text = file_lock.read_text_shared(
+        target, encoding="utf-8", newline=newline)
+
+    assert api.open_calls, "주입이 no-op — 대조가 성립하지 않는다"
+    assert windows_text == posix_text
+
+
+def test_windows_read_returns_the_handle_when_the_descriptor_handoff_fails(
+    file_lock, tmp_path, monkeypatch
+):
+    """fd 로 넘기기 전에 실패하면 **핸들을 반환한다** (소유권이 아직 여기 있다).
+
+    이 자리를 빼먹으면 실패마다 커널 핸들이 새고, 그 파일은 이후 삭제·교체가 막힌다.
+    """
+    api = FakeWindowsSharedOpenApi(osfhandle_error=OSError("핸들 이전 실패"))
+    _force_windows_read_branch(file_lock, monkeypatch, api)
+    target = tmp_path / "handoff.md"
+    target.write_bytes(b"x")
+
+    with pytest.raises(OSError, match="핸들 이전 실패"):
+        file_lock.read_bytes_shared(target)
+
+    assert len(api.closed) == 1, f"핸들이 반환되지 않았다: {api.closed}"
+
+
+def test_windows_read_does_not_double_close_after_a_successful_handoff(
+    file_lock, tmp_path, monkeypatch
+):
+    """소유권이 fd 로 넘어간 뒤에는 핸들을 따로 닫지 않는다 (이중 반환 금지).
+
+    Windows 에서 이중 close 는 그 사이 재사용된 남의 핸들을 닫아 무관한 IO 를 깨뜨린다.
+    """
+    api = FakeWindowsSharedOpenApi()
+    _force_windows_read_branch(file_lock, monkeypatch, api)
+    target = tmp_path / "once.md"
+    target.write_bytes(b"y")
+
+    assert file_lock.read_bytes_shared(target) == b"y"
+    assert api.closed == [], f"소유권 이전 뒤에도 핸들을 닫았다: {api.closed}"
+
+
+def test_windows_read_propagates_the_open_failure_without_a_descriptor(
+    file_lock, tmp_path, monkeypatch
+):
+    """열기 실패는 그대로 올라간다 — 일반 `open` 으로 조용히 내려앉지 않는다.
+
+    폴백을 두면 그 경로의 리더가 다시 교체를 막는데도 초록이 된다([[no-green-by-disabling]]).
+    """
+    api = FakeWindowsSharedOpenApi(open_error=PermissionError("열기 거부"))
+    _force_windows_read_branch(file_lock, monkeypatch, api)
+    target = tmp_path / "denied.md"
+    target.write_bytes(b"z")
+
+    with pytest.raises(PermissionError, match="열기 거부"):
+        file_lock.read_bytes_shared(target)
+
+    assert api.osfhandle_calls == [], "열기에 실패했는데 fd 이전을 시도했다"
+    assert api.closed == [], "열지 못한 핸들을 닫으려 했다"
+
+
+def test_shared_read_flags_include_the_platform_binary_flag(file_lock, monkeypatch):
+    """플래그 조립은 플랫폼이 그 이름을 줄 때만 얹는다 (POSIX 에서 AttributeError 금지)."""
+    assert file_lock._shared_read_flags() == os.O_RDONLY | getattr(os, "O_BINARY", 0)
+
+    monkeypatch.setattr(file_lock.os, "O_BINARY", _INJECTED_READ_O_BINARY, raising=False)
+    assert file_lock._shared_read_flags() == os.O_RDONLY | _INJECTED_READ_O_BINARY
+
+
+# ── 읽기 재복제 차단 (원자 교체 대상 판독은 seam 한 곳으로·T-0729) ───────────
+# 쓰기 축과 같은 규율이다 — **가드가 곧 목록**이라 사람이 전환 대상을 관리하지 않는다.
+# `tools/*.py` 전수를 AST 로 훑어 파일 판독(`read_text`/`read_bytes`/읽기 모드 `open`)을 모두
+# 열거하고, 등재부 밖에서 종전 읽기가 되살아나면 그 자리가 red 다.
+#
+# 판정 범위가 "원자 교체 대상 파일" 이 아니라 "엔진 도구의 모든 판독" 인 이유는 실측이다 —
+# 대상만 좁히려면 dst 값-흐름을 풀어야 하는데 17개 호출의 dst 가 전부 지역 변수라 파일 정체가
+# 안 나오고(티켓 파일은 런타임 조립이라 어떤 표현식으로도 안 잡힌다), 리터럴 기반으로 좁히면
+# 24모듈 중 24모듈이 걸려 전량과 같아진다. 판정 가능한 규칙은 전량 + 등재 예외 하나뿐이다.
+
+# 판독 프리미티브 — 이 이름을 부르는 자리가 곧 전환 대상이다.
+_READ_PRIMITIVES = frozenset({"read_text", "read_bytes"})
+
+# `os.open` 은 **fd 프리미티브**라 파일 객체 판독이 아니다 — 심볼릭 링크 안전 walk(dir_fd·
+# O_NOFOLLOW)와 배타 생성(O_EXCL)이 그 위에 서 있고, 공유 읽기로 바꾸면 그 보장이 사라진다.
+_FD_PRIMITIVE_RECEIVERS = frozenset({"os"})
+
+# 쓰기 모드 문자 — 하나라도 있으면 판독이 아니다.
+_WRITE_MODE_FLAGS = "wax+"
+
+# 공용 seam 안에서 종전 열기를 부르는 **유일한** 자리 (POSIX 분기).
+_SEAM_READ_SITE = ("file_lock.py", "open_shared")
+
+
+def _degrade_helper_reason(module: str, why: str, *helpers: str) -> dict:
+    """한 모듈의 강등 헬퍼들에 같은 사유를 단다 (헬퍼는 등재 예외의 *구현*이다).
+
+    헬퍼 이름을 인자로 받는다 — 모듈마다 쓰는 판독 종류가 달라(예: `review_rounds` 는 bytes
+    판독이 없다) 세 개를 가정하면 없는 함수가 등재부에 남아 red 가 된다.
+    """
+    return {(module, name): why for name in helpers}
+
+
+# **등재된 예외** — 공유 읽기 seam 을 쓸 수 없거나 대상이 아닌 판독. `(모듈, 함수)` → 사유.
+# 등재 밖 종전 읽기도, 사유가 빈 등재도 red 다([[T-0729]] §결정 · 선택지 A 의 판독 쪽 확장).
+SHARED_READ_EXCEPTIONS: dict[tuple[str, str], str] = {
+    ("engine_rev.py", "read_literal"): (
+        "rev 검증자 자신의 부트스트랩 판독 — 형제 file_lock 을 로드하려면 그 사본의 rev 를 "
+        "대조해야 하고 그 대조를 하는 곳이 여기라 순환이다"
+    ),
+    ("engine_rev.py", "bump"): (
+        "같은 순환 위에서 자기 rev 를 포함해 전 모듈 리터럴을 다시 쓰는 경로 — 스탬프가 바뀌는 "
+        "도중이라 형제 rev 대조가 성립하지 않는다"
+    ),
+    ("pm_render.py", "render_file"): (
+        "인자가 상류 템플릿 원본(원자 교체 대상 아님)인지 목적지 사본(pm_import 가 원자 교체)인지 "
+        "**정적으로 구분되지 않는다**. 렌더는 순수 변환이라 이 판독이 상태를 만들지 않고, 호출부의 "
+        "목적지 판독은 이미 seam 을 지난다"
+    ),
+    ("pm_update.py", "_copy_manifest_preserving_guest"): (
+        "`sp` 가 파일 경로가 아니라 **인메모리 소스**(`_ManifestTextSource`·flavor manifest "
+        "합집합)일 수 있는 자리다 — 같은 문에서 `isinstance(sp, Path)` 로 갈라 경로일 때만 seam 을 "
+        "지난다"
+    ),
+    **_degrade_helper_reason(
+        "pm_update.py",
+        "복구 채널의 판독 강등 분기 — pm_update 는 엔진 사본이 깨진 채택자에게도 떠야 한다"
+        "(`_atomic_replace_or_degrade` 의 판독 쪽 짝·등록 사유 `shared_read_seam`)",
+        "_read_text_shared", "_read_bytes_shared", "_open_shared",
+    ),
+    **_degrade_helper_reason(
+        "pm_import.py",
+        "복구/도입 채널의 판독 강등 분기 — 구세대·손상 사본 트리에서도 conf 판독과 키 기록이 "
+        "성립해야 한다(`_atomic_replace_conf` 와 같은 등재 항목의 판독 쪽)",
+        "_read_text_shared", "_read_bytes_shared", "_open_shared",
+    ),
+    **_degrade_helper_reason(
+        "pm_log.py",
+        "판독은 형제 없이도 떠야 한다 — pm_bootstrap 이 이 모듈의 로그 판독을 fail-soft 로 "
+        "재사용한다(로더 주석의 명시 계약)",
+        "_read_text_shared", "_read_bytes_shared", "_open_shared",
+    ),
+    **_degrade_helper_reason(
+        "review_rounds.py",
+        "판독은 형제 없이도 떠야 한다 — 부분 동기 트리에서도 라운드 판정이 살아 있어야 그 판정을 "
+        "쓰는 도구들이 복구를 안내한다(로더 주석의 명시 계약)",
+        "_read_text_shared", "_open_shared",
+    ),
+    ("external_review.py", "_read_text_shared"): (
+        "판독은 형제 없이도 떠야 한다 — 진단·denylist·재앵커는 seam 이 필요한 `--gate` 구간 밖이고 "
+        "pm_delegate 가 그 경로를 deep-import 로 재사용한다(로더 주석의 기능 축)"
+    ),
+    ("identity_args.py", "_read_text_shared"): (
+        "board 가 import 시점에 로드하는 leaf point-reader 의 강등 분기 — 판독 계약이 "
+        "'부재/손상 → None' 이라 seam 부재로 올리면 실재하는 장부를 '없음' 으로 위장한다"
+    ),
+    ("repo_coordinates.py", "_read_text_shared"): (
+        "같은 leaf 좌표 모듈의 강등 분기 — seam 부재로 올리면 실재하는 리스 장부를 '읽을 수 없다' "
+        "로 위장해 좌표 해소 전체가 막힌다"
+    ),
+}
+
+
+def _is_read_call(node: ast.Call, bindings: tuple[set[str], set[str]]) -> bool:
+    """이 호출이 **파일 판독**인가 (`read_text`/`read_bytes`/읽기 모드 `open`).
+
+    `os.open` 은 제외한다(fd 프리미티브). 모드가 상수로 안 보이면 내장 `open` 기본값(`"r"`)을
+    따라 판독으로 본다 — 놓치는 쪽보다 더 세는 쪽이 안전하다(등재로 풀 수 있다).
+    """
+    open_names, os_aliases = bindings
+    func = node.func
+    if isinstance(func, ast.Attribute) and func.attr in _READ_PRIMITIVES:
+        return True
+    is_builtin = isinstance(func, ast.Name) and func.id in open_names
+    is_method = isinstance(func, ast.Attribute) and func.attr == "open"
+    if not (is_builtin or is_method):
+        return False
+    if (is_method and isinstance(func.value, ast.Name)
+            and func.value.id in os_aliases):
+        return False
+    index = 1 if is_builtin else 0
+    mode = None
+    if len(node.args) > index and isinstance(node.args[index], ast.Constant):
+        mode = node.args[index].value
+    for keyword in node.keywords:
+        if keyword.arg == "mode" and isinstance(keyword.value, ast.Constant):
+            mode = keyword.value.value
+    effective = mode if isinstance(mode, str) else "r"
+    return not any(flag in effective for flag in _WRITE_MODE_FLAGS)
+
+
+def _open_bindings(tree: ast.Module) -> tuple[set[str], set[str]]:
+    """`(open 을 가리키는 이름들, os 별칭들)` — 별칭 우회를 판정에 반영한다.
+
+    `import os as _o` 로 받은 `_o.open(...)` 도 fd 프리미티브이고, `from builtins import open
+    as o` 로 받은 `o(path)` 도 판독이다. 이름 그대로만 보면 둘 다 가드의 사각이 된다.
+    """
+    names = {"open"}
+    os_aliases = set(_FD_PRIMITIVE_RECEIVERS)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            os_aliases.update(alias.asname or alias.name
+                              for alias in node.names if alias.name == "os")
+        elif isinstance(node, ast.ImportFrom) and node.module == "builtins":
+            names.update(alias.asname or alias.name
+                         for alias in node.names if alias.name == "open")
+    return names, os_aliases
+
+
+def _read_call_sites(source: str) -> list[tuple[str, int]]:
+    """소스 한 벌의 판독 호출 위치 `(감싼 함수명, 줄번호)` 목록 (귀속까지 기계 판정)."""
+    tree = ast.parse(source)
+    enclosing: dict[ast.AST, str] = {}
+    for node in ast.walk(tree):
+        name = node.name if isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef)) else enclosing.get(node, "")
+        for child in ast.iter_child_nodes(node):
+            enclosing[child] = name
+    bindings = _open_bindings(tree)
+    return [
+        (enclosing.get(node, ""), node.lineno)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _is_read_call(node, bindings)
+    ]
+
+
+def _read_sites_by_module() -> dict[str, list[tuple[str, int]]]:
+    """tools/ 전수 → 모듈별 판독 호출 위치 `(감싼 함수, 줄번호)`."""
+    found = {
+        path.name: _read_call_sites(path.read_text(encoding="utf-8"))
+        for path in sorted(TOOLS.glob("*.py"))
+    }
+    return {name: sites for name, sites in found.items() if sites}
+
+
+def test_plain_reads_live_only_in_the_seam_and_the_registered_exceptions():
+    """종전 읽기 = 공용 seam 한 곳 + **등재된 예외**뿐이다 (가드가 곧 목록).
+
+    쓰기 축(`test_os_replace_lives_only_in_the_seam_and_the_registered_exceptions`)과 같은
+    판정이다 — `tools/*.py` 전수를 훑어 판독을 감싼 함수까지 귀속시키고, 등재부 밖에서 되살아나면
+    그 자리가 red 다. 등재부가 사라져도 red 이므로 예외는 조용히 증식하지 못한다.
+    """
+    measured = {
+        (module, function)
+        for module, sites in _read_sites_by_module().items()
+        for function, _line in sites
+    }
+    expected = {_SEAM_READ_SITE} | set(SHARED_READ_EXCEPTIONS)
+    assert measured == expected, (
+        f"등재 밖 종전 읽기: {sorted(measured - expected)} / "
+        f"사라진 등재(목록 정리 필요): {sorted(expected - measured)}"
+    )
+
+
+def test_every_registered_read_exception_carries_a_reason():
+    """등재된 판독 예외는 사유가 있어야 한다 — 빈 사유는 등재가 아니라 구멍이다."""
+    assert SHARED_READ_EXCEPTIONS, "등재부가 비었다(예외 0이면 가드가 더 좁아야 한다)"
+    for site, reason in SHARED_READ_EXCEPTIONS.items():
+        assert reason.strip(), f"사유 없는 등재: {site}"
+
+
+def test_read_seam_consumers_delegate_instead_of_reading_directly():
+    """전환한 도구는 seam 판독 위임을 실제로 갖는다 (등재 예외 밖 종전 읽기 0).
+
+    "종전 읽기가 없다" 만 보면 판독 자체가 사라진 모듈도 초록이다 — 위임이 **있는지**를 함께 본다.
+    """
+    exempt = {module for module, _function in SHARED_READ_EXCEPTIONS}
+    for module, sites in _read_sites_by_module().items():
+        if module == _SEAM_READ_SITE[0]:
+            continue
+        assert module in exempt, f"{module}: 등재 없는 종전 읽기 {sites}"
+    converted = {
+        path.name for path in sorted(TOOLS.glob("*.py"))
+        if _delegates_to_shared_read(path.read_text(encoding="utf-8"))
+    }
+    assert len(converted) >= 20, f"전환 모듈이 너무 적다(측정 오류 의심): {sorted(converted)}"
+
+
+def _delegates_to_shared_read(source: str) -> bool:
+    """이 소스가 공유 읽기에 위임하는가 (seam 호출 또는 모듈 지역 강등 헬퍼 호출)."""
+    names = {"read_text_shared", "read_bytes_shared", "open_shared",
+             "_read_text_shared", "_read_bytes_shared", "_open_shared"}
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr in names:
+            return True
+        if isinstance(func, ast.Name) and func.id in names:
+            return True
+        if (isinstance(func, ast.Name) and func.id == "getattr"
+                and len(node.args) >= 2 and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value in names):
+            return True
+    return False
+
+
+@pytest.mark.parametrize(
+    ("label", "snippet", "expected"),
+    (
+        ("read-text", "p.read_text(encoding='utf-8')\n", 1),
+        ("read-bytes", "p.read_bytes()\n", 1),
+        ("open-default", "open(p)\n", 1),
+        ("open-text", "open(p, 'r', encoding='utf-8')\n", 1),
+        ("open-binary", "open(p, 'rb')\n", 1),
+        ("open-method", "p.open('r', encoding='utf-8')\n", 1),
+        ("open-keyword-mode", "open(p, mode='r')\n", 1),
+        ("write", "open(p, 'w', encoding='utf-8')\n", 0),
+        ("append", "open(p, 'a')\n", 0),
+        ("update", "open(p, 'r+')\n", 0),
+        ("fd-primitive", "import os\nos.open(p, os.O_RDONLY)\n", 0),
+        ("write-text", "p.write_text('x', encoding='utf-8')\n", 0),
+        ("comment", "# p.read_text(encoding='utf-8')\nDOC = 'p.read_bytes()'\n", 0),
+    ),
+)
+def test_read_guard_classifies_each_form(label, snippet, expected):
+    """판정기가 각 표기를 옳게 가른다 — 판독만 세고 쓰기·fd 프리미티브·산문은 안 센다."""
+    assert len(_read_call_sites(snippet)) == expected, label
+
+
+def test_a_new_unregistered_plain_read_is_red():
+    """등재 없는 새 종전 읽기는 가드가 red 로 잡는다 (등재부가 곧 상한·감도 실증)."""
+    source = (TOOLS / "worktree_pool.py").read_text(encoding="utf-8")
+    mutated = source.replace(
+        'file_lock.read_text_shared(LEASES_FILE, encoding="utf-8")',
+        'LEASES_FILE.read_text(encoding="utf-8")',
+        1,
+    )
+    assert mutated != source, "변이 앵커 소실"
+    sites = _read_call_sites(mutated)
+    assert sites, "변이가 실제로 종전 읽기를 만들지 않았다"
+    assert all(
+        ("worktree_pool.py", function) not in SHARED_READ_EXCEPTIONS
+        for function, _line in sites
+    ), "이 변이 지점이 이미 등재돼 있다 — 감도 실증이 성립하지 않는다"
+
+
+def test_the_fd_primitive_exclusion_is_not_a_blanket_hole():
+    """`os.open` 제외는 **수신자 기준**이다 — 같은 이름의 파일 객체 열기는 그대로 센다.
+
+    제외를 이름(`open`)으로 걸면 `path.open("rb")` 전량이 가드 밖으로 새어 나간다.
+    """
+    assert len(_read_call_sites("import os\nos.open(p, os.O_RDONLY)\n")) == 0
+    assert len(_read_call_sites("import os\np.open('rb')\n")) == 1
+    assert len(_read_call_sites("import os as _o\n_o.open(p, 0)\np.open('rb')\n")) == 1
 
 
 # ── 강제 삭제 (read-only·잔재 금지·T-0711) ──────────────────────────────────

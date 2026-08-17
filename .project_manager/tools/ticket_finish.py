@@ -5,7 +5,9 @@
     venv/bin/python .project_manager/tools/ticket_finish.py T-NNNN [--section "<섹션명>"] [--dry-run]
 
 동작 순서 (하나라도 실패하면 이후 단계 중단):
-  1. 회귀 실행 — pytest tests/ -q. red 면 즉시 중단.
+  1. 회귀 실행 — 게이트는 areas.md(prefix 행 > repo 행) > local.conf test_cmd 로 해소하고,
+     해소 실패면 pytest tests/ -q. red 면 즉시 중단(비-pytest 게이트는 exit code 로 판정
+     — §게이트 종류).
   2. log/current.md 스켈레톤 append — 표준 형식 entry 골격.
   3. board.py complete 호출 — 회귀를 이미 통과했으므로 --tests-pass.
   4. git stage — **선언 경로만**(ticket `touches` ∪ *이 실행이 쓴* 산출물) 스테이징 + 스코프
@@ -258,6 +260,19 @@ def _load_pm_log():
     )
 
 
+def _load_file_lock():
+    """공용 파일 프리미티브 seam(`file_lock.py`)을 같은 tools/ 에서 경로 로드한다.
+
+    원자 교체 대상 파일을 읽는 지점은 이 seam 의 공유 읽기를 지난다([[T-0729]]) — 일반 `open`
+    리더가 하나라도 잡고 있으면 Windows 는 그 파일의 원자 교체를 WinError 32 로 막는다. 부재/
+    손상/rev 불일치는 엔진 사본 손상이므로 흡수하지 않는다(fail-loud·재동기 안내).
+    """
+    return _load_module_from_path(
+        Path(__file__).resolve().parent / "file_lock.py", "file_lock.py",
+        verifier=_verify_engine_rev, cache=True,
+    )
+
+
 try:
     identity_args = _load_identity_args()
 except Exception as exc:  # noqa: BLE001 — 직접 CLI는 import 단계 skew도 복구 안내로 번역.
@@ -410,7 +425,7 @@ def local_config() -> dict[str, str]:
     conf: dict[str, str] = {}
     if not LOCAL_CONF.exists():
         return conf
-    for line in LOCAL_CONF.read_text(encoding="utf-8").splitlines():
+    for line in _load_file_lock().read_text_shared(LOCAL_CONF, encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -421,14 +436,13 @@ def local_config() -> dict[str, str]:
 
 # ── 회귀 명령 해소 (per-repo) ──────────────────────────────────
 #
-# multi-PM(multi-PM) 모델에선 활성 repo 가 비-Python(Go 등)일 수 있어 `pytest tests/ -q`
-# 가 틀린다 — 회귀는 **활성 repo 의 per-repo test_cmd**(areas.md 레지스트리)를 써야
-# 한다. board.py 의 `_test_cmd` 가 그 우선순위(override > areas.md 활성 prefix
-# 행 > local.conf > 기본)의 단일 진실이므로 import 해 재사용한다.
+# 활성 repo 가 비-Python(Go 등)이거나 `tests/` 자체가 없을 수 있어 `pytest tests/ -q` 가
+# 틀린다 — 회귀는 그 repo 의 `test_cmd`(areas.md 레지스트리 prefix 행/repo 행 > local.conf)를
+# 써야 한다. 해소 체인의 단일 사본은 pm_handoff `_resolve_gate_cmd` 이고 이 도구는 자기 board
+# 로드 seam 만 얹어 위임한다(아래 `_resolve_per_repo_test_cmd`).
 #
 # **솔로/프레임워크 자기 회귀(=현행 `pytest tests/ -q` venv 실행)는 반드시 보존**한다:
-# areas.md 없음 / 활성 prefix 없음 / 그 행의 test_cmd 빈 값이면 *multi-PM 오버라이드가
-# 아니므로* None 을 돌려, 호출부가 현행 하드코딩 argv 를 그대로 쓰게 한다(board 의
+# 어느 층도 값을 주지 못하면 None 을 돌려, 호출부가 현행 argv 를 그대로 쓰게 한다(board 의
 # 솔로 폴백 `pytest -q` 와 달리 venv 인터프리터·`tests/` 경로를 보존 — 도그푸딩 불변).
 
 def _load_board_module():
@@ -486,32 +500,80 @@ def _guard_worktree_misanchor() -> bool:
 
 
 def _resolve_per_repo_test_cmd() -> str | None:
-    """multi-PM 모드 활성 repo 의 per-repo test_cmd(문자열)를 해소한다. 솔로면 None.
+    """활성 회귀 게이트 명령(문자열)을 해소한다. 해소 실패면 None(솔로 폴백).
 
-    board.py 를 import 해 areas.md 레지스트리 해소(`id_prefix`·`_areas_row_for_prefix`)를
-    재사용한다 — areas.md 가 있고 활성 prefix 의 행에 비어 있지 않은 `test_cmd` 가 있을
-    때만 그 문자열을 반환한다. 그 외(솔로·미등록·빈 값·import 실패)는 None(현행 보존).
+    해소 체인 — 앞선 층이 비어 있지 않은 값을 주면 거기서 멈춘다:
 
-    areas.md 존재 가드는 board 의 `areas_file()`(board_root 추종)로 위임한다 — board/ 분리
-    시 areas.md 가 board/ 안(submodule)으로 옮겨가므로 legacy 위치(wiki 밖
-    `.project_manager/areas.md`)를 보면 stale 이다. board 로드 후 그 함수를 부른다(`id_prefix`
-    해소와 동일 루트).
+      1. areas.md 활성 **prefix** 행의 `test_cmd`   (multi-repo 네임스페이스 형상)
+      2. areas.md 활성 **repo** 행의 `test_cmd`     (prefix 칼럼이 빈 무prefix 형상)
+      3. `local.conf` 의 `test_cmd`                 (per-clone 명시 설정)
+      4. None → 호출부가 솔로 `pytest tests/ -q` venv argv (도그푸딩 불변)
+
+    **체인 자체는 pm_handoff `_resolve_gate_cmd` 가 소유한다** — 사본을 두지 않고 동적 로드해
+    위임한다(`_regression_cwd` 위임과 같은 방향·DRY). 해소 함수가 이 도구에만 있고 pm_handoff
+    엔 없던 미러 이탈이 무prefix 채택자 결함의 절반이었다: 사본 둘을 만들면 다음 갱신에서
+    다시 갈린다. board 모듈은 **이 도구의 seam**(`_load_board_module`)이 준다 — areas/
+    local.conf 해소를 hermetic 하게 가로채는 기존 테스트 seam 이 그대로 살아 있다.
+
+    pm_handoff 부재/로드 실패는 None(솔로 폴백·fail-soft·현행 보존)이고, 형제 사본 skew 는
+    fail-loud 로 올린다(`_regression_cwd` 와 동형).
     """
     mod = _load_board_module()
     if mod is None:
         return None
-    if not mod.areas_file().exists():
+    hp = _load_pm_handoff()
+    if hp is None:
         return None
     try:
-        prefix = mod.id_prefix()
-        if not prefix:
-            return None
-        row = mod._areas_row_for_prefix(prefix)
-        if row and row.get("test_cmd"):
-            return row["test_cmd"]
-    except Exception:
+        return hp._resolve_gate_cmd(mod)
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 위임 실패는 솔로 폴백.
+        if _is_engine_rev_skew(exc):
+            raise  # 사본 skew 는 fail-loud(삼키지 않는다).
         return None
-    return None
+
+
+# ── 게이트 종류 (pytest 스위트인가 임의 명령인가) ────────────────────────
+#
+# 해소된 test_cmd 가 pytest 스위트라는 보장은 없다 — `go test ./...`·`viewer bind` 같은 임의
+# 명령이다. 그런데 green 판정을 pytest 요약행(`N passed`)에만 걸어 두면 비-pytest 게이트는
+# **항상 red** 로 오판돼 완료 부기가 통째로 막힌다(→ `--no-pytest` 상시 우회 → 진짜 red 를
+# 놓친다). 그래서 판정 기준을 게이트 종류로 가른다:
+#   - pytest 게이트 — 기존 요약행 판정 + 테스트 수 파싱 (100% 불변).
+#   - 비-pytest 게이트 — exit code 0 만 green. 테스트 수는 측정 불가라 "?"(로그 스켈레톤이
+#     이미 지원하는 값·`--no-pytest` 경로와 동형).
+# **fail-soft 가 아니다** — 비-pytest 게이트도 rc != 0 이면 그대로 중단한다(red 무시 없음).
+#
+# 이 세 wrapper 는 pm_handoff 와 **동형 미러**다(해소 체인과 달리 위임하지 않는다) — 각 도구가
+# 자기 `is_pytest_green`(요약행 seam 을 자기 board 로드에 묶는 기존 미러)을 판정에 쓰기
+# 때문이다. 두 미러가 갈리면 `tests/test_regression_gate_resolution.py` 파리티 가드가 red 다.
+_PYTEST_GATE_TOKEN = "pytest"
+
+# 솔로/프레임워크 자기 회귀가 실제로 실행하는 argv 의 표시용 라벨 (dry-run 안내 문구).
+_SOLO_GATE_LABEL = "pytest tests/ -q"
+
+
+def _gate_is_pytest(gate_cmd: str | None) -> bool:
+    """해소된 회귀 명령이 pytest 스위트면 True.
+
+    `None`(해소 실패) = 솔로/프레임워크 자기 회귀 = venv pytest argv 이므로 True.
+    """
+    return gate_cmd is None or _PYTEST_GATE_TOKEN in gate_cmd
+
+
+def _gate_label(gate_cmd: str | None) -> str:
+    """회귀 게이트를 사람이 읽는 한 줄로 (안내 출력용)."""
+    return gate_cmd if gate_cmd else _SOLO_GATE_LABEL
+
+
+def _regression_is_green(output: str, returncode: int, gate_cmd: str | None) -> bool:
+    """회귀가 green 이면 True — 판정 기준은 게이트 종류가 정한다(`_gate_is_pytest`).
+
+    - pytest 게이트 — 기존 요약행 판정(`is_pytest_green`) 100% 불변.
+    - 비-pytest 게이트 — exit code 0 만 green(요약행 개념이 없다).
+    """
+    if _gate_is_pytest(gate_cmd):
+        return is_pytest_green(output, returncode)
+    return returncode == 0
 
 
 # ── pytest 출력 파서 ────────────────────────────────────────────────────
@@ -816,7 +878,7 @@ def _fallback_ticket_frontmatter(
     for status in ("open", "claimed", "blocked", "done"):
         for path in sorted((tickets_dir / status).glob(f"{ticket_id}*.md")):
             try:
-                text = path.read_text(encoding="utf-8")
+                text = _load_file_lock().read_text_shared(path, encoding="utf-8")
             except (OSError, UnicodeError):
                 continue
             if _fallback_frontmatter_scalar(text, "id") == ticket_id:
@@ -1398,9 +1460,9 @@ class TicketFinisher:
         """회귀를 실행해 (returncode, stdout+stderr) 반환.
 
         명령 해소:
-          - **multi-PM 모드** — 활성 repo 의 per-repo test_cmd(areas.md)가 있으면 그 문자열을
-            shell 로 실행(board.py 회귀와 동형·비-Python repo 수용).
-          - **솔로/프레임워크 자기 회귀** — per-repo cmd 가 없으면 현행 그대로
+          - **해소 성공** — `_resolve_per_repo_test_cmd()`(areas prefix 행 > areas repo 행 >
+            local.conf)가 준 문자열을 shell 로 실행(board.py 회귀와 동형·비-Python repo 수용).
+          - **솔로/프레임워크 자기 회귀** — 해소 실패면 현행 그대로
             `[venv_python, -m, pytest, tests/, -q]` venv argv(도그푸딩 불변·하위호환).
 
         cwd 는 런타임 해소— 명시 주입(`regression_cwd` 인자)이 있으면 그 경로,
@@ -1616,9 +1678,7 @@ class TicketFinisher:
     def _worktree_line_count(root: Path, path: str) -> int | None:
         """rename destination의 현재 파일 줄 수(읽기 실패면 None)."""
         try:
-            return len((root / path).read_text(
-                encoding="utf-8", errors="replace",
-            ).splitlines())
+            return len(_load_file_lock().read_text_shared(root / path, encoding="utf-8", errors="replace").splitlines())
         except (OSError, UnicodeError):
             return None
 
@@ -2005,32 +2065,50 @@ class TicketFinisher:
             )
             new_total: int | str = "?"
         else:
+            # 게이트 종류(pytest 스위트 / 해소된 임의 명령)를 먼저 해소한다 — green 판정
+            # 기준과 안내 문구가 여기서 갈린다(`_gate_is_pytest`).
+            gate_cmd = _resolve_per_repo_test_cmd()
             if dry_run:
-                print("  [dry-run] pytest tests/ -q 실행 중 (파일·board·git 편집만 생략)...")
+                print(
+                    f"  [dry-run] {_gate_label(gate_cmd)} 실행 중 "
+                    "(파일·board·git 편집만 생략)..."
+                )
             returncode, output = self._run_pytest_fn()
             print(output.rstrip())
 
-            if not is_pytest_green(output, returncode):
+            if not _regression_is_green(output, returncode, gate_cmd):
                 print(
                     "\n[중단] 회귀 red — log/current.md·board·git 어떤 것도 건드리지 않는다.",
                     file=sys.stderr,
                 )
-                print(
-                    "원인: pytest 가 실패를 보고했거나 출력 파싱 실패.",
-                    file=sys.stderr,
-                )
+                if _gate_is_pytest(gate_cmd):
+                    print(
+                        "원인: pytest 가 실패를 보고했거나 출력 파싱 실패.",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"원인: 회귀 명령이 실패했다 — `{gate_cmd}` (exit {returncode}).",
+                        file=sys.stderr,
+                    )
                 return 1
 
-            parsed = parse_pytest_output(output)
-            if parsed is None:
-                print(
-                    "\n[중단] pytest 출력 파싱 실패 — passed 수를 읽지 못했다.",
-                    file=sys.stderr,
-                )
-                return 1
+            if _gate_is_pytest(gate_cmd):
+                parsed = parse_pytest_output(output)
+                if parsed is None:
+                    print(
+                        "\n[중단] pytest 출력 파싱 실패 — passed 수를 읽지 못했다.",
+                        file=sys.stderr,
+                    )
+                    return 1
 
-            new_total, deselected = parsed
-            print(f"\n  ✓ green: passed={new_total}, deselected={deselected}")
+                new_total, deselected = parsed
+                print(f"\n  ✓ green: passed={new_total}, deselected={deselected}")
+            else:
+                # 비-pytest 게이트 — 테스트 수 개념이 없으므로 측정하지 않는다("?" ·
+                # `--no-pytest` 경로와 동형). green 근거는 exit 0 이다.
+                new_total = "?"
+                print(f"\n  ✓ green: `{gate_cmd}` (exit 0) — 테스트 수 미측정")
 
         # status.md 는 더 이상 갱신하지 않는다.
         # 테스트 수는 위 pytest 실측이 단일 진실·history 는 아래 log skeleton 으로 남는다.

@@ -236,6 +236,105 @@ def _load_file_lock():
     )
 
 
+# ── 공유 읽기 (등재 예외 · 형제 없이도 떠야 하는 판독) ──────────────────────
+# 원자 교체 대상을 읽는 지점은 공용 seam 을 지난다([[T-0729]]) — 일반 `open` 리더가 하나라도
+# 잡고 있으면 Windows 는 그 교체를 WinError 32 로 막는다. 다만 이 모듈의 판독은 위 로더 주석의
+# 계약대로 **형제 없이도 떠야 한다**(pm_bootstrap 이 `split_entries` 를 fail-soft 로 재사용한다).
+# 그래서 여기는 **등재된 예외**다 — seam 이 있으면 쓰고, 없거나 로드가 실패하면 사유를 남기고
+# 종전 읽기로 진행한다. 잃는 것은 "Windows 에서 이 판독이 열려 있는 동안의 교체 한 번" 이고,
+# 얻는 것은 "깨진 트리에서도 로그 판독이 산다" 다.
+
+# 사본 불일치를 **의도적으로 흡수**하는 경계의 등록부 (경계 이름 → 사유). 등록되지 않은 경계는
+# 흡수 자격이 없다 — 기본 규율은 여전히 "marked skew 는 재-raise" 다.
+_ENGINE_REV_SKEW_RECOVERY_REASONS = {
+    "shared_read_seam": (
+        "판독은 형제 없이도 떠야 한다 — pm_bootstrap 이 이 모듈의 로그 판독을 fail-soft 로 "
+        "재사용하므로, seam 부재로 판독이 죽으면 부트스트랩 요약 전체가 함께 죽는다. "
+        "부재/손상/혼합 사본을 흡수하되 조용하지 않게 사유를 stderr 로 남기고 종전 읽기로 "
+        "진행한다(잃는 것은 Windows 에서 이 판독 중의 원자 교체 한 번)"
+    ),
+}
+
+
+def _absorb_engine_rev_skew_for_recovery(exc, boundary: str) -> bool:
+    """판독 경계가 marked skew 를 의도적으로 흡수했음을 표시한다 (사유 등록 필수).
+
+    반환값으로 일반 실패와 사본 불일치를 구분해 호출부가 진단 문구를 달리한다 — 흡수는 하되
+    조용하지는 않다."""
+    reason = _ENGINE_REV_SKEW_RECOVERY_REASONS.get(boundary, "").strip()
+    if not reason:
+        raise ValueError(f"등록되지 않았거나 사유가 빈 복구 경계: {boundary!r}")
+    return _is_engine_rev_skew(exc)
+
+
+
+# 강등 사유는 프로세스당 한 번만 알린다 — 판독마다 찍으면 진단이 자기 소음에 묻힌다.
+_shared_read_degraded = False
+
+
+def _warn_shared_read_degraded(cause: str) -> None:
+    """강등 사유를 **프로세스당 한 번** 알린다 (판독마다 찍으면 진단이 자기 소음에 묻힌다)."""
+    global _shared_read_degraded
+    if _shared_read_degraded:
+        return
+    _shared_read_degraded = True
+    print(
+        f"경고: 공유 읽기 seam 을 쓸 수 없어 일반 읽기로 진행합니다 ({cause}) — Windows "
+        "에서는 이 판독이 열려 있는 동안 원자 교체가 실패할 수 있습니다. `pm-update` 로 "
+        ".project_manager/tools/ 전체를 재동기하십시오.",
+        file=sys.stderr,
+    )
+
+
+def _shared_read_api(name: str):
+    """공유 읽기 seam 의 함수 하나 — 없거나 못 쓰면 `None` (등재 예외의 강등 분기·loud).
+
+    **부재/손상 로드**와 **구세대 사본**(로드는 되는데 그 함수가 없는 형상)을 함께 본다 — 쓰기
+    축의 등재 예외가 `getattr(..., "atomic_replace", None)` 로 두 형상을 같이 받는 것과 같다.
+    한쪽만 보면 부분 업그레이드 트리에서 AttributeError 로 죽는다.
+    """
+    global _shared_read_degraded
+    try:
+        seam = _load_file_lock()
+    except Exception as exc:  # noqa: BLE001 — 부재/손상/혼합은 이 판독의 정상 입력이다.
+        skew = _absorb_engine_rev_skew_for_recovery(exc, "shared_read_seam")
+        cause = f"엔진 사본 불일치 — {exc}" if skew else f"{type(exc).__name__}: {exc}"
+        _warn_shared_read_degraded(cause)
+        return None
+    api = getattr(seam, name, None)
+    if api is None:
+        _warn_shared_read_degraded(f"구세대 file_lock 사본에 {name} 이(가) 없음")
+    return api
+
+
+def _read_text_shared(path, *, encoding=None, errors=None, newline=None) -> str:
+    """`file_lock.read_text_shared` — seam 을 못 쓰면 같은 의미의 종전 읽기로 강등한다."""
+    api = _shared_read_api("read_text_shared")
+    if api is not None:
+        return api(path, encoding=encoding, errors=errors, newline=newline)
+    with open(path, "r", encoding=encoding, errors=errors, newline=newline) as handle:
+        return handle.read()
+
+
+def _read_bytes_shared(path) -> bytes:
+    """`file_lock.read_bytes_shared` — seam 을 못 쓰면 같은 의미의 종전 읽기로 강등한다."""
+    api = _shared_read_api("read_bytes_shared")
+    if api is not None:
+        return api(path)
+    with open(path, "rb") as handle:
+        return handle.read()
+
+
+def _open_shared(path, *, binary, encoding=None, errors=None, newline=None):
+    """`file_lock.open_shared` — seam 을 못 쓰면 같은 의미의 종전 열기로 강등한다."""
+    api = _shared_read_api("open_shared")
+    if api is not None:
+        return api(path, binary=binary, encoding=encoding, errors=errors, newline=newline)
+    if binary:
+        return open(path, "rb")
+    return open(path, "r", encoding=encoding, errors=errors, newline=newline)
+
+
 REPO = Path(__file__).resolve().parents[2]
 WIKI_DIR = REPO / ".project_manager" / "wiki"
 LOG_DIR = WIKI_DIR / "log"
@@ -387,7 +486,7 @@ def append_log_locked(path: Path, text: str) -> None:
 
 
 def _replace_atomic(path: Path, text: str) -> None:
-    """같은 디렉터리의 임시 파일을 쓴 뒤 `os.replace`로 원자 교체한다."""
+    """같은 디렉터리의 임시 파일을 쓴 뒤 `file_lock.atomic_replace`로 원자 교체한다."""
     path = Path(path)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
@@ -397,7 +496,7 @@ def _replace_atomic(path: Path, text: str) -> None:
         # 범위 밖 bytes가 흔들리지 않게 한다.
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
             handle.write(text)
-        os.replace(str(tmp), str(path))
+        _load_file_lock().atomic_replace(tmp, path)
     finally:
         with contextlib.suppress(OSError):
             tmp.unlink()
@@ -405,7 +504,7 @@ def _replace_atomic(path: Path, text: str) -> None:
 
 def _read_text_exact(path: Path) -> str:
     """UTF-8 파일을 universal-newline 변환 없이 읽어 CRLF/mixed bytes를 보존한다."""
-    return Path(path).read_bytes().decode("utf-8")
+    return _read_bytes_shared(Path(path)).decode("utf-8")
 
 
 # ── 명령 ───────────────────────────────────────────────────────────────────
@@ -621,7 +720,7 @@ def build_ctx_window_mismatch_advisory(
 def _read_json_object(path: Path) -> dict | None:
     """JSON object point-read. 부재·손상·스키마 불일치는 fail-soft ``None``."""
     try:
-        value = json.loads(Path(path).read_text(encoding="utf-8"))
+        value = json.loads(_read_text_shared(Path(path), encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeError):
         return None
     return value if isinstance(value, dict) else None
@@ -657,7 +756,7 @@ def _git_common_dir_from_files(repo: Path) -> Path | None:
         if dot_git.is_dir():
             git_dir = dot_git
         elif dot_git.is_file():
-            pointer = dot_git.read_text(encoding="utf-8").strip()
+            pointer = _read_text_shared(dot_git, encoding="utf-8").strip()
             if not pointer.startswith("gitdir:"):
                 return None
             target = Path(pointer[len("gitdir:"):].strip())
@@ -668,7 +767,7 @@ def _git_common_dir_from_files(repo: Path) -> Path | None:
         common_pointer = git_dir / "commondir"
         if not common_pointer.is_file():
             return git_dir.resolve(strict=False)
-        raw_common = common_pointer.read_text(encoding="utf-8").strip()
+        raw_common = _read_text_shared(common_pointer, encoding="utf-8").strip()
         if not raw_common:
             return None
         common = Path(raw_common)
@@ -781,7 +880,7 @@ def _local_conf_session(pm_home: Path) -> str | None:
     conf = Path(pm_home) / ".project_manager" / "local.conf"
     session = None
     try:
-        lines = conf.read_text(encoding="utf-8").splitlines()
+        lines = _read_text_shared(conf, encoding="utf-8").splitlines()
     except (OSError, UnicodeError):
         return None
     for line in lines:
@@ -943,7 +1042,7 @@ def _ledger_section(pm_home: Path, task: str) -> str:
 def _pm_state_section(pm_home: Path, task: str, source: str, line_limit: int) -> str:
     state_path = _pm_state_path(pm_home, task, source)
     try:
-        lines = state_path.read_text(encoding="utf-8").splitlines()[:line_limit]
+        lines = _read_text_shared(state_path, encoding="utf-8").splitlines()[:line_limit]
     except (OSError, UnicodeError):
         lines = []
     body = "\n".join(lines).strip() or "(pm_state를 읽을 수 없음)"
@@ -1338,7 +1437,7 @@ def _read_implicit_boundary_state(prefix: Path) -> tuple[str, Path] | None:
         return None
     for path in pending:
         try:
-            boundary_id = path.read_text(encoding="utf-8").strip()
+            boundary_id = _read_text_shared(path, encoding="utf-8").strip()
         except (OSError, UnicodeError):
             continue
         if boundary_id.startswith("implicit-"):
@@ -1351,7 +1450,7 @@ def _clear_implicit_boundary_state(path: Path | None, boundary_id: str) -> None:
     if path is None:
         return
     try:
-        if path.read_text(encoding="utf-8").strip() == boundary_id:
+        if _read_text_shared(path, encoding="utf-8").strip() == boundary_id:
             path.unlink()
     except (OSError, UnicodeError):
         pass
@@ -1469,7 +1568,7 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
     claimed = None
     # boundary 유도→marker 선점→append를 log lock 하나에 묶어 동시 호출도 같은 log 상태를 본다.
     with log_write_lock(CURRENT_FILE):
-        current_text = CURRENT_FILE.read_text(encoding="utf-8")
+        current_text = _read_text_shared(CURRENT_FILE, encoding="utf-8")
         boundary_id, phase, implicit_state = _resolve_compaction_boundary(
             args, task=identity_name, current_text=current_text,
         )

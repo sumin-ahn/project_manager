@@ -636,7 +636,7 @@ class AdrIssuer:
                 if tpath is None:
                     warnings.append(f"{verb} 대상 {adr_id(tnum)} 파일을 decisions/ 에서 못 찾음 — back-ref skip")
                     continue
-                original = tpath.read_text(encoding="utf-8")
+                original = _load_file_lock().read_text_shared(tpath, encoding="utf-8")
                 edited = apply_lifecycle_backref(original, adr_id(number), verb)
                 if edited == original and _split_frontmatter(original) is None:
                     warnings.append(f"{adr_id(tnum)} frontmatter 파싱 실패 — back-ref skip")
@@ -646,7 +646,7 @@ class AdrIssuer:
         # README 색인.
         readme_text = None
         if self._readme_file.exists():
-            readme_text = self._readme_file.read_text(encoding="utf-8")
+            readme_text = _load_file_lock().read_text_shared(self._readme_file, encoding="utf-8")
             readme_text, w = insert_accepted_row(
                 readme_text, number=number, slug=slug, title=title, date=self._date, tags=tags,
             )
@@ -959,6 +959,19 @@ def _load_pm_log():
         Path(__file__).resolve().parent / "pm_log.py",
         "pm_log.py",
         verifier=_verify_engine_rev,
+    )
+
+
+def _load_file_lock():
+    """공용 파일 프리미티브 seam(`file_lock.py`)을 같은 tools/ 에서 경로 로드한다.
+
+    원자 교체 대상 파일을 읽는 지점은 이 seam 의 공유 읽기를 지난다([[T-0729]]) — 일반 `open`
+    리더가 하나라도 잡고 있으면 Windows 는 그 파일의 원자 교체를 WinError 32 로 막는다. 부재/
+    손상/rev 불일치는 엔진 사본 손상이므로 흡수하지 않는다(fail-loud·재동기 안내).
+    """
+    return _load_module_from_path(
+        Path(__file__).resolve().parent / "file_lock.py", "file_lock.py",
+        verifier=_verify_engine_rev, cache=True,
     )
 
 

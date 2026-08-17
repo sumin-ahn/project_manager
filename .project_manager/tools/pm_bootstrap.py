@@ -264,7 +264,7 @@ def _resolve_python_argv(
     """
     conf_path = (repo if repo is not None else REPO) / ".project_manager" / "local.conf"
     try:
-        lines = conf_path.read_text(encoding="utf-8").splitlines()
+        lines = _load_file_lock().read_text_shared(conf_path, encoding="utf-8").splitlines()
     except (OSError, UnicodeError):
         lines = ()
 
@@ -500,7 +500,7 @@ ENGINE_REV = "v1.7.5"
 
 # _load_tool(generic)이 이름으로 로드하는 stamped 형제. deep-import AST 가드는 클래스 메서드와
 # 중첩 함수까지 포함해 실제 호출 target을 측정하고, 그 집합이 이 리터럴에 포함되는지 단언한다.
-_STAMPED_SIBLINGS = frozenset({"pm_handoff.py", "pm_bootstrap.py", "pm_config.py", "pm_log.py"})
+_STAMPED_SIBLINGS = frozenset({"file_lock.py", "pm_handoff.py", "pm_bootstrap.py", "pm_config.py", "pm_log.py"})
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -615,6 +615,19 @@ def _load_tool(name: str):
     return mod
 
 
+def _load_file_lock():
+    """공용 파일 프리미티브 seam(`file_lock.py`)을 같은 tools/ 에서 경로 로드한다.
+
+    원자 교체 대상 파일을 읽는 지점은 이 seam 의 공유 읽기를 지난다([[T-0729]]) — 일반 `open`
+    리더가 하나라도 잡고 있으면 Windows 는 그 파일의 원자 교체를 WinError 32 로 막는다. 부재/
+    손상/rev 불일치는 엔진 사본 손상이므로 흡수하지 않는다(fail-loud·재동기 안내).
+    """
+    return _load_module_from_path(
+        Path(__file__).resolve().parent / "file_lock.py", "file_lock.py",
+        verifier=_verify_engine_rev, cache=True,
+    )
+
+
 def _load_identity_args():
     """공용 `identity_args` 모듈을 동적 로드한다.
 
@@ -652,7 +665,7 @@ def _registered_repos(areas_file: Path | None = None) -> list[str]:
     rows: list[str] = []
     header: list[str] | None = None
     sep_pattern = re.compile(r"^\|[\s:|-]+\|?$")
-    for line in areas_file.read_text(encoding="utf-8").splitlines():
+    for line in _load_file_lock().read_text_shared(areas_file, encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped.startswith("|") or sep_pattern.match(stripped):
             continue
@@ -2579,7 +2592,7 @@ class PmBootstrap:
         """
         if not self._log_file.exists():
             return None
-        log_text = self._log_file.read_text(encoding="utf-8")
+        log_text = _load_file_lock().read_text_shared(self._log_file, encoding="utf-8")
         bound_session = self._bound_session_name()
         # 솔로(bound 진짜 미해소)는 슬롯 개념이 없다 — **마지막 entry(모든 타입)**를
         # 그대로 dump 한다(handoff·complete·decide 무관). handoff-우선 필터를 태우면 최신 complete
@@ -2658,8 +2671,10 @@ class PmBootstrap:
         state_text: str | None = None
         if state_path is not None and state_path.exists():
             try:
-                state_text = state_path.read_text(encoding="utf-8")
-            except Exception:  # noqa: BLE001 — fail-soft: read 실패는 pm_state 미해소로 취급.
+                state_text = _load_file_lock().read_text_shared(state_path, encoding="utf-8")
+            except Exception as exc:  # noqa: BLE001 — fail-soft: read 실패는 pm_state 미해소.
+                if _is_engine_rev_skew(exc):
+                    raise  # 판독 seam 형제 skew 는 fail-loud(`_load_tool` 과 같은 규칙).
                 state_text = None
 
         bound_session = self._bound_session_name()
@@ -2744,8 +2759,10 @@ class PmBootstrap:
         if not self._log_file.exists():
             return None
         try:
-            return self._log_file.read_text(encoding="utf-8")
-        except Exception:  # noqa: BLE001 — fail-soft: read 실패는 None(surface 생략).
+            return _load_file_lock().read_text_shared(self._log_file, encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001 — fail-soft: read 실패는 None(surface 생략).
+            if _is_engine_rev_skew(exc):
+                raise  # 판독 seam 형제 skew 는 fail-loud(`_load_tool` 과 같은 규칙).
             return None
 
     def _current_user(self) -> str | None:
@@ -2822,7 +2839,7 @@ class PmBootstrap:
         if not leases_file.exists():
             return None
         try:
-            data = json.loads(leases_file.read_text(encoding="utf-8"))
+            data = json.loads(_load_file_lock().read_text_shared(leases_file, encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return None
         if not isinstance(data, dict) or not isinstance(data.get("leases"), list):
@@ -2879,7 +2896,7 @@ class PmBootstrap:
         dash_file = _dashboard_file()
         if dash_file.exists():
             try:
-                text = dash_file.read_text(encoding="utf-8")
+                text = _load_file_lock().read_text_shared(dash_file, encoding="utf-8")
             except OSError:
                 text = None
             pm_handoff = _load_tool("pm_handoff") if text is not None else None
@@ -4550,7 +4567,7 @@ class PmBootstrap:
             if not sidecar.is_file():
                 return False  # 훅 미설치 — 설치는 repo add/worktree add 축(여기선 drift 만).
             current = [line.strip()
-                       for line in sidecar.read_text(encoding="utf-8").splitlines()
+                       for line in _load_file_lock().read_text_shared(sidecar, encoding="utf-8").splitlines()
                        if line.strip()]
             protected_ok = current == protected
             gate_mode, test_cmd = gate_config(
@@ -4558,7 +4575,7 @@ class PmBootstrap:
             expected_contract = f"{gate_mode}\n{test_cmd}\n"
             contract_sidecar = Path(hooks_dir) / repo / str(contract_name)
             current_contract = (
-                contract_sidecar.read_text(encoding="utf-8")
+                _load_file_lock().read_text_shared(contract_sidecar, encoding="utf-8")
                 if contract_sidecar.is_file() else None)
             contract_ok = current_contract == expected_contract
             # 배선 축 — sidecar 내용이 최신이어도 hooksPath 가 끊겼으면 훅은 발화하지 않는다.
@@ -4875,7 +4892,9 @@ class PmBootstrap:
         """
         try:
             return self._build_command_card_markdown(identity)
-        except Exception:  # noqa: BLE001 — fail-soft: 카드 렌더 실패는 절 생략(부트스트랩 유지).
+        except Exception as exc:  # noqa: BLE001 — fail-soft: 카드 렌더 실패는 절 생략.
+            if _is_engine_rev_skew(exc):
+                raise  # 렌더가 판독 seam 까지 들어가므로 형제 skew 만은 삼키지 않는다.
             return None
 
     def _build_command_card_markdown(self, identity: dict | None) -> str:

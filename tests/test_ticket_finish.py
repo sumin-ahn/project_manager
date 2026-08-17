@@ -85,25 +85,33 @@ def test_is_pytest_green_no_passed_is_false(tf):
     assert tf.is_pytest_green("collected 0 items", returncode=0) is False
 
 
-# ── 회귀 명령 per-repo 해소 (codex must-fix 1·ADR-0014) ───────────────────────
+# ── 회귀 명령 per-repo 해소 (codex must-fix 1·ADR-0014·T-0730) ────────────────
 #
-# multi-PM(multi-PM) 모드에선 활성 repo 가 비-Python 일 수 있어 `pytest tests/ -q` 가 틀린다 —
-# 회귀는 활성 repo 의 per-repo test_cmd(areas.md)를 써야 한다. 단 **솔로/프레임워크 자기
-# 회귀(areas.md 없음)는 현행 `pytest tests/ -q` venv 실행을 반드시 보존**(도그푸딩 불변).
-# `tf` 모듈 전역(AREAS_FILE·_load_board_module)을 재바인딩해 hermetic 하게 검증한다.
+# 활성 repo 가 비-Python 이거나 `tests/` 가 없으면 `pytest tests/ -q` 가 틀린다 — 회귀는 그
+# repo 의 test_cmd 를 써야 한다. 해소는 4층이다(prefix 행 > repo 행 > local.conf > 솔로 폴백·
+# 체인 본체는 pm_handoff `_resolve_gate_cmd` 단일 사본이고 이 도구는 자기 board seam 만 얹어
+# 위임한다). 단 **솔로/프레임워크 자기 회귀(어느 층도 미해소)는 현행 `pytest tests/ -q` venv
+# 실행을 반드시 보존**(도그푸딩 불변). 층별 우선순위·두 도구 파리티·무prefix 채택자 e2e 는
+# `test_regression_gate_resolution.py` 가 소유하고, 여기서는 이 도구 표면의 계약을 본다.
+# `tf` 모듈 전역(_load_board_module)을 재바인딩해 hermetic 하게 검증한다.
 
 
 class _FakeBoard:
-    """board.py 대역 — areas_file / id_prefix / _areas_row_for_prefix 만 흉내(areas 해소 가로채기).
+    """board.py 대역 — 해소 체인이 읽는 표면을 흉내낸다(areas 해소 가로채기).
 
     `areas_file()` = board_root 추종 결과(T-0162 A6) — `_resolve_per_repo_test_cmd` 의 존재
     가드가 board 모듈 함수로 위임되므로 대역도 그 함수를 제공한다(실재 areas.md 경로 주입).
+    prefix 층 뒤에 repo 행·local.conf 층이 있으므로(T-0730) 그 표면도 대역이 갖는다 — 없으면
+    체인이 AttributeError 로 조기 탈출해 "None 이 나온 이유"가 흐려진다.
     """
 
-    def __init__(self, prefix, row, areas_path=None):
+    def __init__(self, prefix, row, areas_path=None, *, rows=(), repos=(), conf=None):
         self._prefix = prefix
         self._row = row
         self._areas_path = areas_path or Path("/__nonexistent_areas__.md")
+        self._rows = list(rows)
+        self._repos = set(repos)
+        self._conf = dict(conf or {})
 
     def areas_file(self):
         return self._areas_path
@@ -113,6 +121,24 @@ class _FakeBoard:
 
     def _areas_row_for_prefix(self, prefix):
         return self._row if prefix == self._prefix else None
+
+    def _parse_areas(self):
+        return ([], list(self._rows))
+
+    def session_name(self):
+        return None
+
+    def _repo_from_session(self, session):
+        head, sep, tail = session.rpartition("_")
+        if not sep or not head or not tail.isdigit():
+            return None
+        return head
+
+    def registered_repos(self):
+        return set(self._repos)
+
+    def local_config(self):
+        return dict(self._conf)
 
 
 def test_resolve_per_repo_cmd_solo_no_areas_returns_none(tf, tmp_path, monkeypatch):
@@ -159,6 +185,36 @@ def test_resolve_per_repo_cmd_board_load_failure_returns_none(tf, tmp_path, monk
     """board import 실패(None)면 None — fail-soft 로 솔로 폴백(현행 보존)."""
     monkeypatch.setattr(tf, "_load_board_module", lambda: None)
     assert tf._resolve_per_repo_test_cmd() is None
+
+
+def test_resolve_per_repo_cmd_blank_prefix_uses_repo_row(tf, tmp_path, monkeypatch):
+    """무prefix 채택자 형상 — prefix 칼럼이 비어도 repo 행의 test_cmd 로 해소한다 (T-0730).
+
+    현행 `pm-config repo add` 는 prefix 를 빈 값으로 등록하므로 `id_prefix()` 가 None 이다.
+    prefix 층만 보면 올바른 test_cmd 를 담은 행에 도달하지 못해 하드코딩 pytest 로 폴백하고,
+    `tests/` 가 없는 채택자는 회귀가 항상 red 로 오판된다.
+    """
+    areas = tmp_path / "areas.md"
+    areas.write_text("| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
+    monkeypatch.setattr(
+        tf, "_load_board_module",
+        lambda: _FakeBoard(
+            None, None, areas_path=areas,
+            rows=[{"repo": "heru", "prefix": "", "test_cmd": "viewer bind"}],
+            repos={"heru"},
+        ),
+    )
+    assert tf._resolve_per_repo_test_cmd() == "viewer bind"
+
+
+def test_resolve_per_repo_cmd_reads_local_conf_without_areas(tf, tmp_path, monkeypatch):
+    """areas.md 가 아예 없어도 local.conf test_cmd 를 읽는다 (T-0730·3층은 areas 가드 밖)."""
+    monkeypatch.setattr(
+        tf, "_load_board_module",
+        lambda: _FakeBoard(None, None, areas_path=tmp_path / "no-areas.md",
+                           conf={"test_cmd": "go test ./..."}),
+    )
+    assert tf._resolve_per_repo_test_cmd() == "go test ./..."
 
 
 def test_default_run_pytest_solo_uses_venv_pytest_argv(tf, tmp_path, monkeypatch):
@@ -297,6 +353,34 @@ def test_soft_step_exception_does_not_block_completion(tf, tmp_path, capsys):
     rc = finisher.run("T-1234", section=None, dry_run=False)
     assert rc == 0
     assert "[완료] T-1234 부기 완료." in capsys.readouterr().out
+
+
+def test_dry_run_label_shows_resolved_gate(tf, tmp_path, monkeypatch, capsys):
+    """dry-run 안내는 **실제로 돌 명령**을 보여준다 — 해소된 게이트가 있으면 그 문자열 (T-0730)."""
+    monkeypatch.setattr(tf, "_resolve_per_repo_test_cmd", lambda: "go test ./...")
+    finisher = tf.TicketFinisher(
+        run_pytest_fn=lambda: (0, "ok\n"),
+        run_board_fn=lambda args: (0, "board ok"),
+        run_git_fn=lambda args: (0, ""),
+        board_count_fn=lambda: 10,
+        ticket_title_fn=lambda tid: "t",
+        affected_domain_fn=lambda tid: [],
+        log_file=tmp_path / "log.md",
+    )
+    rc = finisher.run("T-1234", section=None, dry_run=True)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "[dry-run] go test ./... 실행 중" in out
+    assert "[dry-run] pytest tests/ -q 실행 중" not in out
+
+
+def test_dry_run_label_shows_solo_argv_when_unresolved(tf, tmp_path, monkeypatch, capsys):
+    """해소 실패(솔로)면 dry-run 안내도 현행 `pytest tests/ -q` 그대로(도그푸딩 불변)."""
+    monkeypatch.setattr(tf, "_resolve_per_repo_test_cmd", lambda: None)
+    finisher = _make_finisher(tf, tmp_path, affected=[])
+    rc = finisher.run("T-1234", section=None, dry_run=True)
+    assert rc == 0
+    assert "[dry-run] pytest tests/ -q 실행 중" in capsys.readouterr().out
 
 
 def test_soft_step_runs_in_dry_run_too(tf, tmp_path, capsys):

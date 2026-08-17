@@ -319,14 +319,22 @@ def test_engine_rev_skew_absorption_ledger_owners_are_a_closed_set():
 
     **판정 경로는 어느 도구에서도 흡수하지 않는다** — 위 넷은 전부 정리/fail-open 경계다. 그 밖의
     도구에서 skew 는 실결함 신호이므로 fail-loud 다 — 새 도구가 조용히 완화 지점을 들이면 여기서
-    red 가 된다."""
+    red 가 된다.
+
+    T-0729 가 셋을 더한다 — `pm_import`·`pm_log`·`review_rounds` 의 **공유 읽기 강등** 경계
+    (`shared_read_seam`) 하나씩이다. 판독이 공용 seam 을 지나게 되면서 그 형제 로드가 판독 경로에
+    닿는데, 이 세 모듈은 "판독은 형제 없이도 떠야 한다" 를 각자 로더 주석에 명시한 채널이다
+    (`pm_import`=복구/도입 · `pm_log`=pm_bootstrap 이 fail-soft 로 재사용하는 판독 ·
+    `review_rounds`=부분 동기 트리에서도 살아야 하는 라운드 판정). 판독은 아무것도 커밋하지 않고
+    종전 읽기와 바이트가 같아서 흡수해도 잃는 것이 "Windows 에서 그 판독 중의 원자 교체 한 번"
+    뿐이고, 올리면 복구 채널 자신이 막힌다. 흡수는 사유 등록 + stderr 강등 알림과 짝이다."""
     owners = sorted(
         path.name for path in TOOLS.glob("*.py")
         if "_ENGINE_REV_SKEW_RECOVERY_REASONS" in path.read_text(encoding="utf-8")
     )
     assert owners == [
-        "delegate_channel_guard.py", "external_review.py",
-        "pm_delegate.py", "pm_update.py",
+        "delegate_channel_guard.py", "external_review.py", "pm_delegate.py",
+        "pm_import.py", "pm_log.py", "pm_update.py", "review_rounds.py",
     ]
 
 

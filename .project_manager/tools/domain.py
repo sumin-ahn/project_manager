@@ -321,7 +321,7 @@ def _repository_query_batch():
 ENGINE_REV = "v1.7.5"
 
 # rev 스탬프를 지닌 형제 파일만 대조 대상. AST deep-import 가드가 실제 target과 정합을 단언한다.
-_STAMPED_SIBLINGS = frozenset({"board.py", "repo_coordinates.py", "repo_owned_files.py"})
+_STAMPED_SIBLINGS = frozenset({"file_lock.py", "board.py", "repo_coordinates.py", "repo_owned_files.py"})
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -380,6 +380,19 @@ def _load_board():
 def _load_repo_coordinates():
     """공용 repo 좌표 normalizer를 로드한다. 부재/손상은 호출부가 fail-loud 한다."""
     return _load_module("repo_coordinates", "repo_coordinates.py")
+
+
+def _load_file_lock():
+    """공용 파일 프리미티브 seam(`file_lock.py`)을 같은 tools/ 에서 경로 로드한다.
+
+    원자 교체 대상 파일을 읽는 지점은 이 seam 의 공유 읽기를 지난다([[T-0729]]) — 일반 `open`
+    리더가 하나라도 잡고 있으면 Windows 는 그 파일의 원자 교체를 WinError 32 로 막는다. 부재/
+    손상/rev 불일치는 엔진 사본 손상이므로 흡수하지 않는다(fail-loud·재동기 안내).
+    """
+    return _load_module_from_path(
+        Path(__file__).resolve().parent / "file_lock.py", "file_lock.py",
+        verifier=_verify_engine_rev, cache=True,
+    )
 
 
 def _load_repo_owned_files():
@@ -1087,7 +1100,7 @@ def load_pages(domain_dir: Path = DOMAIN_DIR, *, strict: bool = False) -> list[d
         # (non-UTF-8 tmp — cp949·바이너리)는 OSError 가 아니라 별도 포획 — 안 잡으면 load_pages
         # 전체가 크래시해 crash-0 보장이 깨진다.
         try:
-            has_delimiter = path.read_text(encoding="utf-8").lstrip().startswith("---")
+            has_delimiter = _load_file_lock().read_text_shared(path, encoding="utf-8").lstrip().startswith("---")
         except (OSError, UnicodeDecodeError) as exc:
             if strict:
                 raise DomainPageEnumerationError(path, exc) from exc
@@ -1796,7 +1809,7 @@ def _coverage_readme_text(domain_dir: Path) -> tuple[str | None, str | None]:
     """README를 읽어 `(fence 제외 본문, 오류)`로 반환한다."""
     readme = Path(domain_dir) / "README.md"
     try:
-        return _markdown_without_fenced_code(readme.read_text(encoding="utf-8")), None
+        return _markdown_without_fenced_code(_load_file_lock().read_text_shared(readme, encoding="utf-8")), None
     except FileNotFoundError:
         return None, "README.md 없음"
     except (OSError, UnicodeError) as exc:
@@ -2377,7 +2390,7 @@ def _read_source(source: str | None) -> str:
         return ""
     if source == "-":
         return sys.stdin.read()
-    return Path(source).read_text(encoding="utf-8")
+    return _load_file_lock().read_text_shared(Path(source), encoding="utf-8")
 
 
 # 코드펜스 토글 — 라인-시작 ``` 또는 ~~~ (3+ 백틱/틸드)이 펜스 경계(CommonMark 는 둘 다 펜스).
@@ -2479,7 +2492,7 @@ def current_truth_guide_block(domain_dir: Path) -> str:
     빠질 뿐 draft 생성 자체는 막지 않는다(엔진 동기가 곧 템플릿을 되돌려 놓는다).
     """
     try:
-        text = (Path(domain_dir) / DOMAIN_TEMPLATE_FILE).read_text(encoding="utf-8")
+        text = _load_file_lock().read_text_shared(Path(domain_dir) / DOMAIN_TEMPLATE_FILE, encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return ""
     marker = text.find(CURRENT_TRUTH_GUIDE_MARKER)

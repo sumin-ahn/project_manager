@@ -3542,6 +3542,109 @@ def test_task_regression_red_slot_blocks_handoff(hf, tmp_path, capsys):
     assert "회귀 red" in capsys.readouterr().err
 
 
+# ── 비-pytest 게이트 (무prefix 채택자 형상·T-0730) ────────────────────────────
+#
+# 채택자 게이트는 `go test ./...`·커스텀 CLI 일 수 있고 `tests/` 자체가 없을 수 있다. 게이트
+# 해소가 areas.md prefix 칼럼만 보면(현행 `repo add` 는 prefix 를 빈 값으로 등록한다) 그 형상
+# 에서 하드코딩 pytest 로 폴백해 회귀가 **항상 red** 로 오판되고 핸드오프가 통째로 막혔다.
+# 여기서는 핸드오프 run() 이 해소된 게이트로 판정하는지(green=exit 0·red=rc≠0)를 본다.
+# 층별 우선순위·두 도구 파리티는 `test_regression_gate_resolution.py` 소유.
+
+_ADOPTER_GATE_CMD = "env PYTHONPATH=src .venv/bin/python -m viewer bind"
+
+
+class _AdopterBoard:
+    """무prefix 채택자 board 대역 — areas/local.conf 표면만 바꾸고 나머지는 실 board 위임.
+
+    pytest 요약행 파서 seam(`_pytest_summary_line` 등)은 실 board 것을 그대로 쓴다 — 이 케이스가
+    바꾸는 것은 **게이트 종류**뿐이고 pytest 경로 판정은 무회귀여야 하기 때문이다.
+    """
+
+    def __init__(self, areas_path, test_cmd):
+        self._real = _load_tool("board")
+        self._areas_path = areas_path
+        self._test_cmd = test_cmd
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def areas_file(self):
+        return self._areas_path
+
+    def id_prefix(self):
+        return None                       # prefix 칼럼이 빈 등록 형상.
+
+    def session_name(self):
+        return None
+
+    def registered_repos(self):
+        return {"heru"}
+
+    def _parse_areas(self):
+        return ([], [{"repo": "heru", "prefix": "", "test_cmd": self._test_cmd}])
+
+    def local_config(self):
+        return {}
+
+
+def _adopter_gate_handoff(hf, tmp_path, monkeypatch, result):
+    """무prefix 채택자 areas 를 보는 task 회귀 핸드오프 + 관찰 러너."""
+    areas = tmp_path / "areas.md"
+    areas.write_text("| repo | prefix | git | test_cmd | owner |\n", encoding="utf-8")
+    monkeypatch.setattr(
+        hf, "_load_board", lambda: _AdopterBoard(areas, _ADOPTER_GATE_CMD))
+    box = [None]
+    pytest_fn, cwds = _recording_pytest(box, result=result)
+    pool = _TaskSetPool(["work/heru_1"], states={"work/heru_1": {"dirty": True}})
+    handoff = _task_reg_handoff(hf, tmp_path, pool, pytest_fn)
+    box[0] = handoff
+    return handoff, cwds
+
+
+def test_non_pytest_gate_green_by_exit_code(hf, tmp_path, monkeypatch, capsys):
+    """비-pytest 게이트가 exit 0 이면 green — 요약행이 없어도 핸드오프가 완주한다(rc 0).
+
+    수정 전엔 pytest 요약행(`N passed`)이 없다는 이유로 red 판정이라 핸드오프가 막혔다.
+    """
+    handoff, cwds = _adopter_gate_handoff(
+        hf, tmp_path, monkeypatch, result=(0, "✅ 매니페스트 검증 통과 — 전략 13\n"))
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=False,
+        task="mytask", user_ack="mytask",
+    )
+    assert rc == 0
+    assert cwds == ["work/heru_1"]
+    assert "▷ work/heru_1 회귀" in capsys.readouterr().out
+
+
+def test_non_pytest_gate_red_blocks_handoff(hf, tmp_path, monkeypatch, capsys):
+    """fail-soft 가 아니다 — 비-pytest 게이트도 rc != 0 이면 핸드오프 차단(rc 1)·명령 surface."""
+    handoff, _cwds = _adopter_gate_handoff(
+        hf, tmp_path, monkeypatch, result=(1, "✗ 매니페스트 검증 실패\n"))
+    rc = handoff.run(
+        session_num=7, wave_summary="요약", dry_run=False, skip_pytest=False,
+        task="mytask", user_ack="mytask",
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "회귀 red" in err
+    assert f"`{_ADOPTER_GATE_CMD}` (exit 1)" in err
+
+
+def test_non_pytest_gate_dry_run_label_shows_resolved_command(hf, tmp_path, monkeypatch,
+                                                              capsys):
+    """dry-run 슬롯 안내는 실제로 돌 명령을 보여준다(하드코딩 pytest 문구 아님)."""
+    handoff, _cwds = _adopter_gate_handoff(
+        hf, tmp_path, monkeypatch, result=(0, "✅ 통과\n"))
+    changed = [("work/heru_1", "dirty")]
+    monkeypatch.setattr(handoff, "_slot_worktree_missing", lambda slot: False)
+    ran = handoff._run_task_regressions(changed, dry_run=True)
+    assert ran == ["work/heru_1"]
+    out = capsys.readouterr().out
+    assert f"[dry-run] {_ADOPTER_GATE_CMD} 실행 중" in out
+    assert "[dry-run] pytest tests/ -q 실행 중" not in out
+
+
 def test_task_regression_zero_held_slots_skips(hf, tmp_path, capsys):
     """보유 슬롯 0개 — 회귀 대상 없음 명시 skip(REPO 폴백 red 아님)·핸드오프 완주(T-0393)."""
     box = [None]

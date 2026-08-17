@@ -1530,14 +1530,16 @@ def test_an_unreadable_hook_is_refused(board, monkeypatch, tmp_path, capsys):
 
     세대를 확정하지 못한 훅을 통과시키는 것이 곧 옛 게이트가 조용히 사는 채널이다."""
     hook = _hooked_repo(board, monkeypatch, tmp_path, _legacy_hook())
-    real_read_text = Path.read_text
+    # 훅 판독은 공유 읽기 seam 을 지난다(T-0729) — 주입도 그 자리에 건다. `Path.read_text` 에
+    # 걸면 엔진이 그 호출을 더는 하지 않아 이 회귀가 공허해진다.
+    real_read_text = board.file_lock.read_text_shared
 
-    def _boom(self, *args, **kwargs):
-        if self == hook:
+    def _boom(target, *args, **kwargs):
+        if Path(target) == hook:
             raise OSError("읽기 실패")
-        return real_read_text(self, *args, **kwargs)
+        return real_read_text(target, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_text", _boom)
+    monkeypatch.setattr(board.file_lock, "read_text_shared", _boom)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
     assert board.cmd_regression(_run_args()) == 1

@@ -5,7 +5,8 @@
 분리하지만, 장부의 gate entry/예약/산출/수렴 판정 스키마는 같이 쓴다. 이 모듈은 두 축에서
 갈리면 안 되는 다음 규칙만 소유한다.
 
-* JSON 장부 read + PID/UUID 임시 파일을 이용한 원자 write
+* JSON 장부 read + PID/UUID 임시 파일을 이용한 원자 write (교체 자체는 공용 `file_lock` seam —
+  플랫폼별 rename 의미 차이를 이 모듈이 복제하지 않는다)
 * gate entry 정규화와 단조 sequence 예약/스폰 전 환불
 * 예약 순서 기준 must-fix 추이, 진행 중 예약을 포함한 상한, 발산 조기 차단
 
@@ -20,11 +21,136 @@ import datetime
 import json
 import os
 import re
+import sys
 import uuid
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+_TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
+_TOOLS_BOOTSTRAP_FILE = os.path.realpath(
+    os.path.join(_TOOLS_BOOTSTRAP, "repo_owned_files.py")
+)
+_TOOLS_BOOTSTRAP_KEY = f"_project_manager_repo_owned_files_bootstrap:{_TOOLS_BOOTSTRAP_FILE}"
+_TOOLS_BOOTSTRAP_MODULE = sys.modules.get(_TOOLS_BOOTSTRAP_KEY)
+_TOOLS_BOOTSTRAP_SENTINEL = object()
+try:
+    if (
+        _TOOLS_BOOTSTRAP_MODULE is not None
+        and os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
+        != _TOOLS_BOOTSTRAP_FILE
+    ):
+        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
+        _TOOLS_BOOTSTRAP_MODULE = None
+    if _TOOLS_BOOTSTRAP_MODULE is None:
+        _TOOLS_BOOTSTRAP_PREVIOUS = sys.modules.pop(
+            "repo_owned_files", _TOOLS_BOOTSTRAP_SENTINEL
+        )
+        _TOOLS_BOOTSTRAP_ADDED = not sys.path or sys.path[0] != _TOOLS_BOOTSTRAP
+        if _TOOLS_BOOTSTRAP_ADDED:
+            sys.path.insert(0, _TOOLS_BOOTSTRAP)
+        try:
+            import repo_owned_files as _TOOLS_BOOTSTRAP_MODULE
+            if (
+                os.path.realpath(getattr(_TOOLS_BOOTSTRAP_MODULE, "__file__", ""))
+                != _TOOLS_BOOTSTRAP_FILE
+            ):
+                raise ImportError(
+                    "repo_owned_files 형제 경로 불일치: "
+                    f"{getattr(_TOOLS_BOOTSTRAP_MODULE, '__file__', None)!r}"
+                )
+            sys.modules[_TOOLS_BOOTSTRAP_KEY] = _TOOLS_BOOTSTRAP_MODULE
+        finally:
+            # 엔진 import bootstrap은 메인 스레드 전용이다. 그래도 위치를 가정한 pop(0)은
+            # 피하고, 우리가 넣은 값이 남아 있을 때 그 값만 제거한다.
+            if _TOOLS_BOOTSTRAP_ADDED:
+                try:
+                    sys.path.remove(_TOOLS_BOOTSTRAP)
+                except ValueError:
+                    pass
+            if sys.modules.get("repo_owned_files") is _TOOLS_BOOTSTRAP_MODULE:
+                sys.modules.pop("repo_owned_files", None)
+            if _TOOLS_BOOTSTRAP_PREVIOUS is not _TOOLS_BOOTSTRAP_SENTINEL:
+                sys.modules["repo_owned_files"] = _TOOLS_BOOTSTRAP_PREVIOUS
+    _load_module_from_path = _TOOLS_BOOTSTRAP_MODULE.load_module
+except Exception as _TOOLS_BOOTSTRAP_ERROR:
+    if sys.modules.get(_TOOLS_BOOTSTRAP_KEY) is _TOOLS_BOOTSTRAP_MODULE:
+        sys.modules.pop(_TOOLS_BOOTSTRAP_KEY, None)
 
+    def _load_module_from_path(
+        path,
+        expected_filename,
+        *,
+        verifier=None,
+        allow_unverified=False,
+        cache=False,
+        cache_key=None,
+    ):
+        """구형/손상 중앙 seam에서 복구 명령까지 띄우는 import-by-name 폴백."""
+        target = os.path.realpath(os.fspath(path))
+        if os.path.basename(target) != expected_filename:
+            raise ValueError(
+                f"module filename mismatch: expected {expected_filename!r}, "
+                f"got {os.path.basename(target)!r}"
+            )
+        if verifier is not None and allow_unverified:
+            raise ValueError("choose verifier or allow_unverified=True, not both")
+        if verifier is None and not allow_unverified:
+            raise ValueError(
+                "module load requires verifier or explicit allow_unverified=True"
+            )
+        module_key = cache_key or f"_project_manager_legacy_loaded:{target}"
+        module = sys.modules.get(module_key) if cache else None
+        inserted = False
+        try:
+            if module is None:
+                if (
+                    target == _TOOLS_BOOTSTRAP_FILE
+                    and _TOOLS_BOOTSTRAP_MODULE is not None
+                ):
+                    module = _TOOLS_BOOTSTRAP_MODULE
+                else:
+                    import_name = os.path.splitext(expected_filename)[0]
+                    previous = sys.modules.pop(
+                        import_name, _TOOLS_BOOTSTRAP_SENTINEL
+                    )
+                    parent = os.path.dirname(target)
+                    added = not sys.path or sys.path[0] != parent
+                    if added:
+                        sys.path.insert(0, parent)
+                    try:
+                        module = __import__(import_name)
+                        if os.path.realpath(getattr(module, "__file__", "")) != target:
+                            raise ImportError(
+                                f"{expected_filename} 형제 경로 불일치"
+                            )
+                    finally:
+                        if added:
+                            try:
+                                sys.path.remove(parent)
+                            except ValueError:
+                                pass
+                        if sys.modules.get(import_name) is module:
+                            sys.modules.pop(import_name, None)
+                        if previous is not _TOOLS_BOOTSTRAP_SENTINEL:
+                            sys.modules[import_name] = previous
+                if cache:
+                    sys.modules[module_key] = module
+                    inserted = True
+            if verifier is not None:
+                verifier(module, expected_filename)
+            return module
+        except Exception as exc:
+            if cache and (inserted or sys.modules.get(module_key) is module):
+                sys.modules.pop(module_key, None)
+            if target == _TOOLS_BOOTSTRAP_FILE:
+                raise RuntimeError(
+                    f"엔진 공용 로더 {target}를 불러올 수 없음; "
+                    "pm-update로 .project_manager/tools 전체를 재동기화하라."
+                ) from exc
+            raise
+
+
+# baked 엔진 rev — engine_rev.py --bump가 기계 일괄 재작성한다.
 ENGINE_REV = "v1.7.5"
 
 CONVERGENCE_DIVERGING = "diverging"
@@ -38,6 +164,146 @@ PM_FIXED_INTERNAL_ROUNDS_LIMIT = 3
 
 _PM_FIXED_RESULT_RE = re.compile(r"^rc=0(?:\s+\([^\r\n;]+\))?$")
 _WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _verify_engine_rev(sibling_module, sibling_filename):
+    """로드한 형제의 baked ENGINE_REV를 이 사본과 대조한다(skew만 fail-loud)."""
+    got = getattr(sibling_module, "ENGINE_REV", None)
+    if got != ENGINE_REV:
+        err = RuntimeError(
+            f"엔진 사본 버전 불일치 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 "
+            f"형제 {sibling_filename}(rev={got!r})를 로드했다 (사본 skew: 부분/수동 복사 또는 "
+            f"구형 사본). `pm-update`(또는 pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
+        )
+        err._engine_rev_skew = True
+        raise err
+
+
+def _require_engine_sibling(path: Path, filename: str) -> None:
+    """load-bearing 형제 모듈의 **부재**를 stale 사본과 같은 진단으로 번역한다 (fail-loud).
+
+    부재는 raw `FileNotFoundError`로 터져 복구 방법(pm-update 재동기)을 알려주지 않는다 —
+    원인이 부분/수동 복사라는 점은 stale 사본과 같으므로 같은 marked skew로 표출한다
+    (board.py `_require_engine_sibling` 동형·self-contained 복제).
+    """
+    if path.exists():
+        return
+    err = RuntimeError(
+        f"엔진 사본 불완전 — 로더 {Path(__file__).name}(rev={ENGINE_REV!r})가 형제 "
+        f"{filename} 을(를) 찾지 못했다: {path} (부분/수동 복사). `pm-update`(또는 "
+        "pm_update.py)로 .project_manager/tools/ 전체를 재동기하라."
+    )
+    err._engine_rev_skew = True
+    raise err
+
+
+def _load_file_lock():
+    """원자 교체 seam(`file_lock.py`)을 같은 tools/ 에서 경로 로드한다 (지연·프로세스 1회).
+
+    **쓰기 경로 전용 지연 로드**다 — 읽기(`read_ledger`)와 판정은 형제 없이도 떠야 한다(부분
+    동기 트리에서도 라운드 판정은 살아 있어야 하고, 이 모듈을 소비하는 도구들이 그 판정으로
+    복구를 안내한다). 부재도 rev 불일치도 조용히 흡수하지 않고 marked skew 로 올린다 — 다른
+    엔진 형제 로더와 같은 규칙이다.
+    """
+    lock_path = Path(__file__).resolve().with_name("file_lock.py")
+    _require_engine_sibling(lock_path, "file_lock.py")
+    return _load_module_from_path(
+        lock_path, "file_lock.py", verifier=_verify_engine_rev, cache=True,
+    )
+
+
+# ── 공유 읽기 (등재 예외 · 형제 없이도 떠야 하는 판독) ──────────────────────
+# 원자 교체 대상을 읽는 지점은 공용 seam 을 지난다([[T-0729]]) — 일반 `open` 리더가 하나라도
+# 잡고 있으면 Windows 는 그 교체를 WinError 32 로 막는다. 다만 이 모듈의 판독은 위 로더 주석의
+# 계약대로 **형제 없이도 떠야 한다**(부분 동기 트리에서 라운드 판정이 살아 있어야 그 판정을 쓰는
+# 도구들이 복구를 안내한다). 그래서 여기는 **등재된 예외**다 — seam 이 있으면 쓰고, 없거나 로드가
+# 실패하면 사유를 남기고 종전 읽기로 진행한다. 잃는 것은 "Windows 에서 이 판독이 열려 있는 동안의
+# 교체 한 번" 이고, 얻는 것은 "깨진 트리에서도 라운드 판정이 산다" 다.
+
+# 사본 불일치를 **의도적으로 흡수**하는 경계의 등록부 (경계 이름 → 사유). 등록되지 않은 경계는
+# 흡수 자격이 없다 — 기본 규율은 여전히 "marked skew 는 재-raise" 다.
+_ENGINE_REV_SKEW_RECOVERY_REASONS = {
+    "shared_read_seam": (
+        "판독은 형제 없이도 떠야 한다 — 부분 동기 트리에서 라운드 판정이 죽으면 그 판정으로 "
+        "복구를 안내하는 도구들이 함께 죽는다. 부재/손상/혼합 사본을 흡수하되 조용하지 않게 "
+        "사유를 stderr 로 남기고 종전 읽기로 진행한다(잃는 것은 Windows 에서 이 판독 중의 "
+        "원자 교체 한 번)"
+    ),
+}
+
+
+def _is_engine_rev_skew(exc) -> bool:
+    """fail-soft 소비 지점에서 rev skew 만 구분하기 위한 구조화 판정."""
+    return getattr(exc, "_engine_rev_skew", False)
+
+
+def _absorb_engine_rev_skew_for_recovery(exc, boundary: str) -> bool:
+    """판독 경계가 marked skew 를 의도적으로 흡수했음을 표시한다 (사유 등록 필수).
+
+    반환값으로 일반 실패와 사본 불일치를 구분해 호출부가 진단 문구를 달리한다 — 흡수는 하되
+    조용하지는 않다."""
+    reason = _ENGINE_REV_SKEW_RECOVERY_REASONS.get(boundary, "").strip()
+    if not reason:
+        raise ValueError(f"등록되지 않았거나 사유가 빈 복구 경계: {boundary!r}")
+    return _is_engine_rev_skew(exc)
+
+
+# 강등 사유는 프로세스당 한 번만 알린다 — 판독마다 찍으면 진단이 자기 소음에 묻힌다.
+_shared_read_degraded = False
+
+
+def _warn_shared_read_degraded(cause: str) -> None:
+    """강등 사유를 **프로세스당 한 번** 알린다 (판독마다 찍으면 진단이 자기 소음에 묻힌다)."""
+    global _shared_read_degraded
+    if _shared_read_degraded:
+        return
+    _shared_read_degraded = True
+    print(
+        f"경고: 공유 읽기 seam 을 쓸 수 없어 일반 읽기로 진행합니다 ({cause}) — Windows "
+        "에서는 이 판독이 열려 있는 동안 원자 교체가 실패할 수 있습니다. `pm-update` 로 "
+        ".project_manager/tools/ 전체를 재동기하십시오.",
+        file=sys.stderr,
+    )
+
+
+def _shared_read_api(name: str):
+    """공유 읽기 seam 의 함수 하나 — 없거나 못 쓰면 `None` (등재 예외의 강등 분기·loud).
+
+    **부재/손상 로드**와 **구세대 사본**(로드는 되는데 그 함수가 없는 형상)을 함께 본다 — 쓰기
+    축의 등재 예외가 `getattr(..., "atomic_replace", None)` 로 두 형상을 같이 받는 것과 같다.
+    한쪽만 보면 부분 업그레이드 트리에서 AttributeError 로 죽는다.
+    """
+    global _shared_read_degraded
+    try:
+        seam = _load_file_lock()
+    except Exception as exc:  # noqa: BLE001 — 부재/손상/혼합은 이 판독의 정상 입력이다.
+        skew = _absorb_engine_rev_skew_for_recovery(exc, "shared_read_seam")
+        cause = f"엔진 사본 불일치 — {exc}" if skew else f"{type(exc).__name__}: {exc}"
+        _warn_shared_read_degraded(cause)
+        return None
+    api = getattr(seam, name, None)
+    if api is None:
+        _warn_shared_read_degraded(f"구세대 file_lock 사본에 {name} 이(가) 없음")
+    return api
+
+
+def _read_text_shared(path, *, encoding=None, errors=None, newline=None) -> str:
+    """`file_lock.read_text_shared` — seam 을 못 쓰면 같은 의미의 종전 읽기로 강등한다."""
+    api = _shared_read_api("read_text_shared")
+    if api is not None:
+        return api(path, encoding=encoding, errors=errors, newline=newline)
+    with open(path, "r", encoding=encoding, errors=errors, newline=newline) as handle:
+        return handle.read()
+
+
+def _open_shared(path, *, binary, encoding=None, errors=None, newline=None):
+    """`file_lock.open_shared` — seam 을 못 쓰면 같은 의미의 종전 열기로 강등한다."""
+    api = _shared_read_api("open_shared")
+    if api is not None:
+        return api(path, binary=binary, encoding=encoding, errors=errors, newline=newline)
+    if binary:
+        return open(path, "rb")
+    return open(path, "r", encoding=encoding, errors=errors, newline=newline)
 
 
 def utc_now_iso() -> str:
@@ -66,7 +332,7 @@ def read_ledger(
     """
     target = Path(path)
     try:
-        data = json.loads(target.read_text(encoding="utf-8"))
+        data = json.loads(_read_text_shared(target, encoding="utf-8"))
     except FileNotFoundError:
         return {}
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -94,7 +360,7 @@ def write_ledger(path: Path | str, ledger: dict) -> None:
             json.dumps(ledger, ensure_ascii=False, indent=2),
             encoding="utf-8", newline="\n"
         )
-        os.replace(str(tmp), str(target))
+        _load_file_lock().atomic_replace(tmp, target)
     finally:
         try:
             if tmp.exists():
@@ -400,7 +666,7 @@ def parse_pm_fixed_evidence(
     if not target.is_file():
         raise ValueError(f"--pm-fixed 변경 파일을 찾을 수 없습니다: {relative.as_posix()}")
     try:
-        with target.open("r", encoding="utf-8") as stream:
+        with _open_shared(target, binary=False, encoding="utf-8") as stream:
             line_count = sum(1 for _line in stream)
     except (OSError, UnicodeError) as exc:
         raise ValueError(

@@ -87,19 +87,23 @@ def test_dump_ticket_passes_utf8_encoding_and_untranslated_newlines(
 
 
 def test_load_ticket_passes_utf8_encoding(board, tmp_path, monkeypatch):
-    """load_ticket 이 read_text 에 encoding='utf-8' 를 명시하는지 직접 검증."""
+    """load_ticket 이 판독에 encoding='utf-8' 를 명시하는지 직접 검증.
+
+    판독은 공유 읽기 seam 을 지나므로([[T-0729]]) 관찰도 그 자리에서 한다 — `Path.read_text` 를
+    보면 엔진이 그 호출을 더는 하지 않아 이 검증이 공허해진다.
+    """
     path = tmp_path / "T-9999-y.md"
     path.write_text("---\nid: T-9999\n---\nbody\n", encoding="utf-8")
 
     captured: dict = {}
-    orig = Path.read_text
+    orig = board.file_lock.read_text_shared
 
-    def spy(self, *args, **kwargs):
-        if self.name == "T-9999-y.md":
+    def spy(target, *args, **kwargs):
+        if Path(target).name == "T-9999-y.md":
             captured["encoding"] = kwargs.get("encoding")
-        return orig(self, *args, **kwargs)
+        return orig(target, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_text", spy)
+    monkeypatch.setattr(board.file_lock, "read_text_shared", spy)
     board.load_ticket(path)
     assert captured.get("encoding") == "utf-8"
 

@@ -1039,17 +1039,20 @@ def test_damaged_ledger_warns_recovers_and_keeps_reservation_metered(
         path.write_bytes(b"")
     else:
         path.write_text("{}", encoding="utf-8")
-        original_read_text = Path.read_text
+        # 판독은 공유 읽기 seam 을 지난다(T-0729) — 주입도 그 자리에 건다. `Path.read_text` 에
+        # 걸면 엔진이 그 호출을 더는 하지 않아 회귀가 공허해진다.
+        seam = pd._load_file_lock()
+        original_read_text = seam.read_text_shared
         denied_once = False
 
-        def permission_denied_once(self, *args, **kwargs):
+        def permission_denied_once(target, *args, **kwargs):
             nonlocal denied_once
-            if self == path and not denied_once:
+            if Path(target) == path and not denied_once:
                 denied_once = True
                 raise PermissionError("ledger read denied")
-            return original_read_text(self, *args, **kwargs)
+            return original_read_text(target, *args, **kwargs)
 
-        monkeypatch.setattr(Path, "read_text", permission_denied_once)
+        monkeypatch.setattr(seam, "read_text_shared", permission_denied_once)
 
     budget = pd._reserve_internal_review_round(
         "T-DAMAGE-001", confirm_fix=False, wall_timeout_sec=60,

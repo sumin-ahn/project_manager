@@ -1467,14 +1467,16 @@ def test_prepare_lookup_and_read_share_board_lock(pd, monkeypatch, tmp_path):
             return "T-1010"
 
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: FakeBoard())
-    original_read_bytes = Path.read_bytes
+    # 티켓 본문 판독은 공유 읽기 seam 을 지난다([[T-0729]]) — 추적도 그 자리에 건다.
+    seam = pd._load_file_lock()
+    original_read_bytes = seam.read_bytes_shared
 
     def tracked_read_bytes(path):
-        if path == source:
+        if Path(path) == source:
             state["read_locked"] = state["locked"]
         return original_read_bytes(path)
 
-    monkeypatch.setattr(Path, "read_bytes", tracked_read_bytes)
+    monkeypatch.setattr(seam, "read_bytes_shared", tracked_read_bytes)
     plan = pd.prepare_ticket_copy(
         ticket="T-1010", role="developer", cwd=slot, pm_home=pm_home,
     )

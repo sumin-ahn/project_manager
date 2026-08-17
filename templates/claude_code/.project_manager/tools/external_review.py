@@ -270,6 +270,13 @@ _ENGINE_REV_SKEW_RECOVERY_REASONS = {
         "갈아타면 이 실행이 왜 죽었는지가 사라지고 라운드 환불 판정의 근거도 함께 사라진다. "
         "불일치는 경고 한 줄로 남기고 중단 사유(주 예외)를 그대로 전파한다"
     ),
+    "shared_read_seam": (
+        "판독은 형제 없이도 떠야 한다 — 이 모듈의 진단·denylist·재앵커 경로는 seam 이 필요한 "
+        "`--gate` 구간 밖이고(로더 주석의 기능 축), pm_delegate 가 그 경로를 deep-import 로 "
+        "재사용한다. seam 부재로 판독이 죽으면 부분 동기 트리에서 진단 자체가 사라진다. "
+        "부재/손상/혼합 사본을 흡수하되 조용하지 않게 사유를 stderr 로 남기고 종전 읽기로 "
+        "진행한다(잃는 것은 Windows 에서 이 판독 중의 원자 교체 한 번)"
+    ),
     "partial_container_cleanup": (
         "구성 실패로 남은 부분 격리 컨테이너 정리는 **원래 실패를 덮지 않는 것**이 계약이다 — "
         "여기서 갈아타면 격리가 왜 실패했는지가 사라진다. 삭제 수단이 형제 모듈이라 사본 불일치도 "
@@ -925,7 +932,7 @@ def _registered_worktrees(pm_home: Path) -> tuple[Path, ...]:
     """PM 홈의 실재 worktree 후보를 lease 장부에서 파생한다(하네스 목록/슬롯 추측 없음)."""
     ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     try:
-        data = json.loads(ledger.read_text(encoding="utf-8"))
+        data = json.loads(_read_text_shared(ledger, encoding="utf-8"))
     except FileNotFoundError:
         return ()
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -1804,7 +1811,7 @@ def local_config(repo: Path | None = None) -> dict[str, str]:
     path = (repo / ".project_manager" / "local.conf") if repo is not None else LOCAL_CONF
     if not path.exists():
         return conf
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in _read_text_shared(path, encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -2519,6 +2526,61 @@ def _load_file_lock():
     return _load_module_from_path(
         lock_path, "file_lock.py", verifier=_verify_engine_rev, cache=True,
     )
+
+
+# ── 공유 읽기 (등재 예외 · 형제 없이도 떠야 하는 판독) ──────────────────────
+# 원자 교체 대상을 읽는 지점은 공용 seam 을 지난다([[T-0729]]) — 일반 `open` 리더가 하나라도
+# 잡고 있으면 Windows 는 그 교체를 WinError 32 로 막는다. 다만 이 모듈의 판독은 위 로더 주석의
+# 기능 축 그대로 **형제 없이도 떠야 한다**(진단·denylist·재앵커는 seam 이 필요한 `--gate` 구간
+# 밖이고, pm_delegate 가 그 경로를 deep-import 로 재사용한다). 그래서 여기는 **등재된 예외**다 —
+# seam 이 있으면 쓰고, 없거나 로드가 실패하면 사유를 남기고 종전 읽기로 진행한다.
+
+# 강등 사유는 프로세스당 한 번만 알린다 — 판독마다 찍으면 진단이 자기 소음에 묻힌다.
+_shared_read_degraded = False
+
+
+def _warn_shared_read_degraded(cause: str) -> None:
+    """강등 사유를 **프로세스당 한 번** 알린다 (판독마다 찍으면 진단이 자기 소음에 묻힌다)."""
+    global _shared_read_degraded
+    if _shared_read_degraded:
+        return
+    _shared_read_degraded = True
+    print(
+        f"경고: 공유 읽기 seam 을 쓸 수 없어 일반 읽기로 진행합니다 ({cause}) — Windows "
+        "에서는 이 판독이 열려 있는 동안 원자 교체가 실패할 수 있습니다. `pm-update` 로 "
+        ".project_manager/tools/ 전체를 재동기하십시오.",
+        file=sys.stderr,
+    )
+
+
+def _shared_read_api(name: str):
+    """공유 읽기 seam 의 함수 하나 — 없거나 못 쓰면 `None` (등재 예외의 강등 분기·loud).
+
+    **부재/손상 로드**와 **구세대 사본**(로드는 되는데 그 함수가 없는 형상)을 함께 본다 — 쓰기
+    축의 등재 예외가 `getattr(..., "atomic_replace", None)` 로 두 형상을 같이 받는 것과 같다.
+    한쪽만 보면 부분 업그레이드 트리에서 AttributeError 로 죽는다.
+    """
+    global _shared_read_degraded
+    try:
+        seam = _load_file_lock()
+    except Exception as exc:  # noqa: BLE001 — 부재/손상/혼합은 이 판독의 정상 입력이다.
+        skew = _absorb_engine_rev_skew_for_recovery(exc, "shared_read_seam")
+        cause = f"엔진 사본 불일치 — {exc}" if skew else f"{type(exc).__name__}: {exc}"
+        _warn_shared_read_degraded(cause)
+        return None
+    api = getattr(seam, name, None)
+    if api is None:
+        _warn_shared_read_degraded(f"구세대 file_lock 사본에 {name} 이(가) 없음")
+    return api
+
+
+def _read_text_shared(path, *, encoding=None, errors=None, newline=None) -> str:
+    """`file_lock.read_text_shared` — seam 을 못 쓰면 같은 의미의 종전 읽기로 강등한다."""
+    api = _shared_read_api("read_text_shared")
+    if api is not None:
+        return api(path, encoding=encoding, errors=errors, newline=newline)
+    with open(path, "r", encoding=encoding, errors=errors, newline=newline) as handle:
+        return handle.read()
 
 
 def _restrict_to_owner(path: Path) -> None:
@@ -4596,7 +4658,7 @@ def _split_ticket_frontmatter(text: str, *, source: Path) -> tuple[str | None, s
 def _load_ticket_body_from_file(path: Path) -> str:
     """이미 정확-일치 해소된 ticket 파일의 frontmatter만 벗긴 본문 원문."""
     _frontmatter, body = _split_ticket_frontmatter(
-        path.read_text(encoding="utf-8"), source=path,
+        _read_text_shared(path, encoding="utf-8"), source=path,
     )
     return body
 
@@ -4669,7 +4731,7 @@ def _parse_estimate_from_file(path: Path) -> str | None:
 def _parse_touches_from_file(path: Path) -> list[str]:
     """ticket 파일에서 frontmatter touches 를 추출한다."""
     fm_text, _body = _split_ticket_frontmatter(
-        path.read_text(encoding="utf-8"), source=path,
+        _read_text_shared(path, encoding="utf-8"), source=path,
     )
     if fm_text is None:
         return []
@@ -4709,7 +4771,7 @@ def _load_review_context() -> str:
     """인스턴스 overlay 또는 기본 헤더에 티켓 결정 권위 규약을 빠짐없이 결합한다."""
     if REVIEW_CONTEXT_FILE.exists():
         try:
-            context = REVIEW_CONTEXT_FILE.read_text(encoding="utf-8").strip() + "\n"
+            context = _read_text_shared(REVIEW_CONTEXT_FILE, encoding="utf-8").strip() + "\n"
             if _AUTHORITATIVE_TICKET_CONTEXT not in context:
                 context += "\n" + _AUTHORITATIVE_TICKET_CONTEXT + "\n"
             return context
@@ -5215,7 +5277,7 @@ def _build_reviewer_home(
 def _scrubbed_json_text(source: Path, drop_keys: Sequence[str]) -> str | None:
     """최상위 선언 키를 떼어낸 JSON 본문 — 읽기/파싱/형식이 어긋나면 None(복제 안 함)."""
     try:
-        payload = json.loads(source.read_text(encoding="utf-8"))
+        payload = json.loads(_read_text_shared(source, encoding="utf-8"))
     except (OSError, UnicodeError, ValueError):
         return None
     if not isinstance(payload, dict):
@@ -5237,7 +5299,7 @@ def _scrubbed_toml_text(source: Path, drop_tables: Sequence[str]) -> str | None:
     (`projects = {...}`)처럼 줄 절단으로 못 빼는 형태는 이 검증에서 걸려 복제 자체가 취소된다.
     """
     try:
-        text = source.read_text(encoding="utf-8")
+        text = _read_text_shared(source, encoding="utf-8")
     except (OSError, UnicodeError):
         return None
     dropped = set(drop_tables)
@@ -6825,7 +6887,7 @@ def _local_conf_path(repo: Path | None = None) -> Path:
 def _read_local_config(path: Path) -> dict[str, str]:
     """존재가 확인된 비교 대상 local.conf를 KEY=value 로 읽는다."""
     conf: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in _read_text_shared(path, encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
