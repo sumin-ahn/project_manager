@@ -616,6 +616,40 @@ def test_opencode_send_rejects_symlink_parent(pd, tmp_path):
         pd._cleanup_attempt_transport(transport)
 
 
+def test_posix_mode_probe_unlink_failure_warns_but_keeps_verdict(pd, tmp_path, monkeypatch, capsys):
+    """T-0734 (a): probe 임시파일 unlink 실패는 판정값을 바꾸지 않고 stderr 에 잔여 경로를 남긴다."""
+    delegate = pd
+    real_unlink = Path.unlink
+    seen: dict[str, Path] = {}
+
+    def failing_unlink(self, *args, **kwargs):
+        if self.name.startswith(".ticket-copy-mode-"):
+            seen["probe"] = self
+            raise PermissionError(13, "unlink denied (injected)")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+    verdict = delegate._posix_mode_supported(tmp_path)
+    assert isinstance(verdict, bool)
+    assert "probe" in seen, "주입한 unlink 실패가 probe 경로를 타지 않았다"
+    err = capsys.readouterr().err
+    assert "mode probe 임시파일 삭제 실패" in err
+    assert str(seen["probe"]) in err
+    assert "unlink denied (injected)" in err
+    # 잔여 파일은 실제로 남아 있고(정리 실패), 이 테스트가 치운다.
+    assert seen["probe"].exists()
+    real_unlink(seen["probe"])
+
+
+def test_posix_mode_probe_success_path_is_silent(pd, tmp_path, capsys):
+    """T-0734 (b): 정상 경로는 판정값만 내고 stderr 는 비어 있으며 probe 잔여 0."""
+    delegate = pd
+    verdict = delegate._posix_mode_supported(tmp_path)
+    assert isinstance(verdict, bool)
+    assert capsys.readouterr().err == ""
+    assert not any(p.name.startswith(".ticket-copy-mode-") for p in tmp_path.iterdir())
+
+
 def test_opencode_existing_attempt_directory_fails_loud(
         pd, monkeypatch, tmp_path):
     """UUID attempt 디렉터리가 선존재하면 재사용·재시도 없이 충돌을 올린다."""

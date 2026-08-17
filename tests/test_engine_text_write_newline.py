@@ -5,6 +5,12 @@
 # `NamedTemporaryFile(mode=...)`은 임시 파일 생명주기까지, `partial(open, ...)`은 생성된
 # callable의 흐름까지 추적해야 해 이 단순 AST 가드의 대상이 아니다. 2026-08-17 독립 AST/grep
 # 실측에서 canonical 엔진의 두 형태 사용은 모두 0건이므로, 오탐 위험이 큰 흐름 분석은 넣지 않는다.
+# 같은 이유로 미대상인 형태가 셋 더 있다(T-0691 R3 실측 · canonical 엔진 사용 0건):
+#   - 대입 별칭 `_x = os.fdopen` 뒤 `_x(fd, "w")` — 값 흐름 추적이 필요하다(from-import·모듈 별칭은 잡는다).
+#   - `codecs.open(path, "w", encoding=...)` — mode 가 두 번째 위치 인자라 이 스캐너의 mode 해소와 다르고
+#     엔진의 codecs 사용은 lookup/decoder 뿐이다.
+#   - 다른 모듈에서 attribute 로 부르는 공용 래퍼(`pu._fdopen_text(...)`)는 `_call_name` 이 잡는다(아래).
+# "주석에 없으면 잡힌다" 로 읽지 마라 — 새 형태를 엔진에 들이면 이 목록과 스캐너를 함께 갱신한다.
 
 from __future__ import annotations
 
@@ -53,6 +59,9 @@ def _call_name(
             return "io.open"
         if call.func.value.id in os_aliases and call.func.attr == "open":
             return None
+    if call.func.attr in {"_fdopen_text", "_fdopen_binary"}:
+        # `import pm_import as pu; pu._fdopen_text(...)` — 공용 래퍼의 attribute 호출도 호출부 검사 대상.
+        return call.func.attr
     if call.func.attr == "open":
         return "Path.open"
     return None

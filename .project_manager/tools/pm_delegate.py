@@ -1238,8 +1238,17 @@ def _posix_mode_supported(directory: Path) -> bool:
         if probe is not None:
             try:
                 probe.unlink()
-            except OSError:
-                pass
+            except OSError as exc:
+                # probe 는 진단용이라 실패가 위임을 막지 않는다 — 대신 잔여 파일을 loud 로 남긴다(T-0734).
+                _warn_probe_cleanup_failure(probe, exc)
+
+
+def _warn_probe_cleanup_failure(probe: Path, exc: OSError) -> None:
+    """mode probe 임시파일 정리 실패를 주 결과(판정값)를 덮지 않고 stderr 로 남긴다."""
+    print(
+        f"경고: 티켓 사본 mode probe 임시파일 삭제 실패 — 잔존 가능 경로: {probe} · 오류: {exc}",
+        file=sys.stderr,
+    )
 
 
 def _ticket_copy_ledger_row(row: object, *, line_number: int) -> dict:
@@ -5262,6 +5271,9 @@ def _prompt_file_denylist_pattern(prompt_file: Path) -> str | None:
     try:
         candidates.append(prompt_file.resolve())
     except OSError:
+        # resolve() 실패(끊긴 symlink·권한·긴 경로)는 해소 경로 후보만 잃는다 — 원본 경로 후보는 이미
+        # 목록에 있어 이름·디렉토리 성분 스캔이 계속되고, 파일 자체는 뒤 읽기 단계에서 다시 실패한다
+        # (fail-closed 방향). 그래서 사유 있는 fail-soft 로 둔다(T-0734).
         pass
     for cand in candidates:
         # 이름은 **소문자 정규화** 후 판정한다 — `.ENV`·`DEPLOY.PEM`·`Credentials.env` 가 내용을 읽기도
