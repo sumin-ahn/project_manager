@@ -2560,8 +2560,9 @@ def test_argv_matrix_permission_axis(pd, harness, role):
             assert "Write" in tools and "Edit" in tools
             assert "--permission-mode" in argv
         else:
-            # read 역할은 제품 트리를 새로 쓰지 않는다(Write 없음). researcher 의 Edit 만
-            # 등재된 예외다 — 티켓 사본 자기 절 기록 전용(T-0696).
+            # read 역할은 제품 트리를 새로 쓰지 않는다(Write 없음). researcher 만 티켓 사본
+            # 자기 절 기록용 Edit 를 받는다(T-0696·ADR-0089) — claude 축에서 이 플래그는
+            # 가용성만 넓히고 경로는 codex/opencode 축이 좁힌다.
             assert "Write" not in tools
             assert ("Edit" in tools) == (role == "researcher")
             assert "--permission-mode" not in argv

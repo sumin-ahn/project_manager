@@ -226,18 +226,11 @@ def test_disabling_the_ledger_axis_makes_the_three_probes_green(board, pd):
 # external-review 절 기록도 같은 장부 게이트를 지난다 (봉인 writer 5주체)
 # ════════════════════════════════════════════════════════════════════════
 
-def _external_review_content(pd) -> str:
-    content, problem = pd.build_external_review_section_content(
-        "판정: 통과\n\n## must-fix\n- 없음\n", today="2026-08-18",
-    )
-    assert problem is None or isinstance(problem, str)
-    return content
-
-
 def _write_external_review(board, pd, ticket: str):
+    # T-0696 R2 이후 절 본문 조립은 writer 가 락 안에서 한다 — 회신 원문과 날짜를 넘긴다.
     return pd.write_external_reviewer_section(
-        ticket=ticket, content=_external_review_content(pd),
-        pm_home=board.root, board=board.module,
+        ticket=ticket, reply_text="판정: 통과\n\n## must-fix\n- 없음\n",
+        today="2026-08-18", pm_home=board.root, board=board.module,
     )
 
 

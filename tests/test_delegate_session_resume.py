@@ -44,6 +44,11 @@ def _load(name: str):
     return module
 
 
+def pd_module():
+    """fixture 밖(파라미터 목록·전수 단언)에서 쓰는 엔진 모듈 로더."""
+    return _load("pm_delegate")
+
+
 @pytest.fixture(scope="module")
 def pd():
     return _load("pm_delegate")
@@ -596,7 +601,15 @@ def test_resume_round_sends_delta_on_the_reused_session(pd, monkeypatch, tmp_pat
 
 
 def test_resume_success_is_session_identity_not_rc(pd, monkeypatch, tmp_path, capsys):
-    """순수읽기 researcher는 rc=0 다른 세션이면 fresh + full payload로 다시 돈다."""
+    """재사용 성공 판정은 rc 가 아니라 **세션 정체성**이다 — rc=0 이어도 다른 세션이면 실패다.
+
+    관측은 재실행 금지 클래스 **밖**에서 한다(그 클래스는 rc=1 fail-loud 로 닫히는 별도 축이고
+    전용 테스트가 소유한다). researcher 는 T-0696 에서 그 클래스로 옮겨졌으므로 이 축에서는
+    분류만 임시로 되돌려 폴백 경로를 본다.
+    """
+    monkeypatch.setattr(
+        pd, "RESUME_MUTATING_ROLES", pd.RESUME_MUTATING_ROLES - {"researcher"},
+    )
     out_dir, _ledger_path, _record_id = _resume_fixture(pd, tmp_path, role="researcher")
     prompt = _write_prompt(tmp_path, "해소 주장 본문")
     fake = _FakeRun(
@@ -724,9 +737,22 @@ def _write_role_fixture(pd, tmp_path, role: str):
     return out_dir, ledger_path
 
 
-@pytest.mark.parametrize("role", sorted({"developer", "architect", "code-reviewer"}))
-def test_write_role_resume_mismatch_fails_loud(pd, monkeypatch, tmp_path, capsys, role):
-    """write 역할 불일치 → rc 1 · fresh 재실행 0 · 트리 확인 안내 (중복·충돌 편집 차단)."""
+_NO_RERUN_ROLES = sorted({"developer", "architect", "code-reviewer", "researcher"})
+
+
+def test_no_rerun_class_is_pinned_to_the_engine_classification():
+    """재실행 금지 클래스 전수 고정 — 역할이 들어오고 나갈 때 이 목록이 red 로 알려준다.
+
+    researcher 는 T-0696 에서 편입됐다: 제품 트리에는 read 지만 자기 티켓 사본 절을 기록하므로
+    세션 불일치 뒤 fresh 재실행이 같은 절을 두 번 쓸 수 있다(code-reviewer 와 같은 근거).
+    """
+    assert set(_NO_RERUN_ROLES) == set(pd_module().RESUME_MUTATING_ROLES)
+    assert set(pd_module().READ_ROLES) <= set(pd_module().RESUME_MUTATING_ROLES)
+
+
+@pytest.mark.parametrize("role", _NO_RERUN_ROLES)
+def test_mutating_role_resume_mismatch_fails_loud(pd, monkeypatch, tmp_path, capsys, role):
+    """재실행 금지 클래스 불일치 → rc 1 · fresh 재실행 0 · 확인 안내 (중복 기록 차단)."""
     assert role in pd.RESUME_MUTATING_ROLES
     out_dir, _ledger_path = _write_role_fixture(pd, tmp_path, role)
     prompt = _write_prompt(tmp_path, "구현했다.")
@@ -744,10 +770,17 @@ def test_write_role_resume_mismatch_fails_loud(pd, monkeypatch, tmp_path, capsys
     assert "재위임은 명시 재호출만" in err              # 무음 대체 금지 안내(단일 깔때기)
 
 
-@pytest.mark.parametrize("role", ["researcher"])
-def test_read_role_resume_mismatch_still_reruns(pd, monkeypatch, tmp_path, capsys, role):
-    """read 역할은 현행 유지 — 트리를 안 만지므로 fresh + full payload 재실행이 안전하다."""
-    assert role in pd.READ_ROLES
+def test_id_mismatch_rerun_survives_for_the_unclassified_role_axis(
+        pd, monkeypatch, tmp_path, capsys):
+    """id 불일치 fresh 재실행 경로는 **분류 밖 역할**에만 남는다(T-0696 이후 위임 4역할은 전부 금지).
+
+    옛 전제("read 역할이라 재실행")는 researcher 가 자기 티켓 절을 기록하면서 사라졌다. 경로
+    자체는 살아 있어야 하므로(분류가 다시 갈릴 때의 기본값) 분류에서 뺀 역할로 관측한다.
+    """
+    role = "researcher"
+    monkeypatch.setattr(
+        pd, "RESUME_MUTATING_ROLES", pd.RESUME_MUTATING_ROLES - {role},
+    )
     out_dir, _ledger_path = _write_role_fixture(pd, tmp_path, role)
     prompt = _write_prompt(tmp_path, "해소 주장 본문")
     fake = _FakeRun(

@@ -147,9 +147,9 @@ def test_opencode_researcher_exists():
 def test_opencode_researcher_writes_only_its_ticket_section():
     """researcher는 native/cross 공용 custom agent이며 Bash를 기계적으로 거부한다.
 
-    `edit: allow` 는 ADR-0018 조사 read-only 규약의 등재된 예외다 — 조사 산출도 티켓 절로
-    남아야 한다는 결정(T-0696)의 최소 수단이고, 범위는 slot 안 티켓 사본의 자기 역할 절이다
-    (code-reviewer 선례와 동형). bash·task 는 계속 deny 다.
+    `edit: allow` 는 "모든 참여 역할이 자기 산출을 티켓 절로 남긴다"(ADR-0089·T-0696)의 최소
+    수단이다. opencode 축은 역할 agent permission 이 편집 자체를 기계로 켜고 끄는 자리이며,
+    범위(사본의 자기 절)는 카드 문구가 지시한다. bash·task 는 계속 deny 다.
     """
     fm = _load_agent_frontmatter(RESEARCHER_MD)
     assert fm.get("mode") == "all", "researcher가 native task와 cross run을 함께 지원하지 않음"

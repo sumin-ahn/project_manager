@@ -313,7 +313,19 @@ INTERNAL_FINDING_IDS_FIELD = "finding_ids"
 
 PM_REVIEW_BLOCK = "pm-review-v1"
 PM_REVIEW_DISPOSITION_BLOCK = "pm-review-disposition-v1"
-PM_REVIEW_VERSION = 1
+# fence 이름(`…-v1`)은 블록 **종류** 라벨이고, payload 의 `version` 이 스키마 세대다. severity 를
+# 필수로 올리면서 세대를 2 로 승격했다 — 이미 봉인돼 손댈 수 없는 v1 블록(진행 중 티켓 실측
+# 8건·라운드 산출)을 파서가 legacy 로 계속 읽어야 판정 표면이 현존 자산을 잠그지 않는다.
+PM_REVIEW_VERSION = 2
+PM_REVIEW_LEGACY_VERSION = 1
+PM_REVIEW_SUPPORTED_VERSIONS: tuple[int, ...] = (
+    PM_REVIEW_LEGACY_VERSION, PM_REVIEW_VERSION,
+)
+# severity 를 요구하기 시작하는 세대. v1 블록은 부재를 허용하고 렌더가 '미기재'로 표기한다.
+PM_REVIEW_SEVERITY_MIN_VERSION = 2
+PM_REVIEW_SEVERITY_UNSPECIFIED_LABEL = "미기재"
+# PM 판정 블록은 스키마가 그대로라 세대를 올리지 않는다(채널 필드는 선택 key 로 흡수).
+PM_REVIEW_DISPOSITION_VERSION = PM_REVIEW_LEGACY_VERSION
 PM_REVIEW_CLASSES: tuple[str, ...] = (
     "implementation-defect", "spec-violation", "design-proposal",
 )
@@ -2314,6 +2326,20 @@ def _assert_ticket_copy_root_ignored(
         )
 
 
+def anchor_board_to_repo(board, repo: Path):
+    """board 모듈의 경로 앵커를 명시 repo 좌표로 고정한다(코드 권위와 데이터 권위 분리).
+
+    동적 import의 REPO는 파일 깊이로 파생되지만 hermetic fixture처럼 tools만 옮긴 형상도 명시된
+    PM 홈 좌표가 권위다. board의 기존 함수는 모두 module REPO에서 경로를 해소한다. **자기 형제
+    board 를 로드해 PM 홈 데이터에 쓰는 호출자**(external_review 회수)도 같은 규칙을 쓰도록
+    공용으로 둔다 — 앵커 규칙이 두 군데면 규칙이 둘이 된다."""
+    board.REPO = Path(repo).resolve()
+    board.LOCAL_DIR = board.REPO / ".project_manager" / ".local"
+    board.BOARD_LOCK = board.LOCAL_DIR / "board.lock"
+    board.BOARD_FILE = board.REPO / ".project_manager" / "wiki" / "board.md"
+    return board
+
+
 def _load_board_for_repo(repo: Path):
     repo = repo.resolve()
     path = repo / ".project_manager" / "tools" / "board.py"
@@ -2324,13 +2350,7 @@ def _load_board_for_repo(repo: Path):
     if not path.is_file():
         raise DelegateError(f"실행 가능한 board.py가 없습니다: {path}")
     board = _load_module_from_path(path, "board.py", verifier=_verify_engine_rev)
-    # 동적 import의 REPO는 파일 깊이로 파생되지만 hermetic fixture처럼 tools만 옮긴 형상도
-    # 명시된 PM 홈 좌표가 권위다. board의 기존 함수는 모두 module REPO에서 경로를 해소한다.
-    board.REPO = repo
-    board.LOCAL_DIR = board.REPO / ".project_manager" / ".local"
-    board.BOARD_LOCK = board.LOCAL_DIR / "board.lock"
-    board.BOARD_FILE = board.REPO / ".project_manager" / "wiki" / "board.md"
-    return board
+    return anchor_board_to_repo(board, repo)
 
 
 def prepare_ticket_copy(
@@ -2656,11 +2676,12 @@ def _load_ticket_copy_plan(
 
 
 class ExternalReviewSectionWrite(NamedTuple):
-    """엔진이 기록한 external-reviewer 절의 좌표와 board 동기 상태."""
+    """엔진이 기록한 external-reviewer 절의 좌표·board 동기 상태·회수 위반 사유."""
 
     path: Path
     ordinal: int
     sync_ready: bool
+    problem: str | None = None
 
 
 EXTERNAL_REVIEW_SECTION_LABEL = "추가 리뷰"
@@ -2717,13 +2738,15 @@ def validate_external_review_block(reply_text: str) -> str | None:
     value = reviews[0].value
     try:
         _pm_review_exact_keys(value, PM_REVIEW_PAYLOAD_KEYS, PM_REVIEW_BLOCK)
-        _pm_review_version(value, PM_REVIEW_BLOCK)
+        version = _pm_review_version(value, PM_REVIEW_BLOCK)
         if not isinstance(value["findings"], list) or not isinstance(
             value["confirmations"], list
         ):
             raise PMReviewError("malformed", "findings/confirmations는 JSON array여야 합니다")
         parsed = [
-            _pm_review_parse_finding(item, 0, reviewer_role=EXTERNAL_REVIEW_ROLE)
+            _pm_review_parse_finding(
+                item, 0, reviewer_role=EXTERNAL_REVIEW_ROLE, version=version,
+            )
             for item in value["findings"]
         ]
         parsed += [
@@ -2740,17 +2763,102 @@ def validate_external_review_block(reply_text: str) -> str | None:
     return None
 
 
+def collect_review_finding_ids(ticket_text: str, reviewer_role: str) -> set[str]:
+    """티켓 본문에 이미 등장한 채널 finding ID 전부(관용 스캔).
+
+    엄격 파서를 쓰지 않는다 — 구 스키마·손상 블록이 섞여 있어도 ID 재사용은 막아야 하고, 산문
+    인용까지 포함해 **보수적으로 넓게** 잡는 편이 충돌보다 안전하다(다음 번호가 커질 뿐이다).
+    """
+    prefix = _pm_review_finding_id_prefix(reviewer_role)
+    pattern = re.compile(
+        rf"(?<![A-Za-z0-9_-]){re.escape(prefix)}-(\d{{1,6}})(?![A-Za-z0-9_-])"
+    )
+    return {f"{prefix}-{match.group(1)}" for match in pattern.finditer(ticket_text)}
+
+
+def next_review_finding_id(ticket_text: str, reviewer_role: str) -> str:
+    """이 채널이 다음 라운드에 쓸 첫 finding ID — 티켓의 기존 최대 번호 + 1.
+
+    추가 리뷰어 세션은 라운드마다 fresh 라 스스로 이전 ID 를 모른다. 프롬프트에 실값을 실어야
+    2라운드가 같은 ID 를 재선언해 delta 를 영구 malformed 로 만들지 않는다.
+    """
+    prefix = _pm_review_finding_id_prefix(reviewer_role)
+    numbers = [
+        int(finding_id.split("-", 1)[1])
+        for finding_id in collect_review_finding_ids(ticket_text, reviewer_role)
+    ]
+    return f"{prefix}-{(max(numbers) + 1 if numbers else 1):03d}"
+
+
+def _neutralize_review_fence(body: str) -> str:
+    """회수 거부된 블록의 fence 라벨만 무해화한다(내용은 절에 그대로 남긴다).
+
+    거부 사유가 있는 블록을 versioned fence 그대로 티켓에 넣으면 그 티켓의 `review delta` 가
+    영구 malformed 가 되고, 절은 봉인돼 손수정 경로도 없다([[ADR-0089]]). 라벨을 평문 fence 로
+    낮춰 산출은 보존하고 판정 표면은 다음 라운드로 열어 둔다.
+    """
+    lines: list[str] = []
+    for line in body.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if stripped.startswith("```") and stripped[3:].strip() in {
+            PM_REVIEW_BLOCK, PM_REVIEW_DISPOSITION_BLOCK,
+        }:
+            indent = line[:len(line) - len(stripped)]
+            newline = line[len(line.rstrip("\r\n")):]
+            lines.append(f"{indent}```text{newline}")
+            continue
+        lines.append(line)
+    return "".join(lines)
+
+
+def _external_review_id_collisions(
+    body: str, existing_finding_ids: Sequence[str],
+) -> list[str]:
+    """회신 블록의 **신규 finding** ID 중 티켓에 이미 있는 것(확인 라운드는 대상 아님)."""
+    existing = set(existing_finding_ids)
+    if not existing:
+        return []
+    blocks = [
+        block for block in _pm_review_json_blocks(body)
+        if block.kind == PM_REVIEW_BLOCK
+    ]
+    if len(blocks) != 1:
+        return []
+    findings = blocks[0].value.get("findings")
+    if not isinstance(findings, list):
+        return []
+    collided = {
+        item["id"] for item in findings
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+        and item["id"] in existing
+    }
+    return sorted(collided)
+
+
 def build_external_review_section_content(
     reply_text: str, *, today: str, label: str = EXTERNAL_REVIEW_SECTION_LABEL,
+    existing_finding_ids: Sequence[str] = (),
 ) -> tuple[str, str | None]:
     """추가 리뷰어 산출을 역할 절 본문으로 만든다 — (본문, 위반 사유 또는 None).
 
     본문은 산문 답변 전문이다(그 안에 `pm-review-v1` 블록이 하나 들어 있다). 블록이 없거나
     스키마를 어기면 본문 첫 줄에 경고를 남기고 사유를 함께 돌려준다 — 조용히 장부에만 남기지
     않는다(호출부가 rc≠0 로 표면화한다).
+
+    `existing_finding_ids`(회수 직전 티켓 스냅샷)와 겹치는 신규 finding ID 는 재선언이라 거부
+    한다 — 산출은 절에 남기되 fence 라벨을 낮춰 판정 표면을 다음 라운드로 열어 둔다.
     """
     body, neutralized = neutralize_ticket_growth_markup(reply_text)
     problem = validate_external_review_block(body)
+    collisions: list[str] = []
+    if problem is None:
+        collisions = _external_review_id_collisions(body, existing_finding_ids)
+        if collisions:
+            problem = (
+                f"finding ID 재선언: {', '.join(collisions)} — 티켓에 이미 있는 ID 라 이 블록을 "
+                "판정 표면에 올리지 않았습니다(다음 라운드에서 새 ID 로 다시 내십시오)"
+            )
+            body = _neutralize_review_fence(body)
     lines = [f"## {label} ({EXTERNAL_REVIEW_ROLE} · {today})", ""]
     if problem is not None:
         lines.extend([f"{EXTERNAL_REVIEW_BLOCK_WARNING_PREFIX}{problem}", ""])
@@ -2765,12 +2873,13 @@ def build_external_review_section_content(
 
 
 def write_external_reviewer_section(
-    *, ticket: str, content: str, pm_home: Path, board=None,
+    *, ticket: str, reply_text: str, today: str, pm_home: Path, board=None,
 ) -> ExternalReviewSectionWrite:
     """추가 리뷰어 산출을 PM 홈 티켓의 새 external-reviewer 절로 원자 기록한다.
 
     쓰기 주체는 엔진이다 — 추가 리뷰어에게 사본 편집 권한을 주지 않는다. 도착지·구조·봉인·판정
-    표면은 내부 리뷰어 harvest 와 같다(`by=external-review` 로 writer 만 구분).
+    표면은 내부 리뷰어 harvest 와 같다(`by=external-review` 로 writer 만 구분). 절 본문 조립은
+    **락 안**에서 한다 — finding ID 재선언 판정이 실제로 쓰는 티켓 스냅샷과 같아야 한다.
     """
     board = _load_board_for_repo(pm_home) if board is None else board
     role = EXTERNAL_REVIEW_ROLE
@@ -2793,6 +2902,10 @@ def write_external_reviewer_section(
         )
         growth_dir = ticket_growth_dir_for_ticket_path(ticket_path)
         ledger = read_ticket_growth_ledger(growth_dir, ticket)
+        content, problem = build_external_review_section_content(
+            reply_text, today=today,
+            existing_finding_ids=collect_review_finding_ids(current_text, role),
+        )
         ordinal = sum(
             section.role == role
             for section in _ticket_growth_sections(current_text)
@@ -2810,11 +2923,14 @@ def write_external_reviewer_section(
             )
         # 봉인 writer 는 예외 없이 같은 fail-closed 장부 판정을 지난다 — 한 writer 만 게이트
         # 밖에 있으면 이 티켓이 닫는 세탁(절 삭제 → 정상 명령 1회 → GREEN)이 그 문에서 재현된다.
+        stamp_before = ticket_growth_migration_stamped(growth_dir)
         require_ticket_growth_ledger_before_write(
             current_text, ledger, ticket=ticket,
-            migrated=ticket_growth_migration_stamped(growth_dir),
+            migrated=stamp_before,
             action="external-review 절 기록",
         )
+        # 조립은 LF 한 표기로 하고 지배 개행을 **한 번만** 입힌다. 이미 CRLF 인 회신을 그대로
+        # 치환하면 `\r\r\n` 이 되고, 봉인 해시는 개행 정규화 입력이라 손상이 조용히 통과한다.
         newline = _dominant_ticket_newline(current_text)
         block = (
             f"<!-- {_TICKET_SECTION_MARKER}:start role={role} -->\n"
@@ -2826,24 +2942,29 @@ def write_external_reviewer_section(
             "" if normalized_tail.endswith("\n\n")
             else ("\n" if normalized_tail.endswith("\n") else "\n\n")
         )
-        appended = current_text + (separator + block).replace("\n", newline)
+        addition = (separator + block).replace("\r\n", "\n").replace("\r", "\n")
+        appended = current_text + addition.replace("\n", newline)
         write = upsert_ticket_seal_with_ledger(
             board, ticket_path, appended, role, ordinal,
             by=EXTERNAL_REVIEW_SEAL_WRITER, ticket=ticket, ledger=True,
         )
         ledger_path = write.ledger_path
     message = f"external-review {ticket} {role}"
-    # 티켓 + 성장 장부를 같은 부분 커밋에 싣는다(신규 helper → 기존 단일 경로 → 폴백 3단).
+    # 티켓 + 성장 장부(+ 이 쓰기가 처음 만든 마이그레이션 stamp)를 같은 부분 커밋에 싣는다
+    # (신규 helper → 기존 단일 경로 → 폴백 3단 · `cmd_section_add`·harvest 와 같은 경로 집합).
     sync_paths = getattr(board, "_growth_mutation_sync_paths", None)
     growth_sync = getattr(board, "_growth_mutation_sync", None)
     paths = [ticket_path] + ([ledger_path] if ledger_path is not None else [])
+    stamp_path = ticket_growth_stamp_path(growth_dir)
+    if stamp_path.exists():
+        paths.append(stamp_path)
     if callable(sync_paths):
         sync_ready = bool(sync_paths(message, paths))
     elif callable(growth_sync):
         sync_ready = bool(growth_sync(message, ticket_path))
     else:
         sync_ready = False
-    return ExternalReviewSectionWrite(ticket_path, ordinal, sync_ready)
+    return ExternalReviewSectionWrite(ticket_path, ordinal, sync_ready, problem)
 
 
 def harvest_ticket_copy(
@@ -3406,16 +3527,22 @@ def _pm_review_exact_keys(
         )
 
 
-def _pm_review_version(value: dict, label: str) -> None:
+def _pm_review_version(
+    value: dict, label: str, *, allowed: Sequence[int] | None = None,
+) -> int:
+    """블록 payload 세대를 검증하고 그 값을 돌려준다(호출부가 세대별 규칙에 쓴다)."""
+    accepted = tuple(PM_REVIEW_SUPPORTED_VERSIONS if allowed is None else allowed)
     version = value.get("version")
     if (
         not isinstance(version, int)
         or isinstance(version, bool)
-        or version != PM_REVIEW_VERSION
+        or version not in accepted
     ):
+        expected = " 또는 ".join(str(item) for item in accepted)
         raise PMReviewError(
-            "malformed", f"{label} version은 정수 {PM_REVIEW_VERSION}이어야 합니다"
+            "malformed", f"{label} version은 정수 {expected}이어야 합니다"
         )
+    return version
 
 
 def _pm_review_finding_id_prefix(reviewer_role: str) -> str:
@@ -3439,13 +3566,28 @@ def _pm_review_assert_id_namespace(
         )
 
 
+def _pm_review_finding_keys(version: int) -> tuple[str, ...]:
+    """세대별 finding key 집합 — v1 은 severity 이전 스키마다(부재 허용·존재도 허용)."""
+    if version >= PM_REVIEW_SEVERITY_MIN_VERSION:
+        return PM_REVIEW_FINDING_KEYS
+    return tuple(key for key in PM_REVIEW_FINDING_KEYS if key != "severity")
+
+
 def _pm_review_parse_finding(
     value: object, reviewer_ordinal: int,
     *, reviewer_role: str = INTERNAL_REVIEW_ROLE,
+    version: int = PM_REVIEW_VERSION,
 ) -> PMReviewFinding:
     if not isinstance(value, dict):
         raise PMReviewError("malformed", "finding은 JSON object여야 합니다")
-    _pm_review_exact_keys(value, PM_REVIEW_FINDING_KEYS, "finding")
+    # v1 블록은 severity 를 안 실었지만 실었을 수도 있다(전환기 산출). 두 key 집합 중
+    # **하나와 정확히** 일치해야 하며, v2 는 severity 를 포함한 집합만 받는다.
+    expected_keys = _pm_review_finding_keys(version)
+    if version < PM_REVIEW_SEVERITY_MIN_VERSION and set(value) == set(
+        PM_REVIEW_FINDING_KEYS
+    ):
+        expected_keys = PM_REVIEW_FINDING_KEYS
+    _pm_review_exact_keys(value, expected_keys, "finding")
     finding_id = _pm_review_nonempty_string(value["id"], "finding.id")
     prefix = _pm_review_finding_id_prefix(reviewer_role)
     if _PM_REVIEW_ID_RE.fullmatch(finding_id) is None:
@@ -3457,12 +3599,14 @@ def _pm_review_parse_finding(
     classification = _pm_review_nonempty_string(value["class"], "finding.class")
     if classification not in PM_REVIEW_CLASSES:
         raise PMReviewError("malformed", f"finding.class 미지원: {classification!r}")
-    # severity 는 필수다. 소급 완화 분기를 두지 않는 근거는 파싱 경계다 — delta/disposition 은
-    # 진행 중(open/claimed) 티켓의 라운드에서만 돌고, 완료된 티켓의 옛 블록은 다시 파싱되지
-    # 않는다. 부재를 통과시키면 "반드시 고쳐야 하는가"를 기계가 다시 산문에서 추론해야 한다.
-    severity = _pm_review_nonempty_string(value["severity"], "finding.severity")
-    if severity not in PM_REVIEW_SEVERITIES:
-        raise PMReviewError("malformed", f"finding.severity 미지원: {severity!r}")
+    # severity 는 v2 부터 필수다. 경계는 **블록 세대**이지 티켓 상태가 아니다 — 파서는 진행 중
+    # 티켓의 옛 라운드 블록도 계속 읽고(봉인돼 손댈 수 없다), 그 블록은 v1 이라 부재가 정상이다.
+    # 부재는 빈 문자열로 싣고 렌더가 '미기재'로 표기한다(산문 추론 금지).
+    severity = ""
+    if "severity" in value:
+        severity = _pm_review_nonempty_string(value["severity"], "finding.severity")
+        if severity not in PM_REVIEW_SEVERITIES:
+            raise PMReviewError("malformed", f"finding.severity 미지원: {severity!r}")
     if not isinstance(value["design_change"], bool):
         raise PMReviewError("malformed", "finding.design_change는 boolean이어야 합니다")
     return PMReviewFinding(
@@ -3560,6 +3704,36 @@ def _pm_review_seed_object(
     return {key: values.get(key, "") for key in keys}
 
 
+def _pm_review_refused_section_keys(
+    ticket_text: str, sections: Sequence[TicketGrowthSection],
+) -> set[tuple[str, int]]:
+    """엔진이 **회수 거부**로 표시한 절(경고만 있고 판정 블록이 없는 절)의 키 집합.
+
+    finding ID 재선언처럼 판정 표면에 올릴 수 없는 산출은 절 경고와 함께 평문으로만 남는다.
+    그 절을 판정 대상으로 세면 "최신 리뷰 절에 블록이 없다"로 티켓 전체 delta 가 막혀,
+    거부한 라운드가 오히려 봉인된 자산을 잠근다. 판정 표면에서만 제외하고 산출은 보존한다.
+    """
+    block_owners = {
+        (section.role, section.ordinal)
+        for block in _pm_review_json_blocks(ticket_text)
+        if block.kind == PM_REVIEW_BLOCK
+        for section in sections
+        if section.marker_start <= block.start and block.end <= section.marker_end
+    }
+    refused: set[tuple[str, int]] = set()
+    for section in sections:
+        key = (section.role, section.ordinal)
+        if key in block_owners:
+            continue
+        content = ticket_text[section.content_start:section.content_end]
+        if any(
+            line.startswith(EXTERNAL_REVIEW_BLOCK_WARNING_PREFIX)
+            for line in content.splitlines()
+        ):
+            refused.add(key)
+    return refused
+
+
 def _pm_review_block_for_section(
     ticket_text: str, section: TicketGrowthSection,
 ) -> _PMReviewBlock:
@@ -3583,12 +3757,12 @@ def _pm_review_section_ids(
     """한 reviewer block에 등장한 finding/confirmation ID를 순서 보존해 반환한다."""
     value = _pm_review_block_for_section(ticket_text, section).value
     _pm_review_exact_keys(value, PM_REVIEW_PAYLOAD_KEYS, PM_REVIEW_BLOCK)
-    _pm_review_version(value, PM_REVIEW_BLOCK)
+    version = _pm_review_version(value, PM_REVIEW_BLOCK)
     if not isinstance(value["findings"], list) or not isinstance(value["confirmations"], list):
         raise PMReviewError("malformed", "findings/confirmations는 JSON array여야 합니다")
     findings = [
         _pm_review_parse_finding(
-            item, section.ordinal, reviewer_role=section.role,
+            item, section.ordinal, reviewer_role=section.role, version=version,
         )
         for item in value["findings"]
     ]
@@ -3631,7 +3805,10 @@ def _pm_review_disposition_rows_for_ordinal(
         return None, []
 
     value = matches[0].value
-    _pm_review_version(value, PM_REVIEW_DISPOSITION_BLOCK)
+    _pm_review_version(
+        value, PM_REVIEW_DISPOSITION_BLOCK,
+        allowed=(PM_REVIEW_DISPOSITION_VERSION,),
+    )
     if "finding_zero" in value:
         _pm_review_exact_keys(
             value,
@@ -3736,9 +3913,11 @@ def render_ticket_growth_section_seed(role: str, ticket_text: str) -> str:
     # 두 리뷰 채널은 같은 골격을 쓰고 finding ID 접두만 다르다(판정 표면이 하나이므로).
     id_prefix = _pm_review_finding_id_prefix(role)
     placeholder_id = f"{id_prefix}-NNN"
+    growth_sections = _ticket_growth_sections(ticket_text)
+    refused_keys = _pm_review_refused_section_keys(ticket_text, growth_sections)
     previous_sections = [
-        section for section in _ticket_growth_sections(ticket_text)
-        if section.role == role
+        section for section in growth_sections
+        if section.role == role and (section.role, section.ordinal) not in refused_keys
     ]
     confirmation_ids = [placeholder_id]
     if previous_sections:
@@ -3810,9 +3989,12 @@ def render_pm_review_disposition_template(
     채널(`reviewer_role`) 미지정이면 두 리뷰 채널을 통틀어 **최신 절**의 채널을 쓴다 — PM 은
     채널마다 다른 절차를 밟지 않고 같은 명령으로 판정한다.
     """
+    all_sections = _ticket_growth_sections(ticket_text)
+    refused = _pm_review_refused_section_keys(ticket_text, all_sections)
     review_sections = [
-        section for section in _ticket_growth_sections(ticket_text)
+        section for section in all_sections
         if section.role in REVIEW_ROLES
+        and (section.role, section.ordinal) not in refused
     ]
     if reviewer_role is None:
         reviewer_role = (
@@ -3839,11 +4021,13 @@ def render_pm_review_disposition_template(
     block = _pm_review_block_for_section(ticket_text, section)
     value = block.value
     _pm_review_exact_keys(value, PM_REVIEW_PAYLOAD_KEYS, PM_REVIEW_BLOCK)
-    _pm_review_version(value, PM_REVIEW_BLOCK)
+    version = _pm_review_version(value, PM_REVIEW_BLOCK)
     if not isinstance(value["findings"], list) or not isinstance(value["confirmations"], list):
         raise PMReviewError("malformed", "findings/confirmations는 JSON array여야 합니다")
     findings = [
-        _pm_review_parse_finding(item, section.ordinal, reviewer_role=section.role)
+        _pm_review_parse_finding(
+            item, section.ordinal, reviewer_role=section.role, version=version,
+        )
         for item in value["findings"]
     ]
     confirmations = [
@@ -3885,7 +4069,7 @@ def render_pm_review_disposition_template(
                 "pending", f"reviewer ordinal={section.ordinal}은 이미 finding-zero 판정됨",
             )
         payload = _pm_review_seed_object(PM_REVIEW_FINDING_ZERO_PAYLOAD_KEYS, {
-            "version": PM_REVIEW_VERSION,
+            "version": PM_REVIEW_DISPOSITION_VERSION,
             PM_REVIEW_DISPOSITION_ROLE_KEY: section.role,
             "reviewer_ordinal": section.ordinal,
             "finding_zero": "accepted",
@@ -3911,7 +4095,7 @@ def render_pm_review_disposition_template(
             for finding_id in finding_ids
         ]
         payload = _pm_review_seed_object(PM_REVIEW_DISPOSITION_PAYLOAD_KEYS, {
-            "version": PM_REVIEW_VERSION,
+            "version": PM_REVIEW_DISPOSITION_VERSION,
             PM_REVIEW_DISPOSITION_ROLE_KEY: section.role,
             "reviewer_ordinal": section.ordinal,
             "dispositions": dispositions,
@@ -3930,8 +4114,11 @@ def parse_pm_review_delta(ticket_text: str) -> PMReviewDelta:
     ordinal 은 독립이고 finding ID 는 접두로 갈려 티켓 전역 유일이다.
     """
     sections = _ticket_growth_sections(ticket_text)
+    refused = _pm_review_refused_section_keys(ticket_text, sections)
     reviewer_sections = [
-        section for section in sections if section.role in REVIEW_ROLES
+        section for section in sections
+        if section.role in REVIEW_ROLES
+        and (section.role, section.ordinal) not in refused
     ]
     blocks = _pm_review_json_blocks(ticket_text)
     review_by_channel: dict[tuple[str, int], _PMReviewBlock] = {}
@@ -3992,11 +4179,13 @@ def parse_pm_review_delta(ticket_text: str) -> PMReviewDelta:
         block = review_by_channel[channel]
         value = block.value
         _pm_review_exact_keys(value, PM_REVIEW_PAYLOAD_KEYS, PM_REVIEW_BLOCK)
-        _pm_review_version(value, PM_REVIEW_BLOCK)
+        version = _pm_review_version(value, PM_REVIEW_BLOCK)
         if not isinstance(value["findings"], list) or not isinstance(value["confirmations"], list):
             raise PMReviewError("malformed", "findings/confirmations는 JSON array여야 합니다")
         parsed_findings = [
-            _pm_review_parse_finding(item, ordinal, reviewer_role=role)
+            _pm_review_parse_finding(
+                item, ordinal, reviewer_role=role, version=version,
+            )
             for item in value["findings"]
         ]
         parsed_confirmations = [
@@ -4049,7 +4238,10 @@ def parse_pm_review_delta(ticket_text: str) -> PMReviewDelta:
                 ),
                 PM_REVIEW_DISPOSITION_BLOCK,
             )
-            _pm_review_version(value, PM_REVIEW_DISPOSITION_BLOCK)
+            _pm_review_version(
+                value, PM_REVIEW_DISPOSITION_BLOCK,
+                allowed=(PM_REVIEW_DISPOSITION_VERSION,),
+            )
             if channel not in zero_channels or value["finding_zero"] != "accepted":
                 raise PMReviewError("malformed", f"{label} finding_zero disposition 불일치")
             accepted_zero.add(channel)
@@ -4061,7 +4253,10 @@ def parse_pm_review_delta(ticket_text: str) -> PMReviewDelta:
             ),
             PM_REVIEW_DISPOSITION_BLOCK,
         )
-        _pm_review_version(value, PM_REVIEW_DISPOSITION_BLOCK)
+        _pm_review_version(
+            value, PM_REVIEW_DISPOSITION_BLOCK,
+            allowed=(PM_REVIEW_DISPOSITION_VERSION,),
+        )
         if not isinstance(value["dispositions"], list):
             raise PMReviewError("malformed", "dispositions는 JSON array여야 합니다")
         source_ids = {
@@ -4157,7 +4352,7 @@ def render_pm_review_delta(ticket: str, delta: PMReviewDelta) -> str:
         lines.extend([
             f"### {finding.id}",
             f"- 채널: {finding.reviewer_role}",
-            f"- 심각도: {finding.severity}",
+            f"- 심각도: {finding.severity or PM_REVIEW_SEVERITY_UNSPECIFIED_LABEL}",
             f"- 분류: {finding.classification}",
             f"- 권위 근거: {finding.authority}",
             f"- 관측 증거: {finding.evidence}",
@@ -4172,12 +4367,61 @@ def render_pm_review_delta(ticket: str, delta: PMReviewDelta) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _pm_review_summary_rows(ticket_text: str) -> list[str]:
-    """리뷰 절별 finding 을 (채널·ordinal·심각도·분류·판정 상태) 한 줄로 축약한다."""
-    sections = [
-        section for section in _ticket_growth_sections(ticket_text)
-        if section.role in REVIEW_ROLES
+def _pm_review_summary_section_rows(
+    ticket_text: str, section: TicketGrowthSection, label: str,
+) -> list[str]:
+    """한 리뷰 절의 요약 줄 — 이 절의 파싱 실패는 이 절 안에서만 접힌다."""
+    block = _pm_review_block_for_section(ticket_text, section)
+    value = block.value
+    _pm_review_exact_keys(value, PM_REVIEW_PAYLOAD_KEYS, PM_REVIEW_BLOCK)
+    version = _pm_review_version(value, PM_REVIEW_BLOCK)
+    if not isinstance(value["findings"], list) or not isinstance(
+        value["confirmations"], list
+    ):
+        raise PMReviewError("malformed", "findings/confirmations는 JSON array여야 합니다")
+    findings = [
+        _pm_review_parse_finding(
+            item, section.ordinal, reviewer_role=section.role, version=version,
+        )
+        for item in value["findings"]
     ]
+    confirmations = [
+        _pm_review_parse_confirmation(
+            item, section.ordinal, reviewer_role=section.role,
+        )
+        for item in value["confirmations"]
+    ]
+    _block, disposition_rows = _pm_review_disposition_rows_for_ordinal(
+        ticket_text, section.ordinal, reviewer_role=section.role,
+    )
+    decisions = {parsed.id: parsed.decision for parsed, _raw in disposition_rows}
+    if not findings and not confirmations:
+        return [f"  {label} finding 0건"]
+    rows = [
+        f"  {label} {finding.id} "
+        f"severity={finding.severity or PM_REVIEW_SEVERITY_UNSPECIFIED_LABEL} "
+        f"class={finding.classification} "
+        f"PM={decisions.get(finding.id, '미판정')}"
+        for finding in findings
+    ]
+    rows += [
+        f"  {label} {confirmation.id} 확인={confirmation.status}"
+        for confirmation in confirmations
+    ]
+    return rows
+
+
+def _pm_review_summary_rows(ticket_text: str) -> list[str]:
+    """리뷰 절별 finding 을 (채널·ordinal·심각도·분류·판정 상태) 한 줄로 축약한다.
+
+    표시면이라 관용 판정이다 — 한 절의 블록이 옛 스키마이거나 손상돼도 그 절 한 줄만 경고로
+    접고 나머지 절의 요약은 그대로 낸다(구 블록 하나가 티켓 전체 요약을 잠그지 않는다).
+    """
+    all_sections = _ticket_growth_sections(ticket_text)
+    sections = [
+        section for section in all_sections if section.role in REVIEW_ROLES
+    ]
+    refused = _pm_review_refused_section_keys(ticket_text, all_sections)
     rows: list[str] = []
     blocks = [
         block for block in _pm_review_json_blocks(ticket_text)
@@ -4190,44 +4434,19 @@ def _pm_review_summary_rows(ticket_text: str) -> list[str]:
             if section.marker_start <= block.start and block.end <= section.marker_end
         ]
         if not contained:
-            # versioned block 도입 전 절은 요약할 구조가 없다 — 조회는 계속 열어 둔다.
-            rows.append(f"  {label} versioned block 없음")
-            continue
-        block = _pm_review_block_for_section(ticket_text, section)
-        value = block.value
-        _pm_review_exact_keys(value, PM_REVIEW_PAYLOAD_KEYS, PM_REVIEW_BLOCK)
-        _pm_review_version(value, PM_REVIEW_BLOCK)
-        if not isinstance(value["findings"], list) or not isinstance(
-            value["confirmations"], list
-        ):
-            raise PMReviewError("malformed", "findings/confirmations는 JSON array여야 합니다")
-        findings = [
-            _pm_review_parse_finding(item, section.ordinal, reviewer_role=section.role)
-            for item in value["findings"]
-        ]
-        confirmations = [
-            _pm_review_parse_confirmation(
-                item, section.ordinal, reviewer_role=section.role,
-            )
-            for item in value["confirmations"]
-        ]
-        _block, disposition_rows = _pm_review_disposition_rows_for_ordinal(
-            ticket_text, section.ordinal, reviewer_role=section.role,
-        )
-        decisions = {parsed.id: parsed.decision for parsed, _raw in disposition_rows}
-        if not findings and not confirmations:
-            rows.append(f"  {label} finding 0건")
-            continue
-        for finding in findings:
+            # 엔진이 거부한 절과 versioned block 도입 전 절을 구분해 표기한다(둘 다 조회는 연다).
             rows.append(
-                f"  {label} {finding.id} severity={finding.severity} "
-                f"class={finding.classification} "
-                f"PM={decisions.get(finding.id, '미판정')}"
+                f"  {label} 회수 거부(판정 표면 제외)"
+                if (section.role, section.ordinal) in refused
+                else f"  {label} versioned block 없음"
             )
-        for confirmation in confirmations:
-            rows.append(
-                f"  {label} {confirmation.id} 확인={confirmation.status}"
+            continue
+        try:
+            rows.extend(
+                _pm_review_summary_section_rows(ticket_text, section, label)
             )
+        except DelegateError as exc:
+            rows.append(f"  {label} ⚠ 요약 불가: {exc}")
     return rows
 
 
@@ -4235,6 +4454,8 @@ def render_pm_review_summary(ticket_text: str) -> str:
     """`board.py show` 가 붙이는 리뷰 블록 요약(사람용 렌더는 블록에서만 파생).
 
     표시면이라 파싱 실패로 티켓 조회를 깨지 않는다 — 사유를 그 자리에 loud 하게 남긴다.
+    절 단위 실패는 그 절 한 줄로 접히고, 여기서 접는 것은 marker/fence 손상처럼 티켓 전체를
+    읽을 수 없게 하는 형상뿐이다.
     """
     try:
         rows = _pm_review_summary_rows(ticket_text)
@@ -4270,10 +4491,13 @@ def _internal_projected_finding_ids(
                 _pm_review_exact_keys(
                     value, PM_REVIEW_PAYLOAD_KEYS, PM_REVIEW_BLOCK,
                 )
-                _pm_review_version(value, PM_REVIEW_BLOCK)
+                version = _pm_review_version(value, PM_REVIEW_BLOCK)
                 if not isinstance(value["findings"], list):
                     raise PMReviewError("malformed", "findings는 JSON array여야 합니다")
-                parsed = [_pm_review_parse_finding(item, 0) for item in value["findings"]]
+                parsed = [
+                    _pm_review_parse_finding(item, 0, version=version)
+                    for item in value["findings"]
+                ]
                 ids = [finding.id for finding in parsed]
                 if len(ids) != len(set(ids)):
                     raise PMReviewError("malformed", "finding ID 중복")
