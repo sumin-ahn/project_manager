@@ -8157,7 +8157,7 @@ def _portable_exclusive_write(path: Path, content: str) -> None:
         with handle:
             handle.write(content)
         _load_file_lock().restrict_to_owner(path)
-    except BaseException:
+    except BaseException as write_exc:
         _close_transport_fd(fd)
         fd = None
         if created:
@@ -8165,7 +8165,9 @@ def _portable_exclusive_write(path: Path, content: str) -> None:
                 os.unlink(path)
             except OSError as unlink_exc:
                 # 원래 쓰기 예외를 롤백 실패로 덮지 않는다 — 아래 bare raise가 그대로 전파한다.
-                # 정리 실패는 관측만 loud 하게 남긴다([[T-0705]]).
+                # 정리 실패는 관측만 loud 하게 남긴다([[T-0705]]). 잔여 파일 경로는 원 예외에
+                # 실어 둔다 — 호출자가 cleanup 재시도·자기-은닉 ignore 보존 판단에 쓴다([[T-0735]]).
+                write_exc.residual_path = path
                 _warn_transport_cleanup_failure(
                     path, unlink_exc, action="쓰기 실패 롤백 삭제",
                 )
@@ -8212,18 +8214,25 @@ def _save_opencode_transport_prompt(
             raise DelegateError(
                 f"opencode prompt 전달 디렉터리 생성 실패: {current}: {exc}"
             ) from exc
+    ignore_path = dest.parent / _OPENCODE_TRANSPORT_IGNORE
     try:
         _assert_path_entry_not_symlink(
             dest.parent, label="opencode prompt 전달 부모",
         )
-        _portable_exclusive_write(
-            dest.parent / _OPENCODE_TRANSPORT_IGNORE,
-            _OPENCODE_TRANSPORT_IGNORE_BODY,
-        )
+        _portable_exclusive_write(ignore_path, _OPENCODE_TRANSPORT_IGNORE_BODY)
         transport.ignore_created = True
         _portable_exclusive_write(dest, prompt)
         transport.prompt_created = True
-    except BaseException:
+    except BaseException as exc:
+        # 롤백 unlink까지 실패하면(T-0705 경고) 잔여 파일이 디스크에 남는데도 `*_created`가
+        # False라 cleanup이 그 존재를 몰랐다 — 원 예외의 잔여 경로 표식으로 해당 플래그를 세워
+        # 기존 cleanup 순서(프롬프트 재시도 → 성공 시만 ignore 삭제 → 실패 시 ignore 보존+loud)를
+        # 타게 한다([[T-0735]]).
+        residual_path = getattr(exc, "residual_path", None)
+        if residual_path == dest:
+            transport.prompt_created = True
+        elif residual_path == ignore_path:
+            transport.ignore_created = True
         _cleanup_attempt_transport(transport)
         raise
     return transport

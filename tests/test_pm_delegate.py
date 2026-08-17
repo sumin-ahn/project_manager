@@ -607,6 +607,104 @@ def test_portable_exclusive_write_success_path_unchanged(pd, tmp_path, capsys):
     assert target.read_text(encoding="utf-8") == "정상 내용"
 
 
+def test_opencode_transport_prompt_residual_retry_succeeds_cleans_everything(
+        pd, monkeypatch, tmp_path, capsys):
+    """(a) 프롬프트 쓰기 실패+롤백 unlink 실패 → cleanup 재시도가 성공하면 잔여 0·ignore도 정리([[T-0735]])."""
+    cwd = tmp_path / "sandbox"
+    cwd.mkdir()
+
+    real_fdopen = pd.os.fdopen
+    fdopen_calls = {"n": 0}
+
+    def _fdopen(fd, *args, **kwargs):
+        fdopen_calls["n"] += 1
+        if fdopen_calls["n"] == 2:  # 1번째=ignore 쓰기(정상) · 2번째=prompt 본문 쓰기(실패시킴)
+            return _FailingWriteHandle(fd)
+        return real_fdopen(fd, *args, **kwargs)
+
+    monkeypatch.setattr(pd.os, "fdopen", _fdopen)
+
+    real_unlink = pd.os.unlink
+    unlink_calls = {"n": 0}
+
+    def _unlink(path, *args, **kwargs):
+        if Path(path).name == "prompt.md":
+            unlink_calls["n"] += 1
+            if unlink_calls["n"] == 1:  # 롤백 1차 시도만 거부 — cleanup 재시도는 통과시킨다.
+                raise PermissionError("의도한 1차 롤백 삭제 거부")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(pd.os, "unlink", _unlink)
+
+    with pytest.raises(OSError, match="의도한 쓰기 실패"):
+        pd._save_opencode_transport_prompt(cwd, "민감 프롬프트")
+
+    captured = capsys.readouterr()
+    assert unlink_calls["n"] == 2
+    assert "쓰기 실패 롤백 삭제 실패" in captured.err  # T-0705 1차 실패 경고(불변)
+    assert "합성 프롬프트 삭제 실패" not in captured.err  # cleanup 재시도는 성공 — 2차 경고 없음
+    assert not (cwd / ".project_manager").exists()  # 잔여 0 · ignore·디렉터리까지 정리
+
+
+def test_opencode_transport_prompt_residual_retry_fails_preserves_ignore(
+        pd, monkeypatch, tmp_path, capsys):
+    """(b) 재시도도 실패 → 자기-은닉 ignore 보존 + stderr에 잔여 경로([[T-0735]])."""
+    cwd = tmp_path / "sandbox"
+    cwd.mkdir()
+
+    real_fdopen = pd.os.fdopen
+    fdopen_calls = {"n": 0}
+
+    def _fdopen(fd, *args, **kwargs):
+        fdopen_calls["n"] += 1
+        if fdopen_calls["n"] == 2:
+            return _FailingWriteHandle(fd)
+        return real_fdopen(fd, *args, **kwargs)
+
+    monkeypatch.setattr(pd.os, "fdopen", _fdopen)
+
+    real_unlink = pd.os.unlink
+
+    def _deny_prompt_unlink(path, *args, **kwargs):
+        if Path(path).name == "prompt.md":
+            raise PermissionError("의도한 롤백 삭제 거부")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(pd.os, "unlink", _deny_prompt_unlink)
+
+    with pytest.raises(OSError, match="의도한 쓰기 실패"):
+        pd._save_opencode_transport_prompt(cwd, "민감 프롬프트")
+
+    captured = capsys.readouterr()
+    residual_prompt = cwd / ".project_manager" / ".local" / "delegate"
+    prompt_paths = list(residual_prompt.rglob("prompt.md"))
+    ignore_paths = list(residual_prompt.rglob(".gitignore"))
+    assert len(prompt_paths) == 1 and prompt_paths[0].exists()  # 잔여 프롬프트 보존(재시도 실패)
+    assert len(ignore_paths) == 1 and ignore_paths[0].exists()  # 자기-은닉 ignore 보존(노출 방지)
+    assert "쓰기 실패 롤백 삭제 실패" in captured.err  # T-0705 1차 실패 경고
+    assert "합성 프롬프트 삭제 실패" in captured.err  # cleanup 재시도 실패도 loud
+    assert str(prompt_paths[0]) in captured.err
+
+
+def test_opencode_transport_prompt_success_path_unaffected_by_residual_signal(
+        pd, tmp_path, capsys):
+    """(c) 정상 경로(쓰기 성공)의 prepare→cleanup 은 잔여 표식 로직과 무관하게 불변([[T-0735]])."""
+    cwd = tmp_path / "sandbox"
+    cwd.mkdir()
+
+    transport = pd._save_opencode_transport_prompt(cwd, "정상 프롬프트")
+
+    assert transport.prompt_created is True
+    assert transport.ignore_created is True
+    assert transport.path.read_text(encoding="utf-8") == "정상 프롬프트"
+
+    pd._cleanup_attempt_transport(transport)
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert not (cwd / ".project_manager").exists()
+
+
 @pytest.mark.skipif(not _can_symlink(), reason="symlink 생성 능력 필요")
 def test_opencode_send_rejects_symlink_parent(pd, tmp_path):
     """send 직전 prompt 부모가 symlink면 lexical 경로 전송을 거부한다."""
