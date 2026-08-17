@@ -1630,15 +1630,28 @@ def _cli_fail_open(reason: str) -> dict[str, str]:
 def _write_machine_line(text: str, stream: TextIO, seam) -> None:
     """호스트가 파싱하는 한 줄을 콘솔 코덱 전환과 무관하게 UTF-8 로 내보낸다 (T-0693).
 
-    ``seam`` 은 ``main`` 이 진입에서 로드한 ``console_encoding`` 모듈이다. 가드가 그 로드
-    전에 죽은 경계(사본 skew·형제 부재)는 ``None`` 을 받는데, 그 원인은 이미 같은 호출의
-    fail-open 보고(stderr 한 줄 또는 allow JSON 사유)로 표면화돼 있으므로 여기서는 "호스트는
-    완전한 한 줄을 받는다" 를 지키는 텍스트 write 로 내려앉는다.
+    ``seam`` 은 ``main`` 이 진입에서 로드한 ``console_encoding`` 모듈이다. 가드 자신이 죽은
+    fail-open 경계는 ``None`` 을 받는다 — 그 자리는 ``configure_console_utf8`` 이 아예 돌지
+    않은 상태라 텍스트 레이어가 로케일 코덱(Windows cp949·errors=strict)일 수 있고, 한글과
+    em dash 가 실린 엔벨로프가 통째로 ``UnicodeEncodeError`` 로 사라진다. 그래서 형제 없이도
+    같은 보장을 준다 — ``.buffer`` 로 UTF-8 bytes 를 직접 쓰고, ``.buffer`` 가 없는 스트림
+    (테스트 캡처·``io.StringIO``)만 텍스트 write 로 내려간다.
     """
-    if seam is None:
-        stream.write(text + "\n")
+    if seam is not None:
+        seam.write_machine_line(text, stream=stream)
         return
-    seam.write_machine_line(text, stream=stream)
+    line = text + "\n"
+    buffer = getattr(stream, "buffer", None)
+    if buffer is None:
+        stream.write(line)
+        return
+    try:
+        # 텍스트 레이어에 남은 출력이 bytes 뒤로 밀리지 않게 먼저 비운다(seam 과 같은 규율).
+        stream.flush()
+    except Exception:
+        pass
+    buffer.write(line.encode("utf-8"))
+    buffer.flush()
 
 
 def _run_decide_cli(
@@ -1728,15 +1741,8 @@ def main(
     stderr: TextIO | None = None,
     config_loader: Callable[[], Mapping[str, str]] = load_local_config,
     state_dir: Path | None = None,
-    machine_seam=None,
 ) -> int:
-    """Run decide CLI when argv is non-empty, otherwise the legacy Claude hook.
-
-    ``machine_seam`` 은 진입에서 로드하는 ``console_encoding`` 을 담는 자리다. 파라미터로
-    두는 이유는 fail-open 경계 때문이다 — 그 로드 자체가 실패해도(사본 skew·형제 부재) 아래
-    except 절이 호스트에 완전한 한 줄을 내보내야 하므로, 미해소 상태를 ``None`` 으로 읽을 수
-    있어야 한다.
-    """
+    """Run decide CLI when argv is non-empty, otherwise the legacy Claude hook."""
     try:
         machine_seam = _load_module_from_path(
             Path(__file__).resolve().with_name("console_encoding.py"),
@@ -1834,6 +1840,9 @@ def main(
         # a broken guard must not lock out either native delegation surface.
         _absorb_engine_rev_skew_for_recovery(exc, "hook_fail_open")
         output_stream = sys.stdout if stdout is None else stdout
+        # 가드 자신이 죽은 경계의 emit 은 형제에 기대지 않는다 — 진입 seam 로드 자체가 실패한
+        # 경우도 여기로 오므로, 아래 emit 은 형제 없이 UTF-8 bytes 를 쓰는 폴백을 탄다.
+        machine_seam = None
         cli_argv = list(argv or [])
         if cli_argv and cli_argv[0] == "supervise":
             # supervisor 자신이 죽어도 호스트는 완전한 엔벨로프 한 줄을 받는다.

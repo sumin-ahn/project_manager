@@ -101,6 +101,36 @@ def git_anchor_hook_evaluate(stdin: dict, root: Path) -> dict | None:
     return None
 
 
+def _write_hook_json(output: dict) -> None:
+    """Claude 훅 JSON 을 콘솔 코덱과 무관하게 UTF-8 bytes 로 쓴다 (T-0736).
+
+    Windows 파이프 stdout 은 로케일 코덱(cp949)+``errors=strict`` 다. 판정 사유에는 한글과
+    cp949 미매핑 문자(em dash·`✓`·`⚠`)가 실리므로 텍스트 write 는 ``UnicodeEncodeError`` 로
+    죽고 훅 출력이 통째로 사라진다 — bytes 를 직접 써서 그 표면을 없앤다.
+
+    **형태는 종전 그대로다**: 단일 JSON · 종결 개행 없음(Claude 훅 소비자 계약·[[T-0736]]
+    §인터페이스). 엔진 seam(`console_encoding.write_machine_line`)은 한 줄 종결(LF)을 붙이므로
+    이 자리에서 그대로 부르면 바이트 형태가 바뀐다. 그래서 seam 은 **인코딩 정책의 출처로만**
+    참조하고(같은 규율: 텍스트 레이어 선-flush → UTF-8 bytes → flush), 쓰기는 표준 라이브러리로
+    한다 — 어댑터가 엔진 사본에 묶이지 않는 기존 관례와도 같은 방향이다.
+    """
+    text = json.dumps(output, ensure_ascii=False)
+    stream = sys.stdout
+    if stream is None:  # pythonw/pyw 기동엔 표준 스트림이 없다 — 종전 write 처럼 무출력.
+        return
+    buffer = getattr(stream, "buffer", None)
+    if buffer is None:  # `.buffer` 없는 캡처 스트림(테스트·래퍼) — 종전 텍스트 경로.
+        stream.write(text)
+        return
+    try:
+        # 텍스트 레이어에 남은 출력이 bytes 뒤로 밀리지 않게 먼저 비운다.
+        stream.flush()
+    except Exception:
+        pass
+    buffer.write(text.encode("utf-8"))
+    buffer.flush()
+
+
 def run_git_anchor_hook(root: Path) -> int:
     """stdin JSON을 읽어 Claude hook JSON을 쓰는 얇은 CLI 모드."""
     try:
@@ -119,7 +149,7 @@ def run_git_anchor_hook(root: Path) -> int:
             }
         }
     if output is not None:
-        sys.stdout.write(json.dumps(output, ensure_ascii=False))
+        _write_hook_json(output)
     return 0
 
 
@@ -131,7 +161,7 @@ def _emit_git_anchor_boundary_warn(exc: BaseException) -> int:
             "additionalContext": f"[git-anchor/warn] 판정 불가({exc}) — cwd를 직접 확인",
         }
     }
-    sys.stdout.write(json.dumps(output, ensure_ascii=False))
+    _write_hook_json(output)
     return 0
 
 
