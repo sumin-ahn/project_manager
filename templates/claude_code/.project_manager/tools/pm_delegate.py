@@ -7612,8 +7612,12 @@ def _portable_exclusive_write(path: Path, content: str) -> None:
         if created:
             try:
                 os.unlink(path)
-            except OSError:
-                pass
+            except OSError as unlink_exc:
+                # 원래 쓰기 예외를 롤백 실패로 덮지 않는다 — 아래 bare raise가 그대로 전파한다.
+                # 정리 실패는 관측만 loud 하게 남긴다([[T-0705]]).
+                _warn_transport_cleanup_failure(
+                    path, unlink_exc, action="쓰기 실패 롤백 삭제",
+                )
         raise
     finally:
         _close_transport_fd(fd)

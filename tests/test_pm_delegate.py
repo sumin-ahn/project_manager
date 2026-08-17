@@ -524,6 +524,77 @@ def test_portable_exclusive_write_collision_preserves_existing_file(pd, tmp_path
     assert target.read_text(encoding="utf-8") == "original"
 
 
+class _FailingWriteHandle:
+    """`os.fdopen` 대역 — 실제 fd를 열어 두되 `write` 호출만 실패시킨다([[T-0705]])."""
+
+    def __init__(self, fd):
+        self._fd = fd
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        os.close(self._fd)
+        return False
+
+    def write(self, data):
+        raise OSError("의도한 쓰기 실패")
+
+
+def test_portable_exclusive_write_rollback_success_propagates_silently(
+        pd, monkeypatch, tmp_path, capsys):
+    """(a) 쓰기 실패 + unlink 성공 → 원래 예외 전파, 경고 없음, 잔여 파일 0."""
+    target = tmp_path / "write-fails-unlink-ok.txt"
+    monkeypatch.setattr(
+        pd.os, "fdopen", lambda fd, *a, **kw: _FailingWriteHandle(fd),
+    )
+
+    with pytest.raises(OSError, match="의도한 쓰기 실패"):
+        pd._portable_exclusive_write(target, "content")
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert not target.exists()
+
+
+def test_portable_exclusive_write_rollback_failure_warns_and_keeps_original_exception(
+        pd, monkeypatch, tmp_path, capsys):
+    """(b) 쓰기 실패 + unlink 실패 → 원래 예외 그대로 전파 + stderr에 잔여 경로·원인."""
+    target = tmp_path / "write-fails-unlink-fails.txt"
+    monkeypatch.setattr(
+        pd.os, "fdopen", lambda fd, *a, **kw: _FailingWriteHandle(fd),
+    )
+
+    original_unlink = pd.os.unlink
+
+    def _deny_rollback_unlink(path, *args, **kwargs):
+        if Path(path) == target:
+            raise PermissionError("의도한 롤백 삭제 거부")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(pd.os, "unlink", _deny_rollback_unlink)
+
+    with pytest.raises(OSError, match="의도한 쓰기 실패"):
+        pd._portable_exclusive_write(target, "content")
+
+    captured = capsys.readouterr()
+    assert str(target) in captured.err
+    assert "의도한 롤백 삭제 거부" in captured.err
+    assert target.exists()
+
+
+def test_portable_exclusive_write_success_path_unchanged(pd, tmp_path, capsys):
+    """(c) 정상 경로(쓰기 성공) 동작·반환은 불변 — 경고 없음."""
+    target = tmp_path / "normal.txt"
+
+    result = pd._portable_exclusive_write(target, "정상 내용")
+
+    captured = capsys.readouterr()
+    assert result is None
+    assert captured.err == ""
+    assert target.read_text(encoding="utf-8") == "정상 내용"
+
+
 @pytest.mark.skipif(not _can_symlink(), reason="symlink 생성 능력 필요")
 def test_opencode_send_rejects_symlink_parent(pd, tmp_path):
     """send 직전 prompt 부모가 symlink면 lexical 경로 전송을 거부한다."""
