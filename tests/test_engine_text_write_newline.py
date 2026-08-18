@@ -11,6 +11,13 @@
 #     엔진의 codecs 사용은 lookup/decoder 뿐이다.
 #   - 다른 모듈에서 attribute 로 부르는 공용 래퍼(`pu._fdopen_text(...)`)는 `_call_name` 이 잡는다(아래).
 # "주석에 없으면 잡힌다" 로 읽지 마라 — 새 형태를 엔진에 들이면 이 목록과 스캐너를 함께 갱신한다.
+#
+# `_ALLOWED`는 (파일, 함수명, 호출 형태) 심볼 키다(T-0748) — 라인 번호가 아니다. `pm_import.py`는
+# 22 모듈 동일 부트스트랩 블록의 소비자라 그 블록을 고치면 아래쪽 모든 정의의 라인이 밀린다;
+# 라인 핀이었다면 그때마다 이 allowlist가 무관하게 red 였다(T-0746 실측). 함수 소속은 AST로
+# 판정하므로 함수 본문 내부에서의 라인 이동엔 무감하다 — `_fdopen_text`/`_fdopen_binary` 자체의
+# 이름을 바꾸거나 그 안의 `os.fdopen` 호출 형태(예: attribute 경유)를 바꿀 때만 아래 항목을
+# 함께 고친다.
 
 from __future__ import annotations
 
@@ -19,15 +26,17 @@ import importlib.util
 from pathlib import Path
 
 
-_ALLOWED: set[tuple[str, int, str]] = {
+_ALLOWED: set[tuple[str, str, str, str]] = {
     (
         "pm_import.py",
-        2493,
+        "_fdopen_text",
+        "os.fdopen",
         "_fdopen_text는 mode/newline을 호출자에게서 받아 전달하는 공용 래퍼다.",
     ),
     (
         "pm_import.py",
-        2502,
+        "_fdopen_binary",
+        "os.fdopen",
         "_fdopen_binary는 binary mode 전용 공용 래퍼다.",
     ),
 }
@@ -125,18 +134,41 @@ def _parsed_call(source: str) -> ast.Call:
     return expression
 
 
+def _enclosing_function_names(tree: ast.AST) -> dict[int, str]:
+    """`id(노드)` → 그 노드를 직접 담은 최근접 함수 정의 이름(모듈 최상위는 `"<module>"`).
+
+    라인이 아니라 함수 소속으로 호출부를 식별하기 위한 보조 지도다(T-0748) — 같은 함수 안에서
+    코드가 위아래로 밀려도 이 매핑은 바뀌지 않는다. 중첩 함수는 부모가 아니라 자신의 이름을
+    받는다(가장 가까운 정의가 실제 호출부 소속이다).
+    """
+    names: dict[int, str] = {}
+
+    def visit(node: ast.AST, current: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            child_current = current
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                child_current = child.name
+            names[id(child)] = child_current
+            visit(child, child_current)
+
+    visit(tree, "<module>")
+    return names
+
+
 def _scan_text_writes() -> tuple[
-    list[tuple[str, int, str, bool]],
-    list[tuple[str, int, str]],
+    list[tuple[str, int, str, str, bool]],
+    list[tuple[str, int, str, str]],
 ]:
-    calls: list[tuple[str, int, str, bool]] = []
-    unresolved_modes: list[tuple[str, int, str]] = []
+    calls: list[tuple[str, int, str, str, bool]] = []
+    unresolved_modes: list[tuple[str, int, str, str]] = []
     for path in sorted(TOOLS.glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         fdopen_aliases, os_aliases = _import_aliases(tree)
+        function_names = _enclosing_function_names(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
+            function_name = function_names.get(id(node), "<module>")
             kind: str | None = None
             if isinstance(node.func, ast.Attribute) and node.func.attr == "write_text":
                 kind = "write_text"
@@ -150,7 +182,9 @@ def _scan_text_writes() -> tuple[
                     continue
                 mode = _literal_mode(node, call_name)
                 if mode is None:
-                    unresolved_modes.append((path.name, node.lineno, call_name))
+                    unresolved_modes.append(
+                        (path.name, node.lineno, function_name, call_name)
+                    )
                     continue
                 if _is_text_write_mode(mode):
                     kind = call_name
@@ -158,6 +192,7 @@ def _scan_text_writes() -> tuple[
                 calls.append((
                     path.name,
                     node.lineno,
+                    function_name,
                     kind,
                     _valid_newline(node),
                 ))
@@ -201,26 +236,65 @@ def test_engine_text_writes_declare_newline():
     calls, unresolved_modes = _scan_text_writes()
     assert calls, "canonical .project_manager/tools/*.py 텍스트 쓰기 스캔 대상이 0건이다"
 
-    allowed_locations = {(filename, lineno) for filename, lineno, _reason in _ALLOWED}
+    allowed_keys = {
+        (filename, function_name, call_name)
+        for filename, function_name, call_name, _reason in _ALLOWED
+    }
     unresolved = [
-        f"{filename}:{lineno} ({kind})"
-        for filename, lineno, kind in unresolved_modes
-        if (filename, lineno) not in allowed_locations
+        f"{filename}:{lineno} ({function_name}::{call_name})"
+        for filename, lineno, function_name, call_name in unresolved_modes
+        if (filename, function_name, call_name) not in allowed_keys
     ]
     assert not unresolved, (
         "텍스트 쓰기 여부를 판정할 수 없는 비리터럴 mode 호출이다; "
-        "리터럴 mode로 바꾸거나 _ALLOWED에 사유와 함께 등재하라:\n"
+        "리터럴 mode로 바꾸거나 _ALLOWED에 (파일, 함수명, 호출 형태) 사유와 함께 등재하라:\n"
         + "\n".join(unresolved)
     )
     missing = [
-        f"{filename}:{lineno} ({kind})"
-        for filename, lineno, kind, valid_newline in calls
-        if not valid_newline and (filename, lineno) not in allowed_locations
+        f"{filename}:{lineno} ({function_name}::{kind})"
+        for filename, lineno, function_name, kind, valid_newline in calls
+        if not valid_newline and (filename, function_name, kind) not in allowed_keys
     ]
     assert not missing, (
         '텍스트 쓰기의 newline은 리터럴 "\\n" 또는 ""여야 한다:\n'
         + "\n".join(missing)
     )
+
+
+def test_enclosing_function_names_resolve_by_ast_not_line_shift():
+    """함수 소속 판정은 라인이 아니라 AST 구조를 본다 — 앞에 줄을 끼워 넣어도 안 바뀐다."""
+    source = (
+        "TOP_LEVEL = call_at_module_scope()\n"
+        "\n"
+        "def outer():\n"
+        "    call_in_outer()\n"
+        "    def inner():\n"
+        "        call_in_inner()\n"
+        "    return inner\n"
+    )
+    tree = ast.parse(source)
+    names = _enclosing_function_names(tree)
+    calls = {
+        node.func.id: names[id(node)]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+    }
+    assert calls == {
+        "call_at_module_scope": "<module>",
+        "call_in_outer": "outer",
+        "call_in_inner": "inner",
+    }
+
+    # 위에 줄을 끼워 넣어 모든 라인을 밀어도(부트스트랩 블록 편집이 하는 일) 소속은 그대로다.
+    shifted_source = "# padding\n" * 5 + source
+    shifted_tree = ast.parse(shifted_source)
+    shifted_names = _enclosing_function_names(shifted_tree)
+    shifted_calls = {
+        node.func.id: shifted_names[id(node)]
+        for node in ast.walk(shifted_tree)
+        if isinstance(node, ast.Call)
+    }
+    assert shifted_calls == calls
 
 
 def _load_engine_module(name: str):

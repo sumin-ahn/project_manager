@@ -1026,6 +1026,28 @@ def _module_assignment(tree: ast.Module, name: str) -> ast.Assign | ast.AnnAssig
     return matches[0]
 
 
+# 부트스트랩 블록(아래에서 해시하는 `_TOOLS_BOOTSTRAP...` 구간) 편집 절차 — 22 모듈에 byte
+# 단위로 복제돼 있어 한 줄만 고쳐도 이 순서를 전부 밟는다(T-0746 에서 이 순서를 안 밟아 가드
+# 3종이 릴리즈 중 두 번 더 red 났다 · T-0748 로 기계화):
+#   1. 대표 모듈 하나(예: board.py)에서 블록을 고치고 그 모듈 단위로 동작을 검증한다.
+#   2. 나머지 소비 모듈 전부에 **byte 단위로 동일하게** 옮긴다 — 소비 모듈 목록은
+#      `test_ast_target_set_is_measured_not_frozen_to_ticket_snapshot` 이 실측하므로 하드코딩한
+#      목록을 따로 유지하지 않는다(`test_all_measured_bootstrap_blocks_are_byte_identical` 이
+#      아래에서 바로 그 실측 집합 == 동일 해시 집합을 확인한다).
+#   3. `python3 .project_manager/tools/pm_update.py --all-targets --from .` 로 templates 3타깃에
+#      재전파한다(drift 0 확인 · CLAUDE.md).
+#   4. 이 블록을 담는 모듈(`pm_import.py`·`pm_update.py` 포함)이 바뀌면 아래 3개 가드가 같이
+#      red 가 될 수 있다 — 각자 절차대로 재핀한다:
+#      a. `test_engine_text_write_newline.py::_ALLOWED` — (파일, 함수명, 호출 형태) 심볼 키라
+#         블록 편집으로 아래쪽 라인이 밀려도 무감하다. 편집이 `_fdopen_text`/`_fdopen_binary`
+#         자체의 이름이나 그 안 `os.fdopen` 호출 형태를 바꿀 때만 그 항목을 함께 고친다.
+#      b. `test_upgrade_adopter_e2e.py::_T0585_PM_UPDATE_SHA256` — `pm_update.py` 블록을 고치면
+#         whole-file sha 가 반드시 바뀐다. 실패 메시지가 안내하는 재핀 절차(anachronism 부재
+#         단언 통과 확인 → digest 갱신)를 그대로 따른다.
+#      c. private-context 원장(`tests/data/private_context_baseline.json`·
+#         `private_context_hard_allowlist.json`) — 편집한 소스의 추적 대상 패턴 수가 바뀌면
+#         `python3 tests/test_private_context_guard.py --regenerate` 로 재생성한다.
+#   5. `python3 -m pytest tests/ -q -n 4`(또는 test_cmd)로 전수 회귀를 확인한다.
 def _bootstrap_block_hashes(tools: Path) -> dict[str, str]:
     """실측 bootstrap 소비자의 공통 블록을 source byte 범위로 해시한다."""
     hashes: dict[str, str] = {}
@@ -1060,7 +1082,11 @@ def _assert_bootstrap_blocks_identical(tools: Path) -> None:
     report = collect_central_guard_report(tools)
     consumers = {source for source, _function, _line in report.loader_calls}
     assert set(hashes) == consumers
-    assert len(set(hashes.values())) == 1, hashes
+    assert len(set(hashes.values())) == 1, (
+        f"{hashes}\n"
+        "부트스트랩 블록이 소비 모듈 사이에서 갈렸다 — 이 함수 위 편집 절차(22 모듈 sweep → "
+        "templates 재전파 → 가드 3종 재핀)를 따라 나머지 모듈을 같은 byte 로 맞춘다."
+    )
 
 
 def _set_literal_mapping_value(path: Path, name: str, key, value) -> None:

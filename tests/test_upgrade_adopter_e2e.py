@@ -894,7 +894,12 @@ def _t0585_pm_update_source() -> str:
             f"T-0585 세대 합성본에 훅 세트 게이트가 남았다: {anachronism}")
     digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
     assert digest == _T0585_PM_UPDATE_SHA256, (
-        f"T-0585 updater fixture drift: {digest} — reverse delta/expected SHA를 함께 검토하라")
+        f"T-0585 updater fixture drift: {digest}\n"
+        "재핀 절차(T-0748): (1) 위 anachronism 부재 단언 2건이 이미 통과했는지 먼저 확인한다 "
+        "— 실패했다면 SHA를 갱신하지 말고 역델타(위 _slice_replace/replace 호출들)를 먼저 "
+        "고쳐 세대 시대착오 재유입을 막는다. (2) 통과했다면(= 이번 변경이 정말 pm_update.py "
+        "배달 경계 밖이라면) _T0585_PM_UPDATE_SHA256 을 위 digest 값으로 갱신하고, 왜 배달 "
+        "경계가 그대로인지 한 문단을 이 함수 docstring 위 이력에 덧붙인다.")
     return source
 
 
