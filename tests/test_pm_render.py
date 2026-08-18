@@ -932,6 +932,8 @@ _CODEX_HARD_TOML = (
     'sandbox_mode = "workspace-write"\n'
 )
 _CODEX_HARD_SOURCE = "templates/codex/.codex/agents/developer-hard.toml"
+# 하네스 판정 입력은 **인스턴스 상대 좌표**다(상류 경로 아님) — 계획의 dest 좌표.
+_CODEX_HARD_CARD = ".codex/agents/developer-hard.toml"
 
 
 def _model_fields(text: str) -> dict:
@@ -946,18 +948,29 @@ def _model_fields(text: str) -> dict:
     return fields
 
 
-def test_card_harness_from_source_uses_nearest_adapter_dir(pm_render):
-    """카드 하네스는 렌더 소스 경로의 **가장 가까운** 어댑터 네임스페이스가 정한다."""
-    assert pm_render.card_harness_from_source(_CODEX_HARD_SOURCE) == "codex"
-    assert pm_render.card_harness_from_source("/x/.claude/agents/developer.md") == "claude"
-    assert pm_render.card_harness_from_source(
-        "templates/opencode/.opencode/agents/developer.md") == "opencode"
-    # 한 하네스 템플릿이 담은 타 네임스페이스 파일은 그 네임스페이스 소속이다.
-    assert pm_render.card_harness_from_source(
-        "templates/opencode/.claude/skills/pm-x/SKILL.md") == "claude"
+def test_card_harness_from_path_uses_first_component(pm_render):
+    """카드 하네스는 **인스턴스 상대 경로의 첫 컴포넌트**(어댑터 네임스페이스)가 정한다."""
+    assert pm_render.card_harness_from_path(_CODEX_HARD_CARD) == "codex"
+    assert pm_render.card_harness_from_path(".claude/agents/developer.md") == "claude"
+    assert pm_render.card_harness_from_path(".opencode/agents/developer.md") == "opencode"
+    # 한 인스턴스가 담은 타 네임스페이스 파일(cross-ns 의존물)도 그 네임스페이스 소속이다.
+    assert pm_render.card_harness_from_path(".claude/skills/pm-x/SKILL.md") == "claude"
     # 판정 불가(어댑터 밖·인메모리 렌더)는 None — 미사용 프로필 규칙이 발화하지 않는다.
-    assert pm_render.card_harness_from_source("wiki/README.md") is None
-    assert pm_render.card_harness_from_source(None) is None
+    assert pm_render.card_harness_from_path(".project_manager/wiki/README.md") is None
+    assert pm_render.card_harness_from_path(None) is None
+
+
+def test_card_harness_ignores_components_outside_instance_root(pm_render):
+    """저장소 **밖** 경로 컴포넌트는 판정에 쓰이지 않는다 (가드 시야 == 판정 표면).
+
+    체크아웃이 `~/.claude/...` 아래면 절대경로 훑기는 어댑터 밖 파일(공유 wiki·엔진 문서)까지
+    claude 로 오분류한다 — 그 오분류는 토큰이 산문으로 번지는 순간 조용한 오중화가 된다."""
+    assert pm_render.card_harness_from_path(
+        "/home/me/.claude/projects/inst/.project_manager/wiki/README.md") is None
+    assert pm_render.card_harness_from_path(
+        "/home/me/.claude/projects/inst/.codex/agents/developer-hard.toml") is None
+    # 상류 좌표(`templates/<flavor>/…`)도 인스턴스 상대가 아니므로 판정 대상이 아니다.
+    assert pm_render.card_harness_from_path(_CODEX_HARD_SOURCE) is None
 
 
 def test_codex_tier_toml_renders_hard_profile_values(pm_render):
@@ -969,6 +982,7 @@ def test_codex_tier_toml_renders_hard_profile_values(pm_render):
             "DELEGATE_REASONING_DEVELOPER_HARD": "high",
         },
         source=_CODEX_HARD_SOURCE,
+        card_path=_CODEX_HARD_CARD,
         delegate_harness={
             "DELEGATE_MODEL_DEVELOPER_HARD": "codex",
             "DELEGATE_REASONING_DEVELOPER_HARD": "codex",
@@ -983,7 +997,7 @@ def test_codex_tier_toml_renders_hard_profile_values(pm_render):
 def test_codex_tier_toml_unset_conf_is_graceful_todo(pm_render):
     """위임 매핑 미설정 채택자 — TOML 도 leak 대신 intentional-TODO 중화(키 부재 = config 기본 상속)."""
     out = pm_render.render_adapter(_CODEX_HARD_TOML, operational={},
-                                   source=_CODEX_HARD_SOURCE)
+                                   source=_CODEX_HARD_SOURCE, card_path=_CODEX_HARD_CARD)
     fields = _model_fields(out)
     assert fields["model"].startswith('# model = "<model>"')
     assert fields["model_reasoning_effort"].startswith(
@@ -992,7 +1006,8 @@ def test_codex_tier_toml_unset_conf_is_graceful_todo(pm_render):
     assert "delegate.developer.hard.model=" in fields["model"]
     assert "{{" not in out
     # 멱등 — 중화 산출물을 다시 렌더해도 같은 bytes(재렌더 왕복 0).
-    assert pm_render.render_adapter(out, operational={}, source=_CODEX_HARD_SOURCE) == out
+    assert pm_render.render_adapter(
+        out, operational={}, source=_CODEX_HARD_SOURCE, card_path=_CODEX_HARD_CARD) == out
 
 
 def test_unused_profile_neutralizes_instead_of_filling_other_harness_model(pm_render):
@@ -1004,6 +1019,7 @@ def test_unused_profile_neutralizes_instead_of_filling_other_harness_model(pm_re
             "DELEGATE_REASONING_DEVELOPER_HARD": "xhigh",
         },
         source=_CODEX_HARD_SOURCE,
+        card_path=_CODEX_HARD_CARD,
         delegate_harness={
             "DELEGATE_MODEL_DEVELOPER_HARD": "claude",
             "DELEGATE_REASONING_DEVELOPER_HARD": "claude",
@@ -1023,7 +1039,7 @@ def test_unused_profile_judgment_is_per_role(pm_render):
     out = pm_render.render_adapter(
         tpl,
         operational={"DELEGATE_MODEL_DEVELOPER": "sonnet"},
-        source=".claude/agents/developer.md",
+        card_path=".claude/agents/developer.md",
         delegate_harness={
             "DELEGATE_MODEL_DEVELOPER": "claude",      # 이 카드의 하네스 — 그대로 렌더.
             "DELEGATE_MODEL_ARCHITECT": "codex",       # 다른 역할이 타 하네스여도 무관.
@@ -1037,5 +1053,5 @@ def test_delegate_harness_unknown_keeps_current_render(pm_render):
     tpl = 'model: "{{DELEGATE_MODEL_DEVELOPER}}"\n'
     out = pm_render.render_adapter(
         tpl, operational={"DELEGATE_MODEL_DEVELOPER": "sonnet"},
-        source=".codex/agents/developer.toml", delegate_harness={})
+        card_path=".codex/agents/developer.toml", delegate_harness={})
     assert out == 'model: "sonnet"\n'

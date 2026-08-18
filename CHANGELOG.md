@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+### 업그레이드 노트
+
+- **guest 어댑터(`add-harness` 로 얹은 하네스)의 렌더물이 이제 `pm-update` 로 갱신된다.** 그 카드의
+  `model` 을 손으로 고쳐 뒀다면 다음 흡수가 `local.conf` 값(또는 미설정 시 중화 주석)으로 되돌린다 —
+  값을 유지하려면 카드가 아니라 `local.conf` 의 `delegate.<role>[.<tier>].{model,reasoning}` 에 둔다.
+  `add-harness <harness>` 재실행은 어댑터 파일이 새로 추가/폐기됐을 때만 필요하다.
+- **이 판을 받는 흡수는 스코프 없이(전량) 실행한다.** `--paths` 로 어댑터만 좁히면 인스턴스에 설치된
+  구 엔진이 새 토큰(`{{DELEGATE_MODEL_DEVELOPER_HARD}}` 등)을 몰라 렌더 leak 으로 rc1 이 된다.
+  전량 실행은 같은 계획 안에서 엔진(`.project_manager/tools/**`)을 먼저 얹으므로 안전하다.
+
 ### Fixed
 
 - **위임 모델 선언(`local.conf delegate.*`)이 세 하네스의 agent 카드 전부에 도달한다.** 카드의
@@ -21,10 +31,13 @@
   사유를 남긴 채 중화한다(`# model: <model>  # TODO: …`) — 미해소는 update rc 를 바꾸지 않는다.
   카드 손편집은 다음 흡수가 conf 값으로 되돌린다(그게 렌더물의 의도된 동작이다). 인스턴스 조치는
   없다 — 갱신을 실행하는 것은 인스턴스에 설치된 `pm_update.py` 이므로, 이 판을 받은 뒤의 다음
-  갱신에서 host/guest 무관하게 카드가 conf 와 일치한다. 다만 opencode 인스턴스에서 역할 카드의
-  모델을 계속 명시하려면 `local.conf` 에 `delegate.<role>.model` 을 둬야 한다 — 설치 시 잡힌
-  모델(`opencode_pro_model`)은 이제 `pm.md` 에만 적용되고, 역할 카드는 위임 매핑이 없으면 model
-  키 부재(=opencode 기본 모델)로 중화된다.
+  갱신에서 host/guest 무관하게 카드가 conf 와 일치한다. 다만 카드가 모델을 계속 명시하려면 그 값이
+  `local.conf` 에 있어야 한다: opencode 역할 카드 4장은 `delegate.<role>.model`(설치 시 잡힌
+  `opencode_pro_model` 은 이제 `pm.md` 에만 적용된다), codex hard 티어 프로필
+  (`.codex/agents/developer-hard.toml`)은 `delegate.developer.hard.model`·
+  `delegate.developer.hard.reasoning` 이다. 미설정이면 그 줄이 중화(주석화)돼 카드에 model 키가
+  없는 상태가 되고, 하네스는 자기 config 기본 모델로 스폰한다(hard 티어의 상향 프로필은 conf 에
+  값을 넣어야 유지된다).
 
 ## [1.7.6] - 2026-08-18
 

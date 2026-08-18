@@ -487,11 +487,14 @@ wiki, ticket, log 같은 인스턴스 상태는 덮어쓰지 않는다. 나중�
 어댑터도 인스턴스 `engine.manifest` 의 전용 구획(마커로 감싼 목록)에 등재돼 관리를 받는다 —
 opencode 를 codex 프로젝트에 붙일 때 opencode 가 소비하는 `.claude/skills` 처럼 어댑터
 네임스페이스 밖 의존물도 그 구획에 함께 등재된다. `pm-update` 는 이 구획을 보존(코어를 덮어쓴 뒤
-재부착)하며, 구획 안 행은 채널이 둘로 갈린다: `@render` 행(어댑터 렌더물)은 update-plan 에서
-제외되어 `add-harness <harness>` 재실행으로 갱신하고(refresh 채널), 비-`@render` 엔진 행
-(`@source=` 매핑·guest 하네스의 드라이버/훅 등)은 `pm-update` 가 byte-copy 로 함께 갱신한다
-(update 채널). 구세대 구획(엔진 행 미등재)은 다음 `pm-update` 가 flavor 배타 경로 증거로 엔진
-행을 파생·등재해 동결 없이 수렴한다.
+재부착)하며, 구획 안 두 종류를 **같은 update 채널**로 전파하되 방식이 갈린다: `@render` 행
+(어댑터 렌더물)은 채택자 `local.conf` 값으로 **다시 렌더**하고, 비-`@render` 엔진 행(`@source=`
+매핑·guest 하네스의 드라이버/훅 등)은 byte-copy 로 갱신한다. 렌더물이므로 guest 어댑터 카드의
+손편집(예 agent 카드의 `model`)은 다음 `pm-update` 가 `local.conf` 값으로 되돌린다 — 값을 바꾸는
+자리는 카드가 아니라 `local.conf` 의 `delegate.<role>[.<tier>].{model,reasoning}` 이다.
+`add-harness <harness>` 재실행은 그 하네스의 어댑터 파일이 새로 추가/폐기됐을 때(구획 등재 갱신)
+쓰고, 값 반영에는 필요하지 않다. 구세대 구획(엔진 행 미등재)은 다음 `pm-update` 가 flavor 배타
+경로 증거로 엔진 행을 파생·등재해 동결 없이 수렴한다.
 
 엔진 버전 관리는 별도 `engine.version` 파일이 아니라 git 으로 한다. 릴리즈는 git tag 와
 CHANGELOG 로 식별하고, 채택자는 `local.conf` 의 upstream rev baseline 으로 "어디까지 받았는지"를

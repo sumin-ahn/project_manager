@@ -159,29 +159,31 @@ def _delegate_todo_placeholder(token_key: str) -> str:
     return _DELEGATE_MODEL_TODO_PLACEHOLDER
 
 
-def card_harness_from_source(source: str | None) -> str | None:
-    """렌더 소스 경로 → 그 카드가 속한 하네스 (판정 불가면 None).
+def card_harness_from_path(card_path: str | None) -> str | None:
+    """**인스턴스 상대** 카드 경로 → 그 카드가 속한 하네스 (판정 불가면 None).
 
-    경로 컴포넌트의 어댑터 네임스페이스(`.claude`/`.codex`/`.opencode`)를 **뒤에서부터** 찾는다 —
-    한 하네스 템플릿이 다른 하네스 네임스페이스의 파일을 담을 수 있으므로(opencode 템플릿 안의
-    `.claude/skills`) 파일에 가장 가까운 선언이 그 파일의 하네스다. 소스가 없거나(인메모리 렌더)
-    어댑터 밖이면 None — 그때는 하네스 판정을 요구하는 규칙(미사용 프로필)이 발화하지 않는다.
+    판정은 상대경로의 **첫 컴포넌트**만 본다 — 어댑터 네임스페이스(`.claude`/`.codex`/
+    `.opencode`)는 인스턴스 루트 바로 아래에 있고, 그 밖의 위치에 같은 이름이 나타나면 그건
+    네임스페이스 선언이 아니다. 절대경로 전체를 훑으면 체크아웃이 `~/.claude/...` 아래일 때
+    어댑터 밖 파일(공유 wiki·스킬 등)까지 그 하네스로 오분류된다(가드 시야 == 판정 표면).
+
+    경로가 없거나(인메모리 렌더·호출부 미배선) 어댑터 밖이면 None — 그때는 하네스 판정을
+    요구하는 규칙(미사용 프로필)이 발화하지 않고 현행 해소가 그대로 간다.
     """
-    if not source:
+    if not card_path:
         return None
-    for part in reversed(str(source).replace("\\", "/").split("/")):
-        harness = CARD_HARNESS_BY_ADAPTER_DIR.get(part)
-        if harness:
-            return harness
-    return None
+    rel = str(card_path).replace("\\", "/").lstrip("/")
+    if not rel:
+        return None
+    return CARD_HARNESS_BY_ADAPTER_DIR.get(rel.split("/", 1)[0])
 
 
 def unused_delegate_profiles(
-    source: str | None, delegate_harness: dict[str, str] | None
+    card_path: str | None, delegate_harness: dict[str, str] | None
 ) -> dict[str, str]:
     """이 카드에서 **미사용 프로필**인 위임 토큰 → 그 역할의 conf 하네스.
 
-    카드의 하네스(`card_harness_from_source`)와 conf 의 `delegate.<role>[.<tier>].harness` 가
+    카드의 하네스(`card_harness_from_path`)와 conf 의 `delegate.<role>[.<tier>].harness` 가
     다르면 그 카드는 이번 형상에서 스폰되지 않는 프로필이다 — 다른 하네스용 모델 값을 억지로
     박으면 카드가 conf 와 어긋난 사실(그 역할은 저쪽 하네스로 간다)을 감춘다. 값을 채우는 대신
     intentional-TODO 로 중화하고 이유를 꼬리에 남긴다(rc 불변).
@@ -189,7 +191,7 @@ def unused_delegate_profiles(
     conf 하네스를 모르면(키 부재) 판정하지 않는다 — 미설정은 오설정이 아니라 정상 형상이고,
     그때는 model 키가 있으면 그대로 해소한다(현행 거동 보존).
     """
-    card_harness = card_harness_from_source(source)
+    card_harness = card_harness_from_path(card_path)
     if not card_harness or not delegate_harness:
         return {}
     return {
@@ -548,15 +550,17 @@ def render_adapter(
     empty_keys: list[str] | None = None,
     template_dir: str | tuple[str, ...] | list[str] | None = None,
     delegate_harness: dict[str, str] | None = None,
+    card_path: str | None = None,
 ) -> str:
     """어댑터 템플릿 → 자족 .md (operational plain replace).
 
-    source: leak 에러에 실을 파일 경로(선택·render_file 이 전달). 진단 + **카드 하네스 판정**에
-    쓴다(`card_harness_from_source` — 미사용 프로필 중화).
+    source: leak 에러에 실을 파일 경로(선택·render_file 이 전달). 진단용일 뿐 렌더엔 무영향.
     empty_keys: 호출자(pm_update)가 local.conf 빈값이라 dict 에서 제외한 token-key 목록(선택).
     렌더러가 직접 감지한 빈값 key 와 합쳐 leak 힌트("값을 채우라")에 싣는다.
     delegate_harness: 위임 token-key → conf 의 그 역할/티어 하네스(선택·pm_update 가 local.conf
     에서 해소). 카드 하네스와 다르면 그 토큰은 미사용 프로필이라 값 대신 이유를 중화로 남긴다.
+    card_path: 이 산출물의 **인스턴스 상대 경로**(선택·pm_update 가 계획의 dest 좌표를 넘긴다).
+    카드 하네스 판정의 유일한 입력이다 — 미배선이면 미사용 프로필 규칙이 발화하지 않는다.
 
     template_dir가 주어지면 operational보다 먼저 canonical 스킬 호출 토큰을 그 하네스 값으로
     치환한다. 값은 SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR 단일 registry에서만 읽는다.
@@ -569,7 +573,7 @@ def render_adapter(
     operational = operational or {}
     # 미사용 프로필(카드 하네스 ≠ conf 의 그 역할 하네스)은 **치환 전에** 제외한다 — 값을 먼저
     # 채우면 아래 중화가 볼 토큰이 없어져 다른 하네스용 모델이 그대로 카드에 박힌다.
-    unused = unused_delegate_profiles(source, delegate_harness)
+    unused = unused_delegate_profiles(card_path, delegate_harness)
     if unused:
         operational = {
             key: value for key, value in operational.items() if key not in unused
@@ -603,7 +607,7 @@ def render_adapter(
     result, _ = neutralize_delegate_model_todo(
         result, all_empty,
         unused_profiles=unused,
-        card_harness=card_harness_from_source(source),
+        card_harness=card_harness_from_path(card_path),
     )
     _assert_no_leak(result, source=source, empty_keys=all_empty)
     return result

@@ -10,7 +10,7 @@ baseline(local.conf `upstream_rev`)과 cache/경로 HEAD 사이 commit 수 및 �
 ./pm-update.sh --changes --from <cache-or-path>   # commit 수 + 4버킷 분리
 ```
 
-출력 4버킷 (분류 기준은 실 sync의 계획 manifest와 같다 — guest 절 채널 분리 포함):
+출력 4버킷 (분류 기준은 실 sync의 계획 manifest와 같다 — guest 절 행 합류 포함):
 
 | 버킷 | 뜻 |
 |---|---|

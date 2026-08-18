@@ -664,15 +664,18 @@ ADAPTER_HOOK_SET = {
     ),
 }
 
-# 위 정적 경로와 같은 instance-owned 정책 섹션의 조건부 보호 규칙. Codex template은 model을
-# 생략해 사용자 기본값을 상속하지만, adopter가 agent별 model/reasoning을 명시하면 그 *파일 전체*가
-# override overlay다. 자동 TOML merge 대신 byte 보존한다. pattern/필드 추가는 이 선언만 고친다.
+# 위 정적 경로와 같은 instance-owned 정책 섹션의 조건부 보호 규칙 — 선언한 최상위 TOML 키를
+# adopter 가 갖고 있으면 그 *파일 전체*를 byte 보존한다(자동 TOML merge 대신). pattern/필드
+# 추가는 이 선언만 고친다.
+#
+# **agent 카드의 `model`/`model_reasoning_effort` 는 여기 없다**: 카드의 모델·추론은 local.conf
+# `delegate.<role>[.<tier>].{model,reasoning}` 의 렌더 파생물이라 단일 진실이 conf 다. 그 두 필드를
+# 여기서 보존하면 add-harness 는 손편집을 지키고 다음 pm-update 는 conf 로 되돌려, 두 표면이 같은
+# 필드에 반대 규칙을 선언하게 된다. 모델을 바꾸는 자리는 카드가 아니라 local.conf 다.
 ADD_HARNESS_PRESERVE_EXISTING_TOML_FIELDS = {
     "claude": {},
     "opencode": {},
-    "codex": {
-        ".codex/agents/*.toml": frozenset({"model", "model_reasoning_effort"}),
-    },
+    "codex": {},
 }
 
 # sed 치환 대상 operational placeholder (`docs/placeholders.md` 표). 자유서술 3종은 여기 없음(보존).
@@ -5055,7 +5058,8 @@ def _guest_manifest_lines(
 
     한 절에 두 종류가 모이고 **한 줄의 `@render` 유무가 소유 채널을 가른다**(새 어휘 0):
 
-      - **어댑터 렌더물**(`@render @target-owned [@source=…]`) — add-harness refresh 소유.
+      - **어댑터 렌더물**(`@render @target-owned [@source=…]`) — 재렌더 전파(update 채널이 conf 로
+        다시 렌더한다·손편집은 되돌아간다).
         후보 = guest flavor manifest 의 `@render` **선언 전부**(`_flavor_render_relpaths` 와 같은
         판정). flavor `@render` 선언 자체가 이미 경계다 — flavor 는 자기가 관리하는 경로만 `@render`
         로 선언하므로("flavor 미선언 경로 유입 0" 불변식의 구조적 보장) namespace cap 없이 **cross-ns

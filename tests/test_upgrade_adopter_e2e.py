@@ -704,7 +704,11 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   delta 의 네 anchor 는 전부 `_main`/`sync_adapter_configs` 쪽이라 그대로 유일 해소되고, 배달
 #   경계(planning → apply → self-update 순서)와 배달 파일 집합도 불변이다 — 이 fixture 트리엔
 #   guest 절이 없어 합류 자체가 무동작이다. 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "aadcd3676e782f93dd8d968a5ab3220d2f6a8c95f8b73cb071fd1c474db1874e"
+#   T-0760 R1 재작업이 카드 하네스 판정 입력을 상류 절대경로에서 **dest 상대 좌표**로 바꾸며 또
+#   이동했다. 들어온 것은 좌표 파생 헬퍼(`_dest_relative_path`) 하나와 렌더 호출 3곳의 인자이고,
+#   역적용 delta 의 네 anchor 는 전부 `_main`/`sync_adapter_configs` 쪽이라 그대로 유일 해소된다.
+#   배달 경계와 배달 파일 집합도 불변이다 — 현재화한 것은 기대 SHA 하나뿐이다.
+_T0585_PM_UPDATE_SHA256 = "8f8c89bf903c65dbd549858211244156c7c4a1bc24b62b2b9365fe657249bc12"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).

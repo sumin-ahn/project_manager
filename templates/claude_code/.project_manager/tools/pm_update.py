@@ -2910,8 +2910,9 @@ def _frozen_flavor_evidence(
 ) -> list[str] | None:
     """다른 모든 후보에는 없는 배타적 flavor 경로의 frozen evidence를 계산한다.
 
-    guest 절이 소유한 경로는 add-harness refresh 채널이 전담하므로 evidence에서 **개별로** 뺀다.
-    flavor 고유 경로가 전부 guest 소유일 때만 ``None``(그 flavor 전체가 refresh 채널 관할)이고,
+    guest 절이 소유한 경로는 **절 자체가 소유를 선언**했으므로(미등재 flavor 유입이 아니다)
+    evidence에서 **개별로** 뺀다.
+    flavor 고유 경로가 전부 guest 소유일 때만 ``None``(그 flavor 전체가 절의 선언 관할)이고,
     그 밖의 guest 밖 고유 경로는 남겨 frozen 판정에 쓴다. ``add_harness``는 항상 guest 행을
     등재하므로, guest 소유 하나로 flavor 전체를 버리면 frozen 상태에 도달하는 유일한 경로가 곧
     탐지기를 끈다(add-harness 채택자에게 경고가 구조적으로 발화하지 못함).
@@ -2983,8 +2984,9 @@ def _selected_upstream_manifests(
     선언된 후순위 manifest가 부재해도 선택 목록에서 버리지 않아 호출부가 로컬 union을 유지하며
     경고하고, 해소 불가 선언은 primary만 유지한 채 경고한다.
 
-    add-harness guest 절은 별도 refresh 채널이므로 core 합집합으로 승격하지 않는다. guest가 소유한
-    경로만 존재해 후보가 된 flavor는 제외해 기존 add-harness 불가침 계약을 유지한다.
+    add-harness guest 절은 **절이 소유를 선언한 경로**라 core 합집합(flavor 선택) 승격 근거가 되지
+    않는다 — 그 경로가 존재한다는 사실은 host core 가 그 flavor 라는 증거가 아니다(전파 자체는
+    update 채널이 절의 선언대로 한다). guest가 소유한 경로만 존재해 후보가 된 flavor는 제외한다.
 
     ``guest_backfill_paths``(이번 실행이 파생한 guest 엔진 행)도 그 guest 소유 집합에 합친다. 절
     텍스트만 보면 legacy 코호트 **첫 실행**에서 같은 run 이 "이 파일들은 어떤 채널도 없다" 고 경고한
@@ -3662,12 +3664,17 @@ def _render_text(
     entry_notation_template: str | tuple[str, ...] | list[str] | None = None,
     flat_command_skill: str | None = None,
     codex_operational_skill: str | None = None,
+    card_path: str | None = None,
 ) -> str:
     """source 템플릿을 채택자 local.conf(operational)로 렌더한 텍스트.
 
     local.conf 의 operational 값을 plain replace 로 채운다(free-form 은 pm_import FILL 채널이
     canonical home 에서 전담). 결과는 자족(잔여 `{{...}}` 0·assertion).
     호출부(apply/plan)가 dst 와 비교/기록한다.
+
+    `card_path` 는 이 산출물의 **인스턴스 상대 좌표**(계획의 dest 경로)다 — 카드 하네스 판정
+    (미사용 프로필 중화)의 입력이라, 상류 절대경로가 아니라 dest 좌표를 넘겨야 체크아웃 위치가
+    판정을 흔들지 않는다.
     """
     render_mod = _load_pm_render()
     operational, empty_keys = _operational_from_local_conf(dest_root)
@@ -3679,6 +3686,7 @@ def _render_text(
         template_dir=entry_notation_template,
         source=str(source_path),
         delegate_harness=_delegate_harness_from_local_conf(dest_root),
+        card_path=card_path,
     )
     if flat_command_skill is not None:
         rendered = _render_flat_command_reference(rendered, flat_command_skill)
@@ -3838,6 +3846,17 @@ def _rendered_text_matches_dest(rendered: str, dst) -> bool:
     return _normalize_newlines(rendered) == _normalize_newlines(current)
 
 
+def _dest_relative_path(dst, dest_root) -> str | None:
+    """dst 의 **인스턴스 상대 좌표** — 관계가 성립하지 않으면 None(판정 불가는 무판정).
+
+    계획(`apply`)은 manifest 좌표(`_r`)를 그대로 들고 있으나 변경검출(`_render_eq_dst`)은 dst 만
+    받으므로, 같은 좌표를 여기서 파생해 두 경로가 같은 판정 입력을 쓰게 한다."""
+    try:
+        return Path(dst).relative_to(Path(dest_root)).as_posix()
+    except (ValueError, TypeError):
+        return None
+
+
 def _render_eq_dst(
     sp: Path,
     dst: Path,
@@ -3857,7 +3876,7 @@ def _render_eq_dst(
     try:
         rendered = _render_text(
             sp, dest_root, entry_notation_template, flat_command_skill,
-            codex_operational_skill,
+            codex_operational_skill, _dest_relative_path(dst, dest_root),
         )
     except Exception:  # noqa: BLE001 — 렌더 실패는 '다름'으로 보수 처리.
         return False
@@ -4481,6 +4500,7 @@ def apply(changes: list[tuple], *, is_hook_set_path=None) -> None:
                 template_dir=getattr(dst, "entry_notation_template", None),
                 source=str(sp),
                 delegate_harness=_delegate_harness_from_local_conf(dest_root),
+                card_path=str(_r).replace("\\", "/"),
             )
             if getattr(dst, "flat_command_skill", None) is not None:
                 rendered = _render_flat_command_reference(
