@@ -2241,3 +2241,95 @@ def test_two_leases_no_longer_refuse_the_regression_cwd(board):
     """
     _write_ledger(board, "A_1", "B_1")
     assert board._regression_cwd() == str(board.REPO)
+
+
+# ── 스위트 없는 트리의 회귀 요청 = 실행 전 거부 (T-0733 R2 · F-009) ─────────
+# 훅이 push 를 가리는 것과 같은 축(그 트리에 `tests/` 가 있는가)을 사람이 직접 부른 실행에도 댄다.
+# 스위트 없는 홈에서 도는 pytest 는 홈 루트 재귀 수집(슬롯 스위트 오수집)이나 rc4/rc5 로 끝나고,
+# 그 결과가 소비자 없는 홈 플래그에 red 로 남는다.
+
+def test_a_run_is_refused_before_pytest_when_this_tree_has_no_suite(
+        board, monkeypatch, capsys):
+    """`tests/` 를 지목하는 test_cmd + 스위트 없는 트리 → 실행 전 rc1(측정 0·기록 0·처방 1줄)."""
+    fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
+    assert not (board.REPO / "tests").is_dir()
+
+    assert board.cmd_regression(_run_args(cmd="pytest tests/ -q", final=True)) == 1
+
+    assert fake.calls == []                          # pytest 를 띄우지 않았다
+    assert not board.REGRESSION_FLAG.exists()        # 게이트 플래그도 쓰지 않았다
+    err = capsys.readouterr().err
+    assert "회귀 스위트가 없다" in err and "--cwd" in err and "--task" in err
+
+
+def test_a_tree_with_a_suite_runs_as_before(board, monkeypatch):
+    """같은 test_cmd 라도 그 트리에 `tests/` 가 있으면 그대로 돈다 (거부는 트리 사실에만 붙는다)."""
+    (board.REPO / "tests").mkdir(parents=True, exist_ok=True)
+    fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
+
+    assert board.cmd_regression(_run_args(cmd="pytest tests/ -q", final=True)) == 0
+
+    assert fake.calls and fake.calls[0]["kwargs"]["cwd"] == str(board.REPO)
+    assert _flag(board)["scope"] == "full"
+
+
+def test_an_explicit_cwd_is_respected_even_without_a_suite(board, monkeypatch, tmp_path):
+    """명시 `--cwd`(=`--task` 도 같은 자리)는 채택자가 트리를 확정한 것 — 거부하지 않는다."""
+    pinned = tmp_path / "pinned"
+    pinned.mkdir()
+    fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
+
+    assert board.cmd_regression(
+        _run_args(cmd="pytest tests/ -q", cwd=str(pinned), final=True)) == 0
+
+    assert fake.calls and fake.calls[0]["kwargs"]["cwd"] == str(pinned)
+
+
+def test_a_test_cmd_outside_tests_is_untouched(board, monkeypatch):
+    """스위트가 `tests/` 밖인 채택자는 무영향 — 판정은 'argv 가 tests/ 를 지목했는가'만 본다."""
+    fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
+
+    assert board.cmd_regression(_run_args(cmd="pytest -q", final=True)) == 0
+
+    assert fake.calls                                  # 그대로 실행(거부 없음)
+
+
+def test_the_rc5_note_says_the_tree_lacks_a_suite_not_a_session_mismatch(board, monkeypatch):
+    """rc5 진단은 트리 사실을 말한다 — 세션/lease 처방은 회귀가 그걸 안 보므로 거짓이다."""
+    note = board._regression_rc5_note(5, str(board.REPO), None)
+    assert "`tests/` 가 없다" in note and "--cwd" in note
+    assert "lease" not in note and "PM_SESSION_NAME" not in note
+    # 명시 `--cwd` 는 트리 확정이라 힌트를 붙이지 않는다.
+    assert board._regression_rc5_note(5, str(board.REPO), "/pinned") == \
+        " · 수집 0 — 테스트 루트/cwd 확인"
+
+
+# ── 세대 판정은 항상 도는 게이트 줄에도 붙는다 (T-0733 R2 · F-010) ──────────
+# rev3 부터 `tests/` 없는 트리의 훅은 회귀를 부르지 않는다. 세대 판정의 호출자가 회귀뿐이면
+# 그 트리는 다음 세대 교체 처방을 받을 자리가 없다 — lint 줄은 두 형상 모두 항상 돈다.
+
+def test_a_previous_generation_hook_also_blocks_the_lint_gate(
+        board, monkeypatch, tmp_path, capsys):
+    """스위트 없는 트리에서도 구세대 훅은 `lint --gate` 가 같은 처방으로 막는다."""
+    rev2 = next(b for b in board._legacy_pre_push_hook_bodies("python3")
+                if f"{board._PM_HOOK_REV_PREFIX}2" in b)
+    hook = _hooked_repo(board, monkeypatch, tmp_path, rev2)
+    assert not (board.REPO / "tests").is_dir()       # 회귀 게이트 비대상 트리
+
+    assert board.cmd_lint(argparse.Namespace(gate=True)) == 1
+
+    assert hook.read_text(encoding="utf-8") == rev2  # 고치지 않는다
+    err = capsys.readouterr().err
+    assert "구버전" in err and "board.py init" in err
+    # 보고 전용 `lint`(무 `--gate`)는 차단 표면이 아니다 — 부착은 게이트 모드에만.
+    assert board.cmd_lint(argparse.Namespace(gate=False)) == 0
+    assert "구버전" not in capsys.readouterr().err
+
+
+def test_the_lint_gate_stays_silent_under_a_current_hook(
+        board, monkeypatch, tmp_path, capsys):
+    """현행 세대 훅에서는 lint 게이트가 무소음 통과 — 부착이 과차단을 만들지 않는다."""
+    _hooked_repo(board, monkeypatch, tmp_path, board.pre_push_hook_body("python3"))
+
+    assert board.cmd_lint(argparse.Namespace(gate=True)) == 0
+    assert "구버전" not in capsys.readouterr().err

@@ -1337,35 +1337,35 @@ def test_regression_run_rc1_records_fail(reg_board, monkeypatch):
     assert data["rc"] == 1
 
 
-def test_regression_run_rc5_repo_fallback_surfaces_session_hint(
+def test_regression_run_rc5_surfaces_the_missing_suite_hint(
         reg_board, monkeypatch, capsys):
-    """rc5 + REPO 폴백(lease 미매칭) + tests/ 부재 → 세션 해소 힌트 표면화 (T-0220).
+    """rc5 + 그 트리에 tests/ 부재 → **트리 사실**과 처방을 표면화 (T-0220 → T-0733 정정).
 
-    훅 env 에 세션 정체성이 없어 침묵 폴백 → 상시 vacuous green 이던 것을 시끄럽게 만든다.
-    힌트에 해소된 session 값과 PM_SESSION_NAME/local.conf 안내가 들어간다.
+    종전 문구는 '활성 slot lease 미매칭 — PM_SESSION_NAME/local.conf 확인'이었다. 회귀 cwd 가
+    lease/세션을 해소하던 시절의 진단이라, 슬롯 우회가 삭제된 지금은 정상 바인딩된 세션에게도
+    거짓 처방이 된다(리뷰 F-008).
     """
     monkeypatch.setenv("PM_SESSION_NAME", "orch-dev-T0220")
     monkeypatch.setattr(reg_board.subprocess, "Popen", _FakeRun(5))
     reg_board.cmd_regression(_run_args())
     out = capsys.readouterr().out
-    assert "활성 slot lease 미매칭" in out
-    assert "session=`orch-dev-T0220`" in out
-    assert "PM_SESSION_NAME" in out
-    assert "local.conf" in out
+    assert "`tests/` 가 없다" in out
+    assert "--cwd" in out and "--task" in out
+    assert "lease" not in out and "PM_SESSION_NAME" not in out   # 거짓 처방 재유입 차단
 
 
-def test_regression_run_rc5_explicit_cwd_no_fallback_hint(
+def test_regression_run_rc5_explicit_cwd_gets_no_tree_hint(
         reg_board, monkeypatch, capsys):
-    """rc5 지만 명시 `--cwd`(override)면 폴백이 아니므로 세션 힌트를 붙이지 않는다.
+    """rc5 지만 명시 `--cwd`(override)면 채택자가 트리를 확정한 것이라 트리 힌트를 붙이지 않는다.
 
-    수집 0 노트는 그대로(rc5=fail) 나오되, '미매칭 폴백' 힌트는 override 경로에선 무의미하다.
+    수집 0 노트는 그대로(rc5=fail) 나오되, 트리 처방은 명시 경로에선 무의미하다.
     """
     monkeypatch.setenv("PM_SESSION_NAME", "orch-dev-T0220")
     monkeypatch.setattr(reg_board.subprocess, "Popen", _FakeRun(5))
     reg_board.cmd_regression(_run_args(cwd=str(reg_board._proj / "elsewhere")))
     out = capsys.readouterr().out
     assert "수집 0" in out               # rc5=fail 노트는 유지.
-    assert "활성 slot lease 미매칭" not in out  # override 는 폴백 아님 → 힌트 없음.
+    assert "`tests/` 가 없다" not in out  # 명시 트리 → 처방 없음.
 
 
 def test_regression_run_rc5_scoped_returns_fail(reg_board, monkeypatch, capsys):
