@@ -427,7 +427,11 @@ def test_ticket_finish_task_ambiguous_fails_loud(tf, monkeypatch, capsys):
 
 
 def test_ticket_finish_task_no_pytest_still_resolves_workspace(tf, monkeypatch, capsys):
-    """--no-pytest 는 회귀만 생략: F6 worktree는 stage/status 계획을 위해 그대로 forward한다."""
+    """--no-pytest 는 회귀만 생략: F6 worktree는 stage/status 계획을 위해 그대로 forward한다.
+
+    해소 자체도 회귀 skip 여부와 무관하게 돈다 — 비-task 경로와 동형이고, 해소가 stale 슬롯
+    (장부에는 있고 디스크에는 없음) 존재검사를 태운다. 결과 트리는 양쪽 같다.
+    """
     _write_leases(tf.LEASES_FILE, [
         {"slot": "work/A_3", "repo": "A", "session": "job8", "state": "leased"},
     ])
@@ -444,7 +448,7 @@ def test_ticket_finish_task_no_pytest_still_resolves_workspace(tf, monkeypatch, 
 
     monkeypatch.setattr(tf, "TicketFinisher", _FakeFinisher)
     assert tf.main(["T-0001", "--task", "job8", "--no-pytest"]) == 0
-    assert captured["regression_cwd"] is None
+    assert captured["regression_cwd"] == "CWD::work/A_3"   # 회귀 skip 여도 해소는 수행
     assert captured["task_workspace"] == tf.REPO / "work" / "A_3"
     assert captured["run"]["skip_pytest"] is True
     assert str(tf.REPO / "work" / "A_3") in capsys.readouterr().out
