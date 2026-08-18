@@ -27,6 +27,9 @@
     다른 호출이 이 자리를 지나므로, 자기 임시 파일로 자기 판정을 깨지 않으려면 규약이 필요하다.
   - 교체 뒤 디스크에는 옛 내용 아니면 새 내용만 있다(공용 원자 교체 seam).
   - 판정은 파일시스템 상태만 본다 — 장부도 stamp 도 두지 않는다.
+  - **산출 없음(`pending`) 판정은 그 라운드 파일 하나의 내용만 본다** — 날짜도, 같은 티켓의
+    다른 라운드도, 명세도 입력이 아니다. 시점에 기대면 같은 역할 앞 라운드의 회수가 손대지
+    않은 뒤 라운드의 판정을 뒤집어, 회수면과 조회·lint 면이 서로 다른 답을 낸다.
 
 파일 IO 는 공용 seam 을 지난다 — 판독은 `file_lock.read_text_shared`, 교체는
 `file_lock.atomic_replace`, 예약 생성은 `os.O_EXCL`+`os.O_BINARY` 바이트 쓰기다(텍스트 모드
@@ -181,11 +184,10 @@ ENGINE_REV = "v1.7.6"
 # 옮겨다녀도 라운드는 자기 자리에 남는다.
 ROUNDS_DIRNAME = "rounds"
 
-# 사람용 절명. 키 집합 = 라운드를 남기는 역할 전부다.
-# **권위 방향은 이 표 → board** 다 — 라운드 헤더를 내는 쪽이 여기이고, board 의 성장 절 표는
-# 후속 티켓에서 이 표를 파생으로 읽는다(그때까지 board 는 argparse 선택지를 자기 표에서 내므로
-# 두 표가 같은 값을 들고 있고, 그 일치는 테스트가 못박는다). board 를 로드해 가져오지 않는다 —
-# 소비 방향이 board → 이 모듈이라 반대 방향 로드는 순환이다.
+# 사람용 라운드 절명(첫 줄 헤더의 라벨). 키 집합 = 라운드를 남기는 역할 전부다.
+# **권위 방향은 이 표 → board** 다 — 라운드 헤더를 내는 쪽이 여기이고, board 는 절명·argparse
+# 선택지를 이 표에서 파생해 읽는다(복제 0). board 를 로드해 가져오지 않는다 — 소비 방향이
+# board → 이 모듈이라 반대 방향 로드는 순환이다.
 ROLE_LABELS: dict[str, str] = {
     "architect": "설계",
     "developer": "구현 보충",
@@ -380,25 +382,45 @@ def parse_round_filename(name: str) -> tuple[int, str] | None:
     return ordinal, role
 
 
-# ── 시드 렌더 · 무편집(산출 없음) 판정 ──────────────────────────────────────
+# ── 헤더·시드 렌더 · 무편집(산출 없음) 판정 ────────────────────────────────
 
-def render_round_seed(role: str, ticket_text: str, *, today: str) -> str:
-    """라운드 파일의 시드 — 첫 줄 헤더 + 역할 골격 본문.
+def render_round_header(role: str, *, today: str) -> str:
+    """라운드 파일 첫 줄 — `## <라벨> (<role> · <YYYY-MM-DD>)`.
 
-    헤더 형식은 `## <라벨> (<role> · <YYYY-MM-DD>)` 로 종전 역할 절 헤더와 같다. 골격 본문은
-    `pm_delegate` 를 부른다(로직 이동이 아니라 호출 — 시드 문구의 단일 진실은 그쪽이다).
+    준비(시드)와 추가 리뷰어 회수(실내용)가 같은 첫 줄을 쓴다. 라운드 파일 형식은 이 모듈이
+    소유하므로 헤더 문자열도 여기 하나뿐이다 — 쓰는 자리마다 다시 적으면 라벨·표기가 갈린다.
     """
     _require_role(role)
     if not isinstance(today, str) or _HEADER_DATE_RE.match(today) is None:
         raise RoundsError(f"라운드 헤더 날짜는 YYYY-MM-DD 형식이어야 한다: {today!r}")
+    return f"## {ROLE_LABELS[role]} ({role} · {today})"
+
+
+def render_round_seed(
+    role: str, ticket_text: str, *, today: str,
+    previous_round: tuple[int, str] | None = None,
+) -> str:
+    """라운드 파일의 시드 — 첫 줄 헤더 + 역할 골격 본문.
+
+    헤더 형식은 `## <라벨> (<role> · <YYYY-MM-DD>)` 로 종전 역할 절 헤더와 같다. 골격 본문은
+    `pm_delegate` 를 부른다(로직 이동이 아니라 호출 — 시드 문구의 단일 진실은 그쪽이다).
+
+    `previous_round` 는 **같은 역할의 직전 라운드** `(순번, 본문)` 이다 — 리뷰 역할 골격이
+    확인 대상 finding ID 를 프리필하는 유일한 입력이고, 예약 시점에만 쓴다. 없으면
+    자리표시자다. 무편집 판정(`_text_is_pending`)은 이 값을 입력으로 쓰지 않는다.
+    """
     return (
-        f"## {ROLE_LABELS[role]} ({role} · {today})\n\n"
-        + _render_round_seed_body(role, ticket_text)
+        render_round_header(role, today=today) + "\n\n"
+        + _render_round_seed_body(role, ticket_text, previous_round)
     )
 
 
-def _render_round_seed_body(role: str, ticket_text: str) -> str:
-    return _load_pm_delegate().render_ticket_growth_section_seed(role, ticket_text)
+def _render_round_seed_body(
+    role: str, ticket_text: str, previous_round: tuple[int, str] | None = None,
+) -> str:
+    return _load_pm_delegate().render_ticket_growth_section_seed(
+        role, ticket_text, previous_round=previous_round,
+    )
 
 
 def _round_header_re(role: str) -> re.Pattern[str]:
@@ -412,25 +434,59 @@ def _normalized_newlines(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def _text_is_pending(role: str, text: str, ticket_text: str) -> bool:
-    """본문이 시드 재렌더와 같은가 — 첫 줄(날짜가 든 헤더)은 문법만 보고 대조에서 뺀다.
+def _text_is_pending(role: str, text: str) -> bool:
+    """이 파일 하나만 보고 "시드 그대로(산출 없음)"를 판정한다 — 시점 독립.
 
-    개행 표기는 정규화해 비교한다. 시드는 LF 로 예약되지만 CRLF 체크아웃(또는 CRLF 를 쓰는
-    슬롯)을 지나면 같은 골격이 CRLF 로 돌아오고, 그것을 "편집됨"으로 읽으면 산출 없는 라운드가
-    산출 있는 것으로 위장된다.
+    첫 줄은 날짜와 사람이 고른 라벨이 드는 자리라 **문법만** 본다(라벨·날짜 자유). 그 아래
+    본문은 골격 소유자(`pm_delegate`)가 내용 구조로 판정한다 — 자리표시자만 든 골격이면 산출이
+    없다. 판정 입력에 board 의 다른 라운드도 명세도 넣지 않는다: 넣으면 같은 역할 앞 라운드의
+    회수가 손대지 않은 뒤 라운드의 판정을 뒤집는다(회수면과 표시면이 서로 다른 답을 낸다).
     """
     first_line, separator, rest = text.partition("\n")
     if not separator:
         return False
     if _round_header_re(role).fullmatch(first_line.rstrip("\r")) is None:
         return False
-    expected = "\n" + _render_round_seed_body(role, ticket_text)
-    return _normalized_newlines(rest) == _normalized_newlines(expected)
+    body = _normalized_newlines(rest)
+    if not body.startswith("\n"):
+        return False        # 헤더와 본문 사이 빈 줄까지가 시드 형식이다.
+    return _load_pm_delegate().ticket_round_body_is_pending(role, body[1:])
 
 
-def round_is_pending(round: Round, *, ticket_text: str) -> bool:
-    """이 라운드가 아직 시드 그대로(산출 없음)인가."""
-    return _text_is_pending(round.role, round.text, ticket_text)
+def latest_round_of_role(rounds, role: str):
+    """그 역할의 **마지막 산출 라운드**(없으면 None) — 직전-라운드 규칙의 단일 소유자.
+
+    배제는 하나다: 산출이 없는 라운드(`pending`)는 자리표시자 골격뿐이라 어떤 소비자에게도
+    직전 산출이 아니다. 시드 프리필(예약)·확인 대상 finding ID(추가 리뷰어 프롬프트)가 같은
+    규칙을 봐야 한쪽이 표면 밖 ID 를 받거나 "prefill 을 해소할 수 없어 강등" 경고를 정상
+    경로에서 낸다. 입력은 `Round`(또는 `role`·`ordinal`·`text`·`pending` 을 가진 같은 모양)의
+    목록이다.
+    """
+    candidates = [
+        item for item in rounds
+        if item.role == role and not getattr(item, "pending", False)
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item.ordinal)
+
+
+def previous_round_of_role(rounds, role: str):
+    """같은 역할 직전 산출 라운드의 `(순번, 본문)` — 시드 프리필의 유일한 입력.
+
+    규칙은 `latest_round_of_role` 하나이고 이 함수는 시드 렌더가 받는 모양으로 줄인 것이다.
+    """
+    latest = latest_round_of_role(rounds, role)
+    return None if latest is None else (latest.ordinal, latest.text)
+
+
+def round_is_pending(round: Round, *, ticket_text: str = "") -> bool:
+    """이 라운드가 아직 시드 그대로(산출 없음)인가.
+
+    `ticket_text` 는 판정 입력이 아니다 — 소비자 호출 좌표를 유지하기 위한 자리이고, 판정은
+    라운드 파일 내용만 본다.
+    """
+    return _text_is_pending(round.role, round.text)
 
 
 # ── 예약 · 로드 · 교체 ──────────────────────────────────────────────────────
@@ -515,12 +571,15 @@ def reserve_round(
 
 
 def load_rounds(
-    tickets_dir: Path | str, ticket_id: str, *, ticket_text: str,
+    tickets_dir: Path | str, ticket_id: str, *, ticket_text: str = "",
 ) -> list[Round]:
     """티켓의 라운드를 순번 순으로 읽는다 (없으면 빈 목록).
 
     판독은 공유 읽기 seam 을 지나고 개행은 원문 그대로 둔다(`newline=""`) — 회수된 bytes 를
-    보존해 되쓰는 지점들이 그 구분에 기대 있다.
+    보존해 되쓰는 지점들이 그 구분에 기대 있다. 무편집 판정은 라운드마다 **자기 파일 하나**만
+    보므로 라운드 사이 순서 의존이 없다.
+
+    `ticket_text` 는 판정 입력이 아니다 — 소비자 호출 좌표를 유지하기 위한 자리다.
     """
     directory = rounds_dir_for_ticket(ticket_id, tickets_dir)
     rounds: list[Round] = []
@@ -531,7 +590,7 @@ def load_rounds(
         rounds.append(
             Round(
                 ordinal=ordinal, role=role, path=path, text=text,
-                pending=_text_is_pending(role, text, ticket_text),
+                pending=_text_is_pending(role, text),
             )
         )
     return rounds
@@ -568,7 +627,7 @@ def replace_round(path: Path | str, text: str) -> None:
 # ── 판정 · 렌더 ────────────────────────────────────────────────────────────
 
 def verify_rounds(
-    tickets_dir: Path | str, ticket_id: str, *, ticket_text: str,
+    tickets_dir: Path | str, ticket_id: str, *, ticket_text: str = "",
 ) -> list[RoundProblem]:
     """라운드 디렉터리의 현재 상태만 보고 판정한다 (장부 없음).
 
@@ -578,7 +637,8 @@ def verify_rounds(
     (`round-gap`·`round-dup`)** 이고 나머지 둘은 표시용이다(심각도는 소비자 소유).
 
     점-접두 항목은 라운드가 아니라 엔진 임시 산출·부산물이라 판정하지 않는다. 판독 실패는
-    삼키지 않는다.
+    삼키지 않는다. `ticket_text` 는 판정 입력이 아니다 — 소비자 호출 좌표를 유지하기 위한
+    자리다(산출 없음 판정은 라운드 파일 내용만 본다).
     """
     directory = rounds_dir_for_ticket(ticket_id, tickets_dir)
     problems: list[RoundProblem] = []
@@ -627,7 +687,7 @@ def verify_rounds(
         text = _load_file_lock().read_text_shared(
             path, encoding="utf-8", newline="",
         )
-        if _text_is_pending(role, text, ticket_text):
+        if _text_is_pending(role, text):
             problems.append(
                 RoundProblem(
                     PROBLEM_PENDING,

@@ -239,14 +239,14 @@ def test_board_git_anchor_hook_json_is_utf8(capture_console, monkeypatch):
 
 
 def test_pm_delegate_ticket_cli_json_is_utf8(capture_console, monkeypatch, tmp_path):
-    """ticket prepare/harvest 의 경로·capability JSON(다른 프로세스가 파싱)이 무손실이다."""
+    """ticket prepare/harvest 의 경로 JSON(다른 프로세스가 파싱)이 무손실이다."""
     pm_delegate = _load("pm_delegate")
     slot = tmp_path / "슬롯 — 사본"
     slot.mkdir()
     monkeypatch.setattr(pm_delegate, "_ticket_cli_owner", lambda _cwd: tmp_path / "pm")
     plan = pm_delegate.TicketCopyPlan(
-        slot / "ticket-T-2000.md", slot / "baseline.md", slot / "metadata.json",
-        slot, tmp_path / "pm", "T-2000", "developer", b"c" * 32,
+        slot / "01-developer.md", slot, "T-2000", "developer", 1,
+        tmp_path / "pm" / "01-developer.md",
     )
     monkeypatch.setattr(pm_delegate, "prepare_ticket_copy", lambda **_kwargs: plan)
     stream = capture_console()
@@ -256,7 +256,9 @@ def test_pm_delegate_ticket_cli_json_is_utf8(capture_console, monkeypatch, tmp_p
     ]) == 0
 
     prepared = _machine_payload(stream)
-    assert prepared == {"copy": str(plan.path), "capability": plan.capability.hex()}
+    assert prepared == {
+        "copy": str(plan.path), "ordinal": plan.ordinal, "run_dir": str(plan.run_dir),
+    }
     assert Path(prepared["copy"]).parent == slot  # 한글·em dash 경로가 그대로 왕복한다.
 
     harvest_stream = capture_console()

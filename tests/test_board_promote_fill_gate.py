@@ -310,3 +310,34 @@ def test_promote_rejects_section_deleted_draft(board_git):
         "거부된 draft 는 .drafts/ 에 남아야 한다."
     assert not list((board_dir / "tickets" / "open").glob("T-*-*.md")), \
         "거부됐는데 draft 가 open/ 으로 이동됨."
+
+
+# ════════════════════════════════════════════════════════════════════════
+# draft 라운드 — 승격 커밋이 명세와 함께 출하한다
+# ════════════════════════════════════════════════════════════════════════
+#
+# draft 명세는 board-git ignore 지만 `tickets/rounds/<티켓>/` 은 ignore 밖이다. promote 가
+# 함께 싣지 않으면 준비된 라운드가 board 에 미커밋으로 눌러앉는다.
+
+@requires_git
+def test_promote_commits_the_draft_rounds_with_the_spec(board_git):
+    board_dir = board_git._board_dir
+    board_git.cmd_new(_new_args("라운드 동반"))
+    tid = _draft_id(board_dir)
+    draft_path = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
+    fm, _ = board_git.load_ticket(draft_path)
+    board_git.dump_ticket(draft_path, fm, _FILLED_BODY)
+
+    rc_section = board_git.cmd_section_add(
+        argparse.Namespace(id=tid, role="architect", label=None))
+    assert rc_section == 0
+    round_rel = f"tickets/rounds/{tid}/01-architect.md"
+    assert (board_dir / round_rel).is_file()
+    tracked_before = _git(["ls-tree", "-r", "--name-only", "HEAD"], board_dir).stdout
+    assert round_rel not in tracked_before, "draft 구간에서 이미 커밋됨(promote 소유 위반)"
+
+    assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 0
+
+    tracked = _git(["ls-tree", "-r", "--name-only", "HEAD"], board_dir).stdout
+    assert round_rel in tracked, "승격 커밋에 draft 라운드가 빠짐"
+    assert not list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))

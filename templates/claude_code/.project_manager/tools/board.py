@@ -297,9 +297,6 @@ CODEX_DELEGATE_OBSERVATIONS = (
     LOCAL_DIR / "delegate-channel" / "codex-observations.jsonl"
 )
 STATUS_DIRS: tuple[str, ...] = ("open", "claimed", "blocked", "done")
-# 성장 장부 디렉토리 이름 — pm_delegate 가 장부 스키마·판정의 단일 진실이고 여기 값은 delegate
-# 로드 전에 파일 존재만 볼 때 쓰는 같은 이름이다(lockstep 은 테스트가 감사한다).
-TICKET_GROWTH_LEDGER_DIRNAME = ".growth"
 # Ideas have a simpler lifecycle than tickets — no claim/complete middle
 # states, just `open → promoted|killed`.
 IDEA_STATUS_DIRS: tuple[str, ...] = ("open", "promoted", "killed")
@@ -2345,6 +2342,27 @@ def _load_review_rounds():
     )
 
 
+# 라운드 seam 의 실제 사본 경로 — 로더와 argparse 선택지 해소가 같은 파일을 본다(스크립트
+# 위치 앵커라 REPO monkeypatch 와 무관하게 자기 tools/ 를 가리킨다).
+TICKET_ROUNDS_PY = Path(__file__).resolve().parent / "ticket_rounds.py"
+
+
+def _load_ticket_rounds():
+    """라운드 사이드카 공용 seam(`ticket_rounds.py`)을 같은 tools/ 에서 지연 로드한다.
+
+    경로 규약·순번 예약·적재·판정·역할 라벨의 단일 진실이 그쪽에 있고 board 는 소비만 한다 —
+    라벨표·디렉터리 이름·판정 규칙을 이 파일에 복제하지 않는다(복제하면 한쪽만 바뀐 채 남는다).
+    시드 렌더가 다시 `pm_delegate` 를 부르므로 로드는 캐시한다(사본 하나 · 예외 클래스 하나).
+
+    board 의 라운드 소비 지점(show·section-add·complete 게이트·lint·reid)은 이 형제가 있어야
+    성립하므로 부재·skew 는 조용히 넘기지 않고 재동기 안내로 fail-loud 한다.
+    """
+    _require_engine_sibling(TICKET_ROUNDS_PY, "ticket_rounds.py")
+    return _load_module_from_path(
+        TICKET_ROUNDS_PY, "ticket_rounds.py", verifier=_verify_engine_rev, cache=True,
+    )
+
+
 def _write_machine_line(text: str) -> None:
     """기계 판독 한 줄(JSON 페이로드)을 콘솔 코덱 전환과 무관하게 UTF-8 로 내보낸다.
 
@@ -3853,8 +3871,8 @@ def areas_set_cell(repo: str, column: str, value: str) -> tuple[str, str]:
 #   - ticket writer(`new/claim/complete/block/unclaim/unblock/promote/section-add/tier` 및
 #     `migrate-identity` ticket backfill)는 lookup→상태검증→load→move/write 전부를
 #     board_lock 으로 직렬화한다. POSIX rename 자체는 원자적이어도
-#     성장 write가 고정한 옛 path에 뒤늦게 replace하면 상태별 파일이 둘 생기므로 lifecycle과
-#     in-place 성장 write가 같은 배타 경계를 공유해야 한다.
+#     in-place write(tier)가 고정한 옛 path에 뒤늦게 replace하면 상태별 파일이 둘 생기므로
+#     lifecycle과 in-place write가 같은 배타 경계를 공유해야 한다.
 #
 # 크로스플랫폼(stdlib-only — 런타임 의존은 PyYAML 뿐): POSIX=fcntl.flock,
 # Windows=msvcrt.locking. 둘 다 없으면 단일-머신 전제의 무락 폴백(락 파일만 생성).
@@ -4417,9 +4435,9 @@ _AREAS_UNION_DRIVER = "union"
 # 형상별 areas.md 경로 표기(그 git 의 `.gitattributes` 기준 상대). 선언 줄의 패턴을 이 표기들에
 # 맞춰본다 — git slash anchoring + `*`·`**` 의미의 보수적 matcher를 공유한다.
 _BOARD_AREAS_ATTR_TARGETS: tuple[str, ...] = ("areas.md", "/areas.md")
-# board git 에 **엔진이 넣는 텍스트 파일**의 확장자. 지금 실재하는 건 티켓·areas 의 `.md` 뿐이지만
-# 표기 고정을 한 확장자에 매달 이유가 없다 — 엔진이 board 에 넣는 어떤 텍스트도 같은 표기로
-# 체크아웃돼야 봉인 입력(LF 정규화 해시)과 byte 판정이 개행으로 갈리지 않는다.
+# board git 에 **엔진이 넣는 텍스트 파일**의 확장자. 지금 실재하는 건 티켓·라운드·areas 의 `.md`
+# 뿐이지만 표기 고정을 한 확장자에 매달 이유가 없다 — 엔진이 board 에 넣는 어떤 텍스트도 같은
+# 표기로 체크아웃돼야 회수 bytes 보존과 재작성 byte 판정이 개행으로 갈리지 않는다.
 # 채택자가 board 에 둔 다른 형식은 대상이 아니다(우리 소유 확장자만 선언한다).
 _BOARD_TEXT_ATTR_EXTENSIONS: tuple[str, ...] = ("md", "json", "txt", "jsonl")
 # 커버리지 판정 대상 — 상태 디렉토리 × 확장자(중첩 경로) ∪ board 루트 직계(앵커드 선언 탐지).
@@ -4428,12 +4446,6 @@ _BOARD_TEXT_ATTR_TARGETS: tuple[str, ...] = tuple(
     for status in (*STATUS_DIRS, ".drafts")
     for extension in _BOARD_TEXT_ATTR_EXTENSIONS
 ) + tuple(f"board-root-file.{extension}" for extension in _BOARD_TEXT_ATTR_EXTENSIONS)
-# 성장 장부(`tickets/.growth/T-NNNN.jsonl`)의 union merge 커버리지 판정 대상. 서로 다른 clone 의
-# 두 PM 이 같은 티켓의 다른 역할을 harvest 하면 양쪽 append 가 생긴다 — union 은 줄 순서를
-# 보장하지 않지만 **같은 키의 동시 harvest 는 harvest 의 stale 검사가 이미 막으므로** 키별 상대
-# 순서는 보존된다. 이 논거가 "키별 최신 레코드" 판정의 전제이며 판정 기준을 바꿀 때 함께 본다.
-_BOARD_GROWTH_ATTR_TARGETS: tuple[str, ...] = (
-    f"tickets/{TICKET_GROWTH_LEDGER_DIRNAME}/T-0000.jsonl",)
 _INLINE_AREAS_ATTR_TARGETS: tuple[str, ...] = (
     ".project_manager/areas.md", "/.project_manager/areas.md")
 _BOARD_GITATTRIBUTES_BLOCK = (
@@ -4441,13 +4453,10 @@ _BOARD_GITATTRIBUTES_BLOCK = (
     "# git 내장 union merge 드라이버로 양쪽 행을 모두 보존한다.\n"
     "# board 는 별도 git 이라 superproject 루트의 같은 선언이 닿지 않는다 — 여기가 그 배포처다.\n"
     f"areas.md merge={_AREAS_UNION_DRIVER}\n"
-    "# Windows checkout에서도 엔진-소유 텍스트의 논리 개행을 LF로 유지한다(티켓 봉인 입력·\n"
+    "# Windows checkout에서도 엔진-소유 텍스트의 논리 개행을 LF로 유지한다(라운드 회수 bytes·\n"
     "# 재작성 byte 판정). 엔진의 표기 보존이 근본이고 이 선언은 그 위의 방어층이다.\n"
     + "".join(
         f"*.{extension} text eol=lf\n" for extension in _BOARD_TEXT_ATTR_EXTENSIONS)
-    + "# 티켓 성장 장부 = append-only 권위 기록 — 서로 다른 PM 의 append 가 merge 에서 서로를\n"
-    "# 지우지 않도록 같은 union 드라이버로 양쪽 줄을 모두 보존한다.\n"
-    f"tickets/{TICKET_GROWTH_LEDGER_DIRNAME}/*.jsonl merge={_AREAS_UNION_DRIVER}\n"
 )
 # board 루트에 엔진이 배포하는 파일들. ensure/판정/snapshot/pathspec 이 모두 이 seam 을 공유해
 # 한 파일만 WIP 보호에서 빠지는 drift 를 막는다. 순서는 pathspec·복구 안내의 나열 순서다.
@@ -4668,20 +4677,32 @@ def _target_lf_declared(text: str, target: str) -> bool:
     return text_attr in _GITATTRIBUTES_TEXT_ENABLED and eol_attr == "lf"
 
 
+def _board_text_attr_targets() -> tuple[str, ...]:
+    """LF 커버리지 판정 대상 — 상태 경로 × 확장자 + board 루트 직계 + **라운드 중첩 경로**.
+
+    라운드 파일은 상태 디렉토리가 아니라 `tickets/<라운드 디렉터리>/<티켓>/` 아래 산다 —
+    상태 경로만 재던 판정은 그 자리를 못 본다. 디렉터리 이름과 파일명 문법은 사이드카 seam 이
+    소유하므로 여기서 표기를 복제하지 않고 그 표에서 프로브 경로를 만든다.
+    """
+    rounds = _load_ticket_rounds()
+    probe = f"tickets/{rounds.ROUNDS_DIRNAME}/T-0/{rounds.round_filename(1, 'developer')}"
+    return (*_BOARD_TEXT_ATTR_TARGETS, probe)
+
+
 def _board_text_lf_declared(text: str) -> bool:
-    """모든 상태 경로 × 엔진-소유 확장자에 ``text``+``eol=lf``가 유효한가."""
-    return all(_target_lf_declared(text, target) for target in _BOARD_TEXT_ATTR_TARGETS)
+    """모든 상태·라운드 경로 × 엔진-소유 확장자에 ``text``+``eol=lf``가 유효한가."""
+    return all(_target_lf_declared(text, target)
+               for target in _board_text_attr_targets())
 
 
 def _board_gitattributes_declared(text: str) -> bool:
-    """board git에 엔진 소유 union(areas·성장 장부)·엔진-소유 텍스트 LF 규칙이 모두 배포됐는가.
+    """board git에 엔진 소유 areas union·엔진-소유 텍스트 LF 규칙이 모두 배포됐는가.
 
     술어는 선언들의 **논리곱**이다 — 하나라도 단독 판정으로 두면 그 선언이 이미 있는 기존
     보드에서 backfill 이 돌지 않아 나머지가 영구히 미배포로 남는다.
     """
     return (
         _areas_union_declared(text, _BOARD_AREAS_ATTR_TARGETS)
-        and _areas_union_declared(text, _BOARD_GROWTH_ATTR_TARGETS)
         and _board_text_lf_declared(text)
     )
 
@@ -8872,7 +8893,7 @@ def find_idea(iid: str) -> tuple[str, Path]:
 
 
 # ── 개행 표기 보존 ───────────────────────────────────────────────────────────
-# 티켓 파일을 **읽어서 다시 쓰는** 경로(lifecycle 이동·frontmatter 갱신·성장 절 append)는 본문을
+# 티켓 파일을 **읽어서 다시 쓰는** 경로(lifecycle 이동·frontmatter 갱신)는 본문을
 # LF 로 다루지만, 되쓸 때 표기를 뒤집으면 안 된다. CRLF 체크아웃(Windows `core.autocrlf=true`)
 # 채택자에선 손대지 않은 줄까지 전면 diff 가 되고, 위임 사본 harvest 가 byte 로 재는 "준비 뒤
 # 외부 편집" 판정(pm_delegate)이 내용은 같은데 stale 로 오판해 회수를 거부한다.
@@ -9027,38 +9048,30 @@ def dump_ticket_atomic(path: Path, fm: dict[str, Any], body: str) -> None:
     file_lock.atomic_replace(tmp, path)
 
 
-# ── 티켓 성장 절 + 위임 티어 ────────────────────────────────────────
-# 성장 절은 후속 회수 도구가 사람이 쓴 제목 문구에 의존하지 않고 경계를 찾도록 시작/끝
-# marker 를 쌍으로 둔다. role 은 marker 와 사람용 heading 양쪽에 기록한다. 같은 role 재호출도
-# 별도 marker pair 를 append 하므로 라운드 이력이 덮이지 않는다.
-TICKET_GROWTH_SECTION_MARKER = "pm-ticket-section"
-# key 집합 = `pm_delegate.TICKET_COPY_ROLES`(성장 marker/seal 이 허용하는 역할의 단일 권위)이고
-# board 는 사람용 절명만 소유한다. 두 집합의 일치는 테스트가 못박는다 — board 는 엔진 모듈을
-# import 하지 않으므로(deep-import 는 지연 로드) argparse 선택지는 이 표에서 나온다.
-TICKET_GROWTH_ROLE_LABELS: dict[str, str] = {
-    "architect": "설계",
-    "developer": "구현 보충",
-    "code-reviewer": "리뷰",
-    "researcher": "조사",
-    "external-reviewer": "추가 리뷰",
-}
+# ── 티켓 라운드 + 위임 티어 ────────────────────────────────────────
+# 역할 산출 1건 = 라운드 파일 1개이고 그 자리는 명세 파일 밖(`tickets/rounds/<티켓>/`)이다.
+# 역할 집합·사람용 라벨·파일명 문법의 권위는 사이드카 seam 이며 board 는 파생으로만 읽는다.
 TICKET_TIERS: frozenset[str] = frozenset({"pm-direct", "normal", "hard"})
 
 
-def growth_ledger_dir() -> Path:
-    """`tickets/.growth/` — board 형상(board-git 분리·legacy)과 무관하게 같은 상대 위치."""
-    return tickets_dir() / TICKET_GROWTH_LEDGER_DIRNAME
+def _round_role_choices() -> tuple[str, ...] | None:
+    """`--role` argparse 선택지 — 형제가 있으면 그 표에서, 없으면 선택지 없음(None).
+
+    파서는 **모든 명령 앞에서** 조립된다 — 여기서 형제 부재를 fail-loud 로 올리면 라운드와
+    무관한 명령(게이트·조회)까지 부분 동기 트리에서 죽는다. 역할 검증 자체는 예약 seam 이
+    하므로(허용 밖 역할은 rc=1) 선택지 부재는 UX 만 좁아진다. 대체 표를 두지 않는다.
+    """
+    if not TICKET_ROUNDS_PY.exists():
+        return None
+    return tuple(ticket_round_role_labels())
 
 
-def growth_ledger_dir_for(ticket_path: Path) -> Path:
-    """대상 티켓 파일이 사는 status 디렉토리의 형제 `.growth/` (draft 포함)."""
-    return Path(ticket_path).resolve().parent.parent / TICKET_GROWTH_LEDGER_DIRNAME
+def ticket_round_role_labels() -> dict[str, str]:
+    """라운드 역할 → 사람용 라벨 (권위 = 사이드카 seam · board 는 복제하지 않는다).
 
-
-def growth_ledger_path(ticket: str, *, ticket_path: Path | None = None) -> Path:
-    directory = (growth_ledger_dir() if ticket_path is None
-                 else growth_ledger_dir_for(ticket_path))
-    return directory / f"{ticket}.jsonl"
+    argparse 선택지와 절명 기본값이 같은 표를 읽어야 한 쪽만 넓어지는 drift 가 생기지 않는다.
+    """
+    return dict(_load_ticket_rounds().ROLE_LABELS)
 
 
 class TierSignals(NamedTuple):
@@ -9283,10 +9296,10 @@ def tier_signals(
     )
 
 
-def _growth_ticket_path(
+def _active_ticket_path(
     tid: str, action: str, *, role: str | None = None,
 ) -> tuple[int, Path | None]:
-    """성장 mutation 대상 해소 — open/claimed와 section-add의 draft×architect만 허용.
+    """section-add/tier 대상 해소 — open/claimed와 section-add의 draft×architect만 허용.
 
     tier는 계속 open/claimed로 닫고 section-add만 draft 설계 bootstrap을 연다. blocked/done 및
     draft×developer|code-reviewer는 같은 경계에서 거부한다. directory 상태가 lifecycle 단일 진실인
@@ -9312,142 +9325,89 @@ def _growth_ticket_path(
     return 0, path
 
 
-def _growth_mutation_sync_paths(message: str, paths: Sequence[Path]) -> bool:
-    """성장 mutation이 만진 **여러** 경로(티켓+장부+stamp)를 한 스코프 커밋으로 부기한다."""
+def _rounds_mutation_sync_paths(message: str, paths: Sequence[Path]) -> bool:
+    """라운드/티어 mutation이 만진 경로들을 한 스코프 커밋으로 부기한다.
+
+    시그니처는 고정이다 — pm_delegate 회수가 `getattr` 로 이 이름을 찾고 없으면 구-board 이름을
+    거쳐 board-git funnel 로 내려가는 skew 폴백을 탄다. 인자를 늘리면 부분 동기된 PM 홈 사본에서
+    라운드는 반영됐는데 CLI 만 TypeError 로 죽는 부분 성공이 재현된다.
+    """
     refresh_board()
     return _board_git_sync_best_effort(message, tuple(paths))
 
 
-def _growth_mutation_sync(message: str, path: Path) -> bool:
-    """성장 mutation의 board 렌더 + 기존 best-effort board-git funnel 공용 경로.
-
-    시그니처는 고정이다 — pm_delegate 가 `getattr` 로 이 이름을 찾고 없으면 구-board 폴백을
-    타는 skew shim 이라, 인자를 늘리면 stale PM 홈 사본에서 atomic write 뒤 TypeError 로
-    부분 성공이 재현된다. 복수 경로는 새 이름 helper 를 쓰고 호출측이 3단으로 내려간다.
-    """
-    return _growth_mutation_sync_paths(message, (path,))
-
-
 def _section_label(role: str, override: str | None) -> str | None:
     """사람용 절명 해소. 개행/빈 값만 거부해 Markdown heading injection을 막는다."""
-    label = override if override is not None else TICKET_GROWTH_ROLE_LABELS[role]
+    label = override if override is not None else ticket_round_role_labels()[role]
     label = label.strip()
     if not label or "\n" in label or "\r" in label:
         return None
     return label
 
 
+def _round_seed_header_override(seed: str, label: str, role: str, today: str) -> str:
+    """시드 첫 줄의 라벨만 사람이 준 절명으로 바꾼다 (본문 골격은 seam 산출 그대로).
+
+    헤더 문법(`## <라벨> (<role> · <날짜>)`)은 seam 이 소유하므로 여기서 다시 조립하지 않고
+    **그 자리의 라벨만** 치환한다 — 기본 라벨일 때는 바이트가 그대로다.
+    """
+    default_header, separator, rest = seed.partition("\n")
+    replacement = f"## {label} ({role} · {today})"
+    if not separator or default_header == replacement:
+        return seed
+    return replacement + separator + rest
+
+
 def cmd_section_add(args: argparse.Namespace) -> int:
-    """티켓 끝에 역할·날짜, 역할별 골격, 기계 경계를 원자 append한다."""
-    label = _section_label(args.role, args.label)
+    """다음 라운드를 시드로 예약한다 — 슬롯 없는 준비(PM 이 직접 채우는 자리).
+
+    쓰는 것은 `tickets/rounds/<티켓>/NN-<role>.md` 하나뿐이다. 명세 파일은 건드리지 않으므로
+    lifecycle writer 와 겹치지 않고, 순번 채번+배타 생성만 짧은 board_lock 이 직렬화한다
+    (락 컨텍스트는 seam 이 잡는다 — board_lock 은 재진입이 없어 호출자가 잡은 채 넘기지 않는다).
+    """
+    role = args.role
+    label = _section_label(role, args.label)
     if label is None:
         print("cannot section-add: --label 은 비어 있거나 개행을 포함할 수 없다", file=sys.stderr)
         return 1
-    role = args.role
     today = datetime.date.today().isoformat()
-    # load→append→replace 를 board lock 아래 묶어 동시 재호출도 서로의 절을 덮지 않는다. 원본
-    # text를 그대로 이어 붙여 section-add가 기존 frontmatter formatting/body bytes를 재직렬화하지
-    # 않는다. `_atomic_write_text`가 같은 directory temp+fsync+replace로 crash partial-write도 막는다.
+    rounds = _load_ticket_rounds()
     with board_lock():
-        rc, path = _growth_ticket_path(args.id, "section-add", role=role)
+        rc, path = _active_ticket_path(args.id, "section-add", role=role)
         if path is None:
             return rc
         load_ticket(path)  # 지정 mutation은 손상 YAML을 fail-loud하는 기존 계약 유지.
-        with file_lock.open_shared(path, binary=False, encoding="utf-8", newline="") as handle:
-            original = handle.read()
-        delegate = _load_pm_delegate_module()
-        if delegate is None:
-            print("cannot section-add: pm_delegate seal 엔진을 로드할 수 없다", file=sys.stderr)
-            return 1
         is_draft = path.resolve().parent == drafts_dir().resolve()
-        growth_dir = delegate.ticket_growth_dir_for_ticket_path(path)
-        # draft는 장부에 쓰지 않으므로(promote가 승격 시점에 1회 기록) 장부 축을 판정하지 않는다.
-        ledger = (
-            None if is_draft
-            else delegate.read_ticket_growth_ledger(growth_dir, args.id)
+        with file_lock.open_shared(path, binary=False, encoding="utf-8", newline="") as handle:
+            spec_text = handle.read()
+
+    try:
+        existing = rounds.load_rounds(tickets_dir(), args.id, ticket_text=spec_text)
+        seed = rounds.render_round_seed(
+            role, spec_text, today=today,
+            previous_round=rounds.previous_round_of_role(existing, role),
         )
-        try:
-            ordinal = sum(
-                item.role == role for item in delegate._ticket_growth_sections(original)
-            )
-            existing_seals = delegate.parse_ticket_seals(original)
-            if (role, ordinal) in existing_seals:
-                raise delegate.DelegateError(
-                    f"새 절과 충돌하는 고아 seal 존재: role={role} ordinal={ordinal}"
-                )
-            # 절을 지운 뒤 같은 ordinal 을 새로 만드는 세탁을 막는다 — 장부는 append-only 라
-            # 지워진 절의 레코드가 그대로 남아 있다. 아래 합성 판정보다 **먼저** 물어 이 시도에는
-            # 절 복원이 아니라 "이 ordinal 은 이미 쓰였다" 는 구체 사유를 낸다.
-            if ledger is not None and (role, ordinal) in ledger.latest:
-                raise delegate.DelegateError(
-                    "성장 장부에 이미 있는 절 재생성 거부(삭제된 절의 레코드가 남아 있음): "
-                    f"role={role} ordinal={ordinal}"
-                )
-            delegate.require_sealed_growth_before_write(
-                original, args.id, action="section-add",
-            )
-            delegate.require_ticket_growth_ledger_before_write(
-                original, ledger, ticket=args.id,
-                migrated=delegate.ticket_growth_migration_stamped(growth_dir),
-                action="section-add",
-            )
-            content = (
-                f"## {label} ({role} · {today})\n\n"
-                + delegate.render_ticket_growth_section_seed(role, original)
-            )
-            seal_line = delegate._ticket_seal_line(
-                role, ordinal, content, by="section-add",
-            )
-        except Exception as exc:  # noqa: BLE001 — seal/marker 문제는 write 전에 loud 실패.
-            print(f"cannot section-add: growth seal failed — {exc}", file=sys.stderr)
-            return 1
-        section = (
-            f"<!-- {TICKET_GROWTH_SECTION_MARKER}:start role={role} -->\n"
-            + content
-            + f"<!-- {TICKET_GROWTH_SECTION_MARKER}:end role={role} -->\n"
-            + seal_line
+        round_path = rounds.reserve_round(
+            tickets_dir(), args.id, role,
+            content=_round_seed_header_override(seed, label, role, today),
+            lock=board_lock(),
         )
-        # 기존 bytes(`original`)는 그대로 두고 **덧붙이는 블록만** 그 파일의 표기로 렌더한다 —
-        #   CRLF 티켓에 LF 절을 섞으면 이후 lifecycle 재작성이 지배 표기로 접으면서 우리가
-        #   건드리지 않은 절의 bytes 까지 바뀐다(혼재 금지).
-        newline = _dominant_newline(original)
-        tail = original.replace("\r\n", "\n")  # 빈 줄 판정은 표기와 무관하게(정규화 후).
-        separator = "" if tail.endswith("\n\n") else ("\n" if tail.endswith("\n") else "\n\n")
-        written = original + _with_newline(separator + section, newline)
-        _atomic_write_text(path, written)
-        # 쓰기 순서는 티켓 먼저, 장부 다음이며 같은 임계구역 안이다. 반대 순서면 crash 가
-        # 복구 불가능한 `절 삭제 검출` false-RED 를 남긴다(장부는 append-only).
-        touched: list[Path] = [path]
-        if not is_draft:
-            try:
-                appended = delegate.append_ticket_growth_records(
-                    growth_dir, args.id, written, by="section-add")
-            except delegate.DelegateError as exc:
-                # 티켓은 이미 써졌다. traceback 대신 사유와 자기치유 경로를 알린다(직전 판정이
-                # 손상을 걸러 도달은 드물다). 광의 `except` 로 넓히지 않는다 — 그러면 엔진 rev
-                # skew 같은 marked 예외까지 rc1 로 접혀 부분 동기를 숨긴다.
-                print(f"cannot section-add: growth ledger failed — {exc}\n"
-                      "  · 절과 봉인은 이미 기록됐다. 남은 것은 장부 기재뿐이라 판정은 "
-                      "`장부 미기재`(처방: seal-backfill 또는 재-harvest)로 복구된다",
-                      file=sys.stderr)
-                return 1
-            if appended:
-                touched.append(delegate.ticket_growth_ledger_path(growth_dir, args.id))
-            stamp = delegate.ticket_growth_stamp_path(growth_dir)
-            if stamp.exists():
-                touched.append(stamp)
+    except rounds.RoundsError as exc:
+        print(f"cannot section-add: {exc}", file=sys.stderr)
+        return 1
 
     if is_draft:
-        # draft는 board-git 미커밋 authoring 영역이다. marker 생성도 같은 로컬 파일 안에서
-        # 끝내며 refresh/pull/commit/push는 promote가 소유한다.
+        # draft는 board-git 미커밋 authoring 영역이다. 라운드 파일도 promote 가 승격 시점에
+        # 함께 커밋한다(refresh/pull/commit/push 소유가 promote 라는 기존 규칙).
         print(
-            f"section added {args.id}: {label} ({role} · {today}) "
-            "(local draft; promote가 출하 소유)"
+            f"section added {args.id}: {label} ({role} · {today}) → "
+            f"{_rel_to_repo(round_path)} (local draft; promote가 출하 소유)"
         )
     else:
-        ready = _growth_mutation_sync_paths(
-            f"section-add {args.id} {role}", tuple(touched))
-        print(f"section added {args.id}: {label} ({role} · {today})"
+        ready = _rounds_mutation_sync_paths(
+            f"section-add {args.id} {role}", (round_path,))
+        print(f"section added {args.id}: {label} ({role} · {today}) → "
+              f"{_rel_to_repo(round_path)}"
               f"{_board_git_mutation_state_suffix(ready)}")
     return 0
 
@@ -9459,14 +9419,14 @@ def cmd_tier(args: argparse.Namespace) -> int:
               f"{', '.join(sorted(TICKET_TIERS))}", file=sys.stderr)
         return 1
     with board_lock():
-        rc, path = _growth_ticket_path(args.id, "tier")
+        rc, path = _active_ticket_path(args.id, "tier")
         if path is None:
             return rc
         fm, body = load_ticket(path)
         fm["tier"] = args.tier
         dump_ticket_atomic(path, fm, body)
 
-    ready = _growth_mutation_sync(f"tier {args.id} {args.tier}", path)
+    ready = _rounds_mutation_sync_paths(f"tier {args.id} {args.tier}", (path,))
     print(f"tier set {args.id}: {args.tier}{_board_git_mutation_state_suffix(ready)}")
     return 0
 
@@ -9504,8 +9464,8 @@ def move_item(base_dir: Path, src: Path, dst_status: str) -> Path:
 
     On POSIX rename(2) is atomic and a lost race surfaces as FileNotFoundError
     (the source is already gone). 이 primitive 자체는 generic ticket/idea 이동이라 lock-free다.
-    티켓 호출자는 lifecycle rename과 in-place 성장 write 사이 lookup→path 고정→replace TOCTOU를
-    막기 위해 전체 read/transform/move/write를 `board_lock`으로 감싼다. idea는 성장 writer
+    티켓 호출자는 lifecycle rename과 in-place write(tier) 사이 lookup→path 고정→replace TOCTOU를
+    막기 위해 전체 read/transform/move/write를 `board_lock`으로 감싼다. idea는 in-place writer
     대상이 아니므로 별도 lifecycle의 현행 lock-free 호출을 유지한다.
     """
     dst_dir = base_dir / dst_status
@@ -9630,7 +9590,7 @@ def cmd_claim(args: argparse.Namespace) -> int:
 
     # strict claim 전체(prefetch → local move/dump → commit/push → confirm/rollback)를 두 락으로
     # 감싼다. 순서는 **board_git_lock → board_lock** 고정. board_lock은 network 동안도 유지해
-    # rollback이 동시 growth write를 옛 bytes로 덮는 창을 닫는다(짧은 전역 coordination 비용 수용).
+    # rollback이 동시 in-place write를 옛 bytes로 덮는 창을 닫는다(짧은 전역 coordination 비용 수용).
     # `_cmd_claim_locked`는 두 락 보유 전제라 내부에서 어느 락도 재진입하지 않는다.
     with board_git_lock():
         with board_lock():
@@ -9786,8 +9746,27 @@ def _internal_review_completion_problem(tid: str) -> str | None:
     )
 
 
+def _round_completion_problems(tid: str, spec_text: str) -> list[str]:
+    """완료 게이트가 보는 라운드 판정 — **순번 유일성·연속성이 깨진 둘만 차단**한다.
+
+    빈틈(`round-gap`)과 중복(`round-dup`)은 라운드가 지워졌거나 순서가 모호하다는 뜻이라
+    완료 증거가 성립하지 않는다. 이름 문법 위반과 산출 없는 라운드(시드 그대로)는 정보로만
+    낸다 — 미회수는 게이트가 아니라는 결정이고, 판정 코드의 단일 진실은 사이드카 seam 이다.
+    """
+    rounds = _load_ticket_rounds()
+    problems = rounds.verify_rounds(tickets_dir(), tid, ticket_text=spec_text)
+    blocking_codes = (rounds.PROBLEM_GAP, rounds.PROBLEM_DUPLICATE)
+    blocking: list[str] = []
+    for item in problems:
+        if item.code in blocking_codes:
+            blocking.append(f"{item.code}: {item.detail}")
+        else:
+            print(f"ⓘ  {item.code}: {item.detail}", file=sys.stderr)
+    return blocking
+
+
 def _complete_gate(tid: str, args: argparse.Namespace,
-                   body: str | None = None, *, seal_text: str | None = None,
+                   body: str | None = None, *, spec_text: str | None = None,
                    ticket_path: Path | None = None) -> list[str]:
     """Verify completion housekeeping before a ticket may move to done/.
 
@@ -9797,9 +9776,12 @@ def _complete_gate(tid: str, args: argparse.Namespace,
     The regression check trusts the caller's `--tests-pass` assertion rather
     than re-running the (slow) suite.
 
-    `body` = 완료 대상 티켓 본문(§3 DoD 체크 입력). None 이면 DoD 검사를 건너뛴다 —
+    `body` = 완료 대상 티켓 본문(§3 DoD 체크 입력). None 이면 DoD·라운드 검사를 건너뛴다 —
     본문 없이 부기 축만 묻는 호출자(단위 테스트 등)를 위한 것이고, 실 complete 경로
-    (`cmd_complete`)는 항상 본문을 넘긴다.
+    (`cmd_complete`)는 항상 본문과 명세 전문을 넘긴다.
+
+    `spec_text` = 명세 파일 전문(frontmatter 포함) — PM 판정 블록이 사는 자리다(없으면 본문으로
+    대신한다). 라운드 산출 없음 판정의 입력은 아니다(그 판정은 라운드 파일 내용만 본다).
     """
     problems: list[str] = []
     id_re = re.compile(rf"\b{re.escape(tid)}\b")
@@ -9824,52 +9806,8 @@ def _complete_gate(tid: str, args: argparse.Namespace,
     if body is not None:
         problems.extend(_dod_open_items(body))
 
-        growth_text = body if seal_text is None else seal_text
-        has_growth = any(
-            line.startswith(f"<!-- {TICKET_GROWTH_SECTION_MARKER}:")
-            or line.startswith("<!-- pm-ticket-seal")
-            for line in growth_text.splitlines()
-        )
-        # marker 가 **전부** 사라진 상태가 이 게이트로 통과하려는 공격 형상이다. marker 유무로
-        # 단락하면 그 상태에서 판정이 아예 호출되지 않으므로, 장부를 먼저 조회해 레코드가 하나
-        # 라도 있으면 delegate 를 로드한다(T-0694 F-010 개정).
-        has_ledger = growth_ledger_path(tid, ticket_path=ticket_path).exists()
-        if not has_growth and not has_ledger:
-            delegate = None
-        else:
-            delegate = _load_pm_delegate_module()
-        if (has_growth or has_ledger) and delegate is None:
-            problems.append(
-                "growth seal 검증 엔진을 로드할 수 없다 — pm_delegate.py 형상을 복구하라"
-            )
-        elif delegate is not None:
-            growth_dir = (
-                delegate.ticket_growth_dir_for_ticket_path(ticket_path)
-                if ticket_path is not None
-                else delegate.ticket_growth_dir(tickets_dir())
-            )
-            growth_problems = delegate.verify_ticket_growth(
-                growth_text,
-                delegate.read_ticket_growth_ledger(growth_dir, tid),
-                ticket=tid,
-                migrated=delegate.ticket_growth_migration_stamped(growth_dir),
-            )
-            if growth_problems:
-                problems.extend(
-                    delegate.format_ticket_growth_problems(growth_problems)
-                )
-            else:
-                backfilled = [
-                    f"{seal.role}[{seal.ordinal}]"
-                    for seal in delegate.parse_ticket_seals(growth_text).values()
-                    if seal.by == "backfill"
-                ]
-                if backfilled:
-                    print(
-                        "⚠️  growth-seal: by=backfill 봉인 존재 — "
-                        + ", ".join(backfilled),
-                        file=sys.stderr,
-                    )
+        problems.extend(_round_completion_problems(
+            tid, body if spec_text is None else spec_text))
 
     # 5. 이 티켓에 내부 리뷰 라운드가 실제 기록된 뒤에는 마지막 계측 라운드 통과 또는 그 잔여에
     #    결속된 유효 처분만 완료 증거다. 장부/entry/rounds 부재는 과거 티켓 무대상이다.
@@ -9893,15 +9831,15 @@ def cmd_complete(args: argparse.Namespace) -> int:
             return 1
 
         # 본문은 게이트 **전**에 읽는다 — §3 DoD 체크의 입력이다(이동 전 읽기라 차단 시
-        # 티켓은 claimed/ 에 그대로 남는다). lookup부터 최종 dump까지 같은 lock이라 성장
-        # 절/tier가 이 body snapshot 뒤에 끼어들어 유실되지 않는다.
+        # 티켓은 claimed/ 에 그대로 남는다). lookup부터 최종 dump까지 같은 lock이라 tier 가
+        # 이 body snapshot 뒤에 끼어들어 유실되지 않는다.
         with file_lock.open_shared(path, binary=False, encoding="utf-8", newline="") as handle:
-            seal_text = handle.read()
+            spec_text = handle.read()
         fm, body = load_ticket(path)
 
         # Sync gate — refuse to mark done until housekeeping is verified.
         problems = _complete_gate(
-            args.id, args, body, seal_text=seal_text, ticket_path=path)
+            args.id, args, body, spec_text=spec_text, ticket_path=path)
         if problems:
             print(f"cannot complete {args.id}: sync gate failed —", file=sys.stderr)
             for msg in problems:
@@ -9915,7 +9853,7 @@ def cmd_complete(args: argparse.Namespace) -> int:
     refresh_board()
     # 스코프 = 이 mutation 이 만진 두 경로만 — 공유 board 의 무관한 미커밋 작업이
     # 이 커밋에 실려 push 되지 않는다. best-effort sync는 기존 lifecycle 6 callsite
-    # (new/promote/complete/block/unclaim/unblock) + growth 공용 helper 1곳(section-add/tier 공유)이
+    # (new/promote/complete/block/unclaim/unblock) + 공용 helper 1곳(section-add/tier 공유)이
     # 모두 명시 path를 넘긴다(AST 메타가드가 7 callsite를 감사).
     ready = _board_git_sync_best_effort(f"complete {args.id}", (path, new_path))
     print(f"completed {args.id}{_board_git_mutation_state_suffix(ready)}")
@@ -10761,9 +10699,9 @@ def _migrate_tickets_apply(
         user: str, slot: str, statuses: tuple[str, ...]) -> tuple[int, bool]:
     """티켓 backfill — scan/read/transform/relookup/atomic dump 전체를 board_lock으로 직렬화.
 
-    migrate는 status 이동 없이 frontmatter만 고치는 in-place ticket writer다. 성장 writer가 marker나
-    tier를 기록한 뒤 migration이 lock 밖의 옛 ``fm/body`` snapshot을 dump하면 그 성장이 유실된다.
-    따라서 lifecycle/growth 8종과 같은 board_lock을 후보 scan부터 마지막 dump까지 유지한다.
+    migrate는 status 이동 없이 frontmatter만 고치는 in-place ticket writer다. tier writer가 값을
+    기록한 뒤 migration이 lock 밖의 옛 ``fm/body`` snapshot을 dump하면 그 기록이 유실된다.
+    따라서 lifecycle/tier writer와 같은 board_lock을 후보 scan부터 마지막 dump까지 유지한다.
 
     lock 안 재조회는 방어적으로 유지한다. 엔진 writer는 모두 같은 lock을 따르므로 정상 경합에서는
     경로가 바뀌지 않지만, 수동/구버전 writer가 경로를 옮긴 경우 stale write 대신 skip+loud한다.
@@ -10811,7 +10749,7 @@ def _migrate_identity_apply(
     - **areas.md**: `_migrate_areas_apply` 가 board_lock 으로 RMW 를 보호한다(`areas_append`
       와의 lost-update 방지·진짜 공유 mutation).
     - **티켓**: `_migrate_tickets_apply`가 scan/read/transform/relookup/dump 전체를 같은 board_lock으로
-      보호해 lifecycle/growth writer와 stale overwrite 없이 직렬화한다.
+      보호해 lifecycle/tier writer와 stale overwrite 없이 직렬화한다.
 
     **재진입 금지**: areas와 ticket helper가 각각 락을 획득하고 반환한 뒤 다음 helper로 간다.
     board.md 재생성(`refresh_board` — 자체 board_lock)은 **호출자(`cmd_migrate_identity`)가
@@ -10835,7 +10773,7 @@ def cmd_migrate_identity(args: argparse.Namespace) -> int:
     표시값과 로그 표기에만 쓰이고, 이미 기록된 슬롯 토큰을 자신의 값으로 덮어쓰지 않는다(비파괴).
 
     **단일-세션 업그레이드 op (동시성 모델)**: 일회성 전체 backfill이라는 운영 성격은 유지한다.
-    다만 areas와 티켓 모두 board_lock writer이며, 티켓 scan/read/transform/dump는 lifecycle/growth와
+    다만 areas와 티켓 모두 board_lock writer이며, 티켓 scan/read/transform/dump는 lifecycle/tier와
     하나의 순서로 관측된다. 두 helper의 lock 구간은 중첩되지 않고 board.md 재생성은 모두 끝난 뒤
     lock 밖에서 1회 한다.
     """
@@ -11108,53 +11046,19 @@ def cmd_promote(args: argparse.Namespace) -> int:
         final_path = path
         if status == "draft":
             # drafts_dir() → open/ 이동 — 이제서야 STATUS_DIRS 스캔·board-git 대상이 된다.
-            # status dump와 rename도 같은 lock 안이라 claim/성장 writer가 중간 형상을 못 본다.
+            # status dump와 rename도 같은 lock 안이라 claim/tier writer가 중간 형상을 못 본다.
             fm["status"] = "open"
             dump_ticket(path, fm, body)
             new_path = move_ticket(path, "open")
             touched.append(new_path)
             final_path = new_path
             moved = True
-        # draft 구간에는 장부 축이 없다(불변식 8) — promote 가 승격 시점의 봉인 전부를 1회
-        # 기록하고 그 순간부터 장부 축 판정이 시작된다. 멱등 조건(키별 최신 레코드 sha ≠ 봉인
-        # sha)은 append seam 안에 있어 이미 open 인 티켓에 재실행해도 레코드가 늘지 않는다.
-        has_seal = "<!-- pm-ticket-seal" in body
-        delegate = _load_pm_delegate_module() if has_seal else None
-        if has_seal and delegate is None:
-            print("cannot promote: growth seal 엔진을 로드할 수 없다 — "
-                  "pm_delegate.py 형상을 복구하라", file=sys.stderr)
-            return 1
-        if delegate is not None:
-            growth_dir = delegate.ticket_growth_dir_for_ticket_path(final_path)
-            with file_lock.open_shared(
-                    final_path, binary=False, encoding="utf-8", newline="") as handle:
-                promoted_text = handle.read()
-            try:
-                if status != "draft":
-                    # draft 승격만 장부 파일을 처음 만든다. 이미 open 인 티켓에 재실행하는
-                    # 경로까지 무조건 만들게 두면 "장부 파일 삭제 → promote → GREEN" 이
-                    # 성립해 stamp 가 세운 삭제 의심 판정이 무력화된다.
-                    delegate.require_ticket_growth_ledger_before_write(
-                        promoted_text,
-                        delegate.read_ticket_growth_ledger(growth_dir, args.id),
-                        ticket=args.id,
-                        migrated=delegate.ticket_growth_migration_stamped(growth_dir),
-                        action="promote",
-                    )
-                appended = delegate.append_ticket_growth_records(
-                    growth_dir, args.id, promoted_text, by="promote")
-            except delegate.DelegateError as exc:
-                # 손상 장부/문법은 승격 시점에 loud 하게 막는다 — 이동은 이미 끝났으므로
-                # 사유를 그대로 알리고 부기를 멈춘다(다음 promote 재실행이 이어받는다).
-                print(f"cannot promote {args.id}: 성장 장부 기록 실패 — {exc}",
-                      file=sys.stderr)
-                return 1
-            if appended:
-                touched.append(
-                    delegate.ticket_growth_ledger_path(growth_dir, args.id))
-            stamp = delegate.ticket_growth_stamp_path(growth_dir)
-            if stamp.exists():
-                touched.append(stamp)
+        # draft 의 라운드도 promote 가 출하한다 — draft 명세는 board-git ignore 지만
+        # `tickets/<라운드 디렉터리>/<티켓>/` 은 ignore 밖이라, 승격 커밋에 함께 싣지 않으면
+        # 준비된 라운드가 미커밋으로 눌러앉는다(스코프 전개는 디렉터리를 파일로 펼친다).
+        round_dir = _load_ticket_rounds().rounds_dir_for_ticket(args.id, tickets_dir())
+        if round_dir.is_dir():
+            touched.append(round_dir)
     if moved:
         refresh_board()
     ready = _board_git_sync_best_effort(f"promote {args.id}", touched)
@@ -12115,52 +12019,33 @@ def _plan_file_renames(id_map: dict[str, str]) -> list[tuple[Path, Path]]:
     return renames
 
 
-def _plan_growth_ledger_renames(
-        renames: list[tuple[Path, Path]]) -> list[tuple[Path, Path, str, str]]:
-    """티켓 파일 rename 계획을 따라 그 티켓의 성장 장부도 함께 옮길 계획을 세운다.
+def _plan_rounds_dir_renames(
+        renames: list[tuple[Path, Path]]) -> list[tuple[Path, Path]]:
+    """티켓 파일 rename 계획을 따라 그 티켓의 라운드 디렉터리도 함께 옮길 계획을 세운다.
 
-    장부를 두고 가면 새 ID 에서 "장부 부재 → seal-backfill → GREEN" 이 성립해 손편집 1회 +
-    정상 명령 1회로 절 삭제가 세탁된다. 레코드를 옮기는 게 아니라 **파일을 옮긴다**(레코드
-    집합은 불변이고 ID 라벨만 보드 전역 relabel 을 따라간다).
+    라운드는 티켓 ID 로 이름 붙은 디렉터리 하나에 모여 있으므로 옮길 것도 **디렉터리 하나**다
+    (파일별 계획이 아니다). 두고 가면 새 ID 는 라운드가 없는 티켓이 되고 옛 ID 자리에는
+    티켓 없는 라운드가 남는다 — 그 상태에서 순번 연속성 판정은 아무 것도 못 본다.
     """
-    growth = growth_ledger_dir()
-    plans: list[tuple[Path, Path, str, str]] = []
+    plans: list[tuple[Path, Path]] = []
+    rounds = _load_ticket_rounds()
     for src, dst in renames:
         old_id = _ticket_id_from_filename(src.name)
         new_id = _ticket_id_from_filename(dst.name)
         if not old_id or not new_id or old_id == new_id:
             continue
-        src_path = growth / f"{old_id}.jsonl"
-        if src_path.exists():
-            plans.append((src_path, growth / f"{new_id}.jsonl", old_id, new_id))
+        src_dir = rounds.rounds_dir_for_ticket(old_id, tickets_dir())
+        if src_dir.is_dir():
+            plans.append(
+                (src_dir, rounds.rounds_dir_for_ticket(new_id, tickets_dir()))
+            )
     return plans
 
 
-def _relabel_growth_ledger_records(path: Path, old_id: str, new_id: str) -> None:
-    """옮길 장부의 ID 라벨만 새 ID 로 바꾼다 — 키·sha·writer·시각은 그대로 둔다.
-
-    판정은 레코드의 `ticket` 으로 장부 오배치를 loud 하게 잡는다. relabel 이 라벨을 데려가지
-    않으면 정상 relabel 이 그 판정을 영구 RED 로 만든다. 읽기/JSON 실패는 조용히 넘기지 않고
-    경고로 남긴 뒤 파일만 옮긴다(판정이 그 상태를 다시 loud 하게 잡는다).
-    """
-    try:
-        text = file_lock.read_text_shared(path, encoding="utf-8")
-        rows = [json.loads(line) for line in text.splitlines() if line.strip()]
-    except (OSError, UnicodeError, ValueError) as exc:
-        print(f"  ⚠ 성장 장부 재라벨 skip {path.name} — 읽기/JSON 실패({exc}). "
-              "파일만 옮긴다; 판정이 ticket 라벨 불일치로 잡는다.", file=sys.stderr)
-        return
-    rewritten = []
-    for row in rows:
-        if isinstance(row, dict) and row.get("ticket") == old_id:
-            row = {**row, "ticket": new_id}
-        rewritten.append(json.dumps(
-            row, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
-    _atomic_write_text(path, "".join(line + "\n" for line in rewritten))
-
-
 def _apply_file_renames(renames: list[tuple[Path, Path]]) -> None:
-    """파일명 rename 을 2단계(src→tmp→dst)로 적용 — 번호 swap(reorder) 시 clobber 방지.
+    """이름 rename 을 2단계(src→tmp→dst)로 적용 — 번호 swap(reorder) 시 clobber 방지.
+
+    대상은 티켓 파일과 그 티켓의 라운드 디렉터리다(둘 다 같은 부모 안 rename 이라 규칙이 같다).
 
     reorder 는 두 티켓이 번호를 맞바꿀 수 있어(T-P-001↔T-P-002) 직접 rename 하면 중간에 대상을
     덮어쓴다. 먼저 전부 유니크 tmp(`.relabel-N.tmp`·dot-prefix 라 STATUS glob 밖)로 옮긴 뒤
@@ -12218,7 +12103,7 @@ def _prefix_relabel(build_map, *, verb: str, label: str,
     부르는 board.md 재생성은 `refresh_board`(자체 board_lock·재진입 데드락)가 아니라 락-보유 전제
     변형 `_refresh_board_locked` 를 직접 부른다. board-git 백업(`_board_git_*`)은 board_lock 이
     아니라 별도 git repo(subprocess)를 만지므로 재획득이 없다(구간 안이어도 데드락 없음).
-    ticket lifecycle/growth/migrate writer도 같은 board_lock을 쓰므로 relabel 적용 구간과 직렬화된다.
+    ticket lifecycle/tier/migrate writer도 같은 board_lock을 쓰므로 relabel 적용 구간과 직렬화된다.
 
     **TOCTOU 봉합**: `build_map` 은 (id_map|None, rc) 를 반환하는 클로저다 —
     스캔→맵→collision 검사를 *락 안 fresh snapshot* 에서 수행해, 검사와 적용 사이에 `cmd_new` 가
@@ -12276,13 +12161,12 @@ def _prefix_relabel(build_map, *, verb: str, label: str,
         if not id_map:
             return rc
         renames = _plan_file_renames(id_map)
-        ledger_renames = _plan_growth_ledger_renames(renames)
+        rounds_renames = _plan_rounds_dir_renames(renames)
         # dst 선검증(belt·아무것도 쓰기 전): 계획 밖 파일이 dst 를 점유하면 abort — 덮어쓰기 차단.
         planned_srcs = {src for src, _ in renames}
-        planned_srcs |= {src for src, _dst, _old, _new in ledger_renames}
-        occupied = [dst for _, dst in renames if dst.exists() and dst not in planned_srcs]
-        occupied += [dst for _src, dst, _old, _new in ledger_renames
-                     if dst.exists() and dst not in planned_srcs]
+        planned_srcs |= {src for src, _dst in rounds_renames}
+        occupied = [dst for _, dst in renames + rounds_renames
+                    if dst.exists() and dst not in planned_srcs]
         if occupied:
             sample = ", ".join(x.name for x in occupied[:5])
             print(f"[중단] rename 대상 경로가 이미 존재({sample}) — 덮어쓰기 방지 위해 적용 전 "
@@ -12293,9 +12177,7 @@ def _prefix_relabel(build_map, *, verb: str, label: str,
         # `git_scope_stageable` 의 추적 판정이 살려낸다(삭제가 커밋에 실려야 rename 이 완성).
         touched: list[Path] = []
         scale = rewrite_refs(root, id_map, dry_run=False, changed_paths=touched)
-        for src, _dst, old_id, new_id in ledger_renames:
-            _relabel_growth_ledger_records(src, old_id, new_id)
-        all_renames = renames + [(src, dst) for src, dst, _old, _new in ledger_renames]
+        all_renames = renames + rounds_renames
         _apply_file_renames(all_renames)
         for src, dst in all_renames:
             touched.extend((src, dst))
@@ -12753,6 +12635,12 @@ def cmd_reid(args: argparse.Namespace) -> int:
 
 
 def cmd_show(args: argparse.Namespace) -> int:
+    """명세 전문 + 라운드 파일들을 순번 순으로 이어 보여준다.
+
+    티켓 하나는 명세 파일 하나와 라운드 파일 N 개다 — 조회는 그 둘을 한 화면에 조립하는
+    자리다. 라운드 렌더(구분선·산출 없음 표시)는 사이드카 seam 이 소유하고, 리뷰 finding
+    요약은 versioned 블록에서만 파생한다(산문에 같은 항목을 다시 적지 않는다).
+    """
     try:
         status, path = find_ticket(args.id)
     except FileNotFoundError as e:
@@ -12761,21 +12649,28 @@ def cmd_show(args: argparse.Namespace) -> int:
     print(f"-- {args.id} ({status}/) --\n")
     body = file_lock.read_text_shared(path, encoding="utf-8")
     print(body)
-    # 사람이 읽는 finding 요약은 versioned 블록에서만 파생한다 — 산문에 같은 항목을 다시 적지
-    # 않기 위한 표시면이다. 엔진 사본이 없거나 구세대면 본문만 출력한다(표시면은 조회를 막지 않는다).
-    delegate = _load_pm_delegate_module()
-    render_summary = getattr(delegate, "render_pm_review_summary", None)
-    if callable(render_summary):
-        summary = render_summary(body)
-        if summary:
-            print(summary)
-    if delegate is not None:
-        growth_dir = delegate.ticket_growth_dir_for_ticket_path(path)
-        ledger = delegate.read_ticket_growth_ledger(growth_dir, args.id)
-        if ledger.present:
-            state = ledger.error or (
-                f"{ledger.count} 레코드 · 절 키 {len(ledger.latest)}")
-            print(f"-- 성장 장부: {state} --")
+    rounds_module = _load_ticket_rounds()
+    try:
+        rounds = rounds_module.load_rounds(tickets_dir(), args.id, ticket_text=body)
+    except rounds_module.RoundsError as exc:
+        # 표시면은 조회를 막지 않는다 — 사유는 그 자리에 loud 하게 남기고 판정은 lint·
+        # 완료 게이트(같은 seam)가 한다.
+        print(f"⚠ 라운드 조회 실패: {exc}", file=sys.stderr)
+        return 0
+    if rounds:
+        print(f"-- 라운드 {len(rounds)}건 --\n")
+        print(rounds_module.render_rounds_for_show(rounds))
+        # 엔진 사본이 없거나 구세대면 라운드 본문까지만 낸다(표시면은 조회를 막지 않는다).
+        delegate = _load_pm_delegate_module()
+        render_summary = getattr(delegate, "render_pm_review_summary", None)
+        if callable(render_summary):
+            summary = render_summary(body, rounds)
+            if summary:
+                print(summary)
+        pending = [item for item in rounds if item.pending]
+        if pending:
+            print(f"-- 미회수 {len(pending)}건: "
+                  + ", ".join(item.path.name for item in pending) + " --")
     return 0
 
 
@@ -14651,7 +14546,11 @@ _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
      "dangling-wikilink-scaffold", "un-migrated-overlay", "adapter-drift",
      "adr-author", "areas-duplicate-repo", "areas-merge-union",
      "delegate-same-model", "design-pending", "design-estimate",
-     "codex-delegate-matcher-miss", "growth-seal"})
+     "codex-delegate-matcher-miss",
+     # 라운드 판정 코드(사이드카 seam 소유) + board 고유 잔여·판정불능 관측. 차단은 완료
+     # 게이트가 한다.
+     "round-name", "round-gap", "round-dup", "round-pending", "round-temporary",
+     "round-stray", "round-unreadable"})
 
 
 def _adr_id_from_path(p: Path) -> str:
@@ -15895,70 +15794,106 @@ def lint_delegate() -> list[tuple[str, str, str]]:
     return [(label, "delegate-same-model", detail) for label, detail in findings]
 
 
-def lint_growth_seals() -> list[tuple[str, str, str]]:
-    """active/draft 역할 절의 봉인·장부 문제를 한 advisory 축으로 집계한다(never-block).
+# 라운드가 아닌 잔여를 가리키는 lint 종류. 판정 코드 자체는 사이드카 seam 이 소유하고
+# (`round-name`·`round-gap`·`round-dup`·`round-pending`) board 는 그것을 그대로 lint kind 로
+# 쓴다 — 아래 이름은 그 밖의 board 고유 관측 하나뿐이다.
+_ROUND_TEMPORARY_LINT_KIND = "round-temporary"
+# 라운드 디렉터리 자리(`tickets/rounds/` 직계)에 있는 파일 — 티켓 하나의 라운드 디렉터리만
+# 사는 자리라 파일은 잘못 놓인 잔여다(seam 의 티켓 단위 판정은 그 자리를 보지 않는다).
+_ROUND_STRAY_LINT_KIND = "round-stray"
+# 한 티켓의 라운드 판정이 실패한 자리 — 나머지 티켓 판정은 그대로 내고 이 티켓만 사유로 남긴다.
+_ROUND_UNREADABLE_LINT_KIND = "round-unreadable"
+# 구 단일-파일 컨테이너의 흔적. 본문에 이 주석이 남아 있으면 그 티켓의 역할 산출은 아직
+# 라운드 파일로 옮겨지지 않은 것이다(마이그레이션 대상).
+_LEGACY_GROWTH_MARKERS: tuple[str, ...] = (
+    "<!-- pm-ticket-section:", "<!-- pm-ticket-seal")
+_LEGACY_GROWTH_LINT_KIND = "legacy-growth-section"
+_LEGACY_GROWTH_MIGRATION_HINT = (
+    "`python3 .project_manager/tools/board.py rounds migrate` 를 1회 실행해 "
+    "역할 절을 라운드 파일로 옮겨라"
+)
 
-    순회 상태는 `seal-backfill` 허용 상태(`_SEAL_BACKFILL_STATUSES`)와 **같은 진실**을 쓴다 —
-    처방을 실행할 수 있는 상태를 advisory 가 보지 못하면 그 상태의 문제는 아무도 보지 못한다.
-    draft 는 장부에 쓰지 않으므로(promote 가 1회 기록) 봉인 축만 본다.
+
+def lint_rounds() -> list[tuple[str, str, str]]:
+    """라운드 디렉터리의 판정(`verify_rounds`)을 board lint 표면으로 올린다 (advisory).
+
+    차단 소비자는 완료 게이트다 — 여기서는 같은 판정을 **보이게만** 한다(never-block).
+
+    fail-soft 경계는 **티켓 하나**다 — 한 티켓의 읽기 실패가 그때까지 모은 판정을 통째로
+    버리지 않고 그 티켓만 사유로 남긴다. 판정 자체를 못 한 자리를 조용히 비우지 않기 위해서다.
+
+    라운드 디렉터리 자리의 파일 항목과 점(`.`) 으로 시작하는 항목은 라운드가 아니라 잘못 놓인
+    잔여·엔진의 원자 교체 중간 파일이다 — 둘 다 seam 판정 밖이라 여기서 표면화한다.
     """
     try:
-        mod = _load_pm_delegate_module()
-        if mod is None:
-            return []
-        broken: list[str] = []
-        backfilled: list[str] = []
-        for status in sorted(mod._SEAL_BACKFILL_STATUSES):
-            directory = drafts_dir() if status == "draft" else tickets_dir() / status
-            for path in sorted(directory.glob("T-*.md")):
-                growth_dir = mod.ticket_growth_dir_for_ticket_path(path)
-                ticket = _ticket_id_from_filename(path.name) or path.stem
-                # 판정 소비자는 장부를 먼저 읽는다 — 티켓을 먼저 읽으면 그 사이 section-add 가
-                # 끼어들 때 처방 없는 `절 삭제 검출` 로 오판한다.
-                ledger = (
-                    None if status == "draft"
-                    else mod.read_ticket_growth_ledger(growth_dir, ticket)
-                )
-                with file_lock.open_shared(path, binary=False, encoding="utf-8", newline="") as handle:
-                    text = handle.read()
-                problems = mod.verify_ticket_growth(
-                    text, ledger, ticket=ticket,
-                    migrated=mod.ticket_growth_migration_stamped(growth_dir),
-                )
-                if problems:
-                    broken.append(
-                        f"{ticket}({'; '.join(item.message for item in problems)})"
-                    )
-                else:
-                    legacy = [
-                        f"{seal.role}[{seal.ordinal}]"
-                        for seal in mod.parse_ticket_seals(text).values()
-                        if seal.by == "backfill"
-                    ]
-                    if legacy:
-                        backfilled.append(f"{ticket}({', '.join(legacy)})")
-    # fail-soft 사유: growth-seal은 전역 board lint의 visibility-only/never-block 축이다. 한 active
-    # ticket의 읽기·문법 문제나 optional delegate 로드 실패가 무관한 board 조회를 죽이지 않게
-    # advisory를 생략하되, 엔진 rev skew만은 부분 동기를 숨기지 않고 그대로 재전파한다. 차단
-    # 소비자(complete·review delta·성장 write)는 반대로 fail-closed 다 — 이 비대칭은 의도된 것이다.
+        rounds = _load_ticket_rounds()
+        root = rounds.rounds_dir(tickets_dir())
+        entries = sorted(root.iterdir()) if root.is_dir() else []
+    # fail-soft 사유: 라운드 판정은 전역 board lint 의 visibility-only/never-block 축이다. 형제
+    # 로드 실패나 디렉터리 판독 실패가 무관한 board 조회를 죽이지 않게 축을 생략하되, 엔진 rev
+    # skew 만은 부분 동기를 숨기지 않고 그대로 재전파한다. 차단 소비자(완료 게이트)는 반대로
+    # fail-closed 다 — 이 비대칭은 의도된 것이다.
     except Exception as exc:  # noqa: BLE001 — 위 등록 사유의 advisory fail-soft 경계.
         if _is_engine_rev_skew(exc):
             raise
         return []
-    if not broken and not backfilled:
-        return []
-    details: list[str] = []
-    if broken:
-        details.append(f"미봉인/불일치 {len(broken)}개 — " + " · ".join(broken))
-    if backfilled:
-        details.append(
-            f"by=backfill 봉인 {len(backfilled)}개 — " + " · ".join(backfilled)
-        )
-    return [(
-        "active ticket growth",
-        "growth-seal",
-        " | ".join(details),
-    )]
+
+    findings: list[tuple[str, str, str]] = []
+    for entry in entries:
+        if not entry.is_dir():
+            findings.append((
+                entry.name, _ROUND_STRAY_LINT_KIND,
+                f"라운드 디렉터리 자리에 파일이 있다: {_rel_to_repo(entry)} "
+                "(이 자리엔 티켓별 라운드 디렉터리만 산다)",
+            ))
+            continue
+        ticket = entry.name
+        try:
+            for problem in rounds.verify_rounds(tickets_dir(), ticket):
+                findings.append((ticket, problem.code, problem.detail))
+            leftovers = sorted(
+                item.name for item in entry.iterdir()
+                if item.name.startswith(rounds.ROUND_TEMPORARY_PREFIX)
+            )
+        except Exception as exc:  # noqa: BLE001 — 티켓 단위 advisory fail-soft 경계.
+            if _is_engine_rev_skew(exc):
+                raise
+            findings.append((
+                ticket, _ROUND_UNREADABLE_LINT_KIND,
+                f"라운드 판정 실패(이 티켓만 건너뛴다): {exc}",
+            ))
+            continue
+        if leftovers:
+            findings.append((
+                ticket, _ROUND_TEMPORARY_LINT_KIND,
+                f"엔진 임시 파일 잔여 {len(leftovers)}개(교체 중 크래시 의심): "
+                + ", ".join(leftovers),
+            ))
+    return findings
+
+
+def lint_legacy_growth_sections() -> list[tuple[str, str, str]]:
+    """명세 본문에 남은 구 역할 절(marker/봉인 주석)을 blocking 으로 잡는다.
+
+    라운드 사이드카 전환 뒤에도 절이 본문에 남아 있으면 그 산출은 어떤 라운드 판정에도 잡히지
+    않는다(두 형식이 공존하는 상태). 마이그레이션 명령 1회로 해소되므로 red 로 강제한다.
+    done 을 포함한 전 상태와 draft 를 본다 — 변환 대상이 완료 티켓에 몰려 있다.
+    """
+    findings: list[tuple[str, str, str]] = []
+    for status in (*STATUS_DIRS, ".drafts"):
+        for path in sorted((tickets_dir() / status).glob("T-*.md")):
+            loaded = load_ticket_soft(path)
+            if loaded is None:
+                continue
+            fm, body = loaded
+            if not any(marker in body for marker in _LEGACY_GROWTH_MARKERS):
+                continue
+            findings.append((
+                str(fm.get("id") or path.name),
+                _LEGACY_GROWTH_LINT_KIND,
+                f"본문에 구 역할 절 주석이 남아 있다 — {_LEGACY_GROWTH_MIGRATION_HINT}",
+            ))
+    return findings
 
 
 def _load_delegate_channel_guard_module():
@@ -16109,6 +16044,9 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     delegate-same-model(delegate dev/reviewer 동일-모델 해소 → 맹점 공유로 인한 검출력 저하 가시화·
     advisory·never-block) +
     codex-delegate-matcher-miss(unmatched SubagentStart → PM 표면 1줄·advisory·never-block) +
+    round-*(라운드 순번 유일성·연속성·산출 없음·임시 파일 잔여 가시화·advisory·never-block·
+    차단은 완료 게이트) + legacy-growth-section(명세 본문에 남은 구 역할 절 → 마이그레이션
+    명령 1회로 해소·blocking) +
     design-pending(티켓 설계 단계 `design: required` 미완 — 설계 절 미충전/필드 미승격 가시화·
     advisory·never-block·차단은 claim 게이트)."""
     return (lint_dependencies() + lint_bodies() + lint_ideas()
@@ -16119,7 +16057,7 @@ def lint_tickets() -> list[tuple[str, str, str]]:
             + lint_domain_freshness() + lint_adapter_drift()
             + lint_render_leak() + lint_unmigrated_overlay()
             + lint_areas_duplicate_repo() + lint_areas_merge_union()
-            + lint_delegate() + lint_growth_seals()
+            + lint_delegate() + lint_rounds() + lint_legacy_growth_sections()
             + lint_codex_delegate_observations())
 
 
@@ -16331,10 +16269,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "section-add",
-        help="open/claimed 티켓 끝에 역할·날짜·기계 marker가 붙은 빈 성장 절 append")
+        help="open/claimed 티켓의 다음 라운드를 빈 시드로 예약(슬롯 없는 준비)")
     p.add_argument("id", metavar="T-NNNN")
-    p.add_argument("--role", required=True, choices=tuple(TICKET_GROWTH_ROLE_LABELS),
-                   help="절 작성 역할(기본 절명과 marker role을 함께 결정)")
+    p.add_argument("--role", required=True, choices=_round_role_choices(),
+                   help="라운드 역할(파일명과 기본 절명을 함께 결정)")
     p.add_argument("--label", help="사람용 절명 오버라이드(예: 재설계)")
     p.set_defaults(fn=cmd_section_add)
 
@@ -16367,7 +16305,7 @@ def build_parser() -> argparse.ArgumentParser:
                        help="이전 데이터 일회성 backfill — areas area_owner·ticket "
                             "created_by·슬롯-only claimed_by (멱등·비파괴·dry-run 선검토). "
                             "일회성 전체 스캔 op. areas와 ticket RMW는 각각 board_lock으로 "
-                            "lifecycle/growth writer와 직렬화한다.")
+                            "lifecycle/tier writer와 직렬화한다.")
     p.add_argument("--dry-run", action="store_true",
                    help="변경 미리보기(쓰기 0·per-file 요약). 먼저 실행 권장.")
     p.add_argument("--user", help="identity override (기본: local.conf user= / git config "

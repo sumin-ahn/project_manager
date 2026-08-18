@@ -8189,15 +8189,12 @@ _BOARD_GITATTRIBUTES_SCAFFOLD = (
     "# git 내장 union merge 드라이버로 양쪽 행을 모두 보존한다.\n"
     "# board 는 별도 git 이라 superproject 루트의 같은 선언이 닿지 않는다 — 여기가 그 배포처다.\n"
     "areas.md merge=union\n"
-    "# Windows checkout에서도 엔진-소유 텍스트의 논리 개행을 LF로 유지한다(티켓 봉인 입력·\n"
+    "# Windows checkout에서도 엔진-소유 텍스트의 논리 개행을 LF로 유지한다(라운드 회수 bytes·\n"
     "# 재작성 byte 판정). 엔진의 표기 보존이 근본이고 이 선언은 그 위의 방어층이다.\n"
     "*.md text eol=lf\n"
     "*.json text eol=lf\n"
     "*.txt text eol=lf\n"
     "*.jsonl text eol=lf\n"
-    "# 티켓 성장 장부 = append-only 권위 기록 — 서로 다른 PM 의 append 가 merge 에서 서로를\n"
-    "# 지우지 않도록 같은 union 드라이버로 양쪽 줄을 모두 보존한다.\n"
-    "tickets/.growth/*.jsonl merge=union\n"
 )
 
 

@@ -111,7 +111,7 @@ def _decision(finding_id: str, decision: str) -> dict:
     }
 
 
-def _disposition_block(rows: list[dict], *, ordinal: int = 0) -> str:
+def _disposition_block(rows: list[dict], *, ordinal: int = 1) -> str:
     payload = {"version": 1, "reviewer_ordinal": ordinal, "dispositions": rows}
     return (
         "```pm-review-disposition-v1\n"
@@ -120,8 +120,18 @@ def _disposition_block(rows: list[dict], *, ordinal: int = 0) -> str:
     )
 
 
-def _sealed_reviewer_section(pd, payload: dict, *, ordinal: int = 0) -> str:
-    content = (
+def _round(pd, ordinal: int, text: str, role: str = "code-reviewer"):
+    """라운드 파일 하나 — 순번·역할은 파일 이름이 단일 진실이다([[T-0749]])."""
+    rounds_module = pd._load_ticket_rounds()
+    return rounds_module.Round(
+        ordinal=ordinal, role=role,
+        path=Path(rounds_module.round_filename(ordinal, role)),
+        text=text, pending=False,
+    )
+
+
+def _reviewer_round_text(pd, payload: dict) -> str:
+    return (
         "## 리뷰 (code-reviewer · 2026-08-17)\n\n"
         "## must-fix\n- 구조화 finding 참조\n\n"
         "## should-fix\n- 없음\n\n"
@@ -131,145 +141,39 @@ def _sealed_reviewer_section(pd, payload: dict, *, ordinal: int = 0) -> str:
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         + "\n```\n"
     )
-    digest = pd.seal_for(content.encode("utf-8"))
-    return (
-        "<!-- pm-ticket-section:start role=code-reviewer -->\n"
-        + content
-        + "<!-- pm-ticket-section:end role=code-reviewer -->\n"
-        + f"<!-- pm-ticket-seal role=code-reviewer ordinal={ordinal} "
-        + f"sha256={digest} by=section-add -->\n"
+
+
+def _reviewer_round(pd, payload: dict, *, ordinal: int = 1):
+    return _round(pd, ordinal, _reviewer_round_text(pd, payload))
+
+
+def _seeded_round_text(pd, role: str, ticket_text: str = "", previous=None) -> str:
+    rounds_module = pd._load_ticket_rounds()
+    return rounds_module.render_round_seed(
+        role, ticket_text, today="2026-08-17", previous_round=previous,
     )
 
 
-def _seeded_section(pd, role: str, ticket_prefix: str = "") -> str:
-    content = (
-        f"## 역할 ({role} · 2026-08-17)\n\n"
-        + pd.render_ticket_growth_section_seed(role, ticket_prefix)
-    )
-    digest = pd.seal_for(content.encode("utf-8"))
-    return (
-        f"<!-- pm-ticket-section:start role={role} -->\n"
-        + content
-        + f"<!-- pm-ticket-section:end role={role} -->\n"
-        + f"<!-- pm-ticket-seal role={role} ordinal=0 sha256={digest} "
-        + "by=section-add -->\n"
-    )
-
-
-def _seed_growth_ledger(pd, path: Path, ticket: str = "T-0700") -> None:
-    """봉인 도입 이후 형상 — 현재 봉인들을 그 티켓 장부에 기재한다(sweep 등가·T-0699)."""
-    pd.append_ticket_growth_records(
-        pd.ticket_growth_dir_for_ticket_path(path), ticket,
-        path.read_text(encoding="utf-8"), by="backfill", stamp=False,
-    )
-
-
-def _legacy_reviewer_section(pd, ordinal: int) -> str:
-    content = (
+def _legacy_reviewer_round(pd, ordinal: int):
+    """versioned block 도입 전 산출 — 프리필이 해소할 수 없는 직전 라운드."""
+    return _round(pd, ordinal, (
         "## 리뷰 (code-reviewer · 2026-08-17)\n\n"
         "판정: 통과\n\n## must-fix\n- 없음\n\n"
         f"legacy reviewer ordinal {ordinal}\n"
+    ))
+
+
+def test_every_round_role_seed_comes_from_the_delegate_renderer(pd, board):
+    """모든 역할의 라운드 시드는 한 렌더러에서 나온다 — 역할 집합의 권위도 하나다."""
+    rounds_module = pd._load_ticket_rounds()
+    # 라운드 역할 집합의 단일 권위는 seam 이고 board 는 사람용 절명만 소유한다.
+    assert set(board.ticket_round_role_labels()) == set(pd.TICKET_COPY_ROLES)
+    assert set(rounds_module.ROLES) == set(pd.TICKET_COPY_ROLES)
+    assert board.ticket_round_role_labels() == rounds_module.ROLE_LABELS
+
+    text = "".join(
+        _seeded_round_text(pd, role) for role in sorted(pd.TICKET_COPY_ROLES)
     )
-    digest = pd.seal_for(content.encode("utf-8"))
-    return (
-        "<!-- pm-ticket-section:start role=code-reviewer -->\n"
-        + content
-        + "<!-- pm-ticket-section:end role=code-reviewer -->\n"
-        + f"<!-- pm-ticket-seal role=code-reviewer ordinal={ordinal} "
-        + f"sha256={digest} by=section-add -->\n"
-    )
-
-
-def _run_harvest(
-    pd, tmp_path, monkeypatch, *, ticket_text: str, copy_text: str, role: str,
-):
-    pm_home = tmp_path / "pm-home"
-    slot = tmp_path / "slot"
-    source = pm_home / "board" / "tickets" / "claimed" / "T-0700-seed.md"
-    source.parent.mkdir(parents=True)
-    source.write_text(ticket_text, encoding="utf-8", newline="\n")
-    _seed_growth_ledger(pd, source)
-    copy = slot / "copies" / "T-0700" / role / ("a" * 32) / "ticket-T-0700.md"
-    copy.parent.mkdir(parents=True)
-    copy.write_text(copy_text, encoding="utf-8", newline="\n")
-    plan = pd.TicketCopyPlan(
-        copy, copy.with_name("baseline.md"), copy.with_name("meta.json"),
-        slot, pm_home, "T-0700", role, b"x" * 32,
-    )
-    baseline = ticket_text.encode("utf-8")
-    metadata = {
-        "ordinal": max(
-            section.ordinal for section in pd._ticket_growth_sections(ticket_text)
-            if section.role == role
-        ),
-        "source_relpath": "board/tickets/claimed/T-0700-seed.md",
-        "baseline_sha256": hashlib.sha256(baseline).hexdigest(),
-    }
-
-    class FakeBoard:
-        @staticmethod
-        @contextlib.contextmanager
-        def board_lock():
-            yield
-
-        @staticmethod
-        def tickets_dir():
-            return pm_home / "board" / "tickets"
-
-        @staticmethod
-        def drafts_dir():
-            return pm_home / "board" / "tickets" / ".drafts"
-
-        @staticmethod
-        def _ticket_id_from_filename(_name):
-            return "T-0700"
-
-        @staticmethod
-        def _atomic_write_text(path, text):
-            path.write_text(text, encoding="utf-8", newline="\n")
-
-        @staticmethod
-        def _growth_mutation_sync(_message, _path):
-            return True
-
-    monkeypatch.setattr(
-        pd, "_load_ticket_copy_plan",
-        lambda *_a, **_k: (plan, metadata, copy_text.encode("utf-8"), baseline),
-    )
-    monkeypatch.setattr(pd, "_ticket_copy_ledger_record", lambda *_a, **_k: None)
-    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _home: FakeBoard())
-    monkeypatch.setattr(pd, "_mark_ticket_copy_harvested_best_effort", lambda *_a: None)
-    result = pd.harvest_ticket_copy(
-        copy_path=copy, cwd=slot, pm_home=pm_home, capability=b"x" * 32,
-    )
-    return result, source.read_text(encoding="utf-8")
-
-
-def test_section_add_seeds_every_growth_role_from_delegate_renderer(
-    pd, board, tmp_path, monkeypatch,
-):
-    path = tmp_path / "tickets" / "claimed" / "T-0700-seed.md"
-    path.parent.mkdir(parents=True)
-    path.write_text("---\nid: T-0700\nstatus: claimed\n---\n# ticket\n", encoding="utf-8", newline="\n")
-
-    @contextlib.contextmanager
-    def unlocked():
-        yield
-
-    monkeypatch.setattr(board, "board_lock", unlocked)
-    monkeypatch.setattr(board, "_growth_ticket_path", lambda *_a, **_k: (0, path))
-    monkeypatch.setattr(board, "load_ticket", lambda _path: ({}, ""))
-    monkeypatch.setattr(board, "_load_pm_delegate_module", lambda: pd)
-    monkeypatch.setattr(board, "_growth_mutation_sync_paths", lambda *_a, **_k: True)
-    monkeypatch.setattr(board, "drafts_dir", lambda: tmp_path / "drafts")
-
-    # 성장 역할 집합의 단일 권위는 pm_delegate 이고 board 는 사람용 절명만 소유한다.
-    assert set(board.TICKET_GROWTH_ROLE_LABELS) == set(pd.TICKET_COPY_ROLES)
-    for role in sorted(pd.TICKET_COPY_ROLES):
-        args = argparse.Namespace(role=role, label=None, id="T-0700")
-        assert board.cmd_section_add(args) == 0, role
-
-    text = path.read_text(encoding="utf-8")
     assert "검토 판정: <설계 통과|수정 후 통과|반려>" in text
     assert all(term in text for term in (
         "## 변경 파일", "## 신규 테스트", "## 회귀", "## DoD evidence", "## 민감도",
@@ -282,7 +186,6 @@ def test_section_add_seeds_every_growth_role_from_delegate_renderer(
     ))
     # 두 리뷰 채널이 각자 접두의 골격을 받는다(판정 표면은 하나·ID 네임스페이스는 분리).
     assert '"id":"F-NNN"' in text and '"id":"X-NNN"' in text
-    assert pd.verify_ticket_seals(text) == []
 
 
 def test_review_seed_follows_parser_class_status_and_key_constants(pd, monkeypatch):
@@ -329,127 +232,152 @@ def test_review_seed_pins_current_parser_schema_contract(pd):
     ]
 
 
-def test_confirmation_round_prefills_every_id_from_previous_reviewer(pd):
-    previous = _sealed_reviewer_section(pd, _review_payload("F-003", "F-001"))
-    rendered = pd.render_ticket_growth_section_seed("code-reviewer", previous)
-    payload = json.loads(rendered.split("```pm-review-v1\n", 1)[1].split("\n```", 1)[0])
+def _seed_payload(rendered: str) -> dict:
+    return json.loads(rendered.split("```pm-review-v1\n", 1)[1].split("\n```", 1)[0])
+
+
+def test_confirmation_round_prefills_every_id_from_previous_round_file(pd):
+    """확인 대상 프리필의 입력은 같은 역할의 **직전 라운드 파일**이다([[T-0749]] F-007)."""
+    previous = _reviewer_round(pd, _review_payload("F-003", "F-001"))
+    rendered = pd.render_ticket_growth_section_seed(
+        "code-reviewer", "", previous_round=(previous.ordinal, previous.text),
+    )
+    payload = _seed_payload(rendered)
     assert [row["id"] for row in payload["confirmations"]] == ["F-003", "F-001"]
     assert all(row["status"] == "<resolved|unresolved|regressed>"
                for row in payload["confirmations"])
 
 
 def test_confirmation_seed_excludes_previous_rejected_findings(pd):
-    previous = _sealed_reviewer_section(pd, _review_payload("F-001", "F-002"))
-    ticket = previous + _disposition_block([
+    """PM `rejected` 배제 입력은 명세의 판정 블록이다 — 라운드 파일 밖이다."""
+    previous = _reviewer_round(pd, _review_payload("F-001", "F-002"))
+    spec = _disposition_block([
         _decision("F-001", "accepted"),
         _decision("F-002", "rejected"),
-    ])
-    rendered = pd.render_ticket_growth_section_seed("code-reviewer", ticket)
-    payload = json.loads(rendered.split("```pm-review-v1\n", 1)[1].split("\n```", 1)[0])
+    ], ordinal=previous.ordinal)
+    rendered = pd.render_ticket_growth_section_seed(
+        "code-reviewer", spec, previous_round=(previous.ordinal, previous.text),
+    )
+    payload = _seed_payload(rendered)
     assert [row["id"] for row in payload["confirmations"]] == ["F-001"]
 
 
+def test_first_round_seed_has_no_previous_input(pd):
+    rendered = pd.render_ticket_growth_section_seed("code-reviewer", "")
+    payload = _seed_payload(rendered)
+    assert [row["id"] for row in payload["confirmations"]] == ["F-NNN"]
+
+
 def test_unedited_seed_is_malformed_review_output(pd):
-    ticket = _seeded_section(pd, "code-reviewer")
+    """시드 그대로인 라운드는 판정 표면에 올라도 malformed 다(산출이 없다)."""
+    seed = _seeded_round_text(pd, "code-reviewer")
     with pytest.raises(pd.PMReviewError) as caught:
-        pd.parse_pm_review_delta(ticket)
+        pd.parse_pm_review_delta("", [_round(pd, 1, seed)])
     assert caught.value.code == "malformed"
 
 
-def test_harvest_warns_loudly_when_seed_was_not_edited(pd, tmp_path, monkeypatch, capsys):
-    ticket_text = "---\nid: T-0700\nstatus: claimed\n---\n" + _seeded_section(pd, "developer")
-    result, _updated = _run_harvest(
-        pd, tmp_path, monkeypatch, ticket_text=ticket_text,
-        copy_text=ticket_text, role="developer",
+def test_seed_round_is_judged_pending_by_the_rounds_seam(pd):
+    """'산출 없음' 판정은 라운드 seam 이 소유한다 — 회수는 그 판정만 본다."""
+    rounds_module = pd._load_ticket_rounds()
+    for role in ("developer", "code-reviewer", "external-reviewer"):
+        seed = _seeded_round_text(pd, role)
+        item = rounds_module.Round(
+            ordinal=1, role=role,
+            path=Path(rounds_module.round_filename(1, role)),
+            text=seed, pending=False,
+        )
+        assert rounds_module.round_is_pending(item) is True
+        edited = rounds_module.Round(*item[:3], item.text + "\n실산출\n", False)
+        assert rounds_module.round_is_pending(edited) is False
+
+
+def test_pending_judgment_reads_only_the_round_body(pd):
+    """판정 입력은 라운드 본문 하나다 — 프리필 ID·날짜·명세는 판정을 바꾸지 않는다."""
+    previous = _reviewer_round(pd, _review_payload("F-003", "F-001"))
+    prefilled = _seeded_round_text(
+        pd, "code-reviewer", previous=(previous.ordinal, previous.text),
     )
-    assert result.sync_ready is True
-    assert "산출 없음" in capsys.readouterr().err
+    assert '"id":"F-003"' in prefilled.replace(" ", "")
+
+    # 같은 골격을 서로 다른 날짜·명세로 지어도 판정은 같다(자리표시자 = 산출 없음).
+    assert pd.ticket_round_body_is_pending(
+        "code-reviewer", prefilled.partition("\n")[2].lstrip("\n"),
+    ) is True
+    for text in (prefilled, _seeded_round_text(pd, "code-reviewer")):
+        assert pd._load_ticket_rounds().round_is_pending(
+            _round(pd, 2, text),
+        ) is True
+
+    # 자리표시자를 실값으로 바꾸면 산출이다(ID 만 자유롭다).
+    filled = prefilled.replace("<resolved|unresolved|regressed>", "resolved")
+    assert pd._load_ticket_rounds().round_is_pending(_round(pd, 2, filled)) is False
 
 
-def test_legacy_reviewer_prefill_degrades_and_section_add_stays_available(
-    pd, board, tmp_path, monkeypatch, capsys,
-):
-    path = tmp_path / "tickets" / "claimed" / "T-0700-legacy.md"
-    path.parent.mkdir(parents=True)
-    original = (
-        "---\nid: T-0700\nstatus: claimed\n---\n"
-        + _legacy_reviewer_section(pd, 0)
-        + _legacy_reviewer_section(pd, 1)
+def test_legacy_previous_round_prefill_degrades_to_placeholder(pd, capsys):
+    """직전 라운드가 versioned block 이전 산출이면 자리표시자로 강등하고 loud 하게 알린다."""
+    previous = _legacy_reviewer_round(pd, 1)
+    rendered = pd.render_ticket_growth_section_seed(
+        "code-reviewer", "", previous_round=(previous.ordinal, previous.text),
     )
-    path.write_text(original, encoding="utf-8", newline="\n")
-    _seed_growth_ledger(pd, path)
-
-    @contextlib.contextmanager
-    def unlocked():
-        yield
-
-    monkeypatch.setattr(board, "board_lock", unlocked)
-    monkeypatch.setattr(board, "_growth_ticket_path", lambda *_a, **_k: (0, path))
-    monkeypatch.setattr(board, "load_ticket", lambda _path: ({}, ""))
-    monkeypatch.setattr(board, "_load_pm_delegate_module", lambda: pd)
-    monkeypatch.setattr(board, "_growth_mutation_sync_paths", lambda *_a, **_k: True)
-    monkeypatch.setattr(board, "drafts_dir", lambda: tmp_path / "drafts")
-
-    args = argparse.Namespace(role="code-reviewer", label=None, id="T-0700")
-    assert board.cmd_section_add(args) == 0
-    updated = path.read_text(encoding="utf-8")
-    assert len([s for s in pd._ticket_growth_sections(updated)
-                if s.role == "code-reviewer"]) == 3
-    assert '"id":"F-NNN"' in updated
-    assert "F-NNN 골격으로 강등" in capsys.readouterr().err
-    assert pd.verify_ticket_seals(updated) == []
-
-
-def test_legacy_reviewer_seed_probe_warns_false_and_harvest_does_not_block(
-    pd, tmp_path, monkeypatch, capsys,
-):
-    ticket_text = (
-        "---\nid: T-0700\nstatus: claimed\n---\n"
-        + _legacy_reviewer_section(pd, 0)
-        + _legacy_reviewer_section(pd, 1)
-    )
-    latest = [
-        section for section in pd._ticket_growth_sections(ticket_text)
-        if section.role == "code-reviewer"
-    ][-1]
-    assert pd.ticket_growth_section_seed_is_unedited(ticket_text, latest) is False
-    assert "F-NNN 골격으로 강등" in capsys.readouterr().err
-
-    addition = "R2 legacy reviewer 산출 회수 성공\n"
-    copy_text = (
-        ticket_text[:latest.content_end] + addition + ticket_text[latest.content_end:]
-    )
-    result, updated = _run_harvest(
-        pd, tmp_path, monkeypatch, ticket_text=ticket_text,
-        copy_text=copy_text, role="code-reviewer",
-    )
-    assert result.changed is True and result.sync_ready is True
-    assert addition in updated
+    payload = _seed_payload(rendered)
+    assert [row["id"] for row in payload["confirmations"]] == ["F-NNN"]
     assert "F-NNN 골격으로 강등" in capsys.readouterr().err
 
 
-def test_seed_unedited_probe_fails_open_when_renderer_cannot_judge(
-    pd, monkeypatch, capsys,
-):
-    ticket = _seeded_section(pd, "developer")
-    section = pd._ticket_growth_sections(ticket)[0]
+def test_refused_previous_round_is_not_a_prefill_source(pd):
+    """회수 거부 표식이 있는 라운드는 판정 표면 밖이라 확인 대상을 공급하지 않는다."""
+    refused_text = (
+        "## 추가 리뷰 (external-reviewer · 2026-08-17)\n\n"
+        + pd.EXTERNAL_REVIEW_REFUSED_LINE + "\n\n"
+        + _reviewer_round_text(pd, _review_payload("X-001")).partition("\n")[2]
+    )
+    rendered = pd.render_ticket_growth_section_seed(
+        "external-reviewer", "", previous_round=(1, refused_text),
+    )
+    payload = _seed_payload(rendered)
+    assert [row["id"] for row in payload["confirmations"]] == ["X-NNN"]
 
-    def fail_seed(_role, _prefix):
-        raise pd.DelegateError("legacy parser unavailable")
 
-    monkeypatch.setattr(pd, "render_ticket_growth_section_seed", fail_seed)
-    assert pd.ticket_growth_section_seed_is_unedited(ticket, section) is False
-    warning = capsys.readouterr().err
-    assert "편집됨으로 간주" in warning and "legacy parser unavailable" in warning
+def _materialize(pd, spec: str, rounds, tickets_dir: Path, ticket_id: str) -> Path:
+    """명세 파일 하나 + `rounds/<id>/NN-<role>.md` 를 실제로 깐다(CLI 경로 입력)."""
+    rounds_module = pd._load_ticket_rounds()
+    spec_path = tickets_dir / "claimed" / f"{ticket_id}-review.md"
+    spec_path.parent.mkdir(parents=True, exist_ok=True)
+    spec_path.write_text(spec, encoding="utf-8", newline="")
+    rounds_dir = rounds_module.rounds_dir_for_ticket(ticket_id, tickets_dir)
+    rounds_dir.mkdir(parents=True, exist_ok=True)
+    for item in rounds:
+        (rounds_dir / rounds_module.round_filename(item.ordinal, item.role)).write_text(
+            item.text, encoding="utf-8", newline="",
+        )
+    return spec_path
+
+
+def _fake_board(spec_path: Path, tickets_dir: Path):
+    class FakeBoard:
+        @staticmethod
+        @contextlib.contextmanager
+        def board_lock():
+            yield
+
+        @staticmethod
+        def find_ticket_exact(_ticket):
+            return "claimed", spec_path
+
+        @staticmethod
+        def tickets_dir():
+            return tickets_dir
+
+    return FakeBoard
 
 
 def test_disposition_template_prefills_all_pending_ids_and_filled_block_passes(pd):
-    ticket = _sealed_reviewer_section(pd, _review_payload("F-002", "F-001"))
-    rendered = pd.render_pm_review_disposition_template(ticket)
+    reviewer = _reviewer_round(pd, _review_payload("F-002", "F-001"))
+    rendered = pd.render_pm_review_disposition_template("", [reviewer])
     payload = json.loads(
         rendered.split("```pm-review-disposition-v1\n", 1)[1].split("\n```", 1)[0]
     )
-    assert payload["reviewer_ordinal"] == 0
+    assert payload["reviewer_ordinal"] == 1
     assert [row["id"] for row in payload["dispositions"]] == ["F-002", "F-001"]
     assert all(set(row) == set(pd.PM_REVIEW_DISPOSITION_KEYS)
                for row in payload["dispositions"])
@@ -461,15 +389,15 @@ def test_disposition_template_prefills_all_pending_ids_and_filled_block_passes(p
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         + "\n```\n"
     )
-    delta = pd.parse_pm_review_delta(ticket + filled)
+    delta = pd.parse_pm_review_delta(filled, [reviewer])
     assert [finding.id for finding, _decision in delta.accepted] == ["F-002", "F-001"]
 
 
 def test_disposition_template_preserves_existing_rows_and_replaces_partial_block(pd):
-    review = _sealed_reviewer_section(pd, _review_payload("F-001", "F-002"))
+    reviewer = _reviewer_round(pd, _review_payload("F-001", "F-002"))
     existing = _decision("F-001", "rejected")
-    ticket = review + _disposition_block([existing])
-    rendered = pd.render_pm_review_disposition_template(ticket)
+    spec = _disposition_block([existing])
+    rendered = pd.render_pm_review_disposition_template(spec, [reviewer])
     payload = json.loads(
         rendered.split("```pm-review-disposition-v1\n", 1)[1].split("\n```", 1)[0]
     )
@@ -490,82 +418,60 @@ def test_disposition_template_preserves_existing_rows_and_replaces_partial_block
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         + "\n```\n"
     )
-    delta = pd.parse_pm_review_delta(review + replacement)
+    delta = pd.parse_pm_review_delta(replacement, [reviewer])
     assert [finding.id for finding, _row in delta.accepted] == ["F-002"]
 
 
 def test_disposition_template_rejects_confirmation_only_round(
     pd, tmp_path, monkeypatch, capsys,
 ):
-    first = _sealed_reviewer_section(pd, _review_payload("F-001"), ordinal=0)
-    second_payload = {
+    first = _reviewer_round(pd, _review_payload("F-001"), ordinal=1)
+    second = _reviewer_round(pd, {
         "version": 1,
         "findings": [],
         "confirmations": [{
             "id": "F-001", "status": "resolved", "evidence": "회귀 통과",
         }],
-    }
-    second = _sealed_reviewer_section(pd, second_payload, ordinal=1)
+    }, ordinal=2)
     with pytest.raises(pd.DelegateError, match="confirmation-only.*신규 finding이 없습니다"):
-        pd.render_pm_review_disposition_template(first + second, 1)
+        pd.render_pm_review_disposition_template("", [first, second], 2)
 
-    ticket_path = tmp_path / "tickets" / "claimed" / "T-0700-confirmation-only.md"
-    ticket_path.parent.mkdir(parents=True)
-    ticket_path.write_text(first + second, encoding="utf-8", newline="\n")
-    _seed_growth_ledger(pd, ticket_path)
-
-    class FakeBoard:
-        @staticmethod
-        @contextlib.contextmanager
-        def board_lock():
-            yield
-
-        @staticmethod
-        def find_ticket_exact(_ticket):
-            return "claimed", ticket_path
-
+    tickets_dir = tmp_path / "tickets"
+    spec_path = _materialize(pd, "", [first, second], tickets_dir, "T-0700")
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
-    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _owner: FakeBoard())
+    monkeypatch.setattr(
+        pd, "_load_board_for_repo",
+        lambda _owner: _fake_board(spec_path, tickets_dir),
+    )
     assert pd.main([
-        "review", "disposition-template", "--ticket", "T-0700", "--ordinal", "1",
+        "review", "disposition-template", "--ticket", "T-0700", "--ordinal", "2",
     ]) == 1
     assert "confirmation-only" in capsys.readouterr().err
 
 
 def test_disposition_template_defaults_latest_and_honors_explicit_ordinal(pd):
-    ticket = (
-        _sealed_reviewer_section(pd, _review_payload("F-001"), ordinal=0)
-        + _sealed_reviewer_section(pd, _review_payload("F-002"), ordinal=1)
-    )
-    latest = pd.render_pm_review_disposition_template(ticket)
-    first = pd.render_pm_review_disposition_template(ticket, 0)
-    assert '"reviewer_ordinal":1' in latest and '"id":"F-002"' in latest
-    assert '"reviewer_ordinal":0' in first and '"id":"F-001"' in first
+    rounds = [
+        _reviewer_round(pd, _review_payload("F-001"), ordinal=1),
+        _reviewer_round(pd, _review_payload("F-002"), ordinal=2),
+    ]
+    latest = pd.render_pm_review_disposition_template("", rounds)
+    first = pd.render_pm_review_disposition_template("", rounds, 1)
+    assert '"reviewer_ordinal":2' in latest and '"id":"F-002"' in latest
+    assert '"reviewer_ordinal":1' in first and '"id":"F-001"' in first
 
 
 def test_disposition_template_cli_and_pending_error_prescribe_same_command(
     pd, tmp_path, monkeypatch, capsys,
 ):
-    ticket_path = tmp_path / "tickets" / "claimed" / "T-0700-review.md"
-    ticket_path.parent.mkdir(parents=True)
-    ticket_path.write_text(
-        _sealed_reviewer_section(pd, _review_payload("F-007")), encoding="utf-8",
-        newline="\n",
+    tickets_dir = tmp_path / "tickets"
+    spec_path = _materialize(
+        pd, "", [_reviewer_round(pd, _review_payload("F-007"))], tickets_dir, "T-0700",
     )
-    _seed_growth_ledger(pd, ticket_path)
-
-    class FakeBoard:
-        @staticmethod
-        @contextlib.contextmanager
-        def board_lock():
-            yield
-
-        @staticmethod
-        def find_ticket_exact(_ticket):
-            return "claimed", ticket_path
-
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
-    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _owner: FakeBoard())
+    monkeypatch.setattr(
+        pd, "_load_board_for_repo",
+        lambda _owner: _fake_board(spec_path, tickets_dir),
+    )
     assert pd.main([
         "review", "disposition-template", "--ticket", "T-0700",
     ]) == 0

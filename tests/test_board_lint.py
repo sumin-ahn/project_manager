@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import shutil
 from pathlib import Path
@@ -3454,3 +3455,230 @@ def test_fallback_lookup_warns_when_it_answers_with_a_different_ticket(
     assert path.name == "T-7777-001-other.md"
     err = capsys.readouterr().err
     assert "정확 일치 티켓 없음" in err and "T-7777-001" in err
+
+
+# ── 라운드 사이드카 lint (advisory) + 구 역할 절 잔존 (blocking) ──────────────
+#
+# 라운드 판정의 단일 진실은 사이드카 seam 이고 board 는 그것을 lint 표면으로만 올린다
+# (차단 소비자는 완료 게이트). 반대로 명세 본문에 남은 구 역할 절은 마이그레이션 명령 1회로
+# 해소되는 이행 잔재라 blocking 이다.
+
+def _lint_ticket(board, status: str, tid: str, *, body: str = "") -> Path:
+    directory = board.tickets_dir() / status
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{tid}-fixture.md"
+    path.write_text(
+        "---\n"
+        f"id: {tid}\n"
+        "title: 픽스처\n"
+        f"status: {'open' if status == '.drafts' else status}\n"
+        "created: '2026-01-02'\n"
+        "created_by: t\n"
+        "claimed_by: null\n"
+        "depends_on: []\n"
+        "blocks: []\n"
+        "touches: []\n"
+        "estimate: small\n"
+        "tags: []\n"
+        "---\n\n"
+        f"# {tid} — 픽스처\n\n## 목표\n판정 입력.\n\n"
+        "## 완료 조건 (Definition of Done)\n- [x] 없음\n\n## 참고\n- 없음\n"
+        + body,
+        encoding="utf-8",
+    )
+    return path
+
+
+def _lint_round(board, tid: str, name: str, text: str) -> Path:
+    path = board._load_ticket_rounds().rounds_dir_for_ticket(tid, board.tickets_dir()) / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8", newline="")
+    return path
+
+
+def test_round_problem_kinds_are_the_seam_codes_and_never_block(board):
+    """lint kind = seam 판정 코드 그대로 · 전부 advisory (차단은 완료 게이트 하나)."""
+    rounds = board._load_ticket_rounds()
+    for code in (rounds.PROBLEM_NAME, rounds.PROBLEM_GAP,
+                 rounds.PROBLEM_DUPLICATE, rounds.PROBLEM_PENDING):
+        assert code in board._ADVISORY_LINT_KINDS, code
+    for kind in (board._ROUND_TEMPORARY_LINT_KIND, board._ROUND_STRAY_LINT_KIND,
+                 board._ROUND_UNREADABLE_LINT_KIND):
+        assert kind in board._ADVISORY_LINT_KINDS, kind
+
+
+def test_lint_rounds_surfaces_gap_and_pending(board, monkeypatch, tmp_path):
+    _wire_repo(board, monkeypatch, tmp_path)
+    path = _lint_ticket(board, "claimed", "T-3001")
+    rounds = board._load_ticket_rounds()
+    _lint_round(board, "T-3001", "01-developer.md",
+                "## 구현 보충 (developer · 2026-01-02)\n\n실제 산출.\n")
+    _lint_round(board, "T-3001", "03-code-reviewer.md",
+                rounds.render_round_seed(
+                    "code-reviewer", path.read_text(encoding="utf-8"), today="2026-01-02"))
+
+    issues = board.lint_rounds()
+
+    kinds = {kind for _name, kind, _detail in issues}
+    assert kinds == {rounds.PROBLEM_GAP, rounds.PROBLEM_PENDING}, issues
+    assert all(name == "T-3001" for name, _kind, _detail in issues)
+    assert any("02" in detail for _n, kind, detail in issues if kind == rounds.PROBLEM_GAP)
+
+
+def test_lint_rounds_reports_engine_temporary_leftovers(board, monkeypatch, tmp_path):
+    """점-접두 잔여(교체 중 크래시)는 라운드가 아니므로 seam 판정 밖이다 — 여기서 보이게 한다."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    _lint_ticket(board, "claimed", "T-3002")
+    rounds = board._load_ticket_rounds()
+    _lint_round(board, "T-3002", "01-developer.md",
+                "## 구현 보충 (developer · 2026-01-02)\n\n실제 산출.\n")
+    leftover = (f"{rounds.ROUND_TEMPORARY_PREFIX}01-developer.md.1234.deadbeef"
+                f"{rounds.ROUND_TEMPORARY_SUFFIX}")
+    _lint_round(board, "T-3002", leftover, "부분 쓰기\n")
+
+    issues = board.lint_rounds()
+
+    assert [(name, kind) for name, kind, _detail in issues] == [
+        ("T-3002", board._ROUND_TEMPORARY_LINT_KIND)]
+    assert leftover in issues[0][2]
+
+
+def test_lint_rounds_is_clean_for_a_consistent_board(board, monkeypatch, tmp_path):
+    _wire_repo(board, monkeypatch, tmp_path)
+    _lint_ticket(board, "claimed", "T-3003")
+    _lint_round(board, "T-3003", "01-developer.md",
+                "## 구현 보충 (developer · 2026-01-02)\n\n실제 산출.\n")
+    _lint_round(board, "T-3003", "02-code-reviewer.md",
+                "## 리뷰 (code-reviewer · 2026-01-02)\n\n실제 리뷰.\n")
+
+    assert board.lint_rounds() == []
+
+
+def test_lint_rounds_without_a_rounds_directory_is_empty(board, monkeypatch, tmp_path):
+    _wire_repo(board, monkeypatch, tmp_path)
+    _lint_ticket(board, "open", "T-3004")
+    assert board.lint_rounds() == []
+
+
+def test_lint_rounds_keeps_reporting_a_round_without_output_after_a_sibling_lands(
+    board, monkeypatch, tmp_path,
+):
+    """같은 역할 병렬 2라운드 — 01 회수가 02 의 미회수 판정을 지우지 않는다."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    path = _lint_ticket(board, "claimed", "T-3011")
+    rounds = board._load_ticket_rounds()
+    spec_text = path.read_text(encoding="utf-8")
+    block = json.dumps({
+        "version": 2,
+        "findings": [{
+            "id": "F-001", "class": "implementation-defect", "severity": "must-fix",
+            "authority": "설계 §경계", "evidence": "probe rc=1",
+            "recommendation": "F-001 수정", "design_change": False,
+        }],
+        "confirmations": [],
+    }, ensure_ascii=False)
+    _lint_round(
+        board, "T-3011", "01-code-reviewer.md",
+        "## 리뷰 (code-reviewer · 2026-01-03)\n\n## must-fix\n- F-001\n\n"
+        "## 판정\n판정: 반려 · finding 1건(must-fix 1건)\n\n"
+        f"```pm-review-v1\n{block}\n```\n",
+    )
+    _lint_round(
+        board, "T-3011", "02-code-reviewer.md",
+        rounds.render_round_seed("code-reviewer", spec_text, today="2026-01-02"),
+    )
+
+    issues = board.lint_rounds()
+
+    assert [(name, kind) for name, kind, _detail in issues] == [
+        ("T-3011", rounds.PROBLEM_PENDING)]
+    assert "02-code-reviewer.md" in issues[0][2]
+
+
+def test_lint_rounds_surfaces_a_file_sitting_where_a_ticket_directory_belongs(
+    board, monkeypatch, tmp_path,
+):
+    """`tickets/rounds/` 직계는 티켓별 디렉터리 자리다 — 파일 항목은 잔여로 보인다."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    _lint_ticket(board, "claimed", "T-3012")
+    _lint_round(board, "T-3012", "01-developer.md",
+                "## 구현 보충 (developer · 2026-01-02)\n\n실제 산출.\n")
+    stray = board._load_ticket_rounds().rounds_dir(board.tickets_dir()) / "NOTES.md"
+    stray.write_text("라운드 디렉터리가 아니다\n", encoding="utf-8")
+
+    issues = board.lint_rounds()
+
+    assert [(name, kind) for name, kind, _detail in issues] == [
+        ("NOTES.md", board._ROUND_STRAY_LINT_KIND)]
+    assert "NOTES.md" in issues[0][2]
+
+
+def test_lint_rounds_fail_soft_boundary_is_one_ticket(board, monkeypatch, tmp_path):
+    """한 티켓의 판정 실패가 다른 티켓의 판정을 통째로 버리지 않는다."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    path = _lint_ticket(board, "claimed", "T-3013")
+    rounds = board._load_ticket_rounds()
+    _lint_round(board, "T-3013", "01-developer.md",
+                rounds.render_round_seed(
+                    "developer", path.read_text(encoding="utf-8"), today="2026-01-02"))
+    # 판정 자체가 불가능한 이름(플랫폼 예약 장치명) — seam 이 loud 하게 거부한다.
+    unreadable = rounds.rounds_dir(board.tickets_dir()) / "CON"
+    unreadable.mkdir(parents=True, exist_ok=True)
+
+    issues = board.lint_rounds()
+
+    assert sorted((name, kind) for name, kind, _detail in issues) == [
+        ("CON", board._ROUND_UNREADABLE_LINT_KIND),
+        ("T-3013", rounds.PROBLEM_PENDING),
+    ]
+
+
+_LEGACY_SECTION = (
+    "\n<!-- pm-ticket-section:start role=developer -->\n"
+    "## 구현 보충 (developer · 2026-01-02)\n\n옛 컨테이너 산출.\n"
+    "<!-- pm-ticket-section:end role=developer -->\n"
+)
+
+
+def test_legacy_growth_section_blocks_and_names_the_migration(board, monkeypatch, tmp_path):
+    """구 역할 절이 남은 티켓은 red — 처방(마이그레이션 명령 1회)을 문구에 담는다."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    _lint_ticket(board, "done", "T-3005", body=_LEGACY_SECTION)
+
+    issues = board.lint_legacy_growth_sections()
+
+    assert [(name, kind) for name, kind, _detail in issues] == [
+        ("T-3005", "legacy-growth-section")]
+    assert "legacy-growth-section" not in board._ADVISORY_LINT_KINDS, "차단 축이어야 한다"
+    assert "rounds migrate" in issues[0][2]
+
+
+def test_legacy_growth_section_covers_every_status_and_drafts(board, monkeypatch, tmp_path):
+    """변환 대상은 완료 티켓에 몰려 있다 — done 과 draft 도 순회한다."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    _lint_ticket(board, "done", "T-3006", body=_LEGACY_SECTION)
+    _lint_ticket(board, ".drafts", "T-3007", body=_LEGACY_SECTION)
+    _lint_ticket(board, "open", "T-3008")
+
+    names = sorted(name for name, _kind, _detail in board.lint_legacy_growth_sections())
+    assert names == ["T-3006", "T-3007"]
+
+
+def test_legacy_seal_comment_alone_is_enough_to_flag(board, monkeypatch, tmp_path):
+    """marker 를 손으로 지우고 봉인 주석만 남긴 형상도 미변환이다."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    _lint_ticket(board, "done", "T-3009",
+                 body="\n<!-- pm-ticket-seal role=developer ordinal=0 sha256=x by=harvest -->\n")
+
+    assert [kind for _n, kind, _d in board.lint_legacy_growth_sections()] == [
+        "legacy-growth-section"]
+
+
+def test_migrated_board_has_no_legacy_findings(board, monkeypatch, tmp_path):
+    _wire_repo(board, monkeypatch, tmp_path)
+    _lint_ticket(board, "done", "T-3010")
+    _lint_round(board, "T-3010", "01-developer.md",
+                "## 구현 보충 (developer · 2026-01-02)\n\n실제 산출.\n")
+
+    assert board.lint_legacy_growth_sections() == []
+    assert board.lint_rounds() == []
