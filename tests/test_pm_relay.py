@@ -28,8 +28,11 @@ from pathlib import Path
 
 import pytest
 
+from test_opencode_permission_guard import _load_agent_frontmatter
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
+OPENCODE_AGENTS = REPO / "templates" / "opencode" / ".opencode" / "agents"
 
 
 def _load(name: str, path: Path):
@@ -54,8 +57,14 @@ def test_opencode_prompt_guard_converts_cwd_symlink_loop(orch, tmp_path):
 
 
 @pytest.mark.parametrize("role", ("developer", "architect", "code-reviewer", "researcher"))
-def test_opencode_runtime_role_config_is_self_contained_and_exact(orch, role):
-    """Cross adopter에 agent 카드가 없어도 선택 역할 하나의 mode/permission이 완결된다."""
+def test_opencode_runtime_role_config_is_self_contained_and_stable(orch, role):
+    """Cross adopter에 agent 카드가 없어도 선택 역할 하나의 mode 가 완결되고, 반복 호출이
+    같은 wire bytes 를 낸다(감사 가능한 결정론).
+
+    permission 값 자체의 기대치(edit/bash/task/webfetch 등)는 손기입하지 않는다 — 출하 카드
+    frontmatter 와의 파리티는 아래 test_opencode_runtime_role_fragment_matches_shipped_card_permission
+    단일 진실이 대조한다(T-0747·카드만 바뀌고 fragment 가 stale 로 남는 half-fix 방지).
+    """
     first = orch.opencode_runtime_role_config(role)
     assert first == orch.opencode_runtime_role_config(role)  # stable wire/audit bytes
     config = json.loads(first)
@@ -63,16 +72,38 @@ def test_opencode_runtime_role_config_is_self_contained_and_exact(orch, role):
     assert set(config["agent"]) == {role}
     agent = config["agent"][role]
     assert agent["mode"] == "all"
-    assert agent["permission"]["task"] == "deny"
-    assert agent["permission"]["webfetch"] == "deny"
-    # edit 는 전 역할 allow — researcher 도 티켓 사본 자기 절을 기록한다(ADR-0089·T-0696 F-014·
-    # 출하 카드와 동일 축 · T-0745). researcher 는 bash 만 deny.
-    assert agent["permission"]["edit"] == "allow"
-    if role == "researcher":
-        assert agent["permission"]["bash"] == "deny"
-    else:
-        assert agent["permission"]["bash"]["*"] == "allow"
-        assert agent["permission"]["bash"]["rm *"] == "deny"
+
+
+@pytest.mark.parametrize("role", ("developer", "architect", "code-reviewer", "researcher"))
+def test_opencode_runtime_role_fragment_matches_shipped_card_permission(orch, role):
+    """fragment(pm_relay.opencode_runtime_role_config) permission == 출하 카드 frontmatter
+    permission — 두 표면이 어긋나도 잡는 가드가 없어 [[T-0696]] 이 카드만 바꾸고 fragment 를
+    남긴 half-fix([[T-0745]])가 나왔다. 카드 없는 cross cwd 위임이 fragment 의 존재 이유라
+    파생 방향은 fragment→카드가 아니므로, 이 대조가 두 표면의 단일 진실 보증이다. 카드 파서는
+    test_opencode_permission_guard 의 기존 헬퍼를 재사용한다.
+
+    파리티(fragment == 카드)는 상대 단언이라 두 표면이 *동시에* 완화돼도(예: webfetch
+    deny→allow 를 fragment 4사본 + 카드 5장에 함께 적용) 잡지 못한다(리뷰어 실측: 관련 39개
+    테스트 파일 1943 passed/0 failed). webfetch deny 는 절대 앵커로 별도 고정한다(F-001).
+    """
+    fragment = json.loads(orch.opencode_runtime_role_config(role))
+    fragment_permission = fragment["agent"][orch.OPENCODE_AGENT[role]]["permission"]
+    card_permission = _load_agent_frontmatter(OPENCODE_AGENTS / f"{role}.md")["permission"]
+
+    # 절대 앵커 — 파리티(상대 단언)만으로는 두 표면의 동시 완화를 못 잡는다(F-001).
+    assert fragment_permission["webfetch"] == "deny"
+
+    # 파리티 — 카드 permission 의 모든 키(장래 신설 축 포함, 손기입 키 목록 없이)가 fragment
+    # 와 정확히 같다(F-002). bash 는 매핑 규칙 없이 그대로 대조한다: researcher 는 양쪽 모두
+    # 문자열 "deny", 나머지 역할은 양쪽 모두 동일한 위험-bash 패턴맵(dict).
+    assert set(card_permission) <= set(fragment_permission), (
+        f"{role}: 카드에만 있는 permission 키 "
+        f"{set(card_permission) - set(fragment_permission)}"
+    )
+    for key, value in card_permission.items():
+        assert fragment_permission[key] == value, (
+            f"{role}.{key}: fragment={fragment_permission[key]!r} != card={value!r}"
+        )
 
 
 def test_opencode_runtime_role_overrides_untrusted_incoming_content_without_mutation(orch):
