@@ -346,14 +346,16 @@ def _regression_cwd(worktree_slot: str | None = None) -> str:
         슬롯을 자동해소(`work/<repo>_<N>`),
       - 그것도 없으면(솔로/모호/부재) **현 `REPO` 기본** (fail-soft 폴백·솔로 무변경).
 
-    pm_handoff 를 동적 로드해 그 함수에 위임한다(DRY — `_auto_slot` 복제 0). pm_handoff
-    부재/로드 실패는 `str(REPO)` 폴백(현행 100% 보존·additive). pm_handoff.REPO 는 같은
-    `tools/` 위치 기준이라 ticket_finish.REPO 와 동일 경로다.
+    pm_handoff 를 동적 로드해 그 함수에 위임하되(DRY — `_auto_slot` 복제 0) **앵커는 이 도구의
+    `REPO` 를 넘긴다**(`repo_root=`). 그 인자를 생략하면 해소가 pm_handoff 모듈의 `REPO` 를 따라
+    가는데, 두 값이 갈리는 형상(호출자가 앵커를 재지정한 경우)에서는 해소된 코드 트리가 이 도구의
+    PM 홈과 무관한 트리를 가리켜 stage/측정이 엉뚱한 repo 로 간다. pm_handoff 부재/로드 실패는
+    `str(REPO)` 폴백(현행 100% 보존·additive).
     """
     hp = _load_pm_handoff()
     if hp is not None:
         try:
-            return hp._regression_cwd(worktree_slot)
+            return hp._regression_cwd(worktree_slot, repo_root=REPO)
         except Exception as exc:  # noqa: BLE001 — fail-soft: 위임 실패는 REPO 폴백.
             if _is_engine_rev_skew(exc):
                 raise
@@ -1192,7 +1194,8 @@ def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
                 run_git: Callable[[list[str]], tuple[int, str]], *,
                 repo: Path | None = None, include_touches: bool = True,
                 include_engine_outputs: bool = True,
-                touches_workspace: Path | None = None) -> StageScope:
+                touches_workspace: Path | None = None,
+                touches: Sequence[str] | None = None) -> StageScope:
     """이 완료 부기가 stage 할 pathspec (REPO 상대·실제 `add` 가능한 **파일**).
 
     선언원 = 티켓 `touches` ∪ `engine_written_paths()`. **판정은 board.py 의 repo-중립
@@ -1204,6 +1207,9 @@ def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
     를, board 분리 형상에선 서브모듈 내부 경로를 가리킬 수 있는데, 그대로 pathspec 에 넣으면
     `git add` 가 **rc=128 fatal** 로 죽어 아무것도 stage 되지 않는다.
 
+    `touches` 를 주면 board 조회 대신 그 목록을 선언원으로 쓴다 — 두-repo 계획이 티켓 touches 를
+    repo 별 몫으로 갈라 각 계획에 자기 몫만 넘기는 데 쓴다(주지 않으면 종전대로 board 조회).
+
     board 모듈을 못 띄우면 **fail-loud** — 빈 pathspec + error 사유를 돌려준다(호출부가 경고 +
     잔여 전체 보고). 여기서 조용한 fail-soft 는 stage 0 을 정상처럼 보이게 해 위험하다.
     """
@@ -1214,9 +1220,10 @@ def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
     repo = Path(repo) if repo is not None else REPO
     declared: list[Path] = []
     if include_touches:
-        touches = get_ticket_touches(board_py, ticket_id)
+        declared_touches = (list(touches) if touches is not None
+                            else get_ticket_touches(board_py, ticket_id))
         if touches_workspace is not None and any(
-                _has_worktree_touch_prefix(path) for path in touches):
+                _has_worktree_touch_prefix(path) for path in declared_touches):
             try:
                 coords = _load_repo_coordinates()
             except RuntimeError as exc:
@@ -1229,14 +1236,14 @@ def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
                     f"repo 좌표 normalizer를 로드하지 못했다 ({TOOLS_DIR / 'repo_coordinates.py'})",
                 )
             try:
-                touches = coords.normalize_repo_paths(
-                    touches,
+                declared_touches = coords.normalize_repo_paths(
+                    declared_touches,
                     pm_root=REPO,
                     workspace=touches_workspace,
                 )
             except getattr(coords, "RepoCoordinateError", RuntimeError) as exc:
                 return StageScope((), f"touches 좌표 정규화 실패 ({exc})")
-        declared.extend(repo / touch for touch in touches)
+        declared.extend(repo / touch for touch in declared_touches)
     if include_engine_outputs:
         # PM-home 산출물은 ticket code worktree 가 아니라 이 도구의 설계 repo 에만 있다.
         declared.extend(engine_written_paths(board, ticket_id, log_file))
@@ -1252,6 +1259,23 @@ def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
 # "잔여 없음"이라는 **거짓 안심**이 나오면 안 된다(reviewer 실측). 그래서 board 가 있으면 그
 # NUL 파서(`git_parse_porcelain_z` — 스코프 전개와 **같은 함수**)를 쓰고, 없으면 줄 단위
 # degraded 판독으로 **보고만** 이어간다(그 경우 스코프도 비어 있어 전부 스코프 밖이 맞다).
+
+
+def _path_exists_in(root: Path, relative: str) -> bool:
+    """`root` 안에 이 선언 경로가 실재하는가 (판정 불능·경로 마법은 False).
+
+    touches 는 사람이 적는 값이라 glob/pathspec 마법이 섞일 수 있다. 그런 선언은 이 트리에 있다고
+    단정하지 않고 False 로 접는다 — 판정 불능을 존재로 세면 몫이 틀린 계획에 실린다. 절대경로
+    선언은 pathlib 규칙상 `root` 가 무시되고 그 경로 자체로 판정된다(트리별 몫을 가르지 못하므로
+    호출부에서 양쪽 계획에 들어간다).
+    """
+    candidate = relative.strip()
+    if not candidate or candidate.startswith(":(") or any(ch in candidate for ch in "*?["):
+        return False
+    try:
+        return (root / candidate).exists()
+    except OSError:
+        return False
 
 
 def scope_covers(pathspec: Sequence[str], path: str) -> bool:
@@ -1498,7 +1522,11 @@ class TicketFinisher:
     def _code_tree(self) -> Path:
         """코드가 있는 트리 — 회귀 cwd 해소와 **같은 규칙**(task 작업공간 > 명시 > 자동 슬롯).
 
-        분리된 PM 홈엔 코드가 없으므로 diff 측정도 회귀와 같은 트리를 봐야 한다."""
+        분리된 PM 홈엔 코드가 없으므로 diff 측정도 회귀와 같은 트리를 봐야 한다.
+
+        **회귀 skip 여부와 독립**이다 — `--no-pytest` 는 [1/5] 회귀 실행만 건너뛴다. 이 트리는
+        diff 서킷브레이커 측정 root·touches 좌표 정규화·PM-direct 재검이 함께 쓰므로, 회귀를
+        안 돌린다고 해소를 건너뛰면 그 소비자들이 PM 홈(분리 형상에선 엔진 import 사본)을 잰다."""
         if self._task_workspace is not None:
             return self._task_workspace
         if self._regression_cwd is not None:
@@ -1929,16 +1957,71 @@ class TicketFinisher:
         return stage_scope(ticket_id, self._board_py, self._log_file,
                            self._run_git_stdout_fn)
 
-    def _task_stage_scope(self, ticket_id: str) -> StageScope:
-        """task worktree 에는 ticket touches만 계획한다 (홈 산출물 유입 금지)."""
-        assert self._task_workspace is not None
+    def _code_stage_scope(self, ticket_id: str, code_tree: Path,
+                          touches: Sequence[str] | None = None) -> StageScope:
+        """코드 트리에는 ticket touches만 계획한다 (홈 산출물 유입 금지).
 
+        트리를 인자로 받는다 — 코드 트리는 task 작업공간일 수도, 해소된 슬롯 worktree 일 수도
+        있고 둘은 stage 규칙이 같다(`_stage_plans` 가 어느 트리인지 판정한다). `touches` 는
+        이 트리 몫으로 갈린 부분집합이다(미지정이면 티켓 touches 전체).
+        """
         def run_git(args: list[str]) -> tuple[int, str]:
-            return self._run_git_stdout_at_fn(self._task_workspace, args)
+            return self._run_git_stdout_at_fn(code_tree, args)
 
         return stage_scope(ticket_id, self._board_py, self._log_file, run_git,
-                           repo=self._task_workspace, include_engine_outputs=False,
-                           touches_workspace=self._task_workspace)
+                           repo=code_tree, include_engine_outputs=False,
+                           touches_workspace=code_tree, touches=touches)
+
+    def _split_touches_by_tree(self, ticket_id: str,
+                               code_tree: Path) -> tuple[list[str], list[str]]:
+        """티켓 touches 를 (코드 트리 몫, PM 홈 몫)으로 가른다.
+
+        판정은 **어느 트리에 실재하는가** 다: 코드 트리에 있으면 코드 트리, 없고 PM 홈에 있으면
+        PM 홈(wiki·결정 기록·domain 같은 홈-상주 산출물), 어디에도 없으면 두 계획 모두(신규
+        파일이거나 추적 중인 삭제 — 어느 쪽인지는 각 트리의 stage 필터가 판정한다). 두-repo 계획이 코드 몫만 계획하면 홈-상주 touches 가 **어느 repo 에서도 stage 되지
+        않고** 잔여 보고에만 남는다 — 그 경로들은 이미 선언돼 있어 "touches 를 보강하라"는 처방도
+        듣지 않는다. 정규화 불능이면 전부 코드 몫으로 두어 `stage_scope` 가 기존과 같은 fail-loud
+        사유를 내게 한다(여기서 삼키지 않는다).
+        """
+        touches = list(get_ticket_touches(self._board_py, ticket_id))
+        if not touches:
+            return [], []
+        # 코드 트리 좌표 해소는 측정이 쓰는 공용 seam 을 그대로 쓴다(사본 0·같은 규칙).
+        # 그 seam 의 workspace 가 곧 `_code_tree()` 이므로 여기 코드 트리와 같은 트리다.
+        in_code_tree = self._normalize_measured_touches(touches, warn=False)
+        if in_code_tree is None or len(in_code_tree) != len(touches):
+            return touches, []
+        code_touches: list[str] = []
+        home_touches: list[str] = []
+        for declared, normalized in zip(touches, in_code_tree):
+            in_code = _path_exists_in(code_tree, normalized)
+            in_home = _path_exists_in(REPO, declared)
+            if in_code:
+                code_touches.append(declared)
+            elif in_home:
+                home_touches.append(declared)
+            else:
+                # 어디에도 실재하지 않는 선언 — 신규 파일일 수도, **추적 중인 삭제**일 수도 있다.
+                # 한쪽으로만 접으면 삭제가 그 트리에서 추적되지 않아 stage 필터에 떨어지고 어느
+                # 계획에도 안 실린다. 둘 다에 넣어도 각 계획의 필터가 자기 트리에서 추적되는 것만
+                # 남기므로 이중 stage 는 생기지 않는다.
+                code_touches.append(declared)
+                home_touches.append(declared)
+        return code_touches, home_touches
+
+    @staticmethod
+    def _is_separated_code_tree(code_tree: Path) -> bool:
+        """이 코드 트리가 PM 홈과 분리된 트리인가 — 판정은 `트리 != PM 홈` 하나다.
+
+        "PM 홈 하위인가" 같은 위치 제약은 두지 않는다: 슬롯 worktree 가 심링크거나 다른
+        마운트에 있으면 그 제약이 참이 아니고, 그러면 diff 측정은 코드 트리를 보는데 stage 만
+        PM 홈으로 내려앉아 **한 값의 두 소비자가 갈린다**. 해소 자체가 이미 이 도구의 `REPO` 를
+        앵커로 하므로(`_regression_cwd` 가 `repo_root` 를 forward) 트리가 PM 홈과 다르다는 것은
+        곧 분리 형상이라는 뜻이다. 경로 해소 실패는 False(fail-soft·기존 단일 계획 유지)."""
+        try:
+            return code_tree.resolve() != REPO.resolve()
+        except OSError:
+            return False
 
     def _default_status_entries(self) -> tuple[tuple[str, str], ...]:
         """워킹트리 상태 `((XY, 경로), …)` (loud 보고 입력) — 실 해소.
@@ -1955,19 +2038,30 @@ class TicketFinisher:
     def _stage_plans(self, ticket_id: str) -> tuple[RepoStagePlan, ...]:
         """실제 stage 와 dry-run 이 공유하는 repo별 계획 단일 진실.
 
-        task-mode 는 PM 홈에 log/board 산출물, worktree 에 code touches를 각각 둔다.
-        비-task 경로는 기존 단일 PM-home 계획을 그대로 쓴다.
+        분기 축은 task 여부가 아니라 **해소된 코드 트리가 PM 홈인가**다 — 코드 트리 소비자
+        (diff 측정·[4/5] stage·PM-direct 재검)는 전부 `_code_tree()` 하나를 본다. 트리가 PM 홈
+        자신이면(솔로/임베디드) 기존 단일 계획이고, 분리 형상(task 작업공간 또는 해소된 슬롯
+        worktree)이면 PM 홈에 log/board 산출물, 코드 트리에 코드 touches 를 각각 둔다. 축을
+        task 유무로 두면 슬롯 해소로 온 코드 트리에서 PM 홈의 동명 사본이 stage 된다.
+
+        touches 는 **repo 별 몫으로 갈라** 각 계획에 넘긴다(`_split_touches_by_tree`) — 홈에만
+        사는 touches(wiki·결정 기록·domain)를 코드 계획에만 두면 어느 repo 에서도 stage 되지
+        않는다. [5/5] 커밋 안내도 이 계획을 그대로 따라 repo 별로 나온다.
         """
-        if self._task_workspace is None:
+        code_tree = self._code_tree()
+        if not self._is_separated_code_tree(code_tree):
             return (RepoStagePlan("PM 홈", REPO, self._stage_scope_fn(ticket_id)),)
+        code_touches, home_touches = self._split_touches_by_tree(ticket_id, code_tree)
         home_scope = stage_scope(
             ticket_id, self._board_py, self._log_file, self._run_git_stdout_fn,
-            include_touches=False,
+            include_touches=bool(home_touches), touches=home_touches,
         )
+        label = ("task worktree touches" if self._task_workspace is not None
+                 else "slot worktree touches")
         return (
             RepoStagePlan("PM 홈 산출물", REPO, home_scope),
-            RepoStagePlan("task worktree touches", self._task_workspace,
-                          self._task_stage_scope(ticket_id)),
+            RepoStagePlan(label, code_tree,
+                          self._code_stage_scope(ticket_id, code_tree, code_touches)),
         )
 
     # ── 메인 흐름 ────────────────────────────────────────────────────
@@ -1992,9 +2086,11 @@ class TicketFinisher:
             expand = getattr(board, "expand_owned_touch_files", None) if board else None
             if expand is None:
                 raise RuntimeError("board expand_owned_touch_files seam 부재")
-            expanded = expand(self._code_tree(), measured_touches)
-            entries = (self._status_entries_at_fn(self._task_workspace)
-                       if self._task_workspace is not None else self._status_entries_fn())
+            code_tree = self._code_tree()
+            expanded = expand(code_tree, measured_touches)
+            entries = (self._status_entries_at_fn(code_tree)
+                       if self._is_separated_code_tree(code_tree)
+                       else self._status_entries_fn())
             changed_paths = tuple(
                 path for _xy, path in entries
                 if any(self._touch_claims_path(touch, path) for touch in measured_touches)
@@ -2030,7 +2126,8 @@ class TicketFinisher:
 
         `skip_pytest`(--no-pytest) 는 [1/5] 회귀 단계를 건너뛴다 — 측정은 PM 이 /pm-qa
         등으로 별도. board complete 는 `--tests-pass` 를 유지한다(pm_handoff `--no-pytest` 동형·
-        회귀 red 아님·skip 로 진행). 다중슬롯 형상에서 회귀 cwd 를 정할 수 없을 때 우회 수단.
+        회귀 red 아님·skip 로 진행). **회귀 실행만** 건너뛴다 — 코드 트리 해소·diff 측정·
+        stage 는 그대로다(`_code_tree`).
         """
         del section  # status 합계표 제거로 더 이상 쓰지 않음(후방호환 수용만).
         print(
@@ -2352,7 +2449,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-pytest",
         action="store_true",
         help=f"[1/5] 회귀 단계를 skip 한다 (측정은 {_runtime_skill_entry('pm-qa')} 등으로 "
-             "별도·board complete 는 --tests-pass 유지).",
+             "별도·board complete 는 --tests-pass 유지). 회귀 실행만 skip — 코드 트리 해소·"
+             "diff 측정·stage 는 그대로다.",
     )
     return parser
 
@@ -2376,8 +2474,8 @@ def _main(argv: list[str] | None = None) -> int:
 
     # 정체성 인자 *검증*(`--slot` 단독·`slot < 1` = uniform fail-loud)은 `--no-pytest` 와
     # 무관하게 **항상** 수행한다. task F6도 회귀 전용 값이 아니다: stage/status 계획의 cwd 단일
-    # 진실이므로 --no-pytest 에서도 반드시 해소한다. 반면 slot-mode 모호 게이트는 회귀를 실제로
-    # 돌 때만 적용한다(기존 --no-pytest escape hatch 보존).
+    # 진실이므로 --no-pytest 에서도 반드시 해소한다. slot-mode 코드 트리 해소·모호 게이트도
+    # 같다 — 회귀 skip 여부와 독립이다(아래 비-task 경로 주석).
     try:
         identity = identity_args.parse_identity(args)
     except ValueError as exc:
@@ -2419,21 +2517,30 @@ def _main(argv: list[str] | None = None) -> int:
             return 1
         print(f"작업공간(task {identity.task}) → {REPO / ws.slot}")
         task_workspace = REPO / ws.slot
-        if not args.no_pytest:
-            regression_cwd = _regression_cwd(ws.slot)
-    elif not args.no_pytest:
+        # 비-task 경로와 동형으로 `--no-pytest` 와 무관하게 해소한다 — 결과 트리는 같지만
+        # (`_code_tree` 가 task 작업공간을 먼저 본다) 해소가 stale 슬롯(장부에는 있고 디스크에는
+        # 없음) 존재검사를 태워 경고 없이 사라지던 갈래를 없앤다.
+        regression_cwd = _regression_cwd(ws.slot)
+    else:
+        # 코드 트리(=회귀 cwd) 해소는 `--no-pytest` 와 **무관하게** 항상 수행한다. 해소 결과는
+        # 회귀 실행 전용 값이 아니다 — diff 서킷브레이커(`_code_tree()`)·[4/5] stage·PM-direct
+        # 재검이 같은 트리를 소비한다. 회귀 skip 이 해소까지 우회하면 그 소비자들이 PM 홈(분리
+        # 형상에선 엔진 import 사본)을 잰다: 실측에서 dirty 한 PM 홈 import 사본이 small 상한
+        # 300 줄 티켓을 2832 줄로 false-block 했고, 같은 호출이 PM 홈의 import 사본을 stage 했다.
+        # `--no-pytest` 는 [1/5] 회귀 실행만 건너뛸 뿐 트리 해소의 우회 수단이 아니다 — 모호는
+        # `--repo/--slot` 또는 `--task` 명시로만 푼다(기계 판정).
         worktree_slot, ambiguity = _resolve_finish_slot(identity.repo, identity.slot)
         if ambiguity is not None:
-            print(f"\n[중단] 회귀 슬롯 해소 모호 — {ambiguity}", file=sys.stderr)
+            print(f"\n[중단] 코드 트리(회귀 cwd) 해소 모호 — {ambiguity}", file=sys.stderr)
             print(
                 "  → `--repo <name> [--slot <N>]`(예: --repo project_manager --slot 1) 으로 슬롯을 "
-                f"명시하거나, `--no-pytest` 로 회귀를 skip 하라(측정은 "
-                f"{_runtime_skill_entry('pm-qa')} 등으로 별도).",
+                "명시하거나, `--task <이름>` 으로 task 작업공간을 쓰라 — 코드 트리는 회귀뿐 아니라 "
+                "diff 측정·stage 가 함께 쓰므로 회귀 skip 으로는 풀리지 않는다.",
                 file=sys.stderr,
             )
             return 1
-        # 해소된 슬롯이 있으면 그 worktree 를 회귀 cwd 로 명시 forward(_regression_cwd 위임).
-        # solo/미해소(None)면 regression_cwd 미주입 → _default_run_pytest 런타임 폴백(현행 100% 보존).
+        # 해소된 슬롯이 있으면 그 worktree 를 코드 트리(회귀 cwd)로 명시 forward(_regression_cwd 위임).
+        # solo/미해소(None)면 미주입 → 런타임 `_regression_cwd()` 폴백(현행 100% 보존).
         if worktree_slot:
             regression_cwd = _regression_cwd(worktree_slot)
             session = Path(worktree_slot).name
