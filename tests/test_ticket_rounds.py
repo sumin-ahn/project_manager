@@ -90,7 +90,15 @@ def test_rounds_dir_is_a_fixed_sibling_of_the_status_directories(rounds, tickets
 
 
 @pytest.mark.parametrize(
-    "ticket_id", ["", ".", "..", "../escape", "a/b", "a\\b"],
+    "ticket_id",
+    [
+        "", ".", "..", "../escape", "a/b", "a\\b",
+        "C:x",          # Windows drive-relative — POSIX 구분자 없이 상위로 나간다
+        "C:",
+        "T-1:a",        # 대체 데이터 스트림 표기
+        "CON", "nul", "LPT1",   # Windows 예약 장치명
+        "T-0001 ", "T-0001.",   # Windows 가 조용히 떼는 후행 공백·점
+    ],
 )
 def test_ticket_id_that_is_not_a_single_path_segment_is_refused(rounds, tickets_dir, ticket_id):
     with pytest.raises(rounds.RoundsError):
@@ -184,6 +192,7 @@ def test_review_round_seed_carries_the_review_block_skeleton(rounds, delegate):
 
 
 def test_round_seed_labels_match_the_board_role_labels(rounds):
+    """권위는 `ticket_rounds.ROLE_LABELS` — board 표가 파생으로 뒤집힐 때까지 일치를 못박는다."""
     board = _load_tool("board")
     assert rounds.ROLE_LABELS == board.TICKET_GROWTH_ROLE_LABELS
     assert rounds.ROLES == tuple(board.TICKET_GROWTH_ROLE_LABELS)
@@ -297,6 +306,104 @@ def test_reserve_round_refuses_roles_outside_the_round_role_set(rounds, tickets_
         rounds.reserve_round(
             tickets_dir, "T-0001", "dev", content="x", lock=threading.Lock(),
         )
+
+
+def test_reserve_round_refuses_to_overwrite_when_the_scan_was_stale(
+    rounds, tickets_dir, monkeypatch,
+):
+    """채번이 틀려도 배타 생성이 최종 보루다 — 남의 라운드를 덮지 않고 loud 하게 멈춘다."""
+    existing = _reserve(rounds, tickets_dir, "T-0001", "developer")
+    before = existing.read_bytes()
+    monkeypatch.setattr(rounds, "_scan_round_files", lambda directory: [])
+
+    with pytest.raises(rounds.RoundsError, match="예약 충돌"):
+        rounds.reserve_round(
+            tickets_dir, "T-0001", "developer",
+            content="다른 시드\n", lock=threading.Lock(),
+        )
+
+    assert existing.read_bytes() == before
+
+
+def test_temporary_round_path_stays_outside_the_round_name_grammar(rounds, tickets_dir):
+    target = tickets_dir / "rounds" / "T-0001" / "01-developer.md"
+    temporary = rounds._temporary_round_path(target)
+    assert temporary.parent == target.parent          # 원자 rename 은 같은 파일시스템이어야 한다
+    assert temporary.name.startswith(rounds.ROUND_TEMPORARY_PREFIX)
+    assert temporary.name.endswith(rounds.ROUND_TEMPORARY_SUFFIX)
+    assert rounds.parse_round_filename(temporary.name) is None
+
+
+def test_load_verify_and_reserve_survive_the_lockless_harvest_window(
+    rounds, tickets_dir, monkeypatch,
+):
+    """회수(무락) 중간 파일이 디스크에 있는 창에서도 같은 티켓의 로드·판정·예약이 정상이다."""
+    target = _reserve(rounds, tickets_dir, "T-0001", "developer")
+    harvested = "## 구현 보충 (developer · 2026-01-03)\n\n회수 본문\n"
+    seam = rounds._load_file_lock()
+    original_replace = seam.atomic_replace
+    inside_window = threading.Event()
+    release = threading.Event()
+    failure: list[BaseException] = []
+
+    def blocking_replace(source, destination):
+        inside_window.set()
+        assert release.wait(30), "회수 창 해제 신호 누락"
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(seam, "atomic_replace", blocking_replace)
+
+    def harvest() -> None:
+        try:
+            rounds.replace_round(target, harvested)
+        except BaseException as exc:   # noqa: BLE001 — 스레드 실패를 본 스레드로 옮긴다.
+            failure.append(exc)
+
+    thread = threading.Thread(target=harvest)
+    thread.start()
+    try:
+        assert inside_window.wait(30), "회수 창에 진입하지 못했다"
+        # 창이 실재하는지 먼저 단언한다 — 임시 파일이 없으면 이 테스트는 아무것도 안 본다.
+        residue = [
+            item.name for item in target.parent.iterdir()
+            if item.name.startswith(rounds.ROUND_TEMPORARY_PREFIX)
+        ]
+        assert len(residue) == 1, residue
+
+        loaded = rounds.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+        assert [(item.ordinal, item.role) for item in loaded] == [(1, "developer")]
+        assert loaded[0].text != harvested        # 교체 전이라 리더는 옛 내용을 본다
+
+        problems = rounds.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+        assert [problem.code for problem in problems] == [rounds.PROBLEM_PENDING]
+
+        reserved = rounds.reserve_round(
+            tickets_dir, "T-0001", "code-reviewer",
+            content=_seed(rounds, "code-reviewer"), lock=threading.Lock(),
+        )
+        assert reserved.name == "02-code-reviewer.md"
+    finally:
+        release.set()
+        thread.join(30)
+
+    assert not failure, failure
+    assert target.read_bytes() == harvested.encode("utf-8")
+    assert sorted(item.name for item in target.parent.iterdir()) == [
+        "01-developer.md", "02-code-reviewer.md",
+    ]
+
+
+def test_stray_dot_prefixed_files_are_not_rounds_and_do_not_break_anything(
+    rounds, tickets_dir,
+):
+    """점-접두 규약은 임시 파일뿐 아니라 외부 부산물(.DS_Store 류)도 표면 밖에 둔다."""
+    path = _reserve(rounds, tickets_dir, "T-0001", "developer")
+    rounds.replace_round(path, "## 구현 보충 (developer · 2026-01-03)\n\n회수\n")
+    (path.parent / ".DS_Store").write_bytes(b"\x00")
+
+    loaded = rounds.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    assert [item.role for item in loaded] == ["developer"]
+    assert rounds.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT) == []
 
 
 # ── 로드 ───────────────────────────────────────────────────────────────────
@@ -428,6 +535,15 @@ def test_verify_rounds_reports_a_pending_round_as_information(rounds, tickets_di
     assert "01-developer.md" in problems[0].detail
 
 
+def test_verify_problem_codes_are_four_distinct_values(rounds):
+    """소비자(lint·complete 게이트)가 한국어 detail 을 파싱하지 않고 코드로 심각도를 정한다."""
+    codes = {
+        rounds.PROBLEM_NAME, rounds.PROBLEM_GAP,
+        rounds.PROBLEM_DUPLICATE, rounds.PROBLEM_PENDING,
+    }
+    assert codes == {"round-name", "round-gap", "round-dup", "round-pending"}
+
+
 def test_verify_rounds_reports_a_name_that_breaks_the_grammar(rounds, tickets_dir):
     path = _reserve(rounds, tickets_dir, "T-0001", "developer")
     rounds.replace_round(path, "## 구현 보충 (developer · 2026-01-03)\n\n내용\n")
@@ -438,7 +554,7 @@ def test_verify_rounds_reports_a_name_that_breaks_the_grammar(rounds, tickets_di
     assert "notes.md" in problems[0].detail
 
 
-def test_verify_rounds_reports_two_roles_holding_the_same_ordinal(rounds, tickets_dir):
+def test_verify_rounds_reports_two_roles_holding_the_same_ordinal_as_a_duplicate(rounds, tickets_dir):
     directory = tickets_dir / "rounds" / "T-0001"
     directory.mkdir(parents=True)
     for role in ("architect", "developer"):
@@ -446,8 +562,9 @@ def test_verify_rounds_reports_two_roles_holding_the_same_ordinal(rounds, ticket
             f"## 산출 ({role} · 2026-01-03)\n\n내용\n", encoding="utf-8",
         )
     problems = rounds.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
-    assert [problem.code for problem in problems] == [rounds.PROBLEM_NAME]
+    assert [problem.code for problem in problems] == [rounds.PROBLEM_DUPLICATE]
     assert "01" in problems[0].detail
+    assert "architect" in problems[0].detail and "developer" in problems[0].detail
 
 
 def test_verify_rounds_does_not_call_a_trailing_gap_when_the_last_round_is_pending(

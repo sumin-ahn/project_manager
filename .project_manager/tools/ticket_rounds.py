@@ -22,7 +22,9 @@
 불변식:
   - 같은 티켓에서 순번은 유일하고 1..N 연속이다 — 경합하면 배타 생성이 한쪽만 통과시킨다.
   - 이름 문법을 벗어난 항목은 조용히 건너뛰지 않는다(`load_rounds` 는 loud, `verify_rounds` 는
-    판정으로 표면화).
+    판정으로 표면화). **예외는 점(`.`)으로 시작하는 항목** — 엔진의 임시 산출(원자 교체 중간
+    파일)과 도구가 흘린 부산물이 사는 자리이고 라운드가 아니다. 회수는 무락이라 그 창 동안
+    다른 호출이 이 자리를 지나므로, 자기 임시 파일로 자기 판정을 깨지 않으려면 규약이 필요하다.
   - 교체 뒤 디스크에는 옛 내용 아니면 새 내용만 있다(공용 원자 교체 seam).
   - 판정은 파일시스템 상태만 본다 — 장부도 stamp 도 두지 않는다.
 
@@ -37,7 +39,7 @@ import os
 import re
 import sys
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import NamedTuple
 
 _TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
@@ -179,9 +181,11 @@ ENGINE_REV = "v1.7.6"
 # 옮겨다녀도 라운드는 자기 자리에 남는다.
 ROUNDS_DIRNAME = "rounds"
 
-# 사람용 절명. 키 집합 = 라운드를 남기는 역할 전부이고, 값은 board 의 성장 절 라벨과 같은 문구다.
-# board 를 로드해 가져오지 않는다 — 소비 방향이 board → 이 모듈이라 반대 방향 로드는 순환이고,
-# board 는 argparse 선택지를 자기 표에서 낸다. 두 표의 일치는 테스트가 못박는다.
+# 사람용 절명. 키 집합 = 라운드를 남기는 역할 전부다.
+# **권위 방향은 이 표 → board** 다 — 라운드 헤더를 내는 쪽이 여기이고, board 의 성장 절 표는
+# 후속 티켓에서 이 표를 파생으로 읽는다(그때까지 board 는 argparse 선택지를 자기 표에서 내므로
+# 두 표가 같은 값을 들고 있고, 그 일치는 테스트가 못박는다). board 를 로드해 가져오지 않는다 —
+# 소비 방향이 board → 이 모듈이라 반대 방향 로드는 순환이다.
 ROLE_LABELS: dict[str, str] = {
     "architect": "설계",
     "developer": "구현 보충",
@@ -197,11 +201,26 @@ ROUND_ORDINAL_WIDTH = 2
 # 보드 git 이 추적하는 일반 파일이다 — 슬롯 run-dir 사본(소유자 전용)과 권한 관례가 다르다.
 ROUND_FILE_MODE = 0o644
 
-# 판정 코드. 완료 게이트가 red 로 보는 것은 `round-gap`(삭제 의심) 하나이고, `round-pending`
-# (시드 그대로)은 표시용이다.
+# 판정 코드. 완료 게이트가 red 로 보는 것은 순번 유일성·연속성이 깨진 둘(`round-gap` 삭제 의심 ·
+# `round-dup` 같은 순번 중복)이고, `round-name`(문법 위반)과 `round-pending`(시드 그대로)은
+# 표시용이다. 심각도 자체는 소비자(lint·complete 게이트)가 정한다.
 PROBLEM_NAME = "round-name"
 PROBLEM_GAP = "round-gap"
+PROBLEM_DUPLICATE = "round-dup"
 PROBLEM_PENDING = "round-pending"
+
+# 원자 교체 중간 파일의 이름 규약 — 점 접두라 라운드 스캔 표면 밖이다(회수는 무락이라 이 파일이
+# 디스크에 있는 창 동안 같은 티켓의 load/verify/reserve 가 지나간다).
+ROUND_TEMPORARY_PREFIX = "."
+ROUND_TEMPORARY_SUFFIX = ".tmp"
+
+# Windows 가 파일/디렉터리 이름으로 열지 못하는 예약 장치명. 두 플랫폼에서 같은 티켓 ID 가 같은
+# 자리를 가리키도록 여기서 함께 거부한다(POSIX 에서만 만들어지는 라운드 디렉터리 금지).
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{index}" for index in range(1, 10)}
+    | {f"LPT{index}" for index in range(1, 10)}
+)
 
 # 이름 후보를 느슨히 뗀 뒤 정규 형태와 대조한다(문법 판정은 `round_filename` 한 곳이 소유).
 _ROUND_FILENAME_RE = re.compile(r"\A(?P<ordinal>\d+)-(?P<role>[^\r\n]+)\Z")
@@ -298,14 +317,24 @@ def _safe_ticket_id(ticket_id: str) -> str:
     """경로 한 마디로 쓸 수 있는지만 본다.
 
     ID **문법**(`T-NNNN`·prefix 형)은 board 소유라 여기서 복제하지 않는다 — 복제하면 발행측이
-    문법을 넓힐 때 이 사본만 남아 멀쩡한 티켓의 라운드를 막는다. 여기서 막는 것은 디렉터리
-    탈출과 빈 이름뿐이다.
+    문법을 넓힐 때 이 사본만 남아 멀쩡한 티켓의 라운드를 막는다. 여기서 막는 것은 라운드
+    디렉터리 밖을 가리키는 이름과 빈 이름이다.
+
+    판정은 문자 열거가 아니라 **두 플랫폼의 경로 규칙**으로 한다 — 구분자 목록만 세면 한쪽에서
+    샌다(드라이브 상대 `C:x` 는 POSIX 구분자를 하나도 안 쓰고도 상위로 나간다). 후행 공백·점과
+    예약 장치명도 함께 거부한다: Windows 가 그것들을 조용히 다른 이름으로 해소해, 같은 ID 가
+    플랫폼마다 다른 디렉터리를 가리키게 된다.
     """
     text = str(ticket_id)
-    separators = {"/", "\\", os.sep}
-    if os.altsep:
-        separators.add(os.altsep)
-    if not text or text in {".", ".."} or any(sep in text for sep in separators):
+    if not text or text in {".", ".."}:
+        raise RoundsError(f"라운드 디렉터리 이름으로 쓸 수 없는 티켓 ID: {ticket_id!r}")
+    if (
+        PurePosixPath(text).name != text
+        or PureWindowsPath(text).name != text
+        or ":" in text
+        or text != text.rstrip(" .")
+        or text.split(".")[0].upper() in _WINDOWS_RESERVED_NAMES
+    ):
         raise RoundsError(f"라운드 디렉터리 이름으로 쓸 수 없는 티켓 ID: {ticket_id!r}")
     return text
 
@@ -424,12 +453,24 @@ def _write_new_file(path: Path, text: str) -> None:
         os.close(descriptor)
 
 
+def _is_engine_temporary(name: str) -> bool:
+    """점 접두 = 라운드가 아닌 엔진 임시 산출·부산물(스캔 표면 밖)."""
+    return name.startswith(ROUND_TEMPORARY_PREFIX)
+
+
 def _scan_round_files(directory: Path) -> list[tuple[int, str, Path]]:
-    """라운드 디렉터리의 항목을 순번 순으로 뗀다 — 문법을 벗어난 항목은 loud."""
+    """라운드 디렉터리의 항목을 순번 순으로 뗀다 — 문법을 벗어난 항목은 loud.
+
+    점-접두 항목만 예외로 건너뛴다(`ROUND_TEMPORARY_PREFIX` 규약) — 진행 중인 원자 교체의
+    중간 파일이 그 자리에 있고, 그것을 문법 위반으로 읽으면 무락 회수 창 동안 같은 티켓의
+    로드·예약이 무작위로 죽는다.
+    """
     if not directory.is_dir():
         return []
     found: list[tuple[int, str, Path]] = []
     for entry in sorted(directory.iterdir(), key=lambda item: item.name):
+        if _is_engine_temporary(entry.name):
+            continue
         parsed = parse_round_filename(entry.name) if entry.is_file() else None
         if parsed is None:
             raise RoundsError(
@@ -496,16 +537,23 @@ def load_rounds(
     return rounds
 
 
+def _temporary_round_path(target: Path) -> Path:
+    """원자 교체 중간 파일 경로 — 같은 디렉터리(rename 요건) + 점 접두(스캔 표면 밖)."""
+    return target.with_name(
+        f"{ROUND_TEMPORARY_PREFIX}{target.name}.{os.getpid()}.{uuid.uuid4().hex}"
+        f"{ROUND_TEMPORARY_SUFFIX}"
+    )
+
+
 def replace_round(path: Path | str, text: str) -> None:
     """라운드 파일을 같은 디렉터리 임시 파일을 거쳐 원자 교체한다 (bytes·개행 보존).
 
     락은 없다 — 교체 대상이 자기 파일 하나이고, 원자 교체가 "디스크에는 옛 내용 아니면 새 내용"
-    을 보장한다(열린 리더는 옛 내용을 끝까지 읽는다).
+    을 보장한다(열린 리더는 옛 내용을 끝까지 읽는다). 그래서 중간 파일은 **점-접두 규약**으로
+    둔다 — 락이 없는 만큼 그 창 동안 같은 티켓의 로드·판정·예약이 이 디렉터리를 지나간다.
     """
     target = Path(path)
-    temporary = target.with_name(
-        f"{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    )
+    temporary = _temporary_round_path(target)
     try:
         _write_new_file(temporary, text)
         _load_file_lock().atomic_replace(temporary, target)
@@ -524,15 +572,21 @@ def verify_rounds(
 ) -> list[RoundProblem]:
     """라운드 디렉터리의 현재 상태만 보고 판정한다 (장부 없음).
 
-    `round-name` 은 파일명 문법·역할 집합과 순번 중복(둘 이상이 같은 번호를 쥐면 순서가
-    모호하다), `round-gap` 은 1..N 의 빈틈(삭제 의심 · 완료 게이트가 red 로 보는 유일한 코드),
-    `round-pending` 은 시드 그대로인 라운드다(표시용). 판독 실패는 삼키지 않는다.
+    `round-name` 은 파일명 문법·역할 집합 위반, `round-dup` 은 같은 순번을 둘 이상이 쥔 상태
+    (라운드 순서가 모호하다), `round-gap` 은 1..N 의 빈틈(삭제 의심), `round-pending` 은 시드
+    그대로인 라운드다. **완료 게이트가 red 로 보는 것은 순번 유일성·연속성이 깨진 둘
+    (`round-gap`·`round-dup`)** 이고 나머지 둘은 표시용이다(심각도는 소비자 소유).
+
+    점-접두 항목은 라운드가 아니라 엔진 임시 산출·부산물이라 판정하지 않는다. 판독 실패는
+    삼키지 않는다.
     """
     directory = rounds_dir_for_ticket(ticket_id, tickets_dir)
     problems: list[RoundProblem] = []
     valid: list[tuple[int, str, Path]] = []
     if directory.is_dir():
         for entry in sorted(directory.iterdir(), key=lambda item: item.name):
+            if _is_engine_temporary(entry.name):
+                continue
             parsed = parse_round_filename(entry.name) if entry.is_file() else None
             if parsed is None:
                 problems.append(
@@ -552,7 +606,7 @@ def verify_rounds(
         if len(roles) > 1:
             problems.append(
                 RoundProblem(
-                    PROBLEM_NAME,
+                    PROBLEM_DUPLICATE,
                     f"순번 중복 {ordinal:0{ROUND_ORDINAL_WIDTH}d}: {', '.join(sorted(roles))}",
                 )
             )
