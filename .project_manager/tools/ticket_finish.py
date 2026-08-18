@@ -1266,8 +1266,8 @@ def _path_exists_in(root: Path, relative: str) -> bool:
 
     touches 는 사람이 적는 값이라 glob/pathspec 마법이 섞일 수 있다. 그런 선언은 이 트리에 있다고
     단정하지 않고 False 로 접는다 — 판정 불능을 존재로 세면 몫이 틀린 계획에 실린다. 절대경로
-    선언은 pathlib 규칙상 `root` 가 무시되고 그 경로 자체로 판정된다(트리별 몫을 가르지 못하므로
-    호출부에서 양쪽 계획에 들어간다).
+    선언은 pathlib 규칙상 `root` 가 무시돼 두 트리 검사가 같은 답을 낸다 — 실재하면 호출부의
+    우선순위대로 코드 몫이 되고, 실재하지 않으면 양쪽 계획에 들어간다.
     """
     candidate = relative.strip()
     if not candidate or candidate.startswith(":(") or any(ch in candidate for ch in "*?["):

@@ -402,6 +402,7 @@ def _split_home_shape(
     tmp_path: Path, *, ticket_id: str, touches: list[str],
     home_lines: int, worktree_lines: int, slot: str = "work/myrepo_1",
     slot_target: Path | None = None, home_only: dict[str, int] | None = None,
+    code_files: list[str] | None = None,
 ):
     """분리 PM 홈(엔진 사본 보유)과 슬롯 worktree 를 각각 실 git 저장소로 만든다.
 
@@ -410,10 +411,13 @@ def _split_home_shape(
 
     `slot_target` 을 주면 worktree 를 PM 홈 **밖**에 만들고 슬롯 경로를 그 심링크로 둔다(슬롯이
     다른 마운트/심링크인 형상). `home_only` 는 PM 홈에만 사는 touches(wiki 산출물 등)와 그
-    미커밋 줄 수다 — 코드 트리에는 만들지 않는다.
+    미커밋 줄 수다 — 코드 트리에는 만들지 않는다. `code_files` 는 두 트리에 만들 파일 이름이다 —
+    touches 가 `work/<repo>_<N>/` 접두 형식일 때 선언 좌표와 파일 좌표를 따로 준다(미지정이면
+    touches 그대로).
     """
     home_only = dict(home_only or {})
-    shared = [touch for touch in touches if touch not in home_only]
+    shared = (list(code_files) if code_files is not None
+              else [touch for touch in touches if touch not in home_only])
     home = tmp_path / "pm-home"
     tools = home / ".project_manager" / "tools"
     tools.parent.mkdir(parents=True)
@@ -613,3 +617,28 @@ def test_home_resident_touch_deletion_is_staged_in_pm_home(tmp_path, monkeypatch
         ".project_manager/wiki/log/current.md", home_touch,
     ]
     assert _staged_paths(worktree) == []
+
+
+def test_symlinked_slot_with_prefixed_touch_uses_code_tree(tmp_path, monkeypatch, capsys):
+    """심링크 슬롯 + `work/<repo>_<N>/` 접두 touch — 측정과 stage 가 외부 코드 트리를 쓴다.
+
+    접두 형식은 좌표 normalizer 를 타는데, slot 도출이 실체 경로만 보면 심링크 슬롯이 PM 홈
+    밖이라 정규화가 실패한다 — diff 측정은 경고 후 skip, stage 는 빈 scope 가 돼 이 형상만 조용히
+    가드 밖으로 빠진다. 상대 표기 touch 는 normalizer 를 타지 않아 이 갈래를 덮지 못한다.
+    """
+    home, worktree, tf = _split_home_shape(
+        tmp_path, ticket_id="T-6707",
+        touches=["work/myrepo_1/src/engine.py"], code_files=["src/engine.py"],
+        home_lines=2000, worktree_lines=10,
+        slot_target=tmp_path / "outside-slot",
+    )
+    trees = _probe_code_tree(tf, monkeypatch)
+
+    rc = tf.main(["T-6707", "--repo", "myrepo", "--slot", "1", "--no-pytest"])
+
+    err = capsys.readouterr().err
+    assert rc == 0                                   # 측정은 코드 트리(10줄·상한 이내)
+    assert trees and set(trees) == {worktree}
+    assert "좌표 정규화 실패" not in err
+    assert _staged_paths(worktree) == ["src/engine.py"]
+    assert _staged_paths(home) == [".project_manager/wiki/log/current.md"]

@@ -148,3 +148,43 @@ def test_normalize_repo_path_rejects_non_relative_coordinates(
     with pytest.raises(coords.RepoCoordinateError, match=message):
         coords.normalize_repo_path(
             f"{slot}/{relative}", pm_root=tmp_path, leases_file=ledger)
+
+
+
+def _symlink_slot(link: Path, target: Path) -> None:
+    """슬롯 경로를 target 심링크로 만든다 (권한/플랫폼 미지원이면 skip)."""
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"심링크 슬롯을 만들 수 없다 ({exc})")
+
+
+def test_workspace_slot_derives_from_logical_path_when_slot_is_symlink(coords, tmp_path):
+    """슬롯이 PM 홈 밖 실체를 가리키는 심링크여도 논리 경로로 slot 을 도출한다.
+
+    실체 경로만 보면 `workspace가 PM 홈 밖` 으로 fail-loud 해, 심링크/외부 마운트 슬롯에서만
+    접두 형식 touches 정규화가 통째로 막힌다. 반환하는 실행 경로는 resolve 된 실체 그대로다.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    home = tmp_path / "home"
+    link = home / "work" / "project_manager_1"
+    _symlink_slot(link, outside)
+
+    normalized = coords.normalize_repo_path(
+        "work/project_manager_1/src/engine.py", pm_root=home, workspace=link)
+
+    assert normalized == "src/engine.py"
+    assert normalized.workspace == outside.resolve()   # 실행 경로 = 실재 트리
+
+
+def test_workspace_slot_existence_check_uses_resolved_path(coords, tmp_path):
+    """실재 검사는 resolve 경로가 기준 — dangling 심링크는 slot 도출과 무관하게 fail-loud."""
+    home = tmp_path / "home"
+    link = home / "work" / "project_manager_1"
+    _symlink_slot(link, tmp_path / "missing")
+
+    with pytest.raises(coords.RepoCoordinateError, match="실재하지 않는다"):
+        coords.normalize_repo_path(
+            "work/project_manager_1/src/engine.py", pm_root=home, workspace=link)
