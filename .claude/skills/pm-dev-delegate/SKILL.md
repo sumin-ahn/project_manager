@@ -89,7 +89,8 @@ developer·code-reviewer·architect·researcher는 PM 홈 티켓을 직접 편�
 
 - **실패 판정**: PM 홈 장부에 준비 기록이 없는 경로, 장부의 board 경로와 라운드 이름 불일치,
   예약 소실(board 라운드 파일 부재)은 board 를 바꾸지 않고 rc=1이다. run-dir 과 board 라운드를
-  보존한 채 원인을 고친 뒤 출력된 `ticket harvest --copy ... --cwd ...`를 다시 실행한다. 산출이
+  보존한 채 원인을 고친 뒤 출력된 copy 경로로 `ticket harvest --copy <copy> --cwd <worktree>` 를
+  다시 실행한다. 산출이
   **시드 그대로**면 board 를 바꾸지 않고 경고만 내며 run-dir 을 남긴다(게이트가 아니라 같은 세션을
   이어 시킬 여지다). run-dir 루트 `.project_manager/.local/delegate-ticket-copies/`는 tracked
   `.project_manager/.gitignore`의 `.local/` 규칙으로 무시되어 `git status --short`와 커밋 대상에

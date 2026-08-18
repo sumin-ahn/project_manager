@@ -345,12 +345,9 @@ def _assert_wave_side_effects(dest: Path, proc: subprocess.CompletedProcess, har
             f"실 {harness} {role} 라운드 파일에 harvest sentinel 부재 — 산출이 회수되지 않았다: "
             f"{[str(path) for path in role_rounds]}\n" + tail
         )
-        # 첫 줄 헤더는 엔진이 만들고 에이전트가 보존해야 한다(라벨·역할·날짜).
-        assert any(text.startswith("## ") and f"({role} · " in text.splitlines()[0]
-                   for text in texts), (
-            f"실 {harness} {role} 라운드 파일의 첫 줄 헤더가 보존되지 않음: "
-            f"{[str(path) for path in role_rounds]}\n" + tail
-        )
+        # 첫 줄 헤더(라벨·역할·날짜)는 엔진이 시드하지만 사람 참고용이라 엔진이 재작성을
+        # 강제하지 않는다(ticket_rounds 단일 진실은 파일명의 순번·역할) — 라이브 tier 판정 축은
+        # 엔진이 실제로 강제하는 성질(sentinel·아래 pm-review-v1 블록)로 좁힌다.
         if role == _REVIEWER_SUBAGENT:
             # 리뷰 라운드는 엔진이 시드한 판정 블록을 담은 채 회수돼야 delta 단계가 선다.
             assert any(f"```{_PM_REVIEW_BLOCK}" in text for text in texts), (

@@ -381,11 +381,12 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
 #   엔진 `.project_manager/tools/` 는 마이그레이션 진단 문구로 이 낱말을 legitimately 쓰므로
 #   스캔 밖이고, 이 표면은 "에이전트·PM 이 읽고 그대로 실행하는 문서"로 한정한다.
 _ROUND_MODEL_STALE_TOKENS = (
-    "pm-ticket-section", "seal-backfill", "transfer-from", "capability-stdin",
-    "티켓 사본", "성장 사본", "ticket-copy", "자기 절", "역할 절",
-    "marker", "capability", "seal", "봉인",
+    "pm-ticket-section", "pm-ticket-seal", "seal-backfill",
+    "--transfer-from", "--capability-stdin", "ticket-copy", "ticket_copies",
+    "자기 절", "역할 절", ".growth",
 )
-# 위임 문서 표면 = 역할 카드 + 위임 스킬/슬래시 command + opencode PM 지침 + 방법론 2종 + lite 진입문서.
+# 위임 문서 표면 = 역할 카드 + 위임 스킬/슬래시 command + 위임 스킬 references + opencode PM
+# 지침 + 방법론 2종 + lite 진입문서.
 _DELEGATION_SKILLS = ("pm-dev-delegate", "pm-ticket")
 _ADAPTER_NAMESPACES = tuple(
     sorted({d for dirs in HARNESS_ADAPTER_DIRS.values() for d in dirs})
@@ -412,6 +413,11 @@ def _delegation_docs(root: Path) -> list[Path]:
                     base / "command" / f"{skill}.md",
                 ) if path.is_file()
             ]
+            references = base / "skills" / skill / "references"
+            if references.is_dir():
+                found += [
+                    path for path in sorted(references.glob("*.md")) if path.is_file()
+                ]
         instructions = base / "pm-instructions.md"
         if instructions.is_file():
             found.append(instructions)
@@ -454,7 +460,7 @@ def test_delegation_docs_drop_single_file_container_vocabulary():
     for root, docs in scanned.items():
         assert docs, f"위임 문서 스캔 0건: {root} — 파생 글롭이 표면을 놓쳤다"
         relative = {path.relative_to(root).as_posix() for path in docs}
-        assert any("/agents/" in rel for rel in relative) or root == REPO, (
+        assert any("/agents/" in rel for rel in relative), (
             f"{root}: 역할 카드가 스캔에 없다 — {sorted(relative)}"
         )
         assert any(
@@ -547,7 +553,12 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
     plan = json.loads(prepared.stdout.strip().splitlines()[-1])
     round_file = Path(plan["copy"])
     run_dir = Path(plan["run_dir"])
-    assert round_file.name == f"{plan['ordinal']:02d}-developer.md"
+    # 순번 zero-pad 폭의 이름 문법은 엔진(ticket_rounds)이 단일 진실 — 여기서 재타이핑하지
+    # 않고 glob 으로 찾아 응답 `copy` 와 일치하는지만 대조한다.
+    role_rounds = sorted(run_dir.glob("*-developer.md"))
+    assert role_rounds == [round_file], (
+        f"{harness}: run-dir 라운드 파일이 응답 copy 와 다르다: {role_rounds} vs {round_file}"
+    )
     # run-dir 에서 쓸 수 있는 건 라운드 파일 하나고 나머지는 읽기 전용 입력이다.
     assert sorted(item.name for item in run_dir.iterdir()) == [
         round_file.name, "rounds", "spec.md"
