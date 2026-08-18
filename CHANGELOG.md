@@ -7,7 +7,70 @@
 
 ## [Unreleased]
 
+### 업그레이드 노트
+
+- **BREAKING — 티켓 컨테이너가 명세 파일 + 라운드 사이드카로 바뀐다 (채택자 1회 마이그레이션).**
+  기존 board 를 쓰는 인스턴스는 엔진 흡수 후 **한 번** 실행한다:
+  `python3 .project_manager/tools/board.py rounds migrate`
+  (미회수 구 위임 사본이 남아 있으면 rc 1 로 멈춘다 — 목록을 확인한 뒤 `--discard-unharvested` 로
+  함께 폐기한다. `--dry-run` 은 계획만 출력한다.) 미실행 board 는 `board.py lint` 가
+  `legacy-growth-section` 으로 red 이고 pm-update 가 흡수 뒤 같은 문구로 한 번 안내한다.
+  - **데이터 이동**: 역할 산출(리뷰·설계·구현 보충·조사)은 티켓 본문이 아니라
+    `tickets/rounds/T-NNNN/NN-<role>.md`(고정 위치 · 티켓 상태 이동을 따라가지 않음)에 산다. 티켓 안
+    `pm-ticket-section`·`pm-ticket-seal` 문법과 성장 장부 `tickets/.growth/`(+ `.gitattributes` 의 그
+    union 선언)는 사라진다. `board.py show` 는 명세 + 라운드를 조립해 보여 준다.
+  - **삭제된 CLI**: `pm_delegate.py ticket seal-backfill` · `ticket prepare --transfer-from` ·
+    `--capability-stdin` · `external_review.py --ticket-body-max`.
+  - **무시되는 local.conf 키**: `review_ticket_body_max_bytes`(추가 리뷰어 입력 상한). 입력 선별이
+    파일 단위(명세 + 역할별 마지막 라운드)로 바뀌어 바이트 상한 자체가 없어졌다.
+  - **위임 왕복**: `ticket prepare` 가 board 에 라운드를 예약(빈 시드 파일)하고 슬롯 run-dir
+    `<T>/<run>/`(역할 세그먼트 없음)을 만든다 — 쓰기 가능 파일은 라운드 파일 `NN-<role>.md` 하나이고
+    `spec.md`(명세)·`rounds/`(이전 라운드)는 읽기 전용 입력이다. `ticket harvest` 는 run 당 1회이며
+    성공 시 run-dir 을 지운다. PM 홈 장부는 `.local/delegate-rounds.jsonl` 하나이고 구
+    `ticket_copies.jsonl`·`delegate-ticket-copy-trust/`·구 레이아웃 사본은 위 명령이 지운다.
+  - **거부 표식 정책**: 회수 검증에 걸린 추가 리뷰어 산출은 라운드 파일을 만들지 않고 raw 로만
+    남는다(`pm-review-refused` 는 엔진 전용 표식이며 새 회수는 발행하지 않는다). 변환은 옛 거부 산출의
+    그 줄을 그대로 옮겨 판정 표면 제외를 유지한다.
+  - **되돌림**: board 커밋 1개(`rounds migrate: N tickets · .growth removed`) revert. 구 사본 산출물
+    삭제는 비가역이라 미회수분만 명시 플래그로 막는다.
+- **어댑터 카드·스킬·방법론(pm_role·pm_playbook)이 라운드 파일 모델로 다시 쓰였다.** 위임 프롬프트는
+  라운드 파일 절대경로를 지정하고, 대상 역할은 그 파일 하나에만 쓴다(첫 줄 헤더 보존 · 그 아래 엔진이
+  시드한 골격을 채움 · 스키마 재타이핑 없음). 손으로 고친 카드가 있다면 다음 흡수가 canonical 로
+  되돌린다.
+
+- **guest 어댑터(`add-harness` 로 얹은 하네스)의 렌더물이 이제 `pm-update` 로 갱신된다.** 그 카드의
+  `model` 을 손으로 고쳐 뒀다면 다음 흡수가 `local.conf` 값(또는 미설정 시 중화 주석)으로 되돌린다 —
+  값을 유지하려면 카드가 아니라 `local.conf` 의 `delegate.<role>[.<tier>].{model,reasoning}` 에 둔다.
+  `add-harness <harness>` 재실행은 어댑터 파일이 새로 추가/폐기됐을 때만 필요하다.
+- **이 판을 받는 흡수는 스코프 없이(전량) 실행한다.** `--paths` 로 어댑터만 좁히면 인스턴스에 설치된
+  구 엔진이 새 토큰(`{{DELEGATE_MODEL_DEVELOPER_HARD}}` 등)을 몰라 렌더 leak 으로 rc1 이 된다.
+  전량 실행은 같은 계획 안에서 엔진(`.project_manager/tools/**`)을 먼저 얹으므로 안전하다.
+
 ### Changed
+
+- **티켓 컨테이너 = 명세 파일 + 라운드 사이드카 (ADR-0090 · R1~R7).** 티켓 한 파일에 역할 절을
+  키우고 봉인·성장 장부·MAC·신뢰 사본·baseline·절 밖 대조·차등 판정·반사실 프로브로 보정하던 단일
+  파일 컨테이너를 없애고, 명세(`tickets/<status>/T-NNNN-*.md`)와 라운드
+  (`tickets/rounds/T-NNNN/NN-<role>.md` · 티켓 전역 순번 · `os.O_EXCL` 예약)로 나눴다.
+  - `ticket_rounds.py`(신설 seam): 경로 규약 · 라운드 예약/적재/교체 · `verify_rounds`(round-gap ·
+    round-dup 은 blocking · round-name · round-pending · round-temporary · round-unreadable 은 표시) ·
+    산출 없음(pending) 판정은 라운드 파일 하나의 내용 구조만 본다(날짜·다른 라운드·명세 비의존) ·
+    같은 역할의 직전 산출 라운드 규칙(`latest_round_of_role` · pending 제외)이 시드 프리필과 추가
+    리뷰어 확인 대상 ID 의 단일 소유자.
+  - `pm_delegate.py`: `ticket prepare/harvest/copies` 재작성(위 업그레이드 노트) · 삭제된 장치의
+    심볼 94개·CLI 3개·테스트 3파일 제거 · `review delta`/disposition 골격은 라운드 파일을 읽는다.
+  - `board.py`: `show` = 명세 + 라운드 조립(미회수 표시) · `section-add` = 라운드 예약 ·
+    `complete` 게이트에 `verify_rounds`(gap/dup red) · `reid` 가 `rounds/` 도 rename · `promote` 가
+    `rounds/T/` 를 함께 커밋 · lint `round-*`·`legacy-growth-section`(blocking) · 절명은
+    `ticket_rounds.ROLE_LABELS` 파생 · `rounds migrate`(위) 신설.
+  - `external_review.py`: 회수 = 내용 검증 통과 시 `ticket_rounds.reserve_round(content=…)` 로 라운드
+    파일 직접 생성(거부는 raw 만) · 입력 = 명세 + 역할별 마지막 라운드 파일 · 입력 바이트 상한 삭제.
+  - `ticket_finish.py`: stage 후보에 `tickets/rounds/T-NNNN/` 의 라운드 파일(문법 판정은
+    `ticket_rounds.parse_round_filename` · 점-접두 임시 파일 제외 · board-git 분리 형상 제외).
+  - 어댑터 3타깃(claude `.claude/agents`·`skills` · codex `.codex/agents`·`.agents/skills` · opencode
+    `.opencode/agents`·`command`) + `pm_role.md`·`pm_playbook.md`: 라운드 파일 모델 문구 · 옛 컨테이너
+    어휘 0 을 기계 가드로 고정(`test_delegation_docs_drop_single_file_container_vocabulary`) ·
+    fresh-adopter e2e 가 3타깃 template 사본에서 준비→쓰기→회수 1라운드를 실제로 돈다.
 
 - **PM 홈 push 는 회귀를 요구하지 않는다 — 회귀 게이트는 `tests/` 가 있는 트리(코드 repo)에만
   붙는다**(채택자 제보 2항목). pre-push 훅이 push 시점에 그 트리를 보고 스스로 가린다: `tests/` 가
@@ -40,18 +103,21 @@
   처방한다(엔진은 설치된 훅을 몰래 고치지 않는다). 흡수(`pm-update`) 뒤 `board.py init` 을 한 번
   돌리면 새 훅으로 교체된다. 남의 pre-push 훅·서명 없는 훅은 대상이 아니다.
 
-### 업그레이드 노트
-
-- **guest 어댑터(`add-harness` 로 얹은 하네스)의 렌더물이 이제 `pm-update` 로 갱신된다.** 그 카드의
-  `model` 을 손으로 고쳐 뒀다면 다음 흡수가 `local.conf` 값(또는 미설정 시 중화 주석)으로 되돌린다 —
-  값을 유지하려면 카드가 아니라 `local.conf` 의 `delegate.<role>[.<tier>].{model,reasoning}` 에 둔다.
-  `add-harness <harness>` 재실행은 어댑터 파일이 새로 추가/폐기됐을 때만 필요하다.
-- **이 판을 받는 흡수는 스코프 없이(전량) 실행한다.** `--paths` 로 어댑터만 좁히면 인스턴스에 설치된
-  구 엔진이 새 토큰(`{{DELEGATE_MODEL_DEVELOPER_HARD}}` 등)을 몰라 렌더 leak 으로 rc1 이 된다.
-  전량 실행은 같은 계획 안에서 엔진(`.project_manager/tools/**`)을 먼저 얹으므로 안전하다.
-
 ### Fixed
 
+- **Windows 잠복 테스트 함정 정리.** 테스트의 전역 `os.name` 변이 16곳(7파일)을 엔진 seam
+  (`board._probe_os_name` · `console_encoding` · `pm_bootstrap` · `pm_handoff` · `ticket_finish`) patch 로
+  바꾸고, python 자식 subprocess 의 encoding 미명시 4곳을 명시했다. 병렬 회귀(`pytest -n 8`)의 자식
+  pytest 가 cp949 콘솔에서 한글 경고를 내다 리더 스레드가 죽던 1건(`test_regression_parallel`)은
+  자식 env `PYTHONUTF8=1` 로 닫았다(Windows VM `-n 8` 전수 실측). 재발 방지 AST 가드
+  `tests/test_tests_windows_portability_discipline.py`.
+- **opencode 역할 권한: 출하 카드 frontmatter `permission` == 런타임 fragment
+  (`pm_relay.opencode_runtime_role_config`) 파리티 가드**(4역할 전수 · webfetch deny 절대 앵커). 카드만
+  고치고 fragment 를 남기는 half-fix 클래스가 기계로 닫혔다(테스트만).
+- **엔진 부트스트랩 블록(22 모듈 동일) 편집 파급 목록 기계화**(테스트만): 라인-핀 allowlist 를
+  (파일·함수·호출형태) 심볼 키로 바꿔 라인 이동에 무감·같은 함수 안 신규 쓰기에 red · 가드 실패
+  메시지가 원장 2종(hard_allowlist=`--regenerate` 기계 재생성 / baseline=검토형 ratchet 손 갱신)의
+  재핀 절차를 가리킨다.
 - **위임 모델 선언(`local.conf delegate.*`)이 세 하네스의 agent 카드 전부에 도달한다.** 카드의
   `model` 은 `delegate.<role>[.<tier>].{model,reasoning}` 의 렌더 파생물인데 세 곳이 어긋나 있었다:
   (1) `add-harness` 로 얹은 guest 어댑터(예 codex host + claude guest)의 렌더물은 update 계획에서
