@@ -194,6 +194,7 @@ STAMPED_MODULES = (
     "pm_relay.py",
     "external_review.py",
     "review_rounds.py",
+    "ticket_rounds.py",
     "gate_snapshot.py",
     "pm_render.py",
     "pm_import.py",
