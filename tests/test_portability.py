@@ -48,7 +48,7 @@ def test_default_python_posix_venv_present(monkeypatch, tmp_path, name):
     mod = _load(name)
     repo = _make_repo(tmp_path, venv=True, nt=False)
     monkeypatch.setattr(mod, "REPO", repo)
-    monkeypatch.setattr(mod.os, "name", "posix")
+    monkeypatch.setattr(mod, "_probe_os_name", lambda: "posix")
     assert mod._default_python() == str(repo / "venv" / "bin" / "python")
 
 
@@ -58,7 +58,7 @@ def test_default_python_nt_venv_present(monkeypatch, tmp_path, name):
     mod = _load(name)
     repo = _make_repo(tmp_path, venv=True, nt=True)
     monkeypatch.setattr(mod, "REPO", repo)
-    monkeypatch.setattr(mod.os, "name", "nt")
+    monkeypatch.setattr(mod, "_probe_os_name", lambda: "nt")
     assert mod._default_python() == str(repo / "venv" / "Scripts" / "python.exe")
 
 
@@ -68,7 +68,7 @@ def test_default_python_posix_venv_absent_falls_back(monkeypatch, tmp_path, name
     mod = _load(name)
     repo = _make_repo(tmp_path, venv=False, nt=False)
     monkeypatch.setattr(mod, "REPO", repo)
-    monkeypatch.setattr(mod.os, "name", "posix")
+    monkeypatch.setattr(mod, "_probe_os_name", lambda: "posix")
     monkeypatch.setattr(mod.sys, "executable", "/fake/sys/python")
     assert mod._default_python() == "/fake/sys/python"
 
@@ -79,7 +79,7 @@ def test_default_python_nt_venv_absent_falls_back(monkeypatch, tmp_path, name):
     mod = _load(name)
     repo = _make_repo(tmp_path, venv=False, nt=True)
     monkeypatch.setattr(mod, "REPO", repo)
-    monkeypatch.setattr(mod.os, "name", "nt")
+    monkeypatch.setattr(mod, "_probe_os_name", lambda: "nt")
     monkeypatch.setattr(mod.sys, "executable", "/fake/sys/python")
     assert mod._default_python() == "/fake/sys/python"
 

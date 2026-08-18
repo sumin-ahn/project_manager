@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import builtins
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -55,6 +56,11 @@ def console_encoding():
     finally:
         if hasattr(builtins, PROCESS_STATE_KEY):
             delattr(builtins, PROCESS_STATE_KEY)
+
+
+def test_probe_os_name_seam_defaults_to_the_real_interpreter_value(console_encoding):
+    """기본 프로브는 전역 `os.name` 그대로다 — seam 추가가 동작을 바꾸지 않는다(T-0741)."""
+    assert console_encoding._probe_os_name() == os.name
 
 
 class _FakeKernel32:
@@ -148,7 +154,7 @@ class _Stream:
 
 
 def _install_windows(monkeypatch, module, kernel32, stdout=None, stderr=None):
-    monkeypatch.setattr(module.os, "name", "nt")
+    monkeypatch.setattr(module, "_probe_os_name", lambda: "nt")
     monkeypatch.setattr(module.os, "getpid", lambda: 50)
     monkeypatch.setattr(module, "_get_kernel32", lambda: kernel32)
     if stdout is not None:
@@ -484,7 +490,7 @@ def test_failed_capture_reconfigure_is_not_reported_as_applied(console_encoding,
 def test_non_powershell_parent_has_no_capture_encoding(
     console_encoding, monkeypatch, parent_name
 ):
-    monkeypatch.setattr(console_encoding.os, "name", "nt")
+    monkeypatch.setattr(console_encoding, "_probe_os_name", lambda: "nt")
     console_encoding._process_state()["original_output_cp"] = 949
     monkeypatch.setattr(console_encoding, "_parent_process_name", lambda: parent_name)
 
@@ -502,7 +508,7 @@ def test_translit_handler_maps_known_symbols_and_falls_back_to_question_mark(
 def test_non_windows_functions_are_noop_and_streams_stay_utf8(console_encoding, monkeypatch):
     stdout = _Stream()
     stderr = _Stream()
-    monkeypatch.setattr(console_encoding.os, "name", "posix")
+    monkeypatch.setattr(console_encoding, "_probe_os_name", lambda: "posix")
     monkeypatch.setattr(
         console_encoding,
         "_get_kernel32",
