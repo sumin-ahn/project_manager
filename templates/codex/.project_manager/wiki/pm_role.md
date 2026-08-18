@@ -36,7 +36,7 @@ PM 역할의 정적 운영 매뉴얼이다. PM 역할은 보드 운영·분할·
 
 기계 측정은 `/pm-bootstrap` skill(backbone `.project_manager/tools/pm_bootstrap.py`) 한 번으로 끝낸다.
 
-**task 계약:** 시작/재개는 `/pm-bootstrap --task <이름>`, 종료는 `/pm-handoff --task <이름>`만 쓴다. Python backbone의 task 진입은 `pm_bootstrap.py --task <이름>`·`pm_handoff.py --task <이름> --user-ack <값>`이며, 승인값은 사용자 발화에서 받아 그대로 전달하고 세션이 만들지 않는다. 신규 task는 작업공간 0개여도 task pm_state를 즉시 만들고, 기존 task는 보유 슬롯 집합과 task pm_state를 자동 수령한다. task와 repo/slot 혼합 진입은 거부한다. 작업공간 대여·편입은 task-aware pm-env/worktree 명령의 책임이다. 단, alloc/release와 rebase 소유검사처럼 repo/slot이 **대상 자원**, task가 **소유 명의**인 자원 연산은 유지한다.
+**task 계약:** 시작/재개는 `/pm-bootstrap --task <이름>`, 종료는 `/pm-handoff`(무인자 · 스킬은 인자를 받지 않는다)만 쓴다. Python backbone의 task 진입은 `pm_bootstrap.py --task <이름>`·`pm_handoff.py --task <이름> --user-ack <값>`이며, 종료 시 `--task`·`--user-ack` 값은 PM 이 부트스트랩에서 사용자와 확인한 정체성으로 채운다(사용자의 `/pm-handoff` 호출이 그 정체성에 대한 명시 종료 지시). 신규 task는 작업공간 0개여도 task pm_state를 즉시 만들고, 기존 task는 보유 슬롯 집합과 task pm_state를 자동 수령한다. task와 repo/slot 혼합 진입은 거부한다. 작업공간 대여·편입은 task-aware pm-env/worktree 명령의 책임이다. 단, alloc/release와 rebase 소유검사처럼 repo/slot이 **대상 자원**, task가 **소유 명의**인 자원 연산은 유지한다.
 
 `architecture.md`·`status.md`·`decisions/`·`roadmap.md`·전체 보드·타 슬롯 log는 시작 시 통독하지
 않고, 실제 필요가 생길 때 §찾아가는 법에 따라 해당 절만 읽는다.
@@ -307,7 +307,7 @@ CLI가 차수·인계 본문·남은작업을 이미 dump하므로 손 추출하
 
 ## 핸드오프 절차 (7단계)
 
-`/pm-handoff` skill(backbone `pm_handoff.py`)을 사용하고 dry-run을 권장한다(`--dry-run`). task 경로는 `/pm-handoff --task <이름>`만 쓰며 backbone은 사용자 발화의 승인값을 그대로 받은 `pm_handoff.py --task <이름> --user-ack <값>`으로 차수·기본 요약·보유 작업공간을 해소한다(세션의 승인값 생성·자동 부착 금지). 다음 트리거는 `/pm-bootstrap --task <이름>`이다.
+`/pm-handoff` skill(backbone `pm_handoff.py`)을 사용하고 dry-run을 권장한다(`--dry-run`). task 경로의 사용자 진입은 `/pm-handoff`(무인자)이며 PM 이 부트스트랩 확인 정체성으로 `pm_handoff.py --task <이름> --user-ack <이름>`을 채워 부른다 — backbone 이 차수·기본 요약·보유 작업공간을 해소한다. 다음 트리거는 `/pm-bootstrap --task <이름>`이다.
 
 자동 처리:
 0. dirty-tree 게이트 — PM 홈 + 활성 worktree 전수의 미커밋 잔여(gitignored 제외)를 어떤 파일 mutation 보다 앞에서 판정. 잔여가 있으면 rc 1 차단 + 목록 열거이며 정상 해소는 세션 산출 선-커밋이다(불가피 시 `--ack-dirty "<사유>"` — 사유는 handoff entry 에 박제). `--auto-trigger`는 사용자 명시 핸드오프 호출부의 호환 신호로 차단 대신 loud 경고+사유 자동 박제를 쓰지만, 독자 트리거나 승인이 아니며 `--user-ack`를 우회하지 않는다. 커밋 0 트리는 untracked 만으로 판정, 비-git 트리는 비차단 경고.

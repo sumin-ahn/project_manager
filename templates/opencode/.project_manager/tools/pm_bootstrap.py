@@ -5306,8 +5306,8 @@ class PmBootstrap:
             suffix=ti,
         ))
         lines.append(skill(
-            f"/pm-handoff --task {task_name}",
-            "task 세션 종료 7단계 자동화(task state에서 차수 자동 해소)",
+            "/pm-handoff",
+            f"task 세션 종료 7단계 자동화 — 무인자(스킬은 인자를 안 받음 · PM 이 --task {task_name} 을 채워 backbone 호출)",
         ))
         lines.append(engine(_C_PM_HANDOFF_TASK, prefix=f"--task {task_name}"))
         lines.append("")

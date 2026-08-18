@@ -45,7 +45,7 @@ env prefix 없이 호출한다:
 
 ### 세션 식별
 
-- **task 사용자 경로** — 시작/재개는 `/pm-bootstrap --task <이름>`, 종료는 `/pm-handoff --task <이름>`만 쓴다. 이 `/…` 표기는 하네스 슬래시 팔레트 진입이며 인자를 그대로 전달한다(팔레트 파일 위치는 어댑터 문서 소관). 신규 task는 작업공간 0개로 시작하고 task 진입 시 pm_state를 즉시 만든 뒤 PM이 슬롯을 별도로 대여한다. 기존 task는 보유 슬롯 집합과 task pm_state를 수령한다. Python backbone은 `pm_bootstrap.py --task <이름>`·`pm_handoff.py --task <이름> --user-ack <값>`을 사용하며, 승인값은 사용자 발화에서 받아 그대로 전달하고 세션이 만들지 않는다. task와 repo/slot 혼합 진입은 엔진이 거부한다.
+- **task 사용자 경로** — 시작/재개는 `/pm-bootstrap --task <이름>`, 종료는 `/pm-handoff`(무인자 · 스킬은 인자를 받지 않는다)만 쓴다. 이 `/…` 표기는 하네스 슬래시 팔레트 진입이며 인자를 그대로 전달한다(팔레트 파일 위치는 어댑터 문서 소관). 신규 task는 작업공간 0개로 시작하고 task 진입 시 pm_state를 즉시 만든 뒤 PM이 슬롯을 별도로 대여한다. 기존 task는 보유 슬롯 집합과 task pm_state를 수령한다. Python backbone은 `pm_bootstrap.py --task <이름>`·`pm_handoff.py --task <이름> --user-ack <값>`을 사용하며, 종료 시 그 값은 PM 이 부트스트랩에서 사용자와 확인한 정체성으로 채운다. task와 repo/slot 혼합 진입은 엔진이 거부한다.
 - **PM 세션명 canonical=`<repo>_<N>`**(`<repo>`=프로젝트 repo, `<N>`=PM 슬롯). board 쓰기는 `--repo <repo> --slot <N>`을 전달한다:
   ```bash
   {{PY}} .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 예: --repo myproj --slot 1
