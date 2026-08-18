@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "count": 596,
+  "count": 600,
   "surface_counts": {
     "markdown": 148,
     "python-non-prose": 32,
-    "python-prose": 416
+    "python-prose": 420
   },
   "entries": [
     {
@@ -853,6 +853,14 @@
       "match": "T-0729",
       "surface": "python-prose",
       "hash": "244faa36b2351d0db075af70563681dea89ed578d6f69a361e5fc32dc61182b1",
+      "count": 1
+    },
+    {
+      "path": ".project_manager/tools/ticket_finish.py",
+      "kind": "work_item",
+      "match": "T-0749",
+      "surface": "python-prose",
+      "hash": "16bc89e89cf9316a7bd4f4ed9c96e66ea292f3ad1f5c1f9a7a7df9b456c77563",
       "count": 1
     },
     {
@@ -1781,6 +1789,14 @@
       "match": "T-0729",
       "surface": "python-prose",
       "hash": "244faa36b2351d0db075af70563681dea89ed578d6f69a361e5fc32dc61182b1",
+      "count": 1
+    },
+    {
+      "path": "templates/claude_code/.project_manager/tools/ticket_finish.py",
+      "kind": "work_item",
+      "match": "T-0749",
+      "surface": "python-prose",
+      "hash": "16bc89e89cf9316a7bd4f4ed9c96e66ea292f3ad1f5c1f9a7a7df9b456c77563",
       "count": 1
     },
     {
@@ -2861,6 +2877,14 @@
       "match": "T-0729",
       "surface": "python-prose",
       "hash": "244faa36b2351d0db075af70563681dea89ed578d6f69a361e5fc32dc61182b1",
+      "count": 1
+    },
+    {
+      "path": "templates/codex/.project_manager/tools/ticket_finish.py",
+      "kind": "work_item",
+      "match": "T-0749",
+      "surface": "python-prose",
+      "hash": "16bc89e89cf9316a7bd4f4ed9c96e66ea292f3ad1f5c1f9a7a7df9b456c77563",
       "count": 1
     },
     {
@@ -4165,6 +4189,14 @@
       "match": "T-0729",
       "surface": "python-prose",
       "hash": "244faa36b2351d0db075af70563681dea89ed578d6f69a361e5fc32dc61182b1",
+      "count": 1
+    },
+    {
+      "path": "templates/opencode/.project_manager/tools/ticket_finish.py",
+      "kind": "work_item",
+      "match": "T-0749",
+      "surface": "python-prose",
+      "hash": "16bc89e89cf9316a7bd4f4ed9c96e66ea292f3ad1f5c1f9a7a7df9b456c77563",
       "count": 1
     },
     {

@@ -1413,6 +1413,82 @@ def test_resolve_finish_slot_pm_handoff_absent_fail_soft(tf, monkeypatch):
     assert tf._resolve_finish_slot("myrepo", None) == (None, None)
 
 
+# ── engine_written_paths — rounds/T-NNNN/ stage 후보 (T-0753·ADR-0090 R5) ───────
+
+class _FakeRoundsBoard:
+    """`engine_written_paths` 전용 최소 board 대역 — 그 함수가 실제로 읽는 속성만 노출한다."""
+
+    STATUS_DIRS = ("open", "claimed", "blocked", "done")
+
+    def __init__(self, tickets_dir: Path, ticket_path: Path, *, board_git_enabled=False):
+        self._tickets_dir = tickets_dir
+        self._ticket_path = ticket_path
+        self._board_git_enabled_value = board_git_enabled
+
+    def tickets_dir(self) -> Path:
+        return self._tickets_dir
+
+    def find_ticket(self, ticket_id):
+        return ("claimed", self._ticket_path)
+
+    def _board_git_enabled(self) -> bool:
+        return self._board_git_enabled_value
+
+
+def test_engine_written_paths_includes_existing_round_files(tf, tmp_path):
+    """rounds/<id>/ 아래 실존하는 라운드 파일이 stage 후보에 들어간다 (디렉터리 통째가 아니라
+    파일 단위)."""
+    tickets_dir = tmp_path / "tickets"
+    ticket_path = tickets_dir / "claimed" / "T-0753.md"
+    round_dir = tickets_dir / "rounds" / "T-0753"
+    round_dir.mkdir(parents=True)
+    dev_round = round_dir / "01-developer.md"
+    review_round = round_dir / "02-code-reviewer.md"
+    dev_round.write_text("dev\n", encoding="utf-8")
+    review_round.write_text("review\n", encoding="utf-8")
+    board = _FakeRoundsBoard(tickets_dir, ticket_path)
+
+    paths = tf.engine_written_paths(board, "T-0753", tmp_path / "log.md")
+
+    assert dev_round in paths
+    assert review_round in paths
+    assert round_dir not in paths  # 디렉터리 자체는 후보로 들어가지 않는다
+
+
+def test_engine_written_paths_excludes_rounds_when_board_git_separated(tf, tmp_path):
+    """board-git 분리 형상에선 티켓과 함께 라운드도 stage 후보에서 빠진다(현행 티켓 제외 규칙
+    동일)."""
+    tickets_dir = tmp_path / "tickets"
+    ticket_path = tickets_dir / "claimed" / "T-0753.md"
+    round_dir = tickets_dir / "rounds" / "T-0753"
+    round_dir.mkdir(parents=True)
+    (round_dir / "01-developer.md").write_text("dev\n", encoding="utf-8")
+    board = _FakeRoundsBoard(tickets_dir, ticket_path, board_git_enabled=True)
+
+    paths = tf.engine_written_paths(board, "T-0753", tmp_path / "log.md")
+
+    assert paths == [tmp_path / "log.md"]
+
+
+def test_engine_written_paths_excludes_dot_prefixed_temporary_round_files(tf, tmp_path):
+    """원자 교체 중간 파일(점-접두 `ROUND_TEMPORARY_PREFIX`/`ROUND_TEMPORARY_SUFFIX`)은 라운드가
+    아니므로 stage 후보에서 제외한다 (R1 리뷰 F-010)."""
+    tickets_dir = tmp_path / "tickets"
+    ticket_path = tickets_dir / "claimed" / "T-0753.md"
+    round_dir = tickets_dir / "rounds" / "T-0753"
+    round_dir.mkdir(parents=True)
+    dev_round = round_dir / "01-developer.md"
+    dev_round.write_text("dev\n", encoding="utf-8")
+    temporary = round_dir / ".01-developer.md.4242.deadbeef.tmp"
+    temporary.write_text("mid\n", encoding="utf-8")
+    board = _FakeRoundsBoard(tickets_dir, ticket_path)
+
+    paths = tf.engine_written_paths(board, "T-0753", tmp_path / "log.md")
+
+    assert dev_round in paths
+    assert temporary not in paths
+
+
 # ── task-mode two-git stage plan (T-0437) ───────────────────────────────────
 
 def test_task_stage_plan_separates_pm_outputs_and_worktree_touches(tf, tmp_path, monkeypatch, capsys):

@@ -1137,24 +1137,72 @@ def _has_worktree_touch_prefix(path: str) -> bool:
     return _WORKTREE_TOUCH_PREFIX.match(norm) is not None
 
 
+def _load_ticket_rounds():
+    """라운드 사이드카 경로·임시 파일 규약의 단일 진실(`ticket_rounds.py`)을 경로 로드한다.
+
+    부재는 None(fail-soft) — round stage 후보만 생략하고 티켓 파일 stage 는 그대로 진행한다
+    (`_load_repo_coordinates` 동형). 엔진 사본 skew 는 흡수하지 않는다(fail-loud) — 호출부인
+    `engine_written_paths` 는 이 함수를 자신의 넓은 try 밖에서 불러, skew 가 조용히 삼켜지지
+    않고 그대로 표면화되게 한다.
+    """
+    path = TOOLS_DIR / "ticket_rounds.py"
+    if not path.exists():
+        return None
+    try:
+        mod = _load_module_from_path(
+            path, "ticket_rounds.py", verifier=_verify_engine_rev,
+        )
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 round 후보만 생략한다.
+        if _is_engine_rev_skew(exc):
+            raise
+        return None
+    return mod
+
+
+def _round_stage_candidates(
+        rounds_module, tickets_dir: Path, ticket_id: str) -> list[Path]:
+    """티켓 라운드 디렉터리에 **실존하는** 라운드 파일만 stage 후보로 낸다 (디렉터리 자체는
+    넣지 않는다 — untracked 신규 라운드도 실 파일 목록이라야 `git_scope_stage_pathspec` 이
+    add 한다).
+
+    점-접두 임시 잔여(`ROUND_TEMPORARY_PREFIX`/`ROUND_TEMPORARY_SUFFIX` — 원자 교체 중간
+    산출)는 라운드가 아니므로 후보에서 뺀다.
+    """
+    directory = rounds_module.rounds_dir_for_ticket(ticket_id, tickets_dir)
+    if not directory.is_dir():
+        return []
+    return sorted(
+        entry for entry in directory.iterdir()
+        if entry.is_file()
+        and entry.name.endswith(rounds_module.ROUND_FILE_SUFFIX)
+        and not entry.name.startswith(rounds_module.ROUND_TEMPORARY_PREFIX)
+        and not entry.name.endswith(rounds_module.ROUND_TEMPORARY_SUFFIX)
+    )
+
+
 def engine_written_paths(board, ticket_id: str, log_file: Path) -> list[Path]:
     """**이 실행이 실제로 쓴** 산출물 경로.
 
       - `log/current.md` — 2단계가 스켈레톤을 append 한다(항상).
-      - 티켓 파일의 옛/새 경로 — 3단계 `board.py complete` 가 `claimed/`→`done/` 로 옮긴다.
-        **board-git 분리 형상에선 제외** 한다: 티켓이 서브모듈(`.project_manager/board/`) 안이라
-        상위 repo 의 `git add` 가 `fatal: … is in submodule`(rc=128)로 죽고, 그 이동은 board-git
-        이 자기 커밋으로 이미 기록한다. legacy(board 미분리·**출하 템플릿 기본 형상**)에선 그
-        이동이 홈 git 에 떨어지므로 반드시 실어야 한다 — 안 그러면 채택자가 매 finish 마다 손으로
-        `git add` 해야 한다(reviewer 실측).
+      - 티켓 파일의 옛/새 경로 · 라운드 사이드카(`tickets/rounds/<id>/*.md`) — 3단계
+        `board.py complete` 가 티켓을 `claimed/`→`done/` 로 옮기고, 라운드는 고정 위치([[T-0749]]
+        `ticket_rounds.py`)라 상태 이동을 따라가지 않지만 그 실행이 새로 쓴 파일이라 함께
+        stage 대상이다. **board-git 분리 형상에선 티켓과 함께 라운드도 제외** 한다: 티켓이
+        서브모듈(`.project_manager/board/`) 안이라 상위 repo 의 `git add` 가 `fatal: … is in
+        submodule`(rc=128)로 죽고, 그 이동은 board-git 이 자기 커밋으로 이미 기록한다(라운드도
+        같은 서브모듈 트리 안). legacy(board 미분리·**출하 템플릿 기본 형상**)에선 그 이동이 홈
+        git 에 떨어지므로 반드시 실어야 한다 — 안 그러면 채택자가 매 finish 마다 손으로 `git add`
+        해야 한다(reviewer 실측).
 
     옛 경로는 상태 디렉토리를 몰라도 된다 — 후보(모든 STATUS_DIRS/같은 파일명)를 넣어두면
     실존/추적되지 않는 후보는 `git_scope_stageable` 이 거른다(추적 중인 *삭제* 경로만 남아
-    이동이 커밋으로 완성된다). board 미로드면 log 만.
+    이동이 커밋으로 완성된다). 라운드는 디렉터리 통째가 아니라 존재하는 파일만 넣는다(위
+    `_round_stage_candidates`). board 미로드면 log 만.
     """
     paths: list[Path] = [Path(log_file)]
     if board is None:
         return paths
+    rounds = _load_ticket_rounds()
     try:
         if board._board_git_enabled():
             return paths
@@ -1162,6 +1210,9 @@ def engine_written_paths(board, ticket_id: str, log_file: Path) -> list[Path]:
         paths.append(ticket_path)
         paths.extend(board.tickets_dir() / status / ticket_path.name
                      for status in board.STATUS_DIRS)
+        if rounds is not None:
+            paths.extend(
+                _round_stage_candidates(rounds, board.tickets_dir(), ticket_id))
     except Exception:  # noqa: BLE001 — 티켓 조회 실패(부재·손상)는 log 만으로 진행(잔여 보고가 알린다).
         pass
     return paths
