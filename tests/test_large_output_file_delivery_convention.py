@@ -65,8 +65,10 @@ _OPENCODE_SAFE_WRITE = [
     ("safe_write 지시", ("safe_write",)),
 ]
 # write 16KB deny 임계는 write-capable 역할(developer·architect)에만 요구한다 — read-only 역할
-# (researcher·code-reviewer)은 write·edit 가 전면 deny 라 16KB 임계 자체가 무의미(그 문구를 read-only
-# 카드에 넣으면 write 가 16KB 까지는 되는 듯 오인 · T-0342: read-only 카드 16KB 문구 정합).
+# (researcher·code-reviewer)은 edit 가 자기 티켓 사본 절로 한정돼(ADR-0089 전원 참여·T-0696·
+# T-0745 — edit permission 자체는 두 역할 모두 allow) 대형 산출 **파일**을 새로 쓰지 않으므로
+# 16KB 임계 자체가 무의미(그 문구를 이 카드에 넣으면 write 가 16KB 까지는 되는 듯 오인 ·
+# T-0342: read-only 카드 16KB 문구 정합).
 _OPENCODE_WRITE_16KB_DENY = [
     ("write deny 임계(16KB)", ("16KB", "16 KB")),
 ]
@@ -139,7 +141,9 @@ def test_opencode_card_convention_uses_safe_write(label, path):
     opencode write 는 16KB 초과를 거부하므로 대형 파일 쓰기는 safe_write chunk 로 해야 한다 —
     inbound(tool_output) 이 아니라 outbound(생성) 축의 파일-쓰기 채널을 카드가 안내해야 함.
     write 16KB deny 임계 명시는 write-capable 역할(developer·architect)에만 요구한다 — read-only
-    역할(researcher·code-reviewer)은 write·edit 전면 deny 라 16KB 임계가 무의미(T-0342).
+    역할(researcher·code-reviewer)은 edit 가 자기 티켓 사본 절로 한정돼(ADR-0089 전원 참여·
+    T-0696·T-0745 — edit permission 자체는 두 역할 모두 allow) 대형 산출 파일을 새로 쓰지
+    않으므로 16KB 임계가 무의미(T-0342).
     """
     region = _convention_region(path)
     assert region, f"{label} ({path.relative_to(REPO)}): 규약 절 마커 부재 (T-0337)"
