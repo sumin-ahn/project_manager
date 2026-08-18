@@ -51,6 +51,10 @@
 # review_rounds: 추가 리뷰어/내부 code-reviewer가 공유하는 라운드 장부 read/write·수렴 판정 seam.
 # 저장 파일·파일락 경로와 축별 부가 부기는 각 호출 도구가 소유한다.
 .project_manager/tools/review_rounds.py
+# ticket_rounds: 티켓 명세 파일 옆 라운드 사이드카(tickets/rounds/<id>/NN-<role>.md) 공용 seam —
+#   경로 규약·파일명 문법·티켓 전역 순번 배타 예약·로드/판정/렌더. 락과 보드 경로 해소는
+#   호출자 소유(board 를 로드하지 않는다). 신설 도구라 등록 필수(미등록=전파 안 됨).
+.project_manager/tools/ticket_rounds.py
 # gate_snapshot: 명시 검토 경로만 working tree↔격리 worktree 내용 해시를 대조하는 fail-loud 생성기.
 .project_manager/tools/gate_snapshot.py
 # worktree_pool: multi-PM worktree 풀/슬롯 리스 엔진 (ADR-0013). 리스 장부(.local/worktree-leases.json)는 per-clone(manifest 밖)
