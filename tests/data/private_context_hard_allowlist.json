@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "count": 584,
+  "count": 576,
   "surface_counts": {
     "markdown": 148,
-    "python-non-prose": 28,
-    "python-prose": 408
+    "python-non-prose": 24,
+    "python-prose": 404
   },
   "entries": [
     {
@@ -85,14 +85,6 @@
       "match": "T-0000",
       "surface": "python-non-prose",
       "hash": "4f745a21118f4e13b55c77ca166f222337701fbaf7e5a348746809f9fd35d41b",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/board.py",
-      "kind": "work_item",
-      "match": "T-0000",
-      "surface": "python-non-prose",
-      "hash": "6f7dc063072f11b4e710721becaef23aec731d8e11c13c74fa86ed4a125d5801",
       "count": 1
     },
     {
@@ -293,14 +285,6 @@
       "match": "T-0683",
       "surface": "python-prose",
       "hash": "de223758b260a0e97cb08cd5a41ce9c4ae38d399db29b589e2af37b37056d4b0",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/board.py",
-      "kind": "work_item",
-      "match": "T-0694",
-      "surface": "python-prose",
-      "hash": "f9aea702a22312a05e333df5df654447888bb91004d91919a16105158c0f8c89",
       "count": 1
     },
     {
@@ -994,14 +978,6 @@
     {
       "path": "templates/claude_code/.project_manager/tools/board.py",
       "kind": "work_item",
-      "match": "T-0000",
-      "surface": "python-non-prose",
-      "hash": "6f7dc063072f11b4e710721becaef23aec731d8e11c13c74fa86ed4a125d5801",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/board.py",
-      "kind": "work_item",
       "match": "T-0001",
       "surface": "python-prose",
       "hash": "0487aec7121da0bf9d6572556eacbd6c66e976714e689eb5d6df31e7a6f8e4ae",
@@ -1197,14 +1173,6 @@
       "match": "T-0683",
       "surface": "python-prose",
       "hash": "de223758b260a0e97cb08cd5a41ce9c4ae38d399db29b589e2af37b37056d4b0",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/board.py",
-      "kind": "work_item",
-      "match": "T-0694",
-      "surface": "python-prose",
-      "hash": "f9aea702a22312a05e333df5df654447888bb91004d91919a16105158c0f8c89",
       "count": 1
     },
     {
@@ -2050,14 +2018,6 @@
     {
       "path": "templates/codex/.project_manager/tools/board.py",
       "kind": "work_item",
-      "match": "T-0000",
-      "surface": "python-non-prose",
-      "hash": "6f7dc063072f11b4e710721becaef23aec731d8e11c13c74fa86ed4a125d5801",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/board.py",
-      "kind": "work_item",
       "match": "T-0001",
       "surface": "python-prose",
       "hash": "0487aec7121da0bf9d6572556eacbd6c66e976714e689eb5d6df31e7a6f8e4ae",
@@ -2253,14 +2213,6 @@
       "match": "T-0683",
       "surface": "python-prose",
       "hash": "de223758b260a0e97cb08cd5a41ce9c4ae38d399db29b589e2af37b37056d4b0",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/board.py",
-      "kind": "work_item",
-      "match": "T-0694",
-      "surface": "python-prose",
-      "hash": "f9aea702a22312a05e333df5df654447888bb91004d91919a16105158c0f8c89",
       "count": 1
     },
     {
@@ -3330,14 +3282,6 @@
     {
       "path": "templates/opencode/.project_manager/tools/board.py",
       "kind": "work_item",
-      "match": "T-0000",
-      "surface": "python-non-prose",
-      "hash": "6f7dc063072f11b4e710721becaef23aec731d8e11c13c74fa86ed4a125d5801",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/board.py",
-      "kind": "work_item",
       "match": "T-0001",
       "surface": "python-prose",
       "hash": "0487aec7121da0bf9d6572556eacbd6c66e976714e689eb5d6df31e7a6f8e4ae",
@@ -3533,14 +3477,6 @@
       "match": "T-0683",
       "surface": "python-prose",
       "hash": "de223758b260a0e97cb08cd5a41ce9c4ae38d399db29b589e2af37b37056d4b0",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/board.py",
-      "kind": "work_item",
-      "match": "T-0694",
-      "surface": "python-prose",
-      "hash": "f9aea702a22312a05e333df5df654447888bb91004d91919a16105158c0f8c89",
       "count": 1
     },
     {
