@@ -77,7 +77,8 @@ def _run_hook(hook_path: Path, payload: dict | None = None) -> subprocess.Comple
 def _run_python_hook(hook_path: Path, payload: dict) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(hook_path.parent / "ctx_stop_hook.py")],
-        input=json.dumps(payload), capture_output=True, text=True, timeout=30,
+        input=json.dumps(payload), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=30,
     )
 
 

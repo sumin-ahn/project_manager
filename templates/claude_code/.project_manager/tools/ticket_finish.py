@@ -415,6 +415,19 @@ def _resolve_finish_slot(repo: str | None, slot: int | None) -> tuple[str | None
     return hp._resolve_explicit_identity_slot(repo, slot)
 
 
+def _probe_os_name() -> str:
+    """Read the interpreter OS family through one injectable seam.
+
+    Tests that need `_default_python()` to take the Windows branch on any host
+    cannot rebind the global `os.name` directly — `pathlib` consults that same
+    global to pick its flavour, and rebinding it mid-test breaks every path
+    operation in the process. Routing the read through this function keeps the
+    injection point inside this module instead of on the `os` global (this
+    tool holds its own copy of the seam — see `_default_python` for why).
+    """
+    return os.name
+
+
 def _default_python() -> str:
     """플랫폼-인지 venv 인터프리터 경로 (없으면 sys.executable 폴백).
 
@@ -426,7 +439,7 @@ def _default_python() -> str:
     형상에선 venv/ 를 안 만든다. 그때는 `sys.executable`(현재 인터프리터)로 폴백해 그 환경의
     pytest 를 쓴다(폴백 분기·additive). 즉 존재 시 venv 우선, 부재 시 sys.executable 두 갈래다.
     """
-    cand = REPO / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    cand = REPO / "venv" / ("Scripts/python.exe" if _probe_os_name() == "nt" else "bin/python")
     return str(cand) if cand.exists() else sys.executable
 
 

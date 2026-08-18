@@ -315,6 +315,8 @@ module.start_raw_record(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         for index in range(4)
     ]

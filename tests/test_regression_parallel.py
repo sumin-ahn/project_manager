@@ -28,6 +28,7 @@ from xdist import workermanage
 from xdist.remote import serialize_warning_message
 
 import conftest as test_config
+from _textio import utf8_child_env
 
 REPO = Path(__file__).resolve().parent.parent
 TOOLS = REPO / ".project_manager" / "tools"
@@ -199,10 +200,17 @@ def _write_probe_suite(root: Path, *, with_guards: bool) -> None:
 
 
 def _run_parallel_probe(root: Path) -> subprocess.CompletedProcess:
+    """중첩 pytest 를 UTF-8 stdio 로 띄운다.
+
+    부모가 `encoding="utf-8"` 로 읽어도, 자식 파이썬 자체가 로케일 기본 코덱(Windows
+    cp949)으로 쓰면 그 바이트를 UTF-8 로 재해석하는 순간 한글 경고 본문이 mojibake 된다
+    (T-0741). `utf8_child_env` 로 자식 stdio 코덱을 명시해 부모의 UTF-8 디코드 가정과
+    맞춘다.
+    """
     return subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-n", "2", str(root)],
         cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
-        stdin=subprocess.DEVNULL, timeout=NESTED_RUN_TIMEOUT_SECONDS)
+        env=utf8_child_env(), stdin=subprocess.DEVNULL, timeout=NESTED_RUN_TIMEOUT_SECONDS)
 
 
 def test_parallel_run_survives_worker_warnings(tmp_path):

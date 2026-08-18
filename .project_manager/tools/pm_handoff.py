@@ -949,6 +949,20 @@ def _migrate_legacy_pm_state(
     return _pm_state_path(worktree_slot, areas_file, leases_file, migrate=True)
 
 
+def _probe_os_name() -> str:
+    """Read the interpreter OS family through one injectable seam.
+
+    Tests that need `_default_python()` to take the Windows branch on any host
+    cannot rebind the global `os.name` directly — `pathlib` consults that same
+    global to pick its flavour, and rebinding it mid-test breaks every path
+    operation in the process. Routing the read through this function keeps the
+    injection point inside this module instead of on the `os` global (this
+    tool doesn't import board.py, so it holds its own copy of the seam too —
+    no cross-tool dependency).
+    """
+    return os.name
+
+
 def _default_python() -> str:
     """플랫폼-인지 venv 인터프리터 경로 (없으면 sys.executable 폴백).
 
@@ -957,7 +971,7 @@ def _default_python() -> str:
     있으므로, venv 가 있으면 무조건 venv 를 우선해 회귀 측정 인터프리터를 보존한다.
     (이 도구는 board.py 를 import 하지 않으므로 헬퍼 중복 보유 — 도구 간 의존 없음.)
     """
-    cand = REPO / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    cand = REPO / "venv" / ("Scripts/python.exe" if _probe_os_name() == "nt" else "bin/python")
     return str(cand) if cand.exists() else sys.executable
 
 # ── 세션 차수 추론 placeholder (infer_next_session_num 사용) ──────────────────

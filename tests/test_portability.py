@@ -10,6 +10,7 @@ monkeypatch 로 흔들어 4조합(_default_python)·3분기(_detect_py)를 검�
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -43,12 +44,26 @@ def _make_repo(tmp_path: Path, *, venv: bool, nt: bool) -> Path:
 # ── _default_python() — 4조합 (os.name × venv 존재) ────────────────────────
 
 @pytest.mark.parametrize("name", DEFAULT_PYTHON_TOOLS)
+def test_default_python_seam_defaults_to_the_real_interpreter_value(name):
+    """세 도구 모두 `_probe_os_name` 기본값이 실 `os.name` 그대로다(T-0741 F-001).
+
+    board·console_encoding 은 각자 파일에서 이 불변성을 이미 확인한다 — 여기서는
+    `_default_python()` 을 공유하는 pm_bootstrap·pm_handoff·ticket_finish 세 사본이
+    각자 독립적으로 같은 불변성을 지키는지 못 박는다(pm_handoff·ticket_finish 는
+    board.py 를 import 하지 않으므로 seam 사본 각각을 직접 확인해야 한다).
+    """
+    mod = _load(name)
+    assert mod._probe_os_name() == os.name
+
+
+
+@pytest.mark.parametrize("name", DEFAULT_PYTHON_TOOLS)
 def test_default_python_posix_venv_present(monkeypatch, tmp_path, name):
     """posix + venv 존재 → venv/bin/python (이 머신 현행 보존)."""
     mod = _load(name)
     repo = _make_repo(tmp_path, venv=True, nt=False)
     monkeypatch.setattr(mod, "REPO", repo)
-    monkeypatch.setattr(mod.os, "name", "posix")
+    monkeypatch.setattr(mod, "_probe_os_name", lambda: "posix")
     assert mod._default_python() == str(repo / "venv" / "bin" / "python")
 
 
@@ -58,7 +73,7 @@ def test_default_python_nt_venv_present(monkeypatch, tmp_path, name):
     mod = _load(name)
     repo = _make_repo(tmp_path, venv=True, nt=True)
     monkeypatch.setattr(mod, "REPO", repo)
-    monkeypatch.setattr(mod.os, "name", "nt")
+    monkeypatch.setattr(mod, "_probe_os_name", lambda: "nt")
     assert mod._default_python() == str(repo / "venv" / "Scripts" / "python.exe")
 
 
@@ -68,7 +83,7 @@ def test_default_python_posix_venv_absent_falls_back(monkeypatch, tmp_path, name
     mod = _load(name)
     repo = _make_repo(tmp_path, venv=False, nt=False)
     monkeypatch.setattr(mod, "REPO", repo)
-    monkeypatch.setattr(mod.os, "name", "posix")
+    monkeypatch.setattr(mod, "_probe_os_name", lambda: "posix")
     monkeypatch.setattr(mod.sys, "executable", "/fake/sys/python")
     assert mod._default_python() == "/fake/sys/python"
 
@@ -79,7 +94,7 @@ def test_default_python_nt_venv_absent_falls_back(monkeypatch, tmp_path, name):
     mod = _load(name)
     repo = _make_repo(tmp_path, venv=False, nt=True)
     monkeypatch.setattr(mod, "REPO", repo)
-    monkeypatch.setattr(mod.os, "name", "nt")
+    monkeypatch.setattr(mod, "_probe_os_name", lambda: "nt")
     monkeypatch.setattr(mod.sys, "executable", "/fake/sys/python")
     assert mod._default_python() == "/fake/sys/python"
 
