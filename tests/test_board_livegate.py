@@ -36,7 +36,7 @@ def _load_board():
 def live_board(tmp_path, monkeypatch):
     """fresh board 모듈 + livegate IO 전역을 tmp 로 재지정한 hermetic 인스턴스.
 
-    LEASES_FILE 은 부재로 둔다 → `_active_slot_path` None → `_regression_cwd` 가 REPO(=tmp
+    LEASES_FILE 은 부재로 둔다 → `_active_slot_path` None → `_livegate_cwd` 가 REPO(=tmp
     proj)로 폴백. worktree HEAD 는 `_git_head_at` 대역으로 고정(라이브 git 미접근).
     """
     proj = tmp_path / "proj"
@@ -190,10 +190,13 @@ def test_record_rc_nonzero_records_fail(live_board, monkeypatch, capsys):
     assert "release red (rc=1)" in err
 
 
-# ── record ⑤ cwd 해소 = 활성 slot worktree (seam 재사용) ─────────────────────
+# ── record ⑤ cwd 해소 = 활성 slot worktree (`_livegate_cwd`) ────────────────
 
 def test_record_uses_regression_cwd_seam(live_board, monkeypatch):
-    """record 의 pytest 는 `_regression_cwd`(활성 slot worktree)에서 돈다 — 회귀와 동일 seam."""
+    """record 의 pytest 는 `_livegate_cwd`(활성 slot worktree)에서 돈다.
+
+    회귀 cwd 와는 갈린다 — 회귀는 push 되는 트리 자신에서 돌고(`_regression_cwd`), 라이브 게이트만
+    PM 홈에서 실행돼 코드가 사는 슬롯 트리를 겨냥한다(T-0733)."""
     worktree = str(live_board._proj / "work" / "slot1")
     # `_active_slot_path(session=None)` 시그니처(ADR-0040 D2) — 선택 인자 수용.
     monkeypatch.setattr(live_board, "_active_slot_path", lambda session=None: worktree)
@@ -241,8 +244,8 @@ def test_record_explicit_cwd_override(live_board, monkeypatch):
 
 
 # ── record ⑥ multi-lease cwd 해소: --repo/--slot 이 슬롯 핀 (T-0298·ADR-0057·--cwd 우회 불요) ──
-# `livegate record` 는 이제 `--repo`/`--slot`(ADR-0057)을 받아 regression/handoff 과 동형
-# (session_name)으로 `_regression_cwd` 에 thread 한다. multi-lease(leased≥2) 홈에서 --repo/--slot
+# `livegate record` 는 이제 `--repo`/`--slot`(ADR-0057)을 받아 handoff 과 동형
+# (session_name)으로 `_livegate_cwd` 에 thread 한다. multi-lease(leased≥2) 홈에서 --repo/--slot
 # 명시면 그 슬롯 cwd 로 해소돼 pytest 가 돌고(rc0), 무명시면 seam 이 fail-loud(모호는 시끄럽게) —
 # 광고한 remedy(`--repo <repo> --slot <N>`)가 실제로 수용돼 dead-end 가 아니다(T-0285 anti-pattern
 # 회피).

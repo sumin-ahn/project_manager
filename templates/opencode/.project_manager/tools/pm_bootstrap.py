@@ -1058,6 +1058,30 @@ def parse_lint_counts(lint_output: str) -> tuple[int, int] | None:
     return None
 
 
+# lint gate 출력 안에 섞여 나오는 **훅 세대 차단** — lint 산출이 아니다. `lint --gate` 진입은
+# push 게이트 훅의 세대를 lint 수집 **앞**에서 대조하고, 비-현행이면 그 안내 1줄만 내고 끝낸다.
+# 그 출력을 "파싱 실패"로 읽으면 dump 의 lint 칸이 `gate error (unparsed)` 로 저하돼 원인
+# (구세대 훅)과 처방(`board.py init`)이 가려진다 — 채택자가 흡수 직후 겪는 창이 정확히 그것이다.
+_LINT_HOOK_GENERATION_RESULT = "pre-push 훅 세대 차단 (board.py init 재실행)"
+
+
+def _hook_generation_notice(lint_output: str) -> str | None:
+    """lint gate 출력이 훅 세대 차단이면 그 줄, 아니면 None.
+
+    판정 접두는 **board.py 가 소유**한다(`PM_HOOK_NOTICE_PREFIX`) — 여기 사본을 두면 엔진이
+    문구를 바꿀 때 조용히 어긋난다(pytest 요약행 seam 과 같은 규칙). board 로드 실패·구사본
+    (상수 부재)이면 None 으로 흘려 현행 판정을 그대로 쓴다(fail-soft).
+    """
+    board = _load_board()
+    prefix = getattr(board, "PM_HOOK_NOTICE_PREFIX", None) if board is not None else None
+    if not prefix:
+        return None
+    for line in lint_output.splitlines():
+        if line.startswith(prefix):
+            return line.strip()
+    return None
+
+
 def _clip_utf8(text: str, byte_limit: int) -> str:
     """문자 경계를 깨지 않고 UTF-8 byte 상한 안으로 한 줄을 clip한다."""
     if byte_limit < 0:
@@ -2211,8 +2235,15 @@ class PmBootstrap:
         # rc==0 가지를 빼면 빈 출력·traceback 이 `clean` 으로 보고돼(실측 확인) 모르는 상태가
         # 성공으로 위장된다. 모르는 상태는 clean 이 아니므로 blocking 으로 surface 한다.
         lint_parse_failed = lint_counts is None
+        # 파싱 실패 중 **훅 세대 차단**은 원인·처방이 확정된 상태다 — "모르는 상태"로 뭉뜽그리지
+        # 않고 그 사실을 그대로 싣는다(blocking 신호는 동일하게 유지).
+        hook_generation_blocked = (
+            _hook_generation_notice(lint_output) is not None if lint_parse_failed else False
+        )
         lint_result = (
-            "gate error (unparsed)"
+            _LINT_HOOK_GENERATION_RESULT
+            if hook_generation_blocked
+            else "gate error (unparsed)"
             if lint_parse_failed
             else parse_lint_result(lint_output)
         )

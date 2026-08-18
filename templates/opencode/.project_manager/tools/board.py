@@ -1899,7 +1899,7 @@ def _registers_worktree(pm_home: Path, anchor: Path, *, runner: Any = subprocess
     worktree 로 두는 PM 홈인지 미검증이면, 무관한 프레임워크 PM 홈 하위에 우연히 중첩된 linked
     worktree 를 엉뚱한 pm_home 으로 오귀속한다(reviewer should-fix). 아래 둘 중 하나면 등록으로 인정:
       (a) anchor 경로가 `<pm_home>/work/<name>` 형태 — 프레임워크 worktree 등록 관례(leases slot·
-          `_regression_cwd` 가 `repo_root / "work/<repo>_<N>"` 조립·동형), 또는
+          `_active_slot_path` 가 `repo_root / "work/<repo>_<N>"` 조립·동형), 또는
       (b) anchor 의 `git rev-parse --git-common-dir`(공유 git 저장소)이 `pm_home` 하위 —
           `<pm_home>/.repos/<repo>.git`(두-git) 또는 `<pm_home>/.git`(단일 git worktree).
     둘 다 아니면 False → 호출부가 None(기존 fail-soft·오탐 0).
@@ -3882,15 +3882,19 @@ def board_lock() -> Iterator[None]:
 
 
 # ── 회귀 게이트 ──────────────────────────────────────────────────────
-# 회귀 단위 ≡ push 단위 · green 인 것만 push. `regression run` 이 측정·기록(per-clone
-# 로컬 플래그), pre-push 훅이 `regression check` 로 HEAD green 을 검증. 비차단 pre-warm 은
-# PM 이 `run_in_background` 로 `regression run` 을 돌리는 워크플로(하니스 background).
+# 회귀 단위 ≡ **코드 repo** push 단위 · green 인 것만 push. 회귀 게이트가 붙는 자리는 `tests/` 가
+# 있는 트리뿐이다 — 코드가 worktree 슬롯에 사는 분리 형상의 PM 홈(dev-state·board·wiki)에는 돌릴
+# 스위트가 없어 회귀를 요구하지 않는다. 그 판정은 훅 본문이 push 시점에 직접 한다
+# (`pre_push_hook_body` 의 `[ -d tests ]` 자기 가림 · lint 게이트는 두 형상 모두 항상).
+# `regression run` 이 측정·기록(per-clone 로컬 플래그), pre-push 훅이 `regression check` 로 HEAD
+# green 을 검증. 비차단 pre-warm 은 PM 이 `run_in_background` 로 `regression run` 을 돌리는
+# 워크플로(하니스 background).
 
 def _git_head_at(cwd: str) -> str:
     """주어진 작업 디렉토리의 git HEAD sha 를 반환한다 (실패/비-repo 면 '').
 
     `_git_head` 는 board 프로세스의 `REPO` 기준이지만, livegate 기록은 테스트가 실제로
-    돈 **활성 slot worktree**(=`_regression_cwd`)의 HEAD 를 키로 삼아야 한다 — 보호훅이
+    돈 **활성 slot worktree**(=`_livegate_cwd`)의 HEAD 를 키로 삼아야 한다 — 보호훅이
     push 하는 sha(=worktree HEAD)와 대조되기 때문. 이 함수가 그 cwd-매개 HEAD 를 낸다.
     """
     r = subprocess.run(["git", "-C", cwd, "rev-parse", "HEAD"],
@@ -3943,12 +3947,13 @@ def _hooks_dir() -> Path | None:
 _PM_HOOK_SIGNATURE = "pm pre-push gate"
 # 본문 세대 스탬프 — "이 훅이 어느 세대인가"를 파일 자신이 말하게 한다. 게이트 명령을 바꿀 때
 # 이 값을 올리면, 이미 깔린 옛 훅이 스스로 구세대임을 드러낸다.
-PM_HOOK_REV = 2
+PM_HOOK_REV = 3
 _PM_HOOK_REV_PREFIX = "# pm-hook-rev: "
 # 설치된 훅에서 인터프리터를 되읽는 규칙 — 채택자의 런처 선택(`py -3.12` 등)이 세대 판정을
 # 뒤집지 않게 한다(본문 대조를 그 인터프리터로 조립한다).
+# (회귀 줄은 `[ -d tests ]` 블록 안이라 들여쓰기가 붙는다 — 앞 공백을 캡처 밖에서 흘린다.)
 _PM_HOOK_INTERPRETER_RE = re.compile(
-    r"^(?P<py>\S.*?) \.project_manager/tools/board\.py regression check", re.M,
+    r"^[ \t]*(?P<py>\S.*?) \.project_manager/tools/board\.py regression check", re.M,
 )
 
 
@@ -3956,20 +3961,34 @@ def pre_push_hook_body(py: str | None = None) -> str:
     """pre-push 훅 본문 **단일 진실** — 설치·세대 대조가 같은 문자열을 본다.
 
     두 표면이 각자 본문을 알면 "설치된 훅이 현행인가"를 물을 수 없다(그게 구버전 훅이 조용히
-    사는 채널이었다). `py` 미지정이면 호출 시점 인터프리터를 탐지한다."""
+    사는 채널이었다). `py` 미지정이면 호출 시점 인터프리터를 탐지한다.
+
+    본문은 **게이트 둘**을 싣고 앞의 것만 트리를 보고 스스로 가린다:
+      1. **회귀 게이트** — `[ -d tests ]` 인 트리에서만 돈다. 훅은 push 되는 트리의 루트에서 실행
+         되므로(git) 이 판정의 대상이 곧 push 단위 그 자체다. `tests/` 가 없는 트리(분리 형상의
+         PM 홈)는 돌릴 스위트가 없으니 회귀를 요구하지 않는다 — 종전엔 그 자리에서 회귀 cwd 를
+         활성 슬롯으로 우회해 **코드가 한 줄도 안 바뀐 board/wiki push 가 슬롯 스위트 전량**을
+         요구했다(채택자 제보).
+      2. **lint 게이트** — 대상이 그 트리 자신의 board/wiki 라 코드 유무와 무관하다. **항상** 돈다
+         (차단을 강제하는 상시 호출자는 이 훅 하나뿐이다)."""
     interpreter = py if py is not None else _detect_py()
     return (
         "#!/bin/sh\n"
-        "# pm pre-push gate — green 회귀 AND lint 게이트만 push. board.py init 이 설치.\n"
+        "# pm pre-push gate — 회귀 게이트(tests/ 있는 트리만) AND lint 게이트(항상). "
+        "board.py init 이 설치.\n"
         f"{_PM_HOOK_REV_PREFIX}{PM_HOOK_REV}\n"
-        f"{interpreter} .project_manager/tools/board.py regression check || \\\n"
-        f"  {interpreter} .project_manager/tools/board.py regression run --final || exit 1\n"
+        "if [ -d tests ]; then\n"
+        f"  {interpreter} .project_manager/tools/board.py regression check || \\\n"
+        f"    {interpreter} .project_manager/tools/board.py regression run --final || exit 1\n"
+        "else\n"
+        '  echo "pre-push: 회귀 게이트 비대상 — 이 트리에 tests/ 없음(PM 홈) · lint 게이트만"\n'
+        "fi\n"
         f"{interpreter} .project_manager/tools/board.py lint --gate || exit 1\n"
     )
 
 
 def _legacy_pre_push_hook_bodies(py: str) -> tuple[str, ...]:
-    """**알려진 구세대 본문** 전수 (현행 직전 세대 1종) — 정확일치 registry.
+    """**알려진 구세대 본문** 전수 (rev 미표기·rev 2 두 세대) — 정확일치 registry.
 
     차단 여부는 이 registry 가 아니라 "현행 본문인가" 하나로 갈린다(비-현행은 전부 차단). registry
     가 가르는 것은 안내의 사유 낱말뿐이다 — 아는 세대면 "구버전", 모르는 본문이면 "엔진이 모르는
@@ -3983,6 +4002,15 @@ def _legacy_pre_push_hook_bodies(py: str) -> tuple[str, ...]:
         f"{py} .project_manager/tools/board.py regression check || \\\n"
         f"  {py} .project_manager/tools/board.py regression run || exit 1\n"
         f"{py} .project_manager/tools/board.py lint --gate || exit 1\n",
+        # rev 2 — 회귀 게이트가 트리를 보지 않고 **항상** 돌던 본문. 코드가 없는 분리 형상 PM 홈
+        # 에서도 회귀를 요구해, 슬롯 스위트 전량이 board/wiki push 의 조건이 됐다(채택자 제보).
+        # 이 훅이 남아 있으면 push 가 막히고 처방은 `board.py init` 재실행 1회다.
+        "#!/bin/sh\n"
+        "# pm pre-push gate — green 회귀 AND lint 게이트만 push. board.py init 이 설치.\n"
+        f"{_PM_HOOK_REV_PREFIX}2\n"
+        f"{py} .project_manager/tools/board.py regression check || \\\n"
+        f"  {py} .project_manager/tools/board.py regression run --final || exit 1\n"
+        f"{py} .project_manager/tools/board.py lint --gate || exit 1\n",
     )
 
 
@@ -3993,8 +4021,11 @@ def install_pre_push_hook() -> bool:
       1. 회귀 게이트 — green 회귀만 push (`regression check` 실패 시 `regression run --final`).
          `--final` 은 활성 리뷰 사이클 중의 targeted 강등을 건너뛴다 — push 게이트는 언제나
          FULL 이어야 한다(강등된 결과는 게이트 플래그를 쓰지 않아 훅이 통과할 수 없다).
+         **`tests/` 가 있는 트리에서만** 돈다 — 판정은 훅 본문이 push 시점에 한다.
       2. lint 게이트 — `lint --gate` 차단 카테고리(dangling/unstable-ref/
-         dependency/thin) 발견 시 push 실패. status drift 자문성은 차단 안 함.
+         dependency/thin) 발견 시 push 실패. status drift 자문성은 차단 안 함. 두 형상 모두 돈다.
+    설치는 **어디서든** 한다(트리 형상을 여기서 묻지 않는다) — 코드가 뒤에 생기거나(worktree add)
+    사라져도 같은 훅이 그때그때 맞게 가리므로, 설치/제거를 오가는 상태 기계가 필요 없다.
     `board.py init` 가 (재)설치하므로 멱등·재설치 안전.
     """
     hooks = _hooks_dir()
@@ -4212,16 +4243,22 @@ def _installed_hook_interpreter(body: str) -> str | None:
     return match.group("py") if match else None
 
 
+# 훅 세대 안내의 **호출 경로 중립 접두** — 이 판정은 `regression`(스위트 있는 트리)과
+# `lint --gate`(두 형상 모두) 두 진입에서 나온다. 접두가 한 채널 이름(`regression:`)이면 다른
+# 채널의 소비자가 그 출력을 자기 채널 산출로 읽다가 파싱에 실패한다(pm_bootstrap 의 lint dump
+# 가 `gate error (unparsed)` 로 저하되던 자리). 접두를 여기서 소유해 소비자가 사본 없이 짚는다.
+PM_HOOK_NOTICE_PREFIX = "pre-push 훅: "
 # 차단 안내 — 처방은 `init` 재실행 하나뿐이라 두 사유(구세대·미상 본문)가 같은 문장을 쓴다.
 # 인터프리터 표기는 채택자 문서와 같은 규칙이다(Linux/macOS `python3` · Windows 런처 `py -3`).
 _STALE_HOOK_REFUSAL = (
-    "regression: 설치된 pre-push 훅이 {kind}입니다 ({hook}) — "
+    f"{PM_HOOK_NOTICE_PREFIX}설치된 pre-push 훅이 {{kind}}입니다 ({{hook}}) — "
     "`python3 .project_manager/tools/board.py init` 재실행 후 다시 시도"
     "(Windows 는 py -3)."
 )
 _UNREADABLE_HOOK_REFUSAL = (
-    "regression: 설치된 pre-push 훅을 읽지 못해 세대를 판정할 수 없습니다 ({hook}: {error}) — "
-    "`python3 .project_manager/tools/board.py init` 재실행 후 다시 시도(Windows 는 py -3)."
+    f"{PM_HOOK_NOTICE_PREFIX}설치된 pre-push 훅을 읽지 못해 세대를 판정할 수 없습니다 "
+    "({hook}: {error}) — `python3 .project_manager/tools/board.py init` 재실행 후 "
+    "다시 시도(Windows 는 py -3)."
 )
 # git 이 훅 위치 자체를 답하지 못한 경우 — **사유를 실어 알린다**(침묵 no-op 금지). 차단이
 # 아니라 경고인 이유는 이 rc≠0 이 두 형상을 합치기 때문이다: (1) config 파싱 실패(실측 원인 —
@@ -4233,7 +4270,7 @@ _UNREADABLE_HOOK_REFUSAL = (
 # 통과한 것인지 아예 안 돈 것인지 구분 불가). 그 관측성만 되돌린다.
 # (`_sha_anchor_status` 의 rc≥2 fatal = 환경적 판정불가 규약과 같은 방향이다.)
 _UNRESOLVED_HOOKS_NOTICE = (
-    "regression: 훅 디렉토리를 해소하지 못해 pre-push 훅 세대 판정을 생략합니다 ({reason}) — "
+    f"{PM_HOOK_NOTICE_PREFIX}훅 디렉토리를 해소하지 못해 세대 판정을 생략합니다 ({{reason}}) — "
     "훅을 쓰는 형상이면 git 설정(core.hooksPath 등)을 확인하십시오"
     "(Windows 경로는 `C:/path/to/hooks` 표기 또는 백슬래시 이스케이프)."
 )
@@ -6426,8 +6463,9 @@ def _active_slot_test_cmd(session: str | None = None) -> str | None:
 def _active_slot_path(session: str | None = None) -> str | None:
     """활성 worktree 슬롯(lease)의 절대 경로 (없으면 None).
 
-    분리된 PM 홈(코드 없음)+worktree 모델에서 회귀는 활성 repo 의
-    worktree cwd 에서 돌아야 한다 — 이 함수가 그 경로를 lease 장부에서 해소한다.
+    분리된 PM 홈(코드 없음)+worktree 모델에서 **PM 홈이 실행하는 코드 트리 작업**(leased ≥2 회귀
+    순회·릴리즈 라이브 게이트)은 활성 repo 의 worktree cwd 에서 돌아야 한다 — 이 함수가 그 경로를
+    lease 장부에서 해소한다. (push 게이트 회귀는 push 되는 트리 자신이 돈다 — `_regression_cwd`.)
 
     `_active_slot_test_cmd` 와 *동형* 데이터-결합: **worktree_pool 을 import 하지 않고**
     리스 장부 파일(`LEASES_FILE`)을 stdlib json 으로 직접 read 한다.
@@ -6498,41 +6536,20 @@ def _test_cmd(override: str | None, session: str | None = None) -> str:
     return local_config().get("test_cmd") or "pytest -q"
 
 
-def _regression_cwd(override: str | None = None, session: str | None = None) -> str:
-    """회귀를 실행할 작업 디렉토리를 해소한다.
+def _regression_cwd(override: str | None = None) -> str:
+    """회귀를 실행할 작업 디렉토리 — 명시 `--cwd` 가 있으면 그것, 없으면 **이 트리**(`REPO`).
 
-    multi-PM 모델에선 코드가 활성 repo 의 **worktree** 에 있고 multi-PM 루트(`REPO`)엔 코드/테스트가
-    없다 — 회귀는 worktree cwd 에서 돌아야 한다.
-    이 함수는 그 cwd 를 주입 가능한 seam 으로 노출한다.
+    회귀 단위는 push 되는 코드 트리 자신이다. 종전엔 여기서 활성 슬롯 worktree 로 우회했는데,
+    그것은 "PM 홈엔 `tests/` 가 없다"는 증상을 cwd 로 땜질한 것이라 코드가 한 줄도 안 바뀐 PM 홈
+    push 가 슬롯 스위트 전량을 요구했다(채택자 제보). 그 판정은 이제 훅 본문이 push 시점에
+    직접 한다(`pre_push_hook_body` 의 `[ -d tests ]`) — 스위트가 없는 트리는 회귀를 아예 요구하지
+    않으므로 우회할 대상이 없다.
 
-    해소 순서:
-      - `override`(CLI `--cwd`·미래 호출자가 worktree 경로를 넘김) 가 있으면 그것,
-      - 없으면 **활성 슬롯 경로**(`_active_slot_path(session)` — lease 장부에서 이 세션의 leased
-        슬롯 worktree 경로·worktree_pool 미import·`session` 명시는 M>1 슬롯 순회용),
-      - 활성 슬롯이 미해소인데 **leased ≥2·세션/cwd 미지정**(진짜 모호)이면 `REPO` 침묵 폴백
-        대신 **fail-loud**(`sys.exit`) — `--repo <repo> --slot <N>`/`--cwd <path>` 명시를 안내한다.
-        REPO(PM 홈·`tests/` 없음)로 조용히 폴백하면 livegate/회귀가 broken slot 을 수집해
-        false fail 을 내던 것(livegate `--cwd` 우회의 근원·PM 61+62 이월)을 근절한다 —
-        session_name 의 귀속-쓰기 fail-loud(bare slot 입구 거부)(rc5 vacuous-pass
-        근절)과 같은 "모호는 시끄럽게" 철학. **`session` 명시(비-None)·leased <2(솔로/단일)는
-        무변경** — 아래 `REPO` 폴백을 그대로 탄다(additive·솔로 100% 보존).
-      - 그것도 없으면 **현 `REPO` 기본** (솔로/multi-PM-미배선 — additive·솔로 무변경).
+    슬롯 트리를 겨냥해야 하는 형상은 각자 자기 자리에서 해소한다: leased ≥2 순회는
+    `_regression_multi_run`/`_regression_multi_check` 가 `_active_slot_path` 로, 릴리즈 라이브
+    게이트는 `_livegate_cwd` 로, 다른 트리를 지목하는 실행은 `--cwd` 로 명시한다.
     """
-    if override:
-        return override
-    slot = _active_slot_path(session)
-    if slot:
-        return slot
-    # 활성 슬롯 미해소 + leased ≥2 + 세션/cwd 미지정 = genuine ambiguity → fail-loud.
-    # (session 명시면 `session is None` False → REPO 폴백·무변경 / leased <2 도 REPO 폴백·무변경.)
-    if session is None and len(identity_args.leased_sessions(LEASES_FILE)) >= 2:
-        sys.exit(
-            "[중단] 회귀/livegate cwd 미해소 — 활성 슬롯이 여럿(leased ≥2)인데 세션/cwd "
-            "미지정으로 모호하다. REPO(PM 홈·tests 없음)로 침묵 폴백하면 broken slot 을 수집해 "
-            "false fail 이 되므로 거부한다. `--repo <repo> --slot <N>` 로 슬롯을 명시하거나 "
-            "`--cwd <worktree 절대경로>` 로 직접 지정하라 (예: `--repo project_manager --slot 1`)."
-        )
-    return str(REPO)
+    return override or str(REPO)
 
 
 def _minimum_python() -> tuple[int, int]:
@@ -7716,21 +7733,89 @@ def _run_regression_cmd(cmd: str, cwd: str,
 def _regression_rc5_note(rc: int, cwd: str, override: str | None) -> str:
     """rc5(pytest 수집 0 · "no tests ran") 진단 힌트를 만든다 (rc≠5 면 '').
 
-    "no tests ran"(exit 5)은 pass 로 기록하지 않는다— 수집 0 은 테스트 루트/cwd 가
-    어긋났다는 신호지 green 이 아니다
-    채널로 확장). 나아가 lease/세션 미매칭으로 cwd 가 REPO 로 폴백했고 그 REPO 에 `tests/` 가
-    없으면 세션 해소 경로를 시끄럽게
-    표면화한다 — 훅 env 에 세션 정체성이 없어 상시 vacuous green 을 만들던 침묵 폴백
-    `override`(명시 `--cwd`)면 폴백이 아니므로 힌트를 붙이지 않는다.
+    "no tests ran"(exit 5)은 pass 로 기록하지 않는다 — 수집 0 은 테스트 루트/cwd 가 어긋났다는
+    신호지 green 이 아니다. 나아가 그 트리에 `tests/` 자체가 없으면 **트리 사실**을 실어 처방까지
+    준다: 회귀는 이 트리에서 돌고(회귀 단위 = push 되는 트리) 다른 트리는 명시로만 지목한다.
+    (종전엔 여기서 '활성 slot lease 미매칭 — 세션 설정 확인'이라 말했다. 회귀 cwd 가 lease/세션을
+    해소하던 시절의 문장이라, 우회가 삭제된 지금은 정상 바인딩된 세션에게도 거짓 처방이 된다.)
+    `override`(명시 `--cwd`/`--task`)면 채택자가 트리를 확정한 것이라 힌트를 붙이지 않는다.
     """
     if rc != 5:
         return ""
     note = " · 수집 0 — 테스트 루트/cwd 확인"
-    fell_back_to_repo = not override and cwd == str(REPO)
-    if fell_back_to_repo and not (Path(cwd) / "tests").is_dir():
-        note += (f" · 활성 slot lease 미매칭(session=`{session_name() or '(비바인딩)'}`) — "
-                 "`PM_SESSION_NAME` 또는 local.conf `session=` 확인")
+    if not override and not (Path(cwd) / "tests").is_dir():
+        note += (f" · 이 트리에 `tests/` 가 없다({cwd} · 분리 형상 PM 홈) — 코드 트리에서 "
+                 "실행하거나 `--cwd <코드 트리 절대경로>`/`--task <이름>` 으로 지목하라")
     return note
+
+
+# ── 스위트 없는 트리의 회귀 요청 = 실행 전 거부 ────────────────────────────
+# 판정 축은 훅 본문과 같다(그 트리에 `tests/` 가 있는가). 훅이 push 를 가리는 것과 대칭으로,
+# 사람이 직접 부른 `regression run` 도 스위트가 없는 트리에서는 돌지 않는다 — 돌려봐야 홈 루트
+# 재귀 수집(슬롯 스위트 오수집)이나 rc4/rc5 이고, 그 결과가 소비자 없는 홈 플래그에 red 로 남는다.
+_SUITELESS_TREE_REFUSAL = (
+    "regression: 이 트리엔 회귀 스위트가 없다 — {cwd} 에 `tests/` 가 없는데 test_cmd "
+    "`{cmd}` 는 이 트리를 대상으로 삼는다({why}). 코드 트리에서 실행하거나 "
+    "`--cwd <코드 트리 절대경로>` / `--task <이름>` 으로 지목하라 (측정·기록 안 함)."
+)
+_SUITELESS_WHY_TARGETS_TESTS = "`tests/` 지목"
+_SUITELESS_WHY_NO_PATH = "수집 경로 미지정 → cwd 재귀 수집"
+# pytest 인자 중 **경로로 볼 수 있는 토큰**의 모양 — 옵션 값(`-n 8`·`-k expr`)을 경로로
+# 오인하지 않으려고 세 신호만 본다: 경로 구분자 · `.py` · nodeid(`::`). 이 셋 다 아니면 실재
+# 여부로 한 번 더 본다(`pytest pkg` 같은 디렉토리 인자).
+_PYTEST_PATHLIKE_RE = re.compile(r"[/\\]|\.py$|::")
+
+
+def _pytest_collect_paths(args: Sequence[str], cwd: str) -> bool:
+    """pytest argv 가 **수집 경로를 하나라도 지정**하는지 (아니면 cwd 재귀 수집이다).
+
+    옵션(`-` 로 시작)은 건너뛰고, 남은 토큰 중 경로 모양(`_PYTEST_PATHLIKE_RE`)이거나 그 트리에
+    실재하는 것이 하나라도 있으면 True. 옵션 **값**(`-n 8` 의 `8`·`-k expr` 의 `expr`)은 셋 다
+    아니라 걸러진다 — 값을 경로로 세면 "경로 미지정" 판정이 조용히 무력화된다.
+    """
+    for raw in args:
+        if not raw or raw.startswith("-"):
+            continue
+        if _PYTEST_PATHLIKE_RE.search(raw) or (Path(cwd) / raw).exists():
+            return True
+    return False
+
+
+def _suiteless_tree_refusal(cmd: str, cwd: str, override: str | None) -> str | None:
+    """스위트가 없는 트리의 회귀 요청이면 거부 안내 1줄, 아니면 None (판정만·부작용 0).
+
+    거부는 **세 조건이 모두** 참일 때다:
+      1. 명시 `--cwd`/`--task` 가 **없다** — 명시면 채택자가 트리를 확정한 것이라 존중한다.
+      2. test_cmd 가 pytest 호출이고(`_engine_invocation_details` — git-anchor 가드와 같은
+         정규화) **이 트리를 대상으로 삼는다**. 둘 중 하나면 그렇다:
+           · 상대 `tests/` 지목(`_pytest_targets_tests` — 같은 가드가 쓰는 판정), 또는
+           · 수집 경로 미지정(`_pytest_collect_paths` False) — pytest 가 cwd 를 재귀 수집한다.
+             엔진 기본 폴백 test_cmd(`pytest -q`)가 이 갈래다. 스위트 없는 홈에서 이 형상은
+             슬롯 worktree 의 `work/<repo>_<N>/tests/**` 를 잘못된 rootdir 로 긁어 **FULL green
+             기록**을 남겼다(리뷰 실측).
+      3. 그 트리에 `tests/` 가 없다.
+    스위트가 `tests/` 밖이면서 경로를 명시하는 커스텀 test_cmd(`pytest src -q` 등)와 비-pytest
+    test_cmd 는 판정 대상이 아니다(무영향). 판정 불능(따옴표 불균형·pytest 아님)도 거부하지
+    않는다 — 이 게이트는 fail-open 이다(실행을 막는 쪽이 아니라 헛도는 실행을 줄이는 쪽).
+    """
+    if override:
+        return None
+    try:
+        argv = shlex.split(cmd)
+    except ValueError:
+        return None
+    details = _engine_invocation_details(cwd, argv)
+    if details is None or details.kind != "pytest":
+        return None
+    if _pytest_targets_tests(details.args):
+        why = _SUITELESS_WHY_TARGETS_TESTS
+    elif not _pytest_collect_paths(details.args, cwd):
+        why = _SUITELESS_WHY_NO_PATH
+    else:
+        return None
+    if (Path(cwd) / "tests").is_dir():
+        return None
+    return _SUITELESS_TREE_REFUSAL.format(cmd=cmd, cwd=cwd, why=why)
 
 
 # ── M>1 회귀 슬롯 해소 ────────────────────────────────────
@@ -7915,10 +8000,11 @@ def cmd_regression(args: argparse.Namespace) -> int:
     (문서화된 의도적 조작)만 단일-슬롯으로 좁히고 env 는 이 판정에서 제외한다 — 단일-lease/
     솔로/명시는 현행 결과 동일. (env 는 단일-슬롯 threading 등 다른 해소엔 그대로 유효.)
     """
-    # 구형 서명 훅 = 차단 — run/check 두 진입 모두에서 대조한다. 회귀 게이트는 push 게이트의
-    # 유일한 상시 진입점이라, 여기서 막으면 채택자가 릴리즈 노트를 읽지 않아도 옛 훅으로는 push 가
-    # 성립하지 않는다(처방은 `init` 재실행 1회). 판정은 **어떤 부작용보다 앞**이다 — 회귀를 돌리고
-    # 기록까지 남긴 뒤 막으면, 그 기록이 다음 실행의 green 재사용 입력이 된다.
+    # 구형 서명 훅 = 차단 — run/check 두 진입 모두에서 대조한다. 옛 세대 본문은 트리를 가리지
+    # 않고 **항상** 회귀를 불렀으므로, 여기서 막으면 채택자가 릴리즈 노트를 읽지 않아도 옛 훅으로는
+    # push 가 성립하지 않는다 — `tests/` 없는 PM 홈도 마찬가지다(처방은 `init` 재실행 1회).
+    # 판정은 **어떤 부작용보다 앞**이다 — 회귀를 돌리고 기록까지 남긴 뒤 막으면, 그 기록이 다음
+    # 실행의 green 재사용 입력이 된다.
     stale_hook = _stale_pre_push_hook_refusal()
     if stale_hook is not None:
         print(stale_hook, file=sys.stderr)
@@ -7983,19 +8069,27 @@ def cmd_regression(args: argparse.Namespace) -> int:
             parts.append(_scope_args(touches))
         parts.append(_quarantine_args())
         cmd = " ".join(p for p in parts if p)
-        print(f"regression: $ {cmd}")
         # shell=True 로 띄운 pytest 자식은 별도 프로세스 — 부모 콘솔 reconfigure 보호를
         # 못 받는다. 자식의 인코딩을 도구가 코드로 명시(env 워크어라운드 아님): 한국어
         # Windows(cp949 콘솔)에서도 자식 stdout/stderr·파일 IO 를 UTF-8 로 강제.
         env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
-        # cwd seam — multi-PM 모델은 활성 repo 의 worktree 에서 돌아야 한다.
-        # `--cwd` 주입 시 그 경로, 미주입(솔로/multi-PM-미배선)은 REPO. **절대경로로 정규화**해
+        # cwd seam — 회귀는 이 트리(REPO)에서 돈다(슬롯 자동해소 없음·회귀 단위 = push 되는 트리).
+        # `--cwd`/`--task` 주입 시 그 경로, 미주입이면 REPO. **절대경로로 정규화**해
         # 실행·기록·이후 conf 해소가 프로세스 cwd 에 흔들리지 않게 한다(상대 `--cwd` 방어).
         explicit_cwd = getattr(args, "cwd", None)
-        cwd = os.path.abspath(_regression_cwd(explicit_cwd, session=sess))
+        cwd = os.path.abspath(_regression_cwd(explicit_cwd))
         if not scoped and not explicit_cwd:
             # 훅 `check || run` 재실행 — 차단 기록이 있으면 그 앵커에서 돈다(위 함수 참조).
             cwd = _inherit_flag_anchor(cwd)
+        # 스위트 없는 트리 = 실행 전 거부. 판정은 **최종 cwd** 기준이고(앵커 승계 뒤), pytest 를
+        # 띄우지도 플래그를 쓰지도 않는다 — 헛돈 결과가 게이트 기록으로 남으면 안 된다.
+        suiteless = _suiteless_tree_refusal(cmd, cwd, explicit_cwd)
+        if suiteless is not None:
+            print(suiteless, file=sys.stderr)
+            return 1
+        # 실행 안내는 **거부 판정 뒤**다 — 돌지 않은 명령을 `$ …` 로 남기면 로그·핸드오프
+        # 인용에서 실행한 것처럼 읽힌다(거부 문구가 스스로 '측정·기록 안 함'을 말하는 것과 같은 축).
+        print(f"regression: $ {cmd}")
         rc, out, _err = _run_regression_cmd(cmd, cwd, env)
         # pass = rc0 한정. pytest rc5(수집 0·"no tests ran")는 fail — 수집 0 은 green 이
         # 아니라 테스트 루트/cwd 결함이다.
@@ -8055,7 +8149,7 @@ def cmd_regression(args: argparse.Namespace) -> int:
     # 재해소하면 `run --cwd <tree>` 와 다른 local.conf 를 읽는다(false-green/false-RED).
     recorded_collected = _flag_collected(data)
     floor_now = _regression_min_collected(_flag_conf_anchor(
-        data, _regression_cwd(getattr(args, "cwd", None), session=sess)))
+        data, _regression_cwd(getattr(args, "cwd", None))))
     if _green_floor_stale(recorded_collected, floor_now):
         print(f"regression: stale (기록 수집 {recorded_collected} < 현재 하한 {floor_now} "
               "— 하한 신규/상향) — 재실행 필요.", file=sys.stderr)
@@ -8066,7 +8160,7 @@ def cmd_regression(args: argparse.Namespace) -> int:
 
 # ── 릴리즈 라이브 게이트 ────────────────────────────────────────
 # 라이브 LLM 검증(실 하네스 smoke)을 릴리즈(main 머지) 단일 지점으로 모은 게이트.
-# `livegate record` 가 `pytest -m release` 를 회귀와 동일한 cwd 해소로 실행·측정하고
+# `livegate record` 가 `pytest -m release` 를 슬롯 cwd 해소(`_livegate_cwd`)로 실행·측정하고
 # (실행=기록·손기록 없음), 보호훅이 `livegate check --rev <sha>` 로 push HEAD 가 green 인지
 # 소비한다. false-green 방어를 위해 rc0 만으로는 부족하고 수집 N==pin 을 함께 요구한다
 # (수집 pin·rc5 vacuous-pass 근절의 원칙을 라이브 채널로 확장).
@@ -8434,17 +8528,57 @@ def _refuse_release_for_must_fix(flag: Path, cwd: str, problems: list[str]) -> i
     return 1
 
 
+def _livegate_cwd(override: str | None = None, session: str | None = None) -> str:
+    """라이브 wave(`pytest -m release`)를 돌릴 작업 디렉토리를 해소한다.
+
+    회귀 cwd(`_regression_cwd`)와 갈리는 이유는 실행 주체가 다르기 때문이다 — 회귀는 push 되는
+    트리 자신이 자기 스위트를 돌지만, 릴리즈 라이브 게이트는 **PM 홈에서 실행돼 코드가 사는 슬롯
+    트리를 겨냥**한다. 그래서 슬롯 해소는 여기 남는다.
+
+    해소 순서:
+      - `override`(CLI `--cwd` — 릴리즈 readonly 슬롯 핀)가 있으면 그것,
+      - 없으면 **활성 슬롯 경로**(`_active_slot_path(session)` — lease 장부에서 이 세션의 leased
+        슬롯 worktree 경로·worktree_pool 미import·`session` 명시는 M>1 슬롯 지목용),
+      - 활성 슬롯이 미해소인데 **leased ≥2·세션/cwd 미지정**(진짜 모호)이면 `REPO` 침묵 폴백
+        대신 **fail-loud**(`sys.exit`) — `--repo <repo> --slot <N>`/`--cwd <path>` 명시를 안내한다.
+        REPO(PM 홈·`tests/` 없음)로 조용히 폴백하면 라이브 wave 가 broken slot 을 수집해
+        false fail 을 내던 것(livegate `--cwd` 우회의 근원)을 근절한다 — session_name 의 귀속-쓰기
+        fail-loud(bare slot 입구 거부·rc5 vacuous-pass 근절)과 같은 "모호는 시끄럽게" 철학.
+        **`session` 명시(비-None)·leased <2(솔로/단일)는 아래 `REPO` 폴백을 그대로 탄다.**
+      - 그것도 없으면 **현 `REPO` 기본** (솔로/단일 repo — 코드가 이 트리에 있다).
+
+    명시 `session` 이 매칭 슬롯을 못 찾은 갈래는 이 `REPO` 폴백을 타지만 **성질로 고정하지
+    않는다**(테스트 없음·의도적): 분리 형상 PM 홈에서 라이브 wave 를 도는 것은 어차피 거짓 경로라,
+    그 갈래는 폴백이 아니라 fail-loud 로 좁히는 쪽이 맞다.
+    """
+    if override:
+        return override
+    slot = _active_slot_path(session)
+    if slot:
+        return slot
+    # 활성 슬롯 미해소 + leased ≥2 + 세션/cwd 미지정 = genuine ambiguity → fail-loud.
+    # (session 명시면 `session is None` False → REPO 폴백·무변경 / leased <2 도 REPO 폴백·무변경.)
+    if session is None and len(identity_args.leased_sessions(LEASES_FILE)) >= 2:
+        sys.exit(
+            "[중단] livegate cwd 미해소 — 활성 슬롯이 여럿(leased ≥2)인데 세션/cwd "
+            "미지정으로 모호하다. REPO(PM 홈·tests 없음)로 침묵 폴백하면 broken slot 을 수집해 "
+            "false fail 이 되므로 거부한다. `--repo <repo> --slot <N>` 로 슬롯을 명시하거나 "
+            "`--cwd <worktree 절대경로>` 로 직접 지정하라 (예: `--repo project_manager --slot 1`)."
+        )
+    return str(REPO)
+
+
 def _livegate_record(args: argparse.Namespace) -> int:
     """`pytest -m release` 를 실행·측정하고 결과를 livegate.json 에 기록한다 (실행=기록).
 
-    회귀와 동일한 cwd 해소(`_regression_cwd` — 활성 slot worktree)로 subprocess 실행 →
+    슬롯 cwd 해소(`_livegate_cwd` — 활성 slot worktree)로 subprocess 실행 →
     **rc0 그리고 수집 N==pin** 일 때만 `pass @ <worktree HEAD>` 기록. rc!=0 또는 N!=pin 이면
     `fail` 기록 + rc1(사유 표면화). 손기록 경로는 없다(위조/착오 차단). 기록 위치는
     push 보호훅 read 위치(`_resolve_livegate_flag` — engine-root sidecar)와 정렬해 단일 소스다
     (worktree/PM 홈 어느 board.py 로 돌려도 훅이 읽는 한 파일).
 
     `--repo`/`--slot`은 regression/handoff 과 동형으로 `session_name` 해소를 거쳐
-    `_regression_cwd` 에 thread 한다 (M>1 홈에서 슬롯 cwd 를 명시 — `--cwd` 절대경로 핀 우회
+    `_livegate_cwd` 에 thread 한다 (M>1 홈에서 슬롯 cwd 를 명시 — `--cwd` 절대경로 핀 우회
     불요). 무명시 + leased ≥2 는 seam 이 fail-loud(모호는 시끄럽게) 하며, 그 메시지가
     안내하는 `--repo <repo> --slot <N>` 이 실제로 이 subparser 에서 수용돼 dead-end 가 아니다
     (remedy 정직·anti-pattern 회피).
@@ -8457,13 +8591,13 @@ def _livegate_record(args: argparse.Namespace) -> int:
             args.cwd = task_cwd
         print(f"livegate: 작업공간(task {args.task}) → {task_cwd}")
     # `--cwd` 명시(릴리즈 readonly 슬롯 핀)면 session 해소 자체를 생략한다 —
-    # `_regression_cwd` 는 override 최우선이라 session 이 불요한데, eager 해소가 `--repo` 단독
+    # `_livegate_cwd` 는 override 최우선이라 session 이 불요한데, eager 해소가 `--repo` 단독
     # actor 특정(resolve_actor_slot)을 타서 readonly(leased) 슬롯 추가로 활성 ≥2 가 되는 순간
     # 모호 fail-loud 를 오발화시켰다.
     _explicit_cwd = getattr(args, "cwd", None)
-    cwd = _regression_cwd(_explicit_cwd,
-                          session=(None if _explicit_cwd
-                                   else session_name(_actor_session_override(args))))
+    cwd = _livegate_cwd(_explicit_cwd,
+                        session=(None if _explicit_cwd
+                                 else session_name(_actor_session_override(args))))
     # 기록 위치를 push 보호훅 read 위치와 정렬(단일 소스) — **실행 전에** 해소한다. 훅과 같은
     # engine-root sidecar 해소를 공유해, worktree board.py·PM 홈 board.py 어느 쪽으로 돌려도 훅이
     # 읽는 한 파일에 기록. engine-root 무효(BROKEN)는 실행 전에 알 수 있으니, 값비싼 `pytest -m
@@ -10344,7 +10478,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     `--prefix` 는 협업(다중-사람)용이 아니라 **M>1 repo 의 ID 네임스페이스** — 같은
     single user 가 여러 repo 를 동시에 도는 multi-PM 셋업에서 ID 충돌을 막는다.
 
-    공통: local.conf + pm_state(template) + pre-push 회귀 훅.
+    공통: local.conf + pm_state(template) + pre-push 게이트 훅.
     namespaced(--prefix): areas.md 레지스트리 등록 + prefix(→ T-PREFIX-NNN·multi-repo 가드 활성).
     solo (N=1·M=1): areas.md 안 만듦 → 가드 off → legacy T-NNNN (오버헤드 0).
     """
@@ -10426,7 +10560,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         PM_STATE_FILE.write_text(seed, encoding="utf-8", newline="\n")
         print(f"✓ pm_state.md 생성 ({_rel_to_repo(PM_STATE_TEMPLATE)} 에서)")
     if install_pre_push_hook():
-        print("✓ pre-push 회귀 게이트 훅 설치 (green 회귀만 push)")
+        print("✓ pre-push 게이트 훅 설치 (lint 게이트는 항상 · 회귀 게이트는 tests/ 있는 트리만)")
     # board submodule 이 분리된 형상이면 ignore=all 자동 설정 — design(코드) git 이
     # board PM-commit 으로 오염되지 않게(누출 0). 솔로/미분리/git 부재면 no-op(fail-soft·무영향).
     if _configure_board_submodule():
@@ -12822,8 +12956,19 @@ def cmd_lint(args: argparse.Namespace) -> int:
     `--gate`: 종료코드를 *차단 카테고리*에만 1 로 둔다 — status drift 같은 자문성
     (lint_status 의 "never blocks" 보장) 은 보고는 하되 종료코드에 반영하지 않는다.
     즉 `--gate` 는 pre-push 게이트용 엄격 부분집합이다.
+
+    `--gate` 진입은 **훅 세대 판정**도 함께 탄다(`_stale_pre_push_hook_refusal`). 회귀 게이트는
+    `tests/` 있는 트리에서만 도는데, 세대 판정의 호출자가 거기뿐이면 스위트 없는 트리(분리 형상
+    PM 홈)는 다음 세대 교체 처방을 받을 자리가 없다 — 반면 lint 줄은 **두 형상 모두** 훅의 마지막
+    줄로 항상 돈다. 새 게이트가 아니라 기존 판정의 부착 지점을 하나 더 두는 것이고, 판정은 lint
+    수집보다 **앞**이다(옛 훅 아래서 통과한 lint 가 push 허가로 읽히지 않게).
     """
     gate = getattr(args, "gate", False)
+    if gate:
+        stale_hook = _stale_pre_push_hook_refusal()
+        if stale_hook is not None:
+            print(stale_hook, file=sys.stderr)
+            return 1
     issues = lint_tickets()
     hook_issues = _run_lint_hooks()
     total = len(issues) + len(hook_issues)
@@ -16238,9 +16383,11 @@ def build_parser() -> argparse.ArgumentParser:
                        help="회귀 게이트 (run=측정·기록 / check=HEAD green 검증·pre-push 훅용)")
     p.add_argument("action", choices=["run", "check"])
     p.add_argument("--cmd", help="테스트 명령 (기본: 활성 repo areas.md test_cmd → local.conf test_cmd → pytest -q)")
-    p.add_argument("--cwd", help="회귀 실행 cwd (seam·기본 REPO; multi-PM은 활성 repo worktree 배선)")
-    identity_args.add_identity_args(p)  # 명시 슬롯(이 슬롯만 회귀·M>1 홈에서 무명시면 전 leased
-    # 슬롯 all-or-nothing
+    p.add_argument("--cwd", help="회귀 실행 cwd (seam·기본=이 트리 REPO · 슬롯 자동해소 없음 — "
+                                 "다른 트리는 여기서 명시)")
+    identity_args.add_identity_args(p)  # 명시 슬롯 = 디스패치(M>1 순회 생략)와 그 슬롯 test_cmd
+    # 만 좁힌다 · 실행 트리는 REPO(다른 트리는 `--cwd`/`--task` 로 명시) · M>1 홈에서 무명시면
+    # 전 leased 슬롯 all-or-nothing
     p.add_argument("--ticket", help="이 ticket 의 touches 로 스코프 (dev 빠른 루프·advisory)")
     p.add_argument("--touches", help="comma-separated 파일로 스코프 (advisory)")
     p.add_argument("--final", action="store_true",

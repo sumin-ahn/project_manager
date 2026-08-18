@@ -16,6 +16,7 @@ import argparse
 import importlib.util
 import io
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -1279,8 +1280,10 @@ def reg_board(board, monkeypatch):
 
     board 픽스처는 REGRESSION_FLAG·LOCAL_DIR·LEASES_FILE 을 monkeypatch 하지 않아 실 repo 를
     가리킨다 — 여기서 tmp 로 재지정한다. LEASES_FILE 은 부재(→`_active_slot_path` None →
-    cwd=REPO 폴백)·REPO(=tmp proj)엔 `tests/` 없음 → rc5 폴백 힌트 조건이 성립한다.
+    cwd=REPO 폴백)다. 트리는 **스위트가 있는 코드 트리**가 기본이다(`tests/` 실재) — 회귀 측정
+    케이스의 전제다. 스위트 없는 트리를 요구하는 케이스는 `_without_suite(board)` 로 지운다.
     """
+    (board._proj / "tests").mkdir(parents=True, exist_ok=True)
     local = board._proj / ".project_manager" / ".local"
     monkeypatch.setattr(board, "LOCAL_DIR", local)
     monkeypatch.setattr(board, "REGRESSION_FLAG", local / "regression.json")
@@ -1293,6 +1296,12 @@ def _run_args(**over):
     base = dict(action="run", cmd=None, ticket=None, touches=None)
     base.update(over)
     return argparse.Namespace(**base)
+
+
+def _without_suite(board) -> None:
+    """이 트리를 **스위트 없는 트리**(분리 형상 PM 홈)로 만든다 — `tests/` 를 지운다."""
+    shutil.rmtree(board.REPO / "tests", ignore_errors=True)
+    assert not (board.REPO / "tests").is_dir()
 
 
 def test_regression_run_rc5_records_fail(reg_board, monkeypatch, capsys):
@@ -1337,35 +1346,39 @@ def test_regression_run_rc1_records_fail(reg_board, monkeypatch):
     assert data["rc"] == 1
 
 
-def test_regression_run_rc5_repo_fallback_surfaces_session_hint(
+def test_regression_run_rc5_surfaces_the_missing_suite_hint(
         reg_board, monkeypatch, capsys):
-    """rc5 + REPO 폴백(lease 미매칭) + tests/ 부재 → 세션 해소 힌트 표면화 (T-0220).
+    """rc5 + 그 트리에 tests/ 부재 → **트리 사실**과 처방을 표면화 (T-0220 → T-0733 정정).
 
-    훅 env 에 세션 정체성이 없어 침묵 폴백 → 상시 vacuous green 이던 것을 시끄럽게 만든다.
-    힌트에 해소된 session 값과 PM_SESSION_NAME/local.conf 안내가 들어간다.
+    종전 문구는 '활성 slot lease 미매칭 — PM_SESSION_NAME/local.conf 확인'이었다. 회귀 cwd 가
+    lease/세션을 해소하던 시절의 진단이라, 슬롯 우회가 삭제된 지금은 정상 바인딩된 세션에게도
+    거짓 처방이 된다(리뷰 F-008).
     """
     monkeypatch.setenv("PM_SESSION_NAME", "orch-dev-T0220")
     monkeypatch.setattr(reg_board.subprocess, "Popen", _FakeRun(5))
-    reg_board.cmd_regression(_run_args())
+    _without_suite(reg_board)
+    # 스위트 없는 트리라도 이 test_cmd 는 자기 경로를 명시하므로 실행 전 거부에 걸리지 않는다
+    # (거부는 '이 트리를 대상으로 삼는' 형상만 — 여기선 rc5 진단 문구가 판정 대상이다).
+    (reg_board.REPO / "src").mkdir(parents=True, exist_ok=True)
+    reg_board.cmd_regression(_run_args(cmd="pytest src -q"))
     out = capsys.readouterr().out
-    assert "활성 slot lease 미매칭" in out
-    assert "session=`orch-dev-T0220`" in out
-    assert "PM_SESSION_NAME" in out
-    assert "local.conf" in out
+    assert "`tests/` 가 없다" in out
+    assert "--cwd" in out and "--task" in out
+    assert "lease" not in out and "PM_SESSION_NAME" not in out   # 거짓 처방 재유입 차단
 
 
-def test_regression_run_rc5_explicit_cwd_no_fallback_hint(
+def test_regression_run_rc5_explicit_cwd_gets_no_tree_hint(
         reg_board, monkeypatch, capsys):
-    """rc5 지만 명시 `--cwd`(override)면 폴백이 아니므로 세션 힌트를 붙이지 않는다.
+    """rc5 지만 명시 `--cwd`(override)면 채택자가 트리를 확정한 것이라 트리 힌트를 붙이지 않는다.
 
-    수집 0 노트는 그대로(rc5=fail) 나오되, '미매칭 폴백' 힌트는 override 경로에선 무의미하다.
+    수집 0 노트는 그대로(rc5=fail) 나오되, 트리 처방은 명시 경로에선 무의미하다.
     """
     monkeypatch.setenv("PM_SESSION_NAME", "orch-dev-T0220")
     monkeypatch.setattr(reg_board.subprocess, "Popen", _FakeRun(5))
     reg_board.cmd_regression(_run_args(cwd=str(reg_board._proj / "elsewhere")))
     out = capsys.readouterr().out
     assert "수집 0" in out               # rc5=fail 노트는 유지.
-    assert "활성 slot lease 미매칭" not in out  # override 는 폴백 아님 → 힌트 없음.
+    assert "`tests/` 가 없다" not in out  # 명시 트리 → 처방 없음.
 
 
 def test_regression_run_rc5_scoped_returns_fail(reg_board, monkeypatch, capsys):
@@ -1458,12 +1471,13 @@ def multi_reg_board(reg_board, monkeypatch):
 
 # ── M0(솔로)/M1(단일 lease) — 현행 단일-슬롯 경로 무변경 ──────────────────────
 
-def test_regression_run_single_lease_uses_shared_flag_and_slot_cwd(
+def test_regression_run_single_lease_uses_shared_flag_and_repo_cwd(
         reg_board, monkeypatch):
-    """M1(단일 lease)·무명시 → 단일-슬롯 경로 유지: 공유 REGRESSION_FLAG 기록 + 슬롯 cwd.
+    """M1(단일 lease)·무명시 → 단일-슬롯 경로 유지: 공유 REGRESSION_FLAG 기록 + 이 트리(REPO) cwd.
 
-    leased 1개면 all-or-nothing 순회로 안 빠지고(현행 결과 동일), _regression_cwd 가 그 슬롯
-    worktree 로 해소된다(session_name 단일-lease 유도). per-slot 플래그를 만들지 않는다.
+    leased 1개면 all-or-nothing 순회로 안 빠진다(현행 결과 동일). 회귀 cwd 는 리스가 있어도
+    push 되는 트리 자신이다 — 슬롯 우회는 삭제됐다(T-0733·`--cwd` 명시만 다른 트리를 지목).
+    per-slot 플래그를 만들지 않는다.
     """
     _clear_env(monkeypatch)
     _write_ledger(reg_board, {"session": "solo_1"})   # leased 정확히 1개
@@ -1474,8 +1488,8 @@ def test_regression_run_single_lease_uses_shared_flag_and_slot_cwd(
     # 공유 플래그에 기록 (슬롯 순회 아님 — per-slot 플래그 부재).
     assert reg_board.REGRESSION_FLAG.exists()
     assert not (reg_board.LOCAL_DIR / "regression-solo_1.json").exists()
-    # cwd = 그 슬롯 worktree (단일-lease 유도값을 threading).
-    assert fake.calls[0]["kwargs"]["cwd"] == _slot_cwd(reg_board, "solo_1")
+    # cwd = 이 트리(REPO) — 리스가 있어도 슬롯으로 우회하지 않는다.
+    assert fake.calls[0]["kwargs"]["cwd"] == str(reg_board.REPO)
 
 
 # ── reviewer 방어가드 (`and sess`) — sess None 시 손상 행 false-match 차단 ──────
@@ -1674,15 +1688,20 @@ def test_regression_multi_run_ignores_env_session(
 
 def test_regression_run_explicit_session_narrows_in_multi(
         multi_reg_board, monkeypatch):
-    """M2+ 라도 CLI --repo/--slot 명시는 그 슬롯 단일 경로로 좁힌다 (문서화된 의도적 조작만 허용)."""
+    """M2+ 라도 CLI --repo/--slot 명시는 그 슬롯 단일 경로로 좁힌다 (문서화된 의도적 조작만 허용).
+
+    좁히는 대상은 **디스패치**(전-슬롯 순회 → 실행 1회)와 그 슬롯 test_cmd 다. 회귀 cwd 는
+    슬롯이 아니라 이 트리(REPO)다 — 슬롯 우회는 삭제됐고 다른 트리는 `--cwd`/`--task` 로 지목한다
+    (T-0733).
+    """
     b = multi_reg_board
     fake = _FakeRun(0)
     monkeypatch.setattr(b.subprocess, "Popen", fake)
     rc = b.cmd_regression(_run_args(repo="A", slot=1))
     assert rc == 0
-    # 단일-슬롯 경로 — 공유 REGRESSION_FLAG·A_1 cwd 하나만(슬롯 순회 아님).
+    # 단일-슬롯 경로 — 공유 REGRESSION_FLAG·실행 1회(슬롯 순회 아님)·cwd 는 이 트리.
     assert len(fake.calls) == 1
-    assert fake.calls[0]["kwargs"]["cwd"] == _slot_cwd(b, "A_1")
+    assert fake.calls[0]["kwargs"]["cwd"] == str(b.REPO)
     assert b.REGRESSION_FLAG.exists()
     assert not (b.LOCAL_DIR / "regression-A_1.json").exists()
 
@@ -1794,68 +1813,6 @@ def test_regression_run_explicit_slot_cwd_keeps_slot_test_cmd(
     # 명시 슬롯(proj_1)의 test_cmd 가 실렸다(모호 폴백과 달리 pickable).
     assert fake.calls[0]["args"][0].startswith("SLOT1_CMD")
     assert fake.calls[0]["kwargs"]["cwd"] == override
-
-
-# ════════════════════════════════════════════════════════════════════════
-# _regression_cwd — multi-slot genuine-ambiguity fail-loud (T-0298)
-# 활성 슬롯 미해소 + leased ≥2 + 세션/cwd 미지정 = 진짜 모호 → REPO(PM 홈·tests 없음)
-# 침묵 폴백(broken slot 수집 → false fail) 대신 fail-loud(--session/--cwd 안내).
-# override·명시 session·leased <2 는 무변경(additive·솔로 100% 보존). livegate record
-# 의 `--cwd` 우회를 불필요하게 만든다(seam 단일 지점 — livegate/회귀 공유).
-# ════════════════════════════════════════════════════════════════════════
-
-def test_regression_cwd_single_lease_resolves_slot(board, monkeypatch):
-    """(a) leased 정확히 1개·무명시 → 그 슬롯 worktree 로 해소(session_name 단일-lease 유도)."""
-    _clear_env(monkeypatch)
-    _write_ledger(board, {"session": "solo_1"})
-    assert board._regression_cwd() == str(board.REPO / "work/solo_1")
-
-
-def test_regression_cwd_two_leases_no_session_fails_loud(board, monkeypatch):
-    """(b) leased ≥2 + 세션/cwd 미지정 → fail-loud(SystemExit·--repo/--slot/--cwd 안내).
-
-    REPO(PM 홈·tests 없음) 침묵 폴백이 broken slot 을 수집해 false fail 을 내던 것을 근절 —
-    안내 메시지에 `--repo/--slot`·`--cwd` 두 우회를 모두 실어 자기해결 동선을 준다.
-    """
-    _clear_env(monkeypatch)
-    _write_ledger(board, {"session": "A_1"}, {"session": "B_1"})
-    with pytest.raises(SystemExit) as exc:
-        board._regression_cwd()
-    msg = str(exc.value)
-    assert "--repo" in msg
-    assert "--cwd" in msg
-
-
-def test_regression_cwd_two_leases_explicit_session_resolves(board, monkeypatch):
-    """(c) leased ≥2 라도 명시 session 이 매칭 슬롯을 뽑으면 해소(명시 우선·fail-loud 아님)."""
-    _clear_env(monkeypatch)
-    _write_ledger(board, {"session": "A_1"}, {"session": "B_1"})
-    assert board._regression_cwd(session="B_1") == str(board.REPO / "work/B_1")
-
-
-def test_regression_cwd_two_leases_override_wins(board, monkeypatch):
-    """(c') leased ≥2 라도 override(--cwd)면 그 경로 그대로(명시 우선·fail-loud 우회)."""
-    _clear_env(monkeypatch)
-    _write_ledger(board, {"session": "A_1"}, {"session": "B_1"})
-    injected = str(board.REPO / "work" / "elsewhere")
-    assert board._regression_cwd(injected) == injected
-
-
-def test_regression_cwd_zero_lease_falls_back_to_repo(board, monkeypatch):
-    """(d) leased 0(솔로/미배선·장부 부재) → REPO 폴백(솔로 100% 보존·additive·fail-loud 아님)."""
-    _clear_env(monkeypatch)
-    assert not board.LEASES_FILE.exists()   # 장부 부재 = leased 0 = 솔로.
-    assert board._regression_cwd() == str(board.REPO)
-
-
-def test_regression_cwd_explicit_session_no_match_still_repo(board, monkeypatch):
-    """명시 session 이 매칭 슬롯이 없어도(leased ≥2) fail-loud 아님 — 현행 REPO 폴백(무변경).
-
-    fail-loud 는 오직 genuine ambiguity(session 미지정)에만 — 명시 session 은 항상 우선.
-    """
-    _clear_env(monkeypatch)
-    _write_ledger(board, {"session": "A_1"}, {"session": "B_1"})
-    assert board._regression_cwd(session="C_9") == str(board.REPO)
 
 
 def test_validate_prefix_rejects_leading_underscore(board):
