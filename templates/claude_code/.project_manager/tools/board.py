@@ -9462,12 +9462,53 @@ def _frontmatter_with_claimed_rev(
     return rebuilt
 
 
+def _load_pm_handoff():
+    """pm_handoff 모듈을 동적 로드한다 — 부재/로드 실패는 None(fail-soft).
+
+    `ticket_finish._load_pm_handoff` 와 동형(경로-앵커 형제 로드·같은 검증자) — claim 의 코드
+    트리 해소가 finish 와 **같은 seam**(`_resolve_explicit_identity_slot`)을 쓰려면 이 도구도
+    같은 방식으로 pm_handoff 를 끌어와야 한다(사본 복제 금지·엔진 관례). 부재/로드 실패는
+    측정 보조 필드(claimed_rev) 미박제로 접힐 뿐이라 claim 을 막지 않는다."""
+    hp_path = Path(__file__).resolve().parent / "pm_handoff.py"
+    if not hp_path.exists():
+        return None
+    try:
+        mod = _load_module_from_path(
+            hp_path, "pm_handoff.py", verifier=_verify_engine_rev,
+        )
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 claim 을 막지 않는다.
+        if _is_engine_rev_skew(exc):
+            raise  # pm_handoff 가 중첩 로드한 형제 skew 는 fail-loud(삼키지 않는다).
+        return None
+    return mod
+
+
+def _warn_claim_code_tree_folded_to_repo_home() -> None:
+    """claim 코드 트리 해소가 REPO(PM 홈)로 접혔음을 알린다 — 분리 PM 홈 형상의 조용한 오-앵커 방지.
+
+    worktree 리스 장부(`LEASES_FILE`)가 존재한다는 것은 이 PM 홈이 (지금은 매칭되는 활성
+    슬롯이 없더라도) 코드-분리 worktree 모델을 쓴다는 신호다. 그 형상에서 `REPO` 폴백은
+    코드가 없는 트리를 잰다는 뜻일 수 있는데, claim 시점엔 REPO 자체가 git repo 라 rev 가
+    조용히 읽혀 경고가 안 났다(F-001) — 여기서 loud 하게 짚어 완료 부기 시점의 오안내
+    ("다른 저장소의 것이거나 히스토리가 다시 쓰였는지 확인하라")를 막는다."""
+    print(
+        "주의: claim 시점 코드 트리 해소가 PM 홈(REPO)으로 접혔다 — worktree 리스 장부가 있는 "
+        "분리 PM 홈 형상에서는 REPO 에 코드가 없을 수 있다(오-앵커 위험). `--repo <name> "
+        "[--slot <N>]` 또는 `--task <이름>` 으로 코드 트리를 명시하라.",
+        file=sys.stderr,
+    )
+
+
 def _claim_code_tree(args: argparse.Namespace, session: str) -> str | None:
     """claim 시점 rev 를 읽을 **코드 트리** — 완료 부기 측정 트리와 같은 해소 규칙.
 
-    분리된 PM 홈엔 코드가 없으므로 diff 측정 트리는 task 작업공간 > 활성 슬롯 worktree > REPO
-    순으로 해소된다(`ticket_finish._code_tree`·`_regression_cwd` 와 같은 축). claim 이 그 트리의
-    HEAD 를 박제해야 완료 부기가 같은 좌표에서 "claim 이후 누적"을 잰다.
+    분리된 PM 홈엔 코드가 없으므로 diff 측정 트리는 task 작업공간 > `--repo`/`--slot` 슬롯
+    worktree > (인자 전무) 세션/REPO 순으로 해소된다. `--repo`/`--slot` 명시(kind="slot"/"repo")는
+    `ticket_finish._resolve_finish_slot` 이 쓰는 그 seam(pm_handoff `_resolve_explicit_identity_slot`)
+    을 형제 로드해 재사용한다 — `session_name()` 이 유도한 세션 문자열(`<repo>_<N>`)이 리스 장부의
+    실제 `session` 필드(task 이름 등 임의 문자열)와 일치한다는 전제가 깨지는 형상(F-001: 리스
+    session 이 `<repo>_<N>` 이 아닌 실측)에서도 finish 와 같은 좌표를 잰다. **인자 전무**
+    (kind="none")만 종전 세션/REPO 층을 그대로 쓴다.
 
     해소 실패는 `None` 이다 — 이 값은 측정 보조일 뿐이라 claim 을 막지 않는다(호출부가 경고
     1줄). task 작업공간 해소는 실행-위치 도구처럼 `sys.exit` 하지 않고 여기서 사유를 접는다.
@@ -9479,9 +9520,27 @@ def _claim_code_tree(args: argparse.Namespace, session: str) -> str | None:
         except (ValueError, identity_args.WorkspaceResolutionError):
             return None
         return str(REPO / workspace.slot)
-    # session 을 명시해 넘긴다 — `_regression_cwd` 의 모호 fail-loud 는 세션 미지정 축이고,
-    # claim 은 이미 세션을 해소했다(여기서 죽으면 rev 박제가 claim 을 막는 셈이 된다).
-    return _regression_cwd(session=session)
+    identity = identity_args.parse_identity(args)
+    if identity.kind in ("slot", "repo"):
+        hp = _load_pm_handoff()
+        worktree_slot = None
+        if hp is not None:
+            try:
+                worktree_slot, _err = hp._resolve_explicit_identity_slot(
+                    identity.repo, identity.slot, LEASES_FILE,
+                )
+            except Exception as exc:  # noqa: BLE001 — fail-soft: 해소 실패는 필드 미박제로 접는다.
+                if _is_engine_rev_skew(exc):
+                    raise
+                worktree_slot = None
+        return str(REPO / worktree_slot) if worktree_slot else None
+    # kind == "none" — 인자 전무: 기존 세션/REPO 층. session 을 명시해 넘긴다 — `_regression_cwd`
+    # 의 모호 fail-loud 는 세션 미지정 축이고, claim 은 이미 세션을 해소했다(여기서 죽으면 rev
+    # 박제가 claim 을 막는 셈이 된다).
+    tree = _regression_cwd(session=session)
+    if tree == str(REPO) and LEASES_FILE.exists():
+        _warn_claim_code_tree_folded_to_repo_home()
+    return tree
 
 
 def _claim_head_rev(args: argparse.Namespace, session: str) -> str | None:
@@ -9600,6 +9659,11 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str,
             # 해소 실패는 필드 생략이다(경고는 이미 냈다) — 없는 앵커를 지어내면 완료 부기가
             # 엉뚱한 폭을 재고, 그 오차 방향은 과소 측정(가드 약화)이다.
             fm = _frontmatter_with_claimed_rev(fm, claimed_rev)
+        else:
+            # stale 앵커 제거 — 이 claim 이 rev 를 못 박았는데 이전 소유 주기의 claimed_rev 가
+            # 남아 있으면(unclaim 이 지우지 않았거나 구 티켓 재사용) "필드 생략" 계약이 깨지고
+            # 완료 부기가 그 stale rev 로 잰다(경고 문구가 사실과 다른 옛 폭을 가리키게 된다).
+            fm.pop("claimed_rev", None)
         dump_ticket(new_path, fm, body)
     except FileNotFoundError:
         print(f"claim race lost on {args.id}", file=sys.stderr)
@@ -9828,6 +9892,9 @@ def cmd_unclaim(args: argparse.Namespace) -> int:
         fm["status"] = "open"
         fm["claimed_by"] = None
         fm["claimed_at"] = None
+        # claimed_rev 도 함께 비운다 — 소유가 풀린 티켓에 옛 claim 의 앵커가 남으면 재claim 이
+        # 해소에 실패해도(비-git 등) stale rev 가 앵커로 살아남아 "필드 생략" 계약이 깨진다.
+        fm.pop("claimed_rev", None)
         dump_ticket(new_path, fm, body)
     refresh_board()
     ready = _board_git_sync_best_effort(f"unclaim {args.id}", (path, new_path))

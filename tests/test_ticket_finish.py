@@ -1863,6 +1863,29 @@ def test_default_diff_cap_seam_is_off_when_external_review_is_absent(
     assert finisher._default_diff_cap_block("T-1234") is None
 
 
+def test_default_diff_cap_seam_absorbs_a_missing_claim_anchor_symbol(
+        tf, tmp_path, monkeypatch, capsys):
+    """사본은 있으나 `claim_anchor` seam 이 없는 구형/부분 설치도 벽돌 대신 옛 폭+경고로 접힌다.
+
+    `_diff_numstat_by_path` 의 required 가드와 짝이 되는 케이스 — 사본 부재(위 테스트)와 달리
+    사본은 있고 다른 seam(측정 numstat)은 갖췄는데 이 seam 만 없는 형상이다."""
+    external = tf._load_external_review()
+    assert external is not None
+    monkeypatch.delattr(external, "claim_anchor", raising=False)
+    monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: ["src/pay.py"])
+    monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: "small")
+    monkeypatch.setattr(external, "local_config", lambda repo=None: {})
+    monkeypatch.setattr(external, "diff_line_total", lambda *a, **k: 301)
+    monkeypatch.setattr(tf, "_load_external_review", lambda: external)
+
+    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md")
+    block = finisher._default_diff_cap_block("T-1234")
+
+    assert block is not None and "301줄" in block and "300줄" in block
+    err = capsys.readouterr().err
+    assert "claim_anchor 부재" in err and "T-1234" in err
+
+
 # ── 측정 스코프 정규화 · 기계 mirror 제외 (T-0601 ①⑧) ────────────────────────
 #
 # ⑧ PM 홈 좌표 touches(`work/<repo>_<N>/…`)를 그대로 재면 측정 트리에 그 경로가 없어 diff 가 0 이
@@ -2269,6 +2292,10 @@ def test_pm_direct_finish_wires_directory_expansion_into_condition_a(
 # 비기 때문이다(상한을 넘긴 wave 가 그대로 통과한 실측). claim 이 그 시점 **코드 트리 HEAD** 를
 # frontmatter 에 박제하고, 완료 부기가 그것을 앵커로 "claim 이후 누적"을 잰다. 아래 형상은 실
 # git 저장소 + 엔진 사본으로 claim → dev 커밋 → merge → 전파 커밋 순서를 그대로 재현한다.
+#
+# claim 표면(박제 위치·코드 트리 해소 3형상·비-git 경고) 자체의 계약은 여기서 재현하지 않는다 —
+# 그 축은 `tests/test_board_claim_strict.py` 가 소유한다(claim 계약 회귀는 그 파일에서 찾는다).
+# 아래는 **이미 박제된 앵커를 소비하는 측정 폭** 케이스만이다.
 
 _WAVE_TICKET = "T-7301"
 _WAVE_OTHER_TICKET = "T-7302"
@@ -2311,13 +2338,21 @@ def _load_tool_copy(root: Path, name: str):
 
 
 def _wave_repo(tmp_path: Path, *, git: bool = True):
-    """엔진 사본 + (선택) 실 git 저장소인 솔로 형상 — claim 직전 상태와 board 모듈."""
+    """엔진 사본 + (선택) 실 git 저장소인 솔로 형상 — claim 직전 상태와 board 모듈.
+
+    측정 폭 케이스는 코드 트리 해소 자체가 관심사가 아니다(그 축은 F-004 가 별도로 값 단언한다
+    — `test_board_claim_strict.py`) — 여기서는 REPO 가 곧 코드 트리인 **솔로** 형상(인자 전무·
+    kind="none")으로 고정해 claim/finish 가 항상 같은 트리를 본다는 전제만 지킨다. local.conf
+    `session=`(solo-legacy 폴백)로 리스 장부/env 없이도 `session_name(required=True)` 가
+    결정론적으로 해소되게 한다."""
     root = tmp_path / "wave"
     shutil.copytree(TOOLS, root / ".project_manager" / "tools")
     (root / ".project_manager" / "wiki").mkdir(parents=True, exist_ok=True)
     for status in ("open", "claimed", "blocked", "done"):
         (root / ".project_manager" / "board" / "tickets" / status).mkdir(
             parents=True, exist_ok=True)
+    (root / ".project_manager" / "local.conf").write_text(
+        "session=me\n", encoding="utf-8")
     _wave_ticket(root, _WAVE_TICKET, status="open", touch="src/")
     _wave_write(root / "src" / "app.py", 5)
     _wave_write(root / "docs" / "notes.md", 3)
@@ -2331,8 +2366,11 @@ def _wave_repo(tmp_path: Path, *, git: bool = True):
 
 
 def _wave_claim(board, ticket_id: str = _WAVE_TICKET) -> int:
-    return board.cmd_claim(
-        argparse.Namespace(id=ticket_id, repo="me", slot=1, user="me"))
+    # 인자 전무(kind="none") — session 은 `_wave_repo` 의 local.conf `session=` 로 결정론적
+    # 해소된다. env override 가 ambient 로 새는 것만 방어한다(다른 축 무관심).
+    os.environ.pop("PM_SESSION_NAME", None)
+    os.environ.pop("CLAUDE_SESSION_NAME", None)
+    return board.cmd_claim(argparse.Namespace(id=ticket_id, user="me"))
 
 
 def _wave_ticket_path(root: Path, ticket_id: str = _WAVE_TICKET) -> Path:
@@ -2383,31 +2421,6 @@ def _wave_set_claimed_rev(board, root: Path, value: str | None) -> None:
     else:
         fm["claimed_rev"] = value
     board.dump_ticket(path, fm, body)
-
-
-def test_claim_stamps_the_claim_time_code_tree_head(tmp_path):
-    """`claim` 이 그 시점 코드 트리 HEAD 를 `claimed_rev` 로 박제한다."""
-    root, board = _wave_repo(tmp_path)
-    expected = _wave_git(root, "rev-parse", "HEAD").stdout.strip()
-
-    assert _wave_claim(board) == 0
-
-    fm, _body = board.load_ticket(_wave_ticket_path(root))
-    assert fm["claimed_rev"] == expected
-    keys = list(fm)
-    assert keys[keys.index("claimed_at") + 1] == "claimed_rev", \
-        "claim 3종(주체·시각·rev)이 떨어져 기록되면 사람이 티켓에서 앵커를 못 읽는다."
-
-
-def test_claim_without_a_git_tree_warns_and_still_claims(tmp_path, capsys):
-    """비-git 트리에선 필드를 생략하고 경고만 낸다 — 박제 실패가 claim 을 막지 않는다."""
-    root, board = _wave_repo(tmp_path, git=False)
-
-    assert _wave_claim(board) == 0
-
-    fm, _body = board.load_ticket(_wave_ticket_path(root))
-    assert "claimed_rev" not in fm
-    assert "rev 박제 skip" in capsys.readouterr().err
 
 
 def test_merge_wave_is_measured_from_the_claim_anchor(tmp_path):

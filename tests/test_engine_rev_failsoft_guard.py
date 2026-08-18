@@ -1009,7 +1009,12 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   여기서 사본 불일치를 그대로 올리면 판정·요약을 출력한 뒤 traceback 으로 죽어 채택자에게는
     #   "리뷰 실패"로만 보인다. 등록 사유 `ticket_harvest` 로 흡수하되 설계된 회수 실패 처방
     #   (재동기 안내 + rc≠0 + raw 경로)으로 접고, 표시 없는 RuntimeError 는 그대로 전파한다.
-    assert len(report.boundaries) == 224, "propagation sweep boundary ratchet changed"
+    # 226 = 224 + T-0738 claim 코드 트리 해소 seam 통일의 두 경계. `board._load_pm_handoff`
+    #   (형제 pm_handoff 동적 로드 — `ticket_finish._load_pm_handoff` 동형)와 `board._claim_code_tree`
+    #   의 `--repo`/`--slot` 해소 분기(`pm_handoff._resolve_explicit_identity_slot` 위임) 모두
+    #   부재/로드 실패는 claimed_rev 미박제(측정 보조 필드 생략)로 접되, 마킹된 skew 는 그대로
+    #   올린다 — 형제 사본이 갈린 사실이 "코드 트리 미해소 경고" 한 줄에 묻히면 안 된다.
+    assert len(report.boundaries) == 226, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

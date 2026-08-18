@@ -1432,6 +1432,16 @@ def build_log_skeleton(
 
 # ── 핵심 흐름 ──────────────────────────────────────────────────────────
 
+# `external_review.claim_anchor` 는 비교적 최근 신설된 심볼이다 — 구형/부분 설치
+# external_review 사본(측정 numstat seam 은 있으나 이 seam 은 없음)에서 무가드 호출은
+# AttributeError 로 완료 부기를 벽돌로 만든다(`_diff_numstat_by_path` 의 `required` 가드와
+# 같은 클래스). 부재는 앵커 미적용(옛 폭)으로 접고 같은 loud 경고 1줄을 남긴다.
+_CLAIM_ANCHOR_SEAM_ABSENT_NOTE = (
+    "external_review 사본에 claim_anchor 부재(구형/부분 설치) — 폭 과소 측정 가능(옛 폭·"
+    "작업트리+직전 커밋 한 칸으로만 잰다). pm-update 로 .project_manager/tools/ 를 재동기하라."
+)
+
+
 class TicketFinisher:
     """PM 부기 자동화 핵심 로직.
 
@@ -1864,9 +1874,15 @@ class TicketFinisher:
         cap = external._diff_cap(external.local_config(REPO), estimate)
         if cap is None:
             return None
-        claimed_rev, anchor_note = external.claim_anchor(
-            self._code_tree(), inputs.claimed_rev,
-        )
+        claim_anchor_fn = getattr(external, "claim_anchor", None)
+        if claim_anchor_fn is None:
+            # 형제 seam 부재와 같은 규칙(`_diff_numstat_by_path` 의 required 가드 동형) —
+            # AttributeError 로 완료 부기를 벽돌로 만들지 않고 앵커 없음(옛 폭)으로 접는다.
+            claimed_rev, anchor_note = None, _CLAIM_ANCHOR_SEAM_ABSENT_NOTE
+        else:
+            claimed_rev, anchor_note = claim_anchor_fn(
+                self._code_tree(), inputs.claimed_rev,
+            )
         if anchor_note is not None:
             self._warn_claim_anchor_gap(ticket_id, anchor_note)
         try:

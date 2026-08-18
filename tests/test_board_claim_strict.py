@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import ast
 import importlib.util
+import json
 import os
 import shutil
 import stat
@@ -1261,3 +1262,195 @@ def test_claim_transaction_runs_inside_board_git_lock(board, tmp_path, monkeypat
         "prefetch 시점에 board-git 락이 안 잡혀 있음 — 트랜잭션 밖에서 도는 구간 존재."
     assert list((board_dir / "tickets" / "claimed").glob("T-0001-*.md"))
     assert _lock_is_free() is True, "claim 종료 후에도 락이 걸린 채 남음."
+
+
+# ════════════════════════════════════════════════════════════════════════
+# claim 코드 트리 해소 앵커 — 박제 위치·3형상 값 단언·비-git 경고·unclaim 클리어
+# (T-0738 R1 리뷰 F-001·F-003·F-004·F-006)
+#
+# 측정 폭(claim 앵커를 *소비*해 diff 를 재는 쪽)은 `tests/test_ticket_finish.py` 소관이다
+# ("── 측정 폭 = claim 시점 rev 앵커" 절). 여기서는 claim 계약 자체 — **어느 트리의 HEAD 를
+# 박제하는가**(코드 트리 해소 3형상: task 작업공간·`--repo`/`--slot` 슬롯 worktree·솔로) 와
+# 해소 실패/무효화 시 필드 상태만 값으로 단언한다. `board` fixture(`anchor_board_module`)는
+# `REPO`/`BOARD_FILE`/`BOARD_LOCK` 만 재앵커하므로, 리스 장부(`LEASES_FILE`)가 필요한 케이스는
+# 여기서 직접 tmp 로 재지정한다(다른 44 케이스는 리스 장부를 안 건드려 그 갭이 안 드러났다).
+# ════════════════════════════════════════════════════════════════════════
+
+def _claim_anchor_leases_file(tmp_path: Path) -> Path:
+    """이 절 전용 리스 장부 경로 — `LEASES_FILE` 를 여기서만 tmp 로 재지정한다."""
+    path = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _init_code_git(root: Path, *, seed_text: str) -> str:
+    """`root` 를 (코드) git 저장소로 만들고 첫 커밋의 HEAD sha 를 반환한다.
+
+    `seed_text` 로 서로 다른 트리는 서로 다른 HEAD 를 갖는다 — "어느 트리를 쟀나" 를 sha 값으로
+    구분하기 위한 장치(`board` fixture 가 이미 `_GIT_IDENTITY` 를 env 로 세팅해 로컬
+    `git config user.*` 없이도 커밋된다)."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "seed.txt").write_text(seed_text, encoding="utf-8")
+    _git(["init", "-q", "-b", "main"], root)
+    _git(["add", "-A"], root)
+    _git(["commit", "-qm", "seed"], root)
+    return _git(["rev-parse", "HEAD"], root).stdout.strip()
+
+
+def _seed_open_ticket(root: Path, tid: str) -> Path:
+    """`<root>/.project_manager/board/tickets/{open,claimed,blocked,done}/` 에 open 티켓 하나."""
+    tdir = root / ".project_manager" / "board" / "tickets"
+    for status in ("open", "claimed", "blocked", "done"):
+        (tdir / status).mkdir(parents=True, exist_ok=True)
+    path = tdir / "open" / f"{tid}-t.md"
+    path.write_text(_TICKET_TEXT.format(tid=tid, status="open"), encoding="utf-8")
+    return path
+
+
+def _claimed_ticket(root: Path, tid: str) -> Path:
+    return root / ".project_manager" / "board" / "tickets" / "claimed" / f"{tid}-t.md"
+
+
+@requires_git
+def test_claim_anchor_task_shape_stamps_the_slot_worktree_head(board, tmp_path, monkeypatch):
+    """`--task` 형상 — 앵커는 그 task 가 보유한 슬롯 worktree HEAD 다(PM 홈 HEAD 가 아니다)."""
+    monkeypatch.setattr(board, "LEASES_FILE", _claim_anchor_leases_file(tmp_path))
+    repo_head = _init_code_git(tmp_path, seed_text="home\n")
+    slot_head = _init_code_git(tmp_path / "work" / "proj_1", seed_text="slot\n")
+    assert repo_head != slot_head, "fixture 전제: 두 트리의 HEAD 가 달라야 '어느 트리를 쟀나' 를 값으로 가른다."
+    board.LEASES_FILE.write_text(json.dumps({"leases": [
+        {"slot": "work/proj_1", "repo": "proj", "session": "mytask", "state": "leased"},
+    ]}), encoding="utf-8")
+    _seed_open_ticket(tmp_path, "T-9010")
+
+    assert board.cmd_claim(argparse.Namespace(id="T-9010", task="mytask", user="me")) == 0
+
+    fm, _body = board.load_ticket(_claimed_ticket(tmp_path, "T-9010"))
+    assert fm["claimed_rev"] == slot_head
+    assert fm["claimed_rev"] != repo_head
+
+
+@requires_git
+def test_claim_anchor_slot_shape_stamps_the_worktree_head_even_when_lease_session_differs(
+        board, tmp_path, monkeypatch):
+    """`--repo`/`--slot` 형상 — 리스 `session` 이 `<repo>_<N>` 이 아니어도(F-001 실측 형상)
+    슬롯 worktree HEAD 를 잰다 — 세션 문자열 불일치로 PM 홈에 조용히 접히지 않는다."""
+    monkeypatch.setattr(board, "LEASES_FILE", _claim_anchor_leases_file(tmp_path))
+    repo_head = _init_code_git(tmp_path, seed_text="home\n")
+    slot_head = _init_code_git(tmp_path / "work" / "proj_1", seed_text="slot\n")
+    assert repo_head != slot_head
+    # 리스 session 은 "proj_1" 이 아니라 임의 문자열("main") — 실측 형상 재현.
+    board.LEASES_FILE.write_text(json.dumps({"leases": [
+        {"slot": "work/proj_1", "repo": "proj", "session": "main", "state": "leased"},
+    ]}), encoding="utf-8")
+    _seed_open_ticket(tmp_path, "T-9011")
+
+    assert board.cmd_claim(argparse.Namespace(id="T-9011", repo="proj", slot=1, user="me")) == 0
+
+    fm, _body = board.load_ticket(_claimed_ticket(tmp_path, "T-9011"))
+    assert fm["claimed_rev"] == slot_head
+    assert fm["claimed_rev"] != repo_head
+
+
+@requires_git
+def test_claim_anchor_solo_shape_stamps_the_repo_head(board, tmp_path, monkeypatch):
+    """인자 전무(솔로) — REPO 자체가 코드 트리다(리스 장부 없음·기존 세션/REPO 층 무변경)."""
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    monkeypatch.setenv("PM_SESSION_NAME", "me")
+    repo_head = _init_code_git(tmp_path, seed_text="home\n")
+    _seed_open_ticket(tmp_path, "T-9012")
+
+    assert board.cmd_claim(argparse.Namespace(id="T-9012", user="me")) == 0
+
+    fm, _body = board.load_ticket(_claimed_ticket(tmp_path, "T-9012"))
+    assert fm["claimed_rev"] == repo_head
+
+
+@requires_git
+def test_claim_stamps_the_claim_time_code_tree_head(board, tmp_path, monkeypatch):
+    """`claim` 이 그 시점 코드 트리 HEAD 를 `claimed_rev` 로 박제한다(솔로 형상)."""
+    monkeypatch.setenv("PM_SESSION_NAME", "me")
+    expected = _init_code_git(tmp_path, seed_text="home\n")
+    _seed_open_ticket(tmp_path, "T-9013")
+
+    assert board.cmd_claim(argparse.Namespace(id="T-9013", user="me")) == 0
+
+    fm, _body = board.load_ticket(_claimed_ticket(tmp_path, "T-9013"))
+    assert fm["claimed_rev"] == expected
+    keys = list(fm)
+    assert keys[keys.index("claimed_at") + 1] == "claimed_rev", \
+        "claim 3종(주체·시각·rev)이 떨어져 기록되면 사람이 티켓에서 앵커를 못 읽는다."
+
+
+def test_claim_without_a_git_tree_warns_and_still_claims(board, tmp_path, monkeypatch, capsys):
+    """비-git 트리에선 필드를 생략하고 경고만 낸다 — 박제 실패가 claim 을 막지 않는다."""
+    monkeypatch.setenv("PM_SESSION_NAME", "me")
+    _seed_open_ticket(tmp_path, "T-9014")
+
+    assert board.cmd_claim(argparse.Namespace(id="T-9014", user="me")) == 0
+
+    fm, _body = board.load_ticket(_claimed_ticket(tmp_path, "T-9014"))
+    assert "claimed_rev" not in fm
+    assert "rev 박제 skip" in capsys.readouterr().err
+
+
+@requires_git
+def test_claim_warns_when_bare_claim_folds_to_repo_home_with_a_leases_file(
+        board, tmp_path, monkeypatch, capsys):
+    """분리 PM 홈 형상(리스 장부 존재)에서 인자 전무 claim 이 REPO 로 접히면 경고를 낸다(F-001).
+
+    값은 여전히 REPO HEAD(기존 폴백 무변경) — 이 테스트는 그 폴백이 *조용하지 않다* 는 것만
+    추가로 단언한다."""
+    monkeypatch.setattr(board, "LEASES_FILE", _claim_anchor_leases_file(tmp_path))
+    repo_head = _init_code_git(tmp_path, seed_text="home\n")
+    # 리스 장부는 있지만 이 세션과 매칭되는 활성 슬롯이 없다(분리 PM 홈인데 REPO 로 접히는 형상).
+    board.LEASES_FILE.write_text(json.dumps({"leases": [
+        {"slot": "work/other_1", "repo": "other", "session": "other-session", "state": "leased"},
+    ]}), encoding="utf-8")
+    monkeypatch.setenv("PM_SESSION_NAME", "me")
+    _seed_open_ticket(tmp_path, "T-9015")
+
+    assert board.cmd_claim(argparse.Namespace(id="T-9015", user="me")) == 0
+
+    fm, _body = board.load_ticket(_claimed_ticket(tmp_path, "T-9015"))
+    assert fm["claimed_rev"] == repo_head
+    assert "PM 홈(REPO)으로 접혔다" in capsys.readouterr().err
+
+
+@requires_git
+def test_unclaim_clears_the_claimed_rev_anchor(board, tmp_path, monkeypatch):
+    """unclaim 은 `claimed_by`/`claimed_at` 과 함께 `claimed_rev` 도 비운다(F-003).
+
+    소유가 풀린 티켓에 옛 claim 의 앵커가 남으면, 다음 claim 이 해소에 실패해도(비-git 등)
+    stale rev 가 앵커로 살아남아 인터페이스의 '필드 생략' 이 깨진다."""
+    monkeypatch.setenv("PM_SESSION_NAME", "me")
+    repo_head = _init_code_git(tmp_path, seed_text="home\n")
+    _seed_open_ticket(tmp_path, "T-9016")
+    assert board.cmd_claim(argparse.Namespace(id="T-9016", user="me")) == 0
+    fm, _body = board.load_ticket(_claimed_ticket(tmp_path, "T-9016"))
+    assert fm["claimed_rev"] == repo_head
+
+    assert board.cmd_unclaim(argparse.Namespace(id="T-9016")) == 0
+
+    fm, _body = board.load_ticket(
+        tmp_path / ".project_manager" / "board" / "tickets" / "open" / "T-9016-t.md")
+    assert "claimed_rev" not in fm
+
+
+def test_reclaim_without_git_pops_a_stale_claimed_rev_from_a_reused_ticket(
+        board, tmp_path, monkeypatch):
+    """claim 해소 실패(비-git) 시 티켓에 이미 값이 있어도 `claimed_rev` 를 비운다(F-003).
+
+    unclaim 을 거치지 않고 stale 값이 남은 open 티켓(구 claim 주기 재사용) 형상을 직접
+    재현한다 — `_cmd_claim_locked` 의 해소-실패 분기가 옛 값을 그대로 두지 않는지 단언한다."""
+    monkeypatch.setenv("PM_SESSION_NAME", "me")
+    path = _seed_open_ticket(tmp_path, "T-9017")
+    fm, body = board.load_ticket(path)
+    fm["claimed_rev"] = "a" * 40
+    board.dump_ticket(path, fm, body)
+
+    assert board.cmd_claim(argparse.Namespace(id="T-9017", user="me")) == 0
+
+    fm, _body = board.load_ticket(_claimed_ticket(tmp_path, "T-9017"))
+    assert "claimed_rev" not in fm
