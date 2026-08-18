@@ -1,7 +1,7 @@
 ---
 description: "{{PROJECT_NAME}} 프로젝트의 설계 노동 전문 subagent. PM(build primary)이 설계 spike — idea promote/kill 분석·ADR 초안·spec 추출·ticket 본문 가설 및 cross-module 영향 검증·인터페이스 설계 — 를 위임할 때 사용. 설계 노동 ≠ 결정: 산출은 근거 있는 권고+초안이고 발행·비준은 PM 이 한다. board 조작·log·status process·ADR 발행·idea promote 는 하지 않는다(PM 담당). 단 architecture.md·status.md content-truth(구조·구현상태 판정·비고)는 유지·갱신한다(ADR-0022/0023)."
 mode: all
-model: "{{OPENCODE_PRO_MODEL}}"
+model: "{{DELEGATE_MODEL_ARCHITECT}}"
 temperature: 0.2
 permission:
   read: allow

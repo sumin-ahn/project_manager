@@ -1,7 +1,7 @@
 ---
 description: "{{PROJECT_NAME}} 프로젝트에서 developer subagent 의 변경을 독립 검토하는 subagent. generate ≠ evaluate — 구현하지 않은 주체가 검토한다. DoD 충족/ADR·spec 정합/회귀/프로젝트 제약/테스트 품질을 점검하고 must-fix·suggestion·통과/반려를 티켓 reviewer 절에 기록한다. 제품 코드·PM 상태는 수정하지 않는다."
 mode: all
-model: "{{OPENCODE_PRO_MODEL}}"
+model: "{{DELEGATE_MODEL_CODE_REVIEWER}}"
 temperature: 0.1
 permission:
   read: allow

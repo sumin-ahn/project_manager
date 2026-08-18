@@ -1459,11 +1459,11 @@ def _guest_block_entries(pm_update, manifest: Path) -> dict:
     }
 
 
-def test_dest_guest_manifest_paths_narrows_to_render_rows(pm_update, tmp_path):
-    """guest 절 파싱: `@render` 행만 refresh 채널 경로로 잡고 엔진 행은 update 채널에 남긴다 (⑤).
+def test_dest_guest_manifest_entries_keep_channel_markers(pm_update, tmp_path):
+    """guest 절 파싱: 행마다 `@render`/`@target-owned`/`@source` 마커를 그대로 실어 온다.
 
-    `--paths` 스코프 거부 라벨링이 유일 소비자다 — 엔진 행까지 넣으면 정상 전파 대상 경로를
-    "guest 절 소속이라 지정 불가" 로 오거부한다."""
+    두 행 다 update 채널이 전파하되 **방식**이 갈린다(렌더물=재렌더·엔진 행=byte-copy) — 계획이
+    그 방식을 고르려면 경로만이 아니라 마커까지 필요하다."""
     dest = tmp_path / "dest"
     _make_legacy_guest_adopter(pm_update, dest)
     manifest = dest / ".project_manager" / "engine.manifest"
@@ -1481,20 +1481,33 @@ def test_dest_guest_manifest_paths_narrows_to_render_rows(pm_update, tmp_path):
     assert not entries[".opencode/lib"].render and entries[".opencode/lib"].target_owned
     assert entries[".opencode/lib"].source_rel == "templates/opencode/.opencode/lib"
 
-    assert pm_update._dest_guest_manifest_paths(dest) == {".opencode/agents"}, \
-        "엔진 행이 refresh-소유 집합에 섞였다(정상 전파 경로를 --paths 에서 오거부한다)"
 
-
-def test_guest_engine_rows_join_plan_and_render_rows_are_excluded(
+def test_guest_rows_join_plan_engine_copy_and_render_rerender(
         pm_update, tmp_path, monkeypatch, capsys):
-    """엔진 행은 계획에 실려 byte-copy 되고, 렌더물 행은 계획에서 빠진다 (⑤ 롤아웃).
+    """guest 절의 두 행이 **같은 update 채널**로 전파된다 — 엔진 행은 byte-copy, 렌더물은 재렌더.
 
-    이 채널이 없으면 `pm_relay` 코어와 짝인 드라이버가 설치 시점 사본으로 영구 동결된다."""
+    엔진 행이 빠지면 `pm_relay` 코어와 짝인 드라이버가 설치 시점 사본으로 영구 동결되고, 렌더물이
+    빠지면 conf 를 바꿔도 그 어댑터가 설치 시점 값으로 남는다(채택자 실측: 카드 model 이 conf 와
+    영구 불일치). dry-run 은 그 재렌더를 `[render]` 로 예고한다."""
     framework = _make_guest_framework(tmp_path / "fw")
     dest = tmp_path / "adopter"
-    _make_legacy_guest_adopter(pm_update, dest)
+    manifest = _make_legacy_guest_adopter(pm_update, dest)
+    # 실 add-harness 가 적는 provenance 를 붙인다 — source 가 해소돼야 재렌더가 실제로 돈다.
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            ".opencode/agents    @render @target-owned",
+            ".opencode/agents    @render    @target-owned    "
+            "@source=templates/opencode/.opencode/agents"),
+        encoding="utf-8")
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+
+    assert pm_update.main(["--from", str(framework), "--dry-run"]) == 0
+    preview = capsys.readouterr().out
+    assert "[render] .opencode/agents/pm.md" in preview, \
+        f"dry-run 이 guest 렌더물 재렌더를 예고하지 않았다: {preview!r}"
+    assert (dest / ".opencode" / "agents" / "pm.md").read_text(
+        encoding="utf-8") == "adopter-owned agent\n", "dry-run 이 파일을 바꿨다"
 
     assert pm_update.main(["--from", str(framework)]) == 0
     out = capsys.readouterr().out
@@ -1504,9 +1517,13 @@ def test_guest_engine_rows_join_plan_and_render_rows_are_excluded(
     assert (dest / ".opencode" / "pm_orch_opencode.py").read_text(
         encoding="utf-8") == "# driver v2\n", "engine-mirror 드라이버가 동기되지 않았다"
     assert (dest / ".opencode" / "agents" / "pm.md").read_text(
-        encoding="utf-8") == "adopter-owned agent\n", \
-        "렌더물(add-harness refresh 소유)이 update 채널에 갱신됐다(불가침 위반)"
-    assert ".opencode/agents" not in out, f"렌더물이 계획에 떴다: {out!r}"
+        encoding="utf-8") == "upstream agent\n", \
+        "guest 렌더물이 재렌더를 안 받았다(설치 시점 사본 동결·손편집이 conf 를 이긴다)"
+    assert "[render] .opencode/agents/pm.md" in out, f"렌더물이 계획에 없다: {out!r}"
+
+    # 멱등 — 수렴 후 재실행은 변경 0(렌더 산출이 안정).
+    assert pm_update.main(["--from", str(framework)]) == 0
+    assert "최신 — 변경 없음" in capsys.readouterr().out
 
 
 def test_guest_engine_backfill_persists_rows_once_then_idempotent(
@@ -1816,11 +1833,11 @@ def test_scope_paths_accepts_guest_engine_row_before_persistence(
     assert rc == 0, f"파생 엔진 행 경로가 오거부됐다: {captured.err!r}"
     assert (dest / ".opencode" / "pm_orch_opencode.py").read_text(
         encoding="utf-8") == "# driver v2\n"
-    # 렌더물 행은 여전히 guest 채널 라벨로 거부된다(진단 분리 유지).
+    # 렌더물 행도 같은 update 채널이라 스코프로 지정할 수 있다(옛 "guest 절 소속" 오거부 소멸).
     rc_render = pm_update.main(
         ["--from", str(framework), "--paths", ".opencode/agents"])
-    assert rc_render == 1
-    assert "[guest 절] .opencode/agents" in capsys.readouterr().err
+    assert rc_render == 0, "guest 렌더물 경로가 스코프에서 오거부됐다"
+    assert "[미등재]" not in capsys.readouterr().err
 
 
 def test_resolve_manifest_selfheal_flavor_source_not_clobbered_by_root(pm_update, tmp_path):
@@ -2497,32 +2514,6 @@ def test_empty_legacy_manifest_does_not_promote_arbitrary_flavor(
     assert "엔진 경로" not in err
     assert "[new] .claude/agents" not in captured.out, \
         "빈 manifest가 claude_code로 승격돼 .claude 설치 계획을 만들었다"
-
-
-def test_guest_promotion_subtracts_only_the_manifest_actually_promoted(
-        pm_update, tmp_path):
-    """guest 차감은 heal에서 실제 plan으로 승격된 후순위 합집합만 보고 미승격 상태는 비운다."""
-    first = tmp_path / "templates" / "first" / ".project_manager" / "engine.manifest"
-    second = tmp_path / "templates" / "second" / ".project_manager" / "engine.manifest"
-    first.parent.mkdir(parents=True)
-    second.parent.mkdir(parents=True)
-    first.write_text(".first/a\n", encoding="utf-8")
-    second.write_text(".second/promoted\n", encoding="utf-8")
-
-    promoted = pm_update.merge_manifest_sources([first, second])["entries"]
-    paths = pm_update._selected_upstream_core_paths({
-        "upstream_manifest": first,
-        "upstream_manifests": [first, second],
-        "manifest": promoted,
-    })
-
-    assert paths == {".first/a", ".second/promoted"}
-    assert pm_update._selected_upstream_core_paths({
-        "status": "diverged",
-        "upstream_manifest": first,
-        "upstream_manifests": [first, second],
-        "manifest": None,
-    }) == set()
 
 
 def test_template_manifests_only_declare_their_own_flavor(pm_update):
@@ -6377,8 +6368,10 @@ def test_paths_scope_refusal_writes_nothing_to_dest(
     assert "[미등재]" in capsys.readouterr().err
 
 
-def test_paths_scope_reports_guest_clause_separately(pm_update, tmp_path, monkeypatch, capsys):
-    """guest 절 경로는 "미등재(오타)" 가 아니라 **채널이 다른 것**이라 사유를 갈라 알린다."""
+def test_paths_scope_accepts_guest_clause_path(pm_update, tmp_path, monkeypatch, capsys):
+    """guest 절 경로는 정상 스코프 대상이다 — 절의 렌더물도 update 채널이 전파하기 때문이다.
+
+    옛 판정("guest 절 소속이라 지정 불가")은 렌더물을 계획에서 빼던 시절의 진단이라 소멸했다."""
     dest = tmp_path / "guest_dest"
     source = tmp_path / "guest_source"
     _make_upstream_tree(source, _SCOPE_FILES, _SCOPE_MANIFEST)
@@ -6396,8 +6389,8 @@ def test_paths_scope_reports_guest_clause_separately(pm_update, tmp_path, monkey
     rc = pm_update.main(["--paths", ".opencode/agents"])
 
     err = capsys.readouterr().err
-    assert rc == 1
-    assert "[guest 절]" in err and "add-harness" in err, err
+    assert rc == 0, f"guest 절 경로가 미등재로 거부됐다: {err!r}"
+    assert "[미등재]" not in err, err
 
 
 def test_paths_scope_warns_on_engine_rev_mixing(pm_update, tmp_path, monkeypatch, capsys):
@@ -7248,6 +7241,14 @@ CARD_ROLE_CONF_KEYS = {
     "DELEGATE_MODEL_CODE_REVIEWER": "delegate.code-reviewer.model",
 }
 
+# 위임 토큰 표 전체 — claude 역할 카드(4) + codex 티어 프로필의 모델·추론(2). 표가 조용히 줄면
+# 그 카드가 영영 TODO 로 중화되므로 기대 집합을 못박는다(가드 시야 == 표면).
+DELEGATE_CONF_KEYS = {
+    **CARD_ROLE_CONF_KEYS,
+    "DELEGATE_MODEL_DEVELOPER_HARD": "delegate.developer.hard.model",
+    "DELEGATE_REASONING_DEVELOPER_HARD": "delegate.developer.hard.reasoning",
+}
+
 
 def _card_model_line(text: str) -> str:
     """카드 frontmatter 의 model 줄(해소·중화 양쪽) — 없으면 빈 문자열."""
@@ -7258,17 +7259,42 @@ def _card_model_line(text: str) -> str:
 
 
 def test_delegate_model_tokens_wired_in_both_channels(pm_update):
-    """4토큰이 render 채널(OPERATIONAL_KEYS)과 local.conf 채널 양쪽에 배선.
+    """위임 토큰 전부가 render 채널(OPERATIONAL_KEYS)과 local.conf 채널 양쪽에 배선.
 
-    한쪽만 있으면 (a) 토큰이 영영 미해소 leak 이거나 (b) conf 값이 아무 산출도 안 바꾼다."""
+    한쪽만 있으면 (a) 토큰이 영영 미해소 leak 이거나 (b) conf 값이 아무 산출도 안 바꾼다.
+    배선은 표 하나(`DELEGATE_MODEL_CONF_KEYS`)의 파생이라, 표를 실제로 순회해 검사한다."""
     pm_render = pm_update._load_pm_render()
-    for token_key, conf_key in CARD_ROLE_CONF_KEYS.items():
+    assert pm_render.DELEGATE_MODEL_CONF_KEYS == DELEGATE_CONF_KEYS, \
+        "위임 토큰 표가 기대 집합과 갈렸다(역할/티어가 조용히 늘거나 줄었다)"
+    conf_channel = pm_update._local_conf_operational_map()
+    for token_key, conf_key in pm_render.DELEGATE_MODEL_CONF_KEYS.items():
         assert token_key in pm_render.OPERATIONAL_KEYS, \
             f"{token_key} 가 render operational 채널에 미등재 — 재렌더가 토큰을 leak 시킨다"
-        assert pm_update._LOCAL_CONF_TO_OPERATIONAL.get(conf_key) == token_key, \
+        assert conf_channel.get(conf_key) == token_key, \
             f"local.conf `{conf_key}` → {token_key} 매핑 부재 — 선언이 실행면에 닿지 않는다"
-    assert pm_render.DELEGATE_MODEL_CONF_KEYS == CARD_ROLE_CONF_KEYS, \
-        "TODO 안내가 제시하는 conf 키가 실제 해소 키와 갈렸다"
+    assert pm_render.DELEGATE_HARNESS_CONF_KEYS == {
+        token_key: conf_key.rsplit(".", 1)[0] + ".harness"
+        for token_key, conf_key in DELEGATE_CONF_KEYS.items()
+    }, "미사용 프로필 판정이 읽는 harness 키가 모델 키와 같은 프로필을 가리키지 않는다"
+
+
+def test_delegate_harness_from_local_conf_reads_profile_harness(pm_update, tmp_path):
+    """`_delegate_harness_from_local_conf` 가 역할/티어별 harness 를 token-key 로 돌려준다.
+
+    미설정/빈값은 담지 않는다 — 판정 불가는 "미사용 프로필" 이 아니라 현행 거동(해소값 렌더)이다."""
+    dest = tmp_path / "dest"
+    _write_local_conf(dest, "\n".join([
+        "delegate.developer.harness=claude",
+        "delegate.developer.hard.harness=codex",
+        "delegate.architect.harness=",
+        "",
+    ]))
+
+    assert pm_update._delegate_harness_from_local_conf(dest) == {
+        "DELEGATE_MODEL_DEVELOPER": "claude",
+        "DELEGATE_MODEL_DEVELOPER_HARD": "codex",
+        "DELEGATE_REASONING_DEVELOPER_HARD": "codex",
+    }
 
 
 def test_agent_cards_use_role_model_tokens_and_no_literal_model():
@@ -7369,18 +7395,30 @@ def test_agent_card_empty_delegate_model_is_loud_leak(pm_update, tmp_path):
         )
 
 
-def _import_claude_adopter(pm_import, dest: Path) -> None:
-    """fresh claude 채택자 설치 (출력 삼킴·라이브 하네스 미호출)."""
+def _import_adopter(pm_import, dest: Path, harness: str = "claude") -> None:
+    """fresh 채택자 설치 (출력 삼킴·라이브 하네스 미호출)."""
     import io
     from contextlib import redirect_stdout
 
     buf = io.StringIO()
     with redirect_stdout(buf):
         rc = pm_import.main([
-            "--new", str(dest), "--harness", "claude",
+            "--new", str(dest), "--harness", harness,
             "--name", "Acme", "--fill", "manual",
         ])
     assert rc == 0, f"fresh import 실패(rc={rc}):\n{buf.getvalue()[-2000:]}"
+
+
+def _pin_card_model(card: Path, model: str) -> None:
+    """카드의 model 줄을 리터럴로 손편집한다(중화 주석줄도 활성 리터럴로 되돌린다)."""
+    lines = []
+    for line in card.read_text(encoding="utf-8").splitlines(keepends=True):
+        if line.lstrip("# ").startswith("model:"):
+            eol = "\n" if line.endswith("\n") else ""
+            lines.append(f'model: "{model}"' + eol)
+        else:
+            lines.append(line)
+    card.write_text("".join(lines), encoding="utf-8", newline="")
 
 
 def test_fresh_adopter_card_model_follows_delegate_conf_across_updates(
@@ -7395,7 +7433,7 @@ def test_fresh_adopter_card_model_follows_delegate_conf_across_updates(
     pm_import = pm_update._load_pm_import()
     monkeypatch.setattr(pm_import, "_real_models_runner", lambda: (False, []))
     dest = tmp_path / "adopter"
-    _import_claude_adopter(pm_import, dest)
+    _import_adopter(pm_import, dest, "claude")
     card = dest / ".claude" / "agents" / "developer.md"
 
     # ① 위임 미설정 fresh import — 활성 리터럴 대신 TODO 중화, 어댑터 토큰 leak 0.
@@ -7452,3 +7490,88 @@ def test_fresh_adopter_card_model_follows_delegate_conf_across_updates(
     assert "불일치" not in decided.stdout + decided.stderr, \
         f"카드가 conf 와 같은데 불일치 경고:\n{decided.stdout}\n{decided.stderr}"
     assert json.loads(decided.stdout)["model"] == "sonnet"
+
+
+def test_guest_agent_card_model_follows_delegate_conf_after_absorb(
+        pm_update, tmp_path, monkeypatch, capsys):
+    """codex host + claude guest(add-harness) — **흡수 한 번**이면 guest 카드가 conf 값이 된다.
+
+    guest 절 렌더물을 계획에서 빼던 동안 이 형상의 카드는 add-harness 를 다시 돌리기 전엔 설치
+    시점 값으로 남았다(채택자 실측: 카드 opus ↔ conf sonnet 상시 경고). host 형상만 보는 e2e 로는
+    안 잡히는 사각이라 guest 형상으로 직접 태운다: dry-run `[render]` 예고 → apply 값 일치 →
+    재실행 변경 0(멱등).
+    """
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "_real_models_runner", lambda: (False, []))
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
+    dest = tmp_path / "guest-adopter"
+    _import_adopter(pm_import, dest, "codex")
+    pm_import.add_harness(dest, "claude", dry_run=False, source_root=REPO)
+    capsys.readouterr()
+    card = dest / ".claude" / "agents" / "developer.md"
+    assert card.is_file(), "claude-as-guest 카드 미복사(픽스처 전제 붕괴)"
+
+    conf = dest / ".project_manager" / "local.conf"
+    conf.write_text(
+        conf.read_text(encoding="utf-8")
+        + "delegate_enabled=true\n"
+        + "delegate.developer.harness=claude\n"
+        + "delegate.developer.model=sonnet\n",
+        encoding="utf-8", newline="\n",
+    )
+    _pin_card_model(card, "opus")  # 옛 값(손편집) — 다음 update 가 되돌려야 한다.
+
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+
+    assert pm_update.main(["--from", str(REPO), "--dry-run"]) == 0
+    preview = capsys.readouterr().out
+    assert "[render] .claude/agents/developer.md" in preview, \
+        f"dry-run 이 guest 카드 재렌더를 예고하지 않았다: {preview!r}"
+    assert _card_model_line(card.read_text(encoding="utf-8")) == 'model: "opus"', \
+        "dry-run 이 파일을 바꿨다(무변경 계약 위반)"
+
+    assert pm_update.main(["--from", str(REPO)]) == 0
+    assert _card_model_line(card.read_text(encoding="utf-8")) == 'model: "sonnet"', \
+        "흡수 후에도 guest 카드가 conf 값이 아니다(add-harness 재실행을 요구하는 옛 형상)"
+
+    settled = card.read_bytes()
+    assert pm_update.main(["--from", str(REPO)]) == 0
+    assert card.read_bytes() == settled, "재렌더가 멱등하지 않다(매 흡수 churn)"
+
+
+def test_unused_profile_card_is_neutralized_not_filled(pm_update, tmp_path, monkeypatch, capsys):
+    """conf 가 다른 하네스를 가리키는 카드는 **값 대신 사유**로 중화된다(미사용 프로필).
+
+    codex host 인데 developer 를 claude 로 위임하는 형상: `.codex/agents/developer-hard.toml` 은
+    이번 형상에서 스폰되지 않으므로 claude 용 모델을 박으면 카드가 conf 와 어긋난 사실을 감춘다.
+    렌더는 실패하지 않는다 — 미해소가 update rc 를 바꾸지 않는다."""
+    pm_import = pm_update._load_pm_import()
+    monkeypatch.setattr(pm_import, "_real_models_runner", lambda: (False, []))
+    monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
+    dest = tmp_path / "unused-profile"
+    _import_adopter(pm_import, dest, "codex")
+    capsys.readouterr()
+
+    conf = dest / ".project_manager" / "local.conf"
+    conf.write_text(
+        conf.read_text(encoding="utf-8")
+        + "delegate.developer.hard.harness=claude\n"
+        + "delegate.developer.hard.model=opus\n"
+        + "delegate.developer.hard.reasoning=high\n",
+        encoding="utf-8", newline="\n",
+    )
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+
+    assert pm_update.main(["--from", str(REPO)]) == 0, "미사용 프로필이 update rc 를 바꿨다"
+
+    toml = (dest / ".codex" / "agents" / "developer-hard.toml").read_text(encoding="utf-8")
+    model_line = next(ln for ln in toml.splitlines() if ln.lstrip("# ").startswith("model ="))
+    assert model_line.startswith('# model = "<model>"'), \
+        f"미사용 프로필인데 다른 하네스 모델이 박혔다: {model_line!r}"
+    assert "claude" in model_line, "중화 사유(conf 의 그 역할 하네스)가 안 실렸다"
+    assert "opus" not in toml, "conf 의 claude 용 모델이 codex 카드에 새어 들어갔다"
+    assert "{{" not in toml, "중화 산출물에 리터럴 토큰 잔존(자족 위반)"

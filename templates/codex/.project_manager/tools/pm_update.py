@@ -2048,10 +2048,9 @@ def _in_scope_paths(rel: str, scope: list[str]) -> bool:
 def _dest_guest_manifest_entries(effective_dest: Path) -> list[ManifestEntry]:
     """dest engine.manifest 의 add-harness guest 절 행 — 읽기 실패·절 부재는 빈 목록.
 
-    절 안의 한 줄이 **소유 채널**을 스스로 말한다: `@render` 행은 어댑터 렌더물(add-harness
-    refresh 소유·update plan 제외), 비-`@render` 행은 엔진 파일(update 채널 소유·byte-copy 전파).
-    그 구분을 하려면 경로만이 아니라 마커까지 필요하므로 파싱해서 돌려준다(파서는
-    `_parse_manifest_line` 공유)."""
+    절 안의 한 줄이 **전파 방식**을 스스로 말한다: `@render` 행은 어댑터 렌더물(재렌더),
+    비-`@render` 행은 엔진 파일(byte-copy). 두 종류 다 update 채널이 전파하되 방식이 갈리므로,
+    경로만이 아니라 마커까지 필요하다 — 파싱해서 돌려준다(파서는 `_parse_manifest_line` 공유)."""
     manifest_file = Path(effective_dest) / ".project_manager" / "engine.manifest"
     try:
         block = _extract_guest_manifest_block(_read_text_shared(manifest_file, encoding="utf-8"))
@@ -2061,20 +2060,6 @@ def _dest_guest_manifest_entries(effective_dest: Path) -> list[ManifestEntry]:
         return []
     entries = [_parse_manifest_line(line) for line in block.splitlines()]
     return [entry for entry in entries if entry is not None]
-
-
-def _dest_guest_manifest_paths(effective_dest: Path) -> set[str]:
-    """dest guest 절의 **`@render` 행** 경로 집합 — 읽기 실패·절 부재는 빈 집합.
-
-    이 집합의 유일한 소비자는 `--paths` 스코프 거부 라벨링이다: 렌더물은 update plan 에서 빠지는
-    **다른 채널**(add-harness refresh 전용)이라, 스코프 거부 진단이 그것을 "미등재(오타)" 로 뭉치면
-    사람이 없는 오타를 찾게 된다. 반대로 **엔진 행은 update 채널의 정상 전파 대상**이므로 여기 넣으면
-    안 된다 — 넣으면 그 경로를 `--paths` 로 지정한 요청이 "guest 절 소속" 으로 오거부된다."""
-    return {
-        str(entry).replace("\\", "/").strip("/")
-        for entry in _dest_guest_manifest_entries(effective_dest)
-        if _entry_render_flag(entry)
-    }
 
 
 # ── guest 절 엔진 행 파생 백필 ────────────────────────────────────────────────
@@ -2152,8 +2137,9 @@ def _guest_engine_backfill_entries(
     """dest guest 절이 담아야 할 **엔진 행**을 upstream flavor 에서 재파생 — (엔트리, 해소 flavor).
 
     파생은 pm_import 의 단일 생성기(`_guest_manifest_lines` — 복사 술어 `_in_adapter_namespace` 를
-    그대로 태운다)를 호출해 얻고 비-`@render` 행만 남긴다. 렌더물은 add-harness refresh 소유라
-    update 채널이 파생하지 않으며, 생성기를 공유하므로 "등재 ⊆ 복사" 가 여기서도 상속된다.
+    그대로 태운다)를 호출해 얻고 비-`@render` 행만 남긴다. 렌더물 행은 절에 이미 있고(add-harness
+    가 등재) 재렌더로 전파되므로 백필 대상이 아니며, 생성기를 공유하므로 "등재 ⊆ 복사" 가 여기서도
+    상속된다.
     guest 절이 없거나(비-add-harness) flavor 를 해소할 수 없으면 빈 목록(무동작·현행 거동).
 
     flavor 해소 = **선언 ∪ 미선언분 추론**이다. 한 절에 두 하네스가 공존하고 그 중 하나만 새 세대로
@@ -2217,38 +2203,22 @@ def _guest_engine_backfill_entries(
 
 
 def _refuse_unregistered_scope_paths(
-        manifest: list, scope: list[str], guest_paths: set[str],
+        manifest: list, scope: list[str],
         effective_dest: Path | None = None) -> int:
-    """스코프 요청 중 manifest 미등재분을 사유별로 loud 거부 — 있으면 rc1, 없으면 0.
+    """스코프 요청 중 manifest 미등재분을 loud 거부 — 있으면 rc1, 없으면 0.
 
-    두 사유를 가른다: **guest 절**(add-harness 채널이라 update 가 원래 안 건드린다)과 **미등재**
-    (오타·인스턴스 소유·아직 manifest 에 안 올린 신규 파일). 같은 문구로 뭉치면 전자는 manifest 를
-    뒤지게 만들고 후자는 채널을 오해하게 만든다."""
+    미등재 = 오타·인스턴스 소유·아직 manifest 에 안 올린 신규 파일. **guest 절은 사유가 아니다**:
+    절의 렌더물 행도 엔진 행도 update 채널이 전파하므로 계획 manifest 에 실려 있고,
+    따라서 정상 스코프 대상이다(옛 "guest 절 소속이라 지정 불가" 거부는 그 채널 분리와 함께 소멸)."""
     unregistered = _unregistered_scope_paths(manifest, scope, effective_dest)
     if not unregistered:
         return 0
-    guest_hits = [
-        path for path in unregistered
-        if any(_paths_overlap(path, guest) for guest in guest_paths)
-    ]
     for path in unregistered:
-        if path in guest_hits:
-            print(f"  [guest 절] {path} — add-harness 가 등재한 guest `@render` 경로다. "
-                  "update 채널의 전파 대상이 아니므로(refresh 는 add-harness 소관) 스코프로 "
-                  "지정할 수 없다.", file=sys.stderr)
-        else:
-            print(f"  [미등재] {path}", file=sys.stderr)
-    plain = [path for path in unregistered if path not in guest_hits]
-    if plain:
-        print(
-            f"오류: --paths 경로 {len(plain)}개가 engine.manifest 등재분이 아니다 — pm-update 는 "
-            "manifest 소유 경로만 전파한다(인스턴스 소유 파일은 대상 아님). 경로 오타이거나, 그 "
-            "파일이 아직 manifest 에 등재되지 않았는지 확인하라.", file=sys.stderr)
-    if guest_hits:
-        print(
-            f"오류: --paths 경로 {len(guest_hits)}개가 add-harness guest 절 소속이다 — "
-            "`pm_config add-harness <harness>` 로 갱신하라(update 는 guest 를 건드리지 않는다).",
-            file=sys.stderr)
+        print(f"  [미등재] {path}", file=sys.stderr)
+    print(
+        f"오류: --paths 경로 {len(unregistered)}개가 engine.manifest 등재분이 아니다 — pm-update 는 "
+        "manifest 소유 경로만 전파한다(인스턴스 소유 파일은 대상 아님). 경로 오타이거나, 그 "
+        "파일이 아직 manifest 에 등재되지 않았는지 확인하라.", file=sys.stderr)
     return 1
 
 
@@ -3447,18 +3417,6 @@ def _print_manifest_merge_conflicts(selfheal: dict) -> None:
     )
 
 
-def _selected_upstream_core_paths(selfheal: dict) -> set[str]:
-    """이번 실행에서 실제 승격된 selfheal manifest의 core 경로 집합.
-
-    ``selfheal["manifest"]``는 heal 판정에서만 채워진 선택 flavor 합집합이다. 후보 upstream
-    manifest를 직접 다시 읽으면 diverged/in_sync처럼 승격하지 않은 실행에서도 guest 보호를
-    해제한다. 실제 plan 기준으로 승격된 엔트리만 반환해 후순위 flavor의 1-run 승격은 유지하면서
-    미승격 상태의 guest는 계속 보호한다.
-    """
-    entries = selfheal.get("manifest") or []
-    return {str(entry).replace("\\", "/") for entry in entries}
-
-
 def _template_dir_from_manifest(
     manifest_path: Path | None,
     source_root: Path,
@@ -3513,9 +3471,9 @@ def _installed_entry_notation_manifests(
 ) -> list[Path]:
     """core 선택에 더해 실제 설치된 add-harness guest를 표기 context에만 포함한다.
 
-    guest는 update plan/manifest self-heal에서는 계속 불가침이다. 다만 공유 wiki를 실제로 읽는
-    하네스 집합에서는 빠지면 안 되므로, 설치 하네스를 찾아 그 flavor manifest를 context 입력에만
-    보탠다.
+    guest flavor는 manifest self-heal의 **선택/승격 대상이 아니다**(core 합집합 밖). 다만 공유
+    wiki를 실제로 읽는 하네스 집합에서는 빠지면 안 되므로, 설치 하네스를 찾아 그 flavor manifest를
+    context 입력에만 보탠다.
 
     판정은 **pm_import.installed_harnesses 단일 진실**을 쓴다(구조 판정 사본 금지). 어댑터
     디렉터리+root-doc 실재만 보면 일반 프로젝트가 자기 용도로 가진 `.codex/`·`AGENTS.md`를 codex
@@ -3569,17 +3527,49 @@ _LOCAL_CONF_TO_OPERATIONAL = {
     # (pm_render.neutralize_model_todo·import 대칭) — 한 토큰 미해소가 엔진/타 어댑터 update
     # 전체를 막지 않는다(부분-graceful). claude tree 엔 토큰 부재 → no-op.
     "opencode_pro_model": "OPENCODE_PRO_MODEL",
-    # claude native agent 카드 전용 — `.claude/agents @render` 재렌더가 카드 frontmatter 의
-    # `model:` 을 이 매핑으로 local.conf 에서 재유도한다. native 스폰의 실효 모델은 카드라,
-    # 이 배선이 없으면 `delegate.<role>` 선언이 실행면에 닿지 못한다(선언↔실행 불일치 경고).
-    # 카드는 normal 프로필이므로 `delegate.<role>.model` 만 읽는다(hard 세트는 카드 밖).
-    # **미해소**(위임 매핑 미설정 채택자)면 render_adapter 가 leak 으로 rc-fail 하지 않고
-    # intentional-TODO 로 graceful 중화한다(pm_render.neutralize_delegate_model_todo).
-    "delegate.developer.model": "DELEGATE_MODEL_DEVELOPER",
-    "delegate.researcher.model": "DELEGATE_MODEL_RESEARCHER",
-    "delegate.architect.model": "DELEGATE_MODEL_ARCHITECT",
-    "delegate.code-reviewer.model": "DELEGATE_MODEL_CODE_REVIEWER",
+    # 위임 모델/추론 토큰(`delegate.<role>[.<tier>].{model,reasoning}`)은 여기 손으로 적지 않는다 —
+    # pm_render.DELEGATE_MODEL_CONF_KEYS 한 표를 역전해 얹는다(`_local_conf_operational_map`).
 }
+
+
+def _local_conf_operational_map() -> dict[str, str]:
+    """local.conf key → operational token key — 고정 배선 + **위임 토큰(파생)**.
+
+    위임 토큰의 단일 표는 `pm_render.DELEGATE_MODEL_CONF_KEYS`(token→conf key)다. 여기에 사본을
+    두면 새 역할/티어가 한쪽에만 늘어 그 토큰이 조용히 미배선된다(카드가 영영 TODO 로 중화). 표를
+    역전해 쓰므로 표가 자라면 배선도 같이 자란다.
+
+    pm_render 로드 실패는 고정 배선만 반환한다 — 렌더 자체가 pm_render 를 요구하므로 그 실행은
+    어차피 렌더에 닿지 못하고, 위임 토큰은 미해소 → intentional-TODO 중화로 흡수된다(값을 지어내지
+    않는다). `_entry_doc_operational_keys` 의 폴백과 같은 경계다.
+    """
+    try:
+        delegate = _load_pm_render().DELEGATE_MODEL_CONF_KEYS
+    except Exception:  # noqa: BLE001 — 로드 실패는 고정 배선만(위임 토큰은 중화로 흡수).
+        return dict(_LOCAL_CONF_TO_OPERATIONAL)
+    return {
+        **_LOCAL_CONF_TO_OPERATIONAL,
+        **{conf_key: token_key for token_key, conf_key in delegate.items()},
+    }
+
+
+def _delegate_harness_from_local_conf(dest_root: Path) -> dict[str, str]:
+    """위임 token-key → 그 역할/티어의 conf 하네스 — 카드의 **미사용 프로필** 판정 입력.
+
+    카드가 선언하는 하네스(렌더 소스 경로)와 이 값이 다르면 그 카드는 이번 형상에서 스폰되지
+    않는다 — render 가 값 대신 사유를 중화로 남긴다(`pm_render.unused_delegate_profiles`).
+    키 부재/빈값은 담지 않는다(판정 불가 = 현행 거동 유지).
+    """
+    try:
+        harness_keys = _load_pm_render().DELEGATE_HARNESS_CONF_KEYS
+    except Exception:  # noqa: BLE001 — 로드 실패면 판정 입력 없음(중화 규칙 비발화).
+        return {}
+    conf = _read_local_conf(dest_root / ".project_manager" / "local.conf")
+    return {
+        token_key: conf[conf_key]
+        for token_key, conf_key in harness_keys.items()
+        if conf.get(conf_key)
+    }
 
 
 def _operational_from_local_conf(dest_root: Path) -> tuple[dict[str, str], list[str]]:
@@ -3601,7 +3591,7 @@ def _operational_from_local_conf(dest_root: Path) -> tuple[dict[str, str], list[
     conf = _read_local_conf(dest_root / ".project_manager" / "local.conf")
     operational: dict[str, str] = {}
     empty_keys: list[str] = []
-    for conf_key, token_key in _LOCAL_CONF_TO_OPERATIONAL.items():
+    for conf_key, token_key in _local_conf_operational_map().items():
         if conf_key not in conf:
             continue
         if conf[conf_key] == "":
@@ -3688,6 +3678,7 @@ def _render_text(
         empty_keys=empty_keys,
         template_dir=entry_notation_template,
         source=str(source_path),
+        delegate_harness=_delegate_harness_from_local_conf(dest_root),
     )
     if flat_command_skill is not None:
         rendered = _render_flat_command_reference(rendered, flat_command_skill)
@@ -4489,6 +4480,7 @@ def apply(changes: list[tuple], *, is_hook_set_path=None) -> None:
                 empty_keys=empty_keys,
                 template_dir=getattr(dst, "entry_notation_template", None),
                 source=str(sp),
+                delegate_harness=_delegate_harness_from_local_conf(dest_root),
             )
             if getattr(dst, "flat_command_skill", None) is not None:
                 rendered = _render_flat_command_reference(
@@ -4628,53 +4620,34 @@ def resolve_manifest_for_dest(dest_root: Path, source_root: Path) -> Path:
     raise FileNotFoundError("engine.manifest 없음 (dest·source 둘 다).")
 
 
-def _split_guest_channels(
-        entries: list, guest_entries: list, guest_backfill: list,
-        selfheal: dict | None) -> list:
-    """계획 manifest 에 add-harness guest 절의 **소유 채널 분리**를 적용한다.
+def _join_guest_channels(
+        entries: list, guest_entries: list, guest_backfill: list) -> list:
+    """계획 manifest 에 add-harness guest 절의 행을 **합류**시킨다 (core 와 같은 채널).
 
-    절 한 줄의 `@render` 유무가 채널을 가른다:
-      - `@render` 행(어댑터 렌더물) = add-harness refresh 전용·update 불가침 → **계획 제외**.
-        `@target-owned` skip 은 *source-부재* 때만 발동해, 프레임워크 root 에 source 가 실재하는
-        claude-guest(`.claude/agents`·`.claude/skills`)는 self-update 계획이 그냥 갱신해 채택자의
-        guest 로컬 수정을 덮었다. 절은 apply 가 재부착하므로 파일엔 남고 계획에서만 뺀다.
-      - 비-`@render` 행(엔진 파일) = update 채널 소유 → **계획 합류**(byte-copy). 이 행까지 빼면
-        `pm_relay` 코어와 짝인 드라이버·ctx 가드가 어떤 채널로도 갱신되지 않아 영구 동결된다."""
-    if not guest_entries:
+    guest 절은 두 종류를 담는다 — 어댑터 렌더물(`@render`)과 엔진 파일(비-`@render`) — 그러나
+    **update 채널은 하나**다:
+      - `@render` 행(어댑터 렌더물) = core `@render` 와 같은 재렌더 경로. 카드의 model 은
+        local.conf(`delegate.*`)의 렌더 파생물이라, guest 를 계획에서 빼면 conf 를 바꿔도 그 카드가
+        영영 옛 값으로 남는다(채택자 실측: 카드 opus ↔ conf sonnet). 손편집은 다음 update 가
+        되돌린다 — 그게 렌더물의 의도된 동작이다(add-harness 재실행을 요구하지 않는다).
+      - 비-`@render` 행(엔진 파일) = byte-copy 전파. 이 행이 빠지면 `pm_relay` 코어와 짝인
+        드라이버·ctx 가드가 어떤 채널로도 갱신되지 않아 영구 동결된다.
+
+    core 가 이미 소유한 경로(승격분 포함)는 core 선언이 이긴다 — 경로-포함(`_path_owned_by`)으로
+    접어 같은 파일을 두 번 계획하지 않는다. 절 자체는 apply 가 재부착하므로(`_copy_manifest_
+    preserving_guest`) 계획 합류가 절을 바꾸지 않는다."""
+    if not guest_entries and not guest_backfill:
         return entries
-    refresh_owned = {
-        str(entry).replace("\\", "/") for entry in guest_entries
-        if _entry_render_flag(entry)
-    }
-    if refresh_owned:
-        # **승격분 제외**: guest 경로가 upstream core 로
-        # 승격되면(selfheal 이 그 경로를 담은 upstream 을 계획 기준으로 올림) 이제 core 라 **1차
-        # sync 에서 갱신돼야** 한다 — dest guest 절에 있어도 **upstream core 에 실재하면 필터 밖**
-        # (안 그러면 첫 실행이 그 파일을 안 갱신·2회 필요). upstream core = selfheal 이 해소한 flavor
-        # manifest 경로(사본 0·같은 대조 기준). --target 은 selfheal 미실행이나 guest 절도 없어 무해.
-        upstream_core_paths = _selected_upstream_core_paths(selfheal or {})
-        if upstream_core_paths:
-            # guest destination 자체(또는 그 상위)가 core로 승격된 때만 refresh 소유를 해제한다.
-            # core의 단일 override 파일이 guest 디렉터리 아래에 있다는 이유로 디렉터리 전체를
-            # 승격하면, diverged/legacy manifest에서도 그 child를 update가 덮는다.
-            refresh_owned = {
-                guest for guest in refresh_owned
-                if not _path_owned_by(guest, upstream_core_paths)
-            }
-    # 아래 합류가 append 하므로 **항상 새 리스트**로 뜬다 — 입력이 selfheal 승격분 그 자체일 수
-    #   있어(같은 객체) 제자리 변경하면 selfheal 산출이 오염된다.
-    planned = [
-        entry for entry in entries
-        if not _path_owned_by(str(entry).replace("\\", "/"), refresh_owned)
-    ]
-    # 엔진 행 합류 — 파생분 우선, 그 뒤 절에만 남은 행(상류에서 폐기된 경로는 `@target-owned` 라
-    #   loud `[skip]` + rc0). selfheal 이 upstream 을 승격한 run 은 계획 manifest 가 upstream 전용
-    #   이라 guest 엔진 행이 통째로 빠지므로, 경로 중복만 접고 계획에 얹는다.
+    # append 하므로 **항상 새 리스트**로 뜬다 — 입력이 selfheal 승격분 그 자체일 수 있어(같은
+    #   객체) 제자리 변경하면 selfheal 산출이 오염된다.
+    planned = list(entries)
     planned_paths = {str(entry).replace("\\", "/") for entry in planned}
-    for entry in [*guest_backfill,
-                  *(e for e in guest_entries if not _entry_render_flag(e))]:
+    # 파생분 우선, 그 뒤 절에 실재하는 행(상류에서 폐기된 경로는 `@target-owned` 라 loud `[skip]`
+    #   + rc0). selfheal 이 upstream 을 승격한 run 은 계획 manifest 가 upstream core 전용이라 guest
+    #   행이 통째로 빠지므로, 경로 중복만 접고 계획에 얹는다.
+    for entry in [*guest_backfill, *guest_entries]:
         path = str(entry).replace("\\", "/")
-        if path in planned_paths:
+        if _path_owned_by(path, planned_paths):
             continue
         planned_paths.add(path)
         planned.append(entry)
@@ -4704,10 +4677,10 @@ def _resolve_planning_manifest(
     통째 덮어 커스텀 행을 지우는 것을 막는다). 이 축이 `_main` 에만 있으면 그 코호트에서 미리보기가
     engine.manifest 를 "받는다" 고 오보한다 — 기준 일치가 이 헬퍼의 존재 이유다.
 
-    **add-harness guest 절의 채널 분리도 여기서** 한다(`_split_guest_channels`). `_main` 에만 있던
-    동안 미리보기는 guest 렌더물을 "받는다" 고 하고 guest 엔진 행은 "안 받는다" 고 해, 이 헬퍼의
-    존재 이유(미리보기 == 계획)가 guest 축에서만 거짓이었다. `guest_entries`/`guest_backfill` 은
-    호출부가 이미 해소했으면 넘기고(중복 IO·pm_import 재로드 회피), 없으면 여기서 해소한다.
+    **add-harness guest 절의 합류도 여기서** 한다(`_join_guest_channels`). `_main` 에만 있으면
+    미리보기와 계획이 guest 축에서 갈려 이 헬퍼의 존재 이유(미리보기 == 계획)가 거짓이 된다.
+    `guest_entries`/`guest_backfill` 은 호출부가 이미 해소했으면 넘기고(중복 IO·pm_import 재로드
+    회피), 없으면 여기서 해소한다.
     """
     if guest_entries is None:
         guest_entries = _dest_guest_manifest_entries(effective_dest)
@@ -4723,7 +4696,7 @@ def _resolve_planning_manifest(
                 entry for entry in entries
                 if str(entry).replace("\\", "/") != _MANIFEST_SELF_REL
             ]
-    return _split_guest_channels(entries, guest_entries, guest_backfill, selfheal)
+    return _join_guest_channels(entries, guest_entries, guest_backfill)
 
 
 def _resolve_local_manifest(effective_dest: Path, source_root: Path) -> list:
@@ -6201,8 +6174,7 @@ def _main(argv: list[str] | None = None) -> int:
                 if str(entry).replace("\\", "/") not in early_paths
             ]
             rc = _refuse_unregistered_scope_paths(
-                early_manifest, scope_paths, _dest_guest_manifest_paths(effective_dest),
-                effective_dest)
+                early_manifest, scope_paths, effective_dest)
             if rc:
                 return rc
 
@@ -6250,9 +6222,8 @@ def _main(argv: list[str] | None = None) -> int:
 
     # 계획 기준 manifest — 승격분 우선·없으면 dest 우선 로컬 해소. `--changes` 미리보기가 **같은
     #   헬퍼**를 소비한다(판정 사본 0: 미리보기 분류 기준 == 적용 계획 기준).
-    # add-harness guest 절의 소유 채널 분리(`@render`=refresh 소유·계획 제외 / 비-`@render`=update
-    #   채널·계획 합류 + 파생 백필)도 이 헬퍼 안에서 일어난다 — `--changes` 미리보기가 같은 기준을
-    #   자동 상속한다(판정 사본 0).
+    # add-harness guest 절의 계획 합류(`@render`=재렌더 / 비-`@render`=byte-copy + 파생 백필)도
+    #   이 헬퍼 안에서 일어난다 — `--changes` 미리보기가 같은 기준을 자동 상속한다(판정 사본 0).
     try:
         manifest = _resolve_planning_manifest(
             effective_dest, source_root, selfheal,
@@ -6353,11 +6324,9 @@ def _main(argv: list[str] | None = None) -> int:
     #    (출하 인벤토리 0 등)는 그대로 표면화된다 — 스코프는 *적용 범위*를 좁히지 실패 판정을
     #    끄지 않는다.
     if scope_paths:
-        # 좁은 판정(계획 확정 manifest 기준) — 선검증은 합집합이라 관대했다. guest 절 소속은
-        #   "오타" 가 아니라 채널이 다른 것이라 사유를 갈라 알린다.
+        # 좁은 판정(계획 확정 manifest 기준) — 선검증은 합집합이라 관대했다.
         rc = _refuse_unregistered_scope_paths(
-            manifest, scope_paths, _dest_guest_manifest_paths(effective_dest),
-            effective_dest)
+            manifest, scope_paths, effective_dest)
         if rc:
             return rc
         # 등재 디렉토리 **안의 오타**는 위 판정을 통과한다(`adapterdir/typo.md` 는 `adapterdir`

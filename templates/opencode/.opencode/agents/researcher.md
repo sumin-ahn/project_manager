@@ -1,7 +1,7 @@
 ---
 description: "{{PROJECT_NAME}} 프로젝트의 read-only gather 전문 subagent. PM(build primary)이 무거운 *bounded* 읽기/조사/추출 — 여러 파일·레퍼런스·로그를 훑어 사실·인용·목록을 뽑아 *결론만* 돌려받고 싶을 때 — 를 위임할 때 사용. 제품 코드·문서를 수정하지 않는다(자기 티켓 사본 절만 기록). PM 의 synthesis(교차 통찰)를 대체하지 않는다 — 정해진 범위의 fact-gathering 만."
 mode: all
-model: "{{OPENCODE_PRO_MODEL}}"
+model: "{{DELEGATE_MODEL_RESEARCHER}}"
 temperature: 0.1
 permission:
   read: allow

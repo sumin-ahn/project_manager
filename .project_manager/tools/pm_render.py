@@ -24,7 +24,8 @@ post-render assertion 이 emission 순간 hard-fail(allow-list 없음). operatio
 상시 backstop(2중 차단).
 
 **유일한 예외 = intentional-TODO placeholder(모델 토큰)**: `{{OPENCODE_PRO_MODEL}}`(채택자가
-opencode 없이 import)과 `{{DELEGATE_MODEL_<ROLE>}}`(local.conf 에 `delegate.<role>.model` 부재)은
+opencode 없이 import)과 `{{DELEGATE_MODEL_<ROLE>}}`(local.conf 에 `delegate.<role>.model` 부재,
+또는 그 역할이 다른 하네스로 가는 **미사용 프로필** 카드)은
 결정적 해소가 불가능한 토큰이라, 미해소 시 leak(자족 위반)이 아니라 `# model: …  # TODO: …` 로
 graceful 중화한다(pm_import --fill manual 과 대칭·채택자-fill 대기). 이건 자족 산출물 위반이 아니다
 — 리터럴 `{{...}}` 토큰이 제거되고(자족 유지) 채택자가 나중에 채우는 지점만 남는다.
@@ -41,6 +42,47 @@ from pathlib import Path
 
 # baked 엔진 rev — engine_rev.py --bump가 기계 일괄 재작성한다.
 ENGINE_REV = "v1.7.6"
+
+# 하네스 agent 카드의 역할별 모델/추론 토큰 → local.conf 해소 키. **위임 토큰의 단일 표**다
+# (하네스별 사본 금지): claude `.claude/agents/*.md`·codex `.codex/agents/*.toml`·opencode
+# `.opencode/agents/*.md` 가 같은 토큰 이름을 쓰고 같은 conf 키에서 해소된다. 카드의 model 은
+# `delegate.<role>[.<tier>].{model,reasoning}` 의 렌더 파생물이고, 그 밖의 출처를 갖지 않는다.
+#
+# hard 티어(`developer-hard`)는 **별도 완전 세트**다 — normal 프로필을 상속하지 않는다(엔진의
+# 프로필 해소와 같은 규칙). reasoning 토큰은 그 값을 실제로 소비하는 카드가 있는 것만 둔다
+# (codex `model_reasoning_effort`) — 소비처 없는 토큰은 배선만 늘리고 해소를 못 검증한다.
+#
+# pm_update 는 이 표를 **역전해** local.conf 채널 배선을 만든다(`_local_conf_operational_map`) —
+# 손으로 재타이핑한 사본을 두면 새 역할/티어가 한쪽에만 늘어 조용히 미배선된다.
+DELEGATE_MODEL_CONF_KEYS: dict[str, str] = {
+    "DELEGATE_MODEL_DEVELOPER": "delegate.developer.model",
+    "DELEGATE_MODEL_DEVELOPER_HARD": "delegate.developer.hard.model",
+    "DELEGATE_REASONING_DEVELOPER_HARD": "delegate.developer.hard.reasoning",
+    "DELEGATE_MODEL_RESEARCHER": "delegate.researcher.model",
+    "DELEGATE_MODEL_ARCHITECT": "delegate.architect.model",
+    "DELEGATE_MODEL_CODE_REVIEWER": "delegate.code-reviewer.model",
+}
+
+
+def _harness_conf_key(conf_key: str) -> str:
+    """`delegate.<role>[.<tier>].{model,reasoning}` → 같은 프로필의 `.harness` 키 (원자 tuple)."""
+    return conf_key.rsplit(".", 1)[0] + ".harness"
+
+
+# 같은 역할/티어의 하네스 키 — 위 표에서 **파생**한다(사본 0). 카드가 선언하는 하네스와 이 값이
+# 다르면 그 카드는 미사용 프로필이다(아래 `unused_delegate_profiles`).
+DELEGATE_HARNESS_CONF_KEYS: dict[str, str] = {
+    token_key: _harness_conf_key(conf_key)
+    for token_key, conf_key in DELEGATE_MODEL_CONF_KEYS.items()
+}
+
+# 어댑터 네임스페이스 디렉터리 → 하네스 이름. 카드가 **어느 하네스 프로필인가**의 단일 판정원
+# (렌더 소스 경로가 그 사실을 들고 있다 — 토큰 이름엔 하네스가 없다).
+CARD_HARNESS_BY_ADAPTER_DIR: dict[str, str] = {
+    ".claude": "claude",
+    ".codex": "codex",
+    ".opencode": "opencode",
+}
 
 # operational — import sed 치환된 리터럴 (local.conf 재유도). plain replace·omit 없음.
 # pm_import.OPERATIONAL_TOKENS(중괄호 포함)와 동일 집합을 bare key 로 + opencode 전용
@@ -65,15 +107,13 @@ OPERATIONAL_KEYS: tuple[str, ...] = (
     # opencode 없이 import·TODO 폴백)면 leak 이 아니라 intentional-TODO 로 graceful 중화한다
     # (neutralize_model_todo·import 대칭) — 아래 render_adapter 참조.
     "OPENCODE_PRO_MODEL",
-    # claude native agent 카드 전용 — 역할별 위임 모델(`delegate.<role>.model` 해소값).
-    # native 스폰의 실효 모델은 카드 frontmatter 라, 카드가 리터럴이면 `delegate.*` 선언이
+    # 하네스 agent 카드 전용 — 역할별 위임 모델/추론(`delegate.<role>[.<tier>].*` 해소값).
+    # 스폰의 실효 모델은 카드 frontmatter/TOML 이라, 카드가 리터럴이면 `delegate.*` 선언이
     # 실행면에 닿지 못한다(채택자 제보 — 선언 sonnet ↔ 실행 opus). 역할별 개별 토큰이라야
     # 역할마다 다른 모델을 표현할 수 있다. 미해소(local.conf 키 부재)면 OPENCODE_PRO_MODEL 과
     # 같은 intentional-TODO 중화(neutralize_delegate_model_todo) — rc-fail 하지 않는다.
-    "DELEGATE_MODEL_DEVELOPER",
-    "DELEGATE_MODEL_RESEARCHER",
-    "DELEGATE_MODEL_ARCHITECT",
-    "DELEGATE_MODEL_CODE_REVIEWER",
+    # 목록은 DELEGATE_MODEL_CONF_KEYS 에서 **파생**한다(한 표·사본 0).
+    *DELEGATE_MODEL_CONF_KEYS,
 )
 
 # 잔여 leak 스캔 — 대문자/언더스코어 토큰 (post-render assertion·잔존 시 무조건 raise).
@@ -99,17 +139,64 @@ OPENCODE_MODEL_TOKEN = "{{OPENCODE_PRO_MODEL}}"
 _OPENCODE_MODEL_KEY = "OPENCODE_PRO_MODEL"  # bare operational key — all_empty 판정용(빈값 vs 부재)
 _MODEL_TODO_PLACEHOLDER = "<provider/model>"
 
-# claude native agent 카드의 역할별 모델 토큰 → local.conf 해소 키(normal 프로필).
-# 카드는 normal 프로필이라 `delegate.<role>.model` 만 읽는다(hard 는 별도 세트·혼합 상속 없음).
-# pm_update._LOCAL_CONF_TO_OPERATIONAL 이 같은 쌍을 operational 채널에 배선하고, 여기 값은
-# 미해소 시 TODO 안내에 실릴 **채택자가 채울 키 이름**이다(단일 진실).
-DELEGATE_MODEL_CONF_KEYS: dict[str, str] = {
-    "DELEGATE_MODEL_DEVELOPER": "delegate.developer.model",
-    "DELEGATE_MODEL_RESEARCHER": "delegate.researcher.model",
-    "DELEGATE_MODEL_ARCHITECT": "delegate.architect.model",
-    "DELEGATE_MODEL_CODE_REVIEWER": "delegate.code-reviewer.model",
-}
+# 중화 대상 줄 = **모델 필드 줄**. 하네스마다 표기가 다르다(YAML frontmatter `model:` · codex
+# TOML `model = `/`model_reasoning_effort = `)나 판정은 하나여야 import 와 self-update 가 같은
+# 산출을 낸다. 산문/헤더의 토큰은 비대상(주석화하면 markdown/TOML 이 깨진다) — 그 위치의 미해소
+# 토큰은 계속 `_assert_no_leak` 가 표면화한다.
+_MODEL_FIELD_LINE_RE = re.compile(r"^(?:model|model_reasoning_effort)\s*[:=]")
+
 _DELEGATE_MODEL_TODO_PLACEHOLDER = "<model>"
+_DELEGATE_REASONING_TODO_PLACEHOLDER = "<reasoning>"
+# 추론 토큰 접두사 — 중화 placeholder 를 값의 종류에 맞춘다(`<model>` 자리에 추론 등급을 쓰면
+# 채택자가 무엇을 채울지 오해한다).
+_DELEGATE_REASONING_TOKEN_PREFIX = "DELEGATE_REASONING_"
+
+
+def _delegate_todo_placeholder(token_key: str) -> str:
+    """중화된 줄에 남길 형식힌트 — 모델 토큰은 `<model>`, 추론 토큰은 `<reasoning>`."""
+    if token_key.startswith(_DELEGATE_REASONING_TOKEN_PREFIX):
+        return _DELEGATE_REASONING_TODO_PLACEHOLDER
+    return _DELEGATE_MODEL_TODO_PLACEHOLDER
+
+
+def card_harness_from_source(source: str | None) -> str | None:
+    """렌더 소스 경로 → 그 카드가 속한 하네스 (판정 불가면 None).
+
+    경로 컴포넌트의 어댑터 네임스페이스(`.claude`/`.codex`/`.opencode`)를 **뒤에서부터** 찾는다 —
+    한 하네스 템플릿이 다른 하네스 네임스페이스의 파일을 담을 수 있으므로(opencode 템플릿 안의
+    `.claude/skills`) 파일에 가장 가까운 선언이 그 파일의 하네스다. 소스가 없거나(인메모리 렌더)
+    어댑터 밖이면 None — 그때는 하네스 판정을 요구하는 규칙(미사용 프로필)이 발화하지 않는다.
+    """
+    if not source:
+        return None
+    for part in reversed(str(source).replace("\\", "/").split("/")):
+        harness = CARD_HARNESS_BY_ADAPTER_DIR.get(part)
+        if harness:
+            return harness
+    return None
+
+
+def unused_delegate_profiles(
+    source: str | None, delegate_harness: dict[str, str] | None
+) -> dict[str, str]:
+    """이 카드에서 **미사용 프로필**인 위임 토큰 → 그 역할의 conf 하네스.
+
+    카드의 하네스(`card_harness_from_source`)와 conf 의 `delegate.<role>[.<tier>].harness` 가
+    다르면 그 카드는 이번 형상에서 스폰되지 않는 프로필이다 — 다른 하네스용 모델 값을 억지로
+    박으면 카드가 conf 와 어긋난 사실(그 역할은 저쪽 하네스로 간다)을 감춘다. 값을 채우는 대신
+    intentional-TODO 로 중화하고 이유를 꼬리에 남긴다(rc 불변).
+
+    conf 하네스를 모르면(키 부재) 판정하지 않는다 — 미설정은 오설정이 아니라 정상 형상이고,
+    그때는 model 키가 있으면 그대로 해소한다(현행 거동 보존).
+    """
+    card_harness = card_harness_from_source(source)
+    if not card_harness or not delegate_harness:
+        return {}
+    return {
+        token_key: harness
+        for token_key, harness in delegate_harness.items()
+        if harness and harness != card_harness and token_key in DELEGATE_MODEL_CONF_KEYS
+    }
 
 
 def _local_conf_key(token_key: str) -> str:
@@ -125,6 +212,20 @@ def _delegate_model_todo_tail(conf_key: str) -> str:
     """중화된 `# model:` 줄 꼬리의 TODO 안내 — 채울 local.conf 키와 재렌더 경로를 명시한다."""
     return (f"  # TODO: local.conf `{conf_key}=` 를 채우고 pm-update 를 다시 실행하면 "
             "이 줄이 그 값으로 렌더된다")
+
+
+def _delegate_unused_profile_tail(
+    conf_key: str, conf_harness: str, card_harness: str | None
+) -> str:
+    """미사용 프로필로 중화한 줄의 꼬리 — 값이 아니라 **이유**를 남긴다.
+
+    conf 가 이 역할을 다른 하네스로 보내고 있으므로 이 카드는 이번 형상에서 스폰되지 않는다.
+    채택자가 이 카드를 쓰려면 고칠 곳은 카드가 아니라 local.conf 의 하네스 키다(단일 진실).
+    """
+    card = f" (이 카드는 {card_harness})" if card_harness else ""
+    return (f"  # TODO: conf 의 이 역할 하네스는 {conf_harness} 라 미사용 프로필이다{card} — "
+            f"local.conf `{_harness_conf_key(conf_key)}` 를 이 하네스로 바꾸면 "
+            f"이 줄이 `{conf_key}` 값으로 렌더된다")
 
 
 def _model_todo_tail(available: list[str] | None = None) -> str:
@@ -149,7 +250,7 @@ def neutralize_model_todo(
     줄을 통째 `# ` 로 주석화(YAML frontmatter 에서 model 키 부재 → opencode 기본 모델)
     하면서 리터럴 토큰을 `<provider/model>` 형식힌트로 제거(자족 산출물·render leak 회피).
 
-    **model: 필드 줄만** 대상이다(`line.lstrip().startswith("model:")`) — 산문/헤더/docstring
+    **모델 필드 줄만** 대상이다(`_MODEL_FIELD_LINE_RE`) — 산문/헤더/docstring
     의 토큰(예: README 의 "placeholder `{{OPENCODE_PRO_MODEL}}` 로 출하")은 `# ` prepend 시
     markdown 이 깨지므로 건드리지 않는다. 그런 위치의 토큰은 render 가 계속 leak 으로 표면화한다.
     비파괴·멱등: 이미 `# ` 주석이거나 `TODO` 가 붙은 줄은 재처리 안 함.
@@ -164,11 +265,12 @@ def neutralize_model_todo(
 def _comment_out_model_line(
     text: str, token: str, placeholder: str, tail: str
 ) -> tuple[str, bool]:
-    """`model:` 필드 줄의 미해소 `token` 을 주석화·중화하는 공유 줄-변환 (판정 사본 금지).
+    """모델 필드 줄의 미해소 `token` 을 주석화·중화하는 공유 줄-변환 (판정 사본 금지).
 
-    모델 토큰이 여럿(opencode 어댑터·claude 역할 카드)이라도 **줄 판정은 하나**여야 import 와
-    self-update 가 같은 산출을 낸다. 대상은 `model:` 로 시작하는 줄뿐이고, 이미 주석이거나
-    `TODO` 가 붙은 줄은 비파괴·멱등으로 건너뛴다.
+    모델 토큰이 여럿(opencode 어댑터·역할 카드·티어 프로필)이라도 **줄 판정은 하나**여야 import 와
+    self-update 가 같은 산출을 낸다. 대상은 모델 필드 줄(`_MODEL_FIELD_LINE_RE` — YAML
+    frontmatter 의 `model:` 과 codex TOML 의 `model =`/`model_reasoning_effort =`)뿐이고, 이미
+    주석이거나 `TODO` 가 붙은 줄은 비파괴·멱등으로 건너뛴다.
     """
     if token not in text:
         return text, False
@@ -176,7 +278,7 @@ def _comment_out_model_line(
     marked = False
     for line in text.splitlines(keepends=True):
         if (token in line and "TODO" not in line
-                and line.lstrip().startswith("model:")):
+                and _MODEL_FIELD_LINE_RE.match(line.lstrip())):
             eol = "\n" if line.endswith("\n") else ""
             body = line.rstrip("\n").replace(token, placeholder)
             out.append("# " + body + tail + eol)
@@ -187,9 +289,13 @@ def _comment_out_model_line(
 
 
 def neutralize_delegate_model_todo(
-    text: str, skip_keys: list[str] | tuple[str, ...] | None = None
+    text: str,
+    skip_keys: list[str] | tuple[str, ...] | None = None,
+    *,
+    unused_profiles: dict[str, str] | None = None,
+    card_harness: str | None = None,
 ) -> tuple[str, bool]:
-    """미해소 `{{DELEGATE_MODEL_<ROLE>}}` 이 있는 `model:` 줄을 주석화·토큰 중화한다.
+    """미해소 `{{DELEGATE_MODEL_<ROLE>}}` 이 있는 모델 필드 줄을 주석화·토큰 중화한다.
 
     변환: `model: {{DELEGATE_MODEL_DEVELOPER}}` → `# model: <model>  # TODO: …`. 줄 전체를
     주석화해 frontmatter 에서 `model` 키를 부재시키면 claude 가 세션 기본 모델로 스폰한다
@@ -201,19 +307,30 @@ def neutralize_delegate_model_todo(
     ``skip_keys``(빈값이라 호출자가 제외한 token-key)는 중화하지 않고 토큰을 남겨
     `_assert_no_leak` 가 "값을 채우라" 로 표면화하게 한다.
 
+    ``unused_profiles``(token-key → conf 하네스)는 **해소값이 있어도** 중화한다 — 그 카드는 conf
+    가 다른 하네스로 보내는 역할이라 이번 형상에서 스폰되지 않는다(미사용 프로필). 꼬리에 사유를
+    남겨 채택자가 고칠 곳이 카드가 아니라 local.conf 임을 지목한다. ``card_harness`` 는 그 안내에
+    실을 이 카드의 하네스다.
+
     반환: (중화된 text, 중화 발생 여부). import(render_managed_files)·self-update(pm_update 의
     @render 재렌더) 양쪽이 같은 함수를 타 byte-동일 산출을 낸다(재렌더 왕복 0).
     """
     skipped = set(skip_keys or ())
+    unused = dict(unused_profiles or {})
     marked = False
     for token_key, conf_key in DELEGATE_MODEL_CONF_KEYS.items():
-        if token_key in skipped:
+        if token_key in skipped and token_key not in unused:
             continue
+        tail = (
+            _delegate_unused_profile_tail(conf_key, unused[token_key], card_harness)
+            if token_key in unused
+            else _delegate_model_todo_tail(conf_key)
+        )
         text, changed = _comment_out_model_line(
             text,
             "{{" + token_key + "}}",
-            _DELEGATE_MODEL_TODO_PLACEHOLDER,
-            _delegate_model_todo_tail(conf_key),
+            _delegate_todo_placeholder(token_key),
+            tail,
         )
         marked = marked or changed
     return text, marked
@@ -430,12 +547,16 @@ def render_adapter(
     source: str | None = None,
     empty_keys: list[str] | None = None,
     template_dir: str | tuple[str, ...] | list[str] | None = None,
+    delegate_harness: dict[str, str] | None = None,
 ) -> str:
     """어댑터 템플릿 → 자족 .md (operational plain replace).
 
-    source: leak 에러에 실을 파일 경로(선택·render_file 이 전달). 진단용일 뿐 렌더엔 무영향.
+    source: leak 에러에 실을 파일 경로(선택·render_file 이 전달). 진단 + **카드 하네스 판정**에
+    쓴다(`card_harness_from_source` — 미사용 프로필 중화).
     empty_keys: 호출자(pm_update)가 local.conf 빈값이라 dict 에서 제외한 token-key 목록(선택).
     렌더러가 직접 감지한 빈값 key 와 합쳐 leak 힌트("값을 채우라")에 싣는다.
+    delegate_harness: 위임 token-key → conf 의 그 역할/티어 하네스(선택·pm_update 가 local.conf
+    에서 해소). 카드 하네스와 다르면 그 토큰은 미사용 프로필이라 값 대신 이유를 중화로 남긴다.
 
     template_dir가 주어지면 operational보다 먼저 canonical 스킬 호출 토큰을 그 하네스 값으로
     치환한다. 값은 SKILL_ENTRY_PREFIX_BY_TEMPLATE_DIR 단일 registry에서만 읽는다.
@@ -446,6 +567,13 @@ def render_adapter(
     잔존하면 leak 으로 표면화된다(미마이그레이션 신호).
     """
     operational = operational or {}
+    # 미사용 프로필(카드 하네스 ≠ conf 의 그 역할 하네스)은 **치환 전에** 제외한다 — 값을 먼저
+    # 채우면 아래 중화가 볼 토큰이 없어져 다른 하네스용 모델이 그대로 카드에 박힌다.
+    unused = unused_delegate_profiles(source, delegate_harness)
+    if unused:
+        operational = {
+            key: value for key, value in operational.items() if key not in unused
+        }
     result = (
         render_skill_entry_notation(
             template_text, template_dir, source=source
@@ -468,10 +596,15 @@ def render_adapter(
     # 그 밖의 미해소 토큰(다른 위치·다른 `{{...}}`)도 계속 fail-loud(불변식 c).
     if _OPENCODE_MODEL_KEY not in all_empty:
         result, _ = neutralize_model_todo(result)
-    # 같은 intentional-TODO 규약 — claude 역할 카드의 `{{DELEGATE_MODEL_<ROLE>}}` 는 local.conf 에
-    # `delegate.<role>.model` 이 없는 채택자(위임 매핑 미설정)에서 결정적으로 해소되지 않는다.
-    # 빈값(present-but-empty) 키는 all_empty 로 넘겨 중화에서 빼고 leak 으로 표면화한다(오설정 신호).
-    result, _ = neutralize_delegate_model_todo(result, all_empty)
+    # 같은 intentional-TODO 규약 — 역할 카드의 `{{DELEGATE_MODEL_<ROLE>}}` 는 local.conf 에
+    # `delegate.<role>[.<tier>].model` 이 없는 채택자(위임 매핑 미설정)에서 결정적으로 해소되지
+    # 않는다. 빈값(present-but-empty) 키는 all_empty 로 넘겨 중화에서 빼고 leak 으로 표면화한다
+    # (오설정 신호). 미사용 프로필은 해소값 유무와 무관하게 사유 꼬리로 중화한다(위 unused).
+    result, _ = neutralize_delegate_model_todo(
+        result, all_empty,
+        unused_profiles=unused,
+        card_harness=card_harness_from_source(source),
+    )
     _assert_no_leak(result, source=source, empty_keys=all_empty)
     return result
 

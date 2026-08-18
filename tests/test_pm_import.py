@@ -3265,8 +3265,10 @@ def test_opencode_model_flag_substitutes(pm_import, tmp_path):
     # 토큰이 모두 치환되고 명시 모델로 바뀌었다.
     assert not pm_import._token_present(dest, OPENCODE_MODEL_TOKEN, relpaths), \
         "플래그 치환 후에도 모델 토큰이 잔존."
-    dev = dest / ".opencode" / "agents" / "developer.md"
-    assert "ollama/qwen3.6:27b" in dev.read_text(encoding="utf-8")
+    # 설치 모델 토큰을 담는 카드는 primary `pm.md` 다 — 역할 카드는 `delegate.<role>.model`
+    #   파생이라 이 해소 경로의 대상이 아니다.
+    pm_card = dest / ".opencode" / "agents" / "pm.md"
+    assert "ollama/qwen3.6:27b" in pm_card.read_text(encoding="utf-8")
 
 
 def test_opencode_model_flag_warns_when_not_in_available(pm_import, tmp_path, capsys):
@@ -3306,8 +3308,8 @@ def test_opencode_model_interactive_selection(pm_import, tmp_path):
     assert result.path == "interactive"
     assert result.model == "opencode/big-pickle", "번호 선택이 잘못 매핑됨."
     assert result.changed >= 1
-    dev = dest / ".opencode" / "agents" / "developer.md"
-    assert "opencode/big-pickle" in dev.read_text(encoding="utf-8")
+    pm_card = dest / ".opencode" / "agents" / "pm.md"
+    assert "opencode/big-pickle" in pm_card.read_text(encoding="utf-8")
     assert not pm_import._token_present(dest, OPENCODE_MODEL_TOKEN, relpaths)
 
 
@@ -3348,8 +3350,8 @@ def test_opencode_model_non_tty_todo_with_available_list(pm_import, tmp_path, ca
     assert result.model is None
     assert result.changed == 0
     assert OPENCODE_MODEL_TOKEN in result.todos
-    dev = dest / ".opencode" / "agents" / "developer.md"
-    dev_text = dev.read_text(encoding="utf-8")
+    pm_card = dest / ".opencode" / "agents" / "pm.md"
+    dev_text = pm_card.read_text(encoding="utf-8")
     # T-0133: TODO 폴백(모델 미해소)은 model: 줄을 주석화하며 토큰을 <provider/model> 로 *중화*한다
     # (실제 모델로 치환=채움이 아님). model 파일엔 리터럴 토큰이 남지 않는다(@render leak 회피) — 발견
     # 경로는 주석 model 줄 + 형식 힌트 + 가용목록 TODO 로 보존. (whole-tree 토큰 존재는 README 산문에서
@@ -3377,7 +3379,7 @@ def test_opencode_model_binary_absent_todo_fallback(pm_import, tmp_path, capsys)
     assert result.path == "todo"
     assert result.changed == 0
     assert result.available == [], "조회 실패인데 가용 목록이 비어있지 않음."
-    dev_text = (dest / ".opencode" / "agents" / "developer.md").read_text(encoding="utf-8")
+    dev_text = (dest / ".opencode" / "agents" / "pm.md").read_text(encoding="utf-8")
     # T-0133: TODO 폴백은 model: 줄 토큰을 <provider/model> 로 중화 — model 파일에 리터럴 토큰 0(@render leak 회피).
     assert OPENCODE_MODEL_TOKEN not in dev_text, "TODO 폴백인데 model 파일에 리터럴 토큰 잔존(@render leak)."
     assert "TODO" in dev_text
@@ -3450,13 +3452,23 @@ def test_opencode_agent_frontmatter_valid_after_default_import(pm_import, tmp_pa
     토큰을 형식 힌트 `<provider/model>` 로 *중화* 하되 주석 `model:` 줄 + TODO 안내는 보존한다 —
     채택자 발견경로(주석 해제 후 provider/model 로 치환·`--opencode-model` 재import)는 유지하고,
     리터럴 토큰만 제거(이전 "토큰 보존" 계약을 활성화가 강제 변경). main 의 기본 경로(autouse fixture
-    가 _real_models_runner 를 (False, []) 로 고정 → 폴백)로 import 한 3개 subagent frontmatter 가드.
+    가 _real_models_runner 를 (False, []) 로 고정 → 폴백)로 import 한 subagent frontmatter 가드.
+
+    카드마다 미해소 사유가 다르다 — primary `pm.md` 는 설치 모델(`{{OPENCODE_PRO_MODEL}}`),
+    역할 카드는 위임 모델(`delegate.<role>.model`)이다. 둘 다 같은 중화 규약(주석 `model:` 줄 +
+    형식 힌트 + TODO 안내)을 타되 형식 힌트와 안내가 그 사유를 가리켜야 한다.
     """
     dest = tmp_path / "fmvalid"
     rc = pm_import.main(["--new", str(dest), "--harness", "opencode", "--name", "FmValid"])
     assert rc == 0
     agents_dir = dest / ".opencode" / "agents"
-    for name in ("developer.md", "code-reviewer.md", "architect.md"):
+    hints = {
+        "pm.md": ("<provider/model>", OPENCODE_MODEL_TOKEN),
+        "developer.md": ("<model>", "{{DELEGATE_MODEL_DEVELOPER}}"),
+        "code-reviewer.md": ("<model>", "{{DELEGATE_MODEL_CODE_REVIEWER}}"),
+        "architect.md": ("<model>", "{{DELEGATE_MODEL_ARCHITECT}}"),
+    }
+    for name, (hint, token) in hints.items():
         text = (agents_dir / name).read_text(encoding="utf-8")
         assert text.startswith("---\n"), f"{name}: frontmatter 시작 구분자 없음"
         end = text.find("\n---\n", 4)
@@ -3467,14 +3479,18 @@ def test_opencode_agent_frontmatter_valid_after_default_import(pm_import, tmp_pa
             f"{name}: 미해소 폴백인데 model 키가 활성(부재여야 opencode 기본 모델): {fm.get('model')!r}"
         )
         # T-0133: @render leak-safety — 리터럴 토큰은 *없어야* 한다(render _assert_no_leak hard-fail 회피).
-        assert OPENCODE_MODEL_TOKEN not in text, \
+        assert token not in text, \
             f"{name}: @render 경로 agent 에 리터럴 모델 토큰 잔존 → render leak"
-        # 그래도 발견경로는 보존: 주석 model: 줄 + 형식 힌트(<provider/model>) + TODO 안내.
-        assert "<provider/model>" in text, f"{name}: 폴백 형식 힌트(<provider/model>) 소실"
+        # 그래도 발견경로는 보존: 주석 model: 줄 + 사유에 맞는 형식 힌트 + TODO 안내.
+        assert hint in text, f"{name}: 폴백 형식 힌트({hint}) 소실"
         assert re.search(r"^#\s*model:", text[: end + 5], re.MULTILINE), \
             f"{name}: model 줄이 `# model:` 로 주석화되지 않음"
         # frontmatter 영역에 HTML 주석 잔류 0 (YAML 깨짐 방지 — T-0033 codex must-fix 회귀 가드).
         assert "<!--" not in text[: end + 5], f"{name}: frontmatter 에 HTML 주석 잔류"
+    # 역할 카드의 TODO 는 채울 conf 키를 지목한다(설치 모델 안내와 사유가 갈린다).
+    dev_text = (agents_dir / "developer.md").read_text(encoding="utf-8")
+    assert "delegate.developer.model=" in dev_text, \
+        "역할 카드 TODO 가 채울 local.conf 키를 지목하지 않는다"
 
 
 def test_resolve_inactive_when_token_absent(pm_import, tmp_path):
@@ -3839,8 +3855,8 @@ def test_main_opencode_flag_end_to_end(pm_import, tmp_path):
     relpaths = _copied_relpaths_of(dest)
     assert not pm_import._token_present(dest, OPENCODE_MODEL_TOKEN, relpaths), \
         "main --opencode-model 인데 토큰이 잔존."
-    dev = dest / ".opencode" / "agents" / "developer.md"
-    assert "ollama/qwen3.6:27b" in dev.read_text(encoding="utf-8")
+    pm_card = dest / ".opencode" / "agents" / "pm.md"
+    assert "ollama/qwen3.6:27b" in pm_card.read_text(encoding="utf-8")
 
 
 # ── T-0034: --into 백업 — 파일별 git-인지 skip + 중앙화 디렉토리 ───────────────
@@ -5101,25 +5117,33 @@ def test_add_harness_guest_registration_warns_when_no_manifest(pm_import, tmp_pa
     assert "render/lint 관리 밖" in capsys.readouterr().err
 
 
-def test_pm_update_preserves_claude_guest_local_edit(
+def test_pm_update_rerenders_claude_guest_card_from_conf(
         pm_import, pm_update, tmp_path, monkeypatch):
-    """claude-as-guest 의 채택자 로컬 수정이 self-update 후 **보존**된다 (T-0456 R22 MF-1).
+    """claude-as-guest 카드는 self-update 가 **local.conf 로 다시 렌더**한다(손편집은 되돌아간다).
 
-    `@target-owned` skip 은 *source-부재* 때만이라, 프레임워크 root 에 source 실재하는 claude-guest
-    (`.claude/agents`)는 옛 self-update plan 이 그냥 갱신해 로컬 수정을 덮었다. guest 절 항목을 plan 에서
-    제외해 닫는다(update 불가침·refresh 가 유일 guest 채널). red-첫: 로컬 수정 → self-update → 보존."""
+    카드의 model 은 `delegate.<role>.model` 의 렌더 파생물이고 단일 진실은 local.conf 다 — guest 를
+    계획에서 빼면 conf 를 바꿔도 카드가 설치 시점 값으로 남는다(채택자 실측: 카드 model ↔ conf 영구
+    불일치). 그래서 이 축은 "손편집 보존" 이 아니라 "conf 로 수렴" 을 못박는다."""
     monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
     monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
     dest = _build_live_instance(pm_import, tmp_path / "guest_edit", "opencode")
     pm_import.add_harness(dest, "claude", dry_run=False, source_root=REPO)
     agent = dest / ".claude" / "agents" / "developer.md"
     assert agent.is_file(), "claude-as-guest `.claude/agents/developer.md` 미복사"
+    conf = dest / ".project_manager" / "local.conf"
+    conf.write_text(
+        conf.read_text(encoding="utf-8")
+        + "delegate.developer.harness=claude\n"
+        + "delegate.developer.model=sonnet\n",
+        encoding="utf-8", newline="\n")
     agent.write_text("LOCAL ADOPTER GUEST EDIT\n", encoding="utf-8")  # 채택자 로컬 수정.
 
     monkeypatch.setattr(pm_update, "REPO", dest)
     assert pm_update.main(["--from", str(REPO)]) == 0
-    assert agent.read_text(encoding="utf-8") == "LOCAL ADOPTER GUEST EDIT\n", \
-        "self-update 가 claude guest 로컬 수정을 덮음(R22 MF-1 미해소·update 불가침 위반)"
+    text = agent.read_text(encoding="utf-8")
+    assert text.startswith("---\n"), \
+        "guest 카드가 재렌더되지 않았다(손편집이 conf 를 이긴다·설치 시점 동결)"
+    assert 'model: "sonnet"' in text, "재렌더 산출이 conf 해소값이 아니다"
 
 
 def test_add_harness_renders_preexisting_token_form_guest_file(pm_import, tmp_path):
@@ -5277,14 +5301,18 @@ def test_pm_update_diverged_selfheal_preserves_guest_owned_file(
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
     assert pm_update.main(["--from", str(fw)]) == 0
 
-    assert guest_file.read_bytes() == user_bytes, \
-        "diverged인데 후순위 upstream 경로를 차감해 guest 사용자 파일을 덮음"
+    # guest 렌더물은 diverged 여부와 무관하게 update 채널이 재렌더한다(손편집은 되돌아간다).
+    #   이 테스트가 지키는 축은 **local-only core 선언 보존**(승격 거부)이지 guest 파일 불가침이 아니다.
+    assert guest_file.read_bytes() != user_bytes, \
+        "guest 렌더물이 재렌더를 안 받았다(설치 시점 사본 동결)"
+    assert (dest / ".local" / "custom-core").read_text(encoding="utf-8") == "custom core\n", \
+        "diverged 로 승격을 거부했는데 로컬 전용 core 파일이 훼손됐다"
 
 
 def test_add_harness_guest_render_survives_pm_update(pm_import, pm_update, tmp_path, monkeypatch):
     """MF-1 roundtrip: add_harness → pm_update self-update 후에도 guest 절이 잔존하고 manifest-파생
-    render/scan 이 계속 guest 를 본다 (engine.manifest self-prop overwrite 보존·T-0456). **MF-2**:
-    사용자 model override 도 재렌더 clobber 없이 잔존(@target-owned → pm_update 재렌더 skip)."""
+    render/scan 이 계속 guest 를 본다 (engine.manifest self-prop overwrite 보존·T-0456). 함께
+    렌더물의 의도된 동작(손으로 박은 model override 는 다음 흡수가 conf 파생물로 되돌린다)도 본다."""
     monkeypatch.setattr(pm_import, "read_upstream_rev", lambda *a, **k: None)
     monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
     dest = _build_live_instance(pm_import, tmp_path / "roundtrip", "claude")
@@ -5308,9 +5336,10 @@ def test_add_harness_guest_render_survives_pm_update(pm_import, pm_update, tmp_p
     assert pu._extract_guest_manifest_block(after) is not None, "pm_update 가 guest 절을 지웠다(MF-1 미해소)"
     render_paths = {str(e) for e in pu.read_manifest(manifest) if getattr(e, "render", False)}
     assert {".codex/agents", ".agents/skills"} <= render_paths, sorted(render_paths)
-    # MF-2: 사용자 override 잔존(재렌더 clobber 없음).
-    assert "USER/OVERRIDE" in agent.read_text(encoding="utf-8"), \
-        "pm_update 재렌더가 사용자 model override 를 덮었다(MF-2 미해소)"
+    # 카드 model 의 단일 진실은 local.conf 다 — 손으로 박은 override 는 다음 흡수가 되돌린다
+    #   (codex host 의 core `.codex/agents @render` 와 같은 거동·guest 라고 예외를 두지 않는다).
+    assert "USER/OVERRIDE" not in agent.read_text(encoding="utf-8"), \
+        "guest 렌더물이 재렌더를 안 받았다(카드 손편집이 conf 를 이긴다)"
     after_update = role.read_text(encoding="utf-8")
     assert "(claude)" in after_update and "(codex)" in after_update
     assert "`$pm-bootstrap`(codex)" in after_update

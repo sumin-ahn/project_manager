@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "count": 571,
+  "count": 567,
   "paths": {
     ".claude/agents/code-reviewer.md": [
       {
@@ -434,11 +434,6 @@
       {
         "kind": "session_stamp",
         "hash": "0287e34ecf778b42ee32f46de1707d9347b4ee21cc7c0855f309ab60c6e5bc2f",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "afdfcc43470a9fb396241e15b1aa9f90e6c797eab1d6ee20501203f1613ca1d4",
         "count": 1
       },
       {
@@ -1038,11 +1033,6 @@
       {
         "kind": "session_stamp",
         "hash": "0287e34ecf778b42ee32f46de1707d9347b4ee21cc7c0855f309ab60c6e5bc2f",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "afdfcc43470a9fb396241e15b1aa9f90e6c797eab1d6ee20501203f1613ca1d4",
         "count": 1
       },
       {
@@ -1660,11 +1650,6 @@
       {
         "kind": "session_stamp",
         "hash": "0287e34ecf778b42ee32f46de1707d9347b4ee21cc7c0855f309ab60c6e5bc2f",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "afdfcc43470a9fb396241e15b1aa9f90e6c797eab1d6ee20501203f1613ca1d4",
         "count": 1
       },
       {
@@ -2478,11 +2463,6 @@
       {
         "kind": "session_stamp",
         "hash": "0287e34ecf778b42ee32f46de1707d9347b4ee21cc7c0855f309ab60c6e5bc2f",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "afdfcc43470a9fb396241e15b1aa9f90e6c797eab1d6ee20501203f1613ca1d4",
         "count": 1
       },
       {

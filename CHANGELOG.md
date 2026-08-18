@@ -7,6 +7,25 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **위임 모델 선언(`local.conf delegate.*`)이 세 하네스의 agent 카드 전부에 도달한다.** 카드의
+  `model` 은 `delegate.<role>[.<tier>].{model,reasoning}` 의 렌더 파생물인데 세 곳이 어긋나 있었다:
+  (1) `add-harness` 로 얹은 guest 어댑터(예 codex host + claude guest)의 렌더물은 update 계획에서
+  빠져 conf 를 바꿔도 설치 시점 카드가 남았고(실측: 카드 `opus` ↔ conf `sonnet` 상시 경고),
+  (2) codex `.codex/agents/developer-hard.toml` 의 모델·추론이 리터럴이었으며, (3) opencode 역할
+  카드 4장이 역할 무관 단일 토큰(`{{OPENCODE_PRO_MODEL}}`)을 썼다. 이제 guest 절의 `@render` 행도
+  core 와 같은 재렌더 경로를 타고(dry-run 은 `[render]` 로 예고), codex 티어 프로필과 opencode 역할
+  카드가 역할별 토큰으로 렌더된다(opencode `pm.md` 는 PM 자신의 모델이라 설치 모델 pin 유지).
+  카드가 가리키는 하네스가 conf 의 그 역할 하네스와 다르면 **미사용 프로필**이라 값을 채우지 않고
+  사유를 남긴 채 중화한다(`# model: <model>  # TODO: …`) — 미해소는 update rc 를 바꾸지 않는다.
+  카드 손편집은 다음 흡수가 conf 값으로 되돌린다(그게 렌더물의 의도된 동작이다). 인스턴스 조치는
+  없다 — 갱신을 실행하는 것은 인스턴스에 설치된 `pm_update.py` 이므로, 이 판을 받은 뒤의 다음
+  갱신에서 host/guest 무관하게 카드가 conf 와 일치한다. 다만 opencode 인스턴스에서 역할 카드의
+  모델을 계속 명시하려면 `local.conf` 에 `delegate.<role>.model` 을 둬야 한다 — 설치 시 잡힌
+  모델(`opencode_pro_model`)은 이제 `pm.md` 에만 적용되고, 역할 카드는 위임 매핑이 없으면 model
+  키 부재(=opencode 기본 모델)로 중화된다.
+
 ## [1.7.6] - 2026-08-18
 
 ### 업그레이드 노트

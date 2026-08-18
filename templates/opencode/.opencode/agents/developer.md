@@ -1,7 +1,7 @@
 ---
 description: "{{PROJECT_NAME}} 프로젝트의 단일 ticket 구현 전문 subagent. PM(build primary)이 코드 변경이 필요한 ticket(T-NNNN)을 위임할 때 사용. ticket 본문의 목표/인터페이스/결정/DoD대로 코드+테스트를 작성한다. board.py 조작과 status.md/log 갱신은 하지 않는다(PM 담당)."
 mode: all
-model: "{{OPENCODE_PRO_MODEL}}"
+model: "{{DELEGATE_MODEL_DEVELOPER}}"
 temperature: 0.1
 permission:
   read: allow

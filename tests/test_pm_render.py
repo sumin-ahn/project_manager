@@ -918,3 +918,124 @@ def test_adapter_surfaces_no_machine_variant_tokens():
                 if token in text:
                     offenders.append(f"{md.relative_to(REPO)}: {token}")
     assert not offenders, "머신-가변 토큰 재도입 (T-0219 ping-pong 재발 위험):\n" + "\n".join(offenders)
+
+
+# ── 위임 모델 토큰 — 하네스별 카드(claude md · codex toml · opencode md) ────────
+# 카드의 model 은 local.conf `delegate.<role>[.<tier>].{model,reasoning}` 의 렌더 파생물이다.
+# 하네스마다 파일 형식이 달라도 해소 표와 줄-중화 판정은 하나여야 import 와 self-update 가 같은
+# 산출을 낸다(왕복 0).
+
+_CODEX_HARD_TOML = (
+    'name = "developer-hard"\n'
+    'model = "{{DELEGATE_MODEL_DEVELOPER_HARD}}"\n'
+    'model_reasoning_effort = "{{DELEGATE_REASONING_DEVELOPER_HARD}}"\n'
+    'sandbox_mode = "workspace-write"\n'
+)
+_CODEX_HARD_SOURCE = "templates/codex/.codex/agents/developer-hard.toml"
+
+
+def _model_fields(text: str) -> dict:
+    """TOML 텍스트의 model 계열 필드 줄 → {필드명: 줄} (중화된 주석 줄 포함)."""
+    fields = {}
+    for line in text.splitlines():
+        body = line.lstrip("# ")
+        for field in ("model_reasoning_effort", "model"):
+            if body.startswith(field):
+                fields.setdefault(field, line)
+                break
+    return fields
+
+
+def test_card_harness_from_source_uses_nearest_adapter_dir(pm_render):
+    """카드 하네스는 렌더 소스 경로의 **가장 가까운** 어댑터 네임스페이스가 정한다."""
+    assert pm_render.card_harness_from_source(_CODEX_HARD_SOURCE) == "codex"
+    assert pm_render.card_harness_from_source("/x/.claude/agents/developer.md") == "claude"
+    assert pm_render.card_harness_from_source(
+        "templates/opencode/.opencode/agents/developer.md") == "opencode"
+    # 한 하네스 템플릿이 담은 타 네임스페이스 파일은 그 네임스페이스 소속이다.
+    assert pm_render.card_harness_from_source(
+        "templates/opencode/.claude/skills/pm-x/SKILL.md") == "claude"
+    # 판정 불가(어댑터 밖·인메모리 렌더)는 None — 미사용 프로필 규칙이 발화하지 않는다.
+    assert pm_render.card_harness_from_source("wiki/README.md") is None
+    assert pm_render.card_harness_from_source(None) is None
+
+
+def test_codex_tier_toml_renders_hard_profile_values(pm_render):
+    """codex 티어 프로필 TOML 이 `delegate.developer.hard.*` 해소값으로 렌더된다(모델+추론)."""
+    out = pm_render.render_adapter(
+        _CODEX_HARD_TOML,
+        operational={
+            "DELEGATE_MODEL_DEVELOPER_HARD": "gpt-5.6-sol",
+            "DELEGATE_REASONING_DEVELOPER_HARD": "high",
+        },
+        source=_CODEX_HARD_SOURCE,
+        delegate_harness={
+            "DELEGATE_MODEL_DEVELOPER_HARD": "codex",
+            "DELEGATE_REASONING_DEVELOPER_HARD": "codex",
+        },
+    )
+    fields = _model_fields(out)
+    assert fields["model"] == 'model = "gpt-5.6-sol"'
+    assert fields["model_reasoning_effort"] == 'model_reasoning_effort = "high"'
+    assert "{{" not in out
+
+
+def test_codex_tier_toml_unset_conf_is_graceful_todo(pm_render):
+    """위임 매핑 미설정 채택자 — TOML 도 leak 대신 intentional-TODO 중화(키 부재 = config 기본 상속)."""
+    out = pm_render.render_adapter(_CODEX_HARD_TOML, operational={},
+                                   source=_CODEX_HARD_SOURCE)
+    fields = _model_fields(out)
+    assert fields["model"].startswith('# model = "<model>"')
+    assert fields["model_reasoning_effort"].startswith(
+        '# model_reasoning_effort = "<reasoning>"'), \
+        "추론 토큰이 `<model>` 형식힌트로 중화됐다(채울 값의 종류를 오해시킨다)"
+    assert "delegate.developer.hard.model=" in fields["model"]
+    assert "{{" not in out
+    # 멱등 — 중화 산출물을 다시 렌더해도 같은 bytes(재렌더 왕복 0).
+    assert pm_render.render_adapter(out, operational={}, source=_CODEX_HARD_SOURCE) == out
+
+
+def test_unused_profile_neutralizes_instead_of_filling_other_harness_model(pm_render):
+    """conf 하네스 ≠ 카드 하네스면 **해소값이 있어도** 값 대신 사유를 남긴다(미사용 프로필)."""
+    out = pm_render.render_adapter(
+        _CODEX_HARD_TOML,
+        operational={
+            "DELEGATE_MODEL_DEVELOPER_HARD": "opus",
+            "DELEGATE_REASONING_DEVELOPER_HARD": "xhigh",
+        },
+        source=_CODEX_HARD_SOURCE,
+        delegate_harness={
+            "DELEGATE_MODEL_DEVELOPER_HARD": "claude",
+            "DELEGATE_REASONING_DEVELOPER_HARD": "claude",
+        },
+    )
+    model_line = _model_fields(out)["model"]
+    assert model_line.startswith('# model = "<model>"'), model_line
+    assert "claude" in model_line, "중화 사유(conf 의 그 역할 하네스)가 안 실렸다"
+    assert "delegate.developer.hard.harness" in model_line, \
+        "고칠 곳(local.conf 하네스 키)을 지목하지 않는다"
+    assert "opus" not in out and "xhigh" not in out, "다른 하네스 값이 카드에 새어 들어갔다"
+
+
+def test_unused_profile_judgment_is_per_role(pm_render):
+    """미사용 프로필 판정은 역할별이다 — 한 역할이 타 하네스라고 다른 역할까지 중화하지 않는다."""
+    tpl = 'model: "{{DELEGATE_MODEL_DEVELOPER}}"\n'
+    out = pm_render.render_adapter(
+        tpl,
+        operational={"DELEGATE_MODEL_DEVELOPER": "sonnet"},
+        source=".claude/agents/developer.md",
+        delegate_harness={
+            "DELEGATE_MODEL_DEVELOPER": "claude",      # 이 카드의 하네스 — 그대로 렌더.
+            "DELEGATE_MODEL_ARCHITECT": "codex",       # 다른 역할이 타 하네스여도 무관.
+        },
+    )
+    assert out == 'model: "sonnet"\n'
+
+
+def test_delegate_harness_unknown_keeps_current_render(pm_render):
+    """conf 하네스 미설정(판정 불가)은 미사용 프로필이 아니다 — 해소값이 있으면 그대로 렌더한다."""
+    tpl = 'model: "{{DELEGATE_MODEL_DEVELOPER}}"\n'
+    out = pm_render.render_adapter(
+        tpl, operational={"DELEGATE_MODEL_DEVELOPER": "sonnet"},
+        source=".codex/agents/developer.toml", delegate_harness={})
+    assert out == 'model: "sonnet"\n'
