@@ -1,6 +1,7 @@
-"""tests/ 전역 conftest — codex ambient env 중화(autouse) + codex 라이브 하네스 공용 헬퍼 (ADR-0070 T-0407).
+"""tests/ 전역 conftest — codex ambient env 중화(autouse) + codex 라이브 하네스 공용 헬퍼 (ADR-0070 T-0407)
++ 병렬 실행(pytest-xdist) 경고 되살리기 (T-0757).
 
-두 관심사를 담는다:
+세 관심사를 담는다:
 
 1. **codex ambient env 중화 (autouse·T-0405 리뷰 forward-note)** — 회귀를 codex 하네스로 돌리면
    (에이전트=codex 세션이 pytest 를 기동) 그 세션의 ambient `CODEX_THREAD_ID`/`CODEX_CI` 가 pytest
@@ -15,6 +16,11 @@
    `test_fresh_adopter_runtime_smoke.py`(T-0408 병렬 소유)를 건드리지 않으려 codex-전용 라이브 인프라는
    여기 한곳에 둔다(중복 금지). 라이브 규율(세션 실측·ADR-0070 D7): 격리 CODEX_HOME(실 ~/.codex/auth.json
    복사 후 테스트 종료 시 삭제) + `codex exec … stdin=DEVNULL`(미닫힘 시 무기한 대기 실측·spike §D3).
+
+3. **병렬 실행 경고 되살리기 (T-0757)** — 회귀를 pytest-xdist 로 돌리면 워커에서 난 경고를
+   컨트롤러가 클래스 이름으로 다시 import 해 되살린다. 파일 경로로 연 모듈의 이름은 컨트롤러에
+   없어 import 가 실패하고, xdist 가 그 실패를 잡지 않아 경고 한 건이 실행 전체를 INTERNALERROR 로
+   죽인다. 아래 ③ 이 그 되살리기를 실패-연성으로 감싼다.
 """
 from __future__ import annotations
 
@@ -365,3 +371,77 @@ def run_codex_exec(prompt: str, cwd: Path, home: Path, *, model: str | None = No
         cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
         env=codex_live_env(home), stdin=subprocess.DEVNULL, timeout=timeout,
     )
+
+
+# ── ③ 병렬 실행(pytest-xdist) 경고 되살리기 (T-0757) ───────────────────────────
+
+# 워커가 낸 경고를 컨트롤러는 `importlib.import_module(<경고 클래스의 모듈 이름>)` 으로 되살린다
+# (`xdist/workermanage.py::unserialize_warning_message`). 파일 경로로 연 모듈의 이름은 컨트롤러에 없어
+# import 가 실패하고, xdist 가 그 실패를 잡지 않아 경고 한 건이 실행 전체를 INTERNALERROR 로 죽는다
+# (실측: 엔진 합성 이름 `_project_manager_repo_owned_files:<path>` · 테스트 사본 이름
+# `file_lock_under_test`).
+#
+# 이름을 되살리는 대신 되살리기 실패를 낮춰 받는 **한 겹**으로 닫는다. 이름 해소는 표면을 못 덮는다 —
+# 테스트의 `spec_from_file_location` 호출부 192 파일이 제각각 이름을 붙여 규칙이 없다. 그리고 잃는
+# 정보도 없다 — 경고 필터·`pytest.warns` 판정은 이미 워커에서 그 클래스로 끝났고, 컨트롤러가 하는
+# 일은 요약 표시뿐이라 원 모듈명·클래스명·메시지를 본문 문자열로 보존하면 표시가 그대로 남는다.
+_DEGRADED_WARNING_MODULE = "builtins"
+_DEGRADED_WARNING_CLASS = "Warning"
+_XDIST_UNSERIALIZER_ATTR = "unserialize_warning_message"
+
+
+def degraded_warning_message_data(data: dict) -> dict:
+    """되살릴 수 없는 경고 데이터를 `builtins.Warning` 한 겹으로 낮춘다(원 정체는 본문에 보존)."""
+    degraded = dict(data)
+    degraded["message_module"] = _DEGRADED_WARNING_MODULE
+    degraded["message_class_name"] = _DEGRADED_WARNING_CLASS
+    degraded["message_args"] = (
+        f"{data['message_module']}.{data['message_class_name']}: {data['message_str']}",)
+    degraded["category_module"] = _DEGRADED_WARNING_MODULE
+    degraded["category_class_name"] = _DEGRADED_WARNING_CLASS
+    return degraded
+
+
+def tolerant_warning_unserializer(original):
+    """되살리기 실패를 낮춰 받는 감싸개를 만든다 (설치와 분리 — 가드 테스트가 직접 부른다)."""
+
+    def tolerant_unserialize_warning_message(data: dict):
+        try:
+            return original(data)
+        except Exception:
+            return original(degraded_warning_message_data(data))
+
+    tolerant_unserialize_warning_message._pm_tolerant = True
+    # 감싸개가 원본을 들고 있어야 가드 테스트가 어느 프로세스에서든 "감싸기 이전" 동작을 부른다.
+    tolerant_unserialize_warning_message._pm_original = original
+    return tolerant_unserialize_warning_message
+
+
+def install_tolerant_warning_unserializer() -> None:
+    """xdist 컨트롤러의 경고 되살리기를 감싸개로 바꾼다(중복 설치 없음).
+
+    감쌀 지점은 xdist 내부 심볼이다 — 상류가 이름을 바꾸면 조용히 넘어가지 않고 즉시 실패한다.
+    조용히 넘어가면 병렬 회귀가 경고 한 건에 INTERNALERROR 로 죽는 상태로 되돌아간다.
+    """
+    import xdist
+    from xdist import workermanage
+
+    original = getattr(workermanage, _XDIST_UNSERIALIZER_ATTR, None)
+    if original is None:
+        raise RuntimeError(
+            f"pytest-xdist {xdist.__version__} 의 workermanage 에 "
+            f"`{_XDIST_UNSERIALIZER_ATTR}` 가 없다 — 병렬 회귀의 경고 되살리기를 감쌀 지점이 "
+            "사라졌다(그대로 두면 워커 경고 한 건이 실행 전체를 INTERNALERROR 로 죽인다). "
+            "tests/conftest.py ③절을 새 xdist API 에 맞춰 갱신하라.")
+    if getattr(original, "_pm_tolerant", False):
+        return
+    setattr(workermanage, _XDIST_UNSERIALIZER_ATTR, tolerant_warning_unserializer(original))
+
+
+def pytest_configure(config):
+    """되살리기를 실제로 하는 프로세스(xdist 컨트롤러)에만 감싸기를 설치한다."""
+    if hasattr(config, "workerinput"):
+        return
+    if not config.pluginmanager.hasplugin("xdist"):
+        return
+    install_tolerant_warning_unserializer()

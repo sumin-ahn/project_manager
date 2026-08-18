@@ -49,7 +49,8 @@ tests/                 # 엔진 단위테스트 (pytest)
 - **설계 산출(ADR·roadmap·spike)은 ② PM 홈 `.project_manager/wiki/`**(decisions/·raw/spikes/·roadmap)에
   둔다 — 이 제품 repo 의 wiki 는 엔진 방법론(pm_role·pm_playbook·_template·domain)만. `/spike-new` 로 설계
   spike 박제는 ② 에서.
-- **테스트 없이는 끝난 게 아니다.** `python3 -m pytest tests/ -q` 통과가 완료 조건.
+- **테스트 없이는 끝난 게 아니다.** `python3 -m pytest tests/ -q -n 8`(pytest-xdist 병렬) 통과가
+  완료 조건. `-n` 없는 단일 실행도 같은 결과지만 30분+ 걸린다.
 - **작은 단위 분할 → 단계별 검증 · 최소 변경 · 명시적 풀네임.**
 
 ## 의존성 설치
@@ -57,11 +58,12 @@ tests/                 # 엔진 단위테스트 (pytest)
 엔진의 Python 지원 하한은 **3.11**이다(`tomllib` 표준 라이브러리가 지배 제약).
 
 ```bash
-python3 -m pip install -r requirements-dev.txt   # PyYAML(런타임) + pytest(테스트)
+python3 -m pip install -r requirements-dev.txt   # PyYAML(런타임) + pytest·pytest-xdist(테스트)
 ```
 
 `requirements.txt` = 런타임(`PyYAML>=6` — board/ticket 도구가 frontmatter 파싱),
-`requirements-dev.txt` = 그 위에 `pytest`. fresh clone 은 이걸 먼저 깔아야 import 단계를 넘는다.
+`requirements-dev.txt` = 그 위에 `pytest`·`pytest-xdist`(회귀 병렬 실행). fresh clone 은 이걸 먼저
+깔아야 import 단계를 넘는다.
 
 ## 자주 쓰는 명령
 
@@ -74,7 +76,8 @@ python3 -m pip install -r requirements-dev.txt   # PyYAML(런타임) + pytest(�
 > 파라미터나 명령 분리로 실행한다.
 
 ```bash
-python3 -m pytest tests/ -q                               # 엔진 테스트 (Windows: py -3.12 -m pytest ...)
+python3 -m pytest tests/ -q -n 8                          # 엔진 테스트 (병렬 · Windows: py -3.12 -m pytest ...)
+# `-n 8` 은 워커 수 — 코어 수에 맞춰 조절하고, 생략하면 단일 프로세스로 같은 스위트를 돈다.
 python3 .project_manager/tools/board.py list              # 보드
 python3 .project_manager/tools/board.py lint              # 의존성·thin·wikilink 검사
 # 엔진 변경을 존재하는 모든 타깃에 내보내기 (이 제품 repo → templates/*):
