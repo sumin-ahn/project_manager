@@ -16,8 +16,8 @@ upstream 엔진 변경을 raw `pm_update.py`가 아닌 facade(`./pm-update.sh`)�
 
 - **pm-update** = 엔진 + host 어댑터 갱신(upstream→채택자).
 - upstream 값 전환은 [[pm-env]], 세션 시작 상태점검은 [[pm-bootstrap]].
-- **dual-harness guest**(`add-harness`로 얹은 `.opencode/*` 등)는 engine.manifest guest 절 안에서 두 채널로 갈린다 — 한 줄의 `@render` 유무가 소유를 정한다.
-  - **어댑터 렌더물**(`@render @target-owned`, 예 `.opencode/agents`): pm-update는 갱신하지 않는다. `add-harness <harness>`를 재실행한다(refresh·기존 인스턴스 위 live-safe).
+- **dual-harness guest**(`add-harness`로 얹은 `.opencode/*` 등)도 engine.manifest guest 절째로 pm-update가 전파한다 — 한 줄의 `@render` 유무가 **전파 방식**을 정한다(채널은 하나다).
+  - **어댑터 렌더물**(`@render @target-owned`, 예 `.opencode/agents`·`.claude/agents`): pm-update가 채택자 `local.conf` 값으로 **다시 렌더**한다. 카드의 `model`을 손으로 고쳐도 다음 pm-update가 conf 값으로 되돌린다 — 값을 바꾸는 자리는 `local.conf`의 `delegate.<role>[.<tier>].{model,reasoning}`다. `add-harness <harness>` 재실행은 그 하네스 어댑터 파일이 새로 추가/폐기됐을 때 쓰고, 값 반영에는 필요하지 않다.
   - **어댑터 엔진 파일**(`@source=templates/<flavor>/… @target-owned`, 예 `.opencode/lib`·`.codex/pm_orch_codex.py`·claude ctx 가드): pm-update가 byte-copy로 갱신한다. `pm_relay` 코어와 짝인 파일들이라 이 채널이 없으면 코어↔드라이버 skew가 쌓인다.
 - 구버전에서 얹은 guest 절에는 엔진 행이 없을 수 있다. 이 경우 pm-update가 flavor를 1회 추론해 엔진 행을 절에 기록하며(이후 실행은 기록된 `@source` provenance를 따른다), 화면에 `guest 엔진 행 N건 파생`으로 표시한다.
 

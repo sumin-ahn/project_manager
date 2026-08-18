@@ -10,9 +10,10 @@ frontmatter `model:`)가 정한다. (ADR-0006 §3/D3/D5 supersede.)
   (a) templates/opencode 트리에 `opencode run ... -m {{OPENCODE_PRO_MODEL}}` 패턴(= 위임마다
       모델 명시)이 0건.  더 넓게 `-m {{OPENCODE_PRO_MODEL}}` 자체가 0건.
   (b) AGENTS.md 에 task tool 위임·`subagent_type` 매핑 문구가 존재.
-  (c) agents/{developer,architect,code-reviewer}.md 의 `model: "{{OPENCODE_PRO_MODEL}}"` pin 유지
-      (T-0033 pm_import 치환 타깃 안정).
-  (d) `{{OPENCODE_PRO_MODEL}}` 전체 잔존이 정확히 그 3개 agents `model:` 줄뿐.
+  (c) 역할 카드(developer/architect/code-reviewer/researcher)의 `model:` 이 역할별 위임 토큰
+      (`{{DELEGATE_MODEL_<ROLE>}}` — local.conf `delegate.<role>.model` 의 렌더 파생물)이고,
+      primary `pm.md` 만 설치 모델 pin(`{{OPENCODE_PRO_MODEL}}`)을 유지.
+  (d) `{{OPENCODE_PRO_MODEL}}` 전체 잔존이 정확히 `pm.md` 의 `model:` 줄 하나뿐.
 
 stdlib + pyyaml(엔진이 이미 의존 — board.py) 만 사용. opencode CLI 미실행. 파일 iterate·존재
 시만 검사(hermetic).
@@ -54,8 +55,17 @@ FALLBACK_AGENT = {
     "researcher.md": "researcher",
 }
 
-# agents/*.md frontmatter 에 pin 으로 유지돼야 할 model 줄.
-MODEL_PIN_LINE = 'model: "{{OPENCODE_PRO_MODEL}}"'
+# agents/*.md frontmatter 의 model 줄. **역할 카드는 역할별 위임 토큰**(local.conf
+# `delegate.<role>.model` 의 렌더 파생물)이고, primary `pm.md` 는 위임 역할이 아니라 PM 자신의
+# 모델이라 opencode 설치 모델 토큰을 유지한다.
+PRO_MODEL_PIN_LINE = 'model: "{{OPENCODE_PRO_MODEL}}"'
+ROLE_MODEL_TOKENS = {
+    "developer.md": "{{DELEGATE_MODEL_DEVELOPER}}",
+    "code-reviewer.md": "{{DELEGATE_MODEL_CODE_REVIEWER}}",
+    "architect.md": "{{DELEGATE_MODEL_ARCHITECT}}",
+    "researcher.md": "{{DELEGATE_MODEL_RESEARCHER}}",
+}
+PM_CARD = OPENCODE / ".opencode" / "agents" / "pm.md"
 
 
 def _opencode_md_files() -> list[Path]:
@@ -169,40 +179,43 @@ def test_agents_lite_md_documents_task_tool_delegation():
     )
 
 
-# ── (c) agents/*.md `model:` pin 유지 ───────────────────────────────────────
+# ── (c) agents/*.md `model:` 토큰 유지 ──────────────────────────────────────
 
-def test_agent_model_pin_retained():
-    """각 agent frontmatter 의 `model: "{{OPENCODE_PRO_MODEL}}"` pin 이 유지된다.
+def test_agent_model_token_is_role_scoped():
+    """역할 카드 frontmatter 의 `model:` 이 **역할별 위임 토큰**이다.
 
-    task tool 1차가 이 필드대로 자식을 구동하고(실증), pm_import(T-0033)가 이 토큰을
-    결정적 치환 타깃으로 삼으므로 제거하면 안 된다. (ADR-0006 D5 supersede.)
+    task tool 1차가 이 필드대로 자식을 구동하므로(실증), 카드가 리터럴이거나 역할 무관 단일
+    토큰이면 local.conf `delegate.<role>.model` 선언이 실행면에 닿지 못한다(선언↔실행 불일치).
+    primary `pm.md` 는 위임 역할이 아니라 PM 자신의 모델이라 설치 모델 토큰을 유지한다.
     """
     for path in AGENT_FILES:
         fm = _load_frontmatter(path)
-        assert fm.get("model") == PRO_MODEL_TOKEN, (
-            f"{path.name} 의 model pin 이 {PRO_MODEL_TOKEN!r} 가 아님: {fm.get('model')!r} "
-            "(T-0032 — pin 유지 필수)"
+        assert fm.get("model") == ROLE_MODEL_TOKENS[path.name], (
+            f"{path.name} 의 model 이 {ROLE_MODEL_TOKENS[path.name]!r} 가 아님: "
+            f"{fm.get('model')!r} — 역할별 해소가 깨진다"
         )
+    assert _load_frontmatter(PM_CARD).get("model") == PRO_MODEL_TOKEN, (
+        f"pm.md 의 model pin 이 {PRO_MODEL_TOKEN!r} 가 아님 (PM 자신의 모델은 위임 역할이 아님)"
+    )
 
 
-def test_agent_model_pin_line_present_verbatim():
-    """`model: "{{OPENCODE_PRO_MODEL}}"` 줄이 각 agent md 에 문자 그대로 존재한다."""
+def test_agent_model_token_line_present_verbatim():
+    """`model: "{{DELEGATE_MODEL_<ROLE>}}"` 줄이 각 역할 카드에 문자 그대로 존재한다."""
     for path in AGENT_FILES:
         text = path.read_text(encoding="utf-8")
-        assert MODEL_PIN_LINE in text, (
-            f"{path.name} 에 {MODEL_PIN_LINE!r} 줄이 없음 (T-0032 pin 회귀)"
-        )
+        expected = f'model: "{ROLE_MODEL_TOKENS[path.name]}"'
+        assert expected in text, f"{path.name} 에 {expected!r} 줄이 없음"
+    assert PRO_MODEL_PIN_LINE in PM_CARD.read_text(encoding="utf-8")
 
 
-# ── (d) {{OPENCODE_PRO_MODEL}} 잔존이 정확히 agents 4곳 model: 줄뿐 ──────────
+# ── (d) {{OPENCODE_PRO_MODEL}} 잔존이 정확히 pm.md model: 줄 하나 ────────────
 
-def test_pro_model_token_only_in_agent_model_pins():
-    """`{{OPENCODE_PRO_MODEL}}` 전체 잔존 = agents/*.md 의 `model:` 줄 5곳뿐.
+def test_pro_model_token_only_in_pm_primary_pin():
+    """`{{OPENCODE_PRO_MODEL}}` 전체 잔존 = `pm.md` 의 `model:` 줄 1곳뿐.
 
-    `-m` 위임 명시는 전부 제거됐고, 토큰은 agent model pin 으로만 남아야 한다 (T-0032 DoD).
-    subagent 4곳(researcher/architect/developer/code-reviewer — 4축 gather/design/build/
-    evaluate · researcher=gather 추가 T-0106) + pm primary 1곳(T-0045·ADR-0009 relay spawn
-    타깃 — primary 도 Pro 모델 pin 을 가지며 pm_import 치환 대상이다).
+    `-m` 위임 명시는 전부 제거됐고, 역할 카드 4장은 역할별 위임 토큰으로 옮겨갔다. 남는 건
+    primary(PM 자신·relay spawn 타깃)의 설치 모델 pin 하나다 — 그것까지 위임 토큰으로 바꾸면
+    위임 역할이 아닌 자리를 `delegate.*` 로 표현하게 된다.
     """
     occurrences = []
     for path in _opencode_md_files():
@@ -210,18 +223,22 @@ def test_pro_model_token_only_in_agent_model_pins():
             if PRO_MODEL_TOKEN in line:
                 occurrences.append((path, i, line.strip()))
 
-    # 정확히 5건 — 그리고 다섯 다 model pin 줄.
-    assert len(occurrences) == 5, (
-        f"`{PRO_MODEL_TOKEN}` 잔존이 5건(agents model pin)이 아님: "
+    assert len(occurrences) == 1, (
+        f"`{PRO_MODEL_TOKEN}` 잔존이 1건(pm.md model pin)이 아님: "
         + "\n".join(f"{p.relative_to(REPO)}:{i}: {ln}" for p, i, ln in occurrences)
     )
-    for path, i, line in occurrences:
-        assert line == MODEL_PIN_LINE, (
-            f"{path.relative_to(REPO)}:{i} 의 토큰이 model pin 줄이 아님: {line!r} (T-0032)"
-        )
-    pin_files = {p.name for p, _, _ in occurrences}
-    assert pin_files == {
-        "researcher.md", "developer.md", "code-reviewer.md", "architect.md", "pm.md"
-    }, (
-        f"model pin 이 예상 5 agent 파일이 아님: {pin_files}"
+    path, i, line = occurrences[0]
+    assert path.name == "pm.md", f"설치 모델 pin 이 pm.md 밖에 있음: {path.relative_to(REPO)}"
+    assert line == PRO_MODEL_PIN_LINE, (
+        f"{path.relative_to(REPO)}:{i} 의 토큰이 model pin 줄이 아님: {line!r}"
     )
+
+
+def test_role_model_tokens_only_in_their_own_card():
+    """역할 토큰은 자기 카드에만 있다 — 카드끼리 토큰이 섞이면 역할별 해소가 무너진다."""
+    for path in AGENT_FILES:
+        text = path.read_text(encoding="utf-8")
+        for name, token in ROLE_MODEL_TOKENS.items():
+            if name == path.name:
+                continue
+            assert token not in text, f"{path.name} 에 타 역할 토큰 {token} 잔존"

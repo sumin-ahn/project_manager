@@ -5,9 +5,11 @@
 name = "developer-hard"
 description = "{{PROJECT_NAME}} 단일 ticket 구현 subagent (난제=hard 티어). developer 와 동일 역할이나 상향 추론 프로필 — 엔진 코어·파서·비파괴 계약·cross-module·보안·회귀 광범위 ticket 을 in-session spawn 위임할 때. ticket 본문 목표/인터페이스/DoD 대로 코드+테스트 작성. board.py 조작·status/log 갱신 금지(PM 담당)."
 # 평시(developer.toml)는 config 기본(D5) 상속·model 생략이나, hard 는 난제 프로필이라 상위 모델·추론을
-#   명시 override 한다(티어의 존재 이유 = 더 강한 프로필로 라우팅·spike §3.2). 실값은 어댑터 소관.
-model = "gpt-5.6-sol"                # 난제 프로필 — 상위 모델(sol 계열) 명시.
-model_reasoning_effort = "high"      # 난제 프로필 — 넓은 blast-radius·비파괴 계약 판단에 상향 추론.
+#   명시 override 한다(티어의 존재 이유 = 더 강한 프로필로 라우팅·spike §3.2). **실값은 리터럴이 아니라
+#   local.conf `delegate.developer.hard.{model,reasoning}` 의 렌더 파생물이다**(단일 진실).
+#   그 역할이 다른 하네스로 가면(conf harness ≠ codex) 이 두 줄은 미사용 프로필로 중화(주석화)된다.
+model = "{{DELEGATE_MODEL_DEVELOPER_HARD}}"
+model_reasoning_effort = "{{DELEGATE_REASONING_DEVELOPER_HARD}}"
 sandbox_mode = "workspace-write"    # 코드 편집=쓰기 필요·network/full-access 불요(egress 가드·config.toml).
 developer_instructions = """
 당신은 Developer subagent (난제=hard 티어) — {{PROJECT_NAME}} 구현 전문가. PM(메인세션)이 in-session

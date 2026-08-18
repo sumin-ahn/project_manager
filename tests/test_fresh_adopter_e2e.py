@@ -1002,6 +1002,15 @@ def _guest_engine_rows(pm_update, dest: Path) -> dict[str, object]:
     }
 
 
+def _guest_render_paths(pm_update, dest: Path) -> list[str]:
+    """dest guest 절의 **렌더물 행**(`@render`) 경로 — 재렌더 채널 대상."""
+    return sorted(
+        str(entry).replace("\\", "/")
+        for entry in pm_update._dest_guest_manifest_entries(dest)
+        if getattr(entry, "render", False)
+    )
+
+
 @pytest.mark.parametrize("base,added", _ADD_HARNESS_PAIRS)
 def test_add_harness_guest_engine_files_sync_on_pm_update(
         pm_import, pm_update, tmp_path, monkeypatch, base, added):
@@ -1012,7 +1021,8 @@ def test_add_harness_guest_engine_files_sync_on_pm_update(
     시점 사본으로 영구 동결됐다(`pm_relay` 코어와 짝인 engine-mirror → 코어↔드라이버 skew).
 
     전 순서쌍에서: 채택자 사본을 stale 로 만들고 self-update → (a) 엔진 파일이 upstream 과 **byte
-    일치** · (b) 어댑터 렌더물(add-harness refresh 소유)과 instance-owned 파일은 byte **불변**."""
+    일치** · (b) 어댑터 렌더물도 같은 채널로 **재렌더**(stale 사본 소멸) · (c) 어느 manifest 에도
+    없는 instance-owned 설정은 byte **불변**."""
     dest = tmp_path / f"guest-engine-{base}-{added}"
     assert pm_import.main(
         ["--new", str(dest), "--harness", base, "--name", "Adopter", "--fill", "manual"]
@@ -1056,13 +1066,22 @@ def test_add_harness_guest_engine_files_sync_on_pm_update(
             target.write_text(local_config_marker, encoding="utf-8", newline="\n")
             planted.append(rel)
     assert planted, f"{base}->{added}: instance-owned 설정 심기 0(공허 축)"
-    render_paths = sorted(pm_update._dest_guest_manifest_paths(dest))
     instance_owned = sorted({*pm_import.ADD_HARNESS_CREATE_IF_ABSENT[added], *planted})
+
+    # 렌더물 축 — guest `@render` 아래 실 파일도 stale 로 만든다. 렌더물은 conf 파생이라 update 가
+    #   다시 렌더해야 하고(설치 시점 사본 동결 금지), 손편집은 그때 되돌아간다.
+    render_paths = _guest_render_paths(pm_update, dest)
+    stale_render = sorted(
+        rel for rel in _snapshot_tree(dest)
+        if any(rel == p or rel.startswith(p + "/") for p in render_paths)
+    )
+    assert stale_render, f"{base}->{added}: guest 렌더물 파일 0(공허 축)"
+    for rel in stale_render:
+        (dest / rel).write_text(stale_marker, encoding="utf-8", newline="\n")
     before = _snapshot_tree(dest)
 
     def _untouchable(rel: str) -> bool:
-        return (rel in instance_owned
-                or any(rel == p or rel.startswith(p + "/") for p in render_paths))
+        return rel in instance_owned
 
     assert any(_untouchable(rel) for rel in before), \
         f"{base}->{added}: 불변 축 대상 0(공허 대조)"
@@ -1083,7 +1102,12 @@ def test_add_harness_guest_engine_files_sync_on_pm_update(
         rel for rel, payload in before.items()
         if _untouchable(rel) and after.get(rel) != payload)
     assert changed == [], (
-        f"{base}->{added}: 렌더물·instance-owned 파일이 update 채널에 변경됨(불가침 위반): {changed}")
+        f"{base}->{added}: instance-owned 파일이 update 채널에 변경됨(불가침 위반): {changed}")
+    frozen_render = sorted(
+        rel for rel in stale_render
+        if after.get(rel) == stale_marker.encode("utf-8"))
+    assert frozen_render == [], (
+        f"{base}->{added}: guest 렌더물이 재렌더를 못 받아 설치 시점 사본으로 동결: {frozen_render}")
 
 
 def test_add_harness_pairs_are_derived_permutation():

@@ -40,6 +40,38 @@
   처방한다(엔진은 설치된 훅을 몰래 고치지 않는다). 흡수(`pm-update`) 뒤 `board.py init` 을 한 번
   돌리면 새 훅으로 교체된다. 남의 pre-push 훅·서명 없는 훅은 대상이 아니다.
 
+### 업그레이드 노트
+
+- **guest 어댑터(`add-harness` 로 얹은 하네스)의 렌더물이 이제 `pm-update` 로 갱신된다.** 그 카드의
+  `model` 을 손으로 고쳐 뒀다면 다음 흡수가 `local.conf` 값(또는 미설정 시 중화 주석)으로 되돌린다 —
+  값을 유지하려면 카드가 아니라 `local.conf` 의 `delegate.<role>[.<tier>].{model,reasoning}` 에 둔다.
+  `add-harness <harness>` 재실행은 어댑터 파일이 새로 추가/폐기됐을 때만 필요하다.
+- **이 판을 받는 흡수는 스코프 없이(전량) 실행한다.** `--paths` 로 어댑터만 좁히면 인스턴스에 설치된
+  구 엔진이 새 토큰(`{{DELEGATE_MODEL_DEVELOPER_HARD}}` 등)을 몰라 렌더 leak 으로 rc1 이 된다.
+  전량 실행은 같은 계획 안에서 엔진(`.project_manager/tools/**`)을 먼저 얹으므로 안전하다.
+
+### Fixed
+
+- **위임 모델 선언(`local.conf delegate.*`)이 세 하네스의 agent 카드 전부에 도달한다.** 카드의
+  `model` 은 `delegate.<role>[.<tier>].{model,reasoning}` 의 렌더 파생물인데 세 곳이 어긋나 있었다:
+  (1) `add-harness` 로 얹은 guest 어댑터(예 codex host + claude guest)의 렌더물은 update 계획에서
+  빠져 conf 를 바꿔도 설치 시점 카드가 남았고(실측: 카드 `opus` ↔ conf `sonnet` 상시 경고),
+  (2) codex `.codex/agents/developer-hard.toml` 의 모델·추론이 리터럴이었으며, (3) opencode 역할
+  카드 4장이 역할 무관 단일 토큰(`{{OPENCODE_PRO_MODEL}}`)을 썼다. 이제 guest 절의 `@render` 행도
+  core 와 같은 재렌더 경로를 타고(dry-run 은 `[render]` 로 예고), codex 티어 프로필과 opencode 역할
+  카드가 역할별 토큰으로 렌더된다(opencode `pm.md` 는 PM 자신의 모델이라 설치 모델 pin 유지).
+  카드가 가리키는 하네스가 conf 의 그 역할 하네스와 다르면 **미사용 프로필**이라 값을 채우지 않고
+  사유를 남긴 채 중화한다(`# model: <model>  # TODO: …`) — 미해소는 update rc 를 바꾸지 않는다.
+  카드 손편집은 다음 흡수가 conf 값으로 되돌린다(그게 렌더물의 의도된 동작이다). 인스턴스 조치는
+  없다 — 갱신을 실행하는 것은 인스턴스에 설치된 `pm_update.py` 이므로, 이 판을 받은 뒤의 다음
+  갱신에서 host/guest 무관하게 카드가 conf 와 일치한다. 다만 카드가 모델을 계속 명시하려면 그 값이
+  `local.conf` 에 있어야 한다: opencode 역할 카드 4장은 `delegate.<role>.model`(설치 시 잡힌
+  `opencode_pro_model` 은 이제 `pm.md` 에만 적용된다), codex hard 티어 프로필
+  (`.codex/agents/developer-hard.toml`)은 `delegate.developer.hard.model`·
+  `delegate.developer.hard.reasoning` 이다. 미설정이면 그 줄이 중화(주석화)돼 카드에 model 키가
+  없는 상태가 되고, 하네스는 자기 config 기본 모델로 스폰한다(hard 티어의 상향 프로필은 conf 에
+  값을 넣어야 유지된다).
+
 ## [1.7.6] - 2026-08-18
 
 ### 업그레이드 노트

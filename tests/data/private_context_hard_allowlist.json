@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "count": 596,
+  "count": 595,
   "surface_counts": {
-    "markdown": 148,
+    "markdown": 147,
     "python-non-prose": 32,
     "python-prose": 416
   },
@@ -4356,7 +4356,7 @@
       "kind": "work_item",
       "match": "ADR-0048",
       "surface": "markdown",
-      "hash": "2e7bc078bf7576fab7973aa3171032a64ff6cd95ec199f6e0d441fb62362423e",
+      "hash": "4d213a4c6013fa16f6c92f5101cb937d718a3fa96338541ce4d309bc9dd49f57",
       "count": 1
     },
     {
@@ -4365,14 +4365,6 @@
       "match": "ADR-0054",
       "surface": "markdown",
       "hash": "0fa6dda7ad8e364c531ccb2bb12aa91ae112b58064818502604be916bfa12860",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/README.md",
-      "kind": "work_item",
-      "match": "ADR-0058",
-      "surface": "markdown",
-      "hash": "2e7bc078bf7576fab7973aa3171032a64ff6cd95ec199f6e0d441fb62362423e",
       "count": 1
     },
     {

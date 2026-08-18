@@ -101,8 +101,10 @@ pm_import 가 이를 **추측 없이 `opencode models` 결정적 조회**로 해
   `pm_update`(`./pm-update.sh`)로 전파된다 (flavor manifest·ADR-0054). `AGENTS.md` 는 인스턴스
   소유라 유지된다 (claude `CLAUDE.md` 대칭).
 - **claude 인스턴스에 dual-harness 로 얹은 opencode** (`add-harness opencode` — opencode 가 guest) —
-  이 `.opencode/*` 는 host(claude) manifest 밖이라 `pm_update` 가 건드리지 않는다. 갱신은
-  `add-harness opencode` 를 다시 돌려 받는다 (refresh·기존 인스턴스 위 live-safe·ADR-0058·ADR-0048).
+  이 `.opencode/*` 는 host manifest 의 guest 절에 등재돼 `pm_update` 가 함께 전파한다: 렌더물
+  (`@render`·agent 카드 등)은 채택자 `local.conf` 값으로 다시 렌더하고, 엔진 파일은 byte-copy 로
+  갱신한다. `add-harness opencode` 재실행은 어댑터 파일이 새로 추가/폐기됐을 때 등재를 갱신하는
+  용도다 (기존 인스턴스 위 live-safe·ADR-0048).
 
 ## 엔진 동기화 (메인테이너 · 루트 → 이 타깃)
 
