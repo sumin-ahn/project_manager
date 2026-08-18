@@ -9646,8 +9646,8 @@ def _complete_gate(tid: str, args: argparse.Namespace,
     본문 없이 부기 축만 묻는 호출자(단위 테스트 등)를 위한 것이고, 실 complete 경로
     (`cmd_complete`)는 항상 본문과 명세 전문을 넘긴다.
 
-    `spec_text` = 명세 파일 전문(frontmatter 포함). 라운드 무편집 판정이 예약 당시 시드를 다시
-    렌더할 때 쓰는 입력이라 본문만으로는 대신할 수 없다(없으면 본문으로 대신한다).
+    `spec_text` = 명세 파일 전문(frontmatter 포함) — PM 판정 블록이 사는 자리다(없으면 본문으로
+    대신한다). 라운드 산출 없음 판정의 입력은 아니다(그 판정은 라운드 파일 내용만 본다).
     """
     problems: list[str] = []
     id_re = re.compile(rf"\b{re.escape(tid)}\b")
@@ -14402,8 +14402,10 @@ _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
      "adr-author", "areas-duplicate-repo", "areas-merge-union",
      "delegate-same-model", "design-pending", "design-estimate",
      "codex-delegate-matcher-miss",
-     # 라운드 판정 코드(사이드카 seam 소유) + board 고유 잔여 관측. 차단은 완료 게이트가 한다.
-     "round-name", "round-gap", "round-dup", "round-pending", "round-temporary"})
+     # 라운드 판정 코드(사이드카 seam 소유) + board 고유 잔여·판정불능 관측. 차단은 완료
+     # 게이트가 한다.
+     "round-name", "round-gap", "round-dup", "round-pending", "round-temporary",
+     "round-stray", "round-unreadable"})
 
 
 def _adr_id_from_path(p: Path) -> str:
@@ -15651,6 +15653,11 @@ def lint_delegate() -> list[tuple[str, str, str]]:
 # (`round-name`·`round-gap`·`round-dup`·`round-pending`) board 는 그것을 그대로 lint kind 로
 # 쓴다 — 아래 이름은 그 밖의 board 고유 관측 하나뿐이다.
 _ROUND_TEMPORARY_LINT_KIND = "round-temporary"
+# 라운드 디렉터리 자리(`tickets/rounds/` 직계)에 있는 파일 — 티켓 하나의 라운드 디렉터리만
+# 사는 자리라 파일은 잘못 놓인 잔여다(seam 의 티켓 단위 판정은 그 자리를 보지 않는다).
+_ROUND_STRAY_LINT_KIND = "round-stray"
+# 한 티켓의 라운드 판정이 실패한 자리 — 나머지 티켓 판정은 그대로 내고 이 티켓만 사유로 남긴다.
+_ROUND_UNREADABLE_LINT_KIND = "round-unreadable"
 # 구 단일-파일 컨테이너의 흔적. 본문에 이 주석이 남아 있으면 그 티켓의 역할 산출은 아직
 # 라운드 파일로 옮겨지지 않은 것이다(마이그레이션 대상).
 _LEGACY_GROWTH_MARKERS: tuple[str, ...] = (
@@ -15665,49 +15672,58 @@ _LEGACY_GROWTH_MIGRATION_HINT = (
 def lint_rounds() -> list[tuple[str, str, str]]:
     """라운드 디렉터리의 판정(`verify_rounds`)을 board lint 표면으로 올린다 (advisory).
 
-    차단 소비자는 완료 게이트다 — 여기서는 같은 판정을 **보이게만** 한다(never-block). 판정
-    입력은 명세 전문이라 티켓을 못 찾으면 빈 문자열로 판정한다(순번 유일성·연속성은 명세와
-    무관하고, 산출 없음 판정만 보수적으로 접힌다).
+    차단 소비자는 완료 게이트다 — 여기서는 같은 판정을 **보이게만** 한다(never-block).
 
-    점(`.`) 으로 시작하는 항목은 라운드가 아니라 엔진의 원자 교체 중간 파일이다 — 정상 흐름엔
-    남지 않으므로 크래시 잔여를 별도 정보 판정으로 표면화한다(seam 은 스캔에서 건너뛴다).
+    fail-soft 경계는 **티켓 하나**다 — 한 티켓의 읽기 실패가 그때까지 모은 판정을 통째로
+    버리지 않고 그 티켓만 사유로 남긴다. 판정 자체를 못 한 자리를 조용히 비우지 않기 위해서다.
+
+    라운드 디렉터리 자리의 파일 항목과 점(`.`) 으로 시작하는 항목은 라운드가 아니라 잘못 놓인
+    잔여·엔진의 원자 교체 중간 파일이다 — 둘 다 seam 판정 밖이라 여기서 표면화한다.
     """
     try:
         rounds = _load_ticket_rounds()
-        findings: list[tuple[str, str, str]] = []
         root = rounds.rounds_dir(tickets_dir())
-        if not root.is_dir():
-            return []
-        for directory in sorted(root.iterdir()):
-            if not directory.is_dir():
-                continue
-            ticket = directory.name
-            found = find_ticket_exact(ticket)
-            spec_text = ""
-            if found is not None:
-                spec_text = file_lock.read_text_shared(
-                    found[1], encoding="utf-8", newline="")
-            for problem in rounds.verify_rounds(
-                    tickets_dir(), ticket, ticket_text=spec_text):
-                findings.append((ticket, problem.code, problem.detail))
-            leftovers = sorted(
-                item.name for item in directory.iterdir()
-                if item.name.startswith(rounds.ROUND_TEMPORARY_PREFIX)
-            )
-            if leftovers:
-                findings.append((
-                    ticket, _ROUND_TEMPORARY_LINT_KIND,
-                    f"엔진 임시 파일 잔여 {len(leftovers)}개(교체 중 크래시 의심): "
-                    + ", ".join(leftovers),
-                ))
-    # fail-soft 사유: 라운드 판정은 전역 board lint 의 visibility-only/never-block 축이다. 한
-    # 티켓의 읽기 실패나 형제 로드 실패가 무관한 board 조회를 죽이지 않게 축을 생략하되, 엔진
-    # rev skew 만은 부분 동기를 숨기지 않고 그대로 재전파한다. 차단 소비자(완료 게이트)는 반대로
+        entries = sorted(root.iterdir()) if root.is_dir() else []
+    # fail-soft 사유: 라운드 판정은 전역 board lint 의 visibility-only/never-block 축이다. 형제
+    # 로드 실패나 디렉터리 판독 실패가 무관한 board 조회를 죽이지 않게 축을 생략하되, 엔진 rev
+    # skew 만은 부분 동기를 숨기지 않고 그대로 재전파한다. 차단 소비자(완료 게이트)는 반대로
     # fail-closed 다 — 이 비대칭은 의도된 것이다.
     except Exception as exc:  # noqa: BLE001 — 위 등록 사유의 advisory fail-soft 경계.
         if _is_engine_rev_skew(exc):
             raise
         return []
+
+    findings: list[tuple[str, str, str]] = []
+    for entry in entries:
+        if not entry.is_dir():
+            findings.append((
+                entry.name, _ROUND_STRAY_LINT_KIND,
+                f"라운드 디렉터리 자리에 파일이 있다: {_rel_to_repo(entry)} "
+                "(이 자리엔 티켓별 라운드 디렉터리만 산다)",
+            ))
+            continue
+        ticket = entry.name
+        try:
+            for problem in rounds.verify_rounds(tickets_dir(), ticket):
+                findings.append((ticket, problem.code, problem.detail))
+            leftovers = sorted(
+                item.name for item in entry.iterdir()
+                if item.name.startswith(rounds.ROUND_TEMPORARY_PREFIX)
+            )
+        except Exception as exc:  # noqa: BLE001 — 티켓 단위 advisory fail-soft 경계.
+            if _is_engine_rev_skew(exc):
+                raise
+            findings.append((
+                ticket, _ROUND_UNREADABLE_LINT_KIND,
+                f"라운드 판정 실패(이 티켓만 건너뛴다): {exc}",
+            ))
+            continue
+        if leftovers:
+            findings.append((
+                ticket, _ROUND_TEMPORARY_LINT_KIND,
+                f"엔진 임시 파일 잔여 {len(leftovers)}개(교체 중 크래시 의심): "
+                + ", ".join(leftovers),
+            ))
     return findings
 
 

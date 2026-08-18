@@ -8,6 +8,7 @@ from __future__ import annotations
 import ast
 import datetime
 import importlib.util
+import json
 import re
 import shutil
 import subprocess
@@ -241,6 +242,52 @@ def test_show_assembles_the_spec_and_the_rounds_in_ordinal_order(board_env, caps
     assert path.read_text(encoding="utf-8") in out, "명세 전문이 조회에 없다"
     assert out.index("--- 01-developer ---") < out.index("--- 02-code-reviewer")
     assert "실제 구현 산출." in out
+    assert "--- 02-code-reviewer (산출 없음) ---" in out
+    assert "미회수 1건: 02-code-reviewer.md" in out
+
+
+def _harvested_review_text(finding_id: str = "F-001") -> str:
+    """회수된 리뷰 라운드 본문 — 자리표시자가 아닌 값이 든 `pm-review-v1` 블록 하나."""
+    block = json.dumps({
+        "version": 2,
+        "findings": [{
+            "id": finding_id, "class": "implementation-defect",
+            "severity": "must-fix", "authority": "설계 §경계",
+            "evidence": "probe rc=1", "recommendation": f"{finding_id} 수정",
+            "design_change": False,
+        }],
+        "confirmations": [],
+    }, ensure_ascii=False)
+    return (
+        "## 리뷰 (code-reviewer · 2026-01-03)\n\n"
+        f"## must-fix\n- {finding_id}\n\n"
+        "## 판정\n판정: 반려 · finding 1건(must-fix 1건)\n\n"
+        f"```pm-review-v1\n{block}\n```\n"
+    )
+
+
+@requires_git
+def test_show_keeps_marking_a_parallel_round_unharvested(board_env, capsys):
+    """같은 역할 병렬 2라운드 — 01 회수 뒤에도 손대지 않은 02 는 미회수로 보인다.
+
+    조회의 산출 없음 판정이 다른 라운드의 현재 내용에 기대면 02 가 산출 있는 것으로 읽혀
+    `(산출 없음)`·`미회수` 가 사라지고 요약이 골격을 파싱한다.
+    """
+    board, board_dir, _bare = board_env
+    _seed_ticket(board_dir, "T-1018", "claimed")
+    for _ in range(2):
+        assert board.main(["section-add", "T-1018", "--role", "code-reviewer"]) == 0
+    second_before = (_rounds_dir(board_dir, "T-1018") / "02-code-reviewer.md").read_bytes()
+    first = _rounds_dir(board_dir, "T-1018") / "01-code-reviewer.md"
+    first.write_text(_harvested_review_text("F-001"), encoding="utf-8", newline="")
+
+    assert board.main(["show", "T-1018"]) == 0
+
+    out = capsys.readouterr().out
+    assert (_rounds_dir(board_dir, "T-1018")
+            / "02-code-reviewer.md").read_bytes() == second_before
+    assert "--- 01-code-reviewer ---" in out and "(산출 없음)" not in out.split(
+        "--- 02-code-reviewer")[0].split("--- 01-code-reviewer")[1]
     assert "--- 02-code-reviewer (산출 없음) ---" in out
     assert "미회수 1건: 02-code-reviewer.md" in out
 

@@ -716,11 +716,73 @@ def test_parallel_reviewer_rounds_keep_the_untouched_seed_unharvested(
     assert [paths for _message, paths in sync_log] == [[first.board_path]]
 
 
+def test_slot_write_failure_after_the_reservation_names_the_leftover_round(
+    pd, rounds_env, monkeypatch,
+):
+    """예약 뒤 실패는 board 에 라운드를 남긴다 — 진단이 그 좌표와 이후 상태를 말한다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-7216")
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("디스크 가득")
+
+    monkeypatch.setattr(pd, "_write_exclusive_file", _boom)
+    with pytest.raises(pd.DelegateError) as caught:
+        pd.prepare_ticket_copy(
+            ticket="T-7216", role="developer", cwd=slot, pm_home=pm_home,
+        )
+
+    message = str(caught.value)
+    assert "티켓 라운드 사본 생성 실패" in message
+    assert "01-developer.md" in message and "순번 1" in message
+    assert "산출 없음" in message and "다음 순번" in message
+    # 예약은 되돌리지 않는다(보상 삭제는 순번 빈틈을 만든다) — 진단이 말한 그대로다.
+    assert [item.name for item in _rounds_dir(pm_home, "T-7216").iterdir()] == [
+        "01-developer.md"]
+    monkeypatch.undo()
+    plan = pd.prepare_ticket_copy(
+        ticket="T-7216", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    assert plan.ordinal == 2
+
+
+def test_harvest_calls_the_board_commit_seam_directly_and_is_loud_without_it(
+    pd, rounds_env, monkeypatch,
+):
+    """부분 동기 사본에서 board 커밋만 조용히 빠진 rc0 을 만들지 않는다(이름 폴백 없음)."""
+    source = PM_DELEGATE.read_text(encoding="utf-8")
+    assert "board._rounds_mutation_sync_paths(" in source
+    assert "_growth_mutation_sync_paths" not in source
+    assert 'getattr(board, "_rounds_mutation_sync_paths"' not in source
+
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-7217")
+    plan = pd.prepare_ticket_copy(
+        ticket="T-7217", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    plan.path.write_text(
+        plan.path.read_text(encoding="utf-8") + "\n산출\n",
+        encoding="utf-8", newline="",
+    )
+    original = pd._load_board_for_repo
+
+    def _board_without_the_seam(repo):
+        board = original(repo)
+        del board._rounds_mutation_sync_paths      # 이름이 갈린 사본 재현
+        return board
+
+    monkeypatch.setattr(pd, "_load_board_for_repo", _board_without_the_seam)
+    with pytest.raises(AttributeError):
+        pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
+
+
 def test_pending_previous_round_is_not_a_prefill_source(pd, rounds_env, capsys):
     """미회수(pending) 앞 라운드는 자리표시자뿐이라 프리필 공급원이 아니다 ([[T-0750]] 리뷰 F-006).
 
     빼지 않으면 정상 경로(앞 라운드 진행 중)에서 '강등' 경고가 나가 진짜 이상 신호를 덮는다.
+    규칙은 사이드카 seam 하나가 소유한다 — pm_delegate 는 자기 사본을 두지 않는다.
     """
+    assert not hasattr(pd, "_previous_round_of_role")
     pm_home, slot, tickets, _sync = rounds_env
     _write_spec(tickets, "T-7204")
     pd.prepare_ticket_copy(

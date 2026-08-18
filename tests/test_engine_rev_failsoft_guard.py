@@ -1009,7 +1009,11 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   여기서 사본 불일치를 그대로 올리면 판정·요약을 출력한 뒤 traceback 으로 죽어 채택자에게는
     #   "리뷰 실패"로만 보인다. 등록 사유 `ticket_harvest` 로 흡수하되 설계된 회수 실패 처방
     #   (재동기 안내 + rc≠0 + raw 경로)으로 접고, 표시 없는 RuntimeError 는 그대로 전파한다.
-    assert len(report.boundaries) == 224, "propagation sweep boundary ratchet changed"
+    # 225 = 224 + board lint 라운드 판정의 **티켓 단위** fail-soft 한 경계. 순회 전체를 감싸던
+    #   경계가 티켓 하나로 좁혀지면서(한 티켓의 읽기 실패가 그때까지 모은 판정을 통째로 버리지
+    #   않는다) 같은 규칙의 경계가 하나 늘었다 — 둘 다 advisory 축이라 흡수하되 마킹된 skew 는
+    #   그대로 올리고, 흡수한 티켓은 `round-unreadable` 로 표면에 남는다(조용한 생략 아님).
+    assert len(report.boundaries) == 225, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

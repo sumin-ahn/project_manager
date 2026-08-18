@@ -299,8 +299,8 @@ ROLE_CHOICES: tuple[str, ...] = ("developer", "researcher", "architect", "code-r
 TIER_CHOICES: tuple[str, ...] = ("normal", "hard")
 
 INTERNAL_REVIEW_ROLE = "code-reviewer"
-# 추가 리뷰어(external_review) 산출이 회수되는 역할 절. 하네스로 위임되는 역할이 아니라 엔진이
-# 직접 쓰는 채널이라 `ROLE_CHOICES` 에는 없고 티켓 성장 역할 집합에만 있다.
+# 추가 리뷰어(external_review) 산출이 회수되는 역할. 하네스로 위임되는 역할이 아니라 엔진이
+# 직접 쓰는 채널이라 `ROLE_CHOICES` 에는 없고 라운드 역할 집합에만 있다.
 EXTERNAL_REVIEW_ROLE = "external-reviewer"
 # 티켓 게이트 리뷰 채널 — 두 채널의 finding 은 같은 delta/disposition 표면에서 판정된다.
 REVIEW_ROLES: tuple[str, ...] = (INTERNAL_REVIEW_ROLE, EXTERNAL_REVIEW_ROLE)
@@ -391,8 +391,8 @@ _PM_REVIEW_AUTHORITY_REF_RE = re.compile(
 WRITE_ROLES: frozenset[str] = frozenset({"developer", "architect"})
 READ_ROLES: frozenset[str] = frozenset({"researcher", "code-reviewer"})
 # 하네스의 기본 권한축과 resume 재실행 안전성은 같은 분류가 아니다. read 역할(code-reviewer·
-# researcher)은 제품 worktree에는 read지만 성장 ticket-copy의 자기 절은 edit한다. 세션 불일치 뒤
-# fresh 재실행하면 같은 절을 두 번 쓸 수 있으므로 resume 축에서는 mutating으로 다룬다.
+# researcher)은 제품 worktree에는 read지만 run-dir 의 라운드 파일 `NN-<role>.md` 는 write한다.
+# 세션 불일치 뒤 fresh 재실행하면 새 라운드가 하나 더 생기므로 resume 축에서는 mutating으로 다룬다.
 RESUME_MUTATING_ROLES: frozenset[str] = WRITE_ROLES | frozenset(
     {"code-reviewer", "researcher"}
 )
@@ -406,7 +406,8 @@ RESUME_MUTATING_ROLES: frozenset[str] = WRITE_ROLES | frozenset(
 #   · claude 2.1.227: `--help`의 `--add-dir <directories...>`가 추가 tool-access 루트를 받는다.
 #   · opencode 1.18.16: `run --help`에는 추가-dir 플래그가 없다. custom 역할 카드를 `mode: all`로
 #     출하해 native task와 cross `run --agent <role>`가 같은 정의를 쓰며, code-reviewer 카드는
-#     ticket-copy 절 기록을 위해 edit 가능하다. repo 쓰기 표면은 경고와 위임 전후 감사로 관리한다.
+#     run-dir 라운드 파일 기록을 위해 edit 가능하다. repo 쓰기 표면은 경고와 위임 전후 감사로
+#     관리한다.
 #     researcher 카드의 read-only 권한에는
 #     TMPDIR=/tmp/pm_delegate_probe일 때
 #     `external_directory /tmp/pm_delegate_probe/opencode/* = allow`, `edit * = deny`가 나왔다.
@@ -1263,22 +1264,17 @@ def _ticket_round_seed(
     )
 
 
-def _previous_round_of_role(rounds, role: str):
-    """시드 프리필의 공급원 — 같은 역할의 **직전 라운드**(없으면 None).
+def _reserved_round_residue(board_rel: str, ordinal: int) -> str:
+    """예약 뒤 실패 경로의 진단 꼬리 — 남은 board 라운드 좌표와 그 라운드의 이후 상태.
 
-    공급원 배제 규칙은 한자리에 모은다: 산출이 없는 라운드(`pending`)는 자리표시자 골격뿐이라
-    프리필로 쓸 수 없다. 그것을 넣으면 정상 경로(앞 라운드가 아직 미회수)에서 "prefill 을
-    해소할 수 없어 강등" 경고가 나간다 — 판정 표면 배제(회수 거부 라운드·PM `rejected` ID)와
-    같은 자리에서 걸러야 경고가 진짜 이상 신호로 남는다.
+    예약은 되돌리지 않는다(보상 삭제는 동시 준비가 다음 순번을 이미 잡았을 때 순번 빈틈을
+    만든다). 그래서 실패 진단이 무엇이 남았는지 좌표로 말해야 운영자가 board 에서 그 라운드를
+    찾을 수 있다.
     """
-    candidates = [
-        item for item in rounds
-        if item.role == role and not getattr(item, "pending", False)
-    ]
-    if not candidates:
-        return None
-    latest = max(candidates, key=lambda item: item.ordinal)
-    return latest.ordinal, latest.text
+    return (
+        f" · 예약한 board 라운드는 남습니다: {board_rel}(순번 {ordinal}) — 산출 없음으로 남고 "
+        "다음 준비는 다음 순번을 씁니다"
+    )
 
 
 def _expected_slot_round_path(cwd: Path, row: dict, rounds_module) -> Path:
@@ -1431,7 +1427,9 @@ def prepare_ticket_copy(
         )
         seed = _ticket_round_seed(
             rounds_module, role, spec_text,
-            _previous_round_of_role(existing, role),
+            # 프리필 공급원 규칙(같은 역할 직전 라운드 · 산출 없는 라운드 배제)은 사이드카
+            # seam 하나가 소유한다 — 여기서 다시 구현하면 예약측·판정측 규칙이 갈린다.
+            rounds_module.previous_round_of_role(existing, role),
             today=datetime.date.today().isoformat(),
         )
         # ── 여기부터 board 를 건드린다 ──────────────────────────────────
@@ -1454,7 +1452,10 @@ def prepare_ticket_copy(
                 parent_fd=run_dir_fd,
             )
         except OSError as exc:
-            raise DelegateError(f"티켓 라운드 사본 생성 실패: {run_dir}: {exc}") from exc
+            raise DelegateError(
+                f"티켓 라운드 사본 생성 실패: {run_dir}: {exc}"
+                + _reserved_round_residue(board_rel, ordinal)
+            ) from exc
         # 이전 라운드는 읽기 전용 입력이다 — 시드 그대로인 미회수 라운드도 함께 깐다(진행 중
         # 다른 역할의 자리를 숨기지 않는다).
         try:
@@ -1468,6 +1469,7 @@ def prepare_ticket_copy(
         except OSError as exc:
             raise DelegateError(
                 f"이전 라운드 사본 생성 실패: {rounds_dir}: {exc}"
+                + _reserved_round_residue(board_rel, ordinal)
             ) from exc
     finally:
         if run_dir_fd is not None:
@@ -1475,16 +1477,22 @@ def prepare_ticket_copy(
         if rounds_dir_fd is not None:
             os.close(rounds_dir_fd)
 
-    _append_delegate_rounds_ledger(pm_home, {
-        "ticket": ticket,
-        "role": role,
-        "ordinal": ordinal,
-        "run_id": run_id,
-        "copy": str(copy_path.resolve()),
-        "board_rel": board_rel,
-        "prepared_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "harvested_at": None,
-    })
+    try:
+        _append_delegate_rounds_ledger(pm_home, {
+            "ticket": ticket,
+            "role": role,
+            "ordinal": ordinal,
+            "run_id": run_id,
+            "copy": str(copy_path.resolve()),
+            "board_rel": board_rel,
+            "prepared_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "harvested_at": None,
+        })
+    except DelegateError as exc:
+        # 장부 행이 없으면 이 라운드는 회수 자체가 막힌다 — 남은 좌표를 진단에 싣는다.
+        raise DelegateError(
+            f"{exc}{_reserved_round_residue(board_rel, ordinal)}"
+        ) from exc
     return TicketCopyPlan(
         copy_path.resolve(), run_dir, ticket, role, ordinal, board_path,
     )
@@ -1550,19 +1558,10 @@ def harvest_ticket_copy(
     board = _load_board_for_repo(pm_home)
     rounds_module.replace_round(board_path, text)
     message = f"ticket-harvest {row['ticket']} {row['role']}"
-    # board 쪽 helper 이름은 라운드 전환 후속에서 `_rounds_mutation_sync_paths` 로 바뀔 수 있어
-    # 부분 동기된 PM 홈 사본에서 AttributeError 로 "라운드는 반영됐는데 CLI 만 실패" 를 만들지
-    # 않는다.
-    sync_paths = getattr(board, "_rounds_mutation_sync_paths", None)
-    if not callable(sync_paths):
-        sync_paths = getattr(board, "_growth_mutation_sync_paths", None)
-    if callable(sync_paths):
-        sync_ready = bool(sync_paths(message, (board_path,)))
-    else:
-        board.refresh_board()
-        sync_ready = bool(
-            board._board_git_sync_best_effort(message, (board_path,))
-        )
+    # board 부분 커밋 seam 은 직접 부른다 — 이름을 더듬어 찾으면 부분 동기된 사본에서 커밋만
+    # 조용히 빠진 rc0(라운드는 바뀌었는데 board git 은 그대로)이 된다. 이름이 갈리면
+    # AttributeError 로 loud 하게 죽는 편이 그 침묵보다 낫다.
+    sync_ready = bool(board._rounds_mutation_sync_paths(message, (board_path,)))
     harvested = dict(row)
     harvested["harvested_at"] = datetime.datetime.now(
         datetime.timezone.utc
@@ -1609,7 +1608,7 @@ def validate_external_review_block(reply_text: str) -> str | None:
     if dispositions:
         return (
             f"리뷰어 산출에 {PM_REVIEW_DISPOSITION_BLOCK} 이 있습니다 — PM 판정 블록은 "
-            "역할 절 밖 PM 영역이 소유합니다"
+            "라운드 파일 밖 명세(PM 영역)가 소유합니다"
         )
     reviews = [block for block in blocks if block.kind == PM_REVIEW_BLOCK]
     if len(reviews) != 1:
@@ -1681,8 +1680,10 @@ def _pm_review_refused_rounds(rounds: Sequence) -> set[tuple[str, int]]:
     그 라운드를 판정 대상으로 세면 "최신 리뷰 라운드에 블록이 없다"로 티켓 전체 delta 가 막혀,
     거부한 라운드가 오히려 회수된 자산을 잠근다. 판정 표면에서만 제외하고 산출은 보존한다.
 
-    판정 기준은 산문 문자열이 아니라 **엔진이 발행한 표식 줄**이다(회수 본문에서는 같은 표기가
-    무해화된다).
+    판정 기준은 산문 문자열이 아니라 **엔진이 발행한 표식 줄**이다. 지금 그 줄을 발행하는 회수는
+    없다 — 내용 검증에 걸린 산출은 라운드 파일 자체가 생기지 않고 raw 에만 남으며, 표식을 실은
+    회신은 회수가 거부한다(`external_review_harvest_problem`). 판독이 남아 있는 이유는 단일 파일
+    시절의 거부 산출을 그대로 옮겨 온 라운드다.
     """
     refused: set[tuple[str, int]] = set()
     for item in rounds:
@@ -2642,7 +2643,7 @@ def render_ticket_growth_section_seed(
             "## 미해소\n- <남은 질문 또는 없음>\n"
         )
     if role not in REVIEW_ROLES:
-        raise DelegateError(f"역할별 성장 골격 미지원: {role}")
+        raise DelegateError(f"역할별 라운드 골격 미지원: {role}")
 
     # 두 리뷰 채널은 같은 골격을 쓰고 finding ID 접두만 다르다(판정 표면이 하나이므로).
     id_prefix = _pm_review_finding_id_prefix(role)
@@ -2671,14 +2672,78 @@ def render_ticket_growth_section_seed(
                 )
                 confirmation_ids = [placeholder_id]
 
-    # 산문은 판정 요약과 must-fix ID 나열까지다 — 증거·권고·심각도는 블록이 단일 진실이라
-    # 항목별 서술을 다시 적지 않는다(같은 finding 3중 기재 제거). must-fix 절은 0건 라운드의
-    # 통과 선언 교차 확인 입력이라 그대로 남는다.
+    return _render_review_round_seed_body(role, confirmation_ids)
+
+
+def _render_review_round_seed_body(
+    role: str, confirmation_ids: Sequence[str],
+) -> str:
+    """리뷰 채널 라운드 시드 본문 — 확인 대상 ID 말고는 전부 골격 상수다.
+
+    산문은 판정 요약과 must-fix ID 나열까지다 — 증거·권고·심각도는 블록이 단일 진실이라
+    항목별 서술을 다시 적지 않는다(같은 finding 3중 기재 제거). must-fix 절은 0건 라운드의
+    통과 선언 교차 확인 입력이라 그대로 남는다.
+
+    렌더와 무편집 판정(`ticket_round_body_is_pending`)이 이 함수 하나를 본다 — 판정이 골격을
+    따로 적으면 문구가 갈린 순간 손대지 않은 라운드가 "산출 있음"으로 뒤집힌다.
+    """
+    placeholder_id = f"{_pm_review_finding_id_prefix(role)}-NNN"
     return (
         f"## must-fix\n- <없음 또는 finding ID 나열({placeholder_id})·"
         "증거와 권고는 아래 블록>\n\n"
         "## 판정\n판정: <통과|반려> · finding <N>건(must-fix <N>건)\n\n"
         + render_pm_review_block_skeleton(role, confirmation_ids)
+    )
+
+
+def _round_seed_confirmation_ids(body: str) -> list[str] | None:
+    """본문의 유일한 `pm-review-v1` 블록이 실은 confirmation ID 목록 (판정 불가면 None).
+
+    골격 대조의 유일한 가변 입력을 **그 파일 자신**에서 뽑는다 — 프리필된 ID 는 예약 당시
+    board 상태의 산물이라 판정 시점에 다시 계산하면 같은 역할 앞 라운드의 회수가 손대지 않은
+    뒤 라운드의 판정을 뒤집는다.
+    """
+    try:
+        blocks = [
+            block for block in _pm_review_json_blocks(body)
+            if block.kind == PM_REVIEW_BLOCK
+        ]
+    except PMReviewError:
+        return None
+    if len(blocks) != 1:
+        return None
+    confirmations = blocks[0].value.get("confirmations")
+    if not isinstance(confirmations, list):
+        return None
+    ids: list[str] = []
+    for item in confirmations:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            return None
+        ids.append(item["id"])
+    return ids
+
+
+def ticket_round_body_is_pending(role: str, body: str) -> bool:
+    """라운드 본문(첫 줄 헤더 제외)이 시드 골격 그대로인가 = 산출 없음.
+
+    판정 입력은 **이 본문 하나**다 — 예약 날짜도, 같은 티켓의 다른 라운드도, 명세도 보지 않는다.
+    역할 골격은 상수이고 리뷰 채널만 확인 대상 finding ID 를 예약 시점 board 에서 프리필하므로,
+    그 ID 는 본문 자신에서 읽어 같은 골격을 다시 렌더해 대조한다: 프리필된 ID 가 있어도
+    status·evidence 가 자리표시자 그대로면 산출이 없는 것이다.
+
+    개행 표기는 정규화해 비교한다 — CRLF 체크아웃(또는 CRLF 를 쓰는 슬롯)을 지난 같은 골격을
+    "편집됨"으로 읽으면 산출 없는 라운드가 산출 있는 것으로 위장된다.
+    """
+    normalized = _normalized_newlines(body)
+    if role not in REVIEW_ROLES:
+        return normalized == _normalized_newlines(
+            render_ticket_growth_section_seed(role, "")
+        )
+    confirmation_ids = _round_seed_confirmation_ids(normalized)
+    if confirmation_ids is None:
+        return False
+    return normalized == _normalized_newlines(
+        _render_review_round_seed_body(role, confirmation_ids)
     )
 
 
@@ -2927,7 +2992,7 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> PMReviewDelta:
         label = f"reviewer {role} ordinal={ordinal}"
         if channel not in review_by_channel:
             raise PMReviewError(
-                "malformed", f"disposition이 없는 reviewer 절을 참조: {label}",
+                "malformed", f"disposition이 없는 리뷰 라운드를 참조: {label}",
             )
         value = block.value
         if "finding_zero" in value:
@@ -2991,7 +3056,7 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> PMReviewDelta:
         )
         raise PMReviewError(
             "pending",
-            f"PM 미판정 finding={pending}; finding-zero reviewer 절="
+            f"PM 미판정 finding={pending}; finding-zero 리뷰 라운드="
             f"{[f'{role}[{ordinal}]' for role, ordinal in pending_zero]}; "
             f"대상 채널={pending_channels}",
         )
@@ -9223,7 +9288,7 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
 
     문서↔CLI 존재 가드는 `main()`의 선행 dispatch를 실행하지 않고 parser만 읽어야 한다. 실행과
     검사가 다른 parser를 만들면 문서의 중첩 flag가 실재해도 미등록으로 오판하거나, 반대로 검사만
-    green인 가짜 표면이 생긴다. 현재 공개 대상은 성장 사본 `ticket`이고 소비자는 반환 parser에
+    green인 가짜 표면이 생긴다. 현재 공개 대상은 라운드 사본 `ticket`이고 소비자는 반환 parser에
     command 뒤 argv를 그대로 넣는다.
     """
     if command == "review":
@@ -9233,12 +9298,12 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
         )
         sub = parser.add_subparsers(dest="review_command", required=True)
         delta = sub.add_parser(
-            "delta", help="성장 티켓에서 developer에게 허용된 finding만 렌더"
+            "delta", help="티켓 라운드에서 developer에게 허용된 finding만 렌더"
         )
         delta.add_argument("--ticket", required=True, metavar="T-NNNN")
         disposition = sub.add_parser(
             "disposition-template",
-            help="reviewer 절의 미판정 finding ID를 PM disposition 골격으로 렌더",
+            help="리뷰 라운드의 미판정 finding ID를 PM disposition 골격으로 렌더",
         )
         disposition.add_argument("--ticket", required=True, metavar="T-NNNN")
         disposition.add_argument(
@@ -9642,12 +9707,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="위임 대상 ticket — touches 로 범위 밖 변경을 경고 판정"
                              "(code-reviewer는 --ticket 또는 --gate 필수; 그 밖 역할은 생략 시 "
                              "허용 경로 0·차단 아님). "
-                             "code-reviewer 성장 사본의 "
+                             "code-reviewer 라운드 사본의 "
                              "단일-path write 격리를 보장하지 못하는 target도 경고 후 선택한 "
                              "target으로 계속 실행")
     parser.add_argument("--gate", default=None, metavar="T-NNNN",
                         help="내부 code-reviewer 라운드 게이트(기본 --ticket에서 유도). "
-                             "code-reviewer는 항상 --ticket 성장 절에 결과를 기록한다")
+                             "code-reviewer는 항상 --ticket 라운드 파일에 결과를 기록한다")
     parser.add_argument("--confirm-fix", action="store_true",
                         help="직전 유효 반려 must-fix만 확인하는 게이트당 1회 확인 전용 라운드")
     parser.add_argument("--resume-from", default=None, metavar="T-NNNN|RECORD-ID",
@@ -9887,7 +9952,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         return 1
 
     # code-reviewer의 --gate는 내부 라운드 식별자이면서 같은 canonical ticket이다. 중복
-    # --ticket을 요구하지 않고 성장 사본·touches·raw ticket 필드가 모두 이 한 값으로 수렴한다.
+    # --ticket을 요구하지 않고 라운드 사본·touches·raw ticket 필드가 모두 이 한 값으로 수렴한다.
     effective_ticket = args.ticket or (
         args.gate if args.role == INTERNAL_REVIEW_ROLE else None
     )

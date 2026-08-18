@@ -410,7 +410,9 @@ def test_ticket_body_selection_skips_rounds_without_output(
     out = capsys.readouterr().out
     assert "1라운드 실산출" in out
     assert "--- 02-developer ---" not in out
-    assert "생략 라운드: 1개" in out
+    # 생략은 접힌 **산출**의 수다 — 산출 없는 라운드는 접힐 것이 없어 세지 않는다.
+    assert "생략 라운드: 0개" in out
+    assert "(생략한 라운드" not in out
 
 
 def test_ticket_body_selection_without_rounds_is_byte_identical(

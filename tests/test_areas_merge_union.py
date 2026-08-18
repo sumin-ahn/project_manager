@@ -203,6 +203,62 @@ def test_text_lf_pattern_must_cover_every_storage_path(
     assert board._board_text_lf_declared(text) is all_storage_paths_covered
 
 
+def _status_and_root_only_declaration(board) -> str:
+    """상태 디렉터리 + board 루트 직계만 덮는 LF 선언 — 라운드 중첩 경로는 못 덮는다."""
+    lines = [
+        f"tickets/{status}/*.{extension} text eol=lf\n"
+        for status in (*board.STATUS_DIRS, ".drafts")
+        for extension in board._BOARD_TEXT_ATTR_EXTENSIONS
+    ]
+    lines += [
+        f"/*.{extension} text eol=lf\n"
+        for extension in board._BOARD_TEXT_ATTR_EXTENSIONS
+    ]
+    return "".join(lines)
+
+
+def test_text_lf_judgment_covers_the_nested_rounds_path(board):
+    """라운드 파일은 `tickets/rounds/<티켓>/` 아래 산다 — 상태 경로만 덮은 선언은 미배포다."""
+    rounds = board._load_ticket_rounds()
+    probe = (
+        f"tickets/{rounds.ROUNDS_DIRNAME}/T-0/{rounds.round_filename(1, 'developer')}"
+    )
+    # 프로브 경로의 값은 사이드카 seam 에서 파생한다(리터럴 복제 0).
+    assert probe in board._board_text_attr_targets()
+    assert probe not in board._BOARD_TEXT_ATTR_TARGETS
+
+    partial = _status_and_root_only_declaration(board)
+    assert all(
+        board._target_lf_declared(partial, target)
+        for target in board._BOARD_TEXT_ATTR_TARGETS
+    ), "상태·루트 축은 이 선언이 이미 덮는다(테스트 전제)"
+    assert board._target_lf_declared(partial, probe) is False
+    assert board._board_text_lf_declared(partial) is False
+    assert board._board_text_lf_declared(
+        partial + f"tickets/{rounds.ROUNDS_DIRNAME}/**/*.md text eol=lf\n",
+    ) is True
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git 바이너리 부재")
+def test_git_agrees_the_rounds_path_is_not_covered_by_status_patterns(board, tmp_path):
+    """독립 대조 — 같은 선언에서 git 자신이 라운드 경로를 미지정으로 읽는다."""
+    rounds = board._load_ticket_rounds()
+    probe = (
+        f"tickets/{rounds.ROUNDS_DIRNAME}/T-0/{rounds.round_filename(1, 'developer')}"
+    )
+    board_dir = _make_board_dir(board, tmp_path, real_git=True)
+    (board_dir / ".gitattributes").write_text(
+        _status_and_root_only_declaration(board), encoding="utf-8", newline="",
+    )
+
+    checked = _git(["check-attr", "eol", "--", probe], board_dir).stdout.strip()
+    assert checked == f"{probe}: eol: unspecified"
+    status_target = board._BOARD_TEXT_ATTR_TARGETS[0]
+    assert _git(["check-attr", "eol", "--", status_target], board_dir).stdout.strip() == (
+        f"{status_target}: eol: lf"
+    )
+
+
 def test_text_lf_accepts_auto_detection_form(board):
     """`text=auto eol=lf`(git 이 텍스트로 판정한 파일에 LF 적용)도 배포된 것으로 인정한다."""
     assert board._board_text_lf_declared("* text=auto eol=lf\n") is True

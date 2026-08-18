@@ -24,6 +24,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
+EXTERNAL_REVIEW = TOOLS / "external_review.py"
 DIFF = "diff --git a/x.py b/x.py\n@@ -1 +1 @@\n-old\n+new\n"
 TICKET = "T-9601"
 ROLE = "external-reviewer"
@@ -1222,6 +1223,59 @@ def test_prompt_skeleton_carries_the_confirmable_ids_of_the_previous_round(
                   _reject_reply(_finding("X-004")), conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
     assert pd.render_pm_review_block_skeleton(ROLE, []) in calls["prompt"]
+
+
+def test_prompt_skeleton_ignores_a_reserved_round_without_output(
+    external, pd, monkeypatch, tmp_path,
+):
+    """예약만 해 둔 시드 라운드는 직전 산출이 아니다 — 확인 대상이 빈 목록이 되면 안 된다.
+
+    PM 이 `section-add --role external-reviewer` 로 자리만 잡아 둔 라운드가 '직전 라운드'
+    자리를 차지하면 `--confirm-fix` 가 '확인 대상이 판정 표면에 없습니다'로 막힌다.
+    """
+    conf = {"review_rounds_max": "9"}
+    spec = _seed_board(tmp_path)
+    _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-001")), conf=conf)
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+
+    rounds_module = pd._load_ticket_rounds()
+    reserved = _write_round(
+        tmp_path, 2, ROLE,
+        rounds_module.render_round_seed(
+            ROLE, spec.read_text(encoding="utf-8"), today="2026-08-18",
+        ),
+    )
+    assert [item.pending for item in _rounds(pd, tmp_path)] == [False, True]
+
+    calls = _wire(external, monkeypatch, tmp_path,
+                  _reject_reply(_finding("X-002")), conf=conf)
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+    assert pd.render_pm_review_block_skeleton(ROLE, ["X-001"]) in calls["prompt"]
+    assert reserved.exists()
+
+
+def test_board_commit_seam_is_called_directly_and_is_loud_when_it_is_missing(
+    external, monkeypatch, tmp_path,
+):
+    """부분 동기 사본에서 커밋만 조용히 빠진 rc0 을 만들지 않는다 (이름 폴백 없음)."""
+    source = EXTERNAL_REVIEW.read_text(encoding="utf-8")
+    assert "board._rounds_mutation_sync_paths(" in source
+    assert "_growth_mutation_sync_paths" not in source
+    assert 'getattr(board, "_rounds_mutation_sync_paths"' not in source
+
+    _seed_board(tmp_path)
+    real_loader = external._load_board
+
+    def _loader():
+        board = real_loader()
+        del board._rounds_mutation_sync_paths     # 이름이 갈린 사본 재현
+        return board
+
+    monkeypatch.setattr(external, "_load_board", _loader)
+    _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-001")))
+
+    with pytest.raises(AttributeError):
+        _run(external, tmp_path, "--ticket", TICKET)
 
 
 # ── F-025 강등 안내·지연 해소 ───────────────────────────────────────────

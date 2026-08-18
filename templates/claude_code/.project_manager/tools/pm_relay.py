@@ -1082,10 +1082,11 @@ def with_harness_runtime_role(
 OPENCODE_ATTACHED_MSG = "첨부된 프롬프트 파일(--file)의 지시를 그대로 수행하라."
 
 # claude 가용 도구셋 — `--tools`(가용성 제한, `--allowedTools` 아님). 역할축:
-#   write(developer/architect) = 편집 도구 포함 · researcher = 읽기 + 티켓 사본 자기 절 기록용
-#   Edit(Write/Bash 없음) · code-reviewer = 읽기+Bash(pytest·Write/Edit 제외). 콤마-구분 단일 인자.
+#   write(developer/architect) = 편집 도구 포함 · researcher = 읽기 + 라운드 파일
+#   (`NN-<role>.md`) 기록용 Edit(Write/Bash 없음) · code-reviewer = 읽기+Bash(pytest·Write/Edit
+#   제외). 콤마-구분 단일 인자.
 #
-# researcher 의 Edit 는 "모든 참여 역할이 자기 산출을 티켓 절로 남긴다"([[ADR-0089]]·[[T-0696]])의
+# researcher 의 Edit 는 "모든 참여 역할이 자기 산출을 라운드 파일 하나로 남긴다"의
 # 최소 수단이다. **보장 수준을 정확히 적는다**: `--tools` 는 도구 *가용성* 축이라 claude 축에서는
 # 편집 대상 경로를 좁히지 못한다(규율은 역할 카드 문구와 위임 전후 git/touches 감사가 든다).
 # 경로를 기계로 좁히는 것은 다른 두 축이다 — codex 는 read-only sandbox + `--add-dir <copy dir>`,

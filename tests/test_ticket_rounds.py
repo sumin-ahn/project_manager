@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 import os
 import threading
 from pathlib import Path, PurePosixPath
@@ -476,6 +477,125 @@ def test_a_header_that_lost_its_date_is_not_pending(rounds, tickets_dir):
     rounds.replace_round(path, "## 구현 보충\n" + seed.partition("\n")[2])
     loaded = rounds.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert loaded[0].pending is False
+
+
+def test_a_seed_with_a_custom_header_label_is_still_pending(rounds, tickets_dir):
+    """헤더 라벨은 사람이 고르는 자리다(`section-add --label`) — 판정은 본문 골격만 본다."""
+    path = _reserve(rounds, tickets_dir, "T-0001", "developer")
+    seed = _seed(rounds, "developer")
+    rounds.replace_round(
+        path, "## 구현 보충(2차) (developer · 2026-01-02)\n" + seed.partition("\n")[2],
+    )
+    loaded = rounds.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    assert loaded[0].pending is True
+
+
+def _reviewer_output(finding_id: str = "F-001", role: str = "code-reviewer") -> str:
+    """실산출 리뷰 라운드 — 자리표시자가 아닌 값이 든 `pm-review-v1` 블록 하나."""
+    block = json.dumps({
+        "version": 2,
+        "findings": [{
+            "id": finding_id, "class": "implementation-defect",
+            "severity": "must-fix", "authority": "설계 §경계",
+            "evidence": "probe rc=1", "recommendation": f"{finding_id} 수정",
+            "design_change": False,
+        }],
+        "confirmations": [],
+    }, ensure_ascii=False)
+    return (
+        f"## 리뷰 ({role} · 2026-01-03)\n\n"
+        f"## must-fix\n- {finding_id}\n\n"
+        "## 판정\n판정: 반려 · finding 1건(must-fix 1건)\n\n"
+        f"```pm-review-v1\n{block}\n```\n"
+    )
+
+
+def test_pending_does_not_flip_when_an_earlier_round_of_the_same_role_is_harvested(
+    rounds, tickets_dir,
+):
+    """같은 역할 병렬 2라운드 — 01 회수가 손대지 않은 02 의 판정을 뒤집지 않는다.
+
+    판정 입력이 시점(다른 라운드의 현재 내용)에 기대면 02 가 "산출 있음"으로 읽혀
+    `verify_rounds` 가 미회수를 보고하지 않고 조회의 `(산출 없음)` 표시도 사라진다.
+    """
+    first = _reserve(rounds, tickets_dir, "T-0001", "code-reviewer")
+    second = _reserve(rounds, tickets_dir, "T-0001", "code-reviewer")
+    untouched = second.read_bytes()
+
+    rounds.replace_round(first, _reviewer_output("F-001"))
+
+    loaded = rounds.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    assert second.read_bytes() == untouched, "판정 대상 파일이 바뀌었다(테스트 전제 붕괴)"
+    assert [(item.ordinal, item.pending) for item in loaded] == [(1, False), (2, True)]
+
+    problems = rounds.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    assert [problem.code for problem in problems] == [rounds.PROBLEM_PENDING]
+    assert "02-code-reviewer.md" in problems[0].detail
+    assert "--- 02-code-reviewer (산출 없음) ---" in rounds.render_rounds_for_show(loaded)
+
+
+def test_a_seed_whose_confirmation_ids_are_prefilled_is_pending(rounds, tickets_dir):
+    """예약이 프리필한 실 finding ID 가 있어도 status·evidence 가 자리표시자면 산출이 없다."""
+    first = _reserve(rounds, tickets_dir, "T-0001", "code-reviewer")
+    rounds.replace_round(first, _reviewer_output("F-007"))
+    loaded = rounds.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+
+    seed = rounds.render_round_seed(
+        "code-reviewer", TICKET_TEXT, today="2026-01-04",
+        previous_round=rounds.previous_round_of_role(loaded, "code-reviewer"),
+    )
+    assert '"id":"F-007"' in seed.replace(" ", ""), "프리필이 일어나지 않았다(전제 붕괴)"
+    _reserve(rounds, tickets_dir, "T-0001", "code-reviewer", content=seed)
+
+    reloaded = rounds.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    assert [(item.ordinal, item.pending) for item in reloaded] == [(1, False), (2, True)]
+
+
+def test_filling_the_confirmation_status_ends_pending(rounds, tickets_dir):
+    """골격 대조는 ID 만 자유롭다 — 값을 채운 블록은 산출이다."""
+    path = _reserve(rounds, tickets_dir, "T-0001", "code-reviewer")
+    seed = path.read_text(encoding="utf-8")
+    filled = seed.replace("<resolved|unresolved|regressed>", "resolved")
+    assert filled != seed
+    rounds.replace_round(path, filled)
+
+    loaded = rounds.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    assert loaded[0].pending is False
+
+
+def test_a_round_whose_review_block_is_broken_is_not_pending(rounds, tickets_dir):
+    """블록을 읽지 못하면 골격이라 단정하지 않는다 — 산출 있음 쪽으로 남긴다."""
+    path = _reserve(rounds, tickets_dir, "T-0001", "code-reviewer")
+    seed = path.read_text(encoding="utf-8")
+    rounds.replace_round(path, seed.replace('"confirmations"', '"confirmations'))
+
+    loaded = rounds.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    assert loaded[0].pending is False
+
+
+# ── 직전 라운드 규칙 (프리필·확인 대상의 단일 소유자) ───────────────────────
+
+def test_latest_round_of_role_skips_rounds_without_output(rounds, tickets_dir):
+    first = _reserve(rounds, tickets_dir, "T-0001", "code-reviewer")
+    rounds.replace_round(first, _reviewer_output("F-001"))
+    _reserve(rounds, tickets_dir, "T-0001", "code-reviewer")      # 예약만 (산출 없음)
+    loaded = rounds.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+
+    latest = rounds.latest_round_of_role(loaded, "code-reviewer")
+    assert (latest.ordinal, latest.pending) == (1, False)
+    assert rounds.previous_round_of_role(loaded, "code-reviewer") == (
+        1, first.read_text(encoding="utf-8"),
+    )
+
+
+def test_previous_round_of_role_ignores_other_roles_and_empty_input(rounds, tickets_dir):
+    developer = _reserve(rounds, tickets_dir, "T-0001", "developer")
+    rounds.replace_round(developer, "## 구현 보충 (developer · 2026-01-03)\n\n산출\n")
+    loaded = rounds.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+
+    assert rounds.previous_round_of_role(loaded, "code-reviewer") is None
+    assert rounds.latest_round_of_role([], "developer") is None
+    assert rounds.previous_round_of_role(loaded, "developer")[0] == 1
 
 
 # ── 교체 (회수) ────────────────────────────────────────────────────────────

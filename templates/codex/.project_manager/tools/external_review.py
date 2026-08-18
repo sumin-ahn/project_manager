@@ -4881,7 +4881,7 @@ def _load_ticket_body(ticket_id: str, *, pm_home: Path | None = None) -> str:
 
 
 class TicketBodySelection(NamedTuple):
-    """리뷰 입력 티켓 본문 — 명세 + 선별한 라운드, 그리고 싣지 않은 라운드 수."""
+    """리뷰 입력 티켓 본문 — 명세 + 선별한 라운드, 그리고 접어 둔 산출 라운드 수."""
 
     text: str
     omitted_rounds: int
@@ -4897,14 +4897,13 @@ def _select_ticket_body_for_review(body: str, rounds: Sequence) -> TicketBodySel
 
     명세(`body`)는 권위 절과 PM 판정 블록을 그대로 담은 파일이라 전량 싣는다. 라운드는 파일
     하나가 산출 하나라 선별이 파일 선택으로 끝난다 — 역할마다 마지막 것만 싣고, 시드 그대로인
-    라운드(산출 없음)는 싣지 않는다. 이어 붙이는 표기는 `ticket_rounds.render_rounds_for_show`
+    라운드(산출 없음)는 세지도 싣지도 않는다. 이어 붙이는 표기는 `ticket_rounds.render_rounds_for_show`
     가 소유한다(사람이 `board.py show` 에서 읽는 그 구분선과 같은 규칙 하나).
 
     라운드가 없으면 명세 원문을 **바이트 그대로** 돌려준다 — 라운드 없는 티켓의 입력이 이 선별
     도입 전후로 동일해야 한다.
     """
-    loaded = list(rounds)
-    landed = [item for item in loaded if not item.pending]
+    landed = [item for item in rounds if not item.pending]
     last_by_role: dict[str, int] = {}
     for item in landed:
         last_by_role[item.role] = max(item.ordinal, last_by_role.get(item.role, 0))
@@ -4912,7 +4911,9 @@ def _select_ticket_body_for_review(body: str, rounds: Sequence) -> TicketBodySel
         (item for item in landed if last_by_role[item.role] == item.ordinal),
         key=lambda item: item.ordinal,
     )
-    omitted = len(loaded) - len(selected)
+    # 생략 = **접힌 산출**의 수다. 산출 없는 라운드는 애초에 실을 것이 없으므로 세지 않는다 —
+    # 세면 접힌 산출이 없는 티켓에서도 "생략" 과 선별 요약 헤더가 붙는다.
+    omitted = len(landed) - len(selected)
     if not selected and not omitted:
         return TicketBodySelection(body, 0)
 
@@ -8232,7 +8233,9 @@ def _confirmable_external_finding_ids(
     """확인 라운드가 참조할 수 있는 이 채널 finding ID 실값 목록 (대상 없으면 None).
 
     입력은 이 채널의 **직전 라운드 파일** 하나다 — 확인 전용 라운드의 임무가 "직전 라운드
-    must-fix 의 해소 확인"이라 리뷰 라운드 시드 프리필과 같은 시야여야 한다.
+    must-fix 의 해소 확인"이라 리뷰 라운드 시드 프리필과 같은 시야여야 한다. 그 "직전 라운드"
+    규칙(역할 필터 · 산출 없는 라운드 배제 · 마지막 순번)은 사이드카 seam 이 소유한다 — 여기서
+    다시 구현하면 예약해 둔 시드 라운드가 직전 산출 자리를 차지해 확인 대상이 빈 목록이 된다.
     배제(PM 이 `rejected` 로 판정한 ID)는 시드와 **같은 엔진 함수**가 소유한다 — 두 채널이 서로
     다른 목록을 보면 한쪽 리뷰어가 표면이 거부할 ID 를 확인 대상으로 받는다.
     """
@@ -8241,10 +8244,9 @@ def _confirmable_external_finding_ids(
         return None
     delegate = _load_pm_delegate()
     role = delegate.EXTERNAL_REVIEW_ROLE
-    previous = [item for item in state.rounds if item.role == role]
-    if not previous:
+    latest = _load_ticket_rounds().latest_round_of_role(state.rounds, role)
+    if latest is None:
         return []
-    latest = max(previous, key=lambda item: item.ordinal)
     try:
         return delegate.collect_confirmable_finding_ids(state.text, role, [latest])
     except delegate.DelegateError as exc:
@@ -8343,12 +8345,9 @@ def _reserve_external_review_round(
     )
     ordinal, _role = rounds_module.parse_round_filename(round_path.name)
     message = f"external-review {ticket} {role}"
-    # board 부분 커밋 seam 의 이름은 라운드 전환 중이라 두 이름이 공존한다(구 이름은 board 쪽
-    # 전환이 끝나면 사라진다).
-    sync_paths = getattr(board, "_rounds_mutation_sync_paths", None)
-    if not callable(sync_paths):
-        sync_paths = getattr(board, "_growth_mutation_sync_paths", None)
-    sync_ready = bool(sync_paths(message, [round_path])) if callable(sync_paths) else False
+    # board 부분 커밋 seam 은 직접 부른다 — 이름을 더듬어 찾으면 그 이름이 갈렸을 때 라운드
+    # 파일만 만들어지고 board 커밋은 조용히 빠진 rc0 이 된다(AttributeError 로 죽는 편이 낫다).
+    sync_ready = bool(board._rounds_mutation_sync_paths(message, [round_path]))
     print(
         f"[external-review] 티켓 회수: {ticket} {role}[{ordinal}] → {round_path}"
         + ("" if sync_ready else " (board-git 동기 미준비)"),

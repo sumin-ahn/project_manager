@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "count": 572,
+  "count": 564,
   "surface_counts": {
     "markdown": 148,
     "python-non-prose": 24,
-    "python-prose": 400
+    "python-prose": 392
   },
   "entries": [
     {
@@ -730,25 +730,9 @@
     {
       "path": ".project_manager/tools/pm_relay.py",
       "kind": "work_item",
-      "match": "ADR-0089",
-      "surface": "python-prose",
-      "hash": "da44e23c35fa6ad6d61fd5b962a9efc23c3aae25101ffab4e03a1689b7111d06",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/pm_relay.py",
-      "kind": "work_item",
       "match": "T-0086",
       "surface": "python-prose",
       "hash": "ca9f4bf17cd46a97c3a9dac3ffe4991bc4f38ca2bb0c21d91a9b8873927fdb9d",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/pm_relay.py",
-      "kind": "work_item",
-      "match": "T-0696",
-      "surface": "python-prose",
-      "hash": "da44e23c35fa6ad6d61fd5b962a9efc23c3aae25101ffab4e03a1689b7111d06",
       "count": 1
     },
     {
@@ -1610,25 +1594,9 @@
     {
       "path": "templates/claude_code/.project_manager/tools/pm_relay.py",
       "kind": "work_item",
-      "match": "ADR-0089",
-      "surface": "python-prose",
-      "hash": "da44e23c35fa6ad6d61fd5b962a9efc23c3aae25101ffab4e03a1689b7111d06",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/pm_relay.py",
-      "kind": "work_item",
       "match": "T-0086",
       "surface": "python-prose",
       "hash": "ca9f4bf17cd46a97c3a9dac3ffe4991bc4f38ca2bb0c21d91a9b8873927fdb9d",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/pm_relay.py",
-      "kind": "work_item",
-      "match": "T-0696",
-      "surface": "python-prose",
-      "hash": "da44e23c35fa6ad6d61fd5b962a9efc23c3aae25101ffab4e03a1689b7111d06",
       "count": 1
     },
     {
@@ -2642,25 +2610,9 @@
     {
       "path": "templates/codex/.project_manager/tools/pm_relay.py",
       "kind": "work_item",
-      "match": "ADR-0089",
-      "surface": "python-prose",
-      "hash": "da44e23c35fa6ad6d61fd5b962a9efc23c3aae25101ffab4e03a1689b7111d06",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/pm_relay.py",
-      "kind": "work_item",
       "match": "T-0086",
       "surface": "python-prose",
       "hash": "ca9f4bf17cd46a97c3a9dac3ffe4991bc4f38ca2bb0c21d91a9b8873927fdb9d",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/pm_relay.py",
-      "kind": "work_item",
-      "match": "T-0696",
-      "surface": "python-prose",
-      "hash": "da44e23c35fa6ad6d61fd5b962a9efc23c3aae25101ffab4e03a1689b7111d06",
       "count": 1
     },
     {
@@ -3898,25 +3850,9 @@
     {
       "path": "templates/opencode/.project_manager/tools/pm_relay.py",
       "kind": "work_item",
-      "match": "ADR-0089",
-      "surface": "python-prose",
-      "hash": "da44e23c35fa6ad6d61fd5b962a9efc23c3aae25101ffab4e03a1689b7111d06",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/pm_relay.py",
-      "kind": "work_item",
       "match": "T-0086",
       "surface": "python-prose",
       "hash": "ca9f4bf17cd46a97c3a9dac3ffe4991bc4f38ca2bb0c21d91a9b8873927fdb9d",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/pm_relay.py",
-      "kind": "work_item",
-      "match": "T-0696",
-      "surface": "python-prose",
-      "hash": "da44e23c35fa6ad6d61fd5b962a9efc23c3aae25101ffab4e03a1689b7111d06",
       "count": 1
     },
     {

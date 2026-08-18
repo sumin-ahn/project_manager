@@ -856,6 +856,36 @@ def test_pending_round_does_not_block_completion(live_board, capsys):
     assert "round-pending" in err and "01-developer.md" in err
 
 
+def test_pending_round_survives_a_sibling_harvest_in_the_gate(live_board, capsys):
+    """같은 역할 병렬 2라운드 — 01 회수 뒤에도 02 는 미회수 정보로 남는다(차단은 아니다)."""
+    path = _seed_ticket(live_board, "T-9107", _dod_body("- [x] 코드"))
+    block = json.dumps({
+        "version": 2,
+        "findings": [{
+            "id": "F-001", "class": "implementation-defect", "severity": "must-fix",
+            "authority": "설계 §경계", "evidence": "probe rc=1",
+            "recommendation": "F-001 수정", "design_change": False,
+        }],
+        "confirmations": [],
+    }, ensure_ascii=False)
+    _write_round(
+        live_board, "T-9107", "01-code-reviewer.md",
+        "## 리뷰 (code-reviewer · 2026-01-03)\n\n## must-fix\n- F-001\n\n"
+        "## 판정\n판정: 반려 · finding 1건(must-fix 1건)\n\n"
+        f"```pm-review-v1\n{block}\n```\n",
+    )
+    _write_round(
+        live_board, "T-9107", "02-code-reviewer.md",
+        _seeded_round_text(live_board, "T-9107", "code-reviewer", path),
+    )
+
+    rc = live_board.cmd_complete(_complete_args("T-9107"))
+
+    err = capsys.readouterr().err
+    assert rc == 0, f"미회수 라운드가 완료를 막음: {err}"
+    assert "round-pending" in err and "02-code-reviewer.md" in err
+
+
 def test_round_name_violation_is_information_only(live_board, capsys):
     """이름 문법 위반은 표시용이다 — 완료 게이트의 차단 사유가 아니다."""
     _seed_ticket(live_board, "T-9104", _dod_body("- [x] 코드"))

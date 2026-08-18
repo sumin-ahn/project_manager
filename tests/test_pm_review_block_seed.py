@@ -279,16 +279,38 @@ def test_unedited_seed_is_malformed_review_output(pd):
 def test_seed_round_is_judged_pending_by_the_rounds_seam(pd):
     """'산출 없음' 판정은 라운드 seam 이 소유한다 — 회수는 그 판정만 본다."""
     rounds_module = pd._load_ticket_rounds()
-    for role in ("developer", "code-reviewer"):
+    for role in ("developer", "code-reviewer", "external-reviewer"):
         seed = _seeded_round_text(pd, role)
         item = rounds_module.Round(
             ordinal=1, role=role,
             path=Path(rounds_module.round_filename(1, role)),
             text=seed, pending=False,
         )
-        assert rounds_module.round_is_pending(item, ticket_text="") is True
+        assert rounds_module.round_is_pending(item) is True
         edited = rounds_module.Round(*item[:3], item.text + "\n실산출\n", False)
-        assert rounds_module.round_is_pending(edited, ticket_text="") is False
+        assert rounds_module.round_is_pending(edited) is False
+
+
+def test_pending_judgment_reads_only_the_round_body(pd):
+    """판정 입력은 라운드 본문 하나다 — 프리필 ID·날짜·명세는 판정을 바꾸지 않는다."""
+    previous = _reviewer_round(pd, _review_payload("F-003", "F-001"))
+    prefilled = _seeded_round_text(
+        pd, "code-reviewer", previous=(previous.ordinal, previous.text),
+    )
+    assert '"id":"F-003"' in prefilled.replace(" ", "")
+
+    # 같은 골격을 서로 다른 날짜·명세로 지어도 판정은 같다(자리표시자 = 산출 없음).
+    assert pd.ticket_round_body_is_pending(
+        "code-reviewer", prefilled.partition("\n")[2].lstrip("\n"),
+    ) is True
+    for text in (prefilled, _seeded_round_text(pd, "code-reviewer")):
+        assert pd._load_ticket_rounds().round_is_pending(
+            _round(pd, 2, text),
+        ) is True
+
+    # 자리표시자를 실값으로 바꾸면 산출이다(ID 만 자유롭다).
+    filled = prefilled.replace("<resolved|unresolved|regressed>", "resolved")
+    assert pd._load_ticket_rounds().round_is_pending(_round(pd, 2, filled)) is False
 
 
 def test_legacy_previous_round_prefill_degrades_to_placeholder(pd, capsys):
