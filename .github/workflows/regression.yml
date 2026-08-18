@@ -19,6 +19,6 @@ jobs:
         run: |
           python -m pip install -U pip
           [ -f requirements.txt ] && pip install -r requirements.txt || true
-          pip install pytest
+          pip install pytest pytest-xdist
       - name: full regression
-        run: pytest -q
+        run: pytest -q -n auto   # 러너 코어 수만큼 병렬 (pytest-xdist)

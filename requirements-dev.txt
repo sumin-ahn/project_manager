@@ -1,3 +1,5 @@
 # Dev/test dependencies. 런타임 의존을 포함한 뒤 테스트 러너만 추가한다.
 -r requirements.txt
 pytest
+# 회귀 병렬 실행(`-n`) — 단일 프로세스 30분+ 가 8 워커에서 4분대(T-0757).
+pytest-xdist>=3.5
