@@ -401,12 +401,19 @@ def _seed_git_tree(root: Path, files: dict[str, int], *,
 def _split_home_shape(
     tmp_path: Path, *, ticket_id: str, touches: list[str],
     home_lines: int, worktree_lines: int, slot: str = "work/myrepo_1",
+    slot_target: Path | None = None, home_only: dict[str, int] | None = None,
 ):
     """분리 PM 홈(엔진 사본 보유)과 슬롯 worktree 를 각각 실 git 저장소로 만든다.
 
     두 트리가 같은 touches 파일을 갖고 서로 다른 크기의 미커밋 변경을 두므로, 측정 root 가
     어느 트리인지에 따라 diff 총량(=차단 여부)이 갈린다.
+
+    `slot_target` 을 주면 worktree 를 PM 홈 **밖**에 만들고 슬롯 경로를 그 심링크로 둔다(슬롯이
+    다른 마운트/심링크인 형상). `home_only` 는 PM 홈에만 사는 touches(wiki 산출물 등)와 그
+    미커밋 줄 수다 — 코드 트리에는 만들지 않는다.
     """
+    home_only = dict(home_only or {})
+    shared = [touch for touch in touches if touch not in home_only]
     home = tmp_path / "pm-home"
     tools = home / ".project_manager" / "tools"
     tools.parent.mkdir(parents=True)
@@ -415,12 +422,19 @@ def _split_home_shape(
     log_dir = home / ".project_manager" / "wiki" / "log"
     log_dir.mkdir(parents=True, exist_ok=True)
     (log_dir / "current.md").write_text("# log\n", encoding="utf-8")
-    _seed_git_tree(
-        home, {touch: home_lines for touch in touches},
-        extra_paths=(".project_manager",),
-    )
+    home_files = {touch: home_lines for touch in shared}
+    home_files.update(home_only)
+    _seed_git_tree(home, home_files, extra_paths=(".project_manager",))
     worktree = home / slot
-    _seed_git_tree(worktree, {touch: worktree_lines for touch in touches})
+    if slot_target is None:
+        _seed_git_tree(worktree, {touch: worktree_lines for touch in shared})
+    else:
+        _seed_git_tree(slot_target, {touch: worktree_lines for touch in shared})
+        worktree.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            worktree.symlink_to(slot_target, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:   # 권한/플랫폼 미지원
+            pytest.skip(f"심링크 슬롯을 만들 수 없다 ({exc})")
 
     spec = importlib.util.spec_from_file_location(
         f"ticket_finish_split_{tmp_path.name}", tools / "ticket_finish.py",
@@ -526,3 +540,52 @@ def test_no_pytest_stages_touches_in_slot_worktree_not_pm_home(tmp_path, monkeyp
     assert f"[slot worktree touches] cwd={worktree}" in out
     assert (f"[slot worktree touches] cwd={worktree}: "
             '`git commit -m "<메시지>" -- src/engine.py`') in out
+
+
+def test_symlinked_slot_keeps_measurement_and_stage_on_one_tree(
+        tmp_path, monkeypatch, capsys):
+    """슬롯 worktree 가 PM 홈 밖(심링크)이어도 측정과 stage 가 같은 트리를 본다.
+
+    위치로 분리 여부를 판정하면(PM 홈 하위인가) 이 형상에서 diff 는 슬롯을, stage 는 PM 홈을
+    보게 돼 한 값의 두 소비자가 갈린다 — PM 홈의 dirty 한 동명 사본이 다시 stage 된다.
+    """
+    home, worktree, tf = _split_home_shape(
+        tmp_path, ticket_id="T-6704", touches=["src/engine.py"],
+        home_lines=2000, worktree_lines=10,
+        slot_target=tmp_path / "outside-slot",
+    )
+    trees = _probe_code_tree(tf, monkeypatch)
+
+    rc = tf.main(["T-6704", "--repo", "myrepo", "--slot", "1", "--no-pytest"])
+
+    out = capsys.readouterr().out
+    assert rc == 0                                   # 측정은 코드 트리(10줄·상한 이내)
+    assert trees and set(trees) == {worktree}
+    assert _staged_paths(worktree) == ["src/engine.py"]
+    assert _staged_paths(home) == [".project_manager/wiki/log/current.md"]
+    assert f"[slot worktree touches] cwd={worktree}" in out
+
+
+def test_home_resident_touch_is_staged_in_pm_home(tmp_path, monkeypatch, capsys):
+    """PM 홈에만 사는 touch 는 홈 계획이 stage 하고, 코드 touch 는 코드 트리가 stage 한다.
+
+    두 계획이 각자 몫만 맡으므로 홈-상주 산출물이 어느 repo 에도 안 실리는 구멍이 없다. 홈에
+    있는 코드 파일 사본은 코드 몫이라 홈에서 stage 되지 않는다.
+    """
+    home_touch = ".project_manager/wiki/roadmap.md"
+    home, worktree, tf = _split_home_shape(
+        tmp_path, ticket_id="T-6705", touches=["src/engine.py", home_touch],
+        home_lines=5, worktree_lines=10, home_only={home_touch: 20},
+    )
+    _probe_code_tree(tf, monkeypatch)
+
+    rc = tf.main(["T-6705", "--repo", "myrepo", "--slot", "1", "--no-pytest"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert _staged_paths(worktree) == ["src/engine.py"]
+    assert _staged_paths(home) == [
+        ".project_manager/wiki/log/current.md", home_touch,
+    ]
+    assert f'[PM 홈 산출물] cwd={home}: `git commit -m "<메시지>" --' in out
+    assert home_touch in out

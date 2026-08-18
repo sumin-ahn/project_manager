@@ -909,16 +909,19 @@ def _bind_pm_handoff_seams(tf, monkeypatch, areas: Path, leases: Path, repo_root
     pm_handoff `_regression_cwd`(과 그 하부 `_auto_slot`)의 areas/leases 는 def-time 바운드
     기본 인자라 모듈 전역 setattr rebind 가 무효다(가짜 seam). 그래서 원본 `_regression_cwd`
     를 닫아 `worktree_slot` 만 받고 areas/leases/repo_root 를 *명시 인자로* 넘기는 lambda 로
-    교체한다 — 이게 실 장부/areas/REPO 미접촉 hermetic 해소의 유효한 seam 이다(repo_root 미지정
-    이면 real 의 기본값=REPO). ticket_finish wrapper 는 `hp._regression_cwd(slot)` 로 호출하므로
-    이 교체가 그대로 위임 경로에 먹힌다.
+    교체한다 — 이게 실 장부/areas/REPO 미접촉 hermetic 해소의 유효한 seam 이다. ticket_finish
+    wrapper 는 `hp._regression_cwd(slot, repo_root=<자기 REPO>)` 로 호출하므로 lambda 도 그
+    kwarg 를 받는다 — 테스트가 고정한 repo_root 가 있으면 그것이 우선이고(hermetic 앵커),
+    없으면 wrapper 가 넘긴 앵커를 그대로 쓴다.
     """
     hp = tf._load_pm_handoff()
     assert hp is not None  # 동적 로드 성공 전제 (없으면 폴백 테스트로 분리)
     real = hp._regression_cwd
     monkeypatch.setattr(
         hp, "_regression_cwd",
-        lambda worktree_slot=None: real(worktree_slot, areas, leases, repo_root=repo_root),
+        lambda worktree_slot=None, *, repo_root=None, _pinned=repo_root: real(
+            worktree_slot, areas, leases,
+            repo_root=_pinned if _pinned is not None else repo_root),
     )
     monkeypatch.setattr(tf, "_load_pm_handoff", lambda: hp)
     return hp
@@ -1097,10 +1100,12 @@ def _bind_pm_handoff_repo(tf, monkeypatch, repo_root: Path):
     """pm_handoff 를 로드해 `REPO` 를 `repo_root` 로 monkeypatch 하고 그 인스턴스를 고정
     반환하도록 `tf._load_pm_handoff` 를 교체한다 — `_resolve_explicit_identity_slot`(M3 리스
     조인검증)·`_regression_cwd`(L1) 의 leases_file/repo_root 기본 해소가 이 tmp_path 를 보게
-    만드는 hermetic seam(실 장부·실 REPO 미접촉)."""
+    만드는 hermetic seam(실 장부·실 REPO 미접촉). ticket_finish 의 `REPO` 도 같이 옮긴다 —
+    해소 앵커를 wrapper 가 `repo_root=REPO` 로 forward 하므로, 한쪽만 옮기면 두 앵커가 갈린다."""
     hp = tf._load_pm_handoff()
     assert hp is not None
     monkeypatch.setattr(hp, "REPO", repo_root)
+    monkeypatch.setattr(tf, "REPO", repo_root)
     monkeypatch.setattr(tf, "_load_pm_handoff", lambda: hp)
     return hp
 
@@ -1132,8 +1137,11 @@ class _FakeHandoff:
         return self._resolve_result
 
     @staticmethod
-    def _regression_cwd(worktree_slot=None):
-        return f"/fake-repo/{worktree_slot}" if worktree_slot else "/fake-repo"
+    def _regression_cwd(worktree_slot=None, *, repo_root=None):
+        # 실 wrapper 가 앵커(`repo_root=`)를 forward 한다 — 대역이 그 kwarg 를 안 받으면
+        # TypeError 가 fail-soft 폴백으로 삼켜져 해소 자체가 검증되지 않는다.
+        base = str(repo_root) if repo_root is not None else "/fake-repo"
+        return f"{base}/{worktree_slot}" if worktree_slot else base
 
 
 def test_repo_slot_resolves_explicit_worktree_slot(tf, tmp_path, monkeypatch):
@@ -1418,7 +1426,7 @@ def test_task_stage_plan_separates_pm_outputs_and_worktree_touches(tf, tmp_path,
 
     def fake_scope(ticket_id, board_py, log_file, run_git, *, repo=None,
                    include_touches=True, include_engine_outputs=True,
-                   touches_workspace=None):
+                   touches_workspace=None, touches=None):
         repo = Path(repo or home)
         calls.append((repo, include_touches, include_engine_outputs))
         if include_engine_outputs:
@@ -1471,7 +1479,7 @@ def test_task_stage_plan_dry_run_matches_actual_repo_pathspec(tf, tmp_path, monk
 
     def fake_scope(ticket_id, board_py, log_file, run_git, *, repo=None,
                    include_touches=True, include_engine_outputs=True,
-                   touches_workspace=None):
+                   touches_workspace=None, touches=None):
         return tf.StageScope((("home.md",) if include_engine_outputs else ("code.py",)), None)
 
     monkeypatch.setattr(tf, "stage_scope", fake_scope)
