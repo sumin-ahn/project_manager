@@ -1449,13 +1449,15 @@ def test_the_gate_reads_the_surface_parser_not_a_copied_rule_list(
     시야가 같은 함수 하나라 표면에 malformed 규칙이 늘어도 게이트가 자동으로 따라온다. 옮겨 적으면
     규칙이 늘 때마다 두 시야가 조용히 갈린다(그 갈림이 이 티켓에서 두 번 재현됐다).
     """
-    gate_source = inspect.getsource(pd._external_review_delta_regression)
+    gate_source = inspect.getsource(pd._pm_review_delta_regression_reason)
     reason_source = inspect.getsource(pd._pm_review_delta_malformed_reason)
     assert "_pm_review_delta_malformed_reason(" in gate_source
     assert "parse_pm_review_delta(" in reason_source
+    # 기준선도 같은 파서로 잰다 — 절 개수·사유 문자열 같은 우회 판정이 없다.
+    assert gate_source.count("_pm_review_delta_malformed_reason(") == 2
     # 예정 본문 조립도 실제 쓰기와 같은 helper 다(게이트가 다른 문자열을 판정하지 않는다).
-    assert "_append_external_review_section(" in gate_source
-    assert "_append_external_review_section(" in inspect.getsource(
+    assert "_append_ticket_growth_section(" in gate_source
+    assert "_append_ticket_growth_section(" in inspect.getsource(
         pd.write_external_reviewer_section,
     )
 
@@ -1469,6 +1471,87 @@ def test_the_gate_reads_the_surface_parser_not_a_copied_rule_list(
     )
     assert problem is not None and "판정 표면 malformed 유발" in problem
     assert pd.EXTERNAL_REVIEW_REFUSED_LINE in content
+
+
+def test_the_baseline_probe_section_is_known_good(pd):
+    """(F-024) 기준선 프로브 자체가 정상이어야 이 판정이 fail-open 으로 꺼지지 않는다."""
+    probe = pd._pm_review_probe_section_content("", "external-reviewer")
+    baseline = pd._append_ticket_growth_section("", probe, "external-reviewer")
+    assert pd._pm_review_delta_malformed_reason(baseline) is None
+    # 프로브 ID 는 티켓의 다음 실값이라 재선언·충돌로 걸리지 않는다.
+    landed = _sealed_external_section(pd, _payload([_finding("X-001")]), ordinal=0)
+    assert '"id":"X-002"' in pd._pm_review_probe_section_content(
+        landed, "external-reviewer",
+    )
+    # 채널 중립 — 내부 회수도 자기 접두로 같은 프로브를 만든다.
+    assert '"id":"F-001"' in pd._pm_review_probe_section_content("", "code-reviewer")
+
+
+def test_a_broken_baseline_probe_fails_loud_instead_of_opening_the_gate(
+    external, pd, monkeypatch, tmp_path, capsys,
+):
+    """(F-024) 프로브가 깨지면 기준선이 항상 dirty 라 게이트가 조용히 꺼진다 — fail-loud 로 멈춘다."""
+    ticket_path = _seed_board(tmp_path)
+    before = ticket_path.read_text(encoding="utf-8")
+    # 프로브가 채우는 자리표시가 비면 표면 파서가 그 절을 malformed 로 본다(엔진 결함 형상).
+    monkeypatch.setattr(pd, "_PM_REVIEW_PROBE_TEXT", "")
+    with pytest.raises(pd.PMReviewError, match="판정 프로브 손상"):
+        pd.build_external_review_section_content(
+            _reject_reply(_finding("X-001")), today="2026-08-18", ticket_text=before,
+        )
+
+    _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-001")))
+    monkeypatch.setattr(external, "_load_pm_delegate", lambda: pd)
+    assert _run(external, tmp_path, "--ticket", TICKET) != 0
+    err = capsys.readouterr().err
+    assert "회수 문제" in err and "판정 프로브 손상" in err
+    assert ticket_path.read_text(encoding="utf-8") == before   # 절을 쓰지 않는다.
+
+
+@pytest.mark.parametrize("existing_defect", ["stray-fence", "disposition-of-a-refused-id"])
+def test_a_pre_existing_defect_does_not_get_blamed_on_the_new_round(
+    external, pd, monkeypatch, tmp_path, capsys, existing_defect,
+):
+    """(F-024) 리뷰 절과 무관한 기존 malformed 사유가 있어도 새 라운드는 착지한다.
+
+    기준선을 "거부되지 않은 리뷰 절 0개 = 결함 없음" 으로 세면 그 사유가 이 라운드 탓이 되어
+    이후 모든 라운드가 거부된다(봉인이라 복구 경로 없음). 반사실 프로브는 같은 파서로 기존
+    결함을 먼저 재고 침묵한다.
+    """
+    rounds = {"review_rounds_max": "9"}
+    if existing_defect == "stray-fence":
+        # 역할 절 밖 스키마 예시 인용 — 표면 파서는 이걸 malformed 로 본다.
+        ticket_path = _seed_board(
+            tmp_path, body="\n## 참고\n" + _block(_payload([_finding("X-050")])),
+        )
+    else:
+        ticket_path = _seed_board(tmp_path)
+        _wire(external, monkeypatch, tmp_path, _BROKEN_JSON_REPLY, conf=rounds)
+        assert _run(external, tmp_path, "--ticket", TICKET) != 0
+        # 거부 절 평문에 남은 X-001 을 PM 이 finding 으로 읽고 판정을 써 버린 티켓.
+        ticket_path.write_text(
+            ticket_path.read_text(encoding="utf-8") + _disposition("X-001"),
+            encoding="utf-8", newline="",
+        )
+    before = pd._pm_review_delta_malformed_reason(
+        ticket_path.read_text(encoding="utf-8")
+    )
+    assert before is not None                      # 기존 결함이 있는 티켓이다.
+    capsys.readouterr()
+
+    _wire(external, monkeypatch, tmp_path,
+          _reject_reply(_finding("X-100")), conf=rounds)
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+    err = capsys.readouterr().err
+    assert "회수 문제" not in err
+
+    text = ticket_path.read_text(encoding="utf-8")
+    landed = _sections(pd, text, "external-reviewer")[-1]
+    assert pd.EXTERNAL_REVIEW_REFUSED_LINE not in landed
+    assert '"id":"X-100"' in landed
+    assert pd.verify_ticket_seals(text) == []
+    assert ("external-reviewer", len(_sections(pd, text, "external-reviewer")) - 1) \
+        not in pd._pm_review_refused_section_keys(text, pd._ticket_growth_sections(text))
 
 
 def test_an_already_malformed_ticket_does_not_block_new_rounds(pd, tmp_path):
@@ -1577,6 +1660,46 @@ def test_prompt_skeleton_carries_the_confirmable_ids(
     assert pd.collect_confirmable_finding_ids(
         ticket_path.read_text(encoding="utf-8"), "external-reviewer",
     ) == ["X-002", "X-003"]
+
+
+# ── F-025 강등 안내·지연 해소 ───────────────────────────────────────────
+
+
+def test_degraded_confirmable_ids_names_both_consumers(
+    external, pd, monkeypatch, tmp_path, capsys,
+):
+    """(F-025) 해소 실패 안내는 두 소비자를 함께 말한다 — 골격 실값 · 확인 근거 표면 대조."""
+    _seed_board(tmp_path)
+    calls = _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-001")))
+
+    def _raise(*_args, **_kwargs):
+        raise pd.DelegateError("확인 목록 해소 실패 probe")
+
+    monkeypatch.setattr(pd, "collect_confirmable_finding_ids", _raise)
+    monkeypatch.setattr(external, "_load_pm_delegate", lambda: pd)
+
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+    err = capsys.readouterr().err
+    assert "골격" in err and "장부 기록 그대로" in err
+    # 해소가 꺼져도 라운드는 돈다 — 골격은 placeholder 로 강등된다.
+    assert pd.render_pm_review_block_skeleton("external-reviewer") in calls["prompt"]
+
+
+def test_a_disabled_run_does_not_read_the_harvest_target(
+    external, pd, monkeypatch, tmp_path,
+):
+    """(F-025) 비활성 no-op 은 티켓을 읽지 않는다 — 해소는 소비 지점에서만 일어난다."""
+    _seed_board(tmp_path)
+    _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-001")),
+          conf={"additional_reviewer_enabled": "false"})
+    reads: list[str] = []
+    monkeypatch.setattr(
+        external, "_harvest_target_ticket_body",
+        lambda *args, **kwargs: reads.append("read") or None,
+    )
+
+    assert _run(external, tmp_path, "--ticket", TICKET) == 0     # no-op
+    assert reads == []
 
 
 # ── F-018 무해화: 라벨만 낮추고 뒤 텍스트는 보존 ────────────────────────

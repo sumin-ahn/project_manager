@@ -1657,6 +1657,13 @@ _CONFIRM_FIX_REFUSED_HARVEST_GUIDANCE = (
     "  (장부: {ledger})"
 )
 
+# 확인 가능한 finding ID 해소 실패 안내의 강등 서술 — **두 소비자**를 함께 적는다. 하나만 적으면
+# `--confirm-fix` 운영자가 표면 대조가 꺼진 것을 모른 채 장부 기록만 실린 근거를 받는다.
+_CONFIRMABLE_IDS_DEGRADED = (
+    "골격은 확인 가능한 finding ID 없이 싣고, `--confirm-fix` 근거는 판정 표면 대조 없이 "
+    "장부 기록 그대로 싣습니다."
+)
+
 # `--ack-rounds` 폐지 안내 — 플래그는 인자표에 남겨 두고(모르는 인자 오류 대신 처방을 낸다)
 # 호출 자체를 거부한다. 연장 승인 경로가 남아 있으면 상한이 상한이 아니게 된다.
 _ACK_ROUNDS_REMOVED_GUIDANCE = (
@@ -7955,16 +7962,23 @@ def _main(argv: list[str] | None = None) -> int:
             return False
         return True
 
-    # 확인 가능한 finding ID 실값은 이 실행에서 **한 번** 해소해 프롬프트 골격과 확인 전용 라운드
-    # 근거가 같은 목록을 보게 한다(회수 대상이 있는 실행만 · 읽기 전용). 표면 밖 ID(회수 거부
-    # 라운드·PM rejected)를 확인 대상으로 실으면 그 라운드가 회수 게이트에 다시 걸린다.
-    confirmable_finding_ids = _confirmable_external_finding_ids(
-        args, pm_home=pm_home,
-        degraded="확인 가능한 finding ID 없이 골격을 싣습니다.",
-    )
-    surface_finding_ids = (
-        None if confirmable_finding_ids is None else set(confirmable_finding_ids)
-    )
+    # 확인 가능한 finding ID 실값은 **소비 지점에서** 한 번만 해소한다(회수 대상이 있는 실행만 ·
+    # 읽기 전용). 두 소비자(프롬프트 골격 실값 · 확인 전용 라운드 근거의 표면 대조)가 같은 목록을
+    # 봐야 리뷰어가 표면 밖 ID(회수 거부 라운드·PM rejected)를 확인 대상으로 받지 않는다.
+    # 미리 읽지 않는 이유는 부작용 규율이다 — 비활성 no-op·프롬프트를 만들지 않는 조기 종료는
+    # 티켓 파일을 건드리지 않는다.
+    resolved_confirmable: dict[str, list[str] | None] = {}
+
+    def confirmable_finding_ids() -> list[str] | None:
+        if "ids" not in resolved_confirmable:
+            resolved_confirmable["ids"] = _confirmable_external_finding_ids(
+                args, pm_home=pm_home, degraded=_CONFIRMABLE_IDS_DEGRADED,
+            )
+        return resolved_confirmable["ids"]
+
+    def surface_finding_ids() -> set[str] | None:
+        ids = confirmable_finding_ids()
+        return None if ids is None else set(ids)
 
     def compose_prompt(confirm_fix_evidence: str | None) -> str:
         """이번 실행의 프롬프트 — 확인 전용 라운드 근거만 호출 시점에 따라 다르다."""
@@ -7974,7 +7988,7 @@ def _main(argv: list[str] | None = None) -> int:
             confirm_fix=args.confirm_fix,
             confirm_fix_evidence=confirm_fix_evidence,
             next_finding_id=_next_external_finding_id(args, pm_home=pm_home),
-            confirmation_ids=confirmable_finding_ids,
+            confirmation_ids=confirmable_finding_ids(),
         )
 
     # 구키 deprecation — 미리보기·실행 **양쪽**에서 같은 자리에 안내. 게이트 판정 앞이라 꺼져 있는
@@ -7989,7 +8003,7 @@ def _main(argv: list[str] | None = None) -> int:
         # dry-run은 예약 스냅샷이 없으므로 읽기 전용 장부 조회 근거로 미리보기를 조립한다.
         prompt = compose_prompt(
             _gate_confirm_fix_evidence(
-                args.gate, surface_finding_ids=surface_finding_ids,
+                args.gate, surface_finding_ids=surface_finding_ids(),
             )
             if getattr(args, "confirm_fix", False) and args.gate else None
         )
@@ -8104,7 +8118,7 @@ def _main(argv: list[str] | None = None) -> int:
     # snapshot evidence로 아래에서 반드시 재조립한다(동시 마감 라운드와 두 read가 갈려도 한 스냅샷).
     prompt = compose_prompt(
         _gate_confirm_fix_evidence(
-            args.gate, surface_finding_ids=surface_finding_ids,
+            args.gate, surface_finding_ids=surface_finding_ids(),
         )
         if getattr(args, "confirm_fix", False) and args.gate else None
     )
@@ -8112,7 +8126,7 @@ def _main(argv: list[str] | None = None) -> int:
     budget = _reserve_round_budget(
         args, conf, wall_timeout_sec=timeout,
         target_rev=_target_rev_fingerprint(diff),
-        surface_finding_ids=surface_finding_ids,
+        surface_finding_ids=surface_finding_ids(),
     )
     if budget.refused_rc is not None:
         return budget.refused_rc
