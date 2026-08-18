@@ -330,6 +330,8 @@ PM_REVIEW_SEVERITY_MIN_VERSION = 2
 PM_REVIEW_SEVERITY_UNSPECIFIED_LABEL = "미기재"
 # PM 판정 블록은 스키마가 그대로라 세대를 올리지 않는다(채널 필드는 선택 key 로 흡수).
 PM_REVIEW_DISPOSITION_VERSION = PM_REVIEW_LEGACY_VERSION
+# 차등 판정 기준선 프로브가 채우는 자리표시 문자열 — 티켓에 기록되지 않는 메모리 안 본문이다.
+_PM_REVIEW_PROBE_TEXT = "기준선 프로브"
 PM_REVIEW_CLASSES: tuple[str, ...] = (
     "implementation-defect", "spec-violation", "design-proposal",
 )
@@ -2937,9 +2939,10 @@ def _external_review_missing_confirmation_targets(
 ) -> list[str]:
     """회신 블록의 confirmation ID 중 티켓 판정 표면에 **없는** 것.
 
-    판정 표면은 confirmation 이 선행 finding 을 참조할 것을 요구한다. 회수 게이트가 그 대조를
-    빼면 표면에 없는 ID(회수 거부된 라운드의 ID·환각 ID)를 실은 블록이 봉인돼 그 티켓의 delta 가
-    영구 malformed 로 잠긴다 — 두 시야를 같게 맞춰 그 자리에서 거부하고 라운드를 다시 열어 둔다.
+    판정 표면은 confirmation 이 선행 finding 을 참조할 것을 요구한다. 이 대조는 차등 술어
+    (`_pm_review_delta_regression_reason`)와 분담이 있다 — 기준선이 정상인 티켓에서는 두 축이
+    같은 회신을 잡지만(겹친다), **기준선이 이미 malformed 인 티켓**에서는 차등이 침묵하므로
+    표면에 없는 ID(회수 거부된 라운드의 ID·환각 ID)를 실은 블록을 막는 것은 이 대조뿐이다.
     """
     declared = set(declared_finding_ids)
     blocks = [
@@ -2959,8 +2962,10 @@ def _external_review_missing_confirmation_targets(
     return sorted(missing)
 
 
-def _append_external_review_section(ticket_text: str, content: str) -> str:
-    """새 external-reviewer 절을 붙인 **예정 본문**(봉인 주석 전).
+def _append_ticket_growth_section(
+    ticket_text: str, content: str, role: str,
+) -> str:
+    """새 역할 절을 붙인 **예정 본문**(봉인 주석 전 · 채널 중립).
 
     회수 게이트의 차등 판정과 실제 쓰기가 **같은 조립**을 봐야 "게이트가 통과시킨 본문"과 "절에
     들어가는 본문"이 갈리지 않는다.
@@ -2970,9 +2975,9 @@ def _append_external_review_section(ticket_text: str, content: str) -> str:
     """
     newline = _dominant_ticket_newline(ticket_text)
     block = (
-        f"<!-- {_TICKET_SECTION_MARKER}:start role={EXTERNAL_REVIEW_ROLE} -->\n"
+        f"<!-- {_TICKET_SECTION_MARKER}:start role={role} -->\n"
         + content
-        + f"<!-- {_TICKET_SECTION_MARKER}:end role={EXTERNAL_REVIEW_ROLE} -->\n"
+        + f"<!-- {_TICKET_SECTION_MARKER}:end role={role} -->\n"
     )
     normalized_tail = ticket_text.replace("\r\n", "\n")
     separator = (
@@ -2994,40 +2999,108 @@ def _pm_review_delta_malformed_reason(ticket_text: str) -> str | None:
     return None
 
 
-def _pm_review_surface_was_clean(ticket_text: str) -> bool:
-    """차등 판정의 기준선 — 이 라운드 **전** 판정 표면이 malformed 가 아니었는가.
+def _pm_review_probe_section_text(
+    ticket_text: str, reviewer_role: str,
+) -> str:
+    """기준선 프로브 본문을 만든다(자기 점검 없음 — 점검 자신이 쓰는 순수 빌더)."""
+    values: dict[str, object] = {
+        "id": next_review_finding_id(ticket_text, reviewer_role),
+        "class": PM_REVIEW_CLASSES[0],
+        "severity": PM_REVIEW_SEVERITIES[0],
+        "design_change": False,
+    }
+    finding = {
+        key: values.get(key, _PM_REVIEW_PROBE_TEXT)
+        for key in _pm_review_finding_keys(PM_REVIEW_VERSION)
+    }
+    payload = _pm_review_seed_object(PM_REVIEW_PAYLOAD_KEYS, {
+        "version": PM_REVIEW_VERSION,
+        "findings": [finding],
+        "confirmations": [],
+    })
+    return (
+        f"## {_PM_REVIEW_PROBE_TEXT} ({reviewer_role})\n\n판정: 반려\n\n"
+        + _pm_review_block_text(payload)
+    )
 
-    리뷰 절이 아직 없는 티켓은 파서가 "블록 없음"으로 malformed 를 내지만 그건 기존 결함이 아니라
-    **빈 상태**다. 빈 상태를 기존 결함으로 세면 첫 라운드가 표면을 잠가도 게이트가 침묵한다.
+
+# 프로브 무결성 점검 결과 (프로세스당 역할별 1회). 프로브가 깨지면 기준선이 **항상** dirty 가 돼
+# 차등 판정이 조용히 꺼진다 — 그 silent-degrade 를 막으려고 소비 지점에서 fail-loud 한다.
+_PM_REVIEW_PROBE_SELF_CHECK: dict[str, str | None] = {}
+
+
+def _pm_review_probe_self_check(reviewer_role: str) -> None:
+    """빈 본문 + 프로브 절 하나가 정상 표면인지 확인한다(아니면 fail-loud).
+
+    프로브는 기준선을 재는 자다. 그 자신이 표면 규칙을 어기면 모든 티켓의 기준선이 malformed 로
+    읽혀 회수 게이트가 아무것도 잡지 못한다(fail-open). 판정 불능은 통과가 아니므로 그 자리에서
+    멈춘다 — 호출부가 회수 실패(rc≠0)로 표면화한다.
     """
-    try:
-        sections = _ticket_growth_sections(ticket_text)
-        refused = _pm_review_refused_section_keys(ticket_text, sections)
-    except DelegateError:
-        return False              # 기준선을 읽을 수 없으면 이 라운드를 원인으로 몰지 않는다.
-    if not any(
-        section.role in REVIEW_ROLES
-        and (section.role, section.ordinal) not in refused
-        for section in sections
-    ):
-        return True
-    return _pm_review_delta_malformed_reason(ticket_text) is None
+    if reviewer_role not in _PM_REVIEW_PROBE_SELF_CHECK:
+        _PM_REVIEW_PROBE_SELF_CHECK[reviewer_role] = _pm_review_delta_malformed_reason(
+            _append_ticket_growth_section(
+                "", _pm_review_probe_section_text("", reviewer_role), reviewer_role,
+            )
+        )
+    reason = _PM_REVIEW_PROBE_SELF_CHECK[reviewer_role]
+    if reason is not None:
+        raise PMReviewError(
+            "malformed",
+            f"판정 프로브 손상: {reason} — 기준선을 잴 수 없어 회수 게이트가 판정할 수 "
+            "없습니다(엔진 결함 · 이 라운드 산출은 raw 에 보존됩니다)",
+        )
+
+
+def _pm_review_probe_section_content(
+    ticket_text: str, reviewer_role: str,
+) -> str:
+    """차등 판정의 기준선을 재는 **알려진 정상** 리뷰 절 본문(티켓에 기록되지 않는다).
+
+    빈 표면을 "절 개수 0" 으로 특례하면 리뷰 절과 무관한 기존 malformed 사유(역할 절 밖 stray
+    fence · 실재하지 않는 finding 에 걸린 PM 판정 등)가 새 라운드 탓이 되어 이후 모든 라운드가
+    영구 거부된다. 대신 정상 절 하나를 붙여 보고 **그래도** malformed 면 기존 결함으로 센다 —
+    판정은 표면 파서가 하고 사유 문자열을 다시 적지 않는다.
+
+    쓰기 전에 프로브 자신의 무결성을 먼저 확인한다(프로세스당 1회) — 깨진 프로브는 게이트를
+    조용히 끄므로 통과가 아니라 실패다.
+    """
+    _pm_review_probe_self_check(reviewer_role)
+    return _pm_review_probe_section_text(ticket_text, reviewer_role)
+
+
+def _pm_review_delta_regression_reason(
+    ticket_text: str, content: str, *, role: str, probe_content: str,
+) -> str | None:
+    """이 절을 붙이면 판정 표면이 malformed 로 **바뀌는가** — 바뀌면 그 사유, 아니면 None.
+
+    표면 규칙(스키마·ID·판정 정합)을 게이트로 하나씩 옮겨 적지 않는다 — 규칙이 늘 때마다 두 시야가
+    조용히 갈린다. 표면 파서를 **예정 본문에 그대로 태워** 차등으로 본다.
+
+    기준선은 **반사실 프로브**다: 같은 본문에 알려진 정상 절(`probe_content`)을 붙여도 여전히
+    malformed 면 이 라운드와 무관한 기존 결함이므로 원인으로 몰지 않는다(거부해도 회복되지 않고
+    이후 라운드를 영구 차단하기만 한다). 기준선과 예정 본문을 **같은 파서**로 재므로 표면 규칙이
+    늘어도 이 판정이 자동으로 따라온다.
+
+    채널 중립이다 — 내부 회수(harvest)도 자기 역할·자기 프로브로 같은 판정을 쓸 수 있다.
+    """
+    if _pm_review_delta_malformed_reason(
+        _append_ticket_growth_section(ticket_text, probe_content, role)
+    ) is not None:
+        return None
+    return _pm_review_delta_malformed_reason(
+        _append_ticket_growth_section(ticket_text, content, role)
+    )
 
 
 def _external_review_delta_regression(
     ticket_text: str, content: str,
 ) -> str | None:
-    """이 절을 붙이면 판정 표면이 malformed 로 **바뀌는가** — 바뀌면 거부 사유, 아니면 None.
-
-    표면 규칙(스키마·ID·판정 정합)을 게이트로 하나씩 옮겨 적지 않는다 — 규칙이 늘 때마다 두 시야가
-    조용히 갈린다. 표면 파서를 **예정 본문에 그대로 태워** 차등으로 본다: 붙이면 malformed 인데
-    붙이기 전에는 아니었다면 이 라운드가 원인이다. 이미 malformed 인 티켓은 이 라운드 탓이 아니고
-    거부해도 회복되지 않으므로 통과시킨다(거부가 영구 차단이 되지 않게).
-    """
-    if not _pm_review_surface_was_clean(ticket_text):
-        return None
-    reason = _pm_review_delta_malformed_reason(
-        _append_external_review_section(ticket_text, content)
+    """추가 리뷰어 절의 차등 판정 — 사유가 있으면 회수 거부 문구로 감싼다."""
+    reason = _pm_review_delta_regression_reason(
+        ticket_text, content, role=EXTERNAL_REVIEW_ROLE,
+        probe_content=_pm_review_probe_section_content(
+            ticket_text, EXTERNAL_REVIEW_ROLE,
+        ),
     )
     if reason is None:
         return None
@@ -3171,7 +3244,7 @@ def write_external_reviewer_section(
         )
         # 절 조립은 회수 게이트의 차등 판정과 **같은 helper** 를 쓴다 — 게이트가 본 예정 본문과
         # 실제로 쓰는 본문이 갈리면 통과 판정이 다른 문자열에 대한 판정이 된다.
-        appended = _append_external_review_section(current_text, content)
+        appended = _append_ticket_growth_section(current_text, content, role)
         write = upsert_ticket_seal_with_ledger(
             board, ticket_path, appended, role, ordinal,
             by=EXTERNAL_REVIEW_SEAL_WRITER, ticket=ticket, ledger=True,
@@ -3932,6 +4005,15 @@ def _pm_review_seed_object(
     return {key: values.get(key, "") for key in keys}
 
 
+def _pm_review_block_text(payload: Mapping[str, object]) -> str:
+    """`pm-review-v1` fence 한 개를 렌더한다 — 골격과 기준선 프로브가 같은 표기를 쓴다."""
+    return (
+        f"```{PM_REVIEW_BLOCK}\n"
+        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        + "\n```\n"
+    )
+
+
 def _pm_review_refused_section_keys(
     ticket_text: str, sections: Sequence[TicketGrowthSection],
 ) -> set[tuple[str, int]]:
@@ -4112,11 +4194,7 @@ def render_pm_review_block_skeleton(
         "findings": [finding],
         "confirmations": confirmations,
     })
-    return (
-        f"```{PM_REVIEW_BLOCK}\n"
-        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        + "\n```\n"
-    )
+    return _pm_review_block_text(payload)
 
 
 def render_ticket_growth_section_seed(role: str, ticket_text: str) -> str:
