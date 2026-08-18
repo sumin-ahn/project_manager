@@ -48,6 +48,12 @@
   구 엔진이 새 토큰(`{{DELEGATE_MODEL_DEVELOPER_HARD}}` 등)을 몰라 렌더 leak 으로 rc1 이 된다.
   전량 실행은 같은 계획 안에서 엔진(`.project_manager/tools/**`)을 먼저 얹으므로 안전하다.
 
+- (v1.7.2 이월 안내) **추가 리뷰어 구키 4종은 제거됐다(읽지 않는다).** 게이트
+  `external_review_enabled` 와 노브 `external_review_round_limit`·`external_review_wave_budget`·
+  `external_review_incomplete_round_limit` 가 대상이다. 구키만 있는 `local.conf` 는 추가 리뷰어가
+  꺼진 상태이므로, 키 이름을 신키(`additional_reviewer_*`)로 직접 바꾸거나 opt-in
+  질문(`board.py init`·`pm-update`)에 다시 답한다.
+
 ### Changed
 
 - **diff 서킷브레이커가 claim 시점 rev 부터 잰다.** `board.py claim` 이 그 시점 코드 트리 HEAD 를
