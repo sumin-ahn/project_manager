@@ -433,7 +433,7 @@ def test_fsync_guard_ignores_mentions_in_comments_and_strings():
 def test_reintroduced_readonly_ledger_sync_is_red():
     """장부 append 뒤 읽기 전용 재-open sync 를 되살리면 가드가 red 로 잡는다 (감도 실증)."""
     source = (TOOLS / "pm_delegate.py").read_text(encoding="utf-8")
-    ledger_append = source.split("def _append_ticket_copy_ledger", 1)[1].split(
+    ledger_append = source.split("def _append_delegate_rounds_ledger", 1)[1].split(
         "\ndef ", 1
     )[0]
     assert "fsync" not in ledger_append, (

@@ -789,40 +789,6 @@ def test_opencode_send_rejects_symlink_parent(pd, tmp_path):
         pd._cleanup_attempt_transport(transport)
 
 
-def test_posix_mode_probe_unlink_failure_warns_but_keeps_verdict(pd, tmp_path, monkeypatch, capsys):
-    """T-0734 (a): probe 임시파일 unlink 실패는 판정값을 바꾸지 않고 stderr 에 잔여 경로를 남긴다."""
-    delegate = pd
-    real_unlink = Path.unlink
-    seen: dict[str, Path] = {}
-
-    def failing_unlink(self, *args, **kwargs):
-        if self.name.startswith(".ticket-copy-mode-"):
-            seen["probe"] = self
-            raise PermissionError(13, "unlink denied (injected)")
-        return real_unlink(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "unlink", failing_unlink)
-    verdict = delegate._posix_mode_supported(tmp_path)
-    assert isinstance(verdict, bool)
-    assert "probe" in seen, "주입한 unlink 실패가 probe 경로를 타지 않았다"
-    err = capsys.readouterr().err
-    assert "mode probe 임시파일 삭제 실패" in err
-    assert str(seen["probe"]) in err
-    assert "unlink denied (injected)" in err
-    # 잔여 파일은 실제로 남아 있고(정리 실패), 이 테스트가 치운다.
-    assert seen["probe"].exists()
-    real_unlink(seen["probe"])
-
-
-def test_posix_mode_probe_success_path_is_silent(pd, tmp_path, capsys):
-    """T-0734 (b): 정상 경로는 판정값만 내고 stderr 는 비어 있으며 probe 잔여 0."""
-    delegate = pd
-    verdict = delegate._posix_mode_supported(tmp_path)
-    assert isinstance(verdict, bool)
-    assert capsys.readouterr().err == ""
-    assert not any(p.name.startswith(".ticket-copy-mode-") for p in tmp_path.iterdir())
-
-
 def test_opencode_existing_attempt_directory_fails_loud(
         pd, monkeypatch, tmp_path):
     """UUID attempt 디렉터리가 선존재하면 재사용·재시도 없이 충돌을 올린다."""
@@ -1977,11 +1943,11 @@ def test_write_probe_name_stays_within_engine_artifact_budget(pd):
     """프로브 이름이 엔진 자신의 산출물보다 경로 예산을 더 먹으면 안 된다.
 
     Windows 실측: 사본 디렉터리 199자에 61자 프로브가 붙어 MAX_PATH(259)를 프로브만 넘겼다
-    (같은 자리 `metadata.json`·`ticket-*.md` 는 모두 들어간다)."""
+    (같은 자리 `NN-<role>.md`·`spec.md` 는 모두 들어간다)."""
+    rounds_module = pd._load_ticket_rounds()
     budget = max(
-        len(pd.TICKET_COPY_METADATA_NAME),
-        len(pd.TICKET_COPY_BASELINE_NAME),
-        len(pd.TICKET_COPY_TAG_NAME),
+        len(rounds_module.round_filename(1, "code-reviewer")),
+        len(pd.TICKET_COPY_SPEC_NAME),
     )
     first, second = pd._write_probe_name(), pd._write_probe_name()
     assert len(first) <= budget
@@ -2009,9 +1975,11 @@ def test_write_probe_fits_wherever_engine_artifacts_fit(pd, tmp_path):
 
     Windows 의 MAX_PATH(259) 실패와 **같은 클래스**를 Linux 의 PATH_MAX 예산으로 태운다:
     `metadata.json` 은 딱 들어가고 그보다 긴 이름은 못 들어가는 디렉터리를 만든다."""
-    budget = len(pd.TICKET_COPY_METADATA_NAME)
+    # run-dir 안 최장 엔진 산출물 = 라운드 파일 이름(`NN-code-reviewer.md`).
+    artifact = pd._load_ticket_rounds().round_filename(1, "code-reviewer")
+    budget = len(artifact)
     deep = _deep_directory_with_remaining_budget(tmp_path, budget + 1)
-    (deep / pd.TICKET_COPY_METADATA_NAME).write_text("{}", encoding="utf-8")
+    (deep / artifact).write_text("{}", encoding="utf-8")
 
     pd._probe_writable_target(deep, label="ticket 사본")     # 예외 없이 통과해야 한다
 
@@ -5645,32 +5613,11 @@ def _scope_workspace(tmp_path: Path, monkeypatch, pd, touches=("work/demo_1/src"
         "status: open\n"
         f"touches:\n{touches_block}\n"
         "---\n\n"
-        f"# {TICKET_ID} — 범위 훅 e2e\n\n"
-        "<!-- pm-ticket-section:start role=developer -->\n"
-        "## 구현 보충 (developer · 2026-08-13)\n\n"
-        "<!-- pm-ticket-section:end role=developer -->\n"
-        "<!-- pm-ticket-section:start role=code-reviewer -->\n"
-        "## 리뷰 (code-reviewer · 2026-08-13)\n\n"
-        "<!-- pm-ticket-section:end role=code-reviewer -->\n"
-        "<!-- pm-ticket-section:start role=architect -->\n"
-        "## 설계 (architect · 2026-08-13)\n\n"
-        "<!-- pm-ticket-section:end role=architect -->\n"
-        # researcher 도 티켓 성장 역할이라 위임 전에 자기 절이 있어야 한다(T-0696).
-        "<!-- pm-ticket-section:start role=researcher -->\n"
-        "## 조사 (researcher · 2026-08-13)\n\n"
-        "<!-- pm-ticket-section:end role=researcher -->\n"
+        f"# {TICKET_ID} — 범위 훅 e2e\n\n## 목표\n범위 판정 e2e.\n"
     )
-    ticket_text, changed = pd.backfill_ticket_seals(ticket_text)
-    assert changed == [
-        ("developer", 0), ("code-reviewer", 0), ("architect", 0), ("researcher", 0),
-    ]
+    # 라운드는 준비가 예약한다([[ADR-0090]]) — 명세에는 역할 산출이 없다.
     ticket_path = tickets / f"{TICKET_ID}-scope.md"
     ticket_path.write_text(ticket_text, encoding="utf-8")
-    # T-0699: 봉인이 있는 open 티켓은 성장 장부 레코드도 있어야 harvest 가 통과한다(봉인 도입 이전
-    # 형상은 sweep 대상이라 거부) — 실물 보드처럼 backfill 레코드를 함께 세운다.
-    pd.append_ticket_growth_records(
-        pd.ticket_growth_dir_for_ticket_path(ticket_path), TICKET_ID, ticket_text, by="backfill",
-    )
     ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.parent.mkdir(parents=True)
     ledger.write_text(
@@ -5826,32 +5773,17 @@ def test_corrupt_ticket_degrades_only_generic_axis_and_adapter_warning_survives(
     )
     corrupt_text = (
         "---\n"
-        "id: T-CORRUPTED\n"
+        f"id: {TICKET_ID}\n"
         "title: 손상 ticket\n"
         "status: open\n"
+        # 손상 축은 `touches` **형식**뿐이다(목록이 아니라 매핑) — 티켓 조회 자체는 성립해야
+        # 이 테스트의 축(범위 축만 강등 · 어댑터 축은 생존)이 드러난다.
         "touches:\n"
-        f"- work/demo_1/{adapter_root}\n"
+        f"  work/demo_1/{adapter_root}: yes\n"
         "---\n\n"
-        "<!-- pm-ticket-section:start role=developer -->\n"
-        "## 구현 보충 (developer · 2026-08-13)\n\n"
-        "<!-- pm-ticket-section:end role=developer -->\n"
-        # 손상 축은 frontmatter(id 불일치·touches)뿐이다 — 역할 절 4개는 원본과 같게 둔다.
-        # T-0699 성장 장부가 원본의 4 절 레코드를 들고 있어, 절을 빼면 '절 삭제 검출' 이라는
-        # 별개의 정당한 RED 가 harvest 를 막아 이 테스트의 축(scope 감사 강등)을 가린다.
-        "<!-- pm-ticket-section:start role=code-reviewer -->\n"
-        "## 리뷰 (code-reviewer · 2026-08-13)\n\n"
-        "<!-- pm-ticket-section:end role=code-reviewer -->\n"
-        "<!-- pm-ticket-section:start role=architect -->\n"
-        "## 설계 (architect · 2026-08-13)\n\n"
-        "<!-- pm-ticket-section:end role=architect -->\n"
-        "<!-- pm-ticket-section:start role=researcher -->\n"
-        "## 조사 (researcher · 2026-08-13)\n\n"
-        "<!-- pm-ticket-section:end role=researcher -->\n"
+        f"# {TICKET_ID}\n\n## 목표\n손상 축 격리.\n"
     )
-    ticket_path.write_text(
-        pd.backfill_ticket_seals(corrupt_text)[0],
-        encoding="utf-8",
-    )
+    ticket_path.write_text(corrupt_text, encoding="utf-8")
     fake = _WritingRun(workspace, ([relative], _ok_result()))
 
     rc = _run_main(
@@ -5880,28 +5812,13 @@ def test_corrupt_ticket_isolation_oracle_is_sensitive_to_coupled_none(
         tmp_path / "pm_home" / ".project_manager" / "wiki" / "tickets" / "open"
         / f"{TICKET_ID}-scope.md"
     )
+    # 손상 축은 `touches` 형식뿐이다(매핑) — 티켓 조회는 성립한다.
     corrupt_text = (
-        "---\nid: T-CORRUPTED\ntitle: 손상\nstatus: open\ntouches: []\n---\n\n"
-        "<!-- pm-ticket-section:start role=developer -->\n"
-        "## 구현 보충 (developer · 2026-08-13)\n\n"
-        "<!-- pm-ticket-section:end role=developer -->\n"
-        # 손상 축은 frontmatter(id 불일치·touches)뿐이다 — 역할 절 4개는 원본과 같게 둔다.
-        # T-0699 성장 장부가 원본의 4 절 레코드를 들고 있어, 절을 빼면 '절 삭제 검출' 이라는
-        # 별개의 정당한 RED 가 harvest 를 막아 이 테스트의 축(scope 감사 강등)을 가린다.
-        "<!-- pm-ticket-section:start role=code-reviewer -->\n"
-        "## 리뷰 (code-reviewer · 2026-08-13)\n\n"
-        "<!-- pm-ticket-section:end role=code-reviewer -->\n"
-        "<!-- pm-ticket-section:start role=architect -->\n"
-        "## 설계 (architect · 2026-08-13)\n\n"
-        "<!-- pm-ticket-section:end role=architect -->\n"
-        "<!-- pm-ticket-section:start role=researcher -->\n"
-        "## 조사 (researcher · 2026-08-13)\n\n"
-        "<!-- pm-ticket-section:end role=researcher -->\n"
+        f"---\nid: {TICKET_ID}\ntitle: 손상\nstatus: open\n"
+        "touches:\n  broken: yes\n---\n\n"
+        f"# {TICKET_ID}\n\n## 목표\n손상 축 격리.\n"
     )
-    ticket_path.write_text(
-        pd.backfill_ticket_seals(corrupt_text)[0],
-        encoding="utf-8",
-    )
+    ticket_path.write_text(corrupt_text, encoding="utf-8")
     real_begin = pd.begin_scope_audit
 
     def _coupled_begin(ticket, cwd, *, pm_root=None, adapter_roots=None):

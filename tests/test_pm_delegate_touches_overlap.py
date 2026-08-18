@@ -97,18 +97,9 @@ def _ticket_text(pd, ticket_id: str, *, status: str, claimed_by: str | None,
         f"{claim_line}"
         f"{touches_block}"
         "---\n\n"
-        f"# {ticket_id} — 교집합 e2e\n\n"
-        "<!-- pm-ticket-section:start role=developer -->\n"
-        "## 구현 보충 (developer · 2026-08-17)\n\n"
-        "<!-- pm-ticket-section:end role=developer -->\n"
-        "<!-- pm-ticket-section:start role=code-reviewer -->\n"
-        "## 리뷰 (code-reviewer · 2026-08-17)\n\n"
-        "<!-- pm-ticket-section:end role=code-reviewer -->\n"
-        "<!-- pm-ticket-section:start role=architect -->\n"
-        "## 설계 (architect · 2026-08-17)\n\n"
-        "<!-- pm-ticket-section:end role=architect -->\n"
+        f"# {ticket_id} — 교집합 e2e\n\n## 목표\n교집합 판정 e2e.\n"
     )
-    sealed, _changed = pd.backfill_ticket_seals(text)
+    sealed = text
     return sealed
 
 
@@ -151,14 +142,8 @@ def _overlap_workspace(
         ticket_path = directory / f"{ticket_id}-overlap.md"
         text = _ticket_text(pd, ticket_id, status=status, claimed_by=claimed_by,
                             touches=touches)
+        # 라운드는 명세 밖 파일이고 준비가 예약한다([[ADR-0090]]) — 명세만 세우면 된다.
         ticket_path.write_text(text, encoding="utf-8")
-        # T-0699: 봉인이 있는 active 티켓은 성장 장부 레코드도 있어야 위임 종료 harvest 가
-        # 통과한다(봉인만 있고 장부가 없는 형상은 마이그레이션 sweep 대상이라 거부) —
-        # 실물 보드처럼 backfill 레코드를 함께 세운다.
-        pd.append_ticket_growth_records(
-            pd.ticket_growth_dir_for_ticket_path(ticket_path), ticket_id, text,
-            by="backfill",
-        )
 
     ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.parent.mkdir(parents=True, exist_ok=True)

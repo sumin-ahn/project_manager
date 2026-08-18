@@ -391,7 +391,7 @@ def test_existence_classifier_catches_drift():
     worktree = _load_parser("worktree_pool")
     config = _load_parser("pm_config")
     delegate_ticket, delegate_tokens = _parser_for_command(
-        "pm_delegate", _tokenize("ticket harvest --copy /tmp/c --cwd /tmp/w --capability-stdin")
+        "pm_delegate", _tokenize("ticket harvest --copy /tmp/c --cwd /tmp/w")
     )
     assert board is not None and handoff is not None
     assert worktree is not None and config is not None

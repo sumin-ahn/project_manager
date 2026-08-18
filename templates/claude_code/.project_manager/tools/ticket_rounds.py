@@ -382,23 +382,34 @@ def parse_round_filename(name: str) -> tuple[int, str] | None:
 
 # ── 시드 렌더 · 무편집(산출 없음) 판정 ──────────────────────────────────────
 
-def render_round_seed(role: str, ticket_text: str, *, today: str) -> str:
+def render_round_seed(
+    role: str, ticket_text: str, *, today: str,
+    previous_round: tuple[int, str] | None = None,
+) -> str:
     """라운드 파일의 시드 — 첫 줄 헤더 + 역할 골격 본문.
 
     헤더 형식은 `## <라벨> (<role> · <YYYY-MM-DD>)` 로 종전 역할 절 헤더와 같다. 골격 본문은
     `pm_delegate` 를 부른다(로직 이동이 아니라 호출 — 시드 문구의 단일 진실은 그쪽이다).
+
+    `previous_round` 는 **같은 역할의 직전 라운드** `(순번, 본문)` 이다 — 리뷰 역할 골격이
+    확인 대상 finding ID 를 프리필하는 유일한 입력이고([[T-0749]] F-007), 무편집 판정
+    (`_text_is_pending`)은 같은 값으로 시드를 다시 렌더해 대조한다. 없으면 자리표시자다.
     """
     _require_role(role)
     if not isinstance(today, str) or _HEADER_DATE_RE.match(today) is None:
         raise RoundsError(f"라운드 헤더 날짜는 YYYY-MM-DD 형식이어야 한다: {today!r}")
     return (
         f"## {ROLE_LABELS[role]} ({role} · {today})\n\n"
-        + _render_round_seed_body(role, ticket_text)
+        + _render_round_seed_body(role, ticket_text, previous_round)
     )
 
 
-def _render_round_seed_body(role: str, ticket_text: str) -> str:
-    return _load_pm_delegate().render_ticket_growth_section_seed(role, ticket_text)
+def _render_round_seed_body(
+    role: str, ticket_text: str, previous_round: tuple[int, str] | None = None,
+) -> str:
+    return _load_pm_delegate().render_ticket_growth_section_seed(
+        role, ticket_text, previous_round=previous_round,
+    )
 
 
 def _round_header_re(role: str) -> re.Pattern[str]:
@@ -412,25 +423,48 @@ def _normalized_newlines(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def _text_is_pending(role: str, text: str, ticket_text: str) -> bool:
+def _text_is_pending(
+    role: str, text: str, ticket_text: str,
+    previous_round: tuple[int, str] | None = None,
+) -> bool:
     """본문이 시드 재렌더와 같은가 — 첫 줄(날짜가 든 헤더)은 문법만 보고 대조에서 뺀다.
 
     개행 표기는 정규화해 비교한다. 시드는 LF 로 예약되지만 CRLF 체크아웃(또는 CRLF 를 쓰는
     슬롯)을 지나면 같은 골격이 CRLF 로 돌아오고, 그것을 "편집됨"으로 읽으면 산출 없는 라운드가
     산출 있는 것으로 위장된다.
+
+    `previous_round` 는 예약 당시 시드가 본 **같은 역할의 직전 라운드**여야 한다 — 다른 값을
+    주면 리뷰 역할 골격의 프리필이 달라져 무편집 라운드가 편집됨으로 읽힌다.
     """
     first_line, separator, rest = text.partition("\n")
     if not separator:
         return False
     if _round_header_re(role).fullmatch(first_line.rstrip("\r")) is None:
         return False
-    expected = "\n" + _render_round_seed_body(role, ticket_text)
+    expected = "\n" + _render_round_seed_body(role, ticket_text, previous_round)
     return _normalized_newlines(rest) == _normalized_newlines(expected)
 
 
-def round_is_pending(round: Round, *, ticket_text: str) -> bool:
+def _previous_round_for(loaded, role: str, ordinal: int) -> tuple[int, str] | None:
+    """`(순번, 역할, 경로, 본문)` 목록에서 같은 역할의 **직전** 라운드 `(순번, 본문)`.
+
+    시드 재렌더 입력이라 예약 당시와 같은 것을 골라야 한다 — 자기보다 앞선 순번 중 최대다.
+    """
+    candidates = [
+        item for item in loaded if item[1] == role and item[0] < ordinal
+    ]
+    if not candidates:
+        return None
+    latest = max(candidates, key=lambda item: item[0])
+    return latest[0], latest[3]
+
+
+def round_is_pending(
+    round: Round, *, ticket_text: str,
+    previous_round: tuple[int, str] | None = None,
+) -> bool:
     """이 라운드가 아직 시드 그대로(산출 없음)인가."""
-    return _text_is_pending(round.role, round.text, ticket_text)
+    return _text_is_pending(round.role, round.text, ticket_text, previous_round)
 
 
 # ── 예약 · 로드 · 교체 ──────────────────────────────────────────────────────
@@ -523,15 +557,24 @@ def load_rounds(
     보존해 되쓰는 지점들이 그 구분에 기대 있다.
     """
     directory = rounds_dir_for_ticket(ticket_id, tickets_dir)
-    rounds: list[Round] = []
-    for ordinal, role, path in _scan_round_files(directory):
-        text = _load_file_lock().read_text_shared(
-            path, encoding="utf-8", newline="",
+    # 무편집 판정은 **같은 역할의 직전 라운드**를 입력으로 쓴다(예약 당시 시드가 본 그 값) —
+    # 그래서 본문을 먼저 다 읽고 순번 순으로 판정한다.
+    loaded = [
+        (
+            ordinal, role, path,
+            _load_file_lock().read_text_shared(path, encoding="utf-8", newline=""),
         )
+        for ordinal, role, path in _scan_round_files(directory)
+    ]
+    rounds: list[Round] = []
+    for ordinal, role, path, text in loaded:
         rounds.append(
             Round(
                 ordinal=ordinal, role=role, path=path, text=text,
-                pending=_text_is_pending(role, text, ticket_text),
+                pending=_text_is_pending(
+                    role, text, ticket_text,
+                    _previous_round_for(loaded, role, ordinal),
+                ),
             )
         )
     return rounds
@@ -623,11 +666,17 @@ def verify_rounds(
                     f"순번 빈틈(삭제 의심): {', '.join(missing)}",
                 )
             )
-    for ordinal, role, path in valid:
-        text = _load_file_lock().read_text_shared(
-            path, encoding="utf-8", newline="",
+    loaded = [
+        (
+            ordinal, role, path,
+            _load_file_lock().read_text_shared(path, encoding="utf-8", newline=""),
         )
-        if _text_is_pending(role, text, ticket_text):
+        for ordinal, role, path in valid
+    ]
+    for ordinal, role, _path, text in loaded:
+        if _text_is_pending(
+            role, text, ticket_text, _previous_round_for(loaded, role, ordinal),
+        ):
             problems.append(
                 RoundProblem(
                     PROBLEM_PENDING,

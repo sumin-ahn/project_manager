@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "count": 596,
+  "count": 628,
   "surface_counts": {
     "markdown": 148,
-    "python-non-prose": 32,
-    "python-prose": 416
+    "python-non-prose": 28,
+    "python-prose": 452
   },
   "entries": [
     {
@@ -594,9 +594,41 @@
     {
       "path": ".project_manager/tools/pm_delegate.py",
       "kind": "work_item",
-      "match": "ADR-0089",
+      "match": "ADR-0090",
       "surface": "python-prose",
-      "hash": "8eea0bf222e50774cd9ac51f2cab01d0213575818bd64c394a0ab3deb4c01143",
+      "hash": "749807c50cf7742503036d5c813f6d6425acb6e2eaad19571af512df5966f6d4",
+      "count": 1
+    },
+    {
+      "path": ".project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "ADR-0090",
+      "surface": "python-prose",
+      "hash": "87340fdc4b270cd009a99823ae934faccf4a51ad31a55dd69fb02f807ac8b3b9",
+      "count": 1
+    },
+    {
+      "path": ".project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "ADR-0090",
+      "surface": "python-prose",
+      "hash": "9326780a78e5d2ae1e89bbaf5fcf9fb477e2da7f35316b5b6c8a0abc942dec9c",
+      "count": 1
+    },
+    {
+      "path": ".project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "ADR-0090",
+      "surface": "python-prose",
+      "hash": "9f6243a37f1d5a6d0d9f2688a8fbf744d5b5ce9c2719ea16ea1186f9be5a8928",
+      "count": 1
+    },
+    {
+      "path": ".project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "ADR-0090",
+      "surface": "python-prose",
+      "hash": "ee536963698fedb4a9ad2de32bd81f2cbc2c04e1c636eee84df0631b703bddc7",
       "count": 1
     },
     {
@@ -605,22 +637,6 @@
       "match": "T-0472",
       "surface": "python-prose",
       "hash": "b28a29a3fb04704aa735ebed4db2c89d07a330b1e38c2254bbf3d9c9baa7978a",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/pm_delegate.py",
-      "kind": "work_item",
-      "match": "T-0694",
-      "surface": "python-prose",
-      "hash": "481027a3332d2decbad602190fbdb0393c20a0b7cc7ac8ce53785c1b36151864",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/pm_delegate.py",
-      "kind": "work_item",
-      "match": "T-0699",
-      "surface": "python-non-prose",
-      "hash": "7c5ac786519d02ed6991a20bf283d503cdaf6c8655a700a77bd3a193499980d4",
       "count": 1
     },
     {
@@ -693,6 +709,46 @@
       "match": "T-0735",
       "surface": "python-prose",
       "hash": "f8c45176cd22a1235113b761521136bd8fc09feca26b3a92661ae3c6f1b6a392",
+      "count": 1
+    },
+    {
+      "path": ".project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-0749",
+      "surface": "python-prose",
+      "hash": "2f2972500f4c633631412cdf7ba33bc942a1de1d9a58ea663394237797f52d99",
+      "count": 1
+    },
+    {
+      "path": ".project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-0749",
+      "surface": "python-prose",
+      "hash": "344fe39ebcd64030c87cdd0d80f695d5db2bebda2c6b15ee3c1367a01a5d668a",
+      "count": 1
+    },
+    {
+      "path": ".project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-0749",
+      "surface": "python-prose",
+      "hash": "7a69beb7e1603b4ed6699464db903bb6f1736cfcf3cc428ea05866af29fb3b3e",
+      "count": 1
+    },
+    {
+      "path": ".project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-0751",
+      "surface": "python-prose",
+      "hash": "84927105cc98c52ac36ad3589d8f4f8cb2e9883c4a1a3181fb467fd82afc459b",
+      "count": 1
+    },
+    {
+      "path": ".project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-0752",
+      "surface": "python-prose",
+      "hash": "60fb325b5891f6ee1c88cefa4bee07e364b7212ae8c5a1020f8c24d8e3d60729",
       "count": 1
     },
     {
@@ -853,6 +909,14 @@
       "match": "T-0729",
       "surface": "python-prose",
       "hash": "244faa36b2351d0db075af70563681dea89ed578d6f69a361e5fc32dc61182b1",
+      "count": 1
+    },
+    {
+      "path": ".project_manager/tools/ticket_rounds.py",
+      "kind": "work_item",
+      "match": "T-0749",
+      "surface": "python-prose",
+      "hash": "b29bf2596788e539ee07eeae6589a1904f4f5e79b65126a53b76a38d14bd36fc",
       "count": 1
     },
     {
@@ -1522,9 +1586,41 @@
     {
       "path": "templates/claude_code/.project_manager/tools/pm_delegate.py",
       "kind": "work_item",
-      "match": "ADR-0089",
+      "match": "ADR-0090",
       "surface": "python-prose",
-      "hash": "8eea0bf222e50774cd9ac51f2cab01d0213575818bd64c394a0ab3deb4c01143",
+      "hash": "749807c50cf7742503036d5c813f6d6425acb6e2eaad19571af512df5966f6d4",
+      "count": 1
+    },
+    {
+      "path": "templates/claude_code/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "ADR-0090",
+      "surface": "python-prose",
+      "hash": "87340fdc4b270cd009a99823ae934faccf4a51ad31a55dd69fb02f807ac8b3b9",
+      "count": 1
+    },
+    {
+      "path": "templates/claude_code/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "ADR-0090",
+      "surface": "python-prose",
+      "hash": "9326780a78e5d2ae1e89bbaf5fcf9fb477e2da7f35316b5b6c8a0abc942dec9c",
+      "count": 1
+    },
+    {
+      "path": "templates/claude_code/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "ADR-0090",
+      "surface": "python-prose",
+      "hash": "9f6243a37f1d5a6d0d9f2688a8fbf744d5b5ce9c2719ea16ea1186f9be5a8928",
+      "count": 1
+    },
+    {
+      "path": "templates/claude_code/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "ADR-0090",
+      "surface": "python-prose",
+      "hash": "ee536963698fedb4a9ad2de32bd81f2cbc2c04e1c636eee84df0631b703bddc7",
       "count": 1
     },
     {
@@ -1533,22 +1629,6 @@
       "match": "T-0472",
       "surface": "python-prose",
       "hash": "b28a29a3fb04704aa735ebed4db2c89d07a330b1e38c2254bbf3d9c9baa7978a",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/pm_delegate.py",
-      "kind": "work_item",
-      "match": "T-0694",
-      "surface": "python-prose",
-      "hash": "481027a3332d2decbad602190fbdb0393c20a0b7cc7ac8ce53785c1b36151864",
-      "count": 1
-    },
-    {
-      "path": "templates/claude_code/.project_manager/tools/pm_delegate.py",
-      "kind": "work_item",
-      "match": "T-0699",
-      "surface": "python-non-prose",
-      "hash": "7c5ac786519d02ed6991a20bf283d503cdaf6c8655a700a77bd3a193499980d4",
       "count": 1
     },
     {
@@ -1621,6 +1701,46 @@
       "match": "T-0735",
       "surface": "python-prose",
       "hash": "f8c45176cd22a1235113b761521136bd8fc09feca26b3a92661ae3c6f1b6a392",
+      "count": 1
+    },
+    {
+      "path": "templates/claude_code/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-0749",
+      "surface": "python-prose",
+      "hash": "2f2972500f4c633631412cdf7ba33bc942a1de1d9a58ea663394237797f52d99",
+      "count": 1
+    },
+    {
+      "path": "templates/claude_code/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-0749",
+      "surface": "python-prose",
+      "hash": "344fe39ebcd64030c87cdd0d80f695d5db2bebda2c6b15ee3c1367a01a5d668a",
+      "count": 1
+    },
+    {
+      "path": "templates/claude_code/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-0749",
+      "surface": "python-prose",
+      "hash": "7a69beb7e1603b4ed6699464db903bb6f1736cfcf3cc428ea05866af29fb3b3e",
+      "count": 1
+    },
+    {
+      "path": "templates/claude_code/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-0751",
+      "surface": "python-prose",
+      "hash": "84927105cc98c52ac36ad3589d8f4f8cb2e9883c4a1a3181fb467fd82afc459b",
+      "count": 1
+    },
+    {
+      "path": "templates/claude_code/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-0752",
+      "surface": "python-prose",
+      "hash": "60fb325b5891f6ee1c88cefa4bee07e364b7212ae8c5a1020f8c24d8e3d60729",
       "count": 1
     },
     {
@@ -1781,6 +1901,14 @@
       "match": "T-0729",
       "surface": "python-prose",
       "hash": "244faa36b2351d0db075af70563681dea89ed578d6f69a361e5fc32dc61182b1",
+      "count": 1
+    },
+    {
+      "path": "templates/claude_code/.project_manager/tools/ticket_rounds.py",
+      "kind": "work_item",
+      "match": "T-0749",
+      "surface": "python-prose",
+      "hash": "b29bf2596788e539ee07eeae6589a1904f4f5e79b65126a53b76a38d14bd36fc",
       "count": 1
     },
     {
@@ -2602,9 +2730,41 @@
     {
       "path": "templates/codex/.project_manager/tools/pm_delegate.py",
       "kind": "work_item",
-      "match": "ADR-0089",
+      "match": "ADR-0090",
       "surface": "python-prose",
-      "hash": "8eea0bf222e50774cd9ac51f2cab01d0213575818bd64c394a0ab3deb4c01143",
+      "hash": "749807c50cf7742503036d5c813f6d6425acb6e2eaad19571af512df5966f6d4",
+      "count": 1
+    },
+    {
+      "path": "templates/codex/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "ADR-0090",
+      "surface": "python-prose",
+      "hash": "87340fdc4b270cd009a99823ae934faccf4a51ad31a55dd69fb02f807ac8b3b9",
+      "count": 1
+    },
+    {
+      "path": "templates/codex/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "ADR-0090",
+      "surface": "python-prose",
+      "hash": "9326780a78e5d2ae1e89bbaf5fcf9fb477e2da7f35316b5b6c8a0abc942dec9c",
+      "count": 1
+    },
+    {
+      "path": "templates/codex/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "ADR-0090",
+      "surface": "python-prose",
+      "hash": "9f6243a37f1d5a6d0d9f2688a8fbf744d5b5ce9c2719ea16ea1186f9be5a8928",
+      "count": 1
+    },
+    {
+      "path": "templates/codex/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "ADR-0090",
+      "surface": "python-prose",
+      "hash": "ee536963698fedb4a9ad2de32bd81f2cbc2c04e1c636eee84df0631b703bddc7",
       "count": 1
     },
     {
@@ -2613,22 +2773,6 @@
       "match": "T-0472",
       "surface": "python-prose",
       "hash": "b28a29a3fb04704aa735ebed4db2c89d07a330b1e38c2254bbf3d9c9baa7978a",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/pm_delegate.py",
-      "kind": "work_item",
-      "match": "T-0694",
-      "surface": "python-prose",
-      "hash": "481027a3332d2decbad602190fbdb0393c20a0b7cc7ac8ce53785c1b36151864",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.project_manager/tools/pm_delegate.py",
-      "kind": "work_item",
-      "match": "T-0699",
-      "surface": "python-non-prose",
-      "hash": "7c5ac786519d02ed6991a20bf283d503cdaf6c8655a700a77bd3a193499980d4",
       "count": 1
     },
     {
@@ -2701,6 +2845,46 @@
       "match": "T-0735",
       "surface": "python-prose",
       "hash": "f8c45176cd22a1235113b761521136bd8fc09feca26b3a92661ae3c6f1b6a392",
+      "count": 1
+    },
+    {
+      "path": "templates/codex/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-0749",
+      "surface": "python-prose",
+      "hash": "2f2972500f4c633631412cdf7ba33bc942a1de1d9a58ea663394237797f52d99",
+      "count": 1
+    },
+    {
+      "path": "templates/codex/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-0749",
+      "surface": "python-prose",
+      "hash": "344fe39ebcd64030c87cdd0d80f695d5db2bebda2c6b15ee3c1367a01a5d668a",
+      "count": 1
+    },
+    {
+      "path": "templates/codex/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-0749",
+      "surface": "python-prose",
+      "hash": "7a69beb7e1603b4ed6699464db903bb6f1736cfcf3cc428ea05866af29fb3b3e",
+      "count": 1
+    },
+    {
+      "path": "templates/codex/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-0751",
+      "surface": "python-prose",
+      "hash": "84927105cc98c52ac36ad3589d8f4f8cb2e9883c4a1a3181fb467fd82afc459b",
+      "count": 1
+    },
+    {
+      "path": "templates/codex/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-0752",
+      "surface": "python-prose",
+      "hash": "60fb325b5891f6ee1c88cefa4bee07e364b7212ae8c5a1020f8c24d8e3d60729",
       "count": 1
     },
     {
@@ -2861,6 +3045,14 @@
       "match": "T-0729",
       "surface": "python-prose",
       "hash": "244faa36b2351d0db075af70563681dea89ed578d6f69a361e5fc32dc61182b1",
+      "count": 1
+    },
+    {
+      "path": "templates/codex/.project_manager/tools/ticket_rounds.py",
+      "kind": "work_item",
+      "match": "T-0749",
+      "surface": "python-prose",
+      "hash": "b29bf2596788e539ee07eeae6589a1904f4f5e79b65126a53b76a38d14bd36fc",
       "count": 1
     },
     {
@@ -3906,9 +4098,41 @@
     {
       "path": "templates/opencode/.project_manager/tools/pm_delegate.py",
       "kind": "work_item",
-      "match": "ADR-0089",
+      "match": "ADR-0090",
       "surface": "python-prose",
-      "hash": "8eea0bf222e50774cd9ac51f2cab01d0213575818bd64c394a0ab3deb4c01143",
+      "hash": "749807c50cf7742503036d5c813f6d6425acb6e2eaad19571af512df5966f6d4",
+      "count": 1
+    },
+    {
+      "path": "templates/opencode/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "ADR-0090",
+      "surface": "python-prose",
+      "hash": "87340fdc4b270cd009a99823ae934faccf4a51ad31a55dd69fb02f807ac8b3b9",
+      "count": 1
+    },
+    {
+      "path": "templates/opencode/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "ADR-0090",
+      "surface": "python-prose",
+      "hash": "9326780a78e5d2ae1e89bbaf5fcf9fb477e2da7f35316b5b6c8a0abc942dec9c",
+      "count": 1
+    },
+    {
+      "path": "templates/opencode/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "ADR-0090",
+      "surface": "python-prose",
+      "hash": "9f6243a37f1d5a6d0d9f2688a8fbf744d5b5ce9c2719ea16ea1186f9be5a8928",
+      "count": 1
+    },
+    {
+      "path": "templates/opencode/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "ADR-0090",
+      "surface": "python-prose",
+      "hash": "ee536963698fedb4a9ad2de32bd81f2cbc2c04e1c636eee84df0631b703bddc7",
       "count": 1
     },
     {
@@ -3917,22 +4141,6 @@
       "match": "T-0472",
       "surface": "python-prose",
       "hash": "b28a29a3fb04704aa735ebed4db2c89d07a330b1e38c2254bbf3d9c9baa7978a",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/pm_delegate.py",
-      "kind": "work_item",
-      "match": "T-0694",
-      "surface": "python-prose",
-      "hash": "481027a3332d2decbad602190fbdb0393c20a0b7cc7ac8ce53785c1b36151864",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.project_manager/tools/pm_delegate.py",
-      "kind": "work_item",
-      "match": "T-0699",
-      "surface": "python-non-prose",
-      "hash": "7c5ac786519d02ed6991a20bf283d503cdaf6c8655a700a77bd3a193499980d4",
       "count": 1
     },
     {
@@ -4005,6 +4213,46 @@
       "match": "T-0735",
       "surface": "python-prose",
       "hash": "f8c45176cd22a1235113b761521136bd8fc09feca26b3a92661ae3c6f1b6a392",
+      "count": 1
+    },
+    {
+      "path": "templates/opencode/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-0749",
+      "surface": "python-prose",
+      "hash": "2f2972500f4c633631412cdf7ba33bc942a1de1d9a58ea663394237797f52d99",
+      "count": 1
+    },
+    {
+      "path": "templates/opencode/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-0749",
+      "surface": "python-prose",
+      "hash": "344fe39ebcd64030c87cdd0d80f695d5db2bebda2c6b15ee3c1367a01a5d668a",
+      "count": 1
+    },
+    {
+      "path": "templates/opencode/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-0749",
+      "surface": "python-prose",
+      "hash": "7a69beb7e1603b4ed6699464db903bb6f1736cfcf3cc428ea05866af29fb3b3e",
+      "count": 1
+    },
+    {
+      "path": "templates/opencode/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-0751",
+      "surface": "python-prose",
+      "hash": "84927105cc98c52ac36ad3589d8f4f8cb2e9883c4a1a3181fb467fd82afc459b",
+      "count": 1
+    },
+    {
+      "path": "templates/opencode/.project_manager/tools/pm_delegate.py",
+      "kind": "work_item",
+      "match": "T-0752",
+      "surface": "python-prose",
+      "hash": "60fb325b5891f6ee1c88cefa4bee07e364b7212ae8c5a1020f8c24d8e3d60729",
       "count": 1
     },
     {
@@ -4165,6 +4413,14 @@
       "match": "T-0729",
       "surface": "python-prose",
       "hash": "244faa36b2351d0db075af70563681dea89ed578d6f69a361e5fc32dc61182b1",
+      "count": 1
+    },
+    {
+      "path": "templates/opencode/.project_manager/tools/ticket_rounds.py",
+      "kind": "work_item",
+      "match": "T-0749",
+      "surface": "python-prose",
+      "hash": "b29bf2596788e539ee07eeae6589a1904f4f5e79b65126a53b76a38d14bd36fc",
       "count": 1
     },
     {
