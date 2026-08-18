@@ -666,13 +666,7 @@ def test_read_anchor_labels_only_real_board_owner_as_pm_home(
 def test_mutation_dispatch_never_prints_read_anchor(monkeypatch, subcommand):
     """모든 mutation leaf는 display-only read 앵커를 타지 않는다(rc/차단 경로 불변)."""
     b = _load_board()
-    parts = subcommand.split()
-    args = argparse.Namespace(
-        cmd=parts[0],
-        idea_cmd=parts[1] if parts[0] == "idea" else None,
-        prefix_cmd=parts[1] if parts[0] == "prefix" else None,
-        fn=lambda _args: 0,
-    )
+    args = _dispatch_namespace(b, subcommand, lambda _args: 0)
     monkeypatch.setattr(b, "build_parser", lambda: types.SimpleNamespace(parse_args=lambda _argv: args))
     monkeypatch.setattr(b, "_guard_worktree_misanchor", lambda _action: False)
     monkeypatch.setattr(
@@ -799,7 +793,22 @@ _MUTATION_ARGVS = [
     ["prefix", "strip", "AAA"],
     ["prefix", "merge", "AAA", "--into", "BBB"],
     ["prefix", "delete", "AAA"],
+    ["rounds", "migrate", "--dry-run"],
 ]
+
+
+def _dispatch_namespace(board, subcommand: str, fn):
+    """분류 키(`<group> <leaf>` 점표기)를 그대로 되돌려주는 Namespace 를 만든다.
+
+    서브그룹 dest 이름은 엔진의 단일 표에서 가져온다 — 여기에 dest 를 손으로 나열하면 새 그룹이
+    생겼을 때 그 leaf 가 이 게이트에서 조용히 top-level 로 접힌다(검증 공회전).
+    """
+    parts = subcommand.split()
+    values = {"cmd": parts[0], "fn": fn}
+    dest = board._SUBCOMMAND_GROUP_DESTS.get(parts[0])
+    if dest is not None and len(parts) > 1:
+        values[dest] = parts[1]
+    return argparse.Namespace(**values)
 
 
 def test_mutation_argv_list_covers_all_mutations():
@@ -975,13 +984,7 @@ def test_read_board_resolution_opens_only_read_dispatch(
         monkeypatch, subcommand):
     """실 등록 leaf 전수에서 PM 홈 board 해소는 read 축에만 열리고 mutation/sidecar는 닫힌다."""
     b = _load_board()
-    parts = subcommand.split()
-    args = argparse.Namespace(
-        cmd=parts[0],
-        idea_cmd=parts[1] if parts[0] == "idea" else None,
-        prefix_cmd=parts[1] if parts[0] == "prefix" else None,
-        fn=lambda _args: 0,
-    )
+    args = _dispatch_namespace(b, subcommand, lambda _args: 0)
     monkeypatch.setattr(b, "build_parser", lambda: types.SimpleNamespace(parse_args=lambda _argv: args))
     monkeypatch.setattr(b, "_guard_worktree_misanchor", lambda _action: False)
     calls: list[Path] = []
