@@ -392,7 +392,7 @@ def render_round_seed(
     `pm_delegate` 를 부른다(로직 이동이 아니라 호출 — 시드 문구의 단일 진실은 그쪽이다).
 
     `previous_round` 는 **같은 역할의 직전 라운드** `(순번, 본문)` 이다 — 리뷰 역할 골격이
-    확인 대상 finding ID 를 프리필하는 유일한 입력이고([[T-0749]] F-007), 무편집 판정
+    확인 대상 finding ID 를 프리필하는 유일한 입력이고, 무편집 판정
     (`_text_is_pending`)은 같은 값으로 시드를 다시 렌더해 대조한다. 없으면 자리표시자다.
     """
     _require_role(role)
