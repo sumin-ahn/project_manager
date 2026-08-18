@@ -137,7 +137,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
                         # 이름으로 import 한다 — FileFinder 는 디렉터리 목록을 mtime 으로 캐시하고
                         # 인터프리터 시작 뒤 생긴 파일은 invalidate 없이는 인식이 보장되지 않는다
                         # (Python 문서 `importlib.invalidate_caches` · Windows 실측 간헐
-                        # ModuleNotFoundError · T-0746). 블록은 stdlib-only 라 지역 import 로 둔다.
+                        # ModuleNotFoundError). 블록은 stdlib-only 라 지역 import 로 둔다.
                         import importlib as _bootstrap_importlib
                         _bootstrap_importlib.invalidate_caches()
                         module = __import__(import_name)
@@ -1019,11 +1019,11 @@ def opencode_runtime_role_config(role: str) -> str:
     """
     perm_axis(role)  # shared role allowlist and wording
     # ``edit`` is allowed for every role, researcher included: all participating roles record
-    # their own output in the ticket copy's role section (ADR-0089 · T-0696 F-014), and the
-    # shipped opencode researcher card carries the same ``edit: allow`` / ``bash: deny`` axis.
-    # This fragment is the highest-precedence config, so a researcher ``edit: deny`` here would
-    # override the card and leave the harvested section unwritten (T-0745). Path narrowing is
-    # not an opencode edit-permission axis; the pre/post delegation touches audit holds it.
+    # their own output in the ticket copy's role section, and the shipped opencode researcher
+    # card carries the same ``edit: allow`` / ``bash: deny`` axis. This fragment is the
+    # highest-precedence config, so a researcher ``edit: deny`` here would override the card
+    # and leave the harvested section unwritten. Path narrowing is not an opencode
+    # edit-permission axis; the pre/post delegation touches audit holds it.
     permission: dict[str, object] = {
         "read": "allow",
         "edit": "allow",
