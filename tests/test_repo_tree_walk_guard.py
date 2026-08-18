@@ -47,6 +47,24 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "정적 테스트 소스 자체가 판정 대상"
     ),
     (
+        "tests/test_tests_windows_portability_discipline.py",
+        "test_tests_do_not_mutate_the_global_os_name",
+        "rglob",
+        "'*.py'",
+    ): WalkException(
+        "닫힌 tests/ Python 소스의 전역 os.name 변이 전수 검사 — repo 소유 인벤토리가 아니라 "
+        "정적 테스트 소스 자체가 판정 대상(T-0741)"
+    ),
+    (
+        "tests/test_tests_windows_portability_discipline.py",
+        "test_tests_python_child_subprocess_calls_declare_encoding",
+        "rglob",
+        "'*.py'",
+    ): WalkException(
+        "닫힌 tests/ Python 소스의 python 자식 subprocess encoding 규율 전수 검사 — repo 소유 "
+        "인벤토리가 아니라 정적 테스트 소스 자체가 판정 대상(T-0741)"
+    ),
+    (
         "tests/test_pm_update_opencode.py",
         "test_templates_do_not_ship_github_workflows",
         "rglob",

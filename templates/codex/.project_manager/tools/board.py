@@ -6542,8 +6542,9 @@ def _minimum_python() -> tuple[int, int]:
     기존 엔진 로더 관례대로 파일 위치를 앵커로 삼는다. 탐지 때만 지연 로드해 board 의
     다른 명령과 최소 격리 테스트에는 새 선행 의존을 만들지 않는다.
     """
-    # os.name 은 _detect_py Windows 분기 테스트/실행에서 바뀔 수 있으므로, 그 값에 따라
-    # WindowsPath/PosixPath 구현을 고르는 pathlib 대신 import 시 고정된 os.path 를 쓴다.
+    # _detect_py 의 Windows 분기는 _probe_os_name() seam 주입으로 테스트한다(전역 os.name 은
+    # 더 이상 안 바뀐다). 그래도 pathlib 은 실행 시점 os.name 을 참조해 WindowsPath/PosixPath 를
+    # 고르므로, 이 함수는 그 선택 자체에 기대지 않도록 import 시 고정된 os.path 를 계속 쓴다.
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "engine_rev.py")
     mod = _load_module_from_path(
         type(REPO)(path), "engine_rev.py", allow_unverified=True,
