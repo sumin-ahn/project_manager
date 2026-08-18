@@ -330,7 +330,8 @@ IDEA_STATUS_DIRS: tuple[str, ...] = ("open", "promoted", "killed")
 # (idea/prefix 서브그룹은 `<group> <sub>` 점표기.) reid=ID 재부여·promote-scope=wiki family_scope
 # retag·refresh=파생 board.md 재생성(worktree refresh 는 정당 사용 없음·stray dashboard 방지)·
 # verified-at-backfill/repin=PM 홈 현재-진실 문서(architecture/status/domain) frontmatter 쓰기(
-# worktree 엔 그 문서가 없어 no-op 이나 PM 홈 실행이 설계 의도라 오실행 가드).
+# worktree 엔 그 문서가 없어 no-op 이나 PM 홈 실행이 설계 의도라 오실행 가드)·
+# rounds migrate=구 역할 절을 라운드 파일로 옮기고 구 장부/사본을 지우는 일회성 board 쓰기.
 _MUTATION_SUBCOMMANDS: frozenset[str] = frozenset({
     "new", "promote", "claim", "complete", "block", "unclaim", "unblock",
     "section-add", "tier",
@@ -338,6 +339,7 @@ _MUTATION_SUBCOMMANDS: frozenset[str] = frozenset({
     "verified-at-backfill", "verified-at-repin",
     "idea new", "idea promote", "idea kill",
     "prefix rename", "prefix strip", "prefix merge", "prefix delete",
+    "rounds migrate",
 })
 # 조회(read-only·board 상태 미변경) — 게이트 없음.
 _READ_SUBCOMMANDS: frozenset[str] = frozenset({
@@ -360,6 +362,11 @@ _READ_PM_INPUTS_BY_SUBCOMMAND: dict[str, str] = {
 _SIDECAR_SUBCOMMANDS: frozenset[str] = frozenset({
     "regression", "livegate", "git-anchor",
 })
+# 서브그룹 이름 → 그 그룹 leaf 를 담은 argparse dest. 분류 키(`<group> <leaf>` 점표기)를 만드는
+# `_resolved_subcommand` 의 단일 표다 — 파서에 그룹을 더하면 여기에도 등재한다.
+_SUBCOMMAND_GROUP_DESTS: dict[str, str] = {
+    "idea": "idea_cmd", "prefix": "prefix_cmd", "rounds": "rounds_cmd",
+}
 
 # raw git mutation 가드도 board dispatch의 mutation 분류와 같은 원칙(한 표 → 모든 소비처)을 쓴다.
 # 하네스별 훅은 이 표를 복제하지 않고 ``judge_git_anchor``/``judge_git_anchor_command``만 호출한다.
@@ -1792,17 +1799,17 @@ def judge_git_anchor_command(
 
 
 def _resolved_subcommand(args: argparse.Namespace) -> str:
-    """argparse Namespace 에서 실행된 subcommand 를 점표기로 해소한다(idea/prefix 서브그룹 포함).
+    """argparse Namespace 에서 실행된 subcommand 를 점표기로 해소한다(서브그룹 포함).
 
-    top-level dest=`cmd`, 서브그룹 dest=`idea_cmd`/`prefix_cmd` — dispatch 게이트가 mutation
-    분류를 조회할 키를 만든다. (미지정/불명 → "".)
+    top-level dest=`cmd`, 서브그룹 dest 는 아래 표 — dispatch 게이트가 mutation 분류를 조회할
+    키를 만든다. (미지정/불명 → "".) 새 서브그룹은 표에만 등재하면 되고, 등재를 잊으면 그
+    그룹의 leaf 가 분류에서 통째로 빠진다 — 메타 가드 테스트가 그 클래스를 잡는다.
     """
     cmd = getattr(args, "cmd", None) or ""
-    if cmd == "idea":
-        return f"idea {getattr(args, 'idea_cmd', '') or ''}".strip()
-    if cmd == "prefix":
-        return f"prefix {getattr(args, 'prefix_cmd', '') or ''}".strip()
-    return cmd
+    dest = _SUBCOMMAND_GROUP_DESTS.get(cmd)
+    if dest is None:
+        return cmd
+    return f"{cmd} {getattr(args, dest, '') or ''}".strip()
 
 
 def _print_read_anchor(
@@ -9412,6 +9419,583 @@ def cmd_section_add(args: argparse.Namespace) -> int:
     return 0
 
 
+# ── 구 컨테이너(역할 절) → 라운드 파일 일회성 변환 ────────────────────────
+#
+# 라운드 사이드카 이전의 board 는 역할 산출을 명세 본문 안에 marker 로 감싸 누적했고
+# (`<!-- pm-ticket-section:start role=… -->` … `:end` + 봉인 줄), 그 옆에 성장 장부
+# `tickets/.growth/` 와 구 위임 사본 산출물(PM 홈 사본 장부·신뢰 사본·슬롯의 역할 세그먼트
+# 레이아웃)을 뒀다. `rounds migrate` 는 그 형상을 한 번에 라운드 파일로 옮기고 나머지를
+# **지운다** — 두 형식을 영구히 읽는 리더를 두지 않는 것이 이 명령의 존재 이유다. 변환 뒤
+# 명세엔 marker 가 남지 않으므로 `legacy-growth-section` lint 도 함께 꺼진다.
+#
+# 판정 문법은 구 엔진이 **실제로 쓴 줄**이다(아래 정규식). 산문이 backtick 으로 인용한 같은
+# 표기는 HTML 주석 줄이 아니라 걸리지 않는다.
+_LEGACY_SECTION_MARKER = "pm-ticket-section"
+_LEGACY_SEAL_MARKER = "pm-ticket-seal"
+_LEGACY_SECTION_LINE_RE = re.compile(
+    rf"\A<!-- {re.escape(_LEGACY_SECTION_MARKER)}:(start|end) "
+    r"role=([a-z][a-z0-9-]*) -->\r?\n?\Z"
+)
+_LEGACY_SEAL_LINE_RE = re.compile(
+    rf"\A<!-- {re.escape(_LEGACY_SEAL_MARKER)} role=([a-z][a-z0-9-]*) "
+    r"ordinal=(\d+) sha256=([0-9a-f]{64}) by=([a-z][a-z-]*) -->\r?\n?\Z"
+)
+# 구 성장 장부 디렉터리(jsonl + stamp) — 변환이 통째로 지운다.
+_LEGACY_GROWTH_LEDGER_DIRNAME = ".growth"
+# 그 장부의 union merge 선언에 딸린 배포 주석. 선언 바로 앞에 있을 때만 함께 걷는다.
+_LEGACY_GROWTH_ATTR_COMMENTS: tuple[str, ...] = (
+    "# 티켓 성장 장부 = append-only 권위 기록 — 서로 다른 PM 의 append 가 merge 에서 서로를",
+    "# 지우지 않도록 같은 union 드라이버로 양쪽 줄을 모두 보존한다.",
+)
+# 구 위임 사본 산출물 — PM 홈 장부·신뢰 사본 디렉터리, 그리고 슬롯 안 사본 루트.
+_LEGACY_TICKET_COPY_LEDGER_NAME = "ticket_copies.jsonl"
+_LEGACY_TICKET_COPY_TRUST_DIRNAME = "delegate-ticket-copy-trust"
+_LEGACY_TICKET_COPY_ROOT_RELS: tuple[str, ...] = (
+    ".project_manager", ".local", "delegate-ticket-copies")
+
+
+class _RoundsMigrationError(RuntimeError):
+    """변환을 계속하면 무엇을 지우는지 모르게 되는 상태 — 판독 불능 구 사본 장부."""
+
+
+class _LegacySection(NamedTuple):
+    """구 형식 역할 절 하나 — 라운드가 될 본문과 명세에서 지울 줄 범위(양끝 포함)."""
+
+    role: str
+    content: str
+    first_line: int
+    last_line: int
+
+
+class _LegacyCopyLedger(NamedTuple):
+    """구 사본 장부 판독 결과 — 삭제 전 확인이 필요한 행만 따로 센다."""
+
+    path: Path
+    rows: int
+    unharvested: tuple[str, ...]
+    unreadable: int
+
+
+class _RoundsMigrationTicket(NamedTuple):
+    """변환 계획 1건 — 명세 스냅샷·잘라낼 절·변환 후 본문."""
+
+    ticket: str
+    status: str
+    path: Path
+    body_before: str
+    body_after: str
+    sections: tuple[_LegacySection, ...]
+
+
+def _fenced_code_line_mask(lines: Sequence[str]) -> list[bool]:
+    """줄마다 ``` 코드 펜스 안인지 (토글 줄 자체도 안쪽으로 센다).
+
+    문법을 문서화한 티켓은 예시 marker 를 펜스로 감싼다 — 그 예시를 데이터로 읽으면 문서
+    티켓이 변환 대상으로 오판되거나(없는 절을 찾다 실패) lint 가 예시 하나로 영영 red 가
+    된다. 짝이 맞지 않는 마지막 펜스(파일이 열린 채 끝남)는 안쪽으로 접는다 — 더 넓게
+    안전한 쪽이다. `_has_legacy_growth_markers`/`_legacy_growth_sections`(및 그걸 위임하는
+    lint)가 공유하는 시야다.
+    """
+    mask: list[bool] = []
+    inside = False
+    for line in lines:
+        if line.lstrip().startswith("```"):
+            inside = not inside
+            mask.append(True)
+            continue
+        mask.append(inside)
+    return mask
+
+
+def _has_legacy_growth_markers(body: str) -> bool:
+    """본문에 구 컨테이너 주석 **줄**이 있는가 (변환 대상·lint 판정의 공용 시야).
+
+    후보는 **column 0** 의 주석 줄뿐이다 — 산문이 backtick 이나 인용부호 안에서 같은 표기를
+    설명하는 티켓이 실재한다(구 봉인 문법을 설명한 티켓). 그것을 데이터로 읽으면 변환은 없는
+    절을 찾다 실패하고, lint 는 변환 뒤에도 영영 red 로 남는다. 좁힌 시야는 구 엔진의 봉인
+    후보 판정과 같은 규칙이고, ``` 펜스로 감싼 문법 예시도 산문과 같이 데이터에서 뺀다
+    (`_fenced_code_line_mask`).
+    """
+    lines = body.splitlines()
+    fenced = _fenced_code_line_mask(lines)
+    return any(
+        not fenced[index] and line.startswith(marker)
+        for index, line in enumerate(lines)
+        for marker in _LEGACY_GROWTH_MARKERS
+    )
+
+
+def _legacy_growth_sections(body: str) -> list[_LegacySection]:
+    """구 역할 절을 **등장 순서대로** 뗀다 (문법 위반은 loud).
+
+    지울 범위에는 end marker 바로 다음 줄의 봉인이 포함된다 — 봉인은 절의 꼬리이지 명세
+    텍스트가 아니다. 문법을 벗어난 marker 줄은 변환에서 조용히 빠지면 안 되므로 그 티켓을
+    통째로 실패로 올린다(사람이 고친 뒤 재실행). ``` 펜스 안의 marker 는
+    `_has_legacy_growth_markers` 와 같은 시야로 건너뛴다(문법 예시를 절로 오인하지 않는다).
+    """
+    lines = body.splitlines(keepends=True)
+    fenced = _fenced_code_line_mask(lines)
+    sections: list[_LegacySection] = []
+    open_marker: tuple[str, int] | None = None
+    for index, line in enumerate(lines):
+        if fenced[index] or not line.startswith(f"<!-- {_LEGACY_SECTION_MARKER}:"):
+            continue
+        matched = _LEGACY_SECTION_LINE_RE.fullmatch(line)
+        if matched is None:
+            raise ValueError(
+                "구 역할 절 marker 문법 위반 — marker 줄은 "
+                "`<!-- pm-ticket-section:start|end role=<역할> -->` 하나여야 한다: "
+                f"{line.strip()}"
+            )
+        kind, role = matched.groups()
+        if kind == "start":
+            if open_marker is not None:
+                raise ValueError(
+                    f"구 역할 절 marker 중첩: role={open_marker[0]} 안에 role={role} start")
+            open_marker = (role, index)
+            continue
+        if open_marker is None:
+            raise ValueError(f"구 역할 절 end marker 짝 없음: role={role}")
+        start_role, start_index = open_marker
+        if role != start_role:
+            raise ValueError(
+                f"구 역할 절 marker 역할 불일치: start={start_role} · end={role}")
+        last_index = index
+        following = lines[index + 1] if index + 1 < len(lines) else ""
+        sealed = _LEGACY_SEAL_LINE_RE.fullmatch(following)
+        if sealed is not None and sealed.group(1) == role:
+            last_index = index + 1
+        sections.append(_LegacySection(
+            role=role,
+            content="".join(lines[start_index + 1:index]),
+            first_line=start_index,
+            last_line=last_index,
+        ))
+        open_marker = None
+    if open_marker is not None:
+        raise ValueError(f"구 역할 절 start marker 의 end 누락: role={open_marker[0]}")
+    return sections
+
+
+def _damaged_legacy_seal_line(body: str) -> str | None:
+    """문법을 벗어난 봉인 줄 하나 (없으면 None).
+
+    변환이 지우는 것은 **정확 문법**의 봉인뿐이다. 손상된 봉인이 남으면 그 티켓은 변환 뒤에도
+    lint red 라, 조용히 통과시키지 않고 실패로 올려 사람이 고치게 한다.
+    """
+    for line in body.splitlines(keepends=True):
+        if not line.startswith(f"<!-- {_LEGACY_SEAL_MARKER}"):
+            continue
+        if _LEGACY_SEAL_LINE_RE.fullmatch(line) is None:
+            return line.strip()
+    return None
+
+
+def _strip_legacy_sections(body: str, sections: Sequence[_LegacySection]) -> str:
+    """명세에서 절 블록과 남은 고아 봉인을 지운 본문 (절 밖 텍스트는 그 자리 그대로).
+
+    제거 자리에서 빈 줄이 겹치면 하나만 남긴다 — 앞뒤 텍스트가 각각 자기 빈 줄을 갖고 있어
+    블록만 걷으면 빈 줄이 둘로 남는다. 잘라낸 자리 밖의 바이트는 건드리지 않는다.
+    """
+    lines = body.splitlines(keepends=True)
+    drop: set[int] = set()
+    for section in sections:
+        drop.update(range(section.first_line, section.last_line + 1))
+    for index, line in enumerate(lines):
+        if index not in drop and _LEGACY_SEAL_LINE_RE.fullmatch(line) is not None:
+            drop.add(index)            # 절이 사라진 고아 봉인 — 명세에 남기지 않는다.
+    kept: list[str] = []
+    dropped_before = False
+    for index, line in enumerate(lines):
+        if index in drop:
+            dropped_before = True
+            continue
+        if dropped_before and not line.strip() and kept and not kept[-1].strip():
+            continue
+        dropped_before = False
+        kept.append(line)
+    return "".join(kept)
+
+
+def _rounds_migration_plan() -> tuple[list[_RoundsMigrationTicket], list[str]]:
+    """변환 대상 티켓과 실패 사유 목록 (읽기 전용).
+
+    대상 = 명세 본문에 구 marker 가 남은 티켓 전부다. done 을 포함한 전 상태와 draft 를 본다 —
+    변환 대상이 완료 티켓에 몰려 있고, 두 형식이 공존하는 상태를 남기지 않는 것이 목적이다.
+    """
+    plan: list[_RoundsMigrationTicket] = []
+    failures: list[str] = []
+    for status in (*STATUS_DIRS, ".drafts"):
+        for path in sorted((tickets_dir() / status).glob("T-*.md")):
+            loaded = load_ticket_soft(path)
+            if loaded is None:
+                failures.append(f"{path.name}: 명세 판독 실패(위 경고 참조)")
+                continue
+            fm, body = loaded
+            if not _has_legacy_growth_markers(body):
+                continue
+            ticket = str(fm.get("id") or path.stem)
+            try:
+                sections = _legacy_growth_sections(body)
+            except ValueError as exc:
+                failures.append(f"{ticket}: {exc}")
+                continue
+            damaged = _damaged_legacy_seal_line(body)
+            if damaged is not None:
+                failures.append(f"{ticket}: 구 봉인 줄 문법 위반 — {damaged}")
+                continue
+            if not sections:
+                failures.append(f"{ticket}: 절 없이 marker 표기만 남아 있다(손으로 확인 필요)")
+                continue
+            plan.append(_RoundsMigrationTicket(
+                ticket=ticket, status=status, path=path, body_before=body,
+                body_after=_strip_legacy_sections(body, sections),
+                sections=tuple(sections),
+            ))
+    return plan, failures
+
+
+def _legacy_growth_ledger_dir() -> Path:
+    """`tickets/.growth/` — 구 성장 장부(jsonl + stamp)의 고정 위치."""
+    return tickets_dir() / _LEGACY_GROWTH_LEDGER_DIRNAME
+
+
+def _is_legacy_growth_attr_line(line: str) -> bool:
+    """성장 장부 **전용** union 선언인가 — 장부 디렉터리를 패턴에 담은 줄만 본다.
+
+    `*.jsonl text eol=lf` 처럼 장부를 부수적으로 덮는 일반 선언은 대상이 아니다(그 선언이
+    지키는 것은 board 의 다른 엔진 텍스트다).
+    """
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return False
+    return f"{_LEGACY_GROWTH_LEDGER_DIRNAME}/" in stripped.split()[0]
+
+
+def _legacy_growth_attr_cleanup(text: str) -> str | None:
+    """board `.gitattributes` 에서 성장 장부 선언을 걷어낸 본문 (변화 없으면 None).
+
+    엔진이 배포했던 주석 두 줄은 그 선언 **바로 앞에 있을 때만** 함께 걷는다 — 사용자가 쓴
+    주석을 선언과 묶어 지우지 않는다.
+    """
+    kept: list[str] = []
+    for line in text.splitlines(keepends=True):
+        if not _is_legacy_growth_attr_line(line):
+            kept.append(line)
+            continue
+        while kept and kept[-1].strip() in _LEGACY_GROWTH_ATTR_COMMENTS:
+            kept.pop()
+    updated = "".join(kept)
+    return updated if updated != text else None
+
+
+def _legacy_ticket_copy_ledger() -> _LegacyCopyLedger | None:
+    """PM 홈의 구 사본 장부 판독 (파일이 없으면 None).
+
+    판독 불능 행은 미회수와 같은 축으로 센다 — 무엇을 지우는지 못 읽는 장부를 조용히 지우는
+    것이 이 명령에서 가장 나쁜 방향이다.
+    """
+    path = LOCAL_DIR / _LEGACY_TICKET_COPY_LEDGER_NAME
+    if not path.is_file():
+        return None
+    try:
+        text = file_lock.read_text_shared(path, encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise _RoundsMigrationError(
+            f"구 사본 장부를 읽지 못했다: {path} ({exc}) — 삭제 대상을 확인할 수 없어 멈춘다"
+        ) from exc
+    rows = 0
+    unharvested: list[str] = []
+    unreadable = 0
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        rows += 1
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            unreadable += 1
+            continue
+        if not isinstance(row, dict):
+            unreadable += 1
+            continue
+        if row.get("harvested_at") is None:
+            unharvested.append(str(row.get("copy") or "(경로 미기록)"))
+    return _LegacyCopyLedger(
+        path=path, rows=rows, unharvested=tuple(unharvested), unreadable=unreadable)
+
+
+def _legacy_copy_slot_roots() -> tuple[Path, ...]:
+    """구 사본을 찾을 루트 — git 앵커 가드와 **같은 등록 판정**에 REPO 자신을 더한다.
+
+    등록 판정(lease 장부 + linked worktree + 이 PM 홈 소유)은 multi-PM 슬롯만 본다. 출하
+    기본 형상인 solo(등록 슬롯 0 · PM 홈 == 코드 트리)에서는 구 사본이 REPO 자신의
+    `.project_manager/.local/delegate-ticket-copies/` 에 남는데, 그 자리는 등록 슬롯 집합에
+    없어 순회·삭제 양쪽에서 조용히 빠지고 "정리 완료" 가 거짓이 된다. REPO 아래 그 구
+    레이아웃이 실재할 때만 더한다(등록 슬롯에 이미 있으면 dedupe). 등록 슬롯이 0 인데
+    장부가 있으면 여전히 그 사실을 알린다(그 경고와 REPO 자신 편입은 서로 다른 축이다 —
+    REPO 는 항상 그 자리에 있으므로 등록 슬롯 해소와 무관하게 검사한다).
+    """
+    slots = _registered_slot_paths(REPO)
+    if not slots and LEASES_FILE.exists():
+        print("  ⚠ 등록 슬롯 해소 0 — 리스 장부는 있으나 슬롯을 확인하지 못했다. 슬롯에 구 "
+              "사본이 남아 있을 수 있다(직접 확인).", file=sys.stderr)
+    if REPO not in slots and REPO.joinpath(*_LEGACY_TICKET_COPY_ROOT_RELS).is_dir():
+        slots = (*slots, REPO)
+    return slots
+
+
+def _legacy_slot_copy_dirs() -> list[Path]:
+    """등록 슬롯에 남은 **구 레이아웃** 사본 디렉터리 전부.
+
+    구 레이아웃은 `<티켓>/<역할>/<run>/` 이고 현행은 `<티켓>/<run>/` 이다 — 역할 이름 한 마디가
+    구분자라, 역할 디렉터리만 지우면 현행 run 디렉터리는 그대로 남는다.
+    """
+    roles = set(_load_ticket_rounds().ROLES)
+    found: list[Path] = []
+    for slot in _legacy_copy_slot_roots():
+        root = slot.joinpath(*_LEGACY_TICKET_COPY_ROOT_RELS)
+        if not root.is_dir():
+            continue
+        for ticket_dir in sorted(root.iterdir()):
+            if not ticket_dir.is_dir() or ticket_dir.is_symlink():
+                continue
+            for child in sorted(ticket_dir.iterdir()):
+                if child.is_dir() and not child.is_symlink() and child.name in roles:
+                    found.append(child)
+    return found
+
+
+def _remove_legacy_copy_dir(directory: Path) -> None:
+    """구 사본 디렉터리 하나를 지우고 빈 껍데기 부모까지 걷는다."""
+    file_lock.force_rmtree(directory)
+    parent = directory.parent
+    try:
+        if parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+    except OSError:
+        pass                        # 남은 빈 껍데기는 해가 없다(정리의 목적은 사본 부재).
+
+
+def _rounds_migration_reserve(item: _RoundsMigrationTicket) -> list[Path]:
+    """한 티켓의 절을 등장 순서대로 라운드 파일로 예약한다 (채번은 사이드카 seam 소유).
+
+    board_lock 은 seam 이 채번+생성 구간만 잡는다 — 그래서 이 함수는 락을 쥐지 않은 채
+    호출돼야 한다(board_lock 은 재진입이 없다).
+    """
+    rounds = _load_ticket_rounds()
+    created: list[Path] = []
+    for section in item.sections:
+        created.append(rounds.reserve_round(
+            tickets_dir(), item.ticket, section.role,
+            content=section.content, lock=board_lock(),
+        ))
+    return created
+
+
+def _rounds_migration_rewrite_spec(item: _RoundsMigrationTicket) -> str | None:
+    """명세에서 절 블록을 걷어낸다 — 쓰기 직전 재조회로 stale 덮어쓰기를 막는다.
+
+    반환은 skip 사유(없으면 None). frontmatter 는 **락 안에서 다시 읽은 값**을 쓴다(tier 같은
+    in-place writer 의 기록을 옛 스냅샷으로 덮지 않는다). 라운드 파일은 이미 예약된 뒤라
+    skip 은 loud 다 — 그 티켓만 사람이 다시 보게 하려는 것이지 조용히 지나가려는 게 아니다.
+    """
+    with board_lock():
+        try:
+            _status, current_path = find_ticket_for_mutation(item.ticket)
+        except FileNotFoundError:
+            return "재조회 시 없음(다른 writer 가 완료/삭제)"
+        if current_path != item.path:
+            return f"쓰기 직전 이동됨({_rel_to_repo(current_path)})"
+        fm, body = load_ticket(current_path)
+        if body != item.body_before:
+            return "쓰기 직전 본문 변경됨(동시 편집)"
+        dump_ticket_atomic(current_path, fm, item.body_after)
+    return None
+
+
+def _rounds_migration_deletions(
+        growth_dir: Path, attr_path: Path, attr_cleaned: str | None,
+        ledger: _LegacyCopyLedger | None, trust_dir: Path,
+        slot_dirs: Sequence[Path]) -> list[str]:
+    """삭제 대상 요약 줄 — 계획 출력과 적용 실행이 같은 목록을 본다."""
+    lines: list[str] = []
+    if growth_dir.is_dir():
+        # 구 장부는 평평하다(`<티켓>.jsonl` + stamp) — 직계만 센다(재귀 순회 seam 불요).
+        lines.append(f"{_rel_to_repo(growth_dir)} "
+                     f"(항목 {sum(1 for _ in growth_dir.iterdir())}개)")
+    if attr_cleaned is not None:
+        lines.append(f"{_rel_to_repo(attr_path)} 의 성장 장부 union 선언")
+    if ledger is not None:
+        lines.append(f"{_rel_to_repo(ledger.path)} ({ledger.rows}행 · 미회수 "
+                     f"{len(ledger.unharvested)}행 · 판독 불가 {ledger.unreadable}행)")
+    if trust_dir.is_dir():
+        lines.append(f"{_rel_to_repo(trust_dir)} "
+                     f"({sum(1 for _ in trust_dir.iterdir())}개)")
+    if slot_dirs:
+        lines.append(f"슬롯 구 레이아웃 사본 {len(slot_dirs)}개(역할 디렉터리)")
+    return lines
+
+
+def _board_gitattributes_text(path: Path) -> str:
+    """board `.gitattributes` 본문 (없거나 못 읽으면 빈 문자열·표기 보존 판독)."""
+    try:
+        if not path.is_file():
+            return ""
+        return file_lock.read_text_shared(path, encoding="utf-8", newline="")
+    except (OSError, UnicodeError):
+        return ""
+
+
+def _print_rounds_migration_plan(
+        plan: Sequence[_RoundsMigrationTicket], deletions: Sequence[str]) -> None:
+    """계획 출력 — 티켓별 라운드 파일명과 삭제 목록(쓰기 0 경로 전용).
+
+    파일명은 예약이 실제로 붙일 이름이다. 라운드가 이미 있는 티켓이면 그 뒤 번호가 되므로
+    현재 라운드 수를 시작점으로 센다.
+    """
+    rounds = _load_ticket_rounds()
+    for item in plan:
+        try:
+            start = len(rounds.load_rounds(
+                tickets_dir(), item.ticket, ticket_text=item.body_before))
+        except rounds.RoundsError:
+            start = 0                   # 판정은 적용 실행이 loud 하게 한다(계획은 표시만).
+        names = ", ".join(
+            rounds.round_filename(start + ordinal, section.role)
+            for ordinal, section in enumerate(item.sections, start=1)
+        )
+        print(f"  {item.ticket} ({item.status}/): {names}")
+    if deletions:
+        print("  삭제 대상:")
+        for line in deletions:
+            print(f"    - {line}")
+
+
+def cmd_rounds_migrate(args: argparse.Namespace) -> int:
+    """구 역할 절·성장 장부·구 위임 사본 산출물을 라운드 파일 형상으로 1회 변환한다.
+
+    절차: 계획 수집 → 미회수 게이트 → 티켓별 (라운드 예약 → 명세 재기록) → 장부·배포 선언
+    삭제 → board 커밋 1개 → PM 홈·슬롯의 구 사본 산출물 삭제. **멱등** 이다 — marker 도 잔여도
+    없는 board 에서 재실행하면 변경 0·rc 0 이다.
+
+    되돌림은 board 커밋 revert 다(라운드 파일 삭제 + 명세 복원). 구 사본 산출물 삭제는
+    비가역이라 **미회수 사본이 남아 있으면 멈춘다**(rc 1) — `--discard-unharvested` 만 그것을
+    함께 지운다. 변환하지 못한 티켓이 하나라도 있으면 rc 1 이다(남은 두 형식이 조용히
+    "완료" 로 보이지 않게).
+    """
+    dry_run = bool(getattr(args, "dry_run", False))
+    discard = bool(getattr(args, "discard_unharvested", False))
+    tag = "[dry-run] " if dry_run else ""
+    try:
+        plan, failures = _rounds_migration_plan()
+        ledger = _legacy_ticket_copy_ledger()
+        slot_dirs = _legacy_slot_copy_dirs()
+    except _RoundsMigrationError as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
+        return 1
+
+    trust_dir = LOCAL_DIR / _LEGACY_TICKET_COPY_TRUST_DIRNAME
+    growth_dir = _legacy_growth_ledger_dir()
+    attr_path = board_root() / ".gitattributes"
+    attr_text = _board_gitattributes_text(attr_path)
+    attr_cleaned = _legacy_growth_attr_cleanup(attr_text) if attr_text else None
+    deletions = _rounds_migration_deletions(
+        growth_dir, attr_path, attr_cleaned, ledger, trust_dir, slot_dirs)
+
+    print(f"{tag}rounds migrate — 변환 대상 티켓 {len(plan)}건 · 라운드 파일 "
+          f"{sum(len(item.sections) for item in plan)}개")
+    for failure in failures:
+        print(f"  ⚠ 변환 불가 — {failure}", file=sys.stderr)
+
+    unresolved = list(ledger.unharvested) if ledger is not None else []
+    if ledger is not None and ledger.unreadable:
+        unresolved.append(f"(판독 불가 행 {ledger.unreadable}개)")
+    if unresolved:
+        if discard:
+            # 폐기해도 지우는 것은 **엔진이 소유한 자리**뿐이다 — 등록 슬롯 밖(옛 임시 트리 등)의
+            # 사본은 이 명령의 소유가 아니라 손대지 않는다. 목록을 내 그 사실이 숨지 않게 한다.
+            print(f"  ⚠ 구 사본 장부의 미회수 {len(unresolved)}건을 장부와 함께 폐기한다 "
+                  "(등록 슬롯 밖 경로의 파일은 지우지 않는다 — 아래 목록을 직접 확인하라).",
+                  file=sys.stderr)
+        else:
+            reason = (f"구 사본 장부에 미회수 {len(unresolved)}건이 남아 있다 — 삭제는 비가역이라 "
+                      "`--discard-unharvested` 없이는 진행하지 않는다")
+            print(f"{'  ⚠ ' if dry_run else '[중단] '}{reason}"
+                  f"{'(적용 실행은 여기서 rc 1 로 멈춘다)' if dry_run else ''}.",
+                  file=sys.stderr)
+        for copy_path in unresolved:
+            print(f"    {copy_path}", file=sys.stderr)
+        if not discard and not dry_run:
+            return 1
+
+    if not plan and not deletions:
+        print("  (변경 없음 — 이미 변환됨이거나 구 형상 잔여 없음)")
+        return 1 if failures else 0
+    if dry_run:
+        _print_rounds_migration_plan(plan, deletions)
+        print("[dry-run] 쓰기 0 — 적용하려면 --dry-run 없이 재실행.")
+        return 1 if failures else 0
+
+    rounds_module = _load_ticket_rounds()
+    commit_paths: list[Path] = []
+    migrated = 0
+    for item in plan:
+        try:
+            created = _rounds_migration_reserve(item)
+        except rounds_module.RoundsError as exc:
+            failures.append(f"{item.ticket}: 라운드 예약 실패")
+            print(f"  ⚠ {item.ticket}: 라운드 예약 실패 — {exc}", file=sys.stderr)
+            continue
+        skip = _rounds_migration_rewrite_spec(item)
+        if skip is not None:
+            failures.append(f"{item.ticket}: 명세 재기록 skip")
+            print(f"  ⚠ {item.ticket}: 명세 재기록 skip — {skip} "
+                  f"(예약된 라운드 {len(created)}개는 그대로 남는다)", file=sys.stderr)
+            continue
+        migrated += 1
+        print(f"  {item.ticket} ({item.status}/): 라운드 {len(created)}개 · 절 제거")
+        # draft 는 board-git 미커밋 authoring 영역이다 — 그 명세도 라운드도 promote 가 낸다.
+        if item.status != ".drafts":
+            commit_paths.extend(created)
+            commit_paths.append(item.path)
+
+    if growth_dir.is_dir():
+        file_lock.force_rmtree(growth_dir)
+        commit_paths.append(growth_dir)
+        print(f"  삭제: {_rel_to_repo(growth_dir)}")
+    if attr_cleaned is not None:
+        _write_text_keeping_newlines(attr_path, attr_cleaned)
+        commit_paths.append(attr_path)
+        print(f"  정리: {_rel_to_repo(attr_path)} (성장 장부 union 선언 제거)")
+
+    ready = True
+    if commit_paths:
+        ready = _rounds_mutation_sync_paths(
+            f"rounds migrate: {migrated} tickets · .growth removed", commit_paths)
+
+    # 구 사본 삭제는 비가역이라 board 커밋이 실제로 서지 못했으면(ready=False) 보류한다 —
+    # 커밋 실패 사유(board-git 이상)를 사람이 보기 전에 되돌릴 수 없는 삭제까지 끝내지
+    # 않는다. 라운드 파일·명세는 이미 디스크에 있으므로 재실행(멱등)이 마저 지운다.
+    if ready:
+        if ledger is not None:
+            ledger.path.unlink(missing_ok=True)
+            print(f"  삭제: {_rel_to_repo(ledger.path)}")
+        if trust_dir.is_dir():
+            file_lock.force_rmtree(trust_dir)
+            print(f"  삭제: {_rel_to_repo(trust_dir)}")
+        for directory in slot_dirs:
+            _remove_legacy_copy_dir(directory)
+        if slot_dirs:
+            print(f"  삭제: 슬롯 구 레이아웃 사본 {len(slot_dirs)}개")
+    elif ledger is not None or trust_dir.is_dir() or slot_dirs:
+        print("  ⚠ board 커밋 실패 — 구 사본 삭제 보류(재실행 시 계속 진행한다).",
+              file=sys.stderr)
+
+    print(f"변환 완료 {migrated}건{_board_git_mutation_state_suffix(ready)}")
+    return 1 if failures else 0
+
+
 def cmd_tier(args: argparse.Namespace) -> int:
     """선택 frontmatter `tier`를 기록/갱신한다. 허용값 외 입력은 파일 읽기 전 rc=1."""
     if args.tier not in TICKET_TIERS:
@@ -15806,7 +16390,7 @@ _ROUND_UNREADABLE_LINT_KIND = "round-unreadable"
 # 구 단일-파일 컨테이너의 흔적. 본문에 이 주석이 남아 있으면 그 티켓의 역할 산출은 아직
 # 라운드 파일로 옮겨지지 않은 것이다(마이그레이션 대상).
 _LEGACY_GROWTH_MARKERS: tuple[str, ...] = (
-    "<!-- pm-ticket-section:", "<!-- pm-ticket-seal")
+    f"<!-- {_LEGACY_SECTION_MARKER}:", f"<!-- {_LEGACY_SEAL_MARKER}")
 _LEGACY_GROWTH_LINT_KIND = "legacy-growth-section"
 _LEGACY_GROWTH_MIGRATION_HINT = (
     "`python3 .project_manager/tools/board.py rounds migrate` 를 1회 실행해 "
@@ -15878,6 +16462,9 @@ def lint_legacy_growth_sections() -> list[tuple[str, str, str]]:
     라운드 사이드카 전환 뒤에도 절이 본문에 남아 있으면 그 산출은 어떤 라운드 판정에도 잡히지
     않는다(두 형식이 공존하는 상태). 마이그레이션 명령 1회로 해소되므로 red 로 강제한다.
     done 을 포함한 전 상태와 draft 를 본다 — 변환 대상이 완료 티켓에 몰려 있다.
+
+    시야는 변환 명령과 **같은 판정**을 쓴다(`_has_legacy_growth_markers`) — 한쪽만 넓으면 변환이
+    끝난 board 가 영영 red 로 남는다.
     """
     findings: list[tuple[str, str, str]] = []
     for status in (*STATUS_DIRS, ".drafts"):
@@ -15886,7 +16473,7 @@ def lint_legacy_growth_sections() -> list[tuple[str, str, str]]:
             if loaded is None:
                 continue
             fm, body = loaded
-            if not any(marker in body for marker in _LEGACY_GROWTH_MARKERS):
+            if not _has_legacy_growth_markers(body):
                 continue
             findings.append((
                 str(fm.get("id") or path.name),
@@ -16411,6 +16998,20 @@ def build_parser() -> argparse.ArgumentParser:
     ip = idea_sub.add_parser("kill", help="mv idea open → killed")
     ip.add_argument("id")
     ip.set_defaults(fn=cmd_idea_kill)
+
+    # rounds subcommand group — 라운드 사이드카 유지보수. 지금은 구 컨테이너(역할 절) 일회성
+    # 변환 하나뿐이다(조회는 `show`·판정은 `lint`/완료 게이트가 이미 소유).
+    rounds_p = sub.add_parser("rounds", help="라운드 사이드카 유지보수")
+    rounds_sub = rounds_p.add_subparsers(dest="rounds_cmd", required=True)
+
+    rp = rounds_sub.add_parser(
+        "migrate",
+        help="구 역할 절(marker/봉인)·성장 장부·구 위임 사본을 라운드 파일 형상으로 1회 변환 (멱등)")
+    rp.add_argument("--dry-run", action="store_true",
+                    help="계획(티켓·라운드 파일명·삭제 목록)만 출력·쓰기 0")
+    rp.add_argument("--discard-unharvested", action="store_true",
+                    help="구 사본 장부의 미회수 행이 가리키는 사본까지 함께 삭제(비가역)")
+    rp.set_defaults(fn=cmd_rounds_migrate)
 
     # reid — 단일 티켓 ID 재부여. 번호·prefix 변경 무손실
     # relabel + 전 참조 rewrite. prefix rename/merge 와 같은 파이프라인(`_prefix_relabel`) 재사용.

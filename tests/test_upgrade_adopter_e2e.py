@@ -1054,6 +1054,103 @@ def test_upgrade_adopter_crlf_dest_reaches_zero_change_and_keeps_notation(tmp_pa
         f"CRLF dest 의 내용 차이를 놓쳤다(정규화가 판정을 무디게 만듦)\n{dirty.stdout}")
 
 
+# ── S7 구 컨테이너 board 의 1회 변환 (T-0754) ────────────────────────────────
+# 엔진을 흡수해도 **board 데이터**는 구세대 그대로다 — 역할 산출을 명세 본문 안에 marker 로
+# 감싸 두던 형상은 `board.py rounds migrate` 한 번으로만 풀린다. 채택자 축에서 그 경로가
+# 실제로 닫히는지(동기 → 안내 → 변환 → lint clean → 멱등)를 실 CLI 로 잰다.
+
+# pm:data-literal:begin
+# 아래 리터럴은 **채택자 디스크에 기록된 구세대 데이터**다(구 엔진이 실제로 쓴 줄) — 엔진 상수를
+# 참조하면 문법이 통째로 바뀌어도 이 게이트가 green 이라 여기엔 문자열을 직접 박는다.
+_LEGACY_SECTION_START = "<!-- pm-ticket-section:start role=developer -->"
+_LEGACY_SECTION_END = "<!-- pm-ticket-section:end role=developer -->"
+_LEGACY_SEAL = (
+    "<!-- pm-ticket-seal role=developer ordinal=0 sha256="
+    + "0" * 64 + " by=harvest -->"
+)
+# pm:data-literal:end
+
+_LEGACY_ROUND_BODY = "## 구현 보충 (developer · 2026-08-17)\n\n채택자 board 의 옛 산출.\n"
+_LEGACY_TICKET_ID = "T-0001"
+
+
+def _install_legacy_board(dest: Path) -> tuple[Path, Path]:
+    """채택자 board 에 구 컨테이너 형상(역할 절 + 성장 장부)을 깐다 → (티켓 경로, 장부 경로)."""
+    tickets = dest / ".project_manager" / "wiki" / "tickets"
+    assert tickets.is_dir(), f"채택자 board 스캐폴드 부재: {tickets}"
+    ticket = tickets / "done" / f"{_LEGACY_TICKET_ID}-legacy.md"
+    ticket.write_text(
+        "---\n"
+        f"id: {_LEGACY_TICKET_ID}\n"
+        "title: 옛 컨테이너 티켓\n"
+        "status: done\n"
+        "created: '2026-08-17'\n"
+        "created_by: adopter\n"
+        "claimed_by: null\n"
+        "claimed_at: null\n"
+        "completed_at: '2026-08-17'\n"
+        "depends_on: []\n"
+        "blocks: []\n"
+        "touches: []\n"
+        "estimate: small\n"
+        "design: n/a\n"
+        "tags: []\n"
+        "---\n"
+        f"# {_LEGACY_TICKET_ID} — 옛 컨테이너 티켓\n\n## 메모\n채택자 산문.\n\n"
+        f"{_LEGACY_SECTION_START}\n{_LEGACY_ROUND_BODY}{_LEGACY_SECTION_END}\n"
+        f"{_LEGACY_SEAL}\n\n## PM 판정\n판정은 명세에 남는다.\n",
+        encoding="utf-8", newline="\n")
+    growth = tickets / ".growth"
+    growth.mkdir(exist_ok=True)
+    (growth / ".migrated").write_text("1\n", encoding="utf-8", newline="\n")
+    (growth / f"{_LEGACY_TICKET_ID}.jsonl").write_text(
+        '{"ticket": "' + _LEGACY_TICKET_ID + '", "role": "developer", "ordinal": 0}\n',
+        encoding="utf-8", newline="\n")
+    return ticket, growth
+
+
+def test_upgrade_adopter_legacy_board_converges_after_update_and_migrate(tmp_path):
+    """구 컨테이너 board 채택자: 동기가 변환을 안내하고, 명령 1회로 lint 가 clean 해진다."""
+    dest = tmp_path / "legacy-container-adopter"
+    assert _PM_IMPORT.main([
+        "--new", str(dest), "--harness", "codex", "--name", _ADOPTER_NAME,
+        "--fill", "manual",
+    ]) == 0
+    _prime_engine_to_canonical(dest)
+    ticket, growth = _install_legacy_board(dest)
+
+    synced = _run_pm_update(dest)
+    assert "board.py rounds migrate" in synced.stderr, (
+        f"흡수가 구 컨테이너 잔존을 알리지 않았다\n{synced.stdout}\n{synced.stderr}")
+    assert ticket.read_text(encoding="utf-8").count(_LEGACY_SECTION_START) == 1, (
+        "동기가 board 데이터를 자동 변환했다(안내만 해야 한다)")
+
+    red = _run_adopter_tool(dest, "board.py", "lint")
+    assert "legacy-growth-section" in (red.stdout + red.stderr), (
+        f"변환 전 board 가 lint red 가 아니다\n{red.stdout}\n{red.stderr}")
+
+    migrated = _run_adopter_tool(dest, "board.py", "rounds", "migrate")
+    assert migrated.returncode == 0, f"{migrated.stdout}\n{migrated.stderr}"
+
+    round_file = (dest / ".project_manager" / "wiki" / "tickets" / "rounds"
+                  / _LEGACY_TICKET_ID / "01-developer.md")
+    assert round_file.read_text(encoding="utf-8") == _LEGACY_ROUND_BODY
+    spec = ticket.read_text(encoding="utf-8")
+    assert "pm-ticket-section" not in spec and "pm-ticket-seal" not in spec
+    assert "## PM 판정" in spec, "절 밖 PM 텍스트가 사라졌다"
+    assert not growth.exists()
+
+    green = _run_adopter_tool(dest, "board.py", "lint")
+    assert "legacy-growth-section" not in (green.stdout + green.stderr), (
+        f"변환 뒤에도 구 컨테이너 판정이 남았다\n{green.stdout}\n{green.stderr}")
+    settled = _run_pm_update(dest)
+    assert "board.py rounds migrate" not in settled.stderr, "변환 뒤에도 안내가 남았다"
+
+    again = _run_adopter_tool(dest, "board.py", "rounds", "migrate")
+    assert again.returncode == 0 and "변경 없음" in again.stdout, (
+        f"재실행이 멱등이 아니다\n{again.stdout}\n{again.stderr}")
+
+
 def test_update_release_skill_cards_pin_zero_change_and_adapter_gate_contract():
     """canonical + claude/codex/opencode 출하 카드가 changes=0 skip 문구를 재도입하지 않는다."""
     update_cards = [

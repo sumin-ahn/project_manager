@@ -804,9 +804,12 @@ def test_ticket_writer_lock_inventory_and_claim_lock_order_are_ast_guarded():
     }
     discovered_ticket_writers = direct_sink_callers - reviewed_non_ticket_exceptions
     # section-add 는 없다 — 라운드 예약은 명세 파일을 쓰지 않고 자기 라운드 파일만 만든다.
+    # `_rounds_migration_rewrite_spec` 은 구 컨테이너 변환이 명세에서 절 블록을 걷어내는
+    # in-place writer 다(`rounds migrate` 의 티켓 단계).
     expected_ticket_sink_callers = {
         "cmd_new", "cmd_promote", "_cmd_claim_locked", "cmd_complete", "cmd_block",
         "cmd_unclaim", "cmd_unblock", "cmd_tier", "_migrate_tickets_apply",
+        "_rounds_migration_rewrite_spec",
     }
     assert direct_sink_callers & reviewed_non_ticket_exceptions == reviewed_non_ticket_exceptions, (
         "reviewed exception이 더 이상 sink caller가 아님 — inventory 분류 갱신 필요")
@@ -815,7 +818,7 @@ def test_ticket_writer_lock_inventory_and_claim_lock_order_are_ast_guarded():
 
     ordinary_writers = {
         "cmd_new", "cmd_promote", "cmd_complete", "cmd_block", "cmd_unclaim", "cmd_unblock",
-        "cmd_tier", "_migrate_tickets_apply",
+        "cmd_tier", "_migrate_tickets_apply", "_rounds_migration_rewrite_spec",
     }
     assert ordinary_writers | {"_cmd_claim_locked"} == discovered_ticket_writers
     for name in ordinary_writers:

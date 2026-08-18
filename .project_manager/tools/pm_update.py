@@ -5366,6 +5366,83 @@ def _print_instance_owned_template_delta(lines: list[str]) -> None:
         print(line)
 
 
+# ── 구 컨테이너(역할 절) 잔존 안내 ────────────────────────────────────────────
+# 엔진을 흡수해도 **board 데이터**는 그대로다 — 역할 산출을 명세 본문에 marker 로 감싸 두던
+# 구 형상은 board.py 의 일회성 변환 명령으로만 풀린다. 그 사실을 흡수 끝에 1회 알린다(자동
+# 실행하지 않는다 — board 를 쓰는 mutation 이라 사람이 시점을 정한다). 문구는 board lint 의
+# 같은 판정과 동일하고, 두 사본의 일치는 테스트가 board 를 로드해 대조한다(pm_update 는
+# stdlib-only 로 돌기 위해 board 를 import 하지 않는다).
+LEGACY_GROWTH_MARKERS: tuple[str, ...] = (
+    "<!-- pm-ticket-section:", "<!-- pm-ticket-seal")
+LEGACY_GROWTH_MIGRATION_HINT = (
+    "`python3 .project_manager/tools/board.py rounds migrate` 를 1회 실행해 "
+    "역할 절을 라운드 파일로 옮겨라"
+)
+# board 형상 두 가지(분리 submodule·legacy wiki 안) — board.board_root 와 같은 판정 순서다.
+_BOARD_TICKET_DIR_CANDIDATES: tuple[tuple[str, ...], ...] = (
+    (".project_manager", "board", "tickets"),
+    (".project_manager", "wiki", "tickets"),
+)
+_BOARD_TICKET_SCAN_DIRS: tuple[str, ...] = (
+    "open", "claimed", "blocked", "done", ".drafts")
+
+
+def _has_legacy_growth_marker_line(text: str) -> bool:
+    """board `_has_legacy_growth_markers` 와 같은 시야 — column 0 주석 줄 · ``` 펜스 안 제외.
+
+    substring 판정이면 산문 인용(backtick·들여쓰기)이나 문법 예시(펜스)까지 잡혀 변환이 끝난
+    뒤에도 안내가 영구히 남는다. 두 사본의 일치는 테스트가 board 를 로드해 판정 결과로 대조한다.
+    """
+    inside = False
+    for line in text.splitlines():
+        if line.lstrip().startswith("```"):
+            inside = not inside
+            continue
+        if inside:
+            continue
+        if any(line.startswith(marker) for marker in LEGACY_GROWTH_MARKERS):
+            return True
+    return False
+
+
+def _legacy_growth_ticket_files(dest_root: Path) -> list[Path]:
+    """명세 본문에 구 역할 절 marker 가 남은 티켓 파일 (없으면 빈 목록·판독 실패는 건너뜀).
+
+    ID 파싱은 하지 않는다 — 안내에 필요한 것은 "몇 건이 남았나" 이고, ID 문법은 board 소유라
+    여기서 복제하면 발행 문법이 넓어질 때만 이 사본이 어긋난다.
+
+    판정은 board `_has_legacy_growth_markers` 와 같은 규칙(**column 0** 의 줄 단위
+    `startswith`)이다 — substring 판정이면 산문이 backtick 인용이나 들여쓰기로 같은 표기를
+    설명한 티켓(변환 대상이 아님)까지 잡혀, 변환이 끝난 뒤에도 이 안내가 영구히 남는다.
+    """
+    tickets_dir = None
+    for parts in _BOARD_TICKET_DIR_CANDIDATES:
+        candidate = dest_root.joinpath(*parts)
+        if candidate.is_dir():
+            tickets_dir = candidate
+            break
+    if tickets_dir is None:
+        return []
+    found: list[Path] = []
+    for status in _BOARD_TICKET_SCAN_DIRS:
+        for path in sorted((tickets_dir / status).glob("T-*.md")):
+            try:
+                text = _read_text_shared(path, encoding="utf-8")
+            except (OSError, UnicodeError):
+                continue
+            if _has_legacy_growth_marker_line(text):
+                found.append(path)
+    return found
+
+
+def _print_legacy_growth_finding(tickets: list[Path]) -> None:
+    """구 컨테이너 잔존을 stderr 로 1회 안내 (없으면 완전 무출력)."""
+    if not tickets:
+        return
+    print(f"⚠️  board 에 구 역할 절이 남은 티켓 {len(tickets)}건 — "
+          f"{LEGACY_GROWTH_MIGRATION_HINT}.", file=sys.stderr)
+
+
 def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
 
@@ -6547,6 +6624,10 @@ def _main(argv: list[str] | None = None) -> int:
         if not args.target and not scope_paths:
             _print_instance_owned_template_delta(
                 _instance_owned_template_delta_lines(effective_dest, source_root))
+            # 같은 게이트를 쓴다 — 둘 다 "이 인스턴스를 전량 동기한 실행" 에서만 볼 값이다
+            # (`--target` 은 templates 사본이라 board 가 없고, 경로 스코프는 부분 전파다).
+            _print_legacy_growth_finding(
+                _legacy_growth_ticket_files(effective_dest))
 
     if not changes:
         # 잔존 은퇴 파일은 changes 와 독립이다 — "변경 없음" 이 곧 "dest 가 상류와 같다" 는 아니다.
