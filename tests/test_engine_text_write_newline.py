@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+from collections import Counter
 from pathlib import Path
 
 
@@ -140,6 +141,12 @@ def _enclosing_function_names(tree: ast.AST) -> dict[int, str]:
     라인이 아니라 함수 소속으로 호출부를 식별하기 위한 보조 지도다(T-0748) — 같은 함수 안에서
     코드가 위아래로 밀려도 이 매핑은 바뀌지 않는다. 중첩 함수는 부모가 아니라 자신의 이름을
     받는다(가장 가까운 정의가 실제 호출부 소속이다).
+
+    알려진 근사: `ast.iter_child_nodes(FunctionDef)`는 `decorator_list`·`args`(기본값 표현식)도
+    자식으로 내려주므로, 데코레이터 인자나 파라미터 기본값 안의 호출은 실제로는 정의 시점에
+    **감싸는 스코프**에서 평가되는데도 이 함수는 그 함수 자신의 이름으로 귀속한다. 스캔 대상
+    (`.project_manager/tools/*.py`)에 그런 형태가 0건이라(실측) 하강 제외까지는 넣지 않는다 —
+    새로 생기면 이 근사부터 의심한다.
     """
     names: dict[int, str] = {}
 
@@ -199,6 +206,31 @@ def _scan_text_writes() -> tuple[
     return calls, unresolved_modes
 
 
+def _allowed_key_match_counts(
+    allowed_keys: set[tuple[str, str, str]],
+    calls: list[tuple[str, int, str, str, bool]],
+    unresolved_modes: list[tuple[str, int, str, str]],
+) -> dict[tuple[str, str, str], int]:
+    """`_ALLOWED` 각 키가 문제 스캔 결과(unresolved mode·missing newline)와 몇 건 매칭되는지 센다.
+
+    허용은 라인이 아니라 (파일, 함수명, 호출 형태) 심볼이므로, 그 심볼이 원래 가리키던 호출이
+    사라지면(리네임·삭제) 0건 죽은 항목이 되고, 같은 함수 안에 같은 형태의 새 미검증 호출이
+    늘면(T-0748 리뷰 민감도 B2) 2건 이상으로 벌어진다 — 정합은 항상 정확히 1건이다.
+    """
+    counts: dict[tuple[str, str, str], int] = {key: 0 for key in allowed_keys}
+    for filename, _lineno, function_name, call_name in unresolved_modes:
+        key = (filename, function_name, call_name)
+        if key in counts:
+            counts[key] += 1
+    for filename, _lineno, function_name, kind, valid_newline in calls:
+        if valid_newline:
+            continue
+        key = (filename, function_name, kind)
+        if key in counts:
+            counts[key] += 1
+    return counts
+
+
 def test_engine_text_writes_declare_newline():
     path_open = _parsed_call('dest.open("w", encoding="utf-8")')
     assert _call_name(path_open) == "Path.open"
@@ -240,6 +272,14 @@ def test_engine_text_writes_declare_newline():
         (filename, function_name, call_name)
         for filename, function_name, call_name, _reason in _ALLOWED
     }
+    match_counts = _allowed_key_match_counts(allowed_keys, calls, unresolved_modes)
+    mismatched = {key: count for key, count in match_counts.items() if count != 1}
+    assert not mismatched, (
+        "_ALLOWED 항목이 스캔 결과와 정확히 1건씩 매칭되지 않는다 — 0건은 죽은 항목(제거), "
+        "2건 이상은 같은 자리에 새 미검증 텍스트 쓰기가 늘었다는 뜻이다(리터럴 mode/newline으로 "
+        "고치거나 별도 사유로 새로 등재하라):\n"
+        + "\n".join(f"{key}: {count}건" for key, count in sorted(mismatched.items()))
+    )
     unresolved = [
         f"{filename}:{lineno} ({function_name}::{call_name})"
         for filename, lineno, function_name, call_name in unresolved_modes
@@ -295,6 +335,24 @@ def test_enclosing_function_names_resolve_by_ast_not_line_shift():
         if isinstance(node, ast.Call)
     }
     assert shifted_calls == calls
+
+
+def test_allowed_symbol_key_flags_dead_entry_and_new_sibling_write():
+    """리뷰 민감도 B2: 허용된 함수 안에 새 미검증 쓰기가 늘면(또는 사라지면) 매칭 수가 어긋난다."""
+    key = ("pm_import.py", "_fdopen_text", "os.fdopen")
+    allowed_keys = {key}
+
+    # 정상 상태 — 원래 그 자리 하나만(unresolved mode 경유) 매칭된다.
+    exempted = [("pm_import.py", 2493, "_fdopen_text", "os.fdopen")]
+    assert _allowed_key_match_counts(allowed_keys, [], exempted) == {key: 1}
+
+    # 같은 함수 안에 새 os.fdopen(fd, "w") 하나가 더 생기면(리터럴 mode·newline 누락) 2건으로
+    # 벌어진다 — 예전 라인-무관 필터는 이 경우를 무탐지했다(T-0748 리뷰 F-003).
+    sibling_write = [("pm_import.py", 2500, "_fdopen_text", "os.fdopen", False)]
+    assert _allowed_key_match_counts(allowed_keys, sibling_write, exempted) == {key: 2}
+
+    # 호출이 사라지면(리네임·삭제) 0건 — 죽은 항목.
+    assert _allowed_key_match_counts(allowed_keys, [], []) == {key: 0}
 
 
 def _load_engine_module(name: str):

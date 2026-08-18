@@ -789,6 +789,15 @@ def _t0585_pm_update_source() -> str:
     mock driver가 아니라 source/manifest planning, apply, self-update 순서를 포함한 실제 updater다.
     이 순서 전체가 회귀의 load-bearing 범위라 whole-file SHA가 의도적이다. 향후 updater 변경은
     무관해 보여도 이 실제 배달 경계를 다시 검토한 뒤 reverse delta/기대 SHA를 함께 현재화한다.
+
+    아래 각 `_slice_replace`/`.replace(...)` 호출의 marker 문자열은 현재 `pm_update.py` 소스와
+    정확히 일치해야 한다. marker 가 사라지거나 모호해지면(다른 편집이 그 자리를 바꿔서) 그
+    호출의 assert(`_slice_replace`의 `assert source.count(start_marker) == 1`)가 아래 whole-file
+    SHA assert보다 먼저 AssertionError로 멈춘다 — 이건 SHA drift가 아니라 marker 자체가 낡았다는
+    뜻이다. 그때는 SHA를 건드리지 말고, 새 `pm_update.py` 소스에서 그 marker가 가리키던 경계에
+    해당하는 새 텍스트를 찾아 marker 문자열만 갱신한 뒤 이 함수를 처음부터 다시 돌린다.
+
+    T-0748 재핀 이력(배달 경계가 그대로였던 근거는 여기 계속 쌓는다):
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
@@ -895,11 +904,12 @@ def _t0585_pm_update_source() -> str:
     digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
     assert digest == _T0585_PM_UPDATE_SHA256, (
         f"T-0585 updater fixture drift: {digest}\n"
-        "재핀 절차(T-0748): (1) 위 anachronism 부재 단언 2건이 이미 통과했는지 먼저 확인한다 "
-        "— 실패했다면 SHA를 갱신하지 말고 역델타(위 _slice_replace/replace 호출들)를 먼저 "
-        "고쳐 세대 시대착오 재유입을 막는다. (2) 통과했다면(= 이번 변경이 정말 pm_update.py "
-        "배달 경계 밖이라면) _T0585_PM_UPDATE_SHA256 을 위 digest 값으로 갱신하고, 왜 배달 "
-        "경계가 그대로인지 한 문단을 이 함수 docstring 위 이력에 덧붙인다.")
+        "재핀 절차(T-0748): 이 assert에 도달했다는 것은 위 anachronism 부재 단언 2건이 이미 "
+        "통과했다는 뜻이다(둘 중 하나라도 실패했다면 여기 오지 않는다) — 즉 이 drift는 세대 "
+        "시대착오 재유입이 아니라 배달 경계 안의 다른 변경이다. _T0585_PM_UPDATE_SHA256 을 위 "
+        "digest 값으로 갱신하고, 왜 배달 경계가 그대로인지 한 문단을 이 함수 docstring 에 "
+        "덧붙인다. (marker 자체가 안 맞아 여기 도달하기 전에 `_slice_replace` 가 먼저 터졌다면 "
+        "SHA 문제가 아니라 marker 갱신이 필요하다는 뜻이다 — 이 함수 docstring 참고.)")
     return source
 
 
