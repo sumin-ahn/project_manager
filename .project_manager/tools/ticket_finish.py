@@ -1185,14 +1185,15 @@ def engine_written_paths(board, ticket_id: str, log_file: Path) -> list[Path]:
 
       - `log/current.md` — 2단계가 스켈레톤을 append 한다(항상).
       - 티켓 파일의 옛/새 경로 · 라운드 사이드카(`tickets/rounds/<id>/*.md`) — 3단계
-        `board.py complete` 가 티켓을 `claimed/`→`done/` 로 옮기고, 라운드는 고정 위치([[T-0749]]
-        `ticket_rounds.py`)라 상태 이동을 따라가지 않지만 그 실행이 새로 쓴 파일이라 함께
-        stage 대상이다. **board-git 분리 형상에선 티켓과 함께 라운드도 제외** 한다: 티켓이
-        서브모듈(`.project_manager/board/`) 안이라 상위 repo 의 `git add` 가 `fatal: … is in
-        submodule`(rc=128)로 죽고, 그 이동은 board-git 이 자기 커밋으로 이미 기록한다(라운드도
-        같은 서브모듈 트리 안). legacy(board 미분리·**출하 템플릿 기본 형상**)에선 그 이동이 홈
-        git 에 떨어지므로 반드시 실어야 한다 — 안 그러면 채택자가 매 finish 마다 손으로 `git add`
-        해야 한다(reviewer 실측).
+        `board.py complete` 가 티켓을 `claimed/`→`done/` 로 옮기고, 라운드는
+        `ticket_rounds.rounds_dir_for_ticket` 가 정하는 고정 위치라 상태 이동을 따라가지
+        않지만 그 실행이 새로 쓴 파일이라 함께 stage 대상이다. **board-git 분리 형상에선
+        티켓과 함께 라운드도 제외** 한다: 티켓이 서브모듈(`.project_manager/board/`) 안이라
+        상위 repo 의 `git add` 가 `fatal: … is in submodule`(rc=128)로 죽고, 그 이동은
+        board-git 이 자기 커밋으로 이미 기록한다(라운드도 같은 서브모듈 트리 안).
+        legacy(board 미분리·**출하 템플릿 기본 형상**)에선 그 이동이 홈 git 에 떨어지므로
+        반드시 실어야 한다 — 안 그러면 채택자가 매 finish 마다 손으로 `git add` 해야 한다
+        (reviewer 실측).
 
     옛 경로는 상태 디렉토리를 몰라도 된다 — 후보(모든 STATUS_DIRS/같은 파일명)를 넣어두면
     실존/추적되지 않는 후보는 `git_scope_stageable` 이 거른다(추적 중인 *삭제* 경로만 남아
