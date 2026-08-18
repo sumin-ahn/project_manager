@@ -301,7 +301,8 @@ def test_windows_probe_snippet_runs_and_reports_this_interpreter():
         snippet = windows.split("$probe = & $cand -c '", 1)[1].split("'", 1)[0]
         completed = subprocess.run(
             [sys.executable, "-c", snippet],
-            capture_output=True, text=True, check=True, env=utf8_child_env(),
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            check=True, env=utf8_child_env(),
         )
         # 엔진 하한(3.11) 이상인 이 인터프리터는 채택 판정을 받아야 한다.
         assert completed.stdout == "True", f"{event}: {completed.stdout!r}"

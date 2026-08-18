@@ -20,6 +20,7 @@ r"""reviewer_cmd argv 분해의 **실행 플랫폼 규칙**과 분해 규칙 사
 from __future__ import annotations
 
 import importlib.util
+import os
 import shlex
 import subprocess
 from pathlib import Path
@@ -171,10 +172,15 @@ def test_the_posix_rule_really_mangles_the_windows_path(board):
 
 def test_platform_default_follows_the_running_platform(board, monkeypatch):
     """`windows=None` 은 실행 플랫폼(`os.name`)을 본다 — 주입 인자는 그 판정을 대체할 뿐이다."""
-    monkeypatch.setattr(board.os, "name", "nt")
+    monkeypatch.setattr(board, "_probe_os_name", lambda: "nt")
     assert board.split_command_argv(WINDOWS_REVIEWER_CMD)[0] == WINDOWS_EXECUTABLE
-    monkeypatch.setattr(board.os, "name", "posix")
+    monkeypatch.setattr(board, "_probe_os_name", lambda: "posix")
     assert board.split_command_argv(WINDOWS_REVIEWER_CMD)[0] != WINDOWS_EXECUTABLE
+
+
+def test_probe_os_name_seam_defaults_to_the_real_interpreter_value(board):
+    """기본 프로브는 전역 `os.name` 그대로다 — seam 추가가 동작을 바꾸지 않는다(T-0741)."""
+    assert board._probe_os_name() == os.name
 
 
 # ── 3. 러너까지 도달하는 argv ───────────────────────────────────────────────

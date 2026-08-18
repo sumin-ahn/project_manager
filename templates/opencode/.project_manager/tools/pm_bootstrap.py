@@ -925,7 +925,7 @@ def _default_python() -> str:
     현재 인터프리터로 폴백한다. 이 머신은 시스템 python3 에 pytest 가 없고 venv 에만
     있으므로, venv 가 있으면 무조건 venv 를 우선해 회귀 측정 인터프리터를 보존한다.
     """
-    cand = REPO / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    cand = REPO / "venv" / ("Scripts/python.exe" if _probe_os_name() == "nt" else "bin/python")
     return str(cand) if cand.exists() else sys.executable
 
 # 프로젝트 timezone — 부트스트랩 타임스탬프 표기용. 필요 시 교체.

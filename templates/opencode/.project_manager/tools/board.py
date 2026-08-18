@@ -1283,6 +1283,20 @@ def restore_shell_windows_path_separators(token: str) -> str:
     return token.replace(_SHELL_WINDOWS_PATH_SEPARATOR, "\\")
 
 
+def _probe_os_name() -> str:
+    """Read the interpreter OS family through one injectable seam.
+
+    Tests that need to exercise the Windows branch of `split_command_argv` or
+    `_detect_py` on any host cannot rebind the global `os.name` — `pathlib`
+    consults that same global to pick its flavour, and rebinding it mid-test
+    breaks every path operation in the process (`NotImplementedError` on a
+    `PosixPath` built under a monkeypatched `os.name == "nt"`). Routing the
+    read through this function keeps the injection point inside this module
+    instead of on the `os` global.
+    """
+    return os.name
+
+
 def split_command_argv(command: str, *, windows: bool | None = None) -> list[str]:
     """command 문자열을 **실행 플랫폼 규칙**으로 argv 로 분해한다 (엔진 공용 seam).
 
@@ -1300,7 +1314,7 @@ def split_command_argv(command: str, *, windows: bool | None = None) -> list[str
     Windows 분해를 그대로 태우는 주입 seam 이다(회귀가 실행 플랫폼에 의존하지 않게).
     """
     if windows is None:
-        windows = os.name == "nt"
+        windows = _probe_os_name() == "nt"
     if not windows:
         return shlex.split(command)
     return [
@@ -6528,8 +6542,9 @@ def _minimum_python() -> tuple[int, int]:
     기존 엔진 로더 관례대로 파일 위치를 앵커로 삼는다. 탐지 때만 지연 로드해 board 의
     다른 명령과 최소 격리 테스트에는 새 선행 의존을 만들지 않는다.
     """
-    # os.name 은 _detect_py Windows 분기 테스트/실행에서 바뀔 수 있으므로, 그 값에 따라
-    # WindowsPath/PosixPath 구현을 고르는 pathlib 대신 import 시 고정된 os.path 를 쓴다.
+    # _detect_py 의 Windows 분기는 _probe_os_name() seam 주입으로 테스트한다(전역 os.name 은
+    # 더 이상 안 바뀐다). 그래도 pathlib 은 실행 시점 os.name 을 참조해 WindowsPath/PosixPath 를
+    # 고르므로, 이 함수는 그 선택 자체에 기대지 않도록 import 시 고정된 os.path 를 계속 쓴다.
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "engine_rev.py")
     mod = _load_module_from_path(
         type(REPO)(path), "engine_rev.py", allow_unverified=True,
@@ -6618,7 +6633,7 @@ def _detect_py() -> str:
     subprocess 가 PATH 해석하고, CLAUDE.md `{{PY}}` 표시에도 가독하다.
     탐지는 후보마다 subprocess를 최대 세 번 실행하므로 프로세스 수명 동안 결과를 캐시한다.
     """
-    candidates = ("python", "py", "python3") if os.name == "nt" else ("python3", "python")
+    candidates = ("python", "py", "python3") if _probe_os_name() == "nt" else ("python3", "python")
     probe_missing = not os.path.isfile(_python_floor_probe_path())
     found: list[str] = []
     for cand in candidates:

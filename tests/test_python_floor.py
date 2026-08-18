@@ -177,7 +177,7 @@ def test_board_missing_floor_probe_degrades_to_inline_floor_check(
 
 def test_board_detect_all_old_falls_back_and_reports_versions(monkeypatch, capsys):
     board = _load("board")
-    monkeypatch.setattr(board.os, "name", "nt")
+    monkeypatch.setattr(board, "_probe_os_name", lambda: "nt")
     monkeypatch.setattr(board.shutil, "which", lambda cmd: f"/fake/{cmd}")
     monkeypatch.setattr(board, "_interp_runs", lambda cmd: False)
     versions = {"python": "python=3.9", "py": "py=2.7", "python3": "python3=3.10"}

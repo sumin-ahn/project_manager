@@ -85,6 +85,22 @@ def _process_state() -> dict[str, Any]:
     return state
 
 
+def _probe_os_name() -> str:
+    """Read the interpreter OS family through one injectable seam.
+
+    The four Windows-branch functions below (`_set_console_codepage_utf8`,
+    `_toolhelp_processes`, `_parent_process_name`, `_powershell_capture_encoding`)
+    each gate on `os.name`. Tests that need the Windows branch on any host
+    cannot rebind the global `os.name` directly — `pathlib` consults that same
+    global to pick its flavour, and rebinding it mid-test breaks every path
+    operation in the process (`NotImplementedError` on a `PosixPath` built
+    under a monkeypatched `os.name == "nt"`). Routing the read through this
+    function keeps the injection point inside this module instead of on the
+    `os` global.
+    """
+    return os.name
+
+
 def _get_kernel32() -> Any:
     """실 kernel32를 늦게 구한다. 테스트는 이 경계를 fake로 교체할 수 있다."""
     return ctypes.windll.kernel32
@@ -115,7 +131,7 @@ def _restore_console_codepages(
 
 def _set_console_codepage_utf8() -> None:
     """Windows 콘솔 codepage를 보관한 뒤 UTF-8로 맞추고 종료 원복을 등록한다."""
-    if os.name != "nt":
+    if _probe_os_name() != "nt":
         return
     try:
         state = _process_state()
@@ -163,7 +179,7 @@ def _toolhelp_processes(kernel32: Any | None = None) -> list[tuple[int, int, str
     ``kernel32`` 인자는 Windows VM 없이도 동일한 ctypes 포인터 경계를 검증하기 위한
     주입 seam이다. WinAPI 실패는 빈 목록으로 축약한다.
     """
-    if os.name != "nt":
+    if _probe_os_name() != "nt":
         return []
     try:
         class PROCESSENTRY32W(ctypes.Structure):
@@ -217,7 +233,7 @@ def _toolhelp_processes(kernel32: Any | None = None) -> list[tuple[int, int, str
 
 def _parent_process_name() -> str | None:
     """Python 래퍼를 건너뛴 첫 조상의 exe 이름을 소문자로 반환한다."""
-    if os.name != "nt":
+    if _probe_os_name() != "nt":
         return None
     try:
         processes = {
@@ -261,7 +277,7 @@ def _utf8_reader_requested() -> bool:
 def _powershell_capture_encoding() -> str | None:
     """비 UTF-8 콘솔을 읽는 PowerShell 부모이면 그 Python 코덱명을 반환한다."""
     state = _process_state()
-    if os.name != "nt":
+    if _probe_os_name() != "nt":
         state["parent_name"] = None
         return None
     parent_name = _parent_process_name()

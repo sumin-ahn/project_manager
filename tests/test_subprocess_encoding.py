@@ -393,7 +393,7 @@ def _install_fake_ctypes(monkeypatch, console_encoding):
 
 def test_common_codepage_set_on_windows(console_encoding, monkeypatch):
     """os.name=='nt' 에서 _set_console_codepage_utf8 가 65001 두 codepage 를 설정."""
-    monkeypatch.setattr(console_encoding.os, "name", "nt")
+    monkeypatch.setattr(console_encoding, "_probe_os_name", lambda: "nt")
     kernel32 = _install_fake_ctypes(monkeypatch, console_encoding)
     console_encoding._set_console_codepage_utf8()
     assert kernel32.output_cp_calls == [65001], "SetConsoleOutputCP(65001) 누락/오인자"
@@ -402,7 +402,7 @@ def test_common_codepage_set_on_windows(console_encoding, monkeypatch):
 
 def test_common_codepage_noop_on_posix(console_encoding, monkeypatch):
     """os.name!='nt'(POSIX) 에서는 분기에 진입하지 않아 SetConsole*CP 미호출."""
-    monkeypatch.setattr(console_encoding.os, "name", "posix")
+    monkeypatch.setattr(console_encoding, "_probe_os_name", lambda: "posix")
     kernel32 = _install_fake_ctypes(monkeypatch, console_encoding)
     console_encoding._set_console_codepage_utf8()
     assert kernel32.output_cp_calls == [], "POSIX 에서 SetConsoleOutputCP 가 호출됨"
@@ -411,7 +411,7 @@ def test_common_codepage_noop_on_posix(console_encoding, monkeypatch):
 
 def test_codepage_best_effort_swallows_exception(console_encoding, monkeypatch):
     """ctypes 호출이 예외(콘솔 핸들 없음 등)를 던져도 조용히 통과(best-effort)."""
-    monkeypatch.setattr(console_encoding.os, "name", "nt")
+    monkeypatch.setattr(console_encoding, "_probe_os_name", lambda: "nt")
 
     class _Boom:
         def SetConsoleOutputCP(self, cp):  # noqa: N802
@@ -441,7 +441,7 @@ def test_common_stream_reconfigure_is_guarded_and_best_effort(console_encoding, 
     stdout = _Records()
     monkeypatch.setattr(console_encoding.sys, "stdout", stdout)
     monkeypatch.setattr(console_encoding.sys, "stderr", _Raises())
-    monkeypatch.setattr(console_encoding.os, "name", "posix")
+    monkeypatch.setattr(console_encoding, "_probe_os_name", lambda: "posix")
     console_encoding.configure_console_utf8()
     assert stdout.calls == [{"encoding": "utf-8", "errors": "replace"}]
 

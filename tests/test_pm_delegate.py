@@ -3802,6 +3802,8 @@ def test_adapter_registry_notation_changes_do_not_brick_cli(
         [sys.executable, str(tools / "pm_delegate.py"), "--help"],
         cwd=tmp_path,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         check=False,
     )
