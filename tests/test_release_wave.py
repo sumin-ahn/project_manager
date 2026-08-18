@@ -68,6 +68,7 @@ _GROWTH_SENTINELS = {
     _REVIEWER_SUBAGENT: "LIVE_TICKET_REVIEWER_PERSISTED",
 }
 
+
 # opencode 는 gemma 가 느리고 변동 커 1800s, claude 는 probe 실측 145s 여유분 600s.
 _OPENCODE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_TIMEOUT", "1800"))
 _CLAUDE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_CLAUDE_TIMEOUT", "600"))
@@ -93,6 +94,20 @@ _OPENCODE_COMPACTION_TURNS = (
 ) // _OPENCODE_COMPACTION_TURN_CHARS
 
 _TOOLS = Path(__file__).resolve().parents[1] / ".project_manager" / "tools"
+
+
+def _pm_review_block_name() -> str:
+    """리뷰 블록 이름의 단일 진실 = 엔진 상수 (문자열을 테스트에 재타이핑하지 않는다)."""
+    spec = importlib.util.spec_from_file_location(
+        "_release_wave_pm_delegate", _TOOLS / "pm_delegate.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.PM_REVIEW_BLOCK
+
+
+# 회수된 리뷰 라운드가 담아야 하는 판정 블록 이름(엔진 파생).
+_PM_REVIEW_BLOCK = _pm_review_block_name()
 
 
 def _compaction_checkpoint_count(dest: Path) -> int:
@@ -218,12 +233,13 @@ def _run_opencode_live(argv, *, cwd, env, timeout):
 
 
 def _full_wave_prompt(entry_doc: str) -> str:
-    """PM 세션이 full wave와 native 3역할 ticket-copy 왕복을 운영하라는 프롬프트.
+    """PM 세션이 full wave와 native 3역할 라운드 파일 왕복을 운영하라는 프롬프트.
 
     board.py 경로를 *주지 않는다* — adopter 가 `entry_doc` 만으로 도구를 찾아 운영해야 통과(= 문서 운영성).
-    같은 claimed ticket에 architect/developer/code-reviewer marker를 만들고, 역할마다 prepare→native
-    subagent→harvest를 수행한다. 역할 절의 고유 sentinel과 developer의 probe.txt를 side-effect로
-    관측한다. 기존 Claude/OpenCode full-wave 호출을 재사용해 별도 native 중복 테스트를 만들지 않는다.
+    같은 claimed ticket에서 역할마다 prepare→native subagent→harvest를 수행한다. 준비가 예약한 라운드
+    파일(`tickets/rounds/<T-NNNN>/NN-<역할>.md`)의 고유 sentinel과 developer의 probe.txt를 side-effect로
+    관측한다. `section-add`는 여기서 쓰지 않는다 — 슬롯 없는 준비라 위임 경로와 겹치면 빈 라운드가
+    하나 더 예약된다. 기존 Claude/OpenCode full-wave 호출을 재사용해 별도 native 중복 테스트를 만들지 않는다.
     """
     return (
         f"You are the PM for this project. Read {entry_doc} to learn how the project board "
@@ -231,19 +247,20 @@ def _full_wave_prompt(entry_doc: str) -> str:
         "(1) create exactly one ticket titled 'release wave probe' (touches README.md) with the "
         "board tool, "
         "(2) claim it, "
-        "(3) for EACH role architect, developer, and code-reviewer, use board.py section-add for that role, "
-        "then use pm_delegate.py ticket prepare, pass the returned absolute copy path to the harness-native "
-        "subagent tool, and always run ticket harvest afterward. Each subagent must edit ONLY its own latest "
-        "role section in that copy and write this exact role sentinel: "
+        "(3) for EACH role architect, developer, and code-reviewer, use pm_delegate.py ticket prepare "
+        "for that role, pass the returned absolute round file path to the harness-native "
+        "subagent tool, and always run ticket harvest afterward. Each subagent must edit ONLY that one "
+        "round file (keep its first header line and the seeded skeleton) and write this exact role "
+        "sentinel into it: "
         f"architect={_GROWTH_SENTINELS[_ARCH_SUBAGENT]}, "
         f"developer={_GROWTH_SENTINELS[_DEV_SUBAGENT]}, "
         f"code-reviewer={_GROWTH_SENTINELS[_REVIEWER_SUBAGENT]}. "
-        "Use the native role/subagent name matching each role; do not edit the canonical ticket directly. "
+        "Use the native role/subagent name matching each role; do not edit the ticket spec file directly. "
         f"The {_DEV_SUBAGENT} must ALSO create {PROBE_FILE} in the project root containing exactly "
         f"'{PROBE_TEXT}'. The code-reviewer final reply must contain '판정: 통과', a '## must-fix' heading, "
         "and '- 없음'. "
         "(4) after all three harvests, start a fresh board.py show process and verify all three sentinels are "
-        "present in the canonical ticket, "
+        "present in the ticket rounds it prints, "
         "(5) mark the ticket complete/done (satisfy the complete sync gate however the docs say — "
         "e.g. a log entry and the tests-pass / untested flag). "
         "Reply with the ticket id when the ticket is done."
@@ -305,15 +322,38 @@ def _assert_wave_side_effects(dest: Path, proc: subprocess.CompletedProcess, har
         f"open={_tickets_in(dest, 'open')} claimed={_tickets_in(dest, 'claimed')}\n" + tail
     )
     ticket_name = sorted(done_tickets)[-1]
-    ticket_path = dest / ".project_manager" / "wiki" / "tickets" / "done" / ticket_name
-    ticket_text = ticket_path.read_text(encoding="utf-8")
+    ticket_id_match = re.match(r"(T-\d+)-", ticket_name)
+    assert ticket_id_match, f"done ticket 파일명에서 ID 를 못 읽음: {ticket_name}\n" + tail
+    ticket_id = ticket_id_match.group(1)
+    rounds_dir = (
+        dest / ".project_manager" / "wiki" / "tickets" / "rounds" / ticket_id
+    )
+    assert rounds_dir.is_dir(), (
+        f"실 {harness} done ticket에 라운드 디렉터리 부재 — prepare 예약이 board 에 남지 않았다: "
+        f"{rounds_dir}\n" + tail
+    )
     for role, sentinel in _GROWTH_SENTINELS.items():
-        assert sentinel in ticket_text, (
-            f"실 {harness} done ticket에 {role} harvest sentinel 부재 — native prepare→subagent→harvest "
-            f"영속 왕복 미성립: {ticket_path}\n" + tail
+        # 회수된 라운드는 `NN-<역할>.md` 다 — 이름 문법은 엔진(ticket_rounds)이 단일 진실이라
+        # 여기서는 그 형식으로 찾고 내용만 단언한다.
+        role_rounds = sorted(rounds_dir.glob(f"*-{role}.md"))
+        assert role_rounds, (
+            f"실 {harness} done ticket에 {role} 라운드 파일 부재 — native prepare→subagent→harvest "
+            f"영속 왕복 미성립: {rounds_dir}\n" + tail
         )
-        assert ticket_text.count(f"<!-- pm-ticket-section:start role={role} -->") >= 1
-        assert ticket_text.count(f"<!-- pm-ticket-section:end role={role} -->") >= 1
+        texts = [path.read_text(encoding="utf-8") for path in role_rounds]
+        assert any(sentinel in text for text in texts), (
+            f"실 {harness} {role} 라운드 파일에 harvest sentinel 부재 — 산출이 회수되지 않았다: "
+            f"{[str(path) for path in role_rounds]}\n" + tail
+        )
+        # 첫 줄 헤더(라벨·역할·날짜)는 엔진이 시드하지만 사람 참고용이라 엔진이 재작성을
+        # 강제하지 않는다(ticket_rounds 단일 진실은 파일명의 순번·역할) — 라이브 tier 판정 축은
+        # 엔진이 실제로 강제하는 성질(sentinel·아래 pm-review-v1 블록)로 좁힌다.
+        if role == _REVIEWER_SUBAGENT:
+            # 리뷰 라운드는 엔진이 시드한 판정 블록을 담은 채 회수돼야 delta 단계가 선다.
+            assert any(f"```{_PM_REVIEW_BLOCK}" in text for text in texts), (
+                f"실 {harness} 리뷰 라운드에 {_PM_REVIEW_BLOCK} 블록 부재 — 시드 골격이 지워졌다: "
+                f"{[str(path) for path in role_rounds]}\n" + tail
+            )
 
 
 @pytest.mark.release

@@ -198,5 +198,5 @@ def test_report_only_roles_do_not_create_standalone_delivery_files(label, path, 
         assert "파일 산출로 우회하지 않는다" in text
         assert "200줄/8KB" in text
     else:
-        assert "ticket-copy" in text
+        assert "라운드 파일" in text
         assert "별도 산출 파일" in text

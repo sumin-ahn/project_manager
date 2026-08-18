@@ -132,8 +132,12 @@ def test_adapter_artifacts_byte_identical():
         )
 
 
-def test_claude_native_ticket_growth_uses_agent_contract_for_three_roles():
-    """Agent의 실제 필드와 3역할 copy marker를 prepare→harvest 사이에 고정한다."""
+def test_claude_native_ticket_rounds_use_agent_contract_for_three_roles():
+    """Agent의 실제 필드와 3역할 라운드 파일 지시를 prepare→harvest 사이에 고정한다.
+
+    라운드 파일 모델(ADR-0090)에서 각 위임이 쓸 수 있는 파일은 `NN-<역할>.md` 하나뿐이라,
+    프롬프트 블록마다 그 역할의 파일 이름과 prepare 출력 경로가 함께 실려야 한다.
+    """
     text = (ROOT_CLAUDE / "skills" / "pm-dev-delegate" / "SKILL.md").read_text(
         encoding="utf-8"
     )
@@ -142,9 +146,15 @@ def test_claude_native_ticket_growth_uses_agent_contract_for_three_roles():
     for role, block in zip(("developer", "code-reviewer", "architect"), blocks):
         assert f"subagent_type: {role}" in block
         assert "description:" in block and "run_in_background:" in block and "prompt:" in block
-        assert f"role={role}" in block and "<prepare JSON의 copy>" in block
+        assert f"NN-{role}.md" in block and "<prepare JSON의 copy>" in block
+        # 읽기 전용 입력 좌표(명세·이전 라운드)를 프롬프트가 실값으로 지시한다.
+        assert "spec.md" in block and "rounds/" in block
     assert "ticket prepare" in text and "ticket harvest" in text
-    assert "최신 architect" in text and "절을 직접 성장" in text
+    # 재설계는 같은 절을 키우지 않고 다음 순번의 새 라운드 파일에 쓴다.
+    assert "다음 순번의 새 라운드 파일" in text
+    # 단일 파일 컨테이너 시절 어휘가 카드에 남아 있으면 라운드 모델과 어긋난다.
+    for stale in ("pm-ticket-section", "성장 티켓 사본", "capability", "transfer-from"):
+        assert stale not in text, f"pm-dev-delegate 카드에 옛 모델 어휘 잔존: {stale}"
 
 
 # ── T-0202: settings.json portable-by-construction 가드 (manifest-out·render 미탑승) ──

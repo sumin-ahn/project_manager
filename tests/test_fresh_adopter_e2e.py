@@ -373,6 +373,225 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
         "(반쪽 파리티·T-0433). lifecycle 이 안 밟는 상태-dir 도 채택자는 즉시 쓴다(blocked 이행).")
 
 
+# ── 라운드 파일 모델 (ADR-0090) — 어댑터 문구 · 준비→회수 1사이클 ─────────────
+# 티켓 산출은 명세 파일 안 역할 절이 아니라 `tickets/rounds/<T-NNNN>/NN-<역할>.md` 라운드 파일
+# 하나다. 어댑터가 옛 모델을 지시하면 에이전트는 존재하지 않는 자리를 찾는다(문서가 곧 실행 지시).
+
+# 단일 파일 컨테이너 시절 어휘 — 위임 문서 표면에 하나라도 남으면 red.
+#   엔진 `.project_manager/tools/` 는 마이그레이션 진단 문구로 이 낱말을 legitimately 쓰므로
+#   스캔 밖이고, 이 표면은 "에이전트·PM 이 읽고 그대로 실행하는 문서"로 한정한다.
+_ROUND_MODEL_STALE_TOKENS = (
+    "pm-ticket-section", "pm-ticket-seal", "seal-backfill",
+    "--transfer-from", "--capability-stdin", "ticket-copy", "ticket_copies",
+    "자기 절", "역할 절", ".growth",
+)
+# 위임 문서 표면 = 역할 카드 + 위임 스킬/슬래시 command + 위임 스킬 references + opencode PM
+# 지침 + 방법론 2종 + lite 진입문서.
+_DELEGATION_SKILLS = ("pm-dev-delegate", "pm-ticket")
+_ADAPTER_NAMESPACES = tuple(
+    sorted({d for dirs in HARNESS_ADAPTER_DIRS.values() for d in dirs})
+)
+
+
+def _delegation_docs(root: Path) -> list[Path]:
+    """`root` 트리의 위임 문서 전부 — 어댑터 네임스페이스는 엔진 매핑에서 파생(손-열거 아님)."""
+    found: list[Path] = []
+    for namespace in _ADAPTER_NAMESPACES:
+        base = root / namespace
+        if not base.is_dir():
+            continue
+        agents = base / "agents"
+        if agents.is_dir():
+            found += [
+                path for path in sorted(agents.iterdir())
+                if path.is_file() and path.suffix in (".md", ".toml")
+            ]
+        for skill in _DELEGATION_SKILLS:
+            found += [
+                path for path in (
+                    base / "skills" / skill / "SKILL.md",
+                    base / "command" / f"{skill}.md",
+                ) if path.is_file()
+            ]
+            references = base / "skills" / skill / "references"
+            if references.is_dir():
+                found += [
+                    path for path in sorted(references.glob("*.md")) if path.is_file()
+                ]
+        instructions = base / "pm-instructions.md"
+        if instructions.is_file():
+            found.append(instructions)
+    wiki = root / ".project_manager" / "wiki"
+    found += [
+        path for path in (wiki / "pm_role.md", wiki / "pm_playbook.md") if path.is_file()
+    ]
+    found += [path for path in sorted(root.glob("*.lite.md")) if path.is_file()]
+    return sorted(set(found))
+
+
+def _stale_round_model_hits(paths) -> dict:
+    hits = {}
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        found = [token for token in _ROUND_MODEL_STALE_TOKENS if token in text]
+        if found:
+            hits[str(path)] = found
+    return hits
+
+
+def _template_roots() -> list[Path]:
+    """`templates/<dir>` 단일-어댑터 타깃 루트 (엔진 HARNESS_TEMPLATE_DIRS 파생)."""
+    return [
+        REPO / "templates" / dirs[0]
+        for dirs in _PM_IMPORT.HARNESS_TEMPLATE_DIRS.values() if len(dirs) == 1
+    ]
+
+
+def test_delegation_docs_drop_single_file_container_vocabulary():
+    """canonical + 3 타깃 위임 문서에 옛 단일 파일 컨테이너 어휘가 0이다 (ADR-0090).
+
+    가드 시야를 표면과 **독립으로 대조**한다 — 파생 글롭이 조용히 줄면(디렉토리 개명·미출하)
+    스캔 0으로 vacuous green 이 되므로, 각 루트가 실제로 내놓아야 하는 좌표를 따로 단언한다.
+    """
+    roots = [REPO, *_template_roots()]
+    scanned = {root: _delegation_docs(root) for root in roots}
+
+    # (a) 시야 자기검증 — 루트마다 역할 카드와 위임 스킬/command 를 최소 1개씩 봐야 한다.
+    for root, docs in scanned.items():
+        assert docs, f"위임 문서 스캔 0건: {root} — 파생 글롭이 표면을 놓쳤다"
+        relative = {path.relative_to(root).as_posix() for path in docs}
+        assert any("/agents/" in rel for rel in relative), (
+            f"{root}: 역할 카드가 스캔에 없다 — {sorted(relative)}"
+        )
+        assert any(
+            rel.endswith(f"{skill}/SKILL.md") or rel.endswith(f"command/{skill}.md")
+            for skill in _DELEGATION_SKILLS for rel in relative
+        ), f"{root}: 위임 스킬/command 가 스캔에 없다 — {sorted(relative)}"
+        assert {".project_manager/wiki/pm_role.md",
+                ".project_manager/wiki/pm_playbook.md"} <= relative, (
+            f"{root}: 방법론 문서가 스캔에 없다 — {sorted(relative)}"
+        )
+
+    # (b) 실제 판정 — 옛 어휘 0.
+    hits = _stale_round_model_hits(
+        [path for docs in scanned.values() for path in docs]
+    )
+    assert not hits, (
+        "위임 문서에 단일 파일 컨테이너 시절 어휘 잔존 — 라운드 파일 모델(ADR-0090)과 어긋난다: "
+        f"{hits}"
+    )
+
+
+@pytest.mark.parametrize("harness", HARNESSES)
+def test_fresh_adopter_delegation_docs_drop_stale_vocabulary(pm_import, tmp_path, harness):
+    """실 import 산출물의 위임 문서에도 옛 어휘가 0이다 (전파 누락 = 채택자만 red 방지)."""
+    dest = tmp_path / f"round-docs-{harness}"
+    assert pm_import.main(
+        ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
+    ) == 0
+    docs = _delegation_docs(dest)
+    assert docs, f"{harness}: 실 설치본에 위임 문서가 하나도 없다 — 어댑터 미출하?"
+    hits = _stale_round_model_hits(docs)
+    assert not hits, f"{harness} 실 설치본 위임 문서에 옛 어휘 잔존: {hits}"
+
+
+def _delegate_cli(dest: Path, *args: str) -> subprocess.CompletedProcess:
+    """imported 트리의 pm_delegate.py 를 동일 인터프리터로 호출 (cwd=dest·비대화형·capture)."""
+    return subprocess.run(
+        [sys.executable, str(dest / ".project_manager" / "tools" / "pm_delegate.py"), *args],
+        cwd=str(dest), capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
+        env={**os.environ, "PM_NONINTERACTIVE": "1"},
+    )
+
+
+def _git_init_adopter(dest: Path) -> None:
+    """채택자 트리를 git 트리로 만든다 — `ticket prepare` 의 ignore 규칙 검증 전제."""
+    for args in (
+        ["init", "-q"],
+        ["add", "-A"],
+        ["-c", "user.name=adopter", "-c", "user.email=adopter@test.invalid",
+         "commit", "-qm", "seed"],
+    ):
+        done = subprocess.run(
+            ["git", "-C", str(dest), *args], capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+        )
+        assert done.returncode == 0, f"git {args[0]} 실패: {done.stderr}"
+
+
+@pytest.mark.parametrize("harness", HARNESSES)
+def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path, harness):
+    """실 import 트리에서 `ticket prepare` → 라운드 파일 편집 → `ticket harvest` → `show` 1사이클.
+
+    기계층이다(라이브 LLM 0) — 에이전트가 할 편집을 테스트가 직접 한다. 이 사이클이 채택자
+    사본에서 돌아야 위임이 성립하므로, 엔진만 고치고 template 전파를 빠뜨리면 여기서 red 다.
+    """
+    dest = tmp_path / f"round-cycle-{harness}"
+    assert pm_import.main(
+        ["--new", str(dest), "--harness", harness, "--name", "Adopter", "--fill", "manual"]
+    ) == 0
+    _git_init_adopter(dest)
+
+    new = _board(dest, "new", "round cycle probe", "--touches", "README.md")
+    assert new.returncode == 0, f"{harness} `board.py new` 실패: {new.stderr}"
+    listing = _board(dest, "list", "--all", "--status", "open")
+    match = re.search(r"T-\d+", listing.stdout)
+    assert match, f"{harness} 발행 ticket 미발견:\n{listing.stdout}"
+    tid = match.group(0)
+    claim = _board(dest, "claim", tid, "--repo", "pilot", "--slot", "1")
+    assert claim.returncode == 0, f"{harness} `board.py claim` 실패: {claim.stderr}"
+
+    prepared = _delegate_cli(
+        dest, "ticket", "prepare", "--ticket", tid, "--role", "developer",
+        "--cwd", str(dest),
+    )
+    assert prepared.returncode == 0, (
+        f"{harness} `ticket prepare` 실패(rc={prepared.returncode}) — 채택자 사본에서 라운드 준비가 "
+        f"안 된다.\n--- stdout ---\n{prepared.stdout}\n--- stderr ---\n{prepared.stderr}"
+    )
+    plan = json.loads(prepared.stdout.strip().splitlines()[-1])
+    round_file = Path(plan["copy"])
+    run_dir = Path(plan["run_dir"])
+    # 순번 zero-pad 폭의 이름 문법은 엔진(ticket_rounds)이 단일 진실 — 여기서 재타이핑하지
+    # 않고 glob 으로 찾아 응답 `copy` 와 일치하는지만 대조한다.
+    role_rounds = sorted(run_dir.glob("*-developer.md"))
+    assert role_rounds == [round_file], (
+        f"{harness}: run-dir 라운드 파일이 응답 copy 와 다르다: {role_rounds} vs {round_file}"
+    )
+    # run-dir 에서 쓸 수 있는 건 라운드 파일 하나고 나머지는 읽기 전용 입력이다.
+    assert sorted(item.name for item in run_dir.iterdir()) == [
+        round_file.name, "rounds", "spec.md"
+    ]
+
+    sentinel = "ROUND_CYCLE_PERSISTED"
+    round_file.write_text(
+        round_file.read_text(encoding="utf-8") + f"\n{sentinel}\n",
+        encoding="utf-8", newline="",
+    )
+    harvested = _delegate_cli(
+        dest, "ticket", "harvest", "--copy", str(round_file), "--cwd", str(dest),
+    )
+    assert harvested.returncode == 0, (
+        f"{harness} `ticket harvest` 실패(rc={harvested.returncode})\n"
+        f"--- stdout ---\n{harvested.stdout}\n--- stderr ---\n{harvested.stderr}"
+    )
+    assert json.loads(harvested.stdout.strip().splitlines()[-1])["changed"] is True
+    assert not run_dir.exists(), f"{harness}: 회수 뒤에도 run-dir 이 남음 — run 이 안 닫혔다"
+
+    board_round = (
+        dest / ".project_manager" / "wiki" / "tickets" / "rounds" / tid / round_file.name
+    )
+    assert board_round.is_file(), f"{harness}: board 라운드 파일 부재: {board_round}"
+    assert sentinel in board_round.read_text(encoding="utf-8")
+
+    shown = _board(dest, "show", tid)
+    assert shown.returncode == 0, f"{harness} `board.py show` 실패: {shown.stderr}"
+    assert sentinel in shown.stdout, (
+        f"{harness}: `show` 가 회수된 라운드를 표시하지 않는다 — 명세만 출력?\n{shown.stdout}"
+    )
+
+
 @pytest.mark.parametrize("harness", HARNESSES)
 def test_fresh_adopter_central_loader_survives_self_update(pm_import, tmp_path, harness):
     """세 flavor 실출하 사본이 중앙 loader를 포함하고 self-update 뒤에도 직접 CLI로 동작한다."""

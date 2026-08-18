@@ -139,7 +139,7 @@ agent 를 스폰한다(부모 sandbox 상속·`codex exec --agent` 플래그 부
 
 - 4축 = `.codex/agents/{architect,code-reviewer,developer,researcher}.toml`. 각 TOML 은 필수 필드
   `name`/`description`/`developer_instructions`(≈system prompt) + `sandbox_mode`(developer/architect=
-  `workspace-write`·code-reviewer=`workspace-write`(성장 사본 자기 절만 write·코드/board/git 금지)·
+  `workspace-write`·code-reviewer=`workspace-write`(지정된 라운드 파일만 write·코드/board/git 금지)·
   researcher=`read-only`)를 담는다. `model` 키는 없다 — 사용자
   config 기본 상속(D5).
 - 표준 위임 프롬프트는 `$pm-dev-delegate` 스킬. (위임 *개념*·generate≠evaluate 는 루트 README.)

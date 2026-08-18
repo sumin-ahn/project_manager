@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "count": 563,
+  "count": 562,
   "surface_counts": {
-    "markdown": 147,
+    "markdown": 146,
     "python-non-prose": 24,
     "python-prose": 392
   },
@@ -3077,14 +3077,6 @@
       "match": "ADR-0006",
       "surface": "markdown",
       "hash": "a7c7291e0edc2784d4b71f569a513d2f727d04576c5bfd4548f4e5634d55c3fc",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.opencode/agents/researcher.md",
-      "kind": "work_item",
-      "match": "T-0696",
-      "surface": "markdown",
-      "hash": "b2f9c47ef8e589061b467b635c57f756b11de9d7165e480eaaf0f0bcf1d044f2",
       "count": 1
     },
     {

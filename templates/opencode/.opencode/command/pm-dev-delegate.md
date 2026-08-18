@@ -54,56 +54,47 @@ python3 .project_manager/tools/board.py regression run --task <이름>
 cross 외부 송신·과금 동의만 게이트하며 native 설정 조회와 실행에는 적용하지 않는다.
 1차 판정은 이 카드이며 `pm_delegate.py` same-harness 경고는 never-block 백스톱이다.
 
-### 성장 티켓 사본 — 모든 위임의 준비/회수
+### 라운드 파일 — 모든 위임의 준비/회수
 
-developer·code-reviewer·architect는 PM 홈 티켓을 직접 편집하지 않는다. PM은 위임마다 그 시점
-티켓 전문을 slot 안 기계 소유 사본으로 새로 준비하고, 에이전트는 프롬프트에 주입된 절대경로의
-`pm-ticket-section:start/end role=<역할>` 자기 절만 채운다.
+developer·code-reviewer·architect·researcher는 PM 홈 티켓을 직접 편집하지 않는다. PM은 위임마다
+`ticket prepare`로 board 에 라운드 순번을 예약하고, 엔진이 slot run-dir 에 **쓸 수 있는 파일 하나**
+(`NN-<역할>.md`)와 읽기 전용 입력(`spec.md`=티켓 명세 · `rounds/`=이전 라운드)을 깐다. 에이전트는
+프롬프트에 주입된 그 절대경로 하나만 채우고 파일 이름·순번은 엔진이 만든다.
 
 - **native prepare → spawn → harvest**:
 
   ```bash
   python3 .project_manager/tools/pm_delegate.py ticket prepare \
-      --ticket T-NNNN --role <developer|code-reviewer|architect> \
+      --ticket T-NNNN --role <developer|code-reviewer|architect|researcher> \
       --cwd <작업 worktree 절대경로>
-  # stdout JSON의 `copy`만 native task prompt에 주입한다.
-  # `capability`는 PM 홈 장부가 보관한다 — agent prompt/파일/argv에 넣지 않고 PM이 손으로 옮겨
-  # 적지도 않는다(prepare가 등록·harvest가 해소).
+  # stdout JSON의 `copy`(라운드 파일 절대경로)만 native task prompt에 주입한다.
   # native 위임 종료 뒤(rc/판정과 무관):
   python3 .project_manager/tools/pm_delegate.py ticket harvest \
       --copy <prepare JSON의 copy> --cwd <작업 worktree 절대경로>
-  # 미회수 사본 조회(컴팩션·세션 교체 뒤 복구 진입점):
+  # 미회수 준비 조회(컴팩션·세션 교체 뒤 복구 진입점):
   #   python3 .project_manager/tools/pm_delegate.py ticket copies --unharvested
   ```
 
   prepare가 실패하면 spawn하지 않는다. harvest가 실패하면 티켓을 다음 단계로 넘기지 않고 같은
-  `--copy`로 재실행한다. capability 값은 명령 argv·프롬프트·로그에 쓰지 않는다. 명시 공급이 필요한
-  경우에만 `--capability-stdin`을 쓰며(그때는 stdin 한 줄), 무-stdin + 장부 미등록만 fail-loud다.
-  사본·읽기 전용 baseline·metadata·tag 복제본은 성공 뒤에도 보존되며
-  재호출마다 새 디렉터리를 쓰므로 서로 덮지 않는다.
+  `--copy`로 재실행한다. 회수 성공 = run-dir 삭제 = run 닫힘이라 재회수 개념이 없고, 닫힌 run에
+  다시 부르면 파일이 없어 자연 실패한다. 준비마다 새 run-dir 을 쓰므로 서로 덮지 않는다.
 
 - **cross 자동 후처리**: 아래 실 실행에 `--ticket T-NNNN`을 주면 `pm_delegate.py`가 prepare,
-  사본 경로/자기 절 제한 preamble 합성, subprocess 실행, `finally` harvest를 한 호출에서 수행한다.
+  라운드 파일 경로 preamble 합성, subprocess 실행, `finally` harvest를 한 호출에서 수행한다.
   하네스 rc 비정상·runner 예외에도 harvest를 시도하며, harvest 실패는 원래 rc보다 강한 비정상 종료와
-  token 값 없는 진단을 stderr에 낸다. cross capability는 main 메모리에만 존재하고 raw·ledger·파일·
-  프롬프트·stderr에 남기지 않으므로 프로세스 종료 뒤 수동 재-harvest할 수 없다. 실패 시 보존 사본을
-  진단한 뒤 새 prepare/위임을 수행한다. resume delta, 세션 불일치 뒤 fresh retry, 인프라 fallback도
-  이번 호출에서 준비한 **같은 사본 경로** 지시를 매 wire에 다시 싣고, 전 시도가 끝난 뒤 한 번 회수한다.
-  `--dry-run`은 무부수효과라 사본을 만들지 않는다.
+  진단을 stderr에 낸다. 실패 시 남은 run-dir 을 진단한 뒤 같은 `--copy`로 재회수하거나 새
+  prepare/위임을 수행한다. resume delta, 세션 불일치 뒤 fresh retry, 인프라 fallback도 이번
+  호출에서 준비한 **같은 라운드 파일 경로** 지시를 매 wire에 다시 싣고, 전 시도가 끝난 뒤 한 번
+  회수한다. `--dry-run`은 무부수효과라 준비하지 않는다.
 
-- **실패 판정**: marker 밖 byte 변경, marker 누락·중복·중첩·역할 불일치, 준비 뒤 같은 역할 절의
-  PM 홈 변경은 stale overwrite 없이 rc=1. 원본과 사본을 보존한 채 원인을 고친 뒤 출력된
-  `ticket harvest --copy ... --cwd ...`를 다시 실행한다. 준비 뒤 PM 홈 절이 바뀐 경우는
-  `ticket prepare --ticket ... --role ... --transfer-from <구 사본>`이 같은 role·ordinal 절을 새
-  사본으로 옮겨 준다 — **PM이 역할 절 bytes를 손으로 옮겨 적지 않는다**(봉인 취지).
-  사본 디렉터리 `.project_manager/.local/delegate-ticket-copies/`는 tracked
+- **실패 판정**: PM 홈 장부에 준비 기록이 없는 경로, 장부의 board 경로와 라운드 이름 불일치,
+  예약 소실(board 라운드 파일 부재)은 board 를 바꾸지 않고 rc=1이다. run-dir 과 board 라운드를
+  보존한 채 원인을 고친 뒤 출력된 `ticket harvest --copy ... --cwd ...`를 다시 실행한다. 산출이
+  **시드 그대로**면 board 를 바꾸지 않고 경고만 내며 run-dir 을 남긴다(게이트가 아니라 같은 세션을
+  이어 시킬 여지다). run-dir 루트 `.project_manager/.local/delegate-ticket-copies/`는 tracked
   `.project_manager/.gitignore`의 `.local/` 규칙으로 무시되어 `git status --short`와 커밋 대상에
-  나타나지 않는다(prepare가 `git check-ignore`로 확인하고 규칙 부재 시 fail-loud). baseline과
-  metadata·tag는 PM 홈 local trust 영역에도 복제한다. 어느 파일도 권위가 아니며, harvest는 파일에
-  저장하지 않은 per-run 256-bit capability의 domain-separated HMAC(metadata canonical bytes+
-  baseline)을 먼저 검증한 뒤에만 target/ordinal을 사용한다. 그 뒤 board lock 아래 canonical ticket
-  재조회와 stale 비교까지 모두 통과해야 반영한다. 이미 원하는 block이 반영된 재-harvest도 sync를
-  다시 시도하며 JSON의 `changed`와 `sync_ready`를 별도 반환한다.
+  나타나지 않는다(prepare가 `git check-ignore`로 확인하고 규칙 부재 시 fail-loud). 회수는 board
+  라운드 파일을 원자 교체하고 JSON의 `changed`와 `sync_ready`를 별도 반환한다.
 
 ### 1. 매핑 조회 (dry-run)
 
@@ -152,7 +143,7 @@ python3 .project_manager/tools/pm_delegate.py --role <역할> \
 - `--cwd`: 구현할 worktree **절대경로**. 모든 역할 필수(기본값 없음). task-mode 해소값을 실값으로 넣는다.
 - `--tier`: developer에만 사용.
 - role preamble(역할 정체성, commit/push 등 git 비가역·board 조작·어댑터 `.claude/.codex/.opencode` 수정 금지)은 엔진이 자동 합성한다. 프롬프트 파일에는 작업만 담고 금지 문구를 중복하지 않는다.
-- developer·code-reviewer·architect의 정식 실행은 `--ticket`을 받아 성장 사본을 자동 준비하고 그 절대경로와 자기 역할 절만 편집한다. OpenCode 네 역할 카드는 `mode: all`이며 native `task(subagent_type=<role>)`와 cross `opencode run --agent <role>`가 정확한 역할명을 쓴다. 타 하네스 adopter처럼 역할 카드가 없는 cross는 엔진이 이번 역할 하나의 mode/permission을 정제된 env에 주입하고 모델을 CLI로 명시해 default build/plan 폴백을 막는다. code-reviewer는 제품 코드를 고치지 않지만 ticket-copy의 자기 절은 반드시 기록한다. OpenCode처럼 단일 경로 쓰기 격리를 보장하지 못해도 경고 후 사용자가 고른 target으로 계속 실행하며, 역할 규약과 위임 전후 git/touches 감사가 범위 밖 변경을 loud하게 표면화한다. target 자동 대체·새 reviewer opt-in·새 sandbox는 추가하지 않는다.
+- developer·code-reviewer·architect의 정식 실행은 `--ticket`을 받아 라운드 파일을 자동 준비하고 그 절대경로 하나만 편집한다. OpenCode 네 역할 카드는 `mode: all`이며 native `task(subagent_type=<role>)`와 cross `opencode run --agent <role>`가 정확한 역할명을 쓴다. 타 하네스 adopter처럼 역할 카드가 없는 cross는 엔진이 이번 역할 하나의 mode/permission을 정제된 env에 주입하고 모델을 CLI로 명시해 default build/plan 폴백을 막는다. code-reviewer는 제품 코드를 고치지 않지만 지정된 라운드 파일은 반드시 기록한다. OpenCode처럼 단일 경로 쓰기 격리를 보장하지 못해도 경고 후 사용자가 고른 target으로 계속 실행하며, 역할 규약과 위임 전후 git/touches 감사가 범위 밖 변경을 loud하게 표면화한다. target 자동 대체·새 reviewer opt-in·새 sandbox는 추가하지 않는다.
 - 병렬 cross wave는 OpenCode가 제공하는 호출측 동시 실행으로 동기·stateless `pm_delegate` 호출을 병렬화한다.
 - 결과: `rc=0` 성공(stdout 첫 줄=실행 provenance, 폴백 시 실제 하네스 포함; 이후 최종 reply; raw 파일 박제), `rc=1` 실패(loud·raw 경로 stderr), `rc=3` opt-in OFF. PM이 reply를 검토하고 board를 갱신하며 위임 대상은 board를 조작하지 않는다.
 - `--ticket T-NNNN`은 해당 ticket `touches`를 허용 집합으로 전후 워크스페이스를 비교해 범위 밖 신규/변경/커밋을 stderr 경고한다(차단 아님·rc 불변). 생략 시 허용 0이라 모든 변경을 경고한다. **dev 위임에는 `--ticket`이 표준**.
@@ -180,8 +171,9 @@ task tool 호출:
   prompt:
     "T-NNNN 을 구현하라.
 
-     성장 티켓 사본(절대경로): <prepare JSON의 copy>. 이 파일의 최신
-     `pm-ticket-section:start/end role=developer` 내부만 채우고 capability는 요구·기록하지 마라.
+     라운드 파일(절대경로): <prepare JSON의 copy> — 이름은 `NN-developer.md`. 산출은 이 파일
+     하나에만 쓰고(첫 줄 헤더 유지·그 아래 골격을 채움), 같은 디렉터리의 `spec.md`(티켓 명세)와
+     `rounds/`(이전 라운드)는 읽기 전용으로만 읽어라. PM 홈 티켓은 편집하지 마라.
 
      세션명: orch-dev-TNNNN (board.py 조작은 orchestrator(PM) 담당·dev 는 코드+테스트만).
      작업 위치(worktree 절대경로): <해소 절대경로 — task-mode 시·슬롯/솔로는 생략>.
@@ -228,10 +220,10 @@ task tool 호출:
 > (`rc`·`elapsed_sec`·`silence_sec`)로 마감한다. 백그라운드 호출이 끊겨 stdout(그 안의 raw 경로)을
 > 잃어도 `python3 .project_manager/tools/pm_delegate.py raw [--unfinished]` 로 절대경로를 조회하라 —
 > **미마감 레코드 자체가 kill 증거**다. 재위임 전에 반드시 확인한다(완성분을 버리고 중복 과금하는 경로).
-> **native 위임은 raw 장부에는 남지 않지만 성장 사본에는 남는다** — 같은 하네스 안에서 도는 위임은
-> 위 native prepare→spawn→harvest를 수행한다. 하네스 보고/전사가 끊겨도 prepare가 출력한 사본을
-> 먼저 읽고, `ticket harvest --copy ... --cwd ...`로 회수한 뒤에만 재위임한다. 사본 경로마저
-> 잃었으면 `ticket copies --unharvested`가 미회수 사본을 열거한다.
+> **native 위임은 raw 장부에는 남지 않지만 라운드 파일에는 남는다** — 같은 하네스 안에서 도는 위임은
+> 위 native prepare→spawn→harvest를 수행한다. 하네스 보고/전사가 끊겨도 prepare가 출력한 라운드
+> 파일을 먼저 읽고, `ticket harvest --copy ... --cwd ...`로 회수한 뒤에만 재위임한다. 경로마저
+> 잃었으면 `ticket copies --unharvested`가 미회수 준비를 열거한다.
 > **어느 장부를 봤는지 첫 줄로 확인한다** — `조회 장부: <절대경로>`. 장부는 **엔진 사본별**이라
 > `경고: 다른 엔진 사본 장부가 있습니다(이 조회에서는 읽지 않음): <경로>` 가 뜨면 자동 대체 조회가
 > 된 게 아니다 — 표시된 사본에서 **명시적으로 다시 조회**하라. `--output-dir DIR` 로 저장한 산출은
@@ -246,9 +238,10 @@ task tool 호출:
   prompt:
     "T-NNNN 의 변경을 검토하라.
 
-     성장 티켓 사본(절대경로): <prepare JSON의 copy>. 코드·board·git은 수정하지 말고, OpenCode
-     reviewer의 edit 권한으로 이 파일의 최신 `pm-ticket-section:start/end role=code-reviewer`
-     내부에만 판정 근거를 기록하라. edit/write 도구 금지는 코드와 다른 파일에 그대로 적용된다.
+     라운드 파일(절대경로): <prepare JSON의 copy> — 이름은 `NN-code-reviewer.md`. 코드·board·git은
+     수정하지 말고, OpenCode reviewer의 edit 권한으로 이 파일 하나에만 판정 근거를 기록하라(첫 줄
+     헤더 유지). 같은 디렉터리의 `spec.md`(티켓 명세)와 `rounds/`(이전 라운드)는 읽기 전용 입력이며,
+     edit/write 도구 금지는 코드와 다른 파일에 그대로 적용된다.
 
      변경 파일: <touches 인자 그대로 인용>.
      작업 위치(병렬 wave 시 격리 스냅샷): <아래 §게이트 격리 스냅샷으로 만든 gate worktree
@@ -265,9 +258,9 @@ task tool 호출:
      판정하라 — probe 재실행 실측값 포함. 신규 발견은 그 뒤에 NEW 라벨로 분리해 보고하라.
 
      완료 시 보고:
-     - 같은 reviewer 절에 `section-add` 가 시드한 `pm-review-v1` 골격을 그대로 채운다. 필드 이름·
-       분류·상태 낱말을 스스로 만들거나 골격 밖 형식을 쓰지 않는다(스키마 단일 진실 = 엔진 파서).
-       미사용 array 도 빈 배열로 둔다.
+     - 같은 라운드 파일에 엔진이 시드한 리뷰 골격을 그대로 채운다. 필드 이름·분류·상태 낱말을
+       스스로 만들거나 골격 밖 형식을 쓰지 않는다(스키마 단일 진실 = 엔진 파서). 미사용 array 도
+       빈 배열로 둔다.
      - (2라운드 이후) 골격이 프리필한 확인 ID 를 먼저 채우고 신규 결함만 새 finding ID.
      - 설계 변경 제안은 확정하지 말고 골격의 설계-제안 분류로 보고한다.
      - should-fix (권장·운영 영향 있음)
@@ -288,19 +281,19 @@ task tool 호출:
   prompt:
     "T-NNNN 의 설계 또는 재설계를 수행하라.
 
-     성장 티켓 사본(절대경로): <prepare JSON의 copy>. 이 파일의 최신
-     `pm-ticket-section:start/end role=architect` 내부에만 경계 실측·불변식·표면 상한·테스트 전략을
-     기록하라. 재투입이면 이전 설계·developer·code-reviewer 절을 대조하고, 새로 준비된 최신 architect
-     절을 직접 성장시켜 결함과 변경 결정을 남겨라. capability는 요구·기록하지 마라."
+     라운드 파일(절대경로): <prepare JSON의 copy> — 이름은 `NN-architect.md`. 경계 실측·불변식·
+     표면 상한·테스트 전략을 이 파일 하나에만 기록하라(첫 줄 헤더 유지). 재투입이면 같은 디렉터리
+     `rounds/`의 이전 설계·developer·code-reviewer 라운드를 대조하고, 이번에 준비된 라운드 파일에
+     결함과 변경 결정을 남겨라. `spec.md`·`rounds/`는 읽기 전용이다."
 ```
 
 architect도 위 native `ticket prepare` 뒤 `task`를 호출하고 종료 뒤 `ticket harvest --copy ...`를
-실행한다(capability는 장부에서 해소된다). 재설계는 새 prepare가 지정한 최신 ordinal을 성장시키며 harvest의
-stale·ticket·role·ordinal·HMAC 검증을 그대로 통과해야 한다.
+실행한다. 재설계는 새 prepare가 예약한 **다음 순번의 새 라운드 파일**에 쓰며 이전 라운드는 읽기
+전용으로 남는다(라운드는 회수 후 불변).
 
-> **fix 라운드 프롬프트는 PM 승인 delta만 쓴다.** PM은 reviewer 절 밖
-> `pm-review-disposition-v1` block에 reviewer ordinal과 ID별 `decision(accepted|rejected|decision-required)`,
-> `reason`, `scope`, `prerequisite`를 전수 기록한 뒤
+> **fix 라운드 프롬프트는 PM 승인 delta만 쓴다.** PM은 라운드 파일 밖 명세의 PM 영역에
+> `python3 .project_manager/tools/pm_delegate.py review disposition-template --ticket T-NNNN` 이 낸
+> 판정 골격을 붙여 미판정 finding 을 전수 판정한 뒤
 > `python3 .project_manager/tools/pm_delegate.py review delta --ticket T-NNNN`을 실행한다. 출력된
 > accepted ID·원문 필드·PM scope만 developer에게 전달하고 rejected/decision-required/보고서 전문은
 > 전달하지 않는다. 비성공이면 표시된 판정·재설계 처방을 먼저 수행하고, 빈 성공이면 재투입하지 않는다.
