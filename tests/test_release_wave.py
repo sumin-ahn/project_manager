@@ -631,6 +631,12 @@ def _multirepo_wave_prompt(repos: tuple[str, ...] = _MULTIREPO_REPOS) -> str:
     (`--repo <repo> --slot 1`·`work/<repo>_1` 슬롯 파일)이다. 그래서 prompt 는 그 축만 친다(ticket 본문
     "viable 불확실/과복잡 시 형태 재검토" 허용). board.py 경로는 *준다* — 단일 wave 가 문서 운영성
     (경로 미제공)을 이미 검증하므로 여기선 multi-repo 핸들링에 집중한다.
+
+    신규 prefix 는 사용자-승인 게이트(`require_prefix_user_ack`·값-결속 `--user-ack <prefix>`)를 지난다.
+    이 release-test 프롬프트 자체가 신규 테스트 prefix 승인 주체이므로 각 repo 의 (유일한) `new` 원 명령에
+    `--user-ack REPO` 를 명시한다 — 에이전트가 ack 를 자동 부착하는 형상은 테스트하지 않으며(엔진 메시지가
+    "세션 자동 부착 금지"를 명시), ack 없는 프롬프트는 라이브 판정이 모델 행동에 좌우된다(T-0744·
+    multiuser 프롬프트의 dd1b9ce 와 동일 클래스).
     """
     repo_list = " and ".join(repos)
     steps = "\n".join(
@@ -642,11 +648,13 @@ def _multirepo_wave_prompt(repos: tuple[str, ...] = _MULTIREPO_REPOS) -> str:
         f"{len(repos)} code repos: {repo_list}. Each repo has its own worktree slot directory: "
         + ", ".join(f"work/{r}_1" for r in repos) + ". The board engine is "
         ".project_manager/tools/board.py.\n\n"
+        "This release-test instruction explicitly approves each repo's value-bound --user-ack for its "
+        "new test prefix; do not invent or alter acknowledgements.\n\n"
         "Do a minimal wave for EACH repo, one repo fully before the next:\n"
         f"{steps}\n\n"
         "For a repo named REPO, the 4 steps are exactly:\n"
         '  1. Create a ticket:   python3 .project_manager/tools/board.py new "wave probe REPO" '
-        "--prefix REPO\n"
+        "--prefix REPO --user-ack REPO\n"
         "     (this prints the new ticket id, e.g. T-REPO-001 — note it)\n"
         "  2. Claim it:          python3 .project_manager/tools/board.py claim <TICKET_ID> "
         "--repo REPO --slot 1\n"
@@ -1396,6 +1404,32 @@ def test_multiuser_wave_prompt_has_per_identity_mechanics():
     # 미claim open(유출 대상) + claim 둘 다 지시 — 섞임 격리의 catch 대상 open 필요.
     assert "open probe" in prompt and "do NOT claim" in prompt
     # negative backstop — 구 actor 플래그 재유입 시 라이브 없이 red(T-0324 재발 방지).
+    assert "--session" not in prompt and "--worktree-slot" not in prompt
+
+
+def test_multirepo_wave_prompt_has_user_ack_per_prefix():
+    """multirepo wave 프롬프트가 신규 prefix 의 값-결속 사용자 ack 를 `new` 원 명령에 담는다 (T-0744).
+
+    라이브 미실행 시에도 프롬프트 구조를 가드 — `--prefix REPO` 는 v1.7.4 이후 신규 prefix 사용자-승인
+    게이트(`require_prefix_user_ack`)를 지나므로 프롬프트가 `--user-ack REPO` 를 주지 않으면 라이브 판정이
+    모델 행동(ack 자기부착 vs 사용자에게 질의 후 정지)에 좌우된다(livegate d0b5890 실측). multiuser
+    프롬프트 가드(`test_multiuser_wave_prompt_has_per_identity_mechanics`)와 동일 클래스.
+    """
+    prompt = _multirepo_wave_prompt()
+    for repo in _MULTIREPO_REPOS:
+        assert repo in prompt, f"프롬프트에 repo '{repo}' 미언급"
+        assert f"work/{repo}_1" in prompt, f"프롬프트에 repo '{repo}' 슬롯 디렉토리 누락"
+    # 템플릿은 REPO 치환형 — new 원 명령 1곳에만 값-결속 ack 가 있어야 한다(자동 부착 형상 미테스트).
+    assert prompt.count("--prefix REPO --user-ack REPO") == 1, (
+        "multirepo 프롬프트의 `new` 원 명령은 `--prefix REPO --user-ack REPO` 값-결속 승인을 정확히 1회 담아야 함"
+    )
+    for line in prompt.splitlines():
+        if "board.py claim" in line or "board.py complete" in line:
+            assert "--user-ack" not in line, f"ack 는 new 원 명령에만 — 재부착 금지: {line!r}"
+    # 승인 주체 문장 — 에이전트가 ack 를 지어내거나 바꾸지 않도록 프롬프트가 명시한다.
+    assert "explicitly approves" in prompt and "--user-ack" in prompt
+    assert "board.py new" in prompt and "board.py claim" in prompt and "board.py complete" in prompt
+    # negative backstop — 구 actor 플래그 재유입 시 라이브 없이 red.
     assert "--session" not in prompt and "--worktree-slot" not in prompt
 
 
