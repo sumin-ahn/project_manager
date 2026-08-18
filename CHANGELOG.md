@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [1.7.6] - 2026-08-18
+
 ### 업그레이드 노트
 
 - **티켓의 역할 절은 이제 엔진 경로로만 쓰인다(봉인).** `section-add`·`harvest`·`seal-backfill` 이
