@@ -589,3 +589,27 @@ def test_home_resident_touch_is_staged_in_pm_home(tmp_path, monkeypatch, capsys)
     ]
     assert f'[PM 홈 산출물] cwd={home}: `git commit -m "<메시지>" --' in out
     assert home_touch in out
+
+
+def test_home_resident_touch_deletion_is_staged_in_pm_home(tmp_path, monkeypatch, capsys):
+    """홈-상주 touch 를 지운 상태로 완료하면 그 삭제가 PM 홈 index 에 실린다.
+
+    삭제된 경로는 어느 트리에도 실재하지 않는다 — 코드 몫으로만 접으면 코드 트리에서 추적되지
+    않아 stage 필터가 떨구고 삭제가 어느 계획에도 안 실린다.
+    """
+    home_touch = ".project_manager/wiki/roadmap.md"
+    home, worktree, tf = _split_home_shape(
+        tmp_path, ticket_id="T-6706", touches=["src/engine.py", home_touch],
+        home_lines=0, worktree_lines=0, home_only={home_touch: 0},
+    )
+    (home / home_touch).unlink()
+    _probe_code_tree(tf, monkeypatch)
+
+    rc = tf.main(["T-6706", "--repo", "myrepo", "--slot", "1", "--no-pytest"])
+
+    assert rc == 0
+    assert capsys.readouterr() is not None
+    assert _staged_paths(home) == [
+        ".project_manager/wiki/log/current.md", home_touch,
+    ]
+    assert _staged_paths(worktree) == []

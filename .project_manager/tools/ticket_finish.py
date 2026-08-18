@@ -1264,9 +1264,10 @@ def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
 def _path_exists_in(root: Path, relative: str) -> bool:
     """`root` 안에 이 선언 경로가 실재하는가 (판정 불능·경로 마법은 False).
 
-    touches 는 사람이 적는 값이라 glob/pathspec 마법이나 절대경로가 섞일 수 있다. 그런 선언은
-    "이 트리에 있다"고 단정하지 않고 False 로 접는다 — 호출부(repo 별 몫 판정)의 기본값이 코드
-    트리라, 접힘의 방향이 기존 동작(코드 몫)을 보존한다.
+    touches 는 사람이 적는 값이라 glob/pathspec 마법이 섞일 수 있다. 그런 선언은 이 트리에 있다고
+    단정하지 않고 False 로 접는다 — 판정 불능을 존재로 세면 몫이 틀린 계획에 실린다. 절대경로
+    선언은 pathlib 규칙상 `root` 가 무시되고 그 경로 자체로 판정된다(트리별 몫을 가르지 못하므로
+    호출부에서 양쪽 계획에 들어간다).
     """
     candidate = relative.strip()
     if not candidate or candidate.startswith(":(") or any(ch in candidate for ch in "*?["):
@@ -1976,8 +1977,8 @@ class TicketFinisher:
         """티켓 touches 를 (코드 트리 몫, PM 홈 몫)으로 가른다.
 
         판정은 **어느 트리에 실재하는가** 다: 코드 트리에 있으면 코드 트리, 없고 PM 홈에 있으면
-        PM 홈(wiki·결정 기록·domain 같은 홈-상주 산출물), 어디에도 없으면 코드 트리(신규 파일
-        기본). 두-repo 계획이 코드 몫만 계획하면 홈-상주 touches 가 **어느 repo 에서도 stage 되지
+        PM 홈(wiki·결정 기록·domain 같은 홈-상주 산출물), 어디에도 없으면 두 계획 모두(신규
+        파일이거나 추적 중인 삭제 — 어느 쪽인지는 각 트리의 stage 필터가 판정한다). 두-repo 계획이 코드 몫만 계획하면 홈-상주 touches 가 **어느 repo 에서도 stage 되지
         않고** 잔여 보고에만 남는다 — 그 경로들은 이미 선언돼 있어 "touches 를 보강하라"는 처방도
         듣지 않는다. 정규화 불능이면 전부 코드 몫으로 두어 `stage_scope` 가 기존과 같은 fail-loud
         사유를 내게 한다(여기서 삼키지 않는다).
@@ -1993,9 +1994,18 @@ class TicketFinisher:
         code_touches: list[str] = []
         home_touches: list[str] = []
         for declared, normalized in zip(touches, in_code_tree):
-            if _path_exists_in(code_tree, normalized) or not _path_exists_in(REPO, declared):
+            in_code = _path_exists_in(code_tree, normalized)
+            in_home = _path_exists_in(REPO, declared)
+            if in_code:
                 code_touches.append(declared)
+            elif in_home:
+                home_touches.append(declared)
             else:
+                # 어디에도 실재하지 않는 선언 — 신규 파일일 수도, **추적 중인 삭제**일 수도 있다.
+                # 한쪽으로만 접으면 삭제가 그 트리에서 추적되지 않아 stage 필터에 떨어지고 어느
+                # 계획에도 안 실린다. 둘 다에 넣어도 각 계획의 필터가 자기 트리에서 추적되는 것만
+                # 남기므로 이중 stage 는 생기지 않는다.
+                code_touches.append(declared)
                 home_touches.append(declared)
         return code_touches, home_touches
 
