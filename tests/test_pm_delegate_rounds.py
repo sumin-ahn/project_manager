@@ -234,7 +234,8 @@ def test_closed_run_cannot_be_harvested_again(pd, rounds_env):
     )
     pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
 
-    with pytest.raises(pd.DelegateError, match="읽기 실패"):
+    # run-dir 이 없다 = run 이 닫혔다. 별도 "이미 회수됨" 판정 없이 경로에서 자연 실패한다.
+    with pytest.raises(pd.DelegateError, match="경로 검사 실패|읽기 실패"):
         pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
 
 
@@ -594,3 +595,262 @@ def test_role_sets_match_the_rounds_seam(pd):
     rounds_module = pd._load_ticket_rounds()
     assert not hasattr(pd, "EXTERNAL_REVIEW_SECTION_LABEL")
     assert set(pd.TICKET_COPY_ROLES) == set(rounds_module.ROLES)
+
+
+# ── 거부된 준비는 board 를 건드리지 않는다 ([[T-0750]] 리뷰 F-001) ─────────
+
+def _board_side_effects(pm_home: Path, ticket: str) -> tuple[list[str], list[dict]]:
+    directory = _rounds_dir(pm_home, ticket)
+    rounds = sorted(item.name for item in directory.iterdir()) if directory.is_dir() else []
+    return rounds, [row for row in _ledger_rows(pm_home) if row["ticket"] == ticket]
+
+
+def test_ignore_rejection_leaves_no_board_round_or_ledger_row(pd, rounds_env):
+    """ignore 규칙 미검증 슬롯의 거부는 예약 **앞**이라 board 부작용이 0이다.
+
+    뒤에 두면 회수 불가능한 고아 라운드(장부 행이 없어 harvest 가 거부한다)가 남고 순번 하나가
+    영구 소모된다.
+    """
+    pm_home, slot, tickets, sync_log = rounds_env
+    _write_spec(tickets, "T-7200")
+    assert _git(slot, "rm", "-q", "--cached", ".project_manager/.gitignore").returncode == 0
+
+    with pytest.raises(pd.DelegateError, match="untracked"):
+        pd.prepare_ticket_copy(
+            ticket="T-7200", role="developer", cwd=slot, pm_home=pm_home,
+        )
+
+    assert _board_side_effects(pm_home, "T-7200") == ([], [])
+    assert sync_log == []
+
+
+@pytest.mark.parametrize(
+    ("ticket", "role", "pattern"),
+    [
+        ("T-7201", "reviewer-not-a-role", "미지원 역할"),
+        ("T-7299", "developer", "ticket not found"),
+    ],
+    ids=("role", "missing-ticket"),
+)
+def test_pre_reservation_rejections_have_no_board_side_effect(
+        pd, rounds_env, ticket, role, pattern):
+    pm_home, slot, tickets, sync_log = rounds_env
+    _write_spec(tickets, "T-7201")
+    with pytest.raises(pd.DelegateError, match=pattern):
+        pd.prepare_ticket_copy(
+            ticket=ticket, role=role, cwd=slot, pm_home=pm_home,
+        )
+    assert _board_side_effects(pm_home, ticket) == ([], [])
+    assert sync_log == []
+
+
+def test_done_ticket_rejection_has_no_board_side_effect(pd, rounds_env):
+    pm_home, slot, tickets, sync_log = rounds_env
+    done = tickets.parent / "done"
+    done.mkdir()
+    (done / "T-7202-rounds.md").write_text(
+        _spec_text("T-7202", status="done"), encoding="utf-8", newline="\n",
+    )
+    with pytest.raises(pd.DelegateError, match="open/claimed 또는 draft×architect"):
+        pd.prepare_ticket_copy(
+            ticket="T-7202", role="developer", cwd=slot, pm_home=pm_home,
+        )
+    assert _board_side_effects(pm_home, "T-7202") == ([], [])
+    assert sync_log == []
+
+
+# ── 무편집 판정은 시점에 의존하지 않는다 ([[T-0750]] 리뷰 F-002) ───────────
+
+def _reviewer_output(pd, seed_text: str, finding_id: str) -> str:
+    block = json.dumps({
+        "version": pd.PM_REVIEW_VERSION,
+        "findings": [{
+            "id": finding_id, "class": "implementation-defect", "severity": "must-fix",
+            "authority": "[[ADR-0090]] §경계", "evidence": "probe rc=1",
+            "recommendation": f"{finding_id}만 수정", "design_change": False,
+        }],
+        "confirmations": [],
+    }, ensure_ascii=False)
+    return (
+        seed_text.partition("\n")[0]
+        + f"\n\n## must-fix\n- {finding_id}\n\n## 판정\n판정: 반려 · finding 1건(must-fix 1건)\n\n"
+        + f"```{pd.PM_REVIEW_BLOCK}\n{block}\n```\n"
+    )
+
+
+def test_parallel_reviewer_rounds_keep_the_untouched_seed_unharvested(
+        pd, rounds_env, capsys):
+    """같은 역할 2라운드 병렬(설계가 명시 허용) — 앞 라운드 회수가 뒤 라운드 판정을 뒤집지 않는다.
+
+    시드를 회수 **시점**에 재렌더해 비교하면 프리필 입력이 그 사이 바뀌어, 손대지 않은 슬롯
+    파일이 '산출 있음'으로 회수된다(board 커밋 + run 닫힘). 판정 입력은 예약이 쓴 board 라운드
+    bytes 여야 한다.
+    """
+    pm_home, slot, tickets, sync_log = rounds_env
+    _write_spec(tickets, "T-7203")
+    first = pd.prepare_ticket_copy(
+        ticket="T-7203", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+    second = pd.prepare_ticket_copy(
+        ticket="T-7203", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+    assert (first.ordinal, second.ordinal) == (1, 2)
+    untouched = second.path.read_bytes()
+
+    first.path.write_text(
+        _reviewer_output(pd, first.path.read_text(encoding="utf-8"), "F-001"),
+        encoding="utf-8", newline="",
+    )
+    assert pd.harvest_ticket_copy(
+        copy_path=first.path, cwd=slot, pm_home=pm_home,
+    ).changed is True
+    capsys.readouterr()
+
+    assert second.path.read_bytes() == untouched
+    result = pd.harvest_ticket_copy(
+        copy_path=second.path, cwd=slot, pm_home=pm_home,
+    )
+    assert result.changed is False
+    assert "산출 없음" in capsys.readouterr().err
+    assert second.run_dir.exists()
+    assert second.board_path.read_bytes() == untouched
+    assert [paths for _message, paths in sync_log] == [[first.board_path]]
+
+
+def test_pending_previous_round_is_not_a_prefill_source(pd, rounds_env, capsys):
+    """미회수(pending) 앞 라운드는 자리표시자뿐이라 프리필 공급원이 아니다 ([[T-0750]] 리뷰 F-006).
+
+    빼지 않으면 정상 경로(앞 라운드 진행 중)에서 '강등' 경고가 나가 진짜 이상 신호를 덮는다.
+    """
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-7204")
+    pd.prepare_ticket_copy(
+        ticket="T-7204", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+    capsys.readouterr()
+    second = pd.prepare_ticket_copy(
+        ticket="T-7204", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+    warning = capsys.readouterr().err
+    assert "강등" not in warning
+    block_text = second.path.read_text(encoding="utf-8").partition(
+        f"```{pd.PM_REVIEW_BLOCK}"
+    )[2].replace(" ", "")
+    assert '"confirmations":[{"id":"F-NNN"' in block_text
+
+
+# ── 회수 입력 검증 = 장부 인가 경로 전량 일치 ([[T-0750]] 리뷰 F-003) ──────
+
+def _ledger_path(pm_home: Path) -> Path:
+    return pm_home / ".project_manager" / ".local" / "delegate-rounds.jsonl"
+
+
+def _append_raw_ledger_line(pm_home: Path, payload: str) -> None:
+    path = _ledger_path(pm_home)
+    with path.open("a", encoding="utf-8", newline="") as handle:
+        handle.write(payload + "\n")
+
+
+def _rewrite_last_row(pm_home: Path, **changes) -> dict:
+    rows = _ledger_rows(pm_home)
+    row = dict(rows[-1])
+    row.update(changes)
+    _append_raw_ledger_line(
+        pm_home, json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+    )
+    return row
+
+
+def test_harvest_refuses_a_row_whose_binding_does_not_match_the_path(pd, rounds_env):
+    """장부 행의 (순번·역할)이 요청 경로와 어긋나면 회수하지 않는다 — run 도 지우지 않는다."""
+    pm_home, slot, tickets, sync_log = rounds_env
+    _write_spec(tickets, "T-7205")
+    plan = pd.prepare_ticket_copy(
+        ticket="T-7205", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    plan.path.write_text(
+        plan.path.read_text(encoding="utf-8") + "\n산출\n", encoding="utf-8", newline="",
+    )
+    _rewrite_last_row(pm_home, ordinal=2)
+
+    with pytest.raises(pd.DelegateError, match="장부가 인가한 라운드 경로와 불일치"):
+        pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
+    assert plan.run_dir.exists() and plan.path.exists()
+    assert sync_log == []
+
+
+def test_harvest_refuses_a_row_pointing_outside_or_above_the_run_dir(pd, rounds_env):
+    """조작된 행이 run-dir 밖·상위를 가리켜도 거부한다 — `force_rmtree` 가 남의 자리를 지우지 않는다."""
+    pm_home, slot, tickets, sync_log = rounds_env
+    _write_spec(tickets, "T-7206")
+    plan = pd.prepare_ticket_copy(
+        ticket="T-7206", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    sibling = pd.prepare_ticket_copy(
+        ticket="T-7206", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    above = plan.run_dir.parent / plan.path.name
+    above.write_text("## 구현 보충 (developer · 2026-08-18)\n\n밀반입\n",
+                     encoding="utf-8", newline="\n")
+    _rewrite_last_row(pm_home, copy=str(above))
+
+    with pytest.raises(pd.DelegateError, match="장부가 인가한 라운드 경로와 불일치"):
+        pd.harvest_ticket_copy(copy_path=above, cwd=slot, pm_home=pm_home)
+    # 형제 run 과 상위 디렉터리 어느 쪽도 사라지지 않는다.
+    assert sibling.run_dir.exists() and plan.run_dir.exists() and above.exists()
+    assert sync_log == []
+
+
+def test_harvest_refuses_when_the_authorising_row_is_value_corrupt(pd, rounds_env):
+    """행 값이 형식을 벗어나면 그 행은 장부에서 빠지고 회수는 '준비 기록 없음'으로 거부된다."""
+    pm_home, slot, tickets, sync_log = rounds_env
+    _write_spec(tickets, "T-7207")
+    plan = pd.prepare_ticket_copy(
+        ticket="T-7207", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    plan.path.write_text(
+        plan.path.read_text(encoding="utf-8") + "\n산출\n", encoding="utf-8", newline="",
+    )
+    # 준비 기록을 값 손상 행으로 덮는다(run_id 형식 위반) — 남는 인가 행이 없다.
+    original = _ledger_rows(pm_home)[-1]
+    broken = dict(original, run_id="not-a-run-id")
+    _ledger_path(pm_home).write_text(
+        json.dumps(broken, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8", newline="",
+    )
+
+    with pytest.raises(pd.DelegateError, match="준비 기록 없음"):
+        pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
+    assert plan.run_dir.exists() and plan.board_path.exists()
+    assert sync_log == []
+
+
+def test_corrupt_ledger_lines_are_skipped_loudly_without_losing_other_runs(
+        pd, rounds_env, capsys):
+    """한 행의 손상이 다른 run 의 회수를 막지 않는다 — 건너뛰되 조용하지 않다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-7208")
+    plan = pd.prepare_ticket_copy(
+        ticket="T-7208", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    _append_raw_ledger_line(pm_home, "{ not json")
+    _append_raw_ledger_line(pm_home, json.dumps({"ticket": "T-7208"}))
+    plan.path.write_text(
+        plan.path.read_text(encoding="utf-8") + "\n산출\n", encoding="utf-8", newline="",
+    )
+
+    assert pd.harvest_ticket_copy(
+        copy_path=plan.path, cwd=slot, pm_home=pm_home,
+    ).changed is True
+    warning = capsys.readouterr().err
+    assert warning.count("delegate-rounds 장부 손상 행 건너뜀") >= 2
+
+
+@pytest.mark.skipif(not posix_mode_supported(), reason="POSIX mode 왕복이 되는 환경 필요")
+def test_ledger_is_owner_only(pd, rounds_env):
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-7209")
+    pd.prepare_ticket_copy(
+        ticket="T-7209", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    assert stat.S_IMODE(_ledger_path(pm_home).stat().st_mode) == 0o600

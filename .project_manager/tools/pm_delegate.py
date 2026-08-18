@@ -1263,15 +1263,17 @@ def _ticket_round_seed(
     )
 
 
-def _previous_round_of_role(rounds, role: str, *, before: int | None = None):
-    """같은 역할의 **직전 라운드** — 시드 프리필과 무편집 판정의 유일한 입력([[T-0749]] F-007).
+def _previous_round_of_role(rounds, role: str):
+    """시드 프리필의 공급원 — 같은 역할의 **직전 라운드**(없으면 None).
 
-    `before` 는 대상 순번이다(그 앞의 것만 본다). 예약 시점에는 아직 자기 파일이 없어 None 이고,
-    회수·판정 시점에는 자기 순번을 넘겨 준비 당시와 **같은 직전 라운드**를 다시 고른다.
+    공급원 배제 규칙은 한자리에 모은다: 산출이 없는 라운드(`pending`)는 자리표시자 골격뿐이라
+    프리필로 쓸 수 없다. 그것을 넣으면 정상 경로(앞 라운드가 아직 미회수)에서 "prefill 을
+    해소할 수 없어 강등" 경고가 나간다 — 판정 표면 배제(회수 거부 라운드·PM `rejected` ID)와
+    같은 자리에서 걸러야 경고가 진짜 이상 신호로 남는다.
     """
     candidates = [
         item for item in rounds
-        if item.role == role and (before is None or item.ordinal < before)
+        if item.role == role and not getattr(item, "pending", False)
     ]
     if not candidates:
         return None
@@ -1279,35 +1281,36 @@ def _previous_round_of_role(rounds, role: str, *, before: int | None = None):
     return latest.ordinal, latest.text
 
 
-def _read_slot_round_text(copy_path: Path, cwd: Path) -> str:
+def _expected_slot_round_path(cwd: Path, row: dict, rounds_module) -> Path:
+    """장부 행이 인가하는 **유일한** 슬롯 경로 — 회수 입력 검증의 단일 단언.
+
+    행의 (ticket, run_id, ordinal, role) 로 경로를 다시 조립해 전량 일치를 요구한다. 규칙이
+    하나라 containment(사본 루트 밖)·깊이(run-dir 상위·하위)·파일명 결속(순번·역할)·티켓 결속이
+    함께 닫힌다 — 축마다 다른 검사를 두면 하나가 빠졌을 때 조용히 넓어진다.
+
+    비교는 **어휘적**이다(경로 해소를 끼우지 않는다). 해소하면 그 자리가 symlink 로 바뀐 형상에서
+    양쪽이 같은 대상으로 접혀 결속 판정이 눈먼다 — 대상 무결성은 chain lstat 과 nofollow 판독이
+    따로 본다.
+    """
+    return Path(cwd) / _ticket_copy_relative_path(
+        row["ticket"], row["run_id"],
+        rounds_module.round_filename(row["ordinal"], row["role"]),
+    )
+
+
+def _same_lexical_path(left: Path, right: Path) -> bool:
+    """두 절대경로가 같은 자리를 가리키는가 (정규화만 · 해소 없음)."""
+    return os.path.normpath(str(left)) == os.path.normpath(str(right))
+
+
+def _read_slot_round_text(copy_path: Path) -> str:
     """슬롯 라운드 파일을 이식 경계 seam 으로 읽는다 (정규 파일·nofollow·UTF-8).
 
-    회수가 신뢰하는 것은 PM 홈 장부가 가리키는 **그 경로**뿐이다. 그 경로가 심볼릭 링크나
-    디렉터리로 바뀌어 있으면 다른 파일의 내용을 board 에 올리는 셈이라 거부한다.
+    경로가 장부 행이 인가한 그것인지는 호출부가 이미 단언했다. 여기서 막는 것은 **그 경로가
+    가리키는 대상**이 회수 뒤에 바뀐 형상이다 — 최종 파일의 symlink 와, 사본 루트로 가는 길목의
+    디렉터리 교체.
     """
     copy_path = Path(copy_path)
-    if not copy_path.is_absolute():
-        raise DelegateError("티켓 라운드 사본 경로는 절대경로여야 합니다")
-    lexical_root = (Path(cwd) / TICKET_COPY_REL_ROOT)
-    try:
-        copy_path.relative_to(lexical_root)
-    except ValueError as exc:
-        raise DelegateError(
-            f"티켓 라운드 사본 containment 위반: {copy_path} 는 {lexical_root} 밖입니다"
-        ) from exc
-    # 사본 루트로 가는 길목이 symlink 로 바뀌면 최종 파일의 nofollow 만으로는 다른 트리의
-    # 파일을 board 에 올릴 수 있다(준비가 만든 chain 을 회수 전에 갈아끼우는 형상).
-    current = Path(cwd)
-    for part in TICKET_COPY_REL_ROOT.parts:
-        current = current / part
-        try:
-            observed = current.lstat()
-        except OSError as exc:
-            raise DelegateError(f"티켓 라운드 사본 경로 검사 실패: {current}: {exc}") from exc
-        if stat.S_ISLNK(observed.st_mode) or not stat.S_ISDIR(observed.st_mode):
-            raise DelegateError(
-                f"티켓 라운드 사본 경로 symlink/비-directory 거부: {current}"
-            )
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -1337,16 +1340,55 @@ def _read_slot_round_text(copy_path: Path, cwd: Path) -> str:
         ) from exc
 
 
+def _normalized_newlines(text: str) -> str:
+    """개행 표기만 LF 로 접는다 — 표기 차이를 내용 변경으로 읽지 않기 위해서다."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _assert_slot_run_dir_chain_is_plain(cwd: Path, ticket: str, run_id: str) -> None:
+    """run-dir 까지의 **모든** 마디가 실 디렉터리인지 본다 (symlink 교체 거부).
+
+    시야는 검사 대상 표면과 같아야 한다 — 사본 루트까지만 보면 `<ticket>/<run_id>` 두 마디가
+    검사 밖이라, 그 자리를 symlink 로 갈아끼우면 다른 트리의 파일이 회수되고 `force_rmtree` 가
+    남의 디렉터리를 지운다. 최종 파일의 nofollow 판독은 그 다음 층이다.
+    """
+    current = Path(cwd)
+    for part in _ticket_run_relative_dir(ticket, run_id).parts:
+        current = current / part
+        try:
+            observed = current.lstat()
+        except OSError as exc:
+            raise DelegateError(f"티켓 라운드 사본 경로 검사 실패: {current}: {exc}") from exc
+        if stat.S_ISLNK(observed.st_mode) or not stat.S_ISDIR(observed.st_mode):
+            raise DelegateError(
+                f"티켓 라운드 사본 경로 symlink/비-directory 거부: {current}"
+            )
+
+
+def _board_relative_path(board_path: Path, pm_home: Path) -> str:
+    """장부에 싣는 board 상대 경로 — PM 홈 밖으로 해소되면 경계 오류로 표면화한다."""
+    try:
+        return board_path.resolve().relative_to(pm_home).as_posix()
+    except ValueError as exc:
+        raise DelegateError(
+            f"board 라운드 경로가 PM 홈 밖으로 해소됨: board={board_path} · pm_home={pm_home}"
+        ) from exc
+
+
 def prepare_ticket_copy(
     *, ticket: str, role: str, cwd: Path, pm_home: Path,
 ) -> TicketCopyPlan:
     """board 에 라운드 순번을 시드로 예약하고, 같은 파일을 슬롯 run-dir 에 materialize 한다.
 
-    절차는 셋이다 — (1) 티켓 조회·상태 판정 (2) 짧은 board_lock 안 채번+O_EXCL 예약
-    (3) 슬롯 run-dir 에 쓰기 대상 1개(`NN-<role>.md`)와 읽기 전용 입력(`spec.md`·`rounds/`)
-    laydown. 마지막으로 PM 홈 장부에 준비 기록을 남긴다(회수의 신뢰 뿌리).
+    **거부 판정은 전부 예약 앞에 둔다** — 역할·티켓 조회·상태·ignore 규칙·run-dir
+    경계가 모두 board 를 건드리기 전에 끝난다. 뒤에 두면 거부된 준비가 board 에 회수 불가능한
+    고아 라운드를 남기고 순번 하나를 영구 소모한다(장부 행이 없어 회수 자체가 막힌다).
 
-    락은 (2) 구간만 잡는다. 채번과 생성 사이가 두 준비가 같은 번호를 계산할 수 있는 유일한
+    순서는 다섯이다 — (1) 역할·티켓·상태 판정 (2) ignore 검증과 슬롯 run-dir 확보(슬롯 전용
+    부작용) (3) 시드 렌더 (4) 짧은 board_lock 안 채번+O_EXCL 예약 (5) 슬롯 파일 laydown + PM 홈
+    장부 기록(회수의 신뢰 뿌리).
+
+    락은 (4) 구간만 잡는다. 채번과 생성 사이가 두 준비가 같은 번호를 계산할 수 있는 유일한
     창이고, 회수·기록 경로에는 락이 없다.
     """
     if role not in TICKET_COPY_PREPARE_ROLES:
@@ -1373,56 +1415,63 @@ def prepare_ticket_copy(
         except (OSError, UnicodeError) as exc:
             raise DelegateError(f"PM 홈 티켓 읽기 실패: {source}: {exc}") from exc
 
-    tickets_dir = board.tickets_dir()
-    existing = rounds_module.load_rounds(tickets_dir, ticket, ticket_text=spec_text)
-    seed = _ticket_round_seed(
-        rounds_module, role, spec_text,
-        _previous_round_of_role(existing, role),
-        today=datetime.date.today().isoformat(),
-    )
-    # 예약은 락을 자기가 잡는다(진입하지 않은 컨텍스트를 넘긴다 — board_lock 은 재진입 없음).
-    board_path = rounds_module.reserve_round(
-        tickets_dir, ticket, role, content=seed, lock=board.board_lock(),
-    )
-    ordinal, _role = rounds_module.parse_round_filename(board_path.name)
-
+    # ── 예약 전 거부 판정 (board 무영향) ──────────────────────────────────
     run_id = uuid.uuid4().hex
     _assert_ticket_copy_root_ignored(cwd, ticket=ticket, run_id=run_id)
     run_dir, run_dir_fd = _secure_ticket_copy_dir(cwd, ticket, run_id)
+    rounds_dir = rounds_dir_fd = None
     try:
+        rounds_dir, rounds_dir_fd = _secure_ticket_copy_dir(
+            cwd, ticket, run_id, extra_parts=(TICKET_COPY_ROUNDS_DIRNAME,),
+        )
+
+        tickets_dir = board.tickets_dir()
+        existing = rounds_module.load_rounds(
+            tickets_dir, ticket, ticket_text=spec_text,
+        )
+        seed = _ticket_round_seed(
+            rounds_module, role, spec_text,
+            _previous_round_of_role(existing, role),
+            today=datetime.date.today().isoformat(),
+        )
+        # ── 여기부터 board 를 건드린다 ──────────────────────────────────
+        # 예약은 락을 자기가 잡는다(진입하지 않은 컨텍스트를 넘긴다 — board_lock 은 재진입 없음).
+        board_path = rounds_module.reserve_round(
+            tickets_dir, ticket, role, content=seed, lock=board.board_lock(),
+        )
+        ordinal, _role = rounds_module.parse_round_filename(board_path.name)
+        board_rel = _board_relative_path(board_path, pm_home)
+
         copy_path = run_dir / board_path.name
-        _write_exclusive_file(
-            copy_path, seed.encode("utf-8"), 0o600, parent_fd=run_dir_fd,
-        )
-        _write_exclusive_file(
-            run_dir / TICKET_COPY_SPEC_NAME,
-            spec_text.encode("utf-8"),
-            0o400,
-            parent_fd=run_dir_fd,
-        )
-    except OSError as exc:
-        raise DelegateError(f"티켓 라운드 사본 생성 실패: {run_dir}: {exc}") from exc
+        try:
+            _write_exclusive_file(
+                copy_path, seed.encode("utf-8"), 0o600, parent_fd=run_dir_fd,
+            )
+            _write_exclusive_file(
+                run_dir / TICKET_COPY_SPEC_NAME,
+                spec_text.encode("utf-8"),
+                0o400,
+                parent_fd=run_dir_fd,
+            )
+        except OSError as exc:
+            raise DelegateError(f"티켓 라운드 사본 생성 실패: {run_dir}: {exc}") from exc
+        # 이전 라운드는 읽기 전용 입력이다 — 시드 그대로인 미회수 라운드도 함께 깐다(진행 중
+        # 다른 역할의 자리를 숨기지 않는다).
+        try:
+            for item in existing:
+                _write_exclusive_file(
+                    rounds_dir / item.path.name,
+                    item.text.encode("utf-8"),
+                    0o400,
+                    parent_fd=rounds_dir_fd,
+                )
+        except OSError as exc:
+            raise DelegateError(
+                f"이전 라운드 사본 생성 실패: {rounds_dir}: {exc}"
+            ) from exc
     finally:
         if run_dir_fd is not None:
             os.close(run_dir_fd)
-    # 이전 라운드는 읽기 전용 입력이다 — 시드 그대로인 미회수 라운드도 함께 깐다(진행 중 다른
-    # 역할의 자리를 숨기지 않는다).
-    rounds_dir, rounds_dir_fd = _secure_ticket_copy_dir(
-        cwd, ticket, run_id, extra_parts=(TICKET_COPY_ROUNDS_DIRNAME,),
-    )
-    try:
-        for item in existing:
-            _write_exclusive_file(
-                rounds_dir / item.path.name,
-                item.text.encode("utf-8"),
-                0o400,
-                parent_fd=rounds_dir_fd,
-            )
-    except OSError as exc:
-        raise DelegateError(
-            f"이전 라운드 사본 생성 실패: {rounds_dir}: {exc}"
-        ) from exc
-    finally:
         if rounds_dir_fd is not None:
             os.close(rounds_dir_fd)
 
@@ -1432,7 +1481,7 @@ def prepare_ticket_copy(
         "ordinal": ordinal,
         "run_id": run_id,
         "copy": str(copy_path.resolve()),
-        "board_rel": board_path.resolve().relative_to(pm_home).as_posix(),
+        "board_rel": board_rel,
         "prepared_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "harvested_at": None,
     })
@@ -1449,45 +1498,48 @@ def harvest_ticket_copy(
     회수 성공 = run-dir 삭제 = run 닫힘. 재회수 개념이 없고, 닫힌 run 에 다시 부르면 파일이
     없어 자연 실패한다. 슬롯 파일이 시드 그대로면 board 를 바꾸지 않고 경고만 낸다 — run-dir 은
     남겨 같은 세션을 이어 시킬 수 있게 한다(게이트가 아니다).
+
+    "시드 그대로"는 **board 라운드 파일의 현재 bytes**와의 직접 대조로 판정한다(개행 표기만
+    정규화). 그 파일이 이 run 의 예약이 쓴 시드 자신이라 판정 입력이 시점에 의존하지 않는다 —
+    시드를 다시 렌더해 비교하면 그 사이 같은 역할의 다른 라운드가 회수될 때 프리필 입력이 바뀌어
+    손대지 않은 산출이 "산출 있음"으로 뒤집힌다.
     """
     pm_home = Path(pm_home).resolve()
     cwd = Path(cwd).resolve()
-    row = _delegate_round_record(pm_home, copy_path)
-    text = _read_slot_round_text(copy_path, cwd)
-    board_path = pm_home / Path(*PurePosixPath(row["board_rel"]).parts)
-    run_dir = Path(copy_path).resolve().parent
-
     rounds_module = _load_ticket_rounds()
-    # 장부 행과 두 경로의 결속을 이름으로 다시 확인한다 — 순번·역할은 **파일 이름이 단일
-    # 진실**이라, 행과 이름이 갈리면 다른 라운드를 덮어쓰는 회수가 된다.
-    expected_name = rounds_module.round_filename(row["ordinal"], row["role"])
-    if board_path.name != expected_name or Path(copy_path).name != expected_name:
+    row = _delegate_round_record(pm_home, copy_path)
+    # 장부 행이 인가하는 경로와 **전량 일치**해야 한다 — containment·깊이·순번/역할 결속이
+    # 이 단언 하나로 닫힌다.
+    expected = _expected_slot_round_path(cwd, row, rounds_module)
+    given = Path(copy_path)
+    if not given.is_absolute() or not _same_lexical_path(given, expected):
         raise DelegateError(
-            f"delegate-rounds 장부와 라운드 파일 이름 불일치: 기대={expected_name} · "
-            f"board={board_path.name} · slot={Path(copy_path).name}"
+            "delegate-rounds 장부가 인가한 라운드 경로와 불일치 — 회수하지 않습니다: "
+            f"요청={given} · 장부 인가={expected}"
         )
-    board = _load_board_for_repo(pm_home)
-    found = board.find_ticket_exact(row["ticket"])
-    if found is None:
-        raise DelegateError(f"ticket not found: {row['ticket']}")
-    _status, spec_path = found
+    _assert_slot_run_dir_chain_is_plain(cwd, row["ticket"], row["run_id"])
+    text = _read_slot_round_text(expected)
+    run_dir = expected.parent
+    board_path = pm_home / Path(*PurePosixPath(row["board_rel"]).parts)
+    if board_path.name != expected.name:
+        raise DelegateError(
+            "delegate-rounds 장부의 board 경로와 라운드 이름 불일치: "
+            f"board={board_path.name} · 기대={expected.name}"
+        )
+
     try:
-        spec_text = _load_file_lock().read_bytes_shared(spec_path).decode("utf-8")
+        reserved = _load_file_lock().read_text_shared(
+            board_path, encoding="utf-8", newline="",
+        )
+    except FileNotFoundError as exc:
+        raise DelegateError(
+            f"board 라운드 파일이 없습니다(예약 소실): {board_path}"
+        ) from exc
     except (OSError, UnicodeError) as exc:
-        raise DelegateError(f"PM 홈 티켓 읽기 실패: {spec_path}: {exc}") from exc
-    board_rounds = rounds_module.load_rounds(
-        board.tickets_dir(), row["ticket"], ticket_text=spec_text,
-    )
-    candidate = rounds_module.Round(
-        ordinal=row["ordinal"], role=row["role"], path=Path(copy_path),
-        text=text, pending=False,
-    )
-    if rounds_module.round_is_pending(
-        candidate, ticket_text=spec_text,
-        previous_round=_previous_round_of_role(
-            board_rounds, row["role"], before=row["ordinal"],
-        ),
-    ):
+        raise DelegateError(
+            f"board 라운드 파일 읽기 실패: {board_path}: {exc}"
+        ) from exc
+    if _normalized_newlines(text) == _normalized_newlines(reserved):
         print(
             "경고: ticket harvest 산출 없음 — 준비가 시드한 라운드 골격이 그대로입니다: "
             f"ticket={row['ticket']} {board_path.name} · run-dir 을 유지합니다: {run_dir}",
@@ -1495,9 +1547,10 @@ def harvest_ticket_copy(
         )
         return TicketHarvestResult(False, True)
 
+    board = _load_board_for_repo(pm_home)
     rounds_module.replace_round(board_path, text)
     message = f"ticket-harvest {row['ticket']} {row['role']}"
-    # 이름은 [[T-0751]] 에서 `_rounds_mutation_sync_paths` 로 바뀔 수 있어 getattr 폴백을 남긴다 —
+    # board 쪽 helper 이름은 라운드 전환 후속에서 `_rounds_mutation_sync_paths` 로 바뀔 수 있어
     # 부분 동기된 PM 홈 사본에서 AttributeError 로 "라운드는 반영됐는데 CLI 만 실패" 를 만들지
     # 않는다.
     sync_paths = getattr(board, "_rounds_mutation_sync_paths", None)
@@ -1749,7 +1802,7 @@ def _external_review_missing_confirmation_targets(
     """회신 블록의 confirmation ID 중 티켓 판정 표면에 **없는** 것.
 
     판정 표면은 confirmation 이 선행 finding 을 참조할 것을 요구한다. 라운드가 파일 하나라
-    차등 판정·반사실 프로브가 사라졌으므로([[ADR-0090]]), 표면에 없는 ID(회수 거부된 라운드의
+    차등 판정·반사실 프로브가 사라졌으므로, 표면에 없는 ID(회수 거부된 라운드의
     ID·환각 ID)를 실은 블록을 막는 것은 이 대조 하나다.
     """
     declared = set(declared_finding_ids)
@@ -1895,7 +1948,7 @@ def _load_file_lock():
 
 
 def _load_ticket_rounds():
-    """라운드 사이드카 공용 seam([[T-0749]]) — 경로·예약·적재·판정·라벨의 단일 진실.
+    """라운드 사이드카 공용 seam(`ticket_rounds.py`) — 경로·예약·적재·판정·라벨의 단일 진실.
 
     로드 전에 **이 인스턴스**를 형제 로더 캐시에 심는다. seam 은 시드 본문을 렌더할 때
     `pm_delegate` 를 되로드하는데, 그때 두 번째 사본이 뜨면 `DelegateError` 클래스가 갈려
@@ -2561,7 +2614,7 @@ def render_ticket_growth_section_seed(
     """라운드 예약이 넣을 역할별 본문 골격. review JSON은 parser 상수에서만 파생한다.
 
     `previous_round` 는 **같은 역할의 직전 라운드** `(순번, 본문)` 이다 — 확인 대상 finding ID
-    프리필의 유일한 입력이다([[T-0749]] F-007). 명세(`ticket_text`)는 PM 판정 블록(=`rejected`
+    프리필의 유일한 입력이다. 명세(`ticket_text`)는 PM 판정 블록(=`rejected`
     배제)의 출처이고 finding 선언은 라운드 파일에만 있으므로 두 입력이 함께 필요하다.
     """
     if role == "architect":
@@ -9331,7 +9384,7 @@ def _cmd_review(argv: list[str]) -> int:
                 owner_board.tickets_dir(), args.ticket, ticket_text=ticket_text,
             )
         # 순번 유일성·연속성이 깨진 상태만 차단한다 — 산출 없음(`round-pending`)과 이름 문법
-        # (`round-name`)은 표시용이라 판정을 막지 않는다([[ADR-0090]] 3.8 · 심각도는 소비자 소유).
+        # (`round-name`)은 표시용이라 판정을 막지 않는다(심각도는 소비자 소유다).
         blocking = [
             problem for problem in problems
             if problem.code in (
@@ -9356,7 +9409,7 @@ def _cmd_review(argv: list[str]) -> int:
     except PMReviewError as exc:
         prescriptions = {
             # 라운드 축에서 판정을 막는 상태는 순번 유일성·연속성 하나뿐이라 처방도 하나다
-            # ([[ADR-0090]] 3.8) — 봉인·장부 시절의 문제별 처방 분기는 사라졌다.
+            # 봉인·장부 시절의 문제별 처방 분기는 사라졌다.
             "unsealed": (
                 "라운드 순번이 깨졌다 — `tickets/rounds/<ticket>/` 의 빠진 순번을 board git "
                 "이력에서 복원하라(라운드 파일은 회수 후 불변이다)"
