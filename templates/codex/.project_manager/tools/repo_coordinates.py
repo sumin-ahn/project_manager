@@ -130,21 +130,36 @@ def _normalize_relative(relative: str, original: str) -> str:
 
 
 def _workspace_slot(workspace: Path | str, pm_root: Path) -> tuple[str, Path]:
-    """workspace를 PM 홈 상대 slot 문자열로 바꾼다. PM 홈 밖/부재면 fail-loud."""
+    """workspace를 PM 홈 상대 slot 문자열로 바꾼다. PM 홈 밖/부재면 fail-loud.
+
+    slot 도출과 실재 검사는 **다른 경로**를 본다:
+
+      - slot 도출 — resolve 경로가 PM 홈 하위면 그것으로, 아니면 **논리 경로**(symlink 를 따라가지
+        않은 절대 표기)가 PM 홈 하위일 때만 그것으로. 슬롯 worktree 가 심링크거나 다른 마운트에
+        있으면 실체는 PM 홈 밖인데, 그건 좌표 선언이 틀렸다는 뜻이 아니라 슬롯이 다른 곳에
+        실재한다는 뜻이다. 논리 경로마저 PM 홈 밖이면 종전대로 fail-loud.
+      - 실재 검사와 반환하는 실행 경로 — **resolve 된 경로**. dangling 심링크는 여기서 걸리고,
+        호출부(측정·stage)는 파일이 실제로 있는 트리를 받는다.
+    """
     root = Path(pm_root).resolve()
+    logical_root = Path(os.path.abspath(pm_root))
     candidate = Path(workspace)
     if not candidate.is_absolute():
         candidate = root / candidate
-    candidate = candidate.resolve()
+    resolved = candidate.resolve()
+    logical = Path(os.path.abspath(candidate))
     try:
-        slot = candidate.relative_to(root).as_posix()
+        slot = resolved.relative_to(root).as_posix()
     except ValueError as exc:
-        raise RepoCoordinateError(
-            f"workspace가 PM 홈 밖이다: workspace={candidate}, pm_root={root}"
-        ) from exc
-    if not candidate.is_dir():
-        raise RepoCoordinateError(f"workspace 디렉토리가 실재하지 않는다: {candidate}")
-    return slot, candidate
+        try:
+            slot = logical.relative_to(logical_root).as_posix()
+        except ValueError:
+            raise RepoCoordinateError(
+                f"workspace가 PM 홈 밖이다: workspace={resolved}, pm_root={root}"
+            ) from exc
+    if not resolved.is_dir():
+        raise RepoCoordinateError(f"workspace 디렉토리가 실재하지 않는다: {resolved}")
+    return slot, resolved
 
 
 # ── 엔진 중앙 로더 부트스트랩 (형제 로드는 이 한 경로만·`repo_owned_files.load_module`) ──
