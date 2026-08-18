@@ -1005,7 +1005,7 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   "중첩 로드 형제 skew 는 fail-loud")을 그대로 따라 marked skew 만 재전파하고 나머지는
     #   종전대로 접는다(surface 생략·게이트 graceful skip).
     # 224 = 222 + T-0696 추가 리뷰어 산출 **회수 경계**의 두 자리(`_load_pm_delegate`/board 재앵커
-    #   로드 · `write_external_reviewer_section` 쓰기). 회수는 이미 끝나고 과금된 라운드의 부기라,
+    #   로드 · `_reserve_external_review_round` 쓰기). 회수는 이미 끝나고 과금된 라운드의 부기라,
     #   여기서 사본 불일치를 그대로 올리면 판정·요약을 출력한 뒤 traceback 으로 죽어 채택자에게는
     #   "리뷰 실패"로만 보인다. 등록 사유 `ticket_harvest` 로 흡수하되 설계된 회수 실패 처방
     #   (재동기 안내 + rc≠0 + raw 경로)으로 접고, 표시 없는 RuntimeError 는 그대로 전파한다.

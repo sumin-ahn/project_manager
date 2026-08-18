@@ -321,9 +321,9 @@ INTERNAL_FINDING_IDS_FIELD = "finding_ids"
 
 PM_REVIEW_BLOCK = "pm-review-v1"
 PM_REVIEW_DISPOSITION_BLOCK = "pm-review-disposition-v1"
-# versioned fence 후보를 찾는 유일한 정규식 — 스캐너(`_pm_review_json_blocks`)와 회수 거부
-# 무해화(`_neutralize_review_fence`)가 **이 상수 하나만** 쓴다(리터럴 재기재 없음). 무해화가
-# 스캐너보다 좁으면 남은 손상 fence 하나가 티켓 전역 스캔을 fail-loud 시킨다.
+# versioned fence 후보를 찾는 유일한 정규식 — 스캐너(`_pm_review_json_blocks`)가 이 상수만 쓴다
+# (리터럴 재기재 없음). 들여쓰기·4중 backtick·미지원 라벨까지 후보로 잡아야 손상 fence 하나가
+# 티켓 전역 스캔에서 조용히 빠지지 않는다.
 _PM_REVIEW_FENCE_CANDIDATE_RE = re.compile(r"`{3,}(pm-review[^\s`]*)")
 # fence 이름(`…-v1`)은 블록 **종류** 라벨이고, payload 의 `version` 이 스키마 세대다. severity 를
 # 필수로 올리면서 세대를 2 로 승격했다 — 이미 봉인돼 손댈 수 없는 v1 블록(진행 중 티켓 실측
@@ -1583,21 +1583,10 @@ def _ticket_copy_preamble(plan: TicketCopyPlan) -> str:
     )
 
 
-class ExternalReviewSectionWrite(NamedTuple):
-    """엔진이 기록한 external-reviewer 절의 좌표·board 동기 상태·회수 위반 사유."""
-
-    path: Path
-    ordinal: int
-    sync_ready: bool
-    problem: str | None = None
-
-
-# 사람용 절명. **권위는 `ticket_rounds.ROLE_LABELS`** 이고 이 상수는 순수 렌더의 기본값이다
-# (실 회수 경로는 seam 의 표를 그대로 넘긴다 · 두 값의 일치는 테스트가 못박는다).
-EXTERNAL_REVIEW_SECTION_LABEL = "추가 리뷰"
-EXTERNAL_REVIEW_BLOCK_WARNING_PREFIX = "⚠ versioned block 부재/위반: "
-# 회수를 거부한 절에 **엔진만** 남기는 기계 판독 표식. 판정 표면 제외는 산문 휴리스틱이
-# 아니라 이 표식으로만 판정한다 — 외부 산출이 같은 문장을 담아도 표식은 무해화된다.
+# 회수를 거부한 산출에 **엔진만** 남기던 기계 판독 표식. 새 회수는 이 표식을 발행하지 않는다
+# (내용 검증에 걸린 산출은 라운드 파일을 만들지 않고 raw 에만 남는다). 판독은 남긴다 — 단일 파일
+# 시절의 거부 산출을 그대로 옮겨 온 라운드가 판정 표면에 서면 그 티켓의 delta 가 막히기 때문이다.
+# 발행이 엔진 전용이므로 회수 검증은 같은 줄을 실은 외부 산출을 거부한다.
 EXTERNAL_REVIEW_REFUSED_MARKER = "pm-review-refused"
 EXTERNAL_REVIEW_REFUSED_LINE = (
     f"<!-- {EXTERNAL_REVIEW_REFUSED_MARKER} role={EXTERNAL_REVIEW_ROLE} -->"
@@ -1606,24 +1595,6 @@ EXTERNAL_REVIEW_REFUSED_LINE = (
 _EXTERNAL_REVIEW_REFUSED_LINE_RE = re.compile(
     rf"\A{re.escape(EXTERNAL_REVIEW_REFUSED_LINE)}\Z"
 )
-
-
-def neutralize_ticket_growth_markup(text: str) -> tuple[str, int]:
-    """회수 본문의 **회수 거부 표식** 표기를 무해화한다((본문, 무해화 줄 수)).
-
-    라운드가 파일 하나라 절 경계 marker 는 사라졌고(파서를 깨뜨릴 표기가 없다), 남은 위험은
-    하나다 — 외부 산출이 회수 거부 표식을 스스로 선언해 자기 라운드를 판정 표면에서 빼는 것.
-    그 표식은 엔진만 발행해야 하므로 comment opener 를 HTML escape 해 사람은 읽고 판정기는
-    데이터로 보지 않게 한다.
-    """
-    neutralized = 0
-    lines: list[str] = []
-    for line in text.splitlines(keepends=True):
-        if f"<!-- {EXTERNAL_REVIEW_REFUSED_MARKER}" in line:
-            line = line.replace("<!--", "&lt;!--")
-            neutralized += 1
-        lines.append(line)
-    return "".join(lines), neutralized
 
 
 def validate_external_review_block(reply_text: str) -> str | None:
@@ -1801,37 +1772,6 @@ def collect_confirmable_finding_ids(
     return sorted(declared - rejected)
 
 
-def _neutralize_review_fence(body: str) -> str:
-    """회수 거부된 산출의 review fence 라벨을 평문으로 낮춘다(내용은 절에 그대로 남긴다).
-
-    거부 사유가 있는 블록을 versioned fence 그대로 티켓에 넣으면 그 티켓의 `review delta` 가
-    영구 malformed 가 되고, 절은 봉인돼 손수정 경로도 없다([[ADR-0089]]). 사유 종류를 가리지
-    않고(스키마 위반·블록 중복·severity 부재·JSON 손상·ID 재선언) 라벨만 낮춰 산출은 보존하고
-    판정 표면은 다음 라운드로 열어 둔다.
-
-    스캐너와 **같은 정규식**을 써서 손상 fence(들여쓰기·4중 backtick·미지원 라벨)도 남기지
-    않는다 — 하나라도 남으면 그 티켓의 전역 블록 스캔이 fail-loud 한다.
-
-    치환 구간은 **라벨까지**다. fence 줄 뒤에 붙은 같은 줄 텍스트(리뷰어의 괄호 설명 등)를 함께
-    버리면 "산출을 절에 보존한다"는 처리와 어긋난다.
-    """
-    lines: list[str] = []
-    for line in body.splitlines(keepends=True):
-        content = line.rstrip("\r\n")
-        newline = line[len(content):]
-        stripped = content.lstrip()
-        match = _PM_REVIEW_FENCE_CANDIDATE_RE.match(stripped)
-        if match is not None:
-            indent = content[:len(content) - len(stripped)]
-            # backtick 개수는 그대로 둔다 — 닫는 fence 와 짝이 어긋나면 뒤 본문까지 코드로 읽힌다.
-            ticks = "`" * (len(match.group(0)) - len(match.group(1)))
-            trailing = stripped[match.end():]
-            lines.append(f"{indent}{ticks}text{trailing}{newline}")
-            continue
-        lines.append(line)
-    return "".join(lines)
-
-
 def _external_review_id_collisions(
     body: str, existing_finding_ids: Sequence[str],
 ) -> list[str]:
@@ -1883,120 +1823,56 @@ def _external_review_missing_confirmation_targets(
     return sorted(missing)
 
 
-def _render_external_review_section(
-    body: str, *, today: str, label: str, neutralized: int, problem: str | None,
-) -> str:
-    """절 본문 렌더 — 거부 사유가 있으면 머리에 기계 표식과 경고를 얹는다."""
-    lines = [f"## {label} ({EXTERNAL_REVIEW_ROLE} · {today})", ""]
+def external_review_harvest_problem(
+    reply_text: str, *, ticket_text: str, rounds: Sequence,
+) -> str | None:
+    """추가 리뷰어 회신을 라운드로 회수해도 되는지 판정한다 — 위반 사유 또는 None.
+
+    회수 주체(`external_review`)는 이 판정이 None 일 때만 라운드 파일을 만든다. 거부한 산출은
+    파일을 만들지 않고 raw 에만 남는다 — 라운드가 파일 하나라 "거부 표식을 얹어 절에 보존하고
+    판정 표면에서 빼는" 보정이 필요 없다.
+
+    사유는 네 축이고 종류를 가리지 않고 같은 처리(거부)다: 엔진 전용 표식 선언 · `pm-review-v1`
+    블록 규칙 위반(부재·중복·스키마·JSON 손상) · 티켓에 이미 있는 finding ID 재선언 · 티켓 판정
+    표면에 없는 confirmation 대상.
+
+    대조는 두 축이고 시야가 다르다. 신규 finding ID 는 **넓은** 스캔(산문 인용 포함)과,
+    confirmation 대상은 **판정 표면 선언**과 맞춘다. 차등 판정·반사실 프로브는 없다 — 이 산출이
+    다른 라운드의 판정을 오염시킬 자리가 없다(F-028 구조 폐쇄).
+    """
+    if any(
+        _EXTERNAL_REVIEW_REFUSED_LINE_RE.match(line) is not None
+        for line in reply_text.splitlines()
+    ):
+        return (
+            f"엔진 전용 표식({EXTERNAL_REVIEW_REFUSED_MARKER})을 회신이 선언했습니다 — 그 줄은 "
+            "라운드를 판정 표면에서 빼므로 산출이 스스로 쓸 수 없습니다"
+        )
+    problem = validate_external_review_block(reply_text)
     if problem is not None:
-        lines.extend([
-            EXTERNAL_REVIEW_REFUSED_LINE, "",
-            f"{EXTERNAL_REVIEW_BLOCK_WARNING_PREFIX}{problem}", "",
-        ])
-    if neutralized:
-        lines.extend([
-            f"⚠ 성장 marker 표기 {neutralized}줄을 무해화했습니다(절 경계 보호).", "",
-        ])
-    content = "".join(f"{line}\n" for line in lines) + body
-    return content if content.endswith("\n") else content + "\n"
-
-
-def build_external_review_section_content(
-    reply_text: str, *, today: str, ticket_text: str, rounds: Sequence,
-    label: str = EXTERNAL_REVIEW_SECTION_LABEL,
-) -> tuple[str, str | None]:
-    """추가 리뷰어 산출을 라운드 본문으로 만든다 — (본문, 위반 사유 또는 None).
-
-    본문은 산문 답변 전문이다(그 안에 `pm-review-v1` 블록이 하나 들어 있다). 회수를 거부할
-    사유(스키마 위반·블록 중복·severity 부재·JSON 손상·티켓에 이미 있는 finding ID 재선언·티켓
-    판정 표면에 없는 confirmation 대상)가 있으면 **종류를 가리지 않고 같은 처리**를 한다 —
-    머리에 기계 표식과 경고를 남기고, 위반 블록은 fence 를 평문으로 낮춰 산출을 보존한다.
-    사유는 함께 돌려준다(호출부가 rc≠0 로 표면화한다).
-
-    대조는 두 축이고 시야가 다르다. 신규 finding ID 는 **넓은** 스캔(산문 인용·거부 라운드
-    포함)과, confirmation 대상은 **판정 표면 선언**(거부 라운드 제외)과 맞춘다. 차등 판정·반사실
-    프로브는 없다 — 라운드가 파일 하나라 이 산출이 다른 라운드의 판정을 오염시킬 자리가 없다
-    (파일 하나만 파싱하므로 기준선 손상이 다른 라운드로 번질 자리가 없다).
-    """
-    body, neutralized = neutralize_ticket_growth_markup(reply_text)
-    problem = validate_external_review_block(body)
-    if problem is None:
-        existing_ids = collect_review_finding_ids(ticket_text, EXTERNAL_REVIEW_ROLE)
-        for item in rounds:
-            existing_ids |= collect_review_finding_ids(
-                item.text, EXTERNAL_REVIEW_ROLE,
-            )
-        collisions = _external_review_id_collisions(body, existing_ids)
-        if collisions:
-            problem = (
-                f"finding ID 재선언: {', '.join(collisions)} — 티켓에 이미 있는 ID 라 이 블록을 "
-                "판정 표면에 올리지 않았습니다(다음 라운드에서 새 ID 로 다시 내십시오)"
-            )
-    if problem is None:
-        missing = _external_review_missing_confirmation_targets(
-            body,
-            collect_review_finding_declarations(
-                ticket_text, EXTERNAL_REVIEW_ROLE, rounds,
-            ),
+        return problem
+    existing_ids = collect_review_finding_ids(ticket_text, EXTERNAL_REVIEW_ROLE)
+    for item in rounds:
+        existing_ids |= collect_review_finding_ids(item.text, EXTERNAL_REVIEW_ROLE)
+    collisions = _external_review_id_collisions(reply_text, existing_ids)
+    if collisions:
+        return (
+            f"finding ID 재선언: {', '.join(collisions)} — 티켓에 이미 있는 ID 라 이 라운드를 "
+            "회수하지 않았습니다(다음 라운드에서 새 ID 로 다시 내십시오)"
         )
-        if missing:
-            problem = (
-                f"confirmation 대상 finding 부재: {', '.join(missing)} — 티켓 판정 표면에 없는 "
-                "ID 라 이 블록을 올리지 않았습니다(회수 거부된 라운드의 ID 이거나 존재하지 않는 "
-                "ID 입니다 · 다음 라운드에서 실재하는 ID 로 다시 내십시오)"
-            )
-    return _render_external_review_section(
-        _neutralize_review_fence(body) if problem is not None else body,
-        today=today, label=label, neutralized=neutralized, problem=problem,
-    ), problem
-
-
-def write_external_reviewer_section(
-    *, ticket: str, reply_text: str, today: str, pm_home: Path, board=None,
-) -> ExternalReviewSectionWrite:
-    """추가 리뷰어 산출을 PM 홈 티켓의 새 external-reviewer 라운드로 기록한다.
-
-    **DEPRECATED — 추가 리뷰어 회수가 `external_review` 로 옮겨가면 삭제한다**(그때까지 같은
-    호출부를 살려 두는 얇은 경유지다 · 쓰기 규약은 준비와 같은 `reserve_round` seam 이다).
-
-    쓰기 주체는 엔진이다 — 추가 리뷰어에게 슬롯 편집 권한을 주지 않는다. 본문 조립은 예약과
-    같은 스냅샷에서 한다(finding ID 재선언 판정이 실제로 쓰는 상태와 같아야 한다).
-    """
-    board = _load_board_for_repo(pm_home) if board is None else board
-    rounds_module = _load_ticket_rounds()
-    role = EXTERNAL_REVIEW_ROLE
-    found = board.find_ticket_exact(ticket)
-    if found is None:
-        raise DelegateError(f"ticket not found: {ticket}")
-    status, ticket_path = found
-    if status not in ("open", "claimed"):
-        raise DelegateError(
-            f"external-reviewer 라운드 기록은 open/claimed 티켓만 허용: "
-            f"{ticket} in {status}/"
+    missing = _external_review_missing_confirmation_targets(
+        reply_text,
+        collect_review_finding_declarations(
+            ticket_text, EXTERNAL_REVIEW_ROLE, rounds,
+        ),
+    )
+    if missing:
+        return (
+            f"confirmation 대상 finding 부재: {', '.join(missing)} — 티켓 판정 표면에 없는 "
+            "ID 라 이 라운드를 회수하지 않았습니다(존재하지 않는 ID 이거나 회수되지 않은 "
+            "산출의 ID 입니다 · 다음 라운드에서 실재하는 ID 로 다시 내십시오)"
         )
-    with _load_file_lock().open_shared(
-        ticket_path, binary=False, encoding="utf-8", newline="",
-    ) as handle:
-        current_text = handle.read()
-    tickets_dir = board.tickets_dir()
-    rounds = rounds_module.load_rounds(
-        tickets_dir, ticket, ticket_text=current_text,
-    )
-    content, problem = build_external_review_section_content(
-        reply_text, today=today, ticket_text=current_text, rounds=rounds,
-        label=rounds_module.ROLE_LABELS[role],
-    )
-    # 준비(prepare)와 **같은 채번+생성 seam** 이다 — 인자가 시드냐 실내용이냐만 다르다.
-    round_path = rounds_module.reserve_round(
-        tickets_dir, ticket, role, content=content, lock=board.board_lock(),
-    )
-    ordinal, _role = rounds_module.parse_round_filename(round_path.name)
-    message = f"external-review {ticket} {role}"
-    sync_paths = getattr(board, "_rounds_mutation_sync_paths", None)
-    if not callable(sync_paths):
-        sync_paths = getattr(board, "_growth_mutation_sync_paths", None)
-    sync_ready = bool(sync_paths(message, [round_path])) if callable(sync_paths) else False
-    return ExternalReviewSectionWrite(round_path, ordinal, sync_ready, problem)
+    return None
 
 
 def _with_ticket_copy_preamble(

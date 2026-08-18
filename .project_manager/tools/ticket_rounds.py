@@ -380,7 +380,19 @@ def parse_round_filename(name: str) -> tuple[int, str] | None:
     return ordinal, role
 
 
-# ── 시드 렌더 · 무편집(산출 없음) 판정 ──────────────────────────────────────
+# ── 헤더·시드 렌더 · 무편집(산출 없음) 판정 ────────────────────────────────
+
+def render_round_header(role: str, *, today: str) -> str:
+    """라운드 파일 첫 줄 — `## <라벨> (<role> · <YYYY-MM-DD>)`.
+
+    준비(시드)와 추가 리뷰어 회수(실내용)가 같은 첫 줄을 쓴다. 라운드 파일 형식은 이 모듈이
+    소유하므로 헤더 문자열도 여기 하나뿐이다 — 쓰는 자리마다 다시 적으면 라벨·표기가 갈린다.
+    """
+    _require_role(role)
+    if not isinstance(today, str) or _HEADER_DATE_RE.match(today) is None:
+        raise RoundsError(f"라운드 헤더 날짜는 YYYY-MM-DD 형식이어야 한다: {today!r}")
+    return f"## {ROLE_LABELS[role]} ({role} · {today})"
+
 
 def render_round_seed(
     role: str, ticket_text: str, *, today: str,
@@ -395,11 +407,8 @@ def render_round_seed(
     확인 대상 finding ID 를 프리필하는 유일한 입력이고, 무편집 판정
     (`_text_is_pending`)은 같은 값으로 시드를 다시 렌더해 대조한다. 없으면 자리표시자다.
     """
-    _require_role(role)
-    if not isinstance(today, str) or _HEADER_DATE_RE.match(today) is None:
-        raise RoundsError(f"라운드 헤더 날짜는 YYYY-MM-DD 형식이어야 한다: {today!r}")
     return (
-        f"## {ROLE_LABELS[role]} ({role} · {today})\n\n"
+        render_round_header(role, today=today) + "\n\n"
         + _render_round_seed_body(role, ticket_text, previous_round)
     )
 
