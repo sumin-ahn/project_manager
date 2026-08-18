@@ -342,6 +342,68 @@ def test_migrate_removes_legacy_delegate_artifacts_but_keeps_the_current_layout(
 
 
 @requires_git
+def test_migrate_finds_legacy_copies_in_the_repo_itself_when_solo(
+        legacy_board, capsys, monkeypatch):
+    """solo 형상(등록 슬롯 0 · PM 홈 == 코드 트리)에서도 REPO 자신의 구 레이아웃을 지운다(F-002).
+
+    등록 슬롯 판정만 보면 solo 는 항상 슬롯 0 이라, 구 사본이 REPO 자신에 남아도 순회·삭제
+    양쪽에서 조용히 빠지고 "정리 완료" 가 거짓이 된다.
+    """
+    board, board_dir, root = legacy_board
+    _write_legacy_ticket(board_dir, "T-3995", "done", [("developer", "구현 산출.")])
+    _commit_board(board_dir)
+    monkeypatch.setattr(board, "_registered_slot_paths", lambda pm_home, **_kwargs: ())
+    artifacts = _seed_legacy_copies(board, root, slot="")
+
+    assert board.main(["rounds", "migrate", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "슬롯 구 레이아웃 사본 1개" in out, "등록 슬롯 0 인데 REPO 자신의 구 사본을 못 봤다"
+
+    assert board.main(["rounds", "migrate"]) == 0
+
+    assert not artifacts["ledger"].exists()
+    assert not artifacts["trust"].exists()
+    assert not artifacts["legacy_role_dir"].exists()
+    assert (artifacts["current_run"] / "01-developer.md").is_file(), (
+        "현행 레이아웃 run 디렉터리까지 지웠다")
+
+
+@requires_git
+def test_migrate_holds_legacy_copy_deletion_when_the_board_commit_fails(
+        legacy_board, capsys, monkeypatch):
+    """board 커밋이 서지 못하면(ready=False) 비가역 사본 삭제를 보류하고, 재실행이 마저
+    지운다(F-004 · 멱등).
+    """
+    board, board_dir, root = legacy_board
+    _write_legacy_ticket(board_dir, "T-3990", "done", [("developer", "구현 산출.")])
+    _commit_board(board_dir)
+    artifacts = _seed_legacy_copies(board, root)
+    # `monkeypatch` 는 `legacy_board` 픽스처와 이 테스트가 **같은 인스턴스**를 공유한다
+    # (function-scope fixture caching) — `monkeypatch.undo()` 를 쓰면 픽스처가 앵커한
+    # REPO·LOCAL_DIR·LEASES_FILE 까지 실 경로로 되돌아가 재실행이 실 worktree 를 건드린다.
+    # 이 속성 하나만 되돌리도록 명시 재대입한다(전역 undo 금지).
+    real_sync = board._rounds_mutation_sync_paths
+    monkeypatch.setattr(board, "_rounds_mutation_sync_paths", lambda *_a, **_k: False)
+
+    assert board.main(["rounds", "migrate"]) == 0
+
+    err = capsys.readouterr().err
+    assert "커밋 실패" in err and "보류" in err
+    assert artifacts["ledger"].exists(), "커밋 실패인데 구 사본 장부를 지웠다"
+    assert artifacts["trust"].exists(), "커밋 실패인데 신뢰 사본을 지웠다"
+    assert artifacts["legacy_role_dir"].exists(), "커밋 실패인데 슬롯 구 사본을 지웠다"
+    assert _round_names(board_dir, "T-3990") == ["01-developer.md"], (
+        "라운드 파일은 board 커밋 성패와 무관하게 이미 디스크에 있어야 한다")
+
+    monkeypatch.setattr(board, "_rounds_mutation_sync_paths", real_sync)  # 재실행이 마저 지운다.
+    assert board.main(["rounds", "migrate"]) == 0
+
+    assert not artifacts["ledger"].exists()
+    assert not artifacts["trust"].exists()
+    assert not artifacts["legacy_role_dir"].exists()
+
+
+@requires_git
 def test_migrate_stops_on_unharvested_legacy_copies_without_the_discard_flag(
         legacy_board, capsys):
     """미회수 사본이 남아 있으면 **아무것도 지우지 않고** rc 1 로 멈춘다(삭제는 비가역)."""
@@ -578,6 +640,26 @@ def test_legacy_section_parser_ignores_prose_mentions():
     assert board._legacy_growth_sections(body) == []
 
 
+def test_legacy_markers_inside_a_fenced_code_block_are_not_data():
+    """``` 로 감싼 marker 예시(문법을 문서화한 티켓)는 변환·lint 판정 모두에서 빠진다.
+
+    문서 티켓이 실 문법을 예시로 펜스에 넣으면, column-0 판정만으로는 그 예시가 진짜 절로
+    읽혀 변환 대상이 되거나 lint 가 영영 red 로 남는다(F-003).
+    """
+    board = _load_board()
+    body = (
+        "## 문법 예시\n"
+        "```\n"
+        "<!-- pm-ticket-section:start role=developer -->\n"
+        "산출.\n"
+        "<!-- pm-ticket-section:end role=developer -->\n"
+        "```\n"
+    )
+
+    assert board._has_legacy_growth_markers(body) is False
+    assert board._legacy_growth_sections(body) == []
+
+
 def test_growth_union_cleanup_keeps_unrelated_declarations():
     """장부 전용 선언만 걷고 일반 텍스트 선언과 사용자 주석은 남긴다."""
     board = _load_board()
@@ -641,6 +723,44 @@ def test_pm_update_hint_matches_the_board_lint_wording():
 
     assert pm_update.LEGACY_GROWTH_MIGRATION_HINT == board._LEGACY_GROWTH_MIGRATION_HINT
     assert pm_update.LEGACY_GROWTH_MARKERS == board._LEGACY_GROWTH_MARKERS
+
+
+def test_pm_update_and_board_lint_share_the_same_column_zero_judgment(
+        tmp_path, monkeypatch):
+    """인용/들여쓰기 marker 는 두 사본 모두 0건, 진짜 marker 는 둘 다 1건이다(F-001).
+
+    문구 parity(`test_pm_update_hint_matches_the_board_lint_wording`)는 판정 **시야**의
+    substring vs column-0 차이를 못 잡는다 — 실 board T-0694 처럼 들여쓰기+backtick 인용된
+    marker 를 섞어 두 사본의 **판정 결과**를 대조한다.
+    """
+    board = _load_board()
+    pm_update = _load_pm_update()
+    anchor_board_module(board, tmp_path, monkeypatch)
+    tickets = tmp_path / ".project_manager" / "board" / "tickets" / "done"
+    tickets.mkdir(parents=True)
+
+    quoted_body = (
+        "## 문법 설명\n"
+        "구 형식은 이렇게 생겼다:\n\n"
+        "  `<!-- pm-ticket-seal role=developer ordinal=0 "
+        f"sha256={_SEAL_SHA} by=harvest -->`\n"
+    )
+    (tickets / "T-4200-quoted.md").write_text(
+        _ticket_text("T-4200", "done") + "\n" + quoted_body,
+        encoding="utf-8", newline="")
+
+    real_block, _content = _legacy_section("developer", 0, body="산출.")
+    (tickets / "T-4201-real.md").write_text(
+        _ticket_text("T-4201", "done") + "\n" + real_block,
+        encoding="utf-8", newline="")
+
+    board_findings = sorted(
+        name for name, _kind, _detail in board.lint_legacy_growth_sections())
+    pm_update_found = sorted(
+        path.name for path in pm_update._legacy_growth_ticket_files(tmp_path))
+
+    assert board_findings == ["T-4201"], "인용/들여쓰기 marker 가 board lint 에 잡혔다"
+    assert pm_update_found == ["T-4201-real.md"], "인용/들여쓰기 marker 가 흡수 안내에 잡혔다"
 
 
 @pytest.mark.parametrize("layout", ["board", "wiki"])

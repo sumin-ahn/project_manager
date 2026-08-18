@@ -5399,6 +5399,10 @@ def _legacy_growth_ticket_files(dest_root: Path) -> list[Path]:
 
     ID 파싱은 하지 않는다 — 안내에 필요한 것은 "몇 건이 남았나" 이고, ID 문법은 board 소유라
     여기서 복제하면 발행 문법이 넓어질 때만 이 사본이 어긋난다.
+
+    판정은 board `_has_legacy_growth_markers` 와 같은 규칙(**column 0** 의 줄 단위
+    `startswith`)이다 — substring 판정이면 산문이 backtick 인용이나 들여쓰기로 같은 표기를
+    설명한 티켓(변환 대상이 아님)까지 잡혀, 변환이 끝난 뒤에도 이 안내가 영구히 남는다.
     """
     tickets_dir = None
     for parts in _BOARD_TICKET_DIR_CANDIDATES:
@@ -5415,7 +5419,11 @@ def _legacy_growth_ticket_files(dest_root: Path) -> list[Path]:
                 text = _read_text_shared(path, encoding="utf-8")
             except (OSError, UnicodeError):
                 continue
-            if any(marker in text for marker in LEGACY_GROWTH_MARKERS):
+            if any(
+                line.startswith(marker)
+                for line in text.splitlines()
+                for marker in LEGACY_GROWTH_MARKERS
+            ):
                 found.append(path)
     return found
 

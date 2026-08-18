@@ -3598,6 +3598,15 @@ def test_legacy_seal_comment_alone_is_enough_to_flag(board, monkeypatch, tmp_pat
         "legacy-growth-section"]
 
 
+def test_legacy_growth_section_ignores_fenced_syntax_examples(board, monkeypatch, tmp_path):
+    """``` 로 감싼 marker 문법 예시(문서화 티켓)는 변환 대상이 아니라 lint 도 red 를 안 낸다."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    fenced = "\n```\n" + _LEGACY_SECTION.strip("\n") + "\n```\n"
+    _lint_ticket(board, "done", "T-3011", body=fenced)
+
+    assert board.lint_legacy_growth_sections() == []
+
+
 def test_migrated_board_has_no_legacy_findings(board, monkeypatch, tmp_path):
     _wire_repo(board, monkeypatch, tmp_path)
     _lint_ticket(board, "done", "T-3010")

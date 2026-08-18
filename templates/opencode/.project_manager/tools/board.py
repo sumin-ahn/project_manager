@@ -9353,17 +9353,40 @@ class _RoundsMigrationTicket(NamedTuple):
     sections: tuple[_LegacySection, ...]
 
 
+def _fenced_code_line_mask(lines: Sequence[str]) -> list[bool]:
+    """줄마다 ``` 코드 펜스 안인지 (토글 줄 자체도 안쪽으로 센다).
+
+    문법을 문서화한 티켓은 예시 marker 를 펜스로 감싼다 — 그 예시를 데이터로 읽으면 문서
+    티켓이 변환 대상으로 오판되거나(없는 절을 찾다 실패) lint 가 예시 하나로 영영 red 가
+    된다. 짝이 맞지 않는 마지막 펜스(파일이 열린 채 끝남)는 안쪽으로 접는다 — 더 넓게
+    안전한 쪽이다. `_has_legacy_growth_markers`/`_legacy_growth_sections`(및 그걸 위임하는
+    lint)가 공유하는 시야다.
+    """
+    mask: list[bool] = []
+    inside = False
+    for line in lines:
+        if line.lstrip().startswith("```"):
+            inside = not inside
+            mask.append(True)
+            continue
+        mask.append(inside)
+    return mask
+
+
 def _has_legacy_growth_markers(body: str) -> bool:
     """본문에 구 컨테이너 주석 **줄**이 있는가 (변환 대상·lint 판정의 공용 시야).
 
     후보는 **column 0** 의 주석 줄뿐이다 — 산문이 backtick 이나 인용부호 안에서 같은 표기를
     설명하는 티켓이 실재한다(구 봉인 문법을 설명한 티켓). 그것을 데이터로 읽으면 변환은 없는
     절을 찾다 실패하고, lint 는 변환 뒤에도 영영 red 로 남는다. 좁힌 시야는 구 엔진의 봉인
-    후보 판정과 같은 규칙이다.
+    후보 판정과 같은 규칙이고, ``` 펜스로 감싼 문법 예시도 산문과 같이 데이터에서 뺀다
+    (`_fenced_code_line_mask`).
     """
+    lines = body.splitlines()
+    fenced = _fenced_code_line_mask(lines)
     return any(
-        line.startswith(marker)
-        for line in body.splitlines()
+        not fenced[index] and line.startswith(marker)
+        for index, line in enumerate(lines)
         for marker in _LEGACY_GROWTH_MARKERS
     )
 
@@ -9373,13 +9396,15 @@ def _legacy_growth_sections(body: str) -> list[_LegacySection]:
 
     지울 범위에는 end marker 바로 다음 줄의 봉인이 포함된다 — 봉인은 절의 꼬리이지 명세
     텍스트가 아니다. 문법을 벗어난 marker 줄은 변환에서 조용히 빠지면 안 되므로 그 티켓을
-    통째로 실패로 올린다(사람이 고친 뒤 재실행).
+    통째로 실패로 올린다(사람이 고친 뒤 재실행). ``` 펜스 안의 marker 는
+    `_has_legacy_growth_markers` 와 같은 시야로 건너뛴다(문법 예시를 절로 오인하지 않는다).
     """
     lines = body.splitlines(keepends=True)
+    fenced = _fenced_code_line_mask(lines)
     sections: list[_LegacySection] = []
     open_marker: tuple[str, int] | None = None
     for index, line in enumerate(lines):
-        if not line.startswith(f"<!-- {_LEGACY_SECTION_MARKER}:"):
+        if fenced[index] or not line.startswith(f"<!-- {_LEGACY_SECTION_MARKER}:"):
             continue
         matched = _LEGACY_SECTION_LINE_RE.fullmatch(line)
         if matched is None:
@@ -9567,16 +9592,22 @@ def _legacy_ticket_copy_ledger() -> _LegacyCopyLedger | None:
 
 
 def _legacy_copy_slot_roots() -> tuple[Path, ...]:
-    """구 사본을 찾을 슬롯 — git 앵커 가드와 **같은 등록 판정**을 쓴다(판정 사본 금지).
+    """구 사본을 찾을 루트 — git 앵커 가드와 **같은 등록 판정**에 REPO 자신을 더한다.
 
-    그 판정은 lease 장부 등록 + linked worktree + 이 PM 홈 소유까지 확인한다 — 삭제를 하는
-    자리라 좁고 검증된 집합이 맞다. 다만 장부가 있는데 해소된 슬롯이 0 이면 그 사실을 알린다:
-    슬롯 잔여를 못 본 채 "정리 완료" 라고 말하지 않기 위해서다(삭제는 하지 않는다).
+    등록 판정(lease 장부 + linked worktree + 이 PM 홈 소유)은 multi-PM 슬롯만 본다. 출하
+    기본 형상인 solo(등록 슬롯 0 · PM 홈 == 코드 트리)에서는 구 사본이 REPO 자신의
+    `.project_manager/.local/delegate-ticket-copies/` 에 남는데, 그 자리는 등록 슬롯 집합에
+    없어 순회·삭제 양쪽에서 조용히 빠지고 "정리 완료" 가 거짓이 된다. REPO 아래 그 구
+    레이아웃이 실재할 때만 더한다(등록 슬롯에 이미 있으면 dedupe). 등록 슬롯이 0 인데
+    장부가 있으면 여전히 그 사실을 알린다(그 경고와 REPO 자신 편입은 서로 다른 축이다 —
+    REPO 는 항상 그 자리에 있으므로 등록 슬롯 해소와 무관하게 검사한다).
     """
     slots = _registered_slot_paths(REPO)
     if not slots and LEASES_FILE.exists():
         print("  ⚠ 등록 슬롯 해소 0 — 리스 장부는 있으나 슬롯을 확인하지 못했다. 슬롯에 구 "
               "사본이 남아 있을 수 있다(직접 확인).", file=sys.stderr)
+    if REPO not in slots and REPO.joinpath(*_LEGACY_TICKET_COPY_ROOT_RELS).is_dir():
+        slots = (*slots, REPO)
     return slots
 
 
@@ -9809,16 +9840,23 @@ def cmd_rounds_migrate(args: argparse.Namespace) -> int:
         ready = _rounds_mutation_sync_paths(
             f"rounds migrate: {migrated} tickets · .growth removed", commit_paths)
 
-    if ledger is not None:
-        ledger.path.unlink(missing_ok=True)
-        print(f"  삭제: {_rel_to_repo(ledger.path)}")
-    if trust_dir.is_dir():
-        file_lock.force_rmtree(trust_dir)
-        print(f"  삭제: {_rel_to_repo(trust_dir)}")
-    for directory in slot_dirs:
-        _remove_legacy_copy_dir(directory)
-    if slot_dirs:
-        print(f"  삭제: 슬롯 구 레이아웃 사본 {len(slot_dirs)}개")
+    # 구 사본 삭제는 비가역이라 board 커밋이 실제로 서지 못했으면(ready=False) 보류한다 —
+    # 커밋 실패 사유(board-git 이상)를 사람이 보기 전에 되돌릴 수 없는 삭제까지 끝내지
+    # 않는다. 라운드 파일·명세는 이미 디스크에 있으므로 재실행(멱등)이 마저 지운다.
+    if ready:
+        if ledger is not None:
+            ledger.path.unlink(missing_ok=True)
+            print(f"  삭제: {_rel_to_repo(ledger.path)}")
+        if trust_dir.is_dir():
+            file_lock.force_rmtree(trust_dir)
+            print(f"  삭제: {_rel_to_repo(trust_dir)}")
+        for directory in slot_dirs:
+            _remove_legacy_copy_dir(directory)
+        if slot_dirs:
+            print(f"  삭제: 슬롯 구 레이아웃 사본 {len(slot_dirs)}개")
+    elif ledger is not None or trust_dir.is_dir() or slot_dirs:
+        print("  ⚠ board 커밋 실패 — 구 사본 삭제 보류(재실행 시 계속 진행한다).",
+              file=sys.stderr)
 
     print(f"변환 완료 {migrated}건{_board_git_mutation_state_suffix(ready)}")
     return 1 if failures else 0
