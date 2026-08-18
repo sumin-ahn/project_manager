@@ -19,18 +19,14 @@
 
 3. **병렬 실행 경고 되살리기 (T-0757)** — 회귀를 pytest-xdist 로 돌리면 워커에서 난 경고를
    컨트롤러가 클래스 이름으로 다시 import 해 되살린다. 파일 경로로 연 모듈의 이름은 컨트롤러에
-   없어 import 가 실패하고, xdist 가 그 실패를 잡지 않아 실행 전체가 INTERNALERROR 로 죽는다.
-   아래 ③ 이 두 겹으로 닫는다 — 엔진 합성 모듈명은 meta_path finder 가 실제 파일로 해소하고,
-   그 밖의 이름(테스트가 임의로 붙인 사본 이름)은 실패-연성 되살리기로 낮춰 받는다.
+   없어 import 가 실패하고, xdist 가 그 실패를 잡지 않아 경고 한 건이 실행 전체를 INTERNALERROR 로
+   죽인다. 아래 ③ 이 그 되살리기를 실패-연성으로 감싼다.
 """
 from __future__ import annotations
 
-import importlib.abc
-import importlib.util
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
@@ -377,115 +373,21 @@ def run_codex_exec(prompt: str, cwd: Path, home: Path, *, model: str | None = No
     )
 
 
-# ── ③ 병렬 실행(pytest-xdist) 경고 되살리기 — 합성 모듈명 finder + 실패-연성 (T-0757) ──
+# ── ③ 병렬 실행(pytest-xdist) 경고 되살리기 (T-0757) ───────────────────────────
 
-# 엔진은 파일 경로로 연 모듈에 `_project_manager_<name>:<abs path>` 형태의 합성 이름을 준다
-# (사본 구분 목적 · 22/23 도구의 byte-동일 부트스트랩 블록과 `repo_owned_files.load_module`).
-# 그 모듈이 정의한 경고 클래스(`RepoFilesFallbackWarning`·`LocklessFallbackWarning` 등)가 워커에서
-# 발생하면 xdist 컨트롤러는 `importlib.import_module(<합성 이름>)` 으로 클래스를 되살리려 한다
-# (`xdist/workermanage.py::unserialize_warning_message`). 컨트롤러에는 그 이름의 모듈이 없어 import 가
-# 실패하고, 예외가 receiver 스레드로 올라가 실행 전체가 INTERNALERROR 로 죽는다. 합성 이름 자체는
-# 엔진 부트스트랩 블록의 byte-동일 가드에 묶여 있어(T-0748) 테스트 인프라에서 흡수한다.
+# 워커가 낸 경고를 컨트롤러는 `importlib.import_module(<경고 클래스의 모듈 이름>)` 으로 되살린다
+# (`xdist/workermanage.py::unserialize_warning_message`). 파일 경로로 연 모듈의 이름은 컨트롤러에 없어
+# import 가 실패하고, xdist 가 그 실패를 잡지 않아 경고 한 건이 실행 전체를 INTERNALERROR 로 죽는다
+# (실측: 엔진 합성 이름 `_project_manager_repo_owned_files:<path>` · 테스트 사본 이름
+# `file_lock_under_test`).
 #
-# 합성 이름에는 경로의 `.`(`.project_manager`·확장자 `.py`)이 들어가 importlib 이 이를 점 표기 패키지
-# 경로로 읽는다 — 실제 import 는 최상위 조각부터 시작한다(실측: 첫 실패 이름이 잎이 아니라
-# `_project_manager_repo_owned_files:<repo>/`). 그래서 finder 는 파일로 끝나는 잎 이름과 그 조상 조각을
-# 모두 해소해야 한다.
-_SYNTHETIC_MODULE_PREFIX = "_project_manager_"
-_SYNTHETIC_MODULE_SEPARATOR = ":"
-_SYNTHETIC_MODULE_SOURCE_SUFFIX = ".py"
-# 사라진 사본 이름에 즉석 제공하는 클래스는 경고로 한정한다 — 되살리기 소비자가 xdist 의 경고
-# 재구성 한 곳뿐이라, 그 밖의 속성 조회는 평소대로 AttributeError 로 둔다.
-_FABRICATED_CLASS_SUFFIX = "Warning"
-
-
-def synthetic_module_location(fullname: str) -> str | None:
-    """합성 모듈명이면 `:` 뒤 경로 부분을, 아니면 None 을 준다.
-
-    첫 `:` 로만 자른다 — Windows 드라이브 문자(`C:\\...`)는 경로 쪽에 그대로 남는다.
-    경로가 절대경로인지는 따지지 않는다(조상 조각은 드라이브 경계에서 잘릴 수 있다) —
-    `_project_manager_` 접두 + `:` 조합 자체가 엔진 전용이라 다른 이름과 겹치지 않는다.
-    """
-    if not fullname.startswith(_SYNTHETIC_MODULE_PREFIX):
-        return None
-    name, separator, location = fullname.partition(_SYNTHETIC_MODULE_SEPARATOR)
-    if not separator or not location or name == _SYNTHETIC_MODULE_PREFIX:
-        return None
-    return location
-
-
-class _SyntheticParentLoader(importlib.abc.Loader):
-    """합성 이름의 조상 조각을 빈 패키지로 만든다 (자식 import 가 부모의 `__path__` 를 요구한다)."""
-
-    def create_module(self, spec):
-        return None
-
-    def exec_module(self, module):
-        return None
-
-
-class _SyntheticWarningStubLoader(importlib.abc.Loader):
-    """사본이 사라진 잎 이름에 경고 클래스를 즉석으로 만들어 준다.
-
-    엔진 사본을 tmp 트리에 두고 in-process 로 로드한 테스트가 경고를 냈다면, 컨트롤러가 그 경고를
-    되살릴 때 원본 파일은 이미 지워졌을 수 있다. 그 한 건이 실행 전체를 INTERNALERROR 로 죽이지
-    않도록 같은 이름의 `Warning` 하위 클래스를 대신 준다(xdist 는 클래스로 메시지만 재구성한다).
-    """
-
-    def create_module(self, spec):
-        return None
-
-    def exec_module(self, module):
-        module_name = module.__name__
-
-        def __getattr__(attribute_name: str):
-            if not attribute_name.endswith(_FABRICATED_CLASS_SUFFIX):
-                raise AttributeError(attribute_name)
-            fabricated = type(attribute_name, (Warning,), {"__module__": module_name})
-            setattr(module, attribute_name, fabricated)
-            return fabricated
-
-        module.__getattr__ = __getattr__
-
-
-class EngineSyntheticModuleFinder(importlib.abc.MetaPathFinder):
-    """엔진 합성 모듈명을 그 경로의 파일로 해소하는 meta_path finder."""
-
-    def find_spec(self, fullname, path=None, target=None):
-        location = synthetic_module_location(fullname)
-        if location is None:
-            return None
-        if not location.endswith(_SYNTHETIC_MODULE_SOURCE_SUFFIX):
-            return importlib.util.spec_from_loader(
-                fullname, _SyntheticParentLoader(), is_package=True)
-        if Path(location).is_file():
-            return importlib.util.spec_from_file_location(fullname, location)
-        return importlib.util.spec_from_loader(fullname, _SyntheticWarningStubLoader())
-
-
-def install_engine_synthetic_module_finder() -> None:
-    """finder 를 `sys.meta_path` 앞에 한 번만 꽂는다.
-
-    컨트롤러와 워커가 모두 이 conftest 를 import 하므로 양쪽 프로세스에 함께 선다(경고를 되살리는
-    쪽은 컨트롤러다). 이미 꽂혀 있으면 그대로 둔다 — 같은 프로세스에서 conftest 가 두 번
-    import 돼도 finder 가 쌓이지 않는다.
-    """
-    if any(isinstance(finder, EngineSyntheticModuleFinder) for finder in sys.meta_path):
-        return
-    sys.meta_path.insert(0, EngineSyntheticModuleFinder())
-
-
-install_engine_synthetic_module_finder()
-
-
-# 컨트롤러가 워커 경고를 되살릴 때 import 하는 이름이 늘 해소되지는 않는다. 엔진 합성 이름은 위
-# finder 가 실제 파일로 풀지만, 테스트가 자기 사본을 임의 이름으로 로드해 낸 경고는 어떤 규칙으로도
-# 컨트롤러에서 해소할 수 없다(`spec_from_file_location` 호출부 192 파일이 제각각 이름을 쓴다 —
-# 실측: `-n 8` 전수에서 `No module named 'file_lock_under_test'`). xdist 는 그 import 실패를 잡지
-# 않아 경고 한 건이 실행 전체를 INTERNALERROR 로 죽인다. 되살리기를 실패-연성으로 감싸 원래 클래스
-# 이름과 메시지를 본문에 보존한 일반 Warning 으로 낮춘다 — 경고를 숨기거나 끄지 않는다.
+# 이름을 되살리는 대신 되살리기 실패를 낮춰 받는 **한 겹**으로 닫는다. 이름 해소는 표면을 못 덮는다 —
+# 테스트의 `spec_from_file_location` 호출부 192 파일이 제각각 이름을 붙여 규칙이 없다. 그리고 잃는
+# 정보도 없다 — 경고 필터·`pytest.warns` 판정은 이미 워커에서 그 클래스로 끝났고, 컨트롤러가 하는
+# 일은 요약 표시뿐이라 원 모듈명·클래스명·메시지를 본문 문자열로 보존하면 표시가 그대로 남는다.
 _DEGRADED_WARNING_MODULE = "builtins"
 _DEGRADED_WARNING_CLASS = "Warning"
+_XDIST_UNSERIALIZER_ATTR = "unserialize_warning_message"
 
 
 def degraded_warning_message_data(data: dict) -> dict:
@@ -516,13 +418,24 @@ def tolerant_warning_unserializer(original):
 
 
 def install_tolerant_warning_unserializer() -> None:
-    """xdist 컨트롤러의 경고 되살리기를 감싸개로 바꾼다(중복 설치 없음)."""
+    """xdist 컨트롤러의 경고 되살리기를 감싸개로 바꾼다(중복 설치 없음).
+
+    감쌀 지점은 xdist 내부 심볼이다 — 상류가 이름을 바꾸면 조용히 넘어가지 않고 즉시 실패한다.
+    조용히 넘어가면 병렬 회귀가 경고 한 건에 INTERNALERROR 로 죽는 상태로 되돌아간다.
+    """
+    import xdist
     from xdist import workermanage
 
-    original = workermanage.unserialize_warning_message
+    original = getattr(workermanage, _XDIST_UNSERIALIZER_ATTR, None)
+    if original is None:
+        raise RuntimeError(
+            f"pytest-xdist {xdist.__version__} 의 workermanage 에 "
+            f"`{_XDIST_UNSERIALIZER_ATTR}` 가 없다 — 병렬 회귀의 경고 되살리기를 감쌀 지점이 "
+            "사라졌다(그대로 두면 워커 경고 한 건이 실행 전체를 INTERNALERROR 로 죽인다). "
+            "tests/conftest.py ③절을 새 xdist API 에 맞춰 갱신하라.")
     if getattr(original, "_pm_tolerant", False):
         return
-    workermanage.unserialize_warning_message = tolerant_warning_unserializer(original)
+    setattr(workermanage, _XDIST_UNSERIALIZER_ATTR, tolerant_warning_unserializer(original))
 
 
 def pytest_configure(config):
