@@ -60,6 +60,11 @@
   사본이 그대로 노출되므로 그 사실을 짚어 거부한다(첫 커밋 전 트리는 인덱스 등록으로 충분하다).
   채택자가 `.gitignore` 의 `.local/` 규칙을 지운 형상은 prepare 가 복구 처방과 함께 fail-loud 한다.
   인스턴스 조치는 없다.
+- (v1.7.2 이월 안내) **추가 리뷰어 구키 4종은 제거됐다(읽지 않는다).** 게이트
+  `external_review_enabled` 와 노브 `external_review_round_limit`·`external_review_wave_budget`·
+  `external_review_incomplete_round_limit` 가 대상이다. 구키만 있는 `local.conf` 는 추가 리뷰어가
+  꺼진 상태이므로, 키 이름을 신키(`additional_reviewer_*`)로 직접 바꾸거나 opt-in
+  질문(`board.py init`·`pm-update`)에 다시 답한다.
 
 ### Added
 
