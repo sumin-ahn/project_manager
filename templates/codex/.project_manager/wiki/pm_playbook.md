@@ -52,12 +52,12 @@ type: reference
 
 ## 위임 — 두 가지 방식
 
-ticket 본문은 저작→(hard) 설계→구현 보충→리뷰→(설계 결함) 재설계가 한 파일에 누적되는
-성장 문서이며 각 위임 시점에도 self-contained다. 그래서 위임 프롬프트를 bespoke하게
-재작성하지 않는다. `board.py section-add`가 역할 marker를 먼저 만들고, `/pm-dev-delegate --ticket`은
-`pm_delegate.py ticket prepare|harvest`로 slot
-`.project_manager/.local/delegate-ticket-copies/` 사본을 전달·회수한다. 에이전트는 사본의 최신 자기
-역할 절만 쓰고 PM 홈·frontmatter·marker·다른 절은 건드리지 않는다. commit과 board 상태 전이는 PM 몫이다.
+티켓은 PM이 소유하는 명세 파일 하나와, 저작→(hard) 설계→구현 보충→리뷰→(설계 결함) 재설계가 한 건씩
+쌓이는 라운드 파일들로 이뤄지며 각 위임 시점에도 self-contained다. 그래서 위임 프롬프트를 bespoke하게
+재작성하지 않는다. `/pm-dev-delegate --ticket`은 `pm_delegate.py ticket prepare|harvest`로 slot
+run-dir(`.project_manager/.local/delegate-ticket-copies/` 아래)의 라운드 파일 하나를 전달·회수한다
+(슬롯 없이 PM이 직접 채울 자리는 `board.py section-add`가 예약한다). 에이전트는 그 라운드 파일
+하나만 쓰고 명세·이전 라운드는 읽기 전용으로 읽는다. commit과 board 상태 전이는 PM 몫이다.
 
 > **harness 노트:** 아래 예시는 **claude(`Agent` 툴·`run_in_background`·`.claude/agents/`)** 기준. **opencode 는 네이티브 `task` 툴**(자식 세션)로 위임한다 — `.opencode/pm-instructions.md`(위임 규약·`AGENTS.md` 공통 코어와 함께 자동 로드)·`.opencode/agents/` 참조. **codex 는 `.codex/agents/`(TOML 카드)** 를 쓰고 위임 채널은 하네스 네이티브다(`AGENTS.md` 공통 코어 + 하네스 운영 지침이 단일 진실). 역할 카드 경로는 하네스마다 다르므로(디렉토리·확장자 모두) 아래 목록은 카드를 `subagent_type` 이름으로만 가리킨다. 축 분리·touches disjoint·single-source 프롬프트·PM 산출 비준 원칙은 동일하다.
 
@@ -91,9 +91,9 @@ T-NNNN 의 변경을 검토하라. 변경 파일: <경로>. (code-reviewer)
 
 **검토 루프(normal/hard):** dev → **내부 code-reviewer + 추가 리뷰어 (둘 다)** → PM finding 판정 →
 승인 delta 재작업 → PM 회귀 verify → `board.py complete`. reviewer 산출은 구현 명령이 아니라
-증거·제안이다. 구현 결함은 PM이 accepted한 범위만 dev가 재작업한다. 설계 결함은 reviewer 절을 포함한
-최신 ticket 사본으로 architect를 다시 투입해 재설계 절을 추가한 뒤 dev가 재구현한다. 2회차 이후
-reviewer는 이전 reviewer 절의 must-fix 해소 여부와 그 뒤 변경분을 먼저 보는 델타 리뷰를 한다.
+증거·제안이다. 구현 결함은 PM이 accepted한 범위만 dev가 재작업한다. 설계 결함은 리뷰 라운드까지
+읽기 전용 입력으로 깔아 architect를 다시 투입해 재설계 라운드를 추가한 뒤 dev가 재구현한다. 2회차 이후
+reviewer는 이전 리뷰 라운드의 must-fix 해소 여부와 그 뒤 변경분을 먼저 보는 델타 리뷰를 한다.
 루프를 생략하지 않는다. git 도입 후 code-reviewer는 `git diff`로 변경 범위·내용을 직접 검증한다.
 PM-direct는 이 루프 대신 PM 구현·self-review·범위 테스트를 거친다.
 
@@ -105,7 +105,7 @@ PM-direct는 이 루프 대신 PM 구현·self-review·범위 테스트를 거�
 2. **검증 근거 지정 의무.** 위임 프롬프트는 "무엇으로 재는지"를 명시한다 — 실제 git 이 만든 산출물, 설치 바이너리에서 추출한 fixture, fake runner 아닌 층의 동작 단언. cold dev 는 트리 기억이 없어 검증 근거를 지정하지 않으면 픽스처를 지어내고(조립 문자열·순환 단언·문자열만 검사), 그 결함이 라운드를 늘린다.
 3. **클래스 전수 열거 의무.** dev 는 구현 전에 결함 클래스의 인스턴스를 진입점·플랫폼·실패 모드·호출 경로 축으로 전수 나열해 보고하고 전부 처리한다. 보고된 형상만 처리한 결과는 미완이다. 전수 열거가 불가능하면 그 사실과 열거 경계를 보고한다. 클래스는 해당 결함의 클래스에 한정하며 티켓 밖 기능으로 스코프를 확대하지 않는다. 완료 보고에는 열거한 인스턴스 목록과 각각의 처리를 포함하며, 목록이 없으면 PM 이 반려한다.
 4. **역방향 확인 의무.** dev 는 고침이 반대 방향 실패를 만들지 않았는지 단언한다. 느슨함을 조인 fix 는 과결속을, 조임을 푼 fix 는 누락을, 차단을 추가한 fix 는 정상 사용 차단을 각각 확인한다.
-5. **finding/disposition 장부.** 두 블록의 스키마 단일 진실은 **엔진 파서 상수**이며 엔진이 골격을 공급한다 — 카드·스킬·프롬프트·이 문서에 키·분류·상태 낱말을 복제하지 않는다(복제본은 drift 한다). reviewer는 `section-add`가 시드한 `pm-review-v1` 골격을 채워 안정 ID로 결함을 남기고, 확인 라운드는 골격이 프리필한 ID를 먼저 판정한 뒤 신규 결함만 새 ID로 분리한다. PM은 `pm_delegate.py review disposition-template --ticket T-NNNN`이 낸 `pm-review-disposition-v1` 골격의 판정·사유·developer 허용 범위·선행 조건 자리를 채워 역할 절 밖에 붙인다. 설계 변경을 요구하는 finding은 권위 ticket/spec/ADR를 먼저 개정하지 않으면 결정 대기다. finding 0은 reviewer 통과+0건 선언과 PM 판정 한 건으로 끝낸다.
+5. **finding/disposition 장부.** 두 블록의 스키마 단일 진실은 **엔진 파서 상수**이며 엔진이 골격을 공급한다 — 카드·스킬·프롬프트·이 문서에 키·분류·상태 낱말을 복제하지 않는다(복제본은 drift 한다). reviewer는 엔진이 시드한 리뷰 골격을 채워 안정 ID로 결함을 남기고, 확인 라운드는 골격이 프리필한 ID를 먼저 판정한 뒤 신규 결함만 새 ID로 분리한다. PM은 `pm_delegate.py review disposition-template --ticket T-NNNN`이 낸 판정 골격의 판정·사유·developer 허용 범위·선행 조건 자리를 채워 라운드 파일 밖 명세의 PM 영역에 붙인다. 설계 변경을 요구하는 finding은 권위 ticket/spec/ADR를 먼저 개정하지 않으면 결정 대기다. finding 0은 reviewer 통과+0건 선언과 PM 판정 한 건으로 끝낸다.
 6. **accepted-only delta + 세션 재사용.** `python3 .project_manager/tools/pm_delegate.py review delta --ticket T-NNNN` 출력만 fix 프롬프트에 붙인다. renderer는 accepted ID의 원문 필드와 PM scope만 내며 rejected는 제외한다. 미판정·decision-required는 전체 delta를 차단하고, 같은 accepted ID가 2회 연속 unresolved/regressed면 추가 loop 대신 architect 재설계 또는 티켓 분할을 처방한다. accepted 0/finding 0은 성공+빈 stdout이라 developer를 재투입하지 않는다. fix 라운드는 이 delta를 `pm_delegate --resume-from <T-NNNN>` 으로 **직전 dev 세션에 재사용**하는 것이 기본이다. reviewer 전문·rejected/decision-required 원문을 developer에게 다시 보내지 않는다.
 7. **내부 라운드 상한 3.** 추가 리뷰어 게이트와 동형 — 3라운드에 수렴하지 않으면 라운드 추가가 아니라 재설계·티켓 분할로 전환한다.
 8. **작업 중단 사유 판정.** 유효 집합 3항목만 작업 중단 사유로 인정한다. 무효 집합 5항목으로 중단하면 규약 위반이다. 각 항목은 조건과 결론을 함께 판정한다.
@@ -204,23 +204,23 @@ ticket 본문의 목표 / 인터페이스 / 결정 / DoD 대로 수행.
    - **hard**: 도구 모듈 2+, 공용 코드, 파싱 규칙, 기존 동작 영향, 보안·시크릿·외부 송신·git 훅,
      board 상태 전이·lease·잠금·동시성 중 1개 이상. architect 설계→상위 developer→reviewer.
    - **normal**: 소거법. developer→reviewer, 별도 설계 없음. 애매하면 상향한다.
-2. **설계 + claim** — hard는 open 티켓에 architect 절을 만들고 사본으로 설계를 회수한 뒤
+2. **설계 + claim** — hard는 open 티켓에 architect 라운드를 준비해 설계를 회수한 뒤
    `design: done|waived`로 승격한다. `/pm-wave-claim T-NNNN`이 DoD self-containment·depends_on·
    placeholder·wikilink dangling을 검증한다. `design: required`는 설계 절 완성 전 claim rc=1이다.
    PM-direct/normal은 별도 설계 없이 claim한다.
-3. **구현** — PM-direct는 PM이 직접 구현·self-review한다. normal/hard는 빈 developer 절을 만든 뒤
-   `/pm-dev-delegate T-NNNN --role developer`로 사본을 전달한다. **병렬 시 touches disjoint 필수**
+3. **구현** — PM-direct는 PM이 직접 구현·self-review한다. normal/hard는
+   `/pm-dev-delegate T-NNNN --role developer`가 준비한 라운드 파일을 전달한다. **병렬 시 touches disjoint 필수**
    (file 겹침 0).
 4. **(병렬 wave) dev 실행 중 PM 안전 작업** — touches 와 겹치지 않는 파일 편집·다른 ticket 본문 작성·`.project_manager/wiki/` 페이지 정비. ⚠️ touches 겹치는 파일 편집 금지(reviewer `git diff` 오염). ⚠️ 회귀 baseline 측정도 race 위험 — dev cycle 후 한 번에.
-5. **reviewer 위임 + 추가 리뷰어 교차(normal/hard)** — reviewer 절을 만든 뒤
+5. **reviewer 위임 + 추가 리뷰어 교차(normal/hard)** —
    `/pm-dev-delegate T-NNNN --role code-reviewer` (background) **+ 추가 리뷰어 병행**. 내부 reviewer
    프롬프트에 *"status.md / log/current.md 갱신은 orchestrator 담당 — 그 누락은 developer must-fix
-   아님"* 명시. 추가 리뷰어 must-fix와 내부 must-fix를 합쳐 6단계에서 처리. 2회차는 이전 reviewer
-   절의 MF 해소와 이후 변경분을 우선한다. PM-direct는 이 단계를 생략한다.
+   아님"* 명시. 추가 리뷰어 must-fix와 내부 must-fix를 합쳐 6단계에서 처리. 2회차는 이전 리뷰
+   라운드의 MF 해소와 이후 변경분을 우선한다. PM-direct는 이 단계를 생략한다.
 6. **PM should-fix 분기**:
    - **PM 직접 fix**: 1줄·1패턴 변경 + dev 가 안 도는 영역.
    - **dev 재작업**: 구현 결함인 여러 줄 변경 또는 dev 가 같은 file 작업 중.
-   - **architect 재설계**: 설계 결함이면 최신 ticket 사본에 재설계 절을 추가한 뒤 dev 재구현.
+   - **architect 재설계**: 설계 결함이면 새 architect 라운드를 준비해 재설계를 회수한 뒤 dev 재구현.
    - **별도 ticket 후보 메모**: 본 ticket 범위 외 / 후속 caller 추가 시. 다음 PM 세션용 영구 기록.
    - **처리 보류 (suggestion)**: 운영 영향 0·기능 충분. 이것이 should-fix vs suggestion 기준.
 7. **ticket complete + 부기** — `/pm-wave-finish T-NNNN` (`ticket_finish.py` wrapper). 회귀 green 확인(red 면 중단·아무것도 안 건드림) → log/current.md 스켈레톤 append → board complete (`--tests-pass`) → git stage — **그 ticket 이 선언한 경로만**.

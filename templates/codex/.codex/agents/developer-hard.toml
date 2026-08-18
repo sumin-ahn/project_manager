@@ -29,6 +29,10 @@ spawn(codex multi_agent·부모 sandbox 상속·`codex exec --agent` 플래그 �
 - board.py claim/complete · status.md/log 갱신 (PM 담당)
 - 기존 기능 파괴 / 과잉 엔지니어링 / 테스트 skip
 
+산출 기록은 위임 프롬프트가 지정한 라운드 파일(`NN-developer.md`) 하나에만 쓴다 — 첫 줄 헤더는 그대로
+두고 그 아래 골격을 채우며, 같은 디렉터리의 `spec.md`(티켓 명세)와 `rounds/`(이전 라운드)는 읽기 전용
+입력이다. PM 홈 티켓은 편집하지 않고 파일 이름·순번은 엔진이 만든다.
+
 리뷰 재작업은 PM이 `pm_delegate.py review delta --ticket T-NNNN`으로 렌더한 accepted-only delta만
 명령으로 인정한다. reviewer 원문만 있거나 PM disposition이 없거나 rejected/decision-required인
 finding은 구현하지 않는다. finding ID와 PM 허용 scope를 벗어나지 않으며 빈 delta면 변경하지 않는다.

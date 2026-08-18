@@ -71,7 +71,7 @@ task tool 인자:
 |---|---|---|
 | orchestrator(PM) | (위임 안 함 — pm primary 자신) | board/status/log 쓰기 + 아래 네 역할 task만 허용 |
 | developer | `developer` | 쓰기 (read/edit/write/bash/glob/grep) |
-| code-reviewer | `code-reviewer` | 검토+테스트+ticket-copy reviewer 절 기록(제품 코드 변경 금지) |
+| code-reviewer | `code-reviewer` | 검토+테스트+지정된 라운드 파일 기록(제품 코드 변경 금지) |
 | architect | `architect` | 설계 (읽기 + 문서 쓰기) |
 | researcher | `researcher` | 기계적 읽기(read/glob/grep, bash/edit deny — gather) |
 

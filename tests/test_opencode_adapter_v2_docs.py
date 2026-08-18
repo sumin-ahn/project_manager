@@ -207,19 +207,26 @@ def test_opencode_pm_dev_delegate_ships_as_canonical_skill_mirror():
     assert f".opencode/command/pm-dev-delegate.md     @render @source={source}" in manifest
 
 
-def test_opencode_native_ticket_growth_uses_task_contract_only():
-    """3개 성장 역할은 OpenCode task의 실제 3필드로 prepare→spawn→harvest한다."""
+def test_opencode_native_ticket_rounds_use_task_contract_only():
+    """3개 위임 역할은 OpenCode task의 실제 3필드로 prepare→spawn→harvest한다.
+
+    라운드 파일 모델(ADR-0090)에서 쓰기 대상은 `NN-<역할>.md` 하나이고 명세·이전 라운드는
+    읽기 전용 입력이라, 프롬프트 블록이 그 좌표를 실값으로 실어야 한다.
+    """
     text = PM_DEV_DELEGATE_CANONICAL.read_text(encoding="utf-8")
     blocks = re.findall(r"task tool 호출:\n(.*?)(?=\n```)", text, flags=re.DOTALL)
     assert len(blocks) == 3
     for role, block in zip(("developer", "code-reviewer", "architect"), blocks):
         assert f"subagent_type: {role}" in block
         assert "description:" in block and "prompt:" in block
-        assert f"role={role}" in block and "<prepare JSON의 copy>" in block
+        assert f"NN-{role}.md" in block and "<prepare JSON의 copy>" in block
+        assert "spec.md" in block and "rounds/" in block
     assert "ticket prepare" in text and "ticket harvest" in text
     assert "Agent 툴 호출" not in text
     assert "run_in_background" not in text
-    assert "최신 architect" in text and "절을 직접 성장" in text
+    assert "다음 순번의 새 라운드 파일" in text
+    for stale in ("pm-ticket-section", "성장 티켓 사본", "capability", "transfer-from"):
+        assert stale not in text, f"opencode pm-dev-delegate 카드에 옛 모델 어휘 잔존: {stale}"
 
 
 def test_opencode_pm_dev_delegate_no_framework_wikilink():

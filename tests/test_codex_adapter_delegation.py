@@ -358,17 +358,23 @@ def test_pm_dev_delegate_documents_only_native_codex_spawn_fields():
     assert "비동기로 진행" in text, "spawn 반환 thread의 비동기 운영 규칙 누락"
 
 
-def test_codex_native_reviewer_can_write_only_ticket_section_by_role_contract():
+def test_codex_native_reviewer_can_write_only_its_round_file_by_role_contract():
+    """codex reviewer 카드가 쓰기 대상을 라운드 파일 하나로 못박는다 (ADR-0090)."""
     reviewer = _load("code-reviewer")
     assert reviewer["sandbox_mode"] == "workspace-write"
     contract = reviewer["description"] + "\n" + reviewer["developer_instructions"]
     for term in (
-        "pm-ticket-section:start/end role=code-reviewer",
+        "NN-code-reviewer.md",
         "코드·board·git 수정 권한이 아니다",
         "PM은 위임 전후 git 상태를 감사",
-        "지정 사본 밖 파일 수정",
+        "지정된 라운드 파일 밖 파일 수정",
+        # 명세·이전 라운드는 읽기 전용 입력이다.
+        "spec.md",
+        "rounds/",
     ):
         assert term in contract
+    for stale in ("pm-ticket-section", "성장 티켓 사본", "자기 절"):
+        assert stale not in contract, f"codex reviewer 카드에 옛 모델 어휘 잔존: {stale}"
 
 
 def test_pm_dev_delegate_custom_roles_never_use_full_history_fork():

@@ -34,7 +34,6 @@ from __future__ import annotations
 import importlib.util
 import os
 import shutil
-import sys
 import subprocess
 from pathlib import Path
 
@@ -137,7 +136,7 @@ def _delegate(pd, monkeypatch, capsys, repo: Path, prompt: Path, harness: str, m
 
 
 def _growth_ticket_text(ticket: str) -> str:
-    labels = {"architect": "설계", "developer": "구현", "code-reviewer": "리뷰"}
+    """라운드 모델의 명세 파일 — 역할 산출 자리가 본문에 없다(라운드는 prepare 가 예약한다)."""
     text = (
         "---\n"
         f"id: {ticket}\n"
@@ -150,15 +149,9 @@ def _growth_ticket_text(ticket: str) -> str:
         "completed_at: null\n"
         "depends_on: []\nblocks: []\ntouches: []\nestimate: small\n"
         "design: 'waived: live transport fixture'\ntags: []\n---\n"
-        f"# {ticket} — live cross growth\n\n## 목표\nrole copy persistence\n"
+        f"# {ticket} — live cross growth\n\n## 목표\nrole round persistence\n"
         "\nOUTSIDE_MARKER_MUST_STAY\n"
     )
-    for role in _GROWTH_ROLES:
-        text += (
-            f"\n<!-- pm-ticket-section:start role={role} -->\n"
-            f"## {labels[role]} ({role} · 2026-08-14)\n\n"
-            f"<!-- pm-ticket-section:end role={role} -->\n"
-        )
     return text
 
 
@@ -181,13 +174,6 @@ def _seed_growth_repo(tmp_path: Path, ticket: str) -> tuple[Path, Path]:
         subprocess.run([_GIT, "-C", str(repo), "commit", "-q", "-m", "seed ignore"], check=True)
     source = tickets / f"{ticket}-live-cross-growth.md"
     source.write_text(_growth_ticket_text(ticket), encoding="utf-8")
-    # 손으로 적은 역할 절은 미봉인 legacy 절이라 `ticket prepare` 가 거부한다(역할 절 봉인 게이트).
-    # 채택자 업그레이드 노트와 같은 경로로 봉인 backfill 을 거쳐 엔진이 발행한 형상으로 맞춘다.
-    backfill = subprocess.run(
-        [sys.executable, str(tools / "pm_delegate.py"), "ticket", "seal-backfill", "--ticket", ticket],
-        cwd=str(repo), capture_output=True, text=True, encoding="utf-8", errors="replace",
-    )
-    assert backfill.returncode == 0, f"seal-backfill rc={backfill.returncode}\n{backfill.stderr}"
     return repo, source
 
 
@@ -201,6 +187,11 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
     monkeypatch.setattr(pd, "check_local_conf_divergence", lambda *_a, **_k: (repo, None, er))
     monkeypatch.setattr(pd, "_cwd_in_git_repo", lambda *_a, **_k: True)
     output_dir = tmp_path / "raw"
+    rounds_dir = (
+        repo / ".project_manager" / "wiki" / "tickets" / "rounds" / ticket
+    )
+    # 명세 파일은 위임 전체에서 1 byte 도 바뀌지 않아야 한다(쓰기 대상은 라운드 파일 하나).
+    spec_before = source.read_bytes()
 
     for role in _GROWTH_ROLES:
         sentinel = _GROWTH_SENTINELS[role]
@@ -210,9 +201,10 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
             if role == "code-reviewer" else "After the edit, reply with exactly DONE.\n"
         )
         prompt.write_text(
-            "The delegation preamble gives an absolute mutable ticket-copy path. Open that copy, find the "
-            f"latest role={role} pm-ticket-section, and write exactly {sentinel} on its own line inside that "
-            "section. Do not edit outside that section and do not modify any other file. " + final_contract,
+            "The delegation preamble gives one absolute writable round file path. Open that file, keep its "
+            f"first header line and the seeded skeleton, and append exactly {sentinel} on its own line. "
+            "Do not modify any other file — spec.md and the rounds/ directory next to it are read-only. "
+            + final_contract,
             encoding="utf-8",
         )
         rc, reply, err = _delegate(
@@ -227,23 +219,39 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
             assert "Falling back to default agent" not in err + reply, (
                 "OpenCode custom 역할이 default agent로 강등됨" + tail
             )
-        current = source.read_text(encoding="utf-8")
-        assert sentinel in current, (
+        # 회수 대상은 `NN-<역할>.md` 하나다 — 이름 문법의 단일 진실은 엔진(ticket_rounds)이고
+        # 여기서는 그 형식으로 찾아 내용만 단언한다.
+        role_rounds = sorted(rounds_dir.glob(f"*-{role}.md"))
+        assert role_rounds, (
+            f"{_CROSS_MAIN_FOR_TARGET[target]}→{target} {role} 라운드 파일 부재: {rounds_dir}" + tail
+        )
+        texts = [path.read_text(encoding="utf-8") for path in role_rounds]
+        assert any(sentinel in text for text in texts), (
             f"{_CROSS_MAIN_FOR_TARGET[target]}→{target} {role} harvest sentinel 부재" + tail
         )
-        assert current.count("OUTSIDE_MARKER_MUST_STAY") == 1
-        assert current.count(f"<!-- pm-ticket-section:start role={role} -->") == 1
+        assert any(text.splitlines()[0].startswith("## ") and f"({role} · " in text.splitlines()[0]
+                   for text in texts), (
+            f"{_CROSS_MAIN_FOR_TARGET[target]}→{target} {role} 라운드 첫 줄 헤더 소실" + tail
+        )
+        # 명세는 읽기 전용 입력이다 — 회수는 명세를 건드리지 않는다.
+        assert source.read_bytes() == spec_before, (
+            f"{_CROSS_MAIN_FOR_TARGET[target]}→{target} {role} 위임이 명세 파일을 변경함: {source}" + tail
+        )
         assert list(output_dir.glob(f"pm_delegate_{target}_*.txt")), "raw 감사 산출물 부재"
 
-    # 새 Python 프로세스가 canonical 파일을 다시 읽어 세 역할 결과를 모두 관측해야 영속 증거다.
+    # 새 Python 프로세스가 라운드 디렉터리를 다시 읽어 세 역할 결과를 모두 관측해야 영속 증거다.
     probe = subprocess.run(
         [shutil.which("python3") or "python3", "-c",
-         "from pathlib import Path; print(Path(r'%s').read_text(encoding='utf-8'))" % source],
+         "from pathlib import Path; "
+         "print(''.join(p.read_text(encoding='utf-8') "
+         "for p in sorted(Path(r'%s').iterdir())))" % rounds_dir],
         cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
     )
-    assert probe.returncode == 0
+    assert probe.returncode == 0, probe.stderr
     assert all(sentinel in probe.stdout for sentinel in _GROWTH_SENTINELS.values())
-    assert probe.stdout.count("OUTSIDE_MARKER_MUST_STAY") == 1
+    # 명세는 끝까지 원본 그대로다.
+    assert source.read_bytes() == spec_before
+    assert source.read_text(encoding="utf-8").count("OUTSIDE_MARKER_MUST_STAY") == 1
 
 
 def _assert_delegate_ok(rc: int, reply: str, err: str, output_dir: Path, harness: str) -> None:

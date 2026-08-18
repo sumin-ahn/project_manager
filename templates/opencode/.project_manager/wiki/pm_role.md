@@ -117,24 +117,28 @@ PM wave의 claim·finish·qa·dev-delegate·handoff·regression은 **스킬/comm
 
 PM은 여러 출처의 synthesis를 직접 흡수하고, bounded fact-gather·정해진 초안·구현·검증만 위임한다. librarian 분리는 보류한다.
 
-### 성장 티켓 파이프라인·티어
+### 티켓 파이프라인·티어
 
-모든 티켓은 저작부터 완료까지 같은 본문에 단계 산출을 누적하는 성장 문서다.
-PM이 대략 내용(목표·방향·범위)을 자족적으로 쓰고, hard면 architect 설계 절, normal/hard면
-developer 구현 보충 절과 code-reviewer 리뷰 절을 차례로 누적한다. 구현 결함은 developer가 고치고,
-설계 결함은 architect가 재설계 절을 추가한 뒤 developer가 재구현한다. 2회차 이후 리뷰는 이전 리뷰
-절을 기준으로 변경분을 먼저 본다. reviewer finding은 PM 판정 전 증거·제안이며 developer 명령이
+모든 티켓은 명세 파일 하나(`tickets/<상태>/<id>.md`)와 라운드 디렉터리
+(`tickets/rounds/<id>/NN-<역할>.md`)로 이뤄진다. 명세는 PM이 소유하고, 역할 산출은 라운드 파일이
+한 건씩 누적한다.
+PM이 명세에 대략 내용(목표·방향·범위)을 자족적으로 쓰고, hard면 architect 설계 라운드, normal/hard면
+developer 구현 보충 라운드와 code-reviewer 리뷰 라운드를 차례로 누적한다. 구현 결함은 developer가
+고치고, 설계 결함은 architect가 재설계 라운드를 추가한 뒤 developer가 재구현한다. 2회차 이후 리뷰는
+이전 리뷰 라운드를 기준으로 변경분을 먼저 본다. reviewer finding은 PM 판정 전 증거·제안이며 developer 명령이
 아니다. PM은 versioned disposition으로 전수 판정하고 `pm_delegate.py review delta --ticket`이 낸
 accepted-only delta만 재작업에 쓴다. decision-required는 권위 개정 전 차단하며 같은 accepted ID의
-2회 연속 미해소는 재설계·분할로 전환한다. 절은 `board.py section-add`가 marker와 역할·날짜를 만들며,
-에이전트가 표식을 직접 만들지 않는다.
+2회 연속 미해소는 재설계·분할로 전환한다. 라운드 파일의 이름·순번은 엔진이 만들며(`section-add`는
+슬롯 없는 준비, `ticket prepare`는 위임용 준비), 에이전트가 파일을 만들지 않는다.
 
-에이전트는 PM 홈 티켓에 직접 쓰지 않는다. `pm_delegate.py ticket prepare`가 slot의
-`.project_manager/.local/delegate-ticket-copies/` 아래 사본을 만들고, 에이전트는 그 사본의 최신 자기
-역할 절만 채운다. `ticket harvest`가 marker 밖 무변경·stale 여부를 검증해 PM 홈 단일 진실에 회수한다.
-draft에서는 architect 역할만 `section-add`와 prepare/harvest가 허용되며 이 로컬 authoring 경로는
-board-git sync를 0회 수행한다. developer/code-reviewer draft 실행과 blocked/done 전 역할은 trust/copy
-상태 생성 전에 거부되고, promote/claim 게이트는 그대로다. 실 위임에서는 `/pm-dev-delegate`가
+에이전트는 PM 홈 티켓에 직접 쓰지 않는다. `pm_delegate.py ticket prepare`가 board에 순번을 예약하고
+slot run-dir(`.project_manager/.local/delegate-ticket-copies/` 아래)에 쓸 수 있는 라운드 파일 하나와
+읽기 전용 입력(`spec.md`·`rounds/`)을 깐다. 에이전트는 그 파일 하나만 채우고 `ticket harvest`가
+board 라운드 파일을 원자 교체한 뒤 run-dir을 지운다(회수 = run 닫힘). 산출이 시드 그대로면 board를
+바꾸지 않고 경고만 낸다. draft에서는 architect 역할만 `section-add`와 prepare/harvest가 허용되며 이
+로컬 authoring 경로는 board-git sync를 0회 수행한다. developer/code-reviewer draft 실행과 blocked/done
+전 역할은 예약 전에 거부되고, promote/claim 게이트는 그대로다. 라운드 디렉터리는 고정 위치라 티켓
+상태 이동을 따라가지 않는다. 실 위임에서는 `/pm-dev-delegate`가
 `--ticket` prepare/harvest를 감싼다. board 상태 조작과 커밋은
 계속 PM 전담이다. 실행 인자·실패 복구는 카드가 단일 진실이고 여기서는 규율만 소유한다.
 
@@ -164,7 +168,7 @@ board-git sync를 0회 수행한다. developer/code-reviewer draft 실행과 blo
 - 개별 ticket의 코드·테스트·기능 디버깅(PM-direct는 예외).
 - [[pm_role.local.md]] §보호 영역 수정.
 - immutable 스냅샷(`raw/` 등) 수정.
-- claimed ticket의 위임 역할 절을 손으로 대신 작성. PM-direct 구현과 회수된 성장 절의 최종 정합·부기는 예외다.
+- claimed ticket의 위임 라운드 파일을 손으로 대신 작성. PM-direct 구현과 회수된 라운드의 최종 정합·부기는 예외다.
 
 ### PM-direct
 

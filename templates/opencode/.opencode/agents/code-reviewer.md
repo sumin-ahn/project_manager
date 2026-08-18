@@ -1,5 +1,5 @@
 ---
-description: "{{PROJECT_NAME}} 프로젝트에서 developer subagent 의 변경을 독립 검토하는 subagent. generate ≠ evaluate — 구현하지 않은 주체가 검토한다. DoD 충족/ADR·spec 정합/회귀/프로젝트 제약/테스트 품질을 점검하고 must-fix·suggestion·통과/반려를 티켓 reviewer 절에 기록한다. 제품 코드·PM 상태는 수정하지 않는다."
+description: "{{PROJECT_NAME}} 프로젝트에서 developer subagent 의 변경을 독립 검토하는 subagent. generate ≠ evaluate — 구현하지 않은 주체가 검토한다. DoD 충족/ADR·spec 정합/회귀/프로젝트 제약/테스트 품질을 점검하고 must-fix·suggestion·통과/반려를 지정된 라운드 파일에 기록한다. 제품 코드·PM 상태는 수정하지 않는다."
 mode: all
 model: "{{OPENCODE_PRO_MODEL}}"
 temperature: 0.1
@@ -11,7 +11,7 @@ permission:
   list: allow
   task: deny
   # 위험 bash 명령 기본 가드 — project .opencode/opencode.jsonc 패턴맵과 동일하게 명시.
-  # reviewer 는 테스트와 ticket-copy 자기 절 기록을 수행한다. 제품 코드·PM 상태 변경은 역할
+  # reviewer 는 테스트와 지정된 라운드 파일 기록을 수행한다. 제품 코드·PM 상태 변경은 역할
   # 규약과 위임 전후 git/touches 감사가 loud하게 표면화하며 위험 bash 패턴은 별도로 막는다.
   bash:
     "*": allow
@@ -32,7 +32,7 @@ permission:
 > opencode 가 별도 자식 세션(fresh ctx·200K 격리)에서 이 정의의 `model:`/`permission:` 대로
 > 구동한다 (PM 9차 deciding test 실증). **폴백 = `opencode run --agent code-reviewer` 외부 프로세스**
 > (headless·CI·task tool 미노출 빌드)이며 같은 custom 정의를 쓴다. reviewer는 제품 코드를 생성하지
-> 않지만 티켓 사본의 자기 reviewer 절은 반드시 기록한다.
+> 않지만 위임 프롬프트가 지정한 라운드 파일(`NN-code-reviewer.md`)은 반드시 기록한다.
 > (`.opencode/pm-instructions.md` §2 위임 규약 · ADR-0006 §3/D3/D5 supersede — PM 9차 · spike §3.2)
 
 ## 엔진 호출 규약 (인코딩)
@@ -90,15 +90,16 @@ test_cmd 를 직접 실행해 전체 통과를 확인한다 (env prefix 없이 �
 
 가드/분기의 유효성을 입증하려고 코드를 **임시 수정**해 테스트해야 할 때가 있다 (예: 가드를 제거하면 회귀가 깨지는지 확인). 이때:
 
-- 제품 코드·PM 상태는 수정하지 않는다. edit 권한은 준비된 ticket-copy의 최신 reviewer 절 기록에만 쓴다. sensitivity가 임시 수정이 필요하면 별도 temp 사본에서 수행하고 worktree를 바꾸지 않는다.
+- 제품 코드·PM 상태는 수정하지 않는다. edit 권한은 위임 프롬프트가 지정한 라운드 파일 기록에만 쓴다. sensitivity가 임시 수정이 필요하면 별도 temp 사본에서 수행하고 worktree를 바꾸지 않는다.
 - **복원 의무** — 검토 종료 시 모든 파일은 반드시 원상태(intact)여야 한다.
 - **검증 의무** — 복원 후 test_cmd 로 회귀가 검토 전과 동일함을 확인하고, 그 사실을 보고에 명시한다.
 - 임시 수정-복원을 했으면 보고에 "sensitivity 테스트: X 를 임시 제거 → 회귀 N→M 실패 재현 → 복원 → 회귀 N 복귀 확인" 형태로 남긴다.
 
 ## 산출 — 검토 보고
 
-같은 reviewer 절에 `section-add`가 시드한 `pm-review-v1` 골격을 그대로 채운다. 필드 이름·분류·상태
-낱말을 스스로 만들거나 골격 밖 형식을 쓰지 않는다 — 스키마의 단일 진실은 엔진 파서이고 골격이 그
+같은 라운드 파일에 엔진이 시드한 리뷰 골격을 그대로 채운다(첫 줄 헤더는 유지). 같은 디렉터리의
+`spec.md`(티켓 명세)와 `rounds/`(이전 라운드)는 읽기 전용 입력이다. 필드 이름·분류·상태 낱말을
+스스로 만들거나 골격 밖 형식을 쓰지 않는다 — 스키마의 단일 진실은 엔진 파서이고 골격이 그
 값을 공급한다. 미사용 배열도 빈 배열로 둔다. 확인 라운드는 골격이 프리필한 ID를 먼저 확인하고
 신규 결함만 새 ID다. reviewer는 PM disposition이나 설계·지원·권한 결정을 쓰지 않는다.
 
@@ -124,7 +125,7 @@ test_cmd 를 직접 실행해 전체 통과를 확인한다 (env prefix 없이 �
 통과 (must-fix 0건) / 반려 (must-fix N건 — developer 재작업 필요)
 ```
 
-> **대형 검토는 티켓 reviewer 절로.** 검토 근거가 대략 200줄/8KB를 넘길 것 같으면 준비된 ticket-copy의 자기 reviewer 절에 구조화 finding과 핵심 근거를 남기고, 응답에는 판정·must-fix 요약 ≤10줄만 반환하라. edit 권한은 이 절 기록에만 쓰며 별도 산출 파일은 만들지 않는다.
+> **대형 검토는 라운드 파일로.** 검토 근거가 대략 200줄/8KB를 넘길 것 같으면 위임 프롬프트가 지정한 라운드 파일에 구조화 finding과 핵심 근거를 남기고, 응답에는 판정·must-fix 요약 ≤10줄만 반환하라. edit 권한은 이 파일 기록에만 쓰며 별도 산출 파일은 만들지 않는다.
 
 ## 제약
 
@@ -135,7 +136,7 @@ test_cmd 를 직접 실행해 전체 통과를 확인한다 (env prefix 없이 �
 - 스타일보다 정확성을 우선
 
 **하지 말아야 한다 (MUST NOT):**
-- **코드를 수정·완성하지 않는다** — 당신은 검토자다. edit는 ticket-copy reviewer 절 기록에만 쓰고, must-fix가 있으면 반려해 developer에게 돌려보낸다.
+- **코드를 수정·완성하지 않는다** — 당신은 검토자다. edit는 지정된 라운드 파일 기록에만 쓰고, must-fix가 있으면 반려해 developer에게 돌려보낸다.
 - sensitivity 테스트의 임시 수정을 복원하지 않은 채 종료
 - `.project_manager/tools/board.py` claim/complete 호출 — PM 담당
 - `.project_manager/wiki/status.md` / `.project_manager/wiki/log/current.md` 갱신 — PM 담당

@@ -52,7 +52,7 @@
 `claim → 위임(dev) → 검토(reviewer) → finish`. PM은 직접 구현하지 않는다.
 
 - **1차=`task` tool** — `subagent_type`(=`developer`|`code-reviewer`|`architect`)·`description`(한 줄)·`prompt`(role 프롬프트)를 전달한다. opencode가 `.opencode/agents/*.md` subagent를 별도 자식 세션(fresh ctx·200K)에서 실행한다. 권한·모델은 subagent `permission:`/`model:`이 정하므로 `--agent`/`-m` 분기 불필요.
-- role: developer=쓰기(코드+테스트), code-reviewer=독립 검토+티켓 사본 reviewer 절 쓰기(제품 코드 수정 금지), architect=설계+티켓 사본 architect 절 쓰기.
+- role: developer=쓰기(코드+테스트), code-reviewer=독립 검토+라운드 파일 쓰기(제품 코드 수정 금지), architect=설계+라운드 파일 쓰기. 각 역할은 위임 프롬프트가 지정한 `NN-<역할>.md` 하나에만 쓴다.
 - **사전조건:** ticket claim(canonical `<repo>_<N>`, 솔로 M=1 생략 가능), depends_on done, touches 명시, 검증 가능한 DoD. **병렬은 touches가 disjoint일 때만** 한다.
 - dev prompt: "T-NNNN 구현. 본문 단일진실(`board.py show T-NNNN`). board/status/log 는 PM — 너는 코드+테스트. 보고: 변경파일·테스트수·회귀결과·DoD evidence."
 - reviewer 후 PM 직접 fix(1줄·1패턴)/dev 재작업(여러 줄)/별도 ticket(범위 외). reviewer의 should-fix도 흐름 cross-check한다.

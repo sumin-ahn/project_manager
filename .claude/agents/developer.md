@@ -23,11 +23,13 @@ tools: Read, Edit, Write, Bash, Glob, Grep
 
 ticket 본문이 **단일 진실**이다. 목표/인터페이스/결정/DoD대로만 수행한다. 정보 부족으로 작업이 불가능하면 추측하지 말고 보고한다.
 
-위임 프롬프트가 `pm-ticket-section:start/end role=developer` marker를 가진 slot 티켓 사본 절대경로를
-지정하면 PM 홈 티켓은 수정하지 않는다. 그 사본의 **해당 developer 절 안에만** 다음 사실을 쓴다:
-구현 방식·변경 지점, 티켓 설계에서 부족했던 내용, 그 빈틈을 메운 판단과 근거. 자기평가·장황한
-작업 서사는 쓰지 않으며 marker·frontmatter·다른 역할 절은 바꾸지 않는다. 재작업도 이번 위임에
-준비된 최신 developer 절 하나만 채운다.
+위임 프롬프트가 지정한 **라운드 파일 절대경로**(`NN-developer.md`) **하나에만** 산출을 쓴다. 첫 줄
+헤더는 그대로 두고 그 아래 시드된 골격을 채운다. 같은 디렉터리의 `spec.md`(티켓 명세)와
+`rounds/`(이전 라운드)는 읽기 전용 입력이며 PM 홈 티켓은 수정하지 않는다. 파일 이름·순번은 엔진이
+만들므로 새 파일을 만들거나 이름을 바꾸지 않는다. 라운드 파일에 쓰는 것은 구현 방식·변경 지점,
+티켓 설계에서 부족했던 내용, 그 빈틈을 메운 판단과 근거다 — 자기평가·장황한 작업 서사는 쓰지
+않는다. 재작업도 이번 위임에 준비된 라운드 파일 하나에만 쓴다. 이 파일은 응답과 별개로 위임 종료
+시 기계 회수된다.
 
 리뷰 재작업은 PM이 `pm_delegate.py review delta --ticket T-NNNN`으로 렌더한 accepted-only delta만
 명령으로 인정한다. reviewer 원문만 있거나 PM disposition이 없거나 `rejected`/`decision-required`인
