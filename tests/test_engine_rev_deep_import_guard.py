@@ -1254,6 +1254,40 @@ def test_bootstrap_fallback_restores_path_and_same_name_module_on_error(
     assert board._TOOLS_BOOTSTRAP_KEY not in sys.modules
 
 
+def test_bootstrap_fallback_invalidates_import_caches_before_import_by_name(
+    tmp_path, monkeypatch,
+):
+    """import-by-name 폴백은 `__import__` 전에 `importlib.invalidate_caches()` 를 부른다 (T-0746).
+
+    FileFinder 는 디렉터리 목록을 mtime 으로 캐시하므로 인터프리터 시작 뒤 만든 형제 모듈(중앙 로더
+    선복구가 방금 복사한 seam)은 invalidate 없이는 인식이 보장되지 않는다 — Windows 에서
+    `pm-update`([missing] seam 복구) 가 간헐 ModuleNotFoundError 로 rc1 이던 원인. Linux 는 mtime
+    변화가 매번 관측돼 재현이 안 되므로 호출 사실 자체를 관측한다(플랫폼 분기 없음).
+    """
+    import importlib
+
+    tools = _copy_tools(tmp_path, "board", "identity_args", "file_lock")
+    (tools / "repo_owned_files.py").write_text("def broken(:\n", encoding="utf-8")
+    board = _load_module(tools, "board")
+    calls: list[int] = []
+    real = importlib.invalidate_caches
+
+    def counting():
+        calls.append(1)
+        real()
+
+    monkeypatch.setattr(importlib, "invalidate_caches", counting)
+    # 로더가 처음 보는(런타임 생성) 형제 모듈 — 파일은 loader 호출 직전에 만든다.
+    fresh = tools / "runtime_created_sibling.py"
+    fresh.write_text("VALUE = 42\n", encoding="utf-8")
+    module = board._load_module_from_path(
+        fresh, "runtime_created_sibling.py", allow_unverified=True,
+    )
+    assert module.VALUE == 42
+    assert calls, "폴백 로더가 __import__ 전에 importlib.invalidate_caches() 를 부르지 않았다"
+    assert "runtime_created_sibling" not in sys.modules
+
+
 def test_manifest_ships_central_loader_before_every_consumer():
     pm_update = _load_module(TOOLS, "pm_update")
     seam = ".project_manager/tools/repo_owned_files.py"

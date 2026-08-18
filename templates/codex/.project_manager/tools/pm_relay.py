@@ -133,6 +133,13 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
                     if added:
                         sys.path.insert(0, parent)
                     try:
+                        # 런타임에 만든 형제 모듈(중앙 로더 선복구가 방금 복사한 seam 등)을
+                        # 이름으로 import 한다 — FileFinder 는 디렉터리 목록을 mtime 으로 캐시하고
+                        # 인터프리터 시작 뒤 생긴 파일은 invalidate 없이는 인식이 보장되지 않는다
+                        # (Python 문서 `importlib.invalidate_caches` · Windows 실측 간헐
+                        # ModuleNotFoundError · T-0746). 블록은 stdlib-only 라 지역 import 로 둔다.
+                        import importlib as _bootstrap_importlib
+                        _bootstrap_importlib.invalidate_caches()
                         module = __import__(import_name)
                         if os.path.realpath(getattr(module, "__file__", "")) != target:
                             raise ImportError(
@@ -1011,9 +1018,15 @@ def opencode_runtime_role_config(role: str) -> str:
     highest-precedence fragment only pins the delegated role's identity and permissions.
     """
     perm_axis(role)  # shared role allowlist and wording
+    # ``edit`` is allowed for every role, researcher included: all participating roles record
+    # their own output in the ticket copy's role section (ADR-0089 · T-0696 F-014), and the
+    # shipped opencode researcher card carries the same ``edit: allow`` / ``bash: deny`` axis.
+    # This fragment is the highest-precedence config, so a researcher ``edit: deny`` here would
+    # override the card and leave the harvested section unwritten (T-0745). Path narrowing is
+    # not an opencode edit-permission axis; the pre/post delegation touches audit holds it.
     permission: dict[str, object] = {
         "read": "allow",
-        "edit": "deny" if role == "researcher" else "allow",
+        "edit": "allow",
         "glob": "allow",
         "grep": "allow",
         "list": "allow",

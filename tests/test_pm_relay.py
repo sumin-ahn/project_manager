@@ -65,11 +65,12 @@ def test_opencode_runtime_role_config_is_self_contained_and_exact(orch, role):
     assert agent["mode"] == "all"
     assert agent["permission"]["task"] == "deny"
     assert agent["permission"]["webfetch"] == "deny"
+    # edit 는 전 역할 allow — researcher 도 티켓 사본 자기 절을 기록한다(ADR-0089·T-0696 F-014·
+    # 출하 카드와 동일 축 · T-0745). researcher 는 bash 만 deny.
+    assert agent["permission"]["edit"] == "allow"
     if role == "researcher":
-        assert agent["permission"]["edit"] == "deny"
         assert agent["permission"]["bash"] == "deny"
     else:
-        assert agent["permission"]["edit"] == "allow"
         assert agent["permission"]["bash"]["*"] == "allow"
         assert agent["permission"]["bash"]["rm *"] == "deny"
 
