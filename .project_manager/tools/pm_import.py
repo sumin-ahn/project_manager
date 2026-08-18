@@ -218,7 +218,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
 # Python 하한 probe보다 먼저 평가되므로 3.10에서도 파싱 가능한 문법만 쓴다.
-ENGINE_REV = "v1.7.6"
+ENGINE_REV = "v1.7.7"
 
 
 def _runtime_skill_entry(skill: str) -> str:
