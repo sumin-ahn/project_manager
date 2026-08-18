@@ -10,8 +10,10 @@ per-repo 회귀 명령 해소(ADR-0014)·domain soft 알림(ADR-0018 #2)·전체
 """
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -2037,6 +2039,29 @@ def test_default_diff_cap_seam_is_off_when_external_review_is_absent(
     assert finisher._default_diff_cap_block("T-1234") is None
 
 
+def test_default_diff_cap_seam_absorbs_a_missing_claim_anchor_symbol(
+        tf, tmp_path, monkeypatch, capsys):
+    """사본은 있으나 `claim_anchor` seam 이 없는 구형/부분 설치도 벽돌 대신 옛 폭+경고로 접힌다.
+
+    `_diff_numstat_by_path` 의 required 가드와 짝이 되는 케이스 — 사본 부재(위 테스트)와 달리
+    사본은 있고 다른 seam(측정 numstat)은 갖췄는데 이 seam 만 없는 형상이다."""
+    external = tf._load_external_review()
+    assert external is not None
+    monkeypatch.delattr(external, "claim_anchor", raising=False)
+    monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: ["src/pay.py"])
+    monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: "small")
+    monkeypatch.setattr(external, "local_config", lambda repo=None: {})
+    monkeypatch.setattr(external, "diff_line_total", lambda *a, **k: 301)
+    monkeypatch.setattr(tf, "_load_external_review", lambda: external)
+
+    finisher = tf.TicketFinisher(log_file=tmp_path / "log.md")
+    block = finisher._default_diff_cap_block("T-1234")
+
+    assert block is not None and "301줄" in block and "300줄" in block
+    err = capsys.readouterr().err
+    assert "claim_anchor 부재" in err and "T-1234" in err
+
+
 # ── 측정 스코프 정규화 · 기계 mirror 제외 (T-0601 ①⑧) ────────────────────────
 #
 # ⑧ PM 홈 좌표 touches(`work/<repo>_<N>/…`)를 그대로 재면 측정 트리에 그 경로가 없어 diff 가 0 이
@@ -2434,3 +2459,211 @@ def test_pm_direct_finish_wires_directory_expansion_into_condition_a(
     err = capsys.readouterr().err
     assert "PM-direct 조건 (a) 위반" in err
     assert "3개 파일" in err
+
+
+# ── 측정 폭 = claim 시점 rev 앵커 (merge 기반 wave) ─────────────────────────
+#
+# 옛 폭(작업트리 → 비면 직전 커밋 한 칸)은 dev 브랜치를 `--no-ff` merge 로 흡수하는 wave 에서
+# 0 에 수렴했다 — 완료 부기 시점 트리는 clean 이고 마지막 커밋이 전파/부기라 티켓 경로 교집합이
+# 비기 때문이다(상한을 넘긴 wave 가 그대로 통과한 실측). claim 이 그 시점 **코드 트리 HEAD** 를
+# frontmatter 에 박제하고, 완료 부기가 그것을 앵커로 "claim 이후 누적"을 잰다. 아래 형상은 실
+# git 저장소 + 엔진 사본으로 claim → dev 커밋 → merge → 전파 커밋 순서를 그대로 재현한다.
+#
+# claim 표면(박제 위치·코드 트리 해소 3형상·비-git 경고) 자체의 계약은 여기서 재현하지 않는다 —
+# 그 축은 `tests/test_board_claim_strict.py` 가 소유한다(claim 계약 회귀는 그 파일에서 찾는다).
+# 아래는 **이미 박제된 앵커를 소비하는 측정 폭** 케이스만이다.
+
+_WAVE_TICKET = "T-7301"
+_WAVE_OTHER_TICKET = "T-7302"
+_WAVE_SRC_LINES = 320          # claim 이후 `src/` 누적(dev 커밋 2건) — small 상한 300 초과
+_WAVE_DOCS_LINES = 50          # 같은 wave 가 `docs/` 에 남긴 변경(타 claimed 티켓 전용 몫)
+_WAVE_PROPAGATION_LINES = 4    # merge 뒤 전파 커밋이 만든 신규 파일 1건당 줄 수
+
+
+def _wave_git(root: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(root), *args], check=True,
+                          capture_output=True, text=True, encoding="utf-8")
+
+
+def _wave_write(path: Path, lines: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(f"line{index}\n" for index in range(lines)),
+                    encoding="utf-8")
+
+
+def _wave_ticket(root: Path, ticket_id: str, *, status: str, touch: str) -> Path:
+    path = (root / ".project_manager" / "board" / "tickets" / status
+            / f"{ticket_id}-wave.md")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"---\nid: {ticket_id}\ntitle: wave\nstatus: {status}\n"
+        "claimed_by: null\nclaimed_at: null\ncompleted_at: null\n"
+        f"depends_on: []\nblocks: []\ntouches:\n- {touch}\nestimate: small\n"
+        f"tags: []\n---\n\n# {ticket_id} — wave\n\n## 목표\nx\n",
+        encoding="utf-8")
+    return path
+
+
+def _load_tool_copy(root: Path, name: str):
+    """tmp 저장소 안 엔진 사본을 로드한다 — 그 사본의 REPO 가 곧 이 저장소다(hermetic)."""
+    spec = importlib.util.spec_from_file_location(
+        f"wave_{name}", root / ".project_manager" / "tools" / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _wave_repo(tmp_path: Path, *, git: bool = True):
+    """엔진 사본 + (선택) 실 git 저장소인 솔로 형상 — claim 직전 상태와 board 모듈.
+
+    측정 폭 케이스는 코드 트리 해소 자체가 관심사가 아니다(그 축은 F-004 가 별도로 값 단언한다
+    — `test_board_claim_strict.py`) — 여기서는 REPO 가 곧 코드 트리인 **솔로** 형상(인자 전무·
+    kind="none")으로 고정해 claim/finish 가 항상 같은 트리를 본다는 전제만 지킨다. local.conf
+    `session=`(solo-legacy 폴백)로 리스 장부/env 없이도 `session_name(required=True)` 가
+    결정론적으로 해소되게 한다."""
+    root = tmp_path / "wave"
+    shutil.copytree(TOOLS, root / ".project_manager" / "tools")
+    (root / ".project_manager" / "wiki").mkdir(parents=True, exist_ok=True)
+    for status in ("open", "claimed", "blocked", "done"):
+        (root / ".project_manager" / "board" / "tickets" / status).mkdir(
+            parents=True, exist_ok=True)
+    (root / ".project_manager" / "local.conf").write_text(
+        "session=me\n", encoding="utf-8")
+    _wave_ticket(root, _WAVE_TICKET, status="open", touch="src/")
+    _wave_write(root / "src" / "app.py", 5)
+    _wave_write(root / "docs" / "notes.md", 3)
+    if git:
+        _wave_git(root, "init", "-q", "-b", "main")
+        _wave_git(root, "config", "user.email", "t@e")
+        _wave_git(root, "config", "user.name", "t")
+        _wave_git(root, "add", "-A")
+        _wave_git(root, "commit", "-qm", "seed")
+    return root, _load_tool_copy(root, "board")
+
+
+def _wave_claim(board, ticket_id: str = _WAVE_TICKET) -> int:
+    # 인자 전무(kind="none") — session 은 `_wave_repo` 의 local.conf `session=` 로 결정론적
+    # 해소된다. env override 가 ambient 로 새는 것만 방어한다(다른 축 무관심).
+    os.environ.pop("PM_SESSION_NAME", None)
+    os.environ.pop("CLAUDE_SESSION_NAME", None)
+    return board.cmd_claim(argparse.Namespace(id=ticket_id, user="me"))
+
+
+def _wave_ticket_path(root: Path, ticket_id: str = _WAVE_TICKET) -> Path:
+    return (root / ".project_manager" / "board" / "tickets" / "claimed"
+            / f"{ticket_id}-wave.md")
+
+
+def _wave_work(root: Path) -> None:
+    """claim 부기 커밋 → dev 커밋 2건 → `merge --no-ff` → 전파 커밋 2건.
+
+    끝난 트리는 clean 이고 마지막 커밋(전파)은 `src/` 를 안 건드린다 — 옛 폭이 0 으로 접히는
+    바로 그 배치다."""
+    _wave_git(root, "add", "-A")
+    _wave_git(root, "commit", "-qm", "claim 부기")
+    _wave_git(root, "checkout", "-q", "-b", f"dev/{_WAVE_TICKET}")
+    _wave_write(root / "src" / "app.py", 5 + 200)
+    _wave_git(root, "commit", "-qam", "dev 1")
+    _wave_write(root / "src" / "app.py", 5 + _WAVE_SRC_LINES)
+    _wave_write(root / "docs" / "notes.md", 3 + _WAVE_DOCS_LINES)
+    _wave_git(root, "commit", "-qam", "dev 2")
+    _wave_git(root, "checkout", "-q", "main")
+    _wave_git(root, "merge", "-q", "--no-ff", "-m", "merge dev", f"dev/{_WAVE_TICKET}")
+    for index in (1, 2):
+        _wave_write(root / "docs" / f"propagation{index}.md", _WAVE_PROPAGATION_LINES)
+        _wave_git(root, "add", "-A")
+        _wave_git(root, "commit", "-qm", f"propagation {index}")
+
+
+def _wave_finisher(root: Path, tmp_path: Path):
+    """tmp 저장소를 코드 트리로 쓰는 완료 부기 인스턴스와 그 external_review 사본."""
+    finish = _load_tool_copy(root, "ticket_finish")
+    finisher = finish.TicketFinisher(
+        board_py=root / ".project_manager" / "tools" / "board.py",
+        regression_cwd=root,
+        log_file=tmp_path / "log.md",
+    )
+    external = finish._load_external_review()
+    assert external is not None
+    return finisher, external
+
+
+def _wave_set_claimed_rev(board, root: Path, value: str | None) -> None:
+    """박제된 앵커를 구 티켓(부재)·타 저장소 rev 형상으로 바꾼다."""
+    path = _wave_ticket_path(root)
+    fm, body = board.load_ticket(path)
+    if value is None:
+        fm.pop("claimed_rev", None)
+    else:
+        fm["claimed_rev"] = value
+    board.dump_ticket(path, fm, body)
+
+
+def test_merge_wave_is_measured_from_the_claim_anchor(tmp_path):
+    """merge 로 흡수한 dev 누적이 완료 부기 서킷브레이커에 잡힌다(옛 폭에선 0 이던 형상)."""
+    root, board = _wave_repo(tmp_path)
+    assert _wave_claim(board) == 0
+    _wave_work(root)
+    finisher, external = _wave_finisher(root, tmp_path)
+
+    assert external.diff_line_total(root, "HEAD", ["src/"]) == 0, \
+        "옛 폭이 이 형상을 0 으로 재던 사실이 사라졌다 — 대조군 소실."
+    block = finisher._default_diff_cap_block(_WAVE_TICKET)
+
+    assert block is not None
+    assert f"{_WAVE_SRC_LINES}줄" in block and "300줄" in block
+
+
+def test_uncommitted_work_still_rides_the_measured_width(tmp_path):
+    """작업트리 미커밋 변경도 같은 폭이다 — 커밋 누적 + 작업트리 한 폭으로 잰다."""
+    root, board = _wave_repo(tmp_path)
+    assert _wave_claim(board) == 0
+    _wave_work(root)
+    _wave_write(root / "src" / "app.py", 5 + _WAVE_SRC_LINES + 11)
+    _finisher, external = _wave_finisher(root, tmp_path)
+    fm, _body = board.load_ticket(_wave_ticket_path(root))
+
+    assert external.diff_line_total(
+        root, "HEAD", ["src/"], claimed_rev=fm["claimed_rev"]
+    ) == _WAVE_SRC_LINES + 11
+
+
+def test_other_claimed_ticket_share_is_excluded_under_the_anchor(tmp_path):
+    """타 claimed 티켓 전용 몫 제외는 새 폭에서도 그대로다 (귀속 보정 무변경)."""
+    root, board = _wave_repo(tmp_path)
+    assert _wave_claim(board) == 0
+    _wave_ticket(root, _WAVE_OTHER_TICKET, status="claimed", touch="docs/")
+    _wave_work(root)
+    finisher, _external = _wave_finisher(root, tmp_path)
+
+    block = finisher._default_diff_cap_block(_WAVE_TICKET)
+
+    excluded = _WAVE_DOCS_LINES + 2 * _WAVE_PROPAGATION_LINES
+    assert block is not None and f"{_WAVE_SRC_LINES}줄" in block
+    assert f"귀속 제외: {excluded}줄" in block and _WAVE_OTHER_TICKET in block
+
+
+def test_ticket_without_an_anchor_falls_back_to_the_old_width_loudly(
+        tmp_path, capsys):
+    """구 티켓(앵커 부재)은 옛 폭으로 재되 통과가 조용하지 않다 — 경고 1줄."""
+    root, board = _wave_repo(tmp_path)
+    assert _wave_claim(board) == 0
+    _wave_work(root)
+    _wave_set_claimed_rev(board, root, None)
+    finisher, _external = _wave_finisher(root, tmp_path)
+
+    assert finisher._default_diff_cap_block(_WAVE_TICKET) is None
+    err = capsys.readouterr().err
+    assert "claimed_rev 없음" in err and "과소 측정" in err
+
+
+def test_unresolvable_anchor_falls_back_to_the_old_width_loudly(tmp_path, capsys):
+    """이 트리에서 해소되지 않는 rev 도 같은 처방이다 — 조용한 0 줄로 접지 않는다."""
+    root, board = _wave_repo(tmp_path)
+    assert _wave_claim(board) == 0
+    _wave_work(root)
+    _wave_set_claimed_rev(board, root, "b" * 40)
+    finisher, _external = _wave_finisher(root, tmp_path)
+
+    assert finisher._default_diff_cap_block(_WAVE_TICKET) is None
+    assert "해소하지 못함" in capsys.readouterr().err

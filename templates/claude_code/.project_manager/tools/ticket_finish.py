@@ -744,6 +744,15 @@ def get_ticket_estimate(board_py: Path, ticket_id: str) -> str | None:
     return estimate.strip() or None if isinstance(estimate, str) else None
 
 
+def get_ticket_claimed_rev(board_py: Path, ticket_id: str) -> str | None:
+    """ticket_id 의 frontmatter `claimed_rev` (없으면 None) — 측정 폭의 claim 앵커 입력.
+
+    `board.py claim` 이 claim 시점 코드 트리 HEAD 를 박제한 값이다. 구 티켓(박제 이전)엔
+    없으므로 None 이 정상 형상이고, 그때 폭을 옛 것으로 접는 판정은 소비자가 소유한다."""
+    claimed_rev = _ticket_frontmatter(board_py, ticket_id).get("claimed_rev")
+    return claimed_rev.strip() or None if isinstance(claimed_rev, str) else None
+
+
 def _clean_touches(value: object) -> list[str]:
     """frontmatter touches 값을 정규 문자열 목록으로 접는다."""
     if isinstance(value, str):
@@ -815,6 +824,7 @@ class DiffTicketInputs(NamedTuple):
     touches: list[str]
     estimate: str | None
     board_error: str | None
+    claimed_rev: str | None = None
 
 
 def get_ticket_touches(board_py: Path, ticket_id: str) -> list[str]:
@@ -923,7 +933,9 @@ def _fallback_ticket_frontmatter(
     estimate = _fallback_frontmatter_scalar(text, "estimate")
     if estimate not in {"small", "medium", "large"}:
         estimate = None
-    return {"touches": touches, "estimate": estimate}
+    # 앵커 형태 검증은 측정 seam(`claim_anchor`)이 소유한다 — 여기서는 원문 스칼라만 복구한다.
+    return {"touches": touches, "estimate": estimate,
+            "claimed_rev": _fallback_frontmatter_scalar(text, "claimed_rev")}
 
 
 # ── domain 연동 (soft 알림) ──────────────────────────────────
@@ -1478,6 +1490,16 @@ def build_log_skeleton(
 
 # ── 핵심 흐름 ──────────────────────────────────────────────────────────
 
+# `external_review.claim_anchor` 는 비교적 최근 신설된 심볼이다 — 구형/부분 설치
+# external_review 사본(측정 numstat seam 은 있으나 이 seam 은 없음)에서 무가드 호출은
+# AttributeError 로 완료 부기를 벽돌로 만든다(`_diff_numstat_by_path` 의 `required` 가드와
+# 같은 클래스). 부재는 앵커 미적용(옛 폭)으로 접고 같은 loud 경고 1줄을 남긴다.
+_CLAIM_ANCHOR_SEAM_ABSENT_NOTE = (
+    "external_review 사본에 claim_anchor 부재(구형/부분 설치) — 폭 과소 측정 가능(옛 폭·"
+    "작업트리+직전 커밋 한 칸으로만 잰다). pm-update 로 .project_manager/tools/ 를 재동기하라."
+)
+
+
 class TicketFinisher:
     """PM 부기 자동화 핵심 로직.
 
@@ -1621,15 +1643,23 @@ class TicketFinisher:
                 get_ticket_touches(self._board_py, ticket_id),
                 get_ticket_estimate(self._board_py, ticket_id),
                 None,
+                get_ticket_claimed_rev(self._board_py, ticket_id),
             )
         fallback = _fallback_ticket_frontmatter(
             self._board_py, ticket_id, external,
         )
+        claimed_rev = fallback.get("claimed_rev")
         return DiffTicketInputs(
             _clean_touches(fallback.get("touches")),
             fallback.get("estimate") if isinstance(fallback.get("estimate"), str) else None,
             snapshot.error,
+            claimed_rev if isinstance(claimed_rev, str) and claimed_rev else None,
         )
+
+    @staticmethod
+    def _warn_claim_anchor_gap(ticket_id: str, note: str) -> None:
+        """측정 폭이 옛 폭으로 접혔다는 단일 loud 진단 표면 (조용한 과소 측정 금지)."""
+        print(f"  ⚠ diff 서킷브레이커 측정 폭 — {ticket_id} {note}", file=sys.stderr)
 
     @staticmethod
     def _warn_diff_attribution_failure(error: str) -> None:
@@ -1734,40 +1764,35 @@ class TicketFinisher:
     @staticmethod
     def _diff_numstat_by_path(
         external, root: Path, paths: Sequence[str], *, run_fn=None,
+        claimed_rev: str | None = None,
     ) -> tuple[DiffPathStat, ...]:
-        """external_review 측정 단계의 numstat 한 벌을 경로별 총량으로 접는다.
+        """external_review 측정 폭의 numstat 한 벌을 경로별 총량으로 접는다.
 
-        `_stage_diff_runs` 는 staged+unstaged+untracked 와 HEAD~1 폴백을 소유하고,
+        폭(claim 앵커·staged+unstaged+untracked·폴백 단계)은 `measured_numstat_text` 가 소유하고
         `_sum_numstat` 은 binary/machine-mirror 제외를 소유한다. 이 함수는 그 결과 **한 번**을
         경로별로 나눌 뿐이며 claimed 티켓마다 git diff 를 다시 실행하지 않는다.
         """
-        required = ("_diff_bases", "_stage_diff_runs", "_sum_numstat", "_numstat_path")
+        required = ("measured_numstat_text", "_sum_numstat", "_numstat_path")
         if not all(hasattr(external, name) for name in required):
             raise AttributeError("external_review numstat seam 부재")
-        for stage_base in external._diff_bases("HEAD"):
-            runs = external._stage_diff_runs(
-                root, stage_base, list(paths), run_fn=run_fn,
-                extra_args=("--numstat",),
-            )
-            text = "".join(
-                result.stdout for result in runs if result.returncode == 0
-            )
-            if not text.strip():
+        text = external.measured_numstat_text(
+            root, "HEAD", list(paths), run_fn, claimed_rev=claimed_rev,
+        )
+        if not text.strip():
+            return ()
+        totals: dict[tuple[str, ...], int] = {}
+        for line in text.splitlines():
+            fields = line.split("\t")
+            if len(fields) < 3:
                 continue
-            totals: dict[tuple[str, ...], int] = {}
-            for line in text.splitlines():
-                fields = line.split("\t")
-                if len(fields) < 3:
-                    continue
-                logical_paths = TicketFinisher._numstat_paths(external, fields[2])
-                totals[logical_paths] = (
-                    totals.get(logical_paths, 0) + external._sum_numstat(line)
-                )
-            return tuple(
-                DiffPathStat(logical_paths, amount)
-                for logical_paths, amount in totals.items()
+            logical_paths = TicketFinisher._numstat_paths(external, fields[2])
+            totals[logical_paths] = (
+                totals.get(logical_paths, 0) + external._sum_numstat(line)
             )
-        return ()
+        return tuple(
+            DiffPathStat(logical_paths, amount)
+            for logical_paths, amount in totals.items()
+        )
 
     @staticmethod
     def _head_line_count(root: Path, path: str, *, run_fn=None) -> int | None:
@@ -1791,7 +1816,7 @@ class TicketFinisher:
 
     def _ticket_diff_attribution(
         self, ticket_id: str, external, touches: Sequence[str], *, run_fn=None,
-        board_error: str | None = None,
+        board_error: str | None = None, claimed_rev: str | None = None,
     ) -> DiffAttribution:
         """claimed 합집합 numstat 한 벌에서 현재 티켓 몫과 타 티켓 전용 몫을 가른다.
 
@@ -1826,6 +1851,8 @@ class TicketFinisher:
             # 보정할 타 티켓이 없거나 보드가 불완전하면 기존 단일-ticket 측정식을 그대로 쓴다.
             # 특히 실패를 가드 off 로 접지 않고 현재 touches 전체의 상한 판정을 계속한다.
             measure_kwargs = {"run_fn": run_fn} if run_fn is not None else {}
+            if claimed_rev:
+                measure_kwargs["claimed_rev"] = claimed_rev
             total = external.diff_line_total(
                 root, "HEAD", list(touches), **measure_kwargs,
             )
@@ -1841,6 +1868,7 @@ class TicketFinisher:
         try:
             by_path = self._diff_numstat_by_path(
                 external, root, measurement_paths, run_fn=run_fn,
+                claimed_rev=claimed_rev,
             )
         except AttributeError:
             # 부분 설치/구형 external_review 에선 귀속 보정을 포기하되 종전 측정은 유지한다.
@@ -1887,9 +1915,10 @@ class TicketFinisher:
         """diff 서킷브레이커 판정 — 차단 안내 문자열, 통과·가드 off 면 None.
 
         상한 표·측정식·문구는 external_review 소유분을 그대로 쓴다(기계 mirror 제외도 그
-        측정 seam 이 소유한다 — 여기 사본 없음). 측정 불가(모듈 부재·touches 부재·좌표 정규화
-        불능·estimate 미선언·비-git 트리)는 **가드 off** 다 — 이 축의 실패로 완료 부기를 막지
-        않는다(hard 차단은 상한 초과라는 확정 사실에만 건다)."""
+        측정 seam 이 소유한다 — 여기 사본 없음). 측정 폭의 기준점은 이 티켓의 claim 시점 rev
+        (`claimed_rev`)라 dev 브랜치를 merge 로 흡수한 누적도 한 폭에 들어온다. 측정 불가
+        (모듈 부재·touches 부재·좌표 정규화 불능·estimate 미선언·비-git 트리)는 **가드 off** 다 —
+        이 축의 실패로 완료 부기를 막지 않는다(hard 차단은 상한 초과라는 확정 사실에만 건다)."""
         external = _load_external_review()
         if external is None:
             return None
@@ -1903,9 +1932,21 @@ class TicketFinisher:
         cap = external._diff_cap(external.local_config(REPO), estimate)
         if cap is None:
             return None
+        claim_anchor_fn = getattr(external, "claim_anchor", None)
+        if claim_anchor_fn is None:
+            # 형제 seam 부재와 같은 규칙(`_diff_numstat_by_path` 의 required 가드 동형) —
+            # AttributeError 로 완료 부기를 벽돌로 만들지 않고 앵커 없음(옛 폭)으로 접는다.
+            claimed_rev, anchor_note = None, _CLAIM_ANCHOR_SEAM_ABSENT_NOTE
+        else:
+            claimed_rev, anchor_note = claim_anchor_fn(
+                self._code_tree(), inputs.claimed_rev,
+            )
+        if anchor_note is not None:
+            self._warn_claim_anchor_gap(ticket_id, anchor_note)
         try:
             attribution = self._ticket_diff_attribution(
                 ticket_id, external, touches, board_error=inputs.board_error,
+                claimed_rev=claimed_rev,
             )
         except OSError:
             return None

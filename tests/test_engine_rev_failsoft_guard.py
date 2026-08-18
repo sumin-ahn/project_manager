@@ -1018,7 +1018,12 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   경계가 티켓 하나로 좁혀지면서(한 티켓의 읽기 실패가 그때까지 모은 판정을 통째로 버리지
     #   않는다) 같은 규칙의 경계가 하나 늘었다 — 둘 다 advisory 축이라 흡수하되 마킹된 skew 는
     #   그대로 올리고, 흡수한 티켓은 `round-unreadable` 로 표면에 남는다(조용한 생략 아님).
-    assert len(report.boundaries) == 226, "propagation sweep boundary ratchet changed"
+    # 228 = 226 + T-0738 claim 코드 트리 해소 seam 통일의 두 경계. `board._load_pm_handoff`
+    #   (형제 pm_handoff 동적 로드 — `ticket_finish._load_pm_handoff` 동형)와 `board._claim_code_tree`
+    #   의 `--repo`/`--slot` 해소 분기(`pm_handoff._resolve_explicit_identity_slot` 위임) 모두
+    #   부재/로드 실패는 claimed_rev 미박제(측정 보조 필드 생략)로 접되, 마킹된 skew 는 그대로
+    #   올린다 — 형제 사본이 갈린 사실이 "코드 트리 미해소 경고" 한 줄에 묻히면 안 된다.
+    assert len(report.boundaries) == 228, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
