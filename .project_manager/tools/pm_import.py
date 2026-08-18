@@ -172,16 +172,17 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
                         import_name, _TOOLS_BOOTSTRAP_SENTINEL
                     )
                     parent = os.path.dirname(target)
+                    # 런타임에 만든 형제 모듈(중앙 로더 선복구가 방금 복사한 seam 등)을
+                    # 이름으로 import 한다 — FileFinder 는 디렉터리 목록을 mtime 으로 캐시하고
+                    # 인터프리터 시작 뒤 생긴 파일은 invalidate 없이는 인식이 보장되지 않는다
+                    # (Python 문서 `importlib.invalidate_caches` · Windows 실측 간헐
+                    # ModuleNotFoundError). 블록은 stdlib-only 라 지역 import 로 두되 sys.path 에
+                    # parent 를 넣기 전에 가져와 그 트리의 동명 파일이 stdlib 를 가리지 않게 한다.
+                    import importlib as _bootstrap_importlib
                     added = not sys.path or sys.path[0] != parent
                     if added:
                         sys.path.insert(0, parent)
                     try:
-                        # 런타임에 만든 형제 모듈(중앙 로더 선복구가 방금 복사한 seam 등)을
-                        # 이름으로 import 한다 — FileFinder 는 디렉터리 목록을 mtime 으로 캐시하고
-                        # 인터프리터 시작 뒤 생긴 파일은 invalidate 없이는 인식이 보장되지 않는다
-                        # (Python 문서 `importlib.invalidate_caches` · Windows 실측 간헐
-                        # ModuleNotFoundError). 블록은 stdlib-only 라 지역 import 로 둔다.
-                        import importlib as _bootstrap_importlib
                         _bootstrap_importlib.invalidate_caches()
                         module = __import__(import_name)
                         if os.path.realpath(getattr(module, "__file__", "")) != target:

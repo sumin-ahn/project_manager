@@ -125,7 +125,8 @@
   로 끝나던 것을 고쳤다.** dest 에 `repo_owned_files.py` 가 아예 없던(중단된 갱신) 인스턴스에서 복구
   사본을 쓴 뒤 이름으로 import 하는 폴백 로더가 Python import 캐시(디렉터리 목록·mtime 기준)에 막혀
   10회 중 4회꼴로 rc1 이 났다. 폴백 로더가 import 전에 `importlib.invalidate_caches()` 를 부른다(전 엔진
-  모듈의 동일 부트스트랩 블록). 재실행으로만 넘어가던 인스턴스는 조치 없이 한 번에 통과한다.
+  모듈의 동일 부트스트랩 블록). 갱신을 실행하는 것은 인스턴스에 설치된 `pm_update.py` 이므로 v1.7.6 을 받은
+  뒤의 다음 갱신부터 적용된다. 인스턴스 조치는 없다.
 - **opencode 로 cross 위임된 `researcher` 가 티켓 사본의 자기 역할 절을 쓸 수 있다.** 엔진이 결속하는
   runtime 역할 fragment 가 researcher 의 `edit` 를 deny 해, 출하 카드(`edit: allow`·`bash: deny`)와
   달리 회수 절이 빈 채로 남았다. fragment 도 카드와 같은 축(edit allow · bash/task/webfetch deny)이다.

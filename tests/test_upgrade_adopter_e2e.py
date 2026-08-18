@@ -698,7 +698,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   경계(planning → apply → self-update 순서)와 배달 파일 집합도 불변이다. 헬퍼는 seam 이 있으면
 #   그것을, 없으면 종전 읽기를 쓰므로 이 fixture 트리에서 읽는 바이트가 같다 — 현재화한 것은
 #   기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "7bbb18e83dd739537acbce98e14d8a8e5e20c0759305a4c09a09c3195ffaeadd"
+_T0585_PM_UPDATE_SHA256 = "ecd02728badfb1a8bfcdcd16bcf73da210a5965eb1dad793a00d17dc6a60e4e9"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).

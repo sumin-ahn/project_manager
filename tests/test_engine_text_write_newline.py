@@ -22,12 +22,12 @@ from pathlib import Path
 _ALLOWED: set[tuple[str, int, str]] = {
     (
         "pm_import.py",
-        2492,
+        2493,
         "_fdopen_text는 mode/newline을 호출자에게서 받아 전달하는 공용 래퍼다.",
     ),
     (
         "pm_import.py",
-        2501,
+        2502,
         "_fdopen_binary는 binary mode 전용 공용 래퍼다.",
     ),
 }
