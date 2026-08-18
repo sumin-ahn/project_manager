@@ -1009,7 +1009,12 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   여기서 사본 불일치를 그대로 올리면 판정·요약을 출력한 뒤 traceback 으로 죽어 채택자에게는
     #   "리뷰 실패"로만 보인다. 등록 사유 `ticket_harvest` 로 흡수하되 설계된 회수 실패 처방
     #   (재동기 안내 + rc≠0 + raw 경로)으로 접고, 표시 없는 RuntimeError 는 그대로 전파한다.
-    assert len(report.boundaries) == 224, "propagation sweep boundary ratchet changed"
+    # 225 = 224 + T-0753 rounds stage 후보 형제 로더 한 경계(`ticket_finish._load_ticket_rounds`).
+    #   `engine_written_paths` 가 라운드 사이드카 경로·임시 파일 규약(`ticket_rounds.py`)을
+    #   형제 로드해 stage 후보를 내는데, 그 형제가 부재/구버전이면 round 후보만 생략하고 티켓
+    #   파일 stage 는 그대로 진행한다(`_load_repo_coordinates` 동형) — 단 마킹된 skew 는
+    #   그대로 올린다(다른 형제 로더와 같은 규칙).
+    assert len(report.boundaries) == 225, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
