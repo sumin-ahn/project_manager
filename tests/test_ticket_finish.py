@@ -1470,23 +1470,123 @@ def test_engine_written_paths_excludes_rounds_when_board_git_separated(tf, tmp_p
     assert paths == [tmp_path / "log.md"]
 
 
-def test_engine_written_paths_excludes_dot_prefixed_temporary_round_files(tf, tmp_path):
-    """원자 교체 중간 파일(점-접두 `ROUND_TEMPORARY_PREFIX`/`ROUND_TEMPORARY_SUFFIX`)은 라운드가
-    아니므로 stage 후보에서 제외한다 (R1 리뷰 F-010)."""
+def test_engine_written_paths_excludes_non_round_and_temporary_files_by_grammar(
+        tf, tmp_path):
+    """라운드 판정은 `parse_round_filename` 문법 하나 — 점-접두 임시 잔여뿐 아니라 라운드가
+    아닌 `.md`(`notes.md`·`01-dev.md`)도 stage 후보 밖이고, 진짜 라운드만 후보에 남는다
+    (리뷰 F-002 — `.md` 접미 + 점-접두 제외 조합으로 되돌리면 `notes.md`·`01-dev.md`가 다시
+    후보에 실려 이 테스트가 red 가 된다)."""
     tickets_dir = tmp_path / "tickets"
     ticket_path = tickets_dir / "claimed" / "T-0753.md"
     round_dir = tickets_dir / "rounds" / "T-0753"
     round_dir.mkdir(parents=True)
     dev_round = round_dir / "01-developer.md"
     dev_round.write_text("dev\n", encoding="utf-8")
-    temporary = round_dir / ".01-developer.md.4242.deadbeef.tmp"
-    temporary.write_text("mid\n", encoding="utf-8")
+    non_round_names = [
+        ".01-developer.md.4242.deadbeef.tmp",  # 원자 교체 중간 산출(점-접두)
+        "notes.md",                            # 라운드 아닌 무관 md
+        "01-dev.md",                           # 역할 약칭(문법 밖)
+    ]
+    for name in non_round_names:
+        (round_dir / name).write_text("x\n", encoding="utf-8")
     board = _FakeRoundsBoard(tickets_dir, ticket_path)
 
     paths = tf.engine_written_paths(board, "T-0753", tmp_path / "log.md")
 
     assert dev_round in paths
-    assert temporary not in paths
+    for name in non_round_names:
+        assert round_dir / name not in paths
+
+
+def test_round_stage_candidates_uses_round_filename_grammar_not_ad_hoc_suffix(
+        tf, tmp_path):
+    """`_round_stage_candidates` 는 자체 접미/접두 조합이 아니라 `parse_round_filename` 문법
+    단일 소유자에만 위임한다 (리뷰 F-001 — reviewer 실측: 9개 이름 배치 중 자체 조합은 4건을
+    후보에 실렸는데 진짜 라운드는 2건뿐이었다)."""
+    rounds_module = tf._load_ticket_rounds()
+    tickets_dir = tmp_path / "tickets"
+    round_dir = tickets_dir / "rounds" / "T-0753"
+    round_dir.mkdir(parents=True)
+    names = [
+        "01-developer.md",                      # 진짜 라운드
+        "02-code-reviewer.md",                  # 진짜 라운드
+        "01-dev.md",                             # 역할 아님(약칭)
+        "3-developer.md",                        # zero-pad 없음
+        "001-developer.md",                      # 과잉 pad
+        "01-developer.txt",                      # 확장자 아님
+        "README.md",                             # 무관 md
+        "notes.md",                              # 무관 md
+        ".01-developer.md.4242.deadbeef.tmp",    # 원자 교체 중간 산출(점-접두)
+    ]
+    for name in names:
+        (round_dir / name).write_text("x\n", encoding="utf-8")
+
+    candidates = tf._round_stage_candidates(rounds_module, tickets_dir, "T-0753")
+
+    assert candidates == [
+        round_dir / "01-developer.md", round_dir / "02-code-reviewer.md",
+    ]
+
+
+def test_stage_scope_real_git_add_stages_untracked_new_round_file(tf, tmp_path):
+    """untracked 신규 라운드 파일이 실 git repo 에서 `git add` 로 실제 stage 된다 (리뷰 F-005 —
+    후보 산출뿐 아니라 real git 경로까지 왕복). board 대역은 조회 세 자리(`tickets_dir`·
+    `find_ticket`·`_board_git_enabled`)만 대역하고, `git_scope_stage_pathspec` 자체는 실
+    board.py 것을 그대로 빌려 real git 서브프로세스(status/ls-files/check-ignore)를 태운다."""
+    repo = tmp_path / "repo"
+    tickets_dir = repo / "tickets"
+    ticket_path = tickets_dir / "claimed" / "T-0753.md"
+    ticket_path.parent.mkdir(parents=True)
+    ticket_path.write_text("ticket\n", encoding="utf-8")
+    round_dir = tickets_dir / "rounds" / "T-0753"
+    round_dir.mkdir(parents=True)
+    round_file = round_dir / "01-developer.md"
+    round_file.write_text("dev round\n", encoding="utf-8")
+
+    def git(args):
+        result = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            check=False, capture_output=True, text=True, encoding="utf-8",
+        )
+        return result.returncode, result.stdout
+
+    assert git(["init", "-q"])[0] == 0
+
+    board_py = tmp_path / "real_round_stage_board.py"
+    board_py.write_text(
+        f"ENGINE_REV = {_real_engine_rev()!r}\n"
+        "import importlib.util as _ilu\n"
+        "from pathlib import Path as _Path\n"
+        "_spec = _ilu.spec_from_file_location(\n"
+        f"    '_t0753_real_board_for_round_stage_test', {str(TOOLS / 'board.py')!r})\n"
+        "_real_board = _ilu.module_from_spec(_spec)\n"
+        "_spec.loader.exec_module(_real_board)\n"
+        "git_scope_stage_pathspec = _real_board.git_scope_stage_pathspec\n"
+        f"STATUS_DIRS = {tf.load_board_module(tf.BOARD_PY).STATUS_DIRS!r}\n"
+        f"_TICKET_PATH = _Path({str(ticket_path)!r})\n"
+        f"_TICKETS_DIR = _Path({str(tickets_dir)!r})\n"
+        "def tickets_dir():\n"
+        "    return _TICKETS_DIR\n"
+        "def find_ticket(ticket_id):\n"
+        "    return ('claimed', _TICKET_PATH)\n"
+        "def _board_git_enabled():\n"
+        "    return False\n",
+        encoding="utf-8",
+    )
+
+    scope = tf.stage_scope(
+        "T-0753", board_py, repo / "log.md", git,
+        repo=repo, include_touches=False,
+    )
+    assert scope.error is None
+    round_rel = round_file.relative_to(repo).as_posix()
+    assert round_rel in scope.pathspec
+
+    rc, _ = git(["add", "-A", "--", *scope.pathspec])
+    assert rc == 0
+    rc, staged = git(["diff", "--cached", "--name-only"])
+    assert rc == 0
+    assert round_rel in staged.splitlines()
 
 
 # ── task-mode two-git stage plan (T-0437) ───────────────────────────────────

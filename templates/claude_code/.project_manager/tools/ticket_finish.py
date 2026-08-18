@@ -1161,12 +1161,15 @@ def _load_ticket_rounds():
 
 def _round_stage_candidates(
         rounds_module, tickets_dir: Path, ticket_id: str) -> list[Path]:
-    """티켓 라운드 디렉터리에 **실존하는** 라운드 파일만 stage 후보로 낸다 (디렉터리 자체는
+    """티켓 라운드 디렉터리에 **실존하는 라운드 파일만** stage 후보로 낸다 (디렉터리 자체는
     넣지 않는다 — untracked 신규 라운드도 실 파일 목록이라야 `git_scope_stage_pathspec` 이
     add 한다).
 
-    점-접두 임시 잔여(`ROUND_TEMPORARY_PREFIX`/`ROUND_TEMPORARY_SUFFIX` — 원자 교체 중간
-    산출)는 라운드가 아니므로 후보에서 뺀다.
+    라운드 판정은 문법 단일 소유자 `parse_round_filename` 한 곳에 위임한다 — 접미/접두를
+    이 함수가 다시 조합하면(`.md` 접미 + 점-접두 제외 등) 라운드가 아닌 `.md`(예: `notes.md`·
+    `01-dev.md`)까지 후보에 실린다(reviewer 실측 — 9개 이름 배치 중 진짜 라운드 2건만
+    통과해야 하는데 4건이 통과). 점-접두 임시 잔여(원자 교체 중간 산출)도 이 문법을 벗어나
+    자연히 걸러지므로 별도 조건이 필요 없다.
     """
     directory = rounds_module.rounds_dir_for_ticket(ticket_id, tickets_dir)
     if not directory.is_dir():
@@ -1174,9 +1177,7 @@ def _round_stage_candidates(
     return sorted(
         entry for entry in directory.iterdir()
         if entry.is_file()
-        and entry.name.endswith(rounds_module.ROUND_FILE_SUFFIX)
-        and not entry.name.startswith(rounds_module.ROUND_TEMPORARY_PREFIX)
-        and not entry.name.endswith(rounds_module.ROUND_TEMPORARY_SUFFIX)
+        and rounds_module.parse_round_filename(entry.name) is not None
     )
 
 
@@ -1203,10 +1204,15 @@ def engine_written_paths(board, ticket_id: str, log_file: Path) -> list[Path]:
     paths: list[Path] = [Path(log_file)]
     if board is None:
         return paths
+    try:
+        board_git_separated = board._board_git_enabled()
+    except Exception:  # noqa: BLE001 — 판정 실패도 board 미로드와 같은 취급(log 만).
+        return paths
+    if board_git_separated:
+        return paths
+    # 분리 형상이면 여기 도달하지 않는다 — round 형제 로드도 그때만 한다(불필요한 로드 skip).
     rounds = _load_ticket_rounds()
     try:
-        if board._board_git_enabled():
-            return paths
         _status, ticket_path = board.find_ticket(ticket_id)
         paths.append(ticket_path)
         paths.extend(board.tickets_dir() / status / ticket_path.name
