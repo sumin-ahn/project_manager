@@ -7,7 +7,7 @@ ADR-0014 의 실 엔진 개조 — multi-PM 모델에서 회귀가 multi-PM 루�
      구 스키마 `| prefix | area | owner |` 하위호환 (헤더-인식 파서).
   2. **`_test_cmd` per-repo 해소** — 활성 prefix 의 areas.md 행 test_cmd → solo 폴백
      (local.conf test_cmd → pytest -q).
-  3. **회귀 cwd seam** `_regression_cwd` — 주입 시 그 경로, 미주입 시 REPO.
+  3. **회귀 cwd seam** `_regression_cwd` — 주입(`--cwd`) 시 그 경로, 미주입 시 REPO.
 
 **hermetic 필수**: board.py 의 경로 전역(`AREAS_FILE`·`LOCAL_CONF`·`REPO` 등)은 import
 시점에 실 repo 절대경로로 고정된다 — tmp 프로젝트로 monkeypatch 재지정해 실 루트의
@@ -995,7 +995,7 @@ def test_active_slot_path_non_dict_json_returns_none(board, monkeypatch):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# _regression_cwd — cwd seam (주입 → 활성 슬롯 → REPO 기본)
+# _regression_cwd — cwd seam (주입 → REPO 기본 · 슬롯 우회 없음)
 # ════════════════════════════════════════════════════════════════════════
 
 def test_regression_cwd_default_is_repo(board):
@@ -1014,28 +1014,6 @@ def test_regression_cwd_injected_path_wins(board):
 def test_regression_cwd_empty_string_falls_back_to_repo(board):
     """빈 문자열 주입은 falsy → REPO 폴백 (seam 의 방어적 기본)."""
     assert board._regression_cwd("") == str(board.REPO)
-
-
-def test_regression_cwd_resolves_active_slot_when_no_override(board, monkeypatch):
-    """override 없으면 lease 의 활성 슬롯 worktree 경로를 해소 (T-0122·ADR-0026)."""
-    monkeypatch.setattr(board, "session_name", lambda override=None: "me")
-    _write_ledger(board, _lease_row(slot="work/A_1", repo="A", session="me"))
-    assert board._regression_cwd() == str(board.REPO / "work/A_1")
-
-
-def test_regression_cwd_override_wins_over_active_slot(board, monkeypatch):
-    """override 가 활성 슬롯보다 우선 (override > 슬롯 > REPO)."""
-    monkeypatch.setattr(board, "session_name", lambda override=None: "me")
-    _write_ledger(board, _lease_row(slot="work/A_1", repo="A", session="me"))
-    injected = str(board._tmp / "elsewhere")
-    assert board._regression_cwd(injected) == injected
-
-
-def test_regression_cwd_no_matching_slot_falls_back_to_repo(board, monkeypatch):
-    """장부에 이 세션 매칭 슬롯이 없으면 REPO 폴백 (additive)."""
-    monkeypatch.setattr(board, "session_name", lambda override=None: "me")
-    _write_ledger(board, _lease_row(slot="work/A_1", repo="A", session="other"))
-    assert board._regression_cwd() == str(board.REPO)
 
 
 # ════════════════════════════════════════════════════════════════════════

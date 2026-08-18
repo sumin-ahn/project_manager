@@ -2007,3 +2007,237 @@ def test_scalar_touches_in_a_real_ticket_never_becomes_a_character_scope(
 
     assert '-k "' not in fake.calls[0]["args"][0]
     assert _flag(board)["scope"] == "full"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 훅 자기 가림 — 회귀 게이트는 `tests/` 가 있는 트리만 · lint 게이트는 항상 (T-0733)
+# ════════════════════════════════════════════════════════════════════════
+# 회귀 단위는 push 되는 트리 자신이다. 코드가 worktree 슬롯에 사는 분리 형상의 PM 홈(dev-state·
+# board·wiki)엔 돌릴 스위트가 없는데도 옛 훅은 회귀를 요구했고, 회귀 cwd 가 활성 슬롯으로 우회해
+# **코드가 한 줄도 안 바뀐 board/wiki push 가 슬롯 스위트 전량**을 조건으로 삼았다(채택자 제보).
+# 판정은 이제 훅 본문이 push 시점에 `[ -d tests ]` 로 직접 한다.
+#
+# 아래 e2e 는 **실 git push** 로 그 셸 분기를 태운다 — 훅 본문이 산출물이라 파이썬에서 문자열만
+# 대조하면 "git 이 이 스크립트를 어떻게 실행하는가"(cwd·분기·종료코드 전파)가 검증되지 않는다.
+# 게이트 명령 자리에는 인자를 기록하는 sh 대역을 둔다(실 엔진·실 pytest 를 돌리지 않는다).
+
+_FAKE_BOARD_SH = """#!/bin/sh
+echo "$*" >> "$PM_TEST_GATE_LOG"
+case "$*" in
+  regression*) exit ${PM_TEST_RC_REGRESSION:-0} ;;
+  *lint*) exit ${PM_TEST_RC_LINT:-0} ;;
+esac
+exit 0
+"""
+
+
+def _push_env(tmp_path: Path, **extra: str) -> dict:
+    """격리된 git 실행 환경 — 실행 환경의 사용자/시스템 config 가 판정을 흔들지 않게 한다."""
+    env = utf8_child_env()
+    env.update({
+        "GIT_CONFIG_GLOBAL": str(tmp_path / "global.gitconfig"),
+        "GIT_CONFIG_SYSTEM": str(tmp_path / "system.gitconfig"),
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
+        "PM_TEST_GATE_LOG": str(tmp_path / "gate.log"),
+    })
+    env.update(extra)
+    return env
+
+
+def _git_e2e(args: list[str], cwd: Path, env: dict) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=str(cwd), env=env, capture_output=True,
+                          text=True, encoding="utf-8", errors="replace")
+
+
+def _pushable_repo(board, monkeypatch, tmp_path, env: dict, *, with_tests: bool) -> Path:
+    """실 git 저장소 + bare 원격 + **엔진이 설치한** 현행 훅 — push 가 훅을 실제로 돌리는 형상.
+
+    `with_tests` 가 두 형상을 가른다: `tests/` 있는 트리(코드 repo) / 없는 트리(분리 형상 PM 홈).
+    인터프리터를 `sh` 로 설치해 게이트 명령 자리의 sh 대역이 그대로 실행되게 한다 — 파이썬 경로·
+    엔진 로딩 없이 훅의 셸 분기만 태운다.
+    """
+    repo = tmp_path / "home"
+    tools = repo / ".project_manager" / "tools"
+    tools.mkdir(parents=True)
+    (tools / "board.py").write_text(_FAKE_BOARD_SH, encoding="utf-8", newline="\n")
+    (repo / "README.md").write_text("seed\n", encoding="utf-8")
+    if with_tests:
+        (repo / "tests").mkdir()
+        (repo / "tests" / "test_seed.py").write_text(
+            "def test_seed():\n    assert True\n", encoding="utf-8")
+    bare = tmp_path / "remote.git"
+    assert _git_e2e(["init", "-q", "-b", "main", str(repo)], tmp_path, env).returncode == 0
+    assert _git_e2e(["init", "-q", "--bare", str(bare)], tmp_path, env).returncode == 0
+    assert _git_e2e(["add", "-A"], repo, env).returncode == 0
+    assert _git_e2e(["commit", "-qm", "seed"], repo, env).returncode == 0
+    assert _git_e2e(["remote", "add", "origin", str(bare)], repo, env).returncode == 0
+    # 설치는 엔진 경로 그대로 — 테스트가 본문을 손으로 쓰면 설치기와 본문 사이의 drift 를 못 본다.
+    monkeypatch.setattr(board, "REPO", repo)
+    monkeypatch.setattr(board, "_detect_py", lambda: "sh")
+    assert board.install_pre_push_hook() is True
+    return repo
+
+
+def _gate_calls(tmp_path: Path) -> list[str]:
+    """훅이 실제로 부른 게이트 명령 목록 (sh 대역이 기록·미호출이면 로그 파일 자체가 없다)."""
+    log = tmp_path / "gate.log"
+    if not log.exists():
+        return []
+    return [line for line in log.read_text(encoding="utf-8").splitlines() if line]
+
+
+def _remote_has_main(tmp_path: Path, env: dict) -> bool:
+    """원격에 main 이 실제로 도착했는가 — 훅 차단이 push 를 막았는지 값으로 확인."""
+    return _git_e2e(["rev-parse", "--verify", "-q", "main"],
+                    tmp_path / "remote.git", env).returncode == 0
+
+
+@requires_git
+def test_a_push_from_a_tree_without_tests_meets_only_the_lint_gate(
+        board, monkeypatch, tmp_path):
+    """`tests/` 없는 트리(분리 형상 PM 홈) push — 회귀는 아예 호출되지 않고 lint 만 돌며 rc0.
+
+    제보 형상의 근절 축이다: 코드가 없는 홈의 push 가 슬롯 스위트를 요구하지 않는다. '회귀가
+    green 이라 통과'와 구분하려고 **회귀 명령이 호출되지 않았음**(대역 로그)을 값으로 단언한다.
+    """
+    env = _push_env(tmp_path)
+    repo = _pushable_repo(board, monkeypatch, tmp_path, env, with_tests=False)
+
+    push = _git_e2e(["push", "-q", "origin", "main"], repo, env)
+
+    assert push.returncode == 0, push.stderr
+    assert _gate_calls(tmp_path) == ["lint --gate"]      # 회귀 미실행·lint 는 실행
+    assert "회귀 게이트 비대상" in (push.stdout + push.stderr)
+    assert _remote_has_main(tmp_path, env)
+
+
+@requires_git
+def test_a_push_from_a_tree_with_tests_still_meets_the_regression_gate(
+        board, monkeypatch, tmp_path):
+    """`tests/` 있는 트리(코드 repo) push — 회귀 게이트는 무변경(check 선행·그 뒤 lint)."""
+    env = _push_env(tmp_path)
+    repo = _pushable_repo(board, monkeypatch, tmp_path, env, with_tests=True)
+
+    push = _git_e2e(["push", "-q", "origin", "main"], repo, env)
+
+    assert push.returncode == 0, push.stderr
+    assert _gate_calls(tmp_path) == ["regression check", "lint --gate"]
+    assert _remote_has_main(tmp_path, env)
+
+
+@requires_git
+def test_a_red_regression_still_blocks_a_push_from_a_code_tree(
+        board, monkeypatch, tmp_path):
+    """코드 트리에서 회귀가 red 면 push 는 막힌다 — `check` 실패 시 `run --final` 재시도까지."""
+    env = _push_env(tmp_path, PM_TEST_RC_REGRESSION="1")
+    repo = _pushable_repo(board, monkeypatch, tmp_path, env, with_tests=True)
+
+    push = _git_e2e(["push", "-q", "origin", "main"], repo, env)
+
+    assert push.returncode != 0
+    assert _gate_calls(tmp_path) == ["regression check", "regression run --final"]
+    assert not _remote_has_main(tmp_path, env)          # 차단은 원격에 도달하지 않는다
+
+
+@requires_git
+def test_the_lint_gate_still_blocks_a_push_from_a_tree_without_tests(
+        board, monkeypatch, tmp_path):
+    """회귀를 가려도 lint 게이트는 남는다 — PM 홈 자신의 board/wiki 무결성은 계속 push 를 막는다.
+
+    이 훅이 lint 차단을 강제하는 유일한 상시 호출자다(가림이 게이트 하나를 통째로 없애지 않는다).
+    """
+    env = _push_env(tmp_path, PM_TEST_RC_LINT="1")
+    repo = _pushable_repo(board, monkeypatch, tmp_path, env, with_tests=False)
+
+    push = _git_e2e(["push", "-q", "origin", "main"], repo, env)
+
+    assert push.returncode != 0
+    assert _gate_calls(tmp_path) == ["lint --gate"]
+    assert not _remote_has_main(tmp_path, env)
+
+
+# ── 본문 세대 — 현행 rev / 구세대 registry ─────────────────────────────────
+
+def test_the_current_body_masks_the_regression_gate_and_stamps_a_new_rev(board):
+    """현행 본문 = `[ -d tests ]` 가림 + 항상 도는 lint + 새 세대 스탬프(설치 훅의 자기 신고)."""
+    body = board.pre_push_hook_body("python3")
+    assert f"{board._PM_HOOK_REV_PREFIX}{board.PM_HOOK_REV}" in body
+    assert board.PM_HOOK_REV == 3                      # 본문이 바뀌면 세대도 바뀐다
+    assert "if [ -d tests ]; then" in body
+    # 회귀 두 줄은 가림 블록 **안**, lint 줄은 블록 **밖**(항상).
+    masked = body.split("if [ -d tests ]; then", 1)[1].split("\nfi\n", 1)
+    assert "regression check" in masked[0] and "regression run --final" in masked[0]
+    assert masked[1] == "python3 .project_manager/tools/board.py lint --gate || exit 1\n"
+
+
+def test_the_previous_generation_is_registered_as_legacy(board):
+    """직전 세대(rev 2 · 트리를 안 보고 항상 회귀)가 registry 에 등재됐다 — 정확일치 2 세대."""
+    legacy = board._legacy_pre_push_hook_bodies("python3")
+    assert len(legacy) == 2
+    rev2 = next(b for b in legacy if f"{board._PM_HOOK_REV_PREFIX}2" in b)
+    assert "if [ -d tests ]" not in rev2                # 가림 없이 항상 회귀를 요구하던 본문
+    assert "regression run --final" in rev2
+    assert all(b != board.pre_push_hook_body("python3") for b in legacy)
+
+
+def test_the_installed_launcher_survives_the_indented_gate_line(board):
+    """세대 대조는 **설치된 훅의** 인터프리터로 한다 — 가림 블록 들여쓰기가 그 되읽기를 깨지 않는다.
+
+    되읽기가 깨지면 `py -3.12` 채택자의 현행 훅이 `python3` 본문과 대조돼 상시 구세대로 오판된다.
+    """
+    body = board.pre_push_hook_body("py -3.12")
+    assert board._installed_hook_interpreter(body) == "py -3.12"
+    # 되읽은 인터프리터로 조립한 본문이 그 훅과 정확히 같아야 세대 판정이 통과한다.
+    assert board.pre_push_hook_body(board._installed_hook_interpreter(body)) == body
+
+
+def test_a_previous_generation_hook_is_refused_with_the_init_prescription(
+        board, monkeypatch, tmp_path, capsys):
+    """직전 세대(rev 2) 훅이 깔린 트리는 차단된다 — 처방은 `board.py init` 재실행 1회.
+
+    이것이 이미 배포된 훅의 유일한 교체 경로다(엔진은 남의 훅도, 옛 훅도 손대지 않는다).
+    """
+    rev2 = next(b for b in board._legacy_pre_push_hook_bodies("python3")
+                if f"{board._PM_HOOK_REV_PREFIX}2" in b)
+    hook = _hooked_repo(board, monkeypatch, tmp_path, rev2)
+    fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
+
+    assert board.cmd_regression(_run_args()) == 1
+
+    assert hook.read_text(encoding="utf-8") == rev2      # 고치지 않는다
+    assert fake.calls == []                              # 회귀 미실행
+    assert not board.REGRESSION_FLAG.exists()            # 기록 없음
+    err = capsys.readouterr().err
+    assert "구버전" in err and "board.py init" in err
+
+
+# ── 회귀 cwd = push 되는 트리(REPO) · 슬롯 우회 없음 ────────────────────────
+
+def test_the_regression_cwd_is_this_tree_even_with_a_leased_slot(board):
+    """리스 장부에 활성 슬롯이 있어도 회귀 cwd 는 이 트리다 — 슬롯 우회가 삭제됐다.
+
+    우회는 "PM 홈엔 tests/ 가 없다"를 cwd 로 땜질한 것이었고, 그 판정은 이제 훅이 직접 한다.
+    """
+    _write_ledger(board, "solo_1")
+    # 슬롯 자체는 해소된다(장부·경로 조립은 살아 있다) — 회귀가 그리로 가지 않을 뿐이다.
+    assert board._active_slot_path("solo_1") == _slot_cwd(board, "solo_1")
+    assert board._regression_cwd() == str(board.REPO)
+    assert board._regression_cwd(None) == str(board.REPO)
+
+
+def test_an_explicit_cwd_still_pins_the_regression_tree(board):
+    """명시 `--cwd` 는 그대로다 — 다른 트리를 겨냥하는 유일한 채널(솔로/핀 실행 무변경)."""
+    _write_ledger(board, "solo_1")
+    pinned = str(board.REPO / "elsewhere")
+    assert board._regression_cwd(pinned) == pinned
+
+
+def test_two_leases_no_longer_refuse_the_regression_cwd(board):
+    """leased ≥2 여도 회귀 cwd 는 모호하지 않다 — 이 트리 하나뿐이라 거부(fail-loud)가 사라졌다.
+
+    모호가 성립하던 것은 '슬롯 중 어느 것을 도느냐'였다. 그 선택 자체가 없어졌으므로 거부도 없다
+    (슬롯 순회는 `_regression_multi_run` 이 슬롯 경로를 자기 손으로 해소한다).
+    """
+    _write_ledger(board, "A_1", "B_1")
+    assert board._regression_cwd() == str(board.REPO)
