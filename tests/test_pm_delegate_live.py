@@ -34,6 +34,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import shutil
+import sys
 import subprocess
 from pathlib import Path
 
@@ -171,8 +172,22 @@ def _seed_growth_repo(tmp_path: Path, ticket: str) -> tuple[Path, Path]:
     tickets = repo / ".project_manager" / "wiki" / "tickets" / "claimed"
     tickets.mkdir(parents=True)
     (repo / ".project_manager" / ".local").mkdir(parents=True)
+    # 사본 루트(.local/)는 tracked `.project_manager/.gitignore` 로 무시돼야 prepare 가 받는다
+    # (채택자 출하 형상과 같게 — ignore 규칙 출처 검증).
+    ignore = repo / ".project_manager" / ".gitignore"
+    ignore.write_text(".local/\n", encoding="utf-8")
+    if _GIT is not None:
+        subprocess.run([_GIT, "-C", str(repo), "add", ".project_manager/.gitignore"], check=True)
+        subprocess.run([_GIT, "-C", str(repo), "commit", "-q", "-m", "seed ignore"], check=True)
     source = tickets / f"{ticket}-live-cross-growth.md"
     source.write_text(_growth_ticket_text(ticket), encoding="utf-8")
+    # 손으로 적은 역할 절은 미봉인 legacy 절이라 `ticket prepare` 가 거부한다(역할 절 봉인 게이트).
+    # 채택자 업그레이드 노트와 같은 경로로 봉인 backfill 을 거쳐 엔진이 발행한 형상으로 맞춘다.
+    backfill = subprocess.run(
+        [sys.executable, str(tools / "pm_delegate.py"), "ticket", "seal-backfill", "--ticket", ticket],
+        cwd=str(repo), capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    assert backfill.returncode == 0, f"seal-backfill rc={backfill.returncode}\n{backfill.stderr}"
     return repo, source
 
 
