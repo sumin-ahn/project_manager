@@ -33,7 +33,7 @@ push 대상 rev의 release live wave를 실측·기록한다. 부트스트랩 0�
 ```bash
 # main-참조 기준면 = readonly 슬롯(detached·origin/main 추적). PM_ORCH_LIVE_RELEASE=1 필수.
 PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py livegate record --repo <repo> --cwd <readonly 슬롯 절대경로>
-#   readonly 슬롯 경로는 `pm-config worktree status` 의 role=readonly 행에서 확인.
+#   readonly 슬롯 경로는 `pm-config status` 의 role=readonly 행에서 확인(`worktree` 서브커맨드는 add·prune-stale·remove 뿐).
 ```
 
 record 는 라이브 wave 를 돌리기 **전에** 추가 리뷰 라운드 장부를 스캔해 **미해소 must-fix 잔여**를 차단한다(rc=1·우회 플래그 없음·차단도 fail 로 기록되어 push 훅까지 닫힌다). 차단되면 나열된 게이트마다 처분을 선언하고 다시 돌린다 — `external_review.py --resolve-gate <게이트> --into <T-NNNN>`(후속 티켓 재설계·그 티켓이 **done** 이어야 열린다) 또는 `--fixed <근거 게이트>`(코드 해소·통과로 끝난 근거 게이트 지목). 잔여를 "사소하다"고 넘기는 경로는 없다(판정 입력은 장부의 기록 사실뿐). 처분 상태는 `external_review.py --rounds-report` 의 처분 열로 확인한다. 같은 검사를 `livegate check`(push 보호훅)도 수행하므로, record 이후 새 반려 라운드가 기록되면 push 시점에 다시 막힌다.
