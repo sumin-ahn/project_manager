@@ -112,8 +112,7 @@ def _fixture_board(pd, pm_home: Path, sync_log: list | None = None):
             sync_log.append((message, [Path(item) for item in paths]))
         return True
 
-    board._growth_mutation_sync_paths = _sync
-    board._growth_mutation_sync = lambda message, path: _sync(message, (path,))
+    board._rounds_mutation_sync_paths = _sync
     return board
 
 

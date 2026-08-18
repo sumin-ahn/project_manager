@@ -787,3 +787,98 @@ def test_cmd_complete_blocks_on_a_hidden_second_dod_section(live_board, capsys):
     assert path.exists()
     assert not list((live_board.tickets_dir() / "done").glob("T-9005*"))
     assert "DoD 미체크" in capsys.readouterr().err
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 축 C — 라운드 판정 게이트 (순번 유일성·연속성만 차단)
+# ════════════════════════════════════════════════════════════════════════
+#
+# 완료 증거가 성립하지 않는 것은 라운드가 지워졌거나(빈틈) 순서가 모호한(중복) 상태뿐이다.
+# 산출 없는 라운드(시드 그대로)와 이름 문법 위반은 정보로만 낸다 — 미회수는 게이트가 아니다.
+
+
+def _write_round(board, tid: str, name: str, text: str) -> Path:
+    path = board._load_ticket_rounds().rounds_dir_for_ticket(tid, board.tickets_dir()) / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8", newline="")
+    return path
+
+
+def _harvested_round_text(role: str) -> str:
+    return f"## 라벨 ({role} · 2026-01-02)\n\n실제 산출.\n"
+
+
+def _seeded_round_text(board, tid: str, role: str, path: Path) -> str:
+    """예약 직후와 **같은 bytes** — 무편집(산출 없음) 판정의 유일한 통과 형상."""
+    rounds = board._load_ticket_rounds()
+    return rounds.render_round_seed(
+        role, path.read_text(encoding="utf-8"), today="2026-01-02")
+
+
+def test_round_gap_blocks_completion(live_board, capsys):
+    """순번 빈틈(삭제 의심) → rc=1 · 티켓은 claimed/ 에 남는다."""
+    path = _seed_ticket(live_board, "T-9101", _dod_body("- [x] 코드"))
+    _write_round(live_board, "T-9101", "01-developer.md", _harvested_round_text("developer"))
+    _write_round(live_board, "T-9101", "03-code-reviewer.md",
+                 _harvested_round_text("code-reviewer"))
+
+    rc = live_board.cmd_complete(_complete_args("T-9101"))
+
+    err = capsys.readouterr().err
+    assert rc == 1 and path.exists()
+    assert not list((live_board.tickets_dir() / "done").glob("T-9101*"))
+    assert "round-gap" in err and "02" in err
+
+
+def test_round_duplicate_blocks_completion(live_board, capsys):
+    """같은 순번을 둘이 쥔 상태(순서 모호) → rc=1."""
+    path = _seed_ticket(live_board, "T-9102", _dod_body("- [x] 코드"))
+    _write_round(live_board, "T-9102", "01-developer.md", _harvested_round_text("developer"))
+    _write_round(live_board, "T-9102", "01-architect.md", _harvested_round_text("architect"))
+
+    rc = live_board.cmd_complete(_complete_args("T-9102"))
+
+    assert rc == 1 and path.exists()
+    assert "round-dup" in capsys.readouterr().err
+
+
+def test_pending_round_does_not_block_completion(live_board, capsys):
+    """산출 없는 라운드(시드 그대로)는 정보 출력일 뿐 완료를 막지 않는다."""
+    path = _seed_ticket(live_board, "T-9103", _dod_body("- [x] 코드"))
+    _write_round(live_board, "T-9103", "01-developer.md",
+                 _seeded_round_text(live_board, "T-9103", "developer", path))
+
+    rc = live_board.cmd_complete(_complete_args("T-9103"))
+
+    err = capsys.readouterr().err
+    assert rc == 0, f"미회수 라운드가 완료를 막음: {err}"
+    assert list((live_board.tickets_dir() / "done").glob("T-9103*"))
+    assert "round-pending" in err and "01-developer.md" in err
+
+
+def test_round_name_violation_is_information_only(live_board, capsys):
+    """이름 문법 위반은 표시용이다 — 완료 게이트의 차단 사유가 아니다."""
+    _seed_ticket(live_board, "T-9104", _dod_body("- [x] 코드"))
+    _write_round(live_board, "T-9104", "notes.md", "라운드가 아닌 파일\n")
+
+    rc = live_board.cmd_complete(_complete_args("T-9104"))
+
+    assert rc == 0
+    assert "round-name" in capsys.readouterr().err
+
+
+def test_harvested_rounds_in_sequence_pass_the_gate(live_board):
+    """1..N 연속·중복 없음 → 게이트 무영향(정상 경로 회귀)."""
+    _seed_ticket(live_board, "T-9105", _dod_body("- [x] 코드"))
+    _write_round(live_board, "T-9105", "01-developer.md", _harvested_round_text("developer"))
+    _write_round(live_board, "T-9105", "02-code-reviewer.md",
+                 _harvested_round_text("code-reviewer"))
+
+    assert live_board.cmd_complete(_complete_args("T-9105")) == 0
+    assert list((live_board.tickets_dir() / "done").glob("T-9105*"))
+
+
+def test_gate_without_rounds_directory_is_silent(live_board, capsys):
+    """라운드가 없는 티켓(대다수 레거시)은 이 축에서 아무 것도 내지 않는다."""
+    assert live_board._complete_gate("T-9106", _gate_args(), _dod_body("- [x] 코드")) == []
+    assert "round-" not in capsys.readouterr().err

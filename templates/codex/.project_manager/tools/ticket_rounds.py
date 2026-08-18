@@ -445,18 +445,38 @@ def _text_is_pending(
     return _normalized_newlines(rest) == _normalized_newlines(expected)
 
 
-def _previous_round_for(loaded, role: str, ordinal: int) -> tuple[int, str] | None:
-    """`(순번, 역할, 경로, 본문)` 목록에서 같은 역할의 **직전** 라운드 `(순번, 본문)`.
+def previous_round_of_role(rounds, role: str, *, before: int | None = None):
+    """같은 역할의 **직전 라운드** `(순번, 본문)` — 시드 프리필과 무편집 판정의 유일한 입력.
 
-    시드 재렌더 입력이라 예약 당시와 같은 것을 골라야 한다 — 자기보다 앞선 순번 중 최대다.
+    `before` 는 대상 순번이다(그 앞의 것만 본다). 예약 시점에는 아직 자기 파일이 없어 None
+    이고, 회수·판정 시점에는 자기 순번을 넘겨 준비 당시와 **같은 직전 라운드**를 다시 고른다.
+    입력은 `Round`(또는 `role`·`ordinal`·`text` 를 가진 같은 모양)의 목록이다.
+
+    규칙이 갈리면 무편집 라운드가 편집됨으로 읽히므로 예약측·판정측이 이 함수 하나를 쓴다.
     """
     candidates = [
-        item for item in loaded if item[1] == role and item[0] < ordinal
+        item for item in rounds
+        if item.role == role and (before is None or item.ordinal < before)
     ]
     if not candidates:
         return None
-    latest = max(candidates, key=lambda item: item[0])
-    return latest[0], latest[3]
+    latest = max(candidates, key=lambda item: item.ordinal)
+    return latest.ordinal, latest.text
+
+
+def _previous_round_for(loaded, role: str, ordinal: int) -> tuple[int, str] | None:
+    """적재 중간 표현(`(순번, 역할, 경로, 본문)` 목록)용 얇은 어댑터 — 규칙은 위 함수 하나다."""
+    return previous_round_of_role(
+        [
+            Round(
+                ordinal=item[0], role=item[1], path=item[2], text=item[3],
+                pending=False,
+            )
+            for item in loaded
+        ],
+        role,
+        before=ordinal,
+    )
 
 
 def round_is_pending(

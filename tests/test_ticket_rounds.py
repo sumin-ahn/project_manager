@@ -191,11 +191,11 @@ def test_review_round_seed_carries_the_review_block_skeleton(rounds, delegate):
     ) in seed
 
 
-def test_round_seed_labels_match_the_board_role_labels(rounds):
-    """권위는 `ticket_rounds.ROLE_LABELS` — board 표가 파생으로 뒤집힐 때까지 일치를 못박는다."""
+def test_round_seed_labels_are_the_authority_board_reads(rounds):
+    """권위는 `ticket_rounds.ROLE_LABELS` 이고 board 는 그 표를 파생으로 읽는다(복제 0)."""
     board = _load_tool("board")
-    assert rounds.ROLE_LABELS == board.TICKET_GROWTH_ROLE_LABELS
-    assert rounds.ROLES == tuple(board.TICKET_GROWTH_ROLE_LABELS)
+    assert board.ticket_round_role_labels() == rounds.ROLE_LABELS
+    assert tuple(board.ticket_round_role_labels()) == rounds.ROLES
 
 
 def test_round_roles_match_the_delegate_round_role_authority(rounds, delegate):

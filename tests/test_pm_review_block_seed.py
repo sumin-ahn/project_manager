@@ -167,9 +167,9 @@ def test_every_round_role_seed_comes_from_the_delegate_renderer(pd, board):
     """모든 역할의 라운드 시드는 한 렌더러에서 나온다 — 역할 집합의 권위도 하나다."""
     rounds_module = pd._load_ticket_rounds()
     # 라운드 역할 집합의 단일 권위는 seam 이고 board 는 사람용 절명만 소유한다.
-    assert set(board.TICKET_GROWTH_ROLE_LABELS) == set(pd.TICKET_COPY_ROLES)
+    assert set(board.ticket_round_role_labels()) == set(pd.TICKET_COPY_ROLES)
     assert set(rounds_module.ROLES) == set(pd.TICKET_COPY_ROLES)
-    assert board.TICKET_GROWTH_ROLE_LABELS == rounds_module.ROLE_LABELS
+    assert board.ticket_round_role_labels() == rounds_module.ROLE_LABELS
 
     text = "".join(
         _seeded_round_text(pd, role) for role in sorted(pd.TICKET_COPY_ROLES)

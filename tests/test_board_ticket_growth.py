@@ -1,4 +1,8 @@
-"""T-0675 — 티켓 성장 절(section-add)과 위임 tier의 실제 CLI/board-git 계약."""
+"""티켓 라운드 예약(section-add)·조회(show)와 위임 tier의 실제 CLI/board-git 계약.
+
+section-add 는 명세 파일을 건드리지 않는다 — 쓰는 것은 `tickets/rounds/<티켓>/NN-<role>.md`
+하나뿐이고, 그래서 lifecycle writer 와의 경합 축은 tier(in-place frontmatter writer)만 남는다.
+"""
 from __future__ import annotations
 
 import ast
@@ -32,7 +36,7 @@ _VALID_BODY = (
     "# {tid} — 성장 테스트\n\n"
     "## 목표\n위임 라운드 기록을 누적한다.\n\n"
     "## 인터페이스\nboard.py CLI 두 개를 쓴다.\n\n"
-    "## 결정\n기계 marker 경계를 쓴다.\n\n"
+    "## 결정\n라운드 파일 하나로 왕복한다.\n\n"
     "## 설계\n설계 면제 티켓이다.\n\n"
     "## 완료 조건 (Definition of Done)\n- [ ] 실제 동작 검증\n\n"
     "## 참고\n- T-0675\n\n"
@@ -127,6 +131,16 @@ def _seed_ticket(board_dir: Path, tid: str, status: str, *, tier: str | None = N
     return path
 
 
+def _rounds_dir(board_dir: Path, tid: str) -> Path:
+    """라운드 디렉터리 — 상태 디렉터리의 형제라 티켓 이동을 따라가지 않는다."""
+    return board_dir / "tickets" / "rounds" / tid
+
+
+def _round_names(board_dir: Path, tid: str) -> list[str]:
+    directory = _rounds_dir(board_dir, tid)
+    return sorted(item.name for item in directory.iterdir()) if directory.is_dir() else []
+
+
 def _head(board_dir: Path) -> str:
     return _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
 
@@ -152,10 +166,15 @@ def _has_os_file_lock() -> bool:
 
 
 @requires_git
-def test_section_add_cli_roles_markers_round_trip_and_recall_accumulates(board_env):
-    """역할 3종·label override·같은 역할 재호출이 4개 실제 commit과 4개 절로 누적된다."""
+def test_section_add_reserves_one_round_file_per_call_and_keeps_the_spec_bytes(board_env):
+    """역할 3종·label override·같은 역할 재호출이 4개 라운드 파일 + 4개 commit 으로 누적된다.
+
+    명세 파일은 **바이트가 그대로**여야 한다 — 라운드는 명세 밖 파일이고, 예약이 명세를 다시
+    쓰면 lifecycle writer 와 같은 자리를 두 writer 가 만지는 옛 형상으로 되돌아간다.
+    """
     board, board_dir, bare = board_env
     path = _seed_ticket(board_dir, "T-1001", "open")
+    spec_before = path.read_bytes()
     calls = [
         ("architect", None, "설계"),
         ("developer", None, "구현 보충"),
@@ -169,26 +188,92 @@ def test_section_add_cli_roles_markers_round_trip_and_recall_accumulates(board_e
             argv += ["--label", override]
         assert board.main(argv) == 0
 
-    text = path.read_text(encoding="utf-8")
-    marker = re.escape(board.TICKET_GROWTH_SECTION_MARKER)
-    sections = re.findall(
-        rf"<!-- {marker}:start role=([^ ]+) -->\n"
-        rf"## ([^\n]+) \(([^ ]+) · (\d{{4}}-\d{{2}}-\d{{2}})\)\n\n"
-        rf"(?s:.*?)"
-        rf"<!-- {marker}:end role=([^ ]+) -->",
-        text,
-    )
-    assert len(sections) == 4
-    today = datetime.date.today().isoformat()
-    assert sections == [
-        (role, label, role, today, role) for role, _override, label in calls
+    assert _round_names(board_dir, "T-1001") == [
+        "01-architect.md", "02-developer.md", "03-code-reviewer.md", "04-developer.md",
     ]
-    assert text.index("원본 메모.") < text.index("## 설계 (architect")
-    assert text.index("## 구현 보충 (developer") < text.index("## 재구현 (developer")
+    today = datetime.date.today().isoformat()
+    for ordinal, (role, _override, label) in enumerate(calls, start=1):
+        text = (_rounds_dir(board_dir, "T-1001")
+                / f"{ordinal:02d}-{role}.md").read_text(encoding="utf-8")
+        assert text.splitlines()[0] == f"## {label} ({role} · {today})"
+        assert len(text.splitlines()) > 1, "역할 골격 본문이 비어 있음"
+    assert path.read_bytes() == spec_before, "라운드 예약이 명세 파일을 건드렸다"
     assert int(_git(["rev-list", "--count", "HEAD"], board_dir).stdout) == before_count + 4
     assert _git(["log", "-4", "--format=%s"], board_dir).stdout.count("section-add T-1001") == 4
-    remote = _remote_text(bare, "tickets/open/T-1001-growth.md")
-    assert remote == text
+    remote = _remote_text(bare, "tickets/rounds/T-1001/04-developer.md")
+    assert remote == (_rounds_dir(board_dir, "T-1001")
+                      / "04-developer.md").read_text(encoding="utf-8")
+
+
+@requires_git
+def test_section_add_seed_is_the_shared_seam_render(board_env):
+    """시드 bytes 의 단일 진실은 사이드카 seam 이다 (board 가 자기 골격을 따로 렌더하지 않는다)."""
+    board, board_dir, _bare = board_env
+    path = _seed_ticket(board_dir, "T-1014", "open")
+    rounds = board._load_ticket_rounds()
+
+    assert board.main(["section-add", "T-1014", "--role", "developer"]) == 0
+
+    spec_text = path.read_text(encoding="utf-8")
+    expected = rounds.render_round_seed(
+        "developer", spec_text, today=datetime.date.today().isoformat())
+    written = (_rounds_dir(board_dir, "T-1014") / "01-developer.md").read_text(
+        encoding="utf-8")
+    assert written == expected
+    loaded = rounds.load_rounds(board.tickets_dir(), "T-1014", ticket_text=spec_text)
+    assert [item.pending for item in loaded] == [True], "예약 직후 라운드는 산출 없음이어야 한다"
+
+
+@requires_git
+def test_show_assembles_the_spec_and_the_rounds_in_ordinal_order(board_env, capsys):
+    """조회는 명세 전문 + 라운드 파일을 순번 순으로 조립하고 미회수 개수를 낸다."""
+    board, board_dir, _bare = board_env
+    path = _seed_ticket(board_dir, "T-1015", "claimed")
+    assert board.main(["section-add", "T-1015", "--role", "developer"]) == 0
+    assert board.main(["section-add", "T-1015", "--role", "code-reviewer"]) == 0
+    harvested = _rounds_dir(board_dir, "T-1015") / "01-developer.md"
+    harvested.write_text(
+        harvested.read_text(encoding="utf-8") + "\n실제 구현 산출.\n", encoding="utf-8")
+
+    assert board.main(["show", "T-1015"]) == 0
+
+    out = capsys.readouterr().out
+    assert path.read_text(encoding="utf-8") in out, "명세 전문이 조회에 없다"
+    assert out.index("--- 01-developer ---") < out.index("--- 02-code-reviewer")
+    assert "실제 구현 산출." in out
+    assert "--- 02-code-reviewer (산출 없음) ---" in out
+    assert "미회수 1건: 02-code-reviewer.md" in out
+
+
+@requires_git
+def test_show_without_rounds_prints_only_the_spec(board_env, capsys):
+    """라운드가 없으면 조회 출력은 종전 그대로다(빈 구분선·빈 요약 없음)."""
+    board, board_dir, _bare = board_env
+    _seed_ticket(board_dir, "T-1016", "open")
+
+    assert board.main(["show", "T-1016"]) == 0
+
+    out = capsys.readouterr().out
+    assert "-- T-1016 (open/) --" in out
+    tail = out.split("-- T-1016 (open/) --", 1)[1]
+    assert "-- 라운드" not in tail and "미회수" not in tail
+    assert "--- 0" not in tail, "라운드 구분선이 없는데 렌더됨"
+
+
+@requires_git
+def test_show_survives_a_malformed_round_file(board_env, capsys):
+    """표시면은 조회를 막지 않는다 — 이름 문법 위반은 loud 경고이고 명세는 그대로 나온다."""
+    board, board_dir, _bare = board_env
+    _seed_ticket(board_dir, "T-1017", "open")
+    directory = _rounds_dir(board_dir, "T-1017")
+    directory.mkdir(parents=True)
+    (directory / "notes.md").write_text("라운드가 아닌 파일\n", encoding="utf-8")
+
+    assert board.main(["show", "T-1017"]) == 0
+
+    captured = capsys.readouterr()
+    assert "-- T-1017 (open/) --" in captured.out
+    assert "라운드 조회 실패" in captured.err
 
 
 @requires_git
@@ -222,9 +307,9 @@ def test_growth_commands_allow_each_active_state(board_env, status, command):
     argv = (["section-add", "T-1003", "--role", "developer"]
             if command == "section-add" else ["tier", "T-1003", "pm-direct"])
     assert board.main(argv) == 0
-    fm, body = board.load_ticket(path)
+    fm, _body = board.load_ticket(path)
     if command == "section-add":
-        assert "## 구현 보충 (developer · " in body
+        assert _round_names(board_dir, "T-1003") == ["01-developer.md"]
     else:
         assert fm["tier"] == "pm-direct"
 
@@ -245,6 +330,7 @@ def test_growth_commands_reject_non_active_states_without_writes(board_env, caps
             if command == "section-add" else ["tier", "T-1004", "normal"])
     assert board.main(argv) == 1
     assert path.read_text(encoding="utf-8") == before_text
+    assert _round_names(board_dir, "T-1004") == []
     assert _head(board_dir) == before_head
     error = capsys.readouterr().err
     assert "open/claimed 티켓" in error
@@ -256,17 +342,20 @@ def test_growth_commands_reject_non_active_states_without_writes(board_env, caps
 
 @requires_git
 def test_draft_section_add_allows_only_architect_and_never_syncs(board_env, monkeypatch, capsys):
+    """draft 의 라운드도 같은 규칙으로 예약하되 board-git 부기는 promote 가 소유한다."""
     board, board_dir, _bare = board_env
     path = _write_ticket(board_dir, "T-1011", "draft")
     before_head = _head(board_dir)
+    before_spec = path.read_bytes()
     sync_calls = []
     monkeypatch.setattr(
-        board, "_growth_mutation_sync",
+        board, "_rounds_mutation_sync_paths",
         lambda *_args: sync_calls.append(_args) or True,
     )
 
     assert board.main(["section-add", "T-1011", "--role", "architect"]) == 0
-    assert "role=architect" in path.read_text(encoding="utf-8")
+    assert _round_names(board_dir, "T-1011") == ["01-architect.md"]
+    assert path.read_bytes() == before_spec
     assert sync_calls == [] and _head(board_dir) == before_head
     assert "local draft; promote가 출하 소유" in capsys.readouterr().out
 
@@ -279,6 +368,7 @@ def test_draft_section_add_rejects_non_architect_before_write(board_env, capsys,
     before = path.read_bytes()
     assert board.main(["section-add", "T-1012", "--role", role]) == 1
     assert path.read_bytes() == before
+    assert _round_names(board_dir, "T-1012") == []
     assert "draft×architect" in capsys.readouterr().err
 
 
@@ -313,6 +403,7 @@ def test_growth_commands_missing_ticket_are_rc2(board_env, command, capsys):
     argv = (["section-add", "T-9999", "--role", "developer"]
             if command == "section-add" else ["tier", "T-9999", "normal"])
     assert board.main(argv) == 2
+    assert _round_names(_board_dir, "T-9999") == []
     assert "ticket not found" in capsys.readouterr().err
 
 
@@ -330,9 +421,9 @@ def test_growth_commands_commit_failure_preserves_local_mutation(board_env, caps
             if command == "section-add" else ["tier", "T-1006", "hard"])
     assert board.main(argv) == 0
     assert _head(board_dir) == before_head
-    fm, body = board.load_ticket(path)
+    fm, _body = board.load_ticket(path)
     if command == "section-add":
-        assert "## 리뷰 (code-reviewer · " in body
+        assert _round_names(board_dir, "T-1006") == ["01-code-reviewer.md"]
     else:
         assert fm["tier"] == "hard"
     captured = capsys.readouterr()
@@ -341,17 +432,19 @@ def test_growth_commands_commit_failure_preserves_local_mutation(board_env, caps
 
 
 @requires_git
-@pytest.mark.parametrize("growth", ["section-add", "tier"])
 @pytest.mark.parametrize("lifecycle", ["block", "claim"])
-def test_growth_write_and_lifecycle_transition_share_one_ticket_lock(
-        board_env, monkeypatch, growth, lifecycle):
-    """MF-1 결정적 probe: 성장 replace 중 lifecycle move/dump가 끼어 중복/유실되지 않는다.
+def test_inplace_write_and_lifecycle_transition_share_one_ticket_lock(
+        board_env, monkeypatch, lifecycle):
+    """결정적 probe: in-place 티켓 write(tier) 중 lifecycle move/dump가 끼어들지 않는다.
 
-    성장 writer가 temp write를 끝내고 최종 replace 직전에 멈춘다. 이 시점에 block 또는 claim을
-    시작한다. 공통 board_lock이면 lifecycle은 끝나지 못하고, 성장 write 완료 뒤 최신 body를 읽어
-    이동한다. lock이 빠지면 lifecycle이 먼저 이동/dump한 뒤 성장 replace가 옛 open path를 다시
-    만들어 open+blocked/claimed 중복 또는 성장 데이터 유실을 즉시 재현한다.
+    tier writer가 temp write를 끝내고 최종 replace 직전에 멈춘다. 이 시점에 block 또는 claim을
+    시작한다. 공통 board_lock이면 lifecycle은 끝나지 못하고, write 완료 뒤 최신 body를 읽어
+    이동한다. lock이 빠지면 lifecycle이 먼저 이동/dump한 뒤 replace가 옛 open path를 다시
+    만들어 open+blocked/claimed 중복 또는 기록 유실을 즉시 재현한다.
+
+    section-add 는 이 축의 대상이 아니다 — 명세 파일을 쓰지 않고 자기 라운드 파일만 만든다.
     """
+    growth = "tier"
     if not _has_os_file_lock():
         pytest.skip("OS 배타락 부재 — board_lock 무락 fallback에서는 경합 단언 비적용")
 
@@ -361,7 +454,7 @@ def test_growth_write_and_lifecycle_transition_share_one_ticket_lock(
     # 경합 테스트 관심은 파일 트랜잭션이다. board-git/파생 render는 이미 별도 실제 Git 테스트가
     # 검증하며 여기서 섞으면 lock 획득 순서 대신 원격 왕복 타이밍을 재게 된다.
     monkeypatch.setattr(board, "_board_git_enabled", lambda: False)
-    monkeypatch.setattr(board, "_growth_mutation_sync", lambda _message, _path: True)
+    monkeypatch.setattr(board, "_rounds_mutation_sync_paths", lambda _message, _paths: True)
     monkeypatch.setattr(board, "_board_git_sync_best_effort", lambda _message, _paths: True)
     monkeypatch.setattr(board, "refresh_board", lambda: None)
 
@@ -431,12 +524,9 @@ def test_growth_write_and_lifecycle_transition_share_one_ticket_lock(
     destination = board_dir / "tickets" / ("blocked" if lifecycle == "block" else "claimed") / open_path.name
     assert destination.exists()
     assert len(list((board_dir / "tickets").glob(f"*/{open_path.name}"))) == 1
-    fm, body = board.load_ticket(destination)
+    fm, _body = board.load_ticket(destination)
     assert fm["status"] == ("blocked" if lifecycle == "block" else "claimed")
-    if growth == "section-add":
-        assert "pm-ticket-section:start role=developer" in body
-    else:
-        assert fm["tier"] == "hard"
+    assert fm["tier"] == "hard"
 
 
 @requires_git
@@ -536,10 +626,10 @@ def test_strict_claim_confirm_or_rollback_excludes_growth_until_finished(
     final_path = board_dir / "tickets" / final_status / open_path.name
     assert final_path.exists()
     assert len(list((board_dir / "tickets").glob(f"*/{open_path.name}"))) == 1
-    fm, body = board.load_ticket(final_path)
+    fm, _body = board.load_ticket(final_path)
     assert fm["status"] == final_status
     if growth == "section-add":
-        assert "pm-ticket-section:start role=developer" in body
+        assert _round_names(board_dir, "T-1009") == ["01-developer.md"]
     else:
         assert fm["tier"] == "hard"
 
@@ -554,16 +644,19 @@ def test_strict_claim_confirm_or_rollback_excludes_growth_until_finished(
         assert "remote racer" in subjects
     growth_subject = "section-add T-1009 developer" if growth == "section-add" else "tier T-1009 hard"
     assert growth_subject in subjects
-    remote_text = _remote_text(bare, f"tickets/{final_status}/{open_path.name}")
-    assert ("pm-ticket-section:start role=developer" in remote_text
-            if growth == "section-add" else "tier: hard" in remote_text)
+    if growth == "section-add":
+        remote_round = _remote_text(bare, "tickets/rounds/T-1009/01-developer.md")
+        assert remote_round.startswith("## 구현 보충 (developer · ")
+    else:
+        assert "tier: hard" in _remote_text(
+            bare, f"tickets/{final_status}/{open_path.name}")
 
 
 @requires_git
-@pytest.mark.parametrize("growth", ["section-add", "tier"])
-def test_identity_migration_and_growth_share_snapshot_to_dump_lock(
-        board_env, monkeypatch, growth):
-    """신규 MF probe: migration stale snapshot dump 전에 growth가 끼어 marker/tier를 잃지 않는다."""
+def test_identity_migration_and_inplace_write_share_snapshot_to_dump_lock(
+        board_env, monkeypatch):
+    """probe: migration stale snapshot dump 전에 tier write 가 끼어 그 값을 잃지 않는다."""
+    growth = "tier"
     if not _has_os_file_lock():
         pytest.skip("OS 배타락 부재 — board_lock 무락 fallback에서는 경합 단언 비적용")
 
@@ -573,7 +666,7 @@ def test_identity_migration_and_growth_share_snapshot_to_dump_lock(
         path.read_text(encoding="utf-8").replace("created_by: test\n", "created_by: null\n"),
         encoding="utf-8",
     )
-    monkeypatch.setattr(board, "_growth_mutation_sync", lambda _message, _path: True)
+    monkeypatch.setattr(board, "_rounds_mutation_sync_paths", lambda _message, _paths: True)
 
     migration_paused = threading.Event()
     allow_migration_dump = threading.Event()
@@ -625,12 +718,9 @@ def test_identity_migration_and_growth_share_snapshot_to_dump_lock(
     assert not migration_thread.is_alive() and not growth_thread.is_alive(), "migration 경합 timeout"
     assert not errors, errors
     assert results == {"migration": (1, True), "growth": 0}
-    fm, body = board.load_ticket(path)
+    fm, _body = board.load_ticket(path)
     assert fm["created_by"] == "alice", "migration 결과 유실"
-    if growth == "section-add":
-        assert "pm-ticket-section:start role=developer" in body, "migration stale body가 marker를 덮음"
-    else:
-        assert fm["tier"] == "hard", "migration stale frontmatter가 tier를 덮음"
+    assert fm["tier"] == "hard", "migration stale frontmatter가 tier를 덮음"
 
 
 def test_ticket_writer_lock_inventory_and_claim_lock_order_are_ast_guarded():
@@ -660,18 +750,16 @@ def test_ticket_writer_lock_inventory_and_claim_lock_order_are_ast_guarded():
         )
     }
     reviewed_non_ticket_exceptions = {
-        "cmd_idea_new",       # ideas/ 전용, ticket 성장/lifecycle 대상 아님.
+        "cmd_idea_new",       # ideas/ 전용, ticket lifecycle 대상 아님.
         "_transition_idea",   # ideas/ open→promoted|killed.
         "cmd_promote_scope",  # decisions/specs frontmatter writer.
         "repin_verified_at",  # current-truth 문서 freshness writer.
-        # 성장 장부(.jsonl) 의 ID 라벨 재기록 — ticket 파일 sink 가 아니며 relabel 파이프라인의
-        # board_lock 구간 안에서만 불린다(T-0699).
-        "_relabel_growth_ledger_records",
     }
     discovered_ticket_writers = direct_sink_callers - reviewed_non_ticket_exceptions
+    # section-add 는 없다 — 라운드 예약은 명세 파일을 쓰지 않고 자기 라운드 파일만 만든다.
     expected_ticket_sink_callers = {
         "cmd_new", "cmd_promote", "_cmd_claim_locked", "cmd_complete", "cmd_block",
-        "cmd_unclaim", "cmd_unblock", "cmd_section_add", "cmd_tier", "_migrate_tickets_apply",
+        "cmd_unclaim", "cmd_unblock", "cmd_tier", "_migrate_tickets_apply",
     }
     assert direct_sink_callers & reviewed_non_ticket_exceptions == reviewed_non_ticket_exceptions, (
         "reviewed exception이 더 이상 sink caller가 아님 — inventory 분류 갱신 필요")
@@ -680,16 +768,34 @@ def test_ticket_writer_lock_inventory_and_claim_lock_order_are_ast_guarded():
 
     ordinary_writers = {
         "cmd_new", "cmd_promote", "cmd_complete", "cmd_block", "cmd_unclaim", "cmd_unblock",
-        "cmd_section_add", "cmd_tier", "_migrate_tickets_apply",
+        "cmd_tier", "_migrate_tickets_apply",
     }
     assert ordinary_writers | {"_cmd_claim_locked"} == discovered_ticket_writers
     for name in ordinary_writers:
         locks = lock_withs(functions[name], "board_lock")
         assert len(locks) == 1, f"{name} board_lock 경계 누락/중복: {len(locks)}"
-        forbidden_inside = {"refresh_board", "_growth_mutation_sync", "_board_git_sync_best_effort"}
+        forbidden_inside = {
+            "refresh_board", "_rounds_mutation_sync_paths", "_board_git_sync_best_effort"}
         assert not forbidden_inside.intersection(
             call_name(node) for node in ast.walk(locks[0]) if isinstance(node, ast.Call)
         ), f"{name} board_lock 안에서 refresh/board-git 재진입"
+
+    # section-add 는 조회 구간만 board_lock 을 잡고, 채번+생성은 seam 에 **진입하지 않은** 락
+    # 컨텍스트를 넘겨 그쪽이 잡는다(board_lock 은 재진입이 없다).
+    section_add = functions["cmd_section_add"]
+    assert len(lock_withs(section_add, "board_lock")) == 1, "조회 구간 락 경계 누락/중복"
+    reserve = [
+        node for node in ast.walk(section_add)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "reserve_round"
+    ]
+    assert len(reserve) == 1, "라운드 예약 호출이 하나가 아님"
+    assert any(
+        kw.arg == "lock" and call_name(kw.value) == "board_lock"
+        for kw in reserve[0].keywords
+    ), "예약에 board_lock 컨텍스트를 넘기지 않음"
+    assert not lock_withs(section_add, "board_lock")[0].items[0].optional_vars, \
+        "조회 락은 이름을 묶지 않는다(구간 밖 재사용 금지)"
 
     claim = functions["cmd_claim"]
     git_locks = lock_withs(claim, "board_git_lock")
@@ -712,27 +818,23 @@ def test_ticket_writer_lock_inventory_and_claim_lock_order_are_ast_guarded():
 
 
 @requires_git
-def test_growth_section_is_not_a_promote_placeholder(board_env):
-    """빈 성장 절(marker 포함)은 기존 draft promote placeholder/thin gate를 새로 막지 않는다."""
+def test_promote_ships_the_draft_rounds_with_the_spec(board_env):
+    """draft 의 라운드는 promote 커밋에 함께 실린다 — 예약 자체는 promote 게이트를 막지 않는다."""
     board, board_dir, bare = board_env
     path = _write_ticket(board_dir, "T-1007", "draft")
-    original = path.read_text(encoding="utf-8")
-    content = f"## 구현 보충 (developer · {datetime.date.today().isoformat()})\n\n"
-    digest = board._load_pm_delegate_module().seal_for(content.encode("utf-8"))
-    growth = (
-        "\n<!-- pm-ticket-section:start role=developer -->\n"
-        + content
-        + "<!-- pm-ticket-section:end role=developer -->\n"
-        + f"<!-- pm-ticket-seal role=developer ordinal=0 sha256={digest} by=backfill -->\n"
-    )
-    path.write_text(original + growth, encoding="utf-8")
 
+    assert board.main(["section-add", "T-1007", "--role", "architect"]) == 0
+    assert _round_names(board_dir, "T-1007") == ["01-architect.md"]
     assert board.main(["promote", "T-1007"]) == 0
+
     promoted = board_dir / "tickets" / "open" / path.name
     assert promoted.exists() and not path.exists()
-    assert "pm-ticket-section:start role=developer" in promoted.read_text(encoding="utf-8")
-    assert "tickets/open/T-1007-growth.md" in _git(
-        ["ls-tree", "-r", "--name-only", "main"], bare).stdout
+    tracked = _git(["ls-tree", "-r", "--name-only", "main"], bare).stdout
+    assert "tickets/open/T-1007-growth.md" in tracked
+    assert "tickets/rounds/T-1007/01-architect.md" in tracked, \
+        "draft 라운드가 승격 커밋에서 빠짐(미커밋으로 눌러앉는다)"
+    assert _remote_text(bare, "tickets/rounds/T-1007/01-architect.md") == (
+        _rounds_dir(board_dir, "T-1007") / "01-architect.md").read_text(encoding="utf-8")
 
 
 def test_parser_dispatch_keeps_existing_commands_and_classifies_growth_mutations():

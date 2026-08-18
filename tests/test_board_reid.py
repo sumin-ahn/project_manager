@@ -642,3 +642,78 @@ def test_cli_reid_session_flag_parsed(board):
     assert args.repo == "proj"
     assert args.slot == 1
     assert args.dry_run is False
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 라운드 사이드카 — 디렉터리 동반 rename + 본문 참조 재작성
+# ════════════════════════════════════════════════════════════════════════
+#
+# 라운드는 티켓 ID 로 이름 붙은 디렉터리 하나에 모여 있다. 두고 가면 새 ID 는 라운드 없는
+# 티켓이 되고 옛 ID 자리엔 티켓 없는 라운드가 남는다.
+
+def _seed_round(board, tid: str, name: str, text: str) -> Path:
+    path = board._load_ticket_rounds().rounds_dir_for_ticket(tid, board.tickets_dir()) / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8", newline="")
+    return path
+
+
+def _rounds_dir(board, tid: str) -> Path:
+    return board._load_ticket_rounds().rounds_dir_for_ticket(tid, board.tickets_dir())
+
+
+def test_reid_moves_the_rounds_directory_with_the_ticket(board):
+    """티켓 파일 rename 과 같은 적용 구간에서 라운드 디렉터리도 새 ID 로 옮긴다."""
+    _seed_ticket(board, "T-0036")
+    _seed_round(board, "T-0036", "01-developer.md",
+                "## 구현 보충 (developer · 2026-01-02)\n\n산출 본문.\n")
+    _seed_round(board, "T-0036", "02-code-reviewer.md",
+                "## 리뷰 (code-reviewer · 2026-01-02)\n\n리뷰 본문.\n")
+
+    assert board.cmd_reid(_ns("T-0036", "T-0250")) == 0
+
+    assert not _rounds_dir(board, "T-0036").exists(), "옛 ID 자리에 라운드가 남음"
+    moved = _rounds_dir(board, "T-0250")
+    assert sorted(p.name for p in moved.iterdir()) == [
+        "01-developer.md", "02-code-reviewer.md"]
+    assert "산출 본문." in (moved / "01-developer.md").read_text(encoding="utf-8")
+
+
+def test_reid_rewrites_ticket_references_inside_round_bodies(board):
+    """라운드 본문의 wikilink·bare 참조도 같은 토큰 rewrite 를 받는다."""
+    _seed_ticket(board, "T-0036")
+    _seed_round(board, "T-0036", "01-developer.md",
+                "## 구현 보충 (developer · 2026-01-02)\n\n"
+                "[[T-0036]] 의 후속이고 T-0036 을 참조한다. T-00361 은 건드리지 않는다.\n")
+
+    assert board.cmd_reid(_ns("T-0036", "T-0250")) == 0
+
+    text = (_rounds_dir(board, "T-0250") / "01-developer.md").read_text(encoding="utf-8")
+    assert "[[T-0250]]" in text and "T-0250 을 참조한다" in text
+    assert "T-0036" not in text.replace("T-00361", "")
+    assert "T-00361" in text, "경계 규칙 위반(토큰 아닌 부분치환)"
+
+
+def test_reid_aborts_when_the_target_rounds_directory_is_occupied(board, capsys):
+    """계획 밖 라운드 디렉터리가 dst 를 점유하면 아무것도 쓰기 전에 중단한다."""
+    _seed_ticket(board, "T-0036")
+    _seed_round(board, "T-0036", "01-developer.md", "## 구현 보충 (developer · 2026-01-02)\n\nA\n")
+    _seed_round(board, "T-0250", "01-developer.md", "## 구현 보충 (developer · 2026-01-02)\n\nB\n")
+
+    rc = board.cmd_reid(_ns("T-0036", "T-0250"))
+
+    assert rc == 1
+    assert "중단" in capsys.readouterr().err
+    assert _ids_on_disk(board) == {"T-0036"}
+    assert "A\n" in (_rounds_dir(board, "T-0036") / "01-developer.md").read_text(
+        encoding="utf-8")
+    assert "B\n" in (_rounds_dir(board, "T-0250") / "01-developer.md").read_text(
+        encoding="utf-8")
+
+
+def test_reid_without_rounds_is_unaffected(board):
+    """라운드가 없는 티켓(대다수)의 reid 는 종전 경로 그대로다."""
+    _seed_ticket(board, "T-0036")
+    assert board.cmd_reid(_ns("T-0036", "T-0250")) == 0
+    assert _ids_on_disk(board) == {"T-0250"}
+    assert not _rounds_dir(board, "T-0250").exists()
