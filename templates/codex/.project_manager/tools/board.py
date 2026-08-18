@@ -9672,6 +9672,41 @@ def _rounds_migration_deletions(
     return lines
 
 
+def _board_gitattributes_text(path: Path) -> str:
+    """board `.gitattributes` 본문 (없거나 못 읽으면 빈 문자열·표기 보존 판독)."""
+    try:
+        if not path.is_file():
+            return ""
+        return file_lock.read_text_shared(path, encoding="utf-8", newline="")
+    except (OSError, UnicodeError):
+        return ""
+
+
+def _print_rounds_migration_plan(
+        plan: Sequence[_RoundsMigrationTicket], deletions: Sequence[str]) -> None:
+    """계획 출력 — 티켓별 라운드 파일명과 삭제 목록(쓰기 0 경로 전용).
+
+    파일명은 예약이 실제로 붙일 이름이다. 라운드가 이미 있는 티켓이면 그 뒤 번호가 되므로
+    현재 라운드 수를 시작점으로 센다.
+    """
+    rounds = _load_ticket_rounds()
+    for item in plan:
+        try:
+            start = len(rounds.load_rounds(
+                tickets_dir(), item.ticket, ticket_text=item.body_before))
+        except rounds.RoundsError:
+            start = 0                   # 판정은 적용 실행이 loud 하게 한다(계획은 표시만).
+        names = ", ".join(
+            rounds.round_filename(start + ordinal, section.role)
+            for ordinal, section in enumerate(item.sections, start=1)
+        )
+        print(f"  {item.ticket} ({item.status}/): {names}")
+    if deletions:
+        print("  삭제 대상:")
+        for line in deletions:
+            print(f"    - {line}")
+
+
 def cmd_rounds_migrate(args: argparse.Namespace) -> int:
     """구 역할 절·성장 장부·구 위임 사본 산출물을 라운드 파일 형상으로 1회 변환한다.
 
@@ -9787,41 +9822,6 @@ def cmd_rounds_migrate(args: argparse.Namespace) -> int:
 
     print(f"변환 완료 {migrated}건{_board_git_mutation_state_suffix(ready)}")
     return 1 if failures else 0
-
-
-def _board_gitattributes_text(path: Path) -> str:
-    """board `.gitattributes` 본문 (없거나 못 읽으면 빈 문자열·표기 보존 판독)."""
-    try:
-        if not path.is_file():
-            return ""
-        return file_lock.read_text_shared(path, encoding="utf-8", newline="")
-    except (OSError, UnicodeError):
-        return ""
-
-
-def _print_rounds_migration_plan(
-        plan: Sequence[_RoundsMigrationTicket], deletions: Sequence[str]) -> None:
-    """계획 출력 — 티켓별 라운드 파일명과 삭제 목록(쓰기 0 경로 전용).
-
-    파일명은 예약이 실제로 붙일 이름이다. 라운드가 이미 있는 티켓이면 그 뒤 번호가 되므로
-    현재 라운드 수를 시작점으로 센다.
-    """
-    rounds = _load_ticket_rounds()
-    for item in plan:
-        try:
-            start = len(rounds.load_rounds(
-                tickets_dir(), item.ticket, ticket_text=item.body_before))
-        except rounds.RoundsError:
-            start = 0                   # 판정은 적용 실행이 loud 하게 한다(계획은 표시만).
-        names = ", ".join(
-            rounds.round_filename(start + ordinal, section.role)
-            for ordinal, section in enumerate(item.sections, start=1)
-        )
-        print(f"  {item.ticket} ({item.status}/): {names}")
-    if deletions:
-        print("  삭제 대상:")
-        for line in deletions:
-            print(f"    - {line}")
 
 
 def cmd_tier(args: argparse.Namespace) -> int:
