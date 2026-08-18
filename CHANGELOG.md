@@ -121,6 +121,15 @@
 
 ### Fixed
 
+- **`pm-update` 가 중앙 로더 seam 을 선복구한 직후 같은 실행에서 Windows 가 간헐적으로 `ModuleNotFoundError`
+  로 끝나던 것을 고쳤다.** dest 에 `repo_owned_files.py` 가 아예 없던(중단된 갱신) 인스턴스에서 복구
+  사본을 쓴 뒤 이름으로 import 하는 폴백 로더가 Python import 캐시(디렉터리 목록·mtime 기준)에 막혀
+  10회 중 4회꼴로 rc1 이 났다. 폴백 로더가 import 전에 `importlib.invalidate_caches()` 를 부른다(전 엔진
+  모듈의 동일 부트스트랩 블록). 재실행으로만 넘어가던 인스턴스는 조치 없이 한 번에 통과한다.
+- **opencode 로 cross 위임된 `researcher` 가 티켓 사본의 자기 역할 절을 쓸 수 있다.** 엔진이 결속하는
+  runtime 역할 fragment 가 researcher 의 `edit` 를 deny 해, 출하 카드(`edit: allow`·`bash: deny`)와
+  달리 회수 절이 빈 채로 남았다. fragment 도 카드와 같은 축(edit allow · bash/task/webfetch deny)이다.
+  인스턴스 조치는 없다.
 - **`ticket_finish` 의 `--no-pytest` 가 회귀 실행만 건너뛴다.** 이전에는 슬롯(코드 트리) 해소까지 건너뛰어
   diff 서킷브레이커 측정과 `[4/5]` stage 가 PM 홈(분리 형상에서는 엔진 import 사본)을 보았다. 이제
   코드 트리 소비자(diff 측정·stage·PM-direct 재검)는 전부 같은 해소 결과를 쓰고, 다중 슬롯이 모호하면
