@@ -607,9 +607,13 @@ def test_concurrent_claim_only_one_wins(proj):
         assert ("claim race lost" in stderr
                 or f"cannot claim {tid}: currently in claimed/" in stderr), (
             f"패배자 stderr 이 알려진 깨끗한 패배 형태가 아님: {stderr!r}")
-    # winner 는 어떤 패배 메시지도 내지 않는다(자기 stderr 깨끗).
+    # winner 는 어떤 패배 메시지도, traceback 도 내지 않는다(자기 stderr 깨끗). 비-git tmp
+    # 형상이 내는 claim rev 박제 advisory 는 패배가 아니라 측정 폭 안내라 이 단언의 대상이
+    # 아니다 — 여기서 재는 성질은 "승자가 진 것처럼 보이지 않는다" 이다.
     win_stderr = wins[0][1]
-    assert win_stderr == "", f"승자 stderr 이 비어있지 않음: {win_stderr!r}"
+    assert "claim race lost" not in win_stderr and "cannot claim" not in win_stderr, \
+        f"승자 stderr 에 패배 메시지가 섞임: {win_stderr!r}"
+    assert "Traceback" not in win_stderr, f"승자 stderr 에 traceback: {win_stderr!r}"
 
     # 최종: ticket 은 claimed/ 에 정확히 1개·open 에 잔존 0 (분열·중복 없음).
     claimed = list((board.TICKETS_DIR / "claimed").glob(f"{tid}-*.md"))

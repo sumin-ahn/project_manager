@@ -4540,15 +4540,17 @@ def _untracked_diff_runs(
 def _stage_diff_runs(
     root: Path, stage_base: str, paths: Sequence[str],
     run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
-    *, extra_args: Sequence[str] = (),
+    *, extra_args: Sequence[str] = (), untracked: bool | None = None,
 ) -> list[subprocess.CompletedProcess]:
     """한 diff 단계를 이루는 git 실행 결과 — 'HEAD' 단계만 스테이징/언스테이징+untracked 다.
 
     `extra_args` 는 같은 폭을 **다른 형식**으로 뽑는 데 쓴다(`--numstat`). 폭 자체(단계 표)는
     한 곳이 정하고 형식만 갈리게 해, 리뷰가 본 diff 와 서킷브레이커가 잰 diff 가 어긋나지 않게 한다.
 
-    untracked 는 **작업트리 단계('HEAD')에만** 붙인다 — 명시 base·폴백 커밋 단계는 커밋 사이의
-    폭이라 아직 커밋되지 않은 신규 파일이 그 폭의 구성원이 아니다.
+    untracked 는 기본적으로 **작업트리 단계('HEAD')에만** 붙는다 — 명시 base·폴백 커밋 단계는
+    커밋 사이의 폭이라 아직 커밋되지 않은 신규 파일이 그 폭의 구성원이 아니다. `untracked` 를
+    명시하면 그 판정을 호출부가 소유한다: claim 앵커 단계(`git diff <claim 시점 rev>`)는 커밋
+    이름을 base 로 쓰지만 비교 대상이 **현재 작업트리**라 신규 파일도 그 폭의 구성원이다.
     """
     _run = run_fn or subprocess.run
     arg_sets = (("--cached",), ()) if stage_base == "HEAD" else ((stage_base,),)
@@ -4557,7 +4559,8 @@ def _stage_diff_runs(
              capture_output=True, text=True, encoding="utf-8", errors="replace")
         for args in arg_sets
     ]
-    if stage_base == "HEAD":
+    include_untracked = stage_base == "HEAD" if untracked is None else untracked
+    if include_untracked:
         runs.extend(
             _untracked_diff_runs(root, paths, run_fn, extra_args=extra_args))
     return runs
@@ -4625,26 +4628,108 @@ def _sum_numstat(text: str) -> int:
     return total
 
 
-def diff_line_total(
+# ── 서킷브레이커 측정 폭 (claim 앵커) ──────────────────────────────────────
+# 서킷브레이커가 재야 하는 것은 "이 티켓이 claim 이후 남긴 변경"이다. 작업트리+직전 커밋 한 칸
+# 이라는 옛 폭은 dev 브랜치를 `--no-ff` merge 로 흡수하는 형상에서 0 에 수렴한다 — finish 시점
+# 트리는 clean 이고 마지막 커밋이 전파/부기 커밋이면 티켓 경로 교집합이 비기 때문이다(실측).
+# claim 시점 코드 트리 HEAD 를 앵커로 쓰면 그 사이 커밋(merge 로 들어온 dev 누적 포함)이
+# 한 폭에 들어온다.
+
+# 앵커는 git argv 에 그대로 들어가므로 형태를 먼저 좁힌다 — 옵션처럼 보이는 값(`--foo`)이
+# base 자리로 새면 git 이 그것을 플래그로 읽는다. board 가 박제하는 값은 40자 sha 다.
+_CLAIMED_REV_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+
+CLAIMED_REV_ABSENT_NOTE = (
+    "claimed_rev 없음 — 폭 과소 측정 가능(옛 폭·작업트리+직전 커밋 한 칸으로만 잰다). "
+    "claim 시점 rev 가 박제된 티켓부터 claim 이후 누적(merge 흡수분 포함)을 잰다."
+)
+CLAIMED_REV_UNRESOLVED_NOTE = (
+    "claimed_rev {rev} 를 이 트리에서 해소하지 못함 — 폭 과소 측정 가능(옛 폭으로 잰다). "
+    "박제된 rev 가 다른 저장소의 것이거나 히스토리가 다시 쓰였는지 확인하라."
+)
+
+
+def claim_anchor(
+    root: Path, claimed_rev: str | None,
+    run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
+) -> tuple[str | None, str | None]:
+    """측정에 쓸 claim 앵커와 **폭 축소 사유** — `(앵커, None)` 또는 `(None, 사유)`.
+
+    `git diff <rev>` 는 rev 를 못 찾으면 rc≠0 이고 측정 경로는 실패한 실행을 '이 단계에는 변경
+    없음'으로 접는다. 그래서 해소되지 않는 앵커를 그대로 넘기면 **조용한 0 줄**(false-green)이
+    된다 — 폭을 고르기 전에 존재를 한 번 묻고, 없으면 사유를 돌려 호출부가 옛 폭으로 접되
+    그 사실을 시끄럽게 알리게 한다."""
+    if not claimed_rev:
+        return None, CLAIMED_REV_ABSENT_NOTE
+    if not _CLAIMED_REV_RE.match(claimed_rev):
+        return None, CLAIMED_REV_UNRESOLVED_NOTE.format(rev=claimed_rev)
+    _run = run_fn or subprocess.run
+    try:
+        result = _run(
+            ["git", "-C", str(root), "rev-parse", "--verify", "--quiet",
+             f"{claimed_rev}^{{commit}}"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+    except OSError:
+        return None, CLAIMED_REV_UNRESOLVED_NOTE.format(rev=claimed_rev)
+    if result.returncode != 0:
+        return None, CLAIMED_REV_UNRESOLVED_NOTE.format(rev=claimed_rev)
+    return claimed_rev, None
+
+
+def _measure_stages(
+    base: str, claimed_rev: str | None,
+) -> tuple[tuple[str, bool], ...]:
+    """서킷브레이커가 잴 단계 표 — `(git diff 기준, untracked 포함 여부)`.
+
+    claim 앵커가 있고 base 가 기본('HEAD')이면 단계는 하나다: `git diff <claimed_rev>` 는 그
+    커밋 트리와 **현재 작업트리**를 비교하므로 claim 이후 커밋(merge 로 흡수한 dev 브랜치 누적
+    포함)·스테이징·언스테이징이 한 폭에 들어온다. untracked 신규 파일도 작업트리 구성원이라
+    함께 센다(stage 전 대형 신규 파일이 0 줄로 통과하던 창을 그대로 닫아 둔다).
+
+    앵커가 없거나(구 티켓) `--base` 가 명시되면 옛 폭 그대로다 — 명시 base 는 사용자가 고른
+    폭이라 앵커가 덮어쓰지 않는다."""
+    if claimed_rev and base == "HEAD":
+        return ((claimed_rev, True),)
+    return tuple((stage, stage == "HEAD") for stage in _diff_bases(base))
+
+
+def measured_numstat_text(
     root: Path, base: str, paths: Sequence[str],
     run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
-) -> int:
-    """검토 폭의 diff 총량(추가+삭제) — `extract_diff` 와 **같은 단계 표**를 쓴다.
+    *, claimed_rev: str | None = None,
+) -> str:
+    """서킷브레이커 측정 폭의 `--numstat` 원문 — **폭의 단일 정의 지점**.
 
-    폭 판정(어느 base 단계가 이번 diff 인가)은 새로 만들지 않고 `_diff_bases` 를 그대로 재사용하고,
-    형식만 `--numstat` 이다. 실패한 git 실행은 '그 단계에는 변경 없음'으로 본다(추출 경로의 폴백
-    규칙과 같다 — 측정 실패가 게이트를 벽돌로 만들지 않는다)."""
-    for stage_base in _diff_bases(base):
+    총량(`diff_line_total`)과 경로별 귀속(완료 부기의 claimed 합집합 분배)이 같은 함수를 소비해,
+    두 소비자가 다른 폭을 재는 어긋남이 생기지 않는다. 실패한 git 실행은 '그 단계에는 변경
+    없음'으로 본다(추출 경로의 폴백 규칙과 같다 — 측정 실패가 게이트를 벽돌로 만들지 않는다)."""
+    for stage_base, untracked in _measure_stages(base, claimed_rev):
         text = "".join(
             result.stdout
             for result in _stage_diff_runs(
                 root, stage_base, paths, run_fn, extra_args=("--numstat",),
+                untracked=untracked,
             )
             if result.returncode == 0
         )
         if text.strip():
-            return _sum_numstat(text)
-    return 0
+            return text
+    return ""
+
+
+def diff_line_total(
+    root: Path, base: str, paths: Sequence[str],
+    run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
+    *, claimed_rev: str | None = None,
+) -> int:
+    """검토 폭의 diff 총량(추가+삭제) — `measured_numstat_text` 폭을 합계로 접는다.
+
+    폭 판정(어느 단계가 이번 측정인가)은 새로 만들지 않고 그 함수를 그대로 재사용하고, 형식만
+    `--numstat` 이다. `claimed_rev` 는 claim 앵커(옵션) — 없으면 종전 폭 그대로다."""
+    return _sum_numstat(
+        measured_numstat_text(root, base, paths, run_fn, claimed_rev=claimed_rev)
+    )
 
 
 def _diff_cap_refusal(
@@ -4654,8 +4739,11 @@ def _diff_cap_refusal(
     """이번 실행의 diff 서킷브레이커 판정 (통과·가드 off 면 None).
 
     상한을 고르는 티켓은 `--ticket`(검토 범위를 정한 티켓) 우선, 없으면 `--gate`(게이트 표식)다.
-    측정 폭은 **이번 실행이 실제로 리뷰하는 범위**(해소된 검토 경로)라 리뷰가 본 것과 잰 것이
-    같다. 측정 실패(git 부재·비-repo)는 0 으로 접혀 가드가 조용히 off 된다 — 이 축의 실패로
+    측정 폭은 **이번 실행이 실제로 리뷰하는 범위**(해소된 검토 경로)이고, 기준점은 그 티켓의
+    claim 시점 rev(`claimed_rev`)다 — 완료 부기 서킷브레이커와 같은 폭이라 두 게이트가 다른
+    숫자를 보지 않는다. `--base` 가 명시되면 사용자가 고른 폭이 우선한다(앵커 미적용). 앵커를
+    못 쓰는 티켓은 옛 폭으로 재되 **경고 1줄**을 남긴다 — 과소 측정이 조용히 통과하지 않게 한다.
+    측정 실패(git 부재·비-repo)는 0 으로 접혀 가드가 조용히 off 된다 — 이 축의 실패로
     리뷰 채널을 막지 않는다(hard 거부는 예산 축이 소유)."""
     ticket = args.ticket or args.gate
     if not ticket:
@@ -4664,8 +4752,19 @@ def _diff_cap_refusal(
     cap = _diff_cap(conf, estimate)
     if cap is None:
         return None
+    claimed_rev: str | None = None
+    anchor_note: str | None = None
+    if args.base == "HEAD":
+        # 기본 폭일 때만 앵커를 적용한다 — 명시 `--base` 는 사용자가 고른 폭의 주인이다.
+        claimed_rev, anchor_note = claim_anchor(
+            root, parse_ticket_claimed_rev(ticket, pm_home=pm_home),
+        )
+    if anchor_note is not None:
+        print(f"주의: diff 서킷브레이커 측정 폭 — {ticket} {anchor_note}",
+              file=sys.stderr)
     try:
-        total = diff_line_total(root, args.base, list(paths))
+        total = diff_line_total(root, args.base, list(paths),
+                                claimed_rev=claimed_rev)
     except OSError:
         return None
     return diff_cap_block(
@@ -4959,17 +5058,38 @@ def parse_ticket_estimate(ticket_id: str, *, pm_home: Path | None = None) -> str
     조회 실패(ticket 부재·형식 거부·board seam 로드 실패)와 파싱 실패를 **한 깔때기**에서 받는
     이유는 둘 다 같은 처방(가드 off)이라서다 — 두 try 로 나누면 조회 쪽 새 실패 형상이 그대로
     실행을 죽인다."""
+    return _parse_ticket_scalar(ticket_id, "estimate", pm_home=pm_home)
+
+
+def parse_ticket_claimed_rev(
+    ticket_id: str, *, pm_home: Path | None = None,
+) -> str | None:
+    """board ticket frontmatter 의 `claimed_rev` 값 (ticket/필드 부재면 None).
+
+    서킷브레이커 측정 폭의 claim 앵커 입력이다. 실패 처방은 estimate 축과 같다 — 조회/파싱
+    실패는 앵커 없음(호출부가 옛 폭 + 경고)이고, 엔진 사본 skew 만 fail-loud 다. 형태 검증은
+    앵커 해소(`claim_anchor`)가 소유한다 — 여기서는 원문 스칼라만 돌려준다."""
+    return _parse_ticket_scalar(ticket_id, "claimed_rev", pm_home=pm_home)
+
+
+def _parse_ticket_scalar(
+    ticket_id: str, key: str, *, pm_home: Path | None = None,
+) -> str | None:
+    """티켓 frontmatter 스칼라 하나를 읽는 **단일 fail-soft 깔때기**(조회 + 파싱).
+
+    서킷브레이커 입력(estimate·claimed_rev)이 같은 실패 처방을 쓰므로 흡수 경계도 하나다 —
+    필드마다 try 를 늘리면 같은 규칙의 사본이 늘고 엔진 사본 skew 재전파를 한쪽만 빠뜨린다."""
     try:
-        return _parse_estimate_from_file(
-            _find_ticket_file(ticket_id, pm_home=pm_home))
+        return _parse_frontmatter_scalar(
+            _find_ticket_file(ticket_id, pm_home=pm_home), key)
     except Exception as exc:  # noqa: BLE001 — 조회/파싱 실패는 가드 off(ticket_finish 동형).
         if _is_engine_rev_skew(exc):
             raise  # 사본 skew 는 fail-loud(삼키지 않는다).
         return None
 
 
-def _parse_estimate_from_file(path: Path) -> str | None:
-    """ticket frontmatter 의 `estimate` 스칼라 (없으면 None) — **완료 게이트와 같은 파서**.
+def _parse_frontmatter_scalar(path: Path, key: str) -> str | None:
+    """ticket frontmatter 의 문자열 스칼라 (없거나 비-문자열이면 None).
 
     board 의 frontmatter 로더(`load_ticket` = YAML)를 형제 seam 으로 재사용한다. 자체 정규식
     파싱은 YAML 이 주석으로 읽는 꼬리(`estimate: small # reviewed`)를 값에 붙여 `small` 을
@@ -4977,11 +5097,16 @@ def _parse_estimate_from_file(path: Path) -> str | None:
     (`ticket_finish.get_ticket_estimate`·같은 board 로더)은 `small` 로 읽어 **두 게이트가 다른
     값을 보는** 형상이 났다. 같은 값을 두 번 해석하지 않는 것이 유일한 해소다.
 
-    값 정규화도 완료쪽과 같다 — 비-문자열(리스트·숫자)은 상한을 지어내지 않고 None(가드 off)."""
+    값 정규화도 완료쪽과 같다 — 비-문자열(리스트·숫자)은 값을 지어내지 않고 None 이다."""
     board = _load_board()
     fm, _body = board.load_ticket(path)
-    estimate = fm.get("estimate") if isinstance(fm, dict) else None
-    return estimate.strip() or None if isinstance(estimate, str) else None
+    value = fm.get(key) if isinstance(fm, dict) else None
+    return value.strip() or None if isinstance(value, str) else None
+
+
+def _parse_estimate_from_file(path: Path) -> str | None:
+    """ticket 파일의 `estimate` 스칼라 — **완료 게이트와 같은 파서**(표시 경로 공유 표면)."""
+    return _parse_frontmatter_scalar(path, "estimate")
 
 
 def _parse_touches_from_file(path: Path) -> list[str]:

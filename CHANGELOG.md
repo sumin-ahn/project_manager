@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **diff 서킷브레이커가 claim 시점 rev 부터 잰다.** `board.py claim` 이 그 시점 코드 트리 HEAD 를
+  ticket frontmatter `claimed_rev` 로 박제하고, 완료 부기(`ticket_finish`)와 추가 리뷰어 진입 검사
+  (`external_review`)가 그 rev 와 현재 작업트리의 차이를 측정 폭으로 쓴다. dev 브랜치를 `--no-ff`
+  merge 로 흡수하고 전파 커밋이 뒤따르는 형상에서 옛 폭(작업트리 → 비면 직전 커밋 한 칸)이 0 줄로
+  접혀 상한 초과 wave 가 통과하던 것을 닫는다. 박제 실패(비-git·코드 트리 미해소)는 경고 1줄이고
+  claim 을 막지 않으며, `claimed_rev` 가 없거나 이 트리에서 해소되지 않는 구 티켓은 옛 폭으로 재되
+  "폭 과소 측정 가능" 경고를 남긴다. `--base` 명시는 종전대로 그 폭이 우선한다.
+
 ## [1.7.6] - 2026-08-18
 
 ### 업그레이드 노트

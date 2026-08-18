@@ -9442,6 +9442,65 @@ def _slugify(text: str, max_len: int = 40) -> str:
 
 # ── commands ───────────────────────────────────────────────────────────
 
+def _frontmatter_with_claimed_rev(
+    fm: dict[str, Any], claimed_rev: str,
+) -> dict[str, Any]:
+    """`claimed_at` 바로 뒤에 `claimed_rev` 를 둔 frontmatter (앵커 키가 없으면 끝에 붙인다).
+
+    frontmatter 는 삽입 순서대로 직렬화되므로(`sort_keys=False`) 자리를 정하려면 재조립해야
+    한다. claim 3종(주체·시각·rev)이 붙어 있어야 티켓을 연 사람이 한 자리에서 읽는다. 기존
+    값이 있으면 그 자리를 옮겨 덮어써 중복 키가 생기지 않는다."""
+    if "claimed_at" not in fm:
+        return {**fm, "claimed_rev": claimed_rev}
+    rebuilt: dict[str, Any] = {}
+    for key, value in fm.items():
+        if key == "claimed_rev":
+            continue
+        rebuilt[key] = value
+        if key == "claimed_at":
+            rebuilt["claimed_rev"] = claimed_rev
+    return rebuilt
+
+
+def _claim_code_tree(args: argparse.Namespace, session: str) -> str | None:
+    """claim 시점 rev 를 읽을 **코드 트리** — 완료 부기 측정 트리와 같은 해소 규칙.
+
+    분리된 PM 홈엔 코드가 없으므로 diff 측정 트리는 task 작업공간 > 활성 슬롯 worktree > REPO
+    순으로 해소된다(`ticket_finish._code_tree`·`_regression_cwd` 와 같은 축). claim 이 그 트리의
+    HEAD 를 박제해야 완료 부기가 같은 좌표에서 "claim 이후 누적"을 잰다.
+
+    해소 실패는 `None` 이다 — 이 값은 측정 보조일 뿐이라 claim 을 막지 않는다(호출부가 경고
+    1줄). task 작업공간 해소는 실행-위치 도구처럼 `sys.exit` 하지 않고 여기서 사유를 접는다.
+    """
+    if getattr(args, "task", None):
+        try:
+            identity = identity_args.parse_identity(args)
+            workspace = identity_args.resolve_task_workspace(identity, LEASES_FILE)
+        except (ValueError, identity_args.WorkspaceResolutionError):
+            return None
+        return str(REPO / workspace.slot)
+    # session 을 명시해 넘긴다 — `_regression_cwd` 의 모호 fail-loud 는 세션 미지정 축이고,
+    # claim 은 이미 세션을 해소했다(여기서 죽으면 rev 박제가 claim 을 막는 셈이 된다).
+    return _regression_cwd(session=session)
+
+
+def _claim_head_rev(args: argparse.Namespace, session: str) -> str | None:
+    """claim 시점 코드 트리 HEAD sha (해소 불가·비-git 이면 경고 1줄 + None).
+
+    이 값이 티켓 frontmatter `claimed_rev` 로 박제되고, diff 서킷브레이커가 그것을 앵커로
+    "claim 이후 이 티켓이 남긴 변경"(dev 브랜치를 merge 로 흡수한 누적 포함)을 잰다. 박제
+    실패는 **경고만** 이다 — 측정 보조 필드가 소유 확정을 막지 않는다."""
+    tree = _claim_code_tree(args, session)
+    rev = _git_head_at(tree) if tree else ""
+    if not rev:
+        where = tree or "코드 트리 미해소"
+        print(f"주의: claim 시점 rev 박제 skip — {where} 의 git HEAD 를 읽지 못했다"
+              "(비-git·해소 불가). diff 서킷브레이커는 옛 폭(작업트리+직전 커밋 한 칸)으로 "
+              "측정한다.", file=sys.stderr)
+        return None
+    return rev
+
+
 def cmd_claim(args: argparse.Namespace) -> int:
     _reject_task_slot_identity_mix(args)
     # claim = 귀속 쓰기 — 세션 미해소면 fail-loud
@@ -9453,6 +9512,8 @@ def cmd_claim(args: argparse.Namespace) -> int:
     # (graceful·기존 슬롯-only 값과 형태 동일). 진행메시지/board surface 는 슬롯(sess)을 쓴다.
     assignee = identity_tag(session_override=override,
                             user_override=getattr(args, "user", None))
+    # 코드 트리 HEAD 박제 — 락 밖(읽기 전용 git 조회)이라 board mutation 창을 넓히지 않는다.
+    claimed_rev = _claim_head_rev(args, sess)
 
     # strict claim 전체(prefetch → local move/dump → commit/push → confirm/rollback)를 두 락으로
     # 감싼다. 순서는 **board_git_lock → board_lock** 고정. board_lock은 network 동안도 유지해
@@ -9460,10 +9521,11 @@ def cmd_claim(args: argparse.Namespace) -> int:
     # `_cmd_claim_locked`는 두 락 보유 전제라 내부에서 어느 락도 재진입하지 않는다.
     with board_git_lock():
         with board_lock():
-            return _cmd_claim_locked(args, assignee)
+            return _cmd_claim_locked(args, assignee, claimed_rev)
 
 
-def _cmd_claim_locked(args: argparse.Namespace, assignee: str) -> int:
+def _cmd_claim_locked(args: argparse.Namespace, assignee: str,
+                      claimed_rev: str | None = None) -> int:
     """`cmd_claim` 본체 — board_git_lock + board_lock 보유 전제(둘 다 재진입 금지)."""
     # claim STRICT 1단계: 선점 감지는 **읽기 전용**(fetch + 원격 트리
     # 직접 조회)이고, `pull --rebase` 는 원격이 앞섰을 때만 시도한다. 차단은 "원격이 앞섰고
@@ -9534,6 +9596,10 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str) -> int:
         fm["status"] = "claimed"
         fm["claimed_by"] = assignee
         fm["claimed_at"] = now_utc()
+        if claimed_rev:
+            # 해소 실패는 필드 생략이다(경고는 이미 냈다) — 없는 앵커를 지어내면 완료 부기가
+            # 엉뚱한 폭을 재고, 그 오차 방향은 과소 측정(가드 약화)이다.
+            fm = _frontmatter_with_claimed_rev(fm, claimed_rev)
         dump_ticket(new_path, fm, body)
     except FileNotFoundError:
         print(f"claim race lost on {args.id}", file=sys.stderr)
