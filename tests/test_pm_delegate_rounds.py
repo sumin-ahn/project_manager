@@ -589,9 +589,8 @@ def test_ledger_relocated_to_delegate_rounds(pd, tmp_path):
     )
 
 
-def test_external_review_label_matches_rounds_seam(pd):
+def test_role_sets_match_the_rounds_seam(pd):
+    """역할 집합의 단일 진실은 seam 이다 — 라벨 사본은 두지 않는다([[ADR-0090]] R4 에서 삭제)."""
     rounds_module = pd._load_ticket_rounds()
-    assert pd.EXTERNAL_REVIEW_SECTION_LABEL == (
-        rounds_module.ROLE_LABELS[pd.EXTERNAL_REVIEW_ROLE]
-    )
+    assert not hasattr(pd, "EXTERNAL_REVIEW_SECTION_LABEL")
     assert set(pd.TICKET_COPY_ROLES) == set(rounds_module.ROLES)

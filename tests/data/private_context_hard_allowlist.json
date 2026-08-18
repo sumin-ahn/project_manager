@@ -1,10 +1,10 @@
 {
   "version": 2,
-  "count": 628,
+  "count": 624,
   "surface_counts": {
     "markdown": 148,
     "python-non-prose": 28,
-    "python-prose": 452
+    "python-prose": 448
   },
   "entries": [
     {
@@ -586,25 +586,9 @@
     {
       "path": ".project_manager/tools/pm_delegate.py",
       "kind": "work_item",
-      "match": "ADR-0089",
-      "surface": "python-prose",
-      "hash": "0f4e864cd774f5755052b5e9493f0f4092d01a6154ea2a953231a845fac25c46",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/pm_delegate.py",
-      "kind": "work_item",
       "match": "ADR-0090",
       "surface": "python-prose",
       "hash": "749807c50cf7742503036d5c813f6d6425acb6e2eaad19571af512df5966f6d4",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/pm_delegate.py",
-      "kind": "work_item",
-      "match": "ADR-0090",
-      "surface": "python-prose",
-      "hash": "87340fdc4b270cd009a99823ae934faccf4a51ad31a55dd69fb02f807ac8b3b9",
       "count": 1
     },
     {
@@ -621,14 +605,6 @@
       "match": "ADR-0090",
       "surface": "python-prose",
       "hash": "9f6243a37f1d5a6d0d9f2688a8fbf744d5b5ce9c2719ea16ea1186f9be5a8928",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/pm_delegate.py",
-      "kind": "work_item",
-      "match": "ADR-0090",
-      "surface": "python-prose",
-      "hash": "ee536963698fedb4a9ad2de32bd81f2cbc2c04e1c636eee84df0631b703bddc7",
       "count": 1
     },
     {
@@ -741,14 +717,6 @@
       "match": "T-0751",
       "surface": "python-prose",
       "hash": "84927105cc98c52ac36ad3589d8f4f8cb2e9883c4a1a3181fb467fd82afc459b",
-      "count": 1
-    },
-    {
-      "path": ".project_manager/tools/pm_delegate.py",
-      "kind": "work_item",
-      "match": "T-0752",
-      "surface": "python-prose",
-      "hash": "60fb325b5891f6ee1c88cefa4bee07e364b7212ae8c5a1020f8c24d8e3d60729",
       "count": 1
     },
     {
