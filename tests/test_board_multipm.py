@@ -16,6 +16,7 @@ import argparse
 import importlib.util
 import io
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -1279,8 +1280,10 @@ def reg_board(board, monkeypatch):
 
     board 픽스처는 REGRESSION_FLAG·LOCAL_DIR·LEASES_FILE 을 monkeypatch 하지 않아 실 repo 를
     가리킨다 — 여기서 tmp 로 재지정한다. LEASES_FILE 은 부재(→`_active_slot_path` None →
-    cwd=REPO 폴백)·REPO(=tmp proj)엔 `tests/` 없음 → rc5 폴백 힌트 조건이 성립한다.
+    cwd=REPO 폴백)다. 트리는 **스위트가 있는 코드 트리**가 기본이다(`tests/` 실재) — 회귀 측정
+    케이스의 전제다. 스위트 없는 트리를 요구하는 케이스는 `_without_suite(board)` 로 지운다.
     """
+    (board._proj / "tests").mkdir(parents=True, exist_ok=True)
     local = board._proj / ".project_manager" / ".local"
     monkeypatch.setattr(board, "LOCAL_DIR", local)
     monkeypatch.setattr(board, "REGRESSION_FLAG", local / "regression.json")
@@ -1293,6 +1296,12 @@ def _run_args(**over):
     base = dict(action="run", cmd=None, ticket=None, touches=None)
     base.update(over)
     return argparse.Namespace(**base)
+
+
+def _without_suite(board) -> None:
+    """이 트리를 **스위트 없는 트리**(분리 형상 PM 홈)로 만든다 — `tests/` 를 지운다."""
+    shutil.rmtree(board.REPO / "tests", ignore_errors=True)
+    assert not (board.REPO / "tests").is_dir()
 
 
 def test_regression_run_rc5_records_fail(reg_board, monkeypatch, capsys):
@@ -1347,7 +1356,11 @@ def test_regression_run_rc5_surfaces_the_missing_suite_hint(
     """
     monkeypatch.setenv("PM_SESSION_NAME", "orch-dev-T0220")
     monkeypatch.setattr(reg_board.subprocess, "Popen", _FakeRun(5))
-    reg_board.cmd_regression(_run_args())
+    _without_suite(reg_board)
+    # 스위트 없는 트리라도 이 test_cmd 는 자기 경로를 명시하므로 실행 전 거부에 걸리지 않는다
+    # (거부는 '이 트리를 대상으로 삼는' 형상만 — 여기선 rc5 진단 문구가 판정 대상이다).
+    (reg_board.REPO / "src").mkdir(parents=True, exist_ok=True)
+    reg_board.cmd_regression(_run_args(cmd="pytest src -q"))
     out = capsys.readouterr().out
     assert "`tests/` 가 없다" in out
     assert "--cwd" in out and "--task" in out

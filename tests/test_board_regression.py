@@ -51,11 +51,16 @@ def board(tmp_path, monkeypatch):
 
     LEASES_FILE 은 기본 부재(→ leased 0 = 솔로 · `_active_slot_path` None → cwd=REPO 폴백)이고,
     M>1 테스트만 장부를 직접 심는다. env 세션은 제거해 실 PM 세션이 새지 않게 한다.
+
+    트리는 **스위트가 있는 코드 트리**가 기본이다(`tests/` 실재) — 이 파일의 대다수 케이스가
+    "자기 스위트를 도는 트리"의 측정·기록·강등을 다루기 때문이다. 스위트 없는 트리(분리 형상
+    PM 홈)를 요구하는 케이스는 `_without_suite(board)` 로 그 디렉토리를 지우고 시작한다.
     """
     proj = tmp_path / "proj"
     pm = proj / ".project_manager"
     local = pm / ".local"
     local.mkdir(parents=True, exist_ok=True)
+    (proj / "tests").mkdir(parents=True, exist_ok=True)
     mod = _load_board()
     overrides = {
         "REPO": proj,
@@ -161,6 +166,12 @@ def _install_run(board, monkeypatch, fake) -> _FakeRun:
     """회귀 러너 seam(`subprocess.Popen` — tee 하며 읽는다)을 대역으로 덮는다."""
     monkeypatch.setattr(board.subprocess, "Popen", fake)
     return fake
+
+
+def _without_suite(board) -> None:
+    """이 트리를 **스위트 없는 트리**(분리 형상 PM 홈)로 만든다 — `tests/` 를 지운다."""
+    shutil.rmtree(board.REPO / "tests", ignore_errors=True)
+    assert not (board.REPO / "tests").is_dir()
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -506,7 +517,7 @@ def test_run_inherits_anchor_of_blocking_record(board, monkeypatch, tmp_path):
     A 의 RED 기록을 덮어 그대로 push 된다(codex must-fix).
     """
     tree_a = tmp_path / "A"
-    tree_a.mkdir()
+    (tree_a / "tests").mkdir(parents=True)      # 그 트리가 회귀를 돌던 코드 트리다
     _seed_anchor_flag(board, tree_a)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7577 passed in 140.00s\n"))
     assert board.cmd_regression(_run_args()) == 0
@@ -517,7 +528,7 @@ def test_run_inherits_anchor_of_blocking_record(board, monkeypatch, tmp_path):
 def test_run_inherits_anchor_of_floor_stale_green(board, monkeypatch, tmp_path):
     """하한 미달 green(=check 가 stale 로 막는 기록)도 차단 기록 — 같은 앵커에서 재실행."""
     tree_a = tmp_path / "A"
-    tree_a.mkdir()
+    (tree_a / "tests").mkdir(parents=True)      # 그 트리가 회귀를 돌던 코드 트리다
     _set_floor(board, 7000, tree=tree_a)
     _seed_anchor_flag(board, tree_a, status="pass", rc=0, collected=12, floor=0)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="7577 passed in 140.00s\n"))
@@ -2252,7 +2263,7 @@ def test_a_run_is_refused_before_pytest_when_this_tree_has_no_suite(
         board, monkeypatch, capsys):
     """`tests/` 를 지목하는 test_cmd + 스위트 없는 트리 → 실행 전 rc1(측정 0·기록 0·처방 1줄)."""
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
-    assert not (board.REPO / "tests").is_dir()
+    _without_suite(board)
 
     assert board.cmd_regression(_run_args(cmd="pytest tests/ -q", final=True)) == 1
 
@@ -2264,7 +2275,7 @@ def test_a_run_is_refused_before_pytest_when_this_tree_has_no_suite(
 
 def test_a_tree_with_a_suite_runs_as_before(board, monkeypatch):
     """같은 test_cmd 라도 그 트리에 `tests/` 가 있으면 그대로 돈다 (거부는 트리 사실에만 붙는다)."""
-    (board.REPO / "tests").mkdir(parents=True, exist_ok=True)
+    assert (board.REPO / "tests").is_dir()           # 픽스처 기본 = 코드 트리
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
     assert board.cmd_regression(_run_args(cmd="pytest tests/ -q", final=True)) == 0
@@ -2285,17 +2296,30 @@ def test_an_explicit_cwd_is_respected_even_without_a_suite(board, monkeypatch, t
     assert fake.calls and fake.calls[0]["kwargs"]["cwd"] == str(pinned)
 
 
-def test_a_test_cmd_outside_tests_is_untouched(board, monkeypatch):
-    """스위트가 `tests/` 밖인 채택자는 무영향 — 판정은 'argv 가 tests/ 를 지목했는가'만 본다."""
+def test_a_test_cmd_that_names_its_own_paths_is_untouched(board, monkeypatch):
+    """스위트가 `tests/` 밖이고 **경로를 명시**하는 채택자는 무영향 — 그 트리를 재귀 수집하지 않는다."""
+    _without_suite(board)
+    (board.REPO / "src").mkdir(parents=True, exist_ok=True)
     fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
 
-    assert board.cmd_regression(_run_args(cmd="pytest -q", final=True)) == 0
+    assert board.cmd_regression(_run_args(cmd="pytest src -q", final=True)) == 0
 
     assert fake.calls                                  # 그대로 실행(거부 없음)
 
 
+def test_a_non_pytest_test_cmd_is_untouched(board, monkeypatch):
+    """비-pytest test_cmd(go/npm 등)는 판정 대상이 아니다 — 수집 규칙을 모르므로 fail-open."""
+    _without_suite(board)
+    fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="ok\n"))
+
+    assert board.cmd_regression(_run_args(cmd="go test ./...", final=True)) == 0
+
+    assert fake.calls
+
+
 def test_the_rc5_note_says_the_tree_lacks_a_suite_not_a_session_mismatch(board, monkeypatch):
     """rc5 진단은 트리 사실을 말한다 — 세션/lease 처방은 회귀가 그걸 안 보므로 거짓이다."""
+    _without_suite(board)
     note = board._regression_rc5_note(5, str(board.REPO), None)
     assert "`tests/` 가 없다" in note and "--cwd" in note
     assert "lease" not in note and "PM_SESSION_NAME" not in note
@@ -2314,7 +2338,7 @@ def test_a_previous_generation_hook_also_blocks_the_lint_gate(
     rev2 = next(b for b in board._legacy_pre_push_hook_bodies("python3")
                 if f"{board._PM_HOOK_REV_PREFIX}2" in b)
     hook = _hooked_repo(board, monkeypatch, tmp_path, rev2)
-    assert not (board.REPO / "tests").is_dir()       # 회귀 게이트 비대상 트리
+    _without_suite(board)                            # 회귀 게이트 비대상 트리
 
     assert board.cmd_lint(argparse.Namespace(gate=True)) == 1
 
@@ -2333,3 +2357,89 @@ def test_the_lint_gate_stays_silent_under_a_current_hook(
 
     assert board.cmd_lint(argparse.Namespace(gate=True)) == 0
     assert "구버전" not in capsys.readouterr().err
+
+
+# ── 판정 축 = '이 트리를 대상으로 삼는가' (T-0733 R3 · F-013) ────────────────
+# 엔진 기본 폴백 test_cmd(`pytest -q`)는 경로를 지정하지 않아 pytest 가 **cwd 를 재귀 수집**한다.
+# 스위트 없는 홈에서 그 형상은 슬롯 worktree 의 `work/<repo>_<N>/tests/**` 를 잘못된 rootdir 로
+# 긁어 FULL green 을 기록했다(리뷰 실측). 경로 미지정도 '이 트리 대상'으로 본다.
+
+def test_a_path_less_pytest_is_refused_in_a_tree_without_a_suite(
+        board, monkeypatch, capsys):
+    """경로 미지정 pytest(`pytest -q` — 엔진 기본 폴백) + 스위트 없는 트리 → 실행 전 거부."""
+    _without_suite(board)
+    fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="1 passed in 0.10s\n"))
+
+    assert board.cmd_regression(_run_args(cmd="pytest -q", final=True)) == 1
+
+    assert fake.calls == []                        # 재귀 수집이 시작되지 않는다
+    assert not board.REGRESSION_FLAG.exists()      # FULL green 위장 기록도 없다
+    err = capsys.readouterr().err
+    assert "수집 경로 미지정" in err
+
+
+def test_an_option_value_is_not_mistaken_for_a_collect_path(board, monkeypatch, capsys):
+    """옵션 값(`-n 8`·`-k expr`)은 경로가 아니다 — 값이 경로로 세어지면 판정이 무력화된다."""
+    _without_suite(board)
+    fake = _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="1 passed in 0.10s\n"))
+
+    assert board.cmd_regression(_run_args(cmd="pytest -q -n 8 -k smoke", final=True)) == 1
+
+    assert fake.calls == []
+    assert "수집 경로 미지정" in capsys.readouterr().err
+
+
+def test_the_refusal_does_not_assert_what_kind_of_tree_this_is(board):
+    """거부 문구는 트리 **정체**를 단정하지 않는다 — 판정한 것은 '스위트 부재' 하나뿐이다."""
+    _without_suite(board)
+    refusal = board._suiteless_tree_refusal("pytest -q", str(board.REPO), None)
+    assert refusal is not None
+    assert "PM 홈" not in refusal                   # 정체 단정 금지(코드 트리 오설정도 같은 문구)
+    assert "회귀 스위트가 없다" in refusal and str(board.REPO) in refusal
+
+
+def test_a_refused_run_does_not_print_the_command_as_if_it_ran(
+        board, monkeypatch, capsys):
+    """거부 경로엔 `regression: $ <cmd>` 실행 안내가 찍히지 않는다 (돌지 않은 명령을 남기지 않는다)."""
+    _without_suite(board)
+    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="1 passed in 0.10s\n"))
+
+    assert board.cmd_regression(_run_args(cmd="pytest tests/ -q", final=True)) == 1
+
+    assert "regression: $" not in capsys.readouterr().out
+
+
+def test_an_executed_run_still_prints_the_command(board, monkeypatch, capsys):
+    """실행되는 경로의 안내는 그대로다 — 순서만 바뀌었지 관측성이 줄지 않았다."""
+    _install_run(board, monkeypatch, _FakeRun(rc=0, stdout="9 passed in 0.10s\n"))
+
+    assert board.cmd_regression(_run_args(final=True)) == 0
+
+    assert "regression: $" in capsys.readouterr().out
+
+
+# ── 훅 세대 안내는 호출 경로 중립 (T-0733 R3 · F-012) ───────────────────────
+# 같은 판정이 `regression`(스위트 있는 트리)과 `lint --gate`(두 형상)에서 나온다. 접두가 한
+# 채널 이름이면 다른 채널의 소비자(pm_bootstrap lint dump)가 자기 산출로 읽다가 파싱에 실패한다.
+
+def test_the_hook_notice_prefix_is_channel_neutral(board):
+    """세 안내 문자열 모두 채널 중립 접두를 쓴다 — `regression:` 접두 0."""
+    notices = (board._STALE_HOOK_REFUSAL, board._UNREADABLE_HOOK_REFUSAL,
+               board._UNRESOLVED_HOOKS_NOTICE)
+    for notice in notices:
+        assert notice.startswith(board.PM_HOOK_NOTICE_PREFIX)
+        assert not notice.startswith("regression:")
+
+
+def test_the_lint_gate_refusal_carries_the_neutral_prefix(
+        board, monkeypatch, tmp_path, capsys):
+    """`lint --gate` 로 나가는 차단 문구도 그 접두다(소비자가 채널 산출로 오독하지 않게)."""
+    rev2 = next(b for b in board._legacy_pre_push_hook_bodies("python3")
+                if f"{board._PM_HOOK_REV_PREFIX}2" in b)
+    _hooked_repo(board, monkeypatch, tmp_path, rev2)
+
+    assert board.cmd_lint(argparse.Namespace(gate=True)) == 1
+
+    err = capsys.readouterr().err
+    assert err.startswith(board.PM_HOOK_NOTICE_PREFIX)
+    assert "regression:" not in err

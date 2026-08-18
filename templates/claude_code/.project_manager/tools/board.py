@@ -4229,16 +4229,22 @@ def _installed_hook_interpreter(body: str) -> str | None:
     return match.group("py") if match else None
 
 
+# 훅 세대 안내의 **호출 경로 중립 접두** — 이 판정은 `regression`(스위트 있는 트리)과
+# `lint --gate`(두 형상 모두) 두 진입에서 나온다. 접두가 한 채널 이름(`regression:`)이면 다른
+# 채널의 소비자가 그 출력을 자기 채널 산출로 읽다가 파싱에 실패한다(pm_bootstrap 의 lint dump
+# 가 `gate error (unparsed)` 로 저하되던 자리). 접두를 여기서 소유해 소비자가 사본 없이 짚는다.
+PM_HOOK_NOTICE_PREFIX = "pre-push 훅: "
 # 차단 안내 — 처방은 `init` 재실행 하나뿐이라 두 사유(구세대·미상 본문)가 같은 문장을 쓴다.
 # 인터프리터 표기는 채택자 문서와 같은 규칙이다(Linux/macOS `python3` · Windows 런처 `py -3`).
 _STALE_HOOK_REFUSAL = (
-    "regression: 설치된 pre-push 훅이 {kind}입니다 ({hook}) — "
+    f"{PM_HOOK_NOTICE_PREFIX}설치된 pre-push 훅이 {{kind}}입니다 ({{hook}}) — "
     "`python3 .project_manager/tools/board.py init` 재실행 후 다시 시도"
     "(Windows 는 py -3)."
 )
 _UNREADABLE_HOOK_REFUSAL = (
-    "regression: 설치된 pre-push 훅을 읽지 못해 세대를 판정할 수 없습니다 ({hook}: {error}) — "
-    "`python3 .project_manager/tools/board.py init` 재실행 후 다시 시도(Windows 는 py -3)."
+    f"{PM_HOOK_NOTICE_PREFIX}설치된 pre-push 훅을 읽지 못해 세대를 판정할 수 없습니다 "
+    "({hook}: {error}) — `python3 .project_manager/tools/board.py init` 재실행 후 "
+    "다시 시도(Windows 는 py -3)."
 )
 # git 이 훅 위치 자체를 답하지 못한 경우 — **사유를 실어 알린다**(침묵 no-op 금지). 차단이
 # 아니라 경고인 이유는 이 rc≠0 이 두 형상을 합치기 때문이다: (1) config 파싱 실패(실측 원인 —
@@ -4250,7 +4256,7 @@ _UNREADABLE_HOOK_REFUSAL = (
 # 통과한 것인지 아예 안 돈 것인지 구분 불가). 그 관측성만 되돌린다.
 # (`_sha_anchor_status` 의 rc≥2 fatal = 환경적 판정불가 규약과 같은 방향이다.)
 _UNRESOLVED_HOOKS_NOTICE = (
-    "regression: 훅 디렉토리를 해소하지 못해 pre-push 훅 세대 판정을 생략합니다 ({reason}) — "
+    f"{PM_HOOK_NOTICE_PREFIX}훅 디렉토리를 해소하지 못해 세대 판정을 생략합니다 ({{reason}}) — "
     "훅을 쓰는 형상이면 git 설정(core.hooksPath 등)을 확인하십시오"
     "(Windows 경로는 `C:/path/to/hooks` 표기 또는 백슬래시 이스케이프)."
 )
@@ -7733,10 +7739,31 @@ def _regression_rc5_note(rc: int, cwd: str, override: str | None) -> str:
 # 사람이 직접 부른 `regression run` 도 스위트가 없는 트리에서는 돌지 않는다 — 돌려봐야 홈 루트
 # 재귀 수집(슬롯 스위트 오수집)이나 rc4/rc5 이고, 그 결과가 소비자 없는 홈 플래그에 red 로 남는다.
 _SUITELESS_TREE_REFUSAL = (
-    "regression: 이 트리엔 회귀 스위트가 없다 — test_cmd `{cmd}` 가 `tests/` 를 지목하는데 "
-    "{cwd} 에 그 디렉토리가 없다(분리 형상 PM 홈). 코드 트리에서 실행하거나 "
+    "regression: 이 트리엔 회귀 스위트가 없다 — {cwd} 에 `tests/` 가 없는데 test_cmd "
+    "`{cmd}` 는 이 트리를 대상으로 삼는다({why}). 코드 트리에서 실행하거나 "
     "`--cwd <코드 트리 절대경로>` / `--task <이름>` 으로 지목하라 (측정·기록 안 함)."
 )
+_SUITELESS_WHY_TARGETS_TESTS = "`tests/` 지목"
+_SUITELESS_WHY_NO_PATH = "수집 경로 미지정 → cwd 재귀 수집"
+# pytest 인자 중 **경로로 볼 수 있는 토큰**의 모양 — 옵션 값(`-n 8`·`-k expr`)을 경로로
+# 오인하지 않으려고 세 신호만 본다: 경로 구분자 · `.py` · nodeid(`::`). 이 셋 다 아니면 실재
+# 여부로 한 번 더 본다(`pytest pkg` 같은 디렉토리 인자).
+_PYTEST_PATHLIKE_RE = re.compile(r"[/\\]|\.py$|::")
+
+
+def _pytest_collect_paths(args: Sequence[str], cwd: str) -> bool:
+    """pytest argv 가 **수집 경로를 하나라도 지정**하는지 (아니면 cwd 재귀 수집이다).
+
+    옵션(`-` 로 시작)은 건너뛰고, 남은 토큰 중 경로 모양(`_PYTEST_PATHLIKE_RE`)이거나 그 트리에
+    실재하는 것이 하나라도 있으면 True. 옵션 **값**(`-n 8` 의 `8`·`-k expr` 의 `expr`)은 셋 다
+    아니라 걸러진다 — 값을 경로로 세면 "경로 미지정" 판정이 조용히 무력화된다.
+    """
+    for raw in args:
+        if not raw or raw.startswith("-"):
+            continue
+        if _PYTEST_PATHLIKE_RE.search(raw) or (Path(cwd) / raw).exists():
+            return True
+    return False
 
 
 def _suiteless_tree_refusal(cmd: str, cwd: str, override: str | None) -> str | None:
@@ -7744,12 +7771,17 @@ def _suiteless_tree_refusal(cmd: str, cwd: str, override: str | None) -> str | N
 
     거부는 **세 조건이 모두** 참일 때다:
       1. 명시 `--cwd`/`--task` 가 **없다** — 명시면 채택자가 트리를 확정한 것이라 존중한다.
-      2. test_cmd 가 상대 `tests/` 를 지목한다 — git-anchor 가드의 판정
-         (`_engine_invocation_details` + `_pytest_targets_tests`)을 그대로 재사용한다. 스위트가
-         `tests/` 밖에 있는 커스텀 test_cmd 채택자는 이 판정에 걸리지 않는다(무영향).
+      2. test_cmd 가 pytest 호출이고(`_engine_invocation_details` — git-anchor 가드와 같은
+         정규화) **이 트리를 대상으로 삼는다**. 둘 중 하나면 그렇다:
+           · 상대 `tests/` 지목(`_pytest_targets_tests` — 같은 가드가 쓰는 판정), 또는
+           · 수집 경로 미지정(`_pytest_collect_paths` False) — pytest 가 cwd 를 재귀 수집한다.
+             엔진 기본 폴백 test_cmd(`pytest -q`)가 이 갈래다. 스위트 없는 홈에서 이 형상은
+             슬롯 worktree 의 `work/<repo>_<N>/tests/**` 를 잘못된 rootdir 로 긁어 **FULL green
+             기록**을 남겼다(리뷰 실측).
       3. 그 트리에 `tests/` 가 없다.
-    판정 불능(따옴표 불균형·pytest 아님)은 거부하지 않는다 — 이 게이트는 fail-open 이다(실행을
-    막는 쪽이 아니라 헛도는 실행을 줄이는 쪽).
+    스위트가 `tests/` 밖이면서 경로를 명시하는 커스텀 test_cmd(`pytest src -q` 등)와 비-pytest
+    test_cmd 는 판정 대상이 아니다(무영향). 판정 불능(따옴표 불균형·pytest 아님)도 거부하지
+    않는다 — 이 게이트는 fail-open 이다(실행을 막는 쪽이 아니라 헛도는 실행을 줄이는 쪽).
     """
     if override:
         return None
@@ -7760,11 +7792,15 @@ def _suiteless_tree_refusal(cmd: str, cwd: str, override: str | None) -> str | N
     details = _engine_invocation_details(cwd, argv)
     if details is None or details.kind != "pytest":
         return None
-    if not _pytest_targets_tests(details.args):
+    if _pytest_targets_tests(details.args):
+        why = _SUITELESS_WHY_TARGETS_TESTS
+    elif not _pytest_collect_paths(details.args, cwd):
+        why = _SUITELESS_WHY_NO_PATH
+    else:
         return None
     if (Path(cwd) / "tests").is_dir():
         return None
-    return _SUITELESS_TREE_REFUSAL.format(cmd=cmd, cwd=cwd)
+    return _SUITELESS_TREE_REFUSAL.format(cmd=cmd, cwd=cwd, why=why)
 
 
 # ── M>1 회귀 슬롯 해소 ────────────────────────────────────
@@ -8018,7 +8054,6 @@ def cmd_regression(args: argparse.Namespace) -> int:
             parts.append(_scope_args(touches))
         parts.append(_quarantine_args())
         cmd = " ".join(p for p in parts if p)
-        print(f"regression: $ {cmd}")
         # shell=True 로 띄운 pytest 자식은 별도 프로세스 — 부모 콘솔 reconfigure 보호를
         # 못 받는다. 자식의 인코딩을 도구가 코드로 명시(env 워크어라운드 아님): 한국어
         # Windows(cp949 콘솔)에서도 자식 stdout/stderr·파일 IO 를 UTF-8 로 강제.
@@ -8037,6 +8072,9 @@ def cmd_regression(args: argparse.Namespace) -> int:
         if suiteless is not None:
             print(suiteless, file=sys.stderr)
             return 1
+        # 실행 안내는 **거부 판정 뒤**다 — 돌지 않은 명령을 `$ …` 로 남기면 로그·핸드오프
+        # 인용에서 실행한 것처럼 읽힌다(거부 문구가 스스로 '측정·기록 안 함'을 말하는 것과 같은 축).
+        print(f"regression: $ {cmd}")
         rc, out, _err = _run_regression_cmd(cmd, cwd, env)
         # pass = rc0 한정. pytest rc5(수집 0·"no tests ran")는 fail — 수집 0 은 green 이
         # 아니라 테스트 루트/cwd 결함이다.

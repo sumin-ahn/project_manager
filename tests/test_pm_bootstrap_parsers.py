@@ -2058,3 +2058,46 @@ def test_main_positional_repo_flag_mismatch_fails_loud(capsys):
     assert excinfo.value.code != 0
     err = capsys.readouterr().err
     assert "alpha" in err and "beta" in err
+
+
+def test_collect_board_names_the_hook_generation_block_instead_of_unparsed():
+    """`lint --gate` 가 훅 세대 차단으로 끝난 출력은 '파싱 실패'가 아니라 그 사실로 surface 된다.
+
+    흡수 직후~`board.py init` 전 창에서 채택자가 실제로 만나는 상태다 — dump 가
+    `gate error (unparsed)` 로 뭉뚱그리면 원인(구세대 훅)과 처방이 가려진다. 접두 문자열은
+    board.py 가 소유하므로 여기서도 그 상수로 조립한다(사본 금지).
+    """
+    mod = _load_module()
+    board_mod = mod._load_board()
+    assert board_mod is not None, "board.py 사본을 로드하지 못했다"
+    hook_block = board_mod._STALE_HOOK_REFUSAL.format(
+        kind="구버전", hook="/tmp/home/.git/hooks/pre-push") + "\n"
+    assert hook_block.startswith(board_mod.PM_HOOK_NOTICE_PREFIX)
+
+    def board_fn(args: list[str]) -> tuple[int, str]:
+        if args[0] == "list":
+            return (0, "  [open   ] T-0010  x  -  adapter\n")
+        if args == ["lint", "--gate"]:
+            return (1, hook_block)
+        raise AssertionError(f"예상치 못한 board 호출: {args}")
+
+    board = mod.PmBootstrap(run_board_fn=board_fn)._collect_board()
+    assert board["lint"] == mod._LINT_HOOK_GENERATION_RESULT
+    assert "board.py init" in board["lint_gate_output"]
+    assert board["lint_blocking"] is True          # 차단 신호는 그대로다
+    assert board["lint_parse_failed"] is True      # lint 수치는 여전히 미상
+
+
+def test_collect_board_keeps_unparsed_for_a_non_hook_lint_failure():
+    """훅 세대가 아닌 비정형 실패는 종전대로 `gate error (unparsed)` — 판정이 넓어지지 않았다."""
+    mod = _load_module()
+
+    def board_fn(args: list[str]) -> tuple[int, str]:
+        if args[0] == "list":
+            return (0, "  [open   ] T-0010  x  -  adapter\n")
+        if args == ["lint", "--gate"]:
+            return (2, "Traceback (most recent call last):\nRuntimeError: hook boom\n")
+        raise AssertionError(f"예상치 못한 board 호출: {args}")
+
+    board = mod.PmBootstrap(run_board_fn=board_fn)._collect_board()
+    assert board["lint"] == "gate error (unparsed)"
