@@ -753,14 +753,18 @@ def test_pm_update_and_board_lint_share_the_same_column_zero_judgment(
     (tickets / "T-4201-real.md").write_text(
         _ticket_text("T-4201", "done") + "\n" + real_block,
         encoding="utf-8", newline="")
+    fenced_body = "## 문법 예시\n\n```\n" + real_block + "```\n"
+    (tickets / "T-4202-fenced.md").write_text(
+        _ticket_text("T-4202", "done") + "\n" + fenced_body,
+        encoding="utf-8", newline="")
 
     board_findings = sorted(
         name for name, _kind, _detail in board.lint_legacy_growth_sections())
     pm_update_found = sorted(
         path.name for path in pm_update._legacy_growth_ticket_files(tmp_path))
 
-    assert board_findings == ["T-4201"], "인용/들여쓰기 marker 가 board lint 에 잡혔다"
-    assert pm_update_found == ["T-4201-real.md"], "인용/들여쓰기 marker 가 흡수 안내에 잡혔다"
+    assert board_findings == ["T-4201"], "인용/들여쓰기/펜스 marker 가 board lint 에 잡혔다"
+    assert pm_update_found == ["T-4201-real.md"], "인용/들여쓰기/펜스 marker 가 흡수 안내에 잡혔다"
 
 
 @pytest.mark.parametrize("layout", ["board", "wiki"])

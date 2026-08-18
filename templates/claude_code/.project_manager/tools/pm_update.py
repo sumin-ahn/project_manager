@@ -5394,6 +5394,24 @@ _BOARD_TICKET_SCAN_DIRS: tuple[str, ...] = (
     "open", "claimed", "blocked", "done", ".drafts")
 
 
+def _has_legacy_growth_marker_line(text: str) -> bool:
+    """board `_has_legacy_growth_markers` 와 같은 시야 — column 0 주석 줄 · ``` 펜스 안 제외.
+
+    substring 판정이면 산문 인용(backtick·들여쓰기)이나 문법 예시(펜스)까지 잡혀 변환이 끝난
+    뒤에도 안내가 영구히 남는다. 두 사본의 일치는 테스트가 board 를 로드해 판정 결과로 대조한다.
+    """
+    inside = False
+    for line in text.splitlines():
+        if line.lstrip().startswith("```"):
+            inside = not inside
+            continue
+        if inside:
+            continue
+        if any(line.startswith(marker) for marker in LEGACY_GROWTH_MARKERS):
+            return True
+    return False
+
+
 def _legacy_growth_ticket_files(dest_root: Path) -> list[Path]:
     """명세 본문에 구 역할 절 marker 가 남은 티켓 파일 (없으면 빈 목록·판독 실패는 건너뜀).
 
@@ -5419,11 +5437,7 @@ def _legacy_growth_ticket_files(dest_root: Path) -> list[Path]:
                 text = _read_text_shared(path, encoding="utf-8")
             except (OSError, UnicodeError):
                 continue
-            if any(
-                line.startswith(marker)
-                for line in text.splitlines()
-                for marker in LEGACY_GROWTH_MARKERS
-            ):
+            if _has_legacy_growth_marker_line(text):
                 found.append(path)
     return found
 
