@@ -2731,8 +2731,8 @@ def test_main_worktree_without_add_shows_group_help(pc):
 
 # ════════════════════════════════════════════════════════════════════════
 # _default_session — board.session_name 과 동형 count-based 유도 (ADR-0040 D1·T-0073)
-# env > lease 장부 leased 1개면 그 session(단일-lease 유도) > (장부 부재·leased 0 = solo)
-# local.conf session= > None. leased ≥2 면 local.conf 건너뜀. cmd_status/whoami 의
+# env > lease 장부 leased 1개면 그 session(단일-lease 유도) > None. per-clone
+# local.conf `session=` 층은 T-0779 가 폐지했다. cmd_status/whoami 의
 # "이 세션의 리스" surface 가 이걸 쓰므로 board 매칭과 정합해야 한다(T-0066 must-fix).
 # board 와 tail 만 다르다(host-pid 폴백 없음 — surface 는 미해소=None → "(비바인딩)").
 # ════════════════════════════════════════════════════════════════════════
@@ -2740,7 +2740,7 @@ def test_main_worktree_without_add_shows_group_help(pc):
 def _bind_tmp_repo(pc, monkeypatch, tmp_path):
     """pc 의 REPO 를 tmp 로 재지정 — 실 루트 local.conf/리스장부 무오염(hermetic).
 
-    _local_conf_session·_leased_sessions 가 `REPO / .project_manager / …` 를 읽으므로 REPO 를
+    `_leased_sessions`·conf 헬퍼가 `REPO / .project_manager / …` 를 읽으므로 REPO 를
     tmp 로 묶어야 실 루트를 안 건드린다. module-scope pc 라도 monkeypatch 가 테스트 후 복원.
     """
     pm = tmp_path / ".project_manager"
@@ -2807,8 +2807,8 @@ def test_default_session_single_lease_wins_over_local_conf(pc, monkeypatch, tmp_
     assert pc._default_session() == "derived-1"
 
 
-def test_default_session_two_leases_skips_local_conf_returns_none(pc, monkeypatch, tmp_path):
-    """leased ≥2 (모호) → local.conf 건너뜀 → None (silent 오귀속 차단·ADR-0040)."""
+def test_default_session_two_leases_returns_none(pc, monkeypatch, tmp_path):
+    """leased ≥2 (모호) → None (silent 오귀속 차단·ADR-0040)."""
     conf = _bind_tmp_repo(pc, monkeypatch, tmp_path)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
@@ -2817,17 +2817,17 @@ def test_default_session_two_leases_skips_local_conf_returns_none(pc, monkeypatc
     assert pc._default_session() is None
 
 
-def test_default_session_reads_local_conf_session(pc, monkeypatch, tmp_path):
-    """env·lease 없음(장부 부재 = solo) → local.conf `session=` (legacy 폴백·must-fix)."""
+def test_default_session_ignores_local_conf_session(pc, monkeypatch, tmp_path):
+    """env·lease 없음 + local.conf `session=foo` → None (폴백 폐지·board 동형·T-0779)."""
     conf = _bind_tmp_repo(pc, monkeypatch, tmp_path)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     conf.write_text("session=foo\n", encoding="utf-8")
-    assert pc._default_session() == "foo"
+    assert pc._default_session() is None
 
 
 def test_default_session_solo_unbound_returns_none(pc, monkeypatch, tmp_path):
-    """env·lease·local.conf session= 모두 없음 → None (구 host-pid 폴백 제거·ADR-0040).
+    """env·lease 모두 없음 → None (구 host-pid 폴백 제거·ADR-0040).
 
     surface(cmd_status/whoami·required=False)가 이 None 을 "(비바인딩)" 으로 표시한다 —
     `<host>-<pid>` 는 세션-귀속 아닌 국소 용처(worktree_pool lease 취득)에만 잔존.
@@ -2838,17 +2838,14 @@ def test_default_session_solo_unbound_returns_none(pc, monkeypatch, tmp_path):
     assert pc._default_session() is None
 
 
-def test_local_conf_session_ignores_comments_and_blanks(pc, monkeypatch, tmp_path):
-    """헬퍼가 `#` 주석/빈 줄/무관 키 무시하고 session= 만 집는다(board.local_config 동형)."""
-    conf = _bind_tmp_repo(pc, monkeypatch, tmp_path)
-    conf.write_text("# c\n\nprefix=PAY\nsession=bar\n", encoding="utf-8")
-    assert pc._local_conf_session() == "bar"
+def test_no_local_conf_session_parser_remains(pc):
+    """conf `session=` 자체 파서(`_local_conf_session`)가 모듈에서 사라졌다 (T-0779).
 
-
-def test_local_conf_session_absent_returns_none(pc, monkeypatch, tmp_path):
-    """local.conf 부재 → None (OSError 폴백)."""
-    _bind_tmp_repo(pc, monkeypatch, tmp_path)
-    assert pc._local_conf_session() is None
+    board 를 import 하지 않는 3개 모듈이 각자 같은 키를 파싱하던 사본이 폐지 대상이었다 —
+    이름이 살아 있으면 다음 호출자가 다시 그 층을 살릴 수 있으므로 부재를 못박는다.
+    """
+    assert not hasattr(pc, "_local_conf_session")
+    assert hasattr(pc, "_local_conf_user")      # 같은 관용구의 살아 있는 키는 유지
 
 
 # ════════════════════════════════════════════════════════════════════════

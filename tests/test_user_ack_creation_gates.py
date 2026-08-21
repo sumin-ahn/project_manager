@@ -1,6 +1,7 @@
 """T-0636 신규-생성 축의 값-결속 사용자 승인 게이트.
 
-prefix 4소스 합집합/6개 CLI 호출형(new·init·task prefix·rename·merge·reid)과 물리
+prefix 3소스 합집합(areas·기발행 티켓·task 장부)/6개 CLI 호출형(new·init·task prefix·
+rename·merge·reid)과 물리
 worktree add 변형을 hermetic하게 검증한다. 기존 downstream 테스트에는 무차별 ack를
 붙이지 않고, 이 파일에서 거부/승인/오결속을 명시적으로 나눈다.
 """
@@ -216,25 +217,28 @@ def test_known_prefixes_task_source_alone(board):
     assert board.known_prefixes() == frozenset({"TASK"})
 
 
-def test_known_prefixes_solo_conf_source_alone(board):
+def test_known_prefixes_local_conf_prefix_key_is_not_a_source(board):
+    """local.conf `prefix=` 는 승인 게이트의 소스가 아니다 (T-0779 · 3소스).
+
+    해소 체인(`id_prefix`)에서 그 층을 지웠으므로 게이트 합집합에도 없어야 한다 — 남아
+    있으면 도달 불가능한 clone-local 라벨을 whitelist 한다.
+    """
     board.LOCAL_CONF.write_text("prefix=SOLO\n", encoding="utf-8")
-    assert board.known_prefixes() == frozenset({"SOLO"})
+    assert board.known_prefixes() == frozenset()
 
 
-def test_four_source_subset_matrix_single_case_passes_and_split_case_fails(
+def test_three_source_subset_matrix_single_case_passes_and_split_case_fails(
     board, capsys,
 ):
-    """4소스의 비어 있지 않은 15조합을 실파일로 구성해 canonical 경계를 전수한다.
+    """3소스의 비어 있지 않은 7조합을 실파일로 구성해 canonical 경계를 전수한다.
 
     같은 ``AAA`` case만 있으면 조합 크기와 무관하게 단일 canonical로 통과한다. 두 case를
-    넣은 11개 다중-source 조합은 모두 fail-loud여야 한다. 단, areas가 있으면 solo local.conf는
-    해소 규칙상 비활성 소스이므로 ``areas+solo``만 유효 단일-source로 통과한다.
+    넣은 4개 다중-source 조합은 모두 fail-loud여야 한다(비활성 소스가 없으므로 예외 0).
     """
-    sources = ("areas", "tickets", "tasks", "solo")
+    sources = ("areas", "tickets", "tasks")
 
     def reset_sources():
         board.AREAS_FILE.unlink(missing_ok=True)
-        board.LOCAL_CONF.unlink(missing_ok=True)
         board.LEASES_FILE.unlink(missing_ok=True)
         for status in (*board.STATUS_DIRS, ".drafts"):
             status_dir = board.TICKETS_DIR / status
@@ -248,7 +252,8 @@ def test_four_source_subset_matrix_single_case_passes_and_split_case_fails(
             board.areas_append(prefix, "area", "owner")
         elif source == "tickets":
             _seed_ticket(board, f"T-{prefix}-001")
-        elif source == "tasks":
+        else:
+            assert source == "tasks"
             board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
             board.LEASES_FILE.write_text(
                 json.dumps({
@@ -257,12 +262,9 @@ def test_four_source_subset_matrix_single_case_passes_and_split_case_fails(
                 }),
                 encoding="utf-8",
             )
-        else:
-            board.LOCAL_CONF.write_text(f"prefix={prefix}\n", encoding="utf-8")
 
     single_case_passes = 0
     split_case_failures = 0
-    inactive_solo_passes = 0
     for mask in range(1, 1 << len(sources)):
         selected = [source for index, source in enumerate(sources) if mask & (1 << index)]
 
@@ -284,29 +286,20 @@ def test_four_source_subset_matrix_single_case_passes_and_split_case_fails(
         result = board._prefix_target_snapshot("AaA", surface="matrix")
         captured = capsys.readouterr()
 
-        effective = [
-            source for source in selected
-            if source != "solo" or "areas" not in selected
-        ]
-        if len(effective) == 1:
-            assert selected == ["areas", "solo"]
-            assert result == ("AAA", False)
-            assert "case 변형이 2개 이상" not in captured.err
-            inactive_solo_passes += 1
-        else:
-            assert result == (None, False), selected
-            assert "case 변형이 2개 이상" in captured.err
-            split_case_failures += 1
+        # 3소스 전부 활성이므로 다중-source split 은 예외 없이 fail-loud 다.
+        assert result == (None, False), selected
+        assert "case 변형이 2개 이상" in captured.err
+        split_case_failures += 1
 
-    assert (single_case_passes, split_case_failures, inactive_solo_passes) == (15, 10, 1)
+    assert (single_case_passes, split_case_failures) == (7, 4)
 
 
-@pytest.mark.parametrize("derived", ["task", "session", "single-area", "solo-conf"])
+@pytest.mark.parametrize("derived", ["task", "session", "single-area"])
 @pytest.mark.parametrize("split_case", [False, True], ids=["single-case", "split-case"])
 def test_cmd_new_derived_prefixes_share_canonical_gate(
     board, capsys, derived, split_case,
 ):
-    """task·세션·단일 areas·solo-conf 유도값도 명시 prefix와 같은 판정을 지난다."""
+    """task·세션·단일 areas 유도값도 명시 prefix와 같은 판정을 지난다."""
     task = None
     repo = None
     slot = None
@@ -326,10 +319,9 @@ def test_cmd_new_derived_prefixes_share_canonical_gate(
         board.areas_append("OTHER", "other", "owner", repo="other")
         repo = "svc"
         slot = 1
-    elif derived == "single-area":
-        board.areas_append("AAA", "area", "owner", repo="svc")
     else:
-        board.LOCAL_CONF.write_text("prefix=AAA\n", encoding="utf-8")
+        assert derived == "single-area"
+        board.areas_append("AAA", "area", "owner", repo="svc")
 
     if split_case:
         _seed_ticket(board, "T-aaa-001")
@@ -355,7 +347,7 @@ def test_cmd_new_derived_prefixes_share_canonical_gate(
         assert "case 변형이 2개 이상" not in captured.err
 
 
-def test_known_prefixes_ignores_solo_conf_when_area_registered(board):
+def test_known_prefixes_ignores_local_conf_prefix_when_area_registered(board):
     board.LOCAL_CONF.write_text("prefix=SOLO\n", encoding="utf-8")
     board.areas_append("AREA", "area", "owner")
     assert board.known_prefixes() == frozenset({"AREA"})

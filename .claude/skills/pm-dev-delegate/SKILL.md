@@ -213,7 +213,10 @@ Agent 툴 호출:
      - 열거한 인스턴스 목록과 각각의 처리
      - 신규 테스트 수
      - 지정 회귀 결과 (A passed · 범위 명시)
-     - DoD 각 항목별 충족 evidence 명시"
+     - DoD 각 항목별 충족 evidence 명시
+     - fix 라운드면 엔진이 시드한 검증 골격을 accepted ID 전수로 채운다(재현 커맨드·기대값·fix 전
+       실값). 기계로 확인할 수 없는 항목은 골격이 제공하는 닫힌 사유로 선언한다. 형식·낱말은 골격이
+       단일 진실이다."
 ```
 
 > ⚠ **kill 되어도 산출은 남는다 — 단 `pm_delegate`/`external_review` 실행에 한한다.**
@@ -299,8 +302,8 @@ architect도 위 native `ticket prepare` 뒤 Agent를 호출하고 종료 뒤 `t
 > 미판정 finding ID 를 전부 프리필한 판정 골격을 내므로, 그 골격의 판정·사유 자리만 채워 티켓
 > 명세의 PM 영역에 붙인 뒤
 > `python3 .project_manager/tools/pm_delegate.py review delta --ticket T-NNNN`을 실행한다. 출력된
-> accepted ID·원문 필드·PM scope만 developer에게 전달하고 rejected/decision-required/보고서 전문은
-> 전달하지 않는다. 비성공이면 표시된 판정·재설계 처방을 먼저 수행하고, 빈 성공이면 재투입하지 않는다.
+> delta 를 발췌하지 말고 그대로 developer에게 전달한다(끝의 제약 블록 포함).
+> rejected/decision-required·보고서 전문은 출력에 없고 따로 전달하지도 않는다. 비성공이면 표시된 판정·재설계 처방을 먼저 수행하고, 빈 성공이면 재투입하지 않는다.
 > cross fix 라운드는
 > `pm_delegate --resume-from <T-NNNN>` 으로 **직전 dev 세션을 재사용**한다(cold 재투입은 티켓+코드
 > 재섭취를 라운드마다 다시 낸다 — fresh 는 resume 미일치 폴백·전사 과대 시에만). 같은 accepted ID가 2라운드

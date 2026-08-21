@@ -516,7 +516,7 @@ def _dashboard_file() -> Path:
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
-ENGINE_REV = "v1.7.7"
+ENGINE_REV = "v1.7.8"
 
 # _load_tool(generic)이 이름으로 로드하는 stamped 형제. deep-import AST 가드는 클래스 메서드와
 # 중첩 함수까지 포함해 실제 호출 target을 측정하고, 그 집합이 이 리터럴에 포함되는지 단언한다.
@@ -5073,7 +5073,7 @@ class PmBootstrap:
         else:
             lines.append(
                 "정체성: 솔로(단일 세션) — `--repo`/`--slot` 명시 불요(env `PM_SESSION_NAME` / "
-                "local.conf `session=` 로 자동 해소)."
+                "단일 등록·단일 lease 자동 해소 — local.conf 폴백은 폐지)."
             )
         # 스킬-우선 운영 pointer — 규칙/why 는 pm_role 이 단일 진실(재설명 금지).
         lines.append(

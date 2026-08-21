@@ -42,8 +42,10 @@ import datetime
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from collections.abc import Iterator
@@ -182,7 +184,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 
 
 # ── 엔진 사본 rev 스탬프 (pm_bootstrap deep-import target) ────────────────
-ENGINE_REV = "v1.7.7"
+ENGINE_REV = "v1.7.8"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -276,6 +278,11 @@ _ENGINE_REV_SKEW_RECOVERY_REASONS = {
         "재사용하므로, seam 부재로 판독이 죽으면 부트스트랩 요약 전체가 함께 죽는다. "
         "부재/손상/혼합 사본을 흡수하되 조용하지 않게 사유를 stderr 로 남기고 종전 읽기로 "
         "진행한다(잃는 것은 Windows 에서 이 판독 중의 원자 교체 한 번)"
+    ),
+    "inflight_ledger_query": (
+        "compaction snapshot 은 hook 경계다 — 진행 중 작업 절의 장부 조회(pm_delegate·pm_relay "
+        "in-process 호출)가 재-raise 하면 payload 전체가 죽는다. 손상/로드 실패/사본 skew 를 "
+        "흡수하되 조용하지 않게 사유를 stderr 로 남기고 그 절만 1줄로 접는다(다른 절은 온전)"
     ),
 }
 
@@ -403,6 +410,34 @@ CTX_GUARD_CONTINUITY_GUIDANCE = (
 _PRECOMPACT_BREADCRUMB = (
     f"\n> ⚠ auto-compact 발생 — {CTX_GUARD_CONTINUITY_GUIDANCE}\n"
 )
+
+# ── 전언 경고 + 진행 중 작업 절 (컴팩션 복구 주입 보강) ─────────────
+# 컴팩션 요약 속 단언("불가·없음·누구 몫·이미 됨")은 근거가 지워진 전언이다 — 실측 없이
+# 행동 전제로 상속되지 않게 always-keep 접두로 싣는다(문안은 architect 라운드 확정 verbatim).
+# CTX_GUARD 금지표현·FORBIDDEN 정규식 3종(tests/test_ctx_continuity_guidance.py) 0 hit 대상이다.
+SNAPSHOT_HEARSAY_WARNING = (
+    "## 전언 경고 (요약 속 단언은 미검증)\n"
+    "- 압축 요약이 남긴 \"불가·없음·누구 몫·이미 됨\"은 근거가 지워진 전언이다. "
+    "행동 전제로 삼기 전에 실측 1회.\n"
+    "- 접근 경로·환경·선례는 CLAUDE.md 와 `python3 .project_manager/tools/pm_log.py tail`, "
+    "log/current.md 검색으로 확인한다.\n"
+    "- 이 절은 판단 재료다. 진행 중 작업은 계속한다.\n"
+)
+
+# 진행 중 작업 절의 접기 상한("외 N건") — 각 불릿이 스스로 크기를 제한한다(상한 tail-drop에
+# 기대지 않는다). 값은 architect 라운드 §"접기 상한" 확정.
+_INFLIGHT_UNHARVESTED_SHOWN = 3
+_INFLIGHT_RAW_SHOWN = 3
+_INFLIGHT_CLAIMED_SHOWN = 12
+_INFLIGHT_SLOT_SHOWN = 4
+_INFLIGHT_MAX_LINE_CHARS = 200
+_INFLIGHT_MAX_LINES = 8
+
+# 슬롯 WIP git 프로브 — subprocess 0 계약(장부 조회 축)의 유일한 예외. 현재 task leased 슬롯 +
+# PM 홈 합계 상한 3회, 개별 timeout은 남은 예산과 1.0s 중 작은 값, `--no-optional-locks`로
+# 병렬 dev 슬롯의 git 작업과 경합하지 않는다. 전 예외 흡수(fail-soft) — 장부 조회는 여전히 spawn 0.
+_WIP_PROBE_MAX_CALLS = 3
+_WIP_PROBE_TIMEOUT_SECONDS = 1.0
 
 # 새 current.md 가 처음 생길 때 얹는 표준 헤더 (log.md 의 기존 헤더와 동일 형식).
 CURRENT_HEADER = """\
@@ -879,13 +914,11 @@ def _active_tasks(pm_home: Path) -> list[str]:
 # 소비자가 문자열 리터럴을 복제하지 않도록 생산자가 집합까지 함께 노출한다.
 IDENTITY_SOURCE_CWD_LEASE = "cwd→lease"
 IDENTITY_SOURCE_SINGLE_ACTIVE_TASK = "단일 활성 task"
-IDENTITY_SOURCE_SOLO_LOCAL_CONF = "solo local.conf"
 IDENTITY_SOURCE_LEGACY_PM_STATE = "legacy pm_state"
 IDENTITY_SOURCE_UNRESOLVED = "정체성 미해소"
 SNAPSHOT_IDENTITY_SOURCES = frozenset({
     IDENTITY_SOURCE_CWD_LEASE,
     IDENTITY_SOURCE_SINGLE_ACTIVE_TASK,
-    IDENTITY_SOURCE_SOLO_LOCAL_CONF,
     IDENTITY_SOURCE_LEGACY_PM_STATE,
     IDENTITY_SOURCE_UNRESOLVED,
 })
@@ -894,31 +927,15 @@ HANDOFF_TASK_MODE_IDENTITY_SOURCES = frozenset({
     IDENTITY_SOURCE_SINGLE_ACTIVE_TASK,
 })
 HANDOFF_COLLECTION_ONLY_IDENTITY_SOURCES = frozenset({
-    IDENTITY_SOURCE_SOLO_LOCAL_CONF,
     IDENTITY_SOURCE_LEGACY_PM_STATE,
 })
 
 
-def _local_conf_session(pm_home: Path) -> str | None:
-    """solo/legacy ``local.conf``의 ``session=``을 board 파서와 같은 의미로 읽는다."""
-    conf = Path(pm_home) / ".project_manager" / "local.conf"
-    session = None
-    try:
-        lines = _read_text_shared(conf, encoding="utf-8").splitlines()
-    except (OSError, UnicodeError):
-        return None
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        if key.strip() == "session":
-            session = value.strip() or None
-    return session
-
-
 def resolve_snapshot_identity(pm_home: Path, cwd: Path) -> tuple[str | None, str]:
-    """cwd lease → 단일 활성 task → solo/legacy 순으로 snapshot 정체성을 해소한다."""
+    """cwd lease → 단일 활성 task → legacy pm_state 순으로 snapshot 정체성을 해소한다.
+
+    per-clone ``local.conf``의 ``session=``은 층이 아니다 — slot 종속 값이 프로젝트 공용
+    conf 에 있던 범위 오류라 엔진 어디서도 읽지 않는다."""
     matches: list[tuple[int, str]] = []
     lease_rows = _lease_rows(pm_home)
     for row in lease_rows:
@@ -939,12 +956,9 @@ def resolve_snapshot_identity(pm_home: Path, cwd: Path) -> tuple[str | None, str
     active = _active_tasks(pm_home)
     if len(active) == 1:
         return active[0], IDENTITY_SOURCE_SINGLE_ACTIVE_TASK
-    # task 장부가 없는 신규 solo 채택자와 legacy solo만 마지막에 받는다. cwd와 무관한
-    # leased 행이 하나라도 있으면 multi/worktree 오귀속 가능성이 있으므로 local.conf를 쓰지 않는다.
+    # task 장부가 없는 legacy 형상만 마지막에 받는다. cwd와 무관한 leased 행이 하나라도
+    # 있으면 multi/worktree 오귀속 가능성이 있으므로 이 층에 오지 않는다.
     if not active and not any(row.get("state") == "leased" for row in lease_rows):
-        session = _local_conf_session(pm_home)
-        if session:
-            return session, IDENTITY_SOURCE_SOLO_LOCAL_CONF
         legacy_state = Path(pm_home) / ".project_manager" / "wiki" / "pm_state.md"
         if legacy_state.is_file():
             return "pm", IDENTITY_SOURCE_LEGACY_PM_STATE
@@ -1006,7 +1020,7 @@ def resolved_lease_slot_path(pm_home: Path, session: str) -> Path | None:
 
 
 def _pm_state_path(pm_home: Path, task: str, source: str) -> Path:
-    """해소 층에 맞는 task 또는 legacy solo pm_state 경로를 반환한다."""
+    """해소 층에 맞는 task 또는 legacy pm_state 경로를 반환한다."""
     if source in HANDOFF_COLLECTION_ONLY_IDENTITY_SOURCES:
         return Path(pm_home) / ".project_manager" / "wiki" / "pm_state.md"
     return (
@@ -1040,16 +1054,29 @@ def _ticket_counts(pm_home: Path) -> tuple[Path, dict[str, int]]:
     return tickets, counts
 
 
+def _lease_task_slots(pm_home: Path, task: str) -> list[tuple[str, Path]]:
+    """현재 task 가 leased 로 보유한 슬롯 — (장부 표기, 해소 경로) 쌍.
+
+    ``_ledger_section``(장부 표기 문자열만)과 슬롯 WIP 프로브(해소 경로가 필요)가 같은
+    lease 판정 한 번을 공유한다 — 판정을 두 곳에 복제하면 갈릴 수 있다.
+    """
+    slots: list[tuple[str, Path]] = []
+    for row in _lease_rows(pm_home):
+        if row.get("state") == "leased" and row.get("session") == task and row.get("slot"):
+            resolved = _lease_slot_path(pm_home, row)
+            if resolved is not None:
+                slots.append((str(row["slot"]), resolved))
+    return slots
+
+
 def _ledger_section(pm_home: Path, task: str) -> str:
     active = _active_tasks(pm_home)
     leases = _lease_rows(pm_home)
     states: dict[str, int] = {}
-    task_slots: list[str] = []
     for row in leases:
         state = str(row.get("state") or "unknown")
         states[state] = states.get(state, 0) + 1
-        if state == "leased" and row.get("session") == task and row.get("slot"):
-            task_slots.append(str(row["slot"]))
+    task_slots = [label for label, _path in _lease_task_slots(pm_home, task)]
     tickets, counts = _ticket_counts(pm_home)
     state_text = ", ".join(f"{key} {states[key]}" for key in sorted(states)) or "장부 없음"
     count_text = " / ".join(f"{key} {counts[key]}" for key in ("open", "claimed", "blocked", "done"))
@@ -1083,6 +1110,251 @@ def _recovery_section(task: str, source: str) -> str:
         "- 자동 생성된 compaction checkpoint 골격의 구간·서사 불릿은 PM 판단으로 채운다.\n"
         f"- {CTX_GUARD_CONTINUITY_GUIDANCE}\n"
     )
+
+
+def _hearsay_section() -> str:
+    """always-keep 절 — ``build_snapshot`` 의 deadline 폐기 순서에서도 살아남는다."""
+    return SNAPSHOT_HEARSAY_WARNING
+
+
+def _load_pm_delegate():
+    """pm_delegate 모듈을 in-process 로드 — 미회수 라운드 준비 조회(``ticket_copy_records``) 전용.
+
+    부재/로드 실패/사본 skew 는 모두 예외로 전파한다. 호출부(``_inflight_section``)가 절 단위
+    fail-soft 로 접고, skew 만 등록 경계(``inflight_ledger_query``)에서 흡수해 표출한다
+    (``pm_handoff._load_pm_delegate`` 동형 seam — CLI subprocess 왕복 대신 같은 프로세스 호출).
+    """
+    path = Path(__file__).resolve().parent / "pm_delegate.py"
+    return _load_module_from_path(path, "pm_delegate.py", verifier=_verify_engine_rev)
+
+
+def _load_pm_relay():
+    """pm_relay 모듈을 in-process 로드 — 미마감 raw 무락 조회(``raw_records(lock=False)``) 전용."""
+    path = Path(__file__).resolve().parent / "pm_relay.py"
+    return _load_module_from_path(path, "pm_relay.py", verifier=_verify_engine_rev)
+
+
+# raw 장부 필드·예외 메시지처럼 신뢰 경계 밖 값이 CR/LF·제어문자를 실어 절의 물리 줄 수
+# 상한을 우회하거나 가짜 "## " heading 을 주입하지 못하게 렌더 직전에 단일 안전 구분자로
+# 정규화한다(소유 모듈은 raw 레코드를 행별 스키마 검증 없이 반환한다).
+_INFLIGHT_CONTROL_CHAR_RE = re.compile(r"[\r\n\t\x00-\x1f\x7f]+")
+
+
+def _inflight_safe_text(value: object) -> str:
+    """임의 값을 렌더 안전한 단일 줄 문자열로 정규화한다(CR/LF·제어문자 → 공백 1개)."""
+    return _INFLIGHT_CONTROL_CHAR_RE.sub(" ", str(value)).strip()
+
+
+def _fold_join(items: list[str], shown: int, unit: str) -> str:
+    """앞 ``shown`` 개만 나열하고 나머지는 "외 N<unit>" 로 접는다(절 길이 자기 상한 · tail-drop 비의존)."""
+    head = items[:shown]
+    text = " · ".join(head)
+    remaining = len(items) - len(head)
+    if remaining > 0:
+        text += f" 외 {remaining}{unit}"
+    return text
+
+
+def _inflight_capped_line(*, prefix: str, content: str, suffix: str) -> str:
+    """``content`` 만 잘라 줄 상한(``_INFLIGHT_MAX_LINE_CHARS``)을 지킨다(접두·명령 포인터는 보존)."""
+    line = f"{prefix}{content}{suffix}"
+    if len(line) <= _INFLIGHT_MAX_LINE_CHARS:
+        return line
+    budget = _INFLIGHT_MAX_LINE_CHARS - len(prefix) - len(suffix) - 1
+    if budget <= 0:
+        return line[:_INFLIGHT_MAX_LINE_CHARS]
+    return f"{prefix}{content[:budget]}…{suffix}"
+
+
+def _unharvested_copies_line(rows: list[dict]) -> str:
+    """``pm_delegate.ticket_copy_records(unharvested=True)`` 실값 → 미회수 라운드 준비 불릿."""
+    prefix = "- 미회수 라운드 준비 "
+    suffix = " → `python3 .project_manager/tools/pm_delegate.py ticket copies --unharvested`"
+    if not rows:
+        return _inflight_capped_line(prefix=prefix, content="0건", suffix=suffix)
+    labels = [f"{row['ticket']} {row['role']}#{row['ordinal']}" for row in rows]
+    content = f"{len(rows)}건: {_fold_join(labels, _INFLIGHT_UNHARVESTED_SHOWN, '건')}"
+    return _inflight_capped_line(prefix=prefix, content=content, suffix=suffix)
+
+
+def _unfinished_raw_line(rows: list[dict], ledger_path: Path) -> str:
+    """``pm_relay.unfinished_raw_records(lock=False)`` 실값 → 미마감 위임 raw 불릿(kill 증거)."""
+    prefix = "- 미마감 위임 raw "
+    suffix = " → `python3 .project_manager/tools/pm_delegate.py raw --unfinished`"
+    if not rows:
+        return _inflight_capped_line(
+            prefix=prefix, content=f"0건 (장부: {ledger_path})", suffix=suffix,
+        )
+    labels = [
+        f"{_inflight_safe_text(row.get('started_at'))} "
+        f"{_inflight_safe_text(row.get('surface'))}/{_inflight_safe_text(row.get('harness'))}"
+        for row in rows
+    ]
+    content = (
+        f"{len(rows)}건: {_fold_join(labels, _INFLIGHT_RAW_SHOWN, '건')} (장부: {ledger_path})"
+    )
+    return _inflight_capped_line(prefix=prefix, content=content, suffix=suffix)
+
+
+def _claimed_tickets_line(ticket_ids: list[str]) -> str:
+    """claimed 티켓 디렉터리 glob 실값 → ID 목록 불릿(개수만이 아니라 목록으로 편입)."""
+    prefix = "- claimed 티켓 "
+    if not ticket_ids:
+        return f"{prefix}0건"
+    safe_ids = sorted(_inflight_safe_text(tid) for tid in ticket_ids)
+    folded = _fold_join(safe_ids, _INFLIGHT_CLAIMED_SHOWN, "건")
+    return _inflight_capped_line(prefix=prefix, content=f"{len(ticket_ids)}건: {folded}", suffix="")
+
+
+def _git_status_counts(path: Path, timeout: float) -> tuple[int, int, int] | None:
+    """``git --no-optional-locks status --porcelain`` 1회 — staged/미staged/untracked 개수.
+
+    git 부재·비-repo·timeout·기타 예외는 전부 흡수해 ``None`` — WIP 프로브 계약(전 예외 흡수)의
+    실행 지점이다. 이 함수는 절대 예외를 올리지 않는다(호출부가 subprocess 0 장부 조회와 섞이지
+    않게 이 함수 하나로 유일한 예외를 가둔다).
+    """
+    if timeout <= 0 or shutil.which("git") is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "--no-optional-locks", "-C", str(path), "status", "--porcelain"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout, check=False,
+        )
+    except Exception:  # noqa: BLE001 — WIP 프로브 전 예외 흡수 계약.
+        return None
+    if result.returncode != 0:
+        return None
+    staged = unstaged = untracked = 0
+    for line in result.stdout.splitlines():
+        if not line:
+            continue
+        if line.startswith("??"):
+            untracked += 1
+            continue
+        index_state = line[0]
+        worktree_state = line[1] if len(line) > 1 else " "
+        if index_state not in (" ", "?"):
+            staged += 1
+        if worktree_state not in (" ", "?"):
+            unstaged += 1
+    return staged, unstaged, untracked
+
+
+def _wip_probe_targets(pm_home: Path, task: str) -> tuple[list[tuple[str, Path]], int]:
+    """WIP 프로브 대상 — PM 홈 자리를 먼저 예약한 뒤 leased 슬롯으로 나머지를 채운다.
+
+    반환은 ``(프로브할 대상, 상한 때문에 못 본 leased 슬롯 수)``. leased 슬롯이 상한보다 많을
+    때 뒤에 append 되는 PM 홈이 slice 로 조용히 밀려나던 결함(4-slot 프로브
+    실측: PM 홈·slot-d 소실)을 막는다 — PM 홈이 기존 슬롯과 겹치지 않을 때만 자리를 예약해
+    상한을 낭비하지 않는다. 못 본 슬롯은 spawn 없이 개수만 돌려준다(``_wip_slot_line`` 이
+    "외 N개(프로브 생략)"로 표면화 — 침묵 누락 금지).
+    """
+    slots = list(_lease_task_slots(pm_home, task))
+    seen = {os.path.normcase(str(path.resolve(strict=False))) for _label, path in slots}
+    pm_home_path = Path(pm_home)
+    pm_home_key = os.path.normcase(str(pm_home_path.resolve(strict=False)))
+    pm_home_distinct = pm_home_key not in seen
+    slot_budget = max(0, _WIP_PROBE_MAX_CALLS - (1 if pm_home_distinct else 0))
+    probed_slots = slots[:slot_budget]
+    skipped = len(slots) - len(probed_slots)
+    targets = list(probed_slots)
+    if pm_home_distinct:
+        targets.append(("PM 홈", pm_home_path))
+    return targets, skipped
+
+
+def _wip_slot_line(
+    pm_home: Path, task: str, *, deadline: float, monotonic=time.monotonic,
+) -> str:
+    """슬롯 WIP 프로브 결과 불릿 — subprocess 0 계약의 유일한 예외(장부 조회는 여전히 spawn 0).
+
+    각 프로브 **직전**에 ``deadline - monotonic()`` 으로 잔여 예산을 다시 계산한다 — 한 번 계산한
+    값을 여러 호출에 재사용하면(4-slot·잔여 0.2s 프로브에서 timeout 합계 0.6s
+    실측) 앞선 호출의 실제 소요가 뒤 호출 예산을 깎지 않는다는 착시가 생겨 snapshot 자체의
+    deadline 을 넘길 수 있다. 잔여가 0 이하면 그 대상부터는 spawn 하지 않고 "예산 소진"으로
+    표기한다(장부 조회 subprocess 0 계약과 별개로, 프로브 자신의 시간 계약).
+    """
+    targets, skipped = _wip_probe_targets(pm_home, task)
+    parts: list[str] = []
+    for label, path in targets:
+        safe_label = _inflight_safe_text(label)
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            parts.append(f"{safe_label} 예산 소진")
+            continue
+        timeout = min(remaining, _WIP_PROBE_TIMEOUT_SECONDS)
+        counts = _git_status_counts(path, timeout)
+        if counts is None:
+            parts.append(f"{safe_label} 조회 불가")
+        else:
+            staged, unstaged, untracked = counts
+            parts.append(
+                f"{safe_label} staged {staged} / 미staged {unstaged} / untracked {untracked}"
+            )
+    content = _fold_join(parts, _INFLIGHT_SLOT_SHOWN, "개") if parts else "대상 없음"
+    if skipped > 0:
+        content += f" 외 {skipped}개(프로브 생략)"
+    return _inflight_capped_line(prefix="- 슬롯 WIP: ", content=content, suffix="")
+
+
+def _inflight_query_failure_line(exc: Exception, *, skew: bool) -> str:
+    """진행 중 작업 절의 skew 흡수 경계 표출 — 흡수해도 stderr 1줄 + payload 1줄로 표출한다.
+
+    복구 마커 호출(사유 등록 검증)은 흡수 지점인 호출부 except 핸들러가 직접 수행하고
+    (`skew` 로 그 판정을 받는다 — 정적 가드의 시야가 핸들러 본문이다), 여기서는 표출만 한다.
+    stderr 진단은 원문 그대로(다중행이어도 무방) 남기되, payload 에 실리는 절 본문은
+    ``_inflight_safe_text``로 정규화하고 ``_inflight_capped_line``으로 줄 상한을 지킨다
+    (예외 메시지에 개행이 섞이면 가짜 heading 을 주입할 수 있다).
+    """
+    cause = f"엔진 사본 불일치 — {exc}" if skew else f"{type(exc).__name__}: {exc}"
+    print(f"경고: 진행 중 작업 절 조회 실패 ({cause}) — 절을 1줄로 접음", file=sys.stderr)
+    line = _inflight_capped_line(
+        prefix="- 조회 실패: ",
+        content=_inflight_safe_text(cause),
+        suffix=" → `python3 .project_manager/tools/pm_bootstrap.py`로 직접 확인",
+    )
+    return "## 진행 중 작업 (장부 실측)\n" + line + "\n"
+
+
+def _inflight_section(
+    pm_home: Path, task: str, *, deadline: float, monotonic=time.monotonic,
+) -> str:
+    """미회수 라운드 준비·미마감 raw·claimed 티켓·슬롯 WIP 을 in-process 조회로 편입한다.
+
+    장부 조회는 subprocess 0(``pm_delegate.ticket_copy_records``·``pm_relay.raw_records``
+    in-process 호출) — WIP git 프로브(``_wip_slot_line``)만 유일한 예외(자체 상한·전 예외 흡수).
+    네 조회 중 하나라도 예외를 올리면 절 전체를 1줄로 접는다(다른 절은 온전 — 절 단위 fail-soft).
+    각 불릿은 ``_inflight_safe_text``/``_inflight_capped_line`` 으로 이미 단일 줄이지만, 물리
+    행 수도 조립 단계에서 실제로 강제한다(``_INFLIGHT_MAX_LINES`` — 선언만
+    되고 조립에서 미강제였던 결함).
+    """
+    try:
+        delegate = _load_pm_delegate()
+        unharvested_rows = delegate.ticket_copy_records(pm_home, unharvested=True)
+        relay = _load_pm_relay()
+        _raw_dir, raw_ledger = relay.raw_storage_paths(
+            pm_home, "delegate", None, temp_dir=Path(tempfile.gettempdir()),
+        )
+        unfinished_raw_rows = relay.unfinished_raw_records(raw_ledger, lock=False)
+        tickets_dir, _counts = _ticket_counts(pm_home)
+        claimed_ids = [
+            path.stem for path in (tickets_dir / "claimed").glob("T-*.md")
+            if path.is_file()
+        ]
+    except Exception as exc:  # noqa: BLE001 — 절 단위 fail-soft(등록 경계에서만 skew 흡수).
+        skew = _absorb_engine_rev_skew_for_recovery(exc, "inflight_ledger_query")
+        return _inflight_query_failure_line(exc, skew=skew)
+
+    lines = [
+        _unharvested_copies_line(unharvested_rows),
+        _unfinished_raw_line(unfinished_raw_rows, raw_ledger),
+        _claimed_tickets_line(claimed_ids),
+        _wip_slot_line(pm_home, task, deadline=deadline, monotonic=monotonic),
+    ]
+    body_lines = "\n".join(lines).splitlines()
+    body = "\n".join(body_lines[:_INFLIGHT_MAX_LINES])
+    return "## 진행 중 작업 (장부 실측)\n" + body + "\n"
 
 
 def build_ctx_guard_guidance(
@@ -1165,7 +1437,7 @@ def _snapshot_within_limits(text: str) -> bool:
 
 
 def _truncate_snapshot_text(text: str) -> str:
-    """문자/UTF-8 경계를 깨지 않고 snapshot의 이중 상한 안으로 자른다."""
+    """문자/UTF-8 경계를 깨지 않고 snapshot의 이중 상한 안으로 자른다(머리를 보존)."""
     text = text[:SNAPSHOT_MAX_CHARS]
     if len(text.encode("utf-8")) <= SNAPSHOT_MAX_BYTES:
         return text
@@ -1179,15 +1451,73 @@ def _truncate_snapshot_text(text: str) -> str:
     return text[:low]
 
 
-def cap_snapshot_sections(identity: str, sections: list[str]) -> str:
-    """뒤 절부터 통째로 덜고, 초대형 정체성 절은 안전 절단해 이중 상한을 지킨다."""
+def _truncate_snapshot_text_keep_tail(text: str) -> str:
+    """``_truncate_snapshot_text`` 의 꼬리-보존 변형 — 문자/UTF-8 경계를 지키며 뒤쪽을 남긴다.
+
+    always-keep 접두 자체가 이중 상한을 넘는 극단 형상에서, 나중에
+    추가된 절(전언 경고)이 먼저 온 절(ctx 진단)보다 우선 살아남게 한다.
+    """
+    text = text[-SNAPSHOT_MAX_CHARS:] if len(text) > SNAPSHOT_MAX_CHARS else text
+    if len(text.encode("utf-8")) <= SNAPSHOT_MAX_BYTES:
+        return text
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        candidate = text[-middle:] if middle else ""
+        if len(candidate.encode("utf-8")) <= SNAPSHOT_MAX_BYTES:
+            low = middle
+        else:
+            high = middle - 1
+    return text[-low:] if low else ""
+
+
+def _truncate_identity_keeping_suffix(identity: str, suffix: str) -> str:
+    """identity 를 이중 상한 안으로 절단하되 always-keep 접두(``suffix``)는 뒤에 온전히 붙인다.
+
+    접두 자체가 상한을 넘는 비정상 입력이면 identity 를 버리고 접두를 꼬리-보존으로 안전
+    절단한다(나중에 추가된 절 — 전언 경고 — 이 먼저 온 절보다 우선 산다). 정상 운용에서 접두는
+    몇백 자 수준이라 이 분기는 사실상 도달하지 않는다.
+    """
+    if not suffix:
+        return _truncate_snapshot_text(identity.rstrip() + "\n")
+    trimmed = identity.rstrip()
+    combined = f"{trimmed}\n{suffix}" if trimmed else suffix
+    if _snapshot_within_limits(combined):
+        return combined
+    if not _snapshot_within_limits(suffix):
+        return _truncate_snapshot_text_keep_tail(suffix)
+    low, high = 0, len(identity)
+    while low < high:
+        middle = (low + high + 1) // 2
+        candidate = identity[:middle].rstrip()
+        probe = f"{candidate}\n{suffix}" if candidate else suffix
+        if _snapshot_within_limits(probe):
+            low = middle
+        else:
+            high = middle - 1
+    trimmed_identity = identity[:low].rstrip()
+    return f"{trimmed_identity}\n{suffix}" if trimmed_identity else suffix
+
+
+def cap_snapshot_sections(
+    identity: str, sections: list[str], *, required: int = 0,
+) -> str:
+    """뒤 절부터 통째로 덜고, 초대형 정체성 절은 안전 절단해 이중 상한을 지킨다.
+
+    ``required`` 는 ``sections`` 앞 N 개(예: ctx 진단+전언 경고)를 tail-drop 대상에서 제외한다
+    — 총량 cap 경로에서도 always-keep 절이 살아남는다(이전엔 identity 가
+    거의 상한을 채운 상태에서 필수 접두까지 일반 절처럼 pop 돼 사라졌다 — 7,942-char identity
+    프로브에서 hearsay_present=False 로 실측). 필수 접두를 포함해도 넘치면 identity 의 가변
+    부분을 절단해 접두를 지킨다(``_truncate_identity_keeping_suffix``).
+    """
     kept = list(sections)
-    while kept:
+    while len(kept) > required:
         text = "\n".join([identity, *kept]).rstrip() + "\n"
         if _snapshot_within_limits(text):
             return text
         kept.pop()
-    return _truncate_snapshot_text(identity.rstrip() + "\n")
+    required_text = "\n".join(kept).rstrip() + "\n" if kept else ""
+    return _truncate_identity_keeping_suffix(identity, required_text)
 
 
 def _latest_ctx_window_mismatch_section(
@@ -1250,7 +1580,12 @@ def build_snapshot(
     ctx_observed_tokens: int | None = None,
     harness: str | None = None,
 ) -> tuple[str | None, str | None]:
-    """주입 최종 텍스트를 조립한다. 반환은 ``(text, warning)``이며 외부 호출·lock은 0이다."""
+    """주입 최종 텍스트를 조립한다. 반환은 ``(text, warning)``.
+
+    장부 조회는 subprocess·lock 0 (진행 중 작업 절의 WIP git 프로브만 상한 3회의 유일한 예외 —
+    `_wip_slot_line` 참고). 절 순서: [ctx 진단] → 전언 경고(always-keep) → 장부 포인터 →
+    진행 중 작업 → pm_state → 복구 포인터.
+    """
     started = monotonic()
     identity_name, source = resolve_snapshot_identity(pm_home, cwd)
     if identity_name is None:
@@ -1274,17 +1609,36 @@ def build_snapshot(
     # loud 진단은 compaction 직후 복구 계약의 핵심이므로 tail-drop 최후까지 남는 첫 절이다.
     if mismatch is not None:
         sections.append(mismatch)
+    # 전언 경고는 always-keep 접두 — 뒤 절부터 폐기하는 timeout 분기·총량 cap 경로 모두에서
+    # ``required=always_keep`` 로 cap_snapshot_sections 에 보존 경계를 명시한다.
+    sections.append(_hearsay_section())
+    always_keep = len(sections)
+    # WIP 프로브(F-002)가 절 진입 전이 아니라 **호출 직전마다** 잔여를 재는 절대 deadline.
+    deadline = started + SNAPSHOT_TIMEOUT_SECONDS
     if monotonic() - started >= SNAPSHOT_TIMEOUT_SECONDS:
-        return cap_snapshot_sections(identity, sections), None
+        return cap_snapshot_sections(identity, sections, required=always_keep), None
 
     sections.append(_ledger_section(pm_home, identity_name))
     if monotonic() - started >= SNAPSHOT_TIMEOUT_SECONDS:
-        return cap_snapshot_sections(identity, sections[:1] if mismatch is not None else []), None
+        return cap_snapshot_sections(
+            identity, sections[:always_keep], required=always_keep,
+        ), None
+
+    sections.append(
+        _inflight_section(pm_home, identity_name, deadline=deadline, monotonic=monotonic)
+    )
+    if monotonic() - started >= SNAPSHOT_TIMEOUT_SECONDS:
+        return cap_snapshot_sections(
+            identity, sections[:always_keep], required=always_keep,
+        ), None
+
     sections.append(_pm_state_section(pm_home, identity_name, source, line_limit))
     if monotonic() - started >= SNAPSHOT_TIMEOUT_SECONDS:
-        return cap_snapshot_sections(identity, sections[:1] if mismatch is not None else []), None
+        return cap_snapshot_sections(
+            identity, sections[:always_keep], required=always_keep,
+        ), None
     sections.append(_recovery_section(identity_name, source))
-    return cap_snapshot_sections(identity, sections), None
+    return cap_snapshot_sections(identity, sections, required=always_keep), None
 
 
 def cmd_snapshot(args: argparse.Namespace) -> int:

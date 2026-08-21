@@ -45,7 +45,8 @@ def _isolate_codex_lint(board, monkeypatch) -> None:
         "lint_adr_lifecycle", "lint_adr_author", "lint_architecture_freshness",
         "lint_status_freshness", "lint_domain_freshness", "lint_adapter_drift",
         "lint_render_leak", "lint_unmigrated_overlay",
-        "lint_areas_duplicate_repo", "lint_areas_merge_union", "lint_delegate",
+        "lint_areas_repo_unregistered", "lint_areas_duplicate_repo",
+        "lint_areas_merge_union", "lint_delegate",
     ):
         monkeypatch.setattr(board, name, lambda: [])
     monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])

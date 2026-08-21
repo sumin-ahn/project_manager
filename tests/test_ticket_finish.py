@@ -2528,7 +2528,7 @@ def _wave_repo(tmp_path: Path, *, git: bool = True):
         (root / ".project_manager" / "board" / "tickets" / status).mkdir(
             parents=True, exist_ok=True)
     (root / ".project_manager" / "local.conf").write_text(
-        "session=me\n", encoding="utf-8")
+        "test_cmd=pytest -q\n", encoding="utf-8")
     _wave_ticket(root, _WAVE_TICKET, status="open", touch="src/")
     _wave_write(root / "src" / "app.py", 5)
     _wave_write(root / "docs" / "notes.md", 3)
@@ -2542,11 +2542,19 @@ def _wave_repo(tmp_path: Path, *, git: bool = True):
 
 
 def _wave_claim(board, ticket_id: str = _WAVE_TICKET) -> int:
-    # 인자 전무(kind="none") — session 은 `_wave_repo` 의 local.conf `session=` 로 결정론적
-    # 해소된다. env override 가 ambient 로 새는 것만 방어한다(다른 축 무관심).
-    os.environ.pop("PM_SESSION_NAME", None)
+    # 인자 전무(kind="none") — 세션은 env 명시로 결정론적으로 바인딩한다(per-clone conf
+    # `session=` 폴백은 폐지·T-0779). 다른 축엔 무관심하다.
+    saved = os.environ.get("PM_SESSION_NAME")
+    os.environ["PM_SESSION_NAME"] = "me"
     os.environ.pop("CLAUDE_SESSION_NAME", None)
-    return board.cmd_claim(argparse.Namespace(id=ticket_id, user="me"))
+    try:
+        return board.cmd_claim(argparse.Namespace(id=ticket_id, user="me"))
+    finally:
+        # 같은 워커의 다음 테스트로 새지 않게 원복한다(ambient env 오염 0).
+        if saved is None:
+            os.environ.pop("PM_SESSION_NAME", None)
+        else:
+            os.environ["PM_SESSION_NAME"] = saved
 
 
 def _wave_ticket_path(root: Path, ticket_id: str = _WAVE_TICKET) -> Path:

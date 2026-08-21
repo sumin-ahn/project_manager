@@ -295,8 +295,8 @@ architect도 위 native `ticket prepare` 뒤 `task`를 호출하고 종료 뒤 `
 > `python3 .project_manager/tools/pm_delegate.py review disposition-template --ticket T-NNNN` 이 낸
 > 판정 골격을 붙여 미판정 finding 을 전수 판정한 뒤
 > `python3 .project_manager/tools/pm_delegate.py review delta --ticket T-NNNN`을 실행한다. 출력된
-> accepted ID·원문 필드·PM scope만 developer에게 전달하고 rejected/decision-required/보고서 전문은
-> 전달하지 않는다. 비성공이면 표시된 판정·재설계 처방을 먼저 수행하고, 빈 성공이면 재투입하지 않는다.
+> delta 를 발췌하지 말고 그대로 developer에게 전달한다(끝의 제약 블록 포함).
+> rejected/decision-required·보고서 전문은 출력에 없고 따로 전달하지도 않는다. 비성공이면 표시된 판정·재설계 처방을 먼저 수행하고, 빈 성공이면 재투입하지 않는다.
 > cross fix 라운드는
 > `pm_delegate --resume-from <T-NNNN>` 으로 **직전 dev 세션을 재사용**한다(cold 재투입은 티켓+코드
 > 재섭취를 라운드마다 다시 낸다 — fresh 는 resume 미일치 폴백·전사 과대 시에만). 같은 accepted ID가 2라운드

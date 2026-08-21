@@ -18,7 +18,8 @@ sed 로 못 채우는 **자유서술 placeholder** 채움(하니스 헤드리스
 동작:
   소스 = <--from>/templates/<harness>/ 트리(엔진 + 어댑터)를 대상으로 복사한다.
   콤마 선택 또는 `all`이면 선택된 어댑터 트리를 집합으로 병합 복사한다.
-  복사 후 operational placeholder 를 sed 치환하고 `board.py init`(solo)을 호출한다.
+  복사 후 operational placeholder 를 sed 치환하고 `board.py init`(무인자)을 호출한다
+  — 그 호출이 areas.md 에 이 clone 의 repo 행을 빈 prefix(=none 카테고리)로 등록한다.
     - sed 대상 = {{PROJECT_NAME}}·{{PROJECT_TAGLINE}}·{{PROJECT_ROOT}}·{{PY}}·{{TEST_CMD}}·{{DATE}}.
     - 엔진 문서(wiki/pm_role.md·pm_playbook.md)는 sed 제외 — local.conf 가 런타임 해소.
     - 자유서술 3종({{PROJECT_CONSTRAINTS}}·{{PROTECTED_PATHS}}·{{USER_GATE_ITEMS}})은 보존(아래 fill).
@@ -218,7 +219,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
 # Python 하한 probe보다 먼저 평가되므로 3.10에서도 파싱 가능한 문법만 쓴다.
-ENGINE_REV = "v1.7.7"
+ENGINE_REV = "v1.7.8"
 
 
 def _runtime_skill_entry(skill: str) -> str:
@@ -3008,7 +3009,12 @@ def render_managed_files(
 # ── board.py init 호출 ─────────────────────────────────────────────────────
 
 def run_board_init(dest_root: Path) -> int:
-    """복사된 트리의 board.py init(solo)을 호출 — local.conf·pm_state·pre-push 훅 생성.
+    """복사된 트리의 board.py init 을 인자 없이 호출 — areas repo 행·local.conf·pm_state·
+    pre-push 훅 생성.
+
+    인자 0 호출은 그대로 성립한다 — init 은 `--prefix` 없이도 이 clone 의 repo 행을 등록하고
+    (prefix 칼럼은 빈 채 = 무prefix `T-NNNN` 카테고리), 그 등록에는 `--area`·사용자 승인이
+    필요 없다(신규 카테고리 신설이 아니다).
 
     같은 인터프리터(sys.executable)로 호출 — board.py 는 pyyaml 의존이라 venv 보존 필요.
     비대화형(stdin 비-tty)이면 external_review opt-in 은 board.py 가 안전쪽(OFF)으로 건너뛴다.
@@ -3070,8 +3076,8 @@ def sync_local_conf(dest_root: Path, project_name: str) -> bool:
 
     board.py init 은 project_name 빈값·test_cmd=`pytest -q` 를 하드코딩하므로(seam
     불완전), 엔진 문서(local.conf 해소)와 CLAUDE.md(sed 치환)가 *다른 값*을 보게 된다.
-    project_name·test_cmd·py 3개 키만 키 단위 갱신해 정렬한다. board.py init 이 쓴 다른 키
-    (session·prefix·external_review 등)와 주석은 보존. clobber 금지. 파일 변경 시 True.
+    project_name·test_cmd·py 3개 키만 키 단위 갱신해 정렬한다. 나머지 키(ctx 예산·
+    additional_reviewer 등)와 주석은 보존. clobber 금지. 파일 변경 시 True.
     """
     local_conf = dest_root / ".project_manager" / "local.conf"
     if not local_conf.is_file():
@@ -3381,7 +3387,7 @@ def backup_existing_local_conf(dest_root: Path, backup_root: Path | None) -> str
 
     MF1: board.py init 은 local.conf 를 무조건 write_text 로 덮으므로, 이미 프레임워크를
     쓰던 프로젝트(재-import/업그레이드)면 기존 per-clone 설정(additional_reviewer_enabled·
-    추가 리뷰어 프로필 `additional_reviewer.*`·레거시 `reviewer_cmd`·session·prefix 등)이
+    추가 리뷰어 프로필 `additional_reviewer.*`·레거시 `reviewer_cmd` 등)이
     무백업 손실된다. local.conf 는 pm_import 의
     copy/backup 대상 트리 밖이라 CopyAction 의 백업 로직을 안 탄다 — init 호출 전 여기서
     명시적으로 백업한다.
@@ -3411,11 +3417,10 @@ def reapply_preserved_conf_keys(dest_root: Path, original_text: str) -> bool:
     """board.py init 이 새로 쓴 local.conf 위에, 기존 파일의 사용자 키를 재병합한다.
 
     MF1: board.py init 은 local.conf 를 통째로 덮으므로, init 이 *안 쓴* 사용자 키
-    (additional_reviewer_enabled·추가 리뷰어 프로필 `additional_reviewer.*`·레거시 `reviewer_cmd`·
-    prefix 등)는 init 후 사라진다. 따라서 init 산출 local.conf 에 *없는* 기존 키만
-    _set_conf_keys 로 다시 얹는다. init 이 쓴 키
-    (session·py·test_cmd·project_name·솔로 init 이 채운 prefix 등)는 init/operational sync
-    값을 우선해 덮지 않는다. 결과: import 후 local.conf = board init 기본 + operational sync
+    (additional_reviewer_enabled·추가 리뷰어 프로필 `additional_reviewer.*`·레거시 `reviewer_cmd`
+    등)는 init 후 사라진다. 따라서 init 산출 local.conf 에 *없는* 기존 키만
+    _set_conf_keys 로 다시 얹는다. init 이 쓴 키(py·test_cmd·project_name·ctx 예산)는
+    init/operational sync 값을 우선해 덮지 않는다. 결과: import 후 local.conf = board init 기본 + operational sync
     + 사용자 기존 설정 보존. 재병합으로 변경 시 True.
 
     보존은 **키 이름을 열거하지 않는 일반 규칙**이다 — `_parse_conf_keys` 가 `key=value` 를

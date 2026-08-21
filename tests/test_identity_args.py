@@ -222,6 +222,99 @@ def test_leased_sessions_schema_mismatch_returns_empty(ia, tmp_path):
     assert ia.leased_sessions(leases) == []
 
 
+# ── lease_row_count — 상태 무관 행 수 · 부재/손상 구분 (T-0792 · F-001 리뷰 라운드 03 must-fix) ──
+# 부재/정상-파싱-0행 = "확인된 0"(유도 허용) · 읽기실패/JSON파손/스키마불일치 = "손상"(None·유도
+# 차단) — 두 결론을 접으면 실제로 풀 행을 보유한 손상 장부도 오해소된다(리뷰 재현).
+
+
+def test_lease_row_count_counts_all_states(ia, tmp_path):
+    leases = tmp_path / "worktree-leases.json"
+    _write_leases(leases, [
+        {"slot": "work/A_1", "repo": "A", "session": "A_1", "state": "leased"},
+        {"slot": "work/A_2", "repo": "A", "session": "A_2", "state": "idle"},
+    ])
+    assert ia.lease_row_count(leases) == 2
+
+
+def test_lease_row_count_missing_file_returns_zero(ia, tmp_path):
+    """장부 파일 자체가 없음(fresh 솔로 홈) → 확인된 0(유도 허용 대상)."""
+    assert ia.lease_row_count(tmp_path / "absent.json") == 0
+
+
+def test_lease_row_count_empty_leases_list_returns_zero(ia, tmp_path):
+    """정상 파싱된 `leases` 배열이 빈 리스트 → 확인된 0(유도 허용 대상)."""
+    leases = tmp_path / "worktree-leases.json"
+    _write_leases(leases, [])
+    assert ia.lease_row_count(leases) == 0
+
+
+def test_lease_row_count_corrupt_json_returns_none(ia, tmp_path):
+    """손상 3형 ① JSON 파손 — 파일은 존재하나 파싱 불가 → `None`(행 수 모름·유도 차단).
+
+    F-001 수정 전: 이 경우도 `0` 으로 접혀 단일-등록 유도가 오발화했다(리뷰 재현).
+    """
+    leases = tmp_path / "worktree-leases.json"
+    leases.write_text("{not valid json", encoding="utf-8")
+    assert ia.lease_row_count(leases) is None
+
+
+def test_lease_row_count_schema_mismatch_returns_none(ia, tmp_path):
+    """손상 3형 ② 최상위 스키마 불일치(dict 아님) → `None`."""
+    leases = tmp_path / "worktree-leases.json"
+    leases.write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
+    assert ia.lease_row_count(leases) is None
+
+
+def test_lease_row_count_read_failure_returns_none(ia, tmp_path):
+    """손상 3형 ③ 읽기 실패 — 경로가 파일이 아니라 디렉터리(실제 OSError 유발) → `None`.
+
+    `exists()` 는 True(디렉터리도 존재)이므로 "부재" 분기를 안 타고, 뒤이은 읽기가
+    `IsADirectoryError`(OSError 서브클래스)로 실패해야 손상으로 정확히 분류된다.
+    """
+    leases = tmp_path / "worktree-leases.json"
+    leases.mkdir()
+    assert ia.lease_row_count(leases) is None
+
+
+# ── single_registration_session — 세 모듈 공유 술어 (F-002 리뷰 라운드 03 PM 재비준) ──────
+
+
+def test_single_registration_session_derives_when_registered_one_and_ledger_absent(ia, tmp_path):
+    leases = tmp_path / "absent.json"
+    assert ia.single_registration_session({"solo"}, leases) == "solo_1"
+
+
+def test_single_registration_session_derives_when_ledger_empty_list(ia, tmp_path):
+    leases = tmp_path / "worktree-leases.json"
+    _write_leases(leases, [])
+    assert ia.single_registration_session({"solo"}, leases) == "solo_1"
+
+
+def test_single_registration_session_none_when_ledger_has_row(ia, tmp_path):
+    leases = tmp_path / "worktree-leases.json"
+    _write_leases(leases, [
+        {"slot": "work/other_9", "repo": "solo", "session": "other_9", "state": "idle"},
+    ])
+    assert ia.single_registration_session({"solo"}, leases) is None
+
+
+def test_single_registration_session_none_when_two_registered(ia, tmp_path):
+    leases = tmp_path / "absent.json"
+    assert ia.single_registration_session({"a", "b"}, leases) is None
+
+
+def test_single_registration_session_none_when_zero_registered(ia, tmp_path):
+    leases = tmp_path / "absent.json"
+    assert ia.single_registration_session(set(), leases) is None
+
+
+def test_single_registration_session_none_when_ledger_corrupt(ia, tmp_path):
+    """F-001 공유 — 손상 장부(파싱 불가)는 등록 1개라도 유도하지 않는다(행 있는 것과 동일 취급)."""
+    leases = tmp_path / "worktree-leases.json"
+    leases.write_text("{not valid json", encoding="utf-8")
+    assert ia.single_registration_session({"solo"}, leases) is None
+
+
 # ── repo_slot_numbers — pm_bootstrap `_repo_slot_numbers` 흡수 ───────────────
 
 

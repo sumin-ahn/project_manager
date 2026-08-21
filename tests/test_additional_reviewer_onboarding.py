@@ -703,6 +703,13 @@ def test_board_init_merge_preserves_existing_profile(board, monkeypatch, tmp_pat
     conf = _isolated_conf(board, monkeypatch, tmp_path, existing)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
     monkeypatch.setattr(board, "REPO", tmp_path)
+    # init 은 areas repo 행을 항상 등록하므로(T-0779) 레지스트리·락 경로도 tmp 로 묶는다.
+    pm_dir = tmp_path / ".project_manager"
+    (pm_dir / ".local").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(board, "AREAS_FILE", pm_dir / "areas.md")
+    monkeypatch.setattr(board, "LOCAL_DIR", pm_dir / ".local")
+    monkeypatch.setattr(board, "BOARD_LOCK", pm_dir / ".local" / "board.lock")
+    monkeypatch.setattr(board, "LEASES_FILE", pm_dir / ".local" / "worktree-leases.json")
     monkeypatch.setattr(board, "PM_STATE_FILE", tmp_path / "pm_state.md")
     monkeypatch.setattr(board, "PM_STATE_TEMPLATE", tmp_path / "pm_state.template.md")
     monkeypatch.setattr(board, "install_pre_push_hook", lambda: False)

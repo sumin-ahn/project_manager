@@ -2339,6 +2339,9 @@ def test_a_previous_generation_hook_also_blocks_the_lint_gate(
                 if f"{board._PM_HOOK_REV_PREFIX}2" in b)
     hook = _hooked_repo(board, monkeypatch, tmp_path, rev2)
     _without_suite(board)                            # 회귀 게이트 비대상 트리
+    # 이 tmp 보드는 init 을 안 돌린 등록 0 형상이라 areas 이관 안내(advisory)가 상시 붙는다 —
+    # 이 테스트의 판정축(훅 세대)이 아니므로 격리한다.
+    monkeypatch.setattr(board, "lint_areas_repo_unregistered", lambda: [])
 
     assert board.cmd_lint(argparse.Namespace(gate=True)) == 1
 

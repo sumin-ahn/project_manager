@@ -1023,7 +1023,15 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   의 `--repo`/`--slot` 해소 분기(`pm_handoff._resolve_explicit_identity_slot` 위임) 모두
     #   부재/로드 실패는 claimed_rev 미박제(측정 보조 필드 생략)로 접되, 마킹된 skew 는 그대로
     #   올린다 — 형제 사본이 갈린 사실이 "코드 트리 미해소 경고" 한 줄에 묻히면 안 된다.
-    assert len(report.boundaries) == 228, "propagation sweep boundary ratchet changed"
+    # 229 = 228 + 컴팩션 snapshot 진행 중 작업 절의 장부 조회 경계(`pm_log._inflight_section`).
+    #   in-process 장부 조회(위임 라운드·raw·claimed·WIP) 실패를 절 1줄로 접는 fail-soft 지만,
+    #   마킹된 skew 는 등록 경계(`inflight_ledger_query`)의 복구 마커를 핸들러가 직접 호출해
+    #   "엔진 사본 불일치" 라벨로 표면화한다 — 조용한 흡수 아님.
+    # 231 = 229 + 단일-등록 유도의 두 `_default_session` 래퍼 경계(worktree_pool·pm_config).
+    #   공유 술어(identity_args.single_registration_session) 유도 실패는 미발화로 접어 각 모듈의
+    #   기존 tail(<host>-<pid>/None)로 물러나되, 마킹된 엔진 skew 는 그대로 re-raise 한다 —
+    #   세 해소 사본 통일 층이 사본 불일치를 tail 폴백 한 줄로 삼키면 안 된다.
+    assert len(report.boundaries) == 231, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

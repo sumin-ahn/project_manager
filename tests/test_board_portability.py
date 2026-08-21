@@ -274,9 +274,23 @@ def test_hook_write_passes_utf8_encoding(board, monkeypatch, tmp_path):
 # ── C8: cmd_init 가 local.conf 에 ctx_window_tokens 핸드오프 예산 surface (T-0128) ──
 
 def _init_isolated(board, monkeypatch, tmp_path):
-    """cmd_init 을 hermetic 으로: LOCAL_CONF 만 tmp, pm_state·훅·opt-in 부수효과 차단."""
+    """cmd_init 을 hermetic 으로: 경로 전역 tmp 재지정 + pm_state·훅·opt-in 부수효과 차단.
+
+    `REPO` 까지 tmp 로 묶는다 — init 은 areas repo 행을 **항상** 등록하므로(T-0779) LOCAL_CONF
+    만 격리하면 `areas_file()`·`board_lock()` 이 실 저장소 루트를 잡아 실 areas.md 를 만든다
+    (hermetic 위반). 등록 repo 이름은 `REPO.name` 에서 유도되므로 tmp 이름이 곧 그 값이다.
+    """
+    proj = tmp_path / "proj"
+    (proj / ".project_manager" / ".local").mkdir(parents=True, exist_ok=True)
     conf_path = tmp_path / "local.conf"
+    monkeypatch.setattr(board, "REPO", proj)
     monkeypatch.setattr(board, "LOCAL_CONF", conf_path)
+    monkeypatch.setattr(board, "AREAS_FILE", proj / ".project_manager" / "areas.md")
+    monkeypatch.setattr(board, "LOCAL_DIR", proj / ".project_manager" / ".local")
+    monkeypatch.setattr(board, "BOARD_LOCK",
+                        proj / ".project_manager" / ".local" / "board.lock")
+    monkeypatch.setattr(board, "LEASES_FILE",
+                        proj / ".project_manager" / ".local" / "worktree-leases.json")
     monkeypatch.setattr(board, "PM_STATE_FILE", tmp_path / "pm_state.md")
     monkeypatch.setattr(board, "PM_STATE_TEMPLATE", tmp_path / "missing-template.md")
     monkeypatch.setattr(board, "install_pre_push_hook", lambda: False)
@@ -401,7 +415,8 @@ def test_init_rerun_preserves_custom_ctx_window_tokens(board, monkeypatch, tmp_p
     conf_text = conf_path.read_text(encoding="utf-8")
     assert "ctx_window_tokens=5000" in conf_text
     assert f"ctx_window_tokens={board.CTX_WINDOW_TOKENS_DEFAULT}" not in conf_text
-    # 인자 없는 재실행이므로 기존 session 도 보존.
+    # init 이 안 쓰는 키(구 `session=` 포함)는 비파괴 병합으로 byte 보존된다 — 엔진은 채택자
+    # conf 를 대신 고쳐 쓰지 않는다(읽지 않을 뿐·T-0779).
     assert "session=my-pm" in conf_text
 
 
@@ -414,25 +429,31 @@ def test_init_absent_writes_full_default(board, monkeypatch, tmp_path):
     assert board.cmd_init(args) == 0
 
     conf_text = conf_path.read_text(encoding="utf-8")
-    assert "session=pm" in conf_text
+    # 세션·prefix 는 per-clone conf 의 키가 아니다(T-0779) — 정체성은 lease 장부·areas.md.
+    assert "session=" not in conf_text and "prefix=" not in conf_text
     assert "py=" in conf_text and "test_cmd=pytest -q" in conf_text
     assert f"ctx_window_tokens={board.CTX_WINDOW_TOKENS_DEFAULT}" in conf_text
     assert "ctx_nudge_pct=" in conf_text and "ctx_stop_pct=" in conf_text
 
 
-def test_init_rerun_explicit_session_updates_and_preserves(board, monkeypatch, tmp_path):
-    """(d) `--repo`/`--slot`(ADR-0057) 명시 시 session 만 갱신, 나머지 커스텀 키는 보존
-    (set-or-replace)."""
+def test_init_rerun_explicit_identity_registers_that_repo_and_preserves_conf(
+    board, monkeypatch, tmp_path,
+):
+    """(d) `--repo`/`--slot`(ADR-0057) 명시 → 그 repo 이름으로 등록되고 conf 는 전부 보존된다.
+
+    세션은 conf 키가 아니므로(T-0779) 명시 정체성은 **등록 repo 이름**으로만 나타나고,
+    사용자 커스텀 키는 한 줄도 바뀌지 않는다(비파괴 병합).
+    """
     conf_path = _init_isolated(board, monkeypatch, tmp_path)
     conf_path.write_text(_CUSTOM_CONF, encoding="utf-8")
     args = argparse.Namespace(prefix=None, area=None, owner=None, repo="newsess", slot=2)
 
     assert board.cmd_init(args) == 0
 
+    assert board.registered_repos() == {"newsess"}
     conf_text = conf_path.read_text(encoding="utf-8")
-    assert "session=newsess_2" in conf_text
-    assert "session=my-pm" not in conf_text
-    # session 갱신은 나머지 커스텀 키를 건드리지 않는다.
+    assert "session=my-pm" in conf_text          # init 이 안 쓰는 키는 byte 보존
+    assert "session=newsess_2" not in conf_text  # 세션을 conf 에 쓰지 않는다
     assert "additional_reviewer_enabled=false" in conf_text
     assert "upstream=/x" in conf_text
     assert "ctx_window_tokens=5000" in conf_text
@@ -464,6 +485,15 @@ def test_init_rerun_no_trailing_newline_optin_append_preserves_last_key(
     monkeypatch.setattr(board, "PM_STATE_FILE", tmp_path / "pm_state.md")
     monkeypatch.setattr(board, "PM_STATE_TEMPLATE", tmp_path / "missing-template.md")
     monkeypatch.setattr(board, "install_pre_push_hook", lambda: False)
+    # init 은 areas repo 행을 **항상** 등록하므로(T-0779) REPO 도 tmp 로 묶어야 hermetic 하다 —
+    # 안 묶으면 `areas_file()`·`board_lock()` 이 실 저장소 루트를 잡는다.
+    _pm = tmp_path / "proj" / ".project_manager"
+    (_pm / ".local").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(board, "REPO", tmp_path / "proj")
+    monkeypatch.setattr(board, "AREAS_FILE", _pm / "areas.md")
+    monkeypatch.setattr(board, "LOCAL_DIR", _pm / ".local")
+    monkeypatch.setattr(board, "BOARD_LOCK", _pm / ".local" / "board.lock")
+    monkeypatch.setattr(board, "LEASES_FILE", _pm / ".local" / "worktree-leases.json")
     # 실 opt-in append 를 태운다 — 대화형 'n'(OFF) 경로를 결정적으로:
     monkeypatch.setattr(board, "_is_noninteractive", lambda: False)
     monkeypatch.setattr(board.sys.stdin, "isatty", lambda: True)

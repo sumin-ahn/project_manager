@@ -245,6 +245,88 @@ def test_sanitize_session_id_matches_hook_rule(orch):
         "11111111-2222-3333-4444-555555555555"
 
 
+# ── claim_session_once — 세션·namespace 스코프 1회 선점 (T-0764) ─────────────
+
+def test_claim_session_once_first_claim_then_duplicate(orch, tmp_path):
+    """같은 (세션, namespace, key) 는 첫 호출만 True 고 이후는 False 다."""
+    assert orch.claim_session_once(tmp_path, "sid-1", "git-anchor", "abc123") is True
+    assert orch.claim_session_once(tmp_path, "sid-1", "git-anchor", "abc123") is False
+    assert orch.claim_session_once(tmp_path, "sid-1", "git-anchor", "abc123") is False
+
+
+def test_claim_session_once_isolates_key_session_and_namespace(orch, tmp_path):
+    """키·세션·namespace 중 하나만 달라도 별개 선점이다(다른 클래스를 함께 삼키지 않음)."""
+    assert orch.claim_session_once(tmp_path, "sid-1", "git-anchor", "key-a") is True
+    assert orch.claim_session_once(tmp_path, "sid-1", "git-anchor", "key-b") is True
+    assert orch.claim_session_once(tmp_path, "sid-2", "git-anchor", "key-a") is True
+    assert orch.claim_session_once(tmp_path, "sid-1", "run-tests", "key-a") is True
+    # 각 축은 자기 스코프 안에서만 중복이다.
+    assert orch.claim_session_once(tmp_path, "sid-2", "git-anchor", "key-a") is False
+    assert orch.claim_session_once(tmp_path, "sid-1", "run-tests", "key-a") is False
+
+
+def test_claim_session_once_uses_one_membership_file_per_session_namespace(orch, tmp_path):
+    """키마다 파일을 만들지 않는다 — 파일 수 = (세션 × namespace) 수·경로는 기존 marker 디렉토리."""
+    for index in range(20):
+        assert orch.claim_session_once(
+            tmp_path, "sid-1", "git-anchor", f"key-{index}",
+        ) is True
+    assert orch.claim_session_once(tmp_path, "sid-2", "git-anchor", "key-0") is True
+
+    marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
+    files = sorted(path.name for path in marker_dir.iterdir())
+    assert files == ["sid-1.git-anchor", "sid-2.git-anchor"]
+    assert (marker_dir / "sid-1.git-anchor").read_text(encoding="utf-8").splitlines() == [
+        f"key-{index}" for index in range(20)
+    ]
+
+
+def test_claim_session_once_refuses_reserved_marker_namespaces(orch, tmp_path):
+    """예약 marker 이름은 선점 대상이 아니다 — 같은 디렉토리 다른 생산자의 신호 위조 차단.
+
+    namespace "done" 을 허용하면 멤버십 파일이 `<sid>.done` 이 되어 회전 marker 와 같은
+    이름이 된다(`stop_marker_present` False→True). nudge·nudge2·final(ctx_stop_hook)·
+    compact-*(pm_log·opencode ctx-guard)도 같은 충돌 축이다.
+    """
+    reserved = (
+        "done", "nudge", "nudge2", "final",
+        "compact-checkpoint", "compact-boundary", "compact-snapshot",
+        "compact-snapshot-receipt",
+        "done!",  # 안전화 뒤 예약어가 되는 표기도 같은 판정.
+    )
+    for namespace in reserved:
+        assert orch.claim_session_once(tmp_path, "sid-1", namespace, "k") is None
+
+    # 회전 신호가 위조되지 않았고, 거부 경로는 파일도 디렉토리도 만들지 않는다.
+    assert orch.stop_marker_present(tmp_path, "sid-1") is False
+    assert not (tmp_path / orch.MARKER_DIR).exists()
+    # 예약어가 아닌 namespace 는 그대로 선점된다(전면 거부 아님).
+    assert orch.claim_session_once(tmp_path, "sid-1", "git-anchor", "k") is True
+
+
+def test_claim_session_once_returns_none_on_marker_io_failure(orch, tmp_path):
+    """멤버십 파일 I/O 실패는 None(판정 불가) — 호출부가 자기 fail 방향을 택한다."""
+    blocked = tmp_path / ".project_manager" / ".local"
+    blocked.mkdir(parents=True)
+    (blocked / "ctx-stop").write_text("marker 디렉토리 자리를 파일이 점유\n", encoding="utf-8")
+
+    assert orch.claim_session_once(tmp_path, "sid-1", "git-anchor", "abc123") is None
+
+
+def test_claim_session_once_sanitizes_session_key(orch, tmp_path):
+    """세션키는 marker 규약과 같은 안전화를 거친다 — traversal·64자 초과·빈 값."""
+    assert orch.claim_session_once(tmp_path, "../../etc/passwd", "git-anchor", "k") is True
+    assert orch.claim_session_once(tmp_path, "  ", "git-anchor", "k") is True
+    assert orch.claim_session_once(tmp_path, "", "git-anchor", "k") is False  # 빈 값 = unknown
+    assert orch.claim_session_once(tmp_path, "z" * 80, "git-anchor", "k") is True
+    assert orch.claim_session_once(tmp_path, "z" * 64, "git-anchor", "k") is False  # 64자 절단
+
+    marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
+    assert sorted(path.name for path in marker_dir.iterdir()) == [
+        "etcpasswd.git-anchor", "unknown.git-anchor", f"{'z' * 64}.git-anchor",
+    ]
+
+
 def test_mark_ctx_post_turn_if_over_boundary_and_under(orch, tmp_path):
     calls = []
 

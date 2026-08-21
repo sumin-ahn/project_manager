@@ -1972,8 +1972,8 @@ def test_bind_slot_leaves_other_slots_untouched(wp):
 
 # ════════════════════════════════════════════════════════════════════════
 # _default_session — board.session_name 과 동형 count-based 유도 (ADR-0040 D1·T-0073)
-# env > lease 장부 leased 1개면 그 session(단일-lease 유도) > (장부 부재·leased 0 = solo)
-# local.conf session= > <host>-<pid>. leased ≥2 면 local.conf 건너뜀. board 와 tail 만
+# env > lease 장부 leased 1개면 그 session(단일-lease 유도) > <host>-<pid>. per-clone
+# local.conf `session=` 층은 T-0779 가 폐지했다. board 와 tail 만
 # 다르다 — 여기는 lease *취득*의 국소 임시 명명이라 미해소를 <host>-<pid> 로 폴백한다
 # (host-pid 는 세션-귀속 아닌 국소 용처에만 잔존·ADR-0040). 저장측(이 모듈)과 매칭측
 # (board.session_name)이 어긋나면 per-slot test_cmd 가 미스된다(T-0066 must-fix).
@@ -1984,7 +1984,7 @@ def _write_local_conf(proj, text):
 
 
 def test_default_session_prefers_pm_env(wp, proj, monkeypatch):
-    """`$PM_SESSION_NAME` 가 최우선 — alias·local.conf session= 무시 (T-0073)."""
+    """`$PM_SESSION_NAME` 가 최우선 — alias·lease 무시 (T-0073)."""
     monkeypatch.setenv("PM_SESSION_NAME", "from-pm-env")
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "from-alias")
     _write_local_conf(proj, "session=from-conf\n")
@@ -1995,7 +1995,7 @@ def test_default_session_claude_env_is_alias(wp, proj, monkeypatch):
     """`$CLAUDE_SESSION_NAME` 단독 → deprecated alias 로 조용히 동작 (T-0073 back-compat).
 
     `PM_SESSION_NAME` 미설정·구 변수만 설정된 기존 환경(dogfooding·채택자)이 깨지지
-    않아야 한다 — alias 우선순위 2번, local.conf 보다 우선.
+    않아야 한다 — alias 우선순위 2번, lease 유도보다 우선.
     """
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "from-alias")
@@ -2010,16 +2010,17 @@ def test_default_session_pm_wins_over_claude(wp, proj, monkeypatch):
     assert wp._default_session() == "new"
 
 
-def test_default_session_reads_local_conf_session(wp, proj, monkeypatch):
-    """env 없음 → local.conf `session=` (board.session_name 의 3층과 동형).
+def test_default_session_ignores_local_conf_session(wp, proj, monkeypatch):
+    """env·lease 없음 + local.conf `session=foo` → `<host>-<pid>` (폴백 폐지·board 동형).
 
-    이 레이어가 빠지면 일반 운영(board init 이 local.conf session= 기록·env 미설정)에서
-    lease.session 이 `<host>-<pid>` 로 저장돼 board 매칭(local.conf session)과 어긋난다.
+    저장측(이 모듈)이 conf 를 읽고 매칭측(board)이 안 읽으면 그 자체가 미스이므로, 두 모듈이
+    같이 그 층을 버린다(T-0779). 여기 tail 만 국소 임시 명명으로 남는다.
     """
+    import socket
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     _write_local_conf(proj, "session=foo\n")
-    assert wp._default_session() == "foo"
+    assert wp._default_session() == f"{socket.gethostname()}-{os.getpid()}"
 
 
 def test_default_session_single_lease_derives_session(wp, proj, monkeypatch):
@@ -2049,8 +2050,8 @@ def test_default_session_idle_leases_not_counted(wp, proj, monkeypatch):
     assert wp._default_session() == "live_1"
 
 
-def test_default_session_two_leases_skips_conf_falls_back_host_pid(wp, proj, monkeypatch):
-    """leased ≥2 (모호) → local.conf 건너뜀 → `<host>-<pid>` (board 는 None·여긴 국소 폴백).
+def test_default_session_two_leases_falls_back_host_pid(wp, proj, monkeypatch):
+    """leased ≥2 (모호) → `<host>-<pid>` (board 는 None·여긴 국소 폴백).
 
     host-pid 최종 폴백은 세션-귀속 아닌 국소 용처(lease 취득 임시 명명)에만 잔존한다(ADR-0040)
     — board.session_name 은 같은 조건에서 None(surface)/fail-loud(required)로 간다(tail 상이).
@@ -2058,14 +2059,14 @@ def test_default_session_two_leases_skips_conf_falls_back_host_pid(wp, proj, mon
     import socket
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    _write_local_conf(proj, "session=some-conf\n")   # 있어도 무시(모호 → 건너뜀)
+    _write_local_conf(proj, "session=some-conf\n")   # 있어도 무시(읽는 층 없음)
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="a_1", state="leased"),
           _lease(wp, slot="work/B_1", repo="B", session="b_1", state="leased"))
     assert wp._default_session() == f"{socket.gethostname()}-{os.getpid()}"
 
 
 def test_default_session_falls_back_to_host_pid(wp, proj, monkeypatch):
-    """env(둘 다)·lease·local.conf session= 모두 없음 → `<host>-<pid>` (국소 폴백 잔존)."""
+    """env(둘 다)·lease 모두 없음 → `<host>-<pid>` (국소 폴백 잔존)."""
     import socket
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
@@ -2073,31 +2074,130 @@ def test_default_session_falls_back_to_host_pid(wp, proj, monkeypatch):
     assert wp._default_session() == f"{socket.gethostname()}-{os.getpid()}"
 
 
-def test_local_conf_session_ignores_comments_and_blanks(wp, proj):
-    """헬퍼가 `#` 주석/빈 줄/무관 키를 무시하고 session= 만 집는다(board.local_config 동형)."""
-    _write_local_conf(proj, "# comment\n\nprefix=PAY\nsession=bar\n# trailing\n")
-    assert wp._local_conf_session() == "bar"
+def test_no_local_conf_session_parser_remains(wp):
+    """conf `session=` 자체 파서(`_local_conf_session`)가 모듈에서 사라졌다 (T-0779)."""
+    assert not hasattr(wp, "_local_conf_session")
 
 
-def test_local_conf_session_absent_returns_none(wp, proj):
-    """local.conf 부재 → None (OSError 폴백)."""
-    assert wp._local_conf_session() is None
+# ════════════════════════════════════════════════════════════════════════
+# 단일-등록 유도 (F-002 · 리뷰 라운드 03 PM 재비준 — 공유 술어 동형 배선)
+# 격리 실측(F-002 재현)에서 board.session_name()='solo_1' 인데 worktree_pool._default_session()
+# ='<host>-<pid>' 로 갈려, bare claim 뒤 무명시 첫 slot 생성이 다른 session 을 저장해 claim 이
+# "mine" 필터에서 사라졌다. `_load_board()`(REPO 일치 가드 포함) → `identity_args.
+# single_registration_session` 공유 술어로 board 와 동일 유도가 되는지 여기서 고정한다.
+# ════════════════════════════════════════════════════════════════════════
+
+def _board_stub(repo_names, *, repo_path):
+    """단일-등록 유도 테스트용 board 대역 — `.REPO`(REPO 일치 가드 통과용)·`.registered_repos()`."""
+    names = set(repo_names)
+    return type("_BoardStub", (), {
+        "REPO": repo_path,
+        "registered_repos": staticmethod(lambda: names),
+    })()
 
 
-def test_create_slot_default_session_uses_local_conf(wp, proj, monkeypatch):
-    """END-TO-END: env 없음·local.conf session=foo → create_slot 이 lease.session=foo 로 저장.
+def test_registered_repos_for_session_reads_board_registered_repos(wp, proj):
+    board = _board_stub({"A"}, repo_path=proj)
+    assert wp._registered_repos_for_session(board=board) == {"A"}
 
-    must-fix 회귀 핀(저장측). session 인자 미지정이면 _default_session() 으로 해소되는데,
-    옛 코드(local.conf 미반영)면 `<host>-<pid>` 로 저장돼 board 매칭측(foo)과 어긋난다.
-    """
+
+def test_registered_repos_for_session_repo_mismatch_returns_empty(wp, proj, tmp_path):
+    """hermetic 오염 가드 — board 대역의 REPO 가 이 모듈의 REPO(=proj)와 다르면 빈 set.
+
+    실 board.py 를 `_load_board()` 로 동적 로드하면 그 board 는 **자신의** `__file__` 기준
+    REPO(=이 저장소 실 루트)를 쓴다 — `wp.REPO` 만 tmp 로 재배선한 hermetic 테스트에서 이 가드가
+    없으면 실 areas.md 가 샌다."""
+    board = _board_stub({"A"}, repo_path=tmp_path / "other-root")
+    assert wp._registered_repos_for_session(board=board) == set()
+
+
+def test_registered_repos_for_session_board_absent_returns_empty(wp, monkeypatch):
+    monkeypatch.setattr(wp, "_load_board", lambda: None)
+    assert wp._registered_repos_for_session() == set()
+
+
+def test_registered_repos_for_session_ordinary_failure_returns_empty(wp, proj):
+    board = type("_BoomBoard", (), {
+        "REPO": proj,
+        "registered_repos": staticmethod(
+            lambda: (_ for _ in ()).throw(RuntimeError("areas parse failure"))),
+    })()
+    assert wp._registered_repos_for_session(board=board) == set()
+
+
+def test_registered_repos_for_session_rethrows_marked_engine_rev_skew(wp, proj):
+    skew = RuntimeError("injected engine rev skew")
+    skew._engine_rev_skew = True
+    board = type("_SkewBoard", (), {
+        "REPO": proj,
+        "registered_repos": staticmethod(lambda: (_ for _ in ()).throw(skew)),
+    })()
+    with pytest.raises(RuntimeError, match="engine rev skew"):
+        wp._registered_repos_for_session(board=board)
+
+
+def test_default_session_single_registration_derives_session(wp, proj, monkeypatch):
+    """등록 repo 1개(대역 주입)+장부 부재 → `<repo>_1` — board.session_name 과 동일 유도값."""
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    _write_local_conf(proj, "session=foo\n")
+    monkeypatch.setattr(wp, "_load_board", lambda: _board_stub({"A"}, repo_path=proj))
+    assert wp._default_session() == "A_1"
+
+
+def test_default_session_single_lease_layer_wins_over_single_registration(wp, proj, monkeypatch):
+    """단일-lease 값이 있으면(장부 leased 1행) 등록-유도보다 우선(체인 순서 불변)."""
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    monkeypatch.setattr(wp, "_load_board", lambda: _board_stub({"A"}, repo_path=proj))
+    _seed(wp, _lease(wp, slot="work/other_1", repo="other", session="other_1", state="leased"))
+    assert wp._default_session() == "other_1"
+
+
+def test_default_session_two_registered_falls_back_host_pid(wp, proj, monkeypatch):
+    import socket
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    monkeypatch.setattr(wp, "_load_board", lambda: _board_stub({"A", "B"}, repo_path=proj))
+    assert wp._default_session() == f"{socket.gethostname()}-{os.getpid()}"
+
+
+def test_default_session_pool_row_present_falls_back_host_pid_despite_single_registration(
+        wp, proj, monkeypatch):
+    """역가드: 등록 1개라도 장부에 idle 행이 있으면(풀 보유 형상) 여전히 host-pid 폴백."""
+    import socket
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    monkeypatch.setattr(wp, "_load_board", lambda: _board_stub({"A"}, repo_path=proj))
+    _seed(wp, _lease(wp, slot="work/A_2", repo="A", session="", pid=0, state="idle"))
+    assert wp._default_session() == f"{socket.gethostname()}-{os.getpid()}"
+
+
+def test_create_slot_default_session_uses_single_registration_derivation(wp, proj, monkeypatch):
+    """전이 일관성(F-002): 등록 repo 1개+장부 부재에서 create_slot 이 lease.session 을 board 와
+    동형으로 유도한 `<repo>_1` 로 저장한다 — bare claim(board.session_name)과 첫 slot 생성
+    (worktree_pool._default_session)이 더 이상 갈리지 않는다(리뷰 F-002 재현의 직접 반증)."""
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    monkeypatch.setattr(wp, "_load_board", lambda: _board_stub({"A"}, repo_path=proj))
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
     lease = wp.create_slot("A", git_runner=git, test_cmd="make hil2")  # session 미지정
-    assert lease.session == "foo", \
-        "create_slot 이 local.conf session= 을 안 읽음(저장측 host-pid·board 매칭 미스)"
+    assert lease.session == "A_1"
+
+
+def test_create_slot_default_session_uses_env_binding(wp, proj, monkeypatch):
+    """END-TO-END: env 바인딩 → create_slot 이 lease.session 을 그 값으로 저장.
+
+    저장측(이 모듈)과 매칭측(board.session_name)이 같은 층을 읽어야 per-slot test_cmd·claim
+    소유권이 맞는다. conf 폴백이 사라진 뒤 남은 명시 층이 env 다.
+    """
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    monkeypatch.setenv("PM_SESSION_NAME", "foo")
+    _write_local_conf(proj, "session=ignored\n")   # 읽는 층 없음
+    _mk_bare_placeholder(wp, "A")
+    git = FakeGit()
+    lease = wp.create_slot("A", git_runner=git, test_cmd="make hil2")  # session 미지정
+    assert lease.session == "foo"
 
 
 # ════════════════════════════════════════════════════════════════════════

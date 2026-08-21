@@ -637,7 +637,13 @@ def _import_multipm_home(tmp_path: Path, harness: str,
 
     for repo in repos:
         _seed_git_repo(origins / repo)
-        add_args = ["repo", "add", repo, "--git", str(origins / repo)]
+        # 등록 owner(registrant) 는 T-0779 부터 세션 해소 체인(명시 > $PM_SESSION_NAME > leased 1개
+        # > None)으로만 정해진다 — fresh 홈은 아직 worktree(lease)가 0개이므로(repo add 가 worktree
+        # add 보다 먼저) local.conf session= 폴백(폐지)에 의존하던 이전 암묵 해소가 사라졌다. 이
+        # 헬퍼가 재현하는 "한 사람이 여러 repo 를 attach 하는 부트스트랩" 시나리오의 registrant 를
+        # `--owner`로 명시(area_owner 축의 `--user` 와는 별개 — registrant=등록 행위자·area_owner=
+        # 그 area 의 user 소유).
+        add_args = ["repo", "add", repo, "--git", str(origins / repo), "--owner", "bootstrap"]
         # area_owners 지정 시 그 repo 의 area_owner(=그 area 의 user 소유)를 `--user` 로 스탬프한다
         # (multi-USER composite). areas.md `area_owner` 칼럼은 `_ticket_owner`(open 소유)의 소유 유도
         # 소스다 — distinct 2 user 여야 세션 뷰가 strict-exclude(섞임 격리)로 돈다. querying identity 는

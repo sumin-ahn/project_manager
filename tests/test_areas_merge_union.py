@@ -725,7 +725,8 @@ def test_lint_tickets_includes_areas_merge_union(board, tmp_path, monkeypatch):
                  "lint_wikilinks", "lint_unstable_refs", "lint_scopes", "lint_domain",
                  "lint_adr_lifecycle", "lint_adr_author", "lint_architecture_freshness",
                  "lint_status_freshness", "lint_domain_freshness", "lint_adapter_drift",
-                 "lint_render_leak", "lint_unmigrated_overlay", "lint_areas_duplicate_repo"):
+                 "lint_render_leak", "lint_unmigrated_overlay", "lint_areas_duplicate_repo",
+                 "lint_areas_repo_unregistered"):
         monkeypatch.setattr(board, name, list)
     assert board.lint_tickets() == [("areas.md", "areas-merge-union", "x")]
 

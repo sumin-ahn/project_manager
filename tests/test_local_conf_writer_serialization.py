@@ -486,8 +486,7 @@ def test_init_merge_and_optin_append_do_not_lose_either_decision(
         return real_set_conf_keys(text, updates)
 
     monkeypatch.setattr(board, "_set_conf_keys", _blocking_set)
-    merge = barrier.run(lambda: board._write_init_local_conf(
-        prefix=None, namespaced=False, sess="pm", override=None))
+    merge = barrier.run(board._write_init_local_conf)
     assert barrier.entered.wait(SYNC_TIMEOUT), "init 병합이 임계 구간에 못 들어갔다"
 
     appended = threading.Event()
@@ -823,10 +822,13 @@ def test_board_init_write_takes_the_shared_lock(board, monkeypatch, tmp_path):
     taken: list[str] = []
     _spy_lock(board.file_lock, monkeypatch, taken)
 
-    board._write_init_local_conf(prefix=None, namespaced=False, sess="pm", override=None)
+    board._write_init_local_conf()
 
     assert taken == [str(conf.parent / ".local" / "local-conf.lock")]
-    assert _parse_conf(conf.read_text(encoding="utf-8"))["session"] == "pm"
+    parsed = _parse_conf(conf.read_text(encoding="utf-8"))
+    assert parsed["test_cmd"] == "pytest -q"
+    # 세션·prefix 는 per-clone conf 의 키가 아니다 (T-0779).
+    assert "session" not in parsed and "prefix" not in parsed
 
 
 def test_key_writer_takes_the_shared_lock(pm_import, monkeypatch, tmp_path):

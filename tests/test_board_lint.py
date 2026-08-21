@@ -1091,6 +1091,8 @@ def test_lint_domain_graceful_when_domain_absent(board, monkeypatch, tmp_path):
     monkeypatch.setattr(board, "lint_wikilinks", lambda: [])
     monkeypatch.setattr(board, "lint_unstable_refs", lambda: [])
     monkeypatch.setattr(board, "lint_scopes", lambda: [])
+    # areas 레지스트리 축은 이 테스트의 주제가 아니다 — 등록 0 이관 안내(advisory)를 격리한다.
+    monkeypatch.setattr(board, "lint_areas_repo_unregistered", lambda: [])
     monkeypatch.setattr(board, "_run_lint_hooks", lambda: [])
     assert board.cmd_lint(SimpleNamespace(gate=True)) == 0
     assert board.cmd_lint(SimpleNamespace(gate=False)) == 0
@@ -3323,7 +3325,10 @@ def test_designated_mutation_stays_fail_loud(board, monkeypatch, tmp_path):
                         ("AREAS_FILE", pm / "areas.md"),
                         ("LEASES_FILE", pm / ".local" / "worktree-leases.json")):
         monkeypatch.setattr(board, name, value)
-    (pm / "local.conf").write_text("session=pm-1\nuser=tester\n", encoding="utf-8")
+    (pm / "local.conf").write_text("user=tester\n", encoding="utf-8")
+    # 세션은 env 명시로 바인딩한다(per-clone conf `session=` 폴백 폐지·T-0779) — 미바인딩이면
+    # 이 테스트가 보려는 실패(손상 frontmatter fail-loud) 대신 세션 미해소로 먼저 죽는다.
+    monkeypatch.setenv("PM_SESSION_NAME", "pm-1")
     monkeypatch.setattr(board, "_git_config_email", lambda: None)
     ticket = _ticket(board, "open", "T-0002", _BROKEN_FRONTMATTER)
 

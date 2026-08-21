@@ -1156,7 +1156,6 @@ def test_solo_collection_accepts_producer_checkpoints_and_excludes_tagged_entrie
 @pytest.mark.parametrize(
     ("shape", "expected_task", "expected_source"),
     [
-        ("local-conf", "solo", "solo local.conf"),
         ("legacy-state", "pm", "legacy pm_state"),
     ],
 )
@@ -1166,13 +1165,10 @@ def test_implicit_handoff_identity_round_trips_real_checkpoint_producer(
     """pm_log 해소 축과 생산 헤더를 그대로 handoff task 소비에 round-trip한다."""
     pm_log = _load_tool("pm_log")
     manager = tmp_path / ".project_manager"
-    if shape == "local-conf":
-        manager.mkdir(parents=True)
-        (manager / "local.conf").write_text("session=solo\n", encoding="utf-8")
-    else:
-        wiki = manager / "wiki"
-        wiki.mkdir(parents=True)
-        (wiki / "pm_state.md").write_text("# legacy state\n", encoding="utf-8")
+    assert shape == "legacy-state"
+    wiki = manager / "wiki"
+    wiki.mkdir(parents=True)
+    (wiki / "pm_state.md").write_text("# legacy state\n", encoding="utf-8")
     monkeypatch.setattr(hf, "REPO", tmp_path)
 
     task, session, source, slot_path = hf._resolve_implicit_handoff_identity(
@@ -1250,23 +1246,22 @@ def test_fresh_solo_keeps_head_handoff_fallback_when_checkpoint_producer_stops(
     ("shape", "expected_task", "expected_collection_task", "expected_session_num"),
     [
         ("fresh", None, None, "7"),
-        ("local-conf", None, "solo", "7"),
         ("legacy-state", None, "pm", "7"),
         ("directory-only-task", None, "main", "7"),
         ("explicit-task", "main", "main", None),
     ],
 )
-def test_handoff_cli_five_shapes_preserve_head_rc_hermetically(
+def test_handoff_cli_four_shapes_preserve_head_rc_hermetically(
     hf, tmp_path, monkeypatch, captured_run, shape,
     expected_task, expected_collection_task, expected_session_num,
 ):
-    """R4 A/B: 다섯 생산 형상의 handoff rc0과 연속성/수집 축을 HEAD와 맞춘다."""
+    """R4 A/B: 네 생산 형상의 handoff rc0과 연속성/수집 축을 HEAD와 맞춘다.
+
+    옛 다섯 번째 형상(per-clone `local.conf session=`)은 해소 층이 폐지돼 사라졌다(T-0779).
+    """
     pm_log = _load_tool("pm_log")
     manager = tmp_path / ".project_manager"
-    if shape == "local-conf":
-        manager.mkdir(parents=True)
-        (manager / "local.conf").write_text("session=solo\n", encoding="utf-8")
-    elif shape == "legacy-state":
+    if shape == "legacy-state":
         wiki = manager / "wiki"
         wiki.mkdir(parents=True)
         (wiki / "pm_state.md").write_text("# legacy state\n", encoding="utf-8")
@@ -1903,14 +1898,14 @@ def test_slot_without_repo_rejected(hf, captured_run):
     assert captured_run == {}
 
 
-def test_implicit_local_conf_identity_only_changes_collection_axis(hf, captured_run):
-    """solo/local.conf는 legacy 차수·state를 유지하고 task 태그만 수집한다."""
+def test_implicit_legacy_state_identity_only_changes_collection_axis(hf, captured_run):
+    """legacy pm_state 층은 legacy 차수·state를 유지하고 task 태그만 수집한다."""
     assert hf.main(
         [
             "--session-seq", "7", "--wave-summary", "x", "--no-pytest",
             "--user-ack", "solo",
         ],
-        identity_resolver=lambda: ("solo", None, "solo local.conf"),
+        identity_resolver=lambda: ("solo", None, "legacy pm_state"),
     ) == 0
     assert captured_run["worktree_slot"] is None
     assert captured_run["task"] is None

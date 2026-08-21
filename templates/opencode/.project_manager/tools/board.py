@@ -178,7 +178,7 @@ HOOKS_DIR = REPO / ".project_manager" / "hooks"  # instance-owned lint hooks
 BOARD_FILE = REPO / ".project_manager" / "wiki" / "board.md"
 LOG_FILE = REPO / ".project_manager" / "wiki" / "log" / "current.md"
 STATUS_FILE = REPO / ".project_manager" / "wiki" / "status.md"
-LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored): py·test_cmd·ctx_* + solo-legacy prefix/session (multi 홈은 유도)
+LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored): py·test_cmd·ctx_* (세션·prefix 는 여기 없다 — lease 장부·areas.md)
 
 
 # ── board root (graceful 탐지) ───────────────────────────────
@@ -2195,9 +2195,9 @@ def local_config(repo: Path | None = None) -> dict[str, str]:
 
     Plain `KEY=value` lines; `#` comments and blank lines ignored. Missing → {}.
     Holds per-clone settings that must NOT be shared via git (py·test_cmd·ctx_*·
-    upstream 등). Written by `pm-init`. `session=`/`prefix=` 는 **solo 형상 전용 legacy**
-    leased ≥2 인 multi 홈에서는 이 키가 있어도 무시되고 세션/prefix 는
-    lease 장부에서 유도된다(session_name·id_prefix). solo 홈만 이 키로 폴백.
+    upstream 등). Written by `pm-init`. `session=`/`prefix=` 는 **어느 형상에서도 읽지 않는다** —
+    세션은 lease 장부, prefix 는 areas.md 칼럼이 단일 진실이다(session_name·id_prefix). 옛
+    conf 에 그 키가 남아 있어도 무시되며 동작은 같다.
     """
     conf: dict[str, str] = {}
     path = (repo / ".project_manager" / "local.conf") if repo is not None else LOCAL_CONF
@@ -2247,7 +2247,7 @@ def _set_conf_keys(text: str, updates: dict[str, str]) -> str:
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
-ENGINE_REV = "v1.7.7"
+ENGINE_REV = "v1.7.8"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -2410,15 +2410,23 @@ def session_name(override: str | None = None, *, required: bool = False) -> str 
           > $PM_SESSION_NAME (env·harness 무관 엔진 식별자)
           > $CLAUDE_SESSION_NAME (env·deprecated alias·silent back-compat)
           > lease 장부 state=="leased" 행이 정확히 1개면 그 session   (단일-lease 유도)
-          > (장부 부재·leased 0 = solo 홈) local.conf `session=`        (legacy 폴백)
+          > areas.md 등록 repo 가 정확히 1개 && lease 장부에 행이 **하나도 없으면**
+            (상태 무관 0행) `f"{repo}_1"`                            (단일-등록 유도)
           > None
 
     `PM_SESSION_NAME` 이 정식 이름(엔진 변수·하니스 무관)·`CLAUDE_SESSION_NAME` 은 구 alias
     (둘 다면 PM 승·조용히 동작·안내는 문서만·`--json` 출력 오염 방지).
 
-    **leased ≥2 (모호)면 local.conf 층을 건너뛴다** — per-clone 저장값(`session=`)으로 남의
-    세션을 silent 오귀속하던 클래스를 원천 차단한다(Windows 4슬롯 홈 리포트). 단일-lease
-    값과 local.conf 값이 다르면 유도값(lease) 승 — 저장 쪽지보다 슬롯 파생 진실.
+    **per-clone 저장 쪽지 폴백은 없다.** slot 종속 값이 프로젝트 공용 per-clone conf(`local.conf
+    session=`)에 있던 것이 범위 오류였다 — multi-PM 이 default 이고 solo 는 N=1
+    부분집합이라 "이 클론이 solo 홈이다"를 이 프로세스만 아는 파일에 스스로 적어두는 쪽지를
+    두지 않는다. 그 키가 conf 에 남아 있어도 읽지 않는다(모르는 키로 표면화될 뿐 동작 불변).
+    세션은 **공유 장부로부터의 유도**(lease 단일-행 · areas.md 단일-등록 && lease 0행) 또는
+    **명시**(env·`--repo/--slot`)로만 해소한다 — 마지막 층도 저장이 아니라 매 호출 재유도다
+    (areas.md 등록 1행 && lease 장부 0행이면 항상 같은 값 · 아무것도 기록하지 않는다).
+    등록 repo 가 2개 이상이거나 lease 장부에 행이(상태 무관) 하나라도 있으면 이 층은 발화하지
+    않고 종전대로 미해소로 떨어진다 — "장부 부재 = solo 홈"이 아니라 "등록 1 && 장부 0"이라는
+    좁은 조건이다(풀 형상·idle 슬롯만 있는 홈은 불변).
 
     `required=True`(귀속 쓰기: claim·migrate·init owner 기본값)에서 미해소(None)면 fail-loud —
     `--repo <repo> --slot <N>` 명시를 안내하고 `sys.exit` 한다(silent 오귀속 금지). `required=False`
@@ -2428,7 +2436,19 @@ def session_name(override: str | None = None, *, required: bool = False) -> str 
 
     저장측(worktree_pool._default_session)과 매칭측(여기)이 어긋나면 per-slot test_cmd·claim
     소유권이 미스되므로 세 모듈(board.session_name·worktree_pool._default_
-    session·pm_config._default_session)을 같은 우선순위로 통일한다(tail 만 용처별 상이).
+    session·pm_config._default_session)을 **공유 술어**(`identity_args.
+    single_registration_session`)로 통일한다(tail 만 용처별 상이 — F-002·리뷰 라운드 03 PM
+    재비준). 격리 실측(F-002 재현)에서 이 층이 공유 술어 없이 board 에만 있으면, bare claim 이
+    `claimed_by` 에 `<repo>_1` 을 저장한 뒤 무명시 첫 worktree 생성이 `<host>-<pid>` 로
+    lease.session 을 저장해 상위 단일-lease 층이 그 값으로 갈아치우는 바람에 방금 만든 claim 이
+    "mine" 필터에서 사라졌다 — "발화 창에 저장 대상이 없다"는 이전 판단은 이 실측으로 반증됐다.
+
+    이 층은 장부가 **구조적으로 확인된** 0행(부재 또는 정상 파싱된 빈 배열)일 때만 발화한다 —
+    파일이 존재하나 읽기 실패·JSON 파손·스키마 불일치인 **손상** 장부는 `identity_args.
+    lease_row_count` 가 `None` 을 돌려주어(F-001·리뷰 라운드 03 must-fix) 이 술어가 스스로
+    미발화한다. "확인된 0행"과 "행 수를 모름(손상)"을 접으면, 실제로 풀 행을 보유했던 홈도
+    장부가 손상되는 순간 `<repo>_1` 로 오해소돼 silent 오귀속이 난다(재현: 손상 JSON 장부 →
+    구현 전 `session_name(required=True)` 가 `'solo_1'` 을 내 `cmd_claim` rc=0 오귀속).
     """
     if override:
         return override
@@ -2438,12 +2458,12 @@ def session_name(override: str | None = None, *, required: bool = False) -> str 
     leased = identity_args.leased_sessions(LEASES_FILE)
     if len(leased) == 1:
         return leased[0]
-    if not leased:
-        # 장부 부재·leased 0 = solo 홈 → legacy local.conf 폴백 (후방호환).
-        sess = local_config().get("session")
-        if sess:
-            return sess
-    # leased ≥2 (모호) 또는 solo 무바인딩 → 미해소.
+    # leased 0(무바인딩) 또는 ≥2(모호) → 단일-등록 유도 시도(공유 술어 — F-002). 손상 장부는
+    # identity_args.lease_row_count 가 None 을 내 이 술어가 스스로 미발화한다(F-001).
+    derived = identity_args.single_registration_session(registered_repos(), LEASES_FILE)
+    if derived:
+        return derived
+    # per-clone 저장 쪽지 폴백 없음(위 두 유도 모두 실패 → 미해소).
     if required:
         sys.exit(
             "[중단] 세션 미해소 — 활성 슬롯이 여럿이거나 바인딩이 없다. 귀속 조작은 "
@@ -2543,8 +2563,12 @@ def _actor_session_override(args: argparse.Namespace, *, soft: bool = False) -> 
     livegate record·reid)의 세션 override 문자열을 해소한다 — 구 `args.session` 을 대체하는
     단일 seam(전 actor 서브 공유·중복 0).
 
-    **`soft=True`**(명시 `--cwd` 핀 호출부 전용) — `--repo` 단독 해소가 모호(활성 ≥2·
-    `SlotResolutionError`)하거나 미해소(활성 0)여도 `sys.exit` 대신 `None` 을 돌린다. 실행 위치가
+    **`soft=True`**(명시 `--cwd` 핀 호출부 + `cmd_init`) — `--repo` 단독 해소가 모호(활성 ≥2·
+    `SlotResolutionError`)하거나 미해소(활성 0)여도 `sys.exit` 대신 `None` 을 돌린다.
+    `cmd_init` 이 soft 인 이유: init 에서 `--repo X` 의 1순위 의미는 *areas 등록명 지정*이고,
+    fresh clone 은 정의상 활성 lease 가 0이라 hard 해소면 그 등록 처방이 자기 자리에서 죽는다.
+    init 의 세션은 등록행 owner 기본값에만 쓰이므로 미해소는 빈 owner(미상)로 강등한다 —
+    귀속 쓰기(claim 등)의 hard 계약은 그대로다. 실행 위치가
     `--cwd` 로 핀된 regression run 은 session 이 cwd/디스패치에 불요하고 슬롯 test_cmd 유도에만
     남으므로(cwd override 최우선), 모호/미해소를 하드 실패시키지 않고 test_cmd 폴백(repo/local)에
     맡긴다 — livegate cf14d9b(`--cwd` 시 eager 해소 생략)의 동형 처방. `--slot` 명시(kind="slot")·
@@ -2582,7 +2606,7 @@ def _actor_session_override(args: argparse.Namespace, *, soft: bool = False) -> 
     if identity.kind == "repo":
         # `--repo X` 명시 = actor 정체성을 X 로 하겠다는 의도. 활성 1슬롯이면 해소, ≥2면 fail-loud.
         # **0개(미해소)도 fail-loud** — None 반환하면 호출부가 "인자 전무(kind=none)"와 구분 못 해
-        # env/단일-lease/local.conf 로 폴백→다른 세션으로 **silent 오귀속**(예 `--repo typo` 가 단일
+        # env/단일-lease 로 폴백→다른 세션으로 **silent 오귀속**(예 `--repo typo` 가 단일
         # lease 세션으로 claim). 명시-정체성 계약·오귀속 방지 목적이라 explicit-unresolved
         # 는 폴백 아니라 명시적 실패로 닫는다(codex r2·kind=none 만 폴백·[[answer-feasibility-dont-decide]] 정신).
         try:
@@ -2710,23 +2734,20 @@ def id_prefix(override: str | None = None, *, session: str | None = None) -> str
         override(--prefix)
           > 세션 유도: session_name(session) → 세션명 `<repo>_<N>` → repo → areas.md 행 prefix
           > 등록 repo(prefix) 가 정확히 1개면 그 prefix               (count-based)
-          > (solo·areas 부재 = 등록 0) local.conf `prefix=`           (legacy 폴백)
           > None
 
-    None → legacy `T-NNNN`(graceful·후방호환). Non-None → `T-<PREFIX>-NNN` 네임스페이스.
+    None → 무prefix `T-NNNN`(`none` 카테고리·1급 형상). Non-None → `T-<PREFIX>-NNN` 네임스페이스.
 
     `session`(키워드 전용) 은 세션 유도층에만 쓰이는 override 다 — M>1 슬롯 순회(`_test_cmd`)가
     슬롯별 prefix 해소를 위해 그 슬롯 세션명을 넘긴다. 미지정(`None`)이면 세션 유도가 전역
-    `session_name()` 을 해소한다(현행·cmd_new/status/init 무변경). count-based·local.conf 층은
-    session 과 무관하다(전역 registry/conf).
+    `session_name()` 을 해소한다(현행·cmd_new/status/init 무변경). count-based 층은 session 과
+    무관하다(전역 registry).
 
-    **solo(areas.md·lease 장부 부재) 경로는 무변경** — 세션 유도(장부 부재 → session_name 이
-    local.conf session 폴백이나 그 세션명이 areas 미등록이라 None)·count-based(등록 0 → skip)를
-    거쳐 legacy local.conf `prefix=` 폴백에 그대로 도달한다. **local.conf `prefix=` 는 solo
-    전용으로 강등**— 등록 repo 가 있으면(≥1) per-repo prefix 는 areas.md(세션/
-    count 유도)가 단일 진실이고 clone 전역 키는 무시한다(남의 prefix 로 silent 오네임스페이스
-    하던 클래스 차단). multi-repo(등록 repo ≥2) 홈에서 세션 유도·count-based 가 둘 다 실패
-    (None)하면 `cmd_new` 가 fail-loud(오네임스페이스 방지).
+    **local.conf `prefix=` 층은 없다.** prefix 는 areas.md 의 per-repo 칼럼이 단일 진실이고,
+    clone 전역 키로 남의 prefix 를 silent 오네임스페이스하던 클래스를 원천 차단한다. 그 키가
+    conf 에 남아 있어도 읽지 않는다. 해소 실패는 `none` 카테고리(`T-NNNN`)이며, multi-repo
+    (등록 repo ≥2) 홈에서 세션 유도·count-based 가 둘 다 실패하면 `cmd_new` 가 fail-loud
+    (오네임스페이스 방지).
     """
     if override:
         # override 를 등록된 canonical case 로 해소 (prefix 동일성=case-insensitive fold):
@@ -2744,11 +2765,8 @@ def id_prefix(override: str | None = None, *, session: str | None = None) -> str
     registered = registered_prefixes()
     if len(registered) == 1:
         return next(iter(registered))
-    # 4. (solo·areas 부재 = 등록 0) local.conf `prefix=` legacy 폴백. 등록 repo 가 있으면
-    #    (≥2·모호) 여기서 local.conf 를 쓰지 않는다 → None(cmd_new fail-loud·오귀속 차단).
-    if not registered:
-        return local_config().get("prefix") or None
-    # 5. 등록 repo ≥2 인데 세션 유도 실패 → None (cmd_new fail-loud).
+    # 4. 미해소 → None. 등록 0(prefix 칼럼이 빈 repo 행만 있는 홈)은 `none` 카테고리(`T-NNNN`)이고,
+    #    등록 ≥2 인데 세션 유도가 실패했으면 `cmd_new` 가 fail-loud 한다(오귀속 차단).
     return None
 
 
@@ -3614,8 +3632,9 @@ def registered_prefixes() -> set[str]:
 
     등록 repo가 2개 이상이면 multi-repo(N×M) 신호로 쓰여 `board.py new`의
     prefix 미해소를 막는다. 단, 명시 prefix는 레지스트리 등록 자체가 필수가 아니며
-    4소스에 없는 새 카테고리라면 값-결속 사용자 승인을 지난 뒤 사용할 수 있다.
-    등록 repo 0개인 solo는 legacy 무prefix를, 1개인 보드는 그 단일 prefix 유도를 허용한다.
+    3소스에 없는 새 카테고리라면 값-결속 사용자 승인을 지난 뒤 사용할 수 있다.
+    prefix 칼럼이 전부 빈 보드는 무prefix(`none` 카테고리)를, 1개인 보드는 그 단일 prefix
+    유도를 허용한다.
 
     헤더-인식 파서(`_parse_areas`)로 `prefix` 칼럼을 읽는다 — 구 스키마
     (`| prefix | … |`)와 신 스키마(`| repo | prefix | … |`) 모두에서
@@ -3836,6 +3855,21 @@ def areas_set_cell(repo: str, column: str, value: str) -> tuple[str, str]:
     strip 해 읽으므로 읽기값은 같지만 파일이 지저분해진다). 반환 `(old, new)` 의 new 도 그 값이다.
 
     **재진입 금지**(board_lock docstring) — board_lock 보유 중에는 부르지 않는다.
+    이미 락을 보유한 호출부(`cmd_init` 의 등록 판정)는 ``_areas_set_cell_locked`` 를 직접 쓴다
+    (`areas_append`/`_areas_append_locked` 와 같은 분리).
+    """
+    with board_lock():
+        old_value, value = _areas_set_cell_locked(repo, column, value)
+    if column == "prefix" and old_value != value:
+        invalidate_known_prefixes_cache()
+    return old_value, value
+
+
+def _areas_set_cell_locked(repo: str, column: str, value: str) -> tuple[str, str]:
+    """``board_lock`` 보유 전제의 셀 교체 변형 — (옛 값, 새 값) 반환.
+
+    검증·원자 write 규칙은 `areas_set_cell` 과 동일하다(그쪽 docstring 이 계약의 단일 진실).
+    캐시 무효화는 호출부 몫이다 — 락 안에서 무효화해도 락을 놓기 전엔 새 값이 안 보인다.
     """
     if column not in _AREAS_COLUMNS:
         raise ValueError(
@@ -3845,28 +3879,25 @@ def areas_set_cell(repo: str, column: str, value: str) -> tuple[str, str]:
             f"areas.md 셀 값에 `|`/개행을 쓸 수 없다(표 corruption): {value!r}")
     value = value.strip()
     af = areas_file()
-    with board_lock():
-        # `newline=""`(universal-newline OFF) 로 읽고 쓴다 — CRLF 채택자(Windows)의 파일을
-        # 셀 하나 바꾸려다 LF 로 무단 정규화하지 않게(`rewrite_refs` 와 같은 관용구).
-        text = ""
-        if af.exists():
-            with file_lock.open_shared(af, binary=False, encoding="utf-8", newline="") as fh:
-                text = fh.read()
-        new_text, old_value = _areas_set_cell_text(text, repo, column, value)
-        if new_text != text:
-            # atomic write — 같은 디렉토리 temp + 원자 교체(부분기록/crash 잔재 방지).
-            # write 실패(디스크풀·권한)로 replace 에 못 가면 `.tmp` 가 남으므로 finally 로 청소한다
-            # (다음 실행이 stale temp 를 만나지 않게·잔재 0).
-            tmp = af.with_suffix(af.suffix + ".tmp")
-            try:
-                with tmp.open("w", encoding="utf-8", newline="") as fh:
-                    fh.write(new_text)
-                file_lock.atomic_replace(tmp, af)
-            finally:
-                # 성공 시 원자 교체로 tmp 는 이미 사라졌다(missing_ok 로 no-op).
-                tmp.unlink(missing_ok=True)
-    if column == "prefix" and old_value != value:
-        invalidate_known_prefixes_cache()
+    # `newline=""`(universal-newline OFF) 로 읽고 쓴다 — CRLF 채택자(Windows)의 파일을
+    # 셀 하나 바꾸려다 LF 로 무단 정규화하지 않게(`rewrite_refs` 와 같은 관용구).
+    text = ""
+    if af.exists():
+        with file_lock.open_shared(af, binary=False, encoding="utf-8", newline="") as fh:
+            text = fh.read()
+    new_text, old_value = _areas_set_cell_text(text, repo, column, value)
+    if new_text != text:
+        # atomic write — 같은 디렉토리 temp + 원자 교체(부분기록/crash 잔재 방지).
+        # write 실패(디스크풀·권한)로 replace 에 못 가면 `.tmp` 가 남으므로 finally 로 청소한다
+        # (다음 실행이 stale temp 를 만나지 않게·잔재 0).
+        tmp = af.with_suffix(af.suffix + ".tmp")
+        try:
+            with tmp.open("w", encoding="utf-8", newline="") as fh:
+                fh.write(new_text)
+            file_lock.atomic_replace(tmp, af)
+        finally:
+            # 성공 시 원자 교체로 tmp 는 이미 사라졌다(missing_ok 로 no-op).
+            tmp.unlink(missing_ok=True)
     return old_value, value
 
 
@@ -7042,7 +7073,11 @@ def internal_verdict_diagnostic(entry: dict) -> str | None:
 GATE_RESOLUTION_INTO = "into"     # 후속 티켓 재설계 — 그 티켓이 done 이어야 릴리즈가 열린다.
 GATE_RESOLUTION_FIXED = "fixed"   # 코드로 해소 — 근거 게이트(통과로 끝난 게이트) 지목이 조건.
 GATE_RESOLUTION_PM_FIXED = "pm-fixed"  # 상한+confirm-fix 소진 뒤 PM 직접 해소(리뷰 통과 아님).
-# 처분 종류별 **대상 필드** — 재설계는 티켓 ID, 해소는 근거 게이트 이름을 싣는다.
+# 기계 확인 증거로 여는 내부 게이트 처분(내부 장부에서만, `allow_pm_verified`
+# 명시 시에만 인정된다 — release 축(_gate_disposition_problem 기본 호출)은 허용하지 않는다).
+GATE_RESOLUTION_PM_VERIFIED = "pm-verified"
+# 처분 종류별 **대상 필드** — 재설계는 티켓 ID, 해소는 근거 게이트 이름을 싣는다. pm-fixed·
+# pm-verified 는 target key 가 없다(각자 별도 evidence/재검증 축을 쓴다).
 _GATE_RESOLUTION_TARGET_KEYS: dict[str, str] = {
     GATE_RESOLUTION_INTO: "ticket",
     GATE_RESOLUTION_FIXED: "evidence_gate",
@@ -7052,6 +7087,7 @@ GATE_RESOLUTION_LABELS: dict[str, str] = {
     GATE_RESOLUTION_INTO: "재설계",
     GATE_RESOLUTION_FIXED: "해소",
     GATE_RESOLUTION_PM_FIXED: "pm-fixed(PM 직접 해소·리뷰 통과 아님)",
+    GATE_RESOLUTION_PM_VERIFIED: "pm-verified(PM 기계 확인 해소·reviewer 재투입 없음)",
 }
 # 처분이 결속하는 **라운드 좌표** 필드 — 선언 시점의 마지막 라운드 순번과 산출 수.
 _GATE_RESOLUTION_BINDING_KEYS: tuple[str, ...] = ("round_sequence", "rounds")
@@ -7119,6 +7155,8 @@ def gate_resolution(entry: dict) -> dict | None:
             )
         except ValueError:
             return None
+    elif kind == GATE_RESOLUTION_PM_VERIFIED:
+        pass    # 대상 필드 없음 — 증거는 재검증 시점에 라이브로 다시 읽는다(장부에 안 싣는다).
     else:
         if key is None:
             return None
@@ -7140,7 +7178,7 @@ def gate_resolution(entry: dict) -> dict | None:
     }
     if kind == GATE_RESOLUTION_PM_FIXED:
         declared[_load_review_rounds().PM_FIXED_EVIDENCE_KEY] = pm_fixed_evidence
-    else:
+    elif kind != GATE_RESOLUTION_PM_VERIFIED:
         declared[key] = target.strip()
     # 내부 reviewer의 새 `fixed` 선언은 반려/근거 diff 지문을 함께 결속한다. 둘 중 하나만
     # 있거나 형식이 손상된 선언은 처분이 아니다(fail-closed). 둘 다 없는 구 선언은 여기서
@@ -8421,13 +8459,17 @@ def _gate_disposition_problem(
     ] = gate_evidence_problem,
     allow_legacy_internal_fixed: bool = False,
     allow_pm_fixed: bool = False,
+    allow_pm_verified: bool = False,
+    pm_verified_problem: Callable[[], str | None] | None = None,
 ) -> str | None:
     """게이트 하나의 처분 판정 — 차단 사유 1줄 (통과면 None).
 
     순서대로 본다: **항목 해석 가능성**(손상이면 잔여를 셀 수 없으니 차단) → 잔여 must_fix(0 이면
     비대상·suggestion 만 남은 게이트 포함·**미상은 대상**) → 처분 선언(미선언·좌표 stale 이면 차단)
     → 갈래별 조건(`fixed` = 근거 게이트가 지금도 뒷받침 · `into` = 대상 티켓이 done ·
-    `pm-fixed` = 내부 장부에서만 허용하며 구조화 근거의 변경 지점을 현재 repo에서 재검증)."""
+    `pm-fixed` = 내부 장부에서만 허용하며 구조화 근거의 변경 지점을 현재 repo에서 재검증 ·
+    `pm-verified` = 내부 장부에서만 허용하며 `pm_verified_problem` 콜백으로
+    delta/기계 확인 증거를 라이브 재검증)."""
     corruption = gate_entry_corruption(entry)
     if corruption is not None:
         return f"  · {gate}: {corruption} — 잔여 must-fix 를 확인할 수 없어 차단합니다"
@@ -8443,6 +8485,15 @@ def _gate_disposition_problem(
         return (f"{prefix} · {label} 이후 새 라운드가 기록됐습니다 "
                 f"(선언 시점 #{declared['round_sequence']}/{declared['rounds']}건 ≠ 현재 "
                 f"#{current['round_sequence']}/{current['rounds']}건) · 새 잔여로 다시 선언하세요")
+    if declared["kind"] == GATE_RESOLUTION_PM_VERIFIED:
+        if not allow_pm_verified:
+            return f"{prefix} · {label} — 이 장부에서는 pm-verified 처분을 허용하지 않습니다"
+        if pm_verified_problem is None:
+            return f"{prefix} · {label} — 발동 조건을 재검증할 수 없습니다(호출부 설정 누락)"
+        problem = pm_verified_problem()
+        if problem is not None:
+            return f"{prefix} · {label} — 발동 조건 재검증 실패: {problem}"
+        return None
     if declared["kind"] == GATE_RESOLUTION_PM_FIXED:
         if not allow_pm_fixed:
             return f"{prefix} · {label} — 이 장부에서는 pm-fixed 처분을 허용하지 않습니다"
@@ -9393,6 +9444,9 @@ def cmd_section_add(args: argparse.Namespace) -> int:
         seed = rounds.render_round_seed(
             role, spec_text, today=today,
             previous_round=rounds.previous_round_of_role(existing, role),
+            # developer 골격의 verify 프리필 입력 — 이미 손에 든 `existing` 을 그대로
+            # 넘긴다(신규 로드 0).
+            rounds=existing,
         )
         round_path = rounds.reserve_round(
             tickets_dir(), args.id, role,
@@ -10280,8 +10334,7 @@ def _claim_head_rev(args: argparse.Namespace) -> str | None:
 def cmd_claim(args: argparse.Namespace) -> int:
     _reject_task_slot_identity_mix(args)
     # claim = 귀속 쓰기 — 세션 미해소면 fail-loud
-    # 명시 --repo/--slot> env > 단일-lease 유도 >
-    # (solo) local.conf.
+    # 명시 --repo/--slot > env > 단일-lease 유도 > 미해소(fail-loud).
     override = _actor_session_override(args)
     sess = session_name(override, required=True)
     # claimed_by 는 `<user>/<slot>` — user 미상이면 슬롯만
@@ -10404,6 +10457,29 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str,
     return 0
 
 
+def _pm_verified_evidence_problem(tid: str) -> str | None:
+    """`pm-verified` 발동 조건을 지금 다시 판정한다(선언·완료 재검증 공용 · fail-closed).
+
+    delta 재파싱·기계 확인 카운트는 `pm_delegate.pm_verified_evidence_problem` 이 단일
+    진실이다 — board 는 이 함수로 deep-import 해 호출하고(순환 회피 · `_load_pm_delegate_module`
+    관례), 사본을 두지 않는다. 티켓을 못 찾거나 명세를 못 읽거나 pm_delegate.py 를 못 불러오면
+    증거를 확인할 수 없어 차단한다(fail-closed)."""
+    found = find_ticket_exact(tid)
+    if found is None:
+        return f"티켓을 찾지 못했습니다: {tid}"
+    _status, path = found
+    try:
+        spec_text = file_lock.read_text_shared(path, encoding="utf-8", newline="")
+    except (OSError, UnicodeError) as exc:
+        return f"티켓 명세를 읽을 수 없습니다: {exc}"
+    delegate = _load_pm_delegate_module()
+    if delegate is None:
+        return "pm_delegate.py 를 불러올 수 없어 증거를 재검증할 수 없습니다"
+    rounds_module = _load_ticket_rounds()
+    rounds = rounds_module.load_rounds(tickets_dir(), tid, ticket_text=spec_text)
+    return delegate.pm_verified_evidence_problem(spec_text, rounds)
+
+
 def _internal_review_completion_problem(tid: str) -> str | None:
     """내부 리뷰 대상 티켓이면 마지막 통과 또는 유효 처분인지 판정한다.
 
@@ -10435,16 +10511,21 @@ def _internal_review_completion_problem(tid: str) -> str | None:
         evidence_problem=internal_gate_evidence_problem,
         allow_legacy_internal_fixed=True,
         allow_pm_fixed=True,
+        allow_pm_verified=True,
+        pm_verified_problem=lambda: _pm_verified_evidence_problem(tid),
     )
     if disposition_problem is None:
         declared = gate_resolution(entry)
-        if (
-            declared is not None
-            and declared["kind"] == GATE_RESOLUTION_PM_FIXED
-        ):
+        if declared is not None and declared["kind"] == GATE_RESOLUTION_PM_FIXED:
             print(
                 f"주의: internal code-reviewer 완료 증거는 리뷰 통과가 아니라 "
                 f"{_load_review_rounds().describe_pm_fixed_resolution(declared)} 입니다.",
+                file=sys.stderr,
+            )
+        elif declared is not None and declared["kind"] == GATE_RESOLUTION_PM_VERIFIED:
+            print(
+                f"주의: internal code-reviewer 완료 증거는 리뷰 통과가 아니라 "
+                f"{_load_review_rounds().describe_pm_verified_resolution(declared)} 입니다.",
                 file=sys.stderr,
             )
         return None
@@ -10644,7 +10725,7 @@ INIT_GUIDE = """\
 ─ init 완료 — 이 clone setup 끝 ({mode}) ─
   3계층: 엔진(upstream) / 공유상태(main: board·status·log·ADR) / per-clone 로컬(pm_state·local.conf · git-ignored)
   규칙: 내구 진실은 공유 채널에만 · pm_state 는 버려도 되는 로컬 · 공유 파일 직접 난편집 금지
-  ID:   `board.py new` 로 {idfmt} 발행
+  ID:   {id_line}
 """
 
 # 추가 리뷰어(additional reviewer) 첫 opt-in 이 원자적으로 심는 기본 프로필.
@@ -11033,9 +11114,12 @@ def prompt_delegate_optin() -> None:
         print("  → cross-harness 위임 OFF (나중에 local.conf delegate_enabled=true 로 켤 수 있음).")
 
 
-def _write_init_local_conf(*, prefix: str | None, namespaced: bool,
-                           sess: str, override: str | None) -> str:
+def _write_init_local_conf() -> None:
     """init 의 local.conf 쓰기 — 존재 판정·읽기·병합·쓰기를 **한 배타 구간**에 닫는다.
+
+    **세션·prefix 키는 쓰지 않는다.** 둘 다 slot·task 종속 값이라 프로젝트 공용 per-clone
+    conf 의 범위가 아니다 — 세션은 lease 장부, prefix 는 areas.md 칼럼이 단일 진실이고 이
+    함수는 py·test_cmd·ctx 예산 같은 per-clone operational 키만 심는다.
 
     구간을 나누면 두 곳이 새는데 둘 다 남의 결정을 지운다: (a) 존재 판정과 최초 생성 사이에
     다른 writer 가 만든 conf 를 통째 write 로 덮고, (b) 병합 경로가 읽은 뒤 교체하는 사이에 붙은
@@ -11043,7 +11127,7 @@ def _write_init_local_conf(*, prefix: str | None, namespaced: bool,
     아니라 "읽고 쓰는 구간" 이고, 같은 락을 conf 의 **모든** writer 가 공유한다.
 
     온보딩 질문(추가 리뷰어·위임 opt-in)은 이 구간 **밖**에서 한다 — 그 커밋이 같은 락을 다시
-    잡으므로 안에서 부르면 재진입(정의되지 않은 동작)이다. 반환값은 사용자에게 표면화할 세션명.
+    잡으므로 안에서 부르면 재진입(정의되지 않은 동작)이다.
     """
     # 인터프리터 탐지는 conf 내용과 무관한 **외부 프로브**(subprocess)다 — 락 밖에서 미리 푼다
     # (임계 구간을 프로브 시간만큼 늘리지 않는다).
@@ -11052,10 +11136,7 @@ def _write_init_local_conf(*, prefix: str | None, namespaced: bool,
         if not LOCAL_CONF.exists():
             # 부재 시(첫 생성) — 현행 그대로 전체 default conf write. 회귀 0.
             conf = "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
-            if namespaced:
-                conf += f"prefix={prefix}\n"  # solo-legacy — multi 홈은 areas.md 유도
             conf += (
-                f"session={sess}\n"  # solo-legacy — multi 홈은 lease 유도
                 "# 엔진 문서 operational placeholder 해소값 ({{PY}}·{{TEST_CMD}}·{{PROJECT_NAME}}):\n"
                 f"py={detected_py}\ntest_cmd=pytest -q\nproject_name=\n"
                 "# ctx 정지-핸드오프 임계 (어댑터 훅이 잔여 컨텍스트 %로 판정):\n"
@@ -11072,7 +11153,7 @@ def _write_init_local_conf(*, prefix: str | None, namespaced: bool,
                 "# ctx_window_tokens_codex=200000\n"
                 + _DELEGATE_CONF_SEED + _HARNESS_BUDGET_CONF_SEED)
             LOCAL_CONF.write_text(conf, encoding="utf-8", newline="\n")
-            return sess
+            return
         # 존재 시 — 비파괴 병합. init 이 안 쓰는 사용자/operational 키
         # (additional_reviewer_enabled·additional_reviewer.*·레거시 reviewer_cmd·upstream·
         # upstream_rev·opencode_pro_model·status_total_style·user 등)를 절대 삭제/변경하지
@@ -11092,13 +11173,9 @@ def _write_init_local_conf(*, prefix: str | None, namespaced: bool,
         for key, value in defaults.items():
             if key not in existing:
                 updates[key] = value
-        # session·prefix 는 명시 인자일 때만 set-or-replace(재등록 UX 보존). 인자 없으면
-        # 기존 session 보존 — 없으면 default(`pm`/`<prefix>-pm`)로 표면화만. (둘 다 solo-legacy·
-        # multi 홈은 유도로 무시.
-        if override:
-            updates["session"] = override
-        if namespaced:
-            updates["prefix"] = prefix
+        # session·prefix 는 어느 경로에서도 쓰지 않는다 — 이미 파일에 남아 있는 그 키도 건드리지
+        # 않는다(비파괴 병합·엔진은 채택자 conf 를 대신 고쳐 쓰지 않는다). 읽는 코드가 없으므로
+        # 남아 있어도 동작은 같다.
         merged = _set_conf_keys(text, updates)
         # trailing newline 보장 — updates 가 비어(default 키 전부 존재) `_set_conf_keys` 가
         # 원문을 그대로 반환하고 그 원문이 개행 없이 끝나면, 뒤이은 prompt_external_review_optin()
@@ -11120,21 +11197,62 @@ def _write_init_local_conf(*, prefix: str | None, namespaced: bool,
                 merged, existing, _HARNESS_BUDGET_SEED_MARKER, _HARNESS_BUDGET_AXIS_KEYS):
             merged += _HARNESS_BUDGET_CONF_SEED
         LOCAL_CONF.write_text(merged, encoding="utf-8", newline="\n")
-        if override:
-            return override
-        return existing.get("session") or sess
+
+
+# areas.md 셀에 그대로 들어가면 표 자체가 깨지는 문자 — repo 이름은 폴더명에서 유도되므로
+# 이 sanity 를 init 입구에서 한 번 본다(부작용 0 fail-loud·`--repo` 로 우회 가능).
+_AREAS_CELL_BREAKERS = ("|", "\n", "\r")
+# 등록 repo 이름 canonical 형식 (`pm-config repo add` 의 검증과 같은 문법). init 은 이 형식을
+# **차단 기준으로 쓰지 않는다** — 폴더명은 사용자 입력이 아니라 이미 존재하는 사실이고, 점·공백이
+# 든 폴더에서 인자 0 온보딩(`pm_import.run_board_init`)을 rc≠0 으로 만들면 그게 더 큰 회귀다.
+# 표를 깨는 문자만 차단하고, 형식 이탈은 `--repo` 처방과 함께 1줄로 표면화한다.
+_INIT_REPO_NAME_CANONICAL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+
+def _init_repo_name(args: argparse.Namespace) -> str | None:
+    """init 이 areas.md 에 등록할 **repo 이름** — `--repo` 명시 > clone 루트 폴더명.
+
+    repo 칼럼은 *이 clone 의 정체성*이고 prefix 칼럼은 *작업 카테고리*다 — 두 축은 섞이지
+    않는다. prefix 를 repo 이름으로 승격하면 (a) 무prefix init 이 이미 만든 이 clone 의 행을
+    못 찾아 사용자가 승인까지 지불한 `--prefix` 가 조용히 버려지고 (b) 이름이 다르면 한 물리
+    repo 가 areas 2행이 되며 (c) 명시 `--repo` 가 조용히 무시된다.
+
+    표를 깨는 문자(`|`·개행)나 빈 이름이면 **아무것도 쓰지 않고** None 을 돌려준다(호출부가 rc 1)
+    — 그 경우의 처방은 `--repo <이름>` 명시다. canonical 형식(영숫자 시작·이후 영숫자/`_`/`-`)을
+    벗어난 폴더명은 등록은 하되 1줄로 알린다(슬롯 세션명 `<repo>_<N>` 가독성·`repo add` 와의 정합).
+    """
+    name = (getattr(args, "repo", None) or REPO.name or "").strip()
+    if not name or any(ch in name for ch in _AREAS_CELL_BREAKERS):
+        print(f"[중단] areas.md 에 등록할 repo 이름을 유도할 수 없다 (후보 {name!r}) — "
+              "`--repo <이름>` 으로 명시하라 (등록·conf 어떤 것도 쓰지 않았다).",
+              file=sys.stderr)
+        return None
+    if not _INIT_REPO_NAME_CANONICAL.match(name):
+        print(f"  ⚠ 등록 repo 이름 {name!r} 이 canonical 형식(`[A-Za-z0-9][A-Za-z0-9_-]*`)을 "
+              "벗어난다 — 그대로 등록하지만, 슬롯 세션명(`<repo>_<N>`)과 `pm-config repo` 조작이 "
+              "읽기 어려워진다. `board.py init --repo <이름>` 으로 등록명을 지정할 수 있다.")
+    return name
 
 
 def cmd_init(args: argparse.Namespace) -> int:
-    """clone 당 1회 setup. --prefix 있으면 multi-repo 네임스페이스, 없으면 solo (N=1·M=1).
+    """clone 당 1회 setup — areas.md repo 행 등록 + local.conf + pm_state + pre-push 게이트 훅.
 
-    multi-PM = N 세션 × M repo 한 개념— *수가 1이냐 더냐*의 문제다.
-    `--prefix` 는 협업(다중-사람)용이 아니라 **M>1 repo 의 ID 네임스페이스** — 같은
-    single user 가 여러 repo 를 동시에 도는 multi-PM 셋업에서 ID 충돌을 막는다.
+    multi-PM = N 세션 × M repo 한 개념 — *수가 1이냐 더냐*의 문제이고 N=1·M=1 도 그 부분집합이다.
+    그래서 등록 경로가 갈리지 않는다: **`--prefix` 유무와 무관하게** 이 clone 의 repo 행을
+    areas.md 에 항상 등록한다(등록 0 형상 없음 → 해소 체인이 레지스트리에서 끝난다).
 
-    공통: local.conf + pm_state(template) + pre-push 게이트 훅.
-    namespaced(--prefix): areas.md 레지스트리 등록 + prefix(→ T-PREFIX-NNN·multi-repo 가드 활성).
-    solo (N=1·M=1): areas.md 안 만듦 → 가드 off → legacy T-NNNN (오버헤드 0).
+    `--prefix` 는 협업(다중-사람)용이 아니라 **작업 카테고리** ID 네임스페이스다. 주면 그
+    카테고리로 `T-<PREFIX>-NNN` 을, 안 주면 prefix 칼럼이 빈 채(=`none` 카테고리) `T-NNNN` 을
+    발행한다 — 둘 다 1급 형상이라 `--prefix` 는 필수가 아니다(비대화형 온보딩이 인자 0으로 돈다).
+
+    **등록 축은 둘이 분리돼 있다** — repo 칼럼 = 이 clone 의 정체성(`--repo` 명시 > 루트 폴더명),
+    prefix 칼럼 = 작업 카테고리(`--prefix`). 멱등 키는 **이 clone 의 repo 행**이다:
+      - 행 없음            → 행 1개 append(prefix 칼럼은 `--prefix` 또는 빈 칸).
+      - 행 있음·`--prefix` 무 → no-op(행 추가 없음).
+      - 행 있음·같은 카테고리 → no-op.
+      - 행 있음·카테고리 비었음 → 그 행의 **prefix 셀만 갱신**(행 추가 아님·스키마 불변).
+      - 행 있음·다른 카테고리 → 부작용 0 fail-loud(카테고리 변경은 `board.py prefix rename` 소관).
+    `--area <설명>` 은 새 행을 만들며 카테고리를 함께 등록할 때만 필요하다.
     """
     _reject_task_slot_identity_mix(args)
     requested_prefix = args.prefix
@@ -11156,21 +11274,20 @@ def cmd_init(args: argparse.Namespace) -> int:
             return 1
         prefix = canonical
         prefix_precheck = canonical
-    namespaced = bool(prefix)  # prefix 있음 = multi-repo 네임스페이스 모드(협업 아님)
-    # session=/prefix= write 는 **solo 형상 전용 legacy** — leased ≥2 인
-    # multi 홈은 이 키를 무시하고 세션/prefix 를 lease 장부에서 유도한다(session_name·
-    # id_prefix). solo 채택자 폴백(후방호환)을 위해 write 는 유지하되, multi 홈은 흡수 후
-    # 이 키를 제거해도 동작 동일(위생).
-    # --repo/--slot로 명시하면 "<repo>_<N>" 으로 완전 해소(리스 조회 불요·kind=slot).
-    # --repo 단독이면 그 repo 의 활성 리스가 1개일 때만 해소(0개/무인자 → None → 아래 default).
-    override = _actor_session_override(args)
-    sess = override or (f"{prefix.lower()}-pm" if namespaced else "pm")
+    # 세션 override 해소는 **soft** 다 — init 에서 `--repo X` 는 1순위로 *등록명 지정*이고,
+    # fresh clone 은 정의상 활성 lease 가 0이라 hard 해소면 등록 처방(`--repo <이름>`)이 그
+    # 자리에서 죽는다. 여기서 세션은 owner 기본값에만 쓰이므로 미해소는 빈 owner 로 강등한다.
+    override = _actor_session_override(args, soft=True)
+    repo_name = _init_repo_name(args)
+    if repo_name is None:
+        return 1
     area_message: str | None = None
-    if namespaced:
-        # areas 등록과 local.conf prefix 쓰기는 같은 board_lock 안에서 fresh 4소스 판정을
-        # 선판정과 대조한 뒤 수행한다. 캐시된 선판정 뒤 다른 세션이 다른 case를 만들었으면
-        # areas/local.conf 모두 쓰기 전에 중단한다(TOCTOU·부분 init 0).
-        with board_lock():
+    wrote_areas = False
+    # areas 등록은 board_lock 안에서 fresh 3소스 판정을 선판정과 대조한 뒤 수행한다. 캐시된
+    # 선판정 뒤 다른 세션이 다른 case를 만들었으면 areas/local.conf 모두 쓰기 전에 중단한다
+    # (TOCTOU·부분 init 0).
+    with board_lock():
+        if prefix:
             fresh = revalidate_prefix_user_ack(
                 requested_prefix,
                 getattr(args, "user_ack", None),
@@ -11180,30 +11297,79 @@ def cmd_init(args: argparse.Namespace) -> int:
             if fresh is None:
                 return 1
             prefix = fresh
-            registered = registered_prefixes()
-            if prefix in registered:
-                area_message = f"prefix {prefix!r} 이미 등록됨 (areas.md) — local.conf 만 갱신."
-            else:
-                if not args.area:
-                    print(f"새 prefix {prefix!r} 등록엔 --area <설명> 필요.", file=sys.stderr)
-                    return 1
-                # owner = areas.md 등록 식별자(registrant) — 협업 소유자가 아니라 등록 출처 표식.
-                owner = args.owner or override or session_name(required=True)
-                area_owner = user_name(getattr(args, "user", None))
-                _areas_append_locked(prefix, owner, area_owner=area_owner)
-                ao_surface = (area_owner if area_owner else
-                              "(미상 — local.conf user= / git user.email 미설정)")
-                area_message = (f"✓ areas.md 등록: {prefix} | {args.area} | owner={owner} | "
-                                f"area_owner={ao_surface}")
-            surface_sess = _write_init_local_conf(
-                prefix=prefix, namespaced=True, sess=sess, override=override)
-        invalidate_known_prefixes_cache()
-    else:
-        surface_sess = _write_init_local_conf(
-            prefix=prefix, namespaced=False, sess=sess, override=override)
-    if area_message:
-        print(area_message)
-    print(f"✓ local.conf: {('prefix=' + prefix + ' · ') if namespaced else ''}session={surface_sess}")
+        # 멱등 키 = **이 clone 의 repo 행**. prefix 존재만으로 등록을 생략하면 사용자가 승인까지
+        # 지불한 카테고리가 조용히 버려지고, prefix 를 repo 이름으로 쓰면 한 물리 repo 가 2행이 된다.
+        _header, _rows = _parse_areas()
+        own_rows = [row for row in _rows if row.get("repo") == repo_name]
+        if len(own_rows) > 1:
+            print(f"[중단] areas.md 에 repo {repo_name!r} 행이 {len(own_rows)}개다(중복) — 어느 행이 "
+                  "이 clone 인지 기계가 정할 수 없다. 한 행만 남기고 수동 정리한 뒤 다시 실행하라 "
+                  f"({_rel_to_repo(areas_file())}·`board.py lint` 의 areas-duplicate-repo 참조). "
+                  "등록·conf 어떤 것도 쓰지 않았다.", file=sys.stderr)
+            return 1
+        # 다른 repo 행이 이미 그 카테고리를 쓰고 있으면 ID 네임스페이스가 겹친다 — 두 repo 가
+        # 같은 `T-<PFX>-NNN` 시리즈를 나눠 쓰면 순번이 충돌한다(부작용 0 fail-loud).
+        if prefix:
+            taken = [row for row in _rows
+                     if (row.get("prefix") or "").lower() == prefix.lower()
+                     and row.get("repo") != repo_name]
+            if taken:
+                print(f"[중단] 카테고리 {prefix!r} 는 이미 repo {taken[0].get('repo')!r} 행에 "
+                      "등록돼 있다 — 두 repo 가 같은 ID 네임스페이스를 나눠 쓰면 순번이 충돌한다. "
+                      "다른 카테고리를 쓰거나 `board.py prefix rename` 으로 먼저 정리하라 "
+                      "(등록·conf 어떤 것도 쓰지 않았다).", file=sys.stderr)
+                return 1
+        own_row = own_rows[0] if own_rows else None
+        registered_cell = (own_row.get("prefix") or "").strip() if own_row else ""
+        if own_row is None:
+            if prefix and not args.area:
+                print(f"새 prefix {prefix!r} 등록엔 --area <설명> 필요.", file=sys.stderr)
+                return 1
+            # owner = areas.md 등록 식별자(registrant) — 협업 소유자가 아니라 등록 출처 표식.
+            # init 은 lease 장부·세션 바인딩이 아직 없는 부트스트랩 지점이라 미해소를 fail-loud
+            # 하지 않는다(빈 칼럼 = 미상). 그 뒤의 등록(`pm-config repo add`)은 세션 귀속 쓰기라
+            # 미해소를 거부한다 — 게이트 위치가 다르다.
+            owner = args.owner or override or session_name() or ""
+            area_owner = user_name(getattr(args, "user", None))
+            _areas_append_locked(prefix or "", owner, repo=repo_name, area_owner=area_owner)
+            wrote_areas = True
+            ao_surface = (area_owner if area_owner else
+                          "(미상 — local.conf user= / git user.email 미설정)")
+            area_message = (f"✓ areas.md 등록: repo={repo_name} | "
+                            f"prefix={prefix or '(빈 칼럼 · none 카테고리)'} | "
+                            f"owner={owner or '(미상 — 세션 미바인딩)'} | "
+                            f"area_owner={ao_surface}")
+        elif not prefix:
+            area_message = (f"repo {repo_name!r} 이미 등록됨 (areas.md) — 행 추가 없음 "
+                            f"(카테고리 {registered_cell or '(빈 칼럼 · none)'}).")
+        elif registered_cell.lower() == prefix.lower():
+            area_message = (f"repo {repo_name!r} 이 이미 카테고리 {registered_cell!r} 로 "
+                            "등록됨 (areas.md) — 변경 없음.")
+        elif registered_cell:
+            print(f"[중단] repo {repo_name!r} 행은 이미 카테고리 {registered_cell!r} 다 — "
+                  f"{prefix!r} 로 바꾸려면 기발행 ID 까지 옮기는 `board.py prefix rename "
+                  f"{registered_cell} {prefix}` 를 쓰라(init 은 카테고리를 갈아끼우지 않는다). "
+                  "등록·conf 어떤 것도 쓰지 않았다.", file=sys.stderr)
+            return 1
+        else:
+            # 이 clone 의 행은 있는데 카테고리 칼럼만 비었다(무prefix init 뒤 카테고리 지정) —
+            # **행 추가가 아니라 셀 갱신**이다(스키마 불변·이미 board_lock 보유 → locked 변형).
+            _areas_set_cell_locked(repo_name, "prefix", prefix)
+            wrote_areas = True
+            area_message = (f"✓ areas.md 카테고리 등록: repo={repo_name} | "
+                            f"prefix={prefix} (기존 행의 prefix 칼럼 갱신·행 추가 없음)")
+        _write_init_local_conf()
+    invalidate_known_prefixes_cache()
+    if wrote_areas:
+        # 등록 행은 board git 의 공유 파일이다 — 파일만 쓰고 두면 board 가 dirty 로 남아
+        # (`M areas.md`) 온보딩 다음 단계가 그 잔여를 사용자 편집으로 만난다. `pm-config repo
+        # add`/`repo protected` 와 **같은 스코프 채널**로 이 mutation 이 만진 경로만 부기한다
+        # (board 가 별도 git 이 아니면 no-op·best-effort 라 실패해도 init 을 되돌리지 않는다).
+        # board_lock 밖에서 부른다(락 순서: board_git_lock → board_lock).
+        _board_git_sync_best_effort("init areas 등록", (areas_file(),))
+    print(area_message)
+    print("✓ local.conf: py·test_cmd·ctx 예산 (세션·prefix 는 conf 키가 아니다 — "
+          "세션=lease 장부 · prefix=areas.md)")
     if not PM_STATE_FILE.exists() and PM_STATE_TEMPLATE.exists():
         # `{{DATE}}` 의 소유자는 **생성 시점**이다 — 템플릿은 채택자 디스크에 토큰-form
         #   으로 남아야 pm_update 의 manifest byte-copy 와 진동하지 않는다. 그러니 그 템플릿으로
@@ -11219,15 +11385,34 @@ def cmd_init(args: argparse.Namespace) -> int:
     # board PM-commit 으로 오염되지 않게(누출 0). 솔로/미분리/git 부재면 no-op(fail-soft·무영향).
     if _configure_board_submodule():
         print("✓ board submodule ignore=all 설정 (코드 git 누출 0)")
-    # areas.md `merge=union` 배포는 여기서 하지 않는다 — init 은 board git 에 commit 하지
-    # 않으므로 파일만 쓰면 board 가 dirty(`?? .gitattributes`)로 남아 다음 `claim` 이 STRICT dirty
-    # 가드에 막힌다(엔진이 만든 파일을 사용자 편집으로 오인·clone→init→claim 온보딩 직격). 배포는
-    # `_board_git_stage_and_commit`(write→stage→commit 이 한 호출에 닫힘) **단일 채널**로 한다.
+    # areas.md `merge=union` 배포는 여기서 하지 않는다 — init 의 board git 기록은
+    # `_board_git_sync_best_effort(..., (areas_file(),))` 로 **areas.md 경로만** stage/commit 하는
+    # scoped 채널이라 `.gitattributes` 는 그 범위 밖이다. 여기서 파일만 쓰면 board 가
+    # dirty(`?? .gitattributes`)로 남아 다음 `claim` 이 STRICT dirty 가드에 막힌다(엔진이 만든
+    # 파일을 사용자 편집으로 오인·clone→init→claim 온보딩 직격) — 미배포 근거는 그대로 유효하다.
+    # 배포는 `_board_git_stage_and_commit`(write→stage→commit 이 한 호출에 닫힘) **단일 채널**로 한다.
     prompt_external_review_optin()
     prompt_delegate_optin()  # cross-harness 위임 opt-in(TTY 1회 질문·실키 기록)
-    mode = f"multi-repo · {prefix}" if namespaced else "solo (N=1·M=1)"
-    idfmt = f"T-{prefix}-NNN" if namespaced else "T-NNNN (legacy)"
-    print(INIT_GUIDE.format(mode=mode, idfmt=idfmt))
+    # 완료 안내의 ID 포맷은 **이 clone 에서 `board.py new` 가 실제로 발행할 값**이다 —
+    # 등록 결과가 아니라 해소 체인(`cmd_new` 와 같은 함수·같은 세션 override)에서 뽑는다.
+    # 등록이 생략/거부된 형상에서 발행되지 않을 포맷을 성공 메시지로 내던 거짓 안내 차단.
+    issued = id_prefix(None, session=override)
+    # `id_prefix(None)` 의 미해소(None)는 두 형상을 가린다 — (a) 등록 ≤1(count-based 로 곧
+    # 무prefix `T-NNNN` 이 발행) (b) 등록 ≥2 인데 세션 유도가 실패(모호). `cmd_new` 는 후자에서
+    # 자신의 ≥2 가드로 fail-loud 하므로 무명시 `T-NNNN` 은 실제로 발행되지 않는다 — 완료 안내가
+    # 그 포맷을 성공 메시지로 내면 거짓이다(같은 `registered_prefixes()` 로 `cmd_new` 와 lockstep).
+    ambiguous = issued is None and len(registered_prefixes()) >= 2
+    if ambiguous:
+        mode = f"repo {repo_name} · 카테고리 모호(등록 카테고리 ≥2·세션 미바인딩)"
+        id_line = ("무명시 `board.py new` 발행 불가 — 등록 카테고리가 여럿이고 세션이 "
+                   "바인딩되지 않았다. `board.py new --prefix <PFX> --user-ack <PFX>` 로 "
+                   "명시하거나 세션을 바인딩하라(`PM_SESSION_NAME=<repo>_<N>` env 또는 "
+                   "단일 활성 슬롯 lease).")
+    else:
+        mode = f"repo {repo_name} · 카테고리 {issued or 'none(무prefix)'}"
+        idfmt = f"T-{issued}-NNN" if issued else "T-NNNN (none 카테고리)"
+        id_line = f"`board.py new` 로 {idfmt} 발행"
+    print(INIT_GUIDE.format(mode=mode, id_line=id_line))
     return 0
 
 
@@ -11562,19 +11747,19 @@ def cmd_new(args: argparse.Namespace) -> int:
         if task_pfx:
             override = task_pfx
     # 명시/task 값은 우선순위상 이미 최종 후보다. areas-only fold lookup(`id_prefix(override)`)으로
-    # 먼저 canonical화하지 않고 아래 **공통 4소스 funnel**에 원 표기 그대로 넘긴다. 그래야
+    # 먼저 canonical화하지 않고 아래 **공통 3소스 funnel**에 원 표기 그대로 넘긴다. 그래야
     # 오염된 areas `AAA`/`aaa`의 set 순회가 명시 경로 진단 입력을 다시 비결정적으로 고르지 않는다.
-    # 둘 다 없을 때만 actor_session을 세션→count→solo 유도 체인에 thread한다 — 안 넘기면 등록
+    # 둘 다 없을 때만 actor_session을 세션→count 유도 체인에 thread한다 — 안 넘기면 등록
     # repo ≥2 환경의 `new "x" --repo alpha --slot 1`이 전역 재해소(모호 None)되어 거부된다.
     prefix = override if override else id_prefix(None, session=actor_session)
     prefix_precheck: str | None = None
     prefix_surface = "board new --prefix" if requested_override else "board new derived prefix"
     if prefix is not None:
         # 명시/유도 분기 **뒤의 최종 발행 prefix**가 canonical 판정의 단일 funnel이다.
-        # task·세션·단일 areas·solo-conf 유도값도 명시 --prefix와 같은 4소스 snapshot을
+        # task·세션·단일 areas 유도값도 명시 --prefix와 같은 3소스 snapshot을
         # 통과해야 한다. 여기서 복수 case면 같은 fail-loud 진단으로 막고, 단일 case면 그
         # canonical 표기를 발행값으로 고정한다. 신규 명시값만 user_ack가 실제 의미를 가지며,
-        # 유도값은 자신을 제공한 4소스 중 하나에 이미 존재하므로 승인 없이 existing으로 통과한다.
+        # 유도값은 자신을 제공한 3소스 중 하나에 이미 존재하므로 승인 없이 existing으로 통과한다.
         canonical = require_prefix_user_ack(
             prefix,
             getattr(args, "user_ack", None),
@@ -11639,7 +11824,7 @@ def cmd_new(args: argparse.Namespace) -> int:
     # 발행할 틈을 없앤다. board.md 재생성은 락 밖(별도 트랜잭션 — 파생물).
     with board_lock():
         if prefix is not None:
-            # 모든 non-None 발행 prefix를 ID 발행 락 안에서 cache-free 4소스 snapshot으로
+            # 모든 non-None 발행 prefix를 ID 발행 락 안에서 cache-free 3소스 snapshot으로
             # 다시 확인한다. 명시/유도 어느 경로든 그사이 다른 case가 생기면 `_next_id`와
             # 파일 write 전에 중단한다.
             fresh = revalidate_prefix_user_ack(
@@ -12240,14 +12425,14 @@ def _prefix_scan(op: str) -> tuple[list[dict[str, Any]] | None, int]:
 
 
 class PrefixSourcesUnreadable(RuntimeError):
-    """prefix 승인 게이트의 4소스 중 하나를 신뢰할 수 없어 fail-loud 해야 함."""
+    """prefix 승인 게이트의 3소스 중 하나를 신뢰할 수 없어 fail-loud 해야 함."""
 
 
 @functools.lru_cache(maxsize=1)
 def _cheap_prefix_inventory() -> tuple[tuple[str, tuple[str, ...]], ...]:
-    """값싼 3소스(areas·task·solo-conf) prefix 재고를 한 번 읽는다.
+    """값싼 2소스(areas·task) prefix 재고를 한 번 읽는다.
 
-    4소스 합성의 입력이자 전체 티켓 inventory가 손상됐을 때의 진단 fallback이다.
+    3소스 합성의 입력이자 전체 티켓 inventory가 손상됐을 때의 진단 fallback이다.
     값싼 소스 자체의 fold case 오염은 전부 보존해, 티켓 소스를 끝내 읽지 못해도
     `_prefix_target_snapshot`이 이미 확인한 case 변형과 출처를 잃지 않게 한다.
     """
@@ -12286,17 +12471,10 @@ def _cheap_prefix_inventory() -> tuple[tuple[str, tuple[str, ...]], ...]:
                     )
                 task_prefixes.add(prefix)
 
-        legacy_prefixes: set[str] = set()
-        if not area_prefixes:
-            legacy = local_config().get("prefix")
-            if legacy:
-                legacy_prefixes.add(legacy)
-
         by_prefix: dict[str, set[str]] = {}
         for source, prefixes in (
             ("areas.md", area_prefixes),
             ("task 장부", task_prefixes),
-            ("solo local.conf", legacy_prefixes),
         ):
             for prefix in prefixes:
                 by_prefix.setdefault(prefix, set()).add(source)
@@ -12314,16 +12492,15 @@ def _cheap_prefix_inventory() -> tuple[tuple[str, tuple[str, ...]], ...]:
 
 @functools.lru_cache(maxsize=1)
 def _known_prefix_inventory() -> tuple[tuple[str, tuple[str, ...]], ...]:
-    """4소스 prefix와 각 출처를 immutable·결정적 snapshot으로 한 번 읽는다.
+    """3소스 prefix와 각 출처를 immutable·결정적 snapshot으로 한 번 읽는다.
 
     소스는 (1) areas.md prefix, (2) 기발행 티켓 ID prefix, (3) worktree task 장부의
-    모든 ``Task.prefix``, (4) 등록 prefix가 0개일 때만 solo legacy local.conf
-    ``prefix=`` 이다. 소스 (4)의 조건은 ``id_prefix`` 해소 규칙과 같아서 multi-repo에서
-    도달 불가능한 clone-local 라벨을 whitelist하지 않는다.
+    모든 ``Task.prefix``다. per-clone ``local.conf`` 는 소스가 아니다 — clone-local 라벨은
+    ``id_prefix`` 해소에도 없으므로 승인 게이트에도 whitelist하지 않는다.
 
     board는 worktree_pool 엔진을 import하지 않는 기존 격리를 지킨다. worktree_pool이
     atomic-replace하는 JSON 장부를 strict point-read하고, 손상은 빈 집합으로 완화하지 않는다.
-    case 충돌 판정은 값싼 소스의 fold-match 여부와 무관하게 항상 티켓까지 4소스를
+    case 충돌 판정은 값싼 소스의 fold-match 여부와 무관하게 항상 티켓까지 3소스를
     확인한다. 첫 전수 스캔 결과는 이 함수의 프로세스 캐시에 보관해 후속 판정 비용을
     회수하며, 티켓 손상은 빈 집합으로 완화하지 않고 fail-loud한다.
     동일 문자열이 여러 소스에 있으면 출처를 합치고, case 변형은 서로 다른 항목으로 보존한다.
@@ -12364,11 +12541,11 @@ def _known_prefix_inventory() -> tuple[tuple[str, tuple[str, ...]], ...]:
 
 @functools.lru_cache(maxsize=128)
 def known_prefixes(target: str | None = None) -> frozenset[str]:
-    """신규-prefix 판정의 단일 진실인 4소스 합집합(canonical case 보존).
+    """신규-prefix 판정의 단일 진실인 3소스 합집합(canonical case 보존).
 
     ``target``은 기존 호출 호환용이며 판정 범위를 줄이지 않는다. 값싼 소스에
     fold/exact match가 있어도 다른 case의 기발행 티켓이 있으면 canonical이 충돌하고,
-    `_next_prefixed_id`가 티켓 case를 이어 쓸 수 있으므로 반드시 4소스를 모두 읽는다.
+    `_next_prefixed_id`가 티켓 case를 이어 쓸 수 있으므로 반드시 3소스를 모두 읽는다.
     전수 스캔은 `_known_prefix_inventory`의 프로세스 1회 캐시로 상쇄한다.
     """
     return frozenset(prefix for prefix, _sources in _known_prefix_inventory())
@@ -12389,7 +12566,7 @@ def _prefix_target_snapshot(
     """현재 snapshot에서 ``(canonical, is_new)``를 반환한다. 판정 불능이면 ``(None, False)``.
 
     한 fold에 case 변형이 둘 이상이면 어느 항목도 canonical로 임의 선택하지 않는다. 발견된
-    모든 변형과 4소스 출처를 정렬 출력하고, 먼저 한 case로 수렴시키라는 처방과 함께 막는다.
+    모든 변형과 3소스 출처를 정렬 출력하고, 먼저 한 case로 수렴시키라는 처방과 함께 막는다.
     """
     try:
         known = known_prefixes(prefix)
@@ -12417,7 +12594,7 @@ def _prefix_target_snapshot(
             )
         else:
             print(
-                f"[중단] {surface}: prefix 4소스 합집합을 신뢰할 수 없다 — {exc}. "
+                f"[중단] {surface}: prefix 3소스 합집합을 신뢰할 수 없다 — {exc}. "
                 "소스 손상을 고친 뒤 다시 실행하라.",
                 file=sys.stderr,
             )
@@ -12466,7 +12643,7 @@ def _print_prefix_case_conflict(
         for candidate in matches
     )
     incomplete = (
-        f"\n  진단 보존: 티켓 inventory 오류({inventory_error})로 4소스 출처를 모두 "
+        f"\n  진단 보존: 티켓 inventory 오류({inventory_error})로 3소스 출처를 모두 "
         "확정하지 못했지만, 위 값싼 소스 출처만으로도 case 충돌은 확정적이다."
         if inventory_error is not None
         else ""
@@ -12474,7 +12651,7 @@ def _print_prefix_case_conflict(
     print(
         f"[중단] {surface}: prefix {prefix!r}의 case 변형이 2개 이상 존재해 canonical을 "
         f"결정할 수 없다 — {variants}.{incomplete}\n"
-        "  정리 처방: 하나의 canonical case를 고른 뒤 areas.md·task 장부·solo local.conf를 "
+        "  정리 처방: 하나의 canonical case를 고른 뒤 areas.md·task 장부를 "
         "그 case로 맞추고, 기발행 티켓은 `board.py prefix rename/merge`로 같은 case에 "
         "수렴시킨 다음 재실행하라. 임의 변형 선택은 새 ID 네임스페이스를 분할하므로 "
         "수행하지 않는다.",
@@ -12490,7 +12667,7 @@ def require_prefix_user_ack(
 ) -> str | None:
     """기존 prefix의 canonical case 또는 승인된 신규 prefix를 반환하고, 거부면 None.
 
-    prefix 동일성은 4소스 합집합에 case-insensitive fold로 대조한다. 신규 라벨은
+    prefix 동일성은 3소스 합집합에 case-insensitive fold로 대조한다. 신규 라벨은
     ``--user-ack <prefix>`` 값이 대상과 정확히 결속될 때만 통과한다. 이 토큰은 적대적
     우회 방지가 아니라 사용자 승인 마찰과 감사 surface이며, 승인 주체가 아닌 세션이
     자가 부착할 수 있다는 위협 모델은 의도적으로 숨기지 않는다.
@@ -12518,7 +12695,7 @@ def require_prefix_user_ack(
     print(
         f"[중단] {surface}: 새 prefix {prefix!r} 신설에는 사용자 명시 승인이 필요하다.{mismatch}\n"
         f"  1순위: 사용자에게 새 카테고리 {prefix!r} 승인을 요청하라.\n"
-        f"  현재 카테고리(areas ∪ 티켓 ∪ task ∪ solo-conf): {categories}\n"
+        f"  현재 카테고리(areas ∪ 티켓 ∪ task): {categories}\n"
         "  정상 등록 경로: areas.md prefix 칼럼 또는 `pm-config task prefix`로 먼저 등록한다. "
         "두 경로도 신규 라벨이면 최초 1회 사용자 승인을 지나야 한다.\n"
         f"  부차 수단: 승인한 사용자만 원 명령에 `--user-ack {prefix}`를 대상값 그대로 붙여 "
@@ -12555,7 +12732,7 @@ def _rename_map(src: str | None, dst: str | None,
 
     src 매칭은 **case-insensitive fold**(`_fold_key`) — `rename aaa bbb` 가 기존
     `T-AAA-*`(prefix `AAA`)를 잡아 relabel 한다(case 만 다르면 silent no-op 하던 갭 봉합). dst 는
-    호출자가 ``require_prefix_user_ack`` 공유 게이트에서 4소스 canonical case로
+    호출자가 ``require_prefix_user_ack`` 공유 게이트에서 3소스 canonical case로
     해소한 값이므로 그대로 발행 case다(`_validate_dst_prefix`는 형식 sanity만 담당).
     """
     src_key = _fold_key(src)
@@ -12921,7 +13098,7 @@ def _validate_dst_prefix(raw: str, parsed: str | None) -> str | None:
     이름이므로 `_validate_prefix`(예약어+`[A-Za-z0-9][A-Za-z0-9_]*`·대소문자 허용)로
     못박아 malformed ID 발행을 막는다. source prefix 는 *기존* 발행분이라 검증하지 않는다(하이픈
     legacy 존중). 기존 prefix와의 fold 동일성 및 canonical case 해소는 네 표면이 공유하는
-    ``require_prefix_user_ack``가 4소스 합집합으로 맡는다.
+    ``require_prefix_user_ack``가 3소스 합집합으로 맡는다.
     """
     if parsed is None:
         return None
@@ -13202,7 +13379,7 @@ def cmd_reid(args: argparse.Namespace) -> int:
     전용 유지).
 
     가드(값싼 정적 → 상태 의존 순): NEW-ID 형식 sanity(발행 문법·legacy prefix 포함) →
-    NEW prefix 4소스 canonical/신설 승인 판정 → src≠dst → (락 안 fresh snapshot) OLD 실재 →
+    NEW prefix 3소스 canonical/신설 승인 판정 → src≠dst → (락 안 fresh snapshot) OLD 실재 →
     타 세션 claim abort(단일세션 op) → NEW collision(전 상태
     디렉토리+.drafts 에 이미 존재하면 abort). 번호 자동발급 카운터는 `_next_id` 가 max 기반이라 어느
     번호로 옮겨도 무충돌이다 — 다음 발급이 최대치를 자연히 이으므로 별도 조정 없이 확인만 한다(결정).
@@ -15238,6 +15415,9 @@ def _ticket_id_from_filename(filename: str) -> str | None:
 #     frontmatter `verified_at: <sha>` 이후 그 문서 매핑 경로에 커밋이 있으면 "재검증 필요"
 #     권고(date 비교 대체). architect 재검증·PM 점검 대상이지 push 결함이 아니므로
 #     visibility 만·never-block.
+#   - areas-repo-unregistered : areas.md 에 등록된 repo 행이 0개. init 이 repo 행을 항상
+#     등록하기 전에 setup 된 구 clone 이라는 뜻이라, 처방(init 재실행) 1줄만 상시 보인다 —
+#     무prefix 발행 자체는 1급 형상이라 push 결함이 아니다(never-block).
 #   - areas-duplicate-repo : areas.md 에 같은 repo 행이 2개 이상. first-match 리졸버
 #     4종이 첫 행에서 return 하므로 조용히 굳는 걸 보이게만 한다 — 자동 병합은 사람 판정 영역이고
 #     레지스트리 정리가 push 결함도 아니라 never-block(`areas_set_cell` 의 fail-loud 와 짝).
@@ -15260,7 +15440,7 @@ _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
      "status-stale", "domain-stale", "domain-unverifiable",
      "architecture-unverifiable", "status-unverifiable",
      "dangling-wikilink-scaffold", "un-migrated-overlay", "adapter-drift",
-     "adr-author", "areas-duplicate-repo", "areas-merge-union",
+     "adr-author", "areas-repo-unregistered", "areas-duplicate-repo", "areas-merge-union",
      "delegate-same-model", "design-pending", "design-estimate",
      "codex-delegate-matcher-miss",
      # 라운드 판정 코드(사이드카 seam 소유) + board 고유 잔여·판정불능 관측. 차단은 완료
@@ -16671,6 +16851,39 @@ def lint_codex_delegate_observations() -> list[tuple[str, str, str]]:
     )]
 
 
+# 등록 0 형상(구 clone) 이관 안내 — `board.py init` 이 repo 행을 항상 등록하기 전에 만들어진
+# clone 은 areas.md 에 자기 repo 행이 없다. 그 홈에선 prefix 해소가 레지스트리에서 끝나지 못하고
+# (세션 유도·count-based 둘 다 입력이 없다) per-clone conf 키는 더 이상 읽지 않으므로, 옛 conf
+# `prefix=` 로 네임스페이스를 받던 채택자가 조용히 무prefix(`T-NNNN`)로 바뀐다. 처방은 init
+# 재실행 한 번이라 차단하지 않고 상시 가시화만 한다.
+AREAS_REPO_UNREGISTERED_NOTICE = (
+    "areas.md 에 이 clone 의 repo 행이 없다(등록 0 = 구 형상) — `board.py init` 을 한 번 다시 "
+    "실행하면 repo 행이 등록된다(`--prefix <카테고리> --area <설명>` 을 주면 그 카테고리로, "
+    "안 주면 빈 prefix 칼럼 = 무prefix `T-NNNN` 로). per-clone local.conf 의 `session=`/"
+    "`prefix=` 는 더 이상 읽지 않는다 — 세션은 lease 장부, prefix 는 areas.md 가 단일 진실이다."
+)
+
+
+def lint_areas_repo_unregistered() -> list[tuple[str, str, str]]:
+    """areas.md 에 등록된 repo 행이 하나도 없으면 이관 안내 advisory (never-block).
+
+    `init` 이 repo 행을 항상 등록하므로 "등록 0" 은 그 변경 **이전에** setup 된 clone 뿐이다.
+    그 형상은 깨지지 않지만(무prefix 발행은 1급 형상) 옛 per-clone conf 키에 기대던 prefix
+    네임스페이스가 조용히 사라지므로, 처방(init 재실행)을 상시 보인다.
+
+    kind=`areas-repo-unregistered`(`_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드 비기여·push
+    미차단). areas 파싱 실패는 빈 결과(lint 를 깨지 않는다).
+    """
+    try:
+        if registered_repos():
+            return []
+    except Exception:  # noqa: BLE001 — areas 파싱 실패는 무발화(advisory 가 lint 를 깨지 않는다).
+        return []
+    # 라벨은 파일명 고정 — `_rel_to_repo` 는 앵커(worktree/PM 홈)에 따라 상대/절대가 갈려
+    # 같은 보드에서 다른 문자열이 나온다(앵커 무관 동일 출력 계약).
+    return [("areas.md", "areas-repo-unregistered", AREAS_REPO_UNREGISTERED_NOTICE)]
+
+
 def lint_areas_duplicate_repo() -> list[tuple[str, str, str]]:
     """areas.md 에 같은 repo 행이 2개 이상이면 advisory (never-block).
 
@@ -16756,6 +16969,7 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     adr-author(ADR `author: <user>/<pm-slot>` provenance 권고·advisory·never-block) +
     현재-진실 문서 freshness(architecture-stale·status-stale·domain-stale·verified_at sha 판정·
     advisory·never-block) +
+    areas-repo-unregistered(areas.md 등록 repo 행 0 → 구 clone 이관 안내·advisory·never-block) +
     areas-duplicate-repo(areas.md 중복 repo 행 → first-match 고착 가시화·advisory·
     never-block) +
     areas-merge-union(areas.md 를 담은 git 에 merge=union 미배포 → 동시 등록 안전 상실 가시화·
@@ -16775,6 +16989,7 @@ def lint_tickets() -> list[tuple[str, str, str]]:
             + lint_architecture_freshness() + lint_status_freshness()
             + lint_domain_freshness() + lint_adapter_drift()
             + lint_render_leak() + lint_unmigrated_overlay()
+            + lint_areas_repo_unregistered()
             + lint_areas_duplicate_repo() + lint_areas_merge_union()
             + lint_delegate() + lint_rounds() + lint_legacy_growth_sections()
             + lint_codex_delegate_observations())
@@ -16962,8 +17177,9 @@ def build_parser() -> argparse.ArgumentParser:
                         f"estimate={DESIGN_REQUIRED_ESTIMATE} → {DESIGN_REQUIRED}, "
                         f"그 외 {DESIGN_NA}. required 면 설계 절 완성 + `{DESIGN_DONE}` 승격 "
                         f"전까지 claim 이 차단된다.")
-    p.add_argument("--prefix", help="작업 카테고리 (자유 입력·배타 구획). "
-                   "default: local.conf prefix / 없으면 none(무prefix 1급 → legacy T-NNNN)")
+    p.add_argument("--prefix", help="작업 카테고리 (자유 입력·배타 구획). 생략 시 세션이 가리키는 "
+                   "areas.md repo 행의 prefix → 등록 prefix 가 정확히 1개면 그것 / 그래도 미해소면 "
+                   "none(무prefix 1급 → legacy T-NNNN)")
     p.add_argument("--user-ack", metavar="<prefix>",
                    help="새 prefix 신설에 대한 사용자 승인 토큰(대상 prefix 값과 정확히 결속)")
     p.add_argument("--user", help="user 식별자 — created_by 의 user 차원 (default: local.conf user= / "
@@ -17009,11 +17225,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("id", metavar="T-NNNN")
     p.set_defaults(fn=cmd_tier_signals)
 
-    p = sub.add_parser("init", help="clone 당 1회 setup (solo · multi-repo N×M) — pm_state·local.conf·pre-push 훅")
-    p.add_argument("--prefix", help="multi-repo (N×M) ID 네임스페이스 (예: PAY). 생략 = solo(legacy T-NNNN)")
+    p = sub.add_parser("init", help="clone 당 1회 setup — areas repo 행 등록·pm_state·local.conf·pre-push 훅")
+    p.add_argument("--prefix", help="ticket ID 작업 카테고리 (예: PAY). 생략 = 무prefix(T-NNNN·none 카테고리)")
     p.add_argument("--user-ack", metavar="<prefix>",
                    help="새 prefix 등록에 대한 사용자 승인 토큰(대상 prefix 값과 정확히 결속)")
-    p.add_argument("--area", help="영역 설명 (namespaced: 새 prefix 최초 등록 시 필요)")
+    p.add_argument("--area", help="영역 설명 (새 prefix 최초 등록 시 필요)")
     p.add_argument("--owner", help="등록 식별자(registrant·기본: session 이름)")
     p.add_argument("--user", help="area_owner = 그 area 의 user 소유 (`--mine` 풀 입력). "
                                   "미지정 시 local.conf user= / git config user.email 로 해소(없으면 빈 값).")
@@ -17029,7 +17245,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="변경 미리보기(쓰기 0·per-file 요약). 먼저 실행 권장.")
     p.add_argument("--user", help="identity override (기본: local.conf user= / git config "
                    "user.email · 미해소 시 abort)")
-    identity_args.add_identity_args(p)  # slot 표시값(기본: $PM_SESSION_NAME/local.conf session=) —
+    identity_args.add_identity_args(p)  # slot 표시값(기본: $PM_SESSION_NAME/$CLAUDE_SESSION_NAME
+    # → lease 장부의 단일 leased 슬롯) —
     # backfill 대상 슬롯을 *바꾸지 않음*. 슬롯-only claimed_by 는 기존 슬롯 토큰을 보존하고
     # user 차원만 prepend(비파괴).
     p.add_argument("--scope", choices=["active", "all"], default="all",

@@ -530,6 +530,42 @@ def test_review_delta_cli_dispatch_renders_success_and_prescribes_pending(
     assert "[pending]" in error and "전수 disposition" in error
 
 
+def test_machine_confirmation_merges_into_the_same_confirmation_history(pd):
+    """T-0786 — PM 기계 확인은 reviewer 확인과 같은 확인 이력에 합류한다(불변식 6).
+
+    dev verify 골격(`pm-review-verify-v1`)과 PM 기계 확인(`pm-review-confirmation-v1`)은
+    이 파일이 다루는 `parse_pm_review_delta` 의 병합 축에 새로 얹힌 입력이다 — 별도
+    reviewer 재투입 없이 accepted 가 비는지가 이 병합의 전부다.
+    """
+    review = _review_section({
+        "version": BLOCK_VERSION,
+        "findings": [_finding("implementation-defect")],
+        "confirmations": [],
+    }) + _disposition(1, [_decision("accepted")])
+    dev_round = _round(pd, 2, (
+        "## 구현 보충 (developer · 2026-08-21)\n\n## 변경 파일\n- x\n\n"
+        f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n"
+        + json.dumps({
+            "version": pd.PM_REVIEW_VERIFY_VERSION,
+            "verifications": [{
+                "id": "F-001", "machine_verifiable": True, "command": "echo hi",
+                "expected": "hi", "before": "bye", "reason": "",
+            }],
+        })
+        + "\n```\n"
+    ), role="developer")
+    confirmation = _Ticket(f"```{pd.PM_REVIEW_CONFIRMATION_BLOCK}\n" + json.dumps({
+        "version": pd.PM_REVIEW_MACHINE_CONFIRMATION_VERSION, "round": 2,
+        "confirmations": [{
+            "id": "F-001", "status": "resolved", "command": "echo hi", "observed": "hi",
+        }],
+    }) + "\n```\n")
+
+    rounds = review.rounds(pd) + [dev_round]
+    delta = pd.parse_pm_review_delta((review + confirmation).spec, rounds)
+    assert delta.accepted == ()
+
+
 def test_review_delta_cli_blocks_on_round_gap(pd, monkeypatch, tmp_path, capsys):
     """순번 빈틈(삭제 의심)은 판정 전에 막는다 — [[ADR-0090]] 3.8 의 유일한 red 축."""
     rounds_module = pd._load_ticket_rounds()

@@ -273,6 +273,7 @@ def test_pm_delegate_ticket_cli_json_is_utf8(capture_console, monkeypatch, tmp_p
 
     assert _machine_payload(harvest_stream) == {
         "copy": str(plan.path.resolve()), "changed": False, "sync_ready": True,
+        "verify_missing": [],
     }
 
 

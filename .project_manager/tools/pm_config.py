@@ -230,7 +230,7 @@ GitRunner = Callable[[list], "tuple[int, str]"]
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
-ENGINE_REV = "v1.7.7"
+ENGINE_REV = "v1.7.8"
 
 # rev 스탬프를 지닌 형제 파일만 대조 대상. pm_update는 복구 채널이라 의도적으로 제외한다.
 # deep-import AST 가드가 실제 호출 target에서 목록/검증 누락을 자동 적발한다.
@@ -349,40 +349,45 @@ def _real_clone_runner() -> GitRunner:
     return runner
 
 
-def _local_conf_session() -> str | None:
-    """`.project_manager/local.conf` 의 `session=` (없거나 OSError → None).
+def _registered_repos_for_session() -> "set[str]":
+    """단일-등록 유도용 areas.md 등록 repo 집합 (`_default_session` 전용 — F-002).
 
-    board.py 를 import 하지 않으므로 `board.local_config()
-    .get("session")` 와 *동일 의미*를 stdlib 로 자체 구현한다 — plain `KEY=value`·`#`
-    주석/빈 줄 무시. 부재/읽기실패는 None(폴백).
+    동적 board 로더(`_load_module`)로 조회한다 — board 부재/`registered_repos` 헬퍼 부재/파싱
+    실패는 빈 set(fail-soft — 유도가 안전하게 미발화로 접힌다).
+
+    hermetic 테스트가 `pm_config.REPO` 만 tmp 로 재지정하고 board 를 주입하지 않으면, 동적
+    로드된 실 board.py 는 **자신의** `__file__` 기준 REPO(=이 저장소의 실 루트)를 써서 tmp REPO
+    와 갈린다 — 그 상태로 `registered_repos()` 를 부르면 실 areas.md 가 hermetic 테스트로
+    샌다. REPO 불일치 시 빈 set 으로 접어 그 오염을 막는다(`_refresh_protected_gate_contracts`
+    의 동일 REPO 대조 가드와 동형).
     """
-    conf_file = REPO / ".project_manager" / "local.conf"
+    board_mod = _load_module("board", "board.py")
+    registered = getattr(board_mod, "registered_repos", None) if board_mod else None
+    if registered is None:
+        return set()
+    board_repo = getattr(board_mod, "REPO", REPO)
+    if Path(board_repo).resolve() != REPO.resolve():
+        return set()
     try:
-        text = _load_file_lock().read_text_shared(conf_file, encoding="utf-8")
-    except OSError:
-        return None
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        if key.strip() == "session":
-            return val.strip() or None
-    return None
+        return set(registered())
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 유도 실패는 미발화(다음 tail 로).
+        if _is_engine_rev_skew(exc):
+            raise
+        return set()
 
 
 def _default_session(*, identity=None) -> str | None:
     """세션 식별자 — board.py `session_name()` 과 *동형* 우선순위:
     `$PM_SESSION_NAME` > `$CLAUDE_SESSION_NAME`(deprecated alias·silent) > lease 장부
-    state=="leased" 행이 정확히 1개면 그 session (단일-lease 유도) > (장부 부재·leased 0 =
-    solo) `local.conf session=` > None.
+    state=="leased" 행이 정확히 1개면 그 session (단일-lease 유도) > areas.md 등록 repo
+    정확히 1개 && lease 장부 구조적 0행(단일-등록 유도·공유 술어·F-002) > None.
 
     `PM_SESSION_NAME` 이 정식 엔진 변수(하니스 무관)·`CLAUDE_SESSION_NAME` 은 구 alias(둘 다면
-    PM 승·조용히 동작). **leased ≥2 (모호)면 local.conf 층을 건너뛴다**(board 와 동형 — silent
-    오귀속 차단). 미해소면 None — `cmd_status`/`whoami` surface(required=False)가 "(비바인딩)"
-    으로 표시한다(Windows 4슬롯 홈에서 비바인딩 세션이 남의 리스로 self-identify 하던 직접 증상
-    수정). `<host>-<pid>` 최종 폴백은 세션-귀속 아닌 국소 용처(worktree_pool lease
-    취득)에만 잔존 — 여기(surface 해소)선 제거.
+    PM 승·조용히 동작). **per-clone `local.conf session=` 층은 없다**(board 와 동형) — slot 종속
+    값이 프로젝트 공용 conf 에 있던 범위 오류라 읽지 않는다. 미해소면 None — `cmd_status`/
+    `whoami` surface(required=False)가 "(비바인딩)" 으로 표시한다(비바인딩 세션이 남의 리스로
+    self-identify 하던 직접 증상 수정). `<host>-<pid>` 최종 폴백은 세션-귀속 아닌 국소 용처
+    (worktree_pool lease 취득)에만 잔존 — 여기(surface 해소)선 제거.
 
     lease 장부(`state=="leased"` 행의 session 목록) 읽기는 공용 `identity_args.leased_sessions`
     로 위임한다
@@ -392,10 +397,15 @@ def _default_session(*, identity=None) -> str | None:
     동형 패턴·스크립트 직접 실행/테스트 양쪽에서 동일하게 동작). `identity` 주입으로 hermetic
     테스트 가능(미주입 시 실 모듈 로드 — `identity_args` 는 파일 IO 0 순수 모듈이라 실 로드도
     안전·부작용 0). 장부 경로는 호출 시점 `REPO` 에서 구성한다(monkeypatch 존중·
-    `_local_conf_session` 과 동형).
+    `_local_conf_user` 와 동형). 단일-등록 유도 층(`identity_args.single_registration_session`)
+    도 같은 주입 `identity` 를 소비한다 — 그 대역은 `single_registration_session` 을 갖춰야
+    한다(leased 0 경로를 실제로 밟는 테스트라면).
 
     저장측(worktree_pool)과 매칭측(여기)이 어긋나면 "이 세션의 리스" surface 가 board 매칭과
-    어긋난다 — 세 모듈을 같은 우선순위로 통일한다.
+    어긋난다 — 세 모듈을 **공유 술어**로 통일한다(F-002·리뷰 라운드 03 PM 재비준 — 격리
+    실측에서 이 층이 board 에만 있으면 bare claim 이 저장한 `claimed_by` 와 이후 첫 slot 생성이
+    저장하는 lease.session 이 갈렸다). registered repo 집합은 `_registered_repos_for_session()`
+    (동적 board 로더)으로 얻는다.
     """
     env = os.environ.get("PM_SESSION_NAME") or os.environ.get("CLAUDE_SESSION_NAME")
     if env:
@@ -405,19 +415,21 @@ def _default_session(*, identity=None) -> str | None:
     leased = identity_mod.leased_sessions(leases_file) if identity_mod is not None else []
     if len(leased) == 1:
         return leased[0]
-    if not leased:
-        # 장부 부재·leased 0 = solo → legacy local.conf 폴백 (후방호환).
-        conf_sess = _local_conf_session()
-        if conf_sess:
-            return conf_sess
-    # leased ≥2 (모호) 또는 solo 무바인딩 → 미해소(surface 는 "(비바인딩)").
+    # leased 0(무바인딩) 또는 ≥2(모호) → 단일-등록 유도 시도(공유 술어 — F-002). 손상 장부는
+    # identity_args.lease_row_count 가 None 을 내 이 술어가 스스로 미발화한다(F-001 공유).
+    derived = (identity_mod.single_registration_session(
+                   _registered_repos_for_session(), leases_file)
+               if identity_mod is not None else None)
+    if derived:
+        return derived
+    # leased 0(무바인딩) 또는 ≥2(모호) → 미해소(surface 는 "(비바인딩)").
     return None
 
 
 def _local_conf_user() -> str | None:
     """`.project_manager/local.conf` 의 `user=` (없거나 OSError → None).
 
-    `_local_conf_session` 과 동형 — board.py 를 import 하지 않으므로
+    `_local_conf_test_cmd` 와 동형 — board.py 를 import 하지 않으므로
     touches 격리) `board.local_config().get("user")` 와 *동일 의미*를 stdlib 로 자체 구현한다.
     plain `KEY=value`·`#` 주석/빈 줄 무시. 부재/읽기실패는 None(폴백).
     """
@@ -483,7 +495,7 @@ def _distinct_area_owners() -> int:
     """areas.md 의 distinct non-empty `area_owner` 수 — pm_config 자체 파싱(다중사용자 최소 신호).
 
     `cmd_status` 의 isolation posture(strict/degrade/solo) 판정용 *coarse* 신호다. board.py 를
-    import 하지 않으므로 `_local_conf_session` 동형으로
+    import 하지 않으므로 `_local_conf_user` 동형으로
     areas.md 를 stdlib 로 직접 읽는다 — board 의 격리 *판정*(`_ticket_is_mine`·티켓 스캔
     `_distinct_ticket_users`)은 복제하지 않고, 공유 레지스트리(areas.md)의 `area_owner` 칼럼만
     헤더-인식으로 센다. 실 strict-exclude 여부는 `board list --mine` loud-warn이
@@ -530,7 +542,7 @@ def _distinct_area_owners() -> int:
 def _local_conf_test_cmd() -> str | None:
     """`.project_manager/local.conf` 의 `test_cmd=` (없거나 OSError → None).
 
-    `_local_conf_session` 과 동형 — board.py 를 import 하지 않으므로
+    `_local_conf_user` 와 동형 — board.py 를 import 하지 않으므로
     touches 격리) `board.local_config().get("test_cmd")` 와 *동일 의미*를 stdlib 로 자체
     구현한다. worktree add 빌드명령 프롬프트의 기본값(`board._test_cmd` 솔로 폴백 레이어와
     동형 — 미지정 시 `pytest -q`)을 제시하는 데 쓴다.
@@ -2356,7 +2368,7 @@ def cmd_status(
 
     # 정체성·세션격리 posture surface: resolved user + isolation
     # 상태(strict/degrade/solo) + remedy. board.py 를 import 하지 않고
-    # user 는 `_default_user`(자체 해소·`_local_conf_session` 동형), 다중사용자 여부는 areas.md
+    # user 는 `_default_user`(자체 해소·`_local_conf_user` 동형), 다중사용자 여부는 areas.md
     # `area_owner` 자체 파싱(`_distinct_area_owners`)으로 판정한다 — board 의 격리 *판정*은 복제
     # 하지 않고 최소 신호만.
     #
@@ -3113,7 +3125,7 @@ def cmd_task_prefix(
         if new_prefix is None:
             return 1
 
-    # 3) 저장 — 신규/기존 prefix 지정은 board_lock 안 fresh 4소스 snapshot을 선판정과
+    # 3) 저장 — 신규/기존 prefix 지정은 board_lock 안 fresh 3소스 snapshot을 선판정과
     # 대조한 직후 worktree_pool 장부 락으로 내려간다. lock 순서는 board→lease로 고정한다
     # (worktree_pool은 board를 import/호출하지 않아 역순 경로 없음). 엔진 primitive의 직접
     # 소비는 사용자 승인 CLI 표면이 아니므로 이 재검증을 성립시킬 수 없고, 설계대로 CLI 단일

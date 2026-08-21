@@ -806,21 +806,22 @@ def test_test_cmd_per_slot_areas_resolves_by_session_not_global(board):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# session_name local.conf 레이어 + default-session END-TO-END (T-0066 must-fix)
+# session_name 해소 층 + default-session END-TO-END (T-0066 must-fix · T-0779 amend)
 # 핵심 회귀 핀: 저장측(worktree_pool._default_session)과 매칭측(board.session_name)이
-# local.conf session= 우선순위에서 *동형* 이어야 per-slot test_cmd 가 매칭된다.
-# 옛 코드(저장측 local.conf 미반영)면 host-pid vs foo 로 어긋나 이 테스트가 실패한다.
+# *동형* 이어야 per-slot test_cmd 가 매칭된다. 두 모듈이 공유하는 층은 env 명시와 단일-lease
+# 유도뿐이다 — per-clone local.conf `session=` 층은 폐지됐다(T-0779).
 # ════════════════════════════════════════════════════════════════════════
 
-def test_session_name_reads_local_conf(board, monkeypatch):
-    """board.session_name: env 없음 → local.conf `session=` (매칭측 우선순위 핀)."""
+def test_session_name_ignores_local_conf(board, monkeypatch):
+    """board.session_name: env·lease 없음 + conf `session=foo` → None (폴백 폐지·T-0779)."""
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     board.LOCAL_CONF.write_text("session=foo\n", encoding="utf-8")
-    assert board.session_name() == "foo"
+    assert board.session_name() is None
 
 
-def test_session_name_env_wins_over_local_conf(board, monkeypatch):
-    """env 가 local.conf 보다 우선 (1층)."""
+def test_session_name_env_is_the_explicit_layer(board, monkeypatch):
+    """env 명시가 해소 1층 — conf 에 다른 값이 남아 있어도 무관하다."""
     monkeypatch.setenv("CLAUDE_SESSION_NAME", "from-env")
     board.LOCAL_CONF.write_text("session=foo\n", encoding="utf-8")
     assert board.session_name() == "from-env"
@@ -848,16 +849,16 @@ def _load_wp_for_board(board):
     return wp
 
 
-def test_default_session_e2e_local_conf_match(board, monkeypatch):
-    """END-TO-END must-fix 핀 — env 없음·local.conf session=foo:
+def test_default_session_e2e_env_binding_match(board, monkeypatch):
+    """END-TO-END must-fix 핀 — env 바인딩(`PM_SESSION_NAME=foo`):
 
     worktree_pool.create_slot(session 미지정) → lease.session=foo 로 저장 →
     board._active_slot_test_cmd()(session_name→foo 매칭) 가 그 슬롯 test_cmd 반환.
-    저장측이 local.conf session= 을 안 읽으면 lease.session=host-pid 라 board(foo)와
-    어긋나 None → 이 단언 실패(옛 코드 회귀 검출).
+    두 모듈의 해소 층이 어긋나면(한쪽만 다른 값으로 해소) 매칭이 깨져 None 이 된다.
     """
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
-    board.LOCAL_CONF.write_text("session=foo\n", encoding="utf-8")
+    monkeypatch.setenv("PM_SESSION_NAME", "foo")
+    board.LOCAL_CONF.write_text("session=ignored\n", encoding="utf-8")  # 읽는 층 없음
     wp = _load_wp_for_board(board)
     (board._tmp / ".repos").mkdir(parents=True, exist_ok=True)
     wp.bare_repo_path("A").mkdir(parents=True, exist_ok=True)  # bare 부재 가드 통과
@@ -872,7 +873,7 @@ def test_default_session_e2e_local_conf_match(board, monkeypatch):
             return (0, "")
 
     wp.create_slot("A", git_runner=_FakeGit(), test_cmd="make hil2")  # session 미지정 → _default_session
-    # 매칭측: board.session_name() 도 local.conf → foo 로 해소돼야 슬롯이 매칭된다.
+    # 매칭측: board.session_name() 도 env → foo 로 해소돼야 슬롯이 매칭된다.
     assert board.session_name() == "foo"
     assert board._active_slot_test_cmd() == "make hil2"
     assert board._test_cmd(None) == "make hil2"
@@ -884,7 +885,7 @@ def test_default_session_e2e_single_lease_derives_over_stale_conf(board, monkeyp
     장부에 leased 슬롯이 정확히 1개(session=host_pid)면 board.session_name 은 그 lease 에서
     유도하므로(stale local.conf session=foo 는 건너뜀·유도값 승), `_active_slot_test_cmd` 의
     session 매칭이 성립해 슬롯 test_cmd 를 돌려준다. T-0066 이 local.conf 레이어 통일로
-    패치하던 비대칭이 count-based 유도로 원천 해소된다(저장 쪽지보다 슬롯 파생 진실).
+    패치하던 비대칭은 count-based 유도로 원천 해소됐고, 그 층 자체는 T-0779 가 지웠다.
     """
     import os
     import socket
@@ -893,7 +894,7 @@ def test_default_session_e2e_single_lease_derives_over_stale_conf(board, monkeyp
     host_pid = f"{socket.gethostname()}-{os.getpid()}"
     _write_ledger(board, _lease_row(slot="work/A_1", repo="A",
                                     session=host_pid, test_cmd="make hil2"))
-    board.LOCAL_CONF.write_text("session=foo\n", encoding="utf-8")  # stale — 유도값이 이김
+    board.LOCAL_CONF.write_text("session=foo\n", encoding="utf-8")  # 잔존 구키 — 읽는 층 없음
     assert board.session_name() == host_pid              # 단일-lease 유도(local.conf foo 아님)
     assert board._active_slot_test_cmd() == "make hil2"  # 매칭 성립 → 슬롯 test_cmd
 

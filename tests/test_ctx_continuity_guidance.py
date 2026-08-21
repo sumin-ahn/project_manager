@@ -116,6 +116,48 @@ def test_forbidden_winding_down_phrases_are_absent_from_rendered_outputs(pm_log,
     )
 
 
+def _snapshot_fixture_pm_home(tmp_path):
+    """전언 경고 + 진행 중 작업 절을 모두 채우는 최소 PM 홈([[T-0787]])."""
+    pm_home = tmp_path / "pm-home"
+    local = pm_home / ".project_manager" / ".local"
+    task_state = local / "tasks" / "main" / "pm_state.md"
+    task_state.parent.mkdir(parents=True)
+    task_state.write_text("# main state\n- 남은 작업: FORBIDDEN 회귀\n", encoding="utf-8")
+    for status, count in (("open", 1), ("claimed", 1), ("blocked", 0), ("done", 1)):
+        directory = pm_home / ".project_manager" / "board" / "tickets" / status
+        directory.mkdir(parents=True)
+        for index in range(count):
+            (directory / f"T-{index:04d}-fixture.md").write_text("fixture\n", encoding="utf-8")
+    ledger = local / "delegate-rounds.jsonl"
+    row = {
+        "ticket": "T-0001", "role": "architect", "ordinal": 1,
+        "run_id": "a" * 32, "copy": str(tmp_path / "copy.md"),
+        "board_rel": "wiki/tickets/rounds/T-0001/architect-1.md",
+        "prepared_at": "2026-08-21T00:00:00.000000+00:00", "harvested_at": None,
+    }
+    ledger.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+    raw_ledger = local / "raw_outputs.json"
+    raw_ledger.write_text(json.dumps({"version": 1, "records": [{
+        "id": "r1", "surface": "delegate", "harness": "codex", "model": "gpt",
+        "role": "architect", "attempt": "1", "pid": 1,
+        "started_at": "2026-08-21T00:00:00.000000+00:00",
+        "raw_path": str(tmp_path / "raw.txt"),
+    }]}), encoding="utf-8")
+    return pm_home
+
+
+def test_forbidden_phrases_absent_from_compaction_snapshot(pm_log, tmp_path):
+    """T-0787 — 전언 경고·진행 중 작업 절을 포함한 snapshot 전문에 FORBIDDEN 정규식 3종 0 hit."""
+    pm_home = _snapshot_fixture_pm_home(tmp_path)
+    text, warning = pm_log.build_snapshot(pm_home, pm_home)
+    assert warning is None and text is not None
+    assert "## 전언 경고" in text and "## 진행 중 작업" in text
+    assert not any(pattern.search(text) for pattern in FORBIDDEN), text
+    assert all(
+        forbidden not in text for forbidden in pm_log.CTX_GUARD_FORBIDDEN_EXPRESSIONS
+    ), text
+
+
 def test_claude_hook_consumes_pm_log_guidance_verbatim(pm_log):
     hook = _load(CLAUDE_TEMPLATE, "t0648_ctx_stop_hook")
     expected = pm_log.build_ctx_guard_guidance(

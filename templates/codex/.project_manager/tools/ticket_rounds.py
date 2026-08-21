@@ -178,7 +178,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 
 
 # baked 엔진 rev — engine_rev.py --bump 이 STAMPED_MODULES 전체와 함께 기계 재작성한다.
-ENGINE_REV = "v1.7.7"
+ENGINE_REV = "v1.7.8"
 
 # 라운드 디렉터리는 status 디렉터리(open/claimed/blocked/done)의 형제다 — 티켓 파일이 그 사이를
 # 옮겨다녀도 라운드는 자기 자리에 남는다.
@@ -398,7 +398,7 @@ def render_round_header(role: str, *, today: str) -> str:
 
 def render_round_seed(
     role: str, ticket_text: str, *, today: str,
-    previous_round: tuple[int, str] | None = None,
+    previous_round: tuple[int, str] | None = None, rounds: "Sequence" = (),
 ) -> str:
     """라운드 파일의 시드 — 첫 줄 헤더 + 역할 골격 본문.
 
@@ -408,18 +408,23 @@ def render_round_seed(
     `previous_round` 는 **같은 역할의 직전 라운드** `(순번, 본문)` 이다 — 리뷰 역할 골격이
     확인 대상 finding ID 를 프리필하는 유일한 입력이고, 예약 시점에만 쓴다. 없으면
     자리표시자다. 무편집 판정(`_text_is_pending`)은 이 값을 입력으로 쓰지 않는다.
+
+    `rounds` 는 이 티켓의 라운드 전체(이 예약 이전)다 — developer 골격이 accepted delta 를
+    계산해 verify 행을 프리필하는 유일한 입력이다. 호출자(`prepare_ticket_copy`·
+    `cmd_section_add`)는 이미 `existing` 을 들고 있어 인자만 추가한다(신규 로드 0).
     """
     return (
         render_round_header(role, today=today) + "\n\n"
-        + _render_round_seed_body(role, ticket_text, previous_round)
+        + _render_round_seed_body(role, ticket_text, previous_round, rounds)
     )
 
 
 def _render_round_seed_body(
     role: str, ticket_text: str, previous_round: tuple[int, str] | None = None,
+    rounds: "Sequence" = (),
 ) -> str:
     return _load_pm_delegate().render_ticket_growth_section_seed(
-        role, ticket_text, previous_round=previous_round,
+        role, ticket_text, previous_round=previous_round, rounds=rounds,
     )
 
 

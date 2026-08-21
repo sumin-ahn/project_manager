@@ -10,6 +10,8 @@
 
 ```bash
 <manager>/pm-config.sh repo add <name> [--git <url>] [--test "<cmd>"]  # repo 등록 + .repos clone (신규=--git 필수 / 기등록 repo 는 --git 없이 areas URL 로 mirror hydrate)
+# fresh 홈의 첫 repo add 처럼 슬롯 lease 가 아직 없으면 조작 주체를 명시해야 한다(fail-loud):
+#   --owner <이름> 또는 env PM_SESSION_NAME — local.conf 폴백은 폐지되어 조용한 귀속이 없다.
 <manager>/pm-config.sh worktree add <repo> --user-ack <repo>       # 사용자 승인값에 결속된 새 worktree 슬롯 + submodule init
 <manager>/pm-config.sh status | whoami                             # 풀/리스 + 이 세션 repo/슬롯/branch
 <manager>/pm-config.sh release <slot> [--force]                    # 작업완료 반납 / 수동 강제(백스톱)

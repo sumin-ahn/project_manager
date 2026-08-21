@@ -498,6 +498,15 @@ def test_board_init_scaffolds_codex_budget_comment(tmp_path, monkeypatch):
     monkeypatch.setattr(board, "PM_STATE_TEMPLATE", tmp_path / "missing-template.md")
     monkeypatch.setattr(board, "install_pre_push_hook", lambda: False)
     monkeypatch.setattr(board, "prompt_external_review_optin", lambda: None)
+    # init 은 areas repo 행을 **항상** 등록하므로(T-0779) REPO 도 tmp 로 묶어야 hermetic 하다 —
+    # 안 묶으면 `areas_file()`·`board_lock()` 이 실 저장소 루트를 잡는다.
+    _pm = tmp_path / "proj" / ".project_manager"
+    (_pm / ".local").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(board, "REPO", tmp_path / "proj")
+    monkeypatch.setattr(board, "AREAS_FILE", _pm / "areas.md")
+    monkeypatch.setattr(board, "LOCAL_DIR", _pm / ".local")
+    monkeypatch.setattr(board, "BOARD_LOCK", _pm / ".local" / "board.lock")
+    monkeypatch.setattr(board, "LEASES_FILE", _pm / ".local" / "worktree-leases.json")
 
     args = argparse.Namespace(prefix=None, area=None, owner=None, session="pm")
     assert board.cmd_init(args) == 0

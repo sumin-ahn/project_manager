@@ -175,6 +175,156 @@ def test_internal_pm_fixed_completion_surface_revalidates_cap_and_names_nonpass_
         assert "상한이 미소진" in problems[0]
 
 
+# ── T-0786(D1) — `pm-verified` 완료 게이트(기계 확인 증거) ────────────────
+
+def _write_ticket_with_rounds(board, tid: str, spec_body: str, rounds: list[tuple[int, str, str]]):
+    """티켓 명세(status=claimed) + `tickets/rounds/<id>/NN-<role>.md` 를 tmp board 에 깐다."""
+    tickets_dir = board.tickets_dir()
+    spec_path = tickets_dir / "claimed" / f"{tid}-gate.md"
+    spec_path.parent.mkdir(parents=True, exist_ok=True)
+    spec_path.write_text(
+        (
+            "---\n"
+            f"id: {tid}\n"
+            "title: pm-verified 게이트 픽스처\n"
+            "status: claimed\n"
+            "created: '2026-08-21'\n"
+            "created_by: test\n"
+            "---\n"
+            f"# {tid}\n\n## 목표\n게이트 픽스처.\n\n{spec_body}"
+        ),
+        encoding="utf-8", newline="",
+    )
+    rounds_module = board._load_ticket_rounds()
+    rounds_dir = rounds_module.rounds_dir_for_ticket(tid, tickets_dir)
+    rounds_dir.mkdir(parents=True, exist_ok=True)
+    for ordinal, role, text in rounds:
+        (rounds_dir / rounds_module.round_filename(ordinal, role)).write_text(
+            text, encoding="utf-8", newline="",
+        )
+    return spec_path
+
+
+def _reviewer_round_text(pd, finding_id: str) -> str:
+    payload = {
+        "version": pd.PM_REVIEW_VERSION,
+        "findings": [{
+            "id": finding_id, "class": "implementation-defect", "severity": "must-fix",
+            "authority": "[[T-0786]]", "evidence": "probe", "recommendation": "fix",
+            "design_change": False,
+        }],
+        "confirmations": [],
+    }
+    return (
+        "## 리뷰 (code-reviewer · 2026-08-21)\n\n## must-fix\n- "
+        f"{finding_id}\n\n## 판정\n판정: 반려\n\n```{pd.PM_REVIEW_BLOCK}\n"
+        + json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n```\n"
+    )
+
+
+def _developer_round_text(pd, finding_id: str, *, resolved_command: str = "echo hi") -> str:
+    payload = {
+        "version": pd.PM_REVIEW_VERIFY_VERSION,
+        "verifications": [{
+            "id": finding_id, "machine_verifiable": True, "command": resolved_command,
+            "expected": "hi", "before": "bye", "reason": "",
+        }],
+    }
+    return (
+        "## 구현 보충 (developer · 2026-08-21)\n\n## 변경 파일\n- x\n\n"
+        f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n"
+        + json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n```\n"
+    )
+
+
+def _pm_body(pd, finding_id: str, *, machine_confirmed: bool) -> str:
+    disposition = {
+        "version": pd.PM_REVIEW_DISPOSITION_VERSION, "reviewer_ordinal": 1,
+        "dispositions": [{
+            "id": finding_id, "decision": "accepted", "reason": "PM 수락",
+            "scope": f"{finding_id} 범위", "prerequisite": "",
+        }],
+    }
+    body = (
+        f"```{pd.PM_REVIEW_DISPOSITION_BLOCK}\n"
+        + json.dumps(disposition, ensure_ascii=False, separators=(",", ":")) + "\n```\n"
+    )
+    if machine_confirmed:
+        confirmation = {
+            "version": pd.PM_REVIEW_MACHINE_CONFIRMATION_VERSION, "round": 2,
+            "confirmations": [{
+                "id": finding_id, "status": "resolved", "command": "echo hi", "observed": "hi",
+            }],
+        }
+        body += (
+            f"```{pd.PM_REVIEW_CONFIRMATION_BLOCK}\n"
+            + json.dumps(confirmation, ensure_ascii=False, separators=(",", ":")) + "\n```\n"
+        )
+    return body
+
+
+def _pm_delegate_module():
+    spec = importlib.util.spec_from_file_location(
+        "pm_delegate_gate", TOOLS / "pm_delegate.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_pm_verified_completion_gate_opens_only_with_machine_confirmation_evidence(board):
+    """(D1) `pm-verified` 처분은 accepted==() + 기계 확인 ≥1 일 때만 완료를 연다."""
+    pd = _pm_delegate_module()
+    tid = "T-PVF-201"
+    spec_body = _pm_body(pd, "F-001", machine_confirmed=True)
+    _write_ticket_with_rounds(board, tid, spec_body, [
+        (1, "code-reviewer", _reviewer_round_text(pd, "F-001")),
+        (2, "developer", _developer_round_text(pd, "F-001")),
+    ])
+    entry = {
+        "count": 2,
+        "rounds": [
+            {"sequence": 1, "verdict": 1, "must_fix": 1},
+            {"sequence": 2, "verdict": 1, "must_fix": 1},
+        ],
+        "resolution": {
+            "kind": board.GATE_RESOLUTION_PM_VERIFIED,
+            "round_sequence": 2, "rounds": 2, "ts": "2026-08-21T00:00:00+00:00",
+        },
+    }
+    _write_internal_rounds(board, {tid: entry})
+
+    assert board._complete_gate(tid, _gate_args()) == []
+
+
+def test_pm_verified_completion_gate_rejects_when_accepted_finding_still_pending(board):
+    """기계 확인이 없어 delta 의 accepted 가 비지 않으면 `pm-verified` 재검증이 거부한다."""
+    pd = _pm_delegate_module()
+    tid = "T-PVF-202"
+    spec_body = _pm_body(pd, "F-001", machine_confirmed=False)   # 기계 확인 없음
+    _write_ticket_with_rounds(board, tid, spec_body, [
+        (1, "code-reviewer", _reviewer_round_text(pd, "F-001")),
+        (2, "developer", _developer_round_text(pd, "F-001")),
+    ])
+    entry = {
+        "count": 2,
+        "rounds": [
+            {"sequence": 1, "verdict": 1, "must_fix": 1},
+            {"sequence": 2, "verdict": 1, "must_fix": 1},
+        ],
+        "resolution": {
+            "kind": board.GATE_RESOLUTION_PM_VERIFIED,
+            "round_sequence": 2, "rounds": 2, "ts": "2026-08-21T00:00:00+00:00",
+        },
+    }
+    _write_internal_rounds(board, {tid: entry})
+
+    problems = board._complete_gate(tid, _gate_args())
+
+    assert len(problems) == 1
+    assert "발동 조건 재검증 실패" in problems[0]
+
+
 # ════════════════════════════════════════════════════════════════════════
 # (a) §3 status-mention 경고 제거 — status.md 에 ticket 없어도 경고 무발화
 # ════════════════════════════════════════════════════════════════════════

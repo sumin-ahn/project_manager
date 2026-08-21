@@ -159,7 +159,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 
 
 # baked 엔진 rev — engine_rev.py --bump가 기계 일괄 재작성한다.
-ENGINE_REV = "v1.7.7"
+ENGINE_REV = "v1.7.8"
 
 CONVERGENCE_DIVERGING = "diverging"
 CONVERGENCE_CAP_UNRESOLVED = "cap-unresolved"
@@ -169,6 +169,11 @@ RESOLUTION_PM_FIXED = "pm-fixed"
 PM_FIXED_EVIDENCE_KEY = "pm_fixed_evidence"
 PM_FIXED_USAGE_KEY = "pm_fixed"
 PM_FIXED_INTERNAL_ROUNDS_LIMIT = 3
+
+# 기계 확인(pm-review-confirmation-v1) 증거로 여는 내부 게이트 처분. `pm-fixed` 와
+# 달리 상한·쿼터가 없다(발동 조건은 증거 — `pm_delegate.pm_verified_evidence_problem` 이
+# 선언·완료 재검증 공용으로 판정한다). 이 모듈은 표기 문구만 소유한다.
+RESOLUTION_PM_VERIFIED = "pm-verified"
 
 _PM_FIXED_RESULT_RE = re.compile(r"^rc=0(?:\s+\([^\r\n;]+\))?$")
 _WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
@@ -797,3 +802,13 @@ def describe_pm_fixed_resolution(declared: dict) -> str:
         "pm-fixed(PM 직접 해소·리뷰 통과 아님; "
         f"변경 {evidence['change']}; 회귀 {evidence['regression']} => {evidence['result']})"
     )
+
+
+def describe_pm_verified_resolution(declared: dict) -> str:
+    """보고/완료 출력용 표기 — 기계 확인 해소임을 명시(리뷰 재투입 없음).
+
+    `declared` 는 `describe_pm_fixed_resolution` 과 같은 호출 관례를 유지하려고 받는다 —
+    이 처분은 별도 근거 blob 을 싣지 않아(증거는 매번 라이브로 재검증) 문구는 kind 고정이다.
+    """
+    del declared
+    return "pm-verified(PM 기계 확인 해소·reviewer 재투입 없음)"

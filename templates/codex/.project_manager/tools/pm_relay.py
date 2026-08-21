@@ -174,7 +174,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 
 
 # baked 엔진 rev — engine_rev.py --bump가 기계 일괄 재작성한다.
-ENGINE_REV = "v1.7.7"
+ENGINE_REV = "v1.7.8"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -224,6 +224,15 @@ def _load_file_lock():
 
 # marker 디렉토리 — ctx_stop_hook.py 의 _MARKER_DIR 와 동일해야 한다(읽기 측·hook 이 쓰는 측).
 MARKER_DIR = Path(".project_manager") / ".local" / "ctx-stop"
+
+# 이 marker 디렉토리는 여러 생산자가 공유한다 — `<세션>.<이름>` 자리를 남이 이미 쓰고 있으면
+# 멤버십 파일이 그 신호를 *위조* 한다(namespace "done" → `<sid>.done` = post-turn 회전 신호).
+#   done                                  · 이 파일 `_marker_path` (회전)
+#   nudge · nudge2 · final                · ctx_stop_hook.py:51,83,87 (사이클 넛지)
+#   compact-* (checkpoint·boundary·snapshot·snapshot-receipt)
+#                                         · pm_log.py:1358,1404 · opencode ctx-guard-core.cjs:315,323
+RESERVED_MARKER_NAMESPACES = frozenset({"done", "nudge", "nudge2", "final"})
+RESERVED_MARKER_NAMESPACE_PREFIX = "compact-"
 
 
 def _runtime_skill_entry(skill: str) -> str:
@@ -595,9 +604,19 @@ def finish_raw_record(
         _write_raw_ledger(ledger_path, ledger)
 
 
-def raw_records(ledger_path: Path, *, unfinished_only: bool = False) -> list[dict]:
-    """장부 레코드를 최신순으로 반환한다. 빈 장부와 손상 장부를 구분한다."""
-    with _raw_ledger_lock(ledger_path):
+def raw_records(
+    ledger_path: Path, *, unfinished_only: bool = False, lock: bool = True,
+) -> list[dict]:
+    """장부 레코드를 최신순으로 반환한다. 빈 장부와 손상 장부를 구분한다.
+
+    `lock=False` 는 배타 파일락(`_raw_ledger_lock`)을 잡지 않고 공유 읽기만 한다 — 쓰기가
+    `_write_raw_ledger` 의 atomic replace 라 항상 완결된 옛/새 파일 중 하나를 본다. compaction
+    snapshot 처럼 "빌더는 subprocess·lock 0" 계약을 지키는 조회 전용 호출자용이다.
+    """
+    if lock:
+        with _raw_ledger_lock(ledger_path):
+            ledger = _read_raw_ledger(ledger_path)
+    else:
         ledger = _read_raw_ledger(ledger_path)
     rows = [
         row for row in ledger["records"]
@@ -609,9 +628,9 @@ def raw_records(ledger_path: Path, *, unfinished_only: bool = False) -> list[dic
     return sorted(rows, key=lambda row: str(row.get("started_at", "")), reverse=True)
 
 
-def unfinished_raw_records(ledger_path: Path) -> list[dict]:
-    """미마감 레코드만 최신순으로 반환하는 조회 facade."""
-    return raw_records(ledger_path, unfinished_only=True)
+def unfinished_raw_records(ledger_path: Path, *, lock: bool = True) -> list[dict]:
+    """미마감 레코드만 최신순으로 반환하는 조회 facade. `lock` 은 `raw_records` 로 전달."""
+    return raw_records(ledger_path, unfinished_only=True, lock=lock)
 
 
 class SpawnResult(NamedTuple):
@@ -2851,6 +2870,64 @@ def _sanitize_session_id(session_id: str) -> str:
 
 def _marker_path(root: Path, session_id: str) -> Path:
     return root / MARKER_DIR / f"{_sanitize_session_id(session_id)}.done"
+
+
+def _session_once_path(root: Path, session_id: str, namespace: str) -> Path:
+    """세션·namespace 당 멤버십 파일 **1개** 경로.
+
+    키마다 파일을 만들지 않는다 — 이 디렉토리를 일괄 정리하는 코드가 없어서
+    (`_rearm_cycle` 은 nudge 3종만 unlink) 키별 파일은 세션당 수백 개가 영구 잔존한다.
+    marker 디렉토리도 새로 만들지 않고 기존 `MARKER_DIR` 을 그대로 쓴다
+    (`.project_manager/.gitignore` 의 `.local/` 커버를 상속 — 채택자 `git add -A` 안전).
+    namespace 도 세션키와 같은 파일명 안전화를 거쳐 traversal 표기를 경로로 만들지 않는다.
+    """
+    safe_session = _sanitize_session_id(session_id if isinstance(session_id, str) else "")
+    safe_namespace = _sanitize_session_id(namespace if isinstance(namespace, str) else "")
+    return root / MARKER_DIR / f"{safe_session}.{safe_namespace}"
+
+
+def claim_session_once(
+    root: Path, session_id: str, namespace: str, key: str,
+) -> bool | None:
+    """``(세션, namespace)`` 스코프에서 ``key`` 를 처음 보는지 선점한다.
+
+    반환은 3상태다(`pm_log.claim_compaction_checkpoint` 와 동형) — ``True`` 는 이번 호출이
+    첫 선점, ``False`` 는 같은 세션·namespace 에서 이미 본 키, ``None`` 은 **장부를 쓸 수 없음**
+    (멤버십 파일 I/O 실패 또는 예약 marker 이름 요청)이다. 호출부가 ``None`` 을 자기 fail
+    방향으로 해석한다(git-anchor 는 fail-open=발화).
+
+    ``namespace`` 가 `RESERVED_MARKER_NAMESPACES`(또는 `compact-` 계열)면 멤버십 파일이 같은
+    디렉토리의 다른 생산자 신호를 위조하므로 **선점하지 않고** ``None`` 을 돌린다 — 예외를 던지지
+    않는 이유는 이 헬퍼의 소비자가 전부 훅 경로라 raise 가 곧 훅 파손이고, 3상태 계약 안에서
+    "장부 사용 불가"로 표현하면 모든 호출부가 이미 가진 fail 방향을 그대로 타기 때문이다.
+
+    ``key`` 는 불투명한 한 줄 토큰이며 의미(해시·문구)는 호출부가 정한다 — 여기서는 공백류를
+    한 칸으로 접어 한 줄 멤버십을 보장하는 것 외에 해석하지 않는다.
+
+    append 는 프로세스 간 원자적이지 않아 경합 시 같은 키가 두 줄 남을 수 있는데, 그 결과는
+    "한 번 더 선점 성공(=발화)" 방향이라 fail-open 과 같다.
+    """
+    safe_namespace = _sanitize_session_id(namespace if isinstance(namespace, str) else "")
+    if (safe_namespace in RESERVED_MARKER_NAMESPACES
+            or safe_namespace.startswith(RESERVED_MARKER_NAMESPACE_PREFIX)):
+        return None  # 남의 marker 이름 — 장부를 만들지 않는다(파일도 디렉토리도 미생성).
+    path = _session_once_path(root, session_id, safe_namespace)
+    entry = " ".join(str(key).split()) or "unknown"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            seen = _load_file_lock().read_bytes_shared(path).decode(
+                "utf-8", errors="replace",
+            ).splitlines()
+        except FileNotFoundError:
+            seen = []
+        if entry in seen:
+            return False
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(f"{entry}\n")
+    except OSError:
+        return None
+    return True
 
 
 class Supervisor:

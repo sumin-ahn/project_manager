@@ -206,7 +206,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 # 복사로 신 로더 + 구 형제가 섞이면 각자 새/옛 리터럴을 지녀 대조에서 skew 로 검출된다.
 # 릴리즈 bump 는 `engine_rev.py --bump vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄
 # 재작성한다(사람 N곳 편집 0).
-ENGINE_REV = "v1.7.7"
+ENGINE_REV = "v1.7.8"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -336,6 +336,25 @@ PM_REVIEW_SUPPORTED_VERSIONS: tuple[int, ...] = (
 # severity 를 요구하기 시작하는 세대. v1 블록은 부재를 허용하고 렌더가 '미기재'로 표기한다.
 PM_REVIEW_SEVERITY_MIN_VERSION = 2
 PM_REVIEW_SEVERITY_UNSPECIFIED_LABEL = "미기재"
+# fix 라운드 delta 꼬리에 부착하는 수정 범위 제약 문구 단일 진실 — 스킬·카드·playbook은
+# 이 상수를 복제하지 않고 "출력을 그대로 전달"만 지시한다(no-hand-retyping 원칙).
+PM_REVIEW_FIX_SCOPE_NOTICE = """\
+## 수정 범위 제약 (이 delta 공통)
+
+- 위에 나열한 finding ID 와 각 `허용 수정 범위` 안에서만 고친다. 그 밖의 코드·테스트·문서는
+  더 나은 방법이 보여도 이번 라운드에서 건드리지 않는다.
+- 처방이나 명세에 빈틈이 있으면 스스로 메우지 않는다. 처방대로 따르면 다른 결함이 생기는
+  상호작용도 빈틈이다. 구현을 멈추고 아래 형식으로 라운드 파일에 적은 뒤 종료한다.
+  보강 처방과 재설계는 PM 이 낸다.
+- 빈틈 보고로 끝난 라운드는 정상 산출이고 성공 종료다. 빈 손으로 끝내지 않으려고
+  처방 밖 구현을 얹지 않는다.
+
+빈틈 보고 형식:
+- 대상: 어느 finding ID 의 어느 처방인가
+- 빈틈: 처방이 정하지 않은 지점은 무엇인가
+- 충돌: 처방대로 하면 무엇이 깨지는가 (재현 커맨드·파일:라인·관측값)
+- 대안: 검토한 선택지와 각각의 영향 (권고까지만 쓰고 적용하지 않는다)
+"""
 # PM 판정 블록은 스키마가 그대로라 세대를 올리지 않는다(채널 필드는 선택 key 로 흡수).
 PM_REVIEW_DISPOSITION_VERSION = PM_REVIEW_LEGACY_VERSION
 PM_REVIEW_CLASSES: tuple[str, ...] = (
@@ -383,6 +402,34 @@ PM_REVIEW_DISPOSITION_KEYS: tuple[str, ...] = (
     "id", "decision", "reason", "scope", "prerequisite",
 )
 _PM_REVIEW_ID_RE = re.compile(r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+")
+
+# ── dev 재현 커맨드(verify) + PM 기계 확인(confirmation) ────────────
+# 확인 라운드 reviewer 재투입을 기계 판정으로 대체한다. dev 는 accepted finding 마다 재현
+# 커맨드·기대값·fix 전 실값을 developer 라운드 파일에 남기고(`pm-review-verify-v1`), PM 은
+# 그것을 직접 실행해 명세의 PM 영역에 관측값과 함께 기록한다(`pm-review-confirmation-v1`).
+# 두 블록 다 fence 이름 뒤 `-v1` 이 종류(kind) 라벨이고 payload 의 `version` 이 세대다 —
+# disposition/finding 블록과 같은 관례(신규라 세대는 1 하나뿐).
+PM_REVIEW_VERIFY_BLOCK = "pm-review-verify-v1"
+PM_REVIEW_CONFIRMATION_BLOCK = "pm-review-confirmation-v1"
+PM_REVIEW_VERIFY_VERSION = 1
+PM_REVIEW_MACHINE_CONFIRMATION_VERSION = 1
+PM_REVIEW_VERIFY_PAYLOAD_KEYS: tuple[str, ...] = ("version", "verifications")
+PM_REVIEW_VERIFY_ROW_KEYS: tuple[str, ...] = (
+    "id", "machine_verifiable", "command", "expected", "before", "reason",
+)
+# `machine_verifiable=false` 일 때만 쓰는 닫힌 사유 — dev 선언(불변식 9)의 유일한 어휘.
+PM_REVIEW_VERIFY_REASONS: tuple[str, ...] = (
+    "design-judgment", "adversarial-probing", "not-reproducible",
+)
+PM_REVIEW_MACHINE_CONFIRMATION_PAYLOAD_KEYS: tuple[str, ...] = (
+    "version", "round", "confirmations",
+)
+PM_REVIEW_MACHINE_CONFIRMATION_ROW_KEYS: tuple[str, ...] = (
+    "id", "status", "command", "observed",
+)
+# 재현 커맨드 안전 경계(불변식 12) — 개행·셸 메타문자가 있으면 malformed. `$(` 는 별도로 본다
+# (문자 클래스로는 두 글자 시퀀스를 표현할 수 없다).
+_PM_REVIEW_COMMAND_METACHAR_RE = re.compile(r"[;&|><`\r\n]")
 _PM_REVIEW_AUTHORITY_REF_RE = re.compile(
     r"\[\[(?:T-(?:[A-Za-z0-9]+-)*\d+|ADR-\d+|[^\]]*[Ss]pec[^\]]*)\]\]"
 )
@@ -875,6 +922,9 @@ class TicketCopyPlan(NamedTuple):
 class TicketHarvestResult(NamedTuple):
     changed: bool
     sync_ready: bool
+    # developer 라운드 회수 시 verify 행이 없거나 자리표시자 그대로인 accepted finding ID
+    # (표시면 관용). developer 가 아니거나 accepted 0 건이면 항상 빈 tuple.
+    verify_missing: tuple[str, ...] = ()
 
 
 def _write_exclusive_file(
@@ -1256,11 +1306,12 @@ _TICKET_PREPARE_STATUSES: tuple[str, ...] = ("open", "claimed")
 
 
 def _ticket_round_seed(
-    rounds_module, role: str, ticket_text: str, previous_round, *, today: str,
+    rounds_module, role: str, ticket_text: str, previous_round, *,
+    today: str, rounds: Sequence = (),
 ) -> str:
     """이 라운드 파일의 시드 bytes — 렌더 규약은 공용 seam 이 소유한다."""
     return rounds_module.render_round_seed(
-        role, ticket_text, today=today, previous_round=previous_round,
+        role, ticket_text, today=today, previous_round=previous_round, rounds=rounds,
     )
 
 
@@ -1431,6 +1482,9 @@ def prepare_ticket_copy(
             # seam 하나가 소유한다 — 여기서 다시 구현하면 예약측·판정측 규칙이 갈린다.
             rounds_module.previous_round_of_role(existing, role),
             today=datetime.date.today().isoformat(),
+            # developer 골격의 verify 프리필 입력 — 이미 손에 든 `existing` 을 그대로
+            # 넘긴다(신규 로드 0).
+            rounds=existing,
         )
         # ── 여기부터 board 를 건드린다 ──────────────────────────────────
         # 예약은 락을 자기가 잡는다(진입하지 않은 컨텍스트를 넘긴다 — board_lock 은 재진입 없음).
@@ -1567,9 +1621,38 @@ def harvest_ticket_copy(
         datetime.timezone.utc
     ).isoformat()
     _append_delegate_rounds_ledger(pm_home, harvested)
+
+    verify_missing: tuple[str, ...] = ()
+    if row["role"] == "developer":
+        # 표시면 관용(불변식) — 이 점검이 실패해도 회수는 이미 끝났다(하드 게이트 아님).
+        try:
+            found = board.find_ticket_exact(row["ticket"])
+            if found is not None:
+                _status, spec_path = found
+                spec_text = _load_file_lock().read_text_shared(
+                    spec_path, encoding="utf-8", newline="",
+                )
+                current_rounds = rounds_module.load_rounds(
+                    board.tickets_dir(), row["ticket"], ticket_text=spec_text,
+                )
+                verify_missing = tuple(_pm_review_verify_missing_ids(
+                    spec_text, current_rounds, row["ordinal"],
+                ))
+        except (DelegateError, OSError, UnicodeError) as exc:
+            print(
+                f"경고: verify 누락 점검을 확인할 수 없습니다: ticket={row['ticket']} · {exc}",
+                file=sys.stderr,
+            )
+        if verify_missing:
+            print(
+                "경고: accepted finding 의 verify 행이 없거나 자리표시자 그대로입니다: "
+                f"{', '.join(verify_missing)}",
+                file=sys.stderr,
+            )
+
     # run-dir 은 엔진 소유 임시 산출물이다(사용자 파일 아님) — 삭제가 곧 run 닫힘이다.
     _load_file_lock().force_rmtree(run_dir)
-    return TicketHarvestResult(True, sync_ready)
+    return TicketHarvestResult(True, sync_ready, verify_missing)
 
 
 def _ticket_copy_preamble(plan: TicketCopyPlan) -> str:
@@ -1903,7 +1986,7 @@ def _load_board():
     """board의 발행 티켓 ID 문법을 단일 진실로 재사용한다."""
     path = Path(__file__).resolve().parent / "board.py"
     return _load_module_from_path(
-        path, "board.py", verifier=_verify_engine_rev,
+        path, "board.py", verifier=_verify_engine_rev, cache=True,
     )
 
 
@@ -2079,11 +2162,18 @@ def _internal_review_format_preamble() -> str:
         "키·상태·분류를 다시 쓰거나 골격 밖 schema를 만들지 않는다."
     )
 
-_INTERNAL_CONFIRM_CHARTER = """\
+# 확인 전용 라운드의 스코프 문구 단일 진실(F-001 fix) — cross 경로(`_INTERNAL_CONFIRM_CHARTER`)와
+# native 경로(`_render_review_round_seed_body`의 HTML 주석) 양쪽이 이 상수 하나를 embed한다.
+# 손으로 각자 다시 쓰면 두 경로가 갈린다.
+CONFIRM_ROUND_SCOPE_RULE = (
+    "이 라운드는 직전 must-fix의 해소 확인 전용이다 — 신규 탐색은 그 fix diff로 제한하고, "
+    "신규 발견은 `NEW`로만 분리해 보고한다."
+)
+
+_INTERNAL_CONFIRM_CHARTER = f"""\
 ## 내부 리뷰 확인 전용 라운드
 
-이 라운드는 아래 직전 must-fix의 해소 여부만 확인한다. 먼저 각 항목을 해소/미해소/퇴행으로
-판정하고, 신규 발견은 `NEW`로 분리해 재설계·티켓 분할 신호로만 보고하라.
+{CONFIRM_ROUND_SCOPE_RULE} 먼저 각 항목을 해소/미해소/퇴행으로 판정한다.
 
 """
 
@@ -2208,7 +2298,10 @@ def _pm_review_json_blocks(text: str) -> list[_PMReviewBlock]:
         offset += len(line)
     blocks: list[_PMReviewBlock] = []
     index = 0
-    supported = {PM_REVIEW_BLOCK, PM_REVIEW_DISPOSITION_BLOCK}
+    supported = {
+        PM_REVIEW_BLOCK, PM_REVIEW_DISPOSITION_BLOCK,
+        PM_REVIEW_VERIFY_BLOCK, PM_REVIEW_CONFIRMATION_BLOCK,
+    }
     while index < len(lines):
         line = lines[index].rstrip("\r\n")
         stripped = line.lstrip()
@@ -2445,6 +2538,185 @@ def _pm_review_block_text(payload: Mapping[str, object]) -> str:
     )
 
 
+def _pm_review_fenced_json(kind: str, payload: Mapping[str, object]) -> str:
+    """`kind` fence 한 개를 렌더한다 — verify/confirmation 골격 공용(disposition 은 기존 자리)."""
+    return (
+        f"```{kind}\n"
+        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        + "\n```\n"
+    )
+
+
+class PMReviewVerifyRow(NamedTuple):
+    """dev 가 남기는 재현 커맨드 1행 — `machine_verifiable` 에 따라 나머지 필드 계약이 갈린다."""
+
+    id: str
+    machine_verifiable: bool
+    command: str
+    expected: str
+    before: str
+    reason: str
+
+
+class PMReviewMachineConfirmation(NamedTuple):
+    """PM 이 남기는 기계 확인 1행 — `round` 는 그 확인이 참조한 developer 라운드 순번이다."""
+
+    id: str
+    status: str
+    command: str
+    observed: str
+    round: int
+
+
+def _pm_review_assert_any_channel_id(finding_id: str, field: str) -> None:
+    """verify/confirmation 행 id 가 알려진 리뷰 채널 접두 중 하나인지 — 채널별 assert 재사용.
+
+    verify/confirmation 블록은 특정 리뷰 채널에 묶이지 않는다(developer 라운드·명세 PM 영역에
+    각각 산다) — 그래서 `_pm_review_assert_id_namespace` 를 채널마다 시도해, 어느 한 채널
+    접두와 일치하면 통과시킨다(같은 규칙 재사용 · 새 접두 어휘를 만들지 않는다)."""
+    for role in REVIEW_ROLES:
+        try:
+            _pm_review_assert_id_namespace(finding_id, role, field)
+            return
+        except PMReviewError:
+            continue
+    raise PMReviewError(
+        "malformed",
+        f"{field} 채널 접두 불일치: {finding_id!r} — "
+        f"{'/'.join(PM_REVIEW_FINDING_ID_PREFIXES.values())}-NNN 형식이어야 합니다",
+    )
+
+
+def _pm_review_assert_verify_command_shape(command: str, field: str) -> None:
+    """불변식 12 — 재현 커맨드는 개행·셸 메타문자 없는 단일 명령이어야 한다."""
+    if _PM_REVIEW_COMMAND_METACHAR_RE.search(command) is not None or "$(" in command:
+        raise PMReviewError(
+            "malformed",
+            f"{field} 는 개행·셸 메타문자(`;` `&` `|` `>` `<` 백틱 `$(`) 없는 단일 명령이어야 "
+            f"합니다: {command!r}",
+        )
+
+
+def _pm_review_parse_verify_row(value: object) -> PMReviewVerifyRow:
+    if not isinstance(value, dict):
+        raise PMReviewError("malformed", "verify 행은 JSON object여야 합니다")
+    _pm_review_exact_keys(value, PM_REVIEW_VERIFY_ROW_KEYS, PM_REVIEW_VERIFY_BLOCK)
+    finding_id = _pm_review_nonempty_string(value["id"], "verify.id")
+    _pm_review_assert_any_channel_id(finding_id, "verify.id")
+    machine_verifiable = value["machine_verifiable"]
+    if not isinstance(machine_verifiable, bool):
+        raise PMReviewError("malformed", "verify.machine_verifiable은 boolean이어야 합니다")
+    raw_fields = (value["command"], value["expected"], value["before"], value["reason"])
+    if not all(isinstance(item, str) for item in raw_fields):
+        raise PMReviewError(
+            "malformed", "verify.command/expected/before/reason은 문자열이어야 합니다",
+        )
+    raw_command = raw_fields[0]
+    if machine_verifiable:
+        # 불변식 12(F-003 fix) — 개행·메타문자 검사는 raw command 에 먼저 하고, 공백 정규화
+        # (strip)는 그 뒤다. strip 을 먼저 하면 선두/후미 개행이 검사 전에 지워져 malformed 가
+        # 통과해버린다(위치 무관 거부 계약 위반).
+        _pm_review_assert_verify_command_shape(raw_command, f"verify {finding_id}.command")
+    command, expected, before, reason = (item.strip() for item in raw_fields)
+    if machine_verifiable:
+        if not command or not expected or not before:
+            raise PMReviewError(
+                "malformed",
+                f"verify {finding_id}는 machine_verifiable=true 면 "
+                "command/expected/before 가 필요합니다",
+            )
+        if reason:
+            raise PMReviewError(
+                "malformed", f"verify {finding_id}는 machine_verifiable=true 면 reason이 비어야 합니다",
+            )
+        if before == expected:
+            raise PMReviewError(
+                "malformed", f"verify {finding_id}의 before는 expected와 달라야 합니다",
+            )
+    else:
+        if command or before:
+            raise PMReviewError(
+                "malformed",
+                f"verify {finding_id}는 machine_verifiable=false 면 command/before가 비어야 합니다",
+            )
+        if not expected:
+            raise PMReviewError(
+                "malformed", f"verify {finding_id}는 expected(무엇이 참이어야 하는가)가 필요합니다",
+            )
+        if reason not in PM_REVIEW_VERIFY_REASONS:
+            raise PMReviewError("malformed", f"verify {finding_id}.reason 미지원: {reason!r}")
+    return PMReviewVerifyRow(finding_id, machine_verifiable, command, expected, before, reason)
+
+
+def _pm_review_verify_rows_for_round(round) -> dict[str, PMReviewVerifyRow]:
+    """그 developer 라운드의 verify 행 — 블록이 없으면 빈 dict(accepted 0건이던 최초 라운드)."""
+    blocks = [
+        block for block in _pm_review_json_blocks(round.text)
+        if block.kind == PM_REVIEW_VERIFY_BLOCK
+    ]
+    if not blocks:
+        return {}
+    if len(blocks) != 1:
+        raise PMReviewError(
+            "malformed",
+            f"developer ordinal={round.ordinal}에는 {PM_REVIEW_VERIFY_BLOCK} block이 "
+            "최대 하나여야 합니다",
+        )
+    value = blocks[0].value
+    _pm_review_exact_keys(value, PM_REVIEW_VERIFY_PAYLOAD_KEYS, PM_REVIEW_VERIFY_BLOCK)
+    _pm_review_version(value, PM_REVIEW_VERIFY_BLOCK, allowed=(PM_REVIEW_VERIFY_VERSION,))
+    if not isinstance(value["verifications"], list):
+        raise PMReviewError("malformed", "verifications는 JSON array여야 합니다")
+    rows: dict[str, PMReviewVerifyRow] = {}
+    for item in value["verifications"]:
+        row = _pm_review_parse_verify_row(item)
+        if row.id in rows:
+            raise PMReviewError(
+                "malformed", f"developer ordinal={round.ordinal} verify ID 중복: {row.id}",
+            )
+        rows[row.id] = row
+    return rows
+
+
+def render_pm_review_verify_skeleton(finding_ids: Sequence[str]) -> str:
+    """accepted finding마다 재현 커맨드/기대값 골격 1행 — key 집합·enum 은 파서 상수 파생."""
+    rows = [
+        _pm_review_seed_object(PM_REVIEW_VERIFY_ROW_KEYS, {
+            "id": finding_id,
+            "machine_verifiable": "<true|false>",
+            "command": "<machine_verifiable=true 면 단일 재현 커맨드, 아니면 빈 문자열>",
+            "expected": "<fix 후 관측돼야 하는 문자열>",
+            "before": "<machine_verifiable=true 면 fix 전 실값, 아니면 빈 문자열>",
+            "reason": "<machine_verifiable=false 일 때만 "
+                      + "|".join(PM_REVIEW_VERIFY_REASONS) + ", 아니면 빈 문자열>",
+        })
+        for finding_id in finding_ids
+    ]
+    payload = _pm_review_seed_object(PM_REVIEW_VERIFY_PAYLOAD_KEYS, {
+        "version": PM_REVIEW_VERIFY_VERSION,
+        "verifications": rows,
+    })
+    return _pm_review_fenced_json(PM_REVIEW_VERIFY_BLOCK, payload)
+
+
+def _pm_review_parse_machine_confirmation_row(
+    value: object, *, round_ordinal: int,
+) -> PMReviewMachineConfirmation:
+    if not isinstance(value, dict):
+        raise PMReviewError("malformed", "confirmation 행은 JSON object여야 합니다")
+    _pm_review_exact_keys(
+        value, PM_REVIEW_MACHINE_CONFIRMATION_ROW_KEYS, PM_REVIEW_CONFIRMATION_BLOCK,
+    )
+    finding_id = _pm_review_nonempty_string(value["id"], "confirmation.id")
+    _pm_review_assert_any_channel_id(finding_id, "confirmation.id")
+    status = _pm_review_nonempty_string(value["status"], "confirmation.status")
+    if status not in PM_REVIEW_CONFIRMATION_STATES:
+        raise PMReviewError("malformed", f"confirmation.status 미지원: {status!r}")
+    command = _pm_review_nonempty_string(value["command"], "confirmation.command")
+    observed = _pm_review_nonempty_string(value["observed"], "confirmation.observed")
+    return PMReviewMachineConfirmation(finding_id, status, command, observed, round_ordinal)
+
+
 class _RoundView(NamedTuple):
     """판정에 필요한 라운드 3필드 — `ticket_rounds.Round` 와 attribute 호환 부분집합.
 
@@ -2610,13 +2882,18 @@ def render_pm_review_block_skeleton(
 
 
 def render_ticket_growth_section_seed(
-    role: str, ticket_text: str, *, previous_round: tuple[int, str] | None = None,
+    role: str, ticket_text: str, *,
+    previous_round: tuple[int, str] | None = None, rounds: Sequence = (),
 ) -> str:
     """라운드 예약이 넣을 역할별 본문 골격. review JSON은 parser 상수에서만 파생한다.
 
     `previous_round` 는 **같은 역할의 직전 라운드** `(순번, 본문)` 이다 — 확인 대상 finding ID
     프리필의 유일한 입력이다. 명세(`ticket_text`)는 PM 판정 블록(=`rejected`
     배제)의 출처이고 finding 선언은 라운드 파일에만 있으므로 두 입력이 함께 필요하다.
+
+    `rounds` 는 이 티켓의 라운드 전체(이 예약 이전)다 — developer 골격이 accepted delta 를
+    계산해 verify 행을 프리필하는 유일한 입력이다. 미전달(`()`)이면 accepted 0 건과
+    동치로 다뤄 verify fence 없는 기존 골격 그대로 렌더한다(호환 기본값).
     """
     if role == "architect":
         return (
@@ -2627,14 +2904,19 @@ def render_ticket_growth_section_seed(
             "검토 판정: <설계 통과|수정 후 통과|반려>\n"
         )
     if role == "developer":
-        return (
-            "## 변경 파일\n- `<경로>`: <변경 내용과 이유>\n\n"
-            "## 신규 테스트\n- 추가한 테스트: <N개 · 파일/케이스>\n\n"
-            "## 회귀\n- 커맨드: `<실행 커맨드>`\n"
-            "- 결과: <A passed / B failed>\n\n"
-            "## DoD evidence\n- <완료 조건>: <충족 근거>\n\n"
-            "## 민감도\n- <상수/가드 임시 변경 → red, 복원 → green 실측>\n"
-        )
+        accepted_ids: list[str] = []
+        if rounds:
+            try:
+                delta = parse_pm_review_delta(ticket_text, rounds)
+                accepted_ids = [finding.id for finding, _disposition in delta.accepted]
+            except PMReviewError as exc:
+                # 최초 구현 라운드(리뷰 라운드 없음)·미판정 잔여 등은 정상 형상이다 — verify
+                # fence 없는 골격으로 강등한다(리뷰 골격 prefill 강등과 동형).
+                print(
+                    f"경고: accepted delta 를 해소할 수 없어 verify 골격 없이 시드합니다: {exc}",
+                    file=sys.stderr,
+                )
+        return _render_developer_round_seed_body(accepted_ids)
     if role == "researcher":
         return (
             "## 조사 질문\n- <무엇을 확정하러 갔는가>\n\n"
@@ -2688,12 +2970,67 @@ def _render_review_round_seed_body(
     따로 적으면 문구가 갈린 순간 손대지 않은 라운드가 "산출 있음"으로 뒤집힌다.
     """
     placeholder_id = f"{_pm_review_finding_id_prefix(role)}-NNN"
+    # F-001 fix — native 위임은 엔진이 프롬프트를 만들지 않으므로 시드가 유일한 보장 채널이다.
+    # 프리필된 실 ID(=확인 라운드)일 때만 스코프 문구를 HTML 주석 1줄로 첫 줄 아래에 심는다 —
+    # 최초 리뷰 라운드(자리표시자만 있는 골격)는 탐색 스코프를 제한할 대상이 없어 그대로 둔다.
+    is_confirmation_round = list(confirmation_ids) != [placeholder_id]
+    scope_notice = f"<!-- {CONFIRM_ROUND_SCOPE_RULE} -->\n\n" if is_confirmation_round else ""
     return (
-        f"## must-fix\n- <없음 또는 finding ID 나열({placeholder_id})·"
+        scope_notice
+        + f"## must-fix\n- <없음 또는 finding ID 나열({placeholder_id})·"
         "증거와 권고는 아래 블록>\n\n"
         "## 판정\n판정: <통과|반려> · finding <N>건(must-fix <N>건)\n\n"
         + render_pm_review_block_skeleton(role, confirmation_ids)
     )
+
+
+def _render_developer_round_seed_body(verify_ids: Sequence[str]) -> str:
+    """developer 라운드 시드 본문 — verify 대상 ID 말고는 전부 골격 상수(리뷰 골격과 동형).
+
+    렌더와 무편집 판정(`ticket_round_body_is_pending`)이 이 함수 하나를 본다 — 판정이 골격을
+    따로 적으면 문구가 갈린 순간 손대지 않은 라운드가 "산출 있음"으로 뒤집힌다.
+    """
+    body = (
+        "## 변경 파일\n- `<경로>`: <변경 내용과 이유>\n\n"
+        "## 신규 테스트\n- 추가한 테스트: <N개 · 파일/케이스>\n\n"
+        "## 회귀\n- 커맨드: `<실행 커맨드>`\n"
+        "- 결과: <A passed / B failed>\n\n"
+        "## DoD evidence\n- <완료 조건>: <충족 근거>\n\n"
+        "## 민감도\n- <상수/가드 임시 변경 → red, 복원 → green 실측>\n"
+    )
+    if verify_ids:
+        body += "\n" + render_pm_review_verify_skeleton(verify_ids)
+    return body
+
+
+def _dev_round_seed_verify_ids(body: str) -> list[str] | None:
+    """본문의 `pm-review-verify-v1` 블록이 실은 finding ID 목록(판정 불가면 None·부재면 []).
+
+    accepted 0 건이던 최초 시드는 verify fence 자체가 없다 — 그건 정상 pristine 형상이라
+    빈 목록을 돌려준다. 블록이 있는데 파싱이 안 되거나(자리표시자 그대로 편집 중 등) 둘
+    이상이면 시드 그대로인지 확신할 수 없어 None(=pending 아님·`_round_seed_confirmation_ids`
+    와 동형 규칙)이다.
+    """
+    try:
+        blocks = [
+            block for block in _pm_review_json_blocks(body)
+            if block.kind == PM_REVIEW_VERIFY_BLOCK
+        ]
+    except PMReviewError:
+        return None
+    if not blocks:
+        return []
+    if len(blocks) != 1:
+        return None
+    verifications = blocks[0].value.get("verifications")
+    if not isinstance(verifications, list):
+        return None
+    ids: list[str] = []
+    for item in verifications:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            return None
+        ids.append(item["id"])
+    return ids
 
 
 def _round_seed_confirmation_ids(body: str) -> list[str] | None:
@@ -2735,6 +3072,13 @@ def ticket_round_body_is_pending(role: str, body: str) -> bool:
     "편집됨"으로 읽으면 산출 없는 라운드가 산출 있는 것으로 위장된다.
     """
     normalized = _normalized_newlines(body)
+    if role == "developer":
+        verify_ids = _dev_round_seed_verify_ids(normalized)
+        if verify_ids is None:
+            return False
+        return normalized == _normalized_newlines(
+            _render_developer_round_seed_body(verify_ids)
+        )
     if role not in REVIEW_ROLES:
         return normalized == _normalized_newlines(
             render_ticket_growth_section_seed(role, "")
@@ -2884,15 +3228,29 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> PMReviewDelta:
     review_by_channel: dict[tuple[str, int], _PMReviewBlock] = {}
     disposition_blocks: dict[tuple[str, int], _PMReviewBlock] = {}
 
+    # developer 라운드의 verify 행 내용은 **여기서 파싱하지 않는다** — 아직 아무 기계 확인도
+    # 참조하지 않은 라운드의 자리표시자/오류 verify 블록이 delta 전체를 막으면 표시면(harvest·
+    # review delta·verify-template 의 "지금 accepted 가 뭔가" 질의)까지 판정면 엄격 규칙에
+    # 전염된다. placement(developer 라운드 안에만)는 구조 검사라 여기서 그대로 하고, row 내용
+    # 파싱은 아래 `_verify_rows_for_developer_round`(confirmation 결속을 실제로 요구하는
+    # 순간)로 미룬다.
+    dev_rounds_by_ordinal: dict[int, object] = {}
     for item in sorted(rounds, key=lambda entry: entry.ordinal):
         channel = (item.role, item.ordinal)
         if channel in refused:
             continue              # 거부 표식이 있는 라운드는 통째로 판정 표면 밖이다.
         for block in _pm_review_json_blocks(item.text):
+            if block.kind == PM_REVIEW_VERIFY_BLOCK:
+                if item.role != "developer":
+                    raise PMReviewError(
+                        "malformed",
+                        f"{PM_REVIEW_VERIFY_BLOCK}은 developer 라운드 파일 안에만 있어야 합니다",
+                    )
+                continue           # verify 행 파싱은 confirmation 결속 시점으로 미룬다.
             if block.kind != PM_REVIEW_BLOCK:
                 raise PMReviewError(
                     "malformed",
-                    f"{PM_REVIEW_DISPOSITION_BLOCK}은 라운드 파일 밖 명세의 PM 영역에 있어야 합니다",
+                    f"{block.kind}은 라운드 파일 밖 명세의 PM 영역에 있어야 합니다",
                 )
             if item.role not in REVIEW_ROLES:
                 raise PMReviewError(
@@ -2906,7 +3264,21 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> PMReviewDelta:
                     f"reviewer {channel[0]} ordinal={channel[1]} review block 중복",
                 )
             review_by_channel[channel] = block
+        if item.role == "developer":
+            dev_rounds_by_ordinal[item.ordinal] = item
 
+    _verify_rows_cache: dict[int, dict[str, PMReviewVerifyRow]] = {}
+
+    def _verify_rows_for_developer_round(round_ordinal: int) -> dict[str, PMReviewVerifyRow] | None:
+        """그 순번이 developer 라운드가 아니면 None, 맞으면 그 라운드의 verify 행(지연 파싱)."""
+        target = dev_rounds_by_ordinal.get(round_ordinal)
+        if target is None:
+            return None
+        if round_ordinal not in _verify_rows_cache:
+            _verify_rows_cache[round_ordinal] = _pm_review_verify_rows_for_round(target)
+        return _verify_rows_cache[round_ordinal]
+
+    confirmation_blocks: list[_PMReviewBlock] = []
     for block in _pm_review_json_blocks(ticket_text):
         if block.kind == PM_REVIEW_BLOCK:
             raise PMReviewError(
@@ -2914,6 +3286,14 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> PMReviewDelta:
                 f"{PM_REVIEW_BLOCK}은 리뷰 역할 라운드 안에 있어야 합니다"
                 f"(허용 채널: {', '.join(REVIEW_ROLES)})",
             )
+        if block.kind == PM_REVIEW_VERIFY_BLOCK:
+            raise PMReviewError(
+                "malformed",
+                f"{PM_REVIEW_VERIFY_BLOCK}은 developer 라운드 파일 안에만 있어야 합니다",
+            )
+        if block.kind == PM_REVIEW_CONFIRMATION_BLOCK:
+            confirmation_blocks.append(block)
+            continue
         value = block.value
         if not isinstance(value.get("reviewer_ordinal"), int) or isinstance(
             value.get("reviewer_ordinal"), bool
@@ -2984,6 +3364,111 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> PMReviewDelta:
                     "malformed", f"finding 0 {label}은 통과+must-fix 0건 선언과 모순"
                 )
             zero_channels.add(channel)
+
+    # 기계 확인 — 명세 PM 영역의 `pm-review-confirmation-v1` 블록. verify 행과의 결속
+    # (같은 id·command)이 stale 방지다 — 회차가 다른 verify 행을 실수로 가리키면 malformed.
+    # round 결속(F-002 fix): (a) round 는 confirmation_blocks 전역에서 단조 증가하는 고유 키다
+    # — 재사용·역순은 명세 안 누적 순서(=이 블록들을 스캔한 문서 순서) 위반으로 막는다.
+    # (b) 각 확인 행은 그 id 의 source finding 이 선언된 reviewer round 보다, 그리고 그 id 의
+    # 기존 reviewer confirmation·기계 확인 round 보다 뒤인 developer round 만 참조할 수 있다 —
+    # 늦게 적은 과거 round 참조가 최신 관측을 덮어쓰지 못하게 한다(불변식 6 시간축 보존).
+    machine_confirmations: dict[str, list[PMReviewMachineConfirmation]] = {}
+    last_confirmation_round: int | None = None
+    for block in confirmation_blocks:
+        value = block.value
+        _pm_review_exact_keys(
+            value, PM_REVIEW_MACHINE_CONFIRMATION_PAYLOAD_KEYS, PM_REVIEW_CONFIRMATION_BLOCK,
+        )
+        _pm_review_version(
+            value, PM_REVIEW_CONFIRMATION_BLOCK,
+            allowed=(PM_REVIEW_MACHINE_CONFIRMATION_VERSION,),
+        )
+        round_ordinal = value.get("round")
+        if (
+            not isinstance(round_ordinal, int) or isinstance(round_ordinal, bool)
+            or round_ordinal < 1
+        ):
+            raise PMReviewError(
+                "malformed", "confirmation.round은 1 이상 정수여야 합니다",
+            )
+        if last_confirmation_round is not None and round_ordinal <= last_confirmation_round:
+            raise PMReviewError(
+                "malformed",
+                f"{PM_REVIEW_CONFIRMATION_BLOCK} round={round_ordinal}가 명세 누적 순서상 "
+                f"단조 증가가 아닙니다(직전 round={last_confirmation_round}) — round 는 티켓 "
+                "전역 고유 키이며 재사용·역순 참조는 malformed",
+            )
+        last_confirmation_round = round_ordinal
+        verify_rows = _verify_rows_for_developer_round(round_ordinal)
+        if verify_rows is None:
+            raise PMReviewError(
+                "malformed",
+                f"{PM_REVIEW_CONFIRMATION_BLOCK} round={round_ordinal}는 developer 라운드가 "
+                "아닙니다",
+            )
+        if not isinstance(value.get("confirmations"), list):
+            raise PMReviewError("malformed", "confirmations는 JSON array여야 합니다")
+        local_ids: list[str] = []
+        for raw in value["confirmations"]:
+            row = _pm_review_parse_machine_confirmation_row(raw, round_ordinal=round_ordinal)
+            local_ids.append(row.id)
+            if row.id not in findings:
+                raise PMReviewError(
+                    "malformed",
+                    f"{PM_REVIEW_CONFIRMATION_BLOCK} id={row.id}가 알려진 finding ID를 "
+                    "참조하지 않습니다",
+                )
+            source_finding = findings[row.id]
+            if source_finding.classification == "design-proposal" or source_finding.design_change:
+                raise PMReviewError(
+                    "malformed",
+                    f"{PM_REVIEW_CONFIRMATION_BLOCK} id={row.id}는 설계 축 finding이라 기계 "
+                    "확인 대상이 아닙니다(reviewer 확인 전용 · 불변식 10)",
+                )
+            confirmation_floor = source_finding.reviewer_ordinal
+            for prior_reviewer_confirmation in confirmations.get(row.id, ()):
+                confirmation_floor = max(
+                    confirmation_floor, prior_reviewer_confirmation.reviewer_ordinal,
+                )
+            for prior_machine_confirmation in machine_confirmations.get(row.id, ()):
+                confirmation_floor = max(confirmation_floor, prior_machine_confirmation.round)
+            if round_ordinal <= confirmation_floor:
+                raise PMReviewError(
+                    "malformed",
+                    f"{PM_REVIEW_CONFIRMATION_BLOCK} id={row.id}의 round={round_ordinal}가 "
+                    f"그 finding 의 선언/기존 확인(ordinal={confirmation_floor}) 보다 뒤가 "
+                    "아닙니다 — 선-선언 round 차용이거나 과거 round 로 최신 관측을 덮어씁니다",
+                )
+            verify_row = verify_rows.get(row.id)
+            if verify_row is None:
+                raise PMReviewError(
+                    "malformed",
+                    f"{PM_REVIEW_CONFIRMATION_BLOCK} id={row.id}가 round={round_ordinal}의 "
+                    "verify 행과 결속되지 않습니다(id 없음)",
+                )
+            if not verify_row.machine_verifiable:
+                raise PMReviewError(
+                    "malformed",
+                    f"{PM_REVIEW_CONFIRMATION_BLOCK} id={row.id}는 machine_verifiable=false 라 "
+                    "reviewer 확인 전용입니다",
+                )
+            if verify_row.command != row.command:
+                raise PMReviewError(
+                    "malformed",
+                    f"{PM_REVIEW_CONFIRMATION_BLOCK} id={row.id}가 round={round_ordinal}의 "
+                    "verify 행과 결속되지 않습니다(command 불일치)",
+                )
+            if row.status == "resolved" and verify_row.expected not in row.observed:
+                raise PMReviewError(
+                    "malformed",
+                    f"{PM_REVIEW_CONFIRMATION_BLOCK} id={row.id} resolved 인데 expected가 "
+                    "observed에 없습니다",
+                )
+            machine_confirmations.setdefault(row.id, []).append(row)
+        if len(local_ids) != len(set(local_ids)):
+            raise PMReviewError(
+                "malformed", f"{PM_REVIEW_CONFIRMATION_BLOCK} round={round_ordinal} ID 중복",
+            )
 
     dispositions: dict[str, PMReviewDisposition] = {}
     accepted_zero: set[tuple[str, int]] = set()
@@ -3067,7 +3552,7 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> PMReviewDelta:
     if required:
         raise PMReviewError("decision-required", f"선행 권위 결정이 필요한 finding: {required}")
     redisplayed_rejected = sorted(
-        finding_id for finding_id in confirmations
+        finding_id for finding_id in set(confirmations) | set(machine_confirmations)
         if dispositions[finding_id].decision == "rejected"
     )
     if redisplayed_rejected:
@@ -3087,15 +3572,26 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> PMReviewDelta:
                     "decision-required",
                     f"accepted 설계 finding {finding_id}의 선행 ticket/spec/ADR wikilink가 없습니다",
                 )
-        history = confirmations.get(finding_id, [])
+        # 확인 이력은 하나의 시간축이다(불변식 6) — reviewer 확인(라운드 순번)과 기계 확인
+        # (참조한 developer 라운드 순번)을 같은 정렬 키로 섞는다. 두 축이 같은 티켓 안에서
+        # 순번을 공유하지 않아(라운드 예약이 역할 무관 전역이다) 값 충돌이 없다.
+        events = [
+            (item.reviewer_ordinal, item.status)
+            for item in confirmations.get(finding_id, ())
+        ] + [
+            (item.round, item.status)
+            for item in machine_confirmations.get(finding_id, ())
+        ]
+        events.sort(key=lambda pair: pair[0])
+        statuses = [status for _ordinal, status in events]
         trailing_unresolved = 0
-        for confirmation in reversed(history):
-            if confirmation.status not in {"unresolved", "regressed"}:
+        for status in reversed(statuses):
+            if status not in {"unresolved", "regressed"}:
                 break
             trailing_unresolved += 1
         if trailing_unresolved >= 2:
             repeated.append(finding_id)
-        elif not history or history[-1].status != "resolved":
+        elif not statuses or statuses[-1] != "resolved":
             accepted.append((finding, disposition))
     if repeated:
         raise PMReviewError(
@@ -3129,7 +3625,161 @@ def render_pm_review_delta(ticket: str, delta: PMReviewDelta) -> str:
         if disposition.prerequisite:
             lines.append(f"- 선행 권위: {disposition.prerequisite}")
         lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
+    body = "\n".join(lines).rstrip()
+    return f"{body}\n\n{PM_REVIEW_FIX_SCOPE_NOTICE}"
+
+
+# ── verify-template — 기계 확인 대상 분류 + PM 확인 골격 ────────────
+
+class PMReviewVerifyTemplate(NamedTuple):
+    """`review verify-template` 1회 판정 — accepted finding 을 세 갈래로 나눈다."""
+
+    round_ordinal: int | None
+    machine_rows: tuple[PMReviewVerifyRow, ...]
+    reviewer_required: tuple[tuple[str, str], ...]   # (finding id, reviewer 확인 사유)
+    missing: tuple[str, ...]                          # verify 행이 없는 accepted finding id
+
+
+def pm_review_verify_template(
+    ticket_text: str, rounds: Sequence, *, round_ordinal: int | None = None,
+) -> PMReviewVerifyTemplate:
+    """accepted finding 을 기계/리뷰어 확인 대상으로 분류한다(PM 자의 0 · 불변식 9·10).
+
+    분류는 dev 선언(`machine_verifiable`) + 엔진 파생(설계 축 finding)만 본다. `round_ordinal`
+    미지정이면 최신 developer 라운드를 본다(리뷰 채널의 "직전 라운드" 규칙과 동형).
+    """
+    delta = parse_pm_review_delta(ticket_text, rounds)
+    rounds_module = _load_ticket_rounds()
+    if round_ordinal is None:
+        target = rounds_module.latest_round_of_role(rounds, "developer")
+    else:
+        target = next(
+            (
+                item for item in rounds
+                if item.role == "developer" and item.ordinal == round_ordinal
+            ),
+            None,
+        )
+        if target is None:
+            raise PMReviewError(
+                "malformed", f"developer ordinal={round_ordinal} 라운드가 없습니다",
+            )
+    verify_rows = _pm_review_verify_rows_for_round(target) if target is not None else {}
+
+    machine_rows: list[PMReviewVerifyRow] = []
+    reviewer_required: list[tuple[str, str]] = []
+    missing: list[str] = []
+    for finding, _disposition in delta.accepted:
+        row = verify_rows.get(finding.id)
+        if row is None:
+            missing.append(finding.id)
+            continue
+        if finding.classification == "design-proposal" or finding.design_change:
+            reviewer_required.append((
+                finding.id,
+                "설계 축 finding(class=design-proposal 또는 design_change=true) — "
+                "reviewer 확인 전용(불변식 10)",
+            ))
+            continue
+        if not row.machine_verifiable:
+            reviewer_required.append((
+                finding.id, f"dev 선언 기계 판정 불가({row.reason}) — reviewer 확인 전용",
+            ))
+            continue
+        machine_rows.append(row)
+    return PMReviewVerifyTemplate(
+        target.ordinal if target is not None else None,
+        tuple(machine_rows), tuple(reviewer_required), tuple(missing),
+    )
+
+
+def render_pm_review_verify_template(template: PMReviewVerifyTemplate) -> str:
+    """기계 확인 대상 행의 PM 확인 골격 — `id`·`command` 는 그대로 옮기고 `status`·`observed`
+    는 자리표시자다(no-hand-retyping). `expected` 는 판정 참고용 안내 줄로만 보인다 —
+    확인 블록 스키마 자체에는 없는 필드다(단일 진실은 verify 행 · 불변식 5 의 정신 상속)."""
+    if not template.machine_rows or template.round_ordinal is None:
+        return ""
+    lines = [f"## 기계 확인 대상 — developer round {template.round_ordinal}", ""]
+    for row in template.machine_rows:
+        lines.append(f"- {row.id}: `{row.command}` → expected: {row.expected}")
+    lines.append("")
+    confirmations = [
+        _pm_review_seed_object(PM_REVIEW_MACHINE_CONFIRMATION_ROW_KEYS, {
+            "id": row.id,
+            "status": "<" + "|".join(PM_REVIEW_CONFIRMATION_STATES) + ">",
+            "command": row.command,
+            "observed": "<관측값>",
+        })
+        for row in template.machine_rows
+    ]
+    payload = _pm_review_seed_object(PM_REVIEW_MACHINE_CONFIRMATION_PAYLOAD_KEYS, {
+        "version": PM_REVIEW_MACHINE_CONFIRMATION_VERSION,
+        "round": template.round_ordinal,
+        "confirmations": confirmations,
+    })
+    lines.append(_pm_review_fenced_json(PM_REVIEW_CONFIRMATION_BLOCK, payload).rstrip("\n"))
+    return "\n".join(lines) + "\n"
+
+
+def _pm_review_machine_confirmation_count(ticket_text: str) -> int:
+    """명세의 `pm-review-confirmation-v1` 블록에 실린 확인 행 총수(표시면 관용 카운트).
+
+    `pm_verified_evidence_problem` 호출 시점에는 `parse_pm_review_delta` 가 이미 같은
+    블록들을 엄격 검증했으므로, 여기서는 재검증 없이 개수만 센다."""
+    total = 0
+    for block in _pm_review_json_blocks(ticket_text):
+        if block.kind != PM_REVIEW_CONFIRMATION_BLOCK:
+            continue
+        rows = block.value.get("confirmations")
+        if isinstance(rows, list):
+            total += len(rows)
+    return total
+
+
+def pm_verified_evidence_problem(ticket_text: str, rounds: Sequence) -> str | None:
+    """`pm-verified` 완료 처분의 발동 조건(증거) — 선언·완료 재검증 공용.
+
+    `review_rounds.recorded_pm_fixed_problem` 과 동형으로, 선언 시점과 완료 재검증 시점이
+    **같은 함수**를 본다. 조건은 상한·쿼터가 아니라 증거다: delta 가 정상 파싱되고
+    `accepted == ()` 이며 기계 확인이 1건 이상 존재해야 한다."""
+    try:
+        delta = parse_pm_review_delta(ticket_text, rounds)
+    except PMReviewError as exc:
+        return f"delta 파싱 실패[{exc.code}]: {exc}"
+    if delta.accepted:
+        remaining = ", ".join(finding.id for finding, _disposition in delta.accepted)
+        return f"PM 판정 accepted 잔여가 있습니다: {remaining}"
+    if _pm_review_machine_confirmation_count(ticket_text) < 1:
+        return "기계 확인(pm-review-confirmation-v1) 기록이 없습니다"
+    return None
+
+
+def _pm_review_verify_missing_ids(
+    ticket_text: str, rounds: Sequence, round_ordinal: int,
+) -> list[str]:
+    """그 developer 라운드에서 verify 행이 없거나 자리표시자 그대로인 accepted ID(harvest 표시용).
+
+    표시면은 관용적이다(불변식 · `:3193-3205` 분업) — delta/verify 파싱 실패도 "확인 불가"로
+    접어 harvest 를 막지 않는다(하드 게이트는 `review verify-template` 판정면의 몫)."""
+    try:
+        delta = parse_pm_review_delta(ticket_text, rounds)
+    except PMReviewError:
+        return []
+    accepted_ids = [finding.id for finding, _disposition in delta.accepted]
+    if not accepted_ids:
+        return []
+    target = next(
+        (
+            item for item in rounds
+            if item.role == "developer" and item.ordinal == round_ordinal
+        ),
+        None,
+    )
+    try:
+        verify_rows = _pm_review_verify_rows_for_round(target) if target is not None else {}
+    except PMReviewError:
+        verify_rows = {}
+    return [finding_id for finding_id in accepted_ids if finding_id not in verify_rows]
 
 
 def _pm_review_section_review_blocks(round) -> list[_PMReviewBlock]:
@@ -4045,10 +4695,13 @@ def _declare_internal_review_resolution(
     into: str | None = None,
     fixed: str | None = None,
     pm_fixed: str | None = None,
+    pm_verified: bool = False,
 ) -> InternalResolutionReport:
-    """현재 마지막 반려 잔여에 후속 티켓·후속 통과·PM 직접 해소를 결속한다."""
-    if sum(value is not None for value in (into, fixed, pm_fixed)) != 1:
-        raise DelegateError("--into, --fixed, --pm-fixed 중 하나만 지정해야 합니다")
+    """현재 마지막 반려 잔여에 후속 티켓·후속 통과·PM 직접 해소·기계 확인 해소를 결속한다."""
+    if sum((into is not None, fixed is not None, pm_fixed is not None, pm_verified)) != 1:
+        raise DelegateError(
+            "--into, --fixed, --pm-fixed, --pm-verified 중 하나만 지정해야 합니다"
+        )
     target = into or fixed
     if target is not None and target == gate:
         raise DelegateError(
@@ -4103,7 +4756,31 @@ def _declare_internal_review_resolution(
         residual = board.gate_residual_must_fix(entry)
         previous = board.gate_resolution(entry)
         common = _load_review_rounds()
-        if pm_fixed is not None:
+        if pm_verified:
+            found = board.find_ticket_exact(gate)
+            if found is None:
+                raise DelegateError(f"게이트에 해당하는 티켓을 보드에서 찾지 못했습니다: {gate}")
+            _status, spec_path = found
+            try:
+                spec_text = _load_file_lock().read_text_shared(
+                    spec_path, encoding="utf-8", newline="",
+                )
+            except (OSError, UnicodeError) as exc:
+                raise DelegateError(f"티켓 명세 읽기 실패: {spec_path}: {exc}") from exc
+            rounds_module = _load_ticket_rounds()
+            ticket_rounds = rounds_module.load_rounds(
+                board.tickets_dir(), gate, ticket_text=spec_text,
+            )
+            problem = pm_verified_evidence_problem(spec_text, ticket_rounds)
+            if problem is not None:
+                raise DelegateError(f"pm-verified 처분을 사용할 수 없습니다: {problem}")
+            declared = {
+                "kind": board.GATE_RESOLUTION_PM_VERIFIED,
+                "ts": common.utc_now_iso(),
+                "must_fix": residual,
+                **board.gate_round_binding(entry),
+            }
+        elif pm_fixed is not None:
             try:
                 declared = common.declare_pm_fixed_resolution(
                     entry,
@@ -9314,6 +9991,15 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
             "--reviewer-role", default=None, choices=REVIEW_ROLES,
             help="대상 리뷰 채널 (기본: 두 채널 통틀어 최신 절의 채널)",
         )
+        verify = sub.add_parser(
+            "verify-template",
+            help="accepted finding 의 기계 확인 대상을 pm-review-confirmation-v1 골격으로 렌더",
+        )
+        verify.add_argument("--ticket", required=True, metavar="T-NNNN")
+        verify.add_argument(
+            "--round", type=int, default=None, metavar="N", dest="round_ordinal",
+            help="대상 developer 라운드 순번 (기본: 최신 developer 라운드)",
+        )
         return parser
     if command != "ticket":
         return None
@@ -9399,6 +10085,7 @@ def _cmd_ticket(argv: list[str]) -> int:
             "copy": str(copy.resolve()),
             "changed": result.changed,
             "sync_ready": result.sync_ready,
+            "verify_missing": list(result.verify_missing),
         }, sort_keys=True))
         return 0
     except DelegateError as exc:
@@ -9465,6 +10152,23 @@ def _cmd_review(argv: list[str]) -> int:
             rendered = render_pm_review_disposition_template(
                 ticket_text, rounds, args.ordinal, reviewer_role=args.reviewer_role,
             )
+        elif args.review_command == "verify-template":
+            template = pm_review_verify_template(
+                ticket_text, rounds, round_ordinal=args.round_ordinal,
+            )
+            rendered = render_pm_review_verify_template(template)
+            for finding_id, reason in template.reviewer_required:
+                print(f"안내: {finding_id} 는 reviewer 확인 대상입니다 — {reason}", file=sys.stderr)
+            if template.missing:
+                if rendered:
+                    sys.stdout.write(rendered)
+                print(
+                    "오류: verify 행이 없는 accepted finding: "
+                    f"{', '.join(template.missing)} — developer 라운드의 검증 골격을 accepted "
+                    "ID 전수로 채우세요",
+                    file=sys.stderr,
+                )
+                return 1
         else:
             delta = parse_pm_review_delta(ticket_text, rounds)
             rendered = render_pm_review_delta(args.ticket, delta)
@@ -9563,6 +10267,14 @@ def _cmd_rounds(argv: list[str]) -> int:
             "change=<file>:<line>; regression=<command>; result=rc=0 (<summary>)"
         ),
     )
+    resolution_mode.add_argument(
+        "--pm-verified",
+        action="store_true",
+        help=(
+            "기계 확인 증거로 해소. 발동 조건: delta 가 정상 파싱되고 "
+            "accepted == () 이며 기계 확인이 1건 이상 존재"
+        ),
+    )
     args = parser.parse_args(argv)
     board = _load_board()
     if args.gate is not None and not board._is_valid_ticket_id(args.gate):
@@ -9583,6 +10295,7 @@ def _cmd_rounds(argv: list[str]) -> int:
                 into=args.into,
                 fixed=args.fixed,
                 pm_fixed=args.pm_fixed,
+                pm_verified=args.pm_verified,
             )
         elif args.rounds_command == "report":
             external = _load_external_review()
@@ -9612,6 +10325,8 @@ def _cmd_rounds(argv: list[str]) -> int:
         residual = "미상" if resolution.residual is None else str(resolution.residual)
         if declared["kind"] == board.GATE_RESOLUTION_PM_FIXED:
             description = _load_review_rounds().describe_pm_fixed_resolution(declared)
+        elif declared["kind"] == board.GATE_RESOLUTION_PM_VERIFIED:
+            description = _load_review_rounds().describe_pm_verified_resolution(declared)
         else:
             target = declared.get("ticket") or declared.get("evidence_gate")
             label = "재설계" if declared["kind"] == board.GATE_RESOLUTION_INTO else "해소"

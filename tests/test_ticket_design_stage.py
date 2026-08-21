@@ -303,11 +303,12 @@ def board(tmp_path, monkeypatch):
         monkeypatch.setattr(mod, name, val)
     (pm / ".local").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(mod, "_git_config_email", lambda: None)
-    # 세션 귀속은 tmp local.conf 로 고정 — 실행 환경의 PM 세션(env)이 새지 않게 지운다
-    # (claim 은 세션 미해소 시 fail-loud 라 hermetic 하려면 바인딩이 필요하다).
-    for key in ("PM_SESSION_NAME", "CLAUDE_SESSION_NAME"):
-        monkeypatch.delenv(key, raising=False)
-    (pm / "local.conf").write_text("session=pm-1\nuser=tester\n", encoding="utf-8")
+    # 세션 귀속은 env 명시로 고정한다 — 실행 환경 값이 새지 않게 alias 를 지우고 이 파일의
+    # 세션을 바인딩한다(claim 은 세션 미해소 시 fail-loud 라 hermetic 하려면 바인딩이 필요하고,
+    # per-clone conf `session=` 폴백은 폐지됐다·T-0779).
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    monkeypatch.setenv("PM_SESSION_NAME", "pm-1")
+    (pm / "local.conf").write_text("user=tester\n", encoding="utf-8")
     return mod
 
 

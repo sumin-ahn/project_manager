@@ -95,6 +95,9 @@ def board(tmp_path, monkeypatch):
     (pm / ".local").mkdir(parents=True, exist_ok=True)  # board_lock 의 lock 파일 위치
     # 기본: git 폴백 미설정(None) — 실 git config 누출 차단. 명시 테스트가 덮는다.
     monkeypatch.setattr(mod, "_git_config_email", lambda: None)
+    # 세션 바인딩은 env 명시 — per-clone conf `session=` 폴백은 폐지됐다(T-0779).
+    monkeypatch.setenv("PM_SESSION_NAME", "pm-1")
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     mod._proj = proj
     return mod
 
@@ -148,7 +151,7 @@ def test_user_name_none_when_neither(board):
 
 def test_user_name_empty_conf_value_ignored(board, monkeypatch):
     """local.conf user= 가 빈 값이면 미설정 취급 → git 폴백으로 내려간다."""
-    _write_conf(board, user="", session="slot")
+    _write_conf(board, user="")
     monkeypatch.setattr(board, "_git_config_email", lambda: "fallback@x.com")
     assert board.user_name() == "fallback@x.com"
 
@@ -173,13 +176,13 @@ def test_git_config_email_fail_soft_when_git_absent(board, monkeypatch):
 
 def test_identity_tag_user_slash_slot(board):
     """user 해소되면 `<user>/<pm-slot>`."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     assert board.identity_tag() == "alice/pm-1"
 
 
 def test_identity_tag_slot_only_when_user_unknown(board):
     """user 미상(None)이면 슬롯만 — 기존 슬롯-only 값과 형태 동일(graceful)."""
-    _write_conf(board, session="pm-1")  # user 키 없음·git 폴백 None(fixture)
+    _write_conf(board)  # user 키 없음·git 폴백 None(fixture)
     assert board.identity_tag() == "pm-1"
 
 
@@ -200,7 +203,7 @@ def _new_args(title="t", prefix=None, user=None, session=None):
 
 def test_cmd_new_sets_created_by_user_slot(board):
     """cmd_new 가 created_by 를 `<user>/<pm-slot>` 으로 박는다 (provenance)."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     assert board.cmd_new(_new_args()) == 0
     created = list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))
     assert len(created) == 1
@@ -210,7 +213,7 @@ def test_cmd_new_sets_created_by_user_slot(board):
 
 def test_cmd_new_created_by_slot_only_when_user_unknown(board):
     """user 미상이면 created_by = 슬롯만 (graceful·하위호환)."""
-    _write_conf(board, session="pm-1")
+    _write_conf(board)
     assert board.cmd_new(_new_args()) == 0
     fm, _ = board.load_ticket(list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))[0])
     assert fm["created_by"] == "pm-1"
@@ -218,7 +221,7 @@ def test_cmd_new_created_by_slot_only_when_user_unknown(board):
 
 def test_cmd_new_created_by_honors_explicit_user(board):
     """args.user 명시가 local.conf 보다 우선해 created_by 에 반영된다."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     assert board.cmd_new(_new_args(user="carol")) == 0
     fm, _ = board.load_ticket(list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))[0])
     assert fm["created_by"] == "carol/pm-1"
@@ -241,7 +244,7 @@ def _claim_args(tid="T-0001", repo=None, slot=None, user=None):
 
 def test_cmd_claim_sets_claimed_by_user_slot(board):
     """cmd_claim 이 claimed_by 를 `<user>/<slot>` 으로 박는다 (assignee)."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     _seed_open(board)
     assert board.cmd_claim(_claim_args()) == 0
     claimed = list((board.TICKETS_DIR / "claimed").glob("T-0001-*.md"))
@@ -252,7 +255,7 @@ def test_cmd_claim_sets_claimed_by_user_slot(board):
 
 def test_cmd_claim_claimed_by_slot_only_when_user_unknown(board):
     """user 미상이면 claimed_by = 슬롯만 — 기존 슬롯-only 동작 보존(graceful)."""
-    _write_conf(board, session="pm-1")
+    _write_conf(board)
     _seed_open(board)
     assert board.cmd_claim(_claim_args()) == 0
     fm, _ = board.load_ticket(list((board.TICKETS_DIR / "claimed").glob("T-0001-*.md"))[0])

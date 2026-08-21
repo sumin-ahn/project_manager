@@ -1174,8 +1174,10 @@ def test_ticket_mutations_pass_scoped_paths():
     calls = [node for node in ast.walk(tree)
              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
              and node.func.id == "_board_git_sync_best_effort"]
-    assert len(calls) == 7, \
-        f"best-effort sync 호출이 7곳이 아님(신규/삭제 시 이 가드를 함께 갱신): {len(calls)}"
+    # 8 = ticket mutation 7 + `init` 의 areas repo 행 등록(T-0779 — 등록 행도 board git 의
+    # 공유 파일이라 같은 스코프 채널로 부기한다).
+    assert len(calls) == 8, \
+        f"best-effort sync 호출이 8곳이 아님(신규/삭제 시 이 가드를 함께 갱신): {len(calls)}"
     for call in calls:
         has_paths = len(call.args) >= 2 or any(kw.arg == "paths" for kw in call.keywords)
         assert has_paths, \

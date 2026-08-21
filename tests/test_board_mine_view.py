@@ -440,7 +440,7 @@ def test_mine_claim_uses_rsplit_user(board, capsys):
     assert ids == ["T-ACC-009"]
 
 
-def test_mine_solo_git_email_legacy_slot_only_included(board, capsys):
+def test_mine_solo_git_email_legacy_slot_only_included(board, capsys, monkeypatch):
     """**codex R2 회귀 가드**: git email 로 my_user 해소된 solo(distinct user ≤1)도 자기 슬롯의
     legacy 슬롯-only claim 을 --mine 에서 계속 본다.
 
@@ -448,7 +448,8 @@ def test_mine_solo_git_email_legacy_slot_only_included(board, capsys):
     git email 만 설정한 흔한 solo 에서 legacy 슬롯 claim 이 사라지는 과보정(round-1)이 났다.
     """
     board._git_config_email = lambda: "solo@example.com"  # type: ignore[assignment]
-    _write_conf(board, session="pm-1")                      # user= 없음 → git email 폴백(my_user 해소)
+    monkeypatch.setenv("PM_SESSION_NAME", "pm-1")           # 세션 바인딩(conf 폴백 폐지·T-0779)
+    _write_conf(board)                                      # user= 없음 → git email 폴백(my_user 해소)
     _seed(board, "T-ACC-005", "claimed", claimed_by="pm-1")  # legacy 슬롯-only·내 슬롯
     ids = _list_ids(board, capsys, mine=True)
     assert ids == ["T-ACC-005"]     # solo → legacy 슬롯-only 포함(git email 해소돼도)
@@ -494,13 +495,14 @@ def test_mine_is_union_of_area_open_and_my_claim(board, capsys):
 # 솔로 graceful — user None 폴백(빈 보드 아님)
 # ════════════════════════════════════════════════════════════════════════
 
-def test_mine_solo_user_none_not_empty(board, capsys):
+def test_mine_solo_user_none_not_empty(board, capsys, monkeypatch):
     """user 미상(None) + areas.md 부재(솔로): --mine 이 빈 보드를 주지 않는다.
 
     폴백 = 전체 open + 내 슬롯 claim → 현행 list 와 사실상 동등(spike §2.D 핵심).
     """
-    # local.conf 에 session 만(user 키 없음)·git 폴백 None(fixture)·areas.md 부재.
-    _write_conf(board, session="pm-1")
+    # 세션은 env 바인딩(conf 폴백 폐지·T-0779)·user 미상(git 폴백 None·fixture)·areas.md 부재.
+    monkeypatch.setenv("PM_SESSION_NAME", "pm-1")
+    _write_conf(board)
     _seed(board, "T-0001", "open")
     _seed(board, "T-0002", "open")
     _seed(board, "T-0003", "claimed", claimed_by="pm-1")    # 내 슬롯 claim
@@ -554,9 +556,10 @@ def test_distinct_area_owners_counts_multiplicity(board):
 # ambiguous_legacy 등)가 계속 커버한다.
 
 
-def test_mine_solo_claim_matches_my_slot(board, capsys):
+def test_mine_solo_claim_matches_my_slot(board, capsys, monkeypatch):
     """솔로 폴백 (b) = 내 슬롯(session_name)의 claim — 슬롯-only 값 매칭."""
-    _write_conf(board, session="pm-1")
+    monkeypatch.setenv("PM_SESSION_NAME", "pm-1")   # 세션 바인딩(conf 폴백 폐지·T-0779)
+    _write_conf(board)
     _seed(board, "T-0003", "claimed", claimed_by="pm-1")
     _seed(board, "T-0004", "done", claimed_by="pm-2")   # 남의 슬롯 → 제외
     ids = _list_ids(board, capsys, mine=True)

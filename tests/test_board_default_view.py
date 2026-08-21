@@ -74,9 +74,11 @@ def board(tmp_path, monkeypatch):
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
     monkeypatch.setattr(mod, "_git_config_email", lambda: None)
-    # 세션 유도 env 를 실환경에서 격리 — 세션은 local.conf/PM_SESSION_NAME 을 테스트가 명시한다.
-    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    # ambient 세션 env 를 먼저 지우고(실환경 격리) 이 파일의 canonical 세션을 명시 바인딩한다 —
+    # per-clone conf `session=` 폴백은 폐지됐다(T-0779). 다른 세션이 필요한 테스트는 자기
+    # monkeypatch.setenv 로 덮는다(나중이 이김).
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    monkeypatch.setenv("PM_SESSION_NAME", "project_manager_1")
     return mod
 
 
@@ -125,7 +127,7 @@ def _assert_no_fold(out: str) -> None:
 def test_default_view_stream_open_by_created_session(board, capsys):
     """open 은 `created_by` 세션이 현 세션과 일치할 때만 상세 — 타 세션 생성분(같은 사용자 타 슬롯
     포함)은 카운트 줄 없이 완전 비노출(ADR-0067 스트림 판정=생성 세션)."""
-    _write_conf(board, user="alice", session="project_manager_1")
+    _write_conf(board, user="alice")
     _seed(board, "T-0001", "open", created_by="alice/project_manager_1")  # 내 세션 생성 → 상세
     _seed(board, "T-0002", "open", created_by="bob/project_manager_2")    # 타 세션 → 비노출
     _seed(board, "T-0003", "open", created_by="alice/project_manager_2")  # 같은 사용자 타 슬롯 → 비노출
@@ -166,7 +168,7 @@ def test_default_view_created_session_requires_same_user(board, capsys, monkeypa
 
 def test_default_view_shows_my_session_claim(board, capsys):
     """내 세션(project_manager_1) claim 은 상세·타 세션 claim 은 기본 뷰 미표시."""
-    _write_conf(board, user="alice", session="project_manager_1")
+    _write_conf(board, user="alice")
     _seed(board, "T-0001", "claimed", claimed_by="alice/project_manager_1")  # 내 세션
     _seed(board, "T-0002", "claimed", claimed_by="bob/project_manager_2")    # 타 세션 → skip
     out = _run(board, capsys)
@@ -176,7 +178,7 @@ def test_default_view_shows_my_session_claim(board, capsys):
 
 def test_default_view_solo_legacy_slot_claim_shown(board, capsys):
     """솔로 legacy 슬롯-only claim(user 토큰 없음)도 내 세션 exact 매칭이면 상세(not multi_user)."""
-    _write_conf(board, session="project_manager_1")   # user 미상(solo)
+    _write_conf(board)   # user 미상(solo)
     _seed(board, "T-0003", "claimed", claimed_by="project_manager_1")   # legacy 슬롯-only·내 슬롯
     out = _run(board, capsys)
     assert _ids(out) == ["T-0003"]
@@ -185,7 +187,7 @@ def test_default_view_solo_legacy_slot_claim_shown(board, capsys):
 def test_default_view_claim_axis_requires_same_user(board, capsys):
     """user-qualified claim은 user ∧ session. multi-user에서 legacy
     슬롯-only는 모호하므로 strict-exclude한다."""
-    _write_conf(board, user="alice", session="project_manager_1")
+    _write_conf(board, user="alice")
     _seed(board, "T-0001", "claimed", claimed_by="alice/project_manager_1")  # 내 user·내 세션
     _seed(board, "T-0002", "claimed", claimed_by="bob/project_manager_1")    # 타 user·같은 세션 → 제외
     _seed(board, "T-0003", "claimed", claimed_by="project_manager_1")        # legacy·multi-user → strict 제외
@@ -211,7 +213,7 @@ def test_default_view_same_named_task_isolated_by_user(board, capsys, monkeypatc
 
 def test_default_view_released_slot_hides_previous_holder_open(board, capsys):
     """동일 슬롯을 bob에게 재대여한 뒤 alice가 그 슬롯에서 만든 예전 open은 제외."""
-    _write_conf(board, user="bob", session="project_manager_1")
+    _write_conf(board, user="bob")
     _seed(board, "T-0001", "open", created_by="alice/project_manager_1")  # 이전 보유자
     _seed(board, "T-0002", "open", created_by="bob/project_manager_1")    # 현재 보유자
     out = _run(board, capsys)
@@ -221,7 +223,7 @@ def test_default_view_released_slot_hides_previous_holder_open(board, capsys):
 
 def test_default_view_unresolved_user_keeps_solo_qualified_claim(board, capsys):
     """git email/user 미해소여도 solo의 자기 세션 qualified claim은 보인다."""
-    _write_conf(board, session="project_manager_1")  # my_user=None
+    _write_conf(board)  # my_user=None
     _seed(board, "T-0001", "claimed", claimed_by="alice/project_manager_1")
     out = _run(board, capsys)
     assert _ids(out) == ["T-0001"]
@@ -241,7 +243,7 @@ def test_default_view_unresolved_user_multi_user_strict_excludes(board, capsys, 
 
 def test_default_view_solo_legacy_created_session_open_shown(board, capsys):
     """solo legacy session-only `created_by`도 기존 degrade대로 자기 슬롯 open을 보존한다."""
-    _write_conf(board, user="alice", session="project_manager_1")
+    _write_conf(board, user="alice")
     _seed(board, "T-0001", "open", created_by="project_manager_1")
     out = _run(board, capsys)
     assert _ids(out) == ["T-0001"]
@@ -252,7 +254,7 @@ def test_default_view_solo_resolved_user_legacy_slot_claim_shown(board, capsys):
 
     solo 게이트는 `my_user is None` 대용값이 아니라 실제 `multi_user` 판정이어야 한다.
     """
-    _write_conf(board, user="alice", session="project_manager_1")
+    _write_conf(board, user="alice")
     _seed(board, "T-0001", "claimed", claimed_by="project_manager_1")
     out = _run(board, capsys)
     assert _ids(out) == ["T-0001"]
@@ -260,7 +262,7 @@ def test_default_view_solo_resolved_user_legacy_slot_claim_shown(board, capsys):
 
 def test_bootstrap_parsers_consume_user_session_filtered_slot_view(board, capsys):
     """부트스트랩의 bound-slot 렌즈가 소비하는 count/open 목록도 board 필터 결과와 자동 정합."""
-    _write_conf(board, user="alice", session="project_manager_1")
+    _write_conf(board, user="alice")
     _seed(board, "T-0001", "open", created_by="alice/project_manager_1")
     _seed(board, "T-0002", "open", created_by="bob/project_manager_1")
     _seed(board, "T-0003", "claimed", claimed_by="alice/project_manager_1")
@@ -284,7 +286,7 @@ def test_bootstrap_parsers_consume_user_session_filtered_slot_view(board, capsys
 def test_default_view_created_by_without_session_hidden(board, capsys):
     """`created_by` 에 세션 부분이 없는 legacy open(user-only)은 바인딩 세션 스트림에 안 든다 —
     backfill 대상(런타임 fallback 없음·ADR-0067). 카운트 줄도 없다."""
-    _write_conf(board, user="alice", session="project_manager_1")
+    _write_conf(board, user="alice")
     _seed(board, "T-0001", "open", created_by="alice/project_manager_1")  # 내 세션 생성 → 상세
     _seed(board, "T-0005", "open", created_by="alice")   # 세션 부재(user-only) → 비노출
     out = _run(board, capsys)
@@ -297,9 +299,10 @@ def test_default_view_created_by_without_session_hidden(board, capsys):
 # ④ 무바인딩/솔로 — user-단위(--mine) 폴백 (solo=subset·특례 아님)
 # ════════════════════════════════════════════════════════════════════════
 
-def test_default_view_unbound_falls_back_to_user_stream(board, capsys):
+def test_default_view_unbound_falls_back_to_user_stream(board, capsys, monkeypatch):
     """세션 미해소(무바인딩)면 user-단위 폴백 — 내 소유(user) open + 타 사용자 open 은 strict-exclude."""
-    _write_conf(board, user="alice")   # session= 없음 → 무바인딩
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)   # 무바인딩 형상
+    _write_conf(board, user="alice")
     _seed(board, "T-0001", "open", created_by="alice/whatever")  # owner alice → 상세
     _seed(board, "T-0002", "open", created_by="bob/x")           # owner bob·multi_user → 제외
     out = _run(board, capsys)
@@ -307,8 +310,9 @@ def test_default_view_unbound_falls_back_to_user_stream(board, capsys):
     _assert_no_fold(out)
 
 
-def test_default_view_solo_no_identity_degrades_to_all_open(board, capsys):
-    """진짜 솔로(user·session 둘 다 미상·단일 사용자)면 all-open degrade — 소유 미해소 open 도 상세."""
+def test_default_view_solo_no_identity_degrades_to_all_open(board, capsys, monkeypatch):
+    """정체성 둘 다 미상(user·session)이면 all-open degrade — 소유 미해소 open 도 상세."""
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)   # 무바인딩 형상
     # conf 없음 → user 미상·session 미상. distinct user ≤1 → not multi_user → degrade.
     _seed(board, "T-0002", "open", created_by=None)
     out = _run(board, capsys)
@@ -338,7 +342,7 @@ def test_slot_view_uses_created_session_stream(board, capsys):
 
 def test_default_view_no_stream_shows_no_tickets(board, capsys):
     """스트림에 아무것도 없으면 (no tickets) — 타 세션 open 이 있어도 카운트 줄 없이 그냥 비어있다."""
-    _write_conf(board, user="alice", session="project_manager_1")
+    _write_conf(board, user="alice")
     _seed(board, "T-0002", "open", created_by="bob/project_manager_2")   # 타 세션 → 완전 비노출
     out = _run(board, capsys)
     assert "(no tickets)" in out
@@ -347,7 +351,7 @@ def test_default_view_no_stream_shows_no_tickets(board, capsys):
 
 def test_default_view_truly_empty_shows_no_tickets(board, capsys):
     """상세도 없고 open 도 없으면 (no tickets)."""
-    _write_conf(board, session="project_manager_1")
+    _write_conf(board)
     _seed(board, "T-0009", "done", claimed_by="bob/project_manager_2")   # done·타 세션 → skip
     out = _run(board, capsys)
     assert "(no tickets)" in out
@@ -360,7 +364,7 @@ def test_default_view_truly_empty_shows_no_tickets(board, capsys):
 
 def test_all_flag_shows_full_board(board, capsys):
     """`--all` = 필터 없는 전체 보드(모든 세션·타 사용자)·접힘 없음."""
-    _write_conf(board, user="alice", session="project_manager_1")
+    _write_conf(board, user="alice")
     _seed(board, "T-0001", "claimed", claimed_by="alice/project_manager_1")
     _seed(board, "T-0002", "claimed", claimed_by="bob/project_manager_2")   # 타 세션도 표시
     _seed(board, "T-0003", "open", created_by="bob/project_manager_2")      # 타 세션 생성 open 도 표시

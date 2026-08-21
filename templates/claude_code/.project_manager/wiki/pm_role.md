@@ -50,7 +50,7 @@ PM 역할의 정적 운영 매뉴얼이다. PM 역할은 보드 운영·분할·
 
 **현재 진실:** `architecture.md`가 현재 아키텍처 단일 진실이다. `decisions/` ADR은 *왜*의 히스토리이며 현재 구속력이 없다. 옛 ADR과 현재 의도/실측이 충돌하면 `architecture.md`를 따르고, architect가 architecture 갱신과 ADR amend/supersede를 한다. `architecture.md`·`status.md` content-truth(구조·구현상태 판정·비고)는 architect가 유지하고 PM은 점검한다.
 
-**세션 정체성:** canonical 문자열은 `<repo>_<N>`이며 board/리스 조작에는 `--repo <repo> --slot <N>`을 명시한다. 실값은 부트스트랩 카드가 채우므로 외우지 않는다. 솔로는 `--repo/--slot` 불요이며 env `PM_SESSION_NAME`/local.conf `session=` 자동 해소(§세션 식별 규칙).
+**세션 정체성:** canonical 문자열은 `<repo>_<N>`이며 board/리스 조작에는 `--repo <repo> --slot <N>`을 명시한다. 실값은 부트스트랩 카드가 채우므로 외우지 않는다. 솔로는 `--repo/--slot` 불요이며 env `PM_SESSION_NAME`·단일 등록/단일 lease 자동 해소(§세션 식별 규칙 — local.conf 폴백 폐지).
 
 ## 찾아가는 법
 
@@ -228,9 +228,9 @@ PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비
 - orchestrator 서브에이전트 라벨은 `orch-dev-T<NNNN>` / `orch-review-T<NNNN>` 류 free-form이다. board 조작은 PM이 하므로 서브는 claim하지 않는다. board 귀속이 필요하면 `$PM_SESSION_NAME`만 바인딩한다(claim 플래그 없음).
 
 세션명·ticket prefix는 저장하지 않고 다음 순서로 유도한다:
-`명시(--repo/--slot·--prefix) > $PM_SESSION_NAME(env·CLAUDE_SESSION_NAME alias) > lease 장부에 leased 슬롯이 정확히 1개면 그 세션(count-based 유도) > (solo 홈·lease 부재) local.conf session=/prefix= legacy 폴백`.
+`명시(--repo/--slot·--prefix) > $PM_SESSION_NAME(env·CLAUDE_SESSION_NAME alias) > lease 장부에 leased 슬롯이 정확히 1개면 그 세션(count-based 유도)`. prefix 는 세션 repo → areas 레지스트리로 해소한다.
 
-leased ≥2인 multi 홈은 local.conf를 건너뛴다. 모호(leased ≥2·무명시)한 귀속 조작(claim/complete/unclaim/release/new owner)은 **fail-loud**하며 `--repo <repo> --slot <N>` 명시를 요구한다. 조회 whoami/status는 `(비바인딩)`을 표시한다. solo의 lease 장부가 없으면 legacy 폴백이며 multi 홈의 `local.conf session=`/`prefix=`는 제거해도, 남아도 무시되어 동일하다. 동적 세션 목록은 [`pm_state.md`](pm_state.md) §"세션 식별 (현재까지 사용된 이름)"에 있고 `/pm-handoff`가 갱신한다.
+`local.conf session=`/`prefix=` 폴백은 폐지되었다 — 진실은 lease 장부와 areas 레지스트리다. 기존 채택자는 conf 에서 두 키를 제거하고 `board init` 재실행으로 이 clone 의 repo 행 등록을 갱신한다. 모호(leased ≥2·무명시)한 귀속 조작(claim/complete/unclaim/release/new owner)은 **fail-loud**하며 `--repo <repo> --slot <N>` 명시를 요구한다. 조회 whoami/status는 `(비바인딩)`을 표시한다. 동적 세션 목록은 [`pm_state.md`](pm_state.md) §"세션 식별 (현재까지 사용된 이름)"에 있고 `/pm-handoff`가 갱신한다.
 
 **`list` 스코핑:** `board.py list`의 `--repo`/`--slot`/`--mine`은 **조회 필터**(해당 식별자의 open+claim), `claim`/`complete`/`migrate-identity`의 `--repo`/`--slot`은 **행위자 지정**이다. 미해소 귀속 조작은 fail-loud하고 조회는 `(비바인딩)`으로 계속된다.
 

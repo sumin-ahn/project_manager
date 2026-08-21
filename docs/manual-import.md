@@ -40,8 +40,8 @@ grep -rlI '{{' . --exclude-dir=.git --exclude-dir=__pycache__ --exclude-dir=node
     -e 's|{{TEST_CMD}}|python3 -m pytest tests/ -q|g' \
     -e "s|{{DATE}}|$(date +%F)|g"
 
-# 3) 이 clone 등록 (clone 당 1회) — solo(N=1·M=1) 또는 multi-repo(N×M·ADR-0016·multi-repo.md)
-python3 .project_manager/tools/board.py init                        # solo: legacy T-NNNN
+# 3) 이 clone 등록 (clone 당 1회·areas 레지스트리 행 등록은 필수) — solo(N=1·M=1) 또는 multi-repo(N×M·ADR-0016·multi-repo.md)
+python3 .project_manager/tools/board.py init                        # 무prefix 등록: T-NNNN 발행
 #   multi-repo(M>1·prefix 네임스페이스): board.py init --prefix pay --area "결제" --user-ack pay   # → T-pay-NNN
 
 # 4) board.py 동작 확인 — 첫 ticket 발행

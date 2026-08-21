@@ -314,10 +314,13 @@ def test_default_session_delegates_to_identity_args_leased_sessions(pc, tmp_path
     assert calls == [tmp_path / ".project_manager" / ".local" / "worktree-leases.json"]
 
 
-def test_default_session_identity_leased_zero_falls_back_to_local_conf(pc, tmp_path, monkeypatch):
-    """주입 대역이 leased 0개를 돌려주면(장부 부재/solo) local.conf `session=` 폴백 체인은
-    여전히 동작한다 — identity_args 로 위임한 뒤에도 `_default_session` 나머지 우선순위(ADR-0040
-    D1)는 불변임을 확인한다.
+def test_default_session_identity_leased_zero_is_unresolved(pc, tmp_path, monkeypatch):
+    """주입 대역이 leased 0개를 돌려주면 conf `session=` 이 있어도 미해소(None)다 (T-0779).
+
+    identity_args 위임 뒤에도 `_default_session` 의 남은 우선순위는 env·단일-lease·단일-등록
+    (F-002 공유 술어)뿐이며, per-clone conf 로 떨어지는 층은 없다. 대역의
+    `single_registration_session` 은 등록 repo 0개(미주입)를 그대로 반영해 None — 실 모듈의
+    동형 계약을 대역이 어긋나게 흉내내지 않는다(interface drift 방지).
     """
     monkeypatch.setattr(pc, "REPO", tmp_path)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
@@ -331,7 +334,11 @@ def test_default_session_identity_leased_zero_falls_back_to_local_conf(pc, tmp_p
         def leased_sessions(leases_file):
             return []
 
-    assert pc._default_session(identity=FakeIdentityEmpty()) == "from-conf"
+        @staticmethod
+        def single_registration_session(registered_repos, leases_file):
+            return None
+
+    assert pc._default_session(identity=FakeIdentityEmpty()) is None
 
 
 def test_default_session_no_identity_injected_uses_real_module(pc, tmp_path, monkeypatch):

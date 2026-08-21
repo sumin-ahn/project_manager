@@ -1013,6 +1013,164 @@ def test_claude_hook_mode_outer_boundary_is_warn_rc0(monkeypatch, capsys, failur
     assert "판정 불가" in got["hookSpecificOutput"]["additionalContext"]
 
 
+# ── 세션 내 완전일치 중복 억제 (T-0764) ────────────────────────────────────
+# 발화 문구·차단 동작은 그대로 두고 *같은 말을 두 번 하지 않는* 것만 본다.
+# stdin 형상은 라이브 훅과 같다 — `session_id` 는 ctx_stop_hook 이 marker 파일명으로 쓰는 그 필드다
+# (실 세션 marker `.project_manager/.local/ctx-stop/<uuid>.nudge` 가 그 값의 실재 증거).
+
+def _hook_stdin(monkeypatch, driver, home: Path, command: str, session_id: str) -> dict:
+    payload = {
+        "session_id": session_id,
+        "hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": str(home),
+        "tool_input": {"command": command},
+    }
+    monkeypatch.setattr(driver.sys, "stdin", io.StringIO(json.dumps(payload)))
+    return payload
+
+
+
+def test_claude_hook_emits_once_per_session_for_identical_message(
+    monkeypatch, topology, capsys,
+):
+    """같은 세션·같은 문구는 첫 1회만 발화하고, 이후 호출의 stdout 은 0바이트다."""
+    driver = _load("git_anchor_claude_once", CLAUDE_DRIVER)
+    monkeypatch.setattr(
+        driver, "_load_board", lambda _root: _load("git_anchor_board_once", BOARD_PY),
+    )
+    home, _slot = topology
+
+    # 명령은 두 OS 모두 warn 인 git mutation 두 종으로 둔다 — cd 잔존 advisory 는 POSIX 셸
+    # 문법 축이라 Windows 판정에 없다(플랫폼 의존 픽스처 금지·VM 실측).
+    _hook_stdin(monkeypatch, driver, home, "git commit -m x", "sess-a")
+    assert driver.run_git_anchor_hook(home) == 0
+    first = json.loads(capsys.readouterr().out)[
+        "hookSpecificOutput"]["additionalContext"]
+    assert first.startswith("[git-anchor/warn]") and "git commit" in first
+
+    # ① 완전일치 재호출 = 침묵(빈 JSON 도 쓰지 않는다).
+    _hook_stdin(monkeypatch, driver, home, "git commit -m x", "sess-a")
+    assert driver.run_git_anchor_hook(home) == 0
+    assert capsys.readouterr().out == ""
+
+    # ② 문구가 다르면 그대로 발화한다(클래스 전면 침묵 아님).
+    _hook_stdin(monkeypatch, driver, home, "git push", "sess-a")
+    assert driver.run_git_anchor_hook(home) == 0
+    other = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert other != first and "실행 앵커=" in other
+
+    # ③ 세션이 다르면 같은 문구도 그 세션의 첫 1회로 발화한다(세션 격리).
+    _hook_stdin(monkeypatch, driver, home, "git commit -m x", "sess-b")
+    assert driver.run_git_anchor_hook(home) == 0
+    assert json.loads(capsys.readouterr().out)[
+        "hookSpecificOutput"]["additionalContext"] == first
+
+    # 상태는 기존 marker 디렉토리 안 세션별 멤버십 파일 1개 — 새 디렉토리·키별 파일 0.
+    marker_dir = home / ".project_manager" / ".local" / "ctx-stop"
+    assert sorted(path.name for path in marker_dir.iterdir()) == [
+        "sess-a.git-anchor", "sess-b.git-anchor",
+    ]
+    assert len(
+        (marker_dir / "sess-a.git-anchor").read_text(encoding="utf-8").splitlines()
+    ) == 2
+
+
+def test_claude_hook_never_suppresses_repeated_deny(monkeypatch, topology, capsys):
+    """차단(deny)은 중복이어도 매번 발화한다 — 억제하면 두 번째 위험 명령이 통과한다."""
+    driver = _load("git_anchor_claude_deny_repeat", CLAUDE_DRIVER)
+    monkeypatch.setattr(
+        driver, "_load_board", lambda _root: _load("git_anchor_board_deny_repeat", BOARD_PY),
+    )
+    home, _slot = topology
+
+    emitted = []
+    for _attempt in range(3):
+        _hook_stdin(monkeypatch, driver, home, "git add tests/shared.txt", "sess-deny")
+        assert driver.run_git_anchor_hook(home) == 0
+        emitted.append(json.loads(capsys.readouterr().out)["hookSpecificOutput"])
+
+    assert all(item["permissionDecision"] == "deny" for item in emitted)
+    assert len({item["permissionDecisionReason"] for item in emitted}) == 1
+    assert "tests/shared.txt" in emitted[0]["permissionDecisionReason"]
+    # deny 는 멤버십 장부에 들어가지도 않는다(억제 대상 아님).
+    assert not (home / ".project_manager" / ".local" / "ctx-stop").exists()
+
+
+def test_claude_hook_keeps_uncertain_downgrade_channel_open(
+    monkeypatch, topology, capsys,
+):
+    """판정불능(deny→warn 강등) 발화는 유지된다 — 사유 전문이 그대로 실린다."""
+    driver = _load("git_anchor_claude_uncertain", CLAUDE_DRIVER)
+    monkeypatch.setattr(
+        driver, "_load_board", lambda _root: _load("git_anchor_board_uncertain", BOARD_PY),
+    )
+    home, _slot = topology
+
+    loop = "for f in x; do git add tests/shared.txt; done"
+    _hook_stdin(monkeypatch, driver, home, loop, "sess-uncertain")
+    assert driver.run_git_anchor_hook(home) == 0
+    text = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "조건/cwd를 정적으로 단일 증명할 수 없음 — 차단하지 않음" in text
+    assert "PM 홈에서 등록 worktree와 양쪽에 실재하는 코드 경로(tests/shared.txt)" in text
+
+    # 완전일치 재호출만 침묵이고, 사유가 다른 판정불능은 계속 나온다.
+    _hook_stdin(monkeypatch, driver, home, loop, "sess-uncertain")
+    assert driver.run_git_anchor_hook(home) == 0
+    assert capsys.readouterr().out == ""
+
+    other_loop = "for f in x; do git add templates/shared.txt; done"
+    _hook_stdin(monkeypatch, driver, home, other_loop, "sess-uncertain")
+    assert driver.run_git_anchor_hook(home) == 0
+    other = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "조건/cwd를 정적으로 단일 증명할 수 없음 — 차단하지 않음" in other
+    assert "templates/shared.txt" in other
+
+
+def test_claude_hook_keeps_emitting_when_membership_io_fails(
+    monkeypatch, topology, capsys,
+):
+    """멤버십 파일 I/O 실패는 fail-open — 같은 문구라도 매번 발화한다."""
+    driver = _load("git_anchor_claude_marker_failure", CLAUDE_DRIVER)
+    monkeypatch.setattr(
+        driver, "_load_board", lambda _root: _load("git_anchor_board_marker_failure", BOARD_PY),
+    )
+    home, _slot = topology
+    # marker 디렉토리 자리를 파일이 점유 = mkdir 실패(플랫폼 무관·chmod 불요).
+    blocked = home / ".project_manager" / ".local" / "ctx-stop"
+    blocked.write_text("not a directory\n", encoding="utf-8")
+
+    # 명령은 두 OS 모두 warn 인 git mutation 으로 둔다 — cd 잔존 advisory 는 POSIX 셸 문법
+    # 축이라 Windows 판정에 없다(플랫폼 의존 픽스처가 이 테스트의 실패 원인이었다·VM 실측).
+    emitted: list[str] = []
+    for _attempt in range(2):
+        _hook_stdin(monkeypatch, driver, home, "git commit -m x", "sess-io")
+        assert driver.run_git_anchor_hook(home) == 0
+        emitted.append(json.loads(capsys.readouterr().out)[
+            "hookSpecificOutput"]["additionalContext"])
+    assert emitted[0].startswith("[git-anchor/warn]")
+    assert "git commit" in emitted[0]
+    # fail-open 의 핵심: 완전히 같은 문구가 두 번째에도 그대로 발화된다(억제 없음).
+    assert emitted[1] == emitted[0]
+    assert blocked.is_file()
+
+
+def test_claude_hook_infra_failure_warn_is_never_suppressed(
+    monkeypatch, topology, capsys,
+):
+    """판정 인프라 손상(`판정 불가`) 발화는 중복 억제를 지나지 않는다(fail-open 무조건)."""
+    driver = _load("git_anchor_claude_infra_repeat", CLAUDE_DRIVER)
+    home, _slot = topology
+
+    def fail_load(_root):
+        raise SystemExit(17)
+
+    monkeypatch.setattr(driver, "_load_board", fail_load)
+    for _attempt in range(2):
+        _hook_stdin(monkeypatch, driver, home, "git add tests/shared.txt", "sess-infra")
+        assert driver.run_git_anchor_hook(home) == 0
+        got = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+        assert "판정 불가" in got["additionalContext"]
+
+
 def test_claude_settings_and_self_resolving_wrapper_are_wired():
     wrapper = CLAUDE_WRAPPER.read_text(encoding="utf-8")
     assert "--git-anchor-hook" in wrapper and "pm_orch_claude.py" in wrapper

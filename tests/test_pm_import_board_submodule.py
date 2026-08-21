@@ -364,7 +364,9 @@ def test_board_ops_target_submodule(pm_import, tmp_path):
     _git(["add", "-A"], board)
     _git(["commit", "-qm", f"seed {tid}"], board)
     _git(["push", "-q", "origin", "HEAD"], board)
-    r = _board(dest, "claim", tid)
+    # 세션 해소 체인(명시 > $PM_SESSION_NAME > leased 1개 > None)에 leased 슬롯이 없으므로
+    # (T-0779: local.conf session= 폴백 폐지) `--repo <repo> --slot <N>` 로 명시한다.
+    r = _board(dest, "claim", tid, "--repo", "home", "--slot", "1")
     assert r.returncode == 0, r.stderr
     assert (board / "tickets" / "claimed" / f"{tid}-seed.md").exists()
     assert not (board / "tickets" / "open" / f"{tid}-seed.md").exists()

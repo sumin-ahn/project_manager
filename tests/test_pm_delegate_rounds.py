@@ -215,6 +215,7 @@ def test_harvest_replaces_board_round_and_closes_the_run(pd, rounds_env):
     result = pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
 
     assert result.changed is True and result.sync_ready is True
+    assert result.verify_missing == ()        # 리뷰 라운드가 없어 accepted 대상 자체가 없다.
     assert plan.board_path.read_text(encoding="utf-8") == produced
     assert not plan.run_dir.exists()          # run 닫힘 = 재회수 없음
     assert sync_log[-1][1] == [plan.board_path]
@@ -486,6 +487,61 @@ def test_review_seed_prefill_ignores_other_role_rounds(pd, rounds_env):
     assert '"confirmations":[{"id":"F-NNN"' in block_text
 
 
+# ── T-0786: harvest `verify_missing` (표시면 관용) ──────────────────────
+
+def test_harvest_reports_verify_missing_for_unfilled_accepted_findings(pd, rounds_env):
+    """dev 라운드 골격에 verify 프리필이 실려도 자리표시자 그대로면 harvest 가 이름을 짚는다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    spec_path = _write_spec(tickets, "T-7020")
+
+    reviewer = pd.prepare_ticket_copy(
+        ticket="T-7020", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+    review_payload = {
+        "version": pd.PM_REVIEW_VERSION,
+        "findings": [{
+            "id": "F-001", "class": "implementation-defect", "severity": "must-fix",
+            "authority": "[[T-0786]]", "evidence": "probe", "recommendation": "fix",
+            "design_change": False,
+        }],
+        "confirmations": [],
+    }
+    reviewer.path.write_text(
+        reviewer.path.read_text(encoding="utf-8").partition("\n")[0]
+        + "\n\n## must-fix\n- F-001\n\n## 판정\n판정: 반려 · finding 1건(must-fix 1건)\n\n"
+        + f"```{pd.PM_REVIEW_BLOCK}\n" + json.dumps(review_payload) + "\n```\n",
+        encoding="utf-8", newline="",
+    )
+    pd.harvest_ticket_copy(copy_path=reviewer.path, cwd=slot, pm_home=pm_home)
+
+    disposition_payload = {
+        "version": pd.PM_REVIEW_DISPOSITION_VERSION, "reviewer_ordinal": 1,
+        "dispositions": [{
+            "id": "F-001", "decision": "accepted", "reason": "PM 수락",
+            "scope": "F-001 범위", "prerequisite": "",
+        }],
+    }
+    spec_path.write_text(
+        spec_path.read_text(encoding="utf-8")
+        + f"\n```{pd.PM_REVIEW_DISPOSITION_BLOCK}\n"
+        + json.dumps(disposition_payload) + "\n```\n",
+        encoding="utf-8", newline="",
+    )
+
+    dev = pd.prepare_ticket_copy(
+        ticket="T-7020", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    seed = dev.path.read_text(encoding="utf-8")
+    assert '"id":"F-001"' in seed.partition(f"```{pd.PM_REVIEW_VERIFY_BLOCK}")[2]
+
+    # verify 골격을 자리표시자 그대로 두고 다른 절만 채워 harvest 대상으로 만든다.
+    dev.path.write_text(seed + "\n실산출\n", encoding="utf-8", newline="")
+    result = pd.harvest_ticket_copy(copy_path=dev.path, cwd=slot, pm_home=pm_home)
+
+    assert result.changed is True
+    assert result.verify_missing == ("F-001",)
+
+
 # ── 경로 예산 · 권한 표면 ─────────────────────────────────────────────────
 
 def test_run_dir_path_has_no_role_segment_and_fits_budget(pd):
@@ -587,6 +643,19 @@ def test_ledger_relocated_to_delegate_rounds(pd, tmp_path):
     assert pd._delegate_rounds_ledger_path(tmp_path) == (
         tmp_path.resolve() / pd.DELEGATE_ROUNDS_LEDGER_REL_PATH
     )
+
+
+def test_load_board_is_cached_across_calls_for_ledger_row_validation(pd):
+    """T-0787 — `_load_board()` cache=True 회귀: 장부 행별 board 재-import 를 막는다.
+
+    이전엔 `cache=True` 를 안 넘겨 `_delegate_rounds_ledger_row`(행별 ID 검증)가 호출될 때마다
+    board.py 를 재실행했다(실측: 79행 장부에서 `_load_board` ncalls 79·cumtime 0.632s). 같은
+    프로세스 안에서 동일 파일을 캐시 없이 반복 로드하면 매번 새 module 객체가 생기므로, 캐시가
+    걸리면 두 호출이 **같은 객체**를 반환해야 한다(시간 단언은 플래키라 identity 로 대신 고정).
+    """
+    first = pd._load_board()
+    second = pd._load_board()
+    assert first is second
 
 
 def test_role_sets_match_the_rounds_seam(pd):

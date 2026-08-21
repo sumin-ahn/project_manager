@@ -390,16 +390,26 @@ def test_local_conf_operational_values_synced(pm_import, tmp_path):
 
 
 def test_local_conf_preserves_board_init_keys(pm_import, tmp_path):
-    """operational 값 동기화가 board.py init 이 쓴 다른 키(session 등)·주석을 보존한다."""
+    """operational 값 동기화가 board.py init 이 쓴 다른 키(ctx 예산 등)·주석을 보존한다.
+
+    T-0779: session=/prefix= 는 board init 이 더는 쓰지 않는다(폐지 — 세션은 lease 장부,
+    prefix 는 areas.md 가 단일 진실). "동기화가 sync 대상 밖 키를 clobber 하지 않는다" 는
+    이 테스트의 계약은 유효하므로, init 이 실제로 쓰는 ctx 예산 키(sync_local_conf 가
+    건드리지 않는 project_name/test_cmd/py 밖 키)로 갱신한다.
+    """
+    board = _load_board()
     dest = tmp_path / "confpreserve"
     rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "Keep"])
     assert rc == 0
 
     local_conf = dest / ".project_manager" / "local.conf"
     conf = _parse_conf(local_conf)
-    # board.py init 솔로가 쓰는 session 키가 살아있어야 한다(clobber 아님 — 키 단위 갱신).
-    assert conf.get("session") == "pm", \
-        f"session 키가 동기화로 손실됨: {conf.get('session')!r}"
+    # board.py init 이 쓰는 ctx 예산 키가 살아있어야 한다(clobber 아님 — 키 단위 갱신).
+    assert conf.get("ctx_nudge_pct") == str(board.CTX_NUDGE_PCT_DEFAULT), \
+        f"ctx_nudge_pct 키가 동기화로 손실됨: {conf.get('ctx_nudge_pct')!r}"
+    # session·prefix 는 폐지 키 — init 이 쓰지 않는다(T-0779).
+    assert conf.get("session") is None, f"session 키가 폐지됐는데 존재: {conf.get('session')!r}"
+    assert conf.get("prefix") is None, f"prefix 키가 폐지됐는데 존재: {conf.get('prefix')!r}"
     # 주석 줄도 보존(board.py init 의 헤더 주석).
     text = local_conf.read_text(encoding="utf-8")
     assert text.startswith("#"), "local.conf 머리 주석이 동기화로 사라짐."

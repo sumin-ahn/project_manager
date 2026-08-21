@@ -182,7 +182,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
-ENGINE_REV = "v1.7.7"
+ENGINE_REV = "v1.7.8"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -2259,7 +2259,7 @@ def ensure_slot_pm_state(slot: str) -> Path:
 
     발동 술어는 session 문자열의 모양이 아니라 장부 정체성이다. ``leased`` 상태의 일반 작업
     슬롯 중 session이 있고, 그 session이 task 장부 이름이 아닌 lease만 slot-mode다. 따라서
-    ``_default_session()``이 env/기존 lease/local.conf/host-pid 중 무엇을 내도 slot state를 만들고,
+    ``_default_session()``이 env/기존 lease/host-pid 중 무엇을 내도 slot state를 만들고,
     task 소유·readonly(무소유) 슬롯은 거짓 앵커를 만들지 않는다.
 
     canonical 파일이 없으면 템플릿보다 먼저 ``pm_handoff._migrate_legacy_pm_state``를 호출해
@@ -4456,7 +4456,7 @@ def status(*, task: "str | None" = None, slot: "str | None" = None,
     대상 슬롯 해소(택일):
       - `slot` 명시 → 그 슬롯 하나(`_normalize_slot` 형식 검증·traversal 차단).
       - `task` 명시 → `slots_for_task(task)`(session==task 이고 leased 인 슬롯).
-      - 둘 다 생략 → 내 task 전 슬롯(`slots_for_task(_default_session())` — env/local.conf 유입
+      - 둘 다 생략 → 내 task 전 슬롯(`slots_for_task(_default_session())` — env/단일-lease 유입
         세션 정체성이 보유한 leased 슬롯· "무인자=내 task 전체").
     각 슬롯을 `slot_git_status`(base·branch·head·N behind·submodule pin/drift·dirty)로 조회하고
     `role`(work/readonly·)을 얹어 슬롯별 dict 리스트로 돌려준다. 손-git 불요·조회 전용
@@ -4651,7 +4651,7 @@ def rebase(slots: "list[str]", *, onto: "str | None" = None,
         정의다. `release(owner_task=)` 의 소유검사와 **동형**(같은 장부·같은 의미: 그 슬롯의
         leased `lease.session` 이 그 명의인가) — 같은 소유를 두 도구가 다르게 판정하던 게 결함의
         본질이었다(이 task 를 1급 축으로 올렸는데 rebase 의 소유 축만 슬롯 세션에 머묾).
-      - 미지정 → 종전대로 세션 명의(`_default_session()` — env/local.conf 유입·`_resolve_current_
+      - 미지정 → 종전대로 세션 명의(`_default_session()` — env/단일-lease 유입·`_resolve_current_
         slot` 동형)로 판정(슬롯-세션 모드 거동 불변).
     어느 축이든 **검사 자체는 그대로**다 — 그 명의가 leased 로 보유하지 않은 슬롯(다른 task·다른
     슬롯 세션·미점유)은 여전히 `not-owner` 스킵(loud). 축 확장이지 검사 제거가 아니다."""
@@ -5311,28 +5311,6 @@ def _checkout_required(slot: str, branch: str, *, create_only: bool = False,
     _resync_submodules_selective(slot_path(slot), git_runner=git_runner)
 
 
-def _local_conf_session() -> str | None:
-    """`.project_manager/local.conf` 의 `session=` (없거나 OSError → None).
-
-    board.py 를 import 하지 않으므로(touches 격리·병렬충돌 회피)
-    `board.local_config().get("session")` 와 *동일 의미*를 stdlib 로 자체 구현한다 —
-    plain `KEY=value`·`#` 주석/빈 줄 무시. 부재/읽기실패는 None(폴백).
-    """
-    conf_file = REPO / ".project_manager" / "local.conf"
-    try:
-        text = file_lock.read_text_shared(conf_file, encoding="utf-8")
-    except OSError:
-        return None
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        if key.strip() == "session":
-            return val.strip() or None
-    return None
-
-
 def _leased_sessions() -> list[str]:
     """lease 장부 state=="leased" 행들의 session 목록 (count-based 유도).
 
@@ -5362,21 +5340,54 @@ def _leased_sessions() -> list[str]:
     return sessions
 
 
+def _registered_repos_for_session(*, board=None) -> "set[str]":
+    """단일-등록 유도용 areas.md 등록 repo 집합 (`_default_session` 전용 — F-002).
+
+    `_load_board()`(보호목록 조회 `_resolve_protected` 와 동형의 단방향 sibling 로더)로 조회한다
+    — board 부재/`registered_repos` 헬퍼 부재/파싱 실패는 빈 set(fail-soft — 유도가 안전하게
+    미발화로 접힌다. 확정 오류로 세션 해소 전체를 죽이지 않는다).
+
+    hermetic 테스트가 이 모듈의 `REPO` 만 tmp 로 재배선하고 `board` 를 주입하지 않으면, 동적
+    로드된 실 board.py 는 **자신의** `__file__` 기준 REPO(=이 저장소의 실 루트)를 써서 tmp REPO
+    와 갈린다 — 그 상태로 `registered_repos()` 를 부르면 실 areas.md 가 hermetic 테스트로
+    샌다. REPO 불일치 시 빈 set 으로 접어 그 오염을 막는다(`pm_config.
+    _refresh_protected_gate_contracts` 의 동일 REPO 대조 가드와 동형).
+    """
+    board_mod = board if board is not None else _load_board()
+    registered = getattr(board_mod, "registered_repos", None) if board_mod else None
+    if registered is None:
+        return set()
+    board_repo = getattr(board_mod, "REPO", REPO)
+    if Path(board_repo).resolve() != REPO.resolve():
+        return set()
+    try:
+        return set(registered())
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 유도 실패는 미발화(다음 tail 로).
+        if _is_engine_rev_skew(exc):
+            raise
+        return set()
+
+
 def _default_session() -> str:
     """세션 식별자 기본값 — board.py `session_name()` 과 *동형* 우선순위:
     `$PM_SESSION_NAME` env > `$CLAUDE_SESSION_NAME` env(deprecated alias·silent) >
     lease 장부 state=="leased" 행이 정확히 1개면 그 session (단일-lease 유도) >
-    (장부 부재·leased 0 = solo) `local.conf session=` > `<host>-<pid>`.
+    areas.md 등록 repo 정확히 1개 && lease 장부 구조적 0행(단일-등록 유도·공유 술어·F-002) >
+    `<host>-<pid>`.
 
     `PM_SESSION_NAME` 이 정식 엔진 변수(하니스 무관)·`CLAUDE_SESSION_NAME` 은 구 alias
-    (둘 다면 PM 승·조용히 동작). **leased ≥2 (모호)면 local.conf 층을 건너뛰고 `<host>-<pid>` 로
-    간다**(board.session_name 과 동형 — 저장 쪽지로 남의 세션 행세 차단).
+    (둘 다면 PM 승·조용히 동작). **per-clone `local.conf session=` 층은 없다**
+    (board.session_name 과 동형 — 저장 쪽지로 남의 세션 행세 차단).
 
     board.session_name 과 **tail 만 다르다**: 여기는 lease *취득*의 국소 임시 명명이라 미해소를
     None/fail 로 두지 않고 `<host>-<pid>` 로 폴백한다(host-pid 최종 폴백은 세션-귀속
-    아닌 국소 용처에만 잔존). board.py 를 import 하지 않으므로(touches
-    격리·병렬충돌 회피) 같은 해소를 자체 구현한다. 저장측(여기)과 매칭측(board.session_name)이
-    어긋나면 per-slot test_cmd 가 미스되므로 세 모듈을 같은 우선순위로 통일한다.
+    아닌 국소 용처에만 잔존). board.py 를 top-level import 하지 않으므로(touches 격리·병렬충돌
+    회피) 리스 카운팅은 자체 구현하지만, 단일-등록 유도 술어(`identity_args.
+    single_registration_session`)는 board.session_name·pm_config._default_session 과 **공유**
+    한다(F-002 — 격리 실측에서 이 층이 board 에만 있으면 bare claim 이 저장한 `claimed_by` 의
+    `<repo>_1` 과 이후 첫 slot 생성이 여기서 저장하는 `<host>-<pid>` 가 갈려, claim 이 "mine"
+    필터에서 사라졌다). registered repo 집합은 `_registered_repos_for_session()`(동적 board
+    로더)으로 얻는다 — areas.md 파싱 자체를 이 모듈이 재구현하지 않는다.
     """
     env = os.environ.get("PM_SESSION_NAME") or os.environ.get("CLAUDE_SESSION_NAME")
     if env:
@@ -5384,12 +5395,13 @@ def _default_session() -> str:
     leased = _leased_sessions()
     if len(leased) == 1:
         return leased[0]
-    if not leased:
-        # 장부 부재·leased 0 = solo → legacy local.conf 폴백 (후방호환).
-        conf_sess = _local_conf_session()
-        if conf_sess:
-            return conf_sess
-    # leased ≥2 (모호) 또는 solo 무바인딩 → 국소 임시 명명 host-pid (lease 취득 전용 잔존).
+    # leased 0(무바인딩) 또는 ≥2(모호) → 단일-등록 유도 시도(공유 술어 — F-002). 손상 장부는
+    # identity_args.lease_row_count 가 None 을 내 이 술어가 스스로 미발화한다(F-001 공유).
+    derived = _identity_args.single_registration_session(
+        _registered_repos_for_session(), LEASES_FILE)
+    if derived:
+        return derived
+    # leased 0(무바인딩) 또는 ≥2(모호) → 국소 임시 명명 host-pid (lease 취득 전용 잔존).
     import socket
     return f"{socket.gethostname()}-{os.getpid()}"
 
@@ -5552,7 +5564,7 @@ def _resolve_current_slot(slot_arg: str | None) -> str:
       1. `slot_arg` 명시(빈 문자열 포함) → `_normalize_slot`(main 의 명시 --repo/--slot 조립·
          권장 경로).
       2. cwd 가 슬롯 worktree 안이면 그 슬롯(`_slot_from_cwd`).
-      3. 세션(`_default_session`·env/local.conf 유입)이 보유한 leased 슬롯 — 정확히 1개면 그것.
+      3. 세션(`_default_session`·env/단일-lease 유입)이 보유한 leased 슬롯 — 정확히 1개면 그것.
 
     3에서 매칭 leased 슬롯이 0개(무바인딩)이거나 ≥2(모호)면 `SlotResolutionError` raise — CLI
     main 이 rc 1 + `--repo/--slot` 안내로 surface 한다(침묵 오타깃 금지). 이 해소는 dev/sync

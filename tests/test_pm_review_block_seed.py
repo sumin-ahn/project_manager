@@ -46,6 +46,10 @@ def _schema_literal_findings(pd, text: str) -> list[tuple[str, int]]:
         "disposition-keys": pd.PM_REVIEW_DISPOSITION_KEYS,
         "classes": pd.PM_REVIEW_CLASSES,
         "confirmation-states": pd.PM_REVIEW_CONFIRMATION_STATES,
+        # T-0786 — dev 재현 커맨드(verify) / PM 기계 확인(machine confirmation) 블록.
+        "verify-keys": pd.PM_REVIEW_VERIFY_ROW_KEYS,
+        "verify-reasons": pd.PM_REVIEW_VERIFY_REASONS,
+        "machine-confirmation-keys": pd.PM_REVIEW_MACHINE_CONFIRMATION_ROW_KEYS,
     }
     findings: list[tuple[str, int]] = []
     offset = 0

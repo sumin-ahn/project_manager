@@ -106,9 +106,20 @@ PM-direct는 이 루프 대신 PM 구현·self-review·범위 테스트를 거�
 3. **클래스 전수 열거 의무.** dev 는 구현 전에 결함 클래스의 인스턴스를 진입점·플랫폼·실패 모드·호출 경로 축으로 전수 나열해 보고하고 전부 처리한다. 보고된 형상만 처리한 결과는 미완이다. 전수 열거가 불가능하면 그 사실과 열거 경계를 보고한다. 클래스는 해당 결함의 클래스에 한정하며 티켓 밖 기능으로 스코프를 확대하지 않는다. 완료 보고에는 열거한 인스턴스 목록과 각각의 처리를 포함하며, 목록이 없으면 PM 이 반려한다.
 4. **역방향 확인 의무.** dev 는 고침이 반대 방향 실패를 만들지 않았는지 단언한다. 느슨함을 조인 fix 는 과결속을, 조임을 푼 fix 는 누락을, 차단을 추가한 fix 는 정상 사용 차단을 각각 확인한다.
 5. **finding/disposition 장부.** 두 블록의 스키마 단일 진실은 **엔진 파서 상수**이며 엔진이 골격을 공급한다 — 카드·스킬·프롬프트·이 문서에 키·분류·상태 낱말을 복제하지 않는다(복제본은 drift 한다). reviewer는 엔진이 시드한 리뷰 골격을 채워 안정 ID로 결함을 남기고, 확인 라운드는 골격이 프리필한 ID를 먼저 판정한 뒤 신규 결함만 새 ID로 분리한다. PM은 `pm_delegate.py review disposition-template --ticket T-NNNN`이 낸 판정 골격의 판정·사유·developer 허용 범위·선행 조건 자리를 채워 라운드 파일 밖 명세의 PM 영역에 붙인다. 설계 변경을 요구하는 finding은 권위 ticket/spec/ADR를 먼저 개정하지 않으면 결정 대기다. finding 0은 reviewer 통과+0건 선언과 PM 판정 한 건으로 끝낸다.
-6. **accepted-only delta + 세션 재사용.** `python3 .project_manager/tools/pm_delegate.py review delta --ticket T-NNNN` 출력만 fix 프롬프트에 붙인다. renderer는 accepted ID의 원문 필드와 PM scope만 내며 rejected는 제외한다. 미판정·decision-required는 전체 delta를 차단하고, 같은 accepted ID가 2회 연속 unresolved/regressed면 추가 loop 대신 architect 재설계 또는 티켓 분할을 처방한다. accepted 0/finding 0은 성공+빈 stdout이라 developer를 재투입하지 않는다. fix 라운드는 이 delta를 `pm_delegate --resume-from <T-NNNN>` 으로 **직전 dev 세션에 재사용**하는 것이 기본이다. reviewer 전문·rejected/decision-required 원문을 developer에게 다시 보내지 않는다.
-7. **내부 라운드 상한 3.** 추가 리뷰어 게이트와 동형 — 3라운드에 수렴하지 않으면 라운드 추가가 아니라 재설계·티켓 분할로 전환한다.
-8. **작업 중단 사유 판정.** 유효 집합 3항목만 작업 중단 사유로 인정한다. 무효 집합 5항목으로 중단하면 규약 위반이다. 각 항목은 조건과 결론을 함께 판정한다.
+6. **accepted-only delta + 세션 재사용.** `python3 .project_manager/tools/pm_delegate.py review delta --ticket T-NNNN` 출력만 fix 프롬프트에 붙인다. renderer는 accepted ID의 원문 필드와 PM scope만 내며 rejected는 제외한다. 미판정·decision-required는 전체 delta를 차단하고, 같은 accepted ID가 2회 연속 unresolved/regressed면 추가 loop 대신 architect 재설계 또는 티켓 분할을 처방한다. accepted 0/finding 0은 성공+빈 stdout이라 developer를 재투입하지 않는다. fix 라운드는 이 delta를 `pm_delegate --resume-from <T-NNNN>` 으로 **직전 dev 세션에 재사용**하는 것이 기본이다. reviewer 전문·rejected/decision-required 원문을 developer에게 다시 보내지 않는다. accepted 의 해소는 reviewer 확인 라운드 또는 **PM 기계 확인**(dev 가 라운드에 남긴 재현 커맨드를
+   PM 이 직접 실행해 관측값과 함께 명세에 기록)으로 성립하며, 둘은 같은 확인 이력에 합류해 2회 연속
+   미해소 규칙을 똑같이 받는다.
+7. **내부 라운드 상한 3.** 추가 리뷰어 게이트와 동형이며, 상한이 세는 것은 **reviewer 스폰
+   라운드**(장부에 예약이 남는 실행)다. PM 기계 확인은 스폰이 없어 장부에 기록되지 않으므로 상한
+   계산에 들어가지 않는다. 3라운드에 수렴하지 않으면 라운드 추가가 아니라 재설계·티켓 분할로
+   전환한다.
+8. **확인은 기계가 먼저.** fix 라운드 산출에는 accepted finding 마다 재현 커맨드·기대값·fix 전
+   실값이 엔진 골격으로 실린다. PM 은 그 커맨드를 직접 실행해 관측값과 함께 명세에 확인을
+   기록한다(골격은 엔진이 낸다 — 커맨드를 손으로 옮겨 적지 않는다). reviewer 재투입은 엔진이
+   계산한 기계 판정 불가 목록(설계 축 finding · dev 가 닫힌 사유로 선언한 행)에만 연다. 재투입한
+   확인 라운드는 해소 확인 전용이고 신규 탐색 범위는 그 fix diff 로 제한한다. 재현 커맨드는
+   메타문자 없는 단일 비파괴 명령이어야 하며, 그 밖이면 실행하지 않고 fix 라운드를 반려한다.
+9. **작업 중단 사유 판정.** 유효 집합 3항목만 작업 중단 사유로 인정한다. 무효 집합 5항목으로 중단하면 규약 위반이다. 각 항목은 조건과 결론을 함께 판정한다.
 
    **유효 집합.**
    - **사용자 명시 지시**: 조건: 사용자가 세션 종료 또는 작업 중단을 명시해 지시한 경우. 결론: 작업 중단 가능.
@@ -129,6 +140,13 @@ PM-direct는 이 루프 대신 PM 구현·self-review·범위 테스트를 거�
    - **종료·축소 권한**: 조건: 세션 종료 또는 작업 축소를 결정하는 경우. 결론: 세션 종료·작업 축소는 사용자 지시로만 한다.
 
 wave 중 완료 부기는 `ticket_finish --no-pytest` + 지정 회귀 실측 근거가 표준이다(전량 검증은 릴리즈 절차 1단계가 담당).
+
+10. **처방 밖 수정 금지·빈틈은 보고.** fix 라운드에서 고칠 수 있는 것은 `review delta` 가 낸 finding ID 와
+    각 허용 수정 범위뿐이다. 그 제약과 빈틈 보고 형식은 delta 렌더러가 출력 끝에 함께 싣는다 — 카드·스킬·
+    프롬프트에 같은 문장을 복제하지 않고, PM 은 렌더된 출력을 발췌하지 않고 그대로 fix 프롬프트에 붙인다.
+    처방대로 따르면 다른 결함이 생기는 상호작용을 developer 가 발견하면 스스로 메우지 않고 라운드 파일에
+    빈틈을 적고 종료한다. 그 라운드는 산출 있는 정상 종료이고 다음 행동은 PM 의 보강 처방 또는 architect
+    재설계다. 같은 처방을 그대로 다시 보내면 같은 빈틈에서 다시 멈춘다.
 
 ### 추가 리뷰어 교차검증 (표준 리뷰 게이트)
 

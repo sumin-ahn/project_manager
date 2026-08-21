@@ -12,9 +12,11 @@ pm_log.py 는 227줄·직접 테스트 0 이었다. log/current.md 의 entry 분
 """
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import re
+import subprocess
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -933,6 +935,354 @@ def _snapshot_home(tmp_path: Path, *, tasks=("main",), lease_session="main"):
     return pm_home, cwd
 
 
+# ── 진행 중 작업 절 픽스처 헬퍼 (T-0787) ────────────────────────────────────
+
+def _seed_delegate_rounds(pm_home: Path, rows: list[dict]) -> Path:
+    """`_snapshot_home` 픽스처 위에 delegate-rounds 장부를 얹는다."""
+    ledger = pm_home / ".project_manager" / ".local" / "delegate-rounds.jsonl"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    body = "\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
+    ledger.write_text(body + ("\n" if rows else ""), encoding="utf-8")
+    return ledger
+
+
+def _seed_raw_ledger(pm_home: Path, records: list[dict]) -> Path:
+    """`_snapshot_home` 픽스처 위에 raw 장부를 얹는다."""
+    ledger = pm_home / ".project_manager" / ".local" / "raw_outputs.json"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(
+        json.dumps({"version": 1, "records": records}, ensure_ascii=False), encoding="utf-8",
+    )
+    return ledger
+
+
+def _delegate_row(
+    tmp_path: Path, ticket: str, *, ordinal: int = 1, role: str = "architect",
+    harvested_at: str | None = None, prepared_at: str = "2026-08-21T00:00:00.000000+00:00",
+) -> dict:
+    return {
+        "ticket": ticket, "role": role, "ordinal": ordinal,
+        "run_id": "a" * 32, "copy": str(tmp_path / f"{ticket}-{role}-{ordinal}.md"),
+        "board_rel": f"wiki/tickets/rounds/{ticket}/{role}-{ordinal}.md",
+        "prepared_at": prepared_at, "harvested_at": harvested_at,
+    }
+
+
+def _raw_record(
+    tmp_path: Path, record_id: str, *, started_at: str = "2026-08-21T00:00:00.000000+00:00",
+    finished_at: str | None = None,
+) -> dict:
+    return {
+        "id": record_id, "surface": "delegate", "harness": "codex", "model": "gpt",
+        "role": "architect", "attempt": "1", "pid": 999, "started_at": started_at,
+        "raw_path": str(tmp_path / f"raw-{record_id}.txt"), "finished_at": finished_at,
+    }
+
+
+def test_inflight_section_surfaces_unharvested_raw_claimed_and_wip(tmp_path):
+    """T-0787 — 존재 형상: 미회수·미마감 raw·claimed·슬롯 WIP 네 항목이 실값으로 편입된다."""
+    mod = _load_module()
+    pm_home, cwd = _snapshot_home(tmp_path)
+    _seed_delegate_rounds(pm_home, [
+        _delegate_row(tmp_path, "T-0787"),
+        _delegate_row(tmp_path, "T-0786", harvested_at="2026-08-20T00:00:00.000000+00:00"),
+    ])
+    _seed_raw_ledger(pm_home, [_raw_record(tmp_path, "r1")])
+    claimed_dir = pm_home / ".project_manager" / "board" / "tickets" / "claimed"
+    (claimed_dir / "T-9999-extra.md").write_text("fixture\n", encoding="utf-8")
+
+    text, warning = mod.build_snapshot(pm_home, cwd)
+
+    assert warning is None
+    assert "## 진행 중 작업 (장부 실측)" in text
+    # T-0786 은 harvested_at 이 있어 미회수 집계에서 제외된다(1건만).
+    assert "미회수 라운드 준비 1건: T-0787 architect#1" in text
+    assert "미마감 위임 raw 1건:" in text and "delegate/codex" in text
+    assert "claimed 티켓 2건: T-0000-fixture · T-9999-extra" in text
+    assert "슬롯 WIP: work/product_1" in text
+
+
+def test_inflight_section_absent_ledgers_render_zero_counts(tmp_path):
+    """T-0787 — 부재 형상: 장부가 없어도 0건으로 표기되고 rc·warning 은 정상이다."""
+    mod = _load_module()
+    pm_home, cwd = _snapshot_home(tmp_path)
+
+    text, warning = mod.build_snapshot(pm_home, cwd)
+
+    assert warning is None
+    assert "미회수 라운드 준비 0건" in text
+    assert "미마감 위임 raw 0건" in text
+    assert "claimed 티켓 1건: T-0000-fixture" in text  # _snapshot_home 기본 claimed=1
+    assert "슬롯 WIP: work/product_1" in text
+
+
+def test_inflight_section_absorbs_corrupt_delegate_ledger_as_one_line(tmp_path, capsys):
+    """T-0787 — fail-soft(손상): 비-UTF8 장부도 절 하나만 1줄로 접고 다른 절은 온전하다."""
+    mod = _load_module()
+    pm_home, cwd = _snapshot_home(tmp_path)
+    ledger = pm_home / ".project_manager" / ".local" / "delegate-rounds.jsonl"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_bytes(b"\xff\xfe \xf8\xa1\xa1\xa1\xa1 not valid utf-8\n")
+
+    text, warning = mod.build_snapshot(pm_home, cwd)
+
+    assert warning is None and text is not None
+    assert "## 진행 중 작업 (장부 실측)\n- 조회 실패:" in text
+    assert "## 장부 포인터" in text and "## pm_state" in text and "## 복구 포인터" in text
+    assert "조회 실패" in capsys.readouterr().err
+
+
+def test_inflight_section_absorbs_module_load_failure_as_one_line(tmp_path, monkeypatch, capsys):
+    """T-0787 — fail-soft(형제 부재): 로드 실패도 절 하나만 1줄로 접는다."""
+    mod = _load_module()
+    pm_home, cwd = _snapshot_home(tmp_path)
+
+    def _boom():
+        raise FileNotFoundError("pm_delegate.py 형제 부재(시뮬레이션)")
+
+    monkeypatch.setattr(mod, "_load_pm_delegate", _boom)
+    text, warning = mod.build_snapshot(pm_home, cwd)
+
+    assert warning is None and text is not None
+    assert "## 진행 중 작업 (장부 실측)\n- 조회 실패:" in text
+    assert "## 장부 포인터" in text and "## pm_state" in text
+    assert "조회 실패" in capsys.readouterr().err
+
+
+def test_inflight_section_absorbs_engine_rev_skew_and_labels_it(tmp_path, monkeypatch, capsys):
+    """T-0787 — fail-soft(사본 skew): 재-raise 하지 않고 등록 경계에서 흡수해 표출한다."""
+    mod = _load_module()
+    pm_home, cwd = _snapshot_home(tmp_path)
+
+    def _boom():
+        err = RuntimeError("엔진 사본 버전 불일치(시뮬레이션)")
+        err._engine_rev_skew = True
+        raise err
+
+    monkeypatch.setattr(mod, "_load_pm_delegate", _boom)
+    text, warning = mod.build_snapshot(pm_home, cwd)
+
+    assert warning is None and text is not None
+    assert "엔진 사본 불일치" in text
+    stderr = capsys.readouterr().err
+    assert "진행 중 작업" in stderr and "엔진 사본 불일치" in stderr
+
+
+def test_inflight_raw_query_never_enters_ledger_lock(tmp_path, monkeypatch):
+    """T-0787 — 무락 단언: 진행 중 작업 절의 raw 조회는 `_raw_ledger_lock` 에 진입하지 않는다."""
+    mod = _load_module()
+    pm_home, cwd = _snapshot_home(tmp_path)
+    _seed_raw_ledger(pm_home, [_raw_record(tmp_path, "r1")])
+    real_relay = mod._load_pm_relay()
+
+    @contextlib.contextmanager
+    def _fail_if_locked(*_a, **_k):
+        pytest.fail("진행 중 작업 절의 raw 조회가 배타 파일락에 진입함(lock=False 계약 위반)")
+        yield  # pragma: no cover — 도달하면 이미 실패
+
+    monkeypatch.setattr(real_relay, "_raw_ledger_lock", _fail_if_locked)
+    monkeypatch.setattr(mod, "_load_pm_relay", lambda: real_relay)
+
+    text, warning = mod.build_snapshot(pm_home, cwd)
+
+    assert warning is None
+    assert "미마감 위임 raw 1건" in text
+
+
+def test_inflight_section_folds_pathological_counts_within_line_and_section_caps(tmp_path):
+    """T-0787 — cap/truncate: 미회수 500·claimed 300 에서도 줄·절·전체 상한을 지킨다."""
+    mod = _load_module()
+    pm_home, cwd = _snapshot_home(tmp_path)
+    rows = [_delegate_row(tmp_path, f"T-{index:04d}") for index in range(500)]
+    _seed_delegate_rounds(pm_home, rows)
+    claimed_dir = pm_home / ".project_manager" / "board" / "tickets" / "claimed"
+    for index in range(300):
+        (claimed_dir / f"T-{index + 5000:04d}-extra.md").write_text("f\n", encoding="utf-8")
+
+    text, warning = mod.build_snapshot(pm_home, cwd)
+
+    assert warning is None and text is not None
+    assert len(text) <= mod.SNAPSHOT_MAX_CHARS
+    assert len(text.encode("utf-8")) <= mod.SNAPSHOT_MAX_BYTES
+    section = text.split("## 진행 중 작업 (장부 실측)\n", 1)[1].split("\n## ", 1)[0]
+    for line in section.splitlines():
+        assert len(line) <= mod._INFLIGHT_MAX_LINE_CHARS
+    assert section.count("\n") <= mod._INFLIGHT_MAX_LINES
+    assert "외 497건" in text  # 500건 중 3건만 나열
+    assert "claimed 티켓 301건" in text  # 기본 1 + 신규 300
+    assert "## pm_state" in text and "## 복구 포인터" in text
+
+
+def test_snapshot_cap_keeps_hearsay_when_identity_alone_is_oversized(tmp_path):
+    """T-0787 F-001 — 총량 cap 경로: identity 가 거의 상한을 채워도 전언 경고는 always-keep."""
+    mod = _load_module()
+    pm_home, cwd = _snapshot_home(tmp_path)
+    oversized = mod._SNAPSHOT_IDENTITY_HEADING + "\n" + ("x" * 7_900)  # 리뷰 repro(7,942c) 규모
+    monkeypatch_target = mod._identity_section
+    mod._identity_section = lambda *_a, **_k: oversized
+    try:
+        text, warning = mod.build_snapshot(pm_home, cwd)
+    finally:
+        mod._identity_section = monkeypatch_target
+
+    assert warning is None and text is not None
+    assert "전언 경고" in text
+    assert len(text) <= mod.SNAPSHOT_MAX_CHARS
+    assert len(text.encode("utf-8")) <= mod.SNAPSHOT_MAX_BYTES
+
+
+def test_snapshot_cap_keeps_hearsay_when_ctx_diagnostic_is_oversized(tmp_path):
+    """T-0787 F-001 — oversized ctx 진단(전체 상한보다 큰 mismatch)에서도 전언 경고가 산다."""
+    mod = _load_module()
+    pm_home, cwd = _snapshot_home(tmp_path)
+    huge_mismatch = "## ctx 설정 진단 (compaction 경계)\n" + ("한" * 9_000) + "\n"
+    monkeypatch_target = mod._latest_ctx_window_mismatch_section
+    mod._latest_ctx_window_mismatch_section = lambda *_a, **_k: huge_mismatch
+    try:
+        text, warning = mod.build_snapshot(pm_home, cwd)
+    finally:
+        mod._latest_ctx_window_mismatch_section = monkeypatch_target
+
+    assert warning is None and text is not None
+    assert "전언 경고" in text
+    assert len(text) <= mod.SNAPSHOT_MAX_CHARS
+    assert len(text.encode("utf-8")) <= mod.SNAPSHOT_MAX_BYTES
+
+
+def test_wip_slot_line_recomputes_remaining_budget_per_probe_call(tmp_path):
+    """T-0787 F-002 — 각 프로브 직전 잔여를 재계산 — 누적 timeout 합이 최초 잔여를 넘지 않는다."""
+    mod = _load_module()
+    fake_targets = [
+        ("slot-a", tmp_path / "a"), ("slot-b", tmp_path / "b"), ("slot-c", tmp_path / "c"),
+    ]
+    orig_targets = mod._wip_probe_targets
+    orig_probe = mod._git_status_counts
+    clock = [0.0]
+
+    def fake_monotonic():
+        return clock[0]
+
+    calls: list[float] = []
+
+    def fake_git_status_counts(_path, timeout):
+        calls.append(timeout)
+        clock[0] += timeout  # 최악의 hang(=timeout 전량 소요)을 흉내낸다.
+        return None
+
+    mod._wip_probe_targets = lambda *_a, **_k: (fake_targets, 0)
+    mod._git_status_counts = fake_git_status_counts
+    try:
+        initial_remaining = 0.5
+        line = mod._wip_slot_line(
+            tmp_path, "main", deadline=initial_remaining, monotonic=fake_monotonic,
+        )
+    finally:
+        mod._wip_probe_targets = orig_targets
+        mod._git_status_counts = orig_probe
+
+    assert sum(calls) <= initial_remaining + 1e-9
+    assert len(calls) < len(fake_targets)  # 첫 호출이 예산을 다 써 나머지는 spawn 되지 않는다.
+    assert "예산 소진" in line
+
+
+def test_inflight_raw_field_newlines_do_not_forge_headings_or_exceed_line_cap(tmp_path):
+    """T-0787 F-003 — raw 장부 필드의 개행이 가짜 heading 주입·줄 수 상한 우회를 못 한다."""
+    mod = _load_module()
+    pm_home, cwd = _snapshot_home(tmp_path)
+    forged_started_at = "2026-08-21T00:00:00\n" + "\n".join(
+        f"## forged-{index}" for index in range(8)
+    )
+    _seed_raw_ledger(pm_home, [{
+        "id": "r1", "surface": "delegate\n## forged-surface", "harness": "codex",
+        "model": "gpt", "role": "architect", "attempt": "1", "pid": 1,
+        "started_at": forged_started_at, "raw_path": str(tmp_path / "raw.txt"),
+    }])
+
+    text, warning = mod.build_snapshot(pm_home, cwd)
+
+    assert warning is None and text is not None
+    headings = [line for line in text.splitlines() if line.startswith("## ")]
+    assert headings == [
+        mod._SNAPSHOT_IDENTITY_HEADING,
+        "## 전언 경고 (요약 속 단언은 미검증)",
+        "## 장부 포인터",
+        "## 진행 중 작업 (장부 실측)",
+        f"## pm_state 머리 ({mod.SNAPSHOT_PM_STATE_LINES}줄 상한)",
+        "## 복구 포인터",
+    ]
+    section = text.split("## 진행 중 작업 (장부 실측)\n", 1)[1].split("\n## ", 1)[0]
+    assert section.count("\n") <= mod._INFLIGHT_MAX_LINES
+    for line in section.splitlines():
+        assert len(line) <= mod._INFLIGHT_MAX_LINE_CHARS
+
+
+def test_inflight_section_multiline_exception_does_not_forge_headings(tmp_path, monkeypatch):
+    """T-0787 F-003 — fail-soft 절의 예외 사유에 개행이 섞여도 heading 주입이 없다."""
+    mod = _load_module()
+    pm_home, cwd = _snapshot_home(tmp_path)
+
+    def _boom():
+        raise RuntimeError("bad ledger\n## forged-exc-1\n## forged-exc-2")
+
+    monkeypatch.setattr(mod, "_load_pm_delegate", _boom)
+    text, warning = mod.build_snapshot(pm_home, cwd)
+
+    assert warning is None and text is not None
+    headings = [line for line in text.splitlines() if line.startswith("## ")]
+    assert "## forged-exc-1" not in headings and "## forged-exc-2" not in headings
+    section = text.split("## 진행 중 작업 (장부 실측)\n", 1)[1].split("\n## ", 1)[0]
+    assert section.count("\n") <= mod._INFLIGHT_MAX_LINES
+
+
+def test_wip_probe_targets_reserve_pm_home_seat_when_leased_slots_exceed_cap(
+    tmp_path, monkeypatch,
+):
+    """T-0787 F-004 — leased 슬롯이 상한보다 많아도 PM 홈이 밀려나지 않고 생략 수를 돌려준다."""
+    mod = _load_module()
+    pm_home = tmp_path / "pm-home-distinct"
+    fake_slots = [(f"slot-{letter}", tmp_path / f"slot-{letter}") for letter in "abcd"]
+    monkeypatch.setattr(mod, "_lease_task_slots", lambda *_a, **_k: fake_slots)
+
+    targets, skipped = mod._wip_probe_targets(pm_home, "main")
+
+    assert len(targets) == mod._WIP_PROBE_MAX_CALLS
+    assert targets[-1][0] == "PM 홈"
+    assert skipped == len(fake_slots) - (mod._WIP_PROBE_MAX_CALLS - 1)
+
+
+def test_wip_slot_line_surfaces_skipped_slot_count_without_spawning(tmp_path, monkeypatch):
+    """T-0787 F-004 — 상한 때문에 못 본 leased 슬롯은 spawn 없이 "외 N개(프로브 생략)"로 남는다."""
+    mod = _load_module()
+    pm_home = tmp_path / "pm-home-distinct"
+    fake_slots = [(f"slot-{letter}", tmp_path / f"slot-{letter}") for letter in "abcd"]
+    monkeypatch.setattr(mod, "_lease_task_slots", lambda *_a, **_k: fake_slots)
+    probe_calls: list[Path] = []
+
+    def fake_git_status_counts(path, _timeout):
+        probe_calls.append(path)
+        return (0, 0, 0)
+
+    monkeypatch.setattr(mod, "_git_status_counts", fake_git_status_counts)
+
+    line = mod._wip_slot_line(pm_home, "main", deadline=10.0, monotonic=lambda: 0.0)
+
+    assert "PM 홈" in line
+    assert f"외 2개(프로브 생략)" in line
+    assert len(probe_calls) == mod._WIP_PROBE_MAX_CALLS
+
+
+def test_snapshot_max_bytes_fits_opencode_channel_cap():
+    """T-0787 — 채널 상한 파리티: SNAPSHOT_MAX_BYTES ≤ opencode spawnSync `maxBuffer` 실값."""
+    mod = _load_module()
+    source = (
+        REPO / "templates" / "opencode" / ".opencode" / "lib" / "ctx-guard-core.cjs"
+    ).read_text(encoding="utf-8")
+    match = re.search(r"maxBuffer:\s*(\d+)\s*\*\s*(\d+)", source)
+    assert match, "opencode maxBuffer 상수를 찾지 못함 — ctx-guard-core.cjs 형식 확인"
+    opencode_max_buffer = int(match.group(1)) * int(match.group(2))
+    assert mod.SNAPSHOT_MAX_BYTES <= opencode_max_buffer
+
+
 def test_snapshot_resolves_cwd_lease_before_multiple_active_tasks(tmp_path):
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path, tasks=("doc", "main"), lease_session="main")
@@ -962,10 +1312,14 @@ def test_snapshot_single_active_task_fallback_and_multi_task_skip(tmp_path):
     assert "정체성 미해소" in warning2
 
 
-def test_solo_legacy_identity_emits_snapshot_and_records_compaction_checkpoint(
+def test_legacy_state_identity_emits_snapshot_and_records_compaction_checkpoint(
     tmp_path, monkeypatch, capsys,
 ):
-    """task/lease 장부 없는 신규 solo도 local.conf+legacy state로 두 경계를 모두 살린다."""
+    """task/lease 장부 없는 legacy 형상은 pm_state 층으로 두 경계를 모두 살린다.
+
+    per-clone `local.conf session=` 은 층이 아니다(T-0779) — conf 에 그 키가 남아 있어도
+    해소는 legacy pm_state 로 간다.
+    """
     mod = _load_module()
     pm_home = tmp_path / "solo"
     manager = pm_home / ".project_manager"
@@ -991,7 +1345,7 @@ def test_solo_legacy_identity_emits_snapshot_and_records_compaction_checkpoint(
     payload = json.loads(capsys.readouterr().out)
     snapshot = payload["systemMessage"]
     assert payload["suppressOutput"] is False
-    assert "- task: pm" in snapshot and "- 해소: solo local.conf" in snapshot
+    assert "- task: pm" in snapshot and "- 해소: legacy pm_state" in snapshot
     assert f"- pm_state: {legacy_state}" in snapshot
     assert "# Solo PM state" in snapshot and "--task pm" not in snapshot
 
@@ -1007,14 +1361,17 @@ def test_solo_legacy_identity_emits_snapshot_and_records_compaction_checkpoint(
     assert not (manager / ".local" / "tasks").exists()
 
 
-def test_snapshot_timeout_returns_identity_section_only(tmp_path):
+def test_snapshot_timeout_returns_identity_and_hearsay_only(tmp_path):
+    """T-0787 — timeout 우선순위: 첫 deadline 초과에도 전언 경고는 always-keep 접두로 산다."""
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
     ticks = iter((10.0, 13.1))
     text, warning = mod.build_snapshot(pm_home, cwd, monotonic=lambda: next(ticks))
     assert warning is None
     assert text.startswith(mod._SNAPSHOT_IDENTITY_HEADING)
-    assert "## 장부 포인터" not in text and "## pm_state" not in text
+    assert mod.SNAPSHOT_HEARSAY_WARNING.rstrip("\n") in text
+    assert "## 장부 포인터" not in text and "## 진행 중 작업" not in text
+    assert "## pm_state" not in text
 
 
 def test_snapshot_distinguishes_log_read_failure_and_explicit_retry_payload(
@@ -1318,16 +1675,34 @@ def test_cmd_checkpoint_dedup_io_failure_warns_but_appends(
 
 def test_cmd_snapshot_reads_ledgers_without_subprocess_and_json_envelope_is_single_object(
         tmp_path, monkeypatch, capsys):
+    """장부 조회(ticket copies·raw·claimed)는 spawn 0 — WIP 프로브만 상한 내 예외로 허용한다.
+
+    T-0787 이전엔 어떤 ``subprocess.run`` 호출도 즉시 fail 이었다. WIP git 프로브 도입 이후에도
+    가드는 죽지 않는다 — "장부 조회는 spawn 0" 으로 **좁혀서** 재단언한다(가드 삭제 금지).
+    """
     mod = _load_module()
     pm_home, cwd = _snapshot_home(tmp_path)
     monkeypatch.setattr(mod, "REPO", pm_home)
-    monkeypatch.setattr(
-        mod.subprocess, "run", lambda *a, **k: pytest.fail("snapshot builder must not spawn"))
+    probe_calls: list[list[str]] = []
+
+    def _fake_run(argv, **kwargs):
+        if argv[:1] != ["git"]:
+            pytest.fail(f"장부 조회가 subprocess 를 spawn 함(spawn 0 계약 위반): {argv!r}")
+        assert "--no-optional-locks" in argv, "WIP 프로브는 --no-optional-locks 필수"
+        assert argv[-2:] == ["status", "--porcelain"]
+        timeout = kwargs.get("timeout")
+        assert timeout is not None and 0 < timeout <= mod._WIP_PROBE_TIMEOUT_SECONDS
+        probe_calls.append(argv)
+        return subprocess.CompletedProcess(argv, 128, stdout="", stderr="fatal: not a git repository")
+
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run)
     args = SimpleNamespace(cwd=str(cwd), state_lines=24, json=True)
     assert mod.cmd_snapshot(args) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["suppressOutput"] is False
     assert payload["systemMessage"].startswith(mod._SNAPSHOT_IDENTITY_HEADING)
+    assert "조회 불가" in payload["systemMessage"]  # WIP 프로브가 fail-soft 로 표기됐는지
+    assert 0 < len(probe_calls) <= mod._WIP_PROBE_MAX_CALLS
 
 
 def test_snapshot_missing_all_ledgers_is_fail_soft_one_line_warning(tmp_path):

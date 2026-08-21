@@ -18,6 +18,7 @@ nested claude 실행은 OAuth 상속(T-0044 PoC 확증) — SDK 없이 CLI subpr
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -34,6 +35,8 @@ import ctx_guard  # noqa: E402  (repo_root 재사용 — 같은 디렉토리 어
 CLAUDE_BIN = "claude"
 DEFAULT_MODEL = "claude-opus-5"  # PM 세션 기본 = opus (품질 우선·2026-08-06 사용자 결정). CLI `--model` 로 frugal override 가능.
 TURN_TIMEOUT_SEC = 600  # subprocess 당 hard hang 가드(상한 — 한 turn 이 길 수 있음).
+GIT_ANCHOR_ONCE_NAMESPACE = "git-anchor"  # 세션 1회 발화 멤버십 파일 접미사(엔진 claim_session_once).
+GIT_ANCHOR_ONCE_KEY_CHARS = 16  # 멤버십 키 = 발화 문구 sha256 앞 16자(문구 전문을 파일에 남기지 않는다).
 
 
 def _load_engine():
@@ -131,6 +134,47 @@ def _write_hook_json(output: dict) -> None:
     buffer.flush()
 
 
+def _git_anchor_advisory_text(output: dict) -> str | None:
+    """중복 억제 대상인 **비차단** advisory 본문 (아니면 None).
+
+    deny 는 `permissionDecision` 으로 도구 실행을 실제로 막는다 — 같은 문구가 반복돼도
+    억제하면 두 번째 위험 명령이 그냥 통과한다(가드 약화). 억제 대상은 `additionalContext` 뿐이다.
+    """
+    hook_output = output.get("hookSpecificOutput") if isinstance(output, dict) else None
+    if not isinstance(hook_output, dict) or hook_output.get("permissionDecision"):
+        return None
+    text = hook_output.get("additionalContext")
+    return text if isinstance(text, str) and text else None
+
+
+def _git_anchor_already_emitted(root: Path, payload: dict, output: dict | None) -> bool:
+    """이 세션에서 **문자열이 완전히 같은** advisory 를 이미 냈으면 True (이번 호출은 stdout 0).
+
+    한 번 실린 훅 출력은 그 세션 컨텍스트에 그대로 쌓이므로 같은 문구의 반복 발화는
+    컨텍스트만 태운다([[T-0764]] 실측 — 발화 1,261회 중 52.7% 가 세션 내 완전일치 중복).
+    판정 로직·차단 동작은 건드리지 않고 *같은 말을 두 번 하지 않을* 뿐이다.
+
+    세션키는 훅 stdin 의 `session_id`(엔진 `_sanitize_session_id` 가 파일명 안전화·빈 값은
+    `unknown`)이고 namespace 는 `git-anchor` 고정이라, 다른 세션·다른 경고 클래스의 멤버십과
+    섞이지 않는다. 마커 I/O 실패(None)·비-advisory 는 False — 발화를 유지한다(fail-open).
+    """
+    text = _git_anchor_advisory_text(output) if output is not None else None
+    if text is None:
+        return False
+    try:
+        engine, _engine_root = _load_engine()
+        key = hashlib.sha256(text.encode("utf-8")).hexdigest()[:GIT_ANCHOR_ONCE_KEY_CHARS]
+        claimed = engine.claim_session_once(
+            root,
+            payload.get("session_id") or payload.get("sessionId") or "",
+            GIT_ANCHOR_ONCE_NAMESPACE,
+            key,
+        )
+    except BaseException:  # 멤버십 판정 손상은 훅 판정을 깨지 않는다 — 발화 유지(fail-open).
+        return False
+    return claimed is False
+
+
 def run_git_anchor_hook(root: Path) -> int:
     """stdin JSON을 읽어 Claude hook JSON을 쓰는 얇은 CLI 모드."""
     try:
@@ -148,6 +192,11 @@ def run_git_anchor_hook(root: Path) -> int:
                 "additionalContext": f"[git-anchor/warn] 판정 불가({exc}) — cwd를 직접 확인",
             }
         }
+    else:
+        # 세션 내 완전일치 중복은 낼 것을 비운다 — stdout 0바이트(빈 JSON 도 쓰지 않는다).
+        # 판정 인프라 손상 발화(위 except)는 이 게이트를 지나지 않는다(fail-open 무조건 발화).
+        if _git_anchor_already_emitted(root, payload, output):
+            output = None
     if output is not None:
         _write_hook_json(output)
     return 0

@@ -7,6 +7,57 @@
 
 ## [Unreleased]
 
+## [1.7.8] - 2026-08-22
+
+리뷰·확인 프로세스 기계화 릴리즈 — 리뷰 라운드 수렴 비용(확인 라운드 reviewer 재투입)을 기계 판정으로
+대체하고, 컴팩션 복구 주입을 장부 실측으로 보강한다.
+
+### 업그레이드 노트
+
+- **BREAKING — local.conf `session=`/`prefix=` 폴백 폐지.** solo 전용 분기가 제거되고 정체성 진실은
+  lease 장부와 areas 레지스트리다. 그 두 키만으로 돌던 인스턴스는 조용한 폴백 없이 fail-loud 하며,
+  `board.py init` 재실행이 areas repo 행을 항상 등록한다(마이그레이션·안내 문구는 실행 시 출력).
+  fresh 홈의 첫 `pm-config repo add` 처럼 lease 이전 조작은 `--owner <id>` 또는 `$PM_SESSION_NAME`
+  명시가 필요하다.
+- **추가 리뷰어 구키 4종은 여전히 읽지 않는다(v1.7.7 폐지 유지).** `external_review_enabled` 와 노브
+  `external_review_round_limit`·`external_review_incomplete_round_limit`·`external_review_wave_budget`
+  은 제거됐다 — 신키 `additional_reviewer_enabled`·`additional_reviewer_*` 로만 동작한다.
+- **fix 라운드 산출에 검증 골격이 의무화된다.** developer fix 골격에 accepted finding 별
+  `pm-review-verify-v1` 행(재현 커맨드·기대값·fix 전 실값 — 메타문자 없는 단일 비파괴 명령)이
+  시드되고, PM 이 직접 실행한 기계 확인은 명세 PM 영역의 `pm-review-confirmation-v1` 블록(라운드
+  결속·단조 순서·expected⊆observed)으로 남는다. `pm_delegate.py review verify-template` 이 골격을
+  프리필하며 verify 행 없는 accepted 가 있으면 rc=1 이다. 완료 게이트에 `pm-verified` 처분
+  (`pm_delegate.py rounds resolve --pm-verified`)이 추가되어 reviewer 재스폰 없이 기계 확인 증거
+  (delta 정상 파싱·accepted 0·기계 확인 ≥1 — 완료 시점 라이브 재검증)로 티켓을 닫는다.
+
+### Added
+
+- 리뷰 delta 꼬리에 수정 범위 제약 블록(허용 범위 내 수정·빈틈은 보고-후-종료가 정상 산출) 1회 부착 —
+  fix 라운드 처방 밖 수정을 렌더러 수준에서 봉쇄 (T-0785).
+- 확인 라운드 기계화: verify/confirmation 블록 2종·`review verify-template` CLI·`pm-verified` 완료
+  처분·확인 라운드 스코프 문구 상수(cross charter+native 시드 양 경로) (T-0786).
+- 컴팩션 snapshot 에 전언 경고 절(always-keep — deadline·총량 cap 양 경로 보존)과 진행 중 작업 절
+  (미회수 라운드·미마감 raw·claimed 티켓·슬롯 WIP — 장부 in-process 실측·subprocess 는 WIP git
+  프로브 ≤3회만·deadline 잔여 재계산·제어문자 정규화·줄/절 상한 강제·다중 슬롯 생략 표기) (T-0787).
+- `SNAPSHOT_MAX_BYTES` ≤ opencode 채널 maxBuffer 파리티 가드 신설 (T-0787).
+
+### Changed
+
+- claude_code git-anchor hook 이 같은 세션의 완전일치 중복 경고를 첫 1회만 발화한다(멤버십은 기존
+  `.local/ctx-stop/` 파일 1개·마커 IO 실패는 fail-open 발화 유지) (T-0764).
+- Windows 콘솔 인코딩이 ambient env(`PYTHONUTF8` 등)에 기대지 않고 엔진 코드로 처리된다 — 콘솔
+  reconfigure 연결 가드 포함 (T-0762).
+- 장부 행 검증의 board 모듈 로드가 캐시되어 행별 재-import 가 제거된다 (T-0787).
+- `pm_relay` raw 장부에 무락 읽기 경로(`lock=False`)가 추가된다 — 컴팩션 훅 경로가 배타락을 잡지
+  않는다(기본값 불변) (T-0787).
+
+### Fixed
+
+- solo 전용 분기 잔재로 폐지 키를 안내하던 산문 표면 4곳(부트스트랩 카드·pm_role·manual-import)
+  교정 (T-0779).
+- fix 라운드 delta 렌더·harvest 표시면의 스테일 산문·기대값 다수(전량 회귀에서 검출된 blast-radius
+  잔여 포함 — 스테일 테스트 8건 갱신·엔진 산문 private-ref 22줄 제거).
+
 ## [1.7.7] - 2026-08-19
 
 ### 업그레이드 노트

@@ -1,7 +1,7 @@
 """tests/ 전역 conftest — codex ambient env 중화(autouse) + codex 라이브 하네스 공용 헬퍼 (ADR-0070 T-0407)
-+ 병렬 실행(pytest-xdist) 경고 되살리기 (T-0757).
++ 병렬 실행(pytest-xdist) 경고 되살리기 (T-0757) + pytest 자기 프로세스 UTF-8 reader 선언 (T-0762).
 
-세 관심사를 담는다:
+네 관심사를 담는다:
 
 1. **codex ambient env 중화 (autouse·T-0405 리뷰 forward-note)** — 회귀를 codex 하네스로 돌리면
    (에이전트=codex 세션이 pytest 를 기동) 그 세션의 ambient `CODEX_THREAD_ID`/`CODEX_CI` 가 pytest
@@ -21,6 +21,23 @@
    컨트롤러가 클래스 이름으로 다시 import 해 되살린다. 파일 경로로 연 모듈의 이름은 컨트롤러에
    없어 import 가 실패하고, xdist 가 그 실패를 잡지 않아 경고 한 건이 실행 전체를 INTERNALERROR 로
    죽인다. 아래 ③ 이 그 되살리기를 실패-연성으로 감싼다.
+
+4. **pytest 자기 프로세스 UTF-8 reader 선언 (T-0762)** — Windows 단독 실행(xdist 없음)에서 부모 셸이
+   PowerShell 이면, 엔진 CLI(`board`·`pm_update` 등)의 `main()` 을 in-process 로 호출하는 테스트가
+   `configure_console_utf8()` 을 통해 조상 체인을 PowerShell 캡처로 오판하고 비-tty 인 pytest 캡처
+   스트림을 cp949·`pm_translit` 로 reconfigure 한다 — capsys 경로는 strict UTF-8 디코드에서 즉시
+   깨지고, capsys 없는 테스트는 세션 1회 생성되는 전역 fd capture 가 영구 오염돼 이후 모든
+   setup·teardown 이 error 가 된다(xdist 는 워커 부모가 `python.exe` 라 재현되지 않는다). 엔진은 이미
+   이 캡처 하네스가 UTF-8 reader 임을 선언받는 탈출구를 갖고 있다
+   (`console_encoding._utf8_reader_requested()` — `PYTHONUTF8=1`/`PYTHONIOENCODING=utf-8`). 그
+   탈출구는 자식 env 가 아니라 **호출하는 프로세스 자신의** `os.environ` 을 읽으므로, pytest
+   자기 프로세스에 직접 심어야 발화한다. 아래 ④ 가 모듈 로드 시점(=pytest 프로세스 기동 시점)에
+   1회 선언한다 — Windows 캡처 전환 자체를 검증하는 `tests/test_console_encoding.py` 는
+   `_install_windows()` 헬퍼가 테스트별로 이 값을 `monkeypatch.delenv` 해 지우므로 충돌하지 않는다.
+   **불변식(F-002)**: 이 선언은 `os.environ` 대입이라 이 프로세스가 스폰하는 자식에게도
+   상속된다 — 자식 인코딩(cp949 등)을 검증하는 가드는 이 ambient 를 전제하지 말고 자기
+   env 를 명시해야 한다(현존 3곳은 이미 그렇다 — `test_console_encoding.py`의
+   `_install_windows()`·`test_machine_output_encoding.py:825`·`test_subprocess_encoding.py:17`).
 """
 from __future__ import annotations
 
@@ -31,6 +48,15 @@ import tempfile
 from pathlib import Path
 
 import pytest
+
+# ── ④ pytest 자기 프로세스 UTF-8 reader 선언 (T-0762) ───────────────────────────
+#
+# 모듈 docstring ④절 참고. fixture 가 아니라 모듈 로드 시점 top-level 문이다 — import 시점이
+# 곧 이 pytest 프로세스의 기동 시점이라 어떤 테스트보다도 먼저 선언되고, xdist 워커도 이 파일을
+# 각자 독립 프로세스에서 import 하므로 워커마다 동일하게 선언된다. `_utf8_reader_requested()`
+# 는 `os.environ` 을 직접 읽으므로(모듈 재로드·`cache=False` 두 번 로드와 무관), 여기서 한 번
+# 심으면 그 뒤 어떤 경로로 `configure_console_utf8()` 이 호출돼도 값으로 발화한다.
+os.environ["PYTHONUTF8"] = "1"
 
 # 테스트가 제품의 output_dir 폴백을 밟으면 tempdir에 감사 raw가 영구 누적된다.
 # 세션 기본 tempdir를 pytest 소유 디렉터리로 격리해 다른 checkout/PM 프로세스 출력과 섞지 않는다.

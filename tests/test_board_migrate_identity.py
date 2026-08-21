@@ -61,6 +61,10 @@ def board(tmp_path, monkeypatch):
         monkeypatch.setattr(mod, name, val)
     (pm / ".local").mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(mod, "_git_config_email", lambda: None)
+    # 세션 바인딩은 env 명시로 준다 — per-clone conf `session=` 폴백은 폐지됐고(T-0779),
+    # migrate 는 귀속 쓰기라 미해소면 fail-loud 다.
+    monkeypatch.setenv("PM_SESSION_NAME", "pm-1")
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     return mod
 
 
@@ -104,7 +108,7 @@ _AREAS_EMPTY_OWNER = (
 
 def test_abort_when_user_unresolved(board, capsys):
     """user 미해소(local.conf user= 없음·git 폴백 None)면 rc≠0·쓰기 0."""
-    _write_conf(board, session="pm-1")  # user 키 없음
+    _write_conf(board)  # user 키 없음
     board.AREAS_FILE.write_text(_AREAS_EMPTY_OWNER, encoding="utf-8")
     p = _seed(board, "T-0001", "open")
     before_areas = board.AREAS_FILE.read_text(encoding="utf-8")
@@ -119,7 +123,7 @@ def test_abort_when_user_unresolved(board, capsys):
 
 def test_user_override_unblocks_abort(board, capsys):
     """--user override 면 user 미해소 abort 를 우회하고 그 값으로 backfill."""
-    _write_conf(board, session="pm-1")
+    _write_conf(board)
     _seed(board, "T-0001", "open")
     rc, out, _ = _run(board, capsys, user="alice")
     assert rc == 0
@@ -133,7 +137,7 @@ def test_user_override_unblocks_abort(board, capsys):
 
 def test_areas_empty_owner_backfilled(board, capsys):
     """빈 area_owner 행(PAY)만 user 로 채우고 이미 채워진 행(ACC→bob)은 불변."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     board.AREAS_FILE.write_text(_AREAS_EMPTY_OWNER, encoding="utf-8")
     rc, out, _ = _run(board, capsys)
     assert rc == 0
@@ -149,7 +153,7 @@ def test_areas_empty_owner_backfilled(board, capsys):
 
 def test_areas_no_registry_noop(board, capsys):
     """areas.md 부재(솔로)면 areas 단계는 no-op(에러 없음)."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     _seed(board, "T-0001", "open")
     rc, out, _ = _run(board, capsys)
     assert rc == 0
@@ -162,7 +166,7 @@ def test_areas_no_registry_noop(board, capsys):
 
 def test_ticket_created_by_backfilled_when_absent(board, capsys):
     """부재(키 없음) created_by → user."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     _seed(board, "T-0001", "open")  # created_by 없음
     _run(board, capsys)
     fm, _ = board.load_ticket(board.TICKETS_DIR / "open" / "T-0001-seed.md")
@@ -171,7 +175,7 @@ def test_ticket_created_by_backfilled_when_absent(board, capsys):
 
 def test_ticket_created_by_null_backfilled(board, capsys):
     """None(YAML null) created_by → user (빈 값도 부재 취급)."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     _seed(board, "T-0001", "open", fm_extra={"created_by": None})
     _run(board, capsys)
     fm, _ = board.load_ticket(board.TICKETS_DIR / "open" / "T-0001-seed.md")
@@ -180,7 +184,7 @@ def test_ticket_created_by_null_backfilled(board, capsys):
 
 def test_slot_only_claimed_by_converted(board, capsys):
     """슬롯-only claimed_by(`pm-1`·`/` 없음) → `<user>/pm-1` (슬롯값 보존·user prepend)."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     _seed(board, "T-0005", "claimed",
           fm_extra={"created_by": "alice", "claimed_by": "pm-1"})
     _run(board, capsys)
@@ -190,7 +194,7 @@ def test_slot_only_claimed_by_converted(board, capsys):
 
 def test_existing_user_slot_claimed_by_unchanged(board, capsys):
     """이미 `<user>/<slot>` 형태인 claimed_by 는 불변(멱등·기존값 보존)."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     _seed(board, "T-0005", "claimed",
           fm_extra={"created_by": "bob", "claimed_by": "bob/pm-2"})
     _run(board, capsys)
@@ -205,7 +209,7 @@ def test_existing_user_slot_claimed_by_unchanged(board, capsys):
 
 def test_idempotent_rerun_noop(board, capsys):
     """1회 적용 후 재실행 = 변경 0(파일 bytes 불변)."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     board.AREAS_FILE.write_text(_AREAS_EMPTY_OWNER, encoding="utf-8")
     p = _seed(board, "T-0005", "claimed", fm_extra={"claimed_by": "pm-1"})
     _run(board, capsys)
@@ -225,7 +229,7 @@ def test_idempotent_rerun_noop(board, capsys):
 
 def test_nondestructive_preserves_key_order_and_body(board, capsys):
     """기존 키 순서·body 텍스트 보존 — created_by 만 추가(끝에 append)."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     body = "# 본문\n\n임의의 마크다운 본문 — 보존돼야 한다.\n\n## 섹션\n- 항목\n"
     _seed(board, "T-0001", "open",
           fm_extra={"depends_on": ["T-0000"], "tags": ["x"]}, body=body)
@@ -247,7 +251,7 @@ def test_nondestructive_preserves_key_order_and_body(board, capsys):
 
 def test_dry_run_no_writes(board, capsys):
     """--dry-run 은 어떤 파일도 쓰지 않는다(per-file 보고만)."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     board.AREAS_FILE.write_text(_AREAS_EMPTY_OWNER, encoding="utf-8")
     p = _seed(board, "T-0005", "claimed", fm_extra={"claimed_by": "pm-1"})
     before_areas = board.AREAS_FILE.read_text(encoding="utf-8")
@@ -268,7 +272,7 @@ def test_dry_run_no_writes(board, capsys):
 
 def test_scope_active_skips_done(board, capsys):
     """--scope active 면 done 티켓은 건드리지 않는다(open+claimed 만)."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     _seed(board, "T-0001", "open")
     done_p = _seed(board, "T-0009", "done")
     before_done = done_p.read_text(encoding="utf-8")
@@ -280,7 +284,7 @@ def test_scope_active_skips_done(board, capsys):
 
 def test_scope_all_includes_done(board, capsys):
     """--scope all(기본) 은 done 티켓도 backfill."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     _seed(board, "T-0009", "done")
     _run(board, capsys, scope="all")
     fm, _ = board.load_ticket(board.TICKETS_DIR / "done" / "T-0009-seed.md")
@@ -328,7 +332,7 @@ def test_old_7col_header_upgraded_to_canonical_8col(board, capsys):
     수정 전엔 헤더에 area_owner 칼럼이 없어 no-op → `_area_owner_in_use()` False → `--mine`
     전체-open degrade. 수정 후엔 헤더가 canonical 8칼럼이 되고 area_owner=user 로 채워진다.
     """
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     board.AREAS_FILE.write_text(_AREAS_OLD_7COL, encoding="utf-8")
     rc, out, _ = _run(board, capsys)
     assert rc == 0
@@ -356,7 +360,7 @@ def test_old_7col_mine_narrows_after_migrate(board, capsys):
         "| service-a | PAY | g:a | pytest -q | reg | develop | main |\n"
     )
     board.AREAS_FILE.write_text(areas, encoding="utf-8")
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     # migrate 전: area_owner 운영 안 됨 → in_use False.
     assert board._area_owner_in_use() is False
     _run(board, capsys)
@@ -381,7 +385,7 @@ def test_old_7col_mine_narrows_after_migrate(board, capsys):
 
 def test_old_6col_header_upgraded(board, capsys):
     """구 6칼럼(base 스키마) → canonical 8칼럼 업그레이드 + area_owner 채움."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     board.AREAS_FILE.write_text(_AREAS_OLD_6COL, encoding="utf-8")
     rc, _, _ = _run(board, capsys)
     assert rc == 0
@@ -393,7 +397,7 @@ def test_old_6col_header_upgraded(board, capsys):
 
 def test_old_5col_header_upgraded(board, capsys):
     """구 5칼럼(per-repo 레지스트리) → canonical 8칼럼 업그레이드 + area_owner 채움."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     board.AREAS_FILE.write_text(_AREAS_OLD_5COL, encoding="utf-8")
     rc, _, _ = _run(board, capsys)
     assert rc == 0
@@ -405,7 +409,7 @@ def test_old_5col_header_upgraded(board, capsys):
 
 def test_old_header_upgrade_preserves_existing_columns_and_comments(board, capsys):
     """업그레이드는 비파괴 — 기존 칼럼 값·표 밖 주석 보존(area_owner 만 append)."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     board.AREAS_FILE.write_text(_AREAS_OLD_7COL, encoding="utf-8")
     _run(board, capsys)
     # 기존 칼럼 값이 그대로 — 행 dict 로 읽어 검증(파서 동형).
@@ -425,7 +429,7 @@ def test_old_header_upgrade_preserves_existing_columns_and_comments(board, capsy
 
 def test_old_header_upgrade_idempotent(board, capsys):
     """업그레이드 후 재실행 = no-op(파일 bytes 불변·멱등)."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     board.AREAS_FILE.write_text(_AREAS_OLD_7COL, encoding="utf-8")
     _run(board, capsys)
     after1 = board.AREAS_FILE.read_text(encoding="utf-8")
@@ -437,7 +441,7 @@ def test_old_header_upgrade_idempotent(board, capsys):
 
 def test_old_header_upgrade_dry_run_no_write(board, capsys):
     """구 헤더라도 --dry-run 은 파일을 쓰지 않는다(미리보기만)."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     board.AREAS_FILE.write_text(_AREAS_OLD_7COL, encoding="utf-8")
     before = board.AREAS_FILE.read_text(encoding="utf-8")
     rc, out, _ = _run(board, capsys, dry_run=True)
@@ -475,7 +479,7 @@ def test_mixed_noncanon_header_backfills_both_rows(board, capsys):
     - 8칼럼 row(PAY): 헤더보다 넓음 → `_parse_areas` 동형으로 canonical index 7 의 빈 area_owner
       를 user 로 채움(must-fix 전엔 index 3 의 `pytest -q` 를 area_owner 로 오인해 no-op).
     """
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     board.AREAS_FILE.write_text(_AREAS_MIXED_NONCANON_HEADER, encoding="utf-8")
     rc, out, _ = _run(board, capsys)
     assert rc == 0
@@ -493,7 +497,7 @@ def test_mixed_noncanon_header_backfills_both_rows(board, capsys):
 
 def test_mixed_noncanon_header_idempotent(board, capsys):
     """혼재 파일 backfill 후 재실행 = no-op(파일 bytes 불변·멱등)."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     board.AREAS_FILE.write_text(_AREAS_MIXED_NONCANON_HEADER, encoding="utf-8")
     _run(board, capsys)
     after1 = board.AREAS_FILE.read_text(encoding="utf-8")
@@ -505,7 +509,7 @@ def test_mixed_noncanon_header_idempotent(board, capsys):
 
 def test_mixed_noncanon_header_preserves_prefilled_wider_row(board, capsys):
     """canonical 8칼럼 wider row 의 area_owner 가 *이미* 채워져 있으면 불변(멱등·index 7 인식)."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     areas = (
         "# Area Registry\n\n"
         "| prefix | area | owner |\n"
@@ -527,7 +531,7 @@ def test_refresh_board_called_on_write(board, capsys, monkeypatch):
     """실제 쓰기가 있으면 끝에 refresh_board() 1회 호출(claimed 표시 갱신 정합)."""
     calls = []
     monkeypatch.setattr(board, "refresh_board", lambda: calls.append(1))
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     _seed(board, "T-0005", "claimed", fm_extra={"claimed_by": "pm-1"})
     rc, _, _ = _run(board, capsys)
     assert rc == 0
@@ -538,7 +542,7 @@ def test_refresh_board_not_called_on_dry_run(board, capsys, monkeypatch):
     """--dry-run 은 파생물도 안 건드림 — refresh_board 미호출."""
     calls = []
     monkeypatch.setattr(board, "refresh_board", lambda: calls.append(1))
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     _seed(board, "T-0005", "claimed", fm_extra={"claimed_by": "pm-1"})
     rc, _, _ = _run(board, capsys, dry_run=True)
     assert rc == 0
@@ -549,7 +553,7 @@ def test_refresh_board_not_called_when_noop(board, capsys, monkeypatch):
     """backfill 대상 0(이미 마이그레이션됨)이면 쓰기 없음 → refresh_board 미호출."""
     calls = []
     monkeypatch.setattr(board, "refresh_board", lambda: calls.append(1))
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     # 이미 채워진 티켓(no-op).
     _seed(board, "T-0005", "claimed",
           fm_extra={"created_by": "alice", "claimed_by": "alice/pm-1"})
@@ -601,7 +605,7 @@ def _lock_spy(board, monkeypatch):
 
 def test_areas_write_happens_inside_board_lock(board, capsys, monkeypatch):
     """areas.md backfill 쓰기가 board_lock 구간 *안에서* 일어난다(락이 RMW 를 감쌈)."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     board.AREAS_FILE.write_text(_AREAS_EMPTY_OWNER, encoding="utf-8")
     with _lock_spy(board, monkeypatch) as rec:
         rc, _, _ = _run(board, capsys)
@@ -616,7 +620,7 @@ def test_areas_write_happens_inside_board_lock(board, capsys, monkeypatch):
 
 def test_areas_dry_run_does_not_acquire_lock(board, capsys, monkeypatch):
     """--dry-run 은 read-only(쓰기 0) — areas 미리보기에 board_lock 을 잡지 않는다."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     board.AREAS_FILE.write_text(_AREAS_EMPTY_OWNER, encoding="utf-8")
     before = board.AREAS_FILE.read_text(encoding="utf-8")
     with _lock_spy(board, monkeypatch) as rec:
@@ -629,7 +633,7 @@ def test_areas_dry_run_does_not_acquire_lock(board, capsys, monkeypatch):
 
 def test_areas_noop_does_not_write_in_lock(board, capsys, monkeypatch):
     """areas backfill 대상 0(이미 채워짐)이면 락은 잡되 write 는 없다(bytes 불변)."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     # 모든 area_owner 가 이미 채워진 areas.md(no-op).
     areas = (
         "# Area Registry\n\n"
@@ -671,7 +675,7 @@ def test_ticket_backfill_acquires_one_global_lock(board, capsys, monkeypatch):
     # refresh_board 는 끝에 자체 board_lock 을 잡는다(파생물·락 밖) — 티켓 backfill *자체*가
     # 락을 잡는지만 보려고 no-op 으로 둔다(refresh 락밖 1회는 별 테스트가 검증).
     monkeypatch.setattr(board, "refresh_board", lambda: None)
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     # areas.md 없음(솔로) — 티켓만 backfill.
     _seed(board, "T-0001", "open")
     _seed(board, "T-0005", "claimed", fm_extra={"claimed_by": "pm-1"})
@@ -690,7 +694,7 @@ def test_ticket_moved_before_write_is_skipped(board, capsys, monkeypatch):
     돌려주면, 경로 불일치로 skip 되고 스캔 경로엔 절대 쓰지 않는다. (하드 보장 아님 — 재조회와
     엔진 writer는 lock 때문에 이 형상에 못 끼지만, 재조회가 외부 이동도 stale write 없이 잡는다.)
     """
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     scan_path = _seed(board, "T-0001", "open")  # 스캔이 보는 open/ 경로.
     before_scan = scan_path.read_text(encoding="utf-8")
     # 다른 세션이 claim 으로 open/→claimed/ 옮긴 상태를 모사 — 재조회가 claimed/ 경로를
@@ -716,7 +720,7 @@ def test_ticket_moved_before_write_is_skipped(board, capsys, monkeypatch):
 
 def test_ticket_gone_before_write_is_skipped(board, capsys, monkeypatch):
     """쓰기 직전 티켓이 *사라지면*(재조회 FileNotFoundError) skip — 다른 파일 안 건드림."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     _seed(board, "T-0001", "open")
     _seed(board, "T-0002", "open")  # 살아있는 다른 티켓.
 
@@ -750,7 +754,7 @@ def test_surviving_ticket_atomic_write(board, capsys, monkeypatch):
         real_atomic(path, fm, body)
 
     monkeypatch.setattr(board, "dump_ticket_atomic", _spied_atomic)
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     _seed(board, "T-0001", "open")
     rc, _, err = _run(board, capsys)
     assert rc == 0
@@ -772,7 +776,7 @@ def test_dry_run_acquires_no_lock(board, capsys, monkeypatch):
             yield
 
     monkeypatch.setattr(board, "board_lock", _spied)
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     board.AREAS_FILE.write_text(_AREAS_EMPTY_OWNER, encoding="utf-8")
     p = _seed(board, "T-0005", "claimed", fm_extra={"claimed_by": "pm-1"})
     before_areas = board.AREAS_FILE.read_text(encoding="utf-8")
@@ -813,7 +817,7 @@ def test_refresh_board_runs_outside_lock(board, capsys, monkeypatch):
         real_refresh()
 
     monkeypatch.setattr(board, "refresh_board", _spied_refresh)
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     board.AREAS_FILE.write_text(_AREAS_EMPTY_OWNER, encoding="utf-8")
     _seed(board, "T-0005", "claimed", fm_extra={"claimed_by": "pm-1"})
     rc, _, _ = _run(board, capsys)
@@ -828,7 +832,7 @@ def test_full_run_completes_without_deadlock(board, capsys):
     있으면 여기서 OS flock 데드락(hang)이나 에러로 잡힌다. 실제 refresh_board 를 그대로
     돌려(monkeypatch 없이) board.md 산출까지 확인한다.
     """
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     board.AREAS_FILE.write_text(_AREAS_EMPTY_OWNER, encoding="utf-8")
     _seed(board, "T-0001", "open")
     _seed(board, "T-0005", "claimed", fm_extra={"claimed_by": "pm-1"})
@@ -848,7 +852,7 @@ def test_full_run_completes_without_deadlock(board, capsys):
 
 def test_surviving_ticket_still_backfilled(board, capsys):
     """정상 경로(아무것도 안 움직임)는 lock 안에서 backfill 된다."""
-    _write_conf(board, user="alice", session="pm-1")
+    _write_conf(board, user="alice")
     _seed(board, "T-0001", "open")
     rc, _, err = _run(board, capsys)
     assert rc == 0
