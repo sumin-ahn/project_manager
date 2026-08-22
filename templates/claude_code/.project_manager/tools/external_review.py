@@ -5027,6 +5027,42 @@ def _select_ticket_body_for_review(body: str, rounds: Sequence) -> TicketBodySel
     return TicketBodySelection("".join(parts), omitted)
 
 
+# 스폰면 경고 문구 — 준비면(`pm_delegate._warn_unharvested_developer_round`, [[T-0807]])과 같은 축을
+# 쓰되, 문구는 다르다. 형상 B(앞선 산출 라운드가 있고 최신만 시드)에서 준비면 문구를 그대로
+# 복제하면 "리뷰어 입력에 실리지 않습니다"가 거짓이 된다 — 이 표면은 그렇게 단정하지 않고, 이번
+# 프롬프트에 실제로 실리는 developer 산출 라운드 이름(없으면 "없음")을 값으로 말한다.
+_SPAWN_SEED_DEVELOPER_ROUND_WARNING = (
+    "경고: 추가 리뷰어가 {ticket} 의 산출 없는 developer 라운드 위에서 스폰됩니다 — "
+    "{name} 이 시드 골격 그대로입니다. 이번 프롬프트에 실리는 developer 산출 라운드: {latest}."
+)
+
+
+def _warn_seed_developer_round(rounds: Sequence, *, ticket: str) -> None:
+    """추가 리뷰어 스폰면의 loud 경고 — 경고이지 거부가 아니다(rc 는 바꾸지 않는다).
+
+    판정은 준비면(T-0807)이 만든 공개 함수(`pm_delegate.unharvested_developer_round`)를 그대로
+    불러 쓴다 — 기준이 둘이면 두 표면이 어긋난다. `prepare_ticket_body` 한 seam 이 미리보기
+    (`--dry-run`)와 실 스폰을 모두 지나므로 이 호출 하나가 두 채널을 함께 덮는다.
+    """
+    delegate = _load_pm_delegate()
+    stale = delegate.unharvested_developer_round(rounds)
+    if stale is None:
+        return
+    ticket_rounds = _load_ticket_rounds()
+    name = ticket_rounds.round_filename(stale.ordinal, stale.role)
+    latest = ticket_rounds.latest_round_of_role(rounds, delegate.REVIEW_SUBJECT_ROLE)
+    latest_name = (
+        ticket_rounds.round_filename(latest.ordinal, latest.role)
+        if latest is not None else "없음"
+    )
+    print(
+        _SPAWN_SEED_DEVELOPER_ROUND_WARNING.format(
+            ticket=ticket, name=name, latest=latest_name,
+        ),
+        file=sys.stderr,
+    )
+
+
 def _parse_title_from_file(path: Path) -> str | None:
     """ticket 파일에서 frontmatter title 스칼라를 추출한다(선별 헤더 요약 전용).
 
@@ -8026,13 +8062,14 @@ def _main(argv: list[str] | None = None) -> int:
                 else _find_ticket_file(args.ticket, pm_home=pm_home)
             )
             raw_text, raw_body = _load_ticket_text_and_body(ticket_file)
-            # 입력 선별 — 명세는 전량, 라운드는 역할별 마지막 산출만(파일 선택).
-            selection = _select_ticket_body_for_review(
-                raw_body,
-                _load_ticket_rounds_for(
-                    args.ticket, pm_home=pm_home, ticket_text=raw_text,
-                ),
+            rounds = _load_ticket_rounds_for(
+                args.ticket, pm_home=pm_home, ticket_text=raw_text,
             )
+            # 시드 그대로인 developer 라운드 위에서 스폰되는지 loud 표시 — [[T-0807]] 준비면과
+            # 같은 축(이 seam 은 dry-run·실 스폰 두 호출을 모두 지난다).
+            _warn_seed_developer_round(rounds, ticket=args.ticket)
+            # 입력 선별 — 명세는 전량, 라운드는 역할별 마지막 산출만(파일 선택).
+            selection = _select_ticket_body_for_review(raw_body, rounds)
             if selection.omitted_rounds > 0:
                 header = _ticket_body_selection_header(ticket_file, args.ticket)
                 composed_body = f"{header}\n\n{selection.text}"
