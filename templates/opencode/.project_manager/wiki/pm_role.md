@@ -74,7 +74,7 @@ PM 역할의 정적 운영 매뉴얼이다. PM 역할은 보드 운영·분할·
 
 PM wave의 claim·finish·qa·dev-delegate·handoff·regression은 **스킬/command로 invoke**한다(claude=Skill 툴, opencode=command). 스킬이 강제하는 읽기범위·메타학습·금지 재열거·우선순위·DoD 자족성 판단을 건너뛰므로 backbone CLI를 직접 호출하지 않는다.
 
-직접 CLI는 래핑 스킬이 없는 op만 허용한다: read-only 조회, 아직 명령어화되지 않은 ticket authoring `new`/`promote`, release `livegate record`, compaction 보충 기록 `pm_log.py checkpoint`(쓰기·스킬 승격 전까지), 희귀 ID/카테고리 유지보수 `reid`/`prefix`/`migrate-identity`. authoring/release/checkpoint 스킬이 생기면 스킬로 승격한다. **스킬이 있는 op은 반드시 스킬로 실행한다.** 실제 인자·정체성 표기는 부트스트랩 카드가 단일 진실이다.
+직접 CLI는 래핑 스킬이 없는 op만 허용한다: read-only 조회, release `livegate record`, compaction 보충 기록 `pm_log.py checkpoint`(쓰기·스킬 승격 전까지), 희귀 ID/카테고리 유지보수 `reid`/`prefix`/`migrate-identity`. release/checkpoint 스킬이 생기면 스킬로 승격한다. **스킬이 있는 op은 반드시 스킬로 실행한다.** 실제 인자·정체성 표기는 부트스트랩 카드가 단일 진실이다.
 
 ## skill 카탈로그
 
@@ -83,6 +83,7 @@ PM wave의 claim·finish·qa·dev-delegate·handoff·regression은 **스킬/comm
 | skill | 역할 | 감싸는 내부 엔진 (직접호출 금지) |
 |---|---|---|
 | `/pm-bootstrap` | 세션 시작; board·git·차수·log 본문·남은작업 surface | `pm_bootstrap.py` |
+| `/pm-ticket` | 티켓 초안 발행 → architect 점검 라운드 → 비준·승격 | `board.py new/lint/promote` |
 | `/pm-wave-claim T-NNNN` | DoD self-containment 검증 + claim | `board.py show/lint/claim` |
 | `/pm-dev-delegate T-NNNN --role developer\|code-reviewer` | orchestrator 위임 표준 프롬프트 | `Agent` 툴 |
 | `/pm-regression` | 비차단 백그라운드 회귀 pre-warm + 완료 알림 | `board.py regression` |
@@ -122,8 +123,15 @@ PM은 여러 출처의 synthesis를 직접 흡수하고, bounded fact-gather·�
 모든 티켓은 명세 파일 하나(`tickets/<상태>/<id>.md`)와 라운드 디렉터리
 (`tickets/rounds/<id>/NN-<역할>.md`)로 이뤄진다. 명세는 PM이 소유하고, 역할 산출은 라운드 파일이
 한 건씩 누적한다.
-PM이 명세에 대략 내용(목표·방향·범위)을 자족적으로 쓰고, hard면 architect 설계 라운드, normal/hard면
-developer 구현 보충 라운드와 code-reviewer 리뷰 라운드를 차례로 누적한다. 구현 결함은 developer가
+PM이 명세에 대략 내용(목표·방향·범위)을 자족적으로 쓴 **초안**을 architect **점검 라운드**가
+실측 대조(본문이 인용한 `파일:줄`·touches 경로)·cross-module 영향(다른 열린 티켓과의 충돌·의존)·
+최소 수단(기존 seam 재사용·삭제 대안·새 설정 키/플래그·서브커맨드의 필요성)으로 검증하고, PM이
+바뀐 지점을 확인해 **비준**한 뒤 promote 한다. PM은 자기 초안의 리뷰어가 아니다(generate ≠
+evaluate) — 초안 작성과 검증은 다른 역할이 맡는다. 점검 라운드 회수는 `design: required|done`
+티켓에서 promote 조건으로 기계 강제되고(미회수면 rc=1), 그 밖의 티켓에는 규범으로 적용한다 —
+다중 티켓을 한 번에 발행할 때와 `estimate: medium` 이상은 점검을 건너뛰지 않는다. 이어서 hard면
+architect 설계 라운드, normal/hard면 developer 구현 보충 라운드와 code-reviewer 리뷰 라운드를
+차례로 누적한다. 구현 결함은 developer가
 고치고, 설계 결함은 architect가 재설계 라운드를 추가한 뒤 developer가 재구현한다. 2회차 이후 리뷰는
 이전 리뷰 라운드를 기준으로 변경분을 먼저 본다. reviewer finding은 PM 판정 전 증거·제안이며 developer 명령이
 아니다. PM은 versioned disposition으로 전수 판정하고 `pm_delegate.py review delta --ticket`이 낸
@@ -157,7 +165,7 @@ board 라운드 파일을 원자 교체한 뒤 run-dir을 지운다(회수 = run
 ## 책임
 
 **한다:**
-- Ticket 발행(`board.py new`)·분할·block/unblock·의존성 lint.
+- Ticket 발행(`/pm-ticket`)·분할·block/unblock·의존성 lint. 문제 진술·분할 판정·초안·비준은 PM, 실측 대조·cross-module 검증·본문 보정은 architect다.
 - 새 구현 세션이 self-contained한 위임 프롬프트 작성.
 - 흩어진 사양을 `specs/` 단일 진실로 추출.
 - 결정을 `decisions/NNNN-*.md` ADR로 명시.

@@ -15,6 +15,7 @@ Agent 툴 + `subagent_type: architect|developer|code-reviewer` + `run_in_backgro
 ## 사전 조건
 
 - ticket 이미 claim (`/pm-wave-claim` 통과 · 세션 정체성 canonical `<repo>_<N>` · 솔로(M=1)는 생략).
+- 예외 — **draft의 architect 본문 점검 라운드는 claim 이전**이다. 엔진이 draft × architect만 허용하고(developer·code-reviewer의 draft 라운드는 거부) 이 경로는 board-git sync 0회다.
 - depends_on 모두 done.
 - touches 명시.
 - DoD verify-able.
@@ -296,6 +297,17 @@ Agent 툴 호출:
 architect도 위 native `ticket prepare` 뒤 Agent를 호출하고 종료 뒤 `ticket harvest --copy ...`를
 실행한다. 재설계는 새 prepare가 예약한 **다음 순번의 새 라운드 파일**에 쓰며 이전 라운드는 읽기
 전용으로 남는다(라운드는 회수 후 불변).
+
+**본문 점검(draft·승격 전)** 도 같은 architect 호출을 쓴다 — 바꾸는 것은 프롬프트 본문 한 곳이다.
+"T-NNNN 의 설계 또는 재설계를 수행하라" 자리에 "T-NNNN 초안 본문의 사실성을 점검하라. 새 설계가
+아니라 **실측 대조**다" 를 넣고, 기록 항목을 지시한다: 본문이 인용한 `파일:줄`의 실재와 줄 범위 ·
+touches 경로의 실재(소유 repo 좌표 기준) · 다른 열린 티켓과의 충돌·의존(cross-module) · 최소 수단
+(기존 seam 재사용·삭제 대안·새 설정 키/플래그·서브커맨드가 정말 필요한지) · 구현 가능하도록
+인터페이스와 DoD 보정. 항목마다 실행한 명령과 관측값으로 판정하고 틀린 주장은 대체 문구까지 적게
+한다. 라운드 파일 경로와 읽기 전용 입력(`spec.md`·`rounds/`) 지시는 위 블록 그대로다.
+
+이 라운드는 claim 이전 draft 에서 돌고, PM 은 회수된 보정 문구를 본문에 반영(비준)한 뒤 승격한다.
+`design: required|done` 티켓은 이 점검 라운드가 회수·충전되기 전 `promote` 가 rc=1 로 거부한다.
 
 > **fix 라운드 프롬프트는 PM 승인 delta만 쓴다.** PM은 판정 블록을 손으로 적지 않는다 —
 > `python3 .project_manager/tools/pm_delegate.py review disposition-template --ticket T-NNNN` 이

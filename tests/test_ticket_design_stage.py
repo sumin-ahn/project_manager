@@ -768,15 +768,28 @@ def test_promote_rejects_design_required_even_when_section_is_filled(board_git, 
     assert not list((board_dir / "tickets" / "open").glob("T-*-*.md"))
 
 
+def _harvest_architect_round(board_git, board_dir: Path, tid: str) -> None:
+    """architect 점검 라운드를 예약하고 산출로 채운다(시드 잔존 아님).
+
+    `design: required|done` 티켓은 이 라운드가 회수되기 전 promote 가 거부한다 — 설계 절
+    충전 축만 보려는 케이스는 이 전제를 갖춘 뒤 판정한다."""
+    assert board_git.cmd_section_add(
+        argparse.Namespace(id=tid, role="architect", label=None)) == 0
+    path = board_dir / "tickets" / "rounds" / tid / "01-architect.md"
+    header = path.read_text(encoding="utf-8").splitlines()[0]
+    path.write_text(f"{header}\n\n인용·touches 를 실측 대조했다.\n", encoding="utf-8")
+
+
 @requires_git
 def test_promote_accepts_filled_design_section_with_done(board_git):
-    """설계 절 완성 + `design: done` draft 는 승격(rc=0)·open/ 이동."""
+    """설계 절 완성 + `design: done` + architect 점검 라운드 회수 → 승격(rc=0)·open/ 이동."""
     board_dir = board_git._board_dir
     assert board_git.cmd_new(_new_args(estimate="large")) == 0
     draft = _draft_path(board_dir)
     fm, _ = board_git.load_ticket(draft)
     fm["design"] = board_git.DESIGN_DONE
     board_git.dump_ticket(draft, fm, _body())
+    _harvest_architect_round(board_git, board_dir, fm["id"])
 
     assert board_git.cmd_promote(argparse.Namespace(id=fm["id"])) == 0
     assert list((board_dir / "tickets" / "open").glob("T-*-*.md")), \
