@@ -683,6 +683,32 @@ def repo_slot_numbers(repo: str, leases_file: Path) -> list[int] | None:
     return sorted(slot_nums)
 
 
+def repo_slot_state_counts(repo: str, leases_file: Path) -> "dict[str, int] | None":
+    """`leases_file` 장부에서 `repo` 슬롯을 `state` 값별로 센다 — 발행 표면(`board.py new`/
+    `promote`)의 "가용(idle) 슬롯 수" 재료가 쓰는 유일한 집계 지점이다.
+
+    `state` 는 3값(`leased`|`idle`|`creating`·`worktree_pool.py`)이고 그 값을 **그대로** 버킷
+    키로 쓴다 — `creating`(provisional)을 `idle`로 세지 않는다. `state` 키 부재는
+    `repo_slot_numbers` 와 동형으로 `"leased"` back-compat 처리한다(장부의 다수 소비자가 이미
+    같은 default 를 쓴다 — 오래된 행을 idle 로 잘못 세지 않는 안전한 방향).
+
+    파일 부재/JSON 깨짐/스키마 불일치(`_load_lease_rows` 가 이미 판정한 축) → `None`
+    (판정불능 — 호출부가 슬롯 재료 줄 자체를 생략한다. 모르는 값을 0 으로 주장하지 않는다).
+    정상 read 인데 그 repo 행이 0개면 빈 `dict`(idle 0 을 정당하게 보고한다).
+    """
+    rows = _load_lease_rows(leases_file)
+    if rows is None:
+        return None
+    counts: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict) or row.get("repo") != repo:
+            continue
+        state = row.get("state", "leased")
+        key = state if isinstance(state, str) and state else "leased"
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
 def _row_slot_numbers(repo: str, slot: object, session: object) -> set[int]:
     """장부 행 하나가 이 repo 에서 점유한 슬롯 번호 — 경로 값 ∪ session 값(공유 규칙).
 

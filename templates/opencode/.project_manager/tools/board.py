@@ -12148,6 +12148,9 @@ def cmd_new(args: argparse.Namespace) -> int:
     if not ready:
         label = "draft 격리 기록" if is_draft else "기록"
         print(f"  ⚠ board-git {label} 보류: local-only/uncommitted", file=sys.stderr)
+    # 발행 시점 판단 재료 — 겹침 0 이면 전부 침묵. 차단 없음(rc 불변).
+    for line in _publish_overlap_material(tid, fm.get("touches")):
+        print(line, file=sys.stderr)
     return 0
 
 
@@ -12221,12 +12224,149 @@ def cmd_promote(args: argparse.Namespace) -> int:
         print(f"promoted {args.id} (board-git 승격 완료)")
     else:
         print(f"promoted {args.id} (board-git 기록 보류: local-only/uncommitted)")
+    # 발행 시점 판단 재료 — 성공 경로 두 갈래(승격 완료/부기 보류) 공통 뒤,
+    # `_board_git_enabled()` 게이트 분기 밖(솔로/legacy 형상에서도 나온다). 겹침 0 이면 침묵.
+    for line in _publish_overlap_material(args.id, fm.get("touches")):
+        print(line, file=sys.stderr)
     return 0
 
 
 # `list` 기본뷰(무-status)의 활성 상태 — done 을 접어 범람을 해소한다. `--status all`
 # 이 STATUS_DIRS 전체(done 포함)를 연다.
 _LIST_ACTIVE_STATUSES: tuple[str, ...] = ("open", "claimed", "blocked")
+
+
+# ── 발행 시점 touches 겹침 재료 (판단 지점에 판단 재료가 있어야 한다) ──────────
+# `new`/`promote` 판단 지점에 다른 활성·draft 티켓과의 touches 겹침 + 가용(idle) 슬롯 수를
+# stderr 재료로 낸다. **절대 차단하지 않는다** — 재료를 놓을 뿐 판정은 PM 이 한다. 좌표
+# 정규화는 `repo_coordinates` 단일 소유자, 비교 규칙(`_touch_paths_overlap`)은 `pm_delegate`
+# 단일 소유자를 재사용한다(board 는 이 축에 자체 문자열 비교를 만들지 않는다 — 접두
+# `work/<repo>_<N>/` 선언이 활성 티켓 상당수라 순진한 비교는 조용히 0이 된다).
+_PUBLISH_OVERLAP_HEADER = "=== ⚠ 발행 touches 겹침 (다른 활성/draft 티켓) ==="
+_PUBLISH_OVERLAP_PATH_LIMIT = 8      # 겹침 수 오름차순 최대 8개 경로(잔여는 "… 외 N개 경로")
+_PUBLISH_OVERLAP_ID_LIMIT = 6        # 경로당 티켓 ID 최대 6개(잔여는 건수로 접기)
+
+
+def _publish_overlap_candidates(exclude_id: str) -> list[tuple[str, dict[str, Any]]]:
+    """겹침 판정 후보 집합 — 활성 3상태(open/claimed/blocked) + drafts, 자기 자신 제외.
+
+    done 은 후보가 아니다(완료된 과거 작업과의 겹침은 판단 재료가 아니다). draft 는
+    `board.md`·`list`·board-git 어디에도 안 보이면서 좌표를 이미 점유하므로 포함한다(다른
+    draft 가 이미 board.py 같은 엔진 파일을 touch 하고 있는 형상이 실제로 있었다). 손상
+    frontmatter 는 `load_ticket_soft` 가 경고 1줄과 함께 skip(fail-soft·rc 불변).
+    """
+    paths: list[Path] = []
+    for status in _LIST_ACTIVE_STATUSES:
+        status_dir = tickets_dir() / status
+        if status_dir.is_dir():
+            paths.extend(sorted(status_dir.glob("*.md")))
+    drafts = drafts_dir()
+    if drafts.is_dir():
+        paths.extend(sorted(drafts.glob("*.md")))
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    for path in paths:
+        loaded = load_ticket_soft(path)
+        if loaded is None:
+            continue
+        fm = loaded[0]
+        tid = str(fm.get("id") or "").strip()
+        if not tid or tid == exclude_id:
+            continue
+        candidates.append((tid, fm))
+    return candidates
+
+
+def _fold_publish_touches(items: list[str], coordinates: Any, delegate: Any) -> tuple[str, ...]:
+    """touches 선언을 발행 시점(`workspace` 없음) 좌표로 접는다 — 검증 실패 항목은 드롭.
+
+    `pm_delegate._folded_touch_pairs` 와 같은 정규화 순서(`normalize_repo_path` →
+    `canonicalize_path_notation` → `_touch_notation`)이되, 그 함수는 `workspace` 를 무조건
+    요구해 발행 시점(claim 이전·workspace 미정)에는 못 쓴다 — `_touches_existence_issues` 와
+    동형으로 `workspace=None`(lease 장부 매핑으로 검증)을 쓴다. 다른 슬롯 선언·미실재 슬롯은
+    항목 단위로 드롭한다(크래시 0).
+    """
+    error_type = getattr(coordinates, "RepoCoordinateError", RuntimeError)
+    folded: list[str] = []
+    for item in items:
+        try:
+            normalized = coordinates.normalize_repo_path(str(item), pm_root=REPO)
+        except error_type:
+            continue
+        value = delegate._touch_notation(
+            coordinates.canonicalize_path_notation(str(normalized)))
+        if value and value != ".":
+            folded.append(value)
+    return tuple(dict.fromkeys(folded))
+
+
+def _publish_idle_slot_count() -> int | None:
+    """이 repo(`REPO.name`)의 가용(idle) 슬롯 수 — 장부 미해소(부재/손상)면 `None`(재료 줄 생략).
+
+    데이터 원천은 lease 장부 하나, 읽기는 `identity_args.repo_slot_state_counts` 술어 하나뿐이다
+    (board 안에 새 장부 read 를 만들지 않는다). `creating` 은 idle 로 세지 않는다.
+    """
+    counts = identity_args.repo_slot_state_counts(REPO.name, LEASES_FILE)
+    if counts is None:
+        return None
+    return counts.get("idle", 0)
+
+
+def _format_publish_overlap_material(
+    per_path: dict[str, set[str]], idle_count: int | None,
+) -> list[str]:
+    """경로별 겹침 집계 → stderr 줄 목록. 겹침 0 이면 슬롯 줄까지 포함해 **전부 침묵**(never-block)."""
+    if not per_path:
+        return []
+    ordered = sorted(per_path.items(), key=lambda kv: (len(kv[1]), kv[0]))
+    shown = ordered[:_PUBLISH_OVERLAP_PATH_LIMIT]
+    hidden = len(ordered) - len(shown)
+    lines = [_PUBLISH_OVERLAP_HEADER]
+    for path, ids in shown:
+        id_list = sorted(ids)
+        head = ", ".join(id_list[:_PUBLISH_OVERLAP_ID_LIMIT])
+        remainder = len(id_list) - _PUBLISH_OVERLAP_ID_LIMIT
+        suffix = f" 외 {remainder}건" if remainder > 0 else ""
+        lines.append(f"  {path}: {len(ids)}건 겹침 ({head}{suffix})")
+    if hidden > 0:
+        lines.append(f"  … 외 {hidden}개 경로")
+    if idle_count is not None:
+        lines.append(
+            f"  가용(idle) 슬롯 {idle_count}개 — 겹침이 곧 직렬 근거는 아니다(슬롯 분리로 병렬 가능)")
+    return lines
+
+
+def _publish_overlap_material(tid: str, touches: object) -> list[str]:
+    """`new`/`promote` 공용 진입점 — touches 겹침 + 가용 슬롯 재료를 stderr 줄 목록으로 렌더.
+
+    좌표/비교 소유자(`repo_coordinates`·`pm_delegate`) 부재·로드 실패나 touches 형식 불명은
+    이 축 전체를 판정불능으로 세어 침묵한다(통과로 위장하지 않되 차단도 하지 않는다 — 부분
+    동기 사본에서 좌표 축만 시야 밖이어도 `new`/`promote` 자체는 막지 않는다).
+    """
+    own_items = _normalized_touches(touches)
+    if not own_items:
+        return []
+    coordinates = _load_repo_coordinates()
+    delegate = _load_pm_delegate_module()
+    if coordinates is None or delegate is None:
+        return []
+    own_folded = _fold_publish_touches(own_items, coordinates, delegate)
+    if not own_folded:
+        return []
+    candidates = _publish_overlap_candidates(tid)
+    per_path: dict[str, set[str]] = {path: set() for path in own_folded}
+    for other_id, other_fm in candidates:
+        other_items = _normalized_touches(other_fm.get("touches"))
+        if not other_items:
+            continue
+        other_folded = _fold_publish_touches(other_items, coordinates, delegate)
+        if not other_folded:
+            continue
+        for own_path in own_folded:
+            if any(delegate._touch_paths_overlap(own_path, other_path)
+                   for other_path in other_folded):
+                per_path[own_path].add(other_id)
+    nonzero = {path: ids for path, ids in per_path.items() if ids}
+    return _format_publish_overlap_material(nonzero, _publish_idle_slot_count())
 
 
 def _tag_values(fm: dict[str, Any]) -> list[str]:
