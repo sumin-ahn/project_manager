@@ -192,6 +192,11 @@ Windows의 동일 좁은 prefix는 `prefix_rule=["py", ".project_manager/tools/p
   git/touches 감사가 범위 밖 변경을 loud하게 표면화한다. target 자동 대체나 reviewer 추가 opt-in은 없다.
 - **병렬 wave** = PM 이 자기 하네스의 백그라운드 실행으로 pm_delegate 호출 자체를 병렬화한다.
   pm_delegate 는 동기·stateless — 병렬은 호출측 책임이다.
+- 같은 세션이 claim 중인 다른 ticket과 `touches`가 겹치면(dry-run 포함) pm_delegate가 이미
+  `=== 병렬 위임 touches 겹침 ===` 경고를 stderr에 낸다(never-block·처방: 순차 실행 또는 슬롯
+  분리). 이 경고 하나만으로 "겹치니 직렬"로 판단하지 않는다 — `board.py new`/`promote`가 발행
+  시점에 낸 가용(idle) 슬롯 수 재료를 함께 보고, 슬롯이 남아 있으면 순차 대신 슬롯 분리로
+  병렬을 유지한다.
 - 결과: `rc=0` 성공(최종 reply = stdout·raw 는 파일 박제) / `rc=1` 실패(loud·raw 경로 stderr) /
   `rc=3` opt-in OFF. reply 를 회수해 PM 이 검토·board 갱신을 담당한다(위임 대상은 board 조작 안 함).
 - **시크릿 스캔 차단 시 `--secret-scan-ack <digest>` 사용 규율**(T-0476): §4.7 이 합성 프롬프트를
