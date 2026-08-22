@@ -1335,6 +1335,13 @@ DIFF_CAP_KEY_PREFIX = "diff_cap."
 # templates 안의 manifest 밖 손편집 파일도 함께 빠지지만, 오차의 방향은 **측정 축소 = 가드 약화**라
 # 정당한 작업을 오차단하지 않는다. template subtree 자체의 정합은 drift-0 가드가 따로 지키고,
 # payload와 리뷰어 거울은 아래의 좁은 manifest 예외만 보존하고 나머지 측정 제외분을 함께 뺀다.
+#
+# 이 정규식은 `.project_manager/`(순수 엔진 사본)만 본다 — `templates/<타깃>/`의 나머지(어댑터층
+# `.claude/`·`.codex/`·`.opencode/`·flavor 루트 `*.md/*.sh/*.cmd`)는 `pm_update --all-targets` 가
+# 마찬가지로 기계로 써내는데도 이 정규식 밖이라 손작업으로 계상됐다(689줄 실측·T-0767 라운드7 부수
+# 발견). 그 어댑터층 판정은 경로 패턴을 추가로 하드코딩하지 않고 `_adapter_layer_machine_mirror`가
+# 그 타깃 engine.manifest 의 `@source=` 방향에서 파생한다(T-0832) — 이 정규식이 아래 함수보다 먼저
+# 걸러내는 subtree(=`.project_manager/`)는 그대로 두고, 그 밖의 templates 경로만 매니페스트로 넘긴다.
 _MACHINE_MIRROR_RE = re.compile(
     r"^templates/[^/]+/\.project_manager/|^\.opencode/node_modules/"
 )
@@ -4618,18 +4625,117 @@ def _numstat_path(field: str) -> str:
     return expanded.split(" => ")[-1].strip()
 
 
+# ── 어댑터층 기계 mirror (T-0832) — engine.manifest `@source=` 방향에서 파생 ──────────
+# 판정 입력은 그 타깃 engine.manifest 항목 하나뿐이다(새 설정 키·CLI 플래그 0). 항목이
+# bare(마커 없음)면 관례상 소스는 같은 상대경로를 **레포 루트**에서 읽는다는 뜻이라(`pm_update.
+# _source_root_rel` 동형) templates/<타깃>/ 접두가 없는 다른 물리 경로를 가리키므로 늘 진짜 교차
+# 위치 복사다. `@source=<path>` 항목은 그 경로가 명시 소스다. 두 경우 다 "그 항목이 가리키는 실제
+# 소스 경로가 이 파일 자신의 templates/<타깃>/ 물리 경로와 같은가"만 보면 된다 — 같으면(자기참조)
+# `pm_update`가 이 파일을 재생성하지 않는다는 뜻이라(no-op self-copy) 그 flavor 가 손으로 관리하는
+# canonical 원본이고(예: `templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md` — 각 flavor 가
+# 자기 소스를 갖는 자리라 제외 대상이 아니다), 다르면 다른 위치(대개 레포 루트의 canonical)에서
+# 기계로 복사돼 들어온 mirror 다. manifest 미등재 경로(CLAUDE.md·AGENTS.md·local.conf·설정 파일 등
+# 인스턴스/flavor 전용 문서)는 애초에 이 판정에 들어오지 않아 손작업으로 남는다. 새 타깃이
+# `templates/<신규>/.project_manager/engine.manifest` 를 갖추면 이 로직은 그 파일 이름만으로
+# 갈리므로 패턴을 손보지 않아도 따라온다.
+_TEMPLATES_FLAVOR_RE = re.compile(r"^templates/([^/]+)/(.+)$")
+
+# flavor 이름 → manifest 항목 리스트(또는 로드 실패 시 None). flavor 당 1회만 읽고 재사용한다 —
+# `_sum_numstat`이 diff 줄마다 호출하므로 매번 재파싱하면 큰 diff에서 I/O 가 선형으로 늘어난다.
+_adapter_manifest_entries_cache: dict[str, list | None] = {}
+
+
+def _load_pm_update_module():
+    """pm_update 모듈을 같은 tools/ 에서 경로 로드한다 (`read_manifest` 재사용).
+
+    board.py `_load_pm_update_module` 과 동형 복제 — pm_update.py 는 ENGINE_REV 를 굽지 않는
+    형제라 `allow_unverified=True`. 실패(부재·손상)는 None 으로 흡수한다 — 어댑터층 판정이
+    loud 하게 죽으면 안 되고(이 판정은 측정 축소 방향으로만 틀려야 한다), pm_update.py 부재/손상
+    시엔 위 `_MACHINE_MIRROR_RE` 단독 판정으로 조용히 강등된다."""
+    pm_update_py = Path(__file__).resolve().with_name("pm_update.py")
+    try:
+        return _load_module_from_path(
+            pm_update_py, "pm_update.py", allow_unverified=True, cache=True,
+        )
+    except Exception:  # noqa: BLE001 — 부재/손상은 무발화 강등(측정 축소 방향).
+        return None
+
+
+def _adapter_flavor_manifest(flavor: str) -> list | None:
+    """`<flavor>` 출하 manifest 항목 (flavor 당 1회 로드·캐시). 실패/부재는 None."""
+    if flavor not in _adapter_manifest_entries_cache:
+        entries = None
+        pm_update = _load_pm_update_module()
+        if pm_update is not None:
+            manifest_path = (
+                REPO / "templates" / flavor / ".project_manager" / "engine.manifest"
+            )
+            try:
+                entries = pm_update.read_manifest(manifest_path)
+            except Exception:  # noqa: BLE001 — 부재/파싱 실패는 그 flavor 판정만 보류.
+                entries = None
+        _adapter_manifest_entries_cache[flavor] = entries
+    return _adapter_manifest_entries_cache[flavor]
+
+
+def _adapter_layer_machine_mirror(canonical_path: str) -> bool:
+    """`templates/<타깃>/`의 `.project_manager/` 밖 경로 — manifest `@source=` 방향으로 판정.
+
+    가장 구체적인(깊은) manifest 항목을 소유자로 삼는다 — 디렉토리 항목(`.claude/skills`) 위에
+    파일 단위 override(`.claude/skills/pm-dev-delegate/SKILL.md @source=...`)가 있으면 override
+    가 이긴다(동률은 나중 선언이 더 구체적이라고 본다). 소유 항목이 없으면(미등재) 손작업(False).
+
+    ``@target-owned`` 항목은 **source 방향 비교 전에** 손작업으로 접는다(F-001·T-0832 라운드3
+    리뷰) — 그 마커는 "upstream 에 source 가 아예 없는 게 정상"이라는 명시 선언이라
+    (`pm_update.TARGET_OWNED_TAG`), bare 경로의 관례적 "레포 루트가 source" 폴백을 이 항목에
+    적용하면 실재하지 않는 교차 위치와 비교해 기계 mirror로 오분류한다 — 수기 소유 파일이
+    측정에서 통째로 빠져 서킷브레이커를 우회하는 방향이라(과다 제외) 이 판정의 불변식(과다
+    제외 0)을 정면으로 어긴다."""
+    match = _TEMPLATES_FLAVOR_RE.match(canonical_path)
+    if match is None:
+        return False
+    flavor, relpath = match.group(1), match.group(2)
+    entries = _adapter_flavor_manifest(flavor)
+    if not entries:
+        return False
+    relpath_norm = relpath.strip("/")
+    owner = None
+    owner_depth = -1
+    for entry in entries:
+        dest = str(entry).replace("\\", "/").strip("/")
+        if relpath_norm == dest or relpath_norm.startswith(dest + "/"):
+            depth = dest.count("/")
+            if depth >= owner_depth:
+                owner = entry
+                owner_depth = depth
+    if owner is None:
+        return False
+    if getattr(owner, "target_owned", False):
+        return False
+    dest_physical = f"templates/{flavor}/{str(owner)}".replace("\\", "/").strip("/")
+    source_physical = (
+        getattr(owner, "source_rel", None) or str(owner)
+    ).replace("\\", "/").strip("/")
+    return source_physical != dest_physical
+
+
 def is_machine_mirror_path(path: str) -> bool:
     """diff 서킷브레이커의 **측정 제외 subtree**인가.
 
     정책은 pm_update 엔진 사본인 `templates/<타깃>/.project_manager/` 아래와 패키지 설치
-    산출물인 `.opencode/node_modules/` 아래를 제외한다. template subtree 의 파일 전부는 아니다 —
-    manifest 밖 손편집 파일도 있어 통째 제외하면 과소 측정이 생기지만, 오차의 방향이
+    산출물인 `.opencode/node_modules/` 아래, 그리고 그 타깃 engine.manifest 가 `@source=` 방향으로
+    선언한 어댑터층 경로(`_adapter_layer_machine_mirror`·T-0832)를 제외한다. template subtree 의
+    파일 전부는 아니다 — manifest 밖 손편집 파일도 있어 통째 제외하면 과소 측정이 생기지만,
+    오차의 방향이
     **측정 축소 = 가드 약화**라
     정당한 작업을 오차단하지 않는다(과다 차단이 아니라 과소 차단 쪽으로만 틀린다).
 
     **측정 제외 규칙의 단일 진실** — 리뷰(external_review)와 완료 기록(ticket_finish)가 같은 판정을
     쓴다(사본 0). 판정은 경로 문자열뿐이라 트리 상태에 의존하지 않는다."""
-    return _MACHINE_MIRROR_RE.match(_canonical_measure_path(path)) is not None
+    canonical = _canonical_measure_path(path)
+    if _MACHINE_MIRROR_RE.match(canonical) is not None:
+        return True
+    return _adapter_layer_machine_mirror(canonical)
 
 
 def _is_review_machine_mirror_path(path: str) -> bool:
