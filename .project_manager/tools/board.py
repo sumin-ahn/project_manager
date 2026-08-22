@@ -331,10 +331,11 @@ IDEA_STATUS_DIRS: tuple[str, ...] = ("open", "promoted", "killed")
 # retag·refresh=파생 board.md 재생성(worktree refresh 는 정당 사용 없음·stray dashboard 방지)·
 # verified-at-backfill/repin=PM 홈 현재-진실 문서(architecture/status/domain) frontmatter 쓰기(
 # worktree 엔 그 문서가 없어 no-op 이나 PM 홈 실행이 설계 의도라 오실행 가드)·
-# rounds migrate=구 역할 절을 라운드 파일로 옮기고 구 장부/사본을 지우는 일회성 board 쓰기.
+# rounds migrate=구 역할 절을 라운드 파일로 옮기고 구 장부/사본을 지우는 일회성 board 쓰기·
+# design=frontmatter `design:` 값 기록/갱신(T-0817·tier와 같은 in-place writer).
 _MUTATION_SUBCOMMANDS: frozenset[str] = frozenset({
     "new", "promote", "claim", "complete", "block", "unclaim", "unblock",
-    "section-add", "tier",
+    "section-add", "tier", "design",
     "init", "migrate-identity", "promote-scope", "reid", "refresh",
     "verified-at-backfill", "verified-at-repin",
     "idea new", "idea promote", "idea kill",
@@ -9493,11 +9494,13 @@ def tier_signals(
 def _active_ticket_path(
     tid: str, action: str, *, role: str | None = None,
 ) -> tuple[int, Path | None]:
-    """section-add/tier 대상 해소 — open/claimed와 section-add의 draft×architect만 허용.
+    """section-add/tier/design 대상 해소 — open/claimed는 공통, draft는 action별로 다르게 연다.
 
-    tier는 계속 open/claimed로 닫고 section-add만 draft 설계 bootstrap을 연다. blocked/done 및
-    draft×developer|code-reviewer는 같은 경계에서 거부한다. directory 상태가 lifecycle 단일 진실인
-    기존 mutation 규약을 그대로 쓴다.
+    tier는 계속 open/claimed로 닫는다. section-add는 draft×architect만 연다(설계 bootstrap).
+    design은 draft 전체를 연다(T-0817) — `design: required`가 promote를 막으므로 draft 단계에서
+    `waived: <사유>`로 면제를 선언할 수 없으면 setter가 있어도 실제 막힌 상황을 풀지 못한다.
+    blocked/done 및 위 두 draft 예외 밖(section-add×developer|code-reviewer 등)은 같은 경계에서
+    거부한다. directory 상태가 lifecycle 단일 진실인 기존 mutation 규약을 그대로 쓴다.
     """
     try:
         status, path = find_ticket_for_mutation(tid)
@@ -9507,12 +9510,14 @@ def _active_ticket_path(
     draft_architect = (
         action == "section-add" and status == "draft" and role == "architect"
     )
-    if status not in ("open", "claimed") and not draft_architect:
-        allowed = (
-            "open/claimed 티켓 또는 draft×architect"
-            if action == "section-add"
-            else "open/claimed 티켓"
-        )
+    draft_design = action == "design" and status == "draft"
+    if status not in ("open", "claimed") and not (draft_architect or draft_design):
+        if action == "section-add":
+            allowed = "open/claimed 티켓 또는 draft×architect"
+        elif action == "design":
+            allowed = "open/claimed/draft 티켓"
+        else:
+            allowed = "open/claimed 티켓"
         print(f"cannot {action} {tid}: currently in {status}/ "
               f"({allowed}만 허용)", file=sys.stderr)
         return 1, None
@@ -10202,6 +10207,40 @@ def cmd_tier(args: argparse.Namespace) -> int:
 
     ready = _rounds_mutation_sync_paths(f"tier {args.id} {args.tier}", (path,))
     print(f"tier set {args.id}: {args.tier}{_board_git_mutation_state_suffix(ready)}")
+    return 0
+
+
+def cmd_design(args: argparse.Namespace) -> int:
+    """발행 후 frontmatter `design`을 기록/갱신하는 1급 수단(T-0817·`cmd_tier` 동형).
+
+    `--design`은 `new` 발행 시점 1회뿐이라 이후 면제(`waived: <사유>`) 선언은 YAML 손편집이
+    유일한 경로였다. 값 검증은 `_validate_design` 재사용 — 인식 불가·사유 없는 `waived`는 파일을
+    읽기 전에 거부한다(rc=1). 대상은 draft/open/claimed를 허용한다(`_active_ticket_path`의
+    design 축) — `design: required`가 promote를 막으므로 draft에서 면제를 선언할 수 없으면
+    setter가 있어도 실제 막힌 상황을 풀지 못한다. 값은 정규화·소문자화 없이 원문 그대로
+    기록한다(`_design_state`가 이미 대소문자 무시로 판정하고, `waived: <사유>`의 사유 원문
+    보존이 필요하다).
+    """
+    reason = _validate_design(args.value)
+    if reason:
+        print(reason, file=sys.stderr)
+        return 1
+    with board_lock():
+        rc, path = _active_ticket_path(args.id, "design")
+        if path is None:
+            return rc
+        fm, body = load_ticket(path)
+        fm["design"] = args.value
+        dump_ticket_atomic(path, fm, body)
+        is_draft = path.resolve().parent == drafts_dir().resolve()
+
+    if is_draft:
+        # draft는 board-git 미커밋 authoring 영역이다 — promote가 출하 시점에 함께 커밋한다
+        # (`cmd_section_add`의 draft 분기와 동형).
+        print(f"design set {args.id}: {args.value} (local draft; promote가 출하 소유)")
+        return 0
+    ready = _rounds_mutation_sync_paths(f"design {args.id} {args.value}", (path,))
+    print(f"design set {args.id}: {args.value}{_board_git_mutation_state_suffix(ready)}")
     return 0
 
 
@@ -17469,6 +17508,15 @@ def build_parser() -> argparse.ArgumentParser:
     # 보장하도록 자유 문자열로 받고 허용집합은 런타임에서 검증한다.
     p.add_argument("tier", metavar="pm-direct|normal|hard")
     p.set_defaults(fn=cmd_tier)
+
+    p = sub.add_parser(
+        "design",
+        help="open/claimed/draft 티켓의 설계 단계(design:) 값 발행 후 기록·갱신")
+    p.add_argument("id", metavar="T-NNNN")
+    # choices를 쓰면 argparse가 rc=2로 선점한다. 계약의 인식 불가 값 rc=1을 cmd_design이 직접
+    # 보장하도록 자유 문자열로 받고 허용집합은 런타임에서 검증한다(`_validate_design`).
+    p.add_argument("value", metavar=DESIGN_VALUE_FORMS)
+    p.set_defaults(fn=cmd_design)
 
     p = sub.add_parser(
         "tier-signals",
