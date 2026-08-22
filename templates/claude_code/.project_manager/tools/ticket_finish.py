@@ -753,6 +753,17 @@ def get_ticket_claimed_rev(board_py: Path, ticket_id: str) -> str | None:
     return claimed_rev.strip() or None if isinstance(claimed_rev, str) else None
 
 
+def get_ticket_claimed_at(board_py: Path, ticket_id: str) -> str | None:
+    """ticket_id 의 frontmatter `claimed_at` (없으면 None) — diff 귀속 **창**의 시작점.
+
+    `board.py claim` 이 박제하는 UTC ISO 시각이다. 같은 wave 에서 이 시각 이후 완료된 티켓은
+    `done/` 으로 옮겨졌어도 아직 같은 트리에 자기 diff 를 남기고 있으므로 귀속 창 안이다.
+    구 티켓(박제 이전)엔 없으므로 None 이 정상 형상이고, 그때 창을 못 정하는 판정은 소비자가
+    소유한다(종전 `claimed/` 만 보는 폭으로 접는다)."""
+    claimed_at = _ticket_frontmatter(board_py, ticket_id).get("claimed_at")
+    return claimed_at.strip() or None if isinstance(claimed_at, str) else None
+
+
 def _clean_touches(value: object) -> list[str]:
     """frontmatter touches 값을 정규 문자열 목록으로 접는다."""
     if isinstance(value, str):
@@ -814,7 +825,7 @@ def pm_direct_finish_warnings(
 
 
 class ClaimedTouchesSnapshot(NamedTuple):
-    """claimed 티켓 touches 읽기 결과 — 정상 빈 목록과 읽기 실패를 분리한다."""
+    """귀속 창 안 티켓 touches 읽기 결과 — 정상 빈 목록과 읽기 실패를 분리한다."""
     tickets: dict[str, list[str]]
     error: str | None
 
@@ -837,12 +848,64 @@ def get_ticket_touches(board_py: Path, ticket_id: str) -> list[str]:
     return _clean_touches(_ticket_frontmatter(board_py, ticket_id).get("touches"))
 
 
-def get_claimed_ticket_touches(board_py: Path) -> ClaimedTouchesSnapshot:
-    """보드의 claimed 티켓별 touches 와 읽기 실패 진단.
+def _frontmatter_head(text: str) -> str:
+    """티켓 원문에서 frontmatter 블록만 잘라낸다 (본문 제외 · YAML 파싱 없음)."""
+    if not text.startswith("---"):
+        return ""
+    end = text.find("\n---", len("---"))
+    return text if end == -1 else text[:end]
+
+
+def _done_paths_in_window(board, since: str | None) -> list[Path]:
+    """`done/` 중 `completed_at >= since` 인 티켓 경로 (창 밖·판정 불능은 제외).
+
+    판독은 frontmatter **머리**의 스칼라 한 개뿐이다 — `done/` 은 수백 건이라 완료 기록마다
+    전문 YAML 파싱을 돌리지 않는다. 부수 효과로 창 **밖** 구 티켓의 손상 frontmatter 가 귀속
+    보정을 깨뜨리지 않는다(파싱하지 않으므로).
+    시각 비교는 board 의 writer-형식 파서(`_parse_utc_iso`)를 그대로 부른다(판정 사본 0).
+    그 seam 이 없는 구 사본이거나 `since` 가 형식이 아니면 창을 정할 수 없으므로 `done/` 을 보지
+    않는다 — 종전 폭(과다 측정) 으로 접는 쪽이 안전하다.
+    """
+    parse_utc_iso = getattr(board, "_parse_utc_iso", None)
+    if since is None or parse_utc_iso is None:
+        return []
+    window_start = parse_utc_iso(since)
+    if window_start is None:
+        return []
+    done_dir = board.tickets_dir() / "done"
+    if not done_dir.is_dir():
+        return []
+    read_text_shared = _load_file_lock().read_text_shared
+    in_window: list[Path] = []
+    for path in sorted(done_dir.glob("T-*.md")):
+        try:
+            head = _frontmatter_head(
+                read_text_shared(path, encoding="utf-8", errors="replace")
+            )
+        except OSError:
+            continue  # 읽기 실패는 창 밖으로 접는다(제외 근거를 못 쓰니 과다 측정 유지).
+        completed_at = parse_utc_iso(
+            _fallback_frontmatter_scalar(head, "completed_at")
+        )
+        if completed_at is not None and completed_at >= window_start:
+            in_window.append(path)
+    return in_window
+
+
+def get_in_window_ticket_touches(
+    board_py: Path, *, since: str | None = None,
+) -> ClaimedTouchesSnapshot:
+    """귀속 창 안 티켓별 touches 와 읽기 실패 진단.
+
+    창 = `claimed/` ∪ (`done/` 중 `completed_at >= since`)이고 `since` 는 현재 티켓의
+    `claimed_at` 이다. `claimed/` 만 보면 같은 wave 에서 **먼저 완료된** 티켓이 `done/` 으로
+    옮겨져 보이지 않고, 그 전용 diff 가 뒤 티켓 몫으로 전부 흡수된다(실측: v1.7.8 wave 6장 —
+    마지막 티켓이 측정할 때 나머지 넷은 이미 done). `since` 가 없으면 창을 정할 수 없으므로
+    `claimed/` 만 보는 종전 동작으로 접는다.
 
     diff 귀속 입력은 이 스냅샷뿐이다. 새 장부나 설정을 만들지 않고, 보드가 권위 있게 정한
-    `tickets_dir()/claimed` 와 각 티켓 frontmatter `touches` 만 읽는다. 디렉터리와 frontmatter
-    status 가 모두 claimed 인 행만 인정한다. 정상적인 빈 touches/빈 claimed 는 `error=None`이고,
+    `tickets_dir()/{claimed,done}` 과 각 티켓 frontmatter `touches` 만 읽는다. 디렉터리와
+    frontmatter status 가 모두 같은 행만 인정한다. 정상적인 빈 touches/빈 창은 `error=None`이고,
     모듈·디렉터리·티켓 읽기/파싱 실패는 error 에 담아 호출부가 loud 하게 보정 skip 을 알린다.
     """
     try:
@@ -852,16 +915,19 @@ def get_claimed_ticket_touches(board_py: Path) -> ClaimedTouchesSnapshot:
         claimed_dir = board.tickets_dir() / "claimed"
         if not claimed_dir.is_dir():
             raise FileNotFoundError(f"claimed 티켓 디렉터리 부재: {claimed_dir}")
-        claimed_paths = sorted(claimed_dir.glob("T-*.md"))
+        window_paths = [("claimed", path)
+                        for path in sorted(claimed_dir.glob("T-*.md"))]
+        window_paths += [("done", path)
+                         for path in _done_paths_in_window(board, since)]
     except Exception as exc:  # noqa: BLE001 — 보드 미로드면 타 티켓 제외 없이 과다 측정 쪽 유지.
         if _is_engine_rev_skew(exc):
             raise
         detail = " ".join(str(exc).split()) or type(exc).__name__
         return ClaimedTouchesSnapshot({}, f"{board_py}: {detail}")
 
-    claimed: dict[str, list[str]] = {}
+    in_window: dict[str, list[str]] = {}
     errors: list[str] = []
-    for path in claimed_paths:
+    for status, path in window_paths:
         try:
             fm, _body = board.load_ticket(path)
         except Exception as exc:  # noqa: BLE001 — 호출부가 전체 보정을 보수적으로 skip 한다.
@@ -870,15 +936,15 @@ def get_claimed_ticket_touches(board_py: Path) -> ClaimedTouchesSnapshot:
             continue
         ticket_id = fm.get("id") if isinstance(fm, dict) else None
         if (not isinstance(ticket_id, str) or not ticket_id.strip()
-                or fm.get("status") != "claimed"):
-            errors.append(f"{path}: claimed frontmatter(id/status) 손상")
+                or fm.get("status") != status):
+            errors.append(f"{path}: {status} frontmatter(id/status) 손상")
             continue
-        claimed[ticket_id.strip()] = _clean_touches(fm.get("touches"))
-    return ClaimedTouchesSnapshot(claimed, "; ".join(errors) or None)
+        in_window[ticket_id.strip()] = _clean_touches(fm.get("touches"))
+    return ClaimedTouchesSnapshot(in_window, "; ".join(errors) or None)
 
 
 def _fallback_frontmatter_scalar(text: str, key: str) -> str | None:
-    """board 모듈 불능 때만 쓰는 보수적 단일-line scalar 복구."""
+    """보수적 단일-line scalar 복구 — board 모듈 불능 폴백과 창 판정의 머리 판독이 함께 쓴다."""
     match = re.search(rf"(?m)^{re.escape(key)}\s*:\s*(.*?)\s*$", text)
     if match is None:
         return None
@@ -1269,10 +1335,16 @@ class RepoStagePlan(NamedTuple):
 
 
 class DiffAttribution(NamedTuple):
-    """티켓 귀속 보정 뒤 diff 총량과 실제 제외 근거."""
+    """티켓 귀속 보정 뒤 diff 총량과 실제 제외 근거.
+
+    `unattributed_total` 은 **디렉터리 양보**로 어느 티켓 몫에도 싣지 않은 양이다 — 창 안 타
+    티켓과 겹친 디렉터리 선언분이라 티켓별 분리 증거가 없다. 조용히 사라지면 측정 축의
+    no-green-by-disabling 위반이므로 차단/통과 안내가 이 수치를 함께 보고한다.
+    """
     total: int
     excluded_total: int
     excluded_ticket_ids: tuple[str, ...]
+    unattributed_total: int = 0
 
 
 class DiffPathStat(NamedTuple):
@@ -1662,6 +1734,15 @@ class TicketFinisher:
         print(f"  ⚠ diff 서킷브레이커 측정 폭 — {ticket_id} {note}", file=sys.stderr)
 
     @staticmethod
+    def _warn_directory_yield(ticket_id: str, amount: int) -> None:
+        """디렉터리 양보로 뺀 양의 단일 loud 표면 — 통과가 조용하지 않게 한다."""
+        print(
+            f"  ⚠ diff 서킷브레이커 디렉터리 양보 — {ticket_id} 창 안 타 티켓과 겹친 "
+            f"디렉터리 선언 {amount}줄을 이 티켓 몫에서 뺐습니다(귀속 불명).",
+            file=sys.stderr,
+        )
+
+    @staticmethod
     def _warn_diff_attribution_failure(error: str) -> None:
         """현재/claimed board 실패의 단일 loud 진단 표면."""
         print(
@@ -1746,6 +1827,38 @@ class TicketFinisher:
         return cls._touch_contains(canonical, changed_path)
 
     @classmethod
+    def _touch_claims_path_exactly(cls, touch: str, changed_path: str) -> bool:
+        """touches 선언이 그 파일을 **정확히 지목**하는가(디렉터리 포함이 아니라).
+
+        디렉터리 양보 규칙의 판정 입력이다. 경로 magic/glob 은 `_touch_claims_path` 와 같은
+        이유로 일치(True)로 취급한다 — 양보가 발동하지 않아 과다 측정이 유지되므로 오차 방향이
+        가드 약화 쪽으로 가지 않는다.
+        """
+        canonical = cls._canonical_touch_path(touch)
+        if canonical.startswith(":(") or any(char in canonical for char in "*?["):
+            return True
+        return canonical == cls._canonical_touch_path(changed_path)
+
+    @classmethod
+    def _touch_owns_path(cls, touch: str, changed_path: str) -> bool:
+        """창 안 타 티켓 선언이 그 파일을 **증명 가능하게** 주장하는가(양보 판정 전용).
+
+        `_touch_claims_path` 는 해소 불능한 magic/glob 을 일치(True)로 접는다 — 그쪽은 "내
+        몫으로 유지" 판정이라 오차가 과다 측정 쪽이다. 같은 술어를 **양보**(내 몫에서 빼는
+        판정)의 상대 owner 산출에 재사용하면 오차 방향이 뒤집힌다: 무관한 타 티켓 선언
+        (`docs/*.md`) 하나만으로 내 디렉터리 변경 400줄 전량이 빠지고 상한이 통과된다(실측).
+
+        그래서 양보 쪽은 반대로 접는다 — 이 귀속기가 Git 과 같게 해석할 수 없는 선언
+        (pathspec magic·glob)은 owner 로 인정하지 않고 양보를 발동시키지 않는다. 실제로 그
+        파일에 걸리는 glob 도 같은 방향이다: 자체 glob 해석을 owner 근거로 믿는 순간 Git 과의
+        해석 차이가 그대로 가드 약화가 되므로, 증명할 수 있는 평문 경로만 owner 로 센다.
+        """
+        canonical = cls._canonical_touch_path(touch)
+        if canonical.startswith(":(") or any(char in canonical for char in "*?["):
+            return False
+        return cls._touch_contains(canonical, changed_path)
+
+    @classmethod
     def _numstat_paths(cls, external, field: str) -> tuple[str, ...]:
         """numstat 경로 필드의 논리 경로들 — rename은 source와 destination 둘 다."""
         if " => " not in field:
@@ -1814,38 +1927,76 @@ class TicketFinisher:
         except (OSError, UnicodeError):
             return None
 
+    @classmethod
+    def _claim_width_amount(
+        cls, root: Path, stat: DiffPathStat, endpoint_claims: Sequence[bool], *,
+        run_fn=None,
+    ) -> int:
+        """그 경로를 **현재 티켓 touches 단독으로** 쟀을 때의 폭.
+
+        Git 은 rename 의 source 만 pathspec 에 주면 삭제 전체, destination 만 주면 추가 전체를
+        세지만, 둘 다 주면 rename delta 만 센다. 창 합집합 측정은 항상 두 endpoint 를 넣으므로
+        단독 claim 의 종전 폭을 여기서 복원한다(50→0 축소 방지).
+
+        복원은 그 폭을 **어디에 싣든** 선행한다 — 내 몫(`total`)이든 디렉터리 양보
+        (`unattributed_total`)든 같은 수치다. 양보가 이 복원을 건너뛰면 400줄 rename 이 귀속
+        에도 보고에도 남지 않고 사라진다(실측). 유실은 과다 측정보다 나쁘다.
+        """
+        if len(stat.paths) != 2 or not any(endpoint_claims) or all(endpoint_claims):
+            return stat.amount
+        if endpoint_claims[0]:
+            source_lines = cls._head_line_count(root, stat.paths[0], run_fn=run_fn)
+            return stat.amount if source_lines is None else source_lines
+        destination_lines = cls._worktree_line_count(root, stat.paths[1])
+        return stat.amount if destination_lines is None else destination_lines
+
     def _ticket_diff_attribution(
         self, ticket_id: str, external, touches: Sequence[str], *, run_fn=None,
         board_error: str | None = None, claimed_rev: str | None = None,
     ) -> DiffAttribution:
-        """claimed 합집합 numstat 한 벌에서 현재 티켓 몫과 타 티켓 전용 몫을 가른다.
+        """창 안 합집합 numstat 한 벌에서 현재 티켓 몫과 타 티켓 전용 몫을 가른다.
 
         겹침 규칙: 변경 파일을 현재 티켓 touches 가 **파일 또는 상위 디렉터리 어떤 형태로든**
         포함하면 그 파일 전체를 현재 측정에 유지한다. 한 파일의 hunks 를 touches 만으로 티켓별
-        분리할 증거가 없기 때문이다. 현재 티켓은 전혀 주장하지 않고 타 claimed 티켓만 주장하는
+        분리할 증거가 없기 때문이다. 현재 티켓은 전혀 주장하지 않고 창 안 타 티켓만 주장하는
         파일만 제외한다. 모호함을 유지(과다 측정) 쪽으로 접는 것이 자기 산출을 숨겨 가드를
         약화하는 것보다 안전하다.
+
+        예외가 **디렉터리 양보** 하나다: 현재 티켓이 그 파일을 디렉터리 선언으로만 주장하고
+        (`tests` 같은 항목) 창 안 타 티켓이 어떤 형태로든 같은 파일을 주장하면 내 몫에서 뺀다.
+        공유 트리 wave 에서 이 규칙이 없으면 디렉터리 선언 하나가 그 아래 전 wave 변경을 자기
+        스코프로 흡수해 티켓별 측정이 4~10배로 부푼다(실측). 뺀 양은 어느 티켓에도 싣지 않고
+        `unattributed_total` 로 보고한다 — 양쪽 정확-claim 이나 양쪽 디렉터리-claim 같은 나머지
+        모호는 종전대로 과다 측정을 유지한다.
+
+        양보의 상대 owner 는 **증명 가능한 선언만** 센다(`_touch_owns_path`) — 해소 불능한
+        pathspec magic/glob 은 owner 가 아니라 양보 없음(과다 측정)이다. 그리고 양보로 빼는
+        수치는 유지할 때와 같은 단독-claim 폭이다(`_claim_width_amount`) — rename endpoint 폭
+        복원을 건너뛰면 전량이 귀속에도 보고에도 남지 않는다.
         """
         root = self._code_tree()
         snapshot = (ClaimedTouchesSnapshot({}, board_error) if board_error is not None
-                    else get_claimed_ticket_touches(self._board_py))
-        claimed: dict[str, list[str]] = {}
+                    else get_in_window_ticket_touches(
+                        self._board_py,
+                        since=get_ticket_claimed_at(self._board_py, ticket_id),
+                    ))
+        in_window: dict[str, list[str]] = {}
         attribution_error = snapshot.error
         if attribution_error is None:
-            for claimed_id, raw_touches in snapshot.tickets.items():
+            for window_id, raw_touches in snapshot.tickets.items():
                 normalized = self._normalize_measured_touches(raw_touches, warn=False)
                 if raw_touches and normalized is None:
-                    attribution_error = f"{claimed_id}: touches 좌표 정규화 실패"
-                    claimed = {}
+                    attribution_error = f"{window_id}: touches 좌표 정규화 실패"
+                    in_window = {}
                     break
-                claimed[claimed_id] = normalized or []
+                in_window[window_id] = normalized or []
         if attribution_error is not None and board_error is None:
             self._warn_diff_attribution_failure(attribution_error)
 
         other_claims = {
-            claimed_id: claimed_touches
-            for claimed_id, claimed_touches in claimed.items()
-            if claimed_id != ticket_id and claimed_touches
+            window_id: window_touches
+            for window_id, window_touches in in_window.items()
+            if window_id != ticket_id and window_touches
         }
         if attribution_error is not None or not other_claims:
             # 보정할 타 티켓이 없거나 보드가 불완전하면 기존 단일-ticket 측정식을 그대로 쓴다.
@@ -1860,7 +2011,7 @@ class TicketFinisher:
 
         measurement_paths = list(touches)
         measurement_paths.extend(
-            touch for claimed_touches in claimed.values() for touch in claimed_touches
+            touch for window_touches in in_window.values() for touch in window_touches
         )
         measurement_paths = list(dict.fromkeys(
             self._canonical_touch_path(path) for path in measurement_paths
@@ -1877,39 +2028,49 @@ class TicketFinisher:
 
         total = 0
         excluded_total = 0
+        unattributed_total = 0
         excluded_ids: set[str] = set()
         for stat in by_path:
             endpoint_claims = tuple(
                 any(self._touch_claims_path(touch, path) for touch in touches)
                 for path in stat.paths
             )
+            exact_endpoint_claims = tuple(
+                any(self._touch_claims_path_exactly(touch, path) for touch in touches)
+                for path in stat.paths
+            )
             owners = {
-                claimed_id for claimed_id, claimed_touches in other_claims.items()
+                window_id for window_id, window_touches in other_claims.items()
                 if any(
                     self._touch_claims_path(touch, path)
-                    for touch in claimed_touches for path in stat.paths
+                    for touch in window_touches for path in stat.paths
                 )
             }
-            if len(stat.paths) == 2 and any(endpoint_claims):
-                # Git은 source만 pathspec에 주면 삭제 전체, destination만 주면 추가 전체를 세지만,
-                # 둘 다 주면 rename delta만 센다. claimed 합집합 측정은 항상 두 endpoint를 넣으므로
-                # source/destination 단독 claim의 종전 폭을 여기서 복원한다(50→0 축소 방지).
-                if all(endpoint_claims):
-                    total += stat.amount
-                elif endpoint_claims[0]:
-                    source_lines = self._head_line_count(
-                        root, stat.paths[0], run_fn=run_fn,
-                    )
-                    total += stat.amount if source_lines is None else source_lines
-                else:
-                    destination_lines = self._worktree_line_count(root, stat.paths[1])
-                    total += stat.amount if destination_lines is None else destination_lines
+            # 양보 판정의 상대 owner 는 **증명 가능한** 선언만 센다(`_touch_owns_path`) —
+            # 유지 판정용 `owners` 와 술어가 다르다. 같은 술어를 쓰면 해소 불능 magic 하나가
+            # 무관한 티켓을 owner 로 만들어 내 몫을 지운다.
+            yield_owners = {
+                window_id for window_id, window_touches in other_claims.items()
+                if any(
+                    self._touch_owns_path(touch, path)
+                    for touch in window_touches for path in stat.paths
+                )
+            }
+            # rename 단독 claim 폭 복원은 몫을 어디에 싣든 선행한다(유지든 양보든 같은 수치).
+            claim_amount = self._claim_width_amount(
+                root, stat, endpoint_claims, run_fn=run_fn,
+            )
+            if any(endpoint_claims) and not any(exact_endpoint_claims) and yield_owners:
+                # 디렉터리 양보 — 내 주장은 디렉터리 선언뿐인데 창 안 타 티켓도 같은 파일을
+                # 주장한다. 내 몫으로 세지 않되 조용히 버리지도 않는다(불변식: 뺀 양 보고).
+                unattributed_total += claim_amount
             elif any(endpoint_claims) or not owners:
-                total += stat.amount  # 겹침/불명은 유지 — 과다 측정이 안전한 방향이다.
+                total += claim_amount  # 겹침/불명은 유지 — 과다 측정이 안전한 방향이다.
             elif stat.amount > 0:
                 excluded_total += stat.amount
                 excluded_ids.update(owners)
-        return DiffAttribution(total, excluded_total, tuple(sorted(excluded_ids)))
+        return DiffAttribution(total, excluded_total, tuple(sorted(excluded_ids)),
+                               unattributed_total)
 
     def _default_diff_cap_block(self, ticket_id: str) -> str | None:
         """diff 서킷브레이커 판정 — 차단 안내 문자열, 통과·가드 off 면 None.
@@ -1954,10 +2115,21 @@ class TicketFinisher:
             attribution.total, cap, ticket=ticket_id, estimate=estimate, scope=touches,
         )
         if block is None:
+            # 통과도 조용하지 않다 — 양보로 뺀 양이 있으면 그 사실을 여기서 말한다(차단이면
+            # 아래 안내가 같은 수치를 실으므로 두 번 말하지 않는다).
+            if attribution.unattributed_total:
+                self._warn_directory_yield(ticket_id, attribution.unattributed_total)
             return None
         excluded_ids = ", ".join(attribution.excluded_ticket_ids) or "(없음)"
-        return (f"{block}\n  타 claimed 티켓 귀속 제외: {attribution.excluded_total}줄"
-                f" · 티켓 {excluded_ids}")
+        lines = [block,
+                 f"  타 claimed 티켓 귀속 제외: {attribution.excluded_total}줄"
+                 f" · 티켓 {excluded_ids}"]
+        if attribution.unattributed_total:
+            lines.append(
+                f"  디렉터리 양보 보류: {attribution.unattributed_total}줄"
+                " (창 안 타 티켓과 겹친 디렉터리 선언 — 티켓별 분리 증거 없음)"
+            )
+        return "\n".join(lines)
 
     def _default_dod_block(self, ticket_id: str) -> str | None:
         """DoD 기록 게이트 preflight 판정 — 차단 사유 문자열, 통과·판정 불가면 None.

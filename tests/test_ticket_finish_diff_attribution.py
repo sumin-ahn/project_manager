@@ -239,10 +239,6 @@ def test_shape_d_block_reports_excluded_amount_and_ticket_id(tmp_path):
     ("current_touches", "other_touches", "changed_path"),
     [
         pytest.param(
-            ["tests/"], ["tests/test_shared.py"], "tests/test_shared.py",
-            id="current-tests-dir-other-specific-file",
-        ),
-        pytest.param(
             [".project_manager/tools/current.py"], [".project_manager/"],
             ".project_manager/tools/current.py", id="other-project-manager-dir",
         ),
@@ -255,7 +251,11 @@ def test_shape_d_block_reports_excluded_amount_and_ticket_id(tmp_path):
 def test_attack_matrix_overlap_is_never_excluded(
     tmp_path, current_touches, other_touches, changed_path,
 ):
-    """공격 매트릭스: 디렉터리/하위파일 어느 방향의 겹침도 깊이 우선으로 빼지 않는다."""
+    """공격 매트릭스: 내 **정확 claim** 이 있으면 어느 방향 겹침도 깊이 우선으로 빼지 않는다.
+
+    내 주장이 디렉터리 선언뿐인 형상(창 안 타 티켓과 겹칠 때 양보)은 별도 규칙이 소유한다 —
+    `test_ticket_finish_wave_attribution.py` 형상 E.
+    """
     root, tf = _shape(
         tmp_path,
         {"T-5001": current_touches, "T-5002": other_touches},
