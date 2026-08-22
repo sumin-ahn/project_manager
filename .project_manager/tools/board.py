@@ -6895,10 +6895,13 @@ def _detect_py() -> str:
 
 
 # ── ctx 임계 (context 정지-핸드오프) ──────────────────────────────
-# 어댑터 훅(opencode·claude)이 컨텍스트 잔여 비율로 nudge/stop 을 판정할 기본값.
+# 세 하네스 어댑터 훅(claude·opencode·codex)이 컨텍스트 잔여 비율로 nudge/stop 을 판정할 기본값.
 # local.conf `ctx_nudge_pct`·`ctx_stop_pct` 로 per-clone 조정 가능 (board.py init 기록).
 # 잔여 10% 정지는 rich 핸드오프 돌릴 컨텍스트가 아슬.
-# 어댑터 사본(claude ctx_guard.py·opencode ctx-guard.js)과 미러(test_ctx_default_mirror 가드).
+# 어댑터 사본 3파일(claude `.claude/ctx_guard.py`·opencode `.opencode/lib/ctx-guard-core.cjs`·
+# codex `.codex/pm_orch_codex.py`)과 미러 — 이 board 상수까지 **4사이트**를
+# `test_ctx_default_mirror` 가드가 대조한다. codex 사이트는 한 파일이 두 소비자를 겸한다
+# (relay 회전 축 `resolve_stop_pct` + 세션 안 훅 넛지 축 `ctx_thresholds`·`ctx_nudge_envelope`).
 CTX_NUDGE_PCT_DEFAULT = 30  # 잔여 ≤ 이 % → "곧 정지" nudge (아직 일은 계속).
 CTX_STOP_PCT_DEFAULT = 20   # 잔여 ≤ 이 % → 정지·핸드오프 트리거 임계.
 # 핸드오프 토큰 예산(위 nudge/stop %의 기준). 어댑터 ctx_guard.CTX_WINDOW_TOKENS_DEFAULT

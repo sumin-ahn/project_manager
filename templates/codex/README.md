@@ -41,7 +41,9 @@ self-driven 으로 구동한다. claude_code 의 `CLAUDE.md`+`.claude/`·opencod
 `hooks.json`도 compaction을 차단하지 않는다. `auto`와 `manual` PreCompact matcher는 checkpoint
 골격을 자동 생성한 뒤 JSON `systemMessage` 안내를 내고 transaction을 통과시킨다. Codex CLI 0.147.0
 로컬 바이너리의 hook event enum에서 `PostCompact` 지원을 확인했으므로 같은 두 matcher를 배선했고,
-이 이벤트는 `pm_log.py snapshot --json`의 엔진 소유 최종 텍스트를 모델에 재주입한다.
+이 이벤트는 `pm_log.py snapshot --json`의 엔진 소유 최종 텍스트를 `systemMessage` 엔벨로프로
+출력한다. 실측된 범위는 이 출력 채널까지이며, 그 엔벨로프의 모델 도달은 direct TUI에서 미검증이고
+headless exec에서는 미도달이다(아래 두 항목).
 compaction 횟수를 세는 영속 상태는 두지 않는다. 각 handler는 POSIX `command`와 native Windows
 PowerShell-safe `commandWindows`에서 동일한 checkpoint 의미의 JSON 하나만 stdout으로 낸다. checkpoint
 subprocess stdout/stderr는 전량 폐기하며 PowerShell 5.x 호환을 위해 명령은 `;`로 분리한다. Windows payload는
@@ -52,14 +54,19 @@ PowerShell 5.1 리다이렉션의 cp949 기본값에서도 JSON이 깨지지 않
   `/hooks` 승인이 없으면 PreCompact 자체가 조용히 발화하지 않는다.
 - headless exec: 같은 메인테이너 실측의 `--oss` 프로브(`reach-probe/`)에서 `^auto$` 비차단
   훅 marker 발화를 확인했고, `turn_aborted` 0건·`context_compacted` 기록과 후속 turn 정상 계속으로
-  compaction 통과를 확인했다. 단, `systemMessage`는 `codex exec`의
+  compaction 통과를 확인했다. 단, compaction 훅의 `systemMessage`는 `codex exec`의
   stdout JSONL·stderr·rollout·`CODEX_HOME` 전수 grep 어디에도 나타나지 않았고 모델 자기보고도 음성이었다. 따라서
-  **exec 경로 안내는 모델에 닿지 않는다(관측만 가능)**.
+  **exec 경로에서 `systemMessage` 안내는 모델에 닿지 않는다(관측만 가능)**.
+  도달 여부는 **채널별로 다르다** — 진입점 훅(`PreToolUse`·`UserPromptSubmit`)의
+  `hookSpecificOutput.additionalContext`는 **모델에 닿는다**. 격리 `CODEX_HOME` 라이브 실측
+  (codex-cli 0.147.0)에서 세션 안 ctx 넛지 문구가 rollout에 `role:"developer"` 입력 레코드로
+  남고 모델이 그 문구를 verbatim 인용했다. 그래서 세션 안 안내는 `systemMessage`가 아니라
+  이 채널을 쓴다.
 - relay: `codex exec --json`의 `turn.completed.usage` 누계를 매 turn 파싱하고 직전 누계와의 차분을
   보수적 점유 상한으로 쓴다. rollout `token_count.last_token_usage`는 같은 이벤트의 누계 input이 방금
   받은 wire 누계 input과 일치할 때만 더 정밀한 1순위 신호로 채택한다. 이 판정값이 예산의 STOP 경계에
   닿으면 relay driver가 turn 완료 회전 신호를 남기고 Supervisor가 세션을 교체한다. exec에서 소실되는
-  hook 안내 대신 driver 회전 선점이 relay 경로를 실보호한다. 이것이 장기 경로의 **proactive** 기계 가드다.
+  compaction 훅 `systemMessage` 안내 대신 driver 회전 선점이 relay 경로를 실보호한다. 이것이 장기 경로의 **proactive** 기계 가드다.
 
 2026-07-22~23 장기 TUI rollout에서는 `context_compacted`가 네 번 기록됐고, 해당 event stream에
 `hook_started`/`hook_completed` 및 기존 echo tripwire 출력은 없었다. 따라서 이전 echo-only tripwire는
