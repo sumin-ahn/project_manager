@@ -242,6 +242,19 @@ _ENGINE_REV_SKEW_RECOVERY_REASONS = {
         "왜 못 만들었는지가 사라진다. 형제 모듈 삭제 수단이 낸 사본 불일치도 같은 이유로 흡수하되, "
         "경고 한 줄로 남겨 재동기 처방이 함께 사라지지 않게 한다"
     ),
+    "ticket_copy_gate_refund": (
+        "T-0846(F-001) — 단일 정리 경계의 환불(abandon)은 **원 거부/전파 예외를 덮지 않는 것**이 "
+        "계약이다 — 여기서 예외를 올리면 이미 확정된 거부 rc·사유나 전파 중인 예외가 정리 실패로 "
+        "뒤바뀐다. 환불 수단이 형제 모듈(`abandon_ticket_copy` → board/file_lock)이라 사본 "
+        "불일치가 이 경계에 도달할 수 있는데, 그것도 정리 실패의 한 형태로 흡수하되 원인을 문구로 "
+        "구분해 '정리 실패'와 '엔진 사본 불일치'가 같은 경고로 뭉개지지 않게 한다"
+    ),
+    "ticket_copy_prepare_rollback": (
+        "T-0846(F-001) — 예약 전 rollback 정리는 **원 예외를 덮지 않는 것**이 계약이다 — 여기서 "
+        "갈아타면 예약이 왜 실패했는지가 사라진다. 삭제 수단이 형제 모듈(`file_lock.force_rmtree`)"
+        "이라 사본 불일치가 이 경계에 닿을 수 있는데, 같은 이유로 흡수하되 경고 한 줄로 남겨 "
+        "재동기 처방이 함께 사라지지 않게 한다"
+    ),
 }
 
 
@@ -1675,104 +1688,156 @@ def prepare_ticket_copy(
     _assert_ticket_copy_root_ignored(cwd, ticket=ticket, run_id=run_id)
     run_dir, run_dir_fd = _secure_ticket_copy_dir(cwd, ticket, run_id)
     rounds_dir = rounds_dir_fd = None
+    # T-0846(F-010) — board_path 예약(reserve_round) 성공 전에 이 블록을 벗어나면(동시
+    # prepare 경합 패자 포함) 이 run_dir 은 이 호출 하나만의 소유라 안전하게 지운다. 성공
+    # 후 실패(장부 append 등)는 board 라운드가 이미 살아 있어 `_reserved_round_residue`
+    # 진단으로 수동 복구 좌표를 남기는 기존 설계를 그대로 둔다(run_dir 을 지우지 않는다).
+    reserved = False
     try:
-        rounds_dir, rounds_dir_fd = _secure_ticket_copy_dir(
-            cwd, ticket, run_id, extra_parts=(TICKET_COPY_ROUNDS_DIRNAME,),
-        )
-
         try:
-            seed = _ticket_round_seed(
-                rounds_module, role, spec_text,
-                # 프리필 공급원 규칙(같은 역할 직전 라운드 · 산출 없는 라운드 배제)은 사이드카
-                # seam 하나가 소유한다 — 여기서 다시 구현하면 예약측·판정측 규칙이 갈린다.
-                rounds_module.previous_round_of_role(existing, role),
-                today=datetime.date.today().isoformat(),
-                # developer 골격의 verify 프리필 입력 — 이미 손에 든 `existing` 을 그대로
-                # 넘긴다(신규 로드 0).
-                rounds=existing,
+            rounds_dir, rounds_dir_fd = _secure_ticket_copy_dir(
+                cwd, ticket, run_id, extra_parts=(TICKET_COPY_ROUNDS_DIRNAME,),
             )
-        except rounds_module.RoundsError as exc:
-            # 시드 seam 은 자기 오류형으로 거부한다(board `section-add` 가 잡는 형). 여기서
-            # 되받아 이 CLI 의 오류형으로 옮긴다 — 두 진입점이 같은 규칙·같은 rc 를 낸다.
-            # 시드 seam 은 실 ticket id 를 모른다(ticket_text 만 받는다) 그래서 `<T-NNNN>`
-            # placeholder 로 처방을 낸다(T-0841 라운드 6) — 이 층은 실값을 쥐고 있으므로
-            # 여기서만 치환해 커맨드가 그대로 실행 가능하게 한다(board `section-add` 는 이
-            # 층을 거치지 않아 치환되지 않는다 — touches 밖).
-            raise DelegateError(str(exc).replace("<T-NNNN>", ticket)) from exc
-        # ── 여기부터 board 를 건드린다 (T-0841 F-003: 상태 재확인·역할 count 재확인·최종
-        # reserve 를 하나의 board_lock 임계구역에서 최신 스냅샷으로 재수행한다 — 위 (1.5)
-        # 사전판정과 이 지점 사이의 gap 이 TOCTOU 였다: 두 준비가 사전판정을 함께 통과해도
-        # 여기서 재확인하는 최신 스캔이 그중 하나만 통과시킨다) ──────────────────────
-        with board.board_lock():
-            refreshed = board.find_ticket_exact(ticket)
-            if refreshed is None:
-                raise DelegateError(f"ticket not found: {ticket}")
-            fresh_status, _fresh_source = refreshed
-            if fresh_status not in _TICKET_PREPARE_STATUSES and not (
-                fresh_status == "draft" and role == "architect"
-            ):
-                raise DelegateError(
-                    "티켓 라운드 준비는 open/claimed 또는 draft×architect만 허용: "
-                    f"{ticket} role={role} currently in {fresh_status}/"
+
+            try:
+                seed = _ticket_round_seed(
+                    rounds_module, role, spec_text,
+                    # 프리필 공급원 규칙(같은 역할 직전 라운드 · 산출 없는 라운드 배제)은 사이드카
+                    # seam 하나가 소유한다 — 여기서 다시 구현하면 예약측·판정측 규칙이 갈린다.
+                    rounds_module.previous_round_of_role(existing, role),
+                    today=datetime.date.today().isoformat(),
+                    # developer 골격의 verify 프리필 입력 — 이미 손에 든 `existing` 을 그대로
+                    # 넘긴다(신규 로드 0).
+                    rounds=existing,
                 )
-            if role in DEFAULT_INTERNAL_ROUND_LIMITS:
-                fresh_existing = rounds_module.load_rounds(
-                    tickets_dir, ticket, ticket_text=spec_text,
-                )
-                count = _internal_round_count(fresh_existing, role)
-                if count >= limit:
-                    raise InternalRoundLimitExceeded(
-                        _INTERNAL_ROUND_LIMIT_GUIDANCE.format(
-                            ticket=ticket, role=role, count=count, limit=limit,
-                            rounds=_internal_round_list(
-                                fresh_existing, role, rounds_module,
-                            ),
-                        )
+            except rounds_module.RoundsError as exc:
+                # 시드 seam 은 자기 오류형으로 거부한다(board `section-add` 가 잡는 형). 여기서
+                # 되받아 이 CLI 의 오류형으로 옮긴다 — 두 진입점이 같은 규칙·같은 rc 를 낸다.
+                # 시드 seam 은 실 ticket id 를 모른다(ticket_text 만 받는다) 그래서 `<T-NNNN>`
+                # placeholder 로 처방을 낸다(T-0841 라운드 6) — 이 층은 실값을 쥐고 있으므로
+                # 여기서만 치환해 커맨드가 그대로 실행 가능하게 한다(board `section-add` 는 이
+                # 층을 거치지 않아 치환되지 않는다 — touches 밖).
+                raise DelegateError(str(exc).replace("<T-NNNN>", ticket)) from exc
+            # ── 여기부터 board 를 건드린다 (T-0841 F-003: 상태 재확인·역할 count 재확인·최종
+            # reserve 를 하나의 board_lock 임계구역에서 최신 스냅샷으로 재수행한다 — 위 (1.5)
+            # 사전판정과 이 지점 사이의 gap 이 TOCTOU 였다: 두 준비가 사전판정을 함께 통과해도
+            # 여기서 재확인하는 최신 스캔이 그중 하나만 통과시킨다) ──────────────────────
+            with board.board_lock():
+                refreshed = board.find_ticket_exact(ticket)
+                if refreshed is None:
+                    raise DelegateError(f"ticket not found: {ticket}")
+                fresh_status, _fresh_source = refreshed
+                if fresh_status not in _TICKET_PREPARE_STATUSES and not (
+                    fresh_status == "draft" and role == "architect"
+                ):
+                    raise DelegateError(
+                        "티켓 라운드 준비는 open/claimed 또는 draft×architect만 허용: "
+                        f"{ticket} role={role} currently in {fresh_status}/"
                     )
-            # 이 함수가 이미 board_lock 을 쥐고 있다(재진입 금지) — reserve_round 자신의
-            # `with lock:` 은 null 컨텍스트로 채워 채번+생성이 같은 임계구역 안에서 돈다.
-            board_path = rounds_module.reserve_round(
-                tickets_dir, ticket, role, content=seed, lock=contextlib.nullcontext(),
-            )
-        ordinal, _role = rounds_module.parse_round_filename(board_path.name)
-        board_rel = _board_relative_path(board_path, pm_home)
-
-        copy_path = run_dir / board_path.name
-        try:
-            _write_exclusive_file(
-                copy_path, seed.encode("utf-8"), 0o600, parent_fd=run_dir_fd,
-            )
-            _write_exclusive_file(
-                run_dir / TICKET_COPY_SPEC_NAME,
-                spec_text.encode("utf-8"),
-                0o400,
-                parent_fd=run_dir_fd,
-            )
-        except OSError as exc:
-            raise DelegateError(
-                f"티켓 라운드 사본 생성 실패: {run_dir}: {exc}"
-                + _reserved_round_residue(board_rel, ordinal)
-            ) from exc
-        # 이전 라운드는 읽기 전용 입력이다 — 시드 그대로인 미회수 라운드도 함께 깐다(진행 중
-        # 다른 역할의 자리를 숨기지 않는다).
-        try:
-            for item in existing:
-                _write_exclusive_file(
-                    rounds_dir / item.path.name,
-                    item.text.encode("utf-8"),
-                    0o400,
-                    parent_fd=rounds_dir_fd,
+                if role in DEFAULT_INTERNAL_ROUND_LIMITS:
+                    fresh_existing = rounds_module.load_rounds(
+                        tickets_dir, ticket, ticket_text=spec_text,
+                    )
+                    count = _internal_round_count(fresh_existing, role)
+                    if count >= limit:
+                        raise InternalRoundLimitExceeded(
+                            _INTERNAL_ROUND_LIMIT_GUIDANCE.format(
+                                ticket=ticket, role=role, count=count, limit=limit,
+                                rounds=_internal_round_list(
+                                    fresh_existing, role, rounds_module,
+                                ),
+                            )
+                        )
+                # 이 함수가 이미 board_lock 을 쥐고 있다(재진입 금지) — reserve_round 자신의
+                # `with lock:` 은 null 컨텍스트로 채워 채번+생성이 같은 임계구역 안에서 돈다.
+                board_path = rounds_module.reserve_round(
+                    tickets_dir, ticket, role, content=seed, lock=contextlib.nullcontext(),
                 )
-        except OSError as exc:
-            raise DelegateError(
-                f"이전 라운드 사본 생성 실패: {rounds_dir}: {exc}"
-                + _reserved_round_residue(board_rel, ordinal)
-            ) from exc
-    finally:
-        if run_dir_fd is not None:
-            os.close(run_dir_fd)
-        if rounds_dir_fd is not None:
-            os.close(rounds_dir_fd)
+                # T-0846(F-002) — reserve_round 반환 즉시, **락 이탈(`__exit__`) 전** 같은 락
+                # 본문 안에서 예약 성공 상태와 복구 좌표를 기록한다. `exclusive_file_lock` 은
+                # unlock/close 실패를 올리는 계약이라, 이 대입이 `with` 밖에 있으면 락 이탈
+                # 실패가 board 만 남기고 run_dir·좌표를 지우는 복구 불능 형상을 만든다.
+                reserved = True
+                # T-0846(F-001 라운드 5) — 아래 두 계산은 각각 실패 가능한 seam 이다
+                # (`parse_round_filename`은 파일명 파싱 실패 시 `None` 반환 · `_board_relative_path`
+                # 는 PM 홈 밖 해소를 계약형 `DelegateError` 로 던진다). 복구 진단(아래 `elif
+                # reserved:`)이 그 실패로 미초기화 변수를 참조해 `UnboundLocalError` 를 내며 원
+                # 예외를 덮지 않도록, 던지지 않는 fallback 좌표를 먼저 확정한 뒤에만 더 나은
+                # 값으로 교체를 시도한다 — 대입은 원자적이라 우변이 던지면 좌변은 fallback
+                # 그대로 남는다.
+                ordinal = 0
+                board_rel = str(board_path)
+                parsed_round = rounds_module.parse_round_filename(board_path.name)
+                if parsed_round is not None:
+                    ordinal, _role = parsed_round
+                board_rel = _board_relative_path(board_path, pm_home)
+
+            copy_path = run_dir / board_path.name
+            try:
+                _write_exclusive_file(
+                    copy_path, seed.encode("utf-8"), 0o600, parent_fd=run_dir_fd,
+                )
+                _write_exclusive_file(
+                    run_dir / TICKET_COPY_SPEC_NAME,
+                    spec_text.encode("utf-8"),
+                    0o400,
+                    parent_fd=run_dir_fd,
+                )
+            except OSError as exc:
+                raise DelegateError(
+                    f"티켓 라운드 사본 생성 실패: {run_dir}: {exc}"
+                    + _reserved_round_residue(board_rel, ordinal)
+                ) from exc
+            # 이전 라운드는 읽기 전용 입력이다 — 시드 그대로인 미회수 라운드도 함께 깐다(진행 중
+            # 다른 역할의 자리를 숨기지 않는다).
+            try:
+                for item in existing:
+                    _write_exclusive_file(
+                        rounds_dir / item.path.name,
+                        item.text.encode("utf-8"),
+                        0o400,
+                        parent_fd=rounds_dir_fd,
+                    )
+            except OSError as exc:
+                raise DelegateError(
+                    f"이전 라운드 사본 생성 실패: {rounds_dir}: {exc}"
+                    + _reserved_round_residue(board_rel, ordinal)
+                ) from exc
+        finally:
+            if run_dir_fd is not None:
+                os.close(run_dir_fd)
+            if rounds_dir_fd is not None:
+                os.close(rounds_dir_fd)
+    except BaseException as exc:
+        # T-0846(F-001) — 정리(force_rmtree)가 `KeyboardInterrupt`·`SystemExit`·비-OSError 로
+        # 죽어도 이미 pending 인 **원** 예외(`exc`)를 대체하지 않는다: 아래는 어떤 예외형이든
+        # 잡아 loud 경고만 남기고 마지막 `raise`(bare)는 항상 `exc` 를 그대로 재전파한다.
+        if not reserved and os.path.lexists(run_dir):
+            try:
+                _load_file_lock().force_rmtree(run_dir)
+            except BaseException as cleanup_exc:
+                skew = _absorb_engine_rev_skew_for_recovery(
+                    cleanup_exc, "ticket_copy_prepare_rollback")
+                cause = (
+                    f"엔진 사본 불일치 — {cleanup_exc}" if skew
+                    else f"{type(cleanup_exc).__name__}: {cleanup_exc}"
+                )
+                print(
+                    "경고: 라운드 준비 실패(예약 전) 후 run-dir 정리 실패 — 잔류할 수 "
+                    f"있습니다: {run_dir}: {cause}",
+                    file=sys.stderr,
+                )
+        elif reserved:
+            # T-0846(F-002) — board 예약은 이미 성공했지만(예: 락 이탈 실패) 이후 단계가
+            # 실패했다. run_dir 은 지우지 않는다(위 분기가 스킵) — 다음 조작자가 board 좌표로
+            # 찾을 수 있게 기존 `_reserved_round_residue` 진단을 그대로 재사용해 loud 하게
+            # 남긴다(복구 불능 — board 만 남고 run-dir·좌표 모두 없음 — 을 만들지 않는다).
+            print(
+                f"경고: board 라운드 예약 후 준비가 실패했습니다({type(exc).__name__}: {exc})"
+                + _reserved_round_residue(board_rel, ordinal),
+                file=sys.stderr,
+            )
+        raise
 
     ledger_row = {
         "ticket": ticket,
@@ -2189,28 +2254,38 @@ def abandon_ticket_copy(
 def _refund_gate_rejected_ticket_copy(
     ticket_copy: TicketCopyPlan, *, cwd: Path, pm_home: Path,
 ) -> None:
-    """T-0841 F-005(라운드 6) — 예약(prepare) 이후 ~ 스폰 이전 구간의 게이트가 거부하면 board
-    라운드 파일·delegate-rounds 장부 행·run-dir 세 축을 같은 프로세스가 즉시 종결한다. 새 경로를
-    만들지 않고 기존 `abandon_ticket_copy` 를 그대로 재사용한다(PM 판정 · 대안 b). `assume_dead=True`
-    — 이 run 의 `owner_pid` 는 **이 살아 있는 프로세스 자신**이라(스폰 전 거부) 생존 판정이 자기
-    자신을 "진행 중"으로 오판해 막는다; 정상 스폰 후 죽은 run 의 교차-프로세스 정리와는 다른 축이다.
-    원 거부 사유(rc·메시지)는 이 함수 호출 **전**에 이미 stderr 로 loud 하게 남는다 — 여기서는
-    환불 결과만 덧붙이고, 환불 자체가 실패해도 원 거부를 대체하지 않는다(경고만 추가·원 rc 유지).
+    """T-0846 — 예약(`prepare_ticket_copy`) 이후 ~ 실행 인계(`_execute_and_collect`) 이전 구간의
+    **단일 정리 경계**. `main()` 의 finally 하나가 이 함수를 부른다 — 그 구간을 벗어나는 모든
+    경로(명시 return · 전파 예외)가 지점 삽입 없이 여기로 수렴한다(T-0841 라운드 6이 꽂은 6개
+    지점 삽입을 대체). board 라운드 파일·delegate-rounds 장부 행·run-dir 세 축을 같은 프로세스가
+    즉시 종결한다. 새 경로를 만들지 않고 기존 `abandon_ticket_copy` 를 그대로 재사용한다.
+    `assume_dead=True` — 이 run 의 `owner_pid` 는 **이 살아 있는 프로세스 자신**이라(핸드오프 전
+    이탈) 생존 판정이 자기 자신을 "진행 중"으로 오판해 막는다; 정상 스폰 후 죽은 run 의
+    교차-프로세스 정리와는 다른 축이다.
+    원 종료 사유(rc·메시지)는 이 함수 호출 **전**에 이미 stderr 로 loud 하게 남거나(명시 거부) 그대로
+    전파 중이다(예외 이탈). 여기서는 환불 결과만 덧붙이고, 환불 자체가 어떤 예외형으로 실패해도
+    (`DelegateError` 뿐 아니라) 원 결과를 대체하지 않는다 — `return`/`raise` 없이 경고만 추가해,
+    이 함수를 부른 `finally` 통과 뒤 원래 return 값·전파 예외가 그대로 유지된다.
     """
     try:
         result = abandon_ticket_copy(
             copy_path=ticket_copy.path, cwd=cwd, pm_home=pm_home, assume_dead=True,
         )
-    except DelegateError as exc:
+    except BaseException as exc:
+        # T-0846(F-001) — 환불이 `KeyboardInterrupt`·`SystemExit`·비-DelegateError 로 죽어도
+        # 이미 pending 인 원 return 값/전파 예외를 대체하지 않는다: 어떤 예외형이든 여기서 잡아
+        # loud 경고만 남기고 `return`(정상 반환) — 호출부 `finally` 통과 뒤 원 결과가 그대로다.
+        skew = _absorb_engine_rev_skew_for_recovery(exc, "ticket_copy_gate_refund")
+        cause = f"엔진 사본 불일치 — {exc}" if skew else f"{type(exc).__name__}: {exc}"
         print(
-            "경고: 게이트 거부 후 ticket 예약 환불 실패 — board 라운드·run-dir 이 잔류할 수 "
+            "경고: 위임 이탈(거부/예외) 후 ticket 예약 환불 실패 — board 라운드·run-dir 이 잔류할 수 "
             f"있습니다. 같은 정리를 `ticket abandon --copy {ticket_copy.path} --cwd {cwd} "
-            f"{ABANDON_ASSUME_DEAD_FLAG}` 로 다시 시도하세요: {exc}",
+            f"{ABANDON_ASSUME_DEAD_FLAG}` 로 다시 시도하세요: {cause}",
             file=sys.stderr,
         )
         return
     print(
-        "[pm-delegate] 게이트 거부로 ticket 예약 환불: "
+        "[pm-delegate] 위임 이탈(거부/예외) 후 ticket 예약 환불: "
         f"board_removed={str(result.board_removed).lower()} · "
         f"run_dir_removed={str(result.run_dir_removed).lower()} · "
         f"converged={str(result.converged).lower()} · copy={ticket_copy.path}",
@@ -12633,423 +12708,420 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         except DelegateError as exc:
             return fail_loud(f"오류: 위임 티켓 라운드 준비 실패: {exc}")
 
-    # 프롬프트 합성과 회수 판정이 같은 실행-전 등록부 스냅샷을 쓴다. 위임 중 pm_import.py가
-    # 바뀌어도 전달한 금지 루트와 다른 현재값으로 재판정하지 않는다.
-    adapter_roots = _resolved_adapter_directories()
-    preamble = _role_preamble(args.role, adapter_roots)
-    if ticket_copy is not None:
-        preamble += "\n" + _ticket_copy_preamble(ticket_copy)
-    prompt = preamble + "\n\n" + task_text
-
-    # 세션 재사용 해소 — **전송 전 게이트보다 앞**이다. 재사용 라운드가 실제로 내보내는 건 delta
-    # payload 라, 게이트(재앵커·시크릿 스캔)가 그걸 못 보면 검사받지 않은 본문이 나간다. 재사용
-    # 실패 시 full payload 로 돌아가므로 두 본문 **모두**를 게이트 입력으로 합친다.
-    resume = resolve_resume_plan(
-        args.resume_from, harness=harness, role=args.role,
-        task_text=task_text, output_dir=output_dir,
-    )
-    outgoing_text = (
-        prompt if resume is None else "\n".join((resume.delta_prompt, prompt))
-    )
-
-    # 쓰기-타깃 axis 재앵커 게이트 (엔진 코드 write + PM 홈 cwd·dry-run 전 = 미리보기서 노출)
-    # divergence와 같은 cwd repo 해소 입력을 기존 write-target 가드에도 재사용한다. 하위 디렉토리
-    # `--cwd`가 PM 홈 가드를 우회하는 별도 판정축을 만들지 않는다.
-    reanchor = check_write_target_reanchor(args.role, cwd_repo or cwd, outgoing_text)
-    if reanchor is not None:
-        print(
-            "오류: 엔진 코드(.project_manager/tools/) write 위임을 adopter#0 PM 홈 cwd 에서 실행했습니다 —\n"
-            "  import 사본을 수정하면 canonical worktree 와 갈려 stale·false-green 이 납니다.\n"
-            f"  · canonical worktree 로 재앵커하세요:  --cwd {reanchor}\n"
-            "  · PM-doc(wiki/ADR/spike) 작업이면 PM 홈 cwd 가 정당합니다 — 그 경우 프롬프트가 엔진 코드\n"
-            "    경로를 write 타깃으로 지목하지 않게 하세요.",
-            file=sys.stderr,
-        )
-        # T-0841 F-005(라운드 6) — 스폰 전 거부는 예약된 board 라운드·run-dir 을 환불한다.
+    # T-0846 — 예약(prepare_ticket_copy) 이후 ~ 실행 인계(_execute_and_collect) 이전 구간
+    # 전체를 하나의 정리 경계로 감싼다. 이 구간을 벗어나는 모든 경로(명시 return · 전파
+    # 예외)가 이 finally 하나로 수렴한다 — 지점마다 호출을 꽂지 않는다(T-0841 라운드 6의
+    # 6개 지점 삽입을 대체한다). `_ticket_copy_handed_off` 는 `_execute_and_collect` 호출
+    # 직전 단 한 곳에서만 True 로 바뀐다 — 그 전에 return 이든 전파 예외든 이 경계를
+    # 빠져나가면 전부 환불(abandon) 로 정리한다.
+    _ticket_copy_handed_off = False
+    try:
+        # 프롬프트 합성과 회수 판정이 같은 실행-전 등록부 스냅샷을 쓴다. 위임 중 pm_import.py가
+        # 바뀌어도 전달한 금지 루트와 다른 현재값으로 재판정하지 않는다.
+        adapter_roots = _resolved_adapter_directories()
+        preamble = _role_preamble(args.role, adapter_roots)
         if ticket_copy is not None:
-            _refund_gate_rejected_ticket_copy(ticket_copy, cwd=cwd_repo, pm_home=config_repo)
-        return 1
+            preamble += "\n" + _ticket_copy_preamble(ticket_copy)
+        prompt = preamble + "\n\n" + task_text
 
-    profile = resolved_delegate_profile(harness, model, reasoning)
-    print(
-        f"[pm-delegate] config provenance: local_conf={conf_path} "
-        f"· pm_home={config_repo.resolve()} · source={profile_source} · resolved_profile={profile}",
-        file=sys.stderr,
-    )
-    # 드라이버 argv 준비 (dry-run·실행 공용). opencode 는 실행 시 합성 프롬프트를 ``--dir`` 아래
-    # wire 사본으로 만들어 --file 전달하므로, dry-run argv 는 사용자 prompt-file 경로로만 표시한다.
-    argv_display = _build_target_argv(
-        harness, model, reasoning, args.role, cwd, prompt_file,
-        None if resume is None else resume.session_id,
-    )
-
-    # 타임아웃은 dry-run 미리보기(폴백 시간 예산 표시)와 실행이 같은 값을 쓴다. 값이 하네스별이라
-    # **시도마다 자기 하네스의 예산**을 쓴다(폴백이 다른 축이면 예산도 그 축의 것).
-    timeout = _resolve_timeout(args, conf, harness)
-    fallback_timeout = (_resolve_timeout(args, conf, fallback[0])
-                        if fallback is not None else timeout)
-    execution_budget = _harness_timeout_budget(harness, timeout)
-    if resume is not None:
-        # 재사용 라운드는 primary 축을 두 번 쓸 수 있다(재사용 turn → 세션 불일치 시 fresh
-        # 재실행). 그 뒤 인프라 폴백까지 겹치면 이 실행의 최악 스폰은 3회다 — 호출층 상한
-        # advisory 가 두 시도만 요구하면 하네스가 엔진 진단보다 먼저 kill 한다.
-        execution_budget += _harness_timeout_budget(harness, timeout)
-    if fallback is not None:
-        execution_budget += _harness_timeout_budget(fallback[0], fallback_timeout)
-    cap_warning = harness_cap_advisory(execution_budget=execution_budget)
-    if cap_warning is not None:
-        print(cap_warning, file=sys.stderr)
-
-    # 시크릿 판정은 dry-run과 실행이 같은 exhaustive 결과를 쓴다. 기존 첫-hit API/판정 순서는
-    # `scan_prompt_secrets()`에 그대로 남고, 사람 승인 경로만 모든 hit를 끝까지 수집한다.
-    secret_hits = scan_prompt_secret_hits(outgoing_text)
-    prompt_digest = (
-        secret_scan_prompt_digest(outgoing_text, harness, model)
-        if secret_hits else None
-    )
-
-    # 실제 실행의 시크릿 승인/차단을 fallback 분기 비교보다 먼저 확정한다. 유효 승인은 fallback을
-    # 확정 억제하고, 없거나 잘못된 승인은 여기서 송신 전 차단되므로 아래 비교에는 발동 가능한
-    # fallback만 남는다. dry-run은 승인 실행이 아니므로 미리보기 뒤의 기존 진단만 수행한다.
-    secret_scan_ack_digest: str | None = None
-    secret_scan_ack_hits: tuple[PromptSecretHit, ...] = ()
-    if not args.dry_run and secret_hits:
-        if prompt_digest is None:
-            print(
-                "오류: 시크릿 탐지는 있었지만 승인 digest를 생성하지 못했습니다 — 전송 전 차단합니다.",
-                file=sys.stderr,
-            )
-            # T-0841 F-005(라운드 6) — 스폰 전 거부는 예약된 board 라운드·run-dir 을 환불한다.
-            if ticket_copy is not None:
-                _refund_gate_rejected_ticket_copy(ticket_copy, cwd=cwd_repo, pm_home=config_repo)
-            return 1
-        ack_matches = (
-            args.secret_scan_ack is not None
-            and hmac.compare_digest(args.secret_scan_ack, prompt_digest)
+        # 세션 재사용 해소 — **전송 전 게이트보다 앞**이다. 재사용 라운드가 실제로 내보내는 건 delta
+        # payload 라, 게이트(재앵커·시크릿 스캔)가 그걸 못 보면 검사받지 않은 본문이 나간다. 재사용
+        # 실패 시 full payload 로 돌아가므로 두 본문 **모두**를 게이트 입력으로 합친다.
+        resume = resolve_resume_plan(
+            args.resume_from, harness=harness, role=args.role,
+            task_text=task_text, output_dir=output_dir,
         )
-        if ack_matches:
-            secret_scan_ack_digest = prompt_digest
-            secret_scan_ack_hits = secret_hits
+        outgoing_text = (
+            prompt if resume is None else "\n".join((resume.delta_prompt, prompt))
+        )
+
+        # 쓰기-타깃 axis 재앵커 게이트 (엔진 코드 write + PM 홈 cwd·dry-run 전 = 미리보기서 노출)
+        # divergence와 같은 cwd repo 해소 입력을 기존 write-target 가드에도 재사용한다. 하위 디렉토리
+        # `--cwd`가 PM 홈 가드를 우회하는 별도 판정축을 만들지 않는다.
+        reanchor = check_write_target_reanchor(args.role, cwd_repo or cwd, outgoing_text)
+        if reanchor is not None:
             print(
-                "시크릿 스캔 차단을 명시 승인으로 통과 — "
-                f"발췌 <{secret_hits[0].excerpt}> · digest <{prompt_digest}> "
-                f"· 전 탐지 {len(secret_hits)}건 확인\n"
-                f"{_format_secret_scan_hits(secret_hits)}",
+                "오류: 엔진 코드(.project_manager/tools/) write 위임을 adopter#0 PM 홈 cwd 에서 실행했습니다 —\n"
+                "  import 사본을 수정하면 canonical worktree 와 갈려 stale·false-green 이 납니다.\n"
+                f"  · canonical worktree 로 재앵커하세요:  --cwd {reanchor}\n"
+                "  · PM-doc(wiki/ADR/spike) 작업이면 PM 홈 cwd 가 정당합니다 — 그 경우 프롬프트가 엔진 코드\n"
+                "    경로를 write 타깃으로 지목하지 않게 하세요.",
                 file=sys.stderr,
             )
-        else:
-            mismatch = (
-                "  · 승인 digest 불일치 — 프롬프트 또는 해소된 수신자 "
-                "(harness:model)가 바뀜 · 발췌 재확인\n"
-                if args.secret_scan_ack is not None else ""
-            )
-            print(
-                "오류: 합성 프롬프트가 시크릿 denylist 판정에 걸렸습니다 — 전송 전 차단합니다.\n"
-                f"  · 전 탐지 {len(secret_hits)}건 — 아래 전체를 확인한 뒤에만 승인하세요.\n"
-                f"{_format_secret_scan_hits(secret_hits)}\n"
-                "  해당 텍스트를 프롬프트에서 제거하세요. 정상 식별자(conf 키 등)가 걸렸다면 판정 버그입니다.\n"
-                f"{mismatch}"
-                f"  · 승인 토큰: {prompt_digest}\n"
-                f"  · 재실행: {_secret_scan_retry_command(resolved, prompt_digest)}",
-                file=sys.stderr,
-            )
-            # T-0841 F-005(라운드 6) — 스폰 전 거부는 예약된 board 라운드·run-dir 을 환불한다.
-            if ticket_copy is not None:
-                _refund_gate_rejected_ticket_copy(ticket_copy, cwd=cwd_repo, pm_home=config_repo)
             return 1
 
-    # 기존 `--cwd` 신뢰 repo축을 파생 config_repo와 대조한다. 유효 시크릿 승인이 해소된 실행은 fallback이
-    # 확정 비발동이므로 비교하지 않는다. 그 밖에도 양쪽 모두 설정된 fallback 값만 공용 seam이 비교한다.
-    compare_fallback = fallback is not None and secret_scan_ack_digest is None
-    try:
-        _resolved_cwd_repo, divergence, er = check_local_conf_divergence(
-            cwd, conf, args.role, tier,
-            config_repo=config_repo,
-            cli_override=(profile_source == "cli-override"),
-            compare_fallback=compare_fallback,
-            # 이미 cwd 해소에 쓴 같은 모듈 객체를 전달한다. `_load_external_review()` 재호출은 새
-            # 모듈/예외 클래스를 만들어 TargetLocalConfReadError catch identity를 깨뜨린다.
-            external_review_module=er,
-        )
-    except er.TargetLocalConfReadError as exc:
-        print(f"오류: {exc}", file=sys.stderr)
-        # T-0841 F-005(라운드 6) — 스폰 전 거부는 예약된 board 라운드·run-dir 을 환불한다.
-        if ticket_copy is not None:
-            _refund_gate_rejected_ticket_copy(ticket_copy, cwd=cwd_repo, pm_home=config_repo)
-        return 1
-    if divergence is not None:
+        profile = resolved_delegate_profile(harness, model, reasoning)
         print(
-            er.format_local_conf_divergence(
-                divergence,
-                surface="pm_delegate",
-                cwd_label="--cwd worktree",
-                source_label="해소된 PM 홈",
-                resolution_note=(
-                    "이번 실행에서는 --cwd의 lease 소유자로 해소된 PM 홈 conf가 적용됩니다: "
-                    f"{divergence.engine_conf_path}\n"
-                    "  차단하지 않고 계속합니다. 같은 프로필을 원하면 --cwd worktree conf의 위 "
-                    "키 값을 PM 홈 conf와 맞추세요. 다른 PM 홈 conf를 선택하려면 --cwd가 "
-                    "가리키는 worktree와 lease 소유 관계를 확인하세요."
-                ),
-            ),
+            f"[pm-delegate] config provenance: local_conf={conf_path} "
+            f"· pm_home={config_repo.resolve()} · source={profile_source} · resolved_profile={profile}",
             file=sys.stderr,
         )
-
-    # Codex egress 승격 판정 — dry-run 표시와 실행 게이트가 같은 입력을 쓴다. 마커는 "승격이 필요한
-    # 형상인가"만 정하고, "이번 호출이 승격됐는가"는 호출층 attestation 이 소유한다.
-    codex_egress_required = codex_egress_escalation_required()
-    codex_egress = codex_egress_label(
-        escalation_required=codex_egress_required,
-        attested=args.codex_egress_escalated,
-    )
-
-    # 병렬 위임 touches 교집합 사전 경고 — 전송-전 게이트를 모두 통과한 뒤, **dry-run 미리보기
-    # 에도** 낸다(띄우기 전에 보는 것이 이 경고의 값이다). rc 는 바꾸지 않는다. 리뷰어는 격리
-    # 스냅샷을 읽기 전용으로 보므로 쓰기 역할만 대상이다.
-    # 이 경고는 **정보성**이다 — 차단 게이트(egress·시크릿·재앵커)와 독립이라 뒤따르는 게이트가
-    # 실행을 막아도 출력은 그대로 남는다(rc·상태 불변). 출력 위치는 미리보기 요구가 정한다.
-    touch_overlaps: tuple[TicketTouchOverlap, ...] = ()
-    if effective_ticket and args.role in WRITE_ROLES:
-        try:
-            touch_overlaps = claimed_touch_overlaps(
-                effective_ticket, pm_root=board_repo, workspace=cwd_repo,
-            )
-        except (DelegateError, OSError, UnicodeError, ValueError) as exc:
-            # 조용히 삼키지 않는다 — 계산이 죽으면 "겹침 0" 과 구분되지 않는다. 엔진 사본 skew
-            # 등 marked 예외는 여기서 잡지 않고 그대로 올린다(형제 로드 규율).
-            print(
-                f"경고: 병렬 위임 touches 교집합 계산 실패({type(exc).__name__}: {exc}) "
-                "— 비차단 진행.",
-                file=sys.stderr,
-            )
-        else:
-            overlap_warning = format_touch_overlap_warning(
-                effective_ticket, touch_overlaps,
-            )
-            if overlap_warning:
-                print(overlap_warning, file=sys.stderr)
-
-    # dry-run — 합성 프롬프트 요약 + argv 출력·미실행 (비활성이어도 허용·rc=0)
-    if args.dry_run:
-        print("=== [dry-run] pm_delegate 미리보기 (미실행) ===")
-        print(f"role: {args.role} · tier: {tier} · 권한축: {_perm_axis(args.role)}")
-        if args.role == INTERNAL_REVIEW_ROLE:
-            print(
-                f"내부 리뷰 게이트: {internal_gate or '없음(자문·장부 증거 아님)'}"
-                + (" · 확인 전용" if args.confirm_fix else "")
-            )
-        print(f"해소: harness={harness} model={model} reasoning={reasoning}")
-        if fallback_skip is not None:
-            print(f"폴백: 비발동 — {fallback_skip}")
-        elif fallback is None:
-            print("폴백: 미설정 (인프라 실패 시 기존 fail-loud)")
-        else:
-            fallback_harness, fallback_model, fallback_reasoning = fallback
-            primary_budget = _harness_timeout_budget(harness, timeout)
-            fallback_budget = _harness_timeout_budget(fallback_harness, fallback_timeout)
-            note, _transport_note = _dry_run_harness_annotations(
-                harness, fallback_harness
-            )
-            print(
-                "폴백: "
-                f"harness={fallback_harness} model={fallback_model} "
-                f"reasoning={fallback_reasoning} (인프라 실패에만 1회"
-                f"{'· 단, --secret-scan-ack 로 통과하면 비발동' if secret_hits else ''})"
-            )
-            print(
-                f"폴백 시간 예산: 최악 primary {primary_budget}s + 폴백 {fallback_budget}s = "
-                f"{primary_budget + fallback_budget}s ("
-                f"{'--secret-scan-ack 통과 시 폴백 비발동이라 이 최악값은 과대· ' if secret_hits else ''}"
-                f"2차 폴백 없음{note})"
-            )
-            print(
-                "  (실행+정리 예산 — 부모 wait/pipe drain을 startup 재시도마다 산입; "
-                f"진단·raw 박제 여유 {_HARNESS_CAP_MARGIN_SEC}s는 호출층 상한에 별도)"
-            )
-        print(f"cwd: {cwd}")
-        print(f"argv: {' '.join(argv_display)}")
-        _budget_note, transport_note = _dry_run_harness_annotations(harness)
-        if transport_note is not None:
-            print(transport_note)
-        print(_dry_run_codex_egress_line(
-            escalation_required=codex_egress_required,
-            attested=args.codex_egress_escalated,
-        ))
-        if secret_hits:
-            print(f"시크릿 스캔: 탐지 {len(secret_hits)}건 — 실 실행은 전송 전 차단")
-            print(_format_secret_scan_hits(secret_hits))
-            print(f"승인 digest 미리보기: {prompt_digest}")
-        else:
-            print("시크릿 스캔: 통과 (탐지 0건)")
-        if args.resume_from is not None:
-            # 재사용을 **요청한** 실행만 이 줄을 낸다(미요청 실행의 미리보기 형상은 불변).
-            print(
-                "세션 재사용: 미적용 — fresh + full payload (사유는 stderr 안내)"
-                if resume is None else
-                f"세션 재사용: session_id={resume.session_id} "
-                f"· 장부 레코드={resume.record_id} · delta payload 송신 "
-                f"(세션 불일치 시 fresh 재실행 1회 = primary 예산 "
-                f"{_harness_timeout_budget(harness, timeout)}s 추가)"
-            )
-        print("--- 합성 프롬프트 ---")
-        dry_run_prompt = prompt if resume is None else resume.delta_prompt
-        # read 역할 + 재앵커 하네스(현재 codex 단독)는 실행과 같은 3-절대경로 preamble을 미리보기
-        # 에도 낸다 — 조건은 재앵커 플래그 단일(§인터페이스 T-0844 라운드 2 — claude·opencode 특례
-        # 없음). dry-run은 부작용 0 계약이라 read_tmp를 만들지 않고 `_predict_read_tmp_paths`로
-        # 같은 이름 규칙의 대표 경로만 계산한다.
-        #
-        # T-0844 라운드 5 must-fix(F-001): 이 조건은 실행 경로가 `read_tmp is not None`(=
-        # `_read_tmp_strategy()` 가 전략을 낸다)으로 판정하는 것과 **같은 사실**을 봐야 한다 —
-        # 예측 전용 사본을 새로 만들지 않고, 실행이 `_create_read_role_temp`를 통해 소비하는 바로
-        # 그 함수(`_read_tmp_strategy()`)를 여기서도 그대로 부른다. 전략이 없는 플랫폼(fd 결속도
-        # 소유자 ACL 도 없음)은 실행도 재앵커를 안 하므로(`read_tmp=None` → `_apply_read_tmp_argv`
-        # 가 argv 를 그대로 반환 → `-C`는 원 `--cwd`) dry-run 도 존재하지 않을 좌표를 예고하지
-        # 않는다(실재하지 않는 좌표를 주는 것은 좌표를 아예 안 주는 것보다 나쁘다 — PM 판정).
-        if (
-            args.role in READ_ROLES
-            and _READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS[harness]
-            and _read_tmp_strategy() is not None
-        ):
-            predicted_exec_root, predicted_writable = _predict_read_tmp_paths(harness)
-            dry_run_prompt = dry_run_prompt + "\n\n" + _reanchor_exec_root_preamble(
-                cwd, predicted_exec_root, predicted_writable,
-            )
-        print(dry_run_prompt)
-        print("=== [dry-run] 외부 호출 생략 ===")
-        return 0
-
-    # Codex egress 게이트 — 타겟 CLI 스폰·raw 예약·과금 문구보다 **앞**이다. 증명 없는 network-off
-    # 실행은 여기서 끝난다(엔진이 sandbox 를 완화하거나 다른 모델로 무음 대체하지 않는다).
-    if codex_egress_required and not args.codex_egress_escalated:
-        # raw 예약 *전* 종료라 장부에도 안 남는다 — 안내가 다른 수신자를 권하면 그 대행은
-        # 아무 데도 기록되지 않는다(감사 실사고가 정확히 이 경로).
-        # T-0841 F-005(라운드 6) — 스폰 전 거부는 예약된 board 라운드·run-dir 을 환불한다.
-        if ticket_copy is not None:
-            _refund_gate_rejected_ticket_copy(ticket_copy, cwd=cwd_repo, pm_home=config_repo)
-        return fail_loud(codex_egress_block_message(resolved, harness, model))
-
-    # env allowlist 정제 + 실행. 인프라 실패일 때만 명시 폴백을 같은 드라이버 계약으로
-    # 1회 실행한다(최악 소요 = 두 시도의 하네스별 예산 합·2차 폴백 없음). 보안/재앵커 게이트는 이
-    # 지점보다 앞이라 폴백 대상이 될 수 없다. (`output_dir` 은 재사용 후보 조회에 먼저 쓰였다.)
-    _run = run_fn or _default_run_fn
-
-    # 범위 판정 캡처 — **위임 전체 단위**로 1회. 폴백 attempt 도 같은 위임의 일부라
-    # attempt 마다 재캡처하지 않는다(PM 이 회수 시점에 "이 위임이 범위 밖을 만졌나"를 본다). 아래
-    # 실행·회수 블록의 모든 종료 경로(성공·폴백·fail-loud·예외)에서 finally 가 정확히 1회 보고한다.
-    scope_audit = begin_scope_audit(
-        effective_ticket, cwd, pm_root=board_repo, adapter_roots=adapter_roots,
-    )
-    if scope_audit is not None and touch_overlaps:
-        # 실행 전에 이미 경고한 겹침 경로를 회수 시점 판정 입력으로 싣는다. 캡처 함수의
-        # 입력이 아니라 이 위임이 무엇을 겹친다고 알렸는지의 기록이다.
-        scope_audit = scope_audit._replace(
-            overlap_paths=overlap_touch_paths(touch_overlaps),
+        # 드라이버 argv 준비 (dry-run·실행 공용). opencode 는 실행 시 합성 프롬프트를 ``--dir`` 아래
+        # wire 사본으로 만들어 --file 전달하므로, dry-run argv 는 사용자 prompt-file 경로로만 표시한다.
+        argv_display = _build_target_argv(
+            harness, model, reasoning, args.role, cwd, prompt_file,
+            None if resume is None else resume.session_id,
         )
-    try:
-        target_rev = (
-            scope_audit.before.head or None if scope_audit is not None else None
+
+        # 타임아웃은 dry-run 미리보기(폴백 시간 예산 표시)와 실행이 같은 값을 쓴다. 값이 하네스별이라
+        # **시도마다 자기 하네스의 예산**을 쓴다(폴백이 다른 축이면 예산도 그 축의 것).
+        timeout = _resolve_timeout(args, conf, harness)
+        fallback_timeout = (_resolve_timeout(args, conf, fallback[0])
+                            if fallback is not None else timeout)
+        execution_budget = _harness_timeout_budget(harness, timeout)
+        if resume is not None:
+            # 재사용 라운드는 primary 축을 두 번 쓸 수 있다(재사용 turn → 세션 불일치 시 fresh
+            # 재실행). 그 뒤 인프라 폴백까지 겹치면 이 실행의 최악 스폰은 3회다 — 호출층 상한
+            # advisory 가 두 시도만 요구하면 하네스가 엔진 진단보다 먼저 kill 한다.
+            execution_budget += _harness_timeout_budget(harness, timeout)
+        if fallback is not None:
+            execution_budget += _harness_timeout_budget(fallback[0], fallback_timeout)
+        cap_warning = harness_cap_advisory(execution_budget=execution_budget)
+        if cap_warning is not None:
+            print(cap_warning, file=sys.stderr)
+
+        # 시크릿 판정은 dry-run과 실행이 같은 exhaustive 결과를 쓴다. 기존 첫-hit API/판정 순서는
+        # `scan_prompt_secrets()`에 그대로 남고, 사람 승인 경로만 모든 hit를 끝까지 수집한다.
+        secret_hits = scan_prompt_secret_hits(outgoing_text)
+        prompt_digest = (
+            secret_scan_prompt_digest(outgoing_text, harness, model)
+            if secret_hits else None
         )
-        diff_fingerprint = (
-            _internal_diff_fingerprint(scope_audit) if internal_gate else None
-        )
-        internal_budget = _reserve_internal_review_round(
-            internal_gate,
-            confirm_fix=bool(args.confirm_fix),
-            wall_timeout_sec=timeout,
-            target_rev=target_rev,
-            diff_fingerprint=diff_fingerprint,
-            expected_confirm_evidence=internal_confirm_evidence,
-        )
-        if internal_budget.refused_rc is not None:
-            # T-0841 F-005(라운드 6) — 스폰 전 거부는 예약된 board 라운드·run-dir 을 환불한다.
-            if ticket_copy is not None:
-                _refund_gate_rejected_ticket_copy(ticket_copy, cwd=cwd_repo, pm_home=config_repo)
-            return internal_budget.refused_rc
-        internal_trace = InternalRoundTrace(internal_budget)
-        try:
-            # 비용/송신 경고는 라운드 예약 승인 뒤에만 낸다. 상한/발산 거부(rc=1)가 "전송 중"을
-            # 출력하면 실제 subprocess 0인 실행을 송신으로 오보한다.
-            print(
-                "[pm-delegate] 실행 provenance: "
-                + codex_egress_provenance(
-                    escalation_required=codex_egress_required,
-                    attested=args.codex_egress_escalated,
-                ),
-                file=sys.stderr,
-            )
-            print(
-                f"외부 하네스 {harness}(model={model}) 로 프롬프트 전송 중 "
-                "(과금·외부 송신).",
-                file=sys.stderr,
-            )
-            advisory = native_advisory(
-                harness, metered_gate=bool(internal_gate),
-            )
-            if advisory is not None:
-                print(advisory, file=sys.stderr)
-            return _execute_and_collect(
-                args=args, harness=harness, model=model, reasoning=reasoning,
-                fallback=fallback, fallback_skip=fallback_skip, cwd=cwd, prompt=prompt,
-                timeout=timeout, fallback_timeout=fallback_timeout,
-                output_dir=output_dir, run_fn=_run,
-                secret_scan_ack_digest=secret_scan_ack_digest,
-                secret_scan_ack_hits=secret_scan_ack_hits,
-                local_conf_path=conf_path,
-                profile_source=profile_source,
-                codex_egress=codex_egress,
-                resume=resume,
-                # 재개 라운드의 티켓 식별자 **계승** — 명시 `--ticket` 이 우선이고, 없으면 이어받은
-                # 레코드의 티켓을 그대로 싣는다. 안 실으면 이 라운드 레코드에 ticket 이 없어 **다음**
-                # 재개의 티켓 지시자 선택(최신 1건)에서 빠지고, 재개 사슬이 한 라운드 만에 끊긴다.
-                # 범위 판정(scope audit)은 계승하지 않는다 — 그건 선언 touches 의 축이라 이 실행이
-                # 무엇을 선언했는지가 기준이다.
-                ticket=effective_ticket or (resume.ticket if resume is not None else None),
-                fresh_reason=(args.fresh.strip() if args.fresh is not None else None),
-                # 이 위임의 기준 rev — 이미 캡처한 실행-전 worktree 상태를 그대로 쓴다(추가 git 호출 0).
-                base_rev=target_rev,
-                internal_trace=internal_trace,
-                ticket_copy=ticket_copy,
-            )
-        finally:
-            _finish_internal_review_round(
-                internal_budget, internal_trace, ticket_copy=ticket_copy,
-            )
-    finally:
-        pending_exception = sys.exception()
-        report_scope_audit(scope_audit, args.role)
-        if ticket_copy is not None:
-            try:
-                result = harvest_ticket_copy(
-                    copy_path=ticket_copy.path, cwd=cwd_repo, pm_home=config_repo,
-                )
+
+        # 실제 실행의 시크릿 승인/차단을 fallback 분기 비교보다 먼저 확정한다. 유효 승인은 fallback을
+        # 확정 억제하고, 없거나 잘못된 승인은 여기서 송신 전 차단되므로 아래 비교에는 발동 가능한
+        # fallback만 남는다. dry-run은 승인 실행이 아니므로 미리보기 뒤의 기존 진단만 수행한다.
+        secret_scan_ack_digest: str | None = None
+        secret_scan_ack_hits: tuple[PromptSecretHit, ...] = ()
+        if not args.dry_run and secret_hits:
+            if prompt_digest is None:
                 print(
-                    "[pm-delegate] ticket harvest: "
-                    f"{'applied' if result.changed else 'unchanged'} · "
-                    f"sync_ready={str(result.sync_ready).lower()} · copy={ticket_copy.path}",
+                    "오류: 시크릿 탐지는 있었지만 승인 digest를 생성하지 못했습니다 — 전송 전 차단합니다.",
                     file=sys.stderr,
                 )
-            except Exception as exc:
-                # 정상 return rc에는 harvest 실패 rc=1이 더 강하다. 반면 runner/실행 예외가 이미
-                # 전파 중이면 finally return으로 삼키지 않고 원 예외를 그대로 보존하며 두 원인을
-                # 모두 stderr에 남긴다.
-                recovery = (
-                    "오류: 위임 종료 ticket harvest 실패 — board 라운드와 slot run-dir 을 "
-                    "그대로 보존했습니다. run-dir 을 진단한 뒤 같은 경로로 "
-                    "`ticket harvest` 를 다시 부르거나 새 prepare/위임으로 복구하세요. "
-                    f"copy={ticket_copy.path} · "
-                    f"{exc}"
+                return 1
+            ack_matches = (
+                args.secret_scan_ack is not None
+                and hmac.compare_digest(args.secret_scan_ack, prompt_digest)
+            )
+            if ack_matches:
+                secret_scan_ack_digest = prompt_digest
+                secret_scan_ack_hits = secret_hits
+                print(
+                    "시크릿 스캔 차단을 명시 승인으로 통과 — "
+                    f"발췌 <{secret_hits[0].excerpt}> · digest <{prompt_digest}> "
+                    f"· 전 탐지 {len(secret_hits)}건 확인\n"
+                    f"{_format_secret_scan_hits(secret_hits)}",
+                    file=sys.stderr,
                 )
-                if pending_exception is not None:
+            else:
+                mismatch = (
+                    "  · 승인 digest 불일치 — 프롬프트 또는 해소된 수신자 "
+                    "(harness:model)가 바뀜 · 발췌 재확인\n"
+                    if args.secret_scan_ack is not None else ""
+                )
+                print(
+                    "오류: 합성 프롬프트가 시크릿 denylist 판정에 걸렸습니다 — 전송 전 차단합니다.\n"
+                    f"  · 전 탐지 {len(secret_hits)}건 — 아래 전체를 확인한 뒤에만 승인하세요.\n"
+                    f"{_format_secret_scan_hits(secret_hits)}\n"
+                    "  해당 텍스트를 프롬프트에서 제거하세요. 정상 식별자(conf 키 등)가 걸렸다면 판정 버그입니다.\n"
+                    f"{mismatch}"
+                    f"  · 승인 토큰: {prompt_digest}\n"
+                    f"  · 재실행: {_secret_scan_retry_command(resolved, prompt_digest)}",
+                    file=sys.stderr,
+                )
+                return 1
+
+        # 기존 `--cwd` 신뢰 repo축을 파생 config_repo와 대조한다. 유효 시크릿 승인이 해소된 실행은 fallback이
+        # 확정 비발동이므로 비교하지 않는다. 그 밖에도 양쪽 모두 설정된 fallback 값만 공용 seam이 비교한다.
+        compare_fallback = fallback is not None and secret_scan_ack_digest is None
+        try:
+            _resolved_cwd_repo, divergence, er = check_local_conf_divergence(
+                cwd, conf, args.role, tier,
+                config_repo=config_repo,
+                cli_override=(profile_source == "cli-override"),
+                compare_fallback=compare_fallback,
+                # 이미 cwd 해소에 쓴 같은 모듈 객체를 전달한다. `_load_external_review()` 재호출은 새
+                # 모듈/예외 클래스를 만들어 TargetLocalConfReadError catch identity를 깨뜨린다.
+                external_review_module=er,
+            )
+        except er.TargetLocalConfReadError as exc:
+            print(f"오류: {exc}", file=sys.stderr)
+            return 1
+        if divergence is not None:
+            print(
+                er.format_local_conf_divergence(
+                    divergence,
+                    surface="pm_delegate",
+                    cwd_label="--cwd worktree",
+                    source_label="해소된 PM 홈",
+                    resolution_note=(
+                        "이번 실행에서는 --cwd의 lease 소유자로 해소된 PM 홈 conf가 적용됩니다: "
+                        f"{divergence.engine_conf_path}\n"
+                        "  차단하지 않고 계속합니다. 같은 프로필을 원하면 --cwd worktree conf의 위 "
+                        "키 값을 PM 홈 conf와 맞추세요. 다른 PM 홈 conf를 선택하려면 --cwd가 "
+                        "가리키는 worktree와 lease 소유 관계를 확인하세요."
+                    ),
+                ),
+                file=sys.stderr,
+            )
+
+        # Codex egress 승격 판정 — dry-run 표시와 실행 게이트가 같은 입력을 쓴다. 마커는 "승격이 필요한
+        # 형상인가"만 정하고, "이번 호출이 승격됐는가"는 호출층 attestation 이 소유한다.
+        codex_egress_required = codex_egress_escalation_required()
+        codex_egress = codex_egress_label(
+            escalation_required=codex_egress_required,
+            attested=args.codex_egress_escalated,
+        )
+
+        # 병렬 위임 touches 교집합 사전 경고 — 전송-전 게이트를 모두 통과한 뒤, **dry-run 미리보기
+        # 에도** 낸다(띄우기 전에 보는 것이 이 경고의 값이다). rc 는 바꾸지 않는다. 리뷰어는 격리
+        # 스냅샷을 읽기 전용으로 보므로 쓰기 역할만 대상이다.
+        # 이 경고는 **정보성**이다 — 차단 게이트(egress·시크릿·재앵커)와 독립이라 뒤따르는 게이트가
+        # 실행을 막아도 출력은 그대로 남는다(rc·상태 불변). 출력 위치는 미리보기 요구가 정한다.
+        touch_overlaps: tuple[TicketTouchOverlap, ...] = ()
+        if effective_ticket and args.role in WRITE_ROLES:
+            try:
+                touch_overlaps = claimed_touch_overlaps(
+                    effective_ticket, pm_root=board_repo, workspace=cwd_repo,
+                )
+            except (DelegateError, OSError, UnicodeError, ValueError) as exc:
+                # 조용히 삼키지 않는다 — 계산이 죽으면 "겹침 0" 과 구분되지 않는다. 엔진 사본 skew
+                # 등 marked 예외는 여기서 잡지 않고 그대로 올린다(형제 로드 규율).
+                print(
+                    f"경고: 병렬 위임 touches 교집합 계산 실패({type(exc).__name__}: {exc}) "
+                    "— 비차단 진행.",
+                    file=sys.stderr,
+                )
+            else:
+                overlap_warning = format_touch_overlap_warning(
+                    effective_ticket, touch_overlaps,
+                )
+                if overlap_warning:
+                    print(overlap_warning, file=sys.stderr)
+
+        # dry-run — 합성 프롬프트 요약 + argv 출력·미실행 (비활성이어도 허용·rc=0)
+        if args.dry_run:
+            print("=== [dry-run] pm_delegate 미리보기 (미실행) ===")
+            print(f"role: {args.role} · tier: {tier} · 권한축: {_perm_axis(args.role)}")
+            if args.role == INTERNAL_REVIEW_ROLE:
+                print(
+                    f"내부 리뷰 게이트: {internal_gate or '없음(자문·장부 증거 아님)'}"
+                    + (" · 확인 전용" if args.confirm_fix else "")
+                )
+            print(f"해소: harness={harness} model={model} reasoning={reasoning}")
+            if fallback_skip is not None:
+                print(f"폴백: 비발동 — {fallback_skip}")
+            elif fallback is None:
+                print("폴백: 미설정 (인프라 실패 시 기존 fail-loud)")
+            else:
+                fallback_harness, fallback_model, fallback_reasoning = fallback
+                primary_budget = _harness_timeout_budget(harness, timeout)
+                fallback_budget = _harness_timeout_budget(fallback_harness, fallback_timeout)
+                note, _transport_note = _dry_run_harness_annotations(
+                    harness, fallback_harness
+                )
+                print(
+                    "폴백: "
+                    f"harness={fallback_harness} model={fallback_model} "
+                    f"reasoning={fallback_reasoning} (인프라 실패에만 1회"
+                    f"{'· 단, --secret-scan-ack 로 통과하면 비발동' if secret_hits else ''})"
+                )
+                print(
+                    f"폴백 시간 예산: 최악 primary {primary_budget}s + 폴백 {fallback_budget}s = "
+                    f"{primary_budget + fallback_budget}s ("
+                    f"{'--secret-scan-ack 통과 시 폴백 비발동이라 이 최악값은 과대· ' if secret_hits else ''}"
+                    f"2차 폴백 없음{note})"
+                )
+                print(
+                    "  (실행+정리 예산 — 부모 wait/pipe drain을 startup 재시도마다 산입; "
+                    f"진단·raw 박제 여유 {_HARNESS_CAP_MARGIN_SEC}s는 호출층 상한에 별도)"
+                )
+            print(f"cwd: {cwd}")
+            print(f"argv: {' '.join(argv_display)}")
+            _budget_note, transport_note = _dry_run_harness_annotations(harness)
+            if transport_note is not None:
+                print(transport_note)
+            print(_dry_run_codex_egress_line(
+                escalation_required=codex_egress_required,
+                attested=args.codex_egress_escalated,
+            ))
+            if secret_hits:
+                print(f"시크릿 스캔: 탐지 {len(secret_hits)}건 — 실 실행은 전송 전 차단")
+                print(_format_secret_scan_hits(secret_hits))
+                print(f"승인 digest 미리보기: {prompt_digest}")
+            else:
+                print("시크릿 스캔: 통과 (탐지 0건)")
+            if args.resume_from is not None:
+                # 재사용을 **요청한** 실행만 이 줄을 낸다(미요청 실행의 미리보기 형상은 불변).
+                print(
+                    "세션 재사용: 미적용 — fresh + full payload (사유는 stderr 안내)"
+                    if resume is None else
+                    f"세션 재사용: session_id={resume.session_id} "
+                    f"· 장부 레코드={resume.record_id} · delta payload 송신 "
+                    f"(세션 불일치 시 fresh 재실행 1회 = primary 예산 "
+                    f"{_harness_timeout_budget(harness, timeout)}s 추가)"
+                )
+            print("--- 합성 프롬프트 ---")
+            dry_run_prompt = prompt if resume is None else resume.delta_prompt
+            # read 역할 + 재앵커 하네스(현재 codex 단독)는 실행과 같은 3-절대경로 preamble을 미리보기
+            # 에도 낸다 — 조건은 재앵커 플래그 단일(§인터페이스 T-0844 라운드 2 — claude·opencode 특례
+            # 없음). dry-run은 부작용 0 계약이라 read_tmp를 만들지 않고 `_predict_read_tmp_paths`로
+            # 같은 이름 규칙의 대표 경로만 계산한다.
+            #
+            # T-0844 라운드 5 must-fix(F-001): 이 조건은 실행 경로가 `read_tmp is not None`(=
+            # `_read_tmp_strategy()` 가 전략을 낸다)으로 판정하는 것과 **같은 사실**을 봐야 한다 —
+            # 예측 전용 사본을 새로 만들지 않고, 실행이 `_create_read_role_temp`를 통해 소비하는 바로
+            # 그 함수(`_read_tmp_strategy()`)를 여기서도 그대로 부른다. 전략이 없는 플랫폼(fd 결속도
+            # 소유자 ACL 도 없음)은 실행도 재앵커를 안 하므로(`read_tmp=None` → `_apply_read_tmp_argv`
+            # 가 argv 를 그대로 반환 → `-C`는 원 `--cwd`) dry-run 도 존재하지 않을 좌표를 예고하지
+            # 않는다(실재하지 않는 좌표를 주는 것은 좌표를 아예 안 주는 것보다 나쁘다 — PM 판정).
+            if (
+                args.role in READ_ROLES
+                and _READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS[harness]
+                and _read_tmp_strategy() is not None
+            ):
+                predicted_exec_root, predicted_writable = _predict_read_tmp_paths(harness)
+                dry_run_prompt = dry_run_prompt + "\n\n" + _reanchor_exec_root_preamble(
+                    cwd, predicted_exec_root, predicted_writable,
+                )
+            print(dry_run_prompt)
+            print("=== [dry-run] 외부 호출 생략 ===")
+            return 0
+
+        # Codex egress 게이트 — 타겟 CLI 스폰·raw 예약·과금 문구보다 **앞**이다. 증명 없는 network-off
+        # 실행은 여기서 끝난다(엔진이 sandbox 를 완화하거나 다른 모델로 무음 대체하지 않는다).
+        if codex_egress_required and not args.codex_egress_escalated:
+            # raw 예약 *전* 종료라 장부에도 안 남는다 — 안내가 다른 수신자를 권하면 그 대행은
+            # 아무 데도 기록되지 않는다(감사 실사고가 정확히 이 경로). T-0846 단일 정리 경계(아래
+            # try/finally)가 환불을 담당한다 — 지점 삽입 없음.
+            return fail_loud(codex_egress_block_message(resolved, harness, model))
+
+        # env allowlist 정제 + 실행. 인프라 실패일 때만 명시 폴백을 같은 드라이버 계약으로
+        # 1회 실행한다(최악 소요 = 두 시도의 하네스별 예산 합·2차 폴백 없음). 보안/재앵커 게이트는 이
+        # 지점보다 앞이라 폴백 대상이 될 수 없다. (`output_dir` 은 재사용 후보 조회에 먼저 쓰였다.)
+        _run = run_fn or _default_run_fn
+
+        # 범위 판정 캡처 — **위임 전체 단위**로 1회. 폴백 attempt 도 같은 위임의 일부라
+        # attempt 마다 재캡처하지 않는다(PM 이 회수 시점에 "이 위임이 범위 밖을 만졌나"를 본다). 아래
+        # 실행·회수 블록의 모든 종료 경로(성공·폴백·fail-loud·예외)에서 finally 가 정확히 1회 보고한다.
+        scope_audit = begin_scope_audit(
+            effective_ticket, cwd, pm_root=board_repo, adapter_roots=adapter_roots,
+        )
+        if scope_audit is not None and touch_overlaps:
+            # 실행 전에 이미 경고한 겹침 경로를 회수 시점 판정 입력으로 싣는다. 캡처 함수의
+            # 입력이 아니라 이 위임이 무엇을 겹친다고 알렸는지의 기록이다.
+            scope_audit = scope_audit._replace(
+                overlap_paths=overlap_touch_paths(touch_overlaps),
+            )
+        try:
+            target_rev = (
+                scope_audit.before.head or None if scope_audit is not None else None
+            )
+            diff_fingerprint = (
+                _internal_diff_fingerprint(scope_audit) if internal_gate else None
+            )
+            internal_budget = _reserve_internal_review_round(
+                internal_gate,
+                confirm_fix=bool(args.confirm_fix),
+                wall_timeout_sec=timeout,
+                target_rev=target_rev,
+                diff_fingerprint=diff_fingerprint,
+                expected_confirm_evidence=internal_confirm_evidence,
+            )
+            if internal_budget.refused_rc is not None:
+                return internal_budget.refused_rc
+            internal_trace = InternalRoundTrace(internal_budget)
+            try:
+                # 비용/송신 경고는 라운드 예약 승인 뒤에만 낸다. 상한/발산 거부(rc=1)가 "전송 중"을
+                # 출력하면 실제 subprocess 0인 실행을 송신으로 오보한다.
+                print(
+                    "[pm-delegate] 실행 provenance: "
+                    + codex_egress_provenance(
+                        escalation_required=codex_egress_required,
+                        attested=args.codex_egress_escalated,
+                    ),
+                    file=sys.stderr,
+                )
+                print(
+                    f"외부 하네스 {harness}(model={model}) 로 프롬프트 전송 중 "
+                    "(과금·외부 송신).",
+                    file=sys.stderr,
+                )
+                advisory = native_advisory(
+                    harness, metered_gate=bool(internal_gate),
+                )
+                if advisory is not None:
+                    print(advisory, file=sys.stderr)
+                _ticket_copy_handed_off = True  # T-0846 — 여기부터 harvest 가 정리를 넘겨받는다
+                return _execute_and_collect(
+                    args=args, harness=harness, model=model, reasoning=reasoning,
+                    fallback=fallback, fallback_skip=fallback_skip, cwd=cwd, prompt=prompt,
+                    timeout=timeout, fallback_timeout=fallback_timeout,
+                    output_dir=output_dir, run_fn=_run,
+                    secret_scan_ack_digest=secret_scan_ack_digest,
+                    secret_scan_ack_hits=secret_scan_ack_hits,
+                    local_conf_path=conf_path,
+                    profile_source=profile_source,
+                    codex_egress=codex_egress,
+                    resume=resume,
+                    # 재개 라운드의 티켓 식별자 **계승** — 명시 `--ticket` 이 우선이고, 없으면 이어받은
+                    # 레코드의 티켓을 그대로 싣는다. 안 실으면 이 라운드 레코드에 ticket 이 없어 **다음**
+                    # 재개의 티켓 지시자 선택(최신 1건)에서 빠지고, 재개 사슬이 한 라운드 만에 끊긴다.
+                    # 범위 판정(scope audit)은 계승하지 않는다 — 그건 선언 touches 의 축이라 이 실행이
+                    # 무엇을 선언했는지가 기준이다.
+                    ticket=effective_ticket or (resume.ticket if resume is not None else None),
+                    fresh_reason=(args.fresh.strip() if args.fresh is not None else None),
+                    # 이 위임의 기준 rev — 이미 캡처한 실행-전 worktree 상태를 그대로 쓴다(추가 git 호출 0).
+                    base_rev=target_rev,
+                    internal_trace=internal_trace,
+                    ticket_copy=ticket_copy,
+                )
+            finally:
+                _finish_internal_review_round(
+                    internal_budget, internal_trace, ticket_copy=ticket_copy,
+                )
+        finally:
+            pending_exception = sys.exception()
+            report_scope_audit(scope_audit, args.role)
+            if ticket_copy is not None and _ticket_copy_handed_off:
+                try:
+                    result = harvest_ticket_copy(
+                        copy_path=ticket_copy.path, cwd=cwd_repo, pm_home=config_repo,
+                    )
                     print(
-                        "오류: 위임 실행 예외도 그대로 전파합니다: "
-                        f"{type(pending_exception).__name__}: {pending_exception}",
+                        "[pm-delegate] ticket harvest: "
+                        f"{'applied' if result.changed else 'unchanged'} · "
+                        f"sync_ready={str(result.sync_ready).lower()} · copy={ticket_copy.path}",
                         file=sys.stderr,
                     )
-                    fail_loud(recovery)
-                else:
-                    if _is_engine_rev_skew(exc):
-                        raise
-                    return fail_loud(recovery)
+                except Exception as exc:
+                    # 정상 return rc에는 harvest 실패 rc=1이 더 강하다. 반면 runner/실행 예외가 이미
+                    # 전파 중이면 finally return으로 삼키지 않고 원 예외를 그대로 보존하며 두 원인을
+                    # 모두 stderr에 남긴다.
+                    recovery = (
+                        "오류: 위임 종료 ticket harvest 실패 — board 라운드와 slot run-dir 을 "
+                        "그대로 보존했습니다. run-dir 을 진단한 뒤 같은 경로로 "
+                        "`ticket harvest` 를 다시 부르거나 새 prepare/위임으로 복구하세요. "
+                        f"copy={ticket_copy.path} · "
+                        f"{exc}"
+                    )
+                    if pending_exception is not None:
+                        print(
+                            "오류: 위임 실행 예외도 그대로 전파합니다: "
+                            f"{type(pending_exception).__name__}: {pending_exception}",
+                            file=sys.stderr,
+                        )
+                        fail_loud(recovery)
+                    else:
+                        if _is_engine_rev_skew(exc):
+                            raise
+                        return fail_loud(recovery)
+    finally:
+        if ticket_copy is not None and not _ticket_copy_handed_off:
+            _refund_gate_rejected_ticket_copy(
+                ticket_copy, cwd=cwd_repo, pm_home=config_repo,
+            )
 
 
 def _execute_and_collect(
