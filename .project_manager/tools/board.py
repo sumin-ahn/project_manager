@@ -6033,7 +6033,10 @@ def _board_git_claim_prefetch(ticket_id: str) -> _ClaimPrefetch:
     # 4. 원격 선점 판정 — dirty·behind 무관(원격 트리를 직접 읽는다).
     remote_status = _board_git_remote_ticket_status(upstream.tracking, ticket_id)
     if remote_status in ("claimed", "done", "blocked"):
-        return _ClaimPrefetch(block=_CLAIM_BLOCK_RACE_LOST, detail=remote_status)
+        # behind 도 함께 실어 보낸다 — 차단 문구가 "로컬 사본이 왜 뒤처진 판단을 했는지"
+        # (list/show 의 freshness 와 같은 판정)를 그 자리에서 설명하게 한다(T-0782).
+        return _ClaimPrefetch(block=_CLAIM_BLOCK_RACE_LOST, detail=remote_status,
+                              behind=_board_git_behind(upstream.tracking))
     # 5. 원격이 앞섰을 때만 통합. 안 앞섰으면 무관 dirty 가 있어도 claim 은 진행한다.
     behind = _board_git_behind(upstream.tracking)
     if behind > 0:
@@ -6143,8 +6146,9 @@ def _claim_block_message(ticket_id: str, prefetch: _ClaimPrefetch) -> str:
     if prefetch.block == _CLAIM_BLOCK_RACE_LOST:
         where = prefetch.detail or "claimed"
         return (f"claim race lost on {ticket_id} — 원격 board 에서 이미 {where}/ 상태다"
-                f"(다른 세션이 먼저 잡았거나 이미 처리됨·로컬 변경 0). "
-                f"`board.py list --all` 로 현황을 확인하라.")
+                f"(다른 세션이 먼저 잡았거나 이미 처리됨·로컬 변경 0). 로컬 사본이 stale 했다 "
+                f"— 원격보다 {behind} 커밋 뒤처진 상태에서 조회됐다(list/show 의 freshness 와 "
+                f"같은 판정). `board.py list --all` 로 현황을 확인하라.")
     if prefetch.block == _CLAIM_BLOCK_DIRTY:
         return (f"board 가 원격보다 {behind} 커밋 뒤졌는데 미커밋 파일이 통합(pull --rebase)을 "
                 f"막는다 — {ticket_id} claim 불가 (offline 아님·네트워크 정상: fetch 성공). "
@@ -12108,6 +12112,40 @@ def _print_board_freshness() -> None:
         print(line, file=sys.stderr)
 
 
+def _print_ticket_remote_mismatch(ticket_id: str, local_status: str) -> None:
+    """이 티켓의 로컬 status ↔ 원격-추적 status 불일치를 1줄(stderr) 표면화한다 (T-0782).
+
+    `show` 전용 추가 표면 — 전역 요약(`_print_board_freshness`)만으로는 "이 티켓" 이 stale
+    한지 알 수 없다(다중 clone 에서 local open 인데 원격은 이미 done 인 사례가 실사고).
+    판정은 claim 이 이미 쓰는 `_board_git_remote_ticket_status`(ls-tree·네트워크 0) 를
+    그대로 재사용한다(새 판정 금지) — **fetch 는 새로 하지 않는다**: 직전
+    `_print_board_freshness()` 호출이 TTL 가드(`_board_fetch_head_fresh`)를 통과했을 때만
+    이미 advisory fetch 를 했으므로, 여기선 그 결과로 갱신된 원격-추적 ref 를 읽기만 한다.
+
+    무출력(오탐 0) 조건: board 비-git · upstream 미설정 · 원격 판정 불가(`None`·offline 스냅샷
+    부재 포함) · local_status 가 STATUS_DIRS 밖(draft 는 board-git 추적 대상이 아님) · 로컬==원격.
+    이 경우들은 "판정불가/무관"일 뿐 "최신" 을 주장하지 않으므로 I2 를 어기지 않는다 — 전역
+    판정불가 사유는 `_print_board_freshness()` 가 이미 표면화했다.
+    """
+    if local_status not in STATUS_DIRS:
+        return
+    if not _board_git_enabled():
+        return
+    upstream = _board_git_upstream()
+    if upstream is None:
+        return
+    remote_status = _board_git_remote_ticket_status(upstream.tracking, ticket_id)
+    if remote_status is None or remote_status == local_status:
+        return
+    behind = _board_git_behind(upstream.tracking)
+    print(
+        f"⚠ {ticket_id} 로컬 사본 stale — 로컬 status={local_status} · "
+        f"원격-추적 status={remote_status}(behind {behind}). "
+        f"`board.py list` 로 board-git freshness 를 확인하거나 board pull 후 재조회하라.",
+        file=sys.stderr,
+    )
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     # `--mine` / `--repo`·`--slot`
     # 뷰: 단일 공유 보드의 렌즈 — **현재 사용자**의 area open + claim.
@@ -13545,6 +13583,10 @@ def cmd_show(args: argparse.Namespace) -> int:
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         return 2
+    # board-git freshness 표면화 (advisory·stderr·T-0782) — list 와 같은 seam 소환 + 이
+    # 티켓 단위 로컬↔원격 status 불일치 1줄. board 비-git 이면 둘 다 무출력.
+    _print_board_freshness()
+    _print_ticket_remote_mismatch(args.id, status)
     print(f"-- {args.id} ({status}/) --\n")
     body = file_lock.read_text_shared(path, encoding="utf-8")
     print(body)
