@@ -333,14 +333,14 @@ def _has_identity_flag(command_line: str) -> bool:
     return "--repo" in tokens or "--slot" in tokens
 
 
-def test_card_solo_branch_omits_identity_flags(bootstrap):
-    """솔로(identity None)는 정체성 인자(`--repo`/`--slot`) 없는 현행 형태로 분기한다."""
+def test_card_unresolved_branch_omits_identity_flags(bootstrap):
+    """정체성 미해소는 인자를 지어내지 않고 빈 형태로 분기한다(값 위조 0)."""
     card = _card(bootstrap, None)
-    # 실행 커맨드 줄 어디에도 정체성 인자가 붙지 않는다.
+    # 실행 커맨드 줄 어디에도 정체성 인자가 붙지 않는다(채울 실값이 없다).
     for line in _command_lines(card):
-        assert not _has_identity_flag(line), f"솔로 커맨드에 정체성 인자가 붙음: {line!r}"
-    # 솔로 헤더 명시 + claim/regression 이 정체성 인자 없이 렌더.
-    assert "솔로(단일 세션)" in card
+        assert not _has_identity_flag(line), f"미해소 커맨드에 정체성 인자가 붙음: {line!r}"
+    # 미해소 헤더 명시 + claim/regression 이 정체성 인자 없이 렌더.
+    assert "정체성: 미해소" in card
     assert "board.py claim T-NNNN" in card
     assert "board.py regression run" in card
     # 자기 슬롯 렌즈 줄(list --repo/--slot)은 정체성이 없으니 생략된다.
@@ -355,8 +355,8 @@ def test_card_lean_branch_fills_repo_slot(bootstrap):
     assert "board.py regression run --repo project_manager --slot 1" in card
 
 
-def test_card_missing_session_key_renders_solo_defensive(bootstrap):
-    """방어적 fail-soft: `session` 키가 **정말로 없는**(결손/불완전) identity 는 솔로 형태로
+def test_card_missing_session_key_renders_unresolved_defensive(bootstrap):
+    """방어적 fail-soft: `session` 키가 **정말로 없는**(결손/불완전) identity 는 미해소 형태로
     graceful 렌더(카드 절이 안 깨짐). 단 이건 결손 dict 방어일 뿐 — 정상 alloc 경로는 아래
     `test_alloc_identity_includes_session` 대로 session 을 채운다(codex T-0250)."""
     broken_identity = {"repo": "A", "slot": "work/A_2", "slot_path": "/x/work/A_2",
@@ -364,7 +364,7 @@ def test_card_missing_session_key_renders_solo_defensive(bootstrap):
     card = _card(bootstrap, broken_identity)
     for line in _command_lines(card):
         assert not _has_identity_flag(line)
-    assert "솔로(단일 세션)" in card
+    assert "정체성: 미해소" in card
 
 
 def test_alloc_identity_includes_session(bootstrap):
@@ -609,18 +609,18 @@ def test_run_lean_emits_card_after_identity_surface(bootstrap, tmp_path, capsys)
     assert "board.py claim T-NNNN --repo X --slot 2" in out
 
 
-def test_run_solo_emits_solo_card(bootstrap, tmp_path, capsys):
-    """run() 솔로(무인자·자동바인딩 미해소)가 정체성 인자 없는 솔로 카드를 emit 한다."""
-    inst = _make_bootstrap(bootstrap, tmp_path)  # worktree_pool 없음 → 솔로 경로
+def test_run_unresolved_emits_unresolved_card(bootstrap, tmp_path, capsys):
+    """run() 미해소(무인자·자동바인딩 실패)가 정체성 인자 없는 카드를 emit 한다."""
+    inst = _make_bootstrap(bootstrap, tmp_path)  # worktree_pool 없음 → 미해소 경로
     rc = inst.run()
     assert rc == 0
     out = capsys.readouterr().out
     assert "이 세션 커맨드 카드" in out
-    assert "솔로(단일 세션)" in out
-    # 솔로 카드의 실행 커맨드 줄엔 정체성 인자가 붙지 않는다(헤더 산문/주석 언급은 제외).
+    assert "정체성: 미해소" in out
+    # 미해소 카드의 실행 커맨드 줄엔 정체성 인자가 붙지 않는다(헤더 산문/주석 언급은 제외).
     card_section = out.split("이 세션 커맨드 카드", 1)[1]
     for line in _command_lines(card_section):
-        assert not _has_identity_flag(line), f"솔로 카드 커맨드에 정체성 인자: {line!r}"
+        assert not _has_identity_flag(line), f"미해소 카드 커맨드에 정체성 인자: {line!r}"
 
 
 def test_run_json_mode_omits_card(bootstrap, tmp_path, capsys):

@@ -2175,16 +2175,18 @@ def test_registered_repos_for_session_rethrows_marked_engine_rev_skew(wp, proj):
         wp._registered_repos_for_session(board=board)
 
 
-def test_default_session_single_registration_derives_session(wp, proj, monkeypatch):
-    """등록 repo 1개(대역 주입)+장부 부재 → `<repo>_1` — board.session_name 과 동일 유도값."""
+def test_default_session_no_rows_does_not_derive_from_registration(wp, proj, monkeypatch):
+    """등록 repo 1개 + 장부 행 0 → 유도 없이 host-pid. 등록은 장부 행이 하는 것이라 "행이 없다"
+    에서 세션 이름을 만들지 않는다(그 층을 되살리면 이 단언이 red)."""
+    import socket
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     monkeypatch.setattr(wp, "_load_board", lambda: _board_stub({"A"}, repo_path=proj))
-    assert wp._default_session() == "A_1"
+    assert wp._default_session() == f"{socket.gethostname()}-{os.getpid()}"
 
 
-def test_default_session_single_lease_layer_wins_over_single_registration(wp, proj, monkeypatch):
-    """단일-lease 값이 있으면(장부 leased 1행) 등록-유도보다 우선(체인 순서 불변)."""
+def test_default_session_single_lease_layer_resolves(wp, proj, monkeypatch):
+    """단일-lease 값이 있으면(장부 leased 1행) 그 값이 세션이다(체인 순서 불변)."""
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     monkeypatch.setattr(wp, "_load_board", lambda: _board_stub({"A"}, repo_path=proj))
@@ -2211,13 +2213,13 @@ def test_default_session_pool_row_present_falls_back_host_pid_despite_single_reg
     assert wp._default_session() == f"{socket.gethostname()}-{os.getpid()}"
 
 
-def test_create_slot_default_session_uses_single_registration_derivation(wp, proj, monkeypatch):
-    """전이 일관성(F-002): 등록 repo 1개+장부 부재에서 create_slot 이 lease.session 을 board 와
-    동형으로 유도한 `<repo>_1` 로 저장한다 — bare claim(board.session_name)과 첫 slot 생성
-    (worktree_pool._default_session)이 더 이상 갈리지 않는다(리뷰 F-002 재현의 직접 반증)."""
+def test_create_slot_default_session_uses_home_row_when_registered(wp, proj, monkeypatch):
+    """전이 일관성: 홈이 슬롯 행으로 등록돼 있으면 create_slot 이 그 행의 session 을 상속한다 —
+    저장측(worktree_pool)과 매칭측(board.session_name)이 같은 장부 행 하나를 본다."""
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     monkeypatch.setattr(wp, "_load_board", lambda: _board_stub({"A"}, repo_path=proj))
+    _seed(wp, _lease(wp, slot=".", repo="A", session="A_1", state="leased"))
     _mk_bare_placeholder(wp, "A")
     git = FakeGit()
     lease = wp.create_slot("A", git_runner=git, test_cmd="make hil2")  # session 미지정

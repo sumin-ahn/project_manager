@@ -4,7 +4,7 @@
 사용:
     venv/bin/python .project_manager/tools/pm_bootstrap.py --task <이름>
 
-slot/solo 호환 경로:
+slot 경로:
     venv/bin/python .project_manager/tools/pm_bootstrap.py [--json] [--with-pytest]
 
 동작:
@@ -189,7 +189,7 @@ def _resolve_log_file(repo: Path = REPO) -> Path:
     worktree 라 REPO-앵커 로그(`REPO/.project_manager/wiki/log/current.md`)가 *부재*(공유 로그는
     PM 홈 소유)해 log 마지막 entry 가 "미해소"로 뜬다 — `pm_log.py tail`(PM 홈에서 실행)과 비대칭.
     슬롯 형상(`repo.parent.name == "work"`)이면 상위 PM 홈(`repo.parent.parent`)의 공유 로그가
-    *실재할 때만* 그걸 가리킨다. 슬롯이 아니거나(솔로·PM 홈 직접 실행) 상위 공유 로그 부재면
+    *실재할 때만* 그걸 가리킨다. 슬롯이 아니거나(PM 홈 직접 실행) 상위 공유 로그 부재면
     REPO-앵커 그대로 폴백한다 — 회귀 0·fail-soft·fresh 채택자(standalone repo) 무영향.
     """
     default = repo / ".project_manager" / "wiki" / "log" / "current.md"
@@ -368,7 +368,7 @@ class _CardCmd(NamedTuple):
     flags: tuple         # 렌더의 비-정체성 옵션 (정합 test 가 leaf 실 등록 여부 검증)
 
 
-# 슬롯/솔로 카드 CLI 커맨드 (현행 표면·byte 동일) — 정체성 suffix 는 render 에 미포함(caller 보간).
+# 슬롯 카드 CLI 커맨드 (현행 표면·byte 동일) — 정체성 suffix 는 render 에 미포함(caller 보간).
 _C_BOARD_LIST_MINE = _CardCmd("board.py", "list --mine", ("list",), ("--mine",))
 _C_BOARD_LIST = _CardCmd("board.py", "list", ("list",), ())
 # `list --all`— 무인자 기본이 세션 스코프(내 세션 스트림만·타 세션분
@@ -484,7 +484,7 @@ _CODEX_CARD_SECTION = "\n".join((
 # areas.md 의 wiki-밖 legacy 위치를 보면 *stale*(등록 repo 0개·자동바인딩 미해소)이다.
 # pm_bootstrap 은 board.py 를 직접 import 하지 않으므로(touches 격리·areas 를 stdlib read),
 # board.py 의 graceful 탐지를 *동형*으로 최소 복제한다 — board/tickets 가 실 디렉토리면 areas 가
-# board/ 안(board/areas.md), 아니면 legacy `.project_manager/areas.md`. 솔로/미분리면 현 위치
+# board/ 안(board/areas.md), 아니면 legacy `.project_manager/areas.md`. 미분리면 현 위치
 # 100% 폴백(회귀 0). 상수 AREAS_FILE 는 hermetic 테스트 seam·legacy 기본값으로 유지.
 
 def _areas_file() -> Path:
@@ -576,14 +576,14 @@ def _write_machine_line(text: str) -> None:
 
 
 # ── worktree_pool import seam (multi-PM 모드) ───────────────────────────
-# multi-PM 인자(--repo)를 받았을 때만 alloc 경로에 진입한다. 솔로 무인자 경로는 이
+# multi-PM 인자(--repo)를 받았을 때만 alloc 경로에 진입한다. 무인자 경로는 이
 # 모듈을 전혀 쓰지 않으므로 import 실패가 무해(fail-soft) — 단 --repo 를 줬는데
 # worktree_pool 이 없으면 **명시 에러**(침묵 무력화 금지).
 def _load_worktree_pool():
     """worktree_pool 모듈을 동적 로드한다. 부재/로드 실패 시 None (fail-soft).
 
     REPO/tools 경로 기준 `spec_from_file_location` — board.py·pm_*.py 와 같은
-    스크립트-위치 앵커 관례. 솔로(multi-PM 미사용)에선 호출 안 되거나 None 이어도
+    스크립트-위치 앵커 관례. alloc 미진입 경로에선 호출 안 되거나 None 이어도
     무인자 경로가 이 모듈을 안 쓰므로 무해. --repo 경로만 None 을 명시 에러로 처리.
     """
     wp_path = TOOLS_DIR / "worktree_pool.py"
@@ -593,7 +593,7 @@ def _load_worktree_pool():
         mod = _load_module_from_path(
             wp_path, "worktree_pool.py", verifier=_verify_engine_rev,
         )
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 솔로 경로를 깨지 않는다.
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 기본 경로를 깨지 않는다.
         if _is_engine_rev_skew(exc):
             raise  # 중첩 로드 형제 skew 는 fail-loud(삼키지 않는다).
         return None
@@ -671,7 +671,7 @@ def _load_identity_args():
     (스크립트-위치 앵커·sys.path 무오염) — 스크립트 직접실행(`__main__`)·테스트
     `spec_from_file_location` 로드 양쪽에서 똑같이 동작한다(sibling import 관성 회피). 부재/
     로드 실패 시 None(fail-soft) — `_repo_slot_numbers`/`_auto_slot` 는 이를 "장부를 읽을 수
-    없음"과 동일하게 흡수해 bare-bootstrap 솔로 경로를 깨지 않는다(B-1).
+    없음"과 동일하게 흡수해 bare-bootstrap 경로를 깨지 않는다(B-1).
     """
     ia_path = TOOLS_DIR / "identity_args.py"
     if not ia_path.exists():
@@ -680,7 +680,7 @@ def _load_identity_args():
         mod = _load_module_from_path(
             ia_path, "identity_args.py", verifier=_verify_engine_rev,
         )
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 솔로 경로를 깨지 않는다.
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 기본 경로를 깨지 않는다.
         if _is_engine_rev_skew(exc):
             raise  # 중첩 로드 형제 skew 는 fail-loud(삼키지 않는다).
         return None
@@ -691,7 +691,7 @@ def _registered_repos(areas_file: Path | None = None) -> list[str]:
     """areas.md 레지스트리에서 등록된 repo 이름 목록 (identity surface '등록영역' 표면용).
 
     board.py 를 import 하지 않는다(touches 격리·병렬충돌 회피) — areas.md 의 `repo`/`prefix`
-    칼럼을 stdlib 로 가볍게 읽는다. 파일 부재/스키마 불일치 → 빈 목록(fail-soft·솔로 무해).
+    칼럼을 stdlib 로 가볍게 읽는다. 파일 부재/스키마 불일치 → 빈 목록(fail-soft·무해).
     `areas_file` 미지정이면 `_areas_file()`(board_root 추종)로 *호출 시점* 해소.
     """
     if areas_file is None:
@@ -783,10 +783,10 @@ def _auto_slot(
 ) -> tuple[str, int] | None:
     """단일 self-host 자동바인딩 판정 — 정확히 1 repo + 그 repo **활성(leased)** 슬롯 정확히 1개면 `(repo, N)`.
 
-    솔로 무인자 bootstrap(`--repo`/`--slot` 둘 다 없음)에서, 등록 repo 가 정확히 1개이고
+    무인자 bootstrap(`--repo`/`--slot` 둘 다 없음)에서, 등록 repo 가 정확히 1개이고
     그 repo 의 활성 worktree 슬롯(leased lease 엔트리)이 정확히 1개면 모호함이 없으므로 그 슬롯에
     자동으로 bind 한다. 그 외는 None
-    (현행 솔로 유지) — repo 0개/≥2개 또는 활성 슬롯 0개/≥2개면 사용자가 `--repo --slot` 명시.
+    (미해소) — repo 0개/≥2개 또는 활성 슬롯 0개/≥2개면 사용자가 `--repo --slot` 명시.
 
     반환은 `identity_args.SlotIdentity` — 정체성 키(`.key`)와 **장부 행의 경로 값**(`.slot`)을
     함께 나른다. 호출부(`_worktree_cwd`·`_pm_state_display_path`·handoff `_regression_cwd`)는
@@ -803,10 +803,10 @@ def _auto_slot(
 
     **idle 필터 영향(codex must-fix)**: 공용 프리미티브가 leased 만 세므로, `{1:idle, 2:leased}`
     는 이전 None(2개→폴백) 대신 leased={2}→exactly-1→슬롯2 로 해소된다 — incidental(`_regression_cwd`·
-    display)이 *활성* 슬롯을 찾는 것이라 오히려 정합·개선(의도된 변화). solo `{1:leased}`→1 은 불변.
+    display)이 *활성* 슬롯을 찾는 것이라 오히려 정합·개선(의도된 변화). `{1:leased}`→1 은 불변.
 
     파일 부재/스키마 불일치/JSON 깨짐/`identity_args` 로드 실패 → None(fail-soft — 자동바인딩은
-    *추가 편의*이지 강제 아님·실패는 현행 솔로로 폴백). `areas_file` 미지정(None)이면
+    *추가 편의*이지 강제 아님·실패는 미해소로 폴백). `areas_file` 미지정(None)이면
     `_registered_repos` 가 `_areas_file()`(board_root 추종)로 해소한다.
 
     **순수 resolver·반환 규격(`SlotIdentity` | None)** — 모든 incidental 호출부(`_worktree_cwd`·
@@ -832,17 +832,15 @@ def _auto_slot(
 
 # ── guarded session-entry 슬롯해소 (default-1 + fail-loud) ─────
 # session-entry 경로(bare `/pm-bootstrap` 무인자·bare handoff)는 *어느 슬롯의* 연속성을
-# 이어야 하는지 명확해야 한다. `_auto_slot`(순수 resolver·"정확히 1 슬롯") 의 None 은
-# **두 경우**를 합친다 — (1) solo(멀티-PM 미셋업·등록 repo 0개) = 정상 솔로 도그푸딩,
-# (2) ambiguous(멀티-PM 셋업 존재하나 under-specified). (1)은 fail-soft 유지(bare bootstrap
-# 무변경), (2)만 fail-loud 여야 1→2 슬롯 경계의 *침묵 동작변경*(없는 legacy 폴백·조용한
-# 연속성 단절)을 명시 에러로 대체한다. 이 함수가 그 둘을 가른다.
+# 이어야 하는지 명확해야 한다. 슬롯을 하나만 쓰는 홈도 그 홈 자신이 등록된 슬롯 행이므로,
+# 해소 실패는 "등록 안 된 홈" 아니면 "under-specified" 둘 중 하나다 — 둘 다 명시 에러다.
+# 조용한 폴백은 1→2 슬롯 경계에서 침묵 동작변경(없는 legacy 경로·연속성 단절)을 만들었다.
 class SlotResolutionError(Exception):
-    """멀티-PM 셋업이 모호(under-specified)해 슬롯을 자동해소할 수 없을 때 — session-entry fail-loud.
+    """슬롯을 자동해소할 수 없을 때 — session-entry fail-loud.
 
-    solo(멀티-PM 미셋업)와 구분된다 — 등록 repo 0개/슬롯 0개는 이 에러가 아니라 None(fail-soft·
-    현행 솔로 유지). 메시지는 repo/slot 개수 + `--repo`/`--slot` 안내를 담는다(호출부가 그대로
-    사용자에게 surface).
+    사유는 둘이다: 등록 repo/슬롯이 없어 **아직 등록되지 않은 홈**이거나, 여럿이라
+    under-specified 이거나. 메시지는 그 사유 + `--repo`/`--slot` 안내를 담는다(호출부가
+    그대로 사용자에게 surface).
     """
 
 
@@ -862,10 +860,9 @@ def _resolve_session_slot(
 
     반환:
       - `(repo, N)` — 해소됨(default-1·단독·단일 self-host).
-      - **None** — solo(멀티-PM 미셋업): 등록 repo 0개, 또는 등록 repo 1개인데 장부를 읽을 수
-        없거나(부재/깨짐) 그 repo 슬롯이 0개. 현행 솔로 fail-soft(bare bootstrap 무변경).
-      - **raise `SlotResolutionError`** — ambiguous(멀티-PM 셋업 존재하나 under-specified):
-        등록 repo ≥2(no `--repo`), 또는 repo 1개인데 슬롯 ≥2 이고 slot 1 부재한 비단독.
+      - **raise `SlotResolutionError`** — 미등록(등록 repo 0개, 또는 등록 repo 1개인데 장부를
+        읽을 수 없거나 그 repo 슬롯이 0개) 또는 under-specified(등록 repo ≥2, 또는 repo 1개인데
+        슬롯 ≥2 이고 slot 1 부재한 비단독). 둘 다 조용한 폴백 대상이 아니다.
 
     `_auto_slot`(순수 resolver) 와 같은 stdlib json 파싱(`_repo_slot_numbers`)을 공유하되,
     "정확히 1개"가 아니라 슬롯 *집합*을 보고 default-1/단독/fail-loud 를 가른다. worktree_pool
@@ -874,7 +871,10 @@ def _resolve_session_slot(
     """
     repos = _registered_repos(areas_file)
     if len(repos) == 0:
-        return None  # solo — 멀티-PM 미셋업(등록 repo 없음). 현행 솔로 fail-soft.
+        raise SlotResolutionError(
+            "등록 repo 0개 — 이 홈은 아직 셋업 전이다. `pm-config init` 으로 셋업하거나 "
+            "`--repo <name> --slot <N>` 으로 명시하라."
+        )
     if len(repos) > 1:
         raise SlotResolutionError(
             f"등록 repo {len(repos)}개({', '.join(repos)}) — 어느 repo 인지 모호하다. "
@@ -883,9 +883,13 @@ def _resolve_session_slot(
     repo = repos[0]
     slot_nums = _repo_slot_numbers(repo, leases_file)
     if not slot_nums:
-        # 장부 부재/깨짐(None) 또는 그 repo 슬롯 0개([]) — 멀티-PM 셋업 미완(슬롯 미생성).
-        # 현행 솔로 fail-soft(bare bootstrap 무변경·`_auto_slot` None 과 동형).
-        return None
+        # 장부 부재/깨짐(None) 또는 그 repo 슬롯 0개([]) — 이 홈은 아직 슬롯 행이 없다.
+        # 조용히 폴백하면 어느 슬롯의 연속성인지 모른 채 로그·pm_state 를 쓰게 된다.
+        raise SlotResolutionError(
+            f"repo '{repo}' 의 활성 슬롯 0개 — 이 홈이 아직 슬롯 행으로 등록되지 않았거나 "
+            f"장부를 읽을 수 없다. `pm-update` 를 1회 실행해 등록을 마치거나 "
+            f"`--repo <name> --slot <N>` 으로 명시하라."
+        )
     if 1 in slot_nums:
         return repo, 1  # slot 1 존재 → default-1(`{1}`·`{1,2}` 등).
     if len(slot_nums) == 1:
@@ -908,7 +912,7 @@ def _session_slot_identity(
     읽어야 한다(리뷰 F-001·F-002) — 그래야 bare 진입(handoff 태그·연속성)과 명시 진입
     (`--repo/--slot`)이 같은 슬롯에서 같은 키를 낸다.
 
-    반환은 `identity_args.SlotIdentity`(키 + 장부 경로 값) 또는 None(solo/미해소).
+    반환은 `identity_args.SlotIdentity`(키 + 장부 경로 값) 또는 None(미해소).
     모호(`SlotResolutionError`)는 그대로 전파한다 — 호출부가 자기 관례(fail-loud/fail-soft)로
     받는다.
     """
@@ -956,23 +960,28 @@ def _render_task_pm_state_pointer(path) -> str:
 
 # ── per-slot pm_state 경로 안내 (multi-PM 연속성) ─────────
 # pm_state 는 *슬롯별*이다 — pm_handoff 가 활성 슬롯의 pm_state 를
-# read/write 하므로(`.local/slots/<slot>/pm_state.md`·솔로 legacy 폴백), 부트스트랩의
+# read/write 하므로(`.local/slots/<slot>/pm_state.md`), 부트스트랩의
 # "첫 turn" 안내도 PM 이 *어느* pm_state 를 읽어야 하는지 같은 경로로 가리켜야 한다.
 # 부트스트랩은 pm_state 를 편집하지 않으므로(read/write 주체는 pm_handoff) 경로 *문자열*만
 # 해소한다 — slot 키는 `_auto_slot`(단일 self-host 자동바인딩) 동형으로 재사용한다.
+_PM_STATE_UNRESOLVED_DISPLAY = "(슬롯 미해소 — pm_state 경로 미확정)"
+
+
 def _pm_state_display_path(
     slot_key: str | None = None,
     areas_file: Path | None = None,
     leases_file: Path | None = None,
 ) -> str:
-    """첫-turn 안내에 쓸 pm_state 경로 문자열 (per-slot·솔로 legacy 폴백).
+    """첫-turn 안내에 쓸 pm_state 경로 문자열 (per-slot).
 
     슬롯 정체성 키가 해소되면(`<repo>_<N>`·명시 또는 `_auto_slot` 단일 self-host) per-slot 경로
-    `.project_manager/.local/slots/<키>/pm_state.md`, 미해소(솔로/모호)면 legacy
-    `pm_state.md`(현행 안내 무변경·짧은 표기). 키는 pm_handoff 가 read/write 하는 상태 경로와
-    **같은 해소**(`identity_args.resolve_slot_identity` — 장부 값 1순위)에서 온다. `_auto_slot` 은
-    같은 모듈 함수라 직접 호출(동적로드 불요·`_worktree_cwd` 동형). 예외/None 은 흡수해 legacy
-    표기로 폴백. `leases_file` 미지정이면 *호출 시점* REPO 기준 재구성(monkeypatch 추종·hermetic).
+    `.project_manager/.local/slots/<키>/pm_state.md`, 미해소면 경로 대신 미확정 표기다 — 슬롯을
+    하나만 쓰는 홈도 그 홈 자신이 슬롯 행이라 키가 해소되므로, 미해소는 "이 홈은 저 legacy
+    파일을 쓴다"가 아니라 "아직 모른다"이고 그렇게 보여야 한다. 키는 pm_handoff 가 read/write
+    하는 상태 경로와 **같은 해소**(`identity_args.resolve_slot_identity` — 장부 값 1순위)에서
+    온다. `_auto_slot` 은 같은 모듈 함수라 직접 호출(동적로드 불요·`_worktree_cwd` 동형).
+    예외/None 은 흡수해 미확정 표기로 폴백. `leases_file` 미지정이면 *호출 시점* REPO 기준
+    재구성(monkeypatch 추종·hermetic).
     """
     if leases_file is None:
         leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
@@ -986,7 +995,7 @@ def _pm_state_display_path(
             resolved = None
         key = resolved.key if resolved is not None else None
     if not key:
-        return "pm_state.md"
+        return _PM_STATE_UNRESOLVED_DISPLAY
     return f".project_manager/.local/slots/{key}/pm_state.md"
 
 
@@ -1585,13 +1594,13 @@ def infer_session_num(pm_state_text: str) -> int | str | None:
 # log/current.md 는 git 추적
 # 최신 담보)이라 handoff entry 제목 `PM N차` 가 차수의 상보 진실이다. handoff entry 로 한정
 # 한다 — complete/fix/note 제목은 `PM N차` 부재/불규칙이라 오파싱을 막는다.
-# 형식: `## [YYYY-MM-DD] handoff | PM N차 (<repo>_<M>) → 다음 PM 세션`(솔로는 태그 생략 —
+# 형식: `## [YYYY-MM-DD] handoff | PM N차 (<repo>_<M>) → 다음 PM 세션`(미해소면 태그 생략 —
 # `… PM N차 → …`·`… PM N차 인계 — …`). optional `(?P<session>...)` = 세션 정체성 태그
 # (pm_handoff `_session_tag`) — 슬롯 필터(자기 슬롯 태그 entry 만)의 캡처 그룹.
 # 캡처는 두 형식: **canonical 슬롯 `<repo>_<N>`**(`[A-Za-z0-9][A-Za-z0-9_-]*_\d+`·pm_config
 # `_REPO_NAME_RE`+`_N`) 또는 **task 태그 `task:<name>`**(sentinel `task:` + `[^)]+`).
 # 슬롯 형식의 `_\d+` 종결·task 형식의 `task:` 접두 둘 다 서술형 괄호(`PM 4차 (아침 대화)`·`(회의 3)`)를
-# 배제한다(should-fix) — 솔로에서 서술 괄호를 세션 태그로 오인해 entry 를 drop 하지 않게. task 명은
+# 배제한다(should-fix) — 서술 괄호를 세션 태그로 오인해 entry 를 drop 하지 않게. task 명은
 # 자유 포맷(한글·공백 허용)이라 bare `(<name>)` 로는 서술 괄호와 오탐이 나므로, pm_handoff 가 태그를
 # `(task:<name>)` sentinel 로 박고 여기서 `task:` 로 판별한다(무태그 흡수 회귀 불변). 비-canonical·
 # 비-task 괄호는 `.*` 로 흡수돼 session=None(무태그 폴백).
@@ -1620,12 +1629,13 @@ def _session_slot_number(bound_session: str, leases_file: Path | None = None) ->
 
 
 def _session_owns_untagged(bound_session: str | None, leases_file: Path | None = None) -> bool:
-    """무태그 handoff entry 가 이 세션 소유인지 판정한다 — 솔로(None)/slot-1 만 True.
+    """무태그 handoff entry 가 이 세션 소유인지 판정한다 — slot-1 만 True.
 
-    무태그 entry = 태그 도입이전 로그 또는 솔로 핸드오프 → 솔로/slot-1 귀속
-    (연속성 보존·제로 마이그레이션). **slot-2+ 는 무태그를 무시**하고 자기 태그 entry 만 센다
-    (핵심 회귀 가드·codex 제언). bound_session 이 None(솔로)이거나 **장부가 그 세션에 준 슬롯
-    번호가 1**이면 True, 그 외(slot-2+·번호 미해소)면 False.
+    무태그 entry = 태그 도입 이전 로그 → slot-1 귀속(연속성 보존·제로 마이그레이션).
+    **slot-2+ 는 무태그를 무시**하고 자기 태그 entry 만 센다(핵심 회귀 가드). 슬롯을 하나만
+    쓰는 홈도 그 홈 자신이 1번 슬롯 행이라 같은 규칙 하나로 판정된다 — 별도 특례가 없다.
+    **장부가 그 세션에 준 슬롯 번호가 1**이면 True, 그 외(slot-2+·번호 미해소·정체성 미해소)면
+    False.
 
     번호를 세션 **이름의 말단**에서 뜯지 않는 이유: 행의 repo/경로와 어긋난 session
     (`repo=A · slot=work/A_1 · session=B_7`)에서 이름은 7 을 주지만 그 세션이 실제로 들고 있는
@@ -1633,11 +1643,11 @@ def _session_owns_untagged(bound_session: str | None, leases_file: Path | None =
     파싱과 같은 값이 나온다.
 
     **task 세션(`task:<name>`)은 항상 False** — task 는 자기 태그(`(task:<name>)`) entry 만
-    소유하고 태그-도입 이전 무태그 legacy(솔로/slot-1 계보)는 자기 것이 아니다. sentinel 판별을
+    소유하고 태그-도입 이전 무태그 legacy(slot-1 계보)는 자기 것이 아니다. sentinel 판별을
     번호 판정보다 **앞에** 둔다: task 명이 우연히 `_1` 로 끝나면(`task:foo_1`) 번호 판정이
     slot-1 로 오판(True)하기 때문(회귀 가드)."""
     if bound_session is None:
-        return True
+        return False
     if bound_session.startswith(_TASK_TAG_PREFIX):
         return False
     return _session_slot_number(bound_session, leases_file) == 1
@@ -1648,7 +1658,7 @@ def _handoff_entry_owned(match: re.Match, bound_session: str | None,
     """handoff 헤더 match 가 bound_session 슬롯 소유인지 판정한다 (슬롯 필터 공용).
 
     태그 있는 entry → 태그 == bound_session 일 때만 소유(타 슬롯 entry 유입 차단). 태그 없는
-    entry → 솔로/slot-1(`owns_untagged`)만 소유. 차수 유도(`parse_last_handoff_session_num`)와
+    entry → slot-1(`owns_untagged`)만 소유. 차수 유도(`parse_last_handoff_session_num`)와
     본문 dump(`extract_slot_handoff_entry`)가 같은 규칙을 공유하게 한 단일 sink.
     """
     tag = match.group("session")
@@ -1666,7 +1676,7 @@ def parse_last_handoff_session_num(
     handoff type entry 로 한정(complete/fix/note 는 제목 `PM N차` 부재/불규칙 — 오파싱 차단).
     `bound_session`(`<repo>_<N>`)이 **양성 해소**되면 자기 슬롯 태그 entry 만 필터해 그 중 최고차
     (append-only 로그라 max=최신)를 취한다 — 전역 max 가 아니다("두 슬롯 같은 N차" 해소·slot-2+ 는
-    무태그/타 슬롯 무시). **bound 가 None(사유 무관 — genuine solo 든 미해소든)이면 전역 tag-agnostic
+    무태그/타 슬롯 무시). **bound 가 None(정체성 미해소)이면 전역 tag-agnostic
     파싱**으로 폴백한다: fresh clone(lease 부재)에 tracked 로그가 태그를 가져도
     log-derived 차수를 잃지 않게(user 연속성 surface 와 동일 원리 — 양성 슬롯일 때만
     필터). handoff entry 부재·log 부재/파싱 실패 → None(fail-soft).
@@ -1691,7 +1701,9 @@ def extract_slot_handoff_entry(
 
     부트스트랩 인계 dump 를 전역 마지막 entry 가 아니라 *자기 슬롯의 마지막 handoff* 로 좁힌다
     — 타 슬롯 entry 본문이 컨텍스트에 유입되면 자기 복원이 흐려진다. 슬롯 필터는
-    `parse_last_handoff_session_num` 과 같은 규칙(`_handoff_entry_owned`·무태그=솔로/slot-1).
+    `parse_last_handoff_session_num` 과 같은 규칙(`_handoff_entry_owned`·무태그=slot-1)이고,
+    **bound 가 미해소(None)면 같은 함수와 동형으로 태그 무관 전역 파싱**이다(걸러낼 자기 슬롯이
+    없는데 무태그만 고르면 태그된 최신 entry 를 잃는다).
     단일 진실 = `pm_log.split_entries`(entry 분할)를 동적 로드 재사용(DRY). 자기 슬롯 handoff
     entry 부재·pm_log 부재/파싱 실패 → None(호출부가 전역 마지막으로 graceful 폴백).
     """
@@ -1711,7 +1723,7 @@ def extract_slot_handoff_entry(
         m = _LOG_HANDOFF_HEADER_RE.search(entry_text)
         if m is None:
             continue  # handoff type 아님(complete/note 등) — skip.
-        if _handoff_entry_owned(m, bound_session, owns_untagged):
+        if bound_session is None or _handoff_entry_owned(m, bound_session, owns_untagged):
             selected = entry_text  # append-only 라 마지막 매치가 자기 슬롯 최신 handoff.
     if selected is None:
         return None
@@ -1730,16 +1742,16 @@ def last_handoff_header_line(
 
     `parse_last_handoff_session_num` 과 같은 grammar·같은 소유 sink(`_handoff_entry_owned`)로
     헤더 줄을 잡는다 — 그 줄을 담은 commit 을 `git log -S<line>`(pickaxe)로 찾아 author email 을
-    얻기 위함. `bound_session`(`<repo>_<N>`·솔로면 None)으로 **자기 슬롯 태그 entry 만 필터**한다
+    얻기 위함. `bound_session`(`<repo>_<N>`·미해소면 None)으로 **자기 슬롯 태그 entry 만 필터**한다
     ("타 슬롯 최소 유입") — slot-2 부트스트랩이 전역 마지막(=slot-1) handoff 로
-    "직전 작성자" 를 오판정하지 않게. 무태그=솔로/slot-1 귀속. 부재/파싱 실패 → None.
+    "직전 작성자" 를 오판정하지 않게. 무태그=slot-1 귀속. 부재/파싱 실패 → None.
     """
     if not log_text:
         return None
     owns_untagged = _session_owns_untagged(bound_session)
     last: re.Match | None = None
     for m in _LOG_HANDOFF_HEADER_RE.finditer(log_text):
-        # 솔로(bound 진짜 미해소)는 슬롯 개념이 없다 — 전역 마지막 handoff(원 동작 보존·타입/태그 무관).
+        # bound 미해소는 자기 슬롯을 모른다 — 전역 마지막 handoff(원 동작 보존·타입/태그 무관).
         # bound 해소 시에만 자기 슬롯 소유 entry 로 필터(slot-2 가 전역 slot-1 작성자를 오판정 안 하게).
         if bound_session is not None and not _handoff_entry_owned(m, bound_session, owns_untagged):
             continue
@@ -1836,7 +1848,7 @@ def _format_board_counts_line(counts: dict[str, int], scope_label: str = "mine")
     `counts` 는 `_collect_board` 가 뽑은 스코프 값이다 — status 별로 "내 세션 생성 open" 또는 "내
     세션 claim" 만 센 값이라 실측(예 done 25)이 전체 done(184) 과 크게 다를 수 있다(done/open/
     claimed/blocked 모두 전체보다 훨씬 작을 소지가 큼). `scope_label` 로 그 스코프를 명시해 "전체
-    done" 처럼 오독하지 않게 한다 — 솔로/무바인딩은 `"mine"`(user·전 슬롯), 명시 슬롯 바인딩
+    done" 처럼 오독하지 않게 한다 — 무바인딩은 `"mine"`(user·전 슬롯), 명시 슬롯 바인딩
     (`--repo`/`--slot`·multi-PM)은 `"slot N"`(그 슬롯 정체성으로 조회·카운트 정합).
 
     **open 도 세션 스코프**: 세션 기본 뷰가 open 을 내 세션 생성분만 보이므로
@@ -2095,7 +2107,7 @@ class PmBootstrap:
         self._areas_file = areas_file if areas_file is not None else _areas_file()
         self._venv_python = venv_python
         # worktree_pool seam — 테스트는 mock 모듈을 주입(hermetic). None 이면 --repo
-        # 경로 진입 시에만 동적 로드(multi-PM 모드)·솔로 무인자 경로는 안 건드린다.
+        # 경로 진입 시에만 동적 로드(multi-PM 모드)·무인자 경로는 안 건드린다.
         self._worktree_pool = worktree_pool
         # board seam — 보호 브랜치 surface(`_repo_protected`)용. 테스트는 mock
         # 모듈 주입. None 이면 lean identity(--repo --slot) 경로에서만 동적 로드(소프트
@@ -2107,14 +2119,14 @@ class PmBootstrap:
         self._run_git_fn = run_git_fn or self._default_run_git
 
         # 바운드 슬롯 식별자(`work/<repo>_<N>`) — git/pytest 러너의 worktree cwd 해소용
-        # run() 진입부에서 명시 multi-PM 모드면 세팅, 솔로면 None
+        # run() 진입부에서 명시 multi-PM 모드면 세팅, 무인자면 None
         # 유지(→ `_worktree_cwd` 가 `_auto_slot` 으로 자동해소). board 러너는 무관(REPO 고정).
         self._bound_slot: str | None = None
 
         # task 세션 식별자 — `--task <이름>` 바인딩 성공 시 run() 진입부에서 세팅.
         # task가 유일한 진입 정체성이며, log/pm_state 귀속을 task 태그(`task:<이름>`)·task 서술 pm_state
         # (`.local/tasks/<이름>/pm_state.md`)로 좁혀 resume-read(차수·남은작업)를 완결한다.
-        # None(무-task)이면 모든 task 분기가 no-op → slot/solo dump 100% 불변(회귀 가드).
+        # None(무-task)이면 모든 task 분기가 no-op → slot dump 100% 불변(회귀 가드).
         self._task_name: str | None = None
         self._task_pm_state_file: Path | None = None
         # task-only 진입이 자동 수령한 **task 소유 작업공간 집합**. `_validate_task_slot_set`
@@ -2141,7 +2153,9 @@ class PmBootstrap:
           - task 모드면 현재 순회 슬롯 또는 task 보유 슬롯의 정렬 첫 항목,
           - task 보유 슬롯이 0개면 `REPO` (전역 슬롯 자동해소 **금지**),
           - 없으면 `_auto_slot()` 으로 단일 self-host 슬롯 자동해소(**행의 `slot` 경로 값**),
-          - 그것도 없으면(솔로/모호/부재) **현 `REPO` 폴백** (fail-soft·솔로 무변경).
+          - 그것도 없으면(판정 불능 — 모호·엔진 사본 부재) **현 `REPO`**. 등록된 홈은 홈 자신이
+            슬롯 행이라 위 층에서 해소되므로, 이 층은 형상 추론이 아니라 dump 가 멈추지 않게
+            하는 마지막 트리다(read surface).
 
         `_auto_slot` 은 **무-task 경로에서만** 같은 모듈 함수를 직접 호출한다(동적로드 불요·
         DRY — 복붙 금지). task 정체성이 잡힌 뒤 전역 `_auto_slot`을 부르면 다른 task 슬롯을
@@ -2166,16 +2180,15 @@ class PmBootstrap:
         return str(REPO)
 
     def _pm_state_display_path(self) -> str:
-        """첫-turn 안내에 쓸 pm_state 경로 (task·per-slot·솔로 legacy 폴백).
+        """첫-turn 안내에 쓸 pm_state 경로 (task·per-slot).
 
         task 모드면 현재 task의 서술 pm_state가 유일한 연속성 앵커이므로 task 바인딩이 해소한
         `.local/tasks/<task>/pm_state.md`를 그대로 표시한다. 이 분기를 slot 자동해소보다 먼저
         두어 task-only 진입(`_bound_slot` 없음)이 타 task 슬롯/legacy 경로를 안내하지 않게 한다.
         명시 multi-PM 모드(`_bound_slot` = 장부 슬롯 경로 값)면 그 슬롯 정체성의 per-slot 경로,
-        솔로 무인자면 `_auto_slot()` 단일 self-host 자동해소(인스턴스 `_areas_file` 추종),
-        둘 다 미해소면 legacy `pm_state.md` 표기(현행 무변경). slot/solo는 모듈
-        `_pm_state_display_path`에 위임한다 — slot 키는 pm_handoff 의 read/write 경로와
-        동형(`<repo>_<N>`).
+        무인자면 `_auto_slot()` 단일 self-host 자동해소(인스턴스 `_areas_file` 추종),
+        둘 다 미해소면 미확정 표기다. 슬롯 축은 모듈 `_pm_state_display_path`에 위임한다 —
+        slot 키는 pm_handoff 의 read/write 경로와 동형(`<repo>_<N>`).
         """
         if self._task_name is not None:
             if self._task_pm_state_file is not None:
@@ -2204,7 +2217,7 @@ class PmBootstrap:
         # encoding 명시 — pytest 의 한글 테스트명 출력을 부모가 cp949 로 디코딩해
         # 크래시하지 않도록 utf-8 고정 (Windows CP949 회피).
         # cwd 는 _worktree_cwd 가 해소한다— 분리된 PM 홈엔 tests/ 가 없으므로
-        # 회귀는 활성 worktree 슬롯에서 돌아야 한다(솔로/미세팅이면 REPO 폴백).
+        # 회귀는 활성 worktree 슬롯에서 돌아야 한다(미세팅이면 REPO 폴백).
         result = subprocess.run(
             [str(self._venv_python), "-m", "pytest", "tests/", "-q"],
             capture_output=True,
@@ -2219,7 +2232,7 @@ class PmBootstrap:
         # encoding 명시 — git 의 한글 커밋 메시지/상태 출력을 부모가 cp949 로
         # 디코딩해 크래시하지 않도록 utf-8 고정 (Windows CP949 회피).
         # cwd 는 _worktree_cwd 가 해소한다— 분리된 PM 홈엔 코드 git 이 없으므로
-        # git dump 는 활성 worktree 슬롯에서 돌아야 한다(솔로/미세팅이면 REPO 폴백).
+        # git dump 는 활성 worktree 슬롯에서 돌아야 한다(미세팅이면 REPO 폴백).
         # 네트워크 계열(fetch/pull)만 timeout— present-but-unresponsive 원격이 세션
         # 시작을 수 분 막는 hang 방지. 초과 시 TimeoutExpired 를 fail-soft rc≠0 로 흡수(abort
         # 아님) → freshness 의 `fetched=False`/pull 실패 경고 경로 합류. 로컬 git(rev-parse·
@@ -2253,8 +2266,8 @@ class PmBootstrap:
             정체성**으로 조회한다(`list --repo <repo> --slot <N>` = 현재-사용자 ∩ 그 슬롯).
             무조건 `list --mine`(user·전 슬롯)로 뽑아 "claimed 4 (mine)" 이 `list --repo REPO --slot 3`
             카운트 = 그 세션 뷰와 정합. 라벨 "(slot N)".
-          - **솔로/무바인딩**(`_bound_slot` None)이면 현행 `--mine`(내 area open + 내 claim·전
-            슬롯) 유지. 솔로(user 미상)는 board 가 전체 open + 내 슬롯 claim 으로 graceful 폴백
+          - **무바인딩**(`_bound_slot` None)이면 현행 `--mine`(내 area open + 내 claim·전
+            슬롯) 유지. user 미상이면 board 가 전체 open + 내 슬롯 claim 으로 graceful 폴백
             하므로 현행과 사실상 동등. 라벨 "(mine)".
         전체 보드(contention 가시·backlog 확인·타 세션 claim)는 `board list --all` 로 PM 이 명시
         조회한다(무인자 기본은 내 세션 스트림만·타 세션 티켓 정보는 기본 dump 에서 완전 제거).
@@ -2472,7 +2485,7 @@ class PmBootstrap:
         board 의 git 상태를 통째로 숨긴다 — multi-PM 에서 board = claim 즉시-sync 공유채널
         이라 board 가 stale 하면 남의 claim 을 놓칠 수 있다(freshness load-bearing).
 
-        `self._board_dir`(`.project_manager/board`) 가 **실 디렉토리가 아니면**(솔로/board
+        `self._board_dir`(`.project_manager/board`) 가 **실 디렉토리가 아니면**(board
         미분리) None 을 반환해 graceful skip 한다(빌더가 Git 섹션에 이 줄을 생략). 실
         디렉토리여도 `-C <board_dir>` git 호출이 전부 실패하면(예: `.git` 없음·손상) 마찬가지로
         None(fail-soft — board freshness 는 *추가 인지*이지 부트스트랩 본체를 막지 않는다).
@@ -2515,7 +2528,7 @@ class PmBootstrap:
 
         (PM 홈·REPO)·(worktree·`_worktree_cwd`)를 각각 fetch/pull 대상으로 한다.
         task 모드는 전역 auto-slot 대신 **task 보유 작업공간 전부**를 scope로 잡는다.
-        자기분리가 아닌 솔로(둘이 같은 디렉토리)면 하나로 접는다 — 같은 repo 를
+        자기분리가 아니면(둘이 같은 디렉토리) 하나로 접는다 — 같은 repo 를
         두 번 fetch/pull 하지 않게. (is_home)만 board 서브모듈 rider 를 붙인다.
         """
         repo_dir = REPO
@@ -2607,7 +2620,7 @@ class PmBootstrap:
     def _sync_board_submodule(self) -> dict | None:
         """board 서브모듈 fetch + branch 유지 ff-pull.
 
-        board 미분리(솔로·`_board_dir` 비-디렉토리)면 None(skip). fetch 상시(fail-soft),
+        board 미분리(`_board_dir` 비-디렉토리)면 None(skip). fetch 상시(fail-soft),
         clean·ff 면 `checkout <branch> && pull --ff-only` 로 branch 를 유지한 채 동기한다 —
         `git submodule update` 의 detached HEAD 를 피한다(그러면 이후 board mutation 기록이
         sentinel 로 스킵된다). dirty·diverged·detached 는 표면화만(pull 안 함).
@@ -2639,7 +2652,7 @@ class PmBootstrap:
     def _collect_freshness(self) -> list[dict]:
         """각 scope 를 fetch → behind/ahead → clean·ff 면 ff-pull 한다.
 
-        솔로면 한 scope 로 접힌다. 반환 목록을 Git 절 freshness surface 에 쓴다.
+        미분리면 한 scope 로 접힌다. 반환 목록을 Git 절 freshness surface 에 쓴다.
         부트스트랩 *첫 단계*로 돌려(run() 순서) 이후 git/board 수집이 pull 반영 상태를
         dump 하게 한다. 실 fetch/pull 은 DI 러너(`_run_git_fn`) 경유 — 테스트는 mock.
         """
@@ -2683,7 +2696,7 @@ class PmBootstrap:
         이 read 측이 같은 키로 자기 태그 entry(차수·본문)를 되읽어 resume 루프를
         닫는다(write↔read 대칭). task 진입은 task 앵커만 사용한다.
 
-        task 무설정이면 슬롯/auto 정체성으로 폴백한다(`_slot_session_name`·slot/solo 반환 불변).
+        task 무설정이면 슬롯/auto 정체성으로 폴백한다(`_slot_session_name` 반환 불변).
         board/lease/대시보드 스코프는 task 와 무관한 슬롯 축이라 그쪽은 `_slot_session_name` 을
         직접 쓴다 — 이 함수는 log/pm_state 귀속(연속성)만 담당한다.
         """
@@ -2695,16 +2708,16 @@ class PmBootstrap:
         """슬롯/auto 정체성 키(`<repo>_<N>`) — board/lease/대시보드 스코프 전용 (task-무관).
 
         명시 multi-PM 모드(`_bound_slot`=`work/<repo>_<N>`)면 `work/` 접두를 벗긴 `<repo>_<N>`.
-        무인자(솔로)면 handoff **write 측**(`_resolve_session_worktree_slot`)과 **같은 경로로**
+        무인자면 handoff **write 측**(`_resolve_session_worktree_slot`)과 **같은 경로로**
         자동해소한다 — 단일 self-host 무인자 부트스트랩이 그 슬롯(`<repo>_<N>`)으로 바인딩되어,
         handoff 가 무인자로 write 한 자기 태그 entry(+무태그 히스토리)를 **둘 다** 자기 것으로
-        되읽는다. 이 write↔read 대칭이 없으면(구: 무인자→None→솔로 read) 단일 self-host 에서
+        되읽는다. 이 write↔read 대칭이 없으면(구: 무인자→None→무태그 read) 단일 self-host 에서
         handoff 가 쓴 `(<repo>_1)` 태그 entry 를 부트스트랩이 버려 차수 유실 stale 침묵
-        무력화가 났다(adopter#0 실증 버그). 등록 repo 0개(진짜 솔로)·모호·판정불가 → None.
+        무력화가 났다(adopter#0 실증 버그). 등록 repo 0개·모호·판정불가 → None.
 
         **task 와 직교**: board 카운트 렌즈·lease/대시보드 자기-제외는 task 태그가 아니라
         슬롯 정체성으로 가른다(task+슬롯 조합에서 자기 슬롯을 "타 PM" 으로 오표시하는 것 방지). task
-        무설정이면 `_bound_session_name` 과 값이 같아 slot/solo 경로 100% 불변이다.
+        무설정이면 `_bound_session_name` 과 값이 같아 slot 경로 100% 불변이다.
         """
         if self._bound_slot:
             identity = self._slot_identity_for(self._bound_slot)
@@ -2731,15 +2744,15 @@ class PmBootstrap:
         handoff write 측이 태그를 만들 때 쓰는 바로 그 resolver(`_resolve_session_slot`·guarded
         default-1)를 재사용해 **write↔read 대칭**을 보장한다(`{1,2}`→slot-1 등 default-1
         규칙까지 동일). leases 는 *호출 시점* REPO 기준 재구성(monkeypatch 추종·hermetic·
-        `_pm_state_display_path` 동형). 부트스트랩 READ 는 모호(`SlotResolutionError`)·판정불가를
-        **crash 없이** 솔로(None)로 폴백한다 — 모호를 fail-loud 로 막는 건 handoff WRITE 만
-        (bootstrap 은 read-only surface·`_resolve_pm_state_file` 폴백 동형).
+        `_pm_state_display_path` 동형). 부트스트랩 READ 는 미해소(`SlotResolutionError`)·판정불가를
+        **crash 없이** None 으로 접는다 — 미해소를 fail-loud 로 막는 건 handoff WRITE 와 bare
+        진입(`main` 의 `_resolve_session_slot`)이고, 여기는 그 뒤의 read-only surface 다.
         """
         try:
             identity = _session_slot_identity(self._areas_file, self._leases_file())
         except SlotResolutionError:
-            return None  # 진짜 모호(멀티-PM under-specified) → 솔로 폴백(read crash 금지).
-        except Exception as exc:  # noqa: BLE001 — fail-soft: 판정 실패는 솔로 폴백(현행 무변경).
+            return None  # 미해소/모호 → None(read surface crash 금지·진입에서 이미 loud).
+        except Exception as exc:  # noqa: BLE001 — fail-soft: 판정 실패는 None(read surface).
             if _is_engine_rev_skew(exc):
                 raise
             return None
@@ -2751,18 +2764,18 @@ class PmBootstrap:
         """**자기 슬롯**의 마지막 handoff entry 제목(date·type·title) + **본문 전체**를 수집한다.
 
         인계 컨텍스트 dump 를 전역 마지막 entry 가 아니라 *자기
-        슬롯의 마지막 handoff*(태그 필터·무태그 폴백=솔로/slot-1)로 좁혀 자기 컨텍스트를 복원한다
+        슬롯의 마지막 handoff*(태그 필터·무태그 폴백=slot-1)로 좁혀 자기 컨텍스트를 복원한다
         (타 슬롯 entry 본문 유입 차단). **MF-2**: bound 세션이 해소됐는데 자기 handoff 가 0개
         (fresh 슬롯)면 **전역 마지막으로 폴백하지 않는다** — 그러면 타 슬롯 handoff 본문·branch 가
         유입되고 `reattach_warning` 이 타 슬롯로 오경고한다("타 슬롯 최소 유입" 정면 위반). fresh
         슬롯은 이 슬롯의 첫 세션이라 인계 dump 없음(None). 전역 폴백은 bound 가 **진짜 미해소**
-        (솔로·식별 자체 없음)일 때만 — 그땐 현행 표시(전역 마지막 제목+본문)를 잃지 않는다.
+        (식별 자체 없음)일 때만 — 그땐 현행 표시(전역 마지막 제목+본문)를 잃지 않는다.
         """
         if not self._log_file.exists():
             return None
         log_text = _load_file_lock().read_text_shared(self._log_file, encoding="utf-8")
         bound_session = self._bound_session_name()
-        # 솔로(bound 진짜 미해소)는 슬롯 개념이 없다 — **마지막 entry(모든 타입)**를
+        # bound 미해소는 자기 슬롯을 모른다 — **마지막 entry(모든 타입)**를
         # 그대로 dump 한다(handoff·complete·decide 무관). handoff-우선 필터를 태우면 최신 complete
         # ("wave 진행 중" 신호)를 과거 handoff 로 가려 현행 표시가 깨진다(타입 무관 동작 보존).
         if bound_session is None:
@@ -2786,17 +2799,17 @@ class PmBootstrap:
         """bound slot 의 per-slot pm_state 경로를 해소한다 (read-only).
 
         명시 주입(`self._pm_state_file`·hermetic 테스트)이 있으면 그대로. 없으면
-        `pm_handoff._pm_state_path`(per-slot·솔로 legacy 폴백)를 **동적 로드**해
+        `pm_handoff._pm_state_path`(per-slot)를 **동적 로드**해
         해소한다(복붙 금지·DRY). `migrate=False` — 부트스트랩은 pm_state 를 *읽기만* 하므로
         legacy → slot 이동(부작용)을 절대 하지 않는다(읽기 위치만). 명시 multi-PM 모드면
         `self._bound_slot`(`work/<repo>_<N>`)을 슬롯 인자로 넘겨 그 슬롯 pm_state 를 본다.
 
         **양성 슬롯 바인딩(`self._bound_slot`)이면 legacy 폴백을 금지**한다 (
         "타 슬롯 최소 유입"): 자기 슬롯 pm_state 가 없을 때 `_pm_state_path` 는
-        legacy `wiki/pm_state.md`(솔로/slot-1 상태)로 폴백하는데, 그러면 fresh slot-2 가 타 슬롯
+        legacy `wiki/pm_state.md`(slot-1 상태)로 폴백하는데, 그러면 fresh slot-2 가 타 슬롯
         차수·남은작업을 가져와 "fresh=1차" 를 깬다. 해소 경로가 자기 슬롯 디렉토리
         (`.local/slots/<slot>/`) 밖(=legacy 폴백)이면 자기 pm_state 부재로 보고 None 을 반환한다
-        (fresh 슬롯·surface 생략·1차 규칙은 `_collect_handoff_context` 층). 솔로(bound None)는
+        (fresh 슬롯·surface 생략·1차 규칙은 `_collect_handoff_context` 층). bound None 은
         legacy 가 자기 것(slot-1 계보)이라 현행 폴백을 유지한다(로그 surface 와 동일 원리).
         pm_handoff 부재/해소 실패 → None(소프트 — 차수/남은작업 surface 생략).
         """
@@ -2815,7 +2828,7 @@ class PmBootstrap:
         except Exception:  # noqa: BLE001 — fail-soft: 해소 실패는 None(surface 생략).
             return None
         # 양성 슬롯인데 해소가 per-slot 디렉토리(`.local/slots/<slot>/pm_state.md`)가 아니면 =
-        # 자기 pm_state 부재로 legacy 폴백된 것 → 타 슬롯/솔로 상태 유입 금지·None(fresh).
+        # 자기 pm_state 부재로 legacy 폴백된 것 → 타 슬롯 상태 유입 금지·None(fresh).
         if self._bound_slot is not None and path.parent.parent.name != "slots":
             return None
         return path
@@ -2885,7 +2898,7 @@ class PmBootstrap:
         # 읽으며 slot/legacy 상태나 fresh-slot 규칙으로 폴백하지 않는다.
         # fresh 슬롯 규칙: 명시 슬롯 바인딩인데 자기 슬롯 차수가 전혀 안 잡히면
         # (pm_state·log 둘 다 미해소) 1차부터 — slot-2+ 는 무태그 기존 로그를 무시하므로 fresh
-        # 슬롯이 placeholder(`?`) 대신 슬롯-first(1차)로 announce 된다. 솔로(bound None)는 현행
+        # 슬롯이 placeholder(`?`) 대신 슬롯-first(1차)로 announce 된다. bound None 은 현행
         # placeholder 보존(회귀 0) — 이 규칙은 명시 슬롯(bound_session 해소·task 제외)에서만 발동한다.
         if bound_session is not None and not is_task_session and not isinstance(session_num, int):
             session_num = 1
@@ -2893,7 +2906,7 @@ class PmBootstrap:
         # fresh 슬롯 판정: 명시 슬롯이 바인딩됐는데 자기 pm_state 도(파일 부재) 자기 슬롯
         # handoff 도(log_num None) 전혀 없으면 = 이 슬롯의 첫 세션이라 복구할 컨텍스트가 없다. 이땐
         # "미해소/직접 확인" placeholder(스크램블 유발) 대신 명시 "fresh" 배너를 dump하도록 빌더에
-        # 신호한다(surface-only·자동 pm_state 생성 안 함). 솔로(bound None)·task는
+        # 신호한다(surface-only·자동 pm_state 생성 안 함). bound None·task는
         # 슬롯 fresh 배너 대상이 아니다(task state는 bind_task가 별도로 보장).
         fresh_slot = (
             bound_session is not None and not is_task_session
@@ -3059,7 +3072,7 @@ class PmBootstrap:
           활성 집합에 없어 배제된다(MF-1·codex·stale idle 노출 0). 활성 집합 판정불가(장부 부재)면
           필터 no-op(현행 표시 보존). 남는 타 슬롯 0개면 None(절 생략).
         - 대시보드 부재/파싱 실패 → `_lease_others` 폴백(`{"mode":"lease","others":[…]}`).
-        - 어느 쪽도 타 PM 0개(솔로) → None(절 생략·graceful).
+        - 어느 쪽도 타 PM 0개 → None(절 생략·graceful).
         """
         dash_file = _dashboard_file()
         if dash_file.exists():
@@ -3137,7 +3150,7 @@ class PmBootstrap:
         lines.append("")
 
         # Board 섹션 — 카운트 스코프 라벨 명확화. 명시 슬롯 바인딩이면 "(slot N)"
-        # (그 슬롯 정체성으로 조회)·솔로/무바인딩이면 "(mine)".
+        # (그 슬롯 정체성으로 조회)·무바인딩이면 "(mine)".
         lines.append("### Board")
         lines.append(_format_board_counts_line(counts, board.get("counts_scope", "mine")))
         if pytest_result is not None:
@@ -3195,7 +3208,7 @@ class PmBootstrap:
         if reattach:
             lines.append(f"- {reattach}")
         # board submodule freshness — `ignore=all` 이 부모 `git status` 에서 board
-        # git 상태를 숨기므로 별도 1줄로 surface. board 미분리(솔로)면 생략(graceful skip).
+        # git 상태를 숨기므로 별도 1줄로 surface. board 미분리면 생략(graceful skip).
         board_git = git.get("board_git")
         if board_git is not None:
             lines.append(f"- board: {_format_board_git_freshness(board_git)}")
@@ -3250,7 +3263,7 @@ class PmBootstrap:
 
         # 다른 활성 PM (수정형 대시보드 light dump) — 자기 컨텍스트 복원 뒤
         # 타 슬롯 현재-상태(3~5줄)만 가볍게 dump(자기 섹션 제외·상세는 log/current.md 몫). 대시보드
-        # 부재면 현행 lease 목록 폴백. 솔로·타 PM 0개면 절 자체 생략(graceful·솔로 무노이즈).
+        # 부재면 현행 lease 목록 폴백. 타 PM 0개면 절 자체 생략(graceful·무노이즈).
         if dashboard_others and dashboard_others.get("others"):
             lines.append("### 다른 활성 PM")
             if dashboard_others.get("mode") == "dashboard":
@@ -3289,7 +3302,7 @@ class PmBootstrap:
             regression_summary = f" 회귀 (handoff entry 참조), lint {lint}."
         lines.append(f"- board: {board_summary}{regression_summary}")
         # pm_state 는 슬롯별— PM 이 *자기 슬롯* pm_state 를 읽도록 per-slot 경로를
-        # 안내한다(pm_handoff 의 read/write 경로와 동형). 솔로/모호면 legacy `pm_state.md` 표기.
+        # 안내한다(pm_handoff 의 read/write 경로와 동형). 미해소면 미확정 표기.
         state_path = self._pm_state_display_path()
         lines.append(
             f"- (직전 세션 요약은 PM 손 — {state_path} \"세션 식별\" 절 + log/current.md 마지막 handoff entry 참조)"
@@ -3372,7 +3385,7 @@ class PmBootstrap:
                 "working_tree": git["working_tree"],
                 # task-only top Git의 결정적 대표 cwd. 전수 작업공간은 task.slot_set,
                 # freshness/pytest 전수 범위는 각 필드 scopes가 별도 surface 한다. 비-task
-                # JSON에는 키 자체를 방출하지 않아 기존 slot/solo 스키마를 보존한다.
+                # JSON에는 키 자체를 방출하지 않아 기존 slot 스키마를 보존한다.
                 **(
                     {"task_cwd_slot": git["task_cwd_slot"]}
                     if "task_cwd_slot" in git
@@ -3383,7 +3396,7 @@ class PmBootstrap:
                     if "task_workspace_count" in git
                     else {}
                 ),
-                # board submodule freshness— None(솔로/board 미분리)이면 생략된 것과
+                # board submodule freshness— None(board 미분리)이면 생략된 것과
                 # 동일 정보량(graceful skip). 있으면 head/dirty/ahead/behind.
                 "board_git": git.get("board_git"),
                 # git freshness— 각 scope 의 fetch/behind·ahead/pull 결과 목록
@@ -3396,7 +3409,7 @@ class PmBootstrap:
             },
             "log_last_entry": log_entry,
             # 다른 활성 PM (수정형 대시보드) — 자기 제외 타 슬롯 섹션 light
-            # dump({"mode":"dashboard"|"lease","others":[…]}) 또는 None(솔로·타 PM 0개).
+            # dump({"mode":"dashboard"|"lease","others":[…]}) 또는 None(타 PM 0개).
             "dashboard_others": dashboard_others,
         }
 
@@ -3418,7 +3431,7 @@ class PmBootstrap:
         with_pytest: True 면 pytest 회귀 실행, False (default) 면 skip.
                      default skip 인 이유는 모듈 docstring 참조.
         repo:        multi-PM 모드— 주면 worktree 슬롯 alloc/bind + identity surface
-                     를 *추가* 출력한다. 무인자(솔로)면 None — 현행 동작 100% 보존
+                     를 *추가* 출력한다. 무인자면 None — 현행 동작 100% 보존
                      (alloc/bind 경로 미진입).
         slot:        multi-PM lean 모드— `--repo` 와 함께 주면 `alloc` 대신
                      `bind_slot("work/<repo>_<N>", repo, "<repo>_<N>")` 로 **직접 바인딩**
@@ -3458,7 +3471,7 @@ class PmBootstrap:
         #   - alloc(`--repo` without `--slot`): 새 슬롯을 alloc 해 정체성(`lease.slot`)을 확정하고 아래
         #     출력에서 재사용한다(재-alloc 금지·`alloc_calls==1`). NeedsCreate(풀 소진)면 맨 앞에서
         #     조기중단 — 슬롯 없어 세션 시작 불가(정당).
-        #   - 솔로/무인자: alloc 미진입 → `_bound_slot` None → `_worktree_cwd` 가 `_auto_slot()` 로
+        #   - 무인자: alloc 미진입 → `_bound_slot` None → `_worktree_cwd` 가 `_auto_slot()` 로
         #     자동해소(현행 보존·순서 무관). board 러너는 슬롯 무관(REPO 고정).
         multipm_lean = repo is not None and slot is not None
         multipm_alloc = repo is not None and slot is None
@@ -3467,8 +3480,8 @@ class PmBootstrap:
         # 슬롯/위치를 쓰고 있나"를 기계로 검증한다. 실패 시 **부분 dump 도 금지**(dump 가 뜨면 PM 이
         # 그것을 세션의 진실로 믿는다) — preflight 가 비-0 을 돌려주면 여기서 alloc/수집/dump
         # 이전에 즉시 중단한다. 엔진 앵커(무조건)+슬롯 실재·점유·기록정합(lean 조건)+main-참조 거부.
-        # solo(repo None)/alloc(slot None)는 슬롯 검사 자연 no-op·앵커만 무조건(결정 2·
-        # [[solo-is-subset-of-multipm]]). alloc 앞단에 둬 앵커 거부 시 신규 lease 잔존을 예방한다.
+        # 무인자(repo None)/alloc(slot None)는 슬롯 검사 자연 no-op·앵커만 무조건(결정 2).
+        # alloc 앞단에 둬 앵커 거부 시 신규 lease 잔존을 예방한다.
         preflight_rc = self._phase0_preflight(repo, slot)
         if preflight_rc != 0:
             return preflight_rc
@@ -3526,7 +3539,7 @@ class PmBootstrap:
         # 실패 시 `sys.exit(1)`)이 abort 하면 방금 잡은 lease 가 stale leased 로 남아 풀 고갈·"다른
         # 활성 PM" 오표시를 낳는다. 예외/SystemExit 시 그 신규 lease 를 release 후 re-raise 한다.
         # 정상 완료(return 0·lint-blocking return 1 = dump 완료)면 lease 유지(세션이 그 슬롯을 쓴다) —
-        # except 는 예외/SystemExit 에만 발동한다. lean/솔로는 이 경로로 신규 lease 를 안 잡으므로
+        # except 는 예외/SystemExit 에만 발동한다. lean/무인자는 이 경로로 신규 lease 를 안 잡으므로
         # cleanup 대상 아님(`alloc_identity is not None` 가드).
         try:
             # git freshness — 부트스트랩 *첫 단계*로 fetch + clean·ff 자동 ff-pull
@@ -3544,7 +3557,7 @@ class PmBootstrap:
                     self._task_workspace_slots[0] if self._task_workspace_slots else None
                 )
                 git["task_workspace_count"] = len(self._task_workspace_slots)
-            # board submodule freshness— HEAD·dirty·ahead/behind. board 미분리(솔로)면
+            # board submodule freshness— HEAD·dirty·ahead/behind. board 미분리면
             # None(graceful skip) — `git` dict 에 실어 빌더로 전달(시그니처 변경 최소화).
             git["board_git"] = self._collect_board_git()
             git["freshness"] = freshness
@@ -3566,11 +3579,11 @@ class PmBootstrap:
             git["user_continuity"] = self._collect_user_continuity(log_text)
             # 차수 + 인계 컨텍스트 — bound slot pm_state 에서 차수·"남은 작업/사용자발의"
             # 절. _bound_slot 세팅 후(lean 진입부·alloc 앞단)라 명시 multi-PM 모드면 그 슬롯 pm_state 를,
-            # 솔로면 자동해소(legacy 폴백). log_text 를 넘겨 차수 log-폴백 + stale 교차검증을 함께
+            # 무인자면 자동해소. log_text 를 넘겨 차수 log-폴백 + stale 교차검증을 함께
             # 해소한다. 미해소/부재면 None → 빌더가 placeholder/명시 포인터로 graceful.
             handoff_ctx = self._collect_handoff_context(log_text)
             # 다른 활성 PM (수정형 대시보드 light dump) — 자기 섹션 제외 타 슬롯
-            # 현재-상태(3~5줄). 대시보드 부재면 lease 목록 폴백·솔로/타 PM 0개면 None(절 생략).
+            # 현재-상태(3~5줄). 대시보드 부재면 lease 목록 폴백·타 PM 0개면 None(절 생략).
             # lean 진입부·alloc 앞단으로 `_bound_slot` 이 확정된 뒤라 자기 세션 제외가 정확하다.
             dashboard_others = self._collect_dashboard_others()
 
@@ -3615,7 +3628,7 @@ class PmBootstrap:
                     print(self._build_identity_markdown(identity))
                 # 커맨드 카드 — identity surface 뒤. 이 세션이 쓸 전 커맨드를 정체성
                 # (`--repo <repo> --slot <N>`) 채운 완성형으로 dump("--help 자체를 안
-                # 가게"). lean 은 정체성 채운 형태·솔로(identity None/session 부재)는 정체성
+                # 가게"). lean 은 정체성 채운 형태·미해소(identity None/session 부재)는 정체성
                 # 인자 없는 형태로 분기. 렌더 실패는 fail-soft(카드 절 생략·위 dump 는 유지).
                 card = self._safe_command_card(identity)
                 if card:
@@ -3664,12 +3677,15 @@ class PmBootstrap:
              사본이면 거부 (`board._pm_home_worktree_misanchor` 소비·부트스트랩은 현행
              이 클래스에 무방비였다).
           2~5 **슬롯 검사** — 슬롯이 명시된 lean 경로(`--repo --slot`·무인자 자동해소 포함)만 돈다.
-             solo(repo None)·alloc(slot None)는 슬롯이 없어 자연 no-op(결정 2·[[solo-is-subset-of-multipm]]).
+             무인자(repo None)·alloc(slot None)는 슬롯이 없어 자연 no-op(결정 2).
             2. **작업공간 실재** — 장부 lease 도 없고 폴더도 없으면 거부(phantom 슬롯 바인딩 방지).
             3. **타 점유자** — 다른 세션이 그 슬롯을 leased 로 보유하면 거부(readonly 예외).
             4. **보호브랜치/origin-추적** — main-참조(보호브랜치 직접 checkout 또는 upstream 설정)면
-               **거부**(부분 dump 금지·readonly 예외).
-            5. **기록 vs live** — `compare_slot_git` 소비(불일치=FAIL-LOUD·미기록=loud+질의 훅).
+               **거부**(부분 dump 금지·readonly 예외·홈 예외).
+            5. **기록 vs live** — `compare_slot_git` 소비(불일치=FAIL-LOUD·미기록=loud+질의 훅·홈 예외).
+
+        4·5 는 **작업 슬롯** 전제 검사라 PM 홈 자신(`HOME_SLOT` 행)엔 걸지 않는다
+        (`_phase0_is_home_slot`). 2·3(실재·점유)은 홈에도 그대로 적용된다.
 
         task 진입은 이 함수 앞에서 repo/slot 혼합을 거부한다. task 보유 슬롯은 별도
         `_validate_task_slot_set` 전수 검증이 담당한다.
@@ -3684,7 +3700,7 @@ class PmBootstrap:
         #     막지 않는다(보호 훅은 추가 가드이지 부트스트랩의 핵심 부작용이 아니다).
         if repo is not None:
             self._reconcile_protected_sidecar(repo)
-        # 2~5 슬롯 검사 — lean(명시 슬롯)만. solo/alloc 은 슬롯이 없어 자연 no-op(결정 2).
+        # 2~5 슬롯 검사 — lean(명시 슬롯)만. 무인자/alloc 은 슬롯이 없어 자연 no-op(결정 2).
         if repo is None or slot is None:
             return 0
         # 검사 대상 슬롯의 **경로**는 장부 행 값이다(재조립 금지·리뷰 F-001) — 재조립하면 장부가
@@ -3768,7 +3784,7 @@ class PmBootstrap:
         (코드 전용) 트리에서 부트스트랩하면 그 트리를 세션 진실로 dump 한다. **cwd 는 판정에 불참**
         앵커는 REPO 만. board 직접 import 금지(touches 격리)라 주입/동적로드 board 의 헬퍼를
         `getattr` 로 쓴다(DI 보존·`_protected_warning` 동형) — board/헬퍼 부재·예외는 fail-soft(검사
-        생략·솔로/standalone 무영향·오탐 0). True=거부(REPO 가 PM 홈 등록 worktree)."""
+        생략·standalone 무영향·오탐 0). True=거부(REPO 가 PM 홈 등록 worktree)."""
         board_mod = self._board or _load_board()
         guard = getattr(board_mod, "_pm_home_worktree_misanchor", None) if board_mod else None
         if guard is None:
@@ -3820,6 +3836,19 @@ class PmBootstrap:
             return False
         return getattr(lease, "role", "work") == "readonly"
 
+    def _phase0_is_home_slot(self, wp, slot_id: str) -> bool:
+        """그 슬롯이 PM 홈 자신(`worktree_pool.HOME_SLOT`)인가 — **작업 슬롯 전제** 검사의 배제 판별.
+
+        main-참조 거부(4)와 기록↔live 정합(5)은 "작업 슬롯에서 보호 브랜치에 커밋" 을 막는 검사다.
+        PM 홈은 작업 슬롯이 아니라 board/wiki 가 사는 트리이고, 그 브랜치가 `main`/`master` 인 것이
+        정상 채택자 형상이라 전제가 성립하지 않는다(홈의 보호는 push 보호 훅이 한다). 판별은 풀이
+        이름 붙인 상수와의 값 비교 하나뿐 — 형상 추론이 아니다. 상수 부재 풀(구버전·mock)은 배제
+        자체가 성립하지 않아 항상 False 이므로 검사가 종전대로 돈다(과배제 0). 상수 부재와 슬롯 값
+        `None` 을 같은 sentinel 로 접으면 미노출 풀에서 `slot_id=None` 이 홈으로 오인돼 두 검사가
+        통째로 배제되므로, 상수 부재를 먼저 분리한다."""
+        home_slot = getattr(wp, "HOME_SLOT", None)
+        return home_slot is not None and slot_id == home_slot
+
     def _phase0_incomplete_create(self, lease) -> bool:
         """그 슬롯이 불완전 생성(`state="creating"`·provisional/중단 마커)인가 — 0단계 차단 대상.
 
@@ -3857,6 +3886,10 @@ class PmBootstrap:
         진입 시점으로 앞당긴다. 실패 시 **부분 dump 도 금지**(0단계 계약 — dump 가 뜨면 PM 이 그것을
         세션 진실로 믿는다). 판정 두 축은 `_phase0_main_reference_reason` 가 소비만 한다(중복 로직 0).
 
+        **홈 예외**: PM 홈 자신(`HOME_SLOT` 행)은 이 검사의 전제인 작업 슬롯이 아니다 —
+        board/wiki 트리가 `main`/`master` 인 것이 정상 채택자 형상이고, 홈에서의 보호는 이 게이트가
+        아니라 push 보호 훅이 한다. 배제하지 않으면 채택자의 첫 부트스트랩이 곧바로 막힌다.
+
         **readonly 예외**: readonly 공유 슬롯(role="readonly")은 detached(브랜치 없음·upstream
         없음)라 두 축에 자연 미해당하지만, role 로도 명시 carve-out 한다 — main-참조 역할을 이전받는
         슬롯이 곧 readonly 이므로 그 자체가 거부되면 자기충돌. (bind flow 에선 2c 가
@@ -3864,6 +3897,9 @@ class PmBootstrap:
 
         반환 0=통과·1=거부(FAIL-LOUD·부분 dump 금지). 거부 메시지엔 해소 2택(readonly 생성 / 작업
         브랜치 전환)을 **실값**으로 싣는다."""
+        # 홈 예외 — PM 홈은 작업 슬롯이 아니라 이 검사의 전제(작업 슬롯 커밋)가 성립하지 않는다.
+        if self._phase0_is_home_slot(wp, slot_id):
+            return 0
         # readonly 예외 — 무브랜치 공유 자산은 main-참조 판정 대상이 아니다(역할 이전 대상 자기보호).
         if self._phase0_is_readonly(lease):
             return 0
@@ -4073,7 +4109,14 @@ class PmBootstrap:
         submodule 만 본다(base=recorded-only breadcrumb). base 불일치 FAIL·"base 대비 N behind"
         판정은 rebase 으로 이월된다(reviewer 추적성).
         `compare_slot_git` 미구현 풀(구버전·mock)·예외는 fail-soft(정합 검사 생략·통과) — 소프트 진단.
+        **홈 예외**(main-참조 거부와 같은 축): PM 홈은 세션이 두고 가는 작업 트리가 아니라
+        `_phase0_is_home_slot` 이면 검사하지 않는다.
         반환 0=통과·1=FAIL-LOUD 거부."""
+        # 홈 예외 — 게이트 4 와 같은 전제(작업 슬롯). 홈은 세션이 두고 가는 작업 트리가 아니라
+        # 브랜치·head 가 채택자 평시 운영으로 움직이므로 "두고 간 기록과 다름" 이 외부 개입 신호가
+        # 아니다. 4 만 배제하면 홈이 브랜치를 옮긴 뒤 여기서 다시 막힌다.
+        if self._phase0_is_home_slot(wp, slot_id):
+            return 0
         compare = getattr(wp, "compare_slot_git", None)
         if compare is None:
             return 0  # 구버전 풀 — 정합 검사 비활성(fail-soft·소프트 진단).
@@ -4582,7 +4625,7 @@ class PmBootstrap:
         slot_path = wp.slot_path(lease.slot)
         # 세션 정체성 = **장부 행이 그 슬롯에 준 정체성**(`_slot_identity` — 행 session 1순위·
         # 없으면 pool 명명 규약의 경로 마디). alloc 도 명시 multi-PM 이므로 identity 에 `session`
-        # 을 채운다. 이게 없으면 커맨드 카드가 `session` 키 부재를 솔로로 오판해 `--repo/--slot`
+        # 을 채운다. 이게 없으면 커맨드 카드가 `session` 키 부재를 미해소로 오판해 `--repo/--slot`
         # 빠진 카드를 dump → claim(required) fail-loud. `work/` 접두를 손으로 벗기던 자리다
         # (리뷰 F-001) — 그 파싱은 `_slot_session_name`(로그 태그·렌즈)과 갈릴 수 있었다.
         identity = self._slot_identity_for(lease.slot)
@@ -5096,7 +5139,7 @@ class PmBootstrap:
 
         identity: lean(멀티-PM) 모드면 `slot`(`work/<repo>_<N>`)+`repo` 키를 담은 dict → 슬롯
                   식별자에서 슬롯 번호를 분리해 `--repo <repo> --slot <N>` 을 채운다. None 또는
-                  `slot`/`repo` 부재(솔로/legacy)면 정체성 인자 없는 현행 형태로 분기.
+                  `slot`/`repo` 부재(미해소/legacy)면 정체성 인자 없는 현행 형태로 분기.
 
         숨은 전제 4대장(claim=promote 선행·prefix rename/merge=홈 git clean·livegate record=
         release-marked pin·migrate-identity=단일세션) + reid=홈 git clean 을 해당 커맨드 줄 바로
@@ -5129,8 +5172,8 @@ class PmBootstrap:
         if slot_num is None and slot_id:
             slot_num = slot_id.rsplit("_", 1)[-1]
         # 정체성 인자 — 멀티-PM 여부 게이트는 **session 존재**로 판정한다(종전 유지): session 결손
-        # (불완전 dict)은 솔로 방어 렌더로 폴백(fail-soft·카드 절 무손상). 게이트 통과 시 번호는 위
-        # slot_num(슬롯 식별자 파생)으로 채운다. lean=` --repo <repo> --slot <N>`·솔로=빈 문자열.
+        # (불완전 dict)은 정체성 없는 방어 렌더로 폴백(fail-soft·카드 절 무손상). 게이트 통과 시
+        # 번호는 위 slot_num(슬롯 식별자 파생)으로 채운다. lean=` --repo <repo> --slot <N>`·미해소=빈 문자열.
         sess = f" --repo {repo_name} --slot {slot_num}" if session and repo_name and slot_num else ""
 
         def cmd(rec: _CardCmd, comment: str = "", suffix: str = "", prefix: str = "") -> str:
@@ -5171,7 +5214,7 @@ class PmBootstrap:
 
         # ── 모드별 렌더 — 현재 모드분만 dump(신호 대 잡음·컨텍스트 잠식 방지).
         # task 세션(`--task`)이면 task 커맨드, readonly 공유 슬롯(role=readonly)이면
-        # 조회만, 그 외(슬롯/솔로)면 현행 슬롯 카드(+ task 모드 발견성 1줄). 안 쓸 커맨드는 안 뿌린다.
+        # 조회만, 그 외(슬롯)면 현행 슬롯 카드(+ task 모드 발견성 1줄). 안 쓸 커맨드는 안 뿌린다.
         task_name = getattr(self, "_task_name", None)
         role = (identity.get("role") if identity else None)
         if task_name:
@@ -5185,7 +5228,7 @@ class PmBootstrap:
 
         lines: list[str] = []
         lines.append("### 이 세션 커맨드 카드 (정체성 채움·--help 불요·단일 진실)")
-        # 정체성 헤더 — 실값 보간(placeholder 0). 솔로는 정체성 인자 불요 명시.
+        # 정체성 헤더 — 실값 보간(placeholder 0). 미해소면 정체성 인자 불요 명시.
         if session:
             branch = (identity.get("branch") if identity else None) or "(미지정)"
             lines.append(
@@ -5200,8 +5243,10 @@ class PmBootstrap:
                 )
         else:
             lines.append(
-                "정체성: 솔로(단일 세션) — `--repo`/`--slot` 명시 불요(env `PM_SESSION_NAME` / "
-                "단일 등록·단일 lease 자동 해소 — local.conf 폴백은 폐지)."
+                "정체성: 미해소 — 보드/리스 조작은 `--repo <repo> --slot <N>` 명시가 필요하다"
+                "(해소 층: env `PM_SESSION_NAME` > 활성 lease 정확히 1개). 장부에 슬롯 행이 "
+                f"하나도 없으면 이 홈은 아직 등록 전이라 `{_runtime_skill_entry('pm-update')}` "
+                "1회가 등록 repo 1개인 홈을 첫 슬롯 행으로 등록한다."
             )
         # 스킬-우선 운영 pointer — 규칙/why 는 pm_role 이 단일 진실(재설명 금지).
         lines.append(
@@ -5300,7 +5345,7 @@ class PmBootstrap:
         # 릴리즈 (직접 — 래핑 스킬 없음) — livegate record 는 release-marked pin.
         # 정체성(`sess`)을 실어 실행가능 형태로 emit — multi-lease 홈에서 정체성 인자 없는 record 는
         # cwd 모호 fail-loud 이므로, 이 세션 슬롯을 명시해 안내 명령이 dead-end 가 아니게 한다
-        # (솔로는 `sess`="" → 무인자·현행 형태·leased <2 라 폴백 무변경).
+        # (미해소는 `sess`="" → 무인자·현행 형태).
         lines.append("# 릴리즈 (직접 — 래핑 스킬 없음)")
         lines.append(cmd(_C_BOARD_LIVEGATE, suffix=sess))
         lines.append(
@@ -5343,7 +5388,7 @@ class PmBootstrap:
 
         # 찾아가기 (부트스트랩 dump 에 없는 것 — 포인터만·정식 서술은 pm_role).
         # 각 항목 "평시 안 읽음·필요할 때만".
-        self_tag = f"`({session})`" if session else "`(솔로/slot-1=무태그)`"
+        self_tag = f"`({session})`" if session else "`(slot-1=무태그)`"
         lines.append("# 찾아가기 (부트스트랩에 없는 것 — 평시 안 읽음·필요할 때만)")
         lines.append(
             f"- 내 티켓 상세: `{tool_invoke}/board.py show T-NNNN`"
@@ -5374,7 +5419,7 @@ class PmBootstrap:
     def _codex_card_section() -> str:
         """codex 하네스면 카드 codex 절(앞 공백 1줄 포함)을, 아니면 빈 문자열을 돌려준다.
 
-        모든 모드 카드(슬롯·솔로·task·readonly) 렌더 끝에 append 되며, 호출이
+        모든 모드 카드(슬롯·task·readonly) 렌더 끝에 append 되며, 호출이
         `_build_command_card_markdown`(→ `_safe_command_card` try/except) 안이라 감지/문자열화가
         터져도 fail-soft(절 생략·부트스트랩 무손상). 비-codex 하네스는
         빈 문자열 → 카드 byte 무변(env 미설정=절 부재=정상·회귀 0).
@@ -5458,7 +5503,7 @@ class PmBootstrap:
         lines.append(engine(_C_BOARD_REGRESSION, suffix=ti))
         lines.append(skill("/pm-wave-finish T-NNNN", "ticket 완료 기록 — 회귀+log+board+stage"))
         # ticket_finish 는 identity.task 있을 때만 회귀 cwd 를 해소한다 —
-        # task 세션은 `--task` 를 실어야 slot/solo 로 오해소하지 않는다(다른 task backbone 과 동형).
+        # task 세션은 `--task` 를 실어야 slot 축으로 오해소하지 않는다(다른 task backbone 과 동형).
         lines.append(engine(
             _C_TICKET_FINISH,
             "스킬이 부르는 내부 엔진·직접 금지 — 내부서 board.py complete 수행",
@@ -5587,7 +5632,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="pytest 회귀 측정 opt-in (default skip — handoff entry 가 숫자를 기록한다고 가정).",
     )
-    # ── multi-PM 모드 (0011) — 무인자(솔로)면 미사용·현행 보존 ──
+    # ── multi-PM 모드 (0011) — 무인자면 자동해소·현행 보존 ──
     # positional `repo`(nargs="?") — handoff rewriter 산출 `/pm-bootstrap <repo> --slot N`
     # (pm_handoff.py `_inject_slot_into_template`)을 raw CLI 가 그대로 수용하기 위한 흡수구
     # canonical 이 분해형 `--repo/--slot`
@@ -5660,7 +5705,6 @@ def _main(argv: list[str] | None = None) -> int:
     # guarded 자동바인딩 — `--repo`/`--slot` 둘 다 없는 bare 무인자 호출에서,
     # `_resolve_session_slot` 으로 repo-안 default-1 규칙(slot1>단독>fail-loud)으로 해소한다.
     #   - 해소(`(repo,N)`) → 그 슬롯에 자동 bind(기존 `--slot` bind 경로 재사용·세션=`<repo>_<N>`).
-    #   - None(solo·멀티-PM 미셋업) → 현행 솔로(무변경·자동바인딩 없음).
     #   - SlotResolutionError(멀티-PM 셋업 모호) → 침묵 폴백 대신 명시 에러(`--repo`/`--slot` 안내).
     # 명시 `--repo`/`--slot` 경로는 이 분기를 타지 않아 무변경. **`--task` 단독은 자동바인딩 제외**
     # task 는 슬롯 0개로 시작 가능해야 하므로 슬롯 자동해소를 태우지 않는다(auto-task

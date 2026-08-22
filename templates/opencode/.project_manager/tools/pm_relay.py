@@ -253,7 +253,7 @@ def build_bootstrap_prompt(
     재진입 프롬프트에 실값으로 박아, 컨텍스트 한계로 회전된 새 PM 세션이 같은 task 를 재바인딩
     (resume)하게 한다. cwd/env 추론()은 기각("cwd 는 해소에 참여하지 않는다"·"cwd/env
     추론 금지"와 모순) — 정체성은 per-call 명시 전달이다. task 슬롯 0개 엣지에서도 (b)만
-    동작한다. task 없으면(슬롯/솔로) bare `/pm-bootstrap`(현행·byte-동일)."""
+    동작한다. task 없으면(슬롯 축) bare `/pm-bootstrap`(현행·byte-동일)."""
     cmd = entry or _runtime_skill_entry("pm-bootstrap")
     if task:
         cmd += f" --task {task}"
@@ -264,7 +264,7 @@ def build_bootstrap_prompt(
     )
 
 
-# 기본(task 무·슬롯/솔로) 재진입 프롬프트 — 현행 bare `/pm-bootstrap` 프롬프트와 byte-동일.
+# 기본(task 무·슬롯 축) 재진입 프롬프트 — 현행 bare `/pm-bootstrap` 프롬프트와 byte-동일.
 BOOTSTRAP_PROMPT = build_bootstrap_prompt(entry="/" + "pm-bootstrap")
 
 # 종료 명령 — supervisor 루프를 끝낸다(EOF 와 동치).

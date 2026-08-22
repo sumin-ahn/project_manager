@@ -35,7 +35,7 @@ python3 .project_manager/tools/board.py new "<한 줄 제목>" \
   --role architect`로 라운드 파일을 준비·회수한다. 이 draft 경로는 board-git sync 0회이며 promote가
   출하를 소유한다. draft에서 developer/code-reviewer 라운드 준비는 거부된다. 라운드 디렉터리
   `tickets/rounds/<T-NNNN>/`는 티켓 상태 이동을 따라가지 않으므로 promote 뒤에도 같은 자리다.
-- solo/legacy(board 비-git) 형상: draft 격리가 없어 곧바로 `open/`에 발행된다.
+- legacy(board 비-git) 형상: draft 격리가 없어 곧바로 `open/`에 발행된다.
 - `--touches`: 작업 범위 및 다른 슬롯과의 충돌 평가용.
 - `--prefix`: 작업 카테고리(자유 입력). multi-repo(등록 repo ≥2)에서는 필수다(네임스페이스).
 - `--design`: 설계 단계 상태. 값은 `required` / `done` / `"waived: <사유>"` / `n/a` 네 형식이며(§3 표), 인식 불가한 값은 발행 전에 거부된다. 생략 시 `--estimate large`면 `required`, 그 외는 `n/a`로 박힌다. 설계 검증이 필요하다고 판단하면 small/medium에도 `--design required`로 명시 지정한다.
@@ -63,4 +63,4 @@ python3 .project_manager/tools/board.py promote <T-NNNN>
 - `promote`는 승격 전 본문을 재검사한다. placeholder(5절 뼈대 문장·`xxxxx`·`T-XXXX` 등)나 누락 표준 절이 있으면 **거부**(rc=1)하고 이슈를 나열한다. 설계 절 뼈대는 이 5절 집합과 **별도 집합**이라 `design: required|done` 티켓에만 적용된다 — `n/a`·`waived`는 뼈대가 남아 있어도 통과한다. draft는 `.drafts/`에 남으므로 더 채운 뒤 재시도한다.
 - `design: required`는 설계 절을 다 채웠어도 promote가 거부한다. **설계 검토 완료(`design: done` 또는 `waived`)가 open 진입 조건**이기 때문이다.
 - 통과하면 draft → `open/` 이동 + board-git 커밋(공유 board에 등장) 후 claim 가능해진다.
-- solo/legacy에서는 `promote`가 사실상 no-op(이미 open)이지만 검증은 `lint`로 실행한다.
+- legacy(board 비-git)에서는 `promote`가 사실상 no-op(이미 open)이지만 검증은 `lint`로 실행한다.

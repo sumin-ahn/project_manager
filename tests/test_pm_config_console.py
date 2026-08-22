@@ -683,7 +683,7 @@ def test_console_autoloads_engines_when_not_injected(pc, monkeypatch, capsys):
 # `area_owner` 자체 파싱(`_distinct_area_owners`)으로 판정한다 — 최소 신호만(board 격리 판정 무복제).
 # ════════════════════════════════════════════════════════════════════════
 
-_MARK_SOLO = "세션격리(registry/area_owner 기준): solo"
+_MARK_SOLO = "세션격리(registry/area_owner 기준): single-user"
 _MARK_STRICT = "세션격리(registry/area_owner 기준): strict"
 _MARK_DEGRADE = "degrade-risk"          # degrade 상태 전용 토큰(strict/solo 문구엔 부재)
 _MARK_AUTHORITATIVE = "board list --mine"   # authoritative 신호 pointer (전 상태 노출·오안심 방지)
@@ -702,7 +702,7 @@ def _status_out(pc, monkeypatch, capsys, *, user, area_owners):
     return capsys.readouterr().out
 
 
-def test_status_surface_solo(pc, monkeypatch, capsys):
+def test_status_surface_single_user(pc, monkeypatch, capsys):
     """단일사용자(distinct area_owner ≤1) → solo·resolved user 노출·degrade-risk 아님.
 
     should-fix: 무조건 "정상" 단언 금지 + registry coarse 신호 명시 + authoritative pointer 노출."""
@@ -733,7 +733,7 @@ def test_status_surface_degrade_with_remedy(pc, monkeypatch, capsys):
     assert _MARK_AUTHORITATIVE in out        # authoritative 신호 pointer 노출
 
 
-def test_status_surface_solo_unresolved_user_not_falsely_reassure(pc, monkeypatch, capsys):
+def test_status_surface_single_user_unresolved_user_not_falsely_reassure(pc, monkeypatch, capsys):
     """solo + 정체성 미해소 → registry 기준 solo(격리 판정 아님)이되 "정상" 오안심 없이 한계·
     authoritative pointer 노출(should-fix). solo 는 remedy 로 nag 하지 않되 warn 확인처는 가리킨다."""
     out = _status_out(pc, monkeypatch, capsys, user=None, area_owners=0)

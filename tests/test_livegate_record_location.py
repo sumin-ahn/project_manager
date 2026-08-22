@@ -187,26 +187,26 @@ def test_record_writes_to_hook_read_location_not_called_copy(tmp_path, monkeypat
 # ── ② 단일-repo/솔로 폴백: 훅 없음 → 현행 REPO/.local (채택자 무변경) ─────────
 
 @_git_required
-def test_resolve_solo_no_hookspath_falls_back_to_repo_local(tmp_path, monkeypatch):
+def test_resolve_no_hookspath_falls_back_to_repo_local(tmp_path, monkeypatch):
     """`core.hooksPath` 미설정(단일-repo/솔로) → LIVEGATE_FLAG(REPO/.local) 폴백·mode solo."""
     mod, engine, worktree, hooks_dir = _make_topology(
         tmp_path, monkeypatch, with_hookspath=False)
 
     flag, mode = mod._resolve_livegate_flag(str(worktree))
 
-    assert mode == mod._LG_SOLO
+    assert mode == mod._LG_NO_HOOK
     assert flag == mod.LIVEGATE_FLAG
 
 
 @_git_required
-def test_resolve_hookspath_without_engine_root_is_solo_not_broken(tmp_path, monkeypatch):
+def test_resolve_hookspath_without_engine_root_is_no_hook_not_broken(tmp_path, monkeypatch):
     """`core.hooksPath` 는 있으나 engine-root sidecar 부재(예: PM 홈 R8 회귀 훅) → solo(오탐 fail-loud 방지)."""
     mod, engine, worktree, hooks_dir = _make_topology(
         tmp_path, monkeypatch, write_engine_root=False)
 
     flag, mode = mod._resolve_livegate_flag(str(worktree))
 
-    assert mode == mod._LG_SOLO, "livegate 훅 아닌 hooksPath 를 broken 으로 오탐하면 안 됨"
+    assert mode == mod._LG_NO_HOOK, "livegate 훅 아닌 hooksPath 를 broken 으로 오탐하면 안 됨"
     assert flag == mod.LIVEGATE_FLAG
 
 
@@ -293,7 +293,7 @@ def test_hook_body_shares_engine_root_livegate_convention():
 
 
 @_git_required
-def test_resolve_livegate_flag_solo_when_not_git_repo(tmp_path, monkeypatch):
+def test_resolve_livegate_flag_no_hook_when_not_git_repo(tmp_path, monkeypatch):
     """비-git 경로(git config 실패) → solo 폴백(비-repo·격리 환경 graceful).
 
     `_git_config_get` 이 실 git 바이너리를 호출하므로 git 없는 러너에선 skip(FileNotFoundError
@@ -308,7 +308,7 @@ def test_resolve_livegate_flag_solo_when_not_git_repo(tmp_path, monkeypatch):
 
     flag, mode = mod._resolve_livegate_flag(str(tmp_path / "nonrepo"))
 
-    assert mode == mod._LG_SOLO
+    assert mode == mod._LG_NO_HOOK
     assert flag == mod.LIVEGATE_FLAG
 
 

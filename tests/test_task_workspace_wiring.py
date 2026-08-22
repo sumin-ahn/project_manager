@@ -224,7 +224,7 @@ def test_livegate_record_non_task_cwd_remains_override(board, monkeypatch, tmp_p
     monkeypatch.setattr(
         board,
         "_resolve_livegate_flag",
-        lambda cwd: (board.LIVEGATE_FLAG, board._LG_SOLO),
+        lambda cwd: (board.LIVEGATE_FLAG, board._LG_NO_HOOK),
     )
 
     assert board.cmd_livegate(_lg_args(cwd=str(target))) == 0

@@ -245,8 +245,10 @@ def test_interactive_run_prompt_goes_to_stdout_not_log(handoff, tmp_path, capsys
         log_file=log_file,
         pm_state_file=state_file,
         pm_playbook_file=playbook_file,
+        dashboard_file=tmp_path / "dashboard.md",
     )
-    rc = inst.run(session_num=5, wave_summary="ws", dry_run=False, skip_pytest=True, user_ack="solo")
+    rc = inst.run(session_num=5, wave_summary="ws", dry_run=False, skip_pytest=True,
+                  worktree_slot="work/proj_1", user_ack="proj_1")
     assert rc == 0
     out = capsys.readouterr().out
     # 인계 프롬프트는 stdout 으로 나간다 ([5/7]).

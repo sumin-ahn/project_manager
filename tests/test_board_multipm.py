@@ -1220,9 +1220,10 @@ def test_session_name_required_fail_loud_carries_explicit_identity_remedy(board,
                        "session=pm\n")
     with pytest.raises(SystemExit) as exc:
         board.session_name(required=True)
-    assert str(exc.value) == (
-        "[중단] 세션 미해소 — 활성 슬롯이 여럿이거나 바인딩이 없다. 귀속 조작은 "
-        "`--repo <repo> --slot <N>` 로 세션을 명시하라 (예: `--repo project_manager --slot 1`).")
+    assert str(exc.value) == board.UNREGISTERED_SESSION_ABORT
+    assert "--repo <repo> --slot <N>" in str(exc.value)
+    # 미등록 홈(행 0)에는 마이그레이션 처방이 함께 나온다 — 조용한 폴백이 없으므로 처방이 필수다.
+    assert "pm-update" in str(exc.value)
 
 
 def test_session_name_solo_unbound_returns_none(board, monkeypatch):
@@ -1269,36 +1270,38 @@ def test_session_name_required_resolves_does_not_exit(board, monkeypatch):
     assert board.session_name(required=True) == "only_1"
 
 
-# ── 단일-등록 유도 (T-0792 — fresh 솔로 채택자의 bare claim 미해소 복원) ─────────
-# areas.md 등록 repo 가 정확히 1개 && lease 장부에 행이(상태 무관) 하나도 없으면 `<repo>_1`.
-# 장부에 행이 하나라도 있으면(idle 포함·풀 형상) 이 층은 발화하지 않고 종전 미해소로 떨어진다.
+# ── 등록은 장부 행이 한다 (유도 층 폐지) ─────────
+# 등록 repo 수와 무관하게 "장부 행 0" 에서 세션 이름을 만들지 않는다. 슬롯을 하나만 쓰는 홈도
+# 자기 자신을 가리키는 N=1 행으로 등록되고, 그 행이 단일-lease 층에서 해소된다.
 
 
-def test_session_name_single_registration_resolves_when_ledger_absent(board, monkeypatch):
-    """등록 repo 1개 + 장부 파일 자체가 없음(fresh import 실측 재현) → `<repo>_1` 유도."""
+def test_session_name_zero_rows_stays_unresolved_even_with_single_registration(
+        board, monkeypatch):
+    """등록 repo 1개 + 장부 부재 → 미해소. 유도 층을 되살리면 이 단언이 red."""
     _clear_env(monkeypatch)
     board.areas_append("SOLO", "단일", "alice", repo="solo")
-    assert board.session_name() == "solo_1"
-
-
-def test_session_name_single_registration_resolves_when_ledger_empty_list(board, monkeypatch):
-    """등록 repo 1개 + 장부는 있으나 `leases` 행이 0개(명시 빈 배열) → 동일 유도."""
-    _clear_env(monkeypatch)
-    board.areas_append("SOLO", "단일", "alice", repo="solo")
-    _write_ledger(board)
-    assert board.session_name() == "solo_1"
-
-
-def test_session_name_single_registration_skipped_when_pool_row_idle(board, monkeypatch):
-    """등록 repo 1개 + 장부에 idle 행이라도 1개 있으면(풀 형상) 이 층은 건너뛰고 미해소."""
-    _clear_env(monkeypatch)
-    board.areas_append("SOLO", "단일", "alice", repo="solo")
-    _write_ledger(board, {"session": "stale_9", "state": "idle"})
     assert board.session_name() is None
 
 
-def test_session_name_single_lease_layer_wins_over_single_registration(board, monkeypatch):
-    """장부에 leased 행이 정확히 1개면 그 값(단일-lease 층)이 단일-등록 유도보다 우선."""
+def test_session_name_zero_rows_empty_list_stays_unresolved(board, monkeypatch):
+    """등록 repo 1개 + `leases` 빈 배열 → 미해소(부재와 같은 판정)."""
+    _clear_env(monkeypatch)
+    board.areas_append("SOLO", "단일", "alice", repo="solo")
+    _write_ledger(board)
+    assert board.session_name() is None
+
+
+def test_session_name_home_row_resolves_registered_home(board, monkeypatch):
+    """홈 자신을 가리키는 N=1 행(`slot="."`) → 그 행의 session 으로 해소(단일-lease 층)."""
+    _clear_env(monkeypatch)
+    board.areas_append("SOLO", "단일", "alice", repo="solo")
+    _write_ledger(board, {"slot": ".", "repo": "solo", "session": "solo_1"})
+    assert board.session_name() == "solo_1"
+    assert board.session_name(required=True) == "solo_1"
+
+
+def test_session_name_single_lease_layer_resolves(board, monkeypatch):
+    """장부에 leased 행이 정확히 1개면 그 값이 세션이다."""
     _clear_env(monkeypatch)
     board.areas_append("SOLO", "단일", "alice", repo="solo")
     _write_ledger(board, {"session": "other_1"})
@@ -1306,41 +1309,31 @@ def test_session_name_single_lease_layer_wins_over_single_registration(board, mo
 
 
 def test_session_name_two_registrations_stay_unresolved(board, monkeypatch):
-    """등록 repo 2개(장부는 부재/0행) → 단일-등록 유도 미발화 → None."""
+    """등록 repo 2개(장부는 부재/0행) → 미해소."""
     _clear_env(monkeypatch)
     board.areas_append("PAY", "결제", "alice", repo="pay")
     board.areas_append("SHIP", "배송", "bob", repo="ship")
     assert board.session_name() is None
 
 
-def test_session_name_env_beats_single_registration(board, monkeypatch):
-    """등록 repo 1개 + 장부 0행이라도 env 가 있으면 env 승(우선순위 불변)."""
+def test_session_name_env_beats_ledger_row(board, monkeypatch):
+    """장부 행이 있어도 env 가 있으면 env 승(우선순위 불변)."""
     monkeypatch.setenv("PM_SESSION_NAME", "from-pm-env")
     board.areas_append("SOLO", "단일", "alice", repo="solo")
+    _write_ledger(board, {"slot": ".", "repo": "solo", "session": "solo_1"})
     assert board.session_name() == "from-pm-env"
 
 
-def test_session_name_override_beats_single_registration(board, monkeypatch):
-    """등록 repo 1개 + 장부 0행이라도 override 인자가 있으면 override 승(해소 0층 불변)."""
+def test_session_name_override_beats_ledger_row(board, monkeypatch):
+    """장부 행이 있어도 override 인자가 있으면 override 승(해소 0층 불변)."""
     _clear_env(monkeypatch)
     board.areas_append("SOLO", "단일", "alice", repo="solo")
+    _write_ledger(board, {"slot": ".", "repo": "solo", "session": "solo_1"})
     assert board.session_name("explicit") == "explicit"
 
 
-def test_session_name_required_resolves_via_single_registration_does_not_exit(board, monkeypatch):
-    """required=True + 단일-등록 유도가 해소되면 fail-loud 없이 그 값 반환."""
-    _clear_env(monkeypatch)
-    board.areas_append("SOLO", "단일", "alice", repo="solo")
-    assert board.session_name(required=True) == "solo_1"
-
-
-def test_session_name_required_fail_loud_when_pool_rows_exist_despite_single_registration(
-        board, monkeypatch):
-    """역가드: 등록 repo 1개라도 장부에 행이 있으면(풀 보유 홈) required=True 는 여전히 fail-loud.
-
-    새 층이 "장부 부재/0행"이 아니라 "행이 있는" 형상까지 느슨해지지 않았음을 못박는다
-    (adopter#0 홈·multi-PM 처럼 등록 1·리스 다수인 홈이 오귀속으로 새지 않음의 축소판).
-    """
+def test_session_name_required_fail_loud_when_rows_are_ambiguous(board, monkeypatch):
+    """등록 repo 1개라도 leased 행이 그 세션을 특정하지 못하면 required=True 는 fail-loud."""
     _clear_env(monkeypatch)
     board.areas_append("SOLO", "단일", "alice", repo="solo")
     _write_ledger(board, {"session": "stale_9", "state": "idle"})
@@ -1348,15 +1341,13 @@ def test_session_name_required_fail_loud_when_pool_rows_exist_despite_single_reg
         board.session_name(required=True)
 
 
-# ── 손상 장부 board-level 역가드 (F-001 · 리뷰 라운드 03 must-fix) ─────────────────
-# 등록 repo 1개(단일-등록 유도 조건 성립)라도 장부가 **손상**(읽기실패·JSON파손·스키마불일치)
-# 이면 "확인된 0행"이 아니므로 이 층은 발화하지 않고 종전대로 미해소로 떨어져야 한다 — 손상=
-# unknown 을 빈=known-0 과 접으면(리뷰 재현) 실제로 풀 행을 보유했던 홈도 장부가 손상되는
-# 순간 `<repo>_1` 로 오해소돼 silent 오귀속이 난다.
+# ── 손상 장부 board-level 역가드 ─────────────────
+# 장부가 **손상**(읽기실패·JSON파손·스키마불일치)이면 행을 못 읽으므로 미해소로 떨어진다 —
+# 손상을 "행 0" 으로 접어 이름을 지어내면 실제로 풀 행을 보유했던 홈이 오귀속된다.
 
 
 def test_session_name_corrupt_json_ledger_stays_unresolved(board, monkeypatch):
-    """손상 3형 ① JSON 파손 — 등록 1개라도 required=False 는 None(발화 안 함)."""
+    """손상 3형 ① JSON 파손 — required=False 는 None(이름을 지어내지 않는다)."""
     _clear_env(monkeypatch)
     board.areas_append("SOLO", "단일", "alice", repo="solo")
     board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -1365,11 +1356,7 @@ def test_session_name_corrupt_json_ledger_stays_unresolved(board, monkeypatch):
 
 
 def test_session_name_corrupt_json_ledger_fail_loud_when_required(board, monkeypatch):
-    """손상 3형 ① JSON 파손 — required=True 는 fail-loud(SystemExit) — 오귀속 rc0 금지.
-
-    리뷰 라운드 03 재현의 직접 반증: 수정 전엔 이 손상 형상에서 `session_name(required=True)`
-    가 `'solo_1'` 을 냈고 `cmd_claim` 이 rc=0 으로 오귀속 기록했다.
-    """
+    """손상 3형 ① JSON 파손 — required=True 는 fail-loud(SystemExit) — 오귀속 rc0 금지."""
     _clear_env(monkeypatch)
     board.areas_append("SOLO", "단일", "alice", repo="solo")
     board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)

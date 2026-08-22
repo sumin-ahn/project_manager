@@ -1,4 +1,4 @@
-"""per-slot pm_state 경로 해소 + graceful 마이그레이션 + 솔로 폴백 (T-0166·ADR-0033 §3.1).
+"""per-slot pm_state 경로 해소 + graceful 마이그레이션 + 미해소 fail-loud (T-0166·ADR-0033 §3.1).
 
 pm_state 를 *슬롯별*로 분리한다 — multi-PM 연속성(여러 PM 슬롯이 한 clone 공유 보드 위에서
 각자 핸드오프 상태 유지·spike §1.3·§3.1). 경로 = `.project_manager/.local/slots/<slot>/pm_state.md`
@@ -6,7 +6,7 @@ pm_state 를 *슬롯별*로 분리한다 — multi-PM 연속성(여러 PM 슬롯
 
 검증 세 축 (pm_handoff·pm_bootstrap):
   - **per-slot read/write**: 슬롯 해소(`<repo>_<N>`) → `.local/slots/<slot>/pm_state.md`.
-  - **솔로 폴백**: 슬롯 미해소(`_auto_slot` None) → legacy `wiki/pm_state.md`(현행 무변경).
+  - **미해소 fail-loud**: 슬롯 미해소(`_auto_slot` None) → 경로를 지어내지 않고 중단.
   - **graceful 마이그레이션**: legacy 존재 + slot 경로 부재 → 첫 접근 시 slot 경로로 이동.
 
 **hermetic 필수**: 각 도구의 모듈-레벨 `REPO`(import 시점 굳음)를 tmp 로 monkeypatch 한 fresh
@@ -94,8 +94,8 @@ def test_resolve_state_slot_auto_single_self_host(hf):
     assert hf._resolve_state_slot() == "project_manager_1"
 
 
-def test_resolve_state_slot_solo_returns_none(hf):
-    """등록 repo 0개(솔로/미분리·areas 부재) → None (legacy 폴백 신호)."""
+def test_resolve_state_slot_unregistered_returns_none(hf):
+    """등록 repo 0개(미분리·areas 부재) → None (미해소 신호)."""
     assert hf._resolve_state_slot() is None
 
 
@@ -182,9 +182,10 @@ def test_pm_state_path_idle_slot1_routes_to_slot2_per_slot(hf):
 
 # ── _pm_state_path: per-slot / 솔로 폴백 / graceful 마이그레이션 ──────────────
 
-def test_pm_state_path_solo_is_legacy(hf):
-    """슬롯 미해소(솔로) → legacy `wiki/pm_state.md` (현행 무변경)."""
-    assert hf._pm_state_path() == _legacy(hf)
+def test_pm_state_path_unresolved_fails_loud(hf):
+    """슬롯 미해소 → 경로를 지어내지 않고 fail-loud(legacy 목적지 없음)."""
+    with pytest.raises(hf.identity_args.SlotResolutionError):
+        hf._pm_state_path()
 
 
 def test_pm_state_path_slot_resolves_to_local_slots(hf):
@@ -315,23 +316,24 @@ def test_pm_state_path_default_1_routes_to_slot1_not_legacy(hf):
     assert resolved != _legacy(hf), "continuity 가 없는 legacy 로 새면 안 됨(이 갭의 회귀)."
 
 
-def test_pm_state_path_truly_ambiguous_falls_back_to_legacy_display(hf):
-    """`{2,3}`(진짜 모호) → display/preview fail-soft 로 legacy 표기 (write 는 run() 가드가 막음)."""
+def test_pm_state_path_truly_ambiguous_fails_loud(hf):
+    """`{2,3}`(진짜 모호) → 미해소와 같은 중단 (어느 슬롯 상태인지 지어내지 않는다)."""
     _write_areas(hf._tmp / ".project_manager" / "areas.md")
     _write_leases_multi(
         hf._tmp / ".project_manager" / ".local" / "worktree-leases.json",
         "project_manager", [2, 3])
-    # SlotResolutionError catch → None → legacy(display fail-soft·크래시 안 함).
-    assert hf._pm_state_path() == _legacy(hf)
+    with pytest.raises(hf.identity_args.SlotResolutionError):
+        hf._pm_state_path()
 
 
-def test_pm_state_path_solo_does_not_touch_legacy(hf):
-    """솔로(슬롯 미해소) + legacy 존재 → legacy 그대로(마이그레이션 안 함·무변경)."""
+def test_pm_state_path_unresolved_does_not_touch_legacy(hf):
+    """슬롯 미해소 + legacy 존재 → 중단하고 legacy 는 손대지 않는다(부작용 0)."""
     legacy = _legacy(hf)
     legacy.parent.mkdir(parents=True, exist_ok=True)
-    legacy.write_text("솔로 상태", encoding="utf-8")
-    assert hf._pm_state_path() == legacy
-    assert legacy.exists() and legacy.read_text(encoding="utf-8") == "솔로 상태"
+    legacy.write_text("이전 상태", encoding="utf-8")
+    with pytest.raises(hf.identity_args.SlotResolutionError):
+        hf._pm_state_path()
+    assert legacy.exists() and legacy.read_text(encoding="utf-8") == "이전 상태"
 
 
 # ── incidental(회귀 cwd) fail-soft 무변경 재확인 (T-0178 should-fix·continuity 와 비대칭) ──
@@ -386,9 +388,9 @@ def bs(tmp_path, monkeypatch):
     return mod
 
 
-def test_bootstrap_display_path_solo_is_legacy(bs):
-    """슬롯 미해소(솔로) → 안내 경로 = `pm_state.md`(현행 짧은 표기·무변경)."""
-    assert bs._pm_state_display_path() == "pm_state.md"
+def test_bootstrap_display_path_unresolved_is_marker(bs):
+    """슬롯 미해소 → 안내 경로 대신 미확정 표기(존재하지 않는 legacy 경로를 가리키지 않는다)."""
+    assert bs._pm_state_display_path() == bs._PM_STATE_UNRESOLVED_DISPLAY
 
 
 def test_bootstrap_display_path_single_self_host_is_per_slot(bs):
@@ -412,11 +414,11 @@ def test_bootstrap_instance_display_path_uses_bound_slot(bs):
         ".project_manager/.local/slots/project_manager_5/pm_state.md"
 
 
-def test_bootstrap_instance_display_path_solo_legacy(bs):
-    """인스턴스 솔로(_bound_slot None·자동해소 None) → legacy 표기(무변경)."""
+def test_bootstrap_instance_display_path_unresolved_marker(bs):
+    """인스턴스 미해소(_bound_slot None·자동해소 None) → 미확정 표기."""
     inst = bs.PmBootstrap(areas_file=bs._tmp / ".project_manager" / "nonexistent-areas.md")
     inst._bound_slot = None
-    assert inst._pm_state_display_path() == "pm_state.md"
+    assert inst._pm_state_display_path() == bs._PM_STATE_UNRESOLVED_DISPLAY
 
 
 def test_resolve_pm_state_bound_slot_no_legacy_fallback(bs, monkeypatch):
@@ -489,15 +491,15 @@ def test_bootstrap_markdown_first_turn_shows_per_slot_path(bs, monkeypatch):
     assert "세션 식별" in md
 
 
-def test_bootstrap_markdown_first_turn_solo_legacy_path(bs):
-    """솔로(슬롯 미해소) → 첫-turn 안내가 현행 `pm_state.md` 표기(무변경)."""
+def test_bootstrap_markdown_first_turn_unresolved_marker(bs):
+    """슬롯 미해소 → 첫-turn 안내가 미확정 표기(없는 legacy 경로를 가리키지 않는다)."""
     inst = bs.PmBootstrap(areas_file=bs._tmp / ".project_manager" / "areas.md")
     inst._bound_slot = None
     board = {"counts": {"done": 0, "open": 0, "claimed": 0, "blocked": 0},
              "open_tickets": [], "lint": "clean"}
     git = {"branch": "main", "commits": [], "no_commits": True, "working_tree": "clean"}
     md = inst._build_markdown(board, None, git, None, "2026-06-27 00:00 KST")
-    assert "pm_state.md \"세션 식별\"" in md
+    assert bs._PM_STATE_UNRESOLVED_DISPLAY in md
     assert ".local/slots/" not in md
 
 
@@ -584,10 +586,13 @@ def test_run_migrates_legacy_then_writes_per_slot(hf):
     assert not legacy.exists(), "legacy → slot 경로로 *이동*(마이그레이션) 후 원본 제거."
 
 
-def test_run_solo_writes_legacy_unchanged(hf):
-    """run() 솔로(슬롯 미해소·areas/leases 부재) → legacy `wiki/pm_state.md` write(현행 무변경)."""
+def test_run_unregistered_home_aborts_without_touching_legacy(hf):
+    """run() 미등록 홈(장부 행 0) → 중단(rc1) · legacy pm_state 무접촉.
+
+    슬롯 행이 없으면 어느 슬롯의 연속성인지 모른다 — 조용히 legacy 에 쓰던 자리를 fail-loud 로
+    바꾼 BREAKING 지점이다(마이그레이션 안내가 메시지에 있다).
+    """
     tmp = hf._tmp
-    # 단일 self-host 형상을 *깔지 않음* → _auto_slot None → 솔로.
     log_file = tmp / "log.md"; log_file.write_text("# log\n", encoding="utf-8")
     playbook_file = tmp / "playbook.md"; playbook_file.write_text("# pb\n", encoding="utf-8")
     legacy = _legacy(hf)
@@ -599,11 +604,39 @@ def test_run_solo_writes_legacy_unchanged(hf):
         run_git_fn=lambda args: (0, ""),
         log_file=log_file, pm_playbook_file=playbook_file,
     )
-    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=True, user_ack="solo")
-    assert rc == 0
-    # 솔로 → legacy 에 써지고 slot 경로는 안 생긴다.
-    assert "**4차**" in legacy.read_text(encoding="utf-8")
+    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=True,
+                  user_ack="proj_1")
+    assert rc == 1
+    assert legacy.read_text(encoding="utf-8") == _SESSION_SECTION
     assert not _slot_path(hf).exists()
+
+
+def test_run_home_row_migrates_legacy_to_per_slot(hf):
+    """run() 등록된 홈(N=1 행) → legacy `wiki/pm_state.md` 가 per-slot 경로로 **이동**한다.
+
+    사용자 가시 이행 ① — git-tracked legacy 파일이 사라지고 gitignored per-slot 경로가 생긴다.
+    """
+    tmp = hf._tmp
+    _make_single_self_host(tmp)
+    log_file = tmp / "log.md"; log_file.write_text("# log\n", encoding="utf-8")
+    playbook_file = tmp / "playbook.md"; playbook_file.write_text("# pb\n", encoding="utf-8")
+    legacy = _legacy(hf)
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(_SESSION_SECTION, encoding="utf-8")
+
+    inst = hf.PmHandoff(
+        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("skip")),
+        run_git_fn=lambda args: (0, ""),
+        log_file=log_file, pm_playbook_file=playbook_file,
+    )
+    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=True,
+                  user_ack="project_manager_1")
+    assert rc == 0
+    slot_state = _slot_path(hf)
+    assert slot_state.exists() and "**4차**" in slot_state.read_text(encoding="utf-8")
+    assert not legacy.exists()
+    # 사용자 가시 이행 ② — 헤더가 무태그가 아니라 슬롯 태그를 단다.
+    assert "(project_manager_1) → 다음 PM 세션" in log_file.read_text(encoding="utf-8")
 
 
 def test_run_explicit_pm_state_not_redirected_to_slot(hf, tmp_path):
@@ -620,7 +653,8 @@ def test_run_explicit_pm_state_not_redirected_to_slot(hf, tmp_path):
         log_file=log_file, pm_playbook_file=playbook_file,
         pm_state_file=explicit,  # 명시 주입.
     )
-    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=True, user_ack="solo")
+    rc = inst.run(session_num=4, wave_summary="신규", dry_run=False, skip_pytest=True,
+                  worktree_slot="work/project_manager_1", user_ack="project_manager_1")
     assert rc == 0
     # 명시 경로에 써지고 slot 경로로 redirect 안 됨.
     assert "**4차**" in explicit.read_text(encoding="utf-8")
@@ -742,9 +776,9 @@ _MULTI_SLOT_LOG = (
 
 # ── _session_owns_untagged: 무태그 귀속 판정 (솔로/slot-1 만) ─────────────────
 
-def test_session_owns_untagged_solo_and_slot1(bs):
-    """무태그 entry 는 솔로(None)/slot-1(`<repo>_1`) 만 자기 것으로 본다."""
-    assert bs._session_owns_untagged(None) is True
+def test_session_owns_untagged_slot1_only(bs):
+    """무태그 entry 는 slot-1(`<repo>_1`) 만 자기 것으로 본다 — 미해소(None)는 소유 없음."""
+    assert bs._session_owns_untagged(None) is False
     assert bs._session_owns_untagged("project_manager_1") is True
 
 
@@ -1149,13 +1183,13 @@ def test_collect_log_entry_fresh_slot_no_reattach_leak(bs, tmp_path):
 
 # ── should-fix: 정규식 태그 캡처를 canonical `<repo>_<N>` 로 제약 (서술형 괄호 오캡처 방지) ──
 
-def test_handoff_regex_ignores_descriptive_parens_for_solo(bs):
-    """should-fix: 서술형 괄호(`PM 4차 (아침 대화)`)는 세션 태그로 오인 안 됨 — 솔로가 소유(drop 0)."""
-    log = "## [2026-07-10] handoff | PM 4차 (아침 대화) → 다음 PM 세션\n- 솔로 본문.\n"
-    # 솔로(bound None) — 서술형 괄호를 태그로 오캡처하면 drop 되어 None 이 됐을 것.
+def test_handoff_regex_ignores_descriptive_parens_when_untagged(bs):
+    """should-fix: 서술형 괄호(`PM 4차 (아침 대화)`)는 세션 태그로 오인 안 됨(drop 0)."""
+    log = "## [2026-07-10] handoff | PM 4차 (아침 대화) → 다음 PM 세션\n- 무태그 본문.\n"
+    # bound 미해소 — 서술형 괄호를 태그로 오캡처하면 drop 되어 None 이 됐을 것.
     assert bs.parse_last_handoff_session_num(log) == 4
     entry = bs.extract_slot_handoff_entry(log)
-    assert entry is not None and "솔로 본문" in entry["body"]
+    assert entry is not None and "무태그 본문" in entry["body"]
 
 
 def test_handoff_regex_canonical_tag_still_captured(bs):
@@ -1163,13 +1197,13 @@ def test_handoff_regex_canonical_tag_still_captured(bs):
     log = "## [2026-07-10] handoff | PM 4차 (project_manager_2) → 다음 PM 세션\n- t.\n"
     # 양성 슬롯(slot-2)은 자기 태그 소유 → 4. 태그 캡처가 정상 동작함을 이 단언이 입증한다.
     assert bs.parse_last_handoff_session_num(log, bound_session="project_manager_2") == 4
-    # 솔로/미해소(None)는 전역 tag-agnostic 파싱 → 태그된 4 도 차수로 복원(codex R4·차수 유실 금지).
+    # 미해소(None)는 전역 tag-agnostic 파싱 → 태그된 4 도 차수로 복원(codex R4·차수 유실 금지).
     assert bs.parse_last_handoff_session_num(log) == 4
 
 
 def test_handoff_regex_descriptive_parens_with_number_not_canonical(bs):
-    """서술형에 숫자가 있어도(`(회의 3)`) 후행 `_N` 없으면 태그 아님 — 솔로 소유."""
-    log = "## [2026-07-10] handoff | PM 5차 (회의 3) → 다음 PM 세션\n- 솔로.\n"
+    """서술형에 숫자가 있어도(`(회의 3)`) 후행 `_N` 없으면 태그 아님 — 무태그로 읽힌다."""
+    log = "## [2026-07-10] handoff | PM 5차 (회의 3) → 다음 PM 세션\n- 본문.\n"
     assert bs.parse_last_handoff_session_num(log) == 5
 
 
@@ -1331,7 +1365,12 @@ _MALFORMED_SESSION_SECTION = (
 
 
 def _write_legacy_state(hf, text: str) -> Path:
-    """솔로 legacy pm_state(`wiki/pm_state.md`)에 텍스트를 쓴다 (normalize CLI 대상)."""
+    """legacy pm_state(`wiki/pm_state.md`)에 텍스트를 쓴다 (normalize CLI 대상).
+
+    normalize 는 *해소된 슬롯*의 pm_state 를 대상으로 하므로 홈 슬롯 행도 함께 깐다 —
+    slot 경로가 아직 없고 legacy 가 있으면 읽기 위치는 legacy 그대로다(이동 없음).
+    """
+    _make_single_self_host(hf._tmp)
     p = _legacy(hf)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(text, encoding="utf-8")
@@ -1492,7 +1531,8 @@ def test_main_normalize_noop_on_clean_file(hf, capsys):
 
 
 def test_main_normalize_missing_file_is_noop(hf, capsys):
-    """대상 pm_state 부재(솔로·미생성) — 명시 안내 후 no-op(rc0·크래시 0)."""
+    """대상 pm_state 부재(미생성) — 명시 안내 후 no-op(rc0·크래시 0)."""
+    _make_single_self_host(hf._tmp)
     assert hf.main(
         ["--normalize-session-anchors"],
         identity_resolver=lambda: (_ for _ in ()).throw(
@@ -1503,7 +1543,7 @@ def test_main_normalize_missing_file_is_noop(hf, capsys):
 
 
 def test_main_normalize_targets_per_slot_pm_state(hf):
-    """--session <repo>_<N> → 해당 슬롯 pm_state 를 정규화(솔로 legacy 아님·per-slot 대상)."""
+    """--session <repo>_<N> → 해당 슬롯 pm_state 를 정규화(legacy 아님·per-slot 대상)."""
     _make_single_self_host(hf._tmp)
     sp = _slot_path(hf, "project_manager_1")
     sp.parent.mkdir(parents=True, exist_ok=True)

@@ -1070,7 +1070,7 @@ def _resolve_diff_root(
         return engine_repo.resolve()
 
     if not candidates:
-        # standalone/solo repo에는 lease 장부가 없다. 이 경우 명시 paths의 유일한 repo는
+        # 아직 슬롯 행이 없는 repo에는 lease 장부가 없다. 이 경우 명시 paths의 유일한 repo는
         # 엔진 자기 repo이며, PM-home 다중 슬롯 오해소와 구분된다.
         return engine_repo.resolve()
     # 슬롯 소유 근거가 되는 단계(`_slot_selection_bases`)만 순서대로 본다 — 암묵 폴백 단계는
@@ -1118,7 +1118,7 @@ def _normalize_review_paths(
             try:
                 value = absolute.relative_to(diff_root).as_posix()
             except ValueError:
-                # solo/legacy ticket은 이미 repo-relative touches를 저장한다.
+                # legacy ticket은 이미 repo-relative touches를 저장한다.
                 value = path.as_posix()
         else:
             value = path.as_posix()
@@ -1145,7 +1145,7 @@ def _scope_from_initial_pm_home(*, ticket_selected: bool, explicit_paths: bool) 
 # ticket touches 해소(`parse_ticket_touches`)가 wiki/ legacy 위치를 보면 *stale*(ticket 미발견
 # → 빈 touches)이다. external_review 는 board.py 를 import 하지 않으므로(YAML frontmatter 직접
 # 파싱), board.py 의 graceful 탐지를 *동형*으로 최소 복제한다 — board/tickets 가 실 디렉토리면
-# board/ 루트, 아니면 wiki/(legacy). 솔로/미분리면 현 위치 100% 폴백(회귀 0). 상수 TICKETS_DIR
+# board/ 루트, 아니면 wiki/(legacy). 미분리면 현 위치 100% 폴백(회귀 0). 상수 TICKETS_DIR
 # 는 hermetic 테스트 seam·legacy 기본값으로 유지.
 
 def _tickets_dir() -> Path:
@@ -1212,7 +1212,7 @@ def _pm_home_reanchor(anchor: Path) -> Path | None:
 
     2중 conjunction (오탐 0 지향·fail-soft): (1) anchor 가 실 board 소유(PM 홈) — worktree(코드
     전용·board 미소유)에서 실행하면 여기서 탈락해 None(정상·재지정 불요), (2) anchor 아래 canonical
-    코드 worktree(`work/<name>`) 존재. 솔로/일반 채택자(로컬 upstream 포함)는 (1) 또는 (2) 미충족으로
+    코드 worktree(`work/<name>`) 존재. 일반 채택자(로컬 upstream 포함)는 (1) 또는 (2) 미충족으로
     None(무영향)."""
     # external_review.main은 명시 selector 기반 diff_root 해소로 전환되어 이 헬퍼를 호출하지 않는다.
     # pm_delegate.check_write_target_reanchor가 adopter write-target 보호에 계속 사용하므로 유지한다.
@@ -2541,7 +2541,7 @@ def _inherit_legacy_round_entry(ledger: dict, gate: str) -> dict | None:
     앵커 이동(diff_root → 소유 PM 홈)의 마이그레이션이다 — 런타임 폴백(두 장부를 계속 합산)이
     아니라 원천 이관이라, 승계 뒤에는 PM 홈 장부가 유일한 진실이다(게이트당 1회·호출부가
     즉시 저장한다). 승계 대상은 **PM 홈에 아직 그 게이트가 없을 때**뿐이라 이미 이관된 게이트의
-    카운트를 옛 값으로 되돌리지 않는다. 두 앵커가 같은 실행(솔로·강등 폴백)은 대상이 아니다.
+    카운트를 옛 값으로 되돌리지 않는다. 두 앵커가 같은 실행(강등 폴백)은 대상이 아니다.
     """
     if gate in ledger:
         return None

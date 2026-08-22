@@ -1213,31 +1213,34 @@ def test_resolve_session_slot_sole_non1_slot(bootstrap, tmp_path):
     assert got == ("project_manager", 3)
 
 
-def test_resolve_session_slot_zero_repos_returns_none(bootstrap, tmp_path):
-    """등록 repo 0개(멀티-PM 미셋업) → None (solo·fail-soft·bare bootstrap 무변경)."""
-    got = _resolve(bootstrap, tmp_path, [], [_lease("project_manager", 1)])
-    assert got is None
+def test_resolve_session_slot_zero_repos_fails_loud(bootstrap, tmp_path):
+    """등록 repo 0개(셋업 전) → SlotResolutionError — 조용한 폴백 없이 셋업/명시를 요구한다."""
+    with pytest.raises(bootstrap.SlotResolutionError) as exc:
+        _resolve(bootstrap, tmp_path, [], [_lease("project_manager", 1)])
+    assert "등록 repo 0개" in str(exc.value)
 
 
-def test_resolve_session_slot_repo1_no_slots_returns_none(bootstrap, tmp_path):
-    """repo 1개지만 그 repo 슬롯 0개(셋업 미완) → None (solo·fail-soft)."""
-    got = _resolve(bootstrap, tmp_path, ["project_manager"], [])
-    assert got is None
+def test_resolve_session_slot_repo1_no_slots_fails_loud(bootstrap, tmp_path):
+    """repo 1개지만 그 repo 슬롯 0개 → SlotResolutionError(미등록 홈·마이그레이션 안내)."""
+    with pytest.raises(bootstrap.SlotResolutionError) as exc:
+        _resolve(bootstrap, tmp_path, ["project_manager"], [])
+    assert "활성 슬롯 0개" in str(exc.value) and "pm-update" in str(exc.value)
 
 
-def test_resolve_session_slot_missing_leases_returns_none(bootstrap, tmp_path):
-    """repo 1개 + 장부 부재 → None (solo·fail-soft·_auto_slot None 동형)."""
-    got = _resolve(bootstrap, tmp_path, ["project_manager"], None)
-    assert got is None
+def test_resolve_session_slot_missing_leases_fails_loud(bootstrap, tmp_path):
+    """repo 1개 + 장부 부재 → SlotResolutionError(등록 전 홈은 조용히 넘어가지 않는다)."""
+    with pytest.raises(bootstrap.SlotResolutionError):
+        _resolve(bootstrap, tmp_path, ["project_manager"], None)
 
 
-def test_resolve_session_slot_corrupt_leases_returns_none(bootstrap, tmp_path):
-    """repo 1개 + 깨진 JSON 장부 → None (fail-soft·크래시 안 함)."""
+def test_resolve_session_slot_corrupt_leases_fails_loud(bootstrap, tmp_path):
+    """repo 1개 + 깨진 JSON 장부 → SlotResolutionError(행 수를 모르면 지어내지 않는다)."""
     areas = tmp_path / "areas.md"
     leases = tmp_path / "worktree-leases.json"
     _write_areas(areas, ["project_manager"])
     leases.write_text("{not valid json", encoding="utf-8")
-    assert bootstrap._resolve_session_slot(areas_file=areas, leases_file=leases) is None
+    with pytest.raises(bootstrap.SlotResolutionError):
+        bootstrap._resolve_session_slot(areas_file=areas, leases_file=leases)
 
 
 def test_resolve_session_slot_two_repos_fails_loud(bootstrap, tmp_path):
@@ -1302,16 +1305,16 @@ def test_resolve_session_slot_both_leased_default_1(bootstrap, tmp_path):
     assert got == ("project_manager", 1)
 
 
-def test_resolve_session_slot_all_idle_returns_none(bootstrap, tmp_path):
-    """`{1:idle, 2:idle}`(활성 없음) → None (fail-soft·활성 세션 부재·솔로 폴백)."""
-    got = _resolve(bootstrap, tmp_path, ["project_manager"],
-                   [_lease("project_manager", 1, "idle"),
-                    _lease("project_manager", 2, "idle")])
-    assert got is None
+def test_resolve_session_slot_all_idle_fails_loud(bootstrap, tmp_path):
+    """`{1:idle, 2:idle}`(활성 없음) → SlotResolutionError(활성 슬롯 0개와 같은 판정)."""
+    with pytest.raises(bootstrap.SlotResolutionError):
+        _resolve(bootstrap, tmp_path, ["project_manager"],
+                 [_lease("project_manager", 1, "idle"),
+                  _lease("project_manager", 2, "idle")])
 
 
-def test_resolve_session_slot_solo_single_leased_unchanged(bootstrap, tmp_path):
-    """solo `{1:leased}` → (repo, 1) — 단일 활성 슬롯 불변(idle 필터가 solo 안 깸·재확인)."""
+def test_resolve_session_slot_single_leased_unchanged(bootstrap, tmp_path):
+    """`{1:leased}` → (repo, 1) — 단일 활성 슬롯 불변(idle 필터가 이 형상을 안 깸·재확인)."""
     got = _resolve(bootstrap, tmp_path, ["project_manager"],
                    [_lease("project_manager", 1, "leased")])
     assert got == ("project_manager", 1)

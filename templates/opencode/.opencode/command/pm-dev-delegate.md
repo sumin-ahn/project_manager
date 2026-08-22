@@ -14,7 +14,7 @@ OpenCode native `task` tool + `description`·`subagent_type: architect|developer
 
 ## 사전 조건
 
-- ticket 이미 claim (`/pm-wave-claim` 통과 · 세션 정체성 canonical `<repo>_<N>` · 솔로(M=1)는 생략).
+- ticket 이미 claim (`/pm-wave-claim` 통과 · 세션 정체성 canonical `<repo>_<N>`).
 - depends_on 모두 done.
 - touches 명시.
 - DoD verify-able.
@@ -43,7 +43,7 @@ python3 .project_manager/tools/board.py regression run --task <이름>
 
 - 출력된 `<worktree 절대경로>`를 developer 프롬프트의 **작업 위치**에 넣는다.
 - task가 슬롯 2개↑를 보유하면 에러(암묵 선택 금지). 잉여 슬롯을 `python3 .project_manager/tools/pm_config.py release <slot> --task <이름>`으로 반납하고 다시 해소한다.
-- 슬롯 세션(비-task)·솔로(M=1)는 종전대로이며 이 주입은 task-mode만 적용.
+- 슬롯 세션(비-task)은 종전대로이며 이 주입은 task-mode만 적용.
 
 ## 위임 설정 조회와 transport 선택 (`pm_delegate`)
 
@@ -176,7 +176,7 @@ task tool 호출:
      `rounds/`(이전 라운드)는 읽기 전용으로만 읽어라. PM 홈 티켓은 편집하지 마라.
 
      세션명: orch-dev-TNNNN (board.py 조작은 orchestrator(PM) 담당·dev 는 코드+테스트만).
-     작업 위치(worktree 절대경로): <해소 절대경로 — task-mode 시·슬롯/솔로는 생략>.
+     작업 위치(worktree 절대경로): <해소 절대경로 — task-mode 시·슬롯 세션은 생략>.
 
      ticket 본문은 python3 .project_manager/tools/board.py show T-NNNN 로 확인.
      등록 worktree 에 board 가 없으면 엔진이 worktree lease 장부로 단일 소유 PM 홈을 확정하고,
@@ -246,7 +246,7 @@ task tool 호출:
      변경 파일: <touches 인자 그대로 인용>.
      작업 위치(병렬 wave 시 격리 스냅샷): <아래 §게이트 격리 스냅샷으로 만든 gate worktree
      절대경로>. 그 격리 스냅샷에서만 읽고 검토하라 — **공유 트리(dev 라이브 편집 중) 및 그 안에서의
-     git 조작 금지**(checkout/stash/reset 등이 병렬 dev 의 WIP 를 덮는다). 솔로(비병렬)면 이 줄 생략.
+     git 조작 금지**(checkout/stash/reset 등이 병렬 dev 의 WIP 를 덮는다). 비병렬 위임이면 이 줄 생략.
 
      ⚠️ status.md / log/current.md 갱신은 orchestrator(PM) 담당 — 그 누락은 developer
      must-fix 아님.

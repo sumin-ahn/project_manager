@@ -455,8 +455,18 @@ def _load_lease_rows(leases_file: Path) -> list[dict] | None:
     return rows
 
 
+# 장부에 행이 하나도 없는 홈(= 아직 슬롯으로 등록되지 않은 홈)이 정체성 해소에 실패했을 때
+# 붙이는 처방 한 줄. 미해소를 조용한 폴백으로 덮지 않으므로, 사용자가 무엇을 하면 되는지는
+# 메시지가 말해야 한다. 문구를 재타이핑하지 않도록 이 모듈이 단일 진실로 들고, 정체성을
+# 해소하는 모듈들이 여기서 가져다 쓴다.
+UNREGISTERED_HOME_REMEDY = (
+    "이 홈의 lease 장부에 행이 하나도 없으면 아직 슬롯 등록 전이다 — `pm-update` 를 1회 "
+    "실행하면 등록 repo 가 1개일 때 홈 자신이 첫 슬롯 행으로 등록된다."
+)
+
+
 # 장부 읽기 축의 판정값 — "못 읽었다"를 **부재**와 **손상**으로 가른다(합치면 실제로 행을
-# 보유한 홈도 장부가 깨지기만 하면 "행 없음"과 같은 취급을 받는다·`lease_row_count` 와 같은 규율).
+# 보유한 홈도 장부가 깨지기만 하면 "행 없음"과 같은 취급을 받는다).
 LEDGER_OK = "ok"                       # 정상 파싱 — rows 가 그 시점 진실.
 LEDGER_MISSING = "ledger-missing"      # 장부 파일 자체가 없다(fresh 홈).
 LEDGER_UNREADABLE = "ledger-unreadable"  # 파일은 있으나 읽기/파싱/스키마 실패(손상).
@@ -502,62 +512,6 @@ def leased_sessions(leases_file: Path) -> list[str]:
             if sess:
                 sessions.append(sess)
     return sessions
-
-
-def lease_row_count(leases_file: Path) -> int | None:
-    """lease 장부 `leases` 배열의 행 수 — **상태 무관**(leased/idle 모두 포함) · **부재와 손상을
-    구분**(F-001 — 리뷰 라운드 03 must-fix 수정).
-
-    `board.session_name` 의 단일-등록 유도 층이 "장부에 행이 하나도 없다"를 판별하는
-    전용 술어 — `leased_sessions`(state=="leased" 만)와 달리 idle 행도 센다. 풀 형상(행 ≥1·전부
-    idle 포함)에서 그 층이 발화하지 않게 하는 것이 목적이라 state 필터를 두지 않는다.
-
-    반환:
-      - `0` — 장부 파일이 **부재**(fresh 홈)이거나, **정상 파싱된** `leases` 배열의 길이가 0
-        (구조적으로 확인된 빈 장부 — 유도 허용 대상).
-      - 양의 정수 — 정상 파싱된 행 수(유도는 이미 상위 층에서 걸러짐 — 이 값 자체가 차단 신호).
-      - `None` — 파일은 **존재하나** 읽기 실패(OSError)·JSON 파손·최상위/`leases` 스키마 불일치
-        (**손상 — 행 수를 모른다**). "확인된 0행"과 "모름"을 접으면 실제로 풀 행을 보유한 홈도
-        장부가 손상되기만 하면 `<repo>_1` 로 오해소된다(리뷰 라운드 03 재현: JSON
-        `'{broken json'` 장부 → 구현 전 `0` → `session_name(required=True)` 가 `'solo_1'` 을
-        내 `cmd_claim` 이 rc=0 로 오귀속 기록). 호출부(`single_registration_session`)는 `None`
-        을 "행이 있는 것"과 동일하게 취급해 유도를 막는다 — 부재(exists 로 먼저 판별)와
-        손상(존재하지만 읽기/파싱 실패)을 이 함수 안에서 구분해 그 신호를 그대로 전달한다.
-    """
-    if not leases_file.exists():
-        return 0
-    rows = _load_lease_rows(leases_file)
-    if rows is None:
-        return None
-    return len(rows)
-
-
-def single_registration_session(registered_repos: "set[str] | list[str]",
-                                 leases_file: Path) -> str | None:
-    """단일-등록 유도 — 세 모듈 공유 술어(F-002 — 리뷰 라운드 03 PM 재비준).
-
-    `registered_repos`(caller 주입 — areas.md 등록 repo 집합)가 정확히 1개 && lease 장부가
-    구조적으로 완전히 비어 있으면(`lease_row_count(leases_file) == 0` — 부재 또는 정상 파싱된
-    빈 배열; **손상(None)은 제외** — F-001 의 부재/손상 구분을 그대로 공유해 손상 장부에서
-    유도가 발화하지 않는다) `f"{repo}_1"`, 아니면 `None`.
-
-    `board.session_name`·`worktree_pool._default_session`·`pm_config._default_session` 세
-    모듈이 이 술어 하나를 공유해 우선순위를 통일한다(docstring 불변식 "세 모듈 같은 우선순위·
-    tail 만 상이"). 격리 실측(리뷰 F-002)에서 세 모듈이 이 층 없이 따로 갈렸다 —
-    `board.session_name()` 은 `<repo>_1` 을 유도해 bare claim 이 `claimed_by` 에 그 값을
-    저장하는데, 이후 무명시 첫 worktree 생성(`worktree_pool.create_slot`/`alloc`)이
-    `<host>-<pid>` 로 lease.session 을 저장하면 board 의 상위 단일-lease 층이 그 값으로 바뀌어
-    방금 만든 claim 이 "mine" 필터에서 사라졌다. areas.md 파싱 자체는 이 모듈의 관심사가
-    아니므로(파일 IO 순수성 — 이 모듈은 board.py 를 import 하지 않는다) `registered_repos`
-    집합은 호출부가 이미 가진 수단(board.registered_repos()·worktree_pool/pm_config 의 동적
-    board 로더)으로 산출해 주입한다(순환 import 회피).
-    """
-    if len(registered_repos) != 1:
-        return None
-    if lease_row_count(leases_file) != 0:
-        return None
-    repo = next(iter(registered_repos))
-    return f"{repo}_1"
 
 
 # ── 경로 마디 안전 술어 (POSIX·Windows 공통·두 축 공유) ────────────────────

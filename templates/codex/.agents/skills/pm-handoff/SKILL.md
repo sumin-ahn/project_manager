@@ -42,12 +42,12 @@ python3 .project_manager/tools/pm_handoff.py --task <부트스트랩 확인 이�
 ```
 
 `--user-ack` 값 = 부트스트랩에서 사용자와 확인한 정체성. 사용자의 `$pm-handoff` 호출이 그 정체성에 대한
-명시 종료 지시이므로 값을 새로 받거나 추론하지 않는다. 부트스트랩 정체성이 확인되지 않은 세션(무인자
-solo 등)만 실행 전 사용자에게 핸드오프 대상값을 확인한다.
+명시 종료 지시이므로 값을 새로 받거나 추론하지 않는다. 부트스트랩 정체성이 확인되지 않은 세션만
+실행 전 사용자에게 핸드오프 대상값을 확인한다.
 
 엔진이 task pm_state에서 차수를 추론하고 기본 wave 요약과 task 보유 작업공간 집합을 해소한다. 사용자에게 repo/slot·session-seq를 받지 않으며, task와 repo/slot/branch/done의 혼합을 거부한다. 다음 세션 트리거는 `$pm-bootstrap --task <이름>` 하나다.
 
-slot/솔로 모드에서 skill 내부 backbone 호출:
+slot 모드에서 skill 내부 backbone 호출:
 
 ```bash
 python3 .project_manager/tools/pm_handoff.py \
@@ -56,10 +56,10 @@ python3 .project_manager/tools/pm_handoff.py \
   --user-ack <값>
 ```
 
-slot 모드의 `<값>`은 부트스트랩에서 확인된 canonical `<repo>_<N>`(legacy solo는 `solo`)을 PM 이
+slot 모드의 `<값>`은 부트스트랩에서 확인된 canonical `<repo>_<N>`을 PM 이
 그대로 채운다(사용자 진입은 여기서도 `$pm-handoff` 무인자).
 
-> 아래 `--session-seq` 설명은 slot/솔로 호환 경로에만 해당한다. 숫자만(`19`) 주면 CLI 가
+> 아래 `--session-seq` 설명은 slot 경로에만 해당한다. 숫자만(`19`) 주면 CLI 가
 > "차"를 붙여 `PM 19차`로 포맷한다.
 > `19차` 를 줘도 CLI 가 후행 "차" 를 정규화(idempotent)해 이중부착(`19차차`)을 막는다.
 > 차수는 `--session-seq` 로만 준다. multi-PM 이면 세션 정체성은

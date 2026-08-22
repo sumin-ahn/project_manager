@@ -467,11 +467,26 @@ def test_trio_single_lease_layer_is_identical(home, trio):
     assert _trio_sessions(trio) == ("custom-session",) * 3
 
 
-def test_trio_single_registration_layer_is_identical(home, trio):
-    """단일-등록 유도 층 — 등록 repo 1개 && 장부 0행이면 세 모듈이 같은 값을 유도한다."""
-    home.write_ledger([])
+def test_trio_home_row_layer_is_identical(home, trio):
+    """홈 슬롯 행 — 홈 자신을 가리키는 N=1 행 하나로 세 모듈이 같은 세션을 해소한다."""
     home.write_areas(["A"])
+    home.write_ledger([{"slot": ".", "repo": "A", "session": "A_1", "pid": 0,
+                        "started": "2026-08-22T00:00:00+00:00", "state": "leased",
+                        "test_cmd": None, "bound": True}])
     assert _trio_sessions(trio) == ("A_1",) * 3
+
+
+def test_trio_zero_rows_does_not_derive_from_registration(home, trio):
+    """등록 repo 1개라도 장부 행이 0이면 유도하지 않는다 — 등록은 장부 행이 한다.
+
+    board/pm_config 는 미해소(None), worktree_pool 은 lease 취득용 국소 임시 명명으로 떨어진다.
+    이 층을 되살리면 세 값이 다시 `A_1` 이 되어 이 단언이 red 다.
+    """
+    board, wp, pm_config = trio
+    home.write_areas(["A"])
+    home.write_ledger([])
+    assert board.session_name() is None and pm_config._default_session() is None
+    assert wp._default_session() != "A_1"
 
 
 def test_trio_ambiguous_and_corrupt_share_unresolved_judgment(home, trio):
@@ -693,7 +708,8 @@ def test_session_axis_helpers_keep_name_rule_without_ledger_rows(home):
     assert home.bp._session_owns_untagged("x_1", home.ledger) is True
     assert home.bp._session_owns_untagged("x_2", home.ledger) is False
     assert home.bp._session_owns_untagged("task:foo_1", home.ledger) is False
-    assert home.bp._session_owns_untagged(None, home.ledger) is True
+    # 정체성 미해소는 무태그 소유권도 없다 — "이름이 없으면 다 내 것"이라는 특례가 없다.
+    assert home.bp._session_owns_untagged(None, home.ledger) is False
 
 
 # ════════════════════════════════════════════════════════════════════════

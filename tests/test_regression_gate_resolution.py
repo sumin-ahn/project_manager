@@ -388,7 +388,7 @@ def test_gate_surface_parity_across_tools(tf, hf):
                  "_regression_is_green"):
         assert callable(getattr(tf, name)), f"ticket_finish 에 {name} 부재"
         assert callable(getattr(hf, name)), f"pm_handoff 에 {name} 부재"
-    assert tf._SOLO_GATE_LABEL == hf._SOLO_GATE_LABEL
+    assert tf._DEFAULT_GATE_LABEL == hf._DEFAULT_GATE_LABEL
     assert tf._PYTEST_GATE_TOKEN == hf._PYTEST_GATE_TOKEN
     for gate_cmd in (None, "pytest tests/ -q", NON_PYTEST_CMD, LOCAL_CONF_CMD):
         assert tf._gate_is_pytest(gate_cmd) == hf._gate_is_pytest(gate_cmd)

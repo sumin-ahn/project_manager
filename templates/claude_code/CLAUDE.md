@@ -14,8 +14,8 @@
 
 1. **이 문서** — 자동 로드된 프로젝트 규칙·형상.
 2. **현재 정체성의 `pm_state`** — task는 `.project_manager/.local/tasks/<task>/pm_state.md`,
-   slot은 `.project_manager/.local/slots/<repo>_<N>/pm_state.md`, 솔로는
-   `.project_manager/wiki/pm_state.md` legacy 폴백. 신규 task는 bootstrap 진입 전 파일이 없어도 정상이다.
+   slot은 `.project_manager/.local/slots/<repo>_<N>/pm_state.md`다(둘 다 git-ignored).
+   신규 task는 bootstrap 진입 전 파일이 없어도 정상이다.
 3. **`/pm-bootstrap` dump 한 번** — board·git·차수·직전 handoff 본문·남은 작업을 한꺼번에
    surface한다. Python backbone은 `{{PY}} .project_manager/tools/pm_bootstrap.py`다.
 <!-- pm-bootstrap-preread:end -->
@@ -31,15 +31,16 @@
 ### 부트스트랩 후 ticket 잡기
 
 세션명 canonical은 `<repo>_<N>`이다. 식별 우선순위는 `--repo`/`--slot` >
-`$PM_SESSION_NAME` > 활성 슬롯 lease가 정확히 1개면 그 세션(단일-lease 유도) >
-솔로의 `local.conf session=` legacy 폴백 > 미해소다. 미해소 귀속 쓰기는 fail-loud한다.
+`$PM_SESSION_NAME` > 활성 슬롯 lease가 정확히 1개면 그 세션(단일-lease 유도) > 미해소다.
+미해소 귀속 쓰기는 fail-loud한다. lease 행이 0개인 홈은 아직 등록 전이며 `/pm-update` 1회가
+등록 repo 1개인 홈을 첫 슬롯 행 `<repo>_1` 로 등록한다.
 
 외부 의존이 없고 다른 세션이 claim하지 않은 ticket을 고른다:
 
 ```bash
 {{PY}} .project_manager/tools/board.py list --status open
 {{PY}} .project_manager/tools/board.py show T-NNNN
-{{PY}} .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 예: --repo myproj --slot 1 · 솔로(M=1)면 생략 가능
+{{PY}} .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 예: --repo myproj --slot 1 · 활성 lease 1개면 생략 가능
 ```
 
 ticket 본문의 **목표 / 인터페이스 / 완료 조건 / 참고 링크**만으로 작업 가능해야 한다. 부족하면
@@ -56,7 +57,7 @@ ticket 본문의 **목표 / 인터페이스 / 완료 조건 / 참고 링크**만
 - `areas.md`(공유 레지스트리) prefix 등록 + `local.conf`(per-clone·git-ignored) 생성 + `pm_state.md` 로컬 생성.
 - 이후 `board.py new` 는 영역별 네임스페이스 `T-pay-NNN` 으로 발행한다.
 - **3계층:** 엔진(upstream) / 공유상태(main: board·status·log·ADR) / per-clone 로컬(pm_state·local.conf).
-- **솔로:** `board.py init`(prefix 없이) → pm_state·pre-push 회귀 훅·legacy `T-NNNN` setup, areas.md 미생성. init 없이도 `board.py new` 는 동작한다.
+- **repo 1개:** `pm-config init`(prefix 없이) → areas 행·홈 슬롯 행·pre-push 회귀 훅·`T-NNNN` setup. 등록 전에도 `board.py new` 는 동작하지만 귀속 조작(claim 등)은 슬롯 행이 있어야 한다.
 
 ## 작업이 끝나면
 
@@ -115,7 +116,7 @@ ticket 본문의 **목표 / 인터페이스 / 완료 조건 / 참고 링크**만
 # 보드 조작
 {{PY}} .project_manager/tools/board.py list
 {{PY}} .project_manager/tools/board.py show T-NNNN
-{{PY}} .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 솔로(M=1)면 생략 가능 (§세션 이름)
+{{PY}} .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 활성 lease 1개면 생략 가능 (§세션 이름)
 {{PY}} .project_manager/tools/board.py complete T-NNNN --tests-pass
 {{PY}} .project_manager/tools/board.py new "title" --touches a.py,b.py --tag phase-1
 {{PY}} .project_manager/tools/board.py lint     # 의존성·thin-ticket 일관성 검사

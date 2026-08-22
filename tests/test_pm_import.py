@@ -2716,16 +2716,16 @@ def test_into_local_conf_init_keys_take_precedence(pm_import, tmp_path):
 # ── T-0071: run_board_init 이 subprocess env 에 PM_NONINTERACTIVE=1 명시 전달 ──
 
 def test_run_board_init_passes_pm_noninteractive_env(pm_import, tmp_path, monkeypatch):
-    """run_board_init 이 board init subprocess env 에 PM_NONINTERACTIVE=1 을 넣는지.
+    """run_board_init 이 셋업 subprocess env 에 PM_NONINTERACTIVE=1 을 넣는지.
 
     Windows DEVNULL stdin 의 isatty() 신뢰불가 함정 회피(T-0071) — stdin=DEVNULL 와 함께
-    env 명시 신호로 external_review opt-in 프롬프트를 결정적 skip. 실 board init 을 돌리지
+    env 명시 신호로 external_review opt-in 프롬프트를 결정적 skip. 실 셋업을 돌리지
     않고 subprocess.run 을 가로채(부작용 0) 전달된 env/stdin 만 친다.
     """
-    # board.py 존재 가드를 통과시킬 더미 트리.
-    board = tmp_path / ".project_manager" / "tools" / "board.py"
-    board.parent.mkdir(parents=True)
-    board.write_text("# stub\n", encoding="utf-8")
+    # 셋업 진입(pm_config init — board init 위임 + 홈 슬롯 등록) 존재 가드를 통과시킬 더미 트리.
+    entry = tmp_path / ".project_manager" / "tools" / "pm_config.py"
+    entry.parent.mkdir(parents=True)
+    entry.write_text("# stub\n", encoding="utf-8")
 
     captured: dict = {}
 

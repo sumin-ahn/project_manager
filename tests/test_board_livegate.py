@@ -19,6 +19,7 @@ import types
 from pathlib import Path
 
 import pytest
+from _home_slot import seed_home_slot
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -36,16 +37,18 @@ def _load_board():
 def live_board(tmp_path, monkeypatch):
     """fresh board 모듈 + livegate IO 전역을 tmp 로 재지정한 hermetic 인스턴스.
 
-    LEASES_FILE 은 부재로 둔다 → `_active_slot_path` None → `_livegate_cwd` 가 REPO(=tmp
-    proj)로 폴백. worktree HEAD 는 `_git_head_at` 대역으로 고정(라이브 git 미접근).
+    장부에는 **홈 N=1 슬롯 행**(`slot="."`)을 깐다 → `_active_slot_path` 가 홈 자신(=tmp proj)을
+    낸다. 라이브 게이트 cwd 는 이제 "행이 없으니 이 트리겠지" 폴백이 아니라 행이 가리키는
+    경로다(등록 안 된 홈은 fail-loud). worktree HEAD 는 `_git_head_at` 대역으로 고정.
     """
     proj = tmp_path / "proj"
     local = proj / ".project_manager" / ".local"
+    seed_home_slot(proj)
     mod = _load_board()
     monkeypatch.setattr(mod, "REPO", proj)
     monkeypatch.setattr(mod, "LOCAL_DIR", local)
     monkeypatch.setattr(mod, "LIVEGATE_FLAG", local / "livegate.json")
-    monkeypatch.setattr(mod, "LEASES_FILE", local / "worktree-leases.json")  # 부재
+    monkeypatch.setattr(mod, "LEASES_FILE", local / "worktree-leases.json")
     monkeypatch.setattr(mod, "_git_head_at", lambda cwd: "cafef00dcafef00d0011223344556677")
     mod._proj = proj
     return mod

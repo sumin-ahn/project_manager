@@ -35,8 +35,8 @@ prefix는 task와 독립인 opt-in 분류 라벨이며 claim 경계가 아니다
 
 - 포맷은 `[a-z0-9_]`; 그 외 rc1, 소문자 권장. `none`은 해제 리터럴. task 미존재면 rc1이며 생성은
   `/pm-bootstrap --task`에서만 한다.
-- **신규 카테고리 신설은 사용자 명시 승인이 필요하다.** 대상 라벨이 기존 카테고리 4소스
-  (areas.md prefix · 기발행 티켓 prefix · task 지정 prefix · solo local.conf)에 없으면 rc=1 로 거부하고
+- **신규 카테고리 신설은 사용자 명시 승인이 필요하다.** 대상 라벨이 기존 카테고리 3소스
+  (areas.md prefix · 기발행 티켓 prefix · task 지정 prefix)에 없으면 rc=1 로 거부하고
   현재 카테고리 목록과 승인 요청 처방을 낸다. 같은 게이트가 `board.py new --prefix`·
   `board.py init --prefix`·`board.py prefix rename|merge` 의 새 라벨에도 걸린다. 기존 카테고리
   사용(대소문자만 다른 표기 포함)은 무마찰이다. **세션이 스스로 `--user-ack` 을 붙여 카테고리를
