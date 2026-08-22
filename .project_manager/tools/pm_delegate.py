@@ -436,9 +436,34 @@ PM_REVIEW_MACHINE_CONFIRMATION_PAYLOAD_KEYS: tuple[str, ...] = (
 PM_REVIEW_MACHINE_CONFIRMATION_ROW_KEYS: tuple[str, ...] = (
     "id", "status", "command", "observed",
 )
-# 재현 커맨드 안전 경계(불변식 12) — 개행·셸 메타문자가 있으면 malformed. `$(` 는 별도로 본다
-# (문자 클래스로는 두 글자 시퀀스를 표현할 수 없다).
-_PM_REVIEW_COMMAND_METACHAR_RE = re.compile(r"[;&|><`\r\n]")
+# 재현 커맨드 안전 경계(불변식 12) — 금지 토큰과 그 사람이 읽는 표기를 **한 상수**에 둔다.
+# 실제 검사(`_pm_review_command_forbidden_token`)와 사용자 표시(`_pm_review_command_shape_hint`
+# → 파서 오류 메시지·verify 골격의 `command` placeholder)가 전부 이 튜플에서 파생하므로 토큰을
+# 넣고 빼면 파서 경계와 골격 문구가 함께 뒤집힌다(검사용/표시용 상수 두 벌 금지). 정규식 문자
+# 클래스가 아니라 부분문자열 목록이라 `$(` 같은 두 글자 시퀀스도 같은 자리에 들어간다.
+# 라벨이 겹치는 토큰(`\r`·`\n` → "개행")은 표시할 때 한 번만 낸다.
+_PM_REVIEW_COMMAND_FORBIDDEN_TOKENS: tuple[tuple[str, str], ...] = (
+    ("\n", "개행"), ("\r", "개행"),
+    (";", "`;`"), ("&", "`&`"), ("|", "`|`"), (">", "`>`"), ("<", "`<`"),
+    ("`", "백틱"), ("$(", "`$(`"),
+)
+
+
+def _pm_review_command_forbidden_token(command: str) -> str | None:
+    """커맨드에 들어 있는 첫 금지 토큰(없으면 None) — 안전 경계 판정의 유일한 출처."""
+    for token, _label in _PM_REVIEW_COMMAND_FORBIDDEN_TOKENS:
+        if token in command:
+            return token
+    return None
+
+
+def _pm_review_command_shape_hint() -> str:
+    """불변식 12(재현 커맨드 안전 경계) 문구의 유일한 출처 — 금지 토큰 상수에서 파생한다."""
+    labels: list[str] = []
+    for _token, label in _PM_REVIEW_COMMAND_FORBIDDEN_TOKENS:
+        if label not in labels:
+            labels.append(label)
+    return "금지 토큰(" + " ".join(labels) + ") 없는 단일 명령"
 _PM_REVIEW_AUTHORITY_REF_RE = re.compile(
     r"\[\[(?:T-(?:[A-Za-z0-9]+-)*\d+|ADR-\d+|[^\]]*[Ss]pec[^\]]*)\]\]"
 )
@@ -2596,20 +2621,46 @@ def _pm_review_seed_object(
     return {key: values.get(key, "") for key in keys}
 
 
+class _PMReviewRawPlaceholder(str):
+    """골격 자리가 비문자열 값(JSON boolean 등)이어야 함을 표시한다.
+
+    `_pm_review_render_json` 은 이 값을 다른 문자열처럼 따옴표로 감싸지 않고 그대로 낸다 —
+    dev 가 "자리표시자만 갈아 끼우는" 정상적 편집을 해도(예: `<true|false>` → `true`) 결과가
+    유효 JSON boolean 이 되게 하려는 것이다. `"<true|false>"` 처럼 따옴표 안에 두면 자리표시자만
+    바꾼 결과가 문자열 `"true"` 가 돼 파서(boolean 요구)가 거부한다.
+    """
+
+
+def _pm_review_render_json(value: object) -> str:
+    """`json.dumps` 대체 — `_PMReviewRawPlaceholder` 는 따옴표 없이 렌더하고 그 외에는
+    `json.dumps(..., ensure_ascii=False, separators=(",", ":"))` 와 산출이 같다.
+
+    versioned block 골격을 내는 모든 자리(`_pm_review_block_text`·`_pm_review_fenced_json`·
+    disposition 템플릿)가 이 함수 하나만 거쳐 비문자열 자리 placeholder 표기 규칙이 갈리지
+    않는다(클래스 폐쇄)."""
+    if isinstance(value, _PMReviewRawPlaceholder):
+        return str(value)
+    if isinstance(value, dict):
+        body = ",".join(
+            f"{json.dumps(key, ensure_ascii=False)}:{_pm_review_render_json(item)}"
+            for key, item in value.items()
+        )
+        return "{" + body + "}"
+    if isinstance(value, list):
+        return "[" + ",".join(_pm_review_render_json(item) for item in value) + "]"
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
 def _pm_review_block_text(payload: Mapping[str, object]) -> str:
     """`pm-review-v1` fence 한 개를 렌더한다 — 골격과 기준선 프로브가 같은 표기를 쓴다."""
-    return (
-        f"```{PM_REVIEW_BLOCK}\n"
-        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        + "\n```\n"
-    )
+    return f"```{PM_REVIEW_BLOCK}\n" + _pm_review_render_json(payload) + "\n```\n"
 
 
 def _pm_review_fenced_json(kind: str, payload: Mapping[str, object]) -> str:
     """`kind` fence 한 개를 렌더한다 — verify/confirmation 골격 공용(disposition 은 기존 자리)."""
     return (
         f"```{kind}\n"
-        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        + _pm_review_render_json(payload)
         + "\n```\n"
     )
 
@@ -2655,12 +2706,11 @@ def _pm_review_assert_any_channel_id(finding_id: str, field: str) -> None:
 
 
 def _pm_review_assert_verify_command_shape(command: str, field: str) -> None:
-    """불변식 12 — 재현 커맨드는 개행·셸 메타문자 없는 단일 명령이어야 한다."""
-    if _PM_REVIEW_COMMAND_METACHAR_RE.search(command) is not None or "$(" in command:
+    """불변식 12 — 재현 커맨드는 금지 토큰(개행·셸 메타문자) 없는 단일 명령이어야 한다."""
+    if _pm_review_command_forbidden_token(command) is not None:
         raise PMReviewError(
             "malformed",
-            f"{field} 는 개행·셸 메타문자(`;` `&` `|` `>` `<` 백틱 `$(`) 없는 단일 명령이어야 "
-            f"합니다: {command!r}",
+            f"{field} 는 {_pm_review_command_shape_hint()}이어야 합니다: {command!r}",
         )
 
 
@@ -2718,8 +2768,9 @@ def _pm_review_parse_verify_row(value: object) -> PMReviewVerifyRow:
 def _pm_review_verify_row_is_unfilled(value: object) -> bool:
     """시드 자리표시자 그대로인 행 = 아직 **선언이 아니다**.
 
-    판별 신호는 `machine_verifiable` 하나다 — 골격은 그 자리에 문자열 자리표시자를 싣고 파서는
-    boolean 을 요구하므로, boolean 이 아닌 행은 어떤 선언도 담고 있지 않다. 이 행을 malformed 로
+    판별 신호는 `machine_verifiable` 하나다 — 골격은 그 자리에 따옴표 없는 raw 자리표시자를 싣고
+    (구조 스캔 전에 같은 자리 한 곳만 재-인용되어 문자열로 들어온다) 파서는 boolean 을 요구하므로,
+    boolean 이 아닌 행은 어떤 선언도 담고 있지 않다. 이 행을 malformed 로
     올리면 (a) 같은 라운드에서 실제로 채워진 다른 ID 의 확인까지 통째로 막히고(라운드 파일은
     회수 뒤 불변이라 영구 차단이다) (b) 태만 처방("골격을 채우세요") 대신 형식 보정 처방이 나간다.
     선언이 없는 것으로 접으면 그 ID 는 분류기에서 `missing`(태만)이 되어 rc≠0 으로 남는다.
@@ -2742,8 +2793,14 @@ def _pm_review_verify_round_declarations(
     같은 라운드에서 한 ID 가 자리표시자와 채워진 행으로 둘 다 나오면 채워진 행이 이긴다 —
     선언이 실제로 있는 쪽이 그 라운드의 관측이다.
     """
+    # 손대지 않은 골격은 boolean 자리가 raw 자리표시자라 그대로는 유효 JSON 이 아니다. 여기서
+    # 그 한 자리만 재-인용해 블록을 열어야 "자리표시자 그대로 = 선언 없음(태만)" 관측이 성립한다
+    # — 재-인용 없이 malformed 로 올리면 같은 라운드의 채워진 행까지 통째로 막힌다. 재-인용은
+    # `machine_verifiable` 값 자리 하나로 한정되고 실제 boolean 값은 건드리지 않으므로, 문자열
+    # `"true"` 를 쓴 행은 여전히 boolean 요구에 걸려 거부된다(관용 추가 0).
     blocks = [
-        block for block in _pm_review_json_blocks(round.text)
+        block for block in _pm_review_json_blocks(
+            _pm_review_requote_verify_placeholder(round.text))
         if block.kind == PM_REVIEW_VERIFY_BLOCK
     ]
     if not blocks:
@@ -2788,15 +2845,83 @@ def _pm_review_verify_rows_for_round(round) -> dict[str, PMReviewVerifyRow]:
     return rows
 
 
+# verify 골격의 boolean 자리 raw placeholder 토큰 — 렌더(`render_pm_review_verify_skeleton`)와
+# 구조 스캔 전용 자기 인식(`_pm_review_requote_verify_placeholder`)이 이 상수 하나만 쓴다.
+# 따옴표 없는 토큰이라 JSON 값 자리에 그대로 있으면 strict 파서가 거부하는데(의도),
+# **손대지 않은 골격 자체**를 구조적으로 다시 인식해야 하는 두 자리(pending 판정·delta 의
+# developer 라운드 fence 존재 스캔)만 이 상수로 임시 재-인용(re-quote)해 fence 구조를 본다.
+_PM_REVIEW_MACHINE_VERIFIABLE_PLACEHOLDER = "<true|false>"
+_PM_REVIEW_MACHINE_VERIFIABLE_KEY = "machine_verifiable"
+# 재-인용 대상은 **딱 한 자리**다 — verify fence 안에서 `"machine_verifiable"` key 바로 뒤에
+# 오는 raw placeholder 값. 앞의 `(?<!\\)` 는 다른 문자열 필드 안에 escape 된 같은 문구
+# (`\"machine_verifiable\":<true|false>`)가 들어와도 값 자리로 오인하지 않게 한다. 전역 치환은
+# 금지다 — `expected` 같은 정상 문자열 필드가 같은 토큰을 담으면 유효한 행이 malformed 로
+# 죽는다(지연 파싱 불변식 역방향 퇴행).
+_PM_REVIEW_MACHINE_VERIFIABLE_SLOT_RE = re.compile(
+    r'(?<!\\)"' + re.escape(_PM_REVIEW_MACHINE_VERIFIABLE_KEY) + r'"([ \t]*:[ \t]*)'
+    + re.escape(_PM_REVIEW_MACHINE_VERIFIABLE_PLACEHOLDER)
+)
+
+
+def _pm_review_requote_verify_placeholder(text: str) -> str:
+    """구조 스캔 전용 전처리 — verify 골격의 raw placeholder(`machine_verifiable`)를 임시로
+    다시 따옴표에 넣어 `_pm_review_json_blocks` 가 fence 존재/경계를 볼 수 있게 한다.
+
+    치환 범위는 verify fence 안의 `machine_verifiable` 값 자리로 한정한다 — fence 밖 본문이나
+    다른 필드(`expected` 등)에 같은 토큰이 들어 있어도 건드리지 않는다.
+
+    이 재-인용은 fence 를 찾고 세는 **구조 스캔에만** 쓴다 — verify 행의 실제 값 검증
+    (`_pm_review_parse_verify_row`)은 항상 이 함수를 거치지 않은 원문을 그대로 보므로 boolean
+    타입 요구가 느슨해지지 않는다(관용이 아니라 자기 인식). dev 가 실제로 채운
+    `true`/`false` 는 이미 유효 JSON 이라 이 치환이 아무 것도 바꾸지 않는다."""
+    def requote(match: re.Match[str]) -> str:
+        return (
+            f'"{_PM_REVIEW_MACHINE_VERIFIABLE_KEY}"' + match.group(1)
+            + f'"{_PM_REVIEW_MACHINE_VERIFIABLE_PLACEHOLDER}"'
+        )
+
+    open_fence = f"```{PM_REVIEW_VERIFY_BLOCK}"
+    out: list[str] = []
+    inside_verify_fence = False
+    for line in text.splitlines(keepends=True):
+        bare = line.rstrip("\r\n")
+        if inside_verify_fence:
+            if bare == "```":
+                inside_verify_fence = False
+            else:
+                line = _PM_REVIEW_MACHINE_VERIFIABLE_SLOT_RE.sub(requote, line)
+        elif bare == open_fence:
+            inside_verify_fence = True
+        out.append(line)
+    return "".join(out)
+
+
 def render_pm_review_verify_skeleton(finding_ids: Sequence[str]) -> str:
-    """accepted finding마다 재현 커맨드/기대값 골격 1행 — key 집합·enum 은 파서 상수 파생."""
+    """accepted finding마다 재현 커맨드/기대값 골격 1행 — key 집합·enum 은 파서 상수 파생.
+
+    `machine_verifiable` 은 boolean 자리라 `_PMReviewRawPlaceholder` 로 따옴표 없이 낸다
+    (axis 1). `command` placeholder 는 파서의 재현 커맨드 안전 경계 문구(`_pm_review_command_shape_
+    hint`)를 그대로 소비해 금지 문자를 두 곳에 적지 않는다(axis 2). `expected` placeholder 는
+    확인 블록의 `expected ⊆ observed` 계약(짧은 부분 문자열만)을 명시해 산문을 유도하지 않는다
+    (axis 3)."""
+    command_hint = (
+        "<machine_verifiable=true 면 " + _pm_review_command_shape_hint()
+        + "(cwd 무관하게 대상을 절대경로로 쓰고 `cd X &&` 는 쓰지 않는다 — `&`가 금지 문자다), "
+        "아니면 빈 문자열>"
+    )
+    expected_hint = (
+        "<fix 후 그 커맨드 output 에 그대로 나오는 짧은 부분 문자열만(수치·핵심 토큰 — 산문 "
+        "설명은 이 자리가 아니라 라운드 본문에 따로 쓴다), machine_verifiable=false 면 무엇이 "
+        f"참이어야 하는지 한 줄로 짧게, reason={PM_REVIEW_VERIFY_GAP_REASON} 이면 빈틈 요지 한 줄>"
+    )
     rows = [
         _pm_review_seed_object(PM_REVIEW_VERIFY_ROW_KEYS, {
             "id": finding_id,
-            "machine_verifiable": "<true|false>",
-            "command": "<machine_verifiable=true 면 단일 재현 커맨드, 아니면 빈 문자열>",
-            "expected": "<fix 후 관측돼야 하는 문자열, "
-                        + f"reason={PM_REVIEW_VERIFY_GAP_REASON} 이면 빈틈 요지 한 줄>",
+            _PM_REVIEW_MACHINE_VERIFIABLE_KEY: _PMReviewRawPlaceholder(
+                _PM_REVIEW_MACHINE_VERIFIABLE_PLACEHOLDER,
+            ),
+            "command": command_hint,
+            "expected": expected_hint,
             "before": "<machine_verifiable=true 면 fix 전 실값, 아니면 빈 문자열>",
             "reason": "<machine_verifiable=false 일 때만 "
                       + "|".join(PM_REVIEW_VERIFY_REASONS) + ", 아니면 빈 문자열>",
@@ -3212,10 +3337,15 @@ def _dev_round_seed_verify_ids(body: str) -> list[str] | None:
     빈 목록을 돌려준다. 블록이 있는데 파싱이 안 되거나(자리표시자 그대로 편집 중 등) 둘
     이상이면 시드 그대로인지 확신할 수 없어 None(=pending 아님·`_round_seed_confirmation_ids`
     와 동형 규칙)이다.
-    """
+
+    `machine_verifiable` 골격 자리는 따옴표 없는 raw placeholder 라 손대지 않은
+    시드 그대로도 strict JSON 이 아니다 — 구조 스캔 전용 재-인용(`_pm_review_requote_verify_
+    placeholder`)으로 fence 존재만 확인하고 ID 를 뽑는다. 실제 검증 파서
+    (`_pm_review_parse_verify_row`)는 이 재-인용을 거치지 않는다(데이터 수용 관용이 아니다)."""
+    requoted = _pm_review_requote_verify_placeholder(body)
     try:
         blocks = [
-            block for block in _pm_review_json_blocks(body)
+            block for block in _pm_review_json_blocks(requoted)
             if block.kind == PM_REVIEW_VERIFY_BLOCK
         ]
     except PMReviewError:
@@ -3408,11 +3538,7 @@ def render_pm_review_disposition_template(
             "reviewer_ordinal": section.ordinal,
             "dispositions": dispositions,
         })
-    return (
-        f"```{PM_REVIEW_DISPOSITION_BLOCK}\n"
-        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        + "\n```\n"
-    )
+    return f"```{PM_REVIEW_DISPOSITION_BLOCK}\n" + _pm_review_render_json(payload) + "\n```\n"
 
 
 def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> PMReviewDelta:
@@ -3435,7 +3561,9 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> PMReviewDelta:
     # review delta·verify-template 의 "지금 accepted 가 뭔가" 질의)까지 판정면 엄격 규칙에
     # 전염된다. placement(developer 라운드 안에만)는 구조 검사라 여기서 그대로 하고, row 내용
     # 파싱은 아래 `_verify_rows_for_developer_round`(confirmation 결속을 실제로 요구하는
-    # 순간)로 미룬다.
+    # 순간)로 미룬다. developer 라운드는 구조 스캔 전용 재-인용을 거쳐야 손대지 않은
+    # verify 골격(raw placeholder)도 fence 존재를 볼 수 있다 — row 값은 여기서 읽지 않으므로
+    # (`continue`) 재-인용이 값 검증에 새지 않는다.
     dev_rounds_by_ordinal: dict[int, object] = {}
     for item in sorted(rounds, key=lambda entry: entry.ordinal):
         channel = (item.role, item.ordinal)
@@ -3446,7 +3574,11 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> PMReviewDelta:
         # 축(`item.pending`)으로 여기서도 배제해야 골격의 자리표시 블록이 실 선언으로 안 읽힌다.
         if item.role in REVIEW_ROLES and item.pending:
             continue
-        for block in _pm_review_json_blocks(item.text):
+        scan_text = (
+            _pm_review_requote_verify_placeholder(item.text)
+            if item.role == "developer" else item.text
+        )
+        for block in _pm_review_json_blocks(scan_text):
             if block.kind == PM_REVIEW_VERIFY_BLOCK:
                 if item.role != "developer":
                     raise PMReviewError(

@@ -9,6 +9,9 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import json
+import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -109,17 +112,38 @@ def _verify_row(
 
 
 def _verify_block(pd, rows: list) -> str:
+    """행 dict 들을 verify fence 로 직렬화한다.
+
+    미충전 자리표시자 행(`_skeleton_row`)은 엔진 시드와 **같은 bytes** 여야 한다 — 골격의
+    `machine_verifiable` 자리는 따옴표 없는 raw placeholder 이므로 json.dumps 가 씌운 따옴표를
+    그 자리에 한해 다시 벗긴다. 실제 boolean 값(`true`/`false`)은 이 치환 대상이 아니다.
+    """
     payload = {"version": pd.PM_REVIEW_VERIFY_VERSION, "verifications": rows}
+    text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    quoted_placeholder = (
+        f'"{pd._PM_REVIEW_MACHINE_VERIFIABLE_KEY}":'
+        + json.dumps(pd._PM_REVIEW_MACHINE_VERIFIABLE_PLACEHOLDER, ensure_ascii=False)
+    )
+    raw_placeholder = (
+        f'"{pd._PM_REVIEW_MACHINE_VERIFIABLE_KEY}":'
+        + pd._PM_REVIEW_MACHINE_VERIFIABLE_PLACEHOLDER
+    )
     return (
         f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n"
-        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        + text.replace(quoted_placeholder, raw_placeholder)
         + "\n```\n"
     )
 
 
 def _skeleton_row(pd, fid: str = "F-001") -> dict:
-    """시드 골격의 verify 행 1개(자리표시자 값 포함) — 문안의 단일 진실은 렌더다."""
-    block = pd.render_pm_review_verify_skeleton([fid])
+    """시드 골격의 verify 행 1개(자리표시자 값 포함) — 문안의 단일 진실은 렌더다.
+
+    골격의 `machine_verifiable` 자리는 따옴표 없는 raw placeholder 라 그대로는 유효 JSON 이
+    아니다(그게 골격의 계약이다). 여기서는 값을 읽기 위해 엔진의 구조-스캔 전처리와 같은
+    재-인용을 거친 뒤 파싱한다 — 자리표시자 문안 자체는 여전히 렌더가 소유한다.
+    """
+    block = pd._pm_review_requote_verify_placeholder(
+        pd.render_pm_review_verify_skeleton([fid]))
     payload = json.loads(
         block.split(f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n", 1)[1].split("\n```", 1)[0]
     )
@@ -132,6 +156,15 @@ def _gap_row(pd, fid: str = "F-001", summary: str = "처방이 정하지 않은 
         fid, machine_verifiable=False, command="", before="", expected=summary,
         reason=pd.PM_REVIEW_VERIFY_GAP_REASON,
     )
+def _fill_verify_field(text: str, key: str, raw_json: str, *, count: int = 1) -> str:
+    """verify 행 `key` 필드의 렌더된 값(따옴표 문자열이든 T-0808 raw placeholder 든)을
+    `raw_json`(JSON 리터럴 텍스트)으로 치환한다. 자리표시자 정확한 문구를 몰라도 key 뒤 값을
+    구조로 찾아 규칙대로 갈아 끼우는 dev 편집을 흉내낸다(엔진이 실제로 낸 골격에 태우는
+    왕복 단언 · T-0808). `count=0` 이면 행 전부(무제한)를 갈아 끼운다."""
+    pattern = re.compile(rf'"{key}":(?:"(?:[^"\\]|\\.)*"|[^,}}]+)')
+    new_text, replaced = pattern.subn(f'"{key}":{raw_json}', text, count=count)
+    assert replaced > 0, f"{key!r} 자리를 찾을 수 없습니다: {text!r}"
+    return new_text
 
 
 def _developer_round_text(pd, verify_rows: list | None = None) -> str:
@@ -187,9 +220,13 @@ def test_seed_prefills_a_verify_row_per_accepted_finding(pd):
     ])
     body = pd.render_ticket_growth_section_seed("developer", spec, rounds=[r1])
     assert pd.PM_REVIEW_VERIFY_BLOCK in body
-    payload = json.loads(
-        body.split(f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n", 1)[1].split("\n```", 1)[0]
-    )
+    fence = body.split(f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n", 1)[1].split("\n```", 1)[0]
+    # 골격의 `machine_verifiable` 자리는 T-0808 이후 따옴표 없는 raw placeholder라 손대지
+    # 않은 골격 그대로는 유효 JSON이 아니다(자리표시자를 실값으로 갈아 끼운 뒤에만 파싱된다 —
+    # 왕복 계약은 별도 테스트가 단언한다). 여기서는 id 목록/key 집합만 보면 되므로 그 한
+    # 자리만 규칙대로(`<true|false>` → `true`) 채워 파싱한다.
+    fence = _fill_verify_field(fence, "machine_verifiable", "true", count=0)
+    payload = json.loads(fence)
     assert [row["id"] for row in payload["verifications"]] == ["F-001", "F-002"]
     assert set(payload["verifications"][0]) == set(pd.PM_REVIEW_VERIFY_ROW_KEYS)
 
@@ -237,14 +274,15 @@ def test_pending_judgment_reads_only_the_round_body(pd):
     body = seed.partition("\n\n")[2]
     assert pd.ticket_round_body_is_pending("developer", body) is True
 
-    # 자리표시자 문안은 렌더가 소유한다 — 여기에 리터럴로 박으면 enum·문안이 늘어난 순간
-    # replace 가 조용히 no-op 이 되고 이 테스트가 vacuous 해진다(T-0805).
     filled = body
-    for key, placeholder in _skeleton_row(pd, "F-001").items():
-        filled = filled.replace(
-            f'"{key}":{json.dumps(placeholder, ensure_ascii=False)}',
-            f'"{key}":{json.dumps(_verify_row("F-001")[key], ensure_ascii=False)}',
-        )
+    for key, raw_json in (
+        ("machine_verifiable", "true"),
+        ("command", json.dumps("echo hi")),
+        ("expected", json.dumps("hi")),
+        ("before", json.dumps("bye")),
+        ("reason", json.dumps("")),
+    ):
+        filled = _fill_verify_field(filled, key, raw_json)
     assert filled != body
     assert "<" not in filled.partition(f"```{pd.PM_REVIEW_VERIFY_BLOCK}")[2]
     assert pd.ticket_round_body_is_pending("developer", filled) is False
@@ -278,12 +316,12 @@ def _verify_delta(pd, spec, rounds):
         (lambda row: row.update(extra="x"), "extra"),
         (lambda row: row.update(command=""), "command/expected/before"),
         (lambda row: row.update(before=row["expected"]), "before는 expected와 달라야"),
-        (lambda row: row.update(command="echo hi; rm -rf /"), "메타문자"),
-        (lambda row: row.update(command="echo hi\nrm -rf /"), "메타문자"),
+        (lambda row: row.update(command="echo hi; rm -rf /"), "금지 토큰"),
+        (lambda row: row.update(command="echo hi\nrm -rf /"), "금지 토큰"),
         # F-003(R4 리뷰 fix) — strip 이 검사보다 먼저면 선두/후미 개행이 검사를 피해간다.
-        (lambda row: row.update(command=row["command"] + "\n"), "메타문자"),
-        (lambda row: row.update(command="\n" + row["command"]), "메타문자"),
-        (lambda row: row.update(command=row["command"] + "\r"), "메타문자"),
+        (lambda row: row.update(command=row["command"] + "\n"), "금지 토큰"),
+        (lambda row: row.update(command="\n" + row["command"]), "금지 토큰"),
+        (lambda row: row.update(command=row["command"] + "\r"), "금지 토큰"),
         (lambda row: row.update(machine_verifiable=False, command="", before="",
                                  reason="not-a-real-reason"), "reason 미지원"),
     ],
@@ -1265,3 +1303,276 @@ def test_pre_change_verify_and_confirmation_bytes_still_parse(pd):
         '"command":"pytest tests/test_x.py -q","observed":"2 passed, 218 deselected"}]}\n```\n'
     )
     assert pd.parse_pm_review_delta(spec, [r1, dev2]).accepted == ()
+# ── T-0808: 골격 자리표시자가 계약을 어기는 값을 유도하지 않는다(왕복 단언) ──────────────
+
+def _naive_placeholder_edit(text: str, token: str, replacement: str) -> str:
+    """자리표시자 텍스트(`<...>`)만 그대로 갈아 끼우는 dev 편집을 흉내낸다 — 주변 따옴표 유무는
+    건드리지 않는다. T-0808 결함류(축 1)의 재현/회귀 경로가 정확히 이 방식이다(자리표시자만
+    갈아 끼우는 "정상적인 채움 방식")."""
+    assert token in text, f"{token!r} 이 없습니다: {text!r}"
+    return text.replace(token, replacement, 1)
+
+
+def _verify_fence_text(pd, finding_ids=("F-001",)) -> str:
+    """`render_pm_review_verify_skeleton` 이 실제로 낸 골격의 fence 본문만 뽑는다(조립 문자열이
+    아니라 엔진 산출 그대로 — T-0808 검증 근거 요구)."""
+    rendered = pd.render_pm_review_verify_skeleton(list(finding_ids))
+    return rendered.split(f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n", 1)[1].split("\n```", 1)[0]
+
+
+# ── 축 1 — machine_verifiable 자리는 따옴표 없는 raw placeholder ────────────────────
+
+def test_machine_verifiable_placeholder_is_unquoted_raw_in_the_rendered_skeleton(pd):
+    """축 1 — 골격 렌더가 boolean 자리를 따옴표 없이 낸다."""
+    fence = _verify_fence_text(pd)
+    assert '"machine_verifiable":<true|false>' in fence
+    assert '"machine_verifiable":"<true|false>"' not in fence
+
+
+@pytest.mark.parametrize("literal,expect", [("true", True), ("false", False)])
+def test_machine_verifiable_naive_edit_round_trips_to_a_real_boolean(pd, literal, expect):
+    """축 1 본체(왕복 단언) — 렌더 → 자리표시자만 갈아 끼움(주변 따옴표 없음) → 파싱 성공 →
+    boolean 타입(문자열이 아니다)."""
+    fence = _verify_fence_text(pd)
+    edited = _naive_placeholder_edit(fence, "<true|false>", literal)
+    payload = json.loads(edited)  # 자리표시자 하나만 바꿨는데 이미 유효 JSON — 본체 단언.
+    assert payload["verifications"][0]["machine_verifiable"] is expect
+
+
+def test_sensitivity_requoted_placeholder_reproduces_the_original_defect(pd, monkeypatch):
+    """민감도(축 1) — 렌더 직렬화가 raw placeholder 특례를 잃으면(따옴표 되돌림) 실제 wave 에서
+    4명 중 3명이 겪은 결함(문자열 `"true"`)이 그대로 재현된다. 위 두 테스트는 이 상태가
+    아니라서 통과한다 — 되돌리면 여기서 red. (`_pm_review_render_json` 을 순수 `json.dumps`
+    로 되돌려 raw placeholder 특례만 잃게 한다 — 다른 문자열 필드까지 깨는 monkeypatch는
+    퇴행을 정확히 재현하지 못한다.)"""
+    monkeypatch.setattr(
+        pd, "_pm_review_render_json",
+        lambda value: json.dumps(value, ensure_ascii=False, separators=(",", ":")),
+    )
+    fence = _verify_fence_text(pd)
+    assert '"machine_verifiable":"<true|false>"' in fence   # 퇴행 재현.
+    naive_edit = _naive_placeholder_edit(fence, "<true|false>", "true")
+    payload = json.loads(naive_edit)   # 구조는 여전히 유효 JSON이지만 값은 문자열이다.
+    assert payload["verifications"][0]["machine_verifiable"] == "true"
+    with pytest.raises(pd.PMReviewError, match="boolean이어야 합니다") as caught:
+        pd._pm_review_parse_verify_row(payload["verifications"][0])
+    assert caught.value.code == "malformed"
+
+
+def test_string_true_is_still_rejected_no_parser_leniency(pd):
+    """파서 완화 금지 — `machine_verifiable` 이 문자열 `"true"` 면 골격과 무관하게 항상 거부."""
+    row = {
+        "id": "F-001", "machine_verifiable": "true", "command": "echo hi",
+        "expected": "hi", "before": "bye", "reason": "",
+    }
+    with pytest.raises(pd.PMReviewError, match="boolean이어야 합니다") as caught:
+        pd._pm_review_parse_verify_row(row)
+    assert caught.value.code == "malformed"
+
+
+# ── 축 2 — command placeholder 는 파서 상수를 그대로 소비한다 ──────────────────────
+
+def test_command_placeholder_derives_from_the_parser_command_shape_hint(pd):
+    """축 2 파리티 — command 골격 문구가 파서의 재현 커맨드 안전 경계 문구를 그대로 담는다
+    (두 곳 서술 금지). `cd X &&` 대신 절대경로 처방도 실값으로 실린다."""
+    fence = _verify_fence_text(pd)
+    assert pd._pm_review_command_shape_hint() in fence
+    assert "절대경로" in fence
+    assert "cd X &&" in fence
+
+
+def test_command_placeholder_labels_match_the_single_forbidden_token_constant(pd):
+    """축 2 파리티(전수) — 골격에 나열된 금지 토큰 표기가 검사 상수 하나에서만 나온다."""
+    fence = _verify_fence_text(pd)
+    for _token, label in pd._PM_REVIEW_COMMAND_FORBIDDEN_TOKENS:
+        assert label in fence
+
+
+def _parse_row_with_command(pd, command: str):
+    """command 만 바꾼 유효 verify 행을 실제 행 파서에 태운다 — 허용 경계 관측 지점."""
+    return pd._pm_review_parse_verify_row(_verify_row("F-001", command=command))
+
+
+def _assert_command_rejected(pd, command: str) -> None:
+    with pytest.raises(pd.PMReviewError) as caught:
+        _parse_row_with_command(pd, command)
+    assert caught.value.code == "malformed"
+    assert pd._pm_review_command_shape_hint() in str(caught.value)
+
+
+def test_sensitivity_forbidden_token_constant_flips_parser_and_render_together(
+    pd, monkeypatch,
+):
+    """민감도(축 2 본체) — 금지 토큰 상수 하나에 토큰을 넣고 빼면 **파서의 통과/거부**와
+    **골격 문구**가 같은 방향으로 함께 뒤집힌다. 검사용 상수와 표시용 상수가 두 벌이면
+    한쪽만 뒤집히고 여기서 red 다(허용 경계는 파서로, 문구는 렌더 산출로 각각 관측한다)."""
+    baseline = pd._PM_REVIEW_COMMAND_FORBIDDEN_TOKENS
+    added, dropped = "echo:hi", "echo hi;"
+
+    # 기준선 — `:` 은 허용·문구에 없음 / `;` 은 거부·문구에 있음.
+    assert _parse_row_with_command(pd, added).command == added
+    assert "`:`" not in _verify_fence_text(pd)
+    _assert_command_rejected(pd, dropped)
+    assert "`;`" in _verify_fence_text(pd)
+
+    # 토큰 추가 → 파서가 거부하고 골격 문구에도 그 토큰이 나타난다.
+    monkeypatch.setattr(
+        pd, "_PM_REVIEW_COMMAND_FORBIDDEN_TOKENS", baseline + ((":", "`:`"),),
+    )
+    _assert_command_rejected(pd, added)
+    assert "`:`" in _verify_fence_text(pd)
+
+    # 토큰 제거 → 파서가 통과시키고 골격 문구에서도 그 토큰이 사라진다.
+    monkeypatch.setattr(
+        pd, "_PM_REVIEW_COMMAND_FORBIDDEN_TOKENS",
+        tuple(pair for pair in baseline if pair[0] != ";"),
+    )
+    assert _parse_row_with_command(pd, dropped).command == dropped
+    assert "`;`" not in _verify_fence_text(pd)
+
+
+def test_cd_and_shell_join_command_is_still_rejected_absolute_path_form_still_passes(pd):
+    """역방향 확인 — `cd X && ...` 는 여전히 거부, 절대경로 단일 커맨드는 여전히 통과(실증
+    라운드 T-0782/T-0796/T-0777 이 유도됐던 형태를 재확인)."""
+    with pytest.raises(pd.PMReviewError, match="금지 토큰"):
+        pd._pm_review_assert_verify_command_shape(
+            "cd /abs/path && pytest -q", "verify F-001.command",
+        )
+    pd._pm_review_assert_verify_command_shape(
+        "pytest /abs/path/tests/test_x.py -q", "verify F-001.command",
+    )
+    with pytest.raises(pd.PMReviewError, match="금지 토큰"):
+        # T-0777 실측 — `python3 -c "...;..."` 는 `cd &&` 를 없애도 `-c` 본문의 `;` 로 거부된다.
+        pd._pm_review_assert_verify_command_shape(
+            'python3 -c "a=1;b=2"', "verify F-001.command",
+        )
+
+
+# ── 축 3 — expected placeholder 는 짧은 기계 대조 가능 문자열만 유도한다 ────────────
+
+def test_expected_placeholder_forbids_prose_and_points_to_round_body(pd):
+    """축 3 — placeholder 문구가 '짧은'·'산문 금지'·'라운드 본문' 을 명시해 산문 유도를 막는다."""
+    fence = _verify_fence_text(pd)
+    assert "짧은 부분 문자열" in fence
+    assert "산문" in fence
+    assert "라운드 본문" in fence
+
+
+def test_expected_short_literal_round_trips_through_a_real_command_into_the_confirmation_contract(
+    pd,
+):
+    """축 3 본체(왕복 단언) — 골격대로 짧은 문자열을 채운 verify 행을 실제 커맨드로 실행해
+    얻은 observed 가 expected 를 포함하고, 그 값으로 확인 블록을 구성해도 malformed 가 없다
+    (`expected ⊆ observed` 계약이 실제로 성립함을 로컬 서브프로세스로 확인 — 외부 발신 없음)."""
+    command = f"{sys.executable} -c \"print('3 passed')\""
+    fence = _verify_fence_text(pd)
+    fence = _naive_placeholder_edit(fence, "<true|false>", "true")
+    fence = _fill_verify_field(fence, "command", json.dumps(command))
+    fence = _fill_verify_field(fence, "expected", json.dumps("3 passed"))
+    fence = _fill_verify_field(fence, "before", json.dumps("2 passed"))
+    fence = _fill_verify_field(fence, "reason", json.dumps(""))
+    payload = json.loads(fence)
+    row_dict = payload["verifications"][0]
+    row = pd._pm_review_parse_verify_row(row_dict)
+
+    proc = subprocess.run(
+        row.command, shell=True, capture_output=True, text=True, timeout=10,
+    )
+    observed = proc.stdout.strip()
+    assert row.expected in observed   # expected ⊆ observed 계약 — 왕복의 핵심.
+
+    r1 = _round(pd, 1, "code-reviewer", _reviewer_round_text(pd, [_finding("F-001")]))
+    spec = _disposition_block(pd, 1, [_decision("F-001", "accepted")])
+    dev2 = _round(pd, 2, "developer", _developer_round_text(pd, [row_dict]))
+    confirmation_row = {
+        "id": "F-001", "status": "resolved", "command": row.command, "observed": observed,
+    }
+    spec_confirmed = spec + _confirmation_block(pd, 2, [confirmation_row])
+    delta = pd.parse_pm_review_delta(spec_confirmed, [r1, dev2])   # malformed 없이 성립.
+    assert delta.accepted == ()   # resolved 확인이 반영돼 accepted 잔여가 빠진다.
+
+
+# ── T-0808: 엔진이 시드하는 모든 versioned block 골격 — 비문자열 자리 따옴표 placeholder 0 ──
+
+def test_non_string_field_placeholders_are_zero_across_every_seeded_skeleton(pd):
+    """전수(클래스 폐쇄) — verify(`machine_verifiable`)·finding(`design_change`)가 엔진이
+    시드하는 골격 전체에서 유일한 비문자열 필드다. 둘 다 실제 타입으로 렌더되고 문자열
+    placeholder 로 위장하지 않는다(파싱된 값 단언 — 존재 검사가 아니다). disposition·machine
+    confirmation 골격에는 비문자열 필드 placeholder 가 아예 없다(문자열 enum 이거나 렌더
+    시점 실값)."""
+    # verify: 손대지 않은 골격은 raw placeholder 라 통짜 파싱이 실패한다(문자열로 위장하지
+    # 않았다는 증거) — 자리표시자만 갈아 끼우면 실제 bool 이 된다(위 왕복 테스트가 값도 확인).
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(_verify_fence_text(pd))
+
+    # finding: design_change 는 처음부터 실값(False)이라 골격 자체가 이미 유효 JSON 이고
+    # 파싱된 타입이 bool 이다(문자열 "false" 로 위장하지 않았다).
+    review_rendered = pd.render_pm_review_block_skeleton("code-reviewer", ["F-NNN"])
+    review_fence = review_rendered.split(f"```{pd.PM_REVIEW_BLOCK}\n", 1)[1].split(
+        "\n```", 1,
+    )[0]
+    review_payload = json.loads(review_fence)
+    assert review_payload["findings"][0]["design_change"] is False
+    assert not isinstance(review_payload["findings"][0]["design_change"], str)
+
+    # disposition — 행 필드는 전부 문자열(`PM_REVIEW_DISPOSITION_KEYS`), payload 의
+    # reviewer_ordinal/version 은 렌더 시점 실값(정수)이지 placeholder 가 아니다.
+    r1 = _round(pd, 1, "code-reviewer", _reviewer_round_text(pd, [_finding("F-001")]))
+    disposition_rendered = pd.render_pm_review_disposition_template("", [r1])
+    disposition_fence = disposition_rendered.split(
+        f"```{pd.PM_REVIEW_DISPOSITION_BLOCK}\n", 1,
+    )[1].split("\n```", 1)[0]
+    disposition_payload = json.loads(disposition_fence)   # 예외 없이 통과.
+    assert isinstance(disposition_payload["reviewer_ordinal"], int)
+    assert isinstance(disposition_payload["version"], int)
+
+    # machine confirmation — 행 필드는 전부 문자열(`PM_REVIEW_MACHINE_CONFIRMATION_ROW_KEYS`),
+    # payload 의 round/version 은 렌더 시점 실값이지 placeholder 가 아니다.
+    spec_accepted = _disposition_block(pd, 1, [_decision("F-001", "accepted")])
+    dev2 = _round(pd, 2, "developer", _developer_round_text(pd, [_verify_row("F-001")]))
+    template = pd.pm_review_verify_template(spec_accepted, [r1, dev2])
+    confirmation_rendered = pd.render_pm_review_verify_template(template)
+    confirmation_fence = confirmation_rendered.split(
+        f"```{pd.PM_REVIEW_CONFIRMATION_BLOCK}\n", 1,
+    )[1].split("\n```", 1)[0]
+    confirmation_payload = json.loads(confirmation_fence)   # 예외 없이 통과.
+    assert isinstance(confirmation_payload["round"], int)
+    assert isinstance(confirmation_payload["version"], int)
+
+
+# ── 구조 스캔 전용 재-인용은 boolean 값 자리 하나에만 걸린다 ─────────────────────────
+
+# 정상 문자열 필드가 담을 수 있는, boolean 자리 placeholder 와 같은 토큰.
+_TOKEN_IN_STRING_FIELD = "ok:<true|false>"
+
+
+def test_placeholder_token_in_another_string_field_passes_delta_scan_and_row_parser(pd):
+    """재-인용 한정 — `expected` 처럼 정상 문자열 필드가 boolean 자리와 같은 토큰을 담아도
+    delta 구조 스캔과 실제 행 파서를 **둘 다** 통과한다. 전역 치환이면 재-인용이 문자열 안에
+    따옴표를 밀어 넣어 `pm-review-verify-v1 JSON 파싱 실패` malformed 로 delta 가 죽는다."""
+    spec, rounds = _basic_ticket(pd, expected=_TOKEN_IN_STRING_FIELD)
+    delta = pd.parse_pm_review_delta(spec, rounds)          # 구조 스캔 — malformed 없이 성립.
+    assert [finding.id for finding, _disposition in delta.accepted] == ["F-001"]
+
+    row = pd._pm_review_parse_verify_row(                   # 실제 행 파서 — 값 그대로 통과.
+        _verify_row("F-001", expected=_TOKEN_IN_STRING_FIELD),
+    )
+    assert row.expected == _TOKEN_IN_STRING_FIELD
+
+
+def test_requote_touches_only_the_machine_verifiable_slot_inside_the_verify_fence(pd):
+    """재-인용 범위 — 채워진 라운드는 한 글자도 바뀌지 않고(fence 밖 산문의 같은 토큰 포함),
+    손대지 않은 골격에서는 boolean 값 자리만 임시 재-인용되고 다른 필드는 원문 그대로다."""
+    filled = _developer_round_text(pd, [_verify_row("F-001", expected=_TOKEN_IN_STRING_FIELD)])
+    filled += '\n산문에도 같은 토큰이 있다: "machine_verifiable":<true|false>\n'
+    assert pd._pm_review_requote_verify_placeholder(filled) == filled
+
+    fence = _fill_verify_field(
+        _verify_fence_text(pd), "expected", json.dumps(_TOKEN_IN_STRING_FIELD),
+    )
+    seed = f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n{fence}\n```\n"
+    requoted = pd._pm_review_requote_verify_placeholder(seed)
+    payload = json.loads(requoted.split("\n", 1)[1].rsplit("```", 1)[0])
+    row = payload["verifications"][0]
+    assert row["machine_verifiable"] == "<true|false>"   # 구조 스캔용 임시 재-인용.
+    assert row["expected"] == _TOKEN_IN_STRING_FIELD     # 다른 필드는 그대로.

@@ -588,7 +588,13 @@ def _append_disposition(pd, spec_path: Path, rows: list) -> None:
 
 
 def _verify_ids_in(pd, text: str) -> list[str]:
-    body = text.partition(f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n")[2]
+    """시드 골격의 verify 행 ID 목록.
+
+    골격의 `machine_verifiable` 자리는 따옴표 없는 raw 자리표시자라 그대로는 유효 JSON 이 아니다
+    — 엔진의 구조-스캔 전처리와 같은 재-인용을 거친 뒤 파싱한다(자리표시자 문안은 렌더 소유).
+    """
+    body = pd._pm_review_requote_verify_placeholder(text).partition(
+        f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n")[2]
     if not body:
         return []
     return [row["id"] for row in json.loads(body.split("\n```", 1)[0])["verifications"]]
