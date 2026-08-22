@@ -11,8 +11,8 @@
 #    파일이라 pm_update 가 덮으면 커스터마이즈 손실. 대신 파일 자체가 portable-by-construction —
 #    치환 토큰·절대경로 0(${CLAUDE_PROJECT_DIR} + 래퍼 self-resolve)이라 import 복사만으로 어느
 #    머신/프로젝트에서든 정확 동작(재작성 채널 불요). 머신-특정 오버라이드는 settings.local.json
-#    (gitignore). ⚠️ **훅 스크립트/드라이버 9종은 manifest 안이다** — ctx_guard.py·ctx_stop_hook.py·
-#    ctx_stop_hook.sh·ctx_statusline.py·ctx_statusline.sh·precompact_capture_hook.sh·pm_orch_claude.py·run_tests_hook.sh·delegate_channel_guard_hook.sh
+#    (gitignore). ⚠️ **훅 스크립트/드라이버 8종은 manifest 안이다** — ctx_guard.py·ctx_stop_hook.py·
+#    ctx_stop_hook.sh·ctx_statusline.py·ctx_statusline.sh·precompact_capture_hook.sh·pm_orch_claude.py·delegate_channel_guard_hook.sh
 #    (아래 "서브에이전트 훅/드라이버" 절 등재·T-0305 로 전환). settings.json 과 같은 취급이라던
 #    옛 서술은 실측과 어긋나 정정했다. `.claude/` 안에서 **미등재인 건 settings.json 뿐**이다.
 #    이 소유 분할이 곧 세대 혼합 창이라(config 는 채택자·훅 파일은 엔진) pm_update 가 훅 세트
@@ -106,12 +106,11 @@
 .claude/skills    @render
 
 # ── 서브에이전트 훅/드라이버 (엔진-미러·framework-owned 전파·T-0305·ADR-0032 Q3 결착) ──────
-# ctx-guard·checkpoint nudge·statusline·회귀 게이트 훅·relay 드라이버는 board 상수/pm_relay 엔진의 미러라
+# ctx-guard·checkpoint nudge·statusline·relay 드라이버는 board 상수/pm_relay 엔진의 미러라
 #   (test_ctx_default_mirror 가 board↔ctx_guard 상수 동기 강제) framework-owned 전파 대상이다 —
 #   engine safety-훅 fix 가 채택자에 닿게(frozen 근절·H1). canonical 소스는 ship 템플릿
 #   `templates/claude_code/.claude/*` 라 `@source=<루트-상대>` 마커가 채택자 dest `.claude/*` 로
 #   remap 한다(T-0303·ADR-0054·프레임워크 루트 `.claude/` 는 ctx 훅 부재·`--target` self-copy no-op).
-#   run_tests_hook.sh 는 프레임워크 루트 `.claude/` 에도 byte-identical 로 실재라 root-sourced(bare).
 #   치환 토큰 0·portable-by-construction 이라 byte-copy 안전(render 불요·.md 아님).
 #   ⚠️ instance-owned 예외(미등록): settings.json(권한·T-0202)·CLAUDE.md(루트 doc)·local.conf.
 #   precompact_capture_hook.sh는 경계 보존 load-bearing 출하물이라 @source 정식 등재한다.
@@ -123,7 +122,6 @@
 .claude/precompact_capture_hook.sh  @source=templates/claude_code/.claude/precompact_capture_hook.sh
 .claude/pm_orch_claude.py  @source=templates/claude_code/.claude/pm_orch_claude.py
 .claude/delegate_channel_guard_hook.sh  @source=templates/claude_code/.claude/delegate_channel_guard_hook.sh
-.claude/run_tests_hook.sh
 
 # ── manifest 자기전파 (B-selfprop·T-0305·OQ-B1) ──────────────────
 # 매니페스트 자신을 전파해 신 엔트리(위 hook/driver)가 기존 채택자에 도달한다(frozen 근절의 전제).

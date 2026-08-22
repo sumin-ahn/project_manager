@@ -1143,7 +1143,7 @@ def _fire_stop_hook(dest: Path, stdin_payload: dict) -> subprocess.CompletedProc
     claude Code 가 훅을 부르는 방식(래퍼 exec·stdin 에 hook JSON)을 그대로 재현한다 — 래퍼가
     인터프리터 self-resolve 후 ctx_stop_hook.py 를 exec. 엔진-측 스크립트라 LLM 아님·부모 env OK.
     bash 절대경로 경유 스폰 — Windows CreateProcess 는 shebang 스크립트를 직접 실행 못 한다
-    (WinError 193·PM 48차 tier3 실측). POSIX 는 shebang 이 bash 라 동치 (test_run_tests_hook 패턴).
+    (WinError 193·PM 48차 tier3 실측). POSIX 는 shebang 이 bash 라 동치.
     """
     bash = shutil.which("bash") or "bash"
     return subprocess.run(

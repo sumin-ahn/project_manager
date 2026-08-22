@@ -42,6 +42,26 @@
   (`identity_args.single_registration_session`·`lease_row_count`), livegate/회귀 cwd 의 PM 홈 폴백,
   핸드오프의 legacy `wiki/pm_state.md` 결속, `pm_log` 의 legacy pm_state 정체성 층, 솔로 전용
   상수·메시지 (T-0793).
+- **편집 시 자동 회귀 훅(`run_tests_hook.sh`) 폐지 — 기존 채택자는 직접 정리한다.** 상류는 삭제를
+  전파하지 않으므로(`pm_update` 는 상류 삭제를 dest 에 적용하지 않고, `.claude/run_tests_hook.sh` 는
+  manifest **파일** 엔트리라 은퇴 파일 보고에도 안 잡힌다) 기존 인스턴스의 훅은 그대로 계속 돈다.
+  끄려면 **이 순서로** 정리한다.
+  1. `.claude/settings.json` 에서 `hooks.PostToolUse` 의 `run_tests_hook.sh` 블록과
+     `permissions.allow` 의 `"Bash(./.claude/run_tests_hook.sh)"` 행을 지운다.
+  2. 그 다음 `.claude/run_tests_hook.sh` 파일을 지운다.
+  역순(파일 먼저)이면 배선이 남은 편집마다 `not found` 비차단 오류(rc127)가 뜬다. `settings.json` 은
+  인스턴스 소유라 이 편집은 다음 동기에 덮이지 않는다. `local.conf` 의 `test_cmd` 키는 유지한다 —
+  회귀 게이트(`board.py regression`·pre-push 훅)가 같은 키의 주 소비자다.
+
+### Removed
+
+- **편집 시 자동 회귀 훅(`run_tests_hook.sh`) 제거** — `.py` 편집 1회마다 `test_cmd`(전체 회귀)를
+  돌리던 claude_code 전용 `PostToolUse` 훅을 폐지했다. 훅 본체 2본·배선(양 `settings.json` 의
+  `PostToolUse` 블록과 권한 행)·manifest 등재 2본·`pm_import` 어댑터 훅 집합 항목·전용 테스트
+  2파일이 사라진다. 회귀 보장 층은 줄지 않는다 — 이 훅이 실제로 낸 유일한 신호(수집 단계 오류)는
+  티켓 지정 회귀와 push 게이트 회귀가 중복으로 잡고, 전체 회귀의 실행 지점은 릴리즈 절차 1회다.
+  claude_code 채택자의 `.claude/settings.json` 에서 `PostToolUse` 항목이 없어지며, 그 이벤트 자체를
+  금지하지는 않는다(채택자 자작 훅은 무관) (T-0771).
 
 ### Changed
 

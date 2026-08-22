@@ -8,9 +8,6 @@
     양쪽 auto-compact ON(template 은 T-0458 로 autoCompactEnabled:true — 메인은 훅 hard-stop 선행·
     서브에이전트는 compaction 자체 정리). breadcrumb 은 net-less 도그푸딩 root 전용으로 유지.
   - `precompact_capture_hook.sh`: template canonical·manifest @source 정식 출하. root 교체는 PM update 몫.
-  - `run_tests_hook.sh`: byte-identical. 루트 사본이 manifest 전파 **원본**(root-sourced·bare)인데
-    런타임 테스트 하네스는 출하 사본만 복사해 돌린다 — 루트만 깨져도 전 스위트가 green 이던 커버리지
-    갭을 이 동일성으로 기계 폐쇄한다(T-0579).
   - `skills/pm-handoff/SKILL.md`·`skills/pm-dev-delegate/SKILL.md`: byte-identical.
   - `agents/*.md`: byte-identical(4파일).
 
@@ -42,7 +39,6 @@ TEMPLATE_CLAUDE = REPO / "templates" / "claude_code" / ".claude"
 # 상호 참조: `tests/test_board_lint.py::_T0463_TOKEN_FORM_MIRRORS`(12파일·`.claude/` prefix 포함)가
 # 같은 불변식의 상위집합 — 거긴 이 동일성이 render-leak 면제의 근거라는 축이다. 한쪽 수정 시 같이 본다.
 IDENTICAL_RELPATHS = [
-    "run_tests_hook.sh",
     "skills/pm-handoff/SKILL.md",
     "skills/pm-dev-delegate/SKILL.md",
     "skills/pm-wave-claim/SKILL.md",
@@ -76,11 +72,11 @@ def test_hook_registration_sets_asymmetric_both_autocompact_on():
     """
     root = json.loads((ROOT_CLAUDE / "settings.json").read_text(encoding="utf-8"))
     tmpl = json.loads((TEMPLATE_CLAUDE / "settings.json").read_text(encoding="utf-8"))
-    assert set(root.get("hooks", {})) == {"PostToolUse", "PreToolUse", "PreCompact"}, (
+    assert set(root.get("hooks", {})) == {"PreToolUse", "PreCompact"}, (
         f"root 등록 훅 집합 드리프트: {set(root.get('hooks', {}))}"
     )
     assert set(tmpl.get("hooks", {})) == {
-        "PostToolUse", "PreToolUse", "UserPromptSubmit", "PreCompact", "PostCompact",
+        "PreToolUse", "UserPromptSubmit", "PreCompact", "PostCompact",
     }, (
         f"template 등록 훅 집합 드리프트: {set(tmpl.get('hooks', {}))}"
     )
@@ -115,11 +111,9 @@ def test_hook_registration_sets_asymmetric_both_autocompact_on():
 # ── byte-identical 어댑터 산출물 (hook·skills·agents) ─────────────────────────
 
 def test_adapter_artifacts_byte_identical():
-    """회귀 훅·pm-handoff/pm-dev-delegate skill·agents 4파일이 양 트리 byte-identical.
+    """pm-handoff/pm-dev-delegate/pm-wave-claim/pm-worktree skill·agents 4파일이 양 트리 byte-identical.
 
     각 파일에 대해 양 트리 존재 + 바이트 동일 검증 (pm_update 전파 무드리프트).
-    `run_tests_hook.sh` 는 여기가 **루트 사본의 유일한 기계 커버리지**다 — 훅 런타임 테스트는 출하
-    사본을 tmp repo 로 복사해 돌리므로, 이 동일성이 깨지지 않아야 루트 사본의 검증이 성립한다.
     """
     for relpath in IDENTICAL_RELPATHS:
         root_path = ROOT_CLAUDE / relpath
@@ -160,7 +154,7 @@ def test_claude_native_ticket_rounds_use_agent_contract_for_three_roles():
 # ── T-0202: settings.json portable-by-construction 가드 (manifest-out·render 미탑승) ──
 # 결정 A(사용자 2026-07-02) + T-0305 amend(ADR-0032 Q3): **settings.json** 은 engine.manifest **밖**
 # (adopter config·인스턴스 소유·pm_update 미갱신)이라 import/update 의 토큰 치환 파이프라인을 안 탄다.
-# (훅 스크립트 ctx_*.py·.sh·run_tests_hook.sh·pm_orch 는 T-0305 로 manifest-**in**=engine-mirror 전파 —
+# (훅 스크립트 ctx_*.py·.sh·pm_orch 는 T-0305 로 manifest-**in**=engine-mirror 전파 —
 #  이 가드는 settings.json 의 portable 성질만 검사하고 훅 파일 존재/실행비트는 확인한다.)
 # 대신 파일 자체가 portable-by-construction — 치환 토큰·머신-특정 절대경로 0(${CLAUDE_PROJECT_DIR}
 # +상대경로+래퍼 self-resolve)이라 어느 머신/프로젝트로 verbatim 복사돼도 그대로 동작한다. 이

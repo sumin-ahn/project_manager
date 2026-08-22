@@ -3,8 +3,8 @@ r"""ctx 래퍼(.sh) 런타임 smoke — statusline/ctx_stop 발화의 *래퍼 �
 `test_claude_ctx_guard.py` 는 backbone `.py`(ctx_guard·ctx_statusline·ctx_stop_hook)를 importlib
 로 직접 로드해 검증한다 — 하지만 실제 배선은 settings.json → **래퍼(.sh)** → 인터프리터 self-resolve
 → `.py` exec 다(T-0202). 그 *래퍼 경유* 런타임 경로엔 자동 가드가 0 이었다: PM 48차 Windows 실측에서
-죽어 있던 층이 정확히 이 래퍼(rc126)인데, [[T-0209]] fix 후 자동 가드는 run_tests_hook 만 생겼고
-([[T-0210]]), ctx 래퍼 2종은 수동 실측뿐이었다.
+죽어 있던 층이 정확히 이 래퍼(rc126)인데, [[T-0209]] fix 후에도([[T-0210]]) ctx 래퍼 2종은
+수동 실측뿐이었다.
 
 회귀 클래스: 래퍼가 인터프리터를 *실행검증*(`--version` rc)이 아니라 구 *존재검증*(`command -v
 python3`)으로 되돌리면, Windows WindowsApps 가짜 python3 shim(command -v 통과·실행 시 rc126)을 못
@@ -12,7 +12,7 @@ python3`)으로 되돌리면, Windows WindowsApps 가짜 python3 shim(command -v
 결정적으로 박제해 그 회귀를 잡는다(개발 중 sensitivity 실측: 래퍼를 구 패턴으로 되돌리면 이 박스에서
 statusline/최종 넛지가 발화 실패 → 여기 단언이 fail).
 
-하니스는 `test_run_tests_hook.py` 패턴을 미러한다: `shutil.which("bash")` 절대경로(WSL 런처 아닌
+하니스 구성: `shutil.which("bash")` 절대경로(WSL 런처 아닌
 Git Bash·Windows-form 경로 일관)·hermetic tmp repo(.claude/ 래퍼+backbone 사본, 실 repo 무오염)·
 인터프리터 PATH 구성. stdin JSON 은 json.dumps 로 만들어 실제 하네스와 동일한 유효 이스케이프를 준다.
 
@@ -44,7 +44,7 @@ _CLAUDE_FILES = (
 
 # subprocess 는 CreateProcess 검색순상 System32\bash.exe(WSL 런처)를 PATH 의 Git Bash 보다 먼저 집는데
 # WSL bash 는 `/mnt/c/…` 마운트라 Windows-form 경로를 못 연다 — shutil.which("bash")(=PATH 순=Git Bash)
-# 절대경로로 실행해 일관된 POSIX 셸을 쓴다(test_run_tests_hook 과 동일 소스·Linux 는 /usr/bin/bash).
+# 절대경로로 실행해 일관된 POSIX 셸을 쓴다(Linux 는 /usr/bin/bash).
 BASH = shutil.which("bash")
 requires_bash = pytest.mark.skipif(BASH is None, reason="bash 부재 — POSIX/Git Bash 래퍼 e2e 불가")
 
@@ -57,7 +57,7 @@ _STOP_INPUT_TOKENS = 190_000
 _OK_USED_TOKENS = 100_000
 
 
-# ── hermetic repo + 인터프리터 env (test_run_tests_hook 미러) ──────────────────
+# ── hermetic repo + 인터프리터 env ───────────────────────────────────────────
 
 def _make_ctx_repo(tmp_path: Path) -> tuple[Path, Path]:
     """래퍼가 기대하는 최소 repo — `.claude/` 에 래퍼+backbone 사본 + repo_root 앵커.

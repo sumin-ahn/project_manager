@@ -4634,10 +4634,10 @@ def test_add_harness_guest_registration_within_namespace_or_flavor_render(
 # 출하 flavor manifest 가 지금 들고 있는 **어댑터 네임스페이스 엔진 파일**(비-`@render`) 수 —
 #   codex `.codex/{pm_orch_codex.py,rules/default.rules}` 2 · opencode `.opencode/{lib,plugins,
 #   pm_orch_opencode.py,.gitignore}` 4 · claude ctx 가드 5종 + `pm_orch_claude.py` +
-#   `run_tests_hook.sh` + `precompact_capture_hook.sh` 8. 구조 단언과 별개로 **수**를 못박아,
-#   새로 얹을 때 그것이 guest 채널을 타는지 사람이 한 번 확인하게 만든다(등재 누락 = 그 하네스의
-#   영구 동결). codex 의 2번째가 T-0584 로 편입된 execpolicy rules 다.
-_GUEST_ENGINE_ROW_COUNT = {"codex": 2, "opencode": 4, "claude": 9}
+#   `precompact_capture_hook.sh` + `delegate_channel_guard_hook.sh` 8. 구조 단언과 별개로
+#   **수**를 못박아, 새로 얹을 때 그것이 guest 채널을 타는지 사람이 한 번 확인하게 만든다
+#   (등재 누락 = 그 하네스의 영구 동결). codex 의 2번째가 T-0584 로 편입된 execpolicy rules 다.
+_GUEST_ENGINE_ROW_COUNT = {"codex": 2, "opencode": 4, "claude": 8}
 
 
 @pytest.mark.parametrize("base,added", _ADD_HARNESS_APPLY_PAIRS)

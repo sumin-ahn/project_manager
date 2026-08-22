@@ -84,7 +84,7 @@ CLAUDE_ONLY_PATHS = {
     ".claude/ctx_guard.py", ".claude/ctx_stop_hook.py", ".claude/ctx_stop_hook.sh",
     ".claude/ctx_statusline.py", ".claude/ctx_statusline.sh",
     ".claude/precompact_capture_hook.sh",
-    ".claude/pm_orch_claude.py", ".claude/run_tests_hook.sh",
+    ".claude/pm_orch_claude.py",
     ".claude/delegate_channel_guard_hook.sh",
 }
 # codex 트리(ADR-0070)의 정당한 manifest 차이(3-way·화이트리스트). claude_code 대비:
@@ -117,7 +117,7 @@ CLAUDE_HOOK_PATHS = frozenset({
     ".claude/ctx_guard.py", ".claude/ctx_stop_hook.py", ".claude/ctx_stop_hook.sh",
     ".claude/ctx_statusline.py", ".claude/ctx_statusline.sh",
     ".claude/precompact_capture_hook.sh",
-    ".claude/pm_orch_claude.py", ".claude/run_tests_hook.sh",
+    ".claude/pm_orch_claude.py",
     ".claude/delegate_channel_guard_hook.sh",
 })
 OPENCODE_HOOK_PATHS = frozenset({
@@ -300,11 +300,11 @@ def _entry_source_rel(pm_update, manifest: Path, relpath: str) -> str | None:
 
 
 def test_claude_manifests_register_engine_mirror_hooks_and_driver():
-    """루트·claude_code manifest 가 ctx 훅·회귀 훅·relay 드라이버를 engine-mirror 로 등록 (T-0305).
+    """루트·claude_code manifest 가 ctx 훅·relay 드라이버를 engine-mirror 로 등록 (T-0305).
 
     frozen 근절 — 이 파일들이 manifest 안이라야 pm-update self-update 로 전파된다(엔진 safety-훅 fix
     가 채택자에 닿음). ctx 훅/드라이버는 ship 템플릿(templates/claude_code/.claude/*)이 canonical 이라
-    `@source=` remap 을 달고, run_tests_hook.sh 는 루트 `.claude/` 실재라 root-sourced(bare)."""
+    전원 `@source=` remap 을 단다(T-0771 로 bare 회귀 훅 행이 사라져 예외가 0)."""
     pm_update = _load_pm_update()
     for name, manifest in (("root", ROOT_MANIFEST), ("claude_code", CC_MANIFEST)):
         paths = _manifest_path_set(manifest)
@@ -312,7 +312,7 @@ def test_claude_manifests_register_engine_mirror_hooks_and_driver():
         assert not missing, f"{name} manifest 에 engine-mirror hook/driver 미등록: {sorted(missing)}"
         # ctx 훅/드라이버(루트 .claude/ 부재)는 @source=templates/claude_code/... remap 필수 —
         # 안 달면 self-update 가 루트에서 소스를 못 찾아 rc2(전파 실패).
-        for rel in CLAUDE_HOOK_PATHS - {".claude/run_tests_hook.sh"}:
+        for rel in CLAUDE_HOOK_PATHS:
             src = _entry_source_rel(pm_update, manifest, rel)
             assert src == f"templates/claude_code/{rel}", (
                 f"{name} manifest {rel} 의 @source remap 이 templates/claude_code/ 를 가리키지 않음: {src!r}")

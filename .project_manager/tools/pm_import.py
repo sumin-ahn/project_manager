@@ -629,7 +629,7 @@ class AdapterHookSetSpec(NamedTuple):
     coupled_groups : **한 세대로 함께 옮겨야** 하는 묶음(로드 시점 결합). 부분 전파가 묶음의
                      일부만 갱신하면 그 자리에서 세대가 갈린다. `live_files` 와 관심사가 다르다 —
                      저쪽은 "원자 write 대상"(파일 단위 torn read)이고 이쪽은 "함께 움직여야
-                     하는 단위"다. 결합이 없는 파일(독립 relay 드라이버·회귀 게이트 훅)은 어느
+                     하는 단위"다. 결합이 없는 파일(독립 relay 드라이버·위임 채널 가드)은 어느
                      묶음에도 들지 않아 단건 전파가 정당하다.
     entrypoints    : 이 엔진 세대가 config 에 기대하는 **범용 진입점**(`AdapterHookEntrypoint`).
                      역방향 축이라 판정은 loud advisory 다 — config 는 채택자 소유이고 그 파일엔
@@ -654,7 +654,6 @@ ADAPTER_HOOK_SET = {
             ".claude/delegate_channel_guard_hook.sh",
             ".claude/precompact_capture_hook.sh",
             ".claude/pm_orch_claude.py",
-            ".claude/run_tests_hook.sh",
         ),
         flag_support={
             # T-0587 이 도입한 세대 결합 — settings.json 의 Bash 매처가 이 플래그를 넘기고,
