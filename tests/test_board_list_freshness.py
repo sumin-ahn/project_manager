@@ -92,19 +92,19 @@ def _wire_board_git(board, monkeypatch, **kw):
     monkeypatch.setattr(board, "_board_git", _fake_board_git(**kw))
 
 
-# ── _board_git_freshness_line — 판정 3분기 + solo 생략 ────────────────────────
+# ── _board_git_freshness — 판정 3분기 + solo 생략 ────────────────────────
 
 def test_freshness_line_online_up_to_date(board, monkeypatch):
     """online·behind0·ahead0 → `board-git: 최신` (부트스트랩 판정 재사용)."""
     _wire_board_git(board, monkeypatch, fetch_rc=0, ab_out="0\t0")
-    line = board._board_git_freshness_line()
+    line = board._board_git_freshness().line
     assert line == "board-git: 최신"
 
 
 def test_freshness_line_offline_undetermined(board, monkeypatch):
     """offline(fetch 실패) → 판정불가 fail-soft (stale 스냅샷을 최신으로 오단정 안 함·T-0341 상속)."""
     _wire_board_git(board, monkeypatch, fetch_rc=1, ab_out="0\t0")
-    line = board._board_git_freshness_line()
+    line = board._board_git_freshness().line
     assert line is not None
     assert "판정불가 — 스냅샷일 수 있음" in line
     assert "최신" not in line              # offline 은 "최신" 을 주장하지 않는다.
@@ -114,7 +114,7 @@ def test_freshness_line_offline_undetermined(board, monkeypatch):
 def test_freshness_line_behind_warns(board, monkeypatch):
     """online·behind>0 → `behind N` + 수동 동기 필요 경고 (behind 시 경고·advisory)."""
     _wire_board_git(board, monkeypatch, fetch_rc=0, ab_out="0\t3")
-    line = board._board_git_freshness_line()
+    line = board._board_git_freshness().line
     assert line is not None
     assert "behind 3" in line
     assert "수동 동기 필요" in line
@@ -123,14 +123,14 @@ def test_freshness_line_behind_warns(board, monkeypatch):
 def test_freshness_line_solo_non_git_omitted(board, monkeypatch):
     """solo/board 비-git(`_board_git_enabled()` False) → None (표면화 생략·오탐 0)."""
     monkeypatch.setattr(board, "_board_git_enabled", lambda: False)
-    assert board._board_git_freshness_line() is None
+    assert board._board_git_freshness().line is None
 
 
 def test_freshness_line_pm_bootstrap_load_fail_omitted(board, monkeypatch):
     """pm_bootstrap 로드 실패 → None (fail-soft·advisory 라 무발화)."""
     monkeypatch.setattr(board, "_board_git_enabled", lambda: True)
     monkeypatch.setattr(board, "_load_pm_bootstrap_module", lambda: None)
-    assert board._board_git_freshness_line() is None
+    assert board._board_git_freshness().line is None
 
 
 def test_freshness_judgment_is_single_sourced(board, monkeypatch):
@@ -143,7 +143,7 @@ def test_freshness_judgment_is_single_sourced(board, monkeypatch):
     real_pmb = board._load_pm_bootstrap_module()
     monkeypatch.setattr(real_pmb, "_format_freshness", lambda scope: "SENTINEL")
     monkeypatch.setattr(board, "_load_pm_bootstrap_module", lambda: real_pmb)
-    assert board._board_git_freshness_line() == "board-git: SENTINEL"
+    assert board._board_git_freshness().line == "board-git: SENTINEL"
 
 
 # ── advisory fetch 조율 (T-0379 should-fix): FETCH_HEAD TTL 가드 + 5s timeout ──
@@ -184,7 +184,7 @@ def test_freshness_skips_fetch_when_fetch_head_fresh(board, monkeypatch, tmp_pat
     fake = _FakeBoardGit(fetch_head_path=fh, ab_out="0\t0")
     monkeypatch.setattr(board, "_board_git_enabled", lambda: True)
     monkeypatch.setattr(board, "_board_git", fake)
-    line = board._board_git_freshness_line()
+    line = board._board_git_freshness().line
     assert line == "board-git: 최신"
     assert fake.fetch_calls == []          # fetch 생략(TTL 재사용).
 
@@ -195,7 +195,7 @@ def test_freshness_runs_fetch_when_fetch_head_stale(board, monkeypatch, tmp_path
     fake = _FakeBoardGit(fetch_head_path=fh, ab_out="0\t0")
     monkeypatch.setattr(board, "_board_git_enabled", lambda: True)
     monkeypatch.setattr(board, "_board_git", fake)
-    board._board_git_freshness_line()
+    board._board_git_freshness()
     assert len(fake.fetch_calls) == 1      # stale → fetch 1회.
 
 
@@ -205,7 +205,7 @@ def test_advisory_fetch_timeout_is_5s(board, monkeypatch, tmp_path):
     fake = _FakeBoardGit(fetch_head_path=fh)
     monkeypatch.setattr(board, "_board_git_enabled", lambda: True)
     monkeypatch.setattr(board, "_board_git", fake)
-    board._board_git_freshness_line()
+    board._board_git_freshness()
     assert fake.fetch_calls, "fetch 가 호출되지 않았다"
     assert fake.fetch_calls[0]["timeout"] == board._FRESHNESS_FETCH_TIMEOUT_SECONDS == 5
 
@@ -216,7 +216,7 @@ def test_pm_bootstrap_not_loaded_when_non_git(board, monkeypatch):
     def _boom():
         raise AssertionError("비-git 인데 pm_bootstrap 로드가 일어남")
     monkeypatch.setattr(board, "_load_pm_bootstrap_module", _boom)
-    assert board._board_git_freshness_line() is None
+    assert board._board_git_freshness().line is None
 
 
 # ── cmd_list 통합: freshness → stderr(stdout 무오염) · solo 생략 ───────────────

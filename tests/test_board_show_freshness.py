@@ -133,6 +133,16 @@ def _show_args(tid: str = "T-0001") -> argparse.Namespace:
     return argparse.Namespace(id=tid)
 
 
+def _expected_show_stdout(ticket_path: Path, tid: str = "T-0001",
+                          status: str = "open") -> str:
+    """`show` stdout 의 baseline — 헤더 1줄 + 명세 전문(라운드 0건)뿐이다.
+
+    T-0782 의 핵심 계약이 "신선도 표기는 stderr 전용·stdout 무오염" 이라, 포함 여부가 아니라
+    **정확일치**로 고정한다(freshness 문구가 한 글자라도 stdout 에 섞이면 red)."""
+    body = ticket_path.read_text(encoding="utf-8")
+    return f"-- {tid} ({status}/) --\n\n{body}\n"
+
+
 def _list_args(**over) -> argparse.Namespace:
     base = dict(mine=False, repo=None, slot=None, task=None, tag=None, status=None)
     base.update(over)
@@ -148,14 +158,20 @@ def test_show_surfaces_ticket_local_remote_status_mismatch(board, tmp_path, caps
     _make_board_git(tmp_path, remote=bare)
     _advance_other_clone(bare, tmp_path, dest_status="done")
 
+    board_dir = tmp_path / ".project_manager" / "board"
     rc = board.cmd_show(_show_args())
     assert rc == 0
-    err = capsys.readouterr().err
-    assert "T-0001" in err
-    assert "로컬 status=open" in err
-    assert "원격-추적 status=done" in err
-    assert "behind" in err
-    assert "로컬 사본 stale" in err
+    cap = capsys.readouterr()
+    # 역방향(F-001): upstream 이 있는 정상 형상에서는 전역 freshness 줄도 그대로 나온다.
+    assert "board-git:" in cap.err
+    assert "T-0001" in cap.err
+    assert "로컬 status=open" in cap.err
+    assert "원격-추적 status=done" in cap.err
+    assert "behind" in cap.err
+    assert "로컬 사본 stale" in cap.err
+    # F-004: stdout 은 baseline 과 정확히 같다(신선도 문구 무혼입).
+    assert cap.out == _expected_show_stdout(
+        board_dir / "tickets" / "open" / "T-0001-t.md")
 
 
 @requires_git
@@ -210,16 +226,75 @@ def test_show_does_not_mutate_board_working_tree(board, tmp_path, capsys):
 @requires_git
 def test_show_offline_degrades_without_crash_or_false_currency_claim(board, tmp_path, capsys):
     bare = _bare(tmp_path, "bare-show-offline")
-    _make_board_git(tmp_path, remote=bare)
+    board_dir = _make_board_git(tmp_path, remote=bare)
     _force_rmtree(bare)   # 원격 도달 불가.
 
     rc = board.cmd_show(_show_args())
     assert rc == 0
     cap = capsys.readouterr()
-    assert "T-0001" in cap.out           # stdout 은 정상 조회를 유지한다.
+    assert cap.out == _expected_show_stdout(   # stdout 은 baseline 그대로.
+        board_dir / "tickets" / "open" / "T-0001-t.md")
     assert "판정불가" in cap.err or "fetch 실패" in cap.err
     assert "board-git: 최신" not in cap.err   # offline 을 "최신"으로 오단정하지 않는다.
     assert "로컬 사본 stale" not in cap.err   # 원격 판정 불가면 불일치도 단정하지 않는다.
+
+
+# ── 검증되지 않은 스냅샷(캐시 불일치 + TTL 밖 + fetch 실패) — 단정 금지 ────────
+
+@requires_git
+def test_show_withholds_mismatch_verdict_when_remote_snapshot_unverified(
+        board, tmp_path, capsys):
+    """캐시된 원격-추적 ref 에 불일치가 남아 있어도, 이번 조회가 원격을 검증 못 했으면 단정 0.
+
+    형상: 원격이 done 으로 앞선 뒤 **실제로 fetch** 해서 추적 ref 에 불일치를 적재 →
+    FETCH_HEAD mtime 을 TTL(60s) 밖으로 되돌림 → bare remote 삭제로 도달 불가. 이때
+    남아 있는 추적 ref 는 *검증되지 않은 캐시*라 "로컬 사본 stale" 은 판정이 아니라 추측이다
+    — 전역 줄이 판정불가를 말하는 같은 흐름에서 티켓 단정이 나오면 두 줄이 서로를 부정한다.
+    """
+    bare = _bare(tmp_path, "bare-show-cached-mismatch")
+    board_dir = _make_board_git(tmp_path, remote=bare)
+    _advance_other_clone(bare, tmp_path, dest_status="done")
+
+    _git(["fetch", "origin"], board_dir)      # 추적 ref 에 불일치(원격 done)를 실제로 적재.
+    tracked = _git(["ls-tree", "-r", "--name-only", "refs/remotes/origin/main",
+                    "--", "tickets/"], board_dir).stdout
+    assert "tickets/done/T-0001-t.md" in tracked, tracked   # 캐시 불일치 적재 확인.
+
+    fetch_head = board_dir / ".git" / "FETCH_HEAD"
+    assert fetch_head.exists()
+    stale_ts = time.time() - 120              # TTL(60s) 밖 → 이번 조회는 재검증이 필요하다.
+    os.utime(fetch_head, (stale_ts, stale_ts))
+    _force_rmtree(bare)                       # 그런데 원격 도달 불가 → fetch 실패(검증 불가).
+
+    rc = board.cmd_show(_show_args())
+    assert rc == 0
+    cap = capsys.readouterr()
+    assert cap.out == _expected_show_stdout(
+        board_dir / "tickets" / "open" / "T-0001-t.md")
+    assert "판정불가" in cap.err or "fetch 실패" in cap.err   # 강등은 전역 줄이 말한다.
+    assert "로컬 사본 stale" not in cap.err    # 검증 못 한 캐시로 stale 을 단정하지 않는다.
+    assert "원격-추적 status" not in cap.err   # 문구 완화가 아니라 **판정 자체를 안 낸다**.
+
+
+# ── 원격에는 tickets/ 가 있으나 이 티켓만 없는 형상 — 조회 정상·단정 0 ────────
+
+@requires_git
+def test_show_silent_when_ticket_absent_from_remote_tracking(board, tmp_path, capsys):
+    """원격 추적에는 다른 티켓만 있고 이 티켓이 없으면(로컬 신규) rc=0·stdout 정상·단정 0."""
+    bare = _bare(tmp_path, "bare-show-absent")
+    board_dir = _make_board_git(tmp_path, remote=bare, tid="T-0002")
+    (board_dir / "tickets" / "open" / "T-0001-t.md").write_text(
+        _TICKET_TEXT.format(tid="T-0001"), encoding="utf-8")
+    _git(["add", "-A"], board_dir)
+    _git(["commit", "-qm", "local-only T-0001"], board_dir)   # 원격엔 push 하지 않는다.
+
+    rc = board.cmd_show(_show_args("T-0001"))
+    assert rc == 0
+    cap = capsys.readouterr()
+    assert cap.out == _expected_show_stdout(
+        board_dir / "tickets" / "open" / "T-0001-t.md")
+    assert "board-git:" in cap.err            # 원격은 도달 가능 — 전역 줄은 그대로 나온다.
+    assert "로컬 사본 stale" not in cap.err    # 원격에 없는 티켓을 stale 이라 하지 않는다.
 
 
 # ── board 비-git — 무출력·무오탐·rc=0 ──────────────────────────────────────
@@ -233,24 +308,26 @@ def _make_legacy_project(tmp_path: Path, tid: str = "T-0001") -> None:
 
 
 def test_show_non_git_board_no_freshness_output(board, tmp_path, capsys):
+    """board 비-git — stderr 는 존재가 아니라 **값**으로 무출력이고 stdout 은 baseline 이다."""
     _make_legacy_project(tmp_path)
     rc = board.cmd_show(_show_args())
     assert rc == 0
     cap = capsys.readouterr()
-    assert "board-git:" not in cap.err
-    assert "로컬 사본 stale" not in cap.err
+    assert cap.err == ""
+    assert cap.out == _expected_show_stdout(
+        tmp_path / ".project_manager" / "wiki" / "tickets" / "open" / "T-0001-t.md")
 
 
 # ── board-git 이지만 원격(upstream) 없음 — 비-git 과 별개의 정상 형상 ──────────
 
 @requires_git
-def test_show_board_git_without_upstream_no_crash_no_false_currency(board, tmp_path, capsys):
-    """board 가 별도 git 이지만 remote/upstream 미설정(단일 로컬) → 정상 조회·rc=0·무오탐.
+def test_show_board_git_without_upstream_is_silent(board, tmp_path, capsys):
+    """board 가 별도 git 이지만 remote/upstream 미설정(단일 로컬) → **완전 무출력**·rc=0.
 
-    전역 freshness 줄(`_print_board_freshness`)은 이 형상을 offline 과 동형으로 다뤄 기존
-    "판정불가" advisory 를 낸다(T-0782 가 건드리지 않는 기배선 동작) — 무출력은 아니지만
-    "최신" 을 오단정하지 않는다(무오탐). 이 티켓이 새로 추가한 티켓 단위 불일치 줄은 upstream
-    이 없으면 판정 재료가 없어 침묵한다(`_print_ticket_remote_mismatch` 자체 게이트)."""
+    대조할 원격이 없으면 신선도라는 개념 자체가 없다(명세 §완료조건 "board 비-git·upstream
+    부재에서 읽기가 무출력/무오탐이고 rc=0"). show 는 네트워크 0 인 `_board_git_upstream`
+    으로 이 형상을 먼저 갈라 전역 freshness 줄과 티켓 불일치 줄을 **둘 다** 생략한다 —
+    무출력을 존재가 아니라 `cap.err == ""` 값으로 고정한다."""
     board_dir = tmp_path / ".project_manager" / "board"
     for status in ("open", "claimed", "blocked", "done"):
         (board_dir / "tickets" / status).mkdir(parents=True, exist_ok=True)
@@ -263,9 +340,9 @@ def test_show_board_git_without_upstream_no_crash_no_false_currency(board, tmp_p
     rc = board.cmd_show(_show_args())
     assert rc == 0
     cap = capsys.readouterr()
-    assert "T-0001" in cap.out
-    assert "board-git: 최신" not in cap.err   # upstream 없음을 "최신"으로 오단정하지 않는다.
-    assert "로컬 사본 stale" not in cap.err   # 이 티켓의 신규 줄은 upstream 미상이면 침묵한다.
+    assert cap.err == ""
+    assert cap.out == _expected_show_stdout(
+        board_dir / "tickets" / "open" / "T-0001-t.md")
 
 
 # ── TTL: FETCH_HEAD 를 실제로 조작해 fetch 생략/재실행을 확인 ──────────────────
@@ -293,7 +370,8 @@ def test_show_skips_fetch_when_fetch_head_within_ttl(board, tmp_path, capsys, mo
     err = capsys.readouterr().err
     assert not any(c and c[0] == "fetch" for c in calls), \
         f"TTL 이내인데 show 가 fetch 를 호출함: {calls}"
-    # fetch 를 안 불렀어도 직전 fetch 로 갱신된 추적 ref 로 불일치는 여전히 표기된다.
+    # 역방향(F-002): TTL 이내 스냅샷은 **검증된** 스냅샷이다 — fetch 를 안 불렀어도 직전
+    # fetch 로 갱신된 추적 ref 로 불일치 단정이 그대로 나온다(판정을 통째로 없애지 않았다).
     assert "로컬 사본 stale" in err
 
 
@@ -324,6 +402,38 @@ def test_show_runs_fetch_when_fetch_head_stale(board, tmp_path, capsys, monkeypa
         f"TTL 밖인데 show 가 fetch 를 호출하지 않음: {calls}"
 
 
+# ── behind 수치의 정직성 — known/unknown 보존 (실 git 계산 경로) ──────────────
+
+@requires_git
+def test_board_git_behind_returns_real_zero_when_up_to_date(board, tmp_path):
+    """원격과 같은 커밋이면 실측 0 을 낸다 — 폴백 0 이 아니라 **계산된** 0(known)."""
+    bare = _bare(tmp_path, "bare-behind-zero")
+    _make_board_git(tmp_path, remote=bare)
+    upstream = board._board_git_upstream()
+    assert upstream is not None
+    assert board._board_git_behind(upstream.tracking) == 0
+
+
+@requires_git
+def test_board_git_behind_returns_real_count_when_remote_advances(board, tmp_path):
+    """원격이 1커밋 앞서면 1 — 진단이 싣는 수치가 실측임을 실 git 으로 고정한다."""
+    bare = _bare(tmp_path, "bare-behind-one")
+    board_dir = _make_board_git(tmp_path, remote=bare)
+    _advance_other_clone(bare, tmp_path, dest_status="done")
+    _git(["fetch", "origin"], board_dir)
+    upstream = board._board_git_upstream()
+    assert upstream is not None
+    assert board._board_git_behind(upstream.tracking) == 1
+
+
+@requires_git
+def test_board_git_behind_returns_none_when_rev_list_fails(board, tmp_path):
+    """rev-list 가 실패하면(없는 추적 ref) 0 이 아니라 None — 계산 불능은 값이 아니다."""
+    bare = _bare(tmp_path, "bare-behind-unknown")
+    _make_board_git(tmp_path, remote=bare)
+    assert board._board_git_behind("refs/remotes/origin/no-such-branch") is None
+
+
 # ── claim 거부 문구 — 로컬 stale 진술 + 원격 status + behind 3요소 (순수 함수) ──
 
 def test_claim_block_message_race_lost_states_stale_and_behind():
@@ -335,3 +445,60 @@ def test_claim_block_message_race_lost_states_stale_and_behind():
     assert "done/" in msg
     assert "로컬 사본이 stale" in msg
     assert "3 커밋" in msg
+
+
+def test_claim_block_message_race_lost_states_actual_zero():
+    """실측 0 은 그대로 0 이라고 말한다 — unknown 처리가 정상 수치를 삼키면 안 된다."""
+    mod = _load_board()
+    prefetch = mod._ClaimPrefetch(
+        block=mod._CLAIM_BLOCK_RACE_LOST, detail="done", behind=0)
+    msg = mod._claim_block_message("T-0042", prefetch)
+    assert "원격보다 0 커밋 뒤처진 상태" in msg
+    assert "판정불가" not in msg
+
+
+def test_claim_block_message_race_lost_omits_number_when_behind_unknown():
+    """behind 계산 불능(None)이면 수치를 단정하지 않고 판정불가로 표시한다."""
+    mod = _load_board()
+    prefetch = mod._ClaimPrefetch(
+        block=mod._CLAIM_BLOCK_RACE_LOST, detail="done", behind=None)
+    msg = mod._claim_block_message("T-0042", prefetch)
+    assert "커밋 뒤처진 상태" not in msg      # 없는 수치를 지어내지 않는다.
+    assert "판정불가" in msg
+    assert "claim race lost" in msg          # 차단 사유 진술은 그대로.
+    assert "로컬 사본이 stale" in msg        # 원격 선점은 검증된 사실이라 유지.
+
+
+# ── claim 차단 **판단** 은 불변 — 진단 수치만 정직해진다 ──────────────────────
+
+@requires_git
+def test_claim_prefetch_blocks_race_lost_with_real_behind(board, tmp_path):
+    """원격이 done 이면 여전히 RACE_LOST 로 차단하고 behind 는 실측 1 을 싣는다."""
+    bare = _bare(tmp_path, "bare-prefetch-race")
+    _make_board_git(tmp_path, remote=bare)
+    _advance_other_clone(bare, tmp_path, dest_status="done")
+
+    prefetch = board._board_git_claim_prefetch("T-0001")
+    assert prefetch.block == board._CLAIM_BLOCK_RACE_LOST
+    assert prefetch.detail == "done"
+    assert prefetch.behind == 1
+
+
+@requires_git
+def test_claim_prefetch_block_decision_unchanged_when_behind_unknown(
+        board, tmp_path, monkeypatch):
+    """behind 가 계산 불능이어도 차단 판단은 옛 0 폴백과 같다 — 선점만 막고 나머진 통과."""
+    bare = _bare(tmp_path, "bare-prefetch-unknown")
+    _make_board_git(tmp_path, remote=bare)
+    monkeypatch.setattr(board, "_board_git_behind", lambda tracking: None)
+
+    # (1) 선점 없음 → 차단하지 않는다(옛 0 폴백과 동일 방향: 원격이 앞섰다고 보지 않는다).
+    prefetch = board._board_git_claim_prefetch("T-0001")
+    assert prefetch.block is None
+    assert prefetch.anchor
+
+    # (2) 원격 선점 → 여전히 차단한다(수치만 unknown 으로 실린다).
+    _advance_other_clone(bare, tmp_path, dest_status="claimed")
+    blocked = board._board_git_claim_prefetch("T-0001")
+    assert blocked.block == board._CLAIM_BLOCK_RACE_LOST
+    assert blocked.behind is None

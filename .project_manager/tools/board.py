@@ -5373,22 +5373,26 @@ def _board_git_remote_ticket_status(tracking: str, ticket_id: str) -> str | None
     return None
 
 
-def _board_git_behind(tracking: str) -> int:
-    """원격이 로컬보다 앞선 커밋 수 (`HEAD..<tracking>`) — 판정 불가면 0.
+def _board_git_behind(tracking: str) -> int | None:
+    """원격이 로컬보다 앞선 커밋 수 (`HEAD..<tracking>`) — **계산 불가면 None**(판정불가).
 
-    0 폴백은 보수적 방향이다: behind 를 모르면 "원격이 안 앞섬" 으로 보고 **차단하지 않는다**
-    (소유 확정 권위는 어차피 push CAS 라, 여기서 막을 이유가 없다).
+    옛 구현은 예외·rc≠0·비정수를 전부 0 으로 접었다. **차단 판단**에는 그 폴백이 보수적이지만
+    (behind 를 모르면 "원격이 안 앞섬" 으로 보고 차단하지 않는다 — 소유 확정 권위는 어차피
+    push CAS 다), **진단 문구**에서는 계산 불능과 실제 0 이 구별되지 않아 "원격보다 0 커밋
+    뒤처진 상태" 라는 거짓 실측 진술이 나왔다. 그래서 값은 known/unknown 을 보존하고, 차단
+    방향의 보수적 해석은 호출부가 `None = 앞서지 않음` 으로 명시한다 — 판단은 불변이고 문구만
+    정직해진다.
     """
     try:
         r = _board_git(["rev-list", "--count", f"HEAD..{tracking}"])
-    except Exception:  # noqa: BLE001 — fail-soft: 조회 예외는 0(차단하지 않음).
-        return 0
+    except Exception:  # noqa: BLE001 — fail-soft: 조회 예외는 판정 불가(None).
+        return None
     if r.returncode != 0:
-        return 0
+        return None
     try:
         return int(r.stdout.strip())
     except ValueError:
-        return 0
+        return None
 
 
 def _board_git_remote_tip(upstream: _BoardGitUpstream) -> str | None:
@@ -5980,8 +5984,8 @@ class _ClaimPrefetch(NamedTuple):
     """`<sha>` = 정상 진행(rollback 복귀 지점) · `""` = board-git 비활성(legacy) · None = 차단."""
     block: str | None = None
     """`_CLAIM_BLOCK_*` 사유 코드 (None = 진행 가능)."""
-    behind: int = 0
-    """원격이 로컬보다 앞선 커밋 수 — 잔여 차단 진단의 핵심 수치."""
+    behind: int | None = 0
+    """원격이 로컬보다 앞선 커밋 수 — 잔여 차단 진단의 핵심 수치. None = 계산 불가(판정불가)."""
     dirty: tuple[tuple[str, str], ...] = ()
     """차단 시점의 미커밋 변경 `(코드, 경로)` — 안내에 표본 + 총계로 낸다."""
     detail: str = ""
@@ -6039,7 +6043,9 @@ def _board_git_claim_prefetch(ticket_id: str) -> _ClaimPrefetch:
                               behind=_board_git_behind(upstream.tracking))
     # 5. 원격이 앞섰을 때만 통합. 안 앞섰으면 무관 dirty 가 있어도 claim 은 진행한다.
     behind = _board_git_behind(upstream.tracking)
-    if behind > 0:
+    # behind 판정 불가(None)는 옛 0 폴백과 **같은 방향**으로 흘린다 — 원격이 앞섰다고 볼 근거가
+    # 없으면 통합도 차단도 하지 않는다(차단 판단 불변·T-0782 는 진단 문구만 정직하게 한다).
+    if behind is not None and behind > 0:
         try:
             pull = _board_git_pull_rebase()
         except Exception:  # noqa: BLE001 — fail-soft: pull 예외(timeout 등)는 offline 취급.
@@ -6145,10 +6151,15 @@ def _claim_block_message(ticket_id: str, prefetch: _ClaimPrefetch) -> str:
                 f"`git -C .project_manager/board push -u origin <branch>` 로 upstream 을 설정하라.")
     if prefetch.block == _CLAIM_BLOCK_RACE_LOST:
         where = prefetch.detail or "claimed"
+        # behind 계산 불가(rev-list 실패)면 수치를 지어내지 않는다 — 실측 0 과 판정불가는 다른
+        # 사실이고, 사용자가 읽는 숫자는 실측이어야 한다(T-0782 F-003).
+        gap = (f"원격보다 {behind} 커밋 뒤처진 상태에서 조회됐다"
+               f"(list/show 의 freshness 와 같은 판정)" if behind is not None else
+               "뒤처진 커밋 수는 판정불가다"
+               "(rev-list 실패·list/show 의 freshness 와 같은 판정)")
         return (f"claim race lost on {ticket_id} — 원격 board 에서 이미 {where}/ 상태다"
                 f"(다른 세션이 먼저 잡았거나 이미 처리됨·로컬 변경 0). 로컬 사본이 stale 했다 "
-                f"— 원격보다 {behind} 커밋 뒤처진 상태에서 조회됐다(list/show 의 freshness 와 "
-                f"같은 판정). `board.py list --all` 로 현황을 확인하라.")
+                f"— {gap}. `board.py list --all` 로 현황을 확인하라.")
     if prefetch.block == _CLAIM_BLOCK_DIRTY:
         return (f"board 가 원격보다 {behind} 커밋 뒤졌는데 미커밋 파일이 통합(pull --rebase)을 "
                 f"막는다 — {ticket_id} claim 불가 (offline 아님·네트워크 정상: fetch 성공). "
@@ -6293,7 +6304,7 @@ def _board_git_refresh_after_rollback() -> None:
             return
         _board_git_fetch(upstream.remote)   # 추적 ref 갱신 — 아래 behind 판정의 전제.
         behind = _board_git_behind(upstream.tracking)
-        if behind <= 0:
+        if behind is None or behind <= 0:
             return
         if _board_git_has_tracked_changes():
             print(f"  ⚠ 로컬 board 뷰 stale — 원격이 {behind} 커밋 앞서지만 미커밋 변경이 있어 "
@@ -12053,11 +12064,24 @@ def _load_pm_bootstrap_module():
         return None
 
 
-def _board_git_freshness_line() -> str | None:
-    """board submodule freshness 를 부트스트랩과 **같은 판정**으로 1줄 만든다 (없으면 None).
+class _BoardFreshness(NamedTuple):
+    """freshness 1줄 + 그 줄이 근거로 쓴 원격-추적 스냅샷의 **검증 여부** (T-0782).
 
-    board 비-git(솔로·legacy·`_board_git_enabled()` False)이거나 pm_bootstrap 로드 실패면 None
-    (표면화 생략·오탐 0). 그 외엔 board-git 을 fetch(원격 실측·offline 이면 fail-soft) 후
+    `verified` 는 "이번 조회가 원격을 실측했나" 다 — TTL 이내 직전 fetch 재사용 또는 이번
+    fetch 성공일 때만 True. False 면 남아 있는 원격-추적 ref 는 **검증되지 않은 캐시**라
+    그것으로 티켓 단위 stale 을 단정할 수 없다(판정 불능을 판정으로 위장하지 않는다).
+    freshness 줄 자체는 그 사실을 "판정불가 — 스냅샷일 수 있음" 으로 이미 말한다.
+    """
+
+    line: str | None
+    verified: bool
+
+
+def _board_git_freshness() -> _BoardFreshness:
+    """board submodule freshness 를 부트스트랩과 **같은 판정**으로 1줄 만든다 (없으면 line=None).
+
+    board 비-git(솔로·legacy·`_board_git_enabled()` False)이거나 pm_bootstrap 로드 실패면
+    `line=None`·`verified=False`(표면화 생략·오탐 0). 그 외엔 board-git 을 fetch(원격 실측·offline 이면 fail-soft) 후
     detached/dirty/ahead·behind 를 board.py 자체 board-git 함수로 수집해, pm_bootstrap 의
     `_format_freshness`로 포맷한다 — **판정 단일화**(중복 0). list
     는 read-only 라 pull 하지 않는다(부트스트랩의 자동 ff-pull 과 달리 표면화만·never-block).
@@ -12066,10 +12090,10 @@ def _board_git_freshness_line() -> str | None:
     """
     # board-git 존재 확인을 **먼저** — 비-git 솔로는 pm_bootstrap(4천줄) 로드도 fetch 도 안 한다.
     if not _board_git_enabled():
-        return None
+        return _BoardFreshness(None, False)
     pmb = _load_pm_bootstrap_module()
     if pmb is None:
-        return None
+        return _BoardFreshness(None, False)
     # fetch 전 TTL 가드: 직전 fetch 가 TTL 이내면 재사용(원격 실측된 스냅샷이라
     # fetched=True)·fetch 생략. 아니면 advisory 짧은 timeout(5s)으로 fetch(offline 이면 fail-soft).
     if _board_fetch_head_fresh(_FRESHNESS_FETCH_TTL_SECONDS):
@@ -12098,21 +12122,27 @@ def _board_git_freshness_line() -> str | None:
         # 정확히 채운다(`_behind_warning` = ⚠ behind N — 수동 동기 필요 (fetch/dirty/diverged)).
         scope["dirty"] = bool(_board_git_status_porcelain().strip())
         scope["note"] = pmb._behind_warning(scope)
-    return f"board-git: {pmb._format_freshness(scope)}"
+    return _BoardFreshness(f"board-git: {pmb._format_freshness(scope)}", fetched)
 
 
-def _print_board_freshness() -> None:
-    """board freshness 1줄을 **stderr** 로 표면화한다 (advisory·stdout 목록 포맷 무오염).
+def _print_board_freshness() -> bool:
+    """board freshness 1줄을 **stderr** 로 표면화하고 스냅샷 검증 여부를 돌려준다 (advisory).
 
     stdout 이 아니라 stderr 인 이유: `board list` stdout 를 파싱하는 소비처(회귀 파서·
     pm_bootstrap counts·아래 anti-degrade warn 과 동형)를 오염시키지 않는다. board 비-git/
-    로드 실패면 None → 무출력(조용히 생략·오탐 0)."""
-    line = _board_git_freshness_line()
-    if line is not None:
-        print(line, file=sys.stderr)
+    로드 실패면 line=None → 무출력(조용히 생략·오탐 0).
+
+    반환값은 **이 줄이 근거로 쓴 원격-추적 스냅샷이 실측 검증됐나**(TTL 이내 재사용 또는 이번
+    fetch 성공)다 — 같은 흐름에서 이어지는 티켓 단위 대조가 검증되지 않은 캐시로 단정하지
+    않게 한다(T-0782). `list` 는 이 값을 쓰지 않는다(현행 동작 무변경)."""
+    freshness = _board_git_freshness()
+    if freshness.line is not None:
+        print(freshness.line, file=sys.stderr)
+    return freshness.verified
 
 
-def _print_ticket_remote_mismatch(ticket_id: str, local_status: str) -> None:
+def _print_ticket_remote_mismatch(ticket_id: str, local_status: str, *,
+                                  snapshot_verified: bool) -> None:
     """이 티켓의 로컬 status ↔ 원격-추적 status 불일치를 1줄(stderr) 표면화한다 (T-0782).
 
     `show` 전용 추가 표면 — 전역 요약(`_print_board_freshness`)만으로는 "이 티켓" 이 stale
@@ -12122,11 +12152,19 @@ def _print_ticket_remote_mismatch(ticket_id: str, local_status: str) -> None:
     `_print_board_freshness()` 호출이 TTL 가드(`_board_fetch_head_fresh`)를 통과했을 때만
     이미 advisory fetch 를 했으므로, 여기선 그 결과로 갱신된 원격-추적 ref 를 읽기만 한다.
 
-    무출력(오탐 0) 조건: board 비-git · upstream 미설정 · 원격 판정 불가(`None`·offline 스냅샷
-    부재 포함) · local_status 가 STATUS_DIRS 밖(draft 는 board-git 추적 대상이 아님) · 로컬==원격.
-    이 경우들은 "판정불가/무관"일 뿐 "최신" 을 주장하지 않으므로 I2 를 어기지 않는다 — 전역
-    판정불가 사유는 `_print_board_freshness()` 가 이미 표면화했다.
+    `snapshot_verified` 가 False 면 **판정 자체를 내지 않는다**(문구만 약하게 하지 않는다):
+    원격-추적 ref 는 남아 있어도 이번 조회에서 검증되지 않은 캐시라, 그것으로 "로컬 사본
+    stale" 을 말하면 판정 불능을 판정으로 위장하게 된다. 그 형상의 강등 진술은 전역
+    freshness 줄("판정불가 — 스냅샷일 수 있음")이 이미 낸다 — 같은 사실을 두 줄로 말하지
+    않는다.
+
+    무출력(오탐 0) 조건: 스냅샷 미검증(fetch 실패·TTL 밖) · board 비-git · upstream 미설정 ·
+    원격 판정 불가(`None`·원격에 그 티켓 없음 포함) · local_status 가 STATUS_DIRS 밖(draft 는
+    board-git 추적 대상이 아님) · 로컬==원격. 이 경우들은 "판정불가/무관"일 뿐 "최신" 을
+    주장하지 않으므로 I2 를 어기지 않는다.
     """
+    if not snapshot_verified:
+        return
     if local_status not in STATUS_DIRS:
         return
     if not _board_git_enabled():
@@ -12138,9 +12176,12 @@ def _print_ticket_remote_mismatch(ticket_id: str, local_status: str) -> None:
     if remote_status is None or remote_status == local_status:
         return
     behind = _board_git_behind(upstream.tracking)
+    # behind 계산 불가면 수치를 지어내지 않는다(T-0782 F-003) — 불일치 사실 자체는 검증된
+    # 스냅샷에서 읽었으므로 그대로 말한다.
+    gap = f"behind {behind}" if behind is not None else "behind 판정불가"
     print(
         f"⚠ {ticket_id} 로컬 사본 stale — 로컬 status={local_status} · "
-        f"원격-추적 status={remote_status}(behind {behind}). "
+        f"원격-추적 status={remote_status}({gap}). "
         f"`board.py list` 로 board-git freshness 를 확인하거나 board pull 후 재조회하라.",
         file=sys.stderr,
     )
@@ -13584,9 +13625,16 @@ def cmd_show(args: argparse.Namespace) -> int:
         print(e, file=sys.stderr)
         return 2
     # board-git freshness 표면화 (advisory·stderr·T-0782) — list 와 같은 seam 소환 + 이
-    # 티켓 단위 로컬↔원격 status 불일치 1줄. board 비-git 이면 둘 다 무출력.
-    _print_board_freshness()
-    _print_ticket_remote_mismatch(args.id, status)
+    # 티켓 단위 로컬↔원격 status 불일치 1줄.
+    #
+    # 대조할 원격이 아예 없는 형상(board 비-git · upstream 미설정)은 **둘 다 무출력**이다:
+    # 신선도라는 개념 자체가 없는데 advisory 를 내면 조회 표면에 무의미한 경고가 상주한다
+    # (upstream 판별은 네트워크 0 인 기존 `_board_git_upstream` seam 이 한다). `list` 는
+    # 현행 동작 그대로 둔다(이 게이트는 show 경로에만 있다).
+    if _board_git_enabled() and _board_git_upstream() is not None:
+        snapshot_verified = _print_board_freshness()
+        _print_ticket_remote_mismatch(args.id, status,
+                                      snapshot_verified=snapshot_verified)
     print(f"-- {args.id} ({status}/) --\n")
     body = file_lock.read_text_shared(path, encoding="utf-8")
     print(body)
