@@ -30,7 +30,8 @@ PM 메인세션(claude/codex/opencode 어디든)이 세션을 떠나지 않고 �
                   끝난다. 같은 호출 안에서 **명시 fallback tuple 밖의** 다른 하네스/모델로 자동
                   재시도하지 않고, 실패 안내도 다른 수신자를 권하지 않는다(권유가 곧 무기록
                   대행의 입구다). 재위임 = 사람의 명시 재호출 · 실패는 raw 장부에 잔존.
-  · opt-in 게이트 — `delegate_enabled`(기본 OFF) 비활성 시 rc=3 + stderr 안내(false-green 차단).
+  · 위임 마스터 스위치 — `delegate.enabled`(기본 ON·채널 무관). off 면 `run`·`ticket prepare` 가
+                  rc=3 + stderr 안내(false-green 차단)이고 하네스 훅의 `decide` 도 deny 한다.
   · Codex egress  — Codex sandbox 의 네트워크 차단(`CODEX_SANDBOX_NETWORK_DISABLED`) 환경에서는
                   `--codex-egress-escalated` 호출층 증명이 없는 실행을 스폰·raw 예약·과금 전에
                   rc=1 로 끊고 도구 승격(`sandbox_permissions="require_escalated"`) 처방을 낸다.
@@ -586,9 +587,9 @@ READ_REGRESSION_UNAVAILABLE_NOTE = (
 # (`pm_relay.HARNESS_PROFILES` — 클라우드 축 codex/claude 와 로컬 GPU 축 opencode 의 실측 근거가
 # 거기 주석에 있다). 이 모듈에 단일 상수를 두지 않는 이유: 값이 두 군데면 규칙이 둘이 되고,
 # 실제로 초기 구현의 단일 기본값(클라우드 표본 기반)이 3시간짜리 로컬 opencode 위임을 죽였다.
-# 해소 순서: `--timeout`(일회성) > local.conf `harness.<name>.wall_timeout` > `delegate_timeout`
+# 해소 순서: `--timeout`(일회성) > local.conf `harness.<name>.wall_timeout` > `delegate.timeout`
 # (표면-flat legacy) > 프로필 선언. 무진행 축은 `harness.<name>.idle_timeout` >
-# `delegate_idle_timeout` > 프로필 선언.
+# `delegate.idle_timeout` > 프로필 선언.
 # 폴백이 발동하면 primary 소진 후 1회 더 실행한다 — 실행 1회의 최악 소요는 하네스마다 달라서
 # _harness_timeout_budget 이 계산한다(추가 폴백 없음 — 상한은 두 시도 예산의 합으로 닫히고,
 # 세션 재사용 라운드는 미일치 fresh 재실행분 primary 예산 1회가 더 가산된다).
@@ -633,13 +634,14 @@ RUN_RESULT_TIMEOUT_THRESHOLD_SEC = "timeout_threshold_sec"
 # opencode 첫-이벤트 stall 을 stderr 에 찍는 엔진 마커(단일 출처) — 분류기의 백스톱 신호로도 쓴다.
 OPENCODE_STALL_MARKER = "[opencode 첫-이벤트 stall:"
 
-# opt-in 게이트 키(기본 OFF·per-clone).
-DELEGATE_ENABLED_KEY = "delegate_enabled"
+# 위임 마스터 스위치 키(per-clone·**기본 ON**). "PM 이 위임을 해도 되는가" 하나만 판정하며 채널
+# (native/cross)로 갈리지 않는다 — 외부 전송을 별도 동의 축으로 게이트하지 않는다.
+DELEGATE_ENABLED_KEY = "delegate.enabled"
 
 # 표면-flat legacy 시간 노브(하네스 무관·기존 채택자 설정 보존). 하네스별 키
 # `harness.<name>.wall_timeout`/`.idle_timeout` 이 설정돼 있으면 그쪽이 이긴다(더 구체적인 선언).
-DELEGATE_TIMEOUT_KEY = "delegate_timeout"
-DELEGATE_IDLE_TIMEOUT_KEY = "delegate_idle_timeout"
+DELEGATE_TIMEOUT_KEY = "delegate.timeout"
+DELEGATE_IDLE_TIMEOUT_KEY = "delegate.idle_timeout"
 
 # 합성 프롬프트 전문에 묶는 건별 시크릿 스캔 승인 토큰. SHA-256 전체 계산 뒤 앞 96bit만
 # 표시한다 — 사람이 재실행 커맨드로 옮길 만큼 짧지만, 이 값은 인증 secret이 아니라 "방금 검토한
@@ -6509,7 +6511,17 @@ def local_config() -> dict[str, str]:
 
 
 def _is_enabled(conf: dict[str, str]) -> bool:
-    return conf.get(DELEGATE_ENABLED_KEY, "false").strip().lower() in ("true", "1", "yes", "on")
+    """위임 허용 여부 — **키 부재·빈값은 허용**(기본 ON)이고 명시 거부만 차단한다.
+
+    기본을 OFF 로 두면 기존 채택자의 native 위임이 이 릴리즈에서 새로 막히는 회귀가 된다
+    (현행 native 무게이트 동작 보존이 기준). 명시 `false` 만 위임 전면 비허용이다.
+    빈값은 conf 파싱 의미대로 **미설정**이라 기본값으로 간다(`delegate.enabled=` 한 줄이
+    위임을 조용히 끄지 않는다).
+    """
+    raw = conf.get(DELEGATE_ENABLED_KEY, "").strip().lower()
+    if not raw:
+        return True
+    return raw in ("true", "1", "yes", "on")
 
 
 # ── config 해소 (원자 tuple) ────────────────────────────────────────────
@@ -6689,7 +6701,7 @@ def harness_profile(harness: str, conf: dict[str, str] | None = None):
 #
 # 프롬프트 스캔은 **파일 경로/이름 + 시크릿 값**만 겨냥한다.
 # external_review 의 denylist(`*token*`·`*secret*` …)는 원래 *파일 경로* 필터라, 그 substring glob 을
-# 산문·식별자에 그대로 대면 정상 conf 키(`ctx_window_tokens_opencode`)·변수명·"토큰 수" 서술이 전부
+# 산문·식별자에 그대로 대면 정상 conf 키(`ctx.window_tokens`)·변수명·"토큰 수" 서술이 전부
 # 걸린다. 그래서 판정을
 # **양성매칭 2축**으로 바꾼다(파서 양성매칭 전환 동형):
 #   ⓐ 경로축 — 토큰이 *경로 형태*(구분자·확장자·닷파일) 또는 알려진 시크릿 파일명일 때만 denylist 적용
@@ -6805,7 +6817,7 @@ _SECRET_VALUE_PREFIX_RE = re.compile(
 _PEM_PRIVATE_KEY_RE = re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----")
 
 # 할당 좌변이 시크릿 키명인가 — **성분 경계**로 판정한다(substring 아님). `GITHUB_TOKEN` 은 걸리고
-# `ctx_window_tokens_opencode`("tokens" — 경계 뒤가 s)는 안 걸린다. 광범위한 `auth` 단독은 제외
+# `ctx.window_tokens`("tokens" — 경계 뒤가 s)는 안 걸린다. 광범위한 `auth` 단독은 제외
 # (auth_url·authors 오탐) — `auth_token`·`authorization`·`bearer` 처럼 크리덴셜 확정형만.
 _SECRET_KEY_WORDS = (
     r"token|secret|credential|password|passwd|passphrase"
@@ -6818,7 +6830,7 @@ _SECRET_KEY_NAME_RE = re.compile(
 )
 # camelCase 키(`accessToken`·`dbPassword`·`clientSecret`·`XSRFToken`) — 위 성분 경계는 `_`/`-` 만 보므로
 # **대소문자 민감**으로 따로 둔다: IGNORECASE 를
-# hump 규칙에 섞으면 뒤 경계 `(?![a-z])` 가 소문자에도 걸려 `ctx_window_tokens_opencode`
+# hump 규칙에 섞으면 뒤 경계 `(?![a-z])` 가 소문자에도 걸려 `ctx.window_tokens`
 # 오탐)가 되살아난다. 앞 경계에 대문자를 포함하는 건 두문자어 접두(`XSRFToken`·`APIToken`·`AWSSecret`·
 # `JWTSecret`)를 잡기 위함이고, 뒤에 소문자가 이어지는 복수/합성형(`accessTokens`·
 # `tokenizerName`)은 제외한다 — `tokens` 배제와 같은 규칙.
@@ -6857,7 +6869,7 @@ _URL_PARAMETER_RE = re.compile(
 # 에서 값축만 못 잡는 비대칭이 생긴다. 발급기관 prefix 판정이라 세분화는 오탐을 안 낳는다.
 _VALUE_CANDIDATE_SPLIT_RE = re.compile(r"[=:/\\?&@#|()\[\]]+")
 
-# 값이 크리덴셜 형태인지의 문턱 — 짧은 값(`180000`)·자연어 식별자(`ctx_window_tokens_opencode`)를
+# 값이 크리덴셜 형태인지의 문턱 — 짧은 값(`180000`)·자연어 식별자(`harness.opencode.ctx_window_tokens`)를
 # 배제하고 랜덤 시크릿만 남긴다. 엔트로피는 bits/char(Shannon). 임계 3.0 근거: 16자 랜덤
 # 영숫자(≈4.0)·발급기관 토큰(≈4.5)은 넉넉히 넘고, 사람이 쓴 영문 식별자/한국어 산문 조각(≈2.5~3.5)
 # 중 *구성 조건까지 통과한 것* 만 남기는 하한 — 즉 엔트로피는 단독 판정이 아니라 구성 조건
@@ -6952,7 +6964,7 @@ def _is_path_shaped(token: str) -> bool:
     """토큰이 파일 경로/이름 형태인가 — denylist substring glob(`*token*`)은 여기에만 적용한다.
 
     경로 구분자 포함(`~/.aws/credentials`)·확장자 보유(`credentials.env`·`foo.pem`)·닷파일(`.env`)
-    중 하나면 경로 형태로 본다. `ctx_window_tokens_opencode` 같은 식별자·산문 단어는 셋 다 아니라
+    중 하나면 경로 형태로 본다. `enforce_minimum_length` 같은 식별자·산문 단어는 셋 다 아니라
     통과한다."""
     if _PATH_SEPARATOR_RE.search(token):
         return True
@@ -6974,14 +6986,14 @@ def _has_secret_data_extension(name: str) -> bool:
     return match.group(0)[1:].lower() in _SECRET_DATA_EXTENSIONS
 
 
-_NAME_PATTERN_CACHE_SIZE = 8  # denylist 종류는 기본 + conf 확장(`review_denylist_extra`) 몇 개뿐
+_NAME_PATTERN_CACHE_SIZE = 8  # denylist 종류는 기본 + conf 확장(`additional_reviewer.denylist_extra`) 몇 개뿐
 
 
 @functools.lru_cache(maxsize=_NAME_PATTERN_CACHE_SIZE)
 def _name_anchored_patterns(patterns: tuple[str, ...]) -> tuple[str, ...]:
     """이름 앵커로 판정할 denylist 패턴(디렉토리 형태 제외) — 토큰마다 재생성하지 않도록 캐시한다.
 
-    입력 tuple 은 호출부가 로드한 denylist(기본 + conf `review_denylist_extra`)라 종류가 몇 개뿐이다."""
+    입력 tuple 은 호출부가 로드한 denylist(기본 + conf `additional_reviewer.denylist_extra`)라 종류가 몇 개뿐이다."""
     return tuple(p for p in patterns if "/" not in p)
 
 
@@ -7123,7 +7135,7 @@ def _char_class_alternation_ratio(value: str) -> float:
 def _has_secret_value_charset(value: str) -> bool:
     """값의 문자 구성이 크리덴셜형인가 — 영문+숫자 혼합, 또는 무숫자 랜덤 대소문자 혼합.
 
-    의 digit 요건은 영문 식별자/산문 오탐(`ctx_window_tokens_opencode`·`enforce_minimum_length`)을
+    의 digit 요건은 영문 식별자/산문 오탐(`enforce_minimum_length`·`reviewer_home_artifacts`)을
     는 그 요건이 무숫자 랜덤 비밀번호(`XkwPqrLmZvTbNhGf`)를
     통과시키던 갭(외부 리뷰 MF3)만 닫는 좁은 완화 — 단어 구분자·단일 케이스·산문형 값을 배제하는
     조임은 `_MIN_CHAR_CLASS_ALTERNATION_RATIO` 주석(임계 근거·잔여 겹침) 참조."""
@@ -7140,7 +7152,7 @@ def _looks_like_secret_value(value: str) -> bool:
     """값이 크리덴셜 형태인가 — 알려진 prefix, 또는 (충분 길이 + 크리덴셜형 문자 구성 + 고엔트로피).
 
     자격증명 없는 URL(문서 링크·엔드포인트)은 제외한다. 숫자만(`180000`)·영문 식별자만
-    (`ctx_window_tokens_opencode`)은 문자 구성 조건에서 걸러진다."""
+    (`enforce_minimum_length`)은 문자 구성 조건에서 걸러진다."""
     if _is_known_secret_value(value):
         return True
     if _URL_SCHEME_RE.match(value) and "@" not in value:
@@ -7729,7 +7741,7 @@ def _prompt_file_denylist_pattern(prompt_file: Path) -> str | None:
     `secrets/`·`credentials/`·`.aws/` 아래 파일은 확장자와 무관하게 차단된다(아래 `_secret_directory_segment`)."""
     er = _load_external_review()
     patterns = er._SECRET_DENYLIST_PATTERNS
-    # 기본 denylist 엔 `/` 패턴이 없다 — 이 분기는 conf 확장(`review_denylist_extra` 에 `secrets/` 류를
+    # 기본 denylist 엔 `/` 패턴이 없다 — 이 분기는 conf 확장(`additional_reviewer.denylist_extra` 에 `secrets/` 류를
     # 넣은 채택자)에서만 도달한다. 기본 형상에서 dead 로 보이는 건 그 때문(관측 메모).
     dir_patterns = tuple(p for p in patterns if "/" in p)
     candidates = [prompt_file]
@@ -8228,7 +8240,7 @@ def check_local_conf_divergence(
     사이에 보존하기 위함이다. 반환 target_repo는 이 skip들과 무관하게 write-target 재앵커에도
     재사용한다.
 
-    범위 경계: `review_denylist_extra`와 `review_paths`는 external_review가 유효 내용 값 비교와
+    범위 경계: `additional_reviewer.denylist_extra`와 `additional_reviewer.paths`는 external_review가 유효 내용 값 비교와
     denylist 합집합 적용을 소유한다.
     """
     er = external_review_module or _load_external_review()
@@ -11563,7 +11575,7 @@ def native_advisory(harness: str | None, *, metered_gate: bool = False) -> str |
 # 샌드박스 안에서 잘못 붙이면 권한 상승 없이 타겟 CLI가 기존처럼 fail-loud 한다).
 
 
-# 아래 wrapper 들은 공용 seam(`pm_relay`)에 표면 인자(진입점 스크립트·지속 동의 키·주어)만 얹는다.
+# 아래 wrapper 들은 공용 seam(`pm_relay`)에 표면 인자(진입점 스크립트·게이트 키·주어)만 얹는다.
 # Windows 판정은 이 모듈의 `_running_on_windows` 를 그대로 통과시켜(주입 가능) 재사용 승인 prefix 와
 # 재실행 안내가 한 축에서만 결정되게 한다.
 
@@ -11616,7 +11628,7 @@ def codex_egress_block_message(argv: list[str], harness: str, model: str) -> str
     return relay.codex_egress_block_message(
         argv, harness, model,
         script=relay.DELEGATE_ENTRYPOINT,
-        consent_key=DELEGATE_ENABLED_KEY,
+        gate_key=DELEGATE_ENABLED_KEY,
         subject=_CODEX_EGRESS_SUBJECT,
         windows=_running_on_windows(),
     )
@@ -11628,7 +11640,7 @@ def _dry_run_codex_egress_line(*, escalation_required: bool, attested: bool) -> 
     return relay.dry_run_codex_egress_line(
         escalation_required=escalation_required, attested=attested,
         script=relay.DELEGATE_ENTRYPOINT,
-        consent_key=DELEGATE_ENABLED_KEY,
+        gate_key=DELEGATE_ENABLED_KEY,
         windows=_running_on_windows(),
     )
 
@@ -11886,6 +11898,20 @@ def _cmd_ticket(argv: list[str]) -> int:
         cwd_repo = _repo_root_for_cwd(cwd)
         owner = _ticket_cli_owner(cwd_repo)
         if args.ticket_command == "prepare":
+            # 위임 마스터 스위치 — **준비 단계에서** 막는다. native 위임도 이 CLI 로 라운드 파일을
+            # 준비하므로(스킬 규정) 여기가 엔진이 확실히 차단할 수 있는 지점이다. run-dir 생성·
+            # 장부 순번 예약보다 앞이라 off 형상에서 고아 산출물이 남지 않는다.
+            # `harvest`·`copies` 는 게이트 밖이다 — 이미 준비된 라운드를 회수/조회하는 길까지
+            # 막으면 스위치를 끄는 순간 진행 중 라운드가 고아가 된다.
+            if not _is_enabled(local_config()):
+                print(
+                    "위임이 꺼져 있습니다 — 채널(native/cross) 무관 "
+                    f"(local.conf: {_local_conf_path()} · {DELEGATE_ENABLED_KEY}=false).\n"
+                    f"켜기: local.conf 에서 `{DELEGATE_ENABLED_KEY}=true` "
+                    "(또는 그 줄을 지우면 기본 허용).",
+                    file=sys.stderr,
+                )
+                return 3
             if not _load_board()._is_valid_ticket_id(args.ticket):
                 parser.error("--ticket은 board 발행 ticket ID 형식이어야 합니다")
             plan = prepare_ticket_copy(
@@ -12236,7 +12262,7 @@ def _cmd_rounds(argv: list[str]) -> int:
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pm_delegate.py",
-        description="cross-harness 역할 위임 채널 (기본 OFF·delegate_enabled opt-in)",
+        description="역할 위임 채널 (마스터 스위치 delegate.enabled·기본 ON·채널 무관)",
         epilog=(
             "local.conf loud 폴백 예시(엔진 기본값 아님):\n"
             "  delegate.developer.fallback.harness=claude\n"
@@ -12371,7 +12397,7 @@ def _resolve_timeout(args: argparse.Namespace, conf: dict[str, str], harness: st
     """위임 turn **벽시계 백스톱**(초)을 양의 정수로 해소한다.
 
     우선순위: `--timeout`(양수 — _validate_args 가 보장) > 하네스 프로필 해소값. 프로필 해소는
-    `pm_relay.resolve_harness_profile`(선언 기본 → `delegate_timeout` legacy → `harness.<name>.
+    `pm_relay.resolve_harness_profile`(선언 기본 → `delegate.timeout` legacy → `harness.<name>.
     wall_timeout`)이 소유하므로 이 함수는 CLI 우선만 얹는다 — 값 규칙이 두 군데로 갈리지 않는다.
     깨진 conf 값은 그 해소기가 stderr 경고 후 선언 기본으로 fail-soft 한다(usage error 부적합)."""
     if args.timeout is not None:
@@ -12583,14 +12609,14 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         )
         return 1
 
-    # opt-in 게이트 (비-dry-run·기본 OFF·disabled = rc=3). **매핑 해소보다 앞** — 기본 OFF +
-    # 매핑 없는 새 설치는 "매핑 미설정"(rc=1)이 아니라 disabled(rc=3)로 응답해야 한다(codex must-fix).
+    # 위임 마스터 스위치 (비-dry-run·기본 ON·명시 off = rc=3). **매핑 해소보다 앞** — 위임 자체가
+    # 비허용인 형상은 "매핑 미설정"(rc=1)이 아니라 disabled(rc=3)로 응답해야 진단이 정확하다.
     # dry-run 은 항상 미리보기 허용(미전송)이라 이 게이트를 통과시킨다.
     if not args.dry_run and not _is_enabled(conf):
         print(
-            "delegate 비활성 — 외부 하네스 송신이 꺼져 있습니다 "
+            "위임이 꺼져 있습니다 — 채널(native/cross) 무관 "
             f"(local.conf: {conf_path} · {DELEGATE_ENABLED_KEY}=false).\n"
-            f"켜기: local.conf 에 `{DELEGATE_ENABLED_KEY}=true` 추가(외부 송신·과금 수용 계약). "
+            f"켜기: local.conf 에서 `{DELEGATE_ENABLED_KEY}=true` (또는 그 줄을 지우면 기본 허용). "
             "미리보기는 `--dry-run`.",
             file=sys.stderr,
         )

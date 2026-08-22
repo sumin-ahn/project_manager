@@ -381,12 +381,12 @@ def test_local_conf_operational_values_synced(pm_import, tmp_path):
     assert rc == 0
 
     conf = _parse_conf(dest / ".project_manager" / "local.conf")
-    assert conf.get("project_name") == "Banana Corp", \
-        f"local.conf project_name 이 --name 과 불일치: {conf.get('project_name')!r}"
-    assert conf.get("test_cmd") == pm_import._default_test_cmd(), \
-        f"local.conf test_cmd 이 _default_test_cmd() 와 불일치: {conf.get('test_cmd')!r}"
-    assert conf.get("py") == pm_import._detected_py(), \
-        f"local.conf py 가 _detected_py() 와 불일치: {conf.get('py')!r}"
+    assert conf.get("project.name") == "Banana Corp", \
+        f"local.conf project_name 이 --name 과 불일치: {conf.get('project.name')!r}"
+    assert conf.get("test.cmd") == pm_import._default_test_cmd(), \
+        f"local.conf test_cmd 이 _default_test_cmd() 와 불일치: {conf.get('test.cmd')!r}"
+    assert conf.get("runtime.py") == pm_import._detected_py(), \
+        f"local.conf py 가 _detected_py() 와 불일치: {conf.get('runtime.py')!r}"
 
 
 def test_local_conf_preserves_board_init_keys(pm_import, tmp_path):
@@ -405,8 +405,8 @@ def test_local_conf_preserves_board_init_keys(pm_import, tmp_path):
     local_conf = dest / ".project_manager" / "local.conf"
     conf = _parse_conf(local_conf)
     # board.py init 이 쓰는 ctx 예산 키가 살아있어야 한다(clobber 아님 — 키 단위 갱신).
-    assert conf.get("ctx_nudge_pct") == str(board.CTX_NUDGE_PCT_DEFAULT), \
-        f"ctx_nudge_pct 키가 동기화로 손실됨: {conf.get('ctx_nudge_pct')!r}"
+    assert conf.get("ctx.nudge_pct") == str(board.CTX_NUDGE_PCT_DEFAULT), \
+        f"ctx.nudge_pct 키가 동기화로 손실됨: {conf.get('ctx.nudge_pct')!r}"
     # session·prefix 는 폐지 키 — init 이 쓰지 않는다(T-0779).
     assert conf.get("session") is None, f"session 키가 폐지됐는데 존재: {conf.get('session')!r}"
     assert conf.get("prefix") is None, f"prefix 키가 폐지됐는데 존재: {conf.get('prefix')!r}"
@@ -425,7 +425,7 @@ def test_local_conf_sync_idempotent(pm_import, tmp_path):
 
     text = (dest / ".project_manager" / "local.conf").read_text(encoding="utf-8")
     # 동기화 키가 정확히 한 줄씩만 존재(중복 추가 없음).
-    for key in ("project_name", "test_cmd", "py"):
+    for key in ("project.name", "test.cmd", "runtime.py"):
         occurrences = [
             line for line in text.splitlines()
             if line.strip().split("=", 1)[0].strip() == key and not line.lstrip().startswith("#")
@@ -454,8 +454,8 @@ def test_new_records_upstream_in_local_conf(pm_import, tmp_path, monkeypatch):
     assert rc == 0
 
     conf = _parse_conf(dest / ".project_manager" / "local.conf")
-    assert conf.get("upstream") == str(REPO), \
-        f"upstream 이 default source(REPO)와 불일치: {conf.get('upstream')!r}"
+    assert conf.get("upstream.path") == str(REPO), \
+        f"upstream 이 default source(REPO)와 불일치: {conf.get('upstream.path')!r}"
 
 
 def test_new_records_upstream_explicit_from(pm_import, tmp_path, monkeypatch):
@@ -470,8 +470,8 @@ def test_new_records_upstream_explicit_from(pm_import, tmp_path, monkeypatch):
                          "--from", str(REPO), "--name", "E"])
     assert rc == 0
     conf = _parse_conf(tmp_path / "up_expl" / ".project_manager" / "local.conf")
-    assert conf.get("upstream") == str(REPO), \
-        f"명시 --from 이 upstream 으로 기록 안 됨: {conf.get('upstream')!r}"
+    assert conf.get("upstream.path") == str(REPO), \
+        f"명시 --from 이 upstream 으로 기록 안 됨: {conf.get('upstream.path')!r}"
 
 
 def test_into_records_upstream_in_local_conf(pm_import, tmp_path, monkeypatch):
@@ -484,8 +484,8 @@ def test_into_records_upstream_in_local_conf(pm_import, tmp_path, monkeypatch):
     assert rc2 == 0
 
     conf = _parse_conf(dest / ".project_manager" / "local.conf")
-    assert conf.get("upstream") == str(REPO), \
-        f"--into 후 upstream 불일치: {conf.get('upstream')!r}"
+    assert conf.get("upstream.path") == str(REPO), \
+        f"--into 후 upstream 불일치: {conf.get('upstream.path')!r}"
 
 
 def test_reimport_updates_stale_upstream(pm_import, tmp_path, monkeypatch):
@@ -503,7 +503,7 @@ def test_reimport_updates_stale_upstream(pm_import, tmp_path, monkeypatch):
     local_conf = dest / ".project_manager" / "local.conf"
     text = local_conf.read_text(encoding="utf-8")
     stale = "/nonexistent/old/checkout"
-    text = re.sub(r"(?m)^upstream=.*$", f"upstream={stale}", text)
+    text = re.sub(r"(?m)^upstream\.path=.*$", f"upstream.path={stale}", text)
     assert stale in text  # 손수 stale 주입 확인
     local_conf.write_text(text, encoding="utf-8")
 
@@ -511,12 +511,12 @@ def test_reimport_updates_stale_upstream(pm_import, tmp_path, monkeypatch):
     assert rc2 == 0
 
     conf = _parse_conf(local_conf)
-    assert conf.get("upstream") == str(REPO), \
-        f"재-import 가 stale upstream 을 갱신하지 않음: {conf.get('upstream')!r}"
+    assert conf.get("upstream.path") == str(REPO), \
+        f"재-import 가 stale upstream 을 갱신하지 않음: {conf.get('upstream.path')!r}"
     # upstream 키가 정확히 한 줄(중복 추가 없음).
     occurrences = [
         line for line in local_conf.read_text(encoding="utf-8").splitlines()
-        if line.strip().split("=", 1)[0].strip() == "upstream"
+        if line.strip().split("=", 1)[0].strip() == "upstream.path"
         and not line.lstrip().startswith("#")
     ]
     assert len(occurrences) == 1, f"upstream 이 {len(occurrences)}회 등장 — 갱신이 아니라 중복."
@@ -526,34 +526,34 @@ def test_record_upstream_unit(pm_import, tmp_path):
     """record_upstream: 기존 upstream 줄은 제자리 갱신, 없으면 추가. 다른 키·주석 보존."""
     local_conf = tmp_path / ".project_manager" / "local.conf"
     local_conf.parent.mkdir(parents=True)
-    local_conf.write_text("# header\nsession=pm\nupstream=/old/path\n", encoding="utf-8")
+    local_conf.write_text("# header\nsession=pm\nupstream.path=/old/path\n", encoding="utf-8")
 
     changed = pm_import.record_upstream(tmp_path, Path("/new/checkout"))
     assert changed is True
     text = local_conf.read_text(encoding="utf-8")
     # record_upstream 은 str(Path) 를 OS-네이티브로 기록(엔진 결정) — Windows 역슬래시를
     # 경로 구분자만 정규화해 비교(POSIX 무변경·os.sep="/").
-    assert "upstream=/new/checkout" in text.replace(os.sep, "/")
-    assert "upstream=/old/path" not in text
+    assert "upstream.path=/new/checkout" in text.replace(os.sep, "/")
+    assert "upstream.path=/old/path" not in text
     assert "session=pm" in text  # 타 키 보존
     assert text.startswith("# header")  # 주석 보존
     # 제자리 갱신이므로 upstream 한 줄만 (upstream_rev 등 다른 키는 이 호출이 안 씀).
     assert sum(
         1 for line in text.splitlines()
-        if line.split("=", 1)[0].strip() == "upstream"
+        if line.split("=", 1)[0].strip() == "upstream.path"
     ) == 1
 
 
 @pytest.mark.parametrize(
     ("key", "value"),
     [
-        ("project_name", "Writer Project"),
-        ("test_cmd", "python3 -m pytest tests/ -q"),
-        ("py", "python3"),
-        ("upstream", "https://github.com/acme/framework.git"),
-        ("upstream_rev", "abc123"),
-        ("upstream_seen_rev", "def456"),
-        ("opencode_pro_model", "openai/gpt-5.6"),
+        ("project.name", "Writer Project"),
+        ("test.cmd", "python3 -m pytest tests/ -q"),
+        ("runtime.py", "python3"),
+        ("upstream.path", "https://github.com/acme/framework.git"),
+        ("upstream.rev", "abc123"),
+        ("upstream.seen_rev", "def456"),
+        ("harness.opencode.pro_model", "openai/gpt-5.6"),
     ],
 )
 def test_general_conf_writer_normalizes_every_key_atomically_for_all_readers(
@@ -600,12 +600,12 @@ def test_record_upstream_accepts_url_string(pm_import, tmp_path):
     """record_upstream 은 URL 문자열도 받아 그대로 기록한다(디커플·URL 선호·T-0145)."""
     local_conf = tmp_path / ".project_manager" / "local.conf"
     local_conf.parent.mkdir(parents=True)
-    local_conf.write_text("session=pm\nupstream=/old\n", encoding="utf-8")
+    local_conf.write_text("session=pm\nupstream.path=/old\n", encoding="utf-8")
 
     changed = pm_import.record_upstream(tmp_path, "https://github.com/foo/bar.git")
     assert changed is True
     conf = _parse_conf(local_conf)
-    assert conf["upstream"] == "https://github.com/foo/bar.git"
+    assert conf["upstream.path"] == "https://github.com/foo/bar.git"
     assert conf["session"] == "pm"  # 타 키 보존
 
 
@@ -617,8 +617,8 @@ def test_explicit_upstream_recorded_distinct_from_source(pm_import, tmp_path):
                          "--from", str(REPO), "--upstream", url])
     assert rc == 0
     conf = _parse_conf(dest / ".project_manager" / "local.conf")
-    assert conf.get("upstream") == url, \
-        f"--upstream 명시값이 기록 안 됨(파일 소스 --from 과 디커플 실패): {conf.get('upstream')!r}"
+    assert conf.get("upstream.path") == url, \
+        f"--upstream 명시값이 기록 안 됨(파일 소스 --from 과 디커플 실패): {conf.get('upstream.path')!r}"
 
 
 def test_bad_upstream_rejected_before_import(pm_import, tmp_path):
@@ -640,8 +640,8 @@ def test_origin_url_auto_derived_when_from_is_clone(pm_import, tmp_path, monkeyp
                          "--from", str(REPO)])
     assert rc == 0
     conf = _parse_conf(dest / ".project_manager" / "local.conf")
-    assert conf.get("upstream") == derived_url, \
-        f"origin URL 자동도출 실패 — upstream={conf.get('upstream')!r}"
+    assert conf.get("upstream.path") == derived_url, \
+        f"origin URL 자동도출 실패 — upstream={conf.get('upstream.path')!r}"
 
 
 def test_upstream_rev_baseline_recorded_on_import(pm_import, tmp_path, monkeypatch):
@@ -652,8 +652,8 @@ def test_upstream_rev_baseline_recorded_on_import(pm_import, tmp_path, monkeypat
     rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "R"])
     assert rc == 0
     conf = _parse_conf(dest / ".project_manager" / "local.conf")
-    assert conf.get("upstream_rev") == "deadbeefcafe", \
-        f"upstream_rev baseline 미기록: {conf.get('upstream_rev')!r}"
+    assert conf.get("upstream.rev") == "deadbeefcafe", \
+        f"upstream_rev baseline 미기록: {conf.get('upstream.rev')!r}"
 
 
 def test_upstream_rev_skipped_when_source_not_git(pm_import, tmp_path, monkeypatch):
@@ -664,8 +664,8 @@ def test_upstream_rev_skipped_when_source_not_git(pm_import, tmp_path, monkeypat
     rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "N"])
     assert rc == 0
     conf = _parse_conf(dest / ".project_manager" / "local.conf")
-    assert "upstream_rev" not in conf, \
-        f"git repo 아닌데 upstream_rev 가 기록됨: {conf.get('upstream_rev')!r}"
+    assert "upstream.rev" not in conf, \
+        f"git repo 아닌데 upstream_rev 가 기록됨: {conf.get('upstream.rev')!r}"
 
 
 def test_record_upstream_rev_preserves_other_keys(pm_import, tmp_path):
@@ -673,13 +673,13 @@ def test_record_upstream_rev_preserves_other_keys(pm_import, tmp_path):
     local_conf = tmp_path / ".project_manager" / "local.conf"
     local_conf.parent.mkdir(parents=True)
     local_conf.write_text(
-        "# h\nsession=pm\nupstream=/x\nupstream_rev=old\n", encoding="utf-8")
+        "# h\nsession=pm\nupstream.path=/x\nupstream.rev=old\n", encoding="utf-8")
 
     changed = pm_import.record_upstream_rev(tmp_path, "newrev123")
     assert changed is True
     conf = _parse_conf(local_conf)
-    assert conf["upstream_rev"] == "newrev123"
-    assert conf["upstream"] == "/x"   # 별개 키 보존(한 키 2역 금지)
+    assert conf["upstream.rev"] == "newrev123"
+    assert conf["upstream.path"] == "/x"   # 별개 키 보존(한 키 2역 금지)
     assert conf["session"] == "pm"
 
 
@@ -803,23 +803,23 @@ def test_set_conf_keys_replaces_in_place(pm_import):
     text = (
         "# header comment\n"
         "session=pm\n"
-        "py=python3\n"
-        "test_cmd=pytest -q\n"
-        "project_name=\n"
+        "runtime.py=python3\n"
+        "test.cmd=pytest -q\n"
+        "project.name=\n"
     )
     out = pm_import._set_conf_keys(text, {
-        "project_name": "X",
-        "test_cmd": "python3 -m pytest tests/ -q",
-        "py": "python3",
+        "project.name": "X",
+        "test.cmd": "python3 -m pytest tests/ -q",
+        "runtime.py": "python3",
     })
     conf = {}
     for line in out.splitlines():
         if line.strip() and not line.lstrip().startswith("#") and "=" in line:
             k, v = line.split("=", 1)
             conf[k.strip()] = v.strip()
-    assert conf["project_name"] == "X"
-    assert conf["test_cmd"] == "python3 -m pytest tests/ -q"
-    assert conf["py"] == "python3"
+    assert conf["project.name"] == "X"
+    assert conf["test.cmd"] == "python3 -m pytest tests/ -q"
+    assert conf["runtime.py"] == "python3"
     assert conf["session"] == "pm"  # 무관 키 보존.
     assert out.startswith("# header comment\n")  # 주석 보존.
     # 제자리 교체 — 새 줄 추가 없이 줄 수 동일.
@@ -829,8 +829,8 @@ def test_set_conf_keys_replaces_in_place(pm_import):
 def test_set_conf_keys_appends_missing(pm_import):
     """_set_conf_keys: 키가 없으면 끝에 추가한다."""
     text = "session=pm\n"
-    out = pm_import._set_conf_keys(text, {"project_name": "Y"})
-    assert "project_name=Y" in out
+    out = pm_import._set_conf_keys(text, {"project.name": "Y"})
+    assert "project.name=Y" in out
     assert "session=pm" in out
 
 
@@ -1820,7 +1820,7 @@ def test_import_order_empty_name_leaks_at_render_not_silently_emptied(pm_import,
     assert type(exc.value).__name__ == "RenderLeakError"
     msg = str(exc.value)
     assert "{{PROJECT_NAME}}" in msg
-    assert "`project_name=`" in msg
+    assert "`project.name=`" in msg
     assert "빈값" in msg
     # render 실패 전이라 파일은 여전히 토큰 보존(silent 로 " 프로젝트" 안 기록됨).
     assert (dest / rel_str).read_text(encoding="utf-8") == \
@@ -2638,13 +2638,13 @@ def test_into_backs_up_and_preserves_existing_local_conf(pm_import, tmp_path):
     local.conf 에 재병합한다 — operational sync(project_name·test_cmd)도 동시 충족.
 
     codex 4차 MF1: local.conf 는 pm_import 의 copy/backup 대상 트리 밖이라, board.py init
-    이 통째로 덮으면 additional_reviewer_enabled·reviewer_cmd·session 등이 무백업 손실된다.
+    이 통째로 덮으면 additional_reviewer.enabled·reviewer_cmd·session 등이 무백업 손실된다.
 
-    T-0021 메모 — additional_reviewer_enabled 보존(아래 assert)은 **T-0017 의 board.py
+    T-0021 메모 — additional_reviewer.enabled 보존(아래 assert)은 **T-0017 의 board.py
     EOF/비대화 가드**에 의존한다: board init 은 pm_import 가 stdin=DEVNULL 로 호출하므로
     `prompt_external_review_optin` 은 비대화(isatty=False/EOF)로 판정해 **아무것도 쓰지
     않고 반환**해야 한다. 그래야 reapply_preserved_conf_keys 가 백업의 사용자값('true')을
-    그대로 재병합한다. board.py 가 pre-fix(가드 없음)면 init 이 `additional_reviewer_enabled=false`
+    그대로 재병합한다. board.py 가 pre-fix(가드 없음)면 init 이 `additional_reviewer.enabled=false`
     를 먼저 써 버려 재병합이 스킵되고 이 테스트는 'false' 로 실패한다 — 정상(엔진 미수정 신호).
     이 ticket(tests-only)에서는 board.py 를 고치지 않으므로, 복사되는 엔진이 pre-fix 인 run
     에서는 이 테스트가 red 일 수 있다. 통합(T-0017 머지·pm_update 동기화) 후 green 이어야 한다.
@@ -2657,8 +2657,8 @@ def test_into_backs_up_and_preserves_existing_local_conf(pm_import, tmp_path):
     # 기존 프로젝트가 갖고 있던 per-clone 설정(board init 솔로가 안 쓰는 키 포함).
     existing_content = (
         "# 기존 사용자 local.conf — 보존되어야 함\n"
-        "additional_reviewer_enabled=true\n"
-        "reviewer_cmd=foo\n"
+        "additional_reviewer.enabled=true\n"
+        "additional_reviewer.harness=codex\n"
         "session=mine\n"
     )
     existing_conf.write_text(existing_content, encoding="utf-8")
@@ -2678,21 +2678,21 @@ def test_into_backs_up_and_preserves_existing_local_conf(pm_import, tmp_path):
     # ② 새 local.conf = board init 기본 + 사용자 키 보존 + operational sync 동시 충족.
     conf = _parse_conf(existing_conf)
     # board init 솔로가 안 쓰는 사용자 키 보존.
-    assert conf.get("additional_reviewer_enabled") == "true", \
-        f"additional_reviewer_enabled 가 보존되지 않음: {conf.get('additional_reviewer_enabled')!r}"
-    assert conf.get("reviewer_cmd") == "foo", \
-        f"reviewer_cmd 가 보존되지 않음: {conf.get('reviewer_cmd')!r}"
+    assert conf.get("additional_reviewer.enabled") == "true", \
+        f"additional_reviewer.enabled 가 보존되지 않음: {conf.get('additional_reviewer.enabled')!r}"
+    assert conf.get("additional_reviewer.harness") == "codex", \
+        f"additional_reviewer.harness 가 보존되지 않음: {conf.get('additional_reviewer.harness')!r}"
     # operational sync 동시 충족 (project_name·test_cmd 가 pm_import 치환값).
-    assert conf.get("project_name") == "Reimport", \
-        f"operational sync 미충족 — project_name: {conf.get('project_name')!r}"
-    assert conf.get("test_cmd") == pm_import._default_test_cmd(), \
-        f"operational sync 미충족 — test_cmd: {conf.get('test_cmd')!r}"
+    assert conf.get("project.name") == "Reimport", \
+        f"operational sync 미충족 — project_name: {conf.get('project.name')!r}"
+    assert conf.get("test.cmd") == pm_import._default_test_cmd(), \
+        f"operational sync 미충족 — test_cmd: {conf.get('test.cmd')!r}"
 
 
 def test_into_local_conf_init_keys_take_precedence(pm_import, tmp_path):
     """재-import 는 기존 사용자 설정을 보존한다 — session 은 명시 인자가 없으므로 기존값
     ('mine')을 유지하고(T-0184 비파괴 병합·cmd_init 이 통째 덮지 않음), init 이 안 쓰는
-    사용자 키(additional_reviewer_enabled)도 보존된다.
+    사용자 키(additional_reviewer.enabled)도 보존된다.
 
     T-0184 이전엔 board init 이 local.conf 를 통째 덮어 session 이 init 솔로 기본('pm')으로
     리셋됐고 기존 'mine' 은 백업에만 남았다(데이터 손실 버그). 이제 cmd_init 은 local.conf
@@ -2703,7 +2703,7 @@ def test_into_local_conf_init_keys_take_precedence(pm_import, tmp_path):
     pm_dir = dest / ".project_manager"
     pm_dir.mkdir()
     (pm_dir / "local.conf").write_text(
-        "session=mine\nadditional_reviewer_enabled=false\n", encoding="utf-8"
+        "session=mine\nadditional_reviewer.enabled=false\n", encoding="utf-8"
     )
 
     rc = pm_import.main(["--into", str(dest), "--harness", "claude", "--name", "Prec"])
@@ -2714,7 +2714,7 @@ def test_into_local_conf_init_keys_take_precedence(pm_import, tmp_path):
     assert conf.get("session") == "mine", \
         f"재-import 가 기존 session 을 보존하지 않음(T-0184 비파괴 병합 기대): {conf.get('session')!r}"
     # board init 이 안 쓰는 사용자 키는 보존.
-    assert conf.get("additional_reviewer_enabled") == "false"
+    assert conf.get("additional_reviewer.enabled") == "false"
 
 
 # ── T-0071: run_board_init 이 subprocess env 에 PM_NONINTERACTIVE=1 명시 전달 ──
@@ -2930,19 +2930,19 @@ def test_reapply_preserved_conf_keys_only_adds_missing(pm_import, tmp_path):
     pm_dir.mkdir(parents=True)
     # board init 이 새로 쓴 것을 모사 — session·project_name 보유.
     (pm_dir / "local.conf").write_text(
-        "session=pm\nproject_name=New\n", encoding="utf-8"
+        "session=pm\nproject.name=New\n", encoding="utf-8"
     )
-    # 기존 원본 — session 은 다른 값('mine'), 추가로 additional_reviewer_enabled 보유.
-    original = "session=mine\nadditional_reviewer_enabled=true\nreviewer_cmd=bar\n"
+    # 기존 원본 — session 은 다른 값('mine'), 추가로 additional_reviewer.enabled 보유.
+    original = "session=mine\nadditional_reviewer.enabled=true\nreviewer_cmd=bar\n"
     changed = pm_import.reapply_preserved_conf_keys(dest, original)
     assert changed is True
 
     conf = _parse_conf(pm_dir / "local.conf")
     # 현재 파일에 있던 키는 불변(init 값 우선).
     assert conf["session"] == "pm"
-    assert conf["project_name"] == "New"
+    assert conf["project.name"] == "New"
     # 현재 파일에 없던 기존 키만 재병합.
-    assert conf["additional_reviewer_enabled"] == "true"
+    assert conf["additional_reviewer.enabled"] == "true"
     assert conf["reviewer_cmd"] == "bar"
 
 
@@ -2954,15 +2954,15 @@ def test_reapply_preserved_conf_keys_only_adds_missing(pm_import, tmp_path):
 # 엔진 기본값으로 덮이지 않는다.
 
 _LEGACY_ONLY_CONF = (
-    "# 레거시 채택자 — 구조적 튜플 없이 reviewer_cmd 만 쓴다\n"
-    "additional_reviewer_enabled=true\n"
+    "# 레거시 채택자 — 구조적 튜플 없이 폐지된 reviewer_cmd 만 쓴다\n"
+    "additional_reviewer.enabled=true\n"
     "reviewer_cmd=codex exec --sandbox read-only --skip-git-repo-check\n"
     "session=mine\n"
 )
 
 _CANONICAL_TUPLE_CONF = (
     "# 추가 리뷰어(additional reviewer) — ON.\n"
-    "additional_reviewer_enabled=true\n"
+    "additional_reviewer.enabled=true\n"
     "additional_reviewer.harness=codex\n"
     "additional_reviewer.model=gpt-5.6-sol\n"
     "additional_reviewer.reasoning=max\n"
@@ -2970,7 +2970,7 @@ _CANONICAL_TUPLE_CONF = (
 )
 
 _CUSTOM_TUPLE_CONF = (
-    "additional_reviewer_enabled=true\n"
+    "additional_reviewer.enabled=true\n"
     "additional_reviewer.harness=opencode\n"
     "additional_reviewer.model=qwen3-coder-next\n"
     "additional_reviewer.reasoning=low\n"
@@ -2983,17 +2983,9 @@ _CUSTOM_TUPLE_CONF = (
     "original,expected",
     [
         pytest.param(
-            _LEGACY_ONLY_CONF,
-            {
-                "additional_reviewer_enabled": "true",
-                "reviewer_cmd": "codex exec --sandbox read-only --skip-git-repo-check",
-            },
-            id="legacy-reviewer-cmd-only",
-        ),
-        pytest.param(
             _CANONICAL_TUPLE_CONF,
             {
-                "additional_reviewer_enabled": "true",
+                "additional_reviewer.enabled": "true",
                 "additional_reviewer.harness": "codex",
                 "additional_reviewer.model": "gpt-5.6-sol",
                 "additional_reviewer.reasoning": "max",
@@ -3003,7 +2995,7 @@ _CUSTOM_TUPLE_CONF = (
         pytest.param(
             _CUSTOM_TUPLE_CONF,
             {
-                "additional_reviewer_enabled": "true",
+                "additional_reviewer.enabled": "true",
                 "additional_reviewer.harness": "opencode",
                 "additional_reviewer.model": "qwen3-coder-next",
                 "additional_reviewer.reasoning": "low",
@@ -3028,14 +3020,37 @@ def test_into_reimport_round_trips_additional_reviewer_profile(
     conf = _parse_conf(pm_dir / "local.conf")
     for key, value in expected.items():
         assert conf.get(key) == value, f"{key} 왕복 실패: {conf.get(key)!r} != {value!r}"
-    # 레거시 채택자에게 구조적 튜플을 새로 만들어 주지 않는다(자동 마이그레이션 금지).
-    if "additional_reviewer.harness" not in expected:
-        assert not [k for k in conf if k.startswith("additional_reviewer.")], (
-            f"레거시 conf 에 추가 리뷰어 튜플이 주입됨: {sorted(conf)}"
-        )
-    # 튜플을 쓰던 채택자에게 레거시 키를 새로 만들어 주지도 않는다.
-    if "reviewer_cmd" not in expected:
-        assert "reviewer_cmd" not in conf, "튜플 채택자에게 reviewer_cmd 가 주입됨"
+    # 튜플을 쓰던 채택자에게 폐지된 레거시 키를 새로 만들어 주지 않는다.
+    assert "reviewer_cmd" not in conf, "튜플 채택자에게 reviewer_cmd 가 주입됨"
+
+
+def test_into_reimport_refuses_legacy_notation_conf_and_prescribes_replacement(
+    pm_import, tmp_path, capsys
+):
+    """구표기 키가 남은 conf 로 --into 하면 init 앞에서 멈추고 교체를 키 단위로 처방한다.
+
+    board.py init 이 그 conf 를 읽는 순간 fail-loud 하므로 원인이 traceback 으로만 보이지
+    않게 앞단에서 멈춘다. 엔진 파일은 **이미 내려놓은 뒤**다(pm_update apply 와 같은 방향 —
+    받을 것은 받게 하고 값을 쓰는 지점에서 막는다). 엔진은 채택자 소유 local.conf 를 대신
+    고쳐 쓰지 않으므로 원본은 바이트 그대로고 백업본도 만들지 않는다.
+    """
+    dest = tmp_path / "legacy_notation"
+    pm_dir = dest / ".project_manager"
+    pm_dir.mkdir(parents=True)
+    conf_path = pm_dir / "local.conf"
+    conf_path.write_text(_LEGACY_ONLY_CONF, encoding="utf-8")
+
+    rc = pm_import.main(["--into", str(dest), "--harness", "claude", "--name", "RT"])
+
+    assert rc == 1
+    out = capsys.readouterr()
+    combined = out.out + out.err
+    assert "`reviewer_cmd` → 제거(대체 키 없음)" in combined, combined
+    # 원본 보존 — 엔진이 채택자 conf 를 대신 고치지 않는다.
+    assert conf_path.read_text(encoding="utf-8") == _LEGACY_ONLY_CONF
+    assert not (dest / pm_import.BACKUP_DIR_NAME).exists(), "거부인데 백업이 생성됐다"
+    # 엔진은 받는다 — 교체 안내를 읽고 conf 를 고친 뒤 같은 명령을 다시 돌리면 된다.
+    assert (dest / ".project_manager" / "tools" / "local_conf.py").is_file()
 
 
 def test_reapply_preserved_conf_keys_round_trips_dotted_and_custom_axes(
@@ -3049,7 +3064,7 @@ def test_reapply_preserved_conf_keys_round_trips_dotted_and_custom_axes(
     dest = tmp_path / "unit_dotted"
     pm_dir = dest / ".project_manager"
     pm_dir.mkdir(parents=True)
-    (pm_dir / "local.conf").write_text("session=pm\nproject_name=New\n", encoding="utf-8")
+    (pm_dir / "local.conf").write_text("session=pm\nproject.name=New\n", encoding="utf-8")
 
     assert pm_import.reapply_preserved_conf_keys(dest, _CUSTOM_TUPLE_CONF) is True
 
@@ -3059,7 +3074,7 @@ def test_reapply_preserved_conf_keys_round_trips_dotted_and_custom_axes(
     assert conf["additional_reviewer.reasoning"] == "low"
     assert conf["additional_reviewer.persona"] == "security"
     assert conf["session"] == "pm"           # init 값 우선(원본 'mine' 이 이기지 않는다)
-    assert conf["project_name"] == "New"
+    assert conf["project.name"] == "New"
 
 
 # ── SF3: __pycache__ / .pyc 복사 제외 ────────────────────────────────────────
@@ -3524,39 +3539,39 @@ def test_resolve_inactive_when_token_absent(pm_import, tmp_path):
     assert result.changed == 0
 
 
-# ── change4 (codex): 해소된 모델을 local.conf opencode_pro_model 로 기록 ──────────
+# ── change4 (codex): 해소된 모델을 local.conf harness.opencode.pro_model 로 기록 ──────────
 #   pm_update @render 가 {{OPENCODE_PRO_MODEL}} 을 local.conf 에서 재유도(_LOCAL_CONF_TO_
-#   OPERATIONAL["opencode_pro_model"])할 때 키 부재면 leak assertion crash. flag/interactive
+#   OPERATIONAL["harness.opencode.pro_model"])할 때 키 부재면 leak assertion crash. flag/interactive
 #   해소 경로만 기록, todo(미해소·토큰이 YAML 주석)·claude(inactive)는 미기록.
 
 def test_import_flag_records_opencode_model_in_local_conf(pm_import, tmp_path):
-    """opencode import + --opencode-model(flag 해소) → local.conf 에 opencode_pro_model 기록."""
+    """opencode import + --opencode-model(flag 해소) → local.conf 에 harness.opencode.pro_model 기록."""
     dest = tmp_path / "modelconf"
     rc = pm_import.main(["--new", str(dest), "--harness", "opencode", "--name", "ModelConf",
                          "--opencode-model", "ollama/qwen3.6:27b"])
     assert rc == 0
     conf = _parse_conf(dest / ".project_manager" / "local.conf")
-    assert conf.get("opencode_pro_model") == "ollama/qwen3.6:27b", \
-        f"flag 해소인데 local.conf opencode_pro_model 부재/불일치: {conf.get('opencode_pro_model')!r}"
+    assert conf.get("harness.opencode.pro_model") == "ollama/qwen3.6:27b", \
+        f"flag 해소인데 local.conf harness.opencode.pro_model 부재/불일치: {conf.get('harness.opencode.pro_model')!r}"
 
 
 def test_import_flag_model_preserves_other_local_conf_keys(pm_import, tmp_path):
-    """opencode_pro_model 기록이 board init·sync 가 쓴 다른 키(project_name·upstream)·주석을 보존."""
+    """harness.opencode.pro_model 기록이 board init·sync 가 쓴 다른 키(project_name·upstream)·주석을 보존."""
     dest = tmp_path / "modelpreserve"
     rc = pm_import.main(["--new", str(dest), "--harness", "opencode", "--name", "Keep It",
                          "--opencode-model", "ollama/qwen3.6:27b"])
     assert rc == 0
     local_conf = dest / ".project_manager" / "local.conf"
     conf = _parse_conf(local_conf)
-    assert conf.get("opencode_pro_model") == "ollama/qwen3.6:27b"
-    assert conf.get("project_name") == "Keep It", "모델 기록이 project_name 을 덮음."
-    assert "upstream" in conf, "모델 기록이 upstream 키를 잃음."
+    assert conf.get("harness.opencode.pro_model") == "ollama/qwen3.6:27b"
+    assert conf.get("project.name") == "Keep It", "모델 기록이 project_name 을 덮음."
+    assert "upstream.path" in conf, "모델 기록이 upstream 키를 잃음."
     assert local_conf.read_text(encoding="utf-8").lstrip().startswith("#"), \
         "모델 기록이 local.conf 머리 주석을 지움."
 
 
 def test_import_todo_does_not_record_opencode_model(pm_import, tmp_path):
-    """opencode import + 플래그 없음(비-tty → todo 폴백·미해소) → opencode_pro_model 미기록.
+    """opencode import + 플래그 없음(비-tty → todo 폴백·미해소) → harness.opencode.pro_model 미기록.
 
     토큰이 YAML 주석(`# model: …`)으로 남아 @render leak 이 없으므로 local.conf 기록도 안 한다.
     (autouse _hermetic_opencode_models fixture 가 _real_models_runner 를 (False, []) 로 고정 →
@@ -3566,18 +3581,18 @@ def test_import_todo_does_not_record_opencode_model(pm_import, tmp_path):
     rc = pm_import.main(["--new", str(dest), "--harness", "opencode", "--name", "ModelTodo"])
     assert rc == 0
     conf = _parse_conf(dest / ".project_manager" / "local.conf")
-    assert "opencode_pro_model" not in conf, \
-        f"todo(미해소)인데 opencode_pro_model 이 기록됨: {conf.get('opencode_pro_model')!r}"
+    assert "harness.opencode.pro_model" not in conf, \
+        f"todo(미해소)인데 harness.opencode.pro_model 이 기록됨: {conf.get('harness.opencode.pro_model')!r}"
 
 
 def test_import_claude_does_not_record_opencode_model(pm_import, tmp_path):
-    """claude-only import(모델 토큰 미잔존·inactive) → opencode_pro_model 미기록."""
+    """claude-only import(모델 토큰 미잔존·inactive) → harness.opencode.pro_model 미기록."""
     dest = tmp_path / "modelclaude"
     rc = pm_import.main(["--new", str(dest), "--harness", "claude", "--name", "ModelClaude"])
     assert rc == 0
     conf = _parse_conf(dest / ".project_manager" / "local.conf")
-    assert "opencode_pro_model" not in conf, \
-        "claude import 인데 opencode_pro_model 이 기록됨."
+    assert "harness.opencode.pro_model" not in conf, \
+        "claude import 인데 harness.opencode.pro_model 이 기록됨."
 
 
 def test_record_opencode_model_set_or_replace_unit(pm_import, tmp_path):
@@ -3585,18 +3600,18 @@ def test_record_opencode_model_set_or_replace_unit(pm_import, tmp_path):
     local_conf = tmp_path / ".project_manager" / "local.conf"
     local_conf.parent.mkdir(parents=True)
     local_conf.write_text(
-        "# header\nproject_name=Keep\nsession=pm\n", encoding="utf-8")
+        "# header\nproject.name=Keep\nsession=pm\n", encoding="utf-8")
     # 신규 추가.
     assert pm_import.record_opencode_model(tmp_path, "ollama/a") is True
     conf = _parse_conf(local_conf)
-    assert conf["opencode_pro_model"] == "ollama/a"
-    assert conf["project_name"] == "Keep" and conf["session"] == "pm"
+    assert conf["harness.opencode.pro_model"] == "ollama/a"
+    assert conf["project.name"] == "Keep" and conf["session"] == "pm"
     assert local_conf.read_text(encoding="utf-8").startswith("# header"), "머리 주석 손실."
     # 제자리 교체(중복 줄 미생성).
     assert pm_import.record_opencode_model(tmp_path, "ollama/b") is True
     text = local_conf.read_text(encoding="utf-8")
-    assert text.count("opencode_pro_model=") == 1, "교체 대신 중복 줄 생성."
-    assert _parse_conf(local_conf)["opencode_pro_model"] == "ollama/b"
+    assert text.count("harness.opencode.pro_model=") == 1, "교체 대신 중복 줄 생성."
+    assert _parse_conf(local_conf)["harness.opencode.pro_model"] == "ollama/b"
     # 동일값 재기록 → 변경 없음(False).
     assert pm_import.record_opencode_model(tmp_path, "ollama/b") is False
 
@@ -5373,7 +5388,7 @@ def test_render_managed_files_covers_guest_when_registered(pm_import, tmp_path):
     이 등재를 하므로 guest 도 렌더된다."""
     dest = tmp_path / "inst"
     (dest / ".project_manager").mkdir(parents=True)
-    (dest / ".project_manager" / "local.conf").write_text("project_name=X\n", encoding="utf-8")
+    (dest / ".project_manager" / "local.conf").write_text("project.name=X\n", encoding="utf-8")
     guest = dest / ".opencode" / "agents" / "x.md"
     guest.parent.mkdir(parents=True)
     guest.write_text("model: {{PROJECT_NAME}}\n", encoding="utf-8")

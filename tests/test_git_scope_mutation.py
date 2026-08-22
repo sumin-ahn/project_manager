@@ -302,7 +302,7 @@ def test_scope_stageable_drops_gitignored_paths(board, tmp_path):
     (repo / "board.md").write_text("tracked despite ignore\n", encoding="utf-8")
     _git(["add", "-f", "--", ".gitignore", "normal.md", "board.md"], repo)
     _git(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"], repo)
-    (repo / "local.conf").write_text("py=python3\n", encoding="utf-8")   # ignored·미추적
+    (repo / "local.conf").write_text("runtime.py=python3\n", encoding="utf-8")   # ignored·미추적
     (repo / "normal.md").write_text("n2\n", encoding="utf-8")
     (repo / "board.md").write_text("changed\n", encoding="utf-8")        # ignored 규칙·추적됨
 
@@ -332,7 +332,7 @@ def test_finish_survives_gitignored_touches(tf, tmp_path, monkeypatch, capsys):
     root = _make_home_repo(tmp_path / "home")
     (root / ".project_manager" / ".gitignore").write_text("local.conf\n", encoding="utf-8")
     _git_commit_all(root, "add gitignore")
-    (root / ".project_manager" / "local.conf").write_text("py=python3\n", encoding="utf-8")
+    (root / ".project_manager" / "local.conf").write_text("runtime.py=python3\n", encoding="utf-8")
     (root / _TOUCHED_FILE).write_text("x = 2\n", encoding="utf-8")
     finisher = _make_finisher(
         tf, root, monkeypatch,

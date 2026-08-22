@@ -434,7 +434,7 @@ def test_record_upstream_revs_absorbs_midsync_skew(pm_update, monkeypatch, tmp_p
     """apply 이후의 baseline 기록도 혼합 트리에서 동기를 죽이지 않는다(기록만 생략)."""
     local_conf = tmp_path / ".project_manager" / "local.conf"
     local_conf.parent.mkdir(parents=True)
-    local_conf.write_text("upstream=/somewhere\n", encoding="utf-8")
+    local_conf.write_text("upstream.path=/somewhere\n", encoding="utf-8")
     sibling = SimpleNamespace(
         read_upstream_rev=lambda _source: "deadbeef",
         _write_conf_keys_locked=lambda *_a, **_k: (_ for _ in ()).throw(_marked_skew()),
@@ -443,7 +443,7 @@ def test_record_upstream_revs_absorbs_midsync_skew(pm_update, monkeypatch, tmp_p
     monkeypatch.setattr(pm_update, "_load_pm_import", lambda: sibling)
     changed, updates = pm_update.record_upstream_revs(tmp_path, tmp_path)
     assert (changed, updates) == (False, {})
-    assert "upstream_rev 기록을 건너뛴다" in capsys.readouterr().err
+    assert "upstream.rev 기록을 건너뛴다" in capsys.readouterr().err
 
 
 def test_record_upstream_revs_still_propagates_non_skew_failures(pm_update, monkeypatch,
@@ -451,7 +451,7 @@ def test_record_upstream_revs_still_propagates_non_skew_failures(pm_update, monk
     """흡수는 marked skew 한정 — 일반 write 실패는 종전대로 올라간다(무차별 삼킴 금지)."""
     local_conf = tmp_path / ".project_manager" / "local.conf"
     local_conf.parent.mkdir(parents=True)
-    local_conf.write_text("upstream=/somewhere\n", encoding="utf-8")
+    local_conf.write_text("upstream.path=/somewhere\n", encoding="utf-8")
     sibling = SimpleNamespace(
         read_upstream_rev=lambda _source: "deadbeef",
         _write_conf_keys_locked=lambda *_a, **_k: (_ for _ in ()).throw(
@@ -832,7 +832,7 @@ def test_midsync_mixed_rev_sync_completes_and_converges(tmp_path):
     dest_tools = _build_engine_tree(dest)
     _stale_rev_copy(dest_tools, "pm_import.py", current_rev)
     (dest / ".project_manager" / "local.conf").write_text(
-        f"upstream={source}\n", encoding="utf-8")
+        f"upstream.path={source}\n", encoding="utf-8")
 
     # 감도 앵커 — 동기 **직전** 트리에서 설치 하네스 판별(`_installed_entry_notation_manifests`
     #   가 부르는 바로 그 API)은 실제로 marked skew 를 낸다. 아래 완주가 "skew 창이 안 열려서"
@@ -864,7 +864,7 @@ def test_midsync_mixed_rev_sync_completes_and_converges(tmp_path):
     assert expected == current_rev
     assert set(revs.values()) == {current_rev} and not unstamped
     assert "수렴하지 않았다" not in combined
-    assert "upstream_rev=" in (dest / ".project_manager" / "local.conf").read_text(
+    assert "upstream.rev=" in (dest / ".project_manager" / "local.conf").read_text(
         encoding="utf-8")                  # 수렴했으므로 baseline 은 종전대로 기록된다
 
 
@@ -881,7 +881,7 @@ def test_mixed_source_tree_fails_loud_instead_of_silently_copying(tmp_path):
     _commit_tree(source)
     dest_tools = _build_engine_tree(dest)
     (dest / ".project_manager" / "local.conf").write_text(
-        f"upstream={source}\n", encoding="utf-8")
+        f"upstream.path={source}\n", encoding="utf-8")
 
     proc = subprocess.run(
         [sys.executable, str(dest_tools / "pm_update.py"), "--from", str(source)],
@@ -894,7 +894,7 @@ def test_mixed_source_tree_fails_loud_instead_of_silently_copying(tmp_path):
     assert "pm_import.py(v0.0.0-stale)" in combined      # 어긋난 사본 지목
     assert "`--from` 트리 자신이 혼합" in combined        # 재실행이 답이 아님을 말한다
     assert "baseline" in combined                        # 억제 사실
-    assert "upstream_rev=" not in (dest / ".project_manager" / "local.conf").read_text(
+    assert "upstream.rev=" not in (dest / ".project_manager" / "local.conf").read_text(
         encoding="utf-8")
 
 
@@ -988,8 +988,6 @@ def test_unconverged_run_skips_the_optin_prompts(pm_update, tmp_path, monkeypatc
     asked: list[str] = []
     monkeypatch.setattr(pm_update, "maybe_prompt_external_review",
                         lambda _dest: asked.append("external_review"))
-    monkeypatch.setattr(pm_update, "maybe_prompt_delegate_optin",
-                        lambda _dest: asked.append("delegate"))
 
     rc = pm_update.main(["--from", str(source)])
 
@@ -1008,13 +1006,11 @@ def test_converged_run_still_asks_the_optin_prompts(pm_update, tmp_path, monkeyp
     asked: list[str] = []
     monkeypatch.setattr(pm_update, "maybe_prompt_external_review",
                         lambda _dest: asked.append("external_review"))
-    monkeypatch.setattr(pm_update, "maybe_prompt_delegate_optin",
-                        lambda _dest: asked.append("delegate"))
 
     rc = pm_update.main(["--from", str(source)])
 
     assert rc == 0, capsys.readouterr().err
-    assert asked == ["external_review", "delegate"]
+    assert asked == ["external_review"]
 
 
 def test_converge_returns_the_convergence_verdict(pm_update, tmp_path, capsys):

@@ -37,7 +37,7 @@ permission:
 
 ## 엔진 호출 규약 (인코딩)
 
-엔진 python CLI(board.py)·프로젝트 test 명령(local.conf `test_cmd=` — 이하 test_cmd)은 env prefix 없이 그대로 호출한다 — 엔진이 인코딩을
+엔진 python CLI(board.py)·프로젝트 test 명령(local.conf `test.cmd=` — 이하 test_cmd)은 env prefix 없이 그대로 호출한다 — 엔진이 인코딩을
 코드로 처리(PM 7차·C1 파일·C2 콘솔 reconfigure)하므로 Windows/CP949·PowerShell 서도 env 없이
 한글 ticket·출력 깨짐 0 으로 동작 (AGENTS.md §1):
 

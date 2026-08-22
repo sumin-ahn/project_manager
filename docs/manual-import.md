@@ -29,7 +29,7 @@ python3 -m pip install -r requirements-dev.txt   # PyYAML(런타임) + pytest(�
 #    단위로 빼도 등가다. (⑤ 밖의 `{{DATE}}`— status.md·architecture.md·log/current.md 등 manifest
 #    미등재 인스턴스 seed — 는 설치일로 채우는 게 맞다·아래 sed 가 그대로 처리.)
 #    {{PY}}/{{TEST_CMD}} 는 엔진 문서·어댑터에서 폐기(T-0219 — 문서 표기는 python3 관례·test 명령은
-#    local.conf test_cmd= 노브)·진입 문서 등엔 잔존.
+#    local.conf test.cmd= 노브)·진입 문서 등엔 잔존.
 grep -rlI '{{' . --exclude-dir=.git --exclude-dir=__pycache__ --exclude-dir=node_modules | \
   grep -vE '^\./\.project_manager/tools/|^\./\.project_manager/engine\.manifest$|^\./\.project_manager/wiki/pm_(role|playbook)\.md$|^\./\.project_manager/wiki/pm_state\.template\.md$|^\./\.project_manager/wiki/domain/_template\.md$' | \
   xargs sed -i \
@@ -54,7 +54,7 @@ python3 .project_manager/tools/board.py list
 #    - {{PROTECTED_PATHS}}·{{USER_GATE_ITEMS}} → .project_manager/wiki/pm_role.local.md (overlay)
 #      — 파일 안 <!-- TODO --> 참고.
 
-# 6) (Python 외 언어면) local.conf 의 test_cmd + ticket_finish.py / pm_*.py 의 pytest 가정 교체 (portability.md).
+# 6) (Python 외 언어면) local.conf 의 test.cmd + ticket_finish.py / pm_*.py 의 pytest 가정 교체 (portability.md).
 
 # 이후 프레임워크 개선 받기: ./pm-update.sh [--from <upstream-checkout>] [--dry-run]
 ```

@@ -96,7 +96,7 @@ def board(tmp_path, monkeypatch):
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
     # user 축은 conf 로, 세션 축은 env 로 명시 바인딩(실 git config·실 clone conf 미접촉).
-    (pm / "local.conf").write_text("user=alice\n", encoding="utf-8")
+    (pm / "local.conf").write_text("identity.user=alice\n", encoding="utf-8")
     monkeypatch.setattr(mod, "_git_config_email", lambda: None)
     monkeypatch.setenv("PM_SESSION_NAME", "pm_1")
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)

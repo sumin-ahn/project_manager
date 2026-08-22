@@ -822,7 +822,7 @@ def emit_contradiction_advisory(
 def _resolve_default_author() -> "str | None":
     """`--author` 생략 시 board `identity_tag()` sibling 재사용 — `<user>/<pm-slot>` 해소.
 
-    board.py 의 기존 identity 해소 체인(local.conf user → git config user.email·세션 토큰)을
+    board.py 의 기존 identity 해소 체인(local.conf identity.user → git config user.email·세션 토큰)을
     그대로 쓴다(자체 로직 신설 0). 로드/해소 실패는 None
     (fail-soft — 호출부가 현행 빈 값 경로 유지·발행을 못 깨게)."""
     try:
@@ -908,7 +908,7 @@ def cmd_new(args: argparse.Namespace) -> int:
     tags = _parse_str_list(args.tags)
 
     # --author 생략 시 기존 identity 해소 체인 재사용(board.identity_tag —
-    # local.conf user → git config user.email → 세션 토큰). 명시 인자 우선·해소 불가(None)면
+    # local.conf identity.user → git config user.email → 세션 토큰). 명시 인자 우선·해소 불가(None)면
     # 현행(빈 값 → lint_adr_author advisory) 유지 — 새 해소 로직 신설 0.
     author = args.author or _resolve_default_author() or ""
 

@@ -12,7 +12,7 @@
   // 자동 컴팩션 기본값(켜짐)을 유지한다. 컨텍스트 한계 대응 모델이 "압축은 허용하고 서사를 미리
   // 박제" 이기 때문이다 — 정상 경로는 사전 checkpoint 넛지 → native compaction → 사후 checkpoint
   // 안내이고, plugin 이 `session.compacted` 를 관측해 밴드를 재무장한다(넛지는 압축 사이클당 1회).
-  // ctx-guard 밴드(잔여 `ctx_nudge_pct`/`ctx_stop_pct` = 기본 30/20)는 전부 **비차단 안내**다.
+  // ctx-guard 밴드(잔여 `ctx.nudge_pct`/`ctx.stop_pct` = 기본 30/20)는 전부 **비차단 안내**다.
   //   최종 밴드도 마지막 checkpoint 넛지로만 소비하고 prompt·도구·compaction 을 막지 않는다.
   //   plugin 산출은 안내문 3종(넛지·2단 강한 넛지·압축 후 안내)뿐이며 핸드오프를 트리거하지 않는다.
   //   세션을 실제로 교체하는 회전은 relay driver 경로가 담당한다(pm_orch_opencode.py·이 plugin 아님).
@@ -21,7 +21,7 @@
   // 압축도 안내도 없이 컨텍스트 초과로 죽는다. agent 별 compaction 토글은 현재 config 스키마에
   // 없으므로(per-agent 미지원) "전역 기본 켜짐 + PM 은 압축 전 checkpoint 박제" 가 둘 다 지키는 조합이다.
   // 밴드 튜닝(선택): 넛지가 너무 늦게 또는 이르게 오면 `local.conf` 의 `ctx_window_tokens_opencode`
-  //   (넛지 %의 분모 예산)와 `ctx_stop_pct`/`ctx_nudge_pct` 로 밴드를 옮긴다. 모델을 바꿔 실제 컨텍스트
+  //   (넛지 %의 분모 예산)와 `ctx.stop_pct`/`ctx.nudge_pct` 로 밴드를 옮긴다. 모델을 바꿔 실제 컨텍스트
   //   창이 달라졌으면 예산부터 그 모델에 맞춘다 — 예산이 실제 창보다 크면 안내가 늦게 온다.
   // (토큰추적·넛지·checkpoint 안내는 .opencode/plugins/ctx-guard.js 가 autoload 로 담당 — 차단 없음.)
   // 모델 출력 상한 명시 (T-0334·대용량 write 신뢰성 3층 가드 ③). limit.output 을 명시해 fallback

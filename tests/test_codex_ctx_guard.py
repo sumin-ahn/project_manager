@@ -12,7 +12,7 @@ codex 어댑터의 2층 ctx 가드 중 **대화형 경로**를 여러 층위에�
        T-0806 이후 압축 두 이벤트의 커맨드는 범용 진입점(`--hook-dispatch <이벤트>`)이고, 어떤
        기능이 도는지는 디스패처 registry 가 쥔다 — 그래서 checkpoint·안내·snapshot 배선 단언은
        hooks.json 이 아니라 그 registry 값을 본다(판정 자체는 같은 값·표기만 옮겨 왔다).
-  3. ctx 예산 키 — `board.py init` 스캐폴드가 `ctx_window_tokens_codex` 주석 예시를 claude/opencode
+  3. ctx 예산 키 — `board.py init` 스캐폴드가 `harness.codex.ctx_window_tokens` 주석 예시를 claude/opencode
        와 나란히 박는다(relay driver `_maybe_mark_ctx` 예산 원천·ADR-0041 per-harness 키).
 
 미러: `test_opencode_ctx_guard.py`(config/plugin 정합)·`test_board_portability.py` C8(board init).
@@ -526,8 +526,8 @@ def test_recorded_long_tui_rollout_fixture_proves_echo_only_tripwire_was_false_g
     assert tripwire_output is True
 
 
-# ── 3. ctx_window_tokens_codex 예산 키: board.py init 스캐폴드 ────────────────
-# relay driver(_maybe_mark_ctx·T-0404)의 예산 원천 = local.conf ctx_window_tokens_codex
+# ── 3. harness.codex.ctx_window_tokens 예산 키: board.py init 스캐폴드 ────────────────
+# relay driver(_maybe_mark_ctx·T-0404)의 예산 원천 = local.conf harness.codex.ctx_window_tokens
 # (ADR-0041 per-harness 키). board.py init 이 claude/opencode 와 나란히 주석 예시를 박는다.
 
 def _load_board():
@@ -537,11 +537,11 @@ def _load_board():
     return mod
 
 
-def test_board_init_scaffolds_codex_budget_comment(tmp_path, monkeypatch):
-    """board.py init(임시 dir·hermetic)이 local.conf 에 ctx_window_tokens_codex 주석 예시를 박는다.
+def test_board_init_leaves_the_codex_budget_key_to_the_docs(tmp_path, monkeypatch):
+    """board.py init 산출에는 codex 예산 **설명/예시가 없다** — 카탈로그는 출하 문서 소유 (T-0767).
 
-    미러 test_board_portability.test_init_scaffold_has_harness_override_comment(claude/opencode).
-    예시는 반드시 주석(#) — 활성 키로 새면 generic 예산(ctx_window_tokens)을 덮는다.
+    미러 test_board_portability.test_init_ctx_budget_is_a_value_not_an_explanation.
+    conf 는 이 clone 이 정한 값만 담고, 하네스별 오버라이드 키의 존재는 README 가 가르친다.
     """
     board = _load_board()
     conf_path = tmp_path / "local.conf"
@@ -565,19 +565,13 @@ def test_board_init_scaffolds_codex_budget_comment(tmp_path, monkeypatch):
     assert board.cmd_init(args) == 0
 
     conf_text = conf_path.read_text(encoding="utf-8")
-    assert "ctx_window_tokens_codex" in conf_text, "codex 예산 주석 예시 없음"
-    # 예시는 반드시 주석(#) — 활성 키로 새어 generic 예산을 덮으면 안 된다(claude/opencode 대칭).
-    for line in conf_text.splitlines():
-        if "ctx_window_tokens_codex" in line:
-            assert line.lstrip().startswith("#"), (
-                f"codex 예산 예시는 주석이어야(활성 키 X): {line!r}"
-            )
-    # claude/opencode 와 한 블록에 나란히.
-    assert "ctx_window_tokens_claude" in conf_text
-    assert "ctx_window_tokens_opencode" in conf_text
-    # 파싱 시 주석 오버라이드는 활성 키로 잡히지 않는다 (local_config 는 # 라인 skip).
+    for harness in ("codex", "claude", "opencode"):
+        assert f"harness.{harness}.ctx_window_tokens" not in conf_text
     parsed = board.local_config()  # LOCAL_CONF 가 conf_path 로 patch 됨.
-    assert "ctx_window_tokens_codex" not in parsed
+    assert not [key for key in parsed if key.startswith("harness.")]
+    # 카탈로그는 출하 문서가 소유한다 — 키가 사라진 게 아니라 자리를 옮겼다.
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    assert "harness.<name>.ctx_window_tokens" in readme
 
 
 # ── 4. 세션 안 ctx 넛지 (T-0770 · claude 미러) ────────────────────────────────
@@ -666,9 +660,9 @@ def _adopter_root(tmp_path: Path, *, conf: str = "", pm_log_body: str | None = N
 
 
 # 밴드 안에 들어가는 예산 — 라이브 점유 15328 / 20000 = 77% (잔여 23% → nudge2 밴드).
-_IN_BAND_BUDGET = "ctx_window_tokens_codex=20000\n"
+_IN_BAND_BUDGET = "harness.codex.ctx_window_tokens=20000\n"
 # 밴드 밖 예산 — 15328 / 60000 = 26% (잔여 74%).
-_OUT_OF_BAND_BUDGET = "ctx_window_tokens_codex=60000\n"
+_OUT_OF_BAND_BUDGET = "harness.codex.ctx_window_tokens=60000\n"
 _STUB_PM_LOG = (
     "import sys\n"
     "sys.stdout.write('ENGINE-GUIDANCE ' + ' '.join(sys.argv[1:]) + '\\n')\n"
@@ -894,10 +888,10 @@ def test_prose_does_not_claim_first_turn_coverage(codex_ctx):
 
 @pytest.mark.parametrize("conf", (
     {},
-    {"ctx_nudge_pct": "40", "ctx_stop_pct": "25"},
-    {"ctx_nudge_pct": "10", "ctx_stop_pct": "20"},   # 역전 → 둘 다 엔진 기본 폴백.
-    {"ctx_stop_pct": "0"},                            # 범위 밖 → 폴백.
-    {"ctx_nudge_pct": "abc", "ctx_stop_pct": "  25 "},
+    {"ctx.nudge_pct": "40", "ctx.stop_pct": "25"},
+    {"ctx.nudge_pct": "10", "ctx.stop_pct": "20"},   # 역전 → 둘 다 엔진 기본 폴백.
+    {"ctx.stop_pct": "0"},                            # 범위 밖 → 폴백.
+    {"ctx.nudge_pct": "abc", "ctx.stop_pct": "  25 "},
 ))
 def test_thresholds_mirror_claude_keys_and_sanity(codex_ctx, claude_ctx, conf):
     """`ctx_nudge_pct`/`ctx_stop_pct` 해소와 sanity 폴백이 claude 와 값으로 같다."""
@@ -906,26 +900,26 @@ def test_thresholds_mirror_claude_keys_and_sanity(codex_ctx, claude_ctx, conf):
 
 @pytest.mark.parametrize("conf", (
     {},
-    {"ctx_window_tokens": "500000"},
-    {"ctx_window_tokens_codex": "300000", "ctx_window_tokens": "500000"},
-    {"ctx_window_tokens_codex": "0", "ctx_window_tokens": "400000"},
-    {"ctx_window_tokens_codex": "nope"},
+    {"ctx.window_tokens": "500000"},
+    {"harness.codex.ctx_window_tokens": "300000", "ctx.window_tokens": "500000"},
+    {"harness.codex.ctx_window_tokens": "0", "ctx.window_tokens": "400000"},
+    {"harness.codex.ctx_window_tokens": "nope"},
 ))
 def test_budget_precedence_mirrors_claude_per_harness_keys(codex_ctx, claude_ctx, conf):
-    """예산 우선순위 `ctx_window_tokens_codex` > `ctx_window_tokens` > 200000 (ADR-0041)."""
+    """예산 우선순위 `harness.codex.ctx_window_tokens` > `ctx.window_tokens` > 200000 (ADR-0041)."""
     assert codex_ctx.resolve_ctx_budget(conf) == claude_ctx.resolve_budget(conf, "codex")
 
 
 def test_budget_precedence_values_are_pinned(codex_ctx):
     """우선순위 3층의 실값 — 미러 대조만으로는 두 사이트가 함께 틀릴 수 있다."""
     assert codex_ctx.resolve_ctx_budget(
-        {"ctx_window_tokens_codex": "300000", "ctx_window_tokens": "500000"}) == 300000
-    assert codex_ctx.resolve_ctx_budget({"ctx_window_tokens": "500000"}) == 500000
+        {"harness.codex.ctx_window_tokens": "300000", "ctx.window_tokens": "500000"}) == 300000
+    assert codex_ctx.resolve_ctx_budget({"ctx.window_tokens": "500000"}) == 500000
     assert codex_ctx.resolve_ctx_budget({}) == codex_ctx.CTX_WINDOW_TOKENS_DEFAULT == 200_000
 
 
 @pytest.mark.parametrize("conf", (
-    {}, {"ctx_nudge_pct": "40", "ctx_stop_pct": "25"}, {"ctx_stop_pct": "5"},
+    {}, {"ctx.nudge_pct": "40", "ctx.stop_pct": "25"}, {"ctx.stop_pct": "5"},
 ))
 def test_band_classification_mirrors_claude_for_every_used_pct(codex_ctx, claude_ctx, conf):
     """0~100% 전 구간에서 밴드 이름이 claude 와 같다 — codex 전용 경계 신설 0."""

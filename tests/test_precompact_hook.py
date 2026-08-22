@@ -161,7 +161,7 @@ def test_band_missed_precompact_durably_records_remedy_and_reinjects_after_compa
     """설정 창 때문에 밴드가 0회면 log 박제 + PostCompact 복구 context 모두 loud하다."""
     hook = _make_repo(tmp_path, with_log=True)
     (tmp_path / ".project_manager" / "local.conf").write_text(
-        "ctx_window_tokens_claude=1000000\n", encoding="utf-8",
+        "harness.claude.ctx_window_tokens=1000000\n", encoding="utf-8",
     )
     transcript = _write_usage_transcript(tmp_path, 655_736)
     payload = {
@@ -179,7 +179,7 @@ def test_band_missed_precompact_durably_records_remedy_and_reinjects_after_compa
     assert "[ctx-window-mismatch] 설정 창이 실 압축 지점보다 큼" in text
     assert "설정 1,000,000 tokens" in text
     assert "PreCompact 관측 655,736 tokens" in text
-    assert "`ctx_window_tokens_claude`" in text
+    assert "`harness.claude.ctx_window_tokens`" in text
     assert "관측 사용량 655,736 tokens 이하" in text
 
     duplicate_pre = _run_hook(hook, payload)
@@ -203,7 +203,7 @@ def test_duplicate_postcompact_preserves_unconsumed_window_mismatch_recovery(tmp
     """같은 완료 경계의 중복 훅이 아직 미소비인 loud 진단 snapshot을 덮지 않는다."""
     hook = _make_repo(tmp_path, with_log=True)
     (tmp_path / ".project_manager" / "local.conf").write_text(
-        "ctx_window_tokens_claude=1000000\n", encoding="utf-8",
+        "harness.claude.ctx_window_tokens=1000000\n", encoding="utf-8",
     )
     transcript = _write_usage_transcript(tmp_path, 655_736)
     payload = {
@@ -235,7 +235,7 @@ def test_duplicate_postcompact_without_transcript_preserves_unconsumed_mismatch(
     """관측 transcript가 없어도 같은 완료 경계의 중복 훅은 loud payload를 보존한다."""
     hook = _make_repo(tmp_path, with_log=True)
     (tmp_path / ".project_manager" / "local.conf").write_text(
-        "ctx_window_tokens_claude=1000000\n", encoding="utf-8",
+        "harness.claude.ctx_window_tokens=1000000\n", encoding="utf-8",
     )
     payload = {
         "cwd": str(tmp_path),
@@ -270,7 +270,7 @@ def test_precompact_retries_diagnostic_after_prior_process_died_post_claim(tmp_p
     """선점 직후 죽은 흔적이 있어도 재실행은 조건을 다시 평가해 진단을 append한다."""
     hook = _make_repo(tmp_path, with_log=True)
     (tmp_path / ".project_manager" / "local.conf").write_text(
-        "ctx_window_tokens_claude=1000000\n", encoding="utf-8",
+        "harness.claude.ctx_window_tokens=1000000\n", encoding="utf-8",
     )
     transcript = _write_usage_transcript(tmp_path, 655_736)
     session_id = "crash-retry-session"
@@ -310,7 +310,7 @@ def test_fired_band_precompact_has_no_window_mismatch_false_positive(
     """이번 사이클 band marker가 하나라도 실재하면 같은 압축의 불일치 진단은 0건이다."""
     hook = _make_repo(tmp_path, with_log=True)
     (tmp_path / ".project_manager" / "local.conf").write_text(
-        "ctx_window_tokens_claude=1000000\n", encoding="utf-8",
+        "harness.claude.ctx_window_tokens=1000000\n", encoding="utf-8",
     )
     transcript = _write_usage_transcript(tmp_path, 655_736)
     marker = (
@@ -333,7 +333,7 @@ def test_fired_band_precompact_has_no_window_mismatch_false_positive(
     )
     assert "checkpoint | (task:main) — compaction" in text
     assert "ctx-window-mismatch" not in text
-    assert "ctx_window_tokens_claude" not in text
+    assert "harness.claude.ctx_window_tokens" not in text
     post = _run_python_hook(hook, {
         "cwd": str(tmp_path),
         "session_id": "normal-session",
@@ -349,7 +349,7 @@ def test_fired_band_precompact_has_no_window_mismatch_false_positive(
     assert post.returncode == restored.returncode == 0
     recovery = json.loads(restored.stdout)["hookSpecificOutput"]["additionalContext"]
     assert "ctx-window-mismatch" not in recovery
-    assert "ctx_window_tokens_claude" not in recovery
+    assert "harness.claude.ctx_window_tokens" not in recovery
 
 
 @pytest.mark.parametrize("trigger", ["manual", None, "future-trigger"])
@@ -359,7 +359,7 @@ def test_non_auto_precompact_never_persists_or_reinjects_window_mismatch(
     """manual /compact와 trigger 부재·미지값은 낮은 사용량이어도 durable 오탐이 0건이다."""
     hook = _make_repo(tmp_path, with_log=True)
     (tmp_path / ".project_manager" / "local.conf").write_text(
-        "ctx_window_tokens_claude=600000\n", encoding="utf-8",
+        "harness.claude.ctx_window_tokens=600000\n", encoding="utf-8",
     )
     transcript = _write_usage_transcript(tmp_path, 30_000)
     payload = {
@@ -382,7 +382,7 @@ def test_non_auto_precompact_never_persists_or_reinjects_window_mismatch(
     assert "ctx-window-mismatch" not in log_text
     recovery = json.loads(restored.stdout)["hookSpecificOutput"]["additionalContext"]
     assert "ctx-window-mismatch" not in recovery
-    assert "ctx_window_tokens_claude" not in recovery
+    assert "harness.claude.ctx_window_tokens" not in recovery
 
 
 def test_sidechain_skips_breadcrumb_and_checkpoint(tmp_path):

@@ -7,7 +7,7 @@ rem pm_update is the single source of truth for the CLI contract.
 rem (Callable as .\pm-update.cmd from both cmd and PowerShell.)
 rem
 rem Usage:  cd <target> ^&^& .\pm-update.cmd
-rem         (--from is auto-defaulted from local.conf upstream=, so it can be omitted.
+rem         (--from is auto-defaulted from local.conf upstream.path=, so it can be omitted.
 rem          See .\pm-update.cmd --help for how to register it.)
 setlocal
 

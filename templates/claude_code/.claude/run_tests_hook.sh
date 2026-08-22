@@ -6,8 +6,8 @@
 # 박제 금지 — 다른 PC 에서 재-import 불필요), 인터프리터는 python3→python 런타임 폴백으로
 # OS 무관하게 고른다. 이 파일은 치환 토큰이 없어 모든 머신에서 byte-identical 하다.
 # 테스트 러너 명령은 이 훅이 사는 **체크아웃 루트**의 `.project_manager/local.conf` 하나에서만
-# 읽는다(`test_cmd`). 그 파일에 test_cmd 가 없으면 엔진 폴백(`pytest tests/`)이 정상 경로다 —
-# PM 홈과 코드 worktree 가 분리된 형상에선 worktree 쪽 local.conf 가 test_cmd 를 안 담을 수 있다.
+# 읽는다(`test.cmd`). 그 파일에 test.cmd 가 없으면 엔진 폴백(`pytest tests/`)이 정상 경로다 —
+# PM 홈과 코드 worktree 가 분리된 형상에선 worktree 쪽 local.conf 가 test.cmd 를 안 담을 수 있다.
 # 이 파일은 엔진 소유(manifest 등재)라 여기서 러너 줄을 고쳐도 다음 엔진 동기에 덮인다. 발화 게이트는
 # .py 편집으로 고정이다(파이썬 외 스택에선 훅이 발화하지 않을 뿐, 회귀는 엔진 도구로 돌린다).
 #
@@ -108,12 +108,12 @@ summarize_run() {
     fi
 }
 
-# 러너는 채택자 소유 — `.project_manager/local.conf` 의 `test_cmd` 를 해소해 *그대로* 실행한다
+# 러너는 채택자 소유 — `.project_manager/local.conf` 의 `test.cmd` 를 해소해 *그대로* 실행한다
 # (플래그를 덧붙이지 않는다: 실값이 이미 `-q` 등 자기 플래그를 담고 있어 중복·충돌한다). 테스트 루트가
 # `tests/` 가 아닌 채택자(`… -m pytest .project_manager/checks/tests -q`)에서 하드코딩이 수집 0 이나
 # 엉뚱한 스위트를 돌리던 클래스를 닫는다. 해소는 엔진 `board.local_config()` 와 동형 — 주석/빈 줄 무시,
 # 키·값 주변 공백 무시, 같은 키 중복 시 last-wins(마지막 값이 비면 앞 값을 해제한 것으로 보고 폴백).
-# 실행이 `sh -c` 인 이유: test_cmd 는 인터프리터 경로 + 인자로 된 명령줄이라 변수 직접 실행으론 워드
+# 실행이 `sh -c` 인 이유: test.cmd 는 인터프리터 경로 + 인자로 된 명령줄이라 변수 직접 실행으론 워드
 # 스플리팅이 깨져 셸 파싱이 필요한데, `eval` 은 **이 훅의 셸 컨텍스트**에서 돌아 위의 `set -u` 를
 # 상속한다 — `PYTHONPATH="$PYTHONPATH:src" pytest` 처럼 미설정 변수를 참조하는 정상 명령이 unbound
 # variable 로 죽는다(엔진에선 안 죽는다). 신선한 자식 셸에 넘겨 엔진 `subprocess.run(shell=True)`
@@ -132,12 +132,27 @@ summarize_run() {
 # --8<-- test_cmd 해소 시작 (tests/test_run_tests_hook_test_cmd.py 파서 동형성 가드가 이 구간을 떼어 돌린다)
 read_test_cmd_lines() {
     sed -n -e 's/[[:space:]]*$//' \
-        -e 's/^[[:space:]]*test_cmd[[:space:]]*=[[:space:]]*//p' \
+        -e 's/^[[:space:]]*test\.cmd[[:space:]]*=[[:space:]]*//p' \
         "$1"
 }
 
+# conf 의 **키 이름만** 뽑는다(주석 줄 제외·값은 보지 않는다) — 구표기 판정의 입력.
+read_conf_keys() {
+    sed -n -e '/^[[:space:]]*#/d' \
+        -e 's/^[[:space:]]*\([^=]*[^=[:space:]]\)[[:space:]]*=.*$/\1/p' \
+        "$1"
+}
+
+# 차단 구키 목록은 엔진이 **생성**한다(손으로 복제하면 표와 훅이 갈린다):
+#   python3 .project_manager/tools/local_conf.py --render-adapter-block sh
+# 생성 시작 — 차단 구키 (local_conf.render_adapter_block · 손편집 금지)
+legacy_conf_keys='additional_reviewer_enabled additional_reviewer_incomplete_round_limit additional_reviewer_round_limit additional_reviewer_wave_budget ctx_nudge_pct ctx_stop_pct ctx_window_tokens date delegate_enabled delegate_idle_timeout delegate_timeout external_review_enabled external_review_idle_timeout external_review_incomplete_round_limit external_review_progress_signal external_review_round_limit external_review_timeout external_review_wave_budget opencode_pro_model project_name project_root project_tagline py regression_min_collected review_denylist_extra review_paths review_rounds_max reviewer_cmd reviewer_env_keep_extra reviewer_home_artifacts_extra test_cmd upstream upstream_rev upstream_seen_rev user'
+legacy_conf_key_prefix='ctx_window_tokens_'
+# 생성 끝 — 차단 구키
+
 conf_file="$repo_root/.project_manager/local.conf"
 conf_error=""
+legacy_found=""
 test_cmd=""
 if [ -e "$conf_file" ]; then
     # 1패스: 읽기 가능성 판정. `2>&1 >/dev/null` 로 stderr 만 받아(값은 버린다) sed 자신의 rc 를 얻는다
@@ -148,18 +163,33 @@ if [ -e "$conf_file" ]; then
         conf_error=$(printf '%s\n' "$conf_stderr" | tail -1)
         [ -n "$conf_error" ] || conf_error="rc $conf_rc"
     else
-        # 2패스: 값 추출. `tail` 은 반드시 명령치환 *안*에서 돌린다 — 밖에서 돌리면 치환이 후행 개행을
+        # 2패스: 구표기 판정을 **값 해소 앞**에 둔다. 뒤에 두면 `test_cmd=` 가 신표기가 아니라는
+        #   이유로 빈 값이 되고, 훅은 그것을 "미지정" 으로 읽어 고정 폴백 러너를 조용히 고른다 —
+        #   채택자는 자기 러너가 돈 줄 안다(엔진 소비 지점의 fail-loud 와 같은 규율).
+        for _key in $(read_conf_keys "$conf_file" 2>/dev/null); do
+            case " $legacy_conf_keys " in
+                *" $_key "*) legacy_found="$legacy_found $_key" ;;
+            esac
+            case "$_key" in
+                "$legacy_conf_key_prefix"?*) legacy_found="$legacy_found $_key" ;;
+            esac
+        done
+        # 3패스: 값 추출. `tail` 은 반드시 명령치환 *안*에서 돌린다 — 밖에서 돌리면 치환이 후행 개행을
         #   먼저 삼켜 "마지막 값이 빈 값"(해제) 케이스가 직전 값으로 되살아난다.
-        test_cmd=$(read_test_cmd_lines "$conf_file" 2>/dev/null | tail -1)
+        if [ -z "$legacy_found" ]; then
+            test_cmd=$(read_test_cmd_lines "$conf_file" 2>/dev/null | tail -1)
+        fi
     fi
 fi
 # --8<-- test_cmd 해소 끝
 
 # 러너 출력은 변수로 받고 종료코드를 *따로* 캡처한다. `러너 | tail -1` 파이프로 받으면 파이프라인 rc 가
-# tail 의 것(항상 0)이라 러너 종료코드가 버려진다 — `test_cmd=false` 같은 무출력 실패가 빈 메시지 +
+# tail 의 것(항상 0)이라 러너 종료코드가 버려진다 — `test.cmd=false` 같은 무출력 실패가 빈 메시지 +
 # 정상으로 위장돼 위의 '조용한 실패 금지'를 스스로 깬다. 요약(마지막 줄 추출)은 rc 를 확보한 뒤 한다.
 if [ -n "$conf_error" ]; then
     result="local.conf 를 읽지 못해 러너를 해소하지 못했다 ($conf_error)"
+elif [ -n "$legacy_found" ]; then
+    result="local.conf 에 구표기 키가 남아 러너를 해소하지 못했다 (${legacy_found# }) — 새 표기로 교체하라"
 else
     if [ -n "$test_cmd" ]; then
         output=$(sh -c "$test_cmd" 2>&1)

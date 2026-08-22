@@ -14,7 +14,7 @@ opencode/claude 가 위임 프롬프트를 받아 완주하고 reply 를 회수�
 + 위임 성공 = rc==0 + raw 박제 파일 존재까지 hard 단언.
 
 **in-process(self-contained)**: `pm_delegate.main()` 을 직접 호출하되 `local_config` 를
-`delegate_enabled=true` 로 monkeypatch 하고 `--harness/--model` CLI override 로 타깃을 지정한다 —
+`delegate.enabled=true` 로 monkeypatch 하고 `--harness/--model` CLI override 로 타깃을 지정한다 —
 per-clone local.conf(worktree) 의존을 없애 fresh clone/CI/livegate 어디서든 자기-정합. run_fn 은
 실제 `_default_run_fn`(실 subprocess 스폰)이다. codex 는 격리 CODEX_HOME(auth 복사·종료 시 삭제·실
 ~/.codex 미오염·conftest 선례)로 스폰한다.
@@ -122,7 +122,7 @@ def _delegate(pd, monkeypatch, capsys, repo: Path, prompt: Path, harness: str, m
     """pm_delegate.main() 을 in-process 로 호출(local_config=enabled monkeypatch·실 run_fn 스폰).
 
     reply 는 stdout(print)로 나오므로 capsys 로 회수한다. rc·reply·stderr 반환."""
-    monkeypatch.setattr(pd, "local_config", lambda: {"delegate_enabled": "true"})
+    monkeypatch.setattr(pd, "local_config", lambda: {"delegate.enabled": "true"})
     argv = ["--role", role, "--prompt-file", str(prompt), "--cwd", str(repo),
             "--harness", harness, "--model", model, "--output-dir", str(output_dir),
             "--timeout", str(timeout)]
@@ -360,7 +360,7 @@ def test_delegate_live_claude_resume_round(tmp_path, monkeypatch, capsys):
         "파일을 새로 읽지 말고 이미 아는 내용으로만 답하라.",
         encoding="utf-8",
     )
-    monkeypatch.setattr(pd, "local_config", lambda: {"delegate_enabled": "true"})
+    monkeypatch.setattr(pd, "local_config", lambda: {"delegate.enabled": "true"})
     rc2 = pd.main([
         "--role", "researcher", "--prompt-file", str(followup), "--cwd", str(repo),
         "--harness", "claude", "--model", CLAUDE_MODEL, "--reasoning", "low",

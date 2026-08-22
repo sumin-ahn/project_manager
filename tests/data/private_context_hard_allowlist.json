@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "count": 562,
+  "count": 560,
   "surface_counts": {
-    "markdown": 146,
+    "markdown": 144,
     "python-non-prose": 24,
     "python-prose": 392
   },
@@ -1850,14 +1850,6 @@
     {
       "path": "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
       "kind": "work_item",
-      "match": "ADR-0004",
-      "surface": "markdown",
-      "hash": "a59fb8fec6a33c5165b622181aad1c18fef9106a63bb58dda944d0716ceb1ac5",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
-      "kind": "work_item",
       "match": "ADR-0018",
       "surface": "markdown",
       "hash": "dccd5abb5cc97307e3478b72fa8d97567027309aecdef11ebbf5df3fcafc131d",
@@ -2949,14 +2941,6 @@
       "match": "ADR-0004",
       "surface": "markdown",
       "hash": "2b0de1248ad7c093657b88b8b0ea763c3ed1e478873ed4132880957e3da6ffab",
-      "count": 1
-    },
-    {
-      "path": "templates/opencode/.opencode/agents/architect.md",
-      "kind": "work_item",
-      "match": "ADR-0004",
-      "surface": "markdown",
-      "hash": "314705cd4e43ab6f16ccd739a45c8063c2533ec079cd5815046231d00fb75a2d",
       "count": 1
     },
     {

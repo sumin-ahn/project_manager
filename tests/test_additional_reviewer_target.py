@@ -10,7 +10,7 @@
 2. 세 구조화 argv — 모델/reasoning 명시 + 읽기 권위(code-reviewer) 권한축 불변.
 3. opencode `--file` 프롬프트 파일 0600 + 성공·실패·예외 전 경로 정리.
 4. 구조화 wire 회신 추출 — 판정은 최종 회신만 보고 raw 는 wire 원문을 보존, 추출 실패는 fail-loud.
-5. legacy `reviewer_cmd` 실행 형상 바이트 동형 + `unpinned-model` loud 라벨.
+5. 공개 facade(커맨드 문자열 직접 호출) 실행 형상 — argv 분해·프롬프트 stdin·출력 원문 판정.
 6. provenance 동일성 — dry-run·stderr 첫 줄·raw 헤더·raw 장부가 **같은 문자열**을 말한다.
 7. Codex egress 게이트(network-off 안전 경계) — 증명 없는 실행은 스폰 전에 끊고 `--force` 로도
    못 넘으며, dry-run 은 부작용 0 으로 처방만 낸다.
@@ -86,14 +86,18 @@ def _neutral_codex_egress_marker(monkeypatch):
 
 def _conf(harness: str = "codex", model: str = "gpt-5.6-sol",
           reasoning: str | None = "max", **extra: str) -> dict[str, str]:
+    """리뷰 축 conf — `extra` 는 **속성 이름만** 받는다(`wave_budget="1"`).
+
+    kwargs 는 점을 담지 못하므로 축 접두(`additional_reviewer.`)를 여기서 붙인다."""
     conf = {
-        "additional_reviewer_enabled": "true",
+        "additional_reviewer.enabled": "true",
         "additional_reviewer.harness": harness,
         "additional_reviewer.model": model,
     }
     if reasoning is not None:
         conf["additional_reviewer.reasoning"] = reasoning
-    conf.update(extra)
+    conf.update({f"additional_reviewer.{name}": value
+                 for name, value in extra.items()})
     return conf
 
 
@@ -236,15 +240,19 @@ def _raw_text(repo: Path) -> str:
 # ══ ① 원자 해소 (부작용 전 fail-loud) ═══════════════════════════════════════
 
 
-def test_no_structured_key_keeps_the_legacy_target(external):
-    """구조화 키가 **하나도 없으면** 종전 경로 — 기본 커맨드/설정 자유 문자열 그대로."""
-    default = external.resolve_reviewer_target({})
-    assert (default.source, default.command) == (
-        external.REVIEWER_SOURCE_LEGACY, external.DEFAULT_REVIEWER_CMD)
-    configured = external.resolve_reviewer_target({"reviewer_cmd": "codex exec -m m1"})
-    assert (configured.source, configured.command) == (
-        external.REVIEWER_SOURCE_LEGACY, "codex exec -m m1")
-    assert configured.structured is False
+def test_no_structured_key_fails_loud_instead_of_a_default_command(external):
+    """구조화 키가 **하나도 없으면** 대상이 없다 — 엔진 기본 커맨드로 조용히 나가지 않는다.
+
+    미고정 모델 경로(옛 `reviewer_cmd`)가 폐지됐으므로 "설정이 없으면 기본값" 자리가 사라졌다.
+    설정 없는 실행은 외부로 나가기 전에 무엇을 설정해야 하는지 말하고 멈춘다."""
+    with pytest.raises(external.ReviewerTargetError) as caught:
+        external.resolve_reviewer_target({})
+    message = str(caught.value)
+    assert external.ADDITIONAL_REVIEWER_HARNESS_KEY in message
+    assert external.ADDITIONAL_REVIEWER_MODEL_KEY in message
+    # 옛 통짜 커맨드 키는 값을 공급하지 않는다 — 남아 있으면 소비 지점이 fail-loud 다.
+    with pytest.raises(external.ReviewerTargetError):
+        external.resolve_reviewer_target({"reviewer_cmd": "codex exec -m m1"})
 
 
 @pytest.mark.parametrize("declared", [
@@ -338,10 +346,9 @@ def test_reserved_sentinel_model_is_not_a_pinned_model(external, model):
     message = str(caught.value)
     assert "예약 sentinel" in message
     assert external.ADDITIONAL_REVIEWER_MODEL_KEY in message      # 어느 키를 고칠지
-    assert external.LEGACY_REVIEWER_CMD_KEY in message            # 미고정을 원하면 갈 곳
-    # 예약 집합은 엔진 자신이 쓰는 낱말들이다(따로 관리되는 사본이 아니다).
-    assert external.RESERVED_MODEL_VALUES == {
-        external.LEGACY_UNSPECIFIED_MODEL, external.UNPINNED_MODEL_LABEL}
+    assert "미고정 실행 경로는 폐지" in message                    # 미고정은 갈 곳이 없다
+    # 예약 집합 = 폐지된 미고정 경로가 쓰던 낱말들. 그 경로가 사라져도 값으로는 계속 막는다.
+    assert external.RESERVED_MODEL_VALUES == frozenset({"default", "unpinned-model"})
 
 
 @pytest.mark.parametrize("model", [
@@ -381,22 +388,6 @@ def test_reserved_sentinel_model_is_refused_before_output_dir_raw_and_spawn(
     assert "추가 리뷰어 실행 중" not in captured.err                # 과금 문구 앞에서 끊긴다
     assert "예약 sentinel" in captured.err
     assert "추가 리뷰어 대상 해소 실패" in captured.err
-
-
-def test_structured_and_nonblank_legacy_command_conflict(external):
-    """대상이 둘이면 어느 쪽이 이기는지 추측해 외부로 보내지 않는다(빈 legacy 값은 선언 아님)."""
-    structured = {"additional_reviewer.harness": "codex",
-                  "additional_reviewer.model": "gpt-5.6-sol"}
-    with pytest.raises(external.ReviewerTargetError) as caught:
-        external.resolve_reviewer_target({**structured, "reviewer_cmd": "codex exec"})
-    assert "대상이 둘" in str(caught.value)
-    # 비어 있는 legacy 값은 선언이 아니다 — 구조화 tuple 이 정상 해소된다.
-    assert external.resolve_reviewer_target(
-        {**structured, "reviewer_cmd": "  "}).structured is True
-    # 구조화 키가 비어 있어도 legacy 와의 이중 선언 판정은 같다.
-    with pytest.raises(external.ReviewerTargetError):
-        external.resolve_reviewer_target(
-            {"additional_reviewer.harness": "", "reviewer_cmd": "codex exec"})
 
 
 def test_resolution_failure_precedes_every_side_effect(
@@ -536,34 +527,18 @@ def test_copied_home_config_defaults_cannot_change_argv_or_ledger(
     assert first_argv != second_argv and first_row["model"] != second_row["model"]
 
 
-def test_structured_ledger_model_is_the_explicit_tuple_not_a_command_reading(
-        external, monkeypatch):
-    """구조화 모델은 커맨드 문자열에서 역추론하지 않는다 — 명시 모델이 `default` 로 퇴화 불가."""
-    monkeypatch.setattr(external, "_reviewer_model", lambda cmd: "default")
+def test_ledger_model_is_the_explicit_tuple_value(external):
+    """장부·raw 헤더·provenance 의 모델 축은 **명시 tuple 값 하나**에서 나온다.
+
+    커맨드 문자열에서 역추론하던 경로는 폐지됐다 — 그 경로가 있으면 명시 모델이 argv 표기 규칙에
+    따라 다른 값으로 퇴화할 수 있었다."""
     structured = external.resolve_reviewer_target(
         {"additional_reviewer.harness": "codex",
          "additional_reviewer.model": "gpt-5.6-sol"})
     assert structured.ledger_model == "gpt-5.6-sol"
-
-
-def test_legacy_ledger_model_is_the_unpinned_identity_not_the_placeholder(external):
-    """legacy 정체는 argv의 model처럼 보이는 토큰 유무와 무관하게 `unpinned-model`이다.
-
-    임의 실행기의 옵션 스키마는 엔진이 보증하지 않는다. exact command는 별도 기록하므로 정보는
-    보존하고, 모델 정체 보증은 구조화 tuple에만 부여한다."""
-    unpinned = external.legacy_reviewer_target({})
-    assert external._reviewer_model(unpinned.command) == "default"   # argv 표기 관측은 그대로
-    assert unpinned.ledger_model == external.UNPINNED_MODEL_LABEL    # 정체는 미고정 라벨
-    # 네 표면의 모델 축이 한 값에서 나온다.
-    assert f"model={unpinned.ledger_model}" in unpinned.profile_tail
-    assert (f"# model: {unpinned.ledger_model}"
-            in external._review_raw_content("본문", None, None, unpinned, None))
-    # `--model`처럼 보이는 토큰이 있어도 legacy command는 opaque하다.
-    pinned = external.ReviewerTarget(
-        external.REVIEWER_SOURCE_LEGACY, "codex exec --model gpt-x")
-    assert external._reviewer_model(pinned.command) == "gpt-x"  # 표기 관측만 가능
-    assert pinned.ledger_model == external.UNPINNED_MODEL_LABEL
-    assert f"model={external.UNPINNED_MODEL_LABEL}" in pinned.profile_tail
+    assert "model=gpt-5.6-sol" in structured.profile_tail
+    assert ("# model: gpt-5.6-sol"
+            in external._review_raw_content("본문", None, None, structured, None))
 
 
 # ══ ③ opencode 프롬프트 파일 (0600 · 전 경로 정리) ══════════════════════════
@@ -871,62 +846,43 @@ def test_malformed_wire_does_not_send_the_operator_down_the_auth_path(
     assert "최종 회신 텍스트를 추출하지 못했습니다" in captured.out   # 사유는 정확히 말한다
 
 
-# ══ ⑤ legacy 호환 (실행 형상 동형 + unpinned-model loud) ═══════════════════
+# ══ ⑤ 공개 facade — 해소된 대상만 실행한다 (커맨드 문자열 직접 실행 경로 폐지) ══
 
 
-def test_legacy_command_stdin_and_output_are_byte_identical_to_the_old_path(
-        external, tmp_path):
-    """legacy 대상은 `shlex.split(reviewer_cmd)` + 프롬프트 stdin + 출력 원문 판정 그대로다."""
-    reviewer = _FakeReviewer(stdout=_PASS_REPLY)
-    result = external.run_review(
-        "프롬프트 본문", reviewer_cmd="codex exec --sandbox read-only",
-        timeout=30, output_dir=tmp_path, run_fn=reviewer,
-    )
-    call = reviewer.calls[0]
-    assert call["argv"] == ["codex", "exec", "--sandbox", "read-only"]
-    assert call["input"] == "프롬프트 본문"          # 프롬프트 stdin 주입(파일 첨부 없음)
-    assert "--file" not in call["argv"] and "-C" not in call["argv"]
-    assert result["answer"] == _PASS_REPLY           # wire 파서를 태우지 않는다
-    assert result["reply_extraction_failed"] is False
-    assert result["all_pass"] is True
+def test_public_facade_requires_a_resolved_target(external, tmp_path):
+    """`run_review` 는 구조화 대상을 **필수**로 받는다 — 커맨드 문자열만으로는 실행되지 않는다.
+
+    모델을 고정하지 않는 실행 경로는 폐지됐다(같은 게이트가 그때그때 다른 모델로 돌면 "어느
+    모델이 이 판정을 냈는가"를 사후에 확정할 수 없다). 커맨드는 검증된 대상에서만 파생한다."""
+    signature = inspect.signature(external.run_review)
+    target_param = signature.parameters["target"]
+
+    assert target_param.default is inspect.Parameter.empty      # 기본값 없는 필수 인자
+    assert "reviewer_cmd" not in signature.parameters           # 문자열 직접 투입구 0
+    with pytest.raises(TypeError):
+        external.run_review("프롬프트 본문", timeout=30, output_dir=tmp_path)
 
 
-def test_legacy_unpinned_model_is_loud_in_every_provenance_surface(
-        external, monkeypatch, tmp_path, capsys):
-    """legacy는 model 표기에도 dry-run·stderr·raw 헤더·장부 모두 unpinned로 라벨링된다."""
-    repo = _repo(tmp_path / "repo", {"additional_reviewer_enabled": "true",
-                                     "reviewer_cmd": "codex exec --model gpt-x --sandbox read-only"})
-    reviewer = _FakeReviewer(stdout=_PASS_REPLY)
-    _wire_main(external, monkeypatch, repo, reviewer)
+def test_the_engine_builds_a_reviewer_target_in_exactly_one_place(external):
+    """대상을 만드는 자리가 해소 함수 하나다 — 모델 미고정 대상을 만들 엔진 경로가 없다."""
+    source = Path(external.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    builders = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and any(isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
+                and inner.func.id == "ReviewerTarget"
+                for inner in ast.walk(node))
+    }
 
-    assert external.main(["--paths", "x.py", "--dry-run"]) == 0
-    preview = capsys.readouterr()
-    assert f"model={external.UNPINNED_MODEL_LABEL}" in preview.out
-    assert "command: codex exec --model gpt-x --sandbox read-only" in preview.out
-
-    assert external.main(["--paths", "x.py", "--no-gate"]) == 0
-    err = capsys.readouterr().err
-    first = err.splitlines()[0]
-    assert first.startswith("[external-review] config provenance:")
-    assert f"source={external.REVIEWER_SOURCE_LEGACY}" in first
-    assert f"model={external.UNPINNED_MODEL_LABEL}" in first
-
-    raw = _raw_text(repo)
-    assert f"# reviewer_source: {external.REVIEWER_SOURCE_LEGACY}" in raw
-    assert f"# model: {external.UNPINNED_MODEL_LABEL}" in raw
-    assert "# command: codex exec --model gpt-x --sandbox read-only" in raw
-    # 장부의 **모델 필드 자체**가 같은 정체를 말한다 — raw 파일을 한 홉 더 읽어야 알 수 있으면
-    # raw 가 지워진 뒤(보존기간 만료·격리 실행) 장부만으로는 모델 축이 닫히지 않고, 그 사이 장부는
-    # `default` 라는 이름의 모델이 봤다고 말한다.
-    row = _raw_ledger(repo)[0]
-    assert row["model"] == external.UNPINNED_MODEL_LABEL
-    assert row["model"] != "default"
-    assert row["reviewer_source"] == external.REVIEWER_SOURCE_LEGACY
-    assert row["command"] == "codex exec --model gpt-x --sandbox read-only"
-    assert row["local_conf"] == str((repo / ".project_manager" / "local.conf").resolve())
-    assert Path(row["raw_path"]).read_text(encoding="utf-8") == raw
-    assert reviewer.calls[0]["argv"] == [
-        "codex", "exec", "--model", "gpt-x", "--sandbox", "read-only"]
+    assert builders == {"resolve_reviewer_target"}
+    # 그 자리는 harness·model 을 반드시 채운다(둘 중 하나라도 비면 해소가 거부한다).
+    with pytest.raises(external.ReviewerTargetError):
+        external.resolve_reviewer_target({"additional_reviewer.harness": "codex"})
+    resolved = external.resolve_reviewer_target({
+        "additional_reviewer.harness": "codex", "additional_reviewer.model": "m"})
+    assert (resolved.harness, resolved.model) == ("codex", "m")
 
 
 # ══ ⑥ provenance 동일성 (dry-run · stderr · raw 헤더 · raw 장부) ═══════════
@@ -1038,8 +994,7 @@ def test_network_off_without_attestation_fails_before_round_raw_isolation_and_sp
         "--dry-run",
         f"{_EGRESS_MARKER}=true",
         "sandbox_workspace_write.network_access=true",
-        f"{external.ADDITIONAL_REVIEWER_ENABLED_KEY}=true",
-        "후속 호출마다 비용을 다시 묻지 마세요",
+        external.ADDITIONAL_REVIEWER_ENABLED_KEY,
     ):
         assert expected in err, expected
 
@@ -1047,7 +1002,7 @@ def test_network_off_without_attestation_fails_before_round_raw_isolation_and_sp
 def test_force_cannot_bypass_the_egress_gate(external, monkeypatch, tmp_path, capsys):
     """`--force` 는 opt-in 게이트용이다 — 안전 경계(egress)를 여는 우회로가 아니다."""
     monkeypatch.setenv(_EGRESS_MARKER, "1")
-    repo = _repo(tmp_path / "repo", _conf(**{"additional_reviewer_enabled": "false"}))
+    repo = _repo(tmp_path / "repo", _conf(enabled="false"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     outdir = tmp_path / "raw-out"
@@ -1064,7 +1019,7 @@ def test_force_cannot_bypass_the_egress_gate(external, monkeypatch, tmp_path, ca
 def test_opt_in_off_is_a_no_op_that_creates_no_output_dir(
         external, monkeypatch, tmp_path, capsys):
     """비활성 no-op(rc=0)도 부작용 0 이다 — 요청한 산출 디렉토리를 만들지 않는다."""
-    repo = _repo(tmp_path / "repo", _conf(**{"additional_reviewer_enabled": "false"}))
+    repo = _repo(tmp_path / "repo", _conf(enabled="false"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     outdir = tmp_path / "raw-out"
@@ -1075,24 +1030,26 @@ def test_opt_in_off_is_a_no_op_that_creates_no_output_dir(
     assert "추가 리뷰어 비활성" in capsys.readouterr().err
 
 
-def test_disabled_notice_on_a_legacy_only_conf_says_undecided_and_names_the_old_key(
-        external, monkeypatch, tmp_path, capsys):
-    """구키만 있는 채택자는 "결정 없음" + 구키 감지 1줄을 함께 받는다 (T-0600·T-0614).
+def test_legacy_only_conf_stops_the_run_instead_of_reading_a_stale_decision(
+        external, monkeypatch, tmp_path):
+    """구키만 있는 conf 는 "결정 없음"으로 접히지 않고 **conf 를 읽는 지점에서 멈춘다**.
 
-    구키는 더 이상 결정을 공급하지 않으므로 비활성 안내가 그 줄을 인용하면 거짓말이 된다(읽지도
-    않는 줄을 현재 상태로 제시하는 셈). 대신 별도 안내가 그 키를 지목하고, 처방은 그대로 신키다.
-    """
+    구키는 값을 공급하지 않으므로, 조용히 미결정으로 접으면 opt-in 을 켜 뒀다고 믿는 채택자가
+    아무 리뷰도 받지 못한 채 green 을 본다. 안내는 어느 키를 무엇으로 바꿀지 키 단위로 말한다."""
     conf = _conf()
     del conf[external.ADDITIONAL_REVIEWER_ENABLED_KEY]
-    conf[external.LEGACY_EXTERNAL_REVIEW_ENABLED_KEY] = "false"
+    conf["external_review_enabled"] = "false"
     repo = _repo(tmp_path / "repo", conf)
     _wire_main(external, monkeypatch, repo, _FakeReviewer(stdout=_wire("codex")))
+    legacy_error = external._load_local_conf().LegacyConfKeyError
 
-    assert external.main(["--paths", "x.py"]) == 0
-    err = capsys.readouterr().err
-    assert "local.conf 에 opt-in 결정 없음" in err
-    assert external.LEGACY_ENABLED_KEY_REMOVED in err        # 구키는 별도 1줄이 지목
-    assert f"`{external.ADDITIONAL_REVIEWER_ENABLED_KEY}=true`" in err   # 처방은 신키
+    with pytest.raises(legacy_error) as caught:
+        external.main(["--paths", "x.py"])
+
+    message = str(caught.value)
+    assert "external_review_enabled" in message                       # 어느 키가 문제인지
+    assert external.ADDITIONAL_REVIEWER_ENABLED_KEY in message        # 무엇으로 바꾸는지
+    assert "모델 값은 자동으로 옮기지 않습니다" in message              # 수동 합의 요구
 
 
 def test_round_limit_refusal_enters_no_isolation_and_creates_no_output_dir(
@@ -1102,14 +1059,17 @@ def test_round_limit_refusal_enters_no_isolation_and_creates_no_output_dir(
     예산 확인·예약이 격리 **뒤**에 서면 이미 상한에 닿은 호출도 거울과 임시 홈을 한 번 만들었다
     지운다. 정리가 성공했다는 것(=`남은 게 없다`)은 seam 에 들어간 적 없다는 것과 다른 진술이다 —
     거부된 호출은 저장소 tracked 사본·홈 인증 사본 복제를 아예 시작하지 않아야 한다."""
-    repo = _repo(tmp_path / "repo", _conf(additional_reviewer_round_limit="1"))
+    limit = external.DEFAULT_ROUND_LIMIT
+    # 수렴-형상 상한(기본 2)은 전송 횟수 축보다 앞에서 막으므로 그 노브를 열어 둔다.
+    repo = _repo(tmp_path / "repo", _conf(rounds_max="99"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     entered = _count_isolation(external, monkeypatch)
     first_out, second_out = tmp_path / "raw-1", tmp_path / "raw-2"
 
-    assert external.main(["--gate", "T-0590", "--paths", "x.py",
-                          "--output-dir", str(first_out)]) == 0
+    for _ in range(limit):                          # 상한(엔진 고정)까지 실제로 전송한다
+        assert external.main(["--gate", "T-0590", "--paths", "x.py",
+                              "--output-dir", str(first_out)]) == 0
     after_first = _round_ledger(repo)
     capsys.readouterr()
     rc = external.main(["--gate", "T-0590", "--paths", "x.py",
@@ -1119,11 +1079,11 @@ def test_round_limit_refusal_enters_no_isolation_and_creates_no_output_dir(
     assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
     assert first_out.is_dir()                       # 실제로 나간 실행은 산출을 남긴다
     assert not second_out.exists()                  # 거부된 실행은 자리도 만들지 않는다
-    assert len(entered) == 1                        # 격리 seam 진입은 나간 실행에서만
-    assert len(reviewer.calls) == 1                 # 스폰도 그 실행에서만
-    # 장부는 첫 라운드 상태 그대로다 — 거부는 예약도 환불도 하지 않는다(왕복 흔적 없음).
+    assert len(entered) == limit                    # 격리 seam 진입은 나간 실행에서만
+    assert len(reviewer.calls) == limit             # 스폰도 그 실행에서만
+    # 장부는 상한 도달 상태 그대로다 — 거부는 예약도 환불도 하지 않는다(왕복 흔적 없음).
     assert _round_ledger(repo) == after_first
-    assert after_first["T-0590"]["count"] == 1
+    assert after_first["T-0590"]["count"] == limit
     assert "라운드 상한 도달" in err
     assert "추가 리뷰어 실행 중" not in err            # 과금 문구 앞에서 끊긴다
 
@@ -1135,7 +1095,7 @@ def test_isolation_failure_after_reservation_refunds_that_reservation(
     예산 게이트를 격리 앞으로 옮긴 대가가 이 경로다: 스폰이 확실히 없었다는 점에서 마감 시점의
     `started=False` 환불과 같은 조건이라, 같은 락·같은 환불 기계를 그대로 쓴다. 되돌린 슬롯은
     다음 정상 실행이 그대로 소비한다(상한이 조용히 깎이지 않는다)."""
-    repo = _repo(tmp_path / "repo", _conf(additional_reviewer_round_limit="1"))
+    repo = _repo(tmp_path / "repo", _conf())
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     workspace_stub = external.create_reviewer_workspace     # _wire_main 이 심은 거울 스텁
@@ -1217,7 +1177,7 @@ def test_unexpected_failure_entering_isolation_refunds_and_propagates(
     '스폰 전 구간'이다. 반대로 rc 로 삼켜서도 안 된다 — 예상 못 한 예외를 격리 실패와 같은
     rc=1 로 바꾸면 진단이 사라진다."""
     repo = _repo(tmp_path / "repo", _conf(
-        additional_reviewer_round_limit="1", additional_reviewer_incomplete_round_limit="1"))
+        round_limit="1", incomplete_rounds_max="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     workspace_stub = external.create_reviewer_workspace   # _wire_main 이 심은 거울 스텁
@@ -1258,7 +1218,7 @@ def test_unexpected_failure_preparing_the_reviewer_environment_refunds_too(
     격리 컨테이너는 이미 섰지만 리뷰어 프로세스는 아직 없는 구간이라, 여기서 죽어도 외부 전송은
     확실히 0 이다. 진입 지점만 막으면 예약이 이 한 칸 뒤에서 그대로 새어나간다."""
     repo = _repo(tmp_path / "repo", _conf(
-        additional_reviewer_round_limit="1", additional_reviewer_incomplete_round_limit="1"))
+        round_limit="1", incomplete_rounds_max="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     outdir = tmp_path / "raw-out"
@@ -1290,8 +1250,8 @@ def test_unusable_output_dir_fails_before_any_spawn_and_refunds(
     상한 1·wave 예산 1 형상에서는 다음 **정상** 호출이 곧바로 rc=4 로 막혀, 전송 0·과금 0 인
     실패가 다음 라운드를 먹는다. 이전 시점이 러너 호출 직전이면 이 구간은 그대로 환불 대상이다."""
     repo = _repo(tmp_path / "repo", _conf(
-        additional_reviewer_round_limit="1", additional_reviewer_incomplete_round_limit="1",
-        additional_reviewer_wave_budget="1"))
+        round_limit="1", incomplete_rounds_max="1",
+        wave_budget="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     blocker = tmp_path / "raw-out"                   # 디렉토리 자리에 놓인 일반 파일
@@ -1329,7 +1289,7 @@ def test_pre_spawn_failure_after_the_raw_reservation_refunds_and_closes_the_reco
     의 입력)이라는 뜻이라, 스폰이 없었으면 장부가 거짓말을 하는 것이다. 레코드는 실패 축으로
     마감하고 중단 사유는 그 레코드가 가리키는 raw 파일에 박제한다(0바이트 파일도 남기지 않는다)."""
     repo = _repo(tmp_path / "repo", _conf(
-        additional_reviewer_round_limit="1", additional_reviewer_incomplete_round_limit="1"))
+        round_limit="1", incomplete_rounds_max="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     real_transport = external._structured_transport
@@ -1568,12 +1528,9 @@ def test_a_nul_argv_rejected_before_the_child_refunds_and_the_next_call_still_ru
     fork 앞이라 hermetic 하다). 종류가 `ValueError` 라 확정 기동 실패 종류표에는 없다: 표식이
     없으면 보수적으로 '전송됐을 수 있음'이 되어, 상한 1·미완 1 인 채택자는 **한 번도 전송하지
     못한 채** 다음 호출이 막힌다."""
-    repo = _repo(tmp_path / "repo", {
-        "additional_reviewer_enabled": "true",
-        "reviewer_cmd": "my-reviewer --flag\x00bad",     # 인자에 NUL — fork 전 거절
-        "additional_reviewer_round_limit": "1",
-        "additional_reviewer_incomplete_round_limit": "1",
-    })
+    # 모델 값에 NUL — 구조화 argv(`-m <model>`)로 그대로 실려 `Popen` 이 fork 전에 거절한다.
+    repo = _repo(tmp_path / "repo", _conf(
+        model="gpt-5.6-sol\x00bad", round_limit="1", incomplete_rounds_max="1"))
     _wire_main(external, monkeypatch, repo)              # 러너는 실 워치독 그대로
 
     assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 1
@@ -1586,7 +1543,7 @@ def test_a_nul_argv_rejected_before_the_child_refunds_and_the_next_call_still_ru
     assert "실행할 수 없음" in raw and "외부 전송은 일어나지 않았습니다" in raw
 
     # 환불한 슬롯은 살아 있다 — 상한 1·미완 1 인데 다음 정상 호출이 그대로 전송된다.
-    reviewer = _FakeReviewer(stdout=_PASS_REPLY)
+    reviewer = _FakeReviewer(stdout=_wire("codex"))
     monkeypatch.setattr(external, "_watchdog_reviewer_run", reviewer)
     assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 0
     capsys.readouterr()
@@ -1744,8 +1701,8 @@ def test_a_proven_no_spawn_refunds_even_if_the_summary_dies(
     상한 1·미완 상한 1·wave 1 형상에서 다음 **정상** 호출이 곧바로 rc=4 로 막힌다. 예외는 그대로
     전파되고(진단은 주 예외가 소유한다) raw 레코드는 이미 정직하게 닫혀 있어야 한다."""
     repo = _repo(tmp_path / "repo", _conf(
-        additional_reviewer_round_limit="1", additional_reviewer_incomplete_round_limit="1",
-        additional_reviewer_wave_budget="1"))
+        round_limit="1", incomplete_rounds_max="1",
+        wave_budget="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     real_summary = external.print_summary
@@ -1790,7 +1747,7 @@ def test_a_proven_no_spawn_refunds_and_stays_loud_when_raw_bookkeeping_dies(
     주 예외를 덮지 않고(중단 사유는 주 예외가 소유한다) 실패 사실만 경고로 남긴다 — 조용히
     성공한 척하는 표면이 없어야 사후에 장부를 믿을 수 있다."""
     repo = _repo(tmp_path / "repo", _conf(
-        additional_reviewer_round_limit="1", additional_reviewer_incomplete_round_limit="1"))
+        round_limit="1", incomplete_rounds_max="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     monkeypatch.setattr(external, "_watchdog_reviewer_run", _missing_binary_runner)
@@ -1855,8 +1812,8 @@ def test_a_proven_no_spawn_refunds_when_the_finalization_save_fails(
     먹은 채 미완으로 남아, 상한 1·미완 상한 1·wave 1 형상에서 다음 **정상** 호출이 곧바로 rc=4 로
     막힌다. 마감 저장은 실패했지만 환불 저장은 성공하는 형상이 실측 축이다(락 경합은 지나간다)."""
     repo = _repo(tmp_path / "repo", _conf(
-        additional_reviewer_round_limit="1", additional_reviewer_incomplete_round_limit="1",
-        additional_reviewer_wave_budget="1"))
+        round_limit="1", incomplete_rounds_max="1",
+        wave_budget="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     monkeypatch.setattr(external, "_watchdog_reviewer_run", _missing_binary_runner)
@@ -1892,7 +1849,7 @@ def test_a_failing_compensation_after_no_spawn_stays_loud_and_conservative(
     장부가 실제보다 헐거워지는 방향(전송한 라운드를 안 셈)으로 틀리지 않는 대신, 되돌리지 못한
     사실은 조용히 숨기지 않는다 — 사후에 장부를 믿으려면 실패 표면이 남아야 한다."""
     repo = _repo(tmp_path / "repo", _conf(
-        additional_reviewer_round_limit="1", additional_reviewer_incomplete_round_limit="1"))
+        round_limit="1", incomplete_rounds_max="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     monkeypatch.setattr(external, "_watchdog_reviewer_run", _missing_binary_runner)
@@ -2148,7 +2105,7 @@ def test_retry_command_starts_with_this_surface_entrypoint(
     message = relay.codex_egress_block_message(
         ["--gate", "T-0590", "--paths", "x.py"], "codex", "gpt-5.6-sol",
         script=relay.EXTERNAL_REVIEW_ENTRYPOINT,
-        consent_key=external.ADDITIONAL_REVIEWER_ENABLED_KEY,
+        gate_key=external.ADDITIONAL_REVIEWER_ENABLED_KEY,
         subject="추가 리뷰어 외부 전송",
         windows=windows,
     )
@@ -2307,10 +2264,8 @@ def test_reviewer_surface_states_the_name_and_keeps_the_transport_axis(external)
     source = (TOOLS / "external_review.py").read_text(encoding="utf-8")
     assert "추가 리뷰어" in source
     assert "외부 전송" in source and "과금" in source          # 전송 축 문구는 유지
-    # 설정 키는 역할 이름과 같은 축으로 통일됐다(T-0597) — 구키는 fallback 으로만 남는다.
-    assert external.ADDITIONAL_REVIEWER_ENABLED_KEY == "additional_reviewer_enabled"
-    assert external.LEGACY_EXTERNAL_REVIEW_ENABLED_KEY == "external_review_enabled"
-    assert external.LEGACY_REVIEWER_CMD_KEY == "reviewer_cmd"
+    # 설정 키는 역할 이름과 같은 축으로 통일됐다(T-0597) — 구키는 값을 공급하지 않는다.
+    assert external.ADDITIONAL_REVIEWER_ENABLED_KEY == "additional_reviewer.enabled"
     assert external.ADDITIONAL_REVIEWER_PREFIX == "additional_reviewer"
     # 파일 이름은 개칭하지 않는다 — 동기가 상류 부재 파일을 지우지 않아 채택자 PM 홈에 구 사본이
     # 남고(두 진입점 공존), 이미 기록된 raw 감사물의 접두와도 어긋난다. 이력은 docstring 1줄.

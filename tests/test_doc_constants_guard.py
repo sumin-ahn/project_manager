@@ -103,11 +103,15 @@ CTX_DOCS = (
 
 
 def test_ctx_budget_keys_documented_in_full_entry_docs():
+    """하네스별 ctx 예산 키가 출하 진입문서에 있다 — 표기는 `harness.<name>.<속성>` 하나다."""
     for rel in CTX_DOCS:
         text = _read(rel)
-        assert "ctx_window_tokens_" in text, (
+        assert "harness.<name>.ctx_window_tokens" in text, (
             f"{rel}: 하네스별 ctx 예산 키(ADR-0041) 문서화 절 누락"
         )
+        # suffix 표기(`ctx_window_tokens_<harness>`)는 폐지됐다 — 두 문법이 공존하면 채택자가
+        # 읽히지 않는 키를 설정하고 조용히 기본값으로 돈다.
+        assert "ctx_window_tokens_" not in text, f"{rel}: 폐지된 suffix 표기 잔존"
 
 
 # ── ⑤ opencode README --opencode-model 예시 = pm_import canonical(옛 예시 잔존 금지) ──

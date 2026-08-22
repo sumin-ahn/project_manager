@@ -673,7 +673,7 @@ def test_codex_maybe_mark_ctx_excludes_cached_input(orch, driver_mod, tmp_path):
 
 
 def test_codex_maybe_mark_ctx_honors_stop_pct_override(orch, driver_mod, tmp_path):
-    """ctx_stop_pct override — stop_pct=40 이면 잔여 40%↔사용 60% 에서 정지(기본 20 보다 이르게)."""
+    """ctx.stop_pct override — stop_pct=40 이면 잔여 40%↔사용 60% 에서 정지(기본 20 보다 이르게)."""
     driver = driver_mod.CodexCliDriver(
         orch.parse_codex_json, ctx_budget=1000, stop_pct=40,
         mark_stop=orch.write_post_turn_marker, root=tmp_path,
@@ -705,28 +705,28 @@ def test_codex_maybe_mark_ctx_disabled_without_mark_stop(orch, driver_mod, tmp_p
 
 
 def test_codex_resolve_stop_pct(driver_mod):
-    """ctx_stop_pct 해소 — conf 값 우선·비정상/범위 밖/미설정은 기본 20 (ctx_guard.ctx_thresholds 대칭)."""
+    """ctx.stop_pct 해소 — conf 값 우선·비정상/범위 밖/미설정은 기본 20 (ctx_guard.ctx_thresholds 대칭)."""
     resolve = driver_mod.resolve_stop_pct
-    assert resolve({"ctx_stop_pct": "15"}) == 15
+    assert resolve({"ctx.stop_pct": "15"}) == 15
     assert resolve({}) == driver_mod.CTX_STOP_PCT_DEFAULT
-    assert resolve({"ctx_stop_pct": "abc"}) == driver_mod.CTX_STOP_PCT_DEFAULT
-    assert resolve({"ctx_stop_pct": "0"}) == driver_mod.CTX_STOP_PCT_DEFAULT     # 범위 밖(≤0) → 기본.
-    assert resolve({"ctx_stop_pct": "100"}) == driver_mod.CTX_STOP_PCT_DEFAULT   # 범위 밖(≥100) → 기본.
+    assert resolve({"ctx.stop_pct": "abc"}) == driver_mod.CTX_STOP_PCT_DEFAULT
+    assert resolve({"ctx.stop_pct": "0"}) == driver_mod.CTX_STOP_PCT_DEFAULT     # 범위 밖(≤0) → 기본.
+    assert resolve({"ctx.stop_pct": "100"}) == driver_mod.CTX_STOP_PCT_DEFAULT   # 범위 밖(≥100) → 기본.
 
 
 def test_codex_resolve_ctx_budget_precedence(driver_mod):
-    """ctx 예산 해소 순서: ctx_window_tokens_codex > ctx_window_tokens > 200000 (ADR-0041)."""
+    """ctx 예산 해소 순서: harness.codex.ctx_window_tokens > ctx_window_tokens > 200000 (ADR-0041)."""
     resolve = driver_mod.resolve_ctx_budget
     # codex 키가 generic 보다 우선.
-    assert resolve({"ctx_window_tokens_codex": "300000", "ctx_window_tokens": "500000"}) == 300000
-    assert resolve({"ctx_window_tokens_codex": "300000"}) == 300000
+    assert resolve({"harness.codex.ctx_window_tokens": "300000", "ctx.window_tokens": "500000"}) == 300000
+    assert resolve({"harness.codex.ctx_window_tokens": "300000"}) == 300000
     # codex 키 없으면 generic.
-    assert resolve({"ctx_window_tokens": "500000"}) == 500000
+    assert resolve({"ctx.window_tokens": "500000"}) == 500000
     # 둘 다 없으면 기본.
     assert resolve({}) == driver_mod.CTX_WINDOW_TOKENS_DEFAULT
     # 비정수/≤0 은 다음 층 폴백.
-    assert resolve({"ctx_window_tokens_codex": "abc", "ctx_window_tokens": "200000"}) == 200000
-    assert resolve({"ctx_window_tokens_codex": "0"}) == driver_mod.CTX_WINDOW_TOKENS_DEFAULT
+    assert resolve({"harness.codex.ctx_window_tokens": "abc", "ctx.window_tokens": "200000"}) == 200000
+    assert resolve({"harness.codex.ctx_window_tokens": "0"}) == driver_mod.CTX_WINDOW_TOKENS_DEFAULT
 
 
 # ── 엔진 Supervisor + codex driver 결합 (post-turn 회전·재전송 금지·codex R2 핵심 가드) ──
@@ -845,7 +845,7 @@ def test_codex_main_forwards_task_budget_and_engine_seams(driver_mod, monkeypatc
     # local.conf codex 예산·정지임계 주입 확인(해소 precedence 가 main 배선에 실제로 닿음).
     (tmp_path / ".project_manager").mkdir()
     (tmp_path / ".project_manager" / "local.conf").write_text(
-        "ctx_window_tokens_codex=333000\nctx_stop_pct=15\n", encoding="utf-8")
+        "harness.codex.ctx_window_tokens=333000\nctx.stop_pct=15\n", encoding="utf-8")
     monkeypatch.setattr(driver_mod, "_load_engine", lambda: (_FakeEngine(), tmp_path))
     rc = driver_mod.main(["--task", "mytask", "--cwd", str(tmp_path)])
     assert rc == 0 and captured["task"] == "mytask"

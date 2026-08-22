@@ -30,6 +30,15 @@ TOKEN_FILE = "tests/test_adapter_token_substitution.py"
 REAL_FILE = "tests/test_real.py"
 
 
+# 해소 가능한 추가 리뷰어 대상 — 대상은 `harness`+`model` 구조화 키로만 서므로(엔진 기본 커맨드
+# 없음) 이 파일의 모든 형상이 그 세트를 깔고 시작한다.
+_REVIEWER_TARGET = {
+    "additional_reviewer.enabled": "true",
+    "additional_reviewer.harness": "codex",
+    "additional_reviewer.model": "gpt-5.6-sol",
+}
+
+
 def _load(name: str = "external_review"):
     """도구 모듈을 (패키지 아님) importlib 로 경로 로드 — 형제 external_review 테스트 동일 규약."""
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
@@ -142,11 +151,11 @@ def test_explicit_block_names_path_pattern_and_remedy(external):
 
 
 def test_explicit_block_uses_extra_pattern(external):
-    """review_denylist_extra 사용자 패턴 매칭분도 그 패턴명으로 '왜'가 보고된다.
+    """additional_reviewer.denylist_extra 사용자 패턴 매칭분도 그 패턴명으로 '왜'가 보고된다.
 
     파일명은 내장 패턴엔 안 걸리고 사용자 추가 `*apikey*` 에만 걸리게 골라, 병합 패턴(내장+추가)으로
     '왜'가 해소됨을 격리한다(내장 `*secret*` 등이 먼저 삼키지 않도록)."""
-    patterns = external._denylist_patterns({"review_denylist_extra": "*apikey*"})
+    patterns = external._denylist_patterns({"additional_reviewer.denylist_extra": "*apikey*"})
     block = external._format_explicit_exclusion_block(["data/company_apikey.dat"], patterns)
     assert "*apikey*" in block
     assert "data/company_apikey.dat" in block
@@ -163,7 +172,7 @@ def _run_main(external, monkeypatch, *, argv, excluded, diff=None,
     반환: (exit_code, reviewer_called)."""
     if diff is None:
         diff = f"diff --git a/{REAL_FILE} b/{REAL_FILE}\n@@ -0,0 +1 @@\n+ok = 1\n"
-    conf = {"additional_reviewer_enabled": "true"} if conf is None else conf
+    conf = dict(_REVIEWER_TARGET) if conf is None else conf
     monkeypatch.setattr(external, "local_config", lambda repo=None: conf)
     monkeypatch.setattr(
         external, "resolve_pm_home_for_repo", lambda anchor, **kwargs: external.REPO,
@@ -240,8 +249,8 @@ def test_paths_and_ticket_together_paths_dominates_blocks(external, monkeypatch,
 
 
 def test_paths_extra_pattern_exclusion_blocks(external, monkeypatch, capsys):
-    """review_denylist_extra 사용자 패턴 매칭분도 --paths 명시 지정이면 동일 차단·패턴명 보고."""
-    conf = {"additional_reviewer_enabled": "true", "review_denylist_extra": "*apikey*"}
+    """additional_reviewer.denylist_extra 사용자 패턴 매칭분도 --paths 명시 지정이면 동일 차단·패턴명 보고."""
+    conf = {**_REVIEWER_TARGET, "additional_reviewer.denylist_extra": "*apikey*"}
     exit_code, reviewer_called = _run_main(
         external, monkeypatch, argv=["--paths", "data/company_apikey.dat"],
         excluded=["data/company_apikey.dat"], diff="", conf=conf)
@@ -367,7 +376,7 @@ def test_reproduce_false_confidence_end_to_end(external, monkeypatch, capsys):
     monkeypatch.setattr(external.subprocess, "run", _fake_git)
     monkeypatch.setattr(
         external, "local_config",
-        lambda repo=None: {"additional_reviewer_enabled": "true"},
+        lambda repo=None: dict(_REVIEWER_TARGET),
     )
     monkeypatch.setattr(
         external, "resolve_pm_home_for_repo", lambda anchor, **kwargs: external.REPO,

@@ -62,16 +62,16 @@ def _payload(role: str, tool_name: str = "Agent") -> dict[str, object]:
 @pytest.mark.parametrize("mapping", ("claude", "other", "absent"))
 def test_four_role_mapping_matrix(guard, rendered_cards, role, mapping):
     rendered_cards("opus")  # 채택자 트리(렌더본)를 가드 입력으로 — 소스 트리는 토큰이라 미렌더 경고가 난다.
-    conf = {"delegate_enabled": "true"}
+    conf = {"delegate.enabled": "true"}
     if mapping == "claude":
         conf = {
-            "delegate_enabled": "true",
+            "delegate.enabled": "true",
             f"delegate.{role}.harness": "claude",
             f"delegate.{role}.model": "opus",
         }
     elif mapping == "other":
         conf = {
-            "delegate_enabled": "true",
+            "delegate.enabled": "true",
             f"delegate.{role}.harness": "codex",
             f"delegate.{role}.model": "gpt-5.6",
         }
@@ -88,8 +88,12 @@ def test_four_role_mapping_matrix(guard, rendered_cards, role, mapping):
 @pytest.mark.parametrize("mapping", ("self", "cross", "absent"))
 @pytest.mark.parametrize("enabled", (True, False))
 def test_neutral_core_decision_table_matrix(guard, role, mapping, enabled):
-    """4 roles × self/cross/unset × opt-in on/off follows rows ②~⑤."""
-    conf = {"delegate_enabled": "true" if enabled else "false"}
+    """4 roles × self/cross/unset × 마스터 스위치 on/off — Row 0.5 + Rows ②~⑤.
+
+    스위치가 꺼져 있으면 매핑 해소 **앞에서** deny 다(채널 무관). 켜져 있으면 종전대로 cross 만
+    deny 한다.
+    """
+    conf = {"delegate.enabled": "true" if enabled else "false"}
     if mapping != "absent":
         conf[f"delegate.{role}.harness"] = (
             "opencode" if mapping == "self" else "claude"
@@ -98,7 +102,7 @@ def test_neutral_core_decision_table_matrix(guard, role, mapping, enabled):
 
     result = guard.decide(role, "normal", conf, "opencode")
 
-    expected = "deny" if enabled and mapping == "cross" else "allow"
+    expected = "deny" if (not enabled or mapping == "cross") else "allow"
     assert result["verdict"] == expected
     assert set(result) == {"verdict", "reason", "harness", "model"}
 
@@ -108,7 +112,7 @@ def test_neutral_core_decision_table_matrix(guard, role, mapping, enabled):
 @pytest.mark.parametrize("enabled", (True, False))
 def test_claude_hook_is_core_specialization_equivalent(guard, role, mapping, enabled):
     """Claude specializes the core verdict/warning without changing its decision."""
-    conf = {"delegate_enabled": "true" if enabled else "false"}
+    conf = {"delegate.enabled": "true" if enabled else "false"}
     if mapping is not None:
         conf[f"delegate.{role}.harness"] = mapping
         conf[f"delegate.{role}.model"] = (
@@ -146,7 +150,7 @@ def test_agent_name_role_tier_normalization(
 
 def test_tier_mapping_matches_engine_base_or_hard_without_inheritance(guard):
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "opencode",
         "delegate.developer.model": "normal-model",
         # resolve_delegate does not define this legacy/nonstandard namespace.
@@ -185,7 +189,7 @@ def test_mapping_resolution_matches_real_engine_full_boundary_matrix(
     guard, tier, configured, nonstandard_normal_keys, fallback_configured
 ):
     """tier x 표준 설정 x 비표준 normal 키 x fallback 설정의 16셀을 엔진과 대조한다."""
-    conf = {"delegate_enabled": "true"}
+    conf = {"delegate.enabled": "true"}
     key = "delegate.developer" + (".hard" if tier == "hard" else "")
     if configured:
         conf[f"{key}.harness"] = "opencode"
@@ -245,7 +249,7 @@ def test_mapping_resolution_calls_pm_delegate_single_truth(guard, monkeypatch):
 
 def test_unknown_self_warns_but_unknown_agent_is_quietly_recorded(guard):
     cross = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "claude",
     }
     unknown_self = guard.decide("developer", "normal", cross, "")
@@ -389,7 +393,7 @@ def test_deny_json_schema_and_remediation(guard):
     stdout = io.StringIO()
     stderr = io.StringIO()
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.researcher.harness": "opencode",
         "delegate.researcher.model": "qwen3-coder",
     }
@@ -424,7 +428,7 @@ def test_hook_deny_remediation_materializes_payload_cwd(guard, tmp_path):
     payload = _payload("developer")
     payload["cwd"] = str(tmp_path)
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "codex",
         "delegate.developer.model": "gpt",
     }
@@ -449,7 +453,7 @@ def test_deny_remediation_uses_windows_quoting_when_running_on_windows(
     """
     monkeypatch.setattr(guard, "_running_on_windows", lambda: True)
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "codex",
         "delegate.developer.model": "gpt",
     }
@@ -481,7 +485,7 @@ def test_deny_remediation_interpreter_follows_the_execution_platform(
     여기서는 그 해소가 처방까지 도달하는지만 고정한다.
     """
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "codex",
         "delegate.developer.model": "gpt",
     }
@@ -524,7 +528,7 @@ def test_deny_remediation_survives_interpreter_resolution_failure(
 
     monkeypatch.setattr(guard, "_load_pm_relay", _boom)
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "codex",
         "delegate.developer.model": "gpt",
     }
@@ -543,7 +547,7 @@ def test_deny_remediation_survives_interpreter_resolution_failure(
 def test_deny_remediation_keeps_posix_quoting_off_windows(guard, monkeypatch):
     monkeypatch.setattr(guard, "_running_on_windows", lambda: False)
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "codex",
         "delegate.developer.model": "gpt",
     }
@@ -624,16 +628,46 @@ def test_real_decide_process_usage_errors_are_rc0_one_line_json(argv):
     assert json.loads(proc.stdout)["verdict"] == "allow"
 
 
-@pytest.mark.parametrize("enabled", (None, "false", "0"))
-def test_cross_mapping_passes_when_delegate_optin_is_off(guard, enabled):
-    """opt-in OFF 형상은 pm_delegate 가 rc3 로 거부라 deny 처방이 교착 — 통과가 정답."""
-    conf = {
-        "delegate.developer.harness": "codex",
-        "delegate.developer.model": "gpt-5.6",
-    }
-    if enabled is not None:
-        conf["delegate_enabled"] = enabled
+@pytest.mark.parametrize("switch", ("false", "0", "no", "off"))
+@pytest.mark.parametrize("mapping", ("cross", "self", "absent"))
+def test_switch_off_denies_every_channel_with_the_switch_prescription(
+    guard, switch, mapping
+):
+    """마스터 스위치 off 는 채널 무관 deny 이고, 처방은 그 스위치 한 줄이다 (Row 0.5).
 
+    끄기가 cross 만 막던 시절엔 native 스폰이 그대로 통과해 "위임을 껐는데 돈다"가 됐다.
+    판정을 매핑 해소 앞으로 올려 그 틈을 닫는다.
+    """
+    conf = {"delegate.enabled": switch}
+    if mapping != "absent":
+        conf["delegate.developer.harness"] = (
+            "claude" if mapping == "self" else "codex")
+        conf["delegate.developer.model"] = "fixture-model"
+
+    core = guard.decide("developer", "normal", conf, "claude")
+    assert core["verdict"] == "deny"
+    assert "delegate.enabled" in core["reason"]
+
+    hook = guard.evaluate_hook(_payload("developer"), config_loader=lambda: conf)
+    output = hook["hookSpecificOutput"]
+    assert output["permissionDecision"] == "deny"
+    assert "delegate.enabled" in output["permissionDecisionReason"]
+
+
+@pytest.mark.parametrize("value", (None, "true", "", "  "))
+def test_switch_default_is_allow_when_unset_or_blank(guard, rendered_cards, value):
+    """스위치 미설정·빈값은 **허용**이다 — 기본이 허용이라 켜려고 줄을 적을 필요가 없다.
+
+    빈값을 거부로 읽으면 `delegate.enabled=` 한 줄이 위임 전체를 조용히 끈다(파싱 의미상
+    빈값은 미설정이다).
+    """
+    rendered_cards("opus")
+    conf = {"delegate.developer.harness": "claude",
+            "delegate.developer.model": "opus"}
+    if value is not None:
+        conf["delegate.enabled"] = value
+
+    assert guard.decide("developer", "normal", conf, "claude")["verdict"] == "allow"
     assert guard.evaluate_hook(_payload("developer"), config_loader=lambda: conf) is None
 
 
@@ -659,13 +693,13 @@ def test_tracked_claude_native_card_map_is_finite_and_nonempty(guard):
 
 
 @pytest.mark.parametrize("role", ROLES)
-@pytest.mark.parametrize("enabled", (True, False))
+@pytest.mark.parametrize("enabled", (True,))
 def test_claude_four_native_cards_match_is_quiet_allow(
     guard, rendered_cards, role, enabled
 ):
     rendered_cards("opus")
     conf = {
-        "delegate_enabled": str(enabled).lower(),
+        "delegate.enabled": str(enabled).lower(),
         f"delegate.{role}.harness": "claude",
         f"delegate.{role}.model": "opus",
     }
@@ -676,13 +710,13 @@ def test_claude_four_native_cards_match_is_quiet_allow(
 
 
 @pytest.mark.parametrize("role", ROLES)
-@pytest.mark.parametrize("enabled", (True, False))
+@pytest.mark.parametrize("enabled", (True,))
 def test_claude_four_native_model_mismatches_are_nonblocking_hook_warnings(
     guard, rendered_cards, role, enabled
 ):
     rendered_cards("opus")
     conf = {
-        "delegate_enabled": str(enabled).lower(),
+        "delegate.enabled": str(enabled).lower(),
         f"delegate.{role}.harness": "claude",
         f"delegate.{role}.model": "not-opus",
     }
@@ -715,7 +749,7 @@ def test_claude_four_native_model_mismatches_are_nonblocking_hook_warnings(
         ("model-sequence", b"---\nmodel: [opus]\n---\n", "scalar"),
     ),
 )
-@pytest.mark.parametrize("enabled", (True, False))
+@pytest.mark.parametrize("enabled", (True,))
 def test_claude_agent_card_failures_allow_with_additional_context(
     guard, monkeypatch, tmp_path, state, body, evidence, enabled
 ):
@@ -724,7 +758,7 @@ def test_claude_agent_card_failures_allow_with_additional_context(
     if body is not None:
         _write_agent_card(tmp_path, relative, body)
     conf = {
-        "delegate_enabled": str(enabled).lower(),
+        "delegate.enabled": str(enabled).lower(),
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
@@ -1285,11 +1319,11 @@ def test_codex_hard_and_opencode_native_do_not_read_claude_cards(
     assert guard.decide("researcher", "normal", opencode, "opencode")["verdict"] == "allow"
 
 
-@pytest.mark.parametrize("enabled", (True, False))
+@pytest.mark.parametrize("enabled", (True,))
 def test_unset_is_quiet_but_partial_tuple_is_loud_fail_open(guard, enabled):
-    unset = {"delegate_enabled": str(enabled).lower()}
+    unset = {"delegate.enabled": str(enabled).lower()}
     partial = {
-        "delegate_enabled": str(enabled).lower(),
+        "delegate.enabled": str(enabled).lower(),
         "delegate.developer.harness": "claude",
     }
     quiet = guard.decide("developer", "normal", unset, "claude")
@@ -1325,4 +1359,4 @@ def test_delegation_docs_distinguish_common_mapping_from_cross_transport():
     assert combined.count("native") >= 3
     assert combined.count("cross transport") >= 3
     assert "cross 위임은 코드/프롬프트·worktree 내용을 외부 하네스로 전송" in skill
-    assert "delegate_enabled" in readme and "delegate_enabled" in playbook
+    assert "delegate.enabled" in readme and "delegate.enabled" in playbook

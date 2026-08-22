@@ -4,13 +4,13 @@
 한 게이트 클러스터 25라운드). PM 자의 "수렴 판단"을 기계 판정으로 대체한다
 ([[mechanize-dont-instruct-llm]]): `--gate <T-NNNN>` 별 라운드 장부
 (`.project_manager/.local/review_rounds.json`·per-clone·git-ignored)에 실 전송 count 를 쌓고,
-limit(local.conf `additional_reviewer_round_limit`·기본 4)을 넘기면 실행 *전에* 거부(전용 rc
+limit(엔진 고정 4)을 넘기면 실행 *전에* 거부(전용 rc
 `EXIT_ROUND_LIMIT_EXCEEDED`)하고 loud 안내를 낸다. **재개 승인 경로는 없다**(T-0593 이 라운드 연장
 승인을 폐지 — 이 파일의 `--ack-rounds` 리터럴은 전부 "어느 표면에서도 rc=1 로 거부된다"는 단언이다).
 출구는 재설계·티켓 분할이고, 직전 must-fix 해소 확인만 게이트당 1회 `--confirm-fix` 로 한다.
 
 T-0583 이 같은 장부에 두 축을 더한다: 라운드별 **산출**(`rounds` — 판정 rc·must-fix 수) append 와
-게이트별 상한과 **별개**인 wave 단위 총 예산(`wave` 절 · local.conf `additional_reviewer_wave_budget`·
+게이트별 상한과 **별개**인 wave 단위 총 예산(`wave` 절 · local.conf `additional_reviewer.wave_budget`·
 기본 24 · 소진 시 같은 rc 4 · `--ack-wave` 로만 재개). 조회면은 `--rounds-report`. 기록은 무조건
 (파싱 불가는 null·리뷰 비차단)이고 hard 거부는 예산 축뿐이다.
 
@@ -281,24 +281,13 @@ def test_timeout_output_shared_formatter_policy(external, output, expected):
     assert expected in rendered
 
 
-# ── 순수 헬퍼: 상한 파싱 (_round_limit) ─────────────────────────────────────
+# ── 판정 라운드 상한: conf 노브 없는 엔진 고정값 ────────────────────────────
 
 
-def test_round_limit_default(external):
-    """미설정 → DEFAULT_ROUND_LIMIT(4·사용자 전역 규율 ">3~4" 기계화)."""
-    assert external._round_limit({}) == external.DEFAULT_ROUND_LIMIT == 4
-
-
-def test_round_limit_knob_override(external):
-    """local.conf additional_reviewer_round_limit 노브가 상한을 바꾼다."""
-    assert external._round_limit({"additional_reviewer_round_limit": "2"}) == 2
-    assert external._round_limit({"additional_reviewer_round_limit": "10"}) == 10
-
-
-def test_round_limit_garbage_and_negative_fall_back(external):
-    """비정수·음수는 기본값으로 fail-soft (깨진 노브가 게이트를 벽돌로 만들지 않음)."""
-    assert external._round_limit({"additional_reviewer_round_limit": "x"}) == 4
-    assert external._round_limit({"additional_reviewer_round_limit": "-3"}) == 4
+def test_round_limit_is_a_fixed_engine_threshold(external):
+    """판정 상한은 4 고정이고 그것을 바꾸는 conf 해소 경로가 없다(노브 철회)."""
+    assert external.DEFAULT_ROUND_LIMIT == 4
+    assert not hasattr(external, "_round_limit")
 
 
 # ── 순수 헬퍼: 외부 리뷰 timeout 해소 (T-0467) ───────────────────────────────
@@ -307,34 +296,39 @@ def test_round_limit_garbage_and_negative_fall_back(external):
 def test_timeout_cli_override_beats_local_conf(external):
     """명시 CLI 양수값은 local.conf 설정보다 우선한다."""
     args = external.argparse.Namespace(timeout=37)
-    assert external._resolve_timeout(args, {"external_review_timeout": "71"}) == 37
+    assert external._resolve_timeout(args, {"additional_reviewer.timeout": "71"}, _reviewer_cmd(external)) == 37
 
 
 def test_timeout_uses_local_conf_when_cli_unspecified(external):
-    """CLI 미지정(None) 시 clone별 external_review_timeout 을 사용한다."""
+    """CLI 미지정(None) 시 clone별 additional_reviewer.timeout 을 사용한다."""
     args = external.argparse.Namespace(timeout=None)
-    assert external._resolve_timeout(args, {"external_review_timeout": "71"}) == 71
+    assert external._resolve_timeout(args, {"additional_reviewer.timeout": "71"}, _reviewer_cmd(external)) == 71
+
+
+def _reviewer_cmd(external, conf=None) -> str:
+    """이번 실행이 부를 리뷰어 커맨드 — 구조화 키 해소 결과(엔진 기본 커맨드는 없다)."""
+    return external.resolve_reviewer_target(dict(conf or _ENABLED_CONF)).command
 
 
 def _declared_wall(external) -> int:
-    """리뷰어 기본 커맨드(codex 축)의 선언 벽시계 백스톱 — 별도 상수가 아니라 프로필에서 온다."""
-    return int(external.reviewer_profile(external.DEFAULT_REVIEWER_CMD, {}).wall_timeout)
+    """해소된 리뷰어(codex 축)의 선언 벽시계 백스톱 — 별도 상수가 아니라 프로필에서 온다."""
+    return int(external.reviewer_profile(_reviewer_cmd(external), {}).wall_timeout)
 
 
 def test_timeout_uses_default_when_not_configured(external):
     """CLI/conf 모두 없으면 리뷰어 하네스 프로필의 유한 백스톱을 쓴다(T-0489 — 상수 폐지)."""
     args = external.argparse.Namespace(timeout=None)
-    assert external._resolve_timeout(args, {}) == _declared_wall(external)
+    assert external._resolve_timeout(args, {}, _reviewer_cmd(external)) == _declared_wall(external)
 
 
 @pytest.mark.parametrize("raw", ["abc", "0", "-1"])
 def test_timeout_invalid_conf_warns_and_falls_back(external, capsys, raw):
     """비수치/0/음수 conf 는 경고 뒤 선언 기본값으로 fail-soft 한다."""
     args = external.argparse.Namespace(timeout=None)
-    assert external._resolve_timeout(args, {"external_review_timeout": raw}) == \
+    assert external._resolve_timeout(args, {"additional_reviewer.timeout": raw}, _reviewer_cmd(external)) == \
         _declared_wall(external)
     warning = capsys.readouterr().err
-    assert "external_review_timeout" in warning
+    assert "additional_reviewer.timeout" in warning
     assert "기본" in warning
 
 
@@ -358,7 +352,7 @@ def test_print_summary_failure_shows_reason_line(external, capsys):
         "reviewer": "codex", "ok": False, "failed": True, "any_must_fix": False,
         "all_pass": False, "verdict": None, "file": None,
         "output": "[리뷰어 타임아웃 — 900초 초과] 재시도: `--timeout <초>` 또는 "
-                  "local.conf `external_review_timeout=<초>` (양의 정수).\n[stderr]\nx",
+                  "local.conf `additional_reviewer.timeout=<초>` (양의 정수).\n[stderr]\nx",
     })
     out = capsys.readouterr().out
     assert "사유: [리뷰어 타임아웃" in out
@@ -489,6 +483,22 @@ def _completed(rc, out="판정: 통과"):
     return subprocess.CompletedProcess(args=["codex"], returncode=rc, stdout=out, stderr="")
 
 
+def _resolved_target(external, harness="codex", model="gpt-5.6-sol"):
+    """해소된 구조화 대상 — `run_review` 는 이것만 받는다(커맨드 문자열 투입구 없음)."""
+    return external.resolve_reviewer_target({
+        "additional_reviewer.harness": harness,
+        "additional_reviewer.model": model,
+    })
+
+
+def _codex_reply(text="판정: 통과\n\n**must-fix**:\n- 없음\n"):
+    """codex 구조화 wire 의 최종 회신 1건 — 판정 파서가 보는 유일한 이벤트."""
+    import json
+    return json.dumps({"type": "item.completed",
+                       "item": {"type": "agent_message", "text": text}},
+                      ensure_ascii=False) + "\n"
+
+
 def test_started_true_on_success_and_nonzero_rc(external):
     """정상 종료(성공/비-0 rc)는 프로세스가 실행됐으므로 started=True (전송·과금 가능)."""
     ok, _o, started = external._run_reviewer_ex("p", "codex", 5, lambda *a, **k: _completed(0))
@@ -506,7 +516,7 @@ def test_started_true_on_timeout(external):
     # 산출물은 두 채널 구조다(T-0563) — 진단 본문은 회신 채널에 실린다.
     assert ok is False and started is True and "타임아웃" in out.answer
     assert "--timeout <초>" in out.answer
-    assert "external_review_timeout=<초>" in out.answer
+    assert "additional_reviewer.timeout=<초>" in out.answer
 
 
 def test_started_false_on_spawn_failures(external):
@@ -590,14 +600,15 @@ def test_run_review_surfaces_started(external, tmp_path):
 
     main() 게이트 테스트는 run_review 를 mock 하므로, 여기서 실제 run_review 가 _run_reviewer_ex 의
     started 를 dict 로 전달함을 성공(True)과 타임아웃(실패지만 True)에서 단언해 seam 을 닫는다."""
-    res = external.run_review("p", reviewer_cmd="codex", output_dir=tmp_path,
-                              run_fn=lambda *a, **k: _completed(0))
+    target = _resolved_target(external)
+    res = external.run_review("p", target=target, output_dir=tmp_path,
+                              run_fn=lambda *a, **k: _completed(0, _codex_reply()))
     assert res["started"] is True and res["failed"] is False
 
     def _timeout(*a, **k):
         import subprocess
         raise subprocess.TimeoutExpired(cmd="codex", timeout=5)
-    res = external.run_review("p", reviewer_cmd="codex", output_dir=tmp_path, run_fn=_timeout)
+    res = external.run_review("p", target=target, output_dir=tmp_path, run_fn=_timeout)
     assert res["failed"] is True and res["started"] is True  # 타임아웃=전송 가능 → 카운트 유지
 
 
@@ -622,6 +633,15 @@ def _stub_reviewer_isolation(external, monkeypatch) -> None:
     monkeypatch.setattr(external, "create_reviewer_workspace", _fake_workspace)
 
 
+# 리뷰어 대상은 구조화 키로만 지정한다 — 모델을 고정하지 않는 실행 경로가 없으므로 CLI 표면을
+# 태우는 배선은 대상 튜플까지 갖춰야 실제 실행 지점에 닿는다.
+_ENABLED_CONF = {
+    "additional_reviewer.enabled": "true",
+    "additional_reviewer.harness": "codex",
+    "additional_reviewer.model": "gpt-5.6-sol",
+}
+
+
 def _wire(external, monkeypatch, tmp_path, *, conf=None,
           diff="diff --git a/x b/x\n@@ -1 +1 @@\n-o\n+n\n", result=None):
     """main() 을 tmp REPO 로 격리 배선 — 외부 리뷰어 호출 횟수를 세는 counter 반환.
@@ -633,7 +653,7 @@ def _wire(external, monkeypatch, tmp_path, *, conf=None,
     monkeypatch.setattr(external, "REPO", tmp_path)
     monkeypatch.setattr(
         external, "local_config",
-        lambda repo=None: dict(conf) if conf is not None else {"additional_reviewer_enabled": "true"})
+        lambda repo=None: dict(conf) if conf is not None else dict(_ENABLED_CONF))
     monkeypatch.setattr(external, "extract_diff", lambda *a, **k: (diff, []))
     _stub_reviewer_isolation(external, monkeypatch)
     real_main = external.main
@@ -698,8 +718,8 @@ def test_valid_json_with_corrupt_records_still_runs_gate(
 # ── red-first: 4회 정상 → 5회째 거부 (DoD) ──────────────────────────────────
 
 # 수렴-형상 상한(기본 3)은 이 축보다 앞에서 막으므로, 전송 횟수 축만 보는 테스트는 그 노브를
-# 열어 둔다(`review_rounds_max` 는 T-0593 의 별도 축이고 전용 테스트가 소유한다).
-_ROUNDS_MAX_OFF = {"additional_reviewer_enabled": "true", "review_rounds_max": "99"}
+# 열어 둔다(`additional_reviewer.rounds_max` 는 T-0593 의 별도 축이고 전용 테스트가 소유한다).
+_ROUNDS_MAX_OFF = {**_ENABLED_CONF, "additional_reviewer.rounds_max": "99"}
 
 
 def test_fifth_round_refused_before_reviewer(external, monkeypatch, tmp_path, capsys):
@@ -885,15 +905,16 @@ def test_killed_main_leaves_machine_counted_unfinished_record(
 # ── local.conf 노브 · --gate 미지정 · ack-without-gate ──────────────────────
 
 
-def test_round_limit_knob_changes_threshold(external, monkeypatch, tmp_path):
-    """local.conf additional_reviewer_round_limit=2 → 3회째 거부 (노브 변경 반영·DoD)."""
-    conf = {"additional_reviewer_enabled": "true", "additional_reviewer_round_limit": "2"}
+def test_round_limit_threshold_is_fixed_and_no_conf_key_moves_it(
+        external, monkeypatch, tmp_path):
+    """4회 전송 뒤 5회째가 거부된다 — 그 값을 낮추는 conf 키를 적어도 무시한다."""
+    conf = {**_ROUNDS_MAX_OFF, "additional_reviewer.round_limit": "1"}
     calls = _wire(external, monkeypatch, tmp_path, conf=conf)
     argv = ["--gate", "T-0105", "--paths", "x.py"]
-    assert external.main(argv) == 0
-    assert external.main(argv) == 0
-    assert external.main(argv) == external.EXIT_ROUND_LIMIT_EXCEEDED  # 3회째 거부
-    assert calls["n"] == 2
+    for _ in range(external.DEFAULT_ROUND_LIMIT):
+        assert external.main(argv) == 0                      # 철회된 키는 상한을 못 낮춘다
+    assert external.main(argv) == external.EXIT_ROUND_LIMIT_EXCEEDED
+    assert calls["n"] == external.DEFAULT_ROUND_LIMIT
 
 
 def test_no_gate_is_not_ledgered(external, monkeypatch, tmp_path):
@@ -1154,15 +1175,15 @@ def test_wave_budget_default(external):
 
 
 def test_wave_budget_knob_override(external):
-    """local.conf additional_reviewer_wave_budget 노브가 예산을 바꾼다 (채택자 조정)."""
-    assert external._wave_budget({"additional_reviewer_wave_budget": "6"}) == 6
-    assert external._wave_budget({"additional_reviewer_wave_budget": "0"}) == 0
+    """local.conf additional_reviewer.wave_budget 노브가 예산을 바꾼다 (채택자 조정)."""
+    assert external._wave_budget({"additional_reviewer.wave_budget": "6"}) == 6
+    assert external._wave_budget({"additional_reviewer.wave_budget": "0"}) == 0
 
 
 def test_wave_budget_garbage_and_negative_fall_back(external):
     """비정수·음수는 기본값으로 fail-soft (라운드 상한 노브와 같은 규칙)."""
-    assert external._wave_budget({"additional_reviewer_wave_budget": "x"}) == 24
-    assert external._wave_budget({"additional_reviewer_wave_budget": "-3"}) == 24
+    assert external._wave_budget({"additional_reviewer.wave_budget": "x"}) == 24
+    assert external._wave_budget({"additional_reviewer.wave_budget": "-3"}) == 24
 
 
 # ── 순수 헬퍼: 구세대 장부 하위호환 (rounds/wave 절 없음) ────────────────────
@@ -1432,7 +1453,7 @@ def test_confirm_fix_round_keeps_the_outcome_history(
 
     라운드는 **반려**로 채운다 — 확인 전용 라운드는 확인할 지적(반려 라운드)이 있는 게이트에서만
     열리므로(T-0602 ①), 이력 축을 보려면 자격을 갖춘 형상이어야 한다."""
-    conf = {"additional_reviewer_enabled": "true", "review_rounds_max": "3"}
+    conf = {**_ENABLED_CONF, "additional_reviewer.rounds_max": "3"}
     _wire(external, monkeypatch, tmp_path, result=_REJECT_WITH_ANSWER, conf=conf)
     argv = ["--gate", "T-0308", "--paths", "x.py"]
     for _ in range(3):
@@ -1475,7 +1496,7 @@ def test_old_schema_ledger_keeps_counting_and_gains_outcomes(
 def test_wave_budget_blocks_across_gates_then_ack_wave_resumes(
         external, monkeypatch, tmp_path, capsys):
     """wave 예산은 게이트를 가로질러 합계로 센다 — 소진 시 rc 4·`--ack-wave` 로만 재개 (DoD)."""
-    conf = {"additional_reviewer_enabled": "true", "additional_reviewer_wave_budget": "2"}
+    conf = {**_ENABLED_CONF, "additional_reviewer.wave_budget": "2"}
     calls = _wire(external, monkeypatch, tmp_path, conf=conf)
     for gate in ("T-0310", "T-0311"):         # 서로 다른 게이트 = 각자 라운드 상한은 여유
         assert external.main(["--gate", gate, "--paths", "x.py"]) == 0
@@ -1636,7 +1657,7 @@ def test_outcome_keeps_its_sequence_when_records_are_acked_away(
 def test_negative_wave_spent_does_not_reopen_the_budget(
         external, monkeypatch, tmp_path, capsys):
     """장부를 `spent: -1` 로 고쳐도 예산은 열리지 않는다 — 손상은 승인을 대신하지 않는다."""
-    conf = {"additional_reviewer_enabled": "true", "additional_reviewer_wave_budget": "2"}
+    conf = {**_ENABLED_CONF, "additional_reviewer.wave_budget": "2"}
     calls = _wire(external, monkeypatch, tmp_path, conf=conf, result=_PASS_WITH_ANSWER)
     for gate in ("T-0337", "T-0338"):
         assert external.main(["--gate", gate, "--paths", "x.py"]) == 0
@@ -1677,7 +1698,7 @@ def test_confirm_fix_does_not_open_the_wave_budget(
     거부된 실행은 예외 quota 도 쓰지 않는다 — 쓰지도 못한 라운드로 1회를 소모하면 다음 실행이
     처방(`--confirm-fix`)을 잃는다. 라운드는 **반려**로 채운다 — 확인 전용 라운드의 자격
     (반려 라운드 실재·T-0602 ①)을 갖춘 게이트라야 wave 축이 판정 자리에 온다."""
-    conf = {"additional_reviewer_enabled": "true", "additional_reviewer_wave_budget": "3"}
+    conf = {**_ENABLED_CONF, "additional_reviewer.wave_budget": "3"}
     calls = _wire(external, monkeypatch, tmp_path, conf=conf, result=_REJECT_WITH_ANSWER)
     for gate in ("T-0316", "T-0317", "T-0318"):
         assert external.main(["--gate", gate, "--paths", "x.py"]) == 1
@@ -1697,7 +1718,7 @@ def test_refused_run_leaves_no_gate_entry_in_the_ledger(
 
     항목을 만들어 두면 "라운드를 쓴 적 없는 게이트"가 장부에 나타나 조회 표와 승계 판정이 실제
     소비와 어긋난다 — 정규화 결과는 통과한 실행만 저장한다."""
-    conf = {"additional_reviewer_enabled": "true", "additional_reviewer_wave_budget": "2"}
+    conf = {**_ENABLED_CONF, "additional_reviewer.wave_budget": "2"}
     calls = _wire(external, monkeypatch, tmp_path, conf=conf)
     for gate in ("T-0330", "T-0331"):
         assert external.main(["--gate", gate, "--paths", "x.py"]) == 0
@@ -1718,16 +1739,17 @@ def test_refused_run_leaves_no_gate_entry_in_the_ledger(
 
 
 def _exhaust_both_budgets(external, monkeypatch, tmp_path):
-    """게이트 라운드 상한(1)과 wave 예산(2)을 동시에 소진한 장부를 만든다."""
+    """게이트 라운드 상한(엔진 고정 4)과 wave 예산(5)을 동시에 소진한 장부를 만든다."""
+    spend = external.DEFAULT_ROUND_LIMIT
     conf = {
-        "additional_reviewer_enabled": "true",
-        "additional_reviewer_round_limit": "1",
-        "additional_reviewer_wave_budget": "2",
+        **_ROUNDS_MAX_OFF,                      # 수렴 축은 별도 테스트 소유(전송 횟수만 본다)
+        "additional_reviewer.wave_budget": str(spend + 1),
     }
     calls = _wire(external, monkeypatch, tmp_path, conf=conf)
-    assert external.main(["--gate", "T-0330", "--paths", "x.py"]) == 0   # 게이트 상한 소진
+    for _ in range(spend):                                              # 게이트 상한 소진
+        assert external.main(["--gate", "T-0330", "--paths", "x.py"]) == 0
     assert external.main(["--gate", "T-0331", "--paths", "x.py"]) == 0   # wave 예산 소진
-    assert calls["n"] == 2
+    assert calls["n"] == spend + 1
     return calls
 
 
@@ -1741,7 +1763,7 @@ def test_wave_approval_survives_a_round_limit_refusal(
     assert external.main(argv + ["--ack-wave"]) == external.EXIT_ROUND_LIMIT_EXCEEDED
     err = capsys.readouterr().err
     assert "라운드 상한 도달" in err
-    assert calls["n"] == 2
+    assert calls["n"] == external.DEFAULT_ROUND_LIMIT + 1
     assert _wave(external, tmp_path)["spent"] == 0        # 리셋은 남았다
     assert "wave 예산 승인 재개" not in err                # 거부된 실행은 '재개'라 말하지 않는다
     assert "wave 예산 승인 기록" in err and "거부" in err
@@ -1751,7 +1773,7 @@ def test_wave_approval_survives_a_round_limit_refusal(
     # 사실상 +1 로 올라간다).
     assert external.main(argv) == external.EXIT_ROUND_LIMIT_EXCEEDED
     assert external.main(argv + ["--confirm-fix"]) == external.EXIT_ROUND_LIMIT_EXCEEDED
-    assert calls["n"] == 2
+    assert calls["n"] == external.DEFAULT_ROUND_LIMIT + 1
     assert _ledger(external, tmp_path)["T-0330"]["confirm_fix"] == 0   # quota 소모 없음
 
 
@@ -1848,7 +1870,7 @@ def test_rounds_report_warns_about_ignored_action_flags(
 
 def test_rounds_report_reflects_the_wave_budget_knob(external, monkeypatch, tmp_path, capsys):
     """예산 표기는 해소된 conf 노브를 따른다 (조회와 게이트가 같은 값을 본다)."""
-    conf = {"additional_reviewer_enabled": "true", "additional_reviewer_wave_budget": "6"}
+    conf = {**_ENABLED_CONF, "additional_reviewer.wave_budget": "6"}
     _wire(external, monkeypatch, tmp_path, conf=conf)
     assert external.main(["--rounds-report"]) == 0
     assert "예산 6" in capsys.readouterr().out
@@ -1911,13 +1933,32 @@ _DEFINITE_LAUNCH_EXCEPTIONS = (
 )
 
 
+_PASS_REPLY = "판정: 통과\n\n## must-fix\n- 없음\n"
+
+
+def _codex_reply_wire(reply: str = _PASS_REPLY) -> str:
+    """codex 구조화 wire(JSONL) 대역 — 최종 회신을 agent_message 이벤트로 싣는다.
+
+    해소된 리뷰어 대상은 구조화 transport 라 stdout 이 하네스 wire 로 읽힌다
+    (`pm_relay.extract_harness_reply`). 평문을 그대로 두면 회신 미추출로 판정이 실패 축에 떨어져,
+    라운드 장부·예산을 보는 단언이 상한이 아니라 파싱 때문에 흔들린다."""
+    events = [
+        {"type": "thread.started", "thread_id": "t-1"},
+        {"type": "item.completed", "item": {"type": "agent_message", "text": reply}},
+        {"type": "turn.completed", "usage": {"input_tokens": 7}},
+    ]
+    return "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events)
+
+
 def _spawn_boundary_runner(*, raise_before=None, raise_after=None, rc=0,
-                           out="판정: 통과\n\n## must-fix\n- 없음\n"):
+                           out=None):
     """스폰 경계를 **이름으로 선언한** 러너 대역 — 경계 앞/뒤 실패를 갈라 주입한다.
 
     `raise_before` = 콜백 전(러너 준비 구간 = Popen 전) 실패, `raise_after` = 콜백 뒤(자식이 뜬
     뒤) 실패. 실 러너와 같은 시그니처를 쓰는 이유는 조건부 전달 판정(`_declares_keyword`)이
-    이름 선언을 보기 때문이다."""
+    이름 선언을 보기 때문이다. `out` 기본값은 통과 판정을 실은 codex wire 다."""
+    if out is None:
+        out = _codex_reply_wire()
     seen = {"calls": 0, "spawn": 0}
 
     def runner(argv, *, input=None, timeout=None, idle_timeout=None,
@@ -2145,12 +2186,12 @@ def _wire_real_run_review(external, monkeypatch, tmp_path, *, conf, runner,
     return _run
 
 
-# 상한을 전부 1 로 조인 형상 — 스폰 0 인 실행이 하나라도 예산을 먹으면 다음 정상 호출이 rc=4 다.
+# 조일 수 있는 상한을 전부 1 로 둔 형상 — 스폰 0 인 실행이 하나라도 예산을 먹으면 다음 정상
+# 호출이 rc=4 다(판정 상한은 엔진 고정 4 라 여기서 조이는 축이 아니다).
 _ALL_LIMITS_ONE = {
-    "additional_reviewer_enabled": "true",
-    "additional_reviewer_round_limit": "1",
-    "additional_reviewer_wave_budget": "1",
-    "additional_reviewer_incomplete_round_limit": "1",
+    **_ENABLED_CONF,
+    "additional_reviewer.wave_budget": "1",
+    "additional_reviewer.incomplete_rounds_max": "1",
 }
 
 
@@ -2224,7 +2265,7 @@ def test_marked_no_child_seam_error_spends_no_budget(external, monkeypatch, tmp_
 
 
 def test_failure_after_popen_still_consumes_the_round(external, monkeypatch, tmp_path):
-    """경계를 지난 뒤 죽은 실행은 종전대로 라운드를 소비한다 — 상한 1 이면 다음 호출이 rc=4.
+    """경계를 지난 뒤 죽은 실행은 종전대로 라운드를 소비한다 — wave 예산 1 이면 다음 호출이 rc=4.
 
     확정 기동 실패의 환불이 "스폰된 실행까지 환불"로 번지지 않았음을 반대편에서 못박는다.
     """
@@ -2240,118 +2281,38 @@ def test_failure_after_popen_still_consumes_the_round(external, monkeypatch, tmp
     assert failing.seen["calls"] == 1, "상한을 넘긴 호출이 리뷰어를 또 띄웠다"
 
 
-# ── 게이트 키 개칭: 구키 제거 + 감지 안내 배선 (T-0597·T-0614) ──────────────
+# ── 노브 키 배선: 해소 헬퍼가 실제로 게이트를 움직인다 (T-0599·T-0614·T-0767) ──
 #
-# 판정 헬퍼(`legacy_enabled_key_warning`)의 단위 단언만으로는 **`_main` 에서 그 헬퍼를 실제로 부르고
-# 출력하는 배선**이 지워져도 green 이다. 그래서 CLI 표면에서 직접 본다 — 자리는 게이트 판정 *앞*이라
-# 미리보기와 실행이 같은 안내를 받는다. 구키 fallback 은 제거됐으므로 구키로 `true` 를 적어 둔
-# 채택자는 **게이트가 열리지 않고**(전송 0) 안내만 받는다 — 그 조합이 바로 무음 강등 방지 지점이다.
+# 해소 헬퍼의 단위 단언만으로는 **상한 판정이 그 헬퍼를 실제로 소비하는지**가 지워져도 green 이다.
+# 그래서 CLI 표면에서 직접 본다. 구표기 fallback·감지 안내 깔때기는 표기 통일과 함께 제거됐고
+# (잔존 구표기는 conf 를 읽는 지점이 fail-loud 로 막는다), 여기서는 **현재 키가 값을 공급한다**는
+# 사실만 실행으로 못박는다.
 
-_LEGACY_ENABLED_CONF = {"external_review_enabled": "true"}
-
-
-def test_legacy_gate_key_no_longer_opens_the_gate_but_is_announced(
-        external, monkeypatch, tmp_path, capsys):
-    """구키로 `true` 를 적어 둔 conf 는 **전송 0**(게이트 OFF)이고 안내 1줄을 stderr 로 받는다.
-
-    fallback 제거의 핵심 케이스다 — 켜 뒀다고 믿는 채택자가 이유를 못 들으면 그게 무음 강등이다.
-    """
-    calls = _wire(external, monkeypatch, tmp_path, conf=_LEGACY_ENABLED_CONF)
-
-    assert external.main(["--paths", "x.py"]) == 0
-    assert calls["n"] == 0, "구키가 여전히 게이트를 열었다(fallback 잔존)"
-    err = capsys.readouterr().err
-    assert err.count(external.LEGACY_ENABLED_KEY_REMOVED) == 1
-    assert "추가 리뷰어 비활성" in err                        # 왜 안 나갔는지도 말한다
-
-
-def test_legacy_gate_key_notice_is_printed_on_dry_run(
-        external, monkeypatch, tmp_path, capsys):
-    """미리보기도 같은 안내를 받는다 — 전송 0 인 경로에서 처방을 미리 볼 수 있어야 한다."""
-    calls = _wire(external, monkeypatch, tmp_path, conf=_LEGACY_ENABLED_CONF)
-
-    assert external.main(["--paths", "x.py", "--dry-run"]) == 0
-    assert calls["n"] == 0                                   # 미리보기는 전송 없음
-    assert external.LEGACY_ENABLED_KEY_REMOVED in capsys.readouterr().err
-
-
-def test_new_gate_key_run_is_quiet_about_the_legacy_key(
-        external, monkeypatch, tmp_path, capsys):
-    """신키 conf 는 안내를 내지 않는다 — 조건 없이 항상 찍는 배선이면 red."""
-    _wire(external, monkeypatch, tmp_path, conf={"additional_reviewer_enabled": "true"})
-
-    assert external.main(["--paths", "x.py", "--no-gate"]) == 0
-    assert "external_review_enabled" not in capsys.readouterr().err
-
-
-# ── 노브 키 개칭: 구키 제거·감지 안내 배선 (T-0599·T-0614) ──────────────────
-#
-# 게이트 키와 같은 축을 노브 3종(판정 상한·미완 상한·wave 예산)에 확장한다. 여기서 CLI 표면을
-# 보는 이유도 같다: 해소 헬퍼의 단위 단언만으로는 **상한 판정이 그 헬퍼를 실제로 소비하는지**와
-# **경고 깔때기가 `_main` 에 배선돼 있는지**가 지워져도 green 이다.
-
-_LEGACY_KNOB_CONF = {
-    "additional_reviewer_enabled": "true",
-    "external_review_round_limit": "1",
-    "external_review_wave_budget": "3",
-    "external_review_incomplete_round_limit": "1",
+_KNOB_CONF = {
+    **_ENABLED_CONF,
+    "additional_reviewer.wave_budget": "1",
+    "additional_reviewer.incomplete_rounds_max": "1",
 }
 
 
-def test_legacy_knob_keys_no_longer_drive_the_round_limit_gate(
-        external, monkeypatch, tmp_path, capsys):
-    """구키로 적힌 상한 1 은 더 이상 게이트를 움직이지 않는다 — 엔진 기본값(4)으로 간다.
-
-    2회째가 통과하는 것이 곧 "구키 값이 안 읽힌다" 의 실 증거다. 값이 사라지는 사실은 안내가
-    말한다(같은 실행의 stderr) — 조용히 기본값으로 돌아가면 그게 무음 강등이다.
-    """
-    calls = _wire(external, monkeypatch, tmp_path, conf=_LEGACY_KNOB_CONF)
+def test_knob_keys_drive_the_wave_budget_gate(external, monkeypatch, tmp_path):
+    """예산 1 을 적은 conf 는 2회째 호출을 막는다 — 값이 실제로 게이트를 움직인다."""
+    calls = _wire(external, monkeypatch, tmp_path, conf=_KNOB_CONF)
     gate = ["--gate", "T-9101", "--paths", "x.py"]
 
     assert external.main(gate) == 0
-    assert external.main(gate) == 0, "구키 상한 1 이 아직 게이트를 움직인다(fallback 잔존)"
-    assert calls["n"] == 2
-    err = capsys.readouterr().err
-    for key in external.LEGACY_KNOB_KEYS:
-        assert external.legacy_knob_key_deprecation(key) in err, key
+    assert external.main(gate) == external.EXIT_ROUND_LIMIT_EXCEEDED
+    assert calls["n"] == 1, "예산을 넘긴 호출이 리뷰어를 또 띄웠다"
 
 
-def test_legacy_knob_key_deprecations_are_printed_on_actual_run(
-        external, monkeypatch, tmp_path, capsys):
-    """값을 공급한 구 노브 키마다 안내 1줄 — 실행 자체는 막지 않는다."""
-    calls = _wire(external, monkeypatch, tmp_path, conf=_LEGACY_KNOB_CONF)
-
-    assert external.main(["--paths", "x.py", "--no-gate"]) == 0
-    assert calls["n"] == 1                                   # 게이트(신키)는 정상 동작
-    err = capsys.readouterr().err
-    for key in external.LEGACY_KNOB_KEYS:
-        assert err.count(external.legacy_knob_key_deprecation(key)) == 1, key
-
-
-def test_legacy_knob_key_deprecations_are_printed_on_dry_run(
-        external, monkeypatch, tmp_path, capsys):
-    """미리보기도 같은 안내를 받는다 — 전송 0 인 경로에서 처방을 미리 볼 수 있어야 한다."""
-    calls = _wire(external, monkeypatch, tmp_path, conf=_LEGACY_KNOB_CONF)
-
-    assert external.main(["--paths", "x.py", "--dry-run"]) == 0
-    assert calls["n"] == 0                                   # 미리보기는 전송 없음
-    err = capsys.readouterr().err
-    for key in external.LEGACY_KNOB_KEYS:
-        assert external.legacy_knob_key_deprecation(key) in err, key
-
-
-def test_new_knob_key_run_is_quiet_about_the_legacy_keys(
-        external, monkeypatch, tmp_path, capsys):
-    """신 노브 키 conf 는 안내를 내지 않는다 — 조건 없이 항상 찍는 배선이면 red."""
-    conf = {"additional_reviewer_enabled": "true",
-            "additional_reviewer_round_limit": "1",
-            "additional_reviewer_wave_budget": "3",
-            "additional_reviewer_incomplete_round_limit": "1"}
-    _wire(external, monkeypatch, tmp_path, conf=conf)
+def test_knob_conf_run_names_no_retired_key(external, monkeypatch, tmp_path, capsys):
+    """현재 키만 쓴 conf 는 구표기 이름을 출력에 흘리지 않는다(가르치지 않는다)."""
+    _wire(external, monkeypatch, tmp_path, conf=_KNOB_CONF)
 
     assert external.main(["--paths", "x.py", "--no-gate"]) == 0
     err = capsys.readouterr().err
-    for legacy in external.LEGACY_KNOB_KEYS.values():
+    for legacy in ("external_review_round_limit", "additional_reviewer_round_limit",
+                   "external_review_wave_budget", "external_review_enabled"):
         assert legacy not in err, legacy
 
 

@@ -965,7 +965,7 @@ def test_fresh_adopter_drift_lint_fires_on_real_local_conf(pm_import, tmp_path, 
     conf = dest / ".project_manager" / "local.conf"
     conf_txt = conf.read_text(encoding="utf-8")
     # import 가 upstream_rev baseline 을 기록했어야 한다(origin 도출·drift 기준점).
-    assert any(l.startswith("upstream_rev=") for l in conf_txt.splitlines()), \
+    assert any(l.startswith("upstream.rev=") for l in conf_txt.splitlines()), \
         f"{harness}: import 가 upstream_rev baseline 미기록 (drift-lint 입력 부재)"
 
     # seen 미기록 → 관찰불가 advisory 발화 (option-a·T-0305·never-block). fresh adopter 는 항상
@@ -983,7 +983,7 @@ def test_fresh_adopter_drift_lint_fires_on_real_local_conf(pm_import, tmp_path, 
     # seen≠baseline 주입 → 실 drift 발화(관찰불가 아닌 **방향-중립 불일치** 메시지·T-0413).
     #   lint 는 git 을 안 하므로 두 rev 의 선후를 모른다 — "이후 변경됨" 단정은 관찰값이 baseline 의
     #   조상일 때 거짓이라 폐기됐다(② 실측). 불일치 사실 + 양쪽 rev 만 알린다.
-    conf.write_text(conf_txt + "upstream_seen_rev=ffff0000baselinedifferent\n", encoding="utf-8", newline="\n")
+    conf.write_text(conf_txt + "upstream.seen_rev=ffff0000baselinedifferent\n", encoding="utf-8", newline="\n")
     fired = _board(dest, "lint")
     assert "adapter-drift" in fired.stdout, f"{harness}: 인위 drift 인데 adapter-drift 미발화\n{fired.stdout}"
     assert "불일치" in fired.stdout and "관찰불가" not in fired.stdout, \
@@ -1490,7 +1490,7 @@ def test_add_harness_ns_bound_is_derived_and_covers_pair_axis():
 # stub·framework 는 비-git)·라이브 하니스 0. [[release-run-all-three-tiers]] 의 machine half — T-0304 라이브
 # composite 와 축이 다르다(재현 가능·on-demand 아님).
 #
-# 채택자가 opencode self-update 를 돌리려면 local.conf 에 opencode_pro_model 이 있어야 한다 — @render 가
+# 채택자가 opencode self-update 를 돌리려면 local.conf 에 harness.opencode.pro_model 이 있어야 한다 — @render 가
 # `{{OPENCODE_PRO_MODEL}}` 를 재유도하는데 미보유면 pm_render._assert_no_leak 가 크래시(자족 산출물 위반).
 # --opencode-model 결정적 flag 로 import 가 agents 치환 + local.conf 기록 → pm_update 재렌더가 동일
 # 리터럴로 해소(drift-0 성립·크래시 0). 라이브 모델 조회 없이 결정적이다.
@@ -1547,8 +1547,8 @@ def test_fresh_opencode_adopter_engine_mutate_propagates_and_render_drift0(
     ])
     assert rc == 0, f"opencode import 실패 (rc={rc})"
     conf = (dest / ".project_manager" / "local.conf").read_text(encoding="utf-8")
-    assert f"opencode_pro_model={_OPENCODE_MODEL}" in conf, (
-        "import 가 opencode_pro_model 을 local.conf 에 기록 안 함 — self-update @render 가 "
+    assert f"harness.opencode.pro_model={_OPENCODE_MODEL}" in conf, (
+        "import 가 harness.opencode.pro_model 을 local.conf 에 기록 안 함 — self-update @render 가 "
         "{{OPENCODE_PRO_MODEL}} 를 재유도 못 해 _assert_no_leak 크래시(drift-0 전제 붕괴).")
 
     # self-update dest = self-location(pm_update.REPO) → 채택자로 고정. source = --from framework(명시).

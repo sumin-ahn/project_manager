@@ -279,7 +279,7 @@ def test_pm_delegate_ticket_cli_json_is_utf8(capture_console, monkeypatch, tmp_p
 
 def _guard_conf() -> dict[str, str]:
     return {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "opencode",
         "delegate.developer.model": "qwen3-coder",
     }

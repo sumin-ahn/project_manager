@@ -78,7 +78,7 @@ def _case(tmp_path: Path, *, with_baseline: bool = True,
         json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if with_baseline:
         (dest / ".project_manager" / "local.conf").write_text(
-            "upstream_rev=entry-base\n", encoding="utf-8")
+            "upstream.rev=entry-base\n", encoding="utf-8")
         ledger = {
             "schema": 1,
             "files": {
@@ -366,7 +366,7 @@ def test_source_root_subdirectory_uses_git_toplevel_prefix(pm_import, tmp_path):
         capture_output=True, text=True, encoding="utf-8",
     ).stdout.strip()
     (dest / ".project_manager" / "local.conf").write_text(
-        f"upstream_rev={baseline}\n", encoding="utf-8")
+        f"upstream.rev={baseline}\n", encoding="utf-8")
     ledger_path = dest / ".project_manager" / "adapter_baseline.json"
     ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
     for entry in ledger["files"].values():

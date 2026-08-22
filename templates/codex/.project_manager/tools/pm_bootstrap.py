@@ -215,7 +215,7 @@ LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"
 _SYMREF_BRANCH_PREFIX = "refs/heads/"
 
 # 카드 밖 안내/에러 문구가 쓰는 기존 도구 호출 접두 리터럴. **커맨드 카드 렌더만** 아래
-# `_CommandEnvironment`가 per-clone 설정의 검증 완료 인터프리터(`py=`) 또는 OS 기본
+# `_CommandEnvironment`가 per-clone 설정의 검증 완료 인터프리터(`runtime.py=`) 또는 OS 기본
 # (Windows=`py -3`, 그 외=`python3`)으로 대체한다. 카드 밖 소비처는 아직 이 리터럴 고정이다 —
 # "이건 어디서나 폴백"으로 읽지 말 것(카드 밖 확장은 별도 판단).
 # 경로는 multi-PM 공유 루트 기준 상대라 PM 이 공유 루트에서 board/wiki 를 조작한다.
@@ -271,31 +271,28 @@ def _command_os_label(*, system: str | None = None, os_name: str | None = None) 
     return "other"
 
 
+def _load_local_conf():
+    """공용 local.conf 로더(`local_conf.py`)를 같은 tools/ 에서 경로 로드한다 (board 사본 동형)."""
+    return _load_module_from_path(
+        Path(__file__).resolve().parent / "local_conf.py", "local_conf.py",
+        verifier=_verify_engine_rev, cache=True,
+        cache_key=f"_project_manager_local_conf:{Path(__file__).resolve().parent}",
+    )
+
+
 def _resolve_python_argv(
     repo: Path | None = None, os_label: str = "linux"
 ) -> tuple[tuple[str, ...], str]:
-    """Resolve the launcher argv, preserving the existing final-`py=` contract.
+    """Resolve the launcher argv, preserving the existing final-`runtime.py=` contract.
 
-    A non-empty final `py=` wins verbatim as one configured executable token.
+    A non-empty final `runtime.py=` wins verbatim as one configured executable token.
     Missing/unreadable config, a missing key, or an empty final value uses the
-    OS default.  In particular, an earlier non-empty value followed by `py=` is
+    OS default.  In particular, an earlier non-empty value followed by `runtime.py=` is
     intentionally treated as empty and falls back, matching the previous card
     resolver.
     """
     conf_path = (repo if repo is not None else REPO) / ".project_manager" / "local.conf"
-    try:
-        lines = _load_file_lock().read_text_shared(conf_path, encoding="utf-8").splitlines()
-    except (OSError, UnicodeError):
-        lines = ()
-
-    interpreter = ""
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        if key.strip() == "py":
-            interpreter = value.strip()
+    interpreter = (_load_local_conf().load_checked(conf_path).get("runtime.py") or "").strip()
     if interpreter:
         return (interpreter,), "local-conf"
     if os_label == "windows":
@@ -336,7 +333,7 @@ def _render_environment_line(environment: _CommandEnvironment) -> str:
 def _resolve_card_tool_invoke(
     repo: Path | None = None, environment: _CommandEnvironment | None = None
 ) -> str:
-    """커맨드 카드 도구 접두를 per-clone `local.conf`의 `py=` 값으로 완성한다.
+    """커맨드 카드 도구 접두를 per-clone `local.conf`의 `runtime.py=` 값으로 완성한다.
 
     설정 파일 부재·읽기 실패·키 부재·빈 값은 OS 기본으로 조용히 폴백한다. 인터프리터의 실행
     가능 여부와 지원 버전은 설정을 기록하는 초기화 단계가 검증하므로 여기서는 선택을 반복하지
@@ -2947,7 +2944,7 @@ class PmBootstrap:
             return None
 
     def _current_user(self) -> str | None:
-        """현재 user 식별자 — `board.user_name()`(local.conf user > git config email).
+        """현재 user 식별자 — `board.user_name()`(local.conf identity.user > git config email).
 
         board 모듈(주입/동적로드)의 `user_name` 을 getattr 로 쓴다(직접 import 금지·touches 격리·
         `_protected_warning` 동형·DI 보존). board 부재/헬퍼 부재/예외 → None(fail-soft·줄 생략).
@@ -2958,7 +2955,9 @@ class PmBootstrap:
             return None
         try:
             return user_name()
-        except Exception:  # noqa: BLE001 — fail-soft: 해소 실패는 None(줄 생략).
+        except Exception as exc:  # noqa: BLE001 — fail-soft: 해소 실패는 None(줄 생략).
+            if _is_engine_rev_skew(exc):
+                raise  # 형제 사본 불일치는 줄 생략으로 삼키지 않는다(fail-loud 보존).
             return None
 
     def _handoff_commit_author(self, handoff_header: str) -> str | None:

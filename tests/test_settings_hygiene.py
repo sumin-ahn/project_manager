@@ -197,12 +197,14 @@ def _execution_command_budget_seconds(card_text: str) -> list[tuple[str, int]]:
     """
     budgets: list[tuple[str, int]] = []
     delegate = _load_tool("pm_delegate")
-    external = _load_tool("external_review")
+    relay = _load_tool("pm_relay")
     command_budgets = {
         "pm_delegate.py": delegate.max_declared_execution_path_budget(),
-        "external_review.py": int(
-            external.reviewer_profile(external.DEFAULT_REVIEWER_CMD).wall_timeout
-        ),
+        # 추가 리뷰어 대상은 `additional_reviewer.harness`+`.model` 로 해소된다 — 엔진 기본
+        # 커맨드가 없으므로 어느 하네스가 설정돼도 담기는 값, 곧 선언 프로필 중 가장 긴 벽시계를
+        # 최악 예산으로 본다.
+        "external_review.py": int(max(
+            profile.wall_timeout for profile in relay.HARNESS_PROFILES.values())),
     }
     for script, budget in command_budgets.items():
         if re.search(

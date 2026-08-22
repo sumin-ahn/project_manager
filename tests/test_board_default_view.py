@@ -82,9 +82,21 @@ def board(tmp_path, monkeypatch):
     return mod
 
 
+# 테스트 kwargs 는 python 식별자라 dot 표기를 담을 수 없다 — conf 키로 옮겨 쓴다
+# (`user=` → `identity.user=`). 구표기로 쓰면 conf 를 읽는 지점이 fail-loud 로 멈춘다.
+_CONF_KEY_ALIASES = {"user": "identity.user", "py": "runtime.py",
+                     "test_cmd": "test.cmd", "upstream": "upstream.path",
+                     "project_name": "project.name"}
+
+
+def _conf_key(name: str) -> str:
+    return _CONF_KEY_ALIASES.get(name, name)
+
+
 def _write_conf(board, **kv) -> None:
     board.LOCAL_CONF.write_text(
-        "".join(f"{k}={v}\n" for k, v in kv.items()), encoding="utf-8")
+        "".join(f"{_conf_key(k)}={v}\n" for k, v in kv.items()),
+        encoding="utf-8")
 
 
 def _seed(board, tid, status, *, claimed_by=None, created_by=None, title="t"):

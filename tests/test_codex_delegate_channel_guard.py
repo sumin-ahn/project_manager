@@ -161,7 +161,7 @@ def test_live_spawn_payload_uses_t0641_decide_cli_seam(guard, monkeypatch):
         return 0
 
     monkeypatch.setattr(guard, "_run_decide_cli", tracked_cli)
-    conf = {"delegate_enabled": "true"}
+    conf = {"delegate.enabled": "true"}
 
     result = guard.evaluate_codex_hook(
         spawn, config_loader=lambda: conf
@@ -195,7 +195,7 @@ def test_codex_cross_mapping_denies_with_both_measured_fields_and_real_cwd(
     monkeypatch.setenv("CODEX_CI", "1")
     cwd = _fixture_cwd("fixture", "work tree")
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "opencode",
         "delegate.developer.model": "qwen3-coder",
     }
@@ -258,7 +258,7 @@ def test_native_cwd_notation_yields_the_full_deny_envelope_on_each_platform(
     """T-0715 — Windows 호스트가 보내는 `C:\\…` payload 로도 deny 엔벨로프가 온전해야 한다."""
     _inject_platform(guard, monkeypatch, platform)
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "opencode",
         "delegate.developer.model": "qwen3-coder",
     }
@@ -293,7 +293,7 @@ def test_foreign_cwd_notation_takes_the_measured_fail_open_allow_shape(
     """
     _inject_platform(guard, monkeypatch, platform)
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "opencode",
         "delegate.developer.model": "qwen3-coder",
     }
@@ -312,7 +312,7 @@ def test_windows_rule_observation_failure_keeps_every_deny_key(guard, monkeypatc
     """Windows 규칙을 주입한 deny 에서 관측 실패를 주입해도 블록 형태가 그대로다."""
     _inject_platform(guard, monkeypatch, "windows")
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "opencode",
         "delegate.developer.model": "qwen3-coder",
     }
@@ -338,7 +338,7 @@ def test_codex_cross_mapping_cli_emits_exact_measured_json_bytes(
     monkeypatch.setenv("CODEX_CI", "1")
     payload = _payload("developer")
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "opencode",
         "delegate.developer.model": "qwen3-coder",
     }
@@ -363,7 +363,7 @@ def test_codex_deny_observation_failure_preserves_exact_block_shape(
     guard, monkeypatch
 ):
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "opencode",
         "delegate.developer.model": "qwen3-coder",
     }
@@ -400,7 +400,7 @@ def test_codex_deny_observation_failure_preserves_exact_block_shape(
 def test_deny_envelope_key_sets_come_from_engine_constants(guard):
     """T-0715 — 스키마는 엔진 상수가 단일 진실이다 (테스트 재타이핑 금지)."""
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "opencode",
         "delegate.developer.model": "qwen3-coder",
     }
@@ -424,7 +424,7 @@ def test_deny_envelope_key_sets_come_from_engine_constants(guard):
 def test_partial_deny_envelope_is_rejected_before_return(guard, missing_key):
     """T-0715 — 필수 키가 빠진 엔벨로프는 호스트에 나가기 전에 fail-loud."""
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "opencode",
         "delegate.developer.model": "qwen3-coder",
     }
@@ -442,7 +442,7 @@ def test_partial_deny_envelope_is_rejected_before_return(guard, missing_key):
 
 def test_partial_hook_specific_output_is_rejected_before_return(guard):
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "opencode",
         "delegate.developer.model": "qwen3-coder",
     }
@@ -465,7 +465,7 @@ def test_observation_failure_keeps_every_deny_key_from_the_constant(
 ):
     """관측 실패를 직접 주입해도 deny 엔벨로프 키가 하나도 빠지지 않는다."""
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "opencode",
         "delegate.developer.model": "qwen3-coder",
     }
@@ -490,7 +490,7 @@ def test_observation_failure_keeps_every_deny_key_from_the_constant(
 def test_observation_failure_on_partial_envelope_fails_loud(guard, monkeypatch):
     """부분 엔벨로프가 관측 실패 경로로 들어와도 조용히 강등되지 않는다."""
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "opencode",
         "delegate.developer.model": "qwen3-coder",
     }
@@ -508,7 +508,7 @@ def test_codex_hook_never_writes_a_partial_envelope_to_the_host(
 ):
     """엔벨로프 조립이 깨져도 호스트에는 사유를 담은 완전한 엔벨로프만 나간다."""
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "opencode",
         "delegate.developer.model": "qwen3-coder",
     }
@@ -542,7 +542,7 @@ def test_codex_hook_never_writes_a_partial_envelope_to_the_host(
 
 def test_codex_native_mapping_allows_with_recorded_reason(guard):
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.researcher.harness": "codex",
         "delegate.researcher.model": "gpt-fixture",
     }
@@ -575,7 +575,7 @@ def test_codex_unknown_or_missing_agent_is_quiet_allow_without_config_load(
 
 def test_codex_hard_profile_missing_allows_without_normal_fallback_or_warning(guard):
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "opencode",
         "delegate.developer.model": "normal-only",
     }
@@ -595,7 +595,7 @@ def test_codex_missing_absolute_cwd_fails_open_instead_of_emitting_placeholder_d
     guard,
 ):
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
@@ -813,7 +813,7 @@ def test_matching_events_survive_rotation_without_false_positive(
     monkeypatch.setattr(guard, "_CODEX_OBSERVATION_MAX_BYTES", 400)
     monkeypatch.setattr(guard, "_CODEX_OBSERVATION_MAX_FILES", 3)
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "codex",
         "delegate.developer.model": "gpt-fixture",
     }
@@ -853,7 +853,7 @@ def test_matching_events_survive_rotation_without_false_positive(
 
 def test_incomplete_config_warning_uses_quiet_jsonl_record_channel(guard, tmp_path):
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "opencode",
         # An incomplete atomic profile is a core [warn] allow.
     }
@@ -979,7 +979,7 @@ def test_posix_hook_wrapper_runs_the_real_guard_and_passes_its_envelope(
 
     폴백은 2필드 경고 + 폴백 마커라 정상 경로와 관측치가 다르다.
     """
-    root = _adopter_tree(tmp_path, ("delegate_enabled=true", *mapping))
+    root = _adopter_tree(tmp_path, ("delegate.enabled=true", *mapping))
 
     result, elapsed = _run_posix_hook(_pretooluse_handler()["command"], root)
 
@@ -1001,7 +1001,7 @@ def test_posix_hook_wrapper_marks_the_fallback_when_the_guard_cannot_answer(
     guard, tmp_path
 ):
     """엔진 사본이 깨진 채택자에서도 완전한 엔벨로프가 나가고, 폴백 사실이 남는다."""
-    root = _adopter_tree(tmp_path, ("delegate_enabled=true",))
+    root = _adopter_tree(tmp_path, ("delegate.enabled=true",))
     (root / ".project_manager" / "tools" / "delegate_channel_guard.py").write_text(
         "raise SystemExit(3)\n", encoding="utf-8", newline="\n"
     )

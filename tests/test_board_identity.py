@@ -5,7 +5,7 @@ multi-user 보드 공유의 기반층 — board 산출(ticket frontmatter·areas
 `created_by`(provenance)·`claimed_by`(assignee) 로 흐르는지 검증한다.
 
 이 파일이 검증하는 계약:
-  1. **user 해소** `user_name` — local.conf `user=` 우선 → `git config user.email` 폴백 →
+  1. **user 해소** `user_name` — local.conf `identity.user=` 우선 → `git config user.email` 폴백 →
      둘 다 없으면 None(graceful·fail-soft).
   2. **identity 합성** `identity_tag` — `<user>/<pm-slot>`·user 미상이면 슬롯만(하위호환).
   3. **ticket created_by** — `cmd_new` 가 생성 시 set(provenance).
@@ -106,9 +106,21 @@ def board(tmp_path, monkeypatch):
     return mod
 
 
+# 테스트 kwargs 는 python 식별자라 dot 표기를 담을 수 없다 — conf 키로 옮겨 쓴다
+# (`user=` → `identity.user=`). 구표기로 쓰면 conf 를 읽는 지점이 fail-loud 로 멈춘다.
+_CONF_KEY_ALIASES = {"user": "identity.user", "py": "runtime.py",
+                     "test_cmd": "test.cmd", "upstream": "upstream.path",
+                     "project_name": "project.name"}
+
+
+def _conf_key(name: str) -> str:
+    return _CONF_KEY_ALIASES.get(name, name)
+
+
 def _write_conf(board, **kv) -> None:
     board.LOCAL_CONF.write_text(
-        "".join(f"{k}={v}\n" for k, v in kv.items()), encoding="utf-8")
+        "".join(f"{_conf_key(k)}={v}\n" for k, v in kv.items()),
+        encoding="utf-8")
 
 
 def _write_leases(board, *rows) -> None:

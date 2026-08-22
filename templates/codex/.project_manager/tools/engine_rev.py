@@ -201,6 +201,7 @@ STAMPED_MODULES = (
     "pm_log.py",
     "repo_owned_files.py",
     "file_lock.py",
+    "local_conf.py",
 )
 
 # deep-import target/loader인데 의도적으로 baked stamp 또는 경계 검증에서 제외하는 복구 채널.
@@ -228,6 +229,11 @@ EXEMPT_UNVERIFIED_DEEP_IMPORTS = {
         "**import 시점**에 로드하는 leaf point-reader 라 형제 판정 계층을 갖지 않는 것이 설계이고, "
         "여기서 빌려 오는 것은 판정이 아니라 '열기 방식' 하나뿐이다 — 구세대 사본은 함수 부재로 "
         "드러나 loud 강등되고, 강등해도 읽는 바이트는 같다",
+    ("local_conf.py", "_read_text_shared"):
+        "conf 판독을 공유 읽기 seam 으로 올리는 지연 로드다. 이 모듈은 다른 도구가 conf 를 읽는 "
+        "모든 지점에서 로드하는 leaf 파서라 형제 판정 계층을 갖지 않는 것이 설계이고, 빌려 오는 "
+        "것은 판정이 아니라 '열기 방식' 하나뿐이다 — 구세대 사본은 함수 부재로 드러나 loud "
+        "강등되고, 강등해도 읽는 바이트는 같다",
     ("repo_coordinates.py", "_read_text_shared"):
         "같은 리스 장부 판독의 지연 로드 — 이 모듈도 다른 도구가 import 시점에 로드하는 leaf "
         "좌표 모듈이라 같은 근거다(빌리는 것은 열기 방식뿐·구세대는 loud 강등·바이트 동일)",

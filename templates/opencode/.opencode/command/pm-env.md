@@ -98,6 +98,6 @@ HEAD(released base), role=readonly, session/pid·배타 대여가 없다. 무소
 ./pm-config.sh upstream set <url|path>
 ```
 
-`set`은 검증 후 `local.conf upstream=`을 타 키 보존·fail-closed로 atomic 재기록한다. URL은
+`set`은 검증 후 `local.conf upstream.path=`을 타 키 보존·fail-closed로 atomic 재기록한다. URL은
 `git ls-remote` 도달성, 경로는 존재+checkout을 검증한다. https/ssh/file은 URL, 나머지는 경로로
 판별하며 [[pm-update]]가 URL이면 cache clone, 경로면 pull한다.

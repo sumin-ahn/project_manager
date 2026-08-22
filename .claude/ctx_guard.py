@@ -5,14 +5,14 @@ statusLine 과 PreToolUse/UserPromptSubmit 넛지가 **같은 임계 로직**을
 두 진입점(``ctx_statusline.py`` · ``ctx_stop_hook.py``)이 여기 함수를 호출한다.
 
 엔진 계약 (임계 상향):
-  - 임계값 = local.conf ``ctx_nudge_pct`` / ``ctx_stop_pct`` (없으면 엔진 기본 30/20).
+  - 임계값 = local.conf ``ctx.nudge_pct`` / ``ctx.stop_pct`` (없으면 엔진 기본 30/20).
     훅/statusline 은 board.py 를 import 하지 않고 **local.conf 를 직접 파싱**한다
     (어댑터는 엔진 사본 경로에 묶이지 않게 — ticket §인터페이스 "local.conf 직접 파싱 권장").
   - ``stop`` 분류는 statusline/relay 소비를 위해 유지하지만 훅에서는 최종 비차단 넛지로 소비한다.
 
 컨텍스트 % 모델 (분모 = 해소된 예산 하나·물리 window% 폐기):
-  - 분모 예산 = ``resolve_budget(conf, harness)`` = ``ctx_window_tokens_<harness>`` >
-    generic ``ctx_window_tokens`` > 200000 (각 층 >0 sanity). statusLine·hook 이 **같은 예산**
+  - 분모 예산 = ``resolve_budget(conf, harness)`` = ``harness.<name>.ctx_window_tokens`` >
+    generic ``ctx.window_tokens`` > 200000 (각 층 >0 sanity). statusLine·hook 이 **같은 예산**
     을 분모로 써 표시와 넛지 밴드 판정을 일치시킨다(claude·opencode 오버라이드 키는 독립).
   - statusLine stdin 의 ``context_window`` 에서 used_tokens = current_usage(input+cache 합) >
     total_input_tokens. current_usage null/부재(세션초·/compact 직후)면 0% graceful. native
@@ -28,6 +28,7 @@ statusLine 과 PreToolUse/UserPromptSubmit 넛지가 **같은 임계 로직**을
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 # ── 엔진 기본 임계 (board.py CTX_*_PCT_DEFAULT 와 동일 — 어댑터는 import 안 하고 미러) ──
@@ -42,11 +43,73 @@ CTX_STOP_PCT_DEFAULT = 20   # 잔여 <= 이 % → 최종 넛지(키 이름은 �
 CTX_NUDGE2_MARGIN_PCT = 3
 
 # 기본 ctx 예산(분모) — resolve_budget 의 최종 폴백(오버라이드·generic 미설정 시).
-# claude 기본 200k. local.conf ``ctx_window_tokens_<harness>``/``ctx_window_tokens`` 로 조정.
+# claude 기본 200k. local.conf ``harness.<name>.ctx_window_tokens``/``ctx.window_tokens`` 로 조정.
 CTX_WINDOW_TOKENS_DEFAULT = 200_000
 
 
 # ── local.conf 직접 파싱 (board.local_config 와 동일 포맷·KEY=value) ──────────
+
+# 차단 구키 목록은 엔진이 **생성**한다(어댑터가 매핑표를 복제하면 표와 파서가 갈린다):
+#   python3 .project_manager/tools/local_conf.py --render-adapter-block python
+# 생성 시작 — 차단 구키 (local_conf.render_adapter_block · 손편집 금지)
+LEGACY_CONF_KEYS = (
+    "additional_reviewer_enabled",
+    "additional_reviewer_incomplete_round_limit",
+    "additional_reviewer_round_limit",
+    "additional_reviewer_wave_budget",
+    "ctx_nudge_pct",
+    "ctx_stop_pct",
+    "ctx_window_tokens",
+    "date",
+    "delegate_enabled",
+    "delegate_idle_timeout",
+    "delegate_timeout",
+    "external_review_enabled",
+    "external_review_idle_timeout",
+    "external_review_incomplete_round_limit",
+    "external_review_progress_signal",
+    "external_review_round_limit",
+    "external_review_timeout",
+    "external_review_wave_budget",
+    "opencode_pro_model",
+    "project_name",
+    "project_root",
+    "project_tagline",
+    "py",
+    "regression_min_collected",
+    "review_denylist_extra",
+    "review_paths",
+    "review_rounds_max",
+    "reviewer_cmd",
+    "reviewer_env_keep_extra",
+    "reviewer_home_artifacts_extra",
+    "test_cmd",
+    "upstream",
+    "upstream_rev",
+    "upstream_seen_rev",
+    "user",
+)
+LEGACY_CONF_KEY_PREFIX = "ctx_window_tokens_"
+# 생성 끝 — 차단 구키
+
+
+def _assert_no_legacy_conf(conf: dict[str, str], path: Path) -> None:
+    """구표기 키가 남아 있으면 **값 해소 전에** 멈춘다 (조용한 기본값 강등 차단).
+
+    어댑터는 엔진을 import 하지 않아 신표기 이름을 말하지 못한다 — 무엇이 걸렸는지만 말하고
+    전수 지목은 엔진 도구(`board.py lint`·`pm_update.py` 안내)에 맡긴다. 여기서 강등하면 채택자는
+    conf 를 고쳤는데 아무 일도 안 일어나는 상태(임계·예산이 전부 엔진 기본값)를 본다."""
+    found = sorted(key for key in conf
+                   if key in LEGACY_CONF_KEYS
+                   or (key.startswith(LEGACY_CONF_KEY_PREFIX)
+                       and len(key) > len(LEGACY_CONF_KEY_PREFIX)))
+    if not found:
+        return
+    print(f"오류: local.conf 에 구표기 키가 남아 있습니다 ({path}) — "
+          f"{', '.join(found)}. 값이 조용히 기본값으로 떨어지지 않도록 여기서 멈춥니다. "
+          "전수 지목은 `board.py lint` 또는 `pm_update.py` 안내가 냅니다.", file=sys.stderr)
+    raise SystemExit(1)
+
 
 def repo_root(start: Path) -> Path:
     """스크립트 위치(.claude/)에서 프로젝트 루트를 찾는다.
@@ -82,6 +145,7 @@ def load_local_config(root: Path) -> dict[str, str]:
             continue
         key, _, val = line.partition("=")
         conf[key.strip()] = val.strip()
+    _assert_no_legacy_conf(conf, path)
     return conf
 
 
@@ -100,8 +164,8 @@ def ctx_thresholds(conf: dict[str, str]) -> dict[str, int]:
 
     codex 인계: nudge/stop 이 비정상(음수·범위 밖·stop>nudge)이면 엔진 기본 폴백.
     """
-    nudge = _int_conf(conf, "ctx_nudge_pct", CTX_NUDGE_PCT_DEFAULT)
-    stop = _int_conf(conf, "ctx_stop_pct", CTX_STOP_PCT_DEFAULT)
+    nudge = _int_conf(conf, "ctx.nudge_pct", CTX_NUDGE_PCT_DEFAULT)
+    stop = _int_conf(conf, "ctx.stop_pct", CTX_STOP_PCT_DEFAULT)
     # sanity: 0 < stop <= nudge < 100. 위반 시 기본으로 폴백 (오타·역전에 robust).
     if not (0 < stop <= nudge < 100):
         nudge, stop = CTX_NUDGE_PCT_DEFAULT, CTX_STOP_PCT_DEFAULT
@@ -111,11 +175,11 @@ def ctx_thresholds(conf: dict[str, str]) -> dict[str, int]:
 def resolve_budget(conf: dict[str, str], harness: str = "claude") -> int:
     """ctx 예산(분모)을 per-harness precedence 로 해소.
 
-    ``ctx_window_tokens_{harness}`` > generic ``ctx_window_tokens`` > ``CTX_WINDOW_TOKENS_DEFAULT``.
+    ``harness.{harness}.ctx_window_tokens`` > generic ``ctx.window_tokens`` > ``CTX_WINDOW_TOKENS_DEFAULT``.
     각 층 >0 sanity — ≤0·비정수면 다음 층 폴백(물리한도/0-특수의미 없음). claude·opencode
     오버라이드 키는 완전 독립(동시 운용 시 하네스별 예산). statusLine·hook 이 이 값을 공유 분모로.
     """
-    for key in (f"ctx_window_tokens_{harness}", "ctx_window_tokens"):
+    for key in (f"harness.{harness}.ctx_window_tokens", "ctx.window_tokens"):
         size = _int_conf(conf, key, 0)
         if size > 0:
             return size

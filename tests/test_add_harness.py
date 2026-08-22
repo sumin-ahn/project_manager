@@ -56,11 +56,16 @@ def _hermetic_opencode_models(pm_import, monkeypatch):
 
 # ── 헬퍼 ──────────────────────────────────────────────────────────────────────
 
+# 테스트 kwargs 는 python 식별자라 dot 표기를 담을 수 없다 — conf 키로 옮겨 쓴다.
+_CONF_KEY_ALIASES = {"upstream": "upstream.path", "project_name": "project.name",
+                     "test_cmd": "test.cmd", "py": "runtime.py", "user": "identity.user"}
+
+
 def _write_local_conf(dest_root: Path, **keys: str) -> None:
     """dest_root/.project_manager/local.conf 를 주어진 키로 쓴다."""
     conf_dir = dest_root / ".project_manager"
     conf_dir.mkdir(parents=True, exist_ok=True)
-    lines = [f"{k}={v}" for k, v in keys.items()]
+    lines = [f"{_CONF_KEY_ALIASES.get(k, k)}={v}" for k, v in keys.items()]
     (conf_dir / "local.conf").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -83,8 +88,8 @@ def _set_conf_upstream(dest_root: Path, value: str) -> None:
     """dest 의 local.conf upstream= 값을 결정적으로 덮는다(테스트 격리)."""
     conf = dest_root / ".project_manager" / "local.conf"
     text = conf.read_text(encoding="utf-8") if conf.is_file() else ""
-    lines = [l for l in text.splitlines() if not l.strip().startswith("upstream=")]
-    lines.append(f"upstream={value}")
+    lines = [l for l in text.splitlines() if not l.strip().startswith("upstream.path=")]
+    lines.append(f"upstream.path={value}")
     conf.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 

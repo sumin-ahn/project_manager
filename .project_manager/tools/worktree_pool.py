@@ -1553,7 +1553,7 @@ $branch
             fi
             if [ -z "$self_test_cmd" ]; then
                 echo "[pm 보호 가드] 채택자 자기 검증 명령 미해소 — fail-closed 거부." >&2
-                echo "  areas.md test_cmd 또는 PM 홈 local.conf test_cmd를 설정하고 훅을 재설치하라." >&2
+                echo "  areas.md test_cmd 또는 PM 홈 local.conf test.cmd를 설정하고 훅을 재설치하라." >&2
                 exit 1
             fi
             if ! command -v sh >/dev/null 2>&1; then
@@ -1604,7 +1604,7 @@ $branch
             self_test_rc=$?
             if [ "$self_test_rc" -ne 0 ]; then
                 echo "[pm 보호 가드] 채택자 자기 검증 RED(rc=$self_test_rc) — 보호 push 거부." >&2
-                echo "  areas.md test_cmd 또는 PM 홈 local.conf test_cmd를 현재 repo 명령으로 설정하라." >&2
+                echo "  areas.md test_cmd 또는 PM 홈 local.conf test.cmd를 현재 repo 명령으로 설정하라." >&2
                 echo "  긴급 우회(감사 기록 필수): PM_SKIP_SELF_TEST=1 PM_SELF_TEST_BYPASS_REASON='사유' PM_ALLOW_PROTECTED_PUSH=1 git push ..." >&2
                 exit 1
             fi
@@ -1613,7 +1613,7 @@ $branch
             ;;
         *)
             echo "[pm 보호 가드] repo 게이트 스코프 미해소('$gate_mode') — fail-closed 거부." >&2
-            echo "  PM 홈 local.conf upstream을 확인하고 pm-update 또는 pm-config repo add로 훅을 재설치하라." >&2
+            echo "  PM 홈 local.conf upstream.path를 확인하고 pm-update 또는 pm-config repo add로 훅을 재설치하라." >&2
             exit 1
             ;;
     esac

@@ -9,7 +9,7 @@ shipping 고유분인 **pm_update self-update 경로 2케이스**(opencode/claud
 
 두 테스트는 import → pm_update(self-update) → 실 LLM 이 *post-update* 진입문서로 ticket 발행을 친다.
 import smoke·full wave 가 못 친 update 경로(opencode: .opencode/* @source 재렌더·미해소
-opencode_pro_model 을 intentional-TODO 로 graceful 중화·T-0310 / claude: .claude/* @render 재렌더·
+harness.opencode.pro_model 을 intentional-TODO 로 graceful 중화·T-0310 / claude: .claude/* @render 재렌더·
 leak 0)를 커버한다. 비결정·느림·라이브 → release wave 와 같은
 `PM_ORCH_LIVE_RELEASE` 게이트(기본 skip·`PM_ORCH_LIVE_RELEASE=1` 일 때만). 프롬프트에 board.py 경로를
 *주지 않는다* — adopter 가 문서만으로 board 도구를 찾아 운영해야 통과(= 문서 운영성). side-effect
@@ -176,7 +176,7 @@ def test_live_opencode_adopter_survives_pm_update_then_operates(tmp_path):
     dest = _import_adopter(tmp_path, "opencode")
     # 1) self-update: .opencode/agents·command 는 @source(ADR-0054·templates/opencode) 재렌더로
     #    *전파*된다(옛 @target-owned skip 아님). 이 채택자는 opencode 없이 import(=_import_adopter 가
-    #    _real_models_runner 를 (False,[]) 스텁) 해 local.conf 에 opencode_pro_model 이 미해소다 —
+    #    _real_models_runner 를 (False,[]) 스텁) 해 local.conf 에 harness.opencode.pro_model 이 미해소다 —
     #    @source 재렌더가 `{{OPENCODE_PRO_MODEL}}` 을 만나면 T-0310 전엔 leak 으로 rc-fail(update 전멸)
     #    이었다. 이제 render_adapter 가 import 와 대칭으로 intentional-TODO 중화 → rc0(엔진·어댑터 정상
     #    update·crash/clobber 0). (릴리즈 라이브 게이트가 정확히 이 회귀를 포착한 지점.)
@@ -384,9 +384,9 @@ def _force_nudge_band_conf(dest: Path, harness: str) -> None:
     with conf_path.open("a", encoding="utf-8") as fh:
         fh.write(
             "\n# T-0286 nudge 밴드 강제 (격리·per-harness 키·generic ctx_window_tokens 미변경)\n"
-            "ctx_nudge_pct=99\n"
-            "ctx_stop_pct=1\n"
-            f"ctx_window_tokens_{harness}=500000\n"
+            "ctx.nudge_pct=99\n"
+            "ctx.stop_pct=1\n"
+            f"harness.{harness}.ctx_window_tokens=500000\n"
         )
 
 

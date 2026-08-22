@@ -107,14 +107,10 @@ LOCAL_CONF_WRITERS: dict[tuple[str, str], tuple[str, str]] = {
         (HOLDS_LOCK, "init 최초 전체 생성 + 비파괴 병합(read→merge→write_text)"),
     ("board.py", "_commit_additional_reviewer_optin"):
         (HOLDS_LOCK, "추가 리뷰어 opt-in 커밋(재읽기→재판정→단일 추가)"),
-    ("board.py", "prompt_delegate_optin"):
-        (HOLDS_LOCK, "cross-harness 위임 opt-in 커밋"),
     ("board.py", "_append_local_conf_atomic"):
         (UNDER_CALLER_LOCK, "선행 개행 + 블록을 한 번의 O_APPEND write 로 붙이는 helper"),
     ("pm_update.py", "_commit_additional_reviewer_optin"):
         (HOLDS_LOCK, "추가 리뷰어 opt-in 커밋(동기 대상 conf)"),
-    ("pm_update.py", "maybe_prompt_delegate_optin"):
-        (HOLDS_LOCK, "cross-harness 위임 opt-in 커밋(동기 대상 conf)"),
     ("pm_update.py", "_append_local_conf_atomic"):
         (UNDER_CALLER_LOCK, "board 사본과 동형 append helper(무락 폴백 포함)"),
     ("pm_update.py", "record_upstream_revs"):
@@ -405,7 +401,7 @@ def test_a_concurrent_key_writer_never_loses_the_optin_append(
 
     monkeypatch.setattr(pm_import, "_set_conf_keys", _blocking_set)
     rmw = barrier.run(
-        lambda: pm_import._write_conf_keys(conf, {"upstream_rev": "rev-2"}))
+        lambda: pm_import._write_conf_keys(conf, {"upstream.rev": "rev-2"}))
     assert barrier.entered.wait(SYNC_TIMEOUT), "RMW writer 가 임계 구간에 못 들어갔다"
 
     appended = threading.Event()
@@ -426,8 +422,8 @@ def test_a_concurrent_key_writer_never_loses_the_optin_append(
     assert not append_thread.is_alive()
 
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
-    assert parsed["upstream_rev"] == "rev-2", "RMW 의 결정이 사라졌다"
-    assert parsed["additional_reviewer_enabled"] == "true", "opt-in 결정이 교체에 덮였다"
+    assert parsed["upstream.rev"] == "rev-2", "RMW 의 결정이 사라졌다"
+    assert parsed["additional_reviewer.enabled"] == "true", "opt-in 결정이 교체에 덮였다"
     assert parsed["session"] == "pm"
 
 
@@ -452,7 +448,7 @@ def test_a_concurrent_key_writer_waits_for_an_in_flight_optin_append(
     written = threading.Event()
 
     def _rmw():
-        pm_import._write_conf_keys(conf, {"upstream_rev": "rev-2"})
+        pm_import._write_conf_keys(conf, {"upstream.rev": "rev-2"})
         written.set()
 
     rmw_thread = threading.Thread(target=_rmw, daemon=True)
@@ -466,15 +462,15 @@ def test_a_concurrent_key_writer_waits_for_an_in_flight_optin_append(
     assert not rmw_thread.is_alive()
 
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
-    assert parsed["upstream_rev"] == "rev-2"
-    assert parsed["additional_reviewer_enabled"] == "true"
+    assert parsed["upstream.rev"] == "rev-2"
+    assert parsed["additional_reviewer.enabled"] == "true"
 
 
 def test_init_merge_and_optin_append_do_not_lose_either_decision(
     board, monkeypatch, tmp_path,
 ):
     """board init 병합(전체 교체)과 opt-in append 가 겹쳐도 양쪽 결정이 남는다."""
-    conf = _conf_at(tmp_path, "session=pm\nupstream=/somewhere\n")
+    conf = _conf_at(tmp_path, "session=pm\nupstream.path=/somewhere\n")
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
     monkeypatch.setattr(board, "_detect_py", lambda: "python3")
     barrier = _Barrier()
@@ -505,15 +501,15 @@ def test_init_merge_and_optin_append_do_not_lose_either_decision(
     assert not append_thread.is_alive()
 
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
-    assert parsed["additional_reviewer_enabled"] == "true", "opt-in 결정이 병합 교체에 덮였다"
-    assert parsed["upstream"] == "/somewhere", "init 이 안 쓰는 사용자 키가 사라졌다"
-    assert parsed["py"] == "python3"
+    assert parsed["additional_reviewer.enabled"] == "true", "opt-in 결정이 병합 교체에 덮였다"
+    assert parsed["upstream.path"] == "/somewhere", "init 이 안 쓰는 사용자 키가 사라졌다"
+    assert parsed["runtime.py"] == "python3"
 
 
 def test_delegate_optin_and_key_writer_do_not_lose_either_decision(
     board, pm_import, monkeypatch, tmp_path,
 ):
-    """위임 opt-in append 도 같은 락 아래다 — 키 writer 와 겹쳐도 둘 다 남는다."""
+    """opt-in append 도 같은 락 아래다 — 키 writer 와 겹쳐도 둘 다 남는다."""
     conf = _conf_at(tmp_path, "session=pm\n")
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
     monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
@@ -528,18 +524,18 @@ def test_delegate_optin_and_key_writer_do_not_lose_either_decision(
         return real_set_conf_keys(text, updates)
 
     monkeypatch.setattr(pm_import, "_set_conf_keys", _blocking_set)
-    rmw = barrier.run(lambda: pm_import._write_conf_keys(conf, {"upstream_rev": "rev-2"}))
+    rmw = barrier.run(lambda: pm_import._write_conf_keys(conf, {"upstream.rev": "rev-2"}))
     assert barrier.entered.wait(SYNC_TIMEOUT)
 
     done = threading.Event()
 
     def _optin():
-        board.prompt_delegate_optin()
+        board.prompt_external_review_optin()
         done.set()
 
     optin_thread = threading.Thread(target=_optin, daemon=True)
     optin_thread.start()
-    assert not done.wait(BLOCKED_PROBE), "RMW 임계 구간에 위임 opt-in 이 끼어들었다"
+    assert not done.wait(BLOCKED_PROBE), "RMW 임계 구간에 opt-in 이 끼어들었다"
 
     barrier.resume.set()
     barrier.join(rmw)
@@ -547,8 +543,8 @@ def test_delegate_optin_and_key_writer_do_not_lose_either_decision(
     assert not optin_thread.is_alive()
 
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
-    assert parsed["upstream_rev"] == "rev-2"
-    assert parsed["delegate_enabled"] == "true"
+    assert parsed["upstream.rev"] == "rev-2"
+    assert parsed["additional_reviewer.enabled"] == "true"
 
 
 # ── 축 3'': 계획도 락 안이다 (stale plan 경쟁·R5 재현) ──────────────────────
@@ -562,13 +558,13 @@ def test_preserve_does_not_revive_a_backup_value_over_a_decision_made_meanwhile(
 ):
     """재-import 의 사용자 키 보존이 **그사이 생긴 결정**을 백업의 옛 값으로 덮지 않는다.
 
-    형상: 백업에 `additional_reviewer_enabled=false` 가 있고, board init 산출 conf 에는 아직 그 키가
+    형상: 백업에 `additional_reviewer.enabled=false` 가 있고, board init 산출 conf 에는 아직 그 키가
     없다. 보존 재병합이 "현재 conf 에 없는 키" 판정을 락 밖에서 해 두면, 그 사이 추가 리뷰어
     opt-in 이 `true` 를 기록해도 낡은 계획이 `false` 로 되돌린다(사람이 방금 켠 결정을 무음
     롤백). 판정을 락 안에서 하면 새 결정은 그대로 남고 충돌하지 않는 보존 대상만 복원된다.
     """
     conf = _conf_at(tmp_path, "session=pm\n")
-    backup = "additional_reviewer_enabled=false\nmy_custom_key=값\n"
+    backup = "additional_reviewer.enabled=false\nmy_custom_key=값\n"
     barrier = _Barrier()
     real_append = board.file_lock.append_atomic
 
@@ -600,7 +596,7 @@ def test_preserve_does_not_revive_a_backup_value_over_a_decision_made_meanwhile(
     assert not preserve_thread.is_alive()
 
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
-    assert parsed["additional_reviewer_enabled"] == "true", (
+    assert parsed["additional_reviewer.enabled"] == "true", (
         "백업의 옛 값이 방금 기록된 결정을 덮었다(락 밖에서 세운 계획)")
     assert parsed["my_custom_key"] == "값", "충돌하지 않는 보존 대상이 사라졌다"
     assert parsed["session"] == "pm"
@@ -612,11 +608,12 @@ def test_an_in_flight_preserve_blocks_a_later_optin_and_keeps_both_decisions(
     """반대 순서 — 보존 재병합이 **현재 상태를 읽는 지점부터** 락 안이라 뒤 opt-in 이 기다린다.
 
     배리어를 쓰기 지점이 아니라 *대상 conf 의 현재 상태 파싱* 지점에 둔다 — 그 읽기가 락 밖이면
-    위임 opt-in 이 이 창에서 즉시 끝나 버린다(red). 락 안이면 순서가 강제되고 두 결정
-    (보존 대상 + 위임 opt-in)이 모두 남는다.
+    opt-in 이 이 창에서 즉시 끝나 버린다(red). 락 안이면 순서가 강제되고 두 결정
+    (보존 대상 + opt-in)이 모두 남는다.
     """
     conf = _conf_at(tmp_path, "session=pm\n")
-    backup = "my_custom_key=값\nadditional_reviewer.harness=codex\n"
+    backup = ("my_custom_key=값\nadditional_reviewer.harness=codex\n"
+              "additional_reviewer.model=gpt-5.6-sol\n")
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
     monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
     monkeypatch.setattr(board.sys.stdin, "isatty", lambda: True)
@@ -639,13 +636,13 @@ def test_an_in_flight_preserve_blocks_a_later_optin_and_keeps_both_decisions(
     done = threading.Event()
 
     def _optin():
-        board.prompt_delegate_optin()
+        board.prompt_external_review_optin()
         done.set()
 
     optin_thread = threading.Thread(target=_optin, daemon=True)
     optin_thread.start()
     assert not done.wait(BLOCKED_PROBE), (
-        "보존 재병합이 현재 상태를 읽는 사이 위임 opt-in 이 끼어들었다 — 읽기가 락 밖이다")
+        "보존 재병합이 현재 상태를 읽는 사이 opt-in 이 끼어들었다 — 읽기가 락 밖이다")
 
     barrier.resume.set()
     barrier.join(preserve)
@@ -655,7 +652,7 @@ def test_an_in_flight_preserve_blocks_a_later_optin_and_keeps_both_decisions(
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
     assert parsed["my_custom_key"] == "값"
     assert parsed["additional_reviewer.harness"] == "codex"
-    assert parsed["delegate_enabled"] == "true", "위임 결정이 보존 교체에 덮였다"
+    assert parsed["additional_reviewer.enabled"] == "true", "opt-in 결정이 보존 교체에 덮였다"
 
 
 def _pm_update_rev_writer(pm_update, monkeypatch, rev: str):
@@ -680,7 +677,7 @@ def _run_rev_record_against_an_upstream_flip(
     출발한다 — 형상 판정이 락 밖이면 그 창의 **옛 형상**으로 계획이 굳는다. 반환은
     (record_upstream_revs 반환값, 최종 conf 파싱).
     """
-    conf = _conf_at(tmp_path, f"session=pm\nupstream={stored}\n")
+    conf = _conf_at(tmp_path, f"session=pm\nupstream.path={stored}\n")
     _pm_update_rev_writer(pm_update, monkeypatch, "rev-new")
     barrier = _Barrier()
     real_set_conf_keys = pm_import._set_conf_keys
@@ -691,7 +688,7 @@ def _run_rev_record_against_an_upstream_flip(
         return real_set_conf_keys(text, updates)
 
     monkeypatch.setattr(pm_import, "_set_conf_keys", _blocking_set)
-    flip = barrier.run(lambda: pm_import._write_conf_keys(conf, {"upstream": flipped}))
+    flip = barrier.run(lambda: pm_import._write_conf_keys(conf, {"upstream.path": flipped}))
     assert barrier.entered.wait(SYNC_TIMEOUT), "upstream 플립이 임계 구간에 못 들어갔다"
 
     recorded: list[tuple[bool, dict[str, str]]] = []
@@ -713,7 +710,7 @@ def _run_rev_record_against_an_upstream_flip(
     assert not rev_thread.is_alive()
 
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
-    assert parsed["upstream"] == flipped, "플립이 rev 기록에 덮였다"
+    assert parsed["upstream.path"] == flipped, "플립이 rev 기록에 덮였다"
     return recorded[0], parsed
 
 
@@ -730,9 +727,9 @@ def test_seen_rev_is_not_written_when_the_shape_becomes_a_url_meanwhile(
         stored="/local/upstream", flipped="https://example.invalid/u.git")
 
     assert changed is True
-    assert updates == {"upstream_rev": "rev-new"}, "URL 형상인데 경로-전용 키를 계획했다"
-    assert parsed["upstream_rev"] == "rev-new"
-    assert "upstream_seen_rev" not in parsed, (
+    assert updates == {"upstream.rev": "rev-new"}, "URL 형상인데 경로-전용 키를 계획했다"
+    assert parsed["upstream.rev"] == "rev-new"
+    assert "upstream.seen_rev" not in parsed, (
         "URL 이 된 conf 에 경로-전용 관찰값이 stale 계획으로 기록됐다")
 
 
@@ -748,9 +745,9 @@ def test_seen_rev_is_written_when_the_shape_becomes_a_path_meanwhile(
         stored="https://example.invalid/u.git", flipped="/local/upstream")
 
     assert changed is True
-    assert updates == {"upstream_rev": "rev-new", "upstream_seen_rev": "rev-new"}
-    assert parsed["upstream_rev"] == "rev-new"
-    assert parsed["upstream_seen_rev"] == "rev-new", (
+    assert updates == {"upstream.rev": "rev-new", "upstream.seen_rev": "rev-new"}
+    assert parsed["upstream.rev"] == "rev-new"
+    assert parsed["upstream.seen_rev"] == "rev-new", (
         "경로 형상이 된 conf 에서 관찰값이 stale 계획으로 누락됐다")
 
 
@@ -788,7 +785,7 @@ def test_the_existence_check_inside_the_lock_is_the_authoritative_one(
     락 밖 판정만 믿고 쓰면 그사이 사라진/교체된 conf 를 되살려 남의 결정을 지운 자리에 옛 내용을
     박는다. 두 진입 모두 락 안 재판정이 권위이며, 그 경로는 graceful 생략이다.
     """
-    conf = _conf_at(tmp_path, "session=pm\nupstream=/local/upstream\n")
+    conf = _conf_at(tmp_path, "session=pm\nupstream.path=/local/upstream\n")
     if entry == "rev-record":
         _pm_update_rev_writer(pm_update, monkeypatch, "rev-new")
         _vanishing_conf_lock(pm_update, monkeypatch)
@@ -826,7 +823,7 @@ def test_board_init_write_takes_the_shared_lock(board, monkeypatch, tmp_path):
 
     assert taken == [str(conf.parent / ".local" / "local-conf.lock")]
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
-    assert parsed["test_cmd"] == "pytest -q"
+    assert parsed["test.cmd"] == "pytest -q"
     # 세션·prefix 는 per-clone conf 의 키가 아니다 (T-0779).
     assert "session" not in parsed and "prefix" not in parsed
 
@@ -837,13 +834,13 @@ def test_key_writer_takes_the_shared_lock(pm_import, monkeypatch, tmp_path):
     taken: list[str] = []
     _spy_lock(pm_import._load_file_lock(), monkeypatch, taken)
 
-    assert pm_import._write_conf_keys(conf, {"upstream": "/u"}) is True
+    assert pm_import._write_conf_keys(conf, {"upstream.path": "/u"}) is True
 
     assert taken == [str(conf.parent / ".local" / "local-conf.lock")]
 
 
-def test_pm_update_delegate_optin_takes_the_shared_lock(pm_update, monkeypatch, tmp_path):
-    """pm_update 의 위임 opt-in 기록도 공용 락 + 단일 원자 추가다."""
+def test_pm_update_optin_takes_the_shared_lock(pm_update, monkeypatch, tmp_path):
+    """pm_update 의 opt-in 기록도 공용 락 + 단일 원자 추가다."""
     conf = _conf_at(tmp_path, "session=pm\n")
     monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
     monkeypatch.setattr(pm_update.sys.stdin, "isatty", lambda: True)
@@ -851,10 +848,11 @@ def test_pm_update_delegate_optin_takes_the_shared_lock(pm_update, monkeypatch, 
     taken: list[str] = []
     _spy_lock(pm_update._load_file_lock(), monkeypatch, taken)
 
-    pm_update.maybe_prompt_delegate_optin(conf.parent.parent)
+    pm_update.maybe_prompt_external_review(conf.parent.parent)
 
     assert taken == [str(conf.parent / ".local" / "local-conf.lock")]
-    assert _parse_conf(conf.read_text(encoding="utf-8"))["delegate_enabled"] == "true"
+    assert (_parse_conf(conf.read_text(encoding="utf-8"))["additional_reviewer.enabled"]
+            == "true")
 
 
 # ── 축 5: 부분 업그레이드 호환 (구세대 file_lock 사본) ──────────────────────
@@ -949,7 +947,7 @@ def test_a_legacy_copy_still_serializes_against_a_new_api_writer(
         return real_set_conf_keys(text, updates)
 
     monkeypatch.setattr(pm_import, "_set_conf_keys", _blocking_set)
-    rmw = barrier.run(lambda: pm_import._write_conf_keys(conf, {"upstream_rev": "rev-2"}))
+    rmw = barrier.run(lambda: pm_import._write_conf_keys(conf, {"upstream.rev": "rev-2"}))
     assert barrier.entered.wait(SYNC_TIMEOUT), "구세대 사본 writer 가 임계 구간에 못 들어갔다"
 
     appended = threading.Event()
@@ -969,8 +967,8 @@ def test_a_legacy_copy_still_serializes_against_a_new_api_writer(
     assert not append_thread.is_alive()
 
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
-    assert parsed["upstream_rev"] == "rev-2"
-    assert parsed["additional_reviewer_enabled"] == "true"
+    assert parsed["upstream.rev"] == "rev-2"
+    assert parsed["additional_reviewer.enabled"] == "true"
 
 
 @pytest.mark.parametrize("name", _LEGACY_MODULES)
@@ -988,14 +986,15 @@ def test_a_copy_without_any_lock_primitive_keeps_the_lockless_recovery_contract(
         assert lock is legacy
 
     if name == "pm_import":
-        assert module._write_conf_keys(conf, {"upstream_rev": "rev-2"}) is True
-        assert _parse_conf(conf.read_text(encoding="utf-8"))["upstream_rev"] == "rev-2"
+        assert module._write_conf_keys(conf, {"upstream.rev": "rev-2"}) is True
+        assert _parse_conf(conf.read_text(encoding="utf-8"))["upstream.rev"] == "rev-2"
     else:
         monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
         monkeypatch.setattr(module.sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr("builtins.input", lambda prompt="": "y")
-        module.maybe_prompt_delegate_optin(conf.parent.parent)
-        assert _parse_conf(conf.read_text(encoding="utf-8"))["delegate_enabled"] == "true"
+        module.maybe_prompt_external_review(conf.parent.parent)
+        assert (_parse_conf(conf.read_text(encoding="utf-8"))["additional_reviewer.enabled"]
+                == "true")
 
 
 def test_marked_rev_skew_is_not_absorbed_by_the_conf_lock_seam(pm_import, monkeypatch, tmp_path):
@@ -1013,7 +1012,7 @@ def test_marked_rev_skew_is_not_absorbed_by_the_conf_lock_seam(pm_import, monkey
 
     monkeypatch.setattr(pm_import, "_load_file_lock", _skew)
     with pytest.raises(RuntimeError) as exc:
-        pm_import._write_conf_keys(conf, {"upstream_rev": "rev-2"})
+        pm_import._write_conf_keys(conf, {"upstream.rev": "rev-2"})
     assert getattr(exc.value, "_engine_rev_skew", False) is True
     with pytest.raises(RuntimeError):
         pm_import._local_conf_lock_path(conf)
@@ -1023,7 +1022,7 @@ def test_marked_rev_skew_is_not_absorbed_by_the_conf_lock_seam(pm_import, monkey
     monkeypatch.setattr(
         pm_import, "_load_file_lock", lambda: (_ for _ in ()).throw(OSError("손상 사본")))
     assert pm_import._local_conf_lock_path(conf) == conf.parent / ".local" / "local-conf.lock"
-    assert pm_import._write_conf_keys(conf, {"upstream_rev": "rev-2"}) is True
+    assert pm_import._write_conf_keys(conf, {"upstream.rev": "rev-2"}) is True
 
 
 def test_record_upstream_revs_falls_back_when_the_key_writer_seam_is_old(
@@ -1034,7 +1033,7 @@ def test_record_upstream_revs_falls_back_when_the_key_writer_seam_is_old(
     그 사본에서는 자기-락 writer 로 물러난다 — 우리 락을 쥔 채 부르면 같은 락 파일을 두 fd 로
     잡아 데드락이므로, 이 테스트가 끝나는 것 자체가 "중첩 락 0" 의 실측이다.
     """
-    conf = _conf_at(tmp_path, "session=pm\nupstream=/local/upstream\n")
+    conf = _conf_at(tmp_path, "session=pm\nupstream.path=/local/upstream\n")
     writer = _pm_update_rev_writer(pm_update, monkeypatch, "rev-new")
     # 구세대 사본의 표면 — 임계 구간 본문(`_write_conf_keys_locked`)이 아직 없다.
     legacy_writer = SimpleNamespace(
@@ -1050,11 +1049,11 @@ def test_record_upstream_revs_falls_back_when_the_key_writer_seam_is_old(
     changed, updates = pm_update.record_upstream_revs(conf.parent.parent, tmp_path / "src")
 
     assert changed is True
-    assert updates == {"upstream_rev": "rev-new", "upstream_seen_rev": "rev-new"}
+    assert updates == {"upstream.rev": "rev-new", "upstream.seen_rev": "rev-new"}
     # 락은 자기-락 writer 가 **한 번만** 잡는다(우리 구간과 중첩되지 않았다).
     assert taken == [str(conf.parent / ".local" / "local-conf.lock")]
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
-    assert parsed["upstream_rev"] == "rev-new" and parsed["upstream_seen_rev"] == "rev-new"
+    assert parsed["upstream.rev"] == "rev-new" and parsed["upstream.seen_rev"] == "rev-new"
 
 
 # ── 축 4: 비파괴 (직렬화가 바이트 계약을 바꾸지 않는다) ─────────────────────
@@ -1063,7 +1062,7 @@ def test_record_upstream_revs_falls_back_when_the_key_writer_seam_is_old(
     "existing",
     (
         pytest.param("# 사용자 주석\nsession=pm\nmy_custom_key=값\n", id="comments-and-unknown"),
-        pytest.param("session=pm\nupstream_rev=abc", id="no-trailing-newline"),
+        pytest.param("session=pm\nupstream.rev=abc", id="no-trailing-newline"),
     ),
 )
 def test_serialized_writers_preserve_comments_unknown_keys_and_newlines(
@@ -1074,13 +1073,13 @@ def test_serialized_writers_preserve_comments_unknown_keys_and_newlines(
     monkeypatch.setattr(board, "LOCAL_CONF", conf)
 
     board._commit_additional_reviewer_optin(True)
-    pm_import._write_conf_keys(conf, {"upstream_rev": "rev-2"})
+    pm_import._write_conf_keys(conf, {"upstream.rev": "rev-2"})
 
     text = conf.read_text(encoding="utf-8")
     parsed = _parse_conf(text)
     assert parsed["session"] == "pm"
-    assert parsed["additional_reviewer_enabled"] == "true"
-    assert parsed["upstream_rev"] == "rev-2"
+    assert parsed["additional_reviewer.enabled"] == "true"
+    assert parsed["upstream.rev"] == "rev-2"
     if "my_custom_key" in existing:
         assert "# 사용자 주석" in text and parsed["my_custom_key"] == "값"
     else:

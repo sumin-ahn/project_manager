@@ -33,6 +33,15 @@ TEMPLATE_TOOLS = {
 }
 
 
+# 해소 가능한 추가 리뷰어 대상 줄 — 대상 해소는 게이트 판정보다 앞이라, 이 절이 재는 축(스냅샷
+# 마커 거부·장부 유지)을 태우려면 conf 가 그 세트를 담아야 한다.
+_REVIEWER_TARGET_LINES = (
+    "additional_reviewer.enabled=true\n"
+    "additional_reviewer.harness=codex\n"
+    "additional_reviewer.model=gpt-5.6-sol\n"
+)
+
+
 def _load(name: str):
     sys.path.insert(0, str(TOOLS))
     try:
@@ -258,6 +267,9 @@ def test_pm_home_work_snapshot_marker_blocks_round_despite_corrupt_lease_candida
         slot, output, ["review/target.txt"],
     )
 
+    (created / ".project_manager").mkdir(parents=True, exist_ok=True)
+    (created / ".project_manager" / "local.conf").write_text(
+        _REVIEWER_TARGET_LINES, encoding="utf-8")
     external = _load("external_review")
     external.REPO = created
     monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
@@ -1432,7 +1444,7 @@ def test_snapshot_recreation_keeps_pm_home_round_ledger_for_confirm_fix(
         encoding="utf-8",
     )
     (repo / ".project_manager" / "local.conf").write_text(
-        "additional_reviewer_enabled=true\nreview_rounds_max=2\n",
+        _REVIEWER_TARGET_LINES + "additional_reviewer.rounds_max=2\n",
         encoding="utf-8",
     )
     target = repo / "review" / "target.txt"
@@ -1443,6 +1455,11 @@ def test_snapshot_recreation_keeps_pm_home_round_ledger_for_confirm_fix(
     first, _files = snapshot.create_snapshot(
         repo, tmp_path / "gate-round-1", ["review/target.txt"],
     )
+    # 스냅샷은 검토 대상 경로만 담으므로 conf 가 없다 — 이 절이 재는 축은 마커 거부라, 대상 해소가
+    # 먼저 걸리지 않게 스냅샷 앵커에도 같은 리뷰어 세트를 둔다.
+    (first / ".project_manager").mkdir(parents=True, exist_ok=True)
+    (first / ".project_manager" / "local.conf").write_text(
+        _REVIEWER_TARGET_LINES, encoding="utf-8")
     external = _load("external_review")
     monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
 

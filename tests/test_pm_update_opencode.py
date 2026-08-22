@@ -381,11 +381,11 @@ def test_maybe_prompt_external_review_uses_dest_local_conf(pm_update, tmp_path):
 
 
 def test_maybe_prompt_external_review_skips_when_already_set(pm_update, tmp_path):
-    """dest_root 의 local.conf 에 additional_reviewer_enabled 가 있으면 아무것도 하지 않는다."""
+    """dest_root 의 local.conf 에 additional_reviewer.enabled 가 있으면 아무것도 하지 않는다."""
     dest = tmp_path / "dest_instance"
     local_conf = dest / ".project_manager" / "local.conf"
     local_conf.parent.mkdir(parents=True)
-    local_conf.write_text("additional_reviewer_enabled=false\n", encoding="utf-8")
+    local_conf.write_text("additional_reviewer.enabled=false\n", encoding="utf-8")
 
     mtime_before = local_conf.stat().st_mtime
     pm_update.maybe_prompt_external_review(dest)
@@ -399,7 +399,7 @@ def test_maybe_prompt_external_review_skips_non_tty(pm_update, tmp_path, monkeyp
     dest = tmp_path / "dest_instance"
     local_conf = dest / ".project_manager" / "local.conf"
     local_conf.parent.mkdir(parents=True)
-    # additional_reviewer_enabled 미포함 → prompt 조건 성립, 그러나 비대화형이므로 skip
+    # additional_reviewer.enabled 미포함 → prompt 조건 성립, 그러나 비대화형이므로 skip
     local_conf.write_text("# 초기\n", encoding="utf-8")
 
     monkeypatch.setattr("sys.stdin", type("FakeStdin", (), {"isatty": lambda self: False})())
@@ -453,7 +453,7 @@ def test_maybe_prompt_falsy_env_preserves_isatty_path(pm_update, tmp_path, monke
 
     pm_update.maybe_prompt_external_review(dest)
 
-    assert "additional_reviewer_enabled=true" in local_conf.read_text(encoding="utf-8")
+    assert "additional_reviewer.enabled=true" in local_conf.read_text(encoding="utf-8")
 
 
 # ── 타깃 발견: templates/*/ 디렉토리 기반 ────────────────────────────────

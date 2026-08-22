@@ -4,7 +4,7 @@
 
 ### 2.5 변경점 미리보기 (sync 전)
 
-baseline(local.conf `upstream_rev`)과 cache/경로 HEAD 사이 commit 수 및 받을 엔진파일을 read-only(`git log`/`diff`, fetch 0)로 본다.
+baseline(local.conf `upstream.rev`)과 cache/경로 HEAD 사이 commit 수 및 받을 엔진파일을 read-only(`git log`/`diff`, fetch 0)로 본다.
 
 ```bash
 ./pm-update.sh --changes --from <cache-or-path>   # commit 수 + 4버킷 분리

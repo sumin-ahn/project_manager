@@ -134,7 +134,7 @@ def test_layer1_prefix_row_wins(tool, monkeypatch):
         rows=[{"repo": "heru", "prefix": "HERU", "test_cmd": PREFIX_ROW_CMD}],
         prefix="HERU",
         repos={"heru"},
-        conf={"test_cmd": LOCAL_CONF_CMD},
+        conf={"test.cmd": LOCAL_CONF_CMD},
     )
     assert _resolve(mod, seam, stub, monkeypatch) == PREFIX_ROW_CMD
 
@@ -150,7 +150,7 @@ def test_layer2_repo_row_when_prefix_blank(tool, monkeypatch):
         rows=[{"repo": "heru", "prefix": "", "test_cmd": NON_PYTEST_CMD}],
         prefix=None,
         repos={"heru"},
-        conf={"test_cmd": LOCAL_CONF_CMD},
+        conf={"test.cmd": LOCAL_CONF_CMD},
     )
     assert _resolve(mod, seam, stub, monkeypatch) == NON_PYTEST_CMD
 
@@ -181,7 +181,7 @@ def test_layer2_ambiguous_repo_falls_through(tool, monkeypatch):
         prefix=None,
         repos={"a", "b"},
         session=None,
-        conf={"test_cmd": LOCAL_CONF_CMD},
+        conf={"test.cmd": LOCAL_CONF_CMD},
     )
     assert _resolve(mod, seam, stub, monkeypatch) == LOCAL_CONF_CMD
 
@@ -194,7 +194,7 @@ def test_layer2_unknown_session_repo_falls_through(tool, monkeypatch):
         prefix=None,
         repos={"other"},
         session="heru_1",
-        conf={"test_cmd": LOCAL_CONF_CMD},
+        conf={"test.cmd": LOCAL_CONF_CMD},
     )
     assert _resolve(mod, seam, stub, monkeypatch) == LOCAL_CONF_CMD
 
@@ -205,7 +205,7 @@ def test_layer3_local_conf_when_areas_absent(tool, monkeypatch):
     3층이 areas 존재 가드 *안*에 있으면 이 케이스가 솔로 pytest 로 잘못 폴백한다.
     """
     mod, seam = tool
-    stub = _StubBoard(areas_exists=False, conf={"test_cmd": LOCAL_CONF_CMD})
+    stub = _StubBoard(areas_exists=False, conf={"test.cmd": LOCAL_CONF_CMD})
     assert _resolve(mod, seam, stub, monkeypatch) == LOCAL_CONF_CMD
 
 
@@ -216,7 +216,7 @@ def test_layer3_local_conf_when_rows_have_no_test_cmd(tool, monkeypatch):
         rows=[{"repo": "heru", "prefix": "HERU", "test_cmd": ""}],
         prefix="HERU",
         repos={"heru"},
-        conf={"test_cmd": LOCAL_CONF_CMD},
+        conf={"test.cmd": LOCAL_CONF_CMD},
     )
     assert _resolve(mod, seam, stub, monkeypatch) == LOCAL_CONF_CMD
 
@@ -329,15 +329,15 @@ def test_gate_label_shows_solo_argv_for_none(tool):
 _PARITY_BOARDS = {
     "prefix_row": _StubBoard(
         rows=[{"repo": "heru", "prefix": "HERU", "test_cmd": PREFIX_ROW_CMD}],
-        prefix="HERU", repos={"heru"}, conf={"test_cmd": LOCAL_CONF_CMD}),
+        prefix="HERU", repos={"heru"}, conf={"test.cmd": LOCAL_CONF_CMD}),
     "repo_row_blank_prefix": _StubBoard(
         rows=[{"repo": "heru", "prefix": "", "test_cmd": NON_PYTEST_CMD}],
-        prefix=None, repos={"heru"}, conf={"test_cmd": LOCAL_CONF_CMD}),
+        prefix=None, repos={"heru"}, conf={"test.cmd": LOCAL_CONF_CMD}),
     "ambiguous_repos": _StubBoard(
         rows=[{"repo": "a", "prefix": "", "test_cmd": "npm test"},
               {"repo": "b", "prefix": "", "test_cmd": NON_PYTEST_CMD}],
-        prefix=None, repos={"a", "b"}, conf={"test_cmd": LOCAL_CONF_CMD}),
-    "areas_absent": _StubBoard(areas_exists=False, conf={"test_cmd": LOCAL_CONF_CMD}),
+        prefix=None, repos={"a", "b"}, conf={"test.cmd": LOCAL_CONF_CMD}),
+    "areas_absent": _StubBoard(areas_exists=False, conf={"test.cmd": LOCAL_CONF_CMD}),
     "nothing": _StubBoard(areas_exists=False, conf={}),
 }
 

@@ -141,7 +141,7 @@ def _opencode_snapshot_receipts(marker_dir: Path) -> frozenset[tuple[str, str]]:
 def _force_opencode_compaction_threshold(dest: Path, model: str) -> None:
     """격리 adopter의 per-harness 예산+선택 모델 limit만 낮춰 native compaction을 강제한다.
 
-    `ctx_window_tokens_opencode`는 PM 59의 격리/per-harness 방식으로 plugin 판정만 옮기고,
+    `harness.opencode.ctx_window_tokens`는 PM 59의 격리/per-harness 방식으로 plugin 판정만 옮기고,
     실제 `session.compacted`는 같은 모델의 `limit.context-output` native 경계로 유도한다.
     generic 예산이나 출하 template은 바꾸지 않는다.
     """
@@ -149,7 +149,7 @@ def _force_opencode_compaction_threshold(dest: Path, model: str) -> None:
     with conf.open("a", encoding="utf-8") as fh:
         fh.write(
             "\n# T-0621 release compaction probe (isolated adopter, per-harness)\n"
-            f"ctx_window_tokens_opencode={_OPENCODE_COMPACTION_CONTEXT}\n"
+            f"harness.opencode.ctx_window_tokens={_OPENCODE_COMPACTION_CONTEXT}\n"
         )
 
     provider, separator, model_name = model.partition("/")
@@ -470,7 +470,7 @@ def test_release_wave_opencode_full_wave(tmp_path):
     완주 → side-effect 가 위임 *결과*를 커버), 위임 흔적(stdout 에 'developer'/'code-reviewer' 등장)은
     **best-effort**(있으면 단언·없으면 skip)다. opencode 위임 관측 수단은 PM probe 후 보강한다.
     gemma 는 느리고 변동 커 timeout 1800s. `--dir` 로 루트 핀(opencode 는 PWD 로 루트 오판).
-    compaction 경계는 격리 adopter의 `ctx_window_tokens_opencode`(하네스별 키) + 선택
+    compaction 경계는 격리 adopter의 `harness.opencode.ctx_window_tokens`(하네스별 키) + 선택
     모델 `limit.context-output`만 낮추고 반복 입력으로 넘긴다. 출하 config/generic 예산은 무변경.
     """
     dest = _import_adopter(tmp_path, "opencode")
@@ -912,7 +912,7 @@ def _board_list(home: Path, *args: str) -> subprocess.CompletedProcess:
 
 
 def _set_home_user(home: Path, user: str) -> None:
-    """home local.conf 에 `user=` 를 append(last-wins) — 필터 뷰 querying identity 를 그 user 로 스탬프.
+    """home local.conf 에 `identity.user=` 를 append(last-wins) — 필터 뷰 querying identity 를 그 user 로 스탬프.
 
     user-first(ADR-0056·T-0312): `list --repo <repo> --slot <N>` 은 **현재 사용자 ∩ 슬롯**이라, 각 identity 의
     세션 뷰는 *그 user 로* 조회해야 자기 claim 이 보인다(옛 area_owner-derivation 폐기 — `--repo`/`--slot` 이
@@ -921,7 +921,7 @@ def _set_home_user(home: Path, user: str) -> None:
     `_write_conf(user=…)`)의 라이브 짝.
     """
     conf = home / ".project_manager" / "local.conf"
-    conf.write_text(conf.read_text(encoding="utf-8") + f"\nuser={user}\n", encoding="utf-8")
+    conf.write_text(conf.read_text(encoding="utf-8") + f"\nidentity.user={user}\n", encoding="utf-8")
 
 
 def _parse_list_rows(stdout: str) -> list[tuple[str, str]]:
@@ -1091,7 +1091,7 @@ def _append_tiny_ctx_window(dest: Path) -> None:
     """
     conf_path = dest / ".project_manager" / "local.conf"
     conf_path.write_text(
-        conf_path.read_text(encoding="utf-8") + f"\nctx_window_tokens={_TINY_CTX_WINDOW}\n",
+        conf_path.read_text(encoding="utf-8") + f"\nctx.window_tokens={_TINY_CTX_WINDOW}\n",
         encoding="utf-8",
     )
 

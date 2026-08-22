@@ -275,7 +275,7 @@ def test_reasoning_none_omits_flag(pd):
 # ══ ④~⑨ main 통합 (mock run_fn·usage/fail-loud/dry-run) ═════════════════════
 
 def _enabled_conf(**extra) -> dict:
-    base = {"delegate_enabled": "true",
+    base = {"delegate.enabled": "true",
             "delegate.developer.harness": "codex", "delegate.developer.model": "gpt-x"}
     base.update(extra)
     return base
@@ -297,16 +297,18 @@ def _run_main(pd, monkeypatch, argv, conf, run_fn=None):
 
 
 def test_disabled_returns_rc3(pd, monkeypatch, tmp_path, capsys):
-    """delegate_enabled=false → rc=3 + stderr(false-green 차단·rc=0 no-op 금지·§5.4)."""
+    """delegate.enabled=false → rc=3 + stderr(false-green 차단·rc=0 no-op 금지·§5.4)."""
     prompt = _write_prompt(tmp_path)
-    conf = {"delegate_enabled": "false",
+    conf = {"delegate.enabled": "false",
             "delegate.developer.harness": "codex", "delegate.developer.model": "gpt-x"}
     fake = _FakeRun(stdout=_codex_stdout())
     rc = _run_main(pd, monkeypatch,
                    ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path)],
                    conf, fake)
     assert rc == 3
-    assert "비활성" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "위임이 꺼져 있습니다" in err
+    assert "채널(native/cross) 무관" in err            # 축이 채널이 아니라 위임 전체다
     assert fake.calls == []  # 스폰 없음
 
 
@@ -329,7 +331,7 @@ def test_prompt_file_containment_reject(pd, monkeypatch, tmp_path, capsys):
 def test_dry_run_outputs_argv_and_prompt(pd, monkeypatch, tmp_path, capsys):
     """dry-run = 합성 프롬프트 + argv 출력·미실행(비활성이어도 허용·rc=0)."""
     prompt = _write_prompt(tmp_path, "고유task마커")
-    conf = {"delegate_enabled": "false",
+    conf = {"delegate.enabled": "false",
             "delegate.developer.harness": "codex", "delegate.developer.model": "gpt-x"}
     fake = _FakeRun(stdout=_codex_stdout())
     rc = _run_main(pd, monkeypatch,
@@ -348,7 +350,7 @@ def test_t0658_code_reviewer_dry_run_prompt_contains_parser_derived_contract(
     """code-reviewer 실 합성 prompt가 판정 선언·목록 0건·허용 토큰 계약을 모두 싣는다."""
     prompt = _write_prompt(tmp_path, "T-0658 리뷰 요청")
     conf = {
-        "delegate_enabled": "false",
+        "delegate.enabled": "false",
         "delegate.code-reviewer.harness": "codex",
         "delegate.code-reviewer.model": "gpt-review",
     }
@@ -2548,7 +2550,7 @@ def test_argv_matrix_permission_axis(pd, harness, role):
         assert argv[argv.index("--agent") + 1] == role
 
 
-# ══ suggestion: --timeout / delegate_timeout 양의 정수 검증 ═══════════════════
+# ══ suggestion: --timeout / delegate.timeout 양의 정수 검증 ═══════════════════
 
 def test_timeout_nonpositive_usage_error(pd, monkeypatch, tmp_path):
     prompt = _write_prompt(tmp_path)
@@ -2560,15 +2562,15 @@ def test_timeout_nonpositive_usage_error(pd, monkeypatch, tmp_path):
 
 
 def test_conf_delegate_timeout_failsoft(pd):
-    """conf delegate_timeout 비수치/≤0 은 traceback 대신 **하네스 프로필 선언값**으로 fail-soft."""
+    """conf delegate.timeout 비수치/≤0 은 traceback 대신 **하네스 프로필 선언값**으로 fail-soft."""
     ns = type("NS", (), {"timeout": None})()
     declared = int(_relay_module().HARNESS_PROFILES["codex"].wall_timeout)
-    assert pd._resolve_timeout(ns, {"delegate_timeout": "abc"}, "codex") == declared
-    assert pd._resolve_timeout(ns, {"delegate_timeout": "-5"}, "codex") == declared
-    assert pd._resolve_timeout(ns, {"delegate_timeout": "600"}, "codex") == 600
+    assert pd._resolve_timeout(ns, {"delegate.timeout": "abc"}, "codex") == declared
+    assert pd._resolve_timeout(ns, {"delegate.timeout": "-5"}, "codex") == declared
+    assert pd._resolve_timeout(ns, {"delegate.timeout": "600"}, "codex") == 600
     # 하네스별 키가 표면-flat legacy 키를 이긴다(더 구체적인 선언).
     assert pd._resolve_timeout(
-        ns, {"delegate_timeout": "600", "harness.codex.wall_timeout": "900"}, "codex") == 900
+        ns, {"delegate.timeout": "600", "harness.codex.wall_timeout": "900"}, "codex") == 900
     ns2 = type("NS", (), {"timeout": 42})()
     assert pd._resolve_timeout(ns2, {}, "codex") == 42   # CLI 가 가장 강함
 
@@ -2585,16 +2587,22 @@ def test_opencode_argv_has_message_positional(pd):
 
 # ══ R2 must-fix 2: opt-in 게이트가 매핑 해소보다 앞 (빈 config → rc=3) ═════════
 
-def test_empty_config_disabled_rc3(pd, monkeypatch, tmp_path, capsys):
-    """빈 config(기본 OFF·매핑 없음) 새 설치 → rc=3(disabled), NOT rc=1(매핑 미설정)·§5.4."""
+def test_empty_config_is_allowed_but_unmapped_rc1(pd, monkeypatch, tmp_path, capsys):
+    """빈 config 새 설치 → 스위치는 **허용**(기본값)이고 막는 것은 매핑 미설정(rc=1)이다.
+
+    스위치 기본이 OFF 이던 시절엔 같은 형상이 rc=3 이었다. 기본을 허용으로 되돌린 뒤에는
+    "위임이 꺼져 있다"고 말하면 거짓 처방이다(켤 줄이 없는데 켜라고 한다).
+    """
     prompt = _write_prompt(tmp_path)
     monkeypatch.setattr(pd, "local_config", lambda: {})
     monkeypatch.setattr(pd, "_cwd_in_git_repo", lambda *a, **k: True)
     fake = _FakeRun(stdout=_codex_stdout())
     rc = pd.main(["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path)],
                  run_fn=fake)
-    assert rc == 3
-    assert "비활성" in capsys.readouterr().err
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "delegate.developer.harness" in err        # 처방은 매핑 설정
+    assert "위임이 꺼져 있습니다" not in err
     assert fake.calls == []
 
 
@@ -3862,7 +3870,7 @@ def test_adapter_surface_guard_is_sensitive_to_each_omission(pd):
 
 
 # ══ ⑬ 시크릿 판정 양성매칭 2축 (경로축/값축·오탐 폐쇄·T-0472) ═══════════════════
-# PM 12차 실측: 정상 conf 키명 `ctx_window_tokens_opencode` 가 `*token*` substring 에 걸려 위임
+# PM 12차 실측: 정상 conf 키명 `harness.opencode.ctx_window_tokens` 가 `*token*` substring 에 걸려 위임
 # 발사가 차단됐다(우회=키명을 풀어 쓰기). 오탐은 없애되 **미탐 방향 금지** — 실 시크릿(파일 경로·
 # 크리덴셜 값)은 계속 차단됨을 음성 통제로 박는다.
 
@@ -3879,9 +3887,9 @@ _FAKE_PEM_BLOCK = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA1b2C3d4\n---
 @pytest.mark.parametrize(
     "prose",
     [
-        "local.conf 의 ctx_window_tokens_opencode 임계를 낮춰라",          # PM 12차 실 차단 케이스
-        "ctx_window_tokens_opencode=180000 으로 조정하라",                # 정상 키 할당(값=숫자)
-        "ctx_window_tokens_claude 와 토큰 수(tokens) 계산을 점검",
+        "local.conf 의 harness.opencode.ctx_window_tokens 임계를 낮춰라",          # PM 12차 실 차단 케이스
+        "harness.opencode.ctx_window_tokens=180000 으로 조정하라",                # 정상 키 할당(값=숫자)
+        "harness.claude.ctx_window_tokens 와 토큰 수(tokens) 계산을 점검",
         "access_token_refresh 함수를 리팩터하라",                          # 식별자 substring
         "GITHUB_TOKEN 환경변수 *이름*만 언급하는 문서를 갱신",              # 값 없는 키명
         "secret_scan_pattern 상수를 추가하고 credential_helper 설정을 조사",
@@ -3890,7 +3898,7 @@ _FAKE_PEM_BLOCK = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA1b2C3d4\n---
         # 실 PM 문서 코퍼스(167 문서) 실측 오탐 — 소스/문서 확장자·산문 조각·디렉토리 줄기
         "tests/test_adapter_token_substitution.py 의 케이스를 늘려라",
         "docs/secret-scan.md 문서를 갱신하라",
-        "ADR-0041 의 ctx_window_tokens_claude/_opencode 분기를 확인",
+        "ADR-0041 의 harness.claude.ctx_window_tokens/_opencode 분기를 확인",
         "opencode json 의 part.tokens.input 필드를 파싱하라",
         "`key/token(다른 계정)` 표기를 정리",
         "log 의 token/input/output/cost 집계를 확인",
@@ -3920,7 +3928,7 @@ def test_secret_scan_identifier_and_prose_not_blocked(pd, prose):
 def test_secret_scan_conf_key_prompt_delegates_rc0(pd, monkeypatch, tmp_path, capsys):
     """재현 e2e: 정상 conf 키명을 담은 위임 프롬프트가 발사된다(T-0472 이전 rc=1 차단)."""
     prompt = _write_prompt(
-        tmp_path, "ctx_window_tokens_opencode 임계를 재조정하고 테스트를 추가하라.")
+        tmp_path, "harness.opencode.ctx_window_tokens 임계를 재조정하고 테스트를 추가하라.")
     fake = _FakeRun(stdout=_codex_stdout("완료"))
     rc = _run_main(pd, monkeypatch,
                    ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(tmp_path),
@@ -4020,7 +4028,7 @@ def test_secret_block_message_shows_excerpt_and_masks_value(pd, monkeypatch, tmp
         ("credentials.env", True),            # 확장자
         ("~/.aws/credentials", True),         # 구분자
         (r"C:\keys\app.pem", True),           # 윈도우 구분자
-        ("ctx_window_tokens_opencode", False),  # 식별자 — 경로 아님
+        ("harness.opencode.ctx_window_tokens", False),  # 식별자 — 경로 아님
         ("tokens", False),
         ("secret", False),
     ],
@@ -4034,7 +4042,7 @@ def test_is_path_shaped_table(pd, token, shaped):
     ("value", "expected"),
     [
         ("180000", False),                       # 숫자만 — conf 임계값
-        ("ctx_window_tokens_opencode", False),   # 영문 식별자
+        ("harness.opencode.ctx_window_tokens", False),   # 영문 식별자
         ("https://github.com/org/repo2", False),  # 자격증명 없는 URL
         ("short1234", False),                    # 길이 미달
         (_FAKE_GITHUB_PAT, True),                # 알려진 prefix
@@ -4056,7 +4064,7 @@ def test_secret_scan_loads_external_review_once(pd, monkeypatch):
         return real()
 
     monkeypatch.setattr(pd, "_load_external_review", _counting)
-    pd.scan_prompt_secrets(" ".join(f"토큰{i} ctx_window_tokens_opencode" for i in range(200)))
+    pd.scan_prompt_secrets(" ".join(f"토큰{i} harness.opencode.ctx_window_tokens" for i in range(200)))
     assert len(calls) == 1
 
 
@@ -4136,7 +4144,7 @@ def test_secret_path_candidates_trims_particle_and_wrappers(pd):
         ("/opt/앱/id_rsa", True),
         ("부재[insteadOf/credential", False),   # 산문 마커 — 실 코퍼스 오탐
         ("`json`→token/input", False),
-        ("ctx_window_tokens_opencode", False),  # 경로 형태 아님
+        ("harness.opencode.ctx_window_tokens", False),  # 경로 형태 아님
     ],
 )
 def test_matching_secret_path_pattern_basename_anchor(pd, token, matched):
@@ -4233,7 +4241,7 @@ def test_prompt_scan_still_allows_source_file_mentions(pd):
 def test_name_anchored_patterns_cached(pd):
     """이름 앵커 패턴 tuple 은 캐시 재사용 — 토큰마다 재생성하면 긴 프롬프트에서 비용이 쌓인다."""
     pd._name_anchored_patterns.cache_clear()
-    prompt = " ".join(f"토큰{i} ctx_window_tokens_opencode docs/note{i}.md" for i in range(50))
+    prompt = " ".join(f"토큰{i} harness.opencode.ctx_window_tokens docs/note{i}.md" for i in range(50))
     pd.scan_prompt_secrets(prompt)
     info = pd._name_anchored_patterns.cache_info()
     assert info.hits >= 1 and info.currsize == 1
@@ -4332,7 +4340,7 @@ def test_quoted_and_camel_case_keys_blocked(pd, kind, text):
         ("accessToken", True), ("clientSecret", True), ("dbPassword", True),
         ("GITHUB_TOKEN", True), ("api_key", True), ("apiKey", True),
         ("accessTokens", False),      # 복수형 — `tokens` 배제 규칙과 동형
-        ("ctx_window_tokens_opencode", False),
+        ("harness.opencode.ctx_window_tokens", False),
         ("maxTokenCount", True),      # hump 뒤가 대문자 — 키명으로는 잡되 값 판정이 최종 필터
         ("tokenizerName", False),     # 소문자 이어짐 — 크리덴셜 키 아님
     ],
@@ -4499,7 +4507,7 @@ def test_url_path_normalization(pd, kind, text, blocked):
         ("XSRFToken", True), ("APIToken", True), ("AWSSecret", True), ("JWTSecret", True),
         ("accessTokens", False), ("tokenizerName", False), ("tokenize", False),
         ("SecretRule", False),                 # 앞 경계 없음(문장 첫 단어형)
-        ("ctx_window_tokens_opencode", False),
+        ("harness.opencode.ctx_window_tokens", False),
     ],
 )
 def test_secret_key_name_acronym_boundary(pd, key, expected):
@@ -5541,14 +5549,16 @@ def test_help_documents_classification_coverage_boundary(pd):
     assert "2×timeout" not in help_text
 
 
-def test_conf_seed_documents_fallback_example(pd):
-    """채택자 시드(local.conf)에 claude/opus 폴백 예시가 **주석으로만** 있다(엔진 기본값 아님)."""
-    seed = _load("board_delegate_seed", TOOLS / "board.py")._DELEGATE_CONF_SEED
-    for line in ("# delegate.developer.fallback.harness=claude",
-                 "# delegate.developer.fallback.model=opus",
-                 "# delegate.developer.hard.fallback.harness=claude"):
-        assert line in seed, f"시드에 폴백 예시 누락: {line}"
-    assert "\ndelegate.developer.fallback." not in seed   # 활성 키 금지(주석 예시만)
+def test_fallback_is_documented_in_shipping_docs_not_seeded_into_conf(pd):
+    """폴백 예시는 **출하 문서**가 소유한다 — conf 는 실값만 담고 엔진 기본값도 없다 (T-0767).
+
+    설명을 conf 에 심으면 값과 어긋난 채 굳는다(그 파일은 아무도 다시 읽지 않는다). 카탈로그는
+    채택자가 실제로 읽는 문서에 있고, 엔진은 폴백을 설정 없이 지어내지 않는다.
+    """
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    assert "delegate.<role>[.hard].fallback" in readme, "폴백 축이 출하 문서에 없다"
+    board_source = (TOOLS / "board.py").read_text(encoding="utf-8")
+    assert "delegate.developer.fallback." not in board_source, "init 시드에 폴백 예시 잔존"
     assert pd.resolve_fallback({}, "developer", "normal") is None
 
 
@@ -6606,8 +6616,9 @@ def test_network_disabled_block_prescribes_escalation_and_flag(
         # 인터프리터 표기는 플랫폼마다 다르다(Windows 는 런처) — 기대값은 엔진 해소 심볼에서
         # 만들고 리터럴로 박지 않는다. 존재/내용 판정은 그대로 유지한다.
         pd._codex_egress_prefix_rule_text(),
-        "delegate_enabled=true",
-        "후속 호출마다 비용을 다시 묻지 마세요",
+        # 승격 축과 위임 스위치를 분리해 말한다 — 스위치가 egress 승격을 대신하지 않는다.
+        "delegate.enabled",
+        "egress 승격을 대신하지 않습니다",
         "재실행: ",
     ):
         assert expected in err, expected
@@ -6737,7 +6748,7 @@ def test_dry_run_reports_escalation_required_without_side_effects(
     assert "Codex egress: escalation required" in out
     assert 'sandbox_permissions="require_escalated"' in out
     assert pd._codex_egress_prefix_rule_text() in out
-    assert "delegate_enabled=true 후속 호출의 비용은 재질문하지 않습니다" in out
+    assert "local.conf `delegate.enabled` 는 이 채널을 쓸지만 정합니다" in out
     assert "--codex-egress-escalated 없이는 스폰 전 rc=1" in out
 
 
@@ -6831,12 +6842,12 @@ def test_disabled_gate_precedes_egress_gate(pd, monkeypatch, tmp_path, capsys):
     """opt-in OFF 는 승격 게이트와 무관하게 기존 rc=3 을 유지한다."""
     monkeypatch.setenv(_EGRESS_MARKER, "1")
     prompt = _write_prompt(tmp_path)
-    conf = {"delegate_enabled": "false",
+    conf = {"delegate.enabled": "false",
             "delegate.developer.harness": "codex", "delegate.developer.model": "gpt-x"}
     fake = _FakeRun(stdout=_codex_stdout())
     rc = _run_main(pd, monkeypatch, _egress_argv(prompt, tmp_path), conf, fake)
     assert rc == 3
-    assert "비활성" in capsys.readouterr().err
+    assert "위임이 꺼져 있습니다" in capsys.readouterr().err
     assert fake.calls == []
 
 

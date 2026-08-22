@@ -1408,7 +1408,7 @@ def extract_harness_reply(harness: str, stdout: str) -> str | None:
 # 만들지 않으므로 샌드박스 안에서 잘못 붙이면 권한 상승 없이 타겟 CLI 가 기존처럼 fail-loud 한다).
 #
 # 두 외부 스폰 표면(pm_delegate 실위임·external_review 추가 리뷰어)이 이 절을 공유한다 — 진입점
-# 스크립트와 지속 동의 키만 표면별 인자다(승인 prefix 는 그 표면 자신을 가리켜야 재사용된다).
+# 스크립트와 게이트 키만 표면별 인자다(승인 prefix 는 그 표면 자신을 가리켜야 재사용된다).
 
 CODEX_EGRESS_MARKER_ENV = "CODEX_SANDBOX_NETWORK_DISABLED"
 CODEX_EGRESS_NOT_REQUIRED = "not-required"
@@ -1498,7 +1498,7 @@ def codex_egress_retry_command(argv: list[str], *, script: str,
 def codex_egress_block_message(
     argv: list[str], harness: str, model: str, *,
     script: str,
-    consent_key: str,
+    gate_key: str,
     subject: str,
     windows: bool | None = None,
 ) -> str:
@@ -1515,8 +1515,8 @@ def codex_egress_block_message(
         f"{CODEX_EGRESS_FLAG} 를 동반하세요(플래그는 권한을 만들지 않는 호출층 attestation).\n"
         f"  · 최초 도구 승인은 {codex_egress_prefix_rule_text(script, windows=windows)} "
         "로 이 진입점만 재사용 승인하세요. Python 전체를 승인하지 마세요.\n"
-        f"  · {consent_key}=true 는 설정된 profile의 외부 전송·통상 과금에 대한 "
-        "지속 동의입니다. 후속 호출마다 비용을 다시 묻지 마세요.\n"
+        f"  · 승격의 근거는 이 도구 승인입니다 — local.conf `{gate_key}` 는 이 채널을 쓸지 "
+        "정하는 스위치일 뿐 egress 승격을 대신하지 않습니다.\n"
         f"  · 재실행: {codex_egress_retry_command(argv, script=script, windows=windows)}\n"
         "  · 전역 sandbox_workspace_write.network_access=true 로 우회하지 마세요 — 일상 명령의 "
         "egress 차단은 프로젝트 안전 경계로 유지합니다."
@@ -1524,7 +1524,7 @@ def codex_egress_block_message(
 
 
 def dry_run_codex_egress_line(*, escalation_required: bool, attested: bool,
-                              script: str, consent_key: str,
+                              script: str, gate_key: str,
                               windows: bool | None = None) -> str:
     """dry-run 이 표시하는 승격 필요/불필요 1~2줄(외부 송신·raw·관측 부작용 없음)."""
     if not escalation_required:
@@ -1542,7 +1542,7 @@ def dry_run_codex_egress_line(*, escalation_required: bool, attested: bool,
         '  실행 도구 호출을 sandbox_permissions="require_escalated" + 기술적 network justification 으로 '
         f"올리고, 같은 명령에 {CODEX_EGRESS_FLAG} 를 동반합니다.\n"
         f"  최초에만 {codex_egress_prefix_rule_text(script, windows=windows)} 로 재사용 "
-        f"승인하고, {consent_key}=true 후속 호출의 비용은 재질문하지 않습니다.\n  {attestation}"
+        f"승인합니다(local.conf `{gate_key}` 는 이 채널을 쓸지만 정합니다).\n  {attestation}"
     )
 
 
@@ -1902,8 +1902,8 @@ def resolve_harness_profile(harness: str, conf: dict | None = None, *,
                             legacy_wall_key: str | None = None) -> HarnessProfile:
     """하네스 → 시간 예산이 해소된 프로필. **두 표면이 이 한 함수를 쓴다.**
 
-    해소 순서(뒤가 이긴다): 선언 기본 → 표면-flat legacy 키(`delegate_timeout`·
-    `external_review_timeout` 등 기존 노브) → 하네스별 키(`harness.<name>.*`). CLI 일회성 override 는
+    해소 순서(뒤가 이긴다): 선언 기본 → 표면-flat legacy 키(`delegate.timeout`·
+    `additional_reviewer.timeout` 등 기존 노브) → 하네스별 키(`harness.<name>.*`). CLI 일회성 override 는
     호출부가 이 결과 위에 얹는다(가장 강함). 미지 하네스는 `fallback`(없으면 UNKNOWN_HARNESS_PROFILE).
     """
     conf = conf or {}

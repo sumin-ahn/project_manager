@@ -619,14 +619,19 @@ def test_external_review_kill_leaves_discoverable_unfinished_record_before_runne
     with pytest.raises(SimulatedHarnessKill):
         external.run_review(
             "review",
-            reviewer_cmd="codex exec --model gpt-x",
+            target=external.resolve_reviewer_target({
+                "additional_reviewer.harness": "codex",
+                "additional_reviewer.model": "gpt-x",
+            }),
             run_fn=killed_runner,
         )
 
     unfinished = external._load_relay().unfinished_raw_records(ledger_path)
     assert len(unfinished) == 1
-    assert unfinished[0]["model"] == external.UNPINNED_MODEL_LABEL
-    assert unfinished[0]["command"] == "codex exec --model gpt-x"
+    # 대상은 언제나 해소된 구조화 tuple 이라 미마감 레코드도 **고정된 모델**을 싣는다 — 어느
+    # 모델이 이 실행을 냈는지는 죽은 실행에서도 확정된다.
+    assert unfinished[0]["model"] == "gpt-x"
+    assert "gpt-x" in unfinished[0]["command"]
     assert Path(unfinished[0]["raw_path"]).is_file()
 
 
@@ -681,11 +686,31 @@ def test_completed_delegate_keeps_existing_raw_audit_header(
 # 영구히 못 본다(실측 2건). 조회를 넓히지 않고 기록을 소유 PM 홈으로 수렴시킨 뒤의 회귀다.
 
 
+# 해소 가능한 리뷰어 대상 — 대상은 `harness`+`model` 구조화 키로만 서므로(기본 커맨드 없음)
+# 이 파일의 모든 형상이 conf 에 그 세트를 갖춰야 run_review 본체까지 들어간다.
+_REVIEWER_CONF = (
+    "additional_reviewer.enabled=true\n"
+    "additional_reviewer.harness=codex\n"
+    "additional_reviewer.model=gpt-5.6-sol\n"
+)
+
+
 def _review_slot_family(tmp_path: Path) -> tuple[Path, Path]:
     """PM 홈 + 등록 슬롯 + 슬롯의 tracked 변경 1건(비어있지 않은 diff)."""
     pm_home, worktree = _engine_family(tmp_path)
     (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
+    # PM 홈 강등(lease 손상) 형상은 슬롯 자기 conf 를 읽으므로 두 자리에 같은 세트를 둔다.
+    for root in (pm_home, worktree):
+        (root / ".project_manager" / "local.conf").write_text(
+            _REVIEWER_CONF, encoding="utf-8")
     return pm_home, worktree
+
+
+_CODEX_PASS_WIRE = json.dumps(
+    {"type": "item.completed",
+     "item": {"type": "agent_message",
+              "text": "판정: 통과\n\n## must-fix\n- 없음\n"}},
+    ensure_ascii=False) + "\n"
 
 
 def _stub_reviewer(external, monkeypatch) -> None:
@@ -694,9 +719,9 @@ def _stub_reviewer(external, monkeypatch) -> None:
         prompt, reviewer_cmd, timeout, run_fn, idle_timeout=None, metrics=None,
         *, cwd=None, env=None, argv=None, stdin_text=None, on_spawn_attempt=None,
     ):
-        # 이 파일의 형상은 모두 legacy 대상(구조화 키 없음)이라 wire transport 주입이 없어야
-        # 한다 — legacy 실행 형상이 구조화 경로 도입으로 바뀌지 않았음을 여기서도 못박는다.
-        assert argv is None and stdin_text is None
+        # 대상은 언제나 구조화 tuple 이라 wire transport(argv)가 주입된다 — 통짜 커맨드 분해
+        # 경로가 되살아나면 여기서 loud 하게 걸린다(프롬프트 전달면은 하네스마다 다르다).
+        assert argv is not None
         # 스폰 시도 seam 은 러너를 대신 서는 이 대역이 소유한다 — 실 경로와 같은 순서로 한 번
         # 부른다(안 부르면 raw 레코드가 스폰 전 중단으로 닫혀 이 파일의 장부 계약이 갈린다).
         if on_spawn_attempt is not None:
@@ -704,7 +729,8 @@ def _stub_reviewer(external, monkeypatch) -> None:
         if metrics is not None:
             metrics.clear()
             metrics.update({"rc": 0, "silence_sec": 0.1})
-        return True, "판정: 통과\n\n## must-fix\n- 없음\n", True
+        # 회신 채널은 하네스 wire(JSONL)다 — 판정 파싱은 그 안의 최종 agent_message 만 본다.
+        return True, _CODEX_PASS_WIRE, True
 
     monkeypatch.setattr(external, "_run_reviewer_ex", _fake_run_reviewer_ex)
     # 이 파일의 축은 raw·라운드 장부다. 게이트가 ticket 형상이면 엔진이 리뷰 뒤 그 티켓의

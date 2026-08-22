@@ -764,7 +764,7 @@ def live_board(tmp_path, monkeypatch):
     for status in mod.STATUS_DIRS:
         (pm / "wiki" / "tickets" / status).mkdir(parents=True, exist_ok=True)
     pm.mkdir(parents=True, exist_ok=True)
-    (pm / "local.conf").write_text("user=t\n", encoding="utf-8")
+    (pm / "local.conf").write_text("identity.user=t\n", encoding="utf-8")
     monkeypatch.setenv("PM_SESSION_NAME", "t_1")
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     return mod

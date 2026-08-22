@@ -775,7 +775,7 @@ def test_claude_main_resolves_and_injects_ctx_config(driver_mod, monkeypatch, tm
     captured["events"] = []
     monkeypatch.setattr(driver_mod, "_load_engine", lambda: (_FakeEngine(), tmp_path))
     monkeypatch.setattr(driver_mod.ctx_guard, "load_local_config", lambda root: {
-        "ctx_window_tokens_claude": "123456", "ctx_stop_pct": "17",
+        "harness.claude.ctx_window_tokens": "123456", "ctx.stop_pct": "17",
     })
     monkeypatch.setattr(
         driver_mod.ctx_guard, "resolve_budget",

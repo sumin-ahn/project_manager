@@ -1,6 +1,6 @@
 """pm_update.py upstream 해소 단위 테스트 (T-0053).
 
---from 생략 시 dest local.conf 의 `upstream=` 을 기본으로 쓰는 해소 순서(①명시 --from
+--from 생략 시 dest local.conf 의 `upstream.path=` 을 기본으로 쓰는 해소 순서(①명시 --from
 ②local.conf upstream= ③에러)·stale 가드·`_read_local_conf` 파싱을 검증한다. 실 복사 없이
 plan/dry-run 레벨로 — fake_repo(REPO monkeypatch) + tmp source 만으로 외부 의존 0.
 
@@ -113,16 +113,16 @@ def test_read_local_conf_parses_key_value(pm_update, tmp_path):
         "# 헤더 주석\n"
         "\n"
         "session=pm\n"
-        "upstream=/home/u/checkout\n"
+        "upstream.path=/home/u/checkout\n"
         "   # 들여쓴 주석\n"
         "bad line without equals\n"
-        "  py = python3  \n",
+        "  runtime.py = python3  \n",
         encoding="utf-8",
     )
     result = pm_update._read_local_conf(conf)
     assert result["session"] == "pm"
-    assert result["upstream"] == "/home/u/checkout"
-    assert result["py"] == "python3"  # 양쪽 공백 strip
+    assert result["upstream.path"] == "/home/u/checkout"
+    assert result["runtime.py"] == "python3"  # 양쪽 공백 strip
     assert "bad line without equals" not in result
     # 주석/빈 줄은 키가 되지 않는다.
     assert "# 헤더 주석" not in result
@@ -135,8 +135,8 @@ def test_read_local_conf_missing_returns_empty(pm_update, tmp_path):
 
 def test_read_local_conf_last_value_wins(pm_update, tmp_path):
     conf = tmp_path / "local.conf"
-    conf.write_text("upstream=/first\nupstream=/second\n", encoding="utf-8")
-    assert pm_update._read_local_conf(conf)["upstream"] == "/second"
+    conf.write_text("upstream.path=/first\nupstream.path=/second\n", encoding="utf-8")
+    assert pm_update._read_local_conf(conf)["upstream.path"] == "/second"
 
 
 # ── ① 명시 --from 우선 (local.conf upstream 무시) ───────────────────────────
@@ -155,7 +155,7 @@ def test_explicit_from_takes_priority_over_local_conf(pm_update, tmp_path, monke
     _make_upstream(explicit, rel=explicit_rel)
     _make_upstream(stored, rel=stored_rel)
     # local.conf 에는 stored 를 등록 — 명시 --from(explicit)이 이를 덮어야 한다.
-    _write_local_conf(fake_repo, f"upstream={stored}\n")
+    _write_local_conf(fake_repo, f"upstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     rc = pm_update.main(["--from", str(explicit), "--dry-run"])
@@ -335,7 +335,7 @@ def test_omitted_from_uses_local_conf_upstream(pm_update, tmp_path, monkeypatch,
     fake_repo = tmp_path / "fake_repo"
     stored = tmp_path / "stored_upstream"
     _make_upstream(stored)
-    _write_local_conf(fake_repo, f"# conf\nupstream={stored}\n")
+    _write_local_conf(fake_repo, f"# conf\nupstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     rc = pm_update.main(["--dry-run"])
@@ -380,7 +380,7 @@ def test_stale_upstream_path_errors(pm_update, tmp_path, monkeypatch, capsys):
     """local.conf upstream 이 부재 경로면 자동 진행 안 하고 명확한 stale 에러로 멈춘다."""
     fake_repo = tmp_path / "fake_repo"
     stale = tmp_path / "moved_away_checkout"  # 생성하지 않음 → 부재
-    _write_local_conf(fake_repo, f"upstream={stale}\n")
+    _write_local_conf(fake_repo, f"upstream.path={stale}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     rc = pm_update.main(["--dry-run"])
@@ -412,7 +412,7 @@ def test_upstream_file_not_dir_errors(pm_update, tmp_path, monkeypatch, capsys):
     fake_repo = tmp_path / "fake_repo"
     a_file = tmp_path / "a_file"
     a_file.write_text("not a dir\n", encoding="utf-8")
-    _write_local_conf(fake_repo, f"upstream={a_file}\n")
+    _write_local_conf(fake_repo, f"upstream.path={a_file}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     rc = pm_update.main(["--dry-run"])
@@ -430,7 +430,7 @@ def test_record_upstream_rev_baseline_records_head(pm_update, tmp_path, monkeypa
     — 그 read 를 monkeypatch 해 라이브 git 없이 baseline 기록 *배선* 을 검증한다(매 sync).
     """
     dest = tmp_path / "dest"
-    _write_local_conf(dest, "session=pm\nupstream=/some/checkout\n")
+    _write_local_conf(dest, "session=pm\nupstream.path=/some/checkout\n")
     source = tmp_path / "src"
     source.mkdir()
 
@@ -441,15 +441,15 @@ def test_record_upstream_rev_baseline_records_head(pm_update, tmp_path, monkeypa
     changed = pm_update.record_upstream_rev_baseline(dest, source)
     assert changed is True
     conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
-    assert conf["upstream_rev"] == "headcommit99"
-    assert conf["upstream"] == "/some/checkout"  # 별개 키 보존(한 키 2역 금지)
+    assert conf["upstream.rev"] == "headcommit99"
+    assert conf["upstream.path"] == "/some/checkout"  # 별개 키 보존(한 키 2역 금지)
     assert conf["session"] == "pm"
 
 
 def test_record_upstream_rev_baseline_skips_when_source_not_git(pm_update, tmp_path, monkeypatch):
     """source 가 git checkout 이 아니면(read_upstream_rev=None·URL upstream 포함) graceful 생략."""
     dest = tmp_path / "dest"
-    _write_local_conf(dest, "upstream=https://h/x.git\n")
+    _write_local_conf(dest, "upstream.path=https://h/x.git\n")
     source = tmp_path / "src"
     source.mkdir()
 
@@ -460,7 +460,7 @@ def test_record_upstream_rev_baseline_skips_when_source_not_git(pm_update, tmp_p
     changed = pm_update.record_upstream_rev_baseline(dest, source)
     assert changed is False
     conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
-    assert "upstream_rev" not in conf
+    assert "upstream.rev" not in conf
 
 
 def test_main_records_upstream_rev_on_successful_sync(pm_update, tmp_path, monkeypatch, capsys):
@@ -468,7 +468,7 @@ def test_main_records_upstream_rev_on_successful_sync(pm_update, tmp_path, monke
     fake_repo = tmp_path / "fake_repo"
     stored = tmp_path / "stored_upstream"
     _make_upstream(stored)
-    _write_local_conf(fake_repo, f"upstream={stored}\n")
+    _write_local_conf(fake_repo, f"upstream.path={stored}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     # baseline rev 읽기를 결정적으로 stub(라이브 git 0).
@@ -479,8 +479,8 @@ def test_main_records_upstream_rev_on_successful_sync(pm_update, tmp_path, monke
     rc = pm_update.main([])  # 실 sync(dry-run 아님) — sentinel 1개 복사.
     assert rc == 0
     conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
-    assert conf.get("upstream_rev") == "syncedrev42", \
-        f"매 sync 후 upstream_rev baseline 미갱신: {conf.get('upstream_rev')!r}"
+    assert conf.get("upstream.rev") == "syncedrev42", \
+        f"매 sync 후 upstream_rev baseline 미갱신: {conf.get('upstream.rev')!r}"
 
 
 def test_main_dry_run_does_not_record_upstream_rev(pm_update, tmp_path, monkeypatch):
@@ -488,7 +488,7 @@ def test_main_dry_run_does_not_record_upstream_rev(pm_update, tmp_path, monkeypa
     fake_repo = tmp_path / "fake_repo"
     stored = tmp_path / "stored_upstream"
     _make_upstream(stored)
-    _write_local_conf(fake_repo, f"upstream={stored}\n")
+    _write_local_conf(fake_repo, f"upstream.path={stored}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     pm_import = pm_update._load_pm_import()
@@ -498,7 +498,7 @@ def test_main_dry_run_does_not_record_upstream_rev(pm_update, tmp_path, monkeypa
     rc = pm_update.main(["--dry-run"])
     assert rc == 0
     conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
-    assert "upstream_rev" not in conf, "dry-run 인데 upstream_rev 가 기록됨(부작용 누출)"
+    assert "upstream.rev" not in conf, "dry-run 인데 upstream_rev 가 기록됨(부작용 누출)"
 
 
 # ── T-0413: 경로 upstream 은 seen(관찰값)도 baseline 과 동시 기록 (거짓 drift 근절) ──
@@ -510,7 +510,7 @@ def test_record_upstream_rev_baseline_records_seen_for_path_upstream(
         pm_update, tmp_path, monkeypatch):
     """경로 upstream — baseline(upstream_rev)과 관찰값(upstream_seen_rev)이 같은 rev 로 동시 기록."""
     dest = tmp_path / "dest"
-    _write_local_conf(dest, "session=pm\nupstream=/some/checkout\n")
+    _write_local_conf(dest, "session=pm\nupstream.path=/some/checkout\n")
     source = tmp_path / "src"
     source.mkdir()
 
@@ -520,10 +520,10 @@ def test_record_upstream_rev_baseline_records_seen_for_path_upstream(
 
     assert pm_update.record_upstream_rev_baseline(dest, source) is True
     conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
-    assert conf["upstream_rev"] == "pathrev1234"
-    assert conf["upstream_seen_rev"] == "pathrev1234", \
+    assert conf["upstream.rev"] == "pathrev1234"
+    assert conf["upstream.seen_rev"] == "pathrev1234", \
         f"경로 upstream 인데 seen 미기록(두 키 어긋남 잔존): {conf!r}"
-    assert conf["upstream"] == "/some/checkout" and conf["session"] == "pm"  # 타 키 보존
+    assert conf["upstream.path"] == "/some/checkout" and conf["session"] == "pm"  # 타 키 보존
 
 
 def test_record_upstream_rev_baseline_replaces_stale_seen_in_place(
@@ -537,10 +537,10 @@ def test_record_upstream_rev_baseline_replaces_stale_seen_in_place(
     _write_local_conf(
         dest,
         "# per-clone\n"
-        "upstream=/w/project_manager_1\n"
-        "upstream_rev=ddf6f4842653\n"
-        "upstream_seen_rev=0ccc02513a7f\n"
-        "py=python3\n",
+        "upstream.path=/w/project_manager_1\n"
+        "upstream.rev=ddf6f4842653\n"
+        "upstream.seen_rev=0ccc02513a7f\n"
+        "runtime.py=python3\n",
     )
     source = tmp_path / "src"
     source.mkdir()
@@ -552,10 +552,10 @@ def test_record_upstream_rev_baseline_replaces_stale_seen_in_place(
     assert pm_update.record_upstream_rev_baseline(dest, source) is True
     text = (dest / ".project_manager" / "local.conf").read_text(encoding="utf-8")
     conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
-    assert conf["upstream_rev"] == conf["upstream_seen_rev"] == "nextsyncrev9", \
+    assert conf["upstream.rev"] == conf["upstream.seen_rev"] == "nextsyncrev9", \
         f"다음 sync 1회로 수렴 안 됨: {conf!r}"
-    assert "# per-clone" in text and conf["py"] == "python3"  # 주석·타 키 보존
-    assert text.count("upstream_seen_rev=") == 1, f"seen 키 중복 append: {text!r}"
+    assert "# per-clone" in text and conf["runtime.py"] == "python3"  # 주석·타 키 보존
+    assert text.count("upstream.seen_rev=") == 1, f"seen 키 중복 append: {text!r}"
 
 
 def test_record_upstream_rev_baseline_leaves_seen_for_url_upstream(
@@ -568,8 +568,8 @@ def test_record_upstream_rev_baseline_leaves_seen_for_url_upstream(
     dest = tmp_path / "dest"
     _write_local_conf(
         dest,
-        "upstream=https://github.com/example/project_manager.git\n"
-        "upstream_seen_rev=skillfetchrev\n",
+        "upstream.path=https://github.com/example/project_manager.git\n"
+        "upstream.seen_rev=skillfetchrev\n",
     )
     source = tmp_path / "cache"  # 스킬이 clone 한 로컬 cache checkout.
     source.mkdir()
@@ -580,8 +580,8 @@ def test_record_upstream_rev_baseline_leaves_seen_for_url_upstream(
 
     assert pm_update.record_upstream_rev_baseline(dest, source) is True
     conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
-    assert conf["upstream_rev"] == "cacheheadrev"
-    assert conf["upstream_seen_rev"] == "skillfetchrev", \
+    assert conf["upstream.rev"] == "cacheheadrev"
+    assert conf["upstream.seen_rev"] == "skillfetchrev", \
         f"URL 형상인데 엔진이 seen 을 덮음(한 키 2역·스킬층 관찰 파괴): {conf!r}"
 
 
@@ -599,21 +599,21 @@ def test_record_upstream_revs_reports_recorded_keys_per_shape(
     monkeypatch.setattr(pm_update, "_load_pm_import", lambda: pm_import)
 
     path_dest = tmp_path / "path_dest"
-    _write_local_conf(path_dest, "upstream=/w/project_manager_1\n")
+    _write_local_conf(path_dest, "upstream.path=/w/project_manager_1\n")
     changed, recorded = pm_update.record_upstream_revs(path_dest, source)
     assert changed is True
-    assert recorded == {"upstream_rev": "shaperev777", "upstream_seen_rev": "shaperev777"}
+    assert recorded == {"upstream.rev": "shaperev777", "upstream.seen_rev": "shaperev777"}
 
     url_dest = tmp_path / "url_dest"
     # URL 형상 + 스킬이 이미 기록한 seen == 이번 cache HEAD (파일 상태로는 구분 불가한 조건).
     _write_local_conf(
         url_dest,
-        "upstream=https://github.com/example/project_manager.git\n"
-        "upstream_seen_rev=shaperev777\n",
+        "upstream.path=https://github.com/example/project_manager.git\n"
+        "upstream.seen_rev=shaperev777\n",
     )
     changed, recorded = pm_update.record_upstream_revs(url_dest, source)
     assert changed is True
-    assert recorded == {"upstream_rev": "shaperev777"}, \
+    assert recorded == {"upstream.rev": "shaperev777"}, \
         f"URL 형상인데 seen 을 기록했다고 보고: {recorded!r}"
 
 
@@ -627,7 +627,7 @@ def test_record_upstream_revs_writes_both_keys_in_single_pass(
     직접 부른다(락 재진입 금지).
     """
     dest = tmp_path / "dest"
-    _write_local_conf(dest, "upstream=/w/project_manager_1\n")
+    _write_local_conf(dest, "upstream.path=/w/project_manager_1\n")
     source = tmp_path / "src"
     source.mkdir()
 
@@ -641,7 +641,7 @@ def test_record_upstream_revs_writes_both_keys_in_single_pass(
         lambda path, updates: (calls.append(dict(updates)), real_write(path, updates))[1])
 
     assert pm_update.record_upstream_revs(dest, source)[0] is True
-    assert calls == [{"upstream_rev": "onepassrev5", "upstream_seen_rev": "onepassrev5"}], \
+    assert calls == [{"upstream.rev": "onepassrev5", "upstream.seen_rev": "onepassrev5"}], \
         f"두 키가 단일 write 로 묶이지 않음(반쪽 상태 위험): {calls!r}"
 
 
@@ -650,7 +650,7 @@ def test_main_records_both_keys_on_path_sync(pm_update, tmp_path, monkeypatch, c
     fake_repo = tmp_path / "fake_repo"
     stored = tmp_path / "stored_upstream"
     _make_upstream(stored)
-    _write_local_conf(fake_repo, f"upstream={stored}\n")
+    _write_local_conf(fake_repo, f"upstream.path={stored}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     pm_import = pm_update._load_pm_import()
@@ -659,9 +659,9 @@ def test_main_records_both_keys_on_path_sync(pm_update, tmp_path, monkeypatch, c
 
     assert pm_update.main([]) == 0
     conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
-    assert conf.get("upstream_rev") == conf.get("upstream_seen_rev") == "bothkeysrev1", \
+    assert conf.get("upstream.rev") == conf.get("upstream.seen_rev") == "bothkeysrev1", \
         f"경로 sync 후 두 키 불일치(거짓 drift 재발): {conf!r}"
-    assert "upstream_seen_rev 동시 기록" in capsys.readouterr().out
+    assert "upstream.seen_rev 동시 기록" in capsys.readouterr().out
 
 
 def test_main_no_changes_converges_stale_path_seen_rev(pm_update, tmp_path, monkeypatch, capsys):
@@ -679,9 +679,9 @@ def test_main_no_changes_converges_stale_path_seen_rev(pm_update, tmp_path, monk
     dest_sentinel.write_text(sentinel.read_text(encoding="utf-8"), encoding="utf-8")
     _write_local_conf(
         fake_repo,
-        f"upstream={source}\n"
-        "upstream_rev=currentrev\n"
-        "upstream_seen_rev=staleobservedrev\n",
+        f"upstream.path={source}\n"
+        "upstream.rev=currentrev\n"
+        "upstream.seen_rev=staleobservedrev\n",
     )
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
@@ -691,7 +691,7 @@ def test_main_no_changes_converges_stale_path_seen_rev(pm_update, tmp_path, monk
 
     assert pm_update.main([]) == 0
     conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
-    assert conf.get("upstream_rev") == conf.get("upstream_seen_rev") == "currentrev"
+    assert conf.get("upstream.rev") == conf.get("upstream.seen_rev") == "currentrev"
     assert "baseline 갱신" in capsys.readouterr().out
 
 
@@ -706,7 +706,7 @@ def test_main_no_changes_with_matching_path_revs_is_quiet(pm_update, tmp_path, m
     dest_sentinel.write_text(sentinel.read_text(encoding="utf-8"), encoding="utf-8")
     local_conf = _write_local_conf(
         fake_repo,
-        f"upstream={source}\nupstream_rev=currentrev\nupstream_seen_rev=currentrev\n",
+        f"upstream.path={source}\nupstream.rev=currentrev\nupstream.seen_rev=currentrev\n",
     )
     before = local_conf.read_text(encoding="utf-8")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
@@ -741,7 +741,7 @@ def test_main_no_changes_dry_run_does_not_converge_path_revs(
     dest_sentinel.write_text(sentinel.read_text(encoding="utf-8"), encoding="utf-8")
     local_conf = _write_local_conf(
         fake_repo,
-        f"upstream={source}\nupstream_rev=currentrev\nupstream_seen_rev=staleobservedrev\n",
+        f"upstream.path={source}\nupstream.rev=currentrev\nupstream.seen_rev=staleobservedrev\n",
     )
     before = local_conf.read_text(encoding="utf-8")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
@@ -766,7 +766,7 @@ def test_main_no_changes_skew_suppresses_both_path_revs(
     dest_sentinel.write_text(sentinel.read_text(encoding="utf-8"), encoding="utf-8")
     local_conf = _write_local_conf(
         fake_repo,
-        f"upstream={source}\nupstream_rev=currentrev\nupstream_seen_rev=staleobservedrev\n",
+        f"upstream.path={source}\nupstream.rev=currentrev\nupstream.seen_rev=staleobservedrev\n",
     )
     before = local_conf.read_text(encoding="utf-8")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
@@ -789,8 +789,8 @@ def test_main_url_sync_does_not_claim_seen_was_recorded(pm_update, tmp_path, mon
     _make_upstream(cache)
     _write_local_conf(
         fake_repo,
-        "upstream=https://github.com/example/project_manager.git\n"
-        "upstream_seen_rev=cachehead77\n",  # 스킬이 fetch 후 기록한 관찰값.
+        "upstream.path=https://github.com/example/project_manager.git\n"
+        "upstream.seen_rev=cachehead77\n",  # 스킬이 fetch 후 기록한 관찰값.
     )
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
@@ -803,7 +803,7 @@ def test_main_url_sync_does_not_claim_seen_was_recorded(pm_update, tmp_path, mon
     assert "baseline 갱신" in out, f"URL sync 인데 baseline 갱신 안내 부재: {out!r}"
     assert "동시 기록" not in out, f"엔진이 안 쓴 seen 을 썼다고 주장(상태 역추론): {out!r}"
     conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
-    assert conf.get("upstream_seen_rev") == "cachehead77"  # 스킬층 관찰값 그대로.
+    assert conf.get("upstream.seen_rev") == "cachehead77"  # 스킬층 관찰값 그대로.
 
 
 def test_main_skew_suppression_suppresses_seen_too(pm_update, tmp_path, monkeypatch, capsys):
@@ -815,7 +815,7 @@ def test_main_skew_suppression_suppresses_seen_too(pm_update, tmp_path, monkeypa
     fake_repo = tmp_path / "fake_repo"
     stored = tmp_path / "stored_upstream"
     _make_upstream(stored)
-    _write_local_conf(fake_repo, f"upstream={stored}\n")
+    _write_local_conf(fake_repo, f"upstream.path={stored}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     skew_stub = ".project_manager/tools/__pm_update_skew_stub__.py"  # 합성 신규 등재분.
     monkeypatch.setattr(
@@ -829,8 +829,8 @@ def test_main_skew_suppression_suppresses_seen_too(pm_update, tmp_path, monkeypa
     out = capsys.readouterr().out
     assert "manifest skew" in out and "억제" in out, f"skew 억제 안내 미출력: {out!r}"
     conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
-    assert "upstream_rev" not in conf, f"skew 인데 baseline 기록됨: {conf!r}"
-    assert "upstream_seen_rev" not in conf, \
+    assert "upstream.rev" not in conf, f"skew 인데 baseline 기록됨: {conf!r}"
+    assert "upstream.seen_rev" not in conf, \
         f"skew 인데 seen 만 앞섬(반대 방향 거짓 경보): {conf!r}"
 
 
@@ -940,7 +940,7 @@ def test_main_selfheal_supersedes_skew_suppression(pm_update, tmp_path, monkeypa
     source = tmp_path / "src"
     _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL, MANIFEST_SELF_REL])
     _write_dest_manifest(fake_repo, [SENTINEL_REL, MANIFEST_SELF_REL])  # 구형 — NEW_ENGINE_REL 누락.
-    _write_local_conf(fake_repo, f"upstream={source}\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     pm_import = pm_update._load_pm_import()
@@ -954,8 +954,8 @@ def test_main_selfheal_supersedes_skew_suppression(pm_update, tmp_path, monkeypa
         f"읽기 가능한 구형 로컬인데 T-0395 억제가 자기치유로 대체 안 됨: {out!r}"
     assert "자기치유" in out and NEW_ENGINE_REL in out, f"자기치유 loud 미출력: {out!r}"
     conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
-    assert conf.get("upstream_rev") == "amendrev", \
-        f"치유 후 정합인데 baseline 미갱신(억제 잔존): {conf.get('upstream_rev')!r}"
+    assert conf.get("upstream.rev") == "amendrev", \
+        f"치유 후 정합인데 baseline 미갱신(억제 잔존): {conf.get('upstream.rev')!r}"
 
 
 def test_main_records_baseline_when_manifest_in_sync(pm_update, tmp_path, monkeypatch, capsys):
@@ -964,7 +964,7 @@ def test_main_records_baseline_when_manifest_in_sync(pm_update, tmp_path, monkey
     source = tmp_path / "src"
     _make_upstream_manifest(source, [SENTINEL_REL])
     _write_dest_manifest(fake_repo, [SENTINEL_REL])  # 정합 로컬 manifest.
-    _write_local_conf(fake_repo, f"upstream={source}\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     pm_import = pm_update._load_pm_import()
@@ -976,8 +976,8 @@ def test_main_records_baseline_when_manifest_in_sync(pm_update, tmp_path, monkey
     out = capsys.readouterr().out
     assert "manifest skew" not in out, f"정합인데 skew 오탐: {out!r}"
     conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
-    assert conf.get("upstream_rev") == "insyncrev7", \
-        f"정합 sync 인데 baseline 미갱신: {conf.get('upstream_rev')!r}"
+    assert conf.get("upstream.rev") == "insyncrev7", \
+        f"정합 sync 인데 baseline 미갱신: {conf.get('upstream.rev')!r}"
 
 
 def test_main_records_baseline_when_upstream_manifest_absent(pm_update, tmp_path, monkeypatch, capsys):
@@ -990,7 +990,7 @@ def test_main_records_baseline_when_upstream_manifest_absent(pm_update, tmp_path
     sentinel.write_text("# upstream sentinel\n", encoding="utf-8")
     _track_source_tree(source)
     _write_dest_manifest(fake_repo, [SENTINEL_REL])
-    _write_local_conf(fake_repo, f"upstream={source}\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     pm_import = pm_update._load_pm_import()
@@ -1002,8 +1002,8 @@ def test_main_records_baseline_when_upstream_manifest_absent(pm_update, tmp_path
     out = capsys.readouterr().out
     assert "fail-soft" in out, f"upstream manifest 부재 fail-soft note 미출력: {out!r}"
     conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
-    assert conf.get("upstream_rev") == "failsoftrev", \
-        f"fail-soft 인데 baseline 미갱신: {conf.get('upstream_rev')!r}"
+    assert conf.get("upstream.rev") == "failsoftrev", \
+        f"fail-soft 인데 baseline 미갱신: {conf.get('upstream.rev')!r}"
 
 
 def test_main_dry_run_shows_selfheal_not_skew_without_recording(pm_update, tmp_path, monkeypatch, capsys):
@@ -1013,7 +1013,7 @@ def test_main_dry_run_shows_selfheal_not_skew_without_recording(pm_update, tmp_p
     source = tmp_path / "src"
     _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL, MANIFEST_SELF_REL])
     _write_dest_manifest(fake_repo, [SENTINEL_REL, MANIFEST_SELF_REL])
-    _write_local_conf(fake_repo, f"upstream={source}\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     pm_import = pm_update._load_pm_import()
@@ -1028,7 +1028,7 @@ def test_main_dry_run_shows_selfheal_not_skew_without_recording(pm_update, tmp_p
     assert "자기치유 예정" in out and NEW_ENGINE_REL in out, \
         f"dry-run 이 자기치유 예정을 표시하지 않음: {out!r}"
     conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
-    assert "upstream_rev" not in conf, "dry-run 인데 baseline 기록됨(부작용 누출)"
+    assert "upstream.rev" not in conf, "dry-run 인데 baseline 기록됨(부작용 누출)"
 
 
 def test_main_target_mode_skips_skew_detection(pm_update, tmp_path, monkeypatch, capsys):
@@ -1043,7 +1043,7 @@ def test_main_target_mode_skips_skew_detection(pm_update, tmp_path, monkeypatch,
     source = tmp_path / "src"
     _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL])  # 루트 manifest = 2 등재.
     _write_dest_manifest(target_root, [SENTINEL_REL])  # 타깃 manifest = 1 등재(의도적 차이).
-    _write_local_conf(target_root, f"upstream={source}\n")
+    _write_local_conf(target_root, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     pm_import = pm_update._load_pm_import()
@@ -1056,8 +1056,8 @@ def test_main_target_mode_skips_skew_detection(pm_update, tmp_path, monkeypatch,
     assert "manifest skew" not in out and "억제" not in out, \
         f"--target 에서 skew 검출/억제가 발화함(오탐): {out!r}"
     conf = pm_update._read_local_conf(target_root / ".project_manager" / "local.conf")
-    assert conf.get("upstream_rev") == "targetrev1", \
-        f"--target 인데 baseline 미갱신(현행 거동 위반): {conf.get('upstream_rev')!r}"
+    assert conf.get("upstream.rev") == "targetrev1", \
+        f"--target 인데 baseline 미갱신(현행 거동 위반): {conf.get('upstream.rev')!r}"
 
 
 # ── manifest 자기치유 (T-0396·self-update 2-pass 단일 실행) ─────────────────────
@@ -2613,7 +2613,7 @@ def test_main_selfheal_reaches_new_entry_in_one_run(pm_update, tmp_path, monkeyp
     source = tmp_path / "src"
     _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL, MANIFEST_SELF_REL])
     _write_dest_manifest(fake_repo, [SENTINEL_REL, MANIFEST_SELF_REL])  # 구형 — 신규 등재 누락.
-    _write_local_conf(fake_repo, f"upstream={source}\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     pm_import = pm_update._load_pm_import()
@@ -2633,8 +2633,8 @@ def test_main_selfheal_reaches_new_entry_in_one_run(pm_update, tmp_path, monkeyp
     assert "자기치유" in out and NEW_ENGINE_REL in out, f"자기치유 loud 미출력: {out!r}"
     assert "manifest skew" not in out, f"치유 후에도 skew 발화(정합 위반): {out!r}"
     conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
-    assert conf.get("upstream_rev") == "healedrev", \
-        f"치유 후 정합인데 baseline 미갱신: {conf.get('upstream_rev')!r}"
+    assert conf.get("upstream.rev") == "healedrev", \
+        f"치유 후 정합인데 baseline 미갱신: {conf.get('upstream.rev')!r}"
 
 
 def test_main_dry_run_shows_selfheal_without_side_effects(pm_update, tmp_path, monkeypatch, capsys):
@@ -2643,7 +2643,7 @@ def test_main_dry_run_shows_selfheal_without_side_effects(pm_update, tmp_path, m
     source = tmp_path / "src"
     _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL, MANIFEST_SELF_REL])
     _write_dest_manifest(fake_repo, [SENTINEL_REL, MANIFEST_SELF_REL])
-    _write_local_conf(fake_repo, f"upstream={source}\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     pm_import = pm_update._load_pm_import()
@@ -2659,7 +2659,7 @@ def test_main_dry_run_shows_selfheal_without_side_effects(pm_update, tmp_path, m
     healed = (fake_repo / ".project_manager" / "engine.manifest").read_text(encoding="utf-8")
     assert NEW_ENGINE_REL not in healed, "dry-run 인데 로컬 manifest 갱신됨(부작용)"
     conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
-    assert "upstream_rev" not in conf, "dry-run 인데 baseline 기록됨(부작용)"
+    assert "upstream.rev" not in conf, "dry-run 인데 baseline 기록됨(부작용)"
 
 
 def test_main_target_mode_skips_selfheal(pm_update, tmp_path, monkeypatch, capsys):
@@ -2673,7 +2673,7 @@ def test_main_target_mode_skips_selfheal(pm_update, tmp_path, monkeypatch, capsy
     source = tmp_path / "src"
     _make_upstream_manifest(source, [SENTINEL_REL, NEW_ENGINE_REL])  # 루트 = 2 등재.
     _write_dest_manifest(target_root, [SENTINEL_REL])  # 타깃 = 1 등재(의도적 차이).
-    _write_local_conf(target_root, f"upstream={source}\n")
+    _write_local_conf(target_root, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     pm_import = pm_update._load_pm_import()
@@ -2718,7 +2718,7 @@ def test_main_flavor_selfheal_skew_uses_flavor_manifest_no_false_suppress(
     _track_source_tree(source)
     # 채택자 manifest = flavor(@source self-prop)·구형(NEW_ENGINE_REL 미등재).
     _write_dest_manifest(fake_repo, [SENTINEL_REL, flavor_self])
-    _write_local_conf(fake_repo, f"upstream={source}\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     pm_import = pm_update._load_pm_import()
@@ -2733,8 +2733,8 @@ def test_main_flavor_selfheal_skew_uses_flavor_manifest_no_false_suppress(
     assert "자기치유" in out and NEW_ENGINE_REL in out, f"자기치유 loud 미출력: {out!r}"
     assert (fake_repo / NEW_ENGINE_REL).exists(), "flavor 자기치유가 신규 파일 미도달"
     conf = pm_update._read_local_conf(fake_repo / ".project_manager" / "local.conf")
-    assert conf.get("upstream_rev") == "flavorrev", \
-        f"flavor 치유 후 정합인데 baseline 미갱신(root skew 오탐 억제?): {conf.get('upstream_rev')!r}"
+    assert conf.get("upstream.rev") == "flavorrev", \
+        f"flavor 치유 후 정합인데 baseline 미갱신(root skew 오탐 억제?): {conf.get('upstream.rev')!r}"
 
 
 # ── MF1(codex): URL upstream + --from 생략 → 명확·actionable 에러 (D5 경계·침묵 실패 금지) ──
@@ -2747,7 +2747,7 @@ def test_url_upstream_omitted_from_errors_clearly(pm_update, tmp_path, monkeypat
     URL 을 판별해 actionable 에러(pm-update 스킬·--from 명시 안내)로 멈춘다(MF1).
     """
     fake_repo = tmp_path / "fake_repo"
-    _write_local_conf(fake_repo, "upstream=https://github.com/acme/proj.git\n")
+    _write_local_conf(fake_repo, "upstream.path=https://github.com/acme/proj.git\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     rc = pm_update.main([])  # --from 생략 → local.conf URL upstream 해소 시도.
@@ -2794,7 +2794,7 @@ def test_url_upstream_explicit_from_local_still_works(pm_update, tmp_path, monke
     (URL 게이트는 stored upstream 해소 분기에만 있고 명시 --from 은 그 분기를 안 탄다).
     """
     fake_repo = tmp_path / "fake_repo"
-    _write_local_conf(fake_repo, "upstream=https://github.com/acme/proj.git\n")
+    _write_local_conf(fake_repo, "upstream.path=https://github.com/acme/proj.git\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     local_src = tmp_path / "local_checkout"
     _make_upstream(local_src)
@@ -2822,7 +2822,7 @@ def test_target_mode_omitted_from_uses_target_local_conf(pm_update, tmp_path, mo
     stored = tmp_path / "target_stored_upstream"
     _make_upstream(stored)
     # 타깃 자신의 local.conf 에 upstream 등록 (self-loc 의 REPO local.conf 자리와 동형).
-    _write_local_conf(target_dir, f"upstream={stored}\n")
+    _write_local_conf(target_dir, f"upstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     rc = pm_update.main(["--target", "oc", "--dry-run"])
@@ -2873,7 +2873,7 @@ def test_target_mode_skips_target_owned_source_absent_with_log(pm_update, tmp_pa
     manifest.write_text(
         SENTINEL_REL + "\n" + absent_rel + "  @render @target-owned\n", encoding="utf-8")
     _track_source_tree(stored)
-    _write_local_conf(target_dir, f"upstream={stored}\n")
+    _write_local_conf(target_dir, f"upstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     rc = pm_update.main(["--target", "oc", "--dry-run"])
@@ -2909,7 +2909,7 @@ def test_target_mode_non_target_owned_source_absent_errors(pm_update, tmp_path, 
     manifest = stored / ".project_manager" / "engine.manifest"
     manifest.write_text(SENTINEL_REL + "\n" + engine_absent + "\n", encoding="utf-8")
     _track_source_tree(stored)
-    _write_local_conf(target_dir, f"upstream={stored}\n")
+    _write_local_conf(target_dir, f"upstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     rc = pm_update.main(["--target", "oc", "--dry-run"])
@@ -2940,7 +2940,7 @@ def test_target_mode_render_only_source_absent_errors(pm_update, tmp_path, monke
     manifest.write_text(
         SENTINEL_REL + "\n" + render_only_absent + "  @render\n", encoding="utf-8")
     _track_source_tree(stored)
-    _write_local_conf(target_dir, f"upstream={stored}\n")
+    _write_local_conf(target_dir, f"upstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     rc = pm_update.main(["--target", "oc", "--dry-run"])
@@ -2967,7 +2967,7 @@ def test_target_mode_mixed_absent_engine_missing_wins(pm_update, tmp_path, monke
     manifest = stored / ".project_manager" / "engine.manifest"
     manifest.write_text(
         owned_absent + "  @target-owned\n" + engine_absent + "\n", encoding="utf-8")
-    _write_local_conf(target_dir, f"upstream={stored}\n")
+    _write_local_conf(target_dir, f"upstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     rc = pm_update.main(["--target", "oc", "--dry-run"])
@@ -2994,7 +2994,7 @@ def test_self_location_source_absent_still_errors(pm_update, tmp_path, monkeypat
     (stored / ".project_manager").mkdir(parents=True)
     (stored / ".project_manager" / "engine.manifest").write_text(
         absent_rel + "\n", encoding="utf-8")
-    _write_local_conf(fake_repo, f"upstream={stored}\n")
+    _write_local_conf(fake_repo, f"upstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     rc = pm_update.main(["--dry-run"])
@@ -3029,7 +3029,7 @@ def test_self_location_skips_target_owned_source_absent_with_log(
     manifest = stored / ".project_manager" / "engine.manifest"
     manifest.write_text(
         SENTINEL_REL + "\n" + absent_rel + "  @render @target-owned\n", encoding="utf-8")
-    _write_local_conf(fake_repo, f"upstream={stored}\n")
+    _write_local_conf(fake_repo, f"upstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     rc = pm_update.main(["--dry-run"])
@@ -3061,7 +3061,7 @@ def test_self_location_render_only_source_absent_errors(
     manifest = stored / ".project_manager" / "engine.manifest"
     manifest.write_text(
         SENTINEL_REL + "\n" + render_only_absent + "  @render\n", encoding="utf-8")
-    _write_local_conf(fake_repo, f"upstream={stored}\n")
+    _write_local_conf(fake_repo, f"upstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     rc = pm_update.main(["--dry-run"])
@@ -3088,7 +3088,7 @@ def test_self_location_mixed_absent_engine_missing_wins(
     manifest = stored / ".project_manager" / "engine.manifest"
     manifest.write_text(
         owned_absent + "  @target-owned\n" + engine_absent + "\n", encoding="utf-8")
-    _write_local_conf(fake_repo, f"upstream={stored}\n")
+    _write_local_conf(fake_repo, f"upstream.path={stored}\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     rc = pm_update.main(["--dry-run"])
@@ -3125,7 +3125,7 @@ def test_main_target_passes_render_disabled(pm_update, tmp_path, monkeypatch):
     (fake_repo / "templates" / "oc").mkdir(parents=True)
     stored = tmp_path / "up_target"
     _make_upstream(stored)
-    _write_local_conf(fake_repo / "templates" / "oc", f"upstream={stored}\n")
+    _write_local_conf(fake_repo / "templates" / "oc", f"upstream.path={stored}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     captured: dict = {}
     _spy_render_enabled(pm_update, monkeypatch, captured)
@@ -3140,7 +3140,7 @@ def test_main_self_location_passes_render_enabled(pm_update, tmp_path, monkeypat
     fake_repo = tmp_path / "fake_repo"
     stored = tmp_path / "up_self"
     _make_upstream(stored)
-    _write_local_conf(fake_repo, f"upstream={stored}\n")
+    _write_local_conf(fake_repo, f"upstream.path={stored}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     captured: dict = {}
     _spy_render_enabled(pm_update, monkeypatch, captured)
@@ -3806,7 +3806,7 @@ def test_self_update_propagates_opencode_adapters_from_templates_source(
         ".opencode/command   @render @source=templates/opencode/.opencode/command\n",
         encoding="utf-8",
     )
-    _write_local_conf(fake_repo, f"upstream={stored}\nadditional_reviewer_enabled=false\n")
+    _write_local_conf(fake_repo, f"upstream.path={stored}\nadditional_reviewer.enabled=false\n")
     _track_source_tree(stored)
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
@@ -3842,7 +3842,7 @@ def test_self_update_source_templates_absent_errors_rc2(
         ".opencode/agents    @render @source=templates/opencode/.opencode/agents\n",
         encoding="utf-8",
     )
-    _write_local_conf(fake_repo, f"upstream={stored}\nadditional_reviewer_enabled=false\n")
+    _write_local_conf(fake_repo, f"upstream.path={stored}\nadditional_reviewer.enabled=false\n")
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     rc = pm_update.main(["--dry-run"])
@@ -3873,7 +3873,7 @@ def test_target_opencode_source_channel_self_copy_noop(pm_update, tmp_path, monk
         ".opencode/agents    @render @source=templates/opencode/.opencode/agents\n",
         encoding="utf-8",
     )
-    _write_local_conf(oc_dir, f"upstream={fake_repo}\nadditional_reviewer_enabled=false\n")
+    _write_local_conf(oc_dir, f"upstream.path={fake_repo}\nadditional_reviewer.enabled=false\n")
     _track_source_tree(fake_repo)
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
@@ -3902,7 +3902,7 @@ def test_claude_render_only_entry_unaffected_by_source_channel(
     dest_manifest = fake_repo / ".project_manager" / "engine.manifest"
     dest_manifest.parent.mkdir(parents=True, exist_ok=True)
     dest_manifest.write_text(".claude/agents  @render\n", encoding="utf-8")
-    _write_local_conf(fake_repo, f"upstream={stored}\nadditional_reviewer_enabled=false\n")
+    _write_local_conf(fake_repo, f"upstream.path={stored}\nadditional_reviewer.enabled=false\n")
     _track_source_tree(stored)
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
@@ -3937,7 +3937,7 @@ def test_render_with_source_marker_renders_operational_tokens(
     )
     _write_local_conf(
         fake_repo,
-        f"upstream={stored}\nproject_name=AcmePay\nadditional_reviewer_enabled=false\n")
+        f"upstream.path={stored}\nproject.name=AcmePay\nadditional_reviewer.enabled=false\n")
     _track_source_tree(stored)
 
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
@@ -4300,7 +4300,7 @@ def test_changes_main_normal_three_blocks(pm_update, tmp_path, monkeypatch, caps
     fake_repo = tmp_path / "fake_repo"
     source = tmp_path / "checkout"
     _make_source_with_manifest(source, [".project_manager/tools/board.py", ".claude/agents"])
-    _write_local_conf(fake_repo, f"upstream={source}\nupstream_rev=base12345678\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\nupstream.rev=base12345678\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     runner = _make_fake_git_runner(
@@ -4334,7 +4334,7 @@ def test_changes_main_count_only(pm_update, tmp_path, monkeypatch, capsys):
     fake_repo = tmp_path / "fake_repo"
     source = tmp_path / "checkout"
     _make_source_with_manifest(source, [".project_manager/tools/board.py"])
-    _write_local_conf(fake_repo, f"upstream={source}\nupstream_rev=base\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\nupstream.rev=base\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     runner = _make_fake_git_runner(
@@ -4352,7 +4352,7 @@ def test_changes_main_log_tail(pm_update, tmp_path, monkeypatch, capsys):
     fake_repo = tmp_path / "fake_repo"
     source = tmp_path / "checkout"
     _make_source_with_manifest(source, [".project_manager/tools/board.py"])
-    _write_local_conf(fake_repo, f"upstream={source}\nupstream_rev=base\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\nupstream.rev=base\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     runner = _make_fake_git_runner(
@@ -4375,7 +4375,7 @@ def test_changes_main_baseline_unrecorded_graceful(pm_update, tmp_path, monkeypa
     source = tmp_path / "checkout"
     _make_source_with_manifest(source, [".project_manager/tools/board.py"])
     # upstream 은 있으나 upstream_rev 없음.
-    _write_local_conf(fake_repo, f"upstream={source}\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     rc = pm_update.main(["--changes"])
@@ -4390,7 +4390,7 @@ def test_changes_main_head_equals_baseline(pm_update, tmp_path, monkeypatch, cap
     fake_repo = tmp_path / "fake_repo"
     source = tmp_path / "checkout"
     _make_source_with_manifest(source, [".project_manager/tools/board.py"])
-    _write_local_conf(fake_repo, f"upstream={source}\nupstream_rev=samerev00000\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\nupstream.rev=samerev00000\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     runner = _make_fake_git_runner(head="samerev00000", log_lines=[], diff_lines=[])
@@ -4407,7 +4407,7 @@ def test_changes_main_baseline_unreachable(pm_update, tmp_path, monkeypatch, cap
     fake_repo = tmp_path / "fake_repo"
     source = tmp_path / "checkout"
     _make_source_with_manifest(source, [".project_manager/tools/board.py"])
-    _write_local_conf(fake_repo, f"upstream={source}\nupstream_rev=gonerev00000\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\nupstream.rev=gonerev00000\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     runner = _make_fake_git_runner(baseline_reachable=False)
@@ -4428,7 +4428,7 @@ def test_changes_main_url_upstream_early_error(pm_update, tmp_path, monkeypatch,
     """
     fake_repo = tmp_path / "fake_repo"
     _write_local_conf(
-        fake_repo, "upstream=https://github.com/acme/proj.git\nupstream_rev=base\n")
+        fake_repo, "upstream.path=https://github.com/acme/proj.git\nupstream.rev=base\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     rc = pm_update.main(["--changes"])
@@ -4446,7 +4446,7 @@ def test_changes_main_url_upstream_explicit_local_from_works(pm_update, tmp_path
     source = tmp_path / "checkout"
     _make_source_with_manifest(source, [".project_manager/tools/board.py"])
     _write_local_conf(
-        fake_repo, "upstream=https://github.com/acme/proj.git\nupstream_rev=base\n")
+        fake_repo, "upstream.path=https://github.com/acme/proj.git\nupstream.rev=base\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     runner = _make_fake_git_runner(
@@ -4467,7 +4467,7 @@ def test_changes_does_not_sync(pm_update, tmp_path, monkeypatch, capsys):
     sentinel = source / ".project_manager" / "tools" / "board.py"
     sentinel.parent.mkdir(parents=True, exist_ok=True)
     sentinel.write_text("# real engine file\n", encoding="utf-8")
-    _write_local_conf(fake_repo, f"upstream={source}\nupstream_rev=base\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\nupstream.rev=base\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     called = {"apply": False}
@@ -4502,7 +4502,7 @@ def test_changes_uses_dest_manifest_when_present(pm_update, tmp_path, monkeypatc
     (fake_repo / ".project_manager").mkdir(parents=True, exist_ok=True)
     (fake_repo / ".project_manager" / "engine.manifest").write_text(
         ".claude/agents\n", encoding="utf-8")
-    _write_local_conf(fake_repo, f"upstream={source}\nupstream_rev=base12345678\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\nupstream.rev=base12345678\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     runner = _make_fake_git_runner(
@@ -4537,7 +4537,7 @@ def test_changes_falls_back_to_source_manifest_when_no_dest(pm_update, tmp_path,
     source = tmp_path / "checkout"
     _make_source_with_manifest(source, [".project_manager/tools/board.py"])
     # dest 에는 engine.manifest 없음(local.conf 만) → source manifest 가 폴백 권위.
-    _write_local_conf(fake_repo, f"upstream={source}\nupstream_rev=base\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\nupstream.rev=base\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     runner = _make_fake_git_runner(
@@ -4604,7 +4604,7 @@ def _selfheal_preview_fixture(pm_update, tmp_path, monkeypatch):
     dest_sentinel = fake_repo / SENTINEL_REL
     dest_sentinel.parent.mkdir(parents=True, exist_ok=True)
     dest_sentinel.write_bytes((source / SENTINEL_REL).read_bytes())  # 기존 등재분은 이미 최신.
-    _write_local_conf(fake_repo, f"upstream={source}\nupstream_rev=base12345678\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\nupstream.rev=base12345678\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     pm_import = pm_update._load_pm_import()
@@ -4680,7 +4680,7 @@ def _legacy_preserved_preview_fixture(pm_update, tmp_path, monkeypatch, shared_r
     _write_dest_manifest(fake_repo, [shared_rel, MANIFEST_SELF_REL])
     (fake_repo / shared_rel).parent.mkdir(parents=True, exist_ok=True)
     (fake_repo / shared_rel).write_text("# stale local\n", encoding="utf-8")
-    _write_local_conf(fake_repo, f"upstream={source}\nupstream_rev=base12345678\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\nupstream.rev=base12345678\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     pm_import = pm_update._load_pm_import()
@@ -4745,7 +4745,7 @@ def test_changes_main_summary_failed_surfaces(pm_update, tmp_path, monkeypatch, 
     fake_repo = tmp_path / "fake_repo"
     source = tmp_path / "checkout"
     _make_source_with_manifest(source, [".project_manager/tools/board.py"])
-    _write_local_conf(fake_repo, f"upstream={source}\nupstream_rev=base12345678\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\nupstream.rev=base12345678\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     def runner(argv):
@@ -4775,7 +4775,7 @@ def test_count_only_without_changes_errors(pm_update, tmp_path, monkeypatch, cap
     fake_repo = tmp_path / "fake_repo"
     source = tmp_path / "checkout"
     _make_source_with_manifest(source, [".project_manager/tools/board.py"])
-    _write_local_conf(fake_repo, f"upstream={source}\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     rc = pm_update.main(["--count-only"])
@@ -4789,7 +4789,7 @@ def test_log_without_changes_errors(pm_update, tmp_path, monkeypatch, capsys):
     fake_repo = tmp_path / "fake_repo"
     source = tmp_path / "checkout"
     _make_source_with_manifest(source, [".project_manager/tools/board.py"])
-    _write_local_conf(fake_repo, f"upstream={source}\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     rc = pm_update.main(["--log"])
@@ -4837,7 +4837,7 @@ def test_retired_upstream_file_survives_sync_and_is_reported(
     keep.write_text("# keep\n", encoding="utf-8")
     retired = fake_repo / RETIRED_DIR_REL / "retired.md"
     retired.write_text("# 상류에서 은퇴한 파일\n", encoding="utf-8")
-    _write_local_conf(fake_repo, f"upstream={source}\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     argv = ["--dry-run"] if dry_run else []
@@ -4864,7 +4864,7 @@ def test_adopter_local_asset_is_reported_as_indistinguishable(
     local_asset = fake_repo / RETIRED_DIR_REL / "project-local" / "SKILL.md"
     local_asset.parent.mkdir(parents=True)
     local_asset.write_text("# 채택자 로컬 자산\n", encoding="utf-8")
-    _write_local_conf(fake_repo, f"upstream={source}\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     assert pm_update.main([]) == 0
@@ -4882,7 +4882,7 @@ def test_retired_report_is_silent_when_dest_matches_upstream(
     fake_repo = tmp_path / "dest-clean"
     source = tmp_path / "source-clean"
     _make_dir_entry_upstream(source, {f"{RETIRED_DIR_REL}/keep.md": "# keep\n"})
-    _write_local_conf(fake_repo, f"upstream={source}\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     assert pm_update.main([]) == 0
@@ -5011,7 +5011,7 @@ def test_changes_labels_upstream_delete_as_not_removed_by_sync(
     fake_repo = tmp_path / "fake_repo"
     source = tmp_path / "checkout"
     _make_source_with_manifest(source, [".claude/skills"])
-    _write_local_conf(fake_repo, f"upstream={source}\nupstream_rev=base12345678\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\nupstream.rev=base12345678\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     runner = _make_fake_git_runner(
         head="head0000",
@@ -5045,7 +5045,7 @@ def test_changes_inherits_guest_channel_split(
     framework = _make_guest_framework(tmp_path / "fw")
     dest = tmp_path / "adopter"
     _make_legacy_guest_adopter(pm_update, dest)
-    _write_local_conf(dest, f"upstream={framework}\nupstream_rev=base12345678\n")
+    _write_local_conf(dest, f"upstream.path={framework}\nupstream.rev=base12345678\n")
     monkeypatch.setattr(pm_update, "REPO", dest)
     runner = _make_fake_git_runner(
         head="head0000",
@@ -5086,7 +5086,7 @@ def test_changes_prints_retired_report_for_dangling_pointer(
     # 파일 엔트리 자체가 상류에서 사라진 형상 — dest 엔 잔존한다.
     (dest / ".claude").mkdir(parents=True)
     (dest / ".claude" / "settings-legacy.json").write_text("{}\n", encoding="utf-8")
-    _write_local_conf(dest, f"upstream={source}\nupstream_rev=base12345678\n")
+    _write_local_conf(dest, f"upstream.path={source}\nupstream.rev=base12345678\n")
     monkeypatch.setattr(pm_update, "REPO", dest)
     runner = _make_fake_git_runner(
         head="head0000",
@@ -5169,7 +5169,7 @@ def test_changes_reports_rename_old_path_leaving_manifest(
     fake_repo = tmp_path / "fake_repo"
     source = tmp_path / "checkout"
     _make_source_with_manifest(source, [".claude/skills"])
-    _write_local_conf(fake_repo, f"upstream={source}\nupstream_rev=base12345678\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\nupstream.rev=base12345678\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     runner = _make_fake_git_runner(
         head="head0000",
@@ -5358,7 +5358,7 @@ def test_dry_run_board_separated_does_not_revive_wiki_template(pm_update, tmp_pa
     source = tmp_path / "upstream"
     _make_template_upstream(source)
     _make_board_separated(fake_repo)
-    _write_local_conf(fake_repo, f"upstream={source}\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     rc = pm_update.main(["--dry-run"])
@@ -5376,7 +5376,7 @@ def test_dry_run_legacy_ships_wiki_template(pm_update, tmp_path, monkeypatch, ca
     source = tmp_path / "upstream"
     _make_template_upstream(source)
     (fake_repo / ".project_manager").mkdir(parents=True)  # board/ 없음 = legacy
-    _write_local_conf(fake_repo, f"upstream={source}\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     rc = pm_update.main(["--dry-run"])
@@ -5396,7 +5396,7 @@ def test_apply_board_separated_writes_template_into_board(pm_update, tmp_path, m
     source = tmp_path / "upstream"
     _make_template_upstream(source)
     _make_board_separated(fake_repo)
-    _write_local_conf(fake_repo, f"upstream={source}\n")
+    _write_local_conf(fake_repo, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
 
     # baseline rev 기록은 본 테스트 무관 — 라이브 git 없이 graceful 생략되게 stub None.
@@ -5576,7 +5576,7 @@ def test_self_prop_self_update_preserves_root_flavor(pm_update, tmp_path, monkey
     _make_flavor_manifest_repo(fake_repo)
     monkeypatch.setattr(pm_update, "REPO", fake_repo)
     _stub_no_baseline_git(pm_update, monkeypatch)
-    _write_local_conf(fake_repo, f"upstream={fake_repo}\n")
+    _write_local_conf(fake_repo, f"upstream.path={fake_repo}\n")
 
     root_manifest = fake_repo / ".project_manager" / "engine.manifest"
     before = root_manifest.read_text(encoding="utf-8")
@@ -5657,7 +5657,7 @@ def test_reinstall_protected_hooks_installs_both_hooks(pm_update, tmp_path, caps
 def test_reinstall_protected_hooks_deploys_adopter_self_test_contract(pm_update, tmp_path):
     """pm_update 재설치는 adopter mode와 repo test_cmd sidecar를 새 훅 본문과 함께 배포한다."""
     dest = _make_pm_home(tmp_path / "adopter-home")
-    _write_local_conf(dest, f"upstream={tmp_path / 'framework-upstream'}\n")
+    _write_local_conf(dest, f"upstream.path={tmp_path / 'framework-upstream'}\n")
 
     result = pm_update.reinstall_protected_hooks(dest, write=True)
 
@@ -5740,7 +5740,7 @@ def test_main_sync_stays_available_when_post_sync_dest_engine_is_skewed(
     dest = _make_pm_home(tmp_path / "home")
     source = tmp_path / "upstream"
     _make_upstream(source)
-    _write_local_conf(dest, f"upstream={source}\n")
+    _write_local_conf(dest, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", dest)
     _stub_no_baseline_git(pm_update, monkeypatch)
     skew = RuntimeError("injected post-sync engine skew")
@@ -5770,7 +5770,7 @@ def test_main_reinstalls_protected_hooks_after_apply(pm_update, tmp_path, monkey
     dest = _make_pm_home(tmp_path / "home")
     source = tmp_path / "upstream"
     _make_upstream(source)                       # sentinel 1개 = changes>0
-    _write_local_conf(dest, f"upstream={source}\n")
+    _write_local_conf(dest, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", dest)
     _stub_no_baseline_git(pm_update, monkeypatch)
 
@@ -5787,7 +5787,7 @@ def test_main_dry_run_previews_reinstall_without_installing(pm_update, tmp_path,
     dest = _make_pm_home(tmp_path / "home")
     source = tmp_path / "upstream"
     _make_upstream(source)
-    _write_local_conf(dest, f"upstream={source}\n")
+    _write_local_conf(dest, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", dest)
 
     rc = pm_update.main(["--dry-run"])
@@ -5839,7 +5839,7 @@ def test_main_reinstalls_protected_hooks_when_no_changes(pm_update, tmp_path, mo
     sentinel = dest / SENTINEL_REL
     sentinel.parent.mkdir(parents=True, exist_ok=True)
     sentinel.write_text((source / SENTINEL_REL).read_text(encoding="utf-8"), encoding="utf-8")
-    _write_local_conf(dest, f"upstream={source}\n")
+    _write_local_conf(dest, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", dest)
     _stub_no_baseline_git(pm_update, monkeypatch)
 
@@ -5860,7 +5860,7 @@ def test_main_second_run_is_quiet_when_hooks_in_sync(pm_update, tmp_path, monkey
     dest = _make_pm_home(tmp_path / "home")
     source = tmp_path / "upstream"
     _make_upstream(source)
-    _write_local_conf(dest, f"upstream={source}\n")
+    _write_local_conf(dest, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", dest)
     _stub_no_baseline_git(pm_update, monkeypatch)
 
@@ -6113,7 +6113,7 @@ def _scope_fixture(pm_update, tmp_path, monkeypatch, name: str) -> tuple[Path, P
     dest = tmp_path / f"{name}_dest"
     source = tmp_path / f"{name}_source"
     _make_upstream_tree(source, _SCOPE_FILES, _SCOPE_MANIFEST)
-    _write_local_conf(dest, f"upstream={source}\n")
+    _write_local_conf(dest, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", dest)
     return dest, source
 
@@ -6239,11 +6239,11 @@ def test_paths_scope_does_not_record_upstream_baseline(pm_update, tmp_path, monk
 
     assert pm_update.main(["--paths", "adapterdir/one.md"]) == 0
     conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
-    assert "upstream_rev" not in conf, "부분 전파가 baseline 을 최신으로 박음(거짓 최신)"
+    assert "upstream.rev" not in conf, "부분 전파가 baseline 을 최신으로 박음(거짓 최신)"
 
     assert pm_update.main([]) == 0  # 대조군 — 전량 sync 는 기존대로 기록한다.
     conf = pm_update._read_local_conf(dest / ".project_manager" / "local.conf")
-    assert conf.get("upstream_rev") == "scopedrev7"
+    assert conf.get("upstream.rev") == "scopedrev7"
 
 
 def test_paths_scope_skips_whole_instance_steps(pm_update, tmp_path, monkeypatch):
@@ -6316,7 +6316,7 @@ def test_paths_scope_reports_a_missing_source_entry_that_holds_the_request(
         {".project_manager/tools/__scope_alpha__.py": "# alpha\n"},
         [".project_manager/tools/__scope_alpha__.py", "adapterdir"],
     )
-    _write_local_conf(dest, f"upstream={source}\n")
+    _write_local_conf(dest, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", dest)
 
     rc = pm_update.main(["--paths", "adapterdir/one.md"])
@@ -6376,7 +6376,7 @@ def test_paths_scope_accepts_guest_clause_path(pm_update, tmp_path, monkeypatch,
     dest = tmp_path / "guest_dest"
     source = tmp_path / "guest_source"
     _make_upstream_tree(source, _SCOPE_FILES, _SCOPE_MANIFEST)
-    _write_local_conf(dest, f"upstream={source}\n")
+    _write_local_conf(dest, f"upstream.path={source}\n")
     manifest = dest / ".project_manager" / "engine.manifest"
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(
@@ -6424,7 +6424,7 @@ def test_paths_scope_reports_missing_source_for_source_remapped_entry(
         [".project_manager/tools/__scope_alpha__.py",
          ".opencode/agents @render @source=templates/opencode/.opencode/agents"],
     )
-    _write_local_conf(dest, f"upstream={source}\n")
+    _write_local_conf(dest, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", dest)
 
     rc = pm_update.main(["--paths", "templates/opencode/.opencode/agents"])
@@ -6478,7 +6478,7 @@ def test_paths_scope_accepts_the_manifest_union_self_prop(pm_update, tmp_path, m
             "\n".join(_SCOPE_MANIFEST + [".project_manager/engine.manifest"]) + "\n",
             encoding="utf-8")
     _track_source_tree(source)
-    _write_local_conf(dest, f"upstream={source}\n")
+    _write_local_conf(dest, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", dest)
 
     rc = pm_update.main(["--paths", ".project_manager/engine.manifest"])
@@ -6523,7 +6523,7 @@ def test_loader_in_scope_is_still_recovered(pm_update, tmp_path, monkeypatch):
         {**_SCOPE_FILES, _loader_rel(): (REPO / _loader_rel()).read_text(encoding="utf-8")},
         _SCOPE_MANIFEST + [_loader_rel()],
     )
-    _write_local_conf(dest, f"upstream={source}\n")
+    _write_local_conf(dest, f"upstream.path={source}\n")
     stale = dest / _loader_rel()
     stale.parent.mkdir(parents=True, exist_ok=True)
     stale.write_text("# 구형 seam\n", encoding="utf-8")
@@ -6546,7 +6546,7 @@ def test_paths_scope_accepts_board_separated_remap(pm_update, tmp_path, monkeypa
     board_rel = ".project_manager/board/tickets/_template.md"
     _make_upstream_tree(source, {template_rel: "# ticket 템플릿\n"}, [template_rel])
     (dest / ".project_manager" / "board" / "tickets").mkdir(parents=True)  # board 분리 형상.
-    _write_local_conf(dest, f"upstream={source}\n")
+    _write_local_conf(dest, f"upstream.path={source}\n")
     monkeypatch.setattr(pm_update, "REPO", dest)
     assert pm_update._is_board_separated(dest), "픽스처 전제(board 분리 판정)"
 
@@ -7019,7 +7019,7 @@ def test_pm_update_managed_dest_missing_source_template_is_rc1_without_rev_conve
     local.parent.mkdir(parents=True, exist_ok=True)
     local.write_bytes(sentinel.read_bytes())
     conf = _write_local_conf(
-        dest, f"upstream={source}\nupstream_rev=old\nupstream_seen_rev=old\n")
+        dest, f"upstream.path={source}\nupstream.rev=old\nupstream.seen_rev=old\n")
     before_conf = conf.read_bytes()
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
@@ -7171,7 +7171,7 @@ def test_pm_update_partial_managed_dest_blocks_zero_change_revision_convergence(
     hooks.parent.mkdir(parents=True)
     hooks.write_text(_INSTALLED_HOOKS, encoding="utf-8")
     conf = _write_local_conf(
-        dest, f"upstream={source}\nupstream_rev=old\nupstream_seen_rev=old\n")
+        dest, f"upstream.path={source}\nupstream.rev=old\nupstream.seen_rev=old\n")
     before_conf = conf.read_bytes()
     monkeypatch.setattr(pm_update, "REPO", dest)
     monkeypatch.setenv("PM_NONINTERACTIVE", "1")
@@ -7322,7 +7322,7 @@ def test_agent_card_renders_conf_model_through_local_conf(pm_update, tmp_path):
         "delegate.researcher.model=haiku",
         "delegate.architect.model=opus",
         "delegate.code-reviewer.model=gpt-5.6-sol",
-        "project_name=Acme",
+        "project.name=Acme",
         "",
     ]))
 
@@ -7354,7 +7354,7 @@ def test_agent_card_unset_delegate_model_is_graceful_todo(pm_update, tmp_path):
     (`{{OPENCODE_PRO_MODEL}}` 선례와 동형)."""
     pm_render = pm_update._load_pm_render()
     dest = tmp_path / "dest"
-    _write_local_conf(dest, "project_name=Acme\ndelegate.researcher.model=haiku\n")
+    _write_local_conf(dest, "project.name=Acme\ndelegate.researcher.model=haiku\n")
 
     operational, empty_keys = pm_update._operational_from_local_conf(dest)
     template_tree = REPO / "templates" / "claude_code" / ".claude" / "agents"
@@ -7383,7 +7383,7 @@ def test_agent_card_empty_delegate_model_is_loud_leak(pm_update, tmp_path):
     """`delegate.<role>.model=` 빈값(오설정)은 중화하지 않고 leak 으로 표면화한다."""
     pm_render = pm_update._load_pm_render()
     dest = tmp_path / "dest"
-    _write_local_conf(dest, "project_name=Acme\ndelegate.developer.model=\n")
+    _write_local_conf(dest, "project.name=Acme\ndelegate.developer.model=\n")
 
     operational, empty_keys = pm_update._operational_from_local_conf(dest)
 
@@ -7450,7 +7450,7 @@ def test_fresh_adopter_card_model_follows_delegate_conf_across_updates(
     conf = dest / ".project_manager" / "local.conf"
     conf.write_text(
         conf.read_text(encoding="utf-8")
-        + "delegate_enabled=true\n"
+        + "delegate.enabled=true\n"
         + "delegate.developer.harness=claude\n"
         + "delegate.developer.model=sonnet\n"
         + "delegate.researcher.model=haiku\n",
@@ -7515,7 +7515,7 @@ def test_guest_agent_card_model_follows_delegate_conf_after_absorb(
     conf = dest / ".project_manager" / "local.conf"
     conf.write_text(
         conf.read_text(encoding="utf-8")
-        + "delegate_enabled=true\n"
+        + "delegate.enabled=true\n"
         + "delegate.developer.harness=claude\n"
         + "delegate.developer.model=sonnet\n",
         encoding="utf-8", newline="\n",

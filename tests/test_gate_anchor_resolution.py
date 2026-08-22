@@ -48,6 +48,9 @@ def _managed_worktree(tmp_path: Path) -> tuple[Path, Path, str]:
     # 실 채택 슬롯처럼 자기 엔진 사본 마커를 둬 repo_root_from_cwd가 슬롯에서 멈추고,
     # lease 기반 PM-home 재앵커가 실제로 load-bearing이 되게 한다.
     (worktree / ".project_manager" / "tools").mkdir(parents=True)
+    # PM 홈 강등(lease 손상) 형상은 슬롯 자기 conf 로 리뷰어 대상을 해소한다.
+    (worktree / ".project_manager" / "local.conf").write_text(
+        _REVIEWER_TARGET_LINES, encoding="utf-8")
 
     ticket = "T-" + "9001"
     tickets = home / ".project_manager" / "wiki" / "tickets" / "open"
@@ -64,7 +67,8 @@ def _managed_worktree(tmp_path: Path) -> tuple[Path, Path, str]:
     )
     local = home / ".project_manager" / "local.conf"
     local.write_text(
-        "delegate_enabled=true\n"
+        _REVIEWER_TARGET_LINES
+        + "delegate.enabled=true\n"
         "delegate.developer.harness=codex\n"
         "delegate.developer.model=gpt-test\n",
         encoding="utf-8",
@@ -89,14 +93,27 @@ def _unregistered_worktree(tmp_path: Path) -> tuple[Path, Path]:
     _git(home, "commit", "-qm", "seed")
     worktree = tmp_path / "snapshot"
     _git(home, "worktree", "add", "-q", "-b", "snapshot", str(worktree))
+    # 미등록 worktree 는 자기 앵커로 강등되므로 리뷰어 대상도 자기 conf 에서 해소된다.
+    conf = worktree / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True, exist_ok=True)
+    conf.write_text(_REVIEWER_TARGET_LINES, encoding="utf-8")
     return home, worktree
+
+
+# 해소 가능한 추가 리뷰어 대상 줄 — 대상은 `harness`+`model` 구조화 키로만 서므로(엔진 기본
+# 커맨드 없음) 실 전송 분기를 태우는 conf 는 이 세 줄을 함께 담아야 한다.
+_REVIEWER_TARGET_LINES = (
+    "additional_reviewer.enabled=true\n"
+    "additional_reviewer.harness=codex\n"
+    "additional_reviewer.model=gpt-5.6-sol\n"
+)
 
 
 def _enable_additional_review(repo: Path) -> None:
     """실 전송 분기까지 태울 최소 opt-in conf."""
     local = repo / ".project_manager" / "local.conf"
     local.parent.mkdir(parents=True, exist_ok=True)
-    local.write_text("additional_reviewer_enabled=true\n", encoding="utf-8")
+    local.write_text(_REVIEWER_TARGET_LINES, encoding="utf-8")
 
 
 def _stub_review_send(external, monkeypatch, tmp_path: Path) -> dict[str, int]:
@@ -170,9 +187,10 @@ def test_unregistered_worktree_allows_boardless_delegate_and_review(
 ):
     _home, worktree = _unregistered_worktree(tmp_path)
     local = worktree / ".project_manager" / "local.conf"
-    local.parent.mkdir()
+    local.parent.mkdir(exist_ok=True)
     local.write_text(
-        "delegate.developer.harness=codex\n"
+        _REVIEWER_TARGET_LINES
+        + "delegate.developer.harness=codex\n"
         "delegate.developer.model=gpt-test\n",
         encoding="utf-8",
     )
@@ -626,7 +644,9 @@ def test_valid_empty_lease_blocks_unregistered_worktree_round(
     ("extra_args", "expected_rc", "expected_error"),
     [
         (("--tier", "hard", "--dry-run"), 1, "hard 프로필 미설정"),
-        ((), 3, "delegate 비활성"),
+        # 위임 스위치 기본이 허용이라, 매핑 없는 conf 의 진단은 "비활성"(rc=3)이 아니라 "역할 매핑
+        # 미설정"(rc=1)이다 — 실제로 없는 것이 매핑이므로 이쪽이 정확한 진단이다.
+        ((), 1, "역할 매핑 미설정"),
     ],
 )
 def test_unregistered_delegate_failure_flushes_anchor_warning_before_return(
@@ -697,7 +717,8 @@ def test_standalone_repo_uses_itself_for_both_tools(tmp_path, monkeypatch, capsy
     local = repo / ".project_manager" / "local.conf"
     local.parent.mkdir()
     local.write_text(
-        "delegate.developer.harness=codex\n"
+        _REVIEWER_TARGET_LINES
+        + "delegate.developer.harness=codex\n"
         "delegate.developer.model=gpt-test\n",
         encoding="utf-8",
     )
@@ -746,7 +767,8 @@ def test_delegate_and_review_failure_sets_match_across_three_repo_shapes(
         local = config_home / ".project_manager" / "local.conf"
         local.parent.mkdir(parents=True, exist_ok=True)
         local.write_text(
-            "delegate.developer.harness=codex\n"
+            _REVIEWER_TARGET_LINES
+            + "delegate.developer.harness=codex\n"
             "delegate.developer.model=gpt-test\n",
             encoding="utf-8",
         )
@@ -923,6 +945,9 @@ def test_external_main_restores_selector_globals_between_calls(
         _git(repo, "add", "seed.txt")
         _git(repo, "commit", "-qm", "seed")
         (repo / "seed.txt").write_text(f"changed-{name}\n", encoding="utf-8")
+        conf = repo / ".project_manager" / "local.conf"
+        conf.parent.mkdir(parents=True, exist_ok=True)
+        conf.write_text(_REVIEWER_TARGET_LINES, encoding="utf-8")
         repos.append(repo)
     engine, absolute = repos
     external = _load("external_review_global_restore")
@@ -1066,7 +1091,7 @@ def test_ticket_touching_other_registered_slot_names_anchor_mismatch(tmp_path):
 
 
 def _dual_slot_home(root: Path) -> tuple[Path, Path, Path]:
-    """등록 슬롯 2개를 가진 PM 홈 — conf review_paths 로 슬롯을 고르는 형상.
+    """등록 슬롯 2개를 가진 PM 홈 — conf additional_reviewer.paths 로 슬롯을 고르는 형상.
 
     두 슬롯 모두 깨끗한 상태로 돌려주므로, 각 테스트가 필요한 변경(작업트리/커밋)을 직접 만든다.
     반환: (PM 홈, 첫 슬롯, 둘째 슬롯).
@@ -1095,7 +1120,8 @@ def _dual_slot_home(root: Path) -> tuple[Path, Path, Path]:
         encoding="utf-8",
     )
     local = home / ".project_manager" / "local.conf"
-    local.write_text("review_paths=src/module.py\n", encoding="utf-8")
+    local.write_text(_REVIEWER_TARGET_LINES + "additional_reviewer.paths=src/module.py\n",
+                     encoding="utf-8")
     ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.parent.mkdir(parents=True)
     ledger.write_text(
@@ -1160,7 +1186,8 @@ def test_delegate_divergence_names_resolved_pm_home_as_profile_source(
     local = worktree / ".project_manager" / "local.conf"
     local.parent.mkdir(parents=True, exist_ok=True)
     local.write_text(
-        "delegate.developer.harness=codex\n"
+        _REVIEWER_TARGET_LINES
+        + "delegate.developer.harness=codex\n"
         "delegate.developer.model=gpt-other\n",
         encoding="utf-8",
     )
@@ -1236,12 +1263,12 @@ def test_unfinished_round_record_is_counted_separately():
 def _cross_owned_slot(root, *, declare_review_paths: bool = True):
     """A 장부가 B 소유 슬롯을 등록한 교차 소유 형상.
 
-    두 PM 홈이 서로 다른 review_paths 를 선언하고, A 의 lease 장부가 B 의
-    worktree 를 슬롯으로 등록한다. 인자 없는 실행에서 A 의 review_paths 로
+    두 PM 홈이 서로 다른 additional_reviewer.paths 를 선언하고, A 의 lease 장부가 B 의
+    worktree 를 슬롯으로 등록한다. 인자 없는 실행에서 A 의 additional_reviewer.paths 로
     diff_root 를 고르면 그 소유자는 B 라, 표시된 config provenance 와 실제
     전송 범위가 갈린다.
 
-    `declare_review_paths=False` 면 두 conf 모두 review_paths 를 선언하지 않아 범위가 엔진 고정
+    `declare_review_paths=False` 면 두 conf 모두 additional_reviewer.paths 를 선언하지 않아 범위가 엔진 고정
     기본 경로로 떨어진다 — 범위 출처가 최초 PM 홈이라는 사실은 같은 형상이다.
     """
     home_a = root / "home-a"
@@ -1260,8 +1287,9 @@ def _cross_owned_slot(root, *, declare_review_paths: bool = True):
         conf = home / ".project_manager" / "local.conf"
         conf.parent.mkdir(parents=True, exist_ok=True)
         conf.write_text(
-            f"review_paths={declared}\n" if declare_review_paths
-            else "# review_paths 미선언 — 엔진 고정 기본 경로로 떨어진다\n",
+            _REVIEWER_TARGET_LINES + (
+                f"additional_reviewer.paths={declared}\n" if declare_review_paths
+                else "# additional_reviewer.paths 미선언 — 엔진 고정 기본 경로로 떨어진다\n"),
             encoding="utf-8",
         )
 
@@ -1310,15 +1338,15 @@ def test_explicit_paths_escape_cross_owned_conf_block(
 def _demoted_worktree_with_owner_filters(tmp_path) -> tuple[Path, Path]:
     """lease 장부 손상으로 config 소유자가 슬롯으로 강등되는 형상 + PM 홈 전용 필터 선언.
 
-    PM 홈만 `review_paths=src` 와 `review_denylist_extra=*.vault` 를 선언하고, 슬롯에는 conf 가
+    PM 홈만 `additional_reviewer.paths=src` 와 `additional_reviewer.denylist_extra=*.vault` 를 선언하고, 슬롯에는 conf 가
     없다. 승계가 없으면 이 실행은 엔진 기본 경로로 `src/keys.vault` 까지 필터 없이 내보낸다.
     """
     home, worktree, _ticket = _managed_worktree(tmp_path)
     conf = home / ".project_manager" / "local.conf"
     conf.write_text(
         conf.read_text(encoding="utf-8")
-        + "review_paths=src\n"
-        + "review_denylist_extra=*.vault\n",
+        + "additional_reviewer.paths=src\n"
+        + "additional_reviewer.denylist_extra=*.vault\n",
         encoding="utf-8",
     )
     _git(worktree, "config", "user.email", "test@example.invalid")
@@ -1341,7 +1369,7 @@ def _demoted_worktree_with_owner_filters(tmp_path) -> tuple[Path, Path]:
 def test_demoted_conf_owner_inherits_owner_pm_home_review_filters(
     tmp_path, monkeypatch, capsys,
 ):
-    """강등 실행도 소유 PM 홈의 denylist/review_paths 를 승계해 필터가 좁아지지 않는다."""
+    """강등 실행도 소유 PM 홈의 denylist/additional_reviewer.paths 를 승계해 필터가 좁아지지 않는다."""
     home, worktree = _demoted_worktree_with_owner_filters(tmp_path)
     external = _load("external_review_demoted_inherit")
     monkeypatch.setattr(external, "REPO", worktree)
@@ -1404,7 +1432,8 @@ def test_ambiguous_owner_candidates_block_without_paths_and_warn_with_paths(
     for home in homes:
         (home / ".project_manager").mkdir(parents=True)
         (home / ".project_manager" / "local.conf").write_text(
-            "review_denylist_extra=*.vault\n", encoding="utf-8",
+            _REVIEWER_TARGET_LINES + "additional_reviewer.denylist_extra=*.vault\n",
+            encoding="utf-8",
         )
     demotion = external.PmHomeDemotion(tmp_path / "slot", "중복 등록", tuple(homes))
 
@@ -1414,21 +1443,22 @@ def test_ambiguous_owner_candidates_block_without_paths_and_warn_with_paths(
         external._conf_with_owner_filters({}, [demotion], explicit_paths=False)
 
     kept = external._conf_with_owner_filters(
-        {"review_paths": "."}, [demotion], explicit_paths=True,
+        {"additional_reviewer.paths": "."}, [demotion], explicit_paths=True,
     )
-    assert kept == {"review_paths": "."}
+    assert kept == {"additional_reviewer.paths": "."}
     assert "승계하지 못했습니다" in capsys.readouterr().err
 
 
 def _demoted_worktree_with_owner_default_scope(tmp_path) -> tuple[Path, Path]:
-    """소유 PM 홈은 review_paths 미선언(=엔진 기본 경로)이고 슬롯만 `.` 를 선언한 강등 형상.
+    """소유 PM 홈은 additional_reviewer.paths 미선언(=엔진 기본 경로)이고 슬롯만 `.` 를 선언한 강등 형상.
 
     슬롯 선언이 살아남으면 lease 손상만으로 송신 범위가 소유 유효 범위보다 넓어진다 — 기본 경로
     밖 파일(`docs/notes.md`)의 포함 여부가 그 판별자다.
     """
     home, worktree, _ticket = _managed_worktree(tmp_path)
     slot_conf = worktree / ".project_manager" / "local.conf"
-    slot_conf.write_text("review_paths=.\n", encoding="utf-8")
+    slot_conf.write_text(_REVIEWER_TARGET_LINES + "additional_reviewer.paths=.\n",
+                         encoding="utf-8")
     _git(worktree, "config", "user.email", "test@example.invalid")
     _git(worktree, "config", "user.name", "test")
     source = worktree / "src" / "module.py"
@@ -1472,9 +1502,9 @@ def test_owner_scope_oracle_is_sensitive_to_surviving_slot_declaration(
 
     def _legacy_merge(conf, owner_filters):
         merged = dict(conf)
-        owner_paths = owner_filters.get("review_paths", "").strip()
+        owner_paths = owner_filters.get("additional_reviewer.paths", "").strip()
         if owner_paths:
-            merged["review_paths"] = owner_paths
+            merged["additional_reviewer.paths"] = owner_paths
         return merged
 
     monkeypatch.setattr(external, "_merged_owner_filters", _legacy_merge)
@@ -1525,7 +1555,8 @@ def _cross_repo_absolute_target(
 
     home_b, slot_b, _ticket_b = _managed_worktree(tmp_path / "b")
     conf_b = home_b / ".project_manager" / "local.conf"
-    conf_b.write_text("review_denylist_extra=*.b-vault\n", encoding="utf-8")
+    conf_b.write_text(_REVIEWER_TARGET_LINES + "additional_reviewer.denylist_extra=*.b-vault\n",
+                      encoding="utf-8")
     _git(slot_b, "config", "user.email", "test@example.invalid")
     _git(slot_b, "config", "user.name", "test")
     source = slot_b / "src" / "module.py"
@@ -1712,7 +1743,8 @@ def _multi_commit_base_home(root: Path) -> tuple[Path, Path, Path]:
     _git(home, "worktree", "add", "-q", "-b", "tip-slot", str(tip))
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
-    conf.write_text("review_paths=src/module.py\n", encoding="utf-8")
+    conf.write_text(_REVIEWER_TARGET_LINES + "additional_reviewer.paths=src/module.py\n",
+                    encoding="utf-8")
     ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.parent.mkdir(parents=True)
     ledger.write_text(
@@ -1804,13 +1836,13 @@ def test_slot_selection_oracle_is_sensitive_to_commit_fallback_as_evidence(
     assert "value = 2" in captured.out  # 아무도 이번에 만들지 않은 base 커밋이 리뷰 대상이 된다
 
 
-# ── 교차 소유 검출은 review_paths 선언 유무와 무관 ─────────────────────────
+# ── 교차 소유 검출은 additional_reviewer.paths 선언 유무와 무관 ─────────────────────────
 
 
 def test_default_review_paths_cross_owned_slot_blocks_before_external_send(
     tmp_path, monkeypatch, capsys,
 ):
-    """conf 가 review_paths 를 선언하지 않아도 교차 소유 형상은 같은 기준으로 차단한다."""
+    """conf 가 additional_reviewer.paths 를 선언하지 않아도 교차 소유 형상은 같은 기준으로 차단한다."""
     home_a, home_b, _slot = _cross_owned_slot(
         tmp_path / "default-cross", declare_review_paths=False,
     )
@@ -1845,7 +1877,7 @@ def test_explicit_paths_escape_default_paths_cross_owned_block(
 def test_default_paths_cross_owned_oracle_is_sensitive_to_declared_only_guard(
     tmp_path, monkeypatch, capsys,
 ):
-    """판정을 옛 '선언된 review_paths 만' 기준으로 되돌리면 같은 형상이 rc=0 으로 통과한다."""
+    """판정을 옛 '선언된 additional_reviewer.paths 만' 기준으로 되돌리면 같은 형상이 rc=0 으로 통과한다."""
     home_a, _home_b, _slot = _cross_owned_slot(
         tmp_path / "declared-only", declare_review_paths=False,
     )

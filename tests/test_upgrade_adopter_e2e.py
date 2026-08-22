@@ -130,7 +130,7 @@ _PM_IMPORT = _engine_pm_import()
 def _run_pm_update(dest: Path, *args: str) -> subprocess.CompletedProcess:
     """채택자 트리의 pm_update.py 를 실제 CLI 로 구동한다(cwd=dest·비대화형·capture).
 
-    upstream 은 명시 `--from REPO` 다 — fresh 인스턴스의 local.conf `upstream=` 은 URL 이라
+    upstream 은 명시 `--from REPO` 다 — fresh 인스턴스의 local.conf `upstream.path=` 은 URL 이라
     엔진이 자동 진행하지 않는다(로컬 checkout 명시가 채택자의 실제 절차)."""
     proc = subprocess.run(
         [sys.executable, str(dest / ".project_manager" / "tools" / "pm_update.py"),
@@ -644,7 +644,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   self-update 순서)는 불변이며, 이 테스트의 두 실행은 PM_NONINTERACTIVE=1 이라 온보딩 질문·
 #   conf write 가 발화하지 않는다. rev 기록은 두 실행 모두에서 종전과 같은 키를 같은 값으로
 #   쓴다(락이 추가됐을 뿐 기록 의미 불변) — 현재화한 것은 기대 SHA 하나뿐이다.
-#   T-0597 에서 또 이동 — opt-in 게이트 키가 `additional_reviewer_enabled` 로 개칭되고 개칭 전
+#   T-0597 에서 또 이동 — opt-in 게이트 키가 `additional_reviewer.enabled` 로 개칭되고 개칭 전
 #   구키가 1릴리즈 fallback 이 됐다. 들어온 것은 온보딩 상수
 #   (`ADDITIONAL_REVIEWER_ENABLED_KEY`·`LEGACY_EXTERNAL_REVIEW_ENABLED_KEY`·
 #   `LEGACY_ENABLED_KEY_DEPRECATION`)와 판정 헬퍼(`additional_reviewer_decision_key`),
@@ -716,7 +716,21 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   이동했다. 들어온 것은 좌표 파생 헬퍼(`_dest_relative_path`) 하나와 렌더 호출 3곳의 인자이고,
 #   역적용 delta 의 네 anchor 는 전부 `_main`/`sync_adapter_configs` 쪽이라 그대로 유일 해소된다.
 #   배달 경계와 배달 파일 집합도 불변이다 — 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "1e1e2322717cef04c13e02715deb40e02077edeadf3665d9010bded329a920e0"
+#   T-0767 이 local.conf 키 표기를 점 표기로 통일하며 또 이동했다. pm_update 쪽 변경은
+#   운영값 키 표 갱신(`project.name`·`upstream.path` 등)·`upstream.rev`/`upstream.seen_rev`
+#   상수와 그 산문·공용 로더(`local_conf.py`) 경로 로드뿐이라 문자열·읽기 키만 바뀌었다.
+#   역적용 delta 의 anchor 중 baseline 절 marker 하나가 그 산문(`upstream_rev` →
+#   `upstream.rev`)이라 marker 문자열을 함께 갱신했고, 나머지 anchor 는 그대로 유일
+#   해소된다. 배달 경계(planning → apply → self-update 순서)와 배달 파일 집합은 불변이다.
+#   같은 절의 리뷰 재작업에서 한 번 더 이동했다 — 교체 안내 호출이 수렴 뒤 두 자리에서
+#   dest/source 해소 입구 한 자리로 옮겨갔다(안내가 성공 반환·dry-run·해소 실패보다 앞서게).
+#   이동한 것은 그 호출 위치뿐이고 역적용 delta 의 네 anchor 는 전부 다른 구간이라 그대로 유일
+#   해소된다. 배달 경계와 배달 파일 집합은 여전히 불변이다 — 현재화한 것은 기대 SHA 하나뿐이다.
+#   통합 브랜치 위로 rebase 하며 한 번 더 이동했다 — 흡수한 커밋들이 pm_update 의 배달 대상
+#   목록이 아니라 그 밖의 코드·산문을 바꿨고, 이 절의 역적용 delta anchor 네 자리는 전부
+#   그 구간 밖이라 그대로 유일 해소된다. 배달 경계(planning → apply → self-update 순서)와
+#   배달 파일 집합은 여전히 불변이고, 현재화한 것은 기대 SHA 하나뿐이다.
+_T0585_PM_UPDATE_SHA256 = "fa4d8459f2d485949dd5dbb4a3726690ca138b5d1a3b64f3bcbb7e52ba8a558a"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
@@ -943,7 +957,7 @@ def _t0585_pm_update_source() -> str:
     source = _slice_replace(
         source,
         "        # apply 로 방금 착지한 **새 훅 세트**를 기준으로 판정한다",
-        "\n    # upstream_rev baseline 갱신",
+        "\n    # upstream.rev baseline 갱신",
         "",
     )
     source = _slice_replace(
@@ -1376,3 +1390,111 @@ def test_upgrade_adopter_absorbs_the_widened_entrypoint_set_without_advisory_noi
         {"hook_event_name": "PreCompact", "cwd": str(dest), "model": "m",
          "session_id": "s", "transcript_path": None, "trigger": "auto", "turn_id": "t"})
     assert envelope and "adapter-fallback" not in json.dumps(envelope, ensure_ascii=False)
+
+# ── S8 구표기 conf 채택자의 전환 (dry-run → RUN1 → RUN2 → 교체 → gate) ───────
+#
+# 표기 통일은 채택자 conf 를 깨뜨리는 전환이라, 채택자가 **무엇을 어떻게 고치는지**를 실 CLI 흐름
+# 에서 듣지 못하면 전환이 성립하지 않는다. 특히 위험한 창은 두 곳이다:
+#   (1) 구표기 `upstream=` 만 있는 채택자는 upstream 미해소로 rc=1 로 끝난다 — 그 실행이 안내를
+#       내지 않으면 채택자는 엔진을 받을 방법도, 무엇이 문제인지도 모른다.
+#   (2) 엔진을 배달하는 RUN1 은 **구 updater** 가 돈다(새 안내 코드가 아직 그 프로세스에 없다).
+#       그래서 공개 절차는 변경 0 RUN2 를 필수로 적고, 그 실행이 안내를 낸다.
+# 여기서는 그 흐름을 실 facade/CLI 로 돌려 값으로 잠근다(helper 수동 호출이 아니다).
+
+# 부분 이주 형상 — 렌더 채널이 쓰는 operational 키는 이미 신표기이고, 위임·ctx·upstream 축만
+# 구표기로 남았다(실 채택자가 안내를 받기 전 상태). 렌더 축까지 구표기면 자족 산출물 토큰 가드가
+# 먼저 서서 이 시나리오가 재는 **안내 시점**이 가려진다.
+_OPERATIONAL_CONF = (
+    "project.name=Upgrade Adopter\n"
+    "runtime.py=python3\n"
+    "test.cmd=python -c \"print('adopter suite')\"\n"
+)
+_LEGACY_AXES_CONF = (
+    "delegate_enabled=true\n"
+    "ctx_window_tokens_claude=54321\n"
+    "regression_min_collected=40\n"
+)
+
+
+def _raw_pm_update(dest: Path, *args: str) -> subprocess.CompletedProcess:
+    """rc 를 판정하지 않는 pm_update 실행 — 실패 경로의 출력까지 본다."""
+    return subprocess.run(
+        [sys.executable, str(dest / ".project_manager" / "tools" / "pm_update.py"), *args],
+        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env={**os.environ, "PM_NONINTERACTIVE": "1"}, timeout=300,
+    )
+
+
+def _make_engine_file_stale(dest: Path) -> Path:
+    """엔진 파일 하나를 구세대로 되돌린다 — RUN1(배달)/RUN2(변경 0)를 실제로 가르기 위해."""
+    stale = dest / ".project_manager" / "tools" / "domain.py"
+    stale.write_text(stale.read_text(encoding="utf-8") + "\n# 구세대 사본 표식\n",
+                     encoding="utf-8")
+    return stale
+
+
+def test_upgrade_adopter_legacy_conf_is_guided_then_replaced_then_gates_run(tmp_path):
+    """구표기 conf 채택자: 안내 → 교체 → 게이트 동작이 실 CLI 로 닫힌다."""
+    dest = tmp_path / "legacy-conf-adopter"
+    assert _PM_IMPORT.main([
+        "--new", str(dest), "--harness", "claude", "--name", _ADOPTER_NAME,
+        "--fill", "manual",
+    ]) == 0
+    _prime_engine_to_canonical(dest)
+    conf = dest / ".project_manager" / "local.conf"
+    conf.write_text(f"upstream={REPO}\n" + _OPERATIONAL_CONF + _LEGACY_AXES_CONF,
+                    encoding="utf-8")
+
+    # (1) 구표기 upstream 만 있는 형상 — 해소는 실패해도 **안내는 나간다**.
+    unresolved = _raw_pm_update(dest)
+    assert unresolved.returncode == 1, unresolved.stdout
+    assert "위임 기본값이 허용으로 바뀝니다" in unresolved.stdout
+    assert "`upstream` → `upstream.path`" in unresolved.stdout
+    assert "`delegate_enabled` → `delegate.enabled`" in unresolved.stdout
+    assert "모델 값은 자동으로 옮기지 않습니다" in unresolved.stdout
+    assert ".codex/config.toml" in unresolved.stdout          # 엔진이 못 고치는 파일 지목
+
+    # (2) dry-run 도 성공 반환 전에 같은 안내를 낸다(무write 실행이라 더더욱 여기서 들어야 한다).
+    before = conf.read_text(encoding="utf-8")
+    planned = _raw_pm_update(dest, "--from", str(REPO), "--dry-run")
+    assert planned.returncode == 0, planned.stderr
+    assert "위임 기본값이 허용으로 바뀝니다" in planned.stdout
+    assert "`regression_min_collected` → `regression.min_collected`" in planned.stdout
+    assert conf.read_text(encoding="utf-8") == before, "dry-run 이 채택자 conf 를 고쳤다"
+
+    # (3) RUN1(배달) → RUN2(변경 0) — 공개 절차가 요구하는 두 실행 **모두** 안내를 낸다.
+    stale = _make_engine_file_stale(dest)
+    run1 = _raw_pm_update(dest, "--from", str(REPO))
+    assert run1.returncode == 0, run1.stderr
+    assert "파일 동기화" in run1.stdout and "위임 기본값이 허용으로 바뀝니다" in run1.stdout
+    assert stale.read_bytes() == (REPO / ".project_manager/tools/domain.py").read_bytes()
+    run2 = _raw_pm_update(dest, "--from", str(REPO))
+    assert run2.returncode == 0, run2.stderr
+    assert "최신 — 변경 없음." in run2.stdout
+    assert "위임 기본값이 허용으로 바뀝니다" in run2.stdout
+    assert "`ctx_window_tokens_claude` → `harness.claude.ctx_window_tokens`" in run2.stdout
+
+    # (4) 교체 전 게이트는 멈춘다 — 조용히 엔진 기본값으로 돌지 않는다.
+    blocked = _run_adopter_tool(dest, "board.py", "list")
+    assert blocked.returncode == 1, blocked.stdout
+    assert "구표기 키가 남아 있습니다" in blocked.stderr + blocked.stdout
+
+    # (5) 교체 후 같은 게이트가 돈다.
+    conf.write_text(f"upstream.path={REPO}\n" + _OPERATIONAL_CONF
+                    + "delegate.enabled=true\nharness.claude.ctx_window_tokens=54321\n"
+                      "regression.min_collected=40\n", encoding="utf-8")
+    green = _run_adopter_tool(dest, "board.py", "list")
+    assert green.returncode == 0, green.stderr
+    settled = _raw_pm_update(dest, "--from", str(REPO))
+    assert settled.returncode == 0, settled.stderr
+    assert "→ `" not in settled.stdout, "교체 뒤에도 키 지목이 남았다"
+
+
+def test_public_update_procedure_documents_the_mandatory_zero_change_run2():
+    """공개 절차(README)가 변경 0 RUN2 를 필수 단계로 적는다 — RUN1 은 구 updater 가 돈다."""
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    section = readme.split("엔진 갱신은 채택자 루트에서 받는다", 1)[1][:900]
+
+    assert "RUN1" in section and "RUN2" in section
+    assert "변경 0" in section
+    assert section.count("./pm-update.sh") >= 3      # dry-run + RUN1 + RUN2

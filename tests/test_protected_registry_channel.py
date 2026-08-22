@@ -925,7 +925,7 @@ def test_bootstrap_reinstall_preserves_resolved_self_test_contract(
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
     conf.write_text(
-        f"upstream={tmp_path / 'framework-source'}\ntest_cmd=go test ./...\n",
+        f"upstream.path={tmp_path / 'framework-source'}\ntest.cmd=go test ./...\n",
         encoding="utf-8",
     )
     pm_config = _load("pm_config")
@@ -954,7 +954,7 @@ def test_bootstrap_reconciles_when_only_resolved_test_cmd_drifts(
     home = tmp_path / "adopter-contract-drift"
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
-    conf.write_text(f"upstream={tmp_path / 'framework-source'}\n", encoding="utf-8")
+    conf.write_text(f"upstream.path={tmp_path / 'framework-source'}\n", encoding="utf-8")
     pm_config = _load("pm_config")
     pm_config.REPO = home
     original_load_tool = bootstrap._load_tool
@@ -1027,7 +1027,7 @@ def test_bootstrap_no_reconcile_when_in_sync(
     home = tmp_path / "in-sync-home"
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
-    conf.write_text(f"upstream={tmp_path / 'external-framework'}\n", encoding="utf-8")
+    conf.write_text(f"upstream.path={tmp_path / 'external-framework'}\n", encoding="utf-8")
     pm_config = _load("pm_config")
     pm_config.REPO = home
     original_load_tool = bootstrap._load_tool

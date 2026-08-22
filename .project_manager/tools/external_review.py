@@ -3,7 +3,7 @@
 
 사람 역할 이름은 **추가 리뷰어(additional reviewer)** 다 — 팀에 한 명 더 붙는 리뷰어다.
 `external` 은 전송/격리/과금 축(코드가 저장소 밖으로 나간다)과 기계 식별자(모듈 파일 이름·
-raw 파일 접두)에만 남는다. 설정 키는 `additional_reviewer_enabled`/`additional_reviewer.*` 다.
+raw 파일 접두)에만 남는다. 설정 키는 `additional_reviewer.enabled`/`additional_reviewer.*` 다.
 
 명칭 이력: 이 모듈의 파일 이름은 개칭 전 이름 `external_review.py` 그대로다(T-0597 판단) —
 파일명을 바꾸면 동기가 상류 부재 파일을 지우지 않으므로 채택자 PM 홈에 구 사본이 남아 두 진입점이
@@ -21,7 +21,7 @@ raw 파일 접두)에만 남는다. 설정 키는 `additional_reviewer_enabled`/
     + 공유 장부 `raw_outputs.json` · --output-dir 로 격리)
 
 기본 비활성:
-  - 코드 diff 가 *외부로 전송*되므로 기본 OFF. local.conf `additional_reviewer_enabled=true`
+  - 코드 diff 가 *외부로 전송*되므로 기본 OFF. local.conf `additional_reviewer.enabled=true`
     또는 `board.py init` / `pm_update` 시 opt-in 으로 켠다. 비활성 시 actual 호출은
     no-op(exit 0)이고 `--dry-run` 은 항상 허용(로컬 미리보기·미전송), `--force` 로 1회 강제.
     단 빈/공백 diff 는 dry-run·비활성 포함 무조건 exit 1 (false-green 원천 차단).
@@ -34,21 +34,21 @@ raw 파일 접두)에만 남는다. 설정 키는 `additional_reviewer_enabled`/
     중단 판정: 주 = **무진행**(마지막 진행 출력 이후 침묵), 백스톱 = 벽시계. 값은 별도 상수가
     아니라 **해소된 추가 리뷰어 대상의 하네스 프로필**(pm_relay·위임 채널과 동일 테이블)에서 오고, 배포별
     조정은 local.conf `harness.<reviewer>.idle_timeout`/`.wall_timeout`(legacy
-    `external_review_idle_timeout`/`external_review_timeout` 도 계속 유효)·일회성은
+    `additional_reviewer.idle_timeout`/`additional_reviewer.timeout` 도 계속 유효)·일회성은
     `--idle-timeout`/`--timeout`. 어느 쪽으로 중단되든 그 시점까지 받은 출력은 원문 파일에
     보존한다(전량 폐기 금지).
   - must-fix 감지 → exit 1
   - 통과 → exit 0
   - 수렴-형상 차단(--gate 별) → exit 4 (실행 전 거부). 라운드 장부의 must_fix 추이로 판정한다:
-    라운드 수가 상한(local.conf review_rounds_max·기본 2)에 닿았거나 직전 라운드보다 must_fix 가
+    라운드 수가 상한(local.conf additional_reviewer.rounds_max·기본 2)에 닿았거나 직전 라운드보다 must_fix 가
     늘었으면(발산·조기 차단) 라운드를 더 쓰지 않는다. 출구는 **재설계·티켓 분할**이고, 직전 지적
     해소만 확인하려면 게이트당 1회 `--confirm-fix`(확인 전용 라운드)를 쓴다.
   - diff 서킷브레이커 → exit 1 (리뷰어 호출 전 거부). 티켓 estimate 별 diff 총량 상한
     (small 300 / medium 1,000 / large 2,500 · local.conf diff_cap.<estimate>)을 넘긴 스코프는
     리뷰 라운드로 닫히지 않으므로 분할·재설계로 보낸다.
   - 라운드 상한 도달(--gate 별) → exit 4 (실행 전 거부·전용 rc). 같은 게이트로
-    판정 4회(local.conf additional_reviewer_round_limit) 또는 미완 2회
-    (additional_reviewer_incomplete_round_limit)를 채우면 이후 실행을 기계 차단한다. 성격은
+    판정 4회(엔진 고정) 또는 미완 2회
+    (local.conf additional_reviewer.incomplete_rounds_max)를 채우면 이후 실행을 기계 차단한다. 성격은
     **무한 루프 차단(anti-loop pause)**이다 — 연장 승인(`--ack-rounds`)은 폐지됐고, 호출하면
     아무것도 하지 않고 거부한다.
   - 게이트 스냅샷 또는 미등록 linked worktree 자기 앵커 + 게이트 라운드 → exit 1 (실행 전
@@ -56,13 +56,13 @@ raw 파일 접두)에만 남는다. 설정 키는 `additional_reviewer_enabled`/
     스냅샷 마커가 있거나 PM 홈을 해소하지 못한 linked worktree에서는 실 전송 라운드를
     기록하지 않는다. dry-run·조회·처분과 명시 `--no-gate` 자문은 이 차단 대상이 아니다.
   - wave 예산 소진 → exit 4 (같은 rc·같은 실행 전 거부). 게이트별 상한과 **별개로** wave 단위
-    총 라운드 예산(local.conf additional_reviewer_wave_budget·기본 24)을 두어 티켓 수 × 라운드 상한
+    총 라운드 예산(local.conf additional_reviewer.wave_budget·기본 24)을 두어 티켓 수 × 라운드 상한
     으로 비용이 무한 확장되는 구조를 막는다 — 재개는 같은 규율의 `--ack-wave`(예산 리셋).
 
 설계:
   - 어댑터 seam: canonical `additional_reviewer.{harness,model,reasoning}` tuple 을 pm_relay 의
-    3-harness 드라이버로 해소한다. tuple 이 전혀 없을 때만 임의 `reviewer_cmd`/기본 command 를
-    legacy `unpinned-model` 경로로 보존한다.
+    3-harness 드라이버로 해소한다. 그 tuple 이 없으면 대상이 없어 fail-loud 다 — 모델을 고정하지
+    않는 실행 경로는 남기지 않는다.
   - 도메인 외부화: 프로젝트 맥락은 `.project_manager/review_context.local.md`(인스턴스 소유)
     가 있으면 주입, 없으면 generic 헤더. 엔진 도구엔 도메인 콘텐츠 0.
   - subprocess DI (run_fn 매개변수) — 테스트에서 mock 주입 가능.
@@ -72,11 +72,11 @@ raw 파일 접두)에만 남는다. 설정 키는 `additional_reviewer_enabled`/
     설정 파일만 복제)을 받는다. 판정 본문에 옛 리뷰 raw·세션 전사가 echo 되면 오염 진단을 loud 로
     남기고 판정을 불명확 처리한다. 격리 실패는 기본 차단이고 `--allow-unisolated-reviewer` 가
     유일한 탈출구다. 배포별 조정 키(local.conf):
-      · `reviewer_env_keep_extra` — 리뷰어에게 물려줄 env 이름 추가(기본 allowlist 밖 인증 변수).
-      · `reviewer_home_artifacts_extra` — 임시 홈에 복제할 인증/설정 파일 추가(홈 상대경로).
+      · `additional_reviewer.env_keep_extra` — 리뷰어에게 물려줄 env 이름 추가(기본 allowlist 밖 인증 변수).
+      · `additional_reviewer.home_artifacts_extra` — 임시 홈에 복제할 인증/설정 파일 추가(홈 상대경로).
   - 시크릿 denylist (.env·*secret*·*credential*·*.key·*token*·*.pem 등) 파일은 diff 에서
     자동 제외한다. 제외 사실은 판정에 반영 — --paths 명시 지정분 제외는 차단(exit 1),
-    --ticket/기본 암묵 수집분 제외는 종합 판정 라인에 병기. review_denylist_extra 로 추가 가능.
+    --ticket/기본 암묵 수집분 제외는 종합 판정 라인에 병기. additional_reviewer.denylist_extra 로 추가 가능.
   - 라운드 상한 기계 차단: 추가 리뷰어 호출(과금·전송)이 무한 반복되지 않게 `--gate <T-NNNN>`
     별 라운드 장부(`.project_manager/.local/review_rounds.json`·per-clone·git-ignored)에 실 전송을
     count 하고, limit(기본 4)회를 넘기면 실행 *전에* 거부(exit 4)한다. "몇 라운드나 돌았나"라는
@@ -635,7 +635,7 @@ def resolve_pm_home_for_repo(
 
 # ── 강등 실행의 소유 PM 홈 필터 승계 (외부 송신 방향) ──────────────────────
 # PM 홈 해소가 실패해 config 소유자가 anchor 자신으로 강등되면, 소유 PM 홈이 선언한
-# `review_denylist_extra`/`review_paths` 가 빠진 채 diff 가 외부로 나간다 — 경고와 provenance 는
+# `additional_reviewer.denylist_extra`/`additional_reviewer.paths` 가 빠진 채 diff 가 외부로 나간다 — 경고와 provenance 는
 # loud 하지만 **필터가 좁아지는 방향**이라 비정상 상태의 송신이 무필터에 가까워진다. 그래서
 # 강등을 감지하면 (1) 소유 PM 홈을 하나로 되찾을 수 있으면 그 **유효 필터**를 승계하고,
 # (2) 되찾을 수 없으면 외부 송신 전에 차단한다.
@@ -649,13 +649,13 @@ def resolve_pm_home_for_repo(
 # 탈출구 매트릭스 (선택된 소유자의 후보 수 × 그 conf 상태 × 명시 --paths):
 #   유일 후보 · conf 정상(선언/미선언 무관) → 승계 후 진행 (--paths 유무 무관)
 #   유일 후보 · conf 읽기 실패             → **항상 차단** — `--paths` 는 *범위*만 명시할 뿐
-#                                            확인하지 못한 `review_denylist_extra` 를 대신하지 못한다
+#                                            확인하지 못한 `additional_reviewer.denylist_extra` 를 대신하지 못한다
 #   후보 0 또는 2+                          → --paths 없으면 차단 / 있으면 loud 경고 후 진행
 # 마지막 줄만 탈출구인 이유: 어느 PM 홈도 이 실행을 지배한다고 확정할 수 없는 상태에서 사용자가
 # 범위를 직접 지정한 것이 남은 유일한 복구 채널이다(자기잠김 금지).
 
 # 승계 대상 = 값이 좁아지면 외부로 더 많이 나가는 축뿐이다(리뷰어/타임아웃 등 실행 프로필은 제외).
-_OWNER_FILTER_KEYS: tuple[str, ...] = ("review_paths", "review_denylist_extra")
+_OWNER_FILTER_KEYS: tuple[str, ...] = ("additional_reviewer.paths", "additional_reviewer.denylist_extra")
 
 
 class OwnerFilterConfError(AnchorResolutionError):
@@ -694,7 +694,7 @@ def _owner_filter_conf(demotion: PmHomeDemotion) -> tuple[Path, dict[str, str]]:
     except (OSError, UnicodeError) as exc:
         raise OwnerFilterConfError(
             "강등 실행이 승계할 소유 PM 홈 conf 를 읽지 못했습니다 — 확인하지 못한 "
-            "review_denylist_extra 는 명시 --paths 로 대체되지 않으므로(범위 지정은 시크릿 필터가 "
+            "additional_reviewer.denylist_extra 는 명시 --paths 로 대체되지 않으므로(범위 지정은 시크릿 필터가 "
             "아니다) 어떤 인자에서도 외부 송신 전에 중단합니다: "
             f"{conf_path} ({type(exc).__name__}: {exc})"
         ) from exc
@@ -706,21 +706,21 @@ def _owner_filter_conf(demotion: PmHomeDemotion) -> tuple[Path, dict[str, str]]:
 def _merged_owner_filters(
     conf: dict[str, str], owner_filters: dict[str, str],
 ) -> dict[str, str]:
-    """강등 실행의 유효 conf — denylist 는 합집합, review_paths 는 소유 **유효 범위**로 교체.
+    """강등 실행의 유효 conf — denylist 는 합집합, additional_reviewer.paths 는 소유 **유효 범위**로 교체.
 
     denylist 합집합의 근거는 양쪽 보호 선언을 모두 존중하는 monotone 안전성이다
-    (`resolve_review_content_conf` 와 같은 규칙). review_paths 는 포함 방향 어느 쪽도 일률적으로
+    (`resolve_review_content_conf` 와 같은 규칙). additional_reviewer.paths 는 포함 방향 어느 쪽도 일률적으로
     안전하지 않아 합치지 않고, 소유 PM 홈의 유효 범위를 통째로 승계한다 — 소유 홈이 선언하지
     않았으면 **엔진 고정 기본 경로가 그 유효 범위**이므로 그것으로 덮는다. 슬롯 선언을 남겨두면
-    (예: 슬롯 `review_paths=.`) lease 손상만으로 송신 범위가 소유 선언보다 넓어진다.
+    (예: 슬롯 `additional_reviewer.paths=.`) lease 손상만으로 송신 범위가 소유 선언보다 넓어진다.
     """
     merged = dict(conf)
-    merged["review_paths"] = " ".join(_configured_paths(owner_filters))
+    merged["additional_reviewer.paths"] = " ".join(_configured_paths(owner_filters))
     extras = tuple(dict.fromkeys(
         (*_denylist_extras(conf), *_denylist_extras(owner_filters))
     ))
     if extras:
-        merged["review_denylist_extra"] = " ".join(extras)
+        merged["additional_reviewer.denylist_extra"] = " ".join(extras)
     return merged
 
 
@@ -748,7 +748,7 @@ def _conf_with_owner_filters(
         if not explicit_paths:
             raise AnchorResolutionError(
                 "PM 홈 해소 실패로 config 소유자가 이 repo 로 강등됐고, 소유 PM 홈의 필터 선언"
-                "(review_denylist_extra/review_paths)을 승계할 수 없습니다 — 시크릿 필터가 좁아진 "
+                "(additional_reviewer.denylist_extra/additional_reviewer.paths)을 승계할 수 없습니다 — 시크릿 필터가 좁아진 "
                 "채로 외부에 송신하지 않도록 전송 전에 중단합니다: "
                 f"anchor={demotion.anchor} · 강등 사유={demotion.reason} · 승계 실패={exc}\n"
                 "  · `--paths <경로>` 로 이번 검토 범위를 직접 지정하면 이 실행은 통과합니다 "
@@ -766,8 +766,8 @@ def _conf_with_owner_filters(
     print(
         "경고: PM 홈 강등 실행 — 소유 PM 홈 유효 필터를 승계했습니다: "
         f"owner={owner} · conf={_local_conf_path(owner)} · "
-        f"review_paths={merged.get('review_paths', '') or '(기본)'!r} · "
-        f"review_denylist_extra={merged.get('review_denylist_extra', '') or '(없음)'!r}",
+        f"additional_reviewer.paths={merged.get('additional_reviewer.paths', '') or '(기본)'!r} · "
+        f"additional_reviewer.denylist_extra={merged.get('additional_reviewer.denylist_extra', '') or '(없음)'!r}",
         file=sys.stderr,
     )
     return merged
@@ -1133,7 +1133,7 @@ def _scope_from_initial_pm_home(*, ticket_selected: bool, explicit_paths: bool) 
     """이번 검토 범위가 **최초 PM 홈**에서 파생됐는가 (diff 소유자 대조 대상).
 
     명시 `--paths` 나 유효 ticket touches 가 범위를 완전 지정하지 않은 실행은 최초 PM 홈 config
-    를 읽어 범위를 얻는다. 그 config 가 `review_paths` 를 선언했든 엔진 고정 기본 경로
+    를 읽어 범위를 얻는다. 그 config 가 `additional_reviewer.paths` 를 선언했든 엔진 고정 기본 경로
     (`DEFAULT_PATHS`)로 떨어졌든 **범위의 출처는 최초 PM 홈 하나**라, 표시 conf 와 실제 전송
     범위가 갈리는 위험은 같다 — 그래서 선언 유무를 판정 입력으로 쓰지 않는다.
     """
@@ -1157,7 +1157,7 @@ def _tickets_dir() -> Path:
     return base / "wiki" / "tickets"
 
 
-# 기본 검토 경로 (--paths·local.conf review_paths 미지정 시)
+# 기본 검토 경로 (--paths·local.conf additional_reviewer.paths 미지정 시)
 DEFAULT_PATHS: list[str] = ["src/", "tests/", "scripts/", ".project_manager/tools/"]
 
 
@@ -1193,7 +1193,7 @@ def _canonical_worktree(anchor: Path) -> Path | None:
     디렉토리를 반환한다(board.py `_registers_worktree` (a) `work/<name>` 등록 관례와 동형). 없으면
     None(무관 형상·재지정 대상 없음).
 
-    local.conf `upstream` 은 재지정 대상 결정에 **쓰지 않는다** — upstream 은 URL 이거나 무관한
+    local.conf `upstream.path` 은 재지정 대상 결정에 **쓰지 않는다** — upstream 은 URL 이거나 무관한
     로컬 checkout(`pm_import --from <로컬>`)일 수 있어, 실 board 를
     소유한 정규 채택자에서 stale/무관 checkout 으로 오안내하며 정상 리뷰를 hard-block 한다(빈-diff
     백스톱도 실 diff 가 non-empty 면 무력). `work/` 슬롯 스캔만으로 adopter#0재지정을
@@ -1220,8 +1220,8 @@ def _pm_home_reanchor(anchor: Path) -> Path | None:
         return None
     return _canonical_worktree(anchor)
 
-# legacy 경로의 기본 명령 (구조화 키 부재 시 · local.conf reviewer_cmd 로 교체 가능·unpinned-model)
-DEFAULT_REVIEWER_CMD = "codex exec --sandbox read-only --skip-git-repo-check"
+# 엔진 기본 리뷰어 커맨드는 없다 — 대상은 구조화 tuple(`additional_reviewer.{harness,model}`)
+# 해소 결과뿐이고, 모델을 고정하지 않는 실행 경로를 남기지 않는다.
 
 # 외부 호출의 시간 예산(무진행 상한 + 벽시계 백스톱)은 **해소된 대상의 하네스 프로필**이 소유한다
 # (`pm_relay.HARNESS_PROFILES` — legacy 기본 command가 `codex exec`이면 codex 축 값). 이 모듈에
@@ -1232,47 +1232,22 @@ DEFAULT_REVIEWER_CMD = "codex exec --sandbox read-only --skip-git-repo-check"
 # 판정 기준을 무진행으로 교체했고, 벽시계는 "감지기 자체가 고장난 경우"의 유한 상한으로 강등된다.
 # 조정: 일회성 `--timeout`/`--idle-timeout` > local.conf `harness.<reviewer>.wall_timeout`/
 # `.idle_timeout` > 아래 표면-flat legacy 키 > 프로필 선언.
-# opt-in 게이트 키는 사람 역할 이름과 같이 `additional_reviewer_enabled` 로 개칭됐다.
-# 구키 `external_review_enabled` 의 **fallback 읽기는 제거됐다**(개칭 릴리즈가 예고한 유예 종료) —
-# 이제 이 키는 값을 공급하지 않는다. 다만 **감지·안내는 남긴다**: 구키만 있는 채택자가 이유 모를
-# OFF 를 겪으면 그게 곧 무음 강등이다. 엔진은 채택자 local.conf 를 대신 고쳐 쓰지 않으므로(자동
-# 마이그레이션 없음) 처방은 사람에게 준다. 모듈 파일명·raw 파일 접두·아래 표면-flat legacy 타임아웃
-# 키는 기계 식별자로 그대로 남는다(기존 raw 감사물과 채택자 PM 홈 사본의 안정 계약).
-# **아래 `LEGACY_*_KEY` 4종은 감지 전용이다** — 값 공급 경로는 없고(어느 해소도 이 상수를 읽어
-# 값을 꺼내지 않는다) 오직 "이 conf 에 구키가 남아 있는가" 를 판정해 안내 1줄을 만드는 데만 쓴다.
-ADDITIONAL_REVIEWER_ENABLED_KEY = "additional_reviewer_enabled"
-LEGACY_EXTERNAL_REVIEW_ENABLED_KEY = "external_review_enabled"
-
-# 라운드/wave 예산 노브도 게이트 키와 **같은 규칙**으로 개칭됐고, fallback 도 같은 릴리즈에 함께
-# 제거됐다 — 이름만 바뀌고 값 의미·기본값은 그대로다. 게이트 키 하나만 바꾸면 채택자 local.conf
-# 안에서 같은 기능의 키가 두 접두로 갈려("어느 게 현재 이름인가") 개칭이 절반만 도착한다. 구키가
-# 값을 담고 있으면 그 값은 무시되고 키마다 안내 1줄이 나간다(엔진 기본값으로 간다). 게이트 축과
-# 같이 아래 `LEGACY_*_KEY` 3종도 **감지 전용**이다(값 공급 아님).
-ADDITIONAL_REVIEWER_ROUND_LIMIT_KEY = "additional_reviewer_round_limit"
-LEGACY_EXTERNAL_REVIEW_ROUND_LIMIT_KEY = "external_review_round_limit"
+# 게이트·예산 노브 키. 이름은 사람 역할 이름(추가 리뷰어) 축 하나로 수렴한다 — 모듈 파일명·raw
+# 파일 접두는 기존 감사물의 안정 계약이라 기계 식별자로 그대로 남는다. **구키 감지 상수는 없다**:
+# 구표기 잔존 판정은 공용 로더(`local_conf.assert_no_legacy`)가 conf 를 읽는 지점에서 한 번에
+# 하고, 이 모듈이 그 표의 사본을 들지 않는다.
+ADDITIONAL_REVIEWER_ENABLED_KEY = "additional_reviewer.enabled"
 ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY = (
-    "additional_reviewer_incomplete_round_limit")
-LEGACY_EXTERNAL_REVIEW_INCOMPLETE_ROUND_LIMIT_KEY = (
-    "external_review_incomplete_round_limit")
-ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY = "additional_reviewer_wave_budget"
-LEGACY_EXTERNAL_REVIEW_WAVE_BUDGET_KEY = "external_review_wave_budget"
-
-# 신키 → 구키 매핑. **감지·안내가 이 한 표에서 파생한다**(값 해소는 더 이상 이 표를 타지 않는다) —
-# 키마다 분기를 복사하면 새 노브가 안내를 못 갖는 절반 배선이 생긴다.
-LEGACY_KNOB_KEYS: dict[str, str] = {
-    ADDITIONAL_REVIEWER_ROUND_LIMIT_KEY: LEGACY_EXTERNAL_REVIEW_ROUND_LIMIT_KEY,
-    ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY:
-        LEGACY_EXTERNAL_REVIEW_INCOMPLETE_ROUND_LIMIT_KEY,
-    ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY: LEGACY_EXTERNAL_REVIEW_WAVE_BUDGET_KEY,
-}
+    "additional_reviewer.incomplete_rounds_max")
+ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY = "additional_reviewer.wave_budget"
 
 # Codex egress attestation 플래그 — 판정/문구 단일 소유자는 pm_relay 이고, 여기 리터럴은 argparse
 # 선언용 사본이다(드리프트는 회귀 테스트가 막는다).
 CODEX_EGRESS_FLAG = "--codex-egress-escalated"
 
-EXTERNAL_TIMEOUT_KEY = "external_review_timeout"
-EXTERNAL_IDLE_TIMEOUT_KEY = "external_review_idle_timeout"
-EXTERNAL_PROGRESS_SIGNAL_KEY = "external_review_progress_signal"
+EXTERNAL_TIMEOUT_KEY = "additional_reviewer.timeout"
+EXTERNAL_IDLE_TIMEOUT_KEY = "additional_reviewer.idle_timeout"
+EXTERNAL_PROGRESS_SIGNAL_KEY = "additional_reviewer.progress_signal"
 
 # 알려진 reviewer CLI의 **실행 파일 + 옵션 계약**. 함수 밖 선언이라 새 CLI/형식 추가가 판정 코드
 # 분기로 번지지 않는다. attr 값은 동적 로드한 pm_relay의 공개 상수명이다.
@@ -1299,17 +1274,17 @@ _REVIEWER_PROGRESS_CONTRACTS = {
 }
 
 # 라운드 상한 — 같은 --gate 로 이 횟수를 넘겨 실 전송하면 이후 실행을 거부한다.
-# 기본 4 는 사용자 전역 규율(추가 리뷰 ">3~4 라운드면 수렴 판단")의 기계화. local.conf
-# additional_reviewer_round_limit 로 조정 가능.
+# 기본 4 는 사용자 전역 규율(추가 리뷰 ">3~4 라운드면 수렴 판단")의 기계화다. **conf 노브가
+# 없다** — 판정 상한을 채택자가 낮췄다 높였다 하는 축은 이 표기 통일에서 제거됐다(대체 키 없음).
 DEFAULT_ROUND_LIMIT = 4
 DEFAULT_INCOMPLETE_ROUND_LIMIT = 2
 
-# 수렴-형상 상한 — 코드 리뷰 라운드 수 상한(기본 2·local.conf `review_rounds_max`).
+# 수렴-형상 상한 — 코드 리뷰 라운드 수 상한(기본 2·local.conf `additional_reviewer.rounds_max`).
 # 위 판정 상한(4)이 "몇 번 전송했나"만 보는 반면 이 축은 **장부의 must_fix 추이**로 수렴 여부를
 # 본다: 상한을 넘겼거나(초과), 직전 라운드보다 must_fix 가 늘었으면(발산) 라운드를 더 쓰지 않는다.
 # 실측에서 green 6건 중 5건이 2R 종결이고 관측된 3R 시도 8건은 모두 반려였다.
 DEFAULT_REVIEW_ROUNDS_MAX = 2
-REVIEW_ROUNDS_MAX_KEY = "review_rounds_max"
+REVIEW_ROUNDS_MAX_KEY = "additional_reviewer.rounds_max"
 
 # 수렴 차단 사유 — 안내 문구의 라벨이자 판정 반환값(호출부가 사유별로 갈리지 않게 한 축).
 CONVERGENCE_DIVERGING = "diverging"
@@ -1359,7 +1334,7 @@ MEASURED_SCOPE_NOTE = "측정=손작업 스코프(기계 mirror 제외)"
 # 티켓 수 × 라운드 상한으로 확장되므로, 전 게이트 합계 전송을 이 예산으로 묶는다. 기본 24 는
 # 게이트 상한 4 × 동시 진행 6티켓 어림이고 실측 세션당 라운드(~50)보다 낮게 잡아 PM 이 중간에
 # `--rounds-report`로 수렴 상태를 점검하는 관측점을 만든다. local.conf
-# additional_reviewer_wave_budget 로 조정 가능.
+# additional_reviewer.wave_budget 로 조정 가능.
 DEFAULT_WAVE_BUDGET = 24
 
 # 라운드 상한 초과 전용 종료 코드 (기존 0=통과·1=반려/실패/오류·2=argparse·3=예약 과 구분).
@@ -1368,7 +1343,7 @@ DEFAULT_WAVE_BUDGET = 24
 EXIT_ROUND_LIMIT_EXCEEDED = 4
 
 # 시크릿 denylist — 이 패턴에 매칭되는 파일은 diff 에서 강제 제외하고 stderr 에 경고.
-# 보수적으로 유지: 오탐 허용 (누락 금지). 프로젝트 고유 경로는 local.conf review_denylist_extra 로.
+# 보수적으로 유지: 오탐 허용 (누락 금지). 프로젝트 고유 경로는 local.conf additional_reviewer.denylist_extra 로.
 _SECRET_DENYLIST_PATTERNS: tuple[str, ...] = (
     ".env",
     ".env.*",
@@ -1604,8 +1579,8 @@ _ROUND_LIMIT_GUIDANCE = (
     "  · **재설계·티켓 분할이 유일한 출구입니다** — 라운드 연장 승인(`--ack-rounds`)은 "
     "폐지됐고, 확인 전용 라운드(`--confirm-fix`)는 수렴 축의 예외라 이 전송 횟수 상한은 "
     "열지 않습니다.\n"
-    "  · 상한 조정은 local.conf `additional_reviewer_round_limit`(판정)과 "
-    "`additional_reviewer_incomplete_round_limit`(미완).\n"
+    "  · 판정 상한은 엔진 고정값이고, 미완 재시도 상한만 local.conf "
+    "`additional_reviewer.incomplete_rounds_max` 로 조정합니다.\n"
     "  (장부: {ledger} · count={count} acked_through={acked})"
 )
 
@@ -1817,7 +1792,7 @@ _WAVE_BUDGET_GUIDANCE = (
     "(spent 를 0 으로 리셋):\n"
     "      python3 .project_manager/tools/external_review.py --gate {gate} --ack-wave [기존 옵션]\n"
     "  · 수렴이 안 되고 있으면(같은 지적 반복·범위 재설계) 그때 사용자에게 보고하세요.\n"
-    "  · 예산 조정은 local.conf `additional_reviewer_wave_budget`.\n"
+    "  · 예산 조정은 local.conf `additional_reviewer.wave_budget`.\n"
     "  (장부: {ledger})"
 )
 
@@ -1903,19 +1878,19 @@ _RESOLVE_GATE_EVIDENCE_GUIDANCE = (
 # ── 설정 ──────────────────────────────────────────────────────────────────
 
 
+def _load_local_conf():
+    """공용 local.conf 로더(`local_conf.py`)를 같은 tools/ 에서 경로 로드한다 (board 사본 동형)."""
+    return _load_module_from_path(
+        Path(__file__).resolve().parent / "local_conf.py", "local_conf.py",
+        verifier=_verify_engine_rev, cache=True,
+        cache_key=f"_project_manager_local_conf:{Path(__file__).resolve().parent}",
+    )
+
+
 def local_config(repo: Path | None = None) -> dict[str, str]:
     """per-clone local.conf 를 KEY=value 로 읽는다 (없으면 빈 dict). board.py 와 동일 포맷."""
-    conf: dict[str, str] = {}
     path = (repo / ".project_manager" / "local.conf") if repo is not None else LOCAL_CONF
-    if not path.exists():
-        return conf
-    for line in _read_text_shared(path, encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        conf[key.strip()] = value.strip()
-    return conf
+    return _load_local_conf().load_checked_readable(path)
 
 
 def _local_config_for_repo(repo: Path) -> dict[str, str]:
@@ -1927,33 +1902,11 @@ def enabled_decision_key(conf: dict[str, str]) -> str | None:
     """게이트 결정을 공급하는 키 — **신키뿐**. 결정이 없으면 None.
 
     "결정"의 판정은 **키 존재**다(값의 truthiness 가 아니다) — `false` 도 기록된 결정이라 온보딩이
-    다시 묻지 않는다. 구키는 개칭 릴리즈의 유예가 끝나 더 이상 결정을 공급하지 않는다: 구키만 있는
-    conf 는 **미결정**이고, 게이트는 기본값(OFF)으로 간다. 그 전환이 무음이 되지 않게 아래
-    `legacy_enabled_key_warning` 이 같은 conf 를 감지해 안내 1줄을 낸다(fallback 은 없되 침묵도 없다).
+    다시 묻지 않는다. 구표기 키는 값을 공급하지 않고, 그 잔존은 conf 를 읽는 지점에서 fail-loud 다
+    (공용 로더 `assert_no_legacy`) — 조용히 미결정으로 접히는 경로가 없다.
     """
     return (ADDITIONAL_REVIEWER_ENABLED_KEY
             if ADDITIONAL_REVIEWER_ENABLED_KEY in conf else None)
-
-
-# 구키만 남은 conf 의 안내 1줄 — board/pm_update 사본과 **같은 문구**를 쓴다(드리프트는 회귀가
-# 잡는다). 엔진은 채택자 conf 를 대신 고쳐 쓰지 않으므로 처방을 사람에게 준다. 버전 리터럴을 박지
-# 않는 이유는 이 문장이 릴리즈마다 stale 해지기 때문이다 — "더 이상 읽지 않는다" 는 사실만 말한다.
-LEGACY_ENABLED_KEY_REMOVED = (
-    f"⚠ local.conf `{LEGACY_EXTERNAL_REVIEW_ENABLED_KEY}` 는 더 이상 읽지 않는다(구키 제거) — "
-    f"`{ADDITIONAL_REVIEWER_ENABLED_KEY}` 로 바꾸세요. 그 전까지 추가 리뷰어는 OFF 입니다."
-)
-
-
-def legacy_enabled_key_warning(conf: dict[str, str]) -> str | None:
-    """구키만 있어 결정이 무시되는 conf 면 안내 1줄, 아니면 None.
-
-    조건은 **구키 존재 + 신키 부재**다. 둘 다 있으면 신키가 결정을 공급하므로 구키 줄은 무해한
-    잔존이고(이미 이주한 채택자) 안내가 잡음이 된다 — 동작이 바뀐 conf 만 알린다.
-    """
-    if (LEGACY_EXTERNAL_REVIEW_ENABLED_KEY in conf
-            and ADDITIONAL_REVIEWER_ENABLED_KEY not in conf):
-        return LEGACY_ENABLED_KEY_REMOVED
-    return None
 
 
 def knob_value_key(conf: dict[str, str], key: str) -> str | None:
@@ -1973,42 +1926,6 @@ def _knob_raw(conf: dict[str, str], key: str) -> str:
     """공급 키의 원문 값 — 공급이 없으면 빈 문자열(호출부가 기본값으로 간다)."""
     supplier = knob_value_key(conf, key)
     return conf.get(supplier, "").strip() if supplier else ""
-
-
-def legacy_knob_key_deprecation(key: str) -> str:
-    """노브 구키 안내 1줄 — 게이트 안내와 같은 형태·같은 처방(값이 무시된다는 사실 포함)."""
-    return (
-        f"⚠ local.conf `{LEGACY_KNOB_KEYS[key]}` 는 더 이상 읽지 않는다(구키 제거) — "
-        f"`{key}` 로 바꾸세요. 그 전까지 엔진 기본값을 씁니다."
-    )
-
-
-def legacy_knob_key_ignored(conf: dict[str, str], key: str) -> bool:
-    """그 노브의 구키가 값을 담았는데 신키가 비어 있는가 — 값이 무시되는 상태.
-
-    둘 다 값이 있으면 신키가 이기고 구키 줄은 무해한 잔존이라 알리지 않는다(이미 이주한 채택자에게
-    잡음을 내지 않는다) — 게이트 축과 같은 판정 규칙이다.
-    """
-    return bool(conf.get(LEGACY_KNOB_KEYS[key], "").strip()) and not conf.get(
-        key, "").strip()
-
-
-def legacy_key_warnings(conf: dict[str, str]) -> list[str]:
-    """이 conf 가 받아야 할 구키 안내 전부 — 게이트 1줄 + 값이 무시되는 노브마다 1줄.
-
-    호출부가 축마다 따로 찍으면 새 노브가 안내 없이 조용히 무시되는 절반 배선이 생긴다. 깔때기를
-    하나로 두어 "구키 때문에 동작이 달라지면 반드시 알린다"가 한 곳의 성질이 된다.
-    """
-    warnings = []
-    enabled_warning = legacy_enabled_key_warning(conf)
-    if enabled_warning:
-        warnings.append(enabled_warning)
-    warnings += [
-        legacy_knob_key_deprecation(key)
-        for key in LEGACY_KNOB_KEYS
-        if legacy_knob_key_ignored(conf, key)
-    ]
-    return warnings
 
 
 def disabled_gate_notice(conf: dict[str, str]) -> str:
@@ -2039,26 +1956,20 @@ def _is_enabled(conf: dict[str, str]) -> bool:
         "true", "1", "yes", "on")
 
 
-def _reviewer_cmd(conf: dict[str, str]) -> str:
-    return conf.get("reviewer_cmd", "").strip() or DEFAULT_REVIEWER_CMD
-
-
 # ── 추가 리뷰어 대상 해소 (원자 tuple) ──────────────────────────────────────
 #
 # 사람 역할 이름은 **추가 리뷰어(additional reviewer)** 다 — 팀에 한 명 더 붙는 리뷰어라는 뜻이고,
 # `external` 은 전송/격리/과금(외부로 나간다)에만 남는다. 그래서 설정 키는 opt-in 게이트
-# `additional_reviewer_enabled` + 대상 `additional_reviewer.*` 이고, raw 파일 접두·모듈 파일 이름
+# `additional_reviewer.enabled` + 대상 `additional_reviewer.*` 이고, raw 파일 접두·모듈 파일 이름
 # 같은 **이미 기록된 산출물에 박힌 기계 식별자만 external_review 그대로** 유지한다.
 #
-# 정상 경로의 대상은 위임과 동형의 **원자 tuple**(harness+model 동반 필수·reasoning 선택)이다.
-# 모델을 고정하지 않는 자유 문자열(`reviewer_cmd`)은 "어느 모델이 봤는지"를 사후에 알 수 없어
-# 라운드 장부·raw 감사가 거짓말을 하게 된다. 하위 호환으로 legacy 경로를 남기되 **unpinned-model**
-# 로 크게 라벨링한다.
+# 대상은 위임과 동형의 **원자 tuple**(harness+model 동반 필수·reasoning 선택) 하나뿐이다.
+# 모델을 고정하지 않는 자유 문자열 경로는 "어느 모델이 봤는지"를 사후에 알 수 없어 라운드 장부·
+# raw 감사가 거짓말을 하게 되므로 폐지했다 — tuple 이 없으면 송신하지 않고 fail-loud 다.
 ADDITIONAL_REVIEWER_PREFIX = "additional_reviewer"
 ADDITIONAL_REVIEWER_HARNESS_KEY = f"{ADDITIONAL_REVIEWER_PREFIX}.harness"
 ADDITIONAL_REVIEWER_MODEL_KEY = f"{ADDITIONAL_REVIEWER_PREFIX}.model"
 ADDITIONAL_REVIEWER_REASONING_KEY = f"{ADDITIONAL_REVIEWER_PREFIX}.reasoning"
-LEGACY_REVIEWER_CMD_KEY = "reviewer_cmd"
 ADDITIONAL_REVIEWER_KEYS: tuple[str, ...] = (
     ADDITIONAL_REVIEWER_HARNESS_KEY,
     ADDITIONAL_REVIEWER_MODEL_KEY,
@@ -2066,18 +1977,10 @@ ADDITIONAL_REVIEWER_KEYS: tuple[str, ...] = (
 )
 
 REVIEWER_SOURCE_STRUCTURED = "structured"
-REVIEWER_SOURCE_LEGACY = "legacy"
-# legacy 경로 라벨 — stderr provenance·dry-run·raw 헤더·raw 장부가 같은 낱말을 쓴다.
-UNPINNED_MODEL_LABEL = "unpinned-model"
-# legacy argv 에 `-m/--model` 표기가 없을 때 `_reviewer_model` 이 돌려주는 자리표시자.
-LEGACY_UNSPECIFIED_MODEL = "default"
-# 모델 축의 **예약 sentinel** — 엔진이 "이 실행은 모델이 고정되지 않았다"를 뜻하는 데 쓰는 낱말이다.
-# 구조화 프로필은 정의상 모델을 고정한 tuple 이므로 이 낱말들을 값으로 받을 수 없다: 받으면 장부·
-# raw 헤더·stderr 가 legacy 미고정 실행과 **글자 단위로 구분 불가**해져 "어느 모델이 봤는가"를
-# 사후에 확정할 수 없다(고정했다는 선언과 기록이 서로 반대말을 한다).
-RESERVED_MODEL_VALUES: frozenset[str] = frozenset(
-    {LEGACY_UNSPECIFIED_MODEL, UNPINNED_MODEL_LABEL}
-)
+# 모델 축의 **예약 sentinel** — 엔진이 "모델이 고정되지 않았다"를 뜻하던 낱말들이다. 구조화
+# 프로필은 정의상 모델을 고정한 tuple 이므로 이 값을 받을 수 없다: 받으면 장부·raw 헤더·stderr 가
+# "고정했다는 선언"과 "미고정"을 같은 글자로 적어 감사가 자기 모순을 기록한다.
+RESERVED_MODEL_VALUES: frozenset[str] = frozenset({"default", "unpinned-model"})
 
 # 추가 리뷰어의 권한축은 **불변**이다 — 읽기 권위(code-reviewer)로 고정하고 설정으로 올릴 수 없다.
 # 리뷰는 저장소를 고치지 않는다(고치는 것은 위임 developer 축의 일이다).
@@ -2098,8 +2001,8 @@ class ReviewerTargetError(RuntimeError):
 class ReviewerTarget(NamedTuple):
     """이번 실행이 실제로 부를 추가 리뷰어 — 세 표면이 공유하는 단일 해소 결과.
 
-    `command` = 세 표면(dry-run·stderr provenance·raw 헤더)이 **같은 문자열로** 말하는 정체다.
-    구조화 대상은 argv 를 그대로 렌더한 값이고, legacy 대상은 설정된 자유 문자열 그대로다.
+    `command` = 세 표면(dry-run·stderr provenance·raw 헤더)이 **같은 문자열로** 말하는 정체이며
+    구조화 tuple 의 argv 를 그대로 렌더한 값이다(다른 출처는 없다).
     """
 
     source: str
@@ -2110,7 +2013,13 @@ class ReviewerTarget(NamedTuple):
 
     @property
     def structured(self) -> bool:
-        return self.source == REVIEWER_SOURCE_STRUCTURED
+        """구조화 transport(하네스 argv 조립)를 태울 수 있는가.
+
+        출처 라벨만으로 판정하면 **해소를 지나지 않아 harness 가 None 인** 대상(부분 구성)이
+        구조화로 읽혀 argv 조립 단계에서 `harness=None` 으로 죽는다. 조립에 필요한 축이 실제로
+        해소됐는지를 함께 본다.
+        """
+        return self.source == REVIEWER_SOURCE_STRUCTURED and self.harness is not None
 
     @property
     def name(self) -> str:
@@ -2121,27 +2030,17 @@ class ReviewerTarget(NamedTuple):
     def ledger_model(self) -> str:
         """이 실행의 **모델 정체** — 네 표면(dry-run·stderr·raw 헤더·raw 장부)이 공유하는 단일 값.
 
-        구조화 대상은 **명시 모델 그대로**다. 구조화 tuple 의 모델을 커맨드 문자열에서 역추론하지
-        않는다(그러면 명시 모델이 argv 표기 규칙에 따라 `default` 로 퇴화할 수 있다).
-
-        legacy `reviewer_cmd`는 임의 실행기까지 허용하는 opaque 문자열이라 `-m/--model` 토큰이
-        실제 수신 모델을 고정한다는 스키마를 엔진이 보증할 수 없다. 따라서 표기 유무와 무관하게
-        항상 `unpinned-model`로 기록한다. exact command는 별도 provenance에 그대로 남으므로 정보는
-        사라지지 않으며, 모델 정체를 보증하려면 구조화 tuple을 써야 한다."""
-        if self.structured:
-            return self.model or ""
-        return UNPINNED_MODEL_LABEL
+        **명시 모델 그대로**다. 커맨드 문자열에서 역추론하지 않는다(그러면 명시 모델이 argv 표기
+        규칙에 따라 `default` 로 퇴화할 수 있다)."""
+        return self.model or ""
 
     @property
     def profile_tail(self) -> str:
         """해소 tuple 의 출처/모델 축 — provenance 문자열의 공통 꼬리.
 
-        모델 축은 장부·raw 헤더와 **같은 정체 값**(`ledger_model`)을 쓴다. legacy 라는 사실은
-        `source=legacy` 가 이미 말하므로 여기서 모델 이름을 다르게 부를 이유가 없다."""
-        if self.structured:
-            return (f"source={self.source}, harness={self.harness}, "
-                    f"model={self.model}, reasoning={self.reasoning}")
-        return f"source={self.source}, model={self.ledger_model}"
+        모델 축은 장부·raw 헤더와 **같은 정체 값**(`ledger_model`)을 쓴다."""
+        return (f"source={self.source}, harness={self.harness}, "
+                f"model={self.model}, reasoning={self.reasoning}")
 
 
 def _structured_reviewer_argv(
@@ -2166,26 +2065,19 @@ def _structured_reviewer_argv(
     return relay.build_opencode_argv(model, reasoning, REVIEWER_ROLE, cwd, prompt_file)
 
 
-def legacy_reviewer_target(conf: dict[str, str]) -> ReviewerTarget:
-    """구조화 키가 없는 형상의 대상 — 종전 `reviewer_cmd`/엔진 기본 커맨드 그대로."""
-    return ReviewerTarget(source=REVIEWER_SOURCE_LEGACY, command=_reviewer_cmd(conf))
-
-
 def resolve_reviewer_target(conf: dict[str, str]) -> ReviewerTarget:
     """`additional_reviewer.{harness,model,reasoning}` 을 **원자로** 해소한다.
 
-    · 구조화 키가 **하나도 없으면**(키 자체가 conf 에 부재) legacy 경로(하위 호환·unpinned-model).
+    · 구조화 키가 **하나도 없으면** 대상이 없다 — fail-loud 다(엔진 기본 커맨드로 조용히 나가지
+      않는다·모델 미고정 실행 경로 폐지).
     · 구조화 키가 하나라도 **있으면**(값이 비어 있어도 선언이다) harness/model 동반 필수 —
       부분 지정은 fail-loud 다(조용한 폴백·절반만 반영된 대상 금지). 선언 판정을 값의 truthiness
-      로 하면 `additional_reviewer.harness=` 처럼 **비운 채 선언한 부분 tuple** 이 legacy 로 조용히
-      떨어져, 사용자가 지정한 것과 다른 대상으로 나간다. 그래서 기준은 **키 존재**다.
+      로 하면 `additional_reviewer.harness=` 처럼 **비운 채 선언한 부분 tuple** 이 "미설정" 으로
+      읽혀 진단이 엉뚱해진다. 그래서 기준은 **키 존재**다.
       `reasoning` 만 빈 값이 허용되고(선택 축·플래그 생략), 그것도 harness/model 이 온전할 때다.
     · model 이 **예약 sentinel**(`RESERVED_MODEL_VALUES` — 엔진이 '모델 미고정'을 뜻하는 낱말)이면
       거부한다. 값이 비어있지 않다는 것만으로 통과시키면 `additional_reviewer.model=default` 가
       "고정했다"는 선언과 함께 미고정 라벨을 장부에 박아, 감사가 자기 모순을 기록한다.
-    · 같은 conf 에 비어있지 않은 `reviewer_cmd` 가 함께 있으면 대상이 둘이라 fail-loud 다(구조화
-      키가 비어 있어도 **선언은 선언**이라 같은 판정을 받는다). 어느 쪽이 이기는지 추측해 외부로
-      보내지 않는다.
     · harness/reasoning 값 검증은 공용 드라이버 계약(pm_relay)이 소유한다.
 
     모든 거부는 **송신·격리·라운드 예약·raw 예약 전**에 성립한다 — 호출부가 이 함수를 그 게이트들
@@ -2197,16 +2089,12 @@ def resolve_reviewer_target(conf: dict[str, str]) -> ReviewerTarget:
         for key in ADDITIONAL_REVIEWER_KEYS
     }
     if not present:
-        return legacy_reviewer_target(conf)
-
-    legacy_cmd = (conf.get(LEGACY_REVIEWER_CMD_KEY) or "").strip()
-    if legacy_cmd:
-        given = ", ".join(present)
         raise ReviewerTargetError(
-            f"추가 리뷰어 대상이 둘입니다 — 구조화 프로필({given})과 legacy "
-            f"`{LEGACY_REVIEWER_CMD_KEY}={legacy_cmd}` 가 같은 local.conf 에 있습니다. "
-            "어느 쪽이 이기는지 추측해 외부로 보내지 않습니다 — 하나만 남기세요"
-            f"(권장: `{LEGACY_REVIEWER_CMD_KEY}` 를 지우고 {ADDITIONAL_REVIEWER_PREFIX}.* 유지)."
+            "추가 리뷰어 대상이 없습니다 — local.conf 에 "
+            f"`{ADDITIONAL_REVIEWER_HARNESS_KEY}`·`{ADDITIONAL_REVIEWER_MODEL_KEY}` 를 "
+            f"설정하세요(선택: `{ADDITIONAL_REVIEWER_REASONING_KEY}`). 엔진 기본 커맨드로 "
+            "조용히 나가지 않습니다 — 모델을 고정하지 않은 실행은 '어느 모델이 판정했는가'를 "
+            "사후에 확정할 수 없습니다."
         )
 
     harness = declared[ADDITIONAL_REVIEWER_HARNESS_KEY]
@@ -2220,9 +2108,7 @@ def resolve_reviewer_target(conf: dict[str, str]) -> ReviewerTarget:
             f"추가 리뷰어 프로필이 불완전합니다({missing} 부재/빈 값) — harness/model 은 동반 "
             "필수인 원자 tuple 입니다. 부분 설정으로 조용한 기본값을 쓰지 않습니다. local.conf 에 "
             f"`{ADDITIONAL_REVIEWER_HARNESS_KEY}`·`{ADDITIONAL_REVIEWER_MODEL_KEY}` 를 함께 "
-            f"설정하세요(선택: `{ADDITIONAL_REVIEWER_REASONING_KEY}`). 구조화 프로필을 쓰지 않을 "
-            f"거면 {ADDITIONAL_REVIEWER_PREFIX}.* 줄을 지우세요(선언이 남아 있으면 legacy 로 "
-            "조용히 떨어지지 않습니다)."
+            f"설정하세요(선택: `{ADDITIONAL_REVIEWER_REASONING_KEY}`)."
         )
     if model.lower() in RESERVED_MODEL_VALUES:
         raise ReviewerTargetError(
@@ -2232,9 +2118,7 @@ def resolve_reviewer_target(conf: dict[str, str]) -> ReviewerTarget:
             "tuple 인데 이 값을 받으면 raw 장부·raw 헤더·stderr provenance 가 legacy 미고정 실행과 "
             "구분되지 않아 '어느 모델이 이 판정을 냈는가'를 사후에 확정할 수 없습니다.\n"
             f"  · 실제 모델 이름을 적으세요(예: `{ADDITIONAL_REVIEWER_MODEL_KEY}=gpt-5.6-sol`).\n"
-            f"  · 모델을 고정하지 않을 거면 {ADDITIONAL_REVIEWER_PREFIX}.* 줄을 지우고 "
-            f"`{LEGACY_REVIEWER_CMD_KEY}` 를 쓰세요(그 경로가 `{UNPINNED_MODEL_LABEL}` 로 "
-            "라벨링됩니다)."
+            "  · 모델 미고정 실행 경로는 폐지됐습니다 — 실행하려면 모델을 고정해야 합니다."
         )
 
     relay = _load_relay()
@@ -2364,7 +2248,7 @@ def reviewer_profile(reviewer_cmd: str, conf: dict[str, str] | None = None):
 
 
 def _resolve_timeout(args: argparse.Namespace, conf: dict[str, str],
-                     reviewer_cmd: str = DEFAULT_REVIEWER_CMD) -> int:
+                     reviewer_cmd: str) -> int:
     """추가 리뷰 **벽시계 백스톱**(초)을 `--timeout` > 리뷰어 프로필 순서로 해소한다.
 
     CLI 양수값은 argparse 검증을 통과한 명시 override다. 그 아래(legacy flat conf →
@@ -2377,7 +2261,7 @@ def _resolve_timeout(args: argparse.Namespace, conf: dict[str, str],
 
 
 def _resolve_idle_timeout(args: argparse.Namespace, conf: dict[str, str],
-                          reviewer_cmd: str = DEFAULT_REVIEWER_CMD) -> float:
+                          reviewer_cmd: str) -> float:
     """무진행 상한(초)을 `--idle-timeout` > 리뷰어 프로필 순서로 해소한다(벽시계 축과 대칭).
 
     값의 출처가 하나이므로(프로필 테이블) 리뷰어 축과 위임 축의 규칙이 갈리지 않는다."""
@@ -2395,33 +2279,18 @@ def _timeout_seconds_arg(raw: str) -> int:
 
 
 def _configured_paths(conf: dict[str, str]) -> list[str]:
-    raw = conf.get("review_paths", "").strip()
+    raw = conf.get("additional_reviewer.paths", "").strip()
     return [p for p in re.split(r"[,\s]+", raw) if p] if raw else list(DEFAULT_PATHS)
 
 
 def _denylist_extras(conf: dict[str, str]) -> tuple[str, ...]:
     """conf 가 추가 선언한 denylist 패턴만 — 엔진 고정분 없이(승계 합집합의 입력)."""
-    extra = conf.get("review_denylist_extra", "").strip()
+    extra = conf.get("additional_reviewer.denylist_extra", "").strip()
     return tuple(p for p in re.split(r"[,\s]+", extra) if p) if extra else ()
 
 
 def _denylist_patterns(conf: dict[str, str]) -> tuple[str, ...]:
     return _SECRET_DENYLIST_PATTERNS + _denylist_extras(conf)
-
-
-def _round_limit(conf: dict[str, str]) -> int:
-    """라운드 상한 (local.conf additional_reviewer_round_limit·기본 `DEFAULT_ROUND_LIMIT`).
-
-    비정수·음수는 기본값으로 fail-soft — 장부/노브 값이 깨졌다고 게이트를 벽돌로 만들지 않는다
-    (음수 상한은 첫 라운드부터 무조건 차단이라 무의미)."""
-    raw = _knob_raw(conf, ADDITIONAL_REVIEWER_ROUND_LIMIT_KEY)
-    if not raw:
-        return DEFAULT_ROUND_LIMIT
-    try:
-        value = int(raw)
-    except ValueError:
-        return DEFAULT_ROUND_LIMIT
-    return value if value >= 0 else DEFAULT_ROUND_LIMIT
 
 
 def _incomplete_round_limit(conf: dict[str, str]) -> int:
@@ -2437,7 +2306,7 @@ def _incomplete_round_limit(conf: dict[str, str]) -> int:
 
 
 def _wave_budget(conf: dict[str, str]) -> int:
-    """wave 총 라운드 예산 (local.conf additional_reviewer_wave_budget·기본 `DEFAULT_WAVE_BUDGET`).
+    """wave 총 라운드 예산 (local.conf additional_reviewer.wave_budget·기본 `DEFAULT_WAVE_BUDGET`).
 
     비정수·음수는 기본값으로 fail-soft — 라운드 상한 노브와 같은 규칙이다(깨진 노브가 게이트를
     벽돌로 만들지 않는다)."""
@@ -2452,7 +2321,7 @@ def _wave_budget(conf: dict[str, str]) -> int:
 
 
 def _review_rounds_max(conf: dict[str, str]) -> int:
-    """수렴-형상 라운드 상한 (local.conf `review_rounds_max`·기본 2).
+    """수렴-형상 라운드 상한 (local.conf `additional_reviewer.rounds_max`·기본 2).
 
     비정수·음수는 기본값으로 fail-soft — 다른 예산 노브와 같은 규칙이다(깨진 노브가 게이트를
     벽돌로 만들지 않는다)."""
@@ -3124,7 +2993,7 @@ def _inflight_reservations(entry: dict, *, wall_timeout_sec: int | None = None) 
     2완료 + 2예약 동시 통과 → 4전송). 예약은 장부 임계 구역 안에서만 만들어지므로, 그 구역에서
     보는 미마감 예약을 상한에 더하면 창이 닫힌다.
 
-    **미완 재시도 상한(`additional_reviewer_incomplete_round_limit`)과 역할이 다르다.** 그쪽은
+    **미완 재시도 상한(`additional_reviewer.incomplete_rounds_max`)과 역할이 다르다.** 그쪽은
     "판정을 못 낸 전송을 몇 번까지 다시 시도하나"(전송 횟수 축·승인 창 기준)이고, 이 수는
     "지금 몇 라운드가 이미 나가 있나"(수렴 축의 동시성)다. 같은 레코드를 보지만 묻는 질문이
     달라 한쪽이 다른 쪽을 대신하지 못한다 — 미완 상한(기본 2)은 상한 3 설정을 넘기는 4전송 창을
@@ -3534,7 +3403,7 @@ def _reserve_round_budget(
         print(_UNACCOUNTED_OPT_OUT_NOTICE, file=sys.stderr)
         return RoundBudget()
 
-    limit = _round_limit(conf)
+    limit = DEFAULT_ROUND_LIMIT
     incomplete_limit = _incomplete_round_limit(conf)
     wave_budget = _wave_budget(conf)
     rounds_max = _review_rounds_max(conf)
@@ -3773,7 +3642,7 @@ class _PreSpawnReservation:
     확실히 없으므로 예약은 되돌아가야 한다. 환불 조건을 예외 **종류**로 잡으면(알려진
     `ReviewerWorkspaceError` 만) 나머지 예외가 예약을 finished_at 없는 미완 레코드로 남겨, 전송도
     과금도 없던 실행이 다음 실행의 미완 재시도 예산을 깎는다 —
-    `additional_reviewer_incomplete_round_limit=1` 이면 다음 **정상** 호출이 곧바로 차단된다. 그래서
+    `additional_reviewer.incomplete_rounds_max=1` 이면 다음 **정상** 호출이 곧바로 차단된다. 그래서
     조건은 종류가 아니라 **구간**이다: 여기서 나가는 모든 `BaseException`
     (`KeyboardInterrupt`·`SystemExit` 포함)이 환불을 부른다.
 
@@ -5458,7 +5327,7 @@ _WORKSPACE_GIT_IDENTITY = (
 # 리뷰어에게 물려줄 env **최소 allowlist**(이름 완전일치·대소문자 무시). 제거-list 는 쓰지 않는다 —
 # "포인터처럼 생긴 이름을 지운다"는 규칙은 새 이름 하나(`CLAUDE_TRANSCRIPT_PATH`·`CODEX_ROLLOUT_PATH`
 # 처럼 인증 예외어를 품은 포인터)마다 구멍이 나고, 그 구멍이 곧 전사 위치를 손에 쥐여 주는 창이다.
-# 모르는 이름은 기본 차단이고, 배포별로 더 필요한 이름은 local.conf `reviewer_env_keep_extra` 로 명시
+# 모르는 이름은 기본 차단이고, 배포별로 더 필요한 이름은 local.conf `additional_reviewer.env_keep_extra` 로 명시
 # 추가한다(인증이 조용히 깨지지 않게 남긴 탈출구).
 _REVIEWER_ENV_ALLOWLIST = frozenset({
     # 프로세스 기본 실행 환경
@@ -5484,14 +5353,14 @@ _REVIEWER_ENV_ALLOWLIST = frozenset({
     "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_ORGANIZATION",
     "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
 })
-_REVIEWER_ENV_KEEP_EXTRA_KEY = "reviewer_env_keep_extra"
+_REVIEWER_ENV_KEEP_EXTRA_KEY = "additional_reviewer.env_keep_extra"
 
 # 거울 생성 중 원본 git 환경 하이재킹 차단용(훅 안에서 실행되면 GIT_DIR 이 살아 있다).
 _GIT_ENV_PREFIX = "GIT_"
 
 # 임시 홈에 복제할 **인증/설정 파일** 선언 표(사용자 홈 기준 상대경로·파일만). 세션/이력/메모리는
 # 여기에 절대 넣지 않는다 — 리뷰어의 홈이 그것들의 부모가 되는 순간 전사 탐색이 다시 열린다.
-# 하네스별로 값만 다르고 복제 코드는 하나다. 배포별 추가분은 local.conf `reviewer_home_artifacts_extra`.
+# 하네스별로 값만 다르고 복제 코드는 하나다. 배포별 추가분은 local.conf `additional_reviewer.home_artifacts_extra`.
 # 부재는 정상이다(그 하네스를 안 쓰는 형상) — 진짜 부족분의 증상은 "미인증/다른 모델로 실행"이고,
 # 그때의 처방은 실패 진단이 직접 안내한다.
 _REVIEWER_HOME_ARTIFACTS: tuple[str, ...] = (
@@ -5506,12 +5375,12 @@ _REVIEWER_HOME_ARTIFACTS: tuple[str, ...] = (
     # 실측(1.18.x): 데이터 디렉터리에 `auth.json` 이 없고 자격증명이 세션 이력과 함께
     # `opencode.db` 한 파일에 들어 있다 — 그 DB 는 **복제하지 않는다**(전사를 통째로 되들이는 셈이고
     # 수백 MB다). 그 형상의 opencode 리뷰어는 codex 와 동형으로 "미인증/다른 모델" 증상을 내고,
-    # 처방도 같다: local.conf `reviewer_home_artifacts_extra` 로 필요한 파일만 명시 추가.
+    # 처방도 같다: local.conf `additional_reviewer.home_artifacts_extra` 로 필요한 파일만 명시 추가.
     ".local/share/opencode/auth.json",
     ".config/opencode/opencode.json",
     ".config/opencode/opencode.jsonc",
 )
-_REVIEWER_HOME_EXTRA_KEY = "reviewer_home_artifacts_extra"
+_REVIEWER_HOME_EXTRA_KEY = "additional_reviewer.home_artifacts_extra"
 
 # 복제 전에 **떼어낼 JSON 키** 선언 — 인증/온보딩과 세션 흔적이 한 파일에 섞여 있는 경우만.
 # 실측(`~/.claude.json`): 최상위는 온보딩/설치 상태지만 `projects` 하위에 원본 저장소 경로 16개와
@@ -5544,7 +5413,7 @@ _REVIEWER_HOME_SOURCE_ANCHORS: tuple[tuple[str, str], ...] = (
 # **라이브 검증 범위 박제**: codex 프로필은 실 게이트로 인증 생존까지 실측했다. claude 프로필은
 # 기계 검증(선언·복제·env 재지정)까지만이고 **라이브 미실측**이다 — 복제한 자격증명으로 리뷰어가
 # 토큰을 갱신하면 원본 refresh 토큰이 회전·무효화될 수 있어(사용자 계정에 영향) 자율 프로브 대상이
-# 아니다. 필요해지면 `reviewer_home_artifacts_extra` 로 보강한 뒤 **사용자 승인 아래 라이브 1회**.
+# 아니다. 필요해지면 `additional_reviewer.home_artifacts_extra` 로 보강한 뒤 **사용자 승인 아래 라이브 1회**.
 
 # 임시 홈이 대체하는 env — 실 홈 값을 물려주면 `~/.codex/sessions`·`~/.claude/projects` 의 부모를
 # 그대로 쥐여 주는 셈이다. allowlist 를 통과한 뒤 **마지막에** 덮어쓴다.
@@ -5732,7 +5601,7 @@ def _workspace_git_env(destination: Path) -> dict[str, str]:
 def _init_workspace_git(destination: Path) -> bool:
     """거울을 자족 git 저장소로 만든다(원본을 가리키는 포인터 없음). 실패는 fail-soft(False).
 
-    `--skip-git-repo-check` 를 안 붙인 채택자 `reviewer_cmd` 도 종전처럼 동작하게 하는 게 목적이다.
+    `--skip-git-repo-check` 가 없는 해소 커맨드도 종전처럼 동작하게 하는 게 목적이다.
     실행 설정은 전용 env + 명시 `-c` 뿐이라 바깥 git config 가 이 단계에 개입하지 못한다.
     """
     env = _workspace_git_env(destination)
@@ -6262,7 +6131,7 @@ def _timeout_output(timeout: int, exc: subprocess.TimeoutExpired) -> str:
         head = (f"[리뷰어 타임아웃 — 벽시계 백스톱 {threshold:.0f}초 초과"
                 f"{silence_label}] "
                 "재시도: `--timeout <초>` 또는 local.conf "
-                "`external_review_timeout=<초>` (양의 정수).")
+                "`additional_reviewer.timeout=<초>` (양의 정수).")
     else:
         measured = idle_seconds if idle_seconds is not None else silence_seconds
         measured_label = f"{measured:.0f}초" if measured is not None else "관측 불가"
@@ -6414,7 +6283,7 @@ def _started_after(exc: BaseException, seam_reached: bool) -> bool:
 NO_REVIEWER_CONFIGURED_MARKER = "추가 리뷰어 미설정"
 REVIEWER_LAUNCH_FAILURE_MARKER = "리뷰어 실행 파일 해소 실패"
 NO_REVIEWER_CONFIGURED_OUTPUT = (
-    f"[{NO_REVIEWER_CONFIGURED_MARKER} — reviewer_cmd 에 실행할 명령이 없습니다"
+    f"[{NO_REVIEWER_CONFIGURED_MARKER} — 해소된 대상에 실행할 명령이 없습니다"
     " (local.conf 확인). 외부 전송은 일어나지 않았습니다]"
 )
 
@@ -6446,13 +6315,14 @@ def _launch_failure_output(
 def _declared_command_mismatch(attempted: str, reviewer_cmd: str | None) -> str:
     """시도한 실행 파일이 선언 문자열에 없으면 그 대조를 진단에 덧붙인다 (빈 문자열 = 일치).
 
-    분해가 경로를 훼손하면 argv[0] 은 채택자가 local.conf 에 적은 어떤 부분문자열도 아니다 —
-    "설치 안 됨"과 "엔진이 커맨드를 잘못 분해함"을 사람이 그 자리에서 가를 수 있는 유일한 사실이다.
+    분해가 경로를 훼손하면 argv[0] 은 엔진이 구조화 키(`additional_reviewer.harness`·`.model`·
+    `.reasoning`)로 해소한 커맨드의 어떤 부분문자열도 아니다 — "설치 안 됨"과 "엔진이 커맨드를
+    잘못 분해함"을 사람이 그 자리에서 가를 수 있는 유일한 사실이다.
     """
     if not reviewer_cmd or not attempted or attempted in reviewer_cmd:
         return ""
     return (
-        f" · 선언한 커맨드에 없는 실행 파일로 분해됐습니다(local.conf: '{reviewer_cmd}') — "
+        f" · 해소된 커맨드에 없는 실행 파일로 분해됐습니다(커맨드: '{reviewer_cmd}') — "
         "경로 구분자·인용을 확인하세요"
     )
 
@@ -6490,8 +6360,7 @@ def _run_reviewer_ex(
     삼키지 않고 seam 오류로 loud 구분한다.
 
     `argv`/`stdin_text` = 구조화 대상의 wire transport 주입. 미지정이면 종전대로
-    `_split_reviewer_argv(reviewer_cmd)`(실행 플랫폼 규칙 분해) + 프롬프트 stdin 이라, legacy 자유
-    문자열 커맨드의 실행 형상은 바이트 단위로 동일하다(구조화 플래그/파서로 다시 쓰지 않는다).
+    `_split_reviewer_argv(reviewer_cmd)`(실행 플랫폼 규칙 분해) + 프롬프트 stdin 이다.
 
     `on_spawn_attempt` = **실제 자식 생성 직전** 1회 호출되는 seam(기본 None = 종전 동작). 라운드
     예약 소유권 이전(`_PreSpawnReservation.hand_off`)이 이 콜백을 탄다. 호출 지점은 러너가 스폰
@@ -6629,7 +6498,7 @@ def _run_reviewer_ex(
 
 def run_reviewer(
     prompt: str,
-    reviewer_cmd: str = DEFAULT_REVIEWER_CMD,
+    reviewer_cmd: str,
     timeout: int | None = None,
     run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
     idle_timeout: float | None = None,
@@ -6646,20 +6515,6 @@ def reviewer_name(reviewer_cmd: str) -> str:
     """reviewer_cmd 의 공유 정규화 키(시간 프로필·진행신호·파일명/요약 공통)."""
     argv = _split_reviewer_argv(reviewer_cmd)
     return _normalized_reviewer_key(argv)
-
-
-def _reviewer_model(reviewer_cmd: str) -> str:
-    """legacy argv의 model처럼 보이는 토큰을 읽는 호환 관측 seam.
-
-    이 값은 **정체가 아니다**. 임의 실행기 문자열의 옵션 의미를 엔진이 보증할 수 없으므로 실제
-    provenance는 `ReviewerTarget.ledger_model == unpinned-model`을 사용한다."""
-    argv = _split_reviewer_argv(reviewer_cmd)
-    for flag in ("--model", "-m"):
-        if flag in argv:
-            index = argv.index(flag)
-            if index + 1 < len(argv):
-                return argv[index + 1]
-    return LEGACY_UNSPECIFIED_MODEL
 
 
 # ── 결과 파싱 ─────────────────────────────────────────────────────────────
@@ -7007,13 +6862,13 @@ def _abort_pre_spawn_raw(
 
 def run_review(
     prompt: str,
-    reviewer_cmd: str = DEFAULT_REVIEWER_CMD,
+    target: ReviewerTarget,
     timeout: int | None = None,
     output_dir: Path | None = None,
     run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
     idle_timeout: float | None = None, local_conf_path: Path | None = None, resolved_profile: str | None = None,
     cwd: Path | str | None = None, env: dict[str, str] | None = None,
-    target: ReviewerTarget | None = None, codex_egress: str | None = None,
+    codex_egress: str | None = None,
     on_spawn_attempt: Callable[[], None] | None = None,
     on_no_spawn: Callable[[], None] | None = None,
 ) -> dict:
@@ -7021,7 +6876,9 @@ def run_review(
 
     반환 dict: reviewer / ok / output / verdict / contamination / file / failed / started /
     any_must_fix / all_pass.
-    `target` = 해소된 추가 리뷰어(미지정이면 `reviewer_cmd` 의 legacy 대상). 구조화 대상은 argv 를
+    `target` = 해소된 추가 리뷰어(**필수**·구조화 tuple). 커맨드 문자열만 받아 그대로 실행하던
+    경로는 폐지됐다 — 모델을 고정하지 않는 실행은 "어느 모델이 이 판정을 냈는가"를 사후에
+    확정할 수 없다. 실행 커맨드는 검증된 `target.command` 에서만 파생한다. argv 를
     직접 조립하고 회신을 **공용 wire 파서**로 추출해 판정에 넣는다 — JSON/스트림 원문을 그대로
     판정 파서에 넣으면 이벤트 필드에 실린 문구가 판정으로 오독된다. raw 박제는 추출 전 wire
     (stdout+stderr)를 그대로 보존한다.
@@ -7052,7 +6909,9 @@ def run_review(
     이미 정상 마감된 레코드는 다시 닫지 않는다(이중 마감 없음). 스폰된 실행(started=True)의 수합
     실패는 종전 보수 규칙 그대로다 — 환불도 보상도 없이 미완으로 남는다.
     """
-    target = target or ReviewerTarget(REVIEWER_SOURCE_LEGACY, reviewer_cmd)
+    # 실행 커맨드의 소유자는 **대상 하나**다 — 두 입력이 갈리면 시간 프로필·argv·장부 헤더가
+    # 서로 다른 것을 말한다.
+    reviewer_cmd = target.command
     name = target.name
     raw_path = _reserve_output(name, output_dir)
     # ── 여기부터 스폰 시도 seam 까지가 "확실히 전송 전" 구간이다 ──────────
@@ -7324,7 +7183,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 예시:
-  # 기본 (HEAD 기준 변경, local.conf review_paths/기본 경로) — 회계 밖 실행을 명시
+  # 기본 (HEAD 기준 변경, local.conf additional_reviewer.paths/기본 경로) — 회계 밖 실행을 명시
   python3 .project_manager/tools/external_review.py --no-gate
 
   # ticket 의 touches 로 경로 결정 (--gate 미지정이면 그 티켓으로 게이트 자동 유도·장부 기록)
@@ -7357,15 +7216,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
   python3 .project_manager/tools/external_review.py --ticket T-NNNN --dry-run
   python3 .project_manager/tools/external_review.py --ticket T-NNNN --codex-egress-escalated
 
-활성화: local.conf 에 `additional_reviewer_enabled=true` ·
+활성화: local.conf 에 `additional_reviewer.enabled=true` ·
         또는 `board.py init` / `pm_update` 시 opt-in 프롬프트.
 추가 리뷰어 대상(원자 tuple · 정상 경로):
         additional_reviewer.harness=codex
         additional_reviewer.model=gpt-5.6-sol
         additional_reviewer.reasoning=max     (선택 · 하네스별 허용집합 검증)
-        harness/model 은 동반 필수이고 legacy `reviewer_cmd` 와 함께 쓸 수 없다.
-        구조화 키가 하나도 없으면 종전 `reviewer_cmd`/기본 커맨드로 도는 unpinned-model 경로다.
-지속 동의: `additional_reviewer_enabled=true` 는 설정된 대상의 외부 전송·통상 과금에 대한 지속
+        harness/model 은 동반 필수다. 이 tuple 이 없으면 대상이 없어 fail-loud 다
+        (모델을 고정하지 않는 실행 경로는 폐지됐다).
+지속 동의: `additional_reviewer.enabled=true` 는 설정된 대상의 외부 전송·통상 과금에 대한 지속
         동의다 — 호출마다 비용을 다시 묻지 않는다. 무한 라운드는 라운드/wave 예산이 기계로 막는다.
 """,
     )
@@ -7373,7 +7232,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help=("git diff 기준 ref (기본: HEAD — 작업트리"
                               "(스테이징+언스테이징), 비면 직전 커밋 HEAD~1..HEAD)"))
     parser.add_argument("--paths", nargs="+", default=None,
-                        help="검토 대상 경로 (기본: local.conf review_paths / src tests scripts ...)")
+                        help="검토 대상 경로 (기본: local.conf additional_reviewer.paths / src tests scripts ...)")
     parser.add_argument("--ticket", default=None, metavar="T-NNNN",
                         help="ticket ID — touches 로 검토 경로 결정. --gate 미지정이면 이 값이 "
                              "게이트로 자동 유도돼 라운드가 장부에 기록·집계된다")
@@ -7466,15 +7325,14 @@ def _local_conf_path(repo: Path | None = None) -> Path:
 
 
 def _read_local_config(path: Path) -> dict[str, str]:
-    """존재가 확인된 비교 대상 local.conf를 KEY=value 로 읽는다."""
-    conf: dict[str, str] = {}
-    for line in _read_text_shared(path, encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        conf[key.strip()] = value.strip()
-    return conf
+    """존재가 확인된 비교 대상 local.conf를 공용 로더로 읽는다(구표기 잔존은 fail-loud).
+
+    판독 실패는 **삼키지 않는다**(`load_strict`) — 호출부가 그 예외로 fail-closed 하므로, 빈 conf
+    로 강등하면 보호 선언을 확인하지 못한 채 외부로 나간다."""
+    module = _load_local_conf()
+    result = module.load_strict(path)
+    module.assert_no_legacy(result)
+    return result.values
 
 
 def _review_raw_content(
@@ -7675,7 +7533,7 @@ def resolve_review_content_conf(
     differences: list[str] = []
     if target_only:
         differences.append(
-            "review_denylist_extra: "
+            "additional_reviewer.denylist_extra: "
             f"{target_label}-only={target_only!r} (양쪽 유효 denylist 합집합 적용)"
         )
 
@@ -7684,7 +7542,7 @@ def resolve_review_content_conf(
         target_paths = _normalized_review_paths(target_conf)
         if engine_paths != target_paths:
             differences.append(
-                f"review_paths: {engine_label}={engine_paths!r}, "
+                f"additional_reviewer.paths: {engine_label}={engine_paths!r}, "
                 f"{target_label}={target_paths!r}"
             )
 
@@ -7768,18 +7626,15 @@ def format_local_conf_divergence(
 
 
 def resolved_reviewer_profile(
-    reviewer_cmd: str, timeout: int | None, idle_timeout: float | None,
-    target: ReviewerTarget | None = None,
+    target: ReviewerTarget, timeout: int | None, idle_timeout: float | None,
 ) -> str:
     """stderr·dry-run·raw 가 **같은 문자열로** 공유하는 추가 리뷰어 해소 tuple.
 
-    앞머리(커맨드·시간 예산)는 종전과 같고, 뒤에 해소 출처 축이 붙는다 — 구조화면
-    `source=structured` + harness/model/reasoning, legacy 면 `source=legacy` +
-    `model=unpinned-model`(모델을 고정하지 않은 경로임을 크게 남긴다)."""
-    tail = (target or ReviewerTarget(REVIEWER_SOURCE_LEGACY, reviewer_cmd)).profile_tail
+    앞머리(커맨드·시간 예산)와 뒤의 해소 출처 축(`source=structured` + harness/model/reasoning)이
+    **같은 검증된 대상 하나**에서 나온다(커맨드 문자열을 따로 받지 않는다)."""
     return (
-        f"(reviewer_cmd={reviewer_cmd}, wall_timeout_sec={timeout}, "
-        f"idle_timeout_sec={idle_timeout}, {tail})"
+        f"(reviewer_cmd={target.command}, wall_timeout_sec={timeout}, "
+        f"idle_timeout_sec={idle_timeout}, {target.profile_tail})"
     )
 
 
@@ -7920,11 +7775,11 @@ def _main(argv: list[str] | None = None) -> int:
             )
         if scope_from_initial_pm_home and pm_home != engine_pm_home:
             raise AnchorResolutionError(
-                "인자 없는 실행의 검토 범위(local.conf review_paths 또는 엔진 고정 기본 경로)를 "
+                "인자 없는 실행의 검토 범위(local.conf additional_reviewer.paths 또는 엔진 고정 기본 경로)를 "
                 "최초 PM 홈에서 파생해 diff_root를 선택했지만, 해소된 diff 소유 PM 홈이 다릅니다. "
                 "config provenance와 실제 전송 범위를 일치시킬 수 없어 외부 송신 전에 중단합니다: "
                 f"initial-pm-home={engine_pm_home} diff-owner-pm-home={pm_home}\n"
-                "  · review_paths 선언 유무와 무관한 같은 기준입니다 — 기본 경로도 최초 PM 홈 "
+                "  · additional_reviewer.paths 선언 유무와 무관한 같은 기준입니다 — 기본 경로도 최초 PM 홈 "
                 "config를 읽어 얻은 이번 실행의 범위입니다.\n"
                 "  · 절대 `--paths <경로>`로 이번 검토 범위를 직접 지정하거나, 유효한 "
                 "`--ticket T-NNNN`(touches 채워진 것)으로 범위를 파생시키세요.\n"
@@ -8016,7 +7871,7 @@ def _main(argv: list[str] | None = None) -> int:
         else float(resolved_time_profile.idle_timeout)
     )
     conf_path = _local_conf_path(pm_home)
-    profile = resolved_reviewer_profile(reviewer_cmd, timeout, idle_timeout, target)
+    profile = resolved_reviewer_profile(target, timeout, idle_timeout)
     # Codex egress 승격 판정 — dry-run 표시와 실행 게이트가 **같은 입력**을 쓴다. 마커는 "승격이
     # 필요한 형상인가"만 정하고, "이번 호출이 승격됐는가"는 호출층 attestation 이 소유한다.
     relay = _load_relay()
@@ -8116,7 +7971,7 @@ def _main(argv: list[str] | None = None) -> int:
                     "denylist는 양쪽 해소값의 합집합을 적용하고 "
                     f"{review_paths_note}: {_local_conf_path(pm_home)}\n"
                     "  차단하지 않고 계속합니다. 대상 전용 denylist도 이번 diff 제외에 적용되며, "
-                    "review_paths 범위를 직접 정하려면 --paths/유효 ticket touches로 이번 범위를 "
+                    "additional_reviewer.paths 범위를 직접 정하려면 --paths/유효 ticket touches로 이번 범위를 "
                     "완전히 지정하세요."
                 ),
             ),
@@ -8294,12 +8149,6 @@ def _main(argv: list[str] | None = None) -> int:
             confirmation_ids=confirmable_finding_ids(),
         )
 
-    # 구키 deprecation — 미리보기·실행 **양쪽**에서 같은 자리에 안내. 게이트 판정 앞이라 꺼져 있는
-    # conf 도 안내를 받는다(구키로 `false` 를 적어 둔 채택자가 켜려 할 때 신키를 알아야 한다).
-    # 게이트와 노브를 한 깔때기에서 받아 축마다 다른 자리에 찍히지 않게 한다.
-    for warning in legacy_key_warnings(conf):
-        print(warning, file=sys.stderr)
-
     if args.dry_run:
         if not prepare_ticket_body():
             return 1
@@ -8333,7 +8182,7 @@ def _main(argv: list[str] | None = None) -> int:
             escalation_required=codex_egress_required,
             attested=args.codex_egress_escalated,
             script=relay.EXTERNAL_REVIEW_ENTRYPOINT,
-            consent_key=ADDITIONAL_REVIEWER_ENABLED_KEY,
+            gate_key=ADDITIONAL_REVIEWER_ENABLED_KEY,
             windows=_running_on_windows(),
         ))
         print("=== [dry-run] 프롬프트 미리보기 (외부 전송 없음) ===")
@@ -8358,7 +8207,7 @@ def _main(argv: list[str] | None = None) -> int:
                 list(sys.argv[1:] if argv is None else argv),
                 target.name, target.ledger_model,
                 script=relay.EXTERNAL_REVIEW_ENTRYPOINT,
-                consent_key=ADDITIONAL_REVIEWER_ENABLED_KEY,
+                gate_key=ADDITIONAL_REVIEWER_ENABLED_KEY,
                 subject="추가 리뷰어 외부 전송",
                 windows=_running_on_windows(),
             ),
@@ -8766,12 +8615,12 @@ def _run_isolated_review(
     #
     # 추가 리뷰어는 PM 세션의 cwd/env/홈을 물려받지 않는다 — 거울과 임시 홈, allowlist env 만 받는다.
     result = run_review(
-        prompt=prompt, reviewer_cmd=reviewer_cmd,
+        prompt=prompt, target=target,
         timeout=timeout, output_dir=output_dir, idle_timeout=idle_timeout,
         local_conf_path=conf_path, resolved_profile=profile,
         cwd=workspace_tree,
         env=reviewer_environment,
-        target=target, codex_egress=codex_egress,
+        codex_egress=codex_egress,
         on_spawn_attempt=reservation.hand_off,
         on_no_spawn=reservation.reclaim_no_spawn,
     )

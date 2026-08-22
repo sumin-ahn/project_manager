@@ -1,7 +1,7 @@
 r"""run_tests_hook.sh 러너 소유권 — `local.conf test_cmd` 해소 + 부재 시 엔진 스위트 폴백 (T-0579).
 
 이 훅은 `pytest tests/` 를 하드코딩했다. 테스트 루트가 `tests/` 가 아닌 채택자(실측:
-`test_cmd=<venv>/python -m pytest .project_manager/checks/tests -q`)에선 수집 0 이거나 엉뚱한 스위트가
+`test.cmd=<venv>/python -m pytest .project_manager/checks/tests -q`)에선 수집 0 이거나 엉뚱한 스위트가
 돌아, 편집마다 뜨는 systemMessage 가 회귀 신호가 아니게 된다. 러너 명령의 소유권을 채택자
 (`.project_manager/local.conf` 의 `test_cmd` — 엔진이 이미 소비하는 seam)로 단일화한 뒤 그 계약을 잠근다.
 
@@ -96,10 +96,10 @@ def _system_message(proc) -> str:
 
 @requires_bash
 @pytest.mark.parametrize("conf", [
-    pytest.param("test_cmd=python stub_runner.py\n", id="plain"),
-    pytest.param("  test_cmd = python stub_runner.py  \n", id="whitespace-padded"),
+    pytest.param("test.cmd=python stub_runner.py\n", id="plain"),
+    pytest.param("  test.cmd = python stub_runner.py  \n", id="whitespace-padded"),
     pytest.param(
-        "# per-clone 설정\npy=python3\ntest_cmd=python stub_runner.py\nproject_name=x\n",
+        "# per-clone 설정\nruntime.py=python3\ntest.cmd=python stub_runner.py\nproject.name=x\n",
         id="among-other-keys",
     ),
 ])
@@ -126,6 +126,41 @@ def test_local_conf_test_cmd_replaces_hardcoded_suite(tmp_path, conf):
 
 
 @requires_bash
+def test_legacy_conf_keys_stop_the_hook_before_it_picks_a_runner(tmp_path):
+    """구표기 conf 는 러너 해소 **전에** 멈춘다 — 고정 폴백 스위트를 조용히 고르지 않는다.
+
+    `test_cmd=` 는 개칭 뒤 훅에게 "미지정" 으로 읽힌다. 그 상태로 진행하면 훅은 엔진 폴백
+    (`pytest tests/`)을 돌리고 채택자는 자기 러너가 돈 줄 안다 — 엔진 소비 지점의 fail-loud 와
+    같은 규율을 이 표면에서도 지킨다.
+    """
+    repo, hook = _make_hook_repo(tmp_path)
+    _write_local_conf(repo, "test_cmd=python stub_runner.py\nctx_window_tokens_claude=5\n")
+    env = _hook_env(tmp_path)
+
+    proc = _fire(hook, repo, env)
+
+    assert not (repo / FALLBACK_MARKER).exists(), "구표기 conf 인데 고정 폴백 스위트가 돌았다"
+    assert not (repo / STUB_MARKER).exists(), "구표기 키가 러너로 해소됐다"
+    message = _system_message(proc)
+    assert "구표기 키" in message, message
+    for key in ("test_cmd", "ctx_window_tokens_claude"):
+        assert key in message, message
+
+
+@requires_bash
+def test_hook_blocked_keys_come_from_the_engine_generator(tmp_path):
+    """훅이 품은 차단 키 선언이 엔진 생성 산출과 글자 단위로 같다(손 복제 0)."""
+    spec = importlib.util.spec_from_file_location(
+        "local_conf_for_hook", REPO / ".project_manager" / "tools" / "local_conf.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    block = module.render_adapter_block("sh")
+
+    for hook_path in (ROOT_HOOK, SHIPPED_HOOK):
+        assert block in hook_path.read_text(encoding="utf-8"), hook_path
+
+
+@requires_bash
 def test_test_cmd_runs_verbatim_without_extra_flags(tmp_path):
     """test_cmd 는 **그대로** 실행된다 — 훅이 `-q --no-header` 등을 덧붙이지 않는다.
 
@@ -135,7 +170,7 @@ def test_test_cmd_runs_verbatim_without_extra_flags(tmp_path):
     repo, hook = _make_hook_repo(tmp_path)
     (repo / "argv_runner.py").write_text(
         "import sys\nprint('ARGV=' + repr(sys.argv[1:]))\n", encoding="utf-8")
-    _write_local_conf(repo, "test_cmd=python argv_runner.py --self-flag\n")
+    _write_local_conf(repo, "test.cmd=python argv_runner.py --self-flag\n")
     env = _hook_env(tmp_path)
 
     message = _system_message(_fire(hook, repo, env))
@@ -154,7 +189,7 @@ def test_test_cmd_referencing_unset_variable_still_runs(tmp_path):
     repo, hook = _make_hook_repo(tmp_path)
     _write_local_conf(
         repo,
-        'test_cmd=PM_T0579_UNSET="$PM_T0579_UNSET:src" python stub_runner.py\n',
+        'test.cmd=PM_T0579_UNSET="$PM_T0579_UNSET:src" python stub_runner.py\n',
     )
     env = _hook_env(tmp_path)
     env.pop("PM_T0579_UNSET", None)
@@ -172,7 +207,7 @@ def test_duplicate_test_cmd_last_wins(tmp_path):
     repo, hook = _make_hook_repo(tmp_path)
     _write_stub_runner(repo, "stub_first.py", "first.marker", "FIRST")
     _write_stub_runner(repo, "stub_last.py", "last.marker", "LAST")
-    _write_local_conf(repo, "test_cmd=python stub_first.py\ntest_cmd=python stub_last.py\n")
+    _write_local_conf(repo, "test.cmd=python stub_first.py\ntest.cmd=python stub_last.py\n")
     env = _hook_env(tmp_path)
 
     message = _system_message(_fire(hook, repo, env))
@@ -186,10 +221,10 @@ def test_duplicate_test_cmd_last_wins(tmp_path):
 @requires_bash
 @pytest.mark.parametrize("conf", [
     pytest.param(None, id="no-local-conf"),
-    pytest.param("py=python3\nproject_name=x\n", id="no-test_cmd-key"),
-    pytest.param("test_cmd=\n", id="empty-value"),
+    pytest.param("runtime.py=python3\nproject.name=x\n", id="no-test_cmd-key"),
+    pytest.param("test.cmd=\n", id="empty-value"),
     pytest.param("#test_cmd=python stub_runner.py\n", id="commented-out"),
-    pytest.param("test_cmd=python stub_runner.py\ntest_cmd=\n", id="last-value-empty-unsets"),
+    pytest.param("test.cmd=python stub_runner.py\ntest.cmd=\n", id="last-value-empty-unsets"),
 ])
 def test_falls_back_to_engine_suite_when_test_cmd_unset(tmp_path, conf):
     """test_cmd 미지정이면 현행대로 엔진 스위트(`pytest tests/`)를 돌린다 (100% 하위호환).
@@ -220,10 +255,10 @@ def test_worktree_shape_local_conf_without_test_cmd_uses_engine_fallback(tmp_pat
     _write_local_conf(
         repo,
         "# per-clone 설정 (git-ignored)\n"
-        "py=python3\n"
-        "project_name=demo\n"
-        "additional_reviewer_enabled=true\n"
-        "upstream_rev=0123456789abcdef0123456789abcdef01234567\n",
+        "runtime.py=python3\n"
+        "project.name=demo\n"
+        "additional_reviewer.enabled=true\n"
+        "upstream.rev=0123456789abcdef0123456789abcdef01234567\n",
     )
     env = _hook_env(tmp_path)
 
@@ -244,7 +279,7 @@ def test_broken_test_cmd_reports_failure_instead_of_silent_fallback(tmp_path):
     잃는다 — 훅의 조용한 실패 금지 규율.
     """
     repo, hook = _make_hook_repo(tmp_path)
-    _write_local_conf(repo, "test_cmd=pm-no-such-runner-t0579 --run\n")
+    _write_local_conf(repo, "test.cmd=pm-no-such-runner-t0579 --run\n")
     env = _hook_env(tmp_path)
 
     proc = _fire(hook, repo, env)
@@ -281,12 +316,12 @@ def test_silent_failing_test_cmd_reports_rc(tmp_path):
     """출력 없이 rc≠0 로 죽는 러너도 실패로 보인다 — rc 를 메시지에 싣는다 (codex must-fix).
 
     러너를 `러너 | tail -1` 로 받으면 파이프라인 rc 가 tail 의 것(항상 0)이라 종료코드가 버려진다.
-    `test_cmd=false` 처럼 출력까지 없으면 메시지가 빈 문자열이 돼 성공과 구분되지 않는다 — '조용한
+    `test.cmd=false` 처럼 출력까지 없으면 메시지가 빈 문자열이 돼 성공과 구분되지 않는다 — '조용한
     실패 금지' 결정을 구현이 스스로 깨는 지점. rc 를 따로 캡처해 메시지에 실어야 한다.
     """
     repo, hook = _make_hook_repo(tmp_path)
     (repo / "silent_fail.py").write_text("import sys\nsys.exit(3)\n", encoding="utf-8")
-    _write_local_conf(repo, "test_cmd=python silent_fail.py\n")
+    _write_local_conf(repo, "test.cmd=python silent_fail.py\n")
     env = _hook_env(tmp_path)
 
     message = _system_message(_fire(hook, repo, env))
@@ -303,7 +338,7 @@ def test_failing_test_cmd_keeps_last_line_and_appends_rc(tmp_path):
     repo, hook = _make_hook_repo(tmp_path)
     (repo / "noisy_fail.py").write_text(
         "import sys\nprint('FAILED stub::case')\nsys.exit(2)\n", encoding="utf-8")
-    _write_local_conf(repo, "test_cmd=python noisy_fail.py\n")
+    _write_local_conf(repo, "test.cmd=python noisy_fail.py\n")
     env = _hook_env(tmp_path)
 
     message = _system_message(_fire(hook, repo, env))
@@ -387,39 +422,39 @@ CONF_DIALECTS = [
     ("absent-file", None),
     ("empty-file", ""),
     ("blank-and-whitespace-lines", "\n   \n\t\n"),
-    ("plain", "test_cmd=pytest -q\n"),
-    ("no-trailing-newline-at-eof", "test_cmd=pytest -q"),
-    ("leading-spaces", "   test_cmd=pytest -q\n"),
-    ("leading-tab", "\ttest_cmd=pytest -q\n"),
-    ("spaces-around-equals", "test_cmd = pytest -q\n"),
-    ("tabs-around-equals", "test_cmd\t=\tpytest -q\n"),
-    ("trailing-spaces-in-value", "test_cmd=pytest -q   \n"),
-    ("trailing-tab-in-value", "test_cmd=pytest -q\t\n"),
-    ("crlf-line-endings", "py=python3\r\ntest_cmd=pytest -q\r\n"),
-    ("crlf-no-trailing-newline", "test_cmd=pytest -q\r"),
-    ("bom-on-key-line", "\ufefftest_cmd=pytest -q\n"),
-    ("bom-on-earlier-line", "\ufeffpy=python3\ntest_cmd=pytest -q\n"),
-    ("empty-value", "test_cmd=\n"),
-    ("whitespace-only-value", "test_cmd=   \n"),
-    ("duplicate-last-wins", "test_cmd=first -q\ntest_cmd=second -q\n"),
-    ("duplicate-last-empty-unsets", "test_cmd=first -q\ntest_cmd=\n"),
-    ("equals-inside-value", "test_cmd=make test ARG=1\n"),
-    ("double-equals", "test_cmd==pytest -q\n"),
-    ("hash-inside-value", 'test_cmd=pytest -k "a#b"\n'),
-    ("quotes-inside-value", 'test_cmd=python -c "import sys; sys.exit(0)"\n'),
-    ("comment-line-tight", "#test_cmd=pytest -q\n"),
-    ("comment-line-spaced", "  # test_cmd=pytest -q\n"),
-    ("key-prefix-mismatch", "xtest_cmd=pytest -q\n"),
-    ("key-suffix-mismatch", "test_cmdx=pytest -q\n"),
-    ("key-underscore-neighbor", "slot_test_cmd=pytest -q\n"),
-    ("key-case-mismatch", "TEST_CMD=pytest -q\n"),
-    ("key-without-equals", "test_cmd\n"),
-    ("non-ascii-value", "test_cmd=pytest -k 한글\n"),
-    ("windows-path-value", "test_cmd=C:\\py\\python.exe -m pytest tests -q\n"),
+    ("plain", "test.cmd=pytest -q\n"),
+    ("no-trailing-newline-at-eof", "test.cmd=pytest -q"),
+    ("leading-spaces", "   test.cmd=pytest -q\n"),
+    ("leading-tab", "\ttest.cmd=pytest -q\n"),
+    ("spaces-around-equals", "test.cmd = pytest -q\n"),
+    ("tabs-around-equals", "test.cmd\t=\tpytest -q\n"),
+    ("trailing-spaces-in-value", "test.cmd=pytest -q   \n"),
+    ("trailing-tab-in-value", "test.cmd=pytest -q\t\n"),
+    ("crlf-line-endings", "runtime.py=python3\r\ntest.cmd=pytest -q\r\n"),
+    ("crlf-no-trailing-newline", "test.cmd=pytest -q\r"),
+    ("bom-on-key-line", "\ufefftest.cmd=pytest -q\n"),
+    ("bom-on-earlier-line", "\ufeffruntime.py=python3\ntest.cmd=pytest -q\n"),
+    ("empty-value", "test.cmd=\n"),
+    ("whitespace-only-value", "test.cmd=   \n"),
+    ("duplicate-last-wins", "test.cmd=first -q\ntest.cmd=second -q\n"),
+    ("duplicate-last-empty-unsets", "test.cmd=first -q\ntest.cmd=\n"),
+    ("equals-inside-value", "test.cmd=make test ARG=1\n"),
+    ("double-equals", "test.cmd==pytest -q\n"),
+    ("hash-inside-value", 'test.cmd=pytest -k "a#b"\n'),
+    ("quotes-inside-value", 'test.cmd=python -c "import sys; sys.exit(0)"\n'),
+    ("comment-line-tight", "#test.cmd=pytest -q\n"),
+    ("comment-line-spaced", "  # test.cmd=pytest -q\n"),
+    ("key-prefix-mismatch", "xtest.cmd=pytest -q\n"),
+    ("key-suffix-mismatch", "test.cmdx=pytest -q\n"),
+    ("key-underscore-neighbor", "slot.test.cmd=pytest -q\n"),
+    ("key-case-mismatch", "TEST.CMD=pytest -q\n"),
+    ("key-without-equals", "test.cmd\n"),
+    ("non-ascii-value", "test.cmd=pytest -k 한글\n"),
+    ("windows-path-value", "test.cmd=C:\\py\\python.exe -m pytest tests -q\n"),
     (
         "realistic-multi-key",
-        "# per-clone 설정\npy=python3\ntest_cmd=python3 -m pytest .checks/tests -q\n"
-        "project_name=demo\nupstream_rev=abc123\n",
+        "# per-clone 설정\nruntime.py=python3\ntest.cmd=python3 -m pytest .checks/tests -q\n"
+        "project.name=demo\nupstream.rev=abc123\n",
     ),
 ]
 
@@ -442,7 +477,7 @@ def test_hook_parser_matches_engine_local_config(tmp_path, monkeypatch, board, c
         conf_path.write_bytes(content.encode("utf-8"))
 
     monkeypatch.setattr(board, "LOCAL_CONF", conf_path)
-    engine_value = board.local_config().get("test_cmd")
+    engine_value = board.local_config().get("test.cmd")
     hook_value = _resolve_via_hook(tmp_path)
 
     assert hook_value == (engine_value or ""), (
@@ -492,7 +527,7 @@ def _argv_payload(text: str) -> str:
 def _prepare_exec_repo(tmp_path: Path, command: str):
     repo, hook = _make_hook_repo(tmp_path)
     (repo / "argv_runner.py").write_text(ARGV_RUNNER, encoding="utf-8")
-    _write_local_conf(repo, f"test_cmd={command}\n")
+    _write_local_conf(repo, f"test.cmd={command}\n")
     env = _hook_env(tmp_path)
     env.pop("PM_T0579_UNSET", None)   # 미설정 변수 축이 환경 오염으로 무력화되지 않게
     return repo, hook, env
@@ -563,5 +598,5 @@ def test_hook_header_documents_local_conf_ownership():
     """
     for path in (ROOT_HOOK, SHIPPED_HOOK):
         header = path.read_text(encoding="utf-8").split("set -u", 1)[0]
-        assert "local.conf" in header and "test_cmd" in header, (
+        assert "local.conf" in header and "test.cmd" in header, (
             f"{path} 머리주석에 러너 소유권(local.conf test_cmd) 안내 부재")

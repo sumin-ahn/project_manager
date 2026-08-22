@@ -83,7 +83,7 @@ def _sim_old_adopter(gen_text: str, op: dict, *, manual_markers: bool = True) ->
 
 
 def _make_dest(tmp_path: Path, agents: str, jsonc: str,
-               conf: str = "py=python3\nproject_name=myproj\ntest_cmd=pytest tests/ -q\n") -> Path:
+               conf: str = "runtime.py=python3\nproject.name=myproj\ntest.cmd=pytest tests/ -q\n") -> Path:
     """채택자 dest 트리(AGENTS.md·opencode.jsonc·local.conf) 구성."""
     dest = tmp_path / "dest"
     (dest / ".opencode").mkdir(parents=True)
@@ -127,8 +127,8 @@ def _make_selfupdate_pair(tmp_path: Path, agents: str) -> tuple[Path, Path]:
     (dest / "AGENTS.md").write_text(agents, encoding="utf-8")
     (dest / ".opencode" / "opencode.jsonc").write_text(_MINIMAL_OLD_JSONC, encoding="utf-8")
     (dest / ".project_manager" / "local.conf").write_text(
-        "py=python3\nproject_name=myproj\ntest_cmd=pytest tests/ -q\n"
-        "additional_reviewer_enabled=false\n", encoding="utf-8")
+        "runtime.py=python3\nproject.name=myproj\ntest.cmd=pytest tests/ -q\n"
+        "additional_reviewer.enabled=false\n", encoding="utf-8")
     return dest, src
 
 

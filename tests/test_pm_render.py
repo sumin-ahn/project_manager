@@ -85,7 +85,7 @@ def test_operational_missing_key_leaks_not_silently_emptied(pm_render):
 def test_operational_empty_value_leaks_not_silently_emptied(pm_render):
     """operational dict 에 *있되 빈 문자열* 인 키는 빈 치환하지 않고 토큰을 남겨 RenderLeakError.
 
-    T-0218 발단(PM 49차 라이브): local.conf `project_name=` 빈값 → 렌더가 `{{PROJECT_NAME}}` 를
+    T-0218 발단(PM 49차 라이브): local.conf `project.name=` 빈값 → 렌더가 `{{PROJECT_NAME}}` 를
     `` 로 silent 치환 → description 이 " 프로젝트"(이름 빈칸)로 커밋·전파. `_assert_no_leak` 는
     *잔여 토큰* 만 보므로 통과했다. 빈값 항목은 치환하지 않아 토큰이 잔존→leak 으로 표면화해야
     한다(silent-empty = leak 클래스·렌더러 이중화·호출자 무관). 에러엔 빈값 힌트가 실린다.
@@ -96,7 +96,7 @@ def test_operational_empty_value_leaks_not_silently_emptied(pm_render):
     msg = str(exc.value)
     assert "{{PROJECT_NAME}}" in msg
     # 빈값 원인 힌트: local.conf `<key>=` 가 빈값 — 값을 채우라.
-    assert "`project_name=`" in msg
+    assert "`project.name=`" in msg
     assert "빈값" in msg
 
 
@@ -113,7 +113,7 @@ def test_operational_empty_value_hint_only_for_leaked_token(pm_render):
     msg = str(exc.value)
     assert "{{UNKNOWN}}" in msg
     # PROJECT_ROOT 는 빈값이나 텍스트에 없어 leak 아님 → 빈값 힌트 부재.
-    assert "project_root" not in msg
+    assert "project.root" not in msg
     assert "빈값" not in msg
 
 
@@ -186,7 +186,7 @@ def test_opencode_pro_model_off_model_line_still_leaks(pm_render):
 
 
 def test_opencode_pro_model_empty_in_conf_still_leaks(pm_render):
-    """`opencode_pro_model=` 빈값(present-but-empty)은 intentional-TODO 로 중화하지 않고 leak 한다
+    """`harness.opencode.pro_model=` 빈값(present-but-empty)은 intentional-TODO 로 중화하지 않고 leak 한다
     (T-0218 빈값 가드 보존·codex T-0310 must-fix). 부재(absent)만 graceful TODO — 빈값은 오설정 신호.
 
     회귀: T-0310 의 neutralize 가 `_assert_no_leak` *전에* 토큰을 제거하면 빈값 케이스가 조용히
@@ -199,7 +199,7 @@ def test_opencode_pro_model_empty_in_conf_still_leaks(pm_render):
         pm_render.render_adapter(tpl, operational={"OPENCODE_PRO_MODEL": ""})
     assert "{{OPENCODE_PRO_MODEL}}" in str(exc.value)
     assert "빈값" in str(exc.value), "빈값 원인 힌트(값을 채우라)가 소실."
-    # 경로 ②: 호출자(pm_update)가 local.conf `opencode_pro_model=` 를 excluded → empty_keys 로 전달.
+    # 경로 ②: 호출자(pm_update)가 local.conf `harness.opencode.pro_model=` 를 excluded → empty_keys 로 전달.
     with pytest.raises(pm_render.RenderLeakError) as exc2:
         pm_render.render_adapter(
             tpl, operational={"PROJECT_NAME": "acme"}, empty_keys=["OPENCODE_PRO_MODEL"])
@@ -446,7 +446,7 @@ def test_plan_render_path_compares_rendered_output(pm_update, tmp_path):
     rel = ".claude/agents/developer.md"
     (src / ".claude/agents").mkdir(parents=True)
     write_lf(src / rel, "- {{PROJECT_NAME}}\nbody\n")
-    _seed_render_dest(dst, local_conf="project_name=acme\n")
+    _seed_render_dest(dst, local_conf="project.name=acme\n")
     # dst 에 *렌더 산출물* 을 미리 둔다 — 같으면 change 없어야.
     (dst / ".claude/agents").mkdir(parents=True)
     write_lf(dst / rel, "- acme\nbody\n")
@@ -468,7 +468,7 @@ def test_plan_render_path_update_when_output_differs(pm_update, tmp_path):
     rel = ".claude/agents/developer.md"
     (src / ".claude/agents").mkdir(parents=True)
     write_lf(src / rel, "- {{PROJECT_NAME}}\nbody\n")
-    _seed_render_dest(dst, local_conf="project_name=acme\n")
+    _seed_render_dest(dst, local_conf="project.name=acme\n")
     (dst / ".claude/agents").mkdir(parents=True)
     write_lf(dst / rel, "- STALE\nbody\n")
 
@@ -490,7 +490,7 @@ def test_apply_render_writes_rendered_output(pm_update, tmp_path):
     (src / ".claude/agents").mkdir(parents=True)
     (src / rel).write_text("- {{PROJECT_NAME}}\n- {{PROJECT_ROOT}}\nbody\n",
                            encoding="utf-8")
-    _seed_render_dest(dst, local_conf="project_name=acme\nproject_root=/r\n")
+    _seed_render_dest(dst, local_conf="project.name=acme\nproject.root=/r\n")
     manifest = pm_update.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     _track_source_tree(src)
@@ -521,7 +521,7 @@ def test_render_dir_text_files_rendered_binary_copied(pm_update, tmp_path):
     (src / toml_rel).write_text('description = "{{PROJECT_NAME}}"\n', encoding="utf-8")
     # 바이너리(UTF-8 디코드 불가) — render 대상 아님(byte-copy·자족 산출물 아님).
     (src / bin_rel).write_bytes(b"\xff\xfe\x00binary\x00")
-    _seed_render_dest(dst, local_conf="project_name=acme\n")
+    _seed_render_dest(dst, local_conf="project.name=acme\n")
     manifest = pm_update.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     _track_source_tree(src)
@@ -575,7 +575,7 @@ def test_render_leak_silent_when_no_render_path(board, monkeypatch, tmp_path):
     m.write_text(".project_manager/tools/board.py\n.claude/agents\n", encoding="utf-8")
     # local.conf 존재 → 트리 게이트 통과(이 무발화는 @render 부재 때문이지 트리 면제가 아님).
     (fake_repo / ".project_manager" / "local.conf").write_text(
-        "project_name=acme\n", encoding="utf-8")
+        "project.name=acme\n", encoding="utf-8")
     # 토큰을 가진 어댑터가 있어도 @render 가 아니므로 검사 안 함.
     adapter = fake_repo / ".claude/agents/developer.md"
     adapter.parent.mkdir(parents=True)
@@ -596,7 +596,7 @@ def test_render_leak_flags_token_in_render_managed_path(board, monkeypatch, tmp_
     m.write_text(".claude/agents @render\n", encoding="utf-8")
     # local.conf 존재 → 채택 인스턴스(render 산출물 트리·트리 게이트 통과해 실 leak 검사).
     (fake_repo / ".project_manager" / "local.conf").write_text(
-        "project_name=acme\n", encoding="utf-8")
+        "project.name=acme\n", encoding="utf-8")
     adapter = fake_repo / ".claude/agents/developer.md"
     adapter.parent.mkdir(parents=True)
     adapter.write_text("- {{PROTECTED_PATHS}}\nbody\n", encoding="utf-8")
@@ -621,7 +621,7 @@ def test_render_leak_clean_when_render_path_fully_rendered(board, monkeypatch, t
     m.write_text(".claude/agents @render\n", encoding="utf-8")
     # local.conf 존재 → 산출물 트리(트리 게이트 통과·실 스캔이 토큰 0 으로 무발화).
     (fake_repo / ".project_manager" / "local.conf").write_text(
-        "project_name=acme\n", encoding="utf-8")
+        "project.name=acme\n", encoding="utf-8")
     adapter = fake_repo / ".claude/agents/developer.md"
     adapter.parent.mkdir(parents=True)
     adapter.write_text("- core/**\nbody\n", encoding="utf-8")
@@ -670,7 +670,7 @@ def test_plan_render_enabled_still_renders_for_adopter(pm_update, tmp_path):
     (src / ".claude/agents").mkdir(parents=True)
     (src / rel).write_text("- {{PROJECT_NAME}}\nbody\n", encoding="utf-8")
     # 채택자 dest — local.conf(operational) 보유.
-    _seed_render_dest(dst, local_conf="project_name=acme\n")
+    _seed_render_dest(dst, local_conf="project.name=acme\n")
     manifest = pm_update.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     _track_source_tree(src)
@@ -689,23 +689,23 @@ def test_plan_render_enabled_still_renders_for_adopter(pm_update, tmp_path):
 
 
 def test_opencode_pro_model_local_conf_mapping(pm_update, tmp_path):
-    """local.conf `opencode_pro_model=...` → operational dict 의 OPENCODE_PRO_MODEL 매핑(T-0133)."""
-    assert pm_update._LOCAL_CONF_TO_OPERATIONAL["opencode_pro_model"] == "OPENCODE_PRO_MODEL"
+    """local.conf `harness.opencode.pro_model=...` → operational dict 의 OPENCODE_PRO_MODEL 매핑(T-0133)."""
+    assert pm_update._LOCAL_CONF_TO_OPERATIONAL["harness.opencode.pro_model"] == "OPENCODE_PRO_MODEL"
     dst = tmp_path / "dst"
-    _seed_render_dest(dst, local_conf="opencode_pro_model=anthropic/claude-opus-4\n")
+    _seed_render_dest(dst, local_conf="harness.opencode.pro_model=anthropic/claude-opus-4\n")
     operational, empty_keys = pm_update._operational_from_local_conf(dst)
     assert operational["OPENCODE_PRO_MODEL"] == "anthropic/claude-opus-4"
     assert empty_keys == []
 
 
 def test_opencode_pro_model_render_resolved_from_local_conf(pm_update, tmp_path):
-    """apply render 가 local.conf 의 opencode_pro_model 로 `{{OPENCODE_PRO_MODEL}}` 해소(end-to-end)."""
+    """apply render 가 local.conf 의 harness.opencode.pro_model 로 `{{OPENCODE_PRO_MODEL}}` 해소(end-to-end)."""
     src = tmp_path / "src"
     dst = tmp_path / "dst"
     rel = ".opencode/agents/architect.md"
     (src / ".opencode/agents").mkdir(parents=True)
     (src / rel).write_text("model: {{OPENCODE_PRO_MODEL}}\nbody\n", encoding="utf-8")
-    _seed_render_dest(dst, local_conf="opencode_pro_model=anthropic/claude-opus-4\n")
+    _seed_render_dest(dst, local_conf="harness.opencode.pro_model=anthropic/claude-opus-4\n")
     manifest = pm_update.read_manifest(
         _write_manifest(src, [".opencode/agents @render"]))
     _track_source_tree(src)
@@ -718,10 +718,10 @@ def test_opencode_pro_model_render_resolved_from_local_conf(pm_update, tmp_path)
 
 
 def test_opencode_pro_model_unresolved_self_update_graceful(pm_update, tmp_path):
-    """self-update apply 가 opencode_pro_model *미해소*(local.conf 부재) model: 템플릿을 렌더할
+    """self-update apply 가 harness.opencode.pro_model *미해소*(local.conf 부재) model: 템플릿을 렌더할
     때 leak crash 하지 않고 graceful TODO 중화한다 (T-0310·@source 자기-update 근본fix).
 
-    발단: opencode 채택자가 opencode 없이 import → local.conf 에 opencode_pro_model 부재 →
+    발단: opencode 채택자가 opencode 없이 import → local.conf 에 harness.opencode.pro_model 부재 →
     @source 재렌더(.opencode/agents)가 `{{OPENCODE_PRO_MODEL}}` 을 leak → apply RenderLeakError
     → self-update 전체 실패(엔진 update 까지 막힘). 이제 중화·rc0 동치(라이브 게이트 포착 회귀).
     """
@@ -730,8 +730,8 @@ def test_opencode_pro_model_unresolved_self_update_graceful(pm_update, tmp_path)
     rel = ".opencode/agents/architect.md"
     (src / ".opencode/agents").mkdir(parents=True)
     (src / rel).write_text('model: "{{OPENCODE_PRO_MODEL}}"\nbody\n', encoding="utf-8")
-    # 채택자 dest — local.conf 에 opencode_pro_model *부재*(해소 못 한 채택자).
-    _seed_render_dest(dst, local_conf="project_name=acme\n")
+    # 채택자 dest — local.conf 에 harness.opencode.pro_model *부재*(해소 못 한 채택자).
+    _seed_render_dest(dst, local_conf="project.name=acme\n")
     manifest = pm_update.read_manifest(
         _write_manifest(src, [".opencode/agents @render"]))
     _track_source_tree(src)
@@ -746,7 +746,7 @@ def test_opencode_pro_model_unresolved_self_update_graceful(pm_update, tmp_path)
 
 
 def test_self_update_partial_graceful_engine_still_updates(pm_update, tmp_path):
-    """불변식 b: opencode_pro_model 한 토큰 미해소가 엔진/타 파일 update 전체를 막지 않는다
+    """불변식 b: harness.opencode.pro_model 한 토큰 미해소가 엔진/타 파일 update 전체를 막지 않는다
     (부분-graceful·T-0310). @render 미해소 파일은 중화되고 일반 엔진 파일은 정상 update·crash 0."""
     src = tmp_path / "src"
     dst = tmp_path / "dst"
@@ -757,7 +757,7 @@ def test_self_update_partial_graceful_engine_still_updates(pm_update, tmp_path):
     # (2) 일반 엔진 파일(비-@render·byte-copy).
     (src / ".project_manager/tools").mkdir(parents=True)
     (src / ".project_manager/tools/board.py").write_text("v2\n", encoding="utf-8")
-    _seed_render_dest(dst, local_conf="project_name=acme\n")
+    _seed_render_dest(dst, local_conf="project.name=acme\n")
     (dst / ".project_manager/tools").mkdir(parents=True, exist_ok=True)
     (dst / ".project_manager/tools/board.py").write_text("v1\n", encoding="utf-8")
     manifest = pm_update.read_manifest(_write_manifest(src, [
@@ -778,14 +778,14 @@ def test_self_update_partial_graceful_engine_still_updates(pm_update, tmp_path):
 # ── 4. 빈값 operational silent-empty 가드 (T-0218·pm_update·pm_import 경로) ────
 
 def test_operational_from_local_conf_excludes_empty_value(pm_update, tmp_path):
-    """local.conf `project_name=`(빈값) → operational dict 에서 제외·empty_keys 로 표면화(T-0218).
+    """local.conf `project.name=`(빈값) → operational dict 에서 제외·empty_keys 로 표면화(T-0218).
 
     빈값을 그대로 넘기면 렌더가 토큰을 빈 문자열로 silent 치환한다(PM 49차 " 프로젝트" 오염).
     부재와 동일 취급으로 제외 → 토큰 잔존 → render 가 leak 으로 잡는다. 정상값은 무영향(회귀).
     """
     dst = tmp_path / "dst"
     # project_name 은 빈값, py 는 정상값 — 빈값만 제외되고 정상값은 보존돼야 한다.
-    _seed_render_dest(dst, local_conf="project_name=\npy=python3\n")
+    _seed_render_dest(dst, local_conf="project.name=\nruntime.py=python3\n")
     operational, empty_keys = pm_update._operational_from_local_conf(dst)
     assert "PROJECT_NAME" not in operational  # 빈값 → dict 에서 제외(부재 동일 취급)
     assert empty_keys == ["PROJECT_NAME"]  # 빈값 token-key 표면화
@@ -795,7 +795,7 @@ def test_operational_from_local_conf_excludes_empty_value(pm_update, tmp_path):
 def test_operational_from_local_conf_all_normal_no_empty_keys(pm_update, tmp_path):
     """정상값만 있으면 empty_keys 는 빈 리스트(빈값 가드가 정상 경로를 오탐 안 함·회귀)."""
     dst = tmp_path / "dst"
-    _seed_render_dest(dst, local_conf="project_name=acme\ntest_cmd=pytest -q\n")
+    _seed_render_dest(dst, local_conf="project.name=acme\ntest.cmd=pytest -q\n")
     operational, empty_keys = pm_update._operational_from_local_conf(dst)
     assert operational["PROJECT_NAME"] == "acme"
     assert operational["TEST_CMD"] == "pytest -q"
@@ -805,7 +805,7 @@ def test_operational_from_local_conf_all_normal_no_empty_keys(pm_update, tmp_pat
 def test_render_text_empty_local_conf_raises_with_hint(pm_update, tmp_path):
     """빈값 local.conf 로 재렌더하면 RenderLeakError + 빈값 힌트(pm_update end-to-end·T-0218).
 
-    발단 재현: 채택자 local.conf `project_name=` 빈값·어댑터에 `{{PROJECT_NAME}}` → 재렌더가
+    발단 재현: 채택자 local.conf `project.name=` 빈값·어댑터에 `{{PROJECT_NAME}}` → 재렌더가
     silent 로 " 프로젝트" 를 쓰던 것을 이제 큰소리로 실패시킨다(값을 채우라 힌트).
     """
     src = tmp_path / "src"
@@ -813,7 +813,7 @@ def test_render_text_empty_local_conf_raises_with_hint(pm_update, tmp_path):
     src_f = src / ".claude/agents/developer.md"
     src_f.parent.mkdir(parents=True)
     src_f.write_text("description: {{PROJECT_NAME}} 프로젝트\n", encoding="utf-8")
-    _seed_render_dest(dst, local_conf="project_name=\n")
+    _seed_render_dest(dst, local_conf="project.name=\n")
     # RenderLeakError 는 RuntimeError 서브클래스 — pm_update 가 pm_render 를 격리 로드하므로
     # 클래스 동일성 대신 base + 이름으로 잡는다(모듈 인스턴스 간 클래스 객체 상이).
     with pytest.raises(RuntimeError) as exc:
@@ -821,7 +821,7 @@ def test_render_text_empty_local_conf_raises_with_hint(pm_update, tmp_path):
     assert type(exc.value).__name__ == "RenderLeakError"
     msg = str(exc.value)
     assert "{{PROJECT_NAME}}" in msg
-    assert "`project_name=`" in msg
+    assert "`project.name=`" in msg
     assert "빈값" in msg
 
 
@@ -832,7 +832,7 @@ def test_apply_render_empty_local_conf_raises(pm_update, tmp_path):
     rel = ".claude/agents/developer.md"
     (src / ".claude/agents").mkdir(parents=True)
     (src / rel).write_text("description: {{PROJECT_NAME}} 프로젝트\n", encoding="utf-8")
-    _seed_render_dest(dst, local_conf="project_name=\n")
+    _seed_render_dest(dst, local_conf="project.name=\n")
     manifest = pm_update.read_manifest(
         _write_manifest(src, [".claude/agents @render"]))
     _track_source_tree(src)

@@ -482,9 +482,18 @@ def _mapping_is_unset(
     )
 
 
+# The master switch shares the ``delegate.`` prefix with the role mapping but is
+# not a mapping key — counting it as one would make a switch-only conf look
+# "configured" and turn Row 5's quiet allow into a resolution warning.
+_DELEGATE_SWITCH_KEY = "delegate.enabled"
+
+
 def _delegate_mapping_config_is_absent(conf: Mapping[str, object]) -> bool:
     """Whether this clone has no primary/fallback delegation mapping at all."""
-    return not any(str(key).startswith("delegate.") for key in conf)
+    return not any(
+        str(key).startswith("delegate.") and str(key) != _DELEGATE_SWITCH_KEY
+        for key in conf
+    )
 
 
 def _frontmatter_model_scalar(value: str) -> str:
@@ -848,13 +857,39 @@ def _is_unrendered_model_token(value: str) -> bool:
     return _UNRENDERED_MODEL_TOKEN_RE.fullmatch(value.strip()) is not None
 
 
+# 마스터 스위치가 off 일 때의 처방 — 매핑을 고치라고 하면 안 된다(막는 것은 매핑이 아니다).
+# `pm_delegate` CLI 로 재지향해도 그 CLI 가 같은 스위치로 rc=3 을 내므로 순환이 된다.
+_ENABLED_REMEDIATION = (
+    "local.conf 에 `delegate.enabled=true` 를 두거나 그 줄을 지우세요(기본 허용)."
+)
+
+
+def _delegate_is_enabled(conf: Mapping[str, object]) -> bool:
+    """위임 마스터 스위치 — **키 부재·빈값은 허용**(기본 ON)이고 명시 거부만 차단한다.
+
+    빈값을 거부로 읽으면 `delegate.enabled=` 한 줄이 위임 전체를 조용히 끈다 — conf 파싱의
+    "마지막 값이 비면 미설정" 의미를 그대로 이어받아 기본값으로 간다.
+    엔진(`pm_delegate._is_enabled`)과 같은 기본값·같은 참 낱말 집합이다.
+    """
+    raw = str(conf.get(_DELEGATE_SWITCH_KEY, "")).strip().lower()
+    if not raw:
+        return True
+    return raw in ("true", "1", "yes", "on")
+
+
 def decide(
     role: object,
     tier: object,
     conf: Mapping[str, object],
     self_harness: object,
 ) -> dict[str, str]:
-    """Apply decision-table rows 0 through 5 without a hook-specific envelope."""
+    """Apply decision-table rows 0 through 5 without a hook-specific envelope.
+
+    Row 0.5 (master switch) sits between name normalisation and mapping
+    resolution: ``delegate.enabled=false`` denies every role spawn regardless of
+    channel.  The guard's own failures stay fail-open — a broken guard must not
+    lock delegation out, because the recovery path itself needs delegation.
+    """
     known_harnesses = _known_harnesses()
     self_name = self_harness.strip().lower() if isinstance(self_harness, str) else ""
 
@@ -884,12 +919,15 @@ def decide(
     if not isinstance(conf, Mapping):
         raise TypeError("delegate config must be a mapping")
 
-    # Mapping is the truth for both native and cross delegation.  Resolve it
-    # independently of the cross-only opt-in so native card drift remains
-    # observable even when external sending is disabled.
-    enabled = str(conf.get("delegate_enabled", "false")).strip().lower() in (
-        "true", "1", "yes", "on",
-    )
+    # Row 0.5: the master switch is decided **before** any mapping resolution.
+    # ``delegate.enabled`` is channel-agnostic (default on), so an explicit off
+    # denies native and cross alike — a mapping-shaped remediation would be the
+    # wrong prescription because the mapping is not what is blocking.
+    if not _delegate_is_enabled(conf):
+        return _result(
+            "deny",
+            f"[delegate-channel/deny] 위임이 꺼져 있습니다 — {_ENABLED_REMEDIATION}",
+        )
 
     if _delegate_mapping_config_is_absent(conf):
         return _result("allow", "[delegate-channel/allow] 역할 매핑 미설정")
@@ -927,18 +965,7 @@ def decide(
             model=model,
         )
 
-    # Row 5: delegate_enabled gates only cross-harness external sending.  With
-    # opt-in off the native call remains available; redirecting it to an rc3
-    # command would deadlock the remediation path.
-    if not enabled:
-        return _result(
-            "allow",
-            "[delegate-channel/allow] cross 매핑이나 delegate_enabled off",
-            harness=harness,
-            model=model,
-        )
-
-    # Cross-harness native spawn redirects to the ledgered CLI.
+    # Row 5: cross-harness native spawn redirects to the ledgered CLI.
     shown_model = model or "(model 미설정)"
     return _result(
         "deny",

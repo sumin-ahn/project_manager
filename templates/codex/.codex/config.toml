@@ -23,5 +23,6 @@ hooks = true          # 비차단 PreCompact checkpoint 안내 발화 전제
 [sandbox_workspace_write]
 # egress 차단 안전 경계. cross-harness 실위임은 전역 true로 완화하지 않고,
 # $pm-dev-delegate 카드의 dry-run → exec_command require_escalated 건별 승격 계약을 탄다.
-# 최초 pm_delegate.py reusable prefix 승인 후엔 delegate_enabled=true를 지속 과금 동의로 쓴다.
+# 최초 pm_delegate.py reusable prefix 승인이 그 승격의 근거다 —
+# local.conf delegate.enabled 는 위임 허용 여부만 정하고 승격을 대신하지 않는다.
 network_access = false

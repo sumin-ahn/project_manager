@@ -9,7 +9,7 @@ rc0 인데 스위트 *일부만* 수집되는 파손(cwd/pythonpath)은 rc 로�
 
 ```conf
 # .project_manager/local.conf — 회귀가 도는 트리(worktree)의 conf 가 기준
-regression_min_collected=7000   # 기본 0 = 가드 off. 자기 수집수보다 여유 있게 낮춰 잡는다.
+regression.min_collected=7000   # 기본 0 = 가드 off. 자기 수집수보다 여유 있게 낮춰 잡는다.
 ```
 
 - FULL 게이트 한정이다 — `--ticket`/`--touches` 스코프 실행은 대상이 아니다(매칭분만 도는 게 정상).
