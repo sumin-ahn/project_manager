@@ -10667,6 +10667,8 @@ def cmd_block(args: argparse.Namespace) -> int:
         fm, body = load_ticket(path)
         new_path = move_ticket(path, "blocked")
         fm["status"] = "blocked"
+        # claimed_by/claimed_at 는 무접촉 — block 은 작업 중단이지 소유 포기가 아니다(I4·T-0783).
+        # 소유 해제 문은 unclaim 하나뿐. `unblock` 이 이 값의 유무로 복귀 목적지를 정한다.
         note = f"\n## Blocked\n{args.reason} — {datetime.date.today().isoformat()}\n"
         dump_ticket(new_path, fm, body + note)
     refresh_board()
@@ -10712,12 +10714,16 @@ def cmd_unblock(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             return 1
         fm, body = load_ticket(path)
-        new_path = move_ticket(path, "open")
-        fm["status"] = "open"
+        # claimed_by 보유 티켓(claimed-origin blocked)은 claimed/ 로 복귀시켜 소유 표식을
+        # 보존한다 — 무조건 open 으로 옮기면 "open + claimed_by 잔존" 모순이 생겼다(T-0783).
+        # open-origin blocked(claimed_by 없음)는 현행대로 open/ 으로 돌아간다(I3 왕복 불변식).
+        dest_status = "claimed" if fm.get("claimed_by") else "open"
+        new_path = move_ticket(path, dest_status)
+        fm["status"] = dest_status
         dump_ticket(new_path, fm, body)
     refresh_board()
     ready = _board_git_sync_best_effort(f"unblock {args.id}", (path, new_path))
-    print(f"unblocked {args.id}{_board_git_mutation_state_suffix(ready)}")
+    print(f"unblocked {args.id} → {dest_status}/{_board_git_mutation_state_suffix(ready)}")
     return 0
 
 
@@ -13897,6 +13903,31 @@ def lint_dependencies() -> list[tuple[str, str, str]]:
     return issues
 
 
+def lint_claim_identity() -> list[tuple[str, str, str]]:
+    """open + claimed_by 잔존 모순 형상 advisory (never-block · T-0783).
+
+    불변식 I1(`status == "open"` 인 티켓은 claimed_by/claimed_at/claimed_rev 전부 null)이
+    깨진 형상을 가시화한다. 옛 `cmd_unblock`(T-0783 이전)이 claimed_by 를 무접촉으로 둔 채
+    무조건 open 으로 옮기던 결함의 잔재로 생길 수 있다 — 조회·필터(`--mine`)·후속 claim 판단을
+    오염시킨다. adopter#0 보드 실측(2026-08-20)에서 대상 0건이라 자동 backfill 은 만들지 않고
+    (대상 없는 코드), 정정은 사용자가 직접 한다: 실제로 아무도 진행하지 않으면 frontmatter 에서
+    claimed_by/claimed_at/claimed_rev 를 지우고, 실제로 진행 중이면 `status: claimed` 로 옮겨
+    상태와 소유를 정합시킨다.
+
+    kind=`open-claimed-contradiction`(`_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드 비기여·
+    push 미차단). `blocked` + claimed_by 는 모순이 **아니다**(claimed-origin blocked 의 정상
+    형상·T-0783 (a)안) — 여기서 잡지 않는다.
+    """
+    return [
+        (fm.get("id", "?"), "open-claimed-contradiction",
+         f"status=open 인데 claimed_by={fm.get('claimed_by')!r} 잔존 — 소유 표식과 상태가 "
+         "모순이다. 진행 중이 아니면 claimed_by/claimed_at/claimed_rev 를 지우고, 진행 중이면 "
+         "claimed/ 로 옮겨 정합시켜라.")
+        for status, fm in _all_tickets()
+        if status == "open" and fm.get("claimed_by")
+    ]
+
+
 # Unfilled `_template.md` text — its presence means the ticket is still a stub.
 # The `## 메모` placeholder is intentionally NOT listed: that section is a work
 # journal filled at completion time, so an empty 메모 is normal for a complete,
@@ -15442,7 +15473,7 @@ _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
      "dangling-wikilink-scaffold", "un-migrated-overlay", "adapter-drift",
      "adr-author", "areas-repo-unregistered", "areas-duplicate-repo", "areas-merge-union",
      "delegate-same-model", "design-pending", "design-estimate",
-     "codex-delegate-matcher-miss",
+     "codex-delegate-matcher-miss", "open-claimed-contradiction",
      # 라운드 판정 코드(사이드카 seam 소유) + board 고유 잔여·판정불능 관측. 차단은 완료
      # 게이트가 한다.
      "round-name", "round-gap", "round-dup", "round-pending", "round-temporary",
@@ -16981,7 +17012,9 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     차단은 완료 게이트) + legacy-growth-section(명세 본문에 남은 구 역할 절 → 마이그레이션
     명령 1회로 해소·blocking) +
     design-pending(티켓 설계 단계 `design: required` 미완 — 설계 절 미충전/필드 미승격 가시화·
-    advisory·never-block·차단은 claim 게이트)."""
+    advisory·never-block·차단은 claim 게이트) +
+    open-claimed-contradiction(status=open 인데 claimed_by 잔존 — 상태-소유 모순 가시화·
+    advisory·never-block·T-0783)."""
     return (lint_dependencies() + lint_bodies() + lint_ideas()
             + lint_status()
             + lint_wikilinks() + lint_unstable_refs() + lint_scopes()
@@ -16992,7 +17025,7 @@ def lint_tickets() -> list[tuple[str, str, str]]:
             + lint_areas_repo_unregistered()
             + lint_areas_duplicate_repo() + lint_areas_merge_union()
             + lint_delegate() + lint_rounds() + lint_legacy_growth_sections()
-            + lint_codex_delegate_observations())
+            + lint_codex_delegate_observations() + lint_claim_identity())
 
 
 # ── board.md regeneration ──────────────────────────────────────────────
@@ -17161,7 +17194,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("id", metavar="T-NNNN")
     p.set_defaults(fn=cmd_unclaim)
 
-    p = sub.add_parser("unblock", help="mv blocked → open")
+    p = sub.add_parser(
+        "unblock",
+        help="mv blocked → claimed(claimed_by 보유·소유 보존) 또는 open(무소유)")
     p.add_argument("id", metavar="T-NNNN")
     p.set_defaults(fn=cmd_unblock)
 

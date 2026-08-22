@@ -3696,3 +3696,66 @@ def test_migrated_board_has_no_legacy_findings(board, monkeypatch, tmp_path):
 
     assert board.lint_legacy_growth_sections() == []
     assert board.lint_rounds() == []
+
+
+# ════════════════════════════════════════════════════════════════════════
+# lint_claim_identity — open + claimed_by 모순 advisory (T-0783)
+# ════════════════════════════════════════════════════════════════════════
+# 옛 `cmd_unblock`(T-0783 이전)이 claimed_by 를 무접촉으로 둔 채 무조건 open 으로 옮기던 결함의
+# 잔재를 가시화한다(I1: status=open 인 티켓은 claimed_by/claimed_at/claimed_rev 전부 null).
+# `blocked` + claimed_by 는 (a)안(claimed-origin blocked 의 정상 형상)이라 대상이 **아니다**.
+
+def _open_with_claimed_by_text(tid: str, *, claimed_by: str) -> str:
+    return (f"---\nid: {tid}\ntitle: 모순 티켓\nstatus: open\n"
+            f"claimed_by: {claimed_by}\nclaimed_at: '2026-08-01T00:00:00+00:00'\n"
+            "depends_on: []\n---\n## 목표\n실값\n\n## 완료 조건\n- [x] 끝\n\n## 참고\n- 없음\n")
+
+
+def _blocked_with_claimed_by_text(tid: str, *, claimed_by: str) -> str:
+    return (f"---\nid: {tid}\ntitle: 정상 blocked 티켓(소유 보유)\nstatus: blocked\n"
+            f"claimed_by: {claimed_by}\nclaimed_at: '2026-08-01T00:00:00+00:00'\n"
+            "depends_on: []\n---\n## 목표\n실값\n\n## 완료 조건\n- [x] 끝\n\n## 참고\n- 없음\n")
+
+
+def _blocked_without_claimed_by_text(tid: str) -> str:
+    return (f"---\nid: {tid}\ntitle: 정상 blocked 티켓(무소유)\nstatus: blocked\n"
+            "depends_on: []\n---\n## 목표\n실값\n\n## 완료 조건\n- [x] 끝\n\n## 참고\n- 없음\n")
+
+
+def test_open_claimed_contradiction_kind_is_advisory_never_block(board):
+    """kind 등록 확인 — `--gate` 종료코드에 기여하지 않는다."""
+    assert "open-claimed-contradiction" in board._ADVISORY_LINT_KINDS
+
+
+def test_lint_claim_identity_flags_open_with_claimed_by(board, monkeypatch, tmp_path):
+    """open + claimed_by 잔존 형상 1건을 정확히 잡는다."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    _ticket(board, "open", "T-0001",
+            _open_with_claimed_by_text("T-0001", claimed_by="alice/pm-1"))
+
+    issues = board.lint_claim_identity()
+    assert [(tid, kind) for tid, kind, _detail in issues] == [
+        ("T-0001", "open-claimed-contradiction")]
+
+
+def test_lint_claim_identity_no_false_positive_on_healthy_shapes(board, monkeypatch, tmp_path):
+    """정상 형상(open+null·claimed+set·blocked+set·blocked+null) 전부 오탐 0
+    (adopter#0 실측 대상 0건 재현 — DoD)."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    _ticket(board, "open", "T-0001", _healthy_ticket_text("T-0001"))
+    _ticket(board, "claimed", "T-0002", _claimed_ticket_text("T-0002", claimed_by="pm_1"))
+    _ticket(board, "blocked", "T-0003",
+            _blocked_with_claimed_by_text("T-0003", claimed_by="alice/pm-1"))
+    _ticket(board, "blocked", "T-0004", _blocked_without_claimed_by_text("T-0004"))
+
+    assert board.lint_claim_identity() == []
+
+
+def test_lint_tickets_surfaces_claim_identity_contradiction(board, monkeypatch, tmp_path):
+    """전체 집계 `lint_tickets()` 도 이 판정을 포함한다."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    _ticket(board, "open", "T-0001",
+            _open_with_claimed_by_text("T-0001", claimed_by="alice/pm-1"))
+
+    kinds = {kind for _tid, kind, _detail in board.lint_tickets()}
+    assert "open-claimed-contradiction" in kinds

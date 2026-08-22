@@ -12,6 +12,10 @@ multi-user 보드 공유의 기반층 — board 산출(ticket frontmatter·areas
   4. **ticket claimed_by** — `cmd_claim` 이 user/slot 차원으로 set·구 슬롯-only 값 graceful.
   5. **actor 정체성 인자** `--repo`/`--slot`(ADR-0057) — `cmd_claim` 의 3 해소 케이스(kind=
      slot/repo/none) + `--slot` 단독 fail-loud (T-0314).
+  6. **cmd_block/cmd_unblock 상태-필드 정합**(T-0783) — `block` 은 claimed_by/claimed_at 무접촉
+     (소유는 작업 중단으로 안 풀린다) · `unblock` 은 claimed_by 유무로 목적지(claimed/open)를
+     갈라 "open + claimed_by 잔존" 모순을 원천 차단한다. 왕복(block→unblock) 멱등·뷰 멤버십
+     보존까지 포함.
 
 **hermetic 필수**: board.py 의 경로 전역(`REPO`·`LOCAL_CONF`·`TICKETS_DIR`·`LEASES_FILE` 등)은
 import 시점에 실 repo 절대경로로 고정된다 — tmp 프로젝트로 monkeypatch 재지정하고 git 폴백은
@@ -316,3 +320,133 @@ def test_cmd_claim_slot_alone_without_repo_fails_loud(board):
     with pytest.raises(SystemExit) as exc:
         board.cmd_claim(_claim_args(slot=3, user="bob"))
     assert "--repo" in str(exc.value)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# cmd_block / cmd_unblock — 상태-필드 정합 (T-0783)
+# ════════════════════════════════════════════════════════════════════════
+#
+# 전이표(실측 대상 전부 — 각 셀은 실 CLI 커맨드(`cmd_block`/`cmd_unblock`)가 실제로 쓴
+# frontmatter 로 확인한다. `cmd_unclaim`(claimed→open 소유 해제)·`cmd_claim`(open→claimed)·
+# `cmd_complete`(claimed→done)는 이 티켓이 손대지 않아 별도 매트릭스 불필요 — 기존 동작 그대로):
+#
+#   출발 status · claimed_by 유무  →(block)→  blocked  →(unblock)→  도착 status
+#   ─────────────────────────────────────────────────────────────────────────
+#   open    · claimed_by=null      → blocked(무접촉)  → open(무접촉)     [현행 무변경]
+#   claimed · claimed_by=<u>/<s>   → blocked(무접촉)  → claimed(보존)    [T-0783 수정 — 이전엔 open]
+#
+# 어느 경로도 "open + claimed_by 잔존"(I1 위반)을 만들지 않는다.
+
+def _block_args(tid="T-0001", reason="테스트 차단"):
+    return argparse.Namespace(id=tid, reason=reason)
+
+
+def _unblock_args(tid="T-0001"):
+    return argparse.Namespace(id=tid)
+
+
+def _ticket_in_status(board, tid, status):
+    """`status` 디렉터리에서 `tid` 티켓 정확히 1개를 찾아 frontmatter/본문을 반환한다."""
+    files = list((board.TICKETS_DIR / status).glob(f"{tid}-*.md"))
+    assert len(files) == 1, f"{tid} 가 {status}/ 에 정확히 1개 있어야 한다: {files}"
+    return board.load_ticket(files[0])
+
+
+def test_claimed_block_unblock_round_trip_preserves_identity(board):
+    """claimed(u) → block → unblock 은 claimed(u) 로 돌아온다 — claimed_by·claimed_at 값 보존."""
+    _write_conf(board, user="alice")
+    _seed_open(board)
+    assert board.cmd_claim(_claim_args()) == 0
+    fm_before, _ = _ticket_in_status(board, "T-0001", "claimed")
+    claimed_by, claimed_at = fm_before["claimed_by"], fm_before["claimed_at"]
+
+    assert board.cmd_block(_block_args()) == 0
+    fm_blocked, _ = _ticket_in_status(board, "T-0001", "blocked")
+    assert fm_blocked["claimed_by"] == claimed_by, "block 이 claimed_by 를 건드렸다(I4 위반)"
+    assert fm_blocked["claimed_at"] == claimed_at, "block 이 claimed_at 을 건드렸다(I4 위반)"
+
+    assert board.cmd_unblock(_unblock_args()) == 0
+    fm_after, _ = _ticket_in_status(board, "T-0001", "claimed")
+    assert fm_after["claimed_by"] == claimed_by
+    assert fm_after["claimed_at"] == claimed_at
+    assert not list((board.TICKETS_DIR / "open").glob("T-0001-*.md")), \
+        "unblock 이 claimed_by 보유 티켓을 open/ 으로 잘못 옮겼다"
+
+
+def test_open_block_unblock_round_trip_unchanged(board):
+    """open → block → unblock 은 현행과 동일 — open 으로 돌아오고 claimed_by 는 계속 null."""
+    _seed_open(board)
+    assert board.cmd_block(_block_args()) == 0
+    fm_blocked, _ = _ticket_in_status(board, "T-0001", "blocked")
+    assert fm_blocked["claimed_by"] is None
+
+    assert board.cmd_unblock(_unblock_args()) == 0
+    fm_after, _ = _ticket_in_status(board, "T-0001", "open")
+    assert fm_after["claimed_by"] is None
+    assert fm_after.get("claimed_at") is None
+
+
+def test_open_block_unblock_round_trip_is_idempotent_twice(board):
+    """open ↔ blocked 왕복을 두 번 반복해도 매번 open 으로 안정 수렴한다(멱등)."""
+    _seed_open(board)
+    for _ in range(2):
+        assert board.cmd_block(_block_args()) == 0
+        assert board.cmd_unblock(_unblock_args()) == 0
+    fm, _ = _ticket_in_status(board, "T-0001", "open")
+    assert fm["claimed_by"] is None
+
+
+def test_claimed_block_unblock_round_trip_is_idempotent_twice(board):
+    """claimed(u) ↔ blocked 왕복을 두 번 반복해도 매번 claimed(u) 로 안정 수렴한다(멱등)."""
+    _write_conf(board, user="alice")
+    _seed_open(board)
+    assert board.cmd_claim(_claim_args()) == 0
+    for _ in range(2):
+        assert board.cmd_block(_block_args()) == 0
+        assert board.cmd_unblock(_unblock_args()) == 0
+    fm, _ = _ticket_in_status(board, "T-0001", "claimed")
+    assert fm["claimed_by"] == "alice/pm-1"
+
+
+def test_no_transition_leaves_open_with_claimed_by_residue(board):
+    """상태×전이 매트릭스 전수 순회 — 두 경로(open 기원·claimed 기원) 끝에 "open + claimed_by
+    잔존"(I1 위반) 형상이 하나도 없다."""
+    _write_conf(board, user="alice")
+    _seed_open(board, tid="T-0001")
+    assert board.cmd_claim(_claim_args(tid="T-0001")) == 0
+    assert board.cmd_block(_block_args(tid="T-0001")) == 0
+    assert board.cmd_unblock(_unblock_args(tid="T-0001")) == 0
+
+    _seed_open(board, tid="T-0002")
+    assert board.cmd_block(_block_args(tid="T-0002")) == 0
+    assert board.cmd_unblock(_unblock_args(tid="T-0002")) == 0
+
+    for status, fm in board._all_tickets():
+        if status == "open":
+            assert fm.get("claimed_by") is None, \
+                f"{fm.get('id')} 가 open/ 인데 claimed_by 잔존: {fm.get('claimed_by')!r}"
+
+
+def test_blocked_with_claimed_by_stays_visible_in_default_and_mine_views(board, capsys):
+    """blocked + claimed_by 티켓이 소유자의 무인자 기본 뷰·`--mine` 에서 사라지지 않는다
+    (I5 — 전이 규칙 변경이 뷰 멤버십을 줄이지 않는다. `_ticket_is_mine`/`_in_default_view` 는
+    이 티켓에서 손대지 않았지만 회귀 보증으로 lock)."""
+    from types import SimpleNamespace
+
+    _write_conf(board, user="alice")
+    _seed_open(board)
+    assert board.cmd_claim(_claim_args()) == 0
+    assert board.cmd_block(_block_args()) == 0
+    capsys.readouterr()  # claim/block 안내 출력 비우기
+
+    rc = board.cmd_list(SimpleNamespace(
+        status=None, tag=None, mine=False, all=False, task=None, repo=None, slot=None))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "T-0001" in out, "blocked+claimed_by 티켓이 무인자 기본 뷰에서 사라졌다"
+
+    rc = board.cmd_list(SimpleNamespace(
+        status=None, tag=None, mine=True, all=False, task=None, repo=None, slot=None))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "T-0001" in out, "blocked+claimed_by 티켓이 --mine 뷰에서 사라졌다"
