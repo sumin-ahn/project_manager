@@ -317,7 +317,18 @@ INTERNAL_DIAGNOSTIC_MISSING_VERDICT = "missing-verdict-word"
 INTERNAL_DIAGNOSTIC_CONFLICTING_VERDICT = "conflicting-verdict-words"
 INTERNAL_DIAGNOSTIC_PASS_WITHOUT_ZERO = "pass-without-zero-must-fix"
 INTERNAL_DIAGNOSTIC_REJECT_WITHOUT_ITEMS = "reject-without-must-fix-items"
+# 라운드 산출 bytes 의 두 판정 축(기계 블록 · 산문)이 서로 다른 값을 세운 형상 — 어느 쪽도
+# 기록하지 않고 두 값을 함께 싣는다(판정 불능을 한쪽 채택으로 위장하지 않는다).
+INTERNAL_DIAGNOSTIC_VERDICT_CONFLICT = "block-reply-verdict-conflict"
+# 기계 블록 축이 판정을 세우지 못한 사유(블록 부재·손상·severity 미기재).
+INTERNAL_DIAGNOSTIC_BLOCK_UNUSABLE = "block-axis-unusable"
 INTERNAL_FINDING_IDS_FIELD = "finding_ids"
+# 장부 판정이 어느 축에서 나왔는가 — 회수될 산출 bytes 의 기계 블록인지, 그 산출이 없어
+# 강등한 터미널 회신 산문인지. 강등 실행을 사후에 구별하는 유일한 기록이다.
+INTERNAL_VERDICT_SOURCE_FIELD = "verdict_source"
+INTERNAL_VERDICT_CONFLICT_FIELD = "verdict_conflict"
+INTERNAL_VERDICT_SOURCE_BLOCK = "block"
+INTERNAL_VERDICT_SOURCE_REPLY = "reply"
 
 PM_REVIEW_BLOCK = "pm-review-v1"
 PM_REVIEW_DISPOSITION_BLOCK = "pm-review-disposition-v1"
@@ -347,11 +358,16 @@ PM_REVIEW_DECISIONS: frozenset[str] = frozenset(
 PM_REVIEW_CONFIRMATION_STATES: tuple[str, ...] = (
     "resolved", "unresolved", "regressed",
 )
+# 해소 상태 — 나머지 상태(미해소·퇴행)는 잔여 must-fix 다. 값을 손으로 다시 적지 않도록
+# enum 첫 항목에서 파생하고, 회귀가 그 결속을 값으로 잠근다.
+PM_REVIEW_CONFIRMATION_RESOLVED: str = PM_REVIEW_CONFIRMATION_STATES[0]
 # 심각도 — `class`(결함 종류)와 다른 축이다. "반드시 고쳐야 하는가"를 블록만으로 판정하려면
 # 값이 블록에 있어야 한다(산문 분류는 기계 입력이 아니다).
 PM_REVIEW_SEVERITIES: tuple[str, ...] = (
     "must-fix", "should-fix", "suggestion",
 )
+# 반드시 고쳐야 하는 단계 — 위 확인 상태와 같은 파생 규칙이다(리터럴 재기재 0).
+PM_REVIEW_SEVERITY_MUST_FIX: str = PM_REVIEW_SEVERITIES[0]
 # finding ID 는 티켓 전역 유일이라 채널별 접두로 네임스페이스를 나눈다(판정 표면은 하나다).
 PM_REVIEW_FINDING_ID_PREFIXES: dict[str, str] = {
     INTERNAL_REVIEW_ROLE: "F",
@@ -2338,10 +2354,23 @@ class InternalReplyDiagnostic(NamedTuple):
 
 
 class InternalReplyAssessment(NamedTuple):
-    """terminal reply 판정과, unknown일 때의 구조화 진단."""
+    """한 축(산문 또는 기계 블록)의 판정과, unknown일 때의 구조화 진단."""
 
     outcome: InternalReplyOutcome
     diagnostic: InternalReplyDiagnostic | None
+
+
+class InternalRoundVerdict(NamedTuple):
+    """두 축을 결합한 라운드 마감 판정과 그 출처."""
+
+    outcome: InternalReplyOutcome
+    diagnostic: InternalReplyDiagnostic | None
+    # 판정을 세운 축(`block`/`reply`) — 미상이면 None.
+    source: str | None = None
+    # 두 축이 상충했을 때 보존하는 양쪽 값.
+    conflict: dict[str, str] | None = None
+    # 판정은 섰지만 다른 축이 못 선 사유(경고로만 낸다 · 장부 판정 무영향).
+    note: str | None = None
 
 
 class PMReviewFinding(NamedTuple):
@@ -4749,6 +4778,42 @@ def _extract_internal_must_fix_items(reply: str) -> list[str] | None:
     return items or None
 
 
+# 재리뷰는 유료 외부 송신이라 판정 불능의 기본 처방이 아니다. 두 축이 모두 판정을 못 세운
+# 실행에서만 선택지로 제시하고, 그때도 비용과 대안(회수된 산출 직접 판정·확인 전용 라운드)을
+# 함께 적는다.
+_INTERNAL_REREVIEW_LAST_RESORT = (
+    "재리뷰는 유료 외부 송신이라 기본 행동이 아닙니다 — 먼저 회수된 라운드 파일을 읽고 PM이 "
+    "직접 판정하거나(`rounds resolve --pm-verified`), 게이트당 1회 `--confirm-fix` 확인 전용 "
+    "라운드로 잔여만 확인하세요. 그래도 재리뷰가 필요하면:"
+)
+# 통과는 두 축 합의로만 인정한다 — 한 축만 통과인 실행의 처방은 "못 선 축을 채워라"다. 채울
+# 대상은 축마다 다르므로 규칙 문장과 재리뷰 불요 문장만 공유하고 가운데만 갈린다.
+_INTERNAL_PASS_BOTH_AXES_RULE = "통과는 기계 블록과 산문이 모두 통과일 때만 기록합니다 —"
+_INTERNAL_PASS_NO_REREVIEW = (
+    "이미 회수된 라운드 파일을 PM이 직접 판정해도 되며 재리뷰(유료 외부 송신)는 필요 없습니다."
+)
+# 기계 블록만 통과인 실행 — 채울 축은 산문이다.
+_INTERNAL_PASS_NEEDS_BOTH_AXES_REPAIR = (
+    f"{_INTERNAL_PASS_BOTH_AXES_RULE} 라운드 파일 판정 절에 허용 선언형 한 줄과 "
+    f"must-fix 0건 항목을 남기세요. {_INTERNAL_PASS_NO_REREVIEW}"
+)
+# 두 축이 서로 다른 값을 세운 실행 — 처방은 산출 일치이지 재리뷰가 아니다.
+_INTERNAL_VERDICT_CONFLICT_REPAIR = (
+    "회수된 라운드 파일에서 두 출처 중 무엇이 이 라운드의 실제 판정인지 확인해 산출을 "
+    "일치시키세요. 어느 쪽도 장부에 기록하지 않았습니다."
+)
+# 기계 블록 축이 못 선 실행의 처방 — 허용 severity 값은 파서 enum에서만 파생한다.
+_INTERNAL_BLOCK_UNUSABLE_REPAIR = (
+    f"라운드 파일에 `{PM_REVIEW_BLOCK}` 블록을 정확히 하나 남기고 finding마다 severity"
+    f"(<{'|'.join(PM_REVIEW_SEVERITIES)}>)를 채우세요."
+)
+# 산문만 통과인 실행 — 채울 축은 기계 블록이다. 반려 축은 이 처방을 타지 않는다.
+_INTERNAL_PASS_NEEDS_BLOCK_AXIS_REPAIR = (
+    f"{_INTERNAL_PASS_BOTH_AXES_RULE} {_INTERNAL_BLOCK_UNUSABLE_REPAIR} "
+    f"{_INTERNAL_PASS_NO_REREVIEW}"
+)
+
+
 def _internal_reply_diagnostic(
     code: str,
     *,
@@ -4858,6 +4923,211 @@ def _internal_reply_assessment(reply: str | None) -> InternalReplyAssessment:
 def _internal_reply_outcome(reply: str | None) -> InternalReplyOutcome:
     """기존 소비 API: 구조화 진단 중 판정값만 반환한다."""
     return _internal_reply_assessment(reply).outcome
+
+
+def _internal_block_assessment(text: str | None) -> InternalReplyAssessment:
+    """산출 bytes의 `pm-review-v1` 블록만으로 판정한다(산문 추론 0).
+
+    `must_fix`는 **must-fix severity finding 수 + 해소되지 않은 confirmation 수**다.
+    confirmation 축을 빼면 확인 전용 라운드(`findings: []` + 퇴행 확인)가 통과로 뒤집힌다.
+    severity가 하나라도 비어 있으면(severity 이전 세대 산출) "반드시 고쳐야 하는가"를 블록만으로
+    알 수 없으므로 **판정 불능**이다 — 0건 통과로 접지 않는다.
+
+    스키마 판정은 전부 기존 strict 파서를 그대로 소비한다(값·key 집합 재기재 0).
+    """
+    reason = "산출 본문 없음"
+    if text and text.strip():
+        try:
+            blocks = [
+                block for block in _pm_review_json_blocks(text)
+                if block.kind == PM_REVIEW_BLOCK
+            ]
+            if len(blocks) != 1:
+                raise PMReviewError(
+                    "malformed",
+                    f"{PM_REVIEW_BLOCK} block이 정확히 하나여야 합니다"
+                    f"(발견 {len(blocks)}건)",
+                )
+            value = blocks[0].value
+            _pm_review_exact_keys(value, PM_REVIEW_PAYLOAD_KEYS, PM_REVIEW_BLOCK)
+            version = _pm_review_version(value, PM_REVIEW_BLOCK)
+            if not isinstance(value["findings"], list) or not isinstance(
+                value["confirmations"], list
+            ):
+                raise PMReviewError(
+                    "malformed", "findings/confirmations는 JSON array여야 합니다",
+                )
+            findings = [
+                _pm_review_parse_finding(item, 0, version=version)
+                for item in value["findings"]
+            ]
+            confirmations = [
+                _pm_review_parse_confirmation(item, 0)
+                for item in value["confirmations"]
+            ]
+            unspecified = [item.id for item in findings if not item.severity]
+            if unspecified:
+                raise PMReviewError(
+                    "malformed",
+                    f"severity {PM_REVIEW_SEVERITY_UNSPECIFIED_LABEL} finding: "
+                    + ", ".join(unspecified),
+                )
+            items = [
+                f"{item.id} — {item.recommendation}" for item in findings
+                if item.severity == PM_REVIEW_SEVERITY_MUST_FIX
+            ] + [
+                f"{item.id}({item.status}) — {item.evidence}"
+                for item in confirmations
+                if item.status != PM_REVIEW_CONFIRMATION_RESOLVED
+            ]
+            return InternalReplyAssessment(
+                InternalReplyOutcome(1 if items else 0, items), None,
+            )
+        except PMReviewError as exc:
+            reason = str(exc)
+    return InternalReplyAssessment(
+        InternalReplyOutcome(None, None),
+        InternalReplyDiagnostic(
+            INTERNAL_DIAGNOSTIC_BLOCK_UNUSABLE,
+            f"기계 블록 축 판정 불능({reason})",
+            _INTERNAL_BLOCK_UNUSABLE_REPAIR,
+        ),
+    )
+
+
+def _internal_round_output_text(
+    ticket_copy: TicketCopyPlan | None,
+) -> tuple[str | None, str | None]:
+    """회수 직전 슬롯 라운드 파일 bytes — 라운드 마감 판정의 권위 입력.
+
+    회수(harvest)는 이 마감보다 뒤에 돌지만 슬롯 사본은 그때까지 실재한다. 실행 순서를 바꾸지
+    않고 이미 손에 든 좌표만 읽는다(순서를 뒤로 옮기면 예외 경로의 라운드 마감/환불이 회수
+    성공에 묶인다).
+
+    반환은 (본문, 강등 사유)다. 사유가 있으면 호출부가 터미널 회신 축으로 강등한다 — 판독
+    고장이 라운드 마감 자체를 잃게 하지 않는다.
+    """
+    if ticket_copy is None:
+        return None, None
+    if ticket_copy.role != INTERNAL_REVIEW_ROLE:
+        return None, (
+            f"라운드 사본 역할이 {INTERNAL_REVIEW_ROLE}가 아님: {ticket_copy.role}"
+        )
+    path = Path(ticket_copy.path)
+    if not path.is_absolute():
+        return None, f"라운드 사본 경로가 절대경로가 아님: {path}"
+    try:
+        if not path.is_file():
+            return None, f"라운드 사본 부재: {path}"
+        return _load_file_lock().read_bytes_shared(path).decode("utf-8"), None
+    except (OSError, UnicodeError) as exc:
+        return None, f"라운드 사본 판독 실패({type(exc).__name__}: {exc}): {path}"
+
+
+def _internal_round_verdict(
+    text: str | None, *, from_round_file: bool,
+) -> InternalRoundVerdict:
+    """같은 산출 bytes의 기계 블록 축과 산문 축을 비대칭 규칙으로 결합한다.
+
+    **반려는 한 축 단독으로 인정하고, 통과는 두 축이 모두 통과일 때만 인정한다.** 한 축만 통과인
+    형상을 통과로 접으면 다른 축이 불능인 라운드가 처분 선언 없이 완료 게이트를 연다 — 실 corpus
+    에서 한 축 단독으로만 판정이 서는 라운드는 전부 통과 방향이었다. 이 비대칭은 두 방향 모두에
+    적용된다(블록만 통과 · 산문만 통과). 두 축이 각각 판정을 세우고 값이 다르면 어느 쪽도
+    기록하지 않는다.
+
+    `from_round_file=False`(회수될 산출이 없는 실행)에서는 블록 축을 아예 계산하지 않는다.
+    터미널 회신에는 기계 블록을 실을 서식 강제가 없어, 그 부재는 이 실행에서 실제로 빠진
+    증거가 아니다 — 처방은 없던 증거만 지목한다.
+    """
+    reply_axis = _internal_reply_assessment(text)
+    block_axis = (
+        _internal_block_assessment(text) if from_round_file
+        else InternalReplyAssessment(InternalReplyOutcome(None, None), None)
+    )
+    block, reply = block_axis.outcome, reply_axis.outcome
+    unknown = InternalReplyOutcome(None, None)
+    canonical_pass, canonical_reject = _internal_canonical_verdict_forms()
+
+    if block.verdict is not None and reply.verdict is not None:
+        if block.verdict != reply.verdict:
+            conflict = {
+                INTERNAL_VERDICT_SOURCE_BLOCK: (
+                    f"{canonical_reject if block.verdict else canonical_pass}"
+                    f"(must-fix {len(block.must_fix_items)}건)"
+                ),
+                INTERNAL_VERDICT_SOURCE_REPLY: (
+                    f"{canonical_reject if reply.verdict else canonical_pass}"
+                    f"(must-fix {len(reply.must_fix_items)}건)"
+                ),
+            }
+            return InternalRoundVerdict(
+                unknown,
+                InternalReplyDiagnostic(
+                    INTERNAL_DIAGNOSTIC_VERDICT_CONFLICT,
+                    "두 판정 축 상충 — 기계 블록 "
+                    f"{conflict[INTERNAL_VERDICT_SOURCE_BLOCK]} · 산문 "
+                    f"{conflict[INTERNAL_VERDICT_SOURCE_REPLY]}",
+                    _INTERNAL_VERDICT_CONFLICT_REPAIR,
+                ),
+                conflict=conflict,
+            )
+        # 두 축 합의 — 수와 항목 텍스트는 권위 블록 한 축에서 함께 만든다(수 == 항목 수).
+        return InternalRoundVerdict(
+            block, None, source=INTERNAL_VERDICT_SOURCE_BLOCK,
+        )
+    if block.verdict:
+        return InternalRoundVerdict(
+            block, None, source=INTERNAL_VERDICT_SOURCE_BLOCK,
+        )
+    reply_diagnostic = reply_axis.diagnostic or _internal_reply_diagnostic(
+        INTERNAL_DIAGNOSTIC_MISSING_VERDICT,
+    )
+    if block.verdict is not None:
+        # 블록만 통과 — 통과는 양축 합의가 필요하므로 미상으로 남긴다.
+        return InternalRoundVerdict(
+            unknown,
+            reply_diagnostic._replace(
+                reason=(
+                    f"{reply_diagnostic.reason} · 기계 블록은 "
+                    f"{canonical_pass}(must-fix {len(block.must_fix_items)}건)"
+                ),
+                repair=_INTERNAL_PASS_NEEDS_BOTH_AXES_REPAIR,
+            ),
+        )
+    if reply.verdict is not None:
+        if from_round_file and not reply.verdict:
+            # 회수될 산출을 읽은 실행에서 **통과**는 두 축 합의로만 인정한다. 블록 축이 못 서고
+            # 산문만 통과인 값을 기록하면 처분 선언 없이 완료 게이트가 열린다(false-green).
+            # 반려 축은 이 규칙을 타지 않는다 — 반려는 한 축 단독으로도 인정한다.
+            # 이 분기의 블록 축은 반드시 불능이라 진단이 실재한다(`_internal_block_assessment`는
+            # 판정이 선 경우에만 진단을 비운다). 그 사유가 처방이 지목할 유일한 결측 증거다.
+            return InternalRoundVerdict(
+                unknown,
+                InternalReplyDiagnostic(
+                    INTERNAL_DIAGNOSTIC_BLOCK_UNUSABLE,
+                    f"{block_axis.diagnostic.reason} · 산문은 "
+                    f"{canonical_pass}(must-fix {len(reply.must_fix_items)}건)",
+                    _INTERNAL_PASS_NEEDS_BLOCK_AXIS_REPAIR,
+                ),
+            )
+        # 산문 축만 판정이 선다 — 값을 기록하고 블록 축이 왜 못 섰는지는 경고로만 남긴다.
+        return InternalRoundVerdict(
+            reply, None, source=INTERNAL_VERDICT_SOURCE_REPLY,
+            note=(
+                None if block_axis.diagnostic is None
+                else block_axis.diagnostic.message
+            ),
+        )
+    reason = reply_diagnostic.reason
+    if block_axis.diagnostic is not None:
+        reason = f"{reason} · {block_axis.diagnostic.reason}"
+    return InternalRoundVerdict(
+        unknown,
+        reply_diagnostic._replace(
+            reason=reason,
+            repair=f"{_INTERNAL_REREVIEW_LAST_RESORT} {reply_diagnostic.repair}",
+        ),
+    )
 
 
 def _internal_confirm_fix_evidence(entry: dict) -> str | None:
@@ -5000,22 +5270,40 @@ def _reserve_internal_review_round(
 def _finish_internal_review_round(
     budget: InternalRoundBudget,
     trace: InternalRoundTrace,
+    *,
+    ticket_copy: TicketCopyPlan | None = None,
 ) -> None:
-    """호출의 any_spawned 사실로 환불 또는 terminal 판정 마감을 원자 저장한다."""
+    """호출의 any_spawned 사실로 환불 또는 산출 판정 마감을 원자 저장한다.
+
+    판정 입력은 **회수될 산출 bytes**다 — 터미널 회신은 그 산출이 없는 실행(`--ticket` 없는
+    게이트·라운드 준비 없는 legacy 호출)에서만 쓰는 대체 입력이다. 회신에는 기계 블록을 실을
+    서식 강제가 없어, 권위 산출이 정상인데 회신 서식만으로 '판정 추출 실패'가 나고 그 처방이
+    유료 재리뷰이던 오탐을 이 입력 교체가 닫는다.
+    """
     if not budget.reserved:
         return
     common = _load_review_rounds()
-    assessment = _internal_reply_assessment(trace.terminal_reply)
+    output_text, degraded_reason = _internal_round_output_text(ticket_copy)
+    from_round_file = output_text is not None
+    text = output_text if from_round_file else trace.terminal_reply
+    assessment = _internal_round_verdict(text, from_round_file=from_round_file)
     parsed = assessment.outcome
-    finding_ids = _internal_projected_finding_ids(
-        trace.terminal_reply, parsed.must_fix_items,
-    )
-    if trace.any_spawned and assessment.diagnostic is not None:
-        print(
-            "경고: 내부 리뷰 판정 추출 실패 — "
-            f"{assessment.diagnostic.message}",
-            file=sys.stderr,
-        )
+    finding_ids = _internal_projected_finding_ids(text, parsed.must_fix_items)
+    if trace.any_spawned:
+        if degraded_reason is not None:
+            print(
+                "경고: 내부 리뷰 판정 입력을 터미널 회신으로 강등 — "
+                f"{degraded_reason}",
+                file=sys.stderr,
+            )
+        if assessment.note is not None:
+            print(f"경고: 내부 리뷰 {assessment.note}", file=sys.stderr)
+        if assessment.diagnostic is not None:
+            print(
+                "경고: 내부 리뷰 판정 추출 실패 — "
+                f"{assessment.diagnostic.message}",
+                file=sys.stderr,
+            )
     try:
         with _internal_round_lock():
             ledger = _load_internal_round_ledger()
@@ -5058,6 +5346,7 @@ def _finish_internal_review_round(
                     None if parsed.must_fix_items is None else len(parsed.must_fix_items)
                 ),
                 INTERNAL_FINDING_IDS_FIELD: finding_ids,
+                INTERNAL_VERDICT_SOURCE_FIELD: assessment.source,
                 "suggestions": None,
                 "raw_record_ids": list(trace.raw_record_ids),
                 "outcome_record_id": trace.outcome_record_id,
@@ -5066,6 +5355,8 @@ def _finish_internal_review_round(
                 outcome[INTERNAL_VERDICT_DIAGNOSTIC_FIELD] = (
                     assessment.diagnostic.as_record()
                 )
+            if assessment.conflict is not None:
+                outcome[INTERNAL_VERDICT_CONFLICT_FIELD] = dict(assessment.conflict)
             common.append_round_outcome(entry, outcome)
             _save_internal_round_ledger(ledger)
     except (OSError, UnicodeError) as exc:
@@ -11793,7 +12084,9 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
                 ticket_copy=ticket_copy,
             )
         finally:
-            _finish_internal_review_round(internal_budget, internal_trace)
+            _finish_internal_review_round(
+                internal_budget, internal_trace, ticket_copy=ticket_copy,
+            )
     finally:
         pending_exception = sys.exception()
         report_scope_audit(scope_audit, args.role)
