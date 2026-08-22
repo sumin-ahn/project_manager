@@ -8159,6 +8159,11 @@ def _main(argv: list[str] | None = None) -> int:
                 f"ticket_body_bytes: {ticket_body_bytes} · "
                 f"생략 라운드: {ticket_body_omitted_rounds}개"
             )
+        else:
+            # 본문 미조립은 정상 형상(예: `--paths` 로 검토 범위를 대체하고 `--ticket` 은
+            # 안 준 실행)이지만, 침묵하면 "본문이 실렸다고 착각한 채 결과를 읽는" 경로가
+            # 열린다 — 정상 형상도 값으로 말한다([[T-0819]]).
+            print("ticket_body: 미조립 — 이번 리뷰어 입력에 게이트 티켓 본문이 실리지 않습니다")
         print(relay.dry_run_codex_egress_line(
             escalation_required=codex_egress_required,
             attested=args.codex_egress_escalated,

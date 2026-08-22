@@ -3177,12 +3177,22 @@ def _warn_unharvested_developer_round(rounds: Sequence) -> None:
     stale = unharvested_developer_round(rounds)
     if stale is None:
         return
-    name = _load_ticket_rounds().round_filename(stale.ordinal, stale.role)
+    rounds_module = _load_ticket_rounds()
+    name = rounds_module.round_filename(stale.ordinal, stale.role)
+    # 단정문 대신 값 진술 — 앞선 라운드에 산출이 있으면(형상 B) 그것이 리뷰어 입력에 실린다.
+    # "실리지 않습니다" 는 그 형상에서 거짓이라 쓰지 않는다([[T-0819]]). 스폰면
+    # (`external_review._warn_seed_developer_round`, [[T-0812]])과 같은 계산 하나(
+    # `latest_round_of_role`)를 써 두 표면이 같은 값을 말하게 한다.
+    latest = rounds_module.latest_round_of_role(rounds, REVIEW_SUBJECT_ROLE)
+    latest_name = (
+        rounds_module.round_filename(latest.ordinal, latest.role)
+        if latest is not None else "없음"
+    )
     print(
         "경고: 리뷰 라운드를 산출 없는 developer 라운드 위에서 준비합니다 — "
-        f"{name} 이 시드 골격 그대로입니다. 리뷰어 입력(`rounds/`)에 dev 의 결함 클래스 "
-        "전수·검증 근거·빈틈 보고가 실리지 않습니다 — 먼저 `ticket harvest` 로 회수한 뒤 "
-        "다시 준비하세요.",
+        f"{name} 이 시드 골격 그대로입니다. 리뷰어 입력(`rounds/`)에 실리는 developer 산출 "
+        f"라운드: {latest_name}. 결함 클래스 전수·검증 근거·빈틈 보고를 이번 라운드에도 실으려면 "
+        "먼저 `ticket harvest` 로 회수한 뒤 다시 준비하세요.",
         file=sys.stderr,
     )
 
