@@ -845,6 +845,13 @@ def test_infrastructure_failure_goes_to_fallback_without_a_fresh_rerun(
     위임이 세 번 스폰되고(재사용 → fresh → 폴백) 호출층 상한 선언과 어긋난다."""
     out_dir, _ledger_path, _record_id = _resume_fixture(pd, tmp_path)
     prompt = _write_prompt(tmp_path)
+    # 폴백은 codex 로 떨어진다 — codex code-reviewer preflight(`_preflight_codex_read_exec_root`
+    # — T-0844)가 스폰 전에 --cwd 저장소/staged 형상을 요구한다.
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "staged.txt").write_text("staged\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "staged.txt"], cwd=tmp_path, check=True, capture_output=True,
+    )
     fake = _FakeRun(
         {"returncode": 127, "stdout": "", "stderr": "하네스 claude 실행 불가: not found",
          "timed_out": False, pd.RUN_RESULT_LAUNCH_FAILED: True},
