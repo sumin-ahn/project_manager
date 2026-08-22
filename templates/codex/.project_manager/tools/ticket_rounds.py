@@ -409,9 +409,12 @@ def render_round_seed(
     확인 대상 finding ID 를 프리필하는 유일한 입력이고, 예약 시점에만 쓴다. 없으면
     자리표시자다. 무편집 판정(`_text_is_pending`)은 이 값을 입력으로 쓰지 않는다.
 
-    `rounds` 는 이 티켓의 라운드 전체(이 예약 이전)다 — developer 골격이 accepted delta 를
-    계산해 verify 행을 프리필하는 유일한 입력이다. 호출자(`prepare_ticket_copy`·
+    `rounds` 는 이 티켓의 라운드 전체(이 예약 이전)다 — developer 골격이 확인 대상 분류기를
+    돌려 verify 행을 프리필하는 유일한 입력이다. 호출자(`prepare_ticket_copy`·
     `cmd_section_add`)는 이미 `existing` 을 들고 있어 인자만 추가한다(신규 로드 0).
+
+    판정을 세우지 못한 상태의 developer 라운드는 `RoundsError` 로 거부된다 — 예약 전이므로
+    라운드 파일도 장부 행도 남지 않는다.
     """
     return (
         render_round_header(role, today=today) + "\n\n"
@@ -423,9 +426,19 @@ def _render_round_seed_body(
     role: str, ticket_text: str, previous_round: tuple[int, str] | None = None,
     rounds: "Sequence" = (),
 ) -> str:
-    return _load_pm_delegate().render_ticket_growth_section_seed(
-        role, ticket_text, previous_round=previous_round, rounds=rounds,
-    )
+    """역할 골격 본문 — 시드 렌더의 거부를 이 모듈의 오류형으로 옮긴다.
+
+    골격 렌더는 판정을 세우지 못한 상태(PM 미판정·선행 결정 필요)를 거부한다. 그 거부는 예약
+    **전**에 일어나므로 잔여가 없고, 두 진입점(`ticket prepare`·`board section-add`)이 같은 규칙을
+    쓴다. 번역이 없으면 board 쪽은 `RoundsError` 만 잡으므로 같은 거부가 traceback 이 된다.
+    """
+    delegate = _load_pm_delegate()
+    try:
+        return delegate.render_ticket_growth_section_seed(
+            role, ticket_text, previous_round=previous_round, rounds=rounds,
+        )
+    except delegate.DelegateError as exc:
+        raise RoundsError(str(exc)) from exc
 
 
 def _round_header_re(role: str) -> re.Pattern[str]:

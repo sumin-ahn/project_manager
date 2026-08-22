@@ -226,6 +226,48 @@ def test_section_add_seed_is_the_shared_seam_render(board_env):
 
 
 @requires_git
+def test_section_add_refuses_a_developer_round_until_the_pm_judgment_is_written(
+    board_env, capsys,
+):
+    """T-0805 채널 파리티 — cross 진입점(`section-add`)도 판정 미기입이면 같은 규칙으로 거부한다.
+
+    거부는 예약 **전**이라 라운드 파일도 commit 도 남지 않고, traceback 이 아니라 기존 문언
+    경로(`cannot section-add: …` rc=1)로 나온다.
+    """
+    board, board_dir, _bare = board_env
+    _seed_ticket(board_dir, "T-1020", "claimed")
+    rounds = board._load_ticket_rounds()
+    pd = rounds._load_pm_delegate()
+    review_payload = {
+        "version": pd.PM_REVIEW_VERSION,
+        "findings": [{
+            "id": "F-001", "class": "implementation-defect", "severity": "must-fix",
+            "authority": "[[T-0805]]", "evidence": "probe", "recommendation": "fix",
+            "design_change": False,
+        }],
+        "confirmations": [],
+    }
+    review_round = _rounds_dir(board_dir, "T-1020") / "01-code-reviewer.md"
+    review_round.parent.mkdir(parents=True, exist_ok=True)
+    review_round.write_text(
+        "## 리뷰 (code-reviewer · 2026-08-22)\n\n## must-fix\n- F-001\n\n"
+        "## 판정\n판정: 반려 · finding 1건(must-fix 1건)\n\n"
+        f"```{pd.PM_REVIEW_BLOCK}\n" + json.dumps(review_payload, ensure_ascii=False)
+        + "\n```\n",
+        encoding="utf-8",
+    )
+    head_before = _head(board_dir)
+
+    assert board.main(["section-add", "T-1020", "--role", "developer"]) == 1
+
+    error = capsys.readouterr().err
+    assert error.startswith("cannot section-add: ")
+    assert "[pending]" in error and "disposition-template" in error
+    assert _round_names(board_dir, "T-1020") == ["01-code-reviewer.md"]
+    assert _head(board_dir) == head_before
+
+
+@requires_git
 def test_show_assembles_the_spec_and_the_rounds_in_ordinal_order(board_env, capsys):
     """조회는 명세 전문 + 라운드 파일을 순번 순으로 조립하고 미회수 개수를 낸다."""
     board, board_dir, _bare = board_env
