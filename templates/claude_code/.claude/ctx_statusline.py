@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""claude statusLine — ctx% 표시 + 임계 넛지 (T-0015 · stdlib only).
+"""claude statusLine — ctx% 표시 + 임계 넛지 (stdlib only).
 
 claude Code 가 statusLine 입력 JSON 을 stdin 으로 준다 (``context_window`` 포함).
 이 스크립트는 컨텍스트 **사용** % 를 산출해 statusline 한 줄을 stdout 에 낸다.
@@ -7,7 +7,7 @@ claude Code 가 statusLine 입력 JSON 을 stdin 으로 준다 (``context_window
 
   - ok    : 회색 ctx N%
   - nudge : 노랑 "ctx N% — checkpoint 준비"
-  - nudge2: 빨강 "ctx N% — checkpoint 권고" (2단 strong·T-0328)
+  - nudge2: 빨강 "ctx N% — checkpoint 권고" (2단 strong)
   - stop  : 빨강 "ctx N% — checkpoint 최종 알림"
 
 statusLine 은 **흐름을 안 끊는다**(가시화만). ctx_stop_hook.py도 같은 밴드에서 모델-facing
@@ -47,7 +47,7 @@ def render_line(used_pct: int, state: str) -> str:
 
 
 def build_statusline(stdin: dict, conf: dict) -> str:
-    # 분모 = 해소된 claude 예산(ADR-0041) — hook 과 같은 예산으로 표시=밴드 일관.
+    # 분모 = 해소된 claude 예산 — hook 과 같은 예산으로 표시=밴드 일관.
     budget = ctx_guard.resolve_budget(conf, "claude")
     used = ctx_guard.context_used_pct_from_statusline(stdin, budget)
     thresholds = ctx_guard.ctx_thresholds(conf)

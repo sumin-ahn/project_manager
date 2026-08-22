@@ -62,6 +62,118 @@ def _load_prose_scanner():
 PROSE_SCANNER = _load_prose_scanner()
 
 
+@lru_cache(maxsize=None)
+def _load_tool_module(name: str):
+    """``.project_manager/tools/<name>.py`` 를 독립 모듈로 로드한다(도구는 패키지가 아님).
+
+    한 번 로드한 모듈 객체를 재사용한다 — oracle 이 registry(``HARNESS_TEMPLATE_DIRS``)를
+    모듈 속성으로 읽으므로, 테스트가 그 속성을 주입하면 oracle 이 그 값을 실제로 소비해야
+    한다. 호출마다 새 모듈을 만들면 주입이 사라져 민감도 실험 자체가 불가능하다.
+    """
+    path = REPO / ".project_manager" / "tools" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _import_channel_python_paths(repo: Path) -> set[Path]:
+    """import 채널 python 축 — ``pm_import`` 의 **실제 출하 열거**를 소비한다.
+
+    열거 규칙을 테스트가 다시 쓰지 않고 ``_iter_source_files``(내부적으로
+    ``_shippable_template_files`` 의 일반파일 판정 + ``COPY_EXCLUDE_*`` 정책)를 그대로
+    호출한다. 규칙 사본을 두면 pm_import 가 규칙을 바꿔도 oracle 은 옛 규칙으로 통과한다.
+    template 트리 목록은 ``HARNESS_TEMPLATE_DIRS`` registry 에서 파생하므로 새 하네스가
+    등록되면 자동 편입된다.
+    """
+    pm_import_module = _load_tool_module("pm_import")
+    sources: set[Path] = set()
+    for dirnames in pm_import_module.HARNESS_TEMPLATE_DIRS.values():
+        for dirname in dirnames:
+            template_root = repo / "templates" / dirname
+            if not template_root.is_dir():
+                continue
+            for _dest_relative, source in pm_import_module._iter_source_files(
+                template_root
+            ):
+                if source.suffix == ".py":
+                    sources.add(source)
+    return sources
+
+
+def _manifest_dest_roots(repo: Path) -> list[Path]:
+    """manifest 를 가진 sync 대상 루트 — ① 자신 + registry 가 등록한 template 트리.
+
+    위치를 리터럴 목록으로 두지 않는다. ``HARNESS_TEMPLATE_DIRS`` 에 하네스가 늘면 그
+    manifest 도 자동으로 대조 대상이 된다.
+    """
+    roots = [repo]
+    pm_import_module = _load_tool_module("pm_import")
+    for dirnames in pm_import_module.HARNESS_TEMPLATE_DIRS.values():
+        for dirname in dirnames:
+            roots.append(repo / "templates" / dirname)
+    return roots
+
+
+def _manifest_channel_python_paths(repo: Path) -> set[Path]:
+    """update 채널 python 축 — ``pm_update`` 의 **실제 출하 전개**를 소비한다.
+
+    각 dest 루트의 manifest 를 ``resolve_manifest_for_dest`` 로 찾고, 항목마다
+    ``manifest_entry_shipping_inventory`` 로 전개한다. 이 seam 은 ``plan`` 이 쓰는 바로 그
+    함수라 디렉터리 항목의 tracked 열거·``@source`` 리매핑·항목 소유권·dest 리매핑이
+    update 계획과 같은 결과를 낸다(``@render`` 항목도 같은 전개를 거친다 — render 는 내용을
+    쓰는 방식만 바꾸지 어떤 파일이 출하되는지를 바꾸지 않는다).
+
+    항목 하나가 내는 ``(dest relpath, source 절대경로)`` 쌍에서 **읽기 쪽**(source)은 ① 안의
+    canonical 산문이고, **목적지 쪽**은 ① 안에 그 사본이 실재할 때만(예 ``.claude/ctx_guard.py``)
+    공개 산문이므로 ``is_file()`` 로 걸러 편입한다. 경로를 하드코딩하지 않는다.
+    """
+    pm_update_module = _load_tool_module("pm_update")
+    paths: set[Path] = set()
+    for dest_root in _manifest_dest_roots(repo):
+        manifest_path = pm_update_module.resolve_manifest_for_dest(dest_root, repo)
+        manifest = pm_update_module.read_manifest(manifest_path)
+        for entry_index in range(len(manifest)):
+            shipped, _source_missing, _target_owned = (
+                pm_update_module.manifest_entry_shipping_inventory(
+                    repo, manifest, entry_index, dest_root
+                )
+            )
+            for dest_relative, source in shipped:
+                source = Path(source)
+                if source.suffix == ".py":
+                    paths.add(source)
+                destination = dest_root / dest_relative
+                if destination.suffix == ".py" and destination.is_file():
+                    paths.add(destination)
+    return paths
+
+
+def _shipping_surface_python_oracle(repo: Path = REPO) -> set[Path]:
+    """``shipping_paths`` 와 독립된 코드 경로(pm_import 출하 열거 + pm_update 출하 전개)로
+    출하 표면 python 축을 파생한다 — I1 대조가 tautology 가 되지 않게 한다(설계 §I1).
+    """
+    repo = repo.resolve()
+    return _import_channel_python_paths(repo) | _manifest_channel_python_paths(repo)
+
+
+def _python_surface_delta(repo: Path) -> tuple[list[str], list[str]]:
+    """``shipping_paths`` python 축과 파생 oracle 의 양방향 차집합 ``(missing, extra)``.
+
+    집합 동등 단언과 그 민감도 실험이 **같은 비교**를 쓰게 하는 seam 이다 — 민감도 쪽이
+    비교를 따로 구현하면 "실제 단언이 red 가 된다"를 보인 게 아니게 된다.
+    """
+    repo = repo.resolve()
+    actual = set(_shipping_paths(repo)[0])
+    expected = _shipping_surface_python_oracle(repo)
+    missing = sorted(
+        path.relative_to(repo).as_posix() for path in expected - actual
+    )
+    extra = sorted(path.relative_to(repo).as_posix() for path in actual - expected)
+    return missing, extra
+
+
 def test_repo_owned_files_exec_failure_removes_partial_cache_and_allows_retry(
     tmp_path, monkeypatch
 ):
@@ -408,12 +520,10 @@ def _describe_delta(
 
 
 def test_shipping_inventory_covers_primary_and_template_surfaces():
-    python_paths, markdown_paths = _shipping_paths(REPO)
-    relative_python = {path.relative_to(REPO).as_posix() for path in python_paths}
+    _python_paths, markdown_paths = _shipping_paths(REPO)
     relative_markdown = {
         path.relative_to(REPO).as_posix() for path in markdown_paths
     }
-    assert ".project_manager/tools/board.py" in relative_python
     assert ".project_manager/wiki/pm_role.md" in relative_markdown
     assert ".claude/agents/developer.md" in relative_markdown
     assert "CLAUDE.md" in relative_markdown
@@ -422,9 +532,19 @@ def test_shipping_inventory_covers_primary_and_template_surfaces():
     )
     for template in path_names:
         prefix = f"templates/{template}/"
-        assert any(path.startswith(prefix) for path in relative_python)
         assert any(path.startswith(prefix) for path in relative_markdown)
     assert path_names
+
+    # I1 — python 축은 존재 단언(예: "이 파일이 보이는가")이 아니라 shipping_paths 와
+    # 독립된 코드 경로(pm_import 출하 열거 + pm_update 출하 전개)에서 파생한 기대집합과의
+    # 집합 동등으로 판정한다(설계 §M1 "집합 동등으로 교체한다·추가 아님"). 존재 단언은 시야가
+    # 112 건이든 6 건이든 통과했었다 — 집합 동등만 시야 축소를 값으로 잡는다.
+    missing, extra = _python_surface_delta(REPO)
+    assert not missing and not extra, (
+        "shipping_paths python 축이 파생 출하 표면과 어긋남 — "
+        f"missing(시야 미포함) {len(missing)}: {missing}; "
+        f"extra(시야 초과) {len(extra)}: {extra}"
+    )
 
 
 def _git(root: Path, *args: str) -> None:
@@ -531,6 +651,153 @@ def test_shipping_inventory_git_missing_archive_falls_back_loudly(
     assert doc in fallback_markdown
     assert ignored_derived not in owned_markdown
     assert ignored_derived in fallback_markdown
+
+
+def _narrow_scope_python_paths(root: Path) -> set[Path]:
+    """T-0814 이전 시야 규칙의 사본 — templates 의 python 은 ``.project_manager/tools/``
+    이하로만 한정한다. sensitivity 대조 전용(프로덕션 코드가 아니다)."""
+    resolved_root = root.resolve()
+    narrow: set[Path] = set()
+    for path in PROSE_SCANNER.repo_owned_paths(root):
+        relative = path.relative_to(resolved_root)
+        parts = relative.parts
+        if path.suffix != ".py":
+            continue
+        if relative.parent == Path(".project_manager", "tools"):
+            narrow.add(path)
+            continue
+        if (
+            len(parts) == 5
+            and parts[0] == "templates"
+            and parts[2] == ".project_manager"
+            and parts[3] == "tools"
+        ):
+            narrow.add(path)
+    return narrow
+
+
+def _count_lint_offenders(paths) -> int:
+    """``test_public_reference_lint`` 와 같은 판정(``prose_token_spans`` + ``_actionable_matches``)을
+    합성 파일 집합에 적용한다."""
+    count = 0
+    for path in paths:
+        source = path.read_text(encoding="utf-8")
+        for span in PROSE_SCANNER.prose_token_spans(source):
+            count += len(PROSE_SCANNER._actionable_matches(span.text))
+    return count
+
+
+def test_sensitivity_python_scope_widening_is_load_bearing(tmp_path):
+    """M2 — 시야 확장이 load-bearing 인지 tmp git 트리 주입으로 고정한다(설계 §M2).
+
+    실 트리에서는 확장 후 offender 가 0 이라 "옛 시야로 되돌리면 red 가 사라진다"를
+    관측할 수 없다. 합성 파일을 주입해 현행(넓은) 시야는 offender **1**, 옛(좁은·
+    ``.project_manager/tools/`` 한정) 시야는 offender **0** 을 같은 테스트에서 값으로
+    대조한다. 실 트리를 더럽히지 않는다(tmp_path 격리).
+    """
+    _git(tmp_path, "init", "-q")
+    injected = tmp_path / "templates" / "claude_code" / ".claude" / "ctx_guard.py"
+    injected.parent.mkdir(parents=True)
+    injected.write_text('"""모듈 개요 (T-9999)."""\n', encoding="utf-8")
+    clean_tool = (
+        tmp_path
+        / "templates"
+        / "claude_code"
+        / ".project_manager"
+        / "tools"
+        / "board.py"
+    )
+    clean_tool.parent.mkdir(parents=True)
+    clean_tool.write_text('"""무결."""\n', encoding="utf-8")
+    _git(
+        tmp_path,
+        "add",
+        str(injected.relative_to(tmp_path)),
+        str(clean_tool.relative_to(tmp_path)),
+    )
+
+    wide_python, _ = _shipping_paths(tmp_path)
+    wide_python = set(wide_python)
+    assert injected in wide_python, "현행 시야는 어댑터 python 을 포함해야 함"
+    assert _count_lint_offenders(wide_python) == 1
+
+    narrow_python = _narrow_scope_python_paths(tmp_path)
+    assert injected not in narrow_python, "옛 시야는 .project_manager/tools/ 밖을 안 봄"
+    assert clean_tool in narrow_python
+    assert _count_lint_offenders(narrow_python) == 0
+
+
+# 새 registry 하네스 민감도 픽스처 — 실 트리와 겹치지 않는 이름을 쓴다.
+_FUTURE_HARNESS = "future"
+_FUTURE_TEMPLATE_MANIFEST = (
+    ".project_manager/tools/board.py\n"
+    ".future/runtime.py    @source=canonical/runtime.py\n"
+    ".future/pkg           @source=canonical/pkg\n"
+    ".future/rendered.py   @render @source=canonical/rendered.py\n"
+)
+
+
+def _write_tracked(root: Path, files: dict[str, str]) -> None:
+    """tmp git 트리에 파일을 쓰고 전부 track 한다(출하 열거는 tracked-only 의미다)."""
+    for relative, content in files.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    _git(root, "add", "--", *files)
+
+
+def test_sensitivity_new_harness_update_only_python_makes_equality_red(
+    tmp_path, monkeypatch
+):
+    """M1 민감도 — 새 registry 하네스의 update-only python 을 주입하면 집합 동등 단언이
+    red 가 되는지 값으로 고정한다.
+
+    픽스처는 리뷰 재현 그대로다. ``HARNESS_TEMPLATE_DIRS`` 에 ``future`` 하네스를 넣고 그
+    template manifest 가 ``templates/`` 밖 canonical python 을 ``@source=`` 로 끌어오게
+    한다(파일 항목·디렉터리 항목·``@render`` 항목 셋 다). 이 python 들은 update 채널로만
+    출하되므로 ``shipping_paths`` 의 분류 규칙은 못 본다. oracle 이 실제 출하 전개에서
+    파생될 때만 그 누락이 ``missing`` 값으로 뜬다 — 파생이 아니면 양쪽이 같이 놓쳐
+    집합 동등이 green 인 채로 실 출하 python 누락을 통과시킨다(false-green).
+    """
+    _git(tmp_path, "init", "-q")
+    template = f"templates/{_FUTURE_HARNESS}"
+    _write_tracked(
+        tmp_path,
+        {
+            ".project_manager/engine.manifest": ".project_manager/tools/board.py\n",
+            ".project_manager/tools/board.py": '"""엔진 도구."""\n',
+            "canonical/runtime.py": '"""update 채널로만 출하되는 파일 항목."""\n',
+            "canonical/pkg/helper.py": '"""update 채널로만 출하되는 디렉터리 항목."""\n',
+            "canonical/rendered.py": '"""update 채널로만 출하되는 @render 항목."""\n',
+            f"{template}/.project_manager/engine.manifest": (
+                _FUTURE_TEMPLATE_MANIFEST
+            ),
+            f"{template}/.project_manager/tools/board.py": '"""엔진 사본."""\n',
+            f"{template}/.future/runtime.py": '"""목적지 사본."""\n',
+            f"{template}/.future/pkg/helper.py": '"""목적지 사본."""\n',
+            f"{template}/.future/rendered.py": '"""목적지 사본."""\n',
+        },
+    )
+    pm_import_module = _load_tool_module("pm_import")
+    monkeypatch.setattr(
+        pm_import_module,
+        "HARNESS_TEMPLATE_DIRS",
+        {_FUTURE_HARNESS: (_FUTURE_HARNESS,)},
+    )
+
+    wide_python = set(_shipping_paths(tmp_path)[0])
+    # 목적지 사본은 templates/ 아래라 옛 규칙도 본다 — 시야 갭은 오직 상류 canonical 쪽이다.
+    assert tmp_path / f"{template}/.future/runtime.py" in wide_python
+    assert tmp_path / "canonical/runtime.py" not in wide_python
+
+    missing, extra = _python_surface_delta(tmp_path)
+
+    assert missing == [
+        "canonical/pkg/helper.py",
+        "canonical/rendered.py",
+        "canonical/runtime.py",
+    ]
+    assert extra == []
 
 
 def test_hard_private_context_matches_reviewed_allowlist():

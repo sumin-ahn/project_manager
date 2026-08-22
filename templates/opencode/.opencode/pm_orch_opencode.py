@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""opencode relay driver — `opencode run` subprocess 세션 구동 (ADR-0009 · 어댑터·얇음).
+"""opencode relay driver — `opencode run` subprocess 세션 구동 (어댑터·얇음).
 
 엔진 core(루트 `.project_manager/tools/pm_relay.py`)의 SessionDriver Protocol
 구현체. relay/respawn/marker 로직은 *엔진* Supervisor 에 있고(루트 `.project_manager/tools/`·
@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 OPENCODE_BIN = "opencode"
-DEFAULT_AGENT = "pm"          # T-0045 PM primary spawn 타깃. build 폴백(`--agent build`).
+DEFAULT_AGENT = "pm"          # PM primary spawn 타깃. build 폴백(`--agent build`).
 TURN_TIMEOUT_SEC = 600        # subprocess 당 hard hang 가드(상한 — 한 turn 이 길 수 있음).
 CTX_STOP_PCT_DEFAULT = 20     # 잔여 정지 임계(%).
 CTX_WINDOW_TOKENS_DEFAULT = 200_000
@@ -153,7 +153,7 @@ class OpencodeCliDriver:
         if not observed:
             # sid 파싱 실패 = 치명 — opencode 는 sid 사전지정 불가라 uuid4 로 폴백하면 그 세션이
             # *존재하지 않아* 다음 relay_turn 의 `-s <uuid>` 가 "Session not found" → 연속성
-            # 침묵 파손(codex T-0048 must-fix). 폴백 대신 명시 중단 — relay 는 유효
+            # 침묵 파손(codex must-fix). 폴백 대신 명시 중단 — relay 는 유효
             # 세션 없이 못 돈다. (engine uuid4 인자는 opencode 경로에선 marker 예측에도 안 쓰인다.)
             raise RuntimeError(
                 "[pm-orch] opencode 출력에서 sessionID 를 파싱하지 못했다 — 세션 구동 실패. "
@@ -181,7 +181,7 @@ class OpencodeCliDriver:
 
         - new_session=True: `--agent <agent>` 로 fresh 세션(opencode 가 sid 발급).
         - session_id 주어지면: `-s <sid>` 로 그 세션 resume.
-        child cwd 격리 — `--dir <cwd>` 로 PM repo root 를 명시(엔진 제약 ①)."""
+        child cwd 격리 — `--dir <cwd>` 로 PM repo root 를 명시(엔진 제약)."""
         cmd = [self.opencode_bin, "run", "--format", "json"]
         if new_session:
             cmd += ["--agent", self.agent]
@@ -198,8 +198,8 @@ class OpencodeCliDriver:
                 stdin=subprocess.DEVNULL,
             )
         except self._stall_error_types as exc:
-            # 첫-이벤트 stall 재시도 소진(T-0336) = fail-loud. 무한 hang(startup network fetch
-            # stall·PM 70) 대신 유한 재시도 후 여기 도달 → loud stderr + turn-level fail-soft
+            # 첫-이벤트 stall 재시도 소진 = fail-loud. 무한 hang(startup network fetch
+            # stall) 대신 유한 재시도 후 여기 도달 → loud stderr + turn-level fail-soft
             # (relay 루프는 살아 다음 입력을 받는다·기존 timeout/OSError 처리와 동일 결).
             sys.stderr.write(f"[pm-orch] {exc}\n")
             return None, None, None
@@ -232,7 +232,7 @@ class OpencodeCliDriver:
 
 
 def _make_watchdog_runner(engine):
-    """프로덕션 기본 runner — 엔진 첫-이벤트 워치독으로 opencode 를 실행(T-0336·startup stall→유한 재시도).
+    """프로덕션 기본 runner — 엔진 첫-이벤트 워치독으로 opencode 를 실행(startup stall→유한 재시도).
 
     driver 의 `runner` seam(테스트가 FakeRunner 주입)을 유지하면서, 프로덕션 main 만 이 runner 로
     현행 600s hard 가드(overall_timeout=self.timeout) *안쪽에* 첫-이벤트 감시를 더한다. capture_output/
@@ -262,7 +262,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--task", default=None, metavar="이름",
-        help="task 정체성(F7·T-0356) — 회전된 새 PM 세션의 재진입 프롬프트에 `--task <이름>` 실값을 "
+        help="task 정체성 — 회전된 새 PM 세션의 재진입 프롬프트에 `--task <이름>` 실값을 "
              "박아 같은 task 를 resume 하게 한다((b) 명시 전달·cwd 추론 금지). 미지정이면 bare "
              "`/pm-bootstrap`(슬롯/솔로).",
     )
@@ -278,8 +278,8 @@ def main(argv: list[str] | None = None) -> int:
     budget = resolve_ctx_budget(conf)
     stop_pct = resolve_stop_pct(conf)
     engine.validate_relay_budget(budget, stop_pct)
-    # 프로덕션 driver 는 첫-이벤트 워치독 runner 로 opencode 를 구동(startup stall→유한 재시도·
-    # T-0336). 소진 시 StallWatchdogError → driver `_turn` 이 loud + fail-soft(stall_error 주입).
+    # 프로덕션 driver 는 첫-이벤트 워치독 runner 로 opencode 를 구동(startup stall→유한 재시도).
+    # 소진 시 StallWatchdogError → driver `_turn` 이 loud + fail-soft(stall_error 주입).
     driver = OpencodeCliDriver(
         engine.parse_opencode_json,
         ctx_budget=budget,
