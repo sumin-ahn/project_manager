@@ -960,9 +960,13 @@ def _expand_hook_argv(argv, root: Path) -> list[str]:
     `{self}`=이 디스패처 파일 자신(자기참조형 기능이 부르는 대상 — git-anchor 는 delegate-channel
     과 달리 부를 별도 엔진 파일이 없다).
 
-    경로는 cwd 가 아니라 **엔진 루트**에서 해소한다(훅이 어느 디렉토리에서 발화해도 같은 자식)."""
+    `{py}`·`{tools}`는 cwd 가 아니라 **엔진 루트**에서 해소한다(훅이 어느 디렉토리에서 발화해도
+    같은 자식). `{self}`는 root 파생이 **아니다** — 실행 중인 파일은 자기 위치(`__file__`)를 이미
+    알고, root 에서 다시 조합한 좌표는 같은 사실의 두 번째 사본이라 레이아웃이 바뀌면 어긋난다
+    (T-0845 — flat 레이아웃에서 `root/.codex/pm_orch_codex.py` 재구성이 실재하지 않는 경로를
+    가리켜 git-anchor 자식 spawn 이 rc=2 로 죽었다)."""
     tools = str(Path(root) / ".project_manager" / "tools")
-    this_file = str(Path(root) / ".codex" / "pm_orch_codex.py")
+    this_file = str(Path(__file__).resolve())
     return [str(token).replace("{py}", sys.executable)
                        .replace("{tools}", tools)
                        .replace("{self}", this_file)
