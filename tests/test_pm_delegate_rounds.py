@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import os
@@ -2336,3 +2337,510 @@ def test_successful_delegation_does_not_refund_the_ticket_copy(pd, refund_env, m
     )
     assert rc == 0
     assert refund_calls == []
+
+
+# ── T-0846 — 단일 정리 경계(지점 삽입 대체) ─────────────────────────────────
+#
+# [[T-0846]] 는 [[T-0841]] 라운드 6이 꽂은 6개 지점 삽입을 `main()` 의 finally 하나로 대체한다.
+# 위 F-005 테스트 3건은 그 경계를 지나는 명시 `return` 경로 회귀를 그대로 지킨다(변경 없음).
+# 아래는 라운드 7 이 지점 삽입이 못 닫은 것으로 실측한 축(전파 예외 · 정리 실패 마스킹 · 동시
+# prepare 패자 run-dir)의 회귀다.
+
+
+def test_propagated_exception_before_handoff_refunds_the_reserved_ticket_copy(
+    pd, refund_env, monkeypatch,
+):
+    """T-0846 — 예약~실행 인계 사이 전파 예외(지점 `return` 이 아니다)도 단일 경계가 환불한다.
+    라운드 7 재현 probe: `_resolved_adapter_directories()` 가 던지면 지점 삽입 방식에선 board·
+    run-dir·장부 미회수 = (1,1,1) 로 남았다 — 이제 (0,0,0) 이다."""
+    home, tickets = refund_env
+    ticket = "T-9105"
+    _write_spec(tickets, ticket)
+
+    def _raise():
+        raise pd.DelegateError("probe: adapter directories 조회 실패")
+
+    monkeypatch.setattr(pd, "_resolved_adapter_directories", _raise)
+
+    before = (
+        _refund_round_file_count(pd, home, ticket),
+        _refund_run_dir_count(pd, home, ticket),
+        _refund_unterminated_ledger_rows(pd, home, ticket),
+    )
+    assert before == (0, 0, 0)
+
+    prompt = home / "task.md"
+    prompt.write_text("문서를 정리하라", encoding="utf-8")
+    with pytest.raises(pd.DelegateError, match="probe"):
+        pd.main(
+            ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
+             "--ticket", ticket, "--output-dir", str(home / "raw")],
+            run_fn=lambda *a, **k: pytest.fail("전파 예외 뒤 스폰되면 안 됨"),
+        )
+
+    after = (
+        _refund_round_file_count(pd, home, ticket),
+        _refund_run_dir_count(pd, home, ticket),
+        _refund_unterminated_ledger_rows(pd, home, ticket),
+    )
+    assert after == (0, 0, 0), f"전파 예외 뒤 잔류 — before={before} after={after}"
+
+
+def test_internal_verdict_cap_refusal_refunds_the_reserved_ticket_copy(
+    pd, refund_env, monkeypatch,
+):
+    """T-0846 — 내부 verdict 상한 거부(`internal_budget.refused_rc`)는 harvest 를 도는 안쪽
+    finally 안에 중첩된 반환 지점이라, 지점 삽입 방식에선 이미 환불된 예약을 harvest 가 다시
+    건드려(이미 포기됨 오류) 원 rc 를 덮었다(라운드 7 구조적 결함). 단일 경계 아래에서는
+    `_ticket_copy_handed_off` 가 False 라 harvest 를 건너뛰고 환불만 한 번 돈다."""
+    home, tickets = refund_env
+    ticket = "T-9107"
+    _write_spec(tickets, ticket)
+    monkeypatch.setattr(pd, "local_config", lambda: {
+        "delegate_enabled": "true",
+        "delegate.code-reviewer.harness": "codex", "delegate.code-reviewer.model": "gpt-x",
+    })
+    monkeypatch.setattr(
+        pd, "_reserve_internal_review_round",
+        lambda *a, **k: pd.InternalRoundBudget(refused_rc=1),
+    )
+
+    before = (
+        _refund_round_file_count(pd, home, ticket),
+        _refund_run_dir_count(pd, home, ticket),
+        _refund_unterminated_ledger_rows(pd, home, ticket),
+    )
+    assert before == (0, 0, 0)
+
+    prompt = home / "task.md"
+    prompt.write_text("리뷰 요청", encoding="utf-8")
+    rc = pd.main(
+        ["--role", "code-reviewer", "--prompt-file", str(prompt), "--cwd", str(home),
+         "--ticket", ticket, "--output-dir", str(home / "raw")],
+        run_fn=lambda *a, **k: pytest.fail("내부 verdict 상한 거부 뒤 스폰되면 안 됨"),
+    )
+    assert rc == 1
+
+    after = (
+        _refund_round_file_count(pd, home, ticket),
+        _refund_run_dir_count(pd, home, ticket),
+        _refund_unterminated_ledger_rows(pd, home, ticket),
+    )
+    assert after == (0, 0, 0), f"내부 verdict 상한 거부 뒤 잔류 — before={before} after={after}"
+
+
+def test_cleanup_failure_does_not_mask_the_original_rejection(
+    pd, refund_env, monkeypatch, capsys,
+):
+    """T-0846 — 환불(`abandon_ticket_copy`) 자체가 `DelegateError` 가 아닌 예외로 실패해도 원
+    rc·거부 사유는 그대로 나오고, 정리 실패는 추가 loud 줄로만 붙는다(원 결과를 대체하지 않음).
+    실패한 환불은 예약도 그대로 남긴다 — 잃어버리지 않고 loud 로 남긴다."""
+    home, tickets = refund_env
+    ticket = "T-9106"
+    _write_spec(tickets, ticket)
+
+    def _boom(**_kwargs):
+        raise RuntimeError("정리 폭발(probe)")
+
+    monkeypatch.setattr(pd, "abandon_ticket_copy", _boom)
+
+    prompt = home / "task.md"
+    prompt.write_text("배포 전에 config.secret.key 를 확인하라", encoding="utf-8")
+    rc = pd.main(
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
+         "--ticket", ticket, "--output-dir", str(home / "raw")],
+        run_fn=lambda *a, **k: pytest.fail("시크릿 스캔 거부 뒤 스폰되면 안 됨"),
+    )
+    assert rc == 1
+
+    err = capsys.readouterr().err
+    assert "시크릿 denylist 판정" in err, "원 거부 사유가 그대로 나와야 한다"
+    assert "환불 실패" in err and "정리 폭발" in err, "정리 실패가 추가 loud 줄로 붙어야 한다"
+
+    after = (
+        _refund_round_file_count(pd, home, ticket),
+        _refund_run_dir_count(pd, home, ticket),
+        _refund_unterminated_ledger_rows(pd, home, ticket),
+    )
+    assert after == (1, 1, 1), f"환불 실패 뒤 진단 좌표(잔류 예약)가 사라졌다 — after={after}"
+
+
+def test_concurrent_prepare_loser_leaves_no_orphaned_run_dir(pd, rounds_env):
+    """T-0846(F-010) — 상한-1 에서 동시 prepare 두 건 중 패자가 board 라운드·장부 행 없이
+    run-dir 만 남기지 않는다(결정적 barrier 재현 — 라운드 7 실측: developer 상한 4 ·
+    before=(3,3,3) → 성공 1·`InternalRoundLimitExceeded` 1 → after=(4,5,4) 였던 결함)."""
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-9201")
+    limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
+    _prepare_n_rounds(pd, pm_home, slot, "T-9201", "developer", limit - 1)
+
+    def _round_files() -> int:
+        rounds_dir = _rounds_dir(pm_home, "T-9201")
+        return len(list(rounds_dir.glob("*.md"))) if rounds_dir.is_dir() else 0
+
+    def _run_dirs() -> int:
+        root = slot / pd.TICKET_COPY_REL_ROOT / "T-9201"
+        return len(list(root.iterdir())) if root.is_dir() else 0
+
+    def _unterminated_ledger_rows() -> int:
+        rows = [row for row in _ledger_rows(pm_home) if row["ticket"] == "T-9201"]
+        latest_by_copy: dict[str, dict] = {}
+        for row in rows:
+            latest_by_copy[row["copy"]] = row
+        return sum(
+            1 for row in latest_by_copy.values()
+            if row.get("harvested_at") is None and "abandoned_at" not in row
+        )
+
+    before = (_round_files(), _run_dirs(), _unterminated_ledger_rows())
+    assert before == (limit - 1, limit - 1, limit - 1)
+
+    barrier = threading.Barrier(2)
+    real_count = pd._internal_round_count
+    call_lock = threading.Lock()
+    state = {"n": 0}
+
+    def _synced_count(existing, role):
+        # F-003 회귀와 같은 재구성 — 처음 두 호출(양쪽 thread 의 (1.5) 사전판정)만 서로 기다린다.
+        with call_lock:
+            state["n"] += 1
+            my_call = state["n"]
+        result = real_count(existing, role)
+        if my_call <= 2:
+            barrier.wait(timeout=5)
+        return result
+
+    results: list = []
+    errors: list = []
+
+    def _worker():
+        try:
+            plan = pd.prepare_ticket_copy(
+                ticket="T-9201", role="developer", cwd=slot, pm_home=pm_home,
+            )
+            results.append(plan)
+        except pd.InternalRoundLimitExceeded as exc:
+            errors.append(exc)
+
+    with unittest.mock.patch.object(pd, "_internal_round_count", side_effect=_synced_count):
+        threads = [threading.Thread(target=_worker) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+    assert len(results) == 1, f"동시 성공 {len(results)}건(정확히 1이어야 함) — errors={errors}"
+    assert len(errors) == 1
+
+    after = (_round_files(), _run_dirs(), _unterminated_ledger_rows())
+    assert after == (limit, limit, limit), f"패자 run-dir 잔류 — before={before} after={after}"
+
+
+# ── T-0846 라운드 3 fix — F-001(BaseException-safe 정리) · F-002(락 이탈 후 잔여) ──────────
+
+
+def test_gate_refund_control_exceptions_do_not_override_the_original_rejection_rc(
+    pd, refund_env, monkeypatch, capsys,
+):
+    """F-001 — `main()` 환불(`abandon_ticket_copy`)에 `KeyboardInterrupt`·`SystemExit` 를
+    주입해도 원 거부 rc=1·원 사유가 그대로 나오고, 정리 실패는 추가 loud 줄로만 붙는다(원래는
+    `except Exception`만 잡아 두 제어 예외가 rc 대신 그대로 전파됐다)."""
+    home, tickets = refund_env
+
+    for index, (exc_factory, label) in enumerate([
+        (lambda: KeyboardInterrupt(), "KeyboardInterrupt"),
+        (lambda: SystemExit(73), "SystemExit"),
+    ]):
+        ticket = f"T-9302{index}"
+        _write_spec(tickets, ticket)
+
+        def _boom(**_kwargs):
+            raise exc_factory()
+
+        monkeypatch.setattr(pd, "abandon_ticket_copy", _boom)
+
+        prompt = home / "task.md"
+        prompt.write_text("배포 전에 config.secret.key 를 확인하라", encoding="utf-8")
+        rc = pd.main(
+            ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
+             "--ticket", ticket, "--output-dir", str(home / "raw")],
+            run_fn=lambda *a, **k: pytest.fail("시크릿 스캔 거부 뒤 스폰되면 안 됨"),
+        )
+        assert rc == 1, f"{label}: 원 rc=1 이 보존돼야 한다"
+
+        err = capsys.readouterr().err
+        assert "시크릿 denylist 판정" in err, f"{label}: 원 거부 사유가 그대로 나와야 한다"
+        assert "환불 실패" in err and label in err, (
+            f"{label}: 정리 실패가 유형과 함께 추가 loud 줄로 붙어야 한다 — err={err}"
+        )
+
+        after = (
+            _refund_round_file_count(pd, home, ticket),
+            _refund_run_dir_count(pd, home, ticket),
+            _refund_unterminated_ledger_rows(pd, home, ticket),
+        )
+        assert after == (1, 1, 1), f"{label}: 정리 실패 뒤 예약 좌표가 사라졌다 — after={after}"
+
+
+def test_gate_refund_original_control_exception_still_propagates_when_cleanup_succeeds(
+    pd, refund_env, monkeypatch,
+):
+    """역방향(F-001) — 원 예외 **자체**가 `KeyboardInterrupt` 고 환불이 성공하면, 그 예외가
+    그대로 전파되고 세 축은 여전히 `(0,0,0)` 이다(정리 성공 경로는 이번 fix 로 안 바뀜)."""
+    home, tickets = refund_env
+    ticket = "T-9303"
+    _write_spec(tickets, ticket)
+
+    def _raise():
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(pd, "_resolved_adapter_directories", _raise)
+
+    before = (
+        _refund_round_file_count(pd, home, ticket),
+        _refund_run_dir_count(pd, home, ticket),
+        _refund_unterminated_ledger_rows(pd, home, ticket),
+    )
+    assert before == (0, 0, 0)
+
+    prompt = home / "task.md"
+    prompt.write_text("문서를 정리하라", encoding="utf-8")
+    with pytest.raises(KeyboardInterrupt):
+        pd.main(
+            ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
+             "--ticket", ticket, "--output-dir", str(home / "raw")],
+            run_fn=lambda *a, **k: pytest.fail("전파 예외 뒤 스폰되면 안 됨"),
+        )
+
+    after = (
+        _refund_round_file_count(pd, home, ticket),
+        _refund_run_dir_count(pd, home, ticket),
+        _refund_unterminated_ledger_rows(pd, home, ticket),
+    )
+    assert after == (0, 0, 0), f"원 제어 예외 뒤 잔류 — before={before} after={after}"
+
+
+def test_prepare_rollback_control_exceptions_preserve_the_original_round_limit_error(
+    pd, rounds_env, monkeypatch, capsys,
+):
+    """F-001 — `prepare_ticket_copy` 예약 전 rollback(`force_rmtree`) 에 `RuntimeError`·
+    `KeyboardInterrupt`·`SystemExit` 를 주입해도 원 `InternalRoundLimitExceeded` 가 그대로
+    전파된다(원래는 `except OSError`만 잡아 주입 예외가 대신 전파되고 경고도 없었다). 정리
+    자체는 여전히 실패하므로(주입) run-dir 고아는 남는다 — 이번 fix 가 보장하는 건 원 예외
+    형·경고 유무이지 정리 성공이 아니다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-9304")
+    limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
+    # (1.5) 빠른 사전판정은 통과시키고(existing=limit-1), 락 안 **최종 admission** 재확인만
+    # 거부시킨다(review 재현과 동일 축 — F-003 TOCTOU 재구성 패턴 재사용). run_dir 은 사전판정
+    # 뒤에 만들어지므로 이래야 force_rmtree 롤백 경로가 실제로 발동한다.
+    _prepare_n_rounds(pd, pm_home, slot, "T-9304", "developer", limit - 1)
+
+    def _round_files() -> int:
+        rounds_dir = _rounds_dir(pm_home, "T-9304")
+        return len(list(rounds_dir.glob("*.md"))) if rounds_dir.is_dir() else 0
+
+    def _run_dirs() -> int:
+        root = slot / pd.TICKET_COPY_REL_ROOT / "T-9304"
+        return len(list(root.iterdir())) if root.is_dir() else 0
+
+    def _unterminated_ledger_rows() -> int:
+        rows = [row for row in _ledger_rows(pm_home) if row["ticket"] == "T-9304"]
+        latest_by_copy: dict[str, dict] = {}
+        for row in rows:
+            latest_by_copy[row["copy"]] = row
+        return sum(
+            1 for row in latest_by_copy.values()
+            if row.get("harvested_at") is None and "abandoned_at" not in row
+        )
+
+    baseline = (_round_files(), _run_dirs(), _unterminated_ledger_rows())
+    assert baseline == (limit - 1, limit - 1, limit - 1)
+
+    real_count = pd._internal_round_count
+
+    def _force_final_check_over_limit(existing, role):
+        # 첫 호출((1.5) 사전판정)은 실값을 그대로 돌려 통과시키고, 두 번째 호출(락 안 최종
+        # 재확인)만 상한 도달로 강제한다.
+        state["n"] += 1
+        if state["n"] == 1:
+            return real_count(existing, role)
+        return limit
+
+    def _attempt_rejected_prepare():
+        state["n"] = 0
+        with unittest.mock.patch.object(
+            pd, "_internal_round_count", side_effect=_force_final_check_over_limit,
+        ):
+            pd.prepare_ticket_copy(
+                ticket="T-9304", role="developer", cwd=slot, pm_home=pm_home,
+            )
+
+    state = {"n": 0}
+    # 역방향(F-001 c) — 정리가 정상 동작하면(주입 없음) 여전히 (0,0,0) 델타다.
+    with pytest.raises(pd.InternalRoundLimitExceeded):
+        _attempt_rejected_prepare()
+    assert (_round_files(), _run_dirs(), _unterminated_ledger_rows()) == baseline
+
+    file_lock = pd._load_file_lock()
+    expected_run_dirs = baseline[1]
+    for exc_factory, label in [
+        (lambda: RuntimeError("정리 폭발(probe)"), "RuntimeError"),
+        (lambda: KeyboardInterrupt(), "KeyboardInterrupt"),
+        (lambda: SystemExit(74), "SystemExit"),
+    ]:
+        def _boom(*_a, _factory=exc_factory, **_k):
+            raise _factory()
+
+        monkeypatch.setattr(file_lock, "force_rmtree", _boom)
+        capsys.readouterr()
+        with pytest.raises(pd.InternalRoundLimitExceeded):
+            _attempt_rejected_prepare()
+        err = capsys.readouterr().err
+        assert "run-dir 정리 실패" in err and label in err, (
+            f"{label}: 정리 실패가 유형과 함께 loud 줄로 붙어야 한다 — err={err}"
+        )
+        expected_run_dirs += 1  # 정리 자체는 주입으로 계속 실패하므로 고아 1개씩 누적한다.
+        assert _round_files() == baseline[0] and _unterminated_ledger_rows() == baseline[2]
+        assert _run_dirs() == expected_run_dirs, (
+            f"{label}: run-dir 고아 누적이 어긋났다 — {_run_dirs()} != {expected_run_dirs}"
+        )
+
+
+def test_board_lock_exit_failure_after_reserve_preserves_run_dir_and_diagnostics(
+    pd, rounds_env, monkeypatch, capsys,
+):
+    """F-002 — `reserve_round` 성공 뒤 두 번째 `board_lock` 의 `__exit__` 가 `OSError` 로
+    실패해도, board 라운드만 남고 run-dir·좌표가 사라지는 복구 불능 형상을 만들지 않는다.
+    (board,run-dir)=(1,1) 로 run-dir 이 보존되고, 진단 메시지에 board 좌표(`_reserved_round_
+    residue`)가 실린다(원래는 `reserved=True` 가 락 이탈 뒤라 이 경로에서 run-dir 이 삭제돼
+    (board,run-dir)=(1,0) 이었다)."""
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-9305")
+
+    board = pd._load_board_for_repo(pm_home)
+    real_board_lock = board.board_lock
+    state = {"n": 0}
+
+    @contextlib.contextmanager
+    def _flaky_board_lock():
+        state["n"] += 1
+        call_number = state["n"]
+        with real_board_lock():
+            yield
+            if call_number == 2:
+                raise OSError("probe: board_lock __exit__ 실패")
+
+    monkeypatch.setattr(board, "board_lock", _flaky_board_lock)
+    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
+
+    def _round_files() -> int:
+        rounds_dir = _rounds_dir(pm_home, "T-9305")
+        return len(list(rounds_dir.glob("*.md"))) if rounds_dir.is_dir() else 0
+
+    def _run_dirs() -> int:
+        root = slot / pd.TICKET_COPY_REL_ROOT / "T-9305"
+        return len(list(root.iterdir())) if root.is_dir() else 0
+
+    def _unterminated_ledger_rows() -> int:
+        rows = [row for row in _ledger_rows(pm_home) if row["ticket"] == "T-9305"]
+        return sum(1 for row in rows if row.get("harvested_at") is None)
+
+    before = (_round_files(), _run_dirs(), _unterminated_ledger_rows())
+    assert before == (0, 0, 0)
+
+    with pytest.raises(OSError, match="probe: board_lock"):
+        pd.prepare_ticket_copy(
+            ticket="T-9305", role="developer", cwd=slot, pm_home=pm_home,
+        )
+
+    after = (_round_files(), _run_dirs(), _unterminated_ledger_rows())
+    assert after == (1, 1, 0), (
+        f"락 이탈 실패 뒤 board 만 남는 복구 불능 형상이 됐다 — before={before} after={after}"
+    )
+    err = capsys.readouterr().err
+    assert "예약한 board 라운드는 남습니다" in err and "T-9305" in err, (
+        f"진단 메시지에 board 복구 좌표가 실려야 한다 — err={err}"
+    )
+
+
+# ── T-0846 라운드 5 fix — F-001 잔여(post-reservation 진단 좌표 초기화) ───────────────────
+
+
+def test_board_relative_path_failure_after_reserve_preserves_original_exception(
+    pd, rounds_env, monkeypatch, capsys,
+):
+    """F-001(라운드 5) — `reserve_round` 성공 뒤 `_board_relative_path` 가 계약형
+    `DelegateError` 를 던져도(PM 홈 밖 해소) 그 원 예외가 그대로 전파된다(원래는 `board_rel`
+    이 미초기화라 복구 분기가 `UnboundLocalError` 로 원 예외를 덮었다 — review 재현: 세 축
+    `(1,1,0)`·복구 경고 없음). fallback 좌표(`str(board_path)`)로 진단 경고가 나가고 세 축은
+    여전히 `(1,1,0)` 이다(run-dir 은 보존 — F-002 와 같은 이유)."""
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-9306")
+
+    def _raise(*_a, **_k):
+        raise pd.DelegateError("probe: board 라운드 경로가 PM 홈 밖으로 해소됨")
+
+    monkeypatch.setattr(pd, "_board_relative_path", _raise)
+
+    def _round_files() -> int:
+        rounds_dir = _rounds_dir(pm_home, "T-9306")
+        return len(list(rounds_dir.glob("*.md"))) if rounds_dir.is_dir() else 0
+
+    def _run_dirs() -> int:
+        root = slot / pd.TICKET_COPY_REL_ROOT / "T-9306"
+        return len(list(root.iterdir())) if root.is_dir() else 0
+
+    def _unterminated_ledger_rows() -> int:
+        rows = [row for row in _ledger_rows(pm_home) if row["ticket"] == "T-9306"]
+        return sum(1 for row in rows if row.get("harvested_at") is None)
+
+    before = (_round_files(), _run_dirs(), _unterminated_ledger_rows())
+    assert before == (0, 0, 0)
+
+    with pytest.raises(pd.DelegateError, match="probe: board 라운드 경로"):
+        pd.prepare_ticket_copy(
+            ticket="T-9306", role="developer", cwd=slot, pm_home=pm_home,
+        )
+
+    after = (_round_files(), _run_dirs(), _unterminated_ledger_rows())
+    assert after == (1, 1, 0), (
+        f"_board_relative_path 실패 뒤 세 축이 review 재현값과 달라졌다 — "
+        f"before={before} after={after}"
+    )
+    err = capsys.readouterr().err
+    assert "예약한 board 라운드는 남습니다" in err and "T-9306" in err, (
+        f"fallback 좌표(raw board_path)로 진단 경고가 나가야 한다(원래는 경고 자체가 없었다) "
+        f"— err={err}"
+    )
+
+
+def test_parse_round_filename_returning_none_does_not_crash_prepare(
+    pd, rounds_env, monkeypatch, capsys,
+):
+    """F-001(라운드 5) — `reserve_round` 가 만든 파일명을 `parse_round_filename` 이 파싱하지
+    못해(`None`) 도(방어적 seam — 정상 운영에선 발생하지 않는다) `ordinal, _role = None` 언패킹
+    으로 `TypeError`/`UnboundLocalError` 크래시하지 않는다. fallback(`ordinal=0`)이 쓰여
+    이후 장부 스키마 검증(`ordinal>=1`)이 **제어된** `DelegateError` 로 loud 하게 거부하고,
+    그 진단 메시지 자체도(`_reserved_round_residue`) fallback 값으로 크래시 없이 조립된다 —
+    가짜 성공으로 조용히 넘어가지 않는다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-9307")
+
+    rounds_module = pd._load_ticket_rounds()
+    real_parse = rounds_module.parse_round_filename
+
+    def _parse_none_for_target(name):
+        if name == "01-developer.md":
+            return None
+        return real_parse(name)
+
+    monkeypatch.setattr(rounds_module, "parse_round_filename", _parse_none_for_target)
+
+    with pytest.raises(pd.DelegateError, match="순번 0") as excinfo:
+        pd.prepare_ticket_copy(
+            ticket="T-9307", role="developer", cwd=slot, pm_home=pm_home,
+        )
+    assert not isinstance(excinfo.value, (TypeError, UnboundLocalError))
+    assert "예약한 board 라운드는 남습니다" in str(excinfo.value)
+    assert "T-9307" in str(excinfo.value)  # 실제 board_rel(정상 계산)이 실렸다 — fallback 아님
