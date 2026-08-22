@@ -12,6 +12,7 @@ import argparse
 import contextlib
 import importlib.util
 import json
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -28,6 +29,17 @@ NESTED_ROUND2_REPLY = FIXTURES / "internal_review_nested_round2_reply.txt"
 T0656_PROSE_NONE_REPLY = FIXTURES / "internal_review_t0656_prose_none_reply.txt"
 T0657_ROUND2_STRUCTURED_PASS_REPLY = (
     FIXTURES / "internal_review_t0657_round2_structured_pass_reply.txt"
+)
+# 회수된 board 라운드 파일 3건 — 장부만 미상으로 박혀 완료가 막혔던 실 게이트의 산출 bytes.
+# 세 파일 모두 산문 통과 선언 + finding 0건 블록이고 절 배치만 다르다. T-0817 회수 bytes 는
+# `internal_round_t0813_pass_both_axes.md` 와 byte 동일이라 그 사본을 그대로 쓴다.
+T0771_ROUND_FILE = FIXTURES / "internal_round_t0771_pass_evidence_after_block.md"
+T0817_ROUND_FILE = FIXTURES / "internal_round_t0813_pass_both_axes.md"
+T0822_ROUND_FILE = FIXTURES / "internal_round_t0822_pass_bullets_before_block.md"
+T0783_REJECT_ROUND_FILE = FIXTURES / "internal_round_t0783_reject_both_axes.md"
+# 같은 실행의 터미널 회신 — 허용 선언형이 없어 장부에 미상을 박은 입력이다.
+T0817_TERMINAL_PROSE_REPLY = (
+    FIXTURES / "internal_review_t0817_terminal_prose_only_reply.txt"
 )
 _DIFF_A = "sha256:" + "a" * 64
 _DIFF_B = "sha256:" + "b" * 64
@@ -117,6 +129,7 @@ def _raw_record(
     gate: str,
     round_id: str,
     reply: str | None,
+    ticket: str | None = None,
 ) -> dict:
     raw_dir, _ledger_path = pd._raw_storage(None)
     raw_dir.mkdir(parents=True, exist_ok=True)
@@ -129,7 +142,7 @@ def _raw_record(
             ),
             encoding="utf-8",
         )
-    return {
+    record = {
         "id": record_id,
         "surface": "delegate",
         "harness": "codex",
@@ -143,6 +156,10 @@ def _raw_record(
         pd.INTERNAL_GATE_FIELD: gate,
         pd.INTERNAL_ROUND_ID_FIELD: round_id,
     }
+    if ticket is not None:
+        # 위임이 라운드 파일을 준비했다는 유일한 기계 흔적 — 회수된 파일 좌표의 ticket 축이다.
+        record[pd.RESUME_FIELD_TICKET] = ticket
+    return record
 
 
 def _write_raw_ledger(pd, records: list[dict]) -> Path:
@@ -426,6 +443,409 @@ def test_recalculate_recomputes_verdict_from_raw_reply(pd):
     assert repaired["rounds"][0]["must_fix"] == 0
     assert repaired["records"][0]["verdict"] is True
     assert repaired["records"][0]["must_fix_items"] == []
+
+
+# ── T-0842 — 회수된 라운드 파일에서 판정을 되살리는 재계산 ──────────────────
+
+def _round_text(path: Path) -> str:
+    """회수된 board 라운드 파일 bytes(fixture)."""
+    return path.read_text(encoding="utf-8")
+
+
+def _harvest_board_round(
+    pd,
+    *,
+    ticket: str,
+    ordinal: int,
+    body: str,
+    outcome: dict,
+    prepared_at: str | None = None,
+    harvested_at: str | None = None,
+) -> Path:
+    """이 라운드가 회수해 board 에 남긴 라운드 파일 + PM 홈 준비/회수 기록을 만든다.
+
+    준비~회수 구간이 라운드 예약 구간과 겹치는 것이 좌표의 유일한 기계 링크라, 실 형상 그대로
+    라운드 자신의 예약 구간을 쓴다. 두 시각은 구간 역전 형상을 만들 때만 덮어쓴다.
+    """
+    owner = Path(pd._CONFIG_REPO_OVERRIDE).resolve()
+    rounds_module = pd._load_ticket_rounds()
+    name = rounds_module.round_filename(ordinal, pd.INTERNAL_REVIEW_ROLE)
+    path = (
+        owner / ".project_manager" / "board" / "tickets" / "rounds" / ticket / name
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    run_id = uuid.uuid4().hex
+    pd._append_delegate_rounds_ledger(owner, {
+        "ticket": ticket,
+        "role": pd.INTERNAL_REVIEW_ROLE,
+        "ordinal": ordinal,
+        "run_id": run_id,
+        "copy": str(owner / "slot" / ticket / run_id / name),
+        "board_rel": pd._board_relative_path(path, owner),
+        "prepared_at": prepared_at or outcome["started_at"],
+        "harvested_at": harvested_at or outcome["ts"],
+    })
+    return path
+
+
+def _stuck_unknown_round(pd, gate: str) -> dict:
+    """터미널 회신만으로 미상이 박힌 라운드 1건 — 막힌 실 게이트의 장부 형상."""
+    reply = _reply(T0817_TERMINAL_PROSE_REPLY)
+    assessment = pd._internal_reply_assessment(reply)
+    assert assessment.outcome == pd.InternalReplyOutcome(None, None)
+    assert assessment.diagnostic.code == pd.INTERNAL_DIAGNOSTIC_MISSING_VERDICT
+
+    _consume(pd, gate, reply, raw_ids=("terminal-only",))
+    entry = _entry(pd, gate)
+    outcome = entry["rounds"][0]
+    assert outcome["verdict"] is None and outcome["must_fix"] is None
+    _write_raw_ledger(pd, [
+        _raw_record(
+            pd,
+            record_id="terminal-only",
+            gate=gate,
+            round_id=outcome["id"],
+            reply=reply,
+            ticket=gate,
+        )
+    ])
+    return outcome
+
+
+def _completion_problem(pd, monkeypatch, gate: str):
+    board = pd._load_board()
+    monkeypatch.setattr(
+        board, "_internal_review_rounds_ledger", pd._internal_round_ledger_path,
+    )
+    monkeypatch.setattr(board, "_ticket_search_dirs", lambda: [])
+    monkeypatch.setattr(board, "_rel_to_repo", lambda path: str(path))
+    return board._internal_review_completion_problem(gate)
+
+
+@pytest.mark.parametrize(
+    ("gate", "ordinal", "round_file"),
+    [
+        pytest.param("T-0771", 5, T0771_ROUND_FILE, id="T-0771"),
+        pytest.param("T-0817", 2, T0817_ROUND_FILE, id="T-0817"),
+        pytest.param("T-0822", 3, T0822_ROUND_FILE, id="T-0822"),
+    ],
+)
+def test_recalculate_recovers_recorded_unknown_from_the_harvested_round_file(
+    pd, monkeypatch, gate, ordinal, round_file,
+):
+    """회수된 파일이 통과인데 장부만 미상이던 실 게이트 3건이 0으로 복구되고 완료가 열린다."""
+    outcome = _stuck_unknown_round(pd, gate)
+    board_path = _harvest_board_round(
+        pd, ticket=gate, ordinal=ordinal,
+        body=_round_text(round_file), outcome=outcome,
+    )
+    assert _completion_problem(pd, monkeypatch, gate) is not None
+
+    report = pd._recalculate_internal_review_rounds(gate)
+
+    assert report.before == (None,)
+    assert report.after == (0,)
+    entry = _entry(pd, gate)
+    row = entry["rounds"][0]
+    assert row["verdict"] == 0
+    assert row["must_fix"] == 0
+    assert row[pd.INTERNAL_FINDING_IDS_FIELD] == []
+    assert row[pd.INTERNAL_VERDICT_SOURCE_FIELD] == pd.INTERNAL_VERDICT_SOURCE_BLOCK
+    assert pd.INTERNAL_VERDICT_DIAGNOSTIC_FIELD not in row
+    recalculation = row[pd.INTERNAL_RECALCULATION_FIELD]
+    assert recalculation["status"] == pd.INTERNAL_RECALCULATION_OK
+    assert str(board_path) in recalculation["detail"]
+    # 예약 레코드도 같은 값으로 따라간다(판정 추출 성공 · 잔여 0건).
+    record = entry["records"][0]
+    assert record["verdict"] is True
+    assert record["must_fix_items"] == []
+    assert _completion_problem(pd, monkeypatch, gate) is None
+
+
+@pytest.mark.parametrize(
+    ("gate", "shape", "reason", "code"),
+    [
+        pytest.param(
+            "T-UNKNOWN-001", "no-record", "회수 기록이 이 라운드 예약 구간에 0건",
+            "missing-verdict-word", id="prepare-record-absent",
+        ),
+        pytest.param(
+            "T-UNKNOWN-002", "file-deleted", "board 라운드 파일 부재",
+            "missing-verdict-word", id="round-file-absent",
+        ),
+        pytest.param(
+            "T-UNKNOWN-003", "broken-block", "기계 블록 축 판정 불능",
+            "block-axis-unusable", id="block-broken",
+        ),
+        pytest.param(
+            "T-UNKNOWN-004", "no-block", "기계 블록 축 판정 불능",
+            "block-axis-unusable", id="block-absent",
+        ),
+    ],
+)
+def test_recalculate_keeps_unknown_when_the_round_file_is_absent_or_unusable(
+    pd, monkeypatch, gate, shape, reason, code,
+):
+    """파일 부재·블록 손상/부재는 종전대로 미상이다 — 판정 불능을 통과로 만들지 않는다."""
+    outcome = _stuck_unknown_round(pd, gate)
+    passing = _round_text(T0817_ROUND_FILE)
+    block_payload = '{"version":2,"findings":[],"confirmations":[]}'
+    assert block_payload in passing
+    if shape != "no-record":
+        body = {
+            "file-deleted": passing,
+            # 산문 축은 통과 그대로 두고 기계 블록만 무너뜨린다 — 한 축만 통과인 형상이
+            # 통과로 접히지 않는지가 판정 대상이다.
+            "broken-block": passing.replace(block_payload, block_payload[:-1]),
+            "no-block": passing.split(f"```{pd.PM_REVIEW_BLOCK}")[0],
+        }[shape]
+        board_path = _harvest_board_round(
+            pd, ticket=gate, ordinal=2, body=body, outcome=outcome,
+        )
+        if shape == "file-deleted":
+            board_path.unlink()
+
+    report = pd._recalculate_internal_review_rounds(gate)
+
+    assert report.before == (None,)
+    assert report.after == (None,)
+    row = _entry(pd, gate)["rounds"][0]
+    assert row["verdict"] is None
+    assert row["must_fix"] is None
+    recalculation = row[pd.INTERNAL_RECALCULATION_FIELD]
+    assert recalculation["status"] == pd.INTERNAL_RECALCULATION_UNKNOWN
+    assert reason in recalculation["detail"]
+    assert row[pd.INTERNAL_VERDICT_DIAGNOSTIC_FIELD]["code"] == code
+    assert row[pd.INTERNAL_VERDICT_SOURCE_FIELD] is None
+    assert _completion_problem(pd, monkeypatch, gate) is not None
+
+
+@pytest.mark.parametrize(
+    ("gate", "recorded_reply", "before"),
+    [
+        pytest.param("T-REJECT-001", REJECT_REPLY, (1,), id="ledger-reject"),
+        pytest.param("T-REJECT-002", None, (None,), id="ledger-unknown"),
+    ],
+)
+def test_recalculate_keeps_a_reject_round_rejected(pd, gate, recorded_reply, before):
+    """반려 라운드 파일은 재계산 후에도 반려다 — 되살리기가 완화가 아니다."""
+    if recorded_reply is None:
+        outcome = _stuck_unknown_round(pd, gate)
+    else:
+        reply = _reply(recorded_reply)
+        _consume(pd, gate, reply, raw_ids=("reject-source",))
+        outcome = _entry(pd, gate)["rounds"][0]
+        _write_raw_ledger(pd, [
+            _raw_record(
+                pd,
+                record_id="reject-source",
+                gate=gate,
+                round_id=outcome["id"],
+                reply=reply,
+                ticket=gate,
+            )
+        ])
+    _harvest_board_round(
+        pd, ticket=gate, ordinal=2,
+        body=_round_text(T0783_REJECT_ROUND_FILE), outcome=outcome,
+    )
+
+    report = pd._recalculate_internal_review_rounds(gate)
+
+    assert report.before == before
+    assert report.after == (1,)
+    row = _entry(pd, gate)["rounds"][0]
+    assert row["verdict"] == 1
+    assert row["must_fix"] == 1
+    assert row[pd.INTERNAL_FINDING_IDS_FIELD] == ["F-001", "F-002"]
+    assert row[pd.INTERNAL_VERDICT_SOURCE_FIELD] == pd.INTERNAL_VERDICT_SOURCE_BLOCK
+
+
+@pytest.mark.parametrize(
+    ("gate", "raw_fixture"),
+    [
+        pytest.param("T-RELAX-001", REJECT_REPLY, id="raw-reject"),
+        pytest.param("T-RELAX-002", PASS_REPLY, id="raw-pass"),
+        pytest.param("T-RELAX-003", T0817_TERMINAL_PROSE_REPLY, id="raw-unknown"),
+    ],
+)
+def test_recalculate_never_relaxes_a_recorded_reject_whatever_the_raw_reply_says(
+    pd, gate, raw_fixture,
+):
+    """파일 통과 + 기록된 반려면 **어느 입력도 채택하지 않는다** — raw 축과 무관하게 반려 유지."""
+    reply = _reply(raw_fixture)
+    _consume(pd, gate, _reply(REJECT_REPLY), raw_ids=("reject-source",))
+    outcome = _entry(pd, gate)["rounds"][0]
+    recorded = {
+        key: outcome.get(key) for key in (
+            "verdict", "must_fix", pd.INTERNAL_FINDING_IDS_FIELD,
+            pd.INTERNAL_VERDICT_SOURCE_FIELD,
+        )
+    }
+    assert recorded["verdict"] == 1 and recorded["must_fix"] == 1
+    _write_raw_ledger(pd, [
+        _raw_record(
+            pd,
+            record_id="reject-source",
+            gate=gate,
+            round_id=outcome["id"],
+            reply=reply,
+            ticket=gate,
+        )
+    ])
+    board_path = _harvest_board_round(
+        pd, ticket=gate, ordinal=2,
+        body=_round_text(T0817_ROUND_FILE), outcome=outcome,
+    )
+
+    report = pd._recalculate_internal_review_rounds(gate)
+
+    assert report.before == (1,)
+    assert report.after == (1,)
+    row = _entry(pd, gate)["rounds"][0]
+    # 값은 하나도 바뀌지 않는다(미채택) — 메타데이터만 사유를 남긴다.
+    assert {key: row.get(key) for key in recorded} == recorded
+    recalculation = row[pd.INTERNAL_RECALCULATION_FIELD]
+    assert recalculation["status"] == pd.INTERNAL_RECALCULATION_UNKNOWN
+    assert "미채택" in recalculation["detail"]
+    assert "완화" in recalculation["detail"]
+    assert str(board_path) in recalculation["detail"]
+
+
+def test_recalculate_without_a_board_file_still_recomputes_reject_to_pass(pd):
+    """board 파일이 없으면 종전 raw 재계산 그대로다 — 완화 차단은 파일 축에만 붙는다."""
+    gate = "T-RELAX-004"
+    _consume(pd, gate, _reply(REJECT_REPLY), raw_ids=("reject-source",))
+    outcome = _entry(pd, gate)["rounds"][0]
+    _write_raw_ledger(pd, [
+        _raw_record(
+            pd,
+            record_id="reject-source",
+            gate=gate,
+            round_id=outcome["id"],
+            reply=_reply(PASS_REPLY),
+            ticket=gate,
+        )
+    ])
+
+    report = pd._recalculate_internal_review_rounds(gate)
+
+    assert report.before == (1,)
+    assert report.after == (0,)
+    row = _entry(pd, gate)["rounds"][0]
+    assert row["verdict"] == 0
+    assert row[pd.INTERNAL_RECALCULATION_FIELD]["status"] == pd.INTERNAL_RECALCULATION_OK
+
+
+@pytest.mark.parametrize(
+    ("gate", "axis", "reason"),
+    [
+        pytest.param(
+            "T-SKEW-001", "outcome", "라운드 예약 구간 역전", id="reservation-window",
+        ),
+        pytest.param(
+            "T-SKEW-002", "harvest", "회수 기록이 이 라운드 예약 구간에 0건",
+            id="prepare-harvest-window",
+        ),
+    ],
+)
+def test_recalculate_refuses_a_coordinate_whose_window_is_inverted(
+    pd, gate, axis, reason,
+):
+    """시각이 파싱돼도 구간이 역전이면 좌표를 세우지 않는다 — 추측 없이 미상 유지."""
+    outcome = _stuck_unknown_round(pd, gate)
+    started, finished = outcome["started_at"], outcome["ts"]
+    if axis == "outcome":
+        # 예약 구간만 뒤집는다 — 준비~회수 기록은 실 형상 그대로 둔다.
+        ledger = json.loads(
+            pd._internal_round_ledger_path().read_text(encoding="utf-8")
+        )
+        stored = ledger[gate]["rounds"][0]
+        stored["started_at"], stored["ts"] = finished, started
+        pd._save_internal_round_ledger(ledger)
+        prepared_at = harvested_at = None
+    else:
+        # 준비~회수만 뒤집는다 — 두 시각 모두 예약 구간 **안**이라 겹침 판정은 통과한다.
+        prepared_at, harvested_at = finished, started
+    _harvest_board_round(
+        pd, ticket=gate, ordinal=2, body=_round_text(T0817_ROUND_FILE),
+        outcome=outcome, prepared_at=prepared_at, harvested_at=harvested_at,
+    )
+
+    report = pd._recalculate_internal_review_rounds(gate)
+
+    assert report.before == (None,)
+    assert report.after == (None,)
+    row = _entry(pd, gate)["rounds"][0]
+    assert row["verdict"] is None
+    assert reason in row[pd.INTERNAL_RECALCULATION_FIELD]["detail"]
+
+
+@pytest.mark.parametrize(
+    ("gate", "board", "after", "status", "reason"),
+    [
+        pytest.param(
+            "T-RAWPATH-001", True, (0,), "recalculated", "board 라운드 파일",
+            id="board-authoritative-without-raw-path",
+        ),
+        pytest.param(
+            "T-RAWPATH-002", False, (None,), "unknown", "raw_path 부재/형식 오류",
+            id="fallback-still-needs-raw-path",
+        ),
+    ],
+)
+def test_recalculate_reads_the_board_file_independently_of_raw_path(
+    pd, gate, board, after, status, reason,
+):
+    """raw_path 유효성은 대체 입력에만 걸린다 — 권위 입력 판독을 가리지 않는다."""
+    outcome = _stuck_unknown_round(pd, gate)
+    raw_row = _raw_record(
+        pd,
+        record_id="terminal-only",
+        gate=gate,
+        round_id=outcome["id"],
+        reply=None,
+        ticket=gate,
+    )
+    raw_row.pop("raw_path")
+    _write_raw_ledger(pd, [raw_row])
+    if board:
+        _harvest_board_round(
+            pd, ticket=gate, ordinal=2,
+            body=_round_text(T0817_ROUND_FILE), outcome=outcome,
+        )
+
+    report = pd._recalculate_internal_review_rounds(gate)
+
+    assert report.before == (None,)
+    assert report.after == after
+    row = _entry(pd, gate)["rounds"][0]
+    recalculation = row[pd.INTERNAL_RECALCULATION_FIELD]
+    assert recalculation["status"] == status
+    assert reason in recalculation["detail"]
+
+
+def test_pm_verified_still_refuses_the_finding_zero_review_round(pd):
+    """복구된 통과 라운드도 `--pm-verified` 는 그대로 거부한다(그 거부는 무변경이다)."""
+    rounds_module = pd._load_ticket_rounds()
+    recovered = rounds_module.Round(
+        ordinal=2,
+        role=pd.INTERNAL_REVIEW_ROLE,
+        path=Path(rounds_module.round_filename(2, pd.INTERNAL_REVIEW_ROLE)),
+        text=_round_text(T0817_ROUND_FILE),
+        pending=False,
+    )
+
+    problem = pd.pm_verified_evidence_problem(
+        "---\nid: T-0817\n---\n# T-0817\n",
+        [recovered],
+        reviewer_role=pd.INTERNAL_REVIEW_ROLE,
+        surface_floor=0,
+    )
+
+    assert problem is not None
+    assert "finding-zero 리뷰 라운드" in problem
 
 
 def test_rounds_resolve_into_records_current_binding_and_rejects_self(pd, capsys):

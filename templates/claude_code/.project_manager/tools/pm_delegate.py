@@ -2622,7 +2622,7 @@ _INTERNAL_CONFIRM_CHARTER = f"""\
 _INTERNAL_ROUND_REFUSAL = (
     "오류: 내부 code-reviewer 게이트 {gate}의 다음 라운드를 거부합니다 — {reason}.\n"
     "  · 사용 라운드: {used}/{limit} · must-fix 추이: {series}\n"
-    "  · 과거 계측이 의심되면 기록된 raw reply로 재계산하세요: "
+    "  · 과거 계측이 의심되면 회수된 라운드 파일·기록된 raw reply로 재계산하세요: "
     "`python3 .project_manager/tools/pm_delegate.py rounds recalculate --gate {gate}`\n"
     "  · 같은 구현을 더 검토하지 말고 재설계하거나 티켓을 분할하세요. 직전 반려 항목의 해소만 "
     "확인하려면 게이트당 1회 `--confirm-fix`를 사용하세요.\n"
@@ -4857,7 +4857,7 @@ def _internal_projected_finding_ids(
 
 
 class InternalRoundRecalculationRow(NamedTuple):
-    """raw reply 한 건을 현행 추출기로 재계산한 결과."""
+    """라운드 하나를 현행 판정 경로로 재계산한 결과."""
 
     sequence: int | None
     outcome_record_id: str | None
@@ -4876,6 +4876,20 @@ class InternalRoundRecalculationReport(NamedTuple):
     before: tuple[int | None, ...]
     after: tuple[int | None, ...]
     rows: tuple[InternalRoundRecalculationRow, ...]
+
+
+class InternalRoundRecalculationInput(NamedTuple):
+    """재계산 한 셀이 실제로 쓴 권위 입력과 그 입력이 세운 판정.
+
+    `verdict=None` 은 **어느 입력도 채택하지 않았다**는 뜻이다(완화 차단) — 그 셀의 장부 값은
+    재계산이 건드리지 않는다. 판정 불능(미상)과 다른 상태다.
+    """
+
+    verdict: InternalRoundVerdict | None
+    # 판정에 쓴 bytes — finding ID 투영이 같은 입력을 보게 하는 자리다.
+    text: str | None
+    # 그 입력이 무엇이고, 1순위 입력을 왜 못 썼는지까지 담은 사람용 좌표.
+    label: str
 
 
 class InternalResolutionReport(NamedTuple):
@@ -5673,58 +5687,233 @@ def _finish_internal_review_round(
         )
 
 
+def _internal_round_ledger_timestamp(value: object) -> datetime.datetime | None:
+    """장부 ISO-8601 시각 — 형식 오류·offset 없는 값은 좌표 미해소로 접는다(추측 0)."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _internal_round_board_file(
+    outcome: Mapping[str, object], raw_record: Mapping[str, object],
+) -> tuple[Path | None, str]:
+    """이 라운드가 회수해 board 에 남긴 라운드 파일 좌표(못 세우면 사유).
+
+    라운드 마감은 슬롯 사본을 읽지만(`_internal_round_output_text`) 회수가 끝나면 그 사본은
+    지워지고 같은 bytes 가 board 라운드 파일로 남는다. 재계산 시점에 두 좌표를 잇는 기계
+    링크는 PM 홈 장부 둘뿐이다 — raw 레코드의 ticket 과 delegate-rounds 회수 기록의 시각창.
+
+    같은 ticket 의 회수된 code-reviewer 라운드 중 **준비~회수 구간이 이 라운드의 예약 구간과
+    겹치는 것이 정확히 하나**일 때만 좌표가 선다. 게이트 하나가 여러 ticket 의 라운드를 셀 수
+    있어 ticket 없이 시각만 보면 동시에 도는 다른 게이트의 라운드와 구별되지 않고, 시각 없이
+    ticket 만 보면 같은 ticket 의 다른 라운드와 구별되지 않는다. 후보가 0건이거나 여럿이면
+    좌표를 추측하지 않는다.
+    """
+    ticket = raw_record.get(RESUME_FIELD_TICKET)
+    if not isinstance(ticket, str) or not ticket:
+        return None, "raw 레코드에 ticket 없음(라운드 파일 준비가 없던 위임)"
+    started = _internal_round_ledger_timestamp(outcome.get("started_at"))
+    finished = _internal_round_ledger_timestamp(outcome.get("ts"))
+    if started is None or finished is None:
+        return None, "라운드 예약 구간 시각 부재/형식 오류"
+    if started > finished:
+        # 시각이 파싱된다고 구간이 되는 것은 아니다 — 역전된 구간으로 겹침을 재면 아무 회수
+        # 기록이나 걸린다. 순서가 깨진 좌표는 세우지 않는다.
+        return None, (
+            "라운드 예약 구간 역전: "
+            f"started_at={outcome.get('started_at')!r} > ts={outcome.get('ts')!r}"
+        )
+    pm_home = (_CONFIG_REPO_OVERRIDE or REPO).resolve()
+    try:
+        prepared_rounds = ticket_copy_records(pm_home, ticket=ticket)
+    except DelegateError as exc:
+        return None, f"delegate-rounds 장부 읽기 실패({exc})"
+    matches: list[dict] = []
+    for row in prepared_rounds:
+        if row["role"] != INTERNAL_REVIEW_ROLE:
+            continue
+        prepared_at = _internal_round_ledger_timestamp(row["prepared_at"])
+        harvested_at = _internal_round_ledger_timestamp(row["harvested_at"])
+        if prepared_at is None or harvested_at is None:
+            # 미회수 라운드 파일은 예약이 깐 시드 그대로다 — 판정할 산출 bytes 가 아니다.
+            continue
+        if prepared_at > harvested_at:
+            # 준비보다 앞선 회수는 이 라운드의 산출 구간이 아니다 — 후보에서 뺀다.
+            continue
+        if prepared_at <= finished and harvested_at >= started:
+            matches.append(row)
+    if len(matches) != 1:
+        return None, (
+            f"{ticket} {INTERNAL_REVIEW_ROLE} 회수 기록이 이 라운드 예약 구간에 "
+            f"{len(matches)}건"
+        )
+    board_relative = PurePosixPath(matches[0]["board_rel"])
+    path = pm_home.joinpath(*board_relative.parts).resolve()
+    try:
+        path.relative_to(pm_home)
+    except ValueError:
+        return None, f"board 라운드 경로가 PM 홈 밖으로 해소됨: {path}"
+    if not path.is_file():
+        return None, f"board 라운드 파일 부재: {path}"
+    return path, ""
+
+
+def _internal_recalculation_relaxes(
+    outcome: Mapping[str, object], assessment: InternalRoundVerdict,
+) -> bool:
+    """되살리기가 완화로 뒤집히는 유일한 형상 — 기록된 반려가 통과가 되는가.
+
+    미상 셀을 파일 근거로 채우는 것(미상→통과·미상→반려)과 통과를 조이는 것은 완화가 아니다.
+    """
+    return bool(outcome.get("verdict")) and assessment.outcome.verdict == 0
+
+
+def _internal_recorded_reply(
+    raw_record: Mapping[str, object],
+) -> tuple[str | None, str | None]:
+    """기록된 raw reply 판독 — (본문, 미판독 사유).
+
+    `raw_path` 유효성은 **이 대체 입력에만** 걸린다. 권위 입력은 회수된 board 라운드 파일이라
+    raw 쪽 좌표 결손이 그 판독을 가리면 정상 산출이 있는 라운드가 미상으로 남는다.
+    """
+    raw_path_value = raw_record.get("raw_path")
+    if not isinstance(raw_path_value, str) or not raw_path_value:
+        return None, "raw_path 부재/형식 오류"
+    if not Path(raw_path_value).is_absolute():
+        return None, f"raw_path가 절대경로가 아님: {raw_path_value!r}"
+    try:
+        return _attached_record_reply(raw_record, Path(raw_path_value)), None
+    except Exception as exc:  # noqa: BLE001 — 해당 셀만 unknown.
+        if _is_engine_rev_skew(exc):
+            raise
+        return None, f"raw reply 읽기/추출 실패({type(exc).__name__}: {exc})"
+
+
+def _internal_recalculated_round_verdict(
+    outcome: Mapping[str, object],
+    raw_record: Mapping[str, object],
+    read_reply: Callable[[], tuple[str | None, str | None]],
+) -> InternalRoundRecalculationInput:
+    """회수된 board 라운드 파일을 1순위 입력으로 이 라운드를 다시 판정한다.
+
+    판정식은 라운드 마감과 같은 함수 하나다(`_internal_round_verdict`) — 재계산에만 있는
+    판정 규칙은 없다. 파일 좌표가 안 서거나 판독이 실패할 때**만** 대체 입력(기록된 raw
+    reply)을 읽고, 두 입력이 모두 판정을 못 세우면 그 셀은 미상으로 남는다(판정 불능은
+    통과가 아니다).
+
+    되살리기는 한 방향이다 — 이미 반려로 기록된 라운드를 파일 축이 통과로 되돌리는 것은
+    완화다. 그 형상에서는 **어느 입력도 채택하지 않는다**(`verdict=None`): 대체 입력이 통과면
+    같은 완화가 다른 문으로 들어오고, 미상이어도 기록된 반려가 그만큼 풀린다. 장부 값은 그대로
+    두고 사유만 남긴다.
+    """
+    board_path, reason = _internal_round_board_file(outcome, raw_record)
+    if board_path is not None:
+        try:
+            text = _load_file_lock().read_bytes_shared(board_path).decode("utf-8")
+        except (OSError, UnicodeError) as exc:
+            reason = (
+                f"board 라운드 파일 판독 실패({type(exc).__name__}: {exc}): {board_path}"
+            )
+        else:
+            verdict = _internal_round_verdict(text, from_round_file=True)
+            if not _internal_recalculation_relaxes(outcome, verdict):
+                return InternalRoundRecalculationInput(
+                    verdict, text, f"board 라운드 파일 {board_path}",
+                )
+            return InternalRoundRecalculationInput(
+                None,
+                None,
+                "기록된 반려를 통과로 되돌리는 완화라 board 라운드 파일 판정을 채택하지 "
+                f"않음: {board_path}",
+            )
+    reply, reply_failure = read_reply()
+    return InternalRoundRecalculationInput(
+        _internal_round_verdict(reply, from_round_file=False),
+        reply,
+        (
+            "기록된 raw reply" if reply_failure is None
+            else f"기록된 raw reply 없음({reply_failure})"
+        )
+        + f"(board 라운드 파일 미사용: {reason})",
+    )
+
+
+def _internal_recorded_count(value: object) -> int | None:
+    """장부에 기록된 계수 — 정수가 아니면 미상으로 접는다(표시·보고용)."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def _apply_internal_round_recalculation(
     outcome: dict,
     record: dict | None,
-    parsed: InternalReplyOutcome,
+    assessment: InternalRoundVerdict | None,
     *,
-    diagnostic: InternalReplyDiagnostic | None,
     status: str,
     detail: str,
     recalculated_at: str,
     outcome_record_id: str | None,
     finding_ids: list[str] | None,
 ) -> InternalRoundRecalculationRow:
-    """재계산값과 출처 상태를 outcome/예약 레코드 양쪽에 같은 형상으로 반영한다."""
-    must_fix = (
-        None if parsed.must_fix_items is None else len(parsed.must_fix_items)
-    )
+    """재계산값과 출처 상태를 outcome/예약 레코드 양쪽에 같은 형상으로 반영한다.
+
+    판정 출처(`verdict_source`)와 축 상충 기록도 함께 갱신한다 — 마감이 남긴 옛 출처를 그대로
+    두면 재계산이 바꾼 값과 그 값을 세운 축이 한 행 안에서 어긋난다.
+
+    `assessment=None`(어느 입력도 채택하지 않음 · 완화 차단)이면 **값은 하나도 쓰지 않고**
+    재계산 메타데이터만 남긴다 — 기록된 판정이 그대로 유지된다.
+    """
     metadata = {
         "status": status,
         "at": recalculated_at,
         "outcome_record_id": outcome_record_id,
         "detail": detail,
     }
-    outcome["verdict"] = parsed.verdict
-    outcome["must_fix"] = must_fix
-    outcome[INTERNAL_FINDING_IDS_FIELD] = finding_ids
-    outcome[INTERNAL_RECALCULATION_FIELD] = dict(metadata)
-    if diagnostic is None:
-        outcome.pop(INTERNAL_VERDICT_DIAGNOSTIC_FIELD, None)
+    if assessment is None:
+        verdict = _internal_recorded_count(outcome.get("verdict"))
+        must_fix = _internal_recorded_count(outcome.get("must_fix"))
     else:
-        outcome[INTERNAL_VERDICT_DIAGNOSTIC_FIELD] = diagnostic.as_record()
-    if record is not None:
-        # 예약 레코드의 verdict는 pass/reject 값이 아니라 "판정 추출 성공" bool이다.
-        record["verdict"] = parsed.verdict is not None
-        record["must_fix_items"] = (
-            None if parsed.must_fix_items is None else list(parsed.must_fix_items)
+        parsed = assessment.outcome
+        diagnostic = assessment.diagnostic
+        verdict = parsed.verdict
+        must_fix = (
+            None if parsed.must_fix_items is None else len(parsed.must_fix_items)
         )
-        record[INTERNAL_FINDING_IDS_FIELD] = finding_ids
-        record[INTERNAL_RECALCULATION_FIELD] = dict(metadata)
-        if diagnostic is None:
-            record.pop(INTERNAL_VERDICT_DIAGNOSTIC_FIELD, None)
+        outcome["verdict"] = parsed.verdict
+        outcome["must_fix"] = must_fix
+        outcome[INTERNAL_FINDING_IDS_FIELD] = finding_ids
+        outcome[INTERNAL_VERDICT_SOURCE_FIELD] = assessment.source
+        if assessment.conflict is None:
+            outcome.pop(INTERNAL_VERDICT_CONFLICT_FIELD, None)
         else:
-            record[INTERNAL_VERDICT_DIAGNOSTIC_FIELD] = diagnostic.as_record()
-    sequence = outcome.get("sequence")
+            outcome[INTERNAL_VERDICT_CONFLICT_FIELD] = dict(assessment.conflict)
+        if diagnostic is None:
+            outcome.pop(INTERNAL_VERDICT_DIAGNOSTIC_FIELD, None)
+        else:
+            outcome[INTERNAL_VERDICT_DIAGNOSTIC_FIELD] = diagnostic.as_record()
+        if record is not None:
+            # 예약 레코드의 verdict는 pass/reject 값이 아니라 "판정 추출 성공" bool이다.
+            record["verdict"] = parsed.verdict is not None
+            record["must_fix_items"] = (
+                None if parsed.must_fix_items is None
+                else list(parsed.must_fix_items)
+            )
+            record[INTERNAL_FINDING_IDS_FIELD] = finding_ids
+            if diagnostic is None:
+                record.pop(INTERNAL_VERDICT_DIAGNOSTIC_FIELD, None)
+            else:
+                record[INTERNAL_VERDICT_DIAGNOSTIC_FIELD] = diagnostic.as_record()
+    outcome[INTERNAL_RECALCULATION_FIELD] = dict(metadata)
+    if record is not None:
+        record[INTERNAL_RECALCULATION_FIELD] = dict(metadata)
     return InternalRoundRecalculationRow(
-        sequence=(
-            sequence
-            if isinstance(sequence, int) and not isinstance(sequence, bool)
-            else None
-        ),
+        sequence=_internal_recorded_count(outcome.get("sequence")),
         outcome_record_id=outcome_record_id,
         status=status,
-        verdict=parsed.verdict,
+        verdict=verdict,
         must_fix=must_fix,
         detail=detail,
     )
@@ -5735,11 +5924,12 @@ def _recalculate_internal_review_rounds(
     *,
     output_dir: Path | None = None,
 ) -> InternalRoundRecalculationReport:
-    """게이트의 기록된 raw reply만으로 verdict/must-fix 수열을 원자 재계산한다.
+    """게이트의 회수된 라운드 파일·기록된 raw reply로 verdict/must-fix 수열을 원자 재계산한다.
 
-    raw 레코드나 파일이 없거나 읽기/추출에 실패하면 과거 값을 신뢰하지 않고 해당 셀을
-    ``None``으로 바꾼다. 실패 사실과 이유는 라운드 메타데이터에 남는다. 라운드 삭제, count 변경,
-    confirm-fix 쿼터 변경은 이 경로의 권한 밖이다.
+    권위 입력은 라운드 마감과 같다 — **회수된 board 라운드 파일**이고, 그 좌표가 안 서거나
+    판독이 실패할 때만 기록된 raw reply 로 내려간다. 두 입력이 모두 판정을 못 세우면 과거 값을
+    신뢰하지 않고 해당 셀을 ``None``으로 바꾼다. 실패 사실과 이유는 라운드 메타데이터에 남는다.
+    라운드 삭제, count 변경, confirm-fix 쿼터 변경은 이 경로의 권한 밖이다.
     """
     common = _load_review_rounds()
     with _internal_round_lock():
@@ -5790,9 +5980,13 @@ def _recalculate_internal_review_rounds(
             )
             round_id = outcome.get("id")
             record = records_by_round.get(str(round_id))
-            parsed = InternalReplyOutcome(None, None)
-            reply: str | None = None
-            diagnostic: InternalReplyDiagnostic | None = None
+            # `None` 은 "어느 입력도 채택하지 않음"(완화 차단)이고, 아래 초기값은 판정 불능
+            # (미상)이다 — 두 상태를 같은 변수로 구별한다.
+            assessment: InternalRoundVerdict | None = InternalRoundVerdict(
+                InternalReplyOutcome(None, None), None,
+            )
+            # 판정에 실제로 쓴 bytes — finding ID 투영이 같은 입력을 보게 하는 자리다.
+            text: str | None = None
             detail: str
             status = INTERNAL_RECALCULATION_UNKNOWN
 
@@ -5821,50 +6015,48 @@ def _recalculate_internal_review_rounds(
                         f"{raw_record.get(INTERNAL_ROUND_ID_FIELD)!r}"
                     )
                 else:
-                    raw_path_value = raw_record.get("raw_path")
-                    if not isinstance(raw_path_value, str) or not raw_path_value:
-                        detail = "raw_path 부재/형식 오류"
-                    elif not Path(raw_path_value).is_absolute():
-                        detail = f"raw_path가 절대경로가 아님: {raw_path_value!r}"
+                    # 권위 입력(회수된 board 라운드 파일) 해소·판독은 raw_path 유효성과
+                    # 독립이다 — 대체 입력은 그 축이 못 설 때만 읽는다.
+                    recalculated = _internal_recalculated_round_verdict(
+                        outcome,
+                        raw_record,
+                        functools.partial(_internal_recorded_reply, raw_record),
+                    )
+                    if recalculated.verdict is None:
+                        # 어느 입력도 채택하지 않았다 — 기록된 판정을 그대로 둔다.
+                        assessment = None
+                        detail = f"재계산 미채택 · 사유: {recalculated.label}"
                     else:
-                        try:
-                            reply = _attached_record_reply(
-                                raw_record, Path(raw_path_value)
+                        assessment = recalculated.verdict
+                        text = recalculated.text
+                        parsed = assessment.outcome
+                        if (
+                            parsed.verdict is not None
+                            and parsed.must_fix_items is not None
+                        ):
+                            status = INTERNAL_RECALCULATION_OK
+                            detail = f"현행 추출기로 재계산 · 입력: {recalculated.label}"
+                        else:
+                            reason = (
+                                assessment.diagnostic.message
+                                if assessment.diagnostic is not None
+                                else "현행 추출기가 verdict 또는 must-fix 수를 확정하지 못함"
                             )
-                            assessment = _internal_reply_assessment(reply)
-                            parsed = assessment.outcome
-                            diagnostic = assessment.diagnostic
-                            if (
-                                parsed.verdict is not None
-                                and parsed.must_fix_items is not None
-                            ):
-                                status = INTERNAL_RECALCULATION_OK
-                                detail = "기록된 raw reply를 현행 추출기로 재계산"
-                            else:
-                                detail = (
-                                    diagnostic.message
-                                    if diagnostic is not None
-                                    else "현행 추출기가 verdict 또는 must-fix 수를 확정하지 못함"
-                                )
-                        except Exception as exc:  # noqa: BLE001 — 해당 셀만 unknown.
-                            if _is_engine_rev_skew(exc):
-                                raise
-                            detail = (
-                                "raw reply 읽기/추출 실패"
-                                f"({type(exc).__name__}: {exc})"
-                            )
+                            detail = f"{reason} · 입력: {recalculated.label}"
 
             results.append(_apply_internal_round_recalculation(
                 outcome,
                 record,
-                parsed,
-                diagnostic=diagnostic,
+                assessment,
                 status=status,
                 detail=detail,
                 recalculated_at=recalculated_at,
                 outcome_record_id=outcome_record_id,
-                finding_ids=_internal_projected_finding_ids(
-                    reply, parsed.must_fix_items,
+                finding_ids=(
+                    None if assessment is None
+                    else _internal_projected_finding_ids(
+                        text, assessment.outcome.must_fix_items,
+                    )
                 ),
             ))
 
