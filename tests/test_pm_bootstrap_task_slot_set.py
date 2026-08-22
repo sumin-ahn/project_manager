@@ -754,6 +754,11 @@ def test_protected_branch_slot_blocks_with_switch_cmd(bootstrap, tmp_path, capsy
     # '기록↔live diverged' 2차 차단을 유발하므로 더는 싣지 않는다.
     assert "worktree_pool.py switch work/A_1 mytask" in cap.err
     assert "git -C work/A_1 switch -c" not in cap.err
+    # T-0810 — 스트립이 남긴 빈 괄호·circled marker 잔재(`① 오염()`) 정정 확인
+    # (실 CLI 출력 값 단언·조립 문자열 금지).
+    assert "()" not in cap.err
+    assert "①" not in cap.err
+    assert "공유 이력이 오염된다." in cap.err
 
 
 def test_all_faults_reported_at_once(bootstrap, tmp_path, capsys):

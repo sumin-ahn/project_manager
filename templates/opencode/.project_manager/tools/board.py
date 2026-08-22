@@ -779,21 +779,114 @@ def _board_mutation_subcommand(args: Sequence[str]) -> str:
 def _engine_other_copy(
     cwd_root: Path | None, script_root: Path, script_identity: str,
     pm_home: Path | None, relative_script: Path, *, runner: Any,
-) -> tuple[Path, Path] | None:
-    """함께 존재하는 반대편(PM import/canonical) 엔진 사본 하나를 찾는다."""
-    candidates: list[Path] = []
+) -> tuple[Path, Path, str] | None:
+    """함께 존재하는 반대편(PM import/canonical) 엔진 사본 하나를 찾는다.
+
+    세 번째 값은 그 사본의 **정체 해소 키**다 — ``cwd`` 는 호출 cwd 의 이미 측정된 정체를
+    그대로 쓰라는 뜻이고, ``slot``/``pm-home`` 은 후보를 고를 때 이미 확정된 정체다. 방향
+    판정(어느 사본이 뒤졌는지)이 추가 앵커 조회 없이 두 사본의 정체를 갖게 하는 자리다.
+    """
+    candidates: list[tuple[Path, str]] = []
     if script_identity == "pm-home" and pm_home is not None:
         if cwd_root is not None and cwd_root != script_root:
-            candidates.append(cwd_root)
-        candidates.extend(_registered_slot_paths(pm_home, runner=runner))
+            candidates.append((cwd_root, "cwd"))
+        candidates.extend(
+            (slot, "slot") for slot in _registered_slot_paths(pm_home, runner=runner)
+        )
     elif script_identity in {"slot", "worktree"} and pm_home is not None:
-        candidates.append(pm_home)
-    for root in candidates:
+        candidates.append((pm_home, "pm-home"))
+    for root, identity_key in candidates:
         root = root.resolve()
         candidate = root / relative_script
         if root != script_root and candidate.is_file():
-            return root, candidate
+            return root, candidate, identity_key
     return None
+
+
+_WORKTREE_IDENTITIES = frozenset({"slot", "worktree"})
+# 소유 PM 홈을 측정하지 못한 사본을 판정 불가 문구에 표기할 때 쓰는 라벨.
+_UNKNOWN_OWNER = "미상"
+
+
+def _git_path_uncommitted(
+    anchor: Path, relative: Path, *, runner: Any = subprocess.run
+) -> bool | None:
+    """`anchor` 저장소에서 `relative` 파일이 **미커밋** 상태인지 (git 조회 1회).
+
+    `git status --porcelain --ignored -- <path>` 의 출력이 있으면 그 사본은 커밋으로 확정되지
+    않았다(작업트리 변경·스테이지·미추적·무시됨). git 아님/오류면 None — **판정 불가**이며
+    호출부는 이를 단정으로 메우지 않는다.
+    """
+    try:
+        result = runner(
+            ["git", "-C", str(anchor), "status", "--porcelain", "--ignored",
+             "--", relative.as_posix()],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if getattr(result, "returncode", 1) != 0:
+        return None
+    return bool((result.stdout or "").strip())
+
+
+def _engine_copy_freshness(
+    current: tuple[str, Path, Path, Path | None],
+    other: tuple[str, Path, Path, Path | None],
+    relative_script: Path, *, runner: Any = subprocess.run,
+) -> str:
+    """sha 가 다른 두 엔진 사본 중 **어느 쪽이 뒤졌는지**를 worktree 의 git 상태로 판정한다.
+
+    입력은 (정체, repo 앵커, 사본 경로, 소유 PM 홈) 두 짝이다. 네 값 모두 호출부가 이미
+    측정한 것이라 추가 앵커 조회가 없고, git 조회는 sha 가 다를 때 이 함수에서 딱 1회
+    일어난다. 방향 판정은 두 사본이 **같은 PM 홈에 속한 한 짝**일 때만 성립한다 — 정체
+    클래스(pm-home/worktree)가 짝을 이루더라도 worktree 의 소유 PM 홈이 상대 사본의 PM 홈과
+    다르면 서로 남남인 저장소라 어느 쪽도 상대의 import 사본이 아니다. 그래서 소유 일치를
+    ``git status`` **전에** 값으로 확인하고, 다르면 조회 없이 판정 불가로 남긴다.
+
+    짝이 성립하면 판정 축은 worktree 사본의 미커밋 여부다 — 미커밋이면 그 사본이 편집
+    중(미확정)이라 PM 홈이 뒤졌다고 말할 수 없고, 커밋 상태면 PM 홈 import 사본이 뒤진
+    것이다. 짝으로 해소되지 않거나 git 상태를 읽지 못하면 **단정하지 않는다** — 내용이
+    다르다는 사실만 남기고 두 사본 경로(호출부 reason 이 이미 싣는다)를 직접 대조하게 한다.
+    """
+    sides = (current, other)
+    worktree_sides = [side for side in sides if side[0] in _WORKTREE_IDENTITIES]
+    home_sides = [side for side in sides if side[0] == "pm-home"]
+    if len(worktree_sides) != 1 or len(home_sides) != 1:
+        return (
+            "사본 내용이 다름 — 어느 쪽이 최신인지 판정 불가"
+            f"(PM 홈–worktree 짝 아님: {current[0]} vs {other[0]}) — "
+            "두 사본 경로를 직접 대조하라"
+        )
+    _worktree_identity, worktree_root, worktree_copy, worktree_pm_home = worktree_sides[0]
+    _home_identity, _home_root, _home_copy, home_pm_home = home_sides[0]
+    if (
+        worktree_pm_home is None or home_pm_home is None
+        or worktree_pm_home != home_pm_home
+    ):
+        return (
+            "사본 내용이 다름 — 어느 쪽이 최신인지 판정 불가"
+            f"(PM 홈–worktree 짝 아님: worktree {worktree_root} 의 소유 PM 홈="
+            f"{worktree_pm_home if worktree_pm_home is not None else _UNKNOWN_OWNER}, "
+            f"상대 사본의 PM 홈={home_pm_home if home_pm_home is not None else _UNKNOWN_OWNER}) — "
+            "두 사본 경로를 직접 대조하라"
+        )
+    uncommitted = _git_path_uncommitted(worktree_root, relative_script, runner=runner)
+    if uncommitted is None:
+        return (
+            "사본 내용이 다름 — 어느 쪽이 최신인지 판정 불가"
+            f"(worktree {worktree_root} git 상태 조회 실패) — 두 사본 경로를 직접 대조하라"
+        )
+    if uncommitted:
+        return (
+            f"worktree 사본 {worktree_copy} 이 미커밋 변경(편집 중·미확정) — "
+            "어느 쪽이 최신인지 단정 불가; worktree 를 커밋으로 확정한 뒤 다시 대조하라"
+        )
+    return (
+        f"worktree 사본 {worktree_copy} 은 커밋 상태(clean) — "
+        "stale import 사본 — 게이트 판정은 canonical 로"
+    )
 
 
 def judge_engine_invocation(
@@ -803,7 +896,9 @@ def judge_engine_invocation(
 
     deny는 PM 홈에 대상 ``tests/``가 없는 pytest 호출과 non-PM 엔진 사본의 board
     mutation 두 축뿐이다. 상대 엔진 경로는 실행 사본의 절대경로와 반대편 사본의
-    도구 파일 sha256 비교를 warn으로 주입한다.
+    도구 파일 sha256 비교를 warn으로 주입한다. sha 가 다를 때만 ``_engine_copy_freshness``
+    가 방향(어느 사본이 뒤졌는지)을 worktree git 상태로 1회 판정하며, 판정이 서지 않으면
+    단정하지 않는다.
     """
     cwd_path = Path(cwd).expanduser().resolve()
     identity, cwd_root, cwd_pm_home = _git_anchor_identity(cwd_path, runner=runner)
@@ -899,18 +994,31 @@ def judge_engine_invocation(
         relative_script, runner=runner,
     )
     if other is not None:
-        _other_root, other_path = other
+        other_root, other_path, other_identity_key = other
         current_hash = _file_sha256(script_path)
         other_hash = _file_sha256(other_path)
-        if current_hash is not None and other_hash is not None:
-            hash_state = (
-                f"도구 파일 sha256 동일({current_hash})"
-                if current_hash == other_hash else
-                f"도구 파일 sha256 다름({current_hash} != {other_hash}) — "
-                "stale import 사본 — 게이트 판정은 canonical 로"
-            )
-        else:
+        if current_hash is None or other_hash is None:
             hash_state = "도구 파일 sha256 비교 불가(파일 읽기 실패) — 사본 경로를 직접 확인"
+        elif current_hash == other_hash:
+            # 사본이 같으면 방향을 물을 게 없다 — git 조회 없이 기존 경로로 끝낸다.
+            hash_state = f"도구 파일 sha256 동일({current_hash})"
+        else:
+            if other_identity_key == "cwd":
+                # cwd 사본의 정체와 소유 PM 홈은 이 함수 첫머리에서 이미 측정했다.
+                other_identity, other_pm_home = identity, cwd_pm_home
+            else:
+                # slot 후보는 그 PM 홈이 등록한 slot 이고 pm-home 후보는 그 PM 홈 자신이라,
+                # 후보를 고르는 데 쓴 홈이 곧 소유 홈이다(추가 앵커 조회 없음).
+                other_identity = other_identity_key
+                other_pm_home = script_pm_home or cwd_pm_home
+            hash_state = (
+                f"도구 파일 sha256 다름({current_hash} != {other_hash}) — "
+                + _engine_copy_freshness(
+                    (script_identity, script_root, script_path, script_pm_home),
+                    (other_identity, other_root, other_path, other_pm_home),
+                    relative_script, runner=runner,
+                )
+            )
         reason += f"; 함께 존재하는 다른 사본={other_path}; {hash_state}"
     return {"verdict": "warn", "cwd_identity": identity, "reason": reason}
 
@@ -2688,11 +2796,24 @@ def _repo_from_session(session: str) -> str | None:
     `project_manager_1` → repo `project_manager`·`a_2_3` → `a_2`) 정확히 갈린다. 끝
     마디가 숫자가 아니거나(솔로 커스텀 세션명 `pm`·`my-session`·`foo_bar`) repo 부분이
     비면(`_1`) `<repo>_<N>` 형태가 아니므로 None (유도 skip → id_prefix 가 다음 층으로).
+
+    **값은 장부가 준다**: 이름 형태로 "슬롯 축인가"만 가르고 실제 repo/번호는
+    `identity_args.session_coordinates` 가 그 세션 명의 행에서 읽는다 — 이름과 행이 어긋난 장부
+    (`repo=A · slot=work/A_1 · session=B_7` — pool alloc 이 다른 repo 의 단일-lease 세션명을 실으면
+    생긴다)에서 이름 분해는 장부에 없는 repo `B` 를 내고, 그 값으로 만든 안내/렌즈는 조인 실패한다
+    (리뷰 F-002). 장부에 그 세션 행이 없으면 이름이 유일한 진실이라 종전 값과 같다.
     """
+    return _session_slot_coordinates(session)[0]
+
+
+def _session_slot_coordinates(session: str) -> "tuple[str | None, int | None]":
+    """세션명 → 재접속 좌표 `(repo, N)` — 이름 형태 게이트 + **장부 값** 좌표(`_repo_from_session`
+    과 `reid` remedy 안내가 공유하는 단일 해소)."""
     head, sep, tail = session.rpartition("_")
     if not sep or not head or not tail.isdigit():
-        return None
-    return head
+        return None, None
+    repo, number = identity_args.session_coordinates(session, LEASES_FILE)
+    return (repo or head), (number if number is not None else int(tail))
 
 
 def _prefix_from_session(session: str | None = None) -> str | None:
@@ -5373,22 +5494,26 @@ def _board_git_remote_ticket_status(tracking: str, ticket_id: str) -> str | None
     return None
 
 
-def _board_git_behind(tracking: str) -> int:
-    """원격이 로컬보다 앞선 커밋 수 (`HEAD..<tracking>`) — 판정 불가면 0.
+def _board_git_behind(tracking: str) -> int | None:
+    """원격이 로컬보다 앞선 커밋 수 (`HEAD..<tracking>`) — **계산 불가면 None**(판정불가).
 
-    0 폴백은 보수적 방향이다: behind 를 모르면 "원격이 안 앞섬" 으로 보고 **차단하지 않는다**
-    (소유 확정 권위는 어차피 push CAS 라, 여기서 막을 이유가 없다).
+    옛 구현은 예외·rc≠0·비정수를 전부 0 으로 접었다. **차단 판단**에는 그 폴백이 보수적이지만
+    (behind 를 모르면 "원격이 안 앞섬" 으로 보고 차단하지 않는다 — 소유 확정 권위는 어차피
+    push CAS 다), **진단 문구**에서는 계산 불능과 실제 0 이 구별되지 않아 "원격보다 0 커밋
+    뒤처진 상태" 라는 거짓 실측 진술이 나왔다. 그래서 값은 known/unknown 을 보존하고, 차단
+    방향의 보수적 해석은 호출부가 `None = 앞서지 않음` 으로 명시한다 — 판단은 불변이고 문구만
+    정직해진다.
     """
     try:
         r = _board_git(["rev-list", "--count", f"HEAD..{tracking}"])
-    except Exception:  # noqa: BLE001 — fail-soft: 조회 예외는 0(차단하지 않음).
-        return 0
+    except Exception:  # noqa: BLE001 — fail-soft: 조회 예외는 판정 불가(None).
+        return None
     if r.returncode != 0:
-        return 0
+        return None
     try:
         return int(r.stdout.strip())
     except ValueError:
-        return 0
+        return None
 
 
 def _board_git_remote_tip(upstream: _BoardGitUpstream) -> str | None:
@@ -5980,8 +6105,8 @@ class _ClaimPrefetch(NamedTuple):
     """`<sha>` = 정상 진행(rollback 복귀 지점) · `""` = board-git 비활성(legacy) · None = 차단."""
     block: str | None = None
     """`_CLAIM_BLOCK_*` 사유 코드 (None = 진행 가능)."""
-    behind: int = 0
-    """원격이 로컬보다 앞선 커밋 수 — 잔여 차단 진단의 핵심 수치."""
+    behind: int | None = 0
+    """원격이 로컬보다 앞선 커밋 수 — 잔여 차단 진단의 핵심 수치. None = 계산 불가(판정불가)."""
     dirty: tuple[tuple[str, str], ...] = ()
     """차단 시점의 미커밋 변경 `(코드, 경로)` — 안내에 표본 + 총계로 낸다."""
     detail: str = ""
@@ -6033,10 +6158,15 @@ def _board_git_claim_prefetch(ticket_id: str) -> _ClaimPrefetch:
     # 4. 원격 선점 판정 — dirty·behind 무관(원격 트리를 직접 읽는다).
     remote_status = _board_git_remote_ticket_status(upstream.tracking, ticket_id)
     if remote_status in ("claimed", "done", "blocked"):
-        return _ClaimPrefetch(block=_CLAIM_BLOCK_RACE_LOST, detail=remote_status)
+        # behind 도 함께 실어 보낸다 — 차단 문구가 "로컬 사본이 왜 뒤처진 판단을 했는지"
+        # (list/show 의 freshness 와 같은 판정)를 그 자리에서 설명하게 한다.
+        return _ClaimPrefetch(block=_CLAIM_BLOCK_RACE_LOST, detail=remote_status,
+                              behind=_board_git_behind(upstream.tracking))
     # 5. 원격이 앞섰을 때만 통합. 안 앞섰으면 무관 dirty 가 있어도 claim 은 진행한다.
     behind = _board_git_behind(upstream.tracking)
-    if behind > 0:
+    # behind 판정 불가(None)는 옛 0 폴백과 **같은 방향**으로 흘린다 — 원격이 앞섰다고 볼 근거가
+    # 없으면 통합도 차단도 하지 않는다(차단 판단 불변·진단 문구만 정직하게 한다).
+    if behind is not None and behind > 0:
         try:
             pull = _board_git_pull_rebase()
         except Exception:  # noqa: BLE001 — fail-soft: pull 예외(timeout 등)는 offline 취급.
@@ -6142,9 +6272,15 @@ def _claim_block_message(ticket_id: str, prefetch: _ClaimPrefetch) -> str:
                 f"`git -C .project_manager/board push -u origin <branch>` 로 upstream 을 설정하라.")
     if prefetch.block == _CLAIM_BLOCK_RACE_LOST:
         where = prefetch.detail or "claimed"
+        # behind 계산 불가(rev-list 실패)면 수치를 지어내지 않는다 — 실측 0 과 판정불가는 다른
+        # 사실이고, 사용자가 읽는 숫자는 실측이어야 한다(F-003).
+        gap = (f"원격보다 {behind} 커밋 뒤처진 상태에서 조회됐다"
+               f"(list/show 의 freshness 와 같은 판정)" if behind is not None else
+               "뒤처진 커밋 수는 판정불가다"
+               "(rev-list 실패·list/show 의 freshness 와 같은 판정)")
         return (f"claim race lost on {ticket_id} — 원격 board 에서 이미 {where}/ 상태다"
-                f"(다른 세션이 먼저 잡았거나 이미 처리됨·로컬 변경 0). "
-                f"`board.py list --all` 로 현황을 확인하라.")
+                f"(다른 세션이 먼저 잡았거나 이미 처리됨·로컬 변경 0). 로컬 사본이 stale 했다 "
+                f"— {gap}. `board.py list --all` 로 현황을 확인하라.")
     if prefetch.block == _CLAIM_BLOCK_DIRTY:
         return (f"board 가 원격보다 {behind} 커밋 뒤졌는데 미커밋 파일이 통합(pull --rebase)을 "
                 f"막는다 — {ticket_id} claim 불가 (offline 아님·네트워크 정상: fetch 성공). "
@@ -6289,7 +6425,7 @@ def _board_git_refresh_after_rollback() -> None:
             return
         _board_git_fetch(upstream.remote)   # 추적 ref 갱신 — 아래 behind 판정의 전제.
         behind = _board_git_behind(upstream.tracking)
-        if behind <= 0:
+        if behind is None or behind <= 0:
             return
         if _board_git_has_tracked_changes():
             print(f"  ⚠ 로컬 board 뷰 stale — 원격이 {behind} 커밋 앞서지만 미커밋 변경이 있어 "
@@ -10667,6 +10803,8 @@ def cmd_block(args: argparse.Namespace) -> int:
         fm, body = load_ticket(path)
         new_path = move_ticket(path, "blocked")
         fm["status"] = "blocked"
+        # claimed_by/claimed_at 는 무접촉 — block 은 작업 중단이지 소유 포기가 아니다.
+        # 소유 해제 문은 unclaim 하나뿐. `unblock` 이 이 값의 유무로 복귀 목적지를 정한다.
         note = f"\n## Blocked\n{args.reason} — {datetime.date.today().isoformat()}\n"
         dump_ticket(new_path, fm, body + note)
     refresh_board()
@@ -10712,12 +10850,16 @@ def cmd_unblock(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             return 1
         fm, body = load_ticket(path)
-        new_path = move_ticket(path, "open")
-        fm["status"] = "open"
+        # claimed_by 보유 티켓(claimed-origin blocked)은 claimed/ 로 복귀시켜 소유 표식을
+        # 보존한다 — 무조건 open 으로 옮기면 "open + claimed_by 잔존" 모순이 생겼다.
+        # open-origin blocked(claimed_by 없음)는 현행대로 open/ 으로 돌아간다(왕복 불변식).
+        dest_status = "claimed" if fm.get("claimed_by") else "open"
+        new_path = move_ticket(path, dest_status)
+        fm["status"] = dest_status
         dump_ticket(new_path, fm, body)
     refresh_board()
     ready = _board_git_sync_best_effort(f"unblock {args.id}", (path, new_path))
-    print(f"unblocked {args.id}{_board_git_mutation_state_suffix(ready)}")
+    print(f"unblocked {args.id} → {dest_status}/{_board_git_mutation_state_suffix(ready)}")
     return 0
 
 
@@ -12043,11 +12185,24 @@ def _load_pm_bootstrap_module():
         return None
 
 
-def _board_git_freshness_line() -> str | None:
-    """board submodule freshness 를 부트스트랩과 **같은 판정**으로 1줄 만든다 (없으면 None).
+class _BoardFreshness(NamedTuple):
+    """freshness 1줄 + 그 줄이 근거로 쓴 원격-추적 스냅샷의 **검증 여부**.
 
-    board 비-git(솔로·legacy·`_board_git_enabled()` False)이거나 pm_bootstrap 로드 실패면 None
-    (표면화 생략·오탐 0). 그 외엔 board-git 을 fetch(원격 실측·offline 이면 fail-soft) 후
+    `verified` 는 "이번 조회가 원격을 실측했나" 다 — TTL 이내 직전 fetch 재사용 또는 이번
+    fetch 성공일 때만 True. False 면 남아 있는 원격-추적 ref 는 **검증되지 않은 캐시**라
+    그것으로 티켓 단위 stale 을 단정할 수 없다(판정 불능을 판정으로 위장하지 않는다).
+    freshness 줄 자체는 그 사실을 "판정불가 — 스냅샷일 수 있음" 으로 이미 말한다.
+    """
+
+    line: str | None
+    verified: bool
+
+
+def _board_git_freshness() -> _BoardFreshness:
+    """board submodule freshness 를 부트스트랩과 **같은 판정**으로 1줄 만든다 (없으면 line=None).
+
+    board 비-git(솔로·legacy·`_board_git_enabled()` False)이거나 pm_bootstrap 로드 실패면
+    `line=None`·`verified=False`(표면화 생략·오탐 0). 그 외엔 board-git 을 fetch(원격 실측·offline 이면 fail-soft) 후
     detached/dirty/ahead·behind 를 board.py 자체 board-git 함수로 수집해, pm_bootstrap 의
     `_format_freshness`로 포맷한다 — **판정 단일화**(중복 0). list
     는 read-only 라 pull 하지 않는다(부트스트랩의 자동 ff-pull 과 달리 표면화만·never-block).
@@ -12056,10 +12211,10 @@ def _board_git_freshness_line() -> str | None:
     """
     # board-git 존재 확인을 **먼저** — 비-git 솔로는 pm_bootstrap(4천줄) 로드도 fetch 도 안 한다.
     if not _board_git_enabled():
-        return None
+        return _BoardFreshness(None, False)
     pmb = _load_pm_bootstrap_module()
     if pmb is None:
-        return None
+        return _BoardFreshness(None, False)
     # fetch 전 TTL 가드: 직전 fetch 가 TTL 이내면 재사용(원격 실측된 스냅샷이라
     # fetched=True)·fetch 생략. 아니면 advisory 짧은 timeout(5s)으로 fetch(offline 이면 fail-soft).
     if _board_fetch_head_fresh(_FRESHNESS_FETCH_TTL_SECONDS):
@@ -12088,18 +12243,69 @@ def _board_git_freshness_line() -> str | None:
         # 정확히 채운다(`_behind_warning` = ⚠ behind N — 수동 동기 필요 (fetch/dirty/diverged)).
         scope["dirty"] = bool(_board_git_status_porcelain().strip())
         scope["note"] = pmb._behind_warning(scope)
-    return f"board-git: {pmb._format_freshness(scope)}"
+    return _BoardFreshness(f"board-git: {pmb._format_freshness(scope)}", fetched)
 
 
-def _print_board_freshness() -> None:
-    """board freshness 1줄을 **stderr** 로 표면화한다 (advisory·stdout 목록 포맷 무오염).
+def _print_board_freshness() -> bool:
+    """board freshness 1줄을 **stderr** 로 표면화하고 스냅샷 검증 여부를 돌려준다 (advisory).
 
     stdout 이 아니라 stderr 인 이유: `board list` stdout 를 파싱하는 소비처(회귀 파서·
     pm_bootstrap counts·아래 anti-degrade warn 과 동형)를 오염시키지 않는다. board 비-git/
-    로드 실패면 None → 무출력(조용히 생략·오탐 0)."""
-    line = _board_git_freshness_line()
-    if line is not None:
-        print(line, file=sys.stderr)
+    로드 실패면 line=None → 무출력(조용히 생략·오탐 0).
+
+    반환값은 **이 줄이 근거로 쓴 원격-추적 스냅샷이 실측 검증됐나**(TTL 이내 재사용 또는 이번
+    fetch 성공)다 — 같은 흐름에서 이어지는 티켓 단위 대조가 검증되지 않은 캐시로 단정하지
+    않게 한다. `list` 는 이 값을 쓰지 않는다(현행 동작 무변경)."""
+    freshness = _board_git_freshness()
+    if freshness.line is not None:
+        print(freshness.line, file=sys.stderr)
+    return freshness.verified
+
+
+def _print_ticket_remote_mismatch(ticket_id: str, local_status: str, *,
+                                  snapshot_verified: bool) -> None:
+    """이 티켓의 로컬 status ↔ 원격-추적 status 불일치를 1줄(stderr) 표면화한다.
+
+    `show` 전용 추가 표면 — 전역 요약(`_print_board_freshness`)만으로는 "이 티켓" 이 stale
+    한지 알 수 없다(다중 clone 에서 local open 인데 원격은 이미 done 인 사례가 실사고).
+    판정은 claim 이 이미 쓰는 `_board_git_remote_ticket_status`(ls-tree·네트워크 0) 를
+    그대로 재사용한다(새 판정 금지) — **fetch 는 새로 하지 않는다**: 직전
+    `_print_board_freshness()` 호출이 TTL 가드(`_board_fetch_head_fresh`)를 통과했을 때만
+    이미 advisory fetch 를 했으므로, 여기선 그 결과로 갱신된 원격-추적 ref 를 읽기만 한다.
+
+    `snapshot_verified` 가 False 면 **판정 자체를 내지 않는다**(문구만 약하게 하지 않는다):
+    원격-추적 ref 는 남아 있어도 이번 조회에서 검증되지 않은 캐시라, 그것으로 "로컬 사본
+    stale" 을 말하면 판정 불능을 판정으로 위장하게 된다. 그 형상의 강등 진술은 전역
+    freshness 줄("판정불가 — 스냅샷일 수 있음")이 이미 낸다 — 같은 사실을 두 줄로 말하지
+    않는다.
+
+    무출력(오탐 0) 조건: 스냅샷 미검증(fetch 실패·TTL 밖) · board 비-git · upstream 미설정 ·
+    원격 판정 불가(`None`·원격에 그 티켓 없음 포함) · local_status 가 STATUS_DIRS 밖(draft 는
+    board-git 추적 대상이 아님) · 로컬==원격. 이 경우들은 "판정불가/무관"일 뿐 "최신" 을
+    주장하지 않으므로 오탐이 아니다.
+    """
+    if not snapshot_verified:
+        return
+    if local_status not in STATUS_DIRS:
+        return
+    if not _board_git_enabled():
+        return
+    upstream = _board_git_upstream()
+    if upstream is None:
+        return
+    remote_status = _board_git_remote_ticket_status(upstream.tracking, ticket_id)
+    if remote_status is None or remote_status == local_status:
+        return
+    behind = _board_git_behind(upstream.tracking)
+    # behind 계산 불가면 수치를 지어내지 않는다(F-003) — 불일치 사실 자체는 검증된
+    # 스냅샷에서 읽었으므로 그대로 말한다.
+    gap = f"behind {behind}" if behind is not None else "behind 판정불가"
+    print(
+        f"⚠ {ticket_id} 로컬 사본 stale — 로컬 status={local_status} · "
+        f"원격-추적 status={remote_status}({gap}). "
+        f"`board.py list` 로 board-git freshness 를 확인하거나 board pull 후 재조회하라.",
+        file=sys.stderr,
+    )
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -13465,9 +13671,8 @@ def cmd_reid(args: argparse.Namespace) -> int:
                 # remedy 는 canonical `--repo/--slot` 로 안내 — `claimed_slot` 이
                 # `<repo>_<N>` 형태면 분해해 그대로 보여주고(정직한 remedy), 아니면(솔로 커스텀
                 # 세션명) 소유 세션명만 병기한다(그 형태는 --repo/--slot 로 재현 불가).
-                remedy_repo = _repo_from_session(claimed_slot)
-                if remedy_repo is not None:
-                    remedy_num = claimed_slot.rsplit("_", 1)[-1]
+                remedy_repo, remedy_num = _session_slot_coordinates(claimed_slot)
+                if remedy_repo is not None and remedy_num is not None:
                     remedy = f"--repo {remedy_repo} --slot {remedy_num}"
                 else:
                     remedy = f"--repo <repo> --slot <N>(소유 세션 `{claimed_slot}`)"
@@ -13539,6 +13744,17 @@ def cmd_show(args: argparse.Namespace) -> int:
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         return 2
+    # board-git freshness 표면화 (advisory·stderr) — list 와 같은 seam 소환 + 이
+    # 티켓 단위 로컬↔원격 status 불일치 1줄.
+    #
+    # 대조할 원격이 아예 없는 형상(board 비-git · upstream 미설정)은 **둘 다 무출력**이다:
+    # 신선도라는 개념 자체가 없는데 advisory 를 내면 조회 표면에 무의미한 경고가 상주한다
+    # (upstream 판별은 네트워크 0 인 기존 `_board_git_upstream` seam 이 한다). `list` 는
+    # 현행 동작 그대로 둔다(이 게이트는 show 경로에만 있다).
+    if _board_git_enabled() and _board_git_upstream() is not None:
+        snapshot_verified = _print_board_freshness()
+        _print_ticket_remote_mismatch(args.id, status,
+                                      snapshot_verified=snapshot_verified)
     print(f"-- {args.id} ({status}/) --\n")
     body = file_lock.read_text_shared(path, encoding="utf-8")
     print(body)
@@ -13894,6 +14110,38 @@ def lint_dependencies() -> list[tuple[str, str, str]]:
         issues.append((cycle[0], "cycle",
                        f"circular depends_on: {' → '.join(cycle)}"))
 
+    return issues
+
+
+def lint_claim_identity() -> list[tuple[str, str, str]]:
+    """open + claimed_by/claimed_at/claimed_rev 잔존 모순 형상 advisory (never-block).
+
+    불변식(`status == "open"` 인 티켓은 claimed_by/claimed_at/claimed_rev 전부 null)이
+    깨진 형상을 가시화한다 — **세 필드 중 하나라도** non-null 이면 잡는다(단독 잔존도 포함·
+    F-002). 옛 `cmd_unblock`(정합 수정 이전)이 claimed_by 를 무접촉으로 둔 채 무조건 open 으로
+    옮기던 결함의 잔재로 생길 수 있다 — 조회·필터(`--mine`)·후속 claim 판단을 오염시킨다.
+    adopter#0 보드 실측에서 대상 0건이라 자동 backfill 은 만들지 않고(대상 없는
+    코드), 정정은 사용자가 직접 한다: 실제로 아무도 진행하지 않으면 frontmatter 에서 잔존
+    필드를 지우고, 실제로 진행 중이면 `status: claimed` 로 옮겨 상태와 소유를 정합시킨다.
+
+    kind=`open-claimed-contradiction`(`_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드 비기여·
+    push 미차단). `blocked` + claimed_by 는 모순이 **아니다**(claimed-origin blocked 의 정상
+    형상) — 여기서 잡지 않는다.
+    """
+    issues: list[tuple[str, str, str]] = []
+    for status, fm in _all_tickets():
+        if status != "open":
+            continue
+        # 그 불변식이 지목하는 세 필드 전부를 개별 검사한다 — 하나만 잔존해도 모순(F-002 확장).
+        residue = {field: fm.get(field)
+                   for field in ("claimed_by", "claimed_at", "claimed_rev") if fm.get(field)}
+        if not residue:
+            continue
+        residue_desc = ", ".join(f"{field}={value!r}" for field, value in residue.items())
+        issues.append((
+            fm.get("id", "?"), "open-claimed-contradiction",
+            f"status=open 인데 {residue_desc} 잔존 — 소유 표식과 상태가 모순이다. 진행 중이 "
+            "아니면 잔존 필드를 지우고, 진행 중이면 claimed/ 로 옮겨 정합시켜라."))
     return issues
 
 
@@ -15442,7 +15690,7 @@ _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
      "dangling-wikilink-scaffold", "un-migrated-overlay", "adapter-drift",
      "adr-author", "areas-repo-unregistered", "areas-duplicate-repo", "areas-merge-union",
      "delegate-same-model", "design-pending", "design-estimate",
-     "codex-delegate-matcher-miss",
+     "codex-delegate-matcher-miss", "open-claimed-contradiction",
      # 라운드 판정 코드(사이드카 seam 소유) + board 고유 잔여·판정불능 관측. 차단은 완료
      # 게이트가 한다.
      "round-name", "round-gap", "round-dup", "round-pending", "round-temporary",
@@ -16981,7 +17229,9 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     차단은 완료 게이트) + legacy-growth-section(명세 본문에 남은 구 역할 절 → 마이그레이션
     명령 1회로 해소·blocking) +
     design-pending(티켓 설계 단계 `design: required` 미완 — 설계 절 미충전/필드 미승격 가시화·
-    advisory·never-block·차단은 claim 게이트)."""
+    advisory·never-block·차단은 claim 게이트) +
+    open-claimed-contradiction(status=open 인데 claimed_by 잔존 — 상태-소유 모순 가시화·
+    advisory·never-block)."""
     return (lint_dependencies() + lint_bodies() + lint_ideas()
             + lint_status()
             + lint_wikilinks() + lint_unstable_refs() + lint_scopes()
@@ -16992,7 +17242,7 @@ def lint_tickets() -> list[tuple[str, str, str]]:
             + lint_areas_repo_unregistered()
             + lint_areas_duplicate_repo() + lint_areas_merge_union()
             + lint_delegate() + lint_rounds() + lint_legacy_growth_sections()
-            + lint_codex_delegate_observations())
+            + lint_codex_delegate_observations() + lint_claim_identity())
 
 
 # ── board.md regeneration ──────────────────────────────────────────────
@@ -17161,7 +17411,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("id", metavar="T-NNNN")
     p.set_defaults(fn=cmd_unclaim)
 
-    p = sub.add_parser("unblock", help="mv blocked → open")
+    p = sub.add_parser(
+        "unblock",
+        help="mv blocked → claimed(claimed_by 보유·소유 보존) 또는 open(무소유)")
     p.add_argument("id", metavar="T-NNNN")
     p.set_defaults(fn=cmd_unblock)
 

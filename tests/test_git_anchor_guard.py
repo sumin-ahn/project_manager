@@ -1,6 +1,7 @@
 """T-0587 — raw git cwd-misanchor 판정 seam + 3하네스 배선."""
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import io
 import json
@@ -60,6 +61,12 @@ def _seed_engine_copy(root: Path, rev: str) -> None:
         )
 
 
+def _commit_engine_copy(root: Path) -> None:
+    """`_seed_engine_copy` 가 쓴 사본을 그 저장소의 커밋으로 확정한다(clean worktree 형상)."""
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "engine copy")
+
+
 def _shell_slot_path(home: Path, slot: Path, notation: str) -> str:
     """같은 slot을 POSIX/Windows 셸 경로 표기로 반환한다.
 
@@ -77,17 +84,22 @@ def _shell_slot_path(home: Path, slot: Path, notation: str) -> str:
     return r"C:\Users\x\slot"
 
 
-@pytest.fixture
-def topology(tmp_path):
-    """서로 다른 git인 PM 홈 + 그 아래 등록 linked slot(양쪽 tests/templates 실재)."""
-    home = tmp_path / "pm-home"
-    _seed_repo(home)
+def _seed_pm_home_state(home: Path) -> None:
+    """PM 홈 정체(실 board)를 만드는 최소 상태 — done ticket + status.md."""
     ticket = home / ".project_manager" / "wiki" / "tickets" / "done" / "T-0001-x.md"
     ticket.parent.mkdir(parents=True)
     ticket.write_text("---\nid: T-0001\n---\n", encoding="utf-8")
     status = home / ".project_manager" / "wiki" / "status.md"
     status.parent.mkdir(parents=True, exist_ok=True)
     status.write_text("status\n", encoding="utf-8")
+
+
+@pytest.fixture
+def topology(tmp_path):
+    """서로 다른 git인 PM 홈 + 그 아래 등록 linked slot(양쪽 tests/templates 실재)."""
+    home = tmp_path / "pm-home"
+    _seed_repo(home)
+    _seed_pm_home_state(home)
 
     source = tmp_path / "product-source"
     _seed_repo(source)
@@ -99,6 +111,19 @@ def topology(tmp_path):
     ledger.write_text(json.dumps({"leases": [{"slot": "work/product_1", "repo": "product",
                                                "state": "leased"}]}) + "\n", encoding="utf-8")
     return home, slot
+
+
+@pytest.fixture
+def foreign_pm_home(topology, tmp_path):
+    """`topology` 와 소유 관계가 전혀 없는 **다른** PM 홈 git 저장소.
+
+    저장소 3개(PM 홈 + 그 등록 slot + 남남인 PM 홈) 형상을 만들어, 정체 클래스만으로는
+    짝처럼 보이는 두 사본이 실제로는 서로의 import 사본이 아닌 경우를 재현한다.
+    """
+    home = tmp_path / "other-pm-home"
+    _seed_repo(home)
+    _seed_pm_home_state(home)
+    return home
 
 
 @pytest.fixture
@@ -238,13 +263,18 @@ def test_engine_guard_denies_worktree_board_mutation(topology):
 
 
 def test_relative_engine_call_warns_on_same_rev_different_bytes(topology):
-    """(c) 같은 release rev여도 도구 bytes가 다르면 stale import를 검출한다."""
+    """(c) 같은 release rev여도 도구 bytes가 다르면 stale import를 검출한다.
+
+    T-0800 이후 이 진단은 worktree 사본이 **커밋으로 확정된** 형상에서만 나온다 —
+    fixture 도 그 형상(slot 사본 커밋)으로 고정한다.
+    """
     board = _load("engine_anchor_relative_copy", BOARD_PY)
     home, slot = topology
     _seed_engine_copy(home, "v1.7.5")
     _seed_engine_copy(slot, "v1.7.5")
-    home_script = home / ".project_manager" / "tools" / "pm_delegate.py"
-    slot_script = slot / ".project_manager" / "tools" / "pm_delegate.py"
+    _commit_engine_copy(slot)
+    home_script = _engine_script(home)
+    slot_script = _engine_script(slot)
     home_script.write_text('ENGINE_REV = "v1.7.5"\nIMPORT_COPY = True\n', encoding="utf-8")
     assert (
         (home / ".project_manager" / "tools" / "engine_rev.py").read_bytes()
@@ -254,18 +284,320 @@ def test_relative_engine_call_warns_on_same_rev_different_bytes(topology):
     got = board.judge_engine_invocation(
         str(slot), ["python3", ".project_manager/tools/pm_delegate.py", "status"],
     )
-    assert got["verdict"] == "warn"
-    assert str(slot / ".project_manager" / "tools" / "pm_delegate.py") in got["reason"]
-    assert str(home / ".project_manager" / "tools" / "pm_delegate.py") in got["reason"]
-    assert "이 사본의 repo 앵커=" in got["reason"]
-    assert "도구 파일 sha256 다름(" in got["reason"]
-    assert board._file_sha256(slot_script) in got["reason"]
-    assert board._file_sha256(home_script) in got["reason"]
-    assert "stale import 사본 — 게이트 판정은 canonical 로" in got["reason"]
+    assert got == _expected_engine_verdict(
+        cwd_identity="slot", script_path=slot_script, script_root=slot,
+        script_identity="slot", other_path=home_script,
+        copy_state=(
+            f"도구 파일 sha256 다름({_sha256(slot_script)} != {_sha256(home_script)}) — "
+            f"worktree 사본 {slot_script} 은 커밋 상태(clean) — "
+            "stale import 사본 — 게이트 판정은 canonical 로"
+        ),
+    )
     via_shell = board.judge_git_anchor_command(
         str(slot), "python3 .project_manager/tools/pm_delegate.py status",
     )
     assert via_shell == got
+
+
+class _GitStatusCountingRunner:
+    """실 git 을 그대로 실행하되 방향 판정용 ``status`` 조회만 세는 seam.
+
+    합성은 ``fail_mode="oserror"`` 하나뿐이다 — git 실행 파일 부재는 프로세스 전역 PATH 를
+    바꿔야 재현되고, 그러면 정체 해소용 ``rev-parse`` 까지 같이 죽어 이 형상(정체는 해소되는데
+    방향 조회만 실패) 자체가 사라진다. 반환코드 실패는 합성하지 않고 실제 git 실패
+    경계(`_corrupt_git_index`)를 쓴다.
+    """
+
+    def __init__(self, fail_mode: str = "") -> None:
+        self.status_calls: list[list[str]] = []
+        self._fail_mode = fail_mode
+
+    def __call__(self, argv, **kwargs):
+        values = [str(value) for value in argv]
+        if "status" in values and "--porcelain" in values:
+            self.status_calls.append(values)
+            if self._fail_mode == "oserror":
+                raise OSError("fixture: git 실행 불가")
+        return subprocess.run(values, **kwargs)
+
+
+def _corrupt_git_index(root: Path) -> None:
+    """실제 git 실패 경계 — `root` worktree 의 index 파일을 깨뜨린다.
+
+    이 상태에서 `git status` 는 rc≠0(fatal)로 실패하지만 `rev-parse`·`worktree list` 는 계속
+    성공한다. 그래서 정체 해소는 그대로 통과하고 방향 판정 조회만 불가가 된다.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--absolute-git-dir"],
+        check=True, capture_output=True, text=True, encoding="utf-8",
+    )
+    (Path(result.stdout.strip()) / "index").write_bytes(b"not-a-git-index")
+
+
+def _sha256(path: Path) -> str:
+    """기대 sha 는 프로덕션 `_file_sha256` 을 쓰지 않고 테스트가 독립 계산한다."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _expected_engine_verdict(
+    *, cwd_identity: str, script_path: Path, script_root: Path, script_identity: str,
+    other_path: Path, copy_state: str,
+) -> dict[str, str]:
+    """상대경로 엔진 호출 warn 의 **반환 dict 전문**을 테스트가 독립 전사한다.
+
+    프로덕션 문자열을 import 하지 않으므로, 가드가 문구를 바꾸거나 방향 단정을 뒤에 덧붙이면
+    전체 동등 비교가 red 가 된다(부분 문자열 ``in`` 단언이 놓치던 drift).
+    """
+    return {
+        "verdict": "warn",
+        "cwd_identity": cwd_identity,
+        "reason": (
+            f"상대경로 엔진 호출의 실행 사본={script_path}; 이 사본의 repo 앵커={script_root} "
+            f"({script_identity}); board mutation은 PM 홈 사본으로 실행하라; "
+            f"함께 존재하는 다른 사본={other_path}; {copy_state}"
+        ),
+    }
+
+
+def _undecided_copy_state(current_sha: str, other_sha: str, detail: str) -> str:
+    """sha 불일치 + **방향 판정 불가** 문구 전문(테스트 독립 전사)."""
+    return (
+        f"도구 파일 sha256 다름({current_sha} != {other_sha}) — "
+        f"사본 내용이 다름 — 어느 쪽이 최신인지 판정 불가({detail}) — "
+        "두 사본 경로를 직접 대조하라"
+    )
+
+
+def _engine_script(root: Path) -> Path:
+    """비교 대상 도구 파일(엔진 사본의 `pm_delegate.py`) 경로."""
+    return root / ".project_manager" / "tools" / "pm_delegate.py"
+
+
+def _mismatched_engine_copies(home: Path, slot: Path, *, commit_slot: bool) -> None:
+    """두 사본의 ``pm_delegate.py`` bytes 를 서로 다르게 만든다.
+
+    ``commit_slot`` 이 참이면 worktree 사본을 커밋으로 확정(clean)하고 PM 홈 사본만 바꾼다 —
+    진짜 stale import 형상이다. 거짓이면 worktree 사본이 미커밋(편집 중) 형상이 된다.
+    """
+    _seed_engine_copy(home, "v1.7.9")
+    _seed_engine_copy(slot, "v1.7.9")
+    if commit_slot:
+        _commit_engine_copy(slot)
+        _engine_script(home).write_text(
+            'ENGINE_REV = "v1.7.9"\nIMPORT_COPY = True\n', encoding="utf-8",
+        )
+    else:
+        _engine_script(slot).write_text(
+            'ENGINE_REV = "v1.7.9"\nWIP = True\n', encoding="utf-8",
+        )
+
+
+def _ignore_engine_copy(root: Path) -> None:
+    """`root` 저장소가 엔진 사본 경로를 `.gitignore` 로 무시하게 만든다(무시 규칙은 커밋)."""
+    (root / ".gitignore").write_text(".project_manager/\n", encoding="utf-8")
+    _git(root, "add", ".gitignore")
+    _git(root, "commit", "-qm", "ignore engine copy")
+
+
+@pytest.mark.parametrize("dirt", ["untracked", "tracked-modified", "gitignored"])
+def test_sha_mismatch_with_dirty_worktree_copy_does_not_claim_stale_import(
+    topology, dirt,
+):
+    """worktree 사본이 미커밋이면 방향을 단정하지 않는다(역방향 오안내 차단).
+
+    ``gitignored`` 는 사본이 `.gitignore` 에 걸려 추적되지 않는 실제 형상이다 — ``--ignored``
+    없이 조회하면 출력이 비어 clean(=stale import)으로 오독된다.
+    """
+    board = _load(f"engine_anchor_dirty_worktree_{dirt}", BOARD_PY)
+    home, slot = topology
+    if dirt == "untracked":
+        _mismatched_engine_copies(home, slot, commit_slot=False)
+    elif dirt == "tracked-modified":
+        _seed_engine_copy(home, "v1.7.9")
+        _seed_engine_copy(slot, "v1.7.9")
+        _commit_engine_copy(slot)
+        _engine_script(slot).write_text(
+            'ENGINE_REV = "v1.7.9"\nWIP = True\n', encoding="utf-8",
+        )
+    else:
+        _ignore_engine_copy(slot)
+        _mismatched_engine_copies(home, slot, commit_slot=False)
+    home_script = _engine_script(home)
+    slot_script = _engine_script(slot)
+    assert home_script.read_bytes() != slot_script.read_bytes()
+
+    runner = _GitStatusCountingRunner()
+    got = board.judge_engine_invocation(
+        str(slot), ["python3", ".project_manager/tools/pm_delegate.py", "status"],
+        runner=runner,
+    )
+    assert got == _expected_engine_verdict(
+        cwd_identity="slot", script_path=slot_script, script_root=slot,
+        script_identity="slot", other_path=home_script,
+        copy_state=(
+            f"도구 파일 sha256 다름({_sha256(slot_script)} != {_sha256(home_script)}) — "
+            f"worktree 사본 {slot_script} 이 미커밋 변경(편집 중·미확정) — "
+            "어느 쪽이 최신인지 단정 불가; worktree 를 커밋으로 확정한 뒤 다시 대조하라"
+        ),
+    )
+    assert len(runner.status_calls) == 1
+
+
+def test_sha_mismatch_with_clean_worktree_copy_reports_stale_import(topology):
+    """worktree 사본이 커밋 상태면 기존 stale import 안내가 그대로 나온다(PM 홈 cwd)."""
+    board = _load("engine_anchor_clean_worktree_from_home", BOARD_PY)
+    home, slot = topology
+    _mismatched_engine_copies(home, slot, commit_slot=True)
+    home_script = _engine_script(home)
+    slot_script = _engine_script(slot)
+    assert home_script.read_bytes() != slot_script.read_bytes()
+
+    runner = _GitStatusCountingRunner()
+    got = board.judge_engine_invocation(
+        str(home), ["python3", ".project_manager/tools/pm_delegate.py", "status"],
+        runner=runner,
+    )
+    assert got == _expected_engine_verdict(
+        cwd_identity="pm-home", script_path=home_script, script_root=home,
+        script_identity="pm-home", other_path=slot_script,
+        copy_state=(
+            f"도구 파일 sha256 다름({_sha256(home_script)} != {_sha256(slot_script)}) — "
+            f"worktree 사본 {slot_script} 은 커밋 상태(clean) — "
+            "stale import 사본 — 게이트 판정은 canonical 로"
+        ),
+    )
+    assert len(runner.status_calls) == 1
+
+
+def test_freshness_git_query_happens_only_when_sha_differs(topology):
+    """성능 제약: 사본이 같으면 git 조회 0회, 다를 때만 1회."""
+    board = _load("engine_anchor_freshness_query_count", BOARD_PY)
+    home, slot = topology
+    _seed_engine_copy(home, "v1.7.9")
+    _seed_engine_copy(slot, "v1.7.9")
+    _commit_engine_copy(slot)
+    home_script = _engine_script(home)
+    slot_script = _engine_script(slot)
+    assert home_script.read_bytes() == slot_script.read_bytes()
+
+    same = _GitStatusCountingRunner()
+    got_same = board.judge_engine_invocation(
+        str(slot), ["python3", ".project_manager/tools/pm_delegate.py", "status"],
+        runner=same,
+    )
+    assert got_same == _expected_engine_verdict(
+        cwd_identity="slot", script_path=slot_script, script_root=slot,
+        script_identity="slot", other_path=home_script,
+        copy_state=f"도구 파일 sha256 동일({_sha256(slot_script)})",
+    )
+    assert same.status_calls == []
+
+    home_script.write_text(
+        'ENGINE_REV = "v1.7.9"\nIMPORT_COPY = True\n', encoding="utf-8",
+    )
+    differs = _GitStatusCountingRunner()
+    got_differs = board.judge_engine_invocation(
+        str(slot), ["python3", ".project_manager/tools/pm_delegate.py", "status"],
+        runner=differs,
+    )
+    assert got_differs == _expected_engine_verdict(
+        cwd_identity="slot", script_path=slot_script, script_root=slot,
+        script_identity="slot", other_path=home_script,
+        copy_state=(
+            f"도구 파일 sha256 다름({_sha256(slot_script)} != {_sha256(home_script)}) — "
+            f"worktree 사본 {slot_script} 은 커밋 상태(clean) — "
+            "stale import 사본 — 게이트 판정은 canonical 로"
+        ),
+    )
+    assert differs.status_calls == [
+        ["git", "-C", str(slot), "status", "--porcelain", "--ignored", "--",
+         ".project_manager/tools/pm_delegate.py"],
+    ]
+
+
+@pytest.mark.parametrize("fail_mode", ["corrupt-index", "oserror"])
+def test_sha_mismatch_with_unreadable_git_state_does_not_assert_direction(
+    topology, fail_mode,
+):
+    """git 상태를 못 읽으면 어느 쪽이 최신인지 단정하지 않고 두 경로를 남긴다."""
+    board = _load(f"engine_anchor_freshness_git_fail_{fail_mode}", BOARD_PY)
+    home, slot = topology
+    _mismatched_engine_copies(home, slot, commit_slot=False)
+    home_script = _engine_script(home)
+    slot_script = _engine_script(slot)
+    if fail_mode == "corrupt-index":
+        _corrupt_git_index(slot)
+        runner = _GitStatusCountingRunner()
+    else:
+        runner = _GitStatusCountingRunner(fail_mode="oserror")
+
+    got = board.judge_engine_invocation(
+        str(slot), ["python3", ".project_manager/tools/pm_delegate.py", "status"],
+        runner=runner,
+    )
+    assert got == _expected_engine_verdict(
+        cwd_identity="slot", script_path=slot_script, script_root=slot,
+        script_identity="slot", other_path=home_script,
+        copy_state=_undecided_copy_state(
+            _sha256(slot_script), _sha256(home_script),
+            f"worktree {slot} git 상태 조회 실패",
+        ),
+    )
+    assert len(runner.status_calls) == 1
+
+
+def test_cross_owner_copies_are_undecided_without_git_query(topology, foreign_pm_home):
+    """소유 PM 홈이 다른 두 사본은 짝이 아니다 — git 조회 0회로 방향을 단정하지 않는다.
+
+    정체 클래스만 보면 pm-home + slot 이라 짝처럼 보이지만, 그 slot 을 소유하는 PM 홈은
+    사본이 있는 PM 홈이 아니다. 서로 남남인 저장소라 어느 쪽도 상대의 import 사본이 아니다.
+    """
+    board = _load("engine_anchor_cross_owner", BOARD_PY)
+    home, slot = topology
+    _seed_engine_copy(slot, "v1.7.9")
+    _commit_engine_copy(slot)
+    _seed_engine_copy(foreign_pm_home, "v1.7.9")
+    foreign_script = _engine_script(foreign_pm_home)
+    foreign_script.write_text(
+        'ENGINE_REV = "v1.7.9"\nIMPORT_COPY = True\n', encoding="utf-8",
+    )
+    slot_script = _engine_script(slot)
+    relative_call = os.path.relpath(foreign_script, slot)
+
+    runner = _GitStatusCountingRunner()
+    got = board.judge_engine_invocation(
+        str(slot), ["python3", relative_call, "status"], runner=runner,
+    )
+    assert got == _expected_engine_verdict(
+        cwd_identity="slot", script_path=foreign_script, script_root=foreign_pm_home,
+        script_identity="pm-home", other_path=slot_script,
+        copy_state=_undecided_copy_state(
+            _sha256(foreign_script), _sha256(slot_script),
+            f"PM 홈–worktree 짝 아님: worktree {slot} 의 소유 PM 홈={home}, "
+            f"상대 사본의 PM 홈={foreign_pm_home}",
+        ),
+    )
+    assert runner.status_calls == []
+
+
+def test_freshness_without_home_worktree_pair_is_undecided_without_git_query(topology):
+    """정체 클래스가 PM 홈–worktree 짝을 이루지 않으면 git 조회 없이 판정 불가로 남긴다."""
+    board = _load("engine_anchor_freshness_unpaired", BOARD_PY)
+    home, slot = topology
+    _mismatched_engine_copies(home, slot, commit_slot=False)
+    relative = Path(".project_manager") / "tools" / "pm_delegate.py"
+
+    runner = _GitStatusCountingRunner()
+    note = board._engine_copy_freshness(
+        ("foreign", slot, slot / relative, None),
+        ("pm-home", home, home / relative, home),
+        relative, runner=runner,
+    )
+    assert note == (
+        "사본 내용이 다름 — 어느 쪽이 최신인지 판정 불가"
+        "(PM 홈–worktree 짝 아님: foreign vs pm-home) — 두 사본 경로를 직접 대조하라"
+    )
+    assert runner.status_calls == []
 
 
 def test_unexpanded_engine_path_reports_unknown_without_changing_deny_axis(topology):

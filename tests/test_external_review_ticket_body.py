@@ -164,6 +164,23 @@ def test_paths_only_prompt_does_not_include_ticket_body(
     assert "ticket_body_bytes:" not in out
 
 
+def test_paths_and_gate_without_ticket_states_body_is_unassembled(
+    external, monkeypatch, tmp_path, capsys,
+):
+    """`--paths --gate T-NNNN`(본문 미조립 형상) — [[T-0819]] 값 단언.
+
+    `--ticket` 이 없으면 `prepare_ticket_body` 가 조립을 건너뛰어 `ticket_body_bytes` 줄
+    자체가 안 찍힌다(형상 E). 미리보기가 침묵 대신 이 사실을 한 줄로 말해야 한다.
+    """
+    _wire(external, monkeypatch, tmp_path)
+
+    assert external.main(["--paths", "x.py", "--gate", "T-9999", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "### 게이트 티켓 본문" not in out
+    assert "ticket_body_bytes:" not in out, "본문 미조립 — 이 줄 자체가 없다"
+    assert "ticket_body: 미조립" in out, "침묵 대신 미조립 사실을 값으로 말해야 한다"
+
+
 @pytest.mark.parametrize(
     "accounting_args",
     (["--gate", "T-7777"], ["--no-gate"]),

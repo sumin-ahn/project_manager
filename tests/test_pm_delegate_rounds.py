@@ -542,6 +542,342 @@ def test_harvest_reports_verify_missing_for_unfilled_accepted_findings(pd, round
     assert result.verify_missing == ("F-001",)
 
 
+# ── T-0805: 시드 시점 의존 — 판정 미기입 거부(잔여 0) · 누적 프리필 ──────
+
+def _finding_payload(pd, fid: str) -> dict:
+    return {
+        "id": fid, "class": "implementation-defect", "severity": "must-fix",
+        "authority": "[[T-0805]]", "evidence": f"{fid} probe",
+        "recommendation": f"{fid} fix", "design_change": False,
+    }
+
+
+def _harvest_review_round(pd, pm_home: Path, slot: Path, ticket: str, finding_ids: list[str]):
+    """실 준비→편집→회수로 reviewer 라운드 1개를 board 에 남긴다(조립 dict 아님)."""
+    reviewer = pd.prepare_ticket_copy(
+        ticket=ticket, role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+    payload = {
+        "version": pd.PM_REVIEW_VERSION,
+        "findings": [_finding_payload(pd, fid) for fid in finding_ids],
+        "confirmations": [],
+    }
+    mustfix = "\n".join(f"- {fid}" for fid in finding_ids)
+    reviewer.path.write_text(
+        reviewer.path.read_text(encoding="utf-8").partition("\n")[0]
+        + f"\n\n## must-fix\n{mustfix}\n\n## 판정\n판정: 반려 · finding "
+        f"{len(finding_ids)}건(must-fix {len(finding_ids)}건)\n\n"
+        + f"```{pd.PM_REVIEW_BLOCK}\n" + json.dumps(payload, ensure_ascii=False) + "\n```\n",
+        encoding="utf-8", newline="",
+    )
+    pd.harvest_ticket_copy(copy_path=reviewer.path, cwd=slot, pm_home=pm_home)
+    return reviewer
+
+
+def _append_disposition(pd, spec_path: Path, rows: list) -> None:
+    payload = {
+        "version": pd.PM_REVIEW_DISPOSITION_VERSION, "reviewer_ordinal": 1,
+        "dispositions": rows,
+    }
+    spec_path.write_text(
+        spec_path.read_text(encoding="utf-8")
+        + f"\n```{pd.PM_REVIEW_DISPOSITION_BLOCK}\n"
+        + json.dumps(payload, ensure_ascii=False) + "\n```\n",
+        encoding="utf-8", newline="",
+    )
+
+
+def _verify_ids_in(pd, text: str) -> list[str]:
+    """시드 골격의 verify 행 ID 목록.
+
+    골격의 `machine_verifiable` 자리는 따옴표 없는 raw 자리표시자라 그대로는 유효 JSON 이 아니다
+    — 엔진의 구조-스캔 전처리와 같은 재-인용을 거친 뒤 파싱한다(자리표시자 문안은 렌더 소유).
+    """
+    body = pd._pm_review_requote_verify_placeholder(text).partition(
+        f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n")[2]
+    if not body:
+        return []
+    return [row["id"] for row in json.loads(body.split("\n```", 1)[0])["verifications"]]
+
+
+@pytest.mark.parametrize("code", ["pending", "decision-required"])
+def test_prepare_refuses_a_developer_round_until_the_pm_judgment_is_written(
+    pd, rounds_env, code,
+):
+    """판정 미기입 상태의 준비는 **거부**다 — board 라운드 파일도 장부 행도 남지 않는다(I8).
+
+    강등해서 시드하면 검증 골격이 없는 라운드가 나가고, 두 단계 뒤 `verify_missing`·rc=1 이
+    dev 태만처럼 표면화된다(T-0790 실증 형상).
+    """
+    pm_home, slot, tickets, _sync = rounds_env
+    ticket = "T-7030" if code == "pending" else "T-7031"
+    spec_path = _write_spec(tickets, ticket)
+    _harvest_review_round(pd, pm_home, slot, ticket, ["F-001"])
+    if code == "decision-required":
+        _append_disposition(pd, spec_path, [{
+            "id": "F-001", "decision": "decision-required",
+            "reason": "선행 권위 결정 필요", "scope": "",
+            "prerequisite": "[[ADR-0001]] 개정 선행",
+        }])
+
+    rounds_before = sorted(item.name for item in _rounds_dir(pm_home, ticket).iterdir())
+    ledger_before = len(_ledger_rows(pm_home))
+
+    with pytest.raises(pd.DelegateError, match="시드할 수 없습니다") as caught:
+        pd.prepare_ticket_copy(
+            ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
+        )
+
+    message = str(caught.value)
+    assert f"[{code}]" in message
+    assert ("disposition-template" in message) if code == "pending" else (
+        "재설계" in message
+    )
+    assert sorted(
+        item.name for item in _rounds_dir(pm_home, ticket).iterdir()
+    ) == rounds_before, "거부가 board 라운드 파일을 남겼다"
+    assert len(_ledger_rows(pm_home)) == ledger_before, "거부가 장부 행을 남겼다"
+
+
+def test_prepare_seeds_the_first_developer_round_without_fence_or_warning(
+    pd, rounds_env, capsys,
+):
+    """역방향 확인 — 리뷰 라운드가 없는 최초 구현 라운드는 종전대로 통과한다(오탐 0)."""
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-7032")
+    capsys.readouterr()
+
+    plan = pd.prepare_ticket_copy(
+        ticket="T-7032", role="developer", cwd=slot, pm_home=pm_home,
+    )
+
+    assert pd.PM_REVIEW_VERIFY_BLOCK not in plan.path.read_text(encoding="utf-8")
+    assert "경고" not in capsys.readouterr().err
+
+
+def test_prepare_after_the_judgment_prefills_only_the_ids_without_a_usable_declaration(
+    pd, rounds_env,
+):
+    """역방향 확인 + I3·I4 왕복 — 판정 뒤 준비는 막히지 않고, 프리필 대상은 분류기 산출이다.
+
+    라운드 2 에서 F-002 는 해소 선언, F-001 은 빈틈 보고로 끝낸다. 라운드 3 시드는 F-001 만
+    다시 요구해야 한다 — F-002 는 PM 이 그대로 확인하면 되는 행이라 다시 열면 "손대지 마라"고
+    한 항목을 시드가 매 라운드 되살린다.
+    """
+    pm_home, slot, tickets, _sync = rounds_env
+    spec_path = _write_spec(tickets, "T-7033")
+    _harvest_review_round(pd, pm_home, slot, "T-7033", ["F-001", "F-002"])
+    _append_disposition(pd, spec_path, [
+        {"id": fid, "decision": "accepted", "reason": "PM 수락",
+         "scope": f"{fid} 범위", "prerequisite": ""}
+        for fid in ("F-001", "F-002")
+    ])
+
+    first = pd.prepare_ticket_copy(
+        ticket="T-7033", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    seed = first.path.read_text(encoding="utf-8")
+    assert _verify_ids_in(pd, seed) == ["F-001", "F-002"]
+
+    rows = [
+        {"id": "F-001", "machine_verifiable": False, "command": "",
+         "expected": "처방이 정하지 않은 지점", "before": "",
+         "reason": pd.PM_REVIEW_VERIFY_GAP_REASON},
+        {"id": "F-002", "machine_verifiable": True, "command": "pytest -q",
+         "expected": "2 passed", "before": "1 failed", "reason": ""},
+    ]
+    first.path.write_text(
+        seed.partition("\n")[0] + "\n\n## 변경 파일\n- 실산출\n\n"
+        + f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n"
+        + json.dumps({"version": pd.PM_REVIEW_VERIFY_VERSION, "verifications": rows},
+                     ensure_ascii=False)
+        + "\n```\n",
+        encoding="utf-8", newline="",
+    )
+    result = pd.harvest_ticket_copy(copy_path=first.path, cwd=slot, pm_home=pm_home)
+    assert result.verify_missing == ()          # 빈틈 보고는 태만이 아니다
+
+    second = pd.prepare_ticket_copy(
+        ticket="T-7033", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    assert _verify_ids_in(pd, second.path.read_text(encoding="utf-8")) == ["F-001"]
+
+
+def _verify_block_bytes(pd, text: str) -> str:
+    """그 라운드 파일이 담고 있는 검증 골격 블록 원문(없으면 빈 문자열)."""
+    _head, fence, rest = text.partition(f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n")
+    return fence + rest.split("\n```", 1)[0] + "\n```" if fence else ""
+
+
+def _without_verify_block(pd, text: str) -> str:
+    """검증 골격 블록을 통째로 걷어낸 본문 — 그 ID 의 행 자체가 없는 라운드를 만든다."""
+    head, fence, rest = text.partition(f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n")
+    if not fence:
+        return text
+    return (head + rest.split("\n```\n", 1)[1]).rstrip("\n") + "\n"
+
+
+def _verify_template_of(pd, pm_home: Path, ticket: str):
+    """board 에 실제로 착지한 명세·라운드 파일로 분류기를 돌린다."""
+    board = pd._load_board_for_repo(pm_home)
+    _status, spec_path = board.find_ticket_exact(ticket)
+    spec_text = spec_path.read_text(encoding="utf-8")
+    rounds = pd._load_ticket_rounds().load_rounds(
+        board.tickets_dir(), ticket, ticket_text=spec_text,
+    )
+    return pd.pm_review_verify_template(spec_text, rounds)
+
+
+def _verify_template_rc(pd, pm_home: Path, monkeypatch, ticket: str) -> int:
+    monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: pm_home)
+    return pd.main(["review", "verify-template", "--ticket", ticket])
+
+
+def _drive_gap_then_next_round(
+    pd, pm_home: Path, slot: Path, tickets: Path, monkeypatch, ticket: str, *, silent: bool,
+):
+    """실 준비→편집→회수를 두 라운드 태운다 — 라운드 2 는 빈틈 보고, 라운드 3 은 두 형상 중 하나.
+
+    `silent=False` 는 시드가 프리필한 자리표시자 행을 **그대로 둔 채** 산문만 덧붙인 라운드다
+    (이번 라운드에 아무 선언도 없다 = 태만). `silent=True` 는 그 ID 의 행 자체가 없는 라운드다
+    (무활동 = 빈틈 이월). 자리표시자 행은 엔진이 시드한 bytes 그대로 두고 손으로 흉내내지 않는다.
+    """
+    spec_path = _write_spec(tickets, ticket)
+    _harvest_review_round(pd, pm_home, slot, ticket, ["F-001", "F-002"])
+    _append_disposition(pd, spec_path, [
+        {"id": fid, "decision": "accepted", "reason": "PM 수락",
+         "scope": f"{fid} 범위", "prerequisite": ""}
+        for fid in ("F-001", "F-002")
+    ])
+
+    second = pd.prepare_ticket_copy(
+        ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
+    )
+    seed_two = second.path.read_text(encoding="utf-8")
+    assert _verify_ids_in(pd, seed_two) == ["F-001", "F-002"]
+    declared = [
+        {"id": "F-001", "machine_verifiable": False, "command": "",
+         "expected": "처방이 정하지 않은 지점", "before": "",
+         "reason": pd.PM_REVIEW_VERIFY_GAP_REASON},
+        {"id": "F-002", "machine_verifiable": True, "command": "pytest -q",
+         "expected": "2 passed", "before": "1 failed", "reason": ""},
+    ]
+    second.path.write_text(
+        _without_verify_block(pd, seed_two) + "\n"
+        + f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n"
+        + json.dumps({"version": pd.PM_REVIEW_VERIFY_VERSION, "verifications": declared},
+                     ensure_ascii=False)
+        + "\n```\n",
+        encoding="utf-8", newline="",
+    )
+    gap_round = pd.harvest_ticket_copy(copy_path=second.path, cwd=slot, pm_home=pm_home)
+    assert gap_round.verify_missing == ()          # 빈틈 보고는 태만이 아니다(라운드 2)
+
+    third = pd.prepare_ticket_copy(
+        ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
+    )
+    seed_three = third.path.read_text(encoding="utf-8")
+    assert _verify_ids_in(pd, seed_three) == ["F-001"]   # 시드는 빈틈 ID 만 다시 요구한다
+    prose = "\n## 메모\n- 이번 라운드는 산문만 정리했다\n"
+    edited = (_without_verify_block(pd, seed_three) if silent else seed_three) + prose
+    if not silent:
+        assert _verify_block_bytes(pd, edited) == _verify_block_bytes(pd, seed_three)
+    third.path.write_text(edited, encoding="utf-8", newline="")
+    harvested = pd.harvest_ticket_copy(copy_path=third.path, cwd=slot, pm_home=pm_home)
+    template = _verify_template_of(pd, pm_home, ticket)
+    return harvested, template, _verify_template_rc(pd, pm_home, monkeypatch, ticket)
+
+
+def test_unfilled_seed_row_in_a_produced_round_buries_the_earlier_gap_declaration(
+    pd, rounds_env, monkeypatch, capsys,
+):
+    """이번 라운드의 '선언 없음' 이 앞 라운드의 빈틈 보고를 덮는다 — 태만은 태만으로 남는다.
+
+    실 준비→회수 왕복을 두 번 태워(빈틈 보고 → 자리표시자 미기입) harvest·verify-template 전
+    경로를 지나고, 같은 경로에서 **행 자체가 없는 조용한 라운드**(의도된 빈틈 이월)와 값으로
+    대조한다. 두 형상이 같은 답을 내면 태만과 빈틈 보고의 구별이 사라진 것이다.
+    """
+    pm_home, slot, tickets, _sync = rounds_env
+
+    negligent, negligent_template, negligent_rc = _drive_gap_then_next_round(
+        pd, pm_home, slot, tickets, monkeypatch, "T-7034", silent=False,
+    )
+    negligent_err = capsys.readouterr().err
+    silent, silent_template, silent_rc = _drive_gap_then_next_round(
+        pd, pm_home, slot, tickets, monkeypatch, "T-7035", silent=True,
+    )
+    silent_err = capsys.readouterr().err
+
+    # (1) 자리표시자를 그대로 둔 라운드 — 앞 라운드의 빈틈 보고가 최신 선언이 되지 않는다.
+    assert negligent.verify_missing == ("F-001",)
+    assert negligent_template.missing == ("F-001",) and negligent_template.gap == ()
+    assert negligent_rc == 1
+    assert "verify 행이 없는 accepted finding" in negligent_err and "F-001" in negligent_err
+    assert [source for source, _row in negligent_template.machine_rows] == [2]
+
+    # (2) 행 자체가 없는 조용한 라운드 — 의도된 이월이라 rc=0 그대로다(과잉 차단 0).
+    assert silent.verify_missing == ()
+    assert [(item[0], item[1]) for item in silent_template.gap] == [("F-001", 2)]
+    assert silent_template.missing == () and silent_rc == 0
+    assert "빈틈 보고" in silent_err
+    assert [source for source, _row in silent_template.machine_rows] == [2]
+
+    # (3) 두 형상이 같은 답을 내면 구별에 실패한 것이다.
+    assert (negligent.verify_missing, negligent_rc) != (silent.verify_missing, silent_rc)
+
+
+def test_filled_fix_round_after_a_gap_report_stays_green(pd, rounds_env, monkeypatch, capsys):
+    """역방향 — 시드가 요구한 ID 를 실제로 채운 fix 라운드는 영향받지 않는다(rc=0·잔여 0)."""
+    pm_home, slot, tickets, _sync = rounds_env
+    spec_path = _write_spec(tickets, "T-7036")
+    _harvest_review_round(pd, pm_home, slot, "T-7036", ["F-001", "F-002"])
+    _append_disposition(pd, spec_path, [
+        {"id": fid, "decision": "accepted", "reason": "PM 수락",
+         "scope": f"{fid} 범위", "prerequisite": ""}
+        for fid in ("F-001", "F-002")
+    ])
+    second = pd.prepare_ticket_copy(
+        ticket="T-7036", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    seed_two = second.path.read_text(encoding="utf-8")
+    second.path.write_text(
+        _without_verify_block(pd, seed_two) + "\n"
+        + f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n"
+        + json.dumps({"version": pd.PM_REVIEW_VERIFY_VERSION, "verifications": [
+            {"id": "F-001", "machine_verifiable": False, "command": "",
+             "expected": "처방이 정하지 않은 지점", "before": "",
+             "reason": pd.PM_REVIEW_VERIFY_GAP_REASON},
+            {"id": "F-002", "machine_verifiable": True, "command": "pytest -q",
+             "expected": "2 passed", "before": "1 failed", "reason": ""},
+        ]}, ensure_ascii=False) + "\n```\n",
+        encoding="utf-8", newline="",
+    )
+    pd.harvest_ticket_copy(copy_path=second.path, cwd=slot, pm_home=pm_home)
+
+    third = pd.prepare_ticket_copy(
+        ticket="T-7036", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    seed_three = third.path.read_text(encoding="utf-8")
+    assert _verify_ids_in(pd, seed_three) == ["F-001"]
+    third.path.write_text(
+        _without_verify_block(pd, seed_three) + "\n"
+        + f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n"
+        + json.dumps({"version": pd.PM_REVIEW_VERIFY_VERSION, "verifications": [
+            {"id": "F-001", "machine_verifiable": True, "command": "pytest -q -k gap",
+             "expected": "1 passed", "before": "1 failed", "reason": ""},
+        ]}, ensure_ascii=False) + "\n```\n",
+        encoding="utf-8", newline="",
+    )
+    harvested = pd.harvest_ticket_copy(copy_path=third.path, cwd=slot, pm_home=pm_home)
+
+    assert harvested.verify_missing == ()
+    template = _verify_template_of(pd, pm_home, "T-7036")
+    assert template.missing == () and template.gap == () and template.stale == ()
+    assert [source for source, _row in template.machine_rows] == [2, 3]
+    capsys.readouterr()
+    assert _verify_template_rc(pd, pm_home, monkeypatch, "T-7036") == 0
+
+
 # ── 경로 예산 · 권한 표면 ─────────────────────────────────────────────────
 
 def test_run_dir_path_has_no_role_segment_and_fits_budget(pd):
@@ -984,3 +1320,568 @@ def test_ledger_is_owner_only(pd, rounds_env):
         ticket="T-7209", role="developer", cwd=slot, pm_home=pm_home,
     )
     assert stat.S_IMODE(_ledger_path(pm_home).stat().st_mode) == 0o600
+
+
+# ── 리뷰 라운드 회수 내용 게이트 (fail-early) ─────────────────────────────────
+#
+# 판정 표면에 올릴 수 없는 리뷰 산출은 board 라운드가 되지 못한다. 픽스처는 실 board 트리·실
+# 라운드 파일·실 `delegate-rounds.jsonl` 이고, 리뷰 블록은 **엔진 골격 렌더**에서 key·enum 을
+# 받아 값만 채운다(스키마 재타이핑 0).
+
+
+def _finding_values(pd, finding_id: str) -> dict:
+    return {
+        "id": finding_id,
+        "class": pd.PM_REVIEW_CLASSES[0],
+        "severity": pd.PM_REVIEW_SEVERITIES[0],
+        "authority": "[[ADR-0090]] §경계",
+        "evidence": f"{finding_id} probe rc=1",
+        "recommendation": f"{finding_id}만 수정",
+        "design_change": False,
+    }
+
+
+def _confirmation_values(pd, finding_id: str) -> dict:
+    return {
+        "id": finding_id,
+        "status": pd.PM_REVIEW_CONFIRMATION_STATES[0],
+        "evidence": f"{finding_id} 회귀 rc=0",
+    }
+
+
+def _review_body(pd, role: str, finding_ids, confirmation_ids=()) -> str:
+    """리뷰 라운드 본문 — 블록 key·fence 는 엔진 골격 렌더가 소유하고 값만 채운다."""
+    confirmation_ids = list(confirmation_ids)
+    skeleton = pd.render_pm_review_block_skeleton(role, confirmation_ids)
+    payload = pd._pm_review_json_blocks(skeleton)[0].value
+    finding_shape = payload["findings"][0]
+    confirmation_shape = (
+        payload["confirmations"][0] if payload["confirmations"]
+        else {key: "" for key in pd.PM_REVIEW_CONFIRMATION_KEYS}
+    )
+    payload["findings"] = [
+        dict(finding_shape, **_finding_values(pd, finding_id))
+        for finding_id in finding_ids
+    ]
+    payload["confirmations"] = [
+        dict(confirmation_shape, **_confirmation_values(pd, finding_id))
+        for finding_id in confirmation_ids
+    ]
+    listed = "\n".join(f"- {finding_id}" for finding_id in finding_ids) or "- 없음"
+    verdict = "반려" if finding_ids else "통과"
+    return (
+        f"## must-fix\n{listed}\n\n"
+        f"## 판정\n판정: {verdict} · finding {len(finding_ids)}건"
+        f"(must-fix {len(finding_ids)}건)\n\n"
+        + pd._pm_review_block_text(payload)
+    )
+
+
+def _write_round_output(path: Path, body: str) -> str:
+    """슬롯 라운드 파일에 산출을 쓴다 — 첫 줄 헤더는 그대로 둔다(라운드 규약)."""
+    produced = path.read_text(encoding="utf-8").partition("\n")[0] + "\n\n" + body
+    path.write_text(produced, encoding="utf-8", newline="")
+    return produced
+
+
+def _land_review_round(pd, pm_home: Path, slot: Path, ticket: str, body: str):
+    """준비 → 산출 → 회수 한 사이클(정상 착지 경로)."""
+    plan = pd.prepare_ticket_copy(
+        ticket=ticket, role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+    _write_round_output(plan.path, body)
+    result = pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
+    assert result.changed is True
+    return plan
+
+
+def _land_round_bypassing_the_gate(
+    pd, pm_home: Path, slot: Path, ticket: str, role: str, body: str,
+):
+    """회수 게이트 이전에 들어간 board 상태 재현 — 예약 라운드 파일을 직접 교체한다."""
+    plan = pd.prepare_ticket_copy(
+        ticket=ticket, role=role, cwd=slot, pm_home=pm_home,
+    )
+    pd._load_ticket_rounds().replace_round(
+        plan.board_path,
+        plan.board_path.read_text(encoding="utf-8").partition("\n")[0] + "\n\n" + body,
+    )
+    return plan
+
+
+def _template_ids(pd, rendered: str) -> list[str]:
+    """골격이 프리필한 판정 대상 ID — 블록은 엔진 파서로 읽는다."""
+    return [
+        row["id"]
+        for row in pd._pm_review_json_blocks(rendered)[0].value["dispositions"]
+    ]
+
+
+def _fill_disposition_template(pd, rendered: str) -> str:
+    """골격을 **그대로** 채운다 — key·순서·fence 는 엔진 렌더 그대로 두고 값만 채운다."""
+    payload = pd._pm_review_json_blocks(rendered)[0].value
+    assert "accepted" in pd.PM_REVIEW_DECISIONS
+    for row in payload["dispositions"]:
+        assert row["decision"] == "<accepted|rejected>"
+        row["decision"] = "accepted"
+        row["reason"] = f"PM {row['id']} 수락"
+        row["scope"] = f"{row['id']} 허용 범위"
+    return (
+        f"```{pd.PM_REVIEW_DISPOSITION_BLOCK}\n"
+        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        + "\n```\n"
+    )
+
+
+def _spec_and_rounds(pd, pm_home: Path, tickets: Path, ticket: str):
+    rounds_module = pd._load_ticket_rounds()
+    spec_path = tickets / f"{ticket}-rounds.md"
+    spec_text = spec_path.read_text(encoding="utf-8")
+    tickets_root = pm_home / ".project_manager" / "wiki" / "tickets"
+    return spec_path, spec_text, rounds_module.load_rounds(
+        tickets_root, ticket, ticket_text=spec_text,
+    )
+
+
+def _harvest_rc(pd, monkeypatch, pm_home: Path, slot: Path, copy_path: Path) -> int:
+    """실 CLI rc — 소유 PM 홈 해소만 픽스처 좌표로 고정한다(판정은 엔진 그대로)."""
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+    return pd._cmd_ticket(["harvest", "--copy", str(copy_path), "--cwd", str(slot)])
+
+
+def test_redeclared_prior_finding_id_is_refused_at_harvest(
+    pd, rounds_env, monkeypatch, capsys,
+):
+    """확인 라운드가 선행 finding ID 를 `findings` 에 다시 실으면 회수가 거부한다.
+
+    재현 형상은 실측 사건 그대로다 — 같은 ID 를 `findings` 와 `confirmations` 양쪽에 기재.
+    """
+    pm_home, slot, tickets, sync_log = rounds_env
+    _write_spec(tickets, "T-7230")
+    first = _land_review_round(
+        pd, pm_home, slot, "T-7230", _review_body(pd, "code-reviewer", ["F-007"]),
+    )
+    second = pd.prepare_ticket_copy(
+        ticket="T-7230", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+    reserved = second.board_path.read_bytes()
+    _write_round_output(
+        second.path, _review_body(pd, "code-reviewer", ["F-007"], ["F-007"]),
+    )
+    capsys.readouterr()
+
+    rc = _harvest_rc(pd, monkeypatch, pm_home, slot, second.path)
+
+    assert rc == 1
+    assert "F-007" in capsys.readouterr().err
+    # 거부가 산출을 파괴하지 않는다 — board bytes 불변 + run-dir 유지(재회수 가능).
+    assert second.board_path.read_bytes() == reserved
+    assert second.run_dir.exists() and second.path.exists()
+    assert _ledger_rows(pm_home)[-1]["harvested_at"] is None
+    assert [paths for _message, paths in sync_log] == [[first.board_path]]
+
+    # `findings` 에만 다시 실은 형상도 같은 회수면에서 거부된다(전역 유일성 축).
+    _write_round_output(second.path, _review_body(pd, "code-reviewer", ["F-007"]))
+    assert _harvest_rc(pd, monkeypatch, pm_home, slot, second.path) == 1
+    assert "finding ID 재선언: F-007" in capsys.readouterr().err
+    assert second.board_path.read_bytes() == reserved
+
+    # 규약대로 고친 사본은 **같은 경로로** 다시 회수된다 — 거부는 run 을 닫지 않는다.
+    produced = _write_round_output(
+        second.path, _review_body(pd, "code-reviewer", ["F-008"], ["F-007"]),
+    )
+    assert _harvest_rc(pd, monkeypatch, pm_home, slot, second.path) == 0
+    assert second.board_path.read_text(encoding="utf-8") == produced
+    assert not second.run_dir.exists()
+
+
+def test_first_review_round_confirming_its_own_finding_is_refused_at_harvest(
+    pd, rounds_env, monkeypatch, capsys,
+):
+    """선행 선언이 공집합인 첫 리뷰 라운드의 자기-확인도 같은 회수면에서 거부된다."""
+    pm_home, slot, tickets, sync_log = rounds_env
+    _write_spec(tickets, "T-7231")
+    plan = pd.prepare_ticket_copy(
+        ticket="T-7231", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+    reserved = plan.board_path.read_bytes()
+    _write_round_output(
+        plan.path,
+        _review_body(pd, "code-reviewer", ["F-001", "F-002"], ["F-001", "F-002"]),
+    )
+    capsys.readouterr()
+
+    rc = _harvest_rc(pd, monkeypatch, pm_home, slot, plan.path)
+
+    assert rc == 1
+    assert "F-001, F-002" in capsys.readouterr().err
+    assert plan.board_path.read_bytes() == reserved
+    assert plan.run_dir.exists() and plan.path.exists()
+    assert _ledger_rows(pm_home)[-1]["harvested_at"] is None
+    assert sync_log == []
+
+    # 선행 선언이 공집합이라 **어떤** 기존 ID 참조도 표면에 없다 — 자기-확인이 아닌 확인도 거부다.
+    _write_round_output(
+        plan.path, _review_body(pd, "code-reviewer", ["F-001"], ["F-050"]),
+    )
+    assert _harvest_rc(pd, monkeypatch, pm_home, slot, plan.path) == 1
+    assert "confirmation 대상 finding 부재: F-050" in capsys.readouterr().err
+    assert plan.board_path.read_bytes() == reserved
+
+
+def test_the_two_refused_shapes_map_to_distinct_delta_branches(pd, rounds_env):
+    """두 픽스처는 판정 표면의 **서로 다른** malformed 분기에 대응한다.
+
+    게이트 이전에 들어간 라운드(회수면을 지나지 않은 board 상태)로 재현한다 — 회수면이 막는
+    형상이 판정면에서 무엇이었는지가 이 대조의 값이다.
+    """
+    pm_home, slot, tickets, _sync = rounds_env
+
+    _write_spec(tickets, "T-7232")
+    first = _land_review_round(
+        pd, pm_home, slot, "T-7232", _review_body(pd, "code-reviewer", ["F-007"]),
+    )
+    _land_round_bypassing_the_gate(
+        pd, pm_home, slot, "T-7232", "code-reviewer",
+        _review_body(pd, "code-reviewer", ["F-007"], ["F-007"]),
+    )
+    _spec, spec_text, rounds = _spec_and_rounds(pd, pm_home, tickets, "T-7232")
+    with pytest.raises(pd.PMReviewError) as redeclared:
+        pd.parse_pm_review_delta(spec_text, rounds)
+    assert "티켓 안 finding ID 재선언: F-007" in str(redeclared.value)
+    assert first.board_path.exists()
+
+    _write_spec(tickets, "T-7233")
+    _land_round_bypassing_the_gate(
+        pd, pm_home, slot, "T-7233", "code-reviewer",
+        _review_body(pd, "code-reviewer", ["F-001"], ["F-001"]),
+    )
+    _spec2, spec_text2, rounds2 = _spec_and_rounds(pd, pm_home, tickets, "T-7233")
+    with pytest.raises(pd.PMReviewError) as self_confirmed:
+        pd.parse_pm_review_delta(spec_text2, rounds2)
+    assert "confirmation이 선행 finding ID를 참조하지 않음: F-001" in str(
+        self_confirmed.value
+    )
+    assert str(redeclared.value) != str(self_confirmed.value)
+
+
+def test_confirmation_round_referencing_prior_ids_still_lands(
+    pd, rounds_env, monkeypatch, capsys,
+):
+    """역방향 확인 — 규약대로 쓴 확인 라운드(기존 ID 는 확인만·신규는 새 ID)는 그대로 착지한다."""
+    pm_home, slot, tickets, sync_log = rounds_env
+    _write_spec(tickets, "T-7234")
+    _land_review_round(
+        pd, pm_home, slot, "T-7234", _review_body(pd, "code-reviewer", ["F-007"]),
+    )
+    second = pd.prepare_ticket_copy(
+        ticket="T-7234", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+    produced = _write_round_output(
+        second.path, _review_body(pd, "code-reviewer", ["F-008"], ["F-007"]),
+    )
+    capsys.readouterr()
+
+    rc = _harvest_rc(pd, monkeypatch, pm_home, slot, second.path)
+
+    assert rc == 0
+    assert second.board_path.read_text(encoding="utf-8") == produced
+    assert not second.run_dir.exists()          # 정상 회수 = run 닫힘
+    assert _ledger_rows(pm_home)[-1]["harvested_at"] is not None
+    assert [paths for _message, paths in sync_log][-1] == [second.board_path]
+
+
+def test_confirmation_only_and_finding_zero_rounds_pass_the_gate(
+    pd, rounds_env, monkeypatch, capsys,
+):
+    """역방향 — 확인 전용 라운드와 finding 0건 통과 라운드는 게이트를 그대로 지난다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-7240")
+    _land_review_round(
+        pd, pm_home, slot, "T-7240", _review_body(pd, "code-reviewer", ["F-001"]),
+    )
+    confirming = pd.prepare_ticket_copy(
+        ticket="T-7240", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+    produced = _write_round_output(
+        confirming.path, _review_body(pd, "code-reviewer", [], ["F-001"]),
+    )
+    capsys.readouterr()
+
+    assert _harvest_rc(pd, monkeypatch, pm_home, slot, confirming.path) == 0
+    assert confirming.board_path.read_text(encoding="utf-8") == produced
+
+    empty = pd.prepare_ticket_copy(
+        ticket="T-7240", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+    produced = _write_round_output(empty.path, _review_body(pd, "code-reviewer", []))
+
+    assert _harvest_rc(pd, monkeypatch, pm_home, slot, empty.path) == 0
+    assert empty.board_path.read_text(encoding="utf-8") == produced
+    assert not empty.run_dir.exists()
+
+
+def test_both_review_channels_refuse_redeclaration_with_the_same_verdict(
+    pd, rounds_env, monkeypatch, capsys,
+):
+    """채널 파리티 — 같은 형상에 두 채널이 같은 사유를 내고 어느 쪽도 산출을 잃지 않는다."""
+    pm_home, slot, tickets, sync_log = rounds_env
+    external = pd._load_module_from_path(
+        pm_home / ".project_manager" / "tools" / "external_review.py",
+        "external_review.py", verifier=pd._verify_engine_rev,
+    )
+    board = _fixture_board(pd, pm_home, sync_log)
+    rounds_module = pd._load_ticket_rounds()
+
+    _write_spec(tickets, "T-7235")
+    _land_review_round(
+        pd, pm_home, slot, "T-7235", _review_body(pd, "code-reviewer", ["F-007"]),
+    )
+    # 추가 리뷰어 채널의 선행 라운드도 같은 board 트리에 세운다(접두만 다른 같은 형상).
+    external_first = rounds_module.reserve_round(
+        _rounds_dir(pm_home, "T-7235").parent.parent, "T-7235",
+        pd.EXTERNAL_REVIEW_ROLE,
+        content=rounds_module.render_round_header(
+            pd.EXTERNAL_REVIEW_ROLE, today="2026-08-22",
+        ) + "\n\n" + _review_body(pd, pd.EXTERNAL_REVIEW_ROLE, ["X-007"]),
+        lock=board.board_lock(),
+    )
+    assert external_first.exists()
+
+    internal_round = pd.prepare_ticket_copy(
+        ticket="T-7235", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+    reserved = internal_round.board_path.read_bytes()
+    _write_round_output(
+        internal_round.path, _review_body(pd, "code-reviewer", ["F-007"], ["F-007"]),
+    )
+    external_reply = _review_body(pd, pd.EXTERNAL_REVIEW_ROLE, ["X-007"], ["X-007"])
+    capsys.readouterr()
+
+    internal_rc = _harvest_rc(pd, monkeypatch, pm_home, slot, internal_round.path)
+    internal_error = capsys.readouterr().err
+    external_problem = external._reserve_external_review_round(
+        "T-7235", external_reply, delegate=pd, rounds_module=rounds_module, board=board,
+    )
+
+    # 같은 사유 종류 — 채널 ID 접두만 빼면 문장이 bytes 로 같다.
+    _spec, spec_text, rounds = _spec_and_rounds(pd, pm_home, tickets, "T-7235")
+    internal_problem = pd.review_harvest_problem(
+        internal_round.path.read_text(encoding="utf-8"),
+        ticket_text=spec_text, rounds=rounds, reviewer_role=pd.INTERNAL_REVIEW_ROLE,
+    )
+    assert external_problem is not None and internal_problem is not None
+    assert internal_problem.replace("F-007", "<ID>") == external_problem.replace(
+        "X-007", "<ID>",
+    )
+    # 같은 rc — 두 채널 다 거부이고, 거부가 산출을 파괴하지 않는다.
+    assert internal_rc == 1
+    assert internal_problem in internal_error
+    assert internal_round.board_path.read_bytes() == reserved
+    assert internal_round.run_dir.exists()
+    assert _round_names(pm_home, "T-7235", pd.EXTERNAL_REVIEW_ROLE) == [
+        external_first.name,
+    ]
+
+
+def _round_names(pm_home: Path, ticket: str, role: str) -> list[str]:
+    return sorted(
+        item.name for item in _rounds_dir(pm_home, ticket).iterdir()
+        if item.stem.endswith(f"-{role}")
+    )
+
+
+# ── disposition-template ↔ review delta 정합 ──────────────────────────────────
+
+
+def test_disposition_template_skeleton_is_accepted_by_review_delta(pd, rounds_env):
+    """왕복 불변식 — 골격대로 채운 판정은 판정 표면이 그대로 수용한다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    spec_path = _write_spec(tickets, "T-7236")
+    _land_review_round(
+        pd, pm_home, slot, "T-7236",
+        _review_body(pd, "code-reviewer", ["F-001", "F-002"]),
+    )
+    _path, spec_text, rounds = _spec_and_rounds(pd, pm_home, tickets, "T-7236")
+
+    rendered = pd.render_pm_review_disposition_template(spec_text, rounds, 1)
+
+    prefilled = _template_ids(pd, rendered)
+    assert prefilled == ["F-001", "F-002"]      # 정당한 신규 finding 은 빠지지 않는다.
+    spec_path.write_text(
+        spec_text + "\n" + _fill_disposition_template(pd, rendered),
+        encoding="utf-8", newline="",
+    )
+    _path, filled_text, rounds = _spec_and_rounds(pd, pm_home, tickets, "T-7236")
+
+    delta = pd.parse_pm_review_delta(filled_text, rounds)
+
+    assert [finding.id for finding, _row in delta.accepted] == prefilled
+
+
+def test_disposition_template_emits_no_skeleton_for_a_redeclaring_round(
+    pd, rounds_env, capsys,
+):
+    """재선언 혼합 라운드에는 골격을 내지 않는다 — 부분 출력은 왕복을 복구하지 못한다.
+
+    나머지 ID 만 실은 골격을 채워도 판정 표면은 같은 라운드를 통째로 거부한다(왕복 불변식은
+    "골격을 채우면 수용" 아니면 "골격 미출력" 둘 중 하나로만 선다).
+    """
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-7237")
+    _land_review_round(
+        pd, pm_home, slot, "T-7237", _review_body(pd, "code-reviewer", ["F-001"]),
+    )
+    _land_round_bypassing_the_gate(
+        pd, pm_home, slot, "T-7237", "code-reviewer",
+        _review_body(pd, "code-reviewer", ["F-001", "F-002"]),
+    )
+    _path, spec_text, rounds = _spec_and_rounds(pd, pm_home, tickets, "T-7237")
+    capsys.readouterr()
+
+    with pytest.raises(pd.PMReviewError) as refused:
+        pd.render_pm_review_disposition_template(spec_text, rounds, 2)
+
+    assert refused.value.code == "malformed"
+    assert "판정 골격을 내지 않습니다: F-001(티켓 전역 재선언)" in str(refused.value)
+    # 부분 골격도, 그 부분 출력을 알리던 경고도 없다 — 채울 값 자체가 나오지 않는다.
+    assert "F-002" not in str(refused.value)
+    assert "제외한 finding" not in capsys.readouterr().err
+    # 판정 표면도 같은 라운드를 막는다 — template 과 delta 가 같은 상태에 같은 판정을 낸다.
+    with pytest.raises(pd.PMReviewError) as surface:
+        pd.parse_pm_review_delta(spec_text, rounds)
+    assert surface.value.code == "malformed"
+    assert "티켓 안 finding ID 재선언: F-001" in str(surface.value)
+
+
+def test_disposition_template_emits_no_skeleton_when_every_finding_is_refused(
+    pd, rounds_env, capsys,
+):
+    """전량 재선언 라운드도 같은 판정이다 — 빈 골격도 부분 골격도 내지 않는다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-7238")
+    _land_review_round(
+        pd, pm_home, slot, "T-7238", _review_body(pd, "code-reviewer", ["F-001"]),
+    )
+    _land_round_bypassing_the_gate(
+        pd, pm_home, slot, "T-7238", "code-reviewer",
+        _review_body(pd, "code-reviewer", ["F-001"]),
+    )
+    _path, spec_text, rounds = _spec_and_rounds(pd, pm_home, tickets, "T-7238")
+    capsys.readouterr()
+
+    with pytest.raises(pd.PMReviewError) as refused:
+        pd.render_pm_review_disposition_template(spec_text, rounds, 2)
+
+    assert refused.value.code == "malformed"
+    assert "판정 골격을 내지 않습니다: F-001(티켓 전역 재선언)" in str(refused.value)
+    assert "제외한 finding" not in capsys.readouterr().err
+
+
+def test_disposition_template_emits_no_skeleton_for_a_self_confirming_round(
+    pd, rounds_env, capsys,
+):
+    """자기-확인 혼합 라운드도 골격 미출력이다 — 표면이 그 라운드를 다른 축으로 막는다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-7239")
+    _land_round_bypassing_the_gate(
+        pd, pm_home, slot, "T-7239", "code-reviewer",
+        _review_body(pd, "code-reviewer", ["F-001", "F-002"], ["F-001"]),
+    )
+    _path, spec_text, rounds = _spec_and_rounds(pd, pm_home, tickets, "T-7239")
+    capsys.readouterr()
+
+    with pytest.raises(pd.PMReviewError) as refused:
+        pd.render_pm_review_disposition_template(spec_text, rounds, 1)
+
+    assert refused.value.code == "malformed"
+    assert "판정 골격을 내지 않습니다: F-001(같은 라운드 자기-확인)" in str(refused.value)
+    assert "F-002" not in str(refused.value)
+    assert "제외한 finding" not in capsys.readouterr().err
+    with pytest.raises(pd.PMReviewError) as surface:
+        pd.parse_pm_review_delta(spec_text, rounds)
+    assert surface.value.code == "malformed"
+    assert "confirmation이 선행 finding ID를 참조하지 않음: F-001" in str(surface.value)
+
+
+def test_clean_confirmation_round_skeleton_is_still_accepted_by_review_delta(
+    pd, rounds_env,
+):
+    """역방향 — 재선언·자기-확인이 없는 확인 라운드는 종전대로 골격을 내고 delta 가 수용한다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    spec_path = _write_spec(tickets, "T-7240")
+    _land_review_round(
+        pd, pm_home, slot, "T-7240", _review_body(pd, "code-reviewer", ["F-001"]),
+    )
+    _path, spec_text, rounds = _spec_and_rounds(pd, pm_home, tickets, "T-7240")
+    first = pd.render_pm_review_disposition_template(spec_text, rounds, 1)
+    spec_path.write_text(
+        spec_text + "\n" + _fill_disposition_template(pd, first),
+        encoding="utf-8", newline="",
+    )
+    # 정상 확인 라운드 — 선행 F-001 은 `confirmations` 로만 참조하고 F-002 를 새로 낸다.
+    _land_review_round(
+        pd, pm_home, slot, "T-7240",
+        _review_body(pd, "code-reviewer", ["F-002"], ["F-001"]),
+    )
+    _path, spec_text, rounds = _spec_and_rounds(pd, pm_home, tickets, "T-7240")
+
+    rendered = pd.render_pm_review_disposition_template(spec_text, rounds, 2)
+
+    assert _template_ids(pd, rendered) == ["F-002"]
+    spec_path.write_text(
+        spec_text + "\n" + _fill_disposition_template(pd, rendered),
+        encoding="utf-8", newline="",
+    )
+    _path, filled_text, rounds = _spec_and_rounds(pd, pm_home, tickets, "T-7240")
+
+    delta = pd.parse_pm_review_delta(filled_text, rounds)
+
+    assert [finding.id for finding, _row in delta.accepted] == ["F-002"]
+
+
+def test_pre_change_confirmation_seed_stays_pending_through_an_unchanged_harvest(
+    pd, rounds_env, monkeypatch, capsys,
+):
+    """업그레이드 창 — 문구를 바꾸기 전에 예약된 확인 라운드 시드도 산출 없음으로 남는다.
+
+    board·슬롯 사본에 옛 문구 bytes 를 그대로 두고 실 CLI 회수를 태운다. 회수는 board 를 바꾸지
+    않고(rc 0 · 산출 없음), 그 라운드는 pending 이라 판정 표면을 막지 않는다.
+    """
+    pm_home, slot, tickets, _sync = rounds_env
+    spec_path = _write_spec(tickets, "T-7241")
+    _land_review_round(
+        pd, pm_home, slot, "T-7241", _review_body(pd, "code-reviewer", ["F-001"]),
+    )
+    _path, spec_text, rounds = _spec_and_rounds(pd, pm_home, tickets, "T-7241")
+    spec_path.write_text(
+        spec_text + "\n" + _fill_disposition_template(
+            pd, pd.render_pm_review_disposition_template(spec_text, rounds, 1),
+        ),
+        encoding="utf-8", newline="",
+    )
+
+    plan = pd.prepare_ticket_copy(
+        ticket="T-7241", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+    seeded = plan.board_path.read_text(encoding="utf-8")
+    legacy = seeded.replace(
+        pd.CONFIRM_ROUND_SCOPE_RULE, pd.LEGACY_CONFIRM_ROUND_SCOPE_RULES[0],
+    )
+    assert legacy != seeded and pd.CONFIRM_ROUND_SCOPE_RULE not in legacy
+    pd._load_ticket_rounds().replace_round(plan.board_path, legacy)
+    plan.path.write_text(legacy, encoding="utf-8", newline="")
+    capsys.readouterr()
+
+    assert _harvest_rc(pd, monkeypatch, pm_home, slot, plan.path) == 0
+
+    assert "산출 없음" in capsys.readouterr().err
+    assert plan.board_path.read_text(encoding="utf-8") == legacy
+    assert plan.run_dir.exists()
+    _path, filled_text, rounds = _spec_and_rounds(pd, pm_home, tickets, "T-7241")
+    landed = next(item for item in rounds if item.ordinal == plan.ordinal)
+    assert landed.pending is True
+
+    delta = pd.parse_pm_review_delta(filled_text, rounds)
+
+    assert [finding.id for finding, _row in delta.accepted] == ["F-001"]

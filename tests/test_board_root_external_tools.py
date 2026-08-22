@@ -159,7 +159,8 @@ def test_bootstrap_auto_slot_uses_board_areas_when_separated(bootstrap):
         '{"leases": [{"repo": "project_manager", "slot": "work/project_manager_1"}]}',
         encoding="utf-8")
     # leases_file 만 명시(board_root 추종 areas 는 _registered_repos 가 자동해소).
-    assert bootstrap._auto_slot(leases_file=leases) == ("project_manager", 1)
+    resolved = bootstrap._auto_slot(leases_file=leases)
+    assert (resolved.key, resolved.slot) == ("project_manager_1", "work/project_manager_1")
 
 
 def test_bootstrap_instance_areas_file_follows_board_root(bootstrap):

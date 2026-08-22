@@ -607,7 +607,7 @@ def _report_partial_run_absorption() -> None:
         file=sys.stderr,
     )
 
-# manifest 의 render 태그 () — path 행 끝 `  @render` 면 byte-copy 대신 render_adapter.
+# manifest 의 render 태그 — path 행 끝 `  @render` 면 byte-copy 대신 render_adapter.
 RENDER_TAG = "@render"
 # manifest 의 target-owned 태그 — path 행 끝 `  @target-owned` 면 그 경로는 타깃 자신만
 # 보유하는 어댑터다(엔진 upstream/루트에 source 부재가 정상). source-부재 skip 의 *명시* 판별자.
@@ -2276,7 +2276,7 @@ def summarize_upstream_changes(
     git_runner=None,
     dest_root: Path | None = None,
 ) -> dict:
-    """upstream 로컬 checkout 의 baseline..HEAD 변경점을 read-only 로 요약한다 ().
+    """upstream 로컬 checkout 의 baseline..HEAD 변경점을 read-only 로 요약한다.
 
     채택자가 받은 baseline(`upstream_rev`) ↔ 그 이후 upstream HEAD 에 쌓인 변경을 *이미 로컬에
     있는* checkout 에서 `git log`/`diff --name-status` 로 집계한다 — **fetch/clone 안 함**
@@ -3231,8 +3231,8 @@ def resolve_manifest_selfheal(
       - manifest: plan 이 쓸 ManifestEntry 리스트 — 'heal' 이면 flavor upstream_entries, 그 외 None
                   (None 이면 호출부가 resolve_manifest_for_dest 산출 로컬 manifest 를 그대로 쓴다).
       - upstream_manifest: 대조에 쓴 flavor-correct upstream engine.manifest **Path** — 호출부(main)가
-                  이 경로를 detect_manifest_skew 에 그대로 넘겨 두 기전의 대조 기준을 flavor 로 정합시킨다
-                  (). 로컬 manifest 부재('no_local')는 self-prop 이 없어 root 폴백 경로.
+                  이 경로를 detect_manifest_skew 에 그대로 넘겨 두 기전의 대조 기준을 flavor 로 정합시킨다.
+                  로컬 manifest 부재('no_local')는 self-prop 이 없어 root 폴백 경로.
     """
     dest_manifest = Path(effective_dest) / ".project_manager" / "engine.manifest"
     root_manifest = Path(source_root) / ".project_manager" / "engine.manifest"
@@ -3580,7 +3580,7 @@ def _operational_from_local_conf(dest_root: Path) -> tuple[dict[str, str], list[
     local.conf 키(lowercase) → operational token key(uppercase). board.py init 이 안 쓴 키는
     포함하지 않는다(빈값 강제 안 함). 출하 어댑터의 operational 토큰은 import sed 로 이미
     리터럴이라 render 시점엔 보통 부재 — 이 매핑은 재렌더가 그 토큰을 만났을 때 local.conf
-    단일 진실로 재유도하기 위한 것().
+    단일 진실로 재유도하기 위한 것.
 
     **값이 빈 문자열인 키도 dict 에서 제외**한다(부재와 동일 취급) — 빈값을 그대로
     넘기면 렌더가 토큰을 빈 문자열로 silent 치환해(예: `project_name=` 빈값 → description 이
@@ -3865,7 +3865,7 @@ def _render_eq_dst(
     flat_command_skill: str | None = None,
     codex_operational_skill: str | None = None,
 ) -> bool:
-    """render path 의 '변경 없음' 정직 판정 — 렌더 산출물 == dst 현재 내용 ().
+    """render path 의 '변경 없음' 정직 판정 — 렌더 산출물 == dst 현재 내용.
 
     filecmp.cmp(템플릿, dst) 는 render path 에 *틀림*(템플릿은 렌더 산출물과 byte-equal 일 수
     없어 항상 update 오보). 대신 source 를 dest 의 local.conf(operational)로 렌더해 dst 와 비교한다.
@@ -3903,7 +3903,7 @@ def plan(
     manifest 항목이 `ManifestEntry`(render 플래그 운반·read_manifest 산출)면 그 path 의 render
     여부를 dst(`_RenderDst` 래퍼)에 실어 apply 가 byte-copy vs render 를 분기하게 한다. 평문
     str 항목(레거시 호출)은 render=False(후방호환·순수 copy2). render path 의 변경검출은
-    filecmp 대신 rendered-output 비교(`_render_eq_dst`) — 템플릿≠산출물 오보 회피().
+    filecmp 대신 rendered-output 비교(`_render_eq_dst`) — 템플릿≠산출물 오보 회피.
 
     render_enabled=False 면 operational 전체 렌더는 끈다. 다만 entry notation context가 있으면
     ``@render`` 어댑터와 공유 canonical wiki의 `/pm-*` 호출 토큰만 타깃 표기로 바꾼다. 프로젝트명
@@ -4217,7 +4217,7 @@ def _print_retired_manifest_files(retired: list[str]) -> None:
 # engine.manifest 는 self-prop `@source` 라 apply 가 upstream 사본으로 통째 덮어쓴다(guest 는 로컬-전용
 # → selfheal 'diverged' 도 *파일* overwrite 는 못 막는다·plan 에 self-prop change 가 실린다·실측). 그래서
 # add_harness 가 등재한 guest `@render` 가 1회 update 만에 사라져 렌더/overlay 스캔 커버리지가 끊기던 것을
-# () 이 마커 구획으로 닫는다: apply 가 engine.manifest 를 덮기 **전** dest 의 guest 절을
+# 이 마커 구획으로 닫는다: apply 가 engine.manifest 를 덮기 **전** dest 의 guest 절을
 # 추출 → 덮은 **뒤** 재부착한다. 마커는 read_manifest 가 '#' 주석으로 무시하고, 절 안의 라인은
 # `@render @target-owned` 유효 항목이라 파서/스캔/렌더가 그대로 소비한다(판정원 단일 = engine.manifest
 # 최종 뷰 하나). 절의 *값* 은 pm_import.add_harness 가 쓴다(같은 리터럴 공유·아래 상수 블록).
@@ -4992,7 +4992,7 @@ def _render_new_entry_doc(
 
 
 # quoted-string 원소 추출 (escape-aware) — 등록-확인을 substring 이 아니라 *정확 원소* 대조로
-# (): `.opencode/pm-instructions.md.bak` 같은 suffix 나 문자열-내
+# `.opencode/pm-instructions.md.bak` 같은 suffix 나 문자열-내
 # 부분일치를 "이미 등록"으로 오인하지 않게 한다.
 _JSONC_STRING_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
 # 최상위(depth==1) `"instructions"` 키 + 배열 여는 `[` — brace-depth 스캐너가 이 위치에서 match.
@@ -5079,7 +5079,7 @@ def _scan_array_end(masked: str, body_start: int) -> int:
 def _find_toplevel_instructions(masked: str) -> tuple[int | None, int | None, int | None]:
     """주석-마스킹된 jsonc 에서 **최상위(depth==1)** `"instructions"` 배열을 brace-depth 추적으로 찾는다.
 
-    중첩 객체(agent/provider 블록 등)의 `"instructions"` 는 무시한다() — opencode 가 읽는
+    중첩 객체(agent/provider 블록 등)의 `"instructions"` 는 무시한다 — opencode 가 읽는
     진입 지침 배열은 최상위 키 하나다. 문자열 리터럴 내 brace/bracket 은 세지 않는다(문자열 상태 추적).
 
     반환 (body_start, body_end, root_end):
@@ -5132,7 +5132,7 @@ def _ensure_jsonc_instructions(jsonc_text: str) -> tuple[str, bool]:
     JSONC(주석)라 json.load 불가 — 주석을 **오프셋 보존 마스킹**한 사본 위에서 **brace-depth 추적**
     으로 위치를 구하고 원본에 같은 오프셋으로 write 한다(비파괴·주석·타 키·provider 보존).
 
-    **최상위(depth==1) 한정** (): 중첩 객체(agent/provider)의 `"instructions"` 가 파일에서
+    **최상위(depth==1) 한정**: 중첩 객체(agent/provider)의 `"instructions"` 가 파일에서
     먼저 나와도 그 중첩 배열에 삽입하지 않는다 — opencode 가 로드하는 진입 지침은 최상위 키다.
     등록-확인은 **quoted-string 원소 정확 대조**(substring 오인 방지·주석-아웃/`.bak` suffix)."""
     rel = _ENTRY_DOC_PM_INSTRUCTIONS_REL
@@ -5661,7 +5661,7 @@ def check_adapter_hook_sets(dest_root: Path, source_root: Path) -> dict:
 
     판정 실패는 `status="unavailable"` 로 내린다(형제 `sync_adapter_configs` 와 같은 fail-soft
     — 이 검사가 성공한 엔진 동기를 traceback 으로 덮지 않는다). 엔진 사본 skew 만 예외."""
-    result: dict = {"status": "ok", "findings": [], "reason": None}
+    result: dict = {"status": "ok", "findings": [], "entrypoints": [], "reason": None}
     try:
         # 판정 선언은 **상류 세대**를 우선한다 — 상류가 이번에 들여오는 새 플래그를 설치본 선언은
         #   모르므로, 그 세대로 보면 요구를 "선언 밖 플래그" 로 접어 green 이 된다. 조회 성격이라
@@ -5685,6 +5685,17 @@ def check_adapter_hook_sets(dest_root: Path, source_root: Path) -> dict:
                 "그 세대가 아는 세대 불일치는 그대로 잡는다)")
             findings = judge(dest_root, source_root)
         remedy_lines = pm_import.hook_set_remedy_lines
+        # 역방향 진입점 축은 **별도 목록**이다 — 완료 게이트가 소비하는 `findings` 에 섞으면
+        #   advisory 가 차단으로 승격돼 훅을 의도적으로 끈 채택자의 흡수가 영구히 막힌다.
+        #   판정 함수가 없는 구세대 형제는 조용히 건너뛴다(그 세대엔 이 개념이 없다).
+        entrypoint_judge = getattr(pm_import, "judge_adapter_hook_entrypoints", None)
+        entrypoint_lines = getattr(pm_import, "hook_entrypoint_advisory_lines", None)
+        entrypoint_findings = (
+            [] if entrypoint_judge is None or entrypoint_lines is None
+            else entrypoint_judge(dest_root, source_root,
+                                  declarations=generation.declarations)
+            if _sibling_accepts_kwarg(entrypoint_judge, "declarations")
+            else entrypoint_judge(dest_root, source_root))
     except Exception as exc:  # noqa: BLE001 — 판정 실패가 동기를 무효화하지 않는다.
         # 사본 rev 혼합도 등록된 경계로 흡수한다 — 이건 채널이 아니라 **가드**라, 판정 채널이
         #   혼합 트리에서 안 열리면 검사를 unavailable 로 접고(경고는 loud) 동기는 완주시킨다.
@@ -5696,6 +5707,13 @@ def check_adapter_hook_sets(dest_root: Path, source_root: Path) -> dict:
          "unmet_paths": list(finding.unmet_paths), "remedy": finding.remedy,
          "detail": finding.detail, "remedy_lines": remedy_lines(finding)}
         for finding in findings
+    ]
+    result["entrypoints"] = [
+        {"harness": finding.harness, "config_relpath": finding.config_relpath,
+         "kind": finding.kind, "event": finding.event, "matcher": finding.matcher,
+         "dispatcher": finding.dispatcher, "detail": finding.detail,
+         "remedy_lines": entrypoint_lines(finding)}
+        for finding in entrypoint_findings
     ]
     return result
 
@@ -5850,6 +5868,12 @@ def _print_adapter_hook_set_finding(result: dict, *, dry_run: bool = False) -> N
         return
     for finding in result.get("findings", []):
         print(f"⚠️  어댑터 훅 세트 세대 불일치({finding['harness']}) — {finding['detail']}.",
+              file=sys.stderr)
+        for line in finding["remedy_lines"]:
+            print(f"    → {line}", file=sys.stderr)
+    # 역방향 진입점 축은 advisory 다 — 같은 자리에서 loud 하게 내되 게이트는 안 건드린다.
+    for finding in result.get("entrypoints", []):
+        print(f"⚠️  어댑터 훅 진입점 누락({finding['harness']}) — {finding['detail']}.",
               file=sys.stderr)
         for line in finding["remedy_lines"]:
             print(f"    → {line}", file=sys.stderr)
@@ -6568,7 +6592,7 @@ def _main(argv: list[str] | None = None) -> int:
     #    비대칭·@target-owned 등) 대조하면 대량 오탐 + baseline 억제가 된다. --target 은 검출/억제
     #    를 비발화하고 현행 거동(무조건 baseline 갱신)을 유지한다(codex must-fix).
     #
-    #    **flavor-correct 대조 기준 통일** (): skew 대조 upstream manifest 는 selfheal 이
+    #    **flavor-correct 대조 기준 통일**: skew 대조 upstream manifest 는 selfheal 이
     #    해소한 *동일* flavor-correct 경로(`selfheal["upstream_manifest"]`)를 넘긴다 — 안 그러면
     #    flavor 채택자(@source self-prop)가 치유 후에도 root-only 경로(`.claude/agents` 등)를 skew
     #    오탐해 baseline 이 억제된다(승격 기준 == 탐지 기준). 승격되면 manifest==flavor
@@ -6728,7 +6752,7 @@ def _main(argv: list[str] | None = None) -> int:
     _print_manifest_selfheal_finding(selfheal, dry_run=False)
     _print_manifest_skew_finding(skew_status, skew_new, dry_run=False)
     if do_migrate:
-        # 전환 write 는 apply(changes) 성공 이후 — 반쪽 상태 방지().
+        # 전환 write 는 apply(changes) 성공 이후 — 반쪽 상태 방지.
         result = migrate_entry_doc(effective_dest, source_root, write=True)
         _print_entry_doc_migration_finding(result, dry_run=False)
 

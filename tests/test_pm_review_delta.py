@@ -66,12 +66,12 @@ class _Ticket:
         ]
 
 
-def _round(pd, ordinal: int, text: str, role: str = "code-reviewer"):
+def _round(pd, ordinal: int, text: str, role: str = "code-reviewer", *, pending: bool = False):
     rounds_module = pd._load_ticket_rounds()
     return rounds_module.Round(
         ordinal=ordinal, role=role,
         path=Path(rounds_module.round_filename(ordinal, role)),
-        text=text, pending=False,
+        text=text, pending=pending,
     )
 
 
@@ -598,3 +598,258 @@ def test_review_delta_cli_blocks_on_round_gap(pd, monkeypatch, tmp_path, capsys)
     assert pd.main(["review", "delta", "--ticket", "T-0685"]) == 1
     error = capsys.readouterr().err
     assert "round-gap" in error and "빠진 순번" in error
+
+
+# ── 시드 그대로인(pending) 리뷰 라운드는 판정 표면 밖 ────────────────────
+
+def _pending_seed_text(pd, role: str, spec_text: str, previous_round: tuple[int, str]) -> str:
+    """엔진이 렌더한 시드 본문 그대로 — 헤더는 직전 라운드 첫 줄을 재사용해 손으로 다시 짓지 않는다."""
+    previous_header = previous_round[1].splitlines()[0]
+    body = pd.render_ticket_growth_section_seed(role, spec_text, previous_round=previous_round)
+    return f"{previous_header}\n\n{body}"
+
+
+def test_pending_seed_review_round_is_excluded_from_the_judgment_surface(pd):
+    """kill·미회수로 시드 그대로 남은 다음 라운드는 판정 표면에 오르지 않는다.
+
+    시드 골격의 자리표시 finding(`class` 값이 `<...>` 그대로)이 실 선언으로 읽히면
+    `parse_pm_review_delta` 가 malformed 로 막힌다 — 표면 함수뿐 아니라, 그 함수를 거치지
+    않고 라운드를 직접 순회해 reviewer block 을 모으는 내부 구간도 같은 배제가 있어야
+    막히지 않는다.
+    """
+    round1 = _round(pd, 1, _review_section({
+        "version": BLOCK_VERSION,
+        "findings": [_finding("implementation-defect")],
+        "confirmations": [],
+    }).round_texts[0])
+    spec = _disposition(1, [_decision("accepted")]).spec
+    round2 = _round(
+        pd, 2, _pending_seed_text(pd, "code-reviewer", spec, (1, round1.text)), pending=True,
+    )
+
+    assert pd._pm_review_surface_rounds([round1, round2]) == [round1]
+    delta = pd.parse_pm_review_delta(spec, [round1, round2])
+    assert [finding.id for finding, _disposition in delta.accepted] == ["F-001"]
+
+
+def test_pending_seed_round_does_not_shadow_a_legitimate_trailing_round(pd):
+    """정당한 산출이 있는 뒤 라운드는 그 뒤에 낀 시드 라운드가 있어도 그대로 판정된다.
+
+    round2 가 F-001 을 실제로 해소 확인하는 라운드다. round3(시드 그대로)을 더 붙여도
+    round2 의 산출은 과잉 배제 없이 그대로 반영되어야 한다."""
+    first = _review_section({
+        "version": BLOCK_VERSION,
+        "findings": [_finding("implementation-defect")],
+        "confirmations": [],
+    })
+    disposition = _disposition(1, [_decision("accepted")])
+    resolved = _review_section({
+        "version": BLOCK_VERSION,
+        "findings": [],
+        "confirmations": [{"id": "F-001", "status": "resolved", "evidence": "probe rc=0"}],
+    })
+    ticket = first + disposition + resolved
+    rounds = ticket.rounds(pd)
+    round3 = _round(
+        pd, 3,
+        _pending_seed_text(pd, "code-reviewer", ticket.spec, (2, rounds[1].text)),
+        pending=True,
+    )
+
+    assert pd._pm_review_surface_rounds(rounds + [round3]) == rounds
+    delta = pd.parse_pm_review_delta(ticket.spec, rounds + [round3])
+    assert delta == pd.parse_pm_review_delta(ticket.spec, rounds) == pd.PMReviewDelta((), False)
+
+
+def test_pending_seed_round_leaves_delta_output_bytes_unchanged(pd):
+    """pending 라운드가 없는 형상과 비교해 delta 산출이 bytes 로 같다.
+
+    시드 라운드를 뒤에 덧붙여도 이미 accepted 판정된 F-001 의 delta 렌더는 한 글자도
+    안 바뀐다."""
+    round1 = _round(pd, 1, _review_section({
+        "version": BLOCK_VERSION,
+        "findings": [_finding("implementation-defect")],
+        "confirmations": [],
+    }).round_texts[0])
+    spec = _disposition(1, [_decision("accepted")]).spec
+    round2 = _round(
+        pd, 2, _pending_seed_text(pd, "code-reviewer", spec, (1, round1.text)), pending=True,
+    )
+    baseline = [round1]
+    with_pending = [round1, round2]
+
+    baseline_delta = pd.parse_pm_review_delta(spec, baseline)
+    with_pending_delta = pd.parse_pm_review_delta(spec, with_pending)
+    assert baseline_delta == with_pending_delta
+    assert (
+        pd.render_pm_review_delta("T-TEST", baseline_delta)
+        == pd.render_pm_review_delta("T-TEST", with_pending_delta)
+    )
+
+
+def test_pending_seed_round_leaves_prep_surface_output_bytes_unchanged(pd):
+    """pending 라운드가 없는 형상과 비교해 disposition-template·confirmable 산출이 bytes 로
+    같다 — 아직 PM 미판정인 F-001 의 준비 골격·확인 대상 ID 는 시드 라운드를 덧붙여도
+    그대로다."""
+    round1 = _round(pd, 1, _review_section({
+        "version": BLOCK_VERSION,
+        "findings": [_finding("implementation-defect")],
+        "confirmations": [],
+    }).round_texts[0])
+    spec = ""
+    round2 = _round(
+        pd, 2, _pending_seed_text(pd, "code-reviewer", spec, (1, round1.text)), pending=True,
+    )
+    baseline = [round1]
+    with_pending = [round1, round2]
+
+    assert (
+        pd.render_pm_review_disposition_template(spec, baseline)
+        == pd.render_pm_review_disposition_template(spec, with_pending)
+    )
+    assert (
+        pd.collect_confirmable_finding_ids(spec, "code-reviewer", baseline)
+        == pd.collect_confirmable_finding_ids(spec, "code-reviewer", with_pending)
+    )
+
+
+# ── 세 CLI 표면(review delta·review verify-template·rounds resolve --pm-verified) ──
+
+def _materialize_rounds(pd, spec_text: str, rounds, tickets_dir: Path, ticket_id: str) -> Path:
+    """명세 파일 + (역할이 섞일 수 있는) 라운드 목록을 실 파일로 깐다."""
+    rounds_module = pd._load_ticket_rounds()
+    spec_path = tickets_dir / "claimed" / f"{ticket_id}-review.md"
+    spec_path.parent.mkdir(parents=True, exist_ok=True)
+    spec_path.write_text(spec_text, encoding="utf-8", newline="")
+    rounds_dir = rounds_module.rounds_dir_for_ticket(ticket_id, tickets_dir)
+    rounds_dir.mkdir(parents=True, exist_ok=True)
+    for item in rounds:
+        (rounds_dir / rounds_module.round_filename(item.ordinal, item.role)).write_text(
+            item.text, encoding="utf-8", newline="",
+        )
+    return spec_path
+
+
+def test_review_delta_cli_ignores_a_pending_seed_round(pd, monkeypatch, tmp_path, capsys):
+    """실 라운드 파일로 깐 티켓에서 시드 라운드가 섞여도 `review delta` CLI 는 rc=0."""
+    tickets_dir = tmp_path / "tickets"
+    round1_text = _review_section({
+        "version": BLOCK_VERSION,
+        "findings": [_finding("implementation-defect")],
+        "confirmations": [],
+    }).round_texts[0]
+    spec = _disposition(1, [_decision("accepted")]).spec
+    round2_text = _pending_seed_text(pd, "code-reviewer", spec, (1, round1_text))
+    ticket_path = _materialize(pd, _Ticket(spec, (round1_text, round2_text)), tickets_dir, "T-0684")
+
+    loaded = pd._load_ticket_rounds().load_rounds(tickets_dir, "T-0684", ticket_text=spec)
+    assert [item.pending for item in loaded] == [False, True]
+
+    class FakeBoard:
+        @staticmethod
+        @contextlib.contextmanager
+        def board_lock():
+            yield
+
+        @staticmethod
+        def find_ticket_exact(_ticket):
+            return "claimed", ticket_path
+
+        @staticmethod
+        def tickets_dir():
+            return tickets_dir
+
+    monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
+    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _owner: FakeBoard())
+    assert pd.main(["review", "delta", "--ticket", "T-0684"]) == 0
+    assert "F-001" in capsys.readouterr().out
+
+
+def test_review_verify_template_cli_ignores_a_pending_seed_round(pd, monkeypatch, tmp_path, capsys):
+    """developer 라운드 뒤에 시드 그대로인 리뷰 라운드가 이어져도 `verify-template` CLI 는 rc=0."""
+    tickets_dir = tmp_path / "tickets"
+    round1_text = _review_section({
+        "version": BLOCK_VERSION,
+        "findings": [_finding("implementation-defect")],
+        "confirmations": [],
+    }).round_texts[0]
+    spec = _disposition(1, [_decision("accepted")]).spec
+    round1 = _round(pd, 1, round1_text)
+    dev_round = _round(pd, 2, (
+        "## 구현 보충 (developer · 2026-08-14)\n\n## 변경 파일\n- x\n\n"
+        f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n"
+        + json.dumps({
+            "version": pd.PM_REVIEW_VERIFY_VERSION,
+            "verifications": [{
+                "id": "F-001", "machine_verifiable": True, "command": "echo hi",
+                "expected": "hi", "before": "bye", "reason": "",
+            }],
+        })
+        + "\n```\n"
+    ), role="developer")
+    round3_text = _pending_seed_text(pd, "code-reviewer", spec, (1, round1_text))
+    round3 = _round(pd, 3, round3_text, pending=True)
+    ticket_path = _materialize_rounds(
+        pd, spec, [round1, dev_round, round3], tickets_dir, "T-0786",
+    )
+
+    loaded = pd._load_ticket_rounds().load_rounds(tickets_dir, "T-0786", ticket_text=spec)
+    assert [item.pending for item in loaded] == [False, False, True]
+
+    class FakeBoard:
+        @staticmethod
+        @contextlib.contextmanager
+        def board_lock():
+            yield
+
+        @staticmethod
+        def find_ticket_exact(_ticket):
+            return "claimed", ticket_path
+
+        @staticmethod
+        def tickets_dir():
+            return tickets_dir
+
+    monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
+    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _owner: FakeBoard())
+    assert pd.main(["review", "verify-template", "--ticket", "T-0786"]) == 0
+    assert pd.PM_REVIEW_CONFIRMATION_BLOCK in capsys.readouterr().out
+
+
+def test_pm_verified_evidence_problem_ignores_a_pending_seed_round(pd, tmp_path):
+    """`rounds resolve --pm-verified` 가 소비하는 증거 판정도 시드 라운드에 막히지 않는다."""
+    tickets_dir = tmp_path / "tickets"
+    round1_text = _review_section({
+        "version": BLOCK_VERSION,
+        "findings": [_finding("implementation-defect")],
+        "confirmations": [],
+    }).round_texts[0]
+    round1 = _round(pd, 1, round1_text)
+    dev_round = _round(pd, 2, (
+        "## 구현 보충 (developer · 2026-08-14)\n\n## 변경 파일\n- x\n\n"
+        f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n"
+        + json.dumps({
+            "version": pd.PM_REVIEW_VERIFY_VERSION,
+            "verifications": [{
+                "id": "F-001", "machine_verifiable": True, "command": "echo hi",
+                "expected": "hi", "before": "bye", "reason": "",
+            }],
+        })
+        + "\n```\n"
+    ), role="developer")
+    round3_text = _pending_seed_text(pd, "code-reviewer", "", (1, round1_text))
+    round3 = _round(pd, 3, round3_text, pending=True)
+
+    confirmation = _Ticket(f"```{pd.PM_REVIEW_CONFIRMATION_BLOCK}\n" + json.dumps({
+        "version": pd.PM_REVIEW_MACHINE_CONFIRMATION_VERSION, "round": 2,
+        "confirmations": [{
+            "id": "F-001", "status": "resolved", "command": "echo hi", "observed": "hi",
+        }],
+    }) + "\n```\n")
+    spec = (_disposition(1, [_decision("accepted")]) + confirmation).spec
+    _materialize_rounds(pd, spec, [round1, dev_round, round3], tickets_dir, "T-0786")
+
+    rounds_module = pd._load_ticket_rounds()
+    loaded = rounds_module.load_rounds(tickets_dir, "T-0786", ticket_text=spec)
+    assert [item.pending for item in loaded] == [False, False, True]
+    assert pd.pm_verified_evidence_problem(spec, loaded) is None

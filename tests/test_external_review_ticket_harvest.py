@@ -1038,6 +1038,35 @@ def test_reused_finding_id_is_refused_and_the_next_round_can_land(
     assert sorted(finding.id for finding, _row in delta.accepted) == ["X-001", "X-002"]
 
 
+def test_self_confirmed_new_finding_is_refused_and_the_next_round_can_land(
+    external, pd, monkeypatch, tmp_path, capsys,
+):
+    """자기 신규 ID 를 `findings`·`confirmations` 양쪽에 실은 회신은 회수하지 않는다.
+
+    선행 선언이 공집합인 첫 라운드에서 나오는 형상이라 재선언 축이 아니라 블록 축에서 걸린다 —
+    판정 표면은 이 형상을 "confirmation이 선행 finding ID를 참조하지 않음"으로 막는다.
+    """
+    conf = {"review_rounds_max": "9"}
+    _seed_board(tmp_path)
+    finding = _finding("X-001")
+    _wire(external, monkeypatch, tmp_path, _confirming_reject_reply(
+        finding, {"id": "X-001", "status": "resolved", "evidence": "자기-확인"},
+    ), conf=conf)
+
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+
+    err = capsys.readouterr().err
+    assert "회수 문제" in err and "ID 중복: X-001" in err
+    assert _round_paths(tmp_path) == []            # 거부 산출은 라운드가 되지 않는다.
+
+    # 규약대로 나눠 낸 다음 라운드는 그대로 착지한다(역방향).
+    _wire(external, monkeypatch, tmp_path, _reject_reply(finding), conf=conf)
+    assert _run(external, tmp_path, "--ticket", TICKET) == 1
+    assert len(_round_paths(tmp_path)) == 1
+    delta = _delta(pd, tmp_path, _disposition("X-001"))
+    assert [item.id for item, _row in delta.accepted] == ["X-001"]
+
+
 def test_confirmation_round_may_reference_existing_ids(
     external, pd, monkeypatch, tmp_path,
 ):

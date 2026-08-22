@@ -537,6 +537,7 @@ def test_line_invariant_requires_exact_matched_span_reconstruction(stripper):
         ("A B", "A  B", "double-space"),
         ("A·B", "A·①", "orphan-marker-after-separator"),
         ("A·B", "A·A6", "orphan-marker-after-separator"),
+        ("# 사유 (T-0146·).", "# 사유 ().", "empty-paren"),
     ],
 )
 def test_delta_scan_rejects_each_new_pattern(

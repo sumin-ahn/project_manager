@@ -3648,6 +3648,9 @@ def test_task_prefix_task_missing_refuses_with_bootstrap_hint(pc, capsys):
     assert rc == 1
     err = capsys.readouterr().err
     assert "pm-bootstrap" in err and "ghost" in err
+    # T-0810 — 스트립이 남긴 빈 괄호 잔재(`()`) 정정 확인(실 CLI 출력 값 단언·조립 문자열 금지).
+    assert "()" not in err
+    assert "정체성을 생성하지 않는다. 먼저" in err
 
 
 def test_task_prefix_engine_missing_errors(pc, capsys, monkeypatch):
