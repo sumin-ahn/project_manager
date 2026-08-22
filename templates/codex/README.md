@@ -68,7 +68,13 @@ PowerShell 5.1 리다이렉션의 cp949 기본값에서도 JSON이 깨지지 않
   `hookSpecificOutput.additionalContext`는 **모델에 닿는다**. 격리 `CODEX_HOME` 라이브 실측
   (codex-cli 0.147.0)에서 세션 안 ctx 넛지 문구가 rollout에 `role:"developer"` 입력 레코드로
   남고 모델이 그 문구를 verbatim 인용했다. 그래서 세션 안 안내는 `systemMessage`가 아니라
-  이 채널을 쓴다.
+  이 채널을 쓴다. **단, 이 넛지는 새 thread 첫 turn 은 보호하지 못한다** — 점유의 첫 기록은
+  첫 모델 응답 뒤 `token_count` 라 첫 요청 시점엔 측정치가 없고, 훅 payload 스키마에도 대체
+  신호가 없다(라이브 실측). 그 구간은 사용률을 만들어 내지 않고 침묵한다(0%로 오보하지 않음).
+  `codex exec resume`·compaction 은 같은 rollout 을 이어 써서 이미 보호되므로, 무방비는 새
+  thread 첫 요청 1회뿐이다. **이 실측 범위는 `codex exec`/`exec resume`/auto-compaction 뿐이다
+  — direct TUI 는 미실측이다.** 코어 rollout writer 공유라 같은 양상일 것으로 예상하나
+  확인된 사실이 아니다.
 - relay: `codex exec --json`의 `turn.completed.usage` 누계를 매 turn 파싱하고 직전 누계와의 차분을
   보수적 점유 상한으로 쓴다. rollout `token_count.last_token_usage`는 같은 이벤트의 누계 input이 방금
   받은 wire 누계 input과 일치할 때만 더 정밀한 1순위 신호로 채택한다. 이 판정값이 예산의 STOP 경계에
