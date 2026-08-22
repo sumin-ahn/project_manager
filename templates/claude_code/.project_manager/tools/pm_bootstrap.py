@@ -364,7 +364,7 @@ def _resolve_card_tool_invoke(
 class _CardCmd(NamedTuple):
     tool: str            # 도구 파일명 (예 "board.py")
     render: str          # 카드에 찍히는 인자 문자열 (정체성 suffix 제외·byte 동일성 원천)
-    subpath: tuple       # build_parser() 서브커맨드 leaf 경로 (flag-only 도구는 ())
+    subpath: tuple       # build_parser() 서브커맨드 leaf 경로 (flag-only 도구는 `()`)
     flags: tuple         # 렌더의 비-정체성 옵션 (정합 test 가 leaf 실 등록 여부 검증)
 
 
@@ -4440,7 +4440,7 @@ class PmBootstrap:
         if reason is not None:
             return (
                 "main-참조 (보호브랜치 직접 checkout / origin-추적)",
-                f"{reason} — 이 슬롯 커밋이 canonical/보호 브랜치로 새면 ① 오염().",
+                f"{reason} — 이 슬롯 커밋이 canonical/보호 브랜치로 새면 공유 이력이 오염된다.",
                 self._remedy_switch_command(wp, repo, slot_id, task),
             )
         # 4. 기록↔live diverged.

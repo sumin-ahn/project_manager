@@ -3159,7 +3159,7 @@ def cmd_task_prefix(
     if updated is None:
         print(
             f"[중단] task {name!r} 이(가) 아직 없다 — prefix 설정은 기존 task 레코드를 갱신할 뿐 "
-            f"정체성을 생성하지 않는다(). 먼저 `{_runtime_skill_entry('pm-bootstrap')} --task "
+            f"정체성을 생성하지 않는다. 먼저 `{_runtime_skill_entry('pm-bootstrap')} --task "
             f"{name}` 로 task 를 만든 뒤 다시 설정하라.",
             file=sys.stderr,
         )

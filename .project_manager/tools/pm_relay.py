@@ -249,9 +249,9 @@ def build_bootstrap_prompt(
 ) -> str:
     """재진입 부트스트랩 프롬프트를 빌드한다 — task 명시 시 `/pm-bootstrap --task <name>` 로 주입.
 
-    **relay task 전달 = () 명시 전달**(): supervisor 가 받은 task 정체성을
+    **relay task 전달 명시 전달**: supervisor 가 받은 task 정체성을
     재진입 프롬프트에 실값으로 박아, 컨텍스트 한계로 회전된 새 PM 세션이 같은 task 를 재바인딩
-    (resume)하게 한다. cwd/env 추론()은 기각("cwd 는 해소에 참여하지 않는다"·"cwd/env
+    (resume)하게 한다. cwd/env 추론은 기각("cwd 는 해소에 참여하지 않는다"·"cwd/env
     추론 금지"와 모순) — 정체성은 per-call 명시 전달이다. task 슬롯 0개 엣지에서도 (b)만
     동작한다. task 없으면(슬롯/솔로) bare `/pm-bootstrap`(현행·byte-동일)."""
     cmd = entry or _runtime_skill_entry("pm-bootstrap")
@@ -1553,7 +1553,7 @@ def dry_run_codex_egress_line(*, escalation_required: bool, attested: bool,
 # 프로세스 그룹째 kill → 재시도(M회) → 소진 시 fail-loud. provider/원인 무관(내부 어느 fetch 가
 # 멈추든 동작). mid-turn(정상 긴 생성) 침묵은 이번 범위 밖 — overall_timeout(호출부의 기존 hard
 # 가드·예: pm_orch_opencode.TURN_TIMEOUT_SEC=600)이 그대로 백스톱. provider 노브(headerTimeout 등)는
-# stall 이 provider 스트림 fetch *밖*에서 발생해 무효 실측() — 워치독이 클래스를 커버한다.
+# stall 이 provider 스트림 fetch *밖*에서 발생해 무효 실측 — 워치독이 클래스를 커버한다.
 
 # env 노브 (worktree_pool 의 PM_GIT_TIMEOUT 네이밍 결). 세 표면(opencode driver·pm_import fill·
 # release 라이브 헬퍼)이 아래 두 해소기로 이 기본값을 공유한다. 값을 바꾸려면 export 후 재실행.
@@ -2586,7 +2586,7 @@ def run_with_first_event_watchdog(
       popen : argv -> proc(first_event_ready()/poll()/kill()/communicate(timeout)/returncode
               [+ last_event_at()/partial_output() — 무진행 판정·부분 보존]).
               기본 = _WatchedPopen(cwd/env/text/input_text/clock 바인딩).
-      clock : () -> 초(단조). 기본 time.monotonic.
+      clock : `()` -> 초(단조). 기본 time.monotonic.
       sleep : (초) -> None. 기본 time.sleep(폴 간격 양보). fake 는 여기서 clock 을 전진시킨다.
       log   : (str) -> None. 기본 stderr 1줄.
 
@@ -2945,7 +2945,7 @@ class Supervisor:
         # max_consecutive_respawns 는 *config* 상수(불변 임계)지 작업/대화 상태가 아니다.
         self.driver = driver
         self.root = Path(root)
-        # task 정체성(() 명시 전달)은 재진입 프롬프트에 baked-in 되어 `self.bootstrap` 에
+        # task 정체성(명시 전달)은 재진입 프롬프트에 baked-in 되어 `self.bootstrap` 에
         # 흡수된다 — 별도 인스턴스 필드로 retain 하지 않는다(stateless 불변식 유지·respawn 은 같은
         # bootstrap 을 재사용해 task 를 자동 forward). bootstrap 명시 override(테스트/커스텀)가 우선,
         # 없으면 task 로 빌드(task None 이면 현행 bare BOOTSTRAP_PROMPT 와 byte-동일).
@@ -2977,7 +2977,7 @@ class Supervisor:
         consecutive_respawns = 0  # bootstrap 직후 연속 즉시-회전 횟수(지역).
 
         while True:
-            # 불변식(): **marker 를 지닌 세션엔 추가 입력을 relay 하지 않는다.**
+            # 불변식: **marker 를 지닌 세션엔 추가 입력을 relay 하지 않는다.**
             # spawn/respawn 의 bootstrap turn 이 예산을 넘겨 marker 를 남겼으면
             # 첫 입력 처리 *전* 여기서 회전한다 — 안 그러면 과예산 세션에 입력 1회가 추가 실행된다
             # (지연 회전). bootstrap 은 이미 실행됐으니 반복 대상이 아니다. 병적
