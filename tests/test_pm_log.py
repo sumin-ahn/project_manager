@@ -342,11 +342,12 @@ def test_checkpoint_slot_compaction_dedups_same_boundary(tmp_path, monkeypatch):
     assert "checkpoint | (project_manager_1) — compaction" in entries[0][1]
 
 
-def test_checkpoint_lease_freeform_task_name_is_not_misclassified_as_slot(
-    tmp_path, monkeypatch,
-):
-    """T-0686 F-003: ``_N`` task는 lease slot basename과 다르면 task 태그를 쓴다."""
-    mod = _load_module("pm_log_t0686_freeform_task")
+def _freeform_task_checkpoint(mod, monkeypatch, tmp_path, *, register_task: bool):
+    """`_N` 형상 session(`foo_1`) 이 slot 경로 이름과 어긋난 lease 를 실 장부 파일로 세운다.
+
+    `register_task=True` 면 그 이름을 장부 `tasks` 컬렉션에 **등록**한다 — 축 판정의 단일 진실이
+    등록 membership 이라, 등록 여부만 바꿔 두 축을 대조한다(이름 모양은 두 케이스가 동일).
+    """
     log_dir, _ = _redirect_paths(mod, monkeypatch, tmp_path)
     log_dir.mkdir(parents=True)
     mod.CURRENT_FILE.write_text(_HEADER, encoding="utf-8")
@@ -354,25 +355,49 @@ def test_checkpoint_lease_freeform_task_name_is_not_misclassified_as_slot(
     cwd.mkdir(parents=True)
     ledger = tmp_path / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.parent.mkdir(parents=True)
-    ledger.write_text(
-        json.dumps({
-            "leases": [{
-                "slot": "work/project_manager_1",
-                "state": "leased",
-                "session": "foo_1",
-            }],
-        }),
-        encoding="utf-8",
-    )
+    payload = {
+        "leases": [{
+            "slot": "work/project_manager_1",
+            "state": "leased",
+            "session": "foo_1",
+        }],
+    }
+    if register_task:
+        payload["tasks"] = [{"name": "foo_1", "prefix": None, "pid": 0, "started": "t"}]
+    ledger.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setattr(mod, "_registered_repos", lambda: set())
 
     rc = mod.cmd_checkpoint(SimpleNamespace(
         task=None, trigger="manual", cwd=str(cwd), breadcrumb=False,
     ))
-
     entries = mod.split_entries(mod.CURRENT_FILE.read_text(encoding="utf-8"))[1]
     assert rc == 0 and len(entries) == 1
-    assert "checkpoint | (task:foo_1) — manual" in entries[0][1]
+    return entries[0][1]
+
+
+def test_checkpoint_registered_freeform_task_name_is_not_misclassified_as_slot(
+    tmp_path, monkeypatch,
+):
+    """T-0686 F-003: 장부에 **등록된** `_N` task 는 lease slot 이름과 달라도 task 태그를 쓴다.
+
+    판정 근거는 이름 모양이나 slot 경로 대조가 아니라 장부 `tasks` 등록이다.
+    """
+    mod = _load_module("pm_log_t0686_freeform_task")
+    entry = _freeform_task_checkpoint(mod, monkeypatch, tmp_path, register_task=True)
+    assert "checkpoint | (task:foo_1) — manual" in entry
+
+
+def test_checkpoint_unregistered_slot_key_session_is_slot_axis(tmp_path, monkeypatch):
+    """등록 task 가 아닌 슬롯 키 session 은 slot 축이다 — slot 경로 이름과 어긋나도 그렇다.
+
+    옛 규칙은 정체성을 slot 경로 basename 과 대조해(`slot.name == identity`) 이 형상을 task 로
+    오분류했고, 그래서 경로에 이름이 없는 슬롯(PM 홈 자신을 가리키는 행)은 slot 축이 될 방법이
+    아예 없었다. 위 등록 케이스와 **장부 tasks 등록 여부만** 다르다(대조군).
+    """
+    mod = _load_module("pm_log_t0686_slotkey_session")
+    entry = _freeform_task_checkpoint(mod, monkeypatch, tmp_path, register_task=False)
+    assert "checkpoint | (foo_1) — manual" in entry
+    assert "task:foo_1" not in entry
 
 
 def test_build_checkpoint_entry_renders_ctx_window_mismatch_with_observation():

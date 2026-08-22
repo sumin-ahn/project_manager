@@ -898,6 +898,33 @@ def _lease_rows(pm_home: Path) -> list[dict]:
     return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
 
+def _ledger_task_names(pm_home: Path) -> set[str]:
+    """장부 top-level ``tasks`` 컬렉션의 이름 집합 — **task 축의 단일 진실**(등록 membership).
+
+    "이 정체성이 task 인가"를 이름 모양(``foo_1`` 형상 추측)이나 slot 경로 대조가 아니라 등록
+    여부로 묻는다(``worktree_pool.reclaim_stale``·``_ensure_slot_pm_state_locked`` 가 이미 쓰는
+    근거와 같은 축). 부재/손상 → 빈 집합(fail-soft).
+    """
+    data = _read_json_object(
+        Path(pm_home) / ".project_manager" / ".local" / "worktree-leases.json"
+    )
+    rows = data.get("tasks") if data else None
+    if not isinstance(rows, list):
+        return set()
+    return {row["name"] for row in rows
+            if isinstance(row, dict) and isinstance(row.get("name"), str) and row.get("name")}
+
+
+def _has_leased_row(lease_rows: list[dict]) -> bool:
+    """장부에 대여 중(leased) 행이 있는가 — 이 홈의 정체성을 장부가 준다는 값 신호.
+
+    행이 하나라도 있으면 정체성 해소는 장부 소관이다: 그 행이 cwd 를 소유하지 않으면 **미해소**가
+    정답이지, 홈 전체를 legacy 단일 정체성으로 접는 것이 아니다(오귀속). 판정은 행 값(``state``)
+    으로 하며 장부 **파일 존재**를 근거로 삼지 않는다.
+    """
+    return any(row.get("state") == "leased" for row in lease_rows)
+
+
 def _active_tasks(pm_home: Path) -> list[str]:
     """task 서술 디렉토리의 활성 이름. 종료 보관소 ``_ended``와 숨김 보조 디렉토리는 제외."""
     tasks_dir = Path(pm_home) / ".project_manager" / ".local" / "tasks"
@@ -912,6 +939,10 @@ def _active_tasks(pm_home: Path) -> list[str]:
 
 # 정체성 해소 층은 사람이 읽는 진단 문구이면서 pm_handoff의 실행/수집 축 분류 계약이다.
 # 소비자가 문자열 리터럴을 복제하지 않도록 생산자가 집합까지 함께 노출한다.
+# 슬롯 정체성 키 형식(`<repo>_<N>`) — `identity_args._SLOT_KEY_RE` 와 같은 값 술어다(이 모듈은
+# leaf point-reader 라 형제를 로드하지 않으므로 패턴만 동형 보유·경로 형태 강제 아님).
+_SLOT_KEY_PATTERN = r"[^()\s/\\]+_[1-9]\d*"
+
 IDENTITY_SOURCE_CWD_LEASE = "cwd→lease"
 IDENTITY_SOURCE_SINGLE_ACTIVE_TASK = "단일 활성 task"
 IDENTITY_SOURCE_LEGACY_PM_STATE = "legacy pm_state"
@@ -956,9 +987,10 @@ def resolve_snapshot_identity(pm_home: Path, cwd: Path) -> tuple[str | None, str
     active = _active_tasks(pm_home)
     if len(active) == 1:
         return active[0], IDENTITY_SOURCE_SINGLE_ACTIVE_TASK
-    # task 장부가 없는 legacy 형상만 마지막에 받는다. cwd와 무관한 leased 행이 하나라도
-    # 있으면 multi/worktree 오귀속 가능성이 있으므로 이 층에 오지 않는다.
-    if not active and not any(row.get("state") == "leased" for row in lease_rows):
+    # 마지막 층은 **장부가 이 홈에 아무 슬롯 정체성도 주지 않은 미등록 형상** 전용이다. 판정은
+    # 행 값(`_has_leased_row`)으로 한다 — 대여 행이 있으면 정체성은 장부 소관이고, 그 행이 cwd 를
+    # 소유하지 않으면 미해소가 정답이다(홈 전체를 단일 legacy 정체성으로 접으면 오귀속).
+    if not active and not _has_leased_row(lease_rows):
         legacy_state = Path(pm_home) / ".project_manager" / "wiki" / "pm_state.md"
         if legacy_state.is_file():
             return "pm", IDENTITY_SOURCE_LEGACY_PM_STATE
@@ -973,15 +1005,20 @@ def _checkpoint_identity_axes(
 ) -> tuple[str | None, str | None]:
     """snapshot 해소값을 checkpoint의 task/session 2축으로 분리한다.
 
-    cwd lease의 session이 그 lease slot의 canonical basename과 같을 때만 slot으로
-    인정한다. task가 우연히 ``foo_1`` 형상인 경우를 일반 정규식으로 slot으로
-    오분류하지 않고, lease 귀속과 slot 형상을 한 번에 검증한다.
+    축 판정의 단일 진실은 **장부**다: cwd 를 소유한 lease 행의 정체성이 (1) 등록 task 이름이
+    아니고 (2) 슬롯 키 형식(``<repo>_<N>``)이면 slot 축이다. 예전 규칙(``slot.name == identity``)
+    은 정체성을 **슬롯 경로 이름**과 대조해, 경로에 이름이 없는 슬롯(PM 홈 자신을 가리키는 행)과
+    경로·session 이 어긋난 행을 전부 task 축으로 오분류했다(task 이름 검증까지 흘러가 bare
+    handoff 가 argparse 에러로 죽었다). task 오분류 방지는 경로 대조가 아니라 **등록 membership**
+    (``_ledger_task_names``)이 맡는다 — ``foo_1`` 형상 task 는 슬롯 예약 패턴이라 애초에 등록될
+    수 없고, 등록됐다면 그 값이 진실이다.
     """
     if source in HANDOFF_COLLECTION_ONLY_IDENTITY_SOURCES:
         return identity, None
     if source != IDENTITY_SOURCE_CWD_LEASE:
         return identity, None
 
+    task_names = _ledger_task_names(pm_home)
     matches: list[tuple[int, bool]] = []
     for row in _lease_rows(pm_home):
         if row.get("state") != "leased" or row.get("session") != identity:
@@ -989,11 +1026,11 @@ def _checkpoint_identity_axes(
         slot = _lease_slot_path(pm_home, row)
         if slot is None or not _is_within(cwd, slot):
             continue
-        is_canonical_slot = (
-            slot.name == identity
-            and re.fullmatch(r"[^()\s/\\]+_[1-9]\d*", identity) is not None
+        is_slot_axis = (
+            identity not in task_names
+            and re.fullmatch(_SLOT_KEY_PATTERN, identity) is not None
         )
-        matches.append((len(slot.resolve(strict=False).parts), is_canonical_slot))
+        matches.append((len(slot.resolve(strict=False).parts), is_slot_axis))
     if matches:
         deepest = max(depth for depth, _is_slot in matches)
         kinds = {is_slot for depth, is_slot in matches if depth == deepest}

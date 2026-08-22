@@ -737,6 +737,46 @@ def _repo_slot_numbers(repo: str, leases_file: Path) -> list[int] | None:
     return ia.repo_slot_numbers(repo, leases_file)
 
 
+def _slot_identity(slot: str | None, leases_file: Path | None = None):
+    """슬롯 경로 값 → 슬롯 정체성(`identity_args.resolve_slot_identity` 위임·단일 진실).
+
+    이 모듈이 `work/<repo>_<N>` basename 을 직접 파싱하지 않기 위한 얇은 위임이다 — 정체성은
+    장부 행의 session 값이 1순위고, 장부가 그 슬롯에 슬롯 축 정체성을 주지 않을 때만 pool 명명
+    규약(경로 마디)으로 내려간다. `identity_args` 부재/로드 실패는 None(fail-soft·현행 폴백).
+    `leases_file` 미지정이면 *호출 시점* REPO 기준 재구성(monkeypatch 추종·hermetic).
+    """
+    ia = _load_identity_args()
+    if ia is None:
+        return None
+    if leases_file is None:
+        leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
+    return ia.resolve_slot_identity(slot, leases_file)
+
+
+def _explicit_slot_path(repo: str, slot: int, leases_file: Path | None = None) -> str:
+    """명시 `--repo X --slot N` → **장부 행의 slot 경로 값**(부재/손상은 canonical 폴백).
+
+    슬롯 경로를 `work/<repo>_<N>` 로 재조립하면 장부가 그 번호를 다른 경로로 들고 있는 슬롯
+    (PM 홈 자신을 가리키는 행 `slot="."`·`nested/X_1`)에서 **존재하지 않는 경로**가 나온다 —
+    0단계 실재 검사·바인딩·cwd 가 전부 그 없는 자리를 본다(리뷰 F-001). 장부가 답을 주지 못하면
+    (부재/손상/그 번호 행 없음) 종전 canonical 관례로 폴백하고, 장부 **모순**(같은 번호를 서로
+    다른 경로가 주장)은 폴백 대상이 아니라 `SlotResolutionError`(fail-loud·리뷰 F-004)다.
+
+    `identity_args` 부재/로드 실패도 canonical 폴백(fail-soft·현행 무변경).
+    """
+    ia = _load_identity_args()
+    if ia is None:
+        return f"work/{repo}_{slot}"
+    if leases_file is None:
+        leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
+    resolution = ia.slot_path_resolution(repo, slot, leases_file)
+    if resolution.status == ia.SLOT_PATH_CONFLICT:
+        raise SlotResolutionError(
+            f"슬롯 경로를 특정할 수 없다 — {resolution.detail}. 장부를 정리한 뒤 다시 실행하라."
+        )
+    return resolution.path or f"work/{repo}_{slot}"
+
+
 def _auto_slot(
     areas_file: Path | None = None,
     leases_file: Path = LEASES_FILE,
@@ -745,8 +785,13 @@ def _auto_slot(
 
     솔로 무인자 bootstrap(`--repo`/`--slot` 둘 다 없음)에서, 등록 repo 가 정확히 1개이고
     그 repo 의 활성 worktree 슬롯(leased lease 엔트리)이 정확히 1개면 모호함이 없으므로 그 슬롯에
-    자동으로 bind 한다(세션=`<repo>_<N>`·기존 `--slot` bind 경로 재사용). 그 외는 None
+    자동으로 bind 한다. 그 외는 None
     (현행 솔로 유지) — repo 0개/≥2개 또는 활성 슬롯 0개/≥2개면 사용자가 `--repo --slot` 명시.
+
+    반환은 `identity_args.SlotIdentity` — 정체성 키(`.key`)와 **장부 행의 경로 값**(`.slot`)을
+    함께 나른다. 호출부(`_worktree_cwd`·`_pm_state_display_path`·handoff `_regression_cwd`)는
+    번호로 `work/<repo>_<N>` 을 재조립하지 않고 `.slot`/`.key` 를 그대로 쓴다 — 장부가 다른 경로를
+    들고 있는 슬롯에서 존재하지 않는 cwd·상태 경로가 나오던 자리다.
 
     판정:
       1. `_registered_repos` 재사용 — areas.md 등록 repo 가 정확히 1개인가(아니면 None).
@@ -764,7 +809,7 @@ def _auto_slot(
     *추가 편의*이지 강제 아님·실패는 현행 솔로로 폴백). `areas_file` 미지정(None)이면
     `_registered_repos` 가 `_areas_file()`(board_root 추종)로 해소한다.
 
-    **순수 resolver·반환 규격 불변(`(repo,N)` | None)** — 모든 incidental 호출부(`_worktree_cwd`·
+    **순수 resolver·반환 규격(`SlotIdentity` | None)** — 모든 incidental 호출부(`_worktree_cwd`·
     `_pm_state_display_path`·handoff `_regression_cwd`)가 이 fail-soft None 폴백에 기댄다.
     session-entry 의 guarded default-1 + fail-loud 규칙은 별도 `_resolve_session_slot` 가 처리한다.
     """
@@ -776,13 +821,13 @@ def _auto_slot(
     if ia is None:
         return None
     try:
-        session = ia.resolve_actor_slot(repo, leases_file)
+        workspace = ia.resolve_actor_workspace(repo, leases_file)
     except ia.SlotResolutionError:
         return None  # ≥2 활성 슬롯(모호) — 순수 resolver 계약상 fail-soft None(raise 아님).
-    if session is None:
+    if workspace is None:
         return None
-    _, _, slot_tail = session.rpartition("_")
-    return repo, int(slot_tail)
+    # 경로는 행의 `slot` 값, 정체성은 행이 준 키 — 세션에서 번호를 뜯어 경로를 재조립하지 않는다.
+    return ia.resolve_slot_identity(workspace.slot, leases_file)
 
 
 # ── guarded session-entry 슬롯해소 (default-1 + fail-loud) ─────
@@ -852,6 +897,32 @@ def _resolve_session_slot(
     )
 
 
+def _session_slot_identity(
+    areas_file: Path | None = None,
+    leases_file: Path = LEASES_FILE,
+):
+    """session-entry 자동해소 결과의 **슬롯 정체성** — `_resolve_session_slot` 좌표의 값 해소.
+
+    `_resolve_session_slot` 은 *좌표*(어느 repo 의 몇 번 슬롯인가)를 낸다. 그 좌표를 세션 키로
+    쓰려면 `f"{repo}_{n}"` 을 **지어내는** 대신 장부가 그 번호에 대해 들고 있는 경로와 정체성을
+    읽어야 한다(리뷰 F-001·F-002) — 그래야 bare 진입(handoff 태그·연속성)과 명시 진입
+    (`--repo/--slot`)이 같은 슬롯에서 같은 키를 낸다.
+
+    반환은 `identity_args.SlotIdentity`(키 + 장부 경로 값) 또는 None(solo/미해소).
+    모호(`SlotResolutionError`)는 그대로 전파한다 — 호출부가 자기 관례(fail-loud/fail-soft)로
+    받는다.
+    """
+    auto = _resolve_session_slot(areas_file, leases_file)
+    if not auto:
+        return None
+    repo, number = auto
+    ia = _load_identity_args()
+    if ia is None:
+        return None
+    slot = _explicit_slot_path(repo, number, leases_file)
+    return ia.resolve_slot_identity(slot, leases_file)
+
+
 # ── 경로 표기 직렬화 (POSIX 단일) ─────────
 def _display_path_text(path) -> str:
     """경로를 사람/비교용 표기(**POSIX 단일**)로 직렬화한다 — 문자열화 지점만 고정한다.
@@ -890,32 +961,33 @@ def _render_task_pm_state_pointer(path) -> str:
 # 부트스트랩은 pm_state 를 편집하지 않으므로(read/write 주체는 pm_handoff) 경로 *문자열*만
 # 해소한다 — slot 키는 `_auto_slot`(단일 self-host 자동바인딩) 동형으로 재사용한다.
 def _pm_state_display_path(
-    slot: tuple[str, int] | None = None,
+    slot_key: str | None = None,
     areas_file: Path | None = None,
     leases_file: Path | None = None,
 ) -> str:
     """첫-turn 안내에 쓸 pm_state 경로 문자열 (per-slot·솔로 legacy 폴백).
 
-    슬롯이 해소되면(`(repo, N)`·명시 또는 `_auto_slot` 단일 self-host) per-slot 경로
-    `.project_manager/.local/slots/<repo>_<N>/pm_state.md`, 미해소(솔로/모호)면 legacy
-    `pm_state.md`(현행 안내 무변경·짧은 표기). `_auto_slot` 은 같은 모듈 함수라 직접
-    호출(동적로드 불요·`_worktree_cwd` 동형). 예외/None 은 흡수해 legacy 표기로 폴백.
-    `leases_file` 미지정이면 *호출 시점* REPO 기준 재구성(monkeypatch 추종·hermetic).
+    슬롯 정체성 키가 해소되면(`<repo>_<N>`·명시 또는 `_auto_slot` 단일 self-host) per-slot 경로
+    `.project_manager/.local/slots/<키>/pm_state.md`, 미해소(솔로/모호)면 legacy
+    `pm_state.md`(현행 안내 무변경·짧은 표기). 키는 pm_handoff 가 read/write 하는 상태 경로와
+    **같은 해소**(`identity_args.resolve_slot_identity` — 장부 값 1순위)에서 온다. `_auto_slot` 은
+    같은 모듈 함수라 직접 호출(동적로드 불요·`_worktree_cwd` 동형). 예외/None 은 흡수해 legacy
+    표기로 폴백. `leases_file` 미지정이면 *호출 시점* REPO 기준 재구성(monkeypatch 추종·hermetic).
     """
     if leases_file is None:
         leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
-    resolved = slot
-    if resolved is None:
+    key = slot_key
+    if key is None:
         try:
             resolved = _auto_slot(areas_file, leases_file)
         except Exception as exc:  # noqa: BLE001 — fail-soft: 판정 실패는 legacy 표기 폴백.
             if _is_engine_rev_skew(exc):
                 raise
             resolved = None
-    if resolved is None:
+        key = resolved.key if resolved is not None else None
+    if not key:
         return "pm_state.md"
-    repo, n = resolved
-    return f".project_manager/.local/slots/{repo}_{n}/pm_state.md"
+    return f".project_manager/.local/slots/{key}/pm_state.md"
 
 
 def _default_python() -> str:
@@ -1531,24 +1603,44 @@ _LOG_HANDOFF_HEADER_RE = re.compile(
 )
 
 
-def _session_owns_untagged(bound_session: str | None) -> bool:
+def _session_slot_number(bound_session: str, leases_file: Path | None = None) -> int | None:
+    """세션 명의가 점유한 슬롯 번호 — **장부 행 값**(`identity_args.session_coordinates`).
+
+    장부에 그 세션 명의 행이 없으면 pool 명명 규약(키 분해)으로 폴백한다(그 형상에선 이름이
+    유일한 진실). `identity_args` 부재/로드 실패는 종전 이름 파싱으로 폴백(fail-soft).
+    """
+    ia = _load_identity_args()
+    if ia is None:
+        m = re.search(r"_(\d+)$", bound_session)
+        return int(m.group(1)) if m else None
+    if leases_file is None:
+        leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
+    _repo, number = ia.session_coordinates(bound_session, leases_file)
+    return number
+
+
+def _session_owns_untagged(bound_session: str | None, leases_file: Path | None = None) -> bool:
     """무태그 handoff entry 가 이 세션 소유인지 판정한다 — 솔로(None)/slot-1 만 True.
 
     무태그 entry = 태그 도입이전 로그 또는 솔로 핸드오프 → 솔로/slot-1 귀속
     (연속성 보존·제로 마이그레이션). **slot-2+ 는 무태그를 무시**하고 자기 태그 entry 만 센다
-    (핵심 회귀 가드·codex 제언). bound_session 이 None(솔로)이거나 canonical `<repo>_1`(slot-1)이면
-    True, 그 외(slot-2+·비정형 non-None)면 False.
+    (핵심 회귀 가드·codex 제언). bound_session 이 None(솔로)이거나 **장부가 그 세션에 준 슬롯
+    번호가 1**이면 True, 그 외(slot-2+·번호 미해소)면 False.
+
+    번호를 세션 **이름의 말단**에서 뜯지 않는 이유: 행의 repo/경로와 어긋난 session
+    (`repo=A · slot=work/A_1 · session=B_7`)에서 이름은 7 을 주지만 그 세션이 실제로 들고 있는
+    슬롯은 A 의 1번이다(리뷰 F-002 와 같은 축). 장부에 행이 없으면 이름이 유일한 진실이라 종전
+    파싱과 같은 값이 나온다.
 
     **task 세션(`task:<name>`)은 항상 False** — task 는 자기 태그(`(task:<name>)`) entry 만
     소유하고 태그-도입 이전 무태그 legacy(솔로/slot-1 계보)는 자기 것이 아니다. sentinel 판별을
-    trailing `_N` 검사보다 **앞에** 둔다: task 명이 우연히 `_1` 로 끝나면(`task:foo_1`) trailing 검사가
+    번호 판정보다 **앞에** 둔다: task 명이 우연히 `_1` 로 끝나면(`task:foo_1`) 번호 판정이
     slot-1 로 오판(True)하기 때문(회귀 가드)."""
     if bound_session is None:
         return True
     if bound_session.startswith(_TASK_TAG_PREFIX):
         return False
-    m = re.search(r"_(\d+)$", bound_session)
-    return m is not None and int(m.group(1)) == 1
+    return _session_slot_number(bound_session, leases_file) == 1
 
 
 def _handoff_entry_owned(match: re.Match, bound_session: str | None,
@@ -1727,15 +1819,15 @@ _FRESH_SLOT_BANNER = (
     f"새 PM 세션으로 시작하고 첫 {_runtime_skill_entry('pm-handoff')} 가 pm_state 를 생성한다."
 )
 
-def _slot_count_label(session: str) -> str:
-    """`<repo>_<N>` 세션 키 → 카운트 스코프 라벨 `"slot N"`.
+def _slot_count_label(session: str, number: int | None = None) -> str:
+    """슬롯 정체성 → 카운트 스코프 라벨 `"slot N"`.
 
-    말단 `_<N>` 의 숫자 N 을 뽑아 `"slot N"` 으로 라벨한다 — bootstrap 카운트가 `--mine`(user·전
-    슬롯)이 아니라 *그 슬롯 정체성*(`list --session <repo>_<N>`)으로 조회됐음을 announce 한다(S1
-    mislabel 근절). 비-슬롯형(말단이 숫자 아님·커스텀 세션명)이면 전체 세션명으로 폴백한다.
+    N 은 **장부 행이 준 슬롯 번호**(`number`)다 — bootstrap 카운트가 `--mine`(user·전 슬롯)이
+    아니라 *그 슬롯 정체성*(조회 렌즈 `--repo <repo> --slot <N>`)으로 조회됐음을 announce 한다(S1
+    mislabel 근절). 라벨의 N 과 렌즈의 N 은 같은 값이어야 하므로 세션 키를 다시 뜯지 않는다.
+    번호 미해소(커스텀 세션명·장부가 번호를 안 줌)면 전체 세션명으로 폴백한다.
     """
-    tail = session.rsplit("_", 1)[-1]
-    return f"slot {tail}" if tail.isdigit() else f"slot {session}"
+    return f"slot {number}" if number is not None else f"slot {session}"
 
 
 def _format_board_counts_line(counts: dict[str, int], scope_label: str = "mine") -> str:
@@ -2048,7 +2140,7 @@ class PmBootstrap:
           - `slot`(명시 multi-PM `--slot` → `work/<repo>_<N>`) 가 있으면 `REPO / slot`,
           - task 모드면 현재 순회 슬롯 또는 task 보유 슬롯의 정렬 첫 항목,
           - task 보유 슬롯이 0개면 `REPO` (전역 슬롯 자동해소 **금지**),
-          - 없으면 `_auto_slot()` 으로 단일 self-host 슬롯 자동해소(`work/<repo>_<N>`),
+          - 없으면 `_auto_slot()` 으로 단일 self-host 슬롯 자동해소(**행의 `slot` 경로 값**),
           - 그것도 없으면(솔로/모호/부재) **현 `REPO` 폴백** (fail-soft·솔로 무변경).
 
         `_auto_slot` 은 **무-task 경로에서만** 같은 모듈 함수를 직접 호출한다(동적로드 불요·
@@ -2070,8 +2162,7 @@ class PmBootstrap:
                 raise
             auto = None
         if auto:
-            repo, n = auto
-            return str(REPO / f"work/{repo}_{n}")
+            return str(REPO / auto.slot)   # 경로는 장부 행의 slot 값(재조립 금지).
         return str(REPO)
 
     def _pm_state_display_path(self) -> str:
@@ -2080,7 +2171,7 @@ class PmBootstrap:
         task 모드면 현재 task의 서술 pm_state가 유일한 연속성 앵커이므로 task 바인딩이 해소한
         `.local/tasks/<task>/pm_state.md`를 그대로 표시한다. 이 분기를 slot 자동해소보다 먼저
         두어 task-only 진입(`_bound_slot` 없음)이 타 task 슬롯/legacy 경로를 안내하지 않게 한다.
-        명시 multi-PM 모드(`_bound_slot` = `work/<repo>_<N>`)면 그 슬롯의 per-slot 경로,
+        명시 multi-PM 모드(`_bound_slot` = 장부 슬롯 경로 값)면 그 슬롯 정체성의 per-slot 경로,
         솔로 무인자면 `_auto_slot()` 단일 self-host 자동해소(인스턴스 `_areas_file` 추종),
         둘 다 미해소면 legacy `pm_state.md` 표기(현행 무변경). slot/solo는 모듈
         `_pm_state_display_path`에 위임한다 — slot 키는 pm_handoff 의 read/write 경로와
@@ -2090,13 +2181,9 @@ class PmBootstrap:
             if self._task_pm_state_file is not None:
                 return _display_path_text(self._task_pm_state_file)
             return f".project_manager/.local/tasks/{self._task_name}/pm_state.md"
-        bound = None
-        if self._bound_slot and self._bound_slot.startswith("work/"):
-            rest = self._bound_slot[len("work/"):]
-            m = re.match(r"^(.+)_(\d+)$", rest)
-            if m:
-                bound = (m.group(1), int(m.group(2)))
-        return _pm_state_display_path(bound, self._areas_file)
+        bound_identity = _slot_identity(self._bound_slot) if self._bound_slot else None
+        bound_key = bound_identity.key if bound_identity is not None else None
+        return _pm_state_display_path(bound_key, self._areas_file)
 
     # ── 기본 subprocess 구현 ─────────────────────────────────────────────
 
@@ -2188,19 +2275,22 @@ class PmBootstrap:
         # 무-task 명시 슬롯이면 그 슬롯 정체성(`--repo <repo> --slot <N>`), 아니면
         # `--mine`. `slot_session`(`<repo>_<N>`)의 말단 `_<N>` 만 잘라 분해한다 — repo 이름에 `_`
         # 가 있어도(예: `project_manager`) rpartition 이 *마지막* `_` 에서만 갈라 정확하다.
-        slot_session = self._slot_session_name() if self._bound_slot else None
+        bound_identity = self._slot_identity_for(self._bound_slot) if self._bound_slot else None
+        slot_session = bound_identity.key if bound_identity is not None else None
         if self._task_name is not None:
             lens = ["--task", self._task_name]
             counts_scope = f"task {self._task_name}"
         elif slot_session:
-            repo_part, _, num_part = slot_session.rpartition("_")
-            if repo_part and num_part.isdigit():
-                lens = ["--repo", repo_part, "--slot", num_part]
+            # 렌즈 좌표(`--repo`/`--slot`)는 **장부 행 값**이다 — 세션 키를 rpartition 으로 다시
+            # 뜯으면 행 repo 와 어긋난 session(`repo=A · session=B_7`)에서 아무 행도 없는
+            # `--repo B --slot 7` 를 조회한다(리뷰 F-002 와 같은 축).
+            if bound_identity.repo and bound_identity.number is not None:
+                lens = ["--repo", bound_identity.repo, "--slot", str(bound_identity.number)]
             else:
-                # 비-슬롯형(커스텀 세션명·말단이 숫자 아님) — decomposed 표면엔 대응 불가한
+                # 좌표 미해소(커스텀 세션명·장부가 번호를 안 줌) — decomposed 표면엔 대응 불가한
                 # 드문 엣지라 `--mine` 으로 안전 폴백한다(라벨은 그대로 slot_session 기반 유지).
                 lens = ["--mine"]
-            counts_scope = _slot_count_label(slot_session)
+            counts_scope = _slot_count_label(slot_session, bound_identity.number)
         else:
             lens = ["--mine"]
             counts_scope = "mine"
@@ -2617,10 +2707,23 @@ class PmBootstrap:
         무설정이면 `_bound_session_name` 과 값이 같아 slot/solo 경로 100% 불변이다.
         """
         if self._bound_slot:
-            if self._bound_slot.startswith("work/"):
-                return self._bound_slot[len("work/"):]
-            return self._bound_slot
+            identity = self._slot_identity_for(self._bound_slot)
+            return identity.key if identity is not None else None
         return self._auto_bound_session()
+
+    def _slot_identity_for(self, slot: str | None):
+        """바인딩된 슬롯 경로 값 → 슬롯 정체성(`identity_args` 위임·경로 파싱 0).
+
+        정체성은 **장부 행의 session** 이고, 장부가 그 슬롯에 슬롯 축 정체성을 주지 않을 때만
+        pool 명명 규약(경로 마지막 마디)이다. `work/` 접두를 손으로 벗겨 세션 키를 만들던 자리
+        (리뷰 F-001)를 이 위임으로 대체한다 — 경로에 이름이 없는 슬롯(`slot="."`)은 접두 제거로는
+        영원히 해소되지 않고, 장부가 다른 session 을 들고 있으면 두 값이 갈린다.
+        """
+        return _slot_identity(slot, self._leases_file())
+
+    def _leases_file(self) -> Path:
+        """*호출 시점* REPO 기준 리스 장부 경로 (monkeypatch 추종·hermetic·모듈 상수 미고정)."""
+        return REPO / ".project_manager" / ".local" / "worktree-leases.json"
 
     def _auto_bound_session(self) -> str | None:
         """무인자 단일 self-host 자동바인딩 세션 키 — handoff `_resolve_session_slot` 재사용 (MF-1·DRY).
@@ -2632,19 +2735,17 @@ class PmBootstrap:
         **crash 없이** 솔로(None)로 폴백한다 — 모호를 fail-loud 로 막는 건 handoff WRITE 만
         (bootstrap 은 read-only surface·`_resolve_pm_state_file` 폴백 동형).
         """
-        leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
         try:
-            auto = _resolve_session_slot(self._areas_file, leases_file)
+            identity = _session_slot_identity(self._areas_file, self._leases_file())
         except SlotResolutionError:
             return None  # 진짜 모호(멀티-PM under-specified) → 솔로 폴백(read crash 금지).
         except Exception as exc:  # noqa: BLE001 — fail-soft: 판정 실패는 솔로 폴백(현행 무변경).
             if _is_engine_rev_skew(exc):
                 raise
             return None
-        if not auto:
-            return None
-        repo, n = auto
-        return f"{repo}_{n}"
+        # 세션 키는 **장부가 그 슬롯에 준 정체성**이다 — 좌표 `(repo, N)` 에서 `f"{repo}_{N}"` 을
+        # 지어내면 장부가 다른 session 을 들고 있는 슬롯에서 write(handoff 태그)와 갈린다.
+        return identity.key if identity is not None else None
 
     def _collect_log_entry(self) -> dict | None:
         """**자기 슬롯**의 마지막 handoff entry 제목(date·type·title) + **본문 전체**를 수집한다.
@@ -3408,7 +3509,14 @@ class PmBootstrap:
         alloc_identity: dict | None = None
         lean_identity: dict | None = None
         if multipm_lean:
-            self._bound_slot = f"work/{repo}_{slot}"
+            # 실행 슬롯 경로는 **장부 행 값**이다(`work/<repo>_<N>` 재조립 금지·리뷰 F-001) —
+            # 이 값이 이후 모든 수집의 cwd·pm_state·정체성 기준이라, 장부가 다른 경로를 들고 있는
+            # 슬롯에서 재조립하면 세션 전체가 없는 자리를 본다.
+            try:
+                self._bound_slot = _explicit_slot_path(repo, slot, self._leases_file())
+            except SlotResolutionError as exc:
+                print(f"\n[중단] {exc}", file=sys.stderr)
+                return 1
         elif multipm_alloc:
             alloc_identity = self._alloc_and_identity(repo, branch, resume)
             self._bound_slot = alloc_identity["slot"]  # 새 슬롯 정체성 → 모든 수집 기준.
@@ -3579,7 +3687,16 @@ class PmBootstrap:
         # 2~5 슬롯 검사 — lean(명시 슬롯)만. solo/alloc 은 슬롯이 없어 자연 no-op(결정 2).
         if repo is None or slot is None:
             return 0
-        slot_id = f"work/{repo}_{slot}"
+        # 검사 대상 슬롯의 **경로**는 장부 행 값이다(재조립 금지·리뷰 F-001) — 재조립하면 장부가
+        # `slot="."`·`nested/X_1` 로 들고 있는 슬롯이 "장부·폴더 어디에도 없음"으로 오판된다.
+        # 반면 **세션**(`<repo>_<N>`)은 이 명시 진입이 *선언하는* 정체성이라 종전 그대로다 —
+        # 점유 검사(`_phase0_other_holder`)가 "그 슬롯을 지금 누가 들고 있나"를 이 선언값과
+        # 대조한다.
+        try:
+            slot_id = _explicit_slot_path(repo, slot, self._leases_file())
+        except SlotResolutionError as exc:
+            print(f"[중단·0단계] {exc}", file=sys.stderr)
+            return 1
         session = f"{repo}_{slot}"
         self_session = session
         wp = self._resolve_worktree_pool()  # multi-PM 인데 풀 부재면 명시 에러(SystemExit·dump 이전).
@@ -4463,17 +4580,21 @@ class PmBootstrap:
             sys.exit(1)
 
         slot_path = wp.slot_path(lease.slot)
-        # 세션 정체성 = 슬롯키(`work/<repo>_<N>` → `<repo>_<N>`) — alloc 도 명시 multi-PM 이므로
-        # identity 에 `session` 을 채운다. 이게 없으면 커맨드
-        # 카드가 `session` 키 부재를 솔로로 오판해 `--repo/--slot` 빠진 카드를 dump → claim(required)
-        # fail-loud.
-        session = lease.slot[len("work/"):] if lease.slot.startswith("work/") else lease.slot
+        # 세션 정체성 = **장부 행이 그 슬롯에 준 정체성**(`_slot_identity` — 행 session 1순위·
+        # 없으면 pool 명명 규약의 경로 마디). alloc 도 명시 multi-PM 이므로 identity 에 `session`
+        # 을 채운다. 이게 없으면 커맨드 카드가 `session` 키 부재를 솔로로 오판해 `--repo/--slot`
+        # 빠진 카드를 dump → claim(required) fail-loud. `work/` 접두를 손으로 벗기던 자리다
+        # (리뷰 F-001) — 그 파싱은 `_slot_session_name`(로그 태그·렌즈)과 갈릴 수 있었다.
+        identity = self._slot_identity_for(lease.slot)
+        session = identity.key if identity is not None else None
         # 브랜치는 슬롯 worktree 의 git HEAD 에서 live 조회
         # git=진실·장부 저장 폐지). detached/조회불가는 None → identity surface 가 "(미지정)".
         return {
             "repo": repo,
             "slot": lease.slot,
             "session": session,
+            # 카드가 렌더할 재접속 좌표 — 슬롯 식별자 문자열을 다시 뜯지 않는다(리뷰 F-002 축).
+            "slot_number": identity.number if identity is not None else None,
             "slot_path": str(slot_path),
             "branch": wp.current_branch(lease.slot),
             "registered_repos": _registered_repos(self._areas_file),
@@ -4485,7 +4606,9 @@ class PmBootstrap:
     def _bind_and_identity(self, repo: str, slot: int) -> dict:
         """슬롯을 직접 bind 하고 lean identity + 상태점검 데이터를 반환한다 (multi-PM lean).
 
-        - 세션 = `f"{repo}_{slot}"`·슬롯 식별자 = `f"work/{repo}_{slot}"`.
+        - 세션 = `f"{repo}_{slot}"`(이 진입이 **선언하는** 정체성) · 슬롯 식별자 = **장부 행이 그
+          번호에 대해 들고 있는 경로**(`_explicit_slot_path` — 재조립 금지·리뷰 F-001. 장부가
+          답을 못 주면 canonical `work/<repo>_<N>`).
         - `worktree_pool.bind_slot(slot_id, repo, session)` 호출 → Lease. **pool alloc 아님**
           (직접 바인딩·`NeedsCreate` 게이트 없음·`reclaim_stale` 안 거침).
         - branch 는 `worktree_pool.current_branch(slot_id)` live 조회(git=진실
@@ -4497,7 +4620,7 @@ class PmBootstrap:
         """
         wp = self._resolve_worktree_pool()
         session = f"{repo}_{slot}"
-        slot_id = f"work/{repo}_{slot}"
+        slot_id = _explicit_slot_path(repo, slot, self._leases_file())
         lease = wp.bind_slot(slot_id, repo, session)
 
         slot_path = wp.slot_path(lease.slot)
@@ -4517,6 +4640,8 @@ class PmBootstrap:
             "repo": repo,
             "session": session,
             "slot": lease.slot,
+            # 카드가 렌더할 재접속 좌표 — 이 진입이 받은 번호 그대로(문자열 재파싱 0).
+            "slot_number": slot,
             "slot_path": str(slot_path),
             "branch": live_branch,
             "others": others,
@@ -4901,13 +5026,10 @@ class PmBootstrap:
         # pm_state 경로 병기 — worktree(=slot 상대경로)/cwd(절대)/pm_state(.local/slots)
         # 3항을 함께 실어 정체성 표기 혼선(`<slot>` placeholder / `work/<repo>_<N>` identity /
         # `.local/slots/<repo>_<N>/` 실경로)을 닫는다. 경로 산출은 기존 `_pm_state_display_path`
-        # 재사용(중복 금지) — identity 슬롯키(`work/<repo>_<N>`)에서 `(repo, N)` 유도(_pm_state_
-        # display_path 인스턴스 메서드와 동형 파싱·출력 표기만·해소 로직 무변경).
-        slot_key: tuple[str, int] | None = None
-        if slot.startswith("work/"):
-            m = re.match(r"^(.+)_(\d+)$", slot[len("work/"):])
-            if m:
-                slot_key = (m.group(1), int(m.group(2)))
+        # 재사용(중복 금지) — identity 슬롯 경로 값에서 정체성 키를 **장부 해소**로 얻는다
+        # (`_slot_identity`·인스턴스 메서드와 동형·출력 표기만·해소 로직 단일 진실).
+        slot_identity = _slot_identity(slot)
+        slot_key = slot_identity.key if slot_identity is not None else None
         pm_state_path = _pm_state_display_path(slot_key, self._areas_file)
 
         lines: list[str] = []
@@ -4996,10 +5118,16 @@ class PmBootstrap:
         tool_invoke = _resolve_card_tool_invoke(environment=environment)
         session = identity.get("session") if identity else None
         repo_name = identity.get("repo") if identity else None
-        # 슬롯 **번호**는 슬롯 식별자(`identity["slot"]`=`work/<repo>_<N>`)의 *마지막* `_` 로 분리한다
-        # (repo 내부 언더스코어와 무관·항상 마지막 세그먼트가 N).
+        # 슬롯 **번호**는 정체성 산출부(`_bind_and_identity`·`_alloc_and_identity`)가 **장부 값**
+        # 에서 확정해 실어 준 좌표다(`identity["slot_number"]`) — 슬롯 식별자 문자열을 여기서 다시
+        # 뜯지 않는다. 카드가 렌더하는 `--repo X --slot N` 은 *다음 세션이 이 슬롯으로 재접속하는
+        # 지시*라 장부에 조인되지 않으면 즉시 M3 로 거부된다(리뷰 F-002 축).
+        # `slot_number` 결손(불완전 dict)은 `session` 결손과 같은 방어 — 슬롯 식별자에서 마지막
+        # `_` 로 분리한 값으로 폴백한다(카드 절 무손상·정상 경로는 항상 좌표를 싣는다).
         slot_id = identity.get("slot") if identity else None
-        slot_num = slot_id.rsplit("_", 1)[-1] if slot_id else None
+        slot_num = identity.get("slot_number") if identity else None
+        if slot_num is None and slot_id:
+            slot_num = slot_id.rsplit("_", 1)[-1]
         # 정체성 인자 — 멀티-PM 여부 게이트는 **session 존재**로 판정한다(종전 유지): session 결손
         # (불완전 dict)은 솔로 방어 렌더로 폴백(fail-soft·카드 절 무손상). 게이트 통과 시 번호는 위
         # slot_num(슬롯 식별자 파생)으로 채운다. lean=` --repo <repo> --slot <N>`·솔로=빈 문자열.
