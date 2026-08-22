@@ -658,7 +658,12 @@ def test_pending_seed_round_does_not_shadow_a_legitimate_trailing_round(pd):
 
     assert pd._pm_review_surface_rounds(rounds + [round3]) == rounds
     delta = pd.parse_pm_review_delta(ticket.spec, rounds + [round3])
-    assert delta == pd.parse_pm_review_delta(ticket.spec, rounds) == pd.PMReviewDelta((), False)
+    # 값 핀은 3필드 전부다 — `confirmation_cursor` 는 [[T-0805]] 가 뒤에 실은 필드이고, 여기서
+    # F-001 이 2 인 것은 라운드 2 의 reviewer 확인이 그 ID 의 인과 floor 이기 때문이다(시드
+    # 라운드와 무관). 기본값에 기대 두 필드만 적으면 필드가 늘어난 순간 핀이 조용히 헐거워진다.
+    assert delta == pd.parse_pm_review_delta(ticket.spec, rounds) == pd.PMReviewDelta(
+        (), False, (("F-001", 2),),
+    )
 
 
 def test_pending_seed_round_leaves_delta_output_bytes_unchanged(pd):

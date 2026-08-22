@@ -3682,14 +3682,21 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> PMReviewDelta:
     # verify 골격(raw placeholder)도 fence 존재를 볼 수 있다 — row 값은 여기서 읽지 않으므로
     # (`continue`) 재-인용이 값 검증에 새지 않는다.
     dev_rounds_by_ordinal: dict[int, object] = {}
+    pending_dev_ordinals: set[int] = set()
     for item in sorted(rounds, key=lambda entry: entry.ordinal):
         channel = (item.role, item.ordinal)
         if channel in refused:
             continue              # 거부 표식이 있는 라운드는 통째로 판정 표면 밖이다.
         # 이 순회는 developer verify 배치 검사·`dev_rounds_by_ordinal` 구축을 겸해 seam
-        # (`_pm_review_surface_rounds`)을 거치지 않는다 — 시드 그대로인 리뷰 라운드는 같은
+        # (`_pm_review_surface_rounds`)을 거치지 않는다 — 시드 그대로인 라운드는 같은
         # 축(`item.pending`)으로 여기서도 배제해야 골격의 자리표시 블록이 실 선언으로 안 읽힌다.
-        if item.role in REVIEW_ROLES and item.pending:
+        # 배제 규칙은 역할과 무관하다(pending = 회수 전 = 아직 산출이 아니다 · 누적 시야
+        # `_pm_review_latest_verify_rows` 와 같은 축) — developer 라운드는 순번만 남겨,
+        # 그 순번을 참조한 기계 확인이 "선언 누락(dev 태만)" 이 아니라 "아직 산출이 아닌
+        # 라운드" 로 진단되게 한다.
+        if item.pending:
+            if item.role == "developer":
+                pending_dev_ordinals.add(item.ordinal)
             continue
         scan_text = (
             _pm_review_requote_verify_placeholder(item.text)
@@ -3726,7 +3733,7 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> PMReviewDelta:
     _verify_rows_cache: dict[int, dict[str, PMReviewVerifyRow]] = {}
 
     def _verify_rows_for_developer_round(round_ordinal: int) -> dict[str, PMReviewVerifyRow] | None:
-        """그 순번이 developer 라운드가 아니면 None, 맞으면 그 라운드의 verify 행(지연 파싱)."""
+        """그 순번이 **산출 있는** developer 라운드가 아니면 None, 맞으면 verify 행(지연 파싱)."""
         target = dev_rounds_by_ordinal.get(round_ordinal)
         if target is None:
             return None
@@ -3857,10 +3864,14 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> PMReviewDelta:
         last_confirmation_round = round_ordinal
         verify_rows = _verify_rows_for_developer_round(round_ordinal)
         if verify_rows is None:
+            reason = (
+                "아직 회수되지 않은 developer 라운드입니다(시드 그대로 · 산출 없음)"
+                if round_ordinal in pending_dev_ordinals
+                else "developer 라운드가 아닙니다"
+            )
             raise PMReviewError(
                 "malformed",
-                f"{PM_REVIEW_CONFIRMATION_BLOCK} round={round_ordinal}는 developer 라운드가 "
-                "아닙니다",
+                f"{PM_REVIEW_CONFIRMATION_BLOCK} round={round_ordinal}는 {reason}",
             )
         if not isinstance(value.get("confirmations"), list):
             raise PMReviewError("malformed", "confirmations는 JSON array여야 합니다")
