@@ -48,12 +48,17 @@ def dispatcher():
     return module
 
 
-def _delegate_feature(dispatcher_module):
-    """디스패처 registry 의 위임 채널 기능 1건 (없으면 red — 배선이 사라진 것)."""
+def _feature_by_id(dispatcher_module, feature_id: str):
+    """디스패처 registry 의 그 기능 1건 (없으면 red — 배선이 사라진 것)."""
     matches = [feature for feature in dispatcher_module.CODEX_HOOK_FEATURES
-               if feature.feature_id == "delegate-channel"]
+               if feature.feature_id == feature_id]
     assert len(matches) == 1, dispatcher_module.CODEX_HOOK_FEATURES
     return matches[0]
+
+
+def _delegate_feature(dispatcher_module):
+    """PreToolUse 스폰 판별을 쥔 위임 채널 기능."""
+    return _feature_by_id(dispatcher_module, "delegate-channel")
 
 
 def _live_evidence() -> dict[str, object]:
@@ -686,9 +691,11 @@ def test_codex_pretooluse_and_subagentstart_wiring_uses_live_payload_fixture(
         for payload in inline_script_payloads(wrapper):
             assert "delegate_channel_guard" not in payload
             assert "candidate" not in payload
-    # 진입점은 세 이벤트 전부에 하나씩 열려 있고 전부 같은 디스패처를 부른다.
+    # 진입점은 출하 config 의 이벤트 전부에 하나씩 열려 있고 전부 같은 디스패처를 부른다.
     assert tuple(dispatcher.CODEX_HOOK_ENTRYPOINT_EVENTS) == (
-        "PreToolUse", "UserPromptSubmit", "PostToolUse")
+        "PreToolUse", "UserPromptSubmit", "PostToolUse",
+        "SubagentStart", "PreCompact", "PostCompact")
+    assert set(events) == set(dispatcher.CODEX_HOOK_ENTRYPOINT_EVENTS)
     for event in dispatcher.CODEX_HOOK_ENTRYPOINT_EVENTS:
         entry_groups = events[event]
         assert len(entry_groups) == 1 and entry_groups[0]["matcher"] == ".*", event
@@ -702,12 +709,19 @@ def test_codex_pretooluse_and_subagentstart_wiring_uses_live_payload_fixture(
     assert re.fullmatch(observer_groups[0]["matcher"], "any-agent-name")
     observer = observer_groups[0]["hooks"]
     assert len(observer) == 1 and observer[0]["type"] == "command"
-    assert observer[0]["timeout"] == 10
-    assert "codex-subagent-observe" in observer[0]["command"]
-    assert "codex-subagent-observe" in observer[0]["commandWindows"]
-    assert "supervise SubagentStart" in observer[0]["command"]
-    assert "supervise SubagentStart" in observer[0]["commandWindows"]
-    assert guard.CODEX_SUPERVISOR_TIMEOUT_SECONDS < observer[0]["timeout"]
+    # T-0806 — 관측 배선도 진입점 뒤 registry 항목이다(옛 직결 커맨드 값이 그대로 옮겨 왔다).
+    for command_key in ("command", "commandWindows"):
+        assert "codex-subagent-observe" not in observer[0][command_key], command_key
+    observe_feature = _feature_by_id(dispatcher, "delegate-channel-subagent")
+    assert observe_feature.event == "SubagentStart"
+    # 옛 matcher 는 `.*`(agent_type 값 공간 전수)이었다 — 판별 없음이 그 값의 이관이다.
+    assert observe_feature.tool_pattern is None
+    assert list(observe_feature.argv) == [
+        "{py}", "{tools}/delegate_channel_guard.py", "supervise", "SubagentStart",
+        "{py}", "{tools}/delegate_channel_guard.py", "codex-subagent-observe",
+    ]
+    assert (guard.CODEX_SUPERVISOR_TIMEOUT_SECONDS
+            < dispatcher.CODEX_HOOK_DISPATCH_BUDGET_SEC < observer[0]["timeout"])
     assert "Execpolicy" in data["description"] and "argv-only" in data["description"]
 
     readme = README.read_text(encoding="utf-8")

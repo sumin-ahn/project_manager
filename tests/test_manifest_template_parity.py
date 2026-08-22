@@ -321,16 +321,23 @@ def test_claude_manifests_register_engine_mirror_hooks_and_driver():
 def test_compaction_adapters_reference_engine_builder_without_copying_snapshot_labels():
     """재주입 하네스는 builder command token만 갖고 최종 텍스트 라벨은 pm_log 한 곳에만 둔다."""
     adapters = {
-        "claude": TEMPLATE_ROOTS["claude_code"] / ".claude" / "ctx_stop_hook.py",
-        "opencode": TEMPLATE_ROOTS["opencode"] / ".opencode" / "lib" / "ctx-guard-core.cjs",
-        "codex": TEMPLATE_ROOTS["codex"] / ".codex" / "hooks.json",
+        "claude": (TEMPLATE_ROOTS["claude_code"] / ".claude" / "ctx_stop_hook.py",),
+        "opencode": (TEMPLATE_ROOTS["opencode"] / ".opencode" / "lib" / "ctx-guard-core.cjs",),
+        # codex 는 PostCompact 배선이 진입점 뒤 registry 로 옮겨서(T-0806) builder token 이
+        #   hooks.json 이 아니라 디스패처에 산다. 라벨 비복제는 두 파일 모두에서 본다.
+        "codex": (TEMPLATE_ROOTS["codex"] / ".codex" / "pm_orch_codex.py",
+                  TEMPLATE_ROOTS["codex"] / ".codex" / "hooks.json"),
     }
     builder_labels = ("## PM 정체성 (compaction 복구)", "## 장부 포인터", "## pm_state 머리", "## 복구 포인터")
-    for harness, path in adapters.items():
-        text = path.read_text(encoding="utf-8")
-        assert "pm_log.py snapshot" in text, f"{harness}: builder command token 누락"
-        assert not any(label in text for label in builder_labels), (
-            f"{harness}: 엔진 전용 snapshot 라벨을 adapter가 복제함")
+    for harness, paths in adapters.items():
+        texts = [path.read_text(encoding="utf-8") for path in paths]
+        # 토큰은 셸 한 줄(`pm_log.py snapshot`)일 수도 argv 원소 두 개(`"…/pm_log.py", "snapshot"`)
+        #   일 수도 있다 — 배선 표기가 아니라 "엔진 builder 를 호출한다" 는 사실을 본다.
+        assert any(re.search(r"pm_log\.py\W{0,8}snapshot", text) for text in texts), \
+            f"{harness}: builder command token 누락"
+        for path, text in zip(paths, texts):
+            assert not any(label in text for label in builder_labels), (
+                f"{harness}:{path.name}: 엔진 전용 snapshot 라벨을 adapter가 복제함")
 
 
 def test_opencode_manifest_registers_engine_mirror_hooks_and_driver():

@@ -592,7 +592,8 @@ class AdapterHookEntrypoint(NamedTuple):
 
     `flag_support` 와 방향이 반대다 — 저쪽은 "config 가 요구하는 것을 설치본이 감당하나"(config →
     엔진)이고, 이쪽은 "이 엔진 세대가 기대하는 진입점이 config 에 있나"(엔진 → config)다. 진입점이
-    빠진 채택자에서 가드는 **발화 자체를 안 한다** — 그 상태가 조용한 통과로 남지 않게 한다.
+    빠진 채택자에서는 **앞으로 등록될** 가드가 발화 자체를 안 한다(옛 직결 배선이 남아 있으면 그
+    시점의 기능은 계속 돈다) — 그 상태가 조용한 통과로 남지 않게 한다.
 
     event      훅 이벤트 이름(config `hooks` 의 키).
     matcher    그 이벤트의 값 공간을 전부 덮는 matcher 리터럴. `None` 은 matcher 키 없음
@@ -690,9 +691,11 @@ ADAPTER_HOOK_SET = {
             #   "어떤 가드를 돌릴지" 는 그 코드 안에서 갈린다. 그래서 가드 **기능** 추가는 이제
             #   엔진 코드 변경뿐이고 채택자 config·`/hooks` 재승인을 다시 요구하지 않는다.
             #   이 집합은 릴리즈 간 불변이다 — 늘리려면 채택자 config 재승인을 동반한 1회
-            #   마이그레이션이다.
+            #   마이그레이션이다. 그래서 codex 가 발화시키는 **모든** 이벤트를 한 번에 담는다:
+            #   일부만 담으면 남은 이벤트가 다음 기능에서 재승인을 다시 부른다.
             AdapterHookEntrypoint(event, ".*", ".codex/pm_orch_codex.py", "--hook-dispatch")
-            for event in ("PreToolUse", "UserPromptSubmit", "PostToolUse")
+            for event in ("PreToolUse", "UserPromptSubmit", "PostToolUse",
+                          "SubagentStart", "PreCompact", "PostCompact")
         ),
     ),
     # opencode 는 훅 커맨드를 선언하는 config 가 없다 — 플러그인은 `.opencode/plugins/`
@@ -6748,7 +6751,7 @@ def judge_adapter_hook_sets(dest_root: Path, source_root: Path | None = None,
 
 # ── 역방향 축: 이 엔진 세대가 기대하는 진입점이 config 에 있나 ───────────────────
 # 위 `judge_adapter_hook_sets` 는 **config → 엔진** 한 방향만 본다(config 가 요구하는 플래그를
-# 설치본이 감당하나). 그 방향만으로는 "진입점이 아예 없어서 가드가 한 번도 발화하지 않는" 상태가
+# 설치본이 감당하나). 그 방향만으로는 "진입점이 아예 없어서 앞으로 등록될 가드가 발화하지 않는" 상태가
 # 판정 밖이다 — config 가 아무것도 요구하지 않으면 미충족도 0 이라 green 이다. 이 절이 반대
 # 방향을 채운다.
 #
@@ -6874,7 +6877,8 @@ def judge_adapter_hook_entrypoints(dest_root: Path, source_root: Path | None = N
                     entrypoint.event, entrypoint.matcher, entrypoint.dispatcher,
                     f"{spec.config_relpath} 에 {entrypoint.event} 범용 진입점"
                     f"(matcher {entrypoint.matcher!r} → {entrypoint.dispatcher})이 없다 — "
-                    f"이 이벤트에 등록된 가드는 한 번도 발화하지 않는다"))
+                    f"이 이벤트에 앞으로 등록될 가드는 발화하지 않는다"
+                    f"(옛 직결 배선이 남아 있으면 그 기능 자체는 계속 돈다)"))
                 continue
             gap = _entrypoint_dispatcher_gap(dest_root, entrypoint)
             if gap is not None:

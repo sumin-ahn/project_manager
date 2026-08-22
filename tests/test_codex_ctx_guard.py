@@ -9,6 +9,9 @@ codex 어댑터의 2층 ctx 가드 중 **대화형 경로**를 여러 층위에�
   2. hooks.json 정합 — 실 codex 스키마(최상위 `hooks` 래퍼 → 이벤트 → matcher-group → 중첩
        `hooks[]` → `{type:command, command:<셸 문자열>}`·Claude Code 형 동일)로 `PreCompact` 비차단
        checkpoint 안내(인라인 command string·별도 스크립트 파일 금지) + strict JSON.
+       T-0806 이후 압축 두 이벤트의 커맨드는 범용 진입점(`--hook-dispatch <이벤트>`)이고, 어떤
+       기능이 도는지는 디스패처 registry 가 쥔다 — 그래서 checkpoint·안내·snapshot 배선 단언은
+       hooks.json 이 아니라 그 registry 값을 본다(판정 자체는 같은 값·표기만 옮겨 왔다).
   3. ctx 예산 키 — `board.py init` 스캐폴드가 `ctx_window_tokens_codex` 주석 예시를 claude/opencode
        와 나란히 박는다(relay driver `_maybe_mark_ctx` 예산 원천·ADR-0041 per-harness 키).
 
@@ -21,6 +24,7 @@ instance-owned(두 파일 모두 manifest 미등록·미전파·trust 재승인 
 from __future__ import annotations
 
 import argparse
+import functools
 import importlib.util
 import json
 import re
@@ -50,6 +54,51 @@ def _load_config() -> dict:
 
 def _load_hooks() -> dict:
     return json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
+
+
+DISPATCHER_REL = ".codex/pm_orch_codex.py"
+DISPATCHER_PY = REPO / "templates" / "codex" / DISPATCHER_REL
+
+
+@functools.lru_cache(maxsize=1)
+def _dispatcher():
+    """출하 디스패처 모듈 — 압축 훅의 기능 배선이 사는 곳(T-0806 이후)."""
+    spec = importlib.util.spec_from_file_location("pm_orch_codex", DISPATCHER_PY)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _features(event: str) -> list:
+    """그 이벤트에 등록된 기능 — 등재 순서 그대로(옛 커맨드의 단계 순서)."""
+    return [feature for feature in _dispatcher().CODEX_HOOK_FEATURES
+            if feature.event == event]
+
+
+def _entrypoint_handler(event: str) -> dict:
+    """그 이벤트의 유일한 진입점 handler."""
+    groups = _load_hooks()["hooks"][event]
+    assert len(groups) == 1, f"{event}: 진입점은 이벤트당 하나다 ({len(groups)}개)"
+    assert groups[0]["matcher"] == ".*", f"{event}: {groups[0]['matcher']!r}"
+    handlers = groups[0]["hooks"]
+    assert len(handlers) == 1, f"{event}: 진입점 handler 는 하나다"
+    return handlers[0]
+
+
+def _feature_tree(tmp_path: Path, pm_log_body: str) -> Path:
+    """출하 디스패처 + 가짜 `pm_log.py` 로 만든 최소 채택자 트리.
+
+    진입점 커맨드를 **그대로** 태우되 장부 CLI 만 가짜로 바꿔, checkpoint 단계의 사람글이
+    엔벨로프 줄로 새지 않는지를 실행 결과로 본다(옛 `>/dev/null 2>&1` 단언의 승계)."""
+    root = tmp_path / "adopter"
+    tools = root / ".project_manager" / "tools"
+    tools.mkdir(parents=True)
+    (tools / "pm_log.py").write_text(pm_log_body, encoding="utf-8", newline="\n")
+    # 엔진 루트 해소 마커(`repo_root`) — 폴백에 기대지 않고 트리 루트를 값으로 고정한다.
+    (tools / "pm_handoff.py").write_text("", encoding="utf-8", newline="\n")
+    (root / ".codex").mkdir(parents=True)
+    shutil.copy2(DISPATCHER_PY, root / DISPATCHER_REL)
+    return root
 
 
 # ── 1. config.toml: 문서화된 auto-compact threshold + machine-local 금지 키 부재 ──
@@ -133,39 +182,42 @@ def _precompact_command_entries() -> list[dict]:
     return entries
 
 
-def test_hooks_precompact_allows_compaction_with_manual_auto_matchers_and_json_stdout():
-    """PreCompact은 matcher를 보존하되 compaction을 중단하지 않고 checkpoint를 안내한다."""
-    groups = _load_hooks()["hooks"]["PreCompact"]
-    assert {group.get("matcher") for group in groups} == {"^auto$", "^manual$"}
-    entries = _precompact_command_entries()
-    cmd_entries = [e for e in entries if e.get("type") == "command"]
-    assert cmd_entries, "type=='command' hook 엔트리 없음 (실 스키마의 'type' 태그 누락)"
+def test_hooks_precompact_allows_compaction_through_one_entrypoint_and_json_stdout():
+    """PreCompact은 진입점 하나로 compaction을 중단하지 않고 checkpoint를 안내한다.
+
+    옛 `^auto$`+`^manual$` 두 matcher는 `trigger` enum 전수(`{manual, auto}`)라 `.*` 하나와 값이
+    같다(추출 스키마 대조는 test_codex_hook_dispatch 의 enum 커버 단언). 실행되는 두 단계
+    (checkpoint 폐기 + ctx-guidance 엔벨로프)는 진입점 뒤 registry 에 값 그대로 있다."""
+    handler = _entrypoint_handler("PreCompact")
+    assert handler.get("type") == "command", handler
     # command 는 셸 문자열이어야 한다 (argv 배열 아님 — 원 결함).
-    for e in cmd_entries:
-        assert isinstance(e.get("command"), str), (
-            f"command 가 문자열이 아님 (실 스키마=셸 command string·argv 배열 아님): {e.get('command')!r}"
-        )
-    joined = " ".join(e["command"] for e in cmd_entries)
-    assert ".project_manager/tools/pm_log.py checkpoint --trigger compaction --phase pre --cwd" in joined
-    assert ".project_manager/tools/pm_log.py ctx-guidance --band precompact --json" in joined
-    assert ">/dev/null 2>&1" in joined, "checkpoint subprocess 출력 폐기 없음"
+    assert isinstance(handler.get("command"), str), (
+        f"command 가 문자열이 아님 (실 스키마=셸 command string·argv 배열 아님): {handler.get('command')!r}"
+    )
+    checkpoint, guidance = _features("PreCompact")
+    assert checkpoint.argv[1:] == ("{tools}/pm_log.py", "checkpoint", "--trigger",
+                                   "compaction", "--phase", "pre", "--cwd", ".")
+    assert checkpoint.side_effect_only is True, "checkpoint 단계 출력 폐기가 사라졌다"
+    assert guidance.argv[1:] == ("{tools}/pm_log.py", "ctx-guidance", "--band",
+                                 "precompact", "--json")
+    assert guidance.side_effect_only is False, "엔벨로프 단계가 답하지 않는다"
+    joined = handler["command"]
     assert "printf" in joined, "JSON stdout을 내는 printf command 없음"
     assert '\"continue\"' not in joined, "비차단 hook에 continue 제어 키가 남음"
     assert '\"stopReason\"' not in joined, "비차단 hook에 stopReason이 남음"
-    assert '\"suppressOutput\":true' in joined, "엔진 부재 fail-soft JSON 없음"
+    # 엔진/인터프리터 부재에도 유효한 엔벨로프 한 줄이 나가야 한다(옛 fail-soft JSON 승계).
+    assert '\"suppressOutput\":false' in joined, "엔진 부재 fail-soft JSON 없음"
+    assert "adapter-fallback" in joined, "폴백 사실을 남기는 마커 없음"
 
 
 def test_hooks_windows_commands_match_posix_nonblocking_checkpoint_contract():
-    """Windows/POSIX가 같은 pm_log ctx-guidance 값을 소비하고 비차단 fallback을 둔다."""
-    groups = _load_hooks()["hooks"]["PreCompact"]
-    assert {group["matcher"] for group in groups} == {"^auto$", "^manual$"}
-    for group in groups:
-        handler = group["hooks"][0]
-        assert "ctx-guidance --band precompact --json" in handler["command"]
-        assert "ctx-guidance --band precompact --json" in handler["commandWindows"]
-        assert '{\"suppressOutput\":true}' in handler["command"]
-        assert '{\"suppressOutput\":true}' in handler["commandWindows"]
-        assert "&&" not in handler["commandWindows"]
+    """Windows/POSIX가 같은 진입점 호출을 하고 비차단 fallback을 둔다."""
+    handler = _entrypoint_handler("PreCompact")
+    for key in ("command", "commandWindows"):
+        assert "--hook-dispatch PreCompact" in handler[key], key
+        assert DISPATCHER_REL in handler[key], key
+        assert '\"suppressOutput\":false' in handler[key], key
+    assert "&&" not in handler["commandWindows"]
 
 
 def test_readme_documents_nonblocking_probe_and_confirmed_headless_non_reachability():
@@ -212,18 +264,25 @@ def test_readme_documents_nonblocking_probe_and_confirmed_headless_non_reachabil
 
 
 def test_hooks_warning_is_inline_and_only_calls_engine_script():
-    """별도 adapter script/정책 복제 없이 pm_log의 checkpoint+ctx-guidance만 호출한다."""
+    """별도 adapter script/정책 복제 없이 엔진 파일만 호출한다.
+
+    진입점은 manifest 등재 디스패처를, 그 뒤 registry 는 엔진 `pm_log.py` 만 부른다 — 어느
+    단계에도 어댑터 소유 스크립트 파일이나 정책 사본이 없다(원 단언의 관심사)."""
     for e in _precompact_command_entries():
         assert e.get("type") == "command", f"command 타입 hook 아님: {e!r}"
         body = e.get("command", "")
         assert isinstance(body, str), f"command 가 문자열 아님 (실 스키마 위반): {body!r}"
-        assert "pm_log.py checkpoint" in body and "pm_log.py ctx-guidance" in body
+        assert f"{DISPATCHER_REL} --hook-dispatch PreCompact" in body
         assert "printf '%s\\n'" in body
         windows = e.get("commandWindows", "")
         assert isinstance(windows, str) and windows, f"Windows commandWindows 누락: {e!r}"
-        assert "pm_log.py' checkpoint" in windows and "pm_log.py' ctx-guidance" in windows
-        assert "Write-Output '" in windows
+        assert f"'{DISPATCHER_REL}' --hook-dispatch PreCompact" in windows
+        assert "Write-Output " in windows
         assert "&&" not in windows and ";" in windows
+    engine_tools = {"{tools}/pm_log.py"}
+    for feature in _features("PreCompact") + _features("PostCompact"):
+        assert feature.argv[0] == "{py}", feature
+        assert feature.argv[1] in engine_tools, f"어댑터 소유 스크립트 호출: {feature}"
 
 
 def _all_windows_commands() -> list[tuple[str, str]]:
@@ -335,70 +394,67 @@ def test_windows_interpreter_is_never_adopted_without_a_probe():
 
 
 def test_postcompact_wires_snapshot_checkpoint_and_windows_symmetry():
-    groups = _load_hooks()["hooks"]["PostCompact"]
-    assert {group.get("matcher") for group in groups} == {"^auto$", "^manual$"}
-    for group in groups:
-        handler = group["hooks"][0]
-        for key in ("command", "commandWindows"):
-            command = handler[key]
-            assert "pm_log.py" in command and "checkpoint" in command and "snapshot" in command
-            assert "--json" in command and "--cwd" in command
-            assert "--phase post" in command
-        assert ">/dev/null 2>&1" in handler["command"]
-        assert "*> $null" in handler["commandWindows"]
-        assert "&&" not in handler["commandWindows"]
+    """PostCompact 진입점 뒤에 checkpoint(post)+snapshot 두 단계가 그대로 있다."""
+    handler = _entrypoint_handler("PostCompact")
+    for key in ("command", "commandWindows"):
+        assert "--hook-dispatch PostCompact" in handler[key], key
+        assert DISPATCHER_REL in handler[key], key
+    assert "&&" not in handler["commandWindows"]
+    checkpoint, snapshot = _features("PostCompact")
+    assert checkpoint.argv[1:] == ("{tools}/pm_log.py", "checkpoint", "--trigger",
+                                   "compaction", "--phase", "post", "--cwd", ".")
+    assert checkpoint.side_effect_only is True, "checkpoint 단계 출력 폐기가 사라졌다"
+    assert snapshot.argv[1:] == ("{tools}/pm_log.py", "snapshot", "--cwd", ".", "--json")
+    assert snapshot.side_effect_only is False, "엔벨로프 단계가 답하지 않는다"
+
+
+# 가짜 장부 CLI — checkpoint 단계는 사람글(stdout)과 에러(stderr)를 내고, 엔벨로프 단계만
+#   JSON 을 낸다. 진입점 산출에 그 사람글이 섞이면 호스트가 엔벨로프를 못 읽는다.
+_FAKE_PM_LOG = (
+    "import json, sys\n"
+    "if 'snapshot' in sys.argv:\n"
+    "    print(json.dumps({'systemMessage':'SNAPSHOT-VERBATIM','suppressOutput':False}))\n"
+    "elif 'ctx-guidance' in sys.argv:\n"
+    "    print(json.dumps({'systemMessage':'ENGINE-GUIDANCE','suppressOutput':False}))\n"
+    "else:\n"
+    "    print('checkpoint-noise')\n"
+    "    print('checkpoint-error', file=sys.stderr)\n"
+)
+_COMPACTION_ENVELOPE = {
+    "PreCompact": {"systemMessage": "ENGINE-GUIDANCE", "suppressOutput": False},
+    "PostCompact": {"systemMessage": "SNAPSHOT-VERBATIM", "suppressOutput": False},
+}
 
 
 @pytest.mark.skipif(
     not posix_bash_supported(), reason="POSIX shell wrapper 실행 환경이 아님"
 )
 def test_posix_precompact_discards_checkpoint_noise_and_emits_one_json(tmp_path):
-    tools = tmp_path / ".project_manager" / "tools"
-    tools.mkdir(parents=True)
-    (tools / "pm_log.py").write_text(
-        "import json, sys\n"
-        "if 'ctx-guidance' in sys.argv:\n"
-        "    print(json.dumps({'systemMessage':'ENGINE-GUIDANCE','suppressOutput':False}))\n"
-        "else:\n"
-        "    print('checkpoint-noise')\n"
-        "    print('checkpoint-error', file=sys.stderr)\n",
-        encoding="utf-8",
+    root = _feature_tree(tmp_path, _FAKE_PM_LOG)
+
+    result = subprocess.run(
+        ["sh", "-c", _entrypoint_handler("PreCompact")["command"]], cwd=root,
+        capture_output=True, text=True, check=True,
     )
-    for group in _load_hooks()["hooks"]["PreCompact"]:
-        result = subprocess.run(
-            ["sh", "-c", group["hooks"][0]["command"]], cwd=tmp_path,
-            capture_output=True, text=True, check=True,
-        )
-        lines = result.stdout.splitlines()
-        assert len(lines) == 1
-        assert json.loads(lines[0]) == {
-            "systemMessage": "ENGINE-GUIDANCE", "suppressOutput": False,
-        }
-        assert result.stderr == ""
+
+    lines = result.stdout.splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0]) == _COMPACTION_ENVELOPE["PreCompact"]
+    assert result.stderr == ""
 
 
 @pytest.mark.skipif(
     not posix_bash_supported(), reason="POSIX shell wrapper 실행 환경이 아님"
 )
 def test_posix_postcompact_injects_builder_json_without_checkpoint_noise(tmp_path):
-    tools = tmp_path / ".project_manager" / "tools"
-    tools.mkdir(parents=True)
-    (tools / "pm_log.py").write_text(
-        "import json, sys\n"
-        "if 'snapshot' in sys.argv:\n"
-        "    print(json.dumps({'systemMessage':'SNAPSHOT-VERBATIM','suppressOutput':False}))\n"
-        "else:\n"
-        "    print('checkpoint-noise')\n"
-        "    print('checkpoint-error', file=sys.stderr)\n",
-        encoding="utf-8",
-    )
-    command = _load_hooks()["hooks"]["PostCompact"][0]["hooks"][0]["command"]
+    root = _feature_tree(tmp_path, _FAKE_PM_LOG)
+
     result = subprocess.run(
-        ["sh", "-c", command], cwd=tmp_path, capture_output=True, text=True, check=True,
+        ["sh", "-c", _entrypoint_handler("PostCompact")["command"]], cwd=root,
+        capture_output=True, text=True, check=True,
     )
-    assert json.loads(result.stdout) == {
-        "systemMessage": "SNAPSHOT-VERBATIM", "suppressOutput": False,
-    }
+
+    assert json.loads(result.stdout) == _COMPACTION_ENVELOPE["PostCompact"]
     assert result.stderr == ""
 
 
@@ -409,35 +465,17 @@ def test_hooks_windows_commands_parse_and_execute_for_pre_and_postcompact_when_a
     if executable is None:
         return  # Linux CI 등 PowerShell 부재 환경은 위 static parser가 contract를 검증한다.
 
-    tools = tmp_path / ".project_manager" / "tools"
-    tools.mkdir(parents=True)
-    (tools / "pm_log.py").write_text(
-        "import json, sys\n"
-        "if 'snapshot' in sys.argv:\n"
-        "    print(json.dumps({'systemMessage':'SNAPSHOT-WINDOWS','suppressOutput':False}))\n"
-        "elif 'ctx-guidance' in sys.argv:\n"
-        "    print(json.dumps({'systemMessage':'ENGINE-GUIDANCE','suppressOutput':False}))\n"
-        "else:\n"
-        "    print('checkpoint-noise')\n"
-        "    print('checkpoint-error', file=sys.stderr)\n",
-        encoding="utf-8",
-    )
     for event in ("PreCompact", "PostCompact"):
-        for group in _load_hooks()["hooks"][event]:
-            raw_command = group["hooks"][0]["commandWindows"]
-            result = subprocess.run(
-                [executable, "-NoProfile", "-NonInteractive", "-Command", raw_command],
-                cwd=tmp_path, check=True, capture_output=True, text=True,
-                encoding="utf-8", errors="replace", env=utf8_child_env(),
-            )
-            expected = {
-                "systemMessage": (
-                    "ENGINE-GUIDANCE" if event == "PreCompact" else "SNAPSHOT-WINDOWS"
-                ),
-                "suppressOutput": False,
-            }
-            assert json.loads(result.stdout.strip()) == expected
-            assert result.stderr == ""
+        root = _feature_tree(tmp_path / event, _FAKE_PM_LOG)
+        result = subprocess.run(
+            [executable, "-NoProfile", "-NonInteractive", "-Command",
+             _entrypoint_handler(event)["commandWindows"]],
+            cwd=root, check=True, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", env=utf8_child_env(),
+        )
+
+        assert json.loads(result.stdout.strip()) == _COMPACTION_ENVELOPE[event]
+        assert result.stderr == ""
 
 
 def _rollout_summary(jsonl: str) -> tuple[int, set[str], bool]:

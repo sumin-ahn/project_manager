@@ -1262,11 +1262,15 @@ def test_upgrade_adopter_gains_a_codex_hook_feature_by_engine_code_alone(tmp_pat
         "설치 직후 채택자 config 가 상류와 다르다(전제 붕괴)"
     # 만들어진 트리의 **파일 내용**으로 진입점을 단언한다(조립 문자열이 아니라 산출물).
     installed = json.loads((dest / hooks_rel).read_text(encoding="utf-8"))["hooks"]
-    for event in ("PreToolUse", "UserPromptSubmit", "PostToolUse"):
+    declared = tuple(entrypoint.event for entrypoint
+                     in _PM_IMPORT.ADAPTER_HOOK_SET["codex"].entrypoints)
+    assert set(installed) == set(declared), "설치 config 와 엔진 선언의 이벤트 집합이 갈렸다"
+    for event in declared:
         groups = installed[event]
         assert len(groups) == 1 and groups[0]["matcher"] == ".*", event
         for key in ("command", "commandWindows"):
             assert _CODEX_DISPATCHER_REL in groups[0]["hooks"][0][key], (event, key)
+            assert f"--hook-dispatch {event}" in groups[0]["hooks"][0][key], (event, key)
     assert (dest / _CODEX_DISPATCHER_REL).is_file(), "디스패처가 설치되지 않았다"
     assert _PM_IMPORT.judge_adapter_hook_entrypoints(dest, framework, ["codex"]) == [], \
         "갓 만든 채택자에 진입점 소견이 뜬다(거짓 red)"
@@ -1292,3 +1296,68 @@ def test_upgrade_adopter_gains_a_codex_hook_feature_by_engine_code_alone(tmp_pat
         dest, "PostToolUse",
         {"hook_event_name": "PostToolUse", "tool_name": "shell"}
     ) == FIXTURE_FEATURE_ENVELOPE, "전파는 됐는데 진입점에서 발화하지 않는다"
+
+
+# ── S8 진입점 집합이 늘어난 릴리즈의 흡수 (T-0806) ────────────────────────────
+# 이관 3 이벤트가 진입점 밖에 있던 세대(T-0777)의 채택자가 이 릴리즈를 흡수하는 창이다.
+# 그 창에서 **무편집 채택자는 advisory 0줄**이어야 한다 — pm_update 는 같은 실행에서
+# `sync_adapter_configs(write=True)` 로 config 를 교체한 뒤 진입점을 판정하므로, 판정 시점의
+# config 는 이미 새 세대다. 이 순서가 뒤집히면 정상 흡수마다 거짓 소견 3줄이 나간다.
+
+_T0806_MIGRATED_EVENTS = {"SubagentStart": (".*",),
+                          "PreCompact": ("^auto$", "^manual$"),
+                          "PostCompact": ("^auto$", "^manual$")}
+
+
+def _pre_t0806_hooks_document(framework: Path) -> dict:
+    """T-0806 이전 세대 형상 — 이관 3 이벤트가 진입점 밖 직결 배선으로 남은 config."""
+    hooks_rel = "templates/codex/.codex/hooks.json"
+    document = json.loads((framework / hooks_rel).read_text(encoding="utf-8"))
+    for event, matchers in _T0806_MIGRATED_EVENTS.items():
+        document["hooks"][event] = [
+            {"matcher": matcher,
+             "hooks": [{"type": "command", "timeout": 10,
+                        "command": '"$py" .project_manager/tools/pm_log.py checkpoint',
+                        "commandWindows":
+                            "& $py '.project_manager/tools/pm_log.py' checkpoint"}]}
+            for matcher in matchers]
+    return document
+
+
+@pytest.mark.skipif(not posix_bash_supported(),
+                    reason="POSIX bash wrapper 실행 환경이 아님")
+def test_upgrade_adopter_absorbs_the_widened_entrypoint_set_without_advisory_noise(
+        tmp_path):
+    """진입점 집합이 늘어난 릴리즈를 무편집 채택자가 흡수 1회로 수렴한다(소견 0줄)."""
+    framework = _build_codex_framework(tmp_path)
+    hooks_rel = ".codex/hooks.json"
+    upstream_hooks = framework / "templates" / "codex" / hooks_rel
+    current_bytes = upstream_hooks.read_bytes()
+    upstream_hooks.write_text(
+        json.dumps(_pre_t0806_hooks_document(framework), ensure_ascii=False, indent=2)
+        + "\n", encoding="utf-8", newline="\n")
+
+    dest = tmp_path / "codex-adopter"
+    assert _PM_IMPORT.main([
+        "--new", str(dest), "--harness", "codex", "--name", _ADOPTER_NAME,
+        "--fill", "manual", "--from", str(framework),
+    ]) == 0
+    # 전제: 이 세대 채택자에는 진입점이 3건 빠져 있다(소견이 발화할 수 있는 상태).
+    before = _PM_IMPORT.judge_adapter_hook_entrypoints(dest, framework, ["codex"])
+    assert {finding.event for finding in before} == set(_T0806_MIGRATED_EVENTS), before
+
+    upstream_hooks.write_bytes(current_bytes)  # 상류를 이 릴리즈 세대로 되돌린다.
+    run = _run_adopter_tool(dest, "pm_update.py", "--from", str(framework))
+
+    assert run.returncode == 0, f"{run.stdout}\n{run.stderr}"
+    assert (dest / hooks_rel).read_bytes() == current_bytes, \
+        "무편집 managed config 가 새 세대로 교체되지 않았다"
+    assert "훅 진입점 누락" not in run.stderr, \
+        f"같은 실행에서 교체된 config 에 거짓 소견이 났다\n{run.stderr}"
+    assert _PM_IMPORT.judge_adapter_hook_entrypoints(dest, framework, ["codex"]) == []
+    # 흡수 뒤 압축 진입점이 실제로 등록 기능을 돌린다(형태 수렴 + 발화 확인).
+    envelope = _run_shipped_entrypoint(
+        dest, "PreCompact",
+        {"hook_event_name": "PreCompact", "cwd": str(dest), "model": "m",
+         "session_id": "s", "transcript_path": None, "trigger": "auto", "turn_id": "t"})
+    assert envelope and "adapter-fallback" not in json.dumps(envelope, ensure_ascii=False)
