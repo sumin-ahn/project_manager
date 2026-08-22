@@ -318,8 +318,8 @@ IDEA_STATUS_DIRS: tuple[str, ...] = ("open", "promoted", "killed")
 # 추가 시 누락되는 클래스는 메타 가드 테스트(`test_board_worktree_misanchor_guard`·분류 상수 vs
 # 실 등록 subcommand 전수 대조)가 잡는다. 읽기-경로·anchor-keyed sidecar(regression·livegate —
 # worktree 에서 도는 게 설계 의도·`.local` sidecar 만 씀)·솔로/standalone(worktree 형상 아님)은
-# 무영향(감지 실패 시 현행 동작·오탐 0·fail-soft). `_worktree_cwd`/`_auto_slot`(②에서 ①찾기·
-# 회귀 cwd 해소)의 *역방향*: 여기선 ①에서 실행된 걸 잡는다.
+# 무영향(감지 실패 시 현행 동작·오탐 0·fail-soft). `_worktree_cwd`/`_auto_slot`(PM 홈에서 공개 제품 worktree 찾기·
+# 회귀 cwd 해소)의 *역방향*: 여기선 공개 제품 worktree에서 실행된 걸 잡는다.
 #
 # 분류 원칙: **PM 홈 소유 상태를 쓰는 명령**(티켓 상태전이·생성·ID/prefix relabel·idea·wiki
 # family-scope retag·clone init·파생 board.md 재생성)은 게이트. **조회(read)** 와 **anchor-keyed
@@ -2752,7 +2752,7 @@ def _validate_actor_task_or_exit(task: str) -> None:
     except identity_args.InvalidTaskName as e:
         sys.exit(
             f"[중단] {e} — `--task` 는 안전한 단일 이름이어야 하고 슬롯 예약패턴"
-            f"(`<repo>_<N>`·⑥)은 쓸 수 없다."
+            f"(`<repo>_<N>`)은 쓸 수 없다."
         )
 
 
@@ -3604,8 +3604,8 @@ def scan_task_tickets(user: str | None, task: str,
         뒤·`_slot_matches`)이 `task` 와 일치하는 것. `task` 세션의 claim 형태 = `<user>/<task>`
         (identity_tag slot 값 `<repo>_<N>` 예약과 기계 판별·task 명은 자유 포맷). `user` 가 주어지고
         claimed_by 에 user 토큰이 있으면 그 user 도 일치해야 한다(교차사용자 동명 task 오귀속 방지).
-        slot-only claim(user 토큰 없음)은 graceful 포함. **terminal status(`done`)는 제외한다(must-fix
-        ①)** — `cmd_complete` 는 done 이동 시 `claimed_by` 를 지우지 않으므로(status/completed_at 만),
+        slot-only claim(user 토큰 없음)은 graceful 포함. **terminal status(`done`)는 제외한다** —
+        `cmd_complete` 는 done 이동 시 `claimed_by` 를 지우지 않으므로(status/completed_at 만),
         `<user>/<task>` 로 claim→complete 한 티켓이 done/ 에 claimed_by 를 남긴다. done 을 담으면 그
         티켓은 `unclaim`(status=="claimed" 요구)도 불가라 **해소 수단이 없어 task end 가 영구 차단**된다
         ("해소=complete 또는 unclaim"). 완료된 작업은 소진 게이트 대상이 아니다. 이게
@@ -13530,7 +13530,7 @@ def cmd_prefix_delete(args: argparse.Namespace) -> int:
 
     prefix 는 티켓으로만 존재하는 작업 카테고리(자동시드 폐지)다. 0 티켓이면:
       - areas.md 에 A 가 등록돼 있으면 → 그 행의 **prefix 셀을 실제로 비운다**(행·repo 등록 보존·
-        무손실·② 수동 조치와 동형). promise=do — 메시지가 실제 셀 편집과 일치한다.
+        무손실·PM 홈 수동 조치와 동형). promise=do — 메시지가 실제 셀 편집과 일치한다.
       - 미등록이면 → 지울 등록이 없으므로 "확인만"(변경 0)으로 정직하게 보고한다.
     티켓이 있으면 물리삭제 없이 rename/merge 로 안내한다(fail-loud). `--dry-run` 은 쓰기 0·규모
     preview(다른 동사와 공통 표기).
@@ -15819,7 +15819,7 @@ def lint_adr_author() -> list[tuple[str, str, str]]:
 # ── 현재-진실 문서 freshness = verified_at sha 판정 (date 비교 대체) ──────────
 # architecture.md·status.md·domain 페이지의 freshness 를 frontmatter `verified_at: <sha>`
 # 기준으로 판정한다: "그 sha 이후 문서 매핑 경로에 커밋이 있나"의 이진 기계 판정
-# Decision 2). date 비교("최신이겠지" 해석 구멍·결정 ⑭ 위반)를 대체한다. architecture.md·
+# Decision 2). date 비교("최신이겠지" 해석 구멍)를 대체한다. architecture.md·
 # status.md 는 엔진 코드 트리를, domain 페이지는 covers→pathspec(domain.py 재사용)을 매핑
 # 경로로 쓴다. 판정은 advisory(`_ADVISORY_LINT_KINDS`·never-block·architect 재검증·PM 점검·
 # 소유 불변).

@@ -510,13 +510,19 @@ def test_f6_slot_owned_by_task_resolves(ia, tmp_path):
 
 
 def test_f6_slot_not_owned_by_task_raises(ia, tmp_path):
-    """행(a): --repo X --slot N 이 내 task 보유 아님 → 에러(F6 소유검사)."""
+    """행(a): --repo X --slot N 이 내 task 보유 아님 → 에러(F6 소유검사).
+
+    사용자 대면 메시지에 사설 fault 라벨(F6)·circled 결정 마커(⑦)가 없어야 한다(T-0818 값
+    단언 — `raise` 로 실제 조립되는 메시지를 실 CLI 경로와 같은 문구로 확인)."""
     leases = tmp_path / "worktree-leases.json"
     _write_leases(leases, [
         {"slot": "work/A_1", "repo": "A", "session": "job7", "state": "leased"},
     ])
-    with pytest.raises(ia.WorkspaceResolutionError, match=r"보유가 아니"):
+    with pytest.raises(ia.WorkspaceResolutionError, match=r"보유가 아니") as exc_info:
         _tw(ia, ["--task", "job7", "--repo", "A", "--slot", "9"], leases)
+    message = str(exc_info.value)
+    assert "F6" not in message
+    assert "⑦" not in message
 
 
 def test_f6_slot_only_without_repo_rejected_at_parse(ia):

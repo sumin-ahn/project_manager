@@ -4528,8 +4528,8 @@ class PmHandoff:
 
         # ── 핸드오프 완료: 보유 슬롯 git 재스냅 ────
         # 기록(log·pm_state) 완료 후 슬롯의 live git 을 lease.git 에 재기록한다 — 세션 중 브랜치/HEAD
-        # 변경(예: 릴리즈 v1.3.2→v1.3.3)이 차기 부트스트랩 0단계 record-vs-live 정합(compare_slot_git·
-        # ㉒)을 `diverged` FAIL-LOUD 로 오탐시켜 정당한 자기 진행을 외부-개입 오경보로 차단하는 것을
+        # 변경(예: 릴리즈 v1.3.2→v1.3.3)이 차기 부트스트랩 0단계 record-vs-live 정합(compare_slot_git)을
+        # `diverged` FAIL-LOUD 로 오탐시켜 정당한 자기 진행을 외부-개입 오경보로 차단하는 것을
         # 막는다. base 미전달=기존 보존(arrival 동형)·판정 재구현 없이 write
         # 프리미티브만 호출. --done(release→idle·git 정리)은 대상 아님 — idle 슬롯은 활성 git 기대가
         # 없다(다음 alloc 이 arrival 재스냅). dry_run 은 예고만. worktree_pool 부재·장부 부재는

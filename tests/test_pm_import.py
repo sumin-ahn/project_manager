@@ -1277,6 +1277,10 @@ def test_codex_import_prints_trust_guidance(pm_import, tmp_path, capsys):
     assert "hook trust" in out                   # ② /hooks 승인 단계
     assert "trust_level" in out                  # -c override 안 먹음 명시(실측)
     assert "codex" in out.lower()
+    # T-0818 값 단언 — circled 단계 마커(①·②)가 실 CLI stdout 에 없다(안내는 ASCII 번호 매김
+    # `1)`·`2)` 로 표시돼 채택자에게 뜻이 선다).
+    assert "①" not in out
+    assert "②" not in out
 
 
 def test_non_codex_import_no_trust_guidance(pm_import, tmp_path, capsys):

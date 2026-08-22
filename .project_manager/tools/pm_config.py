@@ -2737,7 +2737,7 @@ def cmd_release(
     except wp.NotTaskOwner as exc:
         held = f"session {exc.holder!r} 보유 중" if exc.holder else "미점유(idle)"
         print(
-            f"[중단] 슬롯 {args.slot!r} 은 task {owner_task!r} 소유가 아니다 — 반납 거부(F3·{held}). "
+            f"[중단] 슬롯 {args.slot!r} 은 task {owner_task!r} 소유가 아니다 — 반납 거부({held}). "
             "내 task 가 대여한 슬롯만 `--task` 로 반납할 수 있다(다른 task 슬롯 보호).",
             file=sys.stderr,
         )
@@ -2981,7 +2981,7 @@ def cmd_task_end(
             scan = None
     if scan and scan.get("claimed"):
         print(
-            f"[중단] task {name!r} 명의로 claimed 인 티켓이 남아있다 — 종료 거부(⑲·소진 게이트):",
+            f"[중단] task {name!r} 명의로 claimed 인 티켓이 남아있다 — 종료 거부(소진 게이트):",
             file=sys.stderr,
         )
         for row in scan["claimed"]:
@@ -3017,7 +3017,7 @@ def cmd_task_end(
     else:
         print(f"✓ task {name!r} 보유 슬롯 없음(반납 대상 0).")
     if result.moved_to is not None:
-        print(f"✓ 서술 폴더 아카이브 이동(삭제 아님·②): {result.moved_from} → {result.moved_to}")
+        print(f"✓ 서술 폴더 아카이브 이동(삭제 아님·PM 홈): {result.moved_from} → {result.moved_to}")
     else:
         print(f"  서술 폴더 없음(.local/tasks/{name}/ 부재) — 장부 task 레코드만 제거.")
 
@@ -3028,7 +3028,7 @@ def cmd_task_end(
             print(f"  - {row['id']} {row['title']}")
 
     print(
-        f"✓ task {name!r} 종료 완료 — 이름 재사용 안전(아카이브 이동으로 옛 pm_state 오염 없음·②)."
+        f"✓ task {name!r} 종료 완료 — 이름 재사용 안전(아카이브 이동으로 옛 pm_state 오염 없음·PM 홈)."
     )
     # 집합 변경(일괄 반납) 직후 재열거 — 종료 후 보유 슬롯 0(전부 idle 반납)을 확인.
     _render_task_slots(wp, name)

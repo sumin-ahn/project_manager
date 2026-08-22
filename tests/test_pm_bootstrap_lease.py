@@ -583,7 +583,11 @@ def test_bootstrap_readonly_slot_bind_refused(bootstrap, tmp_path, capsys):
     inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=wp)
     rc = inst.run(repo="X", slot=2)
     assert rc == 1
-    assert "readonly" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "readonly" in err
+    # T-0818 값 단언 — circled 결정 마커(⑬)가 실 CLI stderr 에 없다(채택자에게 뜻이 서지 않는
+    # 사설 표식 재유입 방지).
+    assert "⑬" not in err
     assert wp.bind_calls == [], "readonly bind 거부인데 bind_slot 이 불렸다"
 
 

@@ -5,10 +5,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import io
 import json
 import re
 import subprocess
 import sys
+import tokenize
+import unicodedata
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -927,6 +930,304 @@ def test_inventory_delta_flags_stale_entries():
     unexpected, stale = _inventory_delta(Counter({key: 1}), Counter())
     assert not unexpected
     assert stale == Counter({key: 1})
+
+
+# ── circled 마커·F-라벨 판정면 확장 (STRING·FSTRING_MIDDLE·COMMENT) ─────────────
+#
+# 현행 사설-참조 가드(``prose_context_spans`` 계열)는 COMMENT·doc-expression STRING(모듈/함수
+# docstring)만 본다 — 함수-호출 인자 문자열도, f-string 내용(Python 3.12+ 는 ``FSTRING_MIDDLE``
+# 로 토큰화돼 ``STRING`` 이 아니다)도 구조적으로 못 본다. circled 번호·``F1``·``F6`` 류 사설
+# fault 라벨은 그 시야 밖(런타임 문자열)에 몰려 있었다. 아래는 이 클래스 전용 판정면 —
+# 기존 hard/ratchet 대장(``private_context_baseline.json``·``private_context_hard_allowlist.json``)
+# 이 소비하는 ``_python_prose_ranges``/``RATCHET_PATTERNS`` 는 건드리지 않는다(그 대장은 T-번호·
+# ADR-번호·세션 표기 등 다른 클래스를 추적하며, 이 판정면과 공유하면 대장 재생성이 강제된다).
+
+_MARKER_LABEL_PATTERNS = dict(PROSE_SCANNER._DELTA_PATTERNS)
+_CIRCLED_MARKER_RE = _MARKER_LABEL_PATTERNS["circled-marker"]
+_DESIGN_LABEL_RE = _MARKER_LABEL_PATTERNS["design-label"]
+_FSTRING_START = getattr(tokenize, "FSTRING_START", None)
+_FSTRING_MIDDLE = getattr(tokenize, "FSTRING_MIDDLE", None)
+_FSTRING_END = getattr(tokenize, "FSTRING_END", None)
+# Python 3.12+ 토큰 모델 — f-string 내용이 ``FSTRING_MIDDLE`` 로 분리된다. 3.11 은 f-string
+# 전체가 단일 ``STRING`` 이라 그 축이 없다(지원 하한이 3.11 이므로 두 모델 다 통과해야 한다).
+_HAS_FSTRING_TOKENS = _FSTRING_MIDDLE is not None
+_MARKER_LABEL_TOOLS_DIR = REPO / ".project_manager" / "tools"
+
+# 문자열 리터럴 escape 1개. 채택자가 보는 것은 소스 표기가 아니라 **런타임 상수 값**이므로
+# ``"\u2460"``·``"\N{CIRCLED DIGIT ONE}"`` 도 ``"①"`` 과 같은 잔재다(주석은 소스 표기 그대로
+# 읽히므로 해석하지 않는다).
+_STRING_ESCAPE_RE = re.compile(
+    r"\\(?:N\{[^{}]*\}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[0-7]{1,3}|.)",
+    re.DOTALL,
+)
+_SIMPLE_ESCAPE_VALUES = {
+    "n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "f": "\f", "v": "\v",
+    "\\": "\\", "'": "'", '"': '"', "\n": "",  # 마지막은 행 이음(line continuation).
+}
+
+
+def _escape_value(escape: str) -> str:
+    """escape 시퀀스 1개의 런타임 값. Python 이 해석하지 않는 표기는 원문 그대로 둔다."""
+    body = escape[1:]
+    try:
+        if body.startswith("N{"):
+            return unicodedata.lookup(body[2:-1])
+        if body[0] in "uUx":
+            return chr(int(body[1:], 16))
+        if body[0] in "01234567":
+            return chr(int(body, 8))
+    except (KeyError, ValueError, OverflowError):
+        return escape
+    return _SIMPLE_ESCAPE_VALUES.get(body, escape)
+
+
+def _decoded_with_offsets(text: str) -> tuple[str, list[int]]:
+    """(escape 해석된 값, 각 문자의 원문 offset) — 해석 후에도 원문 좌표를 잃지 않는다."""
+    decoded: list[str] = []
+    offsets: list[int] = []
+    index = 0
+    for match in _STRING_ESCAPE_RE.finditer(text):
+        for raw_index in range(index, match.start()):
+            decoded.append(text[raw_index])
+            offsets.append(raw_index)
+        for char in _escape_value(match.group()):
+            decoded.append(char)
+            offsets.append(match.start())
+        index = match.end()
+    for raw_index in range(index, len(text)):
+        decoded.append(text[raw_index])
+        offsets.append(raw_index)
+    return "".join(decoded), offsets
+
+
+def _is_raw_string_prefix(text: str) -> bool:
+    """``r"..."``·``rf"..."`` 처럼 escape 를 해석하지 않는 리터럴인가."""
+    prefix = text[: len(text) - len(text.lstrip("bBfFrRuU"))]
+    return "r" in prefix.lower()
+
+
+def _marker_label_token_spans(
+    source: str, *, include_fstring: bool = True
+) -> list[tuple[int, str, bool]]:
+    """(시작 line, 토큰 원문, escape 해석 여부) — STRING·COMMENT(+FSTRING_MIDDLE) 넓은 판정면.
+
+    ``include_fstring=False`` 로 f-string 축만 뺀 판정면을 재현해 그 축 단독 기여를 잰다
+    (민감도 반사실). Python 3.11(``FSTRING_MIDDLE`` 미존재)에서는 f-string 이 이미 단일
+    ``STRING`` 토큰이라 그 축이 존재하지 않는다(토큰 모델 차이 — 두 모델의 값은 각 테스트가
+    버전별로 정확히 단언한다).
+
+    escape 해석 여부는 런타임 값이 소스 표기와 갈리는 토큰에서만 참이다 — 주석은 소스 표기가
+    곧 읽히는 값이라 거짓, raw 리터럴(``r"..."``)은 escape 가 값이 아니라 문자라 거짓.
+    """
+    spans: list[tuple[int, str, bool]] = []
+    fstring_raw: list[bool] = []
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if _FSTRING_START is not None and token.type == _FSTRING_START:
+            fstring_raw.append(_is_raw_string_prefix(token.string))
+        elif _FSTRING_END is not None and token.type == _FSTRING_END:
+            if fstring_raw:
+                fstring_raw.pop()
+        elif token.type == tokenize.STRING:
+            spans.append(
+                (token.start[0], token.string, not _is_raw_string_prefix(token.string))
+            )
+        elif token.type == tokenize.COMMENT:
+            spans.append((token.start[0], token.string, False))
+        elif (
+            include_fstring
+            and _FSTRING_MIDDLE is not None
+            and token.type == _FSTRING_MIDDLE
+        ):
+            raw = fstring_raw[-1] if fstring_raw else False
+            spans.append((token.start[0], token.string, not raw))
+    return spans
+
+
+def _marker_label_hits(
+    source: str, *, include_fstring: bool = True
+) -> list[tuple[int, str, str]]:
+    """(line, kind, match) — 넓힌 판정면에서 circled 마커·design-label 적중을 낸다.
+
+    ``line`` 은 토큰 시작 라인이 아니라 **적중 문자가 실제로 있는 물리 라인**이다(여러 줄
+    STRING·FSTRING_MIDDLE 에서 토큰 시작 라인을 재사용하면 진단 좌표가 틀린다).
+    """
+    hits: list[tuple[int, str, str]] = []
+    for start_line, text, decode in _marker_label_token_spans(
+        source, include_fstring=include_fstring
+    ):
+        if decode:
+            judged, offsets = _decoded_with_offsets(text)
+        else:
+            judged, offsets = text, None
+        for kind, pattern in (
+            ("circled-marker", _CIRCLED_MARKER_RE),
+            ("design-label", _DESIGN_LABEL_RE),
+        ):
+            for match in pattern.finditer(judged):
+                raw_offset = (
+                    match.start() if offsets is None else offsets[match.start()]
+                )
+                hits.append(
+                    (start_line + text.count("\n", 0, raw_offset), kind, match.group())
+                )
+    return hits
+
+
+def marker_label_residuals(root: Path = REPO) -> list[tuple[str, int, str, str]]:
+    """(path, line, kind, match) — canonical 출하 python 표면의 실 잔재 (합성 픽스처 아님).
+
+    ``test_public_reference_lint.py`` 가 여러 출하 타깃(루트·templates 3벌)에 재사용한다.
+    """
+    residuals: list[tuple[str, int, str, str]] = []
+    for path in sorted((root / ".project_manager" / "tools").glob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        relative = path.relative_to(root).as_posix()
+        for line, kind, match in _marker_label_hits(source, include_fstring=True):
+            residuals.append((relative, line, kind, match))
+    return residuals
+
+
+def test_marker_label_scan_surface_matches_independent_glob_of_shipping_tools():
+    """가드가 스캔하는 canonical python 파일 집합이 독립 glob 결과와 같다(시야==표면)."""
+    python_paths, _ = _shipping_paths(REPO)
+    canonical_python = {
+        path for path in python_paths if path.parent == _MARKER_LABEL_TOOLS_DIR
+    }
+    assert canonical_python == set(sorted(_MARKER_LABEL_TOOLS_DIR.glob("*.py")))
+
+
+def test_marker_label_scan_fstring_axis_toggle_before_after():
+    """f-string 안 마커 — 기능 커버리지는 두 토큰 모델 공통, 축 반사실은 모델별 정확한 값.
+
+    Python 3.12+ 는 f-string 내용을 ``FSTRING_MIDDLE`` 로 내므로 그 축을 빼면 0건이 된다
+    (축이 실제로 하중을 받는다). Python 3.11 은 f-string 전체가 단일 ``STRING`` 이라 그 축이
+    존재하지 않고, 빼도 같은 1건이 ``STRING`` 으로 그대로 잡힌다. 두 모델 다 *잡는다*는
+    결과(기능 커버리지)는 같고 반사실만 다르다 — 어느 쪽도 skip 하지 않는다."""
+    marker = chr(0x2460)  # ①
+    source = f'call(f"fstring marker {marker}")\n'
+    before = _marker_label_hits(source, include_fstring=False)
+    after = _marker_label_hits(source, include_fstring=True)
+    assert after == [(1, "circled-marker", marker)]
+    if _HAS_FSTRING_TOKENS:
+        assert before == []
+    else:
+        assert before == [(1, "circled-marker", marker)]
+
+
+def test_marker_label_scan_reads_escape_interpreted_string_constants():
+    """문자열·f-string 은 escape 가 해석된 **런타임 값**으로 판정한다(주석은 원문 그대로).
+
+    채택자가 보는 것은 소스 표기가 아니라 출력된 값이라, ``"\\u2460"``·
+    ``"\\N{CIRCLED DIGIT ONE}"`` 도 ``"①"`` 과 같은 잔재다. 반대로 주석·raw 리터럴·이중
+    백슬래시는 그 표기가 곧 읽히는 값이라 마커가 아니다(과확장 0)."""
+    marker = chr(0x2460)  # ①
+    caught = [(1, "circled-marker", marker), (1, "design-label", "F1")]
+    label_only = [(1, "design-label", "F1")]
+    cases = [
+        (f'x = "{marker} F1"\n', caught),                        # plain 리터럴
+        ('x = "\\u2460 F1"\n', caught),                          # plain \u escape
+        ('x = "\\N{CIRCLED DIGIT ONE} F1"\n', caught),           # plain \N escape
+        (f'x = f"{marker} F1 {{y}}"\n', caught),                 # f-string 리터럴
+        ('x = f"\\u2460 F1 {y}"\n', caught),                     # f-string \u escape
+        ('x = f"\\N{CIRCLED DIGIT ONE} F1 {y}"\n', caught),      # f-string \N escape
+        ('# \\u2460 F1\n', label_only),                          # 주석은 원문 그대로
+        (f'# {marker} F1\n', caught),                            # 주석 리터럴은 그대로 잡힘
+        ('x = r"\\u2460 F1"\n', label_only),                     # raw 리터럴 = 값이 아님
+        ('x = "\\\\u2460 F1"\n', label_only),                    # 이중 백슬래시 = 값이 아님
+    ]
+    for source, expected in cases:
+        assert _marker_label_hits(source) == expected, source
+
+
+def test_marker_label_hits_report_line_of_match_inside_multiline_token():
+    """진단 좌표 — 여러 줄 STRING·FSTRING_MIDDLE 에서도 적중 문자의 실제 물리 라인을 낸다.
+
+    토큰 시작 라인을 재사용하면 사람이 그 자리를 못 찾는다. escape 가 값에 개행을 만들어도
+    (``"a\\nb"``) 물리 라인은 원문 기준으로 셈한다."""
+    marker = chr(0x2460)  # ①
+    source = (
+        f'x = """one\ntwo\nthree {marker} F1\n"""\n'      # 1~4 행 (적중은 3 행)
+        f'y = f"""alpha\nbeta {{z}}\ngamma {marker}"""\n'  # 5~7 행 (적중은 7 행)
+        'z = "line A\\nline B \\u2460"\n'                  # 8 행 (값 개행에 흔들리지 않음)
+    )
+    assert _marker_label_hits(source) == [
+        (3, "circled-marker", marker),
+        (3, "design-label", "F1"),
+        (7, "circled-marker", marker),
+        (8, "circled-marker", marker),
+    ]
+
+
+def test_marker_label_scan_ignores_identifier_quotes_and_code_names():
+    """정상 파이썬 식별자는 주석·문자열 인용에서도, 코드 NAME 으로도 0건(오차단 0).
+
+    ``F1_score``·``F1_foo``·``_F1`` 은 채택자에게 뜻이 서는 식별자이지 사설 fault 라벨이
+    아니다. 코드 NAME 토큰은 애초에 판정면 밖이라, 그 식별자를 산문에서 인용해도 같은 0 이
+    나와야 방향이 일관된다."""
+    assert _marker_label_hits("# F1_score 계산 로직\n") == []
+    assert _marker_label_hits('x = "F1_foo"\n') == []
+    assert _marker_label_hits("# _F1 접두 식별자\n") == []
+    assert _marker_label_hits("F1_score = compute()\n") == []
+    assert _marker_label_hits('x = "중단 F1 이유"\n') == [(1, "design-label", "F1")]
+
+
+def test_marker_label_scan_covers_comment_plain_string_and_fstring():
+    """세 표면(주석·plain 문자열·f-string) 모두에서 circled 마커·design-label 을 잡는다."""
+    marker = chr(0x2460)  # ①
+    source = (
+        f"# comment {marker}\n"
+        f'call("plain-arg {marker} F1")\n'
+        f'call(f"fstring {marker}")\n'
+    )
+    hits = _marker_label_hits(source, include_fstring=True)
+    assert sorted(line for line, _, _ in hits) == [1, 2, 2, 3]
+    kinds = Counter(kind for _, kind, _ in hits)
+    assert kinds["circled-marker"] == 3
+    assert kinds["design-label"] == 1
+
+
+def test_marker_label_axis_sensitivity_reverting_one_marker_trips_and_clears():
+    """민감도(양방향, 실 canonical 파일) — circled 마커 1건을 되돌리면 가드 red, f-string 축을
+    판정면에서 빼면 그 red 가 사라진다(시야 축의 반사실).
+
+    복원 대상은 이 티켓에서 지운 실제 f-string 자리(``pm_bootstrap.py`` 의
+    ``f"공개 제품 worktree (...)"`` ← 원문 ``f"① task worktree (...)"``)."""
+    path = _MARKER_LABEL_TOOLS_DIR / "pm_bootstrap.py"
+    current = path.read_text(encoding="utf-8")
+    fixed_snippet = 'scopes.append((f"공개 제품 worktree ({task_slot})", wt_dir, False))'
+    assert fixed_snippet in current, "고정 스니펫이 소스에 없다 — 라인이 바뀌면 갱신하라"
+    reverted = current.replace(
+        fixed_snippet,
+        'scopes.append((f"① task worktree ({task_slot})", wt_dir, False))',
+    )
+    assert reverted != current
+
+    red = [
+        (line, match)
+        for line, kind, match in _marker_label_hits(reverted, include_fstring=True)
+        if kind == "circled-marker"
+    ]
+    assert len(red) == 1, f"복원한 1건만 잡혀야 한다 — {red}"
+
+    cleared = [
+        (line, match)
+        for line, kind, match in _marker_label_hits(reverted, include_fstring=False)
+        if kind == "circled-marker"
+    ]
+    if _HAS_FSTRING_TOKENS:
+        assert cleared == [], "f-string 축을 뺐는데도 여전히 잡힘 — 축 제거가 무효"
+    else:
+        # Python 3.11 — f-string 전체가 단일 ``STRING`` 이라 뺄 축이 없다. 같은 1건 그대로.
+        assert cleared == red
+
+
+def test_marker_label_residuals_are_zero_on_real_canonical_tree():
+    """circled 마커·design-label 잔재 0 을 실 canonical 트리에서 값으로 단언(합성 픽스처 아님)."""
+    residuals = marker_label_residuals(REPO)
+    assert not residuals, (
+        f"count={len(residuals)}; "
+        + ", ".join(f"{path}:{line}:{kind}:{match}" for path, line, kind, match in residuals[:20])
+    )
 
 
 def test_temp_output_guard_scopes_concurrent_process_output_to_session_directory(
