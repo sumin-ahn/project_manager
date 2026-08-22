@@ -817,7 +817,10 @@ def test_review_verify_template_cli_ignores_a_pending_seed_round(pd, monkeypatch
 
 
 def test_pm_verified_evidence_problem_ignores_a_pending_seed_round(pd, tmp_path):
-    """`rounds resolve --pm-verified` 가 소비하는 증거 판정도 시드 라운드에 막히지 않는다."""
+    """`rounds resolve --pm-verified` 가 소비하는 증거 판정도 시드 라운드에 막히지 않는다.
+
+    선언 CLI 와 같은 형태로(내부 채널 스코프 · 표면 하한 = 장부 잔여 1) 호출한다 — T-0791 에서
+    무스코프 전역 분기를 삭제했다."""
     tickets_dir = tmp_path / "tickets"
     round1_text = _review_section({
         "version": BLOCK_VERSION,
@@ -852,4 +855,6 @@ def test_pm_verified_evidence_problem_ignores_a_pending_seed_round(pd, tmp_path)
     rounds_module = pd._load_ticket_rounds()
     loaded = rounds_module.load_rounds(tickets_dir, "T-0786", ticket_text=spec)
     assert [item.pending for item in loaded] == [False, False, True]
-    assert pd.pm_verified_evidence_problem(spec, loaded) is None
+    assert pd.pm_verified_evidence_problem(
+        spec, loaded, reviewer_role=pd.INTERNAL_REVIEW_ROLE, surface_floor=1,
+    ) is None

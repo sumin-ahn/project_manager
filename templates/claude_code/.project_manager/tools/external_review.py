@@ -1826,14 +1826,25 @@ _RESOLVE_GATE_MODE_GUIDANCE = (
     "릴리즈가 열립니다)\n"
     "  · 코드로 해소: `--fixed <근거 게이트>` (반려 종료 뒤 **시작**해 변경된 diff를 검토하고 "
     "통과한 장부 게이트를 지목하세요 — 확인 라운드나 후속 게이트)\n"
-    "  · 두 처분을 같이 쓸 수 없습니다 (한 게이트의 잔여는 한 갈래로 소화됩니다)."
+    "  · PM 판정 표면의 기계 확인 증거로 해소: `--pm-verified` (외부 재송신 없음 — accepted "
+    "잔여 0·잔여 must-fix 건수만큼 전건 처분·필요 시 기계 확인 1건 이상)\n"
+    "  · 세 처분을 같이 쓸 수 없습니다 (한 게이트의 잔여는 한 갈래로 소화됩니다)."
 )
 
 _RESOLVE_GATE_REQUIRED_GUIDANCE = (
     "오류: `{flag}` 는 `--resolve-gate <게이트>` 와 함께 써야 합니다 — 처분할 게이트가 없으면 "
     "선언할 사실이 없습니다.\n"
-    "      python3 .project_manager/tools/external_review.py --resolve-gate <게이트> {flag} "
-    "<T-NNNN>"
+    "      python3 .project_manager/tools/external_review.py --resolve-gate <게이트> {flag}"
+    "{value}"
+)
+
+_RESOLVE_GATE_PM_VERIFIED_GUIDANCE = (
+    "오류: 게이트 {gate} 에는 pm-verified 처분을 선언할 수 없습니다 — {detail}\n"
+    "  · `--pm-verified` 는 PM 판정 표면(리뷰 delta)이 그 채널 accepted 잔여 없이, 그 채널 잔여 "
+    "must-fix 건수만큼 전건 처분되고, accepted 가 있었을 때만 기계 확인이 1건 이상 기록됐을 때만 "
+    "선언됩니다.\n"
+    "  · 표면 상태는 `python3 .project_manager/tools/pm_delegate.py review delta --ticket {gate}` "
+    "로 확인하세요."
 )
 
 _RESOLVE_GATE_UNKNOWN_GUIDANCE = (
@@ -4000,6 +4011,8 @@ def _describe_resolution(declared: dict) -> str:
         return f"{label}→{declared['ticket']}"
     if declared["kind"] == board.GATE_RESOLUTION_PM_FIXED:
         return _load_review_rounds().describe_pm_fixed_resolution(declared)
+    if declared["kind"] == board.GATE_RESOLUTION_PM_VERIFIED:
+        return _load_review_rounds().describe_pm_verified_resolution(declared)
     return f"{label}(근거 {declared['evidence_gate']})"
 
 
@@ -4047,9 +4060,10 @@ def _resolve_gate_command(args: argparse.Namespace, engine_repo: Path) -> int:
     if reserved is not None:
         print(reserved, file=sys.stderr)
         return 1
-    into, fixed = args.into, args.fixed
-    if bool(into) == bool(fixed) or fixed == _FIXED_WITHOUT_EVIDENCE:
-        # 둘 다 없음 · 둘 다 있음 · 근거 없는 `--fixed` — 셋 다 "처분이 확정되지 않았다"는 한 축.
+    into, fixed, pm_verified = args.into, args.fixed, args.pm_verified
+    modes_given = sum((bool(into), bool(fixed), pm_verified))
+    if modes_given != 1 or fixed == _FIXED_WITHOUT_EVIDENCE:
+        # 0개 · 2개 이상 · 근거 없는 `--fixed` — 셋 다 "처분이 확정되지 않았다"는 한 축.
         print(_RESOLVE_GATE_MODE_GUIDANCE.format(gate=gate), file=sys.stderr)
         return 1
     if fixed:
@@ -4099,18 +4113,37 @@ def _resolve_gate_command(args: argparse.Namespace, engine_repo: Path) -> int:
                 print(_RESOLVE_GATE_EVIDENCE_GUIDANCE.format(
                     evidence=fixed, gate=gate, detail=detail), file=sys.stderr)
                 return 1
+        elif pm_verified:
+            # 추가 리뷰어 채널로 스코프해 판정한다 — board 는 채널과 그 게이트의 장부 항목을
+            # 받아 다른 채널의 accepted 잔여·기계 확인은 보지 않는다(내부 축과 같은 술어·같은
+            # 규칙이고 채널만 다르다).
+            detail = board._pm_verified_evidence_problem(
+                gate, channel=board.GATE_CHANNEL_ADDITIONAL, entry=entry,
+            )
+            if detail is not None:
+                print(_RESOLVE_GATE_PM_VERIFIED_GUIDANCE.format(
+                    gate=gate, detail=detail), file=sys.stderr)
+                return 1
         residual_label = board.gate_residual_label(entry)
         previous = board.gate_resolution(entry)
-        declared = {
-            "kind": board.GATE_RESOLUTION_INTO if into else board.GATE_RESOLUTION_FIXED,
-            "ticket" if into else "evidence_gate": into or fixed,
-            "ts": _utc_now_iso(),
-            # 선언 시점의 잔여 건수 — 나중에 "무엇을 처분했나"를 되짚는 감사 사실이다.
-            "must_fix": residual,
-            # 처분이 결속하는 라운드 좌표 — 이 뒤에 새 라운드가 오면 그 잔여는 미처분이다
-            # (좌표 없는 선언은 board 가 처분으로 인정하지 않는다·`gate_resolution`).
-            **board.gate_round_binding(entry),
-        }
+        if pm_verified:
+            declared = {
+                "kind": board.GATE_RESOLUTION_PM_VERIFIED,
+                "ts": _utc_now_iso(),
+                "must_fix": residual,
+                **board.gate_round_binding(entry),
+            }
+        else:
+            declared = {
+                "kind": board.GATE_RESOLUTION_INTO if into else board.GATE_RESOLUTION_FIXED,
+                "ticket" if into else "evidence_gate": into or fixed,
+                "ts": _utc_now_iso(),
+                # 선언 시점의 잔여 건수 — 나중에 "무엇을 처분했나"를 되짚는 감사 사실이다.
+                "must_fix": residual,
+                # 처분이 결속하는 라운드 좌표 — 이 뒤에 새 라운드가 오면 그 잔여는 미처분이다
+                # (좌표 없는 선언은 board 가 처분으로 인정하지 않는다·`gate_resolution`).
+                **board.gate_round_binding(entry),
+            }
         entry["resolution"] = declared
         _save_round_ledger(ledger)
     if previous is not None:
@@ -7200,7 +7233,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
   # 게이트 처분 선언 (외부 전송 없음 — 릴리즈 게이트가 읽는 잔여 must-fix 소화 기록)
   python3 .project_manager/tools/external_review.py --resolve-gate T-NNNN --into T-MMMM
   python3 .project_manager/tools/external_review.py --resolve-gate T-NNNN --fixed T-MMMM
+  python3 .project_manager/tools/external_review.py --resolve-gate T-NNNN --pm-verified
   # --fixed 근거는 마지막 반려 종료 뒤 시작 + 변경된 target_rev + 통과가 모두 필요.
+  # --pm-verified 는 PM 판정 표면의 기계 확인 증거로 해소한다(외부 재송신 없음).
   # --resolve-gate 와 --dry-run 조합은 기록 목적과 모순이라 rc1로 거부.
 
   # Codex sandbox(network-off) 안에서: 미리보기 → 도구 승격 + 증명 동반 실행
@@ -7251,9 +7286,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "spent 를 출력하고 종료 (외부 전송 없음·--gate 로 한 게이트만)")
     parser.add_argument("--resolve-gate", default=None, metavar="T-NNNN",
                         help="게이트 처분 선언 — 반려로 끝난 게이트의 잔여 must-fix 를 어떻게 "
-                             "소화했는지 장부에 남기고 종료 (외부 전송 없음). `--into` 또는 "
-                             "`--fixed` 중 하나 필수. 릴리즈 게이트(`board.py livegate record`)가 "
-                             "이 선언을 읽어 미처분 잔여를 차단한다")
+                             "소화했는지 장부에 남기고 종료 (외부 전송 없음). `--into`·`--fixed`·"
+                             "`--pm-verified` 중 하나 필수. 릴리즈 게이트(`board.py livegate "
+                             "record`)가 이 선언을 읽어 미처분 잔여를 차단한다")
     parser.add_argument("--into", default=None, metavar="T-NNNN",
                         help="--resolve-gate 처분: 잔여 must-fix 를 이 후속 티켓으로 재설계 선언 "
                              "(면제 아님 — 그 티켓이 done 이어야 릴리즈가 열린다)")
@@ -7263,6 +7298,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "그 사실을 보인 **근거 게이트**다. 근거 마지막 라운드는 반려 종료 뒤 "
                              "시작했고(started_at·ISO 8601 UTC), 다른 target_rev를 검토해 통과해야 "
                              "한다. 결속 필드 없는 구 라운드는 거부. 지목은 필수")
+    parser.add_argument("--pm-verified", action="store_true",
+                        help="--resolve-gate 처분: PM 판정 표면(리뷰 delta)의 기계 확인 증거로 "
+                             "해소 — 외부 재송신 없음(`pm_delegate rounds resolve --pm-verified` "
+                             "와 같은 이름·같은 의미). 발동 조건: 이 채널 accepted 잔여 0·이 채널 "
+                             "잔여 must-fix 건수만큼 판정 표면 전건 처분(미판정 0)·이 채널에 "
+                             "accepted 가 있었을 때만 기계 확인 1건 이상")
     parser.add_argument("--dry-run", action="store_true",
                         help="diff·프롬프트만 출력, 외부 호출/전송 안 함 (비활성이어도 허용·빈 diff 면 "
                              "exit 1). --resolve-gate 는 기록 명령이므로 함께 쓰면 exit 1")
@@ -7661,9 +7702,16 @@ def _main(argv: list[str] | None = None) -> int:
         return 1
     # 처분 인자는 `--resolve-gate` 없이는 뜻이 없다 — 선언할 게이트가 없으면 남길 사실도 없다
     # (`--confirm-fix` 게이트 누락과 같은 부작용 0 지점·경고-만-실행 금지).
-    for flag, value in (("--into", args.into), ("--fixed", args.fixed)):
+    for flag, value, value_suffix in (
+        ("--into", args.into, " <T-NNNN>"),
+        ("--fixed", args.fixed, " <T-NNNN>"),
+        ("--pm-verified", args.pm_verified, ""),
+    ):
         if value and not args.resolve_gate:
-            print(_RESOLVE_GATE_REQUIRED_GUIDANCE.format(flag=flag), file=sys.stderr)
+            print(
+                _RESOLVE_GATE_REQUIRED_GUIDANCE.format(flag=flag, value=value_suffix),
+                file=sys.stderr,
+            )
             return 1
     if args.resolve_gate:
         # 장부 기록 전용면 — 전송 경로(conf 분기·denylist·diff 추출)보다 앞에서 끝낸다.

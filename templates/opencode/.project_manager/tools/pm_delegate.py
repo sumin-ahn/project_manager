@@ -4277,36 +4277,90 @@ def render_pm_review_verify_template(template: PMReviewVerifyTemplate) -> str:
     return "\n".join(blocks)
 
 
-def _pm_review_machine_confirmation_count(ticket_text: str) -> int:
-    """명세의 `pm-review-confirmation-v1` 블록에 실린 확인 행 총수(표시면 관용 카운트).
+def _pm_review_machine_confirmation_count(
+    ticket_text: str, *, reviewer_role: str,
+) -> int:
+    """그 채널의 `pm-review-confirmation-v1` 확인 행 수(표시면 관용 카운트).
 
     `pm_verified_evidence_problem` 호출 시점에는 `parse_pm_review_delta` 가 이미 같은
-    블록들을 엄격 검증했으므로, 여기서는 재검증 없이 개수만 센다."""
+    블록들을 엄격 검증했으므로, 여기서는 재검증 없이 개수만 센다. 채널은 **필수**다 — 그
+    채널 finding ID 접두(예: `X-`)로 시작하는 확인 행만 세고, 접두를 무시하고 전부 세는
+    무스코프 경로는 두지 않는다(다른 채널의 기계 확인이 이 채널 게이트를 여는 구멍이다).
+    미등록 역할은 `_pm_review_finding_id_prefix` 가 loud 실패시킨다."""
+    prefix = f"{_pm_review_finding_id_prefix(reviewer_role)}-"
     total = 0
     for block in _pm_review_json_blocks(ticket_text):
         if block.kind != PM_REVIEW_CONFIRMATION_BLOCK:
             continue
         rows = block.value.get("confirmations")
-        if isinstance(rows, list):
-            total += len(rows)
+        if not isinstance(rows, list):
+            continue
+        total += sum(
+            1 for row in rows
+            if isinstance(row, dict) and isinstance(row.get("id"), str)
+            and row["id"].startswith(prefix)
+        )
     return total
 
 
-def pm_verified_evidence_problem(ticket_text: str, rounds: Sequence) -> str | None:
-    """`pm-verified` 완료 처분의 발동 조건(증거) — 선언·완료 재검증 공용.
+def pm_verified_evidence_problem(
+    ticket_text: str,
+    rounds: Sequence,
+    *,
+    reviewer_role: str,
+    surface_floor: int | None,
+) -> str | None:
+    """`pm-verified` 완료 처분의 발동 조건(증거) — 선언·완료 재검증 공용 · **채널 스코프 필수**.
 
     `review_rounds.recorded_pm_fixed_problem` 과 동형으로, 선언 시점과 완료 재검증 시점이
-    **같은 함수**를 본다. 조건은 상한·쿼터가 아니라 증거다: delta 가 정상 파싱되고
-    `accepted == ()` 이며 기계 확인이 1건 이상 존재해야 한다."""
+    **같은 함수**를 본다. 조건은 상한·쿼터가 아니라 증거다: delta 가 정상 파싱돼야 한다.
+
+    판정은 언제나 한 채널 안에서만 한다(다른 채널의 accepted 잔여도, 다른 채널의 기계 확인도
+    보지 않는다 — 채널 격리): 그 채널의 accepted 잔여가 없어야 하고, 그 채널 판정 표면
+    finding 수가 `surface_floor`(그 채널 장부의 잔여 must-fix 건수) 이상이어야 하며, 그 채널에
+    accepted 판정이 한 번이라도 있었을 때만 그 채널 기계 확인이 1건 이상 필요하다(확인할 것이
+    없으면 확인을 요구하지 않는다).
+
+    두 인자 모두 **키워드 필수**다 — 생략은 조용한 전역 판정이 아니라 `TypeError` 이고, review
+    채널이 아닌 값(`None` 포함)은 `PMReviewError` 다(fail-loud). 생산 호출부는 내부 완료 게이트
+    (`INTERNAL_REVIEW_ROLE`)와 추가 리뷰어 release 게이트(`EXTERNAL_REVIEW_ROLE`) 둘뿐이고,
+    `surface_floor` 가 정수가 아니면(장부 잔여 '미상') 차단한다(fail-closed)."""
+    if reviewer_role not in REVIEW_ROLES:
+        raise PMReviewError(
+            "malformed",
+            f"pm-verified 증거 판정 채널이 review 채널이 아닙니다: {reviewer_role!r}",
+        )
     try:
         delta = parse_pm_review_delta(ticket_text, rounds)
     except PMReviewError as exc:
         return f"delta 파싱 실패[{exc.code}]: {exc}"
-    if delta.accepted:
-        remaining = ", ".join(finding.id for finding, _disposition in delta.accepted)
-        return f"PM 판정 accepted 잔여가 있습니다: {remaining}"
-    if _pm_review_machine_confirmation_count(ticket_text) < 1:
-        return "기계 확인(pm-review-confirmation-v1) 기록이 없습니다"
+    channel_accepted = [
+        finding for finding, _disposition in delta.accepted
+        if finding.reviewer_role == reviewer_role
+    ]
+    if channel_accepted:
+        remaining = ", ".join(finding.id for finding in channel_accepted)
+        return f"{reviewer_role} 채널 PM 판정 accepted 잔여가 있습니다: {remaining}"
+    declared = collect_review_finding_declarations(ticket_text, reviewer_role, rounds)
+    if not isinstance(surface_floor, int) or isinstance(surface_floor, bool):
+        return f"{reviewer_role} 채널 표면 잔여 하한을 확인할 수 없어 차단합니다(미상)"
+    if len(declared) < surface_floor:
+        return (
+            f"{reviewer_role} 채널 판정 표면 finding {len(declared)}건이 장부 잔여 "
+            f"{surface_floor}건에 못 미칩니다 — 전건 처분 후 다시 선언하세요"
+        )
+    rejected: set[str] = set()
+    for item in _pm_review_surface_rounds(rounds):
+        if item.role != reviewer_role:
+            continue
+        rejected |= _pm_review_rejected_finding_ids(
+            ticket_text, reviewer_role=reviewer_role, reviewer_ordinal=item.ordinal,
+        )
+    had_accepted = bool(declared - rejected)
+    if had_accepted and _pm_review_machine_confirmation_count(
+        ticket_text, reviewer_role=reviewer_role,
+    ) < 1:
+        return f"{reviewer_role} 채널의 기계 확인(pm-review-confirmation-v1) 기록이 없습니다"
     return None
 
 
@@ -5313,7 +5367,15 @@ def _declare_internal_review_resolution(
             ticket_rounds = rounds_module.load_rounds(
                 board.tickets_dir(), gate, ticket_text=spec_text,
             )
-            problem = pm_verified_evidence_problem(spec_text, ticket_rounds)
+            # 내부 채널로 스코프한다 — 이 게이트 장부의 잔여 must-fix 를 판정 표면 하한으로
+            # 삼고 다른 채널(추가 리뷰어)의 accepted 잔여·기계 확인은 증거로 세지 않는다.
+            # 선언(여기)과 완료 재검증(board `_gate_pm_verified_problem`)이 같은 인자로
+            # 같은 술어를 본다.
+            problem = pm_verified_evidence_problem(
+                spec_text, ticket_rounds,
+                reviewer_role=INTERNAL_REVIEW_ROLE,
+                surface_floor=residual,
+            )
             if problem is not None:
                 raise DelegateError(f"pm-verified 처분을 사용할 수 없습니다: {problem}")
             declared = {
@@ -10825,8 +10887,9 @@ def _cmd_rounds(argv: list[str]) -> int:
         "--pm-verified",
         action="store_true",
         help=(
-            "기계 확인 증거로 해소. 발동 조건: delta 가 정상 파싱되고 "
-            "accepted == () 이며 기계 확인이 1건 이상 존재"
+            "기계 확인 증거로 해소. 발동 조건(내부 채널로 스코프): delta 가 정상 파싱되고 "
+            "내부 채널 accepted 잔여가 0 이며 판정 표면 finding 수가 장부 잔여 이상이고, "
+            "accepted 가 있었다면 내부 채널 기계 확인이 1건 이상 존재"
         ),
     )
     args = parser.parse_args(argv)
