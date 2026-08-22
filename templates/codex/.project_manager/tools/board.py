@@ -2478,6 +2478,26 @@ def _load_ticket_rounds():
     )
 
 
+def _load_repo_coordinates():
+    """touches 좌표 정규화 단일 소유자(`repo_coordinates.py`)를 같은 tools/ 에서 지연 로드한다.
+
+    `work/<repo>_<N>/` 슬롯 접두를 리스 장부 대조로 검증한 뒤에만 벗기는 규칙이 그쪽에 있고
+    board 는 소비만 한다(규칙 사본 0). 로드 실패는 None — 호출부가 그 경로를 **판정불능**으로
+    세고 통과로 위장하지 않는다(부분 동기 사본에서 좌표 축만 시야 밖). 사본 skew 는
+    fail-loud 로 재-raise 한다(`_load_pm_bootstrap_module` 동형).
+    """
+    coordinates_py = Path(__file__).resolve().parent / "repo_coordinates.py"
+    try:
+        return _load_module_from_path(
+            coordinates_py, "repo_coordinates.py",
+            verifier=_verify_engine_rev, cache=True,
+        )
+    except Exception as exc:  # noqa: BLE001 — 부재/손상 사본은 판정불능 입력이다.
+        if _is_engine_rev_skew(exc):
+            raise
+        return None
+
+
 def _write_machine_line(text: str) -> None:
     """기계 판독 한 줄(JSON 페이로드)을 콘솔 코덱 전환과 무관하게 UTF-8 로 내보낸다.
 
@@ -12056,6 +12076,10 @@ def cmd_promote(args: argparse.Namespace) -> int:
     `board.py new` 가 생성 시점 게이트로 `drafts_dir()`(STATUS_DIRS 밖)에 남긴
     draft 를, 본문을 채운 뒤 이 명령으로 승격한다. 여전히 placeholder/thin 이 남아있으면
     거부(rc=1)하고 남은 이슈를 안내한다(파일은 drafts_dir() 에 그대로 — 재수정 후 재시도).
+    형식(placeholder/thin/설계 절)에 더해 본문이 **주장하는 사실**도 이 자리에서 판정한다
+    (`content_facts=True` — repo-relative `파일:줄` 인용의 부재·범위 초과와 `design:
+    required|done` 티켓의 architect 점검 라운드 미회수는 차단, touches 미해소와 판정불능
+    개수는 경고 1줄). 판정 대상은 승격되는 티켓 하나이며 기존 open 티켓을 소급하지 않는다.
     통과해야 `open/` 으로 옮겨져 STATUS_DIRS 스캔 대상이 되고 board-git 에 커밋돼 공유 board
     에 존재하게 된다(생성~claim 사이 handoff 창에 미충전 stub 이 인계되는 실패를 원천 차단).
     board 가 별도 git 이 아니면(legacy·솔로) 게이트 자체가 무의미하므로 항상 통과(sync 는
@@ -12075,8 +12099,15 @@ def cmd_promote(args: argparse.Namespace) -> int:
             return 1
         fm, body = load_ticket(path)
         if _board_git_enabled():
-            remaining = _body_lint_issues(args.id, body, strict_sections=True,
-                                          design=fm.get("design"))
+            issues = _body_lint_issues(args.id, body, strict_sections=True,
+                                       design=fm.get("design"),
+                                       touches=fm.get("touches"), content_facts=True)
+            # 경고 축(`_PROMOTE_ADVISORY_KINDS`)은 승격을 막지 않는다 — 차단 여부와 무관하게
+            # 먼저 표면화해, 거부된 경우에도 같은 1줄을 본다.
+            advisories = [i for i in issues if i[1] in _PROMOTE_ADVISORY_KINDS]
+            for tid, kind, detail in advisories:
+                print(f"  ⚠ [{kind}] {detail}", file=sys.stderr)
+            remaining = [i for i in issues if i[1] not in _PROMOTE_ADVISORY_KINDS]
             if remaining:
                 print(f"promote 거부 — {args.id} 에 아직 미충전 {len(remaining)}건:",
                       file=sys.stderr)
@@ -14509,9 +14540,284 @@ def _design_estimate_advisory(
         f"아니면 `design: \"{DESIGN_WAIVED}: <사유>\"` 로 판정을 남겨라"))]
 
 
+# ── 본문 사실성 판정 (승격 순간만·opt-in) ─────────────────────────────────────
+#
+# 형식 게이트(placeholder·thin·설계 절)는 "뼈대가 남았나"만 본다 — 티켓이 *주장하는 사실*
+# (touches 경로가 실재하나 · 인용한 `파일:줄` 이 맞나)과 "초안을 다른 역할이 점검했나"는 그
+# 판정으로 알 수 없는 종류다. 그 축을 `promote` 승격 순간에만 opt-in(`content_facts=True`)으로
+# 더한다. 전역 lint(`lint_bodies`)는 켜지 않는다 — 이미 open 인 티켓을 소급 판정하지 않고
+# `lint --gate` 차단 집합도 그대로다(push 게이트 무오염).
+#
+#   touches 미해소                                          → 경고 1줄(비차단)
+#   repo-relative 인용의 파일 부재·줄 범위 초과              → 차단
+#   `design: required|done` 의 architect 점검 라운드 미회수  → 차단
+#   판정불능(좌표 미해소·basename 단독 인용)                 → 개수 1줄(통과로 위장하지 않는다)
+#
+# 심볼 실재는 판정하지 않는다 — 활성 본문의 미발견 심볼이 전부 정당(신설 예정·하네스 스키마·
+# 자체 예시)이라 정밀도가 0 이다. touches 겹침 축도 이 게이트의 것이 아니다(never-block 표면화
+# 를 소유하는 쪽이 따로 있다).
+_TOUCHES_MISSING_KIND = "touches-missing"
+_CITATION_KIND = "citation-unresolved"
+_ARCHITECT_ROUND_KIND = "architect-review-pending"
+_UNVERIFIABLE_KIND = "content-unverifiable"
+_ARCHITECT_ROLE = "architect"
+
+# promote 가 **경고 1줄**로만 내는 kind — 그 밖의 판정은 전부 차단이다. 전역 등급
+# (`_ADVISORY_LINT_KINDS`)을 여기 재사용하지 않는다: 그 집합엔 authoring 게이트가 *차단*으로
+# 쓰는 `design-pending` 이 들어 있어(전역 lint 는 never-block·승격은 차단), 재사용하면 설계
+# 게이트가 조용히 경고로 강등된다.
+_PROMOTE_ADVISORY_KINDS: frozenset[str] = frozenset(
+    {_TOUCHES_MISSING_KIND, _UNVERIFIABLE_KIND})
+
+# 본문 인용 표기 — 백틱 코드 span 안의 `<경로>.<확장자>:<줄>`. 코드 span 은 `_strip_code` 가
+# 지우는 대상이라 이 스캔만은 **펜스만** 제거한 텍스트를 본다(펜스 안 예시 블록은 인용이 아니다).
+_CITATION_RE = re.compile(r"`(?P<path>[^`\s]+?\.[A-Za-z0-9]{1,6}):(?P<line>\d+)`")
+# repo 트리 좌표가 아닌 표기 — 판정 대상이 아니다(절대·홈·상위 경로).
+_OFF_TREE_CITATION_PREFIXES: tuple[str, ...] = ("/", "~", "..")
+# 하위 디렉터리 기준 인용을 해소할 때 순회에서 빼는 디렉터리 — 티켓이 인용하는 소스가 아니고
+# (객체 저장소·캐시·의존성 벤더), 순회 비용의 대부분이 여기서 나온다.
+_CITATION_INDEX_PRUNE_DIRS: frozenset[str] = frozenset(
+    {".git", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+     "node_modules", ".venv", "venv"})
+
+
+def _content_search_roots() -> tuple[Path, ...]:
+    """티켓이 인용한 경로를 해소할 트리 — PM 홈 + 등록 worktree 슬롯.
+
+    board 의 touches 는 한 트리에 있지 않다: PM 홈이 소유하는 자산(`wiki/` 문서)과 슬롯
+    worktree 가 소유하는 코드(`tests/`·`templates/`)가 한 목록에 섞인다. 한쪽만 보면 정상
+    경로의 상당수가 "부재" 로 읽힌다. 리스 장부는 `_active_slot_path` 와 같은 데이터-결합으로
+    읽고(worktree_pool 미import·원자 교체 대상이라 락 없는 point-read 가 일관 스냅샷),
+    장부 부재·손상·형식 이상은 PM 홈 단독으로 폴백한다(fail-soft — 슬롯은 *추가* 레이어).
+    장부 경로는 호출 시점 `REPO` 로 해소한다(`board_root()` 관례·재앵커 추종).
+    """
+    roots: list[Path] = [REPO]
+    ledger = REPO / ".project_manager" / ".local" / "worktree-leases.json"
+    try:
+        data = json.loads(file_lock.read_text_shared(ledger, encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return tuple(roots)
+    rows = data.get("leases") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return tuple(roots)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        slot = row.get("slot")
+        if not isinstance(slot, str) or not slot:
+            continue
+        path = REPO / slot
+        if path.is_dir() and path not in roots:
+            roots.append(path)
+    return tuple(roots)
+
+
+def _exists_in_roots(relative: str, roots: Sequence[Path]) -> Path | None:
+    """`relative` 를 각 트리에 붙여 처음 실재하는 경로 (어디에도 없으면 None)."""
+    for root in roots:
+        candidate = root / relative
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _touches_existence_issues(
+    tid: str, touches: Any, roots: Sequence[Path],
+) -> tuple[list[tuple[str, str, str]], int]:
+    """touches 경로 실재 판정 → (경고 0~1줄, 판정불능 개수).
+
+    좌표 정규화는 `repo_coordinates.normalize_repo_path` 단일 소유자를 쓴다 — 슬롯 접두
+    (`work/<repo>_<N>/`)는 리스 장부 대조로 **검증된 것만** 벗겨지고, 검증 못 한 접두는
+    예외로 온다. 그 경로는 판정불능으로 세고 red 로도 green 으로도 쓰지 않는다(장부 없는
+    형상에서 조용히 통과·차단되지 않게).
+
+    부재는 **차단이 아니다**: 신설 예정 파일을 touches 에 먼저 적는 것이 정상 운영이고
+    (활성 티켓 실측에서 부재분의 대부분이 그것) 본문 언급 여부로는 구분되지 않아(부재 경로가
+    전부 본문에 등장한다) 차단하면 정당한 발행을 막는다. 그래서 경고 1줄이다.
+    """
+    entries = [str(item).strip() for item in (touches or []) if str(item).strip()]
+    if not entries:
+        return [], 0
+    coordinates = _load_repo_coordinates()
+    if coordinates is None:
+        return [], len(entries)      # 좌표 소유자 부재 → 이 축 전체가 시야 밖
+    error_type = getattr(coordinates, "RepoCoordinateError", RuntimeError)
+    missing: list[str] = []
+    unverifiable = 0
+    for entry in entries:
+        try:
+            normalized = coordinates.normalize_repo_path(entry, pm_root=REPO)
+        except error_type:
+            unverifiable += 1
+            continue
+        # 접두가 검증된 경로는 그 워크스페이스에서만 찾는다(다른 슬롯의 동명 파일로 해소되면
+        # 좌표 선언이 틀렸다는 사실이 가려진다). 접두 없는 경로는 두 소유 트리를 다 본다.
+        workspace = getattr(normalized, "workspace", None)
+        search = (workspace,) if workspace is not None else roots
+        if _exists_in_roots(str(normalized), search) is None:
+            missing.append(entry)
+    if not missing:
+        return [], unverifiable
+    return [(tid, _TOUCHES_MISSING_KIND,
+             f"touches {len(missing)}건이 어느 소유 트리에도 없다: {' · '.join(missing)} — "
+             f"신설 예정이면 그대로 두고, 오타·옛 경로면 고쳐라 (경고·차단 아님)")], unverifiable
+
+
+def _citation_suffix_index(
+    names: set[str], roots: Sequence[Path],
+) -> dict[str, list[Path]]:
+    """`names` 의 파일명만 모은 basename → 실재 경로 색인 (소유 트리당 순회 1회).
+
+    하위 디렉터리 기준 표기를 해소하려면 "그 경로로 끝나는 파일이 트리에 있나"를 봐야 한다.
+    찾는 파일명이 몇 개뿐이라 순회 1회에 필요한 후보만 모은다(인용마다 다시 걷지 않는다).
+    소유 트리는 서로 포함 관계일 수 있어(PM 홈 ⊃ 슬롯 worktree) 절대경로로 중복을 지운다 —
+    안 지우면 같은 파일이 두 건으로 세어져 유일 해소가 사라진다.
+    """
+    index: dict[str, list[Path]] = {name: [] for name in names}
+    seen: set[str] = set()
+    for root in roots:
+        for current, subdirs, files in os.walk(root):
+            subdirs[:] = [name for name in subdirs
+                          if name not in _CITATION_INDEX_PRUNE_DIRS]
+            for name in files:
+                if name not in index:
+                    continue
+                path = Path(current) / name
+                if str(path) in seen:
+                    continue
+                seen.add(str(path))
+                index[name].append(path)
+    return index
+
+
+def _citation_suffix_matches(path: str, index: dict[str, list[Path]]) -> list[Path]:
+    """`path` 로 끝나는 실재 파일 전부 — 하위 디렉터리 기준 표기의 해소 후보."""
+    tail = f"/{path}"
+    return [found for found in index.get(path.rsplit("/", 1)[-1], ())
+            if found.as_posix().endswith(tail)]
+
+
+def _citation_issues(
+    tid: str, prose: str, roots: Sequence[Path],
+) -> tuple[list[tuple[str, str, str]], int]:
+    """본문 `파일:줄` 인용 판정 → (차단 이슈, 판정불능 개수).
+
+    디렉터리 구분자를 가진 인용만 판정한다 — basename 단독(`board.py:11726` 형태)은 출하
+    템플릿·백업 트리에 같은 이름의 사본이 여럿이라 어느 파일인지 확정할 수 없다. 그런 인용은
+    판정불능으로 **세어서** 출력에 싣고 통과로 위장하지 않는다.
+
+    해소는 두 단계다. repo 루트 기준(exact)으로 없으면 하위 디렉터리 기준 표기
+    (`wiki/decisions/x.md` = `.project_manager/wiki/decisions/x.md`)로 보고 소유 트리에서
+    그 경로로 끝나는 파일을 찾는다 — **유일하게** 해소될 때만 그 파일의 줄 범위를 검사하고,
+    사본이 여럿이면 어느 파일의 줄 수인지 확정할 수 없어 판정불능이다. 두 표기 어느 쪽으로도
+    실재 파일이 없으면 **차단**한다: 있지도 않은 파일을 근거로 단 인용이 이 게이트가 막으려는
+    것이라, 표기 편의를 이유로 통과시키면 정탐이 0 이 된다.
+
+    같은 인용이 본문에 여러 번 나오면 한 번만 판정한다(같은 사실을 여러 줄로 내지 않는다).
+    """
+    issues: list[tuple[str, str, str]] = []
+    unverifiable = 0
+    seen: set[str] = set()
+    scanned: list[tuple[str, str, int, Path | None]] = []
+    for match in _CITATION_RE.finditer(prose):
+        citation = f"{match.group('path')}:{match.group('line')}"
+        if citation in seen:
+            continue
+        seen.add(citation)
+        path = match.group("path").replace("\\", "/")
+        if "/" not in path or path.startswith(_OFF_TREE_CITATION_PREFIXES):
+            unverifiable += 1
+            continue
+        scanned.append((citation, path, int(match.group("line")),
+                        _exists_in_roots(path, roots)))
+    # 트리 순회는 exact 로 못 찾은 인용이 있을 때만 — 정상 인용만 있는 티켓은 비용 0.
+    names = {path.rsplit("/", 1)[-1] for _c, path, _l, found in scanned if found is None}
+    index = _citation_suffix_index(names, roots) if names else {}
+    for citation, path, line, found in scanned:
+        if found is None:
+            matches = _citation_suffix_matches(path, index)
+            if len(matches) > 1:
+                unverifiable += 1
+                continue
+            if not matches:
+                issues.append((tid, _CITATION_KIND,
+                               f"인용 `{citation}` 의 파일이 소유 트리에 없다 (repo 루트 "
+                               f"기준·하위 디렉터리 기준 어느 표기로도 해소되지 않는다) — "
+                               f"경로를 실측해 고쳐라"))
+                continue
+            found = matches[0]
+        try:
+            total = len(found.read_text(
+                encoding="utf-8", errors="replace").splitlines())
+        except OSError:
+            unverifiable += 1
+            continue
+        if line < 1 or line > total:
+            issues.append((tid, _CITATION_KIND,
+                           f"인용 `{citation}` 이 줄 범위를 넘는다 (그 파일은 {total}줄) — "
+                           f"실측값으로 고쳐라"))
+    return issues, unverifiable
+
+
+def _architect_round_issues(
+    tid: str, body: str, design: Any,
+) -> list[tuple[str, str, str]]:
+    """`design: required|done` 티켓의 architect 점검 라운드 회수 판정 (차단).
+
+    초안은 PM 이 쓰고 실측 대조·cross-module 검증은 architect 가 한다(generate ≠ evaluate).
+    그 점검이 라운드로 회수되기 전에 승격하면 본문의 사실성을 아무도 안 본 채 공유 보드에
+    올라간다 — 형식 게이트가 통과시키는 결함(틀린 인용·티켓 간 충돌·범위 오판)이 그대로 남는다.
+
+    "산출이 있나" 판정은 라운드 사이드카 소유(`load_rounds` 가 매기는 역할·`round_is_pending`
+    가 매기는 시드 잔존)를 그대로 쓴다 — 여기서 규칙을 다시 만들지 않는다. `n/a`·`waived`
+    (필드 부재 포함)는 설계 단계 비대상이라 무판정이다.
+    """
+    state = _design_state(design)
+    if state not in (DESIGN_REQUIRED, DESIGN_DONE):
+        return []
+    rounds_module = _load_ticket_rounds()
+    rounds = rounds_module.load_rounds(tickets_dir(), tid, ticket_text=body)
+    architect_rounds = [item for item in rounds if item.role == _ARCHITECT_ROLE]
+    if not architect_rounds:
+        return [(tid, _ARCHITECT_ROUND_KIND,
+                 f"design: {state} 인데 {_ARCHITECT_ROLE} 점검 라운드가 없다 — 초안을 "
+                 f"실측 대조(인용·touches·다른 열린 티켓과의 충돌·최소 수단)로 점검받고 "
+                 f"본문에 반영한 뒤 승격하라")]
+    if all(rounds_module.round_is_pending(item, ticket_text=body)
+           for item in architect_rounds):
+        return [(tid, _ARCHITECT_ROUND_KIND,
+                 f"{_ARCHITECT_ROLE} 점검 라운드가 시드 그대로다(산출 없음) — 회수 전에는 "
+                 f"승격하지 않는다")]
+    return []
+
+
+def _content_fact_issues(
+    tid: str, body: str, *, touches: Any, design: Any,
+) -> list[tuple[str, str, str]]:
+    """승격 순간의 사실성 판정 묶음 — 형식 게이트와 같은 `(tid, kind, detail)` 모양."""
+    roots = _content_search_roots()
+    # 인용 자체가 코드 span 표기라 `_strip_code`(span 까지 제거)를 쓰면 판정 대상이 사라진다 —
+    # 펜스만 지운다(펜스 안 예시 블록의 경로는 본문 인용이 아니다).
+    prose = _FENCED_CODE_RE.sub(" ", body)
+    issues: list[tuple[str, str, str]] = []
+    issues.extend(_architect_round_issues(tid, body, design))
+    citation_issues, citation_unverifiable = _citation_issues(tid, prose, roots)
+    issues.extend(citation_issues)
+    touch_issues, touch_unverifiable = _touches_existence_issues(tid, touches, roots)
+    issues.extend(touch_issues)
+    if touch_unverifiable or citation_unverifiable:
+        issues.append((tid, _UNVERIFIABLE_KIND,
+                       f"판정불능 — touches 좌표 {touch_unverifiable}건 · "
+                       f"basename 단독/트리 밖 인용 {citation_unverifiable}건 "
+                       f"(게이트 시야 밖 · 통과로 세지 않는다)"))
+    return issues
+
+
 def _body_lint_issues(tid: str, body: str, *,
                       strict_sections: bool = False,
-                      design: Any = None) -> list[tuple[str, str, str]]:
+                      design: Any = None,
+                      touches: Any = None,
+                      content_facts: bool = False) -> list[tuple[str, str, str]]:
     """단일 티켓 본문의 self-containment issue — `lint_bodies` 와 authoring 게이트가 공유.
 
     `lint_bodies` 의 검사 로직(placeholder·thin)을 단일-티켓 단위로 추출한 것 — `board.py new`
@@ -14525,6 +14831,12 @@ def _body_lint_issues(tid: str, body: str, *,
     `design`: 그 티켓 frontmatter 의 `design:` 값(None=필드 부재=`n/a`). `required`/`done` 일
     때만 `## 설계` 절 충전을 함께 판정한다(kind=`design-pending`) — 값을 안 넘기는 호출자는
     설계 판정 없이 기존 검사만 받는다(레거시 호출 무변경).
+
+    `content_facts`: 승격 게이트(`promote`)만 True — 본문이 *주장하는 사실*(touches 경로 실재·
+    `파일:줄` 인용·architect 점검 라운드 회수)을 함께 판정한다(`_content_fact_issues`).
+    `touches` 는 그 판정의 입력이다(frontmatter 값·None=빈 목록). 전역 lint 와 발행 게이트는
+    켜지 않는다 — 이미 open 인 티켓을 소급 판정하지 않고, 발행 시점 본문은 템플릿이라 인용이
+    없다. 형식 판정(placeholder·thin·design)은 이 플래그와 무관하게 그대로다.
     """
     issues: list[tuple[str, str, str]] = []
     prose = _strip_code(body)
@@ -14538,6 +14850,8 @@ def _body_lint_issues(tid: str, body: str, *,
             issues.append((tid, "thin",
                            f"missing standard section: {section}"))
     issues.extend(_design_issues(tid, body, design))
+    if content_facts:
+        issues.extend(_content_fact_issues(tid, body, touches=touches, design=design))
     return issues
 
 
