@@ -1627,9 +1627,17 @@ def test_codex_prefilter_skips_board_import_for_non_git_bash(monkeypatch, topolo
 def test_codex_dispatcher_routes_bash_tool_names_to_the_self_invoking_child(topology):
     """`dispatch_hook` 이 Bash tool_name 이면 git-anchor 기능(자기참조 `--git-anchor-hook`)을
     스폰한다(등록 축은 tool_name 만 본다 — git 관련성 선별은 그 자식 안에서 돈다). 다른
-    tool_name 은 스폰하지 않는다(배선 자체의 값 확인 — 판정은 위 테스트가 별도로 본다)."""
-    dispatcher = _load("git_anchor_codex_route", CODEX_DISPATCHER)
+    tool_name 은 스폰하지 않는다(배선 자체의 값 확인 — 판정은 위 테스트가 별도로 본다).
+
+    `{self}`는 root 파생이 아니라 실행 중인 파일 자신이다(T-0845) — 이 축을 재려면 디스패처를
+    home 의 **출하 레이아웃**(`<home>/.codex/pm_orch_codex.py`)에 실제로 복사해 그 사본에서
+    로드해야, "실행 중인 파일 좌표"가 곧 그 출하 경로가 된다. 원본 template 경로에서 로드하면
+    `{self}`가 그 template 경로로 전개되는 게 옳은 동작이라 옛 root 재구성 기대와 어긋난다."""
     home, _slot = topology
+    shipped_dispatcher = home / ".codex" / "pm_orch_codex.py"
+    shipped_dispatcher.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(CODEX_DISPATCHER, shipped_dispatcher)
+    dispatcher = _load("git_anchor_codex_route", shipped_dispatcher)
     calls: list[list[str]] = []
 
     def runner(argv, **_kwargs):

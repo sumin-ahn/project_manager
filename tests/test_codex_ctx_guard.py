@@ -1135,7 +1135,12 @@ def test_guidance_failure_modes_are_silent(codex_ctx, tmp_path):
 # ── 4.5 디스패처 합본·출하 CLI (침묵이 실제로 침묵인가) ──────────────────────
 
 def test_dispatcher_merges_the_nudge_without_touching_other_features(codex_ctx, tmp_path):
-    """진입점 합본에서 ctx 넛지만 답하면 그 엔벨로프가 그대로 나가고, 자식은 안 뜬다."""
+    """진입점 합본에서 ctx 넛지만 답하면 그 엔벨로프가 그대로 나가고, 자식은 안 뜬다.
+
+    `tool_name="Read"` — git-anchor(T-0765)가 `^Bash$` 에 등재된 뒤로 `tool_name="Bash"` 페이로드는
+    ctx-nudge 와 git-anchor 둘 다에 걸려 이 단언(무관 기능은 자식을 띄우지 않는다)과 별개로
+    자식이 하나 뜬다 — 이 테스트가 격리하려는 축(도구 무관 in-process 판정)과 무관한 매치라
+    Bash 가 아닌 도구로 고정한다."""
     root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
     rollout = _write_rollout(tmp_path)
     spawned = []
@@ -1145,7 +1150,8 @@ def test_dispatcher_merges_the_nudge_without_touching_other_features(codex_ctx, 
         return subprocess.CompletedProcess(argv, 0, stdout=b"{}", stderr=b"")
 
     envelope = codex_ctx.dispatch_hook(
-        "PreToolUse", json.dumps(_payload(rollout)).encode("utf-8"), root, runner=runner)
+        "PreToolUse", json.dumps(_payload(rollout, tool_name="Read")).encode("utf-8"),
+        root, runner=runner)
 
     assert envelope["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
     assert spawned == [], "도구 무관 판정이 매 호출마다 자식 프로세스를 띄웠다"
@@ -1184,3 +1190,74 @@ def test_shipped_cli_emits_one_line_and_rc0(tmp_path, conf, expected_prefix):
     assert len(completed.stdout.splitlines()) == 1
     assert completed.stdout.decode("ascii").startswith(expected_prefix)
     assert "adapter-fallback" not in completed.stdout.decode("ascii")
+
+
+# ── 4.6 `{self}` = 실행 중인 파일 자신 (root 파생 재구성 아님·T-0845) ──────────────
+# git-anchor 는 delegate-channel 처럼 부를 별도 엔진 파일이 없어 디스패처가 `{self}` 로 자기
+# 자신을 다시 부른다. 옛 구현은 그 좌표를 `root / ".codex" / "pm_orch_codex.py"` 로 **재구성**
+# 했다 — 출하 레이아웃(`<root>/.codex/pm_orch_codex.py`)에서는 우연히 같은 값이라 통과했지만,
+# flat 레이아웃(`<root>/pm_orch_codex.py`)에서는 존재하지 않는 경로를 가리켰다. 두 레이아웃을
+# 실 파일 복사로 재현해 값을 대조한다(픽스처를 한쪽 레이아웃으로 좁히면 다른 쪽 회귀를 가린다).
+
+def _copy_dispatcher_to_layout(tmp_path: Path, label: str) -> tuple[Path, Path]:
+    """`label`(`flat`|`shipped`) 레이아웃으로 디스패처 실 파일을 복사 — (디스패처 경로, root) 반환."""
+    if label == "flat":
+        dispatcher_copy = tmp_path / f"{label}-adopter" / "pm_orch_codex.py"
+    else:
+        dispatcher_copy = tmp_path / f"{label}-adopter" / ".codex" / "pm_orch_codex.py"
+    dispatcher_copy.parent.mkdir(parents=True)
+    shutil.copy2(DISPATCHER_PY, dispatcher_copy)
+    root = dispatcher_copy.parent if label == "flat" else dispatcher_copy.parent.parent
+    return dispatcher_copy, root
+
+
+@pytest.mark.parametrize("label", ("flat", "shipped"))
+def test_self_expands_to_the_running_file_in_both_layouts(tmp_path, label):
+    """`{self}` 전개 결과가 실재 파일인가를 값으로 — flat·출하 두 레이아웃 각각(T-0845)."""
+    dispatcher_copy, root = _copy_dispatcher_to_layout(tmp_path, label)
+    module = _load_module(f"pm_orch_codex_layout_{label}", dispatcher_copy)
+
+    expanded = module._expand_hook_argv(("{self}",), root)[0]
+
+    assert Path(expanded).exists(), f"{label}: {{self}} 전개 결과가 실재하지 않음: {expanded}"
+    assert Path(expanded) == dispatcher_copy.resolve(), (
+        f"{label}: {{self}} 이 실행 중인 파일 자신이 아님: {expanded}")
+
+
+@pytest.mark.parametrize("label", ("flat", "shipped"))
+def test_self_child_spawn_succeeds_in_both_layouts_without_adapter_fallback(tmp_path, label):
+    """git-anchor 자식을 실제로 스폰 — flat·출하 두 레이아웃 모두 rc0·adapter-fallback 0(T-0845).
+
+    출하 CLI 를 그대로 태운다(`--hook-dispatch PreToolUse`) — mock runner 는 self 경로가 실재하지
+    않아도 통과시키므로 여기서는 진짜 자식 프로세스로 재야 결함이 드러난다."""
+    dispatcher_copy, root = _copy_dispatcher_to_layout(tmp_path, label)
+    (root / ".project_manager" / "tools").mkdir(parents=True)
+    (root / ".project_manager" / "tools" / "pm_handoff.py").write_text("", encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, str(dispatcher_copy), "--hook-dispatch", "PreToolUse"],
+        input=json.dumps(_payload(tmp_path / "unused-rollout.jsonl",
+                                  transcript_path=None)).encode("utf-8"),
+        capture_output=True, timeout=60)
+
+    assert completed.returncode == 0, (label, completed.stderr)
+    stdout = completed.stdout.decode("ascii")
+    assert len(completed.stdout.splitlines()) == 1
+    assert "adapter-fallback" not in stdout, f"{label}: {stdout}"
+    assert stdout.strip() == "{}"  # 밴드 미측정(transcript 없음)·git-anchor 무관 커맨드 → 침묵.
+
+
+def test_self_reconstructed_from_root_would_miss_the_flat_layout(tmp_path):
+    """민감도 — `{self}` 를 옛 root 파생(`root/.codex/pm_orch_codex.py`)으로 되돌리면 flat
+    레이아웃에서 존재하지 않는 경로가 나온다(고침이 이 결함을 실제로 잡는지 재현·T-0845)."""
+    dispatcher_copy, root = _copy_dispatcher_to_layout(tmp_path, "flat")
+
+    old_root_derived_self = root / ".codex" / "pm_orch_codex.py"
+    assert not old_root_derived_self.exists(), (
+        "옛 root 파생 경로가 우연히 실재해 민감도 probe 가 판별력을 잃음")
+
+    module = _load_module("pm_orch_codex_sensitivity", dispatcher_copy)
+    fixed_self = module._expand_hook_argv(("{self}",), root)[0]
+
+    assert Path(fixed_self).exists()
+    assert Path(fixed_self) != old_root_derived_self
