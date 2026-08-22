@@ -18,6 +18,8 @@ import os
 import shutil
 import stat
 import subprocess
+import threading
+import unittest.mock
 from pathlib import Path
 
 import pytest
@@ -574,9 +576,9 @@ def _harvest_review_round(pd, pm_home: Path, slot: Path, ticket: str, finding_id
     return reviewer
 
 
-def _append_disposition(pd, spec_path: Path, rows: list) -> None:
+def _append_disposition(pd, spec_path: Path, rows: list, *, ordinal: int = 1) -> None:
     payload = {
-        "version": pd.PM_REVIEW_DISPOSITION_VERSION, "reviewer_ordinal": 1,
+        "version": pd.PM_REVIEW_DISPOSITION_VERSION, "reviewer_ordinal": ordinal,
         "dispositions": rows,
     }
     spec_path.write_text(
@@ -637,6 +639,50 @@ def test_prepare_refuses_a_developer_round_until_the_pm_judgment_is_written(
         item.name for item in _rounds_dir(pm_home, ticket).iterdir()
     ) == rounds_before, "거부가 board 라운드 파일을 남겼다"
     assert len(_ledger_rows(pm_home)) == ledger_before, "거부가 장부 행을 남겼다"
+
+
+def test_pending_prepare_guidance_names_the_real_ordinal_and_channel(pd, rounds_env):
+    """작은 결함(PM 실측 2026-08-23) — `ticket prepare` 의 "pending" 거부 안내가
+    `disposition-template` 기본값(그 채널의 **최신** ordinal)이 아니라 실제로 미판정인
+    ordinal·채널·ticket 실값을 커맨드에 싣는다. 옛 ordinal(1)이 미판정이고 그 뒤 최신
+    ordinal(2)은 이미 판정된 형상 — 안내대로 기본값(최신)을 그냥 실행하면 "미판정 finding이
+    없습니다" 로 막히는 실측 사고를 재현한다.
+    """
+    pm_home, slot, tickets, _sync = rounds_env
+    ticket = "T-7040"
+    spec_path = _write_spec(tickets, ticket)
+    _harvest_review_round(pd, pm_home, slot, ticket, ["F-001"])  # ordinal 1 — 미판정으로 남긴다
+    _harvest_review_round(pd, pm_home, slot, ticket, ["F-002"])  # ordinal 2 — 뒤에서 판정해 최신을 깨끗하게 만든다
+    _append_disposition(pd, spec_path, [{
+        "id": "F-002", "decision": "rejected", "reason": "확인됨",
+        "scope": "", "prerequisite": "",
+    }], ordinal=2)
+
+    with pytest.raises(pd.DelegateError, match="시드할 수 없습니다") as caught:
+        pd.prepare_ticket_copy(
+            ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
+        )
+
+    message = str(caught.value)
+    assert "--ordinal 1" in message
+    assert "--reviewer-role code-reviewer" in message
+    assert f"--ticket {ticket}" in message
+    assert "<T-NNNN>" not in message
+    assert "--ordinal 2" not in message  # 최신(잘못된 옛 기본값)을 안내하지 않는다
+
+    # 실측 재현 — 옛 기본값(그 채널의 최신 ordinal=2)으로 실행하면 PM 이 실제로 막혔던
+    # 오류가 그대로 재현된다.
+    _path, spec_text, rounds = _spec_and_rounds(pd, pm_home, tickets, ticket)
+    with pytest.raises(pd.PMReviewError, match="미판정 finding이 없습니다"):
+        pd.render_pm_review_disposition_template(
+            spec_text, rounds, 2, reviewer_role="code-reviewer",
+        )
+
+    # 안내가 지목한 실값(ordinal=1)으로는 정상적으로 골격이 나온다.
+    rendered = pd.render_pm_review_disposition_template(
+        spec_text, rounds, 1, reviewer_role="code-reviewer",
+    )
+    assert "F-001" in rendered
 
 
 def test_prepare_seeds_the_first_developer_round_without_fence_or_warning(
@@ -1885,3 +1931,408 @@ def test_pre_change_confirmation_seed_stays_pending_through_an_unchanged_harvest
     delta = pd.parse_pm_review_delta(filled_text, rounds)
 
     assert [finding.id for finding, _row in delta.accepted] == ["F-001"]
+
+
+# ── T-0841: 내부 위임 라운드 상한 (external_review.py:49-59 미러) ──────────────────
+
+def _prepare_rc(
+    pd, monkeypatch, pm_home: Path, slot: Path, ticket: str, role: str,
+) -> int:
+    """실 CLI rc — 소유 PM 홈 해소만 픽스처 좌표로 고정한다(판정은 엔진 그대로)."""
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+    return pd._cmd_ticket(["prepare", "--ticket", ticket, "--role", role, "--cwd", str(slot)])
+
+
+def _prepare_n_rounds(pd, pm_home: Path, slot: Path, ticket: str, role: str, n: int):
+    """직접 API 호출로 n 개 라운드를 예약한다(회수 없이 — pending 라운드도 카운트 대상)."""
+    plan = None
+    for _ in range(n):
+        plan = pd.prepare_ticket_copy(
+            ticket=ticket, role=role, cwd=slot, pm_home=pm_home,
+        )
+    return plan
+
+
+def test_developer_round_limit_blocks_at_default_cap(pd, rounds_env, capsys):
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-8001")
+    limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
+    _prepare_n_rounds(pd, pm_home, slot, "T-8001", "developer", limit)
+    capsys.readouterr()
+
+    with pytest.raises(pd.InternalRoundLimitExceeded, match="라운드 상한 도달"):
+        pd.prepare_ticket_copy(ticket="T-8001", role="developer", cwd=slot, pm_home=pm_home)
+
+
+def test_developer_round_limit_cli_rc_matches_external_channel(
+    pd, rounds_env, monkeypatch, capsys,
+):
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-8002")
+    limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
+    _prepare_n_rounds(pd, pm_home, slot, "T-8002", "developer", limit)
+    capsys.readouterr()
+
+    rc = _prepare_rc(pd, monkeypatch, pm_home, slot, "T-8002", "developer")
+
+    external = pd._load_external_review()
+    assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
+    err = capsys.readouterr().err
+    assert "재설계" in err and "분할" in err
+    assert "현재 라운드" in err and "01-developer.md" in err
+    assert "다시 시도" not in err and "재시도" not in err  # 라운드 추가 유도 문구 없음
+
+
+def test_round_under_cap_is_not_blocked(pd, rounds_env):
+    """역방향: 상한 미만이면 정상 준비된다(오차단 0)."""
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-8003")
+    limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
+    plan = _prepare_n_rounds(pd, pm_home, slot, "T-8003", "developer", limit - 1)
+    assert plan.ordinal == limit - 1
+
+
+def test_round_limit_rejection_leaves_no_slot_residue(pd, rounds_env):
+    """게이트는 예약(board)뿐 아니라 슬롯 run-dir 도 만들기 전에 거부한다(고아 0)."""
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-8017")
+    limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
+    _prepare_n_rounds(pd, pm_home, slot, "T-8017", "developer", limit)
+    copy_root = slot / pd.TICKET_COPY_REL_ROOT / "T-8017"
+    before = set(copy_root.iterdir()) if copy_root.exists() else set()
+
+    with pytest.raises(pd.InternalRoundLimitExceeded):
+        pd.prepare_ticket_copy(ticket="T-8017", role="developer", cwd=slot, pm_home=pm_home)
+
+    after = set(copy_root.iterdir()) if copy_root.exists() else set()
+    assert after == before
+
+
+def test_code_reviewer_and_architect_caps_are_higher_than_developer(pd):
+    """결정: code-reviewer·architect 는 developer 보다 라운드가 더 필요하다(실측 분포 근거)."""
+    limits = pd.DEFAULT_INTERNAL_ROUND_LIMITS
+    assert limits["code-reviewer"] > limits["developer"]
+    assert limits["architect"] > limits["developer"]
+
+
+def test_local_conf_overrides_role_round_limit(pd, rounds_env, capsys):
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-8004")
+    (pm_home / ".project_manager" / "local.conf").write_text(
+        "internal_review_round_limit.developer=2\n", encoding="utf-8",
+    )
+    _prepare_n_rounds(pd, pm_home, slot, "T-8004", "developer", 2)
+    capsys.readouterr()
+
+    with pytest.raises(pd.InternalRoundLimitExceeded, match=r"상한 2\)"):
+        pd.prepare_ticket_copy(ticket="T-8004", role="developer", cwd=slot, pm_home=pm_home)
+
+
+def test_researcher_role_is_not_gated(pd, rounds_env):
+    """스코프 밖 역할(researcher)은 게이트 대상이 아니다(티켓 스코프 확대 금지)."""
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-8005")
+    max_limit = max(pd.DEFAULT_INTERNAL_ROUND_LIMITS.values())
+    plan = _prepare_n_rounds(pd, pm_home, slot, "T-8005", "researcher", max_limit + 3)
+    assert plan.ordinal == max_limit + 3
+
+
+def test_harvest_and_copies_are_outside_the_gate(pd, rounds_env, monkeypatch):
+    """역방향: harvest·copies 는 게이트 밖이다 — 진행 중 라운드를 고아로 만들지 않는다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-8006")
+    limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
+    plan = _prepare_n_rounds(pd, pm_home, slot, "T-8006", "developer", limit)
+    # 상한 도달 상태에서도 이미 예약된 라운드의 harvest 는 막히지 않는다.
+    produced = plan.path.read_text(encoding="utf-8") + "\n## 변경 파일\n- x\n"
+    plan.path.write_text(produced, encoding="utf-8", newline="")
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+    rc = pd._cmd_ticket(["harvest", "--copy", str(plan.path), "--cwd", str(slot)])
+    assert rc == 0
+    monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: pm_home)
+    rc2 = pd._cmd_ticket(["copies", "--ticket", "T-8006"])
+    assert rc2 == 0
+
+
+def test_flat_cross_cli_preserves_round_limit_rc(pd, rounds_env, monkeypatch):
+    """F-004 회귀 — flat cross CLI 도 InternalRoundLimitExceeded 를 rc=1 로 뭉개지 않고
+    전용 rc(외부 채널 EXIT_ROUND_LIMIT_EXCEEDED=4)로 보존한다(per-ticket cap 은 어떤 승인으로도
+    안 열림)."""
+    pm_home, _slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-8020")
+
+    def _raise(*_args, **_kwargs):
+        raise pd.InternalRoundLimitExceeded("오류: 내부 위임 라운드 상한 도달 — test")
+
+    monkeypatch.setattr(pd, "prepare_ticket_copy", _raise)
+    monkeypatch.setattr(pd, "local_config", lambda: {
+        "delegate_enabled": "true",
+        "delegate.developer.harness": "codex", "delegate.developer.model": "gpt-x",
+    })
+    monkeypatch.setattr(pd, "_cwd_in_git_repo", lambda *a, **k: True)
+
+    prompt = pm_home / "task.md"
+    prompt.write_text("작업 내용", encoding="utf-8")
+
+    rc = pd.main(
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(pm_home),
+         "--ticket", "T-8020", "--output-dir", str(pm_home / "raw")],
+        run_fn=lambda *a, **k: pytest.fail("라운드 상한 거부 뒤 스폰되면 안 됨"),
+    )
+
+    external = pd._load_external_review()
+    assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
+
+
+def test_concurrent_prepares_at_the_cap_boundary_admit_exactly_one(
+    pd, rounds_env, monkeypatch,
+):
+    """F-003 TOCTOU 회귀 — 상한-1 에서 두 동시 prepare 중 정확히 하나만 성공하고
+    최종 count 가 상한을 넘지 않는다(리뷰어 결정적 재현 재구성: 사전판정 직후 barrier)."""
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-9001")
+    limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
+    _prepare_n_rounds(pd, pm_home, slot, "T-9001", "developer", limit - 1)
+
+    barrier = threading.Barrier(2)
+    real_count = pd._internal_round_count
+    call_lock = threading.Lock()
+    state = {"n": 0}
+
+    def _synced_count(existing, role):
+        # 처음 두 호출(양쪽 thread 의 (1.5) 사전판정)만 서로 기다린다 — phase-2(락 안·직렬)
+        # 호출까지 묶으면 락을 쥔 쪽이 상대를 영원히 기다려 교착한다.
+        with call_lock:
+            state["n"] += 1
+            my_call = state["n"]
+        result = real_count(existing, role)
+        if my_call <= 2:
+            barrier.wait(timeout=5)
+        return result
+
+    results: list = []
+    errors: list = []
+
+    def _worker():
+        try:
+            plan = pd.prepare_ticket_copy(
+                ticket="T-9001", role="developer", cwd=slot, pm_home=pm_home,
+            )
+            results.append(plan)
+        except pd.InternalRoundLimitExceeded as exc:
+            errors.append(exc)
+
+    with unittest.mock.patch.object(pd, "_internal_round_count", side_effect=_synced_count):
+        threads = [threading.Thread(target=_worker) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+    assert len(results) == 1, f"동시 성공 {len(results)}건(정확히 1이어야 함) — errors={errors}"
+    assert len(errors) == 1
+
+    rounds_module = pd._load_ticket_rounds()
+    final = rounds_module.load_rounds(pm_home / ".project_manager" / "wiki" / "tickets", "T-9001")
+    assert pd._internal_round_count(final, "developer") == limit
+
+
+# ── F-005(라운드 6) — 스폰 전 게이트 거부의 ticket 예약 환불 ────────────────
+#
+# `main()`(flat cross CLI)이 `prepare_ticket_copy` 로 board 라운드·run-dir 을 실제로 예약한
+# 뒤, 스폰 전 게이트(재앵커·시크릿 스캔·egress) 가 거부하면 그 예약을 `abandon_ticket_copy`
+# 로 즉시 환불한다(대안 b · 새 경로 없음). 불변식: 거부 뒤 board 라운드 증가 0 · 장부 미회수
+# 행 0 · run-dir 0, 정상 실행 경로엔 환불이 발동하지 않는다(역방향).
+
+_REFUND_EGRESS_MARKER = "CODEX_SANDBOX_NETWORK_DISABLED"
+
+
+@pytest.fixture
+def refund_env(tmp_path, pd, monkeypatch):
+    """cwd·PM 홈이 같은 디렉터리(자기-정박) — `main()` 이 실 prepare 로 board 라운드·장부
+    행·run-dir 을 진짜로 만들게 하면서 `--cwd` 하나로 self-anchored PM 홈 해소가 되게 한다."""
+    home = tmp_path / "home"
+    pm_tools = home / ".project_manager" / "tools"
+    pm_tools.mkdir(parents=True)
+    for source in TOOLS.glob("*.py"):
+        shutil.copy2(source, pm_tools / source.name)
+    tickets = home / ".project_manager" / "wiki" / "tickets" / "claimed"
+    tickets.mkdir(parents=True)
+    (home / ".project_manager" / ".local").mkdir(parents=True)
+    assert _git(home, "init", "-q").returncode == 0
+    gitignore = home / ".project_manager" / ".gitignore"
+    gitignore.write_text(".local/\n", encoding="utf-8", newline="\n")
+    (home / "tracked.txt").write_text("seed\n", encoding="utf-8", newline="\n")
+    assert _git(home, "add", "tracked.txt", ".project_manager/.gitignore").returncode == 0
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "refund")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "refund@test.invalid")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "refund")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "refund@test.invalid")
+    assert _git(home, "commit", "-qm", "seed").returncode == 0
+    sync_log: list = []
+    monkeypatch.setattr(
+        pd, "_load_board_for_repo", lambda _repo: _fixture_board(pd, home, sync_log),
+    )
+    monkeypatch.setattr(pd, "local_config", lambda: {
+        "delegate_enabled": "true",
+        "delegate.developer.harness": "codex", "delegate.developer.model": "gpt-x",
+    })
+    monkeypatch.setattr(pd, "_cwd_in_git_repo", lambda *a, **k: True)
+    monkeypatch.delenv(_REFUND_EGRESS_MARKER, raising=False)
+    return home, tickets
+
+
+def _refund_round_file_count(pd, home: Path, ticket: str) -> int:
+    rounds_dir = _rounds_dir(home, ticket)
+    return len(list(rounds_dir.glob("*.md"))) if rounds_dir.is_dir() else 0
+
+
+def _refund_run_dir_count(pd, home: Path, ticket: str) -> int:
+    root = home / pd.TICKET_COPY_REL_ROOT / ticket
+    return len(list(root.iterdir())) if root.is_dir() else 0
+
+
+def _refund_unterminated_ledger_rows(pd, home: Path, ticket: str) -> int:
+    """장부는 append-only다 — 같은 `copy` 의 마지막 행(추가 순서)이 그 예약의 현재 상태다."""
+    rows = [row for row in _ledger_rows(home) if row["ticket"] == ticket]
+    latest_by_copy: dict[str, dict] = {}
+    for row in rows:
+        latest_by_copy[row["copy"]] = row
+    return sum(
+        1 for row in latest_by_copy.values()
+        if row.get("harvested_at") is None and "abandoned_at" not in row
+    )
+
+
+def test_secret_scan_rejection_refunds_the_reserved_ticket_copy(pd, refund_env):
+    """F-005 — 시크릿 스캔 거부 뒤 board 라운드·run-dir·장부 미회수 행이 전부 0으로 되돌아간다."""
+    home, tickets = refund_env
+    ticket = "T-9101"
+    _write_spec(tickets, ticket)
+    before = (
+        _refund_round_file_count(pd, home, ticket),
+        _refund_run_dir_count(pd, home, ticket),
+        _refund_unterminated_ledger_rows(pd, home, ticket),
+    )
+    assert before == (0, 0, 0)
+
+    prompt = home / "task.md"
+    prompt.write_text("배포 전에 config.secret.key 를 확인하라", encoding="utf-8")
+    rc = pd.main(
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
+         "--ticket", ticket, "--output-dir", str(home / "raw")],
+        run_fn=lambda *a, **k: pytest.fail("시크릿 스캔 거부 뒤 스폰되면 안 됨"),
+    )
+    assert rc == 1
+
+    after = (
+        _refund_round_file_count(pd, home, ticket),
+        _refund_run_dir_count(pd, home, ticket),
+        _refund_unterminated_ledger_rows(pd, home, ticket),
+    )
+    assert after == (0, 0, 0), f"환불 뒤 잔류 — before={before} after={after}"
+
+
+def test_reanchor_rejection_refunds_the_reserved_ticket_copy(pd, refund_env):
+    """F-005 — 엔진 코드 write 재앵커 거부 뒤 board 라운드·run-dir·장부 미회수 행이 0으로
+    되돌아간다. adopter#0 재앵커 판정은 canonical worktree(`work/<n>/…/external_review.py`)
+    존재를 추가로 요구한다."""
+    home, tickets = refund_env
+    ticket = "T-9102"
+    _write_spec(tickets, ticket)
+    wt_tools = home / "work" / "wt1" / ".project_manager" / "tools"
+    wt_tools.mkdir(parents=True)
+    (wt_tools / "external_review.py").write_text("# stub", encoding="utf-8")
+    before = (
+        _refund_round_file_count(pd, home, ticket),
+        _refund_run_dir_count(pd, home, ticket),
+        _refund_unterminated_ledger_rows(pd, home, ticket),
+    )
+    assert before == (0, 0, 0)
+
+    prompt = home / "task.md"
+    prompt.write_text(
+        "다음 파일을 수정하라: .project_manager/tools/board.py 의 함수", encoding="utf-8",
+    )
+    rc = pd.main(
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
+         "--ticket", ticket, "--output-dir", str(home / "raw")],
+        run_fn=lambda *a, **k: pytest.fail("재앵커 거부 뒤 스폰되면 안 됨"),
+    )
+    assert rc == 1
+
+    after = (
+        _refund_round_file_count(pd, home, ticket),
+        _refund_run_dir_count(pd, home, ticket),
+        _refund_unterminated_ledger_rows(pd, home, ticket),
+    )
+    assert after == (0, 0, 0), f"환불 뒤 잔류 — before={before} after={after}"
+
+
+def test_codex_egress_rejection_refunds_the_reserved_ticket_copy(pd, refund_env, monkeypatch):
+    """F-005 — codex egress 미승격 거부 뒤 board 라운드·run-dir·장부 미회수 행이 0으로
+    되돌아간다."""
+    home, tickets = refund_env
+    ticket = "T-9103"
+    _write_spec(tickets, ticket)
+    monkeypatch.setenv(_REFUND_EGRESS_MARKER, "1")
+    before = (
+        _refund_round_file_count(pd, home, ticket),
+        _refund_run_dir_count(pd, home, ticket),
+        _refund_unterminated_ledger_rows(pd, home, ticket),
+    )
+    assert before == (0, 0, 0)
+
+    prompt = home / "task.md"
+    prompt.write_text("문서를 정리하라", encoding="utf-8")
+    rc = pd.main(
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
+         "--ticket", ticket, "--output-dir", str(home / "raw")],
+        run_fn=lambda *a, **k: pytest.fail("egress 미승격 거부 뒤 스폰되면 안 됨"),
+    )
+    assert rc == 1
+
+    after = (
+        _refund_round_file_count(pd, home, ticket),
+        _refund_run_dir_count(pd, home, ticket),
+        _refund_unterminated_ledger_rows(pd, home, ticket),
+    )
+    assert after == (0, 0, 0), f"환불 뒤 잔류 — before={before} after={after}"
+
+
+def test_successful_delegation_does_not_refund_the_ticket_copy(pd, refund_env, monkeypatch):
+    """역방향 — 정상 스폰·정상 종료 경로는 환불을 부르지 않는다(회수된 라운드가 그대로 남는다).
+    스폰 이후엔 기존 harvest 가 세 자산을 정상 종결하므로, 여기서 지키는 성질은 "환불 helper 가
+    이번 호출에서 한 번도 안 불렸다"는 것 하나다."""
+    home, tickets = refund_env
+    ticket = "T-9104"
+    _write_spec(tickets, ticket)
+
+    refund_calls: list = []
+    real_refund = pd._refund_gate_rejected_ticket_copy
+
+    def _spy(ticket_copy, **kwargs):
+        refund_calls.append(ticket_copy)
+        return real_refund(ticket_copy, **kwargs)
+
+    monkeypatch.setattr(pd, "_refund_gate_rejected_ticket_copy", _spy)
+
+    prompt = home / "task.md"
+    prompt.write_text("문서를 정리하라", encoding="utf-8")
+    codex_reply = "\n".join([
+        json.dumps({"type": "thread.started", "thread_id": "th1"}),
+        json.dumps({"type": "item.completed",
+                    "item": {"type": "agent_message", "text": "DONE"}}),
+        json.dumps({"type": "turn.completed", "usage": {"input_tokens": 10}}),
+    ])
+
+    def _run_fn(argv, *, stdin_text, cwd, env, timeout, harness):
+        return {"returncode": 0, "stdout": codex_reply, "stderr": "", "timed_out": False}
+
+    rc = pd.main(
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
+         "--ticket", ticket, "--output-dir", str(home / "raw")],
+        run_fn=_run_fn,
+    )
+    assert rc == 0
+    assert refund_calls == []

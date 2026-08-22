@@ -1525,27 +1525,105 @@ def _board_relative_path(board_path: Path, pm_home: Path) -> str:
         ) from exc
 
 
+class InternalRoundLimitExceeded(DelegateError):
+    """내부 위임 라운드 상한 도달 — `_cmd_ticket`/cross flat CLI 가 exit 4(외부 채널
+    `external_review.EXIT_ROUND_LIMIT_EXCEEDED` 와 동형)로 낸다."""
+
+
+# ── 내부 위임 라운드 상한 (T-0841) ──────────────────────────────────────────
+# 외부 채널(external_review.py:49-59 라운드 상한)의 미러다 — 판정식·rc·"재설계·분할이
+# 유일한 출구" 처방·우회 없음 규약은 그대로 두고, 입력만 내부 채널이 이미 가진 board 라운드
+# 파일로 좁힌다(결정: 새 장부·새 필드 0). architect·developer·code-reviewer만 대상이다 —
+# researcher는 board 라운드 실사용 0건(전수 실측)이라 티켓 스코프 밖으로 남긴다. 축은
+# 역할별 per-ticket 상한 하나뿐이다(cross-ticket 판정 없음).
+#
+# 값은 `tickets/rounds/` 전수 실측(2026-08-23·107개 티켓 디렉터리)에서 역할별 정상↔이상 분기점
+# 으로 정했다(중간값 없이 갈린다):
+#   developer      정상 최대 4(5건) → 이상 6(T-0694·T-0698·T-0779 — 총 12·11·11 라운드 실측)
+#   code-reviewer  정상 최대 4(1건)·3(6건) → 이상 5~6(T-0698·T-0682·T-0694·T-0696)
+#   architect      정상 최대 3(T-0771) → T-0767(architect 5·총 8라운드)은 재설계 성격 — 결정문
+#     "재설계는 상한에 걸리면 안 되는 경우가 있다"에 해당해 다른 둘보다 크게 둔다.
+DEFAULT_INTERNAL_ROUND_LIMITS: dict[str, int] = {
+    "developer": 4,
+    "code-reviewer": 5,
+    "architect": 6,
+}
+INTERNAL_ROUND_LIMIT_KEY_PREFIX = "internal_review_round_limit."  # + role
+
+
+def _internal_conf_int(conf: dict[str, str], key: str, default: int) -> int:
+    """local.conf 정수 노브 — 비정수·음수는 기본값으로 fail-soft(외부 채널 예산 노브와 같은 규칙:
+    깨진 노브가 게이트를 벽돌로 만들지 않는다)."""
+    raw = conf.get(key, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value >= 0 else default
+
+
+def _internal_round_limit(conf: dict[str, str], role: str) -> int:
+    return _internal_conf_int(
+        conf, f"{INTERNAL_ROUND_LIMIT_KEY_PREFIX}{role}",
+        DEFAULT_INTERNAL_ROUND_LIMITS[role],
+    )
+
+
+def _internal_round_count(existing, role: str) -> int:
+    """이 티켓에서 그 역할로 이미 예약된 라운드 수(산출 유무 무관 — 예약 자체를 센다)."""
+    return sum(1 for item in existing if item.role == role)
+
+
+def _internal_round_list(existing, role: str, rounds_module) -> str:
+    """거부 메시지에 싣는 "현재 라운드" 목록 — 순번·역할·산출 유무만(본문은 담지 않는다)."""
+    names = [
+        rounds_module.round_filename(item.ordinal, item.role)
+        + (" (산출 없음)" if item.pending else "")
+        for item in sorted(existing, key=lambda entry: entry.ordinal)
+        if item.role == role
+    ]
+    return ", ".join(names) if names else "(없음)"
+
+
+_INTERNAL_ROUND_LIMIT_GUIDANCE = (
+    "오류: 내부 위임 라운드 상한 도달 — {ticket} role={role} · count={count}(상한 {limit})\n"
+    "  현재 라운드: {rounds}\n"
+    "  · **재설계·티켓 분할이 유일한 출구입니다** — 이 역할로 라운드를 더 예약하지 않습니다"
+    "(우회 없음 · 외부 채널 라운드 상한과 같은 규율).\n"
+    "  · 상한 조정은 local.conf `internal_review_round_limit.{role}`(기본 {limit})."
+)
+
+
 def prepare_ticket_copy(
     *, ticket: str, role: str, cwd: Path, pm_home: Path, owner_pid: int | None = None,
 ) -> TicketCopyPlan:
     """board 에 라운드 순번을 시드로 예약하고, 같은 파일을 슬롯 run-dir 에 materialize 한다.
 
-    **거부 판정은 전부 예약 앞에 둔다** — 역할·티켓 조회·상태·ignore 규칙·run-dir
-    경계가 모두 board 를 건드리기 전에 끝난다. 뒤에 두면 거부된 준비가 board 에 회수 불가능한
+    **거부 판정은 전부 예약 앞에 둔다** — 역할·티켓 조회·상태·ignore 규칙·run-dir·내부 라운드
+    상한이 모두 board를 건드리기 전에 끝난다. 뒤에 두면 거부된 준비가 board에 회수 불가능한
     고아 라운드를 남기고 순번 하나를 영구 소모한다(장부 행이 없어 회수 자체가 막힌다).
 
-    순서는 다섯이다 — (1) 역할·티켓·상태 판정 (2) ignore 검증과 슬롯 run-dir 확보(슬롯 전용
-    부작용) (3) 시드 렌더 (4) 짧은 board_lock 안 채번+O_EXCL 예약 (5) 슬롯 파일 laydown + PM 홈
-    장부 기록(회수의 신뢰 뿌리).
+    순서는 여섯이다 — (1) 역할·티켓·상태 판정 (1.5) 내부 라운드 상한 사전판정(T-0841 · 빠른
+    실패 — 슬롯 run-dir 을 만들기 전에 흔한/비경합 초과 요청을 끝낸다) (2) ignore 검증과 슬롯
+    run-dir 확보(슬롯 전용 부작용) (3) 시드 렌더 (4) **상태 재확인 + 역할 count 재확인 + 채번
+    +O_EXCL 예약을 하나의 board_lock 임계구역에서 최신 스냅샷으로 수행**(T-0841 F-003 — (1.5)의
+    사전판정은 신뢰 뿌리가 아니다: 두 준비가 그 사전판정을 동시에 통과해도 이 임계구역의 최신
+    재확인이 그중 하나만 통과시킨다) (5) 슬롯 파일 laydown + PM 홈 장부 기록(회수의 신뢰 뿌리).
 
-    락은 (4) 구간만 잡는다. 채번과 생성 사이가 두 준비가 같은 번호를 계산할 수 있는 유일한
-    창이고, 회수·기록 경로에는 락이 없다.
+    락은 (4) 구간만 잡는다. 재확인·채번·생성이 그 구간 안에서 한 번에 끝나는 게 두 준비가 같은
+    번호를 계산하거나 상한을 함께 넘길 수 있는 유일한 창을 닫는 방법이고, 회수·기록 경로에는
+    락이 없다.
 
     `owner_pid` 는 **호출자가 이 run 의 소유자일 때만** 준다 — 준비·실행·회수가 한 프로세스의
     try/finally 인 cross 위임이 그 경우다. 그 값이 장부에 실리면 포기(abandon) 판정이 "이 run 이
     아직 살아 있는가"를 기계 관측할 수 있다. 준비 프로세스가 곧바로 끝나고 실제 writer 가 다른
     세션인 native 위임은 이 값을 **주지 않는다**: 즉사한 준비 pid 를 표식으로 실으면 살아 있는
     run 이 죽은 것으로 읽힌다. 키 부재는 "죽음"이 아니라 "증거 없음"이다.
+
+    내부 라운드 상한(게이트별 · role 당)은 어떤 인자로도 열리지 않는다(외부 채널의
+    `--ack-rounds` 폐지와 같은 규율 — 출구는 재설계·분할뿐 · 우회 플래그가 없다).
     """
     if role not in TICKET_COPY_PREPARE_ROLES:
         raise DelegateError(f"티켓 라운드 준비 미지원 역할: {role}")
@@ -1571,6 +1649,27 @@ def prepare_ticket_copy(
         except (OSError, UnicodeError) as exc:
             raise DelegateError(f"PM 홈 티켓 읽기 실패: {source}: {exc}") from exc
 
+    tickets_dir = board.tickets_dir()
+    existing = rounds_module.load_rounds(tickets_dir, ticket, ticket_text=spec_text)
+    conf = (
+        _load_external_review()._local_config_for_repo(pm_home)
+        if role in DEFAULT_INTERNAL_ROUND_LIMITS else None
+    )
+
+    # ── 내부 라운드 상한 (T-0841) — 빠른 실패 사전판정. 신뢰 뿌리가 아니다: 최종 판정은
+    # 아래 (4) 의 board_lock 임계구역이 최신 스냅샷으로 다시 낸다(F-003). 이 사전판정은 상한을
+    # 넘은 흔한(비경합) 요청이 슬롯 run-dir 을 만들기 전에 끝나게 하는 최적화일 뿐이다.
+    if role in DEFAULT_INTERNAL_ROUND_LIMITS:
+        limit = _internal_round_limit(conf, role)
+        count = _internal_round_count(existing, role)
+        if count >= limit:
+            raise InternalRoundLimitExceeded(
+                _INTERNAL_ROUND_LIMIT_GUIDANCE.format(
+                    ticket=ticket, role=role, count=count, limit=limit,
+                    rounds=_internal_round_list(existing, role, rounds_module),
+                )
+            )
+
     # ── 예약 전 거부 판정 (board 무영향) ──────────────────────────────────
     run_id = uuid.uuid4().hex
     _assert_ticket_copy_root_ignored(cwd, ticket=ticket, run_id=run_id)
@@ -1581,10 +1680,6 @@ def prepare_ticket_copy(
             cwd, ticket, run_id, extra_parts=(TICKET_COPY_ROUNDS_DIRNAME,),
         )
 
-        tickets_dir = board.tickets_dir()
-        existing = rounds_module.load_rounds(
-            tickets_dir, ticket, ticket_text=spec_text,
-        )
         try:
             seed = _ticket_round_seed(
                 rounds_module, role, spec_text,
@@ -1599,12 +1694,46 @@ def prepare_ticket_copy(
         except rounds_module.RoundsError as exc:
             # 시드 seam 은 자기 오류형으로 거부한다(board `section-add` 가 잡는 형). 여기서
             # 되받아 이 CLI 의 오류형으로 옮긴다 — 두 진입점이 같은 규칙·같은 rc 를 낸다.
-            raise DelegateError(str(exc)) from exc
-        # ── 여기부터 board 를 건드린다 ──────────────────────────────────
-        # 예약은 락을 자기가 잡는다(진입하지 않은 컨텍스트를 넘긴다 — board_lock 은 재진입 없음).
-        board_path = rounds_module.reserve_round(
-            tickets_dir, ticket, role, content=seed, lock=board.board_lock(),
-        )
+            # 시드 seam 은 실 ticket id 를 모른다(ticket_text 만 받는다) 그래서 `<T-NNNN>`
+            # placeholder 로 처방을 낸다(T-0841 라운드 6) — 이 층은 실값을 쥐고 있으므로
+            # 여기서만 치환해 커맨드가 그대로 실행 가능하게 한다(board `section-add` 는 이
+            # 층을 거치지 않아 치환되지 않는다 — touches 밖).
+            raise DelegateError(str(exc).replace("<T-NNNN>", ticket)) from exc
+        # ── 여기부터 board 를 건드린다 (T-0841 F-003: 상태 재확인·역할 count 재확인·최종
+        # reserve 를 하나의 board_lock 임계구역에서 최신 스냅샷으로 재수행한다 — 위 (1.5)
+        # 사전판정과 이 지점 사이의 gap 이 TOCTOU 였다: 두 준비가 사전판정을 함께 통과해도
+        # 여기서 재확인하는 최신 스캔이 그중 하나만 통과시킨다) ──────────────────────
+        with board.board_lock():
+            refreshed = board.find_ticket_exact(ticket)
+            if refreshed is None:
+                raise DelegateError(f"ticket not found: {ticket}")
+            fresh_status, _fresh_source = refreshed
+            if fresh_status not in _TICKET_PREPARE_STATUSES and not (
+                fresh_status == "draft" and role == "architect"
+            ):
+                raise DelegateError(
+                    "티켓 라운드 준비는 open/claimed 또는 draft×architect만 허용: "
+                    f"{ticket} role={role} currently in {fresh_status}/"
+                )
+            if role in DEFAULT_INTERNAL_ROUND_LIMITS:
+                fresh_existing = rounds_module.load_rounds(
+                    tickets_dir, ticket, ticket_text=spec_text,
+                )
+                count = _internal_round_count(fresh_existing, role)
+                if count >= limit:
+                    raise InternalRoundLimitExceeded(
+                        _INTERNAL_ROUND_LIMIT_GUIDANCE.format(
+                            ticket=ticket, role=role, count=count, limit=limit,
+                            rounds=_internal_round_list(
+                                fresh_existing, role, rounds_module,
+                            ),
+                        )
+                    )
+            # 이 함수가 이미 board_lock 을 쥐고 있다(재진입 금지) — reserve_round 자신의
+            # `with lock:` 은 null 컨텍스트로 채워 채번+생성이 같은 임계구역 안에서 돈다.
+            board_path = rounds_module.reserve_round(
+                tickets_dir, ticket, role, content=seed, lock=contextlib.nullcontext(),
+            )
         ordinal, _role = rounds_module.parse_round_filename(board_path.name)
         board_rel = _board_relative_path(board_path, pm_home)
 
@@ -2054,6 +2183,38 @@ def abandon_ticket_copy(
         board_removed=not board_present,
         run_dir_removed=run_dir_removed,
         converged=bool(ledger_closed and run_dir_removed and board_converged),
+    )
+
+
+def _refund_gate_rejected_ticket_copy(
+    ticket_copy: TicketCopyPlan, *, cwd: Path, pm_home: Path,
+) -> None:
+    """T-0841 F-005(라운드 6) — 예약(prepare) 이후 ~ 스폰 이전 구간의 게이트가 거부하면 board
+    라운드 파일·delegate-rounds 장부 행·run-dir 세 축을 같은 프로세스가 즉시 종결한다. 새 경로를
+    만들지 않고 기존 `abandon_ticket_copy` 를 그대로 재사용한다(PM 판정 · 대안 b). `assume_dead=True`
+    — 이 run 의 `owner_pid` 는 **이 살아 있는 프로세스 자신**이라(스폰 전 거부) 생존 판정이 자기
+    자신을 "진행 중"으로 오판해 막는다; 정상 스폰 후 죽은 run 의 교차-프로세스 정리와는 다른 축이다.
+    원 거부 사유(rc·메시지)는 이 함수 호출 **전**에 이미 stderr 로 loud 하게 남는다 — 여기서는
+    환불 결과만 덧붙이고, 환불 자체가 실패해도 원 거부를 대체하지 않는다(경고만 추가·원 rc 유지).
+    """
+    try:
+        result = abandon_ticket_copy(
+            copy_path=ticket_copy.path, cwd=cwd, pm_home=pm_home, assume_dead=True,
+        )
+    except DelegateError as exc:
+        print(
+            "경고: 게이트 거부 후 ticket 예약 환불 실패 — board 라운드·run-dir 이 잔류할 수 "
+            f"있습니다. 같은 정리를 `ticket abandon --copy {ticket_copy.path} --cwd {cwd} "
+            f"{ABANDON_ASSUME_DEAD_FLAG}` 로 다시 시도하세요: {exc}",
+            file=sys.stderr,
+        )
+        return
+    print(
+        "[pm-delegate] 게이트 거부로 ticket 예약 환불: "
+        f"board_removed={str(result.board_removed).lower()} · "
+        f"run_dir_removed={str(result.run_dir_removed).lower()} · "
+        f"converged={str(result.converged).lower()} · copy={ticket_copy.path}",
+        file=sys.stderr,
     )
 
 
@@ -2722,11 +2883,21 @@ class PMReviewDelta(NamedTuple):
 
 
 class PMReviewError(DelegateError):
-    """versioned reviewer/disposition 구조 또는 상태 전이 거부."""
+    """versioned reviewer/disposition 구조 또는 상태 전이 거부.
 
-    def __init__(self, code: str, message: str) -> None:
+    `channels` 는 "pending" 코드에서만 채워지는 구조화 부가 데이터다 — 이 거부가 지목한
+    (reviewer_role, ordinal) 쌍 전체(T-0841 라운드 6). 처방 문구(`_pm_review_prescription`)가
+    문자열을 재파싱하지 않고 이 값으로 실행 가능한 `--ordinal`/`--reviewer-role` 커맨드를
+    바로 조립한다. `ticket_rounds._render_round_seed_body` 를 건너면 `str(exc)` 로 문자열화되며
+    이 구조는 사라진다 — 그 전(같은 pm_delegate.py 층)에서만 유효하다."""
+
+    def __init__(
+        self, code: str, message: str,
+        *, channels: tuple[tuple[str, int], ...] = (),
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.channels = channels
 
 
 # 판정을 못 세운 상태로 developer 라운드를 시드하면 채울 자리가 없는 라운드가 나가고, 두 단계
@@ -2738,8 +2909,24 @@ PM_REVIEW_SEED_BLOCKING_CODES: frozenset[str] = frozenset(
 )
 
 
-def _pm_review_prescription(code: str, ticket: str) -> str:
-    """판정 거부 코드별 처방 — CLI 거부와 시드 거부가 같은 문언 하나를 쓴다(복제 0)."""
+def _pm_review_prescription(
+    code: str, ticket: str, *, channels: tuple[tuple[str, int], ...] = (),
+) -> str:
+    """판정 거부 코드별 처방 — CLI 거부와 시드 거부가 같은 문언 하나를 쓴다(복제 0).
+
+    `channels` (T-0841 라운드 6)가 있으면 "pending" 처방은 거부가 지목한 채널·ordinal
+    실값으로 채널마다 실행 가능한 커맨드를 낸다 — `disposition-template` 의 `--ordinal`
+    기본값은 **그 채널의 최신 라운드**라, 거부가 지목한 라운드가 최신이 아니면(예: 그 뒤에
+    새 코드-리뷰 라운드가 열렸다) 안내대로 실행해도 "미판정 finding이 없습니다" 로 다시
+    막힌다(실측: PM 2026-08-23). 값이 없으면(다른 코드·구조 없는 옛 예외) 종전 일반 문구로
+    fail-soft 한다."""
+    if code == "pending" and channels:
+        commands = "; ".join(
+            "`python3 .project_manager/tools/pm_delegate.py review disposition-template "
+            f"--ticket {ticket} --reviewer-role {role} --ordinal {ordinal}`"
+            for role, ordinal in channels
+        )
+        return f"다음 골격을 생성해 PM이 finding ID를 전수 disposition하세요: {commands}"
     prescriptions = {
         # 라운드 축에서 판정을 막는 상태는 순번 유일성·연속성 하나뿐이라 처방도 하나다
         # 봉인·장부 시절의 문제별 처방 분기는 사라졌다.
@@ -3647,7 +3834,7 @@ def render_ticket_growth_section_seed(
                         exc.code,
                         f"판정을 세우지 못해 developer 라운드를 시드할 수 없습니다"
                         f"[{exc.code}]: {exc}\n"
-                        f"  · {_pm_review_prescription(exc.code, '<T-NNNN>')}",
+                        f"  · {_pm_review_prescription(exc.code, '<T-NNNN>', channels=exc.channels)}",
                     ) from exc
                 # 최초 구현 라운드(리뷰 라운드 없음) 등은 정상 형상이다 — verify fence 없는
                 # 골격으로 강등한다(리뷰 골격 prefill 강등과 동형).
@@ -4339,19 +4526,26 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> PMReviewDelta:
     pending = sorted(set(findings) - set(dispositions))
     pending_zero = sorted(zero_channels - accepted_zero)
     if pending or pending_zero:
-        pending_channels = sorted(
+        # 구조화 채널 좌표(T-0841 라운드 6) — 처방이 문자열을 재파싱하지 않고 이 쌍으로
+        # 실행 가능한 --ordinal/--reviewer-role 커맨드를 조립한다. 아래 사람용 문구
+        # (pending_channels) 는 이 쌍을 다시 문자열로 접어 **기존과 같은 정렬 규칙**(문자열
+        # 사전순)으로 낸다 — 관측 가능한 메시지는 바이트 그대로 보존한다.
+        pending_channel_pairs = sorted(
             {
-                f"{findings[finding_id].reviewer_role}"
-                f"[{findings[finding_id].reviewer_ordinal}]"
+                (findings[finding_id].reviewer_role, findings[finding_id].reviewer_ordinal)
                 for finding_id in pending
             }
-            | {f"{role}[{ordinal}]" for role, ordinal in pending_zero}
+            | set(pending_zero)
+        )
+        pending_channels = sorted(
+            f"{role}[{ordinal}]" for role, ordinal in pending_channel_pairs
         )
         raise PMReviewError(
             "pending",
             f"PM 미판정 finding={pending}; finding-zero 리뷰 라운드="
             f"{[f'{role}[{ordinal}]' for role, ordinal in pending_zero]}; "
             f"대상 채널={pending_channels}",
+            channels=tuple(pending_channel_pairs),
         )
     required = sorted(
         finding_id for finding_id, disposition in dispositions.items()
@@ -11663,6 +11857,10 @@ def _cmd_ticket(argv: list[str]) -> int:
             "verify_missing": list(result.verify_missing),
         }, sort_keys=True))
         return 0
+    except InternalRoundLimitExceeded as exc:
+        # 외부 채널 exit 4(EXIT_ROUND_LIMIT_EXCEEDED)와 동형 — 실행 전 거부라 slot 부작용 0.
+        print(str(exc), file=sys.stderr)
+        return _load_external_review().EXIT_ROUND_LIMIT_EXCEEDED
     except DelegateError as exc:
         print(f"오류: ticket {args.ticket_command} 실패: {exc}", file=sys.stderr)
         return 1
@@ -11786,7 +11984,7 @@ def _cmd_review(argv: list[str]) -> int:
     except PMReviewError as exc:
         print(
             f"오류: review {args.review_command} 거부[{exc.code}]: {exc}\n"
-            f"  · {_pm_review_prescription(exc.code, args.ticket)}",
+            f"  · {_pm_review_prescription(exc.code, args.ticket, channels=exc.channels)}",
             file=sys.stderr,
         )
         return 1
@@ -12425,6 +12623,13 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
                 # 증거이고, 소유자가 아닌 native 준비는 이 값을 싣지 않는다.
                 owner_pid=os.getpid(),
             )
+        except InternalRoundLimitExceeded as exc:
+            # 전용 rc(F-004) — 외부 채널 exit 4(EXIT_ROUND_LIMIT_EXCEEDED)와 동형. per-ticket
+            # cap 은 어떤 승인으로도 열리지 않는다(우회 플래그 없음).
+            return fail_loud(
+                f"오류: 위임 티켓 라운드 준비 실패: {exc}",
+                rc=_load_external_review().EXIT_ROUND_LIMIT_EXCEEDED,
+            )
         except DelegateError as exc:
             return fail_loud(f"오류: 위임 티켓 라운드 준비 실패: {exc}")
 
@@ -12460,6 +12665,9 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
             "    경로를 write 타깃으로 지목하지 않게 하세요.",
             file=sys.stderr,
         )
+        # T-0841 F-005(라운드 6) — 스폰 전 거부는 예약된 board 라운드·run-dir 을 환불한다.
+        if ticket_copy is not None:
+            _refund_gate_rejected_ticket_copy(ticket_copy, cwd=cwd_repo, pm_home=config_repo)
         return 1
 
     profile = resolved_delegate_profile(harness, model, reasoning)
@@ -12511,6 +12719,9 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
                 "오류: 시크릿 탐지는 있었지만 승인 digest를 생성하지 못했습니다 — 전송 전 차단합니다.",
                 file=sys.stderr,
             )
+            # T-0841 F-005(라운드 6) — 스폰 전 거부는 예약된 board 라운드·run-dir 을 환불한다.
+            if ticket_copy is not None:
+                _refund_gate_rejected_ticket_copy(ticket_copy, cwd=cwd_repo, pm_home=config_repo)
             return 1
         ack_matches = (
             args.secret_scan_ack is not None
@@ -12542,6 +12753,9 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
                 f"  · 재실행: {_secret_scan_retry_command(resolved, prompt_digest)}",
                 file=sys.stderr,
             )
+            # T-0841 F-005(라운드 6) — 스폰 전 거부는 예약된 board 라운드·run-dir 을 환불한다.
+            if ticket_copy is not None:
+                _refund_gate_rejected_ticket_copy(ticket_copy, cwd=cwd_repo, pm_home=config_repo)
             return 1
 
     # 기존 `--cwd` 신뢰 repo축을 파생 config_repo와 대조한다. 유효 시크릿 승인이 해소된 실행은 fallback이
@@ -12559,6 +12773,9 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         )
     except er.TargetLocalConfReadError as exc:
         print(f"오류: {exc}", file=sys.stderr)
+        # T-0841 F-005(라운드 6) — 스폰 전 거부는 예약된 board 라운드·run-dir 을 환불한다.
+        if ticket_copy is not None:
+            _refund_gate_rejected_ticket_copy(ticket_copy, cwd=cwd_repo, pm_home=config_repo)
         return 1
     if divergence is not None:
         print(
@@ -12706,6 +12923,9 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     if codex_egress_required and not args.codex_egress_escalated:
         # raw 예약 *전* 종료라 장부에도 안 남는다 — 안내가 다른 수신자를 권하면 그 대행은
         # 아무 데도 기록되지 않는다(감사 실사고가 정확히 이 경로).
+        # T-0841 F-005(라운드 6) — 스폰 전 거부는 예약된 board 라운드·run-dir 을 환불한다.
+        if ticket_copy is not None:
+            _refund_gate_rejected_ticket_copy(ticket_copy, cwd=cwd_repo, pm_home=config_repo)
         return fail_loud(codex_egress_block_message(resolved, harness, model))
 
     # env allowlist 정제 + 실행. 인프라 실패일 때만 명시 폴백을 같은 드라이버 계약으로
@@ -12741,6 +12961,9 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
             expected_confirm_evidence=internal_confirm_evidence,
         )
         if internal_budget.refused_rc is not None:
+            # T-0841 F-005(라운드 6) — 스폰 전 거부는 예약된 board 라운드·run-dir 을 환불한다.
+            if ticket_copy is not None:
+                _refund_gate_rejected_ticket_copy(ticket_copy, cwd=cwd_repo, pm_home=config_repo)
             return internal_budget.refused_rc
         internal_trace = InternalRoundTrace(internal_budget)
         try:
