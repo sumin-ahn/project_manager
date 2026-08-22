@@ -870,3 +870,136 @@ def test_v160_compound_boundary_does_not_open_a_miss_window(
     assert any(f":: {term} (" in offender for offender in offenders), (
         f"합성어 경계가 '{term}' 미탐 구멍을 냈다: {line!r} → {offenders}"
     )
+
+
+# ── T-0794: 리뷰 루프 서술 가드 (이중 채널 병행=표준 → 단일 reviewer + opt-in 추가 리뷰어) ──
+# v1.7.8 이 리뷰 루프를 reviewer 1회 → PM 판정 delta([[T-0785]]) → PM 기계 확인([[T-0786]]) 으로
+# 기계화했고, 추가 리뷰어는 `additional_reviewer_enabled` 로 켜는 opt-in 채널(기본 OFF)이다. 그런데
+# 출하 방법론·스킬 산문은 "내부 code-reviewer + 추가 리뷰어 (둘 다)"·"표준 리뷰 게이트"로 병행을
+# *표준*으로 서술해 채택자에게 켜지 않은 채널을 필수 단계로 읽혔다. "병행을 표준으로 서술"은 의미
+# 판정이 불가능하므로 관측된 표기 4종을 토큰으로 못박는다.
+#
+# 리터럴 분할: 이 가드 파일 자신이 자기 검사에 안 걸리게(_SELF 제외와 이중 방어).
+_REVIEW_LOOP_CHANNEL = "추가 " + "리뷰어"
+_REVIEW_LOOP_RETIRED = (
+    "병행해 " + _REVIEW_LOOP_CHANNEL,
+    "표준 리뷰 " + "게이트",
+    "reviewer+" + _REVIEW_LOOP_CHANNEL,
+    _REVIEW_LOOP_CHANNEL + " (둘 다)",
+)
+
+
+def _review_loop_historical(rel: str) -> bool:
+    """그 상대경로가 term-of-the-time 기록(고칠 수 없는 표면)인지 판정한다.
+
+    `_v160_shipping_surface` 의 historical 규칙과 같은 집합에 pm_import 백업을 더한다 —
+    `.pm_import_backups/<날짜>/` 는 흡수 전 스냅샷이라 log·decisions 와 같은 immutable 기록이다.
+    """
+    if rel == "CHANGELOG.md" or rel.startswith("tests/"):
+        return True
+    if rel.startswith(".pm_import_backups/"):
+        return True
+    if any(seg in rel for seg in ("/wiki/decisions/", "/wiki/log/", "/wiki/tickets/")):
+        return True
+    if "/wiki/raw/spikes/" in rel and not rel.endswith("/_template.md"):
+        return True
+    return False
+
+
+def _review_loop_surface() -> list[Path]:
+    """리뷰 루프 서술이 실제로 사는 출하 표면 전량.
+
+    `_v160_shipping_surface` 와 historical 규칙·텍스트 확장자 집합을 공유하되 어댑터 디렉터리
+    (`.claude`·`.opencode`·`.codex`·`.agents`)를 **제외하지 않는다** — 리뷰 루프 산문이 사는 자리가
+    바로 스킬·커맨드·에이전트 카드라, v1.6.0 ctx 가드처럼 어댑터를 일괄 제외하면 재유입을 못 잡는다
+    (스킬 `references/*.md`·codex `.agents/skills`·opencode `.opencode/command` 가 그 사각이었다).
+    """
+    files: list[Path] = []
+    for path in repo_owned_paths(REPO, ".", mode=OWNED):
+        if not path.is_file() or path.name == _SELF:
+            continue
+        if _review_loop_historical(path.relative_to(REPO).as_posix()):
+            continue
+        if path.suffix.lower() in _V160_TEXT_SUFFIXES:
+            files.append(path)
+    return files
+
+
+def _review_loop_offenders(files: list[Path]) -> list[str]:
+    """검사 대상에서 폐기된 리뷰 루프 표기를 줄 단위로 반환한다."""
+    offenders = []
+    for f in files:
+        for lineno, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            for retired in _REVIEW_LOOP_RETIRED:
+                if retired in line:
+                    offenders.append(
+                        f"{f.relative_to(REPO).as_posix()}:{lineno} :: {retired}"
+                    )
+    return offenders
+
+
+def test_no_retired_review_loop_phrasing_in_shipping_surface():
+    """출하 표면이 추가 리뷰어 병행을 표준 리뷰 게이트로 서술하지 않는다 (T-0794).
+
+    현행 흐름은 dev → code-reviewer 1회 → PM 판정 delta → dev fix → PM 기계 확인이고, 추가
+    리뷰어는 켠 채택자만 병행하는 opt-in 채널이다. 켜지 않은 채택자가 필수 단계로 읽으면 없는
+    게이트를 기다리거나 외부 전송 동의 없이 채널을 켠다.
+    """
+    offenders = _review_loop_offenders(_review_loop_surface())
+    assert not offenders, (
+        "폐기된 리뷰 루프 표기 잔존 — 추가 리뷰어는 opt-in(기본 OFF) 채널로 서술하라 "
+        f"(T-0794): {offenders}"
+    )
+
+
+def test_review_loop_surface_covers_every_live_channel_mention():
+    """가드 시야가 추가 리뷰어를 언급하는 live 출하 문서 전량을 덮는다 (시야==표면 독립 대조).
+
+    표면 열거를 손으로 유지하면 새 스킬·새 하네스 사본이 시야 밖에서 표기를 되살린다. 가드가
+    보는 집합과, 저장소를 독립으로 훑어 채널을 언급하는 집합을 대조해 차집합 0 을 단언한다.
+    """
+    view = {path.resolve() for path in _review_loop_surface()}
+    mentions = []
+    missed = []
+    for path in repo_owned_paths(REPO, ".", mode=OWNED):
+        if not path.is_file() or path.suffix.lower() != ".md" or path.name == _SELF:
+            continue
+        rel = path.relative_to(REPO).as_posix()
+        if _review_loop_historical(rel):
+            continue
+        if _REVIEW_LOOP_CHANNEL not in path.read_text(encoding="utf-8"):
+            continue
+        mentions.append(rel)
+        if path.resolve() not in view:
+            missed.append(rel)
+    assert mentions, (
+        "채널을 언급하는 live 문서가 0 — 스캔이 무력화됐다(판정 불능은 통과가 아니다)"
+    )
+    assert not missed, f"가드 시야 밖에서 채널을 서술하는 출하 문서: {missed}"
+
+
+@pytest.mark.parametrize("relpath", [
+    ".project_manager/wiki/pm_playbook.md",
+    ".claude/skills/pm-dev-delegate/SKILL.md",
+    ".claude/skills/pm-review/references/operational-details.md",
+    "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
+    "templates/opencode/.opencode/command/pm-dev-delegate.md",
+    "templates/claude_code/.project_manager/wiki/pm_playbook.md",
+])
+def test_review_loop_surface_includes_load_bearing_docs(relpath):
+    """표기가 실제로 잔존했던 자리(canonical·3타깃 사본·어댑터 remap)가 시야 안이다."""
+    view = {path.relative_to(REPO).as_posix() for path in _review_loop_surface()}
+    assert relpath in view
+
+
+@pytest.mark.parametrize("retired", _REVIEW_LOOP_RETIRED)
+def test_review_loop_guard_detects_each_retired_phrase(
+        retired, tmp_path, monkeypatch):
+    """폐기 표기를 하나라도 다시 넣으면 검사가 그 줄을 검출한다 (sensitivity)."""
+    doc = tmp_path / "skill.md"
+    doc.write_text(f"리뷰 루프는 {retired} 로 돌린다.\n", encoding="utf-8")
+    monkeypatch.setitem(globals(), "REPO", tmp_path)
+
+    offenders = _review_loop_offenders([doc])
+
+    assert offenders == [f"skill.md:1 :: {retired}"]

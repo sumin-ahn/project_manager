@@ -89,8 +89,10 @@ T-NNNN 의 변경을 검토하라. 변경 파일: <경로>. (code-reviewer)
 
 ⚠️ code-reviewer 프롬프트에 "`status.md`/`log/current.md` 갱신은 orchestrator 담당 — 그 누락은 developer must-fix 아님" 을 덧붙인다.
 
-**검토 루프(normal/hard):** dev → **내부 code-reviewer + 추가 리뷰어 (둘 다)** → PM finding 판정 →
-승인 delta 재작업 → PM 회귀 verify → `board.py complete`. reviewer 산출은 구현 명령이 아니라
+**검토 루프(normal/hard):** dev → code-reviewer 1회 → PM finding 판정과 승인 delta(§라운드 프로토콜
+5~6항) → dev fix → PM 기계 확인(같은 절 8항 · `pm_delegate.py rounds resolve --pm-verified`) →
+`board.py complete`. 추가 리뷰어는 기본 OFF 인 opt-in 채널이라 `additional_reviewer_enabled=true` 인
+채택자만 이 루프에 병행한다(§추가 리뷰어 교차검증). reviewer 산출은 구현 명령이 아니라
 증거·제안이다. 구현 결함은 PM이 accepted한 범위만 dev가 재작업한다. 설계 결함은 리뷰 라운드까지
 읽기 전용 입력으로 깔아 architect를 다시 투입해 재설계 라운드를 추가한 뒤 dev가 재구현한다. 2회차 이후
 reviewer는 이전 리뷰 라운드의 must-fix 해소 여부와 그 뒤 변경분을 먼저 보는 델타 리뷰를 한다.
@@ -148,9 +150,9 @@ wave 중 완료 부기는 `ticket_finish --no-pytest` + 지정 회귀 실측 근
     빈틈을 적고 종료한다. 그 라운드는 산출 있는 정상 종료이고 다음 행동은 PM 의 보강 처방 또는 architect
     재설계다. 같은 처방을 그대로 다시 보내면 같은 빈틈에서 다시 멈춘다.
 
-### 추가 리뷰어 교차검증 (표준 리뷰 게이트)
+### 추가 리뷰어 교차검증 (opt-in 채널 · 기본 OFF)
 
-내부 code-reviewer 와 **추가 리뷰어(additional reviewer)를 병행**한다. 역할 이름도 설정 키(`additional_reviewer_enabled`·`additional_reviewer.*`)도 추가 리뷰어로 통일돼 있다 — `external_review` 는 엔진 모듈 파일 이름·raw 파일 접두처럼 이미 기록된 산출물에 박힌 기계 식별자와 외부 전송 축의 이름으로만 남는다. 개칭 전 구키를 쓰는 채택자 `local.conf` 는 실행 시 안내 1줄을 받는다(마이그레이션 절차는 README).
+추가 리뷰어(additional reviewer)는 기본 OFF 인 opt-in 채널이다. `additional_reviewer_enabled=true` 로 켠 채택자만 code-reviewer 라운드에 이 채널을 병행하며, 아래 규약은 켠 경우에 적용된다. 역할 이름도 설정 키(`additional_reviewer_enabled`·`additional_reviewer.*`)도 추가 리뷰어로 통일돼 있다 — `external_review` 는 엔진 모듈 파일 이름·raw 파일 접두처럼 이미 기록된 산출물에 박힌 기계 식별자와 외부 전송 축의 이름으로만 남는다. 개칭 전 구키를 쓰는 채택자 `local.conf` 는 실행 시 안내 1줄을 받는다(마이그레이션 절차는 README).
 
 전제는 `local.conf` 의 원자적 튜플 하나다(첫 init/update 에서 **1회만** 묻는다 — 비활성이면 `--dry-run` 미리보기·`--force` 1회 강제).
 
@@ -181,12 +183,12 @@ python3 .project_manager/tools/external_review.py --resolve-gate <게이트> --f
 
 Claude Bash 도구로 아래 장시간 커맨드를 실행할 때는 호출층 `timeout: 29300000`(ms)을 반드시 명시한다. 엔진 CLI `--timeout`은 리뷰어 벽시계이고 Bash 호출층 timeout을 대신하지 않는다.
 
-- **코드 리뷰** = 내부 code-reviewer + 추가 리뷰어 교차.
+- **코드 리뷰**: code-reviewer 라운드와 같은 시점에 교차검증을 돌린다.
   ```
   python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN
   ```
   `--ticket` 이 touches 를 diff 경로로 잡고, `--adr` 이 관련 ADR 을 프롬프트에 참조로 넣는다.
-- **설계 리뷰** (ADR/spike) = 추가 리뷰어 교차. ADR/spike 문서 자체를 diff 로 보낸다.
+- **설계 리뷰** (ADR/spike): ADR/spike 문서 자체를 diff 로 보낸다.
   ```
   python3 .project_manager/tools/external_review.py --base <ref> --paths .project_manager/wiki/decisions/ ... --gate <T-NNNN|ADR-NNNN>   # 실 전송은 --gate(또는 --ticket 유도)나 명시적 --no-gate 필수
   ```

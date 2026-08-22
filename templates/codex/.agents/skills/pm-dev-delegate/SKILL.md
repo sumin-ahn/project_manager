@@ -366,8 +366,8 @@ architect도 위 native `ticket prepare` 뒤 `spawn_agent`를 호출하고 종�
 > 연속 미해소면 라운드 추가가 아니라 재설계·분할로 전환한다(내부 라운드 상한 3 — `pm_playbook.md`
 > §"라운드 프로토콜").
 
-> ⚙️ reviewer 위임과 **병행해 추가 리뷰어(additional reviewer) 교차검증**을 돌린다 (표준 리뷰 게이트):
+> ⚙️ `additional_reviewer_enabled=true` 로 추가 리뷰어(additional reviewer) 채널을 켠 채택자는
+> reviewer 위임과 같은 시점에 교차검증을 돌린다. 기본은 OFF 이고, 끈 채택자에게 이 단계는 없다:
 > `python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN`
 > (ADR 본문 정합 필요 시 `--paths` 에 **코드 경로+ADR 함께 나열** — `--paths` 는
-> `--ticket` touches 를 *대체*함). 전제
-> `additional_reviewer_enabled=true`. 상세는 `pm_playbook.md` §"검토 루프".
+> `--ticket` touches 를 *대체*함). 상세는 `pm_playbook.md` §"추가 리뷰어 교차검증".

@@ -303,6 +303,6 @@ architect도 위 native `ticket prepare` 뒤 `task`를 호출하고 종료 뒤 `
 > 연속 미해소면 라운드 추가가 아니라 재설계·분할로 전환한다(내부 라운드 상한 3 — `pm_playbook.md`
 > §"라운드 프로토콜").
 
-reviewer와 **병행해 추가 리뷰어(additional reviewer) 교차검증**을 실행한다:
+`additional_reviewer_enabled=true` 로 추가 리뷰어(additional reviewer) 채널을 켠 채택자는 reviewer 라운드와 같은 시점에 교차검증을 돌린다. 기본은 OFF 이고, 끈 채택자에게 이 단계는 없다:
 `python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN`
-ADR 본문 정합 필요 시 `--paths`에 **코드 경로+ADR을 함께 나열**한다. `--paths`는 `--ticket` touches를 대체한다. 전제: `additional_reviewer_enabled=true`. 상세: `pm_playbook.md` §"검토 루프".
+ADR 본문 정합 필요 시 `--paths`에 **코드 경로+ADR을 함께 나열**한다. `--paths`는 `--ticket` touches를 대체한다. 상세: `pm_playbook.md` §"추가 리뷰어 교차검증".
