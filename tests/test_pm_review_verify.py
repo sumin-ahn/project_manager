@@ -117,6 +117,23 @@ def _verify_block(pd, rows: list) -> str:
     )
 
 
+def _skeleton_row(pd, fid: str = "F-001") -> dict:
+    """시드 골격의 verify 행 1개(자리표시자 값 포함) — 문안의 단일 진실은 렌더다."""
+    block = pd.render_pm_review_verify_skeleton([fid])
+    payload = json.loads(
+        block.split(f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n", 1)[1].split("\n```", 1)[0]
+    )
+    return payload["verifications"][0]
+
+
+def _gap_row(pd, fid: str = "F-001", summary: str = "처방이 정하지 않은 지점") -> dict:
+    """빈틈 보고 선언 행 — 구현하지 않았음을 기계로 선언한다(태만과 구별되는 유일한 신호)."""
+    return _verify_row(
+        fid, machine_verifiable=False, command="", before="", expected=summary,
+        reason=pd.PM_REVIEW_VERIFY_GAP_REASON,
+    )
+
+
 def _developer_round_text(pd, verify_rows: list | None = None) -> str:
     body = (
         "## 구현 보충 (developer · 2026-08-21)\n\n"
@@ -195,9 +212,16 @@ def test_seed_has_no_fence_when_accepted_is_empty(pd):
     )
 
 
-def test_seed_degrades_without_fence_when_delta_is_unresolvable(pd, capsys):
-    """reviewer 라운드는 있으나 PM 미판정(pending) — 강등해 fence 없이 시드하고 경고를 낸다."""
-    r1 = _round(pd, 1, "code-reviewer", _reviewer_round_text(pd, [_finding("F-001")]))
+def test_seed_degrades_without_fence_when_review_output_is_malformed(pd, capsys):
+    """리뷰 산출이 깨진 형상(`malformed`)은 강등 유지 — fence 없이 시드하고 경고를 낸다.
+
+    거부 범위를 전 코드로 넓히면 리뷰 산출 결함이 시드까지 잠근다(T-0805 실측: 기존 테스트
+    6건 red). 거부는 판정 미기입 두 코드에 한정하고 나머지는 종전 강등이다.
+    """
+    r1 = _round(
+        pd, 1, "code-reviewer",
+        f"## 리뷰 (code-reviewer · 2026-08-22)\n\n```{pd.PM_REVIEW_BLOCK}\nnot json\n```\n",
+    )
     body = pd.render_ticket_growth_section_seed("developer", "", rounds=[r1])
     assert pd.PM_REVIEW_VERIFY_BLOCK not in body
     assert "accepted delta 를 해소할 수 없어" in capsys.readouterr().err
@@ -213,24 +237,16 @@ def test_pending_judgment_reads_only_the_round_body(pd):
     body = seed.partition("\n\n")[2]
     assert pd.ticket_round_body_is_pending("developer", body) is True
 
-    filled = (
-        body.replace('"machine_verifiable":"<true|false>"', '"machine_verifiable":true')
-        .replace(
-            '"command":"<machine_verifiable=true 면 단일 재현 커맨드, 아니면 빈 문자열>"',
-            '"command":"echo hi"',
+    # 자리표시자 문안은 렌더가 소유한다 — 여기에 리터럴로 박으면 enum·문안이 늘어난 순간
+    # replace 가 조용히 no-op 이 되고 이 테스트가 vacuous 해진다(T-0805).
+    filled = body
+    for key, placeholder in _skeleton_row(pd, "F-001").items():
+        filled = filled.replace(
+            f'"{key}":{json.dumps(placeholder, ensure_ascii=False)}',
+            f'"{key}":{json.dumps(_verify_row("F-001")[key], ensure_ascii=False)}',
         )
-        .replace('"expected":"<fix 후 관측돼야 하는 문자열>"', '"expected":"hi"')
-        .replace(
-            '"before":"<machine_verifiable=true 면 fix 전 실값, 아니면 빈 문자열>"',
-            '"before":"bye"',
-        )
-        .replace(
-            '"reason":"<machine_verifiable=false 일 때만 design-judgment|'
-            'adversarial-probing|not-reproducible, 아니면 빈 문자열>"',
-            '"reason":""',
-        )
-    )
     assert filled != body
+    assert "<" not in filled.partition(f"```{pd.PM_REVIEW_VERIFY_BLOCK}")[2]
     assert pd.ticket_round_body_is_pending("developer", filled) is False
 
     # 같은 골격을 다른 명세로 다시 지어도(다른 accepted 계산 입력) 판정은 그 본문 하나로 같다.
@@ -499,9 +515,12 @@ def test_verify_template_routes_design_axis_and_dev_declared_reasons_to_reviewer
     template = pd.pm_review_verify_template(spec, [r1, dev2])
     assert template.machine_rows == ()
     assert template.missing == ()
-    reasons = dict(template.reviewer_required)
-    assert "F-001" in reasons and "설계 축" in reasons["F-001"]
-    assert "F-002" in reasons and "design-judgment" in reasons["F-002"]
+    reasons = {
+        finding_id: (source_round, reason)
+        for finding_id, source_round, reason in template.reviewer_required
+    }
+    assert reasons["F-001"][0] == 2 and "설계 축" in reasons["F-001"][1]
+    assert reasons["F-002"][0] == 2 and "design-judgment" in reasons["F-002"][1]
 
 
 def test_verify_template_reports_missing_verify_rows(pd):
@@ -834,3 +853,415 @@ def test_two_increasing_round_confirmations_for_the_same_finding_are_accepted(pd
     )
     delta = pd.parse_pm_review_delta(spec_ok, rounds)
     assert delta.accepted == ()
+
+
+# ── T-0805: 티켓 전역 누적 5분류 · 빈틈 보고 · rc 규칙 ──────────────────
+
+def _verify_cli(pd, tmp_path, monkeypatch, spec, rounds, *, extra=()) -> int:
+    """실 board 트리(명세 파일 + 라운드 파일)에 형상을 깔고 CLI 를 그대로 돌린다."""
+    tickets_dir = tmp_path / "tickets"
+    spec_path = _materialize(pd, spec, rounds, tickets_dir, "T-0805")
+    monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: tmp_path)
+    monkeypatch.setattr(
+        pd, "_load_board_for_repo", lambda _owner: _fake_board(pd, spec_path, tickets_dir),
+    )
+    return pd.main(["review", "verify-template", "--ticket", "T-0805", *extra])
+
+
+def _confirmation_payloads(pd, rendered: str) -> list[dict]:
+    """렌더된 확인 골격의 블록 payload — 블록 수·`round` 값·대상 ID 를 값으로 읽는다."""
+    return [
+        json.loads(chunk.split("\n```", 1)[0])
+        for chunk in rendered.split(f"```{pd.PM_REVIEW_CONFIRMATION_BLOCK}\n")[1:]
+    ]
+
+
+def _fill_confirmations(pd, rendered: str, template) -> str:
+    """골격의 자리표시자만 채운다(I7 왕복) — 문안은 전부 엔진 상수에서 파생한다.
+
+    `observed` 는 렌더된 모든 행의 `expected` 를 이어 붙인 한 문자열이다. resolved 판정은
+    "expected 가 observed 안에 있는가" 뿐이라 행마다 다른 관측값을 손으로 짜 넣을 필요가 없다.
+    """
+    observed = " · ".join(row.expected for _source, row in template.machine_rows)
+    status_placeholder = "<" + "|".join(pd.PM_REVIEW_CONFIRMATION_STATES) + ">"
+    return (
+        rendered
+        .replace(f'"status":"{status_placeholder}"', '"status":"resolved"')
+        .replace('"observed":"<관측값>"', f'"observed":"{observed}"')
+    )
+
+
+def _accepted_ids(pd, spec: str, rounds) -> list[str]:
+    return [finding.id for finding, _d in pd.parse_pm_review_delta(spec, rounds).accepted]
+
+
+def _round_trip_clears(pd, spec: str, rounds, template) -> list[str]:
+    """template 이 낸 골격을 채워 명세에 붙인 뒤 남는 accepted ID(I7 · 붙여서 수용되는가)."""
+    rendered = pd.render_pm_review_verify_template(template)
+    return _accepted_ids(pd, spec + _fill_confirmations(pd, rendered, template), rounds)
+
+
+def _shape_two_findings(pd, dev_rows_by_round: dict[int, list], *, spec_tail: str = ""):
+    """reviewer round 1(F-001·F-002 accepted) + 지정한 순번의 developer 라운드들."""
+    r1 = _round(pd, 1, "code-reviewer", _reviewer_round_text(
+        pd, [_finding("F-001"), _finding("F-002")],
+    ))
+    spec = _disposition_block(pd, 1, [
+        _decision("F-001", "accepted"), _decision("F-002", "accepted"),
+    ]) + spec_tail
+    rounds = [r1] + [
+        _round(pd, ordinal, "developer", _developer_round_text(pd, rows))
+        for ordinal, rows in sorted(dev_rows_by_round.items())
+    ]
+    return spec, rounds
+
+
+def test_gap_reason_is_a_member_of_the_closed_reason_vocabulary(pd):
+    """축 1 어휘 — 새 값은 하나이고 닫힌 enum 안에 있다(새 key·새 블록·새 version 0)."""
+    assert pd.PM_REVIEW_VERIFY_GAP_REASON == "prescription-gap"
+    assert pd.PM_REVIEW_VERIFY_GAP_REASON in pd.PM_REVIEW_VERIFY_REASONS
+    assert set(pd.PM_REVIEW_VERIFY_ROW_KEYS) == {
+        "id", "machine_verifiable", "command", "expected", "before", "reason",
+    }
+    assert pd.PM_REVIEW_VERIFY_VERSION == 1
+
+
+def test_fix_scope_notice_derives_its_machine_declaration_line_from_the_enum(pd):
+    """계약 정합 — 빈틈 보고 요구 문언이 verify 상수에서 파생된다(문언 drift 0)."""
+    notice = pd.PM_REVIEW_FIX_SCOPE_NOTICE
+    assert pd.PM_REVIEW_VERIFY_GAP_REASON in notice
+    assert pd.PM_REVIEW_VERIFY_BLOCK in notice
+    assert "지우지 말고" in notice
+
+
+# ── 형상 1~4 (축 1) ─────────────────────────────────────────────────────
+
+def test_shape1_all_resolved_renders_one_block_for_every_accepted_id(
+    pd, tmp_path, monkeypatch, capsys,
+):
+    spec, rounds = _shape_two_findings(pd, {2: [
+        _verify_row("F-001"), _verify_row("F-002", command="echo hey", expected="hey"),
+    ]})
+    assert _verify_cli(pd, tmp_path, monkeypatch, spec, rounds) == 0
+    payloads = _confirmation_payloads(pd, capsys.readouterr().out)
+    assert [item["round"] for item in payloads] == [2]
+    assert {row["id"] for row in payloads[0]["confirmations"]} == {"F-001", "F-002"}
+    template = pd.pm_review_verify_template(spec, rounds)
+    assert _round_trip_clears(pd, spec, rounds, template) == []
+
+
+def test_shape2_gap_report_does_not_block_the_resolved_finding(
+    pd, tmp_path, monkeypatch, capsys,
+):
+    """T-0783 라운드 5 형상 — F-001 은 빈틈 보고, F-002 는 해소. rc=0 이고 F-002 는 확인 가능."""
+    spec, rounds = _shape_two_findings(pd, {2: [
+        _gap_row(pd, "F-001", "처방이 판정 순서를 정하지 않음"),
+        _verify_row("F-002", command="echo hey", expected="hey"),
+    ]})
+    assert _verify_cli(pd, tmp_path, monkeypatch, spec, rounds) == 0
+    captured = capsys.readouterr()
+    payloads = _confirmation_payloads(pd, captured.out)
+    assert [item["round"] for item in payloads] == [2]
+    assert [row["id"] for row in payloads[0]["confirmations"]] == ["F-002"]
+    assert "F-001" in captured.err and "선언 round=2" in captured.err
+    assert pd.PM_REVIEW_VERIFY_GAP_REASON in captured.err
+    assert "처방이 판정 순서를 정하지 않음" in captured.err
+
+    template = pd.pm_review_verify_template(spec, rounds)
+    assert [item[0] for item in template.gap] == ["F-001"]
+    assert template.missing == () and template.stale == ()
+    # I6 추적 유실 0 — 빈틈 보고 ID 는 accepted 에 남고 다음 fix delta 에 그대로 실린다.
+    assert _round_trip_clears(pd, spec, rounds, template) == ["F-001"]
+    delta = pd.parse_pm_review_delta(spec, rounds)
+    assert "### F-001" in pd.render_pm_review_delta("T-0805", delta)
+
+
+def test_shape3_all_gap_reports_render_nothing_and_still_succeed(
+    pd, tmp_path, monkeypatch, capsys,
+):
+    """붙일 것이 없어도 실패가 아니다 — 빈틈 보고로 끝난 라운드는 정상 산출이다."""
+    spec, rounds = _shape_two_findings(pd, {2: [
+        _gap_row(pd, "F-001"), _gap_row(pd, "F-002", "두 번째 빈틈"),
+    ]})
+    assert _verify_cli(pd, tmp_path, monkeypatch, spec, rounds) == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "F-001" in captured.err and "F-002" in captured.err
+    assert captured.err.count(pd.PM_REVIEW_VERIFY_GAP_REASON) == 2
+    template = pd.pm_review_verify_template(spec, rounds)
+    # 빈틈은 reviewer 확인 대기와 다른 상태다 — 한 버킷으로 접으면 PM 이 "사람이 확인하면
+    # 끝나는 것"과 "처방을 다시 내야 하는 것"을 구별할 수 없다.
+    assert [item[0] for item in template.gap] == ["F-001", "F-002"]
+    assert template.reviewer_required == ()
+
+
+def test_shape4_missing_row_is_rc1_but_the_resolved_skeleton_is_still_rendered(
+    pd, tmp_path, monkeypatch, capsys,
+):
+    """태만(행 삭제)은 rc=1 로 남되, 해소분 골격 렌더는 인질이 되지 않는다(I2)."""
+    spec, rounds = _shape_two_findings(pd, {2: [
+        _verify_row("F-002", command="echo hey", expected="hey"),
+    ]})
+    assert _verify_cli(pd, tmp_path, monkeypatch, spec, rounds) == 1
+    captured = capsys.readouterr()
+    payloads = _confirmation_payloads(pd, captured.out)
+    assert [row["id"] for row in payloads[0]["confirmations"]] == ["F-002"]
+    assert "verify 행이 없는 accepted finding" in captured.err and "F-001" in captured.err
+
+
+def test_unfilled_placeholder_row_is_treated_as_negligence_not_as_a_declaration(
+    pd, tmp_path, monkeypatch, capsys,
+):
+    """역방향 확인 (a) — 완화된 경로가 진짜 태만을 통과시키지 않는다.
+
+    시드가 프리필한 자리표시자 행을 그대로 둔 라운드는 "선언 없음"이라 rc=1 이고, 같은 라운드의
+    채워진 행은 그대로 확인 대상이다(라운드 파일은 회수 뒤 불변이라 통째 차단하면 영구 차단이다).
+    """
+    spec, rounds = _shape_two_findings(pd, {2: [
+        _skeleton_row(pd, "F-001"),
+        _verify_row("F-002", command="echo hey", expected="hey"),
+    ]})
+    assert _verify_cli(pd, tmp_path, monkeypatch, spec, rounds) == 1
+    captured = capsys.readouterr()
+    assert "F-001" in captured.err
+    payloads = _confirmation_payloads(pd, captured.out)
+    assert [row["id"] for row in payloads[0]["confirmations"]] == ["F-002"]
+
+
+def test_machine_confirmation_cannot_bind_to_an_unfilled_placeholder_row(pd):
+    """역방향 확인 (a) — 자리표시자 행을 근거로 한 기계 확인은 결속에서 막힌다."""
+    spec, rounds = _shape_two_findings(pd, {2: [_skeleton_row(pd, "F-001")]})
+    spec_bad = spec + _confirmation_block(pd, 2, [_confirmation_row("F-001")])
+    with pytest.raises(pd.PMReviewError, match="결속되지 않습니다") as caught:
+        pd.parse_pm_review_delta(spec_bad, rounds)
+    assert caught.value.code == "malformed"
+
+
+# ── 형상 5~9 (축 2 · 누적 장부) ─────────────────────────────────────────
+
+def test_shape5_split_rounds_render_one_block_per_source_round_ascending(
+    pd, tmp_path, monkeypatch, capsys,
+):
+    """T-0783 라운드 5→6 형상 — 앞 라운드의 선언이 뒤 라운드 판정에서 사라지지 않는다(I3)."""
+    spec, rounds = _shape_two_findings(pd, {
+        2: [_verify_row("F-002", command="echo hey", expected="hey")],
+        3: [_verify_row("F-001")],
+    })
+    assert _verify_cli(pd, tmp_path, monkeypatch, spec, rounds) == 0
+    payloads = _confirmation_payloads(pd, capsys.readouterr().out)
+    assert [item["round"] for item in payloads] == [2, 3]
+    assert [row["id"] for item in payloads for row in item["confirmations"]] == [
+        "F-002", "F-001",
+    ]
+    template = pd.pm_review_verify_template(spec, rounds)
+    assert _round_trip_clears(pd, spec, rounds, template) == []
+
+
+def test_shape6_confirmed_ids_leave_both_the_render_and_the_seed_alone(
+    pd, tmp_path, monkeypatch, capsys,
+):
+    """확인 기록 뒤 — 확인된 ID 는 렌더 대상 0 이고, 시드도 그 ID 를 다시 요구하지 않는다(I4)."""
+    spec, rounds = _shape_two_findings(
+        pd,
+        {2: [_verify_row("F-002", command="echo hey", expected="hey")],
+         3: [_verify_row("F-001")]},
+        spec_tail=_confirmation_block(pd, 2, [
+            _confirmation_row("F-002", command="echo hey", observed="hey"),
+        ]),
+    )
+    assert _accepted_ids(pd, spec, rounds) == ["F-001"]
+    assert _verify_cli(pd, tmp_path, monkeypatch, spec, rounds) == 0
+    payloads = _confirmation_payloads(pd, capsys.readouterr().out)
+    assert [item["round"] for item in payloads] == [3]
+    assert [row["id"] for row in payloads[0]["confirmations"]] == ["F-001"]
+
+    template = pd.pm_review_verify_template(spec, rounds)
+    assert template.seed_prefill_ids() == ()
+    seed = pd.render_ticket_growth_section_seed("developer", spec, rounds=rounds)
+    assert pd.PM_REVIEW_VERIFY_BLOCK not in seed   # 손대지 말라고 한 항목을 다시 열지 않는다
+    assert _round_trip_clears(pd, spec, rounds, template) == []
+
+
+def test_shape7_reviewer_only_row_carries_forward_into_a_later_round(pd):
+    """reviewer 확인 전용 선언은 다음 라운드 판정에서 태만으로 뒤집히지 않는다."""
+    spec, rounds = _shape_two_findings(pd, {
+        2: [_verify_row(
+            "F-001", machine_verifiable=False, command="", before="",
+            expected="사람 판단 필요", reason="design-judgment",
+        )],
+        3: [_verify_row("F-002", command="echo hey", expected="hey")],
+    })
+    template = pd.pm_review_verify_template(spec, rounds)
+    assert template.missing == () and template.stale == ()
+    assert [(item[0], item[1]) for item in template.reviewer_required] == [("F-001", 2)]
+    assert [source for source, _row in template.machine_rows] == [3]
+
+
+def test_shape8_gap_row_carries_forward_when_the_next_round_is_silent(
+    pd, tmp_path, monkeypatch, capsys,
+):
+    """빈틈 행 이월 — 이번 라운드가 그 ID 에 무활동이어도 상태는 gap 으로 유지된다(rc=0)."""
+    spec, rounds = _shape_two_findings(pd, {
+        2: [_gap_row(pd, "F-001", "처방 빈틈 그대로"),
+            _verify_row("F-002", command="echo hey", expected="hey")],
+        3: [_verify_row("F-002", command="echo hey2", expected="hey2")],
+    })
+    assert _verify_cli(pd, tmp_path, monkeypatch, spec, rounds) == 0
+    captured = capsys.readouterr()
+    assert "F-001" in captured.err and "선언 round=2" in captured.err
+    template = pd.pm_review_verify_template(spec, rounds)
+    assert [(item[0], item[1]) for item in template.gap] == [("F-001", 2)]
+    assert [source for source, _row in template.machine_rows] == [3]   # 뒤 행이 앞 행을 이긴다
+
+
+def test_unfilled_seed_row_in_a_later_round_buries_the_earlier_gap_row(
+    pd, tmp_path, monkeypatch, capsys,
+):
+    """형상 8 의 대조 — 시드가 심은 자리표시자 행이 실제로 있으면 이월이 아니라 태만이다(rc=1).
+
+    행 자체가 없는 조용한 라운드(형상 8)와 입력이 갈리는 지점은 그 행의 유무 하나다. 두 형상이
+    같은 답을 내면 빈틈 보고와 태만의 구별이 사라진다.
+    """
+    spec, rounds = _shape_two_findings(pd, {
+        2: [_gap_row(pd, "F-001", "처방 빈틈 그대로"),
+            _verify_row("F-002", command="echo hey", expected="hey")],
+        3: [_skeleton_row(pd, "F-001"),
+            _verify_row("F-002", command="echo hey2", expected="hey2")],
+    })
+    assert _verify_cli(pd, tmp_path, monkeypatch, spec, rounds) == 1
+    captured = capsys.readouterr()
+    assert "verify 행이 없는 accepted finding" in captured.err
+    assert "빈틈 보고" not in captured.err          # 앞 라운드 선언은 더 이상 최신값이 아니다
+    template = pd.pm_review_verify_template(spec, rounds)
+    assert template.missing == ("F-001",) and template.gap == ()
+    # 같은 라운드에서 채워진 ID 의 확인은 그대로 살아 있다(부분 확인 인질 금지).
+    assert [source for source, _row in template.machine_rows] == [3]
+    assert template.seed_prefill_ids() == ("F-001",)
+
+
+def test_filled_row_wins_over_a_leftover_placeholder_in_the_same_round(pd):
+    """한 라운드에 자리표시자와 채워진 행이 같은 ID 로 함께 있으면 채워진 쪽이 그 라운드의 관측이다."""
+    spec, rounds = _shape_two_findings(pd, {
+        2: [_gap_row(pd, "F-001", "처방 빈틈 그대로"),
+            _verify_row("F-002", command="echo hey", expected="hey")],
+        3: [_skeleton_row(pd, "F-001"), _verify_row("F-001")],
+    })
+    template = pd.pm_review_verify_template(spec, rounds)
+    assert template.missing == () and template.gap == ()
+    assert [source for source, _row in template.machine_rows] == [2, 3]
+
+
+def test_pristine_pending_round_does_not_bury_an_earlier_gap_row(pd):
+    """역방향 — pristine pending 라운드는 관측이 아니다(자리표시자 행이 있어도 이월을 지우지 않는다).
+
+    산출이 아직 없는 예약본까지 tombstone 으로 읽으면, 라운드를 잡아 두기만 해도 앞 라운드의
+    빈틈 보고가 태만으로 뒤집힌다.
+    """
+    spec, rounds = _shape_two_findings(pd, {
+        2: [_gap_row(pd, "F-001", "처방 빈틈 그대로"),
+            _verify_row("F-002", command="echo hey", expected="hey")],
+    })
+    seeded = pd._load_ticket_rounds().Round(
+        ordinal=3, role="developer", path=Path("03-developer.md"),
+        text="## 구현 보충 (developer · 2026-08-22)\n\n"
+             + pd._render_developer_round_seed_body(["F-001"]),
+        pending=True,
+    )
+    template = pd.pm_review_verify_template(spec, [*rounds, seeded])
+    assert [(item[0], item[1]) for item in template.gap] == [("F-001", 2)]
+    assert template.missing == ()
+    assert [source for source, _row in template.machine_rows] == [2]
+
+
+def test_shape9_row_past_the_confirmation_cursor_is_stale_and_rc1(
+    pd, tmp_path, monkeypatch, capsys,
+):
+    """확인 커서를 지난 선언은 rc=1(재선언 필요) — template 이 delta 가 거부할 골격을 내지 않는다."""
+    spec, rounds = _shape_two_findings(
+        pd,
+        {2: [_verify_row("F-001"),
+             _verify_row("F-002", command="echo hey", expected="hey")],
+         3: [_verify_row("F-002", command="echo hey2", expected="hey2")]},
+        spec_tail=_confirmation_block(pd, 2, [
+            _confirmation_row("F-001", "unresolved", observed="bye"),
+        ]),
+    )
+    assert _verify_cli(pd, tmp_path, monkeypatch, spec, rounds) == 1
+    captured = capsys.readouterr()
+    assert "확인 창을 지난 verify 행" in captured.err and "F-001" in captured.err
+    template = pd.pm_review_verify_template(spec, rounds)
+    assert [(item[0], item[1], item[2]) for item in template.stale] == [("F-001", 2, 2)]
+    assert template.missing == ()      # rc=1 의 사유는 stale 하나다(태만과 갈린다)
+    # 다른 ID 골격은 그대로 렌더되고, 그 골격은 붙이면 수용된다(왕복 유지).
+    payloads = _confirmation_payloads(pd, captured.out)
+    assert [item["round"] for item in payloads] == [3]
+    assert _round_trip_clears(pd, spec, rounds, template) == ["F-001"]
+    # 시드는 stale ID 를 다시 요구한다(재선언 경로).
+    assert template.seed_prefill_ids() == ("F-001",)
+
+
+def test_explicit_round_option_replays_the_cumulative_view_at_that_ordinal(pd):
+    """`--round N` 은 그 순번 **시점까지의** 누적이다 — 뒤 라운드 선언은 보지 않는다."""
+    spec, rounds = _shape_two_findings(pd, {
+        2: [_verify_row("F-002", command="echo hey", expected="hey")],
+        3: [_verify_row("F-001")],
+    })
+    at_two = pd.pm_review_verify_template(spec, rounds, round_ordinal=2)
+    assert at_two.missing == ("F-001",)
+    assert [source for source, _row in at_two.machine_rows] == [2]
+    at_three = pd.pm_review_verify_template(spec, rounds, round_ordinal=3)
+    assert at_three.missing == ()
+
+
+def test_pending_developer_round_is_not_part_of_the_cumulative_view(pd):
+    """산출 없는 라운드(자리표시자 골격)는 스캔 대상이 아니다 — 판정이 통째로 터지지 않는다."""
+    spec, rounds = _shape_two_findings(pd, {2: [
+        _verify_row("F-001"), _verify_row("F-002", command="echo hey", expected="hey"),
+    ]})
+    seeded = pd._load_ticket_rounds().Round(
+        ordinal=3, role="developer", path=Path("03-developer.md"),
+        text="## 구현 보충 (developer · 2026-08-22)\n\n"
+             + pd._render_developer_round_seed_body(["F-001", "F-002"]),
+        pending=True,
+    )
+    template = pd.pm_review_verify_template(spec, [*rounds, seeded])
+    assert template.missing == () and template.stale == ()
+    assert [source for source, _row in template.machine_rows] == [2, 2]
+
+
+# ── 표면 정합 · 소급 파싱 ───────────────────────────────────────────────
+
+def test_harvest_display_and_verify_template_consume_one_classifier(pd):
+    """I4 파리티 — harvest 표시면의 `verify_missing` 과 판정면의 `missing` 이 같은 값이다."""
+    shapes = [
+        _shape_two_findings(pd, {2: [_verify_row("F-001"), _verify_row(
+            "F-002", command="echo hey", expected="hey")]}),
+        _shape_two_findings(pd, {2: [_gap_row(pd, "F-001"), _verify_row(
+            "F-002", command="echo hey", expected="hey")]}),
+        _shape_two_findings(pd, {2: [_verify_row(
+            "F-002", command="echo hey", expected="hey")]}),
+        _shape_two_findings(pd, {2: [_skeleton_row(pd, "F-001"), _skeleton_row(pd, "F-002")]}),
+    ]
+    for spec, rounds in shapes:
+        template = pd.pm_review_verify_template(spec, rounds)
+        assert pd._pm_review_verify_missing_ids(spec, rounds) == list(template.missing)
+
+
+def test_pre_change_verify_and_confirmation_bytes_still_parse(pd):
+    """I9 소급 파싱 — 이 변경 전 형식의 블록이 바뀐 엔진에서 그대로 판정된다(구 bytes 리터럴)."""
+    r1 = _round(pd, 1, "code-reviewer", _reviewer_round_text(pd, [_finding("F-001")]))
+    legacy_verify = (
+        '```pm-review-verify-v1\n'
+        '{"version":1,"verifications":[{"id":"F-001","machine_verifiable":true,'
+        '"command":"pytest tests/test_x.py -q","expected":"2 passed","before":"1 failed",'
+        '"reason":""}]}\n```\n'
+    )
+    dev2 = _round(
+        pd, 2, "developer", "## 구현 보충 (developer · 2026-08-21)\n\n" + legacy_verify,
+    )
+    spec = _disposition_block(pd, 1, [_decision("F-001", "accepted")]) + (
+        '```pm-review-confirmation-v1\n'
+        '{"version":1,"round":2,"confirmations":[{"id":"F-001","status":"resolved",'
+        '"command":"pytest tests/test_x.py -q","observed":"2 passed, 218 deselected"}]}\n```\n'
+    )
+    assert pd.parse_pm_review_delta(spec, [r1, dev2]).accepted == ()
