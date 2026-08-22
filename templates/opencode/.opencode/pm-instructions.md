@@ -80,7 +80,7 @@ task tool 인자:
 
 ### 2.3 위임 전 사전 조건
 
-- ticket 이미 claim (세션 정체성 canonical `<repo>_<N>` · 솔로 M=1 은 생략) · depends_on 모두 done · touches 명시 · DoD verify-able.
+- ticket 이미 claim (세션 정체성 canonical `<repo>_<N>`) · depends_on 모두 done · touches 명시 · DoD verify-able.
 - **컨텍스트 예산** — touches 가 대형 파일·광범위 읽기를 요구하면 dev 가 truncation 위험.
   본문이 정확한 함수/라인·패턴 reference 로 읽기를 좁히는지 확인 (안 되면 위임 전 본문 보강·분할).
 - **병렬 위임 시 touches disjoint** — 동시 위임할 ticket 들의 touches 가 완전히 겹치지

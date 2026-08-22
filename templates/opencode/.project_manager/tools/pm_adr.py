@@ -238,7 +238,7 @@ def validate_slug(slug: str) -> None:
 def next_adr_number(decisions_dir: Path = DECISIONS_DIR) -> int:
     """decisions/ 의 `NNNN-*.md` 를 스캔해 다음 번호를 반환한다.
 
-    decisions/ 부재(신규 clone·솔로)면 1. 파일이 있으면 max+1. `.stem` 앞 숫자 토큰만 본다
+    decisions/ 부재(신규 clone)면 1. 파일이 있으면 max+1. `.stem` 앞 숫자 토큰만 본다
     (README.md·_template.md 등 비-숫자 파일 자연 제외)."""
     if not decisions_dir.is_dir():
         return 1

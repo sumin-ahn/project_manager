@@ -28,6 +28,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from _home_slot import HOME_SESSION, HOME_SLOT, seed_home_slot
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -42,12 +43,16 @@ def _run_handoff(inst, **kw):
     """핸드오프 실행 — 승인 게이트에 정식 승인값을 실어 통과시킨다.
 
     이 모듈의 축은 dirty-tree 게이트이지 사용자-명시 승인 게이트가 아니다(그 축은
-    ``tests/test_pm_handoff_user_ack.py``가 소유한다). 승인 대상값은 task > 슬롯 이름 >
-    legacy solo sentinel 순으로 정해진다.
+    ``tests/test_pm_handoff_user_ack.py``가 소유한다). 승인 대상값은 task > 그 슬롯의 장부
+    정체성 순으로 정해진다 — 무-task 실행은 `_make_handoff` 가 깐 홈 슬롯 행을 쓴다.
     """
+    if kw.get("task") is None:
+        kw.setdefault("worktree_slot", HOME_SLOT)
     if "user_ack" not in kw:
         slot = kw.get("worktree_slot")
-        kw["user_ack"] = kw.get("task") or (slot.rsplit("/", 1)[-1] if slot else "solo")
+        kw["user_ack"] = kw.get("task") or (
+            HOME_SESSION if slot == HOME_SLOT else slot.rsplit("/", 1)[-1]
+        )
     return inst.run(**kw)
 
 def _load(name: str = "pm_handoff"):
@@ -186,6 +191,8 @@ def _make_handoff(hf, tmp_path: Path, monkeypatch, *, git_runner, pool=None,
     대신 task 서술 공간(`.local/tasks/<task>/pm_state.md`)에 실제 state 를 깔아 준다.
     """
     monkeypatch.setattr(hf, "REPO", tmp_path)
+    # 등록된 홈 형상 — 정체성(승인 대상값·회귀 cwd)이 이 장부 행에서 온다.
+    seed_home_slot(tmp_path)
     log_file = tmp_path / "current.md"
     playbook_file = tmp_path / "pm_playbook.md"
     log_file.write_text("# log\n", encoding="utf-8")
@@ -833,7 +840,7 @@ def test_upsert_dirty_ack_line_appends_when_no_anchor(hf):
 
 
 _CRLF_ENTRY = (
-    "## [2026-08-09] handoff | PM 5차 → 다음 PM 세션\r\n"
+    f"## [2026-08-09] handoff | PM 5차 ({HOME_SESSION}) → 다음 PM 세션\r\n"
     "\r\n"
     "- 이 세션 박제 entries: (이 세션 박제 entry 없음)\r\n"
     "- 메타 학습: 없음\r\n"

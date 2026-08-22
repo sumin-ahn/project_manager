@@ -16,6 +16,32 @@
   진입점 소견 0줄), 손편집한 채택자는 `pm-config sync-adapter-config --accept .codex/hooks.json`
   1커맨드로 받는다. 가드 **동작**은 바뀌지 않는다 — 옛 matcher 판정이 디스패처 registry 로 값
   그대로 옮겨 왔다(T-0777·T-0806 합산 1회).
+- **BREAKING — 솔로 모드 폐지. PM 홈이 장부의 첫 슬롯 행(`<repo>_1`)으로 등록된다.** multi-PM 이 단일
+  운영 방식이고 슬롯 1개짜리 홈은 그 안의 N=1 경우다. "lease 행이 없다 = 솔로 형상"으로 읽던 추론과
+  그 위의 솔로 전용 폴백(정체성 자동 해소·회귀/livegate cwd·핸드오프 경로·완료 회귀 트리)이 전부
+  제거됐다. 마이그레이션은 `pm-config update`(pm-update) 흡수 말미에 1회 자동 실행되며 멱등하다
+  (장부 byte 동일). 신규 채택은 `pm-config init`(pm-import 경유 포함)이 그 자리에서 등록한다.
+  등록 repo 가 2개 이상이면 어느 repo 의 홈인지 기계가 정할 수 없어 등록하지 않고 안내만 낸다 —
+  그 홈은 종전대로 `--repo/--slot` 명시로 운영한다.
+- **BREAKING — 등록 전(lease 행 0개) 홈의 귀속 조작은 fail-loud 한다.** 조용한 폴백이 없으므로
+  claim·complete·핸드오프·livegate 는 `[중단] 세션 미해소` 로 멈춘다. 처방은 `pm-update` 1회(또는
+  `--repo <repo> --slot <N>` 명시)다.
+- **BREAKING — `pm_state.md` 위치 이동.** git-tracked `wiki/pm_state.md` 를 쓰던 홈은 첫 핸드오프에서
+  내용이 `.project_manager/.local/slots/<repo>_1/pm_state.md`(git-ignored)로 옮겨진다. 원본은 이동
+  후 남지 않으므로, 그 경로를 참조하던 채택자 스크립트·문서는 슬롯 경로로 갱신한다.
+- **BREAKING — handoff log 헤더에 슬롯 태그가 붙는다.** 무태그 `## [날짜] handoff | PM N차 → 다음 PM
+  세션` 대신 `PM N차 (<repo>_1)` 로 적힌다. 기존 무태그 entry 는 그대로 읽히며(소유 판정은 태그 없는
+  과거 entry 를 현재 슬롯 것으로 본다) 새로 쓰는 entry 만 태그를 갖는다.
+- **BREAKING — `--user-ack` 토큰이 `solo` 에서 `<repo>_1` 로 바뀐다.** 스킬은 값을 엔진 출력에서 받아
+  쓰므로 계약 문구는 그대로이고, `--user-ack solo` 를 하드코딩한 스크립트만 갱신이 필요하다.
+  bare 핸드오프는 슬롯 축으로 승격돼 `--session-seq`·`--wave-summary` 를 종전대로 요구한다.
+
+### Removed
+
+- 솔로 형상 추론·솔로 전용 분기 일체 — "등록 repo 1개 && lease 행 0개 → `<repo>_1`" 유도층
+  (`identity_args.single_registration_session`·`lease_row_count`), livegate/회귀 cwd 의 PM 홈 폴백,
+  핸드오프의 legacy `wiki/pm_state.md` 결속, `pm_log` 의 legacy pm_state 정체성 층, 솔로 전용
+  상수·메시지 (T-0793).
 
 ### Changed
 

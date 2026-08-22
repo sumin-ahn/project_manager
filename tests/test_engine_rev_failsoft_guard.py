@@ -1037,7 +1037,11 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   (`pm_bootstrap._session_slot_identity`) 형제 로드 자체가 사라졌다 — 흡수 규칙이 느슨해진 게
     #   아니라 그 사본을 읽을 이유가 없어진 것이고(같은 장부를 두 번 해석하던 중복), 남은 세션-entry
     #   경계들은 종전대로 마킹된 skew 를 re-raise 한다.
-    assert len(report.boundaries) == 230, "propagation sweep boundary ratchet changed"
+    # 231 = 230 − 1(등록 유도가 사라지며 `pm_config._registered_repos_for_session` 소멸)
+    #   + 2(엔진 흡수 말미 홈 슬롯 등록 `pm_update.register_home_slot` 의 dest 사본 로드·호출
+    #   두 경계). 등록은 파일 동기가 이미 끝난 뒤의 부수 이행이라 실패를 안내 한 줄로 접되,
+    #   마킹된 사본 skew 는 두 경계 모두 그대로 re-raise 한다(동기 성공이 skew 를 덮지 않는다).
+    assert len(report.boundaries) == 231, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

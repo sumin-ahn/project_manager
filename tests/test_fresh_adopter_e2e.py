@@ -373,14 +373,18 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
         "(반쪽 파리티·T-0433). lifecycle 이 안 밟는 상태-dir 도 채택자는 즉시 쓴다(blocked 이행).")
 
 
-# ── bare 귀속 조작(단일-등록 유도) — T-0792 ───────────────────────────────
+# ── bare 귀속 조작(홈 슬롯 행) ────────────────────────────────────────────
 # 위 lifecycle 은 `claim tid --repo pilot --slot 1`(명시)로 돈다 — 카드가 지시하는 **bare**
-# 형태(`board.py claim T-NNNN`)를 기계층이 한 번도 안 밟는 구조적 사각이었다. fresh 솔로
-# 채택자(단일 등록·lease 장부 없음)에서 카드 형태 그대로 첫 시도가 rc0 임을 여기서 못박는다.
+# 형태(`board.py claim T-NNNN`)를 기계층이 한 번도 안 밟는 구조적 사각이었다. fresh 채택자는
+# import 가 홈 자신을 첫 슬롯 행으로 등록하므로, 카드 형태 그대로 첫 시도가 그 행의 정체성으로
+# rc0 임을 여기서 못박는다.
 
 
-def test_fresh_adopter_bare_claim_resolves_via_single_registration(pm_import, tmp_path, monkeypatch):
-    """fresh 솔로 채택자(등록 repo 1개·lease 장부 부재)에서 명시 플래그 없는 bare `claim` 이 rc0.
+def test_fresh_adopter_bare_claim_resolves_via_home_slot_row(pm_import, tmp_path, monkeypatch):
+    """fresh 채택자(등록 repo 1개)에서 명시 플래그 없는 bare `claim` 이 홈 슬롯 행으로 rc0.
+
+    import 가 홈 자신을 첫 슬롯 행(`slot="."`·`session=<repo>_1`)으로 등록하므로 정체성은
+    장부 행에서 온다 — "행이 없다"에서 유도하지 않는다.
 
     env `PM_SESSION_NAME`/`CLAUDE_SESSION_NAME` 누출을 monkeypatch 로 제거하고 실행한다(부모
     pytest 프로세스가 우연히 값을 들고 있어도 이 서브프로세스가 그걸 상속해 오검출하지 않게 —
@@ -393,8 +397,12 @@ def test_fresh_adopter_bare_claim_resolves_via_single_registration(pm_import, tm
         ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual"]
     )
     assert rc == 0, f"import 실패 (rc={rc})"
-    assert not (dest / ".project_manager" / ".local" / "worktree-leases.json").exists(), (
-        "fresh import 는 lease 장부를 만들지 않아야 한다(baseline 재현 전제)")
+    ledger = dest / ".project_manager" / ".local" / "worktree-leases.json"
+    assert ledger.exists(), "fresh import 가 홈 슬롯 행을 등록해야 한다(등록 지점)"
+    rows = json.loads(ledger.read_text(encoding="utf-8"))["leases"]
+    assert [(row["slot"], row["session"], row["state"]) for row in rows] == [
+        (".", f"{dest.name}_1", "leased")
+    ], f"홈 행이 canonical 값이 아니다: {rows}"
 
     new = _board(dest, "new", "bare claim probe", "--touches", "README.md")
     assert new.returncode == 0, f"`board.py new` 실패: {new.stderr}"
@@ -404,19 +412,21 @@ def test_fresh_adopter_bare_claim_resolves_via_single_registration(pm_import, tm
     assert m, f"발행된 ticket 을 list --all 에서 못 찾음:\n{listing.stdout}"
     tid = m.group(0)
 
-    # 카드 형태 그대로 — 명시 --repo/--slot/--session 없이 bare claim (T-0792 재현 명령).
+    # 카드 형태 그대로 — 명시 --repo/--slot 없이 bare claim.
     claim = _board(dest, "claim", tid)
     assert claim.returncode == 0, (
-        f"카드 형태 bare `board.py claim {tid}` 실패(rc={claim.returncode}) — 단일-등록 유도 "
-        f"층 회귀(T-0792).\n--- stdout ---\n{claim.stdout}\n--- stderr ---\n{claim.stderr}"
+        f"카드 형태 bare `board.py claim {tid}` 실패(rc={claim.returncode}) — 홈 슬롯 행 "
+        f"해소 회귀.\n--- stdout ---\n{claim.stdout}\n--- stderr ---\n{claim.stderr}"
     )
+    assert f"{dest.name}_1" in claim.stdout, (
+        f"claim 귀속이 홈 행의 session 값이 아니다:\n{claim.stdout}")
 
 
-def test_fresh_adopter_bare_claim_stays_unresolved_when_pool_rows_exist(
+def test_fresh_adopter_bare_claim_stays_unresolved_when_a_second_slot_is_leased(
         pm_import, tmp_path, monkeypatch):
-    """역가드: 등록 repo 1개라도 lease 장부에 행이(idle 포함) 있으면(풀 보유 홈 시뮬) bare claim 은
-    여전히 fail-loud — 단일-등록 유도가 "장부 부재/0행" 좁은 조건을 넘어 느슨해지지 않았음을
-    fresh 채택자 실 import 산출물에서 못박는다(adopter#0/multi-PM 형상 축소판)."""
+    """역가드: 활성 슬롯이 2개면(홈 행 + 타 슬롯) bare claim 은 fail-loud — 해소가 "활성 lease
+    정확히 1개" 를 넘어 느슨해지지 않았음을 fresh 채택자 실 import 산출물에서 못박는다
+    (adopter#0/multi-PM 형상 축소판)."""
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     dest = tmp_path / "adopter-bare-claim-pool"
@@ -432,22 +442,20 @@ def test_fresh_adopter_bare_claim_stays_unresolved_when_pool_rows_exist(
     assert m, f"발행된 ticket 을 list --all 에서 못 찾음:\n{listing.stdout}"
     tid = m.group(0)
 
-    # 풀 형상 시뮬 — 다른 세션(타 슬롯)의 idle 행 1개를 장부에 직접 심는다(장부 writer 규약과
-    # 무관하게 "행이 하나라도 있으면"만 검증하면 되므로 최소 스키마 직접 write).
+    # 풀 형상 시뮬 — 등록된 홈 행 옆에 다른 세션(타 슬롯)의 leased 행 1개를 장부에 직접 심는다
+    # (장부 writer 규약과 무관하게 "활성 슬롯 2개" 만 검증하면 되므로 최소 스키마 직접 write).
     leases_file = dest / ".project_manager" / ".local" / "worktree-leases.json"
-    leases_file.parent.mkdir(parents=True, exist_ok=True)
-    leases_file.write_text(
-        json.dumps({"leases": [
-            {"slot": "work/adopter-bare-claim-pool_2", "repo": dest.name,
-             "session": "adopter-bare-claim-pool_2", "state": "idle"},
-        ]}),
-        encoding="utf-8",
+    ledger = json.loads(leases_file.read_text(encoding="utf-8"))
+    ledger["leases"].append(
+        {"slot": f"work/{dest.name}_2", "repo": dest.name,
+         "session": f"{dest.name}_2", "state": "leased"}
     )
+    leases_file.write_text(json.dumps(ledger), encoding="utf-8")
 
     claim = _board(dest, "claim", tid)
     assert claim.returncode != 0, (
-        f"풀 행(idle) 존재에도 bare claim 이 rc0 — 단일-등록 유도가 좁은 조건(장부 0행)을 넘어 "
-        f"느슨해졌다(과결속).\n--- stdout ---\n{claim.stdout}")
+        f"활성 슬롯 2개인데 bare claim 이 rc0 — 해소가 '정확히 1개' 조건을 넘어 느슨해졌다"
+        f"(과결속).\n--- stdout ---\n{claim.stdout}")
     assert "세션 미해소" in claim.stderr, (
         f"차단 사유가 세션 미해소 fail-loud 안내가 아님:\n{claim.stderr}")
 

@@ -184,7 +184,7 @@ LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored)
 # ── board root (graceful 탐지) ───────────────────────────────
 # board(tickets+areas)는 `.project_manager/board/`(submodule)로 분리될 수 있다 — 그러면
 # git 형상이 design(superproject)/board(submodule) 둘로 갈려 PM 운영 commit 이 코드 git 을
-# 오염하지 않는다. 분리되지 않은 legacy(솔로·미마이그 adopter)에선 board 가
+# 오염하지 않는다. 분리되지 않은 legacy(미마이그 adopter)에선 board 가
 # wiki/ 안에 그대로 산다. 아래 board_root() 가 *실측*으로 둘을 가른다 — board/tickets 가
 # 실제 dir 이면 board/ 루트, 아니면 wiki/ 루트(legacy). install_pre_push_hook 의 git-path
 # 탐지 패턴 동형(존재할 때만 새 경로·없으면 현 위치).
@@ -223,7 +223,7 @@ def board_root() -> Path:
     `.project_manager/board/tickets` 가 실 디렉토리면 board 가 submodule 로 분리된
     형상 → board/ 루트. 아니면 board 가 아직 wiki/ 안에 있는 legacy 형상 →
     wiki/ 루트(현 위치·무변경). install_pre_push_hook 의 디렉토리-탐지와 동형 — *존재할
-    때만* 새 경로로 갈리고, 없으면 현재 위치로 100% 폴백한다(솔로·미마이그 무영향).
+    때만* 새 경로로 갈리고, 없으면 현재 위치로 100% 폴백한다(미마이그 무영향).
     """
     if _READ_BOARD_ROOT_OVERRIDE is not None:
         return _READ_BOARD_ROOT_OVERRIDE
@@ -317,7 +317,7 @@ IDEA_STATUS_DIRS: tuple[str, ...] = ("open", "promoted", "killed")
 # 분류 상수(`_MUTATION_SUBCOMMANDS`)로 dispatch 에서 한 번 판정한다 — 신규 mutation subcommand
 # 추가 시 누락되는 클래스는 메타 가드 테스트(`test_board_worktree_misanchor_guard`·분류 상수 vs
 # 실 등록 subcommand 전수 대조)가 잡는다. 읽기-경로·anchor-keyed sidecar(regression·livegate —
-# worktree 에서 도는 게 설계 의도·`.local` sidecar 만 씀)·솔로/standalone(worktree 형상 아님)은
+# worktree 에서 도는 게 설계 의도·`.local` sidecar 만 씀)·standalone(worktree 형상 아님)은
 # 무영향(감지 실패 시 현행 동작·오탐 0·fail-soft). `_worktree_cwd`/`_auto_slot`(②에서 ①찾기·
 # 회귀 cwd 해소)의 *역방향*: 여기선 ①에서 실행된 걸 잡는다.
 #
@@ -1954,7 +1954,7 @@ def _print_read_anchor(
 
 def _git_rev_parse(anchor: Path, *args: str, runner: Any = subprocess.run) -> str | None:
     """`git -C <anchor> rev-parse <args>` 결과(strip)를 반환. git 아님/오류/빈 값이면 None
-    (fail-soft — 솔로/standalone·비-git 트리 무영향). `runner` 는 hermetic 테스트 주입 seam."""
+    (fail-soft — standalone·비-git 트리 무영향). `runner` 는 hermetic 테스트 주입 seam."""
     try:
         r = runner(["git", "-C", str(anchor), "rev-parse", *args],
                    capture_output=True, text=True, encoding="utf-8",
@@ -1972,7 +1972,7 @@ def _is_linked_worktree(anchor: Path, *, runner: Any = subprocess.run) -> bool:
 
     linked worktree 는 `git rev-parse --git-dir` 가 `<common>/worktrees/<name>` 을 가리켜
     `--git-common-dir`(=`<common>`)와 **다르다**. 일반 checkout·PM 홈은 둘 다 `.git` 로 동일
-    (→ False). git 아님/오류면 False(fail-soft — 솔로/standalone 무영향).
+    (→ False). git 아님/오류면 False(fail-soft — standalone 무영향).
     """
     git_dir = _git_rev_parse(anchor, "--git-dir", runner=runner)
     common_dir = _git_rev_parse(anchor, "--git-common-dir", runner=runner)
@@ -2035,13 +2035,13 @@ def _registers_worktree(pm_home: Path, anchor: Path, *, runner: Any = subprocess
 
 def _pm_home_worktree_misanchor(anchor: Path, *, runner: Any = subprocess.run) -> Path | None:
     """`anchor`(도구 자기-앵커=REPO)가 **다른 PM 홈의 등록 worktree** 안이면 그 PM 홈 경로를,
-    아니면 None(fail-soft·솔로/standalone 무영향·오탐 0).
+    아니면 None(fail-soft·standalone 무영향·오탐 0).
 
     3중 conjunction (오탐 0 지향·ticket §인터페이스 recipe):
       1. anchor 자신이 *실 board* 를 소유하지 않음 — 소유하면 정당(자체 board 사용이 있는
          가상 채택자도 무영향). (공개 제품 worktree)은 코드 전용·board 미소유라 항상 통과
          
-      2. anchor 가 linked git worktree — 솔로/standalone(일반 checkout·PM 홈)은 여기서 탈락.
+      2. anchor 가 linked git worktree — standalone(일반 checkout·PM 홈)은 여기서 탈락.
       3. 상위 PM 홈 식별 + **등록 확인** — anchor 조상 중 *실 board* 를 가진 최근접 디렉토리를
          찾고, 그 홈이 `_registers_worktree`(work/<name> 관례 또는 git-common-dir 하위)로 anchor 를
          실제 자기 worktree 로 두는지 확인. 등록 안 하면 None(무관 중첩 오탐 방지). 못 찾아도 None.
@@ -2189,7 +2189,7 @@ def _resolve_read_board(
 ) -> _ReadBoardResolution:
     """read-only board를 uniform 규칙으로 해소한다.
 
-    자기 앵커가 실제 board를 가지면 그대로 쓴다. linked worktree가 아니면 legacy/solo
+    자기 앵커가 실제 board를 가지면 그대로 쓴다. linked worktree가 아니면 legacy/비분리
     graceful 경로를 그대로 보존한다. board 없는 linked worktree만 PM 홈 후보의 strict
     lease 장부를 조회하며, 정확히 한 홈이 슬롯을 등록할 때만 그 board를 연다.
     """
@@ -2530,6 +2530,16 @@ except Exception as exc:  # noqa: BLE001 — 직접 CLI는 import 단계 skew도
     raise
 
 
+# 귀속 쓰기(claim·migrate·init owner)가 세션을 해소하지 못했을 때의 중단 메시지. 모호(활성
+# 슬롯 ≥2)와 미등록(행 0)을 한 문장으로 안내한다 — 조용한 폴백이 없으므로 처방이 메시지에
+# 있어야 한다.
+UNREGISTERED_SESSION_ABORT = (
+    "[중단] 세션 미해소 — 활성 슬롯이 여럿이거나 바인딩이 없다. 귀속 조작은 "
+    "`--repo <repo> --slot <N>` 로 세션을 명시하라 (예: `--repo project_manager --slot 1`). "
+    + identity_args.UNREGISTERED_HOME_REMEDY
+)
+
+
 def session_name(override: str | None = None, *, required: bool = False) -> str | None:
     """세션 식별자 해소 — count-based 유도:
 
@@ -2538,23 +2548,17 @@ def session_name(override: str | None = None, *, required: bool = False) -> str 
           > $PM_SESSION_NAME (env·harness 무관 엔진 식별자)
           > $CLAUDE_SESSION_NAME (env·deprecated alias·silent back-compat)
           > lease 장부 state=="leased" 행이 정확히 1개면 그 session   (단일-lease 유도)
-          > areas.md 등록 repo 가 정확히 1개 && lease 장부에 행이 **하나도 없으면**
-            (상태 무관 0행) `f"{repo}_1"`                            (단일-등록 유도)
           > None
 
     `PM_SESSION_NAME` 이 정식 이름(엔진 변수·하니스 무관)·`CLAUDE_SESSION_NAME` 은 구 alias
     (둘 다면 PM 승·조용히 동작·안내는 문서만·`--json` 출력 오염 방지).
 
     **per-clone 저장 쪽지 폴백은 없다.** slot 종속 값이 프로젝트 공용 per-clone conf(`local.conf
-    session=`)에 있던 것이 범위 오류였다 — multi-PM 이 default 이고 solo 는 N=1
-    부분집합이라 "이 클론이 solo 홈이다"를 이 프로세스만 아는 파일에 스스로 적어두는 쪽지를
+    session=`)에 있던 것이 범위 오류였다 — 슬롯 1개는 N=1 부분집합일 뿐이라
+    "이 클론이 어떤 홈이다"를 이 프로세스만 아는 파일에 스스로 적어두는 쪽지를
     두지 않는다. 그 키가 conf 에 남아 있어도 읽지 않는다(모르는 키로 표면화될 뿐 동작 불변).
-    세션은 **공유 장부로부터의 유도**(lease 단일-행 · areas.md 단일-등록 && lease 0행) 또는
-    **명시**(env·`--repo/--slot`)로만 해소한다 — 마지막 층도 저장이 아니라 매 호출 재유도다
-    (areas.md 등록 1행 && lease 장부 0행이면 항상 같은 값 · 아무것도 기록하지 않는다).
-    등록 repo 가 2개 이상이거나 lease 장부에 행이(상태 무관) 하나라도 있으면 이 층은 발화하지
-    않고 종전대로 미해소로 떨어진다 — "장부 부재 = solo 홈"이 아니라 "등록 1 && 장부 0"이라는
-    좁은 조건이다(풀 형상·idle 슬롯만 있는 홈은 불변).
+    세션은 **공유 장부로부터의 유도**(lease 단일-행) 또는 **명시**(env·`--repo/--slot`)로만
+    해소한다 — 어느 층도 저장하지 않고 매 호출 재유도한다.
 
     `required=True`(귀속 쓰기: claim·migrate·init owner 기본값)에서 미해소(None)면 fail-loud —
     `--repo <repo> --slot <N>` 명시를 안내하고 `sys.exit` 한다(silent 오귀속 금지). `required=False`
@@ -2564,19 +2568,12 @@ def session_name(override: str | None = None, *, required: bool = False) -> str 
 
     저장측(worktree_pool._default_session)과 매칭측(여기)이 어긋나면 per-slot test_cmd·claim
     소유권이 미스되므로 세 모듈(board.session_name·worktree_pool._default_
-    session·pm_config._default_session)을 **공유 술어**(`identity_args.
-    single_registration_session`)로 통일한다(tail 만 용처별 상이 — F-002·리뷰 라운드 03 PM
-    재비준). 격리 실측(F-002 재현)에서 이 층이 공유 술어 없이 board 에만 있으면, bare claim 이
-    `claimed_by` 에 `<repo>_1` 을 저장한 뒤 무명시 첫 worktree 생성이 `<host>-<pid>` 로
-    lease.session 을 저장해 상위 단일-lease 층이 그 값으로 갈아치우는 바람에 방금 만든 claim 이
-    "mine" 필터에서 사라졌다 — "발화 창에 저장 대상이 없다"는 이전 판단은 이 실측으로 반증됐다.
+    session·pm_config._default_session)이 같은 우선순위를 공유한다(tail 만 용처별 상이).
 
-    이 층은 장부가 **구조적으로 확인된** 0행(부재 또는 정상 파싱된 빈 배열)일 때만 발화한다 —
-    파일이 존재하나 읽기 실패·JSON 파손·스키마 불일치인 **손상** 장부는 `identity_args.
-    lease_row_count` 가 `None` 을 돌려주어(F-001·리뷰 라운드 03 must-fix) 이 술어가 스스로
-    미발화한다. "확인된 0행"과 "행 수를 모름(손상)"을 접으면, 실제로 풀 행을 보유했던 홈도
-    장부가 손상되는 순간 `<repo>_1` 로 오해소돼 silent 오귀속이 난다(재현: 손상 JSON 장부 →
-    구현 전 `session_name(required=True)` 가 `'solo_1'` 을 내 `cmd_claim` rc=0 오귀속).
+    장부에 행이 하나도 없으면 이 홈은 **아직 슬롯으로 등록되지 않은 것**이고 해소는 미해소로
+    떨어진다 — "행이 없다"에서 세션 이름을 유도하지 않는다. 그 유도는 실제로 행을 보유했던
+    홈이 장부 손상으로 0행처럼 보이는 순간 silent 오귀속이 됐고, 등록 자체를 장부 행으로
+    옮기면서 유도할 대상이 사라졌다.
     """
     if override:
         return override
@@ -2586,17 +2583,9 @@ def session_name(override: str | None = None, *, required: bool = False) -> str 
     leased = identity_args.leased_sessions(LEASES_FILE)
     if len(leased) == 1:
         return leased[0]
-    # leased 0(무바인딩) 또는 ≥2(모호) → 단일-등록 유도 시도(공유 술어 — F-002). 손상 장부는
-    # identity_args.lease_row_count 가 None 을 내 이 술어가 스스로 미발화한다(F-001).
-    derived = identity_args.single_registration_session(registered_repos(), LEASES_FILE)
-    if derived:
-        return derived
-    # per-clone 저장 쪽지 폴백 없음(위 두 유도 모두 실패 → 미해소).
+    # leased 0(미등록) 또는 ≥2(모호) → 미해소. 유도 폴백 없음.
     if required:
-        sys.exit(
-            "[중단] 세션 미해소 — 활성 슬롯이 여럿이거나 바인딩이 없다. 귀속 조작은 "
-            "`--repo <repo> --slot <N>` 로 세션을 명시하라 (예: `--repo project_manager --slot 1`)."
-        )
+        sys.exit(UNREGISTERED_SESSION_ABORT)
     return None
 
 
@@ -2636,7 +2625,7 @@ def user_name(override: str | None = None) -> str | None:
 
     `pm`(슬롯)이 *어느 PM 컨텍스트*인지(=`session_name()`)와 직교하는 **누가**(사람) 차원이다
     multi-user 보드 공유에서 `created_by`(provenance)·`claimed_by`(assignee)·
-    areas `area_owner` 의 user 토큰을 푼다. solo(N=1·M=1)는 보통 `local.conf user=` 미설정 →
+    areas `area_owner` 의 user 토큰을 푼다. 단일 사용자(M=1)는 보통 `local.conf user=` 미설정 →
     `git config user.email` 로 폴백(commit author 와 동일 식별자)·그마저 없으면 None(graceful —
     user 미상 허용·fail-soft·기존 슬롯-only 동작 무변경).
     """
@@ -2814,7 +2803,7 @@ def _repo_from_session(session: str) -> str | None:
     끝의 `_<숫자>` 마디를 슬롯 번호로 떼고 나머지를 repo 로
     잡는다(`rpartition('_')` — 마지막 `_` 만 분리) — repo 명이 `_` 를 포함해도(예
     `project_manager_1` → repo `project_manager`·`a_2_3` → `a_2`) 정확히 갈린다. 끝
-    마디가 숫자가 아니거나(솔로 커스텀 세션명 `pm`·`my-session`·`foo_bar`) repo 부분이
+    마디가 숫자가 아니거나(커스텀 세션명 `pm`·`my-session`·`foo_bar`) repo 부분이
     비면(`_1`) `<repo>_<N>` 형태가 아니므로 None (유도 skip → id_prefix 가 다음 층으로).
 
     **값은 장부가 준다**: 이름 형태로 "슬롯 축인가"만 가르고 실제 repo/번호는
@@ -2844,7 +2833,7 @@ def _prefix_from_session(session: str | None = None) -> str | None:
     prefix 를 돌려준다 — per-repo prefix 의 단일 진실은 areas.md 칼럼이다. 다음은
     모두 None → id_prefix 가 다음 층(count-based)으로 폴백:
       - 세션 미해소(None·모호 M>1·비바인딩) — `session_name()` 이 None(required=False라 fail-loud 아님).
-      - 세션명이 `<repo>_<N>` 형태 아님(솔로 커스텀 세션명) — `_repo_from_session` None.
+      - 세션명이 `<repo>_<N>` 형태 아님(커스텀 세션명) — `_repo_from_session` None.
       - 그 repo 가 areas.md 에 미등록(또는 prefix 칼럼 빈 값·areas.md 부재).
 
     `session` 명시는 M>1 슬롯 순회(`_regression_run_slot`→`_test_cmd`)가 슬롯별로
@@ -3083,7 +3072,7 @@ def _repo_base(repo: str) -> str | None:
     매칭한다(repo add 가 `repo=name·prefix=name` 으로 등록하므로 repo==prefix 가 보통).
 
     None 폴백(worktree add 가 현행 bare HEAD 동작·회귀 0):
-      - areas.md 부재(솔로) — `_parse_areas()` 가 ([],[]).
+      - areas.md 부재 — `_parse_areas()` 가 ([],[]).
       - 그 repo 행이 없음(미등록).
       - `base` 칼럼 자체가 없는 구 레지스트리(헤더에 base 없음 → 행 dict 에 base 키 없음).
       - `base` 칼럼이 빈 값(부분 등록).
@@ -3108,7 +3097,7 @@ def _areas_git_url(repo: str) -> str | None:
     결정론적).
 
     None 폴백(호출자 cmd_repo_add 가 fail-loud 또는 `--git` 명시 요구로 전환):
-      - areas.md 부재(솔로) — `_parse_areas()` 가 ([],[]).
+      - areas.md 부재 — `_parse_areas()` 가 ([],[]).
       - 그 repo 행이 없음(미등록).
       - `git` 칼럼 자체가 없는 구 레지스트리(헤더에 git 없음 → 행 dict 에 git 키 없음).
       - `git` 칼럼이 빈 값(부분 등록).
@@ -3129,7 +3118,7 @@ def _repo_protected(repo: str) -> list[str]:
     **default 폴백 = `DEFAULT_PROTECTED`(main/master/develop)** (`_repo_base` 의 None 폴백과
     다름 — 보호는 *안전 기본값이 있어야* 한다·미지정 repo 도 main 을 막는다). 다음 모두
     default 로 떨어진다:
-      - areas.md 부재(솔로) — `_parse_areas()` 가 ([],[]).
+      - areas.md 부재 — `_parse_areas()` 가 ([],[]).
       - 그 repo 행이 없음(미등록).
       - `protected` 칼럼 자체가 없는 구 레지스트리(헤더에 protected 없음 → 행 dict 에 키 없음).
       - `protected` 칼럼이 빈 값(부분 등록).
@@ -3153,7 +3142,7 @@ def _repo_area_owner(repo: str) -> str | None:
     (repo add 가 `repo=name` 으로 등록).
 
     None 폴백(현행 동작·회귀 0 — `--mine` 풀 판정이 그 area 를 비소유로 처리):
-      - areas.md 부재(솔로) — `_parse_areas()` 가 ([],[]).
+      - areas.md 부재 — `_parse_areas()` 가 ([],[]).
       - 그 repo 행이 없음(미등록).
       - `area_owner` 칼럼 자체가 없는 구 레지스트리(헤더에 area_owner 없음 → 행 dict 에 키 없음).
       - `area_owner` 칼럼이 빈 값(부분 등록).
@@ -3171,7 +3160,7 @@ def _repo_area_owner(repo: str) -> str | None:
 #   (b) 내 claim — `claimed_by` 의 *user* == 내 user (새 형태) ∨ `claimed_by` == 내 슬롯
 #       (legacy 슬롯-only·user 차원 없는 claim). 상태 무관(연속성).
 # graceful degrade(핵심): user 미해소(None)이거나 보드에 area_owner 가 운영 중이지
-# 않으면(미마이그레이션 채택자·솔로) (a)=전체 open 으로 떨어진다(빈 보드 금지·plain list 처럼).
+# 않으면(미마이그레이션 채택자) (a)=전체 open 으로 떨어진다(빈 보드 금지·plain list 처럼).
 # `cmd_list` 가 `_area_owner_in_use()`(areas.md 전역 1회 스캔)로 (a) 범위를 정한다 — per-user
 # 2축 분기(`_owns_any_area`+`area_filter`)를 전역 플래그 1개로 단순화(동반·사용자 결정
 # 2026-06-26: 데이터 정합은 `board migrate-identity` 가 책임·런타임 폴백은 최소).
@@ -3421,11 +3410,11 @@ def _ticket_area_owner(tid: str) -> str | None:
     경우 *그 repo 의 첫 행* area_owner 를 돌려줘 잘못된 소유자가 나온다. prefix 로 이미 정확한 행을
     잡았으니 그 행에서 바로 읽는다(이중 스캔도 제거).
 
-    **no-prefix(솔로 self-host) 폴백 (sole-area)**: 솔로 self-host(
+    **no-prefix(단일 self-host) 폴백 (sole-area)**: 단일 self-host(
     prefix-불요)는 티켓이 `T-NNNN`(prefix 없음)이라 `_ticket_prefix` None 이다. no-prefix 티켓 ⟹
-    솔로 단일-repo(id_prefix None) ⟹ areas registry 의 *단일 area* 가 그 티켓의 area 다 — prefix
-    매핑은 multi-repo 메커니즘이므로 솔로엔 sole-area 폴백이 맞다. areas 에 area 가 **정확히 1개**면
-    그 단일 area 의 area_owner 를 돌려준다(migration 이 area_owner 를 채운 솔로 보드에서 `--mine`
+    단일-repo(id_prefix None) ⟹ areas registry 의 *단일 area* 가 그 티켓의 area 다 — prefix
+    매핑은 multi-repo 메커니즘이므로 단일-repo 엔 sole-area 폴백이 맞다. areas 에 area 가 **정확히 1개**면
+    그 단일 area 의 area_owner 를 돌려준다(migration 이 area_owner 를 채운 단일-repo 보드에서 `--mine`
     (a) 가 no-prefix open 티켓을 잡게). area 가 여러 개면(multi-repo 인데 no-prefix 티켓 = 모순적/
     희귀) 모호하므로 None 유지(기존 동작). prefix 가 *있는* 티켓은 이 폴백을 안 타고 기존 prefix
     경로 그대로(multi-repo 정합·무회귀).
@@ -3449,14 +3438,14 @@ def _area_owner_in_use() -> bool:
     구성돼 있을 때만* 의미가 있다. 이건 **전역**(per-user 아님) 1회 판정이다 — areas.md 전체를
     한 번 스캔해 `area_owner` 칼럼이 어디든 채워져 있으면 True. 채워져 있으면 area_owner 파티션이
     운영 중(마이그레이션됨·multi-user)이라 (a) 를 area_owner==me 로 좁히고, 비어 있으면(미마이그레이션
-    채택자·솔로) (a) 를 전체 open 으로 degrade 한다(빈 보드 금지·plain list 처럼).
+    채택자) (a) 를 전체 open 으로 degrade 한다(빈 보드 금지·plain list 처럼).
 
     이전 per-user `_owns_any_area(my_user)`(내 소유 area ≥1 인가)를 대체한다 — 데이터 정합은
     마이그레이션 도구(`board migrate-identity`)가 책임지고, 런타임 폴백은 **전역 플래그
     하나**로 최소화한다. area_owner 가 운영 중인데 *내* area 가 0개면
     (a) 는 자연히 빈다 — 그건 회귀가 아니라 '내 area 의 open 이 없음'이라는 올바른 결과다.
 
-    areas.md 부재(솔로)·모든 area_owner 빈 값이면 False. ≥1 채워짐이면 True.
+    areas.md 부재·모든 area_owner 빈 값이면 False. ≥1 채워짐이면 True.
     """
     _header, rows = _parse_areas()
     return any((row.get("area_owner") or "").strip() for row in rows)
@@ -3467,11 +3456,11 @@ def _distinct_area_owners() -> int:
 
     `_area_owner_in_use`(채워졌나 bool)와 달리 **다중성**을 센다 — `multi_user` 신호의 두 번째
     축이다. `_distinct_ticket_users`(티켓 귀속만 셈)는 다중-owner 보드라도 claim 이 전부 legacy
-    슬롯-only(user 토큰 0)면 ≤1 로 떨어져 그 보드를 solo 로 오판한다(→ legacy 슬롯-only 포함 경로가
+    슬롯-only(user 토큰 0)면 ≤1 로 떨어져 그 보드를 단일 사용자로 오판한다(→ legacy 슬롯-only 포함 경로가
     발동해 `--slot N` 이 타 area 의 legacy `<repo>_N` 을 suffix 매칭으로 끌어오는 누출).
     areas 에 area_owner 가 2명 이상이면 티켓 user 토큰이 비어도 multi-user 보드다 — 그
-    다중성을 여기서 세어 `multi_user = distinct ticket-user >1 OR distinct area_owner >1` 로 solo
-    정의를 완결한다. areas.md 부재/전부 빈 값이면 0(솔로 신호 보존·회귀 0).
+    다중성을 여기서 세어 `multi_user = distinct ticket-user >1 OR distinct area_owner >1` 로
+    단일 사용자 정의를 완결한다. areas.md 부재/전부 빈 값이면 0(단일 사용자 신호 보존·회귀 0).
     """
     _header, rows = _parse_areas()
     return len({owner for row in rows if (owner := (row.get("area_owner") or "").strip())})
@@ -3502,7 +3491,7 @@ def _created_by_user(created_by: str | None) -> str | None:
     항상-존재 소유자를 살려야 유출을 없앤다.
     `<user>/<slot>` 은 마지막 `/` 분리로 user 를 뽑고, 빈/None 은 None(미상). 드물게 `/` 없는 슬롯-only
     created_by(user 미상 생성)를 user 로 오인할 수 있으나 — 그런 보드는 다중사용자 신호가 안 서면
-    solo degrade 라 무해하고, 서면 strict-exclude 라 안전하다(회귀 0).
+    단일 사용자 degrade 라 무해하고, 서면 strict-exclude 라 안전하다(회귀 0).
     """
     if created_by is None:
         return None
@@ -3575,7 +3564,7 @@ def _ticket_owner(fm: dict, area_owner_in_use: bool) -> str | None:
       - area_owner 파티션이 운영 중(`area_owner_in_use`)이면 그 티켓 area 의 `area_owner`
         (`_ticket_area_owner`)를 1차로 쓰고, 미운영/미해소(경계-교차·미등록 area·미마이그 채택자)면
       - `created_by` 의 user(`_created_by_user`·항상-존재 폴백)로 떨어진다.
-    둘 다 미상이면 None — 호출부(`_ticket_is_mine`)가 solo=degrade / multi=strict 로 가른다.
+    둘 다 미상이면 None — 호출부(`_ticket_is_mine`)가 단일 사용자=degrade / multi=strict 로 가른다.
     미해소 read 유출을 없앤다([[prefer-data-migration-over-fallback]]).
     """
     tid = fm.get("id") or ""
@@ -3587,7 +3576,7 @@ def _distinct_ticket_users() -> int:
     """보드 전체 티켓의 `created_by`/`claimed_by` 에서 해소되는 *distinct user* 수.
 
     **데이터-유도 다중사용자 신호**다(config 플래그 아님) — 세션 뷰 격리(`_ticket_is_mine`)가 소유
-    미해소 open 을 solo(≤1)면 all-open degrade(회귀 0), 다중(≥2)이면 strict-exclude 로 가르는 게이트다.
+    미해소 open 을 단일 사용자(≤1)면 all-open degrade(회귀 0), 다중(≥2)이면 strict-exclude 로 가르는 게이트다.
     전 status 디렉토리를 1회 스캔해 `created_by`(→`_created_by_user`)·`claimed_by`(→`_claimed_by_user`)의
     user 토큰을 집합에 모아 크기를 센다 — 슬롯-only claimed_by·미상은 집합에 안 든다(graceful). 깨진
     티켓은 신호 산정에서 skip(fail-soft·크래시 0). areas 의 area_owner 가 아니라 *티켓* 귀속만 세는 건
@@ -3669,7 +3658,7 @@ def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
     claim) ∪ (내 소유 open). 타 사용자의 claim·미claim open 은 **어떤 필터 뷰에도 안 나온다** —
     전체는 `list --all` 전용(기존 무필터 무인자 `list` 의 이관). querying identity(`my_user`)는 항상 **현재 사용자**(cmd_list 가
     `user_name()` 해소)다. degrade("전체 open=mine")는
-    **solo(distinct user ≤1·`multi_user` False)에서만** 허용한다.
+    **단일 사용자(distinct user ≤1·`multi_user` False)에서만** 허용한다.
 
     (b) 내 claim — 상태 무관 연속성 (user-first). `claimed_by` 의 user 토큰 유무로 가른다:
       - **user-qualified**(`_claimed_by_user(cb)` non-None·`<user>/<slot>`): 내 것 iff `cb_user ==
@@ -3677,16 +3666,16 @@ def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
         ∩ 그 슬롯(또는 그 repo 의 내 슬롯 전체)*(타 슬롯의 내 claim 은 slot 뷰서 제외·`--mine`
         엔 나옴). **비제약 뷰**(`--mine`)면 user 만(전 슬롯). 타 사용자 claim(user 불일치)·my_user
         미해소(귀속 불가)는 제외 — 남의 user-claim 을 slot 번호로 끌어오는 누출 0.
-      - **legacy 슬롯-only**(`cb_user is None`·user 토큰 없음): **진짜 solo(distinct user ≤1·
+      - **legacy 슬롯-only**(`cb_user is None`·user 토큰 없음): **진짜 단일 사용자(distinct user ≤1·
         `not multi_user`)에서만** `_slot_matches`(내 슬롯)로 포함한다. 게이트가 `my_user is None` 이
-        아니라 `not multi_user` 인 건 `user_name()` 이 git email 폴백으로 solo 도 my_user 를 해소할
-        수 있어(흔함) — my_user proxy 면 그 solo 의 자기 슬롯 legacy claim 을 잘못 숨긴다.
+        아니라 `not multi_user` 인 건 `user_name()` 이 git email 폴백으로 단일 사용자도 my_user 를
+        해소할 수 있어(흔함) — my_user proxy 면 그 보드의 자기 슬롯 legacy claim 을 잘못 숨긴다.
         multi_user 면 legacy 는 ambiguous → strict-exclude(migrate-identity backfill).
     (a) 내 소유 open — status==open 한정. `owner = _ticket_owner(fm, area_owner_in_use)`
         (area_owner ?? created_by.user):
       - my_user·owner 둘 다 해소 → strict `owner == my_user`(유출 0·유일 포함 규칙).
       - 미해소(my_user None ∨ owner None) + `multi_user` → `return False`(strict-exclude).
-      - 미해소 + solo(¬multi_user) → `return True`(all-open degrade 보존·빈 보드 금지·회귀 0).
+      - 미해소 + 단일 사용자(¬multi_user) → `return True`(all-open degrade 보존·빈 보드 금지·회귀 0).
     open 은 미claim 이라 슬롯이 없다 — slot-scoped 뷰에서도 (a) 는 슬롯 무관 backlog(`--mine` 과
     동일 풀)로 두고 슬롯으로 좁히지 않는다.
     """
@@ -3701,10 +3690,10 @@ def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
                     not slot_scoped or _slot_matches(cb, my_slot, mode=slot_mode)):
                 return True
         elif not multi_user and _slot_matches(cb, my_slot, mode=slot_mode):
-            # legacy 슬롯-only claim(user 토큰 없음) — **진짜 solo(distinct user ≤1·not multi_user)**
+            # legacy 슬롯-only claim(user 토큰 없음) — **진짜 단일 사용자(distinct user ≤1·not multi_user)**
             # 에서만 slot 매칭으로 포함. 게이트가 `my_user is None` 이 아니라 `not multi_user` 인 건
-            # `user_name()` 이 git email 폴백으로 solo 도 my_user 를 해소할 수 있어(흔함) my_user
-            # proxy 면 그 solo 의 자기 슬롯 legacy claim 을 잘못 숨기기 때문이다. multi_user 면
+            # `user_name()` 이 git email 폴백으로 단일 사용자도 my_user 를 해소할 수 있어(흔함)
+            # my_user proxy 면 그 보드의 자기 슬롯 legacy claim 을 잘못 숨기기 때문이다. multi_user 면
             # legacy 는 ambiguous → strict-exclude(migrate-identity backfill).
             return True
     # (a) 내 소유의 open.
@@ -3714,7 +3703,7 @@ def _ticket_is_mine(status: str, fm: dict, my_user: str | None,
             return owner == my_user       # 소유 해소 → strict(유출 0)
         if multi_user:
             return False                  # 다중사용자 + 미해소 → strict-exclude
-        return True                       # solo → all-open degrade 보존(회귀 0)
+        return True                       # 단일 사용자 → all-open degrade 보존(회귀 0)
     return False
 
 
@@ -3732,16 +3721,16 @@ def _in_default_view(status: str, fm: dict, my_user: str | None,
         `_slot_matches` exact 로 session 을 맞춘다. user-qualified 값은 각각 `_created_by_user` /
         `_claimed_by_user` 로 user 를 해소해 `my_user` 와도 strict 일치해야 한다.
       - **user 미해소 또는 legacy user 토큰 부재**: 다중사용자(`multi_user`)면 모호한 귀속을
-        strict-exclude하고, solo 면 session-only 로 degrade한다. claim 분기는 의도적으로
-        `_ticket_is_mine` 보다 관대하다. solo에서 `my_user` 만 미해소된 user-qualified claim은
+        strict-exclude하고, 단일 사용자면 session-only 로 degrade한다. claim 분기는 의도적으로
+        `_ticket_is_mine` 보다 관대하다. 단일 사용자에서 `my_user` 만 미해소된 user-qualified claim은
         기본 뷰에 보이지만 `--mine`에서는 제외된다. 조회 정체성을 잠시 못 구했다는 이유로 자기
         세션 티켓을 숨기지 않기 위한 보호이며, 다중사용자에서는 이 완화를 허용하지 않는다.
-      - **무바인딩/솔로**(`my_session` None): user-단위 폴백 = `--mine`(내 소유 open + 내 claim·
-        전 슬롯). solo=subset·특례 아님 — N=1 이면 user 스트림=세션 스트림이라 등가([[solo-is-
-        subset-of-multipm]]). `_ticket_is_mine`(slot_scoped=False)를 그대로 상속한다.
+      - **무바인딩**(`my_session` None): user-단위 폴백 = `--mine`(내 소유 open + 내 claim·
+        전 슬롯). N=1 은 부분집합·특례 아님 — user 스트림=세션 스트림이라 등가다.
+        `_ticket_is_mine`(slot_scoped=False)를 그대로 상속한다.
     """
     if not my_session:
-        # 무바인딩/솔로 — user-단위 폴백(--mine 동형·전 슬롯). open 소유·claim 판정은 단일
+        # 무바인딩 — user-단위 폴백(--mine 동형·전 슬롯). open 소유·claim 판정은 단일
         # predicate 재사용(point-patch 금지). my_slot="" 은 slot 매칭 미발동(무바인딩=슬롯 없음).
         return _ticket_is_mine(status, fm, my_user, "", area_owner_in_use,
                                multi_user, slot_mode="exact", slot_scoped=False)
@@ -3758,7 +3747,7 @@ def _in_default_view(status: str, fm: dict, my_user: str | None,
             return created_user == my_user
         return not multi_user
     # 비-open(claimed/blocked/done) — claim session AND user. `_claimed_by_user` 가 None 인
-    # legacy 슬롯-only와 my_user 미해소는 multi-user strict-exclude / solo session-only degrade.
+    # legacy 슬롯-only와 my_user 미해소는 multi-user strict-exclude / 단일 사용자 session-only degrade.
     claimed_by = fm.get("claimed_by") or ""
     if not _slot_matches(claimed_by, my_session, mode="exact"):
         return False
@@ -4551,8 +4540,8 @@ def _configure_board_submodule() -> bool:
     PM 운영 commit 으로 전진해도 design 의 `git status`/`git diff` 가 그 gitlink drift 를 숨겨
     routine `git add -A` 가 board 포인터 bump 를 *우발 stage* 하지 않는다(board↔design 누출 0).
 
-    fail-soft: git 바이너리 부재·git repo 아님·submodule 미분리(`.../board/.git` 없음·솔로/
-    legacy)면 아무 것도 하지 않고 False 반환(솔로·미마이그 adopter 100% 무영향). 멱등:
+    fail-soft: git 바이너리 부재·git repo 아님·submodule 미분리(`.../board/.git` 없음·
+    legacy)면 아무 것도 하지 않고 False 반환(미마이그 adopter 100% 무영향). 멱등:
     `git config` 는 같은 키를 덮어쓰므로 재실행 안전. 반환 True = 설정 적용.
 
     config 키 = `submodule.<.gitmodules-path>.ignore`. board
@@ -4561,7 +4550,7 @@ def _configure_board_submodule() -> bool:
     """
     board_git = REPO / ".project_manager" / "board" / ".git"
     if not board_git.exists():
-        return False  # submodule 미분리(솔로/legacy) — no-op
+        return False  # submodule 미분리(legacy) — no-op
     # `.gitmodules` 에서 이 board path 에 대응하는 submodule 서브섹션 *이름*을 찾는다.
     # 출력 예: `submodule.<name>.path .project_manager/board` — 표준은 name == path.
     name = _board_submodule_name()
@@ -4909,12 +4898,12 @@ def _ensure_board_gitattributes() -> bool:
     untracked·staged·unstaged·삭제 WIP 면 loud 하게 알리고 쓰지 않는다. append 는
     `file_lock.append_atomic`(O_APPEND) — 동시 writer 가 서로를 덮지 않는다.
 
-    fail-soft: board 미분리(legacy·솔로)·areas 가 이 git 밖·IO 실패면 아무 것도 하지 않고 False.
+    fail-soft: board 미분리(legacy)·areas 가 이 git 밖·IO 실패면 아무 것도 하지 않고 False.
     반환 True = 이번 호출이 보강했다.
     """
     root = board_root()
     if not (root / ".git").exists() or areas_file().parent != root:
-        return False  # board 미분리(legacy·솔로) 또는 areas 가 이 git 밖 — no-op.
+        return False  # board 미분리(legacy) 또는 areas 가 이 git 밖 — no-op.
     target = _board_git_root_file_backfill_target(
         ".gitattributes",
         _board_gitattributes_declared,
@@ -5046,12 +5035,12 @@ def _ensure_board_gitignore() -> bool:
     untracked·staged·unstaged WIP 면 사유를 loud 하게 알리고 쓰지 않는다. append 는
     `file_lock.append_atomic`(O_APPEND) — 동시 writer 가 서로를 덮지 않는다.
 
-    fail-soft: board 미분리(legacy·솔로)·IO 실패면 아무 것도 하지 않고 False.
+    fail-soft: board 미분리(legacy)·IO 실패면 아무 것도 하지 않고 False.
     반환 True = 이번 호출이 보강했다.
     """
     root = board_root()
     if not (root / ".git").exists():
-        return False  # board 미분리(legacy·솔로) — no-op(draft 격리는 board-git 형상 전용).
+        return False  # board 미분리(legacy) — no-op(draft 격리는 board-git 형상 전용).
     target = _board_git_root_file_backfill_target(
         ".gitignore", _drafts_ignore_declared)
     if target is None:
@@ -5264,7 +5253,7 @@ def _board_git_enabled() -> bool:
     """board 가 별도 git 으로 분리됐고 sync 가능한가 — `board_root()/.git` 존재 + git 바이너리.
 
     True 면 ticket mutation 이 board git 에 commit/pull/push 한다. False 면 sync 전부
-    no-op(legacy·솔로·git 부재) — `board_root()` 가 wiki/ 를 가리키는 legacy 에선
+    no-op(legacy·git 부재) — `board_root()` 가 wiki/ 를 가리키는 legacy 에선
     `wiki/.git` 가 없어 자동으로 False(superproject git 은 REPO 루트에 산다). board/ 분리
     형상에서만 `board/.git`(submodule git 파일/디렉토리)이 존재한다. git 바이너리 부재면
     분리 형상이라도 no-op(fail-soft·sync 불능).
@@ -5313,7 +5302,7 @@ def board_git_lock() -> Iterator[None]:
     을 잡으므로, 역순 획득이 어디에도 없어야 데드락이 없다: best-effort sync 7 callsite는
     board_lock을 이미 놓은 뒤 불리고, `_prefix_relabel`도 board_lock **밖**에서 이 락을 먼저 잡는다.
 
-    board-git 비활성(legacy·솔로)이면 no-op — 락 파일조차 만들지 않는다(현 동작 무변경).
+    board-git 비활성(legacy)이면 no-op — 락 파일조차 만들지 않는다(현 동작 무변경).
     **재진입 금지**(flock 관례·board_lock 과 동일) — 이 구간 안에서 이 컨텍스트를 다시 잡는
     헬퍼를 부르지 않는다. 프로세스가 죽으면 OS 가 자동 해제한다(stale-lock 없음).
     """
@@ -6016,7 +6005,7 @@ def _board_git_sync_best_effort(message: str,
                                 paths: Sequence[Path] | None = None) -> bool:
     """best-effort local-first sync (new/promote/complete/block/unclaim/unblock/section-add/tier).
 
-    board 가 별도 git 이 아니면 no-op(legacy·솔로). 별도 git 이면: 로컬 commit을 항상
+    board 가 별도 git 이 아니면 no-op(legacy). 별도 git 이면: 로컬 commit을 항상
     시도하고, **새 commit 사실(HEAD 전진)**을 확인한 뒤 → pull --rebase ; push 를 best-effort 로.
     local commit 실패가 mutation 파일을 uncommitted로 남기면 pull/push를 건너뛰고 False를 반환한다.
     offline/auth/conflict 등
@@ -6161,7 +6150,7 @@ def _board_git_claim_prefetch(ticket_id: str) -> _ClaimPrefetch:
     "이미 남이 가져갔나" 를 싸게 먼저 확인해 중복작업을 막는 것뿐이다.
     """
     if not _board_git_enabled():
-        return _ClaimPrefetch(anchor="")  # sync 비활성 — 검증만 진행(legacy·솔로).
+        return _ClaimPrefetch(anchor="")  # sync 비활성 — 검증만 진행(legacy).
     # 1. detached / mid-rebase — 어떤 mutation 보다 먼저. rebase 를 detached 보다 먼저 가른다
     #    (mid-rebase 는 detached 의 부분집합인데 처방이 다르다·checkout 안내는 오도).
     if _board_git_rebase_in_progress():
@@ -6691,7 +6680,7 @@ def _active_slot_path(session: str | None = None) -> str | None:
     활성 슬롯 = (`session` 인자 또는 `session_name()`) == lease.session && state=="leased" 인
     첫 행 — `session` 명시는 M>1 슬롯 순회가 슬롯별 cwd 를 뽑을 때 쓴다. 그 행의
     `slot` 을 `REPO / slot` 절대경로로 반환. 장부 부재/파싱실패/매칭없음/빈 slot → None
-    (fail-soft — 호출부가 다음 레이어[REPO]로 폴백·솔로 무변경).
+    (fail-soft — 호출부가 다음 레이어[REPO]로 폴백).
     """
     if not LEASES_FILE.exists():
         return None
@@ -6735,8 +6724,8 @@ def _test_cmd(override: str | None, session: str | None = None) -> str:
          id_prefix 에도 thread** — M>1 슬롯 순회에서 슬롯 lease test_cmd 가 비면 prefix 유도가
          *그 슬롯의* repo 로 해소돼야 한다(전역 재해소 시 모호 None·env 오귀속으로 전 슬롯이
          같은 test_cmd 를 돌리는 false-green·codex must-fix).
-      4. **솔로 폴백** — 위 전부 미스면 현 단일 `local.conf test_cmd`
-         (없으면 `pytest -q`). 100% 하위호환(장부 없는 솔로/multi-PM-미배선 무영향).
+      4. **최종 폴백** — 위 전부 미스면 현 단일 `local.conf test_cmd`
+         (없으면 `pytest -q`). 100% 하위호환(multi-PM-미배선 무영향).
     """
     if override:
         return override
@@ -7759,7 +7748,7 @@ def _regression_min_collected(cwd: str | None = None) -> int:
     앵커가 run cwd 인 이유: 하한은 *그 트리 스위트* 규모의 함수다. 호출된 board.py 사본의
     `REPO`(두-git 형상에선 tests/ 가 없는 PM 홈·multi-repo 홈에선 남의 repo)에서 읽으면 다른
     트리의 선언이 새어 들어와 엉뚱한 스위트를 강등한다 — 실제로 개발 머신 local.conf 가 tmp
-    스텁 회귀(수집 1)를 강등시킨 누출이 있었다. cwd 미지정은 현행 `REPO` 앵커(솔로 동일).
+    스텁 회귀(수집 1)를 강등시킨 누출이 있었다. cwd 미지정은 현행 `REPO` 앵커.
 
     엔진 기본값은 0(off)이고 채택자가 자기 수집수 기준으로 선언한다. 비정수/음수는 0(off)로
     폴백하되 **경고 1줄**을 낸다 — 오타로 게이트가 조용히 무력화되면 이 가드가 막으려던
@@ -8059,7 +8048,7 @@ def _suiteless_tree_refusal(cmd: str, cwd: str, override: str | None) -> str | N
 def _regression_flag_for(session: str | None) -> Path:
     """세션(슬롯)별 회귀 플래그 경로 — M>1 all-or-nothing 순회용.
 
-    `session` None(솔로·단일-lease·현행 단일-슬롯) → 공유 `REGRESSION_FLAG`(무변경·후방호환).
+    `session` None(단일-lease·현행 단일-슬롯) → 공유 `REGRESSION_FLAG`(무변경·후방호환).
     지정(M>1 슬롯 순회) → `regression-<slug>.json` 로 슬롯별 분리 — 여러 slot 이 같은 `.local/`
     을 공유하므로 세션명 슬러그를 파일명에 담아 슬롯 결과가 서로 덮이지 않게 한다.
     """
@@ -8229,7 +8218,7 @@ def cmd_regression(args: argparse.Namespace) -> int:
     (codex): 훅 프로세스가 env 세션을 상속하면 "어느 세션이 push 하든 전 leased 슬롯 green"이
     조용히 자기 슬롯 단일 경로로 우회된다. 그래서 M>1 디스패치 판정은 **CLI `--repo`/`--slot` 명시**
     (문서화된 의도적 조작)만 단일-슬롯으로 좁히고 env 는 이 판정에서 제외한다 — 단일-lease/
-    솔로/명시는 현행 결과 동일. (env 는 단일-슬롯 threading 등 다른 해소엔 그대로 유효.)
+    명시는 현행 결과 동일. (env 는 단일-슬롯 threading 등 다른 해소엔 그대로 유효.)
     """
     # 구형 서명 훅 = 차단 — run/check 두 진입 모두에서 대조한다. 옛 세대 본문은 트리를 가리지
     # 않고 **항상** 회귀를 불렀으므로, 여기서 막으면 채택자가 릴리즈 노트를 읽지 않아도 옛 훅으로는
@@ -8274,7 +8263,7 @@ def cmd_regression(args: argparse.Namespace) -> int:
             slots = sorted(set(leased))
             return (_regression_multi_run(args, slots) if args.action == "run"
                     else _regression_multi_check(slots))
-    # 단일-슬롯 (명시 --repo/--slot·단일-lease·솔로·명시 --cwd 핀) — 현행 경로. sess 는 슬롯
+    # 단일-슬롯 (명시 --repo/--slot·단일-lease·명시 --cwd 핀) — 현행 경로. sess 는 슬롯
     # test_cmd/cwd threading 용(env 유효·위에서 M>1 만 걸러냄·--cwd 핀은 soft 해소).
     sess = session_name(explicit_override)
     if args.action == "run":
@@ -8438,10 +8427,10 @@ def _write_json_atomic(path: Path, data: dict) -> None:
 # two-git 토폴로지(PM 홈+worktree)에서 record 를 호출된 사본의 `REPO/.local` 에 그냥 쓰면,
 # worktree board.py 로 record 할 때 훅이 안 읽는 worktree `.local` 에 조용히 기록→pass 위장→push
 # 순간에야 불일치로 드러난다. 그래서 record 도 훅과 **동일한 engine-root
-# sidecar 해소**를 공유해 같은 파일에 기록한다(단일 소스). 단일-repo/솔로(livegate 훅 없음)면 현행
+# sidecar 해소**를 공유해 같은 파일에 기록한다(단일 소스). livegate 훅이 없는 홈이면 현행
 # `REPO/.local` 폴백이라 채택자 무변경.
 _LG_ENGINE_ROOT = "engine-root"  # 프레임워크 push 보호훅 활성 → PM 홈 .local (단일 소스).
-_LG_SOLO = "solo"                # livegate 훅 없음 → 호출된 사본 REPO/.local (단일-repo/솔로 무변경).
+_LG_NO_HOOK = "no-hook"          # livegate 훅 없음 → 호출된 사본 REPO/.local (현행 폴백 무변경).
 _LG_BROKEN = "broken"            # 훅 sidecar 존재하나 engine-root 무효 → fail-loud(false-green 차단).
 
 
@@ -8465,13 +8454,13 @@ def _resolve_livegate_flag(cwd: str) -> tuple[Path, str]:
     board.py 가 실재하면(훅의 `[ -f "$engine_root/.../board.py" ]` fail-closed 게이트와 동일
     검증) `<engine-root>/.project_manager/.local/livegate.json` 을 돌려준다. 반환:
       - (PM 홈 .local livegate.json, `_LG_ENGINE_ROOT`) — 훅 활성·단일 소스.
-      - (`LIVEGATE_FLAG`, `_LG_SOLO`) — livegate 훅 없음(단일-repo/솔로·현행 폴백 무변경).
+      - (`LIVEGATE_FLAG`, `_LG_NO_HOOK`) — livegate 훅 없음(현행 폴백 무변경).
       - (`LIVEGATE_FLAG`, `_LG_BROKEN`) — 훅 sidecar 는 있으나 engine-root 무효(빈값/board.py
         부재). 이땐 훅 read 위치와 기록 위치가 갈릴 수 있어 호출부가 fail-loud 로 거부한다.
     """
     hooks_path = _git_config_get(cwd, "core.hooksPath")
     if not hooks_path:
-        return LIVEGATE_FLAG, _LG_SOLO
+        return LIVEGATE_FLAG, _LG_NO_HOOK
     # 상대 `core.hooksPath` 는 git 이 worktree root(=`cwd`) 기준으로 해소한다(프로세스 cwd 아님).
     # 프레임워크 설치는 절대경로라 평시 무영향이나, 수동/상대 설정 방어로 git 시맨틱을 미러.
     hp = Path(hooks_path)
@@ -8480,8 +8469,8 @@ def _resolve_livegate_flag(cwd: str) -> tuple[Path, str]:
     sidecar = hp / "engine-root"
     if not sidecar.is_file():
         # `core.hooksPath` 는 있으나 engine-root sidecar 부재 = livegate 보호훅 아님(예: PM 홈
-        # 자신의 회귀 훅·채택자 custom 훅) → 솔로 폴백(오탐 fail-loud 방지).
-        return LIVEGATE_FLAG, _LG_SOLO
+        # 자신의 회귀 훅·채택자 custom 훅) → 훅 부재 폴백(오탐 fail-loud 방지).
+        return LIVEGATE_FLAG, _LG_NO_HOOK
     lines = file_lock.read_text_shared(sidecar, encoding="utf-8").splitlines()
     engine_root = lines[0].strip() if lines else ""
     if not engine_root:
@@ -8529,7 +8518,7 @@ def _release_rounds_ledger(flag: Path) -> Path:
     record 하든 external_review 가 실제로 쓴 그 장부(소유 PM 홈 `.local/review_rounds.json`)를
     본다. 사본별로 다른 장부를 읽으면 잔여가 있는데 "무대상"으로 통과하는 false-green 이 난다.
 
-    정렬이 성립하는 범위는 **engine-root 모드**(보호훅 활성)다 — 솔로 폴백(`_LG_SOLO`)에서는 호출된
+    정렬이 성립하는 범위는 **engine-root 모드**(보호훅 활성)다 — 훅 부재 폴백(`_LG_NO_HOOK`)에서는 호출된
     사본의 `.local` 이 곧 장부 위치라 같은 식이 그대로 맞는다(단일-repo 형상)."""
     return flag.parent / REVIEW_ROUNDS_LEDGER_NAME
 
@@ -8793,33 +8782,27 @@ def _livegate_cwd(override: str | None = None, session: str | None = None) -> st
       - `override`(CLI `--cwd` — 릴리즈 readonly 슬롯 핀)가 있으면 그것,
       - 없으면 **활성 슬롯 경로**(`_active_slot_path(session)` — lease 장부에서 이 세션의 leased
         슬롯 worktree 경로·worktree_pool 미import·`session` 명시는 M>1 슬롯 지목용),
-      - 활성 슬롯이 미해소인데 **leased ≥2·세션/cwd 미지정**(진짜 모호)이면 `REPO` 침묵 폴백
-        대신 **fail-loud**(`sys.exit`) — `--repo <repo> --slot <N>`/`--cwd <path>` 명시를 안내한다.
-        REPO(PM 홈·`tests/` 없음)로 조용히 폴백하면 라이브 wave 가 broken slot 을 수집해
-        false fail 을 내던 것(livegate `--cwd` 우회의 근원)을 근절한다 — session_name 의 귀속-쓰기
-        fail-loud(bare slot 입구 거부·rc5 vacuous-pass 근절)과 같은 "모호는 시끄럽게" 철학.
-        **`session` 명시(비-None)·leased <2(솔로/단일)는 아래 `REPO` 폴백을 그대로 탄다.**
-      - 그것도 없으면 **현 `REPO` 기본** (솔로/단일 repo — 코드가 이 트리에 있다).
+      - 활성 슬롯이 미해소면 **fail-loud**(`sys.exit`) — `--repo <repo> --slot <N>`/`--cwd <path>`
+        명시를 안내한다.
 
-    명시 `session` 이 매칭 슬롯을 못 찾은 갈래는 이 `REPO` 폴백을 타지만 **성질로 고정하지
-    않는다**(테스트 없음·의도적): 분리 형상 PM 홈에서 라이브 wave 를 도는 것은 어차피 거짓 경로라,
-    그 갈래는 폴백이 아니라 fail-loud 로 좁히는 쪽이 맞다.
+    슬롯 하나만 쓰는 홈도 그 홈 자신이 슬롯 행이라 첫 층에서 해소된다(행의 `slot` 이 홈을
+    가리킨다). 그래서 "행이 없으니 이 트리겠지"라는 `REPO` 침묵 폴백을 두지 않는다 — 그
+    폴백은 코드가 없는 PM 홈을 라이브 wave 대상으로 만들어 broken slot 수집·false fail 을
+    내던 자리다(livegate `--cwd` 우회의 근원). 모호(leased ≥2)와 미등록(행 0)은 같은 이유로
+    같은 중단을 탄다.
     """
     if override:
         return override
     slot = _active_slot_path(session)
     if slot:
         return slot
-    # 활성 슬롯 미해소 + leased ≥2 + 세션/cwd 미지정 = genuine ambiguity → fail-loud.
-    # (session 명시면 `session is None` False → REPO 폴백·무변경 / leased <2 도 REPO 폴백·무변경.)
-    if session is None and len(identity_args.leased_sessions(LEASES_FILE)) >= 2:
-        sys.exit(
-            "[중단] livegate cwd 미해소 — 활성 슬롯이 여럿(leased ≥2)인데 세션/cwd "
-            "미지정으로 모호하다. REPO(PM 홈·tests 없음)로 침묵 폴백하면 broken slot 을 수집해 "
-            "false fail 이 되므로 거부한다. `--repo <repo> --slot <N>` 로 슬롯을 명시하거나 "
-            "`--cwd <worktree 절대경로>` 로 직접 지정하라 (예: `--repo project_manager --slot 1`)."
-        )
-    return str(REPO)
+    sys.exit(
+        "[중단] livegate cwd 미해소 — 이 세션의 활성 슬롯을 특정할 수 없다(활성 슬롯이 "
+        "여럿이거나 이 홈이 아직 슬롯 행으로 등록되지 않았다). PM 홈으로 침묵 폴백하면 "
+        "tests 없는 트리에서 broken slot 을 수집해 false fail 이 되므로 거부한다. "
+        "`--repo <repo> --slot <N>` 로 슬롯을 명시하거나 `--cwd <worktree 절대경로>` 로 직접 "
+        f"지정하라 (예: `--repo project_manager --slot 1`). {identity_args.UNREGISTERED_HOME_REMEDY}"
+    )
 
 
 def _livegate_record(args: argparse.Namespace) -> int:
@@ -8928,7 +8911,7 @@ def _livegate_check(args: argparse.Namespace) -> int:
         return 1
     # 읽을 위치를 push 보호훅 read 위치와 정렬(record 와 대칭·단일 소스). 훅과 같은
     # engine-root sidecar 해소를 공유해, worktree board.py·PM 홈 board.py 어느 사본으로 check 해도
-    # 훅이 기록한 한 파일을 읽는다. hooksPath 미설정/솔로면 현행 LIVEGATE_FLAG(REPO/.local) 폴백 무변경.
+    # 훅이 기록한 한 파일을 읽는다. hooksPath 미설정/훅 부재면 현행 LIVEGATE_FLAG(REPO/.local) 폴백 무변경.
     cwd = getattr(args, "cwd", None) or str(REPO)
     flag, mode = _resolve_livegate_flag(cwd)
     if mode == _LG_BROKEN:
@@ -9954,21 +9937,55 @@ def _legacy_ticket_copy_ledger() -> _LegacyCopyLedger | None:
         path=path, rows=rows, unharvested=tuple(unharvested), unreadable=unreadable)
 
 
+def _leased_slot_paths() -> tuple[Path, ...]:
+    """lease 장부의 leased 행이 가리키는 절대 슬롯 경로 (부재/손상/빈 slot → 제외).
+
+    `_active_slot_path` 와 *동형* 데이터-결합(worktree_pool 미import·stdlib json point-read).
+    거긴 이 세션의 행 하나를 고르고, 여기는 전수를 낸다 — 장부가 아는 슬롯 집합과 다른
+    해소(등록 슬롯·git 앵커)를 **값으로 대조**하는 쪽이 소비자다.
+    """
+    if not LEASES_FILE.exists():
+        return ()
+    try:
+        data = json.loads(file_lock.read_text_shared(LEASES_FILE, encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return ()
+    if not isinstance(data, dict):
+        return ()
+    rows = data.get("leases", [])
+    if not isinstance(rows, list):
+        return ()
+    paths: list[Path] = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("state") != "leased":
+            continue
+        slot = row.get("slot")
+        if slot:
+            paths.append(REPO / slot)
+    return tuple(paths)
+
+
 def _legacy_copy_slot_roots() -> tuple[Path, ...]:
     """구 사본을 찾을 루트 — git 앵커 가드와 **같은 등록 판정**에 REPO 자신을 더한다.
 
-    등록 판정(lease 장부 + linked worktree + 이 PM 홈 소유)은 multi-PM 슬롯만 본다. 출하
-    기본 형상인 solo(등록 슬롯 0 · PM 홈 == 코드 트리)에서는 구 사본이 REPO 자신의
-    `.project_manager/.local/delegate-ticket-copies/` 에 남는데, 그 자리는 등록 슬롯 집합에
-    없어 순회·삭제 양쪽에서 조용히 빠지고 "정리 완료" 가 거짓이 된다. REPO 아래 그 구
-    레이아웃이 실재할 때만 더한다(등록 슬롯에 이미 있으면 dedupe). 등록 슬롯이 0 인데
-    장부가 있으면 여전히 그 사실을 알린다(그 경고와 REPO 자신 편입은 서로 다른 축이다 —
-    REPO 는 항상 그 자리에 있으므로 등록 슬롯 해소와 무관하게 검사한다).
+    등록 판정(lease 장부 + linked worktree + 이 PM 홈 소유)은 pool worktree 슬롯만 본다.
+    홈 자신을 가리키는 슬롯 행은 거기서 자연 탈락하므로 구 사본이 REPO 의
+    `.project_manager/.local/delegate-ticket-copies/` 에 남아도 순회·삭제 양쪽에서 조용히
+    빠진다 — REPO 아래 그 구 레이아웃이 실재하면 더한다(등록 슬롯에 이미 있으면 dedupe).
+
+    경고는 **값 대조**다: 장부가 아는 leased 슬롯 경로 중 등록 슬롯 집합에도 REPO 에도 없는
+    것이 있을 때만 낸다. "장부 파일이 있는데 등록 슬롯이 0" 이라는 존재-키 판정은 홈 자신이
+    슬롯 행인 형상에서 상시 오발화한다(그 행은 원래 등록 슬롯 집합에 안 들어간다).
     """
     slots = _registered_slot_paths(REPO)
-    if not slots and LEASES_FILE.exists():
-        print("  ⚠ 등록 슬롯 해소 0 — 리스 장부는 있으나 슬롯을 확인하지 못했다. 슬롯에 구 "
-              "사본이 남아 있을 수 있다(직접 확인).", file=sys.stderr)
+    covered = {path.resolve(strict=False) for path in slots}
+    covered.add(REPO.resolve(strict=False))
+    unresolved = [path for path in _leased_slot_paths()
+                  if path.resolve(strict=False) not in covered]
+    if unresolved:
+        print(f"  ⚠ 등록 슬롯 해소 누락 {len(unresolved)}건 — 리스 장부의 슬롯 "
+              f"({', '.join(sorted(str(p) for p in unresolved))})을 확인하지 못했다. "
+              "그 슬롯에 구 사본이 남아 있을 수 있다(직접 확인).", file=sys.stderr)
     if REPO not in slots and REPO.joinpath(*_LEGACY_TICKET_COPY_ROOT_RELS).is_dir():
         slots = (*slots, REPO)
     return slots
@@ -10430,18 +10447,18 @@ def _load_pm_handoff():
     return mod
 
 
-def _warn_claim_code_tree_folded_to_repo_home() -> None:
-    """claim 코드 트리 해소가 REPO(PM 홈)로 접혔음을 알린다 — 분리 PM 홈 형상의 조용한 오-앵커 방지.
+def _warn_claim_code_tree_folded_to_repo_home(slot_path: str) -> None:
+    """claim 코드 트리 해소가 이 세션의 슬롯이 아닌 PM 홈으로 접혔음을 알린다.
 
-    worktree 리스 장부(`LEASES_FILE`)가 존재한다는 것은 이 PM 홈이 (지금은 매칭되는 활성
-    슬롯이 없더라도) 코드-분리 worktree 모델을 쓴다는 신호다. 그 형상에서 `REPO` 폴백은
-    코드가 없는 트리를 잰다는 뜻일 수 있는데, claim 시점엔 REPO 자체가 git repo 라 rev 가
-    조용히 읽혀 경고가 안 났다(F-001) — 여기서 loud 하게 짚어 완료 기록 시점의 오안내
-    ("다른 저장소의 것이거나 히스토리가 다시 쓰였는지 확인하라")를 막는다."""
+    이 세션의 활성 슬롯이 **다른 트리**를 가리키는데 측정 트리가 PM 홈이면, claim 시점엔
+    REPO 자체가 git repo 라 rev 가 조용히 읽혀 오-앵커가 드러나지 않는다 — 여기서 loud 하게
+    짚어 완료 기록 시점의 오안내("다른 저장소의 것이거나 히스토리가 다시 쓰였는지
+    확인하라")를 막는다. 홈 자신이 그 세션의 슬롯인 형상은 오-앵커가 아니므로 호출되지
+    않는다(판정은 장부 파일의 존재가 아니라 해소된 슬롯 경로 값이다)."""
     print(
-        "주의: claim 시점 코드 트리 해소가 PM 홈(REPO)으로 접혔다 — worktree 리스 장부가 있는 "
-        "분리 PM 홈 형상에서는 REPO 에 코드가 없을 수 있다(오-앵커 위험). `--repo <name> "
-        "[--slot <N>]` 또는 `--task <이름>` 으로 코드 트리를 명시하라.",
+        f"주의: claim 시점 코드 트리 해소가 PM 홈(REPO)으로 접혔다 — 이 세션의 활성 슬롯은 "
+        f"{slot_path} 다(오-앵커 위험). `--repo <name> [--slot <N>]` 또는 `--task <이름>` 으로 "
+        "코드 트리를 명시하라.",
         file=sys.stderr,
     )
 
@@ -10484,8 +10501,9 @@ def _claim_code_tree(args: argparse.Namespace) -> str | None:
     # kind == "none" — 인자 전무: 회귀 cwd 와 같은 트리(`_regression_cwd` = 이 트리 자신·REPO).
     # 활성 슬롯 우회는 없다 — 다른 트리를 겨냥하려면 `--repo/--slot` 또는 `--task` 로 명시한다.
     tree = _regression_cwd()
-    if tree == str(REPO) and LEASES_FILE.exists():
-        _warn_claim_code_tree_folded_to_repo_home()
+    active = _active_slot_path()
+    if active and os.path.abspath(active) != os.path.abspath(tree):
+        _warn_claim_code_tree_folded_to_repo_home(active)
     return tree
 
 
@@ -11599,7 +11617,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     if install_pre_push_hook():
         print("✓ pre-push 게이트 훅 설치 (lint 게이트는 항상 · 회귀 게이트는 tests/ 있는 트리만)")
     # board submodule 이 분리된 형상이면 ignore=all 자동 설정 — design(코드) git 이
-    # board PM-commit 으로 오염되지 않게(누출 0). 솔로/미분리/git 부재면 no-op(fail-soft·무영향).
+    # board PM-commit 으로 오염되지 않게(누출 0). 미분리/git 부재면 no-op(fail-soft·무영향).
     if _configure_board_submodule():
         print("✓ board submodule ignore=all 설정 (코드 git 누출 0)")
     # areas.md `merge=union` 배포는 여기서 하지 않는다 — init 의 board git 기록은
@@ -11630,6 +11648,14 @@ def cmd_init(args: argparse.Namespace) -> int:
         idfmt = f"T-{issued}-NNN" if issued else "T-NNNN (none 카테고리)"
         id_line = f"`board.py new` 로 {idfmt} 발행"
     print(INIT_GUIDE.format(mode=mode, id_line=id_line))
+    # 이 도구는 lease 장부의 writer 가 아니다(단일 writer 규약) — 홈을 첫 슬롯 행으로 등록하는
+    # 것은 `pm-config init` 이 한다. 직접 호출한 채택자가 등록 없이 남지 않도록 상태만 알린다.
+    if not identity_args.leased_sessions(LEASES_FILE):
+        print(
+            "  ⚠ 이 홈은 아직 슬롯 행이 없다 — 귀속 조작(claim·complete)이 세션 미해소로 "
+            "중단된다. `pm-config init`(또는 `pm-update`)을 1회 실행해 등록을 마쳐라.",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -11988,7 +12014,7 @@ def cmd_new(args: argparse.Namespace) -> int:
         prefix_precheck = canonical
     # multi-repo 네임스페이스 가드는 **레지스트리 *존재*가 아니라 등록 repo *개수*** 기준이다.
     # 등록 prefix 가 ≥2 면 진짜 ID 충돌 가능성이 있으니 prefix 필수(namespace 강제). 등록이
-    # ≤1(0=레지스트리 부재/빈·1=단일 self-host) 이면 충돌이 없으므로 solo legacy `T-NNNN` 을
+    # ≤1(0=레지스트리 부재/빈·1=단일 self-host) 이면 충돌이 없으므로 무prefix legacy `T-NNNN` 을
     # 허용한다(prefix optional) — 단일 self-host 가 areas.md 1행만으로 multi-PM 마찰을 떠안지
     # 않게(단일 등록 repo 케이스). 명시 prefix 가 *주어지면* 그건 그대로
     # 존중해 prefixed ID 를 발행한다 — ≤1 라도 사용자가 골랐으면 따른다.
@@ -12026,7 +12052,7 @@ def cmd_new(args: argparse.Namespace) -> int:
 
     # 발행 규율 게이트: board-git 이 공유(별도 git·submodule) 상태일 때만
     # 의미가 있다 — 미충전 stub 이 board-git 에 커밋돼 다른 slot 의 handoff/bootstrap 을
-    # 오염시키는 게 문제이므로, board 가 별도 git 이 아니면(legacy·솔로)
+    # 오염시키는 게 문제이므로, board 가 별도 git 이 아니면(legacy)
     # 게이트 없이 기존처럼 즉시 open/ 에 발행한다. 별도 git 이면 본문을 *쓰기 전에* 미리
     # 검사(`_body_lint_issues` — `lint_bodies` 와 동일 로직)해 placeholder/thin 이 남아있으면
     # `open/` 이 아니라 `drafts_dir()`(STATUS_DIRS 밖)에 쓴다 — draft 가 STATUS_DIRS
@@ -12137,7 +12163,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
     개수는 경고 1줄). 판정 대상은 승격되는 티켓 하나이며 기존 open 티켓을 소급하지 않는다.
     통과해야 `open/` 으로 옮겨져 STATUS_DIRS 스캔 대상이 되고 board-git 에 커밋돼 공유 board
     에 존재하게 된다(생성~claim 사이 handoff 창에 미충전 stub 이 인계되는 실패를 원천 차단).
-    board 가 별도 git 이 아니면(legacy·솔로) 게이트 자체가 무의미하므로 항상 통과(sync 는
+    board 가 별도 git 이 아니면(legacy) 게이트 자체가 무의미하므로 항상 통과(sync 는
     기존처럼 no-op) — 이 경로에선 draft 개념 자체가 없으므로(`cmd_new` 가 legacy 에선 항상
     `open/` 에 발행) status 는 정상적으로 "open" 이다.
     """
@@ -12220,7 +12246,7 @@ def _tag_values(fm: dict[str, Any]) -> list[str]:
 # 이후 시점의 stale 오독의 잔여
 # 갈래를 닫는다. 판정은 **신규 구현 0** — 부트스트랩이 소비하는 pm_bootstrap 의 순수
 # 판정(`_format_freshness`·`parse_git_ahead_behind`·`_behind_warning`)을 그대로 재사용해 두
-# 소비처(부트스트랩·list)가 같은 하나를 본다(중복 판정 금지). board 비-git(솔로·legacy)은
+# 소비처(부트스트랩·list)가 같은 하나를 본다(중복 판정 금지). board 비-git(legacy)은
 # freshness 개념이 없어 조용히 생략(오탐 0). list 는 read-only 조회라 pull 하지 않고 표면화만.
 
 
@@ -12287,7 +12313,7 @@ class _BoardFreshness(NamedTuple):
 def _board_git_freshness() -> _BoardFreshness:
     """board submodule freshness 를 부트스트랩과 **같은 판정**으로 1줄 만든다 (없으면 line=None).
 
-    board 비-git(솔로·legacy·`_board_git_enabled()` False)이거나 pm_bootstrap 로드 실패면
+    board 비-git(legacy·`_board_git_enabled()` False)이거나 pm_bootstrap 로드 실패면
     `line=None`·`verified=False`(표면화 생략·오탐 0). 그 외엔 board-git 을 fetch(원격 실측·offline 이면 fail-soft) 후
     detached/dirty/ahead·behind 를 board.py 자체 board-git 함수로 수집해, pm_bootstrap 의
     `_format_freshness`로 포맷한다 — **판정 단일화**(중복 0). list
@@ -12295,7 +12321,7 @@ def _board_git_freshness() -> _BoardFreshness:
     offline(fetch 실패)이면 remote-tracking 스냅샷을 "최신"으로 주장하지 않고 "판정불가 —
     스냅샷일 수 있음"으로 fail-soft.
     """
-    # board-git 존재 확인을 **먼저** — 비-git 솔로는 pm_bootstrap(4천줄) 로드도 fetch 도 안 한다.
+    # board-git 존재 확인을 **먼저** — 비-git 홈은 pm_bootstrap(4천줄) 로드도 fetch 도 안 한다.
     if not _board_git_enabled():
         return _BoardFreshness(None, False)
     pmb = _load_pm_bootstrap_module()
@@ -12482,16 +12508,16 @@ def cmd_list(args: argparse.Namespace) -> int:
                   file=sys.stderr)
     # graceful degrade: (a) 풀(내 소유 open) 필터는 보드에 area_owner 가 *운영
     # 중일 때만* 그 파티션을 1차 소유로 쓴다. areas.md 에 area_owner 가 하나도 안 채워졌으면
-    # (미마이그레이션 채택자·솔로) area_owner_in_use=False → 소유는 created_by.user 2차 폴백으로
+    # (미마이그레이션 채택자) area_owner_in_use=False → 소유는 created_by.user 2차 폴백으로
     # 해소한다(`_ticket_owner`).
     #
-    # 다중사용자 판정(`multi_user`·solo 정의 완결): **티켓 user 토큰이든 area_owner 든
+    # 다중사용자 판정(`multi_user`·단일 사용자 정의 완결): **티켓 user 토큰이든 area_owner 든
     # 둘 중 하나라도 distinct ≥2 면 multi-user**. `_distinct_ticket_users`(티켓 귀속만 셈) 단독이면
-    # 다중-owner 보드라도 claim 이 전부 legacy 슬롯-only(user 토큰 0)일 때 ≤1 로 떨어져 solo 로
+    # 다중-owner 보드라도 claim 이 전부 legacy 슬롯-only(user 토큰 0)일 때 ≤1 로 떨어져 단일 사용자로
     # 오판 → legacy 슬롯-only 포함 경로가 발동해 (당시) bare `--slot N`(repo 불문 cross-repo
     # suffix 매칭은 제거됨)이 타 area 의 legacy `<repo>_N` 을 끌어오는 누출이 났다.
     # `_distinct_area_owners`(areas 소유 다중성)를 OR 로 더해 그 클래스를 닫는다.
-    # solo(둘 다 ≤1)면 미해소 open all-open degrade + legacy 슬롯-only 포함 보존, 다중이면
+    # 단일 사용자(둘 다 ≤1)면 미해소 open all-open degrade + legacy 슬롯-only 포함 보존, 다중이면
     # strict-exclude한다.
     area_owner_in_use = (mine or default_view) and _area_owner_in_use()
     multi_user = (mine or default_view) and (
@@ -12507,7 +12533,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         allowed_statuses = _LIST_ACTIVE_STATUSES
     rows: list[tuple[str, dict]] = []
     # 세션격리 strict-exclude 신호: 다중사용자 판정 때문에 귀속 미해소/불일치 티켓을 이 뷰에서
-    # 조용히 드롭했는지 잡는다. solo면 재평가 자체를 생략해 오버헤드와 오탐을 피한다.
+    # 조용히 드롭했는지 잡는다. 단일 사용자면 재평가 자체를 생략해 오버헤드와 오탐을 피한다.
     strict_exclude_fired = False
     for status in STATUS_DIRS:
         if status not in allowed_statuses:
@@ -12527,7 +12553,7 @@ def cmd_list(args: argparse.Namespace) -> int:
                 if in_view:
                     rows.append((status, fm))
                 elif multi_user and not strict_exclude_fired:
-                    # 같은 predicate 를 solo로 재평가해 다중사용자 strict-exclude 때문에 숨긴
+                    # 같은 predicate 를 단일 사용자로 재평가해 다중사용자 strict-exclude 때문에 숨긴
                     # 티켓인지 판정한다. 해소된 사용자 값이 과거 스탬프와 어긋난 경우도 같은
                     # 세션 후보인지 확인하도록 조회 user만 미해소 상태로 완화한다. 세션 축은
                     # 그대로이므로 타 세션의 정상 제외는 경고 신호가 되지 않는다.
@@ -12543,10 +12569,10 @@ def cmd_list(args: argparse.Namespace) -> int:
                                             slot_mode=slot_mode,
                                             slot_scoped=slot_scoped):
                 # 이 제외가 *strict-exclude* 였는지 판정: 같은 predicate 를 multi_user=False 로
-                # 재평가해 solo(all-open degrade)라면 포함됐을 open 이면 = 다중사용자라서 드롭한
+                # 재평가해 단일 사용자(all-open degrade)라면 포함됐을 open 이면 = 다중사용자라서 드롭한
                 # 것(`_ticket_is_mine` 미해소 분기). 판정을 복제하지 않고 단일 predicate 를 재사용
                 # 해 실 드롭만 신호로 잡는다. 이미 발동했으면 재평가를 생략한다. 소유 해소된 타
-                # 사용자 티켓 제외는 solo 에서도 제외라 무신호다.
+                # 사용자 티켓 제외는 단일 사용자에서도 제외라 무신호다.
                 if multi_user and not strict_exclude_fired and _ticket_is_mine(
                         status, fm, my_user, my_slot,
                         area_owner_in_use, False, slot_mode=slot_mode,
@@ -12555,12 +12581,12 @@ def cmd_list(args: argparse.Namespace) -> int:
                 continue
             rows.append((status, fm))
     # anti-degrade loud-warn: 다중사용자 격리가 조용히 티켓을 드롭했거나 정체성이 미해소면 목록
-    # 출력 전에 stderr로 한 줄 경고한다. stdout 목록 포맷은 그대로이며 solo는 경고하지 않는다.
+    # 출력 전에 stderr로 한 줄 경고한다. stdout 목록 포맷은 그대로이며 단일 사용자는 경고하지 않는다.
     if (mine or session_view) and multi_user and (
             strict_exclude_fired or my_user is None):
         print(
             "⚠ 세션격리(strict-exclude): 다중사용자 보드에서 귀속이 미해소되거나 현재 사용자와 "
-            "어긋난 티켓을 이 뷰에서 제외했다. solo 인데 email(git config user.email)을 바꿨다면 "
+            "어긋난 티켓을 이 뷰에서 제외했다. 단일 사용자인데 email(git config user.email)을 바꿨다면 "
             "옛 티켓 귀속(old→new)이 어긋나 2인으로 오판된 것 — created_by/claimed_by 를 backfill "
             "로 정합: `python3 .project_manager/tools/board.py migrate-identity --dry-run` "
             "(단일-세션 op·다른 세션 claim 중 실행 금지). 진짜 다중사용자면 정체성 설정 "
@@ -13248,7 +13274,7 @@ def _apply_file_renames(renames: list[tuple[Path, Path]]) -> None:
 def _home_git_status_porcelain() -> str | None:
     """홈(superproject) git working tree 의 uncommitted 변경 (`status --porcelain`).
 
-    None = git 부재/repo 아님(보고 skip·솔로 안전) · `""` = clean · non-empty = dirty. prefix
+    None = git 부재/repo 아님(보고 skip·안전) · `""` = clean · non-empty = dirty. prefix
     rewrite 는 wiki/log(홈 git)를 건드리므로 relabel diff 가 남의 WIP 와 섞여 보일 수 있다 —
     그래서 이 값을 **안내로** 낸다.
     남의 dirty 로 내 작업이 막히는 과차단이었고, mutation 자체가 만진 경로만 커밋하므로
@@ -13755,7 +13781,7 @@ def cmd_reid(args: argparse.Namespace) -> int:
             current = session_name(_actor_session_override(args))
             if current is None or claimed_slot != current:
                 # remedy 는 canonical `--repo/--slot` 로 안내 — `claimed_slot` 이
-                # `<repo>_<N>` 형태면 분해해 그대로 보여주고(정직한 remedy), 아니면(솔로 커스텀
+                # `<repo>_<N>` 형태면 분해해 그대로 보여주고(정직한 remedy), 아니면(커스텀
                 # 세션명) 소유 세션명만 병기한다(그 형태는 --repo/--slot 로 재현 불가).
                 remedy_repo, remedy_num = _session_slot_coordinates(claimed_slot)
                 if remedy_repo is not None and remedy_num is not None:
@@ -15002,13 +15028,13 @@ def lint_status() -> list[tuple[str, str, str]]:
 # 키 선택(`family_scope:` ≠ `scope:`): 기존 ADR frontmatter 의 `scope:` 는 이미 문서 전략
 # 분류(`mission`·`internal-process`)로 점유돼 있어, 같은 키에 repo 네임스페이스를 얹으면 기존
 # 의미를 깨고 오탐을 부른다. family wiki scope 는 전용 키 `family_scope:` 로 박제해 두 의미체계를
-# 분리한다 — 솔로(키 부재) 회귀 0.
+# 분리한다 — 키 부재 회귀 0.
 
 FAMILY_SCOPE_DEFAULT = "shared"  # family_scope 부재/빈값 → shared 로 간주.
 # family_scope 가 인지되는 wiki 디렉토리 — ADR(decisions/)·spec(specs/).
 _SCOPE_AWARE_DIRS: tuple[Path, ...] = (DECISIONS_DIR, SPECS_DIR)
 # 유효 family_scope 값 형식 — `shared` 또는 prefix 형(영숫자·`-`·`_`, 등록 prefix 와 동형).
-# 형식만 검사(등록 여부는 advisory 메시지로) — areas.md 부재인 솔로에서도 동작.
+# 형식만 검사(등록 여부는 advisory 메시지로) — areas.md 부재에서도 동작.
 _FAMILY_SCOPE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -15051,8 +15077,8 @@ def lint_scopes() -> list[tuple[str, str, str]]:
       - 비문자열 family_scope (list/dict/number 등 — frontmatter 형식 오류).
       - 형식이 깨진 scope (공백/특수문자 등 `_FAMILY_SCOPE_RE` 불일치).
       - shared 도 아니고 areas.md 의 등록 prefix 도 아닌 미지의 repo scope (오타 신호).
-        단 areas.md 부재(솔로)면 등록 대조를 건너뛴다 — 솔로에서 repo scope 는 미래값일 뿐.
-    scope 자체로 hard-fail 을 만들지 않는다. 솔로
+        단 areas.md 부재면 등록 대조를 건너뛴다 — 미등록에서 repo scope 는 미래값일 뿐.
+    scope 자체로 hard-fail 을 만들지 않는다.
     (family_scope 부재) 에선 항상 빈 리스트 — 회귀 0.
 
     *원본 값* 을 검사한다(파싱 헬퍼 `family_scope()` 의 fail-soft 폴백과 분리) — 헬퍼는
@@ -15586,7 +15612,7 @@ def lint_render_leak() -> list[tuple[str, str, str]]:
     면제한다(`_template_mirror_state`). pm_render 의 post-render assertion 과 2중
     backstop — pm_update 가 마지막 도구였는지 무관한 상시 가드.
 
-    fail-soft: manifest 부재·로드 실패·파일 read 오류 → 그 부분 skip(검사 대상 0·솔로/신규 무영향).
+    fail-soft: manifest 부재·로드 실패·파일 read 오류 → 그 부분 skip(검사 대상 0·신규 무영향).
     """
     managed = _render_managed_relpaths()
     if not managed:
@@ -15726,7 +15752,7 @@ def _collect_overlay_adapter_files() -> list[Path]:
         agents/*.toml` 같은 새 형식도 편입. 로드 실패 시 필터 생략 → 호출부 read 의 넓힌 except 가
         바이너리를 흡수(graceful degrade·render-leak 동형).
     root 문서(CLAUDE.md·AGENTS.md)는 `@render`·은퇴 채널 모두 미등재(instance-owned scaffold)라 스코프
-    밖. manifest 부재·스코프 0(솔로/신규)이면 finding 0."""
+    밖. manifest 부재·스코프 0(신규)이면 finding 0."""
     pm_update = _load_pm_update_module()
     candidates: list[Path] = []
     # 인스턴스 engine.manifest @render (host 어댑터 + add-harness 가 등재한 guest·
@@ -15777,7 +15803,7 @@ def lint_unmigrated_overlay() -> list[tuple[str, str, str]]:
         별개. free-form 3종만 매칭(채택자 손편집 산문).
       - 코드 span/fence 안의 *예시* 토큰은 `_strip_code` 로 제거 후 스캔(문서가 토큰을 예시로
         보여줘도 오탐 안 됨).
-      - graceful: 어댑터 파일/디렉토리 부재(솔로·non-adopter) → finding 0. 파일 read 오류는 skip.
+      - graceful: 어댑터 파일/디렉토리 부재(non-adopter) → finding 0. 파일 read 오류는 skip.
     """
     token_re = re.compile(
         r"\{\{(" + "|".join(re.escape(k) for k in _UNMIGRATED_FREEFORM_KEYS) + r")\}\}")
@@ -16027,7 +16053,7 @@ def _ticket_id_from_filename(filename: str) -> str | None:
 #     소유·diverge 정상이라 scope 제외. push 미차단(never-block).
 #   - adr-author : ADR frontmatter `author: <user>/<pm-slot>` provenance 권고.
 #     "누가 결정했나"(provenance·연속성 아님)를 박는 발행측 규칙 — board.py 는 ADR 을 발행하지 않으므로
-#     부재/형식어긋남을 권고만 한다. solo·구 ADR(author 부재)은 정상이라 push 미차단(never-block).
+#     부재/형식어긋남을 권고만 한다. 구 ADR(author 부재)은 정상이라 push 미차단(never-block).
 #   - architecture-stale·status-stale·domain-stale : 현재-진실 문서 freshness — 문서
 #     frontmatter `verified_at: <sha>` 이후 그 문서 매핑 경로에 커밋이 있으면 "재검증 필요"
 #     권고(date 비교 대체). architect 재검증·PM 점검 대상이지 push 결함이 아니므로
@@ -16092,7 +16118,7 @@ def lint_adr_lifecycle() -> list[tuple[str, str, str]]:
     권고(kind=`adr-lifecycle`·`_ADVISORY_LINT_KINDS` 등재로 `--gate` 종료코드 비기여).
     `refines`(추가·대상 불변)는 검사 안 한다. ticket back-ref(`amended_by:[T-NNNN]`)는
     forward edge 가 없어 cross-check 대상 아님(자가일관만). decisions/ 부재·깨진 frontmatter
-    → graceful skip(솔로/신규 clone·ADR 0개 무영향)."""
+    → graceful skip(신규 clone·ADR 0개 무영향)."""
     findings: list[tuple[str, str, str]] = []
     if not DECISIONS_DIR.is_dir():
         return findings
@@ -16164,7 +16190,7 @@ def lint_adr_author() -> list[tuple[str, str, str]]:
     부재/형식어긋남을 visibility 로만 표면화한다. `author` 부재 → "author 권고"; 있으나
     `<user>/<pm-slot>` 형식이 아니면 → 형식 권고. kind=`adr-author`(`_ADVISORY_LINT_KINDS`
     등재로 `--gate` 종료코드 비기여). decisions/ 부재·깨진 frontmatter → graceful skip
-    (솔로/신규 clone·구 ADR author 부재 정상 무영향)."""
+    (신규 clone·구 ADR author 부재 정상 무영향)."""
     findings: list[tuple[str, str, str]] = []
     if not DECISIONS_DIR.is_dir():
         return findings
@@ -16208,8 +16234,8 @@ def _git_commits_between(sha: str, pathspecs: list[str], *,
       - sha 빈값·pathspec 전부 빈 → None (판정 대상 없음).
       - git 바이너리 부재·미지 sha(rc≠0·`bad revision`)·타임아웃/예외 → None (skip).
     None 은 "판정불가(unknown)"라 호출부가 finding 을 내지 않는다(현행 freshness fail-soft
-    성격·솔로/신규 clone 무탈). `runner` 는 테스트 hermetic seam(argv→(rc, stdout))·미주입
-    시 실 subprocess(`git -C repo`)를 쓴다. `repo` 부재는 REPO(기존 호출·solo 자연 퇴화)."""
+    성격·신규 clone 무탈). `runner` 는 테스트 hermetic seam(argv→(rc, stdout))·미주입
+    시 실 subprocess(`git -C repo`)를 쓴다. `repo` 부재는 REPO(기존 호출·자연 퇴화)."""
     sha = (sha or "").strip()
     pathspecs = [p for p in pathspecs if p]
     if not sha or not pathspecs:
@@ -16405,7 +16431,7 @@ def _freshness_owner_repo(owner) -> tuple[Path | None, str | None]:
     """현재-진실 문서의 `repo:` 채널을 소유 git checkout 으로 해소한다.
 
     단일 규칙:
-      - `self` → REPO. 키 부재는 파서/호출부가 `self`를 넘겨 solo로 자연 퇴화한다.
+      - `self` → REPO. 키 부재는 파서/호출부가 `self`를 넘겨 자연 퇴화한다.
       - `upstream` → `local.conf upstream=` **경로형** checkout. 상대경로는 REPO 기준.
 
     URL upstream 은 lint 가 fetch/clone 하지 않는다는 기존 네트워크-0 경계를 지켜 미해소로
@@ -16462,7 +16488,7 @@ def _verified_at_finding(doc_file: Path, pathspecs, label: str, kind: str, *,
     """문서 `verified_at` sha 판정 → 유효 anchor 면 stale/`kind`·아니면 unverifiable advisory.
 
     fail-soft: 문서 부재·frontmatter 없음/깨짐·`verified_at` 부재·환경적 판정불가(`_ANCHOR_UNKNOWN`)
-    → [](명시 skip — solo/신규 clone·아직 verified_at 미부여 문서 무영향·false-green 아님).
+    → [](명시 skip — 신규 clone·아직 verified_at 미부여 문서 무영향·false-green 아님).
 
     **anchor 판정**: `verified_at` 이 유효 backward anchor
     (고정 hex + 해소 + HEAD 선조·`_sha_anchor_status`)가 아니면 종전엔 `_git_commits_between` 이
@@ -16556,7 +16582,7 @@ def lint_domain_freshness(*, runner=None) -> list[tuple[str, str, str]]:
     advisory 는 never-block(`_ADVISORY_LINT_KINDS`)이라 `--gate` 종료코드에 기여하지 않는다.
 
     fail-soft: domain.py 부재/로드 실패·페이지 없음·verified_at 부재·covers 빈·git 불가(sha
-    해소 None) → [](명시 skip·solo/신규 clone 무영향). `updated` date 기반 `lint_domain`
+    해소 None) → [](명시 skip·신규 clone 무영향). `updated` date 기반 `lint_domain`
     stale 과는 별개 축(이건 sha 기준)."""
     domain = _load_domain_module()
     if domain is None:
@@ -17156,7 +17182,7 @@ def lint_adapter_drift() -> list[tuple[str, str, str]]:
     하지 않으므로(rev 비교만) scope 는 advisory 메시지로 안내한다.
 
     fail-soft / 관찰가시성:
-      - `upstream` 미설정(솔로·non-adopter·templates/upstream 부재 환경) → [].
+      - `upstream` 미설정(non-adopter·templates/upstream 부재 환경) → [].
       - baseline(`upstream_rev`) 미기록(아직 revision 추적 전·구 import) → [](관찰 기준점 자체 부재).
       - baseline 은 있으나 seen(`upstream_seen_rev`) 미기록(cache 부재 URL·pm-update 미실행) → **관찰불가
         advisory 1줄**(never-block). 과거엔 조용한 [](silent skip)였으나, hooks/driver 등 safety-critical
@@ -17166,7 +17192,7 @@ def lint_adapter_drift() -> list[tuple[str, str, str]]:
     findings: list[tuple[str, str, str]] = []
     conf = local_config()
 
-    # 솔로/non-adopter — upstream 자체가 없으면 비교할 대상이 없다 (graceful).
+    # non-adopter — upstream 자체가 없으면 비교할 대상이 없다 (graceful).
     if not (conf.get("upstream") or "").strip():
         return findings
 
@@ -17209,7 +17235,7 @@ def _load_domain_module():
     **순환 회피 deep-import seam** — domain.py 가 `board.load_ticket` 을 import 하므로
     board 가 모듈 최상단에서 domain 을 import 하면 순환이다. lint_domain *함수 내부*에서만
     이 헬퍼로 지연 로드한다. domain.py 부재
-    (솔로/신규 clone·구버전)·로드 실패 → None (호출부가 graceful skip).
+    (신규 clone·구버전)·로드 실패 → None (호출부가 graceful skip).
     """
     if not DOMAIN_PY.exists():
         return None
@@ -17230,7 +17256,7 @@ def lint_domain() -> list[tuple[str, str, str]]:
     domain.lint_pages 의 `(kind, label, detail)` 를 board 관례 `(label, kind, detail)` 로
     재배열해 돌려준다. kind 는 domain 의 `stale`/`orphan`/`oversized`/`history` 를 보존 —
     `_ADVISORY_LINT_KINDS` 에 등재돼 `--gate` 종료코드에 *절대* 기여하지 않는다(visibility>
-    enforcement). domain.py 부재·로드 실패·깨진 페이지·git 부재 → [] (솔로/domain 미사용
+    enforcement). domain.py 부재·로드 실패·깨진 페이지·git 부재 → [] (domain 미사용
     프로젝트 무영향). domain.py 가 이미 graceful 이므로 얇게 위임하되, 어떤 예외도 [] 로
     흡수해 board lint 자체는 항상 정상 진행한다.
 
@@ -17292,7 +17318,7 @@ def lint_delegate() -> list[tuple[str, str, str]]:
     pm_delegate.lint_same_model(conf) 의 `(label, detail)` 를 board 관례 `(label, kind, detail)` 로
     감싼다. kind=`delegate-same-model`(`_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드에 *절대*
     기여하지 않는다·visibility>enforcement — 사용자가 동일-모델 조합을 선택할 자유 유지). pm_delegate.py
-    부재·일반 로드 실패·설정 미매핑 → [] (delegate 미사용 프로젝트·솔로 무영향). 사본 skew 는
+    부재·일반 로드 실패·설정 미매핑 → [] (delegate 미사용 프로젝트 무영향). 사본 skew 는
     로더와 이 소비 지점 양쪽에서 재-raise 하고, 그 밖의 예외만 [] 로 흡수한다. board 의
     local.conf(local_config)로 판정한다."""
     try:
@@ -17511,7 +17537,7 @@ def lint_areas_duplicate_repo() -> list[tuple[str, str, str]]:
     `areas_set_cell`(setter)의 fail-loud 와 짝 — 그쪽은 쓰기를 막고, 이쪽은 상시 가시화한다.
 
     kind=`areas-duplicate-repo`(`_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드 비기여·push
-    미차단). areas.md 부재/파싱 실패는 빈 결과(솔로 무영향).
+    미차단). areas.md 부재/파싱 실패는 빈 결과(무영향).
     """
     try:
         _header, rows = _parse_areas()
@@ -17547,7 +17573,7 @@ def lint_areas_merge_union() -> list[tuple[str, str, str]]:
     `_gitattributes_merge_attr` docstring 참조.
 
     kind=`areas-merge-union`(`_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드 비기여·push 미차단).
-    areas.md 부재(솔로 미등록)·읽기 실패는 빈 결과.
+    areas.md 부재(미등록)·읽기 실패는 빈 결과.
     """
     af = areas_file()
     if not af.exists():
@@ -17735,7 +17761,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="내 것만 (렌즈·단일 보드 위 필터·user-first): 내 open"
                         "(area_owner==나 ∨ created_by==나) + 내 claim(claimed_by.user==나)·**전 슬롯**. "
                         "querying identity=현재 사용자(local.conf user= > git email). 타 사용자는 "
-                        "안 나온다. solo(user 미상)는 전체 open + 내 슬롯 claim 으로 graceful degrade. "
+                        "안 나온다. user 미상이면 전체 open + 내 슬롯 claim 으로 graceful degrade. "
                         "`--repo`/`--slot` 과 상호 배타(뷰 스코프는 하나만·cmd_list 런타임 검사).")
     # `--repo`/`--slot` 조회 전용 세션 뷰(`--repo X --slot N`, kind="slot")는 현재 사용자와
     # 세션이 모두 일치하는 생성 open + claim만 비춘다. 무인자 기본 뷰와 같은 의미론이며,
@@ -18061,7 +18087,7 @@ def _main(argv: list[str] | None = None) -> int:
         if resolution.home is not None and resolution.home != REPO:
             with _read_pm_inputs_at(resolution.home, resolution.root):
                 return args.fn(args)
-        # 자기 board/solo/standalone은 import-time REPO 경로 그대로다. 별도 context에 넣지 않아
+        # 자기 board/standalone은 import-time REPO 경로 그대로다. 별도 context에 넣지 않아
         # 폴백 문구·경로 재바인딩이 전혀 생기지 않는다.
         if resolution.root == local_root:
             return args.fn(args)

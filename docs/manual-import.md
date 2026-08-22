@@ -40,9 +40,10 @@ grep -rlI '{{' . --exclude-dir=.git --exclude-dir=__pycache__ --exclude-dir=node
     -e 's|{{TEST_CMD}}|python3 -m pytest tests/ -q|g' \
     -e "s|{{DATE}}|$(date +%F)|g"
 
-# 3) 이 clone 등록 (clone 당 1회·areas 레지스트리 행 등록은 필수) — solo(N=1·M=1) 또는 multi-repo(N×M·ADR-0016·multi-repo.md)
-python3 .project_manager/tools/board.py init                        # 무prefix 등록: T-NNNN 발행
-#   multi-repo(M>1·prefix 네임스페이스): board.py init --prefix pay --area "결제" --user-ack pay   # → T-pay-NNN
+# 3) 이 clone 등록 (clone 당 1회·areas 레지스트리 행 등록 + 홈 슬롯 행 등록) — N=1·M=1 또는 multi-repo(N×M·ADR-0016·multi-repo.md)
+python3 .project_manager/tools/pm_config.py init                    # 무prefix 등록: T-NNNN 발행 + 홈을 첫 슬롯 행으로 등록
+#   multi-repo(M>1·prefix 네임스페이스): pm_config.py init --prefix pay --area "결제" --user-ack pay   # → T-pay-NNN
+#   board.py init 을 직접 부르면 areas 행만 등록되고 슬롯 행이 없어 귀속 조작이 fail-loud 한다(파사드를 써라).
 
 # 4) board.py 동작 확인 — 첫 ticket 발행
 python3 .project_manager/tools/board.py new "첫 ticket — 환경 셋업 검증" --tag infra
@@ -60,7 +61,7 @@ python3 .project_manager/tools/board.py list
 
 새 prefix를 처음 만드는 `board.py new --prefix`, `board.py init --prefix`, `pm-config task
 prefix`, `board.py prefix rename/merge`는 사용자가 승인한 대상값과 같은 `--user-ack <prefix>`가
-필요하다. 이미 areas·기발행 티켓·task 장부(또는 등록 prefix 0개인 solo conf)에 있는 prefix는
+필요하다. 이미 areas·기발행 티켓·task 장부에 있는 prefix는
 대소문자 무관으로 재사용되며 별도 ack가 필요 없다.
 
 치환 후 남은 `{{...}}` 확인 — 위 2)와 **문자 그대로 같은 파이프라인**(파일 단위 `-rlI` + 동일 제외

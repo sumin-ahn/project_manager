@@ -182,10 +182,13 @@ def test_bare_slot_is_resolved_once_and_same_value_binds_ack(
     assert "대상값 'alpha_1'" in capsys.readouterr().out
 
 
-def test_bare_solo_none_resolution_is_frozen_for_ack_and_downstream(
+def test_bare_none_resolution_is_frozen_for_ack_and_downstream(
     monkeypatch, tmp_path, capsys,
 ):
-    """첫 해소 None도 실행 스냅샷이다 — 뒤 lease 변화로 slot을 재해소하지 않는다."""
+    """첫 해소 None도 실행 스냅샷이다 — 뒤 lease 변화로 slot을 재해소하지 않는다.
+
+    해소가 None 이면 승인 대상값도 없으므로 dirty 게이트(첫 판정)에도 도달하지 않고 멈춘다 —
+    재해소가 0회임을 `resolutions` 로 못박는다."""
     handoff = _load_handoff()
     resolutions = []
 
@@ -219,15 +222,15 @@ def test_bare_solo_none_resolution_is_frozen_for_ack_and_downstream(
         wave_summary="x",
         dry_run=False,
         skip_pytest=True,
-        user_ack="solo",
+        user_ack="proj_1",
     )
 
     assert rc == 1
-    assert resolutions == [("entry", None)]
-    assert dirty_trees == [str(tmp_path)]
+    assert resolutions == [("entry", None)]   # 재해소 0회(state/cwd 미호출).
+    assert dirty_trees == []                  # 어떤 판정/write 보다 앞에서 멈춘다.
     assert runner._worktree_slot is None
-    assert runner._pm_state_file == tmp_path / ".project_manager" / "wiki" / "pm_state.md"
-    assert "대상값 'solo'" in capsys.readouterr().out
+    # 해소 스냅샷이 None 이면 승인 대상값도 없다 — sentinel 을 지어내지 않고 그 자리에서 멈춘다.
+    assert "승인 대상값을 해소할 수 없다" in capsys.readouterr().err
 
 
 def test_direct_run_rejects_malformed_worktree_slot_before_ack_or_pipeline(

@@ -1153,39 +1153,6 @@ def test_solo_collection_accepts_producer_checkpoints_and_excludes_tagged_entrie
     assert legacy_untagged_pipe not in collected
 
 
-@pytest.mark.parametrize(
-    ("shape", "expected_task", "expected_source"),
-    [
-        ("legacy-state", "pm", "legacy pm_state"),
-    ],
-)
-def test_implicit_handoff_identity_round_trips_real_checkpoint_producer(
-    hf, tmp_path, monkeypatch, shape, expected_task, expected_source,
-):
-    """pm_log 해소 축과 생산 헤더를 그대로 handoff task 소비에 round-trip한다."""
-    pm_log = _load_tool("pm_log")
-    manager = tmp_path / ".project_manager"
-    assert shape == "legacy-state"
-    wiki = manager / "wiki"
-    wiki.mkdir(parents=True)
-    (wiki / "pm_state.md").write_text("# legacy state\n", encoding="utf-8")
-    monkeypatch.setattr(hf, "REPO", tmp_path)
-
-    task, session, source, slot_path = hf._resolve_implicit_handoff_identity(
-        cwd=tmp_path, pm_log_module=pm_log,
-    )
-    checkpoint = pm_log.build_checkpoint_entry(
-        task, "manual", date="2026-08-05", session=session,
-    )
-
-    assert (task, session, source, slot_path) == (
-        expected_task, None, expected_source, None,
-    )
-    assert hf.collect_session_entries(checkpoint, task, session) == [
-        checkpoint.splitlines()[0],
-    ]
-
-
 def test_identity_source_contract_is_complete_and_fails_on_producer_drift(
     hf, monkeypatch,
 ):
@@ -1193,7 +1160,7 @@ def test_identity_source_contract_is_complete_and_fails_on_producer_drift(
     pm_log = _load_tool("pm_log")
     roles = hf._handoff_identity_source_contract(pm_log)
     assert roles["task_mode"] == pm_log.HANDOFF_TASK_MODE_IDENTITY_SOURCES
-    assert roles["collection_only"] == pm_log.HANDOFF_COLLECTION_ONLY_IDENTITY_SOURCES
+    assert roles["unresolved"] == frozenset({pm_log.IDENTITY_SOURCE_UNRESOLVED})
     assert set().union(*roles.values()) == set(pm_log.SNAPSHOT_IDENTITY_SOURCES)
     assert {value for name, value in vars(pm_log).items() if name.startswith("IDENTITY_SOURCE_")} <= set(pm_log.SNAPSHOT_IDENTITY_SOURCES)
 
@@ -1216,10 +1183,12 @@ def test_explicit_task_checkpoint_producer_round_trips_handoff_collection(hf):
     ]
 
 
-def test_fresh_solo_keeps_head_handoff_fallback_when_checkpoint_producer_stops(
+def test_fresh_home_unresolved_identity_still_enters_run(
     hf, tmp_path, monkeypatch, captured_run, capsys,
 ):
-    """fresh solo 생산자는 중단하되 handoff는 HEAD의 legacy fallback rc0을 유지한다."""
+    """fresh 홈 — checkpoint 생산자는 중단하고, handoff CLI 는 run() 까지 진입한다.
+
+    실행 슬롯 해소·중단 판정은 run() 경계가 한다(CLI 는 정체성 표시만)."""
     pm_log = _load_tool("pm_log")
     monkeypatch.setattr(hf, "REPO", tmp_path)
     monkeypatch.setattr(hf, "_load_pm_log", lambda: pm_log)
@@ -1239,14 +1208,13 @@ def test_fresh_solo_keeps_head_handoff_fallback_when_checkpoint_producer_stops(
     assert captured_run["task"] is None
     assert captured_run["collection_task"] is None
     assert captured_run["session_num"] == "7"
-    assert "legacy solo fallback 유지" in capsys.readouterr().out
+    assert "수집 정체성 미해소" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
     ("shape", "expected_task", "expected_collection_task", "expected_session_num"),
     [
         ("fresh", None, None, "7"),
-        ("legacy-state", None, "pm", "7"),
         ("directory-only-task", None, "main", "7"),
         ("explicit-task", "main", "main", None),
     ],
@@ -1255,17 +1223,14 @@ def test_handoff_cli_four_shapes_preserve_head_rc_hermetically(
     hf, tmp_path, monkeypatch, captured_run, shape,
     expected_task, expected_collection_task, expected_session_num,
 ):
-    """R4 A/B: 네 생산 형상의 handoff rc0과 연속성/수집 축을 HEAD와 맞춘다.
+    """세 생산 형상의 handoff rc0과 연속성/수집 축을 고정한다.
 
-    옛 다섯 번째 형상(per-clone `local.conf session=`)은 해소 층이 폐지돼 사라졌다(T-0779).
+    폐지된 형상 둘은 여기 없다: per-clone `local.conf session=` 층과, 장부가 아무 말도 없을 때
+    홈 전체를 단일 정체성으로 접던 legacy pm_state 층.
     """
     pm_log = _load_tool("pm_log")
     manager = tmp_path / ".project_manager"
-    if shape == "legacy-state":
-        wiki = manager / "wiki"
-        wiki.mkdir(parents=True)
-        (wiki / "pm_state.md").write_text("# legacy state\n", encoding="utf-8")
-    elif shape == "directory-only-task":
+    if shape == "directory-only-task":
         (manager / ".local" / "tasks" / "main").mkdir(parents=True)
         current = manager / "wiki" / "log" / "current.md"
         current.parent.mkdir(parents=True)
@@ -2560,8 +2525,8 @@ def test_collection_only_identity_two_handoffs_do_not_recollect_prior_checkpoint
 ):
     """F-009: entry task와 무태그 boundary를 분리해 두 번째 세션의 오귀속을 막는다."""
     pm_log = _load_tool("pm_log")
-    first = pm_log.build_checkpoint_entry("solo", "manual", date="2026-08-16")
-    second = pm_log.build_checkpoint_entry("solo", "compaction", date="2026-08-17")
+    first = pm_log.build_checkpoint_entry("pm", "manual", date="2026-08-16")
+    second = pm_log.build_checkpoint_entry("pm", "compaction", date="2026-08-17")
     handoff = _hermetic_handoff(hf, tmp_path, _SnapPool())
     handoff._log_file.write_text(first, encoding="utf-8")
 
@@ -2571,8 +2536,9 @@ def test_collection_only_identity_two_handoffs_do_not_recollect_prior_checkpoint
         dry_run=False,
         skip_pytest=True,
         task=None,
-        collection_task="solo",
-        user_ack="solo",
+        collection_task="pm",
+        worktree_slot="work/proj_1",
+        user_ack="proj_1",
     ) == 0
     capsys.readouterr()
     with handoff._log_file.open("a", encoding="utf-8") as stream:
@@ -2584,7 +2550,8 @@ def test_collection_only_identity_two_handoffs_do_not_recollect_prior_checkpoint
         dry_run=True,
         skip_pytest=True,
         task=None,
-        collection_task="solo",
+        collection_task="pm",
+        worktree_slot="work/proj_1",
     ) == 0
     out = capsys.readouterr().out
     assert second.splitlines()[0] in out
@@ -3021,8 +2988,11 @@ def test_run_snapshot_failsoft_when_ledger_missing_slot(hf, tmp_path, capsys):
     assert "리스 장부에 없음" in capsys.readouterr().err
 
 
-def test_run_solo_no_slot_skips_snapshot(hf, tmp_path):
-    """솔로(슬롯 미해소·self._worktree_slot None) — 재스냅 자체를 시도하지 않는다(무회귀)."""
+def test_run_without_identity_refuses_before_snapshot(hf, tmp_path):
+    """슬롯 미해소(self._worktree_slot None) — 승인 대상값이 없어 중단하고 재스냅도 안 한다.
+
+    승인 대상값을 sentinel 로 지어내던 자리라, 아무 write 전에 멈추는지까지 함께 고정한다.
+    """
     pool = _SnapPool()
     handoff = _hermetic_handoff(hf, tmp_path, pool)
     rc = handoff.run(
@@ -3030,9 +3000,9 @@ def test_run_solo_no_slot_skips_snapshot(hf, tmp_path):
         wave_summary="요약",
         dry_run=False,
         skip_pytest=True,
-        user_ack="solo",
+        user_ack="proj_1",
     )
-    assert rc == 0
+    assert rc == 1
     assert pool.snap_calls == []
 
 
@@ -3303,8 +3273,8 @@ def test_run_slot_mode_no_task_does_not_release_task_pid(hf, tmp_path):
     assert pool.task_pid_calls == []                             # task pid 는 미호출
 
 
-def test_run_solo_no_task_does_not_release_task_pid(hf, tmp_path):
-    """솔로(슬롯 미해소·--task 없음) — release_task_pid 미호출(task_mode False·무영향·T-0392)."""
+def test_run_slot_without_task_does_not_release_task_pid(hf, tmp_path):
+    """슬롯 모드(--task 없음) — release_task_pid 미호출(task_mode False·무영향·T-0392)."""
     pool = _TaskPidPool()
     handoff = _hermetic_handoff(hf, tmp_path, pool)
     rc = handoff.run(
@@ -3312,7 +3282,8 @@ def test_run_solo_no_task_does_not_release_task_pid(hf, tmp_path):
         wave_summary="요약",
         dry_run=False,
         skip_pytest=True,
-        user_ack="solo",
+        worktree_slot="work/proj_1",
+        user_ack="proj_1",
     )
     assert rc == 0
     assert pool.task_pid_calls == []

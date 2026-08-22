@@ -160,15 +160,19 @@ def test_gate_isolation_targets_internal_reviewer_not_codex():
     )
 
 
-# ── (4) 솔로(비병렬)는 격리 선택 ──────────────────────────────────────────────
+# ── (4) 비병렬 위임은 격리 선택 ──────────────────────────────────────────────
 
-def test_gate_isolation_solo_is_optional():
-    """격리 절이 솔로(비병렬) 리뷰는 격리 선택(종전대로)임을 명시한다 (결정)."""
+def test_gate_isolation_is_optional_for_non_parallel_delegation():
+    """격리 절이 비병렬 리뷰는 격리 선택(종전대로)임을 명시한다 (결정).
+
+    판정 축은 **병렬 여부**다 — 슬롯이 몇 개인 홈인지가 아니라 같은 트리를 dev 가 라이브로
+    편집 중인지가 격리의 이유다.
+    """
     region = _isolation_region()
     assert region, "격리 절 마커 부재 (T-0410)"
-    missing = [name for name, token in (("솔로", "솔로"), ("선택", "선택")) if token not in region]
+    missing = [name for name, token in (("비병렬", "비병렬"), ("선택", "선택")) if token not in region]
     assert not missing, (
-        f"격리 절에 솔로=격리 선택 명시 누락: {missing} — 비병렬 리뷰는 종전대로임을 명시해야 함 (T-0410)"
+        f"격리 절에 비병렬=격리 선택 명시 누락: {missing} — 비병렬 리뷰는 종전대로임을 명시해야 함 (T-0410)"
     )
 
 

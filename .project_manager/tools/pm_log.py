@@ -701,7 +701,7 @@ def build_checkpoint_entry(
     ctx_observed_tokens: int | None = None,
     harness: str | None = None,
 ) -> str:
-    """task/slot/solo의 compaction/manual 경계 보충 박제 골격을 만든다."""
+    """task/slot 축의 compaction/manual 경계 보충 박제 골격을 만든다."""
     if date is None:
         date = datetime.date.today().isoformat()
     identity_tag = (
@@ -722,7 +722,7 @@ def build_checkpoint_entry(
         if ctx_band_checked else ""
     )
     return (
-        # Consumer grammar: pm_handoff.collect_session_entries()의 task/slot/solo
+        # Consumer grammar: pm_handoff.collect_session_entries()의 task/slot
         # 분기와 동기화한다.
         f"## [{date}] checkpoint{identity_tag} — {trigger}\n\n"
         f"{ctx_check}"
@@ -878,7 +878,7 @@ def resolve_pm_home(repo: Path, cwd: Path) -> Path:
         rows = data.get("leases")
         if not isinstance(rows, list):
             continue
-        # 원장이 현재 엔진 루트 자체 소유면 solo/multi PM 홈이다.
+        # 원장이 현재 엔진 루트 자체 소유면 이 PM 홈이 직접 들고 있는 것이다.
         if candidate.resolve(strict=False) == repo:
             return candidate
         for row in rows:
@@ -915,16 +915,6 @@ def _ledger_task_names(pm_home: Path) -> set[str]:
             if isinstance(row, dict) and isinstance(row.get("name"), str) and row.get("name")}
 
 
-def _has_leased_row(lease_rows: list[dict]) -> bool:
-    """장부에 대여 중(leased) 행이 있는가 — 이 홈의 정체성을 장부가 준다는 값 신호.
-
-    행이 하나라도 있으면 정체성 해소는 장부 소관이다: 그 행이 cwd 를 소유하지 않으면 **미해소**가
-    정답이지, 홈 전체를 legacy 단일 정체성으로 접는 것이 아니다(오귀속). 판정은 행 값(``state``)
-    으로 하며 장부 **파일 존재**를 근거로 삼지 않는다.
-    """
-    return any(row.get("state") == "leased" for row in lease_rows)
-
-
 def _active_tasks(pm_home: Path) -> list[str]:
     """task 서술 디렉토리의 활성 이름. 종료 보관소 ``_ended``와 숨김 보조 디렉토리는 제외."""
     tasks_dir = Path(pm_home) / ".project_manager" / ".local" / "tasks"
@@ -945,25 +935,24 @@ _SLOT_KEY_PATTERN = r"[^()\s/\\]+_[1-9]\d*"
 
 IDENTITY_SOURCE_CWD_LEASE = "cwd→lease"
 IDENTITY_SOURCE_SINGLE_ACTIVE_TASK = "단일 활성 task"
-IDENTITY_SOURCE_LEGACY_PM_STATE = "legacy pm_state"
 IDENTITY_SOURCE_UNRESOLVED = "정체성 미해소"
 SNAPSHOT_IDENTITY_SOURCES = frozenset({
     IDENTITY_SOURCE_CWD_LEASE,
     IDENTITY_SOURCE_SINGLE_ACTIVE_TASK,
-    IDENTITY_SOURCE_LEGACY_PM_STATE,
     IDENTITY_SOURCE_UNRESOLVED,
 })
 HANDOFF_TASK_MODE_IDENTITY_SOURCES = frozenset({
     IDENTITY_SOURCE_CWD_LEASE,
     IDENTITY_SOURCE_SINGLE_ACTIVE_TASK,
 })
-HANDOFF_COLLECTION_ONLY_IDENTITY_SOURCES = frozenset({
-    IDENTITY_SOURCE_LEGACY_PM_STATE,
-})
 
 
 def resolve_snapshot_identity(pm_home: Path, cwd: Path) -> tuple[str | None, str]:
-    """cwd lease → 단일 활성 task → legacy pm_state 순으로 snapshot 정체성을 해소한다.
+    """cwd lease → 단일 활성 task 순으로 snapshot 정체성을 해소한다.
+
+    두 층이 전부다. 슬롯을 하나만 쓰는 홈도 그 홈 자신이 lease 행이라 cwd 가 그 행 안에 있고,
+    첫 층이 답을 준다 — "장부가 아무 말도 없으면 이 홈은 단일 정체성"이라는 층은 없다(그
+    추론은 실제로 슬롯을 여럿 쓰는 홈에서 오귀속이었다).
 
     per-clone ``local.conf``의 ``session=``은 층이 아니다 — slot 종속 값이 프로젝트 공용
     conf 에 있던 범위 오류라 엔진 어디서도 읽지 않는다."""
@@ -987,13 +976,6 @@ def resolve_snapshot_identity(pm_home: Path, cwd: Path) -> tuple[str | None, str
     active = _active_tasks(pm_home)
     if len(active) == 1:
         return active[0], IDENTITY_SOURCE_SINGLE_ACTIVE_TASK
-    # 마지막 층은 **장부가 이 홈에 아무 슬롯 정체성도 주지 않은 미등록 형상** 전용이다. 판정은
-    # 행 값(`_has_leased_row`)으로 한다 — 대여 행이 있으면 정체성은 장부 소관이고, 그 행이 cwd 를
-    # 소유하지 않으면 미해소가 정답이다(홈 전체를 단일 legacy 정체성으로 접으면 오귀속).
-    if not active and not _has_leased_row(lease_rows):
-        legacy_state = Path(pm_home) / ".project_manager" / "wiki" / "pm_state.md"
-        if legacy_state.is_file():
-            return "pm", IDENTITY_SOURCE_LEGACY_PM_STATE
     return None, IDENTITY_SOURCE_UNRESOLVED
 
 
@@ -1013,8 +995,6 @@ def _checkpoint_identity_axes(
     (``_ledger_task_names``)이 맡는다 — ``foo_1`` 형상 task 는 슬롯 예약 패턴이라 애초에 등록될
     수 없고, 등록됐다면 그 값이 진실이다.
     """
-    if source in HANDOFF_COLLECTION_ONLY_IDENTITY_SOURCES:
-        return identity, None
     if source != IDENTITY_SOURCE_CWD_LEASE:
         return identity, None
 
@@ -1057,9 +1037,7 @@ def resolved_lease_slot_path(pm_home: Path, session: str) -> Path | None:
 
 
 def _pm_state_path(pm_home: Path, task: str, source: str) -> Path:
-    """해소 층에 맞는 task 또는 legacy pm_state 경로를 반환한다."""
-    if source in HANDOFF_COLLECTION_ONLY_IDENTITY_SOURCES:
-        return Path(pm_home) / ".project_manager" / "wiki" / "pm_state.md"
+    """해소된 task 의 pm_state 경로를 반환한다."""
     return (
         Path(pm_home) / ".project_manager" / ".local" / "tasks" / task / "pm_state.md"
     )
@@ -1138,9 +1116,7 @@ def _pm_state_section(pm_home: Path, task: str, source: str, line_limit: int) ->
 
 
 def _recovery_section(task: str, source: str) -> str:
-    bootstrap = "python3 .project_manager/tools/pm_bootstrap.py"
-    if source not in HANDOFF_COLLECTION_ONLY_IDENTITY_SOURCES:
-        bootstrap += f" --task {task}"
+    bootstrap = f"python3 .project_manager/tools/pm_bootstrap.py --task {task}"
     return (
         "## 복구 포인터\n"
         f"- `{bootstrap}`로 장부를 다시 펼친다.\n"
@@ -1571,7 +1547,7 @@ def _latest_ctx_window_mismatch_section(
     try:
         _preamble, entries = split_entries(_read_text_exact(current))
     except FileNotFoundError:
-        # 아직 log가 생기지 않은 fresh/solo 형상은 판독 실패가 아니라 활성 진단 없음이다.
+        # 아직 log가 생기지 않은 fresh 홈은 판독 실패가 아니라 활성 진단 없음이다.
         return None
     except (OSError, UnicodeError):
         # ``None``은 판독에 성공했고 활성 진단이 없다는 뜻이다. 판독 실패까지 None으로 합치면

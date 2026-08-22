@@ -22,7 +22,7 @@ prose 는 verbatim 배치(요약/구조화 금지)·**git 무조작**(add/commit
     `*`=한 세그먼트 내. 빈 covers=코드-무관 개념(매칭 0). `fnmatch` 단독은 `**` 가
     부정확하므로 작은 glob→regex 변환(stdlib re)으로 `**`→세그먼트 횡단·`*`→세그먼트 내.
   - **graceful**: domain/ 부재·빈 디렉토리·frontmatter 깨진/없는 페이지 → 빈 리스트/skip
-    (stderr 경고·crash 0). solo·신규 clone 무영향.
+    (stderr 경고·crash 0). 신규 clone 무영향.
   - 모듈 구조 = worktree_pool.py·pm_config.py 따름(경로 상수·argparse main·hermetic 주입
     — load_pages(domain_dir=...) 로 테스트가 tmp dir 주입 가능).
 """
@@ -528,7 +528,7 @@ def _path_matches_covers(path: str, covers: list[str]) -> bool:
 # ── staleness (git 기반·covers→pathspec·fail-soft) ───────────────────────────
 # 페이지 `covers` 코드가 페이지 `updated` *후* git 커밋된 적 있으면 stale = "페이지 지식이
 # 코드보다 뒤처졌을 수 있다". enforcement 아닌 visibility — ⚠ 표시·lint
-# advisory 만(막지 않음). 판정불가는 전부 None(fail-soft·"unknown") — git 부재(솔로/CI)·
+# advisory 만(막지 않음). 판정불가는 전부 None(fail-soft·"unknown") — git 부재(CI 등)·
 # 에러·covers 빈·updated 파싱 실패에 crash 0.
 
 
@@ -964,7 +964,7 @@ def page_stale(page: dict, *,
       - covers 글롭이 전부 pathspec 매핑 불가(빈/공백 또는 미지원 문법 — 비-경계 `**`·절대
         경로 등·`covers_glob_pathspec` 이 None) — 좁힐 대상 없음.
       - git 호출 실패(rc≠0·git 부재/에러) 또는 빈 출력(미추적·커밋 0).
-    crash 0 — git 없는 환경(솔로/CI)도 무탈히 unknown.
+    crash 0 — git 없는 환경(CI 등)도 무탈히 unknown.
 
     **원본-글롭 pathspec**(`covers_glob_pathspec`·`:(glob)` magic — sha-축과 동일 판정 기계
     재사용): git 이 `*`(세그먼트 내)·경계 `**`(슬래시 횡단)을 네이티브로 매칭한다 —
@@ -1077,7 +1077,7 @@ def load_pages(domain_dir: Path = DOMAIN_DIR, *, strict: bool = False) -> list[d
 
     domain wikitree 를 하위 폴더로 조직해도 그 안의 페이지가 잡히도록 `rglob` 로 재귀
     스캔한다(회사 실사용). README.md·_template.md 는 (어느 깊이든) `name` 으로 제외.
-    디렉토리 부재 → [](solo·신규 clone 무영향). 평면 domain/ 은 하위폴더가 없어 결과 불변(additive).
+    디렉토리 부재 → [](신규 clone 무영향). 평면 domain/ 은 하위폴더가 없어 결과 불변(additive).
 
     **frontmatter-less 조용한 skip**: `---` 구분자로 시작하지 않는 `.md`(tmp·메모 등
     다수)는 "페이지 아님" — 개별 경고 없이 조용히 skip 하고 디렉토리별 카운터에만 누적한다.
@@ -1294,7 +1294,7 @@ def _files_for_directory_touch(touch: str) -> list[str]:
 
     git checkout이면 tracked + untracked(non-ignored)를 사용해 ``__pycache__`` 같은 ignore
     산출물이 gap에 섞이지 않게 한다. git이 반환한 파일형 엔트리는 dangling/directory symlink와
-    gitlink도 포함해 그대로 신뢰한다. git을 쓸 수 없는 solo 디렉토리만 실제 일반 파일을 찾는
+    gitlink도 포함해 그대로 신뢰한다. git을 쓸 수 없는 비-git 디렉토리만 실제 일반 파일을 찾는
     파일시스템 순회로 fallback한다. 파일/미해소/checkout 밖 경로는 원 touch 하나를 그대로
     보존한다. 실재하지만 비었거나 모든 파일이 gitignored인 디렉토리는 빈 목록으로 전개돼
     gap에서 사라진다.
@@ -1415,7 +1415,7 @@ def uncovered_paths(
     상한을 적용하며 ``capture --all-gaps``는 이 전체 목록과 같은 정보를 표시한다.
 
     `pages` 미주입 시 `load_pages()`(실 domain/ 스캔·부재 시 []). domain/ 가 비면 *모든*
-    touch 가 uncovered (담당 페이지 0) — solo·신규 clone 무영향(capture 가 gap 절을 띄움).
+    touch 가 uncovered (담당 페이지 0) — 신규 clone 무영향(capture 가 gap 절을 띄움).
     """
     groups = _uncovered_path_groups(
         touches,

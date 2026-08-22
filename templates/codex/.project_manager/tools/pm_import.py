@@ -3062,8 +3062,8 @@ def render_managed_files(
 # ── board.py init 호출 ─────────────────────────────────────────────────────
 
 def run_board_init(dest_root: Path) -> int:
-    """복사된 트리의 board.py init 을 인자 없이 호출 — areas repo 행·local.conf·pm_state·
-    pre-push 훅 생성.
+    """복사된 트리의 셋업(`pm-config init`)을 인자 없이 호출 — areas repo 행·local.conf·
+    pm_state·pre-push 훅 + 이 홈의 첫 슬롯 행 등록.
 
     인자 0 호출은 그대로 성립한다 — init 은 `--prefix` 없이도 이 clone 의 repo 행을 등록하고
     (prefix 칼럼은 빈 채 = 무prefix `T-NNNN` 카테고리), 그 등록에는 `--area`·사용자 승인이
@@ -3080,12 +3080,15 @@ def run_board_init(dest_root: Path) -> int:
     바이트코드 캐싱이 `dest_root/.project_manager/tools/__pycache__/` 를 새로 만든다 — fresh
     import 직후 빌드 산출물이 섞이는 것을 막는다(`test_import_excludes_pycache`).
     """
-    board = dest_root / ".project_manager" / "tools" / "board.py"
-    if not board.exists():
-        print(f"경고: board.py 없음 ({board}) — init 건너뜀.", file=sys.stderr)
+    tools = dest_root / ".project_manager" / "tools"
+    entry = tools / "pm_config.py"
+    if not entry.exists():
+        # 셋업 진입은 pm_config 가 소유한다(board init 위임 + 홈 슬롯 등록). 그 파일이 없으면
+        # 복사가 반쪽이라는 뜻이라 여기서 멈춘다 — board 로 우회하면 등록이 조용히 빠진다.
+        print(f"경고: pm_config.py 없음 ({entry}) — init 건너뜀.", file=sys.stderr)
         return 1
     result = subprocess.run(
-        [sys.executable, str(board), "init"],
+        [sys.executable, str(entry), "init"],
         cwd=str(dest_root),
         stdin=subprocess.DEVNULL,
         env={**os.environ, "PM_NONINTERACTIVE": "1", "PYTHONDONTWRITEBYTECODE": "1"},
@@ -8435,7 +8438,7 @@ def _board_areas_scaffold() -> str:
     """신규 공유 board 의 초기 areas.md (canonical 8칼럼 헤더만·데이터 행 0).
 
     board.py `_areas_header_line()`/`_areas_separator_line()` 와 같은 형식이다. 등록 repo 0 →
-    `registered_prefixes()` 빈 set → 솔로 `T-NNNN`(합류/멀티-repo 등록 전). 이후 `board.py init
+    `registered_prefixes()` 빈 set → 무prefix `T-NNNN`(합류/멀티-repo 등록 전). 이후 `board.py init
     --prefix` / `pm-config repo add` 가 데이터 행을 append 한다(append-only 레지스트리).
     """
     header = "| " + " | ".join(_BOARD_AREAS_COLUMNS) + " |"

@@ -16,8 +16,8 @@
 # 1) 현재 상황 확인 (라이브 — board.md 파일 없어도 동작)
 python3 .project_manager/tools/board.py list
 
-# 2) 세션 이름 정하기 (claim 에 --repo <repo> --slot <N> 로 슬롯 정체성 전달 · 솔로 M=1 은 생략 가능
-#    — 생략 시 $PM_SESSION_NAME > 활성 슬롯 lease 1개면 그 세션 > local.conf session= 순 해소·미해소면 claim 이 --repo/--slot 요구)
+# 2) 세션 이름 정하기 (claim 에 --repo <repo> --slot <N> 로 슬롯 정체성 전달 · 활성 lease 1개면 생략 가능
+#    — 생략 시 $PM_SESSION_NAME > 활성 슬롯 lease 1개면 그 세션 순 해소·미해소면 claim 이 --repo/--slot 요구)
 ```
 
 ### Ticket 잡고 작업
@@ -87,10 +87,9 @@ tickets/
 1. `--repo`/`--slot` 인자 (슬롯 정체성 `<repo>_<N>`)
 2. `$PM_SESSION_NAME` 환경변수 (구 `$CLAUDE_SESSION_NAME` = deprecated alias·여전히 인식)
 3. 활성 슬롯 lease 가 정확히 1개면 그 세션 (단일-lease 유도)
-4. (lease 부재·솔로) `local.conf` 의 `session=` (legacy 폴백)
-5. 미해소 — 귀속 쓰기(claim 등)는 `--repo <repo> --slot <N>` 명시 요구 (fail-loud)
+4. 미해소 — 귀속 쓰기(claim 등)는 `--repo <repo> --slot <N>` 명시 요구 (fail-loud)
 
-`leased ≥2`(모호)면 `local.conf` 층을 건너뛴다 — per-clone 저장값으로 남의 세션에 silent 오귀속하던 것을 차단한다.
+lease 장부에 행이 0개면 이 홈은 아직 슬롯으로 등록되지 않은 것이라 같은 fail-loud 로 떨어진다 — 엔진 흡수(`pm-config update`) 1회가 등록 repo 1개인 홈을 첫 슬롯 행 `<repo>_1` 로 등록한다.
 
 ## 보드 새로고침
 

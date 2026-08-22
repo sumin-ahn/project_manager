@@ -121,13 +121,13 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "a0e05ef4fd453784447e6f8c8c97c71aebb2032aead44a856223545db83dd97b",
-        "count": 2
+        "hash": "798f66df1cc98be3b90953228a070b9b0904653b23e99faa11caa81cbb5a423b",
+        "count": 1
       },
       {
         "kind": "session_stamp",
-        "hash": "bbd8897c765b74afcfd38596b7c9a21e7aee5b317ba9ff8ebc2c87f0bf6ff4db",
-        "count": 1
+        "hash": "a0e05ef4fd453784447e6f8c8c97c71aebb2032aead44a856223545db83dd97b",
+        "count": 2
       },
       {
         "kind": "session_stamp",
@@ -208,6 +208,11 @@
       },
       {
         "kind": "session_stamp",
+        "hash": "07c6c34de8e6beec03d9a4c2dd8c08bf8678f2f7a64e9e783106a1617450ceb0",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
         "hash": "405a4973bbbcfa9b48dd011f791fb0e20058d02dc1eec5849ea6fa87dda2e05b",
         "count": 1
       },
@@ -228,11 +233,6 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "aa384ac9e17e088b171f26e4d5d99de005bf197e423babe076386fc5778e7312",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
         "hash": "bce89b522cadb993ab74753b15481fd8b92adc6d04659542fb27426eb8cdf997",
         "count": 1
       },
@@ -248,17 +248,17 @@
       },
       {
         "kind": "session_stamp",
+        "hash": "ec734703f4870207f86e64b7d1ea8d71c2a7994a3ee0be18ecabadf5f3a15bae",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
         "hash": "f2d492c2d6698a07edc510dda4755acd92ea4c74a29eb1ed49a5e933ce620d74",
         "count": 1
       },
       {
         "kind": "session_stamp",
         "hash": "f2db079bda3b3ed5671d7f46c64ea0650a6134ab5b6d5a7f8ddb11c50cadf984",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "f5cd11408f0e48c46f82d12029ee9d2b7b6b1ba02dfe9c36e0797a76b714b2db",
         "count": 1
       }
     ],
@@ -710,13 +710,13 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "a0e05ef4fd453784447e6f8c8c97c71aebb2032aead44a856223545db83dd97b",
-        "count": 2
+        "hash": "798f66df1cc98be3b90953228a070b9b0904653b23e99faa11caa81cbb5a423b",
+        "count": 1
       },
       {
         "kind": "session_stamp",
-        "hash": "bbd8897c765b74afcfd38596b7c9a21e7aee5b317ba9ff8ebc2c87f0bf6ff4db",
-        "count": 1
+        "hash": "a0e05ef4fd453784447e6f8c8c97c71aebb2032aead44a856223545db83dd97b",
+        "count": 2
       },
       {
         "kind": "session_stamp",
@@ -797,6 +797,11 @@
       },
       {
         "kind": "session_stamp",
+        "hash": "07c6c34de8e6beec03d9a4c2dd8c08bf8678f2f7a64e9e783106a1617450ceb0",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
         "hash": "405a4973bbbcfa9b48dd011f791fb0e20058d02dc1eec5849ea6fa87dda2e05b",
         "count": 1
       },
@@ -817,11 +822,6 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "aa384ac9e17e088b171f26e4d5d99de005bf197e423babe076386fc5778e7312",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
         "hash": "bce89b522cadb993ab74753b15481fd8b92adc6d04659542fb27426eb8cdf997",
         "count": 1
       },
@@ -837,17 +837,17 @@
       },
       {
         "kind": "session_stamp",
+        "hash": "ec734703f4870207f86e64b7d1ea8d71c2a7994a3ee0be18ecabadf5f3a15bae",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
         "hash": "f2d492c2d6698a07edc510dda4755acd92ea4c74a29eb1ed49a5e933ce620d74",
         "count": 1
       },
       {
         "kind": "session_stamp",
         "hash": "f2db079bda3b3ed5671d7f46c64ea0650a6134ab5b6d5a7f8ddb11c50cadf984",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "f5cd11408f0e48c46f82d12029ee9d2b7b6b1ba02dfe9c36e0797a76b714b2db",
         "count": 1
       }
     ],
@@ -1188,17 +1188,17 @@
       },
       {
         "kind": "decision_label",
+        "hash": "6d1cd83e7fa17198698d35c105f868827810cc00c29cbe57e6d1fe023e155063",
+        "count": 1
+      },
+      {
+        "kind": "decision_label",
         "hash": "9ccfd45507d65ac560d59deb2972918b6f1478a2086af2aa16a1ae68d480301b",
         "count": 1
       },
       {
         "kind": "decision_label",
         "hash": "ce138464172455776a53b84932ad7ed00b945ffb75e06ac29908dc67181f0fb6",
-        "count": 1
-      },
-      {
-        "kind": "decision_label",
-        "hash": "e6e7889389956b7d9f2d9680b2ac64dba8eaef2637eee6eb63ad4dcffb64c953",
         "count": 1
       },
       {
@@ -1317,13 +1317,13 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "a0e05ef4fd453784447e6f8c8c97c71aebb2032aead44a856223545db83dd97b",
-        "count": 2
+        "hash": "798f66df1cc98be3b90953228a070b9b0904653b23e99faa11caa81cbb5a423b",
+        "count": 1
       },
       {
         "kind": "session_stamp",
-        "hash": "bbd8897c765b74afcfd38596b7c9a21e7aee5b317ba9ff8ebc2c87f0bf6ff4db",
-        "count": 1
+        "hash": "a0e05ef4fd453784447e6f8c8c97c71aebb2032aead44a856223545db83dd97b",
+        "count": 2
       },
       {
         "kind": "session_stamp",
@@ -1404,6 +1404,11 @@
       },
       {
         "kind": "session_stamp",
+        "hash": "07c6c34de8e6beec03d9a4c2dd8c08bf8678f2f7a64e9e783106a1617450ceb0",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
         "hash": "405a4973bbbcfa9b48dd011f791fb0e20058d02dc1eec5849ea6fa87dda2e05b",
         "count": 1
       },
@@ -1424,11 +1429,6 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "aa384ac9e17e088b171f26e4d5d99de005bf197e423babe076386fc5778e7312",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
         "hash": "bce89b522cadb993ab74753b15481fd8b92adc6d04659542fb27426eb8cdf997",
         "count": 1
       },
@@ -1444,17 +1444,17 @@
       },
       {
         "kind": "session_stamp",
+        "hash": "ec734703f4870207f86e64b7d1ea8d71c2a7994a3ee0be18ecabadf5f3a15bae",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
         "hash": "f2d492c2d6698a07edc510dda4755acd92ea4c74a29eb1ed49a5e933ce620d74",
         "count": 1
       },
       {
         "kind": "session_stamp",
         "hash": "f2db079bda3b3ed5671d7f46c64ea0650a6134ab5b6d5a7f8ddb11c50cadf984",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "f5cd11408f0e48c46f82d12029ee9d2b7b6b1ba02dfe9c36e0797a76b714b2db",
         "count": 1
       }
     ],
@@ -1841,12 +1841,12 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "2c68601134396a8602b3f70c66dbb57c16d4e759fbcfd9ecd25a529735fdcc59",
+        "hash": "2b10d2b40f562299e592bf3940da4879f85e2314ba54b8c5450e404c6f5a84fa",
         "count": 1
       },
       {
         "kind": "session_stamp",
-        "hash": "2b10d2b40f562299e592bf3940da4879f85e2314ba54b8c5450e404c6f5a84fa",
+        "hash": "2c68601134396a8602b3f70c66dbb57c16d4e759fbcfd9ecd25a529735fdcc59",
         "count": 1
       },
       {
@@ -1856,12 +1856,12 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "eb3b6b1cd6782e2bbcbea79da829d093db050729d3671095ef9b9ab0bdd4750e",
+        "hash": "c2b7628474676c3b4a22e29cdbf3b51eb07aad695426932276cc7d3062a0091c",
         "count": 1
       },
       {
         "kind": "session_stamp",
-        "hash": "c2b7628474676c3b4a22e29cdbf3b51eb07aad695426932276cc7d3062a0091c",
+        "hash": "eb3b6b1cd6782e2bbcbea79da829d093db050729d3671095ef9b9ab0bdd4750e",
         "count": 1
       }
     ],
@@ -1883,12 +1883,12 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "5e832401d0cd1c76deafaf4074c0765acb8c5de4c399a4735eb1f02485b2d292",
+        "hash": "43b5393fef973ca7f7476f0eeea833a188b5095ec1fd3e83ee8a31789b7c2bfa",
         "count": 1
       },
       {
         "kind": "session_stamp",
-        "hash": "43b5393fef973ca7f7476f0eeea833a188b5095ec1fd3e83ee8a31789b7c2bfa",
+        "hash": "5e832401d0cd1c76deafaf4074c0765acb8c5de4c399a4735eb1f02485b2d292",
         "count": 1
       },
       {
@@ -1920,11 +1920,6 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "fbb9d43193b54ca78011afca5aca283edcf2557e52c795f1d798e195dc025f47",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
         "hash": "73731e4f54b17eba20ce41b9e84b572fb69e8a9689a255833a05010863ab7e58",
         "count": 1
       },
@@ -1941,6 +1936,11 @@
       {
         "kind": "session_stamp",
         "hash": "c2b7628474676c3b4a22e29cdbf3b51eb07aad695426932276cc7d3062a0091c",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
+        "hash": "fbb9d43193b54ca78011afca5aca283edcf2557e52c795f1d798e195dc025f47",
         "count": 1
       }
     ],
@@ -2120,13 +2120,13 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "a0e05ef4fd453784447e6f8c8c97c71aebb2032aead44a856223545db83dd97b",
-        "count": 2
+        "hash": "798f66df1cc98be3b90953228a070b9b0904653b23e99faa11caa81cbb5a423b",
+        "count": 1
       },
       {
         "kind": "session_stamp",
-        "hash": "bbd8897c765b74afcfd38596b7c9a21e7aee5b317ba9ff8ebc2c87f0bf6ff4db",
-        "count": 1
+        "hash": "a0e05ef4fd453784447e6f8c8c97c71aebb2032aead44a856223545db83dd97b",
+        "count": 2
       },
       {
         "kind": "session_stamp",
@@ -2207,6 +2207,11 @@
       },
       {
         "kind": "session_stamp",
+        "hash": "07c6c34de8e6beec03d9a4c2dd8c08bf8678f2f7a64e9e783106a1617450ceb0",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
         "hash": "405a4973bbbcfa9b48dd011f791fb0e20058d02dc1eec5849ea6fa87dda2e05b",
         "count": 1
       },
@@ -2227,11 +2232,6 @@
       },
       {
         "kind": "session_stamp",
-        "hash": "aa384ac9e17e088b171f26e4d5d99de005bf197e423babe076386fc5778e7312",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
         "hash": "bce89b522cadb993ab74753b15481fd8b92adc6d04659542fb27426eb8cdf997",
         "count": 1
       },
@@ -2247,17 +2247,17 @@
       },
       {
         "kind": "session_stamp",
+        "hash": "ec734703f4870207f86e64b7d1ea8d71c2a7994a3ee0be18ecabadf5f3a15bae",
+        "count": 1
+      },
+      {
+        "kind": "session_stamp",
         "hash": "f2d492c2d6698a07edc510dda4755acd92ea4c74a29eb1ed49a5e933ce620d74",
         "count": 1
       },
       {
         "kind": "session_stamp",
         "hash": "f2db079bda3b3ed5671d7f46c64ea0650a6134ab5b6d5a7f8ddb11c50cadf984",
-        "count": 1
-      },
-      {
-        "kind": "session_stamp",
-        "hash": "f5cd11408f0e48c46f82d12029ee9d2b7b6b1ba02dfe9c36e0797a76b714b2db",
         "count": 1
       }
     ],

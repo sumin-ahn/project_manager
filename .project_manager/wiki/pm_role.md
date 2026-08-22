@@ -25,8 +25,7 @@ PM 역할의 정적 운영 매뉴얼이다. PM 역할은 보드 운영·분할·
    · task: `.project_manager/.local/tasks/<task>/pm_state.md` (세션보다 오래 사는 연속성 앵커)
      신규 task는 `/pm-bootstrap --task <이름>` 진입 즉시 생성되므로 호출 전에는 없어도 정상
    · slot: `.project_manager/.local/slots/<repo>_<N>/pm_state.md`
-     (`<repo>_<N>` = worktree `work/<repo>_<N>` basename) · git-ignored
-   · solo: `wiki/pm_state.md` legacy 폴백
+     (`<repo>_<N>` = lease 장부 행의 session 값) · git-ignored
 3) /pm-bootstrap dump (CLI 한 번) — 아래를 한꺼번에 surface:
    · 커맨드 카드 — 이 세션이 쓸 전 커맨드를 정체성 채워 dump(커맨드 표기 단일 진실)
    · 차수 · 직전 handoff entry 본문 · 남은작업(self-sufficient)
@@ -44,13 +43,13 @@ PM 역할의 정적 운영 매뉴얼이다. PM 역할은 보드 운영·분할·
 **운영면:**
 - task 모드: 진행/남은작업은 per-task `pm_state.md`, 연속성은 `(task:<이름>)` handoff entry, 작업공간은 task 보유 슬롯 집합. task-only 부트스트랩은 전역 auto-slot을 쓰지 않는다.
 - slot 모드: 내 티켓은 `board.py list --mine`, 진행/남은작업은 per-slot `pm_state.md`, 연속성은 자기 슬롯 태그 handoff entry. 자기 공간만 관리한다.
-- 공유: 타 PM은 부트스트랩 대시보드 slot 1줄만 본다. `log/current.md`는 필요한 슬롯 태그 entry만 검색하고 평시 통독하지 않는다. 전체 보드 `board.py list --all`은 열람용이며 무인자 기본 뷰는 내 스트림이다. 솔로(M=1)는 대시보드·슬롯 태그가 무의미하다.
+- 공유: 타 PM은 부트스트랩 대시보드 slot 1줄만 본다. `log/current.md`는 필요한 슬롯 태그 entry만 검색하고 평시 통독하지 않는다. 전체 보드 `board.py list --all`은 열람용이며 무인자 기본 뷰는 내 스트림이다. 슬롯이 하나뿐이면 대시보드에 내 슬롯 1줄만 뜬다.
 
 `log/current.md`의 complete entry는 다음 세션이 그 entry만 읽고도 완료 구간의 무엇을·왜·어떻게 검증했는지 재구성할 수 있는 수준으로 서술한다. `ticket_finish.py`가 만든 `<PM 손>` 골격을 결과 나열로만 두지 말고 결정 이유·핵심 변경·회귀 evidence까지 채우며, compaction 경계에서 그 연속성이 부족하면 `pm_log.py checkpoint --task <이름> [--trigger compaction|manual]`로 보충 골격을 append한 뒤 서사를 PM 손으로 완성한다.
 
 **현재 진실:** `architecture.md`가 현재 아키텍처 단일 진실이다. `decisions/` ADR은 *왜*의 히스토리이며 현재 구속력이 없다. 옛 ADR과 현재 의도/실측이 충돌하면 `architecture.md`를 따르고, architect가 architecture 갱신과 ADR amend/supersede를 한다. `architecture.md`·`status.md` content-truth(구조·구현상태 판정·비고)는 architect가 유지하고 PM은 점검한다.
 
-**세션 정체성:** canonical 문자열은 `<repo>_<N>`이며 board/리스 조작에는 `--repo <repo> --slot <N>`을 명시한다. 실값은 부트스트랩 카드가 채우므로 외우지 않는다. 솔로는 `--repo/--slot` 불요이며 env `PM_SESSION_NAME`·단일 등록/단일 lease 자동 해소(§세션 식별 규칙 — local.conf 폴백 폐지).
+**세션 정체성:** canonical 문자열은 `<repo>_<N>`이며 board/리스 조작에는 `--repo <repo> --slot <N>`을 명시한다. 실값은 부트스트랩 카드가 채우므로 외우지 않는다. 활성 lease 가 1개면 `--repo/--slot` 없이 그 행으로 해소되며 env `PM_SESSION_NAME`이 그보다 우선한다(§세션 식별 규칙 — local.conf 폴백 폐지).
 
 ## 찾아가는 법
 
@@ -231,12 +230,14 @@ PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비
 
 ## 세션 식별 규칙
 
-- PM canonical 정체성은 `<repo>_<N>`이며 board/리스 조작에는 `--repo <repo> --slot <N>`을 명시한다. 값은 부트스트랩 카드가 채운다. 솔로는 `--repo/--slot` 불요.
+- PM canonical 정체성은 `<repo>_<N>`이며 board/리스 조작에는 `--repo <repo> --slot <N>`을 명시한다. 값은 부트스트랩 카드가 채운다. 활성 lease 가 1개면 생략 가능하다.
 - 구현 세션은 짧은 식별자를 `$PM_SESSION_NAME=<name>`으로 바인딩한다.
 - orchestrator 서브에이전트 라벨은 `orch-dev-T<NNNN>` / `orch-review-T<NNNN>` 류 free-form이다. board 조작은 PM이 하므로 서브는 claim하지 않는다. board 귀속이 필요하면 `$PM_SESSION_NAME`만 바인딩한다(claim 플래그 없음).
 
 세션명·ticket prefix는 저장하지 않고 다음 순서로 유도한다:
 `명시(--repo/--slot·--prefix) > $PM_SESSION_NAME(env·CLAUDE_SESSION_NAME alias) > lease 장부에 leased 슬롯이 정확히 1개면 그 세션(count-based 유도)`. prefix 는 세션 repo → areas 레지스트리로 해소한다.
+
+lease 장부에 행이 하나도 없는 홈은 **아직 슬롯으로 등록되지 않은 것**이라 귀속 조작이 fail-loud 한다. `/pm-update` 를 1회 실행하면 등록 repo 가 1개인 홈이 자기 자신을 첫 슬롯 행(`<repo>_1`)으로 등록한다(신규 채택은 `pm-config init` 이 그 자리에서 등록한다).
 
 `local.conf session=`/`prefix=` 폴백은 폐지되었다 — 진실은 lease 장부와 areas 레지스트리다. 기존 채택자는 conf 에서 두 키를 제거하고 `board init` 재실행으로 이 clone 의 repo 행 등록을 갱신한다. 모호(leased ≥2·무명시)한 귀속 조작(claim/complete/unclaim/release/new owner)은 **fail-loud**하며 `--repo <repo> --slot <N>` 명시를 요구한다. 조회 whoami/status는 `(비바인딩)`을 표시한다. 동적 세션 목록은 [`pm_state.md`](pm_state.md) §"세션 식별 (현재까지 사용된 이름)"에 있고 `/pm-handoff`가 갱신한다.
 

@@ -164,9 +164,9 @@ def test_pm_import_harness_runner_uses_utf8_watchdog(pm_import, monkeypatch):
 
 
 def test_pm_import_board_init_passes_utf8(pm_import, monkeypatch, tmp_path):
-    board = tmp_path / ".project_manager" / "tools"
-    board.mkdir(parents=True)
-    (board / "board.py").write_text("# stub", encoding="utf-8")
+    tools = tmp_path / ".project_manager" / "tools"
+    tools.mkdir(parents=True)
+    (tools / "pm_config.py").write_text("# stub", encoding="utf-8")
     rec = _Recorder()
     monkeypatch.setattr(pm_import.subprocess, "run", rec)
     pm_import.run_board_init(tmp_path)

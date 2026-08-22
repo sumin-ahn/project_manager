@@ -294,7 +294,7 @@ sequenceDiagram
 작업 흐름과 실제 코드 작업공간을 분리한다.
 
 여러 repo 를 하나의 PM 홈(공유 보드와 위키)에 묶어 여러 세션이 같이 쓸 수 있다. 혼자 한 repo 만
-쓰면 별도 설정 없이 solo 로 동작한다. 사용자는 보통 "4번
+쓰면 슬롯 1개짜리 홈이 되고 별도 설정이 필요 없다. 사용자는 보통 "4번
 slot 받아서 doc task 로 작업하자"처럼 말하면 되고, PM 이 slot 대여와 보드 귀속을 처리한다.
 상세는 [`docs/multi-repo.md`](docs/multi-repo.md)에 있다.
 

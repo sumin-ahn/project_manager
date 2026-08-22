@@ -95,20 +95,44 @@ _HELP_FLAG_RE = re.compile(r"(?<![\w-])(?:--help|-h)(?![\w-])")
 
 
 # ── 부트스트랩 카드 렌더 (LLM 아님·순수 엔진 재현) ──────────────────────────────
-def _render_solo_command_card(home: Path) -> str:
-    """home 의 pm_bootstrap 엔진으로 솔로(단일 세션) 커맨드 카드를 렌더한다 (LLM 아님·순수 엔진).
+def _home_slot_identity(home: Path) -> dict | None:
+    """home 의 lease 장부 행 → 카드 정체성 dict (행이 없으면 None).
+
+    fresh 채택자는 import 가 홈 자신을 첫 슬롯 행으로 등록하므로, 라이브 프롬프트가 받는 카드도
+    **그 행의 실값**으로 렌더돼야 실제 채택자가 보는 카드와 같다(정체성을 지어내지 않는다).
+    """
+    ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
+    if not ledger.is_file():
+        return None
+    rows = json.loads(ledger.read_text(encoding="utf-8")).get("leases") or []
+    leased = [row for row in rows if row.get("state") == "leased" and row.get("session")]
+    if len(leased) != 1:
+        return None
+    row = leased[0]
+    session = row["session"]
+    return {
+        "session": session,
+        "repo": row.get("repo"),
+        "slot": row.get("slot"),
+        "slot_number": session.rsplit("_", 1)[-1],
+        "slot_path": str(home),
+    }
+
+
+def _render_command_card(home: Path) -> str:
+    """home 의 pm_bootstrap 엔진으로 이 홈의 커맨드 카드를 렌더한다 (LLM 아님·순수 엔진).
 
     부트스트랩이 정체성 채워 dump 하는 커맨드 카드(ADR-0045)를 라이브 LLM 에 *유일한 컨텍스트*로
-    주기 위해 코드로 재현한다. fresh 단일 adopter 는 솔로(identity=None)라 `--session` 없는 형태로
-    분기한다. `_build_command_card_markdown` 은 순수 함수(identity·모듈 상수 `_CARD_TOOL_INVOKE`
-    만 사용·인스턴스 상태 무의존)라 부작용 0 — 그래서 기본 생성자로 인스턴스화해 호출한다.
+    주기 위해 코드로 재현한다. 정체성은 장부 행에서 오고(행이 없으면 미해소 형태로 분기)
+    `_build_command_card_markdown` 은 순수 함수(identity·모듈 상수 `_CARD_TOOL_INVOKE` 만 사용·
+    인스턴스 상태 무의존)라 부작용 0 — 그래서 기본 생성자로 인스턴스화해 호출한다.
     """
     path = home / ".project_manager" / "tools" / "pm_bootstrap.py"
     # 유니크 모듈명 — 워크트리 자신의 pm_bootstrap 과 sys.modules 충돌 방지(경로별 격리).
     spec = importlib.util.spec_from_file_location(f"_card_bootstrap_{abs(hash(str(path)))}", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod.PmBootstrap()._build_command_card_markdown(None)
+    return mod.PmBootstrap()._build_command_card_markdown(_home_slot_identity(home))
 
 
 def _usability_prompt(card: str) -> str:
@@ -594,7 +618,7 @@ def test_command_card_usability_claude(tmp_path):
     """
     def run_attempt(attempt: int) -> tuple[bool, str]:
         dest = _import_attempt(tmp_path, "claude", attempt)
-        prompt = _usability_prompt(_render_solo_command_card(dest))
+        prompt = _usability_prompt(_render_command_card(dest))
         proc, timeout_detail = _run_live_or_timeout(
             ["claude", "-p", "--model", CLAUDE_MODEL,
              "--allowedTools", "Bash",
@@ -630,7 +654,7 @@ def test_command_card_usability_opencode_best_effort(tmp_path):
     """
     def run_attempt(attempt: int) -> tuple[bool, str]:
         dest = _import_attempt(tmp_path, "opencode", attempt)
-        prompt = _usability_prompt(_render_solo_command_card(dest))
+        prompt = _usability_prompt(_render_command_card(dest))
         proc, timeout_detail = _run_live_or_timeout(
             ["opencode", "run", "--agent", "build", "--dir", str(dest),
              "--dangerously-skip-permissions", "-m", LIVE_MODEL,
@@ -652,21 +676,21 @@ def test_command_card_usability_opencode_best_effort(tmp_path):
 # 결정적으로 가드한다 — 라이브 미실행 시에도 mechanics 구조를 회귀가 잡는다.
 
 
-def test_render_solo_command_card_has_lifecycle_commands():
-    """솔로 카드 렌더가 lifecycle 커맨드(new/promote/claim/complete)+핸드오프를 담고 --session 미포함."""
-    card = _render_solo_command_card(REPO)
+def test_render_command_card_has_lifecycle_commands():
+    """카드 렌더가 lifecycle 커맨드(new/promote/claim/complete)+핸드오프를 담고 --session 미포함."""
+    card = _render_command_card(REPO)
     for token in (
         "board.py new", "board.py promote", "board.py claim",
         "board.py complete", "pm_handoff.py",
     ):
-        assert token in card, f"솔로 카드에 '{token}' 부재"
-    # 솔로(정체성 불요) 분기 — --session placeholder 가 박히지 않아야(fresh 단일 adopter 형상).
-    assert "솔로" in card and "--session <session>" not in card
+        assert token in card, f"카드에 '{token}' 부재"
+    # 정체성 헤더는 실값 또는 미해소 명시 — 폐지된 `--session` placeholder 는 어느 쪽에도 없다.
+    assert "정체성:" in card and "--session <session>" not in card
 
 
 def test_usability_prompt_embeds_card_and_sequence():
     """프롬프트가 카드 전문 + 표준 lifecycle 시퀀스(create/fill/promote/claim/complete)를 담고 --help 를 금한다."""
-    card = _render_solo_command_card(REPO)
+    card = _render_command_card(REPO)
     prompt = _usability_prompt(card)
     # 카드가 유일 컨텍스트로 임베드된다(진입문서 경로 미제공).
     assert card in prompt
@@ -686,7 +710,7 @@ def test_usability_prompt_uses_gate_log_path():
     spurious RED 난다. 정확 경로를 durable 하게 고정(다음 갱신자가 다시 어긋내지 않게)·짧은 경로
     단독 지시가 없는지도 확인.
     """
-    prompt = _usability_prompt(_render_solo_command_card(REPO))
+    prompt = _usability_prompt(_render_command_card(REPO))
     assert _ADOPTER_LOG_PATH == ".project_manager/wiki/log/current.md"  # 게이트 실측 경로(단일 진실).
     assert _ADOPTER_LOG_PATH in prompt, "프롬프트가 게이트 로그 경로를 안 지시(complete spurious RED 위험)"
     # 짧은 경로 단독(`.project_manager` 접두 없는 " wiki/log/current.md")로 지시하지 않는다.
@@ -1080,7 +1104,7 @@ def test_judge_claude_passes_full_op_sequence_with_done(tmp_path):
 
 def test_help_invocation_scan_is_card_safe():
     """카드를 에코해도 --help 호출 오탐 0(header 의 '--help 불요'는 `.py` 줄 아님)·실제 호출은 탐지."""
-    card = _render_solo_command_card(REPO)
+    card = _render_command_card(REPO)
     assert _help_invocation_lines(card) == [], "카드 에코가 --help 호출로 오탐됨(카드-에코 무해 위반)"
     assert _help_invocation_lines("python3 .project_manager/tools/board.py claim T-1 --help")
     assert _help_invocation_lines("python3 .project_manager/tools/board.py claim T-1 -h")

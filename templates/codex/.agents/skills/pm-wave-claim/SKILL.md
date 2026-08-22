@@ -24,5 +24,5 @@ python3 .project_manager/tools/board.py lint
 # 3. PM 검증 (아래 체크리스트)
 
 # 4. 통과 시 claim
-python3 .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 솔로(M=1)면 생략 가능
+python3 .project_manager/tools/board.py claim T-NNNN --repo <repo> --slot <N>   # 활성 lease 1개면 생략 가능
 ```

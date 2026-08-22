@@ -22,8 +22,8 @@
 
 1. **이 문서(AGENTS.md·lite 코어)** — 이미 로드된 프로젝트 규칙·형상.
 2. **현재 정체성의 `pm_state`** — task는 `.project_manager/.local/tasks/<task>/pm_state.md`,
-   slot은 `.project_manager/.local/slots/<repo>_<N>/pm_state.md`, 솔로는 `wiki/pm_state.md`
-   legacy 폴백. 신규 task는 bootstrap 진입 전 파일이 없어도 정상이다.
+   slot은 `.project_manager/.local/slots/<repo>_<N>/pm_state.md`다(둘 다 git-ignored).
+   신규 task는 bootstrap 진입 전 파일이 없어도 정상이다.
 3. **`/pm-bootstrap` dump 한 번** — board·git·차수·직전 handoff 본문·남은 작업을 한꺼번에
    surface한다. Python backbone은 `{{PY}} .project_manager/tools/pm_bootstrap.py`다.
 <!-- pm-bootstrap-preread:end -->
@@ -35,7 +35,7 @@
 **현재 진실:** [`architecture.md`](.project_manager/wiki/architecture.md)는 현재 아키텍처 단일
 진실이며, 옛 ADR 또는 현재 의도·실측과 충돌하면 기준으로 따른다. 바뀐 것은 읽는 시점뿐이다.
 
-세션명 canonical은 **`<repo>_<N>`**이다. `board.py ... --repo <repo> --slot <N>`을 쓰며 솔로는 생략 가능하다. 위임 라벨은 `orch-dev-TNNNN`/`orch-review-TNNNN`. 첫 turn에는 board 1줄 + 직전 요약 3~5줄 + 다음 옵션 + *무엇부터?* 결정 요청을 보고한다. 기계 dump는 `pm_bootstrap.py`.
+세션명 canonical은 **`<repo>_<N>`**이다. `board.py ... --repo <repo> --slot <N>`을 쓰며 활성 lease 1개면 생략 가능하다. 위임 라벨은 `orch-dev-TNNNN`/`orch-review-TNNNN`. 첫 turn에는 board 1줄 + 직전 요약 3~5줄 + 다음 옵션 + *무엇부터?* 결정 요청을 보고한다. 기계 dump는 `pm_bootstrap.py`.
 
 ## 2. 작업 원칙 (반드시)
 
@@ -53,7 +53,7 @@
 
 - **1차=`task` tool** — `subagent_type`(=`developer`|`code-reviewer`|`architect`)·`description`(한 줄)·`prompt`(role 프롬프트)를 전달한다. opencode가 `.opencode/agents/*.md` subagent를 별도 자식 세션(fresh ctx·200K)에서 실행한다. 권한·모델은 subagent `permission:`/`model:`이 정하므로 `--agent`/`-m` 분기 불필요.
 - role: developer=쓰기(코드+테스트), code-reviewer=독립 검토+라운드 파일 쓰기(제품 코드 수정 금지), architect=설계+라운드 파일 쓰기. 각 역할은 위임 프롬프트가 지정한 `NN-<역할>.md` 하나에만 쓴다.
-- **사전조건:** ticket claim(canonical `<repo>_<N>`, 솔로 M=1 생략 가능), depends_on done, touches 명시, 검증 가능한 DoD. **병렬은 touches가 disjoint일 때만** 한다.
+- **사전조건:** ticket claim(canonical `<repo>_<N>`), depends_on done, touches 명시, 검증 가능한 DoD. **병렬은 touches가 disjoint일 때만** 한다.
 - dev prompt: "T-NNNN 구현. 본문 단일진실(`board.py show T-NNNN`). board/status/log 는 PM — 너는 코드+테스트. 보고: 변경파일·테스트수·회귀결과·DoD evidence."
 - reviewer 후 PM 직접 fix(1줄·1패턴)/dev 재작업(여러 줄)/별도 ticket(범위 외). reviewer의 should-fix도 흐름 cross-check한다.
 - **폴백**(headless·CI·task tool 미노출): `opencode run --agent <developer|architect|code-reviewer> --format json "<프롬프트>"`. 역할 카드는 `mode: all`이라 primary 실행에서도 같은 `model:`/`permission:`을 쓰며 build/plan으로 축약하지 않는다. `pm_delegate.py` cross 실행은 카드가 없는 타 하네스 adopter에서도 같은 역할을 런타임 config로 주입한다. 병렬 폴백은 세션 DB 락 가능성이 있어 순차가 안전하다.

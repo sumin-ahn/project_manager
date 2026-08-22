@@ -14,6 +14,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from _home_slot import HOME_SESSION, HOME_SLOT, seed_areas, seed_home_slot
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -24,11 +25,19 @@ def _run_handoff(inst, **kw):
     """핸드오프 실행 — 승인 게이트에 정식 승인값을 실어 통과시킨다.
 
     이 모듈의 축은 승인 게이트가 아니다(그 축은 ``tests/test_pm_handoff_user_ack.py``가
-    소유한다). 승인 대상값은 task > 슬롯 이름 > legacy solo sentinel 순으로 정해진다.
+    소유한다). 승인 대상값은 task > 그 슬롯의 장부 정체성이다.
+
+    pm_state 를 명시 주입한 hermetic 인스턴스는 run() 이 슬롯 자동해소를 건너뛰므로, 그 경우에만
+    등록된 홈 슬롯을 실어 준다 — bare 진입(자동해소 경로)을 검증하는 테스트는 그대로 둔다.
     """
+    if (kw.get("task") is None and "worktree_slot" not in kw
+            and getattr(inst, "_pm_state_file_explicit", False)):
+        kw["worktree_slot"] = HOME_SLOT
     if "user_ack" not in kw:
         slot = kw.get("worktree_slot")
-        kw["user_ack"] = kw.get("task") or (slot.rsplit("/", 1)[-1] if slot else "solo")
+        kw["user_ack"] = kw.get("task") or (
+            slot.rsplit("/", 1)[-1] if slot and slot != HOME_SLOT else HOME_SESSION
+        )
     return inst.run(**kw)
 
 def _load(name: str):
@@ -41,6 +50,17 @@ def _load(name: str):
 @pytest.fixture(scope="module")
 def handoff():
     return _load("pm_handoff")
+
+
+@pytest.fixture(autouse=True)
+def _registered_home(handoff, tmp_path, monkeypatch):
+    """모든 테스트의 기본 형상 = **등록된 홈**(N=1 슬롯 행) — 정체성이 장부에서 온다.
+
+    다른 형상을 보는 테스트는 같은 파일들을 덮어써서 자기 형상을 만든다(모호·미등록).
+    """
+    monkeypatch.setattr(handoff, "REPO", tmp_path)
+    seed_areas(tmp_path)
+    seed_home_slot(tmp_path)
 
 
 def _make_handoff_missing_state(handoff, tmp_path: Path):
@@ -157,13 +177,15 @@ def test_resolve_session_wt_slot_explicit_passthrough(handoff, tmp_path):
     assert handoff._resolve_session_worktree_slot("work/project_manager_2") == ("work/project_manager_2", None)
 
 
-def test_resolve_session_wt_slot_solo_is_none(handoff, tmp_path):
-    """등록 repo 0개(solo·멀티-PM 미셋업) → (None, None) (현행 폴백 유지)."""
+def test_resolve_session_wt_slot_unregistered_fails_loud(handoff, tmp_path):
+    """등록 repo 0개(셋업 전) → (None, 사유) — 조용한 폴백 없이 명시를 요구한다."""
     areas = tmp_path / "areas.md"
     leases = tmp_path / "worktree-leases.json"
     _write_areas(areas, [])
     _write_leases(leases, [("project_manager", 1)])
-    assert handoff._resolve_session_worktree_slot(None, areas, leases) == (None, None)
+    slot, msg = handoff._resolve_session_worktree_slot(None, areas, leases)
+    assert slot is None
+    assert msg is not None and "등록 repo 0개" in msg
 
 
 def test_resolve_session_wt_slot_single_self_host_resolves(handoff, tmp_path):
@@ -248,21 +270,18 @@ def test_run_aborts_loud_on_ambiguous_multipm(handoff, tmp_path, monkeypatch, ca
     assert log_file.read_text(encoding="utf-8") == before_log
 
 
-def test_run_solo_not_aborted_no_multipm_setup(handoff, tmp_path, monkeypatch, capsys):
-    """bare run() + solo(멀티-PM 미셋업·areas 부재) → guard 통과(fail-soft·현행 무변경).
+def test_run_registered_home_not_aborted(handoff, tmp_path, capsys):
+    """bare run() + 등록된 홈(N=1 행) → guard 통과·rc 0.
 
-    solo 는 모호 아님 → 중단 안 함. pm_state legacy 부재라 3·4 skip 후 rc 0 으로 끝난다
-    (기존 fail-soft 동작·guard 가 솔로를 깨지 않음을 입증)."""
-    monkeypatch.setattr(handoff, "REPO", tmp_path)
-    # areas/leases 를 *깔지 않음* → 등록 repo 0개 = solo.
+    슬롯이 1개인 홈도 자기 행으로 해소되므로 중단 사유가 없다. pm_state legacy 부재라 3·4 는
+    skip 되고 log skeleton 은 정상 append 된다."""
     inst, log_file = _bare_handoff(handoff, tmp_path)
 
     rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=True)
 
-    assert rc == 0  # solo 는 중단 없이 진행.
+    assert rc == 0
     err = capsys.readouterr().err
     assert "슬롯 해소 모호" not in err  # 모호 에러 안 남.
-    # solo 폴백으로 log skeleton 은 정상 append(현행 동작 보존).
     assert "PM 5차" in log_file.read_text(encoding="utf-8")
 
 
@@ -347,21 +366,18 @@ def test_run_idle_slot1_threads_to_leased_slot2(handoff, tmp_path, monkeypatch):
     assert "slot=`work/project_manager_2`" in log_file.read_text(encoding="utf-8")
 
 
-def test_run_solo_no_slot_threaded_repo_cwd_unchanged(handoff, tmp_path, monkeypatch):
-    """solo `{1:leased}` 미셋업(areas 부재) → 실행 슬롯 미세팅·회귀cwd REPO 폴백(현행 무변경).
+def test_run_home_row_threads_home_slot_and_repo_cwd(handoff, tmp_path):
+    """등록된 홈(N=1 행) → 실행 슬롯 = 홈 행의 `slot` · 회귀cwd = PM 홈 자신.
 
-    solo 는 _resolve_session_worktree_slot→(None,None) → worktree_slot 안 박힘 →
-    _regression_cwd 가 REPO 폴백(self-host solo 회귀 위치 보존). entry 에 worktree 줄 없음."""
-    monkeypatch.setattr(handoff, "REPO", tmp_path)
-    # areas 미설치 → 등록 repo 0개 = solo.
+    "행이 없으니 이 트리겠지" 폴백이 아니라 **행이 홈을 가리켜서** 같은 값이 나온다 — 값의
+    출처가 바뀌었고 결과는 종전과 같다."""
     inst, log_file, captured = _bare_handoff_capturing_cwd(handoff, tmp_path)
 
     rc = _run_handoff(inst, session_num=5, wave_summary="x", dry_run=False, skip_pytest=False)
 
     assert rc == 0
-    assert inst._worktree_slot is None  # 미세팅(현행 유지).
-    assert captured["cwd"] == str(tmp_path)  # REPO 폴백(슬롯 미해소).
-    assert "slot=`" not in log_file.read_text(encoding="utf-8")  # worktree 줄 생략(lean).
+    assert inst._worktree_slot == HOME_SLOT
+    assert captured["cwd"] == str(tmp_path)
 
 
 # ── 앵커 부재 fail-soft — step3 만 스킵, 핸드오프 완주 (T-0243·finance_dev D3) ──────

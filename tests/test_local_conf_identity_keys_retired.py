@@ -396,9 +396,8 @@ def test_legacy_conf_session_fails_loud_on_attributed_write(board):
     board.LOCAL_CONF.write_text(LEGACY_INIT_CONF_HEAD, encoding="utf-8")
     with pytest.raises(SystemExit) as exc:
         board.session_name(required=True)
-    assert str(exc.value) == (
-        "[중단] 세션 미해소 — 활성 슬롯이 여럿이거나 바인딩이 없다. 귀속 조작은 "
-        "`--repo <repo> --slot <N>` 로 세션을 명시하라 (예: `--repo project_manager --slot 1`).")
+    assert str(exc.value) == board.UNREGISTERED_SESSION_ABORT
+    assert "`--repo <repo> --slot <N>`" in str(exc.value)
 
 
 def test_legacy_conf_prefix_does_not_namespace_new_tickets(board):

@@ -318,7 +318,7 @@ def _load_pm_handoff():
         mod = _load_module_from_path(
             hp_path, "pm_handoff.py", verifier=_verify_engine_rev,
         )
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 솔로 경로를 깨지 않는다.
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패는 기본 경로를 깨지 않는다.
         if _is_engine_rev_skew(exc):
             raise  # pm_handoff 가 중첩 로드한 형제 skew 는 fail-loud(삼키지 않는다).
         return None
@@ -352,7 +352,8 @@ def _regression_cwd(worktree_slot: str | None = None) -> str:
       - `worktree_slot`(multi-PM 명시) 가 있으면 `REPO / worktree_slot`,
       - 없으면 pm_handoff `_regression_cwd` 가 bootstrap `_auto_slot` 으로 단일 self-host
         슬롯을 자동해소(`work/<repo>_<N>`),
-      - 그것도 없으면(솔로/모호/부재) **현 `REPO` 기본** (fail-soft 폴백·솔로 무변경).
+      - 그것도 없으면(판정 불능 — 모호·엔진 사본 부재) **현 `REPO`**. 등록된 홈은 홈 자신이
+        슬롯 행이라 위 층에서 해소된다.
 
     pm_handoff 를 동적 로드해 그 함수에 위임하되(DRY — `_auto_slot` 복제 0) **앵커는 이 도구의
     `REPO` 를 넘긴다**(`repo_root=`). 그 인자를 생략하면 해소가 pm_handoff 모듈의 `REPO` 를 따라
@@ -389,12 +390,12 @@ def _resolve_finish_slot(repo: str | None, slot: int | None) -> tuple[str | None
         `_resolve_explicit_identity_slot` 로 (세션↔repo 조인 검증) 통과 후 결정론적 해소.
       - `(work/<repo>_<N>, None)` — `--repo`/`--slot` 둘 다 부재인데 default-1/단독/idle-필터로
         자동해소됨(no-flag 기본 불변).
-      - `(None, None)` — solo/미해소(멀티-PM 미셋업) → 호출부 REPO 런타임 폴백(현행 100% 보존).
+      - `(None, None)` — 판정 불능(pm_handoff 사본 부재) → 호출부 REPO 런타임 폴백.
       - `(None, error_msg)` — **진짜 모호**(멀티-PM under-specified·repo≥2·slot1 부재 비단독) 또는
         (명시 repo/slot 이 리스 장부와 조인 불일치) → 호출부 fail-loud.
 
     `repo`/`slot` 둘 다 `None`(kind='none')이면 기존 no-flag 자동해소로 위임 — pm_handoff
-    부재/로드 실패는 fail-soft `(None, None)`(현행 REPO 폴백·솔로 무변경). `repo`/`slot` 명시인데
+    부재/로드 실패는 fail-soft `(None, None)`(현행 REPO 폴백). `repo`/`slot` 명시인데
     pm_handoff 부재면 검증(리스 조인)을 할 수 없으므로 단순 조립만 해 신뢰한다(현행 폴백 패턴).
     """
     hp = _load_pm_handoff()
@@ -433,7 +434,7 @@ def _default_python() -> str:
 
     Windows 는 venv/Scripts/python.exe, POSIX 는 venv/bin/python. **venv 후보가 존재하면 그대로
     우선**한다 — 이 도그푸딩 머신은 시스템 python3 에 pytest 가 없고 venv 에만 있어, 회귀 측정
-    인터프리터를 보존하려면 venv-first 가 불변이어야 한다(솔로/프레임워크 경로 회귀 0·우선순위 불변).
+    인터프리터를 보존하려면 venv-first 가 불변이어야 한다(프레임워크 자기 회귀 0·우선순위 불변).
 
     venv 가 **없는** 건 에러가 아니라 정상 채택자 경로다 — 시스템 인터프리터에 pytest 가 깔린
     형상에선 venv/ 를 안 만든다. 그때는 `sys.executable`(현재 인터프리터)로 폴백해 그 환경의
@@ -464,9 +465,9 @@ def local_config() -> dict[str, str]:
 # 써야 한다. 해소 체인의 단일 사본은 pm_handoff `_resolve_gate_cmd` 이고 이 도구는 자기 board
 # 로드 seam 만 얹어 위임한다(아래 `_resolve_per_repo_test_cmd`).
 #
-# **솔로/프레임워크 자기 회귀(=현행 `pytest tests/ -q` venv 실행)는 반드시 보존**한다:
+# **프레임워크 자기 회귀(=현행 `pytest tests/ -q` venv 실행)는 반드시 보존**한다:
 # 어느 층도 값을 주지 못하면 None 을 돌려, 호출부가 현행 argv 를 그대로 쓰게 한다(board 의
-# 솔로 폴백 `pytest -q` 와 달리 venv 인터프리터·`tests/` 경로를 보존 — 도그푸딩 불변).
+# 기본 폴백 `pytest -q` 와 달리 venv 인터프리터·`tests/` 경로를 보존 — 도그푸딩 불변).
 
 def _load_board_module():
     """board.py 를 경로 import 해 모듈로 반환한다 (실패 시 None).
@@ -523,14 +524,14 @@ def _guard_worktree_misanchor() -> bool:
 
 
 def _resolve_per_repo_test_cmd() -> str | None:
-    """활성 회귀 게이트 명령(문자열)을 해소한다. 해소 실패면 None(솔로 폴백).
+    """활성 회귀 게이트 명령(문자열)을 해소한다. 해소 실패면 None(기본 폴백).
 
     해소 체인 — 앞선 층이 비어 있지 않은 값을 주면 거기서 멈춘다:
 
       1. areas.md 활성 **prefix** 행의 `test_cmd`   (multi-repo 네임스페이스 형상)
       2. areas.md 활성 **repo** 행의 `test_cmd`     (prefix 칼럼이 빈 무prefix 형상)
       3. `local.conf` 의 `test_cmd`                 (per-clone 명시 설정)
-      4. None → 호출부가 솔로 `pytest tests/ -q` venv argv (도그푸딩 불변)
+      4. None → 호출부가 기본 `pytest tests/ -q` venv argv (도그푸딩 불변)
 
     **체인 자체는 pm_handoff `_resolve_gate_cmd` 가 소유한다** — 사본을 두지 않고 동적 로드해
     위임한다(`_regression_cwd` 위임과 같은 방향·DRY). 해소 함수가 이 도구에만 있고 pm_handoff
@@ -538,7 +539,7 @@ def _resolve_per_repo_test_cmd() -> str | None:
     다시 갈린다. board 모듈은 **이 도구의 seam**(`_load_board_module`)이 준다 — areas/
     local.conf 해소를 hermetic 하게 가로채는 기존 테스트 seam 이 그대로 살아 있다.
 
-    pm_handoff 부재/로드 실패는 None(솔로 폴백·fail-soft·현행 보존)이고, 형제 사본 skew 는
+    pm_handoff 부재/로드 실패는 None(기본 폴백·fail-soft·현행 보존)이고, 형제 사본 skew 는
     fail-loud 로 올린다(`_regression_cwd` 와 동형).
     """
     mod = _load_board_module()
@@ -549,7 +550,7 @@ def _resolve_per_repo_test_cmd() -> str | None:
         return None
     try:
         return hp._resolve_gate_cmd(mod)
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 위임 실패는 솔로 폴백.
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 위임 실패는 기본 폴백.
         if _is_engine_rev_skew(exc):
             raise  # 사본 skew 는 fail-loud(삼키지 않는다).
         return None
@@ -571,21 +572,21 @@ def _resolve_per_repo_test_cmd() -> str | None:
 # 때문이다. 두 미러가 갈리면 `tests/test_regression_gate_resolution.py` 파리티 가드가 red 다.
 _PYTEST_GATE_TOKEN = "pytest"
 
-# 솔로/프레임워크 자기 회귀가 실제로 실행하는 argv 의 표시용 라벨 (dry-run 안내 문구).
-_SOLO_GATE_LABEL = "pytest tests/ -q"
+# 해소 실패 시 실제로 실행하는 기본 argv 의 표시용 라벨 (dry-run 안내 문구).
+_DEFAULT_GATE_LABEL = "pytest tests/ -q"
 
 
 def _gate_is_pytest(gate_cmd: str | None) -> bool:
     """해소된 회귀 명령이 pytest 스위트면 True.
 
-    `None`(해소 실패) = 솔로/프레임워크 자기 회귀 = venv pytest argv 이므로 True.
+    `None`(해소 실패) = 프레임워크 자기 회귀 기본값 = venv pytest argv 이므로 True.
     """
     return gate_cmd is None or _PYTEST_GATE_TOKEN in gate_cmd
 
 
 def _gate_label(gate_cmd: str | None) -> str:
     """회귀 게이트를 사람이 읽는 한 줄로 (안내 출력용)."""
-    return gate_cmd if gate_cmd else _SOLO_GATE_LABEL
+    return gate_cmd if gate_cmd else _DEFAULT_GATE_LABEL
 
 
 def _regression_is_green(output: str, returncode: int, gate_cmd: str | None) -> bool:
@@ -1007,7 +1008,7 @@ def _fallback_ticket_frontmatter(
 # ── domain 연동 (soft 알림) ──────────────────────────────────
 #
 # 순환 없음: domain→board / ticket_finish→board,domain / board 는 둘 다 import 안 함.
-# domain.py 부재(솔로/신규 clone·구버전)·로드 실패 → None (호출부가 graceful skip).
+# domain.py 부재(신규 clone·구버전)·로드 실패 → None (호출부가 graceful skip).
 
 DOMAIN_PY = REPO / ".project_manager" / "tools" / "domain.py"
 
@@ -1036,7 +1037,7 @@ def affected_domain_titles(ticket_id: str, board_py: Path) -> list[tuple[str, bo
 
     각 원소 = `(title, stale)` — stale 은 `domain.page_stale`(True=낡음·False=fresh·
     None=판정불가/unknown). soft step 이 stale True 줄 앞에 ⚠ 를 단다(visibility).
-    domain.py 부재·로드 실패 → None (호출부가 조용히 skip — 솔로/신규 clone 무영향).
+    domain.py 부재·로드 실패 → None (호출부가 조용히 skip — 신규 clone 무영향).
     touches 부재·영향 0 → [](빈 알림). domain.pages_for_touches 재사용(중복 매칭 0).
 
     **소유 repo별 git_runner 1회 생성해 공유** — 페이지 `repo:`를 board의 단일 owner
@@ -1609,7 +1610,7 @@ class TicketFinisher:
         # worktree 슬롯(tests/)에서 돌아야 한다. **즉시 고정하지 않는다** — `regression_cwd`
         # 명시 주입은 그대로 보존(테스트/명시 override)하되, 미지정이면 `__init__` 시점의 REPO
         # 박제 대신 _default_run_pytest 가 런타임에 _regression_cwd() 로 self-host 슬롯을
-        # 자동해소한다(pm_handoff `_regression_cwd` 재사용·솔로는 REPO 폴백 무변경).
+        # 자동해소한다(pm_handoff `_regression_cwd` 재사용·판정 불능은 REPO 폴백).
         self._regression_cwd = str(regression_cwd) if regression_cwd else None
         self._task_workspace = Path(task_workspace) if task_workspace else None
 
@@ -1659,12 +1660,12 @@ class TicketFinisher:
         명령 해소:
           - **해소 성공** — `_resolve_per_repo_test_cmd()`(areas prefix 행 > areas repo 행 >
             local.conf)가 준 문자열을 shell 로 실행(board.py 회귀와 동형·비-Python repo 수용).
-          - **솔로/프레임워크 자기 회귀** — 해소 실패면 현행 그대로
+          - **프레임워크 자기 회귀** — 해소 실패면 현행 그대로
             `[venv_python, -m, pytest, tests/, -q]` venv argv(도그푸딩 불변·하위호환).
 
         cwd 는 런타임 해소— 명시 주입(`regression_cwd` 인자)이 있으면 그 경로,
         없으면 `_regression_cwd()` 가 self-host 단일 슬롯을 자동해소(홈 cwd 에서도 활성
-        worktree 의 tests/ 에서 돌게). 솔로/모호/부재는 REPO 폴백(현행 보존·additive).
+        worktree 의 tests/ 에서 돌게). 판정 불능은 REPO 폴백(현행 보존·additive).
         """
         cwd = self._regression_cwd if self._regression_cwd is not None else _regression_cwd()
         per_repo_cmd = _resolve_per_repo_test_cmd()
@@ -1680,7 +1681,7 @@ class TicketFinisher:
                 cwd=cwd,
             )
         else:
-            # 솔로/프레임워크 자기 회귀 — 현행 venv pytest argv 보존(불변).
+            # 프레임워크 자기 회귀 — 현행 venv pytest argv 보존(불변).
             result = subprocess.run(
                 [str(self._venv_python), "-m", "pytest", "tests/", "-q"],
                 capture_output=True,
@@ -2332,7 +2333,7 @@ class TicketFinisher:
 
         분기 축은 task 여부가 아니라 **해소된 코드 트리가 PM 홈인가**다 — 코드 트리 소비자
         (diff 측정·[4/5] stage·PM-direct 재검)는 전부 `_code_tree()` 하나를 본다. 트리가 PM 홈
-        자신이면(솔로/임베디드) 기존 단일 계획이고, 분리 형상(task 작업공간 또는 해소된 슬롯
+        자신이면(임베디드) 기존 단일 계획이고, 분리 형상(task 작업공간 또는 해소된 슬롯
         worktree)이면 PM 홈에 log/board 산출물, 코드 트리에 코드 touches 를 각각 둔다. 축을
         task 유무로 두면 슬롯 해소로 온 코드 트리에서 PM 홈의 동명 사본이 stage 된다.
 
@@ -2614,7 +2615,7 @@ class TicketFinisher:
 
         # ── soft 알림: 영향받는 domain 페이지 (비차단) ──────
         # 정보일 뿐 게이트가 아니다 — 완료 흐름·rc 를 막지 않는다(예외도 삼킨다).
-        # domain.py 부재(솔로/신규 clone) → None → 조용히 skip(무영향).
+        # domain.py 부재(신규 clone) → None → 조용히 skip(무영향).
         self._notify_affected_domain(ticket_id)
 
         if dry_run:
@@ -2832,7 +2833,7 @@ def _main(argv: list[str] | None = None) -> int:
             )
             return 1
         # 해소된 슬롯이 있으면 그 worktree 를 코드 트리(회귀 cwd)로 명시 forward(_regression_cwd 위임).
-        # solo/미해소(None)면 미주입 → 런타임 `_regression_cwd()` 폴백(현행 100% 보존).
+        # 미해소(None)면 미주입 → 런타임 `_regression_cwd()` 폴백(현행 100% 보존).
         if worktree_slot:
             regression_cwd = _regression_cwd(worktree_slot)
             # 귀속 세션은 **장부 행이 그 슬롯에 준 정체성**이다 — 경로 basename 을 정체성으로

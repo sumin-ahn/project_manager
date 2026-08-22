@@ -5173,6 +5173,38 @@ def _entry_doc_backup(dest_root: Path, rel: str, backup_root: Path) -> None:
     shutil.copy2(src, dst)
 
 
+def register_home_slot(effective_dest: Path, *, write: bool) -> str | None:
+    """흡수 말미 1회 — 이 홈이 아직 슬롯 행이 없으면 홈 자신을 첫 행으로 등록한다.
+
+    정체성이 장부 행에서 오므로, 행이 하나도 없는 기존 채택 홈은 엔진을 흡수한 뒤 귀속 조작이
+    미해소로 떨어진다. 그 이행을 채택자에게 손으로 시키지 않고 흡수가 1회 수행한다 — 조건이
+    "등록 repo 1개 && 행 0" 이라 풀 홈(행 ≥1)에서는 무기록이고 재실행도 무기록이다(멱등).
+
+    등록·안내는 방금 착지한 **dest 사본**의 `pm_config` 가 수행한다(장부 writer 규약과 문구를
+    한 곳이 소유). 사본 부재/로드 실패/구버전은 `None`(안내 생략) — 파일 동기 자체는 이미
+    끝났고 이 단계는 그 위의 부수 이행이다. `write=False`(dry-run)면 판정만 한다.
+    """
+    entry = Path(effective_dest) / ".project_manager" / "tools" / "pm_config.py"
+    if not entry.exists():
+        return None
+    try:
+        module = _load_module_from_path(entry, "pm_config.py", allow_unverified=True)
+    except Exception as exc:  # noqa: BLE001 — 부수 이행 실패가 동기 결과를 뒤집지 않는다.
+        if _is_engine_rev_skew(exc):
+            raise  # marked 사본 skew 는 삼키지 않는다(fail-loud).
+        return None
+    register = getattr(module, "register_home_slot", None)
+    if register is None:
+        return None
+    try:
+        return register(write=write)
+    except Exception as exc:  # noqa: BLE001 — 장부 손상 등은 안내로 강등(동기는 이미 성공).
+        if _is_engine_rev_skew(exc):
+            raise  # marked 사본 skew 는 삼키지 않는다(fail-loud).
+        print(f"  ⚠ 홈 슬롯 등록 건너뜀 — {exc}", file=sys.stderr)
+        return None
+
+
 def migrate_entry_doc(effective_dest: Path, source_root: Path, *, write: bool) -> dict:
     """진입 doc 세대 마이그레이션 — self-update 흡수 경로 한정(호출부가 --target 게이트).
 
@@ -6663,6 +6695,7 @@ def _main(argv: list[str] | None = None) -> int:
             result = migrate_entry_doc(
                 effective_dest, source_root, write=not args.dry_run)
             _print_entry_doc_migration_finding(result, dry_run=args.dry_run)
+            register_home_slot(effective_dest, write=not args.dry_run)
         if do_reinstall:
             # **업그레이드 배달 다음 실행이 여기로 온다**(dest 는 신 엔진·changes 0) — 훅이
             # 실제로 깔리는 지점이므로 migrate 와 동형으로 write 한다(정합이면 무출력).
@@ -6729,6 +6762,7 @@ def _main(argv: list[str] | None = None) -> int:
         if do_migrate:  # 판정만(write=False·무부작용).
             result = migrate_entry_doc(effective_dest, source_root, write=False)
             _print_entry_doc_migration_finding(result, dry_run=True)
+            register_home_slot(effective_dest, write=False)
         if do_reinstall:  # 대상 해소만(write=False·무부작용).
             hooks = reinstall_protected_hooks(effective_dest, write=False)
             _print_protected_hook_reinstall_finding(hooks, dry_run=True)
@@ -6755,6 +6789,7 @@ def _main(argv: list[str] | None = None) -> int:
         # 전환 write 는 apply(changes) 성공 이후 — 반쪽 상태 방지.
         result = migrate_entry_doc(effective_dest, source_root, write=True)
         _print_entry_doc_migration_finding(result, dry_run=False)
+        register_home_slot(effective_dest, write=True)
 
     if do_reinstall:
         # apply 이후 — 방금 착지한 *새* 엔진 사본에서 훅 본문을 읽어 배포한다. 단

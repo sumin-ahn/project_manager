@@ -28,7 +28,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config sync-adapter-config [--list | --check | --accept <경로> | --accept-all] # 어댑터 config 판정 조회 / 수렴 게이트 / 상류 값 수용(단건·세트)
 
 서브커맨드별 엔진 배선:
-  - init      → board.main(["init", ...]) verbatim forward (clone 당 1회 셋업·N=1·M=1[solo] ~ N×M 공용).
+  - init      → board.main(["init", ...]) verbatim forward (clone 당 1회 셋업·N=1·M=1 ~ N×M 공용).
   - repo add  → board.areas_append(per-repo 레지스트리 줄) + `git clone --bare`
                 로 `.repos/<name>.git`(worktree 풀 공유 .git 원).
   - repo protected → (조회) board._repo_protected 실효값 + areas raw 셀(출처) + 훅 sidecar 정합 /
@@ -349,38 +349,10 @@ def _real_clone_runner() -> GitRunner:
     return runner
 
 
-def _registered_repos_for_session() -> "set[str]":
-    """단일-등록 유도용 areas.md 등록 repo 집합 (`_default_session` 전용 — F-002).
-
-    동적 board 로더(`_load_module`)로 조회한다 — board 부재/`registered_repos` 헬퍼 부재/파싱
-    실패는 빈 set(fail-soft — 유도가 안전하게 미발화로 접힌다).
-
-    hermetic 테스트가 `pm_config.REPO` 만 tmp 로 재지정하고 board 를 주입하지 않으면, 동적
-    로드된 실 board.py 는 **자신의** `__file__` 기준 REPO(=이 저장소의 실 루트)를 써서 tmp REPO
-    와 갈린다 — 그 상태로 `registered_repos()` 를 부르면 실 areas.md 가 hermetic 테스트로
-    샌다. REPO 불일치 시 빈 set 으로 접어 그 오염을 막는다(`_refresh_protected_gate_contracts`
-    의 동일 REPO 대조 가드와 동형).
-    """
-    board_mod = _load_module("board", "board.py")
-    registered = getattr(board_mod, "registered_repos", None) if board_mod else None
-    if registered is None:
-        return set()
-    board_repo = getattr(board_mod, "REPO", REPO)
-    if Path(board_repo).resolve() != REPO.resolve():
-        return set()
-    try:
-        return set(registered())
-    except Exception as exc:  # noqa: BLE001 — fail-soft: 유도 실패는 미발화(다음 tail 로).
-        if _is_engine_rev_skew(exc):
-            raise
-        return set()
-
-
 def _default_session(*, identity=None) -> str | None:
     """세션 식별자 — board.py `session_name()` 과 *동형* 우선순위:
     `$PM_SESSION_NAME` > `$CLAUDE_SESSION_NAME`(deprecated alias·silent) > lease 장부
-    state=="leased" 행이 정확히 1개면 그 session (단일-lease 유도) > areas.md 등록 repo
-    정확히 1개 && lease 장부 구조적 0행(단일-등록 유도·공유 술어·F-002) > None.
+    state=="leased" 행이 정확히 1개면 그 session (단일-lease 유도) > None.
 
     `PM_SESSION_NAME` 이 정식 엔진 변수(하니스 무관)·`CLAUDE_SESSION_NAME` 은 구 alias(둘 다면
     PM 승·조용히 동작). **per-clone `local.conf session=` 층은 없다**(board 와 동형) — slot 종속
@@ -397,15 +369,11 @@ def _default_session(*, identity=None) -> str | None:
     동형 패턴·스크립트 직접 실행/테스트 양쪽에서 동일하게 동작). `identity` 주입으로 hermetic
     테스트 가능(미주입 시 실 모듈 로드 — `identity_args` 는 파일 IO 0 순수 모듈이라 실 로드도
     안전·부작용 0). 장부 경로는 호출 시점 `REPO` 에서 구성한다(monkeypatch 존중·
-    `_local_conf_user` 와 동형). 단일-등록 유도 층(`identity_args.single_registration_session`)
-    도 같은 주입 `identity` 를 소비한다 — 그 대역은 `single_registration_session` 을 갖춰야
-    한다(leased 0 경로를 실제로 밟는 테스트라면).
+    `_local_conf_user` 와 동형).
 
     저장측(worktree_pool)과 매칭측(여기)이 어긋나면 "이 세션의 리스" surface 가 board 매칭과
-    어긋난다 — 세 모듈을 **공유 술어**로 통일한다(F-002·리뷰 라운드 03 PM 재비준 — 격리
-    실측에서 이 층이 board 에만 있으면 bare claim 이 저장한 `claimed_by` 와 이후 첫 slot 생성이
-    저장하는 lease.session 이 갈렸다). registered repo 집합은 `_registered_repos_for_session()`
-    (동적 board 로더)으로 얻는다.
+    어긋나므로 세 모듈이 같은 우선순위를 공유한다. 장부 0행에서 세션 이름을 유도하는 층은
+    없다 — 등록은 장부 행이 하고, 행이 없으면 미해소다.
     """
     env = os.environ.get("PM_SESSION_NAME") or os.environ.get("CLAUDE_SESSION_NAME")
     if env:
@@ -415,14 +383,7 @@ def _default_session(*, identity=None) -> str | None:
     leased = identity_mod.leased_sessions(leases_file) if identity_mod is not None else []
     if len(leased) == 1:
         return leased[0]
-    # leased 0(무바인딩) 또는 ≥2(모호) → 단일-등록 유도 시도(공유 술어 — F-002). 손상 장부는
-    # identity_args.lease_row_count 가 None 을 내 이 술어가 스스로 미발화한다(F-001 공유).
-    derived = (identity_mod.single_registration_session(
-                   _registered_repos_for_session(), leases_file)
-               if identity_mod is not None else None)
-    if derived:
-        return derived
-    # leased 0(무바인딩) 또는 ≥2(모호) → 미해소(surface 는 "(비바인딩)").
+    # leased 0(미등록) 또는 ≥2(모호) → 미해소(surface 는 "(비바인딩)").
     return None
 
 
@@ -476,7 +437,7 @@ def _default_user() -> str | None:
     `local.conf user=` > `git config user.email` > None (graceful·user 미상 허용).
 
     `pm`(슬롯·`_default_session`)과 직교하는 **누가**(사람) 차원이다. `repo add` 의 areas.md
-    `area_owner` 칼럼(그 area 의 user 소유·`--mine` 풀 입력) 기본값으로 쓴다. solo 는 보통
+    `area_owner` 칼럼(그 area 의 user 소유·`--mine` 풀 입력) 기본값으로 쓴다. 단일 사용자는 보통
     `local.conf user=` 미설정 → `git config user.email` 폴백·그마저 없으면 None(빈 area_owner).
     """
     conf_user = _local_conf_user()
@@ -494,7 +455,7 @@ _CANONICAL_AREA_OWNER_IDX = 7
 def _distinct_area_owners() -> int:
     """areas.md 의 distinct non-empty `area_owner` 수 — pm_config 자체 파싱(다중사용자 최소 신호).
 
-    `cmd_status` 의 isolation posture(strict/degrade/solo) 판정용 *coarse* 신호다. board.py 를
+    `cmd_status` 의 isolation posture(strict/degrade/single-user) 판정용 *coarse* 신호다. board.py 를
     import 하지 않으므로 `_local_conf_user` 동형으로
     areas.md 를 stdlib 로 직접 읽는다 — board 의 격리 *판정*(`_ticket_is_mine`·티켓 스캔
     `_distinct_ticket_users`)은 복제하지 않고, 공유 레지스트리(areas.md)의 `area_owner` 칼럼만
@@ -503,13 +464,13 @@ def _distinct_area_owners() -> int:
 
     헤더에서 `area_owner` 칼럼을 찾는다(신 스키마). 헤더에 없어도 데이터 행이 canonical
     폭(≥8 셀)이면 마지막(`_CANONICAL_AREA_OWNER_IDX`)에서 읽어 구-헤더+신-row 업그레이드의 유실을
-    막는다. 구분선(`|---|`) skip. 파일/칼럼 부재·파싱 실패는 0(fail-soft·solo 취급·크래시 0).
+    막는다. 구분선(`|---|`) skip. 파일/칼럼 부재·파싱 실패는 0(fail-soft·단일 사용자 취급·크래시 0).
     """
     af = REPO / ".project_manager" / "areas.md"
     try:
         lines = _load_file_lock().read_text_shared(af, encoding="utf-8").splitlines()
     except (OSError, UnicodeError):
-        return 0    # 부재/읽기실패/손상 UTF-8 → 0(solo 취급·크래시 0·docstring fail-soft 계약).
+        return 0    # 부재/읽기실패/손상 UTF-8 → 0(단일 사용자 취급·크래시 0·docstring fail-soft 계약).
     owners: set[str] = set()
     header_idx: int | None = None
     header_seen = False
@@ -544,7 +505,7 @@ def _local_conf_test_cmd() -> str | None:
 
     `_local_conf_user` 와 동형 — board.py 를 import 하지 않으므로
     touches 격리) `board.local_config().get("test_cmd")` 와 *동일 의미*를 stdlib 로 자체
-    구현한다. worktree add 빌드명령 프롬프트의 기본값(`board._test_cmd` 솔로 폴백 레이어와
+    구현한다. worktree add 빌드명령 프롬프트의 기본값(`board._test_cmd` 최종 폴백 레이어와
     동형 — 미지정 시 `pytest -q`)을 제시하는 데 쓴다.
     """
     return _local_conf_value("test_cmd")
@@ -774,9 +735,9 @@ def _protected_push_gate_config(
 
 
 def _default_test_cmd() -> str:
-    """worktree add 빌드명령 프롬프트의 솔로 폴백값 — `local.conf test_cmd` 또는 `pytest -q`.
+    """worktree add 빌드명령 프롬프트의 최종 폴백값 — `local.conf test_cmd` 또는 `pytest -q`.
 
-    board._test_cmd 의 솔로 폴백 레이어(`local_config().get("test_cmd") or "pytest -q"`)와
+    board._test_cmd 의 최종 폴백 레이어(`local_config().get("test_cmd") or "pytest -q"`)와
     동형. `_resolve_repo_test_cmd` 의 마지막 레이어(areas 미등록·빈 값일 때)다 —
     프롬프트 표시값 resolve 의 폴백.
     """
@@ -790,9 +751,9 @@ def _resolve_repo_test_cmd(repo: str, *, board=None) -> str:
     `_load_module` DI + areas 파서 `_parse_areas`/`_areas_row_for_prefix` 재사용):
       1. **활성 repo 의 areas.md test_cmd** — 그 repo(=prefix)의 레지스트리 행에 비어
          있지 않은 `test_cmd` 가 있으면 그것(per-repo 스택·`go test ./...` 등).
-      2. **솔로 폴백** — areas 미등록·빈 값이면 `local.conf test_cmd` 또는 `pytest -q`.
+      2. **최종 폴백** — areas 미등록·빈 값이면 `local.conf test_cmd` 또는 `pytest -q`.
     (활성 슬롯 레이어는 새 슬롯 생성 *전* 시점이라 표시에 무의미 — 생략.) board 부재/파서
-    부재면 솔로 폴백만. 빈입력(Enter) 시 슬롯에 안 박고(None) 이 체인으로 폴백함을 투명하게
+    부재면 최종 폴백만. 빈입력(Enter) 시 슬롯에 안 박고(None) 이 체인으로 폴백함을 투명하게
     보여주는 게 목적이다(must-fix 1 — 슬롯이 areas 보다 우선이라 잘못 덮으면 안 됨).
     """
     board_mod = board or _load_module("board", "board.py")
@@ -812,7 +773,7 @@ def _resolve_repo_test_cmd(repo: str, *, board=None) -> str:
     if row_for_prefix is not None:
         try:
             row = row_for_prefix(repo)
-        except Exception as exc:  # noqa: BLE001 — areas 실패는 솔로 폴백(단 skew 재전파).
+        except Exception as exc:  # noqa: BLE001 — areas 실패는 최종 폴백(단 skew 재전파).
             if _is_engine_rev_skew(exc):
                 raise
             row = None
@@ -1085,7 +1046,7 @@ def _bare_missing_branches(
 
     보호목록은 **브랜치 실재를 요구하지 않는다**(아직 없는 `release` 를 미리 보호하는 게 정상).
     그래서 거부하지 않고 *경고*만 낸다 — 오타(`mian`)를 조용히 흘리지 않기 위한 가시화다.
-    bare 부재(clone 전·솔로)·git 실패는 빈 리스트(fail-soft·경고 생략).
+    bare 부재(clone 전)·git 실패는 빈 리스트(fail-soft·경고 생략).
 
     **bare 조회 자체가 실패하면 경고를 통째로 생략한다** — git 바이너리 부재/권한 등으로 모든
     `show-ref` 가 rc≠0 이 되면 멀쩡한 브랜치까지 "없다"고 오탐한다. 먼저 `rev-parse
@@ -2148,7 +2109,7 @@ def cmd_worktree_add(
     **base 브랜치**: areas.md 의 그 repo base(`pm-config repo add --base`/clone-time
     bare HEAD 가 기록)를 `_resolve_repo_base` 로 읽어 `create_slot(base=)` 로 전달한다 — 슬롯
     브랜치 `<repo>_<N>` 가 그 base(develop 등)에서 파생된다. areas 에 base 없으면(구 스키마/
-    솔로/미지정) None → create_slot 이 현행 bare HEAD 동작(회귀 0).
+    미지정) None → create_slot 이 현행 bare HEAD 동작(회귀 0).
 
     test_cmd(슬롯 리스 바인딩) 해소:
       - `--test "<cmd>"` 명시 → 그 값을 바인딩(현행·CLI 정확작업·CI).
@@ -2163,7 +2124,7 @@ def cmd_worktree_add(
     **성공 출력 다음스텝 (audit #6)**: 슬롯 fs 생성만으로 끝나지 않고, 다음 필수 스텝인
     슬롯을 세션에 바인딩(`/pm-bootstrap <repo> --slot <N>`·정체성 선언)으로 이어준다. N 은 이미
     보유한 `lease.slot`(`work/<repo>_<N>`)에서 파싱(신규 조회 0). **자동바인딩 안 함** — 바인딩은
-    여전히 사용자 명시 스텝(정체성=대화 맥락·lean multi-PM). 솔로/단일 슬롯은 무인자 부트스트랩 힌트.
+    여전히 사용자 명시 스텝(정체성=대화 맥락·lean multi-PM). 단일 슬롯은 무인자 부트스트랩 힌트.
 
     worktree_pool/board/input_fn/is_tty 주입으로 hermetic 테스트(실 worktree add·라이브 input
     없이 배선·분기 검증). board 는 프롬프트 표시값 areas 해소 재사용용(콘솔이 로드한 board 전달).
@@ -2191,7 +2152,7 @@ def cmd_worktree_add(
 
     # base 해소 — areas.md 의 그 repo base 를 읽어 create_slot(base=) 로 전달한다.
     # 슬롯 브랜치 `<repo>_<N>` 가 그 base(repo add 가 기록·develop 등)에서 파생된다. areas 에
-    # base 없으면(구 스키마/솔로/미지정) None → create_slot 이 현행 bare HEAD 동작(회귀 0).
+    # base 없으면(구 스키마/미지정) None → create_slot 이 현행 bare HEAD 동작(회귀 0).
     # board 직접 import 금지 — 주입/로드된 board 의 `_repo_base` 만 쓴다.
     base = _resolve_repo_base(args.repo, board=board)
 
@@ -2264,7 +2225,7 @@ def cmd_worktree_add(
             "  코드 작업은 이 슬롯 cwd 에서 — 보드/wiki 는 multi-PM 공유 `.project_manager`.\n"
             f"  다음 스텝 — 이 슬롯을 세션에 바인딩: "
             f"`{_runtime_skill_entry('pm-bootstrap')} {lease.repo} --slot {slot_num}` "
-            f"(정체성 선언·자동 아님). 솔로/단일 슬롯이면 무인자 "
+            f"(정체성 선언·자동 아님). 단일 슬롯이면 무인자 "
             f"`{_runtime_skill_entry('pm-bootstrap')}` 가 자동바인딩."
         )
         print("  이 바인딩 안내는 사용자(사람) 대상 — 세션이 읽고 자동 실행하면 안 된다.")
@@ -2367,7 +2328,7 @@ def cmd_status(
     print(f"# pm-config {args.command} — 세션: {sess or '(비바인딩)'}")
 
     # 정체성·세션격리 posture surface: resolved user + isolation
-    # 상태(strict/degrade/solo) + remedy. board.py 를 import 하지 않고
+    # 상태(strict/degrade/single-user) + remedy. board.py 를 import 하지 않고
     # user 는 `_default_user`(자체 해소·`_local_conf_user` 동형), 다중사용자 여부는 areas.md
     # `area_owner` 자체 파싱(`_distinct_area_owners`)으로 판정한다 — board 의 격리 *판정*은 복제
     # 하지 않고 최소 신호만.
@@ -2385,7 +2346,7 @@ def cmd_status(
     _authoritative = "실 격리는 `board list --mine`(strict-exclude loud-warn)이 authoritative"
     print(f"## 정체성(user): {resolved_user or '(미해소 — local.conf user= / git config user.email 미설정)'}")
     if not multi_user:
-        print("## 세션격리(registry/area_owner 기준): solo (단일/미등록 registry) — 단, 티켓 귀속"
+        print("## 세션격리(registry/area_owner 기준): single-user (단일/미등록 registry) — 단, 티켓 귀속"
               "(created_by/claimed_by)이 다중이면 세션 뷰가 strict-exclude 될 수 있다. "
               f"{_authoritative}.")
     elif resolved_user is not None:
@@ -3362,7 +3323,7 @@ def cmd_init(
     우회해 이 핸들러로 raw 토큰을 넘긴다. board.main 은 자체 argparse 의 `init`
     서브커맨드로 그 플래그를 직접 받는다(우회 주체는 board 가 아니라 pm_config.main 이다).
 
-    init 은 N=1·M=1(solo) ~ N×M 공용 보편 셋업 — pm-config init 은 그걸 single-user
+    init 은 N=1·M=1 ~ N×M 공용 보편 셋업 — pm-config init 은 그걸 single-user
     multi-repo front door 로 노출만 한다(동작 불변·새 동작 0·cmd_update 의 위임 패턴 동형).
 
     board 주입으로 hermetic 테스트(실 셋업 부작용 없이 forward 배선 검증).
@@ -3379,7 +3340,32 @@ def cmd_init(
     # 없음 → 위임 동안만 "board.py"→"pm-config" 로 치환한다. init 서브파서 usage 는 부모 prog
     # 에서 "pm-config init" 로 자동 파생돼 에이전트가 칠 실 커맨드와 정합(파일명 leak 0).
     with _forwarded_prog({"board.py": _FACADE_PROG}):
-        return board_mod.main(["init", *forward_args])
+        rc = board_mod.main(["init", *forward_args])
+    if rc != 0:
+        return rc
+    # 셋업 말미에 이 홈 자신을 첫 슬롯 행으로 등록한다 — 정체성이 장부 행에서 오므로,
+    # 슬롯을 하나만 쓰는 홈도 그 행이 있어야 세션이 해소된다. 멱등(행이 있으면 무기록).
+    register_home_slot()
+    return 0
+
+
+def register_home_slot(*, worktree_pool=None, write: bool = True) -> str | None:
+    """홈 슬롯 등록 위임 + 안내 1줄 — 장부 writer 는 worktree_pool 단일 진실이다.
+
+    판정 문구도 그 모듈이 소유한다(호출부 재타이핑 0). 엔진 사본 부재/로드 실패/구버전
+    사본은 `None`(안내 생략) — 셋업·흡수의 부수 단계이지 그 자체가 실패 사유는 아니다.
+    반환값은 낸 판정(테스트가 무엇이 일어났는지 대조하는 축)이다.
+    """
+    pool = worktree_pool if worktree_pool is not None else _load_module(
+        "worktree_pool", "worktree_pool.py")
+    if pool is None or not hasattr(pool, "register_home_slot"):
+        return None
+    status, detail = pool.register_home_slot(write=write)
+    note = pool.home_slot_registration_note(status, detail, write=write)
+    if note is not None:
+        text, to_stderr = note
+        print(text, file=sys.stderr if to_stderr else sys.stdout)
+    return status
 
 
 def cmd_add_harness(
@@ -3846,7 +3832,7 @@ def _render_repos(board_mod) -> None:
     """areas.md per-repo 레지스트리 행을 surface 한다 (board._parse_areas 재사용).
 
     board 가 없거나 areas 파서가 없으면(부재·로드실패) 안내만 출력(크래시 0). areas.md
-    부재(솔로/미배선)면 빈 안내. 중복 파싱 구현 0 — board 의 헤더-인식 파서를 그대로 쓴다.
+    부재(미배선)면 빈 안내. 중복 파싱 구현 0 — board 의 헤더-인식 파서를 그대로 쓴다.
     """
     print("## repos (areas.md per-repo 레지스트리):")
     parse_areas = getattr(board_mod, "_parse_areas", None) if board_mod else None

@@ -36,7 +36,7 @@ python3 .project_manager/tools/board.py new "<한 줄 제목>" \
   **설계**를 PM이 인라인으로 쓰는 용례다. 이 draft 경로는 board-git sync 0회이며 promote가
   출하를 소유한다. draft에서 developer/code-reviewer 라운드 준비는 거부된다. 라운드 디렉터리
   `tickets/rounds/<T-NNNN>/`는 티켓 상태 이동을 따라가지 않으므로 promote 뒤에도 같은 자리다.
-- solo/legacy(board 비-git) 형상: draft 격리가 없어 곧바로 `open/`에 발행된다.
+- legacy(board 비-git) 형상: draft 격리가 없어 곧바로 `open/`에 발행된다.
 - `--touches`: 작업 범위 및 다른 슬롯과의 충돌 평가용.
 - `--prefix`: 작업 카테고리(자유 입력). multi-repo(등록 repo ≥2)에서는 필수다(네임스페이스).
 - `--design`: 설계 단계 상태. 값은 `required` / `done` / `"waived: <사유>"` / `n/a` 네 형식이며(references 설계 단계 표), 인식 불가한 값은 발행 전에 거부된다. 생략 시 `--estimate large`면 `required`, 그 외는 `n/a`로 박힌다. 설계 검증이 필요하다고 판단하면 small/medium에도 `--design required`로 명시 지정한다.
@@ -80,4 +80,4 @@ python3 .project_manager/tools/board.py promote <T-NNNN>
 - `design: required`는 설계 절을 다 채웠어도 promote가 거부한다. **설계 검토 완료(`design: done` 또는 `waived`)가 open 진입 조건**이기 때문이다.
 - 형식과 함께 **본문이 주장하는 사실**도 재검사한다(새 플래그 없음). repo-relative `파일:줄` 인용의 파일 부재·줄 범위 초과와 `design: required|done` 티켓의 architect 점검 라운드 미회수는 **거부**(rc=1)이고, 실재하지 않는 `touches`는 **경고 1줄**(신설 예정 파일이 정상이라 차단하지 않는다)이다. 인용은 repo 루트 기준으로 먼저 찾고, 없으면 하위 디렉터리 기준 표기(`wiki/decisions/x.md`)로 보고 그 경로로 끝나는 파일을 소유 트리에서 찾는다 — 유일하게 해소되면 그 파일로 판정하고, 사본이 여럿이거나 basename만 적은 인용(`board.py:120`)은 어느 사본인지 확정할 수 없어 **판정불능 개수**로 표시된다(판정받으려면 repo 루트 기준 경로로 적는다). 어느 표기로도 실재 파일이 없으면 판정불능이 아니라 거부다.
 - 통과하면 draft → `open/` 이동 + board-git 커밋(공유 board에 등장) 후 claim 가능해진다.
-- solo/legacy에서는 `promote`가 사실상 no-op(이미 open)이지만 검증은 `lint`로 실행한다.
+- legacy(board 비-git)에서는 `promote`가 사실상 no-op(이미 open)이지만 검증은 `lint`로 실행한다.

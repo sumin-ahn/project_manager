@@ -36,7 +36,7 @@
    - **`log/current.md` 하나만 적으면 위 2단계 domain capture 산출을 잃는다.** 이 CLI 가 스스로 쓰는 파일은 `log/current.md` 뿐이지만 잔여 손작업 1~2 단계에서 고친 domain 페이지·status 도 이번 세션 산출이다. 고치지 않은 줄은 지운다.
    - 핸드오프엔 `/pm-wave-finish` 같은 스코프 잔여 보고가 없다. [6/7] `git status -s` dump에서 *내 세션 산출*을 골라 pathspec 에 넣고 남의 WIP 는 남긴다.
    - **신규 파일은 `git add` 선행 필수** — 미추적 경로를 pathspec 에 주면 `error: pathspec '…' did not match any file(s) known to git` 으로 **커밋 전체가 rc=1 로 죽는다**(실측).
-   - `pm_state.md`(solo `wiki/pm_state.md` · per-slot/per-task `.local/…`)는 **gitignored** 라 커밋 대상이 아니다. commit message 에만 남긴다. trailer `Co-Authored-By: Claude`.
+   - `pm_state.md`(per-slot/per-task `.local/…`)는 **gitignored** 라 커밋 대상이 아니다. commit message 에만 남긴다. trailer `Co-Authored-By: Claude`.
 4. **마지막 응답에 인계 프롬프트(트리거) 코드블록 출력** — 다음 세션은 `/pm-bootstrap` 실행(트리거 붙여넣기 or 직접). 인계 본문은 부트스트랩이 log entry 에서 자동 dump 하므로 손-채움 불요.
 
 참고: `.project_manager/tools/pm_handoff.py`(backbone CLI), `.project_manager/wiki/pm_role.md`(핸드오프 절차 7단계 단일 진실).
