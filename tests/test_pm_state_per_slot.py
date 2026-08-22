@@ -399,8 +399,8 @@ def test_bootstrap_display_path_single_self_host_is_per_slot(bs):
 
 
 def test_bootstrap_display_path_explicit_slot(bs):
-    """명시 슬롯 tuple → 그 슬롯의 per-slot 경로 표기."""
-    assert bs._pm_state_display_path(("project_manager", 2)) == \
+    """명시 슬롯 정체성 키 → 그 슬롯의 per-slot 경로 표기."""
+    assert bs._pm_state_display_path("project_manager_2") == \
         ".project_manager/.local/slots/project_manager_2/pm_state.md"
 
 

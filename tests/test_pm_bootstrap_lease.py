@@ -1056,8 +1056,20 @@ def _write_leases(path: Path, entries: list[dict]) -> None:
     path.write_text(_auto_json.dumps({"leases": entries}), encoding="utf-8")
 
 
-def test_auto_slot_single_repo_single_slot_returns_pair(bootstrap, tmp_path):
-    """등록 repo 정확히 1개 + 그 repo 슬롯 정확히 1개 → (repo, N)."""
+def _identity(key: str, slot: str):
+    """`_auto_slot` 해소 결과 대역 — 엔진의 실제 `identity_args.SlotIdentity` 타입 그대로.
+
+    정체성 키(`key`)와 장부 경로 값(`slot`)을 분리해 나르는 계약을 테스트에서도 값으로 쓴다
+    (튜플 재조립 금지). 대역이 필요한 곳은 장부 없이 해소 결과만 주입하는 monkeypatch 지점뿐이고,
+    해소 자체를 보는 테스트는 실 장부 파일로 판정한다.
+    """
+    ia = _load("identity_args")
+    return ia.SlotIdentity(key=key, slot=slot,
+                           source=ia.IDENTITY_FROM_LEDGER_SESSION, session=key)
+
+
+def test_auto_slot_single_repo_single_slot_returns_identity(bootstrap, tmp_path):
+    """등록 repo 정확히 1개 + 그 repo 슬롯 정확히 1개 → 그 행의 정체성(키 + 장부 경로 값)."""
     areas = tmp_path / "areas.md"
     leases = tmp_path / "worktree-leases.json"
     _write_areas(areas, ["project_manager"])
@@ -1065,7 +1077,9 @@ def test_auto_slot_single_repo_single_slot_returns_pair(bootstrap, tmp_path):
         {"slot": "work/project_manager_1", "repo": "project_manager",
          "session": "project_manager_1", "state": "leased"},
     ])
-    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) == ("project_manager", 1)
+    resolved = bootstrap._auto_slot(areas_file=areas, leases_file=leases)
+    assert (resolved.key, resolved.slot) == ("project_manager_1", "work/project_manager_1")
+    assert (resolved.repo, resolved.number) == ("project_manager", 1)
 
 
 def test_auto_slot_zero_repos_returns_none(bootstrap, tmp_path):
@@ -1150,7 +1164,8 @@ def test_auto_slot_parses_nonone_slot_number(bootstrap, tmp_path):
         {"slot": "work/project_manager_3", "repo": "project_manager",
          "session": "project_manager_3", "state": "leased"},
     ])
-    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) == ("project_manager", 3)
+    resolved = bootstrap._auto_slot(areas_file=areas, leases_file=leases)
+    assert (resolved.key, resolved.slot) == ("project_manager_3", "work/project_manager_3")
 
 
 # ── 11b. _resolve_session_slot — guarded 슬롯해소 (default-1 + fail-loud·T-0178) ──
@@ -1330,7 +1345,7 @@ def test_auto_slot_idle_slot1_resolves_leased_slot2(bootstrap, tmp_path):
     _write_areas(areas, ["project_manager"])
     _write_leases(leases, [_lease("project_manager", 1, "idle"),
                            _lease("project_manager", 2, "leased")])
-    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) == ("project_manager", 2)
+    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases).key == "project_manager_2"
 
 
 def test_auto_slot_solo_single_leased_unchanged(bootstrap, tmp_path):
@@ -1339,7 +1354,7 @@ def test_auto_slot_solo_single_leased_unchanged(bootstrap, tmp_path):
     leases = tmp_path / "worktree-leases.json"
     _write_areas(areas, ["project_manager"])
     _write_leases(leases, [_lease("project_manager", 1, "leased")])
-    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases) == ("project_manager", 1)
+    assert bootstrap._auto_slot(areas_file=areas, leases_file=leases).key == "project_manager_1"
 
 
 def test_auto_slot_all_idle_returns_none(bootstrap, tmp_path):
@@ -1497,7 +1512,9 @@ def test_default_git_pytest_cwd_is_worktree_but_board_is_repo(bootstrap, monkeyp
 
     monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
     # _auto_slot 을 단일 self-host 로 고정 → worktree cwd 가 결정된다.
-    monkeypatch.setattr(bootstrap, "_auto_slot", lambda: ("project_manager", 1))
+    monkeypatch.setattr(
+        bootstrap, "_auto_slot",
+        lambda: _identity("project_manager_1", "work/project_manager_1"))
     inst = bootstrap.PmBootstrap()
 
     inst._default_run_git(["status"])

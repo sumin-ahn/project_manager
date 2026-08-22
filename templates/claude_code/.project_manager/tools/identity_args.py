@@ -9,10 +9,16 @@ worktree_pool)가 이 한 모듈로 수렴한다(단일 진실·DRY). 지금까�
 
 두 층으로 응집한다(같은 파일·별 함수):
   - **순수 인자 층**: `add_identity_args`·`parse_identity` — 파일 IO 0·부작용 0.
-  - **리스 IO 층**: `leased_sessions`·`repo_slot_numbers`·`resolve_actor_slot` — 리스 장부
+  - **리스 IO 층**: `leased_sessions`·`repo_slot_numbers`·`resolve_actor_slot`/
+    `resolve_actor_workspace`·`resolve_slot_identity`·`slot_path_for_number`·`task_names` — 리스 장부
     (`worktree-leases.json`) 를 stdlib json 으로 직접 point-read 한다. `worktree_pool` 을
     import 하지 않는다(데이터 결합만, 모듈 결합 아님). **콜백 없음**
     이 모듈이 리스 읽기를 직접 소유한다.
+
+슬롯 식별의 단일 진실은 **장부 행의 값**이다 — 정체성은 행의 `session`, 경로는 행의 `slot`, 번호는
+행 값에서 계상한다. 어느 쪽도 다른 쪽에서 재구성하지 않는다(번호로 `work/<repo>_<N>` 을 짓지 않고,
+경로 basename 을 정체성으로 파싱하지 않는다). 장부가 답을 주지 못하면 pool 명명 규약(경로 마디)까지만
+내려가고, 그것도 없으면 **미해소(None)** 다 — 대체값을 지어내지 않는다.
 
 해소 규칙:
   ```
@@ -449,6 +455,31 @@ def _load_lease_rows(leases_file: Path) -> list[dict] | None:
     return rows
 
 
+# 장부 읽기 축의 판정값 — "못 읽었다"를 **부재**와 **손상**으로 가른다(합치면 실제로 행을
+# 보유한 홈도 장부가 깨지기만 하면 "행 없음"과 같은 취급을 받는다·`lease_row_count` 와 같은 규율).
+LEDGER_OK = "ok"                       # 정상 파싱 — rows 가 그 시점 진실.
+LEDGER_MISSING = "ledger-missing"      # 장부 파일 자체가 없다(fresh 홈).
+LEDGER_UNREADABLE = "ledger-unreadable"  # 파일은 있으나 읽기/파싱/스키마 실패(손상).
+
+
+def _read_lease_rows_status(leases_file: Path) -> "tuple[str, list[dict]]":
+    """장부 `leases` dict 행 + **읽기 축 판정**(`LEDGER_*`) — 부재/손상/정상을 구분한다.
+
+    `_lease_dict_rows`(fail-soft·빈 리스트)의 판정형 짝이다. 해소 결과가 "판정 불능"일 때
+    호출부가 *왜* 불능인지(부재냐 손상이냐)를 그대로 사용자에게 낼 수 있게 사유를 나른다.
+    """
+    try:
+        exists = leases_file.exists()
+    except OSError:
+        return LEDGER_UNREADABLE, []
+    if not exists:
+        return LEDGER_MISSING, []
+    rows = _load_lease_rows(leases_file)
+    if rows is None:
+        return LEDGER_UNREADABLE, []
+    return LEDGER_OK, [row for row in rows if isinstance(row, dict)]
+
+
 def leased_sessions(leases_file: Path) -> list[str]:
     """lease 장부에서 `state=="leased"` 행들의 session 목록 (count-based 유도용).
 
@@ -529,22 +560,163 @@ def single_registration_session(registered_repos: "set[str] | list[str]",
     return f"{repo}_1"
 
 
-def repo_slot_numbers(repo: str, leases_file: Path) -> list[int] | None:
-    """`leases_file` 장부에서 `repo` 의 **활성(leased)** worktree 슬롯 번호(`work/<repo>_<N>`→N).
+# ── 경로 마디 안전 술어 (POSIX·Windows 공통·두 축 공유) ────────────────────
+# 슬롯 축의 두 값(장부 행의 session 키 · 슬롯 경로의 마디)은 **둘 다 파일 경로로 결합**된다 —
+# 키는 `.local/slots/<키>/pm_state.md` 디렉토리명이 되고, 경로 마디는 `REPO / <슬롯 경로>` 가
+# 된다. 그래서 두 축은 **같은 술어**를 소비해야 한다: 한쪽만 조이면 같은 값이 다른 축으로 들어와
+# 상태 루트 밖을 가리킨다(리뷰 F-003 실측 — `C:_1` 이 session 키로 통과해
+# `PureWindowsPath("D:/pm/.project_manager/.local/slots") / "C:_1"` 이 부모를 버리고 `C:_1` 을 냈다).
+#
+# 판정은 **실행 OS 와 무관**하다 — POSIX·Windows 양쪽에서 안전한 교집합만 통과시킨다. 같은 장부를
+# 두 OS 가 공유하므로(POSIX 에서 적힌 값이 Windows 에서 읽힌다) 실행 OS 기준으로 재면 그 순간엔
+# 안전해 보이는 값이 다른 OS 에서 탈출한다.
+_PATH_COMPONENT_SEPARATORS = ("/", "\\")
+# Windows 파일명 금지 문자 — 드라이브 표기 `C:` 의 콜론도 이 집합이 함께 막는다.
+_PATH_COMPONENT_FORBIDDEN_CHARS = frozenset('<>:"|?*')
+# Windows 예약 장치 이름 — 확장자를 붙여도(`NUL.txt`) 같은 장치라 stem 으로 판정한다.
+_PATH_COMPONENT_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{n}" for n in range(1, 10)}
+    | {f"LPT{n}" for n in range(1, 10)}
+)
+_PATH_COMPONENT_DOT_NAMES = (".", "..")
 
-    `pm_bootstrap._repo_slot_numbers` 흡수(동형·byte-for-byte 동작 보존). `state` 가 `"leased"`
-    인 엔트리만 센다 — **`state` 키 부재는 `"leased"` 로 back-compat**(`worktree_pool.from_dict`
-    default 동형·`leased_sessions` 와의 의도된 비대칭은 위 docstring 참고). 같은 슬롯 N 의 중복
-    장부 엔트리는 dedup(정렬된 unique 목록).
+
+def path_component_rejection(value: object) -> str | None:
+    """`value` 가 POSIX·Windows 공통 안전한 **단일 경로 마디**가 아니면 사유, 맞으면 `None`.
+
+    거부 축: 빈 값/문자열 아님 · 앞뒤 공백 · 경로구분자(`/`·`\\`) · Windows 금지 문자
+    (드라이브 표기 `C:` 의 콜론 포함) · 제어문자 · `.`/`..`(현재/상위 마디) · 끝의 `.`/공백
+    (Windows 가 조용히 잘라 다른 마디가 된다) · 예약 장치 이름(`CON`·`NUL`·`COM1`…).
+
+    슬롯 키 축(`is_slot_key`)과 슬롯 경로 축(`worktree_pool._normalize_slot`)이 이 한 함수를
+    공유한다 — 사유 문자열을 돌려주므로 각 축이 자기 문맥의 에러 메시지에 그대로 실을 수 있다.
+    """
+    if not isinstance(value, str) or not value:
+        return "빈 값(경로 마디가 아니다)"
+    if value != value.strip():
+        return f"{value!r} — 앞뒤 공백은 경로 마디로 안전하지 않다"
+    for separator in _PATH_COMPONENT_SEPARATORS:
+        if separator in value:
+            return f"{value!r} — 경로구분자({separator!r})를 포함한 값은 단일 마디가 아니다"
+    bad = sorted({ch for ch in value if ch in _PATH_COMPONENT_FORBIDDEN_CHARS})
+    if bad:
+        return (f"{value!r} — Windows 금지 문자({''.join(bad)})를 포함한다"
+                "(드라이브 표기 `C:` 포함)")
+    if any(ord(ch) < 32 for ch in value):
+        return f"{value!r} — 제어문자를 포함한다"
+    if value in _PATH_COMPONENT_DOT_NAMES:
+        return f"{value!r} — 현재/상위 마디는 이름이 아니다"
+    if value.endswith(".") or value.endswith(" "):
+        return f"{value!r} — 끝의 `.`/공백은 Windows 가 잘라 다른 마디가 된다"
+    if value.split(".", 1)[0].upper() in _PATH_COMPONENT_RESERVED_NAMES:
+        return f"{value!r} — Windows 예약 장치 이름이다"
+    return None
+
+
+def is_safe_path_component(value: object) -> bool:
+    """`value` 가 POSIX·Windows 공통 안전한 단일 경로 마디인가 (순수 값 술어·IO 0)."""
+    return path_component_rejection(value) is None
+
+
+# ── 슬롯 정체성 값 술어 (경로 형태 강제 아님) ──────────────────────────────
+# 슬롯 정체성 키 = `<repo>_<N>`(N≥1). 이 술어는 **장부 값이 슬롯 축 정체성인지**를 가른다 —
+# 경로가 어떤 모양이어야 한다는 강제가 아니라, 주어진 *값*(행의 session·경로 마지막 마디)이
+# 슬롯 키로 쓸 수 있는지의 판정이다. 키는 `.local/slots/<키>/pm_state.md` 디렉토리명·log 헤더
+# 태그 `(<키>)`·handoff ack 토큰으로 그대로 쓰이므로 **경로 마디 안전**(`path_component_
+# rejection` — 두 축 공유)에 더해 태그 delimiter 안전 문자만 허용한다(공백·괄호 거부·선두
+# alnum). task 이름(`main`)·`<host>-<pid>` 임시 명명·무소유 빈 session 은 이 형식이 아니라
+# 슬롯 정체성이 아니다.
+_SLOT_KEY_RE = re.compile(r"^[A-Za-z0-9][^\s()/\\]*_[1-9]\d*$")
+
+# 경로 값의 마지막 마디를 뽑는 구분자 — POSIX/Windows 표기를 **OS 무관**하게 같은 값으로 읽는다
+# (`Path(...).name` 은 실행 OS 의 flavour 를 타 같은 장부가 OS 마다 다르게 읽힌다).
+_SLOT_PATH_SEPARATORS = re.compile(r"[\\/]")
+
+
+def is_slot_key(value: object) -> bool:
+    """`value` 가 슬롯 축 정체성 키(`<repo>_<N>`)인가 — 순수 값 술어(IO 0).
+
+    두 관문을 모두 통과해야 한다: (1) **경로 마디 안전**(`path_component_rejection` — 슬롯 경로
+    축과 공유하는 같은 술어), (2) 태그/키 문법(`<repo>_<N>`·선두 alnum·공백/괄호 없음). (1)이
+    없으면 `C:_1` 같은 드라이브 표기가 키로 통과해 `.local/slots/<키>` 결합에서 상태 루트를
+    벗어난다(리뷰 F-003).
+    """
+    return (isinstance(value, str)
+            and is_safe_path_component(value)
+            and _SLOT_KEY_RE.fullmatch(value) is not None)
+
+
+def slot_number_for_repo(repo: str, value: object) -> int | None:
+    """`<repo>_<N>` 값에서 슬롯 번호 N — 아니면 None (순수 값 술어).
+
+    슬롯 **번호** 축(“다음 worktree 를 무슨 이름으로 만드나”)의 단일 규칙이다. `identity_args.
+    repo_slot_numbers`·`worktree_pool._existing_slot_numbers` 가 이 한 함수를 공유해 번호 계상이
+    갈리지 않게 한다.
+    """
+    m = re.fullmatch(rf"{re.escape(repo)}_(\d+)", str(value or ""))
+    return int(m.group(1)) if m else None
+
+
+def normalize_slot_value(value: object) -> str:
+    """장부 슬롯 경로 값 표기 정규화 — POSIX 단일·후행 구분자 제거(대조 전용·IO 0).
+
+    같은 슬롯이 `work/A_1`·`work/A_1/`·`work\\A_1` 로 적혀도 한 값으로 대조된다. 파일시스템을
+    건드리지 않으며(resolve 없음) 경로 의미를 바꾸지 않는다 — 순전히 문자열 대조 키다.
+    """
+    text = str(value or "").strip().replace("\\", "/")
+    while len(text) > 1 and text.endswith("/"):
+        text = text[:-1]
+    return text
+
+
+def slot_path_name(value: object) -> str:
+    """슬롯 경로 값의 마지막 마디(OS 무관) — `work/A_1`→`A_1` · `.`→`` · `D:/x/A_1`→`A_1`."""
+    text = normalize_slot_value(value)
+    if not text:
+        return ""
+    return _SLOT_PATH_SEPARATORS.split(text)[-1]
+
+
+def task_names(leases_file: Path) -> set[str]:
+    """장부 top-level `tasks` 컬렉션의 이름 집합 — task 축의 단일 진실(부재/손상 → 빈 집합).
+
+    "이 세션이 task 인가"를 **이름 모양**(`foo_1` 형상 추측)이 아니라 등록 membership 으로 묻기
+    위한 point-read (`worktree_pool.reclaim_stale`·`_ensure_slot_pm_state_locked` 가 이미 쓰는
+    근거와 같은 축). fail-soft — 장부가 없으면 등록 task 도 없다.
+    """
+    try:
+        data = json.loads(_read_text_shared(leases_file, encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    rows = data.get("tasks", [])
+    if not isinstance(rows, list):
+        return set()
+    return {t["name"] for t in rows
+            if isinstance(t, dict) and isinstance(t.get("name"), str) and t.get("name")}
+
+
+def repo_slot_numbers(repo: str, leases_file: Path) -> list[int] | None:
+    """`leases_file` 장부에서 `repo` 의 **활성(leased)** 슬롯이 점유한 번호 집합.
+
+    번호는 **장부 행의 값**에서 계상한다 — 행의 slot 경로(`work/<repo>_<N>`)와 행의 session
+    (`<repo>_<N>`) 양쪽(`_row_slot_numbers`). 경로에 번호가 없는 행(PM 홈 자신을 가리키는
+    `slot="."` 행 등)도 session 값으로 자기 번호를 점유하므로, 번호 조회/충돌 회피가 그 행을
+    빠뜨리지 않는다. `state` 가 `"leased"` 인 엔트리만 센다 — **`state` 키 부재는 `"leased"` 로
+    back-compat**(`worktree_pool.from_dict` default 동형·`leased_sessions` 와의 의도된 비대칭은
+    위 docstring 참고). 같은 번호의 중복 장부 엔트리는 dedup(정렬된 unique 목록).
 
     파일 부재/JSON 깨짐/스키마 불일치 → `None`(fail-soft·"읽을 수 없음"); 정상 read 인데 그 repo
-    의 leased 슬롯이 0개면 빈 리스트 `[]`("읽었으나 활성 슬롯 없음"). 호출부는 두 경우를 구분한다
-    (`resolve_actor_slot` 이 이 구분을 그대로 위임한다).
+    의 leased 슬롯이 0개면 빈 리스트 `[]`("읽었으나 활성 슬롯 없음"). 호출부는 두 경우를 구분한다.
+
+    **actor 해소는 이 번호 축을 타지 않는다** — `resolve_actor_slot` 은 장부 행 값(session/slot)
+    으로 해소한다(번호에서 세션을 재구성하지 않는다·아래).
     """
     rows = _load_lease_rows(leases_file)
     if rows is None:
         return None
-    slot_re = re.compile(rf"^work/{re.escape(repo)}_(\d+)$")
     slot_nums: set[int] = set()
     for row in rows:
         if not isinstance(row, dict) or row.get("repo") != repo:
@@ -553,10 +725,27 @@ def repo_slot_numbers(repo: str, leases_file: Path) -> list[int] | None:
         # state 키 부재는 leased 로 본다(worktree_pool from_dict default·back-compat).
         if row.get("state", "leased") != "leased":
             continue
-        m = slot_re.match(str(row.get("slot") or ""))
-        if m:
-            slot_nums.add(int(m.group(1)))
+        slot_nums |= _row_slot_numbers(repo, row.get("slot"), row.get("session"))
     return sorted(slot_nums)
+
+
+def _row_slot_numbers(repo: str, slot: object, session: object) -> set[int]:
+    """장부 행 하나가 이 repo 에서 점유한 슬롯 번호 — 경로 값 ∪ session 값(공유 규칙).
+
+    경로 축(`work/<repo>_<N>`)만 세면 경로에 번호가 없는 행(홈 N=1 행 `slot="."`)이 미계상돼
+    다음 `alloc` 이 이미 쓰이는 이름(`<repo>_1`)을 다시 판다. 두 값 모두 **장부 행의 값**이라
+    파일시스템/추측이 개입하지 않는다.
+    """
+    nums: set[int] = set()
+    slot_text = normalize_slot_value(slot)
+    if slot_text.startswith(f"work/{repo}_"):
+        number = slot_number_for_repo(repo, slot_text[len("work/"):])
+        if number is not None:
+            nums.add(number)
+    number = slot_number_for_repo(repo, session)
+    if number is not None:
+        nums.add(number)
+    return nums
 
 
 class SlotResolutionError(Exception):
@@ -570,25 +759,353 @@ class SlotResolutionError(Exception):
     """
 
 
-def resolve_actor_slot(repo: str, leases_file: Path) -> str | None:
-    """actor(`--repo`-단독) 슬롯 해소 — `repo` 의 활성(leased) 슬롯이 정확히 1개면 그 session.
+class SlotPathResolution:
+    """번호→경로 해소 결과 — 경로와 **판정 사유**를 함께 나른다.
 
-    `--repo` 단독 인자에서 actor 연산(claim/finish/handoff/regression/livegate)
-    은 활성 슬롯이 1개면 자동 해소하고, ≥2 개면 모호해 `SlotResolutionError`(fail-loud) — 기존
-    SlotResolutionError 의미를 보존한다. 활성 슬롯이 0개(장부 부재/파싱실패/그 repo 활성 슬롯 없음)
-    는 `None`(fail-soft) — actor 정체성이 미해소라는 신호일 뿐이며, `--session` 필요 여부(required)
-    판단은 caller 몫이다(`board.session_name` 의 `required` 패턴과 동형).
+    `status` 는 `SLOT_PATH_OK`(경로 해소) / `SLOT_PATH_LEDGER_MISSING` / `SLOT_PATH_LEDGER_
+    UNREADABLE` / `SLOT_PATH_ROW_ABSENT`(정상 장부에 그 번호 행 없음) / `SLOT_PATH_CONFLICT`
+    (같은 번호를 서로 다른 경로가 주장 — 모호) 중 하나다. 부재/읽기불능/행 부재는 호출부의 기존
+    canonical 폴백이 정당하지만 **모순은 폴백 대상이 아니다** — 그 구분이 없으면 "장부를 못
+    읽었다"와 "장부가 두 답을 준다"가 같은 `None` 으로 접혀 모호가 조용히 추측으로 통과한다
+    (리뷰 F-004).
+
+    (dataclass 미사용 — `Identity`·`Workspace` 와 같은 로더 제약.)
     """
-    slot_nums = repo_slot_numbers(repo, leases_file)
-    if not slot_nums:
+
+    def __init__(self, status: str, path: str | None = None, detail: str = ""):
+        self.status = status
+        self.path = path
+        self.detail = detail
+
+    def __repr__(self) -> str:
+        return (f"SlotPathResolution(status={self.status!r}, path={self.path!r}, "
+                f"detail={self.detail!r})")
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, SlotPathResolution):
+            return NotImplemented
+        return (self.status, self.path, self.detail) == (
+            other.status, other.path, other.detail)
+
+
+SLOT_PATH_OK = "ok"
+SLOT_PATH_LEDGER_MISSING = LEDGER_MISSING
+SLOT_PATH_LEDGER_UNREADABLE = LEDGER_UNREADABLE
+SLOT_PATH_ROW_ABSENT = "row-absent"
+SLOT_PATH_CONFLICT = "conflict"
+
+
+def slot_path_resolution(repo: str, number: int, leases_file: Path) -> SlotPathResolution:
+    """`repo` 슬롯 번호 `number` → **활성 행의 slot 경로 값** + 판정 사유(discriminated).
+
+    명시 `--repo X --slot N` 이 실행 슬롯 경로를 `work/<repo>_<N>` 로 **재조립**하던 자리를 장부
+    값으로 바꾼다. 장부가 그 번호를 다른 경로로 들고 있으면(`nested/X_1`·PM 홈 자신을 가리키는
+    `.`) 재조립 값은 존재하지 않는 경로다. 번호 점유 판정은 `repo_slot_numbers` 와 같은 규칙
+    (`_row_slot_numbers` — 경로 값 ∪ session 값)을 공유한다.
+
+    같은 번호를 서로 다른 경로가 주장하면 `SLOT_PATH_CONFLICT` — 임의 선택도, canonical 추측도
+    하지 않는다. 쓰기 진입은 이 값을 fail-loud 로 번역한다.
+    """
+    status, rows = _read_lease_rows_status(leases_file)
+    if status != LEDGER_OK:
+        return SlotPathResolution(status, None, f"장부를 읽을 수 없다({leases_file})")
+    slots: set[str] = set()
+    for row in rows:
+        if row.get("repo") != repo:
+            continue
+        if row.get("state", "leased") != "leased":
+            continue
+        if number in _row_slot_numbers(repo, row.get("slot"), row.get("session")):
+            slot = normalize_slot_value(row.get("slot"))
+            if slot:
+                slots.add(slot)
+    if len(slots) == 1:
+        return SlotPathResolution(SLOT_PATH_OK, next(iter(slots)))
+    if not slots:
+        return SlotPathResolution(
+            SLOT_PATH_ROW_ABSENT, None,
+            f"repo {repo!r} 의 활성 행 중 슬롯 번호 {number} 를 점유한 행이 없다")
+    listing = ", ".join(sorted(slots))
+    return SlotPathResolution(
+        SLOT_PATH_CONFLICT, None,
+        f"repo {repo!r} 슬롯 번호 {number} 를 서로 다른 경로 {len(slots)}개({listing})가 "
+        f"주장한다 — 장부 모순이라 임의 선택하지 않는다")
+
+
+def slot_path_for_number(repo: str, number: int, leases_file: Path) -> str | None:
+    """`slot_path_resolution` 의 관용 wrapper — 해소된 경로 값 또는 `None`.
+
+    **읽기/표시 호출부 전용**이다: 부재·손상·행 부재·모순을 한 `None` 으로 접으므로, 그 넷을
+    갈라야 하는 **쓰기 진입은 `slot_path_resolution` 을 직접 소비**해야 한다(모순은 폴백 금지).
+    """
+    return slot_path_resolution(repo, number, leases_file).path
+
+
+def resolve_actor_workspace(repo: str, leases_file: Path) -> "Workspace | None":
+    """actor(`--repo`-단독) 작업공간 해소 — `repo` 의 활성(leased) 슬롯이 정확히 1개면 **그 행**.
+
+    **정체성은 행의 `session`, 경로는 행의 `slot`** — 어느 쪽도 다른 쪽에서 재구성하지 않는다.
+    이전 구현은 번호 집합(`repo_slot_numbers`)으로 해소한 뒤 세션을 `f"{repo}_{N}"` 로 **재조립**
+    해서, 장부의 실제 session 과 갈렸다(task 이름으로 대여된 슬롯을 `<repo>_<N>` 로 오귀속). 여기서
+    행 값을 그대로 내고, 경로가 필요한 호출부(handoff 실행 슬롯·worktree_pool dev/sync)는
+    `.slot` 을 쓴다 — 세션에서 `work/<session>` 을 만들지 않는다.
+
+    - 활성 슬롯 0개(장부 부재/파싱실패/그 repo 활성 슬롯 없음) → `None`(fail-soft·미해소 신호).
+    - 활성 슬롯 ≥2 → `SlotResolutionError`(fail-loud·모호).
+    - 같은 슬롯의 중복 행이 서로 **다른 session** 을 주장하면(장부 모순) 임의 선택하지 않고
+      `SlotResolutionError` — 판정 불능은 통과가 아니다.
+    """
+    by_slot: dict[str, list[dict]] = {}
+    for row in _lease_dict_rows(leases_file):
+        if row.get("repo") != repo:
+            continue
+        # 활성(leased)만 — state 키 부재는 leased(worktree_pool from_dict default·back-compat).
+        if row.get("state", "leased") != "leased":
+            continue
+        slot = normalize_slot_value(row.get("slot"))
+        if not slot:
+            continue
+        by_slot.setdefault(slot, []).append(row)
+    if not by_slot:
         return None
-    if len(slot_nums) == 1:
-        return f"{repo}_{slot_nums[0]}"
-    raise SlotResolutionError(
-        f"repo '{repo}' 활성 슬롯 {len(slot_nums)}개"
-        f"({', '.join(f'work/{repo}_{n}' for n in slot_nums)}) 중 하나로 특정할 수 없다 — "
-        f"`--slot <N>` 으로 명시하라."
+    if len(by_slot) > 1:
+        listing = ", ".join(sorted(
+            by_slot, key=lambda s: (slot_number_for_repo(repo, slot_path_name(s)) or 0, s)))
+        raise SlotResolutionError(
+            f"repo '{repo}' 활성 슬롯 {len(by_slot)}개({listing}) 중 하나로 특정할 수 없다 — "
+            f"`--slot <N>` 으로 명시하라."
+        )
+    rows = next(iter(by_slot.values()))
+    sessions = {str(row.get("session") or "") for row in rows}
+    if len(sessions) > 1:
+        listing = ", ".join(sorted(repr(s) for s in sessions))
+        raise SlotResolutionError(
+            f"repo '{repo}' 슬롯 {rows[0].get('slot')!r} 에 session 이 서로 다른 장부 행이 "
+            f"{len(sessions)}개({listing}) — 장부 모순이라 임의 선택하지 않는다. "
+            f"`--slot <N>` 으로 명시하거나 장부를 정리하라."
+        )
+    row = rows[0]
+    return Workspace(
+        slot=str(row.get("slot")),
+        repo=row.get("repo") or repo,
+        session=(row.get("session") or None),
+        test_cmd=row.get("test_cmd"),
+        readonly=row.get("role") == _LEASE_ROLE_READONLY,
     )
+
+
+def resolve_actor_slot(repo: str, leases_file: Path) -> str | None:
+    """actor(`--repo`-단독) 세션 해소 — 활성 슬롯이 정확히 1개면 **그 행의 session 값 그대로**.
+
+    `--repo` 단독 인자에서 actor 연산(claim/finish/handoff/regression/livegate)은 활성 슬롯이
+    1개면 자동 해소하고, ≥2 개면 모호해 `SlotResolutionError`(fail-loud) — 기존 SlotResolutionError
+    의미를 보존한다. 활성 슬롯이 0개(장부 부재/파싱실패/그 repo 활성 슬롯 없음)는 `None`
+    (fail-soft) — actor 정체성이 미해소라는 신호일 뿐이며, `--session` 필요 여부(required) 판단은
+    caller 몫이다(`board.session_name` 의 `required` 패턴과 동형).
+
+    해소된 슬롯의 session 이 **비어 있으면**(무소유 readonly 공유 슬롯 등) `None` — 그 슬롯엔
+    actor 정체성이 없다. 이전처럼 슬롯 번호로 `<repo>_<N>` 을 지어내면 아무도 대여하지 않은
+    슬롯 이름으로 귀속 쓰기가 나간다(정체성 위조).
+    """
+    workspace = resolve_actor_workspace(repo, leases_file)
+    if workspace is None:
+        return None
+    return workspace.session or None
+
+
+# ── 슬롯 정체성 해소 (장부 값 1순위 · 경로 재구성 금지) ──────────
+# 슬롯의 **정체성 키**(`.local/slots/<키>/pm_state.md` 디렉토리 · log 헤더 태그 `(<키>)` ·
+# handoff ack 토큰)를 한 지점에서 해소한다. 지금까지는 소비 지점마다 경로 basename 을 각자
+# 파싱했고(`pm_handoff._parse_worktree_slot`·`worktree_pool.slot_pm_state_file`), 그래서 경로에
+# 이름이 없는 슬롯(PM 홈 자신을 가리키는 행 `slot="."`)은 어느 소비자도 해소하지 못했다.
+
+IDENTITY_FROM_LEDGER_SESSION = "ledger-session"   # 장부 행 session 값이 정체성을 줬다.
+IDENTITY_FROM_SLOT_PATH = "slot-path"             # 장부 정체성 부재 — pool 명명 규약(경로 마디).
+
+
+class SlotIdentity:
+    """슬롯 해소 결과 — 정체성 키(`key`)와 실제 경로(`slot`)를 함께 나른다.
+
+    `key` = `<repo>_<N>` 상태/태그/ack 키 · `slot` = 장부/호출부가 준 경로 값 그대로 ·
+    `repo`/`number` = **장부 행의 repo 와 그 repo 기준 행 번호**(장부에 행이 없으면 pool 명명
+    규약대로 키 분해) · `session` = 장부 행 session 원값(경로 규약으로 해소했으면 None) ·
+    `source` = 어느 층이 해소했는지(진단·테스트 단언).
+
+    **`repo`/`number` 를 키에서 뜯지 않는 이유**: 키는 그 슬롯의 *정체성*이고 트리거
+    `--repo <repo> --slot <N>` 은 그 슬롯을 다시 **찾는** 좌표다. 둘을 같은 문자열에서 뽑으면
+    session 과 행 repo 가 어긋난 장부(`repo=A · slot=work/A_1 · session=B_7`)에서 `--repo B
+    --slot 7` 이라는 **재접속 불가능한 지시**가 나온다(리뷰 F-002 실측 — 즉시 재해소가 M3 거부).
+    좌표는 장부 행에서 오고, 행이 좌표를 주지 못하면 `number=None`(명시 트리거를 만들지 않는다 —
+    틀린 지시를 내느니 내지 않는다).
+
+    (dataclass 미사용 — `Identity`·`Workspace` 와 같은 이유: `spec_from_file_location` 로드 +
+    `from __future__ import annotations` 결합에서 forward-ref 해소가 깨진다.)
+    """
+
+    def __init__(self, key: str, slot: str, source: str, session: str | None = None,
+                 repo: str | None = None, number: int | None = None):
+        self.key = key
+        self.slot = slot
+        self.source = source
+        self.session = session
+        self.repo = repo
+        self.number = number
+
+    def __repr__(self) -> str:
+        return (f"SlotIdentity(key={self.key!r}, slot={self.slot!r}, "
+                f"source={self.source!r}, session={self.session!r}, "
+                f"repo={self.repo!r}, number={self.number!r})")
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, SlotIdentity):
+            return NotImplemented
+        return (self.key, self.slot, self.source, self.session, self.repo, self.number) == (
+            other.key, other.slot, other.source, other.session, other.repo, other.number)
+
+
+class SlotIdentityResolution:
+    """슬롯 정체성 해소 결과 — 정체성과 **판정 사유**를 함께 나른다.
+
+    `status`:
+      - `SLOT_IDENTITY_OK` — 해소됨(`identity` 비어 있지 않음·어느 층인지는 `identity.source`).
+      - `SLOT_IDENTITY_CONFLICT` — 같은 슬롯을 서로 다른 슬롯 키 session 이 주장(**장부 모순**).
+        `identity` 는 `None` 이다 — 판정 불능을 판정으로 위장하지 않는다.
+      - `SLOT_IDENTITY_LEDGER_MISSING` / `..._UNREADABLE` / `..._ROW_ABSENT` — 장부가 답을 주지
+        못한 세 사유(부재 / 손상 / 정상인데 그 슬롯 행 없음)이고 경로 규약도 키를 못 줬다.
+      - `SLOT_IDENTITY_NO_SLOT` — 입력 슬롯 값 자체가 비었다.
+
+    `fallback` = 모순/미해소일 때 **읽기 표시**가 쓸 수 있는 pool 명명 규약(경로 마디) 정체성.
+    쓰기 진입은 이 값을 쓰지 않는다 — `status` 로 fail-loud 한다.
+    """
+
+    def __init__(self, status: str, identity: "SlotIdentity | None" = None,
+                 detail: str = "", fallback: "SlotIdentity | None" = None):
+        self.status = status
+        self.identity = identity
+        self.detail = detail
+        self.fallback = fallback
+
+    def __repr__(self) -> str:
+        return (f"SlotIdentityResolution(status={self.status!r}, "
+                f"identity={self.identity!r}, detail={self.detail!r})")
+
+
+SLOT_IDENTITY_OK = "ok"
+SLOT_IDENTITY_NO_SLOT = "no-slot"
+SLOT_IDENTITY_LEDGER_MISSING = LEDGER_MISSING
+SLOT_IDENTITY_LEDGER_UNREADABLE = LEDGER_UNREADABLE
+SLOT_IDENTITY_ROW_ABSENT = "row-absent"
+SLOT_IDENTITY_CONFLICT = "conflict"
+
+# 쓰기 진입이 fail-loud 로 번역해야 하는 판정 — "장부가 두 답을 준다"는 폴백 대상이 아니다.
+SLOT_IDENTITY_FAIL_LOUD_STATUSES = (SLOT_IDENTITY_CONFLICT,)
+
+
+def _identity_coordinates(key: str, rows: "list[dict]") -> "tuple[str | None, int | None]":
+    """정체성 키의 재접속 좌표 `(repo, number)` — **장부 행 값 1순위**, 행이 없으면 키 분해.
+
+    행이 있으면 repo 는 행의 `repo` 값이고 번호는 그 repo 기준 행 번호(`_row_slot_numbers` —
+    경로 값 ∪ session 값). 행이 아예 없는 슬롯은 pool 명명 규약이 유일한 진실이라 키를 분해한다
+    (그 형상은 호출부의 canonical 폴백이 그대로 왕복한다). 행이 좌표를 주지 못하면 `(repo, None)`
+    — 명시 트리거를 만들지 않는다는 신호다.
+    """
+    if not rows:
+        head, separator, tail = key.rpartition("_")
+        if separator and head and tail.isdigit():
+            return head, int(tail)
+        return None, None
+    repos = {row.get("repo") for row in rows
+             if isinstance(row.get("repo"), str) and row.get("repo")}
+    if len(repos) != 1:
+        return None, None   # 행이 repo 를 안 주거나 갈린다 — 좌표 없음(트리거 미생성).
+    repo = str(next(iter(repos)))
+    numbers: set[int] = set()
+    for row in rows:
+        numbers |= _row_slot_numbers(repo, row.get("slot"), row.get("session"))
+    return repo, (next(iter(numbers)) if len(numbers) == 1 else None)
+
+
+def session_coordinates(session: object, leases_file: Path) -> "tuple[str | None, int | None]":
+    """세션 명의 → 재접속 좌표 `(repo, number)` — **장부 행 값 1순위**, 행이 없으면 키 분해.
+
+    세션 키를 `rpartition("_")` 로 뜯어 `(repo, N)` 을 만들면 행의 repo 와 어긋난 session
+    (`repo=A · slot=work/A_1 · session=B_7`)에서 장부에 없는 repo `B` 가 나온다 — 그 좌표로 만든
+    지시(`--repo B --slot 7`·board 렌즈·remedy 안내)는 즉시 조인 실패한다(리뷰 F-002). 장부가
+    그 세션을 명의로 가진 행을 들고 있으면 **행의 repo 와 행 번호**가 좌표이고, 그런 행이 없을
+    때만 pool 명명 규약(키 분해)이 유일한 진실이다.
+
+    좌표가 유일하지 않으면(행 repo 가 갈림·번호가 갈림) 해당 축은 `None` — 지어내지 않는다.
+    """
+    if not isinstance(session, str) or not session:
+        return None, None
+    rows = [row for row in _lease_dict_rows(leases_file) if row.get("session") == session]
+    return _identity_coordinates(session, rows)
+
+
+def slot_identity_resolution(slot: object, leases_file: Path) -> SlotIdentityResolution:
+    """슬롯 경로 값 → 슬롯 정체성 + 판정 사유. **장부 행 session 이 1순위**, pool 규약이 2순위.
+
+    해소 순서:
+      1. 장부에서 그 slot 값을 가진 행을 찾아(표기 정규화 후 대조) 그 행의 `session` 이 슬롯 키
+         형식이면 **그 값이 정체성**이다 — 경로 basename 을 파싱하지 않는다. 경로에 이름이 없는
+         슬롯(`slot="."`)도 이 층에서 해소된다.
+      2. 장부가 그 슬롯에 슬롯 축 정체성을 주지 않으면(미등록 · task 소유 session · 무소유 빈
+         session · `<host>-<pid>` 임시 명명) pool 명명 규약대로 **경로의 마지막 마디**를 키로
+         쓴다. 슬롯 상태 앵커는 *슬롯의* 속성이라 대여자(session)가 바뀌어도 같은 키여야 한다 —
+         이 층이 없으면 재바인딩마다 pm_state 연속성이 끊긴다.
+      3. 둘 다 없으면 미해소 — 왜 못 했는지(부재/손상/행 부재)를 `status` 로 나른다.
+
+    같은 slot 값의 행이 **서로 다른 슬롯 키 session** 을 주장하면 `SLOT_IDENTITY_CONFLICT` 다 —
+    2층으로 조용히 내려가 경로 마디를 키로 쓰면 판정 불능이 판정으로 위장된다(리뷰 F-004). 읽기
+    표시가 쓸 수 있게 규약 값은 `fallback` 으로 함께 나르되 `identity` 는 비운다.
+    """
+    if not isinstance(slot, str) or not slot.strip():
+        return SlotIdentityResolution(SLOT_IDENTITY_NO_SLOT, None, "슬롯 값이 비었다")
+    value = normalize_slot_value(slot)
+    ledger_status, all_rows = _read_lease_rows_status(leases_file)
+    rows = [row for row in all_rows if normalize_slot_value(row.get("slot")) == value]
+    name = slot_path_name(value)
+    fallback = None
+    if is_slot_key(name):
+        repo, number = _identity_coordinates(name, rows)
+        fallback = SlotIdentity(key=name, slot=slot, source=IDENTITY_FROM_SLOT_PATH,
+                                repo=repo, number=number)
+    sessions = {row.get("session") for row in rows if is_slot_key(row.get("session"))}
+    if len(sessions) > 1:
+        listing = ", ".join(sorted(repr(s) for s in sessions))
+        return SlotIdentityResolution(
+            SLOT_IDENTITY_CONFLICT, None,
+            f"슬롯 {slot!r} 에 session 이 서로 다른 장부 행이 {len(sessions)}개({listing}) — "
+            f"장부 모순이라 임의 선택하지 않는다",
+            fallback=fallback)
+    if len(sessions) == 1:
+        session = str(next(iter(sessions)))
+        repo, number = _identity_coordinates(session, rows)
+        return SlotIdentityResolution(
+            SLOT_IDENTITY_OK,
+            SlotIdentity(key=session, slot=slot, source=IDENTITY_FROM_LEDGER_SESSION,
+                         session=session, repo=repo, number=number))
+    if fallback is not None:
+        return SlotIdentityResolution(SLOT_IDENTITY_OK, fallback)
+    if ledger_status != LEDGER_OK:
+        return SlotIdentityResolution(
+            ledger_status, None,
+            f"장부를 읽을 수 없고({leases_file}) 경로 {slot!r} 에도 슬롯 키 마디가 없다",
+            fallback=None)
+    return SlotIdentityResolution(
+        SLOT_IDENTITY_ROW_ABSENT, None,
+        f"장부에 슬롯 {slot!r} 의 정체성 행이 없고 경로에도 슬롯 키 마디가 없다")
+
+
+def resolve_slot_identity(slot: object, leases_file: Path) -> "SlotIdentity | None":
+    """`slot_identity_resolution` 의 관용 wrapper — 정체성 또는 `None`.
+
+    **읽기/표시 호출부 전용**이다. 장부 모순(`SLOT_IDENTITY_CONFLICT`)에서는 종전대로 pool 명명
+    규약 폴백을 내어 표시 연속성을 지키지만, **쓰기 진입은 `slot_identity_resolution` 을 직접
+    소비**해 모순을 fail-loud 로 번역해야 한다(리뷰 F-004 — 읽기 관용/쓰기 엄격).
+    """
+    result = slot_identity_resolution(slot, leases_file)
+    return result.identity if result.identity is not None else result.fallback
 
 
 # ── 작업공간(slot) 2단 해소 — task-aware ──────────
@@ -674,8 +1191,20 @@ def resolve_task_workspace(identity: Identity, leases_file: Path) -> Workspace:
             if r.get("session") == task and r.get("state", "leased") == "leased"]
 
     if identity.kind == "slot":
-        target = f"work/{identity.repo}_{identity.slot}"
-        owned = next((r for r in held if r.get("slot") == target), None)
+        # 번호→경로는 **장부 행 값**이 권위다 — `work/<repo>_<N>` 재조립은 장부가 그 번호를 다른
+        # 경로로 들고 있는 슬롯(PM 홈 자신을 가리키는 행 `.`·`nested/X_1`)을 영원히 "미보유"로
+        # 오판한다(리뷰 F-001). 부재/손상/행 부재는 종전 canonical 관례로 폴백하되(검증 불가는
+        # 과잉 차단하지 않는다), **모순은 폴백 대상이 아니다** — 실행 위치를 추측하지 않는다.
+        resolution = slot_path_resolution(identity.repo, identity.slot, leases_file)
+        if resolution.status == SLOT_PATH_CONFLICT:
+            raise WorkspaceResolutionError(
+                f"작업공간 해소 불능 — {resolution.detail}. `--slot <N>` 을 정확히 지정하거나 "
+                f"장부를 정리하라(추측하지 않는다)."
+            )
+        target = resolution.path or f"work/{identity.repo}_{identity.slot}"
+        owned = next((r for r in held
+                      if normalize_slot_value(r.get("slot")) == normalize_slot_value(target)),
+                     None)
         if owned is not None:
             return Workspace(slot=target, repo=owned.get("repo") or identity.repo,
                              session=task, test_cmd=owned.get("test_cmd"))
@@ -683,7 +1212,8 @@ def resolve_task_workspace(identity: Identity, leases_file: Path) -> Workspace:
         # 소유검사를 비적용하고 조회/참조 지칭을 허용한다(장부에 그 슬롯이 실재해야). 쓰기 조작
         # 거부는 readonly 거부 몫 — 여기선 소유검사 예외만 배선한다.
         ro = next((r for r in rows
-                   if r.get("slot") == target and r.get("role") == _LEASE_ROLE_READONLY), None)
+                   if normalize_slot_value(r.get("slot")) == normalize_slot_value(target)
+                   and r.get("role") == _LEASE_ROLE_READONLY), None)
         if ro is not None:
             return Workspace(slot=target, repo=ro.get("repo") or identity.repo,
                              session=ro.get("session") or None,

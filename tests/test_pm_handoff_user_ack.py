@@ -258,7 +258,8 @@ def test_direct_run_rejects_malformed_worktree_slot_before_ack_or_pipeline(
     assert "[승인 감사]" not in captured.out
     err = captured.err
     assert "worktree_slot" in err
-    assert "canonical `work/<repo>_<N>`" in err
+    assert "슬롯 정체성을 해소할 수 없다" in err
+    assert "canonical `<repo>_<N>`" in err
 
 
 def test_compaction_checkpoint_parser_has_no_handoff_ack_gate():

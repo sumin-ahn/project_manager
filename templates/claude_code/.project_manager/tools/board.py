@@ -2688,11 +2688,24 @@ def _repo_from_session(session: str) -> str | None:
     `project_manager_1` → repo `project_manager`·`a_2_3` → `a_2`) 정확히 갈린다. 끝
     마디가 숫자가 아니거나(솔로 커스텀 세션명 `pm`·`my-session`·`foo_bar`) repo 부분이
     비면(`_1`) `<repo>_<N>` 형태가 아니므로 None (유도 skip → id_prefix 가 다음 층으로).
+
+    **값은 장부가 준다**: 이름 형태로 "슬롯 축인가"만 가르고 실제 repo/번호는
+    `identity_args.session_coordinates` 가 그 세션 명의 행에서 읽는다 — 이름과 행이 어긋난 장부
+    (`repo=A · slot=work/A_1 · session=B_7` — pool alloc 이 다른 repo 의 단일-lease 세션명을 실으면
+    생긴다)에서 이름 분해는 장부에 없는 repo `B` 를 내고, 그 값으로 만든 안내/렌즈는 조인 실패한다
+    (리뷰 F-002). 장부에 그 세션 행이 없으면 이름이 유일한 진실이라 종전 값과 같다.
     """
+    return _session_slot_coordinates(session)[0]
+
+
+def _session_slot_coordinates(session: str) -> "tuple[str | None, int | None]":
+    """세션명 → 재접속 좌표 `(repo, N)` — 이름 형태 게이트 + **장부 값** 좌표(`_repo_from_session`
+    과 `reid` remedy 안내가 공유하는 단일 해소)."""
     head, sep, tail = session.rpartition("_")
     if not sep or not head or not tail.isdigit():
-        return None
-    return head
+        return None, None
+    repo, number = identity_args.session_coordinates(session, LEASES_FILE)
+    return (repo or head), (number if number is not None else int(tail))
 
 
 def _prefix_from_session(session: str | None = None) -> str | None:
@@ -13465,9 +13478,8 @@ def cmd_reid(args: argparse.Namespace) -> int:
                 # remedy 는 canonical `--repo/--slot` 로 안내 — `claimed_slot` 이
                 # `<repo>_<N>` 형태면 분해해 그대로 보여주고(정직한 remedy), 아니면(솔로 커스텀
                 # 세션명) 소유 세션명만 병기한다(그 형태는 --repo/--slot 로 재현 불가).
-                remedy_repo = _repo_from_session(claimed_slot)
-                if remedy_repo is not None:
-                    remedy_num = claimed_slot.rsplit("_", 1)[-1]
+                remedy_repo, remedy_num = _session_slot_coordinates(claimed_slot)
+                if remedy_repo is not None and remedy_num is not None:
                     remedy = f"--repo {remedy_repo} --slot {remedy_num}"
                 else:
                     remedy = f"--repo <repo> --slot <N>(소유 세션 `{claimed_slot}`)"

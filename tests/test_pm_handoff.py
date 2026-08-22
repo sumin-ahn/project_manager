@@ -1708,20 +1708,21 @@ def test_implicit_identity_serializes_windows_lease_path_as_posix(
 def test_session_slot_resolution_serializes_windows_lease_path_as_posix(
     hf, tmp_path, monkeypatch,
 ):
-    """session-entry 슬롯 해소도 같은 규칙 — 실행 슬롯 thread 값이 백슬래시를 안 싣는다."""
+    """session-entry 슬롯 해소도 같은 규칙 — 실행 슬롯 thread 값이 백슬래시를 안 싣는다.
+
+    표기 축의 원천은 **장부 행의 slot 값**이다(대역 아님) — Windows 에서 적힌 행이 그대로 다음
+    세션의 cwd 인자로 흘러가므로, 백슬래시 표기가 실려 나가면 같은 슬롯이 OS 를 건너 다른
+    문자열로 읽힌다.
+    """
     areas = tmp_path / "areas.md"
     leases = tmp_path / "worktree-leases.json"
     _write_areas(areas, ["project_manager"])
+    # 슬롯 자리는 pool canonical 이 아닐 수 있고(`nested/...`), 표기도 Windows 백슬래시일 수 있다.
     _write_leases(leases, [
-        {"slot": "work/project_manager_1", "repo": "project_manager",
+        {"slot": "nested\\project_manager_1", "repo": "project_manager",
          "session": "project_manager_1", "state": "leased"},
     ])
     monkeypatch.setattr(hf, "REPO", tmp_path)
-    # 장부 canonical 이름과 별개로, 실제 슬롯 경로는 `nested/...` 처럼 다른 자리일 수 있다
-    # (`resolved_lease_slot_path` 가 그 실경로를 권위로 준다) — 표기 축은 그 값에 걸린다.
-    windows_slot = _windows_slot_under(tmp_path, "nested/project_manager_1")
-    monkeypatch.setattr(
-        hf, "_load_pm_log", lambda: _fake_pm_log_for_slot(windows_slot))
 
     slot, error = hf._resolve_session_worktree_slot(None, areas, leases)
     assert error is None

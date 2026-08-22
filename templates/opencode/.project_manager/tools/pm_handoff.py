@@ -546,7 +546,7 @@ def _regression_cwd(
     해소 순서:
       - `worktree_slot`(명시 `--repo`/`--slot`) 가 있으면 `repo_root / worktree_slot`
         (단 그 디렉토리가 실제로 없으면 stale 슬롯 → `repo_root` 로 폴백·경고 1줄),
-      - 없으면 bootstrap `_auto_slot` 으로 단일 self-host 슬롯을 자동해소(`work/<repo>_<N>` ·
+      - 없으면 bootstrap `_auto_slot` 으로 단일 self-host 슬롯을 자동해소(**행의 `slot` 경로 값** ·
         **같은 존재 검사**를 탄다 — 디렉토리가 없으면 명시 분기와 동형으로 `repo_root` 폴백·경고),
       - 그것도 없으면(솔로/모호/부재) **현 `repo_root` 기본** (fail-soft 폴백·솔로 무변경).
 
@@ -587,16 +587,16 @@ def _regression_cwd(
                 raise
             auto = None
         if auto:
-            repo, n = auto
             # 자동해소도 **명시 슬롯과 같은 존재 검사**를 탄다. 판정은 장부(areas·leases)만 보므로
             #   worktree 디렉토리가 물리적으로 없을 수 있고(장부-파일시스템 out-of-sync), 그대로
             #   `subprocess.run(cwd=...)` 에 넘기면 FileNotFoundError 로 크래시한다 — 같은 상태를
             #   분기마다 다르게 처리할 이유가 없다(폴백도 경고도 동형).
-            candidate = repo_root / f"work/{repo}_{n}"
+            # 경로는 **장부 행의 slot 값**이다(번호로 `work/<repo>_<N>` 재조립 금지).
+            candidate = repo_root / auto.slot
             if candidate.is_dir():
                 return str(candidate)
             print(
-                f"  ⚠ 자동해소 슬롯 '{repo}_{n}' 의 worktree 디렉토리가 없다 ({candidate}) — "
+                f"  ⚠ 자동해소 슬롯 '{auto.key}' 의 worktree 디렉토리가 없다 ({candidate}) — "
                 "REPO 로 폴백한다 (stale 슬롯).",
                 file=sys.stderr,
             )
@@ -714,9 +714,10 @@ def _resolve_state_slot(
     상수가 import 시점에 굳지 않게 None 으로 받아 monkeypatch 된 REPO 를 추종(hermetic).
     """
     if worktree_slot:
-        # 실제 lease 경로(상대/absolute)여도 basename의 canonical session을 상태 키로 쓴다.
-        parsed = _parse_worktree_slot(worktree_slot)
-        return f"{parsed[0]}_{parsed[1]}" if parsed is not None else None
+        # 실제 lease 경로(상대/absolute)여도 **장부 행이 그 슬롯에 준 정체성**을 상태 키로 쓴다
+        # (장부 미등록이면 pool 명명 규약의 경로 마디 — `_slot_identity`).
+        identity = _slot_identity(worktree_slot, leases_file)
+        return identity.key if identity is not None else None
     if areas_file is None:
         areas_file = _areas_file()
     if leases_file is None:
@@ -727,7 +728,10 @@ def _resolve_state_slot(
     if bp is None:
         return None
     try:
-        auto = bp._resolve_session_slot(areas_file, leases_file)
+        # 좌표(`(repo, N)`)를 `f"{repo}_{N}"` 로 재조립하지 않는다 — 그 슬롯의 정체성은 장부가
+        # 준다(`_session_slot_identity`). 재조립은 장부가 다른 session 을 들고 있는 슬롯에서
+        # 명시 진입(`work/<...>` → 행 session)과 갈린 키를 내 상태/태그가 두 갈래로 갈렸다.
+        auto = bp._session_slot_identity(areas_file, leases_file)
     except bp.SlotResolutionError:
         # 진짜 모호(`{2,3}`·repo≥2) — display/preview 는 fail-soft(None→legacy 표기). 실제
         # write 경로는 run() 가드가 이미 fail-loud 로 막았다(여기 도달=방어적).
@@ -736,10 +740,7 @@ def _resolve_state_slot(
         if _is_engine_rev_skew(exc):
             raise
         return None
-    if not auto:
-        return None
-    repo, n = auto
-    return f"{repo}_{n}"
+    return auto.key if auto is not None else None
 
 
 def _lease_slot_path_text(actual, repo: Path) -> str:
@@ -808,29 +809,32 @@ def _resolve_session_worktree_slot(
     if bp is None:
         return None, None  # bootstrap 부재 → 판정 불가·현행 폴백(fail-soft).
     try:
-        auto = bp._resolve_session_slot(areas_file, leases_file)
+        auto = bp._session_slot_identity(areas_file, leases_file)
     except bp.SlotResolutionError as exc:
         return None, str(exc)  # 진짜 모호 → fail-loud.
     except Exception as exc:  # noqa: BLE001 — fail-soft: 판정 실패는 현행 폴백(모호 아님).
         if _is_engine_rev_skew(exc):
             raise
         return None, None
-    if not auto:
+    if auto is None:
         return None, None  # solo/미해소 → 현행 폴백.
-    repo, n = auto
-    canonical = f"{repo}_{n}"
-    # 장부가 준 실제 slot 경로를 권위로 쓴다. 상대 경로가 PM 홈 안이면 그 상대값을 보존하고,
-    # 외부 absolute slot은 absolute 그대로 downstream에 thread한다. 해독/중복이면 기존 canonical
-    # 관례로 fail-soft한다. 생산자 pm_log._lease_slot_path와 같은 해소를 재사용한다.
+    # 실행 슬롯 경로는 **장부 행의 slot 값**이다(`_session_slot_identity` 가 좌표→행 경로까지
+    # 해소한다) — 번호로 `work/<repo>_<N>` 을 재조립하면 장부가 다른 경로로 들고 있는 슬롯에서
+    # 없는 cwd 가 나온다. 외부 absolute slot 은 absolute 그대로 downstream 에 thread 하되 PM 홈
+    # 안이면 상대 표기를 보존한다(생산자 pm_log._lease_slot_path 와 같은 표기 규칙).
+    slot = auto.slot
+    if not slot:
+        return None, None
     try:
-        actual = _load_pm_log().resolved_lease_slot_path(REPO, canonical)
-    except Exception as exc:  # noqa: BLE001 — 경로 보강 실패는 기존 canonical 폴백.
-        if _is_engine_rev_skew(exc):
-            raise
-        actual = None
-    if actual is not None:
-        return _lease_slot_path_text(actual, REPO), None
-    return f"work/{canonical}", None
+        actual = Path(slot)
+        if actual.is_absolute():
+            return _lease_slot_path_text(actual, REPO), None
+    except (OSError, ValueError):  # 표기 이상은 값 그대로 thread(fail-soft·현행 폴백 동형).
+        return slot, None
+    # PM 홈 상대 표기는 **POSIX 단일**로 정규화해 downstream 에 thread 한다 — 같은 슬롯이 OS 를
+    # 건너 다른 문자열로 읽히면 암묵 정체성 해소가 문자열 대조에서 갈린다(`_lease_slot_path_text`
+    # 와 같은 표기 규칙).
+    return identity_args.normalize_slot_value(slot), None
 
 
 # ── 명시 `--repo`/`--slot` → 실행 슬롯 (라이더) ──────────
@@ -872,18 +876,30 @@ def _resolve_explicit_identity_slot(
                 f"[M3] 세션↔repo 조인 불일치 — repo '{repo}' 의 활성 슬롯({listing}) 중 "
                 f"{slot} 이 없다. `--slot` 을 정확히 지정하라."
             )
-        return f"work/{repo}_{slot}", None
+        # 실행 슬롯 경로는 **장부 행의 slot 값**이 권위다 — 번호로 `work/<repo>_<N>` 을 재조립하면
+        # 장부가 다른 경로를 들고 있는 슬롯에서 존재하지 않는 cwd 가 나온다. 장부 미해독(부재/
+        # 손상/행 부재)은 *검증 불가*라 종전 canonical 조립으로 폴백하지만, **모순**(같은 번호를
+        # 서로 다른 경로가 주장)은 폴백 대상이 아니다 — 두 답 중 하나를 조용히 고르면 pm_state·
+        # 로그를 엉뚱한 슬롯에 쓴다(리뷰 F-004·"판정불가"와 "모순"은 다르게 다룬다).
+        resolution = identity_args.slot_path_resolution(repo, slot, leases_file)
+        if resolution.status == identity_args.SLOT_PATH_CONFLICT:
+            return None, (
+                f"[M3] 장부 모순 — {resolution.detail}. 장부를 정리한 뒤 다시 실행하라."
+            )
+        return (resolution.path or f"work/{repo}_{slot}"), None
     # repo 만(슬롯 무) — actor 활성슬롯 자동해소.
     try:
-        resolved = identity_args.resolve_actor_slot(repo, leases_file)
+        workspace = identity_args.resolve_actor_workspace(repo, leases_file)
     except identity_args.SlotResolutionError as exc:
         return None, str(exc)
-    if resolved is None:
+    if workspace is None:
         return None, (
             f"[M3] repo '{repo}' 에 활성(leased) 슬롯이 없다 — 세션↔repo 조인 불가. "
             "`--slot <N>` 으로 명시하거나 셋업을 확인하라."
         )
-    return f"work/{resolved}", None
+    # 경로 = 행의 `slot` 값 그대로(세션에서 `work/<session>` 재조립 금지 — 세션은 task 이름일 수
+    # 있고 그러면 없는 경로가 나온다).
+    return workspace.slot, None
 
 
 def _pm_state_path(
@@ -2053,22 +2069,67 @@ def _select_runtime_bootstrap_notation(template: str) -> str:
     )
 
 
-def _parse_worktree_slot(worktree_slot: str | None) -> tuple[str, int] | None:
-    """lease 실제 경로의 canonical basename ``<repo>_<N>``을 파싱한다.
+def _slot_identity(
+    worktree_slot: str | None,
+    leases_file: Path | None = None,
+) -> "object | None":
+    """실행 슬롯 값 → 슬롯 정체성(`identity_args.resolve_slot_identity` 위임·단일 진실).
 
-    파싱: relative/absolute 경로의 basename을 rsplit("_", 1) → repo·N. N 은 정수여야
-    하고 repo 는 비어 있지 않아야 한다. None·underscore 부재·N 비정수는 모두 None 반환
-    (호출부가 bare 폴백·fail-soft·현행 유지).
+    정체성의 원천은 **장부 행의 session** 이고, 장부가 그 슬롯에 슬롯 축 정체성을 주지 않을
+    때만 pool 명명 규약(경로 마지막 마디)으로 내려간다. 이 모듈이 basename 을 직접 파싱하지
+    않는 이유: 경로에 이름이 없는 슬롯(PM 홈 자신을 가리키는 행 `slot="."`)을 파싱 규칙으로는
+    영원히 해소할 수 없고, 소비 지점마다 파싱을 복제하면 규칙이 갈린다.
+
+    `leases_file` 미지정이면 *호출 시점* REPO 기준으로 재구성한다(monkeypatch 추종·hermetic —
+    다른 리스 해소 함수들과 동형).
     """
-    if not worktree_slot:
+    if leases_file is None:
+        leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
+    return identity_args.resolve_slot_identity(worktree_slot, leases_file)
+
+
+def _slot_identity_admission(worktree_slot: str, label: str) -> str | None:
+    """**쓰기 진입** 슬롯 정체성 검문 — 통과면 None, 아니면 중단 사유 문자열.
+
+    handoff 는 log/current.md·pm_state.md 를 쓰므로 정체성이 확정돼야 진입한다. 관용 wrapper
+    (`_slot_identity`)는 장부 모순에서도 경로 마디 폴백을 내는데, 그 값으로 write 를 통과시키면
+    **판정 불능이 판정으로 위장**된다(리뷰 F-004 — 같은 슬롯을 `A_1`/`B_2` 가 주장하는 장부에서
+    ack 가 `A_1` 로 통과했다). 그래서 판정형(`slot_identity_resolution`)을 직접 소비해 모순과
+    미해소를 각각 명시 사유로 돌려준다(읽기 표시는 종전대로 관용 — 이 함수는 write 전용).
+    """
+    leases_file = REPO / ".project_manager" / ".local" / "worktree-leases.json"
+    resolution = identity_args.slot_identity_resolution(worktree_slot, leases_file)
+    if resolution.status in identity_args.SLOT_IDENTITY_FAIL_LOUD_STATUSES:
+        return (
+            f"{label} {worktree_slot!r} 의 슬롯 정체성이 장부 모순이다 — {resolution.detail}. "
+            "장부를 정리한 뒤 다시 실행하라 "
+            "(log/current.md·pm_state.md 어떤 것도 건드리지 않는다)."
+        )
+    if resolution.identity is None:
+        return (
+            f"{label} {worktree_slot!r} 의 슬롯 정체성을 해소할 수 없다 — 장부 행이 그 슬롯에 준 "
+            "session 도, 경로의 canonical `<repo>_<N>` 마디도 없다 "
+            "(log/current.md·pm_state.md 어떤 것도 건드리지 않는다)."
+        )
+    return None
+
+
+def _parse_worktree_slot(worktree_slot: str | None) -> tuple[str, int] | None:
+    """실행 슬롯 값 → **재접속 좌표** `(repo, N)` (트리거 `--repo/--slot` 렌더용).
+
+    좌표는 `_slot_identity`(장부 값 1순위)가 해소한 **장부 행의 repo·번호**다 — 정체성 키를
+    다시 분해하지도, 경로 basename 을 파싱하지도 않는다. 렌더한 트리거는 *다음 세션이 이 슬롯으로
+    재접속하는 지시*라 장부에 조인돼야 한다: 행 repo 와 어긋난 session(`repo=A · slot=work/A_1 ·
+    session=B_7`)에서 키를 분해하면 `--repo B --slot 7` 이 나오고 즉시 M3 로 거부된다(리뷰 F-002).
+
+    정체성 미해소(장부에도 없고 경로도 슬롯 키가 아님)거나 **장부가 좌표를 주지 못하면** None —
+    호출부가 bare 폴백·하드 거부·fail-soft 등 기존 관례를 적용한다. 재접속 불가능한 명시 트리거를
+    만드느니 만들지 않는다.
+    """
+    identity = _slot_identity(worktree_slot)
+    if identity is None or identity.repo is None or identity.number is None:
         return None
-    rest = Path(worktree_slot).name
-    if "_" not in rest:
-        return None
-    repo, n_str = rest.rsplit("_", 1)
-    if not repo or not n_str.isdigit():
-        return None
-    return repo, int(n_str)
+    return identity.repo, identity.number
 
 
 def _inject_slot_into_template(template: str, worktree_slot: str | None) -> str:
@@ -3923,22 +3984,16 @@ class PmHandoff:
         # run() 직접 호출도 CLI ingress와 같은 canonical slot 도메인을 강제한다. 파싱 실패를
         # `solo`로 강등하면 malformed 경로에 solo ack가 결속되므로, ack 판정과 모든 pipeline
         # 진입보다 앞에서 부작용 0으로 거부한다.
-        if worktree_slot is not None and _parse_worktree_slot(worktree_slot) is None:
-            print(
-                f"\n[중단] worktree_slot {worktree_slot!r} 이(가) 부적합 — "
-                "canonical `work/<repo>_<N>` 형식이어야 한다 "
-                "(log/current.md·pm_state.md 어떤 것도 건드리지 않는다).",
-                file=sys.stderr,
-            )
-            return 1
-        if implicit_worktree_slot is not None and _parse_worktree_slot(implicit_worktree_slot) is None:
-            print(
-                f"\n[중단] 해소된 lease slot {implicit_worktree_slot!r} 이(가) 부적합 — "
-                "경로 basename은 canonical `<repo>_<N>` 이어야 한다 "
-                "(log/current.md·pm_state.md 어떤 것도 건드리지 않는다).",
-                file=sys.stderr,
-            )
-            return 1
+        if worktree_slot is not None:
+            refusal = _slot_identity_admission(worktree_slot, "worktree_slot")
+            if refusal is not None:
+                print(f"\n[중단] {refusal}", file=sys.stderr)
+                return 1
+        if implicit_worktree_slot is not None:
+            refusal = _slot_identity_admission(implicit_worktree_slot, "해소된 lease slot")
+            if refusal is not None:
+                print(f"\n[중단] {refusal}", file=sys.stderr)
+                return 1
 
         # task 이름 검증 — main() CLI 뿐 아니라 run() 직접 호출도 우회 못 하게 엔진층 단일 choke
         # (validate_task_name_engine)를 *어떤 task 소비(pm_state 경로·log 태그·dashboard·트리거)
@@ -4002,14 +4057,11 @@ class PmHandoff:
                     file=sys.stderr,
                 )
                 return 1
-            if resolved_slot is not None and _parse_worktree_slot(resolved_slot) is None:
-                print(
-                    f"\n[중단] 해소된 worktree_slot {resolved_slot!r} 이(가) 부적합 — "
-                    "canonical `work/<repo>_<N>` 형식이어야 한다 "
-                    "(log/current.md·pm_state.md 어떤 것도 건드리지 않는다).",
-                    file=sys.stderr,
-                )
-                return 1
+            if resolved_slot is not None:
+                refusal = _slot_identity_admission(resolved_slot, "해소된 worktree_slot")
+                if refusal is not None:
+                    print(f"\n[중단] {refusal}", file=sys.stderr)
+                    return 1
             if worktree_slot is None and implicit_worktree_slot is not None:
                 # CLI 선-해소는 위 ambiguity gate를 우회하지 않는다. 가드가 통과한 뒤에만
                 # pm_log가 lease 행에서 준 실제 relative/absolute 경로를 실행 축으로 채택한다.
@@ -4191,8 +4243,8 @@ class PmHandoff:
             session_identity = task
             log_session_tag = f"{_TASK_TAG_PREFIX}{task}"
         else:
-            _parsed_slot = _parse_worktree_slot(worktree_slot)
-            session_identity = f"{_parsed_slot[0]}_{_parsed_slot[1]}" if _parsed_slot else None
+            _slot_id = _slot_identity(worktree_slot)
+            session_identity = _slot_id.key if _slot_id is not None else None
             log_session_tag = session_identity
         normalized_session_num = _normalize_session_num(session_num)
         # ack 박제 자리를 못 찾으면(`DirtyAckStampError`) 통과시키지 않는다 — 사유를 잃은 채
@@ -4582,10 +4634,9 @@ def _handoff_user_ack_target(
     """핸드오프 승인 토큰의 canonical 대상값과 사람이 읽는 대상 설명을 반환한다."""
     if task is not None:
         return task, f"task {task!r}"
-    parsed = _parse_worktree_slot(worktree_slot)
-    if parsed is not None:
-        repo, slot = parsed
-        target = f"{repo}_{slot}"
+    identity = _slot_identity(worktree_slot)
+    if identity is not None:
+        target = identity.key
         return target, f"slot {target!r}"
     # legacy solo에는 task/물리 slot 식별자가 없다. 기존 solo 동작을 보존하면서도 값-결속
     # 게이트를 우회하지 않도록 논리적 단일 slot sentinel을 공개 대상값으로 쓴다.

@@ -904,23 +904,62 @@ def test_resolve_current_slot_ambiguous_raises(wp, monkeypatch):
         wp._resolve_current_slot(None)
 
 
-def test_resolve_current_slot_rejects_malformed_slot(wp):
-    """`--slot` 형식검증 — traversal·빈값·`work/` 단독·경로구분자는 SlotResolutionError (must-fix 2).
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "../x", "work/../x", "work/x/../y", "..",          # 상위 traversal 마디
+        "/abs/path", "C:/abs/path", "c:\\abs\\path",         # 절대경로·드라이브 표기
+        "work\\A_1", "A_1\\..\\..\\etc",                     # 백슬래시 구분자 혼용
+        "", "   ",                                         # 빈값
+        "work/", "work/A_1/sub",                           # 슬롯 자리가 아님(부모·하위)
+    ],
+    ids=["dotdot-rel", "dotdot-mid", "dotdot-nested", "dotdot-bare",
+         "absolute", "drive-posix", "drive-win",
+         "backslash-sep", "backslash-traversal",
+         "empty", "blank",
+         "pool-root", "below-slot"],
+)
+def test_resolve_current_slot_rejects_out_of_boundary_values(wp, bad):
+    """`--slot` 값-경계 — traversal·절대경로·구분자 혼용·슬롯 자리 아님은 SlotResolutionError.
 
-    비공허: 형식검증(`_SLOT_ID_RE`)을 없애면 `../x`·`work/../x` 가 `slot_path` 결합으로 슬롯 루트
-    밖을 가리켜 side-effect 경계가 깨진다. 정상 `work/A_1`/`A_1` 은 통과(대조군·아래 별도 테스트).
+    비공허: 값-경계를 없애면 `../x`·`work/../x` 가 `slot_path` 결합으로 PM 홈/슬롯 루트 밖을
+    가리켜 side-effect 경계가 깨진다. 이름 **모양**은 더 이상 강제하지 않지만(아래 대조군)
+    경계는 오히려 넓어졌다 — `..` 마디·드라이브 표기·백슬래시까지 값으로 거부한다.
     """
-    for bad in ("../x", "work/../x", "work/", "", "work/x/../y", "/abs/path", "work/A_1/sub"):
-        with pytest.raises(wp.SlotResolutionError):
-            wp._resolve_current_slot(bad)
+    with pytest.raises(wp.SlotResolutionError):
+        wp._resolve_current_slot(bad)
+
+
+def test_resolve_current_slot_rejects_symlink_escape(wp, tmp_path):
+    """슬롯 자리가 PM 홈 **밖으로 나가는 symlink** 면 거부한다 — 옛 이름-정규식이 못 보던 축."""
+    outside = tmp_path / "outside-target"
+    outside.mkdir()
+    link = wp.WORK_DIR / "A_9"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):  # pragma: no cover — symlink 미지원 플랫폼
+        pytest.skip("symlink 미지원 환경")
+    with pytest.raises(wp.SlotResolutionError):
+        wp._resolve_current_slot("work/A_9")
 
 
 def test_resolve_current_slot_accepts_valid_slot_forms(wp):
-    """`--slot` 정상형(정규형/접두생략/underscore repo)은 통과·정규화 (must-fix 2 대조군)."""
+    """정상 슬롯 자리는 통과·정규화 — 이름 모양은 강제하지 않는다(값-경계 대조군).
+
+    `work/legacy-dir`(번호 없는 이름)·`.`(PM 홈 자신)이 통과하는 것이 값-경계 교체의 핵심이다 —
+    슬롯 정체성은 장부 값이 주고, 이 층은 **경계**만 본다.
+    """
     assert wp._resolve_current_slot("work/A_1") == "work/A_1"
     assert wp._resolve_current_slot("A_1") == "work/A_1"
     assert wp._resolve_current_slot("work/project_manager_2") == "work/project_manager_2"
     assert wp._resolve_current_slot("project_manager_2") == "work/project_manager_2"
+    assert wp._resolve_current_slot("work/legacy-dir") == "work/legacy-dir"
+    assert wp._resolve_current_slot(".") == "."
+    assert wp._resolve_current_slot("./work/A_1") == "work/A_1"
+    # 같은 자리를 가리키는 표기 변형은 한 값으로 정규화한다(문자열 두 개가 한 슬롯을 갈라
+    # 부르는 drift 차단) — 경계를 넘지 않으므로 거부 대상이 아니다.
+    assert wp._resolve_current_slot("work/A_1/") == "work/A_1"
 
 
 def test_slot_from_cwd_derives_slot_when_inside_worktree(wp, monkeypatch):

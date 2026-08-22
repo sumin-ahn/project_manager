@@ -2663,7 +2663,14 @@ def _main(argv: list[str] | None = None) -> int:
         # solo/미해소(None)면 미주입 → 런타임 `_regression_cwd()` 폴백(현행 100% 보존).
         if worktree_slot:
             regression_cwd = _regression_cwd(worktree_slot)
-            session = Path(worktree_slot).name
+            # 귀속 세션은 **장부 행이 그 슬롯에 준 정체성**이다 — 경로 basename 을 정체성으로
+            # 읽으면 경로에 이름이 없는 슬롯(PM 홈 자신을 가리키는 행 `slot="."`)은 `.` 로,
+            # 장부가 다른 session 을 들고 있는 슬롯은 갈린 값으로 귀속된다(리뷰 F-001).
+            # 미해소(장부에도 없고 경로도 슬롯 키가 아님)면 명시 `--repo/--slot` 이 준 값을
+            # 유지한다(`identity.session` — 종전 폴백 관례).
+            resolved = identity_args.resolve_slot_identity(worktree_slot, LEASES_FILE)
+            if resolved is not None:
+                session = resolved.key
 
     finisher = TicketFinisher(regression_cwd=regression_cwd, task_workspace=task_workspace)
     return finisher.run(

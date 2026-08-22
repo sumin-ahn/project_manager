@@ -1031,7 +1031,13 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   공유 술어(identity_args.single_registration_session) 유도 실패는 미발화로 접어 각 모듈의
     #   기존 tail(<host>-<pid>/None)로 물러나되, 마킹된 엔진 skew 는 그대로 re-raise 한다 —
     #   세 해소 사본 통일 층이 사본 불일치를 tail 폴백 한 줄로 삼키면 안 된다.
-    assert len(report.boundaries) == 231, "propagation sweep boundary ratchet changed"
+    # 230 = 231 − 세션-entry 실행 슬롯 해소가 pm_log 를 형제 로드하던 **한 경계**. 그 경계는
+    #   canonical 세션명으로 `pm_log.resolved_lease_slot_path` 를 불러 실 슬롯 경로를 되찾고
+    #   실패를 canonical 조립으로 접던 자리였는데, 슬롯 경로가 **장부 행 값**으로 직접 해소되면서
+    #   (`pm_bootstrap._session_slot_identity`) 형제 로드 자체가 사라졌다 — 흡수 규칙이 느슨해진 게
+    #   아니라 그 사본을 읽을 이유가 없어진 것이고(같은 장부를 두 번 해석하던 중복), 남은 세션-entry
+    #   경계들은 종전대로 마킹된 skew 를 re-raise 한다.
+    assert len(report.boundaries) == 230, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
@@ -1521,7 +1527,10 @@ def test_runtime_loaded_sibling_and_same_method_boundaries_rethrow_marked_skew(
             module, "_load_pm_bootstrap",
             lambda: SimpleNamespace(
                 SlotResolutionError=type("SlotResolutionError", (RuntimeError,), {}),
-                _resolve_session_slot=_raiser(skew),
+                # 세션-entry 실행 슬롯 해소가 부르는 형제 경계 — 좌표만 내던
+                # `_resolve_session_slot` 에서 좌표→행 경로·정체성까지 해소하는
+                # `_session_slot_identity` 로 옮겼다(경계 자체는 같은 자리).
+                _session_slot_identity=_raiser(skew),
             ),
         )
         invoke = lambda: module._resolve_session_worktree_slot()

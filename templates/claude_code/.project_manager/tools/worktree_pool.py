@@ -1930,25 +1930,29 @@ def install_protected_hook(
     return rc == 0
 
 
-def _slot_number(slot: str) -> float:
-    """슬롯 식별자(`work/<repo>_<N>`)의 번호 N — 정렬 키 (최소 번호 대여 결정론 ⓒ).
+def _slot_number(repo: str, lease: "Lease") -> float:
+    """장부 행이 이 repo 에서 점유한 슬롯 번호 — 정렬 키 (최소 번호 대여 결정론 ⓒ).
 
-    마지막 `_` 뒤 tail 이 숫자면 그 int, 아니면(비-숫자 커스텀 슬롯) `inf` 로 밀어 숫자 슬롯을
-    앞세운다(결정론적 정렬·부재/이상 슬롯이 최소 자리를 차지하지 않게). repo 명에 `_` 가 들어가도
-    (`project_manager`) 마지막 `_` 분리라 정확하다(슬롯 번호는 항상 최후 마디)."""
-    tail = slot.rsplit("_", 1)[-1]
-    return int(tail) if tail.isdigit() else float("inf")
+    번호는 **행 값**(경로 값 ∪ session 값·`identity_args._row_slot_numbers` 공유 규칙)에서
+    계상한다 — 슬롯 식별자 문자열의 마지막 `_` 를 뜯던 자리다. 행이 이 repo 번호를 주지 않으면
+    (비-숫자 커스텀 슬롯·경로에 번호가 없는 행) `inf` 로 밀어 숫자 슬롯을 앞세운다(결정론적
+    정렬·부재/이상 슬롯이 최소 자리를 차지하지 않게)."""
+    numbers = _identity_args._row_slot_numbers(repo, lease.slot, lease.session)
+    return float(min(numbers)) if numbers else float("inf")
 
 
 def _existing_slot_numbers(repo: str, leases: list[Lease]) -> set[int]:
-    """장부에 이미 있는 이 repo 의 슬롯 번호 집합."""
+    """장부에 이미 있는 이 repo 의 슬롯 번호 집합 — **행 전수**에서 계상.
+
+    번호는 행의 slot 경로(`work/<repo>_<N>`)와 행의 session(`<repo>_<N>`) 양쪽에서 읽는다
+    (`identity_args._row_slot_numbers` 공유 규칙·`repo_slot_numbers` 와 같은 축). 경로에 번호가
+    없는 행(PM 홈 자신을 가리키는 행 등)도 session 으로 자기 번호를 점유하므로, 다음 `alloc` 이
+    이미 쓰이는 이름(`<repo>_<N>` 세션·브랜치)을 다시 파지 않는다. 상태 무관(idle 포함) —
+    번호는 대여 상태가 아니라 **이름 점유** 축이다(종전 동형).
+    """
     nums: set[int] = set()
-    prefix = f"work/{repo}_"
     for lease in leases:
-        if lease.slot.startswith(prefix):
-            tail = lease.slot[len(prefix):]
-            if tail.isdigit():
-                nums.add(int(tail))
+        nums |= _identity_args._row_slot_numbers(repo, lease.slot, lease.session)
     return nums
 
 
@@ -2178,13 +2182,33 @@ def ensure_task_pm_state(name: str) -> Path:
 
 
 def slot_pm_state_file(slot: str) -> Path:
-    """slot 연속성 앵커 `.local/slots/<repo>_<N>/pm_state.md` 경로.
+    """slot 연속성 앵커 `.local/slots/<정체성 키>/pm_state.md` 경로.
 
-    lease 표준형(`work/<repo>_<N>`)과 handoff 표준형(`<repo>_<N>`)을 같은 canonical
-    디렉토리로 모은다. `pm_handoff._slots_root() / slot / "pm_state.md"`와 동형이다.
+    키는 **장부 행이 그 슬롯에 준 정체성**(session)이 1순위고, 장부가 슬롯 축 정체성을 주지
+    않으면(미등록·task 소유·무소유) pool 명명 규약의 경로 마디다 —
+    `identity_args.resolve_slot_identity` 단일 해소라 `pm_handoff._resolve_state_slot` 과 같은
+    값을 낸다(두 모듈이 같은 파일을 가리키는 근거·`_ensure_slot_pm_state_locked` 의 drift 대조가
+    그걸 기계 확인한다). 경로 basename 을 직접 파싱하지 않으므로 경로에 이름이 없는 슬롯도
+    해소된다.
+
+    정체성 미해소면 `SlotResolutionError`(fail-loud) — 상태 파일 위치를 지어내지 않는다. 장부
+    **모순**(같은 슬롯을 서로 다른 session 이 주장)도 마찬가지다: 이 경로는 pm_state 를 **쓰는**
+    앵커라 관용 폴백(경로 마디 추측)으로 통과시키면 판정 불능이 판정으로 위장된다(리뷰 F-004).
+    그래서 관용 wrapper 가 아니라 판정형(`slot_identity_resolution`)을 직접 소비한다.
     """
     normalized = _normalize_slot(slot)
-    return LOCAL_DIR / "slots" / Path(normalized).name / "pm_state.md"
+    resolution = _identity_args.slot_identity_resolution(normalized, LEASES_FILE)
+    if resolution.status in _identity_args.SLOT_IDENTITY_FAIL_LOUD_STATUSES:
+        raise SlotResolutionError(
+            f"슬롯 {slot!r} 의 정체성이 장부 모순이다 — {resolution.detail}. "
+            "pm_state 위치를 추측하지 않는다(장부를 정리한 뒤 다시 실행하라)."
+        )
+    if resolution.identity is None:
+        raise SlotResolutionError(
+            f"슬롯 {slot!r} 의 정체성을 해소할 수 없다 — 장부 행이 준 session 도, 경로의 "
+            "canonical `<repo>_<N>` 마디도 없다. pm_state 위치를 지어내지 않는다."
+        )
+    return LOCAL_DIR / "slots" / resolution.identity.key / "pm_state.md"
 
 
 def _load_pm_handoff_for_slot_state():
@@ -2491,18 +2515,24 @@ def slots_for_task_strict(name: str) -> list[Lease]:
     for lease in leases:
         slot = lease.slot
         repo = lease.repo
-        if not isinstance(slot, str) or _SLOT_ID_RE.fullmatch(slot) is None:
+        if not isinstance(slot, str):
             raise ValueError(
-                f"task {name!r} 보유 슬롯 식별자 {slot!r} 형식 오류 — "
-                "`work/<repo>_<N>` 상대 형식만 허용한다"
+                f"task {name!r} 보유 슬롯 식별자 {slot!r} 형식 오류 — 문자열 경로여야 한다"
             )
-        slot_repo, separator, slot_number = slot[len("work/"):].rpartition("_")
-        if (
-            not isinstance(repo, str)
-            or not separator
-            or not slot_number.isdigit()
-            or slot_repo != repo
-        ):
+        try:
+            _normalize_slot(slot)   # 값-경계(구문·위치·해소) — cwd 로 이어지기 전 단일 불변식.
+        except SlotResolutionError as exc:
+            raise ValueError(
+                f"task {name!r} 보유 슬롯 식별자 {slot!r} 형식 오류 — {exc}"
+            ) from exc
+        # 행의 repo 값이 슬롯 이름이 주장하는 repo 와 어긋나면 장부 모순이다. 이름이 repo 를
+        # 주장하지 않는 슬롯(`.` 등)은 대조 대상이 아니다 — 이름 모양을 강제하지 않는다.
+        claimed_repo, separator, slot_number = _identity_args.slot_path_name(slot).rpartition("_")
+        if not isinstance(repo, str) or not repo:
+            raise ValueError(
+                f"task {name!r} 보유 슬롯 {slot!r}의 repo 값이 비었다 — 장부 행이 불완전하다"
+            )
+        if separator and slot_number.isdigit() and claimed_repo != repo:
             raise ValueError(
                 f"task {name!r} 보유 슬롯 {slot!r}의 repo {repo!r}가 "
                 "슬롯 식별자의 repo와 일치하지 않음"
@@ -2736,7 +2766,7 @@ def alloc(
         #    보장한다. 비-숫자 tail 슬롯(드문 커스텀)은 뒤로 밀어 숫자 슬롯 우선(`_slot_number`).
         idle_for_repo = sorted(
             (l for l in leases if l.repo == repo and l.state == "idle"),
-            key=lambda l: _slot_number(l.slot),
+            key=lambda l: _slot_number(repo, l),
         )
         for lease in idle_for_repo:
             # **위험차단 (must-fix)**: worktree 물리 부재 슬롯은 리스하지 않는다. stale
@@ -3458,6 +3488,20 @@ def _slot_from_worktree_path(path_str: str) -> "str | None":
     return f"work/{rel.parts[0]}"
 
 
+def _is_pool_worktree_slot(slot: str) -> bool:
+    """`slot` 값이 **pool worktree 자리**(`WORK_DIR` 직계 하위 한 마디)인가 — 값 판정.
+
+    `_slot_from_worktree_path`(git 목록 → 슬롯 값)의 역방향 술어다. 그 함수가 낼 수 있는 값 域이
+    곧 "git worktree 목록과 대조 가능한 자리"라, reconcile 이 그 域 밖의 행을 stale 로 판정하지
+    않게 가른다. 이름 모양이 아니라 위치(경로 값)로만 판정한다 — `work/legacy-dir` 도 자리다.
+    """
+    try:
+        relative = (REPO / slot).resolve(strict=False).relative_to(WORK_DIR.resolve(strict=False))
+    except (ValueError, OSError):
+        return False
+    return len(relative.parts) == 1
+
+
 def _parse_worktree_porcelain(out: str) -> list[GitWorktree]:
     """`git worktree list --porcelain` 출력을 GitWorktree 리스트로 파싱한다.
 
@@ -3568,8 +3612,9 @@ def reconcile_worktrees(*, git_runner: GitRunner | None = None) -> ReconcileResu
 
     - **orphan** = git worktree(슬롯 경로·non-bare)인데 장부에 없음 — 중단된 create/수동 add 잔존
       (audit #2). 다음 create_slot 번호 충돌(#4)·status blind(#3)의 근원.
-    - **stale** = 장부 확정 리스(leased/idle)인데 대응 git worktree 없음 — worktree dir 삭제/prune
-      (audit #3).
+    - **stale** = 장부 확정 리스(leased/idle)이고 **pool worktree 자리**(`work/` 직계 하위)를
+      주장하는데 대응 git worktree 없음 — worktree dir 삭제/prune (audit #3). pool 자리가 아닌
+      행(PM 홈 자신을 가리키는 행 등)은 git worktree 목록의 값 域 밖이라 판정 대상이 아니다.
     - **incomplete** = provisional("creating") 리스 — worktree add 후 확정 전 중단된 create 흔적
       (SIGKILL 커버). 별도 카테고리라 stale 과 이중 계상하지 않는다.
 
@@ -3584,7 +3629,14 @@ def reconcile_worktrees(*, git_runner: GitRunner | None = None) -> ReconcileResu
     git_slots = {w.slot for w in slot_wts}
     orphans = [w for w in slot_wts if w.slot not in lease_slots]
     incomplete = [l for l in leases if l.state == "creating"]
-    stale = [l for l in leases if l.state != "creating" and l.slot not in git_slots]
+    # stale 판정 대상은 **pool worktree 자리(`work/` 직계 하위)를 주장하는 행**뿐이다. 대조
+    # 소스(`list_git_worktrees`)가 낼 수 있는 값이 그 자리뿐이라, 그 밖의 행(PM 홈 자신을
+    # 가리키는 행 등)을 "git 목록에 없다"로 판정하면 데이터가 뒷받침하지 않는 결론을 영구
+    # surface 한다. 위치는 경로 **값**으로 가른다(이름 모양 무관).
+    stale = [
+        l for l in leases
+        if l.state != "creating" and _is_pool_worktree_slot(l.slot) and l.slot not in git_slots
+    ]
     return ReconcileResult(orphans=orphans, stale=stale, incomplete=incomplete)
 
 
@@ -5514,28 +5566,75 @@ class SubmoduleNotInSlot(ValueError):
         )
 
 
-# 슬롯 식별자 형식 — `work/<repo>_<N>`(<repo>=선두 alnum 슬러그·<N>=숫자). 앵커 + `/` 불허라
-# `slot_path` 결합이 슬롯 루트를 벗어날 수 없다(traversal·빈값·`work/` 단독 거부·must-fix 2).
-_SLOT_ID_RE = re.compile(r"^work/[A-Za-z0-9][A-Za-z0-9_.-]*_\d+$")
+# 슬롯 경로 값의 안전 경계 — **이름 모양이 아니라 값**으로 판정한다. 예전 `_SLOT_ID_RE`
+# (`^work/<repo>_<N>$`)는 traversal 방어와 pool 명명 규약을 한 정규식에 묶어, 장부가 정당하게
+# 들고 있는 다른 경로(PM 홈 자신을 가리키는 행 `slot="."` 등)를 "형식 오류"로 거부했다. 경계는
+# 세 축으로 나눈다 — (1) 구문(빈값·백슬래시·절대경로 + 마디마다 `identity_args.
+# path_component_rejection`: 드라이브 표기·Windows 금지 문자·`..`·예약 이름), (2) 위치(PM 홈
+# 자신 또는 `work/` 직계 하위 **한 마디**), (3) 해소(실제 경로가 PM 홈 안 — symlink 탈출까지
+# 거부·정규식이 못 보던 축). 슬롯 **이름**에 대한 강제는 사라진다(`work/legacy-dir` 통과) —
+# 이름 규약(`work/<repo>_<N>`)은 pool **생성**(`_slot_for`)이 소유한다.
+#
+# (1)의 마디 판정은 **장부 session 키 축과 같은 술어**다(`identity_args.is_slot_key` 가 같은
+# 함수를 소비) — 두 축이 갈리면 한쪽이 막는 값이 다른 축으로 들어와 같은 파일 경로 결합에
+# 도달한다(리뷰 F-003: `C:_1` 이 session 키로 통과해 `.local/slots/C:_1` 이 Windows 에서 상태
+# 루트 밖을 가리켰다).
+_SLOT_VALUE_ALT_SEPARATOR = "\\"    # 경로구분자 표기 혼용(백슬래시) — OS 별 해석이 갈려 거부.
+_SLOT_HOME_VALUE = "."              # PM 홈 자신을 가리키는 슬롯 값(경로 마디가 없는 슬롯).
 
 
 def _normalize_slot(slot_arg: str) -> str:
-    """`--slot` 값을 슬롯 식별자 정규형(`work/<repo>_<N>`)으로 정규화 + 형식 검증 (must-fix 2).
+    """`--slot` 값을 슬롯 경로 값으로 정규화 + **값-경계 검증**(슬롯 경계 보호).
 
     스킬/사용자가 `work/A_1`(정규형) 또는 `A_1`(접두 생략) 어느 쪽으로 줘도 받는다 —
-    `slot_path`/장부의 슬롯 식별자 관례(`work/<repo>_<N>`·`_slot_for`)와 정합. **`slot_path` 로
-    `REPO / slot` 결합하기 전에** `_SLOT_ID_RE` 로 형식을 검증한다 — caller-공급 문자열이라
-    `../x`·`work/../x`·빈값·`work/` 단독 같은 traversal/부적격 값이 슬롯 루트 밖을 가리키면
-    `SlotResolutionError` 로 중단한다(side-effect 를 슬롯 경계 안에 가둠).
+    `slot_path`/장부의 슬롯 경로 관례(`_slot_for`)와 정합. 경로 마디가 없는 bare 이름에만
+    `work/` 를 붙이고, 이미 경로인 값(`work/A_1`·`.`)은 그대로 정규화한다.
+
+    거부 축(위 주석의 3축):
+      - 구문 — 빈값 · 백슬래시 구분자 · 절대경로(`/etc`) · **마디 안전**(드라이브 표기 `C:` ·
+        Windows 금지 문자 · 제어문자 · `..` 마디(`../x`·`work/../x`·`work/x/../y`) · Windows
+        예약 장치 이름) — 마디 판정은 장부 session 키 축과 **같은 술어**
+        (`identity_args.path_component_rejection`)다.
+      - 위치 — PM 홈 자신(`.`) 또는 `work/` 직계 하위 한 마디만. `work/`(슬롯들의 부모)·
+        `work/A_1/sub`(슬롯 하위) 거부.
+      - 해소 — `REPO / slot` 의 실제 해소 경로가 PM 홈 밖이면 거부(symlink 탈출).
+    통과 조건은 "PM 홈 안의 슬롯 자리"이며 **이름 모양이 아니다** — 장부가 `slot="."` 을 들고
+    있어도 side-effect 는 여전히 홈 경계 안에 갇힌다. 반환은 PM 홈 상대 POSIX 표기 정규형.
     """
     s = slot_arg.strip()
-    slot = s if s.startswith("work/") else f"work/{s}"
-    if not _SLOT_ID_RE.match(slot):
+    if not s:
         raise SlotResolutionError(
-            f"슬롯 식별자 {slot_arg!r} 형식 오류 — `work/<repo>_<N>`(또는 접두 생략 `<repo>_<N>`) "
-            "형식만 허용한다(traversal·빈값·`work/` 단독·경로구분자 거부·슬롯 경계 보호)."
+            "슬롯 값 형식 오류 — 빈값. PM 홈 안의 슬롯 경로(`work/<repo>_<N>` 또는 접두 생략 "
+            "`<repo>_<N>`)를 지정하라(슬롯 경계 보호)."
         )
-    return slot
+    if _SLOT_VALUE_ALT_SEPARATOR in s or s.startswith("/"):
+        raise SlotResolutionError(
+            f"슬롯 값 {slot_arg!r} 형식 오류 — 절대경로·백슬래시 구분자는 PM 홈 "
+            "상대 슬롯 경로가 아니다(경로구분자·절대경로 거부·슬롯 경계 보호)."
+        )
+    slot = s if ("/" in s or s == _SLOT_HOME_VALUE) else f"work/{s}"
+    parts = [part for part in slot.split("/") if part and part != _SLOT_HOME_VALUE]
+    for part in parts:
+        reason = _identity_args.path_component_rejection(part)
+        if reason is not None:
+            raise SlotResolutionError(
+                f"슬롯 값 {slot_arg!r} 형식 오류 — 마디 {reason}"
+                "(POSIX·Windows 공통 안전 마디만·슬롯 경계 보호)."
+            )
+    normalized = "/".join(parts) if parts else _SLOT_HOME_VALUE
+    if normalized != _SLOT_HOME_VALUE and (len(parts) != 2 or parts[0] != "work"):
+        raise SlotResolutionError(
+            f"슬롯 값 {slot_arg!r} 형식 오류 — 슬롯 자리는 PM 홈 자신(`.`) 또는 `work/` 직계 "
+            "하위 한 마디다(`work/` 단독·슬롯 하위 경로 거부·슬롯 경계 보호)."
+        )
+    home = REPO.resolve(strict=False)
+    resolved = (REPO / normalized).resolve(strict=False)
+    if resolved != home and home not in resolved.parents:
+        raise SlotResolutionError(
+            f"슬롯 값 {slot_arg!r} 형식 오류 — 해소 경로 {resolved} 가 PM 홈({home}) 밖이다"
+            "(symlink 탈출 거부·슬롯 경계 보호)."
+        )
+    return normalized
 
 
 def _slot_from_cwd() -> str | None:
@@ -5572,11 +5671,11 @@ def _resolve_current_slot(slot_arg: str | None) -> str:
     재사용한다(기존 관례). (인자 전무 시
     이 no-flag 체인은 불변.)
 
-    **형식 검증(must-fix 2)**: `slot_arg` 명시는 `_normalize_slot` 이, 그 외 유입도 반환
-    전 `_SLOT_ID_RE`(`_normalize_slot` 재적용)로 최종 슬롯이 `work/<repo>_<N>` 형식임을 강제한다
-    — 어느 source(명시/cwd/session)든 부적격/traversal 값이 `slot_path` 결합으로 슬롯 경계를
-    벗어나지 못하게 하는 단일 불변식. `slot_arg` 는 **빈 문자열도 명시로 취급**(`is not None`)해
-    형식 검증에 태운다(빈값 거부).
+    **값-경계 검증**: `slot_arg` 명시는 `_normalize_slot` 이, 그 외 유입(cwd·장부)도 반환 전
+    같은 `_normalize_slot` 을 재적용해 최종 슬롯의 해소 경로가 **PM 홈 안**임을 강제한다 — 어느
+    source(명시/cwd/session)든 부적격/traversal 값이 `slot_path` 결합으로 슬롯 경계를 벗어나지
+    못하게 하는 단일 불변식(이름 모양 강제가 아니다). `slot_arg` 는 **빈 문자열도 명시로
+    취급**(`is not None`)해 검증에 태운다(빈값 거부).
     """
     if slot_arg is not None:
         return _normalize_slot(slot_arg)  # 명시(빈값 포함) → 정규화 + 형식 검증.
@@ -5642,6 +5741,23 @@ TASK_PM_STATE_EMPTY_MARKER = _identity_args.TASK_PM_STATE_EMPTY_MARKER
 _runtime_skill_entry = _identity_args._runtime_skill_entry
 
 
+def _explicit_slot_path(repo: str, number: int) -> str:
+    """명시 `--repo X --slot N` → **장부 행의 slot 경로 값**(모순은 fail-loud·부재는 canonical).
+
+    dev/sync 의 대상 슬롯은 실 git side-effect 의 cwd 라 "그 번호를 장부가 어느 경로로 들고
+    있는가"가 권위다 — `f"{repo}_{N}"` 재조립은 장부가 다른 경로를 들고 있는 슬롯(PM 홈 자신을
+    가리키는 행 `slot="."`·`nested/X_1`)을 없는 자리로 보낸다(리뷰 F-001). 장부 부재/손상/행
+    부재는 종전 canonical 관례(`<repo>_<N>` — `_resolve_current_slot` 이 `work/` 를 붙인다)로
+    폴백하고, **모순만** fail-loud 다(추측 금지·리뷰 F-004).
+    """
+    resolution = _identity_args.slot_path_resolution(repo, number, LEASES_FILE)
+    if resolution.status == _identity_args.SLOT_PATH_CONFLICT:
+        raise SlotResolutionError(
+            f"대상 슬롯을 특정할 수 없다 — {resolution.detail}. 장부를 정리한 뒤 다시 실행하라."
+        )
+    return resolution.path or f"{repo}_{number}"
+
+
 def _resolve_actor_slot_for_repo(repo: str) -> str:
     """`--repo` 단독(슬롯 무) actor 해소 — 공용 `identity_args.resolve_actor_slot` 위임 (
     
@@ -5655,14 +5771,16 @@ def _resolve_actor_slot_for_repo(repo: str) -> str:
     """
     ia = _load_identity_args()
     try:
-        session = ia.resolve_actor_slot(repo, LEASES_FILE)
+        workspace = ia.resolve_actor_workspace(repo, LEASES_FILE)
     except ia.SlotResolutionError as exc:
         raise SlotResolutionError(str(exc)) from exc
-    if session is None:
+    if workspace is None:
         raise SlotResolutionError(
             f"repo {repo!r} 의 활성(leased) 슬롯이 없다 — `--slot <N>` 으로 대상 슬롯을 명시하라."
         )
-    return _normalize_slot(session)  # session="<repo>_<N>" → 최종 형식 검증(단일 불변식).
+    # 대상 슬롯 경로는 **행의 slot 값**이다 — 세션에서 `work/<session>` 을 재조립하면 세션이 task
+    # 이름이거나 슬롯 경로가 다른 자리일 때 없는 경로를 만든다. 값-경계 검증만 재적용한다.
+    return _normalize_slot(workspace.slot)
 
 
 # ── set-base / status CLI 핸들러 (위치인자 <slot> — pool-management op·명시 슬롯) ──
@@ -6089,7 +6207,7 @@ def _main(argv: "list[str] | None" = None) -> int:
 
     try:
         if identity.kind == "slot":
-            slot = _resolve_current_slot(f"{identity.repo}_{identity.slot}")
+            slot = _resolve_current_slot(_explicit_slot_path(identity.repo, identity.slot))
         elif identity.kind == "repo":
             slot = _resolve_actor_slot_for_repo(identity.repo)
         else:  # kind == "none" — 인자 전무, 기존 no-flag 체인.
