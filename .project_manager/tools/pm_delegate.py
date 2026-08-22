@@ -940,10 +940,16 @@ _DELEGATE_ROUNDS_LEDGER_REQUIRED_FIELDS: frozenset[str] = frozenset(
     {"ticket", "role", "ordinal", "run_id", "copy", "board_rel", "prepared_at",
      "harvested_at"}
 )
-# `abandoned_at` 은 하위 호환 선택 키다(기존 8키 행에는 없다) — kill 잔여를 명시적으로
-# 포기(abandon)한 행에만 붙는다. 검증은 필수-집합 정확 일치가 아니라 상한-집합 포함으로
+# 선택 키 둘은 하위 호환이다(기존 8키 행에는 없다) — `abandoned_at` 은 kill 잔여를 명시적으로
+# 포기(abandon)한 행에, `owner_pid` 는 준비 프로세스가 그 run 의 소유자일 때(prepare·실행·회수가
+# 한 프로세스인 cross 위임)에만 붙는다. 검증은 필수-집합 정확 일치가 아니라 상한-집합 포함으로
 # 완화한다: 정확-일치였다면 이 키를 추가하는 순간 기존 행 전부가 schema 불일치로 건너뛰어진다.
-_DELEGATE_ROUNDS_LEDGER_OPTIONAL_FIELDS: frozenset[str] = frozenset({"abandoned_at"})
+_DELEGATE_ROUNDS_LEDGER_OPTIONAL_FIELDS: frozenset[str] = frozenset(
+    {"abandoned_at", "owner_pid"}
+)
+# 증거 없는 예약을 지우는 유일한 통로 — 무엇을 강제하는지가 아니라 **운영자가 무엇을 확인했는지**
+# 를 말하는 이름이다. 문구와 CLI 가 같은 값을 쓰도록 여기 한 자리에 둔다.
+ABANDON_ASSUME_DEAD_FLAG = "--assume-dead"
 _DELEGATE_ROUNDS_LEDGER_FIELDS: frozenset[str] = (
     _DELEGATE_ROUNDS_LEDGER_REQUIRED_FIELDS | _DELEGATE_ROUNDS_LEDGER_OPTIONAL_FIELDS
 )
@@ -969,8 +975,17 @@ class TicketHarvestResult(NamedTuple):
 
 
 class TicketAbandonResult(NamedTuple):
+    """포기 처분의 **수렴 보고** — 상태 선언이 아니라 세 자산 재판독의 결과다.
+
+    `changed` 는 이번 호출이 실제로 무언가를 바꿨는가이고, 나머지 셋은 호출이 끝난 뒤 다시 읽은
+    값이다. `board_removed` 는 중간 순번 보존일 때 False 다(보존이 정상 종결이다).
+    """
+
     changed: bool
     sync_ready: bool
+    board_removed: bool = False
+    run_dir_removed: bool = False
+    converged: bool = False
 
 
 def _write_exclusive_file(
@@ -999,8 +1014,8 @@ def _delegate_rounds_ledger_row(row: object, *, line_number: int) -> dict:
     """장부 1행의 schema·값 형식을 검증한다 (손상은 그 행만 거부한다).
 
     schema 판정은 필수 8키 **정확 일치**가 아니라 **상한-집합 포함**이다 — 필수 키 전부가 있고,
-    그 위에 선택 키(`abandoned_at`) 가 더해질 수 있다. 정확-일치였다면 선택 키 도입 자체가
-    그 키 없는 기존 행 전부를 schema 불일치로 만든다.
+    그 위에 선택 키(`abandoned_at`·`owner_pid`) 가 더해질 수 있다. 정확-일치였다면 선택 키 도입
+    자체가 그 키 없는 기존 행 전부를 schema 불일치로 만든다.
     """
     if (
         not isinstance(row, dict)
@@ -1030,6 +1045,13 @@ def _delegate_rounds_ledger_row(row: object, *, line_number: int) -> dict:
         )
         or ("abandoned_at" in row and not (
             isinstance(row["abandoned_at"], str) and row["abandoned_at"]
+        ))
+        # `owner_pid` 는 생존 조회에 그대로 들어가는 값이다 — bool/0 이하를 통과시키면 조회 seam
+        # 이 그 값을 "부재"로 정규화해 증거 있는 행이 조용히 증거 없는 행으로 퇴화한다.
+        or ("owner_pid" in row and not (
+            isinstance(row["owner_pid"], int)
+            and not isinstance(row["owner_pid"], bool)
+            and row["owner_pid"] > 0
         ))
     ):
         raise DelegateError(f"delegate-rounds 장부 값 형식 불일치: line={line_number}")
@@ -1488,7 +1510,7 @@ def _board_relative_path(board_path: Path, pm_home: Path) -> str:
 
 
 def prepare_ticket_copy(
-    *, ticket: str, role: str, cwd: Path, pm_home: Path,
+    *, ticket: str, role: str, cwd: Path, pm_home: Path, owner_pid: int | None = None,
 ) -> TicketCopyPlan:
     """board 에 라운드 순번을 시드로 예약하고, 같은 파일을 슬롯 run-dir 에 materialize 한다.
 
@@ -1502,6 +1524,12 @@ def prepare_ticket_copy(
 
     락은 (4) 구간만 잡는다. 채번과 생성 사이가 두 준비가 같은 번호를 계산할 수 있는 유일한
     창이고, 회수·기록 경로에는 락이 없다.
+
+    `owner_pid` 는 **호출자가 이 run 의 소유자일 때만** 준다 — 준비·실행·회수가 한 프로세스의
+    try/finally 인 cross 위임이 그 경우다. 그 값이 장부에 실리면 포기(abandon) 판정이 "이 run 이
+    아직 살아 있는가"를 기계 관측할 수 있다. 준비 프로세스가 곧바로 끝나고 실제 writer 가 다른
+    세션인 native 위임은 이 값을 **주지 않는다**: 즉사한 준비 pid 를 표식으로 실으면 살아 있는
+    run 이 죽은 것으로 읽힌다. 키 부재는 "죽음"이 아니라 "증거 없음"이다.
     """
     if role not in TICKET_COPY_PREPARE_ROLES:
         raise DelegateError(f"티켓 라운드 준비 미지원 역할: {role}")
@@ -1601,17 +1629,20 @@ def prepare_ticket_copy(
         if rounds_dir_fd is not None:
             os.close(rounds_dir_fd)
 
+    ledger_row = {
+        "ticket": ticket,
+        "role": role,
+        "ordinal": ordinal,
+        "run_id": run_id,
+        "copy": str(copy_path.resolve()),
+        "board_rel": board_rel,
+        "prepared_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "harvested_at": None,
+    }
+    if owner_pid is not None:
+        ledger_row["owner_pid"] = owner_pid
     try:
-        _append_delegate_rounds_ledger(pm_home, {
-            "ticket": ticket,
-            "role": role,
-            "ordinal": ordinal,
-            "run_id": run_id,
-            "copy": str(copy_path.resolve()),
-            "board_rel": board_rel,
-            "prepared_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "harvested_at": None,
-        })
+        _append_delegate_rounds_ledger(pm_home, ledger_row)
     except DelegateError as exc:
         # 장부 행이 없으면 이 라운드는 회수 자체가 막힌다 — 남은 좌표를 진단에 싣는다.
         raise DelegateError(
@@ -1640,6 +1671,10 @@ def harvest_ticket_copy(
     cwd = Path(cwd).resolve()
     rounds_module = _load_ticket_rounds()
     row = _delegate_round_record(pm_home, copy_path)
+    # 한 copy 는 회수 또는 포기 중 **하나로만** 종결된다. 포기된 행의 회수를 열어 두면, 그 순번을
+    # 다시 쓴 새 라운드를 옛 run 의 회수가 덮어쓴다(잘못된 포기의 유일한 조용한 손상 경로).
+    if "abandoned_at" in row:
+        raise DelegateError(f"이미 포기된 준비는 회수할 수 없습니다: {copy_path}")
     # 장부 행이 인가하는 경로와 **전량 일치**해야 한다 — containment·깊이·순번/역할 결속이
     # 이 단언 하나로 닫힌다.
     expected = _expected_slot_round_path(cwd, row, rounds_module)
@@ -1768,31 +1803,102 @@ def _review_round_harvest_problem(
     )
 
 
+def _abandon_raw_ledger_hint(pm_home: Path, row: dict, relay) -> str:
+    """거부 문구에 붙이는 **비-권위 참고** — 같은 (ticket, role) 의 미마감 raw 레코드.
+
+    판정 술어에는 넣지 않는다. raw 장부 행에는 `run_id`·`copy` 가 없어 이 예약과 결속되지 않고,
+    하네스 subprocess 를 띄우지 않는 native 위임은 raw 행 자체를 만들지 않는다 — 조인이
+    휴리스틱이라 결정 입력으로 쓰면 증거 없는 예약이 조용히 "증거 있음"으로 뒤바뀐다. 참고를
+    읽지 못하면 참고만 빠진다(판정은 그대로다).
+    """
+    try:
+        _raw_dir, ledger_path = relay.raw_storage_paths(
+            pm_home, "delegate", None, temp_dir=Path(_gettempdir()),
+        )
+        rows = relay.raw_records(ledger_path, unfinished_only=True, lock=False)
+    except (OSError, ValueError, UnicodeError):
+        return ""
+    matches = [
+        item for item in rows
+        if item.get("ticket") == row["ticket"] and item.get("role") == row["role"]
+    ]
+    if not matches:
+        return ""
+    latest = matches[0]
+    pid = latest.get("pid")
+    liveness = "생존" if relay.pid_is_alive(pid) else "사망"
+    return (
+        " · 참고(판정 입력 아님): 같은 티켓·역할의 미마감 raw 레코드가 있습니다 — "
+        f"id={latest.get('id')} pid={pid}({liveness})"
+    )
+
+
+def _abandon_liveness_problem(
+    row: dict, *, copy_path: Path, pm_home: Path, relay,
+) -> str | None:
+    """종료 증거 판정 — 거부 사유(통과면 None). **파괴 연산의 기본값은 거부다.**
+
+    기계가 증명할 수 있는 것만 기계가 막는다: 행에 `owner_pid` 가 있고 그 프로세스가 살아 있으면
+    run 은 진행 중이다. 표식이 없는 행(기존 준비 전부·native 위임)은 증명 수단 자체가 없으므로
+    통과시키지 않고 운영자 명시 확인을 요구한다 — 거부도 무조건 허용도 아닌 제3 선택지다.
+
+    거부 문구는 좌표를 값으로 찍는다. 매번 "무엇을 지우는지" 를 보게 하는 것이 명시 확인 플래그가
+    습관이 되는 것을 막는 유일한 수단이다.
+    """
+    coordinates = (
+        f"ticket={row['ticket']} · role={row['role']} · ordinal={row['ordinal']} · "
+        f"prepared_at={row['prepared_at']} · copy={copy_path}"
+    )
+    hint = _abandon_raw_ledger_hint(pm_home, row, relay)
+    owner_pid = row.get("owner_pid")
+    if owner_pid is None:
+        return (
+            "이 예약에는 종료 증거가 없습니다(장부 행에 owner_pid 없음) — run 이 끝났음을 "
+            f"확인했다면 {ABANDON_ASSUME_DEAD_FLAG} 로 다시 부르세요: {coordinates}{hint}"
+        )
+    if relay.pid_is_alive(owner_pid):
+        return (
+            f"준비를 소유한 프로세스가 실행 중이라 포기하지 않습니다 — pid={owner_pid} "
+            f"(`ps -p {owner_pid}` 로 확인) · 의도한 우회는 {ABANDON_ASSUME_DEAD_FLAG}: "
+            f"{coordinates}{hint}"
+        )
+    return None
+
+
 def abandon_ticket_copy(
-    *, copy_path: Path, cwd: Path, pm_home: Path,
+    *, copy_path: Path, cwd: Path, pm_home: Path, assume_dead: bool = False,
 ) -> TicketAbandonResult:
-    """kill 로 죽어 이어 갈 수 없는 준비를 명시적으로 지운다 — board 라운드 파일 + run-dir.
+    """kill 로 죽어 이어 갈 수 없는 준비를 명시적으로 정리한다 — 장부 행·board 라운드·run-dir.
 
-    회수(harvest)와 인가 경로는 같다(같은 신뢰 뿌리 · 같은 경로 전량 일치 · 같은 run-dir chain
-    plain 판정). 다른 것은 두 판정뿐이다:
+    인가 경로는 회수(harvest)와 같다(같은 신뢰 뿌리 · 같은 경로 전량 일치 · 같은 run-dir chain
+    plain 판정). 그 위에 이 처분만의 규칙 셋이 있다.
 
-    1. **시드 그대로**(harvest 의 "산출 없음" 판정과 같은 술어 — 슬롯 사본 bytes 와 board
-       라운드 파일의 현재 bytes 직접 대조, 개행 표기만 정규화). 산출이 있으면 harvest 로
-       회수해야지 지울 수 없다.
-    2. **그 티켓 라운드 중 최대 순번**. 중간 순번을 지우면 `verify_rounds` 의 `round-gap`
-       (완료 게이트 red)을 만든다. 두 판정 모두 board_lock 안에서 본다 — 동시 `reserve_round`
-       가 이 라운드를 최대 순번에서 밀어내는 경합을 재확인 없이 지나치지 않기 위해서다.
+    1. **종료 증거**(`_abandon_liveness_problem`) — 살아 있는 run 을 지우지 않는다.
+    2. **시드 그대로** — 슬롯 사본 bytes 와 board 라운드 파일의 현재 bytes 직접 대조(개행 표기만
+       정규화). 산출이 있으면 harvest 로 회수할 대상이지 지울 대상이 아니다.
+    3. **최대 순번일 때만 board 파일 삭제** — 중간 순번을 지우면 `round-gap`(완료 게이트 red)을
+       만든다. 중간 순번이면 board 파일을 **보존**하고 장부 행과 run-dir 만 종결한다. 거부가
+       아니라 분기라서 프로토콜이 항상 수렴한다.
 
-    이미 회수됐거나 이미 포기된 준비는 다시 포기할 수 없다(장부 마지막 행이 그 상태를 말한다).
+    순서는 되돌릴 수 없는 삭제를 마지막에 두고 그 앞을 전부 멱등 기록으로 만든다 — journal 없이
+    재개가 성립한다. (1) 인가 (2) 종료 판단·시드 대조 후 `abandoned_at` 마감 행 append(내구성
+    있는 intent) (3) `board_lock` 안에서 최대 순번 재확인 + 최대면 unlink (4) 락 밖 sync
+    (5) 슬롯 파일 재판독 후 시드 그대로일 때만 run-dir 삭제 (6) 세 자산 재판독 수렴 단언.
+    **재호출은 rollback 이 아니라 남은 작업의 완료**다 — 마감 행이 이미 있는 행은 거부하지 않고
+    2 를 건너뛴다.
+
+    `board_lock` 안에는 순번 판정과 unlink 만 둔다. `_rounds_mutation_sync_paths` 는
+    `refresh_board` → `board_lock` 재진입이고 전역 락 순서(board_git_lock → board_lock) 역전이라
+    락 안에서 부르면 교착한다.
     """
     pm_home = Path(pm_home).resolve()
     cwd = Path(cwd).resolve()
     rounds_module = _load_ticket_rounds()
+    relay = _load_relay()
+    # ── 1단계: 인가 ────────────────────────────────────────────────────────
     row = _delegate_round_record(pm_home, copy_path)
     if row["harvested_at"] is not None:
         raise DelegateError(f"이미 회수된 준비는 포기할 수 없습니다: {copy_path}")
-    if "abandoned_at" in row:
-        raise DelegateError(f"이미 포기된 준비입니다: {copy_path}")
     expected = _expected_slot_round_path(cwd, row, rounds_module)
     given = Path(copy_path)
     if not given.is_absolute() or not _same_lexical_path(given, expected):
@@ -1800,20 +1906,32 @@ def abandon_ticket_copy(
             "delegate-rounds 장부가 인가한 라운드 경로와 불일치 — 포기하지 않습니다: "
             f"요청={given} · 장부 인가={expected}"
         )
-    _assert_slot_run_dir_chain_is_plain(cwd, row["ticket"], row["run_id"])
-    text = _read_slot_round_text(expected)
     run_dir = expected.parent
+    # chain 검사는 **지울 것이 남아 있을 때만** 한다 — 이미 지운 run-dir 을 다시 요구하면
+    # 수렴한 처분의 재호출이 "경로 검사 실패"로 막혀 전진 수렴이 깨진다.
+    if os.path.lexists(run_dir):
+        _assert_slot_run_dir_chain_is_plain(cwd, row["ticket"], row["run_id"])
     board_path = pm_home / Path(*PurePosixPath(row["board_rel"]).parts)
     if board_path.name != expected.name:
         raise DelegateError(
             "delegate-rounds 장부의 board 경로와 라운드 이름 불일치: "
             f"board={board_path.name} · 기대={expected.name}"
         )
-
     board = _load_board_for_repo(pm_home)
-    # 시드 대조·최대 순번 재확인·삭제를 한 락 구간에 묶는다 — 락 밖에서 최대 순번을 확인하면
-    # 그 사이 `reserve_round` 가 다음 순번을 예약해 지운 뒤 gap 을 만들 수 있다.
-    with board.board_lock():
+    changed = False
+    sync_ready = False
+    # 이번 호출이 관측한 슬롯 bytes. 5단계가 삭제 직전에 다시 읽어 이 값과 대조한다 — 사전 read
+    # 이후 살아 있는 agent 가 쓴 산출을 지우지 않기 위해서다.
+    observed_slot_text = (
+        _read_slot_round_text(expected) if os.path.lexists(expected) else None
+    )
+
+    # ── 2단계: 종료 판단 + 시드 대조 → 마감 행 append(내구성 있는 intent) ──
+    if "abandoned_at" not in row:
+        if observed_slot_text is None:
+            raise DelegateError(
+                f"슬롯 라운드 파일이 없습니다(포기 판정 불능): {expected}"
+            )
         try:
             reserved = _load_file_lock().read_text_shared(
                 board_path, encoding="utf-8", newline="",
@@ -1826,41 +1944,101 @@ def abandon_ticket_copy(
             raise DelegateError(
                 f"board 라운드 파일 읽기 실패: {board_path}: {exc}"
             ) from exc
-        if _normalized_newlines(text) != _normalized_newlines(reserved):
+        if _normalized_newlines(observed_slot_text) != _normalized_newlines(reserved):
             raise DelegateError(
                 "산출이 있어 포기할 수 없습니다(시드 그대로가 아님) — `ticket harvest` 로 "
                 f"회수하세요: ticket={row['ticket']} {board_path.name}"
             )
-        existing = rounds_module.load_rounds(board.tickets_dir(), row["ticket"])
-        if not existing:
-            raise DelegateError(
-                f"board 라운드 디렉터리를 찾을 수 없습니다: ticket={row['ticket']}"
+        if not assume_dead:
+            problem = _abandon_liveness_problem(
+                row, copy_path=expected, pm_home=pm_home, relay=relay,
             )
-        max_ordinal = max(item.ordinal for item in existing)
-        if row["ordinal"] != max_ordinal:
-            raise DelegateError(
-                "중간 순번은 포기할 수 없습니다(삭제하면 round-gap 을 만듭니다) — "
-                f"ticket={row['ticket']} ordinal={row['ordinal']} · 현재 최대 순번={max_ordinal}"
-            )
+            if problem is not None:
+                raise DelegateError(problem)
+        abandoned = dict(row)
+        abandoned["abandoned_at"] = datetime.datetime.now(
+            datetime.timezone.utc
+        ).isoformat()
+        _append_delegate_rounds_ledger(pm_home, abandoned)
+        changed = True
+
+    # ── 3단계: board_lock 안 — 최대 순번 재확인 + 최대면 unlink (락 안은 여기까지) ──
+    board_kept_reason: str | None = None
+    reserved_now: str | None = None
+    unlinked = False
+    with board.board_lock():
+        if os.path.lexists(board_path):
+            existing = rounds_module.load_rounds(board.tickets_dir(), row["ticket"])
+            max_ordinal = max((item.ordinal for item in existing), default=row["ordinal"])
+            if row["ordinal"] >= max_ordinal:
+                try:
+                    board_path.unlink()
+                except OSError as exc:
+                    raise DelegateError(
+                        f"board 라운드 파일 삭제 실패: {board_path}: {exc}"
+                    ) from exc
+                unlinked = True
+                changed = True
+            else:
+                board_kept_reason = f"중간 순번(현재 최대 순번={max_ordinal})"
+                try:
+                    reserved_now = _load_file_lock().read_text_shared(
+                        board_path, encoding="utf-8", newline="",
+                    )
+                except (OSError, UnicodeError) as exc:
+                    raise DelegateError(
+                        f"board 라운드 파일 읽기 실패: {board_path}: {exc}"
+                    ) from exc
+
+    # ── 4단계: 락 밖 sync ─────────────────────────────────────────────────
+    # 이번에 지웠든(첫 통과) 앞선 시도가 지웠든(재개), board 라운드가 사라졌는데 아직 정리할 것이
+    # 남아 있으면 부른다 — 앞선 시도의 sync 실패가 영구 미커밋으로 굳지 않게 한다(`git add -A`
+    # + commit 이라 재실행은 no-op).
+    if not os.path.lexists(board_path) and (unlinked or os.path.lexists(run_dir)):
         message = f"ticket-abandon {row['ticket']} {row['role']}"
-        try:
-            board_path.unlink()
-        except OSError as exc:
-            raise DelegateError(f"board 라운드 파일 삭제 실패: {board_path}: {exc}") from exc
-        # board 부분 커밋 seam — harvest 와 같은 이유로 이름을 직접 부른다(부분 동기 사본에서
+        # board 부분 커밋 seam 은 이름으로 직접 부른다 — harvest 와 같은 이유다(부분 동기 사본에서
         # 커밋만 조용히 빠지는 rc0 을 피한다).
         sync_ready = bool(board._rounds_mutation_sync_paths(message, (board_path,)))
 
-    abandoned = dict(row)
-    abandoned["abandoned_at"] = datetime.datetime.now(
-        datetime.timezone.utc
-    ).isoformat()
-    _append_delegate_rounds_ledger(pm_home, abandoned)
+    # ── 5단계: 슬롯 파일 재판독 → 시드 그대로일 때만 run-dir 삭제 ──────────
+    if os.path.lexists(run_dir):
+        if os.path.lexists(expected):
+            current = _read_slot_round_text(expected)
+            references = [observed_slot_text]
+            # board 파일이 남아 있으면(중간 순번 보존) 그 bytes 가 시드의 단일 진실이다 — 호출
+            # 사이에 착지한 쓰기까지 이 대조가 잡는다.
+            if reserved_now is not None:
+                references.append(reserved_now)
+            if any(
+                reference is None
+                or _normalized_newlines(current) != _normalized_newlines(reference)
+                for reference in references
+            ):
+                raise DelegateError(
+                    "슬롯 라운드 파일이 시드와 달라져 run-dir 을 지우지 않았습니다(산출 보존) — "
+                    f"산출을 직접 꺼낸 뒤 정리하세요: copy={expected} · run-dir={run_dir}"
+                )
+        try:
+            _load_file_lock().force_rmtree(run_dir)
+        except OSError as exc:
+            raise DelegateError(
+                f"run-dir 삭제 실패: {run_dir}: {exc} — 같은 명령을 다시 실행하면 남은 정리를 "
+                "이어 갑니다"
+            ) from exc
+        changed = True
 
-    # run-dir 은 엔진 소유 임시 산출물이다(사용자 파일 아님) — 삭제가 곧 run 닫힘이다(harvest 와
-    # 동형).
-    _load_file_lock().force_rmtree(run_dir)
-    return TicketAbandonResult(True, sync_ready)
+    # ── 6단계: 세 자산 재판독 수렴 단언 ───────────────────────────────────
+    board_present = os.path.lexists(board_path)
+    run_dir_removed = not os.path.lexists(run_dir)
+    ledger_closed = "abandoned_at" in _delegate_round_record(pm_home, copy_path)
+    board_converged = board_present == (board_kept_reason is not None)
+    return TicketAbandonResult(
+        changed=changed,
+        sync_ready=sync_ready,
+        board_removed=not board_present,
+        run_dir_removed=run_dir_removed,
+        converged=bool(ledger_closed and run_dir_removed and board_converged),
+    )
 
 
 def _ticket_copy_preamble(plan: TicketCopyPlan) -> str:
@@ -10693,10 +10871,14 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
     harvest.add_argument("--cwd", required=True, metavar="ABSPATH")
     abandon = sub.add_parser(
         "abandon",
-        help="시드 그대로인 최대 순번 예약을 포기 — board 라운드 파일 삭제 + run-dir 닫음",
+        help="kill 로 죽은 예약을 포기 — 장부 행 마감 + board 라운드 정리 + run-dir 닫음",
     )
     abandon.add_argument("--copy", required=True, metavar="ABSPATH")
     abandon.add_argument("--cwd", required=True, metavar="ABSPATH")
+    abandon.add_argument(
+        ABANDON_ASSUME_DEAD_FLAG, action="store_true", dest="assume_dead",
+        help="run 이 끝났음을 운영자가 확인했다 (종료 증거가 없거나 소유 pid 가 살아 있어도 진행)",
+    )
     copies = sub.add_parser("copies", help="PM 홈 delegate-rounds 장부 조회")
     copies.add_argument("--ticket", default=None, metavar="T-NNNN")
     copies.add_argument(
@@ -10759,12 +10941,24 @@ def _cmd_ticket(argv: list[str]) -> int:
         if args.ticket_command == "abandon":
             abandon_result = abandon_ticket_copy(
                 copy_path=copy, cwd=cwd_repo, pm_home=owner,
+                assume_dead=args.assume_dead,
             )
             _write_machine_line(json.dumps({
                 "copy": str(copy.resolve()),
                 "changed": abandon_result.changed,
                 "sync_ready": abandon_result.sync_ready,
+                "board_removed": abandon_result.board_removed,
+                "run_dir_removed": abandon_result.run_dir_removed,
+                "converged": abandon_result.converged,
             }, sort_keys=True))
+            if not abandon_result.converged:
+                # 수렴 단언이 깨진 상태는 rc 로 말한다 — 재호출이 남은 작업을 끝낸다(rollback 없음).
+                print(
+                    "오류: ticket abandon 미수렴 — 같은 명령을 다시 실행하세요: "
+                    f"copy={copy}",
+                    file=sys.stderr,
+                )
+                return 1
             return 0
         result = harvest_ticket_copy(
             copy_path=copy, cwd=cwd_repo, pm_home=owner,
@@ -11532,6 +11726,10 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         try:
             ticket_copy = prepare_ticket_copy(
                 ticket=effective_ticket, role=args.role, cwd=cwd_repo, pm_home=config_repo,
+                # 이 run 의 소유자는 **이 프로세스**다 — 준비·실행·회수가 한 try/finally 라
+                # 이 pid 가 살아 있으면 run 도 살아 있다. 포기(abandon) 판정의 유일한 기계
+                # 증거이고, 소유자가 아닌 native 준비는 이 값을 싣지 않는다.
+                owner_pid=os.getpid(),
             )
         except DelegateError as exc:
             return fail_loud(f"오류: 위임 티켓 라운드 준비 실패: {exc}")
