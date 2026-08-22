@@ -5706,7 +5706,7 @@ def _cmd_set_base(args) -> int:
               "슬롯이 실재하는지 확인하라.", file=sys.stderr)
         return 1
     print(f"✓ 슬롯 {slot} 기준점 기록: base = {recorded.get('branch')}@{(recorded.get('commit') or '?')[:12]} "
-          "— 이제부터 부트스트랩 0단계 drift 감지가 이 기준으로 작동한다().")
+          "— 이제부터 부트스트랩 0단계 drift 감지가 이 기준으로 작동한다.")
     return 0
 
 
