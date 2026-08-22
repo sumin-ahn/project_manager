@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "count": 559,
+  "count": 463,
   "paths": {
     ".claude/agents/code-reviewer.md": [
       {
@@ -29,31 +29,6 @@
       }
     ],
     ".project_manager/tools/board.py": [
-      {
-        "kind": "circled_marker",
-        "hash": "0f2ba8ddf6a1b194cd6e0ccd100161a1a3ec2788d27a33c5336d41cd33b25c0a",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "2d051a57367fd0845511d7ab7db79e26e265c242d00a5589ed81025361c06dcd",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "30539fb9a8623ac17d7b9449cc6e6347b099109b5cdd8cf8fba9d7d8420377c4",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "a8a1550d19c9dfceb654bd5fe4314e1afa63de57fb00b3a0fba838c4b3b46cba",
-        "count": 2
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "eda5e62470ddc3012af07a1d2501dd192fa473deb08135a224f1bb079eb7fe38",
-        "count": 1
-      },
       {
         "kind": "decision_label",
         "hash": "4ad666b1e49e15cf661f54b6b4e5b54f42e63eddd317603f6229ecd2413bc99e",
@@ -153,16 +128,6 @@
       }
     ],
     ".project_manager/tools/domain.py": [
-      {
-        "kind": "circled_marker",
-        "hash": "104da500f517b12e0ccce91fac4d1a0287cdc1e9d9e580fe0058c8210c346629",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "3db069b77ea51f46f32b8af8c47f3c98cecb5285a004538b12f04b0469afc7be",
-        "count": 1
-      },
       {
         "kind": "decision_label",
         "hash": "4a2a37574739ba4977940c668a54e160426f5a690cb8fc13f46c63407e802606",
@@ -286,11 +251,6 @@
     ],
     ".project_manager/tools/pm_handoff.py": [
       {
-        "kind": "circled_marker",
-        "hash": "2c12342fbc9f3cf1218a9e688359f1ab3e2478dd899a640a57b7bafe79dc8d53",
-        "count": 1
-      },
-      {
         "kind": "decision_label",
         "hash": "f5a3fdd60398ebb31e38d19f0676cbe4488801fce13cac3dd6c48c8dc11664f3",
         "count": 1
@@ -356,53 +316,6 @@
         "count": 1
       }
     ],
-    ".project_manager/tools/pm_import.py": [
-      {
-        "kind": "circled_marker",
-        "hash": "35e30c39321bbe9c97cc15796be7495ece5c0e66272c5ea72f71f180790645ae",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "791401bd88205518662407d318de31bbaa77a4cc37820755699e8f174081d750",
-        "count": 2
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "894adb1808d0ce6ed58d272de893a5f00f5f42aedc11a02b009290df71fa9b57",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "a0c560dd4117f95228b95f51aaeef5bae19d386e657f574424b1a2bb106545b2",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "c4a10064dac3e9164eefe3261837f14f8d34379b30a1be8b652772855cb4422f",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "c532c2bde78bc5439b17dcd3238502f82442268a470891296654f6c0354b4300",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "dac8f42eacfd411659be7fcd9290037f6a476d1990466bec8d6d108ac6bb8ee7",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "e63fa1811ae37db5e49f933358c61bf7a94c09fc8f7f8782d8ece8d166e01c3a",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "f8170f2b335993575aaf466444ca7f2334f2da138cf0611bf3da41475356f6a6",
-        "count": 2
-      }
-    ],
     ".project_manager/tools/pm_relay.py": [
       {
         "kind": "session_stamp",
@@ -432,29 +345,7 @@
         "count": 1
       }
     ],
-    ".project_manager/tools/ticket_finish.py": [
-      {
-        "kind": "circled_marker",
-        "hash": "6422a58c88ecd72ab5c2c5b18279991431afe360f2e37a58b7af29ba49de6231",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "9364a65fabf2bada72c9de6ba2d0b050129fa15ea92d68e01c4f99b6700e7fd6",
-        "count": 1
-      }
-    ],
     ".project_manager/tools/worktree_pool.py": [
-      {
-        "kind": "decision_label",
-        "hash": "6c726ab00dbe69eea6bc07ff47c577bb065440977c526c81d8580618d2f50644",
-        "count": 1
-      },
-      {
-        "kind": "decision_label",
-        "hash": "b91df5de85cc658c4f2b91066d790dfe962a6c73af6ca98e388a0891c7e7b1c0",
-        "count": 1
-      },
       {
         "kind": "session_stamp",
         "hash": "175db9b23663be114b358e55bd6d6c59995500e516b4bcfa20db3b6229cbae36",
@@ -619,31 +510,6 @@
     ],
     "templates/claude_code/.project_manager/tools/board.py": [
       {
-        "kind": "circled_marker",
-        "hash": "0f2ba8ddf6a1b194cd6e0ccd100161a1a3ec2788d27a33c5336d41cd33b25c0a",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "2d051a57367fd0845511d7ab7db79e26e265c242d00a5589ed81025361c06dcd",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "30539fb9a8623ac17d7b9449cc6e6347b099109b5cdd8cf8fba9d7d8420377c4",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "a8a1550d19c9dfceb654bd5fe4314e1afa63de57fb00b3a0fba838c4b3b46cba",
-        "count": 2
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "eda5e62470ddc3012af07a1d2501dd192fa473deb08135a224f1bb079eb7fe38",
-        "count": 1
-      },
-      {
         "kind": "decision_label",
         "hash": "4ad666b1e49e15cf661f54b6b4e5b54f42e63eddd317603f6229ecd2413bc99e",
         "count": 1
@@ -742,16 +608,6 @@
       }
     ],
     "templates/claude_code/.project_manager/tools/domain.py": [
-      {
-        "kind": "circled_marker",
-        "hash": "104da500f517b12e0ccce91fac4d1a0287cdc1e9d9e580fe0058c8210c346629",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "3db069b77ea51f46f32b8af8c47f3c98cecb5285a004538b12f04b0469afc7be",
-        "count": 1
-      },
       {
         "kind": "decision_label",
         "hash": "4a2a37574739ba4977940c668a54e160426f5a690cb8fc13f46c63407e802606",
@@ -875,11 +731,6 @@
     ],
     "templates/claude_code/.project_manager/tools/pm_handoff.py": [
       {
-        "kind": "circled_marker",
-        "hash": "2c12342fbc9f3cf1218a9e688359f1ab3e2478dd899a640a57b7bafe79dc8d53",
-        "count": 1
-      },
-      {
         "kind": "decision_label",
         "hash": "f5a3fdd60398ebb31e38d19f0676cbe4488801fce13cac3dd6c48c8dc11664f3",
         "count": 1
@@ -945,53 +796,6 @@
         "count": 1
       }
     ],
-    "templates/claude_code/.project_manager/tools/pm_import.py": [
-      {
-        "kind": "circled_marker",
-        "hash": "35e30c39321bbe9c97cc15796be7495ece5c0e66272c5ea72f71f180790645ae",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "791401bd88205518662407d318de31bbaa77a4cc37820755699e8f174081d750",
-        "count": 2
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "894adb1808d0ce6ed58d272de893a5f00f5f42aedc11a02b009290df71fa9b57",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "a0c560dd4117f95228b95f51aaeef5bae19d386e657f574424b1a2bb106545b2",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "c4a10064dac3e9164eefe3261837f14f8d34379b30a1be8b652772855cb4422f",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "c532c2bde78bc5439b17dcd3238502f82442268a470891296654f6c0354b4300",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "dac8f42eacfd411659be7fcd9290037f6a476d1990466bec8d6d108ac6bb8ee7",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "e63fa1811ae37db5e49f933358c61bf7a94c09fc8f7f8782d8ece8d166e01c3a",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "f8170f2b335993575aaf466444ca7f2334f2da138cf0611bf3da41475356f6a6",
-        "count": 2
-      }
-    ],
     "templates/claude_code/.project_manager/tools/pm_relay.py": [
       {
         "kind": "session_stamp",
@@ -1021,29 +825,7 @@
         "count": 1
       }
     ],
-    "templates/claude_code/.project_manager/tools/ticket_finish.py": [
-      {
-        "kind": "circled_marker",
-        "hash": "6422a58c88ecd72ab5c2c5b18279991431afe360f2e37a58b7af29ba49de6231",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "9364a65fabf2bada72c9de6ba2d0b050129fa15ea92d68e01c4f99b6700e7fd6",
-        "count": 1
-      }
-    ],
     "templates/claude_code/.project_manager/tools/worktree_pool.py": [
-      {
-        "kind": "decision_label",
-        "hash": "6c726ab00dbe69eea6bc07ff47c577bb065440977c526c81d8580618d2f50644",
-        "count": 1
-      },
-      {
-        "kind": "decision_label",
-        "hash": "b91df5de85cc658c4f2b91066d790dfe962a6c73af6ca98e388a0891c7e7b1c0",
-        "count": 1
-      },
       {
         "kind": "session_stamp",
         "hash": "175db9b23663be114b358e55bd6d6c59995500e516b4bcfa20db3b6229cbae36",
@@ -1226,31 +1008,6 @@
     ],
     "templates/codex/.project_manager/tools/board.py": [
       {
-        "kind": "circled_marker",
-        "hash": "0f2ba8ddf6a1b194cd6e0ccd100161a1a3ec2788d27a33c5336d41cd33b25c0a",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "2d051a57367fd0845511d7ab7db79e26e265c242d00a5589ed81025361c06dcd",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "30539fb9a8623ac17d7b9449cc6e6347b099109b5cdd8cf8fba9d7d8420377c4",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "a8a1550d19c9dfceb654bd5fe4314e1afa63de57fb00b3a0fba838c4b3b46cba",
-        "count": 2
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "eda5e62470ddc3012af07a1d2501dd192fa473deb08135a224f1bb079eb7fe38",
-        "count": 1
-      },
-      {
         "kind": "decision_label",
         "hash": "4ad666b1e49e15cf661f54b6b4e5b54f42e63eddd317603f6229ecd2413bc99e",
         "count": 1
@@ -1349,16 +1106,6 @@
       }
     ],
     "templates/codex/.project_manager/tools/domain.py": [
-      {
-        "kind": "circled_marker",
-        "hash": "104da500f517b12e0ccce91fac4d1a0287cdc1e9d9e580fe0058c8210c346629",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "3db069b77ea51f46f32b8af8c47f3c98cecb5285a004538b12f04b0469afc7be",
-        "count": 1
-      },
       {
         "kind": "decision_label",
         "hash": "4a2a37574739ba4977940c668a54e160426f5a690cb8fc13f46c63407e802606",
@@ -1482,11 +1229,6 @@
     ],
     "templates/codex/.project_manager/tools/pm_handoff.py": [
       {
-        "kind": "circled_marker",
-        "hash": "2c12342fbc9f3cf1218a9e688359f1ab3e2478dd899a640a57b7bafe79dc8d53",
-        "count": 1
-      },
-      {
         "kind": "decision_label",
         "hash": "f5a3fdd60398ebb31e38d19f0676cbe4488801fce13cac3dd6c48c8dc11664f3",
         "count": 1
@@ -1552,53 +1294,6 @@
         "count": 1
       }
     ],
-    "templates/codex/.project_manager/tools/pm_import.py": [
-      {
-        "kind": "circled_marker",
-        "hash": "35e30c39321bbe9c97cc15796be7495ece5c0e66272c5ea72f71f180790645ae",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "791401bd88205518662407d318de31bbaa77a4cc37820755699e8f174081d750",
-        "count": 2
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "894adb1808d0ce6ed58d272de893a5f00f5f42aedc11a02b009290df71fa9b57",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "a0c560dd4117f95228b95f51aaeef5bae19d386e657f574424b1a2bb106545b2",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "c4a10064dac3e9164eefe3261837f14f8d34379b30a1be8b652772855cb4422f",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "c532c2bde78bc5439b17dcd3238502f82442268a470891296654f6c0354b4300",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "dac8f42eacfd411659be7fcd9290037f6a476d1990466bec8d6d108ac6bb8ee7",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "e63fa1811ae37db5e49f933358c61bf7a94c09fc8f7f8782d8ece8d166e01c3a",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "f8170f2b335993575aaf466444ca7f2334f2da138cf0611bf3da41475356f6a6",
-        "count": 2
-      }
-    ],
     "templates/codex/.project_manager/tools/pm_relay.py": [
       {
         "kind": "session_stamp",
@@ -1628,29 +1323,7 @@
         "count": 1
       }
     ],
-    "templates/codex/.project_manager/tools/ticket_finish.py": [
-      {
-        "kind": "circled_marker",
-        "hash": "6422a58c88ecd72ab5c2c5b18279991431afe360f2e37a58b7af29ba49de6231",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "9364a65fabf2bada72c9de6ba2d0b050129fa15ea92d68e01c4f99b6700e7fd6",
-        "count": 1
-      }
-    ],
     "templates/codex/.project_manager/tools/worktree_pool.py": [
-      {
-        "kind": "decision_label",
-        "hash": "6c726ab00dbe69eea6bc07ff47c577bb065440977c526c81d8580618d2f50644",
-        "count": 1
-      },
-      {
-        "kind": "decision_label",
-        "hash": "b91df5de85cc658c4f2b91066d790dfe962a6c73af6ca98e388a0891c7e7b1c0",
-        "count": 1
-      },
       {
         "kind": "session_stamp",
         "hash": "175db9b23663be114b358e55bd6d6c59995500e516b4bcfa20db3b6229cbae36",
@@ -2029,31 +1702,6 @@
     ],
     "templates/opencode/.project_manager/tools/board.py": [
       {
-        "kind": "circled_marker",
-        "hash": "0f2ba8ddf6a1b194cd6e0ccd100161a1a3ec2788d27a33c5336d41cd33b25c0a",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "2d051a57367fd0845511d7ab7db79e26e265c242d00a5589ed81025361c06dcd",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "30539fb9a8623ac17d7b9449cc6e6347b099109b5cdd8cf8fba9d7d8420377c4",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "a8a1550d19c9dfceb654bd5fe4314e1afa63de57fb00b3a0fba838c4b3b46cba",
-        "count": 2
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "eda5e62470ddc3012af07a1d2501dd192fa473deb08135a224f1bb079eb7fe38",
-        "count": 1
-      },
-      {
         "kind": "decision_label",
         "hash": "4ad666b1e49e15cf661f54b6b4e5b54f42e63eddd317603f6229ecd2413bc99e",
         "count": 1
@@ -2152,16 +1800,6 @@
       }
     ],
     "templates/opencode/.project_manager/tools/domain.py": [
-      {
-        "kind": "circled_marker",
-        "hash": "104da500f517b12e0ccce91fac4d1a0287cdc1e9d9e580fe0058c8210c346629",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "3db069b77ea51f46f32b8af8c47f3c98cecb5285a004538b12f04b0469afc7be",
-        "count": 1
-      },
       {
         "kind": "decision_label",
         "hash": "4a2a37574739ba4977940c668a54e160426f5a690cb8fc13f46c63407e802606",
@@ -2285,11 +1923,6 @@
     ],
     "templates/opencode/.project_manager/tools/pm_handoff.py": [
       {
-        "kind": "circled_marker",
-        "hash": "2c12342fbc9f3cf1218a9e688359f1ab3e2478dd899a640a57b7bafe79dc8d53",
-        "count": 1
-      },
-      {
         "kind": "decision_label",
         "hash": "f5a3fdd60398ebb31e38d19f0676cbe4488801fce13cac3dd6c48c8dc11664f3",
         "count": 1
@@ -2355,53 +1988,6 @@
         "count": 1
       }
     ],
-    "templates/opencode/.project_manager/tools/pm_import.py": [
-      {
-        "kind": "circled_marker",
-        "hash": "35e30c39321bbe9c97cc15796be7495ece5c0e66272c5ea72f71f180790645ae",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "791401bd88205518662407d318de31bbaa77a4cc37820755699e8f174081d750",
-        "count": 2
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "894adb1808d0ce6ed58d272de893a5f00f5f42aedc11a02b009290df71fa9b57",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "a0c560dd4117f95228b95f51aaeef5bae19d386e657f574424b1a2bb106545b2",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "c4a10064dac3e9164eefe3261837f14f8d34379b30a1be8b652772855cb4422f",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "c532c2bde78bc5439b17dcd3238502f82442268a470891296654f6c0354b4300",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "dac8f42eacfd411659be7fcd9290037f6a476d1990466bec8d6d108ac6bb8ee7",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "e63fa1811ae37db5e49f933358c61bf7a94c09fc8f7f8782d8ece8d166e01c3a",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "f8170f2b335993575aaf466444ca7f2334f2da138cf0611bf3da41475356f6a6",
-        "count": 2
-      }
-    ],
     "templates/opencode/.project_manager/tools/pm_relay.py": [
       {
         "kind": "session_stamp",
@@ -2431,29 +2017,7 @@
         "count": 1
       }
     ],
-    "templates/opencode/.project_manager/tools/ticket_finish.py": [
-      {
-        "kind": "circled_marker",
-        "hash": "6422a58c88ecd72ab5c2c5b18279991431afe360f2e37a58b7af29ba49de6231",
-        "count": 1
-      },
-      {
-        "kind": "circled_marker",
-        "hash": "9364a65fabf2bada72c9de6ba2d0b050129fa15ea92d68e01c4f99b6700e7fd6",
-        "count": 1
-      }
-    ],
     "templates/opencode/.project_manager/tools/worktree_pool.py": [
-      {
-        "kind": "decision_label",
-        "hash": "6c726ab00dbe69eea6bc07ff47c577bb065440977c526c81d8580618d2f50644",
-        "count": 1
-      },
-      {
-        "kind": "decision_label",
-        "hash": "b91df5de85cc658c4f2b91066d790dfe962a6c73af6ca98e388a0891c7e7b1c0",
-        "count": 1
-      },
       {
         "kind": "session_stamp",
         "hash": "175db9b23663be114b358e55bd6d6c59995500e516b4bcfa20db3b6229cbae36",

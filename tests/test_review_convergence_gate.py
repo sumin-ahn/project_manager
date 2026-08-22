@@ -858,13 +858,80 @@ def test_numstat_sum_ignores_binary_and_junk(external):
     (".opencode/node_modules/pkg/index.js", True),                       # 루트 npm 산출물
     (".project_manager/tools/board.py", False),                          # 엔진 원본(손작업)
     (".opencode/package.json", False),                                   # 별도 소형 untrack
-    ("templates/claude_code/CLAUDE.md", False),                          # 어댑터층(손작업)
-    ("templates/claude_code/.claude/agents/architect.md", False),        # 어댑터층(손작업)
+    ("templates/claude_code/CLAUDE.md", False),                          # manifest 미등재(손작업)
+    ("templates/claude_code/.claude/agents/architect.md", True),         # bare @render(기계 mirror·T-0832)
     ("tests/test_board_lint.py", False),
 ])
 def test_machine_mirror_predicate_is_the_single_exclusion_rule(external, path, mirrored):
     """제외 판정은 경로 문자열 하나다 — 두 소비처(리뷰·완료)가 같은 술어를 쓴다(사본 0)."""
     assert external.is_machine_mirror_path(path) is mirrored
+
+
+# ── 어댑터층 기계 mirror (T-0832) ───────────────────────────────────────────
+# `_MACHINE_MIRROR_RE` 는 `.project_manager/` 만 봤다 — 그 밖의 어댑터층(`.claude/`·`.codex/`·
+# `.opencode/`)은 pm_update --all-targets 산출인데도 손작업으로 계상됐다(689줄 실측). 아래는 그
+# 판정이 manifest `@source=` 방향에서 파생됨을 실제 세 출하 manifest 로 고정한다 — 경로 패턴
+# 하드코딩이 아니라는 것과, flavor 가 손으로 관리하는 canonical 원본은 여전히 계상된다는 것.
+
+
+@pytest.mark.parametrize("path, mirrored", [
+    # bare(마커 없음) manifest 항목 — 소스는 레포 루트의 같은 상대경로(교차 위치) → 기계 mirror.
+    ("templates/opencode/.claude/skills/pm-env/SKILL.md", True),
+    ("templates/claude_code/.claude/run_tests_hook.sh", True),
+    # `@source=` 가 flavor 자기 자신을 가리키는(self-referential) override — pm_update 가 재생성
+    # 하지 않는 canonical 원본이라 flavor 가 손으로 고친다(결정문 예시와 동형).
+    ("templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md", False),
+    ("templates/codex/.agents/skills/pm-dev-delegate/SKILL.md", False),
+    ("templates/claude_code/.claude/ctx_guard.py", False),
+    # `@source=` 가 다른 flavor 물리 경로(레포 루트 `.claude/skills`)를 가리키는 진짜 교차 위치.
+    ("templates/codex/.agents/skills/pm-adr/SKILL.md", True),
+    # manifest 미등재 — instance/flavor 전용 root doc·config 는 애초에 판정에 들어오지 않는다.
+    ("templates/codex/.codex/config.toml", False),
+    ("templates/opencode/AGENTS.md", False),
+    ("templates/opencode/.opencode/opencode.jsonc", False),
+])
+def test_adapter_layer_mirror_derives_from_manifest_source_direction(external, path, mirrored):
+    """어댑터층 판정 = 그 타깃 engine.manifest 의 `@source=` 방향(자기참조=손작업·교차=mirror)."""
+    assert external.is_machine_mirror_path(path) is mirrored
+
+
+def test_adapter_layer_mirror_extends_to_a_new_target_without_code_changes(
+    external, tmp_path, monkeypatch,
+):
+    """새 타깃이 engine.manifest 를 갖추면 패턴 수정 없이 판정에 편입된다 (표면 상한 고정).
+
+    `templates/<타깃>/` 매칭이 flavor 이름을 하드코딩하지 않는다는 것을 실측한다 — REPO 를
+    가짜 flavor(`newtarget`) 하나짜리 tmp 트리로 monkeypatch 하고 bare/자기참조/`@target-owned`
+    세 항목을 선언해, 코드 변경 없이 같은 결과 형태가 나오는지 본다.
+
+    `@target-owned` 항목은 F-001(T-0832 라운드3 리뷰) 회귀다 — bare 부모 디렉토리(`.guest`, 그
+    자체로는 mirror) 아래에 더 구체적인 `@target-owned` override(`.guest/manual.md`)를 두어,
+    그 override 가 부모의 mirror 판정을 덮고 손작업으로 남는지·numstat 합계에서 계속 잡히는지
+    (측정에서 안 빠지는지) 확인한다."""
+    fake_repo = tmp_path / "repo"
+    manifest = fake_repo / "templates" / "newtarget" / ".project_manager" / "engine.manifest"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        "# fake newtarget manifest — AGENTS.md 는 의도적으로 미등재(instance-owned 대칭)\n"
+        ".newtarget/agents\n"                                  # bare → 레포 루트 교차 → mirror
+        ".newtarget/hooks/guard.py  @source=templates/newtarget/.newtarget/hooks/guard.py\n"
+        ".guest\n"                                              # bare 부모 → 그 자체는 mirror
+        ".guest/manual.md  @target-owned\n"                     # 더 구체적인 target-owned override
+        ,
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(external, "REPO", fake_repo)
+
+    assert external.is_machine_mirror_path("templates/newtarget/.newtarget/agents/x.md") is True
+    assert external.is_machine_mirror_path(
+        "templates/newtarget/.newtarget/hooks/guard.py") is False
+    assert external.is_machine_mirror_path("templates/newtarget/AGENTS.md") is False
+    # bare 부모 아래 다른 파일은 여전히 mirror(교차 위치) — override 의 영향이 그 파일 자신으로 좁다.
+    assert external.is_machine_mirror_path("templates/newtarget/.guest/other.md") is True
+    # `@target-owned` override 파일은 부모가 mirror 라도 손작업으로 남는다(F-001).
+    assert external.is_machine_mirror_path("templates/newtarget/.guest/manual.md") is False
+    numstat = "200\t201\ttemplates/newtarget/.guest/manual.md\n"
+    assert external._sum_numstat(numstat) == 401  # 측정에서 빠지지 않는다(서킷브레이커 우회 금지)
 
 
 def test_exclusion_is_a_subtree_including_hand_edited_files(external):

@@ -87,7 +87,8 @@ _TICKET_TEXT = (
     "touches: []\n"
     "estimate: small\n"
     "tags: []\n"
-    "---\n\n# {tid} — t\n\n## 목표\nx\n"
+    "---\n\n# {tid} — t\n\n## 목표\nx\n\n"
+    "## 완료 조건 (Definition of Done)\n- [x] 구현\n"
 )
 
 
@@ -159,6 +160,16 @@ def board(tmp_path, monkeypatch):
     anchor_board_module(mod, tmp_path, monkeypatch)
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
+    # 정체성 축을 tmp 에 묶는다 — 소유 대조(T-0781)가 user 축을 보므로, 실 clone 의 local.conf
+    # /전역 git email 이 새면 픽스처 claim(`me/…`)과 어긋난다. 세션은 각 테스트가 명시
+    # (`--repo/--slot` 또는 `PM_SESSION_NAME`)한다 — conf `session=` 폴백은 폐지됐다(T-0779).
+    conf = tmp_path / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True, exist_ok=True)
+    conf.write_text("user=me\n", encoding="utf-8")
+    monkeypatch.setattr(mod, "LOCAL_CONF", conf)
+    monkeypatch.setattr(
+        mod, "LEASES_FILE",
+        tmp_path / ".project_manager" / ".local" / "worktree-leases.json")
     return mod
 
 
@@ -1063,13 +1074,14 @@ def test_best_effort_transitions_commit_only_their_paths(board, tmp_path, mutati
 
     if mutation == "complete":
         rc = board.cmd_complete(argparse.Namespace(
-            id="T-0001", tests_pass=True, allow_missing_log=True, allow_untested=False))
+            id="T-0001", tests_pass=True, allow_missing_log=True, allow_untested=False,
+            repo="me", slot=1))
         expected = {"tickets/claimed/T-0001-t.md", "tickets/done/T-0001-t.md"}
     elif mutation == "block":
         rc = board.cmd_block(argparse.Namespace(id="T-0001", reason="r"))
         expected = {"tickets/open/T-0001-t.md", "tickets/blocked/T-0001-t.md"}
     elif mutation == "unclaim":
-        rc = board.cmd_unclaim(argparse.Namespace(id="T-0001"))
+        rc = board.cmd_unclaim(argparse.Namespace(id="T-0001", repo="me", slot=1))
         expected = {"tickets/claimed/T-0001-t.md", "tickets/open/T-0001-t.md"}
     else:
         rc = board.cmd_unblock(argparse.Namespace(id="T-0001"))
@@ -1174,10 +1186,11 @@ def test_ticket_mutations_pass_scoped_paths():
     calls = [node for node in ast.walk(tree)
              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
              and node.func.id == "_board_git_sync_best_effort"]
-    # 8 = ticket mutation 7 + `init` 의 areas repo 행 등록(T-0779 — 등록 행도 board git 의
-    # 공유 파일이라 같은 스코프 채널로 기록한다).
-    assert len(calls) == 8, \
-        f"best-effort sync 호출이 8곳이 아님(신규/삭제 시 이 가드를 함께 갱신): {len(calls)}"
+    # 10 = ticket mutation 9(new·promote·complete·discard·reopen·block·unclaim·unblock +
+    # section-add/tier 공용 helper) + `init` 의 areas repo 행 등록(T-0779 — 등록 행도 board git
+    # 의 공유 파일이라 같은 스코프 채널로 기록한다).
+    assert len(calls) == 10, \
+        f"best-effort sync 호출이 10곳이 아님(신규/삭제 시 이 가드를 함께 갱신): {len(calls)}"
     for call in calls:
         has_paths = len(call.args) >= 2 or any(kw.arg == "paths" for kw in call.keywords)
         assert has_paths, \
@@ -1398,26 +1411,54 @@ def test_claim_without_a_git_tree_warns_and_still_claims(board, tmp_path, monkey
 
 
 @requires_git
-def test_claim_warns_when_bare_claim_folds_to_repo_home_with_a_leases_file(
+def test_claim_warns_when_bare_claim_folds_to_repo_home_despite_an_active_slot(
         board, tmp_path, monkeypatch, capsys):
-    """분리 PM 홈 형상(리스 장부 존재)에서 인자 전무 claim 이 REPO 로 접히면 경고를 낸다(F-001).
+    """인자 전무 claim 이 REPO 를 재는데 **이 세션의 활성 슬롯**이 다른 트리면 경고한다(F-001).
+
+    [[T-0793]] 이후 판정은 리스 장부의 존재가 아니라 **이 세션 행이 해소하는 슬롯 경로 값**이다
+    (`_warn_claim_code_tree_folded_to_repo_home` 독스트링) — 리스 장부는 있어도 이 세션과
+    매칭되는 행이 없는 형상(구 케이스)은 이제 무경고다(홈 자신이 그 세션의 슬롯인 형상과
+    값으로 구분되지 않아서다). 여기서는 이 세션("me") 행이 실재하고 다른 슬롯을 가리키게
+    해 그 값 대조를 직접 겨눈다.
 
     값은 여전히 REPO HEAD(기존 폴백 무변경) — 이 테스트는 그 폴백이 *조용하지 않다* 는 것만
     추가로 단언한다."""
     monkeypatch.setattr(board, "LEASES_FILE", _claim_anchor_leases_file(tmp_path))
     repo_head = _init_code_git(tmp_path, seed_text="home\n")
-    # 리스 장부는 있지만 이 세션과 매칭되는 활성 슬롯이 없다(분리 PM 홈인데 REPO 로 접히는 형상).
-    board.LEASES_FILE.write_text(json.dumps({"leases": [
-        {"slot": "work/other_1", "repo": "other", "session": "other-session", "state": "leased"},
-    ]}), encoding="utf-8")
     monkeypatch.setenv("PM_SESSION_NAME", "me")
+    # 이 세션("me")의 리스가 REPO 가 아닌 다른 슬롯을 가리키는데, bare claim(kind=none)은
+    # 여전히 REPO 트리를 잰다 — 그 접힘이 경고 대상이다.
+    board.LEASES_FILE.write_text(json.dumps({"leases": [
+        {"slot": "work/other_1", "repo": "other", "session": "me", "state": "leased"},
+    ]}), encoding="utf-8")
     _seed_open_ticket(tmp_path, "T-9015")
 
     assert board.cmd_claim(argparse.Namespace(id="T-9015", user="me")) == 0
 
     fm, _body = board.load_ticket(_claimed_ticket(tmp_path, "T-9015"))
     assert fm["claimed_rev"] == repo_head
-    assert "PM 홈(REPO)으로 접혔다" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "PM 홈(REPO)으로 접혔다" in err
+    assert str(tmp_path / "work" / "other_1") in err
+
+
+def test_claim_stays_silent_when_no_lease_row_matches_this_session(
+        board, tmp_path, monkeypatch, capsys):
+    """리스 장부는 있어도 이 세션과 매칭되는 행이 없으면 REPO 로 접혀도 무경고다.
+
+    "장부 파일이 존재한다" 는 판정 축이 아니다 — 홈 자신이 이 세션의 슬롯인 형상과 값으로
+    구분되지 않으면 상시 오발화하므로 [[T-0793]] 이후 이 형상은 의도적으로 침묵한다."""
+    monkeypatch.setattr(board, "LEASES_FILE", _claim_anchor_leases_file(tmp_path))
+    _init_code_git(tmp_path, seed_text="home\n")
+    board.LEASES_FILE.write_text(json.dumps({"leases": [
+        {"slot": "work/other_1", "repo": "other", "session": "other-session", "state": "leased"},
+    ]}), encoding="utf-8")
+    monkeypatch.setenv("PM_SESSION_NAME", "me")
+    _seed_open_ticket(tmp_path, "T-9019")
+
+    assert board.cmd_claim(argparse.Namespace(id="T-9019", user="me")) == 0
+
+    assert "PM 홈(REPO)으로 접혔다" not in capsys.readouterr().err
 
 
 @requires_git

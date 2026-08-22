@@ -1337,13 +1337,18 @@ def test_snapshot_single_active_task_fallback_and_multi_task_skip(tmp_path):
     assert "정체성 미해소" in warning2
 
 
-def test_legacy_state_identity_emits_snapshot_and_records_compaction_checkpoint(
+def test_single_active_task_identity_emits_snapshot_and_records_compaction_checkpoint(
     tmp_path, monkeypatch, capsys,
 ):
-    """task/lease 장부 없는 legacy 형상은 pm_state 층으로 두 경계를 모두 살린다.
+    """cwd 가 어느 lease 에도 안 걸리는 단일 활성 task 형상은 두 경계를 모두 살린다.
 
-    per-clone `local.conf session=` 은 층이 아니다(T-0779) — conf 에 그 키가 남아 있어도
-    해소는 legacy pm_state 로 간다.
+    [[T-0793]] 이후 정체성 해소는 cwd→lease·단일 활성 task 두 층뿐이다 — 장부(task/lease)가
+    아예 없는 "legacy pm_state" 층은 삭제됐다(`resolve_snapshot_identity` 독스트링: "그 층은
+    없다"). `_pm_state_path` 도 이제 `source` 와 무관하게 task 스코프 경로 하나뿐이라 legacy
+    wiki 최상위 `pm_state.md` 로 갈 곳이 없다 — 이 테스트는 남은 두 층 중 cwd 가 lease 밖인
+    형상(단일 활성 task 폴백)에서 snapshot systemMessage 봉투와 checkpoint 기록이 함께
+    사는지를 고정한다(cwd→lease 층은 `test_snapshot_resolves_cwd_lease_before_multiple_
+    active_tasks` 가 이미 고정한다).
     """
     mod = _load_module()
     pm_home = tmp_path / "solo"
@@ -1354,9 +1359,10 @@ def test_legacy_state_identity_emits_snapshot_and_records_compaction_checkpoint(
     (manager / "local.conf").write_text(
         "# fresh solo adopter\nsession=pm\n", encoding="utf-8",
     )
-    legacy_state = wiki / "pm_state.md"
-    legacy_state.write_text(
-        "# Solo PM state\n- 남은 작업: solo compaction 복구\n", encoding="utf-8",
+    task_state = manager / ".local" / "tasks" / "pm" / "pm_state.md"
+    task_state.parent.mkdir(parents=True)
+    task_state.write_text(
+        "# pm state\n- 남은 작업: solo compaction 복구\n", encoding="utf-8",
     )
     current = log_dir / "current.md"
     current.write_text(_HEADER, encoding="utf-8")
@@ -1370,9 +1376,9 @@ def test_legacy_state_identity_emits_snapshot_and_records_compaction_checkpoint(
     payload = json.loads(capsys.readouterr().out)
     snapshot = payload["systemMessage"]
     assert payload["suppressOutput"] is False
-    assert "- task: pm" in snapshot and "- 해소: legacy pm_state" in snapshot
-    assert f"- pm_state: {legacy_state}" in snapshot
-    assert "# Solo PM state" in snapshot and "--task pm" not in snapshot
+    assert "- task: pm" in snapshot and "- 해소: 단일 활성 task" in snapshot
+    assert f"- pm_state: {task_state}" in snapshot
+    assert "# pm state" in snapshot
 
     before = len(mod.split_entries(current.read_text(encoding="utf-8"))[1])
     checkpoint_args = SimpleNamespace(
@@ -1383,7 +1389,6 @@ def test_legacy_state_identity_emits_snapshot_and_records_compaction_checkpoint(
     entries = mod.split_entries(current.read_text(encoding="utf-8"))[1]
     assert len(entries) == before + 1
     assert "checkpoint | (task:pm) — compaction" in entries[-1][1]
-    assert not (manager / ".local" / "tasks").exists()
 
 
 def test_snapshot_timeout_returns_identity_and_hearsay_only(tmp_path):

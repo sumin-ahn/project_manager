@@ -36,6 +36,7 @@ opencode=JS core) — 그래서 엔진 루트 탐색·local.conf 파싱을 drive
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -520,7 +521,17 @@ def rollout_context_tokens(transcript_path) -> int:
     """rollout JSONL 의 **마지막** token_count 점유 토큰 (측정 불가면 0·fail-open).
 
     claude `context_tokens_from_transcript` 대칭 — 파일 끝에서부터 첫 usable 값을 쓴다. 부재·
-    null·읽기 실패·token_count 0건은 전부 0(측정 없음)이라 밴드 판정으로 올라가지 않는다."""
+    null·읽기 실패·token_count 0건은 전부 0(측정 없음)이라 밴드 판정으로 올라가지 않는다.
+
+    **구조적 한계(T-0835 라이브 실측 · codex-cli 0.147.0)**: 점유의 첫 기록은 첫 모델 **응답 뒤**
+    `event_msg/token_count` 다 — 새 thread 의 첫 `UserPromptSubmit`/`PreToolUse` 시점 rollout 에는
+    그 레코드가 아직 없어 이 함수는 0을 돌려준다. 그 0은 "사용률 0%"가 아니라 "아직 측정 안 됨"
+    sentinel 이고, codex 훅 payload 11종 전부(`additionalProperties:false`)에 점유·윈도 신호가
+    없어 대체 채널도 없다(호출부 `ctx_nudge_envelope` 가 이 sentinel 을 밴드 판정에 올리지 않는
+    이유). `codex exec resume`·compaction 은 같은 rollout 파일에 이어 쓰므로(같은 `session_id`)
+    이 구간에 해당하지 않는다 — 무방비는 새 thread 의 첫 모델 요청 1회뿐이다. 이 실측 범위는
+    `codex exec`/`exec resume`/auto-compaction 뿐이다 — direct TUI 는 미실측이다. 코어
+    rollout writer 공유라 같은 양상일 것으로 예상하나 확인된 사실이 아니다."""
     if not isinstance(transcript_path, str) or not transcript_path.strip():
         return 0
     try:
@@ -640,7 +651,14 @@ def ctx_nudge_envelope(payload: dict, root: Path, *,
     없던 때와 **바이트 동일**하다(측정된 통과 형태). 차단·회전 판정은 내지 않는다.
 
     claude `ctx_stop_hook.evaluate` 와 같은 순서다 — 서브에이전트 면제 → 점유 측정 → 밴드 판정
-    → ok 실측이면 재무장 → 안내 문구 → 사이클 marker 선점 → 주입."""
+    → ok 실측이면 재무장 → 안내 문구 → 사이클 marker 선점 → 주입.
+
+    **첫 turn 은 보호하지 못한다(T-0835)**: `rollout_context_tokens` 가 아직 측정 없는 새
+    thread 첫 요청에서 0(sentinel)을 돌려주면 사용률도 0%로 계산되고 밴드는 항상 `ok` 다 —
+    거짓으로 "안전"을 알리는 게 아니라 **판정 자체를 안 하는 침묵**이다(안내 문구를 만들지
+    않고 marker 도 건드리지 않는다). codex 훅에 이 구간을 메울 신호·비차단 채널이 없다는 결론은
+    라이브 실측(codex-cli 0.147.0)이고, claude·opencode 도 같은 구조적 한계를 갖는다(세 하네스
+    공통 규칙 — 하네스 특례 아님)."""
     event = payload.get("hook_event_name") or payload.get("hookEventName")
     if event not in CTX_NUDGE_EVENTS:
         return {}
@@ -682,6 +700,10 @@ def ctx_nudge_envelope(payload: dict, root: Path, *,
 # 가 역방향으로 대조한다 — 진입점이 빠진 채택자는 조용히 통과하지 않는다).
 CODEX_HOOK_DISPATCH_FLAG = "--hook-dispatch"
 CODEX_HOOK_FEATURES_FLAG = "--hook-features"
+# git-anchor 기능의 자기참조 진입 플래그 — claude `pm_orch_claude.py --git-anchor-hook`
+#   대칭. delegate-channel 처럼 부를 별도 엔진 파일이 없어 이 디스패처가 `{self}` 로 자기
+#   자신을 다시 부른다(아래 CODEX_HOOK_FEATURES git-anchor 항목).
+GIT_ANCHOR_HOOK_FLAG = "--git-anchor-hook"
 # 이 파일이 진입점을 받는 이벤트 전수. hooks.json 의 (이벤트 × matcher) 진입점과 1:1 이며,
 #   엔진 역방향 가드가 같은 이름으로 config 를 대조한다. 출하 hooks.json 이 선언하는 이벤트
 #   전부가 여기 있다 — 진입점 밖에 남은 이벤트가 하나라도 있으면 그 이벤트의 두 번째 기능이
@@ -696,6 +718,10 @@ CODEX_HOOK_DISPATCH_BUDGET_SEC = 12
 #   `delegate_channel_guard.CODEX_ADAPTER_FALLBACK_MARKER` 와 같은 값이어야 하고 테스트가 결속한다
 #   (훅 실행 시점에 엔진 모듈을 적재하지 않으려고 리터럴을 둔다·shell 폴백과 같은 근거).
 CODEX_HOOK_ADAPTER_FALLBACK_MARKER = "adapter-fallback"
+# `merge_hook_envelopes` 가 두 개 이상의 `hookSpecificOutput` 을 만나면, 그중 이벤트별 output
+#   스키마 허용키라도 합본 규칙이 없는 키(예: `updatedInput`·`updatedMCPToolOutput`·기준이 아닌
+#   응답의 `permissionDecision` 류)는 **조용히 버리지 않고** 이 마커로 남긴다(T-0824).
+CODEX_HOOK_MERGE_UNHANDLED_KEY_MARKER = "merge-unhandled-key"
 
 
 class CodexHookFeature(NamedTuple):
@@ -705,8 +731,9 @@ class CodexHookFeature(NamedTuple):
     event        발화 이벤트(`CODEX_HOOK_ENTRYPOINT_EVENTS` 중 하나).
     tool_pattern `match_field` 값의 정규식(fullmatch). None 이면 판별 없음(그 이벤트 전량).
                  옛 형상에서 hooks.json matcher 가 하던 판별이 그대로 여기로 옮겨 왔다.
-    argv         기능을 실행하는 커맨드. `{py}` = 이 인터프리터, `{tools}` = 엔진 도구 디렉토리.
-                 자식은 payload 를 stdin 으로 받고 엔벨로프 한 줄을 stdout 으로 낸다.
+    argv         기능을 실행하는 커맨드. `{py}` = 이 인터프리터, `{tools}` = 엔진 도구 디렉토리,
+                 `{self}` = 이 디스패처 파일 자신. 자식은 payload 를 stdin 으로 받고 엔벨로프
+                 한 줄을 stdout 으로 낸다.
     handler      이 파일 안에서 **in-process** 로 도는 기능이면 그 함수(`(payload, root, *,
                  timeout) -> 엔벨로프`). 주면 `argv` 는 쓰이지 않는다. 도구 무관 기능(모든 도구
                  호출마다 발화)을 자식 프로세스로 돌리면 매 호출에 인터프리터가 하나 더 뜨므로,
@@ -801,6 +828,17 @@ CODEX_HOOK_FEATURES: tuple[CodexHookFeature, ...] = (
         event="PostCompact",
         tool_pattern=None,
         argv=("{py}", "{tools}/pm_log.py", "snapshot", "--cwd", ".", "--json"),
+    ),
+    CodexHookFeature(
+        # raw git cwd-anchor 가드가 claude_code·opencode 두 타깃엔 배선돼 있었는데 codex 엔
+        #   없었다(도그푸딩 사각). 판정은 새로 만들지 않고 세 타깃이 공유하는
+        #   `board.judge_git_anchor_command` 를 그대로 부른다(claude `pm_orch_claude.py
+        #   git_anchor_hook_evaluate` 와 동형). git-anchor 엔 delegate-channel 처럼 부를 별도
+        #   엔진 파일이 없어 `{self}` 로 이 디스패처가 자기 자신을 다시 부른다.
+        feature_id="git-anchor",
+        event="PreToolUse",
+        tool_pattern="^Bash$",
+        argv=("{py}", "{self}", GIT_ANCHOR_HOOK_FLAG),
     ),
 )
 
@@ -918,11 +956,20 @@ def _feature_matches(feature: CodexHookFeature, payload: dict) -> bool:
 
 
 def _expand_hook_argv(argv, root: Path) -> list[str]:
-    """registry argv 의 자리표시자를 실값으로 — `{py}`=이 인터프리터·`{tools}`=엔진 도구 디렉토리.
+    """registry argv 의 자리표시자를 실값으로 — `{py}`=이 인터프리터·`{tools}`=엔진 도구 디렉토리·
+    `{self}`=이 디스패처 파일 자신(자기참조형 기능이 부르는 대상 — git-anchor 는 delegate-channel
+    과 달리 부를 별도 엔진 파일이 없다).
 
-    경로는 cwd 가 아니라 **엔진 루트**에서 해소한다(훅이 어느 디렉토리에서 발화해도 같은 자식)."""
+    `{py}`·`{tools}`는 cwd 가 아니라 **엔진 루트**에서 해소한다(훅이 어느 디렉토리에서 발화해도
+    같은 자식). `{self}`는 root 파생이 **아니다** — 실행 중인 파일은 자기 위치(`__file__`)를 이미
+    알고, root 에서 다시 조합한 좌표는 같은 사실의 두 번째 사본이라 레이아웃이 바뀌면 어긋난다
+    (T-0845 — flat 레이아웃에서 `root/.codex/pm_orch_codex.py` 재구성이 실재하지 않는 경로를
+    가리켜 git-anchor 자식 spawn 이 rc=2 로 죽었다)."""
     tools = str(Path(root) / ".project_manager" / "tools")
-    return [str(token).replace("{py}", sys.executable).replace("{tools}", tools)
+    this_file = str(Path(__file__).resolve())
+    return [str(token).replace("{py}", sys.executable)
+                       .replace("{tools}", tools)
+                       .replace("{self}", this_file)
             for token in argv]
 
 
@@ -982,14 +1029,39 @@ def _is_blocking_envelope(envelope: dict) -> bool:
             and hook_output.get("permissionDecision") == "deny")
 
 
+CODEX_HOOK_MERGE_HANDLED_HOOK_SPECIFIC_KEYS = frozenset({"hookEventName", "additionalContext"})
+
+# 최상위 키 중 이미 병합 규칙이 있는 키(F-0824-CR01) — 이 밖의 최상위 키(예: `continue`·
+#   `stopReason`·`decision`·`reason`)를 base 가 아닌 응답이 실으면 조용히 버리지 않고
+#   `CODEX_HOOK_MERGE_UNHANDLED_KEY_MARKER` 로 남긴다 — `hookSpecificOutput` 서브키와 같은 축.
+CODEX_HOOK_MERGE_HANDLED_TOP_LEVEL_KEYS = frozenset(
+    {"systemMessage", "suppressOutput", "hookSpecificOutput"})
+
+
 def merge_hook_envelopes(envelopes) -> dict:
     """여러 기능의 응답을 호스트가 읽는 **한 줄**로 합친다.
 
-    호스트는 훅 하나당 엔벨로프 하나만 읽는다. 규칙 셋:
+    호스트는 훅 하나당 엔벨로프 하나만 읽는다. 합본 규칙은 키마다 다르다:
       1. 빈 엔벨로프(`{}` = 통과)는 기여하지 않는다 — 아무도 답하지 않으면 `{}`(측정된 allow 형태).
       2. 응답이 하나면 **그대로** 돌려준다 — 진입점 도입이 기존 판정 값을 바꾸지 않는다.
-      3. 둘 이상이면 차단 판정이 기준이 되고(없으면 첫 응답), 나머지 기능의 `systemMessage` 는
-         줄바꿈으로 덧붙는다. 차단 사유 필드도 같은 합본으로 맞춰 사유가 잘리지 않게 한다.
+      3. 둘 이상이면 차단 판정이 있는 응답이 기준(base)이 되고(없으면 첫 응답), 그 base 를 얕은
+         복사해 합본을 시작한다 — base 자신의 키는 전량 그대로 실린다(유실 없음).
+      4. `systemMessage` — **문자열 누적**: 전 응답의 값을 줄바꿈으로 이어 붙인다(중복 제외).
+         차단이면 `reason`·`hookSpecificOutput.permissionDecisionReason` 도 같은 합본으로 맞춰
+         사유가 잘리지 않게 한다.
+      5. `hookSpecificOutput.additionalContext` — **문자열 누적**(T-0824): base 가 아닌 응답도
+         이 키만은 base 의 `hookSpecificOutput` 에 **중첩 dict 병합**으로 실린다. deny 등 base
+         차단 판정과 **동시에** 성립한다(codex 0.147.0 라이브 실측 — 차단 집행 + 안내 주입 동거,
+         `.project_manager/board/tickets/rounds/T-0834/01-architect.md` §5). 값이 문자열이
+         아니면(비-str) 침묵하지 않고 6번 마커로 남는다.
+      6. `suppressOutput` — **논리 결합**: 하나라도 `False` 면 결과도 `False`(비차단 안내를 억누르지
+         않는 쪽이 이긴다).
+      7. base 가 아닌 응답이 4·5·6번이 다루지 않는 키를 최상위(예: `continue`·`stopReason`·
+         `decision`·`reason`) 또는 `hookSpecificOutput` 서브키(예: `updatedInput`·
+         `updatedMCPToolOutput`·기준이 아닌 응답의 `permissionDecision`류)로 실으면, **값을
+         합성하지 않고** 합본 규칙이 없다는 사실만 `systemMessage` 에 `[hook-dispatch/warn]
+         {CODEX_HOOK_MERGE_UNHANDLED_KEY_MARKER}` 마커로 남긴다(F-0824-CR01) — 조용히 버리지
+         않는다. base 자신의 키는 `dict(base)` 로 이미 전량 실려 유실이 아니다.
     """
     answered = [item for item in envelopes if isinstance(item, dict) and item]
     if not answered:
@@ -997,12 +1069,51 @@ def merge_hook_envelopes(envelopes) -> dict:
     if len(answered) == 1:
         return answered[0]
     blocking = [item for item in answered if _is_blocking_envelope(item)]
-    merged = dict(blocking[0] if blocking else answered[0])
+    base = blocking[0] if blocking else answered[0]
+    merged = dict(base)
     messages: list[str] = []
+    contexts: list[str] = []
+    unhandled_keys: list[str] = []
+    event_name = None
     for item in answered:
         text = item.get("systemMessage")
         if isinstance(text, str) and text.strip() and text not in messages:
             messages.append(text)
+        if item is not base:
+            # 최상위 허용키 중 4·6번 규칙이 없는 것(`continue`·`stopReason`·`decision`·
+            #   `reason`)은 값을 합성하지 않고 유실 사실만 경고로 남긴다(F-0824-CR01).
+            for key in item:
+                if key not in CODEX_HOOK_MERGE_HANDLED_TOP_LEVEL_KEYS:
+                    unhandled_keys.append(key)
+        hook_output = item.get("hookSpecificOutput")
+        if not isinstance(hook_output, dict):
+            continue
+        if event_name is None and isinstance(hook_output.get("hookEventName"), str):
+            event_name = hook_output["hookEventName"]
+        if "additionalContext" in hook_output:
+            context_value = hook_output["additionalContext"]
+            if isinstance(context_value, str):
+                if context_value.strip() and context_value not in contexts:
+                    contexts.append(context_value)
+            else:
+                unhandled_keys.append(f"additionalContext(비-str:{type(context_value).__name__})")
+        if item is base:
+            continue  # base 는 dict(base) 로 이미 전량 실렸다 — 나머지 키는 유실이 아니다.
+        for key in hook_output:
+            if key not in CODEX_HOOK_MERGE_HANDLED_HOOK_SPECIFIC_KEYS:
+                unhandled_keys.append(key)
+    if contexts:
+        combined_context = "\n".join(contexts)
+        hook_output = merged.get("hookSpecificOutput")
+        hook_output = dict(hook_output) if isinstance(hook_output, dict) else {}
+        hook_output.setdefault("hookEventName", event_name)
+        hook_output["additionalContext"] = combined_context
+        merged["hookSpecificOutput"] = hook_output
+    if unhandled_keys:
+        unique_unhandled = sorted(set(unhandled_keys))
+        messages.append(
+            f"[hook-dispatch/warn] {CODEX_HOOK_MERGE_UNHANDLED_KEY_MARKER}: "
+            f"{', '.join(unique_unhandled)} 합본 규칙 없음 — 값 유실")
     if messages:
         combined = "\n".join(messages)
         merged["systemMessage"] = combined
@@ -1075,6 +1186,121 @@ def run_hook_dispatch(event: str, root: Path, *, stdin=None, stdout=None) -> int
     return 0
 
 
+# ── git-anchor 훅 축 (claude `pm_orch_claude.py --git-anchor-hook` 대칭) ──────────────────────
+# raw git cwd-anchor 판정은 세 하네스가 공유하는 단일 진실 `board.judge_git_anchor_command` 다
+#   (새 판정 로직 없음). 이 절은 codex PreToolUse(Bash) payload 를 그 판정에 배선하고 verdict 를
+#   codex 엔벨로프로 옮기는 자리다 — `.codex/hooks.json` 은 여전히 `--hook-dispatch PreToolUse`
+#   만 알고, 이 기능은 위 `CODEX_HOOK_FEATURES` registry 에 자기 자신을 다시 부르는 항목으로만
+#   등록된다.
+GIT_ANCHOR_ONCE_NAMESPACE = "git-anchor"  # 세션 1회 발화 멤버십 namespace(엔진 claim_session_once).
+GIT_ANCHOR_ONCE_KEY_CHARS = 16  # 멤버십 키 = 발화 문구 sha256 앞 16자(문구 전문을 파일에 남기지 않는다).
+
+
+def _load_board(root: Path):
+    """raw git 훅 판정의 단일 진실인 board.py 를 root 기준으로 로드한다(claude 어댑터 동형)."""
+    board_path = root / ".project_manager" / "tools" / "board.py"
+    spec = importlib.util.spec_from_file_location("pm_git_anchor_board", board_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def git_anchor_hook_evaluate(payload: dict, root: Path) -> dict:
+    """codex PreToolUse(Bash) payload 를 중앙 `judge_git_anchor_command` seam 에 배선한다.
+
+    반환은 **항상 유효한 dict** 다 — 이 기능은 자식 프로세스로 돌고, 디스패처
+    `_run_hook_feature` 는 빈 stdout 을 실패로 읽어 adapter-fallback 경고로 강등한다. 그래서
+    codex 축의 "침묵"은 claude 처럼 0바이트가 아니라 **측정된 allow 형태 `{}`** 다(`merge_hook_
+    envelopes` 가 이미 그 값을 "기여 없음"으로 다룬다). ok·정상 미매칭·세션 내 완전일치 중복
+    warn 이 이 값을 낸다. 판정불능(uncertain)은 board 가 이미 warn 으로 접어 넣으므로 여기서
+    별도로 다루지 않는다(중앙 판정 결정 승계 — 판정불능은 침묵시키지 않는다)."""
+    event = payload.get("hook_event_name") or payload.get("hookEventName")
+    tool = payload.get("tool_name") or payload.get("toolName")
+    tool_input = payload.get("tool_input") or payload.get("toolInput") or {}
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    if event not in (None, "PreToolUse") or tool != "Bash" or not isinstance(command, str):
+        return {}
+    # claude `pm_orch_claude.git_anchor_hook_evaluate` 와 같은 선필터 — 대상은 넷(git 호출·엔진
+    #   도구 호출·pytest·cd 잔존). 판정 대상 비포함은 board import 조차 하지 않는다(핫패스
+    #   비용 0 — 이 함수 자체는 이미 자식 프로세스라 프로세스 spawn 비용은 등록 축(tool_pattern
+    #   ^Bash$)이 진다).
+    prefilter = command.replace("\\\n", "").replace("'", "").replace('"', "")
+    normalized = re.sub(r"/+", "/", prefilter.replace("\\", "/"))
+    if not (
+        re.search(r"(?<![A-Za-z0-9_.-])git(?=\s|$|[<>])", prefilter)
+        or ".project_manager/tools/" in normalized
+        or re.search(r"(?<![A-Za-z0-9_.-])pytest(?=\s|$)", prefilter)
+        or re.search(r"(?:^|[;&|])\s*cd(?=\s)", prefilter)
+    ):
+        return {}
+    cwd = payload.get("cwd")
+    anchor = cwd if isinstance(cwd, str) and cwd else str(root)
+    judgment = _load_board(root).judge_git_anchor_command(anchor, command)
+    verdict = judgment.get("verdict")
+    reason = judgment.get("reason", "git cwd 정체 판정")
+    if verdict == "deny":
+        text = f"[git-anchor/deny] {reason}"
+        return {
+            "decision": "block",
+            "reason": text,
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": text,
+            },
+            "systemMessage": text,
+            "suppressOutput": False,
+        }
+    if verdict == "warn":
+        text = f"[git-anchor/warn] {reason}"
+        if _git_anchor_duplicate(root, payload, text):
+            return {}  # 세션 내 완전일치 중복 — 측정된 allow 형태로 침묵.
+        return {"systemMessage": text, "suppressOutput": False}
+    return {}
+
+
+def _git_anchor_duplicate(root: Path, payload: dict, text: str) -> bool:
+    """이 세션에서 **문자열이 완전히 같은** advisory 를 이미 냈으면 True(claude 헬퍼 재사용).
+
+    마커 I/O 실패(None)는 False — 발화를 유지한다(fail-open). 엔진 `pm_relay.claim_session_
+    once` 를 그대로 부른다 — claude 와 같은 멤버십 디렉토리 `.project_manager/.local/ctx-stop/`
+    를 공유하되 세션키가 달라 서로 섞이지 않는다(새 상태 파일·새 디렉토리 0)."""
+    try:
+        engine, _engine_root = _load_engine()
+        key = hashlib.sha256(text.encode("utf-8")).hexdigest()[:GIT_ANCHOR_ONCE_KEY_CHARS]
+        claimed = engine.claim_session_once(
+            root,
+            payload.get("session_id") or payload.get("sessionId") or "",
+            GIT_ANCHOR_ONCE_NAMESPACE,
+            key,
+        )
+    except BaseException:  # 멤버십 판정 손상은 훅 판정을 깨지 않는다 — 발화 유지(fail-open).
+        return False
+    return claimed is False
+
+
+def run_git_anchor_hook(root: Path, *, stdin=None, stdout=None) -> int:
+    """stdin JSON 훅 payload → codex 엔벨로프 한 줄(항상 유효한 JSON). rc 는 항상 0.
+
+    예외(판정 인프라 손상)는 중복 억제 게이트를 지나지 않고 무조건 발화한다(fail-open ·
+    claude `run_git_anchor_hook` 동형)."""
+    stream = sys.stdin if stdin is None else stdin
+    sink = sys.stdout if stdout is None else stdout
+    try:
+        raw = stream.read()
+        payload = json.loads(raw) if raw else {}
+        if not isinstance(payload, dict):
+            payload = {}
+        envelope = git_anchor_hook_evaluate(payload, root)
+    except BaseException as exc:  # SystemExit 포함 판정 인프라 손상은 정상 Bash 를 막지 않는다.
+        detail = " ".join(str(exc).splitlines()).strip() or type(exc).__name__
+        text = f"[git-anchor/warn] 판정 불가({type(exc).__name__}: {detail}) — cwd를 직접 확인"
+        envelope = {"systemMessage": text, "suppressOutput": False}
+    sink.write(json.dumps(envelope, separators=(",", ":")) + "\n")
+    sink.flush()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="codex PM relay — thin stateless supervisor 세션 자동-회전."
@@ -1095,6 +1321,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help=argparse.SUPPRESS)
     parser.add_argument(CODEX_HOOK_FEATURES_FLAG, action="store_true",
                         help=argparse.SUPPRESS)
+    parser.add_argument(GIT_ANCHOR_HOOK_FLAG, action="store_true",
+                        help=argparse.SUPPRESS)
     return parser
 
 
@@ -1110,6 +1338,8 @@ def main(argv: list[str] | None = None) -> int:
         args = build_parser().parse_args(actual_argv)
         return run_hook_dispatch(
             args.hook_dispatch, repo_root(Path(__file__).resolve().parent))
+    if GIT_ANCHOR_HOOK_FLAG in actual_argv:
+        return run_git_anchor_hook(repo_root(Path(__file__).resolve().parent))
 
     args = build_parser().parse_args(argv)
     engine, root = _load_engine()

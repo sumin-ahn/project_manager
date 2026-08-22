@@ -4,7 +4,9 @@
 
 ## 핵심 약속
 
-- **디렉토리 = 상태.** 한 ticket 파일은 `open/`, `claimed/`, `blocked/`, `done/` 중 정확히 한 곳에 있다.
+- **디렉토리 = 상태.** 한 ticket 파일은 `open/`, `claimed/`, `blocked/`, `done/`, `discarded/` 중 정확히 한 곳에 있다.
+- **종결은 둘이다.** `done/` 은 작업이 실제로 끝난 완료, `discarded/` 는 **처분**(다른 ticket 으로 병합했거나 폐기·취소). 처분을 done 으로 닫으면 done 이 "작업 완료" 를 뜻하지 못한다.
+- **claimed ticket 은 소유자만 만진다.** `complete`·`block`·`unclaim`·`unblock`·`discard` 는 `claimed_by` 와 실행 세션 정체성을 대조하고, 어긋나면 거부하며 이동 경로를 안내한다.
 - **`mv` 가 atomic 한 lock.** POSIX rename(2) 은 동일 파일시스템에서 atomic 이라, 두 세션이 동시에 claim 시도해도 한 쪽만 성공한다 (`.project_manager/tools/board.py claim` 이 wrapping).
 - **`board.py list` 가 라이브 상태.** tickets/ 디렉토리가 단일 진실이고 `board.py list` 는 항상 그걸 직접 읽는다. `board.md` 는 `board.py` 명령마다 갱신되는 로컬 파생 대시보드(git-untracked) — clone 간 공유 안 됨.
 - **frontmatter 가 진실.** 본문 변경은 자유, 헤더는 `board.py` 가 관리.
@@ -38,6 +40,19 @@ python3 .project_manager/tools/board.py unblock T-0003
 
 # 잘못 잡았으면 원위치
 python3 .project_manager/tools/board.py unclaim T-0003
+
+# 소유 세션이 없어 손댈 수 없으면 — 소유자 이전의 유일한 문 (사유는 본문·board-git 에 남는다)
+python3 .project_manager/tools/board.py unclaim T-NNNN --takeover --reason "소유 세션 종료"
+```
+
+### 처분으로 종결 · 오처리 복구
+```bash
+# 구현이 아니라 처분이면 (병합·폐기) — done/ 이 아니라 discarded/ 로 닫는다
+python3 .project_manager/tools/board.py discard T-NNNN merged --reason "T-MMMM 로 흡수"
+python3 .project_manager/tools/board.py discard T-NNNN dropped --reason "취소 — 대체 ticket 이 처리"
+
+# 잘못 종결했으면 되돌리기 (done/ · discarded/ → open/ · 종결을 빠져나가는 유일한 문)
+python3 .project_manager/tools/board.py reopen T-NNNN --reason "오처리 복구"
 ```
 
 ### 새 ticket 발행
@@ -66,14 +81,15 @@ tickets/
 ├── open/                   누구든 claim 가능 (depends_on 모두 done 일 때)
 ├── claimed/                작업 중 (frontmatter.claimed_by 가 작업자 식별 — 슬롯 `<pm>` 또는 multi-user 시 `<user>/<pm-slot>`)
 ├── blocked/                의존성/외부 대기 — claim 불가
-└── done/                   완료
+├── done/                   완료 (작업이 실제로 끝난 종결)
+└── discarded/              처분 종결 — 병합·폐기 (frontmatter `disposition: merged|dropped`)
 ```
 
 ## 충돌 회피
 
 - **세션 시작 전 `board.py list` 확인** — 같은 파일을 건드리는 ticket 이 다른 세션에 claim 되어 있으면 다른 걸 골라라.
 - **`touches:` 정확히 적기** — `git status` 가 회피의 마지막 보루.
-- **claim 후 진행 없으면** — 다른 세션이 `unclaim` 후 새로 claim 가능 (운영 가이드, 자동화 X).
+- **claim 후 진행 없으면** — 소유 세션에서 `unclaim`, 소유 세션이 없으면 `unclaim --takeover --reason <사유>` 로 소유를 해제한 뒤 새로 claim (운영 가이드, 자동화 X).
 
 ## ID 규칙
 
@@ -93,13 +109,13 @@ lease 장부에 행이 0개면 이 홈은 아직 슬롯으로 등록되지 않�
 
 ## 보드 새로고침
 
-`board.py` 의 모든 변경 명령 (`claim`, `complete`, `block`, `unclaim`,
-`unblock`, `new`) 끝에 자동 refresh. 수동 강제는 `board.py refresh`.
+`board.py` 의 모든 변경 명령 (`claim`, `complete`, `discard`, `reopen`, `block`,
+`unclaim`, `unblock`, `new`) 끝에 자동 refresh. 수동 강제는 `board.py refresh`.
 
 ## 한계 (의도된 단순성)
 
 - **분산 락 아님.** 같은 파일시스템 한 클론에서만 atomic. 두 머신이 동시에 쓰면 깨질 수 있음 — 운영상 1 머신 기준.
 - **자동 unclaim 없음.** TTL 기반 회수는 일부러 빼놨다. 사람이 결정.
 - **의존성 그래프 검증.** `depends_on` 은 claim 시점에 한 번 검사. 순환 의존은 `board.py lint` 가 검출.
-- **complete 동기화 게이트.** `board.py complete` 는 `done/` 으로 옮기기 전에 세 축을 확인한다 — `log/current.md` entry · 회귀 통과 (`--tests-pass`) · **DoD 기록**. DoD 축은 본문 `## 완료 조건` 절의 체크박스를 보고 `- [x] <원문>` 또는 `- [>] <원문> (이월: <사유·귀속>)` 만 통과시킨다 (미체크·사유 없는 이월은 차단). 앞 두 축의 정당한 예외는 `--allow-missing-log` / `--allow-untested` 로 우회하고, DoD 축엔 우회 플래그가 없다 — 이월 표기가 그 자리다. 체크박스 없는 산문 DoD 와 이미 done 인 티켓은 검사 대상이 아니다.
+- **complete 동기화 게이트.** `board.py complete` 는 `done/` 으로 옮기기 전에 세 축을 확인한다 — `log/current.md` entry · 회귀 통과 (`--tests-pass`) · **DoD 기록**. DoD 축은 본문 `## 완료 조건` 절의 체크박스를 보고 `- [x] <원문>` 또는 `- [>] <원문> (이월: <사유·귀속>)` 만 통과시킨다 (미체크·사유 없는 이월은 차단). 앞 두 축의 정당한 예외는 `--allow-missing-log` / `--allow-untested` 로 우회하고, DoD 축엔 우회 플래그가 없다 — 이월 표기가 그 자리다. **`## 완료 조건` 절 부재 · 체크박스 0개 (산문 DoD) · 전량 이월도 차단한다** — 전량 이월(체크박스가 전부 사유 있는 `- [>]`)은 완료가 아니라 처분이라, 거부 문구가 `board.py discard` 를 지목한다. 부분 이월(`- [x]` 하나 이상)은 통과한다.
 - **thin ticket 차단.** `board.py lint` 는 open/claimed 본문에 `_template.md` placeholder 가 남았거나 표준 섹션 (목표/완료 조건/참고) 이 없으면 실패한다.

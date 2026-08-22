@@ -1277,6 +1277,10 @@ def test_codex_import_prints_trust_guidance(pm_import, tmp_path, capsys):
     assert "hook trust" in out                   # ② /hooks 승인 단계
     assert "trust_level" in out                  # -c override 안 먹음 명시(실측)
     assert "codex" in out.lower()
+    # T-0818 값 단언 — circled 단계 마커(①·②)가 실 CLI stdout 에 없다(안내는 ASCII 번호 매김
+    # `1)`·`2)` 로 표시돼 채택자에게 뜻이 선다).
+    assert "①" not in out
+    assert "②" not in out
 
 
 def test_non_codex_import_no_trust_guidance(pm_import, tmp_path, capsys):
@@ -4208,6 +4212,7 @@ _BOOTSTRAP_CONTRACT_DIRS = (
     "wiki/tickets/claimed",
     "wiki/tickets/done",
     "wiki/tickets/blocked",
+    "wiki/tickets/discarded",   # 처분 종결(T-0781) — board.STATUS_DIRS 와 같은 집합.
 )
 
 
@@ -4300,7 +4305,7 @@ def test_opencode_wiki_gitkeep_placeholders_tracked(pm_import):
     """빈 디렉토리 placeholder(.gitkeep)가 실제로 git-추적되는지 — 빈 dir 복사·커밋 보장의 유일 메커니즘.
 
     git 은 빈 디렉토리를 추적하지 않으므로, .gitkeep 이 미추적이면 import 가 그 디렉토리를 복사도
-    못 한다(부트스트랩 계약 디렉토리 누락으로 이어짐). 8 placeholder 가 전부 추적 집합에 있어야 한다.
+    못 한다(부트스트랩 계약 디렉토리 누락으로 이어짐). placeholder 전수가 추적 집합에 있어야 한다.
     """
     tracked = _git_tracked_wiki_relpaths("opencode")
     expected_gitkeeps = {
@@ -4312,6 +4317,7 @@ def test_opencode_wiki_gitkeep_placeholders_tracked(pm_import):
         "tickets/claimed/.gitkeep",
         "tickets/done/.gitkeep",
         "tickets/blocked/.gitkeep",
+        "tickets/discarded/.gitkeep",
     }
     missing = expected_gitkeeps - tracked
     assert not missing, f"opencode wiki .gitkeep placeholder 미추적(빈 dir 복사 불가): {sorted(missing)}"
@@ -4630,10 +4636,10 @@ def test_add_harness_guest_registration_within_namespace_or_flavor_render(
 # 출하 flavor manifest 가 지금 들고 있는 **어댑터 네임스페이스 엔진 파일**(비-`@render`) 수 —
 #   codex `.codex/{pm_orch_codex.py,rules/default.rules}` 2 · opencode `.opencode/{lib,plugins,
 #   pm_orch_opencode.py,.gitignore}` 4 · claude ctx 가드 5종 + `pm_orch_claude.py` +
-#   `run_tests_hook.sh` + `precompact_capture_hook.sh` 8. 구조 단언과 별개로 **수**를 못박아,
-#   새로 얹을 때 그것이 guest 채널을 타는지 사람이 한 번 확인하게 만든다(등재 누락 = 그 하네스의
-#   영구 동결). codex 의 2번째가 T-0584 로 편입된 execpolicy rules 다.
-_GUEST_ENGINE_ROW_COUNT = {"codex": 2, "opencode": 4, "claude": 9}
+#   `precompact_capture_hook.sh` + `delegate_channel_guard_hook.sh` 8. 구조 단언과 별개로
+#   **수**를 못박아, 새로 얹을 때 그것이 guest 채널을 타는지 사람이 한 번 확인하게 만든다
+#   (등재 누락 = 그 하네스의 영구 동결). codex 의 2번째가 T-0584 로 편입된 execpolicy rules 다.
+_GUEST_ENGINE_ROW_COUNT = {"codex": 2, "opencode": 4, "claude": 8}
 
 
 @pytest.mark.parametrize("base,added", _ADD_HARNESS_APPLY_PAIRS)

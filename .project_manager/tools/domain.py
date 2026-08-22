@@ -877,8 +877,8 @@ def covers_pathspecs(covers, *, repo: Path | None = None,
         아니라 제외(코드-무관·unmappable 아님).
 
     부재 경로는 `git log <sha>..HEAD -- <pathspec>` 가 **"델타 없음"(빈 출력)과 구분 못 해**
-    조용히 green 이 되는 사각이다 — 두-git 형상에서 `templates/**` 는 ①(제품
-    worktree) 소유라 ②(PM 홈)엔 그 이력이 0 이라 그 페이지는 아무리 낡아도 영원히 green 이었다.
+    조용히 green 이 되는 사각이다 — 두-git 형상에서 `templates/**` 는 제품
+    worktree 소유라 PM 홈엔 그 이력이 0 이라 그 페이지는 아무리 낡아도 영원히 green 이었다.
     **판정 기준은 git 관찰가능성·경계는 verified_at·매핑은 손실 없는 `:(glob)`**이다(codex MF3/R2/R4/R6):
       - untracked 생성물(예 `board.md`)·never-tracked(`templates/**`)·pin *이전* 삭제 경로는 pin
         이후 델타 0 → **부재**(조용한 clean/green 회피).

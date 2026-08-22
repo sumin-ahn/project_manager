@@ -218,7 +218,7 @@ def validate_task_name(name: str, registered_repos: "list[str] | set[str] | None
     if Path(name).name != name:
         raise InvalidTaskName(name, "단일 path 컴포넌트가 아님")
     if registered_repos and is_reserved_task_name(name, registered_repos):
-        raise InvalidTaskName(name, "슬롯 세션 예약 패턴(<repo>_<N>·⑥)")
+        raise InvalidTaskName(name, "슬롯 세션 예약 패턴(<repo>_<N>)")
 
 
 # ── 엔진 중앙 로더 부트스트랩 (형제 로드는 이 한 경로만·`repo_owned_files.load_module`) ──
@@ -681,6 +681,32 @@ def repo_slot_numbers(repo: str, leases_file: Path) -> list[int] | None:
             continue
         slot_nums |= _row_slot_numbers(repo, row.get("slot"), row.get("session"))
     return sorted(slot_nums)
+
+
+def repo_slot_state_counts(repo: str, leases_file: Path) -> "dict[str, int] | None":
+    """`leases_file` 장부에서 `repo` 슬롯을 `state` 값별로 센다 — 발행 표면(`board.py new`/
+    `promote`)의 "가용(idle) 슬롯 수" 재료가 쓰는 유일한 집계 지점이다.
+
+    `state` 는 3값(`leased`|`idle`|`creating`·`worktree_pool.py`)이고 그 값을 **그대로** 버킷
+    키로 쓴다 — `creating`(provisional)을 `idle`로 세지 않는다. `state` 키 부재는
+    `repo_slot_numbers` 와 동형으로 `"leased"` back-compat 처리한다(장부의 다수 소비자가 이미
+    같은 default 를 쓴다 — 오래된 행을 idle 로 잘못 세지 않는 안전한 방향).
+
+    파일 부재/JSON 깨짐/스키마 불일치(`_load_lease_rows` 가 이미 판정한 축) → `None`
+    (판정불능 — 호출부가 슬롯 재료 줄 자체를 생략한다. 모르는 값을 0 으로 주장하지 않는다).
+    정상 read 인데 그 repo 행이 0개면 빈 `dict`(idle 0 을 정당하게 보고한다).
+    """
+    rows = _load_lease_rows(leases_file)
+    if rows is None:
+        return None
+    counts: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict) or row.get("repo") != repo:
+            continue
+        state = row.get("state", "leased")
+        key = state if isinstance(state, str) and state else "leased"
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 def _row_slot_numbers(repo: str, slot: object, session: object) -> set[int]:
@@ -1174,7 +1200,7 @@ def resolve_task_workspace(identity: Identity, leases_file: Path) -> Workspace:
                              session=ro.get("session") or None,
                              test_cmd=ro.get("test_cmd"), readonly=True)
         raise WorkspaceResolutionError(
-            f"작업공간 {target} 은 task {task!r} 보유가 아니다 — F6 소유검사 거부(⑦). 내 task 가 "
+            f"작업공간 {target} 은 task {task!r} 보유가 아니다 — 소유검사 거부. 내 task 가 "
             f"보유한 슬롯을 `--repo/--slot` 으로 지칭하거나 `{_runtime_skill_entry('pm-env')} "
             f"alloc {identity.repo} --task "
             f"{task}` 로 대여하라 (readonly 공유 슬롯이면 조회 지칭은 허용)."
@@ -1194,7 +1220,7 @@ def resolve_task_workspace(identity: Identity, leases_file: Path) -> Workspace:
         slots = ", ".join(sorted(r.get("slot") or "" for r in in_repo))
         raise WorkspaceResolutionError(
             f"task {task!r} 이(가) repo {identity.repo!r} 에서 {len(in_repo)}개 작업공간({slots})을 "
-            f"보유 — 모호하다(⑦·암묵 선택 금지). `--slot <N>` 으로 번호를 명시하라."
+            f"보유 — 모호하다(암묵 선택 금지). `--slot <N>` 으로 번호를 명시하라."
         )
 
     # kind == "none" — 위치 인자 없음(task 만). 통틀어 유일해소 / 0·≥2 는 에러.
@@ -1210,7 +1236,7 @@ def resolve_task_workspace(identity: Identity, leases_file: Path) -> Workspace:
         )
     slots = ", ".join(sorted(r.get("slot") or "" for r in held))
     raise WorkspaceResolutionError(
-        f"task {task!r} 이(가) {len(held)}개 작업공간({slots})을 보유 — 통틀어 모호하다(⑦). "
+        f"task {task!r} 이(가) {len(held)}개 작업공간({slots})을 보유 — 통틀어 모호하다. "
         "암묵 선택하지 않는다. 쓰지 않는 잉여 슬롯을 "
         f"`pm_config.py release <slot> --task {task}`로 반납한 뒤 다시 실행하라."
     )

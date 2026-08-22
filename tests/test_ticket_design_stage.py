@@ -17,6 +17,9 @@
      종료코드에 기여하지 않고, 무인자 lint 는 그대로 보고한다.
   6. **출하 파리티** — 루트 `_template.md`·pm-ticket 스킬 카드의 설계 단계 내용이 templates/ 3벌에
      전부 도달했는지(채택자 도달 가드).
+  7. **`board.py design` 1급 setter(T-0817)** — 발행 후 `design:` 값 전환 CLI. draft 의
+     `design: required` → `waived: <사유>` 전환 후 promote 가 거부(rc=1)에서 통과(rc=0)로
+     뒤집히는 e2e(면제 선언이 손편집 없이도 가능함의 핵심 근거).
 
 **hermetic 필수**: board.py 의 경로 전역(`REPO`·`TICKETS_DIR`·`TEMPLATE_FILE` 등)은 import 시점에
 실 repo 절대경로로 굳는다 — tmp 프로젝트로 monkeypatch 재지정해 실 board 를 읽거나 쓰지 않는다
@@ -846,3 +849,74 @@ def test_shipped_skill_cards_include_design_stage(shipped):
     ).read_text(encoding="utf-8")
     for needle in ("## 설계", "design: required", "PM 인라인", "2라운드"):
         assert needle in text, f"{shipped} 에 설계 단계 규율 {needle!r} 누락."
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 7. `board.py design <T-NNNN> <값>` — 발행 후 1급 setter (T-0817)
+# ════════════════════════════════════════════════════════════════════════
+
+def test_design_subcommand_is_registered_and_shown_in_help():
+    """`design` 이 parser choices에 등록되고 `--help` 에 노출된다(CLI 배선 확인)."""
+    parser = board_mod.build_parser()
+    help_text = parser.format_help()
+    assert "design" in help_text
+    sub = next(a for a in parser._actions
+              if isinstance(a, argparse._SubParsersAction))
+    assert "design" in sub.choices
+    assert sub.choices["design"].get_default("fn") is board_mod.cmd_design
+
+
+@requires_git
+def test_design_waives_a_blocked_draft_so_promote_now_flips_from_reject_to_pass(
+        board_git, capsys):
+    """draft 의 `design: required` 를 `design <ID> "waived: <사유>"` 로 면제하면 promote 가
+    거부(rc=1) → 통과(rc=0) 로 뒤집힌다 — 손편집 없이 1급 수단만으로 막힌 promote 를 푼다."""
+    board_dir = board_git._board_dir
+    assert board_git.cmd_new(_new_args(estimate="large")) == 0
+    draft = _draft_path(board_dir)
+    fm, _ = board_git.load_ticket(draft)
+    tid = fm["id"]
+    assert fm["design"] == board_git.DESIGN_REQUIRED
+    board_git.dump_ticket(draft, fm, _body())   # 5절 + 설계 절 전부 충전 · 필드만 required
+
+    assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 1
+    assert "design-pending" in capsys.readouterr().err
+    assert list((board_dir / "tickets" / ".drafts").glob(f"{tid}-*.md")), \
+        "1차 거부 후 draft 가 .drafts/ 에 남아야 한다."
+
+    reason = 'waived: 콜론:포함 사유(T-0815 architect 라운드 01 §분할 판정 S1)'
+    assert board_git.main(["design", tid, reason]) == 0
+    assert "local draft; promote가 출하 소유" in capsys.readouterr().out
+    fm, _ = board_git.load_ticket(draft)   # 재파싱 성공 = YAML 손상 모드가 닫혔다.
+    assert fm["design"] == reason
+    assert board_git._design_state(fm["design"]) == board_git.DESIGN_WAIVED
+
+    assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 0
+    assert list((board_dir / "tickets" / "open").glob(f"{tid}-*.md")), \
+        "면제 후 promote 가 open/ 으로 이동해야 한다."
+    assert not list((board_dir / "tickets" / ".drafts").glob(f"{tid}-*.md"))
+
+
+@requires_git
+def test_design_open_ticket_transition_syncs_to_board_git(board_git):
+    """open 티켓 전환은 promote와 무관하게 board-git 원격에 값이 도달한다(동기 축 구분)."""
+    board_dir = board_git._board_dir
+    assert board_git.cmd_new(_new_args(estimate="large")) == 0
+    draft = _draft_path(board_dir)
+    fm, _ = board_git.load_ticket(draft)
+    tid = fm["id"]
+    fm["design"] = board_git.DESIGN_DONE
+    board_git.dump_ticket(draft, fm, _body())
+    _harvest_architect_round(board_git, board_dir, tid)
+    assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 0
+
+    assert board_git.main(["design", tid, "n/a"]) == 0
+
+    opened = list((board_dir / "tickets" / "open").glob(f"{tid}-*.md"))[0]
+    fm, _ = board_git.load_ticket(opened)
+    assert fm["design"] == "n/a"
+    bare = Path(_git(["remote", "get-url", "origin"], board_dir).stdout.strip())
+    remote = _git(["show", "main:tickets/open/" + opened.name], bare)
+    assert remote.returncode == 0, remote.stderr
+    remote_fm, _ = board_git._parse_ticket_text(remote.stdout, "remote:open")
+    assert remote_fm["design"] == "n/a"

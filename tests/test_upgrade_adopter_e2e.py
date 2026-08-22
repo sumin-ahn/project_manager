@@ -716,7 +716,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   이동했다. 들어온 것은 좌표 파생 헬퍼(`_dest_relative_path`) 하나와 렌더 호출 3곳의 인자이고,
 #   역적용 delta 의 네 anchor 는 전부 `_main`/`sync_adapter_configs` 쪽이라 그대로 유일 해소된다.
 #   배달 경계와 배달 파일 집합도 불변이다 — 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "c1d8670b2eb0b773b738e2807ae70b43e74319765c43579351eb676cb4f3f578"
+_T0585_PM_UPDATE_SHA256 = "1e1e2322717cef04c13e02715deb40e02077edeadf3665d9010bded329a920e0"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
@@ -841,6 +841,21 @@ def _t0585_pm_update_source() -> str:
     네 anchor 도 이번에 모두 유일하게 해소됐다(`_slice_replace` 의 count==1 단언 선통과). 구/신
     세대로 합성본을 각각 만들어 대조하면 6,603줄 중 13줄이 같은 빈 괄호 제거뿐이다 — 현재화한
     것은 기대 SHA 하나뿐이다.
+
+    T-0793 — 솔로 모드 폐지가 self-update 흡수 말미에 새 최상위 함수
+    `register_home_slot(effective_dest, *, write)` 와 그 호출 3곳(`_main`의 `do_migrate` 세 분기 —
+    실 write·dry-run 판정·write=False 안내, 모두 기존 `migrate_entry_doc(...)` 호출 바로 다음)을
+    더했다. 이 함수는 방금 착지한 dest 사본의 `pm_config.register_home_slot` 을 형제 로드해
+    위임할 뿐이고, 그 형제가 없거나(구세대 dest) 로드 실패면 `None`(무출력)으로 접는다 — 등재
+    사유는 새 함수 자신의 docstring("부재/로드 실패/구버전은 None"). 역적용 delta 의 네 anchor는
+    전부 `sync_adapter_configs`/훅 세트 게이트 쪽이라 이 추가와 겹치지 않고 그대로 유일 해소된다
+    (marker assert 선통과). 배달 경계(source/manifest planning → apply → self-update 순서)도
+    불변이다 — 새 호출은 기존 `do_migrate` 분기 안에 얹힌 부수 이행일 뿐 그 순서·조건을 바꾸지
+    않는다. 이 fixture(RUN1)는 `effective_dest`가 이 합성 T-0585 세대 소스로 self-update 하는
+    쪽이라 `register_home_slot` 호출 시점의 dest `pm_config.py`가 이 새 함수를 아직 모르는 구세대
+    사본이고(방어적 `getattr(module, "register_home_slot", None)` 이 `None` 을 만나 조용히
+    되돌린다), 실제로 재실행해도(위 절차대로 SHA만 현재화) 이 함수 회귀의 다른 단언은 전혀
+    안 흔들렸다 — 현재화한 것은 기대 SHA 하나뿐이다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")

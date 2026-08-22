@@ -16,6 +16,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1279,6 +1280,83 @@ def test_main_repo_slot_forwards_resolved_regression_cwd(tf, monkeypatch):
     assert captured["regression_cwd"].replace(os.sep, "/").endswith("work/project_manager_1")
     assert captured["skip_pytest"] is False
     assert captured["session"] == "project_manager_1"
+
+
+# ── board 정체성 forward (T-0781) ───────────────────────────────────────────
+#
+# board 의 complete 는 `claimed_by` 와 실행 세션을 대조한다. ticket_finish 는 자기 정체성을
+# 이미 해소해 두고도 board 에 넘기지 않았다 — 그 상태로 소유 게이트가 켜지면 다중 슬롯
+# 채택자의 `/pm-wave-finish` 주 경로가 "남의 티켓" 으로 전부 거부된다.
+
+def test_run_forwards_board_identity_args_to_complete(tf, tmp_path):
+    """run(board_identity_args=…) → 내부 board complete argv 끝에 그 인자가 실린다(argv 캡처)."""
+    board_calls: list[list[str]] = []
+    finisher = tf.TicketFinisher(
+        run_pytest_fn=lambda: (0, "1 passed"),
+        run_board_fn=lambda args: (board_calls.append(args), (0, "board ok"))[1],
+        run_git_fn=lambda args: (0, ""),
+        board_count_fn=lambda: 10,
+        ticket_title_fn=lambda tid: "테스트 티켓",
+        affected_domain_fn=lambda tid: None,
+        stage_scope_fn=lambda tid: tf.StageScope((), None),
+        status_entries_fn=lambda: (),
+        dod_block_fn=lambda tid: None,
+        log_file=tmp_path / "log.md",
+    )
+
+    rc = finisher.run("T-1234", section=None, dry_run=False, skip_pytest=True,
+                      session="pay_2", board_identity_args=["--repo", "pay", "--slot", "2"])
+
+    assert rc == 0
+    assert board_calls == [
+        ["complete", "T-1234", "--tests-pass", "--repo", "pay", "--slot", "2"]]
+
+
+def test_main_repo_slot_forwards_identity_to_board_complete(tf, monkeypatch):
+    """`--repo/--slot` 으로 부른 ticket_finish 는 그 좌표를 board complete 로 forward 한다."""
+    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff((None, None)))
+    captured: dict = {}
+
+    class _SpyFinisher(tf.TicketFinisher):
+        def run(self, **kw):
+            captured.update(kw)
+            return 0
+
+    monkeypatch.setattr(tf, "TicketFinisher", _SpyFinisher)
+
+    assert tf.main(["T-1234", "--repo", "project_manager", "--slot", "1"]) == 0
+    assert captured["board_identity_args"] == [
+        "--repo", "project_manager", "--slot", "1"]
+
+
+def test_main_without_identity_keeps_the_bare_complete_argv(tf, monkeypatch):
+    """정체성 인자가 없으면 forward 도 없다 — board 의 기존 해소 체인(env·단일 lease)이 돈다."""
+    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff((None, None)))
+    captured: dict = {}
+
+    class _SpyFinisher(tf.TicketFinisher):
+        def run(self, **kw):
+            captured.update(kw)
+            return 0
+
+    monkeypatch.setattr(tf, "TicketFinisher", _SpyFinisher)
+
+    assert tf.main(["T-1234"]) == 0
+    assert captured["board_identity_args"] == []
+
+
+@pytest.mark.parametrize("identity, slot_identity, expected", [
+    (SimpleNamespace(repo="pay", slot=2, task=None), None,
+     ["--repo", "pay", "--slot", "2"]),
+    (SimpleNamespace(repo="pay", slot=None, task=None),
+     SimpleNamespace(repo="pay", number=3), ["--repo", "pay", "--slot", "3"]),
+    (SimpleNamespace(repo="pay", slot=None, task=None), None, ["--repo", "pay"]),
+    (SimpleNamespace(repo=None, slot=None, task=None), None, []),
+])
+def test_board_identity_argv_prefers_explicit_then_ledger_coordinates(
+        tf, identity, slot_identity, expected):
+    """명시 좌표 > 장부 좌표 > repo 단독 > 없음 — 좌표는 장부 행에서 온다(키 문자열을 안 뜯는다)."""
+    assert tf._board_identity_argv(identity, slot_identity) == expected
 
 
 def test_main_no_pytest_still_gates_ambiguity(tf, monkeypatch, capsys):

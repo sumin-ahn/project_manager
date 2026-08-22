@@ -538,6 +538,8 @@ def test_line_invariant_requires_exact_matched_span_reconstruction(stripper):
         ("A·B", "A·①", "orphan-marker-after-separator"),
         ("A·B", "A·A6", "orphan-marker-after-separator"),
         ("# 사유 (T-0146·).", "# 사유 ().", "empty-paren"),
+        ("A B", "A ①B", "circled-marker"),
+        ("A B", "A F1 B", "design-label"),
     ],
 )
 def test_delta_scan_rejects_each_new_pattern(
@@ -545,6 +547,22 @@ def test_delta_scan_rejects_each_new_pattern(
 ):
     issues = stripper.self_sufficiency_issues(before, after)
     assert any(expected_kind in issue for issue in issues)
+
+
+def test_delta_scan_design_label_ignores_identifier_boundaries(stripper):
+    """정상 파이썬 식별자(`F1_score`·`F1_foo`·`_F1`)는 design-label 로 세지 않는다(오차단 0).
+
+    경계 클래스에 `_` 가 빠져 있으면 코드에서 뜻이 서는 식별자를 사설 fault 라벨로 오차단한다
+    — 단독 토큰 `F1` 만 라벨이다."""
+    for text in ("A F1_score B", "A F1_foo B", "A _F1 B"):
+        assert not any(
+            "design-label" in issue
+            for issue in stripper.self_sufficiency_issues("A B", text)
+        ), text
+    assert any(
+        "design-label" in issue
+        for issue in stripper.self_sufficiency_issues("A B", "A F1 B")
+    )
 
 
 def test_delta_scan_is_per_line_not_aggregate(stripper):

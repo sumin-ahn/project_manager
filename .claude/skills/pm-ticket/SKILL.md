@@ -41,6 +41,7 @@ python3 .project_manager/tools/board.py new "<한 줄 제목>" \
 - `--prefix`: 작업 카테고리(자유 입력). multi-repo(등록 repo ≥2)에서는 필수다(네임스페이스).
 - `--design`: 설계 단계 상태. 값은 `required` / `done` / `"waived: <사유>"` / `n/a` 네 형식이며(references 설계 단계 표), 인식 불가한 값은 발행 전에 거부된다. 생략 시 `--estimate large`면 `required`, 그 외는 `n/a`로 박힌다. 설계 검증이 필요하다고 판단하면 small/medium에도 `--design required`로 명시 지정한다.
 - 출력의 `created <T-NNNN>`로 ID를 확인한다.
+- `--touches`가 다른 활성/draft 티켓과 겹치면 stderr에 겹치는 경로별 티켓 목록 + 가용(idle) 슬롯 수를 낸다(겹침 0이면 완전 침묵). **차단하지 않는다** — 겹친다는 사실만으로 병합·직렬을 강제하지 않는다. 슬롯이 남아 있으면 그 겹침은 병렬로 나눠도 되는 신호일 수 있다.
 
 ## 2. 본문 7절 자족성 채움
 
@@ -57,6 +58,10 @@ python3 .project_manager/tools/board.py new "<한 줄 제목>" \
 ## 3. architect 점검 라운드 (초안 → 점검 → 비준)
 
 본문을 채운 draft는 **PM 초안**이다. 승격 전에 architect 점검 라운드로 실측 대조를 받는다 — PM은 자기 초안의 리뷰어가 아니다(generate ≠ evaluate). 형식 게이트는 뼈대 잔존만 보므로 틀린 인용·티켓 간 충돌·범위 오판은 이 라운드에서만 잡힌다.
+
+**Claude PM은 아래 실 실행 커맨드를 Bash 툴로 호출할 때 `timeout: 29300000`(ms)을 반드시
+명시한다.** 이는 CLI `--timeout`(위임 turn 벽시계)이 아니라 호출층 Bash 툴 파라미터다.
+`BASH_DEFAULT_TIMEOUT_MS=1800000`은 일반 무-파라미터 명령용이라 cross 위임에 의존하지 않는다.
 
 ```bash
 python3 .project_manager/tools/pm_delegate.py ticket prepare --ticket <T-NNNN> --role architect --cwd <worktree>
@@ -81,3 +86,4 @@ python3 .project_manager/tools/board.py promote <T-NNNN>
 - 형식과 함께 **본문이 주장하는 사실**도 재검사한다(새 플래그 없음). repo-relative `파일:줄` 인용의 파일 부재·줄 범위 초과와 `design: required|done` 티켓의 architect 점검 라운드 미회수는 **거부**(rc=1)이고, 실재하지 않는 `touches`는 **경고 1줄**(신설 예정 파일이 정상이라 차단하지 않는다)이다. 인용은 repo 루트 기준으로 먼저 찾고, 없으면 하위 디렉터리 기준 표기(`wiki/decisions/x.md`)로 보고 그 경로로 끝나는 파일을 소유 트리에서 찾는다 — 유일하게 해소되면 그 파일로 판정하고, 사본이 여럿이거나 basename만 적은 인용(`board.py:120`)은 어느 사본인지 확정할 수 없어 **판정불능 개수**로 표시된다(판정받으려면 repo 루트 기준 경로로 적는다). 어느 표기로도 실재 파일이 없으면 판정불능이 아니라 거부다.
 - 통과하면 draft → `open/` 이동 + board-git 커밋(공유 board에 등장) 후 claim 가능해진다.
 - legacy(board 비-git)에서는 `promote`가 사실상 no-op(이미 open)이지만 검증은 `lint`로 실행한다.
+- 성공 시(승격 완료·board-git 기록 보류 두 경로 공통) `--touches` 겹침 재료가 §1과 같은 형식으로 stderr에 다시 나온다 — 발행 시점 이후 board가 바뀌었을 수 있어 승격 직전에 한 번 더 확인하는 자리다. 이 축도 **차단하지 않는다**.

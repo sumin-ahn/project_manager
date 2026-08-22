@@ -343,11 +343,24 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     claim = _board(dest, "claim", tid, "--repo", "pilot", "--slot", "1")
     assert claim.returncode == 0, f"{harness} `board.py claim {tid}` 실패: {claim.stderr}"
 
+    # 소유 게이트(T-0781) — claim 정체성이 아닌 세션의 complete 는 채택자 사본에서도 거부되고,
+    # 거부 문구가 이동 경로(unclaim→claim · --takeover)를 지목해야 한다.
+    foreign = _board(
+        dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested",
+        "--repo", "pilot", "--slot", "9",
+    )
+    assert foreign.returncode != 0, (
+        f"{harness}: 타 세션이 남의 claim 을 complete 했다 — 소유 게이트가 채택자 사본에 없다.\n"
+        f"--- stdout ---\n{foreign.stdout}")
+    assert all(token in foreign.stderr for token in ("소유", "unclaim", "--takeover")), (
+        f"{harness}: 소유 거부 문구가 이동 경로를 안 지목함:\n{foreign.stderr}")
+
     # DoD 기록 게이트(T-0596) — 출하 template 의 미체크 DoD 로는 complete 가 막혀야 한다.
     # 채택자 형상에서 게이트가 실제로 무는지 여기서 확인한다(엔진만 고치고 template 전파를
-    # 빠뜨리면 이 단언이 red — 반쪽 출하 방지).
+    # 빠뜨리면 이 단언이 red — 반쪽 출하 방지). complete 는 claim 과 **같은 정체성**으로 부른다.
     blocked = _board(
-        dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested"
+        dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested",
+        "--repo", "pilot", "--slot", "1",
     )
     assert blocked.returncode != 0, (
         f"{harness}: 미체크 DoD 인데 complete 가 통과함 — DoD 게이트가 채택자 사본에 없다.\n"
@@ -357,7 +370,8 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
 
     _check_off_dod(dest, tid)
     done = _board(
-        dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested"
+        dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested",
+        "--repo", "pilot", "--slot", "1",
     )
     assert done.returncode == 0, f"{harness} `board.py complete {tid}` 실패: {done.stderr}"
 
@@ -727,7 +741,10 @@ def test_harness_templates_ship_ticket_status_scaffold(pm_import, harness):
 
 
 def test_missing_ticket_status_dirs_self_repair_through_full_lifecycle(pm_import, tmp_path):
-    """상태 dir가 없어도 new→block→unblock→claim→complete가 자가 복구한다.
+    """상태 dir가 없어도 new→block→unblock→claim→complete→reopen→discard가 자가 복구한다.
+
+    처분 종결(`discarded/`·T-0781)까지 포함해 STATUS_DIRS 전수를 lifecycle 로 되살린다 —
+    채택자 트리에서 신규 종결 디렉토리가 실제로 만들어지는지가 이 축의 관측 지점이다.
 
     Sensitivity: dump_ticket 또는 move_item의 mkdir-before-write를 되돌리면 이 fixture는
     즉시 FileNotFoundError로 red가 된다.
@@ -750,19 +767,26 @@ def test_missing_ticket_status_dirs_self_repair_through_full_lifecycle(pm_import
     claim = _board(dest, "claim", tid, "--repo", "pilot", "--slot", "1")
     assert claim.returncode == 0, claim.stderr
     _check_off_dod(dest, tid)   # DoD 기록 게이트(T-0596) — 미체크면 complete 가 막힌다.
-    done = _board(dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested")
+    # complete 는 claim 과 같은 정체성으로 부른다 — 소유 대조(T-0781).
+    done = _board(dest, "complete", tid, "--tests-pass", "--allow-missing-log",
+                  "--allow-untested", "--repo", "pilot", "--slot", "1")
     assert done.returncode == 0, done.stderr
+    reopened = _board(dest, "reopen", tid, "--reason", "오처리 복구 스모크")
+    assert reopened.returncode == 0, reopened.stderr
+    discarded = _board(dest, "discard", tid, "dropped", "--reason", "폐기 스모크")
+    assert discarded.returncode == 0, discarded.stderr
+    assert list((tickets / "discarded").glob(f"{tid}-*.md")), "처분 종결이 discarded/ 로 안 갔다"
     assert all((tickets / status).is_dir() for status in _TICKET_STATUS_DIRS)
 
 
 # ── 멀티-유저 훅 경로 portability 가드 (T-0191 · v1.0.x 운영버그 #5) ──────────────
 # import 가 {{PROJECT_ROOT}} 를 절대경로로 박으면 git-공유 시 다른 머신에서 훅이 깨진다
 # (alice 절대경로 커밋 → bob pull → 그 경로 없음 → 훅 무음 실패·ctx-stop 안전게이트 死).
-# settings.json 훅/PreCompact 은 런타임 머신별 해소 ${CLAUDE_PROJECT_DIR}, run_tests_hook.sh 는
-# self-resolve 라 *렌더된* 결과에 절대경로/{{PROJECT_ROOT}} 가 남으면 안 된다(fresh-adopter 게이트).
+# settings.json 훅/PreCompact 은 런타임 머신별 해소 ${CLAUDE_PROJECT_DIR} 를 쓰므로 *렌더된*
+# 결과에 절대경로/{{PROJECT_ROOT}} 가 남으면 안 된다(fresh-adopter 게이트).
 
 def test_fresh_adopter_hook_paths_are_machine_portable(pm_import, tmp_path):
-    """claude import 후 settings.json/run_tests_hook.sh 에 절대경로·{{PROJECT_ROOT}} 잔존 0."""
+    """claude import 후 settings.json 에 절대경로·{{PROJECT_ROOT}} 잔존 0."""
     dest = tmp_path / "adopter-portable"
     rc = pm_import.main(
         ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual"]
@@ -771,14 +795,12 @@ def test_fresh_adopter_hook_paths_are_machine_portable(pm_import, tmp_path):
     dest_abs = str(dest.resolve())
 
     settings_text = (dest / ".claude" / "settings.json").read_text(encoding="utf-8")
-    run_tests_text = (dest / ".claude" / "run_tests_hook.sh").read_text(encoding="utf-8")
 
-    for fname, text in (("settings.json", settings_text), ("run_tests_hook.sh", run_tests_text)):
-        assert "{{PROJECT_ROOT}}" not in text, (
-            f"{fname} 에 미치환 {{{{PROJECT_ROOT}}}} 잔존 — portable 형이 아님")
-        assert dest_abs not in text, (
-            f"{fname} 에 import 절대경로({dest_abs}) 박제 — git 공유 시 다른 머신서 훅 깨짐. "
-            "settings.json=$CLAUDE_PROJECT_DIR / run_tests=self-resolve 를 써라.")
+    assert "{{PROJECT_ROOT}}" not in settings_text, (
+        "settings.json 에 미치환 {{PROJECT_ROOT}} 잔존 — portable 형이 아님")
+    assert dest_abs not in settings_text, (
+        f"settings.json 에 import 절대경로({dest_abs}) 박제 — git 공유 시 다른 머신서 훅 깨짐. "
+        "$CLAUDE_PROJECT_DIR 를 써라.")
 
     # settings.json 훅 명령(hooks.*)은 런타임 머신별 해소를 쓴다 (절대경로 미박제).
     data = json.loads(settings_text)
@@ -792,9 +814,6 @@ def test_fresh_adopter_hook_paths_are_machine_portable(pm_import, tmp_path):
     for cmd in hook_cmds:
         assert "CLAUDE_PROJECT_DIR" in cmd or cmd.startswith("./"), (
             f"훅 명령이 머신별 해소(${{CLAUDE_PROJECT_DIR}})·상대경로 미사용: {cmd!r}")
-
-    # run_tests_hook.sh 는 치환 토큰 0 (완전 self-contained·모든 머신 byte-identical).
-    assert "{{" not in run_tests_text, "run_tests_hook.sh 에 치환 토큰 잔존 (self-resolve 아님)"
 
 
 # ── adopter 출하 위생: 프레임워크-내부 최상위 README 미출하 (T-0192 · v1.0.x 운영버그 #6) ──

@@ -4,7 +4,7 @@
 #
 # 멀티-유저/멀티-프로젝트 안전(T-0202·A안 portable-by-construction): settings.json 에 인터프리터
 # 치환 토큰·절대경로를 박지 않는다 — 스크립트 위치 self-resolve + python3→python 런타임 폴백
-# (run_tests_hook.sh·ctx_stop_hook.sh 와 동일 패턴). 치환 토큰 0·모든 머신 byte-identical.
+# (ctx_stop_hook.sh 와 동일 패턴). 치환 토큰 0·모든 머신 byte-identical.
 # statusLine 은 ${CLAUDE_PROJECT_DIR} 미지원이라 settings.json 이 이 파일을 상대경로로 가리킨다
 # (cwd=프로젝트루트면 동작·아니면 무표시 graceful — T-0191 노트 승계).
 #

@@ -16,7 +16,7 @@ claude_code LLM 세션이 `CLAUDE.md` 를 진입으로 PM 을 구동한다 — o
 - **`.claude/agents/`** — researcher · architect · developer · code-reviewer 서브에이전트 정의.
 - **`.claude/skills/`** — PM workflow slash command (`/pm-bootstrap` · `/pm-wave-claim` · `/pm-dev-delegate` ·
   `/pm-wave-finish` · `/pm-handoff`). 목록·역할 단일 진실 = `pm_role.md` §"skill 카탈로그".
-- **`.claude/settings*.json`** · **`run_tests_hook.sh`** — PM 세션 권한 + 파일 편집 시 회귀 hook.
+- **`.claude/settings*.json`** — PM 세션 권한(allow/deny) + 훅 배선(ctx 가드·위임 채널 가드·compaction breadcrumb).
 
 ### 위임 기제 = `Agent` 툴 `subagent_type`
 

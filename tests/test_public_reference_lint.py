@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from test_private_context_guard import _marker_label_hits
+
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts/strip_private_refs.py"
@@ -143,3 +145,16 @@ def test_orch_driver_help_text_has_no_private_work_item_refs(scanner):
         assert not scanner.RAW_REF_RE.search(help_text), (
             f"{relpath} --help 출력에 사설 참조 잔존: {help_text}"
         )
+def test_shipped_engine_prose_has_no_circled_marker_or_design_label_residue(scanner):
+    """circled 마커·`F1`·`F6` 류 사설 fault 라벨 잔재 0 — 판정면은 STRING·FSTRING_MIDDLE·
+    COMMENT 전부라 런타임 문자열(f-string)도 덮는다. 실패 시 count 와 `path:line` 을 낸다."""
+    offenders: list[str] = []
+    python_paths, _ = scanner.shipping_paths(REPO)
+    for path in python_paths:
+        source = path.read_text(encoding="utf-8")
+        relative = path.relative_to(REPO).as_posix()
+        for line, kind, match in _marker_label_hits(source, include_fstring=True):
+            offenders.append(f"{relative}:{line}:{kind}:{match}")
+    assert not offenders, (
+        f"circled 마커·design-label 잔재; count={len(offenders)}, first={offenders[:50]}"
+    )

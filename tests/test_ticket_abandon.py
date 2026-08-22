@@ -888,7 +888,7 @@ def test_cli_abandon_actually_waits_on_the_board_lock(tmp_path):
          "    time.sleep(float(sys.argv[3]))\n",
          str(home / ".project_manager" / "tools" / "file_lock.py"), str(lock_path),
          str(BOARD_LOCK_HOLD_SEC)],
-        stdout=subprocess.PIPE, text=True,
+        stdout=subprocess.PIPE, text=True, encoding="utf-8",
     )
     try:
         assert holder.stdout.readline().strip() == "locked"

@@ -702,18 +702,46 @@ def test_migrate_is_classified_as_a_board_mutation():
 
 
 @requires_git
-def test_migrate_warns_when_no_slot_resolves_from_a_present_lease_ledger(
+def test_migrate_warns_when_a_leased_slot_is_not_covered_by_registered_or_repo(
         legacy_board, capsys, monkeypatch):
-    """장부는 있는데 등록 슬롯이 0 이면 "정리 완료" 라고 말하지 않고 그 사실을 알린다."""
+    """판정은 존재-키(장부 유무)가 아니라 **값 대조**다(T-0845·`_legacy_copy_slot_roots` 주석의
+    전환) — 리스 장부의 `leased` 행이 가리키는 슬롯이 등록 슬롯 집합에도 REPO 에도 없을 때만
+    경고한다. `_seed_legacy_copies` 의 기본 리스 행은 `state=idle` 이라 `_leased_slot_paths`
+    가 애초에 걸러 내므로(옛 존재-판정 시절 기대와 달리 지금은 트리거되지 않는다), 값
+    불일치를 실제로 만들려면 `leased` 행 + 등록/REPO 밖 슬롯 경로가 필요하다."""
     board, board_dir, root = legacy_board
     _write_legacy_ticket(board_dir, "T-3980", "done", [("developer", "구현 산출.")])
     _commit_board(board_dir)
     _seed_legacy_copies(board, root)
     monkeypatch.setattr(board, "_registered_slot_paths", lambda pm_home, **_kwargs: ())
+    board.LEASES_FILE.write_text(
+        json.dumps({"leases": [{"slot": "work/product_1", "repo": "product",
+                                "session": "product_1", "state": "leased"}]}),
+        encoding="utf-8")
 
     assert board.main(["rounds", "migrate"]) == 0
 
-    assert "등록 슬롯 해소 0" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "등록 슬롯 해소 누락 1건" in err
+    assert "work/product_1" in err
+
+
+@requires_git
+def test_migrate_is_silent_when_the_leased_slot_is_covered_by_registered_slots(
+        legacy_board, capsys):
+    """비-트리거 대조 — 리스 슬롯이 등록 슬롯 집합에 이미 있으면(정상 커버) 경고가 없다."""
+    board, board_dir, root = legacy_board
+    _write_legacy_ticket(board_dir, "T-3981", "done", [("developer", "구현 산출.")])
+    _commit_board(board_dir)
+    _seed_legacy_copies(board, root)  # slot="work/product_1" — legacy_board 기본 등록 슬롯과 일치.
+    board.LEASES_FILE.write_text(
+        json.dumps({"leases": [{"slot": "work/product_1", "repo": "product",
+                                "session": "product_1", "state": "leased"}]}),
+        encoding="utf-8")
+
+    assert board.main(["rounds", "migrate"]) == 0
+
+    assert "등록 슬롯 해소 누락" not in capsys.readouterr().err
 
 
 def test_pm_update_hint_matches_the_board_lint_wording():

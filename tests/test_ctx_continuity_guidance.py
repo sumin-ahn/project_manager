@@ -19,7 +19,7 @@ PM_LOG = ROOT / ".project_manager" / "tools" / "pm_log.py"
 CLAUDE_ROOT = ROOT / ".claude" / "ctx_stop_hook.py"
 CLAUDE_TEMPLATE = ROOT / "templates" / "claude_code" / ".claude" / "ctx_stop_hook.py"
 OPENCODE = ROOT / "templates" / "opencode" / ".opencode" / "lib" / "ctx-guard-core.cjs"
-CODEX = ROOT / "templates" / "codex" / ".codex" / "hooks.json"
+CODEX_DISPATCHER = ROOT / "templates" / "codex" / ".codex" / "pm_orch_codex.py"
 
 FORBIDDEN = (
     re.compile(r"마무리"),
@@ -89,11 +89,17 @@ def test_required_expression_matrix_matches_direct_renderer_and_raw_cli(pm_log, 
 
 def test_shipping_harnesses_reference_central_command_without_policy_copy(pm_log):
     policy_marker = "핸드오프는 사용자 명시 지시로만 한다"
+    # T-0806 이후 codex 축 압축 안내 커맨드는 `hooks.json` 직결이 아니라 디스패처
+    #   `CODEX_HOOK_FEATURES` registry 값이다 — 판정 대상은 hooks.json 텍스트가 아니라 그 registry.
+    dispatcher = _load(CODEX_DISPATCHER, "t0648_codex_dispatcher")
+    compaction_guidance = [feature for feature in dispatcher.CODEX_HOOK_FEATURES
+                            if feature.feature_id == "compaction-guidance"]
+    assert len(compaction_guidance) == 1, dispatcher.CODEX_HOOK_FEATURES
     sources = {
         "claude": CLAUDE_ROOT.read_text(encoding="utf-8"),
         "claude-template": CLAUDE_TEMPLATE.read_text(encoding="utf-8"),
         "opencode": OPENCODE.read_text(encoding="utf-8"),
-        "codex": CODEX.read_text(encoding="utf-8"),
+        "codex": " ".join(compaction_guidance[0].argv),
     }
     assert "ctx-guidance" in sources["claude"]
     assert "ctx-guidance" in sources["claude-template"]

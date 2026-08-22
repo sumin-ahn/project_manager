@@ -94,7 +94,8 @@ _TICKET_TEXT = (
     "touches: []\n"
     "estimate: small\n"
     "tags: []\n"
-    "---\n\n# {tid} — t\n\n## 목표\nx\n"
+    "---\n\n# {tid} — t\n\n## 목표\nx\n\n"
+    "## 완료 조건 (Definition of Done)\n- [x] 구현\n"
 )
 
 
@@ -139,6 +140,15 @@ def board(tmp_path, monkeypatch):
     # `os.environ` 전체를 갈아끼우지 않고(fragile·HOME/PATH 등 보존) 필요한 키만 setenv 한다.
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
+    # 정체성 축 tmp 격리 — 소유 대조(T-0781)가 user 축을 보므로 실 clone conf/전역 git email
+    # 이 새면 픽스처 claim(`me/…`)과 어긋난다. 세션은 테스트가 `--repo/--slot` 으로 명시한다.
+    conf = tmp_path / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True, exist_ok=True)
+    conf.write_text("user=me\n", encoding="utf-8")
+    monkeypatch.setattr(mod, "LOCAL_CONF", conf)
+    monkeypatch.setattr(
+        mod, "LEASES_FILE",
+        tmp_path / ".project_manager" / ".local" / "worktree-leases.json")
     mod._tmp = tmp_path
     return mod
 
@@ -678,7 +688,8 @@ def test_complete_best_effort_offline_still_completes(board, tmp_path, capsys):
 
     _force_rmtree(bare)  # 이제 remote 도달 불가.
     rc = board.cmd_complete(argparse.Namespace(
-        id="T-0001", tests_pass=True, allow_missing_log=True, allow_untested=False))
+        id="T-0001", tests_pass=True, allow_missing_log=True, allow_untested=False,
+        repo="me", slot=1))
     assert rc == 0, "complete(best-effort)가 offline 에서 차단됨 — best-effort 위반."
     assert list((board_dir / "tickets" / "done").glob("T-0001-*.md")), \
         "complete 가 로컬에서 done/ 으로 안 옮겨짐."

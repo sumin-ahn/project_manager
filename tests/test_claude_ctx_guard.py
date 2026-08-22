@@ -689,12 +689,15 @@ def test_settings_wires_pretooluse_hook(name):
 
 
 @pytest.mark.parametrize("name", ["settings.json"])
-def test_settings_preserves_posttooluse(name):
-    # 기존 PostToolUse(run_tests_hook) 가 보존됐다 (회귀 — 무관한 hook 안 깨짐).
+def test_settings_preserves_unrelated_pretooluse_hook(name):
+    # ctx 가드와 무관한 훅(위임 채널 가드·Agent matcher)이 같은 이벤트에 공존한다
+    # (회귀 — ctx 배선이 남의 훅을 덮지 않음. 옛 축이던 PostToolUse 회귀 훅은 T-0771 로 폐지).
     data = json.loads((CLAUDE / name).read_text(encoding="utf-8"))
-    post = data["hooks"]["PostToolUse"]
-    cmds = [h.get("command", "") for m in post for h in m.get("hooks", [])]
-    assert any("run_tests_hook.sh" in c for c in cmds)
+    pre = data["hooks"]["PreToolUse"]
+    agent = [m for m in pre if m.get("matcher") == "Agent"]
+    assert agent, "template settings.json 에 Agent matcher 훅 누락"
+    cmds = [h.get("command", "") for m in agent for h in m.get("hooks", [])]
+    assert any("delegate_channel_guard_hook.sh" in c for c in cmds)
 
 
 # ── 6. compaction-native 넛지 + 사이클 재무장 (ADR-0081) ──────────────────

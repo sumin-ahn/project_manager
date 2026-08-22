@@ -1920,7 +1920,7 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
         except identity_args.InvalidTaskName as exc:
             print(
                 f"[중단] {exc} — `--task` 는 안전한 단일 이름이어야 하고 슬롯 예약패턴"
-                "(`<repo>_<N>`·⑥)은 쓸 수 없다.",
+                "(`<repo>_<N>`)은 쓸 수 없다.",
                 file=sys.stderr,
             )
             return 1

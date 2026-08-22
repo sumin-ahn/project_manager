@@ -1676,3 +1676,89 @@ def test_requote_touches_only_the_machine_verifiable_slot_inside_the_verify_fenc
     row = payload["verifications"][0]
     assert row["machine_verifiable"] == "<true|false>"   # 구조 스캔용 임시 재-인용.
     assert row["expected"] == _TOKEN_IN_STRING_FIELD     # 다른 필드는 그대로.
+
+
+# ── T-0822: 회수된 미충전 자리표시자(tombstone) × 시드 라운드 배제 ────────────────────
+
+# 라운드 3 이 다시 선언한 빈틈 요지 — 라운드 2 의 선언과 값으로 구별되게 다른 문구를 쓴다.
+CROSS_ROUND3_GAP_SUMMARY = "다음 라운드 처방 대기"
+
+
+def _cross_invariant_shape(pd, tmp_path):
+    """두 불변식이 만나는 **한 형상** — 실 라운드 파일 bytes 를 깔고 엔진이 pending 을 판정한다.
+
+    - 라운드 2(산출): F-001·F-002 를 둘 다 빈틈으로 선언한다.
+    - 라운드 3(산출): 시드가 요구한 두 행 중 F-001 은 **자리표시자 그대로** 두고(회수된
+      미충전 = [[T-0805]] tombstone) F-002 만 다시 빈틈으로 선언한다.
+    - 라운드 4: 그 다음 라운드로 예약만 되고 회수되지 않은 시드(kill 된 위임이 남긴 것)다 —
+      엔진이 실제로 렌더한 골격이라 F-001·F-002 자리표시자를 **둘 다** 싣는다. 이 라운드를
+      관측으로 세면 F-002 의 살아 있는 선언까지 지워진다([[T-0813]] 배제가 이겨야 한다).
+    """
+    rounds_module = pd._load_ticket_rounds()
+    r1 = _round(pd, 1, "code-reviewer", _reviewer_round_text(
+        pd, [_finding("F-001"), _finding("F-002")],
+    ))
+    spec = _disposition_block(pd, 1, [
+        _decision("F-001", "accepted"), _decision("F-002", "accepted"),
+    ])
+    r2 = _round(pd, 2, "developer", _developer_round_text(pd, [
+        _gap_row(pd, "F-001"), _gap_row(pd, "F-002"),
+    ]))
+    r3 = _round(pd, 3, "developer", _developer_round_text(pd, [
+        _skeleton_row(pd, "F-001"), _gap_row(pd, "F-002", CROSS_ROUND3_GAP_SUMMARY),
+    ]))
+    r4 = _round(pd, 4, "developer", rounds_module.render_round_seed(
+        "developer", spec, today="2026-08-22", rounds=[r1, r2, r3],
+    ))
+    tickets_dir = tmp_path / "tickets"
+    _materialize(pd, spec, [r1, r2, r3, r4], tickets_dir, "T-0822")
+    return spec, rounds_module.load_rounds(tickets_dir, "T-0822", ticket_text=spec)
+
+
+def _latest_rows(pd, rounds) -> dict[str, tuple[int, str]]:
+    """누적 장부를 값으로 읽는다 — ID 별 (선언 라운드 순번, reason)."""
+    return {
+        finding_id: (source_round, row.reason)
+        for finding_id, (source_round, row) in
+        pd._pm_review_latest_verify_rows(rounds).items()
+    }
+
+
+def test_pending_seed_round_and_a_harvested_placeholder_hold_both_invariants(pd, tmp_path):
+    """[[T-0805]] tombstone 과 [[T-0813]] 시드 배제가 **같은 픽스처에서 동시에** 성립한다.
+
+    각자 파일에서만 green 인 상태가 이 결함을 만들었다([[T-0822]]) — 두 축이 만나는 형상을
+    한 테스트가 값으로 고정한다. 회수된 라운드의 미충전 자리표시자는 여전히 앞 선언을 덮고
+    (F-001 태만), 회수 전 시드 라운드는 아무 것도 덮지 않는다(F-002 빈틈 보고 생존).
+    """
+    spec, rounds = _cross_invariant_shape(pd, tmp_path)
+    assert [item.pending for item in rounds] == [False, False, False, True]
+    # 시드 라운드는 두 ID 의 자리표시자를 다 싣는다 — 관측으로 세면 F-002 선언이 지워진다.
+    assert pd._dev_round_seed_verify_ids(rounds[3].text) == ["F-001", "F-002"]
+
+    template = pd.pm_review_verify_template(spec, rounds)
+    # (a) 회수된 라운드의 미충전 자리표시자 = tombstone — 앞 라운드의 빈틈 보고를 덮는다.
+    assert template.missing == ("F-001",)
+    # (b) 회수 전 시드 라운드 = 관측 아님 — 라운드 3 의 빈틈 보고가 최신 선언으로 남는다.
+    assert template.gap == (("F-002", 3, CROSS_ROUND3_GAP_SUMMARY),)
+    assert template.machine_rows == () and template.stale == ()
+    # (c) 시드 라운드의 유무가 판정 산출을 한 글자도 바꾸지 않는다 — 누적 시야·확인 커서 양쪽.
+    assert template == pd.pm_review_verify_template(spec, rounds[:3])
+    assert _latest_rows(pd, rounds) == _latest_rows(pd, rounds[:3]) == {
+        "F-002": (3, pd.PM_REVIEW_VERIFY_GAP_REASON),
+    }
+    delta = pd.parse_pm_review_delta(spec, rounds)
+    assert delta.confirmation_cursor == (("F-001", 1), ("F-002", 1))
+    assert delta == pd.parse_pm_review_delta(spec, rounds[:3])
+
+
+def test_machine_confirmation_cannot_bind_to_a_pending_developer_round(pd, tmp_path):
+    """회수 전 라운드를 참조한 기계 확인은 막히고, 진단이 그 라운드의 상태를 그대로 말한다.
+
+    "verify 행 없음"(=dev 태만)으로 진단되면 PM 이 존재하지 않는 산출을 dev 에게 요구한다.
+    """
+    spec, rounds = _cross_invariant_shape(pd, tmp_path)
+    spec_bad = spec + _confirmation_block(pd, 4, [_confirmation_row("F-002")])
+    with pytest.raises(pd.PMReviewError, match="아직 회수되지 않은 developer 라운드") as caught:
+        pd.parse_pm_review_delta(spec_bad, rounds)
+    assert caught.value.code == "malformed"
