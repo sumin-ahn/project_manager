@@ -31,8 +31,10 @@ import argparse
 import datetime
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Callable, NamedTuple
@@ -1379,6 +1381,45 @@ class DiffPathStat(NamedTuple):
     amount: int
 
 
+# ── 완료 대상 작업 트리 자기 축 회귀 판정 helper (순수 함수) ────────────────
+_SELF_AXIS_FAILED_NODE_RE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.MULTILINE)
+
+# 전-트리 ratchet 가드 — 이 목록의 파일은 대상 집합에 항상 들어간다(파일별 매핑이 아니라
+# "완료마다 항상 도는 가드" 정책 목록이다). 실 wave 사고에서 신규 red 를 잡아낸 실측으로
+# 고정된 4개다. 새 항목을 빠뜨리면 tests/test_ticket_finish.py 의 목록 커버리지 회귀가 red 로
+# 잡는다 — 추가 규율을 산문에 적지 않는다.
+_SELF_AXIS_RATCHET_GUARD_FILES = (
+    "tests/test_pm_review_delta.py",
+    "tests/test_private_context_guard.py",
+    "tests/test_public_reference_lint.py",
+    "tests/test_upgrade_adopter_e2e.py",
+)
+
+
+def _self_axis_target_paths(path_list_stdout: str) -> set[str]:
+    """git 경로 목록 출력(개행 구분)에서 `tests/` 바로 아래 flat `*.py` 만 남긴다.
+
+    서브디렉터리(`tests/fixtures/…`)는 pytest 수집 대상이 아니라 제외한다. `git diff
+    --name-only HEAD`·`git ls-files -o --exclude-standard` 양쪽 출력에 공용으로 쓴다.
+    """
+    files: set[str] = set()
+    for line in path_list_stdout.splitlines():
+        candidate = line.strip()
+        if not candidate.startswith("tests/") or not candidate.endswith(".py"):
+            continue
+        if "/" in candidate[len("tests/"):]:
+            continue
+        files.add(candidate)
+    return files
+
+
+def _self_axis_failed_node_ids(pytest_output: str) -> set[str]:
+    """pytest `-q` 출력의 `FAILED`/`ERROR` 요약 줄에서 실패한 **테스트 노드 ID** 전체(파일이
+    아니라 함수 단위) — base·dev 양쪽에 실패가 있는 파일에서도 신규분만 비교하려면 함수
+    단위가 필요하다(파일 단위 비교는 그 신규분을 지운다)."""
+    return {match.group(1) for match in _SELF_AXIS_FAILED_NODE_RE.finditer(pytest_output)}
+
+
 def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
                 run_git: Callable[[list[str]], tuple[int, str]], *,
                 repo: Path | None = None, include_touches: bool = True,
@@ -1622,6 +1663,7 @@ class TicketFinisher:
         status_entries_at_fn: Callable[[Path], tuple[tuple[str, str], ...]] | None = None,
         diff_cap_block_fn: Callable[[str], str | None] | None = None,
         dod_block_fn: Callable[[str], str | None] | None = None,
+        self_axis_block_fn: Callable[[str], str | None] | None = None,
         log_file: Path = LOG_FILE,
         board_py: Path = BOARD_PY,
         venv_python: str | Path = _default_python(),
@@ -1674,6 +1716,11 @@ class TicketFinisher:
         # DoD 기록 게이트 preflight seam — 차단 사유 문자열 또는 None(통과·판정 불가).
         # 규칙 소유자는 board(`_dod_open_items`)이고 여기서는 **더 앞에서 한 번 더** 물을 뿐이다.
         self._dod_block_fn = dod_block_fn or self._default_dod_block
+        # 완료 대상 작업 트리 자기 축 회귀 preflight seam — 차단 문자열 또는 None(통과·경고·
+        # 판정불가). 판정 트리는 이 완료 대상 작업 트리 자체다(합성 병합 트리를 만들지 않는다).
+        # 튜플의 **마지막** 원소로만 붙는다(비용순 — diff cap·DoD 는 서브프로세스 0~2회, 이건
+        # base 가 red 일 때만 baseline 회귀를 한 번 더 돈다).
+        self._self_axis_block_fn = self_axis_block_fn or self._default_self_axis_block
         # (스코프 밖 staged, 미스테이지 잔여) 건수 — `[완료]` 줄 재고지용(loud 강화).
         self._dirty_summary: tuple[int, int] = (0, 0)
 
@@ -2189,6 +2236,158 @@ class TicketFinisher:
                      "log/current.md 스켈레톤을 남기기 전에 미리 묻는다.")
         return "\n".join(line for line in lines if line)
 
+    # ── 완료 대상 작업 트리 자기 축 회귀 판정 ────────────────────────────
+    # 판정 트리는 완료 대상 작업 트리 자체다. 대상 집합은 이 트리의 변경분(추적+미추적)과
+    # 전-트리 ratchet 가드 목록의 합집합이고, 그 대상을 작업 트리와 claim 시점 baseline
+    # 양쪽에서 돌려 함수 단위 노드 ID 로 신규 실패만 골라낸다. 존재-판정("돌았다") 이 아니라
+    # 값-대조("base 대비 늘었다")로 차단한다.
+
+    def _self_axis_target_files(self, code_tree: Path) -> set[str]:
+        """대상 tests/*.py 집합 = tracked(staged+unstaged) 변경 ∪ untracked 신규 ∪ ratchet 목록.
+
+        두 git 명령 모두 순수 읽기다 — index 를 갱신하지 않는다(`git status` 는 stat 캐시를
+        건드릴 수 있어 안 쓴다)."""
+        _rc_t, tracked_out = self._run_git_stdout_at_fn(
+            code_tree, ["diff", "--name-only", "HEAD"])
+        _rc_u, untracked_out = self._run_git_stdout_at_fn(
+            code_tree, ["ls-files", "-o", "--exclude-standard"])
+        changed = _self_axis_target_paths(tracked_out) | _self_axis_target_paths(untracked_out)
+        return changed | set(_SELF_AXIS_RATCHET_GUARD_FILES)
+
+    def _run_pytest_subset(self, cwd: Path, files: Sequence[str]) -> tuple[int, str]:
+        """대상 파일만 골라 `cwd` 에서 pytest 를 돌린다(작업 트리·baseline 공용).
+
+        `cwd` 에 실재하지 않는 파일은 건너뛴다(삭제분이 집합에 남아도 수집 에러로 안 죽는다) —
+        하나도 안 남으면 무비용 통과 (0, "")."""
+        existing = sorted(f for f in files if (cwd / f).is_file())
+        if not existing:
+            return 0, ""
+        result = subprocess.run(
+            [str(self._venv_python), "-m", "pytest", *existing, "-q"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            cwd=str(cwd),
+        )
+        return result.returncode, result.stdout + result.stderr
+
+    def _materialize_tree(self, code_tree: Path, ref: str) -> Path:
+        """claim 시점 `ref`(commit-ish) 를 scratch 디렉터리에 추출한 baseline 저장소를 만든다.
+
+        `git archive | tar -x` 로 파일만 옮기고 `git init` 을 더한다 — 환경 의존 테스트(git
+        저장소 존재를 요구하는 가드 등)가 "git 저장소 부재"로 오탐하지 않게 한다. 곧바로
+        `.git/objects/info/alternates` 에 원 저장소 object DB 경로를 적어 원 이력 객체를
+        read-only 로 해소한다 — 실 SHA 를 좌표로 쓰는 테스트가 고립된 scratch 저장소에서
+        "유효한 객체 이름이 아닙니다" 로 오탐하지 않는다(민감도 — 이 한 줄을 빼면 그 오탐이
+        재현된다). `code_tree` 의 ref·index·worktree 등록은 만들지 않는다 — 원 저장소는
+        읽기만 당한다(alternates 는 OID 로 객체를 해소할 뿐 이름으로 ref 를 해소하지 않는다).
+        """
+        scratch = Path(tempfile.mkdtemp(prefix="ticket-finish-baseline-"))
+        try:
+            archive = subprocess.run(
+                ["git", "archive", ref], cwd=str(code_tree), capture_output=True)
+            if archive.returncode != 0:
+                raise RuntimeError(
+                    f"git archive {ref} 실패: "
+                    f"{archive.stderr.decode('utf-8', 'replace')}")
+            tar = subprocess.run(
+                ["tar", "-x"], cwd=str(scratch), input=archive.stdout,
+                capture_output=True)
+            if tar.returncode != 0:
+                raise RuntimeError(f"tar -x 실패: {tar.stderr.decode('utf-8', 'replace')}")
+            init = subprocess.run(
+                ["git", "init", "-q"], cwd=str(scratch), capture_output=True, text=True,
+                encoding="utf-8", errors="replace")
+            if init.returncode != 0:
+                raise RuntimeError(f"git init 실패: {init.stderr}")
+
+            common_rc, common_out = self._run_git_stdout_at_fn(
+                code_tree, ["rev-parse", "--git-common-dir"])
+            if common_rc != 0 or not common_out.strip():
+                raise RuntimeError("원 저장소 object DB 경로(--git-common-dir) 해소 실패")
+            common_dir = Path(common_out.strip().splitlines()[0].strip())
+            if not common_dir.is_absolute():
+                common_dir = (code_tree / common_dir).resolve()
+            alternates_path = scratch / ".git" / "objects" / "info" / "alternates"
+            alternates_path.parent.mkdir(parents=True, exist_ok=True)
+            alternates_path.write_text(f"{common_dir / 'objects'}\n", encoding="utf-8")
+
+            for args in (
+                ["add", "-A"],
+                ["-c", "user.email=ticket-finish-baseline@local",
+                 "-c", "user.name=ticket-finish-baseline",
+                 "commit", "-q", "-m", "baseline (materialized — 실 이력 아님)"],
+            ):
+                result = subprocess.run(
+                    ["git", *args], cwd=str(scratch), capture_output=True, text=True,
+                    encoding="utf-8", errors="replace")
+                if result.returncode != 0:
+                    raise RuntimeError(f"git {' '.join(args)} 실패: {result.stderr}")
+        except Exception:
+            shutil.rmtree(scratch, ignore_errors=True)
+            raise
+        return scratch
+
+    def _default_self_axis_block(self, ticket_id: str) -> str | None:
+        """완료 대상 작업 트리에서 base 대비 신규 red 를 판정한다 — 차단 문자열, 통과·판정불가면
+        None.
+
+        claim 앵커(board `claimed_rev`)가 없으면(채택자 형상·구 티켓) 비교 기준이 없으므로
+        완전히 무발화다 — 작업 트리 회귀조차 돌리지 않는다. 앵커가 있어도 작업 트리가 green
+        이면 baseline 은 돌리지 않는다(비용은 red 일 때만 낸다). red 면 baseline 을 claim
+        시점으로 materialize 해 같은 대상 집합을 돌리고, 함수 단위 노드 ID 차집합(작업 트리 −
+        baseline)이 있으면 차단, 없으면(전부 상속 red) loud 경고만 하고 통과시킨다.
+        """
+        code_tree = self._code_tree()
+        target_files = self._self_axis_target_files(code_tree)
+        if not target_files:
+            return None
+
+        claimed_rev = get_ticket_claimed_rev(self._board_py, ticket_id)
+        if not claimed_rev:
+            return None
+
+        work_rc, work_out = self._run_pytest_subset(code_tree, sorted(target_files))
+        if work_rc == 0:
+            return None  # green — baseline 은 말할 것이 없으므로 돌리지 않는다.
+        work_failed = _self_axis_failed_node_ids(work_out)
+
+        try:
+            baseline_tree = self._materialize_tree(code_tree, claimed_rev)
+        except (OSError, RuntimeError) as exc:
+            print(
+                f"  ⚠ 자기 축 회귀 판정 skip — {ticket_id}: baseline 판정 실패({exc})",
+                file=sys.stderr,
+            )
+            return None
+        try:
+            base_rc, base_out = self._run_pytest_subset(baseline_tree, sorted(target_files))
+        finally:
+            shutil.rmtree(baseline_tree, ignore_errors=True)
+        base_failed = _self_axis_failed_node_ids(base_out) if base_rc != 0 else set()
+
+        new_failed = sorted(work_failed - base_failed)
+        if new_failed:
+            return self._self_axis_block(ticket_id, new_failed, work_out)
+
+        inherited = sorted(work_failed & base_failed)
+        if inherited:
+            print(
+                f"  ⚠ 자기 축 회귀 경고 — {ticket_id}: base 에서 이미 red 인 실패뿐이다"
+                f"({', '.join(inherited)}) — 차단하지 않는다.",
+                file=sys.stderr,
+            )
+        return None
+
+    @staticmethod
+    def _self_axis_block(ticket_id: str, new_failed: list[str], output: str) -> str:
+        """자기 축 신규 red 차단 문자열 — `run()` 이 `[중단]` 접두로 그대로 낸다."""
+        lines = [f"자기 축 회귀 신규 실패 — {ticket_id}"]
+        lines += [f"  ✗ {node}" for node in new_failed]
+        tail = "\n".join(output.rstrip().splitlines()[-20:])
+        if tail:
+            lines.append("  · 회귀 출력(꼬리 20줄):")
+            lines.append(tail)
+        return "\n".join(lines)
+
     def _default_run_board(self, args: list[str]) -> tuple[int, str]:
         """board.py 를 subprocess 로 호출해 (returncode, stdout+stderr) 반환."""
         result = subprocess.run(
@@ -2463,12 +2662,15 @@ class TicketFinisher:
         # PM 판정은 권위를 유지한다. 이 재검은 경고만 보이고 이후 rc를 바꾸지 않는다.
         self._warn_pm_direct_conditions(ticket_id)
 
-        # ── 0. 진입 게이트(preflight) — diff 서킷브레이커 · DoD 기록 ─────
-        # 둘 다 회귀보다 **앞**이고, 무엇보다 [2/5] log 스켈레톤 append 보다 앞이다: 여기서 막힐
+        # ── 0. 진입 게이트(preflight) — diff 서킷브레이커 · DoD 기록 · 자기 축 회귀 ─────
+        # 셋 다 회귀보다 **앞**이고, 무엇보다 [2/5] log 스켈레톤 append 보다 앞이다: 여기서 막힐
         # 실행은 어떤 부작용(회귀 실행·log append·board·git)도 내지 않아야 한다. DoD 판정이
         # [3/5] `board.py complete` 안에만 있던 동안에는 차단마다 stray 스켈레톤이 남고 재실행이
-        # 그것을 중복 append 했다(실측) — 순서가 곧 결함이었다.
-        for preflight in (self._diff_cap_block_fn, self._dod_block_fn):
+        # 그것을 중복 append 했다(실측) — 순서가 곧 결함이었다. 자기 축 회귀는 **비용순으로
+        # 마지막**이다 — 앞 둘은 서브프로세스 0~2회, 이건 작업 트리가 red 일 때만 pytest 를
+        # 최대 2번 돈다(green 이면 0회).
+        for preflight in (self._diff_cap_block_fn, self._dod_block_fn,
+                          self._self_axis_block_fn):
             block = preflight(ticket_id)
             if block:
                 print(f"\n[중단] {block}", file=sys.stderr)

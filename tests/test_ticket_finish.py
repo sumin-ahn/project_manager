@@ -11,10 +11,13 @@ per-repo 회귀 명령 해소(ADR-0014)·domain soft 알림(ADR-0018 #2)·전체
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import os
 import shutil
 import subprocess
+import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -2753,3 +2756,472 @@ def test_unresolvable_anchor_falls_back_to_the_old_width_loudly(tmp_path, capsys
 
     assert finisher._default_diff_cap_block(_WAVE_TICKET) is None
     assert "해소하지 못함" in capsys.readouterr().err
+
+
+
+# ── 완료 대상 작업 트리 자기 축 회귀 ─────────────────────────────────────────
+#
+# 판정 트리는 완료 대상 작업 트리 자체다 — 합성 병합 트리를 만들지 않는다. 대상 파일 집합은
+# 실 git 명령(순수 읽기) 파생이고, baseline 은 claim 시점 커밋을 alternates 로 원 object DB 에
+# 연결해 materialize 한다. 아래는 전부 실 git + 실 pytest 서브프로세스로 검증한다(fake
+# runner·mock 트리 0).
+
+def _axis_git(root: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(root), *args], check=True,
+                          capture_output=True, text=True, encoding="utf-8")
+
+
+def _axis_repo(tmp_path: Path) -> Path:
+    """자기 축 회귀용 최소 git 저장소 — `tests/test_axis_a.py` 하나를 가진 base 커밋 1개."""
+    root = tmp_path / "axis"
+    root.mkdir()
+    _axis_git(root, "init", "-q")
+    _axis_git(root, "config", "user.email", "axis@test")
+    _axis_git(root, "config", "user.name", "axis")
+    (root / "tests").mkdir()
+    (root / "tests" / "test_axis_a.py").write_text(
+        "def test_a():\n    assert 1 == 1  # base\n", encoding="utf-8")
+    _axis_git(root, "add", "-A")
+    _axis_git(root, "commit", "-q", "-m", "base")
+    return root
+
+
+def _axis_head(root: Path) -> str:
+    return _axis_git(root, "rev-parse", "HEAD").stdout.strip()
+
+
+def _axis_write_a(root: Path, body: str) -> None:
+    (root / "tests" / "test_axis_a.py").write_text(body, encoding="utf-8")
+
+
+def _axis_commit(root: Path, message: str) -> str:
+    _axis_git(root, "add", "-A")
+    _axis_git(root, "commit", "-q", "-m", message)
+    return _axis_head(root)
+
+
+def _axis_board_ticket(root: Path, ticket_id: str, claimed_rev: str) -> Path:
+    """`root` 에 엔진 사본 board.py + `claimed_rev` 를 가진 최소 티켓 파일을 만든다.
+
+    자기 축 판정의 claim 앵커 대조가 board.py 를 통해 이 티켓의 frontmatter 를 읽는다 —
+    실 프로젝트 board 를 건드리지 않는 hermetic 사본(`_wave_repo` 와 같은 패턴)."""
+    tools_dir = root / ".project_manager" / "tools"
+    if not tools_dir.exists():
+        shutil.copytree(TOOLS, tools_dir)
+    for status in ("open", "claimed", "blocked", "done"):
+        (root / ".project_manager" / "board" / "tickets" / status).mkdir(
+            parents=True, exist_ok=True)
+    path = (root / ".project_manager" / "board" / "tickets" / "claimed"
+            / f"{ticket_id}-axis.md")
+    path.write_text(
+        f"---\nid: {ticket_id}\ntitle: axis\nstatus: claimed\n"
+        "claimed_by: me\nclaimed_at: '2026-08-23T00:00:00+00:00'\n"
+        f"claimed_rev: {claimed_rev}\ncompleted_at: null\n"
+        "depends_on: []\nblocks: []\ntouches:\n- tests/\nestimate: small\n"
+        "tags: []\n---\n\n# ticket\n\n## 목표\nx\n",
+        encoding="utf-8")
+    return tools_dir / "board.py"
+
+
+def _axis_finisher(tf, root: Path, board_py: Path):
+    return tf.TicketFinisher(task_workspace=root, board_py=board_py)
+
+
+# ── 순수 파싱 helper (git/pytest 출력 파싱만 — 서브프로세스 0) ────────────────
+
+def test_self_axis_target_paths_keeps_only_flat_tests_py(tf):
+    listing = "\n".join([
+        "tests/test_a.py",
+        "tests/fixtures/data.py",
+        "src/app.py",
+        "tests/test_b.py",
+        "README.md",
+    ])
+    assert tf._self_axis_target_paths(listing) == {"tests/test_a.py", "tests/test_b.py"}
+
+
+def test_self_axis_failed_node_ids_parses_function_level_ids(tf):
+    """실패 파싱은 파일이 아니라 **함수 단위 노드 ID** 전체를 남긴다."""
+    output = (
+        "FAILED tests/test_a.py::test_x - AssertionError\n"
+        "ERROR tests/test_b.py::test_y - ImportError\n"
+        "ERROR tests/test_c.py - collection error\n"
+        "2 failed, 1 error in 0.1s\n"
+    )
+    assert tf._self_axis_failed_node_ids(output) == {
+        "tests/test_a.py::test_x", "tests/test_b.py::test_y", "tests/test_c.py",
+    }
+
+
+# ── `_self_axis_target_files` — 대상 집합 산출 ────────────────────────────────
+
+def test_self_axis_target_files_unions_tracked_untracked_and_ratchet_list(tf, tmp_path):
+    root = _axis_repo(tmp_path)
+    (root / "tests" / "test_axis_a.py").write_text(
+        "def test_a():\n    assert 2 == 2  # unstaged change\n", encoding="utf-8")
+    (root / "tests" / "test_axis_untracked.py").write_text(
+        "def test_new():\n    assert True\n", encoding="utf-8")
+
+    finisher = tf.TicketFinisher()
+    target = finisher._self_axis_target_files(root)
+
+    assert "tests/test_axis_a.py" in target       # tracked(unstaged) 변경
+    assert "tests/test_axis_untracked.py" in target  # untracked 신규
+    assert set(tf._SELF_AXIS_RATCHET_GUARD_FILES) <= target  # 전-트리 가드 항상 포함
+
+
+# ── `_default_self_axis_block` 시나리오(T1~T3·T9) ────────────────────────────
+
+def test_default_self_axis_block_does_not_block_on_inherited_red_only(
+        tf, tmp_path, monkeypatch, capsys):
+    """T1 — base 에서 이미 red 인 실패뿐이면 rc 0 · loud 경고 1줄 · 차단 없음."""
+    root = _axis_repo(tmp_path)
+    _axis_write_a(root, "def test_a():\n    assert False  # already red at claim time\n")
+    base = _axis_commit(root, "base is red")
+    board_py = _axis_board_ticket(root, "T-AXIS", claimed_rev=base)
+    monkeypatch.setattr(tf, "_SELF_AXIS_RATCHET_GUARD_FILES", ("tests/test_axis_a.py",))
+
+    finisher = _axis_finisher(tf, root, board_py)
+    block = finisher._default_self_axis_block("T-AXIS")
+
+    assert block is None
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1
+    assert "경고" in err and "tests/test_axis_a.py::test_a" in err
+
+
+def test_default_self_axis_block_blocks_on_new_failure_in_a_file_with_inherited_red(
+        tf, tmp_path, monkeypatch):
+    """T2 — base·dev 양쪽에 실패가 있는 같은 파일에서도 신규분이 함수 단위로 살아남는다
+    (파일 단위 비교였다면 이 신규 실패가 사라졌을 형상)."""
+    root = _axis_repo(tmp_path)
+    (root / "tests" / "test_axis_a.py").write_text(
+        "def test_a():\n    assert False  # already red at claim time\n"
+        "def test_b():\n    assert True\n",
+        encoding="utf-8")
+    base = _axis_commit(root, "base has test_a red")
+    board_py = _axis_board_ticket(root, "T-AXIS", claimed_rev=base)
+    monkeypatch.setattr(tf, "_SELF_AXIS_RATCHET_GUARD_FILES", ("tests/test_axis_a.py",))
+
+    (root / "tests" / "test_axis_a.py").write_text(
+        "def test_a():\n    assert False  # still red — inherited\n"
+        "def test_b():\n    assert False  # dev broke it — new\n",
+        encoding="utf-8")
+    _axis_commit(root, "dev breaks test_b")
+
+    finisher = _axis_finisher(tf, root, board_py)
+    block = finisher._default_self_axis_block("T-AXIS")
+
+    assert block is not None
+    assert "✗ tests/test_axis_a.py::test_b" in block  # 신규분만 ✗ 로 나열된다
+    assert "✗ tests/test_axis_a.py::test_a" not in block  # 상속 red — 신규분에서 빠져야 한다
+
+
+def test_default_self_axis_block_costs_nothing_when_the_work_tree_is_green(
+        tf, tmp_path, monkeypatch, capsys):
+    """T3(역방향 확인 a) — 작업 트리가 green 이면 baseline 은 돌리지 않는다(materialize 0회 ·
+    출력 0줄 · 차단 없음)."""
+    root = _axis_repo(tmp_path)
+    base = _axis_head(root)
+    board_py = _axis_board_ticket(root, "T-AXIS", claimed_rev=base)
+    monkeypatch.setattr(tf, "_SELF_AXIS_RATCHET_GUARD_FILES", ("tests/test_axis_a.py",))
+
+    finisher = _axis_finisher(tf, root, board_py)
+    monkeypatch.setattr(
+        finisher, "_materialize_tree",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("materialize 미호출이어야 한다")))
+
+    block = finisher._default_self_axis_block("T-AXIS")
+
+    assert block is None
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == ""
+
+
+def test_default_self_axis_block_is_silent_when_claimed_rev_is_absent(
+        tf, tmp_path, monkeypatch, capsys):
+    """T9 — 채택자 형상(claimed_rev 미기록). 출력 0줄 · rc 0 상당 · pytest 실행 0회."""
+    root = _axis_repo(tmp_path)
+    _axis_write_a(root, "def test_a():\n    assert False\n")  # red 라도 비교 기준이 없다
+    board_py = _axis_board_ticket(root, "T-AXIS", claimed_rev="")
+    finisher = _axis_finisher(tf, root, board_py)
+    monkeypatch.setattr(
+        finisher, "_run_pytest_subset",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("pytest 미호출이어야 한다")))
+
+    block = finisher._default_self_axis_block("T-AXIS")
+
+    assert block is None
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == ""
+
+
+# ── T4 — untracked 민감도 ─────────────────────────────────────────────────
+
+def test_default_self_axis_block_catches_an_untracked_new_red_test_file(tf, tmp_path):
+    root = _axis_repo(tmp_path)
+    base = _axis_head(root)
+    board_py = _axis_board_ticket(root, "T-AXIS", claimed_rev=base)
+    (root / "tests" / "test_axis_untracked.py").write_text(
+        "def test_new():\n    assert False  # untracked new red\n", encoding="utf-8")
+    # 커밋하지 않는다 — untracked 로 남긴다.
+
+    finisher = _axis_finisher(tf, root, board_py)
+    block = finisher._default_self_axis_block("T-AXIS")
+
+    assert block is not None
+    assert "tests/test_axis_untracked.py::test_new" in block
+
+
+def test_untracked_scan_omission_would_have_missed_the_new_red(tf, tmp_path):
+    """민감도(반대 방향) — tracked diff 만 쓰면(`ls-files -o` 산출을 빼면) 같은 untracked red
+    가 대상 집합에서 사라진다."""
+    root = _axis_repo(tmp_path)
+    (root / "tests" / "test_axis_untracked.py").write_text(
+        "def test_new():\n    assert False\n", encoding="utf-8")
+
+    finisher = tf.TicketFinisher()
+    _rc, tracked_out = finisher._run_git_stdout_at_fn(root, ["diff", "--name-only", "HEAD"])
+    tracked_only = tf._self_axis_target_paths(tracked_out)
+    assert "tests/test_axis_untracked.py" not in tracked_only
+
+    full = finisher._self_axis_target_files(root)
+    assert "tests/test_axis_untracked.py" in full  # ls-files -o 를 더하면 잡힌다
+
+
+# ── T5 — staged 민감도 ───────────────────────────────────────────────────
+
+def test_default_self_axis_block_catches_a_staged_uncommitted_red(tf, tmp_path):
+    root = _axis_repo(tmp_path)
+    base = _axis_head(root)
+    board_py = _axis_board_ticket(root, "T-AXIS", claimed_rev=base)
+    _axis_write_a(root, "def test_a():\n    assert False  # staged, not committed\n")
+    _axis_git(root, "add", "-A")
+
+    finisher = _axis_finisher(tf, root, board_py)
+    block = finisher._default_self_axis_block("T-AXIS")
+
+    assert block is not None
+    assert "tests/test_axis_a.py::test_a" in block
+
+
+def test_head_tree_alone_would_have_missed_the_staged_red(tf, tmp_path):
+    """민감도(반대 방향) — HEAD 트리 자체(커밋된 내용)만 보면 이 staged 변경이 안 보인다.
+    작업 트리 diff(`git diff --name-only HEAD`)라야 값으로 잡는다."""
+    root = _axis_repo(tmp_path)
+    _axis_write_a(root, "def test_a():\n    assert False  # staged, not committed\n")
+    _axis_git(root, "add", "-A")
+
+    finisher = tf.TicketFinisher()
+    rc, out = finisher._run_git_stdout_at_fn(root, ["show", "HEAD:tests/test_axis_a.py"])
+    assert rc == 0 and "assert 1 == 1" in out  # HEAD 트리 자체는 여전히 base 내용
+
+    _rc2, diff_out = finisher._run_git_stdout_at_fn(root, ["diff", "--name-only", "HEAD"])
+    assert "tests/test_axis_a.py" in tf._self_axis_target_paths(diff_out)
+
+
+# ── T6 — alternates 민감도(baseline materialize 의 원 이력 해소) ─────────────
+#
+# F-002 fix — 존재-판정(`git cat-file -e` 직접 확인)이 아니라 값-대조다: alternates 있는/없는
+# 두 baseline 에서 같은 canary 테스트 파일을 **실 pytest** 로 돌려 실패 노드 ID 집합의 차이를
+# 값으로 비교한다(자기 축 판정 본체의 `work_failed - base_failed` 와 같은 형태). canary 의
+# 어서션 자체는 `git cat-file -e` 를 쓰지만, 이 테스트가 대조하는 대상은 그 결과를 감싼
+# **pytest 실패 집합**이지 outer 테스트가 git 명령을 직접 확인하는 게 아니다. 옛
+# `test_accident_one_reproduces_on_the_real_merge_preview_tree` 는 병합 미리보기(merge-tree
+# oid materialize) 를 전제로 한 3단계 테스트였고 그 개념 자체가 재설계로 없어졌다 — 지금은
+# canary 파일을 materialize 된 scratch 에 직접 써 넣어(커밋 불필요) 같은 "고립되면 원 이력
+# SHA 를 못 본다" 성질만 남긴다. 같은 테스트에서 직렬 실측 소요도 박제한다(F-001 rejected —
+# `-n` 은 붙이지 않는다: 권고 집합 직렬도 수 초 수준이라 불필요하고 xdist 미설치 채택자에서
+# `-n` 은 인자 오류로 loud 하게 죽는다).
+
+_ALTERNATES_CANARY_FILE = "tests/test_alternates_canary.py"
+_ALTERNATES_CANARY_NODE = f"{_ALTERNATES_CANARY_FILE}::test_resolves_a_real_historical_object"
+
+
+def _write_alternates_canary(scratch: Path, target_sha: str) -> None:
+    """`scratch` 에 원 이력 SHA 를 `git cat-file -e` 로 참조하는 canary 테스트를 써 넣는다.
+
+    materialize 는 committed 이력만 archive 하므로(작업 트리 미커밋 변경은 못 담는다) canary
+    는 archive 가 아니라 파일시스템에 직접 쓴다 — 커밋이 전혀 필요 없다."""
+    (scratch / "tests").mkdir(parents=True, exist_ok=True)
+    (scratch / _ALTERNATES_CANARY_FILE).write_text(
+        "import subprocess\n\n\n"
+        "def test_resolves_a_real_historical_object():\n"
+        f"    result = subprocess.run(['git', 'cat-file', '-e', {target_sha!r}],\n"
+        "                            capture_output=True)\n"
+        "    assert result.returncode == 0\n",
+        encoding="utf-8",
+    )
+
+
+def test_alternates_presence_flips_a_real_pytest_failure_set_by_exactly_one_node(
+        tf, tmp_path):
+    """alternates 있는/없는 baseline 양쪽에서 같은 canary 를 실 pytest 로 돌려 실패 노드 ID
+    집합 차이를 값으로 대조한다 — 차집합은 정확히 canary 노드 1건이어야 한다. 같은 실행에서
+    직렬 소요를 박제한다."""
+    finisher = tf.TicketFinisher(venv_python=sys.executable)
+    rc_old, old_out = finisher._run_git_stdout_at_fn(tf.REPO, ["rev-parse", "HEAD~3"])
+    assert rc_old == 0
+    target_sha = old_out.strip()
+
+    t0 = time.time()
+    on_tree = finisher._materialize_tree(tf.REPO, "HEAD")
+    try:
+        assert (on_tree / ".git" / "objects" / "info" / "alternates").is_file()
+        _write_alternates_canary(on_tree, target_sha)
+        on_rc, on_out = finisher._run_pytest_subset(on_tree, [_ALTERNATES_CANARY_FILE])
+    finally:
+        shutil.rmtree(on_tree, ignore_errors=True)
+    t1 = time.time()
+
+    off_tree = finisher._materialize_tree(tf.REPO, "HEAD")
+    try:
+        (off_tree / ".git" / "objects" / "info" / "alternates").unlink()
+        _write_alternates_canary(off_tree, target_sha)
+        off_rc, off_out = finisher._run_pytest_subset(off_tree, [_ALTERNATES_CANARY_FILE])
+    finally:
+        shutil.rmtree(off_tree, ignore_errors=True)
+    t2 = time.time()
+
+    on_failed = tf._self_axis_failed_node_ids(on_out)
+    off_failed = tf._self_axis_failed_node_ids(off_out)
+
+    assert on_rc == 0 and on_failed == set(), on_out
+    assert off_rc != 0 and off_failed == {_ALTERNATES_CANARY_NODE}, off_out
+    assert off_failed - on_failed == {_ALTERNATES_CANARY_NODE}  # 차집합 = 정확히 1건
+
+    on_wall, off_wall = t1 - t0, t2 - t1
+    print(
+        f"  [실측·직렬] alternates on={on_wall:.2f}s off={off_wall:.2f}s "
+        f"합계={on_wall + off_wall:.2f}s (-n 미부착 — F-001 rejected)"
+    )
+
+
+# ── T7 — 원 저장소 무오염(지문 4종) ────────────────────────────────────────
+
+def _repo_fingerprint(finisher, root: Path) -> tuple[int, str, str, int]:
+    """refs 수 · refs 해시 · status 해시 · loose object 수."""
+    _rc1, refs_out = finisher._run_git_stdout_at_fn(root, ["show-ref"])
+    refs_lines = sorted(line for line in refs_out.splitlines() if line.strip())
+    refs_hash = hashlib.sha256("\n".join(refs_lines).encode()).hexdigest()[:16]
+    _rc2, status_out = finisher._run_git_stdout_at_fn(root, ["status", "--porcelain"])
+    status_hash = hashlib.sha256(status_out.encode()).hexdigest()[:16]
+    _rc3, common_out = finisher._run_git_stdout_at_fn(root, ["rev-parse", "--git-common-dir"])
+    common_dir = Path(common_out.strip())
+    if not common_dir.is_absolute():
+        common_dir = (root / common_dir).resolve()
+    loose_count = sum(
+        1 for shard in (common_dir / "objects").glob("*")
+        if shard.is_dir() and shard.name not in ("info", "pack")
+        for _obj in shard.glob("*")
+    )
+    return len(refs_lines), refs_hash, status_hash, loose_count
+
+
+def test_gate_execution_does_not_mutate_the_original_repository(tf):
+    """T7 — 게이트 실행 전후 원 저장소 지문 4종(refs 수·refs 해시·status 해시·loose object
+    수) 동일. materialize·alternates 가 원 저장소에 아무 것도 쓰지 않음을 값으로 확인한다."""
+    finisher = tf.TicketFinisher(venv_python=sys.executable)
+    before = _repo_fingerprint(finisher, tf.REPO)
+
+    scratch = finisher._materialize_tree(tf.REPO, "HEAD")
+    shutil.rmtree(scratch, ignore_errors=True)
+
+    after = _repo_fingerprint(finisher, tf.REPO)
+    assert before == after
+
+
+# ── T10 — 전-트리 ratchet 가드 목록 정합 + 신규 가드 커버리지 ─────────────────
+
+def test_self_axis_ratchet_guard_files_are_real_existing_files(tf):
+    for rel in tf._SELF_AXIS_RATCHET_GUARD_FILES:
+        assert (REPO / rel).is_file(), f"{rel} 가 실재하지 않는다"
+    assert len(tf._SELF_AXIS_RATCHET_GUARD_FILES) == len(set(tf._SELF_AXIS_RATCHET_GUARD_FILES))
+
+
+def test_self_axis_ratchet_guard_list_is_a_subset_of_the_full_test_suite(tf):
+    """목록의 각 항목이 `tests/` 안의 실 파일이라는 T10 최소 보증 — 이름만으로 "새 전-트리
+    가드" 를 일반적으로 자동판별하는 수단은 이 라운드에서 찾지 못했다(메모 참조). `_guard.py`/
+    `_lint.py`/`_e2e.py` 접미사로 시도했더니 이 목록과 무관한 기존 파일 22개가 걸려
+    (`test_git_anchor_guard.py` 류의 좁은 범위 가드) 오탐이었다 — 그 시도는 기각하고 최소
+    보증만 남긴다."""
+    all_test_files = {f"tests/{p.name}" for p in (REPO / "tests").glob("test_*.py")}
+    assert set(tf._SELF_AXIS_RATCHET_GUARD_FILES) <= all_test_files
+
+
+# ── I7 소스 단언 — 통과 시 문구 0줄(pass-phrase 재발 방지) ────────────────────
+
+def test_self_axis_source_never_spells_out_a_pass_phrase(tf):
+    source = Path(tf.__file__).read_text(encoding="utf-8")
+    start = source.index("_default_self_axis_block")
+    end = source.index("def _default_run_board")
+    section = source[start:end]
+    for banned in ("자기 축 통과", "green 이다", "판정 green", "seam green"):
+        assert banned not in section
+
+
+def test_source_never_calls_merge_tree_for_self_axis_judgment(tf):
+    """I1 — 판정 트리는 완료 대상 작업 트리 자체다. 소스에 `merge-tree` 호출이 없다(합성
+    병합 트리를 만들지 않는다는 불변식의 소스 단언)."""
+    source = Path(tf.__file__).read_text(encoding="utf-8")
+    assert "merge-tree" not in source
+
+
+# ── preflight 튜플 배선 (순서·`--no-pytest`·DI 기본값) ────────────────────────
+
+def test_self_axis_preflight_runs_last_after_diff_cap_and_dod_pass(tf, tmp_path):
+    finisher = tf.TicketFinisher(
+        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("회귀 미호출이어야 한다")),
+        run_board_fn=lambda args: (_ for _ in ()).throw(AssertionError("board 미호출")),
+        run_git_fn=lambda args: (_ for _ in ()).throw(AssertionError("git 미호출")),
+        diff_cap_block_fn=lambda tid: None,
+        dod_block_fn=lambda tid: None,
+        self_axis_block_fn=lambda tid: f"자기 축 회귀 신규 실패 — {tid}",
+        log_file=tmp_path / "log.md",
+    )
+    assert finisher.run("T-1234", section=None, dry_run=False) == 1
+
+
+def test_self_axis_preflight_is_never_called_when_diff_cap_blocks_first(tf, tmp_path):
+    calls: list[str] = []
+    finisher = tf.TicketFinisher(
+        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("회귀 미호출이어야 한다")),
+        diff_cap_block_fn=lambda tid: "서킷브레이커 차단",
+        dod_block_fn=lambda tid: None,
+        self_axis_block_fn=lambda tid: calls.append(tid) or None,
+        log_file=tmp_path / "log.md",
+    )
+    assert finisher.run("T-1234", section=None, dry_run=False) == 1
+    assert calls == []
+
+
+def test_self_axis_preflight_is_never_called_when_dod_blocks(tf, tmp_path):
+    calls: list[str] = []
+    finisher = tf.TicketFinisher(
+        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("회귀 미호출이어야 한다")),
+        diff_cap_block_fn=lambda tid: None,
+        dod_block_fn=lambda tid: "DoD 미마감",
+        self_axis_block_fn=lambda tid: calls.append(tid) or None,
+        log_file=tmp_path / "log.md",
+    )
+    assert finisher.run("T-1234", section=None, dry_run=False) == 1
+    assert calls == []
+
+
+def test_self_axis_preflight_still_fires_with_no_pytest(tf, tmp_path):
+    """T8 — `--no-pytest` 로 [1/5] 회귀를 건너뛰어도 자기 축 preflight 는 그대로 발화한다."""
+    finisher = tf.TicketFinisher(
+        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("skip_pytest 라 미호출")),
+        diff_cap_block_fn=lambda tid: None,
+        dod_block_fn=lambda tid: None,
+        self_axis_block_fn=lambda tid: f"자기 축 회귀 신규 실패 — {tid}",
+        log_file=tmp_path / "log.md",
+    )
+    assert finisher.run(
+        "T-1234", section=None, dry_run=False, skip_pytest=True) == 1
+
+
+def test_self_axis_block_fn_defaults_to_the_real_implementation(tf):
+    """DI 인자 1개 — 미주입이면 `_default_self_axis_block` 이 기본값이다."""
+    finisher = tf.TicketFinisher()
+    assert finisher._self_axis_block_fn == finisher._default_self_axis_block
