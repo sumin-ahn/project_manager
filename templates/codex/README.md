@@ -31,8 +31,9 @@ self-driven 으로 구동한다. claude_code 의 `CLAUDE.md`+`.claude/`·opencod
   - **부수 이득**: 방법론이 전부 pm_update 갱신 도달 채널(TOML @source·스킬·엔진 카드)에 실려 —
     instance-owned 진입 doc 의 drift 표면이 codex 엔 애초에 생기지 않는다.
 - **`.codex/config.toml`·`.codex/hooks.json`** (instance-owned·채택자 소유) — ctx checkpoint 안내
-  (문서화된 `model_auto_compact_token_limit` + 비차단 PreCompact 구조화 메시지). 트리에 실재하되 pm_update 미전파
-  (settings.json/opencode.jsonc 대칭·hook trust 재승인 churn 회피).
+  (문서화된 `model_auto_compact_token_limit` + 비차단 PreCompact 구조화 메시지). manifest 밖이라
+  byte-copy 전파를 타지 않고, 대신 전용 채널(아래 §어댑터 config 도달 채널)로 도달한다
+  (settings.json/opencode.jsonc 대칭).
 
 ## Context safety: direct TUI vs. relay
 
@@ -65,13 +66,48 @@ PowerShell 5.1 리다이렉션의 cp949 기본값에서도 JSON이 깨지지 않
 false-green이었다. direct TUI rollout의 token_count는 관측되지만 stable post-turn usage callback은 없으므로,
 장기 PM은 relay의 `turn.completed.usage` 가드를 사용한다.
 
-### 기존 채택자 v1.6.0 수동 반영
+## 훅 범용 진입점 (기능 추가가 config를 안 건드린다)
 
-`.codex/hooks.json`은 instance-owned라 `pm_update`가 덮지 않는다. 기존 채택자는 프로젝트별 command나
-권한을 보존한 채 v1.6.0 템플릿의 `PreCompact` `auto`·`manual` handler를 자기 파일에 수동 병합한다.
-두 handler는 checkpoint 의미의 JSON `systemMessage`를 stdout으로 내고 성공 종료해야 하며,
-compaction을 abort하거나 거부하는 설정을 두지 않는다. 병합 뒤 JSON 파싱과 POSIX `command`·Windows
-`commandWindows`가 모두 남았는지 확인하고, trusted project에서 `/hooks` 승인을 다시 확인한다.
+`PreToolUse`·`UserPromptSubmit`·`PostToolUse`는 이벤트당 진입점을 **하나씩만** 연다 — `matcher`는
+`.*`이고 실행 대상은 manifest 등재 디스패처 `.codex/pm_orch_codex.py --hook-dispatch <이벤트>`다.
+"이 payload에 어떤 가드를 돌릴지"의 판단은 그 코드 안의 registry가 쥔다. native spawn 위임 채널도
+그 registry의 한 항목이고, 옛 `^collaborationspawn_agent$` matcher 판정은 값 그대로 진입점 뒤
+분기로 옮겨 왔다.
+
+그래서 **가드 기능 추가는 엔진 코드 변경뿐**이다. 채택자는 `.codex/hooks.json`을 다시 고치지
+않고 `/hooks` 재승인도 다시 하지 않는다. 등록된 기능 목록은
+`python3 .codex/pm_orch_codex.py --hook-features`가 JSON으로 낸다.
+
+진입점 집합 자체는 릴리즈 간 불변이다. 늘리려면 채택자 config 변경 + 재승인이 다시 필요하므로
+1회 마이그레이션으로만 바꾼다. 진입점이 빠진 채택자는 `pm_update`가 이벤트 이름을 지목해
+알린다(advisory — 훅을 의도적으로 끈 채택자를 차단하지 않는다). 자식 가드가 못 답하거나 설치된
+디스패처가 구세대여도 훅은 rc0 + 완전한 엔벨로프로 끝나고 폴백 사실이 `adapter-fallback`
+마커로 남는다. 도구 호출은 어느 경우에도 막히지 않는다.
+
+`SubagentStart`(관측 전용)와 `PreCompact`/`PostCompact`(checkpoint·snapshot)는 값 공간을 전수
+덮는 matcher를 이미 갖고 있어 이 진입점 밖에 남는다. 그 세 이벤트에 두 번째 기능을 얹으려면
+그때 config 변경 + 재승인이 한 번 더 필요하다.
+
+## 어댑터 config 도달 채널 (managed / report)
+
+instance-owned 어댑터 config는 manifest 밖이라 byte-copy 전파를 타지 않는다. 대신 상류 fix가
+도달하는 전용 채널이 분류별로 갈린다.
+
+| 파일 | 분류 | 도달 방식 |
+| --- | --- | --- |
+| `.codex/hooks.json` | `managed` | 무편집이면 `pm_update`가 백업 후 자동 갱신 + `/hooks` 재승인 안내 |
+| `.codex/config.toml` | `report` | 갱신 0 · drift 한 줄 보고 |
+| `.claude/settings.json` | `report` | 동상 |
+| `.opencode/opencode.jsonc` | `report` | 동상 |
+
+`report` 세 파일에는 권한 allowlist·모델·threshold 같은 채택자 노브가 실재해 자동 갱신이 그
+값을 지울 수 있다. 그래서 **이 세 파일의 이벤트 배선은 수동 1커맨드로 남는다** —
+`./pm-config.sh sync-adapter-config --accept <경로>`(백업 후 이 엔진 세대의 값으로 교체). 자동화
+대상이 아니라는 것이 결정이며, 상류가 그 파일의 배선을 바꿔도 채택자가 이 커맨드를 칠 때까지
+반영되지 않는다. 편집분(`edited`)은 어느 분류에서도 자동 갱신되지 않고 보존된다.
+
+`managed` 갱신 뒤에는 trusted project에서 `/hooks` 승인을 다시 확인한다 — hook trust는 현재 hook
+정의의 hash에 결속되므로 정의가 바뀌면 재승인 전까지 발화하지 않는다.
 
 ## 채택 (pm_import — 정규 경로)
 

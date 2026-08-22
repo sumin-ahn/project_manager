@@ -1,15 +1,41 @@
 {
-  "description": "PreToolUse enforces the live-payload-named native spawn delegation channel; SubagentStart records matcher drift but never denies. Compaction hooks create a deduplicated checkpoint skeleton and re-inject the engine-owned PM snapshot without blocking compaction. Execpolicy remains argv-only and cannot enforce spawn metadata.",
+  "description": "PreToolUse, UserPromptSubmit and PostToolUse open one universal matcher each into the manifest-shipped dispatcher .codex/pm_orch_codex.py --hook-dispatch, which decides in process which registered guards run for the payload; the native spawn delegation channel is one such registered guard and keeps its live-payload-named branch there instead of in this adopter-owned file, so later guards ship as engine code and need no new wiring or /hooks re-approval. SubagentStart records matcher drift but never denies. Compaction hooks create a deduplicated checkpoint skeleton and re-inject the engine-owned PM snapshot without blocking compaction. Execpolicy remains argv-only and cannot enforce spawn metadata.",
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "^collaborationspawn_agent$",
+        "matcher": ".*",
         "hooks": [
           {
             "type": "command",
-            "timeout": 10,
-            "command": "if command -v python3 >/dev/null 2>&1; then py=python3; elif command -v python >/dev/null 2>&1; then py=python; else py=; fi; fallback='{\"systemMessage\":\"[delegate-channel/warn] adapter-fallback: interpreter or guard file unavailable; native spawn allowed fail-open.\",\"suppressOutput\":false}'; if [ -z \"$py\" ]; then printf '%s\\n' \"$fallback\"; else out=$(\"$py\" .project_manager/tools/delegate_channel_guard.py supervise PreToolUse \"$py\" .project_manager/tools/delegate_channel_guard.py codex-hook); rc=$?; if [ \"$rc\" -eq 0 ] && [ -n \"$out\" ]; then printf '%s\\n' \"$out\"; else printf '%s\\n' \"$fallback\"; fi; fi",
-            "commandWindows": "$py = $null; foreach ($cand in @('py','python3','python')) { if (Get-Command $cand -ErrorAction SilentlyContinue) { $probe = & $cand -c 'import sys; sys.stdout.write(str(sys.version_info >= (3, 11)))' 2> $null; if ($probe -eq 'True') { $py = $cand; break } } }; $fallback = '{\"systemMessage\":\"[delegate-channel/warn] adapter-fallback: interpreter or guard file unavailable; native spawn allowed fail-open.\",\"suppressOutput\":false}'; if ($null -eq $py) { Write-Output $fallback } else { $out = & $py '.project_manager/tools/delegate_channel_guard.py' supervise PreToolUse $py '.project_manager/tools/delegate_channel_guard.py' codex-hook; if ($LASTEXITCODE -eq 0 -and $null -ne $out -and @($out).Count -gt 0) { Write-Output $out } else { Write-Output $fallback } }"
+            "timeout": 15,
+            "command": "if command -v python3 >/dev/null 2>&1; then py=python3; elif command -v python >/dev/null 2>&1; then py=python; else py=; fi; fallback='{\"systemMessage\":\"[hook-dispatch/warn] adapter-fallback: interpreter or dispatcher unavailable; PreToolUse guards skipped fail-open.\",\"suppressOutput\":false}'; if [ -z \"$py\" ]; then printf '%s\\n' \"$fallback\"; else out=$(\"$py\" .codex/pm_orch_codex.py --hook-dispatch PreToolUse); rc=$?; if [ \"$rc\" -eq 0 ] && [ -n \"$out\" ]; then printf '%s\\n' \"$out\"; else printf '%s\\n' \"$fallback\"; fi; fi",
+            "commandWindows": "$py = $null; foreach ($cand in @('py','python3','python')) { if (Get-Command $cand -ErrorAction SilentlyContinue) { $probe = & $cand -c 'import sys; sys.stdout.write(str(sys.version_info >= (3, 11)))' 2> $null; if ($probe -eq 'True') { $py = $cand; break } } }; $fallback = '{\"systemMessage\":\"[hook-dispatch/warn] adapter-fallback: interpreter or dispatcher unavailable; PreToolUse guards skipped fail-open.\",\"suppressOutput\":false}'; if ($null -eq $py) { Write-Output $fallback } else { $out = & $py '.codex/pm_orch_codex.py' --hook-dispatch PreToolUse; if ($LASTEXITCODE -eq 0 -and $null -ne $out -and @($out).Count -gt 0) { Write-Output $out } else { Write-Output $fallback } }"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 15,
+            "command": "if command -v python3 >/dev/null 2>&1; then py=python3; elif command -v python >/dev/null 2>&1; then py=python; else py=; fi; fallback='{\"systemMessage\":\"[hook-dispatch/warn] adapter-fallback: interpreter or dispatcher unavailable; UserPromptSubmit guards skipped fail-open.\",\"suppressOutput\":false}'; if [ -z \"$py\" ]; then printf '%s\\n' \"$fallback\"; else out=$(\"$py\" .codex/pm_orch_codex.py --hook-dispatch UserPromptSubmit); rc=$?; if [ \"$rc\" -eq 0 ] && [ -n \"$out\" ]; then printf '%s\\n' \"$out\"; else printf '%s\\n' \"$fallback\"; fi; fi",
+            "commandWindows": "$py = $null; foreach ($cand in @('py','python3','python')) { if (Get-Command $cand -ErrorAction SilentlyContinue) { $probe = & $cand -c 'import sys; sys.stdout.write(str(sys.version_info >= (3, 11)))' 2> $null; if ($probe -eq 'True') { $py = $cand; break } } }; $fallback = '{\"systemMessage\":\"[hook-dispatch/warn] adapter-fallback: interpreter or dispatcher unavailable; UserPromptSubmit guards skipped fail-open.\",\"suppressOutput\":false}'; if ($null -eq $py) { Write-Output $fallback } else { $out = & $py '.codex/pm_orch_codex.py' --hook-dispatch UserPromptSubmit; if ($LASTEXITCODE -eq 0 -and $null -ne $out -and @($out).Count -gt 0) { Write-Output $out } else { Write-Output $fallback } }"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 15,
+            "command": "if command -v python3 >/dev/null 2>&1; then py=python3; elif command -v python >/dev/null 2>&1; then py=python; else py=; fi; fallback='{\"systemMessage\":\"[hook-dispatch/warn] adapter-fallback: interpreter or dispatcher unavailable; PostToolUse guards skipped fail-open.\",\"suppressOutput\":false}'; if [ -z \"$py\" ]; then printf '%s\\n' \"$fallback\"; else out=$(\"$py\" .codex/pm_orch_codex.py --hook-dispatch PostToolUse); rc=$?; if [ \"$rc\" -eq 0 ] && [ -n \"$out\" ]; then printf '%s\\n' \"$out\"; else printf '%s\\n' \"$fallback\"; fi; fi",
+            "commandWindows": "$py = $null; foreach ($cand in @('py','python3','python')) { if (Get-Command $cand -ErrorAction SilentlyContinue) { $probe = & $cand -c 'import sys; sys.stdout.write(str(sys.version_info >= (3, 11)))' 2> $null; if ($probe -eq 'True') { $py = $cand; break } } }; $fallback = '{\"systemMessage\":\"[hook-dispatch/warn] adapter-fallback: interpreter or dispatcher unavailable; PostToolUse guards skipped fail-open.\",\"suppressOutput\":false}'; if ($null -eq $py) { Write-Output $fallback } else { $out = & $py '.codex/pm_orch_codex.py' --hook-dispatch PostToolUse; if ($LASTEXITCODE -eq 0 -and $null -ne $out -and @($out).Count -gt 0) { Write-Output $out } else { Write-Output $fallback } }"
           }
         ]
       }

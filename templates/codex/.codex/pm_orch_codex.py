@@ -34,9 +34,12 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
+import time
 from pathlib import Path
+from typing import NamedTuple
 
 CODEX_BIN = "codex"
 TURN_TIMEOUT_SEC = 600  # subprocess 당 hard hang 가드(상한 — 한 turn 이 길 수 있음·codex reasoning).
@@ -388,6 +391,291 @@ class CodexCliDriver:
                 sys.stderr.write("[pm-orch] codex ctx marker 박제 실패\n")
 
 
+# ── codex 훅 범용 진입점 + 기능 디스패처 (T-0777) ──────────────────────────────
+# `.codex/hooks.json` 은 채택자 소유(manifest 밖)라 가드 기능을 하나 더할 때마다 채택자 config
+# 수정 + `/hooks` 재승인을 다시 요구했다. 그 마찰을 1회로 끝내려고 이벤트당 진입점을 **하나만**
+# 열고(`matcher .*` → 이 파일), "이 payload 에 어떤 가드를 돌릴지" 의 판단을 **manifest 등재
+# 코드**인 여기로 옮긴다 — 이후 기능 추가는 아래 registry 한 줄이고 config 는 다시 안 건드린다.
+# opencode `plugins/` 디렉토리 스캔이 같은 문제를 구조적으로 없앤 참고 모델이다.
+#
+# 진입점 집합은 **릴리즈 간 불변**이다. 늘리려면 채택자 config 변경 + 재승인이 다시 필요하므로
+# T-0777 과 같은 1회 마이그레이션을 거친다(선언은 엔진 `pm_import.ADAPTER_HOOK_SET.entrypoints`
+# 가 역방향으로 대조한다 — 진입점이 빠진 채택자는 조용히 통과하지 않는다).
+CODEX_HOOK_DISPATCH_FLAG = "--hook-dispatch"
+CODEX_HOOK_FEATURES_FLAG = "--hook-features"
+# 이 파일이 진입점을 받는 이벤트 전수. hooks.json 의 (이벤트 × matcher) 진입점과 1:1 이며,
+#   엔진 역방향 가드가 같은 이름으로 config 를 대조한다.
+CODEX_HOOK_ENTRYPOINT_EVENTS = ("PreToolUse", "UserPromptSubmit", "PostToolUse")
+# 한 훅 발화에서 기능 자식들에게 나눠 주는 총 예산(초). hooks.json 의 바깥 timeout 보다 작고
+#   엔진 감독자(delegate_channel_guard.CODEX_SUPERVISOR_TIMEOUT_SECONDS=8)보다 커야 한다 —
+#   감독자보다 짧으면 감독자가 완전한 엔벨로프를 내기 전에 이쪽이 먼저 죽여 사유가 사라진다.
+CODEX_HOOK_DISPATCH_BUDGET_SEC = 12
+# 어느 층이 답했는지 출력으로 구별된다 — 이 마커는 엔진 상수
+#   `delegate_channel_guard.CODEX_ADAPTER_FALLBACK_MARKER` 와 같은 값이어야 하고 테스트가 결속한다
+#   (훅 실행 시점에 엔진 모듈을 적재하지 않으려고 리터럴을 둔다·shell 폴백과 같은 근거).
+CODEX_HOOK_ADAPTER_FALLBACK_MARKER = "adapter-fallback"
+
+
+class CodexHookFeature(NamedTuple):
+    """진입점 뒤에 등록된 가드 기능 하나 — **배선의 단일 진실**.
+
+    feature_id   기계 노출용 식별자(`--hook-features`). 기능 파리티 가드가 이 목록을 소비한다.
+    event        발화 이벤트(`CODEX_HOOK_ENTRYPOINT_EVENTS` 중 하나).
+    tool_pattern `tool_name` 정규식(fullmatch). None 이면 도구 무관(그 이벤트 전량).
+                 옛 형상에서 hooks.json matcher 가 하던 판별이 그대로 여기로 옮겨 왔다.
+    argv         기능을 실행하는 커맨드. `{py}` = 이 인터프리터, `{tools}` = 엔진 도구 디렉토리.
+                 자식은 payload 를 stdin 으로 받고 엔벨로프 한 줄을 stdout 으로 낸다.
+    """
+    feature_id: str
+    event: str
+    tool_pattern: str | None
+    argv: tuple[str, ...]
+
+
+# 등록된 기능 전수. **여기 한 줄이 곧 배선**이다 — 새 가드는 이 튜플에 항목을 더하면 되고
+#   채택자 `.codex/hooks.json` 은 그대로다(T-0777 이 닫은 마찰).
+CODEX_HOOK_FEATURES: tuple[CodexHookFeature, ...] = (
+    CodexHookFeature(
+        # 옛 배선: hooks.json `PreToolUse` matcher `^collaborationspawn_agent$` 가 직접 감독자를
+        #   불렀다. 판별식과 커맨드가 값 그대로 여기로 옮겨 왔다(진입점 뒤 분기·동작 보존).
+        feature_id="delegate-channel",
+        event="PreToolUse",
+        tool_pattern="^collaborationspawn_agent$",
+        argv=("{py}", "{tools}/delegate_channel_guard.py", "supervise", "PreToolUse",
+              "{py}", "{tools}/delegate_channel_guard.py", "codex-hook"),
+    ),
+)
+
+
+def _registered_features(features):
+    """판정이 쓸 기능 목록 — 미지정이면 **호출 시점**의 registry.
+
+    기본값을 시그니처에 박으면 def 시점 튜플이 굳어, 기능을 더한 상류 사본을 로드해도 옛 목록이
+    돈다(등록이 코드 변경으로 전파된다는 이 배선의 전제가 그 자리에서 거짓이 된다)."""
+    return CODEX_HOOK_FEATURES if features is None else features
+
+
+def hook_feature_registry(features=None) -> dict:
+    """등록 진입점·기능을 **기계 판독 형태**로 노출 (`--hook-features`).
+
+    배선이 디스패처 뒤로 들어가면 config 파싱으로는 기능을 열거할 수 없다 — 기능 파리티 가드가
+    소비할 목록을 여기서 낸다(하네스 간 기능 집합 대조의 codex 쪽 입력)."""
+    features = _registered_features(features)
+    return {
+        "entrypoint_events": list(CODEX_HOOK_ENTRYPOINT_EVENTS),
+        "features": [
+            {"feature_id": feature.feature_id, "event": feature.event,
+             "tool_pattern": feature.tool_pattern}
+            for feature in features
+        ],
+    }
+
+
+def hook_fallback_envelope(subject: str, detail: str) -> dict:
+    """가드를 못 돌렸다는 사실이 남는 2필드 경고 엔벨로프 (fail-open·차단 0).
+
+    통과와 구별되지 않는 침묵이 이 클래스가 숨는 방식이라, 폴백은 항상 마커를 단다."""
+    return {
+        "systemMessage": (f"[hook-dispatch/warn] {CODEX_HOOK_ADAPTER_FALLBACK_MARKER}: "
+                          f"{subject} 판정 불가({detail}) — 가드 없이 통과(fail-open)"),
+        "suppressOutput": False,
+    }
+
+
+# 판별 결과는 셋이다 — **정상 미매칭**(조용한 통과)과 **판정 불능**을 같은 값으로 접지 않는다.
+#   옛 배선에서는 hooks.json matcher 가 호스트 쪽에서 판별했고, 판별 근거가 없는 입력(빈 stdin·
+#   `{}`·파손 JSON)은 가드 자식이 경고 엔벨로프로 냈다. 판별이 진입점 뒤로 옮겨 온 뒤에도 그
+#   경고 의미가 남아야 한다 — 판정 불능이 통과와 같은 출력이면 가드가 꺼진 것과 구별되지
+#   않는다(T-0777 불변식 4·조용한 실패 금지).
+CODEX_HOOK_ROUTE_MATCH = "match"
+CODEX_HOOK_ROUTE_SKIP = "skip"
+CODEX_HOOK_ROUTE_UNDECIDABLE = "undecidable"
+
+
+class CodexHookRoute(NamedTuple):
+    """한 기능에 대한 판별 결과 — 판정과 (판정 불능일 때의) 사유."""
+    decision: str
+    detail: str = ""
+
+
+def _parse_hook_payload(payload_bytes) -> tuple[dict, str]:
+    """훅 payload → (dict, 못 읽은 사유). 사유가 빈 문자열이면 정상 파싱이다.
+
+    사유를 값으로 돌려주는 이유는 호출부가 "빈 payload" 와 "못 읽은 payload" 를 구분해야 하기
+    때문이다 — 둘을 같은 빈 dict 로 접으면 판정 불능이 정상 미매칭으로 위장한다."""
+    raw = bytes(payload_bytes)
+    if not raw.strip():
+        return {}, "빈 stdin(payload 없음)"
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, TypeError) as exc:
+        detail = " ".join(str(exc).splitlines()).strip() or type(exc).__name__
+        return {}, f"{type(exc).__name__}: {detail}"
+    if not isinstance(payload, dict):
+        return {}, f"payload 가 JSON 객체가 아님({type(payload).__name__})"
+    return payload, ""
+
+
+def _feature_route(feature: CodexHookFeature, payload: dict, *,
+                   payload_error: str = "") -> CodexHookRoute:
+    """그 payload 가 이 기능의 판별식에 걸리는가 — 걸림/안 걸림/**판정 불능**.
+
+    판별식(`tool_pattern`)은 옛 hooks.json matcher 와 같은 fullmatch 다. 판별에 쓸 값이 없거나
+    (payload 파싱 실패·`tool_name` 부재) 판별식 자체가 깨졌으면(정규식 오류) 안 걸린 것이
+    아니라 **판정을 못 한 것**이다."""
+    if feature.tool_pattern is None:
+        return CodexHookRoute(CODEX_HOOK_ROUTE_MATCH)
+    if payload_error:
+        return CodexHookRoute(CODEX_HOOK_ROUTE_UNDECIDABLE,
+                              f"payload 를 못 읽어 tool_name 판별 불가({payload_error})")
+    name = payload.get("tool_name")
+    if not isinstance(name, str) or not name:
+        name = payload.get("toolName")
+    if not isinstance(name, str) or not name:
+        return CodexHookRoute(CODEX_HOOK_ROUTE_UNDECIDABLE,
+                              "payload 에 tool_name 이 없어 판별 불가")
+    try:
+        matched = re.fullmatch(feature.tool_pattern, name) is not None
+    except re.error as exc:
+        return CodexHookRoute(
+            CODEX_HOOK_ROUTE_UNDECIDABLE,
+            f"registry tool_pattern {feature.tool_pattern!r} 정규식 오류({exc})")
+    return CodexHookRoute(
+        CODEX_HOOK_ROUTE_MATCH if matched else CODEX_HOOK_ROUTE_SKIP)
+
+
+def _feature_matches(feature: CodexHookFeature, payload: dict) -> bool:
+    """판별식에 **걸리는가** 하나만 보는 형태(판정 불능은 걸리지 않은 것으로 본다)."""
+    return _feature_route(feature, payload).decision == CODEX_HOOK_ROUTE_MATCH
+
+
+def _expand_hook_argv(argv, root: Path) -> list[str]:
+    """registry argv 의 자리표시자를 실값으로 — `{py}`=이 인터프리터·`{tools}`=엔진 도구 디렉토리.
+
+    경로는 cwd 가 아니라 **엔진 루트**에서 해소한다(훅이 어느 디렉토리에서 발화해도 같은 자식)."""
+    tools = str(Path(root) / ".project_manager" / "tools")
+    return [str(token).replace("{py}", sys.executable).replace("{tools}", tools)
+            for token in argv]
+
+
+def _run_hook_feature(feature: CodexHookFeature, payload_bytes: bytes, root: Path, *,
+                      runner=subprocess.run, timeout: float) -> dict:
+    """기능 자식을 시간 상한 안에서 돌리고 그 엔벨로프를 그대로 돌려준다(실패는 폴백 경고)."""
+    try:
+        completed = runner(
+            _expand_hook_argv(feature.argv, root), input=bytes(payload_bytes),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout,
+        )
+        returncode = getattr(completed, "returncode", None)
+        if returncode != 0:
+            raise ValueError(f"기능 rc={returncode}")
+        envelope = json.loads((getattr(completed, "stdout", b"") or b"").decode("utf-8"))
+        if not isinstance(envelope, dict):
+            raise ValueError("엔벨로프가 JSON 객체가 아님")
+        return envelope
+    except BaseException as exc:  # noqa: BLE001 — 기능 고장이 도구 호출을 막지 않는다.
+        detail = " ".join(str(exc).splitlines()).strip() or type(exc).__name__
+        return hook_fallback_envelope(feature.feature_id, f"{type(exc).__name__}: {detail}")
+
+
+def _is_blocking_envelope(envelope: dict) -> bool:
+    """그 엔벨로프가 차단 판정인가 (`decision`/`permissionDecision` 보유)."""
+    if envelope.get("decision") == "block":
+        return True
+    hook_output = envelope.get("hookSpecificOutput")
+    return (isinstance(hook_output, dict)
+            and hook_output.get("permissionDecision") == "deny")
+
+
+def merge_hook_envelopes(envelopes) -> dict:
+    """여러 기능의 응답을 호스트가 읽는 **한 줄**로 합친다.
+
+    호스트는 훅 하나당 엔벨로프 하나만 읽는다. 규칙 셋:
+      1. 빈 엔벨로프(`{}` = 통과)는 기여하지 않는다 — 아무도 답하지 않으면 `{}`(측정된 allow 형태).
+      2. 응답이 하나면 **그대로** 돌려준다 — 진입점 도입이 기존 판정 값을 바꾸지 않는다.
+      3. 둘 이상이면 차단 판정이 기준이 되고(없으면 첫 응답), 나머지 기능의 `systemMessage` 는
+         줄바꿈으로 덧붙는다. 차단 사유 필드도 같은 합본으로 맞춰 사유가 잘리지 않게 한다.
+    """
+    answered = [item for item in envelopes if isinstance(item, dict) and item]
+    if not answered:
+        return {}
+    if len(answered) == 1:
+        return answered[0]
+    blocking = [item for item in answered if _is_blocking_envelope(item)]
+    merged = dict(blocking[0] if blocking else answered[0])
+    messages: list[str] = []
+    for item in answered:
+        text = item.get("systemMessage")
+        if isinstance(text, str) and text.strip() and text not in messages:
+            messages.append(text)
+    if messages:
+        combined = "\n".join(messages)
+        merged["systemMessage"] = combined
+        if _is_blocking_envelope(merged):
+            merged["reason"] = combined
+            hook_output = merged.get("hookSpecificOutput")
+            if isinstance(hook_output, dict) and "permissionDecisionReason" in hook_output:
+                merged["hookSpecificOutput"] = {
+                    **hook_output, "permissionDecisionReason": combined}
+    if any(item.get("suppressOutput") is False for item in answered):
+        merged["suppressOutput"] = False
+    return merged
+
+
+def dispatch_hook(event: str, payload_bytes: bytes, root: Path, *,
+                  features=None, runner=subprocess.run,
+                  budget: float = CODEX_HOOK_DISPATCH_BUDGET_SEC) -> dict:
+    """그 이벤트에 등록된 기능 중 payload 에 걸리는 것을 돌려 합본 엔벨로프를 만든다.
+
+    걸리는 기능이 없으면 자식을 **하나도 띄우지 않는다** — 진입점이 전 도구 호출로 넓어졌으므로
+    in-process 판별이 없으면 매 호출이 프로세스 하나를 더 만든다. 예산은 기능들이 나눠 쓴다.
+
+    판별을 **못 한** 기능은 조용히 건너뛰지 않고 경고 엔벨로프로 남긴다(rc 는 종전대로 0·차단
+    0) — 옛 배선에서 같은 입력에 가드 자식이 내던 경고가 진입점 뒤에서 사라지면, 가드가 꺼진
+    형상과 출력이 같아진다."""
+    if event not in CODEX_HOOK_ENTRYPOINT_EVENTS:
+        # config 가 이 디스패처 세대가 모르는 진입점을 열었다 — 조용히 통과하지 않는다.
+        return hook_fallback_envelope(
+            f"dispatch:{event}", "이 디스패처 세대에 없는 진입점 이벤트")
+    payload, payload_error = _parse_hook_payload(payload_bytes)
+    deadline = time.monotonic() + budget
+    answers: list[dict] = []
+    for feature in _registered_features(features):
+        if feature.event != event:
+            continue
+        route = _feature_route(feature, payload, payload_error=payload_error)
+        if route.decision == CODEX_HOOK_ROUTE_SKIP:
+            continue  # 정상 미매칭 — 옛 형상에서 호스트 matcher 가 조용히 걸러 주던 값이다.
+        if route.decision == CODEX_HOOK_ROUTE_UNDECIDABLE:
+            answers.append(hook_fallback_envelope(feature.feature_id, route.detail))
+            continue
+        answers.append(_run_hook_feature(
+            feature, payload_bytes, root, runner=runner,
+            timeout=max(0.1, deadline - time.monotonic())))
+    return merge_hook_envelopes(answers)
+
+
+def run_hook_dispatch(event: str, root: Path, *, stdin=None, stdout=None) -> int:
+    """stdin 훅 payload → 합본 엔벨로프 한 줄. **어떤 실패도 rc0 + 유효 엔벨로프**.
+
+    비-ASCII 는 `\\uXXXX` 로 이스케이프해 낸다 — 이 줄은 PowerShell/bash 캡처를 거쳐 호스트로
+    가므로 cp949 콘솔에서도 JSON 이 깨지지 않아야 한다(엔진 감독자 출력과 같은 규약)."""
+    stream = sys.stdin.buffer if stdin is None else stdin
+    sink = sys.stdout if stdout is None else stdout
+    try:
+        payload_bytes = stream.read()
+        if isinstance(payload_bytes, str):
+            payload_bytes = payload_bytes.encode("utf-8")
+        envelope = dispatch_hook(event, payload_bytes, root)
+    except BaseException as exc:  # noqa: BLE001 — 디스패처 고장이 도구 호출을 막지 않는다.
+        detail = " ".join(str(exc).splitlines()).strip() or type(exc).__name__
+        envelope = hook_fallback_envelope(
+            f"dispatch:{event}", f"{type(exc).__name__}: {detail}")
+    sink.write(json.dumps(envelope, separators=(",", ":")) + "\n")
+    sink.flush()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="codex PM relay — thin stateless supervisor 세션 자동-회전."
@@ -402,10 +690,28 @@ def build_parser() -> argparse.ArgumentParser:
              "박아 같은 task 를 resume 하게 한다((b) 명시 전달·cwd 추론 금지). 미지정이면 bare "
              "`$pm-bootstrap`(슬롯/솔로).",
     )
+    # 훅 축(relay 와 같은 파일·claude `pm_orch_claude.py --git-anchor-hook` 대칭) — 하네스가
+    #   부르는 기계 진입점이라 사람 대상 help 에서는 감춘다.
+    parser.add_argument(CODEX_HOOK_DISPATCH_FLAG, default=None, metavar="이벤트",
+                        help=argparse.SUPPRESS)
+    parser.add_argument(CODEX_HOOK_FEATURES_FLAG, action="store_true",
+                        help=argparse.SUPPRESS)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    actual_argv = sys.argv[1:] if argv is None else argv
+    # 훅 축은 relay 부팅(엔진 적재·local.conf·supervisor)을 타지 않는다 — 훅은 매 도구 호출마다
+    #   발화하므로 진입점이 얇아야 하고, 엔진 적재 실패가 도구 호출을 막으면 그게 곧 락아웃이다.
+    if CODEX_HOOK_FEATURES_FLAG in actual_argv:
+        sys.stdout.write(json.dumps(hook_feature_registry(), ensure_ascii=False,
+                                    indent=2, sort_keys=True) + "\n")
+        return 0
+    if CODEX_HOOK_DISPATCH_FLAG in actual_argv:
+        args = build_parser().parse_args(actual_argv)
+        return run_hook_dispatch(
+            args.hook_dispatch, repo_root(Path(__file__).resolve().parent))
+
     args = build_parser().parse_args(argv)
     engine, root = _load_engine()
 

@@ -347,6 +347,377 @@ def test_shipped_claude_template_hook_set_is_self_consistent(pm_import):
     assert unmet == {}, f"출하 template 의 훅 세트가 자기 config 를 감당하지 못한다: {unmet}"
 
 
+def test_shipped_claude_template_flag_demand_is_not_vacuous(pm_import, tmp_path):
+    """출하 settings.json 이 **실제로** 세대 플래그를 요구한다 — 요구 0 이면 자기정합 단언이 공허하다.
+
+    `unmet == {}` 는 요구가 하나도 없을 때도 green 이다. 배선이 진입점 뒤로 접히면서 config 가
+    플래그를 안 넘기게 되면 그 순간 세대 결합 가드(v1.7.0 락아웃 클래스)가 조용히 무력해진다 —
+    구세대 드라이버를 심어 요구가 표면에 뜨는지 본다."""
+    template_root = REPO / "templates" / "claude_code"
+    spec = pm_import.ADAPTER_HOOK_SET["claude"]
+    document = json.loads(
+        (template_root / spec.config_relpath).read_text(encoding="utf-8"))
+    stale = tmp_path / "stale"
+    (stale / ".claude").mkdir(parents=True)
+    for relpath in spec.live_files:
+        (stale / relpath).write_text("# 구세대 사본\n", encoding="utf-8")
+
+    unmet = pm_import._hook_set_demands(document, spec, stale)
+
+    assert (pm_import.HOOK_SET_UNSUPPORTED_FLAG, _GIT_ANCHOR_FLAG) in unmet, \
+        f"출하 settings.json 이 {_GIT_ANCHOR_FLAG} 를 요구하지 않는다(세대 결합 가드 공허): {unmet}"
+
+
+def test_codex_entrypoint_migration_left_claude_wiring_untouched(pm_import):
+    """codex 진입점 마이그레이션(T-0777)이 claude 배선을 건드리지 않았다.
+
+    claude 는 `PreToolUse matcher=*` 진입점을 이미 갖고 있어 흡수 이득이 없고, 기존 `Bash`
+    블록을 지우면 세대 결합 가드가 공허해지며 발화 스코프가 전 도구로 넓어진다. 그래서 이
+    티켓의 비목표였고, 그 사실을 값으로 고정한다."""
+    document = json.loads(
+        (REPO / "templates" / "claude_code" / _SETTINGS_REL).read_text(encoding="utf-8"))
+    groups = document["hooks"]["PreToolUse"]
+
+    assert [group["matcher"] for group in groups] == ["*", "Bash", "Agent"]
+    commands = [handler["command"] for group in groups
+                for handler in group["hooks"]]
+    assert any(command.endswith(_GIT_ANCHOR_FLAG) for command in commands)
+    # codex 디스패처 표기가 claude config 로 새면 배선 진실이 두 벌이 된다.
+    for command in commands:
+        assert "--hook-dispatch" not in command, command
+        assert "pm_orch_codex" not in command, command
+
+
+# ── 역방향 축: 이 엔진 세대가 기대하는 진입점이 config 에 있나 (T-0777) ──────────
+# 위 절들은 **config → 엔진** 방향(config 가 요구하는 것을 설치본이 감당하나)만 본다. 진입점이
+# 아예 없으면 요구가 0 이라 그 방향으로는 영원히 green 이고, 그 상태에서 등록된 가드는 한 번도
+# 발화하지 않는다. 이 절이 반대 방향을 고정한다 — 판정은 advisory 이지 차단이 아니다(config 는
+# 채택자 소유).
+
+_CODEX_HOOKS_REL = ".codex/hooks.json"
+_CODEX_DISPATCHER_REL = ".codex/pm_orch_codex.py"
+_CODEX_DISPATCH_FLAG = "--hook-dispatch"
+_CODEX_ENTRYPOINT_EVENTS = ("PreToolUse", "UserPromptSubmit", "PostToolUse")
+# 디스패처 세대 마커는 config 가 넘기는 **호출 값**(플래그 + 이벤트 이름) 보유다 — 엔진 판정과
+#   같은 기준이다. 플래그만 알고 그 이벤트는 모르는 세대가 실재하고, 그 조합에서 훅은 매 발화마다
+#   폴백으로 빠진다.
+_DISPATCHER_NEW = (f'CODEX_HOOK_DISPATCH_FLAG = "{_CODEX_DISPATCH_FLAG}"\n'
+                   f'CODEX_HOOK_ENTRYPOINT_EVENTS = {_CODEX_ENTRYPOINT_EVENTS!r}\n')
+# 진입점 집합이 늘기 전 세대 — 플래그는 아는데 새 이벤트는 모른다.
+_DISPATCHER_PREVIOUS_EVENT_SET = (
+    f'CODEX_HOOK_DISPATCH_FLAG = "{_CODEX_DISPATCH_FLAG}"\n'
+    'CODEX_HOOK_ENTRYPOINT_EVENTS = ("PreToolUse", "UserPromptSubmit")\n')
+_DISPATCHER_OLD = 'def main(argv=None):\n    return 0\n'
+
+
+def _codex_hooks(events=("PreToolUse", "UserPromptSubmit", "PostToolUse"),
+                 *, matcher: str = ".*") -> str:
+    """codex hooks.json — 이벤트별 범용 진입점 하나씩(출하 형상의 최소 재현)."""
+    return json.dumps({"hooks": {
+        event: [{
+            "matcher": matcher,
+            "hooks": [{"type": "command", "timeout": 15,
+                       "command": f'"$py" {_CODEX_DISPATCHER_REL} '
+                                  f'{_CODEX_DISPATCH_FLAG} {event}'}],
+        }] for event in events
+    }}, ensure_ascii=False, indent=2) + "\n"
+
+
+def _make_codex_case(tmp_path: Path, *, hooks: str,
+                     dispatcher: str | None = _DISPATCHER_NEW) -> Path:
+    """codex 채택자 dest — hooks.json + (선택) 디스패처."""
+    dest = tmp_path / "codex-adopter"
+    (dest / ".codex").mkdir(parents=True)
+    (dest / ".project_manager").mkdir(parents=True)
+    (dest / "AGENTS.md").write_text("# adopter 진입 문서\n", encoding="utf-8")
+    (dest / _CODEX_HOOKS_REL).write_text(hooks, encoding="utf-8")
+    if dispatcher is not None:
+        (dest / _CODEX_DISPATCHER_REL).write_text(dispatcher, encoding="utf-8")
+    (dest / ".project_manager" / "install.json").write_text(
+        '{"schema": 1, "harnesses": ["codex"]}\n', encoding="utf-8")
+    return dest
+
+
+def test_entrypoint_declaration_targets_are_declared_live_files(pm_import):
+    """진입점이 부르는 디스패처는 전부 그 하네스의 훅 세트 파일이어야 한다(선언 두 벌 방지).
+
+    밖의 경로를 선언하면 "판정은 하는데 동기가 원자 write 하지 않는" 파일이 생긴다 —
+    `flag_support` 축과 같은 근거다."""
+    seen_any = False
+    for harness, spec in pm_import.ADAPTER_HOOK_SET.items():
+        events = [entrypoint.event for entrypoint in spec.entrypoints]
+        assert len(events) == len(set(events)), \
+            f"{harness}: 한 이벤트에 진입점을 두 번 선언했다 ({events})"
+        for entrypoint in spec.entrypoints:
+            seen_any = True
+            assert spec.config_relpath, \
+                f"{harness}: config 가 없는 하네스에 진입점을 선언했다({entrypoint.event})"
+            assert pm_import._is_hook_set_file(entrypoint.dispatcher, spec), \
+                f"{harness}:{entrypoint.event} 가 훅 세트 밖 디스패처를 부른다"
+            assert pm_import.is_live_hook_set_path(entrypoint.dispatcher), \
+                f"{harness}:{entrypoint.event} 디스패처가 원자 write 대상이 아니다"
+    assert seen_any, "진입점 선언이 하나도 없다(공허 가드)"
+
+
+@pytest.mark.parametrize("harness,template_dir",
+                         (("claude", "claude_code"), ("codex", "codex"),
+                          ("opencode", "opencode")))
+def test_shipped_template_satisfies_its_entrypoint_declaration(
+        pm_import, harness, template_dir):
+    """출하 template 이 자기 진입점 선언을 만족한다 — 배선을 지우면 그 자리에서 red.
+
+    합성 픽스처만으로는 실 출하물의 재발을 못 막는다(claude 축의 자기정합 단언과 같은 근거)."""
+    findings = pm_import.judge_adapter_hook_entrypoints(
+        REPO / "templates" / template_dir, REPO, [harness])
+
+    assert findings == [], [finding.detail for finding in findings]
+
+
+def test_missing_entrypoint_is_reported_with_the_event_named(pm_import, tmp_path):
+    """진입점을 하나 빼면 그 이벤트를 **지목**한다(민감도) — 나머지는 조용하다."""
+    dest = _make_codex_case(
+        tmp_path, hooks=_codex_hooks(("PreToolUse", "PostToolUse")))
+
+    findings = pm_import.judge_adapter_hook_entrypoints(dest, None, ["codex"])
+
+    assert [(finding.kind, finding.event) for finding in findings] == [
+        (pm_import.HOOK_ENTRYPOINT_MISSING, "UserPromptSubmit")]
+    assert _CODEX_HOOKS_REL in findings[0].detail
+    assert any("sync-adapter-config --accept" in line
+               for line in pm_import.hook_entrypoint_advisory_lines(findings[0]))
+
+
+def test_full_entrypoint_set_is_silent(pm_import, tmp_path):
+    """세 진입점이 다 있고 디스패처가 그 세대면 소견 0(거짓 red 금지)."""
+    dest = _make_codex_case(tmp_path, hooks=_codex_hooks())
+
+    assert pm_import.judge_adapter_hook_entrypoints(dest, None, ["codex"]) == []
+
+
+def test_narrowed_matcher_is_not_a_universal_entrypoint(pm_import, tmp_path):
+    """matcher 가 값 공간을 다 안 덮으면 진입점이 아니다 — 옛 형상이 green 으로 지나가면 안 된다."""
+    dest = _make_codex_case(
+        tmp_path, hooks=_codex_hooks(matcher="^collaborationspawn_agent$"))
+
+    findings = pm_import.judge_adapter_hook_entrypoints(dest, None, ["codex"])
+
+    assert {finding.event for finding in findings} == {
+        "PreToolUse", "UserPromptSubmit", "PostToolUse"}
+    assert {finding.kind for finding in findings} == {
+        pm_import.HOOK_ENTRYPOINT_MISSING}
+
+
+def test_entrypoint_pointing_at_another_command_is_not_credited(pm_import, tmp_path):
+    """matcher 만 맞고 디스패처를 안 부르는 블록은 진입점으로 세지 않는다."""
+    document = json.loads(_codex_hooks())
+    handler = document["hooks"]["PostToolUse"][0]["hooks"][0]
+    handler["command"] = '"$py" .project_manager/tools/pm_log.py snapshot'
+    dest = _make_codex_case(
+        tmp_path, hooks=json.dumps(document, ensure_ascii=False, indent=2) + "\n")
+
+    findings = pm_import.judge_adapter_hook_entrypoints(dest, None, ["codex"])
+
+    assert [finding.event for finding in findings] == ["PostToolUse"]
+
+
+# ── 진입점 판정은 **값 대조**다 (존재가 아니라 호출 값) ──────────────────────
+# 디스패처 경로 부분문자열만 보면, 실행하지 않는 문자열이나 다른 이벤트를 부르는 커맨드까지
+# 진입점으로 인정된다 — 가드는 발화하지 않는데 소견은 0 건인 false-green 이다. 아래 변형들은
+# 그 시야가 실제 표면(어떤 값이 실행되는가)과 어긋나지 않는지를 고정한다.
+
+
+def _codex_hooks_with_command(event: str, command: str) -> str:
+    """한 이벤트의 진입점 커맨드만 바꾼 codex hooks.json."""
+    document = json.loads(_codex_hooks())
+    document["hooks"][event][0]["hooks"][0]["command"] = command
+    document["hooks"][event][0]["hooks"][0]["commandWindows"] = command
+    return json.dumps(document, ensure_ascii=False, indent=2) + "\n"
+
+
+@pytest.mark.parametrize("label,command", (
+    # 플래그 제거 — 디스패처를 부르지만 어느 이벤트로도 dispatch 하지 않는다.
+    ("flag 제거", f'"$py" {_CODEX_DISPATCHER_REL}'),
+    # 잘못된 이벤트 — 선언은 PreToolUse 인데 호출은 PostToolUse 다.
+    ("잘못된 이벤트",
+     f'"$py" {_CODEX_DISPATCHER_REL} {_CODEX_DISPATCH_FLAG} PostToolUse'),
+    # 비실행 경로 문자열 — 경로가 인자로 출력될 뿐 아무것도 실행되지 않는다.
+    ("비실행 경로 문자열", f"printf '%s\\n' {_CODEX_DISPATCHER_REL}"),
+    # 접미가 붙은 이벤트 — 포함 판정으로 돌아가면 이것도 같은 값으로 센다.
+    ("접미가 붙은 이벤트",
+     f'"$py" {_CODEX_DISPATCHER_REL} {_CODEX_DISPATCH_FLAG} PreToolUseLegacy'),
+))
+def test_entrypoint_that_does_not_actually_fire_is_reported(
+        pm_import, tmp_path, label, command):
+    """실제로 발화하지 않는 커맨드는 진입점으로 인정하지 않는다(값 대조·민감도)."""
+    dest = _make_codex_case(
+        tmp_path, hooks=_codex_hooks_with_command("PreToolUse", command))
+
+    findings = pm_import.judge_adapter_hook_entrypoints(dest, None, ["codex"])
+
+    assert [(finding.kind, finding.event) for finding in findings] == [
+        (pm_import.HOOK_ENTRYPOINT_MISSING, "PreToolUse")], label
+
+
+def test_dispatcher_path_and_event_must_live_in_the_same_command(
+        pm_import, tmp_path):
+    """경로는 이 커맨드, 호출 값은 저 커맨드로 흩어져 있으면 진입점이 아니다."""
+    document = json.loads(_codex_hooks())
+    handlers = document["hooks"]["PreToolUse"][0]["hooks"]
+    handlers[0]["command"] = f"printf '%s\\n' {_CODEX_DISPATCHER_REL}"
+    handlers[0]["commandWindows"] = (
+        f'"$py" other_tool.py {_CODEX_DISPATCH_FLAG} PreToolUse')
+    dest = _make_codex_case(
+        tmp_path, hooks=json.dumps(document, ensure_ascii=False, indent=2) + "\n")
+
+    findings = pm_import.judge_adapter_hook_entrypoints(dest, None, ["codex"])
+
+    assert [finding.event for finding in findings] == ["PreToolUse"]
+
+
+@pytest.mark.parametrize("command", (
+    f'"$py" {_CODEX_DISPATCHER_REL} {_CODEX_DISPATCH_FLAG} PreToolUse',
+    f'"$py" {_CODEX_DISPATCHER_REL} {_CODEX_DISPATCH_FLAG}=PreToolUse',
+    f"& $py '{_CODEX_DISPATCHER_REL}' {_CODEX_DISPATCH_FLAG} 'PreToolUse'",
+    f'"$py" .\\{_CODEX_DISPATCHER_REL.replace("/", chr(92))} '
+    f'{_CODEX_DISPATCH_FLAG} PreToolUse',
+))
+def test_real_invocations_are_credited_across_shell_notations(
+        pm_import, tmp_path, command):
+    """실제로 부르는 표기는 전부 진입점으로 센다 — 조인 fix 가 정상 config 를 오탐하면 안 된다."""
+    dest = _make_codex_case(
+        tmp_path, hooks=_codex_hooks_with_command("PreToolUse", command))
+
+    assert pm_import.judge_adapter_hook_entrypoints(dest, None, ["codex"]) == []
+
+
+@pytest.mark.parametrize("harness,template_dir",
+                         (("claude", "claude_code"), ("codex", "codex")))
+def test_shipped_config_is_not_falsely_reported_by_the_value_check(
+        pm_import, harness, template_dir):
+    """현행 출하 선언 전수가 값 대조에서도 진입점으로 인정된다(오탐 0·역방향 확인)."""
+    template_root = REPO / "templates" / template_dir
+    spec = pm_import.ADAPTER_HOOK_SET[harness]
+    document = json.loads(
+        (template_root / spec.config_relpath).read_text(encoding="utf-8"))
+
+    assert spec.entrypoints, harness
+    for entrypoint in spec.entrypoints:
+        assert pm_import._entrypoint_is_present(document, entrypoint), \
+            f"{harness}:{entrypoint.event} 출하 선언이 값 대조에서 오탐됐다"
+
+
+def test_dispatcher_that_knows_the_flag_but_not_the_event_is_stale(
+        pm_import, tmp_path):
+    """플래그는 알고 그 이벤트는 모르는 디스패처 세대도 stale 이다(값 기준 stale 검사).
+
+    진입점 집합이 늘어난 릴리즈의 흡수 창에서 실제로 나오는 형상이고, 그 창에서 훅은 매
+    발화마다 폴백으로 빠진다 — 리터럴 `--hook-dispatch` 존재만 보면 green 으로 지나간다."""
+    dest = _make_codex_case(tmp_path, hooks=_codex_hooks(),
+                            dispatcher=_DISPATCHER_PREVIOUS_EVENT_SET)
+
+    findings = pm_import.judge_adapter_hook_entrypoints(dest, None, ["codex"])
+
+    assert [(finding.kind, finding.event) for finding in findings] == [
+        (pm_import.HOOK_ENTRYPOINT_STALE_DISPATCHER, "PostToolUse")]
+    assert "PostToolUse" in findings[0].detail
+    assert pm_import.entrypoint_invocation(
+        pm_import.ADAPTER_HOOK_SET["codex"].entrypoints[-1]) in findings[0].detail
+
+
+def test_shipped_codex_dispatcher_supports_every_declared_invocation(pm_import):
+    """출하 디스패처가 출하 config 의 호출 값을 전부 감당한다(자기정합·오탐 0)."""
+    template_root = REPO / "templates" / "codex"
+
+    for entrypoint in pm_import.ADAPTER_HOOK_SET["codex"].entrypoints:
+        assert pm_import._entrypoint_dispatcher_gap(template_root, entrypoint) is None, \
+            entrypoint.event
+
+
+def test_stale_dispatcher_behind_a_present_entrypoint_is_reported(pm_import, tmp_path):
+    """진입점은 있는데 설치된 디스패처가 그 플래그를 모르면 훅이 매번 폴백으로 빠진다.
+
+    config 는 managed 라 자동 갱신되고 디스패처는 manifest 라 pm-update 가 덮는다 — 두 축의
+    도착 순서가 갈리는 창이 실재하고, 그 창에서 가드는 무음 통과한다."""
+    dest = _make_codex_case(tmp_path, hooks=_codex_hooks(),
+                            dispatcher=_DISPATCHER_OLD)
+
+    findings = pm_import.judge_adapter_hook_entrypoints(dest, None, ["codex"])
+
+    assert {finding.kind for finding in findings} == {
+        pm_import.HOOK_ENTRYPOINT_STALE_DISPATCHER}
+    assert len(findings) == 3
+    assert pm_import.hook_entrypoint_advisory_lines(findings[0]) == [
+        f"pm-update 로 {_CODEX_DISPATCHER_REL} 를 먼저 받아라"]
+
+
+def test_absent_dispatcher_is_reported_not_silently_credited(pm_import, tmp_path):
+    """디스패처 파일 자체가 없으면 미지원과 같은 판정이다(부재 = 무발화)."""
+    dest = _make_codex_case(tmp_path, hooks=_codex_hooks(), dispatcher=None)
+
+    findings = pm_import.judge_adapter_hook_entrypoints(dest, None, ["codex"])
+
+    assert len(findings) == 3
+    assert {finding.kind for finding in findings} == {
+        pm_import.HOOK_ENTRYPOINT_STALE_DISPATCHER}
+
+
+def test_broken_or_absent_config_yields_no_entrypoint_finding(pm_import, tmp_path):
+    """config 부재·파손은 어댑터 config 채널이 말하는 상태다 — 여기서 겹쳐 처방하지 않는다."""
+    dest = _make_codex_case(tmp_path, hooks="{ 깨진 json")
+    assert pm_import.judge_adapter_hook_entrypoints(dest, None, ["codex"]) == []
+
+    (dest / _CODEX_HOOKS_REL).unlink()
+    assert pm_import.judge_adapter_hook_entrypoints(dest, None, ["codex"]) == []
+
+
+def test_previous_generation_declaration_without_entrypoints_is_silent(
+        pm_import, tmp_path):
+    """진입점 개념이 없던 세대 선언으로 판정하면 조용하다(구세대 형제 강등 경로)."""
+    dest = _make_codex_case(tmp_path, hooks=_codex_hooks(("PreToolUse",)))
+    legacy_spec = SimpleNamespace(
+        config_relpath=_CODEX_HOOKS_REL, live_files=(_CODEX_DISPATCHER_REL,),
+        flag_support={}, coupled_groups=())
+
+    assert pm_import.judge_adapter_hook_entrypoints(
+        dest, None, ["codex"], declarations={"codex": legacy_spec}) == []
+
+
+def test_sync_path_reports_missing_entrypoint_without_blocking(
+        pm_update, tmp_path, capsys):
+    """pm_update 가 진입점 누락을 **지목**하되 완료 게이트는 막지 않는다(advisory)."""
+    dest = _make_codex_case(tmp_path, hooks=_codex_hooks(("PreToolUse",)))
+    source = tmp_path / "framework"
+    (source / "templates" / "codex" / ".codex").mkdir(parents=True)
+    _plant_upstream_pm_import(source)
+
+    result = pm_update.check_adapter_hook_sets(dest, source)
+    pm_update._print_adapter_hook_set_finding(result, dry_run=False)
+    err = capsys.readouterr().err
+
+    assert result["status"] == "ok" and result["findings"] == []
+    assert {item["event"] for item in result["entrypoints"]} == {
+        "UserPromptSubmit", "PostToolUse"}
+    assert "어댑터 훅 진입점 누락(codex)" in err
+    assert "UserPromptSubmit" in err and "PostToolUse" in err
+    assert not pm_update._adapter_hook_set_gate_failed(result), \
+        "advisory 축이 완료 게이트를 막았다 — 훅을 끈 채택자의 흡수가 영구히 잠긴다"
+
+
+def test_sync_path_is_silent_when_every_entrypoint_is_present(
+        pm_update, tmp_path, capsys):
+    """진입점이 다 있으면 이 축은 무출력이다(소음 0)."""
+    dest = _make_codex_case(tmp_path, hooks=_codex_hooks())
+    source = tmp_path / "framework"
+    (source / "templates" / "codex" / ".codex").mkdir(parents=True)
+    _plant_upstream_pm_import(source)
+
+    result = pm_update.check_adapter_hook_sets(dest, source)
+    pm_update._print_adapter_hook_set_finding(result, dry_run=False)
+
+    assert result["entrypoints"] == []
+    assert "진입점" not in capsys.readouterr().err
+
+
 # ── pm_update 동기 경로 배선 ────────────────────────────────────────────────
 
 
