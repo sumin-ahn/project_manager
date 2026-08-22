@@ -28,7 +28,7 @@ marker 는 turn *실행 후* 박제 단일 의미론 — Supervisor 는 그 입�
 codex 어댑터는 claude 와 달리 옆에 Python `ctx_guard` 모듈이 없다(claude=`.claude/ctx_guard.py`·
 opencode=JS core) — 그래서 엔진 루트 탐색·local.conf 파싱을 driver 자체에 둔다(opencode driver 동형).
 
-세션 안 ctx 넛지(T-0770·ADR-0081 D3 개정): 위 relay 축과 별개로, 훅 진입점(`PreToolUse`·
+세션 안 ctx 넛지: 위 relay 축과 별개로, 훅 진입점(`PreToolUse`·
 `UserPromptSubmit`)에서 밴드에 들어가면 비차단 checkpoint 안내를 주입한다(회전 marker 미생산).
 점유는 훅 stdin 의 `transcript_path` rollout JSONL 에서 읽고, 밴드·임계·문구는 claude 와 같은 값을
 쓴다 — 압축이 시작된 뒤(PreCompact)에야 알려 주면 checkpoint 를 남길 여유가 없다는 것이 사유다.
@@ -56,13 +56,13 @@ TURN_TIMEOUT_SEC = 600  # subprocess 당 hard hang 가드(상한 — 한 turn �
 # resolve_stop_pct·claude ctx_guard.ctx_thresholds 대칭). 잔여 20% 회전 ⟺ 사용률 80%.
 CTX_STOP_PCT_DEFAULT = 20  # 잔여 회전 임계(%) — claude ctx_guard.CTX_STOP_PCT_DEFAULT 미러.
 # 세션 안 1단 넛지 임계(잔여 %) — claude ctx_guard.CTX_NUDGE_PCT_DEFAULT·opencode
-# NUDGE_PCT_DEFAULT 미러(T-0770 이 codex 를 4번째 미러 사이트로 편입·tests/test_ctx_default_mirror.py).
+# NUDGE_PCT_DEFAULT 미러(codex 는 네 번째 미러 사이트·tests/test_ctx_default_mirror.py).
 # relay 회전 축은 stop 하나만 쓰고, 이 값은 아래 훅 축(`ctx_thresholds`)이 소비한다.
 CTX_NUDGE_PCT_DEFAULT = 30
 # 2단(strong) 넛지 마진(%p·파생값) — claude ctx_guard.CTX_NUDGE2_MARGIN_PCT·opencode
 # NUDGE2_MARGIN_PCT 미러. nudge2 밴드 = stop_pct < 잔여 <= min(stop_pct + 이 마진, nudge_pct).
 CTX_NUDGE2_MARGIN_PCT = 3
-# ctx 예산(분모) 최종 폴백 — local.conf ctx_window_tokens_<codex|generic> 미설정 시(ADR-0041).
+# ctx 예산(분모) 최종 폴백 — local.conf ctx_window_tokens_<codex|generic> 미설정 시.
 CTX_WINDOW_TOKENS_DEFAULT = 200_000
 
 
@@ -403,7 +403,7 @@ class CodexCliDriver:
                 sys.stderr.write("[pm-orch] codex ctx marker 박제 실패\n")
 
 
-# ── 세션 안 ctx 넛지 판정 (T-0770 · claude ctx_guard/ctx_stop_hook 미러) ────────
+# ── 세션 안 ctx 넛지 판정 (claude ctx_guard/ctx_stop_hook 미러) ────────────────
 # 훅 stdin 에는 토큰 정보가 없다 — codex-cli 0.147.0 격리 CODEX_HOME 라이브 프로브 실측 키는
 # session_id·turn_id·transcript_path·cwd·hook_event_name·model·permission_mode + 이벤트별
 # (prompt | tool_name·tool_input·tool_use_id) + 서브에이전트 발화에서만 agent_id·agent_type 이다.
@@ -411,7 +411,7 @@ class CodexCliDriver:
 # 읽는다(claude 훅이 transcript JSONL 의 마지막 assistant usage 를 읽는 것과 같은 축).
 #
 # 이 축은 위 relay 기계 가드(CodexCliDriver·post-turn 회전 marker)와 **다른 소비자**다 — 여기서는
-# 회전 marker 를 만들지 않고 비차단 안내만 주입한다(ADR-0081 D1). 밴드 경계·임계 키·안내 문구는
+# 회전 marker 를 만들지 않고 비차단 안내만 주입한다. 밴드 경계·임계 키·안내 문구는
 # claude 와 같은 값을 쓰고 codex 전용 임계·문구를 새로 만들지 않는다.
 
 # rollout JSONL 은 세션이 길수록 커진다(라이브 실측 — 2 turn 46KB). 전량을 읽지 않고 꼬리만 본다:
@@ -424,7 +424,7 @@ CTX_GUIDANCE_TIMEOUT_SEC = 3.0
 # (`.project_manager/.local/` 는 이미 git-ignored 라 채택자가 `git add -A` 해도 안 실린다).
 CTX_MARKER_DIR = Path(".project_manager") / ".local" / "ctx-stop"
 # 밴드 → pm_log `ctx-guidance --band` 인자. 마지막 밴드 이름(stop)은 회전이 아니라 **최종 넛지**로
-# 소비된다(claude 와 같은 소비·ADR-0081 D1) — 그래서 인자는 `final` 이다.
+# 소비된다(claude 와 같은 소비) — 그래서 인자는 `final` 이다.
 CTX_BAND_GUIDANCE_ARG = {"nudge": "nudge", "nudge2": "nudge2", "stop": "final"}
 # 밴드별 marker 파일 접미사 — claude `.nudge`/`.nudge2`/`.final` 와 같은 이름.
 CTX_BAND_MARKER_SUFFIX = {"nudge": "nudge", "nudge2": "nudge2", "stop": "final"}
@@ -493,7 +493,7 @@ def _rollout_input_tokens(raw_line: bytes) -> int | None:
     """rollout 한 줄이 token_count 면 그 시점 점유 토큰, 아니면 None.
 
     점유 = `info.last_token_usage.input_tokens`(그 요청이 모델에 보낸 입력 = 그 시점 컨텍스트).
-    `total_token_usage` 는 thread 누계라 점유가 아니다(ADR-0081 §4·라이브 실측에서 두 값이
+    `total_token_usage` 는 thread 누계라 점유가 아니다(라이브 실측에서 두 값이
     15328 vs 30516 으로 갈렸다). 형식은 codex 내부 JSONL 이라 공개 계약이 아니므로 예상 구조만
     좁게 읽고 어긋나면 None(다음 후보로 계속)."""
     if not raw_line.strip():
@@ -637,7 +637,7 @@ def ctx_nudge_envelope(payload: dict, root: Path, *,
     """세션 안 ctx 밴드 판정 → 비차단 안내 엔벨로프. 밴드 밖·측정 실패는 **빈 엔벨로프**.
 
     빈 엔벨로프는 디스패처 합본에서 기여 0이라 이 기능이 침묵한 호출의 stdout 은 이 가드가
-    없던 때와 **바이트 동일**하다(측정된 통과 형태). 차단·회전 판정은 내지 않는다(ADR-0081 D1).
+    없던 때와 **바이트 동일**하다(측정된 통과 형태). 차단·회전 판정은 내지 않는다.
 
     claude `ctx_stop_hook.evaluate` 와 같은 순서다 — 서브에이전트 면제 → 점유 측정 → 밴드 판정
     → ok 실측이면 재무장 → 안내 문구 → 사이클 marker 선점 → 주입."""
@@ -685,7 +685,7 @@ CODEX_HOOK_FEATURES_FLAG = "--hook-features"
 # 이 파일이 진입점을 받는 이벤트 전수. hooks.json 의 (이벤트 × matcher) 진입점과 1:1 이며,
 #   엔진 역방향 가드가 같은 이름으로 config 를 대조한다. 출하 hooks.json 이 선언하는 이벤트
 #   전부가 여기 있다 — 진입점 밖에 남은 이벤트가 하나라도 있으면 그 이벤트의 두 번째 기능이
-#   다시 채택자 config 변경 + `/hooks` 재승인을 요구한다(T-0806 이 닫은 잔여).
+#   다시 채택자 config 변경 + `/hooks` 재승인을 요구한다.
 CODEX_HOOK_ENTRYPOINT_EVENTS = ("PreToolUse", "UserPromptSubmit", "PostToolUse",
                                 "SubagentStart", "PreCompact", "PostCompact")
 # 한 훅 발화에서 기능 자식들에게 나눠 주는 총 예산(초). hooks.json 의 바깥 timeout 보다 작고
@@ -710,7 +710,7 @@ class CodexHookFeature(NamedTuple):
     handler      이 파일 안에서 **in-process** 로 도는 기능이면 그 함수(`(payload, root, *,
                  timeout) -> 엔벨로프`). 주면 `argv` 는 쓰이지 않는다. 도구 무관 기능(모든 도구
                  호출마다 발화)을 자식 프로세스로 돌리면 매 호출에 인터프리터가 하나 더 뜨므로,
-                 판정이 이 파일 안에 있는 기능은 자식을 띄우지 않는다(T-0770 ctx 넛지).
+                 판정이 이 파일 안에 있는 기능은 자식을 띄우지 않는다(ctx 넛지).
     match_field  `tool_pattern` 을 대조할 payload 필드 이름. **판별 축은 이벤트마다 다르다** —
                  codex 0.147.0 훅 input 스키마 실측으로 PreToolUse/PostToolUse 만 `tool_name` 을
                  싣고, SubagentStart 는 `agent_type`, PreCompact/PostCompact 는 `trigger` 다.
@@ -743,7 +743,7 @@ CODEX_HOOK_FEATURES: tuple[CodexHookFeature, ...] = (
         argv=("{py}", "{tools}/delegate_channel_guard.py", "supervise", "PreToolUse",
               "{py}", "{tools}/delegate_channel_guard.py", "codex-hook"),
     ),
-    # 세션 안 ctx 넛지(T-0770) — claude 가 같은 두 이벤트에 거는 것과 같은 채널이다. 두 항목은
+    # 세션 안 ctx 넛지 — claude 가 같은 두 이벤트에 거는 것과 같은 채널이다. 두 항목은
     #   사이클 marker 를 공유하므로 먼저 발화한 채널 하나만 주입한다(멱등).
     CodexHookFeature(
         feature_id="ctx-nudge-pretooluse",
