@@ -5661,7 +5661,7 @@ def check_adapter_hook_sets(dest_root: Path, source_root: Path) -> dict:
 
     판정 실패는 `status="unavailable"` 로 내린다(형제 `sync_adapter_configs` 와 같은 fail-soft
     — 이 검사가 성공한 엔진 동기를 traceback 으로 덮지 않는다). 엔진 사본 skew 만 예외."""
-    result: dict = {"status": "ok", "findings": [], "reason": None}
+    result: dict = {"status": "ok", "findings": [], "entrypoints": [], "reason": None}
     try:
         # 판정 선언은 **상류 세대**를 우선한다 — 상류가 이번에 들여오는 새 플래그를 설치본 선언은
         #   모르므로, 그 세대로 보면 요구를 "선언 밖 플래그" 로 접어 green 이 된다. 조회 성격이라
@@ -5685,6 +5685,17 @@ def check_adapter_hook_sets(dest_root: Path, source_root: Path) -> dict:
                 "그 세대가 아는 세대 불일치는 그대로 잡는다)")
             findings = judge(dest_root, source_root)
         remedy_lines = pm_import.hook_set_remedy_lines
+        # 역방향 축(T-0777)은 **별도 목록**이다 — 완료 게이트가 소비하는 `findings` 에 섞으면
+        #   advisory 가 차단으로 승격돼 훅을 의도적으로 끈 채택자의 흡수가 영구히 막힌다.
+        #   판정 함수가 없는 구세대 형제는 조용히 건너뛴다(그 세대엔 이 개념이 없다).
+        entrypoint_judge = getattr(pm_import, "judge_adapter_hook_entrypoints", None)
+        entrypoint_lines = getattr(pm_import, "hook_entrypoint_advisory_lines", None)
+        entrypoint_findings = (
+            [] if entrypoint_judge is None or entrypoint_lines is None
+            else entrypoint_judge(dest_root, source_root,
+                                  declarations=generation.declarations)
+            if _sibling_accepts_kwarg(entrypoint_judge, "declarations")
+            else entrypoint_judge(dest_root, source_root))
     except Exception as exc:  # noqa: BLE001 — 판정 실패가 동기를 무효화하지 않는다.
         # 사본 rev 혼합도 등록된 경계로 흡수한다 — 이건 채널이 아니라 **가드**라, 판정 채널이
         #   혼합 트리에서 안 열리면 검사를 unavailable 로 접고(경고는 loud) 동기는 완주시킨다.
@@ -5696,6 +5707,13 @@ def check_adapter_hook_sets(dest_root: Path, source_root: Path) -> dict:
          "unmet_paths": list(finding.unmet_paths), "remedy": finding.remedy,
          "detail": finding.detail, "remedy_lines": remedy_lines(finding)}
         for finding in findings
+    ]
+    result["entrypoints"] = [
+        {"harness": finding.harness, "config_relpath": finding.config_relpath,
+         "kind": finding.kind, "event": finding.event, "matcher": finding.matcher,
+         "dispatcher": finding.dispatcher, "detail": finding.detail,
+         "remedy_lines": entrypoint_lines(finding)}
+        for finding in entrypoint_findings
     ]
     return result
 
@@ -5850,6 +5868,12 @@ def _print_adapter_hook_set_finding(result: dict, *, dry_run: bool = False) -> N
         return
     for finding in result.get("findings", []):
         print(f"⚠️  어댑터 훅 세트 세대 불일치({finding['harness']}) — {finding['detail']}.",
+              file=sys.stderr)
+        for line in finding["remedy_lines"]:
+            print(f"    → {line}", file=sys.stderr)
+    # 역방향 진입점 축(T-0777)은 advisory 다 — 같은 자리에서 loud 하게 내되 게이트는 안 건드린다.
+    for finding in result.get("entrypoints", []):
+        print(f"⚠️  어댑터 훅 진입점 누락({finding['harness']}) — {finding['detail']}.",
               file=sys.stderr)
         for line in finding["remedy_lines"]:
             print(f"    → {line}", file=sys.stderr)

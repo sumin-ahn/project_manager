@@ -34,8 +34,10 @@ add-harness 를 안 쓰는 형상이라 도그푸딩으로도 안 걸린다([[do
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -46,6 +48,12 @@ from _harness_matrix import HARNESSES
 # fresh-adopter 게이트의 헬퍼를 그대로 쓴다(판정 사본 금지) — `_snapshot_tree` 는 산출물 트리
 #   컴포넌트(`__pycache__`·`.git`·`.pm_import_backups`) 제외까지 이미 담고 있다.
 from test_fresh_adopter_e2e import _load_pm_import, _snapshot_tree
+# 픽스처 기능 삽입 규약은 디스패처 게이트가 소유한다(사본 금지) — 이 파일은 그것을 상류에
+#   심어 "코드 변경만으로 전파되나" 를 본다.
+from test_codex_hook_dispatch import (
+    FIXTURE_FEATURE_ENVELOPE, dispatcher_source_with_fixture_feature,
+)
+from _win_skip import posix_bash_supported
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -708,7 +716,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   이동했다. 들어온 것은 좌표 파생 헬퍼(`_dest_relative_path`) 하나와 렌더 호출 3곳의 인자이고,
 #   역적용 delta 의 네 anchor 는 전부 `_main`/`sync_adapter_configs` 쪽이라 그대로 유일 해소된다.
 #   배달 경계와 배달 파일 집합도 불변이다 — 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "8f8c89bf903c65dbd549858211244156c7c4a1bc24b62b2b9365fe657249bc12"
+_T0585_PM_UPDATE_SHA256 = "2861ac1fe5cdcc89e38c85754dd0f9ce45e4638e832d4f1aede5c854b863615c"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
@@ -808,6 +816,13 @@ def _t0585_pm_update_source() -> str:
     해당하는 새 텍스트를 찾아 marker 문자열만 갱신한 뒤 이 함수를 처음부터 다시 돌린다.
 
     T-0748 재핀 이력(배달 경계가 그대로였던 근거는 여기 계속 쌓는다):
+
+    T-0777 — codex 훅 범용 진입점의 역방향 축이 `check_adapter_hook_sets` 결과에 advisory 목록을
+    더하고 `_print_adapter_hook_set_finding` 이 그 목록을 한 벌 더 출력한다. 두 함수 모두 이
+    합성본에서는 `_main` 호출 지점이 위 역델타로 이미 제거돼 있어(아래 anachronism 부재 단언 2건이
+    그것을 기계로 확인한다) T-0585 세대 실행 경로에 들지 않는다. 배달 경계
+    (source/manifest planning → apply → self-update 순서)와 어댑터 config 채널 본문은 이번 변경에
+    포함되지 않았다 — `sync_adapter_configs`·`_adapter_config_gate_failed`·`apply` 는 무편집이다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
@@ -1175,3 +1190,87 @@ def test_update_release_skill_cards_pin_zero_change_and_adapter_gate_contract():
         text = card.read_text(encoding="utf-8")
         assert text.count("sync-adapter-config --check") >= 2, card
         assert "livegate/main push/tag/GitHub Release" in text, card
+
+
+# ── S7 진입점이 열린 채택자에 가드 기능이 **코드만으로** 도달하나 (T-0777) ────────
+# 이 티켓의 주장은 "이후 기능 추가는 엔진 코드 변경뿐이고 채택자 config 는 다시 안 건드린다" 다.
+# 그 주장은 업그레이드 축에서만 확인된다 — fresh 축은 진입점이 처음부터 있는지만 본다.
+
+_CODEX_DISPATCHER_REL = ".codex/pm_orch_codex.py"
+
+
+def _build_codex_framework(tmp_path: Path) -> Path:
+    """REPO 로부터 **변경 가능한** codex 프레임워크 소스를 만든다(import + self-update 소스).
+
+    codex 채택자 manifest 가 참조하는 root-상대 경로 전부를 담는다 — 엔진(`.project_manager/`)·
+    root `.claude/skills`(`.agents/skills` @source 원본)·`templates/codex/`(어댑터 @source 원본)·
+    `.gitattributes`. REPO 를 안 건드리려고 사본에 엔진 mutate 를 가한다(fresh 게이트의 opencode
+    헬퍼와 같은 모델)."""
+    framework = tmp_path / "framework"
+    ignore = shutil.ignore_patterns("__pycache__", ".git", "node_modules")
+    shutil.copytree(REPO / ".project_manager", framework / ".project_manager", ignore=ignore)
+    shutil.copytree(REPO / "templates" / "codex",
+                    framework / "templates" / "codex", ignore=ignore)
+    shutil.copytree(REPO / ".claude" / "skills", framework / ".claude" / "skills",
+                    ignore=ignore)
+    shutil.copy2(REPO / ".gitattributes", framework / ".gitattributes")
+    return framework
+
+
+def _run_shipped_entrypoint(dest: Path, event: str, payload: dict) -> dict:
+    """채택자에 설치된 hooks.json 의 그 진입점 커맨드를 **그대로** 실행한다."""
+    hooks = json.loads((dest / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+    handler = hooks["hooks"][event][0]["hooks"][0]
+    completed = subprocess.run(
+        ["bash", "-c", handler["command"]], cwd=dest, input=json.dumps(payload),
+        text=True, capture_output=True, timeout=handler["timeout"] + 5, check=True)
+    return json.loads(completed.stdout)
+
+
+@pytest.mark.skipif(not posix_bash_supported(),
+                    reason="POSIX bash wrapper 실행 환경이 아님")
+def test_upgrade_adopter_gains_a_codex_hook_feature_by_engine_code_alone(tmp_path):
+    """진입점이 열린 채택자 + 상류 기능 추가 → pm_update 1회로 발화(채택자 config 무변경)."""
+    framework = _build_codex_framework(tmp_path)
+    dest = tmp_path / "codex-adopter"
+    assert _PM_IMPORT.main([
+        "--new", str(dest), "--harness", "codex", "--name", _ADOPTER_NAME,
+        "--fill", "manual", "--from", str(framework),
+    ]) == 0
+
+    hooks_rel = ".codex/hooks.json"
+    hooks_before = (dest / hooks_rel).read_bytes()
+    assert hooks_before == (framework / "templates" / "codex" / hooks_rel).read_bytes(), \
+        "설치 직후 채택자 config 가 상류와 다르다(전제 붕괴)"
+    # 만들어진 트리의 **파일 내용**으로 진입점을 단언한다(조립 문자열이 아니라 산출물).
+    installed = json.loads((dest / hooks_rel).read_text(encoding="utf-8"))["hooks"]
+    for event in ("PreToolUse", "UserPromptSubmit", "PostToolUse"):
+        groups = installed[event]
+        assert len(groups) == 1 and groups[0]["matcher"] == ".*", event
+        for key in ("command", "commandWindows"):
+            assert _CODEX_DISPATCHER_REL in groups[0]["hooks"][0][key], (event, key)
+    assert (dest / _CODEX_DISPATCHER_REL).is_file(), "디스패처가 설치되지 않았다"
+    assert _PM_IMPORT.judge_adapter_hook_entrypoints(dest, framework, ["codex"]) == [], \
+        "갓 만든 채택자에 진입점 소견이 뜬다(거짓 red)"
+    # 진입점이 열려 있으나 아직 이 이벤트에 등록된 기능은 없다.
+    assert _run_shipped_entrypoint(
+        dest, "PostToolUse", {"hook_event_name": "PostToolUse", "tool_name": "shell"}) == {}
+
+    # 상류에 가드 기능 하나를 **코드로만** 더한다(hooks.json 무접촉).
+    upstream_dispatcher = framework / "templates" / "codex" / _CODEX_DISPATCHER_REL
+    upstream_dispatcher.write_text(dispatcher_source_with_fixture_feature(),
+                                   encoding="utf-8", newline="\n")
+
+    run = _run_adopter_tool(dest, "pm_update.py", "--from", str(framework))
+    assert run.returncode == 0, f"{run.stdout}\n{run.stderr}"
+    assert "훅 진입점 누락" not in run.stderr, \
+        f"진입점이 다 있는 채택자에 advisory 소음이 났다\n{run.stderr}"
+
+    assert (dest / hooks_rel).read_bytes() == hooks_before, \
+        "기능 추가가 채택자 config 를 건드렸다 — 이 티켓이 닫은 마찰이 그대로다"
+    assert (dest / _CODEX_DISPATCHER_REL).read_bytes() == upstream_dispatcher.read_bytes(), \
+        "디스패처가 전파되지 않았다(코드 채널 파손)"
+    assert _run_shipped_entrypoint(
+        dest, "PostToolUse",
+        {"hook_event_name": "PostToolUse", "tool_name": "shell"}
+    ) == FIXTURE_FEATURE_ENVELOPE, "전파는 됐는데 진입점에서 발화하지 않는다"

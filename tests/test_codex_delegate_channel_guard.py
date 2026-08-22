@@ -23,6 +23,8 @@ from _hook_commands import inline_script_payloads
 REPO = Path(__file__).resolve().parents[1]
 GUARD_PY = REPO / ".project_manager" / "tools" / "delegate_channel_guard.py"
 HOOKS_JSON = REPO / "templates" / "codex" / ".codex" / "hooks.json"
+DISPATCHER_REL = ".codex/pm_orch_codex.py"
+DISPATCHER_PY = REPO / "templates" / "codex" / DISPATCHER_REL
 README = REPO / "templates" / "codex" / "README.md"
 LIVE_PAYLOADS_FIXTURE = (
     REPO / "tests" / "fixtures" / "codex_0_147_0_live_hook_payloads.json"
@@ -35,6 +37,23 @@ def guard():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture()
+def dispatcher():
+    """codex 훅 디스패처(T-0777) — 진입점 뒤 분기 판별식이 여기 산다."""
+    spec = importlib.util.spec_from_file_location("pm_orch_codex", DISPATCHER_PY)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _delegate_feature(dispatcher_module):
+    """디스패처 registry 의 위임 채널 기능 1건 (없으면 red — 배선이 사라진 것)."""
+    matches = [feature for feature in dispatcher_module.CODEX_HOOK_FEATURES
+               if feature.feature_id == "delegate-channel"]
+    assert len(matches) == 1, dispatcher_module.CODEX_HOOK_FEATURES
+    return matches[0]
 
 
 def _live_evidence() -> dict[str, object]:
@@ -611,7 +630,7 @@ def test_codex_hook_cli_infrastructure_failure_is_rc0_allow_and_user_warning(gua
 
 
 def test_codex_pretooluse_and_subagentstart_wiring_uses_live_payload_fixture(
-    guard,
+    guard, dispatcher,
 ):
     data = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
     events = data["hooks"]
@@ -629,28 +648,54 @@ def test_codex_pretooluse_and_subagentstart_wiring_uses_live_payload_fixture(
 
     assert "PreToolUse" in events
     assert "SubagentStart" in events
+    # T-0777 — PreToolUse 는 이제 **범용 진입점**이다(이벤트 전량이 디스패처로 들어온다).
     groups = events["PreToolUse"]
     assert len(groups) == 1
-    assert re.fullmatch(groups[0]["matcher"], spawn["tool_name"])
-    assert not re.fullmatch(groups[0]["matcher"], _live_wait_payload()["tool_name"])
-    assert not re.fullmatch(
-        groups[0]["matcher"], subagent_call["tool_name"]
-    )
+    assert groups[0]["matcher"] == ".*"
+    for tool_name in (spawn["tool_name"], _live_wait_payload()["tool_name"],
+                      subagent_call["tool_name"]):
+        assert re.fullmatch(groups[0]["matcher"], tool_name), tool_name
+    # 스폰 판별은 config 가 아니라 디스패처 registry 가 한다 — 값은 그대로 옮겨 왔다.
+    feature = _delegate_feature(dispatcher)
+    assert feature.event == "PreToolUse"
+    assert re.fullmatch(feature.tool_pattern, spawn["tool_name"])
+    assert not re.fullmatch(feature.tool_pattern, _live_wait_payload()["tool_name"])
+    assert not re.fullmatch(feature.tool_pattern, subagent_call["tool_name"])
+    assert dispatcher._feature_matches(feature, spawn)
+    assert not dispatcher._feature_matches(feature, _live_wait_payload())
+    assert not dispatcher._feature_matches(feature, subagent_call)
+    # 진입점 뒤에서 실행되는 커맨드는 옛 배선과 같은 감독자 호출이다(동작 보존).
+    assert list(feature.argv) == [
+        "{py}", "{tools}/delegate_channel_guard.py", "supervise", "PreToolUse",
+        "{py}", "{tools}/delegate_channel_guard.py", "codex-hook",
+    ]
     handlers = groups[0]["hooks"]
     assert len(handlers) == 1 and handlers[0]["type"] == "command"
-    assert handlers[0]["timeout"] == 10
-    assert "delegate_channel_guard.py codex-hook" in handlers[0]["command"]
-    assert "delegate_channel_guard.py' codex-hook" in handlers[0]["commandWindows"]
+    # 시간 상한 3층: 엔진 감독자 < 디스패처 예산 < 호스트 훅 timeout.
+    assert (guard.CODEX_SUPERVISOR_TIMEOUT_SECONDS
+            < dispatcher.CODEX_HOOK_DISPATCH_BUDGET_SEC < handlers[0]["timeout"])
     # 감독(시간 상한·엔벨로프 검증)은 엔진 소유다 — 어댑터엔 가드 인라인 스크립트가 없다(T-0720).
     for command_key in ("command", "commandWindows"):
         wrapper = handlers[0][command_key]
         assert '"decision":"approve"' not in wrapper
         assert '"permissionDecision":"allow"' not in wrapper
-        assert "supervise PreToolUse" in wrapper
+        assert DISPATCHER_REL in wrapper
+        assert f"{dispatcher.CODEX_HOOK_DISPATCH_FLAG} PreToolUse" in wrapper
+        # 배선이 진입점 하나로 접혔다 — 기능별 커맨드가 config 에 남아 있으면 원 결함 재발이다.
+        assert "delegate_channel_guard" not in wrapper
         for payload in inline_script_payloads(wrapper):
             assert "delegate_channel_guard" not in payload
             assert "candidate" not in payload
-    assert guard.CODEX_SUPERVISOR_TIMEOUT_SECONDS < handlers[0]["timeout"]
+    # 진입점은 세 이벤트 전부에 하나씩 열려 있고 전부 같은 디스패처를 부른다.
+    assert tuple(dispatcher.CODEX_HOOK_ENTRYPOINT_EVENTS) == (
+        "PreToolUse", "UserPromptSubmit", "PostToolUse")
+    for event in dispatcher.CODEX_HOOK_ENTRYPOINT_EVENTS:
+        entry_groups = events[event]
+        assert len(entry_groups) == 1 and entry_groups[0]["matcher"] == ".*", event
+        entry = entry_groups[0]["hooks"][0]
+        for command_key in ("command", "commandWindows"):
+            assert DISPATCHER_REL in entry[command_key], (event, command_key)
+            assert f"{dispatcher.CODEX_HOOK_DISPATCH_FLAG} {event}" in entry[command_key]
 
     observer_groups = events["SubagentStart"]
     assert len(observer_groups) == 1
@@ -886,9 +931,14 @@ def test_posix_hook_wrapper_missing_guard_emits_valid_allow_json(guard, tmp_path
 
 
 def _adopter_tree(tmp_path: Path, conf_lines: tuple[str, ...]) -> Path:
-    """실 엔진 사본 + local.conf 로 채택자 형상을 만든다 (훅 커맨드를 그대로 태우기 위해)."""
+    """실 엔진 사본 + 디스패처 + local.conf 로 채택자 형상을 만든다 (훅 커맨드를 그대로 태운다).
+
+    훅 진입점이 부르는 건 manifest 등재 디스패처(`.codex/pm_orch_codex.py`)이므로 그 파일이
+    채택자 형상의 일부다 — 빼면 이 게이트가 가드 대신 어댑터 폴백만 재게 된다(T-0777)."""
     tools = tmp_path / ".project_manager" / "tools"
     shutil.copytree(REPO / ".project_manager" / "tools", tools)
+    (tmp_path / ".codex").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(DISPATCHER_PY, tmp_path / DISPATCHER_REL)
     (tmp_path / ".project_manager" / "local.conf").write_text(
         "\n".join(conf_lines) + "\n", encoding="utf-8", newline="\n"
     )

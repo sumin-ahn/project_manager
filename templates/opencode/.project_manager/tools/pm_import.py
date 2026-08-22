@@ -587,6 +587,32 @@ ADAPTER_CONFIG_REAPPROVAL_NOTE = {
 _HOOK_COMMAND_ROOT_TOKENS = ("${CLAUDE_PROJECT_DIR}/", "$CLAUDE_PROJECT_DIR/", "./")
 
 
+class AdapterHookEntrypoint(NamedTuple):
+    """이 엔진 세대가 채택자 config 에 **있어야 한다**고 보는 훅 진입점 하나 (T-0777·역방향 축).
+
+    `flag_support` 와 방향이 반대다 — 저쪽은 "config 가 요구하는 것을 설치본이 감당하나"(config →
+    엔진)이고, 이쪽은 "이 엔진 세대가 기대하는 진입점이 config 에 있나"(엔진 → config)다. 진입점이
+    빠진 채택자에서 가드는 **발화 자체를 안 한다** — 그 상태가 조용한 통과로 남지 않게 한다.
+
+    event      훅 이벤트 이름(config `hooks` 의 키).
+    matcher    그 이벤트의 값 공간을 전부 덮는 matcher 리터럴. `None` 은 matcher 키 없음
+               (claude 처럼 matcher 를 쓰지 않는 이벤트).
+    dispatcher 진입점이 실행하는 manifest 소유 파일(dest 기준 POSIX relpath·`live_files` 안).
+               판정은 훅 커맨드 문자열이 이 relpath 를 담는가다 — 출하 커맨드가 인터프리터
+               해소를 포함한 셸 한 줄이라 argv 분해로는 스크립트를 뽑을 수 없다.
+    flag       그 디스패처가 지원해야 하는 플래그 리터럴(없으면 `None`). config 는 갱신됐는데
+               디스패처가 구세대면 훅이 매번 폴백으로 빠진다 — 그 창을 판정하는 축이다.
+               플래그가 있으면 판정은 **호출 값**(`<flag> <event>`)까지 내려간다: 같은
+               커맨드가 디스패처 경로와 그 이벤트 호출을 함께 담아야 진입점으로 세고, 설치된
+               디스패처도 같은 두 값을 감당해야 세대 정합이다. 경로만 보면 실행하지 않는
+               문자열이나 다른 이벤트를 부르는 커맨드가 false-green 으로 통과한다.
+    """
+    event: str
+    matcher: str | None
+    dispatcher: str
+    flag: str | None = None
+
+
 class AdapterHookSetSpec(NamedTuple):
     """한 하네스의 훅 세트 선언 — 판정에 필요한 데이터 전부.
 
@@ -604,11 +630,15 @@ class AdapterHookSetSpec(NamedTuple):
                      저쪽은 "원자 write 대상"(파일 단위 torn read)이고 이쪽은 "함께 움직여야
                      하는 단위"다. 결합이 없는 파일(독립 relay 드라이버·회귀 게이트 훅)은 어느
                      묶음에도 들지 않아 단건 전파가 정당하다.
+    entrypoints    : 이 엔진 세대가 config 에 기대하는 **범용 진입점**(`AdapterHookEntrypoint`).
+                     역방향 축이라 판정은 loud advisory 다 — config 는 채택자 소유이고 그 파일엔
+                     실 노브가 있어, 무편집을 강제하는 red 는 소유 원칙과 충돌한다.
     """
     config_relpath: str
     live_files: tuple[str, ...]
     flag_support: dict[str, tuple[str, ...]]
     coupled_groups: tuple[tuple[str, ...], ...] = ()
+    entrypoints: tuple[AdapterHookEntrypoint, ...] = ()
 
 
 ADAPTER_HOOK_SET = {
@@ -640,13 +670,29 @@ ADAPTER_HOOK_SET = {
             # statusline 래퍼/구현 쌍(같은 근거·독립 축).
             (".claude/ctx_statusline.sh", ".claude/ctx_statusline.py"),
         ),
+        entrypoints=(
+            # claude 는 범용 진입점을 이미 갖고 있다 — T-0777 은 이 값을 바꾸지 않고 선언만
+            #   한다(진입점이 사라진 채택자에서 ctx 가드가 조용히 무발화하는 상태를 표면화).
+            #   래퍼가 인자로 분기하므로 플래그 축은 `flag_support` 가 이미 본다(중복 선언 0).
+            AdapterHookEntrypoint("PreToolUse", "*", ".claude/ctx_stop_hook.sh"),
+        ),
     ),
     "codex": AdapterHookSetSpec(
-        # `.codex/hooks.json` 의 훅 커맨드는 인라인 printf(스크립트 실행 0)라 세대 결합이 없다.
-        #   그래도 같은 깔때기를 태운다 — 커맨드가 스크립트 호출로 바뀌면 선언만 늘리면 된다.
+        # `.codex/hooks.json` 의 훅 커맨드는 인터프리터 해소를 포함한 **셸 한 줄**이라 argv 분해로
+        #   스크립트를 못 뽑는다(`_hook_script_and_arguments` 의 첫 토큰이 `if`) — 그래서
+        #   `flag_support` 는 여기서 구조적으로 공허하고, 같은 세대 결합은 아래 `entrypoints` 의
+        #   `flag` 축이 커맨드 파싱 없이 판정한다(공허한 선언을 두지 않는다).
         config_relpath=".codex/hooks.json",
         live_files=(".codex/pm_orch_codex.py",),
         flag_support={},
+        entrypoints=tuple(
+            # T-0777 — 이벤트당 진입점 하나(`matcher .*`)가 manifest 등재 디스패처를 부르고,
+            #   "어떤 가드를 돌릴지" 는 그 코드 안에서 갈린다. 그래서 가드 **기능** 추가는 이제
+            #   엔진 코드 변경뿐이고 채택자 config·`/hooks` 재승인을 다시 요구하지 않는다.
+            #   이 집합은 릴리즈 간 불변이다 — 늘리려면 T-0777 과 같은 1회 마이그레이션이다.
+            AdapterHookEntrypoint(event, ".*", ".codex/pm_orch_codex.py", "--hook-dispatch")
+            for event in ("PreToolUse", "UserPromptSubmit", "PostToolUse")
+        ),
     ),
     # opencode 는 훅 커맨드를 선언하는 config 가 없다 — 플러그인은 `.opencode/plugins/`
     #   autoload 라 config 가 호출 형태를 담지 않는다. 판정 대상은 없지만 실행 중 하네스가 읽는
@@ -659,6 +705,9 @@ ADAPTER_HOOK_SET = {
         live_files=(".opencode/lib/", ".opencode/plugins/",
                     ".opencode/pm_orch_opencode.py"),
         flag_support={},
+        # 진입점 선언도 비어 있다 — 배선이 `plugins/` **디렉토리 스캔**이라 파일을 더하는 것이
+        #   곧 배선이고 대조할 config 항목 자체가 없다(codex 진입점의 참고 모델).
+        entrypoints=(),
         # 플러그인이 로드 시점에 코어를 import 한다 — 한쪽만 옮기면 그 자리에서 세대가 갈린다.
         #   relay 드라이버는 결합이 없어 묶음 밖이다(단건 전파 정당).
         coupled_groups=((".opencode/plugins/", ".opencode/lib/"),),
@@ -6694,6 +6743,157 @@ def judge_adapter_hook_sets(dest_root: Path, source_root: Path | None = None,
                 remedy = HOOK_SET_REMEDY_ENGINE_STALE
             out.append(_hook_set_finding(harness, spec, kind, subject, unmet, remedy))
     return out
+
+
+# ── 역방향 축: 이 엔진 세대가 기대하는 진입점이 config 에 있나 (T-0777) ──────────
+# 위 `judge_adapter_hook_sets` 는 **config → 엔진** 한 방향만 본다(config 가 요구하는 플래그를
+# 설치본이 감당하나). 그 방향만으로는 "진입점이 아예 없어서 가드가 한 번도 발화하지 않는" 상태가
+# 판정 밖이다 — config 가 아무것도 요구하지 않으면 미충족도 0 이라 green 이다. 이 절이 반대
+# 방향을 채운다.
+#
+# 판정은 **loud advisory** 다(차단 아님). config 는 채택자 소유이고 그 파일엔 실 노브가 있어,
+# 진입점 부재를 red 로 올리면 의도적으로 훅을 끈 채택자의 흡수가 영구히 막힌다. 소견은 별도
+# 채널로 올라가고 완료 게이트(`_adapter_hook_set_gate_failed`)는 이 축을 소비하지 않는다.
+HOOK_ENTRYPOINT_MISSING = "missing-hook-entrypoint"
+HOOK_ENTRYPOINT_STALE_DISPATCHER = "stale-hook-dispatcher"
+
+
+class AdapterHookEntrypointFinding(NamedTuple):
+    """진입점 역방향 소견 하나 — 무엇이 어디서 빠졌는지와 사람이 읽을 사유."""
+    harness: str
+    config_relpath: str
+    kind: str
+    event: str
+    matcher: str | None
+    dispatcher: str
+    detail: str
+
+
+def _entrypoint_groups(document, event: str) -> list:
+    """config 의 그 이벤트 matcher-group 목록 (형상이 어긋나면 빈 목록)."""
+    hooks = document.get("hooks") if isinstance(document, dict) else None
+    groups = hooks.get(event) if isinstance(hooks, dict) else None
+    return [group for group in groups if isinstance(group, dict)] if isinstance(groups, list) else []
+
+
+def _group_commands(group) -> list[str]:
+    """그 matcher-group 이 실행하는 커맨드 전수 (POSIX·Windows 양쪽)."""
+    entries = group.get("hooks")
+    if not isinstance(entries, list):
+        return []
+    return [entry[key] for entry in entries if isinstance(entry, dict)
+            for key in _HOOK_COMMAND_KEYS
+            if isinstance(entry.get(key), str) and entry[key].strip()]
+
+
+def entrypoint_invocation(entrypoint: AdapterHookEntrypoint) -> str | None:
+    """그 진입점이 커맨드에서 **호출해야 하는 값**(`--hook-dispatch PreToolUse`).
+
+    플래그가 없는 진입점(claude 처럼 이벤트마다 커맨드 자체가 갈리는 형상)은 호출 값이 없다 —
+    그 축의 세대 결합은 `flag_support` 가 따로 본다."""
+    return None if not entrypoint.flag else f"{entrypoint.flag} {entrypoint.event}"
+
+
+def _command_invokes_entrypoint(command: str, entrypoint: AdapterHookEntrypoint) -> bool:
+    """**한 커맨드 문자열**이 디스패처를 그 이벤트로 실제 호출하는가.
+
+    디스패처 경로만 보면 실행하지 않는 문자열(`printf .codex/pm_orch_codex.py`)이나 다른
+    이벤트를 부르는 커맨드까지 진입점으로 인정된다 — 발화하지 않는 config 가 소견 0 으로
+    통과하므로, 경로와 호출 값을 **같은 문자열 안에서 함께** 요구한다. 경로 판정이 포함
+    여부인 것은 출하 커맨드가 인터프리터 해소를 담은 셸 한 줄(`if command -v python3 …`)이라
+    argv 분해로는 스크립트가 안 나오고, 하네스가 해소하는 루트 토큰(`${CLAUDE_PROJECT_DIR}/`)
+    같은 접두가 붙어도 같은 파일을 가리키기 때문이다."""
+    normalized = command.replace("\\", "/")
+    if entrypoint.dispatcher not in normalized:
+        return False
+    if not entrypoint.flag:
+        return True
+    # 이벤트 이름은 **경계까지** 대조한다 — 접미가 붙은 다른 이벤트(`PreToolUseLegacy`)를
+    #   같은 값으로 세면 값 대조가 다시 포함 판정으로 되돌아간다.
+    return re.search(
+        rf"{re.escape(entrypoint.flag)}[\s=]+['\"]?"
+        rf"{re.escape(entrypoint.event)}['\"]?(?![\w.-])",
+        normalized) is not None
+
+
+def _entrypoint_is_present(document, entrypoint: AdapterHookEntrypoint) -> bool:
+    """그 진입점이 config 에 **값으로** 있는가 — matcher 일치 + 그 이벤트로의 디스패처 호출."""
+    for group in _entrypoint_groups(document, entrypoint.event):
+        if group.get("matcher") != entrypoint.matcher:
+            continue
+        if any(_command_invokes_entrypoint(command, entrypoint)
+               for command in _group_commands(group)):
+            return True
+    return False
+
+
+def _entrypoint_dispatcher_gap(dest_root: Path,
+                               entrypoint: AdapterHookEntrypoint) -> str | None:
+    """설치된 디스패처가 진입점이 넘기는 **값**을 감당하는가 — 못 하면 빠진 리터럴을 돌려준다.
+
+    기준을 플래그 하나가 아니라 `--hook-dispatch <이벤트>` 두 값으로 두는 이유는, 플래그는
+    아는데 그 이벤트는 모르는 세대가 실재하기 때문이다(진입점 집합이 늘어난 릴리즈의 흡수
+    창). 그 조합에서 훅은 매 발화마다 폴백으로 빠지므로 config 판정과 같은 값으로 본다."""
+    if not entrypoint.flag:
+        return None
+    path = dest_root / entrypoint.dispatcher
+    for literal in (entrypoint.flag, entrypoint.event):
+        if not _hook_file_declares(path, literal, unknown_supported=True):
+            return literal
+    return None
+
+
+def judge_adapter_hook_entrypoints(dest_root: Path, source_root: Path | None = None,
+                                   harnesses=None, *,
+                                   declarations=None) -> list[AdapterHookEntrypointFinding]:
+    """설치된 채택자 config 가 이 엔진 세대의 진입점을 갖고 있는지 판정 (읽기 전용·advisory).
+
+    `source_root` 는 형제 API 와 시그니처를 맞추기 위한 자리다 — 이 축의 기준은 상류 트리가 아니라
+    **선언**(`declarations`)이라 판정에 쓰지 않는다. config 부재·파손은 소견을 내지 않는다: 그건
+    어댑터 config 채널이 이미 자기 문구로 말하는 상태이고, 여기서 겹쳐 말하면 처방이 두 벌이 된다.
+    """
+    dest_root = Path(dest_root)
+    table = _hook_set_table(declarations)
+    names = (list(harnesses) if harnesses is not None
+             else installed_harnesses(dest_root, source_root))
+    out: list[AdapterHookEntrypointFinding] = []
+    for harness in names:
+        spec = table.get(harness)
+        # 구세대 선언 사본에는 이 필드가 없다 — 그 세대엔 판정할 진입점 개념이 아예 없다.
+        entrypoints = getattr(spec, "entrypoints", ()) if spec is not None else ()
+        if spec is None or not spec.config_relpath or not entrypoints:
+            continue
+        document = _read_hook_set_config(dest_root / spec.config_relpath)
+        if document is None:
+            continue
+        for entrypoint in entrypoints:
+            if not _entrypoint_is_present(document, entrypoint):
+                out.append(AdapterHookEntrypointFinding(
+                    harness, spec.config_relpath, HOOK_ENTRYPOINT_MISSING,
+                    entrypoint.event, entrypoint.matcher, entrypoint.dispatcher,
+                    f"{spec.config_relpath} 에 {entrypoint.event} 범용 진입점"
+                    f"(matcher {entrypoint.matcher!r} → {entrypoint.dispatcher})이 없다 — "
+                    f"이 이벤트에 등록된 가드는 한 번도 발화하지 않는다"))
+                continue
+            gap = _entrypoint_dispatcher_gap(dest_root, entrypoint)
+            if gap is not None:
+                out.append(AdapterHookEntrypointFinding(
+                    harness, spec.config_relpath, HOOK_ENTRYPOINT_STALE_DISPATCHER,
+                    entrypoint.event, entrypoint.matcher, entrypoint.dispatcher,
+                    f"설치된 {entrypoint.dispatcher} 가 {entrypoint.event} 진입점이 넘기는 "
+                    f"`{entrypoint_invocation(entrypoint)}` 를 감당하지 않는다"
+                    f"(`{gap}` 미보유) — 훅이 매 발화마다 폴백으로 빠져 가드가 무음 통과한다"))
+    return out
+
+
+def hook_entrypoint_advisory_lines(
+        finding: AdapterHookEntrypointFinding) -> list[str]:
+    """진입점 소견의 처방 줄 — pm-update 와 형제 소비자가 같은 문구를 낸다(처방 사본 0)."""
+    if finding.kind == HOOK_ENTRYPOINT_STALE_DISPATCHER:
+        return [f"pm-update 로 {finding.dispatcher} 를 먼저 받아라"]
+    return [f"pm-config sync-adapter-config --accept {finding.config_relpath} "
+            f"(이 엔진 세대의 진입점을 담은 config 로 되돌린다)",
+            "채택자가 그 이벤트의 훅을 의도적으로 끈 상태면 이 줄은 무시해도 된다(차단 아님)"]
 
 
 def hook_set_remedy_lines(finding: AdapterHookSetFinding) -> list[str]:
