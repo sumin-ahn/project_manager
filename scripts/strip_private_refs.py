@@ -78,6 +78,7 @@ _DELTA_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"|[A-Za-z]\d+|\d+[A-Za-z])(?=$|[ \t·,.;:)\]])"
         ),
     ),
+    ("empty-paren", re.compile(r"\(\s*\)")),
 )
 
 

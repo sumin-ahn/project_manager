@@ -4159,7 +4159,7 @@ class ReadonlySlotNotLeasable(RuntimeError):
 
 
 class RefreshRefused(RuntimeError):
-    """readonly 슬롯 `refresh` 거부 — dirty(누군가 씀·신호) / base 미해소 / non-readonly ().
+    """readonly 슬롯 `refresh` 거부 — dirty(누군가 씀·신호) / base 미해소 / non-readonly.
 
     `reason` ∈ {"dirty", "no-base", "not-readonly"}:
       - **dirty** — read-only 슬롯에 미커밋 변경이 있다 = "누군가 여기 썼다"는 신호. 조용히 reset 하면
@@ -4187,7 +4187,7 @@ class RefreshRefused(RuntimeError):
 
 def refresh(slot: str, *, onto: "str | None" = None,
             git_runner: GitRunner | None = None) -> "tuple[str, str]":
-    """readonly 공유 슬롯을 released 최신으로 갱신한다 — fetch → detached HEAD 이동 ().
+    """readonly 공유 슬롯을 released 최신으로 갱신한다 — fetch → detached HEAD 이동.
 
     read-only 슬롯(detached·문서 검증 기준면)을 최신 released tip 으로 fast-forward 하는 유일 경로다
     (mutation op 은 거부·`refresh` 만 허용). 순서:
@@ -4271,7 +4271,7 @@ def refresh(slot: str, *, onto: "str | None" = None,
         raise RefreshRefused(slot, "git-error",
                              detail=f"`git checkout --detach {ref}` 실패 (rc={rc}): "
                                     f"{str(out).strip()[:200]}{hint}")
-    # submodule 재동기 () — `checkout --detach` 는 superproject HEAD 만 옮기고
+    # submodule 재동기 — `checkout --detach` 는 superproject HEAD 만 옮기고
     # submodule gitlink 는 **옛 pin 잔존** → readonly 기준면이 stale + `git status` dirty(gitlink 변경)
     # 로 남아 **다음 refresh 가 자기 dirty 거부에 걸리는 자가 잠금**이 된다(create_slot 은 init 하는데
     # refresh 는 안 하던 비대칭). readonly 슬롯은 mutation(dev) 거부라 on-branch(dev) submodule 이
@@ -4281,7 +4281,7 @@ def refresh(slot: str, *, onto: "str | None" = None,
     if rc != 0:
         raise RefreshRefused(slot, "git-error",
                              detail=f"submodule 재동기 실패 (rc={rc}): {str(out).strip()[:200]}")
-    # 스냅 갱신 () — base 를 **기준 branch(onto 또는 기록된 base.branch)로 재기록**해 base.commit=새 head 로
+    # 스냅 갱신 — base 를 **기준 branch(onto 또는 기록된 base.branch)로 재기록**해 base.commit=새 head 로
     # 갱신한다. onto 생략(기록된 base.branch 로 refresh)에도 base_branch 를 넘겨야, HEAD 는 최신
     # origin/<base> 로 이동했는데 장부 base.commit 은 옛 커밋으로 남아 status "N behind"·기준면 기록이
     # 실제와 어긋나는 불일치를 막는다. refresh(readonly 전용)는 set-base/rebase 외에 base 가 바뀌는
@@ -4347,7 +4347,7 @@ class BaseRefUnresolvable(RuntimeError):
 
 def set_base(slot: str, base_ref: str, *, commit: "str | None" = None,
              git_runner: GitRunner | None = None) -> "Lease | None":
-    """슬롯 기준점(base)을 **사용자 명시**로 기록한다 — `/pm-worktree set-base` 백본 ().
+    """슬롯 기준점(base)을 **사용자 명시**로 기록한다 — `/pm-worktree set-base` 백본.
 
     미기록 슬롯(v1.3.0 이전)의 base 를 **추론 없이** 사용자가 지정해 기록한다(그때부터 drift 감지
     작동). `base_ref` = 기준 브랜치(예 `origin/main`), `commit` = 명시 `@<commit>`(생략 = 그 브랜치
@@ -4362,7 +4362,7 @@ def set_base(slot: str, base_ref: str, *, commit: "str | None" = None,
     write 를 재구현하지 않는다(base_commit=검증된 실 sha·None 폴백 경로를 안 탄다). **자동 추론 절대
     금지**(엔진=surface·사용자=결정). 장부에 슬롯이 없으면 None. 갱신된 Lease 반환.
 
-    **readonly 거부()**: 대상 슬롯이 readonly 공유 슬롯이면 `ReadonlySlotMutation` raise
+    **readonly 거부**: 대상 슬롯이 readonly 공유 슬롯이면 `ReadonlySlotMutation` raise
     (base 는 released 기준면·mutation 불가·갱신은 refresh 만). ref 해소/장부 write 이전 가드."""
     _reject_readonly_mutation(slot, "set-base", git_runner=git_runner)
     resolved = _resolve_base_commit(
@@ -4389,11 +4389,11 @@ def _read_recorded_base(slot: str) -> "dict | None":
 
 
 class RebaseBaseRequired(RuntimeError):
-    """rebase 대상 슬롯에 기준점(base)이 미기록이라 rebase 를 거부한다 ().
+    """rebase 대상 슬롯에 기준점(base)이 미기록이라 rebase 를 거부한다.
 
     기준점 없이 rebase 하면 "어디로 rebase" 가 정의되지 않는다(추론 금지). `--onto <branch>`
     를 명시하면 그것을 기준으로 진행하고 그 값을 base 로 기록한다(1회 해소·`resolve_rebase_base(onto=)`).
-    그 **계약**만 정의하고 rebase 엔진 본체는 ()가 이 gate 를 소비해 구현한다.
+    그 **계약**만 정의하고 rebase 엔진 본체는 이 gate 를 소비해 구현한다.
 
     (`RuntimeError` 서브클래스 — `BareRepoMissing`/`SlotBranchExists` 동형·파사드가 rc 1 로 surface.)"""
 
@@ -4410,7 +4410,7 @@ def resolve_rebase_base(slot: str, *, onto: "str | None" = None, record: bool = 
                         git_runner: GitRunner | None = None) -> str:
     """rebase 기준-gate — 기준 없으면 거부·`--onto` 명시 시 진행(+`record` 시 기록).
 
-    rebase 엔진 본체()가 "어느 base 로 rebase" 를 이 gate 로 해소한다:
+    rebase 엔진 본체가 "어느 base 로 rebase" 를 이 gate 로 해소한다:
       - `onto` 명시 + `record=True`(기본·standalone 계약) → 그것을 base 로 **즉시 기록**(`set_base`·
         1회 해소)하고 반환. **base 가 실제로 기록됐을 때만 반환** — `set_base` 가 ref 해소 실패로
         `BaseRefUnresolvable` 을 던지면 자연 전파, 슬롯 장부 미등록으로 `None`(기록 실패)을 반환하면
@@ -4425,7 +4425,7 @@ def resolve_rebase_base(slot: str, *, onto: "str | None" = None, record: bool = 
       - `onto` 없음 + 미기록 → `RebaseBaseRequired` raise(거부 — 기준 없이 rebase 불가·추론 금지).
     반환값 = rebase 가 향할 base 브랜치명(본체가 소비). 자동 rebase 없음(사용자 명시).
 
-    **readonly 거부()**: 대상 슬롯이 readonly 공유 슬롯이면 `ReadonlySlotMutation` raise —
+    **readonly 거부**: 대상 슬롯이 readonly 공유 슬롯이면 `ReadonlySlotMutation` raise —
     rebase 는 슬롯 git 을 바꾸는 mutation 이라 read-only 기준면엔 불가(진입 가드·record 무관 선행)."""
     _reject_readonly_mutation(slot, "rebase", git_runner=git_runner)
     if onto is not None:
@@ -4447,9 +4447,9 @@ def resolve_rebase_base(slot: str, *, onto: "str | None" = None, record: bool = 
 
 def base_behind_count(slot: str, base_branch: str, *,
                       git_runner: GitRunner | None = None) -> "int | None":
-    """슬롯 HEAD 가 `base_branch` 대비 몇 커밋 behind 인가 — `git rev-list --count HEAD..<base_branch>` ().
+    """슬롯 HEAD 가 `base_branch` 대비 몇 커밋 behind 인가 — `git rev-list --count HEAD..<base_branch>`.
 
-    base 기록의 배당금: "base 대비 N commits behind" = rebase 필요 판단 근거(). `base_branch`
+    base 기록의 배당금: "base 대비 N commits behind" = rebase 필요 판단 근거. `base_branch`
     (예 `origin/main`)의 live tip 대비 HEAD 가 뒤진 커밋 수. **fetch 안 함**(조회 — 현재 remote-tracking
     ref 기준·era-warning `_slot_era_info` 동형). rev-list 실패(rc≠0)·미해소·슬롯 부재·파싱 실패 →
     None(계산 불가 → 상위에서 `-` 표기)."""
@@ -4477,7 +4477,7 @@ def slot_git_status(slot: str, *, git_runner: GitRunner | None = None) -> dict:
     미기록(base 없음)이면 `behind=None`·`behind_reason`=이유(계산 불가 → CLI `-` 표기·자동 추론
     금지). 기록 있으면 `base_behind_count` 로 N 을 센다. branch/head 는 live 조회
     (`current_branch`/`_slot_head`·표시 축). **submodule pin/drift(`_submodule_statuses`
-    재사용·역할별 `SubmoduleStatus`)·dirty(`_is_dirty`)는 ()조회에 합류**한다
+    재사용·역할별 `SubmoduleStatus`)·dirty(`_is_dirty`)는 조회에 합류**한다
     (rebase 선-검사가 보는 것과 같은 primitive). 전부 fail-soft. 반환 dict: `slot`·`base`
     ({branch,commit}|None)·`branch`·`head`·`behind`(int|None)·`behind_reason`(str|None)·
     `submodules`(list[SubmoduleStatus]·runner 미해소면 [])·`dirty`(bool·runner 미해소면 False)."""
@@ -4503,7 +4503,7 @@ def slot_git_status(slot: str, *, git_runner: GitRunner | None = None) -> dict:
 
 def status(*, task: "str | None" = None, slot: "str | None" = None,
            git_runner: GitRunner | None = None) -> "list[dict]":
-    """슬롯 git 구성 일괄 조회 — 단일 슬롯 / `--task` 전 슬롯 / 무인자=내 task 전 슬롯 ().
+    """슬롯 git 구성 일괄 조회 — 단일 슬롯 / `--task` 전 슬롯 / 무인자=내 task 전 슬롯.
 
     대상 슬롯 해소(택일):
       - `slot` 명시 → 그 슬롯 하나(`_normalize_slot` 형식 검증·traversal 차단).
@@ -4574,7 +4574,7 @@ class RebaseSlotResult:
 
 
 def _rebase_in_progress(slot: str, *, git_runner: GitRunner | None = None) -> bool:
-    """슬롯 worktree 에 rebase 가 진행 중인가 — `.git/rebase-merge` | `rebase-apply` 존재 ().
+    """슬롯 worktree 에 rebase 가 진행 중인가 — `.git/rebase-merge` | `rebase-apply` 존재.
 
     worktree 슬롯의 per-worktree git 디렉토리 위치를 `git rev-parse --git-path <name>` 로 해소하고
     (worktree 는 `.git` 이 gitdir 를 가리키는 파일이라 직접 경로 조합 불가) 그 경로 실재를 본다. 둘
@@ -4607,7 +4607,7 @@ def _rebase_in_progress(slot: str, *, git_runner: GitRunner | None = None) -> bo
 
 def _rebase_one(slot: str, *, onto: "str | None", owner: str,
                 git_runner: GitRunner | None = None) -> RebaseSlotResult:
-    """슬롯 하나 rebase — 선-검사 → fetch → git rebase → 성공 시 장부 원자 갱신 ().
+    """슬롯 하나 rebase — 선-검사 → fetch → git rebase → 성공 시 장부 원자 갱신.
 
     선-검사(스킵+loud·순서): readonly(공유 기준면·mutation 불가) → 소유(`owner` 명의 leased
     아님 — `owner` 는 세션 또는 task 명의·해소는 `rebase`) → dirty(clean 전제) → rebase
@@ -4615,7 +4615,7 @@ def _rebase_one(slot: str, *, onto: "str | None", owner: str,
     onto=진행+기록) 로 대상 base 브랜치를 해소하고, `origin/<base>` 최신을 fetch 후 `git
     rebase` 한다. rc≠0(충돌 등) = **그 상태 그대로 두고 conflict**(엔진 임의 abort 금지). 성공 =
     `record_git_snapshot(base_branch, base_commit=새 base tip)` 로 base.commit·head·recorded_at 을
-    원자 갱신(). **raise 하지 않는다** — 모든 조건을 RebaseSlotResult 로 돌려 일괄 독립성을
+    원자 갱신. **raise 하지 않는다** — 모든 조건을 RebaseSlotResult 로 돌려 일괄 독립성을
     보장한다(한 슬롯의 예외가 나머지를 막지 않음)."""
     def skip(reason: str, base: "str | None" = None) -> RebaseSlotResult:
         return RebaseSlotResult(slot, REBASE_SKIPPED, reason=reason, base=base)
@@ -4691,7 +4691,7 @@ def _rebase_one(slot: str, *, onto: "str | None", owner: str,
 def rebase(slots: "list[str]", *, onto: "str | None" = None,
            owner_task: "str | None" = None,
            git_runner: GitRunner | None = None) -> "list[RebaseSlotResult]":
-    """슬롯 base 를 사용자 명시로 rebase — 단일/일괄·슬롯 독립·자동 rebase 없음 ().
+    """슬롯 base 를 사용자 명시로 rebase — 단일/일괄·슬롯 독립·자동 rebase 없음.
 
     `slots` = 대상 슬롯 식별자 리스트(단일이면 1개·일괄이면 `slots_for_task` 결과). 각 슬롯을
     `_rebase_one` 로 **독립** 처리한다 — 한 슬롯의 충돌/스킵이 나머지를 막지 않는다(일괄 독립성·
@@ -4812,7 +4812,7 @@ def _normalize_branch_name(branch: str, *, git_runner: GitRunner) -> "str | None
     first = resolve(branch)
     if first is None:
         return None
-    return first if resolve(first) == first else None   # 고정점 확인().
+    return first if resolve(first) == first else None   # 고정점 확인.
 
 
 def _local_branch_exists(branch: str, *, git_runner: GitRunner) -> bool:
@@ -4897,7 +4897,7 @@ def _branch_df_conflict(branch: str, *, git_runner: GitRunner) -> "str | None":
 
 
 class SwitchRefused(RuntimeError):
-    """`switch <slot> <branch>` 거부 — rc 1 + 사유 ().
+    """`switch <slot> <branch>` 거부 — rc 1 + 사유.
 
     ⚠ **부작용 범위는 사유마다 다르다**(내부 리뷰 should-fix — docstring 이 자기 사유와 모순이면
     안 된다):
@@ -4912,7 +4912,7 @@ class SwitchRefused(RuntimeError):
       - **unregistered** — 장부에 없는 슬롯(스냅 기록 대상이 아니다·`record` 동형 메시지).
       - **protected** — 대상 브랜치가 그 repo 보호목록. 보호브랜치로 *들어가는* 전환은 이
         커맨드의 목적(main-참조 해소)과 정반대다.
-      - **protected-upstream** — 대상(기존) 브랜치가 **보호브랜치 원격을 origin-추적**한다().
+      - **protected-upstream** — 대상(기존) 브랜치가 **보호브랜치 원격을 origin-추적**한다.
         전환은 되지만 다음 0단계가 다시 main-참조로 막으므로 여기서 거부한다(remedy-유발 상태전이).
       - **no-worktree** — 슬롯 worktree 경로 부재(실경로·runner 미주입).
       - **dirty** — 미커밋 변경이 있다. 전환이 WIP 를 흔든다(rebase 선-검사 동형).
@@ -4994,7 +4994,7 @@ class SwitchResult:
 
 def switch(slot: str, branch: str, *, protected: "list[str] | None" = None,
            git_runner: GitRunner | None = None) -> SwitchResult:
-    """슬롯 브랜치를 전환하고 **같은 호출 안에서** 장부 스냅을 재기록한다 — 원자 ().
+    """슬롯 브랜치를 전환하고 **같은 호출 안에서** 장부 스냅을 재기록한다 — 원자.
 
     0단계 main-참조 fault 의 remedy 를 엔진-매개 단일 커맨드로 만든다. 순서(선-검사는 전부 부작용
     0 — 하나라도 걸리면 전환/기록 어느 것도 하지 않는다):
@@ -5011,7 +5011,7 @@ def switch(slot: str, branch: str, *, protected: "list[str] | None" = None,
          이름 기준**이다(codex must-fix — 원문 기준이면 `@{-1}` 이 보호목록 비교를 우회해 이
          커맨드가 스스로 슬롯을 보호브랜치에 앉힌다). 원문과 다르면 stderr 로 **loud 고지**
          (조용히 다른 브랜치로 가지 않는다).
-      6. **보호목록 거부** — 정규화된 브랜치가 그 repo 보호목록이면 거부().
+      6. **보호목록 거부** — 정규화된 브랜치가 그 repo 보호목록이면 거부.
          `protected` 주입 시 그 목록(테스트 hermetic), 아니면 `_resolve_protected(repo)`.
       7. **존재 판정**(`refs/heads/<정규화>`) → **기존 브랜치면 `@{upstream}` 보호 추적 거부**
          (·`protected-upstream`) · **미존재(=생성 의도)면 모호 인자 거부**(remote-tracking·
@@ -5064,7 +5064,7 @@ def switch(slot: str, branch: str, *, protected: "list[str] | None" = None,
 
     exists = _local_branch_exists(target, git_runner=runner)
     if exists:
-        # ()보호브랜치 원격을 추적하는 기존 브랜치로 가면 다음 0단계가 다시 main-참조로
+        # 보호브랜치 원격을 추적하는 기존 브랜치로 가면 다음 0단계가 다시 main-참조로
         # 막는다(remedy 가 다른 축의 fault 를 만든다). 새 브랜치(`-c`)는 upstream 이 없어 무관.
         tracked = _branch_protected_upstream(target, protected_list, git_runner=runner)
         if tracked is not None:
@@ -5495,7 +5495,7 @@ def dev(slot: str, sub: str, branch: str, *, git_runner: GitRunner | None = None
     `_resync_submodules_selective` 와 동형 배선). `(rc, out)` 반환 — 호출부(CLI)가 rc≠0 를 명시
     에러로 surface 한다. `git_runner` 주입 시 그 runner(테스트 mock·DI seam 보존).
 
-    **readonly 거부()**: 대상 슬롯이 readonly 공유 슬롯이면 `ReadonlySlotMutation` raise —
+    **readonly 거부**: 대상 슬롯이 readonly 공유 슬롯이면 `ReadonlySlotMutation` raise —
     dev 는 submodule 을 on-branch 로 checkout 하는 mutation 이라 read-only 기준면엔 불가(진입 가드).
     """
     _reject_readonly_mutation(slot, "dev", git_runner=git_runner)
@@ -5532,7 +5532,7 @@ def sync(slot: str, *, git_runner: GitRunner | None = None) -> None:
     fail-soft(raise 금지·경고는 stderr) — `_resync_submodules_selective` 계약 상속. `git_runner`
     주입 시 그 runner(테스트 mock·DI seam), 미주입이면 슬롯 worktree 바인딩 실 runner.
 
-    **readonly 거부()**: 대상 슬롯이 readonly 공유 슬롯이면 `ReadonlySlotMutation` raise —
+    **readonly 거부**: 대상 슬롯이 readonly 공유 슬롯이면 `ReadonlySlotMutation` raise —
     sync 는 submodule 을 pin 으로 재동기(checkout)하는 mutation 이라 read-only 기준면엔 불가(진입
     가드·fail-soft 계약보다 우선 — 이건 op 전면 거부지 조회 실패가 아니다).
     """
@@ -5784,13 +5784,13 @@ def _resolve_actor_slot_for_repo(repo: str) -> str:
 
 
 # ── set-base / status CLI 핸들러 (위치인자 <slot> — pool-management op·명시 슬롯) ──
-# dev/sync 의 --repo/--slot identity 와 달리 대상 슬롯을 **위치인자**로 직접 받는다: set-base·status·
-# ()는 자기 세션 슬롯이 아닌 임의 슬롯도 관리 대상이라(pool 관리) 슬롯을 명시
+# dev/sync 의 --repo/--slot identity 와 달리 대상 슬롯을 **위치인자**로 직접 받는다: set-base·status
+# 는 자기 세션 슬롯이 아닌 임의 슬롯도 관리 대상이라(pool 관리) 슬롯을 명시
 # 지정한다. status 는 위치인자 생략 시 cwd/세션 leased 로 해소(무인자=내 슬롯).
 
 
 def _cmd_set_base(args) -> int:
-    """`set-base <slot> <branch>[@<commit>]` CLI 핸들러 — 기준점 사용자 명시 기록 ().
+    """`set-base <slot> <branch>[@<commit>]` CLI 핸들러 — 기준점 사용자 명시 기록.
 
     자동 추론 없이 사용자가 지정한 base 를 `set_base`로 기록한다. 슬롯 형식 오류·
     ref 해소 실패(오타·미fetch·슬롯 worktree 부재 → `BaseRefUnresolvable`)·장부 미등록은 rc 1 로 명시
@@ -5808,7 +5808,7 @@ def _cmd_set_base(args) -> int:
     try:
         lease = set_base(slot, base_ref, commit=commit)
     except ReadonlySlotMutation as exc:
-        print(f"[중단] {exc}", file=sys.stderr)   # readonly 공유 슬롯 — mutation 거부().
+        print(f"[중단] {exc}", file=sys.stderr)   # readonly 공유 슬롯 — mutation 거부.
         return 1
     except BaseRefUnresolvable as exc:
         print(f"[중단] {exc}", file=sys.stderr)   # ref 해소 실패 → 조용히 오기록하지 않고 fail-loud.
@@ -5839,7 +5839,7 @@ def _print_status_row(row: dict) -> None:
                 if base and base.get("branch") else "(미기록)")
     behind = row.get("behind")
     print(f"# 슬롯 {slot} git 구성 (조회 — 손-git 불요)")
-    print(f"  role:   {row.get('role') or _slot_role(slot)}")   # work | readonly ()
+    print(f"  role:   {row.get('role') or _slot_role(slot)}")   # work | readonly
     print(f"  base:   {base_str}")
     print(f"  branch: {row.get('branch') or '(detached/미상)'}")
     print(f"  head:   {(row.get('head') or '(미상)')[:12]}")
@@ -5872,7 +5872,7 @@ def _cmd_status(args) -> int:
         elif slot_arg:
             rows = status(slot=slot_arg)
         else:
-            rows = status()   # 무인자 = 내 task 전 슬롯().
+            rows = status()   # 무인자 = 내 task 전 슬롯.
     except SlotResolutionError as exc:
         print(f"[중단] 대상 슬롯 해소 실패 — {exc}", file=sys.stderr)
         return 1
@@ -5928,7 +5928,7 @@ def _rebase_skip_reason(reason: "str | None") -> str:
 
 def _cmd_rebase(args) -> int:
     """`rebase <slot> [--task <이름>] [--onto <b>]` (단일) · `rebase --task <이름> [--onto <b>]` (일괄)
-    CLI 핸들러 ().
+    CLI 핸들러.
 
     슬롯 독립 처리 — 선-검사(소유/dirty/rebase 진행중) 스킵 + 충돌 그대로 fail-loud(엔진 abort 안
     함) + 성공 시 장부 원자 갱신. 끝에 성공/스킵/충돌 요약. 단일은 성공해야 rc 0(스킵/충돌=rc 1),
@@ -5940,7 +5940,7 @@ def _cmd_rebase(args) -> int:
     task 명의 슬롯을 단일 지정으로 rebase 할 방법이 아예 없었다. 위치인자만이면 종전대로 세션
     명의로 판정한다(슬롯-세션 모드 불변).
 
-    ⚠️ **선행조건()**: 활성 백그라운드 위임(dev) 중인 슬롯은 rebase 하지 마라 — 서브에이전트는
+    ⚠️ **선행조건**: 활성 백그라운드 위임(dev) 중인 슬롯은 rebase 하지 마라 — 서브에이전트는
     하네스 안 프로세스라 엔진이 못 본다(기계 신호 부재·[[parallel-dev-shared-tree-clobber]] 변형).
     스킬/카드에 명문화·실행 전 사용자 확인."""
     task = args.task
@@ -5996,7 +5996,7 @@ def _cmd_rebase(args) -> int:
 
 
 def _cmd_refresh(args) -> int:
-    """`refresh <slot> [--onto <branch>]` CLI 핸들러 — readonly 슬롯 갱신 ().
+    """`refresh <slot> [--onto <branch>]` CLI 핸들러 — readonly 슬롯 갱신.
 
     fetch → detached HEAD 를 기준(onto 또는 기록된 base.branch) 최신 tip 으로 이동한다. `--onto` 는 준
     ref 를 그대로 해소하고(자동 대체 없음·원격 기준은 `origin/<branch>` 로 명시), 생략 시에만 기록된

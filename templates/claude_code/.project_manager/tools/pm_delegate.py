@@ -6153,7 +6153,7 @@ def _iter_prompt_secret_hits(prompt: str) -> Iterator[PromptSecretHit]:
                 yield PromptSecretHit(
                     # 경로축 판정이어도 발췌는 같은 URL 표시층을 탄다. 원문 URL을 그대로 내보내면
                     # userinfo password와 query/fragment 자격증명이 값축 발췌에서는 가려져도 이
-                    # 경로축 발췌를 통해 stderr/raw에 다시 노출된다().
+                    # 경로축 발췌를 통해 stderr/raw에 다시 노출된다.
                     _url_credentials_excerpt(url.group(0)), pattern, _SECRET_AXIS_PATH,
                 )
             # 자격증명·시크릿 파일이 아닌 URL(엔드포인트·문서 링크)만 경로축 비대상 — `:` 분리 뒤 남는
@@ -10018,7 +10018,7 @@ def begin_scope_audit(
     호출 시점은 전송-전 게이트(opt-in·매핑·containment·denylist·재앵커·dry-run)를 **모두 통과한
     뒤**다 — 아무것도 실행하지 않은 경로에서 판정을 켜면 무의미한 git 호출·오탐만 는다.
     캡처/정규화 기준은 `--cwd` 가 아니라 **git toplevel** 이다 — repo 하위 디렉토리를 --cwd 로 주면
-    슬롯 루트와 좌표가 어긋나 판정이 통째로 꺼진다. `--ticket` 이 없으면 touches=() 라 허용 경로가
+    슬롯 루트와 좌표가 어긋나 판정이 통째로 꺼진다. `--ticket` 이 없으면 `touches=()` 라 허용 경로가
     0이다(delegate_scope 계약 — 변경이 있으면 전부 경고).
 
     ``ScopeAudit.overlap_paths``는 실행 **전**에 이미 계산해 경고한 병렬 위임 교집합 경로다

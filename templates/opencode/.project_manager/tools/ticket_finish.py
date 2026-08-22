@@ -171,7 +171,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 
 # ── REPO 앵커 (상향 탐색·board_root() graceful 탐지 동형) ──────────
 # 하드코딩 `parents[2]` 는 tools 가 `<root>/.project_manager/tools/` 정확히 2단 깊이에 있다고
-# 가정한다 — 채택자 형상(다른 깊이)에선 어긋난다().
+# 가정한다 — 채택자 형상(다른 깊이)에선 어긋난다.
 # external_review 와 *동형*(각 파일 self-contained·공유 import 미도입)으로 상향 탐색해 견고화한다:
 # `.project_manager` 마커를 품은 첫(최근접) 조상을 REPO 로, 못 찾으면 현행 `parents[2]` 폴백(회귀 0).
 

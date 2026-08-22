@@ -3574,7 +3574,7 @@ def record_opencode_model(dest_root: Path, model: str) -> bool:
 # → 치환  ③없고 비-tty 또는 opencode 부재 → 치환 안 함·TODO 마커(가용목록 인라인)+stderr 경고.
 # `opencode models` 가 실제 가용 모델의 단일 진실 — LLM 추측(fill) 대신 결정적 조회를 쓴다.
 
-# `opencode models` 조회 seam — () → (성공 여부, provider/model 목록). 테스트가 stub 주입.
+# `opencode models` 조회 seam — `()` → (성공 여부, provider/model 목록). 테스트가 stub 주입.
 ModelsRunner = Callable[[], "tuple[bool, list[str]]"]
 
 
@@ -7913,7 +7913,7 @@ def _append_guest_render_to_manifest(
 
     **단일 guest 절**(마커 하나) 아래 모든 하네스 라인이 모이고, pm_update 가 engine.manifest overwrite
     시 재부착한다(MF-1). refresh 가 add-only 였으면 upstream flavor 에서 사라진 경로가 영구 render/lint
-    관리로 남았다(). write 후 `read_manifest` **왕복 검증**(조용한 미등재 금지·RuntimeError). dest
+    관리로 남았다. write 후 `read_manifest` **왕복 검증**(조용한 미등재 금지·RuntimeError). dest
     manifest 부재·무변경(멱등)은 graceful skip. 계획은 `_guest_render_sync_plan`(preview 공유·판정 사본 0)."""
     manifest = dest_root / ".project_manager" / "engine.manifest"
     # 경로 안전: manifest(또는 조상)가 repo-밖 지향 symlink 면 아래 read/write 가 링크를
@@ -7924,7 +7924,7 @@ def _append_guest_render_to_manifest(
             f"add-harness: engine.manifest 경로가 안전하지 않아 guest 등재를 거부합니다 ({manifest}) "
             "— symlink·조상 symlink·repo 밖. 링크를 옮기거나 제거한 뒤 다시 시도하세요(외부 파일 불변).")
     if not manifest.is_file():
-        # 등재를 조용히 생략하지 않는다() — 복사됐지만 render/lint 관리 밖임을 명시.
+        # 등재를 조용히 생략하지 않는다 — 복사됐지만 render/lint 관리 밖임을 명시.
         print("  ⚠️ engine.manifest 부재 — guest 어댑터가 복사됐으나 render/lint 관리 밖입니다 "
               "(manifest-파생 등재 채널 없음).", file=sys.stderr)
         return {"added": [], "removed": []}
@@ -8804,7 +8804,7 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 1
 
-    # (): --new 대상이 기존 *파일* 이면 아래 iterdir() 가 NotADirectoryError 로
+    # --new 대상이 기존 *파일* 이면 아래 iterdir() 가 NotADirectoryError 로
     #      터진다 — 디렉토리 여부를 먼저 검사해 친화적 비0 오류로 거부한다.
     if is_new and dest_root.exists() and not dest_root.is_dir():
         print(
