@@ -716,7 +716,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   이동했다. 들어온 것은 좌표 파생 헬퍼(`_dest_relative_path`) 하나와 렌더 호출 3곳의 인자이고,
 #   역적용 delta 의 네 anchor 는 전부 `_main`/`sync_adapter_configs` 쪽이라 그대로 유일 해소된다.
 #   배달 경계와 배달 파일 집합도 불변이다 — 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "d8694ef5ff312f4ed9be7ca67e0e25f00d60a62db5d561c85c5b77e19a3ac5c6"
+_T0585_PM_UPDATE_SHA256 = "c1d8670b2eb0b773b738e2807ae70b43e74319765c43579351eb676cb4f3f578"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
@@ -829,6 +829,18 @@ def _t0585_pm_update_source() -> str:
     apply → self-update 순서)·`sync_adapter_configs`·`_adapter_config_gate_failed`·`apply` 는
     무편집이고, 위 역델타의 marker 문자열도 그대로 매치했다(marker assert 선통과). 그래서 이
     drift 는 세대 시대착오가 아니라 합성본에 그대로 실려 온 주석 bytes 차이다.
+
+    T-0810 — 사설 문맥 스트립이 엔진 산문에 남긴 빈 괄호 `()` 를 걷어낸 커밋 e0f07fb(머지
+    db7e153)가 이 drift 를 만들었다. 직전 재핀(합성본 sha d8694ef5) 이후 `pm_update.py` 를 건드린
+    커밋은 이것 하나다. 배달 경계는 불변이다: 변경 13줄이 전부 주석·docstring 텍스트라 COMMENT·
+    docstring 을 제외한 토큰 스트림(31,578개)과 docstring 을 제외한 모듈 AST 가 구/신 세대 동일하고,
+    어댑터 config 채널·배달 함수(`sync_adapter_configs`·`_adapter_config_gate_failed`·`apply`·
+    `_print_adapter_config_finding`)는 byte 동일이다. `plan`·`_main` 만 docstring/주석에서 2·5 바이트
+    줄었을 뿐 실행 코드는 그대로다. 채택자 관측면도 그대로다 — docstring 을 출력으로 내보내는
+    유일한 지점은 argparse `description=__doc__`(모듈 docstring)인데 그건 무편집이고, 역적용 delta 의
+    네 anchor 도 이번에 모두 유일하게 해소됐다(`_slice_replace` 의 count==1 단언 선통과). 구/신
+    세대로 합성본을 각각 만들어 대조하면 6,603줄 중 13줄이 같은 빈 괄호 제거뿐이다 — 현재화한
+    것은 기대 SHA 하나뿐이다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
