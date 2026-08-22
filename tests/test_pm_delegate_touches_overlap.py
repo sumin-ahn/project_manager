@@ -397,6 +397,12 @@ def test_read_only_role_is_not_subject_to_overlap_warning(
             ("T-9702", "claimed", SESSION, ["work/demo_1/src"]),
         ],
     )
+    # codex code-reviewer preflight(`_preflight_codex_read_exec_root` — T-0844)의
+    # staged-nonzero 요건 — workspace 자신의 독립 index에 변경 하나를 얹는다.
+    (workspace / "staged.txt").write_text("staged\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "staged.txt"], cwd=workspace, check=True, capture_output=True,
+    )
     conf = _enabled_conf(**{"delegate.code-reviewer.harness": "codex",
                             "delegate.code-reviewer.model": "gpt-r"})
     fake = _WritingRun(workspace)

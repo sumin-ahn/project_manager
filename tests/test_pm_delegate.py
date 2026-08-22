@@ -1070,6 +1070,14 @@ def _init_transport_test_repo(repo: Path, tracked_path: str = "seed.txt") -> Non
     )
 
 
+def _init_codex_read_role_repo(repo: Path) -> None:
+    """codex code-reviewer preflight(`_preflight_codex_read_exec_root` — T-0844)가 통과하는
+    최소 형상 — repo 자신이 toplevel이고 staged 변경이 하나 있다."""
+    _init_transport_test_repo(repo)
+    (repo / "staged.txt").write_text("staged\n", encoding="utf-8")
+    subprocess.run(["git", "add", "staged.txt"], cwd=repo, check=True, capture_output=True)
+
+
 def test_opencode_non_root_cwd_transport_is_hidden_while_running(pd, tmp_path):
     """repo 하위 cwd의 wire 사본은 실행 중에도 git untracked 표면에 나타나지 않는다."""
     repo = tmp_path / "repo"
@@ -1564,7 +1572,7 @@ def test_codex_read_attempt_reanchors_execution_root_env_preamble_and_cleanup(
     temp_root = tmp_path / "system-temp"
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
-    cwd.mkdir()
+    _init_codex_read_role_repo(cwd)
     monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
     seen = {}
 
@@ -1788,7 +1796,7 @@ def _acl_read_attempt(pd, monkeypatch, tmp_path, harness, model, stdout_fn):
     temp_root = tmp_path / "system-temp"
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
-    cwd.mkdir()
+    _init_codex_read_role_repo(cwd)
     monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
     seen = {}
 
@@ -2173,7 +2181,7 @@ def test_acl_platform_preamble_is_the_real_path_not_the_unavailable_note(
     temp_root = tmp_path / "system-temp"
     cwd = tmp_path / "worktree"
     temp_root.mkdir()
-    cwd.mkdir()
+    _init_codex_read_role_repo(cwd)
     monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
     seen = {}
 
@@ -5579,11 +5587,16 @@ ADAPTER_DEGRADED_HEADER = "=== ⚠ 어댑터 편집 경고 축 강등 ==="
 TICKET_ID = "T-9999"
 
 
-def _scope_workspace(tmp_path: Path, monkeypatch, pd, touches=("work/demo_1/src",)):
+def _scope_workspace(
+    tmp_path: Path, monkeypatch, pd, touches=("work/demo_1/src",),
+    stage_change: bool = False,
+):
     """PM 홈 + `work/<repo>_<N>` git 워크스페이스 + ticket 을 실물로 세운다.
 
     delegate_scope→board(ticket touches)→repo_coordinates(좌표 정규화)→git status 체인을 mock 없이
-    통과시키기 위한 형상(test_delegate_scope 픽스처 동형)."""
+    통과시키기 위한 형상(test_delegate_scope 픽스처 동형). `stage_change=True` 는 codex
+    code-reviewer preflight(`_preflight_codex_read_exec_root` — T-0844)의 staged-nonzero 요건을
+    만족시키려고 workspace 자신에 독립 staged 변경 하나를 얹는다(worktree 는 자기 index 를 갖는다)."""
     pm_home = tmp_path / "pm_home"
     workspace = pm_home / "work" / "demo_1"
     pm_home.mkdir()
@@ -5605,6 +5618,11 @@ def _scope_workspace(tmp_path: Path, monkeypatch, pd, touches=("work/demo_1/src"
         ["git", "worktree", "add", "-q", "-b", "scope-slot", str(workspace)],
         cwd=pm_home, check=True, capture_output=True,
     )
+    if stage_change:
+        (workspace / "staged.txt").write_text("staged\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "staged.txt"], cwd=workspace, check=True, capture_output=True,
+        )
     tickets = pm_home / ".project_manager" / "wiki" / "tickets" / "open"
     tickets.mkdir(parents=True)
     touches_block = "\n".join(f"- {item}" for item in touches) or "[]"
@@ -5701,7 +5719,7 @@ def test_in_scope_only_change_has_no_warning(pd, monkeypatch, tmp_path, capsys):
 
 def test_read_only_role_write_is_warned(pd, monkeypatch, tmp_path, capsys):
     """읽기 전용 역할(code-reviewer)은 touches 가 있어도 허용 0 — 쓰기는 전부 경고."""
-    workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
+    workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd, stage_change=True)
     conf = _enabled_conf(**{"delegate.code-reviewer.harness": "codex",
                             "delegate.code-reviewer.model": "gpt-r"})
     fake = _WritingRun(workspace, (["src/review-note.md"], _ok_result("리뷰 완료")))
@@ -7010,7 +7028,7 @@ def test_t0650_cold_write_role_matrix_uses_real_ledger(
     role, has_completed, fresh_reason, expected_rc,
 ):
     """[R] 실제 장부에서 write만 거부하고 read의 독립 cold 판정은 무마찰 통과시킨다."""
-    workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
+    workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd, stage_change=True)
     output_dir = tmp_path / "raw"
     if has_completed:
         _seed_t0650_raw(pd, output_dir, ticket=TICKET_ID, role=role)
@@ -7229,7 +7247,7 @@ def test_t0650_codex_0147_missing_rollout_reruns_fresh_for_write_and_read(
     pd, monkeypatch, tmp_path, capsys, role,
 ):
     """[C] 0.147.0 실측 세션-부재 오류는 delta 미소비라 write/read 모두 fresh 재실행한다."""
-    workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd)
+    workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd, stage_change=True)
     output_dir = tmp_path / "raw"
     record_id, _raw_path = _seed_t0650_raw(
         pd, output_dir, ticket=TICKET_ID, role=role,

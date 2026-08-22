@@ -10107,6 +10107,56 @@ def _apply_read_tmp_argv(
     return adjusted
 
 
+# 재앵커된 read 실행(현재 codex만·_READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS)의 3-절대경로
+# preamble — PM 43차 T-0844 라운드 2 반려 근거: `--dry-run` 실측에서 합성 프롬프트에 정체성·
+# 금지사항·회귀 범위·산출 형식은 실렸지만 해소된 `--cwd` 절대경로가 **한 글자도 없었다**. 엔진이
+# `-C`를 빈 tmp로 재앵커해 놓고 실 대상 좌표는 PM 산문에만 맡긴 것은 모델 준수 문제가 아니라
+# 엔진 결함이라는 판정이다 — 좌표는 엔진만 아는 기계 사실이므로 엔진이 합성 preamble에 직접
+# 싣는다([[mechanize-dont-instruct-llm]]). 실측 3건(T-0778 r05·T-0841 r02·T-0823 r04)에서 모델의
+# 첫 명령이 `&&`로 묶인 **상대** 명령(`pwd && ls && git rev-parse ...`)이라 격리 root의 빈 pwd에서
+# 곧장 죽었다 — 그래서 예시 명령은 전부 `-C <절대경로>`/명시 target 플래그로 줘서 pwd를 몰라도
+# 그대로 맞게 한다. `_execute_attempt`(실행)와 `main()` dry-run 미리보기가 이 한 함수를 공유한다
+# (값만 다르다 — 실행은 방금 만든 실 read_tmp, dry-run은 부작용 0 인 `_predict_read_tmp_paths`).
+def _reanchor_exec_root_preamble(
+    cwd: Path, exec_root: Path, writable_path: Path,
+) -> str:
+    """실행 root가 재앵커된 read 실행에 검토 대상·실행 root·쓰기 경로 절대값을 박아 준다."""
+    git_status_cmd = render_shell_command(["git", "-C", str(cwd), "status", "--short"])
+    git_diff_cmd = render_shell_command(["git", "-C", str(cwd), "diff", "--cached"])
+    git_head_cmd = render_shell_command(["git", "-C", str(cwd), "rev-parse", "HEAD"])
+    pytest_cmd = render_shell_command([
+        _prescribed_interpreter(), "-m", "pytest", str(cwd),
+        "-p", "no:cacheprovider", "--basetemp", str(writable_path / "pytest"),
+    ])
+    return (
+        "[격리 실행 좌표 — 엔진 값]\n"
+        f"검토 대상(diff·git 상태·회귀 소스) 절대경로: {cwd}\n"
+        f"이 프로세스의 실행 root(-C): {exec_root} — 이 경로는 검토 대상이 아니다"
+        "(격리를 위해 새로 만든 빈 디렉터리다 — source·git index·tests가 없다).\n"
+        f"쓰기 가능 임시 경로: {writable_path}\n"
+        "pwd를 가정하지 말고 절대경로 플래그로 명령하라 — 예:\n"
+        f"  {git_status_cmd}\n"
+        f"  {git_diff_cmd}\n"
+        f"  {git_head_cmd}\n"
+        f"  {pytest_cmd} ...\n"
+    )
+
+
+def _predict_read_tmp_paths(harness: str) -> tuple[Path, Path]:
+    """dry-run 전용 · 부작용 0 — `_create_read_role_temp`와 같은 이름 규칙(`_READ_TMP_PREFIX`+pid+
+    uuid4)으로 대표 경로만 계산한다(mkdir 없음). dry-run 은 실행하지 않으므로 이 값이 이후 실행의
+    read_tmp와 같은 문자열일 필요는 없다 — 이번 invocation이 실행됐다면 만들었을 이름 규칙의
+    진짜 값(placeholder 아님)을 보여주는 게 목적이다."""
+    temp_parent, _optional_parent_name = _read_tmp_parent(harness)
+    attempt_path = temp_parent / f"{_READ_TMP_PREFIX}{os.getpid()}_{uuid.uuid4().hex}"
+    writable_component = _READ_TMP_WRITABLE_COMPONENT_BY_HARNESS[harness]
+    writable_path = (
+        attempt_path / writable_component
+        if writable_component is not None else attempt_path
+    )
+    return attempt_path, writable_path
+
+
 def _read_tmp_prompt_note(
     harness: str, cwd: Path, read_tmp: _ReadRoleTemp | None,
 ) -> str:
@@ -10128,6 +10178,11 @@ def _read_tmp_prompt_note(
         if _READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS[harness]
         else ""
     )
+    reanchor_preamble = (
+        "\n\n" + _reanchor_exec_root_preamble(cwd, read_tmp.path, read_tmp.writable_path)
+        if _READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS[harness]
+        else ""
+    )
     return (
         f"read 역할 실행용 격리 임시 디렉터리: {read_tmp.writable_path}. "
         f"실행 환경의 {env_note}. 회귀 산출물은 이 경로에만 "
@@ -10136,7 +10191,77 @@ def _read_tmp_prompt_note(
         f"--basetemp {pytest_temp} ...`처럼 "
         "cacheprovider를 끄고 basetemp를 지정하라. PYTHONDONTWRITEBYTECODE=1도 설정되어 있다. "
         f"하네스 권한 근거: {harness}.{codex_note}"
+        f"{reanchor_preamble}"
     )
+
+
+# codex read 역할만 `-C`(실행 root)를 격리 tmp로 재앵커한다(_READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS
+# — claude·opencode는 -C/--dir을 건드리지 않아 이 클래스가 구조적으로 없다). 재앵커된 tmp는 절대
+# git 저장소가 아니므로(매 attempt 새로 만드는 빈 0700 디렉터리), 모델은 프롬프트 지시
+# (`_read_tmp_prompt_note`의 codex_note)로 `--cwd` 복귀를 기대받는다 — 그 준수를 기계가 보장할
+# 수는 없다: `codex exec --help` 실측상 `-C`는 항상 암묵적 쓰기 가능 root이고 `--add-dir`는
+# 추가만 한다 — "주 워크스페이스는 read-only·별도 root만 write" 조합이 CLI에 없다(T-0844 실측 —
+# `-c permissions.<name>=` 동적 override 시도도 codex-cli 0.147.0에서 patch 도구가 read-only로
+# 남아 이미 실패한 바 있다·위 주석). 그래서 기계가 보장할 수 있는 건 재앵커 **이전**의 `--cwd`
+# 자신이 리뷰 가능한 형상인가뿐이다 — 재앵커된 tmp에서 다시 rev-parse해 봐야 항상 실패하는
+# 무의미한 검사가 된다. 이 함수는 `--cwd` 를 스폰 전에 검증해 불량 입력을 과금 전에 끊는다
+# (T-0778 r05·T-0841 r02·T-0823 r04 실측 — 세 라운드 모두 `--cwd` 자체는 정상이었다·즉 모델이
+# 격리 tmp에서 `--cwd`로 되짚어가지 못한 것이 근본 원인이고, 이 preflight는 그 모델 준수까지
+# 기계로 보장하진 못한다. 대신 `--cwd` 부실(비-저장소·하위디렉터리 오지정·staged 0)이라는
+# 인접 실패 클래스를 스폰 전에 닫아, 같은 종류의 무의미한 유료 라운드를 줄인다).
+#
+# staged 존재 요건은 code-reviewer 에게만 적용한다 — researcher 역할은 "조사·분석만" 계약이라
+# staged diff 없이도 정당하게 호출된다(researcher에 강제하면 정상 위임을 오차단한다). 저장소·
+# toplevel 검사는 재앵커를 공유하는 모든 codex read 역할(researcher 포함)에 적용한다 — 그건
+# 어떤 역할이든 `--cwd` 가 실제 저장소 최상위가 아니면 재앵커·`_read_tmp_prompt_note`의 절대경로
+# 안내 자체가 잘못된 값을 참조하게 되는, 역할 무관 공통 전제다.
+_READ_ROLE_STAGED_REQUIRED: frozenset[str] = frozenset({"code-reviewer"})
+
+
+def _preflight_codex_read_exec_root(cwd: Path, *, role: str) -> None:
+    """codex read 역할 스폰 **전** `--cwd` 저장소 형상을 기계로 확정한다(외부 호출 없음).
+
+    (a) `--cwd` 가 git 저장소인가 (b) 그 `--show-toplevel` 값이 `--cwd` 자신과 일치하는가
+    (저장소 하위 디렉터리가 잘못 `--cwd` 로 넘어온 경우를 잡는다) (c) code-reviewer 역할이면
+    staged 변경이 있는가. 하나라도 어긋나면 `DelegateError` 로 중단한다 — 호출부
+    (`_execute_attempt`)는 이 함수를 `run_fn` 호출 **이전**에만 부르므로 실패는 과금 없이 끝난다.
+    """
+    resolved_cwd = cwd.resolve()
+    toplevel = subprocess.run(
+        ["git", "-C", str(resolved_cwd), "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    if toplevel.returncode != 0:
+        cause = toplevel.stderr.strip() or toplevel.stdout.strip() or "원인 미상"
+        raise DelegateError(
+            "codex read 역할 preflight 실패 — --cwd 가 git 저장소가 아님(외부 호출 전 중단): "
+            f"cwd={resolved_cwd} · {cause}"
+        )
+    resolved_toplevel = Path(toplevel.stdout.strip()).resolve()
+    if resolved_toplevel != resolved_cwd:
+        raise DelegateError(
+            "codex read 역할 preflight 실패 — 실행 root 불일치(외부 호출 전 중단): "
+            f"--cwd={resolved_cwd} · git toplevel={resolved_toplevel} "
+            "(--cwd 는 저장소 최상위여야 한다)"
+        )
+    if role not in _READ_ROLE_STAGED_REQUIRED:
+        return
+    staged = subprocess.run(
+        ["git", "-C", str(resolved_cwd), "diff", "--cached", "--name-only"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    if staged.returncode != 0:
+        cause = staged.stderr.strip() or staged.stdout.strip() or "원인 미상"
+        raise DelegateError(
+            "codex read 역할 preflight 실패 — staged 조회 실패(외부 호출 전 중단, "
+            f"rc={staged.returncode}): {cause}"
+        )
+    staged_count = len([line for line in staged.stdout.splitlines() if line])
+    if staged_count == 0:
+        raise DelegateError(
+            "codex read 역할 preflight 실패 — staged 변경 0(외부 호출 전 중단): "
+            f"cwd={resolved_cwd} (리뷰할 diff 가 없다)"
+        )
 
 
 def _apply_read_tmp_env(
@@ -10387,6 +10512,18 @@ def _execute_attempt(
                 )
                 else cwd
             )
+            if (
+                read_tmp is not None
+                and _READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS[harness]
+            ):
+                # codex read 역할만 -C를 격리 tmp로 재앵커한다 — 그 tmp는 절대 git 저장소가
+                # 아니므로 여기서 다시 rev-parse해 봐야 무의미하다. 재앵커 **이전**의 --cwd 자신을
+                # 스폰 전에 검증한다(`_preflight_codex_read_exec_root` 선언부 주석 — T-0844).
+                try:
+                    _preflight_codex_read_exec_root(cwd, role=role)
+                except DelegateError as exc:
+                    _record_pre_spawn_rejection(exc)
+                    raise
             if prompt_path is not None:
                 # raw 예약/장부 시작처럼 준비 뒤 실행 전에 낀 작업까지 포함해 lexical
                 # containment와 symlink 아닌 entry를 다시 확인한다.
@@ -12538,7 +12675,29 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
                 f"{_harness_timeout_budget(harness, timeout)}s 추가)"
             )
         print("--- 합성 프롬프트 ---")
-        print(prompt if resume is None else resume.delta_prompt)
+        dry_run_prompt = prompt if resume is None else resume.delta_prompt
+        # read 역할 + 재앵커 하네스(현재 codex 단독)는 실행과 같은 3-절대경로 preamble을 미리보기
+        # 에도 낸다 — 조건은 재앵커 플래그 단일(§인터페이스 T-0844 라운드 2 — claude·opencode 특례
+        # 없음). dry-run은 부작용 0 계약이라 read_tmp를 만들지 않고 `_predict_read_tmp_paths`로
+        # 같은 이름 규칙의 대표 경로만 계산한다.
+        #
+        # T-0844 라운드 5 must-fix(F-001): 이 조건은 실행 경로가 `read_tmp is not None`(=
+        # `_read_tmp_strategy()` 가 전략을 낸다)으로 판정하는 것과 **같은 사실**을 봐야 한다 —
+        # 예측 전용 사본을 새로 만들지 않고, 실행이 `_create_read_role_temp`를 통해 소비하는 바로
+        # 그 함수(`_read_tmp_strategy()`)를 여기서도 그대로 부른다. 전략이 없는 플랫폼(fd 결속도
+        # 소유자 ACL 도 없음)은 실행도 재앵커를 안 하므로(`read_tmp=None` → `_apply_read_tmp_argv`
+        # 가 argv 를 그대로 반환 → `-C`는 원 `--cwd`) dry-run 도 존재하지 않을 좌표를 예고하지
+        # 않는다(실재하지 않는 좌표를 주는 것은 좌표를 아예 안 주는 것보다 나쁘다 — PM 판정).
+        if (
+            args.role in READ_ROLES
+            and _READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS[harness]
+            and _read_tmp_strategy() is not None
+        ):
+            predicted_exec_root, predicted_writable = _predict_read_tmp_paths(harness)
+            dry_run_prompt = dry_run_prompt + "\n\n" + _reanchor_exec_root_preamble(
+                cwd, predicted_exec_root, predicted_writable,
+            )
+        print(dry_run_prompt)
         print("=== [dry-run] 외부 호출 생략 ===")
         return 0
 
