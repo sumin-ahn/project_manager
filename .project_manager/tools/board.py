@@ -15258,27 +15258,42 @@ def _touches_existence_issues(
 def _citation_suffix_index(
     names: set[str], roots: Sequence[Path],
 ) -> dict[str, list[Path]]:
-    """`names` 의 파일명만 모은 basename → 실재 경로 색인 (소유 트리당 순회 1회).
+    """`names` 의 파일명만 모은 basename → 실재 경로 색인 (소유 트리당 열거 1회).
 
     하위 디렉터리 기준 표기를 해소하려면 "그 경로로 끝나는 파일이 트리에 있나"를 봐야 한다.
     찾는 파일명이 몇 개뿐이라 순회 1회에 필요한 후보만 모은다(인용마다 다시 걷지 않는다).
     소유 트리는 서로 포함 관계일 수 있어(PM 홈 ⊃ 슬롯 worktree) 절대경로로 중복을 지운다 —
     안 지우면 같은 파일이 두 건으로 세어져 유일 해소가 사라진다.
+
+    순회는 `repo_owned_files` 공용 seam(추적분 + 미추적·비무시 파일)에 위임한다 — 직접
+    `os.walk` 를 부르면 새 재귀 tree-walk 호출을 전수 감시하는 가드([[T-0822]])의 사각이
+    생긴다. git 부재/비-repo 사본은 그 seam 이 filesystem 전수 순회로 강등해 값은 그대로다.
+
+    그 seam 의 Git 성공 경로는 **working-tree 존재를 재검사하지 않는다**(index-only 경로도
+    돌려준다 — symlink·gitlink 를 거짓 탈락시키지 않으려는 그쪽의 의도적 계약). 인용 판정이
+    묻는 것은 "이 경로에 실제로 읽을 파일이 있는가" 이므로, 여기서 `is_file()` 로 한 번 더
+    걸러 종전 `os.walk` 의 물리 존재 의미를 보존한다 — 안 그러면 tracked-but-working-tree
+    -missing 인용이 차단(citation-unresolved) 대신 판정불능으로 강등된다(가드 약화).
     """
     index: dict[str, list[Path]] = {name: [] for name in names}
     seen: set[str] = set()
     for root in roots:
-        for current, subdirs, files in os.walk(root):
-            subdirs[:] = [name for name in subdirs
-                          if name not in _CITATION_INDEX_PRUNE_DIRS]
-            for name in files:
-                if name not in index:
-                    continue
-                path = Path(current) / name
-                if str(path) in seen:
-                    continue
-                seen.add(str(path))
-                index[name].append(path)
+        for rel in _TOOLS_BOOTSTRAP_MODULE.list_repo_owned_files(
+                root, Path("."), mode=_TOOLS_BOOTSTRAP_MODULE.OWNED):
+            rel_path = Path(rel)
+            if any(part in _CITATION_INDEX_PRUNE_DIRS for part in rel_path.parts):
+                continue
+            name = rel_path.name
+            if name not in index:
+                continue
+            path = root / rel_path
+            key = str(path)
+            if key in seen:
+                continue
+            if not path.is_file():
+                continue
+            seen.add(key)
+            index[name].append(path)
     return index
 
 
@@ -15339,8 +15354,8 @@ def _citation_issues(
                 continue
             found = matches[0]
         try:
-            total = len(found.read_text(
-                encoding="utf-8", errors="replace").splitlines())
+            total = len(file_lock.read_text_shared(
+                found, encoding="utf-8", errors="replace").splitlines())
         except OSError:
             unverifiable += 1
             continue
