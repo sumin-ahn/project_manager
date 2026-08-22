@@ -902,9 +902,16 @@ TICKET_COPY_ROUNDS_DIRNAME = "rounds"
 DELEGATE_ROUNDS_LEDGER_REL_PATH = (
     Path(".project_manager") / ".local" / "delegate-rounds.jsonl"
 )
-_DELEGATE_ROUNDS_LEDGER_FIELDS: frozenset[str] = frozenset(
+_DELEGATE_ROUNDS_LEDGER_REQUIRED_FIELDS: frozenset[str] = frozenset(
     {"ticket", "role", "ordinal", "run_id", "copy", "board_rel", "prepared_at",
      "harvested_at"}
+)
+# `abandoned_at` 은 하위 호환 선택 키다(기존 8키 행에는 없다) — kill 잔여를 명시적으로
+# 포기(abandon)한 행에만 붙는다. 검증은 필수-집합 정확 일치가 아니라 상한-집합 포함으로
+# 완화한다: 정확-일치였다면 이 키를 추가하는 순간 기존 행 전부가 schema 불일치로 건너뛰어진다.
+_DELEGATE_ROUNDS_LEDGER_OPTIONAL_FIELDS: frozenset[str] = frozenset({"abandoned_at"})
+_DELEGATE_ROUNDS_LEDGER_FIELDS: frozenset[str] = (
+    _DELEGATE_ROUNDS_LEDGER_REQUIRED_FIELDS | _DELEGATE_ROUNDS_LEDGER_OPTIONAL_FIELDS
 )
 
 
@@ -925,6 +932,11 @@ class TicketHarvestResult(NamedTuple):
     # developer 라운드 회수 시 verify 행이 없거나 자리표시자 그대로인 accepted finding ID
     # (표시면 관용). developer 가 아니거나 accepted 0 건이면 항상 빈 tuple.
     verify_missing: tuple[str, ...] = ()
+
+
+class TicketAbandonResult(NamedTuple):
+    changed: bool
+    sync_ready: bool
 
 
 def _write_exclusive_file(
@@ -950,8 +962,16 @@ def _delegate_rounds_ledger_path(pm_home: Path) -> Path:
 
 
 def _delegate_rounds_ledger_row(row: object, *, line_number: int) -> dict:
-    """장부 1행의 schema·값 형식을 검증한다 (손상은 그 행만 거부한다)."""
-    if not isinstance(row, dict) or set(row) != _DELEGATE_ROUNDS_LEDGER_FIELDS:
+    """장부 1행의 schema·값 형식을 검증한다 (손상은 그 행만 거부한다).
+
+    schema 판정은 필수 8키 **정확 일치**가 아니라 **상한-집합 포함**이다 — 필수 키 전부가 있고,
+    그 위에 선택 키(`abandoned_at`) 가 더해질 수 있다. 정확-일치였다면 선택 키 도입 자체가
+    그 키 없는 기존 행 전부를 schema 불일치로 만든다.
+    """
+    if (
+        not isinstance(row, dict)
+        or not _DELEGATE_ROUNDS_LEDGER_REQUIRED_FIELDS <= set(row) <= _DELEGATE_ROUNDS_LEDGER_FIELDS
+    ):
         raise DelegateError(f"delegate-rounds 장부 schema 불일치: line={line_number}")
     if (
         not isinstance(row["ticket"], str)
@@ -974,6 +994,9 @@ def _delegate_rounds_ledger_row(row: object, *, line_number: int) -> dict:
             row["harvested_at"] is None
             or isinstance(row["harvested_at"], str) and row["harvested_at"]
         )
+        or ("abandoned_at" in row and not (
+            isinstance(row["abandoned_at"], str) and row["abandoned_at"]
+        ))
     ):
         raise DelegateError(f"delegate-rounds 장부 값 형식 불일치: line={line_number}")
     return dict(row)
@@ -1043,14 +1066,22 @@ def _append_delegate_rounds_ledger(pm_home: Path, row: dict) -> None:
 def ticket_copy_records(
     pm_home: Path, *, ticket: str | None = None, unharvested: bool = False,
 ) -> list[dict]:
-    """copy 별 최신 append snapshot 을 prepare 최신순으로 반환한다 (`ticket copies` 입력)."""
+    """copy 별 최신 append snapshot 을 prepare 최신순으로 반환한다 (`ticket copies` 입력).
+
+    `unharvested` 는 "아직 처분되지 않은 준비"다 — 회수(`harvested_at`)도 포기(`abandoned_at`)도
+    거치지 않은 행만 남긴다. 포기된 행을 미회수로 계속 세면 abandon 이 잔여를 지워도 조회면에는
+    그대로 남아 정리 수단이 무효로 보인다.
+    """
     latest: dict[str, dict] = {}
     for row in _delegate_rounds_ledger_records(pm_home):
         latest[row["copy"]] = row
     rows = [
         row for row in latest.values()
         if (ticket is None or row["ticket"] == ticket)
-        and (not unharvested or row["harvested_at"] is None)
+        and (
+            not unharvested
+            or (row["harvested_at"] is None and "abandoned_at" not in row)
+        )
     ]
     return sorted(rows, key=lambda row: row["prepared_at"], reverse=True)
 
@@ -1655,6 +1686,101 @@ def harvest_ticket_copy(
     return TicketHarvestResult(True, sync_ready, verify_missing)
 
 
+def abandon_ticket_copy(
+    *, copy_path: Path, cwd: Path, pm_home: Path,
+) -> TicketAbandonResult:
+    """kill 로 죽어 이어 갈 수 없는 준비를 명시적으로 지운다 — board 라운드 파일 + run-dir.
+
+    회수(harvest)와 인가 경로는 같다(같은 신뢰 뿌리 · 같은 경로 전량 일치 · 같은 run-dir chain
+    plain 판정). 다른 것은 두 판정뿐이다:
+
+    1. **시드 그대로**(harvest 의 "산출 없음" 판정과 같은 술어 — 슬롯 사본 bytes 와 board
+       라운드 파일의 현재 bytes 직접 대조, 개행 표기만 정규화). 산출이 있으면 harvest 로
+       회수해야지 지울 수 없다.
+    2. **그 티켓 라운드 중 최대 순번**. 중간 순번을 지우면 `verify_rounds` 의 `round-gap`
+       (완료 게이트 red)을 만든다. 두 판정 모두 board_lock 안에서 본다 — 동시 `reserve_round`
+       가 이 라운드를 최대 순번에서 밀어내는 경합을 재확인 없이 지나치지 않기 위해서다.
+
+    이미 회수됐거나 이미 포기된 준비는 다시 포기할 수 없다(장부 마지막 행이 그 상태를 말한다).
+    """
+    pm_home = Path(pm_home).resolve()
+    cwd = Path(cwd).resolve()
+    rounds_module = _load_ticket_rounds()
+    row = _delegate_round_record(pm_home, copy_path)
+    if row["harvested_at"] is not None:
+        raise DelegateError(f"이미 회수된 준비는 포기할 수 없습니다: {copy_path}")
+    if "abandoned_at" in row:
+        raise DelegateError(f"이미 포기된 준비입니다: {copy_path}")
+    expected = _expected_slot_round_path(cwd, row, rounds_module)
+    given = Path(copy_path)
+    if not given.is_absolute() or not _same_lexical_path(given, expected):
+        raise DelegateError(
+            "delegate-rounds 장부가 인가한 라운드 경로와 불일치 — 포기하지 않습니다: "
+            f"요청={given} · 장부 인가={expected}"
+        )
+    _assert_slot_run_dir_chain_is_plain(cwd, row["ticket"], row["run_id"])
+    text = _read_slot_round_text(expected)
+    run_dir = expected.parent
+    board_path = pm_home / Path(*PurePosixPath(row["board_rel"]).parts)
+    if board_path.name != expected.name:
+        raise DelegateError(
+            "delegate-rounds 장부의 board 경로와 라운드 이름 불일치: "
+            f"board={board_path.name} · 기대={expected.name}"
+        )
+
+    board = _load_board_for_repo(pm_home)
+    # 시드 대조·최대 순번 재확인·삭제를 한 락 구간에 묶는다 — 락 밖에서 최대 순번을 확인하면
+    # 그 사이 `reserve_round` 가 다음 순번을 예약해 지운 뒤 gap 을 만들 수 있다.
+    with board.board_lock():
+        try:
+            reserved = _load_file_lock().read_text_shared(
+                board_path, encoding="utf-8", newline="",
+            )
+        except FileNotFoundError as exc:
+            raise DelegateError(
+                f"board 라운드 파일이 없습니다(예약 소실): {board_path}"
+            ) from exc
+        except (OSError, UnicodeError) as exc:
+            raise DelegateError(
+                f"board 라운드 파일 읽기 실패: {board_path}: {exc}"
+            ) from exc
+        if _normalized_newlines(text) != _normalized_newlines(reserved):
+            raise DelegateError(
+                "산출이 있어 포기할 수 없습니다(시드 그대로가 아님) — `ticket harvest` 로 "
+                f"회수하세요: ticket={row['ticket']} {board_path.name}"
+            )
+        existing = rounds_module.load_rounds(board.tickets_dir(), row["ticket"])
+        if not existing:
+            raise DelegateError(
+                f"board 라운드 디렉터리를 찾을 수 없습니다: ticket={row['ticket']}"
+            )
+        max_ordinal = max(item.ordinal for item in existing)
+        if row["ordinal"] != max_ordinal:
+            raise DelegateError(
+                "중간 순번은 포기할 수 없습니다(삭제하면 round-gap 을 만듭니다) — "
+                f"ticket={row['ticket']} ordinal={row['ordinal']} · 현재 최대 순번={max_ordinal}"
+            )
+        message = f"ticket-abandon {row['ticket']} {row['role']}"
+        try:
+            board_path.unlink()
+        except OSError as exc:
+            raise DelegateError(f"board 라운드 파일 삭제 실패: {board_path}: {exc}") from exc
+        # board 부분 커밋 seam — harvest 와 같은 이유로 이름을 직접 부른다(부분 동기 사본에서
+        # 커밋만 조용히 빠지는 rc0 을 피한다).
+        sync_ready = bool(board._rounds_mutation_sync_paths(message, (board_path,)))
+
+    abandoned = dict(row)
+    abandoned["abandoned_at"] = datetime.datetime.now(
+        datetime.timezone.utc
+    ).isoformat()
+    _append_delegate_rounds_ledger(pm_home, abandoned)
+
+    # run-dir 은 엔진 소유 임시 산출물이다(사용자 파일 아님) — 삭제가 곧 run 닫힘이다(harvest 와
+    # 동형).
+    _load_file_lock().force_rmtree(run_dir)
+    return TicketAbandonResult(True, sync_ready)
+
+
 def _ticket_copy_preamble(plan: TicketCopyPlan) -> str:
     return (
         f"라운드 산출 기록: 이 위임의 산출은 {plan.path} **하나에만** 쓴다"
@@ -1781,11 +1907,18 @@ def _pm_review_refused_rounds(rounds: Sequence) -> set[tuple[str, int]]:
 
 
 def _pm_review_surface_rounds(rounds: Sequence) -> list:
-    """판정 표면에 오르는 리뷰 라운드 — 순번 순 · 회수 거부 라운드 제외."""
+    """판정 표면에 오르는 리뷰 라운드 — 순번 순 · 회수 거부 라운드·시드 그대로 라운드 제외.
+
+    `pending`(시드 그대로 · 산출 없음)인 라운드는 골격 placeholder 뿐이라 어떤 판정 소비자에게도
+    산출이 아니다 — `latest_round_of_role`·리뷰 본문 선별(`_select_ticket_body_for_review`)과
+    같은 배제 규칙이다.
+    """
     refused = _pm_review_refused_rounds(rounds)
     return [
         item for item in sorted(rounds, key=lambda entry: entry.ordinal)
-        if item.role in REVIEW_ROLES and (item.role, item.ordinal) not in refused
+        if item.role in REVIEW_ROLES
+        and (item.role, item.ordinal) not in refused
+        and not getattr(item, "pending", False)
     ]
 
 
@@ -3239,6 +3372,8 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> PMReviewDelta:
         channel = (item.role, item.ordinal)
         if channel in refused:
             continue              # 거부 표식이 있는 라운드는 통째로 판정 표면 밖이다.
+        if item.role in REVIEW_ROLES and item.pending:
+            continue              # 시드 그대로인 리뷰 라운드는 placeholder 뿐 — 판정 표면 밖이다.
         for block in _pm_review_json_blocks(item.text):
             if block.kind == PM_REVIEW_VERIFY_BLOCK:
                 if item.role != "developer":
@@ -10021,6 +10156,12 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
     )
     harvest.add_argument("--copy", required=True, metavar="ABSPATH")
     harvest.add_argument("--cwd", required=True, metavar="ABSPATH")
+    abandon = sub.add_parser(
+        "abandon",
+        help="시드 그대로인 최대 순번 예약을 포기 — board 라운드 파일 삭제 + run-dir 닫음",
+    )
+    abandon.add_argument("--copy", required=True, metavar="ABSPATH")
+    abandon.add_argument("--cwd", required=True, metavar="ABSPATH")
     copies = sub.add_parser("copies", help="PM 홈 delegate-rounds 장부 조회")
     copies.add_argument("--ticket", default=None, metavar="T-NNNN")
     copies.add_argument(
@@ -10050,10 +10191,12 @@ def _cmd_ticket(argv: list[str]) -> int:
                 return 0
             print(f"{label} {len(rows)}건")
             for row in rows:
-                status = (
-                    f"회수({row['harvested_at']})"
-                    if row["harvested_at"] is not None else "미회수"
-                )
+                if row["harvested_at"] is not None:
+                    status = f"회수({row['harvested_at']})"
+                elif "abandoned_at" in row:
+                    status = f"포기({row['abandoned_at']})"
+                else:
+                    status = "미회수"
                 print(
                     f"{row['prepared_at']} · {status} · {row['ticket']} · "
                     f"role={row['role']} · ordinal={row['ordinal']} · "
@@ -10078,6 +10221,16 @@ def _cmd_ticket(argv: list[str]) -> int:
         copy = Path(args.copy)
         if not copy.is_absolute():
             parser.error("--copy 는 prepare가 출력한 절대경로여야 합니다")
+        if args.ticket_command == "abandon":
+            abandon_result = abandon_ticket_copy(
+                copy_path=copy, cwd=cwd_repo, pm_home=owner,
+            )
+            _write_machine_line(json.dumps({
+                "copy": str(copy.resolve()),
+                "changed": abandon_result.changed,
+                "sync_ready": abandon_result.sync_ready,
+            }, sort_keys=True))
+            return 0
         result = harvest_ticket_copy(
             copy_path=copy, cwd=cwd_repo, pm_home=owner,
         )
