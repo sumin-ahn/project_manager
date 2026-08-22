@@ -36,6 +36,9 @@ PM_DELEGATE = TOOLS / "pm_delegate.py"
 
 # 경고 문구의 고정 머리 — 단언이 문장 전체를 베끼지 않도록 이 한 조각만 본다.
 WARNING_MARK = "산출 없는 developer 라운드 위에서 준비합니다"
+# [[T-0819]] 값 진술 — 준비면 경고가 "실리지 않습니다" 라고 단정하지 않고, 이번 리뷰어 입력에
+# 실제로 실리는 developer 산출 라운드 이름(없으면 `없음`)을 말하는 자리의 고정 머리.
+LANDED_EVIDENCE_MARK = "리뷰어 입력(`rounds/`)에 실리는 developer 산출 라운드:"
 
 
 def _load_pd():
@@ -197,7 +200,10 @@ def test_review_prepare_over_a_seed_developer_round_is_loud(pd, rounds_env, caps
 
 
 def test_review_prepare_over_a_seed_first_developer_round_is_loud(pd, rounds_env, capsys):
-    """`01-developer`(시드) → `02-code-reviewer`(준비) 재현 형상 — 앞 라운드 없이도 같다."""
+    """`01-developer`(시드) → `02-code-reviewer`(준비) 재현 형상 — 앞 라운드 없이도 같다.
+
+    형상 A1(dev 시드뿐 · 앞선 산출 라운드 없음) — 실리는 developer 산출 라운드는 `없음`이다
+    ([[T-0819]] DoD 값 단언)."""
     pm_home, slot, tickets, _board = rounds_env
     _write_spec(tickets, "T-7802")
     _prepare(pd, pm_home, slot, "T-7802", "developer")
@@ -207,6 +213,7 @@ def test_review_prepare_over_a_seed_first_developer_round_is_loud(pd, rounds_env
 
     error = capsys.readouterr().err
     assert WARNING_MARK in error and "01-developer.md" in error
+    assert f"{LANDED_EVIDENCE_MARK} 없음" in error
 
 
 # ── (2)(3) 역방향 — 정상 경로가 새로 막히거나 시끄러워지지 않는다 ──────────
@@ -248,7 +255,12 @@ def test_developer_round_preparation_is_never_judged(pd, rounds_env, capsys):
 
 
 def test_only_the_latest_developer_round_is_the_judgment_input(pd, rounds_env, capsys):
-    """시야는 마지막 developer 라운드 하나 — 더 앞 라운드의 미회수는 대상이 아니다."""
+    """시야는 마지막 developer 라운드 하나 — 더 앞 라운드의 미회수는 대상이 아니다.
+
+    두 번째 경고가 재현하는 것이 형상 B(앞 라운드에 dev 산출 있음 · 최신 developer 라운드는
+    시드)다 — 실리는 developer 산출 라운드 이름이 그 앞선 산출(`02-developer.md`)임을 값으로
+    말해야 한다. "실리지 않습니다" 처럼 조건에 따라 거짓이 되는 단정문을 쓰면 안 된다
+    ([[T-0819]] DoD 값 단언)."""
     pm_home, slot, tickets, _board = rounds_env
     _write_spec(tickets, "T-7806")
     _prepare(pd, pm_home, slot, "T-7806", "developer")            # 01 시드로 남긴다
@@ -266,6 +278,8 @@ def test_only_the_latest_developer_round_is_the_judgment_input(pd, rounds_env, c
 
     error = capsys.readouterr().err
     assert WARNING_MARK in error and "04-developer.md" in error
+    assert f"{LANDED_EVIDENCE_MARK} 02-developer.md" in error
+    assert "실리지 않습니다" not in error, "형상 B 에서 거짓 문장을 내면 안 된다"
 
 
 # ── (4) 진입점 파리티 ──────────────────────────────────────────────────────
