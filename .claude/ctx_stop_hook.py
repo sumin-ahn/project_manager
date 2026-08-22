@@ -46,7 +46,7 @@ def _session_id(stdin: dict) -> str:
     return "unknown"
 
 
-# ── 사이클별 넛지 멱등 marker (ADR-0081) ───────────────────────────────────
+# ── 사이클별 넛지 멱등 marker ───────────────────────────────────
 def _nudge_marker_path(root: Path, session_id: str) -> Path:
     return root / _MARKER_DIR / f"{session_id}.nudge"
 
@@ -467,7 +467,7 @@ def evaluate(stdin: dict, root: Path, conf: dict) -> tuple[int, dict | None]:
         # best-effort 정리한다. 정상 경로에서 ctx-window-mismatch의 단일 진실은 append-only
         # checkpoint log이고 snapshot은 그 최신 밴드 평가에서 매번 만드는 파생물이다. 원장 판독
         # 실패는 pm_log가 무진단과 구분해 payload 생성을 거부하므로 기존 marker를 보존한다. append
-        # 실패 때만 snapshot 채널이 pending 진단의 임시 단일 진실이 된다(T-0661 subprocess 회귀).
+        # 실패 때만 snapshot 채널이 pending 진단의 임시 단일 진실이 된다(subprocess 회귀 대응).
         _rearm_cycle(root, session_id)
         snapshot = _build_snapshot(root, stdin)
         if snapshot and not _arm_snapshot(root, session_id, snapshot):
@@ -492,7 +492,7 @@ def evaluate(stdin: dict, root: Path, conf: dict) -> tuple[int, dict | None]:
         if snapshot is not None:
             return 0, nudge_output(stdin, snapshot)
 
-    # 분모 = 해소된 claude 예산(ADR-0041·per-harness) — statusLine 과 같은 예산.
+    # 분모 = 해소된 claude 예산(per-harness) — statusLine 과 같은 예산.
     window = ctx_guard.resolve_budget(conf, "claude")
     thresholds = ctx_guard.ctx_thresholds(conf)
 

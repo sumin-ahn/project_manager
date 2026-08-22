@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""claude relay driver — `claude -p` subprocess 세션 구동 (ADR-0009 · 어댑터·얇음).
+"""claude relay driver — `claude -p` subprocess 세션 구동 (어댑터·얇음).
 
 엔진 core(`pm_relay.py`)의 SessionDriver Protocol 구현체. relay/respawn/marker 로직은
 *엔진* 에 있고(루트 `.project_manager/tools/`·DI 로 테스트), 이 파일은 **claude CLI 고유**한
@@ -13,7 +13,7 @@ CLI 진입점: `python3 pm_orch_claude.py [--cwd <PM repo root>] [--model opus]`
 id 를 *지정*. driver 가 turn 후 usage 판정으로 post-turn marker(`<uuid>.done`)를 박고
 supervisor 가 같은 sid 로 stat 한다. resume 은 `--resume <uuid>`. (sid 예측 가능성은 통합 스모크에서 실측.)
 
-nested claude 실행은 OAuth 상속(T-0044 PoC 확증) — SDK 없이 CLI subprocess 만.
+nested claude 실행은 OAuth 상속(PoC 확증) — SDK 없이 CLI subprocess 만.
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ctx_guard  # noqa: E402  (repo_root 재사용 — 같은 디렉토리 어댑터 코어)
 
 CLAUDE_BIN = "claude"
-DEFAULT_MODEL = "claude-opus-5"  # PM 세션 기본 = opus (품질 우선·2026-08-06 사용자 결정). CLI `--model` 로 frugal override 가능.
+DEFAULT_MODEL = "claude-opus-5"  # PM 세션 기본 = opus (품질 우선·사용자 결정). CLI `--model` 로 frugal override 가능.
 TURN_TIMEOUT_SEC = 600  # subprocess 당 hard hang 가드(상한 — 한 turn 이 길 수 있음).
 GIT_ANCHOR_ONCE_NAMESPACE = "git-anchor"  # 세션 1회 발화 멤버십 파일 접미사(엔진 claim_session_once).
 GIT_ANCHOR_ONCE_KEY_CHARS = 16  # 멤버십 키 = 발화 문구 sha256 앞 16자(문구 전문을 파일에 남기지 않는다).
@@ -105,14 +105,14 @@ def git_anchor_hook_evaluate(stdin: dict, root: Path) -> dict | None:
 
 
 def _write_hook_json(output: dict) -> None:
-    """Claude 훅 JSON 을 콘솔 코덱과 무관하게 UTF-8 bytes 로 쓴다 (T-0736).
+    """Claude 훅 JSON 을 콘솔 코덱과 무관하게 UTF-8 bytes 로 쓴다.
 
     Windows 파이프 stdout 은 로케일 코덱(cp949)+``errors=strict`` 다. 판정 사유에는 한글과
     cp949 미매핑 문자(em dash·`✓`·`⚠`)가 실리므로 텍스트 write 는 ``UnicodeEncodeError`` 로
     죽고 훅 출력이 통째로 사라진다 — bytes 를 직접 써서 그 표면을 없앤다.
 
-    **형태는 종전 그대로다**: 단일 JSON · 종결 개행 없음(Claude 훅 소비자 계약·[[T-0736]]
-    §인터페이스). 엔진 seam(`console_encoding.write_machine_line`)은 한 줄 종결(LF)을 붙이므로
+    **형태는 종전 그대로다**: 단일 JSON · 종결 개행 없음(Claude 훅 소비자 계약 §인터페이스).
+    엔진 seam(`console_encoding.write_machine_line`)은 한 줄 종결(LF)을 붙이므로
     이 자리에서 그대로 부르면 바이트 형태가 바뀐다. 그래서 seam 은 **인코딩 정책의 출처로만**
     참조하고(같은 규율: 텍스트 레이어 선-flush → UTF-8 bytes → flush), 쓰기는 표준 라이브러리로
     한다 — 어댑터가 엔진 사본에 묶이지 않는 기존 관례와도 같은 방향이다.
@@ -151,7 +151,7 @@ def _git_anchor_already_emitted(root: Path, payload: dict, output: dict | None) 
     """이 세션에서 **문자열이 완전히 같은** advisory 를 이미 냈으면 True (이번 호출은 stdout 0).
 
     한 번 실린 훅 출력은 그 세션 컨텍스트에 그대로 쌓이므로 같은 문구의 반복 발화는
-    컨텍스트만 태운다([[T-0764]] 실측 — 발화 1,261회 중 52.7% 가 세션 내 완전일치 중복).
+    컨텍스트만 태운다(실측 — 발화 1,261회 중 52.7% 가 세션 내 완전일치 중복).
     판정 로직·차단 동작은 건드리지 않고 *같은 말을 두 번 하지 않을* 뿐이다.
 
     세션키는 훅 stdin 의 `session_id`(엔진 `_sanitize_session_id` 가 파일명 안전화·빈 값은
@@ -281,7 +281,7 @@ class ClaudeCliDriver:
     def _turn(self, cwd, prompt, *, session_id=None, resume=None):
         """비대화 claude turn 1회. (observed_session_id, result_text, used_tokens) 반환.
 
-        child cwd 격리 — subprocess cwd 를 PM repo root 로 명시(엔진 제약 ①). resume 은
+        child cwd 격리 — subprocess cwd 를 PM repo root 로 명시(엔진 제약). resume 은
         같은 세션을 cwd 인자 없이 잇는다(claude 가 세션에 cwd 를 묶음)."""
         cmd = [self.claude_bin, "-p", prompt,
                "--output-format", "stream-json", "--verbose",
@@ -352,7 +352,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--task", default=None, metavar="이름",
-        help="task 정체성(F7·T-0356) — 회전된 새 PM 세션의 재진입 프롬프트에 `--task <이름>` 실값을 "
+        help="task 정체성 — 회전된 새 PM 세션의 재진입 프롬프트에 `--task <이름>` 실값을 "
              "박아 같은 task 를 resume 하게 한다((b) 명시 전달·cwd 추론 금지). 미지정이면 bare "
              "`/pm-bootstrap`(슬롯/솔로).",
     )

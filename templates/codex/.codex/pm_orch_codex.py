@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""codex relay driver — `codex exec` subprocess 세션 구동 (ADR-0009 · ADR-0070 · 어댑터·얇음).
+"""codex relay driver — `codex exec` subprocess 세션 구동 (어댑터·얇음).
 
 엔진 core(루트 `.project_manager/tools/pm_relay.py`)의 SessionDriver Protocol 구현체. relay/
 respawn/marker 로직은 *엔진* Supervisor 에 있고(루트 `.project_manager/tools/`·DI 로 테스트),
@@ -16,14 +16,14 @@ codex thread_id 발급(claude 와 다른 핵심·opencode 동형): claude 는 `-
 이어가기 = `codex exec resume <thread_id>`.
 
 ⚠ stdin close 필수: `codex exec` 는 stdin 이 안 닫히면 "Reading additional input from stdin..."
-로 **무기한 대기** 한다(라이브 실측·spike §D3·3m timeout 재현) — 매 turn subprocess 에
+로 **무기한 대기** 한다(라이브 실측·3m timeout 재현) — 매 turn subprocess 에
 `stdin=subprocess.DEVNULL` 을 준다. 미준수 시 relay 가 첫 turn 에서 영원히 멈춘다.
 
-ctx 기계 가드(ADR-0081 D4·ADR-0041): 세 하네스 모두 driver 가 usage 로 예산 초과를 판정해
+ctx 기계 가드: 세 하네스 모두 driver 가 usage 로 예산 초과를 판정해
 **post-turn** 회전 marker 를 박제한다(엔진 `write_post_turn_marker` DI·Supervisor 무수정 회전).
 marker 는 turn *실행 후* 박제 단일 의미론 — Supervisor 는 그 입력을 다시 보내지 않고 다음 입력 전
 회전한다(세션 안 가드는 marker 를 만들지 않는다·비차단 안내 전용). 예산 = local.conf
-`ctx_window_tokens_codex` > generic `ctx_window_tokens` > 200000(ADR-0041 per-harness precedence).
+`ctx_window_tokens_codex` > generic `ctx_window_tokens` > 200000(per-harness precedence).
 
 codex 어댑터는 claude 와 달리 옆에 Python `ctx_guard` 모듈이 없다(claude=`.claude/ctx_guard.py`·
 opencode=JS core) — 그래서 엔진 루트 탐색·local.conf 파싱을 driver 자체에 둔다(opencode driver 동형).
@@ -44,13 +44,13 @@ from typing import NamedTuple
 CODEX_BIN = "codex"
 TURN_TIMEOUT_SEC = 600  # subprocess 당 hard hang 가드(상한 — 한 turn 이 길 수 있음·codex reasoning).
 
-# ── ctx 기계 가드 상수 (ADR-0070 D4 ①·ADR-0041 — 엔진 ctx_guard 미러) ──────────
+# ── ctx 기계 가드 상수 (엔진 ctx_guard 미러) ──────────
 # 엔진 밴드 "잔여 <= ctx_stop_pct" 는 세션 안에서 최종 checkpoint 넛지(비차단)로 소비된다 — relay
 # 경로는 그 같은 경계에서 driver 가 usage 로 **회전** 한다(post-turn marker → Supervisor 가 새 세션
 # 으로 교체·실보호는 회전이 한다). 임계는 local.conf `ctx_stop_pct` override 해소(기본 20·아래
 # resolve_stop_pct·claude ctx_guard.ctx_thresholds 대칭). 잔여 20% 회전 ⟺ 사용률 80%.
 CTX_STOP_PCT_DEFAULT = 20  # 잔여 회전 임계(%) — claude ctx_guard.CTX_STOP_PCT_DEFAULT 미러.
-# ctx 예산(분모) 최종 폴백 — local.conf ctx_window_tokens_<codex|generic> 미설정 시(ADR-0041).
+# ctx 예산(분모) 최종 폴백 — local.conf ctx_window_tokens_<codex|generic> 미설정 시.
 CTX_WINDOW_TOKENS_DEFAULT = 200_000
 
 
@@ -102,7 +102,7 @@ def load_local_config(root: Path) -> dict[str, str]:
 
 
 def resolve_ctx_budget(conf: dict[str, str]) -> int:
-    """ctx 예산(분모)을 per-harness precedence 로 해소 (ADR-0041 Decision 1).
+    """ctx 예산(분모)을 per-harness precedence 로 해소.
 
     `ctx_window_tokens_codex` > generic `ctx_window_tokens` > CTX_WINDOW_TOKENS_DEFAULT(200000).
     각 층 >0 정수 sanity — ≤0·비정수·미설정이면 다음 층 폴백(0/음수 특수의미 없음). claude
@@ -222,7 +222,7 @@ class CodexCliDriver:
 
     얇다 — 세션 생명주기/회전/marker 는 엔진 Supervisor 가 쥐고, 이 driver 는 한 turn 의 codex
     CLI 호출 + JSONL 파싱 + (relay 경로 전용) usage 기계 ctx 가드만 한다(opencode driver 동형에
-    driver-side ctx marker 를 더한 형태 — codex 엔 plugin marker 채널이 없어서다·ADR-0070 D4 ①).
+    driver-side ctx marker 를 더한 형태 — codex 엔 plugin marker 채널이 없어서다).
     """
 
     def __init__(self, parse_codex_json, *, ctx_budget: int | None = None,
@@ -234,7 +234,7 @@ class CodexCliDriver:
         self._parse = parse_codex_json
         # mark_stop 은 엔진 `write_post_turn_marker`(root, sid)->bool 주입(DI) — marker payload/경로
         # 계약을 엔진이 소유하고 driver 는 예산 판정 후 트리거만 한다. post-turn 표식이라 Supervisor 가
-        # 그 입력을 다시 보내지 않고 회전한다(이미 실행된 turn 의 이중 실행 방지·codex R2). None 이면 가드 no-op.
+        # 그 입력을 다시 보내지 않고 회전한다(이미 실행된 turn 의 이중 실행 방지). None 이면 가드 no-op.
         self._mark_stop = mark_stop
         parser_globals = getattr(parse_codex_json, "__globals__", {})
         self._mark_ctx_if_over = (
@@ -275,14 +275,14 @@ class CodexCliDriver:
                 "세션 구동 실패. (codex 는 thread_id 사전지정 불가라 폴백 불가 · codex/모델 설정 확인.)"
             )
         self._session_cwd[tid] = cwd  # resume 이 같은 cwd(-C)로 잇도록 기억.
-        self._maybe_mark_ctx(tid, usage)  # ADR-0070 D4 ① driver-side 기계 ctx 가드.
+        self._maybe_mark_ctx(tid, usage)  # driver-side 기계 ctx 가드.
         return self._spawn_result(tid, reply)
 
     def relay_turn(self, session_id: str, text: str) -> str:
         """기존 세션 resume — `codex exec resume <tid> -C <cwd> --json` 한 turn 중계."""
         cwd = self._session_cwd.get(session_id)
         _tid, reply, usage = self._turn(cwd, text, resume_id=session_id)
-        self._maybe_mark_ctx(session_id, usage)  # ADR-0070 D4 ① driver-side 기계 ctx 가드.
+        self._maybe_mark_ctx(session_id, usage)  # driver-side 기계 ctx 가드.
         return reply or ""
 
     def close(self, session_id: str) -> None:
@@ -298,12 +298,12 @@ class CodexCliDriver:
 
         - resume_id 없으면: fresh `codex exec`(codex 가 thread_id 발급).
         - resume_id 주어지면: `resume <tid>` 로 그 세션 이어감.
-        child cwd 격리 — `-C <cwd>` 로 PM repo root 를 명시(opencode `--dir` 대칭·엔진 제약 ①).
+        child cwd 격리 — `-C <cwd>` 로 PM repo root 를 명시(opencode `--dir` 대칭).
         커맨드 형 = `codex exec --json -s workspace-write --skip-git-repo-check [-C <cwd>]
         [resume <tid>] <prompt>` (티켓 명세 순). `-C` 는 exec-레벨 플래그라 `resume` 서브커맨드
         *앞*에 둔다 — resume 뒤에 두면 resume 이 -C 를 거부할 때 cwd 격리가 파손된다.
-        (resume+-C 실효는 T-0407 라이브 확인 전제.)
-        sandbox 는 `-s workspace-write` 로 **명시 핀**(codex R4) — PM relay 세션은 파일 수정/테스트
+        (resume+-C 실효는 라이브 확인 전제.)
+        sandbox 는 `-s workspace-write` 로 **명시 핀** — PM relay 세션은 파일 수정/테스트
         실행이 핵심이라, 사용자 전역 config 가 read-only 면 실작업이 막히고 더 느슨하면 안전 경계가
         흔들린다. fill 경로(pm_import)와 동일 핀·spawn/resume 양쪽 공통."""
         cmd = [self.codex_bin, "exec", "--json", "-s", "workspace-write", "--skip-git-repo-check"]
@@ -317,7 +317,7 @@ class CodexCliDriver:
             completed = self.runner(
                 cmd, capture_output=True, text=True, timeout=self.timeout,
                 # ⚠⚠ stdin close 필수 — 미닫힘 시 codex 가 "Reading additional input from
-                # stdin..." 로 무기한 대기(라이브 실측·spike §D3·3m timeout 재현).
+                # stdin..." 로 무기한 대기(라이브 실측·3m timeout 재현).
                 stdin=subprocess.DEVNULL,
             )
         except subprocess.TimeoutExpired:
@@ -336,15 +336,15 @@ class CodexCliDriver:
 
         return self._parse((completed.stdout or "").splitlines())
 
-    # ── driver-side ctx 기계 가드 (ADR-0070 D4 ①·relay 경로 전용) ─────────────────
+    # ── driver-side ctx 기계 가드 (relay 경로 전용) ─────────────────
 
     def _maybe_mark_ctx(self, session_id: str, usage) -> None:
         """turn usage 가 ctx 예산 정지점(잔여 <= stop_pct)에 도달하면 **post-turn** 회전 marker 를 박제한다.
 
-        세 하네스 공통으로 driver 가 회전 판정 주체다(ADR-0081 D4 — 세션 안 가드는 비차단 안내
+        세 하네스 공통으로 driver 가 회전 판정 주체다(세션 안 가드는 비차단 안내
         전용·marker 미생산). codex 는 turn.completed 후 판정한다. turn 이 *이미 실행·응답됐으므로* 엔진
         `write_post_turn_marker` 로 post-turn 표식을 박제 → Supervisor 는 그 입력을 다시 보내지 않고 회전한다(이중 실행
-        방지·codex R2). 예산·usage·root·mark_stop·엔진 판정 헬퍼 중 하나라도 없으면
+        방지). 예산·usage·root·mark_stop·엔진 판정 헬퍼 중 하나라도 없으면
         no-op(가드 비활성·부트/테스트 경로 무영향 — usage None turn 은 rollout 도 안 읽는다:
         신선도 anchor 가 wire 누계 대조를 요구하므로 검증 불가 rollout 채택은 fail-open 재도입.
         그 turn 의 소모는 다음 turn 차분이 보수 흡수한다·PM override). 정지점 = 예산 × (100 - stop_pct)/100.
@@ -391,7 +391,7 @@ class CodexCliDriver:
                 sys.stderr.write("[pm-orch] codex ctx marker 박제 실패\n")
 
 
-# ── codex 훅 범용 진입점 + 기능 디스패처 (T-0777) ──────────────────────────────
+# ── codex 훅 범용 진입점 + 기능 디스패처 ──────────────────────────────
 # `.codex/hooks.json` 은 채택자 소유(manifest 밖)라 가드 기능을 하나 더할 때마다 채택자 config
 # 수정 + `/hooks` 재승인을 다시 요구했다. 그 마찰을 1회로 끝내려고 이벤트당 진입점을 **하나만**
 # 열고(`matcher .*` → 이 파일), "이 payload 에 어떤 가드를 돌릴지" 의 판단을 **manifest 등재
@@ -399,7 +399,7 @@ class CodexCliDriver:
 # opencode `plugins/` 디렉토리 스캔이 같은 문제를 구조적으로 없앤 참고 모델이다.
 #
 # 진입점 집합은 **릴리즈 간 불변**이다. 늘리려면 채택자 config 변경 + 재승인이 다시 필요하므로
-# T-0777 과 같은 1회 마이그레이션을 거친다(선언은 엔진 `pm_import.ADAPTER_HOOK_SET.entrypoints`
+# 같은 1회 마이그레이션을 거친다(선언은 엔진 `pm_import.ADAPTER_HOOK_SET.entrypoints`
 # 가 역방향으로 대조한다 — 진입점이 빠진 채택자는 조용히 통과하지 않는다).
 CODEX_HOOK_DISPATCH_FLAG = "--hook-dispatch"
 CODEX_HOOK_FEATURES_FLAG = "--hook-features"
@@ -433,7 +433,7 @@ class CodexHookFeature(NamedTuple):
 
 
 # 등록된 기능 전수. **여기 한 줄이 곧 배선**이다 — 새 가드는 이 튜플에 항목을 더하면 되고
-#   채택자 `.codex/hooks.json` 은 그대로다(T-0777 이 닫은 마찰).
+#   채택자 `.codex/hooks.json` 은 그대로다(이 구조가 닫은 마찰).
 CODEX_HOOK_FEATURES: tuple[CodexHookFeature, ...] = (
     CodexHookFeature(
         # 옛 배선: hooks.json `PreToolUse` matcher `^collaborationspawn_agent$` 가 직접 감독자를
@@ -486,7 +486,7 @@ def hook_fallback_envelope(subject: str, detail: str) -> dict:
 #   옛 배선에서는 hooks.json matcher 가 호스트 쪽에서 판별했고, 판별 근거가 없는 입력(빈 stdin·
 #   `{}`·파손 JSON)은 가드 자식이 경고 엔벨로프로 냈다. 판별이 진입점 뒤로 옮겨 온 뒤에도 그
 #   경고 의미가 남아야 한다 — 판정 불능이 통과와 같은 출력이면 가드가 꺼진 것과 구별되지
-#   않는다(T-0777 불변식 4·조용한 실패 금지).
+#   않는다(불변식 — 조용한 실패 금지).
 CODEX_HOOK_ROUTE_MATCH = "match"
 CODEX_HOOK_ROUTE_SKIP = "skip"
 CODEX_HOOK_ROUTE_UNDECIDABLE = "undecidable"
@@ -686,7 +686,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--task", default=None, metavar="이름",
-        help="task 정체성(F7·T-0356) — 회전된 새 PM 세션의 재진입 프롬프트에 `--task <이름>` 실값을 "
+        help="task 정체성 — 회전된 새 PM 세션의 재진입 프롬프트에 `--task <이름>` 실값을 "
              "박아 같은 task 를 resume 하게 한다((b) 명시 전달·cwd 추론 금지). 미지정이면 bare "
              "`$pm-bootstrap`(슬롯/솔로).",
     )

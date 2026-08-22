@@ -171,11 +171,21 @@ def shipping_paths(root: Path) -> tuple[list[Path], list[Path]]:
     ``dashboard.md``와 ``pm_state.md`` 같은 per-clone 파생 파일은 경로별 예외가
     아니라 git ignore/소유 판정으로 빠진다. 따라서 앞으로 다른 파생 파일이 생겨도
     같은 규칙이 적용되고, 비-ignore 신규 출하 파일은 계속 검사한다.
+
+    python 축은 루트 canonical 엔진(``.project_manager/tools/*.py``) +
+    ``templates/<harness>/`` 트리 전체의 모든 python(엔진 사본 + 어댑터, 깊이 무관) +
+    templates canonical 과 같은 상대경로를 공유하는 루트 목적지 사본(예:
+    ``.claude/ctx_guard.py`` — ``engine.manifest`` 의 ``@source=`` 목적지가 ① 안에
+    실재하면 그것도 출하 표면이라는 규칙의 파생)이다. 마지막 항은 경로를 하드코딩하지
+    않고 templates 열거 결과에서 상대경로 대조로 도출한다.
     """
+    resolved_root = root.resolve()
+    owned = repo_owned_paths(root)
     python_paths: set[Path] = set()
     markdown_paths: set[Path] = set()
-    for path in repo_owned_paths(root):
-        relative = path.relative_to(root.resolve())
+    template_python_relpaths: set[Path] = set()
+    for path in owned:
+        relative = path.relative_to(resolved_root)
         parts = relative.parts
         if relative == Path("CLAUDE.md"):
             markdown_paths.add(path)
@@ -201,12 +211,18 @@ def shipping_paths(root: Path) -> tuple[list[Path], list[Path]]:
             continue
         if path.suffix == ".md":
             markdown_paths.add(path)
-        elif (
-            path.suffix == ".py"
-            and len(parts) == 5
-            and parts[2] == ".project_manager"
-            and parts[3] == "tools"
-        ):
+        elif path.suffix == ".py":
+            python_paths.add(path)
+            template_python_relpaths.add(Path(*parts[2:]))
+    # 루트 목적지 사본 — templates canonical 과 상대경로가 일치하는 루트 python 만
+    # 편입한다(파생·하드코딩 0). 오늘 값: `.claude/ctx_guard.py`·`.claude/ctx_stop_hook.py`.
+    for path in owned:
+        if path.suffix != ".py" or path in python_paths:
+            continue
+        relative = path.relative_to(resolved_root)
+        if relative.parts and relative.parts[0] == "templates":
+            continue
+        if relative in template_python_relpaths:
             python_paths.add(path)
     return sorted(python_paths), sorted(markdown_paths)
 

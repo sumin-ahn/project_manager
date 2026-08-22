@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""claude 어댑터 ctx 밴드·넛지 공유 코어 (T-0015 · stdlib only).
+"""claude 어댑터 ctx 밴드·넛지 공유 코어 (stdlib only).
 
 statusLine 과 PreToolUse/UserPromptSubmit 넛지가 **같은 임계 로직**을 공유하게 한 모듈.
 두 진입점(``ctx_statusline.py`` · ``ctx_stop_hook.py``)이 여기 함수를 호출한다.
 
-엔진 계약 (T-0013·T-0207 임계 상향):
+엔진 계약 (임계 상향):
   - 임계값 = local.conf ``ctx_nudge_pct`` / ``ctx_stop_pct`` (없으면 엔진 기본 30/20).
     훅/statusline 은 board.py 를 import 하지 않고 **local.conf 를 직접 파싱**한다
     (어댑터는 엔진 사본 경로에 묶이지 않게 — ticket §인터페이스 "local.conf 직접 파싱 권장").
   - ``stop`` 분류는 statusline/relay 소비를 위해 유지하지만 훅에서는 최종 비차단 넛지로 소비한다.
 
-컨텍스트 % 모델 (ADR-0041 — 분모 = 해소된 예산 하나·물리 window% 폐기):
+컨텍스트 % 모델 (분모 = 해소된 예산 하나·물리 window% 폐기):
   - 분모 예산 = ``resolve_budget(conf, harness)`` = ``ctx_window_tokens_<harness>`` >
     generic ``ctx_window_tokens`` > 200000 (각 층 >0 sanity). statusLine·hook 이 **같은 예산**
     을 분모로 써 표시와 넛지 밴드 판정을 일치시킨다(claude·opencode 오버라이드 키는 독립).
   - statusLine stdin 의 ``context_window`` 에서 used_tokens = current_usage(input+cache 합) >
     total_input_tokens. current_usage null/부재(세션초·/compact 직후)면 0% graceful. native
-    ``used_percentage``(물리%)는 ADR-0041 로 **안 읽는다**.
+    ``used_percentage``(물리%)는 **안 읽는다**.
   - 훅 stdin 엔 ``context_window`` 가 **없을 수 있다**(statusline 전용) → 훅은
     ``transcript_path`` JSONL 을 읽어 자체 산출 (마지막 assistant usage 의 입력+캐시
     토큰 = 현재 컨텍스트 점유; omc sessionTotalTokens 선례). 단, 마지막 compact 경계
@@ -31,18 +31,18 @@ import json
 from pathlib import Path
 
 # ── 엔진 기본 임계 (board.py CTX_*_PCT_DEFAULT 와 동일 — 어댑터는 import 안 하고 미러) ──
-# T-0207 상향(20/10→30/20): auto-compact 전에 checkpoint를 남길 여유를 더 확보한다.
+# 임계 상향(20/10→30/20): auto-compact 전에 checkpoint를 남길 여유를 더 확보한다.
 CTX_NUDGE_PCT_DEFAULT = 30  # 잔여 <= 이 % → ticket/checkpoint 넛지.
 CTX_STOP_PCT_DEFAULT = 20   # 잔여 <= 이 % → 최종 넛지(키 이름은 호환성 때문에 유지).
 
-# 2단(strong) nudge 임계 마진 (%p·파생값·T-0328·ADR-0037). nudge2 밴드 = stop_pct < 잔여 <=
+# 2단(strong) nudge 임계 마진 (%p·파생값). nudge2 밴드 = stop_pct < 잔여 <=
 # min(stop_pct + 이 마진, nudge_pct) — 최종 밴드 직전 강화 유도(1단을 모델이 무시해도 재안내).
 # config 노브 신설 없이 stop_pct 에서 파생(config surface 최소). opencode ctx-guard-core.cjs
 # NUDGE2_MARGIN_PCT 와 미러(양 하네스 파리티).
 CTX_NUDGE2_MARGIN_PCT = 3
 
 # 기본 ctx 예산(분모) — resolve_budget 의 최종 폴백(오버라이드·generic 미설정 시).
-# claude 기본 200k. local.conf ``ctx_window_tokens_<harness>``/``ctx_window_tokens`` 로 조정(ADR-0041).
+# claude 기본 200k. local.conf ``ctx_window_tokens_<harness>``/``ctx_window_tokens`` 로 조정.
 CTX_WINDOW_TOKENS_DEFAULT = 200_000
 
 
@@ -98,7 +98,7 @@ def _int_conf(conf: dict[str, str], key: str, default: int) -> int:
 def ctx_thresholds(conf: dict[str, str]) -> dict[str, int]:
     """nudge_pct / stop_pct 를 conf 에서 읽는다. sanity 검증 포함.
 
-    codex T-0013 인계: nudge/stop 이 비정상(음수·범위 밖·stop>nudge)이면 엔진 기본 폴백.
+    codex 인계: nudge/stop 이 비정상(음수·범위 밖·stop>nudge)이면 엔진 기본 폴백.
     """
     nudge = _int_conf(conf, "ctx_nudge_pct", CTX_NUDGE_PCT_DEFAULT)
     stop = _int_conf(conf, "ctx_stop_pct", CTX_STOP_PCT_DEFAULT)
@@ -109,7 +109,7 @@ def ctx_thresholds(conf: dict[str, str]) -> dict[str, int]:
 
 
 def resolve_budget(conf: dict[str, str], harness: str = "claude") -> int:
-    """ctx 예산(분모)을 per-harness precedence 로 해소 (ADR-0041 Decision 1).
+    """ctx 예산(분모)을 per-harness precedence 로 해소.
 
     ``ctx_window_tokens_{harness}`` > generic ``ctx_window_tokens`` > ``CTX_WINDOW_TOKENS_DEFAULT``.
     각 층 >0 sanity — ≤0·비정수면 다음 층 폴백(물리한도/0-특수의미 없음). claude·opencode
@@ -122,7 +122,7 @@ def resolve_budget(conf: dict[str, str], harness: str = "claude") -> int:
     return CTX_WINDOW_TOKENS_DEFAULT
 
 
-# ── statusLine: context_window → used % (분모 = 해소된 예산·ADR-0041) ──────────
+# ── statusLine: context_window → used % (분모 = 해소된 예산) ──────────
 
 def _clamp_pct(value: float) -> int:
     if value != value or value in (float("inf"), float("-inf")):  # NaN/inf 가드
@@ -146,16 +146,16 @@ def _statusline_used_tokens(cw: dict) -> int:
     """statusLine 의 현재 컨텍스트 점유 토큰 — current_usage(input+cache) 단일 소스.
 
     current_usage null/부재/빈 dict(세션초·/compact 직후)면 0 (0% graceful — 정보 없음 =
-    넛지 밴드로 판정하지 않음). total_input_tokens 폴백은 채택 안 함(codex T-0234 must-fix) —
+    넛지 밴드로 판정하지 않음). total_input_tokens 폴백은 채택 안 함 —
     current_usage 가 null 인 바로 그 순간(post-compact) total_input 은 누적성/버전 의존이라
     과대 표시→넛지 오판정 위험. current_usage 있으면 total_input 은 중복이라 불필요.
-    native 물리%(used_percentage)는 ADR-0041 로 폐기(안 읽음).
+    native 물리%(used_percentage)는 폐기(안 읽음).
     """
     return max(0, _current_usage_tokens(cw))
 
 
 def context_used_pct_from_statusline(stdin: dict, budget: int) -> int:
-    """statusLine stdin JSON → 컨텍스트 **사용** % (분모 = 해소된 예산·ADR-0041).
+    """statusLine stdin JSON → 컨텍스트 **사용** % (분모 = 해소된 예산).
 
     used_tokens(current_usage input+cache 단일 소스) / budget. 물리 window%(native
     used_percentage)는 폐기 — hook 과 같은 예산 분모로 표시와 넛지 판정을 일치시킨다. 신호 없으면 0
@@ -252,7 +252,7 @@ def context_used_pct_from_transcript(transcript_path, window_tokens: int) -> int
 # ── 서브에이전트(sidechain) 감지 (메인 세션만 checkpoint 넛지) ──────────────
 
 def transcript_is_sidechain(transcript_path) -> bool:
-    """transcript JSONL 이 서브에이전트(sidechain) 세션의 것인가 (T-0458).
+    """transcript JSONL 이 서브에이전트(sidechain) 세션의 것인가.
 
     claude 는 서브에이전트(Task) 대화를 ``<parent>/subagents/agent-*.jsonl`` 에 기록하고 그 엔트리를
     ``isSidechain: true`` 로 표시한다 — 메인 세션 transcript ``<session>.jsonl`` 은 전 엔트리
@@ -289,7 +289,7 @@ def remaining_pct(used_pct: int) -> int:
 
 
 def nudge2_threshold(thresholds: dict[str, int]) -> int:
-    """2단(strong) nudge 임계(%p) — stop_pct + margin 파생, nudge_pct 로 캡 (T-0328).
+    """2단(strong) nudge 임계(%p) — stop_pct + margin 파생, nudge_pct 로 캡.
 
     nudge2 밴드 = stop_pct < 잔여 <= 이 값. margin(+3)이 nudge 밴드를 넘지 않게 min 으로 캡해
     nudge2 가 nudge 밴드 밖(ok 영역)으로 새지 않는다. opencode nudge2Threshold 와 동형.
@@ -298,7 +298,7 @@ def nudge2_threshold(thresholds: dict[str, int]) -> int:
 
 
 def classify(used_pct: int, thresholds: dict[str, int]) -> str:
-    """used % → 'ok' | 'nudge' | 'nudge2' | 'stop' (잔여 기준·T-0328 2단 nudge).
+    """used % → 'ok' | 'nudge' | 'nudge2' | 'stop' (잔여 기준·2단 nudge).
 
     잔여 <= stop_pct → 'stop'. stop_pct < 잔여 <= nudge2_threshold → 'nudge2'(strong·최종 밴드 직전).
     nudge2_threshold < 잔여 <= nudge_pct → 'nudge'(soft·1단). 그 외 'ok'.
