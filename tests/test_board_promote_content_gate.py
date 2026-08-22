@@ -497,6 +497,46 @@ def test_promote_ships_a_subdirectory_citation_that_resolves_uniquely(
 
 
 @requires_git
+def test_citation_index_excludes_tracked_but_working_tree_missing_paths(tmp_path, monkeypatch):
+    """Git index 에만 있고 디스크엔 없는 인용 대상은 종전 `os.walk` 처럼 차단(citation-unresolved)
+    이지 판정불능 강등이 아니다(code-reviewer F-001).
+
+    `repo_owned_files.list_repo_owned_files(..., mode=OWNED)` 의 Git 성공 경로는 working-tree
+    존재를 재검사하지 않는다(symlink·gitlink 를 거짓 탈락시키지 않으려는 그 seam 의 의도적
+    계약) — `_citation_suffix_index` 소비 쪽에서 `is_file()` 로 한 번 더 걸러야 종전 `os.walk`
+    의 물리 존재 의미가 보존된다. 양방향: 실재 tracked 파일과 미추적·비무시 파일 인용은
+    그대로 해소된다(OWNED 의 미추적 포함 계약은 안 깨졌다) — 존재 확인이 정탐까지 지우면
+    안 된다.
+    """
+    mod = _load_board()
+    for key, val in _GIT_IDENTITY.items():
+        monkeypatch.setenv(key, val)
+    root = tmp_path
+    wiki = root / ".project_manager" / "wiki"
+    wiki.mkdir(parents=True)
+    tracked_present = wiki / "real.md"
+    tracked_present.write_text("a\nb\nc\n", encoding="utf-8")
+    tracked_missing = wiki / "evidence.md"
+    tracked_missing.write_text("x\n", encoding="utf-8")
+
+    for argv in (["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-qm", "seed"]):
+        r = _git(argv, root)
+        assert r.returncode == 0, f"git {argv} 실패: {r.stderr}"
+    tracked_missing.unlink()  # index 는 그대로, working tree 에서만 지운다(`git rm` 아님).
+    untracked = wiki / "fresh.md"
+    untracked.write_text("y\n", encoding="utf-8")  # 미추적·비무시.
+
+    prose = "인용 `wiki/real.md:2` · 인용 `wiki/evidence.md:1` · 인용 `wiki/fresh.md:1`"
+    issues, unverifiable = mod._citation_issues("T-TEST", prose, (root,))
+
+    assert unverifiable == 0, "tracked-but-missing 은 판정불능 강등이 아니라 차단이어야 한다"
+    kinds = [(kind, detail) for _tid, kind, detail in issues]
+    assert len(kinds) == 1, kinds
+    kind, detail = kinds[0]
+    assert kind == "citation-unresolved" and "wiki/evidence.md:1" in detail, kinds
+
+
+@requires_git
 def test_promote_requires_a_harvested_architect_round_then_accepts(board_git, capsys):
     """`design: done` 은 점검 라운드 회수 전 거부 → 회수 뒤 승격(같은 티켓 red→green)."""
     board_dir = board_git._board_dir

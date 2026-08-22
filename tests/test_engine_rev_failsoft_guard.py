@@ -1041,7 +1041,14 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   + 2(엔진 흡수 말미 홈 슬롯 등록 `pm_update.register_home_slot` 의 dest 사본 로드·호출
     #   두 경계). 등록은 파일 동기가 이미 끝난 뒤의 부수 이행이라 실패를 안내 한 줄로 접되,
     #   마킹된 사본 skew 는 두 경계 모두 그대로 re-raise 한다(동기 성공이 skew 를 덮지 않는다).
-    assert len(report.boundaries) == 231, "propagation sweep boundary ratchet changed"
+    # 232 = 231 + T-0776 promote 내용 검토 게이트의 좌표 정규화 형제 로더 한 경계
+    #   (`board._load_repo_coordinates`). touches/인용 좌표를 소유 트리 기준으로 접는 규칙이
+    #   `repo_coordinates.py` 에 있고 board 는 그 형제를 지연 로드해 소비만 한다(규칙 사본 0) —
+    #   부재/손상은 그 축만 판정불능으로 접되(`_load_pm_bootstrap_module` 동형 — 통과로
+    #   위장하지 않는다), 마킹된 엔진 skew 는 그대로 re-raise 한다. (pm_delegate.py 는 같은
+    #   구간에서 `_recalculate_internal_review_rounds` 인라인 판독을
+    #   `_internal_recorded_reply` 로 추출했을 뿐 — 같은 재-raise 경계가 자리만 옮겨 net 0.)
+    assert len(report.boundaries) == 232, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

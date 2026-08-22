@@ -58,6 +58,10 @@ python3 .project_manager/tools/board.py new "<한 줄 제목>" \
 
 본문을 채운 draft는 **PM 초안**이다. 승격 전에 architect 점검 라운드로 실측 대조를 받는다 — PM은 자기 초안의 리뷰어가 아니다(generate ≠ evaluate). 형식 게이트는 뼈대 잔존만 보므로 틀린 인용·티켓 간 충돌·범위 오판은 이 라운드에서만 잡힌다.
 
+**Claude PM은 아래 실 실행 커맨드를 Bash 툴로 호출할 때 `timeout: 29300000`(ms)을 반드시
+명시한다.** 이는 CLI `--timeout`(위임 turn 벽시계)이 아니라 호출층 Bash 툴 파라미터다.
+`BASH_DEFAULT_TIMEOUT_MS=1800000`은 일반 무-파라미터 명령용이라 cross 위임에 의존하지 않는다.
+
 ```bash
 python3 .project_manager/tools/pm_delegate.py ticket prepare --ticket <T-NNNN> --role architect --cwd <worktree>
 # 위임(스킬 /pm-dev-delegate §architect 위임·본문 점검) 후:

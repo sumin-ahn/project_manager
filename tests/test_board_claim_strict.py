@@ -1411,26 +1411,54 @@ def test_claim_without_a_git_tree_warns_and_still_claims(board, tmp_path, monkey
 
 
 @requires_git
-def test_claim_warns_when_bare_claim_folds_to_repo_home_with_a_leases_file(
+def test_claim_warns_when_bare_claim_folds_to_repo_home_despite_an_active_slot(
         board, tmp_path, monkeypatch, capsys):
-    """분리 PM 홈 형상(리스 장부 존재)에서 인자 전무 claim 이 REPO 로 접히면 경고를 낸다(F-001).
+    """인자 전무 claim 이 REPO 를 재는데 **이 세션의 활성 슬롯**이 다른 트리면 경고한다(F-001).
+
+    [[T-0793]] 이후 판정은 리스 장부의 존재가 아니라 **이 세션 행이 해소하는 슬롯 경로 값**이다
+    (`_warn_claim_code_tree_folded_to_repo_home` 독스트링) — 리스 장부는 있어도 이 세션과
+    매칭되는 행이 없는 형상(구 케이스)은 이제 무경고다(홈 자신이 그 세션의 슬롯인 형상과
+    값으로 구분되지 않아서다). 여기서는 이 세션("me") 행이 실재하고 다른 슬롯을 가리키게
+    해 그 값 대조를 직접 겨눈다.
 
     값은 여전히 REPO HEAD(기존 폴백 무변경) — 이 테스트는 그 폴백이 *조용하지 않다* 는 것만
     추가로 단언한다."""
     monkeypatch.setattr(board, "LEASES_FILE", _claim_anchor_leases_file(tmp_path))
     repo_head = _init_code_git(tmp_path, seed_text="home\n")
-    # 리스 장부는 있지만 이 세션과 매칭되는 활성 슬롯이 없다(분리 PM 홈인데 REPO 로 접히는 형상).
-    board.LEASES_FILE.write_text(json.dumps({"leases": [
-        {"slot": "work/other_1", "repo": "other", "session": "other-session", "state": "leased"},
-    ]}), encoding="utf-8")
     monkeypatch.setenv("PM_SESSION_NAME", "me")
+    # 이 세션("me")의 리스가 REPO 가 아닌 다른 슬롯을 가리키는데, bare claim(kind=none)은
+    # 여전히 REPO 트리를 잰다 — 그 접힘이 경고 대상이다.
+    board.LEASES_FILE.write_text(json.dumps({"leases": [
+        {"slot": "work/other_1", "repo": "other", "session": "me", "state": "leased"},
+    ]}), encoding="utf-8")
     _seed_open_ticket(tmp_path, "T-9015")
 
     assert board.cmd_claim(argparse.Namespace(id="T-9015", user="me")) == 0
 
     fm, _body = board.load_ticket(_claimed_ticket(tmp_path, "T-9015"))
     assert fm["claimed_rev"] == repo_head
-    assert "PM 홈(REPO)으로 접혔다" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "PM 홈(REPO)으로 접혔다" in err
+    assert str(tmp_path / "work" / "other_1") in err
+
+
+def test_claim_stays_silent_when_no_lease_row_matches_this_session(
+        board, tmp_path, monkeypatch, capsys):
+    """리스 장부는 있어도 이 세션과 매칭되는 행이 없으면 REPO 로 접혀도 무경고다.
+
+    "장부 파일이 존재한다" 는 판정 축이 아니다 — 홈 자신이 이 세션의 슬롯인 형상과 값으로
+    구분되지 않으면 상시 오발화하므로 [[T-0793]] 이후 이 형상은 의도적으로 침묵한다."""
+    monkeypatch.setattr(board, "LEASES_FILE", _claim_anchor_leases_file(tmp_path))
+    _init_code_git(tmp_path, seed_text="home\n")
+    board.LEASES_FILE.write_text(json.dumps({"leases": [
+        {"slot": "work/other_1", "repo": "other", "session": "other-session", "state": "leased"},
+    ]}), encoding="utf-8")
+    monkeypatch.setenv("PM_SESSION_NAME", "me")
+    _seed_open_ticket(tmp_path, "T-9019")
+
+    assert board.cmd_claim(argparse.Namespace(id="T-9019", user="me")) == 0
+
+    assert "PM 홈(REPO)으로 접혔다" not in capsys.readouterr().err
 
 
 @requires_git
