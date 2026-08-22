@@ -701,6 +701,10 @@ CODEX_HOOK_DISPATCH_BUDGET_SEC = 12
 #   `delegate_channel_guard.CODEX_ADAPTER_FALLBACK_MARKER` 와 같은 값이어야 하고 테스트가 결속한다
 #   (훅 실행 시점에 엔진 모듈을 적재하지 않으려고 리터럴을 둔다·shell 폴백과 같은 근거).
 CODEX_HOOK_ADAPTER_FALLBACK_MARKER = "adapter-fallback"
+# `merge_hook_envelopes` 가 두 개 이상의 `hookSpecificOutput` 을 만나면, 그중 이벤트별 output
+#   스키마 허용키라도 합본 규칙이 없는 키(예: `updatedInput`·`updatedMCPToolOutput`·기준이 아닌
+#   응답의 `permissionDecision` 류)는 **조용히 버리지 않고** 이 마커로 남긴다(T-0824).
+CODEX_HOOK_MERGE_UNHANDLED_KEY_MARKER = "merge-unhandled-key"
 
 
 class CodexHookFeature(NamedTuple):
@@ -1004,14 +1008,39 @@ def _is_blocking_envelope(envelope: dict) -> bool:
             and hook_output.get("permissionDecision") == "deny")
 
 
+CODEX_HOOK_MERGE_HANDLED_HOOK_SPECIFIC_KEYS = frozenset({"hookEventName", "additionalContext"})
+
+# 최상위 키 중 이미 병합 규칙이 있는 키(F-0824-CR01) — 이 밖의 최상위 키(예: `continue`·
+#   `stopReason`·`decision`·`reason`)를 base 가 아닌 응답이 실으면 조용히 버리지 않고
+#   `CODEX_HOOK_MERGE_UNHANDLED_KEY_MARKER` 로 남긴다 — `hookSpecificOutput` 서브키와 같은 축.
+CODEX_HOOK_MERGE_HANDLED_TOP_LEVEL_KEYS = frozenset(
+    {"systemMessage", "suppressOutput", "hookSpecificOutput"})
+
+
 def merge_hook_envelopes(envelopes) -> dict:
     """여러 기능의 응답을 호스트가 읽는 **한 줄**로 합친다.
 
-    호스트는 훅 하나당 엔벨로프 하나만 읽는다. 규칙 셋:
+    호스트는 훅 하나당 엔벨로프 하나만 읽는다. 합본 규칙은 키마다 다르다:
       1. 빈 엔벨로프(`{}` = 통과)는 기여하지 않는다 — 아무도 답하지 않으면 `{}`(측정된 allow 형태).
       2. 응답이 하나면 **그대로** 돌려준다 — 진입점 도입이 기존 판정 값을 바꾸지 않는다.
-      3. 둘 이상이면 차단 판정이 기준이 되고(없으면 첫 응답), 나머지 기능의 `systemMessage` 는
-         줄바꿈으로 덧붙는다. 차단 사유 필드도 같은 합본으로 맞춰 사유가 잘리지 않게 한다.
+      3. 둘 이상이면 차단 판정이 있는 응답이 기준(base)이 되고(없으면 첫 응답), 그 base 를 얕은
+         복사해 합본을 시작한다 — base 자신의 키는 전량 그대로 실린다(유실 없음).
+      4. `systemMessage` — **문자열 누적**: 전 응답의 값을 줄바꿈으로 이어 붙인다(중복 제외).
+         차단이면 `reason`·`hookSpecificOutput.permissionDecisionReason` 도 같은 합본으로 맞춰
+         사유가 잘리지 않게 한다.
+      5. `hookSpecificOutput.additionalContext` — **문자열 누적**(T-0824): base 가 아닌 응답도
+         이 키만은 base 의 `hookSpecificOutput` 에 **중첩 dict 병합**으로 실린다. deny 등 base
+         차단 판정과 **동시에** 성립한다(codex 0.147.0 라이브 실측 — 차단 집행 + 안내 주입 동거,
+         `.project_manager/board/tickets/rounds/T-0834/01-architect.md` §5). 값이 문자열이
+         아니면(비-str) 침묵하지 않고 6번 마커로 남는다.
+      6. `suppressOutput` — **논리 결합**: 하나라도 `False` 면 결과도 `False`(비차단 안내를 억누르지
+         않는 쪽이 이긴다).
+      7. base 가 아닌 응답이 4·5·6번이 다루지 않는 키를 최상위(예: `continue`·`stopReason`·
+         `decision`·`reason`) 또는 `hookSpecificOutput` 서브키(예: `updatedInput`·
+         `updatedMCPToolOutput`·기준이 아닌 응답의 `permissionDecision`류)로 실으면, **값을
+         합성하지 않고** 합본 규칙이 없다는 사실만 `systemMessage` 에 `[hook-dispatch/warn]
+         {CODEX_HOOK_MERGE_UNHANDLED_KEY_MARKER}` 마커로 남긴다(F-0824-CR01) — 조용히 버리지
+         않는다. base 자신의 키는 `dict(base)` 로 이미 전량 실려 유실이 아니다.
     """
     answered = [item for item in envelopes if isinstance(item, dict) and item]
     if not answered:
@@ -1019,12 +1048,51 @@ def merge_hook_envelopes(envelopes) -> dict:
     if len(answered) == 1:
         return answered[0]
     blocking = [item for item in answered if _is_blocking_envelope(item)]
-    merged = dict(blocking[0] if blocking else answered[0])
+    base = blocking[0] if blocking else answered[0]
+    merged = dict(base)
     messages: list[str] = []
+    contexts: list[str] = []
+    unhandled_keys: list[str] = []
+    event_name = None
     for item in answered:
         text = item.get("systemMessage")
         if isinstance(text, str) and text.strip() and text not in messages:
             messages.append(text)
+        if item is not base:
+            # 최상위 허용키 중 4·6번 규칙이 없는 것(`continue`·`stopReason`·`decision`·
+            #   `reason`)은 값을 합성하지 않고 유실 사실만 경고로 남긴다(F-0824-CR01).
+            for key in item:
+                if key not in CODEX_HOOK_MERGE_HANDLED_TOP_LEVEL_KEYS:
+                    unhandled_keys.append(key)
+        hook_output = item.get("hookSpecificOutput")
+        if not isinstance(hook_output, dict):
+            continue
+        if event_name is None and isinstance(hook_output.get("hookEventName"), str):
+            event_name = hook_output["hookEventName"]
+        if "additionalContext" in hook_output:
+            context_value = hook_output["additionalContext"]
+            if isinstance(context_value, str):
+                if context_value.strip() and context_value not in contexts:
+                    contexts.append(context_value)
+            else:
+                unhandled_keys.append(f"additionalContext(비-str:{type(context_value).__name__})")
+        if item is base:
+            continue  # base 는 dict(base) 로 이미 전량 실렸다 — 나머지 키는 유실이 아니다.
+        for key in hook_output:
+            if key not in CODEX_HOOK_MERGE_HANDLED_HOOK_SPECIFIC_KEYS:
+                unhandled_keys.append(key)
+    if contexts:
+        combined_context = "\n".join(contexts)
+        hook_output = merged.get("hookSpecificOutput")
+        hook_output = dict(hook_output) if isinstance(hook_output, dict) else {}
+        hook_output.setdefault("hookEventName", event_name)
+        hook_output["additionalContext"] = combined_context
+        merged["hookSpecificOutput"] = hook_output
+    if unhandled_keys:
+        unique_unhandled = sorted(set(unhandled_keys))
+        messages.append(
+            f"[hook-dispatch/warn] {CODEX_HOOK_MERGE_UNHANDLED_KEY_MARKER}: "
+            f"{', '.join(unique_unhandled)} 합본 규칙 없음 — 값 유실")
     if messages:
         combined = "\n".join(messages)
         merged["systemMessage"] = combined

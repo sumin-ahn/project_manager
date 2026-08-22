@@ -473,6 +473,156 @@ def test_multiple_advisories_merge_without_inventing_a_decision(dispatcher):
     assert merged["suppressOutput"] is False
 
 
+# ── T-0824: `hookSpecificOutput.additionalContext` 축 — deny/advisory 동시 발화에서
+#   조용히 사라지던 안내를 합본에 싣는다 ────────────────────────────────────
+
+_CTX = {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                               "additionalContext": "fixture ctx guidance"}}
+
+
+def test_deny_and_additional_context_coexist_in_one_envelope(dispatcher):
+    """deny 기능과 ctx 안내가 같은 이벤트에서 동시 발화해도 둘 다 합본에 실린다.
+
+    codex 0.147.0 라이브 실측(`.project_manager/board/tickets/rounds/T-0834/01-architect.md`
+    §5)이 이 조합을 codex 가 실제로 차단 집행 + 안내 주입 동거로 처리함을 확인했다 — 그 판정을
+    값으로 고정한다."""
+    merged = dispatcher.merge_hook_envelopes([_DENY, _CTX])
+
+    assert merged["decision"] == "block"
+    assert merged["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert merged["hookSpecificOutput"]["permissionDecisionReason"] == merged["systemMessage"]
+    assert merged["hookSpecificOutput"]["additionalContext"] == "fixture ctx guidance"
+    assert merged["systemMessage"] == "fixture deny"  # ctx 는 systemMessage 축에 안 실린다.
+    assert _DENY["hookSpecificOutput"] == {
+        "hookEventName": "PreToolUse", "permissionDecision": "deny",
+        "permissionDecisionReason": "fixture deny"}, "입력 엔벨로프를 제자리 변형했다"
+    assert _CTX["hookSpecificOutput"] == {
+        "hookEventName": "PreToolUse",
+        "additionalContext": "fixture ctx guidance"}, "입력 엔벨로프를 제자리 변형했다"
+
+
+def test_advisory_and_additional_context_coexist_without_inventing_a_decision(dispatcher):
+    """경고(비차단)와 ctx 가 같이 뜨면 차단 키를 발명하지 않고 additionalContext 만 얹는다."""
+    merged = dispatcher.merge_hook_envelopes([_ADVISORY, _CTX])
+
+    assert set(merged) == {"systemMessage", "suppressOutput", "hookSpecificOutput"}
+    assert merged["systemMessage"] == "fixture advisory"
+    assert merged["hookSpecificOutput"] == {
+        "hookEventName": "PreToolUse", "additionalContext": "fixture ctx guidance"}
+    assert "decision" not in merged
+    assert "permissionDecision" not in merged["hookSpecificOutput"]
+
+
+def test_additional_context_dedups_and_joins_in_registration_order(dispatcher):
+    """ctx 응답이 둘 이상이면(N>1 대비) 결합이 등록 순서 결정적이고 동일 문자열은 1회만 실린다."""
+    second = {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                     "additionalContext": "second guidance"}}
+
+    merged = dispatcher.merge_hook_envelopes([_CTX, second, _CTX])
+
+    assert merged["hookSpecificOutput"]["additionalContext"] == \
+        "fixture ctx guidance\nsecond guidance"
+    assert _CTX["hookSpecificOutput"]["additionalContext"] == "fixture ctx guidance", \
+        "입력 엔벨로프를 제자리 변형했다"
+
+
+def test_non_string_additional_context_is_a_loud_warning_not_a_silent_drop(dispatcher):
+    """`additionalContext` 가 문자열이 아니면 조용히 스킵하지 않고 마커로 남는다."""
+    bad = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": 12345}}
+
+    merged = dispatcher.merge_hook_envelopes([_ADVISORY, bad])
+
+    assert dispatcher.CODEX_HOOK_MERGE_UNHANDLED_KEY_MARKER in merged["systemMessage"]
+    assert "additionalContext" in merged["systemMessage"]
+    assert merged.get("hookSpecificOutput", {}).get("additionalContext") is None
+
+
+def test_unhandled_hook_specific_output_key_is_a_loud_warning_not_a_silent_drop(dispatcher):
+    """base 가 아닌 응답의 `hookSpecificOutput` 이 합본 규칙 없는 키(예: `updatedInput`)를 실으면
+    조용히 버리지 않고 마커로 남는다 — 이 라운드가 배선하는 것은 `additionalContext` 축 하나뿐이고
+    (T-0824 PM 비준 결정 5) 나머지 이벤트별 output 스키마 허용키는 값을 실어 오는 대신 이 마커로
+    유실 사실이 드러난다."""
+    updated_input = {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                             "updatedInput": {"x": 1}}}
+
+    merged = dispatcher.merge_hook_envelopes([_DENY, updated_input])
+
+    assert dispatcher.CODEX_HOOK_MERGE_UNHANDLED_KEY_MARKER in merged["systemMessage"]
+    assert "updatedInput" in merged["systemMessage"]
+    assert "updatedInput" not in merged["hookSpecificOutput"]
+    assert merged["decision"] == "block"  # 규칙 없는 키 경고가 차단 판정을 건드리지 않는다.
+
+
+def test_base_items_own_hook_specific_output_keys_are_not_flagged_unhandled(dispatcher):
+    """base 로 선택된 응답 자신의 키(`permissionDecision` 등)는 유실이 아니라 경고 대상이 아니다."""
+    merged = dispatcher.merge_hook_envelopes([_DENY, _ADVISORY])
+
+    assert dispatcher.CODEX_HOOK_MERGE_UNHANDLED_KEY_MARKER not in merged["systemMessage"]
+
+
+def test_merged_pretooluse_envelope_keys_stay_within_the_extracted_output_schema(
+        dispatcher, hook_io_schema):
+    """deny+ctx 합본 산출의 키가 PreToolUse output 스키마 허용키의 부분집합이다.
+
+    손으로 지어낸 스키마가 아니라 codex 0.147.0 바이너리에서 추출한 fixture(``pre-tool-use.
+    command.output`` — `_schema` 헬퍼는 §T-0806 절에서 정의)로 대조한다."""
+    schema = _schema(hook_io_schema, "PreToolUse", "output")
+    allowed_top = set(schema["properties"])
+    allowed_hook_specific = set(
+        schema["definitions"]["PreToolUseHookSpecificOutputWire"]["properties"])
+
+    merged = dispatcher.merge_hook_envelopes([_DENY, _CTX])
+
+    assert set(merged) <= allowed_top, sorted(merged)
+    assert set(merged["hookSpecificOutput"]) <= allowed_hook_specific, \
+        sorted(merged["hookSpecificOutput"])
+
+
+# ── F-0824-CR01 (code-reviewer 라운드 2 must-fix): 최상위 허용키도 같은 fail-loud 축 ──────
+
+def test_unhandled_top_level_key_is_a_loud_warning_not_a_silent_drop(dispatcher):
+    """base 가 아닌 응답의 최상위 허용키(`continue`·`stopReason`·`decision`·`reason`)가 합본
+    규칙 없이 버려지면 조용히 스킵하지 않고 마커로 남는다 — reviewer 재현 그대로(F-0824-CR01).
+
+    codex 0.147.0 추출 스키마의 PreToolUse output 최상위 허용키에 이 넷이 모두 있다. 처방대로
+    **값을 새로 합성하지 않고** 유실 사실만 경고로 남긴다."""
+    stop_case = dispatcher.merge_hook_envelopes([_ADVISORY, {"stopReason": "fixture stop"}])
+    continue_case = dispatcher.merge_hook_envelopes([_ADVISORY, {"continue": False}])
+    decision_reason_case = dispatcher.merge_hook_envelopes(
+        [_ADVISORY, {"decision": "approve", "reason": "fixture reason"}])
+
+    assert dispatcher.CODEX_HOOK_MERGE_UNHANDLED_KEY_MARKER in stop_case["systemMessage"]
+    assert "stopReason" in stop_case["systemMessage"]
+    assert "stopReason" not in stop_case  # 값을 합성해 살리지 않는다(reviewer 제약).
+
+    assert dispatcher.CODEX_HOOK_MERGE_UNHANDLED_KEY_MARKER in continue_case["systemMessage"]
+    assert "continue" in continue_case["systemMessage"]
+    assert "continue" not in continue_case
+
+    assert dispatcher.CODEX_HOOK_MERGE_UNHANDLED_KEY_MARKER in decision_reason_case["systemMessage"]
+    assert "decision" in decision_reason_case["systemMessage"]
+    assert "reason" in decision_reason_case["systemMessage"]
+    assert "decision" not in decision_reason_case  # base(advisory)엔 decision 이 아예 없다.
+
+
+def test_base_items_own_top_level_keys_are_not_flagged_unhandled(dispatcher):
+    """base 로 선택된 응답 자신의 최상위 키(`decision`·`reason`)는 유실이 아니라 경고 대상이
+    아니다 — F-0824-CR01 처방이 3번 규칙(base 보존)을 깨지 않는지 확인."""
+    merged = dispatcher.merge_hook_envelopes([_DENY, _ADVISORY])
+
+    assert dispatcher.CODEX_HOOK_MERGE_UNHANDLED_KEY_MARKER not in merged["systemMessage"]
+    assert merged["decision"] == "block"
+    assert merged["reason"] == merged["systemMessage"]  # 4번 규칙(기존)이 그대로 채운다.
+
+
+def test_merged_deny_and_ctx_envelope_carries_no_new_unhandled_key_warning(dispatcher):
+    """실제 등록 생산자(deny·ctx)의 합본에는 이 fix 가 새로 만든 경고가 안 실린다 — 최상위 키
+    축 확장이 정상 트래픽 경고 소음을 0으로 유지한다는 값 근거(F-0824-CR01 처방 제약)."""
+    merged = dispatcher.merge_hook_envelopes([_DENY, _CTX])
+
+    assert dispatcher.CODEX_HOOK_MERGE_UNHANDLED_KEY_MARKER not in merged["systemMessage"]
+
+
 # ── 고장 경계 — 어떤 실패도 도구 호출을 막지 않는다 ──────────────────────────
 
 
@@ -575,6 +725,36 @@ def test_shipped_entrypoint_runs_the_registered_guard_for_a_spawn_payload(
     rendered = json.dumps(result, ensure_ascii=False)
     assert guard.CODEX_ADAPTER_FALLBACK_MARKER not in rendered
     assert guard.CODEX_SUPERVISOR_FALLBACK_MARKER not in rendered
+
+
+@pytest.mark.skipif(not posix_bash_supported(),
+                    reason="POSIX bash wrapper 실행 환경이 아님")
+def test_shipped_entrypoint_merges_spawn_deny_and_ctx_nudge_without_losing_either(
+        tmp_path):
+    """출하 PreToolUse 진입점에서 스폰 deny 와 ctx 넛지가 같은 호출에서 동시에 걸리면 둘 다
+    실린다(T-0824 재현 픽스처). 이 fix 전에는 `hookSpecificOutput` 이 통째로 사라져
+    `additionalContext` 가 조용히 유실됐다(실측: 이 테스트를 되돌리면 그 유실이 재현된다)."""
+    root = _adopter_tree(
+        tmp_path, conf_lines=(*_CROSS_CONF, "ctx_window_tokens_codex=20000"))
+    rollout = root / "rollout-live.jsonl"
+    # 예산 20000 · 점유 15328 → 사용 77% · 잔여 23% → nudge2 밴드(기존 ctx-nudge 회귀와 같은 수치).
+    rollout.write_text(
+        '{"type":"event_msg","payload":{"type":"token_count","info":'
+        '{"last_token_usage":{"input_tokens":15328}}}}\n', encoding="utf-8")
+    payload = {**_spawn_payload(), "session_id": "fixture-session",
+              "transcript_path": str(rollout)}
+
+    result, elapsed = _run_entrypoint("PreToolUse", root, payload)
+
+    assert elapsed < _entry_handler("PreToolUse")["timeout"]
+    assert result["decision"] == "block"                      # deny 유지(값 무변경)
+    assert "pm_delegate.py" in result["reason"]                # deny 사유 유지
+    hook_output = result["hookSpecificOutput"]
+    assert hook_output["permissionDecision"] == "deny"         # deny 유지
+    assert hook_output["permissionDecisionReason"] == result["reason"]
+    additional_context = hook_output["additionalContext"]      # 유실되던 값이 이제 실린다
+    assert additional_context.strip() != ""
+    assert "77%" in additional_context and "23%" in additional_context
 
 
 @pytest.mark.skipif(not posix_bash_supported(),
