@@ -66,6 +66,7 @@ UNOWNED_SHIPPED_WIKI_LEDGER = frozenset({
     ".project_manager/wiki/tickets/README.md",
     ".project_manager/wiki/tickets/blocked/.gitkeep",
     ".project_manager/wiki/tickets/claimed/.gitkeep",
+    ".project_manager/wiki/tickets/discarded/.gitkeep",
     ".project_manager/wiki/tickets/done/.gitkeep",
     ".project_manager/wiki/tickets/open/.gitkeep",
 })

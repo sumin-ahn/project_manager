@@ -87,7 +87,8 @@ _TICKET_TEXT = (
     "touches: []\n"
     "estimate: small\n"
     "tags: []\n"
-    "---\n\n# {tid} — t\n\n## 목표\nx\n"
+    "---\n\n# {tid} — t\n\n## 목표\nx\n\n"
+    "## 완료 조건 (Definition of Done)\n- [x] 구현\n"
 )
 
 
@@ -159,6 +160,16 @@ def board(tmp_path, monkeypatch):
     anchor_board_module(mod, tmp_path, monkeypatch)
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
+    # 정체성 축을 tmp 에 묶는다 — 소유 대조(T-0781)가 user 축을 보므로, 실 clone 의 local.conf
+    # /전역 git email 이 새면 픽스처 claim(`me/…`)과 어긋난다. 세션은 각 테스트가 명시
+    # (`--repo/--slot` 또는 `PM_SESSION_NAME`)한다 — conf `session=` 폴백은 폐지됐다(T-0779).
+    conf = tmp_path / ".project_manager" / "local.conf"
+    conf.parent.mkdir(parents=True, exist_ok=True)
+    conf.write_text("user=me\n", encoding="utf-8")
+    monkeypatch.setattr(mod, "LOCAL_CONF", conf)
+    monkeypatch.setattr(
+        mod, "LEASES_FILE",
+        tmp_path / ".project_manager" / ".local" / "worktree-leases.json")
     return mod
 
 
@@ -1063,13 +1074,14 @@ def test_best_effort_transitions_commit_only_their_paths(board, tmp_path, mutati
 
     if mutation == "complete":
         rc = board.cmd_complete(argparse.Namespace(
-            id="T-0001", tests_pass=True, allow_missing_log=True, allow_untested=False))
+            id="T-0001", tests_pass=True, allow_missing_log=True, allow_untested=False,
+            repo="me", slot=1))
         expected = {"tickets/claimed/T-0001-t.md", "tickets/done/T-0001-t.md"}
     elif mutation == "block":
         rc = board.cmd_block(argparse.Namespace(id="T-0001", reason="r"))
         expected = {"tickets/open/T-0001-t.md", "tickets/blocked/T-0001-t.md"}
     elif mutation == "unclaim":
-        rc = board.cmd_unclaim(argparse.Namespace(id="T-0001"))
+        rc = board.cmd_unclaim(argparse.Namespace(id="T-0001", repo="me", slot=1))
         expected = {"tickets/claimed/T-0001-t.md", "tickets/open/T-0001-t.md"}
     else:
         rc = board.cmd_unblock(argparse.Namespace(id="T-0001"))
@@ -1174,10 +1186,11 @@ def test_ticket_mutations_pass_scoped_paths():
     calls = [node for node in ast.walk(tree)
              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
              and node.func.id == "_board_git_sync_best_effort"]
-    # 8 = ticket mutation 7 + `init` 의 areas repo 행 등록(T-0779 — 등록 행도 board git 의
-    # 공유 파일이라 같은 스코프 채널로 기록한다).
-    assert len(calls) == 8, \
-        f"best-effort sync 호출이 8곳이 아님(신규/삭제 시 이 가드를 함께 갱신): {len(calls)}"
+    # 10 = ticket mutation 9(new·promote·complete·discard·reopen·block·unclaim·unblock +
+    # section-add/tier 공용 helper) + `init` 의 areas repo 행 등록(T-0779 — 등록 행도 board git
+    # 의 공유 파일이라 같은 스코프 채널로 기록한다).
+    assert len(calls) == 10, \
+        f"best-effort sync 호출이 10곳이 아님(신규/삭제 시 이 가드를 함께 갱신): {len(calls)}"
     for call in calls:
         has_paths = len(call.args) >= 2 or any(kw.arg == "paths" for kw in call.keywords)
         assert has_paths, \

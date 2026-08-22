@@ -607,13 +607,111 @@ def test_dod_gate_detects_all_markdown_bullet_markers(board):
             f"{bullet!r} 불릿 체크박스가 판정에서 빠짐: {problems}")
 
 
-def test_dod_gate_passes_prose_or_missing_section(board):
-    """체크박스 없는 산문 DoD·DoD 절 부재(레거시 본문)는 통과 — 게이트는 체크박스를 *요구* 하지 않는다."""
+def test_dod_prose_or_missing_section_blocks(board):
+    """체크박스 없는 산문 DoD·DoD 절 부재는 **차단**된다 (T-0781 — 레거시 면제 없음).
+
+    옛 규칙은 "있는 체크박스의 미결만 막는다" 였다 — 그래서 절을 지우거나 산문으로만 적으면
+    게이트가 통째로 꺼졌다(완료 증거 0으로 done). 같은 판정이 `lint`(thin)로 이미 open/claimed
+    를 차단하고 있어 이 강화로 새로 잠기는 활성 티켓은 없다.
+    """
     prose = _dod_body("완료 조건을 산문으로만 적은 옛 티켓.")
     no_section = "# T-0001 — 옛 티켓\n\n## 목표\n옛 형식.\n\n## 참고\n- 없음\n"
 
-    assert board._complete_gate("T-0596", _gate_args(), prose) == []
-    assert board._complete_gate("T-0001", _gate_args(), no_section) == []
+    prose_problems = board._complete_gate("T-0596", _gate_args(), prose)
+    missing_problems = board._complete_gate("T-0001", _gate_args(), no_section)
+
+    assert any("체크박스 0개" in p for p in prose_problems), prose_problems
+    assert any("절 부재" in p for p in missing_problems), missing_problems
+
+
+def test_dod_all_deferred_blocks_and_points_at_discard(board):
+    """전항 `[>]`(사유 정상) → 차단 · 문구가 처분 커맨드(`discard`)를 지목한다.
+
+    사유 붙은 이월은 개별로는 통과 형식이라, 전항이 이월이면 옛 게이트가 **구현 0** 인 티켓을
+    done 으로 내보냈다(실증: done/ 의 병합·취소 4건). 그 형상은 완료가 아니라 처분이다.
+    """
+    body = _dod_body(
+        "- [>] 코드 (이월: T-0766 으로 병합·PM 판정)",
+        "- [>] 테스트 (이월: T-0766 으로 병합·PM 판정)",
+    )
+
+    problems = board._complete_gate("T-0596", _gate_args(), body)
+
+    assert any("전량 이월" in p and "discard" in p for p in problems), problems
+
+
+def test_dod_unchecked_only_is_not_diagnosed_as_all_deferred(board):
+    """미체크만 있는 DoD 는 차단되되 **처분 안내를 받지 않는다** — 그건 미완료지 처분이 아니다.
+
+    옛 판정은 `[x]` 0 하나만 봤다. 그래서 `- [ ]` 한 줄짜리 미완료 티켓도 "전량 이월 → discard"
+    를 함께 안내했고, 그 안내대로 하면 아직 할 일이 남은 티켓이 처분으로 닫힌다(틀린 방향).
+    """
+    body = _dod_body("- [ ] 아직 안 한 항목")
+
+    problems = board._complete_gate("T-0596", _gate_args(), body)
+
+    assert any("DoD 미체크" in p for p in problems), problems
+    assert not any("전량 이월" in p for p in problems), problems
+
+
+def test_dod_unknown_marker_only_is_not_diagnosed_as_all_deferred(board):
+    """미지 마커만 있는 DoD 도 처분 안내를 받지 않는다 — 통과 형식이 아닐 뿐 이월도 아니다."""
+    body = _dod_body("- [?] 통과 형식이 아닌 마커 항목")
+
+    problems = board._complete_gate("T-0596", _gate_args(), body)
+
+    assert any("DoD 미체크" in p for p in problems), problems
+    assert not any("전량 이월" in p for p in problems), problems
+
+
+def test_dod_deferral_without_reason_only_is_not_diagnosed_as_all_deferred(board):
+    """사유 없는 이월만 있는 DoD 도 처분 안내를 받지 않는다 — 유효 이월로 세지 않는다.
+
+    사유 없는 `- [>]` 를 이월로 세면 사유를 지우는 것만으로 "전량 이월" 진단을 얻는다.
+    """
+    body = _dod_body("- [>] 사유 없는 이월 항목")
+
+    problems = board._complete_gate("T-0596", _gate_args(), body)
+
+    assert any("이월 사유 누락" in p for p in problems), problems
+    assert not any("전량 이월" in p for p in problems), problems
+
+
+def test_dod_unchecked_mixed_with_valid_deferral_is_not_all_deferred(board):
+    """유효 이월 + 미체크 혼합은 미완료다 — 전량 이월 진단이 없고 미체크만 지목된다."""
+    body = _dod_body(
+        "- [>] 문서 (이월: 후속 티켓 귀속)",
+        "- [ ] 아직 안 한 항목",
+    )
+
+    problems = board._complete_gate("T-0596", _gate_args(), body)
+
+    assert any("DoD 미체크" in p for p in problems), problems
+    assert not any("전량 이월" in p for p in problems), problems
+
+
+def test_dod_all_deferred_message_counts_valid_deferrals(board):
+    """전량 이월 문구는 **유효 이월 개수**를 체크박스 수와 함께 낸다(판정 근거가 문구에 있다)."""
+    body = _dod_body(
+        "- [>] 코드 (이월: 다른 티켓으로 병합)",
+        "- [>] 테스트 (이월: 다른 티켓으로 병합)",
+        "- [>] 문서 (이월: 다른 티켓으로 병합)",
+    )
+
+    problems = board._complete_gate("T-0596", _gate_args(), body)
+
+    assert any("사유 있는 이월 3 / 체크박스 3개" in p for p in problems), problems
+
+
+def test_dod_partial_deferral_still_passes(board):
+    """부분 이월(`[x]` ≥1 + 사유 있는 `[>]`)은 현행대로 통과 — 정당한 이월 경로를 막지 않는다."""
+    body = _dod_body(
+        "- [x] 코드",
+        "- [>] 라이브 probe 실측 (이월: 하네스 한도 소진·T-0600 귀속)",
+        "- [>] 문서 (이월: 후속 T-0601 귀속)",
+    )
+
+    assert board._complete_gate("T-0596", _gate_args(), body) == []
 
 
 def test_complete_gate_without_body_skips_dod(board):
@@ -647,15 +745,28 @@ _TICKET_FRONTMATTER = (
 
 @pytest.fixture
 def live_board(tmp_path, monkeypatch):
-    """실 파일 이동이 도는 hermetic board — legacy 형상(board-git 비활성·sync no-op)."""
+    """실 파일 이동이 도는 hermetic board — legacy 형상(board-git 비활성·sync no-op).
+
+    정체성은 픽스처 티켓의 `claimed_by: t/t_1` 에 맞춰 **명시 바인딩**한다(T-0781 소유 게이트):
+    세션은 `PM_SESSION_NAME` env, user 는 tmp `local.conf user=`. per-clone conf 의
+    `session=` 폴백은 폐지됐으므로(T-0779) 세션 바인딩에 쓰지 않는다. git email 폴백은 None 으로
+    막아 실 git config 가 user 축에 새지 않게 한다.
+    """
     root = tmp_path / "proj"
     mod = _load_board_bound(root)
     monkeypatch.setattr(mod, "REPO", root)
-    monkeypatch.setattr(
-        mod, "BOARD_LOCK", root / ".project_manager" / ".local" / "board.lock")
-    for status in ("open", "claimed", "blocked", "done"):
-        (root / ".project_manager" / "wiki" / "tickets" / status).mkdir(
-            parents=True, exist_ok=True)
+    pm = root / ".project_manager"
+    monkeypatch.setattr(mod, "BOARD_LOCK", pm / ".local" / "board.lock")
+    monkeypatch.setattr(mod, "LOCAL_CONF", pm / "local.conf")
+    monkeypatch.setattr(mod, "AREAS_FILE", pm / "areas.md")
+    monkeypatch.setattr(mod, "LEASES_FILE", pm / ".local" / "worktree-leases.json")
+    monkeypatch.setattr(mod, "_git_config_email", lambda: None)
+    for status in mod.STATUS_DIRS:
+        (pm / "wiki" / "tickets" / status).mkdir(parents=True, exist_ok=True)
+    pm.mkdir(parents=True, exist_ok=True)
+    (pm / "local.conf").write_text("user=t\n", encoding="utf-8")
+    monkeypatch.setenv("PM_SESSION_NAME", "t_1")
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     return mod
 
 
@@ -904,8 +1015,11 @@ def test_every_dod_section_is_summed_not_just_the_first(board):
 
     problems = board._dod_open_items(body)
 
-    assert len(problems) == 2
-    assert any("앞 절 항목" in p for p in problems) and any("뒤 절 항목" in p for p in problems)
+    # 미체크 사유는 절마다 하나씩 = 2 (전항 미체크라 T-0781 의 전량-이월 사유도 함께 올라오므로
+    # 전체 길이가 아니라 미체크 축만 센다).
+    unchecked = [p for p in problems if "DoD 미체크" in p]
+    assert len(unchecked) == 2, problems
+    assert any("앞 절 항목" in p for p in unchecked) and any("뒤 절 항목" in p for p in unchecked)
 
 
 def test_duplicate_sections_fully_checked_still_pass(board):

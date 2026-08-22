@@ -2,7 +2,7 @@
 """Ticket board CLI — multi-session development coordination.
 
 Atomic claim via POSIX rename(2). Tickets live as markdown files in
-`.project_manager/wiki/tickets/{open,claimed,blocked,done}/`. Each command
+`.project_manager/wiki/tickets/{open,claimed,blocked,done,discarded}/`. Each command
 updates `.project_manager/wiki/board.md` automatically.
 
 `board.py idea …` manages pre-ADR ideas under
@@ -245,7 +245,7 @@ def drafts_dir() -> Path:
 
     `board.py new` 가 board-git 활성(공유) 상태에서 placeholder/thin 본문을 감지하면
     티켓을 `tickets/open/` 이 아니라 이 디렉토리에 둔다 — STATUS_DIRS(`open/claimed/
-    blocked/done`) *밖*이라 STATUS_DIRS 를 순회하는 어떤 mutation(`_board_git_stage_and_commit`
+    blocked/done/discarded`) *밖*이라 STATUS_DIRS 를 순회하는 어떤 mutation(`_board_git_stage_and_commit`
     의 `git add -A`·`_board_git_status_porcelain` 의 `git status --porcelain`·list·lint 등)도
     draft 를 보지 못한다 — 다음 mutation 이 무관 draft 를 실수로 board-git 에 커밋하는 leak
     을 원천 차단한다.
@@ -296,7 +296,21 @@ DELEGATE_CHANNEL_GUARD_PY = REPO / ".project_manager" / "tools" / "delegate_chan
 CODEX_DELEGATE_OBSERVATIONS = (
     LOCAL_DIR / "delegate-channel" / "codex-observations.jsonl"
 )
-STATUS_DIRS: tuple[str, ...] = ("open", "claimed", "blocked", "done")
+# 티켓 상태 디렉토리 — 이 튜플이 조회·렌더·집계·원격 race 판정의 단일 진실이다(board.py 안
+# 소비처는 전부 여기를 순회한다). `discarded` = **처분 종결**(병합·폐기): 구현이 끝나서 닫힌
+# `done` 과 달리 "이 티켓은 다른 티켓으로 흡수됐거나 폐기됐다"는 종결이라, 둘을 같은 디렉토리에
+# 담으면 done 이 "작업 완료" 를 뜻하지 못한다.
+STATUS_DIRS: tuple[str, ...] = ("open", "claimed", "blocked", "done", "discarded")
+# 종결 상태 — 더 이상 진행되지 않는 두 종류(구현 완료 · 처분). 활성 뷰·task 소진 게이트가
+# 이 집합을 뺀다. "done 하나만 종결" 을 가정한 옛 판정은 전부 이 상수를 소비해야 한다.
+TERMINAL_STATUS_DIRS: tuple[str, ...] = ("done", "discarded")
+# 활성(비-종결) 상태 — 기본 `list` 뷰와 처분(discard) 출발 상태가 같은 유도를 공유한다.
+ACTIVE_STATUS_DIRS: tuple[str, ...] = tuple(
+    status for status in STATUS_DIRS if status not in TERMINAL_STATUS_DIRS)
+# 처분 종류(frontmatter `disposition`) — 병합(다른 티켓으로 흡수) · 폐기(취소·대체).
+DISPOSITION_MERGED = "merged"
+DISPOSITION_DROPPED = "dropped"
+DISPOSITION_KINDS: tuple[str, ...] = (DISPOSITION_MERGED, DISPOSITION_DROPPED)
 # Ideas have a simpler lifecycle than tickets — no claim/complete middle
 # states, just `open → promoted|killed`.
 IDEA_STATUS_DIRS: tuple[str, ...] = ("open", "promoted", "killed")
@@ -333,7 +347,8 @@ IDEA_STATUS_DIRS: tuple[str, ...] = ("open", "promoted", "killed")
 # worktree 엔 그 문서가 없어 no-op 이나 PM 홈 실행이 설계 의도라 오실행 가드)·
 # rounds migrate=구 역할 절을 라운드 파일로 옮기고 구 장부/사본을 지우는 일회성 board 쓰기.
 _MUTATION_SUBCOMMANDS: frozenset[str] = frozenset({
-    "new", "promote", "claim", "complete", "block", "unclaim", "unblock",
+    "new", "promote", "claim", "complete", "discard", "reopen",
+    "block", "unclaim", "unblock",
     "section-add", "tier",
     "init", "migrate-identity", "promote-scope", "reid", "refresh",
     "verified-at-backfill", "verified-at-repin",
@@ -3608,7 +3623,8 @@ def scan_task_tickets(user: str | None, task: str,
         ①)** — `cmd_complete` 는 done 이동 시 `claimed_by` 를 지우지 않으므로(status/completed_at 만),
         `<user>/<task>` 로 claim→complete 한 티켓이 done/ 에 claimed_by 를 남긴다. done 을 담으면 그
         티켓은 `unclaim`(status=="claimed" 요구)도 불가라 **해소 수단이 없어 task end 가 영구 차단**된다
-        ("해소=complete 또는 unclaim"). 완료된 작업은 소진 게이트 대상이 아니다. 이게
+        ("해소=complete 또는 unclaim"). 완료된 작업은 소진 게이트 대상이 아니다.
+        처분 종결(`discarded`)도 같은 이유로 제외한다 — 종결 status 전수가 대상 밖이다. 이게
         비어야 task end 가 반납/이동으로 진행한다(거부 게이트).
       - **prefix_open** — `prefix` 가 주어지면 그 prefix(`_ticket_prefix`)의 `open` 티켓. **정보
         표시만**(차단 안 함·prefix≠경계) — task 지정 prefix 의 backlog 를 참고로 보여줄 뿐.
@@ -3629,9 +3645,9 @@ def scan_task_tickets(user: str | None, task: str,
             tid = fm.get("id") or p.stem
             row = {"id": tid, "title": fm.get("title") or "", "status": status}
             cb = fm.get("claimed_by") or ""
-            # terminal status(done)는 claimed 축에서 제외 — done 은 claimed_by 잔존이라도 완료됨이고
-            # 해소 수단(unclaim=claimed 전용)이 없어 담으면 task end 영구 차단.
-            if status != "done" and cb and _slot_matches(cb, task):
+            # 종결 status(done·discarded)는 claimed 축에서 제외 — 종결 티켓은 claimed_by 가
+            # 남아 있어도 끝난 작업이고, 담으면 해소 수단이 없어 task end 가 영구 차단된다.
+            if status not in TERMINAL_STATUS_DIRS and cb and _slot_matches(cb, task):
                 cb_user = _claimed_by_user(cb)
                 if user is None or cb_user is None or cb_user == user:
                     claimed.append(row)
@@ -3746,6 +3762,99 @@ def _in_default_view(status: str, fm: dict, my_user: str | None,
     if my_user is not None and claimed_user is not None:
         return claimed_user == my_user
     return not multi_user
+
+
+# ── claim 소유 대조 (mutation 게이트) ──────────────────────────────────────
+#
+# `claimed_by` 가 박힌 티켓의 상태 변경(complete·discard·block·unclaim·unblock)은 **그 소유
+# 정체성에서만** 성립한다. 옛 동작은 status 만 봤기 때문에 다른 슬롯이 claim 한 티켓을 아무
+# 세션이나 complete 할 수 있었다(채택자 실사고 — slot 1 이 남의 티켓을 자기 것으로 착각해 완료).
+# 판정 축은 조회 뷰(`_ticket_is_mine`/`_in_default_view`)와 **같은 규칙**이다: 양쪽 user 토큰이
+# 해소되면 user ∧ slot, 레거시 슬롯-only 는 solo 에서만 slot-only 로 degrade. 판정을 두 벌로
+# 두지 않으려고 `cmd_reid` 의 기존 대조도 이 함수를 소비한다.
+
+
+class _OwnershipVerdict(NamedTuple):
+    """소유 대조 결과 — 판정(ok)과 **왜**(owner·session·unresolved)를 함께 나른다.
+
+    `owner` = 티켓 `claimed_by` 원값(소유자 없으면 None) · `session` = 이 실행이 해소한 세션 ·
+    `unresolved` = 세션을 해소하지 못해 소유를 증명할 수 없는 경우(=거부·"검사 skip" 폴백 없음).
+    거부 문구는 호출 surface 마다 다르지만 판정은 이 하나다.
+    """
+
+    ok: bool
+    owner: str | None
+    session: str | None
+    unresolved: bool
+
+
+def _ticket_ownership(fm: dict, args: argparse.Namespace) -> _OwnershipVerdict:
+    """이 실행 정체성이 `fm` 티켓의 claim 소유자인가 (claimed_by 부재면 무대상=통과).
+
+    - `claimed_by` 없음 → 소유자 자체가 없으므로 통과(새 차단 아님·open 티켓의 claim/block 무영향).
+    - 세션 미해소 → 거부. claim 이 `session_name(required=True)` 로 이미 fail-loud 인 조건과
+      대칭이다 — 소유를 증명할 수 없는 상태에서 남의 티켓을 옮기는 쪽이 더 나쁘다.
+    - user-qualified `claimed_by`(`<user>/<slot>`) → user 와 slot 이 **둘 다** 일치해야 한다.
+    - 레거시 슬롯-only `claimed_by` → 다중사용자 보드면 귀속이 모호하므로 거부하고, solo
+      (`_distinct_ticket_users` ≤1 ∧ `_distinct_area_owners` ≤1)에서만 slot 일치로 통과한다.
+    """
+    claimed_by = str(fm.get("claimed_by") or "").strip()
+    if not claimed_by:
+        return _OwnershipVerdict(True, None, None, False)
+    session = session_name(_actor_session_override(args))
+    if session is None:
+        return _OwnershipVerdict(False, claimed_by, None, True)
+    owner_user = _claimed_by_user(claimed_by)
+    if owner_user is not None:
+        my_user = user_name(getattr(args, "user", None))
+        ok = (my_user is not None and owner_user == my_user
+              and _slot_matches(claimed_by, session))
+    else:
+        # 슬롯-only 는 user 축이 없다 — 다중사용자 보드에서 슬롯 이름만으로 소유를 인정하면
+        # 동명 슬롯의 타 사용자 claim 을 열어 준다(조회 뷰와 같은 strict-exclude).
+        multi_user = _distinct_ticket_users() > 1 or _distinct_area_owners() > 1
+        ok = (not multi_user) and _slot_matches(claimed_by, session)
+    return _OwnershipVerdict(ok, claimed_by, session, False)
+
+
+def _owner_session_remedy(claimed_by: str) -> str:
+    """소유 세션을 다시 잡는 canonical 좌표 안내 (`--repo X --slot N`).
+
+    `cmd_reid` 가 쓰던 규칙 그대로다 — 슬롯 세션 예약 패턴(`<repo>_<N>`)이면 좌표로 분해해
+    실행 가능한 지시를 주고, 아니면(task·커스텀 세션명) 세션 이름만 병기한다(틀린 좌표를
+    지어내지 않는다).
+    """
+    slot_token = claimed_by.rsplit("/", 1)[-1]
+    repo, number = _session_slot_coordinates(slot_token)
+    if repo is not None and number is not None:
+        return f"--repo {repo} --slot {number}"
+    return f"--repo <repo> --slot <N>(소유 세션 `{slot_token}`)"
+
+
+def _ownership_rejection(action: str, tid: str,
+                         verdict: _OwnershipVerdict) -> str:
+    """소유 불일치 거부 문구 — 소유자 · unclaim→claim 이동 경로 · takeover 를 함께 낸다.
+
+    거부만 하고 끝내면 사람은 그 자리에서 할 수 있는 일이 없다(실사고에서 두 세션이 서로
+    막힌 형상). 문구가 (1) 누구 소유인지 (2) 소유 세션이 살아 있을 때의 정상 이전
+    (3) 소유 세션이 없을 때의 단일 우회(`unclaim --takeover`)를 모두 지목한다.
+    """
+    owner = verdict.owner or ""
+    remedy = _owner_session_remedy(owner)
+    head = (f"[중단] {action} {tid}: 세션 미해소 — 이 티켓은 `{owner}` 소유다"
+            if verdict.unresolved else
+            f"[중단] {action} {tid}: 이 티켓은 `{owner}` 소유다"
+            f"(현재 세션 `{verdict.session}`)")
+    lines = [head + "."]
+    if verdict.unresolved:
+        lines.append("  → 소유 세션에서 `--repo <repo> --slot <N>`(또는 `--task <이름>`)로 "
+                     "세션을 명시해 재실행하라.")
+    else:
+        lines.append(f"  → 이동: 소유 세션(`{remedy}`)에서 `board.py unclaim {tid}` 후 이 "
+                     f"세션에서 `board.py claim {tid}`.")
+    lines.append(f"  → 소유 세션이 없으면: `board.py unclaim {tid} --takeover "
+                 "--reason <사유>` (소유만 해제·사유는 티켓 본문과 board-git 에 남는다).")
+    return "\n".join(lines)
 
 
 def registered_prefixes() -> set[str]:
@@ -5471,6 +5580,13 @@ def _board_git_fetch(remote: str) -> bool:
         return False
 
 
+# 원격에서 이 티켓이 이미 `open` 을 벗어났으면 선점(claim race-lost)이다. STATUS_DIRS 를
+# 추종해 유도한다 — 신규 상태(예: 처분 종결 `discarded`)가 생겨도 "open 이 아니면 선점" 이라는
+# 판정이 자동으로 그 상태를 덮는다(손-열거하면 새 상태가 조용히 claim 가능해진다).
+_CLAIM_RACE_LOST_STATUSES: tuple[str, ...] = tuple(
+    status for status in STATUS_DIRS if status != "open")
+
+
 def _board_git_remote_ticket_status(tracking: str, ticket_id: str) -> str | None:
     """원격 트리에서 그 티켓이 놓인 status 디렉토리 (없으면 None) — 읽기 전용 선점 감지.
 
@@ -6157,7 +6273,7 @@ def _board_git_claim_prefetch(ticket_id: str) -> _ClaimPrefetch:
         return _ClaimPrefetch(block=_CLAIM_BLOCK_OFFLINE)
     # 4. 원격 선점 판정 — dirty·behind 무관(원격 트리를 직접 읽는다).
     remote_status = _board_git_remote_ticket_status(upstream.tracking, ticket_id)
-    if remote_status in ("claimed", "done", "blocked"):
+    if remote_status in _CLAIM_RACE_LOST_STATUSES:
         # behind 도 함께 실어 보낸다 — 차단 문구가 "로컬 사본이 왜 뒤처진 판단을 했는지"
         # (list/show 의 freshness 와 같은 판정)를 그 자리에서 설명하게 한다.
         return _ClaimPrefetch(block=_CLAIM_BLOCK_RACE_LOST, detail=remote_status,
@@ -9008,7 +9124,7 @@ def find_ticket_for_mutation(tid: str) -> tuple[str, Path]:
     경고 한 줄이 나가지만 파일은 이미 옮겨진 뒤다. 되돌리려면 사람이 손으로 상태를 복원해야
     하므로, 이 축은 경고가 아니라 **차단**이다(불일치 = 미존재).
 
-    조회 범위는 `find_ticket_exact` 와 같다 — STATUS_DIRS(open/claimed/blocked/done) →
+    조회 범위는 `find_ticket_exact` 와 같다 — STATUS_DIRS(전 상태 디렉토리) →
     draft 격리 디렉토리(`drafts_dir()`·pseudo-status `"draft"`). draft 를 찾은 mutation 은
     각자의 status 검사가 즉시 거부한다(예: "cannot claim T-x: currently in draft/").
 
@@ -9054,7 +9170,7 @@ def find_ticket(tid: str) -> tuple[str, Path]:
     때문이다(경고를 봤을 땐 이미 이동한 뒤다). 그쪽은 `find_ticket_for_mutation`(정확 일치만)
     이 소유하고, 여기 남는 소비자는 부작용 없는 조회(`show`)뿐이다.
 
-    STATUS_DIRS(open/claimed/blocked/done)에서 못 찾으면 draft 격리 디렉토리
+    STATUS_DIRS(전 상태 디렉토리)에서 못 찾으면 draft 격리 디렉토리
     (`drafts_dir()`)를 폴백으로 스캔해 pseudo-status `"draft"` 로 반환한다 — `show` 가 draft 를
     조회할 수 있게 한다.
     """
@@ -10767,6 +10883,13 @@ def cmd_complete(args: argparse.Namespace) -> int:
             spec_text = handle.read()
         fm, body = load_ticket(path)
 
+        # 소유 대조 — claim 한 정체성만 완료할 수 있다. 이동·기록 **전**이라 거부 시 티켓은
+        # claimed/ 에 한 바이트도 안 바뀐 채 남는다.
+        ownership = _ticket_ownership(fm, args)
+        if not ownership.ok:
+            print(_ownership_rejection("complete", args.id, ownership), file=sys.stderr)
+            return 1
+
         # Sync gate — refuse to mark done until housekeeping is verified.
         problems = _complete_gate(
             args.id, args, body, spec_text=spec_text, ticket_path=path)
@@ -10801,6 +10924,12 @@ def cmd_block(args: argparse.Namespace) -> int:
             print(f"cannot block from {status}/", file=sys.stderr)
             return 1
         fm, body = load_ticket(path)
+        # 소유 대조 — claimed 티켓(=소유자 있음)의 상태 변경은 그 소유 세션만. open 티켓은
+        # claimed_by 가 없어 무대상이다(현행 무변경).
+        ownership = _ticket_ownership(fm, args)
+        if not ownership.ok:
+            print(_ownership_rejection("block", args.id, ownership), file=sys.stderr)
+            return 1
         new_path = move_ticket(path, "blocked")
         fm["status"] = "blocked"
         # claimed_by/claimed_at 는 무접촉 — block 은 작업 중단이지 소유 포기가 아니다.
@@ -10813,28 +10942,64 @@ def cmd_block(args: argparse.Namespace) -> int:
     return 0
 
 
+# unclaim 이 받는 출발 상태 — `claimed`(소유 해제 후 open 복귀)와 `blocked`(상태 유지·소유만
+# 해제)다. blocked 를 받는 이유: unblock 은 claimed_by 를 보고 claimed/ 로 복귀시키므로,
+# blocked + 소유자 부재(퇴장한 세션) 조합은 unclaim 이 blocked 를 못 받으면 어떤 문으로도
+# 풀리지 않는 교착이 된다.
+_UNCLAIM_SOURCE_STATUSES: tuple[str, ...] = ("claimed", "blocked")
+
+
 def cmd_unclaim(args: argparse.Namespace) -> int:
+    takeover = bool(getattr(args, "takeover", False))
+    reason = (getattr(args, "reason", None) or "").strip()
+    if takeover and not reason:
+        # 사유 없는 강제 이전은 이력이 남지 않는다 — 락을 잡기 전에 거부한다(부작용 0).
+        print(f"[중단] unclaim {args.id}: `--takeover` 는 `--reason <사유>` 가 필수다 "
+              "— 소유자 부재 이전의 근거가 티켓 본문과 board-git 에 남아야 한다.",
+              file=sys.stderr)
+        return 1
     with board_lock():
         try:
             status, path = find_ticket_for_mutation(args.id)
         except FileNotFoundError as e:
             print(e, file=sys.stderr)
             return 2
-        if status != "claimed":
-            print(f"cannot unclaim {args.id}: in {status}/", file=sys.stderr)
+        if status not in _UNCLAIM_SOURCE_STATUSES:
+            print(f"cannot unclaim {args.id}: in {status}/, must be "
+                  f"{'/'.join(_UNCLAIM_SOURCE_STATUSES)}", file=sys.stderr)
             return 1
         fm, body = load_ticket(path)
-        new_path = move_ticket(path, "open")
-        fm["status"] = "open"
+        # 소유 대조 — 정상 경로는 소유자만. `--takeover` 는 **소유자 부재 이전의 유일한 문**
+        # 이다(complete/block/unblock 엔 이 인수를 두지 않는다 — 문이 넷이면 소유 규칙이 네 벌이
+        # 된다). 이전 사유는 본문 노트와 board-git 커밋 메시지 양쪽에 남긴다(board-git 없는
+        # 채택자도 이력이 남아야 한다).
+        ownership = _ticket_ownership(fm, args)
+        if not ownership.ok and not takeover:
+            print(_ownership_rejection("unclaim", args.id, ownership), file=sys.stderr)
+            return 1
+        # blocked 는 상태를 유지한다 — unclaim 은 "소유 해제" 지 "차단 해제" 가 아니다.
+        dest_status = "open" if status == "claimed" else status
+        new_path = move_ticket(path, dest_status) if dest_status != status else path
+        fm["status"] = dest_status
+        previous_owner = fm.get("claimed_by")
         fm["claimed_by"] = None
         fm["claimed_at"] = None
         # claimed_rev 도 함께 비운다 — 소유가 풀린 티켓에 옛 claim 의 앵커가 남으면 재claim 이
         # 해소에 실패해도(비-git 등) stale rev 가 앵커로 살아남아 "필드 생략" 계약이 깨진다.
         fm.pop("claimed_rev", None)
+        if takeover:
+            body = body + (f"\n## Takeover\n{reason} — {now_utc()} "
+                           f"(소유 `{previous_owner}` 해제 · 실행 세션 "
+                           f"`{ownership.session or '미해소'}`)\n")
         dump_ticket(new_path, fm, body)
     refresh_board()
-    ready = _board_git_sync_best_effort(f"unclaim {args.id}", (path, new_path))
-    print(f"unclaimed {args.id}{_board_git_mutation_state_suffix(ready)}")
+    message = (f"unclaim {args.id} (takeover: {reason})" if takeover
+               else f"unclaim {args.id}")
+    ready = _board_git_sync_best_effort(message, (path, new_path))
+    detail = f" → {dest_status}/" if dest_status != "open" else ""
+    takeover_note = f" (takeover: {reason})" if takeover else ""
+    print(f"unclaimed {args.id}{detail}{takeover_note}"
+          f"{_board_git_mutation_state_suffix(ready)}")
     return 0
 
 
@@ -10850,6 +11015,12 @@ def cmd_unblock(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             return 1
         fm, body = load_ticket(path)
+        # 소유 대조 — claimed_by 를 보유한 blocked(=claimed 기원)는 그 소유 세션만 되돌린다.
+        # 소유자 없는 open-기원 blocked 는 무대상(현행 무변경).
+        ownership = _ticket_ownership(fm, args)
+        if not ownership.ok:
+            print(_ownership_rejection("unblock", args.id, ownership), file=sys.stderr)
+            return 1
         # claimed_by 보유 티켓(claimed-origin blocked)은 claimed/ 로 복귀시켜 소유 표식을
         # 보존한다 — 무조건 open 으로 옮기면 "open + claimed_by 잔존" 모순이 생겼다.
         # open-origin blocked(claimed_by 없음)는 현행대로 open/ 으로 돌아간다(왕복 불변식).
@@ -10860,6 +11031,102 @@ def cmd_unblock(args: argparse.Namespace) -> int:
     refresh_board()
     ready = _board_git_sync_best_effort(f"unblock {args.id}", (path, new_path))
     print(f"unblocked {args.id} → {dest_status}/{_board_git_mutation_state_suffix(ready)}")
+    return 0
+
+
+# ── 처분 종결(discard) · 오처리 복구(reopen) ────────────────────────────────
+#
+# 종결은 두 종류다: `done`(구현 완료) · `discarded`(처분 — 병합·폐기). 처분을 complete 로
+# 내보내면 done/ 이 "구현 0" 티켓을 담아 done 의 의미가 무너진다. 두 종결은 디렉토리로
+# 갈리므로 조회·렌더·집계에서 자동으로 섞이지 않는다.
+# 처분·복구 모두 기존 lifecycle 4단 프리미티브(move_ticket → frontmatter 수정 → refresh_board
+# → _board_git_sync_best_effort)를 그대로 쓴다 — 별도 이동 장치·별도 sync 경로를 만들지 않는다.
+_DISCARD_SOURCE_STATUSES: tuple[str, ...] = ACTIVE_STATUS_DIRS
+
+
+def cmd_discard(args: argparse.Namespace) -> int:
+    """`discard <T-NNNN> <merged|dropped> --reason <사유>` — 처분 종결(비-완료 종결).
+
+    병합(다른 티켓이 이 일을 흡수)·폐기(취소·대체)를 `done` 과 다른 디렉토리로 닫는다.
+    병합 대상 티켓 ID 는 `--reason` 산문에 남긴다(기계 링크 필드는 두지 않는다 — 플래그가
+    늘고 처분 종류를 인자로 또 갈라야 한다).
+    """
+    reason = (getattr(args, "reason", None) or "").strip()
+    if not reason:
+        print(f"[중단] discard {args.id}: `--reason <사유>` 가 필수다 — 처분 근거 없이 "
+              "티켓을 닫지 않는다.", file=sys.stderr)
+        return 1
+    with board_lock():
+        try:
+            status, path = find_ticket_for_mutation(args.id)
+        except FileNotFoundError as e:
+            print(e, file=sys.stderr)
+            return 2
+        if status not in _DISCARD_SOURCE_STATUSES:
+            print(f"cannot discard {args.id}: in {status}/, must be "
+                  f"{'/'.join(_DISCARD_SOURCE_STATUSES)} "
+                  f"(이미 종결된 티켓은 `reopen` 후 다시 처분하라)", file=sys.stderr)
+            return 1
+        fm, body = load_ticket(path)
+        # 소유 대조 — 남이 claim 해 진행 중인 티켓을 다른 세션이 처분으로 닫으면 그 작업이
+        # 통째로 사라진다(complete 와 같은 축).
+        ownership = _ticket_ownership(fm, args)
+        if not ownership.ok:
+            print(_ownership_rejection("discard", args.id, ownership), file=sys.stderr)
+            return 1
+        new_path = move_ticket(path, "discarded")
+        fm["status"] = "discarded"
+        fm["disposition"] = args.disposition
+        fm["disposition_reason"] = reason
+        note = (f"\n## Discarded\n{args.disposition} — {reason} — {now_utc()}\n")
+        dump_ticket(new_path, fm, body + note)
+    refresh_board()
+    ready = _board_git_sync_best_effort(
+        f"discard {args.id} ({args.disposition}: {reason})", (path, new_path))
+    print(f"discarded {args.id} as {args.disposition}: {reason}"
+          f"{_board_git_mutation_state_suffix(ready)}")
+    return 0
+
+
+def cmd_reopen(args: argparse.Namespace) -> int:
+    """`reopen <T-NNNN> --reason <사유>` — 종결(done·discarded)을 open 으로 되돌린다.
+
+    잘못 처리된 종결을 되돌리는 **유일한 문**이다(옛 안내는 "홈 git 으로 revert" 뿐이었다).
+    완료·처분 표식(`completed_at`·`disposition*`)과 소유 표식(`claimed_by`·`claimed_at`·
+    `claimed_rev`)을 전부 비워 open 티켓의 정상 형상으로 되돌리고, 사유·시각을 본문과
+    board-git 커밋에 남긴다. 소유 대조는 하지 않는다 — 되돌릴 대상은 이미 소유가 끝난
+    종결 티켓이고, 오처리 복구는 그 종결을 낸 세션이 이미 없을 때가 정상이다.
+    """
+    reason = (getattr(args, "reason", None) or "").strip()
+    if not reason:
+        print(f"[중단] reopen {args.id}: `--reason <사유>` 가 필수다 — 종결을 되돌린 근거가 "
+              "남아야 한다.", file=sys.stderr)
+        return 1
+    with board_lock():
+        try:
+            status, path = find_ticket_for_mutation(args.id)
+        except FileNotFoundError as e:
+            print(e, file=sys.stderr)
+            return 2
+        if status not in TERMINAL_STATUS_DIRS:
+            print(f"cannot reopen {args.id}: in {status}/, must be "
+                  f"{'/'.join(TERMINAL_STATUS_DIRS)}", file=sys.stderr)
+            return 1
+        fm, body = load_ticket(path)
+        new_path = move_ticket(path, "open")
+        fm["status"] = "open"
+        fm["completed_at"] = None
+        fm["claimed_by"] = None
+        fm["claimed_at"] = None
+        for field in ("claimed_rev", "disposition", "disposition_reason"):
+            fm.pop(field, None)
+        note = f"\n## Reopened\n{reason} — {now_utc()} (이전 상태 {status}/)\n"
+        dump_ticket(new_path, fm, body + note)
+    refresh_board()
+    ready = _board_git_sync_best_effort(
+        f"reopen {args.id} (from {status}: {reason})", (path, new_path))
+    print(f"reopened {args.id} (was {status}/): {reason}"
+          f"{_board_git_mutation_state_suffix(ready)}")
     return 0
 
 
@@ -12112,9 +12379,9 @@ def cmd_promote(args: argparse.Namespace) -> int:
     return 0
 
 
-# `list` 기본뷰(무-status)의 활성 상태 — done 을 접어 범람을 해소한다. `--status all`
-# 이 STATUS_DIRS 전체(done 포함)를 연다.
-_LIST_ACTIVE_STATUSES: tuple[str, ...] = ("open", "claimed", "blocked")
+# `list` 기본뷰(무-status)의 활성 상태 — 종결(done·discarded)을 접어 범람을 해소한다.
+# `--status all` 이 STATUS_DIRS 전체(종결 포함)를 연다.
+_LIST_ACTIVE_STATUSES: tuple[str, ...] = ACTIVE_STATUS_DIRS
 
 
 def _tag_values(fm: dict[str, Any]) -> list[str]:
@@ -12503,7 +12770,7 @@ _NO_PREFIX_LABEL = "none"
 def cmd_prefix_list(args: argparse.Namespace) -> int:
     """prefix별 티켓 수·번호범위 현황을 출력한다 (read-only·비파괴).
 
-    STATUS_DIRS(open/claimed/blocked/done)의 전 티켓 ID 를 파싱해 `T-<p>-NNN` → 그 prefix,
+    STATUS_DIRS(전 상태 디렉토리)의 전 티켓 ID 를 파싱해 `T-<p>-NNN` → 그 prefix,
     `T-NNNN` → `none`(무prefix)로 버킷팅한다. mess(카테고리 난립·번호 재시작)를 표면화하는
     도구 — board mutation·rewrite 는 하지 않는다.
     """
@@ -13663,23 +13930,17 @@ def cmd_reid(args: argparse.Namespace) -> int:
         # 티켓은 그 소유 세션만 reid 할 수 있다(다른 세션이 작업 중인 ID 를 바꿔 참조를 흔들지 않게).
         # 적용 경로에서는 아래 `_prefix_relabel`이 fresh map/소유 검사를 board_lock 안에서 다시
         # 수행한다. 이 선판정은 승인 안내를 위한 preview이며 쓰기 권위가 아니다.
-        claimed_by = fm.get("claimed_by")
-        if claimed_by:
-            claimed_slot = str(claimed_by).rsplit("/", 1)[-1]   # `<user>/<slot>` → slot (또는 slot-only)
-            current = session_name(_actor_session_override(args))
-            if current is None or claimed_slot != current:
-                # remedy 는 canonical `--repo/--slot` 로 안내 — `claimed_slot` 이
-                # `<repo>_<N>` 형태면 분해해 그대로 보여주고(정직한 remedy), 아니면(솔로 커스텀
-                # 세션명) 소유 세션명만 병기한다(그 형태는 --repo/--slot 로 재현 불가).
-                remedy_repo, remedy_num = _session_slot_coordinates(claimed_slot)
-                if remedy_repo is not None and remedy_num is not None:
-                    remedy = f"--repo {remedy_repo} --slot {remedy_num}"
-                else:
-                    remedy = f"--repo <repo> --slot <N>(소유 세션 `{claimed_slot}`)"
-                print(f"[중단] {old_id} 은 `{claimed_by}` 가 claim 중 — reid 는 단일세션 op 다. 소유 "
-                      f"세션에서 `{remedy}` 로 재실행하거나 먼저 unclaim 하라.",
-                      file=sys.stderr)
-                return None, 1
+        # 소유 판정은 lifecycle mutation 과 **같은 함수**다(`_ticket_ownership`) — 판정을 두 벌로
+        # 두면 한쪽만 user 축을 보는 식으로 갈린다. 문구만 이 surface(단일세션 op)의 것을 쓴다.
+        ownership = _ticket_ownership(fm, args)
+        if not ownership.ok:
+            # remedy 는 canonical `--repo/--slot` 로 안내 — 소유 슬롯이 `<repo>_<N>` 형태면
+            # 분해해 그대로 보여주고(정직한 remedy), 아니면(커스텀 세션명) 세션명만 병기한다.
+            remedy = _owner_session_remedy(ownership.owner or "")
+            print(f"[중단] {old_id} 은 `{ownership.owner}` 가 claim 중 — reid 는 단일세션 op 다. 소유 "
+                  f"세션에서 `{remedy}` 로 재실행하거나 먼저 unclaim 하라.",
+                  file=sys.stderr)
+            return None, 1
         # NEW collision — `_detect_collisions` 재사용(zero-pad 폭 정규화 포함). {OLD:NEW} 를 전 티켓
         # ID 집합에 적용해 두 티켓이 같은 논리 ID(전 상태 디렉토리+.drafts)로 떨어지면 잡는다.
         id_map = {old_id: new_id}
@@ -14283,10 +14544,20 @@ def _dod_heading_mismatch(body: str) -> str | None:
 
 
 def _dod_open_items(body: str) -> list[str]:
-    """done 을 막는 DoD 항목 사유 목록 — 전부 통과하면 빈 리스트.
+    """done 을 막는 DoD 사유 목록 — 전부 통과하면 빈 리스트.
 
-    `_complete_gate` 가 쓰는 단일 깔때기다. 절 부재·체크박스 0개(산문 DoD)는 빈 리스트 —
-    이 게이트는 체크박스를 *요구* 하지 않고, 있는 체크박스의 미결만 막는다(레거시 무영향).
+    `_complete_gate` 가 쓰는 단일 깔때기다(ticket_finish 의 선-검사도 이 함수를 부른다).
+    막는 형상 넷:
+
+      1. **절 부재** — `## 완료 조건` 절이 없다. 판정할 완료 조건이 없으면 완료를 증명할 수
+         없다. 레거시 면제는 두지 않는다 — 같은 판정이 `lint`(thin·`_REQUIRED_SECTIONS`)로
+         이미 open/claimed 를 차단하고 있어 이 게이트로 새로 잠기는 활성 티켓이 없다.
+      2. **헤딩 미인식** — 절 이름 규칙 밖 헤딩(기존 차단·`_dod_heading_mismatch`).
+      3. **체크박스 0개**(산문 DoD) — 기계로 마감을 판정할 항목이 없다.
+      4. **전량 이월** — 항목은 있는데 **전부** 사유 있는 이월이라 실제로 한 게 하나도 없다.
+         그건 구현 완료가 아니라 처분이므로 `discard` 로 종결한다. 부분 이월(`[x]` ≥1)은
+         통과다. 미체크·미지 마커가 하나라도 섞이면 처분이 아니라 **미완료**이므로 이 진단을
+         내지 않는다 — 그 항목들은 위 형상들이 각각 지목한다(틀린 방향 안내 금지).
 
     `## 완료 조건` 절이 여럿이면 **전 절을 합산**한다 — 첫 절만 보면 앞에 빈 절 하나를 두고 뒤
     절에 미체크 항목을 남기는 우회가 성립한다.
@@ -14295,28 +14566,46 @@ def _dod_open_items(body: str) -> list[str]:
     if not sections:
         heading = _dod_heading_mismatch(body)
         if heading is None:
-            return []                       # DoD 절 자체가 없는 레거시 본문 — 종전대로 무영향.
+            return [f"DoD 절 부재: `{_DOD_SECTION}` 절이 없어 완료를 판정할 항목이 하나도 "
+                    f"없다 — 절을 채우고 각 항목을 {_DOD_VALUE_FORMS} 로 마감하라"]
         return [f"DoD 절 헤딩 형식: {heading!r} — 절을 식별할 수 없어 미체크 항목을 판정하지 "
                 f"못한다. `{_DOD_SECTION}` 또는 `{_DOD_SECTION} (부제)` 형식으로 쓰라"]
     problems: list[str] = []
+    checkbox_count = 0
+    checked_count = 0
+    deferred_count = 0        # 사유가 붙은 유효 이월만 센다 — 전량 이월 판정의 분자.
     for line in "\n".join(sections).splitlines():
         match = _DOD_CHECKBOX_RE.match(line)
         if match is None:
             continue
+        checkbox_count += 1
         # 마커는 좌우 공백을 걷고 본다 — `- [ x ]` 는 사람이 체크한 표기다. 걷고도 남는 다문자
         # (`xx`)는 통과 형식이 아니므로 미지 마커로 차단한다(비인식=통과 폐쇄).
         mark = match.group("mark").strip()
         text = match.group("text").strip()
         if mark in _DOD_CHECKED_MARKS:
+            checked_count += 1
             continue
         if mark == _DOD_DEFERRED_MARK:
             if _DOD_DEFERRED_REASON_RE.search(text):
+                deferred_count += 1
                 continue
             problems.append(
                 f"DoD 이월 사유 누락: {text!r} — 이월은 같은 줄에 `(이월: <사유·귀속>)` 필수")
             continue
         unknown = f"마커 `[{mark}]` 는 통과 형식이 아니다 · " if mark else ""
         problems.append(f"DoD 미체크: {text!r} — {unknown}{_DOD_VALUE_FORMS} 로 마감하라")
+    if checkbox_count == 0:
+        problems.append(
+            f"DoD 체크박스 0개: `{_DOD_SECTION}` 절에 기계로 판정할 항목이 없다(산문 DoD) — "
+            f"각 항목을 {_DOD_VALUE_FORMS} 형식으로 적어라")
+    elif deferred_count == checkbox_count:
+        problems.append(
+            f"DoD 전량 이월(사유 있는 이월 {deferred_count} / 체크박스 {checkbox_count}개): "
+            "구현된 항목이 하나도 없다 "
+            "— done 이 아니라 **처분**이다. 병합·폐기라면 "
+            f"`board.py discard <ID> {'|'.join(DISPOSITION_KINDS)} --reason <사유>` 로 "
+            "종결하라(부분 이월은 `[x]` 가 하나 이상일 때 통과한다)")
     return problems
 
 
@@ -15456,11 +15745,16 @@ def lint_unmigrated_overlay() -> list[tuple[str, str, str]]:
 # title 은 CommonMark 3형 모두 흡수 — `"…"`·`'…'`·`(…)`.
 _MD_LINK_TARGET_RE = re.compile(
     r"\]\(\s*<?([^)>\s]+)>?(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?\s*\)")
+# 상태 조각은 **상수에서 유도**한다 — 리터럴로 적으면 상태 디렉토리가 늘어날 때 그 상태의 링크가
+# 조용히 lint 밖으로 빠진다(dangling·슬러그 권고 둘 다 미검사). `re.escape` 는 상태명에 정규식
+# 메타문자가 섞여도 문자 그대로 매칭시킨다.
+_TICKET_STATUS_PATTERN = "|".join(re.escape(status) for status in STATUS_DIRS)
+_IDEA_STATUS_PATTERN = "|".join(re.escape(status) for status in IDEA_STATUS_DIRS)
 _STRUCT_PATH_RE = re.compile(
     r"(?:^|/)(?:"
     r"decisions/([^/]+\.md)"
-    r"|tickets/(?:open|claimed|blocked|done)/([^/]+\.md)"
-    r"|ideas/(?:open|promoted|killed)/([^/]+\.md)"
+    rf"|tickets/(?:{_TICKET_STATUS_PATTERN})/([^/]+\.md)"
+    rf"|ideas/(?:{_IDEA_STATUS_PATTERN})/([^/]+\.md)"
     r")$")
 # 숫자선두 자유어휘 wikilink — `[[NNNN-slug]]`·`[[NNNN]]`·alias `[[NNNN-slug|표시명]]`
 # (ADR/idea 를 ID 아닌 형으로 적은 것). slug 부는 `[^\]|]+`(비-ASCII 포함) — `_slugify` 가 한글
@@ -17247,6 +17541,16 @@ def lint_tickets() -> list[tuple[str, str, str]]:
 
 # ── board.md regeneration ──────────────────────────────────────────────
 
+def _table_cell(value: Any) -> str:
+    """자유 문장을 markdown 표 셀 한 칸으로 안전하게 만든다 (빈 값은 `—`).
+
+    처분 사유는 사람이 쓰는 자유 산문이라 개행·파이프가 들어올 수 있다 — 그대로 넣으면 표가
+    깨져 board.md 렌더가 사람에게 잘못 읽힌다. 개행은 공백으로, 파이프는 이스케이프한다.
+    """
+    text = " ".join(str(value or "").split())
+    return text.replace("|", "\\|") if text else "—"
+
+
 def refresh_board() -> None:
     """Regenerate .project_manager/wiki/board.md.
 
@@ -17293,12 +17597,15 @@ def _refresh_board_locked() -> None:
     lines.append(f"**현황:** {totals}")
     lines.append("")
 
-    emoji = {"open": "🟢", "claimed": "🟡", "blocked": "🔴", "done": "✅"}
+    # STATUS_DIRS 자동 추종의 **유일한 예외** — 새 상태를 STATUS_DIRS 에 더하면 여기 한 줄도
+    # 함께 더해야 한다(빠뜨리면 이 렌더가 KeyError 로 죽는다).
+    emoji = {"open": "🟢", "claimed": "🟡", "blocked": "🔴", "done": "✅",
+             "discarded": "🗃️"}
 
     for status in STATUS_DIRS:
         items = by_status[status]
-        # Skip the done section header when empty so the board stays focused on live work
-        if status == "done" and not items:
+        # 종결 섹션(done·discarded)은 비면 헤더도 접는다 — 보드가 진행 중 작업에 집중하게.
+        if status in TERMINAL_STATUS_DIRS and not items:
             continue
         lines.append(f"## {emoji[status]} {status.upper()} ({len(items)})")
         lines.append("")
@@ -17339,6 +17646,16 @@ def _refresh_board_locked() -> None:
                 lines.append(
                     f"| {fm['id']} | {fm.get('title','')} | "
                     f"{(fm.get('completed_at') or '')[:19]} |"
+                )
+        elif status == "discarded":
+            # 처분 종결 — done 과 섞이지 않게 별도 섹션에 처분 종류·사유를 함께 낸다.
+            lines.append("| ID | Title | 처분 | 사유 |")
+            lines.append("|---|---|---|---|")
+            for fm in sorted(items, key=lambda f: f.get("id") or ""):
+                lines.append(
+                    f"| {fm['id']} | {fm.get('title','')} | "
+                    f"{fm.get('disposition') or '—'} | "
+                    f"{_table_cell(fm.get('disposition_reason'))} |"
                 )
         lines.append("")
 
@@ -17390,7 +17707,10 @@ def build_parser() -> argparse.ArgumentParser:
                    "git config user.email)")
     p.set_defaults(fn=cmd_claim)
 
-    p = sub.add_parser("complete", help="mv claimed → done (sync gate enforced)")
+    # claimed 티켓을 만지는 mutation 4종(complete·block·unclaim·unblock)과 처분(discard)은
+    # `claimed_by` 와 실행 세션을 대조한다 — 그래서 claim 과 **같은** 정체성 인자를 받는다
+    # (신규 플래그를 발명하지 않고 공용 `add_identity_args` 를 재사용).
+    p = sub.add_parser("complete", help="mv claimed → done (sync gate enforced · 소유자만)")
     p.add_argument("id", metavar="T-NNNN")
     p.add_argument("--tests-pass", action="store_true",
                    help="assert the regression suite passes "
@@ -17400,21 +17720,49 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--allow-untested", action="store_true",
                    help="bypass the regression check "
                         "(regression-irrelevant ticket)")
+    identity_args.add_identity_args(p)   # claim 소유 대조용 세션 해소
     p.set_defaults(fn=cmd_complete)
 
-    p = sub.add_parser("block", help="mv open|claimed → blocked")
+    p = sub.add_parser("discard",
+                       help="mv open|claimed|blocked → discarded (처분 종결 — 병합·폐기)")
+    p.add_argument("id", metavar="T-NNNN")
+    p.add_argument("disposition", metavar="|".join(DISPOSITION_KINDS),
+                   choices=DISPOSITION_KINDS,
+                   help="처분 종류 — merged(다른 티켓으로 흡수) · dropped(취소·폐기)")
+    p.add_argument("--reason", required=True,
+                   help="처분 사유 (병합 대상 티켓 ID 도 여기에 적는다)")
+    identity_args.add_identity_args(p)
+    p.set_defaults(fn=cmd_discard)
+
+    p = sub.add_parser("reopen",
+                       help="mv done|discarded → open (오처리 복구 — 종결을 되돌리는 유일한 문)")
+    p.add_argument("id", metavar="T-NNNN")
+    p.add_argument("--reason", required=True, help="복구 사유 (본문·board-git 에 남는다)")
+    p.set_defaults(fn=cmd_reopen)
+
+    p = sub.add_parser("block", help="mv open|claimed → blocked (claimed 는 소유자만)")
     p.add_argument("id", metavar="T-NNNN")
     p.add_argument("--reason", required=True)
+    identity_args.add_identity_args(p)
     p.set_defaults(fn=cmd_block)
 
-    p = sub.add_parser("unclaim", help="mv claimed → open")
+    p = sub.add_parser(
+        "unclaim",
+        help="mv claimed → open · blocked 는 상태 유지하고 소유만 해제 (소유자만 · "
+             "소유 세션이 없으면 --takeover)")
     p.add_argument("id", metavar="T-NNNN")
+    p.add_argument("--takeover", action="store_true",
+                   help="소유자 부재 이전 — 타 세션 claim 을 강제 해제한다(--reason 필수). "
+                        "소유자 이전의 유일한 문이다.")
+    p.add_argument("--reason", help="--takeover 사유 (티켓 본문·board-git 커밋에 남는다)")
+    identity_args.add_identity_args(p)
     p.set_defaults(fn=cmd_unclaim)
 
     p = sub.add_parser(
         "unblock",
-        help="mv blocked → claimed(claimed_by 보유·소유 보존) 또는 open(무소유)")
+        help="mv blocked → claimed(claimed_by 보유·소유 보존) 또는 open(무소유) · 소유자만")
     p.add_argument("id", metavar="T-NNNN")
+    identity_args.add_identity_args(p)
     p.set_defaults(fn=cmd_unblock)
 
     p = sub.add_parser("new", help="create a new ticket")

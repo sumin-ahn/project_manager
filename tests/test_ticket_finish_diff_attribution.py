@@ -38,7 +38,10 @@ def _write_claimed_ticket(
         f"touches:\n{touch_lines}\n"
         f"estimate: {estimate}\n"
         "---\n\n"
-        "# hermetic shape\n",
+        "# hermetic shape\n\n"
+        # 완료 기록 경로는 DoD 게이트를 지난다 — 마감된 DoD 를 심어 이 픽스처의 관측 축
+        # (측정/stage 트리)만 남긴다.
+        "## 완료 조건 (Definition of Done)\n- [x] 구현\n",
         encoding="utf-8",
     )
 

@@ -408,6 +408,8 @@ def test_ticket_finish_task_resolves_regression_cwd(tf, monkeypatch, capsys):
     assert rc == 0
     assert captured["regression_cwd"] == "CWD::work/A_1"   # F6 슬롯을 회귀 cwd 로 forward
     assert captured["task_workspace"] == tf.REPO / "work" / "A_1"
+    # task 귀속은 `<user>/<task>` 다 — board complete 소유 대조(T-0781)에 같은 축을 넘긴다.
+    assert captured["run"]["board_identity_args"] == ["--task", "job6"]
     out = capsys.readouterr().out
     assert str(tf.REPO / "work" / "A_1") in out             # 절대경로 surface
 
