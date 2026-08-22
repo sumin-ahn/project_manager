@@ -27,6 +27,11 @@ marker 는 turn *실행 후* 박제 단일 의미론 — Supervisor 는 그 입�
 
 codex 어댑터는 claude 와 달리 옆에 Python `ctx_guard` 모듈이 없다(claude=`.claude/ctx_guard.py`·
 opencode=JS core) — 그래서 엔진 루트 탐색·local.conf 파싱을 driver 자체에 둔다(opencode driver 동형).
+
+세션 안 ctx 넛지(T-0770·ADR-0081 D3 개정): 위 relay 축과 별개로, 훅 진입점(`PreToolUse`·
+`UserPromptSubmit`)에서 밴드에 들어가면 비차단 checkpoint 안내를 주입한다(회전 marker 미생산).
+점유는 훅 stdin 의 `transcript_path` rollout JSONL 에서 읽고, 밴드·임계·문구는 claude 와 같은 값을
+쓴다 — 압축이 시작된 뒤(PreCompact)에야 알려 주면 checkpoint 를 남길 여유가 없다는 것이 사유다.
 """
 from __future__ import annotations
 
@@ -50,6 +55,13 @@ TURN_TIMEOUT_SEC = 600  # subprocess 당 hard hang 가드(상한 — 한 turn �
 # 으로 교체·실보호는 회전이 한다). 임계는 local.conf `ctx_stop_pct` override 해소(기본 20·아래
 # resolve_stop_pct·claude ctx_guard.ctx_thresholds 대칭). 잔여 20% 회전 ⟺ 사용률 80%.
 CTX_STOP_PCT_DEFAULT = 20  # 잔여 회전 임계(%) — claude ctx_guard.CTX_STOP_PCT_DEFAULT 미러.
+# 세션 안 1단 넛지 임계(잔여 %) — claude ctx_guard.CTX_NUDGE_PCT_DEFAULT·opencode
+# NUDGE_PCT_DEFAULT 미러(T-0770 이 codex 를 4번째 미러 사이트로 편입·tests/test_ctx_default_mirror.py).
+# relay 회전 축은 stop 하나만 쓰고, 이 값은 아래 훅 축(`ctx_thresholds`)이 소비한다.
+CTX_NUDGE_PCT_DEFAULT = 30
+# 2단(strong) 넛지 마진(%p·파생값) — claude ctx_guard.CTX_NUDGE2_MARGIN_PCT·opencode
+# NUDGE2_MARGIN_PCT 미러. nudge2 밴드 = stop_pct < 잔여 <= min(stop_pct + 이 마진, nudge_pct).
+CTX_NUDGE2_MARGIN_PCT = 3
 # ctx 예산(분모) 최종 폴백 — local.conf ctx_window_tokens_<codex|generic> 미설정 시(ADR-0041).
 CTX_WINDOW_TOKENS_DEFAULT = 200_000
 
@@ -391,6 +403,273 @@ class CodexCliDriver:
                 sys.stderr.write("[pm-orch] codex ctx marker 박제 실패\n")
 
 
+# ── 세션 안 ctx 넛지 판정 (T-0770 · claude ctx_guard/ctx_stop_hook 미러) ────────
+# 훅 stdin 에는 토큰 정보가 없다 — codex-cli 0.147.0 격리 CODEX_HOME 라이브 프로브 실측 키는
+# session_id·turn_id·transcript_path·cwd·hook_event_name·model·permission_mode + 이벤트별
+# (prompt | tool_name·tool_input·tool_use_id) + 서브에이전트 발화에서만 agent_id·agent_type 이다.
+# 그래서 점유는 `transcript_path` 가 가리키는 rollout JSONL 의 마지막 `token_count` 이벤트에서
+# 읽는다(claude 훅이 transcript JSONL 의 마지막 assistant usage 를 읽는 것과 같은 축).
+#
+# 이 축은 위 relay 기계 가드(CodexCliDriver·post-turn 회전 marker)와 **다른 소비자**다 — 여기서는
+# 회전 marker 를 만들지 않고 비차단 안내만 주입한다(ADR-0081 D1). 밴드 경계·임계 키·안내 문구는
+# claude 와 같은 값을 쓰고 codex 전용 임계·문구를 새로 만들지 않는다.
+
+# rollout JSONL 은 세션이 길수록 커진다(라이브 실측 — 2 turn 46KB). 전량을 읽지 않고 꼬리만 본다:
+#   token_count 는 turn 마다 기록되므로 최신 값은 꼬리에 있고, 꼬리에서 못 찾으면 측정 불가로
+#   보고 침묵한다(fail-open — 가드 고장이 도구 호출을 막지 않는다).
+CTX_ROLLOUT_TAIL_BYTES = 256 * 1024
+# pm_log ctx-guidance 자식 상한(초) — claude ctx_stop_hook._SNAPSHOT_TIMEOUT_SECONDS 미러.
+CTX_GUIDANCE_TIMEOUT_SEC = 3.0
+# 사이클별 멱등 marker 디렉토리 — claude ctx_stop_hook._MARKER_DIR 와 같은 경로·규약
+# (`.project_manager/.local/` 는 이미 git-ignored 라 채택자가 `git add -A` 해도 안 실린다).
+CTX_MARKER_DIR = Path(".project_manager") / ".local" / "ctx-stop"
+# 밴드 → pm_log `ctx-guidance --band` 인자. 마지막 밴드 이름(stop)은 회전이 아니라 **최종 넛지**로
+# 소비된다(claude 와 같은 소비·ADR-0081 D1) — 그래서 인자는 `final` 이다.
+CTX_BAND_GUIDANCE_ARG = {"nudge": "nudge", "nudge2": "nudge2", "stop": "final"}
+# 밴드별 marker 파일 접미사 — claude `.nudge`/`.nudge2`/`.final` 와 같은 이름.
+CTX_BAND_MARKER_SUFFIX = {"nudge": "nudge", "nudge2": "nudge2", "stop": "final"}
+# 넛지를 주입할 수 있는 훅 이벤트 — 두 이벤트 모두 `additionalContext` 를 갖는다(스키마 실측).
+CTX_NUDGE_EVENTS = ("PreToolUse", "UserPromptSubmit")
+
+
+def _int_conf(conf: dict[str, str], key: str, default: int) -> int:
+    """local.conf 정수 값 — 부재·비정수면 default (claude ctx_guard._int_conf 미러)."""
+    raw = conf.get(key)
+    if raw is None:
+        return default
+    try:
+        return int(str(raw).strip())
+    except (ValueError, AttributeError):
+        return default
+
+
+def ctx_thresholds(conf: dict[str, str]) -> dict[str, int]:
+    """넛지 밴드 임계(잔여 %) — `ctx_nudge_pct`/`ctx_stop_pct` (claude ctx_thresholds 미러).
+
+    sanity 0 < stop <= nudge < 100 위반이면 **둘 다** 엔진 기본으로 폴백한다(오타·역전에 robust).
+    relay 회전 축의 `resolve_stop_pct` 와 키는 같고, 이쪽은 nudge 축까지 있어 claude 와 같은
+    교차 sanity 를 쓴다."""
+    nudge = _int_conf(conf, "ctx_nudge_pct", CTX_NUDGE_PCT_DEFAULT)
+    stop = _int_conf(conf, "ctx_stop_pct", CTX_STOP_PCT_DEFAULT)
+    if not (0 < stop <= nudge < 100):
+        nudge, stop = CTX_NUDGE_PCT_DEFAULT, CTX_STOP_PCT_DEFAULT
+    return {"nudge_pct": nudge, "stop_pct": stop}
+
+
+def nudge2_threshold(thresholds: dict[str, int]) -> int:
+    """2단 넛지 임계(잔여 %) — stop_pct + 마진, nudge_pct 로 캡 (claude nudge2_threshold 미러)."""
+    return min(thresholds["stop_pct"] + CTX_NUDGE2_MARGIN_PCT, thresholds["nudge_pct"])
+
+
+def remaining_pct(used_pct: int) -> int:
+    return max(0, 100 - used_pct)
+
+
+def context_used_pct_from_tokens(tokens: int, budget: int) -> int:
+    """점유 토큰 / 예산 → 사용 % (claude context_used_pct_from_tokens 미러).
+
+    측정 없음(토큰 <= 0)·예산 비정상은 0 — 정보 없음을 밴드로 승격하지 않는다."""
+    if budget <= 0 or tokens <= 0:
+        return 0
+    value = tokens / float(budget) * 100
+    if value != value or value in (float("inf"), float("-inf")):  # NaN/inf 가드
+        return 0
+    return max(0, min(100, round(value)))
+
+
+def classify(used_pct: int, thresholds: dict[str, int]) -> str:
+    """사용 % → 'ok' | 'nudge' | 'nudge2' | 'stop' (잔여 기준·claude classify 미러)."""
+    remaining = remaining_pct(used_pct)
+    if remaining <= thresholds["stop_pct"]:
+        return "stop"
+    if remaining <= nudge2_threshold(thresholds):
+        return "nudge2"
+    if remaining <= thresholds["nudge_pct"]:
+        return "nudge"
+    return "ok"
+
+
+def _rollout_input_tokens(raw_line: bytes) -> int | None:
+    """rollout 한 줄이 token_count 면 그 시점 점유 토큰, 아니면 None.
+
+    점유 = `info.last_token_usage.input_tokens`(그 요청이 모델에 보낸 입력 = 그 시점 컨텍스트).
+    `total_token_usage` 는 thread 누계라 점유가 아니다(ADR-0081 §4·라이브 실측에서 두 값이
+    15328 vs 30516 으로 갈렸다). 형식은 codex 내부 JSONL 이라 공개 계약이 아니므로 예상 구조만
+    좁게 읽고 어긋나면 None(다음 후보로 계속)."""
+    if not raw_line.strip():
+        return None
+    try:
+        event = json.loads(raw_line)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(event, dict):
+        return None
+    payload = event.get("payload")
+    token_event = payload if isinstance(payload, dict) else event
+    if token_event.get("type") != "token_count":
+        return None
+    info = token_event.get("info")
+    last_usage = info.get("last_token_usage") if isinstance(info, dict) else None
+    value = last_usage.get("input_tokens") if isinstance(last_usage, dict) else None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def rollout_context_tokens(transcript_path) -> int:
+    """rollout JSONL 의 **마지막** token_count 점유 토큰 (측정 불가면 0·fail-open).
+
+    claude `context_tokens_from_transcript` 대칭 — 파일 끝에서부터 첫 usable 값을 쓴다. 부재·
+    null·읽기 실패·token_count 0건은 전부 0(측정 없음)이라 밴드 판정으로 올라가지 않는다."""
+    if not isinstance(transcript_path, str) or not transcript_path.strip():
+        return 0
+    try:
+        with Path(transcript_path).open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            size = stream.tell()
+            start = max(0, size - CTX_ROLLOUT_TAIL_BYTES)
+            stream.seek(start)
+            tail = stream.read()
+    except (OSError, ValueError):
+        return 0
+    lines = tail.split(b"\n")
+    if start > 0:
+        lines = lines[1:]  # 꼬리 첫 줄은 잘려 있어 JSON 이 아니다.
+    for raw_line in reversed(lines):
+        tokens = _rollout_input_tokens(raw_line)
+        if tokens is not None:
+            return tokens
+    return 0
+
+
+def _hook_session_id(payload: dict) -> str:
+    """훅 payload 의 세션 식별자 → 파일명 안전 문자열 (claude `_session_id` 미러)."""
+    sid = payload.get("session_id") or payload.get("sessionId")
+    if isinstance(sid, str) and sid.strip():
+        return "".join(c for c in sid.strip() if c.isalnum() or c in "-_")[:64] or "unknown"
+    return "unknown"
+
+
+def _ctx_marker_path(root: Path, session_id: str, band: str) -> Path:
+    return Path(root) / CTX_MARKER_DIR / f"{session_id}.{CTX_BAND_MARKER_SUFFIX[band]}"
+
+
+def _claim_ctx_marker(path: Path) -> bool:
+    """marker 를 배타 생성해 이번 호출이 사이클별 주입권을 얻었는지 (claude `_claim_marker` 미러).
+
+    `O_EXCL` 이라 두 채널(PreToolUse·UserPromptSubmit)이 동시에 와도 하나만 주입한다. 이미
+    선점됐거나 marker 를 못 쓰면 주입하지 않는다(중복 주입보다 침묵이 안전)."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except OSError:
+        return False
+    try:
+        os.write(handle, b"codex ctx nudge injected\n")
+    except OSError:
+        pass  # 생성 성공 자체가 선점의 정본 — 본문 쓰기 실패는 선점을 무효화하지 않는다.
+    finally:
+        try:
+            os.close(handle)
+        except OSError:
+            pass
+    return True
+
+
+def _rearm_ctx_cycle(root: Path, session_id: str) -> None:
+    """ok 실측 복귀 시 밴드 marker 를 지워 다음 상승 사이클을 재무장 (claude `_rearm_cycle` 미러).
+
+    PostCompact 재무장은 비목표다 — 그 이벤트 배선을 고치면 채택자 hook trust 핀이 깨진다.
+    claude 도 ok 실측 경로 재무장을 병행하므로 압축 뒤 사이클은 이 경로가 연다."""
+    for band in CTX_BAND_MARKER_SUFFIX:
+        try:
+            _ctx_marker_path(root, session_id, band).unlink(missing_ok=True)
+        except OSError:
+            pass  # 정리 실패는 best-effort — 남은 marker 는 중복 주입만 막는다.
+
+
+def hook_is_subagent(payload: dict) -> bool:
+    """이 훅 발화가 서브에이전트의 것인가 (checkpoint 서사는 메인 PM 세션 전용).
+
+    라이브 실측(codex-cli 0.147.0): 메인 세션 발화엔 `agent_id`/`agent_type` 키가 **없고**,
+    서브에이전트 발화엔 둘 다 있다(`agent_type="default"`). 서브에이전트의 `session_id` 는
+    부모와 같아서 이 면제가 없으면 부모 사이클 marker 를 서브에이전트가 소비한다."""
+    for key in ("agent_type", "agent_id"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+    return False
+
+
+def _ctx_guidance_text(root: Path, *, band: str, used_pct: int,
+                       thresholds: dict[str, int], timeout: float,
+                       runner=subprocess.run) -> str:
+    """안내 문구는 엔진 `pm_log.py ctx-guidance` stdout **그대로** (문구 복제 금지·claude 대칭).
+
+    엔진 부재·실패·timeout 은 빈 문자열 — 그 호출은 침묵한다(문구를 어댑터가 재작성하지 않는다).
+    `--json` 봉투는 `systemMessage` 형이라 모델-facing 주입엔 쓰지 않는다."""
+    engine = Path(root) / ".project_manager" / "tools" / "pm_log.py"
+    if not engine.is_file():
+        return ""
+    command = [
+        sys.executable, str(engine), "ctx-guidance",
+        "--band", CTX_BAND_GUIDANCE_ARG[band],
+        "--used-pct", str(used_pct),
+        "--remaining-pct", str(remaining_pct(used_pct)),
+        "--stop-pct", str(thresholds["stop_pct"]),
+    ]
+    try:
+        completed = runner(command, cwd=str(root), stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, timeout=timeout)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return ""
+    if getattr(completed, "returncode", 1) != 0:
+        return ""
+    stdout = getattr(completed, "stdout", b"") or b""
+    if isinstance(stdout, bytes):
+        stdout = stdout.decode("utf-8", "replace")
+    return stdout.strip()
+
+
+def ctx_nudge_envelope(payload: dict, root: Path, *,
+                       timeout: float = CTX_GUIDANCE_TIMEOUT_SEC,
+                       runner=subprocess.run) -> dict:
+    """세션 안 ctx 밴드 판정 → 비차단 안내 엔벨로프. 밴드 밖·측정 실패는 **빈 엔벨로프**.
+
+    빈 엔벨로프는 디스패처 합본에서 기여 0이라 이 기능이 침묵한 호출의 stdout 은 이 가드가
+    없던 때와 **바이트 동일**하다(측정된 통과 형태). 차단·회전 판정은 내지 않는다(ADR-0081 D1).
+
+    claude `ctx_stop_hook.evaluate` 와 같은 순서다 — 서브에이전트 면제 → 점유 측정 → 밴드 판정
+    → ok 실측이면 재무장 → 안내 문구 → 사이클 marker 선점 → 주입."""
+    event = payload.get("hook_event_name") or payload.get("hookEventName")
+    if event not in CTX_NUDGE_EVENTS:
+        return {}
+    if hook_is_subagent(payload):
+        return {}
+    root = Path(root)
+    session_id = _hook_session_id(payload)
+    tokens = rollout_context_tokens(payload.get("transcript_path"))
+    conf = load_local_config(root)
+    used_pct = context_used_pct_from_tokens(tokens, resolve_ctx_budget(conf))
+    thresholds = ctx_thresholds(conf)
+    band = classify(used_pct, thresholds)
+    if band == "ok":
+        # 정수 used=0 은 큰 예산에서 작은 양의 측정값일 수도 있다 — 재무장은 **실측된 ok**
+        # (점유 토큰 > 0)에서만 한다. 측정 실패(0)는 marker 를 보존해 중복 주입을 막는다.
+        if tokens > 0:
+            _rearm_ctx_cycle(root, session_id)
+        return {}
+    guidance = _ctx_guidance_text(
+        root, band=band, used_pct=used_pct, thresholds=thresholds,
+        timeout=max(0.1, min(CTX_GUIDANCE_TIMEOUT_SEC, timeout)), runner=runner)
+    if not guidance:
+        return {}  # 문구를 못 읽으면 침묵 — marker 도 안 쓴다(다음 호출이 다시 시도).
+    if not _claim_ctx_marker(_ctx_marker_path(root, session_id, band)):
+        return {}  # 이 사이클엔 이미 주입됐다(멱등).
+    return {"hookSpecificOutput": {"hookEventName": event,
+                                   "additionalContext": guidance}}
+
+
 # ── codex 훅 범용 진입점 + 기능 디스패처 (T-0777) ──────────────────────────────
 # `.codex/hooks.json` 은 채택자 소유(manifest 밖)라 가드 기능을 하나 더할 때마다 채택자 config
 # 수정 + `/hooks` 재승인을 다시 요구했다. 그 마찰을 1회로 끝내려고 이벤트당 진입점을 **하나만**
@@ -425,11 +704,16 @@ class CodexHookFeature(NamedTuple):
                  옛 형상에서 hooks.json matcher 가 하던 판별이 그대로 여기로 옮겨 왔다.
     argv         기능을 실행하는 커맨드. `{py}` = 이 인터프리터, `{tools}` = 엔진 도구 디렉토리.
                  자식은 payload 를 stdin 으로 받고 엔벨로프 한 줄을 stdout 으로 낸다.
+    handler      이 파일 안에서 **in-process** 로 도는 기능이면 그 함수(`(payload, root, *,
+                 timeout) -> 엔벨로프`). 주면 `argv` 는 쓰이지 않는다. 도구 무관 기능(모든 도구
+                 호출마다 발화)을 자식 프로세스로 돌리면 매 호출에 인터프리터가 하나 더 뜨므로,
+                 판정이 이 파일 안에 있는 기능은 자식을 띄우지 않는다(T-0770 ctx 넛지).
     """
     feature_id: str
     event: str
     tool_pattern: str | None
     argv: tuple[str, ...]
+    handler: object | None = None
 
 
 # 등록된 기능 전수. **여기 한 줄이 곧 배선**이다 — 새 가드는 이 튜플에 항목을 더하면 되고
@@ -443,6 +727,22 @@ CODEX_HOOK_FEATURES: tuple[CodexHookFeature, ...] = (
         tool_pattern="^collaborationspawn_agent$",
         argv=("{py}", "{tools}/delegate_channel_guard.py", "supervise", "PreToolUse",
               "{py}", "{tools}/delegate_channel_guard.py", "codex-hook"),
+    ),
+    # 세션 안 ctx 넛지(T-0770) — claude 가 같은 두 이벤트에 거는 것과 같은 채널이다. 두 항목은
+    #   사이클 marker 를 공유하므로 먼저 발화한 채널 하나만 주입한다(멱등).
+    CodexHookFeature(
+        feature_id="ctx-nudge-pretooluse",
+        event="PreToolUse",
+        tool_pattern=None,  # 도구 무관 — 긴 turn 안에서도 밴드 진입을 그 자리에서 알린다.
+        argv=(),
+        handler=ctx_nudge_envelope,
+    ),
+    CodexHookFeature(
+        feature_id="ctx-nudge-userpromptsubmit",
+        event="UserPromptSubmit",
+        tool_pattern=None,
+        argv=(),
+        handler=ctx_nudge_envelope,
     ),
 )
 
@@ -578,6 +878,22 @@ def _run_hook_feature(feature: CodexHookFeature, payload_bytes: bytes, root: Pat
         return hook_fallback_envelope(feature.feature_id, f"{type(exc).__name__}: {detail}")
 
 
+def _run_hook_feature_inprocess(feature: CodexHookFeature, payload: dict, root: Path, *,
+                                timeout: float) -> dict:
+    """in-process 기능을 돌리고 그 엔벨로프를 그대로 돌려준다(실패는 폴백 경고).
+
+    자식 프로세스 경로(`_run_hook_feature`)와 **같은 실패 계약**이다 — 기능 고장이 도구 호출을
+    막지 않고, 폴백은 마커를 달아 통과와 구별된다."""
+    try:
+        envelope = feature.handler(payload, root, timeout=timeout)
+        if not isinstance(envelope, dict):
+            raise ValueError("엔벨로프가 dict 가 아님")
+        return envelope
+    except BaseException as exc:  # noqa: BLE001 — 기능 고장이 도구 호출을 막지 않는다.
+        detail = " ".join(str(exc).splitlines()).strip() or type(exc).__name__
+        return hook_fallback_envelope(feature.feature_id, f"{type(exc).__name__}: {detail}")
+
+
 def _is_blocking_envelope(envelope: dict) -> bool:
     """그 엔벨로프가 차단 판정인가 (`decision`/`permissionDecision` 보유)."""
     if envelope.get("decision") == "block":
@@ -649,9 +965,13 @@ def dispatch_hook(event: str, payload_bytes: bytes, root: Path, *,
         if route.decision == CODEX_HOOK_ROUTE_UNDECIDABLE:
             answers.append(hook_fallback_envelope(feature.feature_id, route.detail))
             continue
+        timeout = max(0.1, deadline - time.monotonic())
+        if feature.handler is not None:
+            answers.append(_run_hook_feature_inprocess(
+                feature, payload, root, timeout=timeout))
+            continue
         answers.append(_run_hook_feature(
-            feature, payload_bytes, root, runner=runner,
-            timeout=max(0.1, deadline - time.monotonic())))
+            feature, payload_bytes, root, runner=runner, timeout=timeout))
     return merge_hook_envelopes(answers)
 
 

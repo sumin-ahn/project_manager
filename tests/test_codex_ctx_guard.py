@@ -169,12 +169,19 @@ def test_hooks_windows_commands_match_posix_nonblocking_checkpoint_contract():
 
 
 def test_readme_documents_nonblocking_probe_and_confirmed_headless_non_reachability():
-    """README는 0.146.0 비차단 실측과 headless systemMessage 미도달 결론을 고정한다."""
+    """README는 0.146.0 비차단 실측과 headless systemMessage 미도달 결론을 고정한다.
+
+    PostCompact 서술은 **채널 사실**(엔진 snapshot 을 `systemMessage` 엔벨로프로 출력)까지만
+    고정한다 — 그 엔벨로프의 모델 도달은 direct TUI 미검증·headless exec 미도달이라 무범위
+    '모델에 재주입' 문장은 재등장하면 red 다(T-0770 F-001).
+    """
     readme = (REPO / "templates" / "codex" / "README.md").read_text(encoding="utf-8")
     normalized = " ".join(readme.split())
     anchors = (
         "compaction을 차단하지 않는다",
-        "`pm_log.py snapshot --json`의 엔진 소유 최종 텍스트",
+        # T-0770 F-001: 무범위 "모델에 재주입" 을 관측된 출력 채널까지로 좁힌 문안.
+        "`pm_log.py snapshot --json`의 엔진 소유 최종 텍스트를 `systemMessage` 엔벨로프로 출력한다",
+        "그 엔벨로프의 모델 도달은 direct TUI에서 미검증이고 headless exec에서는 미도달이다",
         "compaction 횟수를 세는 영속 상태는 두지 않는다",
         "Codex CLI 0.147.0 로컬 바이너리의 hook event enum에서 `PostCompact` 지원을 확인",
         "메인테이너 실측(2026-08-06, codex-cli 0.146.0)",
@@ -184,7 +191,9 @@ def test_readme_documents_nonblocking_probe_and_confirmed_headless_non_reachabil
         "후속 turn 정상 계속",
         "stdout JSONL·stderr·rollout·`CODEX_HOME` 전수 grep",
         "모델 자기보고도 음성이었다",
-        "exec 경로 안내는 모델에 닿지 않는다(관측만 가능)",
+        "exec 경로에서 `systemMessage` 안내는 모델에 닿지 않는다(관측만 가능)",
+        # T-0770 라이브 실측: 같은 exec 경로라도 진입점 훅의 additionalContext 는 도달한다.
+        "`hookSpecificOutput.additionalContext`는 **모델에 닿는다**",
         "direct TUI 표시는 미검증",
         "driver 회전 선점이 relay 경로를 실보호",
         "trusted project와 `/hooks` 승인",
@@ -192,6 +201,12 @@ def test_readme_documents_nonblocking_probe_and_confirmed_headless_non_reachabil
     for anchor in anchors:
         assert anchor in normalized, f"README Context safety 앵커 누락: {anchor!r}"
     assert "PM 게이트 실측 후 확정" not in normalized
+    # 옛 무조건 문장(채널 구분 없음)은 T-0770 라이브 실측이 반증했다 — 되살아나면 red.
+    assert "exec 경로 안내는 모델에 닿지 않는다" not in normalized
+    # T-0770 F-001: PostCompact systemMessage 의 모델 도달은 실측되지 않았다 —
+    # 무범위 재주입 단정(변형 포함)이 되살아나면 red.
+    assert "모델에 재주입" not in normalized
+    assert "최종 텍스트를 모델에" not in normalized
     assert "codex resume --disable hooks" not in normalized
     assert "features.hooks=false" not in readme
 
@@ -525,3 +540,451 @@ def test_board_init_scaffolds_codex_budget_comment(tmp_path, monkeypatch):
     # 파싱 시 주석 오버라이드는 활성 키로 잡히지 않는다 (local_config 는 # 라인 skip).
     parsed = board.local_config()  # LOCAL_CONF 가 conf_path 로 patch 됨.
     assert "ctx_window_tokens_codex" not in parsed
+
+
+# ── 4. 세션 안 ctx 넛지 (T-0770 · claude 미러) ────────────────────────────────
+# codex 어댑터엔 옆에 ctx_guard 모듈이 없어 relay driver 파일(pm_orch_codex.py)이 곧 훅 축의
+# 판정 사이트다. 여기서는 그 축만 본다 — 밴드 경계·임계 키·예산 우선순위가 claude 와 **같은
+# 값**인지, 점유 파서가 실제 rollout bytes 를 읽는지, 밴드 밖·측정 실패가 침묵인지.
+
+DISPATCHER = CODEX / "pm_orch_codex.py"
+CLAUDE_CTX_GUARD = (
+    REPO / "templates" / "claude_code" / ".claude" / "ctx_guard.py")
+
+# codex-cli 0.147.0 격리 CODEX_HOME 라이브 프로브(2026-08-22)에서 채집한 rollout JSONL **원문
+# 줄**이다. 절대경로만 <work> 로 치환했고 그 밖의 bytes 는 그대로다 — 조립 문자열 픽스처는
+# 파서가 실제 형식을 읽는지 판정하지 못한다(같은 프로브가 훅 stdin transcript_path 실값도 고정).
+# 마지막 token_count 의 last_token_usage.input_tokens=15328(그 시점 점유) vs
+# total_token_usage.input_tokens=30516(thread 누계) — 두 값이 갈리는 실물이라 오독이 드러난다.
+LIVE_ROLLOUT_INPUT_TOKENS = 15328
+LIVE_ROLLOUT_THREAD_TOTAL = 30516
+LIVE_ROLLOUT_PREVIOUS_TOKENS = 15188
+LIVE_ROLLOUT_LINES = (
+    '{"timestamp":"2026-08-22T13:46:21.770Z","type":"response_item","payload":{"type":"custom_tool_call","id":"ctc_0dbe7de5479d2aac016a89a82c1dc487d0807438694d4e432a","status":"completed","call_id":"call_4uV2VWCocwPWTSbVHqAtS8RQ","name":"exec","input":"const r = await tools.exec_command({\\"cmd\\":\\"echo probe-ok .\\",\\"workdir\\":\\"<work>\\",\\"yield_time_ms\\":10000,\\"max_output_tokens\\":1000});\\ntext(r.output);\\n","internal_chat_message_metadata_passthrough":{"turn_id":"01a029b8-dd49-7d83-bc4d-16f8f0c4062a"}}}',
+    '{"timestamp":"2026-08-22T13:46:21.865Z","type":"response_item","payload":{"type":"custom_tool_call_output","id":"ctco_01a029b8-f329-7af3-a8ca-3b3cd3ad487b","call_id":"call_4uV2VWCocwPWTSbVHqAtS8RQ","output":[{"type":"input_text","text":"Script completed\\nWall time 0.1 seconds\\nOutput:\\n"},{"type":"input_text","text":"probe-ok .\\n"}],"internal_chat_message_metadata_passthrough":{"turn_id":"01a029b8-dd49-7d83-bc4d-16f8f0c4062a"}}}',
+    '{"timestamp":"2026-08-22T13:46:21.865Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":15188,"cached_input_tokens":11008,"cache_write_input_tokens":0,"output_tokens":114,"reasoning_output_tokens":0,"total_tokens":15302},"last_token_usage":{"input_tokens":15188,"cached_input_tokens":11008,"cache_write_input_tokens":0,"output_tokens":114,"reasoning_output_tokens":0,"total_tokens":15302},"model_context_window":258400},"rate_limits":{"limit_id":"codex","limit_name":null,"primary":{"used_percent":12.0,"window_minutes":10080,"resets_at":1787906812},"secondary":null,"credits":{"has_credits":false,"unlimited":false,"balance":"0"},"individual_limit":null,"spend_control_reached":null,"plan_type":"prolite","rate_limit_reached_type":null}}}',
+    '{"timestamp":"2026-08-22T13:46:23.898Z","type":"event_msg","payload":{"type":"agent_message","message":"DONE","phase":"final_answer","memory_citation":null}}',
+    '{"timestamp":"2026-08-22T13:46:23.898Z","type":"response_item","payload":{"type":"message","id":"msg_0dbe7de5479d2aac016a89a82f7db087d093a5cb3328c42027","role":"assistant","content":[{"type":"output_text","text":"DONE"}],"phase":"final_answer","internal_chat_message_metadata_passthrough":{"turn_id":"01a029b8-dd49-7d83-bc4d-16f8f0c4062a"}}}',
+    '{"timestamp":"2026-08-22T13:46:23.932Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":30516,"cached_input_tokens":25088,"cache_write_input_tokens":0,"output_tokens":119,"reasoning_output_tokens":0,"total_tokens":30635},"last_token_usage":{"input_tokens":15328,"cached_input_tokens":14080,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":15333},"model_context_window":258400},"rate_limits":{"limit_id":"codex","limit_name":null,"primary":{"used_percent":12.0,"window_minutes":10080,"resets_at":1787906812},"secondary":null,"credits":{"has_credits":false,"unlimited":false,"balance":"0"},"individual_limit":null,"spend_control_reached":null,"plan_type":"prolite","rate_limit_reached_type":null}}}',
+    '{"timestamp":"2026-08-22T13:46:23.944Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"01a029b8-dd49-7d83-bc4d-16f8f0c4062a","last_agent_message":"DONE","started_at":1787406376,"completed_at":1787406383,"duration_ms":7669,"time_to_first_token_ms":3582}}',
+)
+
+# 같은 프로브의 훅 stdin 실값(서브에이전트 발화) — 메인 세션 발화엔 이 두 키가 아예 없다.
+LIVE_SUBAGENT_KEYS = {"agent_id": "01a029b9-838e-71c2-9f8a-9993158516ac",
+                      "agent_type": "default"}
+
+
+def _load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def codex_ctx():
+    """훅 축 판정이 사는 codex 어댑터 모듈."""
+    return _load_module("pm_orch_codex_ctx", DISPATCHER)
+
+
+@pytest.fixture(scope="module")
+def claude_ctx():
+    """미러 기준이 되는 claude 공유 코어."""
+    return _load_module("claude_ctx_guard", CLAUDE_CTX_GUARD)
+
+
+def _write_rollout(tmp_path: Path, lines=LIVE_ROLLOUT_LINES, *, filler_bytes: int = 0) -> Path:
+    """라이브 원문 줄로 rollout 파일을 만든다(filler 는 꼬리 밖 과거 구간)."""
+    path = tmp_path / "rollout-live.jsonl"
+    body = ""
+    if filler_bytes:
+        # 꼬리 밖으로 밀려날 과거 줄 — 여기 있는 token_count 를 읽으면 파서가 최신을 못 본 것이다.
+        stale = ('{"type":"event_msg","payload":{"type":"token_count","info":'
+                 '{"last_token_usage":{"input_tokens":999999},'
+                 '"total_token_usage":{"input_tokens":999999}}}}')
+        body += stale + "\n"
+        body += ('{"type":"response_item","payload":{"type":"message","text":"'
+                 + "x" * filler_bytes + '"}}\n')
+    body += "\n".join(lines) + "\n"
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def _adopter_root(tmp_path: Path, *, conf: str = "", pm_log_body: str | None = None) -> Path:
+    """local.conf + (선택) pm_log 스텁만 둔 최소 채택자 트리."""
+    root = tmp_path / "adopter"
+    tools = root / ".project_manager" / "tools"
+    tools.mkdir(parents=True)
+    (root / ".project_manager" / "local.conf").write_text(conf, encoding="utf-8")
+    if pm_log_body is not None:
+        (tools / "pm_log.py").write_text(pm_log_body, encoding="utf-8")
+    return root
+
+
+# 밴드 안에 들어가는 예산 — 라이브 점유 15328 / 20000 = 77% (잔여 23% → nudge2 밴드).
+_IN_BAND_BUDGET = "ctx_window_tokens_codex=20000\n"
+# 밴드 밖 예산 — 15328 / 60000 = 26% (잔여 74%).
+_OUT_OF_BAND_BUDGET = "ctx_window_tokens_codex=60000\n"
+_STUB_PM_LOG = (
+    "import sys\n"
+    "sys.stdout.write('ENGINE-GUIDANCE ' + ' '.join(sys.argv[1:]) + '\\n')\n"
+)
+
+
+def _payload(rollout: Path, **extra) -> dict:
+    payload = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "echo hi"},
+        "session_id": "01a029b8-dd2b-7cc0-aac8-65158e5d120b",
+        "transcript_path": str(rollout),
+    }
+    payload.update(extra)
+    return payload
+
+
+# ── 4.1 점유 파서: 라이브 rollout 원문 bytes ────────────────────────────────
+
+def test_rollout_parser_reads_last_token_usage_from_live_capture(codex_ctx, tmp_path):
+    """실물 rollout 마지막 token_count 의 last_token_usage.input_tokens 를 점유로 읽는다."""
+    rollout = _write_rollout(tmp_path)
+
+    assert codex_ctx.rollout_context_tokens(str(rollout)) == LIVE_ROLLOUT_INPUT_TOKENS
+    # 누계(thread)·직전 요청 값을 잘못 읽으면 같은 파일에서 다른 수가 나온다.
+    assert LIVE_ROLLOUT_INPUT_TOKENS not in (LIVE_ROLLOUT_THREAD_TOTAL,
+                                             LIVE_ROLLOUT_PREVIOUS_TOKENS)
+
+
+def test_rollout_parser_prefers_the_newest_record_inside_the_tail(codex_ctx, tmp_path):
+    """꼬리만 읽어도 최신 값을 쓴다 — 꼬리 밖 과거 token_count 는 채택되지 않는다."""
+    rollout = _write_rollout(tmp_path, filler_bytes=codex_ctx.CTX_ROLLOUT_TAIL_BYTES)
+
+    assert rollout.stat().st_size > codex_ctx.CTX_ROLLOUT_TAIL_BYTES
+    assert codex_ctx.rollout_context_tokens(str(rollout)) == LIVE_ROLLOUT_INPUT_TOKENS
+
+
+@pytest.mark.parametrize("transcript", (None, "", 17, "/no/such/rollout.jsonl"))
+def test_rollout_parser_is_fail_open_for_missing_transcripts(codex_ctx, transcript):
+    """null·빈 값·비문자열·부재 파일은 전부 0(측정 없음) — 예외를 올리지 않는다."""
+    assert codex_ctx.rollout_context_tokens(transcript) == 0
+
+
+def test_rollout_parser_ignores_records_without_usable_usage(codex_ctx, tmp_path):
+    """token_count 0건·손상 줄·비정상 값은 0 — 밴드 판정으로 승격하지 않는다."""
+    path = tmp_path / "rollout-noise.jsonl"
+    path.write_text(
+        '{"type":"event_msg","payload":{"type":"agent_message","message":"hi"}}\n'
+        "not json at all\n"
+        '{"type":"event_msg","payload":{"type":"token_count","info":null}}\n'
+        '{"type":"event_msg","payload":{"type":"token_count","info":'
+        '{"last_token_usage":{"input_tokens":-3}}}}\n'
+        '{"type":"event_msg","payload":{"type":"token_count","info":'
+        '{"last_token_usage":{"input_tokens":true}}}}\n',
+        encoding="utf-8")
+
+    assert codex_ctx.rollout_context_tokens(str(path)) == 0
+
+
+def test_rollout_parser_skips_damaged_lines_to_an_older_usable_record(codex_ctx, tmp_path):
+    """마지막 token_count 가 읽히지 않으면 그 앞의 usable 값을 쓴다(부분 손상 robust)."""
+    lines = list(LIVE_ROLLOUT_LINES) + [
+        '{"type":"event_msg","payload":{"type":"token_count","info":{}}}']
+    rollout = _write_rollout(tmp_path, lines)
+
+    assert codex_ctx.rollout_context_tokens(str(rollout)) == LIVE_ROLLOUT_INPUT_TOKENS
+
+
+# ── 4.2 임계·예산·밴드가 claude 와 같은 키·같은 값인가 ───────────────────────
+
+@pytest.mark.parametrize("conf", (
+    {},
+    {"ctx_nudge_pct": "40", "ctx_stop_pct": "25"},
+    {"ctx_nudge_pct": "10", "ctx_stop_pct": "20"},   # 역전 → 둘 다 엔진 기본 폴백.
+    {"ctx_stop_pct": "0"},                            # 범위 밖 → 폴백.
+    {"ctx_nudge_pct": "abc", "ctx_stop_pct": "  25 "},
+))
+def test_thresholds_mirror_claude_keys_and_sanity(codex_ctx, claude_ctx, conf):
+    """`ctx_nudge_pct`/`ctx_stop_pct` 해소와 sanity 폴백이 claude 와 값으로 같다."""
+    assert codex_ctx.ctx_thresholds(conf) == claude_ctx.ctx_thresholds(conf)
+
+
+@pytest.mark.parametrize("conf", (
+    {},
+    {"ctx_window_tokens": "500000"},
+    {"ctx_window_tokens_codex": "300000", "ctx_window_tokens": "500000"},
+    {"ctx_window_tokens_codex": "0", "ctx_window_tokens": "400000"},
+    {"ctx_window_tokens_codex": "nope"},
+))
+def test_budget_precedence_mirrors_claude_per_harness_keys(codex_ctx, claude_ctx, conf):
+    """예산 우선순위 `ctx_window_tokens_codex` > `ctx_window_tokens` > 200000 (ADR-0041)."""
+    assert codex_ctx.resolve_ctx_budget(conf) == claude_ctx.resolve_budget(conf, "codex")
+
+
+def test_budget_precedence_values_are_pinned(codex_ctx):
+    """우선순위 3층의 실값 — 미러 대조만으로는 두 사이트가 함께 틀릴 수 있다."""
+    assert codex_ctx.resolve_ctx_budget(
+        {"ctx_window_tokens_codex": "300000", "ctx_window_tokens": "500000"}) == 300000
+    assert codex_ctx.resolve_ctx_budget({"ctx_window_tokens": "500000"}) == 500000
+    assert codex_ctx.resolve_ctx_budget({}) == codex_ctx.CTX_WINDOW_TOKENS_DEFAULT == 200_000
+
+
+@pytest.mark.parametrize("conf", (
+    {}, {"ctx_nudge_pct": "40", "ctx_stop_pct": "25"}, {"ctx_stop_pct": "5"},
+))
+def test_band_classification_mirrors_claude_for_every_used_pct(codex_ctx, claude_ctx, conf):
+    """0~100% 전 구간에서 밴드 이름이 claude 와 같다 — codex 전용 경계 신설 0."""
+    thresholds = codex_ctx.ctx_thresholds(conf)
+    assert codex_ctx.nudge2_threshold(thresholds) == claude_ctx.nudge2_threshold(thresholds)
+    for used_pct in range(0, 101):
+        assert (codex_ctx.classify(used_pct, thresholds)
+                == claude_ctx.classify(used_pct, thresholds)), used_pct
+
+
+@pytest.mark.parametrize("tokens,budget", (
+    (0, 200000), (1, 200000), (15328, 20000), (199999, 200000), (400000, 200000),
+    (15328, 0), (-5, 200000),
+))
+def test_used_pct_from_tokens_mirrors_claude(codex_ctx, claude_ctx, tokens, budget):
+    assert (codex_ctx.context_used_pct_from_tokens(tokens, budget)
+            == claude_ctx.context_used_pct_from_tokens(tokens, budget))
+
+
+# ── 4.3 배선: registry 한 줄이고 채택자 config 는 무변경 ──────────────────────
+
+def test_ctx_nudge_is_wired_through_the_dispatcher_registry(codex_ctx):
+    """두 진입점 이벤트에 도구 무관 기능으로 등록되고, 판정은 in-process 다."""
+    features = {feature.feature_id: feature for feature in codex_ctx.CODEX_HOOK_FEATURES
+                if feature.feature_id.startswith("ctx-nudge")}
+
+    assert {feature.event for feature in features.values()} == {"PreToolUse",
+                                                                "UserPromptSubmit"}
+    for feature in features.values():
+        assert feature.tool_pattern is None, feature
+        assert feature.handler is codex_ctx.ctx_nudge_envelope, feature
+        assert feature.event in codex_ctx.CODEX_HOOK_ENTRYPOINT_EVENTS, feature
+    exposed = {item["feature_id"] for item in codex_ctx.hook_feature_registry()["features"]}
+    assert set(features) <= exposed
+
+
+def test_ctx_wiring_adds_nothing_to_the_adopter_hooks_config():
+    """`.codex/hooks.json` 은 이 축의 배선을 담지 않는다 — 채택자 재승인 0 (T-0770 DoD)."""
+    rendered = HOOKS_JSON.read_text(encoding="utf-8")
+
+    for token in ("ctx-nudge", "ctx-guidance --band nudge", "ctx_nudge_pct",
+                  "rollout", "transcript_path"):
+        assert token not in rendered, token
+
+
+# ── 4.4 밴드 발화·침묵·멱등 (판정 함수) ──────────────────────────────────────
+
+def test_band_entry_injects_engine_guidance_verbatim(codex_ctx, tmp_path):
+    """밴드 안에서는 pm_log ctx-guidance stdout 을 **그대로** additionalContext 로 낸다."""
+    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    rollout = _write_rollout(tmp_path)
+
+    envelope = codex_ctx.ctx_nudge_envelope(_payload(rollout), root)
+
+    hook_output = envelope["hookSpecificOutput"]
+    assert hook_output["hookEventName"] == "PreToolUse"
+    guidance = hook_output["additionalContext"]
+    assert guidance.startswith("ENGINE-GUIDANCE ")
+    # 엔진에 넘긴 밴드·수치가 실측 판정값이다(15328/20000 = 77% → 잔여 23% → nudge2).
+    assert "ctx-guidance --band nudge2" in guidance
+    assert "--used-pct 77" in guidance and "--remaining-pct 23" in guidance
+    assert "--stop-pct 20" in guidance
+    # 비차단 — 어떤 결정 필드도 내지 않는다(ADR-0081 D1·codex 는 allow/ask 자체를 거부한다).
+    assert set(envelope) == {"hookSpecificOutput"}
+    assert "permissionDecision" not in hook_output and "decision" not in envelope
+
+
+def test_user_prompt_submit_uses_its_own_event_name(codex_ctx, tmp_path):
+    """두 채널 모두 자기 이벤트 이름으로 주입한다(호스트가 이름으로 봉투를 검증한다)."""
+    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    rollout = _write_rollout(tmp_path)
+
+    envelope = codex_ctx.ctx_nudge_envelope(
+        _payload(rollout, hook_event_name="UserPromptSubmit", tool_name=None), root)
+
+    assert envelope["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+
+
+def test_out_of_band_traffic_is_silent(codex_ctx, tmp_path):
+    """밴드 밖은 빈 엔벨로프 — 이 기능이 합본에 기여하는 바이트가 0이다."""
+    root = _adopter_root(tmp_path, conf=_OUT_OF_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    rollout = _write_rollout(tmp_path)
+
+    assert codex_ctx.ctx_nudge_envelope(_payload(rollout), root) == {}
+    assert not (root / ".project_manager" / ".local" / "ctx-stop").exists()
+
+
+@pytest.mark.parametrize("transcript", (None, "/no/such/rollout.jsonl", "tokenless"))
+def test_measurement_failure_is_silent_fail_open(codex_ctx, tmp_path, transcript):
+    """transcript null·부재·token_count 0건 3형상 — 빈 엔벨로프(가드가 세션을 막지 않는다)."""
+    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    if transcript == "tokenless":
+        path = tmp_path / "rollout-tokenless.jsonl"
+        path.write_text('{"type":"event_msg","payload":{"type":"agent_message"}}\n',
+                        encoding="utf-8")
+        transcript = str(path)
+
+    assert codex_ctx.ctx_nudge_envelope(_payload(tmp_path, transcript_path=transcript),
+                                        root) == {}
+
+
+def test_nudge_is_injected_once_per_cycle(codex_ctx, tmp_path):
+    """같은 사이클 2회 호출 시 두 번째는 침묵 — marker 선점(멱등·claude 규약 재사용)."""
+    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    rollout = _write_rollout(tmp_path)
+
+    first = codex_ctx.ctx_nudge_envelope(_payload(rollout), root)
+    second = codex_ctx.ctx_nudge_envelope(_payload(rollout), root)
+
+    assert first != {} and second == {}
+    markers = sorted(p.name for p in
+                     (root / ".project_manager" / ".local" / "ctx-stop").iterdir())
+    assert markers == ["01a029b8-dd2b-7cc0-aac8-65158e5d120b.nudge2"]
+
+
+def test_measured_ok_rearms_the_cycle_but_unmeasured_ok_does_not(codex_ctx, tmp_path):
+    """재무장은 **실측된 ok**(점유>0)에서만 — 측정 실패는 marker 를 보존한다."""
+    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    rollout = _write_rollout(tmp_path)
+    codex_ctx.ctx_nudge_envelope(_payload(rollout), root)
+    marker_dir = root / ".project_manager" / ".local" / "ctx-stop"
+    assert list(marker_dir.iterdir())
+
+    # 측정 불가(transcript 부재)는 ok 로 보이지만 재무장하지 않는다.
+    codex_ctx.ctx_nudge_envelope(_payload(rollout, transcript_path=None), root)
+    assert list(marker_dir.iterdir())
+
+    # 예산이 커져 실측 ok 로 돌아오면(압축 후 형상) 다음 상승 사이클이 열린다.
+    (root / ".project_manager" / "local.conf").write_text(_OUT_OF_BAND_BUDGET,
+                                                          encoding="utf-8")
+    assert codex_ctx.ctx_nudge_envelope(_payload(rollout), root) == {}
+    assert not list(marker_dir.iterdir())
+
+
+def test_subagent_hook_calls_are_exempt(codex_ctx, tmp_path):
+    """서브에이전트 발화는 면제 — 부모 사이클 marker 를 소비하지 않는다(라이브 키 실값).
+
+    라이브 실측: 서브에이전트 훅 payload 의 `session_id` 는 **부모와 같고** `agent_id`/
+    `agent_type` 만 추가된다. 면제가 없으면 서브에이전트가 부모의 사이클 주입권을 가져간다."""
+    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    rollout = _write_rollout(tmp_path)
+
+    assert codex_ctx.ctx_nudge_envelope(_payload(rollout, **LIVE_SUBAGENT_KEYS), root) == {}
+    assert not (root / ".project_manager" / ".local" / "ctx-stop").exists()
+    # 감도: 같은 payload 에서 서브에이전트 키만 빼면 발화한다.
+    assert codex_ctx.ctx_nudge_envelope(_payload(rollout), root) != {}
+
+
+def test_unrelated_hook_events_are_not_touched(codex_ctx, tmp_path):
+    """주입 채널은 두 이벤트뿐 — PostToolUse 등에서는 판정 자체를 하지 않는다."""
+    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    rollout = _write_rollout(tmp_path)
+
+    assert codex_ctx.ctx_nudge_envelope(
+        _payload(rollout, hook_event_name="PostToolUse"), root) == {}
+
+
+def test_guidance_engine_absence_is_silent_and_keeps_the_cycle_open(codex_ctx, tmp_path):
+    """엔진 문구를 못 읽으면 문구를 복제하지 않고 침묵하며, marker 도 안 쓴다(다음 호출 재시도)."""
+    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET)  # pm_log.py 없음.
+    rollout = _write_rollout(tmp_path)
+
+    assert codex_ctx.ctx_nudge_envelope(_payload(rollout), root) == {}
+    assert not (root / ".project_manager" / ".local" / "ctx-stop").exists()
+
+
+def test_guidance_command_shape_is_the_engine_single_source(codex_ctx, tmp_path):
+    """어댑터는 `pm_log.py ctx-guidance` 를 부를 뿐 문구를 만들지 않는다(호출 argv 실값)."""
+    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    rollout = _write_rollout(tmp_path)
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append((list(argv), kwargs))
+        return subprocess.CompletedProcess(argv, 0, stdout=b"GUIDANCE", stderr=b"")
+
+    envelope = codex_ctx.ctx_nudge_envelope(_payload(rollout), root, runner=runner)
+
+    assert envelope["hookSpecificOutput"]["additionalContext"] == "GUIDANCE"
+    argv, kwargs = calls[0]
+    assert argv[0] == sys.executable
+    assert argv[1] == str(root / ".project_manager" / "tools" / "pm_log.py")
+    assert argv[2:] == ["ctx-guidance", "--band", "nudge2", "--used-pct", "77",
+                        "--remaining-pct", "23", "--stop-pct", "20"]
+    assert kwargs["cwd"] == str(root)
+    assert 0 < kwargs["timeout"] <= codex_ctx.CTX_GUIDANCE_TIMEOUT_SEC
+
+
+def test_guidance_failure_modes_are_silent(codex_ctx, tmp_path):
+    """엔진 rc≠0·timeout·OSError 어느 것도 문구 복제나 예외로 새지 않는다."""
+    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    rollout = _write_rollout(tmp_path)
+
+    def failing(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 3, stdout=b"partial", stderr=b"")
+
+    def timing_out(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, 3.0)
+
+    def exploding(argv, **kwargs):
+        raise OSError("no interpreter")
+
+    for runner in (failing, timing_out, exploding):
+        assert codex_ctx.ctx_nudge_envelope(_payload(rollout), root, runner=runner) == {}
+
+
+# ── 4.5 디스패처 합본·출하 CLI (침묵이 실제로 침묵인가) ──────────────────────
+
+def test_dispatcher_merges_the_nudge_without_touching_other_features(codex_ctx, tmp_path):
+    """진입점 합본에서 ctx 넛지만 답하면 그 엔벨로프가 그대로 나가고, 자식은 안 뜬다."""
+    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    rollout = _write_rollout(tmp_path)
+    spawned = []
+
+    def runner(argv, **kwargs):
+        spawned.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout=b"{}", stderr=b"")
+
+    envelope = codex_ctx.dispatch_hook(
+        "PreToolUse", json.dumps(_payload(rollout)).encode("utf-8"), root, runner=runner)
+
+    assert envelope["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    assert spawned == [], "도구 무관 판정이 매 호출마다 자식 프로세스를 띄웠다"
+
+
+def test_dispatcher_stays_byte_identical_to_the_pass_shape_out_of_band(codex_ctx, tmp_path):
+    """밴드 밖 합본은 이 가드가 없던 때와 같은 통과 형태(`{}`)다 — 새 잡음 0."""
+    root = _adopter_root(tmp_path, conf=_OUT_OF_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    rollout = _write_rollout(tmp_path)
+
+    assert codex_ctx.dispatch_hook(
+        "PreToolUse", json.dumps(_payload(rollout)).encode("utf-8"), root) == {}
+    assert codex_ctx.dispatch_hook(
+        "UserPromptSubmit",
+        json.dumps(_payload(rollout, hook_event_name="UserPromptSubmit")).encode("utf-8"),
+        root) == {}
+
+
+@pytest.mark.parametrize("conf,expected_prefix", (
+    (_IN_BAND_BUDGET, '{"hookSpecificOutput"'),
+    (_OUT_OF_BAND_BUDGET, "{}"),
+))
+def test_shipped_cli_emits_one_line_and_rc0(tmp_path, conf, expected_prefix):
+    """출하 CLI(`--hook-dispatch`)를 실제로 태운다 — rc0 + 한 줄, 밴드 밖은 `{}` 뿐."""
+    root = _adopter_root(tmp_path, conf=conf, pm_log_body=_STUB_PM_LOG)
+    shutil.copy2(DISPATCHER, root / "pm_orch_codex.py")
+    (root / ".project_manager" / "tools" / "pm_handoff.py").write_text("", encoding="utf-8")
+    rollout = _write_rollout(tmp_path)
+
+    completed = subprocess.run(
+        [sys.executable, str(root / "pm_orch_codex.py"), "--hook-dispatch", "PreToolUse"],
+        input=json.dumps(_payload(rollout)).encode("utf-8"),
+        capture_output=True, timeout=60)
+
+    assert completed.returncode == 0, completed.stderr
+    assert len(completed.stdout.splitlines()) == 1
+    assert completed.stdout.decode("ascii").startswith(expected_prefix)
+    assert "adapter-fallback" not in completed.stdout.decode("ascii")

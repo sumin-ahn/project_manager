@@ -494,9 +494,15 @@ def test_codex_maybe_mark_ctx_writes_marker_over_budget(orch, driver_mod, tmp_pa
 
 
 def test_relay_usage_stop_marker_is_proactive_guard_when_nonblocking_hook_is_observation_only():
-    """headless hook 안내는 미도달하므로 relay의 proactive driver 회전이 실보호 경로다."""
+    """compaction 훅 systemMessage는 미도달이므로 relay의 proactive driver 회전이 실보호 경로다.
+
+    T-0770 라이브 실측으로 도달 여부가 **채널별로 갈린다**는 사실이 확정됐다 — 진입점 훅의
+    additionalContext 는 모델에 닿고, compaction 훅 systemMessage 는 닿지 않는다. relay 축의
+    근거는 후자 하나이므로 그 채널로 한정해 고정한다(옛 무조건 문장은 재등장 금지).
+    """
     readme = (REPO / "templates" / "codex" / "README.md").read_text(encoding="utf-8")
-    assert "exec 경로 안내는 모델에 닿지 않는다(관측만 가능)" in readme
+    assert "exec 경로에서 `systemMessage` 안내는 모델에 닿지 않는다(관측만 가능)" in readme
+    assert "exec 경로 안내는 모델에 닿지 않는다" not in readme
     assert "driver 회전 선점이 relay 경로를 실보호" in readme
     assert "**proactive** 기계 가드" in readme
     assert "turn.completed.usage" in readme
