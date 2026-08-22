@@ -13946,28 +13946,35 @@ def lint_dependencies() -> list[tuple[str, str, str]]:
 
 
 def lint_claim_identity() -> list[tuple[str, str, str]]:
-    """open + claimed_by 잔존 모순 형상 advisory (never-block · T-0783).
+    """open + claimed_by/claimed_at/claimed_rev 잔존 모순 형상 advisory (never-block · T-0783).
 
     불변식 I1(`status == "open"` 인 티켓은 claimed_by/claimed_at/claimed_rev 전부 null)이
-    깨진 형상을 가시화한다. 옛 `cmd_unblock`(T-0783 이전)이 claimed_by 를 무접촉으로 둔 채
-    무조건 open 으로 옮기던 결함의 잔재로 생길 수 있다 — 조회·필터(`--mine`)·후속 claim 판단을
-    오염시킨다. adopter#0 보드 실측(2026-08-20)에서 대상 0건이라 자동 backfill 은 만들지 않고
-    (대상 없는 코드), 정정은 사용자가 직접 한다: 실제로 아무도 진행하지 않으면 frontmatter 에서
-    claimed_by/claimed_at/claimed_rev 를 지우고, 실제로 진행 중이면 `status: claimed` 로 옮겨
-    상태와 소유를 정합시킨다.
+    깨진 형상을 가시화한다 — **세 필드 중 하나라도** non-null 이면 잡는다(단독 잔존도 포함·
+    F-002). 옛 `cmd_unblock`(T-0783 이전)이 claimed_by 를 무접촉으로 둔 채 무조건 open 으로
+    옮기던 결함의 잔재로 생길 수 있다 — 조회·필터(`--mine`)·후속 claim 판단을 오염시킨다.
+    adopter#0 보드 실측(2026-08-20)에서 대상 0건이라 자동 backfill 은 만들지 않고(대상 없는
+    코드), 정정은 사용자가 직접 한다: 실제로 아무도 진행하지 않으면 frontmatter 에서 잔존
+    필드를 지우고, 실제로 진행 중이면 `status: claimed` 로 옮겨 상태와 소유를 정합시킨다.
 
     kind=`open-claimed-contradiction`(`_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드 비기여·
     push 미차단). `blocked` + claimed_by 는 모순이 **아니다**(claimed-origin blocked 의 정상
     형상·T-0783 (a)안) — 여기서 잡지 않는다.
     """
-    return [
-        (fm.get("id", "?"), "open-claimed-contradiction",
-         f"status=open 인데 claimed_by={fm.get('claimed_by')!r} 잔존 — 소유 표식과 상태가 "
-         "모순이다. 진행 중이 아니면 claimed_by/claimed_at/claimed_rev 를 지우고, 진행 중이면 "
-         "claimed/ 로 옮겨 정합시켜라.")
-        for status, fm in _all_tickets()
-        if status == "open" and fm.get("claimed_by")
-    ]
+    issues: list[tuple[str, str, str]] = []
+    for status, fm in _all_tickets():
+        if status != "open":
+            continue
+        # I1 이 지목하는 세 필드 전부를 개별 검사한다 — 하나만 잔존해도 모순(F-002 확장).
+        residue = {field: fm.get(field)
+                   for field in ("claimed_by", "claimed_at", "claimed_rev") if fm.get(field)}
+        if not residue:
+            continue
+        residue_desc = ", ".join(f"{field}={value!r}" for field, value in residue.items())
+        issues.append((
+            fm.get("id", "?"), "open-claimed-contradiction",
+            f"status=open 인데 {residue_desc} 잔존 — 소유 표식과 상태가 모순이다. 진행 중이 "
+            "아니면 잔존 필드를 지우고, 진행 중이면 claimed/ 로 옮겨 정합시켜라."))
+    return issues
 
 
 # Unfilled `_template.md` text — its presence means the ticket is still a stub.

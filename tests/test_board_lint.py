@@ -3759,3 +3759,107 @@ def test_lint_tickets_surfaces_claim_identity_contradiction(board, monkeypatch, 
 
     kinds = {kind for _tid, kind, _detail in board.lint_tickets()}
     assert "open-claimed-contradiction" in kinds
+
+
+# ── 필드별 단독 잔존 (F-002 · I1 세 필드 전부 검사) ──────────────────────────
+# claimed_by 만 잔존하는 형상은 위 `_open_with_claimed_by_text` 가 이미 커버하지만 claimed_at
+# 도 같이 채워 시나리오를 겸한다 — 여기 셋은 **한 필드만** 남기고 나머지 둘은 완전히 비워
+# "그 필드 하나만으로도 걸리는가"를 각각 독립 격리해 확인한다.
+
+def _open_claimed_by_only_text(tid: str, *, claimed_by: str) -> str:
+    return (f"---\nid: {tid}\ntitle: claimed_by 단독 잔존\nstatus: open\n"
+            f"claimed_by: {claimed_by}\nclaimed_at: null\ndepends_on: []\n---\n"
+            "## 목표\n실값\n\n## 완료 조건\n- [x] 끝\n\n## 참고\n- 없음\n")
+
+
+def _open_claimed_at_only_text(tid: str, *, claimed_at: str) -> str:
+    return (f"---\nid: {tid}\ntitle: claimed_at 단독 잔존\nstatus: open\n"
+            f"claimed_by: null\nclaimed_at: '{claimed_at}'\ndepends_on: []\n---\n"
+            "## 목표\n실값\n\n## 완료 조건\n- [x] 끝\n\n## 참고\n- 없음\n")
+
+
+def _open_claimed_rev_only_text(tid: str, *, claimed_rev: str) -> str:
+    return (f"---\nid: {tid}\ntitle: claimed_rev 단독 잔존\nstatus: open\n"
+            f"claimed_by: null\nclaimed_rev: {claimed_rev}\ndepends_on: []\n---\n"
+            "## 목표\n실값\n\n## 완료 조건\n- [x] 끝\n\n## 참고\n- 없음\n")
+
+
+def test_lint_claim_identity_flags_claimed_by_alone(board, monkeypatch, tmp_path):
+    """claimed_by 만 잔존(claimed_at/claimed_rev 없음)해도 잡는다 — detail 에 필드명이 보인다."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    _ticket(board, "open", "T-0001",
+            _open_claimed_by_only_text("T-0001", claimed_by="alice/pm-1"))
+
+    issues = board.lint_claim_identity()
+    assert [(tid, kind) for tid, kind, _detail in issues] == [
+        ("T-0001", "open-claimed-contradiction")]
+    assert "claimed_by" in issues[0][2]
+
+
+def test_lint_claim_identity_flags_claimed_at_alone(board, monkeypatch, tmp_path):
+    """claimed_at 만 잔존(claimed_by 없음)해도 잡는다 — F-002 이전엔 [] 였다(reviewer 관측 재현)."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    _ticket(board, "open", "T-0001",
+            _open_claimed_at_only_text("T-0001", claimed_at="2026-08-01T00:00:00+00:00"))
+
+    issues = board.lint_claim_identity()
+    assert [(tid, kind) for tid, kind, _detail in issues] == [
+        ("T-0001", "open-claimed-contradiction")]
+    assert "claimed_at" in issues[0][2]
+
+
+def test_lint_claim_identity_flags_claimed_rev_alone(board, monkeypatch, tmp_path):
+    """claimed_rev 만 잔존(claimed_by 없음)해도 잡는다 — F-002 이전엔 [] 였다(reviewer 관측 재현)."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    _ticket(board, "open", "T-0001",
+            _open_claimed_rev_only_text("T-0001", claimed_rev="abc123"))
+
+    issues = board.lint_claim_identity()
+    assert [(tid, kind) for tid, kind, _detail in issues] == [
+        ("T-0001", "open-claimed-contradiction")]
+    assert "claimed_rev" in issues[0][2]
+
+
+def test_lint_claim_identity_kind_stays_advisory_after_widening(board):
+    """F-002 로 판정을 넓혀도 kind 는 그대로 advisory(비차단) — 차단으로 승격되지 않았다."""
+    assert "open-claimed-contradiction" in board._ADVISORY_LINT_KINDS
+
+
+# ── F-001 (라운드 6) — 실제 open 티켓 frontmatter 형상 전용 픽스처 ────────────
+# `_healthy_ticket_text`(공유 헬퍼·4개 다른 테스트가 exact-equality 로 의존)는 건드리지 않는다
+# (라운드 5 빈틈 보고 수용 — PM 대안 1 채택). 대신 실 board(`.project_manager/board/tickets/
+# open/`) 의 실제 frontmatter 형상을 그대로 재현한 **전용** 픽스처를 쓴다 — claimed_by/
+# claimed_at/completed_at 을 값으로 명시(null)해, "필드 부재"가 아니라 "필드가 null 값으로
+# 존재"하는 정상 open 티켓에서도 오탐 0 임을 값 단언으로 잠근다.
+
+def _realistic_open_ticket_text(tid: str) -> str:
+    return (f"---\nid: {tid}\ntitle: 실측 형상 정상 티켓\nstatus: open\n"
+            "created: '2026-08-01'\ncreated_by: tester/pm-1\n"
+            "claimed_by: null\nclaimed_at: null\ncompleted_at: null\n"
+            "depends_on: []\nblocks: []\ntouches: []\nestimate: small\ndesign: n/a\ntags: []\n"
+            "---\n## 목표\n실값\n\n## 완료 조건\n- [x] 끝\n\n## 참고\n- 없음\n")
+
+
+def test_lint_claim_identity_no_false_positive_on_realistic_open_ticket_shape(
+        board, monkeypatch, tmp_path):
+    """실 board 의 open 티켓 frontmatter 형상(claimed_by/claimed_at/completed_at 이 **값으로**
+    null)에서 오탐 0 — `_healthy_ticket_text`(필드 부재)와 달리 필드가 명시적으로 존재해도
+    값이 null 이면 걸리지 않는다는 것을 값 단언으로 잠근다(F-001)."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    _ticket(board, "open", "T-0001", _realistic_open_ticket_text("T-0001"))
+
+    assert board.lint_claim_identity() == []
+
+
+def test_lint_claim_identity_still_flags_contradiction_alongside_realistic_healthy_ticket(
+        board, monkeypatch, tmp_path):
+    """역방향 확인 — 새 오탐-0 픽스처가 실제 정탐(claimed_by 잔존)까지 함께 삼켜버리지 않는다.
+    같은 스캔에 실측 형상 정상 티켓과 모순 티켓을 같이 두고, 모순 티켓만 정확히 잡히는지 본다."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    _ticket(board, "open", "T-0001", _realistic_open_ticket_text("T-0001"))
+    _ticket(board, "open", "T-0002",
+            _open_with_claimed_by_text("T-0002", claimed_by="alice/pm-1"))
+
+    issues = board.lint_claim_identity()
+    assert [(tid, kind) for tid, kind, _detail in issues] == [
+        ("T-0002", "open-claimed-contradiction")]
