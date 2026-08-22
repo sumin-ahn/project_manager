@@ -5027,7 +5027,7 @@ def _select_ticket_body_for_review(body: str, rounds: Sequence) -> TicketBodySel
     return TicketBodySelection("".join(parts), omitted)
 
 
-# 스폰면 경고 문구 — 준비면(`pm_delegate._warn_unharvested_developer_round`, [[T-0807]])과 같은 축을
+# 스폰면 경고 문구 — 준비면(`pm_delegate._warn_unharvested_developer_round`)과 같은 축을
 # 쓰되, 문구는 다르다. 형상 B(앞선 산출 라운드가 있고 최신만 시드)에서 준비면 문구를 그대로
 # 복제하면 "리뷰어 입력에 실리지 않습니다"가 거짓이 된다 — 이 표면은 그렇게 단정하지 않고, 이번
 # 프롬프트에 실제로 실리는 developer 산출 라운드 이름(없으면 "없음")을 값으로 말한다.
@@ -5040,9 +5040,10 @@ _SPAWN_SEED_DEVELOPER_ROUND_WARNING = (
 def _warn_seed_developer_round(rounds: Sequence, *, ticket: str) -> None:
     """추가 리뷰어 스폰면의 loud 경고 — 경고이지 거부가 아니다(rc 는 바꾸지 않는다).
 
-    판정은 준비면(T-0807)이 만든 공개 함수(`pm_delegate.unharvested_developer_round`)를 그대로
-    불러 쓴다 — 기준이 둘이면 두 표면이 어긋난다. `prepare_ticket_body` 한 seam 이 미리보기
-    (`--dry-run`)와 실 스폰을 모두 지나므로 이 호출 하나가 두 채널을 함께 덮는다.
+    판정은 준비면(`pm_delegate._warn_unharvested_developer_round`)이 쓰는 공개 함수
+    `pm_delegate.unharvested_developer_round` 를 그대로 불러 쓴다 — 기준이 둘이면 두 표면이
+    어긋난다. `prepare_ticket_body` 한 seam 이 미리보기(`--dry-run`)와 실 스폰을 모두
+    지나므로 이 호출 하나가 두 채널을 함께 덮는다.
     """
     delegate = _load_pm_delegate()
     stale = delegate.unharvested_developer_round(rounds)
@@ -8065,8 +8066,9 @@ def _main(argv: list[str] | None = None) -> int:
             rounds = _load_ticket_rounds_for(
                 args.ticket, pm_home=pm_home, ticket_text=raw_text,
             )
-            # 시드 그대로인 developer 라운드 위에서 스폰되는지 loud 표시 — [[T-0807]] 준비면과
-            # 같은 축(이 seam 은 dry-run·실 스폰 두 호출을 모두 지난다).
+            # 시드 그대로인 developer 라운드 위에서 스폰되는지 loud 표시 — 준비면
+            # (`pm_delegate._warn_unharvested_developer_round`)과 같은 축(이 seam 은
+            # dry-run·실 스폰 두 호출을 모두 지난다).
             _warn_seed_developer_round(rounds, ticket=args.ticket)
             # 입력 선별 — 명세는 전량, 라운드는 역할별 마지막 산출만(파일 선택).
             selection = _select_ticket_body_for_review(raw_body, rounds)
@@ -8162,7 +8164,7 @@ def _main(argv: list[str] | None = None) -> int:
         else:
             # 본문 미조립은 정상 형상(예: `--paths` 로 검토 범위를 대체하고 `--ticket` 은
             # 안 준 실행)이지만, 침묵하면 "본문이 실렸다고 착각한 채 결과를 읽는" 경로가
-            # 열린다 — 정상 형상도 값으로 말한다([[T-0819]]).
+            # 열린다 — 정상 형상도 미조립이라고 값으로 말한다.
             print("ticket_body: 미조립 — 이번 리뷰어 입력에 게이트 티켓 본문이 실리지 않습니다")
         print(relay.dry_run_codex_egress_line(
             escalation_required=codex_egress_required,

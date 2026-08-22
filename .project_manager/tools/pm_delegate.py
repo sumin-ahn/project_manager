@@ -3256,8 +3256,8 @@ def _warn_unharvested_developer_round(rounds: Sequence) -> None:
     rounds_module = _load_ticket_rounds()
     name = rounds_module.round_filename(stale.ordinal, stale.role)
     # 단정문 대신 값 진술 — 앞선 라운드에 산출이 있으면(형상 B) 그것이 리뷰어 입력에 실린다.
-    # "실리지 않습니다" 는 그 형상에서 거짓이라 쓰지 않는다([[T-0819]]). 스폰면
-    # (`external_review._warn_seed_developer_round`, [[T-0812]])과 같은 계산 하나(
+    # "실리지 않습니다" 는 그 형상에서 거짓이라 쓰지 않는다. 스폰면
+    # (`external_review._warn_seed_developer_round`)과 같은 계산 하나(
     # `latest_round_of_role`)를 써 두 표면이 같은 값을 말하게 한다.
     latest = rounds_module.latest_round_of_role(rounds, REVIEW_SUBJECT_ROLE)
     latest_name = (
