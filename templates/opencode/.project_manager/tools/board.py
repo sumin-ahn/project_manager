@@ -2,7 +2,7 @@
 """Ticket board CLI — multi-session development coordination.
 
 Atomic claim via POSIX rename(2). Tickets live as markdown files in
-`.project_manager/wiki/tickets/{open,claimed,blocked,done}/`. Each command
+`.project_manager/wiki/tickets/{open,claimed,blocked,done,discarded}/`. Each command
 updates `.project_manager/wiki/board.md` automatically.
 
 `board.py idea …` manages pre-ADR ideas under
@@ -14705,8 +14705,10 @@ def _dod_open_items(body: str) -> list[str]:
          이미 open/claimed 를 차단하고 있어 이 게이트로 새로 잠기는 활성 티켓이 없다.
       2. **헤딩 미인식** — 절 이름 규칙 밖 헤딩(기존 차단·`_dod_heading_mismatch`).
       3. **체크박스 0개**(산문 DoD) — 기계로 마감을 판정할 항목이 없다.
-      4. **전량 이월**(`[x]` 0) — 항목은 있는데 실제로 한 게 하나도 없다. 그건 구현 완료가
-         아니라 처분이므로 `discard` 로 종결한다. 부분 이월(`[x]` ≥1)은 통과다.
+      4. **전량 이월** — 항목은 있는데 **전부** 사유 있는 이월이라 실제로 한 게 하나도 없다.
+         그건 구현 완료가 아니라 처분이므로 `discard` 로 종결한다. 부분 이월(`[x]` ≥1)은
+         통과다. 미체크·미지 마커가 하나라도 섞이면 처분이 아니라 **미완료**이므로 이 진단을
+         내지 않는다 — 그 항목들은 위 형상들이 각각 지목한다(틀린 방향 안내 금지).
 
     `## 완료 조건` 절이 여럿이면 **전 절을 합산**한다 — 첫 절만 보면 앞에 빈 절 하나를 두고 뒤
     절에 미체크 항목을 남기는 우회가 성립한다.
@@ -14722,6 +14724,7 @@ def _dod_open_items(body: str) -> list[str]:
     problems: list[str] = []
     checkbox_count = 0
     checked_count = 0
+    deferred_count = 0        # 사유가 붙은 유효 이월만 센다 — 전량 이월 판정의 분자.
     for line in "\n".join(sections).splitlines():
         match = _DOD_CHECKBOX_RE.match(line)
         if match is None:
@@ -14736,6 +14739,7 @@ def _dod_open_items(body: str) -> list[str]:
             continue
         if mark == _DOD_DEFERRED_MARK:
             if _DOD_DEFERRED_REASON_RE.search(text):
+                deferred_count += 1
                 continue
             problems.append(
                 f"DoD 이월 사유 누락: {text!r} — 이월은 같은 줄에 `(이월: <사유·귀속>)` 필수")
@@ -14746,9 +14750,10 @@ def _dod_open_items(body: str) -> list[str]:
         problems.append(
             f"DoD 체크박스 0개: `{_DOD_SECTION}` 절에 기계로 판정할 항목이 없다(산문 DoD) — "
             f"각 항목을 {_DOD_VALUE_FORMS} 형식으로 적어라")
-    elif checked_count == 0:
+    elif deferred_count == checkbox_count:
         problems.append(
-            f"DoD 전량 이월(`[x]` 0 / 체크박스 {checkbox_count}개): 구현된 항목이 하나도 없다 "
+            f"DoD 전량 이월(사유 있는 이월 {deferred_count} / 체크박스 {checkbox_count}개): "
+            "구현된 항목이 하나도 없다 "
             "— done 이 아니라 **처분**이다. 병합·폐기라면 "
             f"`board.py discard <ID> {'|'.join(DISPOSITION_KINDS)} --reason <사유>` 로 "
             "종결하라(부분 이월은 `[x]` 가 하나 이상일 때 통과한다)")
@@ -16174,11 +16179,16 @@ def lint_unmigrated_overlay() -> list[tuple[str, str, str]]:
 # title 은 CommonMark 3형 모두 흡수 — `"…"`·`'…'`·`(…)`.
 _MD_LINK_TARGET_RE = re.compile(
     r"\]\(\s*<?([^)>\s]+)>?(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?\s*\)")
+# 상태 조각은 **상수에서 유도**한다 — 리터럴로 적으면 상태 디렉토리가 늘어날 때 그 상태의 링크가
+# 조용히 lint 밖으로 빠진다(dangling·슬러그 권고 둘 다 미검사). `re.escape` 는 상태명에 정규식
+# 메타문자가 섞여도 문자 그대로 매칭시킨다.
+_TICKET_STATUS_PATTERN = "|".join(re.escape(status) for status in STATUS_DIRS)
+_IDEA_STATUS_PATTERN = "|".join(re.escape(status) for status in IDEA_STATUS_DIRS)
 _STRUCT_PATH_RE = re.compile(
     r"(?:^|/)(?:"
     r"decisions/([^/]+\.md)"
-    r"|tickets/(?:open|claimed|blocked|done)/([^/]+\.md)"
-    r"|ideas/(?:open|promoted|killed)/([^/]+\.md)"
+    rf"|tickets/(?:{_TICKET_STATUS_PATTERN})/([^/]+\.md)"
+    rf"|ideas/(?:{_IDEA_STATUS_PATTERN})/([^/]+\.md)"
     r")$")
 # 숫자선두 자유어휘 wikilink — `[[NNNN-slug]]`·`[[NNNN]]`·alias `[[NNNN-slug|표시명]]`
 # (ADR/idea 를 ID 아닌 형으로 적은 것). slug 부는 `[^\]|]+`(비-ASCII 포함) — `_slugify` 가 한글
