@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "count": 563,
+  "count": 559,
   "paths": {
     ".claude/agents/code-reviewer.md": [
       {
@@ -201,11 +201,6 @@
       }
     ],
     ".project_manager/tools/pm_bootstrap.py": [
-      {
-        "kind": "decision_label",
-        "hash": "101ee42f23141f5a14ecddcf2e640f9726a94ad9b5ffa80fb14b3ce56070cdc6",
-        "count": 1
-      },
       {
         "kind": "decision_label",
         "hash": "54c35a57681d5b0bfdd5fcab489f78572f03254714351d8ab16cab3e17ac9023",
@@ -795,11 +790,6 @@
       }
     ],
     "templates/claude_code/.project_manager/tools/pm_bootstrap.py": [
-      {
-        "kind": "decision_label",
-        "hash": "101ee42f23141f5a14ecddcf2e640f9726a94ad9b5ffa80fb14b3ce56070cdc6",
-        "count": 1
-      },
       {
         "kind": "decision_label",
         "hash": "54c35a57681d5b0bfdd5fcab489f78572f03254714351d8ab16cab3e17ac9023",
@@ -1407,11 +1397,6 @@
       }
     ],
     "templates/codex/.project_manager/tools/pm_bootstrap.py": [
-      {
-        "kind": "decision_label",
-        "hash": "101ee42f23141f5a14ecddcf2e640f9726a94ad9b5ffa80fb14b3ce56070cdc6",
-        "count": 1
-      },
       {
         "kind": "decision_label",
         "hash": "54c35a57681d5b0bfdd5fcab489f78572f03254714351d8ab16cab3e17ac9023",
@@ -2215,11 +2200,6 @@
       }
     ],
     "templates/opencode/.project_manager/tools/pm_bootstrap.py": [
-      {
-        "kind": "decision_label",
-        "hash": "101ee42f23141f5a14ecddcf2e640f9726a94ad9b5ffa80fb14b3ce56070cdc6",
-        "count": 1
-      },
       {
         "kind": "decision_label",
         "hash": "54c35a57681d5b0bfdd5fcab489f78572f03254714351d8ab16cab3e17ac9023",

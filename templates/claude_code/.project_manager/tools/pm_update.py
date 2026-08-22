@@ -5685,7 +5685,7 @@ def check_adapter_hook_sets(dest_root: Path, source_root: Path) -> dict:
                 "그 세대가 아는 세대 불일치는 그대로 잡는다)")
             findings = judge(dest_root, source_root)
         remedy_lines = pm_import.hook_set_remedy_lines
-        # 역방향 축(T-0777)은 **별도 목록**이다 — 완료 게이트가 소비하는 `findings` 에 섞으면
+        # 역방향 진입점 축은 **별도 목록**이다 — 완료 게이트가 소비하는 `findings` 에 섞으면
         #   advisory 가 차단으로 승격돼 훅을 의도적으로 끈 채택자의 흡수가 영구히 막힌다.
         #   판정 함수가 없는 구세대 형제는 조용히 건너뛴다(그 세대엔 이 개념이 없다).
         entrypoint_judge = getattr(pm_import, "judge_adapter_hook_entrypoints", None)
@@ -5871,7 +5871,7 @@ def _print_adapter_hook_set_finding(result: dict, *, dry_run: bool = False) -> N
               file=sys.stderr)
         for line in finding["remedy_lines"]:
             print(f"    → {line}", file=sys.stderr)
-    # 역방향 진입점 축(T-0777)은 advisory 다 — 같은 자리에서 loud 하게 내되 게이트는 안 건드린다.
+    # 역방향 진입점 축은 advisory 다 — 같은 자리에서 loud 하게 내되 게이트는 안 건드린다.
     for finding in result.get("entrypoints", []):
         print(f"⚠️  어댑터 훅 진입점 누락({finding['harness']}) — {finding['detail']}.",
               file=sys.stderr)

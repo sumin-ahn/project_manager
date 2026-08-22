@@ -6051,13 +6051,13 @@ def _board_git_claim_prefetch(ticket_id: str) -> _ClaimPrefetch:
     remote_status = _board_git_remote_ticket_status(upstream.tracking, ticket_id)
     if remote_status in ("claimed", "done", "blocked"):
         # behind 도 함께 실어 보낸다 — 차단 문구가 "로컬 사본이 왜 뒤처진 판단을 했는지"
-        # (list/show 의 freshness 와 같은 판정)를 그 자리에서 설명하게 한다(T-0782).
+        # (list/show 의 freshness 와 같은 판정)를 그 자리에서 설명하게 한다.
         return _ClaimPrefetch(block=_CLAIM_BLOCK_RACE_LOST, detail=remote_status,
                               behind=_board_git_behind(upstream.tracking))
     # 5. 원격이 앞섰을 때만 통합. 안 앞섰으면 무관 dirty 가 있어도 claim 은 진행한다.
     behind = _board_git_behind(upstream.tracking)
     # behind 판정 불가(None)는 옛 0 폴백과 **같은 방향**으로 흘린다 — 원격이 앞섰다고 볼 근거가
-    # 없으면 통합도 차단도 하지 않는다(차단 판단 불변·T-0782 는 진단 문구만 정직하게 한다).
+    # 없으면 통합도 차단도 하지 않는다(차단 판단 불변·진단 문구만 정직하게 한다).
     if behind is not None and behind > 0:
         try:
             pull = _board_git_pull_rebase()
@@ -6165,7 +6165,7 @@ def _claim_block_message(ticket_id: str, prefetch: _ClaimPrefetch) -> str:
     if prefetch.block == _CLAIM_BLOCK_RACE_LOST:
         where = prefetch.detail or "claimed"
         # behind 계산 불가(rev-list 실패)면 수치를 지어내지 않는다 — 실측 0 과 판정불가는 다른
-        # 사실이고, 사용자가 읽는 숫자는 실측이어야 한다(T-0782 F-003).
+        # 사실이고, 사용자가 읽는 숫자는 실측이어야 한다(F-003).
         gap = (f"원격보다 {behind} 커밋 뒤처진 상태에서 조회됐다"
                f"(list/show 의 freshness 와 같은 판정)" if behind is not None else
                "뒤처진 커밋 수는 판정불가다"
@@ -10695,7 +10695,7 @@ def cmd_block(args: argparse.Namespace) -> int:
         fm, body = load_ticket(path)
         new_path = move_ticket(path, "blocked")
         fm["status"] = "blocked"
-        # claimed_by/claimed_at 는 무접촉 — block 은 작업 중단이지 소유 포기가 아니다(I4·T-0783).
+        # claimed_by/claimed_at 는 무접촉 — block 은 작업 중단이지 소유 포기가 아니다.
         # 소유 해제 문은 unclaim 하나뿐. `unblock` 이 이 값의 유무로 복귀 목적지를 정한다.
         note = f"\n## Blocked\n{args.reason} — {datetime.date.today().isoformat()}\n"
         dump_ticket(new_path, fm, body + note)
@@ -10743,8 +10743,8 @@ def cmd_unblock(args: argparse.Namespace) -> int:
             return 1
         fm, body = load_ticket(path)
         # claimed_by 보유 티켓(claimed-origin blocked)은 claimed/ 로 복귀시켜 소유 표식을
-        # 보존한다 — 무조건 open 으로 옮기면 "open + claimed_by 잔존" 모순이 생겼다(T-0783).
-        # open-origin blocked(claimed_by 없음)는 현행대로 open/ 으로 돌아간다(I3 왕복 불변식).
+        # 보존한다 — 무조건 open 으로 옮기면 "open + claimed_by 잔존" 모순이 생겼다.
+        # open-origin blocked(claimed_by 없음)는 현행대로 open/ 으로 돌아간다(왕복 불변식).
         dest_status = "claimed" if fm.get("claimed_by") else "open"
         new_path = move_ticket(path, dest_status)
         fm["status"] = dest_status
@@ -12078,7 +12078,7 @@ def _load_pm_bootstrap_module():
 
 
 class _BoardFreshness(NamedTuple):
-    """freshness 1줄 + 그 줄이 근거로 쓴 원격-추적 스냅샷의 **검증 여부** (T-0782).
+    """freshness 1줄 + 그 줄이 근거로 쓴 원격-추적 스냅샷의 **검증 여부**.
 
     `verified` 는 "이번 조회가 원격을 실측했나" 다 — TTL 이내 직전 fetch 재사용 또는 이번
     fetch 성공일 때만 True. False 면 남아 있는 원격-추적 ref 는 **검증되지 않은 캐시**라
@@ -12147,7 +12147,7 @@ def _print_board_freshness() -> bool:
 
     반환값은 **이 줄이 근거로 쓴 원격-추적 스냅샷이 실측 검증됐나**(TTL 이내 재사용 또는 이번
     fetch 성공)다 — 같은 흐름에서 이어지는 티켓 단위 대조가 검증되지 않은 캐시로 단정하지
-    않게 한다(T-0782). `list` 는 이 값을 쓰지 않는다(현행 동작 무변경)."""
+    않게 한다. `list` 는 이 값을 쓰지 않는다(현행 동작 무변경)."""
     freshness = _board_git_freshness()
     if freshness.line is not None:
         print(freshness.line, file=sys.stderr)
@@ -12156,7 +12156,7 @@ def _print_board_freshness() -> bool:
 
 def _print_ticket_remote_mismatch(ticket_id: str, local_status: str, *,
                                   snapshot_verified: bool) -> None:
-    """이 티켓의 로컬 status ↔ 원격-추적 status 불일치를 1줄(stderr) 표면화한다 (T-0782).
+    """이 티켓의 로컬 status ↔ 원격-추적 status 불일치를 1줄(stderr) 표면화한다.
 
     `show` 전용 추가 표면 — 전역 요약(`_print_board_freshness`)만으로는 "이 티켓" 이 stale
     한지 알 수 없다(다중 clone 에서 local open 인데 원격은 이미 done 인 사례가 실사고).
@@ -12174,7 +12174,7 @@ def _print_ticket_remote_mismatch(ticket_id: str, local_status: str, *,
     무출력(오탐 0) 조건: 스냅샷 미검증(fetch 실패·TTL 밖) · board 비-git · upstream 미설정 ·
     원격 판정 불가(`None`·원격에 그 티켓 없음 포함) · local_status 가 STATUS_DIRS 밖(draft 는
     board-git 추적 대상이 아님) · 로컬==원격. 이 경우들은 "판정불가/무관"일 뿐 "최신" 을
-    주장하지 않으므로 I2 를 어기지 않는다.
+    주장하지 않으므로 오탐이 아니다.
     """
     if not snapshot_verified:
         return
@@ -12189,7 +12189,7 @@ def _print_ticket_remote_mismatch(ticket_id: str, local_status: str, *,
     if remote_status is None or remote_status == local_status:
         return
     behind = _board_git_behind(upstream.tracking)
-    # behind 계산 불가면 수치를 지어내지 않는다(T-0782 F-003) — 불일치 사실 자체는 검증된
+    # behind 계산 불가면 수치를 지어내지 않는다(F-003) — 불일치 사실 자체는 검증된
     # 스냅샷에서 읽었으므로 그대로 말한다.
     gap = f"behind {behind}" if behind is not None else "behind 판정불가"
     print(
@@ -13636,7 +13636,7 @@ def cmd_show(args: argparse.Namespace) -> int:
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         return 2
-    # board-git freshness 표면화 (advisory·stderr·T-0782) — list 와 같은 seam 소환 + 이
+    # board-git freshness 표면화 (advisory·stderr) — list 와 같은 seam 소환 + 이
     # 티켓 단위 로컬↔원격 status 불일치 1줄.
     #
     # 대조할 원격이 아예 없는 형상(board 비-git · upstream 미설정)은 **둘 다 무출력**이다:
@@ -14006,25 +14006,25 @@ def lint_dependencies() -> list[tuple[str, str, str]]:
 
 
 def lint_claim_identity() -> list[tuple[str, str, str]]:
-    """open + claimed_by/claimed_at/claimed_rev 잔존 모순 형상 advisory (never-block · T-0783).
+    """open + claimed_by/claimed_at/claimed_rev 잔존 모순 형상 advisory (never-block).
 
-    불변식 I1(`status == "open"` 인 티켓은 claimed_by/claimed_at/claimed_rev 전부 null)이
+    불변식(`status == "open"` 인 티켓은 claimed_by/claimed_at/claimed_rev 전부 null)이
     깨진 형상을 가시화한다 — **세 필드 중 하나라도** non-null 이면 잡는다(단독 잔존도 포함·
-    F-002). 옛 `cmd_unblock`(T-0783 이전)이 claimed_by 를 무접촉으로 둔 채 무조건 open 으로
+    F-002). 옛 `cmd_unblock`(정합 수정 이전)이 claimed_by 를 무접촉으로 둔 채 무조건 open 으로
     옮기던 결함의 잔재로 생길 수 있다 — 조회·필터(`--mine`)·후속 claim 판단을 오염시킨다.
-    adopter#0 보드 실측(2026-08-20)에서 대상 0건이라 자동 backfill 은 만들지 않고(대상 없는
+    adopter#0 보드 실측에서 대상 0건이라 자동 backfill 은 만들지 않고(대상 없는
     코드), 정정은 사용자가 직접 한다: 실제로 아무도 진행하지 않으면 frontmatter 에서 잔존
     필드를 지우고, 실제로 진행 중이면 `status: claimed` 로 옮겨 상태와 소유를 정합시킨다.
 
     kind=`open-claimed-contradiction`(`_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드 비기여·
     push 미차단). `blocked` + claimed_by 는 모순이 **아니다**(claimed-origin blocked 의 정상
-    형상·T-0783 (a)안) — 여기서 잡지 않는다.
+    형상) — 여기서 잡지 않는다.
     """
     issues: list[tuple[str, str, str]] = []
     for status, fm in _all_tickets():
         if status != "open":
             continue
-        # I1 이 지목하는 세 필드 전부를 개별 검사한다 — 하나만 잔존해도 모순(F-002 확장).
+        # 그 불변식이 지목하는 세 필드 전부를 개별 검사한다 — 하나만 잔존해도 모순(F-002 확장).
         residue = {field: fm.get(field)
                    for field in ("claimed_by", "claimed_at", "claimed_rev") if fm.get(field)}
         if not residue:
@@ -17123,7 +17123,7 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     design-pending(티켓 설계 단계 `design: required` 미완 — 설계 절 미충전/필드 미승격 가시화·
     advisory·never-block·차단은 claim 게이트) +
     open-claimed-contradiction(status=open 인데 claimed_by 잔존 — 상태-소유 모순 가시화·
-    advisory·never-block·T-0783)."""
+    advisory·never-block)."""
     return (lint_dependencies() + lint_bodies() + lint_ideas()
             + lint_status()
             + lint_wikilinks() + lint_unstable_refs() + lint_scopes()
