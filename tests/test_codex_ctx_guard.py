@@ -588,6 +588,12 @@ def test_board_init_scaffolds_codex_budget_comment(tmp_path, monkeypatch):
 DISPATCHER = CODEX / "pm_orch_codex.py"
 CLAUDE_CTX_GUARD = (
     REPO / "templates" / "claude_code" / ".claude" / "ctx_guard.py")
+# T-0835 라이브 프로브(architect R1·2026-08-22) 픽스처 — 첫 turn(rollout에 token_count 아직
+# 없음) 훅 payload 4건 + 그 시점 rollout 6레코드. 두 파일 모두 `evidence`/새 fixture 헤더에
+# 조달 경로(elide 스크립트)를 남긴다.
+LIVE_PAYLOADS_FIXTURE = REPO / "tests" / "fixtures" / "codex_0_147_0_live_hook_payloads.json"
+FIRST_TURN_ROLLOUT_FIXTURE = (
+    REPO / "tests" / "fixtures" / "codex_0_147_0_first_turn_rollout.jsonl")
 
 # codex-cli 0.147.0 격리 CODEX_HOME 라이브 프로브(2026-08-22)에서 채집한 rollout JSONL **원문
 # 줄**이다. 절대경로만 <work> 로 치환했고 그 밖의 bytes 는 그대로다 — 조립 문자열 픽스처는
@@ -730,6 +736,158 @@ def test_rollout_parser_skips_damaged_lines_to_an_older_usable_record(codex_ctx,
     rollout = _write_rollout(tmp_path, lines)
 
     assert codex_ctx.rollout_context_tokens(str(rollout)) == LIVE_ROLLOUT_INPUT_TOKENS
+
+
+# ── 4.1b 첫 turn: token_count 아직 없음 (T-0835) ────────────────────────────
+# 라이브 프로브(architect R1·2026-08-22)에서 캡처한 새 thread 첫 UserPromptSubmit 시점 rollout —
+# 첫 응답 전이라 token_count 0건이다(§경계 실측). ctx_nudge_envelope 는 이 구간에서 거짓 0%를
+# 만들지 않고 침묵해야 하고(I1), 미측정을 "안전(ok 재무장)"으로 승격하지 않는다(I2).
+
+# 압축 직후 codex 가 **명시적으로** 쓰는 last_token_usage.input_tokens=0(측정된 0) — T-0835
+# architect R1 라이브 프로브(model_auto_compact_token_limit=7000 강제 auto 압축) idx 39 verbatim.
+# 미측정(token_count 0건)과 같은 sentinel(0)로 수렴해야 한다(I2').
+LIVE_ZERO_INPUT_TOKEN_COUNT_LINE = (
+    '{"timestamp":"2026-08-22T14:37:30.427Z","type":"event_msg","payload":{"type":"token_count",'
+    '"info":{"total_token_usage":{"input_tokens":37914,"cached_input_tokens":0,'
+    '"cache_write_input_tokens":0,"output_tokens":637,"reasoning_output_tokens":0,'
+    '"total_tokens":38551},"last_token_usage":{"input_tokens":0,"cached_input_tokens":0,'
+    '"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,'
+    '"total_tokens":6962},"model_context_window":258400},"rate_limits":{"limit_id":"codex",'
+    '"limit_name":null,"primary":null,"secondary":null,"credits":null,"individual_limit":null,'
+    '"spend_control_reached":null,"plan_type":null,"rate_limit_reached_type":null}}}'
+)
+
+
+def _first_turn_rollout_lines() -> tuple[str, ...]:
+    return tuple(FIRST_TURN_ROLLOUT_FIXTURE.read_text(encoding="utf-8").splitlines())
+
+
+def _first_turn_event(event: str) -> dict:
+    """`first_turn_events` fixture 에서 그 이벤트의 라이브 payload(첫 turn) 를 읽는다."""
+    document = json.loads(LIVE_PAYLOADS_FIXTURE.read_text(encoding="utf-8"))
+    matches = [item for item in document["first_turn_events"]
+              if item["hook_event_name"] == event]
+    assert len(matches) == 1, document["first_turn_events"]
+    return matches[0]
+
+
+def _first_turn_payload(rollout: Path, event: str) -> dict:
+    payload = _first_turn_event(event)
+    payload["transcript_path"] = str(rollout)
+    payload["cwd"] = str(rollout.parent)
+    return payload
+
+
+@pytest.mark.parametrize("event", ("UserPromptSubmit", "PreToolUse"))
+def test_first_turn_without_token_count_is_silent(codex_ctx, tmp_path, event):
+    """첫 turn(rollout 에 token_count 0건)은 두 채널 모두 침묵 — 엔진 문구 생성 자체가 없다.
+
+    존재 검사가 아니라 runner 호출 리스트가 **비었음**을 값으로 단언한다(=측정 없음을 실측
+    0%로 오인해 안내를 만들지 않았다). I1-a·I1-c."""
+    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    rollout = _write_rollout(tmp_path, lines=_first_turn_rollout_lines())
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout=b"GUIDANCE", stderr=b"")
+
+    envelope = codex_ctx.ctx_nudge_envelope(
+        _first_turn_payload(rollout, event), root, runner=runner)
+
+    assert envelope == {}
+    assert calls == [], "측정 없음이 엔진 문구 생성을 호출했다 — 0%를 실측치로 오인했다는 뜻"
+
+
+@pytest.mark.parametrize("event", ("UserPromptSubmit", "PreToolUse"))
+def test_first_turn_never_reports_a_usage_percentage(codex_ctx, tmp_path, event):
+    """첫 turn 엔벨로프 직렬화·엔진 호출 어디에도 사용률 수치가 없다(거짓 안내 부재·I1-b).
+
+    감도: 측정 없음을 정상 관측치(used_pct=0)로 바꾸는 회귀가 있으면 `--used-pct` 인자가
+    새로 나타나 이 단언이 red 가 된다."""
+    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    rollout = _write_rollout(tmp_path, lines=_first_turn_rollout_lines())
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout=b"GUIDANCE", stderr=b"")
+
+    envelope = codex_ctx.ctx_nudge_envelope(
+        _first_turn_payload(rollout, event), root, runner=runner)
+
+    serialized = json.dumps(envelope, ensure_ascii=False)
+    assert "%" not in serialized and "컨텍스트 사용" not in serialized
+    assert not any("--used-pct" in call for call in calls)
+
+
+def test_unmeasured_first_turn_preserves_existing_band_markers(codex_ctx, tmp_path):
+    """이미 선 밴드 marker 가 있으면(직전 사이클) 첫 turn 측정 실패가 그걸 지우지 않는다(I2).
+
+    감도: `ctx_nudge_envelope` 의 `if tokens > 0:` 재무장 가드를 지우면 이 marker 가 사라져
+    red 가 된다."""
+    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    measured_rollout = _write_rollout(tmp_path)
+    codex_ctx.ctx_nudge_envelope(_payload(measured_rollout), root)
+    marker_dir = root / ".project_manager" / ".local" / "ctx-stop"
+    before = sorted(p.name for p in marker_dir.iterdir())
+    assert before
+
+    first_turn_rollout = tmp_path / "rollout-first-turn.jsonl"
+    first_turn_rollout.write_text(
+        "\n".join(_first_turn_rollout_lines()) + "\n", encoding="utf-8")
+    first_turn_payload = _first_turn_payload(first_turn_rollout, "UserPromptSubmit")
+    first_turn_payload["session_id"] = _payload(measured_rollout)["session_id"]  # 같은 사이클.
+
+    assert codex_ctx.ctx_nudge_envelope(first_turn_payload, root) == {}
+    after = sorted(p.name for p in marker_dir.iterdir())
+    assert after == before, "측정 불가(첫 turn)가 기존 marker 를 지웠다 — 재무장 가드 위반"
+
+
+def test_zero_input_token_count_after_compaction_is_treated_as_unmeasured(codex_ctx, tmp_path):
+    """압축 직후 codex 가 명시적으로 쓰는 last_token_usage.input_tokens=0(측정된 0)도 미측정과
+    같은 sentinel(0)로 수렴한다 — 침묵·marker 부재(라이브 실물 idx 39·I2')."""
+    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    rollout = tmp_path / "rollout-post-compaction.jsonl"
+    rollout.write_text(LIVE_ZERO_INPUT_TOKEN_COUNT_LINE + "\n", encoding="utf-8")
+
+    assert codex_ctx.rollout_context_tokens(str(rollout)) == 0
+    assert codex_ctx.ctx_nudge_envelope(_payload(rollout), root) == {}
+    assert not (root / ".project_manager" / ".local" / "ctx-stop").exists()
+
+
+def test_first_turn_payload_runs_through_the_shipped_entrypoint_silently(codex_ctx, tmp_path):
+    """첫 turn payload 를 출하 진입점(`dispatch_hook`)에 그대로 먹여도 합본은 `{}`(I5 확장)."""
+    root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
+    rollout = _write_rollout(tmp_path, lines=_first_turn_rollout_lines())
+
+    for event in ("UserPromptSubmit", "PreToolUse"):
+        payload = _first_turn_payload(rollout, event)
+        assert codex_ctx.dispatch_hook(
+            event, json.dumps(payload).encode("utf-8"), root) == {}
+
+
+def test_prose_does_not_claim_first_turn_coverage(codex_ctx):
+    """산문(docstring·출하 README)에 첫 turn 한계 문장 앵커가 있고, "첫 turn 도 보호" 류
+    무범위 주장은 없다(I6·claude ctx_guard.py 선례와 동형). 실측 범위(`codex exec`)도
+    명시돼야 한다 — 라이브 프로브는 `codex exec`/`exec resume`/auto-compaction 만 쟀고
+    direct TUI 는 미실측이라, 그 caveat 없이 결론을 Codex 전체 사실로 쓰면 이 단언이
+    red 가 된다(F-002 fix · code-reviewer R4)."""
+    readme = (REPO / "templates" / "codex" / "README.md").read_text(encoding="utf-8")
+    rollout_doc = codex_ctx.rollout_context_tokens.__doc__ or ""
+    docstrings = rollout_doc + (codex_ctx.ctx_nudge_envelope.__doc__ or "")
+
+    assert "첫 turn" in readme and "보호하지 못한다" in readme
+    assert "첫 turn" in docstrings and "T-0835" in docstrings
+    for prose in (readme, docstrings):
+        assert "첫 turn도 보호" not in prose and "첫 turn을 보호한다" not in prose
+    # F-002: "무방비는 새 thread 첫 요청 1회뿐" 결론은 codex exec 축만 실측했다 — 그 실측
+    # 범위 한정과 direct TUI 미실측 caveat 가 README·rollout_context_tokens docstring
+    # 양쪽에 있어야 한다(빠지면 이 티켓 산출 자체가 실측 범위를 넘어선 주장이 된다).
+    for prose, label in ((readme, "README"), (rollout_doc, "rollout_context_tokens docstring")):
+        assert "codex exec" in prose, f"{label}: codex exec 실측 범위 한정 문구 부재"
+        assert "direct TUI" in prose and "미실측" in prose, (
+            f"{label}: direct TUI 미실측 caveat 부재")
 
 
 # ── 4.2 임계·예산·밴드가 claude 와 같은 키·같은 값인가 ───────────────────────

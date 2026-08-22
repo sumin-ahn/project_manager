@@ -16,6 +16,7 @@ stop/window 만 미러하고 nudge 축이 없어(relay 회전만 판정) 이 가
 """
 from __future__ import annotations
 
+import importlib.util
 import re
 from pathlib import Path
 
@@ -95,3 +96,50 @@ def test_ctx_default_sanity_stop_below_nudge():
     nudge = _grab(BOARD, r"CTX_NUDGE_PCT_DEFAULT\s*=\s*(\d+)")
     stop = _grab(BOARD, r"CTX_STOP_PCT_DEFAULT\s*=\s*(\d+)")
     assert 0 < stop <= nudge < 100, f"디폴트 sanity 위반: nudge={nudge} stop={stop}"
+
+
+# ── 첫 모델 응답 전 침묵 (T-0835) ────────────────────────────────────────────
+# 세 하네스 모두 첫 모델 응답 전에는 점유를 모른다는 구조가 이미 공통 규칙(미측정=침묵)임을
+# 대조한다 — codex/claude 는 같은 sentinel(0)을 돌려주고, opencode 는 assistant 메시지+tokens
+# 없이는 ctx 판정 진입 자체가 없다(가드 코드 신설 0 — 세 사이트 모두 처방 전부터 이미 이 규칙).
+
+def _load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_claude_and_codex_return_the_same_unmeasured_sentinel_before_first_response(tmp_path):
+    """claude `context_tokens_from_transcript`·codex `rollout_context_tokens` 는 첫 응답 전
+    (usage/token_count 0건) 같은 sentinel(0)로 수렴한다 — 어느 쪽도 실측치로 오인하지 않는다."""
+    claude = _load_module("claude_ctx_guard_t0835_mirror", CLAUDE_GUARD)
+    codex = _load_module("codex_ctx_guard_t0835_mirror", CODEX_GUARD)
+
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text(
+        '{"type":"user","message":{"role":"user","content":"hi"}}\n', encoding="utf-8")
+    rollout = tmp_path / "rollout.jsonl"
+    rollout.write_text(
+        '{"type":"event_msg","payload":{"type":"agent_message","message":"hi"}}\n',
+        encoding="utf-8")
+
+    assert claude.context_tokens_from_transcript(str(transcript)) == 0
+    assert codex.rollout_context_tokens(str(rollout)) == 0
+
+
+def test_opencode_gates_ctx_evaluation_on_an_assistant_message_with_tokens():
+    """opencode 는 `message.updated` + `role==assistant` + `tokens` 없이는 ctx 판정
+    (`computeCtxState`) 진입 자체가 없다 — 구조 대조로 codex/claude 의 0-sentinel 과 같은 결론
+    (첫 모델 응답 전에는 점유를 모른다)."""
+    source = OPENCODE_GUARD.read_text(encoding="utf-8")
+    gate = re.search(r'if \(info\.role !== "assistant" \|\| !info\.tokens\) return;', source)
+    assert gate, "opencode: assistant/tokens 게이트 문구를 못 찾음 — 소스가 바뀌었으면 이 가드도 재검토"
+    # `function computeCtxState(...)` 정의가 아니라 **호출부**(`= computeCtxState(used, ...)`)를
+    # 찾는다 — 정의는 게이트보다 항상 앞이라(파일 상단 순수 함수 블록) 정의 위치로는 순서를
+    # 못 본다.
+    evaluation = re.search(r"=\s*computeCtxState\(", source)
+    assert evaluation and evaluation.start() > gate.start(), (
+        "ctx 판정(computeCtxState)이 assistant/tokens 게이트보다 앞에 있다 — "
+        "첫 응답 전에도 평가될 수 있다"
+    )

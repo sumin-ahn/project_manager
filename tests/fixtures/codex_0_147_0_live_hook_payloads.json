@@ -56,6 +56,81 @@
       "agent_type": "default"
     }
   ],
+  "first_turn_evidence": "live capture · codex-cli 0.147.0 · isolated CODEX_HOME + --oss --local-provider ollama -m gpt-oss:20b (무과금) · T-0835 architect R1 프로브 · 새 thread 첫 turn(SessionStart 이후 첫 UserPromptSubmit/PreToolUse/PostToolUse) payload 4건 — `first_turn_events`. 같은 프로브의 첫 UserPromptSubmit 시점 rollout 6레코드는 `tests/fixtures/codex_0_147_0_first_turn_rollout.jsonl` — base_instructions.text(원본 20,751자)·skills 지시문 본문(session_meta 이후 developer 메시지·world_state.host_skills.body 중복)만 길이 보존 없이 elide, 그 밖 bytes 는 그대로(경로만 <work>). 재현: 프로브 dumps/00{1,2,3,4}-*.json 의 payload(경로만 <worktree>/<rollout> 치환) + rollout 원본 앞 6줄에 `tests/fixtures/codex_0_147_0_first_turn_rollout_elide.py` 적용(길이·SHA-256 은 `first_turn_rollout_provenance` 참고).",
+  "first_turn_rollout_provenance": {
+    "regenerate_command": "python3 tests/fixtures/codex_0_147_0_first_turn_rollout_elide.py <라이브 CODEX_HOME 프로브의 rollout jsonl 원본> tests/fixtures/codex_0_147_0_first_turn_rollout.jsonl",
+    "verified_reproduction": "위 커맨드를 T-0835 architect R1 라이브 프로브 원본(2026-08-22 격리 CODEX_HOME 캡처)에 실행한 출력이 이 저장소의 codex_0_147_0_first_turn_rollout.jsonl 과 바이트 동일함을 `diff` 로 확인했다(F-001 fix).",
+    "elided_fields": [
+      {
+        "path": "line0.payload.base_instructions.text",
+        "description": "codex 기본 지시문 원문",
+        "original_length": 20751,
+        "original_sha256": "ac8ae107a0d72fe3476b430afb161ea4e67da2e446d778aefc44828160559807"
+      },
+      {
+        "path": "line2.payload.content[0].text",
+        "description": "skills 지시문 본문 (developer 메시지)",
+        "original_length": 3415,
+        "original_sha256": "7fe5edd6049ae659bfd86280a5a95bc0dec10b8d27ca29b11f9d75ae2c86a5da"
+      },
+      {
+        "path": "line4.payload.state.host_skills.body",
+        "description": "skills 지시문 본문 (world_state 중복)",
+        "original_length": 3372,
+        "original_sha256": "904e2d966d277efaa7c5781bdb127fd4eead71e623f9b73eb26288818b96898c"
+      }
+    ]
+  },
+  "first_turn_events": [
+    {
+      "session_id": "01a029e5-7258-7170-86bd-91a568e13333",
+      "transcript_path": "<rollout>",
+      "cwd": "<worktree>",
+      "hook_event_name": "SessionStart",
+      "model": "gpt-oss:20b",
+      "permission_mode": "bypassPermissions",
+      "source": "startup"
+    },
+    {
+      "session_id": "01a029e5-7258-7170-86bd-91a568e13333",
+      "turn_id": "01a029e5-7269-7802-9a93-35408f29789b",
+      "transcript_path": "<rollout>",
+      "cwd": "<worktree>",
+      "hook_event_name": "UserPromptSubmit",
+      "model": "gpt-oss:20b",
+      "permission_mode": "bypassPermissions",
+      "prompt": "Run the shell command: echo probe-one . Then run the shell command: echo probe-two . Then reply with the single word DONE."
+    },
+    {
+      "session_id": "01a029e5-7258-7170-86bd-91a568e13333",
+      "turn_id": "01a029e5-7269-7802-9a93-35408f29789b",
+      "transcript_path": "<rollout>",
+      "cwd": "<worktree>",
+      "hook_event_name": "PreToolUse",
+      "model": "gpt-oss:20b",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "echo probe-one"
+      },
+      "tool_use_id": "call_9mcll2p4"
+    },
+    {
+      "session_id": "01a029e5-7258-7170-86bd-91a568e13333",
+      "turn_id": "01a029e5-7269-7802-9a93-35408f29789b",
+      "transcript_path": "<rollout>",
+      "cwd": "<worktree>",
+      "hook_event_name": "PostToolUse",
+      "model": "gpt-oss:20b",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "echo probe-one"
+      },
+      "tool_response": "probe-one\n",
+      "tool_use_id": "call_9mcll2p4"
+    }
+  ],
   "compaction_evidence": "live capture · codex-cli 0.147.0 · 격리 CODEX_HOME + model_auto_compact_token_limit=2000 + tee-only PreCompact/PostCompact hooks + --dangerously-bypass-hook-trust · `codex exec` 단일 실행에서 auto 압축이 12회 발화했다(PreCompact 12 · PostCompact 12). PostCompact 실발화가 이 프로젝트에서 관측된 최초 기록이다(T-0806·2026-08-22).",
   "compaction_observed_firings": {
     "PreCompact": 12,

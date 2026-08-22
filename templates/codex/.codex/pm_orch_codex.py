@@ -521,7 +521,17 @@ def rollout_context_tokens(transcript_path) -> int:
     """rollout JSONL 의 **마지막** token_count 점유 토큰 (측정 불가면 0·fail-open).
 
     claude `context_tokens_from_transcript` 대칭 — 파일 끝에서부터 첫 usable 값을 쓴다. 부재·
-    null·읽기 실패·token_count 0건은 전부 0(측정 없음)이라 밴드 판정으로 올라가지 않는다."""
+    null·읽기 실패·token_count 0건은 전부 0(측정 없음)이라 밴드 판정으로 올라가지 않는다.
+
+    **구조적 한계(T-0835 라이브 실측 · codex-cli 0.147.0)**: 점유의 첫 기록은 첫 모델 **응답 뒤**
+    `event_msg/token_count` 다 — 새 thread 의 첫 `UserPromptSubmit`/`PreToolUse` 시점 rollout 에는
+    그 레코드가 아직 없어 이 함수는 0을 돌려준다. 그 0은 "사용률 0%"가 아니라 "아직 측정 안 됨"
+    sentinel 이고, codex 훅 payload 11종 전부(`additionalProperties:false`)에 점유·윈도 신호가
+    없어 대체 채널도 없다(호출부 `ctx_nudge_envelope` 가 이 sentinel 을 밴드 판정에 올리지 않는
+    이유). `codex exec resume`·compaction 은 같은 rollout 파일에 이어 쓰므로(같은 `session_id`)
+    이 구간에 해당하지 않는다 — 무방비는 새 thread 의 첫 모델 요청 1회뿐이다. 이 실측 범위는
+    `codex exec`/`exec resume`/auto-compaction 뿐이다 — direct TUI 는 미실측이다. 코어
+    rollout writer 공유라 같은 양상일 것으로 예상하나 확인된 사실이 아니다."""
     if not isinstance(transcript_path, str) or not transcript_path.strip():
         return 0
     try:
@@ -641,7 +651,14 @@ def ctx_nudge_envelope(payload: dict, root: Path, *,
     없던 때와 **바이트 동일**하다(측정된 통과 형태). 차단·회전 판정은 내지 않는다.
 
     claude `ctx_stop_hook.evaluate` 와 같은 순서다 — 서브에이전트 면제 → 점유 측정 → 밴드 판정
-    → ok 실측이면 재무장 → 안내 문구 → 사이클 marker 선점 → 주입."""
+    → ok 실측이면 재무장 → 안내 문구 → 사이클 marker 선점 → 주입.
+
+    **첫 turn 은 보호하지 못한다(T-0835)**: `rollout_context_tokens` 가 아직 측정 없는 새
+    thread 첫 요청에서 0(sentinel)을 돌려주면 사용률도 0%로 계산되고 밴드는 항상 `ok` 다 —
+    거짓으로 "안전"을 알리는 게 아니라 **판정 자체를 안 하는 침묵**이다(안내 문구를 만들지
+    않고 marker 도 건드리지 않는다). codex 훅에 이 구간을 메울 신호·비차단 채널이 없다는 결론은
+    라이브 실측(codex-cli 0.147.0)이고, claude·opencode 도 같은 구조적 한계를 갖는다(세 하네스
+    공통 규칙 — 하네스 특례 아님)."""
     event = payload.get("hook_event_name") or payload.get("hookEventName")
     if event not in CTX_NUDGE_EVENTS:
         return {}
