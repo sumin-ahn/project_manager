@@ -8455,7 +8455,7 @@ def _reserve_external_review_round(
     rounds = rounds_module.load_rounds(
         tickets_dir, ticket, ticket_text=ticket_text,
     )
-    problem = delegate.external_review_harvest_problem(
+    problem = delegate.review_harvest_problem(
         reply, ticket_text=ticket_text, rounds=rounds,
     )
     if problem is not None:

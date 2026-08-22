@@ -763,6 +763,30 @@ def test_native_initial_review_round_seed_has_no_scope_rule_comment(pd):
     assert not body.startswith("<!--")
 
 
+def test_scope_rule_states_where_existing_finding_ids_belong(pd):
+    """확인 라운드 규약이 ID 배치를 말한다 — 회수면이 거부하는 형상을 시드가 먼저 알린다.
+
+    상수 하나가 native·cross 두 경로의 단일 진실이라 문장 추가로 두 경로가 함께 받는다.
+    """
+    rule = pd.CONFIRM_ROUND_SCOPE_RULE
+    assert "`confirmations` 로만 참조" in rule and "`findings` 에는 신규 ID 만" in rule
+    assert rule in pd._INTERNAL_CONFIRM_CHARTER          # cross 경로
+    previous = _round(pd, 1, "code-reviewer", _reviewer_round_text(pd, [_finding("F-001")]))
+    body = pd.render_ticket_growth_section_seed(          # native 경로
+        "code-reviewer", "", previous_round=(previous.ordinal, previous.text),
+    )
+    assert rule in body
+    # 회수면 사유도 같은 규칙을 말한다(시드 문구와 거부 사유가 갈리지 않는다).
+    problem = pd.review_harvest_problem(
+        _reviewer_round_text(
+            pd, [_finding("F-001")],
+            [{"id": "F-001", "status": "resolved", "evidence": "회귀 rc=0"}],
+        ),
+        ticket_text="", rounds=[], reviewer_role="code-reviewer",
+    )
+    assert problem is not None and "`findings` 에는 신규 ID 만" in problem
+
+
 def test_confirmation_round_seed_scope_comment_survives_pending_round_trip(pd):
     """스코프 주석이 붙어도 시드 그대로(pending) 판정은 같은 렌더 함수 대조로 그대로 선다."""
     previous = _round(pd, 1, "code-reviewer", _reviewer_round_text(pd, [_finding("F-001")]))
@@ -774,6 +798,35 @@ def test_confirmation_round_seed_scope_comment_survives_pending_round_trip(pd):
     body = seed.partition("\n\n")[2]
     assert body.startswith(f"<!-- {pd.CONFIRM_ROUND_SCOPE_RULE} -->\n\n")
     assert pd.ticket_round_body_is_pending("code-reviewer", body) is True
+
+
+def test_pre_change_scope_comment_seed_is_still_judged_unedited(pd):
+    """하위 호환 — 옛 스코프 문구로 시드된 확인 라운드도 pending 이고, 판정은 느슨해지지 않는다.
+
+    문구를 바꾸기 전에 예약된 라운드가 그 변경만으로 "산출 있음" 이 되면 자리표시자 블록이 실
+    선언으로 읽혀 티켓 판정 표면을 막는다. 후보 확장 대상은 골격 bytes 뿐이라 값이 채워진
+    본문은 옛 문구에서도 새 문구에서도 pending 이 아니다.
+    """
+    previous = _round(pd, 1, "code-reviewer", _reviewer_round_text(pd, [_finding("F-001")]))
+    rounds_module = pd._load_ticket_rounds()
+    seed = rounds_module.render_round_seed(
+        "code-reviewer", "", today="2026-08-22",
+        previous_round=(previous.ordinal, previous.text),
+    )
+    body = seed.partition("\n\n")[2]
+    legacy_body = body.replace(
+        pd.CONFIRM_ROUND_SCOPE_RULE, pd.LEGACY_CONFIRM_ROUND_SCOPE_RULES[0],
+    )
+    assert legacy_body != body and pd.CONFIRM_ROUND_SCOPE_RULE not in legacy_body
+
+    assert pd.ticket_round_body_is_pending("code-reviewer", legacy_body) is True
+    assert pd.ticket_round_body_is_pending("code-reviewer", body) is True
+    assert pd.ticket_round_body_is_pending(
+        "code-reviewer", legacy_body.replace("<통과|반려>", "반려"),
+    ) is False
+    assert pd.ticket_round_body_is_pending(
+        "code-reviewer", body.replace("<통과|반려>", "반려"),
+    ) is False
 
 
 # ── R4 리뷰 fix — F-002 confirmation.round 결속(전역 고유+단조·causal floor) ──────────────

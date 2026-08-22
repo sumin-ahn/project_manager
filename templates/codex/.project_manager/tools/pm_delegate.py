@@ -1610,6 +1610,19 @@ def harvest_ticket_copy(
         return TicketHarvestResult(False, True)
 
     board = _load_board_for_repo(pm_home)
+    if row["role"] in REVIEW_ROLES:
+        # 판정 표면에 올릴 수 없는 리뷰 산출은 board 라운드가 되지 못한다 — 들어가고 나면
+        # 티켓 전역 delta 가 막히고 라운드 파일을 되돌릴 정식 수단이 없다(회수면에서 끊는다).
+        problem = _review_round_harvest_problem(
+            text, ticket=row["ticket"], reviewer_role=row["role"],
+            board=board, rounds_module=rounds_module,
+        )
+        if problem is not None:
+            raise DelegateError(
+                f"리뷰 라운드 회수 거부 — {problem}. board 라운드 파일과 slot run-dir 은 "
+                f"그대로 보존했습니다 — 사본을 고쳐 같은 경로로 다시 회수하세요: "
+                f"round={board_path.name} · copy={expected}"
+            )
     rounds_module.replace_round(board_path, text)
     message = f"ticket-harvest {row['ticket']} {row['role']}"
     # board 부분 커밋 seam 은 직접 부른다 — 이름을 더듬어 찾으면 부분 동기된 사본에서 커밋만
@@ -1655,6 +1668,36 @@ def harvest_ticket_copy(
     return TicketHarvestResult(True, sync_ready, verify_missing)
 
 
+def _review_round_harvest_problem(
+    text: str, *, ticket: str, reviewer_role: str, board, rounds_module,
+) -> str | None:
+    """내부 채널 회수 직전 리뷰 라운드 내용 판정 — 위반 사유 또는 None.
+
+    판정 자체는 두 채널 공용(`review_harvest_problem`)이고 이 함수가 하는 일은 그 판정의 입력
+    (명세·라운드 목록)을 PM 홈 board 좌표에서 읽어 오는 것뿐이다. 추가 리뷰어 채널은 같은 입력을
+    회수 직전에 읽는다 — 두 채널이 같은 스냅샷 규칙을 쓴다.
+
+    입력을 읽지 못하면 통과가 아니라 거부다. 판정 불능인 채로 회수하면 그 라운드가 판정 표면에
+    올라 티켓 전체를 막을 수 있고, 거부는 산출을 파괴하지 않으므로(run-dir 유지) 되돌릴 수 있다.
+    """
+    try:
+        found = board.find_ticket_exact(ticket)
+        if found is None:
+            return f"티켓 명세를 찾지 못해 회수 판정을 낼 수 없습니다: {ticket}"
+        _status, spec_path = found
+        spec_text = _load_file_lock().read_text_shared(
+            spec_path, encoding="utf-8", newline="",
+        )
+        rounds = rounds_module.load_rounds(
+            board.tickets_dir(), ticket, ticket_text=spec_text,
+        )
+    except (DelegateError, rounds_module.RoundsError, OSError, UnicodeError) as exc:
+        return f"회수 판정 입력을 읽지 못했습니다: {ticket}: {exc}"
+    return review_harvest_problem(
+        text, ticket_text=spec_text, rounds=rounds, reviewer_role=reviewer_role,
+    )
+
+
 def _ticket_copy_preamble(plan: TicketCopyPlan) -> str:
     return (
         f"라운드 산출 기록: 이 위임의 산출은 {plan.path} **하나에만** 쓴다"
@@ -1679,8 +1722,13 @@ _EXTERNAL_REVIEW_REFUSED_LINE_RE = re.compile(
 )
 
 
-def validate_external_review_block(reply_text: str) -> str | None:
-    """추가 리뷰어 산출의 `pm-review-v1` 블록을 회수 전에 검증한다(위반 사유 또는 None)."""
+def validate_review_block(
+    reply_text: str, *, reviewer_role: str = EXTERNAL_REVIEW_ROLE,
+) -> str | None:
+    """리뷰 산출의 `pm-review-v1` 블록을 회수 전에 검증한다(위반 사유 또는 None).
+
+    채널은 finding ID 접두만 가른다 — 스키마·중복·자리 규칙은 두 채널이 같다.
+    """
     try:
         blocks = _pm_review_json_blocks(reply_text)
     except PMReviewError as exc:
@@ -1706,21 +1754,27 @@ def validate_external_review_block(reply_text: str) -> str | None:
             raise PMReviewError("malformed", "findings/confirmations는 JSON array여야 합니다")
         parsed = [
             _pm_review_parse_finding(
-                item, 0, reviewer_role=EXTERNAL_REVIEW_ROLE, version=version,
+                item, 0, reviewer_role=reviewer_role, version=version,
             )
             for item in value["findings"]
         ]
         parsed += [
             _pm_review_parse_confirmation(
-                item, 0, reviewer_role=EXTERNAL_REVIEW_ROLE,
+                item, 0, reviewer_role=reviewer_role,
             )
             for item in value["confirmations"]
         ]
     except PMReviewError as exc:
         return str(exc)
     ids = [item.id for item in parsed]
-    if len(ids) != len(set(ids)):
-        return "finding/confirmation ID 중복"
+    duplicated = sorted({item for item in ids if ids.count(item) > 1})
+    if duplicated:
+        # 같은 ID 를 `findings` 와 `confirmations` 양쪽에 실은 형상이 여기로 온다 — 사유가
+        # 이름을 짚어야 리뷰어가 어느 항목을 옮겨야 하는지 그 자리에서 안다.
+        return (
+            f"finding/confirmation ID 중복: {', '.join(duplicated)} — 기존 finding 은 "
+            "`confirmations` 로만 참조하고 `findings` 에는 신규 ID 만 씁니다"
+        )
     return None
 
 
@@ -1764,8 +1818,8 @@ def _pm_review_refused_rounds(rounds: Sequence) -> set[tuple[str, int]]:
     거부한 라운드가 오히려 회수된 자산을 잠근다. 판정 표면에서만 제외하고 산출은 보존한다.
 
     판정 기준은 산문 문자열이 아니라 **엔진이 발행한 표식 줄**이다. 지금 그 줄을 발행하는 회수는
-    없다 — 내용 검증에 걸린 산출은 라운드 파일 자체가 생기지 않고 raw 에만 남으며, 표식을 실은
-    회신은 회수가 거부한다(`external_review_harvest_problem`). 판독이 남아 있는 이유는 단일 파일
+    없다 — 내용 검증에 걸린 산출은 라운드 파일이 되지 못하고 raw·슬롯 run-dir 에만 남으며, 표식을
+    실은 회신은 회수가 거부한다(`review_harvest_problem`). 판독이 남아 있는 이유는 단일 파일
     시절의 거부 산출을 그대로 옮겨 온 라운드다.
     """
     refused: set[tuple[str, int]] = set()
@@ -1798,6 +1852,7 @@ def _pm_review_surface_rounds(rounds: Sequence) -> list:
 
 def collect_review_finding_declarations(
     ticket_text: str, reviewer_role: str, rounds: Sequence,
+    *, before_ordinal: int | None = None,
 ) -> set[str]:
     """판정 표면에 **실재하는** 그 채널 finding ID — 회수 거부되지 않은 라운드의 블록 선언만.
 
@@ -1808,11 +1863,17 @@ def collect_review_finding_declarations(
 
     블록 스캔은 라운드 단위 관용 판정이다 — 다른 라운드의 손상이 이 대조를 눈멀게 하면 안 되고,
     읽지 못한 라운드는 선언으로 세지 않는다(대조는 fail-closed 쪽으로 기운다).
+
+    `before_ordinal` 을 주면 그 순번 **앞** 라운드의 선언만 센다. 판정 표면은 ID 를 먼저 선언한
+    라운드에 귀속하므로, 한 라운드가 실은 ID 가 그 라운드의 신규 선언인지 재선언인지는 이 시야
+    로만 갈린다.
     """
     prefix = _pm_review_finding_id_prefix(reviewer_role)
     declared: set[str] = set()
     for item in _pm_review_surface_rounds(rounds):
         if item.role != reviewer_role:
+            continue
+        if before_ordinal is not None and item.ordinal >= before_ordinal:
             continue
         try:
             blocks = _pm_review_section_review_blocks(item)
@@ -1863,7 +1924,7 @@ def collect_confirmable_finding_ids(
     return sorted(declared - rejected)
 
 
-def _external_review_id_collisions(
+def _review_id_collisions(
     body: str, existing_finding_ids: Sequence[str],
 ) -> list[str]:
     """회신 블록의 **신규 finding** ID 중 티켓에 이미 있는 것(확인 라운드는 대상 아님)."""
@@ -1887,7 +1948,7 @@ def _external_review_id_collisions(
     return sorted(collided)
 
 
-def _external_review_missing_confirmation_targets(
+def _review_missing_confirmation_targets(
     body: str, declared_finding_ids: Sequence[str],
 ) -> list[str]:
     """회신 블록의 confirmation ID 중 티켓 판정 표면에 **없는** 것.
@@ -1914,18 +1975,23 @@ def _external_review_missing_confirmation_targets(
     return sorted(missing)
 
 
-def external_review_harvest_problem(
+def review_harvest_problem(
     reply_text: str, *, ticket_text: str, rounds: Sequence,
+    reviewer_role: str = EXTERNAL_REVIEW_ROLE,
 ) -> str | None:
-    """추가 리뷰어 회신을 라운드로 회수해도 되는지 판정한다 — 위반 사유 또는 None.
+    """리뷰 산출을 라운드로 회수해도 되는지 판정한다 — 위반 사유 또는 None.
 
-    회수 주체(`external_review`)는 이 판정이 None 일 때만 라운드 파일을 만든다. 거부한 산출은
-    파일을 만들지 않고 raw 에만 남는다 — 라운드가 파일 하나라 "거부 표식을 얹어 절에 보존하고
-    판정 표면에서 빼는" 보정이 필요 없다.
+    두 회수 경로가 이 함수 하나를 부른다: 추가 리뷰어 회수(`external_review`)와 내부 채널 회수
+    (`harvest_ticket_copy`). 채널이 가르는 것은 finding ID 접두뿐이고 사유·강도는 같다 — 판정
+    표면이 하나라 한쪽만 관대하면 그쪽 산출이 표면을 막는다.
+
+    거부한 산출은 판정 표면에 오르지 않되 사라지지도 않는다. 추가 리뷰어 채널은 라운드 파일을
+    만들지 않고 raw 에 남기고, 내부 채널은 board 라운드 파일 bytes 를 그대로 두고 슬롯 run-dir 을
+    유지한다 — 사본을 고쳐 같은 경로로 다시 회수할 수 있다.
 
     사유는 네 축이고 종류를 가리지 않고 같은 처리(거부)다: 엔진 전용 표식 선언 · `pm-review-v1`
-    블록 규칙 위반(부재·중복·스키마·JSON 손상) · 티켓에 이미 있는 finding ID 재선언 · 티켓 판정
-    표면에 없는 confirmation 대상.
+    블록 규칙 위반(부재·중복·스키마·JSON 손상 · 같은 ID 를 `findings` 와 `confirmations` 양쪽
+    기재) · 티켓에 이미 있는 finding ID 재선언 · 티켓 판정 표면에 없는 confirmation 대상.
 
     대조는 두 축이고 시야가 다르다. 신규 finding ID 는 **넓은** 스캔(산문 인용 포함)과,
     confirmation 대상은 **판정 표면 선언**과 맞춘다. 차등 판정·반사실 프로브는 없다 — 이 산출이
@@ -1939,22 +2005,22 @@ def external_review_harvest_problem(
             f"엔진 전용 표식({EXTERNAL_REVIEW_REFUSED_MARKER})을 회신이 선언했습니다 — 그 줄은 "
             "라운드를 판정 표면에서 빼므로 산출이 스스로 쓸 수 없습니다"
         )
-    problem = validate_external_review_block(reply_text)
+    problem = validate_review_block(reply_text, reviewer_role=reviewer_role)
     if problem is not None:
         return problem
-    existing_ids = collect_review_finding_ids(ticket_text, EXTERNAL_REVIEW_ROLE)
+    existing_ids = collect_review_finding_ids(ticket_text, reviewer_role)
     for item in rounds:
-        existing_ids |= collect_review_finding_ids(item.text, EXTERNAL_REVIEW_ROLE)
-    collisions = _external_review_id_collisions(reply_text, existing_ids)
+        existing_ids |= collect_review_finding_ids(item.text, reviewer_role)
+    collisions = _review_id_collisions(reply_text, existing_ids)
     if collisions:
         return (
             f"finding ID 재선언: {', '.join(collisions)} — 티켓에 이미 있는 ID 라 이 라운드를 "
             "회수하지 않았습니다(다음 라운드에서 새 ID 로 다시 내십시오)"
         )
-    missing = _external_review_missing_confirmation_targets(
+    missing = _review_missing_confirmation_targets(
         reply_text,
         collect_review_finding_declarations(
-            ticket_text, EXTERNAL_REVIEW_ROLE, rounds,
+            ticket_text, reviewer_role, rounds,
         ),
     )
     if missing:
@@ -2174,7 +2240,17 @@ def _internal_review_format_preamble() -> str:
 # 손으로 각자 다시 쓰면 두 경로가 갈린다.
 CONFIRM_ROUND_SCOPE_RULE = (
     "이 라운드는 직전 must-fix의 해소 확인 전용이다 — 신규 탐색은 그 fix diff로 제한하고, "
-    "신규 발견은 `NEW`로만 분리해 보고한다."
+    "신규 발견은 `NEW`로만 분리해 보고한다. 기존 finding 은 `confirmations` 로만 참조하고 "
+    "`findings` 에는 신규 ID 만 쓴다 — 같은 ID 를 양쪽에 실으면 회수가 그 라운드를 거부한다."
+)
+
+# 이 문구를 바꾸기 **전에** 예약돼 아직 회수되지 않은 확인 라운드 시드는 board 에 옛 문장으로
+# 남아 있다. 무편집 판정(`ticket_round_body_is_pending`)이 현재 문구만 대조하면 그 라운드가
+# "산출 있음" 으로 뒤집혀 자리표시자 블록이 실 선언으로 읽히고 티켓 판정 표면을 막는다 —
+# 업그레이드 창을 닫는 대조 후보다. 새 항목은 **문장을 바꿀 때만** 맨 앞에 덧붙인다.
+LEGACY_CONFIRM_ROUND_SCOPE_RULES = (
+    "이 라운드는 직전 must-fix의 해소 확인 전용이다 — 신규 탐색은 그 fix diff로 제한하고, "
+    "신규 발견은 `NEW`로만 분리해 보고한다.",
 )
 
 _INTERNAL_CONFIRM_CHARTER = f"""\
@@ -3022,8 +3098,13 @@ def render_ticket_growth_section_seed(
 
 def _render_review_round_seed_body(
     role: str, confirmation_ids: Sequence[str],
+    *, scope_rule: str = CONFIRM_ROUND_SCOPE_RULE,
 ) -> str:
     """리뷰 채널 라운드 시드 본문 — 확인 대상 ID 말고는 전부 골격 상수다.
+
+    `scope_rule` 은 확인 라운드 주석 문장이다. 예약은 항상 현재 문구(기본값)로 시드하고,
+    무편집 판정만 옛 문구(`LEGACY_CONFIRM_ROUND_SCOPE_RULES`)를 넣어 다시 렌더한다 — 문구를
+    바꾸기 전에 예약된 라운드도 같은 골격 대조로 "산출 없음" 을 유지한다.
 
     산문은 판정 요약과 must-fix ID 나열까지다 — 증거·권고·심각도는 블록이 단일 진실이라
     항목별 서술을 다시 적지 않는다(같은 finding 3중 기재 제거). must-fix 절은 0건 라운드의
@@ -3037,7 +3118,7 @@ def _render_review_round_seed_body(
     # 프리필된 실 ID(=확인 라운드)일 때만 스코프 문구를 HTML 주석 1줄로 첫 줄 아래에 심는다 —
     # 최초 리뷰 라운드(자리표시자만 있는 골격)는 탐색 스코프를 제한할 대상이 없어 그대로 둔다.
     is_confirmation_round = list(confirmation_ids) != [placeholder_id]
-    scope_notice = f"<!-- {CONFIRM_ROUND_SCOPE_RULE} -->\n\n" if is_confirmation_round else ""
+    scope_notice = f"<!-- {scope_rule} -->\n\n" if is_confirmation_round else ""
     return (
         scope_notice
         + f"## must-fix\n- <없음 또는 finding ID 나열({placeholder_id})·"
@@ -3149,8 +3230,14 @@ def ticket_round_body_is_pending(role: str, body: str) -> bool:
     confirmation_ids = _round_seed_confirmation_ids(normalized)
     if confirmation_ids is None:
         return False
-    return normalized == _normalized_newlines(
-        _render_review_round_seed_body(role, confirmation_ids)
+    # 후보는 현재 골격과 옛 스코프 문구로 렌더한 같은 골격들이다 — 문구를 바꾸기 전에 예약된
+    # 라운드가 그 변경만으로 "산출 있음" 이 되면 안 된다. 값이 채워진 라운드는 어느 후보와도
+    # 같지 않으므로 이 후보 확장이 pending 판정을 느슨하게 만들지 않는다.
+    return any(
+        normalized == _normalized_newlines(
+            _render_review_round_seed_body(role, confirmation_ids, scope_rule=rule)
+        )
+        for rule in (CONFIRM_ROUND_SCOPE_RULE, *LEGACY_CONFIRM_ROUND_SCOPE_RULES)
     )
 
 
@@ -3226,6 +3313,36 @@ def render_pm_review_disposition_template(
         )
     if finding_ids and existing_block is not None and "finding_zero" in existing_block:
         raise PMReviewError("malformed", "finding이 있는 reviewer에 finding_zero disposition")
+
+    # 골격의 시야는 대상 라운드 하나인데 판정 표면의 finding ID 유일성은 티켓 전역이다. 두
+    # 시야가 갈리면 골격이 프리필한 ID 를 PM 이 채워도 `parse_pm_review_delta` 가 그 판정을
+    # 되돌려보낸다. 그런 ID 가 하나라도 있으면 **골격을 내지 않는다** — 나머지 ID 만 부분
+    # 출력해도 그 골격을 채운 산출은 같은 라운드 때문에 표면이 통째로 거부하므로(왕복 불변식은
+    # 복구되지 않고 판정 대상 finding 만 조용히 사라진다) 이 라운드는 여기서 끝낸다.
+    # 형상은 둘이다: 선행 같은 채널 라운드가 이미 선언한 ID(재선언), 그리고 이 라운드가 스스로
+    # `confirmations` 에 실은 자기 ID(자기-확인). 판정 표면(`parse_pm_review_delta`)도 같은
+    # 라운드를 malformed 로 막으므로 두 명령이 같은 상태에 같은 판정을 낸다.
+    redeclared = collect_review_finding_declarations(
+        ticket_text, section.role, rounds, before_ordinal=section.ordinal,
+    )
+    self_confirmed = set(confirmation_ids)
+    refused_ids = [
+        finding_id for finding_id in finding_ids
+        if finding_id in redeclared or finding_id in self_confirmed
+    ]
+    if refused_ids:
+        listed = ", ".join(
+            f"{finding_id}("
+            + ("티켓 전역 재선언" if finding_id in redeclared else "같은 라운드 자기-확인")
+            + ")"
+            for finding_id in refused_ids
+        )
+        raise PMReviewError(
+            "malformed",
+            f"reviewer {section.role} ordinal={section.ordinal}에 판정 표면이 받지 않는 "
+            f"finding ID 가 있어 판정 골격을 내지 않습니다: {listed} — 기존 finding 은 "
+            "`confirmations` 로만 참조하고 `findings` 에는 신규 ID 만 씁니다",
+        )
 
     if not finding_ids:
         if confirmation_ids:
