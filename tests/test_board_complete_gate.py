@@ -12,7 +12,7 @@ mention {tid} — affected module row" 경고는 거의 모든 complete 에서 �
   (b) §1 log/current.md mention gate 는 **여전히 동작**한다 — log 에 ticket id 가 없으면
       blocking problem 을 돌려준다(§1·§2 불변 회귀 보호).
 
-**축 B — DoD 부기 게이트 (T-0596)**: 지금의 §3 은 `## 완료 조건` 체크박스 검사다(옛 §3
+**축 B — DoD 기록 게이트 (T-0596)**: 지금의 §3 은 `## 완료 조건` 체크박스 검사다(옛 §3
 status-mention 경고와 무관 — 그건 제거됐고 번호만 비었다). 미체크 `- [ ]` 가 남은 채 done 이
 되면 그 항목은 보드에서 증발하므로(실사고: 라이브 probe DoD 소멸), 통과 형식을 둘로 못박는다:
 `- [x] <원문>`(했다) 또는 `- [>] <원문> (이월: <사유·귀속>)`(안 했고 사유·귀속을 남겼다).
@@ -395,7 +395,7 @@ def test_log_mention_gate_passes_when_log_mentions_ticket(board, capsys):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 축 B — §3 DoD 부기 게이트 (T-0596)
+# 축 B — §3 DoD 기록 게이트 (T-0596)
 # ════════════════════════════════════════════════════════════════════════
 
 def _dod_body(*items: str, section: str = "## 완료 조건 (Definition of Done)") -> str:
@@ -617,7 +617,7 @@ def test_dod_gate_passes_prose_or_missing_section(board):
 
 
 def test_complete_gate_without_body_skips_dod(board):
-    """본문 미제공 호출은 DoD 검사를 건너뛴다(부기 축만 묻는 레거시 호출 무영향)."""
+    """본문 미제공 호출은 DoD 검사를 건너뛴다(기록 축만 묻는 레거시 호출 무영향)."""
     assert board._complete_gate("T-0596", _gate_args()) == []
 
 

@@ -495,7 +495,7 @@ def test_ticket_finish_rejects_task_workspace_pin_mix_before_finisher(
 # ── MUST-FIX (T-0355 게이트): 정체성 깔때기 task 명 검증 — 영속 전 fail-loud ──────
 # 무검증 task 명이 created_by/claimed_by/lease-session 으로 새는 클래스를 _actor_session_override
 # 깔때기(claim/new/regression/livegate/migrate/reid 공유)에서 한 번에 닫는다. 부작용(파일 write·
-# 부기) 이전 fail-loud + 정상 task 는 통과.
+# 기록) 이전 fail-loud + 정상 task 는 통과.
 
 
 @pytest.mark.parametrize("bad", ["../evil", "a/b", "my task", "foo)bar", ".hidden"])
@@ -527,7 +527,7 @@ def test_actor_override_registered_repos_failsoft(board, monkeypatch):
 
 
 def test_new_rejects_unsafe_task_no_file_written(board, monkeypatch):
-    """new --task <불법> → rc≠0(SystemExit) · 티켓 파일/부기 부작용 0 (깔때기 경유)."""
+    """new --task <불법> → rc≠0(SystemExit) · 티켓 파일/기록 부작용 0 (깔때기 경유)."""
     board.LEASES_FILE.parent.mkdir(parents=True, exist_ok=True)
     board.LEASES_FILE.write_text(json.dumps({"leases": [], "tasks": []}), encoding="utf-8")
     tickets_open = board.REPO / "tickets" / "open"
@@ -549,12 +549,12 @@ def test_claim_rejects_unsafe_task_before_mutation(board, monkeypatch):
 
 
 def test_ticket_finish_rejects_unsafe_task(tf, monkeypatch, capsys):
-    """ticket_finish --task <불법> → rc1 (F6 해소 이전 공유 validator·부기 부작용 0)."""
+    """ticket_finish --task <불법> → rc1 (F6 해소 이전 공유 validator·기록 부작용 0)."""
     called = {"finisher": False}
     monkeypatch.setattr(tf, "TicketFinisher",
                         lambda **kw: called.__setitem__("finisher", True))
     rc = tf.main(["T-0001", "--task", "../evil"])
     assert rc == 1
-    assert called["finisher"] is False          # finisher 미도달(부기 부작용 0)
+    assert called["finisher"] is False          # finisher 미도달(기록 부작용 0)
     err = capsys.readouterr().err
     assert "부적합 task 명" in err

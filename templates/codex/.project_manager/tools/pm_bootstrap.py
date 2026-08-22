@@ -2519,7 +2519,7 @@ class PmBootstrap:
 
         board 미분리(솔로·`_board_dir` 비-디렉토리)면 None(skip). fetch 상시(fail-soft),
         clean·ff 면 `checkout <branch> && pull --ff-only` 로 branch 를 유지한 채 동기한다 —
-        `git submodule update` 의 detached HEAD 를 피한다(그러면 이후 board mutation 부기가
+        `git submodule update` 의 detached HEAD 를 피한다(그러면 이후 board mutation 기록이
         sentinel 로 스킵된다). dirty·diverged·detached 는 표면화만(pull 안 함).
         """
         board_dir = self._board_dir
@@ -5142,7 +5142,7 @@ class PmBootstrap:
         lines.append("  ⚠ claim 은 draft 티켓 거부 — 먼저 `promote T-NNNN`(본문 채운 뒤) 필요.")
         lines.append(skill("/pm-regression", "비차단 백그라운드 회귀 pre-warm + 완료 알림"))
         lines.append(engine(_C_BOARD_REGRESSION, suffix=sess))
-        lines.append(skill("/pm-wave-finish T-NNNN", "ticket 완료 부기 — 회귀+log+board+stage"))
+        lines.append(skill("/pm-wave-finish T-NNNN", "ticket 완료 기록 — 회귀+log+board+stage"))
         lines.append(engine(
             _C_TICKET_FINISH,
             "스킬이 부르는 내부 엔진·직접 금지 — 내부서 board.py complete 수행",
@@ -5328,7 +5328,7 @@ class PmBootstrap:
         lines.append("  ⚠ claim 은 draft 티켓 거부 — 먼저 `promote T-NNNN`(본문 채운 뒤) 필요.")
         lines.append(skill("/pm-regression", "비차단 백그라운드 회귀 pre-warm + 완료 알림"))
         lines.append(engine(_C_BOARD_REGRESSION, suffix=ti))
-        lines.append(skill("/pm-wave-finish T-NNNN", "ticket 완료 부기 — 회귀+log+board+stage"))
+        lines.append(skill("/pm-wave-finish T-NNNN", "ticket 완료 기록 — 회귀+log+board+stage"))
         # ticket_finish 는 identity.task 있을 때만 회귀 cwd 를 해소한다 —
         # task 세션은 `--task` 를 실어야 slot/solo 로 오해소하지 않는다(다른 task backbone 과 동형).
         lines.append(engine(

@@ -141,7 +141,7 @@ PM-direct는 이 루프 대신 PM 구현·self-review·범위 테스트를 거�
    - **상한 이후 계속**: 조건: 라운드·wave 상한 도달로 해당 루프가 정지한 상태. 결론: 재설계·분할·다음 티켓으로 계속한다.
    - **종료·축소 권한**: 조건: 세션 종료 또는 작업 축소를 결정하는 경우. 결론: 세션 종료·작업 축소는 사용자 지시로만 한다.
 
-wave 중 완료 부기는 `ticket_finish --no-pytest` + 지정 회귀 실측 근거가 표준이다(전량 검증은 릴리즈 절차 1단계가 담당).
+wave 중 완료 기록은 `ticket_finish --no-pytest` + 지정 회귀 실측 근거가 표준이다(전량 검증은 릴리즈 절차 1단계가 담당).
 
 10. **처방 밖 수정 금지·빈틈은 보고.** fix 라운드에서 고칠 수 있는 것은 `review delta` 가 낸 finding ID 와
     각 허용 수정 범위뿐이다. 그 제약과 빈틈 보고 형식은 delta 렌더러가 출력 끝에 함께 싣는다 — 카드·스킬·
@@ -243,7 +243,7 @@ ticket 본문의 목표 / 인터페이스 / 결정 / DoD 대로 수행.
    - **architect 재설계**: 설계 결함이면 새 architect 라운드를 준비해 재설계를 회수한 뒤 dev 재구현.
    - **별도 ticket 후보 메모**: 본 ticket 범위 외 / 후속 caller 추가 시. 다음 PM 세션용 영구 기록.
    - **처리 보류 (suggestion)**: 운영 영향 0·기능 충분. 이것이 should-fix vs suggestion 기준.
-7. **ticket complete + 부기** — `/pm-wave-finish T-NNNN` (`ticket_finish.py` wrapper). 회귀 green 확인(red 면 중단·아무것도 안 건드림) → log/current.md 스켈레톤 append → board complete (`--tests-pass`) → git stage — **그 ticket 이 선언한 경로만**.
+7. **ticket complete + 기록** — `/pm-wave-finish T-NNNN` (`ticket_finish.py` wrapper). 회귀 green 확인(red 면 중단·아무것도 안 건드림) → log/current.md 스켈레톤 append → board complete (`--tests-pass`) → git stage — **그 ticket 이 선언한 경로만**.
    선언원 = frontmatter `touches` ∪ **이 실행이 실제로 쓴 산출물**, 즉 `log/current.md` + legacy 형상(board 미분리·출하 기본)에서 옮긴 티켓 파일의 **옛/새 경로** 둘뿐. ADR·domain 페이지·`architecture.md`·`status.md` 는 다른 실행 산출이므로 제외한다.
    stage 후 두 방향으로 loud 보고: `미스테이지 잔여`(내 누락이면 `touches` 보강 후 재stage·남의 WIP 면 그대로) · `스코프 밖 staged`(남이 올려둔 것 — bare commit 이면 실림·빼려면 `git restore --staged <경로>`).
    **status.md 는 건드리지 않는다**(judgment-only · 테스트 수 박제 ✗). **모듈 행 판정/비고·git commit 은 PM 손**(commit 도 pathspec 명시).
@@ -276,7 +276,7 @@ ticket 본문의 목표 / 인터페이스 / 결정 / DoD 대로 수행.
 
 board·status·log·로드맵 단일 진실은 PM 1명이 유지하되 잡일을 줄인다:
 
-- **부기 자동화** — ticket 완료 부기(회귀 green → log/current.md 스켈레톤 → board complete → git stage)는 `.project_manager/tools/ticket_finish.py` / `/pm-wave-finish` skill 로 자동화. status.md 는 안 건드린다. PM 은 서술(왜·무엇)만 채운다. ⚠️ status.md **모듈 행 판정/비고**·**git commit** 은 자동화하지 않는다 — PM 손. commit 도 pathspec 명시: `-- <touches> log/current.md [status.md]`.
+- **기록 자동화** — ticket 완료 기록(회귀 green → log/current.md 스켈레톤 → board complete → git stage)는 `.project_manager/tools/ticket_finish.py` / `/pm-wave-finish` skill 로 자동화. status.md 는 안 건드린다. PM 은 서술(왜·무엇)만 채운다. ⚠️ status.md **모듈 행 판정/비고**·**git commit** 은 자동화하지 않는다 — PM 손. commit 도 pathspec 명시: `-- <touches> log/current.md [status.md]`.
 - **세션 시작·종료 자동화** — `/pm-bootstrap` (세션 시작 dump), `/pm-handoff` (세션 종료 7단계).
 - **dev→review 는 background 우선** — `Agent` 툴 `run_in_background: true`. 실행 중 PM 은 독립적인 다음 ticket 을 설계한다. ⚠️ background 창에는 ticket 설계·`.project_manager/wiki/` 문서 작업만; 검토 대상 코드 파일 편집 시 reviewer `git diff` 오염.
 - **회귀 tmp 위생 (worktree 다발 실행 시 필수)** — worktree 병렬 회귀는 pytest run·tmp 를 폭증시킨다. **pytest 쓰는 인스턴스는 `pytest.ini` 에 `tmp_path_retention_policy=failed` + `tmp_path_retention_count=3`** 을 둔다(통과 tmp 즉시 teardown·실패만 보존). `pytest.ini` 는 instance 소유라 엔진이 자동 못 고치므로 채택 시 직접 추가. ⚠️ 중단 run 의 stale `.lock` 이 옛 세션 cleanup 을 skip 하는 pytest+xdist 동작은 패치 불가 — `policy=failed` 로 디스크 영향을 무력화한다. **perf**: worktree 다발 실행에서 `-n auto`(코어수) 워커가 경합하면 `-n N` 또는 `PYTEST_XDIST_AUTO_NUM_WORKERS` 로 캡한다.

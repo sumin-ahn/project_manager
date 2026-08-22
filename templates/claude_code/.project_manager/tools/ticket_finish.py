@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PM 부기 자동화 헬퍼 — ticket 완료 시 기계적 부기를 한 명령으로 묶는다.
+"""PM 기록 자동화 헬퍼 — ticket 완료 시 기계적 기록을 한 명령으로 묶는다.
 
 사용:
     venv/bin/python .project_manager/tools/ticket_finish.py T-NNNN [--section "<섹션명>"] [--dry-run]
@@ -329,7 +329,7 @@ def _load_external_review():
     """external_review 모듈을 동적 로드한다 (부재/로드 실패 시 None·fail-soft).
 
     diff 서킷브레이커의 **정책과 측정식**은 external_review 가 소유한다(그쪽이 diff 산정 로직의
-    단일 진실이다). 완료 부기는 그 판정을 빌려 쓸 뿐이라 사본을 두지 않는다 — 두 표면이 서로 다른
+    단일 진실이다). 완료 기록은 그 판정을 빌려 쓸 뿐이라 사본을 두지 않는다 — 두 표면이 서로 다른
     상한/산정식을 쓰면 "리뷰는 통과했는데 완료가 막힌다"가 규칙이 아니라 사고가 된다."""
     er_path = TOOLS_DIR / "external_review.py"
     if not er_path.exists():
@@ -490,7 +490,7 @@ def _load_board_module():
 # ticket_finish 를 PM 홈의 등록 worktree cwd 에서 오실행하면 REPO 가 worktree 로 착지해
 # stray `wiki/log/current.md` append(+ board.py complete 오실행)를 낸다. board.py
 # 와 *동일 detector*(`_pm_home_worktree_misanchor`·단일 진실)를 deep-import seam 으로 재사용해
-# main() 진입에서 fail-loud 한다 — 부기 어떤 단계(회귀/log append/complete/stage)도 착지 전에
+# main() 진입에서 fail-loud 한다 — 기록의 어떤 단계(회귀/log append/complete/stage)도 착지 전에
 # 중단한다. detector 로드 실패/미해소는 fail-soft(현행 동작·오탐 0).
 
 def _pm_home_misanchor() -> Path | None:
@@ -512,7 +512,7 @@ def _guard_worktree_misanchor() -> bool:
     if pm_home is None:
         return False
     print(
-        "[중단] `ticket_finish` 를 worktree(코드 전용) 트리에서 실행했습니다 — 완료 부기(log·"
+        "[중단] `ticket_finish` 를 worktree(코드 전용) 트리에서 실행했습니다 — 완료 기록(log·"
         "board·git)는 PM 홈이 소유합니다. 이대로면 이 worktree 에 stray log/티켓을 "
         "잘못 만듭니다.\n"
         f"  → PM 홈에서 실행하세요:  cd {pm_home}\n"
@@ -559,7 +559,7 @@ def _resolve_per_repo_test_cmd() -> str | None:
 #
 # 해소된 test_cmd 가 pytest 스위트라는 보장은 없다 — `go test ./...`·`viewer bind` 같은 임의
 # 명령이다. 그런데 green 판정을 pytest 요약행(`N passed`)에만 걸어 두면 비-pytest 게이트는
-# **항상 red** 로 오판돼 완료 부기가 통째로 막힌다(→ `--no-pytest` 상시 우회 → 진짜 red 를
+# **항상 red** 로 오판돼 완료 기록이 통째로 막힌다(→ `--no-pytest` 상시 우회 → 진짜 red 를
 # 놓친다). 그래서 판정 기준을 게이트 종류로 가른다:
 #   - pytest 게이트 — 기존 요약행 판정 + 테스트 수 파싱 (100% 불변).
 #   - 비-pytest 게이트 — exit code 0 만 green. 테스트 수는 측정 불가라 "?"(로그 스켈레톤이
@@ -924,7 +924,7 @@ def _fallback_ticket_frontmatter(
     if isinstance(parser_error, type) and issubclass(parser_error, Exception):
         # external_review의 원문 frontmatter parser는 손상된 opener를 이 타입으로
         # 알린다. 이 fallback은 측정 가드용 입력 복구라 그 경우에도 가드 off로
-        # 접어 완료 부기를 막지 않는다. 다른 예외는 삼키지 않는다.
+        # 접어 완료 기록을 막지 않는다. 다른 예외는 삼키지 않는다.
         parser_errors += (parser_error,)
     try:
         touches = external._parse_touches_from_file(path)
@@ -1255,7 +1255,7 @@ class StageScope(NamedTuple):
 
     빈 `pathspec` 을 두 상태로 갈라 쓴다: **선언이 비었다**(error=None·정상)와 **판정기가
     죽었다**(error=사유). 후자를 조용히 no-op 으로 흘리면 stage 0 인데 아무 말이 없어
-    "부기 끝" 으로 보인다(reviewer 실측 — board 모듈 로드 실패 형상).
+    "기록 끝" 으로 보인다(reviewer 실측 — board 모듈 로드 실패 형상).
     """
     pathspec: tuple[str, ...]
     error: str | None
@@ -1287,7 +1287,7 @@ def stage_scope(ticket_id: str, board_py: Path, log_file: Path,
                 include_engine_outputs: bool = True,
                 touches_workspace: Path | None = None,
                 touches: Sequence[str] | None = None) -> StageScope:
-    """이 완료 부기가 stage 할 pathspec (REPO 상대·실제 `add` 가능한 **파일**).
+    """이 완료 기록이 stage 할 pathspec (REPO 상대·실제 `add` 가능한 **파일**).
 
     선언원 = 티켓 `touches` ∪ `engine_written_paths()`. **판정은 board.py 의 repo-중립
     프리미티브 `git_scope_stage_pathspec` 한 벌을 재사용** 한다 — board-git 이 쓰는 바로 그
@@ -1492,7 +1492,7 @@ def build_log_skeleton(
 
 # `external_review.claim_anchor` 는 비교적 최근 신설된 심볼이다 — 구형/부분 설치
 # external_review 사본(측정 numstat seam 은 있으나 이 seam 은 없음)에서 무가드 호출은
-# AttributeError 로 완료 부기를 벽돌로 만든다(`_diff_numstat_by_path` 의 `required` 가드와
+# AttributeError 로 완료 기록을 벽돌로 만든다(`_diff_numstat_by_path` 의 `required` 가드와
 # 같은 클래스). 부재는 앵커 미적용(옛 폭)으로 접고 같은 loud 경고 1줄을 남긴다.
 _CLAIM_ANCHOR_SEAM_ABSENT_NOTE = (
     "external_review 사본에 claim_anchor 부재(구형/부분 설치) — 폭 과소 측정 가능(옛 폭·"
@@ -1501,7 +1501,7 @@ _CLAIM_ANCHOR_SEAM_ABSENT_NOTE = (
 
 
 class TicketFinisher:
-    """PM 부기 자동화 핵심 로직.
+    """PM 기록 자동화 핵심 로직.
 
     subprocess 함수를 DI 해 테스트에서 실제 실행 없이 결정론적으로 검증한다.
     broker/dispatch.py 의 clock_fn/sleep_fn DI 패턴과 동일.
@@ -1573,7 +1573,7 @@ class TicketFinisher:
         # diff 서킷브레이커 seam — 차단 안내 문자열 또는 None(통과·가드 off). 정책·측정식은
         # external_review 가 소유하고 여기서는 판정만 소비한다.
         self._diff_cap_block_fn = diff_cap_block_fn or self._default_diff_cap_block
-        # DoD 부기 게이트 preflight seam — 차단 사유 문자열 또는 None(통과·판정 불가).
+        # DoD 기록 게이트 preflight seam — 차단 사유 문자열 또는 None(통과·판정 불가).
         # 규칙 소유자는 board(`_dod_open_items`)이고 여기서는 **더 앞에서 한 번 더** 물을 뿐이다.
         self._dod_block_fn = dod_block_fn or self._default_dod_block
         # (스코프 밖 staged, 미스테이지 잔여) 건수 — `[완료]` 줄 재고지용(loud 강화).
@@ -1918,7 +1918,7 @@ class TicketFinisher:
         측정 seam 이 소유한다 — 여기 사본 없음). 측정 폭의 기준점은 이 티켓의 claim 시점 rev
         (`claimed_rev`)라 dev 브랜치를 merge 로 흡수한 누적도 한 폭에 들어온다. 측정 불가
         (모듈 부재·touches 부재·좌표 정규화 불능·estimate 미선언·비-git 트리)는 **가드 off** 다 —
-        이 축의 실패로 완료 부기를 막지 않는다(hard 차단은 상한 초과라는 확정 사실에만 건다)."""
+        이 축의 실패로 완료 기록을 막지 않는다(hard 차단은 상한 초과라는 확정 사실에만 건다)."""
         external = _load_external_review()
         if external is None:
             return None
@@ -1935,7 +1935,7 @@ class TicketFinisher:
         claim_anchor_fn = getattr(external, "claim_anchor", None)
         if claim_anchor_fn is None:
             # 형제 seam 부재와 같은 규칙(`_diff_numstat_by_path` 의 required 가드 동형) —
-            # AttributeError 로 완료 부기를 벽돌로 만들지 않고 앵커 없음(옛 폭)으로 접는다.
+            # AttributeError 로 완료 기록을 벽돌로 만들지 않고 앵커 없음(옛 폭)으로 접는다.
             claimed_rev, anchor_note = None, _CLAIM_ANCHOR_SEAM_ABSENT_NOTE
         else:
             claimed_rev, anchor_note = claim_anchor_fn(
@@ -1960,7 +1960,7 @@ class TicketFinisher:
                 f" · 티켓 {excluded_ids}")
 
     def _default_dod_block(self, ticket_id: str) -> str | None:
-        """DoD 부기 게이트 preflight 판정 — 차단 사유 문자열, 통과·판정 불가면 None.
+        """DoD 기록 게이트 preflight 판정 — 차단 사유 문자열, 통과·판정 불가면 None.
 
         규칙 소유자는 board(`_dod_open_items`)다 — 판정 사본을 두지 않고 그 함수를 부른다.
         권위 있는 차단은 여전히 [3/5] `board.py complete` 가 하고, 여기서는 **더 앞에서 한 번 더**
@@ -2237,7 +2237,7 @@ class TicketFinisher:
         task: str | None = None,
         session: str | None = None,
     ) -> int:
-        """ticket_id 완료 부기 전체 흐름을 실행한다.
+        """ticket_id 완료 기록 전체 흐름을 실행한다.
 
         반환: 0=성공, 1=실패 (중단).
 
@@ -2251,14 +2251,14 @@ class TicketFinisher:
         """
         del section  # status 합계표 제거로 더 이상 쓰지 않음(후방호환 수용만).
         print(
-            f"[ticket_finish] {ticket_id} 완료 부기 시작 "
+            f"[ticket_finish] {ticket_id} 완료 기록 시작 "
             f"(dry_run={dry_run}, skip_pytest={skip_pytest})"
         )
 
         # PM 판정은 권위를 유지한다. 이 재검은 경고만 보이고 이후 rc를 바꾸지 않는다.
         self._warn_pm_direct_conditions(ticket_id)
 
-        # ── 0. 진입 게이트(preflight) — diff 서킷브레이커 · DoD 부기 ─────
+        # ── 0. 진입 게이트(preflight) — diff 서킷브레이커 · DoD 기록 ─────
         # 둘 다 회귀보다 **앞**이고, 무엇보다 [2/5] log 스켈레톤 append 보다 앞이다: 여기서 막힐
         # 실행은 어떤 부작용(회귀 실행·log append·board·git)도 내지 않아야 한다. DoD 판정이
         # [3/5] `board.py complete` 안에만 있던 동안에는 차단마다 stray 스켈레톤이 남고 재실행이
@@ -2454,7 +2454,7 @@ class TicketFinisher:
             if unstaged or staged_out:
                 tail = (f" ⚠ 미스테이지 잔여 {unstaged}건 · 스코프 밖 staged {staged_out}건 "
                         "— 위 [4/5] 목록 확인.")
-            print(f"\n[완료] {ticket_id} 부기 완료.{tail}")
+            print(f"\n[완료] {ticket_id} 기록 완료.{tail}")
 
         return 0
 
@@ -2543,7 +2543,7 @@ class TicketFinisher:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ticket_finish.py",
-        description="ticket 완료 시 PM 부기 자동화 헬퍼 (v1 축소판).",
+        description="ticket 완료 시 PM 기록 자동화 헬퍼 (v1 축소판).",
     )
     parser.add_argument("ticket_id", metavar="T-NNNN", help="완료할 ticket ID")
     parser.add_argument(
@@ -2579,8 +2579,8 @@ def _main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    # PM-홈 worktree 오실행 가드— 부기 어떤 부작용(회귀/log append/complete/stage)도
-    # 나기 *전에* fail-loud. 읽기 경로 없음(ticket_finish 는 전부 쓰기 부기)이라 진입에서 한 번.
+    # PM-홈 worktree 오실행 가드— 기록의 어떤 부작용(회귀/log append/complete/stage)도
+    # 나기 *전에* fail-loud. 읽기 경로 없음(ticket_finish 는 전부 쓰기 기록)이라 진입에서 한 번.
     if _guard_worktree_misanchor():
         return 1
 

@@ -11,7 +11,7 @@ skip), `pytest -m release`(릴리즈 게이트·PM_ORCH_LIVE_RELEASE=1)에서만
 
 시퀀스(의도된 red→green): 코드 wave 가 `ENGINE_REV="vX.Y.Z"`(다음 릴리스)로 먼저 bump 되면
 CHANGELOG 최신 릴리스 절은 아직 이전 버전이라 이 테스트가 릴리즈 게이트에서 **red** 다(정상)
-— PM 이 릴리즈 부기에서 CHANGELOG `## [X.Y.Z]` 절을 쓰면 **green** 이 된다. 즉 "CHANGELOG 를
+— PM 이 릴리즈 기록에서 CHANGELOG `## [X.Y.Z]` 절을 쓰면 **green** 이 된다. 즉 "CHANGELOG 를
 안 쓰면 릴리즈 못 나감"을 기계로 보장한다.
 """
 from __future__ import annotations

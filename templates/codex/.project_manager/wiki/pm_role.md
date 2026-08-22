@@ -168,7 +168,7 @@ board 라운드 파일을 원자 교체한 뒤 run-dir을 지운다(회수 = run
 - 개별 ticket의 코드·테스트·기능 디버깅(PM-direct는 예외).
 - [[pm_role.local.md]] §보호 영역 수정.
 - immutable 스냅샷(`raw/` 등) 수정.
-- claimed ticket의 위임 라운드 파일을 손으로 대신 작성. PM-direct 구현과 회수된 라운드의 최종 정합·부기는 예외다.
+- claimed ticket의 위임 라운드 파일을 손으로 대신 작성. PM-direct 구현과 회수된 라운드의 최종 정합·기록은 예외다.
 
 ### PM-direct
 
@@ -176,7 +176,7 @@ board 라운드 파일을 원자 교체한 뒤 run-dir을 지운다(회수 = run
 developer·reviewer·추가 리뷰어 없이 PM이 직접 편집할 수 있다. 구체 deny 경로는
 [[pm_role.local.md]] §보호 영역이며, 보호 영역은 티어 판별로 우회할 수 없다.
 
-**허용:** UI/UX·템플릿·문구·docstring·주석·typo·표시 라벨·링크·README; 비핵심 상수·임계값(가독성·로깅·표시 항목 수·UI timeout 등); 재현·검증이 명백한 한 파일·수십 줄 이내 버그; 부기·`status.md` process·`log/current.md`·`board.md`·메모리·현재-진실 doc 점검; 개발 도구/스크립트의 비기능 출력 포맷·도움말·dry-run 개선.
+**허용:** UI/UX·템플릿·문구·docstring·주석·typo·표시 라벨·링크·README; 비핵심 상수·임계값(가독성·로깅·표시 항목 수·UI timeout 등); 재현·검증이 명백한 한 파일·수십 줄 이내 버그; 기록·`status.md` process·`log/current.md`·`board.md`·메모리·현재-진실 doc 점검; 개발 도구/스크립트의 비기능 출력 포맷·도움말·dry-run 개선.
 
 **PM-direct 금지(최소 normal 또는 hard):** 위 네 조건 중 하나라도 불충족; 신규 모듈·신규 ADR·구조/스키마 변경; `scope: mission` ADR; [[pm_role.local.md]] §보호 영역. 보안/인증/시크릿·외부 송신·핵심 안전 게이트는 hard 신호다.
 

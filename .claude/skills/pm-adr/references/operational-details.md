@@ -7,7 +7,7 @@
 1. `decisions/NNNN-<slug>.md`: frontmatter(title/created/updated/author/type/status/scope/개정 동사/
    related/tags)와 Context/Decision/Consequences/References placeholder 골격.
 2. amends/supersedes 대상 frontmatter: `status`→amended/superseded, `amended_by`/`superseded_by`에 신규
-   ADR id를 부기한다. surgical 정규식 치환으로 본문·포맷을 보존하며 멱등이다.
+   ADR id를 기록한다. surgical 정규식 치환으로 본문·포맷을 보존하며 멱등이다.
 3. `decisions/README.md`: 신규 행을 Accepted에 넣고 대상을 Accepted→Amended/Superseded로 옮긴다.
    이미 이동됐으면 back-ref cell에 append한다. 표/섹션 구조 불일치는 warning 후 해당 단계만
    skip하는 fail-soft이며 frontmatter back-ref는 수행한다.

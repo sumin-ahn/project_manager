@@ -389,7 +389,7 @@ def test_growth_commands_reject_non_active_states_without_writes(board_env, caps
 
 @requires_git
 def test_draft_section_add_allows_only_architect_and_never_syncs(board_env, monkeypatch, capsys):
-    """draft 의 라운드도 같은 규칙으로 예약하되 board-git 부기는 promote 가 소유한다."""
+    """draft 의 라운드도 같은 규칙으로 예약하되 board-git 기록은 promote 가 소유한다."""
     board, board_dir, _bare = board_env
     path = _write_ticket(board_dir, "T-1011", "draft")
     before_head = _head(board_dir)

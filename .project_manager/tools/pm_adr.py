@@ -13,8 +13,8 @@ README 색인·log decide entry)를 한 명령으로 원자화한다.
 동작 (하나라도 실패하면 이후 단계 미착수·apply 는 마지막에 한 번에):
   1. 채번 — decisions/ 스캔·다음 NNNN.
   2. 신규 ADR 파일 scaffold — `decisions/NNNN-slug.md`(frontmatter + 본문 골격).
-  3. lifecycle back-ref 부기 — `--amends`/`--supersedes` 대상 ADR frontmatter 에 status(amended/
-     superseded) + amended_by/superseded_by 부기(발행 시점 충족·사후 lint 아님).
+  3. lifecycle back-ref 기록 — `--amends`/`--supersedes` 대상 ADR frontmatter 에 status(amended/
+     superseded) + amended_by/superseded_by 기록(발행 시점 충족·사후 lint 아님).
   4. README 색인 — Accepted 표에 신규 행 추가 + amends/supersedes 대상 행 Accepted→Amended/
      Superseded 표 이동(또는 이미 이동됐으면 back-ref cell 에 append).
   5. log/current.md decide entry skeleton append.
@@ -383,7 +383,7 @@ def adr_filename(number: int, slug: str) -> str:
     return f"{number:04d}-{slug}.md"
 
 
-# ── 3. lifecycle back-ref 부기 (대상 ADR frontmatter surgical 치환) ────────────
+# ── 3. lifecycle back-ref 기록 (대상 ADR frontmatter surgical 치환) ────────────
 
 def _find_target_file(decisions_dir: Path, num: int) -> Path | None:
     """대상 ADR 번호 → `decisions/NNNN-*.md` 파일 경로 (없으면 None)."""
@@ -405,7 +405,7 @@ def _split_frontmatter(text: str) -> tuple[str, str] | None:
 
 
 def _apply_backref_to_frontmatter(fm_body: str, new_id: str, want_status: str, back_field: str) -> str:
-    """frontmatter 텍스트(블록 내부)에 status + back-ref 를 surgical 하게 부기한다.
+    """frontmatter 텍스트(블록 내부)에 status + back-ref 를 surgical 하게 기록한다.
 
     - `status:` 줄 값을 want_status(amended/superseded)로 치환.
     - `<back_field>:` 줄이 있으면 그 flow-list 에 new_id 를 append(중복이면 no-op),
@@ -446,7 +446,7 @@ def _parse_flow_list_value(line: str, field: str) -> list[str]:
 
 
 def apply_lifecycle_backref(target_text: str, new_id: str, verb: str) -> str:
-    """대상 ADR 파일 텍스트에 개정 back-ref 를 부기한 새 텍스트를 반환한다.
+    """대상 ADR 파일 텍스트에 개정 back-ref 를 기록한 새 텍스트를 반환한다.
 
     verb = amends/supersedes. frontmatter 블록만 surgical 편집(본문 불변). frontmatter 파싱
     불가(형식 어긋남)면 원문 그대로 반환(호출부가 warning)."""
@@ -873,9 +873,9 @@ def build_parser() -> argparse.ArgumentParser:
     new.add_argument("--status", default="accepted",
                      choices=["proposed", "accepted"], help="발행 status (기본 accepted)")
     new.add_argument("--amends", action="append", default=[], metavar="ADR-NNNN",
-                     help="개정(부분 수정) 대상 — 대상 status→amended·amended_by 부기 (반복 가능)")
+                     help="개정(부분 수정) 대상 — 대상 status→amended·amended_by 기록 (반복 가능)")
     new.add_argument("--supersedes", action="append", default=[], metavar="ADR-NNNN",
-                     help="대체 대상 — 대상 status→superseded·superseded_by 부기 (반복 가능)")
+                     help="대체 대상 — 대상 status→superseded·superseded_by 기록 (반복 가능)")
     new.add_argument("--refines", action="append", default=[], metavar="ADR-NNNN",
                      help="확장(대상 불변) 대상 — related 링크만 (반복 가능)")
     new.add_argument("--related", action="append", default=[], metavar="ID",
@@ -925,14 +925,14 @@ def cmd_new(args: argparse.Namespace) -> int:
         print("\n── 신규 ADR 파일 ──")
         print(plan["adr_text"])
         for tpath, _ in plan["target_edits"]:
-            print(f"── back-ref 부기: {tpath.name} ──")
+            print(f"── back-ref 기록: {tpath.name} ──")
         print("\n── log decide entry ──")
         print(plan["log_entry"])
     else:
         issuer.apply(plan)
         print(f"✓ {adr_id(number)} 발행 → {plan['adr_path'].name}")
         for tpath, _ in plan["target_edits"]:
-            print(f"  ✓ back-ref 부기: {tpath.name}")
+            print(f"  ✓ back-ref 기록: {tpath.name}")
         if plan["readme_text"] is not None:
             print("  ✓ README 색인 갱신")
         print("  ✓ log/current.md decide entry append")

@@ -1,6 +1,6 @@
 ---
 name: pm-adr
-description: "ADR 발행/개정 명령어化 — 번호 자동 채번 + frontmatter scaffold + 개정(amends/supersedes) 대상 ADR 에 lifecycle back-ref(status·amended_by/superseded_by) 발행 시점 자동 부기 + decisions/README.md 색인(Accepted 삽입·개정 대상 Accepted→Amended/Superseded 이동) + log decide entry 를 한 trigger 로 원자화한다. 흩어진 손 단계의 누락 클래스(back-ref 미부기·README 미이동·log 누락)를 명령에서 닫는다. backbone CLI .project_manager/tools/pm_adr.py thin wrapper. Triggers: 'ADR 발행', 'ADR 작성', '결정 박제', 'ADR 개정', 'ADR amend', 'ADR supersede', 'ADR 번호', 'decisions 색인', 'pm-adr'."
+description: "ADR 발행/개정 명령어化 — 번호 자동 채번 + frontmatter scaffold + 개정(amends/supersedes) 대상 ADR 에 lifecycle back-ref(status·amended_by/superseded_by) 발행 시점 자동 기록 + decisions/README.md 색인(Accepted 삽입·개정 대상 Accepted→Amended/Superseded 이동) + log decide entry 를 한 trigger 로 원자화한다. 흩어진 손 단계의 누락 클래스(back-ref 미기록·README 미이동·log 누락)를 명령에서 닫는다. backbone CLI .project_manager/tools/pm_adr.py thin wrapper. Triggers: 'ADR 발행', 'ADR 작성', '결정 박제', 'ADR 개정', 'ADR amend', 'ADR supersede', 'ADR 번호', 'decisions 색인', 'pm-adr'."
 audience: pm-internal
 ---
 

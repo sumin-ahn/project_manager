@@ -3529,7 +3529,7 @@ def test_reconcile_creating_without_worktree_is_incomplete_not_stale(wp):
 def test_prune_stale_leases_removes_absent_worktree_entries(wp):
     """must-fix(1) cleanup — worktree dir 확정 부재(stale idle + worktree 없는 creating) 엔트리 제거 (T-0295).
 
-    이미 사라진 worktree 의 dangling 부기만 정리(사용자 데이터 삭제 아님). worktree dir 이 존재하는
+    이미 사라진 worktree 의 dangling 기록만 정리(사용자 데이터 삭제 아님). worktree dir 이 존재하는
     엔트리는 손대지 않는다. sensitivity: prune 이 no-op 이면 A_1/A_2 잔여로 red.
     """
     _seed(wp,

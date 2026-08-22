@@ -2505,7 +2505,7 @@ def test_status_reconcile_failure_does_not_break_status(pc, capsys):
 
 def test_status_drift_guidance_recommends_prune_not_force_release(pc, capsys):
     """must-fix(1) 안내정정 — drift 복구가 위험한 `release --force`(idle 화·삭제 안 함) 대신
-    `prune-stale`(안전 부기 정리) + orphan 은 `git worktree remove` 를 권한다 (T-0295)."""
+    `prune-stale`(안전 기록 정리) + orphan 은 `git worktree remove` 를 권한다 (T-0295)."""
     stale = FakeLease(slot="work/svc_9", repo="svc", state="idle")
     orphan = SimpleNamespace(slot="work/svc_2", branch="svc_2")
     wp = FakeWorktreePool(leases=[], reconcile=([orphan], [stale], []))

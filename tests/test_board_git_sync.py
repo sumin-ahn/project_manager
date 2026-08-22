@@ -616,7 +616,7 @@ def test_promote_reports_board_git_pending_when_local_commit_is_uncommitted(
 
     out = capsys.readouterr().out
     assert "board-git 승격 완료" not in out, out
-    assert "board-git 부기 보류: local-only/uncommitted" in out, out
+    assert "board-git 기록 보류: local-only/uncommitted" in out, out
 
 
 @requires_git
@@ -815,7 +815,7 @@ def test_best_effort_detached_skips_commit_no_orphan(board, tmp_path, capsys):
     """detached HEAD → best-effort sync 가 commit 을 skip(orphan 0)하고 loud 경고만 낸다 (T-0204).
 
     detached 위의 commit 은 orphan 으로 쌓이고 catch-up 이 구조적으로 불가하므로, best-effort 는
-    commit/pull/push 를 전부 skip 하고 부기를 보류한다 — HEAD 불변(새 orphan commit 0)·경고 출력.
+    commit/pull/push 를 전부 skip 하고 기록을 보류한다 — HEAD 불변(새 orphan commit 0)·경고 출력.
     파일 mutation 은 이미 끝난 뒤라 작업은 무차단(파일은 남는다)."""
     bare = tmp_path / "bare-bed"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
@@ -840,7 +840,7 @@ def test_best_effort_detached_skips_commit_no_orphan(board, tmp_path, capsys):
     err = capsys.readouterr().err
     assert "detached HEAD" in err and "보류" in err, \
         f"detached best-effort 인데 detached 보류 경고가 안 나옴: {err!r}"
-    # 작업 무차단: mutation 파일 자체는 남아야 한다(git 부기만 보류·working tree 미접촉).
+    # 작업 무차단: mutation 파일 자체는 남아야 한다(git 기록만 보류·working tree 미접촉).
     assert (board_dir / "tickets" / "open" / "T-0002-t.md").exists(), \
         "detached best-effort 가 mutation 파일을 되돌림 — 작업 무차단 원칙 위반."
 

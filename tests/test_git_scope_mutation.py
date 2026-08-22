@@ -307,7 +307,7 @@ def test_scope_stageable_drops_gitignored_paths(board, tmp_path):
     (repo / "board.md").write_text("changed\n", encoding="utf-8")        # ignored 규칙·추적됨
 
     # 대조 실측: rc=1 이다(정상 경로는 stage 되지만 **rc≠0** 이라 호출부가 `[중단]` 으로 죽는다 —
-    # pathspec 미매치의 rc=128 과 종류만 다를 뿐 결과는 같은 '부기 절반 + 보고 침묵'이다).
+    # pathspec 미매치의 rc=128 과 종류만 다를 뿐 결과는 같은 '기록 절반 + 보고 침묵'이다).
     raw = _git(["add", "-A", "--", "normal.md", "local.conf"], repo)
     assert raw.returncode != 0, "ignored 명시 pathspec 인데 add 가 성공 — 전제 붕괴"
     _git(["reset", "-q"], repo)      # 대조 실측이 남긴 index 를 되돌린다(이 tmp repo 한정)
@@ -340,7 +340,7 @@ def test_finish_survives_gitignored_touches(tf, tmp_path, monkeypatch, capsys):
 
     rc = finisher.run("T-0001", section=None, dry_run=False)
     out = capsys.readouterr().out
-    assert rc == 0, f"gitignored touches 로 부기가 rc=1 로 죽었다:\n{out}"
+    assert rc == 0, f"gitignored touches 로 기록이 rc=1 로 죽었다:\n{out}"
     staged = _staged(root)
     assert _TOUCHED_FILE in staged and _LOG_FILE in staged
     assert ".project_manager/local.conf" not in staged
@@ -902,7 +902,7 @@ def test_finish_reports_residual_dirty_loud(tf, tmp_path, monkeypatch, capsys):
     assert "roadmap.md" in out and "other-spike.md" in out
     assert "0002-other-draft.md" in out and "other-page.md" in out
     # 마지막 줄에서 한 번 더 재고지 — [4/5] 보고가 이후 8줄에 묻히지 않게(loud 강화).
-    assert "[완료] T-0001 부기 완료. ⚠ 미스테이지 잔여" in out
+    assert "[완료] T-0001 기록 완료. ⚠ 미스테이지 잔여" in out
 
 
 @requires_git

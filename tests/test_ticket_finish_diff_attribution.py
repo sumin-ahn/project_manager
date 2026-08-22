@@ -376,7 +376,7 @@ def test_git_call_count_does_not_scale_with_claimed_ticket_count(
 #
 # `--no-pytest` 가 슬롯 해소까지 우회하던 동안, 측정 root 는 PM 홈으로 폴백했다. 분리 형상의
 # PM 홈에는 엔진 import 사본이 있어 그 사본이 dirty 하면 상한을 훌쩍 넘고, 코드 트리(worktree)가
-# clean 이어도 완료 부기가 false-block 됐다. 아래 두 형상은 같은 호출에서 측정 root 가 슬롯
+# clean 이어도 완료 기록이 false-block 됐다. 아래 두 형상은 같은 호출에서 측정 root 가 슬롯
 # worktree 라는 것을 차단/통과라는 관측 가능한 결과로 고정한다.
 
 
@@ -452,7 +452,7 @@ def _probe_code_tree(tf, monkeypatch) -> list[Path]:
     """main() 이 만드는 finisher 의 코드 트리 해소값을 관찰한다.
 
     board.py subprocess 만 대역으로 막는다 — 이 형상이 검증하는 것은 measurement/stage 트리이고,
-    부기 자체(claimed→done 이동)는 별도 테스트가 소유한다. git·stage 경로는 실물 그대로다.
+    기록 자체(claimed→done 이동)는 별도 테스트가 소유한다. git·stage 경로는 실물 그대로다.
     """
     trees: list[Path] = []
     original = tf.TicketFinisher

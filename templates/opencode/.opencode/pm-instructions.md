@@ -1,7 +1,7 @@
 # pm-instructions.md — opencode PM 운영 지침 (실행 모델 · 위임)
 
 > opencode-고유 PM 운영 전문. `opencode.jsonc` 의 `instructions` 배열로 **AGENTS.md 공통 코어와
-> 함께 자동 로드**된다 — 공통 코어(프로젝트 정체성·엔진 호출[인코딩]·완료 부기·결정 권한·안전
+> 함께 자동 로드**된다 — 공통 코어(프로젝트 정체성·엔진 호출[인코딩]·완료 기록·결정 권한·안전
 > 가드) 위에 opencode 실행 모델과 위임 규약을 얹는다.
 >
 > 대응 관계: 이 파일 = Claude Code 타깃 CLAUDE.md 의 opencode-고유 부분. 그대로 번역이 아니라
@@ -148,7 +148,7 @@ opencode run --agent researcher   --format json "<researcher 프롬프트>"
 
 ## 참고
 
-- `AGENTS.md` — harness-neutral 공통 코어(프로젝트 정체성·엔진 호출·완료 부기·결정 권한·안전 가드).
+- `AGENTS.md` — harness-neutral 공통 코어(프로젝트 정체성·엔진 호출·완료 기록·결정 권한·안전 가드).
 - `.project_manager/wiki/pm_role.md` — PM 책임·결정 권한·핸드오프 단일 진실
 - `.project_manager/wiki/pm_playbook.md` — Wave 패턴·메타 정책 (필요 시 Read)
 - ADR-0006 (`.project_manager/wiki/decisions/`) — opencode 어댑터 결정 (위임·인코딩·모델·self-driven)

@@ -889,40 +889,53 @@ _REVIEW_LOOP_RETIRED = (
 )
 
 
-def _review_loop_historical(rel: str) -> bool:
+def _historical_record(rel: str, *, include_tests: bool = False) -> bool:
     """그 상대경로가 term-of-the-time 기록(고칠 수 없는 표면)인지 판정한다.
 
     `_v160_shipping_surface` 의 historical 규칙과 같은 집합에 pm_import 백업을 더한다 —
     `.pm_import_backups/<날짜>/` 는 흡수 전 스냅샷이라 log·decisions 와 같은 immutable 기록이다.
+    `include_tests` 는 산문 축(테스트는 폐기 표기를 *논의*할 수 있다)과 메시지 축(런타임 문자열을
+    단언하는 테스트가 같은 표기를 들고 있어야 한다)이 갈리는 자리다.
     """
-    if rel == "CHANGELOG.md" or rel.startswith("tests/"):
+    if rel == "CHANGELOG.md":
+        return True
+    if not include_tests and rel.startswith("tests/"):
         return True
     if rel.startswith(".pm_import_backups/"):
         return True
-    if any(seg in rel for seg in ("/wiki/decisions/", "/wiki/log/", "/wiki/tickets/")):
+    if any(seg in rel for seg in (
+        "/wiki/decisions/", "/wiki/log/", "/wiki/tickets/open/",
+        "/wiki/tickets/claimed/", "/wiki/tickets/blocked/", "/wiki/tickets/done/",
+    )):
         return True
     if "/wiki/raw/spikes/" in rel and not rel.endswith("/_template.md"):
         return True
     return False
 
 
-def _review_loop_surface() -> list[Path]:
-    """리뷰 루프 서술이 실제로 사는 출하 표면 전량.
+def _shipped_text_surface(*, include_tests: bool = False) -> list[Path]:
+    """출하 텍스트 표면 전량(엔진 코드·방법론 문서·어댑터·3타깃 사본·설치자 ignore 산문).
 
-    `_v160_shipping_surface` 와 historical 규칙·텍스트 확장자 집합을 공유하되 어댑터 디렉터리
-    (`.claude`·`.opencode`·`.codex`·`.agents`)를 **제외하지 않는다** — 리뷰 루프 산문이 사는 자리가
-    바로 스킬·커맨드·에이전트 카드라, v1.6.0 ctx 가드처럼 어댑터를 일괄 제외하면 재유입을 못 잡는다
-    (스킬 `references/*.md`·codex `.agents/skills`·opencode `.opencode/command` 가 그 사각이었다).
+    `_v160_shipping_surface` 와 텍스트 확장자 집합을 공유하되 어댑터 디렉터리(`.claude`·
+    `.opencode`·`.codex`·`.agents`)를 **제외하지 않는다** — 방법론 산문이 사는 자리가 바로 스킬·
+    커맨드·에이전트 카드라, v1.6.0 ctx 가드처럼 어댑터를 일괄 제외하면 재유입을 못 잡는다(스킬
+    `references/*.md`·codex `.agents/skills`·opencode `.opencode/command` 가 그 사각이었다).
     """
     files: list[Path] = []
     for path in repo_owned_paths(REPO, ".", mode=OWNED):
         if not path.is_file() or path.name == _SELF:
             continue
-        if _review_loop_historical(path.relative_to(REPO).as_posix()):
+        if _historical_record(path.relative_to(REPO).as_posix(),
+                              include_tests=include_tests):
             continue
-        if path.suffix.lower() in _V160_TEXT_SUFFIXES:
+        if path.suffix.lower() in _V160_TEXT_SUFFIXES or path.name == ".gitignore":
             files.append(path)
     return files
+
+
+def _review_loop_surface() -> list[Path]:
+    """리뷰 루프 서술이 실제로 사는 출하 표면(산문 축 — 테스트 제외)."""
+    return _shipped_text_surface()
 
 
 def _review_loop_offenders(files: list[Path]) -> list[str]:
@@ -965,7 +978,7 @@ def test_review_loop_surface_covers_every_live_channel_mention():
         if not path.is_file() or path.suffix.lower() != ".md" or path.name == _SELF:
             continue
         rel = path.relative_to(REPO).as_posix()
-        if _review_loop_historical(rel):
+        if _historical_record(rel):
             continue
         if _REVIEW_LOOP_CHANNEL not in path.read_text(encoding="utf-8"):
             continue
@@ -1003,3 +1016,79 @@ def test_review_loop_guard_detects_each_retired_phrase(
     offenders = _review_loop_offenders([doc])
 
     assert offenders == [f"skill.md:1 :: {retired}"]
+
+
+# ── T-0795: '부기'(附記) 폐지 가드 ─────────────────────────────────────────────
+# '부기'는 일본식 한자어(附記 덧붙여 적음 / 簿記 장부 기록)로 국립국어원 순화 대상이고, 이 프로젝트
+# 문서 규칙(번역체·일본식 공문서체 금지)과 어긋난다. 사용자 결정(2026-08-22)으로 출하 표면 전량에서
+# '기록' 계열로 바꿨다 — 합성어는 `완료 기록`·`기록 게이트`, 단독·동사 용법이 의미를 잃으면 '추가
+# 기록'. 런타임 메시지(`[완료] T-NNNN 기록 완료.`)를 문자열로 단언하는 테스트가 있어 메시지와 단언이
+# 같은 표기를 들고 있어야 하므로 `tests/` 도 이 가드의 시야 안이다(산문 축인 리뷰 루프 가드와 갈린다).
+# historical(CHANGELOG·log·decisions·tickets·sealed spike·pm_import 백업)은 그 시점 표기 기록이라
+# 제외한다.
+#
+# 리터럴 분할: 이 가드 파일 자신이 자기 검사에 안 걸리게(_SELF 제외와 이중 방어).
+_RETIRED_BOOKKEEPING_TERM = "부" + "기"
+
+
+def _retired_bookkeeping_offenders(files: list[Path]) -> list[str]:
+    """검사 대상의 폐기 용어 잔존을 줄 단위로 반환한다."""
+    offenders = []
+    for f in files:
+        for lineno, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+            if _RETIRED_BOOKKEEPING_TERM in line:
+                offenders.append(f"{f.relative_to(REPO).as_posix()}:{lineno}")
+    return offenders
+
+
+def test_no_retired_bookkeeping_term_in_shipping_surface():
+    """출하 표면(엔진 메시지·방법론·스킬·3타깃 사본·테스트 단언)에 '부기' 0 (T-0795)."""
+    offenders = _retired_bookkeeping_offenders(
+        _shipped_text_surface(include_tests=True))
+    assert not offenders, (
+        f"폐기 용어 '{_RETIRED_BOOKKEEPING_TERM}' 잔존 — '기록' 계열로 정정하라 "
+        f"(T-0795): {offenders}"
+    )
+
+
+@pytest.mark.parametrize("relpath", [
+    ".project_manager/tools/ticket_finish.py",   # 런타임 메시지 최다 보유
+    ".project_manager/engine.manifest",          # 확장자 밖 산문 — 손 sweep 이 빠뜨렸던 자리
+    ".project_manager/wiki/pm_playbook.md",
+    ".claude/skills/pm-wave-finish/SKILL.md",
+    "README.md",
+    "tests/test_ticket_finish.py",               # 메시지 문자열 단언 축
+    "templates/codex/AGENTS.md",                 # manifest 밖 어댑터 진입(전파 안 됨)
+    "templates/opencode/.opencode/agents/pm.md",
+    "templates/claude_code/.project_manager/wiki/tickets/README.md",
+])
+def test_bookkeeping_guard_scope_includes_every_sweep_axis(relpath):
+    """sweep 이 실제로 손댄 축(엔진·manifest·방법론·스킬·README·테스트·3타깃 사본)이 시야 안이다.
+
+    manifest·타깃 어댑터 진입·타깃 wiki 스캐폴드는 `pm_update` 전파 대상이 아니라 손 sweep 이
+    빠뜨리기 쉬운 자리다(이번 sweep 도 루트 `engine.manifest` 를 1차 스코프에서 놓쳤다).
+    """
+    view = {path.relative_to(REPO).as_posix()
+            for path in _shipped_text_surface(include_tests=True)}
+    assert relpath in view
+
+
+@pytest.mark.parametrize("relpath", [
+    "CHANGELOG.md",
+    ".pm_import_backups/2026-08-10/AGENTS.md",
+])
+def test_bookkeeping_guard_leaves_historical_records_alone(relpath):
+    """historical 기록은 시야 밖이다 — 그 시점 표기라 고칠 수 없고 red 로 만들면 안 된다."""
+    view = {path.relative_to(REPO).as_posix()
+            for path in _shipped_text_surface(include_tests=True)}
+    assert relpath not in view
+
+
+def test_bookkeeping_guard_detects_reintroduction(tmp_path, monkeypatch):
+    """폐기 용어를 다시 넣으면 검사가 그 줄을 검출한다 (sensitivity)."""
+    doc = tmp_path / "tool.py"
+    doc.write_text(
+        f'print("[완료] {{tid}} {_RETIRED_BOOKKEEPING_TERM} 완료.")\n', encoding="utf-8")
+    monkeypatch.setitem(globals(), "REPO", tmp_path)
+
+    assert _retired_bookkeeping_offenders([doc]) == ["tool.py:1"]

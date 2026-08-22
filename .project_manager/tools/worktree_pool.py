@@ -3595,7 +3595,7 @@ def prune_stale_leases() -> list[str]:
     (slot).exists()` False) 엔트리를 장부에서 삭제한다. 제거된 슬롯 식별자 리스트를 반환한다.
 
     **왜 안전한가 (삭제-위임 원칙 위반 아님)**: 이건 *사용자 데이터/worktree 삭제*가 아니라 이미
-    사라진 worktree 의 **dangling 부기 정리**다 — 지울 파일이 없다(dir 부재가 전제). 그래서:
+    사라진 worktree 의 **dangling 기록 정리**다 — 지울 파일이 없다(dir 부재가 전제). 그래서:
       - orphan **worktree**(git 측·disk 에 존재·작업이 있을 수 있음)는 **손대지 않는다** — 그건
         `git worktree remove <path>` 로 사용자가 판단해 지운다(status reconcile 이 안내).
       - worktree 가 **존재**하는 leased/idle/creating 엔트리도 손대지 않는다(dir 존재 → prune 안 함).

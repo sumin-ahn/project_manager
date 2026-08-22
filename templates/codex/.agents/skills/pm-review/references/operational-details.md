@@ -63,4 +63,4 @@ python3 .project_manager/tools/external_review.py --resolve-gate <게이트> --f
 - `must-fix 감지` → 반려; must-fix 해소 후 재검토.
 - `판정 불명확` → PM 확인 필요.
 - `FALLBACK_INTERNAL` → 내부 code-reviewer로 폴백.
-- must-fix 전부 해소 → 완료 부기(`ticket_finish`) → push 하여 추가 리뷰어 게이트를 종료한다(내부 reviewer 축은 `pm_delegate.py` 가 소유).
+- must-fix 전부 해소 → 완료 기록(`ticket_finish`) → push 하여 추가 리뷰어 게이트를 종료한다(내부 reviewer 축은 `pm_delegate.py` 가 소유).

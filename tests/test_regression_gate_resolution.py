@@ -501,7 +501,7 @@ def test_no_prefix_adopter_shape_resolves_real_areas_row(adopter_board, tf, hf,
 
 def test_no_prefix_adopter_ticket_finish_completes_green(adopter_board, tf, tmp_path,
                                                          monkeypatch, capsys):
-    """채택자 형상 완료 부기 — 비-pytest 게이트가 exit 0 이면 green 으로 완주한다(rc 0).
+    """채택자 형상 완료 기록 — 비-pytest 게이트가 exit 0 이면 green 으로 완주한다(rc 0).
 
     수정 전엔 하드코딩 `pytest tests/ -q` 로 폴백해 `tests/` 부재("no tests ran")로 항상
     red 였다.
@@ -522,14 +522,14 @@ def test_no_prefix_adopter_ticket_finish_completes_green(adopter_board, tf, tmp_
     out = capsys.readouterr().out
     assert f"green: `{NON_PYTEST_CMD}` (exit 0)" in out
     assert "테스트 수 미측정" in out
-    assert "[완료] T-0035 부기 완료." in out
+    assert "[완료] T-0035 기록 완료." in out
     # 테스트 수는 측정하지 않는다 — log 스켈레톤은 `--no-pytest` 경로와 같은 "?" 를 싣는다.
     assert "?" in log_file.read_text(encoding="utf-8")
 
 
 def test_no_prefix_adopter_ticket_finish_red_on_nonzero_rc(adopter_board, tf, tmp_path,
                                                            monkeypatch, capsys):
-    """fail-soft 가 아니다 — 비-pytest 게이트가 rc != 0 이면 부기 전에 중단(rc 1·부작용 0)."""
+    """fail-soft 가 아니다 — 비-pytest 게이트가 rc != 0 이면 기록 전에 중단(rc 1·부작용 0)."""
     monkeypatch.setattr(tf, "_load_board_module", lambda: adopter_board)
     log_file = tmp_path / "log.md"
     finisher = tf.TicketFinisher(

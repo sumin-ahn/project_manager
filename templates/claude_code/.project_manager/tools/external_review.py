@@ -286,7 +286,7 @@ _ENGINE_REV_SKEW_RECOVERY_REASONS = {
         "진행한다(잃는 것은 Windows 에서 이 판독 중의 원자 교체 한 번)"
     ),
     "ticket_harvest": (
-        "회수는 이미 **끝나고 과금된** 라운드의 부기다 — 여기서 사본 불일치로 traceback 을 내면 "
+        "회수는 이미 **끝나고 과금된** 라운드의 기록이다 — 여기서 사본 불일치로 traceback 을 내면 "
         "리뷰 판정과 요약이 이미 출력된 뒤 실행이 죽어, 채택자에게는 '리뷰가 실패했다'로만 보인다. "
         "설계된 회수 실패 처방(재동기 안내 + rc≠0 + raw 경로)으로 접고 산출은 raw 에 남긴다"
     ),
@@ -4520,7 +4520,7 @@ def _untracked_diff_runs(
     """untracked 신규 파일 각각의 '새 파일 diff' 실행 결과 (index 미변경).
 
     `git diff` 는 index/커밋에 있는 것만 보므로 신규 파일이 통째로 빠진다 — 리뷰는 새 파일을 못
-    보고, 서킷브레이커는 그것을 0 줄로 잰다(완료 부기가 재고 나서 stage 하는 순서라 대형 신규
+    보고, 서킷브레이커는 그것을 0 줄로 잰다(완료 기록이 재고 나서 stage 하는 순서라 대형 신규
     파일이 상한을 그대로 통과했다)."""
     _run = run_fn or subprocess.run
     runs: list[subprocess.CompletedProcess] = []
@@ -4594,7 +4594,7 @@ def is_machine_mirror_path(path: str) -> bool:
     **측정 축소 = 가드 약화**라
     정당한 작업을 오차단하지 않는다(과다 차단이 아니라 과소 차단 쪽으로만 틀린다).
 
-    **측정 제외 규칙의 단일 진실** — 리뷰(external_review)와 완료 부기(ticket_finish)가 같은 판정을
+    **측정 제외 규칙의 단일 진실** — 리뷰(external_review)와 완료 기록(ticket_finish)가 같은 판정을
     쓴다(사본 0). 판정은 경로 문자열뿐이라 트리 상태에 의존하지 않는다."""
     return _MACHINE_MIRROR_RE.match(_canonical_measure_path(path)) is not None
 
@@ -4631,7 +4631,7 @@ def _sum_numstat(text: str) -> int:
 # ── 서킷브레이커 측정 폭 (claim 앵커) ──────────────────────────────────────
 # 서킷브레이커가 재야 하는 것은 "이 티켓이 claim 이후 남긴 변경"이다. 작업트리+직전 커밋 한 칸
 # 이라는 옛 폭은 dev 브랜치를 `--no-ff` merge 로 흡수하는 형상에서 0 에 수렴한다 — finish 시점
-# 트리는 clean 이고 마지막 커밋이 전파/부기 커밋이면 티켓 경로 교집합이 비기 때문이다(실측).
+# 트리는 clean 이고 마지막 커밋이 전파/기록 커밋이면 티켓 경로 교집합이 비기 때문이다(실측).
 # claim 시점 코드 트리 HEAD 를 앵커로 쓰면 그 사이 커밋(merge 로 들어온 dev 누적 포함)이
 # 한 폭에 들어온다.
 
@@ -4701,7 +4701,7 @@ def measured_numstat_text(
 ) -> str:
     """서킷브레이커 측정 폭의 `--numstat` 원문 — **폭의 단일 정의 지점**.
 
-    총량(`diff_line_total`)과 경로별 귀속(완료 부기의 claimed 합집합 분배)이 같은 함수를 소비해,
+    총량(`diff_line_total`)과 경로별 귀속(완료 기록의 claimed 합집합 분배)이 같은 함수를 소비해,
     두 소비자가 다른 폭을 재는 어긋남이 생기지 않는다. 실패한 git 실행은 '그 단계에는 변경
     없음'으로 본다(추출 경로의 폴백 규칙과 같다 — 측정 실패가 게이트를 벽돌로 만들지 않는다)."""
     for stage_base, untracked in _measure_stages(base, claimed_rev):
@@ -4740,7 +4740,7 @@ def _diff_cap_refusal(
 
     상한을 고르는 티켓은 `--ticket`(검토 범위를 정한 티켓) 우선, 없으면 `--gate`(게이트 표식)다.
     측정 폭은 **이번 실행이 실제로 리뷰하는 범위**(해소된 검토 경로)이고, 기준점은 그 티켓의
-    claim 시점 rev(`claimed_rev`)다 — 완료 부기 서킷브레이커와 같은 폭이라 두 게이트가 다른
+    claim 시점 rev(`claimed_rev`)다 — 완료 기록 서킷브레이커와 같은 폭이라 두 게이트가 다른
     숫자를 보지 않는다. 앵커는 **기본 폭**(미지정 또는 `--base HEAD`)에만 적용된다 — 판정이
     `args.base == "HEAD"` 문자열 비교라 명시 `--base HEAD` 도 기본과 구분되지 않는다(같은 이름의
     폭을 고른 것이라 실효 위험은 낮다). `--base` 로 다른 값을 명시하면 그 폭이 우선한다(앵커
@@ -8660,7 +8660,7 @@ def _run_isolated_review(
                 # `__exit__` 가 보지 못한다) 거기서 직접 한 번 되돌린다.
                 reservation.settle_refunded()
         except OSError as exc:
-            # 마감은 이미 *끝난* 전송의 부기다 — 여기서 rc 를 바꾸면 리뷰 판정이 락 사정으로
+            # 마감은 이미 *끝난* 전송의 기록이다 — 여기서 rc 를 바꾸면 리뷰 판정이 락 사정으로
             # 뒤집힌다. loud 경고만 남기고 판정 종료코드를 그대로 돌려준다. 마감 못 한 레코드는
             # finished_at 없이 남아 다음 실행의 미완 재시도 예산으로 보수적으로 집계된다.
             #

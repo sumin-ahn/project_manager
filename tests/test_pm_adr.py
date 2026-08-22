@@ -1,6 +1,6 @@
 """pm_adr.py 단위테스트 (T-0368) — ADR 발행/개정 명령어化 backbone.
 
-채번·frontmatter scaffold·lifecycle back-ref surgical 부기·README 색인 이동·log decide entry
+채번·frontmatter scaffold·lifecycle back-ref surgical 기록·README 색인 이동·log decide entry
 + end-to-end 발행 계획/적용을 hermetic(임시 decisions/) 로 검증한다. 마지막에 board.py 의
 `lint_adr_lifecycle`(ADR-0021 advisory)를 발행 산출물에 돌려 **back-ref clean**(DoD 정합)을 실측한다.
 
@@ -214,7 +214,7 @@ def test_build_adr_file_has_body_scaffold(adr):
     assert "PM 서술" in text  # placeholder 존재
 
 
-# ── lifecycle back-ref surgical 부기 ──────────────────────────────────────────
+# ── lifecycle back-ref surgical 기록 ──────────────────────────────────────────
 
 
 _TARGET_ADR = """\

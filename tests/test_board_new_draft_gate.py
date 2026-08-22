@@ -181,7 +181,7 @@ def test_first_draft_root_backfill_commit_failure_is_loud_and_pending(
     assert "A  .gitattributes" in status and "A  .gitignore" in status, status
     assert "board local commit 실패" in err, err
     assert ".gitattributes" in err and ".gitignore" in err, err
-    assert "draft 격리 부기 보류: local-only/uncommitted" in err, err
+    assert "draft 격리 기록 보류: local-only/uncommitted" in err, err
     remote_files = _git(["ls-tree", "-r", "--name-only", "main"], bare).stdout
     assert ".gitattributes" not in remote_files and ".gitignore" not in remote_files
 
@@ -397,7 +397,7 @@ def test_draft_not_leaked_by_unrelated_claim_and_complete(board, tmp_path):
                 fm, _ = board.load_ticket(p)
                 seed_id = "-".join(p.stem.split("-")[:2])
                 # DoD 는 체크 상태로 심는다 — 이 테스트의 주제는 draft leak 이지만 아래에서
-                # 실제로 complete 까지 태우므로 DoD 부기 게이트(T-0596)를 만족해야 한다.
+                # 실제로 complete 까지 태우므로 DoD 기록 게이트(T-0596)를 만족해야 한다.
                 filled_body = (
                     f"# {seed_id} — 실 티켓\n\n"
                     "## 목표\n실제 목표.\n\n"

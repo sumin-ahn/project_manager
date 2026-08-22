@@ -295,7 +295,7 @@ def test_dirty_block_touches_no_file(hf, tmp_path, monkeypatch):
 
 
 def test_dirty_rerun_after_block_is_still_first_entry(hf, tmp_path, monkeypatch):
-    """차단 후 커밋(=clean) 재실행이 entry 를 **1개만** 남긴다 (중복 부기 0)."""
+    """차단 후 커밋(=clean) 재실행이 entry 를 **1개만** 남긴다 (중복 기록 0)."""
     inst, log_file = _make_handoff(
         hf, tmp_path, monkeypatch,
         git_runner=_git_stub({str(tmp_path): _DIRTY_TWO}),

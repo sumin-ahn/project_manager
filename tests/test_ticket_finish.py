@@ -315,7 +315,7 @@ def test_soft_step_prints_affected_pages_and_does_not_block(tf, tmp_path, capsys
     out = capsys.readouterr().out
     assert "이 ticket 이 건드린 영역 domain 페이지" in out
     assert "분석 페이지" in out and "코어 페이지" in out
-    assert "[완료] T-1234 부기 완료." in out  # 완료 흐름 도달
+    assert "[완료] T-1234 기록 완료." in out  # 완료 흐름 도달
 
 
 def test_soft_step_no_affected_pages_prints_none_and_completes(tf, tmp_path, capsys):
@@ -325,7 +325,7 @@ def test_soft_step_no_affected_pages_prints_none_and_completes(tf, tmp_path, cap
     assert rc == 0
     out = capsys.readouterr().out
     assert "(영향 domain 페이지 없음)" in out
-    assert "[완료] T-1234 부기 완료." in out
+    assert "[완료] T-1234 기록 완료." in out
 
 
 def test_soft_step_domain_absent_graceful_skip(tf, tmp_path, capsys):
@@ -335,7 +335,7 @@ def test_soft_step_domain_absent_graceful_skip(tf, tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "(domain 레이어 없음 — skip)" in out
-    assert "[완료] T-1234 부기 완료." in out
+    assert "[완료] T-1234 기록 완료." in out
 
 
 def test_soft_step_exception_does_not_block_completion(tf, tmp_path, capsys):
@@ -354,7 +354,7 @@ def test_soft_step_exception_does_not_block_completion(tf, tmp_path, capsys):
     )
     rc = finisher.run("T-1234", section=None, dry_run=False)
     assert rc == 0
-    assert "[완료] T-1234 부기 완료." in capsys.readouterr().out
+    assert "[완료] T-1234 기록 완료." in capsys.readouterr().out
 
 
 def test_dry_run_label_shows_resolved_gate(tf, tmp_path, monkeypatch, capsys):
@@ -422,7 +422,7 @@ def test_run_does_not_touch_status_md(tf, tmp_path, capsys):
     # status.md 는 byte-동일 (도구가 안 건드림).
     assert status_file.read_text(encoding="utf-8") == original
     out = capsys.readouterr().out
-    assert "[완료] T-1234 부기 완료." in out
+    assert "[완료] T-1234 기록 완료." in out
     # 단계 카운트가 5/5 로 줄었다 (status 단계 제거).
     assert "[1/5]" in out and "[5/5]" in out and "[6/6]" not in out
 
@@ -432,7 +432,7 @@ def test_run_ignores_section_arg(tf, tmp_path, capsys):
     finisher = _make_finisher(tf, tmp_path, affected=[])
     rc = finisher.run("T-1234", section="엔진 도구 (board.py)", dry_run=False)
     assert rc == 0
-    assert "[완료] T-1234 부기 완료." in capsys.readouterr().out
+    assert "[완료] T-1234 기록 완료." in capsys.readouterr().out
 
 
 def test_log_skeleton_reports_measured_total_no_old_total(tf):
@@ -697,7 +697,7 @@ def test_soft_step_marks_stale_affected_page_with_warning(tf, tmp_path, capsys):
     assert "⚠ fresh 페이지" not in out      # fresh(False) → 무표시
     assert "⚠ unknown 페이지" not in out    # unknown(None) → 무표시
     assert "fresh 페이지" in out and "unknown 페이지" in out  # 이름 자체는 출력
-    assert "[완료] T-1234 부기 완료." in out
+    assert "[완료] T-1234 기록 완료." in out
 
 
 def test_affected_domain_titles_stale_exception_yields_unknown(tf, tmp_path, monkeypatch):
@@ -1234,7 +1234,7 @@ def test_run_skip_pytest_bypasses_regression_keeps_tests_pass(tf, tmp_path, caps
     out = capsys.readouterr().out
     assert "회귀 측정 skip" in out
     assert board_calls == [["complete", "T-1234", "--tests-pass"]]  # skip 이어도 --tests-pass 유지
-    assert "[완료] T-1234 부기 완료." in out
+    assert "[완료] T-1234 기록 완료." in out
     assert "회귀 ? / ?" in (tmp_path / "log.md").read_text(encoding="utf-8")  # 측정 total 없이 "?"
 
 
@@ -1645,7 +1645,7 @@ def test_task_stage_plan_separates_pm_outputs_and_worktree_touches(tf, tmp_path,
             '`git commit -m "<메시지>" -- tests/test_real_change.py`') in out
     assert "⚠ [task worktree touches] 미스테이지 잔여 1건" in out
     assert "⚠ [task worktree touches] 스코프 밖 staged 1건" in out
-    assert "[완료] T-0437 부기 완료. ⚠ 미스테이지 잔여 1건 · 스코프 밖 staged 1건" in out
+    assert "[완료] T-0437 기록 완료. ⚠ 미스테이지 잔여 1건 · 스코프 밖 staged 1건" in out
 
 
 def test_task_stage_plan_dry_run_matches_actual_repo_pathspec(tf, tmp_path, monkeypatch, capsys):
@@ -1949,12 +1949,12 @@ def test_diff_cap_pass_completes_normally(tf, tmp_path, capsys):
         log_file=tmp_path / "log.md",
     )
     assert finisher.run("T-1234", section=None, dry_run=False) == 0
-    assert "[완료] T-1234 부기 완료." in capsys.readouterr().out
+    assert "[완료] T-1234 기록 완료." in capsys.readouterr().out
 
 
 def test_unterminated_frontmatter_fallback_keeps_finish_flow_open(
         tf, tmp_path, monkeypatch):
-    """손상 ticket + board 불능은 측정 가드 off라 완료 부기를 막지 않는다."""
+    """손상 ticket + board 불능은 측정 가드 off라 완료 기록을 막지 않는다."""
     repo = tmp_path / "repo"
     board_py = repo / ".project_manager" / "tools" / "board.py"
     board_py.parent.mkdir(parents=True)
@@ -2066,7 +2066,7 @@ def test_default_diff_cap_seam_absorbs_a_missing_claim_anchor_symbol(
 #
 # ⑧ PM 홈 좌표 touches(`work/<repo>_<N>/…`)를 그대로 재면 측정 트리에 그 경로가 없어 diff 가 0 이
 #    나오고 상한이 조용히 우회된다. 정규화는 stage 경로와 **같은** `repo_coordinates` seam 이다.
-# ① 기계 mirror 제외는 external_review 측정 seam 이 소유한다 — 완료 부기는 그 판정을 빌려 쓴다.
+# ① 기계 mirror 제외는 external_review 측정 seam 이 소유한다 — 완료 기록은 그 판정을 빌려 쓴다.
 
 
 def test_measured_touches_normalizes_pm_home_coordinates(tf, tmp_path, monkeypatch):
@@ -2135,7 +2135,7 @@ def test_diff_cap_measures_the_normalized_scope(tf, tmp_path, monkeypatch):
 
 # ── untracked 신규 파일 측정 (T-0604 ③) ─────────────────────────────────────
 #
-# 완료 부기는 **[0/5] 서킷브레이커 → … → [4/5] git stage** 순서다. `git diff` 가 아직 add 되지
+# 완료 기록은 **[0/5] 서킷브레이커 → … → [4/5] git stage** 순서다. `git diff` 가 아직 add 되지
 # 않은 파일을 못 보던 동안에는 그 순서 자체가 결함이었다 — 대형 신규 파일이 0 줄로 측정돼 상한을
 # 통과한 뒤, 바로 다음 단계에서 stage 됐다. 측정이 untracked 를 포함하면 그 창이 닫힌다.
 
@@ -2190,7 +2190,7 @@ def test_an_untracked_file_within_the_cap_still_completes(tf, tmp_path, monkeypa
 
 def test_completion_surface_carries_the_shared_measurement_meaning(
         tf, tmp_path, monkeypatch):
-    """완료 부기 안내도 '측정=손작업 스코프(기계 mirror 제외)'를 싣는다 (문구 단일 출처)."""
+    """완료 기록 안내도 '측정=손작업 스코프(기계 mirror 제외)'를 싣는다 (문구 단일 출처)."""
     external = tf._load_external_review()
     monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: ["templates/"])
     monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: "small")
@@ -2202,7 +2202,7 @@ def test_completion_surface_carries_the_shared_measurement_meaning(
     assert external.MEASURED_SCOPE_NOTE in finisher._default_diff_cap_block("T-1")
 
 
-# ── DoD 부기 게이트 preflight (T-0601 ②) ─────────────────────────────────────
+# ── DoD 기록 게이트 preflight (T-0601 ②) ─────────────────────────────────────
 #
 # DoD 판정이 [3/5] `board.py complete` 안에만 있던 동안에는, 차단될 때마다 [2/5] 가 이미 append 한
 # stray log 스켈레톤이 남고 재실행이 그것을 중복 append 했다(실측). 판정을 append **앞**으로 당겨
@@ -2464,9 +2464,9 @@ def test_pm_direct_finish_wires_directory_expansion_into_condition_a(
 # ── 측정 폭 = claim 시점 rev 앵커 (merge 기반 wave) ─────────────────────────
 #
 # 옛 폭(작업트리 → 비면 직전 커밋 한 칸)은 dev 브랜치를 `--no-ff` merge 로 흡수하는 wave 에서
-# 0 에 수렴했다 — 완료 부기 시점 트리는 clean 이고 마지막 커밋이 전파/부기라 티켓 경로 교집합이
+# 0 에 수렴했다 — 완료 기록 시점 트리는 clean 이고 마지막 커밋이 전파/기록이라 티켓 경로 교집합이
 # 비기 때문이다(상한을 넘긴 wave 가 그대로 통과한 실측). claim 이 그 시점 **코드 트리 HEAD** 를
-# frontmatter 에 박제하고, 완료 부기가 그것을 앵커로 "claim 이후 누적"을 잰다. 아래 형상은 실
+# frontmatter 에 박제하고, 완료 기록이 그것을 앵커로 "claim 이후 누적"을 잰다. 아래 형상은 실
 # git 저장소 + 엔진 사본으로 claim → dev 커밋 → merge → 전파 커밋 순서를 그대로 재현한다.
 #
 # claim 표면(박제 위치·코드 트리 해소 3형상·비-git 경고) 자체의 계약은 여기서 재현하지 않는다 —
@@ -2563,12 +2563,12 @@ def _wave_ticket_path(root: Path, ticket_id: str = _WAVE_TICKET) -> Path:
 
 
 def _wave_work(root: Path) -> None:
-    """claim 부기 커밋 → dev 커밋 2건 → `merge --no-ff` → 전파 커밋 2건.
+    """claim 기록 커밋 → dev 커밋 2건 → `merge --no-ff` → 전파 커밋 2건.
 
     끝난 트리는 clean 이고 마지막 커밋(전파)은 `src/` 를 안 건드린다 — 옛 폭이 0 으로 접히는
     바로 그 배치다."""
     _wave_git(root, "add", "-A")
-    _wave_git(root, "commit", "-qm", "claim 부기")
+    _wave_git(root, "commit", "-qm", "claim 기록")
     _wave_git(root, "checkout", "-q", "-b", f"dev/{_WAVE_TICKET}")
     _wave_write(root / "src" / "app.py", 5 + 200)
     _wave_git(root, "commit", "-qam", "dev 1")
@@ -2584,7 +2584,7 @@ def _wave_work(root: Path) -> None:
 
 
 def _wave_finisher(root: Path, tmp_path: Path):
-    """tmp 저장소를 코드 트리로 쓰는 완료 부기 인스턴스와 그 external_review 사본."""
+    """tmp 저장소를 코드 트리로 쓰는 완료 기록 인스턴스와 그 external_review 사본."""
     finish = _load_tool_copy(root, "ticket_finish")
     finisher = finish.TicketFinisher(
         board_py=root / ".project_manager" / "tools" / "board.py",
@@ -2608,7 +2608,7 @@ def _wave_set_claimed_rev(board, root: Path, value: str | None) -> None:
 
 
 def test_merge_wave_is_measured_from_the_claim_anchor(tmp_path):
-    """merge 로 흡수한 dev 누적이 완료 부기 서킷브레이커에 잡힌다(옛 폭에선 0 이던 형상)."""
+    """merge 로 흡수한 dev 누적이 완료 기록 서킷브레이커에 잡힌다(옛 폭에선 0 이던 형상)."""
     root, board = _wave_repo(tmp_path)
     assert _wave_claim(board) == 0
     _wave_work(root)

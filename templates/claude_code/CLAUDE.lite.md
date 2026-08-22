@@ -70,7 +70,7 @@ PM 은 코드를 직접 짜지 않는다: `claim → 위임(dev) → 검토(revi
 - **병렬 위임은 touches disjoint 일 때만.** reviewer 도 틀릴 수 있으므로 should-fix 는 PM 이 흐름 cross-check 후 적용.
 - skill 표준 프롬프트: `/pm-wave-claim`·`/pm-dev-delegate`·`/pm-wave-finish`.
 
-## 5. 완료 부기 (PM 손)
+## 5. 완료 기록 (PM 손)
 
 ```bash
 {{PY}} .project_manager/tools/board.py complete T-NNNN --tests-pass

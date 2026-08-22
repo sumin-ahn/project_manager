@@ -14,7 +14,7 @@ claude_code 의 `CLAUDE.md`+`.claude/` 에 대응하는 opencode 등가물 — �
 여기 어댑터만 타깃 고유다. (PM 구동 = `AGENTS.md`(harness-neutral 공통 코어) + `.opencode/pm-instructions.md`
 (opencode 실행 모델·위임 규약·`instructions` 배열로 함께 자동 로드); 이 README 는 채택 경로 안내.)
 
-- **`AGENTS.md`** (full 진입·harness-neutral 공통 코어) — PM 부트스트랩·엔진 호출(인코딩)·완료 부기·
+- **`AGENTS.md`** (full 진입·harness-neutral 공통 코어) — PM 부트스트랩·엔진 호출(인코딩)·완료 기록·
   결정 권한·안전 가드. opencode build 세션이 곧 PM 이다. (실행 모델·위임 규약은 아래 pm-instructions.)
 - **`.opencode/pm-instructions.md`** — opencode-고유 실행 모델·위임 규약. `opencode.jsonc` `instructions`
   배열로 공통 코어와 함께 자동 로드된다 (@source 전파 — 방법론 갱신이 채택자에 도달·ADR-0069).
@@ -129,7 +129,7 @@ python3 .project_manager/tools/pm_update.py --from ../../
 
 ## 참고
 
-- `AGENTS.md` — PM 부트스트랩·엔진 호출(인코딩)·완료 부기·결정·안전 가드 공통 코어 (= claude_code 의 `CLAUDE.md`).
+- `AGENTS.md` — PM 부트스트랩·엔진 호출(인코딩)·완료 기록·결정·안전 가드 공통 코어 (= claude_code 의 `CLAUDE.md`).
 - `.opencode/pm-instructions.md` — opencode 실행 모델·위임 규약 (`opencode.jsonc` `instructions` 배열 자동 로드·@source 전파).
 - ADR-0006 · ADR-0069 — opencode 어댑터 타깃 + 진입 doc 공통 코어/하네스별 전달 채널 결정.
 - 루트 [`README.md`](../../README.md) — 프레임워크 전체 가이드(네 기둥·도입·워크플로·이식성·계보).

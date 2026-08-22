@@ -1450,12 +1450,12 @@ def _prepare_handoff_log_change(
         if parsed is None:
             warning = (
                 "같은-세션 판정 실패 — 마지막 handoff 헤더 차수 파싱 실패; "
-                "보수적으로 새 entry를 append합니다 (이중 부기 가능)."
+                "보수적으로 새 entry를 append합니다 (이중 기록 가능)."
             )
         elif not normalized_num.isdigit():
             warning = (
                 f"같은-세션 판정 실패 — 이번 실행 차수 {normalized_num!r} 파싱 실패; "
-                "보수적으로 새 entry를 append합니다 (이중 부기 가능)."
+                "보수적으로 새 entry를 append합니다 (이중 기록 가능)."
             )
         elif int(parsed.group("num")) == int(normalized_num):
             target = candidate
@@ -1512,7 +1512,7 @@ def _prepare_handoff_log_change(
         warning = (
             "같은-세션 판정 실패 — 기존 handoff의 '이 세션 박제 entries' 구획 경계가 "
             f"모호함(marker {len(blocks)}개); 보수적으로 새 entry를 append합니다 "
-            "(이중 부기 가능)."
+            "(이중 기록 가능)."
         )
 
     skeleton = build_handoff_log_skeleton(
@@ -2514,14 +2514,14 @@ def _module_run_git(args: list[str]) -> tuple[int, str]:
 # ── dirty-tree 게이트 ([0/7]·조기 중단) ───────────────────────────────────────
 #
 # 불변식: **핸드오프 시작 시점의 실행 앵커 트리는 clean 이다(gitignored 제외).** 세션 관례상
-# 티켓 산출물은 wave-finish 에서 티켓별로 커밋되고 핸드오프 커밋은 부기(log·pm_state)만 담으므로,
-# 시작 시점의 dirty 는 전부 "부기 누락" 신호다. 실측 사례: 세션 산출 11파일이 미커밋인 채 핸드오프가
+# 티켓 산출물은 wave-finish 에서 티켓별로 커밋되고 핸드오프 커밋은 기록(log·pm_state)만 담으므로,
+# 시작 시점의 dirty 는 전부 "기록 누락" 신호다. 실측 사례: 세션 산출 11파일이 미커밋인 채 핸드오프가
 # 완결·커밋·push 됐고 다음 세션 부트스트랩이 뒤늦게 발견했다 — [6/7] git status dump 가 그 사실을
 # *보여주기만* 하고 차단하지 않았기 때문이다.
 #
 # 그래서 판정을 **어떤 mutation 보다 앞**([2/7] log append·task state 보장·task pid=0 기록 앞)으로
 # 끌어올려 조기 중단으로 승격한다. [6/7] 시점 차단은 log entry 가 이미 append 된 뒤라 재실행이
-# 중복 entry 를 만든다(위임 부기 게이트에서 확인된 순서 문제와 같은 클래스·같은 해법). 회귀
+# 중복 entry 를 만든다(위임 기록 게이트에서 확인된 순서 문제와 같은 클래스·같은 해법). 회귀
 # ([1/7])보다도 앞에 두는 이유는 비용이다 — 판정은 git 조회 몇 번인데 회귀는 수 분이다.
 # 자기-산출물 allowlist 는 필요 없다 — 시점이 allowlist 를 대체한다(log/current.md·pm_state 는
 # 게이트 통과 *후에* 써진다).
@@ -3006,7 +3006,7 @@ class PmHandoff:
     def _record_slot_snapshot(self, slot: str, *, task: str | None = None) -> bool:
         """bound 슬롯의 live git 을 `lease.git` 에 재기록한다 — "여기 두고 간다".
 
-        핸드오프 부기(log·pm_state) 완료 후, 슬롯의 현재 branch/HEAD 를 리스 장부에 재스냅해
+        핸드오프 기록(log·pm_state) 완료 후, 슬롯의 현재 branch/HEAD 를 리스 장부에 재스냅해
         차기 부트스트랩 0단계 record-vs-live 정합(`compare_slot_git`)이 보는 *도착 스냅* 을
         갱신한다. 세션 중 브랜치/HEAD 가 바뀌면(예: 릴리즈 v1.3.2→v1.3.3) bind 의 옛 도착 스냅만
         남아 0단계가 `diverged` FAIL-LOUD 로 정당한 자기 진행을 외부-개입 오경보로 차단하기
@@ -3189,14 +3189,14 @@ class PmHandoff:
     def _release_task_pid(self, task: str) -> bool:
         """task handoff intent를 장부 `pid=0`으로 기록한다 — 성공 여부 반환.
 
-        핸드오프 부기(log·pm_state) 전 task 모드에서 호출한다. task 장부 pid 는 dump 후 즉사하는
+        핸드오프 기록(log·pm_state) 전 task 모드에서 호출한다. task 장부 pid 는 dump 후 즉사하는
         bootstrap subprocess pid라, 종료를 안 기록하면 **정상 인계 후 재개도** dead-pid →
         `bind_task` 가 `reclaimed`("재개(회수·이전 세션 crash)" + "⚠️ 회수 진입")로 상시 오탐한다
         write 프리미티브 `worktree_pool.release_task_pid(task)` 만 호출해 pid 를 0 으로
         비워, 차기 부트스트랩이 clean `resumed`(경고 없음)로 재개하게 한다 — 진짜 crash(핸드오프 없이
         죽어 pid>0 잔존)만 회수 경고를 받는다.
 
-        같은-session 재실행 판정이 이 durable 신호에 의존하므로 더는 보조 fail-soft 부기가 아니다.
+        같은-session 재실행 판정이 이 durable 신호에 의존하므로 더는 보조 fail-soft 기록이 아니다.
         step2 log write **전**에 성공해야 하며, 엔진/primitive/record 부재·예외는 fail-loud(False)다.
         성공 뒤 후속 단계가 중단돼도 pid=0이 남아 재실행이 같은 차수로 복구된다."""
         wp = self._worktree_pool or _load_worktree_pool()
@@ -4433,14 +4433,14 @@ class PmHandoff:
             else:
                 print("  (변경 없음)")
         # 미push commit(ahead) — 커밋만 하고 push 를 안 한 세션이 그대로 넘어가면 다음 세션은
-        # 원격에 없는 부기를 기준으로 판단한다(실측: PM 홈 2커밋 미push). 경고 1줄로만 세운다.
+        # 원격에 없는 기록을 기준으로 판단한다(실측: PM 홈 2커밋 미push). 경고 1줄로만 세운다.
         ahead = _ahead_commit_count(self._run_git_fn)
         if ahead is None:
             print("  (미push commit 수 미해소 — upstream 미설정·detached·원격 부재)")
         elif ahead[0] > 0:
             print(
                 f"  ⚠ 미push commit {ahead[0]}개 (기준 {ahead[1]}) — 아래 [7/7] push 단계에서 "
-                "올려라(미push 부기는 다음 세션에 안 보인다)."
+                "올려라(미push 기록은 다음 세션에 안 보인다)."
             )
         else:
             print(f"  미push commit 없음 (기준 {ahead[1]}).")
@@ -4469,12 +4469,12 @@ class PmHandoff:
         print("  [ ] git commit — **경로를 명시**하라: "
               "`git commit -m \"<메시지>\" -- .project_manager/wiki/log/current.md "
               "<이번 세션에 고친 wiki 문서 경로들>` (Co-Authored-By: Claude 트레일러 포함)")
-        # commit 다음 단계가 빠져 있으면 부기는 로컬에만 남는다 — 위 [6/7] ahead 경고와 짝이다.
+        # commit 다음 단계가 빠져 있으면 기록은 로컬에만 남는다 — 위 [6/7] ahead 경고와 짝이다.
         print("  [ ] PM 홈 push(private 자율) — commit 후 `git push`. "
               "보호 브랜치(공개 제품 repo)는 사용자 승인 게이트라 여기서 밀지 마라.")
 
         # ── 핸드오프 완료: 보유 슬롯 git 재스냅 ────
-        # 부기(log·pm_state) 완료 후 슬롯의 live git 을 lease.git 에 재기록한다 — 세션 중 브랜치/HEAD
+        # 기록(log·pm_state) 완료 후 슬롯의 live git 을 lease.git 에 재기록한다 — 세션 중 브랜치/HEAD
         # 변경(예: 릴리즈 v1.3.2→v1.3.3)이 차기 부트스트랩 0단계 record-vs-live 정합(compare_slot_git·
         # ㉒)을 `diverged` FAIL-LOUD 로 오탐시켜 정당한 자기 진행을 외부-개입 오경보로 차단하는 것을
         # 막는다. base 미전달=기존 보존(arrival 동형)·판정 재구현 없이 write

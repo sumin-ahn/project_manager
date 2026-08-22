@@ -20,7 +20,7 @@ self-driven 으로 구동한다. claude_code 의 `CLAUDE.md`+`.claude/`·opencod
   `codex exec --json` 으로 세션을 열어 `thread.started.thread_id` 를 파싱하고 `codex exec resume <id>`
   로 이어간다(`.codex/pm_orch_codex.py`).
 - **`AGENTS.md`** (공통 코어·instance-owned) — PM 부트스트랩·엔진 호출(인코딩)·완료
-  부기·결정 권한·안전 가드와 `$pm-…` 진입 표기를 제공한다. 같은 파일을 공유하는 다중 하네스 설치는
+  기록·결정 권한·안전 가드와 `$pm-…` 진입 표기를 제공한다. 같은 파일을 공유하는 다중 하네스 설치는
   설치기가 선택된 하네스 표기만 병기해 어느 한쪽도 침묵 오표기하지 않는다.
 - **codex 전용 정적 진입 doc 없음** (ADR-0070 D3 C-v2) — `AGENTS.override.md`·`.codex/AGENTS.md`
   같은 codex 전용 진입 문서를 두지 않는다. codex 방법론 전달 채널 3개:
@@ -226,7 +226,7 @@ python3 .project_manager/tools/pm_update.py --from ../../
 
 ## 참고
 
-- `AGENTS.md` — PM 부트스트랩·엔진 호출(인코딩)·완료 부기·결정·안전 가드 공통 코어
+- `AGENTS.md` — PM 부트스트랩·엔진 호출(인코딩)·완료 기록·결정·안전 가드 공통 코어
   (= claude_code 의 `CLAUDE.md`·opencode 의 `AGENTS.md`·byte-identical).
 - `.codex/agents/*.toml` — codex 위임 4축 custom agent (in-session spawn·`developer_instructions`).
 - `.codex/pm_orch_codex.py` — relay 드라이버 (`codex exec --json` thread_id 파싱·`exec resume`).

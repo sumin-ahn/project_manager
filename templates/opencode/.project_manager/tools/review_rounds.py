@@ -10,7 +10,7 @@
 * gate entry 정규화와 단조 sequence 예약/스폰 전 환불
 * 예약 순서 기준 must-fix 추이, 진행 중 예약을 포함한 상한, 발산 조기 차단
 
-파일락의 경로와 임계 구역은 호출자가 소유한다. 두 도구의 저장 파일과 부가 부기(external의
+파일락의 경로와 임계 구역은 호출자가 소유한다. 두 도구의 저장 파일과 부가 기록(external의
 livegate/wave, internal의 raw attempt 결속)가 다르기 때문이다. 호출자는 반드시 같은 장부 옆의
 파일락 안에서 read-modify-write를 수행한다.
 """

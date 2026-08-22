@@ -1009,7 +1009,7 @@ def test_lock_failure_before_send_is_translated_and_blocks_the_send(
 def test_lock_failure_at_finish_keeps_the_verdict_exit_code(
     external, monkeypatch, tmp_path, capsys,
 ):
-    """마감 구간 락 실패는 판정 rc 를 보존한다 — 끝난 전송의 부기가 판정을 뒤집지 않는다."""
+    """마감 구간 락 실패는 판정 rc 를 보존한다 — 끝난 전송의 기록이 판정을 뒤집지 않는다."""
     calls = _wire(external, monkeypatch, tmp_path)
     _flaky_round_lock(external, monkeypatch, fail_on=2)
 

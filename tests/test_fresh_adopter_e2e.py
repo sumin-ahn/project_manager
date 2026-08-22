@@ -101,7 +101,7 @@ def _raw_unannotated_slash_entries(path: Path) -> list[tuple[int, str]]:
 def _check_off_dod(dest: Path, tid: str) -> Path:
     """채택자 트리의 claimed 티켓 DoD 를 전항 체크(`- [ ]` → `- [x]`)하고 그 경로를 돌려준다.
 
-    complete 는 DoD 부기 게이트(T-0596)를 통과해야 하고, 출하 `_template.md` 의 DoD 4항은 미체크로
+    complete 는 DoD 기록 게이트(T-0596)를 통과해야 하고, 출하 `_template.md` 의 DoD 4항은 미체크로
     시작한다 — 채택자 PM 이 마감 전 손으로 하는 일을 lifecycle 테스트가 그대로 재현한다.
     """
     claimed = dest / ".project_manager" / "wiki" / "tickets" / "claimed"
@@ -343,7 +343,7 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     claim = _board(dest, "claim", tid, "--repo", "pilot", "--slot", "1")
     assert claim.returncode == 0, f"{harness} `board.py claim {tid}` 실패: {claim.stderr}"
 
-    # DoD 부기 게이트(T-0596) — 출하 template 의 미체크 DoD 로는 complete 가 막혀야 한다.
+    # DoD 기록 게이트(T-0596) — 출하 template 의 미체크 DoD 로는 complete 가 막혀야 한다.
     # 채택자 형상에서 게이트가 실제로 무는지 여기서 확인한다(엔진만 고치고 template 전파를
     # 빠뜨리면 이 단언이 red — 반쪽 출하 방지).
     blocked = _board(
@@ -741,7 +741,7 @@ def test_missing_ticket_status_dirs_self_repair_through_full_lifecycle(pm_import
     assert unblock.returncode == 0, unblock.stderr
     claim = _board(dest, "claim", tid, "--repo", "pilot", "--slot", "1")
     assert claim.returncode == 0, claim.stderr
-    _check_off_dod(dest, tid)   # DoD 부기 게이트(T-0596) — 미체크면 complete 가 막힌다.
+    _check_off_dod(dest, tid)   # DoD 기록 게이트(T-0596) — 미체크면 complete 가 막힌다.
     done = _board(dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested")
     assert done.returncode == 0, done.stderr
     assert all((tickets / status).is_dir() for status in _TICKET_STATUS_DIRS)

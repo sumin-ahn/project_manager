@@ -2458,7 +2458,7 @@ def test_run_task_records_precreated_pm_state(hf, tmp_path, capsys, monkeypatch)
 #
 # 세션 중 브랜치/HEAD 가 바뀌면(예: 릴리즈) bind 의 옛 도착 스냅만 남아 차기 부트스트랩 0단계
 # record-vs-live 정합이 `diverged` FAIL-LOUD 로 정당한 진행을 외부-개입 오경보로 차단한다(PM 78
-# 실측). 핸드오프 부기(log·pm_state) 완료 후 bound 슬롯의 live git 을 lease.git 에 재기록해 이를
+# 실측). 핸드오프 기록(log·pm_state) 완료 후 bound 슬롯의 live git 을 lease.git 에 재기록해 이를
 # 닫는다. base 미전달(기존 보존)·판정 재구현 없이 T-0350 write 프리미티브(`record_git_snapshot`)만
 # 호출·솔로/미바인딩/장부 부재/--done(release→idle)은 fail-soft 로 제외.
 
@@ -2931,7 +2931,7 @@ def test_malformed_last_handoff_number_falls_back_to_append_with_loud_warning(
     assert "PM 7차 (project_manager_1)" in log_text
     err = capsys.readouterr().err
     assert "마지막 handoff 헤더 차수 파싱 실패" in err
-    assert "이중 부기 가능" in err
+    assert "이중 기록 가능" in err
 
 
 def test_different_session_number_keeps_append_and_window_behavior(hf, tmp_path):
@@ -2973,7 +2973,7 @@ def test_run_prints_pathspec_commit_guidance(hf, tmp_path, capsys):
 
 
 def test_run_records_slot_snapshot_after_bookkeeping(hf, tmp_path, capsys):
-    """핸드오프가 부기 완료 후 bound 슬롯으로 record_git_snapshot 을 1회 호출한다 (base 미전달·arrival 보존)."""
+    """핸드오프가 기록 완료 후 bound 슬롯으로 record_git_snapshot 을 1회 호출한다 (base 미전달·arrival 보존)."""
     pool = _SnapPool()
     handoff = _hermetic_handoff(hf, tmp_path, pool)
     rc = handoff.run(
@@ -2984,7 +2984,7 @@ def test_run_records_slot_snapshot_after_bookkeeping(hf, tmp_path, capsys):
     # bound 슬롯으로 정확히 1회·base kwarg 미전달(기존 base 보존·arrival 동형·판정 재구현 없음).
     assert pool.snap_calls == [("work/project_manager_1", {})]
     out = capsys.readouterr().out
-    # 재스냅 시점 = 부기([2/7] log·[3/7] pm_state) 완료 후 — 출력 순서로 확인.
+    # 재스냅 시점 = 기록([2/7] log·[3/7] pm_state) 완료 후 — 출력 순서로 확인.
     assert out.index("[재스냅]") > out.index("[7/7]")
     # before(v1.3.2) ≠ after(v1.3.3) → 실갱신 표기(옛 값 성공 위장 아님·T-0391).
     assert "git 재스냅 기록: work/project_manager_1" in out
@@ -3524,7 +3524,7 @@ def test_task_regression_unrecorded_slot_conservatively_included(hf, tmp_path):
 
 
 def test_task_regression_red_slot_blocks_handoff(hf, tmp_path, capsys):
-    """변경 슬롯 회귀가 red 면 핸드오프 차단(rc 1)·부기 미접촉(T-0393·회귀 게이트 불변)."""
+    """변경 슬롯 회귀가 red 면 핸드오프 차단(rc 1)·기록 미접촉(T-0393·회귀 게이트 불변)."""
     box = [None]
     pytest_fn, _cwds = _recording_pytest(box, result=(1, "1 failed in 0.01s\n"))
     pool = _TaskSetPool(["work/a_1"], states={"work/a_1": {"dirty": True}})
@@ -4066,7 +4066,7 @@ def test_task_handoff_real_git_changed_slot_regressed_all_resnapped(hf, tmp_path
 
 # ── [6/7] 미push ahead 경고 · [6b/7] 미마감 raw sweep · [7/7] push 단계 (T-0596) ──
 #
-# 실사고 근거: 세션이 커밋만 하고 push 를 안 한 채 넘어가 다음 세션이 원격에 없는 부기를 기준으로
+# 실사고 근거: 세션이 커밋만 하고 push 를 안 한 채 넘어가 다음 세션이 원격에 없는 기록을 기준으로
 # 판단했고(PM 홈 2커밋 미push), 비정상 종료한 위임/리뷰의 미마감 raw 가 아무도 안 보는 채로
 # 누적했다(실측 17건). 둘 다 **비차단 표면**이다 — 핸드오프 rc 를 바꾸지 않는다.
 

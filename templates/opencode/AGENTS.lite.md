@@ -66,7 +66,7 @@
 
 본문 표준 절: **목표**(무엇·왜), **인터페이스**(시그니처·경로), **결정**(분기 근거), **완료 조건(DoD)**(테스트 green·산출·판정/비고를 검증 가능하게), **참고**(실재 `[[wikilink]]`, frontmatter `depends_on`/`blocks`). `board.py lint`는 목표·완료 조건·참고만 thin 차단(`_REQUIRED_SECTIONS`)하고 dangling을 검사한다. **본문만으로 구현 가능한 단일 진실이어야 한다.** 채번·area prefix·thin 세부는 필요 시 `pm_playbook.md`를 Read한다.
 
-## 5. 완료 부기 (PM 손)
+## 5. 완료 기록 (PM 손)
 
 ```bash
 {{PY}} .project_manager/tools/board.py complete T-NNNN --tests-pass

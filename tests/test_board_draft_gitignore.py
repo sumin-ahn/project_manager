@@ -3,7 +3,7 @@
 draft 티켓(`tickets/.drafts/`)은 **설계상 board-git 미커밋**이다(ADR-0049 authoring flow). 그
 의도는 mutation 축에만 박혀 있었고(`_BOARD_GIT_SCOPE_EXCLUDE`·`_BOARD_GIT_DRAFT_PATHSPEC`)
 관측 축엔 선언이 없어, draft 파일이 untracked 로 남아 dirty-tree 를 재는 소비자
-(`pm_handoff` [0/7] 게이트·`git status`)가 매번 "부기 누락 잔여" 로 오탐했다 — 핸드오프마다
+(`pm_handoff` [0/7] 게이트·`git status`)가 매번 "기록 누락 잔여" 로 오탐했다 — 핸드오프마다
 `--ack-dirty` override 를 요구했다(PM 36 실측).
 
 여기서 검증하는 것:

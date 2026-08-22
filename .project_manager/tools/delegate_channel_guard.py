@@ -267,7 +267,7 @@ _ENGINE_REV_SKEW_RECOVERY_REASONS = {
         "동기 하나가 native 위임을 락아웃한다"
     ),
     "observation_append_fail_open": (
-        "관측 append 는 부기일 뿐 차단 판정이 아니다 — 장부 쓰기 실패(사본 skew 포함)로 이미 "
+        "관측 append 는 기록일 뿐 차단 판정이 아니다 — 장부 쓰기 실패(사본 skew 포함)로 이미 "
         "내려진 allow/deny 를 뒤집거나 훅을 죽이면 정상 위임이 막힌다. 흡수하되 조용하지 않게 "
         "경고 문구(matcher drift 관측 불완전)를 결과 envelope 에 실어 표면화한다"
     ),

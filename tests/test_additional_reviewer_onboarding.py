@@ -2470,7 +2470,7 @@ def test_legacy_knob_key_allowlist_entries_are_load_bearing():
         for new, legacy in KNOB_KEY_PAIRS:
             assert legacy in text, f"{rel} 에 {legacy} 언급이 없다 — allowlist 에서 빼라."
             assert new in text                            # 처방(신키)이 같은 문서 안에 있다
-        assert "세 구키는 다음 릴리즈에서 제거한다" in text   # 노브 구키 제거 예고 부기
+        assert "세 구키는 다음 릴리즈에서 제거한다" in text   # 노브 구키 제거 예고 기록
     for rel in _LEGACY_KNOB_KEY_TEST_FILES:
         path = REPO / rel
         assert path.is_file(), f"allowlist 대상 부재: {rel}"

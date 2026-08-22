@@ -949,7 +949,7 @@ def test_diff_line_total_reuses_the_review_stage_table(external, tmp_path):
 # ── untracked 신규 파일 (T-0604 ③) ──────────────────────────────────────────
 # `git diff` 는 index/커밋에 있는 것만 본다 — 아직 add 되지 않은 신규 파일은 리뷰 diff 에서도,
 # 서킷브레이커 측정에서도 통째로 빠졌다. 대형 신규 파일이 0 줄로 측정된 뒤 그대로 stage 되는
-# 순서(완료 부기)가 그 공백의 직접 대가다. 포함은 **index 를 건드리지 않는** `--no-index` 로 한다.
+# 순서(완료 기록)가 그 공백의 직접 대가다. 포함은 **index 를 건드리지 않는** `--no-index` 로 한다.
 
 
 def _untracked(root: Path, relpath: str, lines: int) -> Path:

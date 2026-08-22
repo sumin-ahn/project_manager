@@ -326,7 +326,7 @@
        "id": "F-007",
        "decision": "accepted",
        "reason": "동작 변경(legacy Claude 훅 LF 종결·Windows 기계 줄 종결자)을 채택자 표면에 남긴다.",
-       "scope": "PM 부기: CHANGELOG 항목 + Windows VM 실측 항목에 세 하네스 훅 왕복 포함.",
+       "scope": "PM 기록: CHANGELOG 항목 + Windows VM 실측 항목에 세 하네스 훅 왕복 포함.",
        "prerequisite": "[[T-0693]] §인터페이스(seam 1개·호출부 교체·공개 시그니처 확장 없음) [[T-0693]]"
       },
       {

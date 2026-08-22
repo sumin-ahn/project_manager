@@ -612,7 +612,7 @@ def _dangerous_cross_repo_pathspecs(
     """PM 홈과 등록 slot 양쪽에 실재하는 좁은 코드-root pathspec만 반환한다.
 
     존재하지 않는 path는 git 자체가 fail-loud하므로 deny하지 않는다. ``tests``/``templates``만
-    후보인 이유는 PM 홈 부기 commit의 정상 pathspec(``.project_manager/wiki/...`` 등)을 막지 않고,
+    후보인 이유는 PM 홈 기록 commit의 정상 pathspec(``.project_manager/wiki/...`` 등)을 막지 않고,
     실제 add-harness 오염 모드만 고정하기 위해서다.
     """
     slots = _registered_slot_paths(pm_home, runner=runner)
@@ -4797,7 +4797,7 @@ def _ensure_board_gitattributes() -> bool:
 # placeholder 본문이 공유 board 에 올라가는 것을 막는다). mutation 축엔 그 의도가 이미 박혀
 # 있지만(`_BOARD_GIT_SCOPE_EXCLUDE`·`_BOARD_GIT_DRAFT_PATHSPEC`), **관측 축**엔 아무 선언도 없어
 # draft 파일이 untracked 로 남는다 — dirty-tree 를 재는 소비자(`pm_handoff` [0/7] 게이트·사람의
-# `git status`)가 그걸 매번 "부기 누락 잔여" 로 오탐해 핸드오프마다 `--ack-dirty` override 를
+# `git status`)가 그걸 매번 "기록 누락 잔여" 로 오탐해 핸드오프마다 `--ack-dirty` override 를
 # 요구했다(핸드오프 관측 결과). board git 의 `.gitignore` 에 그 디렉토리를 선언해 오탐을 원천에서
 # 없앤다 — 새 판정 규칙이 아니라 이미 있던 의도(미커밋)를 git 에 명시하는 것이다.
 _BOARD_GIT_DRAFT_IGNORE_PATTERN = "tickets/.drafts/"
@@ -5516,7 +5516,7 @@ def _git_scope_ignored(repo: Path, pathspec: Sequence[str],
     **`git add` 는 명시 pathspec 이 ignored 면 rc=1 에러다.** 광역 `add -A` 가 ignored 를 조용히
     건너뛰는 것과 다르고, `--ignore-errors` 로도 안 없어진다(reviewer 실측). 그래서 `touches` 에
     gitignored 경로가 하나만 있어도 stage 가 통째로 죽고, 하필 그 순간 잔여 loud 보고까지 함께
-    사라진다(부기는 이미 절반 진행된 상태). 실형상 도달 가능 — 이 보드의 done 티켓 여러 건이
+    사라진다(기록은 이미 절반 진행된 상태). 실형상 도달 가능 — 이 보드의 done 티켓 여러 건이
     `touches: .project_manager/local.conf`(gitignored)를 선언한다.
 
     판정은 `git check-ignore` 로 한다:
@@ -5890,7 +5890,7 @@ def _board_git_sync_best_effort(message: str,
 
     **단 detached HEAD 는 예외**: commit *전* HEAD 상태를 점검해 detached 면
     commit/pull/push 를 전부 skip 하고 loud 경고만 낸다. detached 위의 commit 은 orphan 으로
-    쌓이고 catch-up 이 구조적으로 불가하므로(pull --rebase 계속 실패), 침묵 누적 대신 부기를
+    쌓이고 catch-up 이 구조적으로 불가하므로(pull --rebase 계속 실패), 침묵 누적 대신 기록을
     보류하고 복귀를 안내한다(파일 mutation 은 이미 완료라 작업 무차단은 유지).
 
     git ops 전체를 `board_git_lock` 으로 감싼다 — 같은 clone 의 다른 슬롯이 진행 중인 claim
@@ -5910,10 +5910,10 @@ def _board_git_sync_best_effort_locked(message: str,
     # 가 계속 실패해 "다음 mutation 이 catch-up" 약속이 *구조적으로* 성립하지 않는다(attached
     # 브랜치의 일시 offline/conflict 만 상정한 동작). commit/pull/push 를 모두 skip 하고 loud
     # 경고만 내 orphan 무한 누적을 원천 차단한다. 파일 mutation(rename·frontmatter)은 이미
-    # 끝난 뒤라 작업은 무차단 — git 부기만 보류한다(best-effort=작업 무차단 원칙 유지). 자동
+    # 끝난 뒤라 작업은 무차단 — git 기록만 보류한다(best-effort=작업 무차단 원칙 유지). 자동
     # 복구(checkout/cherry-pick)는 PM 편집/브랜치 의도 침해라 하지 않고 안내만 한다.
     if _board_git_head_detached():
-        print("  ⚠ board sync 보류 — detached HEAD. board git 부기를 건너뛴다(orphan commit "
+        print("  ⚠ board sync 보류 — detached HEAD. board git 기록을 건너뛴다(orphan commit "
               "누적 방지). `git -C .project_manager/board checkout <branch>`(예: main) 로 브랜치에 "
               "복귀하면 다음 mutation 이 일괄 commit·catch-up 한다. detached 에서 이미 쌓인 로컬 "
               "commit 이 있으면 복귀 후 `git -C .project_manager/board cherry-pick <sha>` 로 이식.",
@@ -5965,7 +5965,7 @@ def _board_git_sync_best_effort_locked(message: str,
 
 def _board_git_mutation_state_suffix(local_commit_ready: bool) -> str:
     """best-effort caller의 성공 문구가 uncommitted 상태를 성공처럼 숨기지 않게 한다."""
-    return "" if local_commit_ready else " (board-git 부기 보류: local-only/uncommitted)"
+    return "" if local_commit_ready else " (board-git 기록 보류: local-only/uncommitted)"
 
 
 class _ClaimPrefetch(NamedTuple):
@@ -9384,7 +9384,7 @@ def _active_ticket_path(
 
 
 def _rounds_mutation_sync_paths(message: str, paths: Sequence[Path]) -> bool:
-    """라운드/티어 mutation이 만진 경로들을 한 스코프 커밋으로 부기한다.
+    """라운드/티어 mutation이 만진 경로들을 한 스코프 커밋으로 기록한다.
 
     시그니처는 고정이다 — pm_delegate 회수가 `getattr` 로 이 이름을 찾고 없으면 구-board 이름을
     거쳐 board-git funnel 로 내려가는 skew 폴백을 탄다. 인자를 늘리면 부분 동기된 PM 홈 사본에서
@@ -10261,7 +10261,7 @@ def _warn_claim_code_tree_folded_to_repo_home() -> None:
     worktree 리스 장부(`LEASES_FILE`)가 존재한다는 것은 이 PM 홈이 (지금은 매칭되는 활성
     슬롯이 없더라도) 코드-분리 worktree 모델을 쓴다는 신호다. 그 형상에서 `REPO` 폴백은
     코드가 없는 트리를 잰다는 뜻일 수 있는데, claim 시점엔 REPO 자체가 git repo 라 rev 가
-    조용히 읽혀 경고가 안 났다(F-001) — 여기서 loud 하게 짚어 완료 부기 시점의 오안내
+    조용히 읽혀 경고가 안 났다(F-001) — 여기서 loud 하게 짚어 완료 기록 시점의 오안내
     ("다른 저장소의 것이거나 히스토리가 다시 쓰였는지 확인하라")를 막는다."""
     print(
         "주의: claim 시점 코드 트리 해소가 PM 홈(REPO)으로 접혔다 — worktree 리스 장부가 있는 "
@@ -10272,7 +10272,7 @@ def _warn_claim_code_tree_folded_to_repo_home() -> None:
 
 
 def _claim_code_tree(args: argparse.Namespace) -> str | None:
-    """claim 시점 rev 를 읽을 **코드 트리** — 완료 부기 측정 트리와 같은 해소 규칙.
+    """claim 시점 rev 를 읽을 **코드 트리** — 완료 기록 측정 트리와 같은 해소 규칙.
 
     분리된 PM 홈엔 코드가 없으므로 diff 측정 트리는 task 작업공간 > `--repo`/`--slot` 슬롯
     worktree > (인자 전무) 세션/REPO 순으로 해소된다. `--repo`/`--slot` 명시(kind="slot"/"repo")는
@@ -10426,13 +10426,13 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str,
         fm["claimed_by"] = assignee
         fm["claimed_at"] = now_utc()
         if claimed_rev:
-            # 해소 실패는 필드 생략이다(경고는 이미 냈다) — 없는 앵커를 지어내면 완료 부기가
+            # 해소 실패는 필드 생략이다(경고는 이미 냈다) — 없는 앵커를 지어내면 완료 기록이
             # 엉뚱한 폭을 재고, 그 오차 방향은 과소 측정(가드 약화)이다.
             fm = _frontmatter_with_claimed_rev(fm, claimed_rev)
         else:
             # stale 앵커 제거 — 이 claim 이 rev 를 못 박았는데 이전 소유 주기의 claimed_rev 가
             # 남아 있으면(unclaim 이 지우지 않았거나 구 티켓 재사용) "필드 생략" 계약이 깨지고
-            # 완료 부기가 그 stale rev 로 잰다(경고 문구가 사실과 다른 옛 폭을 가리키게 된다).
+            # 완료 기록이 그 stale rev 로 잰다(경고 문구가 사실과 다른 옛 폭을 가리키게 된다).
             fm.pop("claimed_rev", None)
         dump_ticket(new_path, fm, body)
     except FileNotFoundError:
@@ -10571,7 +10571,7 @@ def _complete_gate(tid: str, args: argparse.Namespace,
     than re-running the (slow) suite.
 
     `body` = 완료 대상 티켓 본문(§3 DoD 체크 입력). None 이면 DoD·라운드 검사를 건너뛴다 —
-    본문 없이 부기 축만 묻는 호출자(단위 테스트 등)를 위한 것이고, 실 complete 경로
+    본문 없이 기록 축만 묻는 호출자(단위 테스트 등)를 위한 것이고, 실 complete 경로
     (`cmd_complete`)는 항상 본문과 명세 전문을 넘긴다.
 
     `spec_text` = 명세 파일 전문(frontmatter 포함) — PM 판정 블록이 사는 자리다(없으면 본문으로
@@ -11363,7 +11363,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     if wrote_areas:
         # 등록 행은 board git 의 공유 파일이다 — 파일만 쓰고 두면 board 가 dirty 로 남아
         # (`M areas.md`) 온보딩 다음 단계가 그 잔여를 사용자 편집으로 만난다. `pm-config repo
-        # add`/`repo protected` 와 **같은 스코프 채널**로 이 mutation 이 만진 경로만 부기한다
+        # add`/`repo protected` 와 **같은 스코프 채널**로 이 mutation 이 만진 경로만 기록한다
         # (board 가 별도 git 이 아니면 no-op·best-effort 라 실패해도 init 을 되돌리지 않는다).
         # board_lock 밖에서 부른다(락 순서: board_git_lock → board_lock).
         _board_git_sync_best_effort("init areas 등록", (areas_file(),))
@@ -11903,7 +11903,7 @@ def cmd_new(args: argparse.Namespace) -> int:
         sync_label = f"new {tid} draft isolation" if is_draft else f"new {tid}"
         ready = _board_git_sync_best_effort(sync_label, (path,))
     if not ready:
-        label = "draft 격리 부기" if is_draft else "부기"
+        label = "draft 격리 기록" if is_draft else "기록"
         print(f"  ⚠ board-git {label} 보류: local-only/uncommitted", file=sys.stderr)
     return 0
 
@@ -11966,7 +11966,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
     if ready:
         print(f"promoted {args.id} (board-git 승격 완료)")
     else:
-        print(f"promoted {args.id} (board-git 부기 보류: local-only/uncommitted)")
+        print(f"promoted {args.id} (board-git 기록 보류: local-only/uncommitted)")
     return 0
 
 
@@ -13929,7 +13929,7 @@ _STRICT_REQUIRED_SECTIONS: tuple[str, ...] = (
     "## 목표", "## 인터페이스", "## 결정", "## 완료 조건", "## 참고")
 
 
-# ── 완료 조건(DoD) 부기 게이트 (complete 차단 — T-0596) ────────────────────────
+# ── 완료 조건(DoD) 기록 게이트 (complete 차단 — T-0596) ────────────────────────
 #
 # DoD 항목이 미체크인 채 done 으로 넘어가면 그 항목은 **증발**한다 — 보드 어디에도 "남았다"는
 # 기록이 없어 후속 세션이 이미 끝난 일로 읽는다(실사고: 라이브 probe DoD 가 기계 표면 없이 사라짐).

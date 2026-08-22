@@ -292,7 +292,7 @@ def test_agents_md_is_thin_common_core():
     """AGENTS.md = 얇은 harness-neutral 공통 코어 — 실행 모델·위임 규약 절이 *부재* (ADR-0069·T-0401 DoD).
 
     opencode-고유 실행 모델(구 §0)·위임 규약(구 §3)은 pm-instructions.md 로 이관됐다. AGENTS.md 는
-    공통 코어(프로젝트 정체성·엔진 호출·완료 부기·결정 권한·안전 가드)만 남는다. codex 어댑터(T-0402)가
+    공통 코어(프로젝트 정체성·엔진 호출·완료 기록·결정 권한·안전 가드)만 남는다. codex 어댑터(T-0402)가
     이 코어를 byte-parity 로 공유하는 전제 — 실행모델/위임규약이 남으면 harness-neutral 이 깨진다.
     """
     text = AGENTS_MD.read_text(encoding="utf-8")
@@ -309,7 +309,7 @@ def test_agents_md_is_thin_common_core():
     for core in (
         "{{PROJECT_TAGLINE}}",              # 프로젝트 한 줄
         "## 1. 엔진 호출 규약",             # 엔진 호출[인코딩]
-        "## 4. 작업 완료 부기",             # 완료 부기
+        "## 4. 작업 완료 기록",             # 완료 기록
         "## 5. PM 결정 권한",               # 결정 권한
         "## 6. 라이브 외부 행위 안전 가드",  # 안전 가드
         "### 프로젝트 고유 제약",           # @render agent 가 참조하는 named anchor

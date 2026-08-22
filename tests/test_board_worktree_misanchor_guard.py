@@ -868,7 +868,7 @@ def test_ticket_finish_from_worktree_fails_loud_no_stray_log(pm_home_worktree,
     err = capsys.readouterr().err
     assert "worktree" in err
     assert str(pm_home) in err
-    assert not log_file.exists()   # stray log 0 (부기 어떤 단계도 착지 전 중단)
+    assert not log_file.exists()   # stray log 0 (기록의 어떤 단계도 착지 전 중단)
 
 
 # ── 실측 사례 (1) lint 오경보: 근본 detect·읽기 경로 무-게이트 ───────────────

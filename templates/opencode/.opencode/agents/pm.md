@@ -39,7 +39,7 @@ permission:
 ## 운영 단일 진실 = AGENTS.md(공통 코어) + .opencode/pm-instructions.md
 
 **PM 운영의 모든 것은 자동 로드되는 두 문서에 있다** — `AGENTS.md`(harness-neutral 공통 코어:
-프로젝트 정체성·엔진 호출[인코딩]·부트스트랩·완료 부기·결정 권한·안전 가드·명령)와
+프로젝트 정체성·엔진 호출[인코딩]·부트스트랩·완료 기록·결정 권한·안전 가드·명령)와
 `.opencode/pm-instructions.md`(opencode 실행 모델·위임 규약). pm-instructions 는 `opencode.jsonc`
 `instructions` 배열로 공통 코어와 함께 세션 시작 시 자동 로드된다. 이 정의는 그 문서들을
 **복제하지 않는다**(중복 = stale 위험, ADR-0008 정신) — 그 문서로 부트스트랩·운영하라고 가리키는
@@ -49,7 +49,7 @@ thin 진입점일 뿐이다.
 
 1. **`AGENTS.md`** 를 따라 부트스트랩한다 (§2 부트스트랩 순서 — pm_role.md / pm_state.md /
    status.md / board list / log tail).
-2. 이후 운영 — 완료 부기(AGENTS.md §4)·결정 권한(§5)·안전 가드(§6)·명령(§7)은 공통 코어가,
+2. 이후 운영 — 완료 기록(AGENTS.md §4)·결정 권한(§5)·안전 가드(§6)·명령(§7)은 공통 코어가,
    **실행 모델·위임 규약은 `.opencode/pm-instructions.md`(§1 실행 모델·§2 위임 규약)**가 단일 진실이다.
 
 ## 세션 식별

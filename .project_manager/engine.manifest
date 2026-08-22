@@ -49,7 +49,7 @@
 # external_review: 추가 리뷰어 어댑터 (ADR-0004·기본 OFF). review_context.local.md·local.conf 는 인스턴스 소유(manifest 밖)
 .project_manager/tools/external_review.py
 # review_rounds: 추가 리뷰어/내부 code-reviewer가 공유하는 라운드 장부 read/write·수렴 판정 seam.
-# 저장 파일·파일락 경로와 축별 부가 부기는 각 호출 도구가 소유한다.
+# 저장 파일·파일락 경로와 축별 부가 기록은 각 호출 도구가 소유한다.
 .project_manager/tools/review_rounds.py
 # ticket_rounds: 티켓 명세 파일 옆 라운드 사이드카(tickets/rounds/<id>/NN-<role>.md) 공용 seam —
 #   경로 규약·파일명 문법·티켓 전역 순번 배타 예약·로드/판정/렌더. 락과 보드 경로 해소는
@@ -85,7 +85,7 @@
 #   표면화하는 비차단 판정기(T-0462). PM-home 좌표는 repo_coordinates 공용 normalizer를 재사용.
 .project_manager/tools/delegate_scope.py
 # pm_adr: ADR 발행/개정 명령어化 backbone (ADR-0049 4요소·ADR-0021 lifecycle). 채번·frontmatter
-#   scaffold·개정 대상 back-ref 부기·README 색인·log decide entry 원자화. 신설 도구라 등록 필수
+#   scaffold·개정 대상 back-ref 기록·README 색인·log decide entry 원자화. 신설 도구라 등록 필수
 #   (미등록=전파 안 됨·pm_render 사례). ADR 실경로는 인스턴스 소유(decisions/·manifest 밖·self-location 해소)
 .project_manager/tools/pm_adr.py
 # contradiction_lint: 모순 lint (ADR-0064·T-0369) — 결정 개정(amends/supersedes) 시점에 옛 결정을

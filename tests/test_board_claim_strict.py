@@ -1148,7 +1148,7 @@ def test_best_effort_catches_up_when_remote_advanced(board, tmp_path):
 
 @requires_git
 def test_best_effort_still_pushes_when_tracked_dirty(board, tmp_path):
-    """추적 dirty 면 pull 을 건너뛰되 **push 는 시도**한다 — dirty 가 부기를 막지 않는다."""
+    """추적 dirty 면 pull 을 건너뛰되 **push 는 시도**한다 — dirty 가 기록을 막지 않는다."""
     bare = _bare(tmp_path, "bare-be-dirty")
     board_dir = _make_board_git(tmp_path, remote=bare)
     (board_dir / "notes.md").write_text("original\nmy edit\n", encoding="utf-8")
@@ -1159,7 +1159,7 @@ def test_best_effort_still_pushes_when_tracked_dirty(board, tmp_path):
 
     assert "tickets/open/T-0007-t.md" in _git(
         ["ls-tree", "-r", "--name-only", "main"], bare).stdout, \
-        "추적 dirty 때문에 push 까지 건너뜀 — best-effort 부기가 막힘."
+        "추적 dirty 때문에 push 까지 건너뜀 — best-effort 기록이 막힘."
     assert (board_dir / "notes.md").read_text(encoding="utf-8") == "original\nmy edit\n"
 
 
@@ -1175,7 +1175,7 @@ def test_ticket_mutations_pass_scoped_paths():
              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
              and node.func.id == "_board_git_sync_best_effort"]
     # 8 = ticket mutation 7 + `init` 의 areas repo 행 등록(T-0779 — 등록 행도 board git 의
-    # 공유 파일이라 같은 스코프 채널로 부기한다).
+    # 공유 파일이라 같은 스코프 채널로 기록한다).
     assert len(calls) == 8, \
         f"best-effort sync 호출이 8곳이 아님(신규/삭제 시 이 가드를 함께 갱신): {len(calls)}"
     for call in calls:

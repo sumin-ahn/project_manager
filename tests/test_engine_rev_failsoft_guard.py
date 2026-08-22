@@ -892,7 +892,7 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 172 = 169 + T-0600 사본 장부 병기의 세 경계(pm_delegate 형제 로더 + 사본 판정 + 사본 미마감
     #   조회). 병기는 가시성 보조라 부재·손상을 사유 1줄로 접지만, 판정을 빌려 오는 대상이 형제
     #   엔진 사본이므로 마킹된 skew 는 같은 규칙으로 그대로 올린다.
-    # 173 = 172 + T-0601 DoD preflight 의 한 경계. 완료 부기가 board 의 DoD 판정을 형제 로드해
+    # 173 = 172 + T-0601 DoD preflight 의 한 경계. 완료 기록이 board 의 DoD 판정을 형제 로드해
     #   **log 스켈레톤 append 앞에서** 한 번 더 묻되, 티켓 부재/손상은 preflight 를 조용히 끄고
     #   (권위 있는 게이트가 뒤에 있다) 마킹된 skew 는 그대로 올린다.
     # 174 = 173 + T-0602 estimate 해석 단일화의 한 경계. 리뷰쪽 estimate 조회가 board 의
@@ -939,9 +939,9 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   argv 조립 실패와 raw 예약/장부 시작 실패 모두 전달 사본을 지운 뒤 **같은 주 예외를
     #   다시 올린다**. 일반 실패나 marked skew를 흡수하지 않는 정리 전용 경계다.
     # 193 = 186 + 이번 wave 신설 경계 일곱. 라운드 장부 분리(review_rounds seam)·게이트 스냅샷
-    #   앵커·diff 귀속 스냅샷·codex 관측 append 가 각자 정리/부기 전용 경계를 두며, 관측 두
+    #   앵커·diff 귀속 스냅샷·codex 관측 append 가 각자 정리/기록 전용 경계를 두며, 관측 두
     #   경계는 등록 사유(`observation_append_fail_open`) 기반 recovery marker 로 흡수한다 —
-    #   관측 append 는 부기일 뿐이라 장부 쓰기 실패로 이미 내려진 allow/deny 를 뒤집지 않고,
+    #   관측 append 는 기록일 뿐이라 장부 쓰기 실패로 이미 내려진 allow/deny 를 뒤집지 않고,
     #   대신 matcher drift 관측이 불완전하다는 경고를 결과 envelope 에 실어 표면화한다.
     # 194 = 193 + T-0676 cross ticket harvest 후처리 한 경계. 단독 marked engine skew는
     # 즉시 재전파하고, runner 원예외가 이미 pending이면 그 원예외를 보존하면서 skew도 진단한다.
@@ -1005,7 +1005,7 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   "중첩 로드 형제 skew 는 fail-loud")을 그대로 따라 marked skew 만 재전파하고 나머지는
     #   종전대로 접는다(surface 생략·게이트 graceful skip).
     # 224 = 222 + T-0696 추가 리뷰어 산출 **회수 경계**의 두 자리(`_load_pm_delegate`/board 재앵커
-    #   로드 · `_reserve_external_review_round` 쓰기). 회수는 이미 끝나고 과금된 라운드의 부기라,
+    #   로드 · `_reserve_external_review_round` 쓰기). 회수는 이미 끝나고 과금된 라운드의 기록이라,
     #   여기서 사본 불일치를 그대로 올리면 판정·요약을 출력한 뒤 traceback 으로 죽어 채택자에게는
     #   "리뷰 실패"로만 보인다. 등록 사유 `ticket_harvest` 로 흡수하되 설계된 회수 실패 처방
     #   (재동기 안내 + rc≠0 + raw 경로)으로 접고, 표시 없는 RuntimeError 는 그대로 전파한다.

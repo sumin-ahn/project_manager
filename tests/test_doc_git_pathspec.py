@@ -301,17 +301,17 @@ _BYPASS_A = """\
    ```
    git commit -m "T-NNNN — <요약>" -- <touches> .project_manager/wiki/log/current.md
    ```
-- 부기 끝나면 git commit 으로 마무리한다 (규칙은 `git add -A -- <경로>` 참고).
+- 기록 끝나면 git commit 으로 마무리한다 (규칙은 `git add -A -- <경로>` 참고).
 """
 _BYPASS_B = "- git stage — 변경 파일 전량 `git add -u` 로 올린다.\n"
 _BYPASS_C = "- git stage — `git add -A -- .` 로 전부 올린다.\n"
-_BYPASS_D_DOC = '- 부기 끝나면 `git commit -m "T-NNNN"` 으로 마무리한다.\n'
+_BYPASS_D_DOC = '- 기록 끝나면 `git commit -m "T-NNNN"` 으로 마무리한다.\n'
 
 
 def test_bypass_a_bare_instruction_next_to_a_correct_example_is_red():
     """우회 A — 문단에 ` -- ` 가 있어도 **bare 지시 자신**이 규칙을 안 말하면 red."""
     offenders = prose_mention_offenders("doc.md", _BYPASS_A)
-    assert any("부기 끝나면 git commit" in o for o in offenders), offenders
+    assert any("기록 끝나면 git commit" in o for o in offenders), offenders
     # 같은 본문의 *정당한* 것(pathspec 명시 지시·bare 규정문·pathspec 붙은 호출)은 red 아님.
     assert len(offenders) == 1, offenders
     assert not commit_invocation_offenders("doc.md", _BYPASS_A)

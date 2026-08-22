@@ -326,7 +326,7 @@ def test_run_floor_zero_default_leaves_behavior_unchanged(board, monkeypatch, ca
     data = _flag(board)
     assert data["status"] == "pass"
     assert data["rc"] == 0
-    assert data["collected"] == 3        # 진단용 부기는 하되 판정엔 안 쓴다.
+    assert data["collected"] == 3        # 진단용 기록은 하되 판정엔 안 쓴다.
     out, err = capsys.readouterr()
     assert "pass (rc=0)" in out
     assert "하한" not in out and "하한" not in err

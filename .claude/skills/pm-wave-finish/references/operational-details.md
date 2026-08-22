@@ -6,7 +6,7 @@
 
 1. **회귀 측정** — `pytest tests/ -q`. red면 즉시 중단하고 dev 재작업. ticket complete도 차단한다.
 2. **log/current.md skeleton append** — `## [YYYY-MM-DD] complete | T-NNNN — <title>`; 본문은 `<PM: 무엇을·왜>` placeholder.
-3. **board.py complete T-NNNN** — `--tests-pass` 가드 + **DoD 부기 게이트** 후 open→done.
+3. **board.py complete T-NNNN** — `--tests-pass` 가드 + **DoD 기록 게이트** 후 open→done.
 4. **git stage** — ticket frontmatter `touches` ∪ 이 실행이 실제 쓴 산출물만 `git add`:
    - `.project_manager/wiki/log/current.md`
    - legacy 형상(board 미분리·**출하 기본**)에서 옮긴 ticket의 옛/새 경로

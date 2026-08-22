@@ -2508,7 +2508,7 @@ def cmd_status(
             "    - orphan worktree(git 측·disk 에 존재·작업 있을 수 있음) → 확인 후 "
             "`git -C .repos/<repo>.git worktree remove <경로>` 로 사용자가 삭제(위임 원칙).\n"
             "    - stale/incomplete 중 worktree dir 이 사라진 dangling 장부 엔트리 → "
-            "`pm-config worktree prune-stale`(안전·이미 없는 worktree 의 부기만 정리).\n"
+            "`pm-config worktree prune-stale`(안전·이미 없는 worktree 의 기록만 정리).\n"
             "    - incomplete 인데 worktree 가 남아있으면 위 `git worktree remove` 후 prune-stale."
         )
     return 0
@@ -2523,7 +2523,7 @@ def cmd_worktree_prune_stale(
 
     status reconcile 이 surface 한 stale/incomplete 중 **worktree 가 물리적으로 부재**한 장부
     엔트리를 제거한다(worktree_pool.prune_stale_leases). **안전**: 지울 worktree 파일이 없는
-    dangling 부기만 정리 — 사용자 데이터/worktree 삭제가 아니라 삭제-위임 원칙 위반이 아니다.
+    dangling 기록만 정리 — 사용자 데이터/worktree 삭제가 아니라 삭제-위임 원칙 위반이 아니다.
     orphan *worktree*(git 측·disk 존재·작업 가능)는 손대지 않는다(그건 `git worktree remove` 로
     사용자가). reconcile(status)이 조회-전용인 것과 분리된 **명시 user-invoked 정리 진입점**이다.
 
@@ -2540,7 +2540,7 @@ def cmd_worktree_prune_stale(
     pruned = wp.prune_stale_leases()
     if pruned:
         print(
-            f"✓ dangling 장부 엔트리 {len(pruned)}개 정리 (worktree 부재·이미 사라진 부기): "
+            f"✓ dangling 장부 엔트리 {len(pruned)}개 정리 (worktree 부재·이미 사라진 기록): "
             f"{', '.join(pruned)}"
         )
     else:
