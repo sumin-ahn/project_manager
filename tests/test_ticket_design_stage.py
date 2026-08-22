@@ -907,6 +907,7 @@ def test_design_open_ticket_transition_syncs_to_board_git(board_git):
     tid = fm["id"]
     fm["design"] = board_git.DESIGN_DONE
     board_git.dump_ticket(draft, fm, _body())
+    _harvest_architect_round(board_git, board_dir, tid)
     assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 0
 
     assert board_git.main(["design", tid, "n/a"]) == 0

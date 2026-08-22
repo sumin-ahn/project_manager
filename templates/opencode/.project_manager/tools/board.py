@@ -332,7 +332,7 @@ IDEA_STATUS_DIRS: tuple[str, ...] = ("open", "promoted", "killed")
 # verified-at-backfill/repin=PM 홈 현재-진실 문서(architecture/status/domain) frontmatter 쓰기(
 # worktree 엔 그 문서가 없어 no-op 이나 PM 홈 실행이 설계 의도라 오실행 가드)·
 # rounds migrate=구 역할 절을 라운드 파일로 옮기고 구 장부/사본을 지우는 일회성 board 쓰기·
-# design=frontmatter `design:` 값 기록/갱신(T-0817·tier와 같은 in-place writer).
+# design=frontmatter `design:` 값 기록/갱신(tier와 같은 in-place writer).
 _MUTATION_SUBCOMMANDS: frozenset[str] = frozenset({
     "new", "promote", "claim", "complete", "block", "unclaim", "unblock",
     "section-add", "tier", "design",
@@ -9519,7 +9519,7 @@ def _active_ticket_path(
     """section-add/tier/design 대상 해소 — open/claimed는 공통, draft는 action별로 다르게 연다.
 
     tier는 계속 open/claimed로 닫는다. section-add는 draft×architect만 연다(설계 bootstrap).
-    design은 draft 전체를 연다(T-0817) — `design: required`가 promote를 막으므로 draft 단계에서
+    design은 draft 전체를 연다 — `design: required`가 promote를 막으므로 draft 단계에서
     `waived: <사유>`로 면제를 선언할 수 없으면 setter가 있어도 실제 막힌 상황을 풀지 못한다.
     blocked/done 및 위 두 draft 예외 밖(section-add×developer|code-reviewer 등)은 같은 경계에서
     거부한다. directory 상태가 lifecycle 단일 진실인 기존 mutation 규약을 그대로 쓴다.
@@ -10267,7 +10267,7 @@ def cmd_tier(args: argparse.Namespace) -> int:
 
 
 def cmd_design(args: argparse.Namespace) -> int:
-    """발행 후 frontmatter `design`을 기록/갱신하는 1급 수단(T-0817·`cmd_tier` 동형).
+    """발행 후 frontmatter `design`을 기록/갱신하는 1급 수단(`cmd_tier` 동형).
 
     `--design`은 `new` 발행 시점 1회뿐이라 이후 면제(`waived: <사유>`) 선언은 YAML 손편집이
     유일한 경로였다. 값 검증은 `_validate_design` 재사용 — 인식 불가·사유 없는 `waived`는 파일을
