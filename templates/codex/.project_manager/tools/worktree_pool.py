@@ -2082,7 +2082,7 @@ def _validate_task_name(name: str, registered_repos: "list[str] | set[str] | Non
     if registered_repos:
         for repo in registered_repos:
             if re.match(rf"^{re.escape(repo)}_\d+$", name):
-                raise InvalidTaskName(name, f"슬롯 세션 예약 패턴(<{repo}>_<N>·⑥)")
+                raise InvalidTaskName(name, f"슬롯 세션 예약 패턴(<{repo}>_<N>)")
 
 
 def task_dir(name: str) -> Path:
@@ -4197,7 +4197,7 @@ class ReadonlySlotMutation(RuntimeError):
         self.slot = slot
         self.op = op
         super().__init__(
-            f"슬롯 {slot!r} 은 readonly 공유 슬롯(role=readonly·⑬)이라 `{op}` 를 거부한다 — 문서 검증 "
+            f"슬롯 {slot!r} 은 readonly 공유 슬롯(role=readonly)이라 `{op}` 를 거부한다 — 문서 검증 "
             f"기준면(released base·detached)이라 git 상태를 바꾸는 op 은 불가하다. 갱신은 "
             f"`{_runtime_skill_entry('pm-worktree')} refresh {slot} "
             f"[--onto <branch>]`(fetch→detach 이동)로만 한다."
@@ -4207,7 +4207,7 @@ class ReadonlySlotMutation(RuntimeError):
 def _reject_readonly_mutation(slot: str, op: str, *, git_runner: GitRunner | None = None) -> None:
     """슬롯이 readonly면 `ReadonlySlotMutation` raise — set-base/rebase/dev/sync 진입 가드.
 
-    엔진 경로 한정 거부. 판별 축은 canonical `lease.role`(0단계 carve-out·F6 예외와 동일 축).
+    엔진 경로 한정 거부. 판별 축은 canonical `lease.role`(0단계 carve-out 예외와 동일 축).
     git_runner 는 시그니처 정합용(현 판별은 장부만 읽어 미사용). mutation 선행 판정이므로
     `read_lease_strict`를 써 손상 장부를 기본 work role로 축약한 뒤 Git 변경을 시작하지 않는다.
     이미 락을 쥔 호출부(release/bind_slot)는 이 헬퍼 대신 보유 중인 `lease.role` 을 직접 검사한다
@@ -4231,7 +4231,7 @@ class ReadonlySlotNotLeasable(RuntimeError):
         self.slot = slot
         self.op = op
         super().__init__(
-            f"슬롯 {slot!r} 은 readonly 공유 슬롯(role=readonly·⑬)이라 `{op}`(대여/반납/바인딩) 대상이 "
+            f"슬롯 {slot!r} 은 readonly 공유 슬롯(role=readonly)이라 `{op}`(대여/반납/바인딩) 대상이 "
             f"아니다 — 무소유 공유 자산(배타 대여 없음·session/pid 없음). 제거하려면 "
             f"`worktree remove {slot} --force`, 최신 갱신은 "
             f"`{_runtime_skill_entry('pm-worktree')} refresh {slot}`."
@@ -4481,7 +4481,7 @@ class RebaseBaseRequired(RuntimeError):
         self.slot = slot
         super().__init__(
             f"슬롯 {slot!r} 의 기준점(base)이 미기록이라 rebase 를 거부한다 — 기준 없이 rebase 불가"
-            f"(추론 금지·결정 ⑪). `--onto <branch>` 로 기준을 명시하면 진행 + 그 값을 base 로 기록"
+            f"(추론 금지). `--onto <branch>` 로 기준을 명시하면 진행 + 그 값을 base 로 기록"
             f"(1회 해소), 또는 먼저 `set-base {slot} <branch>[@<commit>]` 로 기준점을 지정하라."
         )
 
@@ -6005,7 +6005,7 @@ def _cmd_rebase(args) -> int:
     일괄은 충돌이 있으면 rc 1(주의 필요·나머지는 독립 진행).
 
     **`--task` 는 두 역할이고 위치인자와 배타가 아니다**: 대상 *선택*(위치인자 없으면
-    그 task 보유 전 슬롯 일괄) 소유 *명의*(`rebase(owner_task=)` — release F3 동형). 그래서
+    그 task 보유 전 슬롯 일괄) 소유 *명의*(`rebase(owner_task=)` — release 동형). 그래서
     `rebase <slot> --task <이름>` = 그 task 명의로 **단일** 슬롯 rebase 다 — 종전엔 둘이 배타라
     task 명의 슬롯을 단일 지정으로 rebase 할 방법이 아예 없었다. 위치인자만이면 종전대로 세션
     명의로 판정한다(슬롯-세션 모드 불변).

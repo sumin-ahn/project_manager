@@ -218,7 +218,7 @@ def validate_task_name(name: str, registered_repos: "list[str] | set[str] | None
     if Path(name).name != name:
         raise InvalidTaskName(name, "단일 path 컴포넌트가 아님")
     if registered_repos and is_reserved_task_name(name, registered_repos):
-        raise InvalidTaskName(name, "슬롯 세션 예약 패턴(<repo>_<N>·⑥)")
+        raise InvalidTaskName(name, "슬롯 세션 예약 패턴(<repo>_<N>)")
 
 
 # ── 엔진 중앙 로더 부트스트랩 (형제 로드는 이 한 경로만·`repo_owned_files.load_module`) ──
@@ -1174,7 +1174,7 @@ def resolve_task_workspace(identity: Identity, leases_file: Path) -> Workspace:
                              session=ro.get("session") or None,
                              test_cmd=ro.get("test_cmd"), readonly=True)
         raise WorkspaceResolutionError(
-            f"작업공간 {target} 은 task {task!r} 보유가 아니다 — F6 소유검사 거부(⑦). 내 task 가 "
+            f"작업공간 {target} 은 task {task!r} 보유가 아니다 — 소유검사 거부. 내 task 가 "
             f"보유한 슬롯을 `--repo/--slot` 으로 지칭하거나 `{_runtime_skill_entry('pm-env')} "
             f"alloc {identity.repo} --task "
             f"{task}` 로 대여하라 (readonly 공유 슬롯이면 조회 지칭은 허용)."
@@ -1194,7 +1194,7 @@ def resolve_task_workspace(identity: Identity, leases_file: Path) -> Workspace:
         slots = ", ".join(sorted(r.get("slot") or "" for r in in_repo))
         raise WorkspaceResolutionError(
             f"task {task!r} 이(가) repo {identity.repo!r} 에서 {len(in_repo)}개 작업공간({slots})을 "
-            f"보유 — 모호하다(⑦·암묵 선택 금지). `--slot <N>` 으로 번호를 명시하라."
+            f"보유 — 모호하다(암묵 선택 금지). `--slot <N>` 으로 번호를 명시하라."
         )
 
     # kind == "none" — 위치 인자 없음(task 만). 통틀어 유일해소 / 0·≥2 는 에러.
@@ -1210,7 +1210,7 @@ def resolve_task_workspace(identity: Identity, leases_file: Path) -> Workspace:
         )
     slots = ", ".join(sorted(r.get("slot") or "" for r in held))
     raise WorkspaceResolutionError(
-        f"task {task!r} 이(가) {len(held)}개 작업공간({slots})을 보유 — 통틀어 모호하다(⑦). "
+        f"task {task!r} 이(가) {len(held)}개 작업공간({slots})을 보유 — 통틀어 모호하다. "
         "암묵 선택하지 않는다. 쓰지 않는 잉여 슬롯을 "
         f"`pm_config.py release <slot> --task {task}`로 반납한 뒤 다시 실행하라."
     )

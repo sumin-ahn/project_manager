@@ -1879,7 +1879,7 @@ def test_run_surfaces_freshness_and_ff_pull(tmp_path, capsys):
     inst = _make_freshness_bootstrap(mod, tmp_path, git_fn=git_fn)
     assert inst.run() == 0
     out = capsys.readouterr().out
-    assert "freshness (② PM 홈)" in out
+    assert "freshness (PM 홈)" in out
     assert "ff-pull 동기 완료" in out
 
 
@@ -1893,7 +1893,7 @@ def test_run_freshness_json_field(tmp_path, capsys):
     data = _json.loads(capsys.readouterr().out)
     freshness = data["git"]["freshness"]
     assert isinstance(freshness, list) and len(freshness) == 1  # 솔로(②=①) → 1 scope
-    assert freshness[0]["label"] == "② PM 홈"
+    assert freshness[0]["label"] == "PM 홈"
     assert freshness[0]["pulled"] is True
     assert freshness[0]["behind"] == 0
 

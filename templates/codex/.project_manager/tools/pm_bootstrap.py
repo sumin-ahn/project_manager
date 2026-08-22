@@ -2532,12 +2532,12 @@ class PmBootstrap:
         두 번 fetch/pull 하지 않게. (is_home)만 board 서브모듈 rider 를 붙인다.
         """
         repo_dir = REPO
-        scopes: list[tuple[str, Path, bool]] = [("② PM 홈", repo_dir, True)]
+        scopes: list[tuple[str, Path, bool]] = [("PM 홈", repo_dir, True)]
         if self._task_name is not None:
             for task_slot in self._task_workspace_slots:
                 wt_dir = Path(self._worktree_cwd(task_slot))
                 if wt_dir.resolve() != repo_dir.resolve():
-                    scopes.append((f"① task worktree ({task_slot})", wt_dir, False))
+                    scopes.append((f"공개 제품 worktree ({task_slot})", wt_dir, False))
             return scopes
         wt_dir = Path(self._worktree_cwd(self._bound_slot))
         if wt_dir.resolve() != repo_dir.resolve():
@@ -2666,7 +2666,7 @@ class PmBootstrap:
             wt_dir = Path(self._worktree_cwd(task_slot))
             if wt_dir.resolve() != REPO.resolve():
                 freshness.append(self._sync_scope(
-                    f"① task worktree ({task_slot})", wt_dir, is_home=False,
+                    f"공개 제품 worktree ({task_slot})", wt_dir, is_home=False,
                     task_slot=task_slot,
                 ))
         return freshness
@@ -3751,7 +3751,7 @@ class PmBootstrap:
         #     타-점유(3)·보호브랜치(4) 검사는 readonly 를 볼 일이 없다(모두 work 슬롯).
         if self._phase0_is_readonly(lease):
             print(
-                f"[중단·0단계] 슬롯 {slot_id} 은(는) readonly 공유 슬롯(⑬)이라 바인딩(점유)할 수 없습니다 "
+                f"[중단·0단계] 슬롯 {slot_id} 은(는) readonly 공유 슬롯이라 바인딩(점유)할 수 없습니다 "
                 f"— 무소유 공유 자산(배타 대여 없음)이라 세션 정체성을 선언하는 대상이 아닙니다.\n"
                 f"  → 코드를 읽어 참조하는 용도면 bind 없이 그 worktree 를 읽으세요. 최신 갱신은 "
                 f"`{_runtime_skill_entry('pm-worktree')} refresh {session}`(fetch→detach). "
@@ -3765,7 +3765,7 @@ class PmBootstrap:
         if holder is not None:
             print(
                 f"[중단·0단계] 슬롯 {slot_id} 을(를) 다른 세션 `{holder}` 이(가) 점유 중입니다 "
-                f"(leased) — 남의 작업공간에 바인딩할 수 없습니다(결정 ③).\n"
+                f"(leased) — 남의 작업공간에 바인딩할 수 없습니다.\n"
                 f"  → 그 세션의 완료를 기다리거나, 다른 슬롯을 쓰거나, 새 슬롯을 alloc 하세요.",
                 file=sys.stderr,
             )
@@ -3909,7 +3909,7 @@ class PmBootstrap:
         remedy = self._remedy_switch_command(wp, repo, slot_id, session)
         print(
             f"[중단·0단계] 슬롯 {slot_id} 이(가) {reason} — main-참조 상태는 진입 거부입니다. "
-            f"이 슬롯에서 작업하면 커밋이 canonical/보호 브랜치에 얹혀 ① 오염으로 이어집니다(방어를 "
+            f"이 슬롯에서 작업하면 커밋이 canonical/보호 브랜치에 얹혀 공개 제품 오염으로 이어집니다(방어를 "
             f"pre-push 훅에서 진입 시점으로 앞당김).\n"
             f"  → 해소 (택1):\n"
             f"     (a) 코드 읽기 기준면이 필요하면 사용자에게 readonly 슬롯 생성 승인을 요청하세요.\n"
@@ -4198,7 +4198,7 @@ class PmBootstrap:
         if not cands:
             return ""
         shown = " · ".join(f"`{br}`(merge-base `{sha[:12]}`)" for br, sha in cands)
-        return f"\n  후보: {shown} — 자동 채택 안 함(사용자가 `set-base` 로 결정·결정 ⑪)."
+        return f"\n  후보: {shown} — 자동 채택 안 함(사용자가 `set-base` 로 결정)."
 
     # ── multi-PM 모드: worktree 슬롯 alloc + identity surface (0011) ────
 
@@ -4256,8 +4256,8 @@ class PmBootstrap:
             )
         except wp.TaskActiveElsewhere as exc:
             print(
-                f"[중단·F1] task {task!r} 이(가) 다른 살아있는 세션(pid {exc.pid})에서 열려 "
-                f"있습니다 — 같은 task 를 두 창에서 동시에 열 수 없습니다(㉑).\n"
+                f"[중단] task {task!r} 이(가) 다른 살아있는 세션(pid {exc.pid})에서 열려 "
+                f"있습니다 — 같은 task 를 두 창에서 동시에 열 수 없습니다.\n"
                 f"  → 그 창을 쓰거나, 그 세션이 끝난 뒤 다시 여세요. (그 세션이 비정상 종료됐다면 "
                 f"pid 가 죽어 자동 회수되니 잠시 후 재시도.)",
                 file=sys.stderr,
@@ -4265,9 +4265,9 @@ class PmBootstrap:
             return None
         except wp.InvalidTaskName as exc:
             print(
-                f"[중단·F1] task 명 {task!r} 이(가) 부적합합니다 — {exc.reason}.\n"
+                f"[중단] task 명 {task!r} 이(가) 부적합합니다 — {exc.reason}.\n"
                 f"  → task 명은 경로 문자(`/`·`\\`·`..`·선행 `.`) 없는 단일 이름이어야 하고, "
-                f"슬롯 세션 예약 패턴(<등록 repo>_<N>)은 쓸 수 없습니다(⑥).",
+                f"슬롯 세션 예약 패턴(<등록 repo>_<N>)은 쓸 수 없습니다.",
                 file=sys.stderr,
             )
             return None
@@ -4275,7 +4275,7 @@ class PmBootstrap:
             if _is_engine_rev_skew(exc):
                 raise  # bind_task 가 중첩 로드한 형제 skew 는 fail-loud(삼키지 않는다).
             print(
-                f"[중단·F1] task {task!r} 생성/재개 중 pm_state 보장에 실패했습니다 — {exc}. "
+                f"[중단] task {task!r} 생성/재개 중 pm_state 보장에 실패했습니다 — {exc}. "
                 "task 장부만 있는 반쪽 상태로 진행하지 않습니다.",
                 file=sys.stderr,
             )
@@ -4283,7 +4283,7 @@ class PmBootstrap:
         pm_state = wp.task_dir(task) / "pm_state.md"
         if not pm_state.exists():
             print(
-                f"[중단·F1] task {task!r} 바인딩 뒤 pm_state가 생성되지 않았습니다 — {pm_state}. "
+                f"[중단] task {task!r} 바인딩 뒤 pm_state가 생성되지 않았습니다 — {pm_state}. "
                 "task state 즉시 생성 계약을 지원하는 worktree_pool 엔진으로 동기화하세요.",
                 file=sys.stderr,
             )
@@ -4337,7 +4337,7 @@ class PmBootstrap:
                 f"작업 중일 수 있습니다** — 그 창이 살아 있으면 한쪽을 닫으세요(중복 작업 방지)."
             )
         lines.append(
-            f"- **prefix 상태 = {prefix_display}** (기본=없음·①ⓑ) — 사용자와 확인. "
+            f"- **prefix 상태 = {prefix_display}** (기본=없음) — 사용자와 확인. "
             "변경은 `task prefix`."
         )
         # 작업공간(슬롯) — 보유 집합 **전수 열거**. task-only 진입이
@@ -5539,7 +5539,7 @@ class PmBootstrap:
             "### 이 세션 커맨드 카드 (readonly 공유 슬롯·조회 전용)"
         )
         lines.append(
-            f"정체성: readonly 공유 슬롯(`{slot}`·role=readonly·무소유 공유 자산·⑬) — 코드 읽기 "
+            f"정체성: readonly 공유 슬롯(`{slot}`·role=readonly·무소유 공유 자산) — 코드 읽기 "
             "기준면. 배타 대여/세션 바인딩 없음(claim/complete 대상 아님)."
         )
         lines.append(

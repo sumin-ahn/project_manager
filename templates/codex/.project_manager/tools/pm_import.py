@@ -3576,8 +3576,8 @@ def record_opencode_model(dest_root: Path, model: str) -> bool:
 # ── opencode 모델 결정적 해소 단계 (LLM 아님) ──────────────────────
 # board init·conf sync 직후·fill *이전* 의 결정적 단계(sync_local_conf 와 같은 결). opencode
 # 어댑터 token({{OPENCODE_PRO_MODEL}})이 이번 복사본에 잔존할 때만 동작한다.
-# 해소 순서: ①--opencode-model 명시 → 치환  ②없고 stdin tty → `opencode models` 번호목록·선택
-# → 치환  ③없고 비-tty 또는 opencode 부재 → 치환 안 함·TODO 마커(가용목록 인라인)+stderr 경고.
+# 해소 순서: 1) --opencode-model 명시 → 치환  2) 없고 stdin tty → `opencode models` 번호목록·선택
+# → 치환  3) 없고 비-tty 또는 opencode 부재 → 치환 안 함·TODO 마커(가용목록 인라인)+stderr 경고.
 # `opencode models` 가 실제 가용 모델의 단일 진실 — LLM 추측(fill) 대신 결정적 조회를 쓴다.
 
 # `opencode models` 조회 seam — `()` → (성공 여부, provider/model 목록). 테스트가 stub 주입.
@@ -3864,10 +3864,10 @@ def resolve_opencode_model(
 
     opencode 어댑터 token 이 이번 복사본(copied_relpaths)에 잔존할 때만 동작 — 없으면 inactive.
     해소 순서:
-      ① model_arg 명시 → 치환. (조회 가능하면 목록 대조해 *경고만*; 목록에 없어도 사용자 의도
+      1) model_arg 명시 → 치환. (조회 가능하면 목록 대조해 *경고만*; 목록에 없어도 사용자 의도
          존중·치환 — 회사 사설 모델 등.)
-      ② 없고 stdin tty → `opencode models` 번호목록 출력·선택 입력 → 치환. (선택 안 하면 TODO 폴백.)
-      ③ 없고 비-tty(CI·파이프) 또는 opencode 바이너리 부재 → 치환 안 함·TODO 마커(조회 성공 시
+      2) 없고 stdin tty → `opencode models` 번호목록 출력·선택 입력 → 치환. (선택 안 하면 TODO 폴백.)
+      3) 없고 비-tty(CI·파이프) 또는 opencode 바이너리 부재 → 치환 안 함·TODO 마커(조회 성공 시
          가용목록 인라인)+stderr 경고.
 
     models_runner: `opencode models` 조회 seam — 테스트 stub 주입(라이브 CLI 미실행). None 이면
@@ -3892,7 +3892,7 @@ def resolve_opencode_model(
     stream = stdin if stdin is not None else sys.stdin
     is_tty = bool(getattr(stream, "isatty", lambda: False)())
 
-    # ① --opencode-model 명시 → 치환(사용자 의도 우선). 조회 가능하면 목록 대조 경고만.
+    # 1) --opencode-model 명시 → 치환(사용자 의도 우선). 조회 가능하면 목록 대조 경고만.
     if model_arg:
         # 명시값을 **먼저 확정**(치환) — 외부 `opencode models` 조회가 명시-플래그 경로의 import
         # 를 막지 않게(codex suggestion). 목록 대조는 그 *뒤* best-effort 경고만(짧은 timeout·
@@ -3912,10 +3912,10 @@ def resolve_opencode_model(
             note=f"--opencode-model 명시값으로 치환({changed} 파일).",
         )
 
-    # 플래그 없음 → `opencode models` 조회(②③ 공통 전제).
+    # 플래그 없음 → `opencode models` 조회(2·3 공통 전제).
     ok, available = runner()
 
-    # ② stdin tty + 조회 성공 → 번호목록·대화형 선택 → 치환.
+    # 2) stdin tty + 조회 성공 → 번호목록·대화형 선택 → 치환.
     if is_tty and ok and available:
         choice = _prompt_model_choice(available, stream)
         if choice:
@@ -3937,7 +3937,7 @@ def resolve_opencode_model(
             note="대화형 선택 건너뜀 — TODO 폴백.",
         )
 
-    # ③ 비-tty / opencode 부재·조회 실패 → 치환 안 함·TODO 마커(가용목록 인라인 시도)+경고.
+    # 3) 비-tty / opencode 부재·조회 실패 → 치환 안 함·TODO 마커(가용목록 인라인 시도)+경고.
     todos = _mark_model_todos(dest_root, copied_relpaths, available if ok else [],
                               root_identity=root_identity)
     if not ok:
@@ -4951,13 +4951,13 @@ def _print_codex_trust_guidance() -> None:
     """
     print("")
     print("⚠️  codex 어댑터 활성화 전 2단계 trust 승인 필요 (미승인 시 위임/훅 미발화):")
-    print("  ① 이 디렉토리에서 대화형 `codex` 를 1회 열어 프로젝트 trust 를 수락한다")
+    print("  1) 이 디렉토리에서 대화형 `codex` 를 1회 열어 프로젝트 trust 를 수락한다")
     print("     (`.codex/agents/*.toml`·`config.toml` 은 trusted project 한정 로드).")
-    print("  ② codex 안에서 `/hooks` 로 hook trust 를 승인한다 (PreCompact ctx checkpoint 안내 발화 전제).")
+    print("  2) codex 안에서 `/hooks` 로 hook trust 를 승인한다 (PreCompact ctx checkpoint 안내 발화 전제).")
     print("  검증: 대화형 codex 에서 위임 4축(architect/developer/code-reviewer/researcher)이 "
           "스폰 목록에 뜨는지 확인한다.")
     print("  ⚠️ `-c projects.<path>.trust_level=trusted` CLI override 는 안 먹는다(실측) — "
-          "위 ① 대화형 승인이 필수다.")
+          "위 1) 대화형 승인이 필수다.")
 
 
 def _print_claude_trust_guidance() -> None:

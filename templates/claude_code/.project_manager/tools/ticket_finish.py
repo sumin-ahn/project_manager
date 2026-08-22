@@ -2662,8 +2662,8 @@ class TicketFinisher:
                                   label: str = "") -> None:
         """stage 후 상태를 양방향으로 **눈에 띄게** 보고한다 (loud·비차단).
 
-        두 실패 방향을 함께 본다 — ① **미스테이지 잔여**(under-stage: 스코프가 못 덮은 변경 —
-        내 작업 누락이면 `touches` 를 보강해 다시 stage, 남의 WIP 면 그대로 둔다) ②
+        두 실패 방향을 함께 본다 — 1) **미스테이지 잔여**(under-stage: 스코프가 못 덮은 변경 —
+        내 작업 누락이면 `touches` 를 보강해 다시 stage, 남의 WIP 면 그대로 둔다) 2)
         **스코프 밖 staged**(누출: PM 커밋에 실린다). 좁히기가 만드는 실패를 *조용한 유출* 과
         바꾸지 않는 것이 요점이라, 어느 쪽도 침묵하지 않는다. 결과 건수는 `[완료]` 줄에서
         한 번 더 재고지한다(보고가 뒤 출력에 묻히지 않게).
@@ -2766,7 +2766,7 @@ def _main(argv: list[str] | None = None) -> int:
         )
 
     # 정체성 인자 *검증*(`--slot` 단독·`slot < 1` = uniform fail-loud)은 `--no-pytest` 와
-    # 무관하게 **항상** 수행한다. task F6도 회귀 전용 값이 아니다: stage/status 계획의 cwd 단일
+    # 무관하게 **항상** 수행한다. task도 회귀 전용 값이 아니다: stage/status 계획의 cwd 단일
     # 진실이므로 --no-pytest 에서도 반드시 해소한다. slot-mode 코드 트리 해소·모호 게이트도
     # 같다 — 회귀 skip 여부와 독립이다(아래 비-task 경로 주석).
     try:
