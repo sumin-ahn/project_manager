@@ -716,7 +716,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   이동했다. 들어온 것은 좌표 파생 헬퍼(`_dest_relative_path`) 하나와 렌더 호출 3곳의 인자이고,
 #   역적용 delta 의 네 anchor 는 전부 `_main`/`sync_adapter_configs` 쪽이라 그대로 유일 해소된다.
 #   배달 경계와 배달 파일 집합도 불변이다 — 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "2861ac1fe5cdcc89e38c85754dd0f9ce45e4638e832d4f1aede5c854b863615c"
+_T0585_PM_UPDATE_SHA256 = "d8694ef5ff312f4ed9be7ca67e0e25f00d60a62db5d561c85c5b77e19a3ac5c6"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
@@ -823,6 +823,12 @@ def _t0585_pm_update_source() -> str:
     그것을 기계로 확인한다) T-0585 세대 실행 경로에 들지 않는다. 배달 경계
     (source/manifest planning → apply → self-update 순서)와 어댑터 config 채널 본문은 이번 변경에
     포함되지 않았다 — `sync_adapter_configs`·`_adapter_config_gate_failed`·`apply` 는 무편집이다.
+
+    T-0811 — 출하 표면 사설 문맥 청소로 `pm_update.py` 의 주석 2줄(역방향 진입점 축 설명)에서
+    티켓 ID 토큰만 걷어냈다. 변경은 주석 문자열 전용이라 배달 경계(source/manifest planning →
+    apply → self-update 순서)·`sync_adapter_configs`·`_adapter_config_gate_failed`·`apply` 는
+    무편집이고, 위 역델타의 marker 문자열도 그대로 매치했다(marker assert 선통과). 그래서 이
+    drift 는 세대 시대착오가 아니라 합성본에 그대로 실려 온 주석 bytes 차이다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")

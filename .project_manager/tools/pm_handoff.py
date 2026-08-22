@@ -2120,7 +2120,8 @@ def _parse_worktree_slot(worktree_slot: str | None) -> tuple[str, int] | None:
     좌표는 `_slot_identity`(장부 값 1순위)가 해소한 **장부 행의 repo·번호**다 — 정체성 키를
     다시 분해하지도, 경로 basename 을 파싱하지도 않는다. 렌더한 트리거는 *다음 세션이 이 슬롯으로
     재접속하는 지시*라 장부에 조인돼야 한다: 행 repo 와 어긋난 session(`repo=A · slot=work/A_1 ·
-    session=B_7`)에서 키를 분해하면 `--repo B --slot 7` 이 나오고 즉시 M3 로 거부된다(리뷰 F-002).
+    session=B_7`)에서 키를 분해하면 `--repo B --slot 7` 이 나오고 즉시 세션↔repo 조인 불일치로
+    거부된다(리뷰 F-002).
 
     정체성 미해소(장부에도 없고 경로도 슬롯 키가 아님)거나 **장부가 좌표를 주지 못하면** None —
     호출부가 bare 폴백·하드 거부·fail-soft 등 기존 관례를 적용한다. 재접속 불가능한 명시 트리거를

@@ -588,7 +588,7 @@ _HOOK_COMMAND_ROOT_TOKENS = ("${CLAUDE_PROJECT_DIR}/", "$CLAUDE_PROJECT_DIR/", "
 
 
 class AdapterHookEntrypoint(NamedTuple):
-    """이 엔진 세대가 채택자 config 에 **있어야 한다**고 보는 훅 진입점 하나 (T-0777·역방향 축).
+    """이 엔진 세대가 채택자 config 에 **있어야 한다**고 보는 훅 진입점 하나 (역방향 축).
 
     `flag_support` 와 방향이 반대다 — 저쪽은 "config 가 요구하는 것을 설치본이 감당하나"(config →
     엔진)이고, 이쪽은 "이 엔진 세대가 기대하는 진입점이 config 에 있나"(엔진 → config)다. 진입점이
@@ -671,7 +671,7 @@ ADAPTER_HOOK_SET = {
             (".claude/ctx_statusline.sh", ".claude/ctx_statusline.py"),
         ),
         entrypoints=(
-            # claude 는 범용 진입점을 이미 갖고 있다 — T-0777 은 이 값을 바꾸지 않고 선언만
+            # claude 는 범용 진입점을 이미 갖고 있다 — 이 선언은 값을 바꾸지 않고 선언만
             #   한다(진입점이 사라진 채택자에서 ctx 가드가 조용히 무발화하는 상태를 표면화).
             #   래퍼가 인자로 분기하므로 플래그 축은 `flag_support` 가 이미 본다(중복 선언 0).
             AdapterHookEntrypoint("PreToolUse", "*", ".claude/ctx_stop_hook.sh"),
@@ -686,10 +686,11 @@ ADAPTER_HOOK_SET = {
         live_files=(".codex/pm_orch_codex.py",),
         flag_support={},
         entrypoints=tuple(
-            # T-0777 — 이벤트당 진입점 하나(`matcher .*`)가 manifest 등재 디스패처를 부르고,
+            # 이벤트당 진입점 하나(`matcher .*`)가 manifest 등재 디스패처를 부르고,
             #   "어떤 가드를 돌릴지" 는 그 코드 안에서 갈린다. 그래서 가드 **기능** 추가는 이제
             #   엔진 코드 변경뿐이고 채택자 config·`/hooks` 재승인을 다시 요구하지 않는다.
-            #   이 집합은 릴리즈 간 불변이다 — 늘리려면 T-0777 과 같은 1회 마이그레이션이다.
+            #   이 집합은 릴리즈 간 불변이다 — 늘리려면 채택자 config 재승인을 동반한 1회
+            #   마이그레이션이다.
             AdapterHookEntrypoint(event, ".*", ".codex/pm_orch_codex.py", "--hook-dispatch")
             for event in ("PreToolUse", "UserPromptSubmit", "PostToolUse")
         ),
@@ -6745,7 +6746,7 @@ def judge_adapter_hook_sets(dest_root: Path, source_root: Path | None = None,
     return out
 
 
-# ── 역방향 축: 이 엔진 세대가 기대하는 진입점이 config 에 있나 (T-0777) ──────────
+# ── 역방향 축: 이 엔진 세대가 기대하는 진입점이 config 에 있나 ───────────────────
 # 위 `judge_adapter_hook_sets` 는 **config → 엔진** 한 방향만 본다(config 가 요구하는 플래그를
 # 설치본이 감당하나). 그 방향만으로는 "진입점이 아예 없어서 가드가 한 번도 발화하지 않는" 상태가
 # 판정 밖이다 — config 가 아무것도 요구하지 않으면 미충족도 0 이라 green 이다. 이 절이 반대

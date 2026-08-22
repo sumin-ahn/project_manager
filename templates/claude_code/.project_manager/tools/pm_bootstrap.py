@@ -1823,8 +1823,8 @@ def _slot_count_label(session: str, number: int | None = None) -> str:
     """슬롯 정체성 → 카운트 스코프 라벨 `"slot N"`.
 
     N 은 **장부 행이 준 슬롯 번호**(`number`)다 — bootstrap 카운트가 `--mine`(user·전 슬롯)이
-    아니라 *그 슬롯 정체성*(조회 렌즈 `--repo <repo> --slot <N>`)으로 조회됐음을 announce 한다(S1
-    mislabel 근절). 라벨의 N 과 렌즈의 N 은 같은 값이어야 하므로 세션 키를 다시 뜯지 않는다.
+    아니라 *그 슬롯 정체성*(조회 렌즈 `--repo <repo> --slot <N>`)으로 조회됐음을 announce 한다
+    (스코프 mislabel 근절). 라벨의 N 과 렌즈의 N 은 같은 값이어야 하므로 세션 키를 다시 뜯지 않는다.
     번호 미해소(커스텀 세션명·장부가 번호를 안 줌)면 전체 세션명으로 폴백한다.
     """
     return f"slot {number}" if number is not None else f"slot {session}"
@@ -5121,7 +5121,7 @@ class PmBootstrap:
         # 슬롯 **번호**는 정체성 산출부(`_bind_and_identity`·`_alloc_and_identity`)가 **장부 값**
         # 에서 확정해 실어 준 좌표다(`identity["slot_number"]`) — 슬롯 식별자 문자열을 여기서 다시
         # 뜯지 않는다. 카드가 렌더하는 `--repo X --slot N` 은 *다음 세션이 이 슬롯으로 재접속하는
-        # 지시*라 장부에 조인되지 않으면 즉시 M3 로 거부된다(리뷰 F-002 축).
+        # 지시*라 장부에 조인되지 않으면 즉시 세션↔repo 조인 불일치로 거부된다(리뷰 F-002 축).
         # `slot_number` 결손(불완전 dict)은 `session` 결손과 같은 방어 — 슬롯 식별자에서 마지막
         # `_` 로 분리한 값으로 폴백한다(카드 절 무손상·정상 경로는 항상 좌표를 싣는다).
         slot_id = identity.get("slot") if identity else None
