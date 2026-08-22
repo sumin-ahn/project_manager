@@ -750,11 +750,11 @@ def test_missing_ticket_status_dirs_self_repair_through_full_lifecycle(pm_import
 # ── 멀티-유저 훅 경로 portability 가드 (T-0191 · v1.0.x 운영버그 #5) ──────────────
 # import 가 {{PROJECT_ROOT}} 를 절대경로로 박으면 git-공유 시 다른 머신에서 훅이 깨진다
 # (alice 절대경로 커밋 → bob pull → 그 경로 없음 → 훅 무음 실패·ctx-stop 안전게이트 死).
-# settings.json 훅/PreCompact 은 런타임 머신별 해소 ${CLAUDE_PROJECT_DIR}, run_tests_hook.sh 는
-# self-resolve 라 *렌더된* 결과에 절대경로/{{PROJECT_ROOT}} 가 남으면 안 된다(fresh-adopter 게이트).
+# settings.json 훅/PreCompact 은 런타임 머신별 해소 ${CLAUDE_PROJECT_DIR} 를 쓰므로 *렌더된*
+# 결과에 절대경로/{{PROJECT_ROOT}} 가 남으면 안 된다(fresh-adopter 게이트).
 
 def test_fresh_adopter_hook_paths_are_machine_portable(pm_import, tmp_path):
-    """claude import 후 settings.json/run_tests_hook.sh 에 절대경로·{{PROJECT_ROOT}} 잔존 0."""
+    """claude import 후 settings.json 에 절대경로·{{PROJECT_ROOT}} 잔존 0."""
     dest = tmp_path / "adopter-portable"
     rc = pm_import.main(
         ["--new", str(dest), "--harness", "claude", "--name", "Adopter", "--fill", "manual"]
@@ -763,14 +763,12 @@ def test_fresh_adopter_hook_paths_are_machine_portable(pm_import, tmp_path):
     dest_abs = str(dest.resolve())
 
     settings_text = (dest / ".claude" / "settings.json").read_text(encoding="utf-8")
-    run_tests_text = (dest / ".claude" / "run_tests_hook.sh").read_text(encoding="utf-8")
 
-    for fname, text in (("settings.json", settings_text), ("run_tests_hook.sh", run_tests_text)):
-        assert "{{PROJECT_ROOT}}" not in text, (
-            f"{fname} 에 미치환 {{{{PROJECT_ROOT}}}} 잔존 — portable 형이 아님")
-        assert dest_abs not in text, (
-            f"{fname} 에 import 절대경로({dest_abs}) 박제 — git 공유 시 다른 머신서 훅 깨짐. "
-            "settings.json=$CLAUDE_PROJECT_DIR / run_tests=self-resolve 를 써라.")
+    assert "{{PROJECT_ROOT}}" not in settings_text, (
+        "settings.json 에 미치환 {{PROJECT_ROOT}} 잔존 — portable 형이 아님")
+    assert dest_abs not in settings_text, (
+        f"settings.json 에 import 절대경로({dest_abs}) 박제 — git 공유 시 다른 머신서 훅 깨짐. "
+        "$CLAUDE_PROJECT_DIR 를 써라.")
 
     # settings.json 훅 명령(hooks.*)은 런타임 머신별 해소를 쓴다 (절대경로 미박제).
     data = json.loads(settings_text)
@@ -784,9 +782,6 @@ def test_fresh_adopter_hook_paths_are_machine_portable(pm_import, tmp_path):
     for cmd in hook_cmds:
         assert "CLAUDE_PROJECT_DIR" in cmd or cmd.startswith("./"), (
             f"훅 명령이 머신별 해소(${{CLAUDE_PROJECT_DIR}})·상대경로 미사용: {cmd!r}")
-
-    # run_tests_hook.sh 는 치환 토큰 0 (완전 self-contained·모든 머신 byte-identical).
-    assert "{{" not in run_tests_text, "run_tests_hook.sh 에 치환 토큰 잔존 (self-resolve 아님)"
 
 
 # ── adopter 출하 위생: 프레임워크-내부 최상위 README 미출하 (T-0192 · v1.0.x 운영버그 #6) ──

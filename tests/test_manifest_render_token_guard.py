@@ -437,7 +437,7 @@ def _build_claude_framework(tmp_path: Path) -> Path:
 
     claude flavor manifest 가 참조하는 root-상대 경로 전부를 담는다: 엔진(`.project_manager/`)·
     claude 템플릿(`templates/claude_code/` — `@source` 어댑터/훅 canonical)·root `.claude/`
-    (agents·skills·run_tests_hook.sh)·`.gitattributes`·`.github/workflows`. REPO 를 손대지 않게
+    (agents·skills)·`.gitattributes`·`.github/workflows`. REPO 를 손대지 않게
     사본을 쓴다.
     """
     framework = tmp_path / "framework"

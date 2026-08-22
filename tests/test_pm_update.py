@@ -5415,7 +5415,7 @@ def test_apply_board_separated_writes_template_into_board(pm_update, tmp_path, m
 
 
 # ── T-0305: engine-mirror hook/driver self-update 전파 e2e (frozen 근절 실증) ──────────────
-# engine safety-훅(ctx-stop·회귀 게이트)이 manifest **밖**이면 채택자는 import 시점 frozen 사본을
+# engine safety-훅(ctx-stop)·엔진 도구가 manifest **밖**이면 채택자는 import 시점 frozen 사본을
 # 영영 유지해 엔진 fix 가 영영 안 갔다(stale 신호도 없음). 이제 hook 이 manifest 안(@source remap·
 # root-sourced)이라 pm_update self-update 가 엔진 변경을 채택자 dest 로 전파한다. plan/apply 로 실
 # apply 착지를 검증한다 — "엔진 safety-훅 변경이 채택자에 도달"(frozen 근절 DoD).
@@ -5461,29 +5461,30 @@ def test_self_update_propagates_engine_safety_hook_via_source_remap(pm_update, t
     assert "OLD frozen hook" not in landed, "채택자 frozen 사본이 엔진 NEW 로 덮이지 않음"
 
 
-def test_self_update_root_sourced_hook_propagates(pm_update, tmp_path):
-    """root-sourced(bare) hook(run_tests_hook.sh): 루트 `.claude/` 실재분도 self-update 로 전파.
+def test_self_update_bare_engine_file_propagates(pm_update, tmp_path):
+    """bare(root-sourced) 파일 행: 루트 실재분도 self-update 로 전파.
 
-    ctx 훅은 @source(ship 템플릿) 이나 run_tests_hook.sh 는 루트 `.claude/` 에 byte-identical 로
-    실재라 bare 등록(agents/skills 동형). bare 엔트리는 source_root/<rel> 을 그대로 읽어 dest 로 복사한다."""
+    ctx 훅은 @source(ship 템플릿) remap 이지만 엔진 도구 `.project_manager/tools/*.py` 28행은
+    루트에 실재라 bare 등록(agents/skills 동형). bare 엔트리는 source_root/<rel> 을 그대로 읽어
+    dest 로 복사한다."""
     upstream = tmp_path / "framework"
     adopter = tmp_path / "adopter"
-    rel = ".claude/run_tests_hook.sh"
+    rel = ".project_manager/tools/board.py"
 
     src = upstream / rel
     src.parent.mkdir(parents=True, exist_ok=True)
-    src.write_text("#!/bin/sh\n# NEW regression gate\nexit 0\n", encoding="utf-8")
+    src.write_text("# NEW engine tool\n", encoding="utf-8")
     _track_source_tree(upstream)
     frozen = adopter / rel
     frozen.parent.mkdir(parents=True, exist_ok=True)
-    frozen.write_text("#!/bin/sh\n# OLD gate\nexit 0\n", encoding="utf-8")
+    frozen.write_text("# OLD frozen tool\n", encoding="utf-8")
 
     entries = _manifest_entries(pm_update, [rel])  # bare (source_rel None → 루트 상대 = rel)
     changes, missing = pm_update.plan(upstream, entries, dest_root=adopter, render_enabled=True)
     assert not missing
     assert [c[0] for c in changes] == [rel]
     pm_update.apply(changes)
-    assert "NEW regression gate" in frozen.read_text(encoding="utf-8")
+    assert "NEW engine tool" in frozen.read_text(encoding="utf-8")
 
 
 def test_source_remapped_hook_missing_source_reports_rc2_class(pm_update, tmp_path):

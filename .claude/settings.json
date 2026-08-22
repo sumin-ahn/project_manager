@@ -33,7 +33,6 @@
       "Bash(git checkout *)",
       "Bash(git mv *)",
       "Bash(git rm *)",
-      "Bash(./.claude/run_tests_hook.sh)",
       "Bash(gh auth *)",
       "Bash(git config *)",
       "Bash(ssh -T git@github.com)",
@@ -54,19 +53,6 @@
     ]
   },
   "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/.claude/run_tests_hook.sh",
-            "timeout": 60,
-            "statusMessage": "Running tests..."
-          }
-        ]
-      }
-    ],
     "PreToolUse": [
       {
         "matcher": "Bash",
