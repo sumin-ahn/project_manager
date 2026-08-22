@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,8 @@ CLAUDE_WRAPPER = REPO / "templates" / "claude_code" / ".claude" / "ctx_stop_hook
 OPEN_CORE = REPO / "templates" / "opencode" / ".opencode" / "lib" / "git-anchor-core.cjs"
 OPEN_PLUGIN = REPO / "templates" / "opencode" / ".opencode" / "plugins" / "git-anchor.js"
 CODEX_RULES = REPO / "templates" / "codex" / ".codex" / "rules" / "default.rules"
+CODEX_DISPATCHER = REPO / "templates" / "codex" / ".codex" / "pm_orch_codex.py"
+CODEX_LIVE_HOOK_FIXTURE = REPO / "tests" / "fixtures" / "codex_0_147_0_live_hook_payloads.json"
 
 
 def _load(name: str, path: Path):
@@ -1514,10 +1517,232 @@ def test_claude_settings_and_self_resolving_wrapper_are_wired():
                    for row in hooks)
 
 
-def test_codex_execpolicy_records_capability_gap_without_overbroad_rule():
+def test_codex_execpolicy_stays_static_while_the_hook_axis_carries_the_dynamic_guard():
+    """execpolicy는 여전히 정적 판정만 갖고(과차단 방지), 동적 판정은 PreToolUse 훅 축의
+    git-anchor 등록 기능이 담당한다 — [[T-0765]] 가 배선을 더한 뒤에는 사유 문구가 아니라
+    실 registry 값을 요구한다(부재를 강제하던 옛 봉인은 배선 시 red 가 나지 않았다)."""
     text = CODEX_RULES.read_text(encoding="utf-8")
-    assert "raw git cwd-anchor 파리티 예외(T-0587)" in text
-    assert "cwd predicate" in text and "false-deny 0" in text
+    assert "false-deny 0" in text
+    assert "pm_orch_codex.py" in text and "git-anchor" in text
+
+    dispatcher = _load("git_anchor_codex_dispatcher_seal", CODEX_DISPATCHER)
+    features = [feature for feature in dispatcher.CODEX_HOOK_FEATURES
+                if feature.feature_id == "git-anchor"]
+    assert len(features) == 1, dispatcher.CODEX_HOOK_FEATURES
+    feature = features[0]
+    assert feature.event == "PreToolUse"
+    assert feature.tool_pattern == "^Bash$"
+
+
+# ── codex Bash 축 배선 (T-0765 — claude_code·opencode 2타깃엔 있고 codex 엔 없던 gap) ──────────
+# 판정 로직은 새로 만들지 않는다 — 세 하네스가 공유하는 `board.judge_git_anchor_command` 를
+# 그대로 재사용한다. 아래는 codex PreToolUse(Bash) payload → 그 판정 → codex 엔벨로프 변환·배선만
+# 고정한다. payload 는 조립 dict 가 아니라 라이브 캡처 픽스처(`codex_0_147_0_live_hook_payloads.
+# json`)의 Bash 이벤트를 그대로 쓴다(cwd·command 만 시나리오별로 덮어쓴다).
+
+
+def _codex_live_bash_event() -> dict:
+    """라이브 캡처 픽스처(codex-cli 0.147.0)의 유일한 Bash PreToolUse 이벤트."""
+    data = json.loads(CODEX_LIVE_HOOK_FIXTURE.read_text(encoding="utf-8"))
+    events = [event for event in data["events"] if event.get("tool_name") == "Bash"]
+    assert len(events) == 1, events
+    return dict(events[0])
+
+
+def test_codex_bash_axis_deny_matches_the_measured_five_field_envelope(monkeypatch, topology):
+    """라이브 픽스처의 Bash 이벤트로 판정을 호출하고 deny 엔벨로프 5필드가 값으로 일치한다."""
+    dispatcher = _load("git_anchor_codex_deny", CODEX_DISPATCHER)
+    monkeypatch.setattr(
+        dispatcher, "_load_board",
+        lambda _root: _load("git_anchor_board_codex_deny", BOARD_PY),
+    )
+    home, _slot = topology
+    payload = _codex_live_bash_event()
+    payload["cwd"] = str(home)
+    payload["tool_input"] = {"command": "git add tests/shared.txt"}
+
+    envelope = dispatcher.git_anchor_hook_evaluate(payload, home)
+
+    reason = envelope.get("reason", "")
+    assert reason.startswith("[git-anchor/deny]")
+    assert "tests/shared.txt" in reason
+    assert envelope == {
+        "decision": "block",
+        "reason": reason,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        },
+        "systemMessage": reason,
+        "suppressOutput": False,
+    }
+
+
+def test_codex_bash_axis_ok_stays_the_measured_allow_shape_not_zero_bytes(topology):
+    """ok·정상 미매칭은 codex 축에서 `{}`(측정된 allow)다 — claude 의 0바이트와 다르다.
+
+    디스패처 `_run_hook_feature` 는 빈 stdout 을 실패로 읽어 adapter-fallback 으로 강등한다 —
+    0바이트를 쓰면 정상 통과마다 경고가 나간다(T-0765 §역방향 확인)."""
+    dispatcher = _load("git_anchor_codex_ok", CODEX_DISPATCHER)
+    home, _slot = topology
+    payload = _codex_live_bash_event()
+    payload["cwd"] = str(home)
+    payload["tool_input"] = {"command": "ls -la"}
+    assert dispatcher.git_anchor_hook_evaluate(payload, home) == {}
+
+    non_bash = dict(payload)
+    non_bash["tool_name"] = "collaborationwait_agent"
+    non_bash["tool_input"] = {}
+    assert dispatcher.git_anchor_hook_evaluate(non_bash, home) == {}
+
+
+def test_codex_prefilter_skips_board_import_for_non_git_bash(monkeypatch, topology):
+    """git·엔진·pytest·cd 관련이 아닌 Bash 명령은 board import 조차 하지 않는다(핫패스 비용 0
+    — claude `git_anchor_hook_evaluate` 와 같은 선필터를 그대로 옮겨왔다)."""
+    dispatcher = _load("git_anchor_codex_prefilter", CODEX_DISPATCHER)
+    home, _slot = topology
+    calls = []
+
+    class FakeBoard:
+        @staticmethod
+        def judge_git_anchor_command(cwd, command):
+            calls.append((cwd, command))
+            return {"verdict": "warn", "cwd_identity": "pm-home", "reason": "fixture"}
+
+    monkeypatch.setattr(dispatcher, "_load_board", lambda _root: FakeBoard)
+    payload = _codex_live_bash_event()
+    payload["cwd"] = str(home)
+    payload["tool_input"] = {"command": "python3 build.py"}
+
+    assert dispatcher.git_anchor_hook_evaluate(payload, home) == {}
+    assert calls == []
+
+    payload["tool_input"] = {"command": "git commit -m x"}
+    warn = dispatcher.git_anchor_hook_evaluate(payload, home)
+    assert warn == {"systemMessage": "[git-anchor/warn] fixture", "suppressOutput": False}
+    assert calls == [(str(home), "git commit -m x")]
+
+
+def test_codex_dispatcher_routes_bash_tool_names_to_the_self_invoking_child(topology):
+    """`dispatch_hook` 이 Bash tool_name 이면 git-anchor 기능(자기참조 `--git-anchor-hook`)을
+    스폰한다(등록 축은 tool_name 만 본다 — git 관련성 선별은 그 자식 안에서 돈다). 다른
+    tool_name 은 스폰하지 않는다(배선 자체의 값 확인 — 판정은 위 테스트가 별도로 본다)."""
+    dispatcher = _load("git_anchor_codex_route", CODEX_DISPATCHER)
+    home, _slot = topology
+    calls: list[list[str]] = []
+
+    def runner(argv, **_kwargs):
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout=b"{}", stderr=b"")
+
+    payload = _codex_live_bash_event()
+    payload["cwd"] = str(home)
+    payload["tool_input"] = {"command": "git add tests/shared.txt"}
+
+    result = dispatcher.dispatch_hook(
+        "PreToolUse", json.dumps(payload).encode("utf-8"), home, runner=runner)
+
+    assert result == {}
+    assert len(calls) == 1
+    assert calls[0] == [sys.executable, str(home / ".codex" / "pm_orch_codex.py"),
+                        dispatcher.GIT_ANCHOR_HOOK_FLAG]
+
+    calls.clear()
+    non_bash = dict(payload)
+    non_bash["tool_name"] = "collaborationwait_agent"
+    assert dispatcher.dispatch_hook(
+        "PreToolUse", json.dumps(non_bash).encode("utf-8"), home, runner=runner) == {}
+    assert calls == []
+
+
+def test_codex_bash_axis_warn_is_suppressed_once_per_session(monkeypatch, topology):
+    """같은 세션·같은 문구는 첫 1회만 발화하고, 이후는 `{}`([[T-0764]] 침묵 기준 승계).
+
+    deny 는 중복이어도 매번 발화한다(억제하면 두 번째 위험 명령이 통과한다)."""
+    dispatcher = _load("git_anchor_codex_once", CODEX_DISPATCHER)
+    monkeypatch.setattr(
+        dispatcher, "_load_board",
+        lambda _root: _load("git_anchor_board_codex_once", BOARD_PY),
+    )
+    home, _slot = topology
+    payload = _codex_live_bash_event()
+    payload["cwd"] = str(home)
+    payload["tool_input"] = {"command": "git commit -m x"}
+
+    first = dispatcher.git_anchor_hook_evaluate(payload, home)
+    assert first["systemMessage"].startswith("[git-anchor/warn]")
+
+    second = dispatcher.git_anchor_hook_evaluate(payload, home)
+    assert second == {}  # 완전일치 중복 — 측정된 allow 형태로 침묵.
+
+    other_command = dict(payload)
+    other_command["tool_input"] = {"command": "git push"}
+    other = dispatcher.git_anchor_hook_evaluate(other_command, home)
+    assert other["systemMessage"] != first["systemMessage"]  # 문구가 다르면 그대로 발화.
+
+    other_session = dict(payload)
+    other_session["session_id"] = "different-session"
+    assert dispatcher.git_anchor_hook_evaluate(other_session, home)["systemMessage"] == \
+        first["systemMessage"]  # 세션이 다르면 같은 문구도 첫 1회.
+
+    deny_payload = dict(payload)
+    deny_payload["tool_input"] = {"command": "git add tests/shared.txt"}
+    deny_first = dispatcher.git_anchor_hook_evaluate(deny_payload, home)
+    deny_second = dispatcher.git_anchor_hook_evaluate(deny_payload, home)
+    assert deny_first["decision"] == "block"
+    assert deny_second == deny_first  # deny 는 중복 억제 대상이 아니다.
+
+
+@pytest.mark.parametrize("failure_site", ["import", "judge"])
+def test_codex_git_anchor_hook_infra_failure_is_warn_rc0_and_bypasses_dedup(
+    monkeypatch, topology, failure_site,
+):
+    """판정 인프라 손상은 rc0 + warn 으로 강등되고, 중복 억제 게이트를 지나지 않는다(fail-open —
+    claude `run_git_anchor_hook` 동형)."""
+    dispatcher = _load(f"git_anchor_codex_infra_{failure_site}", CODEX_DISPATCHER)
+    home, _slot = topology
+
+    class ExitBoard:
+        @staticmethod
+        def judge_git_anchor_command(_cwd, _command):
+            raise SystemExit(23)
+
+    if failure_site == "import":
+        def fail_load(_root):
+            raise SystemExit(17)
+        monkeypatch.setattr(dispatcher, "_load_board", fail_load)
+    else:
+        monkeypatch.setattr(dispatcher, "_load_board", lambda _root: ExitBoard)
+
+    payload = _codex_live_bash_event()
+    payload["cwd"] = str(home)
+    payload["tool_input"] = {"command": "git add tests/shared.txt"}
+
+    for _attempt in range(2):  # 두 번 호출해도 매번 발화(중복 억제 미적용).
+        stdin = io.StringIO(json.dumps(payload))
+        stdout = io.StringIO()
+        rc = dispatcher.run_git_anchor_hook(home, stdin=stdin, stdout=stdout)
+        assert rc == 0
+        got = json.loads(stdout.getvalue())
+        assert "판정 불가" in got["systemMessage"]
+        assert got["suppressOutput"] is False
+
+
+def test_codex_run_git_anchor_hook_writes_the_measured_allow_shape_for_ok(topology):
+    """`--git-anchor-hook` CLI 엔트리(stdin→stdout)도 ok 에서 `{}`(0바이트 아님)를 쓴다."""
+    dispatcher = _load("git_anchor_codex_hook_ok", CODEX_DISPATCHER)
+    home, _slot = topology
+    payload = _codex_live_bash_event()
+    payload["cwd"] = str(home)
+    payload["tool_input"] = {"command": "ls -la"}
+    stdin = io.StringIO(json.dumps(payload))
+    stdout = io.StringIO()
+
+    rc = dispatcher.run_git_anchor_hook(home, stdin=stdin, stdout=stdout)
+
+    assert rc == 0
+    assert stdout.getvalue() == "{}\n"
 
 
 def test_claude_and_opencode_prefilter_target_sets_match(monkeypatch, topology):
