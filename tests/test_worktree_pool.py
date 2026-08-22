@@ -7785,6 +7785,21 @@ def test_cli_set_base_records_and_reports(wp, proj, monkeypatch, capsys):
     assert wp._read_recorded_base("work/A_1") == {"branch": "origin/main", "commit": _BASE_TIP}
 
 
+def test_cli_set_base_message_has_no_stray_empty_parens(wp, proj, monkeypatch, capsys):
+    """CLI `set-base` 성공 메시지는 빈 괄호 `()` 로 끝나지 않는다(T-0801 — 사설 문맥 스트립 잔재 회귀).
+
+    문장은 마침표로 끝나야 하고, 스트립된 내부 참조 자리에 남았던 빈 `()` 가 재발하지 않아야 한다."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
+    _mk_slot_dir(wp)
+    git = _BaseGit(tips={"origin/main": _BASE_TIP}, head="feat", head_sha=_NEW_SHA)
+    monkeypatch.setattr(wp, "_real_git_runner", lambda cwd: git)
+    rc = wp.main(["set-base", "work/A_1", "origin/main"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "작동한다.\n" in out            # 온전한 마침표 종결 — 빈 () 잔존 회귀 방지.
+    assert "()" not in out
+
+
 def test_cli_set_base_prefix_omitted_slot_form(wp, proj, monkeypatch, capsys):
     """CLI set-base 는 접두 생략 `<repo>_<N>` 슬롯 형식도 정규화해 받는다."""
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="s", state="leased"))
