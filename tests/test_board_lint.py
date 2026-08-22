@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
@@ -61,9 +62,11 @@ def _wire_repo(board, monkeypatch, root: Path) -> Path:
     tickets = wiki / "tickets"
     ideas = wiki / "ideas"
     decisions = wiki / "decisions"
-    for status in ("open", "claimed", "blocked", "done"):
+    # 상태 디렉토리는 board 상수에서 유도한다 — 손으로 열거하면 새 상태가 픽스처 트리에서
+    # 빠져 그 상태의 링크가 "실재 안 함"으로만 관측되고 정상 통과 축을 못 잰다.
+    for status in board.STATUS_DIRS:
         (tickets / status).mkdir(parents=True, exist_ok=True)
-    for status in ("open", "promoted", "killed"):
+    for status in board.IDEA_STATUS_DIRS:
         (ideas / status).mkdir(parents=True, exist_ok=True)
     decisions.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(board, "REPO", root)
@@ -253,6 +256,78 @@ def test_md_path_link_to_existing_decision_is_advice_not_block(board, monkeypatc
     assert kind == "unstable-ref-advice"          # 작동은 함 → 권고만
     assert kind in board._ADVISORY_LINT_KINDS     # gate 가 막지 않음
     assert "[[ADR-0007]]" in detail
+
+
+def test_ticket_path_link_in_every_status_dir_is_classified(board, monkeypatch, tmp_path):
+    """`tickets/<state>/<slug>.md` 링크는 **모든** 상태 디렉토리에서 lint 경로로 들어간다.
+
+    상태 조각을 정규식에 리터럴로 적으면 새 상태가 분류 자체에서 빠져 dangling 도 슬러그 권고도
+    조용히 사라진다(검사 우회). 상태별로 실재 링크=권고 / 부재 링크=차단 두 축을 다 잰다.
+    """
+    wiki = _wire_repo(board, monkeypatch, tmp_path)
+    for status in board.STATUS_DIRS:
+        real = f"T-0100-{status}-real.md"
+        (wiki / "tickets" / status / real).write_text(
+            f"---\nid: T-0100\n---\n# 실재 티켓\n", encoding="utf-8")
+        _doc(wiki, f"note-{status}.md",
+             f"실재 [a](tickets/{status}/{real}) · 부재 [b](tickets/{status}/T-0900-ghost.md)")
+
+    issues = board.lint_unstable_refs()
+
+    by_name = {name: (kind, detail) for name, kind, detail in issues}
+    for status in board.STATUS_DIRS:
+        real = f"T-0100-{status}-real.md"
+        assert real in by_name, f"{status}/: 실재 슬러그 링크가 분류에서 빠짐 — {issues}"
+        assert by_name[real][0] == "unstable-ref-advice", (status, by_name[real])
+    assert by_name.get("T-0900-ghost.md", (None,))[0] == "unstable-ref", issues
+
+
+def test_discarded_ticket_link_existing_is_advice_and_missing_blocks(
+        board, monkeypatch, tmp_path):
+    """처분 종결 디렉토리 링크가 기존 두 lint 경로로 정확히 갈린다 — 실재는 통과·부재는 차단.
+
+    처분 상태가 정규식에서 빠져 있던 동안 `tickets/discarded/…` 링크는 dangling 이어도
+    `lint --gate` 를 그대로 통과했다(환각 링크가 push 게이트를 우회).
+    """
+    wiki = _wire_repo(board, monkeypatch, tmp_path)
+    (wiki / "tickets" / "discarded" / "T-0101-merged-away.md").write_text(
+        "---\nid: T-0101\n---\n# 병합으로 처분된 티켓\n", encoding="utf-8")
+    _doc(wiki, "note.md",
+         "병합됨 [a](../tickets/discarded/T-0101-merged-away.md) 참고")
+    _doc(wiki, "ghost.md",
+         "환각 [b](../tickets/discarded/T-0901-never-existed.md) 참고")
+
+    issues = board.lint_unstable_refs()
+
+    advice = [i for i in issues if i[0] == "T-0101-merged-away.md"]
+    dangling = [i for i in issues if i[0] == "T-0901-never-existed.md"]
+    assert advice and advice[0][1] == "unstable-ref-advice", issues
+    assert advice[0][1] in board._ADVISORY_LINT_KINDS      # gate 가 막지 않음
+    assert "[[T-0101]]" in advice[0][2], advice
+    assert dangling and dangling[0][1] == "unstable-ref", issues
+    assert "실재 안 함" in dangling[0][2], dangling
+
+
+def test_struct_path_regex_has_no_hardcoded_status_names(board):
+    """구조 경로 정규식의 상태 조각이 **상수에서 유도**된다 — 소스에 리터럴 상태명 0.
+
+    이 정규식은 STATUS_DIRS 를 순회하지 않는 별도 소비처라 자동 추종에서 홀로 빠져 있었다.
+    소스 grep 으로 리터럴 열거의 재유입을 막고, 컴파일된 패턴이 실제로 상수 전량을 담는지 잰다.
+    """
+    source = BOARD_PY.read_text(encoding="utf-8")
+    known = (*board.STATUS_DIRS, *board.IDEA_STATUS_DIRS)
+
+    fragments = re.findall(r"(?:tickets|ideas)/\(\?:([^)]*)\)", source)
+    literals = [f for f in fragments if any(name in f for name in known)]
+
+    assert fragments, "구조 경로 정규식 조각을 소스에서 못 찾았다 — 가드 시야가 표면과 어긋났다"
+    assert literals == [], f"상태명을 리터럴로 박은 구조 경로 정규식 잔존: {literals}"
+    for status in board.STATUS_DIRS:
+        assert re.escape(status) in board._TICKET_STATUS_PATTERN, status
+        assert board._STRUCT_PATH_RE.search(f"tickets/{status}/T-0001-x.md"), status
+    for status in board.IDEA_STATUS_DIRS:
+        assert re.escape(status) in board._IDEA_STATUS_PATTERN, status
+        assert board._STRUCT_PATH_RE.search(f"ideas/{status}/0001-x.md"), status
 
 
 def test_raw_snapshot_slug_link_advice_suppressed(board, monkeypatch, tmp_path):

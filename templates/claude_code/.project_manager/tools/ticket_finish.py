@@ -416,6 +416,31 @@ def _resolve_finish_slot(repo: str | None, slot: int | None) -> tuple[str | None
     return hp._resolve_explicit_identity_slot(repo, slot)
 
 
+def _board_identity_argv(identity, slot_identity=None) -> list[str]:
+    """`board.py` 하위 호출에 넘길 정체성 인자 (`--repo/--slot`) — 없으면 빈 목록.
+
+    board 의 lifecycle mutation 은 `claimed_by` 와 실행 세션을 대조하므로, 여기서
+    해소한 정체성을 인자로 넘겨야 같은 세션으로 판정된다. 우선순위:
+
+      1. **명시 `--repo X --slot N`** — 사람이 claim 할 때 쓴 좌표 그대로 넘긴다.
+      2. 장부가 준 슬롯 좌표(`--repo X` 단독으로 슬롯이 유도된 경우) — `SlotIdentity` 의
+         `repo`/`number` 는 장부 행에서 온 **재접속 좌표**다(키 문자열을 뜯지 않는다).
+      3. `--repo` 만 알면 그것만 넘긴다(board 가 같은 규칙으로 다시 유도한다).
+      4. 아무것도 없으면 빈 목록 — board 의 기존 해소 체인(env·단일 lease)이 그대로 돈다.
+    """
+    repo, number = getattr(identity, "repo", None), getattr(identity, "slot", None)
+    if not (repo and number):
+        ledger_repo = getattr(slot_identity, "repo", None)
+        ledger_number = getattr(slot_identity, "number", None)
+        if ledger_repo and ledger_number:
+            repo, number = ledger_repo, ledger_number
+    if repo and number:
+        return ["--repo", str(repo), "--slot", str(number)]
+    if repo:
+        return ["--repo", str(repo)]
+    return []
+
+
 def _probe_os_name() -> str:
     """Read the interpreter OS family through one injectable seam.
 
@@ -2409,6 +2434,7 @@ class TicketFinisher:
         skip_pytest: bool = False,
         task: str | None = None,
         session: str | None = None,
+        board_identity_args: Sequence[str] = (),
     ) -> int:
         """ticket_id 완료 기록 전체 흐름을 실행한다.
 
@@ -2416,6 +2442,12 @@ class TicketFinisher:
 
         `section` 은 후방호환용으로 받기만 하고 무시한다 — status.md 합계표 섹션 행은
         제거됐다(judgment-only·테스트 수는 박제 안 함).
+
+        `board_identity_args` = 이 실행이 이미 해소한 정체성을 board 하위 호출에 그대로
+        넘기는 인자다(`--repo/--slot` 또는 `--task`). board 의 complete 가 `claimed_by` 와
+        실행 세션을 대조하므로, 이 forward 가 없으면 다중 슬롯 채택자에서 ticket_finish
+        경유 완료가 전부 "남의 티켓" 으로 거부된다 — ticket_finish 는 정체성을 이미 해소해 두고
+        board 에 넘기지 않고 있었다.
 
         `skip_pytest`(--no-pytest) 는 [1/5] 회귀 단계를 건너뛴다 — 측정은 PM 이 /pm-qa
         등으로 별도. board complete 는 `--tests-pass` 를 유지한다(pm_handoff `--no-pytest` 동형·
@@ -2531,12 +2563,12 @@ class TicketFinisher:
 
         # ── 3. board.py complete ──────────────────────────────────────
         print("\n[3/5] board.py complete...")
+        board_complete_argv = ["complete", ticket_id, "--tests-pass",
+                               *board_identity_args]
         if dry_run:
-            print(f"  [dry-run] board.py complete {ticket_id} --tests-pass")
+            print(f"  [dry-run] board.py {' '.join(board_complete_argv)}")
         else:
-            board_rc, board_out = self._run_board_fn(
-                ["complete", ticket_id, "--tests-pass"]
-            )
+            board_rc, board_out = self._run_board_fn(board_complete_argv)
             print(f"  {board_out.rstrip()}")
             if board_rc != 0:
                 print(
@@ -2800,6 +2832,9 @@ def _main(argv: list[str] | None = None) -> int:
     regression_cwd: str | None = None
     session: str | None = identity.session
     task_workspace: Path | None = None
+    # board 하위 호출(complete)에 실을 정체성 인자. 명시 인자가 1순위이고, `--repo` 단독처럼
+    # 좌표가 덜 찬 경우에만 장부가 해소한 슬롯 좌표로 채운다(아래 slot 분기).
+    board_identity: list[str] = []
     if identity.task:
         # task-mode 해소는 regression·stage·잔여 보고가 공유한다. --no-pytest 는 측정만
         # 생략할 뿐, 실제 code touches를 놓치게 해서는 안 된다.
@@ -2810,6 +2845,8 @@ def _main(argv: list[str] | None = None) -> int:
             return 1
         print(f"작업공간(task {identity.task}) → {REPO / ws.slot}")
         task_workspace = REPO / ws.slot
+        # task-mode 귀속은 `<user>/<task>` 다 — board 도 같은 축으로 소유를 대조해야 한다.
+        board_identity = ["--task", identity.task]
         # 비-task 경로와 동형으로 `--no-pytest` 와 무관하게 해소한다 — 결과 트리는 같지만
         # (`_code_tree` 가 task 작업공간을 먼저 본다) 해소가 stale 슬롯(장부에는 있고 디스크에는
         # 없음) 존재검사를 태워 경고 없이 사라지던 갈래를 없앤다.
@@ -2844,6 +2881,7 @@ def _main(argv: list[str] | None = None) -> int:
             resolved = identity_args.resolve_slot_identity(worktree_slot, LEASES_FILE)
             if resolved is not None:
                 session = resolved.key
+            board_identity = _board_identity_argv(identity, resolved)
 
     finisher = TicketFinisher(regression_cwd=regression_cwd, task_workspace=task_workspace)
     return finisher.run(
@@ -2853,6 +2891,7 @@ def _main(argv: list[str] | None = None) -> int:
         skip_pytest=args.no_pytest,
         task=identity.task,
         session=session,
+        board_identity_args=board_identity,
     )
 
 

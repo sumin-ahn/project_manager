@@ -774,6 +774,8 @@ _MUTATION_ARGVS = [
     ["promote", "T-0100"],
     ["claim", "T-0100"],
     ["complete", "T-0100"],
+    ["discard", "T-0100", "merged", "--reason", "T-0101 로 병합"],
+    ["reopen", "T-0100", "--reason", "오처리 복구"],
     ["block", "T-0100", "--reason", "r"],
     ["unclaim", "T-0100"],
     ["unblock", "T-0100"],

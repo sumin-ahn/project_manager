@@ -790,7 +790,10 @@ def _make_legacy_board(root: Path, tid: str = "T-0001") -> tuple[Path, Path]:
         (tickets / status).mkdir(parents=True, exist_ok=True)
     old = tickets / "claimed" / f"{tid}-x.md"
     old.write_text(
-        f"---\nid: {tid}\ntitle: t\nstatus: claimed\ntouches: []\n---\n\n# {tid} — t\n",
+        f"---\nid: {tid}\ntitle: t\nstatus: claimed\ntouches: []\n---\n\n# {tid} — t\n\n"
+        # 완료 기록 경로는 DoD 게이트를 지난다 — 이 픽스처의 관측 축은 stage 스코프이므로
+        # 마감된 DoD 를 심어 게이트를 통과시킨다.
+        "## 완료 조건 (Definition of Done)\n- [x] 구현\n",
         encoding="utf-8")
     return old, tickets / "done" / f"{tid}-x.md"
 
@@ -831,8 +834,11 @@ def test_finish_skips_submodule_ticket_paths_in_split_layout(tf, tmp_path, monke
     for status in ("open", "claimed", "done", "blocked"):
         (board_dir / "tickets" / status).mkdir(parents=True, exist_ok=True)
     ticket = board_dir / "tickets" / "done" / "T-0001-x.md"
-    ticket.write_text("---\nid: T-0001\ntitle: t\nstatus: done\n---\n\n# T-0001 — t\n",
-                      encoding="utf-8")
+    ticket.write_text(
+        "---\nid: T-0001\ntitle: t\nstatus: done\n---\n\n# T-0001 — t\n\n"
+        # 완료 기록 경로의 DoD 게이트 통과분 — 이 픽스처의 관측 축은 stage 스코프다.
+        "## 완료 조건 (Definition of Done)\n- [x] 구현\n",
+        encoding="utf-8")
     _git_init(board_dir)
     _git_commit_all(board_dir, "board init")         # board/.git 존재 → 분리 형상
     # 상위 repo 의 index 에 gitlink 를 **기록** 해야 실 형상이다 — 그래야 상위 `add` 가

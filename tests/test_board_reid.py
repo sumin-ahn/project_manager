@@ -62,6 +62,10 @@ def board(tmp_path, monkeypatch):
         monkeypatch.setattr(mod, name, val)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    # user 축 tmp 바인딩 — 소유 대조(T-0781)는 user ∧ slot 이라 픽스처 claim(`me/proj_1`)의
+    # user 를 conf 로 고정해야 한다. git 폴백은 전역 config(실 사용자)를 읽으므로 함께 막는다.
+    (pm / "local.conf").write_text("user=me\n", encoding="utf-8")
+    monkeypatch.setattr(mod, "_git_config_email", lambda: None)
     # 홈 git 가드 기본 clean — 환경 git 유무와 무관하게 relabel 이 진행되게(가드 자체는 전용 테스트).
     monkeypatch.setattr(mod, "_home_git_status_porcelain", lambda: "")
     return mod

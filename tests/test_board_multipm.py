@@ -59,9 +59,21 @@ def _make_project(root: Path) -> None:
         "estimate: small\n"
         "tags: []\n"
         "---\n\n"
-        "# T-NNNN — <제목>\n\n## 목표\n채워라.\n",
+        "# T-NNNN — <제목>\n\n## 목표\n채워라.\n\n"
+        "## 완료 조건 (Definition of Done)\n- [ ] 채워라.\n",
         encoding="utf-8",
     )
+
+
+def _check_off_dod(board, tid: str) -> None:
+    """claimed 티켓의 DoD 를 전항 체크(`- [ ]` → `- [x]`)한다 — 마감 전 PM 이 손으로 하는 일.
+
+    complete 는 DoD 기록 게이트를 통과해야 하고(T-0596·T-0781), 템플릿 DoD 는 미체크로
+    시작한다. lifecycle e2e 가 그 사람 단계를 그대로 재현한다.
+    """
+    (path,) = list((board.TICKETS_DIR / "claimed").glob(f"{tid}-*.md"))
+    path.write_text(path.read_text(encoding="utf-8").replace("- [ ] ", "- [x] "),
+                    encoding="utf-8")
 
 
 @pytest.fixture
@@ -752,6 +764,7 @@ def test_e2e_team_init_then_multi_and_solo_coexist(init_board, monkeypatch):
     assert board.cmd_claim(claim_args) == 0
     assert list((board.TICKETS_DIR / "claimed").glob(f"{pay_id}-*.md"))
 
+    _check_off_dod(board, pay_id)
     complete_args = argparse.Namespace(
         id=pay_id, tests_pass=True, allow_missing_log=True, allow_untested=False)
     assert board.cmd_complete(complete_args) == 0
@@ -774,6 +787,7 @@ def test_e2e_no_prefix_board_flow(init_board, monkeypatch):
 
     monkeypatch.setenv("PM_SESSION_NAME", "pm_1")
     assert board.cmd_claim(argparse.Namespace(id="T-0001", session="pm")) == 0
+    _check_off_dod(board, "T-0001")
     assert board.cmd_complete(argparse.Namespace(
         id="T-0001", tests_pass=True, allow_missing_log=True,
         allow_untested=False)) == 0

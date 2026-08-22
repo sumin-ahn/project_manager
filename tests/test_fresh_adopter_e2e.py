@@ -343,11 +343,24 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     claim = _board(dest, "claim", tid, "--repo", "pilot", "--slot", "1")
     assert claim.returncode == 0, f"{harness} `board.py claim {tid}` 실패: {claim.stderr}"
 
+    # 소유 게이트(T-0781) — claim 정체성이 아닌 세션의 complete 는 채택자 사본에서도 거부되고,
+    # 거부 문구가 이동 경로(unclaim→claim · --takeover)를 지목해야 한다.
+    foreign = _board(
+        dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested",
+        "--repo", "pilot", "--slot", "9",
+    )
+    assert foreign.returncode != 0, (
+        f"{harness}: 타 세션이 남의 claim 을 complete 했다 — 소유 게이트가 채택자 사본에 없다.\n"
+        f"--- stdout ---\n{foreign.stdout}")
+    assert all(token in foreign.stderr for token in ("소유", "unclaim", "--takeover")), (
+        f"{harness}: 소유 거부 문구가 이동 경로를 안 지목함:\n{foreign.stderr}")
+
     # DoD 기록 게이트(T-0596) — 출하 template 의 미체크 DoD 로는 complete 가 막혀야 한다.
     # 채택자 형상에서 게이트가 실제로 무는지 여기서 확인한다(엔진만 고치고 template 전파를
-    # 빠뜨리면 이 단언이 red — 반쪽 출하 방지).
+    # 빠뜨리면 이 단언이 red — 반쪽 출하 방지). complete 는 claim 과 **같은 정체성**으로 부른다.
     blocked = _board(
-        dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested"
+        dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested",
+        "--repo", "pilot", "--slot", "1",
     )
     assert blocked.returncode != 0, (
         f"{harness}: 미체크 DoD 인데 complete 가 통과함 — DoD 게이트가 채택자 사본에 없다.\n"
@@ -357,7 +370,8 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
 
     _check_off_dod(dest, tid)
     done = _board(
-        dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested"
+        dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested",
+        "--repo", "pilot", "--slot", "1",
     )
     assert done.returncode == 0, f"{harness} `board.py complete {tid}` 실패: {done.stderr}"
 
@@ -727,7 +741,10 @@ def test_harness_templates_ship_ticket_status_scaffold(pm_import, harness):
 
 
 def test_missing_ticket_status_dirs_self_repair_through_full_lifecycle(pm_import, tmp_path):
-    """상태 dir가 없어도 new→block→unblock→claim→complete가 자가 복구한다.
+    """상태 dir가 없어도 new→block→unblock→claim→complete→reopen→discard가 자가 복구한다.
+
+    처분 종결(`discarded/`·T-0781)까지 포함해 STATUS_DIRS 전수를 lifecycle 로 되살린다 —
+    채택자 트리에서 신규 종결 디렉토리가 실제로 만들어지는지가 이 축의 관측 지점이다.
 
     Sensitivity: dump_ticket 또는 move_item의 mkdir-before-write를 되돌리면 이 fixture는
     즉시 FileNotFoundError로 red가 된다.
@@ -750,8 +767,15 @@ def test_missing_ticket_status_dirs_self_repair_through_full_lifecycle(pm_import
     claim = _board(dest, "claim", tid, "--repo", "pilot", "--slot", "1")
     assert claim.returncode == 0, claim.stderr
     _check_off_dod(dest, tid)   # DoD 기록 게이트(T-0596) — 미체크면 complete 가 막힌다.
-    done = _board(dest, "complete", tid, "--tests-pass", "--allow-missing-log", "--allow-untested")
+    # complete 는 claim 과 같은 정체성으로 부른다 — 소유 대조(T-0781).
+    done = _board(dest, "complete", tid, "--tests-pass", "--allow-missing-log",
+                  "--allow-untested", "--repo", "pilot", "--slot", "1")
     assert done.returncode == 0, done.stderr
+    reopened = _board(dest, "reopen", tid, "--reason", "오처리 복구 스모크")
+    assert reopened.returncode == 0, reopened.stderr
+    discarded = _board(dest, "discard", tid, "dropped", "--reason", "폐기 스모크")
+    assert discarded.returncode == 0, discarded.stderr
+    assert list((tickets / "discarded").glob(f"{tid}-*.md")), "처분 종결이 discarded/ 로 안 갔다"
     assert all((tickets / status).is_dir() for status in _TICKET_STATUS_DIRS)
 
 

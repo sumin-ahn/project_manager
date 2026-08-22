@@ -4212,6 +4212,7 @@ _BOOTSTRAP_CONTRACT_DIRS = (
     "wiki/tickets/claimed",
     "wiki/tickets/done",
     "wiki/tickets/blocked",
+    "wiki/tickets/discarded",   # 처분 종결(T-0781) — board.STATUS_DIRS 와 같은 집합.
 )
 
 
@@ -4304,7 +4305,7 @@ def test_opencode_wiki_gitkeep_placeholders_tracked(pm_import):
     """빈 디렉토리 placeholder(.gitkeep)가 실제로 git-추적되는지 — 빈 dir 복사·커밋 보장의 유일 메커니즘.
 
     git 은 빈 디렉토리를 추적하지 않으므로, .gitkeep 이 미추적이면 import 가 그 디렉토리를 복사도
-    못 한다(부트스트랩 계약 디렉토리 누락으로 이어짐). 8 placeholder 가 전부 추적 집합에 있어야 한다.
+    못 한다(부트스트랩 계약 디렉토리 누락으로 이어짐). placeholder 전수가 추적 집합에 있어야 한다.
     """
     tracked = _git_tracked_wiki_relpaths("opencode")
     expected_gitkeeps = {
@@ -4316,6 +4317,7 @@ def test_opencode_wiki_gitkeep_placeholders_tracked(pm_import):
         "tickets/claimed/.gitkeep",
         "tickets/done/.gitkeep",
         "tickets/blocked/.gitkeep",
+        "tickets/discarded/.gitkeep",
     }
     missing = expected_gitkeeps - tracked
     assert not missing, f"opencode wiki .gitkeep placeholder 미추적(빈 dir 복사 불가): {sorted(missing)}"

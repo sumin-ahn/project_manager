@@ -66,7 +66,10 @@ def test_regression_skill_references_only_real_board_subcommands():
         a for a in parser._actions if a.__class__.__name__ == "_SubParsersAction"
     )
     real = set(sub.choices)
-    assert "reopen" not in real, "board.py 에 reopen 이 생겼다 — 문서 정직표기(T-0256) 재검토"
+    # (옛 tripwire 제거·T-0781) — "board.py 에 reopen 이 없다" 를 전제한 문서 정직표기가
+    # 있어 엔진의 `reopen` **부재**를 단언했다. 그 문구는 이후 문서에서 사라졌고(현 md 전수
+    # 검색 0건) 종결 되돌리기 문 `reopen` 이 실제로 생겼다. 남는 축은 아래 loop — 문서가
+    # **없는** 서브커맨드를 부르지 않는지(정직표기의 실제 관측 지점)다.
     text = _read(".claude/skills/pm-regression/SKILL.md")
     for m in re.finditer(r"board\.py (\w[\w-]*)", text):
         cmd = m.group(1)
@@ -145,3 +148,95 @@ def test_opencode_readme_model_example_matches_pm_import():
         f"{OPENCODE_README}: --opencode-model 예시가 canonical '{canonical}' 와 어긋남 "
         f"(옛 예시 잔존: {stale}). pm_import.py help 와 동기화하라."
     )
+
+
+# ── ⑤ tickets README: 상태 집합·종결 명령·소유·DoD 계약이 엔진과 같은 말을 한다 ──
+#
+# 이 README 는 `pm_update` 전파 대상이 아니라 **인스턴스 소유** 스캐폴드라 4벌이 손으로 갈린다
+# (루트 + 출하 3타깃). 엔진이 상태·명령·게이트를 바꿔도 이 문서는 조용히 옛 사실을 계속
+# 출하하므로, 서술을 상수·파서·게이트 실행값과 직접 대조한다.
+
+TICKETS_README_COPIES = (
+    ".project_manager/wiki/tickets/README.md",
+    "templates/claude_code/.project_manager/wiki/tickets/README.md",
+    "templates/codex/.project_manager/wiki/tickets/README.md",
+    "templates/opencode/.project_manager/wiki/tickets/README.md",
+)
+
+
+def _board_subcommands(board) -> set[str]:
+    parser = board.build_parser()
+    sub = next(
+        a for a in parser._actions if a.__class__.__name__ == "_SubParsersAction"
+    )
+    return set(sub.choices)
+
+
+def test_tickets_readme_lists_every_status_dir():
+    """상태 집합 서술(핵심 약속 bullet + 디렉토리 트리)이 board.STATUS_DIRS 전량을 덮는다."""
+    board = _load_board()
+    for rel in TICKETS_README_COPIES:
+        text = _read(rel)
+        for status in board.STATUS_DIRS:
+            assert f"`{status}/`" in text, (
+                f"{rel}: 상태 `{status}/` 가 핵심 약속 서술에서 빠짐")
+            assert re.search(rf"── {re.escape(status)}/\s", text), (
+                f"{rel}: 상태 {status}/ 가 디렉토리 트리에서 빠짐")
+
+
+def test_tickets_readme_documents_disposition_and_reopen_commands():
+    """처분·복구 명령과 처분 종류가 실제 파서·상수와 일치한다(없는 명령을 부르지 않는다)."""
+    board = _load_board()
+    real = _board_subcommands(board)
+    assert {"discard", "reopen"} <= real, "board.py 에 discard/reopen 이 없다 — 가드 갱신 필요"
+    for rel in TICKETS_README_COPIES:
+        text = _read(rel)
+        assert "board.py discard" in text, f"{rel}: 처분 종결 명령 안내 누락"
+        assert "board.py reopen" in text, f"{rel}: 종결 복구 명령 안내 누락"
+        for kind in board.DISPOSITION_KINDS:
+            assert kind in text, f"{rel}: 처분 종류 `{kind}` 서술 누락"
+        # 서브커맨드는 ASCII 소문자 토큰이다 — `\w` 로 잡으면 한국어 조사(`board.py 가`)가
+        # 서브커맨드로 오인된다.
+        for m in re.finditer(r"board\.py ([a-z][a-z-]*)", text):
+            assert m.group(1) in real, (
+                f"{rel}: 존재하지 않는 서브커맨드 `board.py {m.group(1)}` 를 언급")
+
+
+def test_tickets_readme_states_owner_only_mutations():
+    """소유 정체성 계약 서술이 실제 소유-대조 커맨드 집합·유일한 이전 경로와 일치한다."""
+    board = _load_board()
+    source = _read(".project_manager/tools/board.py")
+    owner_gated = sorted(set(re.findall(
+        r'_ownership_rejection\("(\w+)"', source)))
+    assert owner_gated, "board.py 에서 소유 대조 커맨드를 못 찾았다 — 가드 시야가 어긋났다"
+    for rel in TICKETS_README_COPIES:
+        text = _read(rel)
+        for cmd in owner_gated:
+            assert f"`{cmd}`" in text, f"{rel}: 소유 대조 커맨드 `{cmd}` 서술 누락"
+        assert "--takeover" in text, f"{rel}: 소유자 부재 이전 경로(--takeover) 안내 누락"
+        assert "claimed_by" in text, f"{rel}: 소유 판정 축(claimed_by) 서술 누락"
+
+
+# complete 게이트의 DoD 축 4형상 — 문서 문장과 게이트 실행값을 같은 테스트에서 대조한다.
+_DOD_BLOCKED_SHAPES = {
+    "절 부재": "# 티켓\n\n## 목표\n옛 형식.\n",
+    "체크박스 0개": "## 완료 조건\n\n산문으로만 적은 완료 조건.\n",
+    "전량 이월": "## 완료 조건\n\n- [>] 항목 (이월: 다른 티켓으로 병합)\n",
+}
+_DOD_PASSING_SHAPE = "## 완료 조건\n\n- [x] 코드\n- [>] 문서 (이월: 후속 귀속)\n"
+
+
+def test_tickets_readme_dod_contract_matches_complete_gate():
+    """DoD 축 서술이 게이트 실측과 일치한다 — 산문 DoD 면제 문구가 남아 있으면 실패."""
+    board = _load_board()
+    for label, body in _DOD_BLOCKED_SHAPES.items():
+        assert board._dod_open_items(body), f"게이트가 {label} 형상을 막지 않는다"
+    assert board._dod_open_items(_DOD_PASSING_SHAPE) == [], "부분 이월이 막힌다"
+
+    for rel in TICKETS_README_COPIES:
+        text = _read(rel)
+        assert "검사 대상이 아니다" not in text, (
+            f"{rel}: 산문 DoD 면제(옛 계약) 문구 잔존 — 게이트는 그 형상을 차단한다")
+        for label in _DOD_BLOCKED_SHAPES:
+            assert label in text, f"{rel}: 차단 형상 '{label}' 서술 누락"
+        assert "부분 이월" in text, f"{rel}: 통과 형상(부분 이월) 서술 누락"
