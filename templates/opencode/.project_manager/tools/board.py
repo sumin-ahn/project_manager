@@ -779,21 +779,114 @@ def _board_mutation_subcommand(args: Sequence[str]) -> str:
 def _engine_other_copy(
     cwd_root: Path | None, script_root: Path, script_identity: str,
     pm_home: Path | None, relative_script: Path, *, runner: Any,
-) -> tuple[Path, Path] | None:
-    """함께 존재하는 반대편(PM import/canonical) 엔진 사본 하나를 찾는다."""
-    candidates: list[Path] = []
+) -> tuple[Path, Path, str] | None:
+    """함께 존재하는 반대편(PM import/canonical) 엔진 사본 하나를 찾는다.
+
+    세 번째 값은 그 사본의 **정체 해소 키**다 — ``cwd`` 는 호출 cwd 의 이미 측정된 정체를
+    그대로 쓰라는 뜻이고, ``slot``/``pm-home`` 은 후보를 고를 때 이미 확정된 정체다. 방향
+    판정(어느 사본이 뒤졌는지)이 추가 앵커 조회 없이 두 사본의 정체를 갖게 하는 자리다.
+    """
+    candidates: list[tuple[Path, str]] = []
     if script_identity == "pm-home" and pm_home is not None:
         if cwd_root is not None and cwd_root != script_root:
-            candidates.append(cwd_root)
-        candidates.extend(_registered_slot_paths(pm_home, runner=runner))
+            candidates.append((cwd_root, "cwd"))
+        candidates.extend(
+            (slot, "slot") for slot in _registered_slot_paths(pm_home, runner=runner)
+        )
     elif script_identity in {"slot", "worktree"} and pm_home is not None:
-        candidates.append(pm_home)
-    for root in candidates:
+        candidates.append((pm_home, "pm-home"))
+    for root, identity_key in candidates:
         root = root.resolve()
         candidate = root / relative_script
         if root != script_root and candidate.is_file():
-            return root, candidate
+            return root, candidate, identity_key
     return None
+
+
+_WORKTREE_IDENTITIES = frozenset({"slot", "worktree"})
+# 소유 PM 홈을 측정하지 못한 사본을 판정 불가 문구에 표기할 때 쓰는 라벨.
+_UNKNOWN_OWNER = "미상"
+
+
+def _git_path_uncommitted(
+    anchor: Path, relative: Path, *, runner: Any = subprocess.run
+) -> bool | None:
+    """`anchor` 저장소에서 `relative` 파일이 **미커밋** 상태인지 (git 조회 1회).
+
+    `git status --porcelain --ignored -- <path>` 의 출력이 있으면 그 사본은 커밋으로 확정되지
+    않았다(작업트리 변경·스테이지·미추적·무시됨). git 아님/오류면 None — **판정 불가**이며
+    호출부는 이를 단정으로 메우지 않는다.
+    """
+    try:
+        result = runner(
+            ["git", "-C", str(anchor), "status", "--porcelain", "--ignored",
+             "--", relative.as_posix()],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if getattr(result, "returncode", 1) != 0:
+        return None
+    return bool((result.stdout or "").strip())
+
+
+def _engine_copy_freshness(
+    current: tuple[str, Path, Path, Path | None],
+    other: tuple[str, Path, Path, Path | None],
+    relative_script: Path, *, runner: Any = subprocess.run,
+) -> str:
+    """sha 가 다른 두 엔진 사본 중 **어느 쪽이 뒤졌는지**를 worktree 의 git 상태로 판정한다.
+
+    입력은 (정체, repo 앵커, 사본 경로, 소유 PM 홈) 두 짝이다. 네 값 모두 호출부가 이미
+    측정한 것이라 추가 앵커 조회가 없고, git 조회는 sha 가 다를 때 이 함수에서 딱 1회
+    일어난다. 방향 판정은 두 사본이 **같은 PM 홈에 속한 한 짝**일 때만 성립한다 — 정체
+    클래스(pm-home/worktree)가 짝을 이루더라도 worktree 의 소유 PM 홈이 상대 사본의 PM 홈과
+    다르면 서로 남남인 저장소라 어느 쪽도 상대의 import 사본이 아니다. 그래서 소유 일치를
+    ``git status`` **전에** 값으로 확인하고, 다르면 조회 없이 판정 불가로 남긴다.
+
+    짝이 성립하면 판정 축은 worktree 사본의 미커밋 여부다 — 미커밋이면 그 사본이 편집
+    중(미확정)이라 PM 홈이 뒤졌다고 말할 수 없고, 커밋 상태면 PM 홈 import 사본이 뒤진
+    것이다. 짝으로 해소되지 않거나 git 상태를 읽지 못하면 **단정하지 않는다** — 내용이
+    다르다는 사실만 남기고 두 사본 경로(호출부 reason 이 이미 싣는다)를 직접 대조하게 한다.
+    """
+    sides = (current, other)
+    worktree_sides = [side for side in sides if side[0] in _WORKTREE_IDENTITIES]
+    home_sides = [side for side in sides if side[0] == "pm-home"]
+    if len(worktree_sides) != 1 or len(home_sides) != 1:
+        return (
+            "사본 내용이 다름 — 어느 쪽이 최신인지 판정 불가"
+            f"(PM 홈–worktree 짝 아님: {current[0]} vs {other[0]}) — "
+            "두 사본 경로를 직접 대조하라"
+        )
+    _worktree_identity, worktree_root, worktree_copy, worktree_pm_home = worktree_sides[0]
+    _home_identity, _home_root, _home_copy, home_pm_home = home_sides[0]
+    if (
+        worktree_pm_home is None or home_pm_home is None
+        or worktree_pm_home != home_pm_home
+    ):
+        return (
+            "사본 내용이 다름 — 어느 쪽이 최신인지 판정 불가"
+            f"(PM 홈–worktree 짝 아님: worktree {worktree_root} 의 소유 PM 홈="
+            f"{worktree_pm_home if worktree_pm_home is not None else _UNKNOWN_OWNER}, "
+            f"상대 사본의 PM 홈={home_pm_home if home_pm_home is not None else _UNKNOWN_OWNER}) — "
+            "두 사본 경로를 직접 대조하라"
+        )
+    uncommitted = _git_path_uncommitted(worktree_root, relative_script, runner=runner)
+    if uncommitted is None:
+        return (
+            "사본 내용이 다름 — 어느 쪽이 최신인지 판정 불가"
+            f"(worktree {worktree_root} git 상태 조회 실패) — 두 사본 경로를 직접 대조하라"
+        )
+    if uncommitted:
+        return (
+            f"worktree 사본 {worktree_copy} 이 미커밋 변경(편집 중·미확정) — "
+            "어느 쪽이 최신인지 단정 불가; worktree 를 커밋으로 확정한 뒤 다시 대조하라"
+        )
+    return (
+        f"worktree 사본 {worktree_copy} 은 커밋 상태(clean) — "
+        "stale import 사본 — 게이트 판정은 canonical 로"
+    )
 
 
 def judge_engine_invocation(
@@ -803,7 +896,9 @@ def judge_engine_invocation(
 
     deny는 PM 홈에 대상 ``tests/``가 없는 pytest 호출과 non-PM 엔진 사본의 board
     mutation 두 축뿐이다. 상대 엔진 경로는 실행 사본의 절대경로와 반대편 사본의
-    도구 파일 sha256 비교를 warn으로 주입한다.
+    도구 파일 sha256 비교를 warn으로 주입한다. sha 가 다를 때만 ``_engine_copy_freshness``
+    가 방향(어느 사본이 뒤졌는지)을 worktree git 상태로 1회 판정하며, 판정이 서지 않으면
+    단정하지 않는다.
     """
     cwd_path = Path(cwd).expanduser().resolve()
     identity, cwd_root, cwd_pm_home = _git_anchor_identity(cwd_path, runner=runner)
@@ -899,18 +994,31 @@ def judge_engine_invocation(
         relative_script, runner=runner,
     )
     if other is not None:
-        _other_root, other_path = other
+        other_root, other_path, other_identity_key = other
         current_hash = _file_sha256(script_path)
         other_hash = _file_sha256(other_path)
-        if current_hash is not None and other_hash is not None:
-            hash_state = (
-                f"도구 파일 sha256 동일({current_hash})"
-                if current_hash == other_hash else
-                f"도구 파일 sha256 다름({current_hash} != {other_hash}) — "
-                "stale import 사본 — 게이트 판정은 canonical 로"
-            )
-        else:
+        if current_hash is None or other_hash is None:
             hash_state = "도구 파일 sha256 비교 불가(파일 읽기 실패) — 사본 경로를 직접 확인"
+        elif current_hash == other_hash:
+            # 사본이 같으면 방향을 물을 게 없다 — git 조회 없이 기존 경로로 끝낸다.
+            hash_state = f"도구 파일 sha256 동일({current_hash})"
+        else:
+            if other_identity_key == "cwd":
+                # cwd 사본의 정체와 소유 PM 홈은 이 함수 첫머리에서 이미 측정했다.
+                other_identity, other_pm_home = identity, cwd_pm_home
+            else:
+                # slot 후보는 그 PM 홈이 등록한 slot 이고 pm-home 후보는 그 PM 홈 자신이라,
+                # 후보를 고르는 데 쓴 홈이 곧 소유 홈이다(추가 앵커 조회 없음).
+                other_identity = other_identity_key
+                other_pm_home = script_pm_home or cwd_pm_home
+            hash_state = (
+                f"도구 파일 sha256 다름({current_hash} != {other_hash}) — "
+                + _engine_copy_freshness(
+                    (script_identity, script_root, script_path, script_pm_home),
+                    (other_identity, other_root, other_path, other_pm_home),
+                    relative_script, runner=runner,
+                )
+            )
         reason += f"; 함께 존재하는 다른 사본={other_path}; {hash_state}"
     return {"verdict": "warn", "cwd_identity": identity, "reason": reason}
 
@@ -13946,28 +14054,35 @@ def lint_dependencies() -> list[tuple[str, str, str]]:
 
 
 def lint_claim_identity() -> list[tuple[str, str, str]]:
-    """open + claimed_by 잔존 모순 형상 advisory (never-block · T-0783).
+    """open + claimed_by/claimed_at/claimed_rev 잔존 모순 형상 advisory (never-block · T-0783).
 
     불변식 I1(`status == "open"` 인 티켓은 claimed_by/claimed_at/claimed_rev 전부 null)이
-    깨진 형상을 가시화한다. 옛 `cmd_unblock`(T-0783 이전)이 claimed_by 를 무접촉으로 둔 채
-    무조건 open 으로 옮기던 결함의 잔재로 생길 수 있다 — 조회·필터(`--mine`)·후속 claim 판단을
-    오염시킨다. adopter#0 보드 실측(2026-08-20)에서 대상 0건이라 자동 backfill 은 만들지 않고
-    (대상 없는 코드), 정정은 사용자가 직접 한다: 실제로 아무도 진행하지 않으면 frontmatter 에서
-    claimed_by/claimed_at/claimed_rev 를 지우고, 실제로 진행 중이면 `status: claimed` 로 옮겨
-    상태와 소유를 정합시킨다.
+    깨진 형상을 가시화한다 — **세 필드 중 하나라도** non-null 이면 잡는다(단독 잔존도 포함·
+    F-002). 옛 `cmd_unblock`(T-0783 이전)이 claimed_by 를 무접촉으로 둔 채 무조건 open 으로
+    옮기던 결함의 잔재로 생길 수 있다 — 조회·필터(`--mine`)·후속 claim 판단을 오염시킨다.
+    adopter#0 보드 실측(2026-08-20)에서 대상 0건이라 자동 backfill 은 만들지 않고(대상 없는
+    코드), 정정은 사용자가 직접 한다: 실제로 아무도 진행하지 않으면 frontmatter 에서 잔존
+    필드를 지우고, 실제로 진행 중이면 `status: claimed` 로 옮겨 상태와 소유를 정합시킨다.
 
     kind=`open-claimed-contradiction`(`_ADVISORY_LINT_KINDS` 등재 → `--gate` 종료코드 비기여·
     push 미차단). `blocked` + claimed_by 는 모순이 **아니다**(claimed-origin blocked 의 정상
     형상·T-0783 (a)안) — 여기서 잡지 않는다.
     """
-    return [
-        (fm.get("id", "?"), "open-claimed-contradiction",
-         f"status=open 인데 claimed_by={fm.get('claimed_by')!r} 잔존 — 소유 표식과 상태가 "
-         "모순이다. 진행 중이 아니면 claimed_by/claimed_at/claimed_rev 를 지우고, 진행 중이면 "
-         "claimed/ 로 옮겨 정합시켜라.")
-        for status, fm in _all_tickets()
-        if status == "open" and fm.get("claimed_by")
-    ]
+    issues: list[tuple[str, str, str]] = []
+    for status, fm in _all_tickets():
+        if status != "open":
+            continue
+        # I1 이 지목하는 세 필드 전부를 개별 검사한다 — 하나만 잔존해도 모순(F-002 확장).
+        residue = {field: fm.get(field)
+                   for field in ("claimed_by", "claimed_at", "claimed_rev") if fm.get(field)}
+        if not residue:
+            continue
+        residue_desc = ", ".join(f"{field}={value!r}" for field, value in residue.items())
+        issues.append((
+            fm.get("id", "?"), "open-claimed-contradiction",
+            f"status=open 인데 {residue_desc} 잔존 — 소유 표식과 상태가 모순이다. 진행 중이 "
+            "아니면 잔존 필드를 지우고, 진행 중이면 claimed/ 로 옮겨 정합시켜라."))
+    return issues
 
 
 # Unfilled `_template.md` text — its presence means the ticket is still a stub.
