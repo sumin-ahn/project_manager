@@ -2317,23 +2317,14 @@ def local_config(repo: Path | None = None) -> dict[str, str]:
     스위트는 실행 cwd 트리의 것이다)를 위한 seam. 미지정은 현행 `LOCAL_CONF`(무변경).
     `external_review.local_config(repo)` 와 동형 시그니처.
 
-    Plain `KEY=value` lines; `#` comments and blank lines ignored. Missing → {}.
-    Holds per-clone settings that must NOT be shared via git (py·test_cmd·ctx_*·
-    upstream 등). Written by `pm-init`. `session=`/`prefix=` 는 **어느 형상에서도 읽지 않는다** —
-    세션은 lease 장부, prefix 는 areas.md 칼럼이 단일 진실이다(session_name·id_prefix). 옛
-    conf 에 그 키가 남아 있어도 무시되며 동작은 같다.
+    파싱·판정은 공용 로더(`local_conf.py`)가 소유한다 — 이 함수는 경로만 정하고 값 소비
+    지점의 계약(구표기 키가 남아 있으면 `LegacyConfKeyError` fail-loud)을 그대로 물려받는다.
+    Missing → {}. per-clone 설정(`runtime.py`·`test.cmd`·`ctx.*`·`upstream.*`)은 git 으로
+    공유하지 않는다. `session=`/`prefix=` 는 폐지된 키다 — 세션의 진실은 lease 장부,
+    prefix 는 areas.md 칼럼이다(구표기 판정이 그 잔존을 지목한다).
     """
-    conf: dict[str, str] = {}
     path = (repo / ".project_manager" / "local.conf") if repo is not None else LOCAL_CONF
-    if not path.exists():
-        return conf
-    for line in file_lock.read_text_shared(path, encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        conf[key.strip()] = val.strip()
-    return conf
+    return _load_local_conf().load_checked_readable(path)
 
 
 def _set_conf_keys(text: str, updates: dict[str, str]) -> str:
@@ -2461,6 +2452,19 @@ def _load_file_lock():
     _require_engine_sibling(lock_path, "file_lock.py")
     return _load_module_from_path(
         lock_path, "file_lock.py", verifier=_verify_engine_rev,
+    )
+
+
+def _load_local_conf():
+    """공용 local.conf 로더(`local_conf.py`)를 같은 tools/ 에서 경로 로드한다.
+
+    파싱 의미(중복 키 last-wins·값 안 `#` 보존)와 신키 레지스트리·구표기 판정의 단일 진실이다 —
+    이 모듈은 자기 파서를 두지 않는다. 로드 실패는 엔진 사본 손상이므로 그대로 올린다(fail-loud).
+    """
+    return _load_module_from_path(
+        Path(__file__).resolve().parent / "local_conf.py", "local_conf.py",
+        verifier=_verify_engine_rev, cache=True,
+        cache_key=f"_project_manager_local_conf:{Path(__file__).resolve().parent}",
     )
 
 
@@ -2613,7 +2617,7 @@ _GIT_USER_TIMEOUT_SECONDS = 5
 def _git_config_email() -> str | None:
     """`git config user.email` 을 읽어 반환 — 미설정/git 부재/실패 → None (fail-soft).
 
-    user identity 해소(`user_name`)의 폴백 레이어다 — `local.conf user=` 가 없을 때
+    user identity 해소(`user_name`)의 폴백 레이어다 — `local.conf identity.user=` 가 없을 때
     git 의 commit author email 을 user 식별자로 쓴다. subprocess 는
     엔진 관례대로 UTF-8 고정(한글 이름·메시지 안전)·짧은 timeout. git 바이너리 부재
     (`shutil.which` None)·rc≠0(미설정)·예외는 모두 None 으로 강등한다(크래시 0).
@@ -2637,17 +2641,17 @@ def _git_config_email() -> str | None:
 def user_name(override: str | None = None) -> str | None:
     """user 식별자 해소 — `session_name()` 과 *동형* 우선순위:
 
-        override > local.conf `user=` > `git config user.email` > None
+        override > local.conf `identity.user=` > `git config user.email` > None
 
     `pm`(슬롯)이 *어느 PM 컨텍스트*인지(=`session_name()`)와 직교하는 **누가**(사람) 차원이다
     multi-user 보드 공유에서 `created_by`(provenance)·`claimed_by`(assignee)·
-    areas `area_owner` 의 user 토큰을 푼다. 단일 사용자(M=1)는 보통 `local.conf user=` 미설정 →
+    areas `area_owner` 의 user 토큰을 푼다. 단일 사용자(M=1)는 보통 `local.conf identity.user=` 미설정 →
     `git config user.email` 로 폴백(commit author 와 동일 식별자)·그마저 없으면 None(graceful —
     user 미상 허용·fail-soft·기존 슬롯-only 동작 무변경).
     """
     if override:
         return override
-    conf_user = local_config().get("user")
+    conf_user = local_config().get("identity.user")
     if conf_user:
         return conf_user
     return _git_config_email()
@@ -6841,7 +6845,7 @@ def _test_cmd(override: str | None, session: str | None = None) -> str:
          id_prefix 에도 thread** — M>1 슬롯 순회에서 슬롯 lease test_cmd 가 비면 prefix 유도가
          *그 슬롯의* repo 로 해소돼야 한다(전역 재해소 시 모호 None·env 오귀속으로 전 슬롯이
          같은 test_cmd 를 돌리는 false-green·codex must-fix).
-      4. **최종 폴백** — 위 전부 미스면 현 단일 `local.conf test_cmd`
+      4. **최종 폴백** — 위 전부 미스면 현 단일 `local.conf test.cmd`
          (없으면 `pytest -q`). 100% 하위호환(multi-PM-미배선 무영향).
     """
     if override:
@@ -6854,7 +6858,7 @@ def _test_cmd(override: str | None, session: str | None = None) -> str:
         row = _areas_row_for_prefix(prefix)
         if row and row.get("test_cmd"):
             return row["test_cmd"]
-    return local_config().get("test_cmd") or "pytest -q"
+    return local_config().get("test.cmd") or "pytest -q"
 
 
 def _regression_cwd(override: str | None = None) -> str:
@@ -6953,7 +6957,7 @@ def _interp_version_label(cmd: str) -> str | None:
 
 @functools.lru_cache(maxsize=1)
 def _detect_py() -> str:
-    """init 의 local.conf py= 기본값으로 쓸 bare 인터프리터 명령을 탐지한다.
+    """init 의 local.conf runtime.py= 기본값으로 쓸 bare 인터프리터 명령을 탐지한다.
 
     Windows(`os.name == "nt"`) 는 `python` 을 1순위로 둔다 — **직접 인터프리터라 스크립트
     shebang 을 무시**한다. 반면 `py` 런처는 `py board.py` 에서 `#!/usr/bin/env python3`
@@ -7002,7 +7006,7 @@ def _detect_py() -> str:
 
 # ── ctx 임계 (context 정지-핸드오프) ──────────────────────────────
 # 세 하네스 어댑터 훅(claude·opencode·codex)이 컨텍스트 잔여 비율로 nudge/stop 을 판정할 기본값.
-# local.conf `ctx_nudge_pct`·`ctx_stop_pct` 로 per-clone 조정 가능 (board.py init 기록).
+# local.conf `ctx.nudge_pct`·`ctx.stop_pct` 로 per-clone 조정 가능 (board.py init 기록).
 # 잔여 10% 정지는 rich 핸드오프 돌릴 컨텍스트가 아슬.
 # 어댑터 사본 3파일(claude `.claude/ctx_guard.py`·opencode `.opencode/lib/ctx-guard-core.cjs`·
 # codex `.codex/pm_orch_codex.py`)과 미러 — 이 board 상수까지 **4사이트**를
@@ -7017,114 +7021,9 @@ CTX_STOP_PCT_DEFAULT = 20   # 잔여 ≤ 이 % → 정지·핸드오프 트리�
 CTX_WINDOW_TOKENS_DEFAULT = 200000
 
 
-# cross-harness 역할 위임(pm_delegate) local.conf 시드 — init 이 쓰는 **주석 스키마**
-# 블록(전 4역할·3키 예시). 전부 독립 주석 라인이다(값 뒤 inline `#` 금지 — local.conf 파서는 값 안의
-# `#` 을 제거하지 않아 inline 주석이 값에 섞인다). 각 예시 key 라인은 주석 해제 시 그대로 유효한
-# KEY=value 가 되도록 trailing 주석/화살표를 붙이지 않는다(설명은 별도 주석 라인). 기본 OFF 는
-# `delegate_enabled=false` 로 표기(부재=false 이나 false 가 기본임을 스키마로 명시). **실키 결정**은
-# TTY 면 init/pm_update 가 1회 물어 기록(prompt_delegate_optin)·비대화형이면 이 주석 기본 OFF 유지.
-# 모델 실값은 어댑터/과금 특수라 엔진 기본값 0 — 아래는 주석 예시일 뿐 활성 key 가 아니다.
-_DELEGATE_SEED_MARKER = "cross-harness 역할 위임"  # 멱등 append 판정 마커(스키마 블록 존재 여부)
-_DELEGATE_CONF_SEED = (
-    "# ── cross-harness 역할 위임 (pm_delegate·기본 OFF) ─────────────\n"
-    "# delegate_enabled 는 기본 OFF. false 가 기본값이며, TTY init/pm_update 는 1회 물어 이 실키를\n"
-    "# 기록한다(y=true). 비대화형(CI)은 아래 기본 OFF 주석을 유지한다. 켜기 = true(외부 송신·과금\n"
-    "# 수용 opt-in 계약 상속 — 켜면 위임 프롬프트/코드가 외부 하네스로 전송된다):\n"
-    "# delegate_enabled=false\n"
-    "# 역할→(하네스·모델·reasoning) 매핑 — 4역할·3키 예시(독립 주석 라인만·값 뒤 inline # 금지):\n"
-    "# 평시(normal) developer:\n"
-    "# delegate.developer.harness=codex\n"
-    "# delegate.developer.model=gpt-5.6-terra\n"
-    "# delegate.developer.reasoning=medium\n"
-    "# 난제(hard) 티어 developer — 세트를 통째로 해소한다(normal 과 혼합 상속 금지):\n"
-    "# delegate.developer.hard.harness=codex\n"
-    "# delegate.developer.hard.model=gpt-5.6-sol\n"
-    "# delegate.developer.hard.reasoning=high\n"
-    "# researcher (순수 읽기·조사):\n"
-    "# delegate.researcher.harness=codex\n"
-    "# delegate.researcher.model=gpt-5.6-terra\n"
-    "# delegate.researcher.reasoning=medium\n"
-    "# architect (설계 초안·발행은 게이트):\n"
-    "# delegate.architect.harness=codex\n"
-    "# delegate.architect.model=gpt-5.6-sol\n"
-    "# delegate.architect.reasoning=high\n"
-    "# code-reviewer — 위임은 매번 새 세션이라 전사 공유가 없어 generate≠evaluate 는 모델이 같아도\n"
-    "# 성립한다. 다만 다른 모델이면 맹점을 공유하지 않아 검출력이 는다 — 선택 가능하면 권장\n"
-    "# (하네스 무관 비교):\n"
-    "# delegate.code-reviewer.harness=codex\n"
-    "# delegate.code-reviewer.model=gpt-5.6-luna\n"
-    "# delegate.code-reviewer.reasoning=high\n"
-    "# (cross-harness 도 지원·권장 — 예 harness=claude·model=opus. 단 claude/opencode .reasoning 은\n"
-    "#  실측 후 적용되며 그 전 지정 시 fail-loud·codex 는 low/medium/high/xhigh):\n"
-    "# loud 폴백(선택·엔진 기본값 없음) — 주 하네스가 **인프라 실패**(스폰 실패·타임아웃·한도/인증)일\n"
-    "# 때만 1회 대체 실행한다. 정상 완료 판정(반려·must-fix)은 폴백 대상이 아니고, 미설정이면 기존\n"
-    "# fail-loud 그대로다. 역할/티어별 완전 세트로 쓴다(예 developer → claude/opus):\n"
-    "# delegate.developer.fallback.harness=claude\n"
-    "# delegate.developer.fallback.model=opus\n"
-    "# delegate.developer.hard.fallback.harness=claude\n"
-    "# delegate.developer.hard.fallback.model=opus\n"
-)
-
-# 하네스별 시간 예산 local.conf 시드 — **별도 마커/블록**인 이유: 위 위임 스키마를 이미 받은 기존
-# 채택자도 재실행 시 이 블록을 append 로 받아 키의 존재를 알게 된다(같은 블록에 끼워 넣으면 마커가
-# 이미 있어 영영 도달하지 않는다). 값은 엔진 기본으로 충분하고, 이 시드는 **노브의 존재를 알리는
-# 문서**다 — 전부 주석(활성 key 0)이라 미설정 채택자 동작은 불변.
-_HARNESS_BUDGET_SEED_MARKER = "하네스별 시간 예산"
-_HARNESS_BUDGET_CONF_SEED = (
-    "# ── 하네스별 시간 예산 (무진행 판정 + 벽시계 백스톱·전부 선택) ─────────\n"
-    "# 외부 하네스 실행(위임·추가 리뷰)의 중단 판정은 **무진행**(마지막 진행 출력 이후 침묵)이 주\n"
-    "# 판정이고 벽시계는 백스톱이다. 엔진 기본값은 축별로 다르다 — 클라우드 축(codex·claude)은\n"
-    "# 실측 기반으로 타이트하고, 로컬 GPU 축(opencode)은 긴 침묵 + 장시간 완주를 견딘다.\n"
-    "# **미설정이어도 안전**하다(설정 없이 정상 작업이 죽지 않게 잡혀 있다). 아래는 배포 환경이\n"
-    "# 다를 때만 조인다 — 예: GPU 가 넉넉해 로컬 추론이 빠르면 opencode 값을 낮춘다.\n"
-    "# 단위는 초. 하네스별 키가 표면-flat 키(delegate_timeout·external_review_timeout)를 이긴다.\n"
-    "# harness.codex.idle_timeout=900\n"
-    "# harness.codex.wall_timeout=3600\n"
-    "# harness.claude.idle_timeout=900\n"
-    "# harness.claude.wall_timeout=3600\n"
-    "# harness.opencode.idle_timeout=5400\n"
-    "# harness.opencode.wall_timeout=14400\n"
-    "# 추가 리뷰어(additional reviewer·external_review)도 같은 키를 읽는다 — 하네스는\n"
-    "# additional_reviewer.harness(기본 codex·아래 opt-in 블록)에서, 그게 없는 레거시 채택자는\n"
-    "# reviewer_cmd 의 첫 토큰에서 온다. 둘 다 codex 면 harness.codex.* 가 적용된다.\n"
-)
-
-
-# 예시 시드가 안내하는 **축**의 실키 표기 — 이름 그대로이거나 그 접두 아래(`delegate.<role>.<knob>`·
-# `harness.<name>.<knob>`)다. 축마다 표기가 둘로 갈리므로(밑줄 게이트 키 + 점 네임스페이스) 두
-# 형태를 함께 선언한다. 표면-flat 구키(`delegate_timeout`·`external_review_timeout` 류)는 **의도적으로
-# 축 밖**이다 — 그 키만 쓰는 채택자에게는 하네스별 예시 블록이 곧 이주 힌트라, 그걸 활성으로 세면
-# 정작 이주 안내를 받아야 할 사람이 못 받는다.
-_DELEGATE_AXIS_KEYS = ("delegate_enabled", "delegate.")
-_HARNESS_BUDGET_AXIS_KEYS = ("harness.",)
-
-
-def _conf_axis_is_configured(conf: dict[str, str], axis_keys: tuple[str, ...]) -> bool:
-    """그 축을 **실키로 이미 쓰고 있는가** (정확히 그 이름이거나 그 접두 아래 키가 있는가).
-
-    판정 입력은 파싱된 conf 다(주석 제외) — 원문 substring 으로 보면 예시 블록 자신의 주석
-    (`# delegate_enabled=false`)이 "설정됨" 으로 읽혀 판정이 자기 자신을 삼킨다.
-    """
-    for key in conf:
-        for axis in axis_keys:
-            if key == axis or (axis.endswith(".") and key.startswith(axis)):
-                return True
-    return False
-
-
-def _example_seed_is_redundant(text: str, conf: dict[str, str], marker: str,
-                               axis_keys: tuple[str, ...]) -> bool:
-    """이 예시 시드를 붙이지 말아야 하는가 — 두 사유 중 하나면 True.
-
-    ㄱ. **이미 있다**(마커 존재) — 같은 블록을 다시 붙이면 재실행마다 conf 가 길어진다(멱등).
-    ㄴ. **그 축을 이미 쓴다**(실키 존재) — 예시 블록은 *그 키를 아직 안 쓰는* 채택자에게 존재를
-        알리는 문서다. 활성 설정 아래에 "기본 OFF" 예시가 통째로 붙으면 그 conf 는 자기 모순이
-        되고(무엇이 유효한지 사람이 못 읽는다), 문서로서의 값도 이미 0 이다.
-
-    반대로 **이미 오염된 conf 를 되돌리지는 않는다** — 붙은 블록을 지우는 것은 채택자 소유 파일의
-    재작성이라 엔진이 하지 않는다(신규 append 만 위생화·소급 청소는 사람 손에 남긴다).
-    """
-    return marker in text or _conf_axis_is_configured(conf, axis_keys)
+# conf 예시 시드는 없다 — 키 카탈로그·설명은 출하 문서 한 곳이 소유한다. 파일이 자기 규칙
+# ("여기엔 실값만 둔다")을 스스로 어기지 않게, 엔진은 conf 에 주석 스키마를 배달하지 않는다.
+# 모르는 키는 `board.py lint` advisory 로 드러나므로 스키마 배달 경로가 따로 필요 없다.
 
 
 def _ctx_pct(key: str, default: int) -> int:
@@ -7144,8 +7043,8 @@ def ctx_thresholds() -> dict[str, int]:
     반환: {"nudge_pct": N, "stop_pct": M}. local.conf 우선·없으면 엔진 기본(30/20).
     """
     return {
-        "nudge_pct": _ctx_pct("ctx_nudge_pct", CTX_NUDGE_PCT_DEFAULT),
-        "stop_pct": _ctx_pct("ctx_stop_pct", CTX_STOP_PCT_DEFAULT),
+        "nudge_pct": _ctx_pct("ctx.nudge_pct", CTX_NUDGE_PCT_DEFAULT),
+        "stop_pct": _ctx_pct("ctx.stop_pct", CTX_STOP_PCT_DEFAULT),
     }
 
 
@@ -7737,10 +7636,10 @@ def _quarantine_args() -> str:
 # ── FULL 게이트 수집 하한 (부분수집 false-green 차단) ─────────────────────
 # rc5(수집 0)만 결함 신호로 보면 **부분 수집**(rc0 인데 스위트 일부만 돎 — cwd/pythonpath 파손)이
 # pass 로 기록된다. 하한은 스위트 규모의 함수라 엔진이 보편값을 정할 수 없으므로 채택자 opt-in
-# (local.conf `regression_min_collected`·기본 0 = 가드 off)으로 선언받고, FULL 게이트 결과가 rc0
+# (local.conf `regression.min_collected`·기본 0 = 가드 off)으로 선언받고, FULL 게이트 결과가 rc0
 # 인데 실행 수가 하한 미만이면 fail 로 강등한다. 강등 rc 는 전용 라벨이라 실 red(rc≠0)·
 # rc5(수집 0)와 사유가 구분된다(check/훅 메시지 진단 가능).
-REGRESSION_MIN_COLLECTED_KEY = "regression_min_collected"
+REGRESSION_MIN_COLLECTED_KEY = "regression.min_collected"
 REGRESSION_RC_PARTIAL_COLLECTION = "partial-collection"    # 수집 < 하한 (비-0·전용 라벨)
 REGRESSION_RC_UNVERIFIED_COLLECTION = "unverified-collection"  # 하한 활성인데 검증 불가
 
@@ -11272,18 +11171,14 @@ INIT_GUIDE = """\
 # 추가 리뷰어(additional reviewer) 첫 opt-in 이 원자적으로 심는 기본 프로필.
 #   사람이 부르는 역할 이름은 **추가 리뷰어**이고, `external_*` 은 이미 기록된 산출물에 박힌 기계
 #   식별자(모듈 파일 이름·raw 파일 접두)와 외부 전송·격리·과금 축에만 남긴다. 게이트 키는
-#   `additional_reviewer_enabled` 로 개칭됐다 — 신규 온보딩은 **신키만** 기록하고, 구키
-#   `external_review_enabled` 는 개칭 유예가 끝나 **더 이상 읽지 않는다**: 구키만 있는 conf 는
-#   미결정이라 온보딩이 다시 묻고(그 답이 신키로 기록되는 것이 이주 경로다) 그 전에 감지 안내
-#   1줄을 낸다(자동 마이그레이션 없음 — 엔진은 채택자 conf 를 대신 고쳐 쓰지 않는다).
-#   `reviewer_cmd` 는 **신규 온보딩에서 만들지 않는다** — 레거시 키는 이미 쓰는 채택자에게만
-#   남고, 새 채택자는 구조적 튜플 하나로 통일한다.
+#   `additional_reviewer.enabled` 다. 구표기 키가 남은 conf 는 conf 를 읽는 지점에서 fail-loud
+#   이므로(공용 로더 `local_conf.assert_no_legacy`) 온보딩이 그 형상을 따로 감지하지 않는다.
+#   자유 문자열 리뷰어 커맨드 키는 폐지됐다 — 대상은 구조화 튜플 하나뿐이다.
 #   같은 값을 pm_update.ADDITIONAL_REVIEWER_DEFAULTS 도 심는다(두 온보딩 진입·동일 프로필).
 #   실행 해소(하네스/모델/추론 강도 → 실 명령)는 external_review 가 하고, 여기서는 값만
 #   시드한다 — 무거운 실행 코어를 board 로 끌어오지 않는다. 드리프트는 테스트가 잡는다.
 #   키 이름은 external_review 코어 선언과 글자로 같아야 한다(드리프트는 회귀가 잡는다).
-ADDITIONAL_REVIEWER_ENABLED_KEY = "additional_reviewer_enabled"
-LEGACY_EXTERNAL_REVIEW_ENABLED_KEY = "external_review_enabled"
+ADDITIONAL_REVIEWER_ENABLED_KEY = "additional_reviewer.enabled"
 
 ADDITIONAL_REVIEWER_DEFAULTS: tuple[tuple[str, str], ...] = (
     (ADDITIONAL_REVIEWER_ENABLED_KEY, "true"),
@@ -11296,61 +11191,44 @@ ADDITIONAL_REVIEWER_DEFAULTS: tuple[tuple[str, str], ...] = (
 def additional_reviewer_decision_key(conf: dict[str, str]) -> str | None:
     """이미 기록된 opt-in 결정을 공급하는 키 — **신키뿐** (없으면 None).
 
-    구키 fallback 이 제거됐으므로 구키만 있는 conf 는 **미결정**이다. 게이트가 그 값을 읽지 않는데
-    "결정됨" 으로 접으면 그 채택자는 OFF 인 채 다시 질문도 못 받는다 — 다시 묻는 것이 이주 경로다
-    (답이 신키로 기록된다). 판정은 키 존재다(값의 truthiness 가 아니다 — `false` 도 결정이다).
-    external_review 코어의 `enabled_decision_key` 와 같은 판정이다.
+    판정은 키 존재다(값의 truthiness 가 아니다 — `false` 도 결정이다). 구표기 키는 값을 공급하지
+    않고 그 잔존은 conf 를 읽는 지점에서 fail-loud 다. external_review 코어의
+    `enabled_decision_key` 와 같은 판정이다.
     """
     return (ADDITIONAL_REVIEWER_ENABLED_KEY
             if ADDITIONAL_REVIEWER_ENABLED_KEY in conf else None)
 
 
-# 구키 감지 안내 1줄 — external_review·pm_update 사본과 **같은 문구**다(드리프트는 회귀가
-# 잡는다). 세 진입이 균일해야 채택자가 어느 표면에서 만나든 같은 처방을 받는다.
-LEGACY_ENABLED_KEY_REMOVED = (
-    f"⚠ local.conf `{LEGACY_EXTERNAL_REVIEW_ENABLED_KEY}` 는 더 이상 읽지 않는다(구키 제거) — "
-    f"`{ADDITIONAL_REVIEWER_ENABLED_KEY}` 로 바꾸세요. 그 전까지 추가 리뷰어는 OFF 입니다."
-)
-
-
-def legacy_enabled_key_notice(conf: dict[str, str]) -> str | None:
-    """구키만 있어 결정이 무시되는 conf 면 안내 1줄 — external_review 판정과 같은 조건."""
-    if (LEGACY_EXTERNAL_REVIEW_ENABLED_KEY in conf
-            and ADDITIONAL_REVIEWER_ENABLED_KEY not in conf):
-        return LEGACY_ENABLED_KEY_REMOVED
-    return None
-
-# opt-in "예" 가 append 하는 블록. additional_reviewer_enabled=true 는 *설정된* 외부 전송과 통상
+# opt-in "예" 가 append 하는 블록. additional_reviewer.enabled=true 는 *설정된* 외부 전송과 통상
 #   과금에 대한 **지속 동의**라, 이후 리뷰마다·라운드 상한마다 비용을 다시 묻지 않는다.
 ADDITIONAL_REVIEWER_OPTIN_BLOCK = (
     "# 추가 리뷰어(additional reviewer) — ON.\n"
-    "# additional_reviewer_enabled=true 는 설정된 외부 전송과 통상 과금에 대한 지속 동의다\n"
+    "# additional_reviewer.enabled=true 는 설정된 외부 전송과 통상 과금에 대한 지속 동의다\n"
     "# (리뷰마다·라운드 상한마다 비용을 다시 묻지 않는다). 프로필은 아래 3키로 교체한다.\n"
     + "".join(f"{key}={value}\n" for key, value in ADDITIONAL_REVIEWER_DEFAULTS)
 )
 
 # 이미 **유효한 대상**이 있는 conf 의 "예" 가 쓰는 블록 — 활성 플래그만 심고 대상은 손대지 않는다.
 #   기본 4키를 그냥 덧붙이면 두 가지로 망가진다: (1) 구조화 튜플이 이미 있으면 last-wins 로
-#   사용자의 하네스/모델/추론 강도가 조용히 기본값으로 바뀌고, (2) 레거시 `reviewer_cmd` 가 있으면
-#   구조화+레거시 **이중 대상**(엔진이 fail-loud 로 거부하는 형상)이 된다.
+#   사용자의 하네스/모델/추론 강도가 조용히 기본값으로 바뀐다.
 ADDITIONAL_REVIEWER_ENABLE_ONLY_BLOCK = (
     "# 추가 리뷰어(additional reviewer) — ON (이미 설정된 대상 그대로).\n"
-    "# additional_reviewer_enabled=true 는 설정된 외부 전송과 통상 과금에 대한 지속 동의다\n"
+    "# additional_reviewer.enabled=true 는 설정된 외부 전송과 통상 과금에 대한 지속 동의다\n"
     "# (리뷰마다·라운드 상한마다 비용을 다시 묻지 않는다).\n"
-    "additional_reviewer_enabled=true\n"
+    "additional_reviewer.enabled=true\n"
 )
 
 # 나중에 켜는 법 — 비대화형/거절 경로가 같은 문장을 쓴다(안내 단일 진실).
 ADDITIONAL_REVIEWER_ENABLE_HINT = (
-    "local.conf 에 additional_reviewer_enabled=true + "
+    "local.conf 에 additional_reviewer.enabled=true + "
     "additional_reviewer.harness/model/reasoning"
 )
 
 # **이미 대상이 있는** conf 의 안내 — 활성 플래그 한 줄만 말한다. 기본 문장을 그대로 쓰면 이미
-#   대상이 있는 채택자에게 구조화 3키를 *더* 적으라는 말이 돼, 레거시 `reviewer_cmd` 위에서는
-#   엔진이 거부하는 이중 대상이 되고 구조화 튜플 위에서는 last-wins 로 자기 선언이 덮인다 —
+#   대상이 있는 채택자에게 구조화 3키를 *더* 적으라는 말이 돼, 구조화 튜플 위에서는 last-wins
+#   로 자기 선언이 덮인다 —
 #   엔진이 write 경로에서 막아 둔 손상을 안내가 사람 손으로 재현시키는 꼴이다.
-ADDITIONAL_REVIEWER_ENABLE_ONLY_HINT = "local.conf 에 additional_reviewer_enabled=true"
+ADDITIONAL_REVIEWER_ENABLE_ONLY_HINT = "local.conf 에 additional_reviewer.enabled=true"
 
 
 def _additional_reviewer_enable_hint(target: str) -> str:
@@ -11376,43 +11254,31 @@ ADDITIONAL_REVIEWER_KEYS: tuple[str, ...] = (
     ADDITIONAL_REVIEWER_MODEL_KEY,
     ADDITIONAL_REVIEWER_REASONING_KEY,
 )
-LEGACY_REVIEWER_CMD_KEY = "reviewer_cmd"
-
-# 판정 결과 — 대상 없음 / 레거시 자유 커맨드 / 구조화 튜플.
+# 판정 결과 — 대상 없음 / 구조화 튜플.
 REVIEWER_TARGET_NONE = "none"
-REVIEWER_TARGET_LEGACY = "legacy"
 REVIEWER_TARGET_STRUCTURED = "structured"
 
 
 class AdditionalReviewerTargetError(RuntimeError):
-    """기존 대상이 그 자체로 깨져 있어 온보딩이 결정을 쓸 수 없는 형상(부분 튜플·이중 대상)."""
+    """기존 대상이 그 자체로 깨져 있어 온보딩이 결정을 쓸 수 없는 형상(부분 튜플)."""
 
 
 def classify_additional_reviewer_target(conf: dict[str, str]) -> str:
     """활성 플래그만 없는 conf 에 **이미 어떤 대상이 있는가**를 판정한다.
 
-    · 구조화 키가 하나도 없고 비어있지 않은 `reviewer_cmd` 도 없으면 `none`(대상 없음).
-    · 구조화 키 없이 비어있지 않은 `reviewer_cmd` 만 있으면 `legacy`.
+    · 구조화 키가 하나도 없으면 `none`(대상 없음).
     · 구조화 키가 하나라도 **있으면**(값이 비어 있어도 선언이다) harness/model 동반 필수이고,
       그 둘이 온전하면 `structured`. 판정 기준을 값의 truthiness 로 하면 비운 채 선언한 부분
       튜플이 '대상 없음'으로 떨어져, 온보딩이 기본 4키를 덧써 사용자의 선언을 갈아치운다.
-    · 부분 튜플·구조화+레거시 이중 대상은 `AdditionalReviewerTargetError` 다 — 어느 쪽이 이기는지
-      추측해 쓰지 않는다(external_review 의 해소 규칙과 같은 판정·같은 이유).
+    · 부분 튜플은 `AdditionalReviewerTargetError` 다 — 절반만 반영된 대상을 추측해 쓰지 않는다
+      (external_review 의 해소 규칙과 같은 판정·같은 이유).
 
     값 자체의 유효성(하네스 이름·모델 sentinel·reasoning 허용집합)은 판정하지 않는다. 그건 실행
     해소의 일이고, 온보딩이 알아야 하는 것은 "덧쓰면 안 되는 선언이 있는가" 하나다.
     """
     present = tuple(key for key in ADDITIONAL_REVIEWER_KEYS if key in conf)
-    legacy_cmd = (conf.get(LEGACY_REVIEWER_CMD_KEY) or "").strip()
     if not present:
-        return REVIEWER_TARGET_LEGACY if legacy_cmd else REVIEWER_TARGET_NONE
-    if legacy_cmd:
-        raise AdditionalReviewerTargetError(
-            f"대상이 둘입니다 — 구조화 프로필({', '.join(present)})과 legacy "
-            f"`{LEGACY_REVIEWER_CMD_KEY}={legacy_cmd}` 가 같은 local.conf 에 있습니다. "
-            f"하나만 남기세요(권장: `{LEGACY_REVIEWER_CMD_KEY}` 를 지우고 "
-            f"{ADDITIONAL_REVIEWER_PREFIX}.* 유지)."
-        )
+        return REVIEWER_TARGET_NONE
     missing = ", ".join(
         key for key in (ADDITIONAL_REVIEWER_HARNESS_KEY, ADDITIONAL_REVIEWER_MODEL_KEY)
         if not (conf.get(key) or "").strip()
@@ -11445,7 +11311,7 @@ def _additional_reviewer_broken_at_commit_notice(reason: str) -> str:
 # 거절이 기록하는 블록 — 결정 자체는 대상과 무관하므로 한 벌뿐이다.
 ADDITIONAL_REVIEWER_DECLINE_BLOCK = (
     "# 추가 리뷰어 — 기본 OFF. 켜려면 true 로.\n"
-    "additional_reviewer_enabled=false\n"
+    "additional_reviewer.enabled=false\n"
 )
 
 # opt-in 커밋 결과 — 락 안에서 **다시 판정한** 사실이다(질문 시점의 판정이 아니다).
@@ -11496,8 +11362,8 @@ def _commit_additional_reviewer_optin(accepted: bool) -> tuple[str, str]:
     """opt-in 응답을 local.conf 에 확정한다 — 락 안에서 **다시 읽고 다시 판정한 뒤** 붙인다.
 
     질문은 사람이 답할 때까지 열려 있다(수 초~수 분). 그동안 다른 행위자가 같은 conf 를 바꿀 수
-    있다 — 활성 키를 켜거나, 레거시 `reviewer_cmd`/구조화 튜플을 새로 적거나, 부분 튜플로
-    깨뜨린다. 질문 **전** 판정으로 쓰면 그 사이 생긴 대상 위에 기본 4키가 얹혀 이중 대상·
+    있다 — 활성 키를 켜거나, 구조화 튜플을 새로 적거나, 부분 튜플로
+    깨뜨린다. 질문 **전** 판정으로 쓰면 그 사이 생긴 대상 위에 기본 4키가 얹혀
     last-wins 손상이 그대로 재현된다. 그래서 판정 입력을 커밋 시점에 다시 읽고,
     재읽기→재판정→append 를 배타락 + 단일 O_APPEND write 로 닫는다(재읽기와 쓰기 사이가 또 하나의
     TOCTOU 창이 되지 않게).
@@ -11548,24 +11414,18 @@ def prompt_external_review_optin() -> None:
 
     "예" 가 쓰는 것은 **기존 대상 유무**로 갈린다(`classify_additional_reviewer_target`):
     대상이 없으면 ADDITIONAL_REVIEWER_DEFAULTS 4키를 원자적으로 심고(활성 플래그 + 하네스·모델·
-    추론 강도), 이미 유효한 대상(레거시 `reviewer_cmd` 또는 구조화 튜플)이 있으면 **활성 플래그
+    추론 강도), 이미 유효한 대상(구조화 튜플)이 있으면 **활성 플래그
     한 줄만** 덧붙여 그 대상을 byte 그대로 보존한다 — 기본 4키를 덧쓰면 구조화 튜플은 last-wins
-    로 갈아치워지고 레거시와는 이중 대상이 된다. 레거시 `reviewer_cmd` 는 어느 경로에서도 만들지
-    않는다. 이미 결정된 conf 는 값을 건드리지 않는다(자동 마이그레이션 없음).
+    로 갈아치워진다. 이미 결정된 conf 는 값을 건드리지 않는다(자동 마이그레이션 없음).
 
-    기존 대상이 그 자체로 깨져 있으면(부분 튜플·이중 대상) 질문도 기록도 하지 않고 진단만 낸다 —
+    기존 대상이 그 자체로 깨져 있으면(부분 튜플) 질문도 기록도 하지 않고 진단만 낸다 —
     어느 쪽이 이기는지 추측해 쓰는 것이 유일한 대안이라, 쓰지 않는 쪽이 안전하다.
 
     질문 전 판정은 **질문 문구**의 입력일 뿐이다. 기록의 입력은 `_commit_additional_reviewer_optin`
     이 커밋 시점에 배타락 안에서 다시 읽어 다시 판정한다 — 사람이 답하는 동안 conf 가 바뀌면 옛
-    판정으로 쓴 기본 4키가 그사이 생긴 대상을 이중 대상/last-wins 로 망가뜨린다.
+    판정으로 쓴 기본 4키가 그사이 생긴 대상을 last-wins 로 망가뜨린다.
     """
     conf = local_config()
-    # 구키 감지는 **판정보다 먼저** — init 도 채택자가 구키를 만나는 진입이라 코어·pm_update 와
-    #   같은 문구를 낸다. 어느 경로로 빠지든 그 사실을 이 실행에서 듣는다.
-    legacy_notice = legacy_enabled_key_notice(conf)
-    if legacy_notice:
-        print(f"  {legacy_notice}")
     decision_key = additional_reviewer_decision_key(conf)
     if decision_key is not None:
         # 이미 결정됨 (true/false 무관·기존 프로필/레거시 키 불변·자동 마이그레이션 없음).
@@ -11599,7 +11459,7 @@ def prompt_external_review_optin() -> None:
     # 질문 전 판정(target)은 **질문 문구**까지의 입력이다. 기록의 입력은 커밋 시점에 다시 읽는다.
     outcome, detail = _commit_additional_reviewer_optin(answer in ("y", "yes"))
     if outcome == OPTIN_COMMIT_ALREADY:
-        print("  (질문하는 사이 local.conf 에 additional_reviewer_enabled 결정이 생겨 그 결정을 "
+        print("  (질문하는 사이 local.conf 에 additional_reviewer.enabled 결정이 생겨 그 결정을 "
               "그대로 둡니다 — 이 응답은 기록하지 않았습니다.)")
     elif outcome == OPTIN_COMMIT_BROKEN:
         print(_additional_reviewer_broken_at_commit_notice(detail))
@@ -11613,61 +11473,19 @@ def prompt_external_review_optin() -> None:
               f"{_additional_reviewer_enable_hint(detail)} 로 켤 수 있음).")
 
 
-def prompt_delegate_optin() -> None:
-    """cross-harness 위임(pm_delegate) opt-in 프롬프트 → local.conf 에 delegate_enabled **실키** 기록
-    (external_review opt-in 동형).
-
-    위임 프롬프트/코드가 외부 하네스로 *전송*되고 그 하네스에 *과금*되므로 기본 OFF. **실키**
-    delegate_enabled(주석 예시가 아니라 local_config 가 파싱하는 활성 키)가 이미 있으면 결정됨 →
-    no-op. 비대화형(파이프·CI)이면 묻지 않고 기본 OFF 유지(주석 스키마 시드가 도입을 안내). TTY 면
-    1회 질문 — y=true·그 외/무입력=false 실키를 기록해 다음 init/update 때 다시 묻지 않는다(멱등).
-    주석 예시는 local_config 파싱에서 제외되므로 주석만 있고 실키가 없으면 '미결정' 으로 본다."""
-    if "delegate_enabled" in local_config():
-        return  # 실키로 이미 결정됨(주석 예시는 미포함 — 미결정 취급)
-    # 명시적 비대화 신호 우선(Windows DEVNULL isatty 함정 회피·external_review optin 동형).
-    if _is_noninteractive() or not sys.stdin.isatty():
-        print("  (비대화형 — cross-harness 위임 OFF 유지. 켜려면 local.conf delegate_enabled=true)")
-        return
-    print("\ncross-harness 위임(pm_delegate)을 켤까요? 켜면 위임 프롬프트/코드가 외부 하네스로 "
-          "*전송*되고 그 하네스에 *과금*됩니다 (역할 노동을 다른 하네스 CLI 로 위임).")
-    try:
-        answer = input("  켜기 [y/N]: ").strip().lower()
-    except EOFError:
-        # stdin EOF(Ctrl-D) = 기본 거절 → false 실키를 **기록**(매번 재질문 방지·opt-in 결정 박제).
-        answer = ""
-    # 기록은 추가 리뷰어 opt-in 과 같은 규약이다 — 전 writer 공용 배타락 안에서 **단일 원자 추가**
-    # (선행 개행 포함). 개행 보장과 블록 추가를 두 write 로 나누면 그 사이가 창이고, 락 밖에서
-    # 붙이면 같은 conf 를 통째 교체하는 writer(init 병합·`_write_conf_keys`)가 이 결정을 덮는다.
-    accepted = answer in ("y", "yes")
-    block = ("# cross-harness 위임 — ON.\ndelegate_enabled=true\n" if accepted else
-             "# cross-harness 위임 — 기본 OFF. 켜려면 true 로.\ndelegate_enabled=false\n")
-    with _local_conf_write_lock(LOCAL_CONF):
-        if "delegate_enabled" in local_config():
-            # 질문하는 사이 결정이 생겼다 — 그 결정이 이긴다(이 응답은 버린다·byte 보존).
-            print("  (질문하는 사이 local.conf 에 delegate_enabled 결정이 생겨 그대로 둡니다 "
-                  "— 이 응답은 기록하지 않았습니다.)")
-            return
-        _append_local_conf_atomic(LOCAL_CONF, block)
-    if accepted:
-        print("  ✓ cross-harness 위임 ON (delegate_enabled=true·외부 송신·과금 수용). "
-              "역할 매핑은 local.conf delegate.<role>.* 주석 예시 참조.")
-    else:
-        print("  → cross-harness 위임 OFF (나중에 local.conf delegate_enabled=true 로 켤 수 있음).")
-
-
 def _write_init_local_conf() -> None:
     """init 의 local.conf 쓰기 — 존재 판정·읽기·병합·쓰기를 **한 배타 구간**에 닫는다.
 
     **세션·prefix 키는 쓰지 않는다.** 둘 다 slot·task 종속 값이라 프로젝트 공용 per-clone
     conf 의 범위가 아니다 — 세션은 lease 장부, prefix 는 areas.md 칼럼이 단일 진실이고 이
-    함수는 py·test_cmd·ctx 예산 같은 per-clone operational 키만 심는다.
+    함수는 `runtime.py`·`test.cmd`·ctx 예산 같은 per-clone operational 키만 심는다.
 
     구간을 나누면 두 곳이 새는데 둘 다 남의 결정을 지운다: (a) 존재 판정과 최초 생성 사이에
     다른 writer 가 만든 conf 를 통째 write 로 덮고, (b) 병합 경로가 읽은 뒤 교체하는 사이에 붙은
     opt-in append(그 자체는 원자였어도)가 교체본에 없어 사라진다. 그래서 락의 단위는 "쓰기" 가
     아니라 "읽고 쓰는 구간" 이고, 같은 락을 conf 의 **모든** writer 가 공유한다.
 
-    온보딩 질문(추가 리뷰어·위임 opt-in)은 이 구간 **밖**에서 한다 — 그 커밋이 같은 락을 다시
+    온보딩 질문(추가 리뷰어 opt-in)은 이 구간 **밖**에서 한다 — 그 커밋이 같은 락을 다시
     잡으므로 안에서 부르면 재진입(정의되지 않은 동작)이다.
     """
     # 인터프리터 탐지는 conf 내용과 무관한 **외부 프로브**(subprocess)다 — 락 밖에서 미리 푼다
@@ -11676,40 +11494,34 @@ def _write_init_local_conf() -> None:
     with _local_conf_write_lock(LOCAL_CONF):
         if not LOCAL_CONF.exists():
             # 부재 시(첫 생성) — 현행 그대로 전체 default conf write. 회귀 0.
-            conf = "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
-            conf += (
-                "# 엔진 문서 operational placeholder 해소값 ({{PY}}·{{TEST_CMD}}·{{PROJECT_NAME}}):\n"
-                f"py={detected_py}\ntest_cmd=pytest -q\nproject_name=\n"
-                "# ctx 정지-핸드오프 임계 (어댑터 훅이 잔여 컨텍스트 %로 판정):\n"
-                f"ctx_nudge_pct={CTX_NUDGE_PCT_DEFAULT}\nctx_stop_pct={CTX_STOP_PCT_DEFAULT}\n"
-                "# ctx_window_tokens: 핸드오프 토큰 예산(위 nudge/stop %의 기준). 큰 window(1M)\n"
-                "# 모델이라도 낮게 두면 이른 핸드오프 = 토큰 경제(큰 컨텍스트가 매 턴 소모 가속).\n"
-                "# 올리면 세션당 더 길게. 물리 window 아님 — 사용자 비용/맥락 선택.\n"
-                f"ctx_window_tokens={CTX_WINDOW_TOKENS_DEFAULT}\n"
-                "# 하네스별 오버라이드(옵션·주석 해제 시 활성): 한 repo 를 claude·opencode 동시\n"
-                "# 운용 시 하네스별 예산 분리(ctx_window_tokens_<harness> > generic > 200K·\n"
-                "# claude/opencode 독립). 미설정 시 위 generic 값이 분모.\n"
-                "# ctx_window_tokens_claude=500000\n"
-                "# ctx_window_tokens_opencode=200000\n"
-                "# ctx_window_tokens_codex=200000\n"
-                + _DELEGATE_CONF_SEED + _HARNESS_BUDGET_CONF_SEED)
+            # 주석은 **값을 재진술하지 않는다** — 손으로 옮겨 적은 값은 반드시 drift 한다.
+            # 키가 무엇을 하는지와 전체 카탈로그는 출하 문서 한 곳이 소유한다.
+            conf = (
+                "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
+                "# 여기엔 실값만 둔다 — 키 카탈로그·설명은 출하 문서 참조.\n"
+                f"runtime.py={detected_py}\n"
+                "test.cmd=pytest -q\n"
+                "project.name=\n"
+                f"ctx.nudge_pct={CTX_NUDGE_PCT_DEFAULT}\n"
+                f"ctx.stop_pct={CTX_STOP_PCT_DEFAULT}\n"
+                f"ctx.window_tokens={CTX_WINDOW_TOKENS_DEFAULT}\n"
+            )
             LOCAL_CONF.write_text(conf, encoding="utf-8", newline="\n")
             return
         # 존재 시 — 비파괴 병합. init 이 안 쓰는 사용자/operational 키
-        # (additional_reviewer_enabled·additional_reviewer.*·레거시 reviewer_cmd·upstream·
-        # upstream_rev·opencode_pro_model·status_total_style·user 등)를 절대 삭제/변경하지
-        # 않는다. 통째 write 금지.
+        # (additional_reviewer.*·delegate.*·upstream.*·harness.*·identity.user 등)를 절대
+        # 삭제/변경하지 않는다. 통째 write 금지.
         text = file_lock.read_text_shared(LOCAL_CONF, encoding="utf-8")
         existing = local_config()
         updates: dict[str, str] = {}
-        # init 기본키는 *없을 때만* 추가 — 기존 값(커스텀 ctx_window_tokens 등)은 보존.
+        # init 기본키는 *없을 때만* 추가 — 기존 값(커스텀 `ctx.window_tokens` 등)은 보존.
         defaults = {
-            "py": detected_py,
-            "test_cmd": "pytest -q",
-            "project_name": "",
-            "ctx_nudge_pct": str(CTX_NUDGE_PCT_DEFAULT),
-            "ctx_stop_pct": str(CTX_STOP_PCT_DEFAULT),
-            "ctx_window_tokens": str(CTX_WINDOW_TOKENS_DEFAULT),
+            "runtime.py": detected_py,
+            "test.cmd": "pytest -q",
+            "project.name": "",
+            "ctx.nudge_pct": str(CTX_NUDGE_PCT_DEFAULT),
+            "ctx.stop_pct": str(CTX_STOP_PCT_DEFAULT),
+            "ctx.window_tokens": str(CTX_WINDOW_TOKENS_DEFAULT),
         }
         for key, value in defaults.items():
             if key not in existing:
@@ -11723,20 +11535,6 @@ def _write_init_local_conf() -> None:
         # 의 append 가 마지막 키에 그대로 붙어 기존 키를 변질시킨다(codex must-fix·병합 경로 회귀).
         if merged and not merged.endswith("\n"):
             merged += "\n"
-        # 기존 adopter 보완: delegate 스키마 시드는 fresh 생성 branch 에만 있으므로
-        # this-change 이전 local.conf 를 가진 채택자는 재실행에도 스키마를 못 받는다. **스키마 블록
-        # 마커**가 없으면 시드를 파일 끝에 append 한다 — 기존 byte 는 위에서 보존(비파괴 병합). 마커로
-        # 판정하므로 실키 결정(delegate_enabled)과 독립이다(스키마 문서 = 별개 축). 이미 있으면 no-op
-        # → 재실행 멱등(fresh conf 는 이미 포함하므로 자연 no-op). 실키 opt-in 은 prompt_delegate_optin.
-        # 가드는 둘이다 — **멱등**(마커) + **활성-키 인지**(그 축을 이미 실키로 쓰는가).
-        if not _example_seed_is_redundant(
-                merged, existing, _DELEGATE_SEED_MARKER, _DELEGATE_AXIS_KEYS):
-            merged += _DELEGATE_CONF_SEED
-        # 하네스별 시간 예산 스키마도 같은 규칙으로 append(별도 마커 — 위 블록을 이미 받은
-        # 기존 채택자에게도 도달한다). 전부 주석이라 기존 동작/값은 불변.
-        if not _example_seed_is_redundant(
-                merged, existing, _HARNESS_BUDGET_SEED_MARKER, _HARNESS_BUDGET_AXIS_KEYS):
-            merged += _HARNESS_BUDGET_CONF_SEED
         LOCAL_CONF.write_text(merged, encoding="utf-8", newline="\n")
 
 
@@ -11875,7 +11673,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             _areas_append_locked(prefix or "", owner, repo=repo_name, area_owner=area_owner)
             wrote_areas = True
             ao_surface = (area_owner if area_owner else
-                          "(미상 — local.conf user= / git user.email 미설정)")
+                          "(미상 — local.conf identity.user= / git user.email 미설정)")
             area_message = (f"✓ areas.md 등록: repo={repo_name} | "
                             f"prefix={prefix or '(빈 칼럼 · none 카테고리)'} | "
                             f"owner={owner or '(미상 — 세션 미바인딩)'} | "
@@ -11933,7 +11731,6 @@ def cmd_init(args: argparse.Namespace) -> int:
     # 파일을 사용자 편집으로 오인·clone→init→claim 온보딩 직격) — 미배포 근거는 그대로 유효하다.
     # 배포는 `_board_git_stage_and_commit`(write→stage→commit 이 한 호출에 닫힘) **단일 채널**로 한다.
     prompt_external_review_optin()
-    prompt_delegate_optin()  # cross-harness 위임 opt-in(TTY 1회 질문·실키 기록)
     # 완료 안내의 ID 포맷은 **이 clone 에서 `board.py new` 가 실제로 발행할 값**이다 —
     # 등록 결과가 아니라 해소 체인(`cmd_new` 와 같은 함수·같은 세션 override)에서 뽑는다.
     # 등록이 생략/거부된 형상에서 발행되지 않을 포맷을 성공 메시지로 내던 거짓 안내 차단.
@@ -12213,7 +12010,7 @@ def _migrate_identity_apply(
 def cmd_migrate_identity(args: argparse.Namespace) -> int:
     """backfill — areas area_owner·ticket created_by/claimed_by.
 
-    `--user` override > `user_name()`(local.conf user= / git config user.email). 미해소(None)면
+    `--user` override > `user_name()`(local.conf identity.user= / git config user.email). 미해소(None)면
     abort(식별자 없이는 backfill 불가). `--dry-run` 은 쓰기 0·per-file 미리보기. `--scope`
     active(open+claimed) | all(기본·done 포함). 멱등(빈 필드만)·비파괴(순서/body/표 보존).
 
@@ -12230,7 +12027,7 @@ def cmd_migrate_identity(args: argparse.Namespace) -> int:
     _reject_task_slot_identity_mix(args)
     user = user_name(getattr(args, "user", None))
     if not user:
-        print("[중단] user 식별자 미해소 — `--user <id>` 를 주거나 local.conf user= / "
+        print("[중단] user 식별자 미해소 — `--user <id>` 를 주거나 local.conf identity.user= / "
               "git config user.email 를 설정하라(식별자 없이는 backfill 불가).",
               file=sys.stderr)
         return 1
@@ -12455,7 +12252,14 @@ def cmd_new(args: argparse.Namespace) -> int:
         label = "draft 격리 기록" if is_draft else "기록"
         print(f"  ⚠ board-git {label} 보류: local-only/uncommitted", file=sys.stderr)
     # 발행 시점 판단 재료 — 겹침 0 이면 전부 침묵. 차단 없음(rc 불변).
-    for line in _publish_overlap_material(tid, fm.get("touches")):
+    # 슬롯 재료의 repo 는 이 발행의 명시 args 정체성이다 — `--repo`/`--slot` 이 REPO.name(물리
+    # 폴더명)과 다른 등록명을 공식 지원하므로(위 §prefix 네임스페이스 가드와 같은 계약), 여기서도
+    # 그 값을 재사용한다(`_actor_session_override` 가 이미 통과시킨 같은 args → 새 해소 축 아님).
+    try:
+        new_repo = identity_args.parse_identity(args).repo
+    except ValueError:
+        new_repo = None
+    for line in _publish_overlap_material(tid, fm.get("touches"), new_repo or REPO.name):
         print(line, file=sys.stderr)
     return 0
 
@@ -12532,7 +12336,13 @@ def cmd_promote(args: argparse.Namespace) -> int:
         print(f"promoted {args.id} (board-git 기록 보류: local-only/uncommitted)")
     # 발행 시점 판단 재료 — 성공 경로 두 갈래(승격 완료/부기 보류) 공통 뒤,
     # `_board_git_enabled()` 게이트 분기 밖(솔로/legacy 형상에서도 나온다). 겹침 0 이면 침묵.
-    for line in _publish_overlap_material(args.id, fm.get("touches")):
+    # `promote` 는 `--repo`/`--slot` 인자가 없다 — 슬롯 재료의 repo 는 이 티켓의 provenance
+    # (`created_by`)에서 세션 토큰을 뽑아(`_created_by_session` — 기존 세션-뷰 seam) 장부
+    # 등록 repo 로 재해소한다(`identity_args.session_coordinates` — 행이 있으면 행의 repo,
+    # 없으면 세션명 키 분해로 폴백). 둘 다 기존 seam 재사용 — 새 해소 축 아님.
+    promote_repo, _promote_slot_number = identity_args.session_coordinates(
+        _created_by_session(fm.get("created_by")), LEASES_FILE)
+    for line in _publish_overlap_material(args.id, fm.get("touches"), promote_repo or REPO.name):
         print(line, file=sys.stderr)
     return 0
 
@@ -12549,8 +12359,11 @@ _LIST_ACTIVE_STATUSES: tuple[str, ...] = ACTIVE_STATUS_DIRS
 # 단일 소유자를 재사용한다(board 는 이 축에 자체 문자열 비교를 만들지 않는다 — 접두
 # `work/<repo>_<N>/` 선언이 활성 티켓 상당수라 순진한 비교는 조용히 0이 된다).
 _PUBLISH_OVERLAP_HEADER = "=== ⚠ 발행 touches 겹침 (다른 활성/draft 티켓) ==="
-_PUBLISH_OVERLAP_PATH_LIMIT = 8      # 겹침 수 오름차순 최대 8개 경로(잔여는 "… 외 N개 경로")
+_PUBLISH_OVERLAP_PATH_LIMIT = 8      # 경로 표시 상한 — 슬롯 줄이 없을 때의 상한(있으면 아래로 줄어든다)
 _PUBLISH_OVERLAP_ID_LIMIT = 6        # 경로당 티켓 ID 최대 6개(잔여는 건수로 접기)
+# 헤더 + 경로/잔여-요약 + 슬롯 줄을 **전부 포함한** 총 상한(리뷰 F-003 — 개별 상한만 지키면
+# 헤더 1 + 경로 8 + 잔여요약 1 + 슬롯 1 = 11줄로 티켓 §결정의 9줄 상한을 넘는다).
+_PUBLISH_OVERLAP_TOTAL_LINE_BUDGET = 9
 
 
 def _publish_overlap_candidates(exclude_id: str) -> list[tuple[str, dict[str, Any]]]:
@@ -12605,13 +12418,20 @@ def _fold_publish_touches(items: list[str], coordinates: Any, delegate: Any) -> 
     return tuple(dict.fromkeys(folded))
 
 
-def _publish_idle_slot_count() -> int | None:
-    """이 repo(`REPO.name`)의 가용(idle) 슬롯 수 — 장부 미해소(부재/손상)면 `None`(재료 줄 생략).
+def _publish_idle_slot_count(repo: str) -> int | None:
+    """`repo`(canonical 등록 repo 정체성 — 물리 폴더명 아님)의 가용(idle) 슬롯 수.
 
-    데이터 원천은 lease 장부 하나, 읽기는 `identity_args.repo_slot_state_counts` 술어 하나뿐이다
-    (board 안에 새 장부 read 를 만들지 않는다). `creating` 은 idle 로 세지 않는다.
+    장부 미해소(부재/손상)면 `None`(재료 줄 생략). 데이터 원천은 lease 장부 하나, 읽기는
+    `identity_args.repo_slot_state_counts` 술어 하나뿐이다(board 안에 새 장부 read 를 만들지
+    않는다). `creating` 은 idle 로 세지 않는다.
+
+    `repo` 는 호출부가 이미 해소한 canonical 값을 받는다 — `new` 는 `--repo`/`--slot` 로 명시된
+    args 정체성(`identity_args.parse_identity`), `promote` 는 티켓 `created_by` provenance 를
+    `identity_args.session_coordinates` 로 재해소한 장부 등록 repo 다. 물리 폴더명(`REPO.name`)은
+    `--repo` 로 다른 등록명을 공식 지원하는 `new` 형상에서 장부 repo 와 어긋날 수 있어(리뷰 실측),
+    이 함수 안에서 다시 유도하지 않는다 — 새 해소 축을 만들지 않고 호출부의 값을 그대로 쓴다.
     """
-    counts = identity_args.repo_slot_state_counts(REPO.name, LEASES_FILE)
+    counts = identity_args.repo_slot_state_counts(repo, LEASES_FILE)
     if counts is None:
         return None
     return counts.get("idle", 0)
@@ -12620,12 +12440,30 @@ def _publish_idle_slot_count() -> int | None:
 def _format_publish_overlap_material(
     per_path: dict[str, set[str]], idle_count: int | None,
 ) -> list[str]:
-    """경로별 겹침 집계 → stderr 줄 목록. 겹침 0 이면 슬롯 줄까지 포함해 **전부 침묵**(never-block)."""
+    """경로별 겹침 집계 → stderr 줄 목록. 겹침 0 이면 슬롯 줄까지 포함해 **전부 침묵**(never-block).
+
+    총 줄 수(헤더 + 경로 표시분 + 잔여-요약 1줄(있으면) + 슬롯 줄(있으면))는
+    `_PUBLISH_OVERLAP_TOTAL_LINE_BUDGET` 을 넘지 않는다 — 슬롯 줄이 붙으면 그만큼 경로 표시
+    예산이 줄어든다. `_PUBLISH_OVERLAP_PATH_LIMIT`(8)은 슬롯 줄이 없을 때 도달 가능한 상한이지
+    항상 보장되는 값이 아니다(리뷰 F-003).
+    """
     if not per_path:
         return []
     ordered = sorted(per_path.items(), key=lambda kv: (len(kv[1]), kv[0]))
-    shown = ordered[:_PUBLISH_OVERLAP_PATH_LIMIT]
-    hidden = len(ordered) - len(shown)
+    slot_line: str | None = None
+    if idle_count is not None:
+        slot_line = (
+            f"  가용(idle) 슬롯 {idle_count}개 — 겹침이 곧 직렬 근거는 아니다(슬롯 분리로 병렬 가능)")
+    # 헤더 1줄 + 슬롯 줄(있으면 1줄)을 뺀 나머지가 경로/잔여-요약 몫이다.
+    reserved = 1 + (1 if slot_line is not None else 0)
+    path_budget = min(_PUBLISH_OVERLAP_PATH_LIMIT,
+                      max(0, _PUBLISH_OVERLAP_TOTAL_LINE_BUDGET - reserved))
+    if len(ordered) <= path_budget:
+        shown, hidden = ordered, 0
+    else:
+        # 잔여-요약 1줄이 그 몫을 하나 먹으므로 실제 경로 표시는 path_budget - 1.
+        shown = ordered[:max(0, path_budget - 1)]
+        hidden = len(ordered) - len(shown)
     lines = [_PUBLISH_OVERLAP_HEADER]
     for path, ids in shown:
         id_list = sorted(ids)
@@ -12635,14 +12473,16 @@ def _format_publish_overlap_material(
         lines.append(f"  {path}: {len(ids)}건 겹침 ({head}{suffix})")
     if hidden > 0:
         lines.append(f"  … 외 {hidden}개 경로")
-    if idle_count is not None:
-        lines.append(
-            f"  가용(idle) 슬롯 {idle_count}개 — 겹침이 곧 직렬 근거는 아니다(슬롯 분리로 병렬 가능)")
+    if slot_line is not None:
+        lines.append(slot_line)
     return lines
 
 
-def _publish_overlap_material(tid: str, touches: object) -> list[str]:
+def _publish_overlap_material(tid: str, touches: object, repo: str) -> list[str]:
     """`new`/`promote` 공용 진입점 — touches 겹침 + 가용 슬롯 재료를 stderr 줄 목록으로 렌더.
+
+    `repo` 는 슬롯 재료(`_publish_idle_slot_count`)가 lease 장부를 조회할 canonical 정체성 —
+    호출부가 이미 해소한 값을 그대로 받는다(이 함수 안에서 유도하지 않는다).
 
     좌표/비교 소유자(`repo_coordinates`·`pm_delegate`) 부재·로드 실패나 touches 형식 불명은
     이 축 전체를 판정불능으로 세어 침묵한다(통과로 위장하지 않되 차단도 하지 않는다 — 부분
@@ -12672,7 +12512,7 @@ def _publish_overlap_material(tid: str, touches: object) -> list[str]:
                    for other_path in other_folded):
                 per_path[own_path].add(other_id)
     nonzero = {path: ids for path, ids in per_path.items() if ids}
-    return _format_publish_overlap_material(nonzero, _publish_idle_slot_count())
+    return _format_publish_overlap_material(nonzero, _publish_idle_slot_count(repo))
 
 
 def _tag_values(fm: dict[str, Any]) -> list[str]:
@@ -12874,7 +12714,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     # 필터 없는 전체(모든 세션·타 사용자)는 `--all` 이다(status 셀렉터는 어느 뷰에도 적용).
     #
     # user-first: 필터 뷰의 "me" 는 **항상 현재 사용자**(`user_name()` =
-    # local.conf user= > git config user.email)다. `--repo`/`--slot` 의 my_user 를
+    # local.conf identity.user= > git config user.email)다. `--repo`/`--slot` 의 my_user 를
     # area_owner-derived(`_area_owner_from_session`/`_area_owner_for_single_area`)로
     # area_owner 미설정(흔함)이면 my_user=None 이 돼 slot-only 매칭·
     # all-open degrade 로 타 슬롯 claim·타 사용자 티켓이 유출되던 근본을 없앤다. area_owner 는
@@ -16573,7 +16413,7 @@ _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
      "dangling-wikilink-scaffold", "un-migrated-overlay", "adapter-drift",
      "adr-author", "areas-repo-unregistered", "areas-duplicate-repo", "areas-merge-union",
      "delegate-same-model", "design-pending", "design-estimate",
-     "codex-delegate-matcher-miss", "open-claimed-contradiction",
+     "codex-delegate-matcher-miss", "open-claimed-contradiction", "local-conf",
      # 라운드 판정 코드(사이드카 seam 소유) + board 고유 잔여·판정불능 관측. 차단은 완료
      # 게이트가 한다.
      "round-name", "round-gap", "round-dup", "round-pending", "round-temporary",
@@ -16920,7 +16760,7 @@ def _freshness_owner_repo(owner) -> tuple[Path | None, str | None]:
 
     단일 규칙:
       - `self` → REPO. 키 부재는 파서/호출부가 `self`를 넘겨 자연 퇴화한다.
-      - `upstream` → `local.conf upstream=` **경로형** checkout. 상대경로는 REPO 기준.
+      - `upstream` → `local.conf upstream.path=` **경로형** checkout. 상대경로는 REPO 기준.
 
     URL upstream 은 lint 가 fetch/clone 하지 않는다는 기존 네트워크-0 경계를 지켜 미해소로
     남긴다. 경로 부재/이동·실 git checkout 검증 실패도 `(None, reason)` — 호출부가
@@ -16939,11 +16779,13 @@ def _freshness_owner_repo(owner) -> tuple[Path | None, str | None]:
         shown = value if value else "<empty>"
         return (None, f"repo({shown}) 미지원 — self 또는 upstream 이어야 함")
     try:
-        upstream = (local_config().get("upstream") or "").strip()
-    except (OSError, UnicodeError, RuntimeError):
+        upstream = (local_config().get("upstream.path") or "").strip()
+    except (OSError, UnicodeError, RuntimeError) as exc:
+        if _is_engine_rev_skew(exc):
+            raise      # 형제 사본 불일치는 "미해소" 한 줄로 삼키지 않는다(fail-loud 보존).
         return (None, "local.conf 읽기 실패로 upstream 소유 repo 미해소")
     if not upstream:
-        return (None, "local.conf upstream 미설정으로 소유 repo 미해소")
+        return (None, "local.conf upstream.path 미설정으로 소유 repo 미해소")
     try:
         # pm_import.classify_upstream 과 같은 self-describing 경계의 필요한 부분만 유지한다.
         # board→pm_import 의존은 역방향이라 만들지 않는다.
@@ -16951,7 +16793,7 @@ def _freshness_owner_repo(owner) -> tuple[Path | None, str | None]:
         is_url = (not is_windows_path and
                   ("://" in upstream or bool(_SCP_STYLE_UPSTREAM_RE.match(upstream))))
         if is_url:
-            return (None, "local.conf upstream 이 URL이라 로컬 소유 repo 미해소")
+            return (None, "local.conf upstream.path 이 URL이라 로컬 소유 repo 미해소")
         # `~`/`~user` 확장은 `_expanded_user_path` 단일 규칙 — 없는 `~user` 는 플랫폼 무관하게
         # 여기서 해소 실패로 끝난다. 종전 `Path.expanduser()` 는 POSIX 만 RuntimeError 였고
         # Windows 는 phantom `C:\\Users\\<name>` 을 조립해 아래 "경로 부재/이동" 으로 갈렸다.
@@ -17063,7 +16905,7 @@ def lint_domain_freshness(*, runner=None) -> list[tuple[str, str, str]]:
         델타 0 (never-tracked=`templates/**` 또는 pin *이전* 삭제) → `absent` → advisory.
         현재 tracked·pin 이후 삭제/rename → `present` → `<sha>..HEAD` stale 검사로.
     **소유 저장소 시계**: 페이지 `repo:`가 `self`(부재 기본)면 REPO, `upstream`이면
-    `local.conf upstream=`의 경로형 checkout 에서 anchor·covers·delta를 모두 판정한다. 문서 위치는
+    `local.conf upstream.path=`의 경로형 checkout 에서 anchor·covers·delta를 모두 판정한다. 문서 위치는
     REPO에 그대로 두고 git 조회만 소유 repo로 바꾼다. upstream 미설정/URL/이동은
     `domain-unverifiable` advisory 이며 green 으로 흡수하지 않는다.
 
@@ -17631,12 +17473,12 @@ def cmd_verified_at_repin(args: argparse.Namespace) -> int:
 
 # adapter-drift baseline 의 두 local.conf 키.
 # 한 키가 baseline 과 현재-관찰을 겸하면 race/자기비교라 *분리*한다:
-#   - upstream_rev      : baseline — 마지막 성공 sync 의 upstream revision (pm_import·pm_update 가 기록).
-#   - upstream_seen_rev : 현재 관찰값 — URL 은 pm-update 스킬이 fetch 후 기록, 경로 upstream 은
+#   - upstream.rev      : baseline — 마지막 성공 sync 의 upstream revision (pm_import·pm_update 가 기록).
+#   - upstream.seen_rev : 현재 관찰값 — URL 은 pm-update 스킬이 fetch 후 기록, 경로 upstream 은
 #                         pm_update 가 sync 시 baseline 과 *함께* 기록(동기 시점 checkout rev = 관찰값·
 #                         cache 부재 URL 은 이 키 부재 → graceful skip.
-_DRIFT_BASELINE_KEY = "upstream_rev"
-_DRIFT_SEEN_KEY = "upstream_seen_rev"
+_DRIFT_BASELINE_KEY = "upstream.rev"
+_DRIFT_SEEN_KEY = "upstream.seen_rev"
 
 
 def lint_adapter_drift() -> list[tuple[str, str, str]]:
@@ -17651,8 +17493,8 @@ def lint_adapter_drift() -> list[tuple[str, str, str]]:
     "마지막 동기 이후 upstream 변경". **lint 는 git network 를 하지 않는다**(codex round-2·3): `local.conf`
     의 **2개 키**만 비교한다 —
 
-      - `upstream_rev`      (baseline·마지막 성공 sync·pm_import/pm_update 가 기록)
-      - `upstream_seen_rev` (현재 관찰값·URL 은 pm-update 스킬이 fetch 후 기록·경로 upstream 은 pm_update 가
+      - `upstream.rev`      (baseline·마지막 성공 sync·pm_import/pm_update 가 기록)
+      - `upstream.seen_rev` (현재 관찰값·URL 은 pm-update 스킬이 fetch 후 기록·경로 upstream 은 pm_update 가
         sync 시 baseline 과 함께 기록)
 
     둘 다 존재하고 **다르면** drift 1 finding(두 rev 불일치 = adapter-layer 가 낡았을 수 있음). 한 키 2역
@@ -17671,8 +17513,8 @@ def lint_adapter_drift() -> list[tuple[str, str, str]]:
 
     fail-soft / 관찰가시성:
       - `upstream` 미설정(non-adopter·templates/upstream 부재 환경) → [].
-      - baseline(`upstream_rev`) 미기록(아직 revision 추적 전·구 import) → [](관찰 기준점 자체 부재).
-      - baseline 은 있으나 seen(`upstream_seen_rev`) 미기록(cache 부재 URL·pm-update 미실행) → **관찰불가
+      - baseline(`upstream.rev`) 미기록(아직 revision 추적 전·구 import) → [](관찰 기준점 자체 부재).
+      - baseline 은 있으나 seen(`upstream.seen_rev`) 미기록(cache 부재 URL·pm-update 미실행) → **관찰불가
         advisory 1줄**(never-block). 과거엔 조용한 [](silent skip)였으나, hooks/driver 등 safety-critical
         잔여가 *관찰 없이* 낡으면 "green 인데 고장"(checkpoint 가드 미발화·회귀 게이트 무력)이라 관찰불가 자체를
         표면화한다. advisory 라 `--gate` 미차단·1줄이라 flood 아님.
@@ -17681,7 +17523,7 @@ def lint_adapter_drift() -> list[tuple[str, str, str]]:
     conf = local_config()
 
     # non-adopter — upstream 자체가 없으면 비교할 대상이 없다 (graceful).
-    if not (conf.get("upstream") or "").strip():
+    if not (conf.get("upstream.path") or "").strip():
         return findings
 
     baseline = (conf.get(_DRIFT_BASELINE_KEY) or "").strip()
@@ -17697,7 +17539,7 @@ def lint_adapter_drift() -> list[tuple[str, str, str]]:
     if not seen:
         findings.append((
             "adapter-layer", "adapter-drift",
-            f"upstream_seen_rev 미기록 — upstream 관찰값이 없어 baseline({baseline[:12]}) 이후 "
+            f"upstream.seen_rev 미기록 — upstream 관찰값이 없어 baseline({baseline[:12]}) 이후 "
             f"adapter-layer(settings·루트 doc·facade) drift 를 판정할 수 없음(관찰불가). "
             f"`pm-update`(upstream fetch)로 관찰값을 기록하면 추적된다 (never-block·hooks/driver 는 전파됨)"))
         return findings
@@ -17798,6 +17640,62 @@ def _load_pm_delegate_module():
             raise
         return None
     return mod
+
+
+# 실 `local.conf` 관측 kind — 채택자 conf 는 git-ignored 라 pytest 시야 밖이다. 엔진이 만드는
+# 생성 문자열은 테스트가 정적으로 단언하고, 이미 디스크에 있는 파일은 이 조회면이 본다.
+_LOCAL_CONF_LINT_KIND = "local-conf"
+
+
+def lint_local_conf() -> list[tuple[str, str, str]]:
+    """실 local.conf 의 구표기 잔존·값 재진술 주석을 advisory 로 표면화(never-block).
+
+    두 관측 모두 **값을 소비하지 않는다** — 그래서 여기서는 fail-loud 하지 않는다. lint 가 멈추면
+    무엇을 고쳐야 하는지 보여 줄 표면 자체가 사라지고, 채택자는 다른 명령의 traceback 만 보게 된다
+    (값 소비 지점의 차단은 그 지점이 이미 한다).
+
+    · 구표기 키: 공용 로더의 전수 매핑표가 판정과 문구를 소유한다(사본 금지).
+    · 값 재진술 주석: 주석이 적어 둔 `키=값` 이 같은 파일의 실값과 다르면 그 줄은 이미 drift 했다.
+      손으로 옮겨 적은 값은 반드시 이렇게 되므로 발견 즉시 지우는 것이 처방이다.
+    """
+    if not LOCAL_CONF.is_file():
+        return []
+    try:
+        module = _load_local_conf()
+        result = module.load(LOCAL_CONF)
+        text = file_lock.read_text_shared(LOCAL_CONF, encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001 — 조회면은 판독 실패로 멈추지 않는다.
+        if _is_engine_rev_skew(exc):
+            raise
+        return []
+    where = _rel_to_repo(LOCAL_CONF)
+    findings = [
+        (where, _LOCAL_CONF_LINT_KIND, line.strip())
+        for line in module.migration_lines(result.legacy)
+    ]
+    findings.extend(
+        (where, _LOCAL_CONF_LINT_KIND,
+         f"주석이 실값과 다른 값을 재진술한다: `{key}={stated}` (실값 `{result.values[key]}`)")
+        for key, stated in _restated_conf_comments(text)
+        if key in result.values and result.values[key] != stated
+    )
+    return findings
+
+
+def _restated_conf_comments(text: str) -> list[tuple[str, str]]:
+    """conf 주석 줄이 적어 둔 `키=값` 쌍 — 실값 대조는 호출부가 한다."""
+    pairs: list[tuple[str, str]] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            continue
+        body = stripped.lstrip("#").strip()
+        if "=" not in body:
+            continue
+        key, _, value = body.partition("=")
+        stated = value.strip().split()[0] if value.strip() else ""
+        pairs.append((key.strip(), stated))
+    return pairs
 
 
 def lint_delegate() -> list[tuple[str, str, str]]:
@@ -18124,7 +18022,8 @@ def lint_tickets() -> list[tuple[str, str, str]]:
             + lint_render_leak() + lint_unmigrated_overlay()
             + lint_areas_repo_unregistered()
             + lint_areas_duplicate_repo() + lint_areas_merge_union()
-            + lint_delegate() + lint_rounds() + lint_legacy_growth_sections()
+            + lint_delegate() + lint_local_conf() + lint_rounds()
+            + lint_legacy_growth_sections()
             + lint_codex_delegate_observations() + lint_claim_identity())
 
 
@@ -18271,7 +18170,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mine", action="store_true",
                    help="내 것만 (렌즈·단일 보드 위 필터·user-first): 내 open"
                         "(area_owner==나 ∨ created_by==나) + 내 claim(claimed_by.user==나)·**전 슬롯**. "
-                        "querying identity=현재 사용자(local.conf user= > git email). 타 사용자는 "
+                        "querying identity=현재 사용자(local.conf identity.user= > git email). 타 사용자는 "
                         "안 나온다. user 미상이면 전체 open + 내 슬롯 claim 으로 graceful degrade. "
                         "`--repo`/`--slot` 과 상호 배타(뷰 스코프는 하나만·cmd_list 런타임 검사).")
     # `--repo`/`--slot` 조회 전용 세션 뷰(`--repo X --slot N`, kind="slot")는 현재 사용자와
@@ -18292,7 +18191,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("claim", help="atomic claim — mv open → claimed")
     p.add_argument("id", metavar="T-NNNN")
     identity_args.add_identity_args(p)
-    p.add_argument("--user", help="user 식별자 — claimed_by 의 user 차원 (default: local.conf user= / "
+    p.add_argument("--user", help="user 식별자 — claimed_by 의 user 차원 (default: local.conf identity.user= / "
                    "git config user.email)")
     p.set_defaults(fn=cmd_claim)
 
@@ -18371,7 +18270,7 @@ def build_parser() -> argparse.ArgumentParser:
                    "none(무prefix 1급 → legacy T-NNNN)")
     p.add_argument("--user-ack", metavar="<prefix>",
                    help="새 prefix 신설에 대한 사용자 승인 토큰(대상 prefix 값과 정확히 결속)")
-    p.add_argument("--user", help="user 식별자 — created_by 의 user 차원 (default: local.conf user= / "
+    p.add_argument("--user", help="user 식별자 — created_by 의 user 차원 (default: local.conf identity.user= / "
                    "git config user.email)")
     p.add_argument("--task", help="task 이름 — task-mode 발행. `--prefix` 생략 시 task "
                    "설정 prefix(기본 없음)·created_by 는 <user>/<task>. 슬롯 세션 예약 패턴 <repo>_<N> 금지.")
@@ -18430,7 +18329,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--area", help="영역 설명 (새 prefix 최초 등록 시 필요)")
     p.add_argument("--owner", help="등록 식별자(registrant·기본: session 이름)")
     p.add_argument("--user", help="area_owner = 그 area 의 user 소유 (`--mine` 풀 입력). "
-                                  "미지정 시 local.conf user= / git config user.email 로 해소(없으면 빈 값).")
+                                  "미지정 시 local.conf identity.user= / git config user.email 로 해소(없으면 빈 값).")
     identity_args.add_identity_args(p)
     p.set_defaults(fn=cmd_init)
 
@@ -18441,7 +18340,7 @@ def build_parser() -> argparse.ArgumentParser:
                             "lifecycle/tier writer와 직렬화한다.")
     p.add_argument("--dry-run", action="store_true",
                    help="변경 미리보기(쓰기 0·per-file 요약). 먼저 실행 권장.")
-    p.add_argument("--user", help="identity override (기본: local.conf user= / git config "
+    p.add_argument("--user", help="identity override (기본: local.conf identity.user= / git config "
                    "user.email · 미해소 시 abort)")
     identity_args.add_identity_args(p)  # slot 표시값(기본: $PM_SESSION_NAME/$CLAUDE_SESSION_NAME
     # → lease 장부의 단일 leased 슬롯) —
@@ -18454,7 +18353,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("regression",
                        help="회귀 게이트 (run=측정·기록 / check=HEAD green 검증·pre-push 훅용)")
     p.add_argument("action", choices=["run", "check"])
-    p.add_argument("--cmd", help="테스트 명령 (기본: 활성 repo areas.md test_cmd → local.conf test_cmd → pytest -q)")
+    p.add_argument("--cmd", help="테스트 명령 (기본: 활성 repo areas.md test_cmd → local.conf test.cmd → pytest -q)")
     p.add_argument("--cwd", help="회귀 실행 cwd (seam·기본=이 트리 REPO · 슬롯 자동해소 없음 — "
                                  "다른 트리는 여기서 명시)")
     identity_args.add_identity_args(p)  # 명시 슬롯 = 디스패치(M>1 순회 생략)와 그 슬롯 test_cmd

@@ -305,8 +305,8 @@ def test_plugin_subscribes_compaction_events_with_local_observation_count():
 def test_plugin_reads_thresholds_from_local_conf():
     """임계값을 엔진 local.conf 의 ctx_*_pct 에서 읽는다 (T-0013 계약)."""
     src = _plugin_src()
-    assert "ctx_nudge_pct" in src, "ctx_nudge_pct 임계 참조 없음"
-    assert "ctx_stop_pct" in src, "ctx_stop_pct 임계 참조 없음"
+    assert "ctx.nudge_pct" in src, "ctx.nudge_pct 임계 참조 없음"
+    assert "ctx.stop_pct" in src, "ctx.stop_pct 임계 참조 없음"
     assert "local.conf" in src, "local.conf 직접 파싱 경로 참조 없음"
 
 
@@ -325,7 +325,7 @@ def test_plugin_uses_resolve_budget_not_model_limit():
         "CTX_WINDOW_TOKENS_DEFAULT=200000 상수 없음 (board.py 미러)"
     )
     # 하네스별 오버라이드 키 참조 (precedence 상위층).
-    assert "ctx_window_tokens_" in src, "하네스별 오버라이드 키(ctx_window_tokens_<harness>) 참조 없음"
+    assert "ctx_window_tokens" in src and "harness." in src, "하네스별 오버라이드 키(harness.<name>.ctx_window_tokens) 참조 없음"
     # event 핸들러가 resolveBudget 로 limit 을 주입한다("opencode" 고정·conf 캐시 재사용).
     assert re.search(r'const limit = resolveBudget\([^;]*["\']opencode["\']\)', src), (
         "event limit 주입원이 resolveBudget(...,\"opencode\") 형태가 아님"
@@ -1889,9 +1889,9 @@ for (const fn of ["parseLocalConf","resolveThresholds","accumulateTokens","compu
 
 // 임계 해석 + sanity 폴백 (엔진 기본 30/20 · T-0207).
 assert.deepStrictEqual(m.resolveThresholds({}), {nudge_pct:30, stop_pct:20});                       // 미설정→기본
-assert.deepStrictEqual(m.resolveThresholds({ctx_nudge_pct:"25",ctx_stop_pct:"12"}), {nudge_pct:25, stop_pct:12});
-assert.deepStrictEqual(m.resolveThresholds({ctx_nudge_pct:"5",ctx_stop_pct:"30"}), {nudge_pct:30, stop_pct:20}); // stop>nudge→폴백
-assert.deepStrictEqual(m.resolveThresholds({ctx_nudge_pct:"-5",ctx_stop_pct:"3"}), {nudge_pct:30, stop_pct:20}); // 음수→폴백
+assert.deepStrictEqual(m.resolveThresholds({"ctx.nudge_pct":"25","ctx.stop_pct":"12"}), {nudge_pct:25, stop_pct:12});
+assert.deepStrictEqual(m.resolveThresholds({"ctx.nudge_pct":"5","ctx.stop_pct":"30"}), {nudge_pct:30, stop_pct:20}); // stop>nudge→폴백
+assert.deepStrictEqual(m.resolveThresholds({"ctx.nudge_pct":"-5","ctx.stop_pct":"3"}), {nudge_pct:30, stop_pct:20}); // 음수→폴백
 
 // 토큰 누적.
 assert.strictEqual(m.accumulateTokens({input:100,output:20,reasoning:5,cache:{read:10,write:3}}), 138);
@@ -1915,7 +1915,7 @@ console.log("NODE_SELFCHECK_OK");
 def test_js_resolve_budget_pure_unit():
     """node 로 resolveBudget 순수 함수(ADR-0041 예산 precedence)를 자가검증.
 
-    precedence: ctx_window_tokens_<harness> > generic ctx_window_tokens >
+    precedence: harness.<name>.ctx_window_tokens > generic ctx.window_tokens >
     CTX_WINDOW_TOKENS_DEFAULT(200000). 각 층 >0 정수 sanity(≤0·비정수·미설정 → 다음 층).
     분모 통일 확인: resolveBudget 결과를 computeCtxState 가 stop/nudge/ok 로 판정한다.
     node 부재 시 skip (정적 검증 test_plugin_uses_resolve_budget_not_model_limit 로 게이트).
@@ -1932,26 +1932,26 @@ assert.strictEqual(typeof m.resolveBudget, "function", "missing export: resolveB
 assert.strictEqual(m.CTX_WINDOW_TOKENS_DEFAULT, 200000, "CTX_WINDOW_TOKENS_DEFAULT 미러(200000) 아님");
 
 // (a) 하네스별 오버라이드 키가 generic 보다 우선.
-assert.strictEqual(m.resolveBudget({ctx_window_tokens_opencode:"500000", ctx_window_tokens:"1000000"}, "opencode"), 500000);
-// (b) 오버라이드 없으면 generic ctx_window_tokens (back-compat·② 1M 무변경).
-assert.strictEqual(m.resolveBudget({ctx_window_tokens:"1000000"}, "opencode"), 1000000);
+assert.strictEqual(m.resolveBudget({"harness.opencode.ctx_window_tokens":"500000", "ctx.window_tokens":"1000000"}, "opencode"), 500000);
+// (b) 오버라이드 없으면 generic ctx.window_tokens (② 1M 무변경).
+assert.strictEqual(m.resolveBudget({"ctx.window_tokens":"1000000"}, "opencode"), 1000000);
 // (c) 둘 다 없으면 200000 기본.
 assert.strictEqual(m.resolveBudget({}, "opencode"), 200000);
 assert.strictEqual(m.resolveBudget(null, "opencode"), 200000);
 // (d) ≤0·비정수·공백은 그 층을 건너뛰고 다음 층으로 폴백 (0/음수 특수의미 없음).
-assert.strictEqual(m.resolveBudget({ctx_window_tokens_opencode:"0",   ctx_window_tokens:"300000"}, "opencode"), 300000);
-assert.strictEqual(m.resolveBudget({ctx_window_tokens_opencode:"-5",  ctx_window_tokens:"300000"}, "opencode"), 300000);
-assert.strictEqual(m.resolveBudget({ctx_window_tokens_opencode:"abc", ctx_window_tokens:"300000"}, "opencode"), 300000);
-assert.strictEqual(m.resolveBudget({ctx_window_tokens_opencode:"1.5", ctx_window_tokens:"300000"}, "opencode"), 300000);
-assert.strictEqual(m.resolveBudget({ctx_window_tokens_opencode:"  ",  ctx_window_tokens:"300000"}, "opencode"), 300000);
+assert.strictEqual(m.resolveBudget({"harness.opencode.ctx_window_tokens":"0",   "ctx.window_tokens":"300000"}, "opencode"), 300000);
+assert.strictEqual(m.resolveBudget({"harness.opencode.ctx_window_tokens":"-5",  "ctx.window_tokens":"300000"}, "opencode"), 300000);
+assert.strictEqual(m.resolveBudget({"harness.opencode.ctx_window_tokens":"abc", "ctx.window_tokens":"300000"}, "opencode"), 300000);
+assert.strictEqual(m.resolveBudget({"harness.opencode.ctx_window_tokens":"1.5", "ctx.window_tokens":"300000"}, "opencode"), 300000);
+assert.strictEqual(m.resolveBudget({"harness.opencode.ctx_window_tokens":"  ",  "ctx.window_tokens":"300000"}, "opencode"), 300000);
 // 모든 층 비정상 → 200000 기본.
-assert.strictEqual(m.resolveBudget({ctx_window_tokens_opencode:"x", ctx_window_tokens:"y"}, "opencode"), 200000);
+assert.strictEqual(m.resolveBudget({"harness.opencode.ctx_window_tokens":"x", "ctx.window_tokens":"y"}, "opencode"), 200000);
 // 하네스 독립: opencode 키는 claude 예산에 새지 않는다 (per-harness precedence).
-assert.strictEqual(m.resolveBudget({ctx_window_tokens_opencode:"500000"}, "claude"), 200000);
+assert.strictEqual(m.resolveBudget({"harness.opencode.ctx_window_tokens":"500000"}, "claude"), 200000);
 
 // (e) 분모 통일: resolveBudget 예산으로 computeCtxState 가 stop/nudge/ok 판정.
 const t = {nudge_pct:30, stop_pct:20};
-const lim = m.resolveBudget({ctx_window_tokens_opencode:"1000"}, "opencode");
+const lim = m.resolveBudget({"harness.opencode.ctx_window_tokens":"1000"}, "opencode");
 assert.strictEqual(lim, 1000);
 assert.strictEqual(m.computeCtxState(500, lim, t).level, "ok");    // 잔여 50%
 assert.strictEqual(m.computeCtxState(700, lim, t).level, "nudge"); // 잔여 30% (넛지 경계·<=)

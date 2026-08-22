@@ -9,7 +9,7 @@ manifest 밖이라 절대 건드리지 않으므로, upstream 갱신이 인스�
 사용:
     # 인스턴스/타깃 내부에서 실행 (self-location):
     python3 .project_manager/tools/pm_update.py --from <upstream-checkout> [--dry-run]
-    # --from 생략 시 dest local.conf 의 upstream= 을 기본으로 쓴다(pm_import 가 자동 기록):
+    # --from 생략 시 dest local.conf 의 upstream.path= 을 기본으로 쓴다(pm_import 가 자동 기록):
     python3 .project_manager/tools/pm_update.py [--dry-run]
 
     # 루트(upstream)에서 특정 templates 타깃으로 동기화:
@@ -29,7 +29,7 @@ manifest 밖이라 절대 건드리지 않으므로, upstream 갱신이 인스�
   engine.manifest 의 각 경로를 <upstream>/<path> → <dest-root>/<path> 로 복사(overwrite).
   디렉토리는 재귀. manifest 에 없는 경로는 무시. --dry-run = 변경 예정만 출력(미적용).
   --paths 지정 시 그 경로(파일 또는 디렉토리) 아래만 전파한다 — manifest 등재분에 한정하고
-  미등재 경로는 rc1 로 거부한다. 부분 전파이므로 upstream_rev baseline 기록·진입 doc
+  미등재 경로는 rc1 로 거부한다. 부분 전파이므로 upstream.rev baseline 기록·진입 doc
   마이그레이션·보호 훅 재설치·동기 후 프롬프트는 발화하지 않는다(전량 흡수로 오인 방지).
   --target 지정 시 dest-root = REPO/templates/<target>/ (타깃 자신의 manifest 우선).
   sync 적용 후에는 등록 repo 전수 **보호 훅 재설치**— 훅은 엔진 코드에서 생성되는
@@ -204,11 +204,9 @@ MANIFEST = REPO / ".project_manager" / "engine.manifest"
 #   board 를 import 하지 않는 이유는 의존 방향(pm_update 는 stdlib-only 로 돈다)이고, 실행
 #   해소를 하지 않는 이유는 무거운 external_review 코어를 업데이트 경로로 끌어오지 않기
 #   위해서다 — 여기서는 값만 시드하고 드리프트는 테스트가 잡는다.
-#   `reviewer_cmd` 는 신규 온보딩에서 만들지 않는다(레거시 채택자 전용 키).
-#   게이트 키는 `additional_reviewer_enabled` 로 개칭됐다 — 신규 기록은 신키만 쓰고,
-#   구키 `external_review_enabled` 의 fallback 은 제거됐다(유예 종료·감지 안내 1줄만 남는다).
-ADDITIONAL_REVIEWER_ENABLED_KEY = "additional_reviewer_enabled"
-LEGACY_EXTERNAL_REVIEW_ENABLED_KEY = "external_review_enabled"
+#   자유 문자열 리뷰어 커맨드 키는 폐지됐다 — 대상은 구조화 튜플 하나뿐이다. 구표기 키가 남은
+#   conf 는 값을 소비하는 지점에서 fail-loud 다(공용 로더 `local_conf.assert_no_legacy`).
+ADDITIONAL_REVIEWER_ENABLED_KEY = "additional_reviewer.enabled"
 
 ADDITIONAL_REVIEWER_DEFAULTS: tuple[tuple[str, str], ...] = (
     (ADDITIONAL_REVIEWER_ENABLED_KEY, "true"),
@@ -221,59 +219,44 @@ ADDITIONAL_REVIEWER_DEFAULTS: tuple[tuple[str, str], ...] = (
 def additional_reviewer_decision_key(conf: dict[str, str]) -> str | None:
     """이미 기록된 opt-in 결정을 공급하는 키 — **신키뿐** (없으면 None).
 
-    board·external_review 사본과 같은 판정이다. 구키 fallback 이 제거됐으므로 구키만 있는 채택자는
-    **미결정**이다 — 게이트가 그 값을 읽지 않는 이상 "결정됨" 으로 접으면 그 채택자는 OFF 인 채로
-    다시 물어보지도 않는 상태에 갇힌다. 다시 묻는 것이 곧 이주 경로다(답이 신키로 기록된다).
+    board·external_review 사본과 같은 판정이다. 판정은 키 존재이고(`false` 도 결정), 구표기 키는
+    값을 공급하지 않으며 그 잔존은 conf 소비 지점에서 fail-loud 다.
     """
     return (ADDITIONAL_REVIEWER_ENABLED_KEY
             if ADDITIONAL_REVIEWER_ENABLED_KEY in conf else None)
 
 
-# 구키 감지 안내 1줄 — external_review 사본과 **같은 문구**(드리프트는 회귀가 잡는다).
-LEGACY_ENABLED_KEY_REMOVED = (
-    f"⚠ local.conf `{LEGACY_EXTERNAL_REVIEW_ENABLED_KEY}` 는 더 이상 읽지 않는다(구키 제거) — "
-    f"`{ADDITIONAL_REVIEWER_ENABLED_KEY}` 로 바꾸세요. 그 전까지 추가 리뷰어는 OFF 입니다."
-)
-
-
-def legacy_enabled_key_notice(conf: dict[str, str]) -> str | None:
-    """구키만 있어 결정이 무시되는 conf 면 안내 1줄 — external_review 판정과 같은 조건."""
-    if (LEGACY_EXTERNAL_REVIEW_ENABLED_KEY in conf
-            and ADDITIONAL_REVIEWER_ENABLED_KEY not in conf):
-        return LEGACY_ENABLED_KEY_REMOVED
-    return None
-
 ADDITIONAL_REVIEWER_OPTIN_BLOCK = (
     "# 추가 리뷰어(additional reviewer) — ON.\n"
-    "# additional_reviewer_enabled=true 는 설정된 외부 전송과 통상 과금에 대한 지속 동의다\n"
+    "# additional_reviewer.enabled=true 는 설정된 외부 전송과 통상 과금에 대한 지속 동의다\n"
     "# (리뷰마다·라운드 상한마다 비용을 다시 묻지 않는다). 프로필은 아래 3키로 교체한다.\n"
     + "".join(f"{key}={value}\n" for key, value in ADDITIONAL_REVIEWER_DEFAULTS)
 )
 
 # 이미 **유효한 대상**이 있는 conf 의 "예" 가 쓰는 블록 — 활성 플래그만 심고 대상은 손대지 않는다
 #   (board.ADDITIONAL_REVIEWER_ENABLE_ONLY_BLOCK 과 같은 값). 기본 4키를 그냥 덧붙이면 구조화
-#   튜플은 last-wins 로 갈아치워지고, 레거시 `reviewer_cmd` 와는 엔진이 거부하는 이중 대상이 된다.
+#   튜플은 last-wins 로 갈아치워져 사용자의 하네스/모델/추론 강도가 조용히 바뀐다.
 ADDITIONAL_REVIEWER_ENABLE_ONLY_BLOCK = (
     "# 추가 리뷰어(additional reviewer) — ON (이미 설정된 대상 그대로).\n"
-    "# additional_reviewer_enabled=true 는 설정된 외부 전송과 통상 과금에 대한 지속 동의다\n"
+    "# additional_reviewer.enabled=true 는 설정된 외부 전송과 통상 과금에 대한 지속 동의다\n"
     "# (리뷰마다·라운드 상한마다 비용을 다시 묻지 않는다).\n"
-    "additional_reviewer_enabled=true\n"
+    "additional_reviewer.enabled=true\n"
 )
 
 ADDITIONAL_REVIEWER_ENABLE_HINT = (
-    "local.conf 에 additional_reviewer_enabled=true + "
+    "local.conf 에 additional_reviewer.enabled=true + "
     "additional_reviewer.harness/model/reasoning"
 )
 
 # **이미 대상이 있는** conf 의 안내 — 활성 플래그 한 줄만 말한다(board 사본과 같은 값·같은 이유).
-#   기본 문장을 그대로 쓰면 구조화 3키를 *더* 적으라는 말이 돼, 레거시 `reviewer_cmd` 위에서는
-#   엔진이 거부하는 이중 대상이 되고 구조화 튜플 위에서는 last-wins 로 자기 선언이 덮인다.
-ADDITIONAL_REVIEWER_ENABLE_ONLY_HINT = "local.conf 에 additional_reviewer_enabled=true"
+#   기본 문장을 그대로 쓰면 구조화 3키를 *더* 적으라는 말이 돼, 이미 대상이 있는 conf 에서는
+#   구조화 튜플 위에서는 last-wins 로 자기 선언이 덮인다.
+ADDITIONAL_REVIEWER_ENABLE_ONLY_HINT = "local.conf 에 additional_reviewer.enabled=true"
 
 # 거절이 기록하는 블록 — 결정 자체는 대상과 무관하므로 한 벌뿐이다(board 사본과 같은 값).
 ADDITIONAL_REVIEWER_DECLINE_BLOCK = (
     "# 추가 리뷰어 — 기본 OFF. 켜려면 true 로.\n"
-    "additional_reviewer_enabled=false\n"
+    "additional_reviewer.enabled=false\n"
 )
 
 # opt-in 커밋 결과 — 락 안에서 **다시 판정한** 사실이다(질문 시점의 판정이 아니다·board 동형).
@@ -297,41 +280,29 @@ ADDITIONAL_REVIEWER_KEYS: tuple[str, ...] = (
     ADDITIONAL_REVIEWER_MODEL_KEY,
     ADDITIONAL_REVIEWER_REASONING_KEY,
 )
-LEGACY_REVIEWER_CMD_KEY = "reviewer_cmd"
-
-# 판정 결과 — 대상 없음 / 레거시 자유 커맨드 / 구조화 튜플.
+# 판정 결과 — 대상 없음 / 구조화 튜플.
 REVIEWER_TARGET_NONE = "none"
-REVIEWER_TARGET_LEGACY = "legacy"
 REVIEWER_TARGET_STRUCTURED = "structured"
 
 
 class AdditionalReviewerTargetError(RuntimeError):
-    """기존 대상이 그 자체로 깨져 있어 온보딩이 결정을 쓸 수 없는 형상(부분 튜플·이중 대상)."""
+    """기존 대상이 그 자체로 깨져 있어 온보딩이 결정을 쓸 수 없는 형상(부분 튜플)."""
 
 
 def classify_additional_reviewer_target(conf: dict[str, str]) -> str:
     """활성 플래그만 없는 conf 에 **이미 어떤 대상이 있는가**를 판정한다
     (board.classify_additional_reviewer_target 와 같은 계약·같은 판정).
 
-    · 구조화 키가 하나도 없고 비어있지 않은 `reviewer_cmd` 도 없으면 `none`(대상 없음).
-    · 구조화 키 없이 비어있지 않은 `reviewer_cmd` 만 있으면 `legacy`.
+    · 구조화 키가 하나도 없으면 `none`(대상 없음).
     · 구조화 키가 하나라도 **있으면**(값이 비어 있어도 선언이다) harness/model 동반 필수이고,
       그 둘이 온전하면 `structured`. 판정 기준을 값의 truthiness 로 하면 비운 채 선언한 부분
       튜플이 '대상 없음'으로 떨어져, 온보딩이 기본 4키를 덧써 사용자의 선언을 갈아치운다.
-    · 부분 튜플·구조화+레거시 이중 대상은 `AdditionalReviewerTargetError` 다 — 어느 쪽이 이기는지
-      추측해 쓰지 않는다(external_review 의 해소 규칙과 같은 판정·같은 이유).
+    · 부분 튜플은 `AdditionalReviewerTargetError` 다 — 절반만 반영된 대상을 추측해 쓰지 않는다
+      (external_review 의 해소 규칙과 같은 판정·같은 이유).
     """
     present = tuple(key for key in ADDITIONAL_REVIEWER_KEYS if key in conf)
-    legacy_cmd = (conf.get(LEGACY_REVIEWER_CMD_KEY) or "").strip()
     if not present:
-        return REVIEWER_TARGET_LEGACY if legacy_cmd else REVIEWER_TARGET_NONE
-    if legacy_cmd:
-        raise AdditionalReviewerTargetError(
-            f"대상이 둘입니다 — 구조화 프로필({', '.join(present)})과 legacy "
-            f"`{LEGACY_REVIEWER_CMD_KEY}={legacy_cmd}` 가 같은 local.conf 에 있습니다. "
-            f"하나만 남기세요(권장: `{LEGACY_REVIEWER_CMD_KEY}` 를 지우고 "
-            f"{ADDITIONAL_REVIEWER_PREFIX}.* 유지)."
-        )
+        return REVIEWER_TARGET_NONE
     missing = ", ".join(
         key for key in (ADDITIONAL_REVIEWER_HARNESS_KEY, ADDITIONAL_REVIEWER_MODEL_KEY)
         if not (conf.get(key) or "").strip()
@@ -947,8 +918,8 @@ def _commit_additional_reviewer_optin(
 
     board.`_commit_additional_reviewer_optin` 과 같은 계약이다. 질문은 사람이 답할 때까지 열려
     있고, 그동안 다른 행위자가 같은 conf 를 바꿀 수 있다 — 활성 키를 켜거나, 레거시
-    `reviewer_cmd`/구조화 튜플을 새로 적거나, 부분 튜플로 깨뜨린다. 질문 **전** 판정으로 쓰면 그
-    사이 생긴 대상 위에 기본 4키가 얹혀 이중 대상·last-wins 손상이 재현된다. 재읽기→재판정→append
+    구조화 튜플을 새로 적거나, 부분 튜플로 깨뜨린다. 질문 **전** 판정으로 쓰면 그
+    사이 생긴 대상 위에 기본 4키가 얹혀 last-wins 손상이 재현된다. 재읽기→재판정→append
     를 배타락 + 단일 O_APPEND write 로 닫아 그 사이에 새 창을 만들지 않는다.
 
     반환 `(결과, 상세)` — 결과는 `OPTIN_COMMIT_*`, 상세는 broken 이면 진단 사유, 그 밖에는 커밋
@@ -976,23 +947,38 @@ def _commit_additional_reviewer_optin(
         return outcome, target
 
 
+def print_conf_migration_notice(dest_root: Path) -> None:
+    """local.conf 표기 통일 교체 안내 — **apply 를 막지 않고** 안내만 낸다.
+
+    엔진 파일은 받게 하고(막으면 채택자가 안내대로 고칠 수단 없이 갇힌다) 값을 실제로 소비하는
+    지점에서 fail-loud 한다(§교체 절차). 기본값 변경 1줄은 구표기 잔존 여부와 무관하게 나간다 —
+    키를 아예 설정하지 않은 채택자는 fail-loud 가 잡지 못하는 유일한 형상이기 때문이다.
+    """
+    local_conf = dest_root / ".project_manager" / "local.conf"
+    if not local_conf.exists():
+        return  # init 전 — 채택자 conf 가 아직 없다
+    module = _load_local_conf()
+    for line in module.migration_notice(module.load(local_conf)):
+        print(f"[pm_update] {line}")
+
+
 def maybe_prompt_external_review(dest_root: Path) -> None:
     """업데이트 후 추가 리뷰어(additional reviewer) opt-in — 아직 미설정이면 **1회** 묻는다.
 
-    코드 diff 외부 *전송*이라 기본 OFF. `additional_reviewer_enabled` **실키**가 이미 있으면
-    (true/false 무관) 묻지 않고 기존 프로필·레거시 `reviewer_cmd` 를 그대로 둔다. 구키만 있는
+    코드 diff 외부 *전송*이라 기본 OFF. `additional_reviewer.enabled` **실키**가 이미 있으면
+    (true/false 무관) 묻지 않고 기존 프로필을 그대로 둔다. 구표기 키만 있는
     conf 는 **미결정**이라 다시 묻되(그 답이 신키로 기록되는 게 이주 경로다) 먼저 안내 1줄로 왜
     다시 묻는지 말한다 — 엔진은 채택자 conf 를 대신 고쳐 쓰지 않는다(자동 마이그레이션 없음).
     비대화형은 안전쪽으로 건너뛰되 나중에 켜는 법을 1줄로 남긴다.
     board.prompt_external_review_optin 과 같은 계약이다 — "예" 는 기존 대상이 없을 때만
-    ADDITIONAL_REVIEWER_DEFAULTS 4키를 원자 기록하고, 이미 유효한 대상(레거시 `reviewer_cmd`·
+    ADDITIONAL_REVIEWER_DEFAULTS 4키를 원자 기록하고, 이미 유효한 대상(
     구조화 튜플)이 있으면 **활성 플래그 한 줄만** 덧붙여 그 대상을 byte 그대로 둔다. 어느
-    경로에서도 `reviewer_cmd` 는 만들지 않는다. 기존 대상이 깨져 있으면(부분 튜플·이중 대상)
+    기존 대상이 깨져 있으면(부분 튜플)
     질문도 기록도 하지 않고 진단만 낸다.
 
     질문 전 판정은 **질문 문구**의 입력일 뿐이다. 기록의 입력은 `_commit_additional_reviewer_optin`
     이 커밋 시점에 배타락 안에서 다시 읽어 다시 판정한다 — 사람이 답하는 동안 conf 가 바뀌면 옛
-    판정으로 쓴 기본 4키가 그사이 생긴 대상을 이중 대상/last-wins 로 망가뜨린다.
+    판정으로 쓴 기본 4키가 그사이 생긴 대상을 last-wins 로 망가뜨린다.
 
     dest_root: 동기화 대상 루트 (루트 또는 타깃). local.conf 는 이 경로 기준으로 읽고 쓴다.
     --target 모드에서 루트 local.conf 를 오염시키지 않기 위해 반드시 effective_dest 를 전달한다.
@@ -1001,18 +987,12 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
     if not local_conf.exists():
         return  # init 전 — board.py init 에서 묻는다
     conf = _read_local_conf(local_conf)
-    # 구키 감지는 **판정보다 먼저** 낸다 — 아래 어느 경로로 빠지든(이미 결정됨·비대화형·질문)
-    #   그 채택자는 자기 구키 줄이 더 이상 읽히지 않는다는 사실을 이 실행에서 듣는다.
-    #   업데이트는 채택자가 구키를 실제로 만나는 채널이고, 엔진은 conf 를 대신 고쳐 쓰지 않는다.
-    legacy_notice = legacy_enabled_key_notice(conf)
-    if legacy_notice:
-        print(f"[pm_update] {legacy_notice}")
     decision_key = additional_reviewer_decision_key(conf)
     if decision_key is not None:
-        # 실키로 이미 결정됨(true/false 무관·기존 프로필/레거시 키 불변). 판정은 파싱된
-        # 키 존재로 한다 — raw 텍스트 substring 으로 보면 주석(`# additional_reviewer_enabled=false`)
+        # 실키로 이미 결정됨(true/false 무관·기존 프로필 불변). 판정은 파싱된
+        # 키 존재로 한다 — raw 텍스트 substring 으로 보면 주석(`# additional_reviewer.enabled=false`)
         # 이나 안내 문장이 결정을 가로채, 켜려던 채택자가 질문도 안내도 못 받는다.
-        # maybe_prompt_delegate_optin·board.prompt_external_review_optin 과 같은 seam.
+        # board.prompt_external_review_optin 과 같은 seam.
         return
     try:
         target = classify_additional_reviewer_target(conf)
@@ -1047,7 +1027,7 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
     outcome, detail = _commit_additional_reviewer_optin(
         local_conf, answer in ("y", "yes"))
     if outcome == OPTIN_COMMIT_ALREADY:
-        print("[pm_update] 질문하는 사이 local.conf 에 additional_reviewer_enabled 결정이 생겨 "
+        print("[pm_update] 질문하는 사이 local.conf 에 additional_reviewer.enabled 결정이 생겨 "
               "그 결정을 그대로 둡니다 — 이 응답은 기록하지 않았습니다.")
     elif outcome == OPTIN_COMMIT_BROKEN:
         print(f"[pm_update] ⚠ 추가 리뷰어 설정이 이미 깨져 있어 opt-in 을 기록하지 않습니다: "
@@ -1061,52 +1041,6 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
     else:
         print("  → 추가 리뷰어 OFF (나중에 "
               f"{_additional_reviewer_enable_hint(detail)} 로 켤 수 있음).")
-
-
-def maybe_prompt_delegate_optin(dest_root: Path) -> None:
-    """동기 후 cross-harness 위임(pm_delegate) opt-in — 아직 실키 미결정이면 (
-    maybe_prompt_external_review 동형).
-
-    delegate_enabled **실키**(주석 예시가 아니라 `_read_local_conf` 가 파싱하는 활성 키)가 이미
-    있으면 결정됨 → no-op. **TTY** 면 1회 질문 — y=true·그 외/무입력=false 실키를 대상 local.conf 에
-    기록한다(질문 응답 기록이 pm_update 의 **유일한 conf write 예외**·그 외 설정 write 는 board.py
-    init 단일 채널). **비-TTY(CI/스크립트)** 면 질문·write 없이 도입 advisory 1줄만 표면화(기본 OFF
-    유지). conf 부재(init 전)면 무발화. effective_dest 기준(--target 루트 오염 방지)."""
-    local_conf = dest_root / ".project_manager" / "local.conf"
-    if not local_conf.exists():
-        return  # init 전 — board.py init 이 시드/질문한다
-    if "delegate_enabled" in _read_local_conf(local_conf):
-        return  # 실키로 이미 결정됨(주석 예시는 _read_local_conf 파싱 제외 — 미결정 취급)
-    if _is_noninteractive() or not sys.stdin.isatty():
-        # 비-TTY — 질문·write 없이 도입 안내만(기본 OFF 유지·write 는 질문 응답 경로 한정).
-        print("[pm_update] pm_delegate cross-harness 위임 채널이 도입됐습니다(기본 OFF) — "
-              "`board.py init` 재실행으로 local.conf 에 `delegate_*` 주석 시드/opt-in 질문을 받거나 "
-              "수동 참조하세요(켜면 프롬프트/코드가 외부 하네스로 전송·과금).")
-        return
-    print("\n[pm_update] cross-harness 위임(pm_delegate)을 켤까요? 켜면 위임 프롬프트/코드가 외부 "
-          "하네스로 *전송*되고 그 하네스에 *과금*됩니다.")
-    try:
-        answer = input("  켜기 [y/N]: ").strip().lower()
-    except EOFError:
-        # stdin EOF(Ctrl-D) = 기본 거절 → false 실키를 **기록**(매번 재질문 방지·opt-in 결정 박제).
-        answer = ""
-    # 기록은 추가 리뷰어 opt-in 과 같은 규약이다 — 전 writer 공용 배타락 안에서 재읽기·재판정 뒤
-    # **단일 원자 추가**(선행 개행 포함). 락 밖에서 붙이면 같은 conf 를 통째 교체하는
-    # writer(board init 병합·`pm_import._write_conf_keys`)가 이 결정을 덮는다.
-    accepted = answer in ("y", "yes")
-    block = ("# cross-harness 위임 — ON.\ndelegate_enabled=true\n" if accepted else
-             "# cross-harness 위임 — 기본 OFF. 켜려면 true 로.\ndelegate_enabled=false\n")
-    with _local_conf_write_lock(local_conf) as lock:
-        if "delegate_enabled" in _read_local_conf(local_conf):
-            # 질문하는 사이 결정이 생겼다 — 그 결정이 이긴다(이 응답은 버린다·byte 보존).
-            print("  (질문하는 사이 local.conf 에 delegate_enabled 결정이 생겨 그대로 둡니다 "
-                  "— 이 응답은 기록하지 않았습니다.)")
-            return
-        _append_local_conf_atomic(local_conf, block, lock)
-    if accepted:
-        print("  ✓ cross-harness 위임 ON (delegate_enabled=true·외부 송신·과금 수용).")
-    else:
-        print("  → cross-harness 위임 OFF (나중에 local.conf delegate_enabled=true 로 켤 수 있음).")
 
 
 def read_manifest(path: Path) -> list[ManifestEntry]:
@@ -1261,22 +1195,28 @@ def _entry_target_owned_flag(entry) -> bool:
     return bool(getattr(entry, "target_owned", False))
 
 
-def _read_local_conf(path: Path) -> dict[str, str]:
-    """local.conf → key=value dict. board.local_config 파싱 규칙 미러.
+def _load_local_conf():
+    """공용 local.conf 로더(`local_conf.py`)를 같은 tools/ 에서 경로 로드한다.
 
-    `KEY=value` 줄만 채택. `#` 주석·빈 줄·`=` 없는 줄은 무시. 미존재 → {}. stdlib only —
-    board 를 import 하지 않는다(pm_update 는 stdlib-only·결합 회피). 같은 키 중복 시 마지막 값.
+    이 모듈의 다른 형제 로드와 같이 `allow_unverified=True` 다 — pm_update 는 **세대 혼합을
+    해소하는 쪽**이라 형제 rev 불일치를 이유로 자기 실행을 막으면 그 혼합을 고칠 수단이 사라진다
+    (rev 판정은 `_verify_engine_rev_convergence` 가 동기 대상 트리에 대해 따로 한다).
     """
-    conf: dict[str, str] = {}
-    if not path.exists():
-        return conf
-    for line in _read_text_shared(path, encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        conf[key.strip()] = val.strip()
-    return conf
+    return _load_module_from_path(
+        Path(__file__).resolve().parent / "local_conf.py", "local_conf.py",
+        allow_unverified=True, cache=True,
+        cache_key=f"_project_manager_local_conf:{Path(__file__).resolve().parent}",
+    )
+
+
+def _read_local_conf(path: Path) -> dict[str, str]:
+    """local.conf → key=value dict (공용 로더 `local_conf.load` · **판정 없음**).
+
+    apply 경로가 이 함수를 지난다 — 구표기 conf 를 가진 채택자도 **엔진 파일은 받아야** 안내대로
+    고칠 수 있다. 그래서 여기서는 `assert_no_legacy` 를 부르지 않는다(값을 실제로 소비하는
+    지점이 부른다·§교체 절차). 미존재/읽기 실패 → {}.
+    """
+    return _load_local_conf().load(path).values
 
 
 def _load_repo_owned_files():
@@ -1900,7 +1840,7 @@ def _load_pm_render():
 def _load_pm_import():
     """pm_import 모듈을 같은 tools/ 에서 직접 로드 (_load_pm_render 패턴 동형).
 
-    upstream_rev baseline 기록(매 sync)에 pm_import 의 URL 안전 git 호출
+    upstream.rev baseline 기록(매 sync)에 pm_import 의 URL 안전 git 호출
     (read_upstream_rev — argv-list·timeout·GIT_TERMINAL_PROMPT=0)과 local.conf set-or-replace
     (`_set_conf_keys` — record_upstream_rev 와 동일 백엔드)를 *재사용*한다 — pm_update 가 자체
     git/conf-write 를 중복 구현하지 않게(엔진 stdlib-only 철학 안에서 검증된 안전 계약을 상속).
@@ -2278,7 +2218,7 @@ def summarize_upstream_changes(
 ) -> dict:
     """upstream 로컬 checkout 의 baseline..HEAD 변경점을 read-only 로 요약한다.
 
-    채택자가 받은 baseline(`upstream_rev`) ↔ 그 이후 upstream HEAD 에 쌓인 변경을 *이미 로컬에
+    채택자가 받은 baseline(`upstream.rev`) ↔ 그 이후 upstream HEAD 에 쌓인 변경을 *이미 로컬에
     있는* checkout 에서 `git log`/`diff --name-status` 로 집계한다 — **fetch/clone 안 함**
     (네트워크 0). git 안전 계약(argv-list·timeout·GIT_TERMINAL_PROMPT=0·config
     격리)은 pm_import._real_upstream_git_runner 를 재사용한다(git_runner 미주입 시). 테스트는
@@ -2396,7 +2336,7 @@ def _resolve_dest_source(args) -> tuple:
     """args(--target·--from) → (rc, dest_root, source_root). rc≠0 이면 메시지는 이미 출력됨.
 
     dest/source 해소는 sync(main)와 read-only --changes가 공유한다 — 둘 다
-    같은 우선순위(명시 --from local.conf upstream= 에러)·URL 게이트·stale
+    같은 우선순위(명시 --from local.conf upstream.path= 에러)·URL 게이트·stale
     가드를 거쳐야 일관적이다. 추출로 두 진입이 같은 코드 경로를 탄다(중복 0). 성공 시 rc=0 +
     (dest_root[None=self-loc], source_root[디렉토리 검증 통과]). 실패 시 rc≠0(메시지 stderr 출력)
     + (None, None).
@@ -2412,18 +2352,25 @@ def _resolve_dest_source(args) -> tuple:
         dest_root = None  # 호출부가 REPO fallback 사용
 
     effective_dest = dest_root if dest_root is not None else REPO
+    # 교체 안내는 **어떤 분기보다 먼저** 나간다 — dry-run·read-only·해소 실패(구표기 `upstream=`
+    # 만 있는 채택자는 여기서 rc=1 로 끝난다)까지 포함해 이 실행이 무엇을 하든 채택자는 기본값
+    # 변경 1줄과 키 단위 지목을 받는다. 성공 반환 뒤에 두면 통지보다 새 기본값이 먼저 활성화된다.
+    # 예외는 기계 판독 모드뿐이다(`--changes --count-only`/`--log` 의 stdout 은 값 하나라
+    # 안내를 실으면 파싱이 깨진다) — 그 두 모드는 파일을 배달하지 않는 조회면이다.
+    if not (getattr(args, "count_only", False) or getattr(args, "log", False)):
+        print_conf_migration_notice(effective_dest)
 
-    # ── upstream(source) 해소 — 순서: 명시 --from local.conf upstream= 에러.
+    # ── upstream(source) 해소 — 순서: 명시 --from local.conf upstream.path= 에러.
     #    침묵 폴백 없음. stale(부재/비-디렉토리) 경로는 자동 진행하지 않고 명확한 에러로 멈춘다.
     if args.source:
         source_root = Path(args.source).resolve()
     else:
         local_conf = effective_dest / ".project_manager" / "local.conf"
-        stored = _read_local_conf(local_conf).get("upstream", "").strip()
+        stored = _read_local_conf(local_conf).get("upstream.path", "").strip()
         if not stored:
             print(
                 "오류: upstream 미등록 — --from <checkout> 를 주거나 "
-                f"{local_conf} 에 `upstream=` 를 등록하라 "
+                f"{local_conf} 에 `upstream.path=` 를 등록하라 "
                 "(이 프로젝트를 한 번 pm_import 하면 자동 기록된다).",
                 file=sys.stderr,
             )
@@ -2449,11 +2396,11 @@ def _resolve_dest_source(args) -> tuple:
     # stale 가드: 해소된 upstream 이 부재/디렉토리 아님 → 자동 진행 금지(명확한 에러). 기존
     # missing-manifest(rc 2)와 구분되는 메시지·rc(=1)로 "upstream 자체가 잘못됐다"를 알린다.
     if not source_root.is_dir():
-        origin = "--from" if args.source else f"local.conf upstream= ({effective_dest}/.project_manager/local.conf)"
+        origin = "--from" if args.source else f"local.conf upstream.path= ({effective_dest}/.project_manager/local.conf)"
         print(
             f"오류: upstream 경로가 디렉토리가 아니거나 존재하지 않음: {source_root} "
             f"(출처: {origin}). 체크아웃이 이동/삭제됐다면 --from 으로 올바른 경로를 주거나 "
-            "local.conf 의 upstream= 을 갱신하라.",
+            "local.conf 의 upstream.path= 을 갱신하라.",
             file=sys.stderr,
         )
         return 1, None, None
@@ -2465,7 +2412,7 @@ def _run_changes(args) -> int:
     """`--changes` read-only 분기 — baseline..HEAD 변경점 요약 출력(실 sync 안 함).
 
     dest/source 해소는 sync 와 공유(_resolve_dest_source) — URL upstream 은 거기서 명확 에러로
-    멈춘다(엔진은 git clone/fetch 안 함). baseline(`upstream_rev`)은 *dest* local.conf
+    멈춘다(엔진은 git clone/fetch 안 함). baseline(`upstream.rev`)은 *dest* local.conf
     에서 읽는다(매 sync 시 pm_update 가 기록한 마지막 동기 기준점). 전부 fail-soft·exit 0(graceful
     안내) — baseline 미기록·HEAD==baseline·baseline 도달불가 각각 메시지로 surface 한다.
     """
@@ -2475,12 +2422,12 @@ def _run_changes(args) -> int:
 
     effective_dest = dest_root if dest_root is not None else REPO
     baseline = _read_local_conf(
-        effective_dest / ".project_manager" / "local.conf").get("upstream_rev", "").strip()
+        effective_dest / ".project_manager" / "local.conf").get("upstream.rev", "").strip()
 
     # baseline 미기록(아직 sync 한 적 없음·구 import) — graceful 안내(exit 0). 다음 sync 후 추적된다.
     if not baseline:
         print(
-            "upstream 변경: baseline 미기록 — 아직 동기 baseline(upstream_rev)이 local.conf 에 "
+            "upstream 변경: baseline 미기록 — 아직 동기 baseline(upstream.rev)이 local.conf 에 "
             "없다. 다음 `pm-update`(실 sync) 후 baseline 이 기록되면 변경점이 추적된다."
         )
         return 0
@@ -2574,17 +2521,17 @@ def _run_changes(args) -> int:
 
 
 # 경로 upstream 에서 baseline 과 *함께* 기록하는 현재-관찰 키 (board._DRIFT_SEEN_KEY 동명).
-_SEEN_REV_KEY = "upstream_seen_rev"
+_SEEN_REV_KEY = "upstream.seen_rev"
 
 
 def _upstream_shape(pm_import, dest_root: Path) -> str:
-    """dest local.conf 의 `upstream=` 값 모양 — 'url' | 'path' (네트워크 0).
+    """dest local.conf 의 `upstream.path=` 값 모양 — 'url' | 'path' (네트워크 0).
 
     seen-rev 동시 기록의 분기 입력이다. 미등록(`--from` 직접 지정·구 import)·분류 실패는
     `_resolve_dest_source` 와 동일하게 **보수적으로 'path'** 취급한다(기존 동작·fail-soft).
     """
     stored = _read_local_conf(
-        dest_root / ".project_manager" / "local.conf").get("upstream", "").strip()
+        dest_root / ".project_manager" / "local.conf").get("upstream.path", "").strip()
     if not stored:
         return "path"
     try:
@@ -2596,12 +2543,12 @@ def _upstream_shape(pm_import, dest_root: Path) -> str:
 def _upstream_rev_updates(pm_import, dest_root: Path, rev: str) -> dict[str, str]:
     """이번에 기록할 rev 키 계획 — baseline 은 항상, 관찰값은 **경로 형상에서만**.
 
-    형상 입력은 대상 conf 의 현재 `upstream=` 값이라 이 계산은 conf 락 구간 안에서만 유효하다
+    형상 입력은 대상 conf 의 현재 `upstream.path=` 값이라 이 계산은 conf 락 구간 안에서만 유효하다
     (락 밖에서 세운 계획은 커밋 시점에 이미 낡을 수 있다 — 동시 `upstream set` 이 path↔URL 을
-    뒤집으면 stale 형상으로 `upstream_seen_rev` 을 잘못 쓰거나 빠뜨린다). 계획을 락 안에서 다시
+    뒤집으면 stale 형상으로 `upstream.seen_rev` 을 잘못 쓰거나 빠뜨린다). 계획을 락 안에서 다시
     세울 수 있게 분리한 조각이다.
     """
-    updates = {"upstream_rev": rev}
+    updates = {"upstream.rev": rev}
     if _upstream_shape(pm_import, dest_root) == "path":
         updates[_SEEN_REV_KEY] = rev
     return updates
@@ -2609,7 +2556,7 @@ def _upstream_rev_updates(pm_import, dest_root: Path, rev: str) -> dict[str, str
 
 def _warn_missing_conf_for_rev(local_conf: Path) -> tuple[bool, dict[str, str]]:
     """local.conf 부재 — rev 기록을 graceful 생략하고 `record_upstream_revs` 반환값을 낸다."""
-    print(f"경고: local.conf 없음 ({local_conf}) — upstream_rev 기록 건너뜀.", file=sys.stderr)
+    print(f"경고: local.conf 없음 ({local_conf}) — upstream.rev 기록 건너뜀.", file=sys.stderr)
     return False, {}
 
 
@@ -2621,9 +2568,9 @@ def record_upstream_revs(dest_root: Path, source_root: Path) -> tuple[bool, dict
     baseline 과 같아서 "엔진이 썼다"와 구분되지 않는다). 기록 생략 시 `(False, {})`.
 
     기록 키:
-      - `upstream_rev`      (baseline·항상) — drift-lint의 "마지막 동기 이후" 기준점
+      - `upstream.rev`      (baseline·항상) — drift-lint의 "마지막 동기 이후" 기준점
         pm_import(import 시)와 여기(매 sync) 둘 다 갱신해야 그 의미가 성립한다.
-      - `upstream_seen_rev` (현재 관찰값·**경로 upstream 한정**) — 경로 형상은 fetch 채널이
+      - `upstream.seen_rev` (현재 관찰값·**경로 upstream 한정**) — 경로 형상은 fetch 채널이
         따로 없어 *동기 시점의 로컬 checkout rev 가 곧 관찰값*이다('로컬 경로'
         분기와 동일 규정). baseline 만 갱신하면 두 키가 영구히 어긋나 정상 흡수 직후에도 drift
         거짓 경보가 상시 뜬다(실측). URL 형상은 **건드리지 않는다** — 스킬층이 fetch 후
@@ -2636,9 +2583,9 @@ def record_upstream_revs(dest_root: Path, source_root: Path) -> tuple[bool, dict
     임계 구간 본문)를 재사용한다. git repo 아님·HEAD 해소 실패·pm_import 로드 실패·local.conf
     부재는 **graceful 생략**(best-effort — sync 자체는 안 깬다).
 
-    conf 존재 판정·형상 판정(`upstream=` 읽기)·updates 계산·atomic write·실효값 검증은 **한
+    conf 존재 판정·형상 판정(`upstream.path=` 읽기)·updates 계산·atomic write·실효값 검증은 **한
     락 구간**이다 — 형상을 락 밖에서 읽으면 동시 `pm-config upstream set` 이 path↔URL 을 뒤집는
-    사이 stale 형상으로 계획이 굳어, URL 이 된 conf 에 `upstream_seen_rev`(스킬층 소유)을 쓰거나
+    사이 stale 형상으로 계획이 굳어, URL 이 된 conf 에 `upstream.seen_rev`(스킬층 소유)을 쓰거나
     path 가 된 conf 에서 그 키를 빠뜨린다. source rev 읽기(git·네트워크)는 대상 conf 와 무관하므로
     락 밖이다 — 사람/네트워크 대기를 임계 구역에 넣지 않는다는 seam 규약 그대로다.
     """
@@ -2677,7 +2624,7 @@ def record_upstream_revs(dest_root: Path, source_root: Path) -> tuple[bool, dict
     except Exception as exc:  # noqa: BLE001 — 사본 skew 만 생략으로 내린다(그 밖은 종전대로 전파).
         if not _absorb_engine_rev_skew_for_recovery(exc, "record_upstream_revs.write"):
             raise
-        print(f"경고: 엔진 사본 rev 혼합으로 upstream_rev 기록을 건너뛴다 ({exc}) — "
+        print(f"경고: 엔진 사본 rev 혼합으로 upstream.rev 기록을 건너뛴다 ({exc}) — "
               "다음 pm-update 가 기록한다(엔진 파일 적용은 유지).", file=sys.stderr)
         return False, {}
 
@@ -2699,8 +2646,8 @@ def converge_upstream_revs(
     묻는다). manifest skew 억제는 rc 축이 아니라 baseline 축이므로 그 판정과 독립이다."""
     if skew_status == "skew":
         print(
-            f"→ manifest skew({len(skew_new)}건)로 upstream_rev baseline(+경로 upstream 의 "
-            "upstream_seen_rev 관찰값) 갱신을 **억제**한다 — drift-lint 가 계속 이 skew 를 울리게 "
+            f"→ manifest skew({len(skew_new)}건)로 upstream.rev baseline(+경로 upstream 의 "
+            "upstream.seen_rev 관찰값) 갱신을 **억제**한다 — drift-lint 가 계속 이 skew 를 울리게 "
             "둔다. 로컬 engine.manifest 를 reconcile 한 뒤 다시 pm-update 하라(신규 등재분 "
             ")."
         )
@@ -2709,7 +2656,7 @@ def converge_upstream_revs(
         # manifest skew 억제와 **같은 패턴**이다 — 사본 rev 가 상류로 수렴하지 않았는데 baseline 을
         #   박으면 "여기까지 흡수함" 이 되어 drift-lint 가 침묵한다(거짓 최신). 위 경고가 이미
         #   어긋난 사본을 지목했으므로 여기서는 억제 사실만 한 줄로 남긴다.
-        print("→ 엔진 사본 rev 미수렴으로 upstream_rev baseline(+`upstream_seen_rev`) 갱신을 "
+        print("→ 엔진 사본 rev 미수렴으로 upstream.rev baseline(+`upstream.seen_rev`) 갱신을 "
               "**억제**한다 — 수렴한 뒤의 실행이 기록한다.")
         return False
 
@@ -2718,9 +2665,9 @@ def converge_upstream_revs(
     # 거짓으로 뜬다.
     changed, recorded = record_upstream_revs(dest_root, source_root)
     if changed:
-        seen_note = " (+upstream_seen_rev 동시 기록)" if _SEEN_REV_KEY in recorded else ""
-        print("✓ local.conf upstream_rev baseline 갱신 (drift-lint 기준점): "
-              f"{recorded['upstream_rev']}{seen_note}")
+        seen_note = " (+upstream.seen_rev 동시 기록)" if _SEEN_REV_KEY in recorded else ""
+        print("✓ local.conf upstream.rev baseline 갱신 (drift-lint 기준점): "
+              f"{recorded['upstream.rev']}{seen_note}")
     return True
 
 
@@ -2734,7 +2681,7 @@ def detect_manifest_skew(
     """upstream engine.manifest ↔ 로컬(sync 에 쓰인) manifest 대조 — 신규 등재분 탐지.
 
     로컬 manifest 가 구형이면 `pm_update` 는 로컬 등재분만 복사해 upstream 이 새로 등재한 엔진
-    경로(신규 등재분)가 도달하지 않는데, upstream_rev baseline 은 무조건 최신으로 갱신돼
+    경로(신규 등재분)가 도달하지 않는데, upstream.rev baseline 은 무조건 최신으로 갱신돼
     drift-lint 가 "최신"으로 침묵한다(구형 identity_args 잔존 →
     pm_handoff AttributeError). 이 함수는 그 skew 를 **탐지만** 한다 — baseline 억제/경고는
     호출부(main)가, 신규 등재분 실제 도달(자기치유)은 이 맡는다(분리: 탐지는 무해).
@@ -3511,24 +3458,24 @@ def _installed_entry_notation_manifests(
     return paths
 
 
-# local.conf key(lowercase) → operational token key(uppercase·pm_render). board.py init 은
-# py·test_cmd·project_name 만 기록 — 나머지(project_root·project_tagline·date)는 local.conf
-# 에 없으므로 매핑 부재 시 빈값(render 시 그 토큰이 남아있으면 leak assertion 이 잡는다·그러나
-# 출하 어댑터의 operational 토큰은 import sed 로 이미 리터럴이라 render 시점엔 보통 부재 → no-op).
+# local.conf key → operational token key(uppercase·pm_render). board.py init 은
+# runtime.py·test.cmd·project.name 만 기록 — 나머지(project.root·project.tagline·project.date)는
+# local.conf 에 없으므로 매핑 부재 시 빈값(render 시 그 토큰이 남아있으면 leak assertion 이 잡는다·
+# 그러나 출하 어댑터의 operational 토큰은 import sed 로 이미 리터럴이라 render 시점엔 보통 부재 → no-op).
 _LOCAL_CONF_TO_OPERATIONAL = {
-    "project_name": "PROJECT_NAME",
-    "project_tagline": "PROJECT_TAGLINE",
-    "project_root": "PROJECT_ROOT",
-    "py": "PY",
-    "test_cmd": "TEST_CMD",
-    "date": "DATE",
+    "project.name": "PROJECT_NAME",
+    "project.tagline": "PROJECT_TAGLINE",
+    "project.root": "PROJECT_ROOT",
+    "runtime.py": "PY",
+    "test.cmd": "TEST_CMD",
+    "project.date": "DATE",
     # opencode 어댑터 전용 — pm_import 가 import 시 local.conf 에 기록(모델 해소 시만).
     # self-update 의 @source 재렌더가 `.opencode/agents` 를 렌더할 때 이 매핑으로
-    # local.conf 재유도. **미해소**(opencode 없이 import 한 채택자·local.conf 에 opencode_pro_model
+    # local.conf 재유도. **미해소**(opencode 없이 import 한 채택자·local.conf 에 harness.opencode.pro_model
     # 부재)면 render_adapter 가 leak 으로 rc-fail 하지 않고 intentional-TODO 로 graceful 중화한다
     # (pm_render.neutralize_model_todo·import 대칭) — 한 토큰 미해소가 엔진/타 어댑터 update
     # 전체를 막지 않는다(부분-graceful). claude tree 엔 토큰 부재 → no-op.
-    "opencode_pro_model": "OPENCODE_PRO_MODEL",
+    "harness.opencode.pro_model": "OPENCODE_PRO_MODEL",
     # 위임 모델/추론 토큰(`delegate.<role>[.<tier>].{model,reasoning}`)은 여기 손으로 적지 않는다 —
     # pm_render.DELEGATE_MODEL_CONF_KEYS 한 표를 역전해 얹는다(`_local_conf_operational_map`).
 }
@@ -3583,7 +3530,7 @@ def _operational_from_local_conf(dest_root: Path) -> tuple[dict[str, str], list[
     단일 진실로 재유도하기 위한 것.
 
     **값이 빈 문자열인 키도 dict 에서 제외**한다(부재와 동일 취급) — 빈값을 그대로
-    넘기면 렌더가 토큰을 빈 문자열로 silent 치환해(예: `project_name=` 빈값 → description 이
+    넘기면 렌더가 토큰을 빈 문자열로 silent 치환해(예: `project.name=` 빈값 → description 이
     " 프로젝트") 탐지 신호가 사라진다. 제외하면 토큰이 잔존해
     render 의 _assert_no_leak 가 leak 으로 잡는다(silent-empty = leak 클래스). 제외된 빈값
     token-key 목록을 함께 반환해 render_adapter 가 leak 힌트("값을 채우라")에 싣게 한다.
@@ -4740,8 +4687,8 @@ def _resolve_local_manifest(effective_dest: Path, source_root: Path) -> list:
 # (2) 세대 원본에서 operational 토큰을 줄-경계 wildcard 로, free-form 토큰(`{{PROJECT_CONSTRAINTS}}`)
 # 을 *리터럴*(미채움=pristine 요구)로 둔 패턴에 re.fullmatch 한다. operational=출하 렌더(전 채택자
 # 결정적)라 wildcard(=미수정), free-form=채택자 FILL 영역이라 리터럴 요구(채웠으면 커스텀 흔적→무손
-# loud). 이로써 local.conf 가 tagline/date 를 보존하지 않아도(board.py init 은 py·test_cmd·
-# project_name 만 기록) 세대 판정이 성립한다 — 재렌더 대조(local.conf 미보유 토큰서 실패)보다 강건.
+# loud). 이로써 local.conf 가 tagline/date 를 보존하지 않아도(board.py init 은 `runtime.py`·
+# `test.cmd`·`project.name` 만 기록) 세대 판정이 성립한다 — 재렌더 대조(local.conf 미보유 토큰서 실패)보다 강건.
 # 매칭 시 operational 값을 *포획*해 신형 재렌더에 재사용(채택자 tagline 보존).
 
 # pm_import._mark_todos 가 manual-fill 시 free-form placeholder 줄 끝에 덧붙이는 마커 — 정규화로
@@ -6150,7 +6097,7 @@ def _main(argv: list[str] | None = None) -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "--from 생략 시 <dest>/.project_manager/local.conf 의 `upstream=` 값을 기본으로 쓴다 "
+            "--from 생략 시 <dest>/.project_manager/local.conf 의 `upstream.path=` 값을 기본으로 쓴다 "
             "(pm_import 가 한 번 import 하면 자동 기록·--from 명시로 override 가능). "
             "단 upstream= 이 **URL**(릴리스 추적 기본)이면 엔진은 로컬 파일만 복사하므로 "
             "(git clone/fetch 안 함) 자동 진행하지 않고 명확한 에러로 멈춘다 — "
@@ -6160,7 +6107,7 @@ def _main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--from", dest="source", required=False, default=None,
                     help="upstream 프레임워크 checkout 경로 "
-                         "(생략 시 local.conf 의 upstream= 사용)")
+                         "(생략 시 local.conf 의 upstream.path= 사용)")
     ap.add_argument("--dry-run", action="store_true")
     target_group = ap.add_mutually_exclusive_group()
     target_group.add_argument(
@@ -6189,7 +6136,7 @@ def _main(argv: list[str] | None = None) -> int:
         help=(
             "명시한 경로만 전파한다(opt-in 부분 전파·반복 지정 가능). manifest 등재 경로만 "
             "허용하며 미등재 경로는 거부한다(rc1·조용한 무전파 없음). 경로는 repo 루트 상대 "
-            "(파일 또는 디렉토리)다. 전량 흡수가 아니므로 upstream_rev baseline 기록·진입 doc "
+            "(파일 또는 디렉토리)다. 전량 흡수가 아니므로 upstream.rev baseline 기록·진입 doc "
             "마이그레이션·보호 훅 재설치·동기 후 프롬프트는 건너뛴다(부분 전파를 '최신' 으로 "
             "박으면 drift-lint 가 거짓 침묵한다). --target·--all-targets 와 조합 가능하고 "
             "--changes 와는 함께 쓸 수 없다."
@@ -6200,7 +6147,7 @@ def _main(argv: list[str] | None = None) -> int:
         "--changes",
         action="store_true",
         help=(
-            "받은 upstream baseline(local.conf upstream_rev) ↔ 그 이후 upstream HEAD 변경점을 "
+            "받은 upstream baseline(local.conf upstream.rev) ↔ 그 이후 upstream HEAD 변경점을 "
             "read-only 로 요약(실 sync 안 함). 엔진 영향(manifest 경로)/그 외 분리. "
             "upstream 이 로컬 checkout 일 때만(URL 은 명확 에러·git clone/fetch 안 함)."
         ),
@@ -6752,7 +6699,6 @@ def _main(argv: list[str] | None = None) -> int:
             if converge_upstream_revs(
                     effective_dest, source_root, skew_status, skew_new):
                 maybe_prompt_external_review(effective_dest)
-                maybe_prompt_delegate_optin(effective_dest)
         return 0
     if args.dry_run:
         print(f"[dry-run] {len(changes)} 파일 변경 예정 (적용 안 함).")
@@ -6828,9 +6774,9 @@ def _main(argv: list[str] | None = None) -> int:
     else:
         print_instance_owned_delta()
 
-    # upstream_rev baseline 갱신 — 매 sync 마다 source(upstream) HEAD 를
+    # upstream.rev baseline 갱신 — 매 sync 마다 source(upstream) HEAD 를
     # local.conf 에 박아 drift-lint의 "마지막 동기 이후" 기준점을 최신화한다. 경로
-    # upstream 이면 `upstream_seen_rev`(현재 관찰값)도 같은 rev 로 함께 기록한다(
+    # upstream 이면 `upstream.seen_rev`(현재 관찰값)도 같은 rev 로 함께 기록한다(
     # 경로는 동기 시점 checkout rev 가 곧 관찰값·두 키가 어긋난 채 남으면 상시 거짓 drift). 단
     # **manifest skew**(로컬 manifest 구형·신규 등재분 미도달)면 갱신을 억제한다 —
     # baseline 을 최신으로 박으면 drift-lint 가 "최신"으로 침묵해 신규 엔진 파일 누락을 은폐한다
@@ -6841,14 +6787,13 @@ def _main(argv: list[str] | None = None) -> int:
     # `--paths`(부분 전파)는 baseline·프롬프트를 건너뛴다 — 요청 경로만 옮긴 실행을 "전량 흡수"
     # 로 박으면 나머지 미전파분이 drift-lint 에서 사라진다(거짓 최신).
     if scope_paths:
-        print("  (경로 스코프 — upstream_rev baseline 을 갱신하지 않는다: 나머지 경로는 "
+        print("  (경로 스코프 — upstream.rev baseline 을 갱신하지 않는다: 나머지 경로는 "
               "여전히 미전파다.)")
         return 0
     # 미수렴이면 프롬프트도 건너뛴다 — baseline 억제와 같은 논거다(성공하지 않은 실행이 던진
     #   질문의 답을 local.conf 에 박으면, 그 실행의 rc1 과 기록이 어긋난다).
     if converge_upstream_revs(effective_dest, source_root, skew_status, skew_new):
         maybe_prompt_external_review(effective_dest)
-        maybe_prompt_delegate_optin(effective_dest)  # 동기 후 delegate opt-in(TTY 질문·비TTY 안내)
     return 0
 
 

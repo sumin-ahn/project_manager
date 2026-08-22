@@ -654,7 +654,7 @@ def _setup_repo_conf(pc, tmp_path, text):
 
 def test_upstream_show_surfaces_value(pc, tmp_path, monkeypatch, capsys):
     """`upstream show` → 현재 upstream 값 + self-describing 분류 surface."""
-    conf = _setup_repo_conf(pc, tmp_path, "upstream=https://github.com/x/y.git\n")
+    conf = _setup_repo_conf(pc, tmp_path, "upstream.path=https://github.com/x/y.git\n")
     args = argparse.Namespace(upstream_action="show")
     rc = pc.cmd_upstream(args, pm_import=_load_pm_import(), git_runner=_good_upstream_runner)
     assert rc == 0
@@ -675,16 +675,16 @@ def test_upstream_show_unregistered(pc, tmp_path, capsys):
 def test_upstream_set_url_valid_records_and_preserves_keys(pc, tmp_path):
     """`upstream set <url>` 도달성 통과 시 atomic 재기록 + 타 키·주석 보존(T-0145)."""
     conf = _setup_repo_conf(
-        pc, tmp_path, "# header\nsession=pm\nupstream=/old\ntest_cmd=pytest\n")
+        pc, tmp_path, "# header\nsession=pm\nupstream.path=/old\ntest.cmd=pytest\n")
     args = argparse.Namespace(
         upstream_action="set", value="https://github.com/foo/bar.git")
     rc = pc.cmd_upstream(args, pm_import=_load_pm_import(), git_runner=_good_upstream_runner)
     assert rc == 0
     text = conf.read_text(encoding="utf-8")
-    assert "upstream=https://github.com/foo/bar.git" in text
-    assert "upstream=/old" not in text          # 제자리 갱신(중복 아님)
+    assert "upstream.path=https://github.com/foo/bar.git" in text
+    assert "upstream.path=/old" not in text          # 제자리 갱신(중복 아님)
     assert "session=pm" in text                 # 타 키 보존
-    assert "test_cmd=pytest" in text            # 타 키 보존
+    assert "test.cmd=pytest" in text            # 타 키 보존
     assert text.startswith("# header")          # 주석 보존
 
 
@@ -693,8 +693,8 @@ def test_upstream_set_normalizes_duplicates_and_effective_value_is_requested(
     """A2 — first/last가 갈린 conf도 upstream 한 줄 + 요청 실효값으로 수렴한다."""
     conf = _setup_repo_conf(
         pc, tmp_path,
-        "# header\nsession=pm\nupstream=/first\ntest_cmd=pytest -q\n"
-        "upstream=/stale\nupstream=\nfooter=keep\n",
+        "# header\nsession=pm\nupstream.path=/first\ntest.cmd=pytest -q\n"
+        "upstream.path=/stale\nupstream.path=\nfooter=keep\n",
     )
     requested = "https://github.com/acme/framework.git"
 
@@ -705,22 +705,22 @@ def test_upstream_set_normalizes_duplicates_and_effective_value_is_requested(
 
     assert rc == 0
     text = conf.read_text(encoding="utf-8")
-    assert text.count("upstream=") == 1
-    assert pc._local_conf_value("upstream") == requested
-    assert _load_pm_import()._parse_conf_keys(text)["upstream"] == requested
+    assert text.count("upstream.path=") == 1
+    assert pc._local_conf_value("upstream.path") == requested
+    assert _load_pm_import()._parse_conf_keys(text)["upstream.path"] == requested
     board = _load_board()
     board.LOCAL_CONF = conf
-    assert board.local_config()["upstream"] == requested
-    assert "session=pm" in text and "test_cmd=pytest -q" in text and "footer=keep" in text
+    assert board.local_config()["upstream.path"] == requested
+    assert "session=pm" in text and "test.cmd=pytest -q" in text and "footer=keep" in text
     assert text.startswith("# header\n")
 
 
 def test_upstream_set_postcondition_mismatch_fails_loud(
         pc, tmp_path, monkeypatch, capsys):
     """A2 — 쓰기 뒤 last-wins 실효값이 요청과 다르면 성공을 출력하지 않는다."""
-    _setup_repo_conf(pc, tmp_path, "upstream=/old\n")
+    _setup_repo_conf(pc, tmp_path, "upstream.path=/old\n")
     pm_import = _load_pm_import()
-    monkeypatch.setattr(pm_import, "_parse_conf_keys", lambda _text: {"upstream": "/raced"})
+    monkeypatch.setattr(pm_import, "_parse_conf_keys", lambda _text: {"upstream.path": "/raced"})
 
     rc = pc.cmd_upstream(
         argparse.Namespace(upstream_action="set", value="https://github.com/acme/new.git"),
@@ -735,7 +735,7 @@ def test_upstream_set_postcondition_mismatch_fails_loud(
 
 def test_upstream_set_recomputes_installed_gate_contract(pc, tmp_path):
     """upstream 변경 즉시 등록 repo 훅의 원자 gate contract를 중앙 resolver로 재설치한다."""
-    _setup_repo_conf(pc, tmp_path, "upstream=/old\ntest_cmd=go test ./...\n")
+    _setup_repo_conf(pc, tmp_path, "upstream.path=/old\ntest.cmd=go test ./...\n")
     board = FakeBoard(
         registered=("svc",), repo_gits={"svc": "git@github.com:acme/framework.git"},
         repo_protecteds={"svc": ["main"]},
@@ -754,35 +754,35 @@ def test_upstream_set_recomputes_installed_gate_contract(pc, tmp_path):
 
 def test_upstream_set_url_unreachable_rejected(pc, tmp_path, capsys):
     """URL 도달 불가(ls-remote 실패)면 fail-closed 거부 — 기록 안 함(T-0145)."""
-    conf = _setup_repo_conf(pc, tmp_path, "upstream=/keep\n")
+    conf = _setup_repo_conf(pc, tmp_path, "upstream.path=/keep\n")
     args = argparse.Namespace(
         upstream_action="set", value="https://github.com/no/such.git")
     rc = pc.cmd_upstream(args, pm_import=_load_pm_import(), git_runner=_bad_upstream_runner)
     assert rc == 1
     assert "도달 불가" in capsys.readouterr().err
-    assert conf.read_text(encoding="utf-8") == "upstream=/keep\n"  # 무변경
+    assert conf.read_text(encoding="utf-8") == "upstream.path=/keep\n"  # 무변경
 
 
 def test_upstream_set_path_valid_records(pc, tmp_path):
     """`upstream set <path>` 가 존재+git checkout 이면 기록(경로 upstream·공동개발 특수)."""
-    conf = _setup_repo_conf(pc, tmp_path, "upstream=/old\n")
+    conf = _setup_repo_conf(pc, tmp_path, "upstream.path=/old\n")
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     args = argparse.Namespace(upstream_action="set", value=str(checkout))
     rc = pc.cmd_upstream(args, pm_import=_load_pm_import(), git_runner=_good_upstream_runner)
     assert rc == 0
-    assert f"upstream={checkout}" in conf.read_text(encoding="utf-8")
+    assert f"upstream.path={checkout}" in conf.read_text(encoding="utf-8")
 
 
 def test_upstream_set_path_nonexistent_rejected(pc, tmp_path, capsys):
     """경로 upstream 이 존재하지 않으면 fail-closed 거부 — 기록 안 함(T-0145)."""
-    conf = _setup_repo_conf(pc, tmp_path, "upstream=/keep\n")
+    conf = _setup_repo_conf(pc, tmp_path, "upstream.path=/keep\n")
     args = argparse.Namespace(
         upstream_action="set", value=str(tmp_path / "does_not_exist"))
     rc = pc.cmd_upstream(args, pm_import=_load_pm_import(), git_runner=_good_upstream_runner)
     assert rc == 1
     assert "디렉토리가 아니거나 존재하지 않음" in capsys.readouterr().err
-    assert conf.read_text(encoding="utf-8") == "upstream=/keep\n"
+    assert conf.read_text(encoding="utf-8") == "upstream.path=/keep\n"
 
 
 def test_upstream_set_unsafe_value_rejected_before_network(pc, tmp_path, capsys):
@@ -790,7 +790,7 @@ def test_upstream_set_unsafe_value_rejected_before_network(pc, tmp_path, capsys)
 
     git_runner 가 호출되지 않아야(네트워크 0) — 순수 검증이 1차 게이트(fail-closed·기록 안 함).
     """
-    conf = _setup_repo_conf(pc, tmp_path, "upstream=/keep\n")
+    conf = _setup_repo_conf(pc, tmp_path, "upstream.path=/keep\n")
     called = {"n": 0}
 
     def runner(argv):
@@ -802,7 +802,7 @@ def test_upstream_set_unsafe_value_rejected_before_network(pc, tmp_path, capsys)
     rc = pc.cmd_upstream(args, pm_import=_load_pm_import(), git_runner=runner)
     assert rc == 1
     assert called["n"] == 0, "순수 검증 실패인데도 git(네트워크)이 호출됨"
-    assert conf.read_text(encoding="utf-8") == "upstream=/keep\n"
+    assert conf.read_text(encoding="utf-8") == "upstream.path=/keep\n"
 
 
 def test_upstream_engine_missing_errors_isolated(pc, monkeypatch, capsys):
@@ -927,7 +927,7 @@ def test_default_user_local_conf_wins_over_git(pc, tmp_path, monkeypatch):
     """_default_user — local.conf user= 가 git email 폴백보다 우선 (T-0161·board.user_name 동형)."""
     pm = tmp_path / ".project_manager"
     pm.mkdir(parents=True)
-    (pm / "local.conf").write_text("user=alice\nsession=slot\n", encoding="utf-8")
+    (pm / "local.conf").write_text("identity.user=alice\nsession=slot\n", encoding="utf-8")
     monkeypatch.setattr(pc, "REPO", tmp_path)
     monkeypatch.setattr(pc, "_git_config_email", lambda: "git@x.com")
     assert pc._default_user() == "alice"
@@ -1746,7 +1746,7 @@ def test_install_protected_hook_gate_resolution_error_is_fail_soft(
     home = tmp_path / "bad-gate-config"
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
-    conf.write_text(f"upstream={upstream}\ntest_cmd=pytest -q\n", encoding="utf-8")
+    conf.write_text(f"upstream.path={upstream}\ntest.cmd=pytest -q\n", encoding="utf-8")
     monkeypatch.setattr(pc, "REPO", home)
 
     class _MustNotInstall:
@@ -1787,11 +1787,11 @@ def _windows_style_expanduser(users_root: Path):
 
 
 def _adopter_home_with_upstream(tmp_path: Path, upstream: str) -> Path:
-    """`upstream=` 만 다른 PM 홈 형상 — gate resolver 입력을 한 줄로 세팅한다."""
+    """`upstream.path=` 만 다른 PM 홈 형상 — gate resolver 입력을 한 줄로 세팅한다."""
     home = tmp_path / "adopter-home"
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
-    conf.write_text(f"upstream={upstream}\ntest_cmd=pytest -q\n", encoding="utf-8")
+    conf.write_text(f"upstream.path={upstream}\ntest.cmd=pytest -q\n", encoding="utf-8")
     return home
 
 
@@ -1886,7 +1886,7 @@ def test_protected_push_gate_config_keeps_framework_self_repo_release_gate(
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
     conf.write_text(
-        f"upstream={home / 'work' / 'svc_2'}\ntest_cmd=python -m pytest tests/ -q\n",
+        f"upstream.path={home / 'work' / 'svc_2'}\ntest.cmd=python -m pytest tests/ -q\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(pc, "REPO", home)
@@ -1902,7 +1902,7 @@ def test_protected_push_gate_config_routes_adopter_to_repo_test_cmd(
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
     conf.write_text(
-        f"upstream={tmp_path / 'framework-checkout'}\ntest_cmd=wrong-global-command\n",
+        f"upstream.path={tmp_path / 'framework-checkout'}\ntest.cmd=wrong-global-command\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(pc, "REPO", home)
@@ -1925,7 +1925,7 @@ def test_protected_push_gate_config_url_identity_keeps_framework_release(
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
     conf.write_text(
-        "upstream=https://github.com/acme/framework.git\ntest_cmd=pytest -q\n",
+        "upstream.path=https://github.com/acme/framework.git\ntest.cmd=pytest -q\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(pc, "REPO", home)
@@ -2000,7 +2000,7 @@ def test_protected_push_gate_config_file_transport_collision_is_adopter_self_tes
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
     conf.write_text(
-        "upstream=file://github.com/acme/framework.git\ntest_cmd=pytest -q\n",
+        "upstream.path=file://github.com/acme/framework.git\ntest.cmd=pytest -q\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(pc, "REPO", home)
@@ -2017,7 +2017,7 @@ def test_protected_push_gate_config_scp_without_user_keeps_framework_release(
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
     conf.write_text(
-        "upstream=github.com:acme/framework.git\ntest_cmd=pytest -q\n",
+        "upstream.path=github.com:acme/framework.git\ntest.cmd=pytest -q\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(pc, "REPO", home)
@@ -2033,13 +2033,13 @@ def test_protected_push_gate_config_missing_upstream_downgrades_to_self_test(
     home = tmp_path / "unresolved-home"
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
-    conf.write_text("test_cmd=pytest -q\n", encoding="utf-8")
+    conf.write_text("test.cmd=pytest -q\n", encoding="utf-8")
     monkeypatch.setattr(pc, "REPO", home)
 
     assert pc._protected_push_gate_config("svc", board=object()) == (
         "self-test", "pytest -q")
     err = capsys.readouterr().err.splitlines()
-    assert len(err) == 1 and "upstream 축 미해소" in err[0]
+    assert len(err) == 1 and "upstream.path 축 미해소" in err[0]
     assert "upstream을 설정" in err[0]
 
 
@@ -2050,7 +2050,7 @@ def test_protected_push_gate_config_url_without_registry_git_downgrades_to_self_
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
     conf.write_text(
-        "upstream=https://github.com/acme/framework.git\ntest_cmd=go test ./...\n",
+        "upstream.path=https://github.com/acme/framework.git\ntest.cmd=go test ./...\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(pc, "REPO", home)
@@ -2068,30 +2068,30 @@ def test_local_conf_value_duplicate_empty_is_last_wins_like_board(
     home = tmp_path / "local-conf-values"
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
-    conf.write_text("test_cmd=first\ntest_cmd=second\ntest_cmd=   \n", encoding="utf-8")
+    conf.write_text("test.cmd=first\ntest.cmd=second\ntest.cmd=   \n", encoding="utf-8")
     monkeypatch.setattr(pc, "REPO", home)
-    assert pc._local_conf_value("test_cmd") == ""
+    assert pc._local_conf_value("test.cmd") == ""
 
 
 def test_protected_push_gate_trailing_empty_upstream_downgrades_like_upstream_show(
         pc, tmp_path, monkeypatch, capsys):
-    """A2 — canonical upstream 뒤 `upstream=`는 해제이며 gate도 미해소 self-test로 본다."""
+    """A2 — canonical upstream 뒤 `upstream.path=`는 해제이며 gate도 미해소 self-test로 본다."""
     home = tmp_path / "cleared-upstream"
     conf = home / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True)
     conf.write_text(
-        "upstream=https://github.com/acme/framework.git\n"
-        "upstream=\n"
-        "test_cmd=go test ./...\n",
+        "upstream.path=https://github.com/acme/framework.git\n"
+        "upstream.path=\n"
+        "test.cmd=go test ./...\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(pc, "REPO", home)
     board = FakeBoard(repo_gits={"svc": "https://github.com/acme/framework.git"})
 
-    assert pc._local_conf_value("upstream") == ""
+    assert pc._local_conf_value("upstream.path") == ""
     assert pc._protected_push_gate_config("svc", board=board) == (
         "self-test", "go test ./...")
-    assert "upstream 축 미해소" in capsys.readouterr().err
+    assert "upstream.path 축 미해소" in capsys.readouterr().err
 
 
 def test_resolve_repo_protected_board_absent_defaults(pc):

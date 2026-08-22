@@ -165,8 +165,8 @@ exec_command(
 `--codex-egress-escalated`는 권한을 만드는 플래그가 아니라 호출층 attestation이다. 단독으로
 샌드박스 명령에 붙이지 말고 반드시 위 `sandbox_permissions` 메타데이터와 같이 쓴다.
 최초 승인은 위의 좁은 reusable `prefix_rule`로 기억할 수 있다. Python 전체나 인자
-전체를 prefix로 승인하지 마라. `delegate_enabled=true`는 설정된 profile의 외부 전송과
-통상 과금에 대한 지속 의사표시이므로 PM은 후속 호출마다 비용을 다시 묻지 않는다.
+전체를 prefix로 승인하지 마라. 승격의 근거는 이 도구 승인이며 `delegate.enabled`는 위임 허용
+여부만 정하는 마스터 스위치라 egress 승격을 대신하지 않는다.
 Windows의 동일 좁은 prefix는 `prefix_rule=["py", ".project_manager/tools/pm_delegate.py"]`이며,
 복사용 재실행 명령도 같은 `py + script` 2 token으로 시작해야 한다.
 승인이 거절되거나 실행이 `rc!=0`/reply 미추출로 끝나면 그 역할 위임은 실패다.
@@ -198,7 +198,7 @@ Windows의 동일 좁은 prefix는 `prefix_rule=["py", ".project_manager/tools/p
   시점에 낸 가용(idle) 슬롯 수 재료를 함께 보고, 슬롯이 남아 있으면 순차 대신 슬롯 분리로
   병렬을 유지한다.
 - 결과: `rc=0` 성공(최종 reply = stdout·raw 는 파일 박제) / `rc=1` 실패(loud·raw 경로 stderr) /
-  `rc=3` opt-in OFF. reply 를 회수해 PM 이 검토·board 갱신을 담당한다(위임 대상은 board 조작 안 함).
+  `rc=3` 위임 스위치 off. reply 를 회수해 PM 이 검토·board 갱신을 담당한다(위임 대상은 board 조작 안 함).
 - **시크릿 스캔 차단 시 `--secret-scan-ack <digest>` 사용 규율**(T-0476): §4.7 이 합성 프롬프트를
   차단하면 **전 탐지 목록(발췌·판정·축) + 승인 토큰 + 재실행 커맨드**가 출력된다. **PM(LLM)이 반사적으로
   재실행하지 마라** — 그러면 게이트가 사실상 무력화된다. 규율: ① 전 탐지 발췌를 읽고 *시크릿을 논하는
@@ -210,18 +210,24 @@ Windows의 동일 좁은 prefix는 `prefix_rule=["py", ".project_manager/tools/p
   `rc=1` fail-loud 이며 억제 사유가 stderr·primary raw 양쪽에 남는다(폴백이 필요하면 `--harness/--model`
   로 수신자를 명시해 재실행하거나 ack 이 불필요하도록 프롬프트를 정리한다).
 
-### opt-in 게이트 (외부 송신 · 기본 OFF)
+### 위임 마스터 스위치
 
-cross 위임은 코드/프롬프트·worktree 내용을 **외부 하네스로 전송**한다 → `delegate_enabled` opt-in 이
-꺼져 있으면(기본 OFF) pm_delegate 는 외부 하네스를 스폰하지 않고 `rc=3` 로 명시 거부한다. 켜기:
+`delegate.enabled`는 "PM이 위임을 해도 되는가" 하나만 정한다. **기본은 허용**이고 채널(native/cross)로
+갈리지 않는다 — 키를 지우면 허용, 명시적으로 끄려면 `false`:
 
 ```ini
 # local.conf (per-clone·git-ignored)
-delegate_enabled = true
+delegate.enabled = false
 ```
 
-`=true` 는 "worktree 내용·(정제된) 환경이 타깃 하네스로 나갈 수 있음"을 사용자가 수용하는 계약이다
-(과금·외부 송신·ADR-0004 상속). **native 단락(same-harness)은 이 게이트 밖** — 외부 송신이 없다.
+끄면 세 층이 막는다: `pm_delegate` 실행 `rc=3` · `pm_delegate ticket prepare` `rc=3`(run-dir·라운드
+순번 미생성) · 훅이 깔린 하네스의 역할 spawn `deny`. `ticket harvest`/`copies`와 `--dry-run`은 게이트
+밖이다(진행 중 라운드가 고아가 되지 않게).
+
+**차단 범위의 한계**: 훅 등록 파일(`settings.json`·`hooks.json`·`opencode.jsonc`)은 채택자 소유라
+엔진이 전파하지 않고, 가드는 자기 고장 시 fail-open이다. 훅을 깔지 않았거나 가드가 고장난 형상에서는
+티켓 없는 ad-hoc native spawn을 막지 못한다 — 스위치가 "모든 native를 막는다"고 읽으면 그것이
+false-green이다.
 
 ## 실행 패턴
 
@@ -383,7 +389,7 @@ touches 경로의 실재(소유 repo 좌표 기준) · 다른 열린 티켓과�
 > 연속 미해소면 라운드 추가가 아니라 재설계·분할로 전환한다(내부 라운드 상한 3 — `pm_playbook.md`
 > §"라운드 프로토콜").
 
-> ⚙️ `additional_reviewer_enabled=true` 로 추가 리뷰어(additional reviewer) 채널을 켠 채택자는
+> ⚙️ `additional_reviewer.enabled=true` 로 추가 리뷰어(additional reviewer) 채널을 켠 채택자는
 > reviewer 위임과 같은 시점에 교차검증을 돌린다. 기본은 OFF 이고, 끈 채택자에게 이 단계는 없다:
 > `python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN`
 > (ADR 본문 정합 필요 시 `--paths` 에 **코드 경로+ADR 함께 나열** — `--paths` 는

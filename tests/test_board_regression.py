@@ -2,7 +2,7 @@
 
 엔진 회귀 게이트는 rc5(수집 0)만 결함 신호로 봤고, **부분 수집**(rc0 인데 cwd/pythonpath 파손으로
 스위트 일부만 돎)은 pass 로 기록했다. 채택자가 로컬 패치로 유지하던 하한 가드를 엔진이 흡수한다 —
-local.conf `regression_min_collected`(기본 0 = off) 미만이면 FULL 게이트를 `fail` + 전용 라벨
+local.conf `regression.min_collected`(기본 0 = off) 미만이면 FULL 게이트를 `fail` + 전용 라벨
 `partial-collection` 으로 강등하고, check(pre-push)가 그 사유를 실어 push 를 막는다.
 
 **hermetic 필수**: board.py 의 경로 전역(`REPO`·`LOCAL_CONF`·`LOCAL_DIR`·`REGRESSION_FLAG`·
@@ -142,7 +142,7 @@ def _set_floor(board, value, tree: Path | None = None) -> None:
     """
     conf = (tree / ".project_manager" / "local.conf") if tree else board.LOCAL_CONF
     conf.parent.mkdir(parents=True, exist_ok=True)
-    conf.write_text(f"regression_min_collected={value}\n", encoding="utf-8")
+    conf.write_text(f"regression.min_collected={value}\n", encoding="utf-8")
 
 
 def _flag(board) -> dict:
@@ -262,7 +262,7 @@ def test_min_collected_default_off(board):
 
 
 def test_min_collected_reads_conf(board):
-    """`regression_min_collected=7000` → 7000 (채택자가 자기 스위트 규모로 선언)."""
+    """`regression.min_collected=7000` → 7000 (채택자가 자기 스위트 규모로 선언)."""
     _set_floor(board, 7000)
     assert board._regression_min_collected() == 7000
 
@@ -271,7 +271,7 @@ def test_min_collected_malformed_warns_and_disables(board, capsys):
     """비정수/음수 값 → 0(off) + 경고 1줄 (오타로 게이트가 조용히 죽지 않게)."""
     _set_floor(board, "seven-thousand")
     assert board._regression_min_collected() == 0
-    assert "regression_min_collected" in capsys.readouterr().err
+    assert "regression.min_collected" in capsys.readouterr().err
     _set_floor(board, -5)
     assert board._regression_min_collected() == 0
     assert "비정수/음수" in capsys.readouterr().err

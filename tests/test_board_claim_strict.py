@@ -165,7 +165,7 @@ def board(tmp_path, monkeypatch):
     # (`--repo/--slot` 또는 `PM_SESSION_NAME`)한다 — conf `session=` 폴백은 폐지됐다(T-0779).
     conf = tmp_path / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True, exist_ok=True)
-    conf.write_text("user=me\n", encoding="utf-8")
+    conf.write_text("identity.user=me\n", encoding="utf-8")
     monkeypatch.setattr(mod, "LOCAL_CONF", conf)
     monkeypatch.setattr(
         mod, "LEASES_FILE",

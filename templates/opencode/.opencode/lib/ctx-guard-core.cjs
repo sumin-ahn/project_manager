@@ -14,7 +14,7 @@
 //
 // 모델 (ADR-0081): 사전 checkpoint 넛지 → native compaction → 사후 checkpoint 넛지.
 //
-// 임계값(엔진 T-0013·T-0207 상향): local.conf `ctx_nudge_pct`/`ctx_stop_pct`(기본 30/20) = "잔여 컨텍스트 %".
+// 임계값(엔진 T-0013·T-0207 상향): local.conf `ctx.nudge_pct`/`ctx.stop_pct`(기본 30/20) = "잔여 컨텍스트 %".
 //   잔여% = (1 - used/limit) * 100. computeCtxState 의 stop 반환은 파리티를 위해 유지하고,
 //   plugin 은 stop 밴드를 최종 checkpoint 안내로만 흡수한다(차단·marker 없음).
 //   plugin 은 local.conf 를 직접 파싱(의존 적음·board.py shell-out 회피).
@@ -72,6 +72,85 @@ function parseLocalConf(text) {
   return conf;
 }
 
+// 차단 구키 목록은 엔진이 **생성**한다(어댑터가 매핑표를 복제하면 표와 파서가 갈린다):
+//   python3 .project_manager/tools/local_conf.py --render-adapter-block js
+// 생성 시작 — 차단 구키 (local_conf.render_adapter_block · 손편집 금지)
+const LEGACY_CONF_KEYS = [
+  "additional_reviewer_enabled",
+  "additional_reviewer_incomplete_round_limit",
+  "additional_reviewer_round_limit",
+  "additional_reviewer_wave_budget",
+  "ctx_nudge_pct",
+  "ctx_stop_pct",
+  "ctx_window_tokens",
+  "date",
+  "delegate_enabled",
+  "delegate_idle_timeout",
+  "delegate_timeout",
+  "external_review_enabled",
+  "external_review_idle_timeout",
+  "external_review_incomplete_round_limit",
+  "external_review_progress_signal",
+  "external_review_round_limit",
+  "external_review_timeout",
+  "external_review_wave_budget",
+  "opencode_pro_model",
+  "project_name",
+  "project_root",
+  "project_tagline",
+  "py",
+  "regression_min_collected",
+  "review_denylist_extra",
+  "review_paths",
+  "review_rounds_max",
+  "reviewer_cmd",
+  "reviewer_env_keep_extra",
+  "reviewer_home_artifacts_extra",
+  "test_cmd",
+  "upstream",
+  "upstream_rev",
+  "upstream_seen_rev",
+  "user",
+];
+const LEGACY_CONF_KEY_PREFIX = "ctx_window_tokens_";
+// 생성 끝 — 차단 구키
+
+// ── 구표기 conf 차단 (값 해소 **전**) ────────────────────────────────────────
+// 개칭된 키가 남은 conf 를 그대로 읽으면 임계·예산이 조용히 엔진 기본값으로 떨어진다 — 채택자는
+// conf 를 고쳤는데 아무 일도 안 일어나는 상태를 본다. 어댑터는 엔진을 import 하지 않아 신표기
+// 이름을 말하지 못하므로, 무엇이 걸렸는지만 말하고 전수 지목은 엔진 도구에 맡긴다.
+function assertNoLegacyConf(conf, confPath) {
+  const found = Object.keys(conf || {})
+    .filter(
+      (key) =>
+        LEGACY_CONF_KEYS.includes(key) ||
+        (key.startsWith(LEGACY_CONF_KEY_PREFIX) && key.length > LEGACY_CONF_KEY_PREFIX.length),
+    )
+    .sort();
+  if (found.length === 0) return;
+  throw new Error(
+    `오류: local.conf 에 구표기 키가 남아 있습니다 (${confPath}) — ${found.join(", ")}. ` +
+      "값이 조용히 기본값으로 떨어지지 않도록 여기서 멈춥니다. " +
+      "전수 지목은 `board.py lint` 또는 `pm_update.py` 안내가 냅니다.",
+  );
+}
+
+// 파일 → 값 한 경로. 부재·판독 실패는 빈 conf(정상 형상)지만 **구표기 잔존은 멈춘다**.
+function loadLocalConf(root) {
+  if (!root) return {};
+  const confPath = path.join(root, LOCAL_CONF_REL);
+  let text = null;
+  try {
+    if (!fs.existsSync(confPath)) return {};
+    text = fs.readFileSync(confPath, "utf-8");
+  } catch {
+    return {};
+  }
+  const conf = parseLocalConf(text);
+  assertNoLegacyConf(conf, confPath);
+  return conf;
+}
+
 // ── 순수 함수: 임계값 해석 + sanity 폴백 ────────────────────────────────────
 // conf(parseLocalConf 결과)에서 nudge/stop 을 정수로 읽고, 비정상이면 엔진 기본 폴백.
 // 비정상 = 비정수 / 음수 / 0이하 / stop > nudge / 100 초과.  하나라도 깨지면 둘 다 기본으로.
@@ -82,8 +161,8 @@ function resolveThresholds(conf) {
     const n = Number.parseInt(String(raw).trim(), 10);
     return Number.isNaN(n) ? dflt : n;
   };
-  let nudge = readPct("ctx_nudge_pct", NUDGE_PCT_DEFAULT);
-  let stop = readPct("ctx_stop_pct", STOP_PCT_DEFAULT);
+  let nudge = readPct("ctx.nudge_pct", NUDGE_PCT_DEFAULT);
+  let stop = readPct("ctx.stop_pct", STOP_PCT_DEFAULT);
   // sanity: 잔여% 임계는 0 < stop ≤ nudge ≤ 100 이어야 의미 있다.
   const sane =
     Number.isInteger(nudge) &&
@@ -101,8 +180,8 @@ function resolveThresholds(conf) {
 
 // ── 순수 함수: ctx 예산 해소 (하네스별 · ADR-0041) ────────────────────────────
 // 정지/넛지 분모(100% 기준) = 해소된 예산 하나 (물리한도 개념 폐기). precedence:
-//   ctx_window_tokens_<harness>  (하네스별 오버라이드)
-//   > ctx_window_tokens          (generic·back-compat)
+//   harness.<name>.ctx_window_tokens  (하네스별 오버라이드)
+//   > ctx.window_tokens             (generic)
 //   > CTX_WINDOW_TOKENS_DEFAULT  (200000)
 // 각 층 >0 정수 sanity — ≤0·비정수·미설정이면 다음 층으로(0/음수 특수의미 없음).
 // claude ctx_guard.resolve_budget(conf,"opencode") 동형. conf = parseLocalConf 결과.
@@ -114,8 +193,8 @@ function resolveBudget(conf, harness) {
     return Number.isInteger(n) && n > 0 ? n : null;
   };
   return (
-    readBudget(`ctx_window_tokens_${harness}`) ||
-    readBudget("ctx_window_tokens") ||
+    readBudget(`harness.${harness}.ctx_window_tokens`) ||
+    readBudget("ctx.window_tokens") ||
     CTX_WINDOW_TOKENS_DEFAULT
   );
 }
@@ -541,16 +620,9 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
   // local.conf 직접 파싱 (thresholds·budget 공용·1회 캐시). root 없거나 실패 시 {}.
   function loadConf() {
     if (cachedConf) return cachedConf;
-    let conf = {};
-    if (root) {
-      try {
-        const p = path.join(root, LOCAL_CONF_REL);
-        if (fs.existsSync(p)) conf = parseLocalConf(fs.readFileSync(p, "utf-8"));
-      } catch {
-        conf = {};
-      }
-    }
-    cachedConf = conf;
+    // 판독 실패는 빈 conf 로 강등하지만(부재가 정상 형상) 구표기 잔존은 그대로 올린다 —
+    // 여기서 삼키면 임계·예산이 조용히 기본값이 된다.
+    cachedConf = loadLocalConf(root);
     return cachedConf;
   }
 
@@ -770,6 +842,10 @@ module.exports = {
   CtxGuardPlugin,
   // 순수 결정 로직 (테스트·자가검증용 export).
   parseLocalConf,
+  loadLocalConf,
+  assertNoLegacyConf,
+  LEGACY_CONF_KEYS,
+  LEGACY_CONF_KEY_PREFIX,
   resolveThresholds,
   resolveBudget,
   accumulateTokens,

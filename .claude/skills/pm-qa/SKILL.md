@@ -26,7 +26,7 @@ wave 시작은 **baseline fix → wave 시작** 순서이며 red baseline 위에
 ### 1. 회귀 측정 (foreground)
 
 ```bash
-# 프로젝트 test 명령은 board regression 이 해소·기록한다 (local.conf test_cmd= · rc0 만 pass)
+# 프로젝트 test 명령은 board regression 이 해소·기록한다 (local.conf test.cmd= · rc0 만 pass)
 python3 .project_manager/tools/board.py regression run
 ```
 

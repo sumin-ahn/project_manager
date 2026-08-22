@@ -37,11 +37,11 @@ def _configure(tmp_path: Path, monkeypatch, state: str, mod=None) -> None:
     conf_dir.mkdir()
     conf = conf_dir / "local.conf"
     if state == "valid":
-        conf.write_text("py=ignored\npy=custom-python\n", encoding="utf-8")
+        conf.write_text("runtime.py=ignored\nruntime.py=custom-python\n", encoding="utf-8")
     elif state == "empty":
-        conf.write_text("py=ignored\npy=\n", encoding="utf-8")
+        conf.write_text("runtime.py=ignored\nruntime.py=\n", encoding="utf-8")
     elif state == "read-error":
-        conf.write_text("py=ignored\n", encoding="utf-8")
+        conf.write_text("runtime.py=ignored\n", encoding="utf-8")
         # conf 판독은 공유 읽기 seam 을 지난다([[T-0729]]) — 주입도 그 자리에 건다.
         # `Path.read_text` 에 걸면 엔진이 그 호출을 더는 하지 않아 이 케이스가 공허해진다.
         seam = mod._load_file_lock()
@@ -145,9 +145,9 @@ def test_final_nonempty_py_wins_and_final_empty_preserves_fallback(tmp_path):
     conf_dir = tmp_path / ".project_manager"
     conf_dir.mkdir()
     conf = conf_dir / "local.conf"
-    conf.write_text("py=first\npy=second\n", encoding="utf-8")
+    conf.write_text("runtime.py=first\nruntime.py=second\n", encoding="utf-8")
     assert mod._resolve_python_argv(tmp_path, "windows") == (("second",), "local-conf")
-    conf.write_text("py=first\npy=\n", encoding="utf-8")
+    conf.write_text("runtime.py=first\nruntime.py=\n", encoding="utf-8")
     assert mod._resolve_python_argv(tmp_path, "windows") == (("py", "-3"), "os-default")
 
 
@@ -155,7 +155,7 @@ def test_configured_launcher_is_one_argv_token_not_shell_parsed(tmp_path):
     mod = _load()
     conf_dir = tmp_path / ".project_manager"
     conf_dir.mkdir()
-    (conf_dir / "local.conf").write_text("py=launcher --not-a-shell-flag\n", encoding="utf-8")
+    (conf_dir / "local.conf").write_text("runtime.py=launcher --not-a-shell-flag\n", encoding="utf-8")
     argv, source = mod._resolve_python_argv(tmp_path, "linux")
     assert argv == ("launcher --not-a-shell-flag",)
     assert source == "local-conf"

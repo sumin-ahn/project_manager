@@ -515,8 +515,15 @@ def _wire_external(external, monkeypatch, pm_home: Path, *, conf=None):
     만 테스트 seam 으로 고정한다(기존 `test_plain_list_ticket_scope_is_explicitly_a_test_fixture_seam`
     과 같은 축).
     """
+    # 추가 리뷰어 대상은 구조화 tuple 이 필수다(미고정 모델 실행 경로가 없다). 이 축은 이 파일의
+    # 검증 대상이 아니므로 해소 가능한 최소 tuple 을 기본으로 깔고, 호출자가 준 값이 이긴다.
+    resolved = {
+        external.ADDITIONAL_REVIEWER_HARNESS_KEY: "codex",
+        external.ADDITIONAL_REVIEWER_MODEL_KEY: "test-model",
+    }
+    resolved.update(conf or {})
     monkeypatch.setattr(external, "REPO", pm_home)
-    monkeypatch.setattr(external, "local_config", lambda repo=None: dict(conf or {}))
+    monkeypatch.setattr(external, "local_config", lambda repo=None: dict(resolved))
     monkeypatch.setattr(external, "extract_diff", lambda *args, **kwargs: (DIFF, []))
     monkeypatch.setattr(
         external, "parse_ticket_touches", lambda ticket_id, pm_home=None: ["x.py"],
@@ -687,7 +694,7 @@ def test_spawn_face_real_send_over_a_seed_developer_round_warns_without_seed_bod
     _write_spec(tickets, ticket)
     _prepare(pd, pm_home, slot, ticket, "developer")  # 01-developer.md 시드
     _wire_external(
-        external, monkeypatch, pm_home, conf={"additional_reviewer_enabled": "true"},
+        external, monkeypatch, pm_home, conf={"additional_reviewer.enabled": "true"},
     )
     prompts: list[str] = []
     _stub_real_send_external(external, monkeypatch, tmp_path, prompts)

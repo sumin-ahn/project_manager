@@ -64,6 +64,12 @@
 #   단일 구현. board(board.lock·board-git.lock)·pm_log(log.lock)·pm_relay(raw 장부 .lock)가
 #   소비한다(락 파일 경로 규약은 각 도구 소유). 신설 도구라 등록 필수(미등록=전파 안 됨·pm_render 사례).
 .project_manager/tools/file_lock.py
+# local_conf: local.conf 파싱/구표기 판정 공용 seam — `KEY=value`·`#` 주석·중복키 last-wins·
+#   미존재/IO 실패는 빈 맵. 구표기(flat) 키가 남아 있으면 소비 시점에 fail-loud 하고 키마다
+#   신표기를 처방한다(pm_update/pm_import 의 파일 반영 경로만 비차단 안내). 소비자 9:
+#   board·external_review·pm_delegate·pm_update·pm_import·pm_config·pm_bootstrap·ticket_finish·
+#   pm_handoff. 신설 도구라 등록 필수(미등록=전파 안 됨·pm_render 사례).
+.project_manager/tools/local_conf.py
 # delegate_channel_guard: claude PreToolUse(Agent) 위임 채널 가드 — local.conf delegate 매핑 불일치 시 deny·자체 고장 fail-open (T-0633). 래퍼 delegate_channel_guard_hook.sh 는 claude 어댑터층(ADAPTER_HOOK_SET)
 .project_manager/tools/delegate_channel_guard.py
 # delegate_scope: 위임 전/후 porcelain 상태를 비교해 ticket touches 밖 변경을 loud 경고로
@@ -77,7 +83,7 @@
 #   참조하는 문서의 잔여 모순 후보를 표면화(탐지 LLM DI·기본 dry / 판정 사람·advisory).
 #   pm_adr.py 발행 명령이 트리거로 호출(개정에만 발화).
 .project_manager/tools/contradiction_lint.py
-# pm_delegate: cross-harness 역할 위임 채널 (ADR-0075·기본 OFF·delegate_enabled opt-in). 신설 도구라
+# pm_delegate: cross-harness 역할 위임 채널 (ADR-0075·기본 OFF·delegate.enabled opt-in). 신설 도구라
 #   등록 필수(미등록=전파 안 됨). local.conf delegate.* 매핑은 인스턴스 소유(manifest 밖)
 .project_manager/tools/pm_delegate.py
 

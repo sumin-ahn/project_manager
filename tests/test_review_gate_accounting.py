@@ -40,6 +40,15 @@ OTHER_GATE = "T-" + "0626-gate"
 FOLLOW_UP_TICKET = "T-" + "0627"
 
 
+# 해소 가능한 추가 리뷰어 대상 — 대상은 `harness`+`model` 구조화 키로만 서므로(엔진 기본 커맨드
+# 없음) 이 파일의 모든 형상이 그 세트를 깔고 시작한다.
+_REVIEWER_TARGET = {
+    "additional_reviewer.enabled": "true",
+    "additional_reviewer.harness": "codex",
+    "additional_reviewer.model": "gpt-5.6-sol",
+}
+
+
 def _load(name: str = "external_review"):
     spec = importlib.util.spec_from_file_location(f"gate_accounting_{name}", TOOLS / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
@@ -99,7 +108,7 @@ def _wire(external, monkeypatch, tmp_path, *, series: list[int] | None = None, c
     monkeypatch.setattr(
         external, "local_config",
         lambda repo=None: dict(conf) if conf is not None
-        else {"additional_reviewer_enabled": "true"})
+        else dict(_REVIEWER_TARGET))
     monkeypatch.setattr(
         external, "resolve_pm_home_for_repo", lambda anchor, **kwargs: tmp_path)
     monkeypatch.setattr(external, "parse_ticket_touches", lambda ticket, **kwargs: ["x.py"])
@@ -237,7 +246,7 @@ def test_derived_gate_hits_the_convergence_cap_like_an_explicit_one(
     실측 함정의 결과(하루 8+ 라운드)가 기계로 불가능해졌음을 3라운드째 rc 4 로 못박는다."""
     reviewer = _wire(external, monkeypatch, tmp_path, series=[3, 2])
     argv = ["--ticket", TICKET]
-    for _ in range(2):                      # 기본 상한 2 (review_rounds_max)
+    for _ in range(2):                      # 기본 상한 2 (additional_reviewer.rounds_max)
         assert external.main(argv) == 1
     capsys.readouterr()
 

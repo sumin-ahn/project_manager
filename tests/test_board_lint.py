@@ -1981,7 +1981,7 @@ def test_render_leak_fires_on_rendered_tree_with_localconf(board, monkeypatch, t
     adapter = _write_claude_adapter(fake_repo, "# {{PROJECT_NAME}} architect\n본문\n")
     # local.conf 존재 → 채택 인스턴스(render 산출물 트리).
     local_conf = fake_repo / ".project_manager" / "local.conf"
-    local_conf.write_text("project_name=acme\npy=python3\n", encoding="utf-8")
+    local_conf.write_text("project.name=acme\nruntime.py=python3\n", encoding="utf-8")
 
     monkeypatch.setattr(board, "REPO", fake_repo)
 
@@ -2033,7 +2033,7 @@ def test_render_leak_skips_only_byte_identical_template_source(board, monkeypatc
     _write_root_manifest(fake_repo, ".claude/agents @render\n")
     adapter = _write_claude_adapter(fake_repo, "# {{PROJECT_NAME}} architect\n")
     (fake_repo / ".project_manager" / "local.conf").write_text(
-        "project_name=project_manager\n", encoding="utf-8")
+        "project.name=project_manager\n", encoding="utf-8")
     _write_shipping_template(fake_repo, "claude_code", ".claude/agents/architect.md",
                              adapter.read_text(encoding="utf-8"))
 
@@ -2063,7 +2063,7 @@ def test_render_leak_template_mirror_requires_shipping_tree_manifest(board, monk
     _write_root_manifest(fake_repo, ".claude/agents @render\n")
     adapter = _write_claude_adapter(fake_repo, "# {{PROJECT_NAME}} architect\n")
     (fake_repo / ".project_manager" / "local.conf").write_text(
-        "project_name=acme\n", encoding="utf-8")
+        "project.name=acme\n", encoding="utf-8")
     body = adapter.read_text(encoding="utf-8")
     _write_shipping_template(fake_repo, "emails", ".claude/agents/architect.md", body,
                              manifest_body=None)
@@ -2104,7 +2104,7 @@ def test_render_leak_template_mirror_requires_render_declaration(board, monkeypa
     _write_root_manifest(fake_repo, ".claude/agents @render\n")
     adapter = _write_claude_adapter(fake_repo, "# {{PROJECT_NAME}} architect\n")
     (fake_repo / ".project_manager" / "local.conf").write_text(
-        "project_name=acme\n", encoding="utf-8")
+        "project.name=acme\n", encoding="utf-8")
     # manifest 는 있으나 @render 선언 0(무관 경로만) — 성격 흉내.
     _write_shipping_template(fake_repo, "claude_code", ".claude/agents/architect.md",
                              adapter.read_text(encoding="utf-8"),
@@ -2147,7 +2147,7 @@ def test_render_leak_template_mirror_rejects_symlink_escape(board, monkeypatch, 
     _write_root_manifest(fake_repo, ".claude/agents @render\n")
     adapter = _write_claude_adapter(fake_repo, "# {{PROJECT_NAME}} architect\n")
     (fake_repo / ".project_manager" / "local.conf").write_text(
-        "project_name=acme\n", encoding="utf-8")
+        "project.name=acme\n", encoding="utf-8")
     templates = fake_repo / "templates"
     templates.mkdir(parents=True, exist_ok=True)
     # templates/alias -> 루트 자신(= .claude/agents/architect.md 가 그대로 비쳐 보인다).
@@ -2180,7 +2180,7 @@ def test_template_mirror_rejects_symlinked_candidate_file(board, monkeypatch, tm
     _write_root_manifest(fake_repo, ".claude/agents @render\n")
     adapter = _write_claude_adapter(fake_repo, "# {{PROJECT_NAME}} architect\n")
     (fake_repo / ".project_manager" / "local.conf").write_text(
-        "project_name=acme\n", encoding="utf-8")
+        "project.name=acme\n", encoding="utf-8")
     _write_shipping_template(fake_repo, "claude_code", ".claude/agents/architect.md", "placeholder\n")
     linked = (fake_repo / "templates" / "claude_code" / ".claude" / "agents" / "architect.md")
     linked.unlink()
@@ -2209,7 +2209,7 @@ def test_template_mirror_offtree_symlink_counts_as_drift(board, monkeypatch, tmp
     _write_root_manifest(fake_repo, ".claude/agents @render\n")
     adapter = _write_claude_adapter(fake_repo, "# {{PROJECT_NAME}} architect\n")
     (fake_repo / ".project_manager" / "local.conf").write_text(
-        "project_name=acme\n", encoding="utf-8")
+        "project.name=acme\n", encoding="utf-8")
     outside = tmp_path / "outside" / "architect.md"
     outside.parent.mkdir(parents=True)
     outside.write_text("# {{PROJECT_NAME}} architect\n", encoding="utf-8")  # 내용은 같지만 트리 밖.
@@ -2240,7 +2240,7 @@ def test_template_mirror_skips_source_remapped_render_entries(board, monkeypatch
     _write_root_manifest(fake_repo, ".claude/agents @render\n")
     adapter = _write_claude_adapter(fake_repo, "# {{PROJECT_NAME}} architect\n")
     (fake_repo / ".project_manager" / "local.conf").write_text(
-        "project_name=acme\n", encoding="utf-8")
+        "project.name=acme\n", encoding="utf-8")
     _write_shipping_template(
         fake_repo, "claude_code", ".claude/agents/architect.md",
         adapter.read_text(encoding="utf-8"),
@@ -2271,7 +2271,7 @@ def test_template_mirror_multi_target_partial_drift_is_not_exempt(board, monkeyp
     fake_repo = tmp_path / "multi_target_root"
     _write_root_manifest(fake_repo, ".claude/skills @render\n")
     (fake_repo / ".project_manager" / "local.conf").write_text(
-        "project_name=acme\n", encoding="utf-8")
+        "project.name=acme\n", encoding="utf-8")
     skill = fake_repo / ".claude" / "skills" / "pm-adr" / "SKILL.md"
     skill.parent.mkdir(parents=True)
     skill.write_text("# {{PROJECT_NAME}} adr\n루트 갱신\n", encoding="utf-8")
@@ -2318,7 +2318,7 @@ def test_template_mirror_missing_copy_in_scope_is_drift(board, monkeypatch, tmp_
     fake_repo = tmp_path / "missing_copy_root"
     _write_root_manifest(fake_repo, ".claude/skills @render\n")
     (fake_repo / ".project_manager" / "local.conf").write_text(
-        "project_name=acme\n", encoding="utf-8")
+        "project.name=acme\n", encoding="utf-8")
     skill = fake_repo / ".claude" / "skills" / "pm-new" / "SKILL.md"
     skill.parent.mkdir(parents=True)
     skill.write_text("# {{PROJECT_NAME}} 신규 skill\n", encoding="utf-8")
@@ -2387,7 +2387,7 @@ def test_render_leak_differing_mirror_message_hints_propagation(board, monkeypat
     _write_root_manifest(fake_repo, ".claude/agents @render\n")
     adapter = _write_claude_adapter(fake_repo, "# {{PROJECT_NAME}} architect\n루트만 수정\n")
     (fake_repo / ".project_manager" / "local.conf").write_text(
-        "project_name=acme\n", encoding="utf-8")
+        "project.name=acme\n", encoding="utf-8")
     _write_shipping_template(fake_repo, "claude_code", ".claude/agents/architect.md",
                              "# {{PROJECT_NAME}} architect\n")
     monkeypatch.setattr(board, "REPO", fake_repo)
@@ -2441,7 +2441,7 @@ def test_render_leak_public_claude_token_form_mirrors_are_clean(board, monkeypat
     fake_repo = tmp_path / "adopter0_worktree"
     _write_root_manifest(fake_repo, ".claude/agents    @render\n.claude/skills    @render\n")
     (fake_repo / ".project_manager" / "local.conf").write_text(
-        "project_name=project_manager\npy=python3\n", encoding="utf-8")
+        "project.name=project_manager\nruntime.py=python3\n", encoding="utf-8")
     template_manifest = (fake_repo / "templates" / "claude_code"
                          / ".project_manager" / "engine.manifest")
     template_manifest.parent.mkdir(parents=True, exist_ok=True)
@@ -2509,7 +2509,7 @@ def _rendered_tree(root: Path) -> None:
     """`.claude/agents @render` 루트 manifest + local.conf(채택 인스턴스=산출물 트리)."""
     _write_root_manifest(root, ".claude/agents @render\n")
     (root / ".project_manager" / "local.conf").write_text(
-        "project_name=acme\n", encoding="utf-8")
+        "project.name=acme\n", encoding="utf-8")
 
 
 def test_render_leak_flags_token_in_non_md_toml(board, monkeypatch, tmp_path):
@@ -2651,7 +2651,7 @@ def test_render_leak_empty_and_missing_render_paths_no_crash(board, monkeypatch,
     fake_repo = tmp_path / "repo"
     _write_root_manifest(fake_repo, ".claude/agents @render\n.opencode/agents @render\n")
     (fake_repo / ".project_manager" / "local.conf").write_text(
-        "project_name=acme\n", encoding="utf-8")
+        "project.name=acme\n", encoding="utf-8")
     (fake_repo / ".opencode" / "agents").mkdir(parents=True)  # 빈 디렉토리
     # .claude/agents 는 만들지 않는다 → 부재 경로.
     monkeypatch.setattr(board, "REPO", fake_repo)
@@ -3068,9 +3068,9 @@ def _wire_conf(board, monkeypatch, conf: dict) -> None:
 def test_adapter_drift_flags_when_baseline_differs_from_seen(board, monkeypatch):
     # 정상 baseline 이후 upstream 이 앞섬(seen≠baseline) → 인위 drift → finding 1.
     _wire_conf(board, monkeypatch, {
-        "upstream": "https://github.com/example/project_manager",
-        "upstream_rev": "aaaaaaaaaaaa1111",
-        "upstream_seen_rev": "bbbbbbbbbbbb2222",
+        "upstream.path": "https://github.com/example/project_manager",
+        "upstream.rev": "aaaaaaaaaaaa1111",
+        "upstream.seen_rev": "bbbbbbbbbbbb2222",
     })
     findings = board.lint_adapter_drift()
     assert len(findings) == 1
@@ -3085,9 +3085,9 @@ def test_adapter_drift_flags_when_baseline_differs_from_seen(board, monkeypatch)
 def test_adapter_drift_clean_when_baseline_equals_seen(board, monkeypatch):
     # baseline == seen → 마지막 동기 이후 upstream 변경 없음 → finding 0 (정상→0).
     _wire_conf(board, monkeypatch, {
-        "upstream": "https://github.com/example/project_manager",
-        "upstream_rev": "cccccccccccc3333",
-        "upstream_seen_rev": "cccccccccccc3333",
+        "upstream.path": "https://github.com/example/project_manager",
+        "upstream.rev": "cccccccccccc3333",
+        "upstream.seen_rev": "cccccccccccc3333",
     })
     assert board.lint_adapter_drift() == []
 
@@ -3095,8 +3095,8 @@ def test_adapter_drift_clean_when_baseline_equals_seen(board, monkeypatch):
 def test_adapter_drift_graceful_when_upstream_absent(board, monkeypatch):
     # 솔로·non-adopter — upstream 자체 부재 → graceful 0 (fail-soft).
     _wire_conf(board, monkeypatch, {
-        "upstream_rev": "aaaaaaaaaaaa1111",
-        "upstream_seen_rev": "bbbbbbbbbbbb2222",
+        "upstream.rev": "aaaaaaaaaaaa1111",
+        "upstream.seen_rev": "bbbbbbbbbbbb2222",
     })
     assert board.lint_adapter_drift() == []
 
@@ -3104,8 +3104,8 @@ def test_adapter_drift_graceful_when_upstream_absent(board, monkeypatch):
 def test_adapter_drift_graceful_when_baseline_unrecorded(board, monkeypatch):
     # baseline(`upstream_rev`) 미기록(구 import·revision 추적 전) → graceful 0.
     _wire_conf(board, monkeypatch, {
-        "upstream": "/some/path/project_manager_1",
-        "upstream_seen_rev": "bbbbbbbbbbbb2222",
+        "upstream.path": "/some/path/project_manager_1",
+        "upstream.seen_rev": "bbbbbbbbbbbb2222",
     })
     assert board.lint_adapter_drift() == []
 
@@ -3115,14 +3115,14 @@ def test_adapter_drift_observability_advisory_when_seen_unrecorded(board, monkey
     # 과거엔 조용한 [](silent skip)였으나, safety-critical 잔여가 *관찰 없이* 낡는 "green 인데 고장"을
     # 막으려 관찰불가 자체를 표면화한다(never-block·1줄이라 flood 아님).
     _wire_conf(board, monkeypatch, {
-        "upstream": "https://github.com/example/project_manager",
-        "upstream_rev": "aaaaaaaaaaaa1111",
+        "upstream.path": "https://github.com/example/project_manager",
+        "upstream.rev": "aaaaaaaaaaaa1111",
     })
     findings = board.lint_adapter_drift()
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert label == "adapter-layer" and kind == "adapter-drift"
-    assert "관찰불가" in detail and "upstream_seen_rev" in detail and "pm-update" in detail
+    assert "관찰불가" in detail and "upstream.seen_rev" in detail and "pm-update" in detail
 
 
 def test_adapter_drift_graceful_when_conf_empty(board, monkeypatch):
@@ -3132,12 +3132,12 @@ def test_adapter_drift_graceful_when_conf_empty(board, monkeypatch):
 
 
 def test_adapter_drift_blank_seen_treated_as_unrecorded(board, monkeypatch):
-    # seen 키는 있으나 빈 값(`upstream_seen_rev=   `) → strip 후 미기록과 동치 → 관찰불가 advisory
+    # seen 키는 있으나 빈 값(`upstream.seen_rev=   `) → strip 후 미기록과 동치 → 관찰불가 advisory
     # (T-0305·never-block). baseline 빈값이면 여전히 graceful [](관찰 기준점 부재).
     _wire_conf(board, monkeypatch, {
-        "upstream": "https://github.com/example/project_manager",
-        "upstream_rev": "aaaaaaaaaaaa1111",
-        "upstream_seen_rev": "   ",
+        "upstream.path": "https://github.com/example/project_manager",
+        "upstream.rev": "aaaaaaaaaaaa1111",
+        "upstream.seen_rev": "   ",
     })
     findings = board.lint_adapter_drift()
     assert len(findings) == 1 and findings[0][1] == "adapter-drift"
@@ -3148,9 +3148,9 @@ def test_adapter_drift_message_is_direction_neutral(board, monkeypatch):
     # T-0413: lint 는 git 을 호출하지 않아(ADR-0032 D5·rev 문자열 비교뿐) 두 rev 의 선후를 모른다.
     # 따라서 "upstream 이 baseline 이후 변경됨" 같은 방향 단정을 하면 안 된다 — 불일치 사실만 알린다.
     _wire_conf(board, monkeypatch, {
-        "upstream": "/w/project_manager_1",
-        "upstream_rev": "aaaaaaaaaaaa1111",
-        "upstream_seen_rev": "bbbbbbbbbbbb2222",
+        "upstream.path": "/w/project_manager_1",
+        "upstream.rev": "aaaaaaaaaaaa1111",
+        "upstream.seen_rev": "bbbbbbbbbbbb2222",
     })
     findings = board.lint_adapter_drift()
     assert len(findings) == 1
@@ -3164,9 +3164,9 @@ def test_adapter_drift_neutral_when_seen_is_older_than_baseline(board, monkeypat
     # ② adopter#0 실측(PM 4차): seen(0ccc0251…·v1.3.5)이 baseline(ddf6f484…·v1.4.0)의 *조상*.
     # finding 개수·kind 는 불변(advisory 1)이되, 메시지가 "upstream 이 앞섰다"고 단정하면 거짓이다.
     _wire_conf(board, monkeypatch, {
-        "upstream": "/w/project_manager_1",
-        "upstream_rev": "ddf6f4842653",
-        "upstream_seen_rev": "0ccc02513a7f",
+        "upstream.path": "/w/project_manager_1",
+        "upstream.rev": "ddf6f4842653",
+        "upstream.seen_rev": "0ccc02513a7f",
     })
     findings = board.lint_adapter_drift()
     assert len(findings) == 1 and findings[0][1] == "adapter-drift"
@@ -3189,9 +3189,9 @@ def test_path_upstream_sync_converges_two_keys_to_drift_clean(board, monkeypatch
     local_conf = dest / ".project_manager" / "local.conf"
     local_conf.parent.mkdir(parents=True, exist_ok=True)
     local_conf.write_text(
-        f"upstream={source}\n"
-        "upstream_rev=ddf6f4842653\n"
-        "upstream_seen_rev=0ccc02513a7f\n",  # 조상 — 흡수 직후에도 거짓 drift 를 내던 형상.
+        f"upstream.path={source}\n"
+        "upstream.rev=ddf6f4842653\n"
+        "upstream.seen_rev=0ccc02513a7f\n",  # 조상 — 흡수 직후에도 거짓 drift 를 내던 형상.
         encoding="utf-8",
     )
     monkeypatch.setattr(board, "LOCAL_CONF", local_conf)
@@ -3210,8 +3210,8 @@ def test_path_upstream_sync_converges_two_keys_to_drift_clean(board, monkeypatch
 
 def test_adapter_drift_uses_two_distinct_keys(board, monkeypatch):
     # 한 키 2역 금지(race/자기비교 회피·codex round-3 NEW-2) — baseline 키와 seen 키가 분리돼야.
-    assert board._DRIFT_BASELINE_KEY == "upstream_rev"
-    assert board._DRIFT_SEEN_KEY == "upstream_seen_rev"
+    assert board._DRIFT_BASELINE_KEY == "upstream.rev"
+    assert board._DRIFT_SEEN_KEY == "upstream.seen_rev"
     assert board._DRIFT_BASELINE_KEY != board._DRIFT_SEEN_KEY
 
 
@@ -3228,9 +3228,9 @@ def test_adapter_drift_is_advisory_never_blocks(board, monkeypatch):
                "lint_render_leak", "lint_unmigrated_overlay", "_run_lint_hooks"):
         monkeypatch.setattr(board, fn, lambda: [])
     _wire_conf(board, monkeypatch, {
-        "upstream": "https://github.com/example/project_manager",
-        "upstream_rev": "aaaaaaaaaaaa1111",
-        "upstream_seen_rev": "bbbbbbbbbbbb2222",
+        "upstream.path": "https://github.com/example/project_manager",
+        "upstream.rev": "aaaaaaaaaaaa1111",
+        "upstream.seen_rev": "bbbbbbbbbbbb2222",
     })
     issues = board.lint_adapter_drift()
     assert issues and all(k == "adapter-drift" for _n, k, _d in issues)
@@ -3400,7 +3400,7 @@ def test_designated_mutation_stays_fail_loud(board, monkeypatch, tmp_path):
                         ("AREAS_FILE", pm / "areas.md"),
                         ("LEASES_FILE", pm / ".local" / "worktree-leases.json")):
         monkeypatch.setattr(board, name, value)
-    (pm / "local.conf").write_text("user=tester\n", encoding="utf-8")
+    (pm / "local.conf").write_text("identity.user=tester\n", encoding="utf-8")
     # 세션은 env 명시로 바인딩한다(per-clone conf `session=` 폴백 폐지·T-0779) — 미바인딩이면
     # 이 테스트가 보려는 실패(손상 frontmatter fail-loud) 대신 세션 미해소로 먼저 죽는다.
     monkeypatch.setenv("PM_SESSION_NAME", "pm-1")
@@ -3455,7 +3455,7 @@ def test_default_list_view_survives_a_non_mapping_frontmatter_ticket(
     monkeypatch.setattr(board, "LOCAL_CONF", pm / "local.conf")
     monkeypatch.setattr(board, "AREAS_FILE", pm / "areas.md")
     monkeypatch.setattr(board, "LEASES_FILE", pm / ".local" / "worktree-leases.json")
-    (pm / "local.conf").write_text("session=pm_1\nuser=tester\n", encoding="utf-8")
+    (pm / "local.conf").write_text("session=pm_1\nidentity.user=tester\n", encoding="utf-8")
     monkeypatch.setattr(board, "_git_config_email", lambda: None)
     _ticket(board, "open", "T-0002", _NON_MAPPING_FRONTMATTER)
     _ticket(board, "open", "T-0001", _healthy_ticket_text("T-0001"))

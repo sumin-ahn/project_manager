@@ -5,7 +5,7 @@
     venv/bin/python .project_manager/tools/ticket_finish.py T-NNNN [--section "<섹션명>"] [--dry-run]
 
 동작 순서 (하나라도 실패하면 이후 단계 중단):
-  1. 회귀 실행 — 게이트는 areas.md(prefix 행 > repo 행) > local.conf test_cmd 로 해소하고,
+  1. 회귀 실행 — 게이트는 areas.md(prefix 행 > repo 행) > local.conf test.cmd 로 해소하고,
      해소 실패면 pytest tests/ -q. red 면 즉시 중단(비-pytest 게이트는 exit code 로 판정
      — §게이트 종류).
   2. log/current.md 스켈레톤 append — 표준 형식 entry 골격.
@@ -471,18 +471,18 @@ def _default_python() -> str:
     return str(cand) if cand.exists() else sys.executable
 
 
+def _load_local_conf():
+    """공용 local.conf 로더(`local_conf.py`)를 같은 tools/ 에서 경로 로드한다 (board 사본 동형)."""
+    return _load_module_from_path(
+        Path(__file__).resolve().parent / "local_conf.py", "local_conf.py",
+        verifier=_verify_engine_rev, cache=True,
+        cache_key=f"_project_manager_local_conf:{Path(__file__).resolve().parent}",
+    )
+
+
 def local_config() -> dict[str, str]:
     """per-clone local.conf 를 KEY=value 로 읽는다 (없으면 빈 dict). board.py 와 동일 포맷."""
-    conf: dict[str, str] = {}
-    if not LOCAL_CONF.exists():
-        return conf
-    for line in _load_file_lock().read_text_shared(LOCAL_CONF, encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        conf[key.strip()] = value.strip()
-    return conf
+    return _load_local_conf().load_checked_readable(LOCAL_CONF)
 
 
 # ── 회귀 명령 해소 (per-repo) ──────────────────────────────────
@@ -557,7 +557,7 @@ def _resolve_per_repo_test_cmd() -> str | None:
 
       1. areas.md 활성 **prefix** 행의 `test_cmd`   (multi-repo 네임스페이스 형상)
       2. areas.md 활성 **repo** 행의 `test_cmd`     (prefix 칼럼이 빈 무prefix 형상)
-      3. `local.conf` 의 `test_cmd`                 (per-clone 명시 설정)
+      3. `local.conf` 의 `test.cmd`                 (per-clone 명시 설정)
       4. None → 호출부가 기본 `pytest tests/ -q` venv argv (도그푸딩 불변)
 
     **체인 자체는 pm_handoff `_resolve_gate_cmd` 가 소유한다** — 사본을 두지 않고 동적 로드해
@@ -580,6 +580,8 @@ def _resolve_per_repo_test_cmd() -> str | None:
     except Exception as exc:  # noqa: BLE001 — fail-soft: 위임 실패는 기본 폴백.
         if _is_engine_rev_skew(exc):
             raise  # 사본 skew 는 fail-loud(삼키지 않는다).
+        if getattr(exc, "_legacy_conf_key", False):
+            raise  # 구표기 conf 잔존도 같은 규칙 — pm_handoff 동형.
         return None
 
 

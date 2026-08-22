@@ -311,7 +311,7 @@ def board(tmp_path, monkeypatch):
     # per-clone conf `session=` 폴백은 폐지됐다·T-0779).
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     monkeypatch.setenv("PM_SESSION_NAME", "pm-1")
-    (pm / "local.conf").write_text("user=tester\n", encoding="utf-8")
+    (pm / "local.conf").write_text("identity.user=tester\n", encoding="utf-8")
     return mod
 
 

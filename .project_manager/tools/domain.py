@@ -579,6 +579,8 @@ def _page_owner_repo(page: dict) -> tuple[Path | None, str | None]:
         owner = page["repo"] if "repo" in page else "self"
         owner_repo, owner_error = resolver(owner)
     except Exception as exc:  # noqa: BLE001 — owner 해소 실패는 stale unknown.
+        if _is_engine_rev_skew(exc):
+            raise      # 형제 사본 불일치는 unknown 한 줄로 삼키지 않는다(fail-loud 보존).
         return (None, f"페이지 repo 소유 checkout 해소 예외: {exc}")
     if owner_repo is None:
         return (None, owner_error or "페이지 repo 소유 checkout 미해소")

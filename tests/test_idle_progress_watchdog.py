@@ -320,6 +320,15 @@ def _unexpected_harness_literal_hits(
 
 # ── ① _WatchedPopen 진행 관측 (실 subprocess·python3 자식·바이너리 불요) ─────────────
 
+
+def _direct_target(external, command: str = "codex"):
+    """직접 호출용 대상 — 이 축의 테스트는 transport 아래(회신/로그 채널·판정·오염)를 본다.
+
+    `run_review` 는 대상을 **필수**로 받고 커맨드 문자열 입구가 없다. 여기서는 하네스 argv 조립을
+    태우지 않는 대상 하나로 고정해 판정 파이프라인만 본다 — 엔진 CLI 가 넘기는 대상은 언제나
+    `resolve_reviewer_target` 이 harness·model 을 채운 구조화 tuple 이다."""
+    return external.ReviewerTarget(external.REVIEWER_SOURCE_STRUCTURED, command)
+
 def test_watched_popen_tracks_last_event_from_stdout(relay):
     """stdout chunk 도착이 마지막 진행 시각을 세운다 + 부분 출력이 즉시 회수 가능."""
     argv = [sys.executable, "-c", "print('EVENT', flush=True); import time; time.sleep(0.3)"]
@@ -1233,13 +1242,13 @@ def test_harness_conf_override_resolution_order(relay, capsys):
     declared = relay.HARNESS_PROFILES["codex"]
     assert relay.resolve_harness_profile("codex", {}) == declared
     legacy = relay.resolve_harness_profile(
-        "codex", {"delegate_timeout": "1234", "delegate_idle_timeout": "77"},
-        legacy_idle_key="delegate_idle_timeout", legacy_wall_key="delegate_timeout")
+        "codex", {"delegate.timeout": "1234", "delegate.idle_timeout": "77"},
+        legacy_idle_key="delegate.idle_timeout", legacy_wall_key="delegate.timeout")
     assert (legacy.wall_timeout, legacy.idle_timeout) == (1234.0, 77.0)
     specific = relay.resolve_harness_profile(
-        "codex", {"delegate_timeout": "1234", "harness.codex.wall_timeout": "5555",
+        "codex", {"delegate.timeout": "1234", "harness.codex.wall_timeout": "5555",
                   "harness.codex.idle_timeout": "999"},
-        legacy_idle_key="delegate_idle_timeout", legacy_wall_key="delegate_timeout")
+        legacy_idle_key="delegate.idle_timeout", legacy_wall_key="delegate.timeout")
     assert (specific.wall_timeout, specific.idle_timeout) == (5555.0, 999.0)
     # 다른 하네스 키는 이 하네스에 영향 없음(축 격리).
     isolated = relay.resolve_harness_profile("claude", {"harness.opencode.idle_timeout": "1"})
@@ -1831,9 +1840,9 @@ def test_delegate_success_carries_silence_observation(pd, monkeypatch):
 
 
 def test_delegate_legacy_flat_conf_keys_still_honoured(pd):
-    """기존 채택자의 표면-flat 키(`delegate_timeout`·`delegate_idle_timeout`)는 계속 유효하다."""
-    profile = pd.harness_profile("codex", {"delegate_timeout": "1234",
-                                           "delegate_idle_timeout": "88"})
+    """기존 채택자의 표면-flat 키(`delegate.timeout`·`delegate.idle_timeout`)는 계속 유효하다."""
+    profile = pd.harness_profile("codex", {"delegate.timeout": "1234",
+                                           "delegate.idle_timeout": "88"})
     assert (profile.wall_timeout, profile.idle_timeout) == (1234.0, 88.0)
 
 
@@ -1924,46 +1933,52 @@ def _init_args():
     return argparse.Namespace(prefix=None, area=None, owner=None, repo=None, slot=None, user=None)
 
 
-def test_local_conf_seed_documents_harness_budget_keys(board, relay):
-    """fresh init 이 하네스별 시간 예산 키를 **시드로 노출**한다 — 존재를 모르면 못 쓴다.
+def test_harness_budget_keys_are_documented_in_the_shipped_catalog(relay):
+    """하네스별 시간 예산 키를 **출하 문서 카탈로그**가 노출한다 — 존재를 모르면 못 쓴다.
 
     GPU 부족은 엔진 속성이 아니라 배포 환경 조건이라 per-clone 으로 조여야 하는데, 키가 문서에
-    없으면 채택자는 false-kill 을 당하고도 노브를 못 찾는다."""
+    없으면 채택자는 false-kill 을 당하고도 노브를 못 찾는다. conf 파일은 실값만 담으므로
+    (시드 주석 블록 폐지) 카탈로그가 그 노출을 단독으로 진다."""
+    catalog = (REPO / "README.md").read_text(encoding="utf-8")
+    assert "harness.<name>.{idle_timeout,wall_timeout}" in catalog
+    assert "미설정이어도 안전" in catalog        # 기본값이 안전하다는 사실도 알린다
+    for harness in relay.HARNESS_PROFILES:
+        assert f"`{harness}`" in catalog or f"harness.{harness}." in catalog, harness
+
+
+def test_init_conf_holds_values_only_without_a_seed_block(board):
+    """fresh init 의 conf 는 **실값만** 담는다 — 주석 처리된 예시 키가 0 이다.
+
+    설명 블록을 conf 로 배달하던 경로는 폐지됐다(카탈로그는 출하 문서 한 곳). 예시가 다시 들어오면
+    같은 키가 두 곳에서 설명되고, 그 사본이 drift 한다."""
     assert board.cmd_init(_init_args()) == 0
     conf = board.LOCAL_CONF.read_text(encoding="utf-8")
-    assert board._HARNESS_BUDGET_SEED_MARKER in conf
-    for harness in relay.HARNESS_PROFILES:
-        assert f"harness.{harness}.idle_timeout=" in conf
-        assert f"harness.{harness}.wall_timeout=" in conf
-    # 전부 주석(활성 key 0) — 시드가 미설정 채택자의 실행 값을 바꾸지 않는다.
-    active = [line for line in conf.splitlines()
-              if line.strip().startswith("harness.") and not line.strip().startswith("#")]
-    assert active == []
-    assert "미설정이어도 안전" in conf          # 기본값이 안전하다는 사실도 알린다
-    assert "external_review" in conf           # 같은 키를 리뷰 축도 읽는다는 사실
+    commented_keys = [line for line in conf.splitlines()
+                      if line.strip().startswith("#") and "=" in line]
+    assert commented_keys == [], commented_keys
+    assert "harness." not in conf and "delegate." not in conf
 
 
-def test_local_conf_seed_reaches_existing_adopters_idempotently(board):
-    """기존 local.conf 를 가진 채택자도 재실행에 블록을 받고, 중복 append 는 없다."""
+def test_existing_adopter_conf_receives_no_appended_block(board):
+    """기존 conf 를 가진 채택자에게도 append 되는 블록이 없다 — 실행할수록 길어지지 않는다."""
     board.LOCAL_CONF.parent.mkdir(parents=True, exist_ok=True)
     board.LOCAL_CONF.write_text(
-        "session=pm\npy=python3\ntest_cmd=pytest -q\n"
-        "# ── cross-harness 역할 위임 (pm_delegate·기본 OFF) ──\n", encoding="utf-8")
+        "identity.user=pm@example.com\nruntime.py=python3\ntest.cmd=pytest -q\n",
+        encoding="utf-8")
+
     board.cmd_init(_init_args())
     once = board.LOCAL_CONF.read_text(encoding="utf-8")
     board.cmd_init(_init_args())
     twice = board.LOCAL_CONF.read_text(encoding="utf-8")
-    assert once.count(board._HARNESS_BUDGET_SEED_MARKER) == 1
-    assert twice.count(board._HARNESS_BUDGET_SEED_MARKER) == 1   # 멱등
-    assert "session=pm" in twice                                 # 비파괴 병합
+
+    assert once == twice                                          # 멱등
+    assert "identity.user=pm@example.com" in twice                # 비파괴 병합
+    assert [line for line in twice.splitlines()
+            if line.strip().startswith("#") and "=" in line] == []
 
 
-def test_seeded_values_match_engine_declarations(board, relay):
-    """시드와 pm-env 4사본이 엔진/출하 선언과 일치 — 문서 drift 가 오설정을 유도하지 않게."""
-    seed = board._HARNESS_BUDGET_CONF_SEED
-    for harness, profile in relay.HARNESS_PROFILES.items():
-        assert f"harness.{harness}.idle_timeout={int(profile.idle_timeout)}" in seed
-        assert f"harness.{harness}.wall_timeout={int(profile.wall_timeout)}" in seed
+def test_pm_env_cards_match_shipped_bash_cap():
+    """pm-env 4사본이 출하 settings 의 Bash 상한과 일치 — 문서 drift 가 오설정을 유도하지 않게."""
     settings = json.loads(
         (REPO / "templates/claude_code/.claude/settings.json").read_text(encoding="utf-8"))
     cap_ms = int(settings["env"]["BASH_MAX_TIMEOUT_MS"])
@@ -2107,7 +2122,7 @@ def test_external_review_wall_timeout_keeps_actual_diagnostics(
     diagnosis = output.answer
     assert "리뷰어 타임아웃" in diagnosis and "--timeout <초>" in diagnosis
     assert "벽시계 백스톱 1800초" in diagnosis and "실측 침묵 7초" in diagnosis
-    assert "external_review_timeout=<초>" in diagnosis
+    assert "additional_reviewer.timeout=<초>" in diagnosis
     assert "PARTIAL" in diagnosis
 
 
@@ -2116,7 +2131,7 @@ def test_external_review_run_review_saves_partial_output(external, monkeypatch, 
     exc = subprocess.TimeoutExpired(["codex"], 900.0, output="HALF REVIEW")
     exc.idle_seconds = 902.0
     monkeypatch.setattr(external, "_load_relay", lambda: _RecordingRelay(exc=exc))
-    result = external.run_review("p", reviewer_cmd="codex exec", timeout=1700,
+    result = external.run_review("p", target=_direct_target(external, "codex exec"), timeout=1700,
                                  output_dir=tmp_path)
     assert result["failed"] is True and result["started"] is True
     assert result["file"] is not None
@@ -2136,7 +2151,7 @@ def test_external_review_cleanup_failure_saves_partial_output(
         raise exc
 
     result = external.run_review(
-        "p", reviewer_cmd="codex exec", timeout=1700,
+        "p", target=_direct_target(external, "codex exec"), timeout=1700,
         output_dir=tmp_path, run_fn=fail_cleanup,
     )
     assert result["failed"] is True and result["started"] is True
@@ -2150,19 +2165,24 @@ def test_external_review_cleanup_failure_saves_partial_output(
 
 
 def test_external_review_idle_resolution_order(external, relay, capsys):
-    """`--idle-timeout` > 하네스 키 > flat legacy > 프로필 선언 — 위임 축과 **같은 해소 순서**."""
+    """`--idle-timeout` > 하네스 키 > 리뷰 축 키 > 프로필 선언 — 위임 축과 **같은 해소 순서**.
+
+    리뷰어 커맨드는 해소된 대상에서 오므로(기본 커맨드 없음) 이 해소자는 그것을 인자로 받는다."""
+    codex = "codex exec"
     cli = external.argparse.Namespace(idle_timeout=45.0)
-    assert external._resolve_idle_timeout(cli, {external.EXTERNAL_IDLE_TIMEOUT_KEY: "77"}) == 45.0
+    assert external._resolve_idle_timeout(
+        cli, {external.EXTERNAL_IDLE_TIMEOUT_KEY: "77"}, codex) == 45.0
     unset = external.argparse.Namespace(idle_timeout=None)
     assert external._resolve_idle_timeout(
-        unset, {external.EXTERNAL_IDLE_TIMEOUT_KEY: "77"}) == 77.0
+        unset, {external.EXTERNAL_IDLE_TIMEOUT_KEY: "77"}, codex) == 77.0
     assert external._resolve_idle_timeout(
         unset, {external.EXTERNAL_IDLE_TIMEOUT_KEY: "77",
-                "harness.codex.idle_timeout": "88"}) == 88.0      # 하네스 키가 더 구체적
-    # 미설정이면 리뷰어 커맨드의 하네스 프로필(기본 codex 축) — 별도 상수가 아니다.
-    assert external._resolve_idle_timeout(unset, {}) == relay.CLOUD_IDLE_TIMEOUT_SEC
+                "harness.codex.idle_timeout": "88"}, codex) == 88.0   # 하네스 키가 더 구체적
+    # 미설정이면 리뷰어 커맨드의 하네스 프로필(codex 축) — 별도 상수가 아니다.
+    assert external._resolve_idle_timeout(unset, {}, codex) == relay.CLOUD_IDLE_TIMEOUT_SEC
     assert external._resolve_idle_timeout(
-        unset, {external.EXTERNAL_IDLE_TIMEOUT_KEY: "x"}) == relay.CLOUD_IDLE_TIMEOUT_SEC
+        unset, {external.EXTERNAL_IDLE_TIMEOUT_KEY: "x"}, codex) == \
+        relay.CLOUD_IDLE_TIMEOUT_SEC
     assert external.EXTERNAL_IDLE_TIMEOUT_KEY in capsys.readouterr().err
 
 
@@ -2312,7 +2332,7 @@ def test_external_review_wall_clock_is_a_backstop_not_a_primary(external):
     실측: 같은 입력 2회 중 하나는 900초 초과 kill / 다른 하나는 `--timeout 1500` 성공. 900 으로
     되돌리면 그 false-kill 구조가 그대로 복원된다."""
     unset = external.argparse.Namespace(timeout=None)
-    assert external._resolve_timeout(unset, {}) > 1500
+    assert external._resolve_timeout(unset, {}, "codex exec") > 1500
 
 
 def test_external_review_runtime_harness_cap_advisory(external):
@@ -2905,61 +2925,15 @@ def test_relay_and_reviewer_share_the_definite_launch_failure_table(relay, exter
     assert relay._DEFINITE_LAUNCH_FAILURES == external._DEFINITE_LAUNCH_FAILURES
 
 
-# ── local.conf 온보딩 위생 — 활성-키 인지·멱등·비파괴 (T-0615) ────────────────
-# 예시 시드는 **그 키를 아직 안 쓰는 채택자에게 존재를 알리는 문서**다. 이미 실키로 그 축을 쓰는
-# conf 에 "기본 OFF" 예시가 통째로 붙으면 그 파일은 자기 모순이 되고(활성 설정과 예시가 섞여 무엇이
-# 유효한지 사람이 못 읽는다·adopter#0 실측) 문서로서의 값도 0 이다. 반대로 **이미 붙은 블록을 엔진이
-# 지우지는 않는다** — 채택자 소유 파일의 재작성은 하지 않는다(신규 append 만 위생화).
+# ── local.conf 온보딩 위생 — 비파괴·멱등 (T-0615 · 시드 폐지 후 T-0767) ────────
+# 예시 시드는 폐지됐다 — conf 는 실값만 담고 키 카탈로그는 출하 문서 한 곳이 소유한다. 남은 계약은
+# 둘이다: init 이 채택자 conf 를 재작성하지 않는다(이미 붙어 있는 구세대 블록도 그대로 둔다)는 것과,
+# 반복 실행이 파일을 늘리지 않는다는 것.
 
 
 def _conf_with(board, text: str) -> None:
     board.LOCAL_CONF.parent.mkdir(parents=True, exist_ok=True)
     board.LOCAL_CONF.write_text(text, encoding="utf-8")
-
-
-def test_active_delegate_axis_suppresses_the_example_seed(board):
-    """활성 `delegate.*` 설정이 있으면 위임 예시 블록을 붙이지 않는다 (모순 차단)."""
-    _conf_with(board, "session=pm\ndelegate.developer.harness=codex\n"
-                      "delegate.developer.model=gpt-5.6-terra\n")
-
-    assert board.cmd_init(_init_args()) == 0
-
-    conf = board.LOCAL_CONF.read_text(encoding="utf-8")
-    assert board._DELEGATE_SEED_MARKER not in conf, \
-        "활성 위임 설정 아래에 '기본 OFF' 예시 블록이 붙었다"
-    assert "# delegate_enabled=false" not in conf
-    assert "delegate.developer.harness=codex" in conf            # 실키 보존
-
-
-def test_active_gate_key_alone_also_suppresses_the_delegate_seed(board):
-    """`delegate_enabled` 실키만 있어도 예시는 생략된다 — 축 표기 둘(밑줄·점)을 함께 본다."""
-    _conf_with(board, "session=pm\ndelegate_enabled=true\n")
-
-    assert board.cmd_init(_init_args()) == 0
-
-    assert board._DELEGATE_SEED_MARKER not in board.LOCAL_CONF.read_text(encoding="utf-8")
-
-
-def test_active_harness_budget_key_suppresses_its_example_seed(board):
-    """활성 `harness.*` 값이 있으면 시간 예산 예시 블록도 생략된다(같은 규칙·다른 축)."""
-    _conf_with(board, "session=pm\nharness.codex.idle_timeout=1200\n")
-
-    assert board.cmd_init(_init_args()) == 0
-
-    conf = board.LOCAL_CONF.read_text(encoding="utf-8")
-    assert board._HARNESS_BUDGET_SEED_MARKER not in conf
-    assert "harness.codex.idle_timeout=1200" in conf             # 실값 보존
-
-
-def test_unconfigured_axis_still_receives_the_seed(board):
-    """축을 아직 안 쓰는 채택자는 종전대로 예시를 받는다 — 가드가 과잉이면 문서가 사라진다."""
-    _conf_with(board, "session=pm\npy=python3\n")
-
-    assert board.cmd_init(_init_args()) == 0
-
-    conf = board.LOCAL_CONF.read_text(encoding="utf-8")
-    assert board._DELEGATE_SEED_MARKER in conf
-    assert board._HARNESS_BUDGET_SEED_MARKER in conf
 
 
 def test_repeated_init_is_byte_identical(board):
@@ -2968,7 +2942,7 @@ def test_repeated_init_is_byte_identical(board):
     두 축(예시 시드 2종)이 마커로 자기 존재를 판정하므로, 실행 횟수가 conf 길이에 영향을 주지
     않는다. 이 단언이 깨지면 채택자 conf 는 업데이트를 거칠수록 길어진다.
     """
-    _conf_with(board, "session=pm\npy=python3\n")
+    _conf_with(board, "session=pm\nruntime.py=python3\n")
 
     assert board.cmd_init(_init_args()) == 0
     once = board.LOCAL_CONF.read_bytes()
@@ -2984,35 +2958,26 @@ def _conf_with_init_defaults(board, extra: str) -> str:
     빼야 "엔진이 기존 내용을 재작성하지 않는다" 를 byte 로 단언할 수 있다.
     """
     return (
-        "session=pm\npy=python3\ntest_cmd=pytest -q\nproject_name=\n"
-        f"ctx_nudge_pct={board.CTX_NUDGE_PCT_DEFAULT}\n"
-        f"ctx_stop_pct={board.CTX_STOP_PCT_DEFAULT}\n"
-        f"ctx_window_tokens={board.CTX_WINDOW_TOKENS_DEFAULT}\n" + extra)
+        "session=pm\nruntime.py=python3\ntest.cmd=pytest -q\nproject.name=\n"
+        f"ctx.nudge_pct={board.CTX_NUDGE_PCT_DEFAULT}\n"
+        f"ctx.stop_pct={board.CTX_STOP_PCT_DEFAULT}\n"
+        f"ctx.window_tokens={board.CTX_WINDOW_TOKENS_DEFAULT}\n" + extra)
 
 
-def test_already_polluted_conf_is_left_untouched(board):
-    """이미 예시가 붙어 오염된 conf 는 **그대로 둔다** — 소급 청소는 엔진 소관이 아니다."""
+def test_already_seeded_conf_is_left_untouched(board):
+    """구세대 시드가 붙어 오염된 conf 는 **그대로 둔다** — 소급 청소는 엔진 소관이 아니다.
+
+    시드 문자열은 엔진에서 사라졌으므로 픽스처가 그 세대의 산출물을 동결해 들고 있는다 — 엔진
+    상수를 참조하면 '지워진 것을 지워졌는지로' 검사하게 돼 계약이 비어 버린다."""
+    legacy_seed = (
+        "\n# ── 하네스별 시간 예산 (미설정이어도 안전) ──\n"
+        "# harness.codex.idle_timeout=900\n"
+        "# harness.codex.wall_timeout=3600\n")
     polluted = _conf_with_init_defaults(
-        board, "delegate.developer.harness=codex\n"
-        + board._DELEGATE_CONF_SEED + board._HARNESS_BUDGET_CONF_SEED)
+        board, "delegate.developer.harness=codex\n" + legacy_seed)
     _conf_with(board, polluted)
 
     assert board.cmd_init(_init_args()) == 0
 
     conf = board.LOCAL_CONF.read_text(encoding="utf-8")
     assert conf == polluted, "채택자 conf 를 엔진이 재작성했다(소급 청소 금지)"
-
-
-def test_axis_judgment_ignores_commented_examples(board):
-    """축 판정은 **파싱된 실키**만 본다 — 예시 주석이 '설정됨' 으로 읽히면 자기 자신을 삼킨다."""
-    assert board._conf_axis_is_configured(
-        {"delegate.developer.harness": "codex"}, board._DELEGATE_AXIS_KEYS) is True
-    assert board._conf_axis_is_configured(
-        {"delegate_enabled": "false"}, board._DELEGATE_AXIS_KEYS) is True
-    assert board._conf_axis_is_configured(
-        {"session": "pm"}, board._DELEGATE_AXIS_KEYS) is False
-    # 접두가 겹치는 남의 키(`delegate_timeout`)는 이 축이 아니다 — 예시를 잘못 끄지 않는다.
-    assert board._conf_axis_is_configured(
-        {"delegate_timeout": "900"}, board._DELEGATE_AXIS_KEYS) is False
-    assert board._conf_axis_is_configured(
-        {"harness.opencode.wall_timeout": "1"}, board._HARNESS_BUDGET_AXIS_KEYS) is True

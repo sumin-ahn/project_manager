@@ -16,6 +16,15 @@ SHIPPED_TARGETS = ("claude_code", "codex", "opencode")
 DERIVED_PREFIX = "게이트 자동 유도: --gate"
 
 
+# 해소 가능한 추가 리뷰어 대상 — 대상은 `harness`+`model` 구조화 키로만 서므로(엔진 기본 커맨드
+# 없음) 이 파일의 모든 형상이 그 세트를 깔고 시작한다.
+_REVIEWER_TARGET = {
+    "additional_reviewer.enabled": "true",
+    "additional_reviewer.harness": "codex",
+    "additional_reviewer.model": "gpt-5.6-sol",
+}
+
+
 def _load_external():
     spec = importlib.util.spec_from_file_location(
         "external_review_t0637", TOOLS / "external_review.py",
@@ -62,8 +71,8 @@ def _pass_result() -> dict:
 def _wire_main(external, monkeypatch, tmp_path: Path, *, conf=None, diff=None, excluded=()):
     """main을 tmp 앵커와 무스폰 reviewer로 격리한다."""
     config = {
-        "additional_reviewer_enabled": "true",
-        "review_paths": "src/ .opencode/node_modules/",
+        **_REVIEWER_TARGET,
+        "additional_reviewer.paths": "src/ .opencode/node_modules/",
     }
     if conf is not None:
         config.update(conf)
@@ -474,7 +483,7 @@ def test_opencode_post_create_containment_failure_cleans_transport(
 def test_early_exit_notice_matrix_has_cell_specific_expectations(
         external, monkeypatch, tmp_path, capsys, early_exit, gate_mode, expected_rc,
         derived_notice, unaccounted_notice, confirmed_notice):
-    conf = {"additional_reviewer_enabled": "false" if early_exit == "disabled" else "true"}
+    conf = {"additional_reviewer.enabled": "false" if early_exit == "disabled" else "true"}
     diff = "" if early_exit == "empty" else _raw_diff("src/app.py")
     calls = _wire_main(external, monkeypatch, tmp_path, conf=conf, diff=diff)
     if early_exit == "egress":

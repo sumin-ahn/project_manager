@@ -51,8 +51,10 @@ python3 .project_manager/tools/board.py regression run --task <이름>
 `local.conf`의 `delegate.<role>[.<tier>]` 매핑은 native와 cross 모두가 읽는 위임 설정의 단일
 진실이다. 위임 전 target이 PM과 같은 하네스인지 판정해 같은 하네스면 native transport, 다른
 하네스면 `pm_delegate.py` cross transport를 선택한다. native agent 카드의 모델은 conf와 일치해야
-하며 가드가 불일치를 경고하되 spawn을 막거나 카드를 자동 수정하지 않는다. `delegate_enabled`는
-cross 외부 송신·과금 동의만 게이트하며 native 설정 조회와 실행에는 적용하지 않는다.
+하며 가드가 불일치를 경고하되 spawn을 막거나 카드를 자동 수정하지 않는다. `delegate.enabled`는
+위임 전체의 마스터 스위치(기본 허용·채널 무관)이며 native/cross 어느 쪽도 예외가 아니다.
+cross 위임은 코드/프롬프트·worktree 내용을 외부 하네스로 전송하고 통상 과금이 발생한다 —
+그 승격은 도구 승인 축이 소유하며 이 스위치가 대신하지 않는다.
 1차 판정은 이 카드이며 `pm_delegate.py` same-harness 경고는 never-block 백스톱이다.
 
 ### 라운드 파일 — 모든 위임의 준비/회수
@@ -147,20 +149,28 @@ python3 .project_manager/tools/pm_delegate.py --role <역할> \
 - developer·code-reviewer·architect의 정식 실행은 `--ticket`을 받아 라운드 파일을 자동 준비하고 그 절대경로 하나만 편집한다. OpenCode 네 역할 카드는 `mode: all`이며 native `task(subagent_type=<role>)`와 cross `opencode run --agent <role>`가 정확한 역할명을 쓴다. 타 하네스 adopter처럼 역할 카드가 없는 cross는 엔진이 이번 역할 하나의 mode/permission을 정제된 env에 주입하고 모델을 CLI로 명시해 default build/plan 폴백을 막는다. code-reviewer는 제품 코드를 고치지 않지만 지정된 라운드 파일은 반드시 기록한다. OpenCode처럼 단일 경로 쓰기 격리를 보장하지 못해도 경고 후 사용자가 고른 target으로 계속 실행하며, 역할 규약과 위임 전후 git/touches 감사가 범위 밖 변경을 loud하게 표면화한다. target 자동 대체·새 reviewer opt-in·새 sandbox는 추가하지 않는다.
 - 병렬 cross wave는 OpenCode가 제공하는 호출측 동시 실행으로 동기·stateless `pm_delegate` 호출을 병렬화한다.
 - 같은 세션이 claim 중인 다른 ticket과 `touches`가 겹치면(dry-run 포함) `pm_delegate`가 이미 `=== 병렬 위임 touches 겹침 ===` 경고를 stderr에 낸다(never-block·처방: 순차 실행 또는 슬롯 분리). 이 경고 하나만으로 "겹치니 직렬"로 판단하지 않는다 — `board.py new`/`promote`가 발행 시점에 낸 가용(idle) 슬롯 수 재료를 함께 보고, 슬롯이 남아 있으면 순차 대신 슬롯 분리로 병렬을 유지한다.
-- 결과: `rc=0` 성공(stdout 첫 줄=실행 provenance, 폴백 시 실제 하네스 포함; 이후 최종 reply; raw 파일 박제), `rc=1` 실패(loud·raw 경로 stderr), `rc=3` opt-in OFF. PM이 reply를 검토하고 board를 갱신하며 위임 대상은 board를 조작하지 않는다.
+- 결과: `rc=0` 성공(stdout 첫 줄=실행 provenance, 폴백 시 실제 하네스 포함; 이후 최종 reply; raw 파일 박제), `rc=1` 실패(loud·raw 경로 stderr), `rc=3` 위임 스위치 off. PM이 reply를 검토하고 board를 갱신하며 위임 대상은 board를 조작하지 않는다.
 - `--ticket T-NNNN`은 해당 ticket `touches`를 허용 집합으로 전후 워크스페이스를 비교해 범위 밖 신규/변경/커밋을 stderr 경고한다(차단 아님·rc 불변). 생략 시 허용 0이라 모든 변경을 경고한다. **dev 위임에는 `--ticket`이 표준**.
 - secret scan이 막으면 전 탐지 목록(발췌·판정·축), 승인 토큰, `--secret-scan-ack <digest>` 재실행 커맨드를 출력한다. **PM(LLM)이 반사적으로 재실행하지 않는다.** 모든 발췌를 읽고 시크릿을 논하는 텍스트(오탐)인지 실 크리덴셜(정탐)인지 판단한다. 조금이라도 모호하면 발췌를 사용자에게 제시하고 승인받은 뒤에만 ack한다. 정탐이면 ack 금지, 해당 내용을 제거해 프롬프트를 재작성한다. 승인은 프롬프트 전문+해소 수신자(harness:model)에 결속된 건별 1회이며 1자나 수신자 변경 시 재승인. ack로 통과한 실행은 **폴백이 억제**되므로(위 §매핑 조회 참조) 인프라 실패가 폴백 없이 `rc=1`로 끝난다 — 그 조합을 기대하지 말고 수신자를 명시해 재실행한다.
 
-### opt-in 게이트
+### 위임 마스터 스위치
 
-cross 위임은 코드/프롬프트·worktree 내용을 외부 하네스로 전송한다. 기본 OFF인 `delegate_enabled`가 꺼지면 스폰 없이 `rc=3`:
+`delegate.enabled`는 "PM이 위임을 해도 되는가" 하나만 정한다. **기본은 허용**이고 채널(native/cross)로
+갈리지 않는다 — 키를 지우면 허용, 명시적으로 끄려면 `false`:
 
 ```ini
 # local.conf (per-clone·git-ignored)
-delegate_enabled = true
+delegate.enabled = false
 ```
 
-`=true`는 worktree 내용·정제된 환경의 외부 송신과 과금을 사용자가 수용하는 계약. same-harness native는 외부 송신이 없어 게이트 밖이다.
+끄면 세 층이 막는다: `pm_delegate` 실행 `rc=3` · `pm_delegate ticket prepare` `rc=3`(run-dir·라운드
+순번 미생성) · 훅이 깔린 하네스의 역할 spawn `deny`. `ticket harvest`/`copies`와 `--dry-run`은 게이트
+밖이다(진행 중 라운드가 고아가 되지 않게).
+
+**차단 범위의 한계**: 훅 등록 파일(`settings.json`·`hooks.json`·`opencode.jsonc`)은 채택자 소유라
+엔진이 전파하지 않고, 가드는 자기 고장 시 fail-open이다. 훅을 깔지 않았거나 가드가 고장난 형상에서는
+티켓 없는 ad-hoc native spawn을 막지 못한다 — 스위치가 "모든 native를 막는다"고 읽으면 그것이
+false-green이다.
 
 ## 실행 패턴
 
@@ -316,6 +326,6 @@ touches 경로의 실재(소유 repo 좌표 기준) · 다른 열린 티켓과�
 > 연속 미해소면 라운드 추가가 아니라 재설계·분할로 전환한다(내부 라운드 상한 3 — `pm_playbook.md`
 > §"라운드 프로토콜").
 
-`additional_reviewer_enabled=true` 로 추가 리뷰어(additional reviewer) 채널을 켠 채택자는 reviewer 라운드와 같은 시점에 교차검증을 돌린다. 기본은 OFF 이고, 끈 채택자에게 이 단계는 없다:
+`additional_reviewer.enabled=true` 로 추가 리뷰어(additional reviewer) 채널을 켠 채택자는 reviewer 라운드와 같은 시점에 교차검증을 돌린다. 기본은 OFF 이고, 끈 채택자에게 이 단계는 없다:
 `python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN`
 ADR 본문 정합 필요 시 `--paths`에 **코드 경로+ADR을 함께 나열**한다. `--paths`는 `--ticket` touches를 대체한다. 상세: `pm_playbook.md` §"추가 리뷰어 교차검증".

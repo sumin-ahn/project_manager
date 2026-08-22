@@ -60,6 +60,68 @@ def _load_engine():
     return module, root
 
 
+# 차단 구키 목록은 엔진이 **생성**한다(어댑터가 매핑표를 복제하면 표와 파서가 갈린다):
+#   python3 .project_manager/tools/local_conf.py --render-adapter-block python
+# 생성 시작 — 차단 구키 (local_conf.render_adapter_block · 손편집 금지)
+LEGACY_CONF_KEYS = (
+    "additional_reviewer_enabled",
+    "additional_reviewer_incomplete_round_limit",
+    "additional_reviewer_round_limit",
+    "additional_reviewer_wave_budget",
+    "ctx_nudge_pct",
+    "ctx_stop_pct",
+    "ctx_window_tokens",
+    "date",
+    "delegate_enabled",
+    "delegate_idle_timeout",
+    "delegate_timeout",
+    "external_review_enabled",
+    "external_review_idle_timeout",
+    "external_review_incomplete_round_limit",
+    "external_review_progress_signal",
+    "external_review_round_limit",
+    "external_review_timeout",
+    "external_review_wave_budget",
+    "opencode_pro_model",
+    "project_name",
+    "project_root",
+    "project_tagline",
+    "py",
+    "regression_min_collected",
+    "review_denylist_extra",
+    "review_paths",
+    "review_rounds_max",
+    "reviewer_cmd",
+    "reviewer_env_keep_extra",
+    "reviewer_home_artifacts_extra",
+    "test_cmd",
+    "upstream",
+    "upstream_rev",
+    "upstream_seen_rev",
+    "user",
+)
+LEGACY_CONF_KEY_PREFIX = "ctx_window_tokens_"
+# 생성 끝 — 차단 구키
+
+
+def _assert_no_legacy_conf(conf: dict[str, str], path: Path) -> None:
+    """구표기 키가 남아 있으면 **값 해소 전에** 멈춘다 (조용한 기본값 강등 차단).
+
+    어댑터는 엔진을 import 하지 않아 신표기 이름을 말하지 못한다 — 무엇이 걸렸는지만 말하고
+    전수 지목은 엔진 도구(`board.py lint`·`pm_update.py` 안내)에 맡긴다. 여기서 강등하면 채택자는
+    conf 를 고쳤는데 아무 일도 안 일어나는 상태(임계·예산이 전부 엔진 기본값)를 본다."""
+    found = sorted(key for key in conf
+                   if key in LEGACY_CONF_KEYS
+                   or (key.startswith(LEGACY_CONF_KEY_PREFIX)
+                       and len(key) > len(LEGACY_CONF_KEY_PREFIX)))
+    if not found:
+        return
+    print(f"오류: local.conf 에 구표기 키가 남아 있습니다 ({path}) — "
+          f"{', '.join(found)}. 값이 조용히 기본값으로 떨어지지 않도록 여기서 멈춥니다. "
+          "전수 지목은 `board.py lint` 또는 `pm_update.py` 안내가 냅니다.", file=sys.stderr)
+    raise SystemExit(1)
+
+
 def load_local_config(root: Path) -> dict[str, str]:
     """`.project_manager/local.conf` 를 KEY=value dict 로 읽는다(없으면 {})."""
     conf: dict[str, str] = {}
@@ -74,12 +136,13 @@ def load_local_config(root: Path) -> dict[str, str]:
             continue
         key, _, value = line.partition("=")
         conf[key.strip()] = value.strip()
+    _assert_no_legacy_conf(conf, path)
     return conf
 
 
 def resolve_ctx_budget(conf: dict[str, str]) -> int:
-    """`ctx_window_tokens_opencode` > generic > 200000 순으로 예산을 해소한다."""
-    for key in ("ctx_window_tokens_opencode", "ctx_window_tokens"):
+    """`harness.opencode.ctx_window_tokens` > generic > 200000 순으로 예산을 해소한다."""
+    for key in ("harness.opencode.ctx_window_tokens", "ctx.window_tokens"):
         raw = conf.get(key)
         if raw is None:
             continue
@@ -94,7 +157,7 @@ def resolve_ctx_budget(conf: dict[str, str]) -> int:
 
 def resolve_stop_pct(conf: dict[str, str]) -> int:
     """잔여 ctx 정지 %를 해소한다. 비정상 값은 기본 20으로 폴백한다."""
-    raw = conf.get("ctx_stop_pct")
+    raw = conf.get("ctx.stop_pct")
     if raw is None:
         return CTX_STOP_PCT_DEFAULT
     try:

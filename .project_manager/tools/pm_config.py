@@ -50,7 +50,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
   - update → pm_update.main(argv) verbatim forward (rename 비용 0·중복 구현 금지).
   - add-harness → pm_import.add_harness_cli(dest, harness, dry_run=, source_root=) verbatim forward
                   (복사 스코프+인터페이스 예외 번역+소스 해소는 pm_import 단일 진실·
-                  중복 0). `--from` 생략 시 dest local.conf upstream 자동 해소(imported 인스턴스).
+                  중복 0). `--from` 생략 시 dest local.conf upstream.path 자동 해소(imported 인스턴스).
   - sync-adapter-config → pm_import.judge_adapter_configs(조회) / accept_adapter_config(수용·백업
                   후 template 채택 + 원장 기록). manifest 밖 instance-owned config 는 동기가 무편집
                   분만 자동 갱신하고 나머지는 보존+보고하므로, 이 커맨드가 보존분을 채택자가
@@ -387,26 +387,23 @@ def _default_session(*, identity=None) -> str | None:
     return None
 
 
-def _local_conf_user() -> str | None:
-    """`.project_manager/local.conf` 의 `user=` (없거나 OSError → None).
+def _load_local_conf():
+    """공용 local.conf 로더(`local_conf.py`)를 같은 tools/ 에서 경로 로드한다 (board 사본 동형)."""
+    return _load_module_from_path(
+        Path(__file__).resolve().parent / "local_conf.py", "local_conf.py",
+        verifier=_verify_engine_rev, cache=True,
+        cache_key=f"_project_manager_local_conf:{Path(__file__).resolve().parent}",
+    )
 
-    `_local_conf_test_cmd` 와 동형 — board.py 를 import 하지 않으므로
-    touches 격리) `board.local_config().get("user")` 와 *동일 의미*를 stdlib 로 자체 구현한다.
-    plain `KEY=value`·`#` 주석/빈 줄 무시. 부재/읽기실패는 None(폴백).
+
+def _local_conf_user() -> str | None:
+    """`.project_manager/local.conf` 의 `identity.user=` (없거나 OSError → None).
+
+    `_local_conf_test_cmd` 와 동형 — 해소는 공용 로더(`local_conf.py`)가 하고 이 함수는
+    키 이름과 빈값→None 관례만 소유한다(`board.local_config().get("identity.user")` 와 동일 의미).
+    부재/읽기실패는 None(폴백)이고, 구표기 키 잔존은 소비 지점 계약대로 fail-loud 다.
     """
-    conf_file = REPO / ".project_manager" / "local.conf"
-    try:
-        text = _load_file_lock().read_text_shared(conf_file, encoding="utf-8")
-    except OSError:
-        return None
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        if key.strip() == "user":
-            return val.strip() or None
-    return None
+    return _local_conf_value("identity.user") or None
 
 
 def _git_config_email() -> str | None:
@@ -434,11 +431,11 @@ def _git_config_email() -> str | None:
 
 def _default_user() -> str | None:
     """user 식별자 — board.py `user_name()` 과 *동형* 우선순위:
-    `local.conf user=` > `git config user.email` > None (graceful·user 미상 허용).
+    `local.conf identity.user=` > `git config user.email` > None (graceful·user 미상 허용).
 
     `pm`(슬롯·`_default_session`)과 직교하는 **누가**(사람) 차원이다. `repo add` 의 areas.md
     `area_owner` 칼럼(그 area 의 user 소유·`--mine` 풀 입력) 기본값으로 쓴다. 단일 사용자는 보통
-    `local.conf user=` 미설정 → `git config user.email` 폴백·그마저 없으면 None(빈 area_owner).
+    `local.conf identity.user=` 미설정 → `git config user.email` 폴백·그마저 없으면 None(빈 area_owner).
     """
     conf_user = _local_conf_user()
     if conf_user:
@@ -501,14 +498,14 @@ def _distinct_area_owners() -> int:
 
 
 def _local_conf_test_cmd() -> str | None:
-    """`.project_manager/local.conf` 의 `test_cmd=` (없거나 OSError → None).
+    """`.project_manager/local.conf` 의 `test.cmd=` (없거나 OSError → None).
 
     `_local_conf_user` 와 동형 — board.py 를 import 하지 않으므로
-    touches 격리) `board.local_config().get("test_cmd")` 와 *동일 의미*를 stdlib 로 자체
+    touches 격리) `board.local_config().get("test.cmd")` 와 *동일 의미*를 stdlib 로 자체
     구현한다. worktree add 빌드명령 프롬프트의 기본값(`board._test_cmd` 최종 폴백 레이어와
     동형 — 미지정 시 `pytest -q`)을 제시하는 데 쓴다.
     """
-    return _local_conf_value("test_cmd")
+    return _local_conf_value("test.cmd")
 
 
 _PROTECTED_GATE_RELEASE = "release"
@@ -523,20 +520,7 @@ def _local_conf_value(key: str) -> str | None:
     `upstream show`와 보호 push gate가 다르게 해석하지 않게 하는 계약이다.
     """
     conf_file = REPO / ".project_manager" / "local.conf"
-    try:
-        lines = _load_file_lock().read_text_shared(conf_file, encoding="utf-8").splitlines()
-    except OSError:
-        return None
-    value: str | None = None
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        found, _, raw = stripped.partition("=")
-        candidate = raw.strip()
-        if found.strip() == key:
-            value = candidate
-    return value
+    return _load_local_conf().load_checked(conf_file).get(key)
 
 
 def _git_remote_identity(value: str) -> tuple[str, str, int | None, str]:
@@ -668,18 +652,18 @@ def _protected_push_gate_config(
 ) -> tuple[str, str]:
     """repo 보호 push의 증거 계약 `(mode, self_test_cmd)`를 provenance로 해소한다.
 
-    PM 홈 `local.conf upstream=`이 이 홈의 canonical `work/<repo>_<N>` 슬롯 자체거나,
+    PM 홈 `local.conf upstream.path=`이 이 홈의 canonical `work/<repo>_<N>` 슬롯 자체거나,
     URL identity가 areas의 repo remote와 같으면 프레임워크 자기 repo라 기존 release
     livegate를 유지한다. 다른 repo면 areas `test_cmd`(없으면 local.conf/default)로 자기 검증한다.
     upstream/registry provenance를 판별할 수 없으면 사용자 통제 밖 조건으로 영구 차단하지
     않고 adopter `self-test`로 강등한다. 증거 명령 자체는 그대로 fail-closed다.
     """
     test_cmd = _resolve_repo_test_cmd(repo, board=board)
-    upstream = _local_conf_value("upstream")
+    upstream = _local_conf_value("upstream.path")
     if not upstream:
         if report_downgrade:
             print(
-                f"⚠ 보호 push gate 강등({repo}): local.conf upstream 축 미해소 — "
+                f"⚠ 보호 push gate 강등({repo}): local.conf upstream.path 축 미해소 — "
                 "release 대신 self-test를 사용한다; upstream을 설정하라.",
                 file=sys.stderr,
             )
@@ -735,9 +719,9 @@ def _protected_push_gate_config(
 
 
 def _default_test_cmd() -> str:
-    """worktree add 빌드명령 프롬프트의 최종 폴백값 — `local.conf test_cmd` 또는 `pytest -q`.
+    """worktree add 빌드명령 프롬프트의 최종 폴백값 — `local.conf test.cmd` 또는 `pytest -q`.
 
-    board._test_cmd 의 최종 폴백 레이어(`local_config().get("test_cmd") or "pytest -q"`)와
+    board._test_cmd 의 최종 폴백 레이어(`local_config().get("test.cmd") or "pytest -q"`)와
     동형. `_resolve_repo_test_cmd` 의 마지막 레이어(areas 미등록·빈 값일 때)다 —
     프롬프트 표시값 resolve 의 폴백.
     """
@@ -751,7 +735,7 @@ def _resolve_repo_test_cmd(repo: str, *, board=None) -> str:
     `_load_module` DI + areas 파서 `_parse_areas`/`_areas_row_for_prefix` 재사용):
       1. **활성 repo 의 areas.md test_cmd** — 그 repo(=prefix)의 레지스트리 행에 비어
          있지 않은 `test_cmd` 가 있으면 그것(per-repo 스택·`go test ./...` 등).
-      2. **최종 폴백** — areas 미등록·빈 값이면 `local.conf test_cmd` 또는 `pytest -q`.
+      2. **최종 폴백** — areas 미등록·빈 값이면 `local.conf test.cmd` 또는 `pytest -q`.
     (활성 슬롯 레이어는 새 슬롯 생성 *전* 시점이라 표시에 무의미 — 생략.) board 부재/파서
     부재면 최종 폴백만. 빈입력(Enter) 시 슬롯에 안 박고(None) 이 체인으로 폴백함을 투명하게
     보여주는 게 목적이다(must-fix 1 — 슬롯이 areas 보다 우선이라 잘못 덮으면 안 됨).
@@ -1622,7 +1606,7 @@ def cmd_repo_add(
         )
         return 1
     # area_owner = 그 area 의 *user* 소유(`--mine` 풀 입력) — registrant
-    # `owner`(슬롯/세션)와 별개 칼럼(overload 금지·codex sug). `--user` 명시 > local.conf user=
+    # `owner`(슬롯/세션)와 별개 칼럼(overload 금지·codex sug). `--user` 명시 > local.conf identity.user=
     # > git config user.email > None(빈 칼럼·_repo_area_owner None 폴백·현행 동작).
     area_owner = getattr(args, "user", None) or _default_user()
     base_arg = getattr(args, "base", None)
@@ -1753,7 +1737,7 @@ def cmd_repo_add(
     # 폴백한다. 빌드명령은 worktree add 프롬프트·콘솔 [b] 에서 채울 수 있다.
     test_surface = args.test if args.test else "(미지정 — worktree add/콘솔 [b] 에서 설정)"
     base_surface = base if base else "(미해소 — worktree add 가 bare HEAD 사용)"
-    area_owner_surface = area_owner if area_owner else "(미상 — local.conf user= / git user.email 미설정)"
+    area_owner_surface = area_owner if area_owner else "(미상 — local.conf identity.user= / git user.email 미설정)"
     protected_surface = protected_cell if protected_cell else "(미지정 — main/master/develop 기본값)"
     print(
         f"✓ areas.md 등록: {name} | git={git_url} | test_cmd={test_surface} | "
@@ -2344,7 +2328,7 @@ def cmd_status(
     multi_user = _distinct_area_owners() > 1
     _remedy = "`board init --owner <you>` 또는 `board migrate-identity`"
     _authoritative = "실 격리는 `board list --mine`(strict-exclude loud-warn)이 authoritative"
-    print(f"## 정체성(user): {resolved_user or '(미해소 — local.conf user= / git config user.email 미설정)'}")
+    print(f"## 정체성(user): {resolved_user or '(미해소 — local.conf identity.user= / git config user.email 미설정)'}")
     if not multi_user:
         print("## 세션격리(registry/area_owner 기준): single-user (단일/미등록 registry) — 단, 티켓 귀속"
               "(created_by/claimed_by)이 다중이면 세션 뷰가 strict-exclude 될 수 있다. "
@@ -3238,9 +3222,9 @@ def cmd_upstream(
 ) -> int:
     """`upstream show | set <value>` — upstream 값 조회/전환.
 
-    - show: local.conf 의 현재 `upstream=` 값을 surface(미등록이면 안내).
+    - show: local.conf 의 현재 `upstream.path=` 값을 surface(미등록이면 안내).
     - set <value>: 검증(URL→ls-remote 도달성·경로→존재+checkout·fail-closed) 통과 후 local.conf
-      `upstream=` atomic 재기록(타 키 보존). 나쁜 값은 거부(rc 1·기록 안 함). 값 self-describing
+      `upstream.path=` atomic 재기록(타 키 보존). 나쁜 값은 거부(rc 1·기록 안 함). 값 self-describing
       이라 path↔URL 전환이 자동(스킬 freshness 분기가 모양으로 적응).
 
     local.conf set-or-replace(pm_import._set_conf_keys·타 키·주석 보존)·URL 안전 검증(pm_import.
@@ -3264,7 +3248,7 @@ def cmd_upstream(
             print(f"upstream: (local.conf 없음 — {local_conf})")
             return 0
         conf = pm_import_mod._parse_conf_keys(_load_file_lock().read_text_shared(local_conf, encoding="utf-8"))
-        value = conf.get("upstream", "").strip()
+        value = conf.get("upstream.path", "").strip()
         if not value:
             print("upstream: (미등록) — `pm-config upstream set <url|path>` 로 설정하라.")
             return 0
@@ -3291,7 +3275,7 @@ def cmd_upstream(
         return 1
 
     try:
-        pm_import_mod._write_conf_keys(local_conf, {"upstream": value})
+        pm_import_mod._write_conf_keys(local_conf, {"upstream.path": value})
     except RuntimeError as exc:
         if _is_engine_rev_skew(exc):
             raise
@@ -3398,7 +3382,7 @@ def cmd_add_harness(
         )
         return 1
     dest = dest_root if dest_root is not None else REPO
-    # --from(source_root) 은 optional — 생략 시 pm_import 가 dest local.conf upstream 에서 어댑터
+    # --from(source_root) 은 optional — 생략 시 pm_import 가 dest local.conf upstream.path 에서 어댑터
     # 소스를 자동 해소한다(imported 인스턴스 갭). 기존 Namespace(테스트/구 호출)에 source 가
     # 없어도 getattr 로 안전하게 None 폴백(하위호환·verbatim forward).
     source_root = getattr(args, "source", None)
@@ -3685,10 +3669,10 @@ def cmd_sync_adapter_config(
 
     판정·수용 로직은 pm_import 단일 진실(`judge_adapter_configs`·`accept_adapter_config`)이고
     여기선 표시와 rc 번역만 한다. dest 해소는 pm_config 관례(REPO 앵커·cmd_add_harness 동형),
-    소스 해소는 add-harness 와 같은 규칙(`--from` > local.conf upstream > dest 자기전환)이다.
+    소스 해소는 add-harness 와 같은 규칙(`--from` > local.conf upstream.path > dest 자기전환)이다.
 
     ``--check``의 인스턴스-소유 세대 요약은 경로별 기준 원장을 따른다. 동기가
-    ``upstream_rev``를 전진시키는 경로는 직후 check에서 사라질 수 있지만, report-drift·
+    ``upstream.rev``를 전진시키는 경로는 직후 check에서 사라질 수 있지만, report-drift·
     edited managed 파일은 보존된 파일별 ``template_rev``를 쓰므로 명시적 ``--accept``
     전까지 매 check에 반복된다. 백업/git을 대신하는 durable backstop은 아니다.
     """
@@ -3807,7 +3791,7 @@ def cmd_sync_adapter_config(
 def _finish_sync_adapter_config(rc: int, *, check: bool) -> int:
     """``--check`` 말미에 경로별 세대 요약 수명을 명시한다."""
     if check:
-        print("세대 요약은 기준 원장별 수명 — upstream_rev 전진분은 이후 사라질 수 있고, "
+        print("세대 요약은 기준 원장별 수명 — upstream.rev 전진분은 이후 사라질 수 있고, "
               "보존·미수용 managed 파일은 --accept 전까지 매 검사 반복; "
               "지난 세대는 백업/git 로 확인")
     return rc
@@ -3944,7 +3928,7 @@ def _console_repo_add(input_fn, board_mod):
     # 의 `show-ref --verify`단일 sink 가 거른다(중복 검사 0).
     args = argparse.Namespace(
         name=name, git=git, test=(test or None), owner=None, base=(base or None),
-        user=None,  # area_owner 는 cmd_repo_add 가 local.conf user= / git email 로 해소.
+        user=None,  # area_owner 는 cmd_repo_add 가 local.conf identity.user= / git email 로 해소.
     )
     cmd_repo_add(args, board=board_mod)
     return None
@@ -4122,7 +4106,7 @@ def build_parser() -> argparse.ArgumentParser:
                             help="등록 owner = registrant (기본: 현 세션)")
     p_repo_add.add_argument("--user", metavar="이름", default=None,
                             help="area_owner = 그 area 의 user 소유 (`--mine` 풀 입력). "
-                                 "미지정 시 local.conf user= / git config user.email 로 해소(없으면 빈 값).")
+                                 "미지정 시 local.conf identity.user= / git config user.email 로 해소(없으면 빈 값).")
     p_repo_add.add_argument("--base", metavar="BRANCH", default=None,
                             help="worktree 슬롯 브랜치가 파생될 base 브랜치 (develop 등). "
                                  "미지정 시 clone 된 bare 의 기본 브랜치(원격 default)로 해소·기록. "
@@ -4292,7 +4276,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_add_harness.add_argument(
         "--from", dest="source", metavar="SOURCE", default=None,
-        help="어댑터 소스 프레임워크 checkout (생략 시 local.conf upstream 에서 자동 해소·"
+        help="어댑터 소스 프레임워크 checkout (생략 시 local.conf upstream.path 에서 자동 해소·"
              "imported 인스턴스 갭). URL upstream 이면 로컬 checkout 경로를 명시해야 한다.",
     )
     p_add_harness.add_argument(
@@ -4332,7 +4316,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_sync_cfg.add_argument(
         "--from", dest="source", metavar="SOURCE", default=None,
-        help="어댑터 소스 프레임워크 checkout (생략 시 local.conf upstream 에서 자동 해소·"
+        help="어댑터 소스 프레임워크 checkout (생략 시 local.conf upstream.path 에서 자동 해소·"
              "add-harness 와 같은 규칙).",
     )
     p_sync_cfg.set_defaults(func=cmd_sync_adapter_config)

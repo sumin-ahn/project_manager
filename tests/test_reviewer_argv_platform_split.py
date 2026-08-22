@@ -288,10 +288,10 @@ def test_a_mangled_executable_names_the_declared_command(external, monkeypatch):
 
     _ok, output, _started = external._run_reviewer_ex(
         "prompt", WINDOWS_REVIEWER_CMD, 5, missing)
-    assert "선언한 커맨드에 없는 실행 파일로 분해됐습니다" in output.answer
+    assert "해소된 커맨드에 없는 실행 파일로 분해됐습니다" in output.answer
     assert WINDOWS_REVIEWER_CMD in output.answer
 
     # PATH 에 없는 평범한 커맨드는 그 대조를 붙이지 않는다 (선언과 시도가 같다).
     _ok, output, _started = external._run_reviewer_ex("prompt", "codex --model x", 5, missing)
     assert external.REVIEWER_LAUNCH_FAILURE_MARKER in output.answer
-    assert "선언한 커맨드에 없는" not in output.answer
+    assert "해소된 커맨드에 없는" not in output.answer

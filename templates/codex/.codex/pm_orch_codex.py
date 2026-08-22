@@ -23,7 +23,7 @@ ctx 기계 가드: 세 하네스 모두 driver 가 usage 로 예산 초과를 �
 **post-turn** 회전 marker 를 박제한다(엔진 `write_post_turn_marker` DI·Supervisor 무수정 회전).
 marker 는 turn *실행 후* 박제 단일 의미론 — Supervisor 는 그 입력을 다시 보내지 않고 다음 입력 전
 회전한다(세션 안 가드는 marker 를 만들지 않는다·비차단 안내 전용). 예산 = local.conf
-`ctx_window_tokens_codex` > generic `ctx_window_tokens` > 200000(per-harness precedence).
+`harness.codex.ctx_window_tokens` > generic `ctx.window_tokens` > 200000(per-harness precedence).
 
 codex 어댑터는 claude 와 달리 옆에 Python `ctx_guard` 모듈이 없다(claude=`.claude/ctx_guard.py`·
 opencode=JS core) — 그래서 엔진 루트 탐색·local.conf 파싱을 driver 자체에 둔다(opencode driver 동형).
@@ -51,9 +51,9 @@ CODEX_BIN = "codex"
 TURN_TIMEOUT_SEC = 600  # subprocess 당 hard hang 가드(상한 — 한 turn 이 길 수 있음·codex reasoning).
 
 # ── ctx 기계 가드 상수 (엔진 ctx_guard 미러) ──────────
-# 엔진 밴드 "잔여 <= ctx_stop_pct" 는 세션 안에서 최종 checkpoint 넛지(비차단)로 소비된다 — relay
+# 엔진 밴드 "잔여 <= ctx.stop_pct" 는 세션 안에서 최종 checkpoint 넛지(비차단)로 소비된다 — relay
 # 경로는 그 같은 경계에서 driver 가 usage 로 **회전** 한다(post-turn marker → Supervisor 가 새 세션
-# 으로 교체·실보호는 회전이 한다). 임계는 local.conf `ctx_stop_pct` override 해소(기본 20·아래
+# 으로 교체·실보호는 회전이 한다). 임계는 local.conf `ctx.stop_pct` override 해소(기본 20·아래
 # resolve_stop_pct·claude ctx_guard.ctx_thresholds 대칭). 잔여 20% 회전 ⟺ 사용률 80%.
 CTX_STOP_PCT_DEFAULT = 20  # 잔여 회전 임계(%) — claude ctx_guard.CTX_STOP_PCT_DEFAULT 미러.
 # 세션 안 1단 넛지 임계(잔여 %) — claude ctx_guard.CTX_NUDGE_PCT_DEFAULT·opencode
@@ -63,7 +63,7 @@ CTX_NUDGE_PCT_DEFAULT = 30
 # 2단(strong) 넛지 마진(%p·파생값) — claude ctx_guard.CTX_NUDGE2_MARGIN_PCT·opencode
 # NUDGE2_MARGIN_PCT 미러. nudge2 밴드 = stop_pct < 잔여 <= min(stop_pct + 이 마진, nudge_pct).
 CTX_NUDGE2_MARGIN_PCT = 3
-# ctx 예산(분모) 최종 폴백 — local.conf ctx_window_tokens_<codex|generic> 미설정 시.
+# ctx 예산(분모) 최종 폴백 — local.conf harness.codex.ctx_window_tokens/ctx.window_tokens 미설정 시.
 CTX_WINDOW_TOKENS_DEFAULT = 200_000
 
 
@@ -94,6 +94,68 @@ def _load_engine():
 
 # ── local.conf 직접 파싱 + ctx 예산 해소 (claude ctx_guard 미러·codex 는 옆에 ctx_guard 없음) ──
 
+# 차단 구키 목록은 엔진이 **생성**한다(어댑터가 매핑표를 복제하면 표와 파서가 갈린다):
+#   python3 .project_manager/tools/local_conf.py --render-adapter-block python
+# 생성 시작 — 차단 구키 (local_conf.render_adapter_block · 손편집 금지)
+LEGACY_CONF_KEYS = (
+    "additional_reviewer_enabled",
+    "additional_reviewer_incomplete_round_limit",
+    "additional_reviewer_round_limit",
+    "additional_reviewer_wave_budget",
+    "ctx_nudge_pct",
+    "ctx_stop_pct",
+    "ctx_window_tokens",
+    "date",
+    "delegate_enabled",
+    "delegate_idle_timeout",
+    "delegate_timeout",
+    "external_review_enabled",
+    "external_review_idle_timeout",
+    "external_review_incomplete_round_limit",
+    "external_review_progress_signal",
+    "external_review_round_limit",
+    "external_review_timeout",
+    "external_review_wave_budget",
+    "opencode_pro_model",
+    "project_name",
+    "project_root",
+    "project_tagline",
+    "py",
+    "regression_min_collected",
+    "review_denylist_extra",
+    "review_paths",
+    "review_rounds_max",
+    "reviewer_cmd",
+    "reviewer_env_keep_extra",
+    "reviewer_home_artifacts_extra",
+    "test_cmd",
+    "upstream",
+    "upstream_rev",
+    "upstream_seen_rev",
+    "user",
+)
+LEGACY_CONF_KEY_PREFIX = "ctx_window_tokens_"
+# 생성 끝 — 차단 구키
+
+
+def _assert_no_legacy_conf(conf: dict[str, str], path: Path) -> None:
+    """구표기 키가 남아 있으면 **값 해소 전에** 멈춘다 (조용한 기본값 강등 차단).
+
+    어댑터는 엔진을 import 하지 않아 신표기 이름을 말하지 못한다 — 무엇이 걸렸는지만 말하고
+    전수 지목은 엔진 도구(`board.py lint`·`pm_update.py` 안내)에 맡긴다. 여기서 강등하면 채택자는
+    conf 를 고쳤는데 아무 일도 안 일어나는 상태(임계·예산이 전부 엔진 기본값)를 본다."""
+    found = sorted(key for key in conf
+                   if key in LEGACY_CONF_KEYS
+                   or (key.startswith(LEGACY_CONF_KEY_PREFIX)
+                       and len(key) > len(LEGACY_CONF_KEY_PREFIX)))
+    if not found:
+        return
+    print(f"오류: local.conf 에 구표기 키가 남아 있습니다 ({path}) — "
+          f"{', '.join(found)}. 값이 조용히 기본값으로 떨어지지 않도록 여기서 멈춥니다. "
+          "전수 지목은 `board.py lint` 또는 `pm_update.py` 안내가 냅니다.", file=sys.stderr)
+    raise SystemExit(1)
+
+
 def load_local_config(root: Path) -> dict[str, str]:
     """`.project_manager/local.conf` 를 KEY=value dict 로 (없으면 {}).
 
@@ -111,16 +173,17 @@ def load_local_config(root: Path) -> dict[str, str]:
             continue
         key, _, val = line.partition("=")
         conf[key.strip()] = val.strip()
+    _assert_no_legacy_conf(conf, path)
     return conf
 
 
 def resolve_ctx_budget(conf: dict[str, str]) -> int:
     """ctx 예산(분모)을 per-harness precedence 로 해소.
 
-    `ctx_window_tokens_codex` > generic `ctx_window_tokens` > CTX_WINDOW_TOKENS_DEFAULT(200000).
+    `harness.codex.ctx_window_tokens` > generic `ctx.window_tokens` > CTX_WINDOW_TOKENS_DEFAULT(200000).
     각 층 >0 정수 sanity — ≤0·비정수·미설정이면 다음 층 폴백(0/음수 특수의미 없음). claude
     ctx_guard.resolve_budget(conf,"codex")·opencode resolveBudget 동형(하네스별 키 완전 독립)."""
-    for key in ("ctx_window_tokens_codex", "ctx_window_tokens"):
+    for key in ("harness.codex.ctx_window_tokens", "ctx.window_tokens"):
         raw = conf.get(key)
         if raw is None:
             continue
@@ -134,11 +197,11 @@ def resolve_ctx_budget(conf: dict[str, str]) -> int:
 
 
 def resolve_stop_pct(conf: dict[str, str]) -> int:
-    """회전 임계(잔여 %)를 conf `ctx_stop_pct` 로 해소 — 없으면/비정상이면 기본 20.
+    """회전 임계(잔여 %)를 conf `ctx.stop_pct` 로 해소 — 없으면/비정상이면 기본 20.
 
     claude `ctx_guard.ctx_thresholds` 의 stop 축과 대칭(sanity: 0 < stop < 100·위반 시 기본 폴백).
     relay 기계 가드는 회전 시점만 판정하므로 nudge 축은 불요 — driver 는 이 하나로 회전 경계를 잡는다."""
-    raw = conf.get("ctx_stop_pct")
+    raw = conf.get("ctx.stop_pct")
     if raw is None:
         return CTX_STOP_PCT_DEFAULT
     try:
@@ -258,7 +321,7 @@ class CodexCliDriver:
             or (lambda sid, reply: (sid, reply))
         )
         self._ctx_budget = ctx_budget
-        self._stop_pct = stop_pct  # 잔여 정지 임계(%) — main 이 local.conf ctx_stop_pct 로 해소해 주입.
+        self._stop_pct = stop_pct  # 잔여 정지 임계(%) — main 이 local.conf ctx.stop_pct 로 해소해 주입.
         self._root = Path(root) if root is not None else None
         self.codex_bin = codex_bin
         self.timeout = timeout
@@ -445,13 +508,13 @@ def _int_conf(conf: dict[str, str], key: str, default: int) -> int:
 
 
 def ctx_thresholds(conf: dict[str, str]) -> dict[str, int]:
-    """넛지 밴드 임계(잔여 %) — `ctx_nudge_pct`/`ctx_stop_pct` (claude ctx_thresholds 미러).
+    """넛지 밴드 임계(잔여 %) — `ctx.nudge_pct`/`ctx.stop_pct` (claude ctx_thresholds 미러).
 
     sanity 0 < stop <= nudge < 100 위반이면 **둘 다** 엔진 기본으로 폴백한다(오타·역전에 robust).
     relay 회전 축의 `resolve_stop_pct` 와 키는 같고, 이쪽은 nudge 축까지 있어 claude 와 같은
     교차 sanity 를 쓴다."""
-    nudge = _int_conf(conf, "ctx_nudge_pct", CTX_NUDGE_PCT_DEFAULT)
-    stop = _int_conf(conf, "ctx_stop_pct", CTX_STOP_PCT_DEFAULT)
+    nudge = _int_conf(conf, "ctx.nudge_pct", CTX_NUDGE_PCT_DEFAULT)
+    stop = _int_conf(conf, "ctx.stop_pct", CTX_STOP_PCT_DEFAULT)
     if not (0 < stop <= nudge < 100):
         nudge, stop = CTX_NUDGE_PCT_DEFAULT, CTX_STOP_PCT_DEFAULT
     return {"nudge_pct": nudge, "stop_pct": stop}

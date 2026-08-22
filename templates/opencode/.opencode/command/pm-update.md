@@ -46,7 +46,7 @@ URL(`https://`·`ssh://`·`file://`) 또는 로컬 경로 모양으로 분기한
   SEEN=$($GIT -C <cache> rev-parse HEAD)
   ```
 
-  fetch 후 `$SEEN`을 채택자 `local.conf`의 **`upstream_seen_rev=<rev>`**로 기록한다. set-or-replace(그 줄만 교체, 없으면 append, 기존 키·주석 보존; `pm_config upstream set` 백엔드와 동형)한다. 이는 drift-lint 입력이며 baseline `upstream_rev`와 **별개 키**다. 이후 `--from <cache>`.
+  fetch 후 `$SEEN`을 채택자 `local.conf`의 **`upstream.seen_rev=<rev>`**로 기록한다. set-or-replace(그 줄만 교체, 없으면 append, 기존 키·주석 보존; `pm_config upstream set` 백엔드와 동형)한다. 이는 drift-lint 입력이며 baseline `upstream.rev`와 **별개 키**다. 이후 `--from <cache>`.
   URL clone/fetch의 redirect·host allowlist·submodule guard는 위 `$GIT` env로 이 스킬이 강제한다.
 
 - **로컬 경로**:
@@ -55,15 +55,15 @@ URL(`https://`·`ssh://`·`file://`) 또는 로컬 경로 모양으로 분기한
   git -C <path> pull          # 또는 "뒤처짐" 경고만 (공동개발 worktree 면 pull 생략 가능)
   ```
 
-  로컬 checkout rev가 seen이다. pm_update가 동기 시 `upstream_rev`(baseline)와 `upstream_seen_rev`(관찰값)를 함께 기록하므로 정상 흡수 직후 두 키가 같다.
+  로컬 checkout rev가 seen이다. pm_update가 동기 시 `upstream.rev`(baseline)와 `upstream.seen_rev`(관찰값)를 함께 기록하므로 정상 흡수 직후 두 키가 같다.
 
 ### 4. 엔진 갱신
 
 ```bash
-./pm-update.sh --from <cache-or-path>     # --from 생략 시 local.conf upstream= 자동(경로일 때만)
+./pm-update.sh --from <cache-or-path>     # --from 생략 시 local.conf upstream.path= 자동(경로일 때만)
 ```
 
-manifest 경로만 byte-overwrite하며 `@render` path는 operational 토큰을 재치환한다. pm_update가 sync rev를 `upstream_rev`로 기록한다. 경로 upstream이면 `upstream_seen_rev`도 같은 rev로 기록하고, URL이면 2단계에서 기록한 seen과 같아져 drift가 clear된다.
+manifest 경로만 byte-overwrite하며 `@render` path는 operational 토큰을 재치환한다. pm_update가 sync rev를 `upstream.rev`로 기록한다. 경로 upstream이면 `upstream.seen_rev`도 같은 rev로 기록하고, URL이면 2단계에서 기록한 seen과 같아져 drift가 clear된다.
 
 ⚠️ URL upstream에서 `--from`을 생략하면 엔진이 에러로 멈춘다. cache 경로를 `--from`으로 준다.
 

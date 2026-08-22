@@ -1048,7 +1048,21 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   위장하지 않는다), 마킹된 엔진 skew 는 그대로 re-raise 한다. (pm_delegate.py 는 같은
     #   구간에서 `_recalculate_internal_review_rounds` 인라인 판독을
     #   `_internal_recorded_reply` 로 추출했을 뿐 — 같은 재-raise 경계가 자리만 옮겨 net 0.)
-    assert len(report.boundaries) == 232, "propagation sweep boundary ratchet changed"
+    # 235 = 232 + 위임 라운드 예약을 단일 임계구역으로 모으며 생긴 세 경계
+    #   (`pm_delegate._refund_gate_rejected_ticket_copy` recovery-absorb ·
+    #   `pm_delegate.prepare_ticket_copy` recovery-absorb·reraises). 예약 실패·거부 뒤 정리는
+    #   원 결과를 덮지 않아야 하므로 정리 실패를 복구 좌표와 함께 흡수하되, 마킹된 사본 skew 는
+    #   그대로 올린다. 그 변경이 이 래칫을 갱신하지 않아 통합 브랜치에 red 로 남아 있던 것을
+    #   여기서 값과 서사로 함께 닫는다.
+    # 239 = 235 + local.conf 읽기를 공용 로더 하나로 모으면서 **마커를 새로 얻은** 네 경계
+    #   (`board._freshness_owner_repo`·`domain._page_owner_repo`·`pm_bootstrap._current_user`·
+    #   `pm_handoff._resolve_gate_cmd`). 넷 다 conf 해소 실패를 "미해소/줄 생략"으로 접던 자리인데,
+    #   그 해소가 이제 rev-검증 형제(local_conf)를 지나므로 마킹된 skew 를 접으면 사본 불일치가
+    #   폴백 한 줄에 묻힌다 — 흡수는 유지하되 마킹된 skew 만 그대로 올린다.
+    # 240 = 239 + 실 conf 관측 조회면(`board.lint_local_conf`). 판독 실패를 관측 0 으로 접는
+    #   advisory 지만(조회면이 멈추면 무엇을 고칠지 보여 줄 표면이 사라진다) 마킹된 skew 는 그대로
+    #   올린다 — 이 조회도 rev-검증 형제(local_conf)를 지난다.
+    assert len(report.boundaries) == 240, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

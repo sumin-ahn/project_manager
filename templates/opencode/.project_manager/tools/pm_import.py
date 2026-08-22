@@ -922,7 +922,7 @@ _DEFAULT_PY_FALLBACK = "python3"
 
 
 def _detected_py() -> str:
-    """{{PY}} 치환·local.conf py= 기본값으로 쓸 인터프리터 명령을 board.py 에서 탐지한다.
+    """{{PY}} 치환·local.conf runtime.py= 기본값으로 쓸 인터프리터 명령을 board.py 에서 탐지한다.
 
     board.py 의 _detect_py() 를 import 해 재사용(단일 진실). board.py 와 같은 디렉토리에
     있으므로 spec_from_file_location 으로 직접 로드 — sys.path 오염 없이 호출 가능.
@@ -947,7 +947,7 @@ def _default_test_cmd() -> str:
 
     상수 하드코딩(`python3 -m pytest`)은 Windows 에서 깨진다(`python3`=비기능 shim 또는
     엉뚱한 Store Python). `_detected_py()` 를 경유해 board.py `_detect_py()` 의 실행검증된
-    인터프리터를 쓴다 — local.conf `py=` 와 동일 소스라 일관.
+    인터프리터를 쓴다 — local.conf `runtime.py=` 와 동일 소스라 일관.
     """
     return f"{_detected_py()} -m pytest tests/ -q"
 
@@ -1234,10 +1234,10 @@ def derive_origin_url(checkout_root: Path, *, git_runner: GitRunner | None = Non
 def read_upstream_rev(checkout_root: Path, *, git_runner: GitRunner | None = None) -> str | None:
     """로컬 git checkout 의 `git rev-parse HEAD` 를 읽는다 — drift baseline.
 
-    `upstream_rev=<commit>` baseline 기록의 입력이다. checkout_root 가 가리키는
+    `upstream.rev=<commit>` baseline 기록의 입력이다. checkout_root 가 가리키는
     로컬 git work tree 의 현재 HEAD commit 을 읽는다 — git repo 아님·HEAD 해소 실패는 None
     (graceful·기록 생략). URL upstream(로컬 checkout 없음)은 baseline 을 못 읽으므로 호출부가
-    경로 upstream 에 한해 호출한다(스킬층이 URL 의 seen-rev 를 별도 기록·`upstream_seen_rev`).
+    경로 upstream 에 한해 호출한다(스킬층이 URL 의 seen-rev 를 별도 기록·`upstream.seen_rev`).
     안전 계약은 `_real_upstream_git_runner`(argv-list·timeout·GIT_TERMINAL_PROMPT=0).
     """
     runner = git_runner if git_runner is not None else _real_upstream_git_runner()
@@ -1954,8 +1954,8 @@ def _substitution_map(project_name: str, project_root: Path, today: str) -> dict
 def _is_engine_source(rel: Path) -> bool:
     """엔진 소스 코드(`.project_manager/tools/`)인가 — placeholder 처리에서 전면 제외 대상.
 
-    엔진 도구(.py)는 verbatim canonical 사본이다: 코드는 런타임에 local.conf 에서 project_name·
-    py·test_cmd 를 읽지, baked placeholder 를 쓰지 않는다. 그런데 그 *주석·docstring·예시 문자열*
+    엔진 도구(.py)는 verbatim canonical 사본이다: 코드는 런타임에 local.conf 에서 `project.name`·
+    `runtime.py`·`test.cmd` 를 읽지, baked placeholder 를 쓰지 않는다. 그런데 그 *주석·docstring·예시 문자열*
     엔 `{{PROJECT_NAME}}`·`{{OPENCODE_PRO_MODEL}}`·`{{PROJECT_CONSTRAINTS}}` 같은 토큰이 문서로
     등장한다(엔진이 placeholder 메커니즘을 설명하므로). 이 문자열들은 *placeholder 가 아니라
     문서*다 — substitute/fill/token-scan 이 건드리면 (a) 주석이 concrete 값으로 변질 (b) free-form
@@ -2037,7 +2037,7 @@ def substitute_placeholders(
     치환해도 안전하고, 복사 안 한 사용자 파일은 절대 건드리지 않는다.
 
     값이 빈 문자열(`""`/`None`)인 subs 는 치환하지 않는다 — `replace(token, "")` 로 토큰을
-    silent 로 비우면(예: 빈 project_name → " 프로젝트") 미해소 탐지 신호가 사라진다(잔여 토큰보다
+    silent 로 비우면(예: 빈 `project.name` → " 프로젝트") 미해소 탐지 신호가 사라진다(잔여 토큰보다
     나쁨). 토큰을 남기면 @render path 는 이후 render_managed_files 의 _assert_no_leak 가 leak 으로
     잡고(같은 subs 를 render 채널에도 넘겨 빈값 힌트까지 표면화), 비-@render path 는 리터럴 토큰이
     가시적으로 남아(침묵 비움 아님) 사람이 즉시 알아챈다. 이 함수는 render *이전* 단계라
@@ -3126,13 +3126,40 @@ def _set_conf_keys(text: str, updates: dict[str, str]) -> str:
     return "".join(out)
 
 
+def _local_conf_has_blocking_legacy(dest_root: Path) -> bool:
+    """dest 의 local.conf 에 **값 공급을 잃는** 구표기 키가 있는가 (안내 전용 키는 제외).
+
+    판정 기준은 공용 로더 하나다(`local_conf.blocking_legacy`) — import 가 자기 목록을 들면
+    소비 지점과 갈린다.
+    """
+    local_conf = dest_root / ".project_manager" / "local.conf"
+    if not local_conf.is_file():
+        return False
+    module = _load_local_conf()
+    return bool(module.blocking_legacy(module.load(local_conf).legacy))
+
+
+def print_conf_migration_notice(dest_root: Path) -> None:
+    """local.conf 표기 통일 교체 안내 — import 도 채택자가 이 사실을 만나는 진입이다.
+
+    안내만 낸다(자동 이관 없음·엔진은 채택자 conf 를 대신 고쳐 쓰지 않는다). 문구의 단일 진실은
+    공용 로더(`local_conf.migration_notice`)이고 pm_update 사본과 같은 문장을 쓴다.
+    """
+    local_conf = dest_root / ".project_manager" / "local.conf"
+    if not local_conf.is_file():
+        return
+    module = _load_local_conf()
+    for line in module.migration_notice(module.load(local_conf)):
+        print(f"  {line}")
+
+
 def sync_local_conf(dest_root: Path, project_name: str) -> bool:
     """board.py init 직후 local.conf 의 operational 해소값을 pm_import 치환값과 일치시킨다.
 
-    board.py init 은 project_name 빈값·test_cmd=`pytest -q` 를 하드코딩하므로(seam
+    board.py init 은 `project.name` 빈값·`test.cmd=pytest -q` 를 하드코딩하므로(seam
     불완전), 엔진 문서(local.conf 해소)와 CLAUDE.md(sed 치환)가 *다른 값*을 보게 된다.
-    project_name·test_cmd·py 3개 키만 키 단위 갱신해 정렬한다. 나머지 키(ctx 예산·
-    additional_reviewer 등)와 주석은 보존. clobber 금지. 파일 변경 시 True.
+    `project.name`·`test.cmd`·`runtime.py` 3개 키만 키 단위 갱신해 정렬한다. 나머지 키
+    (ctx 예산·additional_reviewer 등)와 주석은 보존. clobber 금지. 파일 변경 시 True.
     """
     local_conf = dest_root / ".project_manager" / "local.conf"
     if not local_conf.is_file():
@@ -3140,23 +3167,29 @@ def sync_local_conf(dest_root: Path, project_name: str) -> bool:
               file=sys.stderr)
         return False
     updates = {
-        "project_name": project_name,
-        "test_cmd": _default_test_cmd(),
-        "py": _detected_py(),
+        "project.name": project_name,
+        "test.cmd": _default_test_cmd(),
+        "runtime.py": _detected_py(),
     }
     return _write_conf_keys(local_conf, updates)
 
 
+def _load_local_conf():
+    """공용 local.conf 로더(`local_conf.py`)를 같은 tools/ 에서 경로 로드한다 (board 사본 동형)."""
+    return _load_module_from_path(
+        Path(__file__).resolve().parent / "local_conf.py", "local_conf.py",
+        verifier=_verify_engine_rev, cache=True,
+        cache_key=f"_project_manager_local_conf:{Path(__file__).resolve().parent}",
+    )
+
+
 def _parse_conf_keys(text: str) -> dict[str, str]:
-    """local.conf 텍스트를 key=value dict 로 파싱(주석·빈 줄 제외). board.local_config 와 동치."""
-    conf: dict[str, str] = {}
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, _, value = stripped.partition("=")
-        conf[key.strip()] = value.strip()
-    return conf
+    """local.conf 텍스트 → key=value dict (공용 로더 `local_conf.parse` · **판정 없음**).
+
+    pm_import 는 도입/복구 채널이라 **구표기 conf 도 읽어야** 이주 안내를 낼 수 있다 — 판정은
+    값을 소비하는 지점(`local_conf.assert_values_no_legacy`)이 명시한다.
+    """
+    return _load_local_conf().parse(text)
 
 
 def _load_file_lock():
@@ -3441,8 +3474,8 @@ def backup_existing_local_conf(dest_root: Path, backup_root: Path | None) -> str
     """--into 재-import 전, 기존 local.conf 가 있으면 백업하고 원본 텍스트를 반환한다.
 
     MF1: board.py init 은 local.conf 를 무조건 write_text 로 덮으므로, 이미 프레임워크를
-    쓰던 프로젝트(재-import/업그레이드)면 기존 per-clone 설정(additional_reviewer_enabled·
-    추가 리뷰어 프로필 `additional_reviewer.*`·레거시 `reviewer_cmd` 등)이
+    쓰던 프로젝트(재-import/업그레이드)면 기존 per-clone 설정(additional_reviewer.enabled·
+    추가 리뷰어 프로필 `additional_reviewer.*` 등)이
     무백업 손실된다. local.conf 는 pm_import 의
     copy/backup 대상 트리 밖이라 CopyAction 의 백업 로직을 안 탄다 — init 호출 전 여기서
     명시적으로 백업한다.
@@ -3472,20 +3505,20 @@ def reapply_preserved_conf_keys(dest_root: Path, original_text: str) -> bool:
     """board.py init 이 새로 쓴 local.conf 위에, 기존 파일의 사용자 키를 재병합한다.
 
     MF1: board.py init 은 local.conf 를 통째로 덮으므로, init 이 *안 쓴* 사용자 키
-    (additional_reviewer_enabled·추가 리뷰어 프로필 `additional_reviewer.*`·레거시 `reviewer_cmd`
+    (additional_reviewer.enabled·추가 리뷰어 프로필 `additional_reviewer.*`
     등)는 init 후 사라진다. 따라서 init 산출 local.conf 에 *없는* 기존 키만
-    _set_conf_keys 로 다시 얹는다. init 이 쓴 키(py·test_cmd·project_name·ctx 예산)는
+    _set_conf_keys 로 다시 얹는다. init 이 쓴 키(`runtime.py`·`test.cmd`·`project.name`·ctx 예산)는
     init/operational sync 값을 우선해 덮지 않는다. 결과: import 후 local.conf = board init 기본 + operational sync
     + 사용자 기존 설정 보존. 재병합으로 변경 시 True.
 
     보존은 **키 이름을 열거하지 않는 일반 규칙**이다 — `_parse_conf_keys` 가 `key=value` 를
     문자열로만 다루므로 점 표기(`additional_reviewer.harness`)든 채택자가 만든 커스텀
-    `additional_reviewer.<임의>` 든 그대로 왕복한다. 레거시 `reviewer_cmd` 를 구조적 튜플로
+    `additional_reviewer.<임의>` 든 그대로 왕복한다. 구표기 키를 신표기로
     **자동 마이그레이션하지 않고**, 사용자가 이미 쓴 튜플 값도 덮지 않는다(원문 보존).
 
     보존 대상 계산은 **쓰기와 같은 락 구간 안**이다. 현재 conf 를 락 밖에서 읽어 계획을 세우면
     그사이 다른 진입(추가 리뷰어·위임 opt-in)이 기록한 새 결정이 "현재 conf 에 없는 키" 로 남아,
-    백업에 있던 **옛 값이 새 결정을 덮는다**(예: 백업 `additional_reviewer_enabled=false` 가 방금
+    백업에 있던 **옛 값이 새 결정을 덮는다**(예: 백업 `additional_reviewer.enabled=false` 가 방금
     기록된 `true` 를 되돌린다). 백업 텍스트 파싱은 대상 conf 와 경쟁하지 않으므로 락 밖이다.
     """
     local_conf = dest_root / ".project_manager" / "local.conf"
@@ -3517,7 +3550,7 @@ def reapply_preserved_conf_keys(dest_root: Path, original_text: str) -> bool:
 
 
 def record_upstream(dest_root: Path, upstream_value) -> bool:
-    """upstream 값(URL 또는 로컬 경로)을 dest local.conf 에 `upstream=` 로 기록한다.
+    """upstream 값(URL 또는 로컬 경로)을 dest local.conf 에 `upstream.path=` 로 기록한다.
 
     `--upstream`(future update 기록·URL 선호)↔`--from`(이번 import 파일 소스) 디커플:
     이 함수는 *기록할 upstream 값*을 받아 그대로 박는다. `--upstream` 생략 시 호출부가
@@ -3534,30 +3567,30 @@ def record_upstream(dest_root: Path, upstream_value) -> bool:
     if not local_conf.is_file():
         print(f"경고: local.conf 없음 ({local_conf}) — upstream 기록 건너뜀.", file=sys.stderr)
         return False
-    return _write_conf_keys(local_conf, {"upstream": str(upstream_value)})
+    return _write_conf_keys(local_conf, {"upstream.path": str(upstream_value)})
 
 
 def record_upstream_rev(dest_root: Path, rev: str) -> bool:
-    """upstream baseline revision 을 dest local.conf 에 `upstream_rev=<commit>` 로 기록한다.
+    """upstream baseline revision 을 dest local.conf 에 `upstream.rev=<commit>` 로 기록한다.
 
     drift-lint의 baseline 입력 — "마지막 동기 이후 upstream 변경분"을 재는 기준점이다
-    import 시(이 함수)와 pm_update 매 sync 시 갱신된다. `upstream_seen_rev`(현재
+    import 시(이 함수)와 pm_update 매 sync 시 갱신된다. `upstream.seen_rev`(현재
     관찰값·pm-update 스킬 기록)는 **별개 키** — 한 키 2역 금지(race/자기비교 회피). rev 가
     빈 값(git repo 아님·HEAD 해소 실패)이면 호출부가 이 함수를 부르지 않는다(기록 생략·graceful).
     공용 writer의 중복 정규화·atomic replace·실효값 검증을 거치며 다른 키·주석은 보존한다.
     """
     local_conf = dest_root / ".project_manager" / "local.conf"
     if not local_conf.is_file():
-        print(f"경고: local.conf 없음 ({local_conf}) — upstream_rev 기록 건너뜀.", file=sys.stderr)
+        print(f"경고: local.conf 없음 ({local_conf}) — upstream.rev 기록 건너뜀.", file=sys.stderr)
         return False
-    return _write_conf_keys(local_conf, {"upstream_rev": rev})
+    return _write_conf_keys(local_conf, {"upstream.rev": rev})
 
 
 def record_opencode_model(dest_root: Path, model: str) -> bool:
-    """해소된 opencode 모델을 dest local.conf 에 `opencode_pro_model=` 로 기록한다.
+    """해소된 opencode 모델을 dest local.conf 에 `harness.opencode.pro_model=` 로 기록한다.
 
     {{OPENCODE_PRO_MODEL}} 가 import 때 파일에 직접 치환되지만, local.conf 엔 안 들어가
-    pm_update 의 @render 가 그 토큰을 local.conf 에서 재유도할 때(`opencode_pro_model` →
+    pm_update 의 @render 가 그 토큰을 local.conf 에서 재유도할 때(`harness.opencode.pro_model` →
     OPENCODE_PRO_MODEL · pm_update._LOCAL_CONF_TO_OPERATIONAL) 키 부재로 leak assertion 에
     걸려 채택자 렌더가 crash 한다. 따라서 *실제로 모델이 해소된* 경로(flag·interactive)에서만
     그 값을 local.conf 에 박아 둔다 — todo(미해소)는 토큰이 YAML 주석으로 남아 렌더 leak 이
@@ -3569,7 +3602,7 @@ def record_opencode_model(dest_root: Path, model: str) -> bool:
         print(f"경고: local.conf 없음 ({local_conf}) — opencode 모델 기록 건너뜀.",
               file=sys.stderr)
         return False
-    return _write_conf_keys(local_conf, {"opencode_pro_model": model})
+    return _write_conf_keys(local_conf, {"harness.opencode.pro_model": model})
 
 
 # ── opencode 모델 결정적 해소 단계 (LLM 아님) ──────────────────────
@@ -4889,7 +4922,7 @@ def _resolve_add_harness_source(
     소스 트리가 없다 — 소스는 그 인스턴스의 **upstream 프레임워크 checkout** 이다(add-harness 를
     *라이브 인스턴스*에 걸면 소스는 항상 그 인스턴스의 upstream 이다). 해소 우선순위:
       1. explicit(`--from`)      → 그대로 (기존 계약·override).
-      2. dest local.conf upstream → classify_upstream=path 이고 그 경로에 templates/<harness>/
+      2. dest local.conf upstream.path → classify_upstream=path 이고 그 경로에 templates/<harness>/
                                     가 있으면 소스.
       3. dest 자신              → dest 에 templates/ 가 있으면 dest (framework-checkout 자기전환·
                                     REPO 하드 기본이 맞던 유일 케이스·현행 회귀 보존).
@@ -4908,7 +4941,7 @@ def _resolve_add_harness_source(
     if local_conf.is_file():
         try:
             upstream = _parse_conf_keys(
-                _read_text_shared(local_conf, encoding="utf-8")).get("upstream", "").strip()
+                _read_text_shared(local_conf, encoding="utf-8")).get("upstream.path", "").strip()
         except (UnicodeDecodeError, OSError):
             upstream = ""
         # path upstream 만 자동 해소 — URL 은 로컬 파일 소스가 아니므로 skip(--from 요구).
@@ -4923,9 +4956,9 @@ def _resolve_add_harness_source(
         return dest_root
 
     raise FileNotFoundError(
-        f"add_harness 소스 미해소: {dest_root} 에 templates/ 가 없고, local.conf upstream 도 "
+        f"add_harness 소스 미해소: {dest_root} 에 templates/ 가 없고, local.conf upstream.path 도 "
         f"templates/<harness> 를 가진 로컬 프레임워크 경로가 아니다. "
-        f"`--from <프레임워크 checkout>` 를 주거나 local.conf 의 upstream= 을 로컬 프레임워크 "
+        f"`--from <프레임워크 checkout>` 를 주거나 local.conf 의 upstream.path= 을 로컬 프레임워크 "
         f"경로로 두라(URL upstream 은 자동 해소하지 않는다)."
     )
 
@@ -5982,7 +6015,7 @@ def _instance_owned_fallback_rev(dest_root: Path) -> str | None:
             Path(dest_root), Path(".project_manager") / "local.conf")
     except (OSError, UnsafeDestPathError, UnicodeDecodeError):
         return None
-    value = _parse_conf_keys(text).get("upstream_rev", "").strip()
+    value = _parse_conf_keys(text).get("upstream.rev", "").strip()
     return value or None
 
 
@@ -6008,11 +6041,11 @@ def instance_owned_template_delta_lines(
     """instance-owned 파일의 baseline template 세대 ↔ 현행 세대 델타 요약.
 
     파일별 ``adapter_baseline.json.template_rev``를 우선하고, 항목이 없는 진입문서는 직전
-    ``local.conf upstream_rev``로 폴백한다. 판정은 source checkout의 로컬 object DB만 읽고
+    ``local.conf upstream.rev``로 폴백한다. 판정은 source checkout의 로컬 object DB만 읽고
     파일을 쓰거나 자동 병합하지 않는다. 기준이 없거나 도달하지 않으면 그것을 변경 없음으로
     접지 않고 전량 확인 경고 한 줄로 축약한다.
 
-    노출 수명은 경로별 기준 원장을 따른다. 진입 문서처럼 ``upstream_rev``를 폴백하는
+    노출 수명은 경로별 기준 원장을 따른다. 진입 문서처럼 ``upstream.rev``를 폴백하는
     경로는 성공한 동기 후 기준이 전진해 이후 요약에서 사라질 수 있다. 반면 report-drift·edited
     managed 파일은 보존된 ``adapter_baseline.json.template_rev``가 기준이다. pm-update가
     무편집 managed 파일을 자동 갱신·원장화한 뒤 이 판정을 호출하면 그 항목은 사라지고, 원장이
@@ -8359,11 +8392,11 @@ def add_harness_cli(
 
 
 def _instance_project_name(dest_root: Path) -> str:
-    """라이브 인스턴스의 project_name 을 local.conf 에서 읽는다(없으면 디렉토리명 폴백).
+    """라이브 인스턴스의 프로젝트 이름을 local.conf `project.name` 에서 읽는다(없으면 디렉토리명 폴백).
 
-    add_harness 의 operational 토큰 치환이 인스턴스의 실제 project_name 을 존중하도록 —
+    add_harness 의 operational 토큰 치환이 인스턴스의 실제 이름을 존중하도록 —
     최초 import 가 local.conf 에 박아 둔 값을 재사용한다(_parse_conf_keys). local.conf 부재·
-    project_name 미설정이면 dest 디렉토리명(main 의 --name 기본값과 동형).
+    `project.name` 미설정이면 dest 디렉토리명(main 의 --name 기본값과 동형).
     """
     local_conf = dest_root / ".project_manager" / "local.conf"
     if local_conf.is_file():
@@ -8371,7 +8404,7 @@ def _instance_project_name(dest_root: Path) -> str:
             conf = _parse_conf_keys(_read_text_shared(local_conf, encoding="utf-8"))
         except (UnicodeDecodeError, OSError):
             conf = {}
-        name = conf.get("project_name", "").strip()
+        name = conf.get("project.name", "").strip()
         if name:
             return name
     return dest_root.name
@@ -8714,8 +8747,8 @@ def main(argv: list[str] | None = None) -> int:
             + _runtime_skill_entry("pm-bootstrap") + " → "
             + _runtime_skill_entry("pm-env") + ".\n\n"
             "upstream 기록: --from 은 *파일 소스*, --upstream 은 *future update 기록*으로 "
-            "디커플된다. local.conf 에 `upstream=`(pm_update 가 --from 생략 시 사용) + "
-            "`upstream_rev=<commit>`(drift baseline·--from 이 로컬 git checkout 일 때)이 기록된다. "
+            "디커플된다. local.conf 에 `upstream.path=`(pm_update 가 --from 생략 시 사용) + "
+            "`upstream.rev=<commit>`(drift baseline·--from 이 로컬 git checkout 일 때)이 기록된다. "
             "--upstream 생략 시 --from 으로 폴백하되, --from 이 로컬 clone 이면 origin URL 을 자동도출한다 "
             "(릴리스 추적 기본). 재-import 시 현재 값으로 갱신."
         ),
@@ -9228,10 +9261,20 @@ def main(argv: list[str] | None = None) -> int:
             return board_rc
 
     # MF1: board.py init 은 local.conf 를 무조건 덮으므로(local.conf 는 복사/백업 대상 트리
-    #      밖), --into 재-import 면 기존 per-clone 설정(additional_reviewer_enabled·
-    #      additional_reviewer.*·레거시 reviewer_cmd·prefix 등)이 무백업 손실된다.
+    #      밖), --into 재-import 면 기존 per-clone 설정(additional_reviewer.enabled·
+    #      additional_reviewer.* 등)이 무백업 손실된다.
     #      init *호출 전*에 백업하고 원본 텍스트를 받아둔다(--new 는
     #      빈 디렉토리 보장이라 None — 보존할 것 없음).
+    # 구표기 conf 는 백업 전에 멈춘다 — 바로 뒤 `board.py init` 이 그 conf 를 읽어 fail-loud 하므로
+    # 원인이 traceback 으로만 보이면 채택자가 무엇을 바꿔야 하는지 알 수 없다. 자동 이관은 하지
+    # 않는다(엔진은 채택자 소유 파일을 대신 고쳐 쓰지 않는다) — 키 단위 처방만 낸다.
+    if not is_new and _local_conf_has_blocking_legacy(dest_root):
+        print("오류: local.conf 에 구표기 키가 남아 있어 board.py init 을 실행하지 않습니다 "
+              "— 엔진 파일은 이미 갱신됐으니 아래대로 키를 바꾸고 같은 명령을 다시 실행하세요.",
+              file=sys.stderr)
+        print_conf_migration_notice(dest_root)
+        return 1
+
     preserved_conf_text = backup_existing_local_conf(dest_root, backup_root) if not is_new else None
 
     # SF2: board.py init 비0 이면 local.conf·pm_state 미생성 = import 미완 → 비0 전파.
@@ -9244,14 +9287,14 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return rc
 
-    # board.py init 은 project_name 빈값·test_cmd=`pytest -q` 를 하드코딩한다.
-    # init 성공 직후 local.conf 의 operational 해소값(project_name·test_cmd·py)을 sed
+    # board.py init 은 `project.name` 빈값·`test.cmd=pytest -q` 를 하드코딩한다.
+    # init 성공 직후 local.conf 의 operational 해소값(project.name·test.cmd·runtime.py)을 sed
     # 치환값과 정렬해 엔진 문서(local.conf 해소)와 CLAUDE.md(치환)가 같은 값을 보게 한다.
     if sync_local_conf(dest_root, project_name):
-        print("✓ local.conf operational 값 동기화 (project_name·test_cmd·py)")
+        print("✓ local.conf operational 값 동기화 (project.name·test.cmd·runtime.py)")
 
     # MF1: init 이 덮은 local.conf 위에, 백업해 둔 기존 사용자 키 중 init 이 *안 쓴* 것
-    #      (additional_reviewer_enabled·additional_reviewer.*·레거시 reviewer_cmd·prefix 등)을
+    #      (additional_reviewer.enabled·additional_reviewer.* 등)을
     #      재병합. init/operational sync 값은 우선.
     if preserved_conf_text is not None:
         reapply_preserved_conf_keys(dest_root, preserved_conf_text)
@@ -9270,15 +9313,15 @@ def main(argv: list[str] | None = None) -> int:
         derived = derive_origin_url(source_root)
         upstream_value = derived if derived is not None else str(source_root)
     if record_upstream(dest_root, upstream_value):
-        print(f"✓ local.conf upstream 기록 (pm_update --from 기본값): {upstream_value}")
+        print(f"✓ local.conf upstream.path 기록 (pm_update --from 기본값): {upstream_value}")
 
-    # upstream_rev baseline 기록 — --from 이 로컬 git checkout
+    # upstream.rev baseline 기록 — --from 이 로컬 git checkout
     # 이면 그 HEAD commit 을 baseline 으로 박는다("마지막 동기 이후 변경" 의 기준점). git repo
     # 아님·HEAD 해소 실패면 graceful 생략(URL upstream 은 로컬 checkout 이 없어 baseline 없음 —
-    # 스킬층이 fetch 후 upstream_seen_rev 를 별도 기록·별개 키).
+    # 스킬층이 fetch 후 upstream.seen_rev 를 별도 기록·별개 키).
     baseline_rev = read_upstream_rev(source_root)
     if baseline_rev and record_upstream_rev(dest_root, baseline_rev):
-        print(f"✓ local.conf upstream_rev baseline 기록 (drift-lint 기준점): {baseline_rev}")
+        print(f"✓ local.conf upstream.rev baseline 기록 (drift-lint 기준점): {baseline_rev}")
 
     # ── opencode 모델 local.conf 기록: board init·conf sync 가 local.conf 를 만든 *뒤*.
     #    실제 모델을 해소한 경로(flag·interactive)만 기록 — 이후 pm_update @render 가
@@ -9289,7 +9332,7 @@ def main(argv: list[str] | None = None) -> int:
     if model_result.active and model_result.path in ("flag", "interactive") \
             and model_result.model:
         if record_opencode_model(dest_root, model_result.model):
-            print(f"✓ local.conf opencode_pro_model 기록 ({model_result.model})")
+            print(f"✓ local.conf harness.opencode.pro_model 기록 ({model_result.model})")
 
     # ── 설치 기록(install receipt): 이번 선택 ∪ dest 에 이미 설치돼 있던 하네스(=
     #    `notation_harnesses`·복사 전에 산출한 그 독자 집합)를 인스턴스 메타에 박제한다. 이후
@@ -9363,6 +9406,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  ⚠️ .gitignore 가 미추적/변경 상태 — 비파괴 위해 자동 추가 생략. "
                   f"수동으로 `{BACKUP_DIR_NAME}/` 한 줄을 추가하세요.")
 
+    print_conf_migration_notice(dest_root)
     print(f"✓ import 완료: {dest_root}")
     print("  다음: 자유서술 placeholder 제안 검토·반영(--fill auto 했으면) + 첫 ticket 발행.")
     # claude 는 프로젝트 trust 수락 전 settings.json permissions.allow 를 조용히 무시한다.

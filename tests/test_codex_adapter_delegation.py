@@ -208,7 +208,8 @@ def test_default_permissions_allow_routine_work_and_auto_review_escalations():
     assert "cross-harness 실위임은 전역 true로 완화하지 않고" in config_text
     assert "exec_command require_escalated 건별 승격" in config_text
     assert "pm_delegate.py reusable prefix 승인" in config_text
-    assert "delegate_enabled=true를 지속 과금 동의" in config_text
+    # 승격 근거는 도구 승인이다 — 위임 스위치는 "위임을 해도 되는가" 만 정한다(동의 축 아님).
+    assert "local.conf delegate.enabled 는 위임 허용 여부만 정하고" in config_text
 
 
 def test_command_rules_allow_local_checkpoints_and_guard_dangerous_commands():
@@ -430,8 +431,8 @@ def test_pm_dev_delegate_documents_codex_cross_harness_egress_bridge():
         "호출층 attestation",
         'prefix_rule=["python3", ".project_manager/tools/pm_delegate.py"]',
         'prefix_rule=["py", ".project_manager/tools/pm_delegate.py"]',
-        "delegate_enabled=true",
-        "후속 호출마다 비용을 다시 묻지 않는다",
+        "delegate.enabled",
+        "기본은 허용",
         "native Codex/GPT로 무음 대체하지 마라",
         "sandbox_workspace_write.network_access=true",
     ):

@@ -144,7 +144,7 @@ def board(tmp_path, monkeypatch):
     # 이 새면 픽스처 claim(`me/…`)과 어긋난다. 세션은 테스트가 `--repo/--slot` 으로 명시한다.
     conf = tmp_path / ".project_manager" / "local.conf"
     conf.parent.mkdir(parents=True, exist_ok=True)
-    conf.write_text("user=me\n", encoding="utf-8")
+    conf.write_text("identity.user=me\n", encoding="utf-8")
     monkeypatch.setattr(mod, "LOCAL_CONF", conf)
     monkeypatch.setattr(
         mod, "LEASES_FILE",

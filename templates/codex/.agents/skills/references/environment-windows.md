@@ -11,7 +11,7 @@ Windows에서 안전한 표기 정책이다. 따라서 PowerShell, cmd, Git Bash
 > 파라미터나 명령 분리로 실행한다. (Linux/macOS 는 `python3` 그대로.)
 
 부트스트랩에 표시된 `python=<런처>`가 카드의 실제 런처다. clone-local `local.conf`에서 마지막
-`py=` assignment의 값이 non-empty일 때만 그 값을 쓴다. 마지막 assignment가 비었으면 앞선
+`runtime.py=` assignment의 값이 non-empty일 때만 그 값을 쓴다. 마지막 assignment가 비었으면 앞선
 non-empty 값도 무효화하며, 키가 없거나 파일을 읽을 수 없는 경우와 마찬가지로 Windows 기본
 `py -3`을 쓴다. 명령은 `&&`로 연결하지 않고 도구의 workdir 파라미터를 사용하거나 줄별로 분리한다.
 

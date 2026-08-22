@@ -478,7 +478,7 @@ _V160_RETIRED_CTX_TERMS: tuple[_RetiredCtxTerm, ...] = (
         "ctx" + "-stop", (("ctx",), ("stop", "스톱")),
         separator_chars=_SEPARATORS_PROSE_ONLY,
         underscore_exemption_reason=(
-            "live 런타임 이름 ctx_stop_pct·ctx_stop_hook.py 와 겹친다"
+            "live 런타임 이름 ctx.stop_pct·ctx_stop_hook.py 와 겹친다"
         ),
         runtime_allowances=(".local/ctx-stop", "marker_dir"),
     ),
@@ -668,7 +668,7 @@ _V160_VARIANT_RED_SAMPLES = (
 # 매칭이 이걸 잡기 시작하면 가드가 코드 식별자 규칙까지 지배하는 것이라 오탐이 구조적이 된다.
 _V160_RUNTIME_IDENTIFIER_LINES = (
     "CTX_STOP_PCT_DEFAULT = 20   # 잔여 ≤ 이 % → 정지·핸드오프 트리거 임계.",
-    '"stop_pct": _ctx_pct("ctx_stop_pct", CTX_STOP_PCT_DEFAULT),',
+    '"stop_pct": _ctx_pct("ctx.stop_pct", CTX_STOP_PCT_DEFAULT),',
     "def stop_marker_present(root: Path, session_id: str) -> bool:",
     'exec "$py" "$hook_dir/ctx_stop_hook.py" "$@"',
     'MARKER_DIR = Path(".project_manager") / ".local" / "ctx-stop"',
@@ -846,7 +846,7 @@ def test_v160_guard_tolerates_runtime_snake_case_identifiers(
         line, tmp_path, monkeypatch):
     """snake_case 런타임 이름·marker 경로는 변형 매칭의 대상이 아니다 (경계 못박기).
 
-    `ctx_stop_pct`·`stop_marker_present`·`ctx_stop_hook.py` 는 v1.6.0 이 남긴 live 식별자고,
+    `ctx.stop_pct`·`stop_marker_present`·`ctx_stop_hook.py` 는 v1.6.0 이 남긴 live 식별자고,
     `.local/ctx-stop` marker 경로는 런타임 호환 경로다. 그 두 항목의 구분자에 `_` 를 넣거나
     런타임 허용을 지우면 이 테스트가 먼저 red 로 알린다.
     """
@@ -874,7 +874,7 @@ def test_v160_compound_boundary_does_not_open_a_miss_window(
 
 # ── T-0794: 리뷰 루프 서술 가드 (이중 채널 병행=표준 → 단일 reviewer + opt-in 추가 리뷰어) ──
 # v1.7.8 이 리뷰 루프를 reviewer 1회 → PM 판정 delta([[T-0785]]) → PM 기계 확인([[T-0786]]) 으로
-# 기계화했고, 추가 리뷰어는 `additional_reviewer_enabled` 로 켜는 opt-in 채널(기본 OFF)이다. 그런데
+# 기계화했고, 추가 리뷰어는 `additional_reviewer.enabled` 로 켜는 opt-in 채널(기본 OFF)이다. 그런데
 # 출하 방법론·스킬 산문은 "내부 code-reviewer + 추가 리뷰어 (둘 다)"·"표준 리뷰 게이트"로 병행을
 # *표준*으로 서술해 채택자에게 켜지 않은 채널을 필수 단계로 읽혔다. "병행을 표준으로 서술"은 의미
 # 판정이 불가능하므로 관측된 표기 4종을 토큰으로 못박는다.

@@ -475,11 +475,15 @@ flowchart LR
 ./pm-config.sh add-harness codex
 ```
 
-엔진 갱신은 채택자 루트에서 받는다:
+엔진 갱신은 채택자 루트에서 받는다. **마지막 실행은 변경 0(zero-change)이어야 한다** — 첫 실행은
+채택자가 지금 갖고 있는 구세대 updater 가 돌기 때문에, 새 엔진이 추가한 안내(설정 표기 교체·기본값
+변경 통지)와 완료 게이트는 그 실행에서 나오지 않는다. 배달된 새 엔진으로 한 번 더 돌려 "최신 —
+변경 없음" 을 받은 실행이 그 안내를 낸다:
 
 ```bash
 ./pm-update.sh --dry-run
-./pm-update.sh
+./pm-update.sh          # RUN1 — 구 updater 가 새 엔진을 배달한다
+./pm-update.sh          # RUN2 — 새 엔진이 돌며 안내·완료 게이트를 낸다(변경 0)
 ```
 
 `pm-update` 는 manifest 에 등록된 엔진 파일과 host 하네스 어댑터만 갱신한다. 프로젝트의 board,
@@ -497,7 +501,7 @@ opencode 를 codex 프로젝트에 붙일 때 opencode 가 소비하는 `.claude
 경로 증거로 엔진 행을 파생·등재해 동결 없이 수렴한다.
 
 엔진 버전 관리는 별도 `engine.version` 파일이 아니라 git 으로 한다. 릴리즈는 git tag 와
-CHANGELOG 로 식별하고, 채택자는 `local.conf` 의 upstream rev baseline 으로 "어디까지 받았는지"를
+CHANGELOG 로 식별하고, 채택자는 `local.conf` 의 `upstream.rev` baseline 으로 "어디까지 받았는지"를
 추적한다. 그래서 갱신 전에는 `pm-update --dry-run` 으로 받을 변경을 보고, 갱신 후에는 test/lint 로
 현재 프로젝트에서 실제 동작을 확인한다.
 
@@ -530,31 +534,73 @@ cd <project> && ./pm-update.sh
 
 **위임 설정** `delegate.<role>[.<tier>].{harness,model,reasoning}`은 native와 cross 위임이 함께
 읽는 라우팅 단일 진실이다. target harness가 현재 PM 하네스와 같으면 각 하네스의 native agent
-transport를 쓰고, 다르면 `pm_delegate.py` cross transport를 쓴다. `delegate_enabled=true`는
-cross transport의 외부 송신과 통상 과금에 대한 지속 동의일 뿐이며 native 설정 조회·실행을
-게이트하지 않는다. Claude native agent 카드의 `model:`이 설정과 어긋나거나 카드가 손상되면
+transport를 쓰고, 다르면 `pm_delegate.py` cross transport를 쓴다. `delegate.enabled`는 위임
+전체의 마스터 스위치이고 **기본은 허용**이다(채널 무관). 끄려면 `delegate.enabled=false`를
+명시하며, 그때 막히는 것은 `pm_delegate` 실행(rc=3)·`ticket prepare`(rc=3)·훅이 깔린 하네스의
+역할 spawn(deny)이다 — 훅 등록은 채택자 소유 파일이라 훅을 깔지 않은 형상의 ad-hoc native
+spawn까지 막지는 못한다. Claude native agent 카드의 `model:`이 설정과 어긋나거나 카드가 손상되면
 가드가 비차단 경고를 내며, 설정이나 카드를 자동으로 고치지 않는다.
+
+### `local.conf` 키 카탈로그
+
+`local.conf`에는 **이 clone이 실제로 정한 값만** 둔다(`board.py init`이 만드는 파일도 실값 6줄뿐).
+키 목록과 기본값은 여기가 단일 진실이며, 설정하지 않으면 아래 기본값으로 동작한다. 표기는 전부
+dot notation이고 세그먼트 안 철자는 그 식별자의 정본을 따른다(역할은 `code-reviewer`처럼 하이픈,
+속성은 `idle_timeout`처럼 snake_case).
+
+| 키 | 기본값 | 뜻 |
+|---|---|---|
+| `project.name` | (빈값) | 어댑터 문서 렌더에 쓰는 프로젝트 이름 |
+| `project.tagline` · `project.root` · `project.date` | (없음) | 어댑터 문서 렌더 토큰(한 줄 소개·문서가 가리키는 루트 경로·기준 날짜) |
+| `runtime.py` | 탐지값 | 이 clone의 python 인터프리터(`board.py init`이 실행검증으로 채운다) |
+| `test.cmd` | `pytest -q` | 회귀 게이트가 그대로 실행하는 프로젝트 test 명령 |
+| `identity.user` | `git config user.email` | 이 clone에서 나는 누구인가(slot·task 무관) |
+| `upstream.path` | (없음) | `pm-update`가 기본 source로 쓰는 프레임워크 경로/URL |
+| `upstream.rev` · `upstream.seen_rev` | (없음) | drift-lint의 baseline과 현재 관찰값(엔진이 기록) |
+| `delegate.enabled` | `true` | 위임 마스터 스위치(채널 무관). 끄려면 `false` |
+| `delegate.<role>[.hard].{harness,model,reasoning}` | (없음) | 역할→하네스/모델 매핑. 세트를 통째로 쓴다(티어 간 상속 없음) |
+| `delegate.<role>[.hard].fallback.{harness,model,reasoning}` | (없음) | **인프라 실패**(스폰 실패·타임아웃·한도/인증) 1회 대체. 정상 완료 판정(반려·must-fix)은 대상이 아니다 |
+| `delegate.model_alias.<name>` | (없음) | 모델 별칭 |
+| `delegate.timeout` · `delegate.idle_timeout` | 하네스별 엔진 기본 | 위임 실행의 벽시계 백스톱과 무진행 판정(하네스별 키가 이긴다) |
+| `harness.<name>.{idle_timeout,wall_timeout}` | 하네스별 엔진 기본 | 외부 하네스 실행의 무진행 판정(주)과 벽시계 백스톱. 미설정이어도 안전하다 |
+| `harness.<name>.ctx_window_tokens` | `ctx.window_tokens` | 그 하네스의 컨텍스트 예산(분모) |
+| `harness.opencode.pro_model` | (없음) | opencode 어댑터 카드 렌더에 쓰는 모델 |
+| `ctx.nudge_pct` · `ctx.stop_pct` | `30` · `20` | 잔여 컨텍스트 % 기준 checkpoint 넛지·정지 임계 |
+| `ctx.window_tokens` | `200000` | 하네스별 값이 없을 때의 컨텍스트 예산 |
+| `regression.min_collected` | (없음) | 회귀 수집 하한(0 수집 false-green 차단) |
+| `additional_reviewer.enabled` | `false` | 추가 리뷰어 opt-in(외부 전송·과금 동의) |
+| `additional_reviewer.{harness,model,reasoning}` | (없음) | 리뷰어 대상. 세 키를 세트로 쓴다 |
+| `additional_reviewer.{rounds_max,incomplete_rounds_max,wave_budget}` | 엔진 기본 | 라운드/예산 상한(비용 게이트가 아니라 anti-loop 정지) |
+| `additional_reviewer.{timeout,idle_timeout,progress_signal}` | 엔진 기본 | 리뷰어 실행 예산(하네스별 키가 이긴다) |
+| `additional_reviewer.{paths,denylist_extra,env_keep_extra,home_artifacts_extra}` | (없음) | 리뷰 대상 경로·격리 예외 |
+
+역할 모델을 고를 때는 **generate≠evaluate**가 기준이다. 위임은 매번 새 세션이라 모델이 같아도
+전사 공유가 없지만, `delegate.code-reviewer.model`을 developer와 다르게 두면 맹점을 공유하지 않아
+검출력이 는다(하네스는 달라도 된다). `.reasoning`은 codex가 `low/medium/high/xhigh`를 받고,
+claude·opencode는 실측 후 적용되며 그 전에 지정하면 fail-loud다.
 
 **추가 리뷰어**(additional reviewer) 는 기본적으로 꺼져 있다. 켜면 코드 diff 가 외부로 전송되므로
 프로젝트가 직접 opt-in 을 결정한다. 질문은 첫 init/update 에서 **한 번**뿐이고, "예" 는
 `local.conf` 에 아래 튜플을 원자적으로 기록한다.
 
 ```
-additional_reviewer_enabled=true
+additional_reviewer.enabled=true
 additional_reviewer.harness=codex
 additional_reviewer.model=gpt-5.6-sol
 additional_reviewer.reasoning=max
 ```
 
-`additional_reviewer_enabled=true` 는 설정된 외부 전송과 통상 과금에 대한 지속 동의라, 그 뒤 리뷰마다
-비용 승인을 다시 받지 않는다. 프로필은 세 키를 고쳐 교체한다. 옛 `reviewer_cmd` 를 쓰던 프로젝트는
-그대로 동작하며 자동 마이그레이션 대상이 아니다.
+`additional_reviewer.enabled=true` 는 설정된 외부 전송과 통상 과금에 대한 지속 동의라, 그 뒤 리뷰마다
+비용 승인을 다시 받지 않는다. 프로필은 세 키를 고쳐 교체한다. 리뷰어 대상은 이 구조화 키로만
+지정하며, 옛 `reviewer_cmd` 통짜 커맨드는 더 이상 읽히지 않는다.
 
-게이트 키 이름이 `external_review_enabled` 에서 `additional_reviewer_enabled` 로 바뀌었고, **구키는
-더 이상 읽히지 않는다**(라운드/wave 노브 3종도 같다). 구키만 있는 `local.conf` 는 추가 리뷰어가
-꺼진 상태이며 그 사실을 안내 1줄로 알린다 — `local.conf` 의 키 이름을 직접 바꾸거나, 다시 묻는
-opt-in 질문(`board.py init`·`pm-update`)에 답하면 신키로 기록된다(엔진은 인스턴스 소유인
-`local.conf` 를 대신 고쳐 쓰지 않는다). 두 키가 함께 있으면 신키가 이긴다.
+`local.conf` 키 표기는 **dot notation 하나로 통일**돼 있다(`additional_reviewer.enabled`·
+`delegate.timeout`·`ctx.window_tokens`·`harness.opencode.pro_model` 형태). 옛 flat 표기
+(`external_review_enabled`·`additional_reviewer_enabled`·`reviewer_cmd`·`ctx_window_tokens_opencode`
+등)는 **읽히지 않고 조용히 무시되지도 않는다** — 그 conf 를 소비하는 도구가 실행 시점에 멈추고
+구키마다 대응 신키(또는 제거됨)를 한 줄씩 찍는다. 엔진은 인스턴스 소유인 `local.conf` 를 대신
+고쳐 쓰지 않으므로 안내대로 키 이름을 바꿔 주면 된다. `pm-update` 의 파일 반영 자체는 이 검사에
+막히지 않아서, 구키가 남은 상태에서도 엔진 갱신을 받아 안내를 볼 수 있다.
 
 ### 티켓의 수명
 

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 
@@ -74,20 +75,32 @@ def test_verdict_and_exit(external_review, tmp_path):
             return subprocess.CompletedProcess(argv, rc, stdout=output, stderr="")
         return run_fn
 
+    def reply(text):
+        """codex 구조화 wire 의 최종 회신 이벤트 — 판정 파서의 유일한 입력."""
+        return json.dumps({"type": "item.completed",
+                           "item": {"type": "agent_message", "text": text}},
+                          ensure_ascii=False) + "\n"
+
+    # 실행 대상은 해소된 구조화 tuple 하나다(모델 미고정 커맨드 직접 실행 경로는 폐지).
+    target = external_review.resolve_reviewer_target({
+        "additional_reviewer.harness": "codex",
+        "additional_reviewer.model": "gpt-5.6-sol",
+    })
+
     r = external_review.run_review(
-        "p", reviewer_cmd="x", output_dir=tmp_path,
-        run_fn=mock("판정: 통과\n\n**must-fix**:\n- 없음\n"),
+        "p", target=target, output_dir=tmp_path,
+        run_fn=mock(reply("판정: 통과\n\n**must-fix**:\n- 없음\n")),
     )
     assert r["all_pass"] and external_review.determine_exit_code(r) == 0
 
     r = external_review.run_review(
-        "p", reviewer_cmd="x", output_dir=tmp_path,
-        run_fn=mock("판정: 반려\n\n**must-fix**:\n- foo\n"),
+        "p", target=target, output_dir=tmp_path,
+        run_fn=mock(reply("판정: 반려\n\n**must-fix**:\n- foo\n")),
     )
     assert r["any_must_fix"] and external_review.determine_exit_code(r) == 1
 
     r = external_review.run_review(
-        "p", reviewer_cmd="x", output_dir=tmp_path, run_fn=mock("boom", rc=1),
+        "p", target=target, output_dir=tmp_path, run_fn=mock("boom", rc=1),
     )
     assert r["failed"] and external_review.determine_exit_code(r) == 1
 

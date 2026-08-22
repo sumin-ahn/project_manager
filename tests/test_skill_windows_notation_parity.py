@@ -117,9 +117,9 @@ def test_guide_matches_final_py_assignment_semantics(guide: Path):
     """A final empty assignment overrides, rather than skips, an earlier value."""
     text = guide.read_text(encoding="utf-8")
     normalized = " ".join(text.split())
-    assert "마지막 `py=` assignment의 값이 non-empty일 때만" in normalized
+    assert "마지막 `runtime.py=` assignment의 값이 non-empty일 때만" in normalized
     assert "마지막 assignment가 비었으면 앞선 non-empty 값도 무효화" in normalized
-    assert "마지막 non-empty `py=`" not in text
+    assert "마지막 non-empty `runtime.py=`" not in text
 
 
 def test_t0681_environment_guides_ship_to_all_model_and_opencode_command_channels():

@@ -68,7 +68,7 @@ class _WritingRun:
 
 
 def _enabled_conf(**extra) -> dict:
-    conf = {"delegate_enabled": "true",
+    conf = {"delegate.enabled": "true",
             "delegate.developer.harness": "codex", "delegate.developer.model": "gpt-x"}
     conf.update(extra)
     return conf

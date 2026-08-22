@@ -20,7 +20,7 @@ slot 경로:
      **어떤 mutation 보다 먼저·회귀보다도 먼저** 중단(판정은 git 조회 몇 번). override =
      `--ack-dirty "<사유>"`(사유는 entry 에 박제). `--auto-trigger`는 사용자 명시 핸드오프
      호출부의 호환 신호일 뿐 독자 실행 권한이 아니며, ack 계약을 우회하지 않는다.
-  1. 회귀 측정 — 게이트는 areas.md(prefix 행 > repo 행) > local.conf test_cmd 로 해소하고,
+  1. 회귀 측정 — 게이트는 areas.md(prefix 행 > repo 행) > local.conf test.cmd 로 해소하고,
      해소 실패면 pytest tests/ -q. red 면 즉시 중단·핸드오프 불가(비-pytest 게이트는 exit
      code 로 판정 — §회귀 게이트 해소).
   2. log/current.md handoff entry skeleton append — 세션 중 박제 entry 자동 목록+메타학습·pending intent+회귀/incident.
@@ -2345,7 +2345,7 @@ def _resolve_gate_cmd(board_module) -> str | None:
 
       1. areas.md 활성 **prefix** 행의 `test_cmd`   (multi-repo 네임스페이스 형상)
       2. areas.md 활성 **repo** 행의 `test_cmd`     (prefix 칼럼이 빈 무prefix 형상)
-      3. `local.conf` 의 `test_cmd`                 (per-clone 명시 설정)
+      3. `local.conf` 의 `test.cmd`                 (per-clone 명시 설정)
       4. None → 호출부가 기본 `pytest tests/ -q` venv argv (도그푸딩 불변)
 
     areas.md 존재 가드는 board 의 `areas_file()`(board_root 추종)에 위임한다 — board/ 분리 시
@@ -2369,10 +2369,16 @@ def _resolve_gate_cmd(board_module) -> str | None:
             if by_repo:
                 return by_repo
         # 3층 — local.conf 명시 설정 (areas.md 부재 형상에서도 유효·가드 밖).
-        conf_cmd = board_module.local_config().get("test_cmd")
+        conf_cmd = board_module.local_config().get("test.cmd")
         if conf_cmd:
             return conf_cmd
-    except Exception:  # noqa: BLE001 — 해소 실패는 기본 폴백(현행 보존).
+    except Exception as exc:  # noqa: BLE001 — 해소 실패는 기본 폴백(현행 보존).
+        if _is_engine_rev_skew(exc):
+            raise      # 형제 사본 불일치는 폴백 한 줄로 삼키지 않는다(fail-loud 보존).
+        # 구표기 conf 잔존도 같은 규칙이다 — 삼키면 채택자가 conf 에 적어 둔 게이트가 사라진 채
+        # 기본 pytest 로 조용히 강등된다(중앙 로더를 fail-loud 로 만든 이유가 여기서 무효가 된다).
+        if getattr(exc, "_legacy_conf_key", False):
+            raise
         return None
     return None
 

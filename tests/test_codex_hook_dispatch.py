@@ -706,7 +706,7 @@ def _run_entrypoint(event: str, root: Path, payload: dict) -> tuple[dict, float]
     return json.loads(completed.stdout), time.monotonic() - started
 
 
-_CROSS_CONF = ("delegate_enabled=true", "delegate.developer.harness=opencode",
+_CROSS_CONF = ("delegate.enabled=true", "delegate.developer.harness=opencode",
                "delegate.developer.model=qwen3-coder")
 
 
@@ -735,7 +735,7 @@ def test_shipped_entrypoint_merges_spawn_deny_and_ctx_nudge_without_losing_eithe
     실린다(T-0824 재현 픽스처). 이 fix 전에는 `hookSpecificOutput` 이 통째로 사라져
     `additionalContext` 가 조용히 유실됐다(실측: 이 테스트를 되돌리면 그 유실이 재현된다)."""
     root = _adopter_tree(
-        tmp_path, conf_lines=(*_CROSS_CONF, "ctx_window_tokens_codex=20000"))
+        tmp_path, conf_lines=(*_CROSS_CONF, "harness.codex.ctx_window_tokens=20000"))
     rollout = root / "rollout-live.jsonl"
     # 예산 20000 · 점유 15328 → 사용 77% · 잔여 23% → nudge2 밴드(기존 ctx-nudge 회귀와 같은 수치).
     rollout.write_text(
@@ -965,7 +965,7 @@ def dispatcher_source_with_fixture_feature() -> str:
 def test_a_new_feature_needs_no_config_change(tmp_path):
     """기능을 코드에만 더해도 **같은 출하 config** 로 발화한다 — 이 티켓이 닫는 마찰 자체."""
     root = _adopter_tree(
-        tmp_path, conf_lines=("delegate_enabled=false",),
+        tmp_path, conf_lines=("delegate.enabled=false",),
         dispatcher_body=dispatcher_source_with_fixture_feature())
 
     result, _elapsed = _run_entrypoint("PostToolUse", root,

@@ -508,7 +508,7 @@ def test_downstream_omits_absent_upstream_only_hierarchy(
                  verified_at=pin, title="upstream adapter", repo="upstream")
     local_conf = downstream / ".project_manager" / "local.conf"
     local_conf.parent.mkdir(parents=True, exist_ok=True)
-    local_conf.write_text(f"upstream={owner}\n", encoding="utf-8")
+    local_conf.write_text(f"upstream.path={owner}\n", encoding="utf-8")
     _commit(downstream, "downstream page")
 
     assert covered.exists()
@@ -533,7 +533,7 @@ def test_owner_repo_keeps_full_covers_validation(
                  verified_at=pin, title="owner adapter", repo="upstream")
     local_conf = owner / ".project_manager" / "local.conf"
     local_conf.parent.mkdir(parents=True, exist_ok=True)
-    local_conf.write_text(f"upstream={owner}\n", encoding="utf-8")
+    local_conf.write_text(f"upstream.path={owner}\n", encoding="utf-8")
     _commit(owner, "owner page")
 
     assert board.lint_domain_freshness() == []
@@ -564,7 +564,7 @@ def test_downstream_existing_hierarchy_keeps_absent_finding(
                  verified_at=pin, title="upstream source", repo="upstream")
     local_conf = downstream / ".project_manager" / "local.conf"
     local_conf.parent.mkdir(parents=True, exist_ok=True)
-    local_conf.write_text(f"upstream={owner}\n", encoding="utf-8")
+    local_conf.write_text(f"upstream.path={owner}\n", encoding="utf-8")
     _commit(downstream, "downstream source page")
 
     findings = board.lint_domain_freshness()
@@ -604,7 +604,7 @@ def test_two_repo_owner_change_closes_unsynced_copy_window(
             f"title: {name}\ntype: {doc_type}\nrepo: upstream\nverified_at: {pin}\n"
             "---\n\nbody\n", encoding="utf-8")
     local_conf = pm_home / ".project_manager" / "local.conf"
-    local_conf.write_text(f"upstream={owner}\n", encoding="utf-8")
+    local_conf.write_text(f"upstream.path={owner}\n", encoding="utf-8")
     _commit(pm_home, "PM docs only")
 
     # Canonical owner만 변경. PM import copy는 VERSION=1 그대로다.
@@ -642,7 +642,7 @@ def test_upstream_owner_unresolved_stays_advisory(
     assert len(findings) == 1
     label, kind, detail = findings[0]
     assert (label, kind) == ("외부소유", "domain-unverifiable")
-    assert "upstream 미설정" in detail and "소유 repo" in detail
+    assert "upstream.path 미설정" in detail and "소유 repo" in detail
 
 
 def test_explicit_null_owner_is_unverifiable_not_self(
@@ -746,7 +746,7 @@ def test_unusable_upstream_paths_stay_advisory(
         if case == "damaged_git_marker":
             (candidate / ".git").mkdir()  # 표식만 있고 rev-parse는 실패하는 손상 경로.
         upstream = str(candidate)
-    local_conf.write_text(f"upstream={upstream}\n", encoding="utf-8")
+    local_conf.write_text(f"upstream.path={upstream}\n", encoding="utf-8")
 
     findings = board.lint_domain_freshness(runner=_raising_git)
     assert len(findings) == 1
@@ -772,7 +772,7 @@ def test_unexpandable_upstream_user_stays_advisory(
     local_conf = tmp_path / ".project_manager" / "local.conf"
     local_conf.parent.mkdir(parents=True)
     local_conf.write_text(
-        "upstream=~codex_user_that_must_not_exist_0470/owner\n", encoding="utf-8")
+        "upstream.path=~codex_user_that_must_not_exist_0470/owner\n", encoding="utf-8")
 
     findings = board.lint_domain_freshness(runner=_raising_git)
     assert len(findings) == 1
@@ -793,7 +793,7 @@ def test_current_user_home_expansion_keeps_resolving(
                  title="외부소유", repo="upstream")
     local_conf = tmp_path / ".project_manager" / "local.conf"
     local_conf.parent.mkdir(parents=True)
-    local_conf.write_text("upstream=~/owner\n", encoding="utf-8")
+    local_conf.write_text("upstream.path=~/owner\n", encoding="utf-8")
 
     findings = board.lint_domain_freshness(runner=_raising_git)
     assert len(findings) == 1
@@ -1524,7 +1524,7 @@ def test_repin_cli_unexpandable_upstream_user_fails_before_writing(
     architecture.write_text(original, encoding="utf-8")
     local_conf = tmp_path / ".project_manager" / "local.conf"
     local_conf.write_text(
-        "upstream=~codex_user_that_must_not_exist_0470/owner\n", encoding="utf-8")
+        "upstream.path=~codex_user_that_must_not_exist_0470/owner\n", encoding="utf-8")
     monkeypatch.setattr(board, "REPO", tmp_path)
     monkeypatch.setattr(board, "LOCAL_CONF", local_conf)
     monkeypatch.setattr(board, "ARCHITECTURE_FILE", architecture)

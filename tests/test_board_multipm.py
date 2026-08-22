@@ -662,7 +662,7 @@ def test_cmd_init_owner_defaults_to_session_name(init_board, monkeypatch):
 def test_cmd_init_area_owner_from_explicit_user(init_board, monkeypatch):
     """--user 명시가 area_owner 칼럼에 박힌다 (local.conf user=·git 폴백보다 우선)."""
     # local.conf user= 와 git 폴백이 다른 값을 줘도 --user 가 이긴다.
-    init_board.LOCAL_CONF.write_text("user=conf-user\n", encoding="utf-8")
+    init_board.LOCAL_CONF.write_text("identity.user=conf-user\n", encoding="utf-8")
     monkeypatch.setattr(init_board, "_git_config_email", lambda: "git@x.com")
     rc = init_board.cmd_init(_init_args(
         prefix="pay", area="결제", owner="alice", user="carol", user_ack="pay"))
@@ -673,7 +673,7 @@ def test_cmd_init_area_owner_from_explicit_user(init_board, monkeypatch):
 
 def test_cmd_init_area_owner_falls_back_to_local_conf(init_board, monkeypatch):
     """--user 미지정 → local.conf user= 로 area_owner 해소 (git 폴백보다 우선)."""
-    init_board.LOCAL_CONF.write_text("user=conf-user\n", encoding="utf-8")
+    init_board.LOCAL_CONF.write_text("identity.user=conf-user\n", encoding="utf-8")
     monkeypatch.setattr(init_board, "_git_config_email", lambda: "git@x.com")
     rc = init_board.cmd_init(_init_args(
         prefix="acc", area="정산", owner="bob", user_ack="acc"))
@@ -2085,7 +2085,7 @@ def test_session_excludes_other_users_unclaimed_open(board, capsys):
     open 으로 새던 것을 근절.)
     """
     board.AREAS_FILE.write_text(_TWO_USER_AREAS, encoding="utf-8")
-    _write_conf(board, "user=alice\nsession=alpha_1\n")
+    _write_conf(board, "identity.user=alice\nsession=alpha_1\n")
     _seed_full(board, "T-AL-001", "open", created_by="alice/alpha_1")   # alice 소유 open
     _seed_full(board, "T-BE-001", "open", created_by="bob/beta_1")      # bob 미claim open
     ids = _mine_ids(board, capsys, repo="alpha", slot=1)
@@ -2096,7 +2096,7 @@ def test_session_excludes_other_users_unclaimed_open(board, capsys):
 def test_mine_excludes_other_users_unclaimed_open(board, capsys):
     """--mine 도 동일 — alice 의 --mine 은 bob 소유 open 을 제외한다(area_owner strict)."""
     board.AREAS_FILE.write_text(_TWO_USER_AREAS, encoding="utf-8")
-    _write_conf(board, "user=alice\nsession=alpha_1\n")
+    _write_conf(board, "identity.user=alice\nsession=alpha_1\n")
     _seed_full(board, "T-AL-001", "open", created_by="alice/alpha_1")
     _seed_full(board, "T-BE-001", "open", created_by="bob/beta_1")
     ids = _mine_ids(board, capsys, mine=True)
@@ -2108,7 +2108,7 @@ def test_mine_excludes_other_users_unclaimed_open(board, capsys):
 def test_mine_includes_my_claim_and_my_area_open(board, capsys):
     """(내 claim) ∪ (내 소유 open) — 남의 area 를 claim 한 것도, 내 area open 도 포함."""
     board.AREAS_FILE.write_text(_TWO_USER_AREAS, encoding="utf-8")
-    _write_conf(board, "user=alice\nsession=alpha_1\n")
+    _write_conf(board, "identity.user=alice\nsession=alpha_1\n")
     _seed_full(board, "T-AL-001", "open", created_by="alice/alpha_1")       # 내 area open
     _seed_full(board, "T-BE-005", "claimed", claimed_by="alice/alpha_1")    # 내 claim(남 area)
     _seed_full(board, "T-BE-001", "open", created_by="bob/beta_1")          # 타 사용자 open→제외
@@ -2130,7 +2130,7 @@ def test_slot_view_open_is_created_session_not_area_owner(board, capsys):
         "| alpha | AL | g:a | pytest -q | reg | develop | main | alice |\n"
     )
     board.AREAS_FILE.write_text(single, encoding="utf-8")
-    _write_conf(board, "user=alice\nsession=alpha_1\n")
+    _write_conf(board, "identity.user=alice\nsession=alpha_1\n")
     _seed_full(board, "T-AL-001", "open", created_by="alice/alpha_1")   # 그 세션 생성 → 상세
     _seed_full(board, "T-AL-009", "open", created_by="bob/alpha_2")     # 타 슬롯 생성 → 비노출(소유 무관)
     ids = _mine_ids(board, capsys, repo="alpha", slot=1)
@@ -2145,7 +2145,7 @@ def test_mine_created_by_fallback_excludes_other_no_area_owner(board, capsys):
     현행(버그·T2): area_owner 미운영이면 `not area_owner_in_use → return True` 로 전체 open 유출.
     fix 후: owner=created_by.user 로 bob open 제외(alice 것만)."""
     # areas.md 부재 → area_owner_in_use False → 소유는 created_by.user 로 해소.
-    _write_conf(board, "user=alice\nsession=alpha_1\n")
+    _write_conf(board, "identity.user=alice\nsession=alpha_1\n")
     _seed_full(board, "T-0001", "open", created_by="alice/alpha_1")
     _seed_full(board, "T-0002", "open", created_by="bob/beta_1")
     ids = _mine_ids(board, capsys, mine=True)
@@ -2155,7 +2155,7 @@ def test_mine_created_by_fallback_excludes_other_no_area_owner(board, capsys):
 def test_created_by_fallback_bare_user(board, capsys):
     """`migrate-identity` backfill 은 부재 created_by 를 *슬롯 없는 순수 user* 로 채운다 —
     `_created_by_user` 가 `/` 없는 값을 user 로 읽어 그 소유를 살린다(bare `alice` == my_user)."""
-    _write_conf(board, "user=alice\nsession=alpha_1\n")
+    _write_conf(board, "identity.user=alice\nsession=alpha_1\n")
     _seed_full(board, "T-0001", "open", created_by="alice")          # bare user (backfill 형태)
     _seed_full(board, "T-0002", "open", created_by="bob")            # bare 타 사용자
     ids = _mine_ids(board, capsys, mine=True)
@@ -2166,7 +2166,7 @@ def test_created_by_fallback_bare_user(board, capsys):
 
 def test_solo_all_open_degrade_preserved(board, capsys):
     """solo(distinct user ≤1) — area_owner 미운영·소유 미해소 open 도 전체 표시(빈 보드 금지)."""
-    _write_conf(board, "user=alice\nsession=alpha_1\n")
+    _write_conf(board, "identity.user=alice\nsession=alpha_1\n")
     _seed_full(board, "T-0001", "open", created_by="alice/alpha_1")   # alice(유일 user)
     _seed_full(board, "T-0002", "open")                              # created_by 부재(소유 미상)
     ids = _mine_ids(board, capsys, mine=True)
@@ -2192,7 +2192,7 @@ def test_multi_user_unresolved_owner_strict_excludes(board, capsys):
     """다중사용자(distinct ≥2) + 소유 미해소 open(created_by 부재·area_owner 미운영) → strict-exclude.
 
     현행(버그): area_owner 미운영 → 미해소 open 전체 노출. fix 후: 다중사용자면 미해소 open 제외."""
-    _write_conf(board, "user=alice\nsession=alpha_1\n")
+    _write_conf(board, "identity.user=alice\nsession=alpha_1\n")
     _seed_full(board, "T-0001", "open", created_by="alice/alpha_1")   # 내 소유 open
     _seed_full(board, "T-0002", "claimed", claimed_by="bob/beta_1")   # bob → 2번째 user 신호
     _seed_full(board, "T-0003", "open")                              # 소유 미상 open
@@ -2283,7 +2283,7 @@ def _seed_userfirst_board(board, *, areas: bool):
     """
     if areas:
         board.AREAS_FILE.write_text(_TWO_USER_AREAS, encoding="utf-8")
-    _write_conf(board, "user=alice\nsession=alpha_1\n")
+    _write_conf(board, "identity.user=alice\nsession=alpha_1\n")
     _seed_full(board, "T-AL-001", "open", created_by="alice/alpha_1")     # 내 open
     _seed_full(board, "T-AL-002", "claimed", claimed_by="alice/alpha_1")  # 내 claim·alpha_1
     _seed_full(board, "T-AL-003", "claimed", claimed_by="alice/alpha_2")  # 내 claim·alpha_2(타 슬롯)
@@ -2355,7 +2355,7 @@ def test_userfirst_slot_view_requires_user_and_session(board, capsys):
     alice의 같은 세션 claim만 보이고 bob의 동명 세션 claim과 multi-user에서 모호한 legacy
     슬롯-only claim은 strict-exclude한다.
     """
-    _write_conf(board, "user=alice\n")
+    _write_conf(board, "identity.user=alice\n")
     _seed_full(board, "T-0001", "claimed", claimed_by="alice/repo_1")   # user-qualified·세션 repo_1
     _seed_full(board, "T-0002", "claimed", claimed_by="bob/repo_1")     # 타 user·같은 세션 → 제외
     _seed_full(board, "T-0003", "claimed", claimed_by="repo_1")         # legacy·multi-user → strict 제외
@@ -2407,7 +2407,7 @@ def test_cmd_list_loud_warn_on_strict_exclude(board, capsys, monkeypatch):
     세션은 env 로 바인딩한다 — conf `session=` 폴백은 폐지됐고(T-0779), 미바인딩이면
     "(비바인딩)" 안내가 한 줄 더 붙어 이 시나리오(바인딩 세션)가 아니게 된다."""
     monkeypatch.setenv("PM_SESSION_NAME", "alpha_1")
-    _write_conf(board, "user=alice\n")
+    _write_conf(board, "identity.user=alice\n")
     _seed_full(board, "T-0001", "open", created_by="alice/alpha_1")   # 내 소유 open
     _seed_full(board, "T-0002", "claimed", claimed_by="bob/beta_1")   # bob → 2번째 user 신호
     _seed_full(board, "T-0003", "open")                              # 소유 미상 → strict-exclude
@@ -2444,7 +2444,7 @@ def test_cmd_list_loud_warn_on_identity_unresolved(board, capsys):
 
 def test_cmd_list_solo_no_warn(board, capsys):
     """solo(distinct user ≤1) — 소유 미해소 open 도 degrade 로 포함·무경고(회귀 0)."""
-    _write_conf(board, "user=alice\nsession=alpha_1\n")
+    _write_conf(board, "identity.user=alice\nsession=alpha_1\n")
     _seed_full(board, "T-0001", "open", created_by="alice/alpha_1")   # 유일 user
     _seed_full(board, "T-0002", "open")                              # 소유 미상(degrade 포함)
     rc = board.cmd_list(_list_args(mine=True))
@@ -2460,7 +2460,7 @@ def test_cmd_list_clean_strict_no_warn(board, capsys):
     alice 의 --mine 은 bob 소유 open 을 제외하지만, 그 제외는 solo 에서도 제외될 소유-해소
     티켓이라 strict-exclude 신호가 아니다. my_user 도 해소됨 → 경고 없음."""
     board.AREAS_FILE.write_text(_TWO_USER_AREAS, encoding="utf-8")
-    _write_conf(board, "user=alice\nsession=alpha_1\n")
+    _write_conf(board, "identity.user=alice\nsession=alpha_1\n")
     _seed_full(board, "T-AL-001", "open", created_by="alice/alpha_1")  # 내 소유
     _seed_full(board, "T-BE-001", "open", created_by="bob/beta_1")     # bob 소유(해소됨)
     rc = board.cmd_list(_list_args(mine=True))
@@ -2474,7 +2474,7 @@ def test_cmd_list_all_no_warn(board, capsys):
     """`--all` 전체 뷰(mine=False) — 격리 미적용이라 다중사용자여도 무경고·전체 표시(ADR-0066 이관).
 
     무인자 기본 뷰(default_view)는 세션 스코프라 이 검증은 `--all`(기존 무인자 전체 뷰)로 돈다."""
-    _write_conf(board, "user=alice\nsession=alpha_1\n")
+    _write_conf(board, "identity.user=alice\nsession=alpha_1\n")
     _seed_full(board, "T-0001", "open", created_by="alice/alpha_1")
     _seed_full(board, "T-0002", "open", created_by="bob/beta_1")
     rc = board.cmd_list(_list_args(all=True))
@@ -2486,7 +2486,7 @@ def test_cmd_list_all_no_warn(board, capsys):
 
 def test_default_view_warns_when_legacy_created_by_mimics_a_user(board, capsys):
     """legacy 세션-only created_by 때문에 다중사용자로 오판해 숨긴 open을 경고한다."""
-    _write_conf(board, "user=alice\nsession=alpha_1\n")
+    _write_conf(board, "identity.user=alice\nsession=alpha_1\n")
     _seed_full(board, "T-0001", "open", created_by="alpha_1")
     # 비활성 티켓의 실제 user와 legacy 세션 토큰이 서로 다른 user처럼 집계된다.
     _seed_full(board, "T-0002", "done", created_by="alice/other_1")
@@ -2505,7 +2505,7 @@ def test_default_view_warns_when_legacy_created_by_mimics_a_user(board, capsys):
 
 def test_default_view_warns_when_solo_git_email_changed(board, capsys):
     """한 사용자의 과거·현재 email 스탬프가 공존해 현재 세션 open을 숨기면 경고한다."""
-    _write_conf(board, "user=new@example.com\nsession=alpha_1\n")
+    _write_conf(board, "identity.user=new@example.com\nsession=alpha_1\n")
     _seed_full(
         board, "T-0001", "open", created_by="old@example.com/alpha_1")
     # 상태 기본값에서는 접히지만 distinct-user 판정에는 참여하는 현재 email 스탬프.
@@ -2546,7 +2546,7 @@ def test_cmd_list_email_change_solo_misjudged_multi_user(board, capsys, monkeypa
     remedy 실값 + 단일-세션 op 전제가 실려야 한다. 세션은 env 로 바인딩한다(conf `session=`
     폴백 폐지·T-0779)."""
     monkeypatch.setenv("PM_SESSION_NAME", "alpha_1")
-    _write_conf(board, "user=new@example.com\n")
+    _write_conf(board, "identity.user=new@example.com\n")
     _seed_full(board, "T-0001", "open", created_by="old@example.com/alpha_1")     # 옛 email open
     _seed_full(board, "T-0002", "open")                                          # legacy(정체성 전) open
     _seed_full(board, "T-0003", "claimed", claimed_by="new@example.com/alpha_1")  # 새 email claim
@@ -2570,7 +2570,7 @@ def test_cmd_list_loud_warn_carries_exact_migrate_remedy(board, capsys):
 
     발동 조건(다중사용자 + 소유 미해소 open strict-exclude)에서, 사용자가 커맨드를 기억할 필요
     없이 즉시 붙여넣을 수 있는 정확한 backfill 명령 + 단일-세션 op 전제를 경보가 담는지 못박는다."""
-    _write_conf(board, "user=alice\nsession=alpha_1\n")
+    _write_conf(board, "identity.user=alice\nsession=alpha_1\n")
     _seed_full(board, "T-0001", "open", created_by="alice/alpha_1")
     _seed_full(board, "T-0002", "claimed", claimed_by="bob/beta_1")   # 2번째 user 신호
     _seed_full(board, "T-0003", "open")                              # 소유 미상 → strict-exclude
@@ -2589,7 +2589,7 @@ def test_cmd_list_genuine_multiuser_strict_exclude_unchanged(board, capsys):
     remedy 문구 기계화(T-0382)는 경보 *surface* 만 손댄다 — `_distinct_ticket_users`·multi_user
     게이트·`_ticket_is_mine` 로직은 그대로다. 진짜 다중사용자면 타 사용자 소유 open 은 여전히
     --mine 서 제외되고, 미해소 드롭이 있으면 경보가 난다."""
-    _write_conf(board, "user=alice\nsession=alpha_1\n")
+    _write_conf(board, "identity.user=alice\nsession=alpha_1\n")
     _seed_full(board, "T-0001", "open", created_by="alice/alpha_1")   # 내 소유
     _seed_full(board, "T-0002", "open", created_by="bob/beta_1")      # bob 소유(해소됨) → strict 제외
     _seed_full(board, "T-0003", "open")                              # 소유 미상 → strict-exclude

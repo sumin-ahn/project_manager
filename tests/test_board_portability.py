@@ -124,13 +124,13 @@ def test_prompt_optin_writes_nothing_when_non_tty(board, monkeypatch, tmp_path):
 
     board.prompt_external_review_optin()
 
-    assert not conf.exists() or "additional_reviewer_enabled" not in conf.read_text(encoding="utf-8")
+    assert not conf.exists() or "additional_reviewer.enabled" not in conf.read_text(encoding="utf-8")
 
 
 def test_prompt_optin_writes_nothing_on_eof_under_tty(board, monkeypatch, tmp_path):
     """isatty=True 인데 input() 이 EOFError (Windows-under-pytest 재현) → 아무것도 안 씀.
 
-    수정 전 코드는 answer='' 로 떨어져 additional_reviewer_enabled=false 를 기록했다 —
+    수정 전 코드는 answer='' 로 떨어져 additional_reviewer.enabled=false 를 기록했다 —
     사용자의 기존 true 결정을 덮어 preservation 을 깨뜨림.
     """
     conf = _isolated_local_conf(board, monkeypatch, tmp_path)
@@ -143,21 +143,21 @@ def test_prompt_optin_writes_nothing_on_eof_under_tty(board, monkeypatch, tmp_pa
 
     board.prompt_external_review_optin()
 
-    assert not conf.exists() or "additional_reviewer_enabled" not in conf.read_text(encoding="utf-8")
+    assert not conf.exists() or "additional_reviewer.enabled" not in conf.read_text(encoding="utf-8")
 
 
 def test_prompt_optin_does_not_clobber_existing_true(board, monkeypatch, tmp_path):
-    """이미 additional_reviewer_enabled 가 있으면(여기선 true) EOF 경로로도 건드리지 않음."""
+    """이미 additional_reviewer.enabled 가 있으면(여기선 true) EOF 경로로도 건드리지 않음."""
     conf = _isolated_local_conf(board, monkeypatch, tmp_path)
-    conf.write_text("additional_reviewer_enabled=true\n", encoding="utf-8")
+    conf.write_text("additional_reviewer.enabled=true\n", encoding="utf-8")
     monkeypatch.setattr(board.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": (_ for _ in ()).throw(EOFError))
 
     board.prompt_external_review_optin()
 
     text = conf.read_text(encoding="utf-8")
-    assert "additional_reviewer_enabled=true" in text
-    assert "additional_reviewer_enabled=false" not in text
+    assert "additional_reviewer.enabled=true" in text
+    assert "additional_reviewer.enabled=false" not in text
 
 
 # ── T-0071: PM_NONINTERACTIVE 명시 신호 우선 (isatty 신뢰불가 함정 회피) ──
@@ -181,7 +181,7 @@ def test_prompt_optin_skips_when_pm_noninteractive_truthy(
 
     board.prompt_external_review_optin()
 
-    assert not conf.exists() or "additional_reviewer_enabled" not in conf.read_text(
+    assert not conf.exists() or "additional_reviewer.enabled" not in conf.read_text(
         encoding="utf-8"
     )
 
@@ -201,7 +201,7 @@ def test_prompt_optin_falsy_pm_noninteractive_preserves_isatty_path(
 
     board.prompt_external_review_optin()
 
-    assert "additional_reviewer_enabled=true" in conf.read_text(encoding="utf-8")
+    assert "additional_reviewer.enabled=true" in conf.read_text(encoding="utf-8")
 
 
 def test_prompt_optin_no_env_preserves_non_tty_skip(board, monkeypatch, tmp_path):
@@ -212,7 +212,7 @@ def test_prompt_optin_no_env_preserves_non_tty_skip(board, monkeypatch, tmp_path
 
     board.prompt_external_review_optin()
 
-    assert not conf.exists() or "additional_reviewer_enabled" not in conf.read_text(
+    assert not conf.exists() or "additional_reviewer.enabled" not in conf.read_text(
         encoding="utf-8"
     )
 
@@ -310,31 +310,17 @@ def test_init_writes_ctx_window_tokens_budget(board, monkeypatch, tmp_path):
     assert board.cmd_init(args) == 0
 
     conf_text = conf_path.read_text(encoding="utf-8")
-    assert f"ctx_window_tokens={board.CTX_WINDOW_TOKENS_DEFAULT}" in conf_text
+    assert f"ctx.window_tokens={board.CTX_WINDOW_TOKENS_DEFAULT}" in conf_text
     assert board.CTX_WINDOW_TOKENS_DEFAULT == 200000
     # nudge/stop pct 옆에 배치됐는지 (기존 ctx 임계와 한 블록).
-    assert "ctx_nudge_pct=" in conf_text and "ctx_stop_pct=" in conf_text
+    assert "ctx.nudge_pct=" in conf_text and "ctx.stop_pct=" in conf_text
 
 
-def test_init_ctx_window_tokens_has_cost_meaning_comment(board, monkeypatch, tmp_path):
-    """ctx_window_tokens 라인 위에 비용 의미 주석(이른 핸드오프=토큰 경제·물리 window 아님)이 박힌다."""
-    conf_path = _init_isolated(board, monkeypatch, tmp_path)
-    args = argparse.Namespace(prefix=None, area=None, owner=None, session="pm")
+def test_init_ctx_budget_is_a_value_not_an_explanation(board, monkeypatch, tmp_path):
+    """예산 라인은 **실값 한 줄**이다 — 비용 의미·오버라이드 카탈로그는 출하 문서가 소유한다.
 
-    assert board.cmd_init(args) == 0
-
-    conf_text = conf_path.read_text(encoding="utf-8")
-    assert "# ctx_window_tokens:" in conf_text
-    assert "핸드오프 토큰 예산" in conf_text
-    # 핵심 의미: 물리 window 가 아니라 사용자가 정하는 비용/맥락 선택.
-    assert "물리 window 아님" in conf_text
-
-
-def test_init_scaffold_has_harness_override_comment(board, monkeypatch, tmp_path):
-    """init 스캐폴드에 하네스별 오버라이드 키 주석 예시가 박힌다 (ADR-0041 Decision 4).
-
-    generic ctx_window_tokens=200000 은 활성 유지 + ctx_window_tokens_claude/_opencode 예시는
-    **주석(#)** 으로만 — 기본 불변(물리한도 폐기·동시 운용 시 사용자가 주석 해제로 활성화).
+    설명을 conf 에 심으면 값과 어긋난 채 굳는다(T-0767). conf 는 이 clone 이 정한 값만 담고,
+    "이 숫자가 무엇인가"는 README 키 카탈로그에서 읽는다.
     """
     conf_path = _init_isolated(board, monkeypatch, tmp_path)
     args = argparse.Namespace(prefix=None, area=None, owner=None, session="pm")
@@ -342,46 +328,49 @@ def test_init_scaffold_has_harness_override_comment(board, monkeypatch, tmp_path
     assert board.cmd_init(args) == 0
 
     conf_text = conf_path.read_text(encoding="utf-8")
-    # 두 하네스 오버라이드 키 예시가 스캐폴드에 존재.
-    assert "ctx_window_tokens_claude" in conf_text
-    assert "ctx_window_tokens_opencode" in conf_text
-    # 예시는 반드시 주석(#) — 활성 키로 새어 generic 200K 를 덮으면 안 된다.
-    for line in conf_text.splitlines():
-        if "ctx_window_tokens_claude" in line or "ctx_window_tokens_opencode" in line:
-            assert line.lstrip().startswith("#"), f"오버라이드 예시는 주석이어야 함(활성 키 X): {line!r}"
-    # generic ctx_window_tokens=200000 활성 라인은 그대로 (기본 불변).
-    assert f"ctx_window_tokens={board.CTX_WINDOW_TOKENS_DEFAULT}" in conf_text
-    # 파싱 시 주석 오버라이드는 활성 키로 잡히지 않는다 (local_config 는 # 라인 skip).
+    assert f"ctx.window_tokens={board.CTX_WINDOW_TOKENS_DEFAULT}" in conf_text
+    # 설명 산문·주석 예시가 conf 에 없다.
+    for marker in ("핸드오프 토큰 예산", "물리 window 아님",
+                   "harness.claude.ctx_window_tokens",
+                   "harness.opencode.ctx_window_tokens"):
+        assert marker not in conf_text, f"conf 에 설명 블록 잔존: {marker}"
     parsed = board.local_config()  # _init_isolated 가 LOCAL_CONF 를 conf_path 로 patch.
-    assert "ctx_window_tokens_claude" not in parsed
-    assert "ctx_window_tokens_opencode" not in parsed
-    assert parsed.get("ctx_window_tokens") == str(board.CTX_WINDOW_TOKENS_DEFAULT)
+    assert parsed.get("ctx.window_tokens") == str(board.CTX_WINDOW_TOKENS_DEFAULT)
+    assert not [key for key in parsed if key.startswith("harness.")]
+
+
+def test_harness_ctx_override_is_documented_in_shipping_docs(board):
+    """하네스별 오버라이드 키의 자리는 출하 문서다 — 카탈로그가 사라지지 않았음을 값으로 못박는다."""
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    assert "harness.<name>.ctx_window_tokens" in readme
+    assert "ctx.window_tokens" in readme
 
 
 # ── C9: cmd_init 재실행 비파괴 병합 — 사용자/operational 키 보존 (T-0184) ──────
 # 🔴 데이터 손실 버그: cmd_init 이 local.conf 를 가드 없이 통째 덮어써 재실행 시 init 이
-# 안 쓰는 사용자 키(additional_reviewer_enabled·upstream·upstream_rev·opencode_pro_model 등)가
+# 안 쓰는 사용자 키(additional_reviewer.enabled·upstream·upstream_rev·harness.opencode.pro_model 등)가
 # 소멸하고 커스텀 ctx_window_tokens 가 default 로 리셋됐다. 존재 시 병합으로 수정.
 
 # init 이 안 쓰는 사용자/operational 키 + 커스텀 init 기본키를 담은 기존 local.conf.
 _CUSTOM_CONF = (
     "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
     "session=my-pm\n"
-    "py=python3\ntest_cmd=pytest -q\nproject_name=myproj\n"
-    "ctx_nudge_pct=20\nctx_stop_pct=10\n"
-    "ctx_window_tokens=5000\n"
+    "runtime.py=python3\ntest.cmd=pytest -q\nproject.name=myproj\n"
+    "ctx.nudge_pct=20\nctx.stop_pct=10\n"
+    "ctx.window_tokens=5000\n"
     "# 외부 코드리뷰 (ADR-0004)\n"
-    "additional_reviewer_enabled=false\n"
-    "reviewer_cmd=codex exec\n"
-    "upstream=/x\nupstream_rev=abc\n"
-    "opencode_pro_model=m\n"
+    "additional_reviewer.enabled=false\n"
+    "additional_reviewer.harness=codex\n"
+    "additional_reviewer.model=gpt-5.6-sol\n"
+    "upstream.path=/x\nupstream.rev=abc\n"
+    "harness.opencode.pro_model=m\n"
     "status_total_style=fraction\n"
-    "user=me@example.com\n"
+    "identity.user=me@example.com\n"
 )
 
 
 def test_init_rerun_preserves_custom_operational_keys(board, monkeypatch, tmp_path):
-    """(a) 커스텀 키(additional_reviewer_enabled·upstream·upstream_rev·opencode_pro_model 등)를
+    """(a) 커스텀 키(additional_reviewer.enabled·upstream·upstream_rev·harness.opencode.pro_model 등)를
     담은 local.conf 에 cmd_init 재실행 → 모든 커스텀 키/값이 생존한다(통째 덮어쓰기 금지)."""
     conf_path = _init_isolated(board, monkeypatch, tmp_path)
     conf_path.write_text(_CUSTOM_CONF, encoding="utf-8")
@@ -391,17 +380,18 @@ def test_init_rerun_preserves_custom_operational_keys(board, monkeypatch, tmp_pa
 
     conf_text = conf_path.read_text(encoding="utf-8")
     # init 이 안 쓰는 사용자/operational 키가 전부 원값 그대로 생존.
-    assert "additional_reviewer_enabled=false" in conf_text
-    assert "reviewer_cmd=codex exec" in conf_text
-    assert "upstream=/x" in conf_text
-    assert "upstream_rev=abc" in conf_text
-    assert "opencode_pro_model=m" in conf_text
+    assert "additional_reviewer.enabled=false" in conf_text
+    assert "additional_reviewer.harness=codex" in conf_text
+    assert "additional_reviewer.model=gpt-5.6-sol" in conf_text
+    assert "upstream.path=/x" in conf_text
+    assert "upstream.rev=abc" in conf_text
+    assert "harness.opencode.pro_model=m" in conf_text
     assert "status_total_style=fraction" in conf_text
-    assert "user=me@example.com" in conf_text
+    assert "identity.user=me@example.com" in conf_text
     # T-0207: 기존 클론의 ctx 임계(20/10)는 디폴트 상향(30/20)이 있어도 불변 —
     # init 은 '없을 때만 추가'라 이미 기록된 값을 덮지 않는다(마이그레이션 영향 0).
-    assert "ctx_nudge_pct=20" in conf_text and "ctx_stop_pct=10" in conf_text
-    assert "ctx_nudge_pct=30" not in conf_text and "ctx_stop_pct=20" not in conf_text
+    assert "ctx.nudge_pct=20" in conf_text and "ctx.stop_pct=10" in conf_text
+    assert "ctx.nudge_pct=30" not in conf_text and "ctx.stop_pct=20" not in conf_text
 
 
 def test_init_rerun_preserves_custom_ctx_window_tokens(board, monkeypatch, tmp_path):
@@ -413,8 +403,8 @@ def test_init_rerun_preserves_custom_ctx_window_tokens(board, monkeypatch, tmp_p
     assert board.cmd_init(args) == 0
 
     conf_text = conf_path.read_text(encoding="utf-8")
-    assert "ctx_window_tokens=5000" in conf_text
-    assert f"ctx_window_tokens={board.CTX_WINDOW_TOKENS_DEFAULT}" not in conf_text
+    assert "ctx.window_tokens=5000" in conf_text
+    assert f"ctx.window_tokens={board.CTX_WINDOW_TOKENS_DEFAULT}" not in conf_text
     # init 이 안 쓰는 키(구 `session=` 포함)는 비파괴 병합으로 byte 보존된다 — 엔진은 채택자
     # conf 를 대신 고쳐 쓰지 않는다(읽지 않을 뿐·T-0779).
     assert "session=my-pm" in conf_text
@@ -431,9 +421,9 @@ def test_init_absent_writes_full_default(board, monkeypatch, tmp_path):
     conf_text = conf_path.read_text(encoding="utf-8")
     # 세션·prefix 는 per-clone conf 의 키가 아니다(T-0779) — 정체성은 lease 장부·areas.md.
     assert "session=" not in conf_text and "prefix=" not in conf_text
-    assert "py=" in conf_text and "test_cmd=pytest -q" in conf_text
-    assert f"ctx_window_tokens={board.CTX_WINDOW_TOKENS_DEFAULT}" in conf_text
-    assert "ctx_nudge_pct=" in conf_text and "ctx_stop_pct=" in conf_text
+    assert "runtime.py=" in conf_text and "test.cmd=pytest -q" in conf_text
+    assert f"ctx.window_tokens={board.CTX_WINDOW_TOKENS_DEFAULT}" in conf_text
+    assert "ctx.nudge_pct=" in conf_text and "ctx.stop_pct=" in conf_text
 
 
 def test_init_rerun_explicit_identity_registers_that_repo_and_preserves_conf(
@@ -454,19 +444,19 @@ def test_init_rerun_explicit_identity_registers_that_repo_and_preserves_conf(
     conf_text = conf_path.read_text(encoding="utf-8")
     assert "session=my-pm" in conf_text          # init 이 안 쓰는 키는 byte 보존
     assert "session=newsess_2" not in conf_text  # 세션을 conf 에 쓰지 않는다
-    assert "additional_reviewer_enabled=false" in conf_text
-    assert "upstream=/x" in conf_text
-    assert "ctx_window_tokens=5000" in conf_text
+    assert "additional_reviewer.enabled=false" in conf_text
+    assert "upstream.path=/x" in conf_text
+    assert "ctx.window_tokens=5000" in conf_text
 
 
-# default 키 전부 존재 + additional_reviewer_enabled *부재* + 마지막 줄 개행 없음.
+# default 키 전부 존재 + additional_reviewer.enabled *부재* + 마지막 줄 개행 없음.
 # (updates 가 비어 `_set_conf_keys` 가 원문 verbatim 반환 → trailing newline 회귀 재현 조건.)
 _NO_TRAILING_NL_CONF = (
     "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
     "session=my-pm\n"
-    "py=python3\ntest_cmd=pytest -q\nproject_name=myproj\n"
-    "ctx_nudge_pct=20\nctx_stop_pct=10\n"
-    "ctx_window_tokens=5000"  # ← 마지막 줄·개행 없음(intentional)
+    "runtime.py=python3\ntest.cmd=pytest -q\nproject.name=myproj\n"
+    "ctx.nudge_pct=20\nctx.stop_pct=10\n"
+    "ctx.window_tokens=5000"  # ← 마지막 줄·개행 없음(intentional)
 )
 
 
@@ -479,7 +469,7 @@ def test_init_rerun_no_trailing_newline_optin_append_preserves_last_key(
     붙지 않으며 (b) opt-in 블록이 *새 줄*에서 시작함을 검증한다.
 
     `_init_isolated`(opt-in stub)를 안 쓰고 *실제* prompt_external_review_optin append 를
-    태운다 — 대화형 'n' 경로(additional_reviewer_enabled=false 를 append)를 결정적으로 재현."""
+    태운다 — 대화형 'n' 경로(additional_reviewer.enabled=false 를 append)를 결정적으로 재현."""
     conf_path = tmp_path / "local.conf"
     monkeypatch.setattr(board, "LOCAL_CONF", conf_path)
     monkeypatch.setattr(board, "PM_STATE_FILE", tmp_path / "pm_state.md")
@@ -506,10 +496,10 @@ def test_init_rerun_no_trailing_newline_optin_append_preserves_last_key(
 
     conf_text = conf_path.read_text(encoding="utf-8")
     # (a) 마지막 키가 변질 안 됨 — 값 온전·뒤에 `#`(주석) 안 붙음.
-    assert "ctx_window_tokens=5000\n" in conf_text
-    assert "ctx_window_tokens=5000#" not in conf_text
-    # (b) opt-in 블록이 새 줄에서 시작(additional_reviewer_enabled 라인이 온전).
-    assert "additional_reviewer_enabled=false" in conf_text
+    assert "ctx.window_tokens=5000\n" in conf_text
+    assert "ctx.window_tokens=5000#" not in conf_text
+    # (b) opt-in 블록이 새 줄에서 시작(additional_reviewer.enabled 라인이 온전).
+    assert "additional_reviewer.enabled=false" in conf_text
     # 파싱 무결성: 값 파트에 `#` 이 섞여 들어가지 않았다.
-    assert board.local_config().get("ctx_window_tokens") == "5000"
-    assert board.local_config().get("additional_reviewer_enabled") == "false"
+    assert board.local_config().get("ctx.window_tokens") == "5000"
+    assert board.local_config().get("additional_reviewer.enabled") == "false"

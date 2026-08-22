@@ -415,7 +415,7 @@ def test_build_checkpoint_entry_renders_ctx_window_mismatch_with_observation():
     assert "[ctx-window-mismatch] 설정 창이 실 압축 지점보다 큼" in entry
     assert "설정 1,000,000 tokens" in entry
     assert "PreCompact 관측 655,736 tokens" in entry
-    assert "`ctx_window_tokens_claude`" in entry
+    assert "`harness.claude.ctx_window_tokens`" in entry
     assert "관측 사용량 655,736 tokens 이하" in entry
 
 
@@ -430,8 +430,8 @@ def test_ctx_window_mismatch_without_observation_keeps_qualitative_remedy():
     assert "PreCompact 관측" not in advisory
     assert "관측 사용량 측정 불가" not in advisory
     assert "실 auto-compact 지점 이하" in advisory
-    assert "`ctx_window_tokens_opencode`" in advisory
-    assert "ctx_window_tokens_claude" not in advisory
+    assert "`harness.opencode.ctx_window_tokens`" in advisory
+    assert "harness.claude.ctx_window_tokens" not in advisory
 
 
 def test_cmd_checkpoint_appends_explicit_compaction_trigger(tmp_path, monkeypatch):
@@ -1514,7 +1514,7 @@ def test_ctx_mismatch_checkpoint_snapshot_flow_is_durable_and_re_evaluated(
     assert "## ctx 설정 진단 (compaction 경계)" in snapshot
     assert "설정 600,000 tokens" in snapshot
     assert "PreCompact 관측 30,000 tokens" in snapshot
-    assert "`ctx_window_tokens_claude`" in snapshot
+    assert "`harness.claude.ctx_window_tokens`" in snapshot
 
     fired_common = common | {"boundary_id": "ctx-flow-boundary-2"}
     fired = SimpleNamespace(

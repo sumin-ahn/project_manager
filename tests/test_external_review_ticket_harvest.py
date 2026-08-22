@@ -30,6 +30,15 @@ TICKET = "T-9601"
 ROLE = "external-reviewer"
 
 
+# 해소 가능한 추가 리뷰어 대상 — 대상은 `harness`+`model` 구조화 키로만 서므로(엔진 기본 커맨드
+# 없음) 이 파일의 모든 형상이 그 세트를 깔고 시작한다.
+_REVIEWER_TARGET = {
+    "additional_reviewer.enabled": "true",
+    "additional_reviewer.harness": "codex",
+    "additional_reviewer.model": "gpt-5.6-sol",
+}
+
+
 def _load(name: str):
     spec = importlib.util.spec_from_file_location(
         f"{name}_ticket_harvest", TOOLS / f"{name}.py",
@@ -247,7 +256,7 @@ def _wire(
     `reply` 가 호출 가능이면 프롬프트를 인자로 받아 회신을 만든다(프롬프트가 지시한 ID 를 따르는
     리뷰어 형상). dict['prompts'] 에는 이 배선으로 나간 프롬프트가 순서대로 쌓인다.
     """
-    resolved_conf = {"additional_reviewer_enabled": "true", **(conf or {})}
+    resolved_conf = {**_REVIEWER_TARGET, **(conf or {})}
     monkeypatch.setattr(external, "REPO", pm_home)
     monkeypatch.setattr(
         external, "local_config", lambda repo=None: dict(resolved_conf),
@@ -445,7 +454,7 @@ def test_a_refused_round_does_not_lock_the_next_round(
     external, pd, monkeypatch, tmp_path, capsys,
 ):
     """(b) 거부된 산출 뒤에도 정상 라운드가 착지하고 delta 가 green 이다."""
-    conf = {"review_rounds_max": "9"}
+    conf = {"additional_reviewer.rounds_max": "9"}
     _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, _BROKEN_JSON_REPLY, conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) != 0
@@ -990,7 +999,7 @@ def test_gate_shaped_run_advances_the_finding_id_across_rounds(
     출처가 프롬프트용 티켓 본문이면 이 형상은 매 라운드 첫 ID 를 지시해 2라운드가 재선언으로
     거부된다 — 출처는 회수 대상 티켓의 라운드 파일이다.
     """
-    conf = {"review_rounds_max": "9"}
+    conf = {"additional_reviewer.rounds_max": "9"}
     _seed_board(tmp_path)
     seen: list[str] = []
 
@@ -1018,7 +1027,7 @@ def test_reused_finding_id_is_refused_and_the_next_round_can_land(
     external, pd, monkeypatch, tmp_path, capsys,
 ):
     """(F-004) 같은 ID 재선언은 회수하지 않는다 — 티켓은 계속 판정 가능하다."""
-    conf = {"review_rounds_max": "9"}
+    conf = {"additional_reviewer.rounds_max": "9"}
     _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-001")), conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
@@ -1091,7 +1100,7 @@ def test_hallucinated_confirmation_target_is_refused(
     external, pd, monkeypatch, tmp_path, capsys,
 ):
     """(F-016) 티켓에 없는 ID(하네스 환각)를 확인하면 회수가 거부된다."""
-    conf = {"review_rounds_max": "9"}
+    conf = {"additional_reviewer.rounds_max": "9"}
     _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-001")), conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
@@ -1113,7 +1122,7 @@ def test_confirmation_of_an_unharvested_id_is_refused(
     external, pd, monkeypatch, tmp_path, capsys,
 ):
     """(F-016) 회수되지 않은 산출의 ID 는 표면에 없다 — 그 ID 를 확인해도 거부다."""
-    conf = {"review_rounds_max": "9"}
+    conf = {"additional_reviewer.rounds_max": "9"}
     _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, _BROKEN_JSON_REPLY, conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) != 0   # 라운드1 회수 거부
@@ -1228,7 +1237,7 @@ def test_prompt_skeleton_carries_the_confirmable_ids_of_the_previous_round(
     확인 전용 라운드의 임무가 '직전 라운드 must-fix 의 해소 확인'이라 리뷰 라운드 시드 프리필과
     같은 시야여야 한다([[T-0749]] F-007).
     """
-    conf = {"review_rounds_max": "9"}
+    conf = {"additional_reviewer.rounds_max": "9"}
     _seed_board(tmp_path)
     calls = _wire(external, monkeypatch, tmp_path,
                   _reject_reply(_finding("X-001")), conf=conf)
@@ -1262,7 +1271,7 @@ def test_prompt_skeleton_ignores_a_reserved_round_without_output(
     PM 이 `section-add --role external-reviewer` 로 자리만 잡아 둔 라운드가 '직전 라운드'
     자리를 차지하면 `--confirm-fix` 가 '확인 대상이 판정 표면에 없습니다'로 막힌다.
     """
-    conf = {"review_rounds_max": "9"}
+    conf = {"additional_reviewer.rounds_max": "9"}
     spec = _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-001")), conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
@@ -1340,7 +1349,7 @@ def test_a_disabled_run_does_not_read_the_harvest_target(
     """(F-025) 비활성 no-op 은 티켓을 읽지 않는다 — 해소는 소비 지점에서만 일어난다."""
     _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-001")),
-          conf={"additional_reviewer_enabled": "false"})
+          conf={**_REVIEWER_TARGET, "additional_reviewer.enabled": "false"})
     reads: list[str] = []
     monkeypatch.setattr(
         external, "_harvest_target_ticket_state",

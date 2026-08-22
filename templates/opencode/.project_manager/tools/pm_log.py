@@ -763,8 +763,9 @@ def build_ctx_window_mismatch_advisory(
         and re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", harness.strip().lower())
         else None
     )
-    config_key = "ctx_window_tokens" + (
-        f"_{normalized_harness}" if normalized_harness is not None else ""
+    config_key = (
+        f"harness.{normalized_harness}.ctx_window_tokens"
+        if normalized_harness is not None else "ctx.window_tokens"
     )
     return (
         "> ⚠ [ctx-window-mismatch] 설정 창이 실 압축 지점보다 큼 — 이번 압축 사이클에서 "
@@ -2110,7 +2111,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--harness", metavar="NAME",
-        help="진단 처방의 per-harness ctx_window_tokens_<name> 키",
+        help="진단 처방의 per-harness harness.<name>.ctx_window_tokens 키",
     )
     p.set_defaults(fn=cmd_checkpoint)
 

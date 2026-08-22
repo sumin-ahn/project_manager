@@ -104,7 +104,7 @@ def _write_prompt(directory: Path, text: str = "직전 지적을 해소했다. �
 
 
 def _run_main(pd, monkeypatch, argv, run_fn=None, conf=None):
-    monkeypatch.setattr(pd, "local_config", lambda: dict(conf or {"delegate_enabled": "true"}))
+    monkeypatch.setattr(pd, "local_config", lambda: dict(conf or {"delegate.enabled": "true"}))
     monkeypatch.setattr(pd, "_cwd_in_git_repo", lambda *a, **k: True)
     # 이 파일은 resume wire/ledger 축을 검증한다. code-reviewer의 실 ticket-copy 왕복은 전용
     # growth 회귀가 소유하므로 여기서는 필수 --ticket을 유지하되 copy transport만 격리한다.
@@ -820,7 +820,7 @@ def test_write_role_infrastructure_failure_is_not_the_resume_axis(
 def _fallback_conf() -> dict:
     """config 매핑 + 명시 폴백(CLI 완전지정이 아니어야 폴백이 살아 있다)."""
     return {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.code-reviewer.harness": "claude",
         "delegate.code-reviewer.model": "opus",
         "delegate.code-reviewer.fallback.harness": "codex",

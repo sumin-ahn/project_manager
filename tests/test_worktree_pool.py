@@ -4925,7 +4925,7 @@ def test_generated_hook_adopter_self_test_red_blocks_even_with_live_skip(wp, tmp
         hook, _push_line("refs/heads/main", head), env_override=True,
         skip_live_gate=True, cwd=adopter)
     assert result.returncode != 0
-    assert "areas.md test_cmd" in result.stderr and "local.conf test_cmd" in result.stderr
+    assert "areas.md test_cmd" in result.stderr and "local.conf test.cmd" in result.stderr
     assert "PM_SKIP_SELF_TEST=1" in result.stderr
     assert "PM_SELF_TEST_BYPASS_REASON='사유'" in result.stderr
 

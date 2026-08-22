@@ -94,6 +94,15 @@ def test_owns_real_board_legacy_wiki_tickets(external, tmp_path):
     assert external._owns_real_board(pm) is True
 
 
+# 리뷰어 대상은 구조화 키로만 지정한다 — 모델을 고정하지 않는 실행 경로가 없어서, 게이트 축을
+# 보는 테스트도 대상 튜플을 갖춰야 실제 실행 지점까지 도달한다.
+_ENABLED_CONF = {
+    "additional_reviewer.enabled": "true",
+    "additional_reviewer.harness": "codex",
+    "additional_reviewer.model": "gpt-5.6-sol",
+}
+
+
 # ── _canonical_worktree (work/ 스캔만 · upstream 미참조) ─────────────────────
 
 
@@ -196,7 +205,7 @@ def _run_main(external, monkeypatch, anchor: Path, conf: dict, argv: list[str]):
 def test_main_pm_home_no_paths_derives_worktree(external, monkeypatch, tmp_path, capsys):
     """PM 홈 엔진 사본도 등록 슬롯 하나에서 diff worktree를 자동 파생한다."""
     home, worktree = _make_pm_home(tmp_path)
-    conf = {"additional_reviewer_enabled": "true"}
+    conf = dict(_ENABLED_CONF)
     exit_code, reviewer_called = _run_main(
         external, monkeypatch, home, conf, ["--no-gate"],
     )
@@ -225,12 +234,12 @@ def test_main_default_review_paths_rejects_changed_pm_home_before_send(
     (owner_home / ".project_manager").mkdir(parents=True)
     configs = {
         engine_home: {
-            "additional_reviewer_enabled": "true",
-            "review_paths": "engine-only-path",
+            "additional_reviewer.enabled": "true",
+            "additional_reviewer.paths": "engine-only-path",
         },
         owner_home: {
-            "additional_reviewer_enabled": "true",
-            "review_paths": "owner-only-path",
+            "additional_reviewer.enabled": "true",
+            "additional_reviewer.paths": "owner-only-path",
         },
     }
     monkeypatch.setattr(external, "REPO", engine_home)
@@ -250,7 +259,7 @@ def test_main_default_review_paths_rejects_changed_pm_home_before_send(
 
     assert external.main([]) == 1
     err = capsys.readouterr().err
-    assert "review_paths" in err
+    assert "additional_reviewer.paths" in err
     assert str(engine_home) in err
     assert str(owner_home) in err
     assert "외부 송신 전에 중단" in err
@@ -260,7 +269,7 @@ def test_main_pm_home_ticket_derives_board_and_diff_separately(external, monkeyp
     """PM 홈 board touches와 등록 diff worktree를 별도 앵커로 파생해 리뷰한다."""
     home, worktree = _make_pm_home(tmp_path)
     exit_code, reviewer_called = _run_main(
-        external, monkeypatch, home, {"additional_reviewer_enabled": "true"},
+        external, monkeypatch, home, dict(_ENABLED_CONF),
         ["--ticket", _FIXTURE_TICKET],
     )
     assert exit_code == 0
@@ -273,7 +282,7 @@ def test_main_pm_home_with_paths_passes_gate(external, monkeypatch, tmp_path, ca
 
     override 는 escape hatch — 명시 시 게이트가 막지 않음을 못박는다(빈 diff 면 빈-diff 가드가 백스톱)."""
     home, worktree = _make_pm_home(tmp_path)
-    conf = {"additional_reviewer_enabled": "true"}
+    conf = dict(_ENABLED_CONF)
     exit_code, reviewer_called = _run_main(
         external, monkeypatch, home, conf,
         ["--paths", ".project_manager/tools/", "--no-gate"],
@@ -288,7 +297,7 @@ def test_main_worktree_shape_no_block(external, monkeypatch, tmp_path, capsys):
 
     canonical worktree 에서 실행하는 것이 *정답*이므로 게이트가 이를 막으면 안 된다."""
     home, worktree = _make_pm_home(tmp_path)
-    conf = {"additional_reviewer_enabled": "true"}
+    conf = dict(_ENABLED_CONF)
     # worktree 앵커: 실 board 미소유 → 게이트 미발화.
     exit_code, reviewer_called = _run_main(
         external, monkeypatch, worktree, conf, ["--no-gate"],
@@ -309,7 +318,7 @@ def test_main_local_upstream_adopter_ticket_not_blocked(external, monkeypatch, t
     monkeypatch.setattr(
         external, "parse_ticket_touches", lambda t, **kwargs: [".project_manager/tools/"],
     )
-    conf = {"upstream": str(tmp_path / "foreign"), "additional_reviewer_enabled": "true"}
+    conf = {**_ENABLED_CONF, "upstream.path": str(tmp_path / "foreign")}
     exit_code, reviewer_called = _run_main(external, monkeypatch, home, conf, ["--ticket", "T-0001"])
     assert reviewer_called is True   # 게이트 미차단 → 리뷰어 진행 (오탐 0)
     assert exit_code == 0

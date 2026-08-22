@@ -218,7 +218,7 @@ def test_resolve_per_repo_cmd_reads_local_conf_without_areas(tf, tmp_path, monke
     monkeypatch.setattr(
         tf, "_load_board_module",
         lambda: _FakeBoard(None, None, areas_path=tmp_path / "no-areas.md",
-                           conf={"test_cmd": "go test ./..."}),
+                           conf={"test.cmd": "go test ./..."}),
     )
     assert tf._resolve_per_repo_test_cmd() == "go test ./..."
 
@@ -2609,7 +2609,7 @@ def _wave_repo(tmp_path: Path, *, git: bool = True):
         (root / ".project_manager" / "board" / "tickets" / status).mkdir(
             parents=True, exist_ok=True)
     (root / ".project_manager" / "local.conf").write_text(
-        "test_cmd=pytest -q\n", encoding="utf-8")
+        "test.cmd=pytest -q\n", encoding="utf-8")
     _wave_ticket(root, _WAVE_TICKET, status="open", touch="src/")
     _wave_write(root / "src" / "app.py", 5)
     _wave_write(root / "docs" / "notes.md", 3)

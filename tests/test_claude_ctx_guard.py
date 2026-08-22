@@ -135,32 +135,32 @@ def test_thresholds_defaults(guard):
 
 
 def test_thresholds_reads_conf(guard):
-    th = guard.ctx_thresholds({"ctx_nudge_pct": "30", "ctx_stop_pct": "5"})
+    th = guard.ctx_thresholds({"ctx.nudge_pct": "30", "ctx.stop_pct": "5"})
     assert th == {"nudge_pct": 30, "stop_pct": 5}
 
 
 def test_thresholds_sanity_fallback(guard):
     # stop > nudge (역전) → 기본 폴백.
-    assert guard.ctx_thresholds({"ctx_nudge_pct": "5", "ctx_stop_pct": "30"}) == {
+    assert guard.ctx_thresholds({"ctx.nudge_pct": "5", "ctx.stop_pct": "30"}) == {
         "nudge_pct": 30, "stop_pct": 20
     }
     # 음수 → 기본 폴백.
-    assert guard.ctx_thresholds({"ctx_stop_pct": "-3"}) == {"nudge_pct": 30, "stop_pct": 20}
+    assert guard.ctx_thresholds({"ctx.stop_pct": "-3"}) == {"nudge_pct": 30, "stop_pct": 20}
     # 비정수 → 기본 폴백.
-    assert guard.ctx_thresholds({"ctx_nudge_pct": "abc"}) == {"nudge_pct": 30, "stop_pct": 20}
+    assert guard.ctx_thresholds({"ctx.nudge_pct": "abc"}) == {"nudge_pct": 30, "stop_pct": 20}
     # 100 이상 → 기본 폴백.
-    assert guard.ctx_thresholds({"ctx_nudge_pct": "100"}) == {"nudge_pct": 30, "stop_pct": 20}
+    assert guard.ctx_thresholds({"ctx.nudge_pct": "100"}) == {"nudge_pct": 30, "stop_pct": 20}
 
 
 def test_load_local_config_parses(guard, tmp_path):
     pm = tmp_path / ".project_manager"
     pm.mkdir()
     (pm / "local.conf").write_text(
-        "# comment\nctx_nudge_pct=25\n\nctx_stop_pct = 8\nprefix=PAY\n", encoding="utf-8"
+        "# comment\nctx.nudge_pct=25\n\nctx.stop_pct = 8\nprefix=PAY\n", encoding="utf-8"
     )
     conf = guard.load_local_config(tmp_path)
-    assert conf["ctx_nudge_pct"] == "25"
-    assert conf["ctx_stop_pct"] == "8"
+    assert conf["ctx.nudge_pct"] == "25"
+    assert conf["ctx.stop_pct"] == "8"
     assert conf["prefix"] == "PAY"
 
 
@@ -179,16 +179,16 @@ def test_resolve_budget_defaults_to_200k(guard):
 
 def test_resolve_budget_generic_fallback(guard):
     # 하네스 오버라이드 없음 → generic ctx_window_tokens (back-compat·② 1M 무변경).
-    assert guard.resolve_budget({"ctx_window_tokens": "1000000"}, "claude") == 1_000_000
-    assert guard.resolve_budget({"ctx_window_tokens": "1000000"}, "opencode") == 1_000_000
+    assert guard.resolve_budget({"ctx.window_tokens": "1000000"}, "claude") == 1_000_000
+    assert guard.resolve_budget({"ctx.window_tokens": "1000000"}, "opencode") == 1_000_000
 
 
 def test_resolve_budget_harness_override_wins(guard):
     # 하네스 키가 generic 을 이긴다 (precedence 최상층).
     conf = {
-        "ctx_window_tokens": "300000",
-        "ctx_window_tokens_claude": "1000000",
-        "ctx_window_tokens_opencode": "200000",
+        "ctx.window_tokens": "300000",
+        "harness.claude.ctx_window_tokens": "1000000",
+        "harness.opencode.ctx_window_tokens": "200000",
     }
     assert guard.resolve_budget(conf, "claude") == 1_000_000
     assert guard.resolve_budget(conf, "opencode") == 200_000
@@ -196,20 +196,20 @@ def test_resolve_budget_harness_override_wins(guard):
 
 def test_resolve_budget_independent_harnesses(guard):
     # claude·opencode 오버라이드 키 완전 독립 (동시 운용·generic 없이도 각자 해소).
-    conf = {"ctx_window_tokens_claude": "500000", "ctx_window_tokens_opencode": "200000"}
+    conf = {"harness.claude.ctx_window_tokens": "500000", "harness.opencode.ctx_window_tokens": "200000"}
     assert guard.resolve_budget(conf, "claude") == 500_000
     assert guard.resolve_budget(conf, "opencode") == 200_000
     # 다른 하네스 키만 있고 대상 하네스 키 없으면 → generic(없으면 200K).
-    assert guard.resolve_budget({"ctx_window_tokens_opencode": "999"}, "claude") == 200_000
+    assert guard.resolve_budget({"harness.opencode.ctx_window_tokens": "999"}, "claude") == 200_000
 
 
 @pytest.mark.parametrize("bad", ["0", "-5", "abc", "", "  "])
 def test_resolve_budget_sanity_falls_through(guard, bad):
     # 오버라이드가 ≤0/비정수 → generic 으로, generic 도 비정상이면 200K (각 층 >0 sanity).
     assert guard.resolve_budget(
-        {"ctx_window_tokens_claude": bad, "ctx_window_tokens": "300000"}, "claude") == 300_000
+        {"harness.claude.ctx_window_tokens": bad, "ctx.window_tokens": "300000"}, "claude") == 300_000
     assert guard.resolve_budget(
-        {"ctx_window_tokens_claude": bad, "ctx_window_tokens": bad}, "claude") == 200_000
+        {"harness.claude.ctx_window_tokens": bad, "ctx.window_tokens": bad}, "claude") == 200_000
 
 
 # ── 2. statusLine: context_window → used % (분모=예산·ADR-0041) + 넛지 ────────
@@ -294,7 +294,7 @@ def test_statusline_render_colors_respects_budget_override(guard, statusline):
     stop = statusline.build_statusline(sl, {})
     assert "\033[31m" in stop and "checkpoint 최종 알림" in stop
     # claude 오버라이드 1M: 18% used → ok(회색).
-    ok = statusline.build_statusline(sl, {"ctx_window_tokens_claude": "1000000"})
+    ok = statusline.build_statusline(sl, {"harness.claude.ctx_window_tokens": "1000000"})
     assert "\033[90m" in ok and "ctx 18%" in ok and "checkpoint" not in ok
 
 
@@ -402,7 +402,7 @@ def test_precompact_auto_band_mismatch_four_quadrants(
     manager = tmp_path / ".project_manager"
     manager.mkdir()
     (manager / "local.conf").write_text(
-        "ctx_window_tokens_claude=600000\n", encoding="utf-8",
+        "harness.claude.ctx_window_tokens=600000\n", encoding="utf-8",
     )
     session_id = "auto-quadrant"
     if band_present:
@@ -826,7 +826,7 @@ def test_hook_zero_pct_with_raw_tokens_rearms_cycle_markers(stop_hook, tmp_path)
         "session_id": sid,
         "hook_event_name": "UserPromptSubmit",
     }
-    rc, output = stop_hook.evaluate(stdin, tmp_path, {"ctx_window_tokens_claude": "1000000"})
+    rc, output = stop_hook.evaluate(stdin, tmp_path, {"harness.claude.ctx_window_tokens": "1000000"})
     assert rc == 0 and output is None
     assert not any(marker.exists() for marker in markers)
 
@@ -986,7 +986,7 @@ def _postcompact_durable_mismatch_subprocess_probe(
     log_dir.mkdir(parents=True)
     current = log_dir / "current.md"
     write_lf(current, "# Project Log\n\n> T-0661 subprocess probe\n\n")
-    write_lf(manager / "local.conf", "ctx_window_tokens_claude=600000\n")
+    write_lf(manager / "local.conf", "harness.claude.ctx_window_tokens=600000\n")
     state = manager / ".local" / "tasks" / "main" / "pm_state.md"
     state.parent.mkdir(parents=True)
     write_lf(state, "# main state\n- T-0661 probe\n")
@@ -1377,7 +1377,7 @@ elif args and args[0] == "snapshot":
         encoding="utf-8",
     )
     (worktree / ".project_manager" / "local.conf").write_text(
-        "ctx_window_tokens_claude=600000\n", encoding="utf-8",
+        "harness.claude.ctx_window_tokens=600000\n", encoding="utf-8",
     )
     transcript = worktree / "transcript.jsonl"
     transcript.write_text(json.dumps({

@@ -170,12 +170,12 @@ def _tool_reference_lines(card: str) -> list[str]:
 # ── 0. per-clone 인터프리터 표기 ─────────────────────────────────────────────
 
 def test_card_uses_local_interpreter_for_every_tool_reference(tmp_path, monkeypatch):
-    """`py=python` 형상은 모든 모드의 도구 참조를 같은 `python` 접두로 렌더한다."""
+    """`runtime.py=python` 형상은 모든 모드의 도구 참조를 같은 `python` 접두로 렌더한다."""
     bootstrap = _load(_TREES["root"], "pm_bootstrap")
     conf_dir = tmp_path / ".project_manager"
     conf_dir.mkdir()
     (conf_dir / "local.conf").write_text(
-        "session=demo\npy=python\n", encoding="utf-8"
+        "session=demo\nruntime.py=python\n", encoding="utf-8"
     )
     monkeypatch.setattr(bootstrap, "REPO", tmp_path)
 
@@ -186,7 +186,7 @@ def test_card_uses_local_interpreter_for_every_tool_reference(tmp_path, monkeypa
     assert "python3 .project_manager/tools/" not in cards
 
 
-@pytest.mark.parametrize("conf_text", [None, "session=demo\n", "py=\n"])
+@pytest.mark.parametrize("conf_text", [None, "session=demo\n", "runtime.py=\n"])
 def test_card_interpreter_missing_or_empty_uses_platform_default(
     tmp_path, monkeypatch, conf_text
 ):
@@ -211,7 +211,7 @@ def test_card_interpreter_read_failure_uses_platform_default(tmp_path, monkeypat
     conf_dir = tmp_path / ".project_manager"
     conf_dir.mkdir()
     conf_path = conf_dir / "local.conf"
-    conf_path.write_text("py=python\n", encoding="utf-8")
+    conf_path.write_text("runtime.py=python\n", encoding="utf-8")
     monkeypatch.setattr(bootstrap, "REPO", tmp_path)
     # conf 판독은 공유 읽기 seam 을 지난다([[T-0729]]) — 주입도 그 자리에 건다.
     seam = bootstrap._load_file_lock()

@@ -7,7 +7,7 @@
 # (flag 가 추가돼도 이 파사드는 변경 불필요.)
 #
 # 사용:  cd <target> && ./pm-update.sh
-#        (--from 은 pm_update 이 local.conf 의 upstream= 으로 auto-default 하므로 생략 가능.
+#        (--from 은 pm_update 이 local.conf 의 upstream.path= 으로 auto-default 하므로 생략 가능.
 #         등록법은 ./pm-update.sh --help 참고.)
 set -eu
 

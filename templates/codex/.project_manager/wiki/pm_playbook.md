@@ -62,9 +62,10 @@ run-dir(`.project_manager/.local/delegate-ticket-copies/` 아래)의 라운드 �
 > **harness 노트:** 아래 예시는 **claude(`Agent` 툴·`run_in_background`·`.claude/agents/`)** 기준. **opencode 는 네이티브 `task` 툴**(자식 세션)로 위임한다 — `.opencode/pm-instructions.md`(위임 규약·`AGENTS.md` 공통 코어와 함께 자동 로드)·`.opencode/agents/` 참조. **codex 는 `.codex/agents/`(TOML 카드)** 를 쓰고 위임 채널은 하네스 네이티브다(`AGENTS.md` 공통 코어 + 하네스 운영 지침이 단일 진실). 역할 카드 경로는 하네스마다 다르므로(디렉토리·확장자 모두) 아래 목록은 카드를 `subagent_type` 이름으로만 가리킨다. 축 분리·touches disjoint·single-source 프롬프트·PM 산출 비준 원칙은 동일하다.
 
 `local.conf`의 `delegate.<role>[.<tier>].{harness,model,reasoning}`은 native/cross 공통 위임
-설정이다. target이 현재 PM 하네스면 native agent transport, 다르면 `pm_delegate.py` cross
-transport를 고른다. `delegate_enabled`는 cross 외부 송신·과금 동의만 게이트하고 native 설정
-조회·실행은 막지 않는다. Claude native 카드의 `model:` drift는 가드가 비차단 경고로 표면화하며
+설정이다. target이 현재 PM 하네스면 native agent transport, 다르면
+`pm_delegate.py` cross transport를 고른다. `delegate.enabled`는 위임 전체의 마스터 스위치
+(기본 허용·채널 무관)이고, 끄면 `pm_delegate` 실행·`ticket prepare`·훅이 깔린 하네스의 역할
+spawn이 함께 막힌다. Claude native 카드의 `model:` drift는 가드가 비차단 경고로 표면화하며
 설정·카드를 자동 수정하지 않는다.
 
 ### 방식 A — orchestrator 서브에이전트 (Agent 툴, 권장)
@@ -91,7 +92,7 @@ T-NNNN 의 변경을 검토하라. 변경 파일: <경로>. (code-reviewer)
 
 **검토 루프(normal/hard):** dev → code-reviewer 1회 → PM finding 판정과 승인 delta(§라운드 프로토콜
 5~6항) → dev fix → PM 기계 확인(같은 절 8항 · `pm_delegate.py rounds resolve --pm-verified`) →
-`board.py complete`. 추가 리뷰어는 기본 OFF 인 opt-in 채널이라 `additional_reviewer_enabled=true` 인
+`board.py complete`. 추가 리뷰어는 기본 OFF 인 opt-in 채널이라 `additional_reviewer.enabled=true` 인
 채택자만 이 루프에 병행한다(§추가 리뷰어 교차검증). reviewer 산출은 구현 명령이 아니라
 증거·제안이다. 구현 결함은 PM이 accepted한 범위만 dev가 재작업한다. 설계 결함은 리뷰 라운드까지
 읽기 전용 입력으로 깔아 architect를 다시 투입해 재설계 라운드를 추가한 뒤 dev가 재구현한다. 2회차 이후
@@ -152,20 +153,20 @@ wave 중 완료 기록은 `ticket_finish --no-pytest` + 지정 회귀 실측 근
 
 ### 추가 리뷰어 교차검증 (opt-in 채널 · 기본 OFF)
 
-추가 리뷰어(additional reviewer)는 기본 OFF 인 opt-in 채널이다. `additional_reviewer_enabled=true` 로 켠 채택자만 code-reviewer 라운드에 이 채널을 병행하며, 아래 규약은 켠 경우에 적용된다. 역할 이름도 설정 키(`additional_reviewer_enabled`·`additional_reviewer.*`)도 추가 리뷰어로 통일돼 있다 — `external_review` 는 엔진 모듈 파일 이름·raw 파일 접두처럼 이미 기록된 산출물에 박힌 기계 식별자와 외부 전송 축의 이름으로만 남는다. 개칭 전 구키를 쓰는 채택자 `local.conf` 는 실행 시 안내 1줄을 받는다(마이그레이션 절차는 README).
+추가 리뷰어(additional reviewer)는 기본 OFF 인 opt-in 채널이다. `additional_reviewer.enabled=true` 로 켠 채택자만 code-reviewer 라운드에 이 채널을 병행하며, 아래 규약은 켠 경우에 적용된다. 역할 이름도 설정 키(`additional_reviewer.enabled`·`additional_reviewer.*`)도 추가 리뷰어로 통일돼 있다 — `external_review` 는 엔진 모듈 파일 이름·raw 파일 접두처럼 이미 기록된 산출물에 박힌 기계 식별자와 외부 전송 축의 이름으로만 남는다. 개칭 전 구키를 쓰는 채택자 `local.conf` 는 실행 시 안내 1줄을 받는다(마이그레이션 절차는 README).
 
 전제는 `local.conf` 의 원자적 튜플 하나다(첫 init/update 에서 **1회만** 묻는다 — 비활성이면 `--dry-run` 미리보기·`--force` 1회 강제).
 
 ```
-additional_reviewer_enabled=true
+additional_reviewer.enabled=true
 additional_reviewer.harness=codex
 additional_reviewer.model=gpt-5.6-sol
 additional_reviewer.reasoning=max
 ```
 
-`additional_reviewer_enabled=true` 는 설정된 외부 전송과 통상 과금에 대한 **지속 동의**다 — 켠 뒤에는 리뷰마다·상한 재개마다 사용자에게 비용을 다시 묻지 않는다. 라운드/wave 상한은 비용 게이트가 아니라 기계적 anti-loop 정지이며 축마다 규율이 다르다:
+`additional_reviewer.enabled=true` 는 설정된 외부 전송과 통상 과금에 대한 **지속 동의**다 — 켠 뒤에는 리뷰마다·상한 재개마다 사용자에게 비용을 다시 묻지 않는다. 라운드/wave 상한은 비용 게이트가 아니라 기계적 anti-loop 정지이며 축마다 규율이 다르다:
 
-- **리뷰 라운드 축(연장 승인 없음)** — 상한 2회(`review_rounds_max`), 직전 라운드 대비 must-fix 증가는 상한 전 조기 차단이다. rc=4 면 `--rounds-report` 로 장부를 읽고 **재설계·티켓 분할**로 전환한다(남은 지적은 다음 티켓 목표로 이동). 라운드를 연장하는 승인 플래그는 폐지됐고, 옛 플래그를 붙여 호출하면 rc=1 로 거부된다. 직전 지적의 해소 확인만 필요하면 게이트당 1회 `--confirm-fix`(확인 전용 라운드)를 쓰며, 거기서 나온 신규 발견은 재설계 신호로 본다.
+- **리뷰 라운드 축(연장 승인 없음)** — 상한 2회(`additional_reviewer.rounds_max`), 직전 라운드 대비 must-fix 증가는 상한 전 조기 차단이다. rc=4 면 `--rounds-report` 로 장부를 읽고 **재설계·티켓 분할**로 전환한다(남은 지적은 다음 티켓 목표로 이동). 라운드를 연장하는 승인 플래그는 폐지됐고, 옛 플래그를 붙여 호출하면 rc=1 로 거부된다. 직전 지적의 해소 확인만 필요하면 게이트당 1회 `--confirm-fix`(확인 전용 라운드)를 쓰며, 거기서 나온 신규 발견은 재설계 신호로 본다.
 - **wave 예산 축(재개 ack 유지)** — rc=4 면 `--rounds-report` 로 장부를 읽고 **같은 scope 의 정상 수렴이면 PM 이 자율로 `--ack-wave`** 하며 판단 근거를 log 에 남긴다. 예산을 열어도 라운드 축의 수렴 판정은 그대로 닫혀 있다.
 
 **잔여 must-fix 의 처분(릴리즈 전 필수).** 상한으로 종결된 게이트에 must-fix 가 남았으면 그 잔여를 어떻게 소화했는지 장부에 선언한다. 건수를 읽지 못한 판정 무효 라운드의 잔여는 `0`이 아니라 **미상**이며 똑같이 차단·처분 대상이다. 선언 없는 잔여는 릴리즈가 열리지 않는다(`board.py livegate record` 가 실행 전에 차단·우회 플래그 없음). 보호훅의 `PM_SKIP_LIVE_GATE=1`도 장부 writer가 원자 갱신한 현행 잔여 표식이 명확히 `clear`일 때만 라이브 축을 우회한다. 표식 부재·손상·판독 실패는 잔여 미상이라 fail-closed이며, `board.py livegate record` 1회로 환경과 표식을 먼저 복구한다.
@@ -179,7 +180,7 @@ python3 .project_manager/tools/external_review.py --resolve-gate <게이트> --f
 
 사용자에게 올리는 경우는 중대한 scope 확대·그 밖의 독립적 사용자 게이트 사유다.
 
-레거시 `reviewer_cmd` 를 쓰던 채택자는 그대로 동작한다 — 엔진이 자동 마이그레이션하지 않고, 온보딩도 기존 결정을 덮지 않는다.
+리뷰어 대상은 구조화 키(`additional_reviewer.harness`·`.model`·`.reasoning`)로만 지정한다 — 옛 `reviewer_cmd` 통짜 커맨드 경로는 없어졌고, 엔진이 채택자 conf 를 대신 고쳐 쓰지 않으므로 그 키가 남아 있으면 소비 지점에서 멈추고 교체를 지목한다.
 
 Claude Bash 도구로 아래 장시간 커맨드를 실행할 때는 호출층 `timeout: 29300000`(ms)을 반드시 명시한다. 엔진 CLI `--timeout`은 리뷰어 벽시계이고 Bash 호출층 timeout을 대신하지 않는다.
 
@@ -312,7 +313,7 @@ upstream 엔진 개선을 당기는 저빈도 유지보수. **메인테이너가
 
 1. upstream 체크아웃 확보 (reference repo 를 어딘가 clone/pull · v1 은 로컬 경로만).
 2. `python3 .project_manager/tools/pm_update.py --from <upstream> --dry-run` → 바뀔 엔진 파일 검토.
-3. `--dry-run` 빼고 적용. 엔진 freshness 는 `local.conf` 의 `upstream_rev`↔`upstream_seen_rev`(git rev-baseline)로 추적된다.
+3. `--dry-run` 빼고 적용. 엔진 freshness 는 `local.conf` 의 `upstream.rev`↔`upstream.seen_rev`(git rev-baseline)로 추적된다.
 4. 엔진이 바뀌었으니 회귀 검증 — `python3 .project_manager/tools/board.py regression run`.
 5. 엔진 변경 커밋 + push (공유 — 팀원은 `git pull` 로 받음).
 

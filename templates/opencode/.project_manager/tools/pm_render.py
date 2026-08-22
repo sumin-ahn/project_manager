@@ -102,7 +102,7 @@ OPERATIONAL_KEYS: tuple[str, ...] = (
     "PY",
     "TEST_CMD",
     "DATE",
-    # opencode 어댑터 전용 — pm_import 가 local.conf 에 opencode_pro_model 을 기록.
+    # opencode 어댑터 전용 — pm_import 가 local.conf 에 harness.opencode.pro_model 을 기록.
     # local.conf 에 해소돼 있으면 여기 operational 채널로 plain replace(정상 치환). *미해소*(채택자가
     # opencode 없이 import·TODO 폴백)면 leak 이 아니라 intentional-TODO 로 graceful 중화한다
     # (neutralize_model_todo·import 대칭) — 아래 render_adapter 참조.
@@ -201,12 +201,30 @@ def unused_delegate_profiles(
     }
 
 
+# operational token-key → local.conf 키. 규칙(uppercase→lowercase)으로 유도할 수 없다 —
+# conf 표기가 dot notation 이라 세그먼트 경계가 토큰 이름에 남아 있지 않다(`PROJECT_NAME` 은
+# `project.name` 이고 `OPENCODE_PRO_MODEL` 은 `harness.opencode.pro_model`). 힌트가 실재하지 않는
+# 키를 제시하면 채택자가 그 키를 conf 에 적고도 해소되지 않으므로 표로 고정한다.
+_OPERATIONAL_CONF_KEYS: dict[str, str] = {
+    "PROJECT_NAME": "project.name",
+    "PROJECT_TAGLINE": "project.tagline",
+    "PROJECT_ROOT": "project.root",
+    "PY": "runtime.py",
+    "TEST_CMD": "test.cmd",
+    "DATE": "project.date",
+    "OPENCODE_PRO_MODEL": "harness.opencode.pro_model",
+}
+
+
 def _local_conf_key(token_key: str) -> str:
     """operational token-key → local.conf 키 — 진단 힌트가 실재하지 않는 키를 제시하지 않게.
 
-    대부분은 lowercase 동형(`PROJECT_NAME`→`project_name`)이나 역할별 모델 토큰의 해소 키는
-    dotted(`DELEGATE_MODEL_DEVELOPER`→`delegate.developer.model`)라 규칙이 성립하지 않는다.
+    고정 표 두 개를 본다 — operational(`_OPERATIONAL_CONF_KEYS`)과 역할별 모델 토큰
+    (`DELEGATE_MODEL_CONF_KEYS`·`DELEGATE_MODEL_DEVELOPER`→`delegate.developer.model`). 둘 다
+    없는 토큰은 lowercase 로 떨어뜨린다(신설 토큰이 표에 안 실린 경우의 최소 힌트).
     """
+    if token_key in _OPERATIONAL_CONF_KEYS:
+        return _OPERATIONAL_CONF_KEYS[token_key]
     return DELEGATE_MODEL_CONF_KEYS.get(token_key, token_key.lower())
 
 
@@ -517,7 +535,7 @@ def _fill_operational(text: str, operational: dict) -> tuple[str, list[str]]:
 
     미보유 key(dict 부재)는 물론, **값이 빈 문자열인 key 도 치환하지 않는다**(호출자 무관
     이중화·pm_import 경로 포함) — 토큰을 그대로 남겨 _assert_no_leak 가 leak 으로 잡게 한다.
-    `.get(key, "")` 나 빈값 치환은 미해소를 *침묵 비움*(예: `project_name=` 빈값 → description 이
+    `.get(key, "")` 나 빈값 치환은 미해소를 *침묵 비움*(예: `project.name=` 빈값 → description 이
     " 프로젝트")으로 출하해 탐지 신호 자체를 없앤다 — 잔여 토큰보다 더 나쁘다.
 
     반환: (치환된 text, 빈값이라 건너뛴 token-key 목록). 후자는 render_adapter 가 _assert_no_leak
@@ -589,11 +607,11 @@ def render_adapter(
     # pm_update 가 excluded 한 빈값 key(empty_keys) + 렌더러가 직접 감지한 빈값 key 를 합쳐
     # leak 힌트에 싣는다(중복 제거·순서 보존).
     all_empty = list(dict.fromkeys([*(empty_keys or []), *detected_empty]))
-    # intentional-TODO graceful (import 대칭): opencode_pro_model 이 local.conf 에
+    # intentional-TODO graceful (import 대칭): harness.opencode.pro_model 이 local.conf 에
     # *부재*(채택자가 opencode 없이 import — 키 자체가 없음)면 `{{OPENCODE_PRO_MODEL}}` 을 leak
     # 시키는 대신 model: 줄을 주석화·중화한다(import --fill manual 과 byte-동일·재렌더 왕복 0·
     # 불변식 a: 이미 해소돼 있으면 위 _fill_operational 가 치환해 no-op).
-    #   ⚠ **`opencode_pro_model=` 빈값(present-but-empty)은 중화하지 않는다** — 빈값은 미설정이
+    #   ⚠ **`harness.opencode.pro_model=` 빈값(present-but-empty)은 중화하지 않는다** — 빈값은 미설정이
     #   아니라 *오설정* 신호다(pm_import 는 해소 시에만 이 키를 쓰므로 빈값=손-편집/손상).
     #   대로 leak 시켜 "값을 채우라" 로 표면화한다. 빈값은
     #   all_empty 에 실리므로 그때는 중화를 건너뛰어 토큰을 남긴다 → _assert_no_leak 가 잡는다.

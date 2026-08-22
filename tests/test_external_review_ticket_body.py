@@ -17,6 +17,15 @@ TOOL = TOOLS / "external_review.py"
 DIFF = "diff --git a/x.py b/x.py\n@@ -1 +1 @@\n-old\n+new\n"
 
 
+# 해소 가능한 추가 리뷰어 대상 — 대상은 `harness`+`model` 구조화 키로만 서므로(엔진 기본 커맨드
+# 없음) 이 파일의 모든 형상이 그 세트를 깔고 시작한다.
+_REVIEWER_TARGET = {
+    "additional_reviewer.enabled": "true",
+    "additional_reviewer.harness": "codex",
+    "additional_reviewer.model": "gpt-5.6-sol",
+}
+
+
 def _load():
     spec = importlib.util.spec_from_file_location("external_review_ticket_body", TOOL)
     module = importlib.util.module_from_spec(spec)
@@ -75,7 +84,8 @@ def _round_text(role: str, marker: str) -> str:
 
 def _wire(external, monkeypatch, tmp_path, ticket: Path | None = None, *, conf=None):
     monkeypatch.setattr(external, "REPO", tmp_path)
-    monkeypatch.setattr(external, "local_config", lambda repo=None: dict(conf or {}))
+    monkeypatch.setattr(external, "local_config",
+                        lambda repo=None: {**_REVIEWER_TARGET, **(conf or {})})
     monkeypatch.setattr(external, "extract_diff", lambda *args, **kwargs: (DIFF, []))
     if ticket is not None:
         monkeypatch.setattr(
@@ -138,7 +148,6 @@ def test_real_send_prompt_includes_ticket_body_without_frontmatter(
     ticket = _ticket(tmp_path / "T-9001-real-send.md", body=body)
     _wire(
         external, monkeypatch, tmp_path, ticket,
-        conf={"additional_reviewer_enabled": "true"},
     )
     prompts: list[str] = []
     _stub_real_send(external, monkeypatch, tmp_path, prompts)
@@ -295,7 +304,7 @@ def test_ticket_and_cross_repo_paths_load_body_from_selected_pm_home(
         _ticket(tickets / "claimed" / "T-9001-cross.md", body=body)
 
     monkeypatch.setattr(external, "REPO", engine_home)
-    monkeypatch.setattr(external, "local_config", lambda repo=None: {})
+    monkeypatch.setattr(external, "local_config", lambda repo=None: dict(_REVIEWER_TARGET))
     monkeypatch.setattr(
         external, "resolve_pm_home_for_repo",
         lambda anchor, **kwargs: (

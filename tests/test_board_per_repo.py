@@ -613,7 +613,7 @@ def test_test_cmd_resolves_per_repo_from_active_prefix(board):
     board.AREAS_FILE.write_text(_NEW_SCHEMA, encoding="utf-8")
     _write_ledger(board, _lease_row(slot="work/service-b_1", repo="service-b",
                                     session="service-b_1"))
-    board.LOCAL_CONF.write_text("test_cmd=pytest -q\n", encoding="utf-8")
+    board.LOCAL_CONF.write_text("test.cmd=pytest -q\n", encoding="utf-8")
     # local.conf test_cmd 가 pytest -q 라도, 활성 repo(service-b/ACC)의 areas test_cmd 가 우선.
     assert board._test_cmd(None) == "go test ./..."
 
@@ -630,7 +630,7 @@ def test_test_cmd_per_repo_distinct_prefixes(board):
 def test_test_cmd_solo_no_registry_falls_back_to_local_conf(board):
     """솔로(areas.md 부재) → local.conf test_cmd 폴백 (100% 하위호환)."""
     assert not board.AREAS_FILE.exists()
-    board.LOCAL_CONF.write_text("test_cmd=pytest -q --strict\n", encoding="utf-8")
+    board.LOCAL_CONF.write_text("test.cmd=pytest -q --strict\n", encoding="utf-8")
     assert board._test_cmd(None) == "pytest -q --strict"
 
 
@@ -642,7 +642,7 @@ def test_test_cmd_solo_no_local_conf_defaults_pytest(board):
 def test_test_cmd_no_prefix_in_multi_mode_falls_back(board):
     """areas.md 존재하나 활성 prefix 미해소(local.conf prefix 없음) → 솔로 폴백."""
     board.AREAS_FILE.write_text(_NEW_SCHEMA, encoding="utf-8")
-    board.LOCAL_CONF.write_text("test_cmd=fallback-cmd\n", encoding="utf-8")  # prefix 없음
+    board.LOCAL_CONF.write_text("test.cmd=fallback-cmd\n", encoding="utf-8")  # prefix 없음
     assert board._test_cmd(None) == "fallback-cmd"
 
 
@@ -652,7 +652,7 @@ def test_test_cmd_empty_areas_test_cmd_falls_back(board):
     구 스키마(test_cmd 칼럼 없음)·`areas_append` 부분 등록(빈 test_cmd) 모두 이 경로.
     """
     board.AREAS_FILE.write_text(_OLD_SCHEMA, encoding="utf-8")  # test_cmd 칼럼 없음
-    board.LOCAL_CONF.write_text("prefix=PAY\ntest_cmd=legacy-cmd\n", encoding="utf-8")
+    board.LOCAL_CONF.write_text("prefix=PAY\ntest.cmd=legacy-cmd\n", encoding="utf-8")
     assert board._test_cmd(None) == "legacy-cmd"
 
 
@@ -763,7 +763,7 @@ def test_test_cmd_override_wins_over_slot(board, monkeypatch):
 def test_test_cmd_solo_no_ledger_unaffected(board):
     """솔로(장부 없음·areas 없음) → local.conf 폴백 — 슬롯 레이어 추가가 솔로 무영향."""
     assert not board.LEASES_FILE.exists()
-    board.LOCAL_CONF.write_text("test_cmd=pytest -q --strict\n", encoding="utf-8")
+    board.LOCAL_CONF.write_text("test.cmd=pytest -q --strict\n", encoding="utf-8")
     assert board._test_cmd(None) == "pytest -q --strict"
 
 

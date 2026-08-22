@@ -94,7 +94,7 @@ def _claude_stdout(reply: str = "DONE") -> str:
 
 def _conf(**extra) -> dict[str, str]:
     conf = {
-        "delegate_enabled": "true",
+        "delegate.enabled": "true",
         "delegate.developer.harness": "codex",
         "delegate.developer.model": "gpt-x",
     }

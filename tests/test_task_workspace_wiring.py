@@ -48,7 +48,7 @@ def board(tmp_path, monkeypatch):
     mod = _load("board")
     monkeypatch.setattr(mod, "REPO", proj)
     # `LOCAL_CONF` 는 import 시점에 **실 repo** 로 굳으므로 REPO 재지정만으론 안 따라온다 —
-    # 핀하지 않으면 개발 머신 local.conf(예: `regression_min_collected=7000`)가 스텁 회귀
+    # 핀하지 않으면 개발 머신 local.conf(예: `regression.min_collected=7000`)가 스텁 회귀
     # (수집 1)에 새어들어 강등시킨다(실측 2 fail). tmp 로 핀해 conf 면역을 만든다.
     monkeypatch.setattr(mod, "LOCAL_CONF", proj / ".project_manager" / "local.conf")
     monkeypatch.setattr(mod, "LOCAL_DIR", local)

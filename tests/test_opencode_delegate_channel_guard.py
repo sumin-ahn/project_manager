@@ -422,7 +422,7 @@ def test_opencode_real_python_cli_parity_same_matrix(tmp_path):
     for role in ROLES:
         for enabled in (True, False):
             for mapping in ("self", "cross", "absent"):
-                conf = {"delegate_enabled": "true" if enabled else "false"}
+                conf = {"delegate.enabled": "true" if enabled else "false"}
                 if mapping != "absent":
                     conf[f"delegate.{role}.harness"] = (
                         "opencode" if mapping == "self" else "claude"
@@ -444,9 +444,13 @@ for (const item of cases) {
   const got = core.judgeDelegation(root, root, item.role, null);
   assert.strictEqual(got.verdict, item.expected, JSON.stringify(item));
   assert.strictEqual(got.warning, undefined, got.reason);
-  if (got.verdict === "deny") {
+  // 스위치 off 의 처방은 conf 한 줄이다 — CLI 재실행을 권하면 그 실행이 다시 rc=3 이라 순환이다.
+  if (got.verdict === "deny" && item.conf["delegate.enabled"] !== "false") {
     assert.match(got.reason, new RegExp(`--cwd ${root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
     assert.ok(!got.reason.includes("<worktree>"));
+  }
+  if (got.verdict === "deny" && item.conf["delegate.enabled"] === "false") {
+    assert.match(got.reason, /delegate\.enabled/);
   }
 }
 console.log(`REAL_PYTHON_PARITY_OK:${cases.length}`);

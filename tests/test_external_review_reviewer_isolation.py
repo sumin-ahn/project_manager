@@ -59,6 +59,15 @@ def _jail(tmp_path: Path) -> Path:
     return base
 
 
+# 해소 가능한 추가 리뷰어 대상 — 이 파일의 축은 격리이지 대상 해소가 아니므로, 모든 형상이 같은
+# 구조화 tuple(harness+model)을 깔고 시작한다(대상이 없으면 외부 송신 전에 먼저 끊긴다).
+_REVIEWER_TARGET = {
+    "additional_reviewer.enabled": "true",
+    "additional_reviewer.harness": "codex",
+    "additional_reviewer.model": "gpt-5.6-sol",
+}
+
+
 def _standalone_adopter(tmp_path: Path) -> Path:
     """`pm_home == diff_root == repo` 인 standalone 채택자 형상 — 옛 raw 가 저장소 안에 쌓인다."""
     repo = tmp_path / "adopter"
@@ -574,7 +583,7 @@ def test_scrub_failure_is_distinguished_from_absence(external, monkeypatch, tmp_
     monkeypatch.setattr(external, "extract_diff",
                         lambda *a, **k: ("diff --git a/x b/x\n+n\n", []))
     monkeypatch.setattr(external, "local_config",
-                        lambda repo=None: {"additional_reviewer_enabled": "true"})
+                        lambda repo=None: dict(_REVIEWER_TARGET))
     monkeypatch.setattr(external, "_build_reviewer_home",
                         lambda *a, **k: external.ReviewerHomeBuild(
                             (".codex/auth.json",), (".codex/config.toml",)))
@@ -595,9 +604,9 @@ def test_main_passes_resolved_denylist_and_conf_to_isolation(external, monkeypat
     """거울/프롬프트 비대칭과 keep_extra 탈출구 사망을 막는 두 배선을 캡처로 고정한다."""
     repo = _standalone_adopter(tmp_path)
     conf = {
-        "additional_reviewer_enabled": "true",
-        "review_denylist_extra": "*vendor_dump*",
-        "reviewer_env_keep_extra": "VENDOR_REVIEW_KEY",
+        **_REVIEWER_TARGET,
+        "additional_reviewer.denylist_extra": "*vendor_dump*",
+        "additional_reviewer.env_keep_extra": "VENDOR_REVIEW_KEY",
     }
     monkeypatch.setattr(external, "REPO", repo)
     monkeypatch.setattr(external, "extract_diff",
@@ -623,7 +632,7 @@ def test_main_passes_resolved_denylist_and_conf_to_isolation(external, monkeypat
     assert "*vendor_dump*" in seen["denylist"]
     assert set(external._SECRET_DENYLIST_PATTERNS) <= set(seen["denylist"])
     # conf: 임시 홈 아티팩트·keep_extra 해소의 입력이라 빠지면 탈출구가 죽는다.
-    assert seen["conf"]["reviewer_env_keep_extra"] == "VENDOR_REVIEW_KEY"
+    assert seen["conf"]["additional_reviewer.env_keep_extra"] == "VENDOR_REVIEW_KEY"
 
 
 def test_reviewer_home_skips_unparsable_scrub_targets(external, tmp_path):
@@ -658,7 +667,7 @@ def test_reviewer_home_artifacts_extra_is_declarable(external, tmp_path):
     source = _user_home_with_history(tmp_path)
     (source / ".config" / "vendor").mkdir(parents=True)
     (source / ".config" / "vendor" / "key.json").write_text("{}\n", encoding="utf-8")
-    conf = {"reviewer_home_artifacts_extra": ".config/vendor/key.json"}
+    conf = {"additional_reviewer.home_artifacts_extra": ".config/vendor/key.json"}
     assert ".config/vendor/key.json" in external.reviewer_home_artifacts(conf)
     home = tmp_path / "reviewer-home"
     copied = external._build_reviewer_home(
@@ -796,14 +805,22 @@ def test_partial_workspace_cleanup_survives_read_only_git_objects(
     assert "정리 실패" not in capsys.readouterr().err
 
 
-def _blocked_gate_repo(external, monkeypatch, tmp_path) -> Path:
-    """라운드 상한이 이미 닫힌 실 저장소 형상 (거부가 확정된 실행의 입력)."""
+def _blocked_gate_repo(external, monkeypatch, tmp_path, gate: str) -> Path:
+    """라운드 상한이 이미 닫힌 실 저장소 형상 (거부가 확정된 실행의 입력).
+
+    판정 상한은 conf 노브가 아니라 엔진 고정값이라, 그 게이트의 **장부**를 상한만큼 채운
+    상태로 만든다(구 노브 `additional_reviewer.round_limit=0` 을 대체하는 형상 재현)."""
     repo = _standalone_adopter(tmp_path)
     monkeypatch.setattr(external, "REPO", repo)
     monkeypatch.setattr(external, "extract_diff",
                         lambda *a, **k: ("diff --git a/x b/x\n+n\n", []))
     monkeypatch.setattr(external, "local_config", lambda repo=None: {
-        "additional_reviewer_enabled": "true", "additional_reviewer_round_limit": "0"})
+        **_REVIEWER_TARGET})
+    ledger = repo / ".project_manager" / ".local" / "review_rounds.json"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(json.dumps(
+        {gate: {"count": external.DEFAULT_ROUND_LIMIT, "acked_through": 0,
+                "records": [], "rounds": []}}), encoding="utf-8")
     return repo
 
 
@@ -815,7 +832,7 @@ def test_round_limit_rejection_never_enters_the_isolation_seam(
     인증/설정을 실제로 복제하는 작업이고, 정리 실패는 loud 경고로 남을 뿐 되돌려지지 않는다
     (`test_cleanup_failure_is_loud`). 전송도 못 할 실행이 그 왕복을 하지 않게 예산 게이트가 격리
     **앞**에 선다."""
-    repo = _blocked_gate_repo(external, monkeypatch, tmp_path)
+    repo = _blocked_gate_repo(external, monkeypatch, tmp_path, "T-9999")
     created: list[Path] = []
     real_create = external.create_reviewer_workspace
 
@@ -845,7 +862,7 @@ def test_workspace_is_removed_when_the_review_raises(external, monkeypatch, tmp_
     monkeypatch.setattr(external, "extract_diff",
                         lambda *a, **k: ("diff --git a/x b/x\n+n\n", []))
     monkeypatch.setattr(external, "local_config", lambda repo=None: {
-        "additional_reviewer_enabled": "true"})
+        **_REVIEWER_TARGET})
     created: dict[str, Path] = {}
     real_create = external.create_reviewer_workspace
 
@@ -881,7 +898,7 @@ def test_access_restriction_failure_fails_closed_before_any_send(
     monkeypatch.setattr(external, "extract_diff",
                         lambda *a, **k: ("diff --git a/x b/x\n+n\n", []))
     monkeypatch.setattr(external, "local_config", lambda repo=None: {
-        "additional_reviewer_enabled": "true"})
+        **_REVIEWER_TARGET})
     lock = external._load_file_lock()
 
     def _refuse(path):
@@ -992,7 +1009,7 @@ def test_reviewer_env_covers_relay_declared_session_markers(external):
 
 def test_reviewer_env_keep_extra_opens_declared_names_only(external, tmp_path):
     """배포별 인증 이름이 allowlist 에 없어 게이트가 죽는 자기잠김을 막는 탈출구."""
-    conf = {"reviewer_env_keep_extra": "OPENROUTER_API_KEY, my_vendor_token"}
+    conf = {"additional_reviewer.env_keep_extra": "OPENROUTER_API_KEY, my_vendor_token"}
     extra = external.reviewer_env_keep_extra(conf)
     env = {"OPENROUTER_API_KEY": "r", "MY_VENDOR_TOKEN": "v", "OTHER_STATE": "x"}
     workspace = tmp_path / "ws"
@@ -1170,7 +1187,7 @@ def test_main_runs_reviewer_inside_isolated_workspace(external, monkeypatch, tmp
     monkeypatch.setattr(external, "extract_diff",
                         lambda *a, **k: ("diff --git a/x b/x\n+n\n", []))
     monkeypatch.setattr(external, "local_config",
-                        lambda repo=None: {"additional_reviewer_enabled": "true"})
+                        lambda repo=None: dict(_REVIEWER_TARGET))
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "abc-123")
     seen: dict[str, object] = {}
 
@@ -1204,8 +1221,8 @@ def test_isolation_banner_names_applied_keep_extra(external, monkeypatch, tmp_pa
     monkeypatch.setattr(external, "extract_diff",
                         lambda *a, **k: ("diff --git a/x b/x\n+n\n", []))
     monkeypatch.setattr(external, "local_config", lambda repo=None: {
-        "additional_reviewer_enabled": "true",
-        "reviewer_env_keep_extra": "VENDOR_REVIEW_KEY",
+        **_REVIEWER_TARGET,
+        "additional_reviewer.env_keep_extra": "VENDOR_REVIEW_KEY",
     })
     monkeypatch.setenv("VENDOR_REVIEW_KEY", "k")
     monkeypatch.setattr(external, "run_review", lambda **kwargs: {
@@ -1217,7 +1234,7 @@ def test_isolation_banner_names_applied_keep_extra(external, monkeypatch, tmp_pa
     assert external.main(["--paths", str(repo / "src"), "--no-gate",
                           "--output-dir", str(tmp_path / "raw")]) == 0
     err = capsys.readouterr().err
-    assert "reviewer_env_keep_extra 통과: VENDOR_REVIEW_KEY" in err
+    assert "additional_reviewer.env_keep_extra 통과: VENDOR_REVIEW_KEY" in err
 
 
 def test_reviewer_failure_hint_names_both_escape_keys(external, monkeypatch, tmp_path, capsys):
@@ -1227,7 +1244,7 @@ def test_reviewer_failure_hint_names_both_escape_keys(external, monkeypatch, tmp
     monkeypatch.setattr(external, "extract_diff",
                         lambda *a, **k: ("diff --git a/x b/x\n+n\n", []))
     monkeypatch.setattr(external, "local_config",
-                        lambda repo=None: {"additional_reviewer_enabled": "true"})
+                        lambda repo=None: dict(_REVIEWER_TARGET))
     monkeypatch.setattr(external, "run_review", lambda **kwargs: {
         "reviewer": "codex", "ok": False, "output": "[리뷰어 실행 오류: 401 unauthorized]",
         "verdict": {"has_must_fix": False, "has_pass": False},
@@ -1238,8 +1255,8 @@ def test_reviewer_failure_hint_names_both_escape_keys(external, monkeypatch, tmp
                           "--output-dir", str(tmp_path / "raw")]) == 1
     err = capsys.readouterr().err
     # 이름만 스치는 게 아니라 **실행 가능한 처방**(키=값 형태)이어야 진단으로서 쓸모가 있다.
-    assert "reviewer_home_artifacts_extra=<홈 상대경로" in err
-    assert "reviewer_env_keep_extra=<이름" in err
+    assert "additional_reviewer.home_artifacts_extra=<홈 상대경로" in err
+    assert "additional_reviewer.env_keep_extra=<이름" in err
     assert external.UNISOLATED_REVIEWER_FLAG in err
 
 
@@ -1250,7 +1267,7 @@ def _wire_unbuildable_isolation(external, monkeypatch, tmp_path):
     monkeypatch.setattr(external, "extract_diff",
                         lambda *a, **k: ("diff --git a/x b/x\n+n\n", []))
     monkeypatch.setattr(external, "local_config",
-                        lambda repo=None: {"additional_reviewer_enabled": "true"})
+                        lambda repo=None: dict(_REVIEWER_TARGET))
 
     def _boom(*a, **k):
         raise external.ReviewerWorkspaceError("거울 생성 실패(주입)")
@@ -1295,7 +1312,7 @@ def test_main_opt_out_flag_runs_unisolated_once(external, monkeypatch, tmp_path,
 def test_unisolated_run_is_marked_in_result_and_verdict_block(external, tmp_path, capsys):
     """stderr 만으로는 부족하다 — PM 이 반드시 읽는 판정 블록에 미격리 사실이 남아야 한다."""
     result = external.run_review(
-        "p", reviewer_cmd="codex", output_dir=tmp_path,   # cwd 미지정 = 실제로 미격리
+        "p", target=_direct_target(external), output_dir=tmp_path,   # cwd 미지정 = 실제로 미격리
         run_fn=lambda *a, **k: subprocess.CompletedProcess(["codex"], 0, "판정: 통과\n", ""),
     )
     assert result["unisolated"] is True
@@ -1307,7 +1324,7 @@ def test_unisolated_run_is_marked_in_result_and_verdict_block(external, tmp_path
 def test_isolated_run_keeps_the_verdict_block_unchanged(external, tmp_path, capsys):
     """격리 정상 실행의 판정 블록은 종전과 동일하다(진단 라인 없음)."""
     result = external.run_review(
-        "p", reviewer_cmd="codex", output_dir=tmp_path,
+        "p", target=_direct_target(external), output_dir=tmp_path,
         cwd=tmp_path, env={"PWD": str(tmp_path)},
         run_fn=lambda *a, **k: subprocess.CompletedProcess(["codex"], 0, "판정: 통과\n", ""),
     )
@@ -1398,7 +1415,7 @@ def test_format_noncompliant_prose_verdict_is_never_a_pass(external, tmp_path, p
     assert external.verdict_words(prose) == ()
     assert external.parse_verdict(prose)["has_pass"] is False
     result = external.run_review(
-        "p", reviewer_cmd="codex", output_dir=tmp_path,
+        "p", target=_direct_target(external), output_dir=tmp_path,
         run_fn=lambda *a, **k: subprocess.CompletedProcess(["codex"], 0, prose, ""),
     )
     assert result["all_pass"] is False
@@ -1438,7 +1455,7 @@ def test_prompt_template_echo_is_not_a_pass(external, tmp_path):
     assert external.verdict_words(echoed) == ("[통과",)
     assert external.parse_verdict(echoed)["has_pass"] is False
     result = external.run_review(
-        "p", reviewer_cmd="codex", output_dir=tmp_path,
+        "p", target=_direct_target(external), output_dir=tmp_path,
         run_fn=lambda *a, **k: subprocess.CompletedProcess(["codex"], 0, echoed, ""),
     )
     assert result["all_pass"] is False
@@ -1450,7 +1467,7 @@ def test_negated_verdict_is_not_a_pass(external, tmp_path):
     output = "판정: 비통과\n\n**must-fix** (반드시 수정):\n- 없음\n"
     assert external.parse_verdict(output)["has_pass"] is False
     result = external.run_review(
-        "p", reviewer_cmd="codex", output_dir=tmp_path,
+        "p", target=_direct_target(external), output_dir=tmp_path,
         run_fn=lambda *a, **k: subprocess.CompletedProcess(["codex"], 0, output, ""),
     )
     assert result["all_pass"] is False
@@ -1511,6 +1528,15 @@ def test_parser_alone_reads_the_echoed_pass_as_a_clean_pass(external):
     assert verdict == {"has_must_fix": False, "has_pass": True}
 
 
+
+def _direct_target(external, command: str = "codex"):
+    """직접 호출용 대상 — 이 축의 테스트는 transport 아래(회신/로그 채널·판정·오염)를 본다.
+
+    `run_review` 는 대상을 **필수**로 받고 커맨드 문자열 입구가 없다. 여기서는 하네스 argv 조립을
+    태우지 않는 대상 하나로 고정해 판정 파이프라인만 본다 — 엔진 CLI 가 넘기는 대상은 언제나
+    `resolve_reviewer_target` 이 harness·model 을 채운 구조화 tuple 이다."""
+    return external.ReviewerTarget(external.REVIEWER_SOURCE_STRUCTURED, command)
+
 def _isolated_run_kwargs(root: Path) -> dict:
     """격리 실행 DI 헬퍼 — cwd 와 정화 env 를 **함께** 주입한다(둘 다 있어야 격리다)."""
     return {"cwd": root, "env": {"PWD": str(root)}}
@@ -1521,11 +1547,11 @@ def test_isolation_requires_both_cwd_and_clean_env(external, tmp_path):
     def _runner(*a, **k):
         return subprocess.CompletedProcess(["codex"], 0, "판정: 통과\n", "")
 
-    both = external.run_review("p", reviewer_cmd="codex", output_dir=tmp_path,
+    both = external.run_review("p", target=_direct_target(external), output_dir=tmp_path,
                                run_fn=_runner, **_isolated_run_kwargs(tmp_path))
-    cwd_only = external.run_review("p", reviewer_cmd="codex", output_dir=tmp_path,
+    cwd_only = external.run_review("p", target=_direct_target(external), output_dir=tmp_path,
                                    run_fn=_runner, cwd=tmp_path)
-    env_only = external.run_review("p", reviewer_cmd="codex", output_dir=tmp_path,
+    env_only = external.run_review("p", target=_direct_target(external), output_dir=tmp_path,
                                    run_fn=_runner, env={"PWD": str(tmp_path)})
     assert both["unisolated"] is False
     assert cwd_only["unisolated"] is True and env_only["unisolated"] is True
@@ -1538,7 +1564,7 @@ def test_contaminated_reject_is_not_recorded_as_a_reject(external, tmp_path):
         "**suggestion** (권장):\n- 없음\n\n--- 이전 라운드 원문 ---\n판정: 통과\n"
     )
     result = external.run_review(
-        "p", reviewer_cmd="codex", output_dir=tmp_path,
+        "p", target=_direct_target(external), output_dir=tmp_path,
         run_fn=lambda *a, **k: subprocess.CompletedProcess(["codex"], 0, output, ""),
         **_isolated_run_kwargs(tmp_path),
     )
@@ -1552,7 +1578,7 @@ def test_clean_reject_is_still_recorded_as_a_verdict(external, tmp_path):
     """오염 없는 반려는 종전대로 반려다 — 무효화가 정상 판정까지 삼키면 안 된다."""
     output = "판정: 반려\n\n**must-fix** (반드시 수정):\n- 실제 지적\n"
     result = external.run_review(
-        "p", reviewer_cmd="codex", output_dir=tmp_path,
+        "p", target=_direct_target(external), output_dir=tmp_path,
         run_fn=lambda *a, **k: subprocess.CompletedProcess(["codex"], 0, output, ""),
         **_isolated_run_kwargs(tmp_path),
     )
@@ -1564,7 +1590,7 @@ def test_clean_reject_is_still_recorded_as_a_verdict(external, tmp_path):
 def test_run_review_downgrades_conflicting_verdict_to_unclear(external, tmp_path):
     """오염된 출력에서 '통과'가 그대로 나가면 false-green — 보수적으로 판정 불명확이어야 한다."""
     result = external.run_review(
-        "p", reviewer_cmd="codex", output_dir=tmp_path,
+        "p", target=_direct_target(external), output_dir=tmp_path,
         run_fn=lambda *a, **k: subprocess.CompletedProcess(
             ["codex"], 0, _ECHOED_OLD_BLOCK_OUTPUT, ""),
     )
@@ -1579,7 +1605,7 @@ def test_parser_and_detector_read_the_same_text(external, tmp_path):
     answer = "판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n"
     log = "이전 라운드 원문:\n판정: 반려\n\n**must-fix** (반드시 수정):\n- 옛 지적\n"
     result = external.run_review(
-        "p", reviewer_cmd="codex", output_dir=tmp_path,
+        "p", target=_direct_target(external), output_dir=tmp_path,
         run_fn=lambda *a, **k: subprocess.CompletedProcess(["codex"], 0, answer, log),
     )
     # 회신 구간만 본 판정 = 통과 · 오염 신호 없음 → 진행 로그가 판정에도 검출에도 안 샌다.
@@ -1611,7 +1637,7 @@ def test_run_review_downgrades_any_contaminated_pass(external, tmp_path, citatio
     """판정이 하나여도 옛 raw·전사를 인용했으면 그 통과는 리뷰어 자신의 판정이라는 보장이 없다."""
     output = ("판정: 통과\n\n**must-fix**:\n- 없음\n\n**suggestion**:\n" + citation)
     result = external.run_review(
-        "p", reviewer_cmd="codex", output_dir=tmp_path,
+        "p", target=_direct_target(external), output_dir=tmp_path,
         run_fn=lambda *a, **k: subprocess.CompletedProcess(["codex"], 0, output, ""),
     )
     assert result["contamination"]
@@ -1660,7 +1686,7 @@ def test_progress_log_prompt_echo_is_not_contamination(external, tmp_path):
         "+    raw = \"external_review_codex_20260806_040406_11_ab.txt\"\n"
     )
     result = external.run_review(
-        "p", reviewer_cmd="codex", output_dir=tmp_path,
+        "p", target=_direct_target(external), output_dir=tmp_path,
         run_fn=lambda *a, **k: subprocess.CompletedProcess(
             ["codex"], 0, answer, progress_log),
     )

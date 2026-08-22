@@ -179,4 +179,4 @@ def test_init_writes_detected_py_to_local_conf(monkeypatch, tmp_path, board):
 
     assert rc == 0
     written = local_conf.read_text(encoding="utf-8")
-    assert "py=python3\n" in written
+    assert "runtime.py=python3\n" in written

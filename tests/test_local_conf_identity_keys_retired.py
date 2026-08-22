@@ -376,7 +376,6 @@ def board(tmp_path, monkeypatch):
         monkeypatch.setattr(module, name, value)
     monkeypatch.setattr(module, "install_pre_push_hook", lambda: False)
     monkeypatch.setattr(module, "prompt_external_review_optin", lambda: None)
-    monkeypatch.setattr(module, "prompt_delegate_optin", lambda: None)
     monkeypatch.setattr(module, "_configure_board_submodule", lambda: False)
     monkeypatch.setattr(module, "_git_config_email", lambda: None)
     monkeypatch.setattr(module, "_detect_py", lambda: "python3")

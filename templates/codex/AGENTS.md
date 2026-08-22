@@ -19,7 +19,7 @@ env prefix 없이 호출한다:
 - 구버전 Windows·서드파티 파이프에서 필요할 때만 셸 문법으로 붙인다: PowerShell `$env:PYTHONUTF8='1';`, bash `PYTHONUTF8=1`. bash 문법을 강제하지 않는다.
 - **PowerShell 5.x는 `&&` 체이닝 미지원**(ParseError)이다. `cd X && cmd` 금지; 도구 workdir 파라미터나 명령 분리로 실행한다. Windows 루트 facade는 `.\pm-config.cmd`·`.\pm-update.cmd`(bash 불요).
 
-`{{PY}}`는 setup 시 채택 환경 인터프리터로 치환된다. `.project_manager/local.conf`의 `py=`가 단일 진실이며 `board.py init`이 설정한다(venv면 `venv/bin/python`).
+`{{PY}}`는 setup 시 채택 환경 인터프리터로 치환된다. `.project_manager/local.conf`의 `runtime.py=`가 단일 진실이며 `board.py init`이 설정한다(venv면 `venv/bin/python`).
 
 ## 2. PM 부트스트랩 (세션 시작 시 순서)
 
@@ -135,7 +135,7 @@ PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비
 
 위임(dev/reviewer/architect/researcher)은 하네스 네이티브 채널로 한다. 도구·프롬프트·role 매핑은 하네스별 운영 지침이 단일 진실이다.
 
-ctx 정지 밴드(현행 의미 = 최종 checkpoint 넛지·키 이름은 호환 유지)/넛지 %의 100% 기준은 `.project_manager/local.conf`의 `ctx_window_tokens_<harness>` > generic `ctx_window_tokens` > 200000 순으로 해소한다. 여러 하네스를 함께 쓰면 하네스별 키로 독립 설정하며, 미설정 기본은 200000이다.
+ctx 정지 밴드(현행 의미 = 최종 checkpoint 넛지·키 이름은 호환 유지)/넛지 %의 100% 기준은 `.project_manager/local.conf`의 `harness.<name>.ctx_window_tokens` > generic `ctx.window_tokens` > 200000 순으로 해소한다. 여러 하네스를 함께 쓰면 하네스별 키로 독립 설정하며, 미설정 기본은 200000이다.
 
 ## 8. 핵심 디렉토리
 
