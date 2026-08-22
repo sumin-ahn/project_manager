@@ -1781,11 +1781,18 @@ def _pm_review_refused_rounds(rounds: Sequence) -> set[tuple[str, int]]:
 
 
 def _pm_review_surface_rounds(rounds: Sequence) -> list:
-    """판정 표면에 오르는 리뷰 라운드 — 순번 순 · 회수 거부 라운드 제외."""
+    """판정 표면에 오르는 리뷰 라운드 — 순번 순 · 회수 거부 라운드·시드 그대로인 라운드 제외.
+
+    `item.pending`(kill·미회수로 산출이 비어 있는 예약)은 실을 내용이 없다 — 그 골격의
+    자리표시 블록(finding.class 등)을 판정 대상으로 세면 malformed 로 읽힌다. 제외이지
+    거부가 아니다: rc 를 바꾸지 않고 조용히 표면 밖으로 뺀다.
+    """
     refused = _pm_review_refused_rounds(rounds)
     return [
         item for item in sorted(rounds, key=lambda entry: entry.ordinal)
-        if item.role in REVIEW_ROLES and (item.role, item.ordinal) not in refused
+        if item.role in REVIEW_ROLES
+        and (item.role, item.ordinal) not in refused
+        and not item.pending
     ]
 
 
@@ -3239,6 +3246,11 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> PMReviewDelta:
         channel = (item.role, item.ordinal)
         if channel in refused:
             continue              # 거부 표식이 있는 라운드는 통째로 판정 표면 밖이다.
+        # 이 순회는 developer verify 배치 검사·`dev_rounds_by_ordinal` 구축을 겸해 seam
+        # (`_pm_review_surface_rounds`)을 거치지 않는다 — 시드 그대로인 리뷰 라운드는 같은
+        # 축(`item.pending`)으로 여기서도 배제해야 골격의 자리표시 블록이 실 선언으로 안 읽힌다.
+        if item.role in REVIEW_ROLES and item.pending:
+            continue
         for block in _pm_review_json_blocks(item.text):
             if block.kind == PM_REVIEW_VERIFY_BLOCK:
                 if item.role != "developer":
