@@ -404,8 +404,11 @@ class CodexCliDriver:
 CODEX_HOOK_DISPATCH_FLAG = "--hook-dispatch"
 CODEX_HOOK_FEATURES_FLAG = "--hook-features"
 # 이 파일이 진입점을 받는 이벤트 전수. hooks.json 의 (이벤트 × matcher) 진입점과 1:1 이며,
-#   엔진 역방향 가드가 같은 이름으로 config 를 대조한다.
-CODEX_HOOK_ENTRYPOINT_EVENTS = ("PreToolUse", "UserPromptSubmit", "PostToolUse")
+#   엔진 역방향 가드가 같은 이름으로 config 를 대조한다. 출하 hooks.json 이 선언하는 이벤트
+#   전부가 여기 있다 — 진입점 밖에 남은 이벤트가 하나라도 있으면 그 이벤트의 두 번째 기능이
+#   다시 채택자 config 변경 + `/hooks` 재승인을 요구한다(T-0806 이 닫은 잔여).
+CODEX_HOOK_ENTRYPOINT_EVENTS = ("PreToolUse", "UserPromptSubmit", "PostToolUse",
+                                "SubagentStart", "PreCompact", "PostCompact")
 # 한 훅 발화에서 기능 자식들에게 나눠 주는 총 예산(초). hooks.json 의 바깥 timeout 보다 작고
 #   엔진 감독자(delegate_channel_guard.CODEX_SUPERVISOR_TIMEOUT_SECONDS=8)보다 커야 한다 —
 #   감독자보다 짧으면 감독자가 완전한 엔벨로프를 내기 전에 이쪽이 먼저 죽여 사유가 사라진다.
@@ -421,15 +424,27 @@ class CodexHookFeature(NamedTuple):
 
     feature_id   기계 노출용 식별자(`--hook-features`). 기능 파리티 가드가 이 목록을 소비한다.
     event        발화 이벤트(`CODEX_HOOK_ENTRYPOINT_EVENTS` 중 하나).
-    tool_pattern `tool_name` 정규식(fullmatch). None 이면 도구 무관(그 이벤트 전량).
+    tool_pattern `match_field` 값의 정규식(fullmatch). None 이면 판별 없음(그 이벤트 전량).
                  옛 형상에서 hooks.json matcher 가 하던 판별이 그대로 여기로 옮겨 왔다.
     argv         기능을 실행하는 커맨드. `{py}` = 이 인터프리터, `{tools}` = 엔진 도구 디렉토리.
                  자식은 payload 를 stdin 으로 받고 엔벨로프 한 줄을 stdout 으로 낸다.
+    match_field  `tool_pattern` 을 대조할 payload 필드 이름. **판별 축은 이벤트마다 다르다** —
+                 codex 0.147.0 훅 input 스키마 실측으로 PreToolUse/PostToolUse 만 `tool_name` 을
+                 싣고, SubagentStart 는 `agent_type`, PreCompact/PostCompact 는 `trigger` 다.
+                 축을 `tool_name` 에 고정하면 그 필드가 없는 이벤트에서는 판별식을 아예 쓸 수
+                 없어(=`tool_pattern` 이 None 으로만 가능) 판정 불능 구분이 그 자리에서 사라진다.
+    side_effect_only
+                 자식을 **부작용만** 위해 돌린다 — rc·stdout 을 판정에 쓰지 않고 합본에 `{}` 를
+                 기여한다. 옛 압축 커맨드의 `>/dev/null 2>&1 || true` 단계가 값 그대로 여기다.
+                 기본(False) 자식 계약은 "rc0 + JSON dict stdout" 이고 위반은 폴백 경고인데,
+                 사람글을 stdout 에 내는 장부 CLI 를 그 계약으로 옮기면 압축마다 경고가 나간다.
     """
     feature_id: str
     event: str
     tool_pattern: str | None
     argv: tuple[str, ...]
+    match_field: str = "tool_name"
+    side_effect_only: bool = False
 
 
 # 등록된 기능 전수. **여기 한 줄이 곧 배선**이다 — 새 가드는 이 튜플에 항목을 더하면 되고
@@ -443,6 +458,49 @@ CODEX_HOOK_FEATURES: tuple[CodexHookFeature, ...] = (
         tool_pattern="^collaborationspawn_agent$",
         argv=("{py}", "{tools}/delegate_channel_guard.py", "supervise", "PreToolUse",
               "{py}", "{tools}/delegate_channel_guard.py", "codex-hook"),
+    ),
+    CodexHookFeature(
+        # 옛 배선: hooks.json `SubagentStart` matcher `.*` 가 직접 감독자를 불렀다. 그 matcher 는
+        #   `agent_type` 값 공간을 전수 덮으므로(=판별 없음) 판별식 자리는 None 이다 — 여기에
+        #   `agent_type` 정규식을 새로 세우면 옛 배선이 발화하던 입력(빈 값·읽을 수 없는 payload)
+        #   에서 가드가 안 돌아 판정이 바뀐다.
+        feature_id="delegate-channel-subagent",
+        event="SubagentStart",
+        tool_pattern=None,
+        argv=("{py}", "{tools}/delegate_channel_guard.py", "supervise", "SubagentStart",
+              "{py}", "{tools}/delegate_channel_guard.py", "codex-subagent-observe"),
+    ),
+    # 압축 두 이벤트의 옛 커맨드는 **2단**이었다 — 장부 checkpoint(출력 폐기) 다음 엔벨로프 생성.
+    #   그 2단을 등재 2행으로 옮긴다(순서 = 옛 셸 순서). 옛 matcher 2개(`^auto$`·`^manual$`)는
+    #   `trigger` enum 전수(`{manual, auto}`)라 판별 없음과 값이 같다 — 그래서 판별식이 None 이다.
+    CodexHookFeature(
+        feature_id="compaction-checkpoint-pre",
+        event="PreCompact",
+        tool_pattern=None,
+        argv=("{py}", "{tools}/pm_log.py", "checkpoint", "--trigger", "compaction",
+              "--phase", "pre", "--cwd", "."),
+        side_effect_only=True,
+    ),
+    CodexHookFeature(
+        feature_id="compaction-guidance",
+        event="PreCompact",
+        tool_pattern=None,
+        argv=("{py}", "{tools}/pm_log.py", "ctx-guidance", "--band", "precompact",
+              "--json"),
+    ),
+    CodexHookFeature(
+        feature_id="compaction-checkpoint-post",
+        event="PostCompact",
+        tool_pattern=None,
+        argv=("{py}", "{tools}/pm_log.py", "checkpoint", "--trigger", "compaction",
+              "--phase", "post", "--cwd", "."),
+        side_effect_only=True,
+    ),
+    CodexHookFeature(
+        feature_id="compaction-snapshot",
+        event="PostCompact",
+        tool_pattern=None,
+        argv=("{py}", "{tools}/pm_log.py", "snapshot", "--cwd", ".", "--json"),
     ),
 )
 
@@ -516,24 +574,34 @@ def _parse_hook_payload(payload_bytes) -> tuple[dict, str]:
     return payload, ""
 
 
+def _payload_field_alias(field: str) -> str:
+    """snake_case 필드의 camelCase 표기 — 호스트 표기 흔들림을 같은 값으로 읽는다.
+
+    `tool_name`/`toolName` 을 둘 다 보던 판정을 축이 늘어난 뒤에도 이름 하나에서 파생한다
+    (필드마다 별칭 표를 손으로 유지하면 새 축이 조용히 별칭 없이 등록된다)."""
+    head, _, tail = field.partition("_")
+    return head + "".join(part[:1].upper() + part[1:] for part in tail.split("_") if part)
+
+
 def _feature_route(feature: CodexHookFeature, payload: dict, *,
                    payload_error: str = "") -> CodexHookRoute:
     """그 payload 가 이 기능의 판별식에 걸리는가 — 걸림/안 걸림/**판정 불능**.
 
-    판별식(`tool_pattern`)은 옛 hooks.json matcher 와 같은 fullmatch 다. 판별에 쓸 값이 없거나
-    (payload 파싱 실패·`tool_name` 부재) 판별식 자체가 깨졌으면(정규식 오류) 안 걸린 것이
-    아니라 **판정을 못 한 것**이다."""
+    판별식(`tool_pattern`)은 옛 hooks.json matcher 와 같은 fullmatch 이고, 대조 대상은
+    `match_field` 가 지목한 payload 필드다. 판별에 쓸 값이 없거나(payload 파싱 실패·그 필드
+    부재) 판별식 자체가 깨졌으면(정규식 오류) 안 걸린 것이 아니라 **판정을 못 한 것**이다."""
     if feature.tool_pattern is None:
         return CodexHookRoute(CODEX_HOOK_ROUTE_MATCH)
+    field = feature.match_field
     if payload_error:
         return CodexHookRoute(CODEX_HOOK_ROUTE_UNDECIDABLE,
-                              f"payload 를 못 읽어 tool_name 판별 불가({payload_error})")
-    name = payload.get("tool_name")
+                              f"payload 를 못 읽어 {field} 판별 불가({payload_error})")
+    name = payload.get(field)
     if not isinstance(name, str) or not name:
-        name = payload.get("toolName")
+        name = payload.get(_payload_field_alias(field))
     if not isinstance(name, str) or not name:
         return CodexHookRoute(CODEX_HOOK_ROUTE_UNDECIDABLE,
-                              "payload 에 tool_name 이 없어 판별 불가")
+                              f"payload 에 {field} 이 없어 판별 불가")
     try:
         matched = re.fullmatch(feature.tool_pattern, name) is not None
     except re.error as exc:
@@ -561,6 +629,17 @@ def _expand_hook_argv(argv, root: Path) -> list[str]:
 def _run_hook_feature(feature: CodexHookFeature, payload_bytes: bytes, root: Path, *,
                       runner=subprocess.run, timeout: float) -> dict:
     """기능 자식을 시간 상한 안에서 돌리고 그 엔벨로프를 그대로 돌려준다(실패는 폴백 경고)."""
+    if feature.side_effect_only:
+        # 부작용 단계는 **답하지 않는다** — rc·stdout 을 보지 않고 `{}` 를 기여한다. 옛 압축
+        #   커맨드가 이 자식의 출력·rc 를 `>/dev/null 2>&1 || true` 로 버리던 동작을 값 그대로
+        #   옮긴 것이라, 여기서 경고를 내면 **모든 압축마다** 없던 소음이 새로 생긴다.
+        #   이 침묵은 판정 불능의 조용한 통과와 다르다: 이 기능은 애초에 판정을 하지 않는다.
+        try:
+            runner(_expand_hook_argv(feature.argv, root), input=bytes(payload_bytes),
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+        except BaseException:  # noqa: BLE001 — 장부 기록 실패가 훅 답을 바꾸지 않는다.
+            pass
+        return {}
     try:
         completed = runner(
             _expand_hook_argv(feature.argv, root), input=bytes(payload_bytes),

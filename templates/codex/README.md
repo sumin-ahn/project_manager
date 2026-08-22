@@ -38,14 +38,20 @@ self-driven 으로 구동한다. claude_code 의 `CLAUDE.md`+`.claude/`·opencod
 ## Context safety: direct TUI vs. relay
 
 `model_auto_compact_token_limit`은 auto-compaction을 유발하는 숫자 threshold일 뿐 off 스위치가 아니다.
-`hooks.json`도 compaction을 차단하지 않는다. `auto`와 `manual` PreCompact matcher는 checkpoint
-골격을 자동 생성한 뒤 JSON `systemMessage` 안내를 내고 transaction을 통과시킨다. Codex CLI 0.147.0
-로컬 바이너리의 hook event enum에서 `PostCompact` 지원을 확인했으므로 같은 두 matcher를 배선했고,
+`hooks.json`도 compaction을 차단하지 않는다. PreCompact 진입점은 `trigger` 값(`manual`·`auto`)과
+무관하게 checkpoint 골격을 자동 생성한 뒤 JSON `systemMessage` 안내를 내고 transaction을 통과시킨다.
+Codex CLI 0.147.0 로컬 바이너리의 hook event enum에서 `PostCompact` 지원을 확인했고,
 이 이벤트는 `pm_log.py snapshot --json`의 엔진 소유 최종 텍스트를 모델에 재주입한다.
-compaction 횟수를 세는 영속 상태는 두지 않는다. 각 handler는 POSIX `command`와 native Windows
+`PostCompact` 실발화는 메인테이너 실측(codex-cli 0.147.0)에서 확인했다 — 격리
+`CODEX_HOME`에 `model_auto_compact_token_limit`을 낮춰 `codex exec` 1회에서 auto 압축을 유도하자
+`PreCompact` 12회·`PostCompact` 12회가 발화했고 payload의 `trigger`는 전부 `auto`였다
+(캡처본: `tests/fixtures/codex_0_147_0_live_hook_payloads.json`의 `compaction_events`).
+compaction 횟수를 세는 영속 상태는 두지 않는다. 각 진입점은 POSIX `command`와 native Windows
 PowerShell-safe `commandWindows`에서 동일한 checkpoint 의미의 JSON 하나만 stdout으로 낸다. checkpoint
-subprocess stdout/stderr는 전량 폐기하며 PowerShell 5.x 호환을 위해 명령은 `;`로 분리한다. Windows payload는
+단계의 stdout/stderr는 디스패처가 전량 폐기하며 PowerShell 5.x 호환을 위해 명령은 `;`로 분리한다. Windows payload는
 PowerShell 5.1 리다이렉션의 cp949 기본값에서도 JSON이 깨지지 않도록 ASCII 안내문을 쓴다.
+
+아래 두 실측은 이벤트별 `^auto$`/`^manual$` matcher 시절의 기록이다 — 현행 배선은 §훅 범용 진입점이 설명하는 진입점 하나다.
 
 - direct TUI: 메인테이너 실측(2026-08-06, codex-cli 0.146.0)에서 `^manual$`은 TUI의
   `/compact` 전용임을 확인했다. `systemMessage`의 direct TUI 표시는 미검증이다. trusted project와
@@ -68,11 +74,13 @@ false-green이었다. direct TUI rollout의 token_count는 관측되지만 stabl
 
 ## 훅 범용 진입점 (기능 추가가 config를 안 건드린다)
 
-`PreToolUse`·`UserPromptSubmit`·`PostToolUse`는 이벤트당 진입점을 **하나씩만** 연다 — `matcher`는
+`hooks.json`이 선언하는 **모든** 이벤트(`PreToolUse`·`UserPromptSubmit`·`PostToolUse`·
+`SubagentStart`·`PreCompact`·`PostCompact`)는 이벤트당 진입점을 **하나씩만** 연다 — `matcher`는
 `.*`이고 실행 대상은 manifest 등재 디스패처 `.codex/pm_orch_codex.py --hook-dispatch <이벤트>`다.
-"이 payload에 어떤 가드를 돌릴지"의 판단은 그 코드 안의 registry가 쥔다. native spawn 위임 채널도
-그 registry의 한 항목이고, 옛 `^collaborationspawn_agent$` matcher 판정은 값 그대로 진입점 뒤
-분기로 옮겨 왔다.
+"이 payload에 어떤 가드를 돌릴지"의 판단은 그 코드 안의 registry가 쥔다. native spawn 위임 채널,
+SubagentStart 관측, 압축 checkpoint·안내·snapshot이 전부 그 registry의 항목이고, 옛
+`^collaborationspawn_agent$`·`^auto$`·`^manual$` matcher 판정은 값 그대로 진입점 뒤 분기로 옮겨 왔다
+(`^auto$`+`^manual$`는 `trigger` enum 전수라 `.*` 하나와 값이 같다).
 
 그래서 **가드 기능 추가는 엔진 코드 변경뿐**이다. 채택자는 `.codex/hooks.json`을 다시 고치지
 않고 `/hooks` 재승인도 다시 하지 않는다. 등록된 기능 목록은
@@ -84,9 +92,8 @@ false-green이었다. direct TUI rollout의 token_count는 관측되지만 stabl
 디스패처가 구세대여도 훅은 rc0 + 완전한 엔벨로프로 끝나고 폴백 사실이 `adapter-fallback`
 마커로 남는다. 도구 호출은 어느 경우에도 막히지 않는다.
 
-`SubagentStart`(관측 전용)와 `PreCompact`/`PostCompact`(checkpoint·snapshot)는 값 공간을 전수
-덮는 matcher를 이미 갖고 있어 이 진입점 밖에 남는다. 그 세 이벤트에 두 번째 기능을 얹으려면
-그때 config 변경 + 재승인이 한 번 더 필요하다.
+진입점 밖에 남은 이벤트는 없다. 어느 이벤트에 두 번째 기능을 얹더라도 `.codex/hooks.json`은
+그대로이고 `/hooks` 재승인도 다시 필요하지 않다.
 
 ## 어댑터 config 도달 채널 (managed / report)
 

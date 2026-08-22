@@ -55,5 +55,30 @@
       "agent_id": "019ff16e-19af-7093-ac93-0146ae97466e",
       "agent_type": "default"
     }
+  ],
+  "compaction_evidence": "live capture · codex-cli 0.147.0 · 격리 CODEX_HOME + model_auto_compact_token_limit=2000 + tee-only PreCompact/PostCompact hooks + --dangerously-bypass-hook-trust · `codex exec` 단일 실행에서 auto 압축이 12회 발화했다(PreCompact 12 · PostCompact 12). PostCompact 실발화가 이 프로젝트에서 관측된 최초 기록이다(T-0806·2026-08-22).",
+  "compaction_observed_firings": {
+    "PreCompact": 12,
+    "PostCompact": 12
+  },
+  "compaction_events": [
+    {
+      "session_id": "01a029c5-b445-7c00-8ed6-035bc5530067",
+      "turn_id": "01a029c5-b46d-7de3-80cc-660610d42675",
+      "transcript_path": "<rollout>",
+      "cwd": "<worktree>",
+      "hook_event_name": "PreCompact",
+      "model": "gpt-oss:20b",
+      "trigger": "auto"
+    },
+    {
+      "session_id": "01a029c5-b445-7c00-8ed6-035bc5530067",
+      "turn_id": "01a029c5-b46d-7de3-80cc-660610d42675",
+      "transcript_path": "<rollout>",
+      "cwd": "<worktree>",
+      "hook_event_name": "PostCompact",
+      "model": "gpt-oss:20b",
+      "trigger": "auto"
+    }
   ]
 }

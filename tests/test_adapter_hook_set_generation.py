@@ -397,7 +397,11 @@ def test_codex_entrypoint_migration_left_claude_wiring_untouched(pm_import):
 _CODEX_HOOKS_REL = ".codex/hooks.json"
 _CODEX_DISPATCHER_REL = ".codex/pm_orch_codex.py"
 _CODEX_DISPATCH_FLAG = "--hook-dispatch"
-_CODEX_ENTRYPOINT_EVENTS = ("PreToolUse", "UserPromptSubmit", "PostToolUse")
+# 진입점 이벤트 전수는 **엔진 선언에서 파생**한다 — 여기에 목록을 손으로 두 번째로 두면
+#   T-0806 처럼 집합이 늘 때 픽스처만 옛 세대로 남아 조용히 다른 형상을 검사한다.
+_CODEX_ENTRYPOINT_EVENTS = tuple(
+    entrypoint.event for entrypoint in
+    _load("pm_import_events", "pm_import.py").ADAPTER_HOOK_SET["codex"].entrypoints)
 # 디스패처 세대 마커는 config 가 넘기는 **호출 값**(플래그 + 이벤트 이름) 보유다 — 엔진 판정과
 #   같은 기준이다. 플래그만 알고 그 이벤트는 모르는 세대가 실재하고, 그 조합에서 훅은 매 발화마다
 #   폴백으로 빠진다.
@@ -406,12 +410,11 @@ _DISPATCHER_NEW = (f'CODEX_HOOK_DISPATCH_FLAG = "{_CODEX_DISPATCH_FLAG}"\n'
 # 진입점 집합이 늘기 전 세대 — 플래그는 아는데 새 이벤트는 모른다.
 _DISPATCHER_PREVIOUS_EVENT_SET = (
     f'CODEX_HOOK_DISPATCH_FLAG = "{_CODEX_DISPATCH_FLAG}"\n'
-    'CODEX_HOOK_ENTRYPOINT_EVENTS = ("PreToolUse", "UserPromptSubmit")\n')
+    f'CODEX_HOOK_ENTRYPOINT_EVENTS = {_CODEX_ENTRYPOINT_EVENTS[:-1]!r}\n')
 _DISPATCHER_OLD = 'def main(argv=None):\n    return 0\n'
 
 
-def _codex_hooks(events=("PreToolUse", "UserPromptSubmit", "PostToolUse"),
-                 *, matcher: str = ".*") -> str:
+def _codex_hooks(events=_CODEX_ENTRYPOINT_EVENTS, *, matcher: str = ".*") -> str:
     """codex hooks.json — 이벤트별 범용 진입점 하나씩(출하 형상의 최소 재현)."""
     return json.dumps({"hooks": {
         event: [{
@@ -475,13 +478,14 @@ def test_shipped_template_satisfies_its_entrypoint_declaration(
 
 def test_missing_entrypoint_is_reported_with_the_event_named(pm_import, tmp_path):
     """진입점을 하나 빼면 그 이벤트를 **지목**한다(민감도) — 나머지는 조용하다."""
-    dest = _make_codex_case(
-        tmp_path, hooks=_codex_hooks(("PreToolUse", "PostToolUse")))
+    dropped = "UserPromptSubmit"
+    dest = _make_codex_case(tmp_path, hooks=_codex_hooks(
+        tuple(event for event in _CODEX_ENTRYPOINT_EVENTS if event != dropped)))
 
     findings = pm_import.judge_adapter_hook_entrypoints(dest, None, ["codex"])
 
     assert [(finding.kind, finding.event) for finding in findings] == [
-        (pm_import.HOOK_ENTRYPOINT_MISSING, "UserPromptSubmit")]
+        (pm_import.HOOK_ENTRYPOINT_MISSING, dropped)]
     assert _CODEX_HOOKS_REL in findings[0].detail
     assert any("sync-adapter-config --accept" in line
                for line in pm_import.hook_entrypoint_advisory_lines(findings[0]))
@@ -501,8 +505,7 @@ def test_narrowed_matcher_is_not_a_universal_entrypoint(pm_import, tmp_path):
 
     findings = pm_import.judge_adapter_hook_entrypoints(dest, None, ["codex"])
 
-    assert {finding.event for finding in findings} == {
-        "PreToolUse", "UserPromptSubmit", "PostToolUse"}
+    assert {finding.event for finding in findings} == set(_CODEX_ENTRYPOINT_EVENTS)
     assert {finding.kind for finding in findings} == {
         pm_import.HOOK_ENTRYPOINT_MISSING}
 
@@ -617,9 +620,10 @@ def test_dispatcher_that_knows_the_flag_but_not_the_event_is_stale(
 
     findings = pm_import.judge_adapter_hook_entrypoints(dest, None, ["codex"])
 
+    trailing = _CODEX_ENTRYPOINT_EVENTS[-1]
     assert [(finding.kind, finding.event) for finding in findings] == [
-        (pm_import.HOOK_ENTRYPOINT_STALE_DISPATCHER, "PostToolUse")]
-    assert "PostToolUse" in findings[0].detail
+        (pm_import.HOOK_ENTRYPOINT_STALE_DISPATCHER, trailing)]
+    assert trailing in findings[0].detail
     assert pm_import.entrypoint_invocation(
         pm_import.ADAPTER_HOOK_SET["codex"].entrypoints[-1]) in findings[0].detail
 
@@ -645,7 +649,7 @@ def test_stale_dispatcher_behind_a_present_entrypoint_is_reported(pm_import, tmp
 
     assert {finding.kind for finding in findings} == {
         pm_import.HOOK_ENTRYPOINT_STALE_DISPATCHER}
-    assert len(findings) == 3
+    assert len(findings) == len(_CODEX_ENTRYPOINT_EVENTS)
     assert pm_import.hook_entrypoint_advisory_lines(findings[0]) == [
         f"pm-update 로 {_CODEX_DISPATCHER_REL} 를 먼저 받아라"]
 
@@ -656,7 +660,7 @@ def test_absent_dispatcher_is_reported_not_silently_credited(pm_import, tmp_path
 
     findings = pm_import.judge_adapter_hook_entrypoints(dest, None, ["codex"])
 
-    assert len(findings) == 3
+    assert len(findings) == len(_CODEX_ENTRYPOINT_EVENTS)
     assert {finding.kind for finding in findings} == {
         pm_import.HOOK_ENTRYPOINT_STALE_DISPATCHER}
 
@@ -695,10 +699,11 @@ def test_sync_path_reports_missing_entrypoint_without_blocking(
     err = capsys.readouterr().err
 
     assert result["status"] == "ok" and result["findings"] == []
-    assert {item["event"] for item in result["entrypoints"]} == {
-        "UserPromptSubmit", "PostToolUse"}
+    assert {item["event"] for item in result["entrypoints"]} == set(
+        _CODEX_ENTRYPOINT_EVENTS) - {"PreToolUse"}
     assert "어댑터 훅 진입점 누락(codex)" in err
-    assert "UserPromptSubmit" in err and "PostToolUse" in err
+    for event in set(_CODEX_ENTRYPOINT_EVENTS) - {"PreToolUse"}:
+        assert event in err, event
     assert not pm_update._adapter_hook_set_gate_failed(result), \
         "advisory 축이 완료 게이트를 막았다 — 훅을 끈 채택자의 흡수가 영구히 잠긴다"
 

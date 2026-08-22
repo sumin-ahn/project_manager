@@ -7,8 +7,21 @@
 
 ## [Unreleased]
 
+### 업그레이드 노트
+
+- **managed `.codex/hooks.json` 값 변경 — codex 채택자는 `/hooks` 재승인 1회가 필요하다.** 훅 이벤트
+  6종(`PreToolUse`·`UserPromptSubmit`·`PostToolUse`·`SubagentStart`·`PreCompact`·`PostCompact`)이
+  이벤트당 범용 진입점 하나(`matcher .*` → `.codex/pm_orch_codex.py --hook-dispatch <이벤트>`)로
+  통일됐고 timeout 이 전부 15 다. 무편집 채택자는 `pm-update` 가 백업 후 교체하며(같은 실행에서
+  진입점 소견 0줄), 손편집한 채택자는 `pm-config sync-adapter-config --accept .codex/hooks.json`
+  1커맨드로 받는다. 가드 **동작**은 바뀌지 않는다 — 옛 matcher 판정이 디스패처 registry 로 값
+  그대로 옮겨 왔다(T-0777·T-0806 합산 1회).
+
 ### Changed
 
+- codex 훅 배선이 이벤트별 직결 커맨드에서 진입점 + 디스패처 registry 로 바뀐다 — 이후 가드 기능
+  추가는 엔진 코드 변경뿐이고 채택자 config·재승인을 다시 요구하지 않는다. 등록 기능 목록은
+  `python3 .codex/pm_orch_codex.py --hook-features` 가 JSON 으로 낸다 (T-0777·T-0806).
 - **채택자 대면 메시지의 '부기' 표기 폐지** — 일본식 한자어(附記/簿記)를 '기록' 계열로 바꿨다
   (`[완료] T-NNNN 기록 완료.`·`board-git 기록 보류:`·`이중 기록 가능`·`back-ref 기록`). 엔진 메시지·
   argparse help·방법론 문서·스킬·3타깃 템플릿 사본이 모두 새 표기이며, 이 문자열을 파싱하거나
