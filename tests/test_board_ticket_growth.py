@@ -850,7 +850,7 @@ def test_ticket_writer_lock_inventory_and_claim_lock_order_are_ast_guarded():
     # in-place writer 다(`rounds migrate` 의 티켓 단계).
     expected_ticket_sink_callers = {
         "cmd_new", "cmd_promote", "_cmd_claim_locked", "cmd_complete", "cmd_block",
-        "cmd_unclaim", "cmd_unblock", "cmd_tier", "_migrate_tickets_apply",
+        "cmd_unclaim", "cmd_unblock", "cmd_tier", "cmd_design", "_migrate_tickets_apply",
         "_rounds_migration_rewrite_spec",
     }
     assert direct_sink_callers & reviewed_non_ticket_exceptions == reviewed_non_ticket_exceptions, (
@@ -860,7 +860,7 @@ def test_ticket_writer_lock_inventory_and_claim_lock_order_are_ast_guarded():
 
     ordinary_writers = {
         "cmd_new", "cmd_promote", "cmd_complete", "cmd_block", "cmd_unclaim", "cmd_unblock",
-        "cmd_tier", "_migrate_tickets_apply", "_rounds_migration_rewrite_spec",
+        "cmd_tier", "cmd_design", "_migrate_tickets_apply", "_rounds_migration_rewrite_spec",
     }
     assert ordinary_writers | {"_cmd_claim_locked"} == discovered_ticket_writers
     for name in ordinary_writers:
@@ -945,4 +945,125 @@ def test_parser_dispatch_keeps_existing_commands_and_classifies_growth_mutations
     assert parser.parse_args(
         ["section-add", "T-1", "--role", "developer"]).fn is board.cmd_section_add
     assert parser.parse_args(["tier", "T-1", "hard"]).fn is board.cmd_tier
-    assert {"section-add", "tier"} <= board._MUTATION_SUBCOMMANDS
+    assert parser.parse_args(["design", "T-1", "done"]).fn is board.cmd_design
+    assert {"section-add", "tier", "design"} <= board._MUTATION_SUBCOMMANDS
+
+
+# ── design (frontmatter `design:` 값 발행 후 setter — T-0817) ─────────────────
+
+@requires_git
+def test_design_cli_records_updates_and_preserves_unrelated_frontmatter(board_env):
+    """claimed 티켓 design 갱신을 실제 commit하고 기존 미지/중첩 field·`waived: <사유>`의
+    콜론 포함 사유를 보존한다(YAML 손편집 손상 모드가 닫혔음의 값 형태)."""
+    board, board_dir, bare = board_env
+    path = _seed_ticket(board_dir, "T-1019", "claimed")
+    before_count = int(_git(["rev-list", "--count", "HEAD"], board_dir).stdout)
+
+    assert board.main(["design", "T-1019", "required"]) == 0
+    fm, _body = board.load_ticket(path)
+    assert fm["design"] == "required"
+    assert fm["custom"] == {"nested": ["keep"]}
+
+    reason = "waived: 콜론:포함 사유(T-0815 architect 분할)"
+    assert board.main(["design", "T-1019", reason]) == 0
+    fm, _body = board.load_ticket(path)
+    assert fm["design"] == reason
+    assert board._design_state(fm["design"]) == board.DESIGN_WAIVED
+    assert fm["custom"] == {"nested": ["keep"]}
+    assert int(_git(["rev-list", "--count", "HEAD"], board_dir).stdout) == before_count + 2
+    remote = _remote_text(bare, "tickets/claimed/T-1019-growth.md")
+    remote_fm, _ = board._parse_ticket_text(remote, "remote:claimed/T-1019")
+    assert remote_fm["design"] == reason
+
+
+@requires_git
+@pytest.mark.parametrize("status", ["open", "claimed", "draft"])
+def test_design_allows_every_active_state_including_draft(board_env, status):
+    """명시 allowlist의 open/claimed/draft 전 상태가 실제 CLI dispatch로 성공한다
+    (design 은 세 번째 축으로 draft 를 연다 — tier/section-add 와 다른 경계)."""
+    board, board_dir, _bare = board_env
+    tid = "T-1020"
+    path = (_write_ticket(board_dir, tid, status) if status == "draft"
+            else _seed_ticket(board_dir, tid, status))
+    before_count = int(_git(["rev-list", "--count", "HEAD"], board_dir).stdout)
+
+    assert board.main(["design", tid, "done"]) == 0
+
+    fm, _body = board.load_ticket(path)
+    assert fm["design"] == "done"
+    after_count = int(_git(["rev-list", "--count", "HEAD"], board_dir).stdout)
+    if status == "draft":
+        assert after_count == before_count, "draft 전환은 board-git 커밋 0 이어야 한다."
+    else:
+        assert after_count == before_count + 1, "open/claimed 전환은 board-git 동기가 붙어야 한다."
+
+
+@requires_git
+@pytest.mark.parametrize("status", ["blocked", "done"])
+def test_design_rejects_non_active_states_without_writes(board_env, capsys, status):
+    """active allowlist(open/claimed/draft) 밖의 blocked/done은 rc=1이며 파일과 HEAD를 바꾸지 않는다."""
+    board, board_dir, _bare = board_env
+    path = _seed_ticket(board_dir, "T-1021", status)
+    before_text = path.read_text(encoding="utf-8")
+    before_head = _head(board_dir)
+
+    assert board.main(["design", "T-1021", "done"]) == 1
+
+    assert path.read_text(encoding="utf-8") == before_text
+    assert _head(board_dir) == before_head
+    assert "open/claimed/draft 티켓" in capsys.readouterr().err
+
+
+@requires_git
+def test_design_draft_never_syncs(board_env, monkeypatch, capsys):
+    """draft 전환은 `_rounds_mutation_sync_paths` 를 호출하지 않는다 — promote 가 출하를 소유
+    (`cmd_section_add` 의 draft 분기와 동형)."""
+    board, board_dir, _bare = board_env
+    path = _write_ticket(board_dir, "T-1022", "draft")
+    before_head = _head(board_dir)
+    sync_calls = []
+    monkeypatch.setattr(
+        board, "_rounds_mutation_sync_paths",
+        lambda *args: sync_calls.append(args) or True,
+    )
+
+    assert board.main(["design", "T-1022", "n/a"]) == 0
+
+    fm, _body = board.load_ticket(path)
+    assert fm["design"] == "n/a"
+    assert sync_calls == [] and _head(board_dir) == before_head
+    assert "local draft; promote가 출하 소유" in capsys.readouterr().out
+
+
+@requires_git
+def test_design_unrecognized_value_is_rc1_before_lookup_or_write(board_env, capsys):
+    """인식 불가 값은 대상 조회보다 먼저 거부된다 — 존재하지 않는 티켓도 rc=2 가 아니라 rc=1
+    (값 검증이 lookup 보다 먼저 도는 순서를 rc 값으로 고정)."""
+    board, _board_dir, _bare = board_env
+
+    assert board.main(["design", "T-9999", "bogus"]) == 1
+
+    assert board.DESIGN_VALUE_FORMS in capsys.readouterr().err
+
+
+@requires_git
+def test_design_bare_waived_without_reason_is_rejected(board_env, capsys):
+    """사유 없는 맨 `waived` 는 `_design_state` 가 invalid 로 세우므로 여기서도 함께 거부된다."""
+    board, board_dir, _bare = board_env
+    path = _seed_ticket(board_dir, "T-1023", "open")
+    before_text = path.read_text(encoding="utf-8")
+
+    assert board.main(["design", "T-1023", "waived"]) == 1
+
+    assert path.read_text(encoding="utf-8") == before_text
+    assert board.DESIGN_VALUE_FORMS in capsys.readouterr().err
+
+
+@requires_git
+def test_design_missing_ticket_is_rc2(board_env, capsys):
+    """기존 정확 mutation lookup의 미존재 rc=2 계약을 design도 공유한다."""
+    board, _board_dir, _bare = board_env
+
+    assert board.main(["design", "T-9998", "done"]) == 2
+
+    assert "ticket not found" in capsys.readouterr().err
