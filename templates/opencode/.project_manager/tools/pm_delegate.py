@@ -2881,6 +2881,57 @@ def render_pm_review_block_skeleton(
     return _pm_review_block_text(payload)
 
 
+# 리뷰 라운드가 딛고 서는 발판 역할 — 리뷰어가 읽는 dev 증거는 이 역할의 라운드에서만 온다.
+REVIEW_SUBJECT_ROLE = "developer"
+
+
+def unharvested_developer_round(rounds: Sequence):
+    """리뷰 라운드가 딛고 설 **직전 developer 라운드**가 산출 없음이면 그 라운드(아니면 None).
+
+    시야는 그 티켓의 마지막 developer 라운드 하나다 — 리뷰 입력은 역할별 **마지막 산출**만
+    싣고(`external_review._select_ticket_body_for_review`), 더 앞 라운드의 미회수는 이 준비가
+    되돌릴 수 있는 상태가 아니다.
+
+    developer 라운드가 **아예 없는** 티켓(코드만 보는 독립 검토)은 발판 자체가 없어 대상이
+    아니다 — 없는 증거와 비어 있는 증거는 다른 상태이고, 앞의 것은 정상 경로다.
+
+    "산출 없음" 은 라운드가 이미 실은 `pending` 을 그대로 읽는다 — 회수면
+    (`harvest_ticket_copy`)이 board 를 바꿀지 정하는 그 시드 대조(`ticket_round_body_is_pending`)
+    와 **같은 기준 하나**를 준비면도 소비해야 한쪽만 갱신돼 어긋나지 않는다. 속성 판독 표기는
+    같은 규칙을 쓰는 `ticket_rounds.latest_round_of_role` 과 맞춘다.
+    """
+    developer_rounds = [
+        item for item in rounds if item.role == REVIEW_SUBJECT_ROLE
+    ]
+    if not developer_rounds:
+        return None
+    latest = max(developer_rounds, key=lambda item: item.ordinal)
+    return latest if getattr(latest, "pending", False) else None
+
+
+def _warn_unharvested_developer_round(rounds: Sequence) -> None:
+    """리뷰 라운드 준비면의 loud 경고 — **거부가 아니다**(rc=0 · 판정 어휘의 `gap` 분류).
+
+    거부하지 않는 근거는 실측이다. 시드 그대로인 라운드 예약을 지우거나 되돌릴 수단이 엔진에
+    없고(`ticket prepare|harvest|copies` 뿐), kill 된 위임이 남긴 시드 developer 라운드를 이고
+    가는 티켓이 실재한다 — 거부하면 그 티켓은 리뷰 라운드를 영영 못 연다. 리뷰어를 dev 없이
+    돌리는 정당한 경우(코드만 보는 독립 검토)도 있어 판단은 PM 이 한다.
+
+    준비 시점에 내는 이유는 하나다 — 리뷰가 실행되기 **전**이라야 회수하고 다시 걸 수 있다.
+    """
+    stale = unharvested_developer_round(rounds)
+    if stale is None:
+        return
+    name = _load_ticket_rounds().round_filename(stale.ordinal, stale.role)
+    print(
+        "경고: 리뷰 라운드를 산출 없는 developer 라운드 위에서 준비합니다 — "
+        f"{name} 이 시드 골격 그대로입니다. 리뷰어 입력(`rounds/`)에 dev 의 결함 클래스 "
+        "전수·검증 근거·빈틈 보고가 실리지 않습니다 — 먼저 `ticket harvest` 로 회수한 뒤 "
+        "다시 준비하세요.",
+        file=sys.stderr,
+    )
+
+
 def render_ticket_growth_section_seed(
     role: str, ticket_text: str, *,
     previous_round: tuple[int, str] | None = None, rounds: Sequence = (),
@@ -2926,6 +2977,11 @@ def render_ticket_growth_section_seed(
         )
     if role not in REVIEW_ROLES:
         raise DelegateError(f"역할별 라운드 골격 미지원: {role}")
+
+    # 리뷰어가 딛고 설 dev 산출이 비어 있는지는 **예약 전** 이 자리에서 낸다 — 리뷰 라운드를
+    # 준비하는 세 진입점(`ticket prepare` · cross 위임의 자동 준비 · `board section-add`)이
+    # 모두 이 시드 seam 을 지나므로, 여기 한 곳이 그 클래스 전부를 덮는다.
+    _warn_unharvested_developer_round(rounds)
 
     # 두 리뷰 채널은 같은 골격을 쓰고 finding ID 접두만 다르다(판정 표면이 하나이므로).
     id_prefix = _pm_review_finding_id_prefix(role)
