@@ -29,12 +29,35 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 from pathlib import Path
 
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
+
+# pm-verified 처분 픽스처의 **형상 빌더는 tests/test_board_livegate.py 가 단일 진실**이다 —
+# 생산 배선(내부 완료·릴리즈)과 이 CLI 선언면이 같은 형상을 봐야 기준이 다시 갈리지 않는다.
+from test_board_livegate import (  # noqa: E402
+    _PV_CHANNEL_ADDITIONAL,
+    _PV_CHANNEL_INTERNAL,
+    _PV_EXTERNAL_ROLE,
+    _PV_INTERNAL_ROLE,
+    _load_board as _pv_load_board,
+    _pv_decision,
+    _pv_disposition_block,
+    _pv_finding,
+    _pv_ledger_entry,
+    _pv_pm_verified_resolution,
+    _pv_review_block,
+    _pv_round_outcome,
+    _pv_seed_mixed_channel_shape,
+    _pv_seed_ticket_tree,
+    _pv_seed_v178_shape,
+    _pv_write_round,
+    _pv_write_ticket,
+)
 
 
 def _load(name: str = "external_review"):
@@ -2330,3 +2353,164 @@ def test_new_knob_key_run_is_quiet_about_the_legacy_keys(
     err = capsys.readouterr().err
     for legacy in external.LEGACY_KNOB_KEYS.values():
         assert legacy not in err, legacy
+
+
+# ── `--resolve-gate --pm-verified` — 추가 리뷰어 채널 처분 CLI (T-0791) ──────────
+# 채널 폐지 뒤에도 additional-reviewer 장부(review_rounds.json)의 반려 잔여를 외부 재송신 없이
+# 종결하는 선언면. 릴리즈 축(`_unresolved_must_fix_data`)의 재검증·채널 격리·실패 경로는
+# `tests/test_board_livegate.py` 가 진다 — 여기는 CLI 선언면 자체(모드 선택·전송 0·장부 불변·
+# v1.7.8 실물 형상의 선언 성공/실패)를 담당한다.
+
+@pytest.fixture
+def pm_verified_declare(tmp_path, monkeypatch):
+    """`--resolve-gate --pm-verified` CLI 검증 — 실 티켓 트리 + 실 라운드 파일 + 실 review_rounds.json.
+
+    `run_review` 호출은 assert 로 막는다 — 선언면이 reviewer 를 스폰하면 이 대역이 즉시 실패시킨다
+    (전송 0 계약을 값으로 단언)."""
+    proj = tmp_path
+    _pv_seed_ticket_tree(proj)
+    board_mod = _pv_load_board()
+    monkeypatch.setattr(board_mod, "REPO", proj)
+    external = _load("external_review")
+    monkeypatch.setattr(external, "REPO", proj)
+    monkeypatch.setattr(external, "_load_board", lambda: board_mod)
+    monkeypatch.setattr(
+        external, "run_review",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("--resolve-gate 선언면이 reviewer 를 스폰했다 — 전송 0 계약 위반"),
+        ),
+    )
+    ledger_path = proj / ".project_manager" / ".local" / "review_rounds.json"
+
+    def write_ledger(ledger: dict) -> None:
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        ledger_path.write_text(json.dumps(ledger, ensure_ascii=False), encoding="utf-8")
+
+    return types.SimpleNamespace(
+        external=external, board=board_mod, proj=proj,
+        write_ledger=write_ledger,
+        read_ledger=lambda: json.loads(ledger_path.read_text(encoding="utf-8")),
+        run=lambda *argv: external.main(list(argv)),
+    )
+
+
+def test_resolve_gate_mode_guidance_lists_pm_verified(external, monkeypatch, tmp_path, capsys):
+    """`--resolve-gate` 처분 미지정 안내에 `--pm-verified` 가 3번째 선택지로 실린다."""
+    calls = _wire(external, monkeypatch, tmp_path)
+    assert external.main(["--resolve-gate", "T-0001"]) == 1
+    err = capsys.readouterr().err
+    assert "--into" in err and "--fixed" in err and "--pm-verified" in err
+    assert calls["n"] == 0
+
+
+def test_resolve_gate_rejects_pm_verified_combined_with_into(
+        external, monkeypatch, tmp_path, capsys):
+    """세 처분 중 둘 이상을 같이 쓰면 거부(한 게이트의 잔여는 한 갈래로 소화)."""
+    calls = _wire(external, monkeypatch, tmp_path)
+    rc = external.main(["--resolve-gate", "T-0001", "--into", "T-0002", "--pm-verified"])
+    assert rc == 1
+    assert "--pm-verified" in capsys.readouterr().err
+    assert calls["n"] == 0
+
+
+def test_pm_verified_flag_without_resolve_gate_is_refused(
+        external, monkeypatch, tmp_path, capsys):
+    """`--pm-verified` 를 --resolve-gate 없이 쓰면 거부 — 선언할 게이트가 없으면 뜻이 없다."""
+    calls = _wire(external, monkeypatch, tmp_path)
+    assert external.main(["--pm-verified", "--paths", "x.py"]) == 1
+    err = capsys.readouterr().err
+    assert "--pm-verified" in err and "--resolve-gate" in err
+    assert calls["n"] == 0
+
+
+def test_pm_verified_declares_the_v178_shape_with_zero_external_send(pm_verified_declare):
+    """v1.7.8 실물 형상(잔여1·confirm_fix0·완료라운드1·X-001 rejected·기계확인0)이 신규 경로로 rc0.
+
+    단언: reviewer 스폰 0(고정 fixture) · raw 레코드 증가 0 · `wave.spent` 불변 · 게이트
+    `count`/`confirm_fix` 불변(선언은 장부 기록 전용이라 회계 절을 건드리지 않는다)."""
+    tid = "T-9764"
+    entry = _pv_seed_v178_shape(pm_verified_declare.proj, tid)
+    before = json.loads(json.dumps(entry))
+    pm_verified_declare.write_ledger({tid: entry})
+    raw_dir = pm_verified_declare.proj / ".project_manager" / ".local" / "review"
+
+    assert pm_verified_declare.run("--resolve-gate", tid, "--pm-verified") == 0
+    after = pm_verified_declare.read_ledger()[tid]
+    assert after["resolution"]["kind"] == "pm-verified"
+    assert after["count"] == before["count"]
+    assert after["confirm_fix"] == before["confirm_fix"]
+    assert after["rounds"] == before["rounds"]
+    assert "wave" not in after       # wave 절 자체를 건드리지 않는다(불변)
+    assert not raw_dir.exists(), "선언면이 raw 출력 디렉토리를 만들면 전송이 있었다는 뜻이다"
+
+
+def test_pm_verified_declaration_is_refused_with_reason_when_evidence_is_insufficient(
+        pm_verified_declare, capsys,
+):
+    """증거 미달(표면 미달)이면 rc≠0 + 사람이 읽는 사유(전문)가 stderr 에 실린다."""
+    tid = "T-9780"
+    proj = pm_verified_declare.proj
+    findings = [_pv_finding("X-001")]
+    rows = [_pv_decision("X-001", "rejected")]
+    _pv_write_ticket(proj, tid, "claimed", body=_pv_disposition_block(
+        1, rows, reviewer_role=_PV_EXTERNAL_ROLE,
+    ))
+    _pv_write_round(proj, tid, 1, _PV_EXTERNAL_ROLE, _pv_review_block(findings))
+    entry = _pv_ledger_entry([_pv_round_outcome(1, 3)])   # 잔여 3인데 표면은 1건뿐
+    pm_verified_declare.write_ledger({tid: entry})
+
+    rc = pm_verified_declare.run("--resolve-gate", tid, "--pm-verified")
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "1건" in err and "3건" in err
+    assert tid not in pm_verified_declare.read_ledger() or (
+        "resolution" not in pm_verified_declare.read_ledger()[tid]
+    )
+
+
+def test_rounds_report_shows_pm_verified_disposition_label(pm_verified_declare, capsys):
+    """`--rounds-report` 가 pm-verified 처분을 리뷰 통과와 구분되는 고정 어휘로 보여준다."""
+    tid = "T-9781"
+    entry = _pv_seed_v178_shape(pm_verified_declare.proj, tid)
+    pm_verified_declare.write_ledger({tid: entry})
+    assert pm_verified_declare.run("--resolve-gate", tid, "--pm-verified") == 0
+    capsys.readouterr()
+    assert pm_verified_declare.run("--rounds-report", "--gate", tid) == 0
+    out = capsys.readouterr().out
+    assert "pm-verified" in out and "reviewer 재투입 없음" in out
+
+
+# ── 채널 격리 양방향 — 추가 선언 CLI 실경로 (형상은 test_board_livegate 빌더 공용) ────
+
+def test_additional_declaration_opens_when_its_own_channel_is_machine_confirmed(
+    pm_verified_declare,
+):
+    """혼합 채널 형상에서 추가 채널 X-* 기계 확인이 있으면 이 CLI 선언은 열린다.
+
+    같은 형상에서 **내부 축은 닫힌다**(tests/test_board_livegate.py 의 내부 선언·완료 경로) —
+    채널 격리는 한쪽을 막는 규칙이 아니라 각 채널이 자기 증거만 본다는 규칙이다."""
+    tid = "T-9798"
+    entries = _pv_seed_mixed_channel_shape(
+        pm_verified_declare.proj, tid, machine_channel=_PV_CHANNEL_ADDITIONAL,
+    )
+    pm_verified_declare.write_ledger({tid: entries[_PV_CHANNEL_ADDITIONAL]})
+
+    assert pm_verified_declare.run("--resolve-gate", tid, "--pm-verified") == 0
+    assert pm_verified_declare.read_ledger()[tid]["resolution"]["kind"] == "pm-verified"
+
+
+def test_additional_declaration_is_refused_when_only_the_internal_channel_is_confirmed(
+    pm_verified_declare, capsys,
+):
+    """역방향 — 내부 F-* 기계 확인은 추가 리뷰어 게이트의 증거가 아니다(선언 CLI 실경로)."""
+    tid = "T-9799"
+    entries = _pv_seed_mixed_channel_shape(
+        pm_verified_declare.proj, tid, machine_channel=_PV_CHANNEL_INTERNAL,
+    )
+    pm_verified_declare.write_ledger({tid: entries[_PV_CHANNEL_ADDITIONAL]})
+
+    assert pm_verified_declare.run("--resolve-gate", tid, "--pm-verified") == 1
+    err = capsys.readouterr().err
+    assert f"{_PV_EXTERNAL_ROLE} 채널의 기계 확인" in err
+    assert f"{_PV_INTERNAL_ROLE} 채널의 기계 확인" not in err
+    assert "resolution" not in pm_verified_declare.read_ledger()[tid]

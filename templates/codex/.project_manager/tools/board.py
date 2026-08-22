@@ -7209,9 +7209,15 @@ def internal_verdict_diagnostic(entry: dict) -> str | None:
 GATE_RESOLUTION_INTO = "into"     # 후속 티켓 재설계 — 그 티켓이 done 이어야 릴리즈가 열린다.
 GATE_RESOLUTION_FIXED = "fixed"   # 코드로 해소 — 근거 게이트(통과로 끝난 게이트) 지목이 조건.
 GATE_RESOLUTION_PM_FIXED = "pm-fixed"  # 상한+confirm-fix 소진 뒤 PM 직접 해소(리뷰 통과 아님).
-# 기계 확인 증거로 여는 내부 게이트 처분(내부 장부에서만, `allow_pm_verified`
-# 명시 시에만 인정된다 — release 축(_gate_disposition_problem 기본 호출)은 허용하지 않는다).
+# 기계 확인 증거로 여는 게이트 처분 — 장부마다 `allow_pm_verified` 명시 시에만 인정된다(내부
+# 완료 축·추가 리뷰어 release 축 모두 스코프 인자로 채널 격리해 허용 · 기본 호출은 허용하지 않는다).
 GATE_RESOLUTION_PM_VERIFIED = "pm-verified"
+# `pm-verified` 재검증이 스코프하는 **리뷰 채널** — 게이트가 실린 장부가 곧 채널이다. 두 축이
+# 같은 술어를 쓰되 자기 채널만 본다(다른 채널의 accepted 잔여·기계 확인은 이 게이트의 증거가
+# 아니다 — 채널 격리). role 문자열의 단일 진실은 pm_delegate 라 사본을 두지 않고 재검증 시점에
+# 해소한다(`_pm_verified_channel_role`).
+GATE_CHANNEL_INTERNAL = "internal"        # internal_review_rounds.json (내부 code-reviewer)
+GATE_CHANNEL_ADDITIONAL = "additional"    # review_rounds.json (추가 리뷰어)
 # 처분 종류별 **대상 필드** — 재설계는 티켓 ID, 해소는 근거 게이트 이름을 싣는다. pm-fixed·
 # pm-verified 는 target key 가 없다(각자 별도 evidence/재검증 축을 쓴다).
 _GATE_RESOLUTION_TARGET_KEYS: dict[str, str] = {
@@ -8604,7 +8610,7 @@ def _gate_disposition_problem(
     비대상·suggestion 만 남은 게이트 포함·**미상은 대상**) → 처분 선언(미선언·좌표 stale 이면 차단)
     → 갈래별 조건(`fixed` = 근거 게이트가 지금도 뒷받침 · `into` = 대상 티켓이 done ·
     `pm-fixed` = 내부 장부에서만 허용하며 구조화 근거의 변경 지점을 현재 repo에서 재검증 ·
-    `pm-verified` = 내부 장부에서만 허용하며 `pm_verified_problem` 콜백으로
+    `pm-verified` = 허용된 장부에서만(`allow_pm_verified`) `pm_verified_problem` 콜백으로
     delta/기계 확인 증거를 라이브 재검증)."""
     corruption = gate_entry_corruption(entry)
     if corruption is not None:
@@ -8689,7 +8695,17 @@ def _unresolved_must_fix_data(data: object, ledger: Path) -> list[str]:
     for gate, entry in sorted(data.items()):
         if gate == _REVIEW_LEDGER_WAVE_KEY:
             continue                     # 예약 키(wave 예산 절)는 게이트가 아니다.
-        problem = _gate_disposition_problem(gate, entry, data, search_dirs)
+        # 추가 리뷰어(release) 축은 pm-verified 처분을 허용한다 — PM rejected/기계 확인 증거로
+        # 채널 폐지 뒤에도 외부 재송신 없이 잔여를 종결할 수 있어야 한다(콜백은 그 게이트의
+        # 잔여 must-fix 건수로 스코프한 채널 격리 재검증). pm-fixed 는 계속 허용하지 않는다 —
+        # 이 장부에는 pm-fixed 발동 형상(상한+confirm-fix 소진)이 성립하지 않는다.
+        problem = _gate_disposition_problem(
+            gate, entry, data, search_dirs,
+            allow_pm_verified=True,
+            pm_verified_problem=_gate_pm_verified_problem(
+                gate, entry, GATE_CHANNEL_ADDITIONAL,
+            ),
+        )
         if problem is not None:
             problems.append(problem)
     return problems
@@ -10593,13 +10609,28 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str,
     return 0
 
 
-def _pm_verified_evidence_problem(tid: str) -> str | None:
+def _pm_verified_channel_role(delegate, channel: str) -> str | None:
+    """게이트 채널 → pm_delegate 의 reviewer role 문자열 (모르는 채널이면 None → fail-closed).
+
+    role 문자열은 pm_delegate 가 단일 진실이라 board 에 사본을 두지 않는다."""
+    return {
+        GATE_CHANNEL_INTERNAL: delegate.INTERNAL_REVIEW_ROLE,
+        GATE_CHANNEL_ADDITIONAL: delegate.EXTERNAL_REVIEW_ROLE,
+    }.get(channel)
+
+
+def _pm_verified_evidence_problem(tid: str, *, channel: str, entry: dict) -> str | None:
     """`pm-verified` 발동 조건을 지금 다시 판정한다(선언·완료 재검증 공용 · fail-closed).
 
     delta 재파싱·기계 확인 카운트는 `pm_delegate.pm_verified_evidence_problem` 이 단일
     진실이다 — board 는 이 함수로 deep-import 해 호출하고(순환 회피 · `_load_pm_delegate_module`
     관례), 사본을 두지 않는다. 티켓을 못 찾거나 명세를 못 읽거나 pm_delegate.py 를 못 불러오면
-    증거를 확인할 수 없어 차단한다(fail-closed)."""
+    증거를 확인할 수 없어 차단한다(fail-closed).
+
+    **두 축이 같은 규칙을 쓴다**(one rule, no special cases): 내부 완료 게이트는
+    `channel=GATE_CHANNEL_INTERNAL`, 추가 리뷰어 release 게이트는 `GATE_CHANNEL_ADDITIONAL`
+    로 호출하고, 판정 표면 하한은 **그 채널 장부 entry 의 잔여 must-fix 건수**다. 채널 스코프
+    없이 티켓 전역을 보면 다른 채널의 기계 확인이 이 게이트의 잔여를 여는 구멍이 생긴다."""
     found = find_ticket_exact(tid)
     if found is None:
         return f"티켓을 찾지 못했습니다: {tid}"
@@ -10611,9 +10642,28 @@ def _pm_verified_evidence_problem(tid: str) -> str | None:
     delegate = _load_pm_delegate_module()
     if delegate is None:
         return "pm_delegate.py 를 불러올 수 없어 증거를 재검증할 수 없습니다"
+    reviewer_role = _pm_verified_channel_role(delegate, channel)
+    if reviewer_role is None:
+        return f"pm-verified 재검증 채널을 확정할 수 없습니다: {channel!r}"
     rounds_module = _load_ticket_rounds()
     rounds = rounds_module.load_rounds(tickets_dir(), tid, ticket_text=spec_text)
-    return delegate.pm_verified_evidence_problem(spec_text, rounds)
+    return delegate.pm_verified_evidence_problem(
+        spec_text, rounds,
+        reviewer_role=reviewer_role,
+        surface_floor=gate_residual_must_fix(entry),
+    )
+
+
+def _gate_pm_verified_problem(
+    gate: str, entry: dict, channel: str,
+) -> Callable[[], str | None]:
+    """게이트별 pm-verified 콜백 factory — 루프 클로저의 뒤늦은 바인딩을 피한다.
+
+    `_gate_disposition_problem` 은 이 콜백을 같은 순회 안에서 즉시 호출하지만, 인자를 함수
+    시그니처로 고정해 두면 나중에 호출 지점이 지연·재배치되더라도 클로저가 마지막 `gate`/`entry`
+    를 참조하는 사고가 구조적으로 막힌다. 내부 완료 축과 추가 리뷰어 release 축이 이 한
+    factory 를 공유한다 — 채널만 다르고 규칙은 같다."""
+    return lambda: _pm_verified_evidence_problem(gate, channel=channel, entry=entry)
 
 
 def _internal_review_completion_problem(tid: str) -> str | None:
@@ -10648,7 +10698,9 @@ def _internal_review_completion_problem(tid: str) -> str | None:
         allow_legacy_internal_fixed=True,
         allow_pm_fixed=True,
         allow_pm_verified=True,
-        pm_verified_problem=lambda: _pm_verified_evidence_problem(tid),
+        # 내부 완료 축도 자기 채널로 스코프한다 — 그 게이트 장부 잔여를 표면 하한으로 삼아
+        # 추가 리뷰어 채널의 기계 확인이 내부 잔여를 여는 경로를 닫는다(채널 격리 양방향).
+        pm_verified_problem=_gate_pm_verified_problem(tid, entry, GATE_CHANNEL_INTERNAL),
     )
     if disposition_problem is None:
         declared = gate_resolution(entry)

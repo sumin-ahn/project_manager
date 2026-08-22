@@ -607,20 +607,65 @@ def test_verify_template_cli_honors_explicit_round(pd, tmp_path, monkeypatch, ca
 # ── (D1) pm-verified 증거 + 상한 회계 불변 ──────────────────────────────
 
 def test_pm_verified_evidence_problem_requires_empty_accepted_and_a_machine_confirmation(pd):
+    """증거 규칙(accepted 잔여 0 · 기계 확인 ≥ 1)을 **내부 채널 스코프**로 단언한다.
+
+    T-0791 에서 무스코프 전역 분기를 삭제했으므로 같은 성질을 채널 인자를 준 형태로 본다
+    (`_basic_ticket` = code-reviewer 채널 F-001 1건 → 표면 하한 1)."""
     spec, rounds = _basic_ticket(pd)
     # accepted 잔여가 있으면 거부.
-    assert "accepted 잔여" in pd.pm_verified_evidence_problem(spec, rounds)
+    assert "accepted 잔여" in pd.pm_verified_evidence_problem(
+        spec, rounds, reviewer_role=pd.INTERNAL_REVIEW_ROLE, surface_floor=1,
+    )
     # resolve 됐지만 기계 확인이 없으면(가상: 리뷰 confirmation 만으로 해소) — 대조군은
     # accepted==() 이 되도록 기계 확인을 넣은 경우만 통과해야 한다.
     spec_ok = spec + _confirmation_block(pd, 2, [_confirmation_row("F-001", "resolved")])
-    assert pd.pm_verified_evidence_problem(spec_ok, rounds) is None
+    assert pd.pm_verified_evidence_problem(
+        spec_ok, rounds, reviewer_role=pd.INTERNAL_REVIEW_ROLE, surface_floor=1,
+    ) is None
 
 
 def test_pm_verified_evidence_problem_rejects_when_delta_cannot_parse(pd):
     r1 = _round(pd, 1, "code-reviewer", _reviewer_round_text(pd, [_finding("F-001")]))
-    # PM 미판정(pending) — delta 파싱 실패.
-    problem = pd.pm_verified_evidence_problem("", [r1])
+    # PM 미판정(pending) — delta 파싱 실패. 채널을 줘도 파싱이 먼저 막는다.
+    problem = pd.pm_verified_evidence_problem(
+        "", [r1], reviewer_role=pd.INTERNAL_REVIEW_ROLE, surface_floor=1,
+    )
     assert problem is not None and "delta 파싱 실패" in problem
+
+
+def test_pm_verified_evidence_problem_fails_loud_when_the_channel_is_not_given(pd):
+    """채널 미지정은 조용한 전역 기본값이 아니라 fail-loud 다(T-0791 · 실 호출로 단언).
+
+    삭제된 무스코프 분기가 다시 새는 우회로가 되지 않게 **호출 자체가 실패**해야 한다:
+    인자를 생략하면 `TypeError`(키워드 필수), review 채널이 아닌 값(`None` 포함)이면
+    `PMReviewError`. 표면 하한도 같은 규칙이다 — 생략은 조용한 0 이 아니다."""
+    spec, rounds = _basic_ticket(pd)
+    spec_ok = spec + _confirmation_block(pd, 2, [_confirmation_row("F-001", "resolved")])
+    # 대조군 — 채널·하한을 주면 같은 형상은 통과한다(과차단 아님).
+    assert pd.pm_verified_evidence_problem(
+        spec_ok, rounds, reviewer_role=pd.INTERNAL_REVIEW_ROLE, surface_floor=1,
+    ) is None
+
+    with pytest.raises(TypeError) as channel_omitted:
+        pd.pm_verified_evidence_problem(spec_ok, rounds, surface_floor=1)
+    assert "reviewer_role" in str(channel_omitted.value)
+
+    with pytest.raises(TypeError) as floor_omitted:
+        pd.pm_verified_evidence_problem(
+            spec_ok, rounds, reviewer_role=pd.INTERNAL_REVIEW_ROLE,
+        )
+    assert "surface_floor" in str(floor_omitted.value)
+
+    for bad_channel in (None, "developer", ""):
+        with pytest.raises(pd.PMReviewError) as rejected:
+            pd.pm_verified_evidence_problem(
+                spec_ok, rounds, reviewer_role=bad_channel, surface_floor=1,
+            )
+        assert "review 채널이 아닙니다" in str(rejected.value)
+
+    # 같은 클래스 — 채널 무시 전역 카운트 경로도 남아 있지 않다.
+    with pytest.raises(TypeError):
+        pd._pm_review_machine_confirmation_count(spec_ok)
 
 
 def test_machine_confirmation_flow_leaves_internal_ledger_bytes_unchanged(pd, tmp_path):
@@ -636,7 +681,9 @@ def test_machine_confirmation_flow_leaves_internal_ledger_bytes_unchanged(pd, tm
     pd.render_ticket_growth_section_seed("developer", spec, rounds=rounds)
     pd.parse_pm_review_delta(spec_ok, rounds)
     pd.pm_review_verify_template(spec, rounds)
-    pd.pm_verified_evidence_problem(spec_ok, rounds)
+    pd.pm_verified_evidence_problem(
+        spec_ok, rounds, reviewer_role=pd.INTERNAL_REVIEW_ROLE, surface_floor=1,
+    )
 
     assert ledger.read_bytes() == original
 
