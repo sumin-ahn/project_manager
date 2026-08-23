@@ -987,7 +987,10 @@ _DELEGATE_ROUNDS_LEDGER_FIELDS: frozenset[str] = (
 
 
 class TicketCopyPlan(NamedTuple):
-    """준비 1회의 좌표 — 슬롯 라운드 파일 하나와 그 run-dir, board 예약 결과."""
+    """준비 1회의 좌표 — 슬롯 라운드 파일 하나와 그 run-dir, board 예약 결과.
+
+    `run_id` 는 delegate-rounds 장부의 같은 필드와 값이 같다 — cross 실위임 raw 행이 이 값을
+    `extra` 로 실으면 두 장부가 문자열 일치로 결속된다."""
 
     path: Path
     run_dir: Path
@@ -995,6 +998,7 @@ class TicketCopyPlan(NamedTuple):
     role: str
     ordinal: int
     board_path: Path
+    run_id: str
 
 
 class TicketHarvestResult(NamedTuple):
@@ -1861,7 +1865,7 @@ def prepare_ticket_copy(
             f"{exc}{_reserved_round_residue(board_rel, ordinal)}"
         ) from exc
     return TicketCopyPlan(
-        copy_path.resolve(), run_dir, ticket, role, ordinal, board_path,
+        copy_path.resolve(), run_dir, ticket, role, ordinal, board_path, run_id,
     )
 
 
@@ -2018,10 +2022,11 @@ def _review_round_harvest_problem(
 def _abandon_raw_ledger_hint(pm_home: Path, row: dict, relay) -> str:
     """거부 문구에 붙이는 **비-권위 참고** — 같은 (ticket, role) 의 미마감 raw 레코드.
 
-    판정 술어에는 넣지 않는다. raw 장부 행에는 `run_id`·`copy` 가 없어 이 예약과 결속되지 않고,
-    하네스 subprocess 를 띄우지 않는 native 위임은 raw 행 자체를 만들지 않는다 — 조인이
-    휴리스틱이라 결정 입력으로 쓰면 증거 없는 예약이 조용히 "증거 있음"으로 뒤바뀐다. 참고를
-    읽지 못하면 참고만 빠진다(판정은 그대로다).
+    판정 술어에는 넣지 않는다. cross 실위임 raw 행에는 `run_id`·`copy` 가 실려 이 예약과
+    문자열로 결속되지만, 이 참고는 그 결속을 판정에 쓰지 않고 여전히 (ticket, role) 휴리스틱
+    조인만 쓴다 — 판정식 교체는 이 함수 소유가 아니다. 하네스 subprocess 를 띄우지 않는 native
+    위임은 raw 행 자체를 만들지 않는다(결속 대상 없음). 휴리스틱을 결정 입력으로 쓰면 증거 없는
+    예약이 조용히 "증거 있음"으로 뒤바뀐다. 참고를 읽지 못하면 참고만 빠진다(판정은 그대로다).
     """
     try:
         _raw_dir, ledger_path = relay.raw_storage_paths(
@@ -8811,6 +8816,11 @@ RESUME_FIELD_USAGE = "usage"
 RESUME_FIELD_TICKET = "ticket"
 RESUME_FIELD_RESUME_FROM = "resume_from_session_id"
 RESUME_FIELD_RESUME_MATCHED = "resume_matched"
+# cross 실위임 결속 키 — delegate-rounds 장부의 같은 이름 필드와 값이 그대로 같아야 두 장부가
+# 조인된다. native 위임(라운드 준비가 없는 호출)은 이 값이 없어 raw 행에도 실리지 않는다 —
+# 부재는 "결속 대상 없음"이지 손상이 아니다.
+RESUME_FIELD_RUN_ID = "run_id"
+RESUME_FIELD_TICKET_COPY = "copy"
 # 회신 검증까지 통과한 **유효 성공**인가 — rc(자식 종료 코드)만으로는 못 세는 축이다.
 RESUME_FIELD_REPLY_EXTRACTED = "reply_extracted"
 # attempt 라벨 — raw 헤더/장부가 이 실행이 어떤 라운드였는지 그대로 말한다.
@@ -10675,6 +10685,8 @@ def _execute_attempt(
     base_rev: str | None = None,
     internal_trace: InternalRoundTrace | None = None,
     ticket_copy_path: Path | None = None,
+    run_id: str | None = None,
+    round_copy_path: str | None = None,
 ) -> DelegateAttempt:
     """하네스 1회를 실행하고 raw를 박제한다.
 
@@ -10690,6 +10702,16 @@ def _execute_attempt(
 
     `resume_session_id`/`ticket`/`base_rev` 는 이 실행의 **장부 구조화 필드**다. 재개 id 는 지원
     선언표를 통과한 축에서만 받는다(미지원 축으로 미검증 argv 가 나가지 않는다).
+
+    `run_id`/`round_copy_path` 는 cross 라운드 준비가 있었던 실행에서만 채워진다 — 있으면
+    delegate-rounds 장부의 같은 이름 필드와 값이 같다. native 위임은 라운드 준비 자체가 없어
+    이 실행 경로를 타지 않는다.
+
+    이 함수 호출부(`_execute_and_collect`)는 한 run 에서 최대 3회 이 함수를 부른다(primary·
+    세션 재사용 불일치 뒤 fresh 재실행·인프라 실패 폴백) — 셋 다 같은 `run_id`/`round_copy_path`
+    를 싣는다(raw 행 → 예약은 many-to-one). 종료 판정 입력은 "결속된 행 중 아무 하나의 마감"이
+    아니라 **가장 최신 attempt 행의 마감**이다 — primary 가 실패로 마감되고 폴백이 진행 중인
+    창에서 전자를 쓰면 아직 도는 run 을 끝난 것으로 오판한다.
     """
     relay = _load_relay()
     if resume_session_id is not None and not relay.harness_supports_resume(harness):
@@ -10734,6 +10756,10 @@ def _execute_attempt(
                     (RESUME_FIELD_BASE_REV, base_rev),
                     (RESUME_FIELD_RESUME_FROM, resume_session_id),
                     (FRESH_REASON_FIELD, fresh_reason),
+                    # cross 라운드 준비가 있었던 실행만 채운다 — delegate-rounds 장부 행과
+                    # 값이 같아야 조인이 성립한다.
+                    (RESUME_FIELD_RUN_ID, run_id),
+                    (RESUME_FIELD_TICKET_COPY, round_copy_path),
                     (
                         INTERNAL_ROUND_ID_FIELD,
                         internal_trace.budget.round_id
@@ -13256,6 +13282,10 @@ def _execute_and_collect(
                 if ticket_copy is not None and args.role == "code-reviewer"
                 else None
             ),
+            run_id=(ticket_copy.run_id if ticket_copy is not None else None),
+            round_copy_path=(
+                str(ticket_copy.path) if ticket_copy is not None else None
+            ),
         )
         # 재실행은 **재사용 축의 확정된 실패에만** 쓴다(`resume_rerun_reason`) — 깨끗한 완료의
         # 명시적 세션 id 불일치, 또는 확정된 "세션 없음" 오류. 미분류 `rc≠0` 은 **전송 후** 죽은
@@ -13320,6 +13350,10 @@ def _execute_and_collect(
                     ticket_copy.path
                     if ticket_copy is not None and args.role == "code-reviewer"
                     else None
+                ),
+                run_id=(ticket_copy.run_id if ticket_copy is not None else None),
+                round_copy_path=(
+                    str(ticket_copy.path) if ticket_copy is not None else None
                 ),
             )
     except (OSError, DelegateError) as exc:
@@ -13398,6 +13432,10 @@ def _execute_and_collect(
                     ticket_copy.path
                     if ticket_copy is not None and args.role == "code-reviewer"
                     else None
+                ),
+                run_id=(ticket_copy.run_id if ticket_copy is not None else None),
+                round_copy_path=(
+                    str(ticket_copy.path) if ticket_copy is not None else None
                 ),
             )
         except (OSError, DelegateError) as exc:

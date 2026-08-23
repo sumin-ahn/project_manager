@@ -992,7 +992,7 @@ def test_all_prompt_wires_get_the_same_round_preamble(pd, tmp_path):
     run_dir.mkdir()
     plan = pd.TicketCopyPlan(
         run_dir / "01-developer.md", run_dir, "T-3001", "developer", 1,
-        tmp_path / "board" / "01-developer.md",
+        tmp_path / "board" / "01-developer.md", "c" * 32,
     )
     note = pd._ticket_copy_preamble(plan)
     assert str(plan.path) in note
@@ -2337,6 +2337,122 @@ def test_successful_delegation_does_not_refund_the_ticket_copy(pd, refund_env, m
     )
     assert rc == 0
     assert refund_calls == []
+
+
+def _codex_reply(text: str = "DONE") -> str:
+    return "\n".join([
+        json.dumps({"type": "thread.started", "thread_id": "th1"}),
+        json.dumps({"type": "item.completed",
+                    "item": {"type": "agent_message", "text": text}}),
+        json.dumps({"type": "turn.completed", "usage": {"input_tokens": 10}}),
+    ])
+
+
+def test_cross_delegation_binds_run_id_and_copy_to_its_delegate_rounds_reservation(
+        pd, refund_env):
+    """[[T-0838]] — 실 장부 조인: raw 행의 run_id·copy 가 delegate-rounds 장부의 같은 예약
+    행과 문자열 그대로 일치한다(두 장부를 각자 실제 파일로 만들어 값으로 확인한다)."""
+    home, tickets = refund_env
+    ticket = "T-9105"
+    _write_spec(tickets, ticket)
+
+    prompt = home / "task.md"
+    prompt.write_text("문서를 정리하라", encoding="utf-8")
+
+    def _run_fn(argv, *, stdin_text, cwd, env, timeout, harness):
+        return {"returncode": 0, "stdout": _codex_reply(), "stderr": "", "timed_out": False}
+
+    rc = pd.main(
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
+         "--ticket", ticket, "--output-dir", str(home / "raw")],
+        run_fn=_run_fn,
+    )
+    assert rc == 0
+
+    round_row = next(row for row in _ledger_rows(home) if row["ticket"] == ticket)
+    raw_rows = pd._load_relay().raw_records(home / "raw" / "raw_outputs.json")
+    raw_row = next(row for row in raw_rows if row.get("ticket") == ticket)
+
+    assert raw_row["run_id"] == round_row["run_id"]
+    assert raw_row["copy"] == round_row["copy"]
+
+
+def test_two_cross_runs_of_the_same_ticket_and_role_bind_1to1_not_swapped(
+        pd, refund_env, monkeypatch):
+    """같은 (ticket, role) 의 서로 다른 run 두 건이 각자 자기 예약에만 결속된다.
+
+    rounds 장부는 prepare·harvest 두 곳이 쓰고, harvest 행은 prepare 행의 `dict(row)` 스냅샷이라
+    `run_id`·`copy` 를 그대로 복제한다(실 장부 고유 run_id 대부분이 이 모양으로 2행). `_run_fn`
+    이 슬롯 라운드 파일에 실제로 산출을 써서 harvest 가 "산출 없음" 조기 반환에 빠지지 않고 이
+    복제를 실제로 만들게 한다 — 픽스처가 우연히 시드 그대로 두어 복제가 안 생기는 형상을
+    불변식으로 박제하지 않는다. 예약의 정체성은 행이 아니라 `copy` 로 접은 최신 스냅샷이므로
+    `ticket_copy_records`(copy 별 최신 append)로 접어서 단언한다."""
+    home, tickets = refund_env
+    ticket = "T-9106"
+    _write_spec(tickets, ticket)
+
+    prepared_plans: list = []
+    real_prepare = pd.prepare_ticket_copy
+
+    def _prepare_spy(*args, **kwargs):
+        plan = real_prepare(*args, **kwargs)
+        prepared_plans.append(plan)
+        return plan
+
+    monkeypatch.setattr(pd, "prepare_ticket_copy", _prepare_spy)
+
+    def _run_fn(argv, *, stdin_text, cwd, env, timeout, harness):
+        # 실 하네스가 슬롯 라운드 파일에 산출을 쓰는 형상을 재현한다 — 그래야 harvest 가
+        # 실제로 rounds 장부에 harvested 행(=prepared 행의 dict(row) 스냅샷)을 남긴다.
+        plan = prepared_plans[-1]
+        plan.path.write_text(
+            plan.path.read_text(encoding="utf-8") + "\n## 변경 파일\n- 실산출\n",
+            encoding="utf-8", newline="",
+        )
+        return {"returncode": 0, "stdout": _codex_reply(), "stderr": "", "timed_out": False}
+
+    for label in ("1라운드", "2라운드"):
+        prompt = home / f"task-{label}.md"
+        prompt.write_text(f"{label} 지시", encoding="utf-8")
+        argv = [
+            "--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
+            "--ticket", ticket, "--output-dir", str(home / "raw"),
+        ]
+        if label == "2라운드":
+            # cold 재투입 거부(같은 ticket·role 완료 레코드 존재)를 명시 fresh 로 넘긴다 —
+            # 이 테스트가 보려는 건 재사용 축이 아니라 두 번째 run 의 결속 값이다.
+            argv += ["--fresh", "1:1 결속 값 검증을 위한 두 번째 독립 run"]
+        rc = pd.main(argv, run_fn=_run_fn)
+        assert rc == 0
+
+    all_round_rows = [row for row in _ledger_rows(home) if row["ticket"] == ticket]
+    # 실 장부 형상: run 당 prepared+harvested 2행(dict(row) 스냅샷 복제) — 총 4행, 고유 run_id 는 2.
+    assert len(all_round_rows) == 4
+    assert len({row["run_id"] for row in all_round_rows}) == 2
+
+    # 예약의 정체성은 행이 아니라 copy 로 접은 최신 스냅샷이다.
+    round_rows = pd.ticket_copy_records(home, ticket=ticket)
+    assert len(round_rows) == 2
+    assert {row["ordinal"] for row in round_rows} == {1, 2}
+    assert round_rows[0]["run_id"] != round_rows[1]["run_id"]
+    assert all(row["harvested_at"] is not None for row in round_rows)
+
+    raw_rows = [
+        row for row in pd._load_relay().raw_records(home / "raw" / "raw_outputs.json")
+        if row.get("ticket") == ticket
+    ]
+    assert len(raw_rows) == 2
+
+    for round_row in round_rows:
+        # run_id 로 접은 raw 행의 copy 가 전부 이 예약의 copy 와만 일치한다 — 다른 run 과
+        # 섞이면(교차 결속) 이 set 에 다른 copy 가 섞여 값 단언이 깨진다. rounds 장부 쪽에
+        # 같은 run_id 행이 2개(prepared+harvested) 있어도 raw 쪽 매칭 결과는 영향받지 않는다.
+        matches = [row for row in raw_rows if row["run_id"] == round_row["run_id"]]
+        assert matches, f"1:1 결속 위반 — run_id={round_row['run_id']} 에 raw 행 없음"
+        assert {row["copy"] for row in matches} == {round_row["copy"]}
+
+    # 서로 다른 run 이므로 raw 행의 copy 도 서로 다르다(같은 예약으로 뒤섞이지 않는다).
+    assert raw_rows[0]["copy"] != raw_rows[1]["copy"]
 
 
 # ── T-0846 — 단일 정리 경계(지점 삽입 대체) ─────────────────────────────────

@@ -471,6 +471,117 @@ def test_structured_fields_live_on_the_single_delegate_ledger_row(pd, relay, tmp
     assert survived["must_fix_items"] == row["must_fix_items"]
 
 
+def test_run_id_and_copy_land_on_the_same_row_when_a_round_plan_is_known(pd, tmp_path):
+    """[[T-0838]] — cross 라운드 준비가 있으면 그 run_id·copy 값 그대로가 raw 행에 실린다."""
+    out_dir = tmp_path / "raw"
+    ledger_path = out_dir / "raw_outputs.json"
+    run_id = "a" * 32
+    copy_path = str(tmp_path / "slot" / "01-developer.md")
+    attempt = pd._execute_attempt(
+        harness="claude", model="opus", reasoning=None, role="developer",
+        cwd=tmp_path, prompt="p", timeout=60, output_dir=out_dir,
+        run_fn=_FakeRun(_ok(_claude_wire("완료"))),
+        attempt="primary", ticket=TICKET_ID, run_id=run_id,
+        round_copy_path=copy_path,
+    )
+    row = _rows(ledger_path)[0]
+    assert row["run_id"] == run_id
+    assert row["copy"] == copy_path
+    assert attempt.session_id == SESSION_ID
+
+
+def test_run_id_and_copy_are_absent_when_no_round_plan_is_passed(pd, tmp_path):
+    """[[T-0838]] — 라운드 준비가 없던 실행(native 형상과 같은 모양)은 두 키가 아예 없다.
+
+    부재는 `None` 값이 아니라 키 자체의 부재다 — 기존 raw 행(결속 이전에 기록된 행)과 같은
+    모양이라 조회면이 "결속 없음"과 "손상"을 혼동하지 않는다."""
+    out_dir = tmp_path / "raw"
+    ledger_path = out_dir / "raw_outputs.json"
+    pd._execute_attempt(
+        harness="claude", model="opus", reasoning=None, role="developer",
+        cwd=tmp_path, prompt="p", timeout=60, output_dir=out_dir,
+        run_fn=_FakeRun(_ok(_claude_wire("완료"))),
+        attempt="primary", ticket=TICKET_ID,
+    )
+    row = _rows(ledger_path)[0]
+    assert "run_id" not in row
+    assert "copy" not in row
+
+
+def test_resume_mismatch_fresh_rerun_binds_the_ticket_copy_run_id(pd, tmp_path):
+    """콜사이트 회귀 — `fresh-after-resume-mismatch`(세션 재사용 확정 실패 뒤 fresh 재실행)도
+    `run_id`/`round_copy_path` 를 결속한다. 이 콜사이트의 두 인자 전달을 지우면 이 attempt 행에
+    `run_id`가 없어져 아래 단언이 red 가 된다(primary 콜사이트만 가드하던 빈틈을 닫는다)."""
+    out_dir = tmp_path / "raw"
+    plan = pd.TicketCopyPlan(
+        tmp_path / "slot" / "01-developer.md", tmp_path / "slot", "T-9201",
+        "developer", 1, tmp_path / "board" / "01-developer.md", "b" * 32,
+    )
+    calls: list = []
+
+    def _run_fn(argv, *, stdin_text, cwd, env, timeout, harness):
+        calls.append(harness)
+        if len(calls) == 1:
+            # 재개 대상 세션이 없다는 확정 오류 — fresh + full payload 재실행 자격이 성립한다.
+            return {"returncode": 1, "stdout": "", "stderr": "No conversation found",
+                    "timed_out": False}
+        return _ok(_claude_wire("판정: 통과"))
+
+    resume = pd.ResumePlan(
+        session_id=SESSION_ID, record_id="rec-1", delta_prompt="지적 해소", ticket=None,
+    )
+    rc = pd._execute_and_collect(
+        args=pd.argparse.Namespace(role="developer"),
+        harness="claude", model="opus", reasoning=None,
+        fallback=None, fallback_skip=None,
+        cwd=tmp_path, prompt="p", timeout=60, output_dir=out_dir,
+        run_fn=_run_fn, secret_scan_ack_digest=None, secret_scan_ack_hits=(),
+        resume=resume, ticket_copy=plan,
+    )
+    assert rc == 0
+    assert calls == ["claude", "claude"]           # resume 시도 1회 + fresh 재실행 1회
+
+    rows = _rows(out_dir / "raw_outputs.json")
+    fresh_row = next(row for row in rows if row["attempt"] == pd.RESUME_FRESH_FALLBACK_ATTEMPT)
+    assert fresh_row["run_id"] == plan.run_id
+    assert fresh_row["copy"] == str(plan.path)
+
+
+def test_infra_fallback_attempt_binds_the_ticket_copy_run_id(pd, tmp_path):
+    """콜사이트 회귀 — `fallback-from-*`(인프라 실패 뒤 하네스 폴백)도 `run_id`/`round_copy_path`
+    를 결속한다. 이 콜사이트의 두 인자 전달을 지우면 폴백 attempt 행에 `run_id`가 없어져 아래
+    단언이 red 가 된다(primary 콜사이트만 가드하던 빈틈을 닫는다)."""
+    out_dir = tmp_path / "raw"
+    plan = pd.TicketCopyPlan(
+        tmp_path / "slot" / "01-developer.md", tmp_path / "slot", "T-9202",
+        "developer", 1, tmp_path / "board" / "01-developer.md", "c" * 32,
+    )
+    calls: list = []
+
+    def _run_fn(argv, *, stdin_text, cwd, env, timeout, harness):
+        calls.append(harness)
+        if len(calls) == 1:
+            return {"returncode": 1, "stdout": "", "stderr": "", "timed_out": True}
+        return _ok(_claude_wire("판정: 통과"))
+
+    rc = pd._execute_and_collect(
+        args=pd.argparse.Namespace(role="developer"),
+        harness="codex", model="gpt-x", reasoning=None,
+        fallback=("claude", "opus", None), fallback_skip=None,
+        cwd=tmp_path, prompt="p", timeout=1, fallback_timeout=60,
+        output_dir=out_dir, run_fn=_run_fn,
+        secret_scan_ack_digest=None, secret_scan_ack_hits=(),
+        ticket_copy=plan,
+    )
+    assert rc == 0
+    assert calls == ["codex", "claude"]             # primary(timeout) + 폴백 1회
+
+    rows = _rows(out_dir / "raw_outputs.json")
+    fallback_row = next(row for row in rows if row["attempt"].startswith("fallback-from-"))
+    assert fallback_row["run_id"] == plan.run_id
+    assert fallback_row["copy"] == str(plan.path)
+
+
 def test_a_pass_replys_none_marker_is_not_a_must_fix_item(pd, tmp_path):
     """통과 응답의 `- 없음` 은 항목이 아니다 — `["없음"]` 으로 박제되면 다음 라운드 delta 가
     '없음'을 고칠 지적으로 되읽는다. 정규화는 추가 리뷰 경로와 **같은 술어**(`_is_none_items`)를
