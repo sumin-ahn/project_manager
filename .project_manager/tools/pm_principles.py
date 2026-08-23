@@ -34,9 +34,10 @@ from typing import NamedTuple
 ENGINE_REV = "v1.7.8"
 
 # ── 엔진 중앙 로더 부트스트랩 (형제 로드는 이 한 경로만 · `repo_owned_files.load_module`) ──
-# 이 모듈 자신은 형제를 부를 일이 없다(stdlib-only·정규식 1개짜리 파서) — 그래도 엔진 전체가
-# `spec_from_file_location` 을 중앙 로더 한 곳에서만 부르는 불변식(deep-import 가드)이라, CLI
-# 진입(`main`)이 콘솔 인코딩을 맞추려 `console_encoding.py` 를 지연 로드할 때 같은 경로를 쓴다.
+# 파싱 자체는 정규식 하나로 끝나지만 이 모듈도 형제 둘을 지연 로드한다 — 레지스트리·marker 판독은
+# 공용 읽기 seam(`file_lock`)을, CLI 진입(`main`)의 콘솔 인코딩은 `console_encoding` 을 쓴다. 엔진
+# 전체가 `spec_from_file_location` 을 중앙 로더 한 곳에서만 부르는 불변식(deep-import 가드)이라
+# 두 로드 모두 이 경로를 지난다.
 _TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
 _TOOLS_BOOTSTRAP_FILE = os.path.realpath(
     os.path.join(_TOOLS_BOOTSTRAP, "repo_owned_files.py")
@@ -182,6 +183,19 @@ def _verify_engine_rev(sibling_module, sibling_filename):
         raise err
 
 
+def _load_file_lock():
+    """공용 파일 프리미티브 seam(`file_lock.py`)을 같은 tools/ 에서 경로 로드한다.
+
+    원자 교체 대상 파일을 읽는 지점은 이 seam 의 공유 읽기를 지난다 — 일반 `open` 리더가 하나라도
+    잡고 있으면 Windows 는 그 파일의 원자 교체를 WinError 32 로 막는다. 부재/손상/rev 불일치는
+    엔진 사본 손상이므로 흡수하지 않는다(fail-loud·재동기 안내).
+    """
+    return _load_module_from_path(
+        Path(__file__).resolve().with_name("file_lock.py"), "file_lock.py",
+        verifier=_verify_engine_rev, cache=True,
+    )
+
+
 # ── 스키마 상수 ────────────────────────────────────────────────────────────
 ON_VALUES = ("shell", "edit", "delegate", "prompt")
 
@@ -248,8 +262,9 @@ def _parse_text(text: str, *, layer: str) -> tuple[tuple[Rule, ...], int]:
 
 
 def _read_text(path: Path) -> str:
+    """레지스트리·marker 판독 한 지점(공용 읽기 seam 위임). 부재·판독 실패는 빈 본문."""
     try:
-        return path.read_text(encoding="utf-8")
+        return _load_file_lock().read_text_shared(path, encoding="utf-8")
     except OSError:
         return ""
 
@@ -302,7 +317,9 @@ def judge_recall(root, *, on: str, text: str, seen=None) -> dict | None:
                  있으면 매칭 문안 뒤(매칭 0 이면 단독으로) 경고 줄이 같은 문자열에 이어붙는다 —
                  세 어댑터 모두 이 필드 하나만 주입하므로 파손 경고가 문안 없이 사라지지 않는다.
       - `broken` (있으면) 레지스트리 파손 항목 수 — 판정 불능은 침묵하지 않는다.
-    어떤 입력에도 예외를 던지지 않는다(비차단)."""
+    어떤 입력에도 예외를 던지지 않는다(비차단) — 판독 실패·파손 항목은 값으로 접힌다. 형제 seam
+    부재/손상/rev 불일치만 다른 엔진 모듈과 같은 규칙으로 올라가며, 그 경우도 어댑터 3종의
+    fail-open 이 도구 실행을 막지 않는다."""
     if on not in ON_VALUES:
         return None
     rules, broken = _load_all(root)
@@ -355,8 +372,8 @@ def load_seen_marker(root, session_id) -> set[str]:
     """이번 세션에 이미 주입한 규칙 key 집합(marker 부재·파손은 빈 집합 — 비차단)."""
     path = _marker_path(root, session_id)
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        data = json.loads(_read_text(path))
+    except ValueError:
         return set()
     if isinstance(data, list):
         return {str(k) for k in data}
@@ -373,7 +390,7 @@ def record_seen_marker(root, session_id, keys) -> None:
     existing.update(keys)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(sorted(existing)), encoding="utf-8")
+        path.write_text(json.dumps(sorted(existing)), encoding="utf-8", newline="\n")
     except OSError:
         pass  # marker 쓰기 실패는 소음(재주입)일 뿐 — 도구 실행을 막지 않는다.
 
@@ -387,19 +404,28 @@ def rearm_seen_marker(root, session_id) -> None:
 
 
 def _write_json(payload: dict) -> None:
-    text = json.dumps(payload, ensure_ascii=False)
-    try:
-        console_encoding = _load_module_from_path(
-            Path(__file__).resolve().with_name("console_encoding.py"),
-            "console_encoding.py",
-            verifier=_verify_engine_rev,
-        )
-        console_encoding.write_machine_line(text)
-    except Exception:  # noqa: BLE001 — CLI 출력 실패는 fail-soft(stdout 직접 폴백).
-        print(text)
+    """기계 판독 한 줄(JSON)을 콘솔 코덱 전환과 무관하게 UTF-8 로 내보낸다.
+
+    부모(opencode plugin)가 stdout 을 파싱하므로 콘솔 codepage 강등은 되돌릴 수 없는 손실이다 —
+    `pm_log._write_machine_line` 과 같은 공용 seam 을 쓰고, 형제 부재/손상/rev 불일치는 삼키지
+    않는다(엔진 사본 손상은 fail-loud). 부모는 비영 rc 를 이미 fail-open 으로 다룬다.
+    """
+    console_encoding = _load_module_from_path(
+        Path(__file__).resolve().with_name("console_encoding.py"),
+        "console_encoding.py",
+        verifier=_verify_engine_rev,
+        cache=True,
+    )
+    console_encoding.write_machine_line(json.dumps(payload, ensure_ascii=False))
 
 
 def main(argv: list[str] | None = None) -> int:
+    _console_encoding = _load_module_from_path(
+        Path(__file__).resolve().with_name("console_encoding.py"),
+        "console_encoding.py",
+        verifier=_verify_engine_rev,
+    )
+    _console_encoding.configure_console_utf8()
     parser = argparse.ArgumentParser(
         description="판단 원칙 레지스트리 — 로더 + recall 판정 CLI(opencode subprocess 진입점).",
     )

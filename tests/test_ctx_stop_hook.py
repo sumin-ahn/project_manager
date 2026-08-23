@@ -13,7 +13,11 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 CLAUDE = REPO / "templates" / "claude_code" / ".claude"
-PM_PRINCIPLES_PY = REPO / ".project_manager" / "tools" / "pm_principles.py"
+TOOLS = REPO / ".project_manager" / "tools"
+PM_PRINCIPLES_PY = TOOLS / "pm_principles.py"
+# 로더가 실행 중 지연 로드하는 형제 seam(중앙 로더·공용 읽기·기계 출력) — 채택자 트리엔 항상
+# 함께 있으므로 사본 fixture 도 같은 집합을 깔아야 실제 훅 경로와 같아진다.
+ENGINE_SIBLING_PY = ("repo_owned_files.py", "file_lock.py", "console_encoding.py")
 
 
 def _load(name: str):
@@ -43,6 +47,8 @@ def _write_registry(root: Path, text: str, *, with_loader: bool = True) -> None:
         tools = root / ".project_manager" / "tools"
         tools.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(PM_PRINCIPLES_PY, tools / "pm_principles.py")
+        for name in ENGINE_SIBLING_PY:
+            shutil.copyfile(TOOLS / name, tools / name)
 
 
 def test_recall_and_ctx_band_additional_context_coexist(tmp_path):

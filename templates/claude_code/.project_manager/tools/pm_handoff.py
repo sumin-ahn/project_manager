@@ -1041,6 +1041,7 @@ SHIPPING_GLOBS = (
     "requirements*.txt",              # 런타임/개발 의존성
     ".project_manager/wiki/pm_role.md",       # 방법론 — templates 로 출하
     ".project_manager/wiki/pm_playbook.md",
+    ".project_manager/wiki/pm_principles.md",
     ".project_manager/wiki/README.md",
     ".project_manager/wiki/_template/**",
     ".project_manager/wiki/domain/**",

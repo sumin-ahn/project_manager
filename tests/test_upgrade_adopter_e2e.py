@@ -730,7 +730,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   목록이 아니라 그 밖의 코드·산문을 바꿨고, 이 절의 역적용 delta anchor 네 자리는 전부
 #   그 구간 밖이라 그대로 유일 해소된다. 배달 경계(planning → apply → self-update 순서)와
 #   배달 파일 집합은 여전히 불변이고, 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "618e306618b778d3ad593be2ca2faf960f0e346cc96c180fd8c88c4a85f02903"
+_T0585_PM_UPDATE_SHA256 = "37babe5274bf015189d565459018105c9e91a995ece96c1845da2df045a9604e"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
@@ -830,6 +830,12 @@ def _t0585_pm_update_source() -> str:
     해당하는 새 텍스트를 찾아 marker 문자열만 갱신한 뒤 이 함수를 처음부터 다시 돌린다.
 
     T-0748 재핀 이력(배달 경계가 그대로였던 근거는 여기 계속 쌓는다):
+
+    T-0848 — `drift_changes` 가 엔진 사본 rev skew 를 `None`(게이트 비적용) 으로 접던 분기를 없애고
+    예외를 그대로 전파한다(livegate drift-0 게이트가 자기 양성 형상에서 false-green 이 되던 결함).
+    바뀐 곳은 livegate 전용 질의 헬퍼이며 `_main` 의 source/manifest planning → apply →
+    self-update 배달 순서는 한 줄도 건드리지 않는다. marker 4곳 모두 그대로 유일 해소됐고
+    anachronism 부재 단언 2건도 통과한 상태에서 SHA 만 갱신했다.
 
     T-0777 — codex 훅 범용 진입점의 역방향 축이 `check_adapter_hook_sets` 결과에 advisory 목록을
     더하고 `_print_adapter_hook_set_finding` 이 그 목록을 한 벌 더 출력한다. 두 함수 모두 이

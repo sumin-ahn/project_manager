@@ -12107,13 +12107,17 @@ def _reject_cross_role_prepare(role: str, tier: str, conf: dict[str, str]) -> No
     스위치 판정과 함께 쓴 값을 그대로 받는다(불변식 3 — 실행 엔진 사본 repo 로 읽으면 역할 매핑이 없는
     사본에서 조용히 no-op). 거부는 `verdict=="deny"` 중에서도 cross-harness 불일치 사유뿐이고,
     그 구별은 사용자용 사유 문자열이 아니라 구조 필드(harness/model 이 비어 있지 않음)로 한다(불변식 1).
-    가드 로드 실패·PM 하네스 미상 등 판정불능은 fail-open 이되 침묵하지 않는다(불변식 4).
+    가드 로드 실패·PM 하네스 미상 등 판정불능은 fail-open 이되 침묵하지 않는다(불변식 4). 다만
+    형제 사본 rev 불일치는 판정불능이 아니라 엔진 손상이라 그대로 올린다 — 사본이 갈린 사실이
+    "채널 판정 불가" 한 줄에 묻히면 그 사본으로 계속 위임한다.
     """
     try:
         guard = _load_delegate_channel_guard()
         pm_harness = _session_harness(os.environ) or ""
         result = guard.decide(role, tier, conf, pm_harness)
     except Exception as exc:
+        if _is_engine_rev_skew(exc):
+            raise  # 형제 사본 불일치는 다른 형제 로더와 같은 규칙으로 fail-loud (fail-open 아님).
         detail = " ".join(str(exc).splitlines()).strip() or type(exc).__name__
         print(
             "[pm-delegate/warn] cross 역할 채널 판정 불가"

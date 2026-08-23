@@ -808,6 +808,7 @@ CONSUMPTION_TIME_TOKENS: dict[str, frozenset] = {
 SED_EXCLUDE_FLOOR = frozenset({
     ".project_manager/wiki/pm_role.md",
     ".project_manager/wiki/pm_playbook.md",
+    ".project_manager/wiki/pm_principles.md",
 })
 
 
@@ -829,11 +830,11 @@ def _derive_sed_exclude_relpaths(manifest_path: Path) -> frozenset:
     placeholder는 실제 프로젝트 값으로 치환돼야 하므로 방법론 리터럴 제외 집합에는 들지 않는다.
     서브디렉토리(`tickets/_template.md`·`raw/spikes/_template.md`·`domain/_template.md`)는 "직속"
     조건으로, 직속 템플릿(`pm_state.template.md`)은 `_is_template_scaffold` 로 제외된다 — 현재
-    산출은 정확히 {pm_role.md, pm_playbook.md}.
+    산출은 정확히 {pm_role.md, pm_playbook.md, pm_principles.md}.
 
     manifest 파싱은 pm_update.read_manifest 재사용(새 파서 신설 없음·_render_managed_relpaths 동형).
     manifest 부재·로드 실패 → 리터럴 floor SED_EXCLUDE_FLOOR (fail-soft — 빈 집합이면 broken-manifest
-    엣지에서 pm_role·pm_playbook 이 조용히 오치환되므로 기존 제외를 floor 로 보장·should-fix). 정상
+    엣지에서 방법론 문서가 조용히 오치환되므로 기존 제외를 floor 로 보장·should-fix). 정상
     파싱은 파생 결과를 그대로 반환한다(manifest 가 방법론 문서를 명시적으로 뺐다면 그 판단을 존중)."""
     wiki_prefix = ".project_manager/wiki/"
     if not manifest_path.is_file():

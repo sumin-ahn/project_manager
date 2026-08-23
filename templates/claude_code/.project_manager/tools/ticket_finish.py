@@ -2501,6 +2501,8 @@ class TicketFinisher:
         try:
             baseline_tree = self._materialize_tree(code_tree, claimed_rev)
         except (OSError, RuntimeError) as exc:
+            if _is_engine_rev_skew(exc):
+                raise  # 사본 불일치는 판정 skip 한 줄로 접지 않는다(다른 형제 로더와 같은 규칙).
             print(
                 f"  ⚠ 자기 축 회귀 판정 skip — {ticket_id}: baseline 판정 실패({exc})",
                 file=sys.stderr,

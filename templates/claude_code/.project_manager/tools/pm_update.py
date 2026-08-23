@@ -4230,13 +4230,13 @@ def drift_changes(engine_root: Path) -> list[str] | None:
     except _EngineSyncNotationContextError:
         return None
     except RuntimeError as exc:
-        # 엔진 사본 skew(마커 보존을 위해 `_resolve_engine_sync_plan` 이 원본 그대로 재-raise 함)만
-        #   여기서 판정 불능으로 접는다 — `plan()` 이 낼 수 있는 다른 RuntimeError(예
-        #   `EmptyShippingInventoryError`)는 이 게이트가 가릴 대상이 아니라 그대로 전파한다(`plan()`
-        #   호출은 이 함수에서도 원래 무보호였다 — 좁히지 않으면 F-001 이전 세대보다 더 넓게
-        #   삼키는 회귀가 된다).
-        if _is_engine_rev_skew(exc):
-            return None
+        # 엔진 사본 skew(마커 보존을 위해 `_resolve_engine_sync_plan` 이 원본 그대로 재-raise 함)도
+        #   여기서 판정 불능으로 접지 않는다 — 이 게이트는 "실행 엔진 사본이 upstream 과 갈렸는가"
+        #   를 묻는데, 사본끼리 rev 가 갈린 트리는 그 질문의 **가장 강한 양성**이다. `None` 은
+        #   호출부에서 "이 형상엔 게이트가 적용되지 않음(무차단)" 으로 읽히므로, 접으면 게이트가
+        #   잡으라고 만들어진 그 형상에서만 조용히 통과한다(false-green). 흡수 없이 올려 사본
+        #   재동기 안내를 그대로 보이고, `plan()` 의 다른 RuntimeError(예
+        #   `EmptyShippingInventoryError`)도 종전대로 전파한다.
         raise
     missing = sync_plan["missing"]
     if missing:

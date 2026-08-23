@@ -253,6 +253,15 @@ REVIEWED_NON_INVENTORY_EXCEPTIONS: dict[WalkKey, WalkException] = {
         "'*'",
     ): WalkException("tmp_path add-harness fixture의 각 landing namespace가 nonempty인지 검증"),
     (
+        "tests/test_board_lifecycle_rejections.py",
+        "_tickets_tree_snapshot",
+        "rglob",
+        "'*'",
+    ): WalkException(
+        "tmp_path 합성 tickets 트리(비-git)의 거부 전후 전수 바이트 스냅샷 — 판정이 '거부인데 "
+        "파일이 하나라도 생기거나 옮겨지지 않았다'라 전수 열거가 본질이고, repo-owned seam 은 "
+        "git 추적분만 세어 거부가 새로 만든 미추적 산출을 놓친다(conftest 세션 스냅샷과 같은 축)"),
+    (
         "tests/test_pm_update.py",
         "_landed",
         "rglob",
