@@ -1017,6 +1017,45 @@ def test_opencode_pre_spawn_symlink_rejection_closes_raw_ledger(
     assert "미마감 raw 없음" in capsys.readouterr().out
 
 
+def test_raw_rows_without_run_id_or_copy_still_query_and_close_cleanly(
+        pd, tmp_path, capsys):
+    """[[T-0838]] — 역방향: `run_id`·`copy` 결속 도입이 그 두 키가 없는 기존 행(부재=증거
+    없음)을 손상으로 읽지 않는다. 조회(`raw` · `--unfinished`)와 마감이 그대로 정상이어야 한다."""
+    output_dir = tmp_path / "raw"
+    output_dir.mkdir()
+    ledger_path = output_dir / "raw_outputs.json"
+    relay = pd._load_relay()
+    # 결속 이전 형상 그대로 — extra 에 run_id·copy 를 전혀 싣지 않는다.
+    record_id = relay.start_raw_record(
+        ledger_path, surface="delegate", harness="claude", model="opus",
+        role="developer", raw_path=output_dir / "seed.txt", attempt="primary",
+        extra={"ticket": "T-9200"},
+    )
+
+    capsys.readouterr()
+    assert pd._cmd_raw(["--unfinished", "--output-dir", str(output_dir)]) == 0
+    out = capsys.readouterr()
+    assert "미마감 raw 1건" in out.out
+    assert "경고" not in out.err          # 부재를 손상으로 읽지 않는다 — 경고 0
+
+    unfinished = relay.raw_records(ledger_path, unfinished_only=True)
+    assert len(unfinished) == 1
+    assert "run_id" not in unfinished[0] and "copy" not in unfinished[0]
+
+    # 마감도 결속 이전과 동일하게 정상 — extra 에 run_id·copy 를 계속 안 실어도 실패하지 않는다.
+    relay.finish_raw_record(
+        ledger_path, record_id, rc=0, elapsed_sec=1.0, silence_sec=None,
+    )
+    finished = relay.raw_records(ledger_path)
+    assert len(finished) == 1
+    assert finished[0]["finished_at"] is not None
+    assert "run_id" not in finished[0] and "copy" not in finished[0]
+
+    capsys.readouterr()
+    assert pd._cmd_raw(["--output-dir", str(output_dir)]) == 0
+    assert "경고" not in capsys.readouterr().err
+
+
 @pytest.mark.skipif(not _can_symlink(), reason="symlink 생성 능력 필요")
 def test_opencode_symlink_cwd_preserves_lexical_process_and_file_paths(
         pd, tmp_path):
@@ -7452,6 +7491,7 @@ def _slot_ticket_copy(pd, tmp_path: Path, gate: str, text: str, *, role=None,
         path.unlink()
     return pd.TicketCopyPlan(
         path, run_dir, gate, role or pd.INTERNAL_REVIEW_ROLE, ordinal, board_path,
+        "b" * 32,
     )
 
 
