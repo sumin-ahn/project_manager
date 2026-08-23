@@ -113,6 +113,14 @@ def _wire(external, monkeypatch, tmp_path, *, series: list[int], conf=None,
         ))
     if stub_diff_cap:
         monkeypatch.setattr(external, "_diff_cap_refusal", lambda *a, **k: None)
+    else:
+        # 서킷 절은 총량 축만 태운다 — 폭의 기준점(묶음 장부 통합 브랜치 · 그 merge-base)은
+        # 이 tmp REPO 에 없으므로 해소된 값을 그 자리에 넣는다. 기준점 해소 자체의 거부는
+        # 전용 파일(`test_external_review_diff_cap.py`)이 실 git 으로 값 단언한다.
+        monkeypatch.setattr(
+            external, "cluster_integration_tip", lambda *a, **k: ("task/main", None))
+        monkeypatch.setattr(
+            external, "integration_anchor", lambda *a, **k: ("a" * 40, None))
     reviewer = _Reviewer(series)
     monkeypatch.setattr(external, "run_review", reviewer)
     real_main = external.main

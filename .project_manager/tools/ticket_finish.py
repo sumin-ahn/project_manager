@@ -814,10 +814,10 @@ def get_ticket_estimate(board_py: Path, ticket_id: str) -> str | None:
 
 
 def get_ticket_claimed_rev(board_py: Path, ticket_id: str) -> str | None:
-    """ticket_id 의 frontmatter `claimed_rev` (없으면 None) — 측정 폭의 claim 앵커 입력.
+    """ticket_id 의 frontmatter `claimed_rev` (없으면 None) — 자기 축 회귀 baseline 입력.
 
     `board.py claim` 이 claim 시점 코드 트리 HEAD 를 박제한 값이다. 구 티켓(박제 이전)엔
-    없으므로 None 이 정상 형상이고, 그때 폭을 옛 것으로 접는 판정은 소비자가 소유한다."""
+    없으므로 None 이 정상 형상이고, 그때 그 축을 접는 판정은 소비자가 소유한다."""
     claimed_rev = _ticket_frontmatter(board_py, ticket_id).get("claimed_rev")
     return claimed_rev.strip() or None if isinstance(claimed_rev, str) else None
 
@@ -904,7 +904,6 @@ class DiffTicketInputs(NamedTuple):
     touches: list[str]
     estimate: str | None
     board_error: str | None
-    claimed_rev: str | None = None
 
 
 def get_ticket_touches(board_py: Path, ticket_id: str) -> list[str]:
@@ -1068,9 +1067,7 @@ def _fallback_ticket_frontmatter(
     estimate = _fallback_frontmatter_scalar(text, "estimate")
     if estimate not in {"small", "medium", "large"}:
         estimate = None
-    # 앵커 형태 검증은 측정 seam(`claim_anchor`)이 소유한다 — 여기서는 원문 스칼라만 복구한다.
-    return {"touches": touches, "estimate": estimate,
-            "claimed_rev": _fallback_frontmatter_scalar(text, "claimed_rev")}
+    return {"touches": touches, "estimate": estimate}
 
 
 # ── domain 연동 (soft 알림) ──────────────────────────────────
@@ -1645,8 +1642,9 @@ def _cluster_integration_branch(board_py: Path, ticket_id: str) -> str | None:
     """이 티켓이 속한 묶음의 **통합 브랜치** 이름 (선언 부재·조회 실패는 None).
 
     값의 소유자는 board 의 묶음 장부(`base_branch`)다 — 이 도구는 그 선언을 읽기만 한다.
-    티켓이 묶음을 선언하지 않으면 board 가 크기 1 묶음으로 접어 주고, 그 장부가 없으면
-    통합 브랜치도 없다(판정 불능 — 호출부가 옛 기준으로 접고 그 사실을 알린다).
+    값은 장부를 만들 때 박히므로(발행이 만드는 크기 1 장부 포함) 선언 부재는 판정 입력이
+    없다는 사실이고, 이 판독을 쓰는 두 소비자(완료 기록 판정·리뷰 송신 폭)는 그 사실에
+    **멈춘다** — 다른 기준으로 접는 갈래가 없다.
     """
     _cluster, ledger = ticket_cluster_ledger(board_py, ticket_id)
     declared = (ledger or {}).get("base_branch")
@@ -1893,29 +1891,24 @@ def build_log_skeleton(
 
 # ── 핵심 흐름 ──────────────────────────────────────────────────────────
 
-# `external_review.claim_anchor` 는 비교적 최근 신설된 심볼이다 — 구형/부분 설치
-# external_review 사본(측정 numstat seam 은 있으나 이 seam 은 없음)에서 무가드 호출은
-# AttributeError 로 완료 기록을 벽돌로 만든다(`_diff_numstat_by_path` 의 `required` 가드와
-# 같은 클래스). 부재는 앵커 미적용(옛 폭)으로 접고 같은 loud 경고 1줄을 남긴다.
-_CLAIM_ANCHOR_SEAM_ABSENT_NOTE = (
-    "external_review 사본에 claim_anchor 부재(구형/부분 설치) — 폭 과소 측정 가능(옛 폭·"
-    "작업트리+직전 커밋 한 칸으로만 잰다). pm-update 로 .project_manager/tools/ 를 재동기하라."
+# 판정 기준(통합 브랜치)을 해소하지 못한 실행은 멈춘다 — 측정 폭·사설 참조·잔여 인구가 모두
+# 그 기준을 입력으로 받으므로, 다른 기준으로 접으면 세 판정이 각자 다른 것을 본다.
+_INTEGRATION_TIP_UNDECLARED = (
+    "{ticket} 묶음 장부가 통합 브랜치(base_branch)를 선언하지 않았다 — 완료 기록의 측정 폭·"
+    "사설 참조 판정·잔여 인구가 그 기준을 입력으로 받는다. `board.py cluster show <묶음>` 으로 "
+    "장부를 확인하고 `base_branch` 를 채운 뒤 다시 실행하라."
 )
-
-# 선언한 통합 브랜치를 이 트리에서 못 찾았다는 loud 문구 — 조용한 강등을 만들지 않는다.
-# (선언 자체가 없는 형상은 판정을 옛 기준으로 접기만 한다 — 그 사실을 값으로 알리는 자리는
-# 리뷰 송신 진입점이다.)
-_INTEGRATION_TIP_UNRESOLVED_NOTE = (
-    "통합 브랜치 해소 실패 — {ticket} 장부가 선언한 {branch} 가 이 코드 트리에 없다. 사설 참조 "
-    "판정과 측정 폭이 도입 커밋 유무만 보는 옛 기준으로 접힌다(장부의 통합 브랜치 이름과 이 "
-    "트리의 브랜치를 대조하라)."
+_INTEGRATION_TIP_UNRESOLVED = (
+    "{ticket} 장부가 선언한 통합 브랜치 {branch} 가 이 코드 트리에 없다 ({tree}) — 판정 기준을 "
+    "해소하지 못했다. 장부의 통합 브랜치 이름과 이 트리의 브랜치를 대조하라."
 )
-
-
-_RESIDUAL_POPULATION_FALLBACK_NOTE = (
-    "잔여 판정 인구 축소 — {ticket} 통합 브랜치 tip 을 해소하지 못해 커밋된 변경을 인구에서 "
-    "뺀다(작업 트리 변경만 판정한다). 선언 밖 변경이 이미 커밋돼 있으면 이 실행은 그것을 보지 "
-    "못한다."
+_INTEGRATION_ANCHOR_SEAM_ABSENT = (
+    "external_review 사본에 integration_anchor 부재(구형/부분 설치) — 측정 폭의 기준점을 물을 "
+    "수 없다. pm-update 로 .project_manager/tools/ 를 재동기하라."
+)
+_RESIDUAL_POPULATION_UNRESOLVED = (
+    "{ticket} 통합 브랜치 tip 으로 커밋된 인구를 읽지 못했다 ({tip}) — 잔여 판정 인구가 성립"
+    "하지 않는다. 이 트리에서 그 브랜치가 해소되는지 확인하라."
 )
 _RESIDUAL_ATTRIBUTION_SKIP_NOTE = (
     "잔여 판정 귀속 보정 skip — {ticket} 창 안 티켓 touches 를 읽지 못했다 ({error}). 같은 "
@@ -2104,23 +2097,15 @@ class TicketFinisher:
                 get_ticket_touches(self._board_py, ticket_id),
                 get_ticket_estimate(self._board_py, ticket_id),
                 None,
-                get_ticket_claimed_rev(self._board_py, ticket_id),
             )
         fallback = _fallback_ticket_frontmatter(
             self._board_py, ticket_id, external,
         )
-        claimed_rev = fallback.get("claimed_rev")
         return DiffTicketInputs(
             _clean_touches(fallback.get("touches")),
             fallback.get("estimate") if isinstance(fallback.get("estimate"), str) else None,
             snapshot.error,
-            claimed_rev if isinstance(claimed_rev, str) and claimed_rev else None,
         )
-
-    @staticmethod
-    def _warn_claim_anchor_gap(ticket_id: str, note: str) -> None:
-        """측정 폭이 옛 폭으로 접혔다는 단일 loud 진단 표면 (조용한 과소 측정 금지)."""
-        print(f"  ⚠ diff 서킷브레이커 측정 폭 — {ticket_id} {note}", file=sys.stderr)
 
     def _warn_once(self, key: str, message: str) -> None:
         """같은 사유를 한 실행에서 **한 번만** 낸다 (조용한 강등 금지 · 중복 출력 금지).
@@ -2132,32 +2117,39 @@ class TicketFinisher:
         self._loud_notes.add(key)
         print(f"  ⚠ {message}", file=sys.stderr)
 
-    def _integration_tip(self, ticket_id: str, code_tree: Path) -> str | None:
-        """판정 기준으로 쓸 통합 브랜치 — 장부 선언 ∩ 이 코드 트리 실재 (없으면 None).
+    def _measurement_anchor(self, ticket_id: str, external) -> str:
+        """측정 폭의 기준점 — 통합 브랜치와의 merge-base. 해소 실패는 정지다.
 
-        선언이 없으면 조용히 None 이다(묶음 장부가 통합 브랜치를 갖지 않는 형상 — 판정은 옛
-        기준으로 접힌다). 선언은 있는데 이 트리에서 해소되지 않으면 그 어긋남을 **한 실행에
-        한 줄로** 알린다 — 선언과 실재가 갈린 상태를 통과로 위장하지 않는다(판정 표면 여럿이
-        같은 해소를 부르므로 중복 출력은 막는다)."""
+        두 게이트(diff 서킷브레이커·사설 참조)가 이 한 자리에서 같은 값을 받는다 — 리뷰가 본
+        표면과 완료 기록이 보는 표면이 갈리지 않는다. 구형/부분 설치로 측정 seam 이 없으면
+        폭을 물을 수 없으므로 그것도 정지다(옛 폭으로 접는 갈래가 없다)."""
+        anchor_fn = getattr(external, "integration_anchor", None)
+        if anchor_fn is None:
+            raise _CloseObservationFailure(_INTEGRATION_ANCHOR_SEAM_ABSENT)
+        code_tree = self._code_tree()
+        anchor, reason = anchor_fn(
+            code_tree, self._integration_tip(ticket_id, code_tree))
+        if reason is not None:
+            raise _CloseObservationFailure(f"{ticket_id} {reason}")
+        return anchor
+
+    def _integration_tip(self, ticket_id: str, code_tree: Path) -> str:
+        """판정 기준으로 쓸 통합 브랜치 — 장부 선언 ∩ 이 코드 트리 실재.
+
+        선언이 없거나 이 트리에서 해소되지 않으면 **멈춘다**. 이 값은 측정 폭·사설 참조 신규
+        판정·잔여 인구 세 판정의 공통 기준이라, 없는 채로 진행하면 세 판정이 각자 다른 것을
+        보고 갈린다(선언과 실재가 갈린 상태를 통과로 위장하지도 않는다)."""
         branch = _cluster_integration_branch(self._board_py, ticket_id)
         if not branch:
-            return None
-        try:
-            rc, _out = self._run_git_stdout_at_fn(
-                code_tree,
-                ["rev-parse", "--verify", "--quiet", f"{branch}^{{commit}}"],
-            )
-        except Exception as exc:  # noqa: BLE001 — 해소 실패는 판정 불능(차단 아님).
-            if _is_engine_rev_skew(exc):
-                raise
-            rc = 1
+            raise _CloseObservationFailure(
+                _INTEGRATION_TIP_UNDECLARED.format(ticket=ticket_id))
+        rc, _out = self._run_git_stdout_at_fn(
+            code_tree,
+            ["rev-parse", "--verify", "--quiet", f"{branch}^{{commit}}"],
+        )
         if rc != 0:
-            self._warn_once(
-                f"integration-unresolved:{ticket_id}",
-                _INTEGRATION_TIP_UNRESOLVED_NOTE.format(
-                    ticket=ticket_id, branch=branch),
-            )
-            return None
+            raise _CloseObservationFailure(_INTEGRATION_TIP_UNRESOLVED.format(
+                ticket=ticket_id, branch=branch, tree=code_tree))
         return branch
 
     @staticmethod
@@ -2521,23 +2513,11 @@ class TicketFinisher:
         cap = external._diff_cap(external.local_config(REPO), estimate)
         if cap is None:
             return None
-        claim_anchor_fn = getattr(external, "claim_anchor", None)
-        if claim_anchor_fn is None:
-            # 형제 seam 부재와 같은 규칙(`_diff_numstat_by_path` 의 required 가드 동형) —
-            # AttributeError 로 완료 기록을 벽돌로 만들지 않고 앵커 없음(옛 폭)으로 접는다.
-            claimed_rev, anchor_note = None, _CLAIM_ANCHOR_SEAM_ABSENT_NOTE
-        else:
-            code_tree = self._code_tree()
-            claimed_rev, anchor_note = claim_anchor_fn(
-                code_tree, inputs.claimed_rev,
-                integration_ref=self._integration_tip(ticket_id, code_tree),
-            )
-        if anchor_note is not None:
-            self._warn_claim_anchor_gap(ticket_id, anchor_note)
+        anchor = self._measurement_anchor(ticket_id, external)
         try:
             attribution = self._ticket_diff_attribution(
                 ticket_id, external, touches, board_error=inputs.board_error,
-                claimed_rev=claimed_rev,
+                claimed_rev=anchor,
             )
         except OSError:
             return None
@@ -2563,7 +2543,7 @@ class TicketFinisher:
 
     # ── 사설 참조 완료 기록 preflight ────────────────────────────────────────
     # 판정식·표면 술어는 private_refs.py 소유(사본 0). 측정 폭은 diff 서킷브레이커와 같은
-    # 앵커(`external_review.claim_anchor`)를 재사용한다 — 리뷰가 본 표면과 이 게이트가 보는
+    # 앵커 seam(`_measurement_anchor`)을 재사용한다 — 리뷰가 본 표면과 이 게이트가 보는
     # 표면이 갈리지 않는다. rc 정책의 축은 **그 줄이 통합 브랜치에 이미 있는가**다: 통합
     # 브랜치에 없는 줄(도입 커밋이 없거나, 커밋은 됐지만 그 커밋이 통합 브랜치의 조상이
     # 아니다)의 참조는 이 작업이 새로 들인 유입이라 넓은 recall 의 raw 축 전부를 차단하고,
@@ -2573,8 +2553,8 @@ class TicketFinisher:
     #
     # 이 기준은 **커밋·재배치 순서에 흔들리지 않는다** — 같은 변경이 작업트리에만 있든, 이미
     # 커밋됐든, 재배치 전이든 후든 판정이 같다. 순서를 운영 규칙으로 지키게 하던 자리를 판정
-    # 기준 자체가 대체한다. 통합 브랜치를 해소하지 못하면(선언 부재·이 트리에 없음) 도입 커밋
-    # 유무만 보는 옛 기준으로 접고 그 사실을 시끄럽게 남긴다.
+    # 기준 자체가 대체한다. 통합 브랜치를 해소하지 못하면(선언 부재·이 트리에 없음) 이 판정은
+    # 다른 기준으로 접지 않고 멈춘다.
 
     def _private_ref_surface_paths(
         self, code_tree: Path, touches: Sequence[str], private_refs, external,
@@ -2681,7 +2661,7 @@ class TicketFinisher:
 
     def _private_ref_raw_by_novelty(
         self, code_tree: Path, raw_only: Sequence[tuple[str, int, str]],
-        integration_tip: str | None,
+        integration_tip: str,
     ) -> tuple[list[tuple[str, int, str, str]], list[tuple[str, int, str, str]]]:
         """raw-only offender 를 (신규 유입 + 사유 표기, 흡수분 + 그 줄의 blame sha)로 가른다.
 
@@ -2691,8 +2671,8 @@ class TicketFinisher:
         여기서 읽지 않는다 — 채택자 트리에 그 파일이 없어 판정이 영구 강등되고, 대장 재생성이
         곧 게이트 통과가 된다.
 
-        통합 브랜치를 해소하지 못했으면 도입 커밋 유무만 보는 옛 기준으로 접는다 — 커밋된 줄은
-        전부 흡수분 쪽(경고)이다. 그 강등은 호출부가 한 줄로 알린다(조용한 완화 금지)."""
+        통합 브랜치는 항상 값이다(`_integration_tip` 이 해소하지 못하면 이 판정에 오지 않고
+        멈춘다) — 도입 커밋 유무만 보는 기준으로 접는 갈래가 없다."""
         novel: list[tuple[str, int, str, str]] = []
         absorbed: list[tuple[str, int, str, str]] = []
         for path, line, token in raw_only:
@@ -2701,8 +2681,7 @@ class TicketFinisher:
             )
             if sha is None:
                 novel.append((path, line, token, _PRIVATE_REF_UNCOMMITTED_NOTE))
-            elif integration_tip is None or self._line_reached_integration(
-                    code_tree, sha, integration_tip):
+            elif self._line_reached_integration(code_tree, sha, integration_tip):
                 absorbed.append((path, line, token, sha))
             else:
                 novel.append(
@@ -2718,9 +2697,10 @@ class TicketFinisher:
         새로 들인 유입이라 함께 차단한다. 통합 브랜치가 이미 가진 줄의 raw 는 blame sha 를
         실어 알린다(차단감이 따로 있으면 차단 문구 안에, 없으면 stderr 경고로).
 
-        측정 불가(모듈 부재·touches 부재·표면 교집합 없음·앵커 부재)는 **가드 off** 다 —
-        이 축의 실패로 완료 기록을 막지 않는다(diff_cap 과 같은 자세 — hard 차단은 확정 사실
-        에만 건다)."""
+        측정 불가(모듈 부재·touches 부재·표면 교집합 없음)는 **가드 off** 다 — 이 축의 실패로
+        완료 기록을 막지 않는다(diff_cap 과 같은 자세 — hard 차단은 확정 사실에만 건다). 판정
+        기준(통합 브랜치)이 없는 것은 그 축에 들지 않는다 — 기준 없는 판정은 통과가 아니라
+        정지다."""
         private_refs = _load_private_refs()
         if private_refs is None:
             return None
@@ -2728,10 +2708,9 @@ class TicketFinisher:
         if external is None:
             return None
         measured_diff_text_fn = getattr(external, "measured_diff_text", None)
-        claim_anchor_fn = getattr(external, "claim_anchor", None)
         block_path_fn = getattr(external, "_diff_block_path", None)
-        if measured_diff_text_fn is None or claim_anchor_fn is None or block_path_fn is None:
-            return None  # 구형/부분 external_review 사본 — diff_cap 이 이미 같은 부재를 경고했다.
+        if measured_diff_text_fn is None or block_path_fn is None:
+            return None  # 구형/부분 external_review 사본 — 표면 자체가 없다.
         inputs = self._diff_ticket_inputs(ticket_id, external)
         touches = self._normalize_measured_touches(inputs.touches, warn=False)
         if not touches:
@@ -2743,15 +2722,11 @@ class TicketFinisher:
         if not surface_paths:
             return None
         integration_tip = self._integration_tip(ticket_id, code_tree)
-        claimed_rev, anchor_note = claim_anchor_fn(
-            code_tree, inputs.claimed_rev, integration_ref=integration_tip,
-        )
-        if anchor_note is not None:
-            self._warn_claim_anchor_gap(ticket_id, anchor_note)
+        anchor = self._measurement_anchor(ticket_id, external)
         relative_paths = [path.relative_to(code_tree).as_posix() for path in surface_paths]
         try:
             diff_text = measured_diff_text_fn(
-                code_tree, "HEAD", relative_paths, claimed_rev=claimed_rev,
+                code_tree, "HEAD", relative_paths, claimed_rev=anchor,
             )
         except OSError:
             return None
@@ -2991,25 +2966,15 @@ class TicketFinisher:
         (`git_scope_stageable` — 미존재·미추적 제거) 선언은 그대로다. pathspec 만 보면 선언한
         삭제가 잔여로 둔갑한다.
 
-        통합 tip 미해소(장부 미선언·트리에 없음·조회 실패)는 **종전 dirty 인구**로 접고 그
-        축소를 한 줄로 알린다 — 조용히 접으면 커밋된 선언 밖 변경이 보이지 않는 채로 통과한다.
+        통합 tip 은 판정 인구의 기준이라 해소하지 못하면 멈춘다(`_integration_tip`) — dirty
+        인구로 접으면 커밋된 선언 밖 변경이 보이지 않는 채로 통과한다.
         """
         tip = self._integration_tip(ticket_id, cwd)
-        rc, out = 1, ""
-        if tip is not None:
-            try:
-                rc, out = self._run_git_stdout_at_fn(
-                    cwd, ["diff", "--name-only", "-z", f"{tip}...HEAD"])
-            except Exception as exc:  # noqa: BLE001 — 조회 실패는 인구 축소(차단 아님).
-                if _is_engine_rev_skew(exc):
-                    raise  # 사본 skew 는 fail-loud(삼키지 않는다).
-                rc = 1
-        if tip is None or rc != 0:
-            self._warn_once(
-                f"residual-population:{ticket_id}",
-                _RESIDUAL_POPULATION_FALLBACK_NOTE.format(ticket=ticket_id),
-            )
-            return ()
+        rc, out = self._run_git_stdout_at_fn(
+            cwd, ["diff", "--name-only", "-z", f"{tip}...HEAD"])
+        if rc != 0:
+            raise _CloseObservationFailure(_RESIDUAL_POPULATION_UNRESOLVED.format(
+                ticket=ticket_id, tip=tip))
         declared = tuple(scope) + tuple(
             self._normalize_measured_touches(
                 get_ticket_touches(self._board_py, ticket_id), warn=False) or ())
@@ -3846,6 +3811,13 @@ _CLOSE_MERGE_MESSAGE = "{unit} merge — {title}"
 _CLOSE_BOARD_MESSAGE = "{unit} board — {title}"
 
 
+_CLOSE_INTEGRATION_UNDECLARED = (
+    "{cluster} 장부가 통합 브랜치(base_branch)를 선언하지 않았다 — 재배치·머지의 대상이 "
+    "그 선언이다. `board.py cluster show {cluster}` 로 장부를 확인하고 `base_branch` 를 채운 "
+    "뒤 다시 실행하라."
+)
+
+
 class _CloseObservationFailure(Exception):
     """close 단계의 **관측 자체가 실패**했다 — 그 단계에서 정지한다.
 
@@ -4283,11 +4255,13 @@ class ClusterCloser:
         return None
 
     def _step_rebase(self) -> str | None:
-        """통합 브랜치로 재배치 — 충돌은 원상 복구(abort) 후 정지한다."""
+        """통합 브랜치로 재배치 — 충돌은 원상 복구(abort) 후 정지한다.
+
+        기준 브랜치 선언이 없으면 무대상이 아니라 정지다 — 재배치를 건너뛴 종결은 이 작업을
+        통합 브랜치 밖에 남긴 채 완료를 선언한다."""
         integration = self._declared_branch("base_branch")
         if not integration:
-            print("  통합 브랜치 미선언 — 무대상")
-            return None
+            return _CLOSE_INTEGRATION_UNDECLARED.format(cluster=self._cluster)
         tree = self._code_tree()
         rc, _out = self._git_stdout(
             tree, ["rev-parse", "--verify", "--quiet", f"{integration}^{{commit}}"])
@@ -4326,11 +4300,17 @@ class ClusterCloser:
         return None
 
     def _step_merge(self) -> str | None:
-        """통합 브랜치 머지 — 통합 브랜치를 가진 트리에서 `--no-ff` 로 받는다."""
+        """통합 브랜치 머지 — 통합 브랜치를 가진 트리에서 `--no-ff` 로 받는다.
+
+        묶음 브랜치(`branch`)는 사람이 선언한 묶음만 갖는다(크기 1 자동 장부는 없다) — 그
+        선언이 없으면 받을 브랜치가 없어 무대상이다. 기준 브랜치 미선언은 그 축이 아니라
+        판정 기준의 부재라 정지다."""
         integration = self._declared_branch("base_branch")
+        if not integration:
+            return _CLOSE_INTEGRATION_UNDECLARED.format(cluster=self._cluster)
         source = self._declared_branch("branch")
-        if not integration or not source:
-            print("  통합/묶음 브랜치 미선언 — 무대상")
+        if not source:
+            print("  묶음 브랜치 미선언 — 무대상")
             return None
         tree = self._code_tree()
         rc, _out = self._git_stdout(
@@ -4796,7 +4776,7 @@ def _main(argv: list[str] | None = None) -> int:
     finisher = TicketFinisher(regression_cwd=regression_cwd, task_workspace=task_workspace)
     # 완료 기록 단위는 **묶음 하나**다(특례 없음) — 티켓 하나를 준 호출도 그 티켓의 묶음으로
     # 해소해 같은 파이프라인으로 보낸다. 묶음을 선언하지 않은 티켓은 board 가 크기 1 로 접어
-    # 주고(마이그레이션 0), 장부가 없거나 브랜치를 선언하지 않았으면 재배치·머지만 무대상이다.
+    # 주고(마이그레이션 0), 장부가 통합 브랜치를 선언하지 않았으면 판정 기준이 없어 멈춘다.
     # 티켓용 별도 코드 경로를 남기면 그 경로에서만 장부 기록·반납·포인터 커밋이 빠진다.
     cluster = args.cluster
     if cluster is None:

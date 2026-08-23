@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import current_branch, write_cluster_ledger
+
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -60,6 +62,11 @@ def _shape(
     _git(root, "init", "-q")
     _git(root, "config", "user.email", "ticket-finish-test@example.invalid")
     _git(root, "config", "user.name", "ticket finish test")
+    # 판정 기준(통합 브랜치)은 묶음 장부가 소유한다 — 실 board 는 발행이 이 파일을 만든다.
+    for ticket_id in tickets:
+        write_cluster_ledger(
+            root / ".project_manager" / "wiki", ticket_id,
+            base_branch=current_branch(root))
     (root / "seed.txt").write_text("seed\n", encoding="utf-8")
     for relative in files:
         target = root / relative
@@ -298,10 +305,13 @@ def test_claimed_board_parse_failure_is_loud_and_keeps_the_breaker(
 
 
 @pytest.mark.parametrize("failure", ["syntax", "read"], ids=["syntax-error", "read-error"])
-def test_board_module_failure_is_loud_and_keeps_the_breaker(
-    tmp_path, capsys, failure,
-):
-    """board.py 자체 syntax/read 실패도 최소 입력 복구 후 같은 경고와 320줄 차단을 유지한다."""
+def test_board_module_failure_stops_the_measurement(tmp_path, failure):
+    """board.py 자체 syntax/read 실패는 판정 기준을 읽을 수 없다는 뜻이라 멈춘다.
+
+    최소 입력 복구(touches·estimate)는 그대로지만 측정 폭의 기준점은 묶음 장부에서만 온다 —
+    그 판독이 불가능한 실행이 상한 판정을 흉내 내면, 같은 게이트가 board 상태에 따라 다른
+    폭을 재게 된다.
+    """
     root, tf = _shape(
         tmp_path,
         {"T-6051": ["src/current.py"]},
@@ -318,12 +328,10 @@ def test_board_module_failure_is_loud_and_keeps_the_breaker(
         log_file=root / "log.md",
     )
 
-    block = finisher._default_diff_cap_block("T-6051")
-    err = capsys.readouterr().err
+    with pytest.raises(tf._CloseObservationFailure) as caught:
+        finisher._default_diff_cap_block("T-6051")
 
-    assert block is not None and "diff 320줄 > 상한 300줄" in block
-    assert "⚠ diff 서킷브레이커 귀속 보정 skip — claimed 보드 읽기 실패" in err
-    assert "타 티켓 제외 없이 현재 touches 전체를 측정합니다" in err
+    assert "통합 브랜치" in str(caught.value) and "T-6051" in str(caught.value)
 
 
 def test_claimed_empty_touches_is_not_reported_as_board_failure(tmp_path, capsys):
@@ -384,12 +392,21 @@ def test_git_call_count_does_not_scale_with_claimed_ticket_count(
 
 
 def _seed_git_tree(root: Path, files: dict[str, int], *,
-                   extra_paths: tuple[str, ...] = ()) -> None:
-    """root 를 실 git 저장소로 만들고 커밋한 뒤 파일마다 지정 줄 수의 미커밋 변경을 남긴다."""
+                   extra_paths: tuple[str, ...] = (),
+                   ledger_ticket: str | None = None) -> None:
+    """root 를 실 git 저장소로 만들고 커밋한 뒤 파일마다 지정 줄 수의 미커밋 변경을 남긴다.
+
+    `ledger_ticket` 을 주면 그 티켓의 묶음 장부를 첫 커밋 안에 함께 심는다 — 판정 기준(통합
+    브랜치)의 소유자가 장부라, 선언이 없으면 완료 기록이 멈춘다.
+    """
     root.mkdir(parents=True, exist_ok=True)
     _git(root, "init", "-q")
     _git(root, "config", "user.email", "ticket-finish-test@example.invalid")
     _git(root, "config", "user.name", "ticket finish test")
+    if ledger_ticket is not None:
+        write_cluster_ledger(
+            root / ".project_manager" / "wiki", ledger_ticket,
+            base_branch=current_branch(root))
     (root / "seed.txt").write_text("seed\n", encoding="utf-8")
     for relative in files:
         target = root / relative
@@ -431,7 +448,8 @@ def _split_home_shape(
     (log_dir / "current.md").write_text("# log\n", encoding="utf-8")
     home_files = {touch: home_lines for touch in shared}
     home_files.update(home_only)
-    _seed_git_tree(home, home_files, extra_paths=(".project_manager",))
+    _seed_git_tree(home, home_files, extra_paths=(".project_manager",),
+                   ledger_ticket=ticket_id)
     worktree = home / slot
     if slot_target is None:
         _seed_git_tree(worktree, {touch: worktree_lines for touch in shared})

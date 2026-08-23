@@ -250,28 +250,34 @@ def _round_names(pm_home: Path, ticket: str) -> list[str]:
 def test_budget_values_expand_into_the_role_sequence(pd):
     board = _load_tool("board", "board_budget_sequence")
     sequence = pd.cluster_round_sequence(
-        board.CLUSTER_BUDGET_DEFAULT, defaults=board.CLUSTER_BUDGET_DEFAULT,
+        board.CLUSTER_BUDGET_DEFAULT, cluster="C-cycle",
     )
     assert sequence == _CYCLE
     # 값이 곧 길이다 — 구현 라운드를 2 로 선언하면 그 단계가 두 번이다.
     assert pd.cluster_round_sequence(
         {**board.CLUSTER_BUDGET_DEFAULT, "developer_per_ticket": 2},
-        defaults=board.CLUSTER_BUDGET_DEFAULT,
+        cluster="C-cycle",
     ) == ("architect", "developer", "developer", "code-reviewer", "developer")
-
-
-def test_broken_budget_values_fall_back_to_the_engine_default(pd):
-    """손상된 장부 값이 단계를 조용히 지우지 않는다(부재·비정수는 엔진 기본값)."""
-    board = _load_tool("board", "board_budget_broken")
-    assert pd.cluster_round_sequence(
-        {"architect": "많이", "fix": None}, defaults=board.CLUSTER_BUDGET_DEFAULT,
-    ) == _CYCLE
-    assert pd.cluster_round_sequence(None, defaults=board.CLUSTER_BUDGET_DEFAULT) == _CYCLE
     # 음수는 "그 단계를 건너뛴다"는 선언이라 0 으로 접는다.
     assert pd.cluster_round_sequence(
-        {**board.CLUSTER_BUDGET_DEFAULT, "architect": -3},
-        defaults=board.CLUSTER_BUDGET_DEFAULT,
+        {**board.CLUSTER_BUDGET_DEFAULT, "architect": -3}, cluster="C-cycle",
     ) == ("developer", "code-reviewer", "developer")
+
+
+@pytest.mark.parametrize("budget, missing", [
+    (None, "(없음)"),
+    ({"architect": "많이", "developer_per_ticket": 1,
+      "code-reviewer": 1, "fix": 1}, "architect"),
+    ({"architect": 1, "developer_per_ticket": 1, "code-reviewer": 1}, "fix"),
+])
+def test_an_undeclared_budget_value_stops_the_judgment(pd, budget, missing):
+    """선언되지 않은 값은 기본값으로 지어내지 않는다 — 그 장부는 판정 입력이 아니다."""
+    with pytest.raises(pd.DelegateError) as caught:
+        pd.cluster_round_sequence(budget, cluster="C-broken")
+
+    message = str(caught.value)
+    assert "예산이 선언되지 않았습니다" in message and missing in message
+    assert "cluster show C-broken" in message
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -436,9 +442,7 @@ _ALL_ZERO_BUDGET = {
 def test_an_all_zero_budget_declares_an_empty_sequence(pd):
     """모든 값이 0 이면 수열은 빈 tuple 이다 — '선언 없음' 이 아니라 '허용 라운드 0' 이다."""
     board = _load_tool("board", "board_budget_zero")
-    assert pd.cluster_round_sequence(
-        _ALL_ZERO_BUDGET, defaults=board.CLUSTER_BUDGET_DEFAULT,
-    ) == ()
+    assert pd.cluster_round_sequence(_ALL_ZERO_BUDGET, cluster="C-zero") == ()
 
 
 def test_a_zero_budget_ledger_refuses_every_role(pd, budget_env):
@@ -503,17 +507,32 @@ def test_the_lock_recheck_sees_a_budget_that_shrank_to_zero(
 
 
 def test_a_ledger_that_disappears_mid_prepare_refuses(pd, budget_env, monkeypatch):
-    """선언이 있던 요청은 장부가 사라졌다고 열리지 않는다(삭제가 우회 수단이 아니다)."""
+    """장부가 사라진 요청은 열리지 않는다(삭제가 우회 수단이 아니다)."""
     pm_home, slot, tickets = budget_env
     ledger = _seed(pm_home, tickets, "C-vanish", ["T-7120"])
     _refuse_at_the_lock(pd, pm_home, monkeypatch, ledger.unlink)
 
-    with pytest.raises(pd.DelegateError, match="준비 도중 사라졌습니다"):
+    with pytest.raises(pd.DelegateError, match="묶음 장부가 없습니다"):
         pd.prepare_cluster_copy(
             cluster="C-vanish", role="architect", cwd=slot, pm_home=pm_home,
         )
 
     assert _round_names(pm_home, "T-7120") == []
+
+
+def test_a_ticket_without_a_ledger_stops_the_preparation(pd, budget_env):
+    """장부 없는 크기 1 해석(구세대 티켓)도 무제한이 아니라 정지다 — 판정 입력이 없다."""
+    pm_home, slot, tickets = budget_env
+    (tickets / "T-7130-budget.md").write_text(
+        _spec_text("T-7130", ""), encoding="utf-8", newline="\n")
+
+    with pytest.raises(pd.DelegateError) as caught:
+        pd.prepare_cluster_copy(
+            cluster="C-T-7130", role="architect", cwd=slot, pm_home=pm_home,
+        )
+
+    assert "묶음 장부가 없습니다" in str(caught.value)
+    assert _round_names(pm_home, "T-7130") == []
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -573,26 +592,20 @@ def test_size_one_cluster_takes_the_same_path(pd, budget_env):
     assert "cluster replan C-one --reason" in str(caught.value)
 
 
-def test_ticket_path_without_a_ledger_is_untouched_by_the_budget(pd, budget_env):
-    """장부가 없으면 예산 선언 자체가 없다 — 옛 티켓 경로의 준비는 종전 그대로다."""
+def test_the_ticket_surface_without_a_ledger_stops_too(pd, budget_env):
+    """티켓 표면도 장부 없이는 열리지 않는다 — 필드 없는 티켓이 우회로가 아니다."""
     pm_home, slot, tickets = budget_env
     (tickets / "T-7090-legacy.md").write_text(
         _spec_text("T-7090", "C-T-7090").replace("cluster: C-T-7090\n", ""),
         encoding="utf-8", newline="\n")
 
-    first = pd.prepare_ticket_copy(
-        ticket="T-7090", role="developer", cwd=slot, pm_home=pm_home,
-    )
-    first.path.write_text(
-        first.path.read_text(encoding="utf-8") + "\n## 산출\n- 실측\n",
-        encoding="utf-8", newline="")
-    pd.harvest_ticket_copy(copy_path=first.path, cwd=slot, pm_home=pm_home)
-    second = pd.prepare_ticket_copy(
-        ticket="T-7090", role="developer", cwd=slot, pm_home=pm_home,
-    )
+    with pytest.raises(pd.DelegateError) as caught:
+        pd.prepare_ticket_copy(
+            ticket="T-7090", role="developer", cwd=slot, pm_home=pm_home,
+        )
 
-    # 순서 밖(architect 없이 developer 두 번)이어도 이 경로는 예산 축을 타지 않는다.
-    assert second.board_path.name == "02-developer.md"
+    assert "묶음 장부가 없습니다" in str(caught.value)
+    assert _round_names(pm_home, "T-7090") == []
 
 
 # ════════════════════════════════════════════════════════════════════════

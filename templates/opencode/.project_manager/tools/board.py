@@ -10650,16 +10650,16 @@ def _claim_code_tree(args: argparse.Namespace) -> str | None:
 def _claim_head_rev(args: argparse.Namespace) -> str | None:
     """claim 시점 코드 트리 HEAD sha (해소 불가·비-git 이면 경고 1줄 + None).
 
-    이 값이 티켓 frontmatter `claimed_rev` 로 박제되고, diff 서킷브레이커가 그것을 앵커로
-    "claim 이후 이 티켓이 남긴 변경"(dev 브랜치를 merge 로 흡수한 누적 포함)을 잰다. 박제
-    실패는 **경고만** 이다 — 측정 보조 필드가 소유 확정을 막지 않는다."""
+    이 값이 티켓 frontmatter `claimed_rev` 로 박제되고, 완료 기록의 **자기 축 회귀** 가 그것을
+    baseline 트리로 되살려 이 작업이 새로 낸 실패만 골라낸다. 박제 실패는 **경고만** 이다 —
+    보조 필드가 소유 확정을 막지 않는다(측정 폭의 기준점은 묶음 장부가 소유한다)."""
     tree = _claim_code_tree(args)
     rev = _git_head_at(tree) if tree else ""
     if not rev:
         where = tree or "코드 트리 미해소"
         print(f"주의: claim 시점 rev 박제 skip — {where} 의 git HEAD 를 읽지 못했다"
-              "(비-git·해소 불가). diff 서킷브레이커는 옛 폭(작업트리+직전 커밋 한 칸)으로 "
-              "측정한다.", file=sys.stderr)
+              "(비-git·해소 불가). 완료 기록의 자기 축 회귀는 비교 baseline 이 없어 그 축을 "
+              "건너뛴다.", file=sys.stderr)
         return None
     return rev
 
@@ -10759,13 +10759,13 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str,
         fm["claimed_by"] = assignee
         fm["claimed_at"] = now_utc()
         if claimed_rev:
-            # 해소 실패는 필드 생략이다(경고는 이미 냈다) — 없는 앵커를 지어내면 완료 기록이
-            # 엉뚱한 폭을 재고, 그 오차 방향은 과소 측정(가드 약화)이다.
+            # 해소 실패는 필드 생략이다(경고는 이미 냈다) — 없는 baseline 을 지어내면 자기 축
+            # 회귀가 엉뚱한 트리와 대조하고, 그 오차 방향은 신규 실패 누락(가드 약화)이다.
             fm = _frontmatter_with_claimed_rev(fm, claimed_rev)
         else:
-            # stale 앵커 제거 — 이 claim 이 rev 를 못 박았는데 이전 소유 주기의 claimed_rev 가
-            # 남아 있으면(unclaim 이 지우지 않았거나 구 티켓 재사용) "필드 생략" 계약이 깨지고
-            # 완료 기록이 그 stale rev 로 잰다(경고 문구가 사실과 다른 옛 폭을 가리키게 된다).
+            # stale baseline 제거 — 이 claim 이 rev 를 못 박았는데 이전 소유 주기의 claimed_rev
+            # 가 남아 있으면(unclaim 이 지우지 않았거나 구 티켓 재사용) "필드 생략" 계약이
+            # 깨지고 자기 축 회귀가 그 stale rev 를 baseline 으로 되살린다.
             fm.pop("claimed_rev", None)
         dump_ticket(new_path, fm, body)
     except FileNotFoundError:
@@ -12423,15 +12423,14 @@ def cmd_new(args: argparse.Namespace) -> int:
         # 설계 단계 상태 — 템플릿에 이미 `design:` 이 있으면 그 자리를, 없으면(구 템플릿) 끝에
         # 붙는다. 값 자체는 위에서 해소·검증했다.
         fm["design"] = design
-        # 운영 단위 자동 귀속 — 활성 묶음이 하나면 거기에, 없으면 크기 1 장부를 함께 만든다.
-        # **draft 는 미룬다**: 장부는 board-git 공유인데 draft 명세는 격리(공유 밖)라, 지금
-        # 멤버로 올리면 다른 클론에는 없는 티켓을 가리키는 장부가 공유된다. 승격(`promote`)이
-        # 공유 board 로 올리는 그 자리에서 귀속한다(필드 부재 = 크기 1 로 읽히므로 그 사이도
-        # 판정이 성립한다).
+        # 운영 단위 — 새 티켓은 자기 크기 1 장부를 갖는다(기준 브랜치·예산은 그 자리에서
+        # 박는다). **draft 는 미룬다**: 장부는 board-git 공유인데 draft 명세는 격리(공유 밖)라,
+        # 지금 멤버로 올리면 다른 클론에는 없는 티켓을 가리키는 장부가 공유된다. 승격
+        # (`promote`)이 공유 board 로 올리는 그 자리에서 귀속한다(필드 부재 = 크기 1 로 읽히
+        # 므로 그 사이도 판정이 성립한다).
         cluster_ledger: Path | None = None
-        cluster_created = False
         if not is_draft:
-            fm["cluster"], cluster_ledger, cluster_created = _cluster_auto_attach(tid)
+            fm["cluster"], cluster_ledger = _cluster_auto_attach(tid, args)
 
         if is_draft:
             drafts_dir().mkdir(parents=True, exist_ok=True)
@@ -12445,9 +12444,8 @@ def cmd_new(args: argparse.Namespace) -> int:
     print("  → fill in 목표 / 완료 조건 / 참고, then `board.py lint` "
           "(placeholders left in the body fail lint)")
     if cluster_ledger is not None:
-        # 기존 stdout 줄은 그대로 두고 귀속 사실만 stderr 1줄로 고지한다(크기 1 = 현행 동작).
-        print(f"  ⓘ 클러스터 귀속: {fm['cluster']}"
-              f"{' (크기 1 장부 생성)' if cluster_created else ''}", file=sys.stderr)
+        # 기존 stdout 줄은 그대로 두고 생성 사실만 stderr 1줄로 고지한다(크기 1 = 현행 동작).
+        print(f"  ⓘ 크기 1 묶음 장부 생성: {fm['cluster']}", file=sys.stderr)
 
     if is_draft:
         # draft 는 STATUS_DIRS 밖(drafts_dir())에 있어 board.md(STATUS_DIRS 스캔)에도, 다른
@@ -12535,9 +12533,8 @@ def cmd_promote(args: argparse.Namespace) -> int:
         # 승격 = 공유 board 진입 지점 — 발행이 draft 때 미룬 클러스터 귀속을 여기서 마친다.
         # 필드가 이미 있으면(예: `cluster new` 가 draft 를 멤버로 선언) 그대로 둔다.
         cluster_ledger: Path | None = None
-        cluster_created = False
         if not str(fm.get("cluster") or "").strip():
-            fm["cluster"], cluster_ledger, cluster_created = _cluster_auto_attach(args.id)
+            fm["cluster"], cluster_ledger = _cluster_auto_attach(args.id, args)
             touched.append(cluster_ledger)
         if status == "draft":
             # drafts_dir() → open/ 이동 — 이제서야 STATUS_DIRS 스캔·board-git 대상이 된다.
@@ -12564,8 +12561,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
     else:
         print(f"promoted {args.id} (board-git 기록 보류: local-only/uncommitted)")
     if cluster_ledger is not None:
-        print(f"  ⓘ 클러스터 귀속: {fm['cluster']}"
-              f"{' (크기 1 장부 생성)' if cluster_created else ''}", file=sys.stderr)
+        print(f"  ⓘ 크기 1 묶음 장부 생성: {fm['cluster']}", file=sys.stderr)
     # 발행 시점 판단 재료 — 성공 경로 두 갈래(승격 완료/기록 보류) 공통 뒤,
     # `_board_git_enabled()` 게이트 분기 밖(솔로/legacy 형상에서도 나온다). 겹침 0 이면 침묵.
     # `promote` 는 `--repo`/`--slot` 인자가 없다 — 슬롯 재료의 repo 는 이 티켓의 provenance
@@ -12761,9 +12757,11 @@ def _publish_overlap_material(tid: str, touches: object, repo: str) -> list[str]
 # 멤버십·통합 브랜치·설계 spike·라운드 예산·재설계 기록뿐이다 — 라운드 산출 자리는 종전대로
 # `tickets/rounds/<티켓>/` 이고 장부는 그것을 담지 않는다.
 #
-# **특례가 없다** — 티켓 하나짜리 묶음도 크기 1 클러스터다. `new` 는 활성 묶음이 정확히 하나면
-# 거기에 귀속시키고, 없으면 그 티켓 이름의 크기 1 장부를 함께 만든다. 필드도 장부도 없는
-# 구세대 티켓은 **읽는 자리에서** 크기 1 로 접는다(파일 마이그레이션 0 · `cluster_members`).
+# **특례가 없다** — 티켓 하나짜리 묶음도 크기 1 클러스터다. `new` 는 그 티켓 이름의 크기 1
+# 장부를 함께 만들고 기준 브랜치·예산을 그 자리에서 박는다(빈 값 0 · 판정 표면은 선언된 값만
+# 읽는다). 여러 티켓을 한 묶음으로 묶는 것은 사람 선언(`cluster new`)뿐이다 — 엔진이 고르면
+# 선언한 적 없는 묶음이 생긴다. 필드도 장부도 없는 구세대 티켓은 **읽는 자리에서** 크기 1 로
+# 접는다(파일 마이그레이션 0 · `cluster_members`).
 CLUSTERS_DIRNAME = "clusters"
 CLUSTER_ID_PREFIX = "C-"                  # 장부 파일명·frontmatter `id` 의 접두
 CLUSTER_BRANCH_PREFIX = "task/"           # 통합 브랜치 이름 접두
@@ -12912,13 +12910,6 @@ def all_clusters() -> list[dict[str, Any]]:
     return out
 
 
-def active_clusters() -> list[dict[str, Any]]:
-    """진행 중(비-`closed`) 장부 — status 미기재는 `open` 으로 읽는다."""
-    return [fm for fm in all_clusters()
-            if str(fm.get("status") or CLUSTER_STATUS_OPEN).strip()
-            in CLUSTER_ACTIVE_STATUSES]
-
-
 def ticket_cluster(tid: str, fm: dict[str, Any] | None = None) -> str:
     """그 티켓이 속한 클러스터 id — **필드 부재는 크기 1**(`C-` + 티켓 ID)로 읽는다.
 
@@ -13021,27 +13012,38 @@ def _new_cluster_fm(
     }
 
 
-def _cluster_auto_attach(tid: str) -> tuple[str, Path, bool]:
-    """발행 시점 자동 귀속 — `(클러스터 id, 장부 경로, 새로 만들었는가)`.
+def _cluster_auto_attach(
+    tid: str, args: argparse.Namespace | None,
+) -> tuple[str, Path]:
+    """발행 시점 크기 1 장부 생성 — `(클러스터 id, 장부 경로)`.
 
-    **선언된** 활성 묶음이 정확히 하나면 거기에 넣고, 0개면 그 티켓 이름의 크기 1 장부를 만든다.
-    활성 묶음이 둘 이상이면 **엔진이 고르지 않는다** — 어디에 넣을지는 사람 판정이라 크기 1 로
-    발행하고 `cluster new` 가 나중에 흡수한다(자동 묶기 없음). 다른 티켓의 자동 장부는 후보가
-    아니다(`is_auto_cluster_id`).
+    새 티켓은 **자기 장부**를 갖는다. 여러 티켓을 한 묶음으로 묶는 것은 사람 선언
+    (`cluster new`)이고 엔진은 고르지 않는다 — 활성 묶음에 새 티켓을 자동으로 끼우면 선언한 적
+    없는 묶음이 생기고, 그 묶음의 예산·기준 브랜치가 끼워진 티켓의 판정을 대신한다.
+
+    기준 브랜치와 예산(`_new_cluster_fm` 기본값)은 이 자리에서 박는다 — 판정 표면(완료 기록
+    폭·리뷰 폭·라운드 예산)은 **선언된 값만** 읽고 선언이 없으면 거부하므로, 발행이 값을 비워
+    두면 그 티켓은 완료 기록에서 멈춘다.
 
     board_lock 보유 전제다(발행·승격 임계구역 안에서 부른다).
     """
-    active = [fm for fm in active_clusters()
-              if not is_auto_cluster_id(str(fm.get("id") or ""))]
-    if len(active) == 1:
-        fm = active[0]
-        members = cluster_tickets(fm)
-        if tid not in members:
-            members.append(tid)
-        fm["tickets"] = members
-        return str(fm.get("id")), dump_cluster(fm), False
-    fm = _new_cluster_fm(f"{CLUSTER_ID_PREFIX}{tid}", [tid])
-    return str(fm["id"]), dump_cluster(fm), True
+    _tree, base_branch = _cluster_publish_base_branch(args)
+    fm = _new_cluster_fm(
+        f"{CLUSTER_ID_PREFIX}{tid}", [tid], base_branch=base_branch)
+    return str(fm["id"]), dump_cluster(fm)
+
+
+def _cluster_publish_base_branch(
+    args: argparse.Namespace | None,
+) -> tuple[str, str | None]:
+    """장부에 박을 `(코드 트리, 기준 브랜치)` — 브랜치 없는 트리(detached·비-git)는 None.
+
+    값은 그 세션이 보는 코드 트리의 현재 브랜치다(`_cluster_code_tree` 가 명시 정체성 >
+    활성 슬롯 > 이 트리 순으로 해소한다 · 해소 규칙 사본 0). task 작업공간에서 발행하면 그
+    세션의 통합 브랜치가 그대로 장부에 실린다.
+    """
+    tree = _cluster_code_tree(args)
+    return tree, _cluster_current_branch(tree)
 
 
 def _cluster_release_member(cluster: str, tid: str) -> Path | None:
@@ -13244,8 +13246,7 @@ def _cmd_cluster_new(args: argparse.Namespace) -> int:
             if status == "draft":
                 drafts.append(tid)
             resolved.append((tid, path, fm, body, owner))
-        tree = _cluster_code_tree(args)
-        base_branch = _cluster_current_branch(tree)
+        tree, base_branch = _cluster_publish_base_branch(args)
         branch_note = _cluster_ensure_branch(tree, branch, base_branch)
         touched.append(dump_cluster(_new_cluster_fm(
             cluster, members, base_branch=base_branch, branch=branch, spike=spike)))

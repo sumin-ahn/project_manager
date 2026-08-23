@@ -254,13 +254,13 @@ def test_private_ref_verdict_is_identical_across_the_four_shapes(tf, tmp_path):
 def test_line_the_integration_branch_already_had_leaves_the_width(tf, tmp_path):
     """통합 브랜치가 이미 가진 줄은 이 작업의 폭이 아니다 — 재배치로 흡수해도 무발화다.
 
-    민감도로 대조한다: 통합 브랜치 선언을 지우면 같은 트리에서 그 줄이 옛 폭에 실려 경고로
-    뜬다(원래부터 조용해서 통과한 것이 아니다).
+    민감도로 대조한다: 통합 브랜치 선언을 지우면 같은 트리에서 판정이 **멈춘다**(기준이 없는
+    실행이 조용히 통과하지 않는다 · 원래부터 조용해서 통과한 것이 아니다).
     """
     root, _seed = _order_repo(tmp_path)
     offending = _BASE_BODY.replace('    return "hi"\n',
                                    _RAW_ONLY_LINE + '    return "hi"\n')
-    absorbed = _advance_integration(root, offending, "absorbed offense")
+    _advance_integration(root, offending, "absorbed offense")
     assert _git(root, "rebase", _INTEGRATION_BRANCH).returncode == 0
 
     block, stderr = _block_with_stderr(tf, root)
@@ -269,10 +269,9 @@ def test_line_the_integration_branch_already_had_leaves_the_width(tf, tmp_path):
 
     _write_cluster_ledger(root / ".project_manager" / "board", tickets=(_TICKET,),
                           base_branch=None)
-    fallback_block, fallback_stderr = _block_with_stderr(tf, root)
-    assert fallback_block is None
-    assert f"git blame {_short(root, absorbed)}" in fallback_stderr
-    assert _SYNTHETIC_REF in fallback_stderr
+    with pytest.raises(tf._CloseObservationFailure) as caught:
+        _block_with_stderr(tf, root)
+    assert "통합 브랜치(base_branch)를 선언하지 않았다" in str(caught.value)
 
 
 @requires_git
@@ -309,22 +308,20 @@ def test_actionable_reference_is_blocked_whether_or_not_it_is_committed(tf, tmp_
 
 
 @requires_git
-def test_unresolvable_integration_branch_falls_back_loudly(tf, tmp_path):
-    """선언한 통합 브랜치가 이 트리에 없으면 옛 기준으로 접되 그 사실을 한 줄로 알린다."""
+def test_unresolvable_integration_branch_stops_the_judgment(tf, tmp_path):
+    """선언한 통합 브랜치가 이 트리에 없으면 판정 기준이 없다 — 멈춘다."""
     root, _seed = _order_repo(tmp_path)
     _write_cluster_ledger(root / ".project_manager" / "board", tickets=(_TICKET,),
                           base_branch="task/absent")
     offending = _BASE_BODY.replace('    return "hi"\n',
                                    _RAW_ONLY_LINE + '    return "hi"\n')
     (root / _TOUCH).write_text(offending, encoding="utf-8")
-    introduced = _commit(root, "cluster work")
+    _commit(root, "cluster work")
 
-    block, stderr = _block_with_stderr(tf, root)
+    with pytest.raises(tf._CloseObservationFailure) as caught:
+        _block_with_stderr(tf, root)
 
-    assert "통합 브랜치 해소 실패" in stderr and "task/absent" in stderr
-    # 옛 기준(도입 커밋 유무)으로 접혔다 — 커밋된 줄은 경고 쪽이다.
-    assert block is None
-    assert f"git blame {_short(root, introduced)}" in stderr
+    assert "task/absent" in str(caught.value) and "찾지 못했다" not in str(caught.value)
 
 
 def test_cli_takes_exactly_one_close_target(tf, monkeypatch, capsys):
@@ -372,32 +369,27 @@ def _width_repo(tmp_path: Path) -> tuple[Path, str]:
 
 @requires_git
 def test_width_excludes_what_the_integration_branch_already_had(external, tmp_path):
-    """재배치로 흡수한 분량은 이 작업의 폭이 아니다 — 두 앵커의 값을 대조한다."""
+    """재배치로 흡수한 분량은 이 작업의 폭이 아니다 — 기준점을 claim 시점 rev 와 대조한다."""
     root, seed = _width_repo(tmp_path)
 
-    integration_anchor, note = external.claim_anchor(
-        root, seed, integration_ref=_INTEGRATION_BRANCH)
+    anchor, note = external.integration_anchor(root, _INTEGRATION_BRANCH)
     assert note is None
-    assert integration_anchor == _rev(root, _INTEGRATION_BRANCH)
-
-    claim_anchor, claim_note = external.claim_anchor(root, seed)
-    assert (claim_anchor, claim_note) == (seed, None)
+    assert anchor == _rev(root, _INTEGRATION_BRANCH)
 
     integration_width = external.diff_line_total(
-        root, "HEAD", list(_WIDTH_SCOPE), claimed_rev=integration_anchor)
+        root, "HEAD", list(_WIDTH_SCOPE), claimed_rev=anchor)
     claim_width = external.diff_line_total(
-        root, "HEAD", list(_WIDTH_SCOPE), claimed_rev=claim_anchor)
+        root, "HEAD", list(_WIDTH_SCOPE), claimed_rev=seed)
 
     assert integration_width == _OWN_LINES                      # 자기 몫만
-    assert claim_width == _OWN_LINES + _ABSORBED_LINES          # 옛 기준은 흡수분도 잰다
+    assert claim_width == _OWN_LINES + _ABSORBED_LINES          # 옛 기준은 흡수분도 쟀다
 
 
 @requires_git
 def test_both_width_consumers_see_the_same_stage(external, tmp_path):
     """numstat 총량과 unified diff 원문이 **같은 폭**을 본다(정의 지점 하나)."""
     root, seed = _width_repo(tmp_path)
-    anchor, _note = external.claim_anchor(
-        root, seed, integration_ref=_INTEGRATION_BRANCH)
+    anchor, _note = external.integration_anchor(root, _INTEGRATION_BRANCH)
 
     assert external._measure_stages("HEAD", anchor) == ((anchor, True),)
 
@@ -912,10 +904,10 @@ def test_review_width_is_the_same_before_and_after_commit_and_rebase(external, t
 
 
 @requires_git
-def test_review_width_falls_back_loudly_when_the_integration_branch_is_undeclared(
+def test_review_width_refuses_when_the_integration_branch_is_undeclared(
     external, tmp_path,
 ):
-    """통합 브랜치 선언이 없으면 옛 폭으로 재되 그 사실을 **한 줄로 한 번** 알린다."""
+    """통합 브랜치 선언이 없으면 리뷰 송신을 거부한다 — 다른 기준으로 재지 않는다."""
     root, _seed = _width_repo(tmp_path)
 
     declared_block, declared_stderr = _cap_refusal(external, root, cap=0)
@@ -924,27 +916,27 @@ def test_review_width_falls_back_loudly_when_the_integration_branch_is_undeclare
 
     _write_cluster_ledger(root / ".project_manager" / "board", tickets=(_TICKET,),
                           base_branch=None)
-    fallback_block, fallback_stderr = _cap_refusal(external, root, cap=0)
+    refusal, stderr = _cap_refusal(external, root, cap=0)
 
-    # 옛 기준(claim 앵커)은 재배치로 흡수한 분량까지 이 티켓 폭으로 싣는다.
-    assert f"diff {_OWN_LINES + _ABSORBED_LINES}줄" in fallback_block
-    assert fallback_stderr.count(external.INTEGRATION_TIP_UNDECLARED_NOTE) == 1
+    assert "기준점을 해소하지 못했습니다" in refusal
+    assert external.INTEGRATION_TIP_UNDECLARED_NOTE in refusal
+    assert "diff" not in refusal          # 재지 않은 값을 문구에 싣지 않는다
+    assert stderr == ""
 
 
 @requires_git
-def test_review_width_falls_back_loudly_when_the_integration_branch_is_unresolvable(
+def test_review_width_refuses_when_the_integration_branch_is_unresolvable(
     external, tmp_path,
 ):
-    """선언한 통합 브랜치가 이 트리에 없으면 옛 폭 + 미해소 사유 한 줄이다."""
+    """선언한 통합 브랜치가 이 트리에 없어도 같은 거부다(옛 폭으로 접지 않는다)."""
     root, _seed = _width_repo(tmp_path)
     _write_cluster_ledger(root / ".project_manager" / "board", tickets=(_TICKET,),
                           base_branch="task/absent")
 
     block, stderr = _cap_refusal(external, root, cap=0)
 
-    assert f"diff {_OWN_LINES + _ABSORBED_LINES}줄" in block
-    assert stderr.count(
-        external.INTEGRATION_TIP_UNRESOLVED_NOTE.format(ref="task/absent")) == 1
+    assert external.INTEGRATION_TIP_UNRESOLVED_NOTE.format(ref="task/absent") in block
+    assert stderr == ""
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1243,9 +1235,9 @@ def test_residual_population_excludes_a_sibling_member_commit(
 
 
 @requires_git
-def test_residual_population_narrows_loudly_without_an_integration_tip(
+def test_residual_population_stops_without_an_integration_tip(
         tf, tmp_path, monkeypatch):
-    """통합 tip 을 해소하지 못하면 종전 dirty 인구로 접되 그 축소를 한 줄로 알린다.
+    """통합 tip 을 해소하지 못하면 인구가 성립하지 않는다 — dirty 인구로 접지 않고 멈춘다.
 
     같은 트리에서 통합 브랜치를 선언하면 같은 커밋이 차단감이다
     (`test_residual_population_blocks_an_undeclared_change_either_way`) — 원래부터 통과라서
@@ -1257,11 +1249,11 @@ def test_residual_population_narrows_loudly_without_an_integration_tip(
     (root / _UNDECLARED).write_text(_CHANGED_BODY, encoding="utf-8")
     _commit_paths(root, _UNDECLARED)
 
-    block, err = _residual_verdict(tf, root, _MEMBER_A)
+    with pytest.raises(tf._CloseObservationFailure) as caught:
+        _residual_verdict(tf, root, _MEMBER_A)
 
-    assert block is None
-    assert err.count("잔여 판정 인구 축소") == 1
-    assert _MEMBER_A in err
+    assert _MEMBER_A in str(caught.value)
+    assert "통합 브랜치(base_branch)를 선언하지 않았다" in str(caught.value)
 
 
 def test_status_seam_is_strict_and_the_non_blocking_report_absorbs_it(

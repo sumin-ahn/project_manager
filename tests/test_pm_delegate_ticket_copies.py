@@ -36,6 +36,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import write_cluster_ledger
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 PM_DELEGATE = TOOLS / "pm_delegate.py"
@@ -136,9 +138,15 @@ def env(tmp_path, pd, monkeypatch):
     return pm_home, slot, tickets, sync_log
 
 
-def _write_spec(tickets: Path, ticket: str, **kwargs) -> Path:
+def _write_spec(
+    tickets: Path, ticket: str, *, rounds=("code-reviewer",), **kwargs,
+) -> Path:
+    """명세와 그 티켓의 크기 1 묶음 장부를 함께 쓴다 — `rounds` 가 예약할 역할 순서다."""
     path = tickets / f"{ticket}-supersede.md"
     path.write_text(_spec_text(ticket, **kwargs), encoding="utf-8", newline="\n")
+    write_cluster_ledger(
+        tickets.parent.parent, ticket, base_branch="task/main", rounds=rounds,
+    )
     return path
 
 
@@ -269,7 +277,7 @@ def test_superseded_by_self_reference_is_rejected(pd, env):
 def test_superseded_by_without_evidence_still_requires_assume_dead(pd, env):
     """대체-확인만으로는 부족하다 — 종료 증거 없는 예약은 여전히 명시 확인이 필요하다."""
     pm_home, slot, tickets, sync_log = env
-    _write_spec(tickets, "T-9003")
+    _write_spec(tickets, "T-9003", rounds=("code-reviewer", "code-reviewer"))
     dead = pd.prepare_ticket_copy(
         ticket="T-9003", role="code-reviewer", cwd=slot, pm_home=pm_home,
     )
@@ -295,7 +303,7 @@ def test_superseded_by_without_evidence_still_requires_assume_dead(pd, env):
 def test_superseded_by_does_not_override_a_live_owner_pid(pd, env, monkeypatch):
     """대체-확인을 줘도 소유 pid 가 살아 있으면 명시 확인(`--assume-dead`) 없이는 거부다."""
     pm_home, slot, tickets, sync_log = env
-    _write_spec(tickets, "T-9004")
+    _write_spec(tickets, "T-9004", rounds=("code-reviewer", "code-reviewer"))
     dead = pd.prepare_ticket_copy(
         ticket="T-9004", role="code-reviewer", cwd=slot, pm_home=pm_home, owner_pid=4242,
     )
@@ -335,7 +343,7 @@ def test_superseded_round_closes_the_real_deadlock_shape(pd, env, capsys):
     종결하면 `ticket copies --unharvested` 목록에서 라운드 1 이 값으로 사라진다.
     """
     pm_home, slot, tickets, sync_log = env
-    _write_spec(tickets, "T-9005")
+    _write_spec(tickets, "T-9005", rounds=("code-reviewer", "code-reviewer"))
     round1 = pd.prepare_ticket_copy(
         ticket="T-9005", role="code-reviewer", cwd=slot, pm_home=pm_home,
     )
@@ -404,7 +412,7 @@ def test_superseded_round_closes_the_real_deadlock_shape(pd, env, capsys):
 def test_superseded_abandon_retry_omits_the_flag_and_still_converges(pd, env, monkeypatch):
     """재호출은 `--superseded-by` 를 다시 안 줘도 남은 정리를 끝낸다(장부에서 되읽는다)."""
     pm_home, slot, tickets, sync_log = env
-    _write_spec(tickets, "T-9006")
+    _write_spec(tickets, "T-9006", rounds=("code-reviewer", "code-reviewer"))
     round1 = pd.prepare_ticket_copy(
         ticket="T-9006", role="code-reviewer", cwd=slot, pm_home=pm_home,
     )
@@ -457,7 +465,7 @@ def test_middle_ordinal_abandon_marks_the_preserved_seed_out_of_the_surfaces(
     파괴 판정 기준선을 읽은 뒤 붙으므로 run-dir 정리는 종전대로 끝난다.
     """
     pm_home, slot, tickets, sync_log = env
-    _write_spec(tickets, "T-9020")
+    _write_spec(tickets, "T-9020", rounds=("code-reviewer", "code-reviewer"))
     round1 = pd.prepare_ticket_copy(
         ticket="T-9020", role="code-reviewer", cwd=slot, pm_home=pm_home,
     )
@@ -517,7 +525,7 @@ def test_marker_is_not_a_second_write_and_does_not_block_the_retry(
     호출에 "산출이 생겼다" 로 읽혀 남은 정리가 영영 끝나지 않는다.
     """
     pm_home, slot, tickets, sync_log = env
-    _write_spec(tickets, "T-9022")
+    _write_spec(tickets, "T-9022", rounds=("code-reviewer", "code-reviewer"))
     round1 = pd.prepare_ticket_copy(
         ticket="T-9022", role="code-reviewer", cwd=slot, pm_home=pm_home,
     )
@@ -606,7 +614,7 @@ def test_a_retry_only_flag_cannot_delete_output_the_closing_call_never_confirmed
     5단계 파괴 판정에 쓰이지 않고, run-dir 은 산출 보존으로 거부된다(장부 0 · stderr 0).
     """
     pm_home, slot, tickets, sync_log = env
-    _write_spec(tickets, "T-9009")
+    _write_spec(tickets, "T-9009", rounds=("code-reviewer", "code-reviewer"))
     round1 = pd.prepare_ticket_copy(
         ticket="T-9009", role="code-reviewer", cwd=slot, pm_home=pm_home,
     )
@@ -698,7 +706,7 @@ def test_superseded_by_nonexistent_ordinal_is_rejected(pd, env):
 def test_loud_does_not_print_when_the_liveness_gate_still_rejects(pd, env, monkeypatch, capsys):
     """loud 는 생존 게이트 뒤에만 — 거부된 호출에 "포기합니다" 를 남기지 않는다."""
     pm_home, slot, tickets, sync_log = env
-    _write_spec(tickets, "T-9012")
+    _write_spec(tickets, "T-9012", rounds=("code-reviewer", "code-reviewer"))
     dead = pd.prepare_ticket_copy(
         ticket="T-9012", role="code-reviewer", cwd=slot, pm_home=pm_home, owner_pid=4343,
     )
@@ -729,7 +737,7 @@ def _cli_ticket_owner(pd, monkeypatch, pm_home: Path):
 def test_cli_abandon_wires_the_superseded_by_flag(pd, env, monkeypatch):
     """CLI 표면 — `--superseded-by` 가 argparse 를 거쳐 실제 처분까지 전달된다."""
     pm_home, slot, tickets, sync_log = env
-    _write_spec(tickets, "T-9007")
+    _write_spec(tickets, "T-9007", rounds=("code-reviewer", "code-reviewer"))
     round1 = pd.prepare_ticket_copy(
         ticket="T-9007", role="code-reviewer", cwd=slot, pm_home=pm_home,
     )

@@ -34,6 +34,7 @@ from pathlib import Path
 import pytest
 from _textio import normalize_newline_bytes
 from _win_skip import _can_symlink, posix_mode_supported
+from conftest import write_cluster_ledger
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -5648,7 +5649,7 @@ _DESIGN_SECTION = (
 
 def _scope_workspace(
     tmp_path: Path, monkeypatch, pd, touches=("work/demo_1/src",),
-    stage_change: bool = False,
+    stage_change: bool = False, rounds=("developer",),
 ):
     """PM 홈 + `work/<repo>_<N>` git 워크스페이스 + ticket 을 실물로 세운다.
 
@@ -5701,6 +5702,12 @@ def _scope_workspace(
     # 라운드는 준비가 예약한다([[ADR-0090]]) — 명세에는 역할 산출이 없다.
     ticket_path = tickets / f"{TICKET_ID}-scope.md"
     ticket_path.write_text(ticket_text, encoding="utf-8")
+    # 준비는 라운드 예산·기준 브랜치를 묶음 장부에서만 읽는다 — `cluster` 필드가 없는 이
+    # 티켓은 크기 1 묶음이고, 그 장부가 이 픽스처가 태울 라운드 하나를 선언한다.
+    write_cluster_ledger(
+        pm_home / ".project_manager" / "wiki", TICKET_ID,
+        base_branch="task/main", rounds=rounds,
+    )
     ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.parent.mkdir(parents=True)
     ledger.write_text(
@@ -5782,7 +5789,8 @@ def test_in_scope_only_change_has_no_warning(pd, monkeypatch, tmp_path, capsys):
 
 def test_read_only_role_write_is_warned(pd, monkeypatch, tmp_path, capsys):
     """읽기 전용 역할(code-reviewer)은 touches 가 있어도 허용 0 — 쓰기는 전부 경고."""
-    workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd, stage_change=True)
+    workspace, prompt = _scope_workspace(
+        tmp_path, monkeypatch, pd, stage_change=True, rounds=("code-reviewer",))
     conf = _enabled_conf(**{"delegate.code-reviewer.harness": "codex",
                             "delegate.code-reviewer.model": "gpt-r"})
     fake = _WritingRun(workspace, (["src/review-note.md"], _ok_result("리뷰 완료")))
@@ -7088,7 +7096,6 @@ def test_t0650_cold_guard_uses_real_ledger_shapes(
         pytest.param("developer", True, None, 1, id="developer-completed-blocked"),
         pytest.param("architect", True, None, 1, id="architect-completed-blocked"),
         pytest.param("code-reviewer", True, None, 0, id="reviewer-completed-passes"),
-        pytest.param("researcher", True, None, 0, id="researcher-completed-passes"),
         pytest.param("developer", False, None, 0, id="developer-no-completed-passes"),
         pytest.param(
             "developer", True, "의도적으로 독립 구현 비교", 0,
@@ -7101,7 +7108,8 @@ def test_t0650_cold_write_role_matrix_uses_real_ledger(
     role, has_completed, fresh_reason, expected_rc,
 ):
     """[R] 실제 장부에서 write만 거부하고 read의 독립 cold 판정은 무마찰 통과시킨다."""
-    workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd, stage_change=True)
+    workspace, prompt = _scope_workspace(
+        tmp_path, monkeypatch, pd, stage_change=True, rounds=(role,))
     output_dir = tmp_path / "raw"
     if has_completed:
         _seed_t0650_raw(pd, output_dir, ticket=TICKET_ID, role=role)
@@ -7320,7 +7328,8 @@ def test_t0650_codex_0147_missing_rollout_reruns_fresh_for_write_and_read(
     pd, monkeypatch, tmp_path, capsys, role,
 ):
     """[C] 0.147.0 실측 세션-부재 오류는 delta 미소비라 write/read 모두 fresh 재실행한다."""
-    workspace, prompt = _scope_workspace(tmp_path, monkeypatch, pd, stage_change=True)
+    workspace, prompt = _scope_workspace(
+        tmp_path, monkeypatch, pd, stage_change=True, rounds=(role,))
     output_dir = tmp_path / "raw"
     record_id, _raw_path = _seed_t0650_raw(
         pd, output_dir, ticket=TICKET_ID, role=role,
