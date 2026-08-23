@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import functools
 import importlib.util
+import inspect
 import json
 import re
 import shutil
@@ -281,6 +282,15 @@ def test_hooks_warning_is_inline_and_only_calls_engine_script():
         assert "&&" not in windows and ";" in windows
     engine_tools = {"{tools}/pm_log.py"}
     for feature in _features("PreCompact") + _features("PostCompact"):
+        if not feature.argv:
+            # in-process 기능(subprocess 없음)은 handler 가 엔진 모듈(`{tools}/pm_principles.py`)을
+            # 적재해야 한다 — 어댑터 안에 정책 사본이 있으면 안 된다는 같은 관심사.
+            handler = getattr(feature, "handler", None)
+            assert handler is not None, f"argv 도 handler 도 없는 기능: {feature}"
+            source = inspect.getsource(handler)
+            assert "pm_principles" in source or "_load_principles" in source, (
+                f"in-process handler 가 엔진 모듈을 적재하지 않음: {feature}")
+            continue
         assert feature.argv[0] == "{py}", feature
         assert feature.argv[1] in engine_tools, f"어댑터 소유 스크립트 호출: {feature}"
 
@@ -400,7 +410,8 @@ def test_postcompact_wires_snapshot_checkpoint_and_windows_symmetry():
         assert "--hook-dispatch PostCompact" in handler[key], key
         assert DISPATCHER_REL in handler[key], key
     assert "&&" not in handler["commandWindows"]
-    checkpoint, snapshot = _features("PostCompact")
+    # subprocess 기능만 — in-process 기능(argv 없음·rearm 등)은 이 대칭 검사의 대상이 아니다.
+    checkpoint, snapshot = [f for f in _features("PostCompact") if f.argv]
     assert checkpoint.argv[1:] == ("{tools}/pm_log.py", "checkpoint", "--trigger",
                                    "compaction", "--phase", "post", "--cwd", ".")
     assert checkpoint.side_effect_only is True, "checkpoint 단계 출력 폐기가 사라졌다"
