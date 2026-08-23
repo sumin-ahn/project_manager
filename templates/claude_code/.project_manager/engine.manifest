@@ -36,7 +36,7 @@
 .project_manager/tools/pm_log.py
 .project_manager/tools/ticket_finish.py
 .project_manager/tools/pm_update.py
-# pm_import: 채택자 홈 생성/임베드 import 엔진. manifest 편입→ pm_update 전파로 ⓒ stale 해소. 비-@render·verbatim copy2(tools/* 토큰치환 제외). manifest 진화(새 항목이 기존 채택자에 도달)는 pm-update 스킬 reconcile(self-list 아님·codex)
+# pm_import: 채택자 홈 생성/임베드 import 엔진. manifest 편입→ pm_update 전파로 채택자 사본 stale 해소. 비-@render·verbatim copy2(tools/* 토큰치환 제외). manifest 진화(새 항목이 기존 채택자에 도달)는 pm-update 스킬 reconcile(self-list 아님·codex)
 .project_manager/tools/pm_import.py
 # pm_render: 어댑터 render 엔진 (operational 토큰 치환). pm_update/pm_import 가 @render path 에 위임. 도구 전파 등록일 뿐 — @render *활성화*는 별도 결정
 .project_manager/tools/pm_render.py
@@ -52,11 +52,11 @@
 .project_manager/tools/gate_snapshot.py
 # worktree_pool: repo별 worktree 풀 리스 엔진 (multi-PM 모델). 순수 엔진(git DI seam)
 .project_manager/tools/worktree_pool.py
-# pm_config: multi-PM 셋업/관리 파사드 디스패처 (0014). 루트 forwarder pm-config.sh/.cmd 는
+# pm_config: multi-PM 셋업/관리 파사드 디스패처. 루트 forwarder pm-config.sh/.cmd 는
 #   per-harness 템플릿 트리(templates/<harness>/)에 두고 pm_import 가 채택자 루트로 복사(pm-update.sh/.cmd 동형·manifest 밖)
 .project_manager/tools/pm_config.py
 # identity_args: 공용 정체성 인자 모듈 — --repo/--slot 파싱(discriminated) + 리스(활성슬롯) 읽기·해소
-#   단일 진실(B-1). 전 CLI 가 순차 채택 — 신설 도구라 등록 필수
+#   단일 진실. 전 CLI 가 순차 채택 — 신설 도구라 등록 필수
 #   (미등록=전파 안 됨·pm_render 사례).
 .project_manager/tools/identity_args.py
 # repo_coordinates: PM-home ticket touches(`work/<repo>_<N>/...`)를 검증된 workspace/lease와

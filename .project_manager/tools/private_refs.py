@@ -23,7 +23,7 @@ import os
 import re
 import sys
 import tokenize
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
@@ -435,34 +435,78 @@ def _cmd_prose_spans(source: str) -> list[tuple[int, int]]:
     return spans
 
 
-def _quote_aware_hash_comment_spans(source: str) -> list[tuple[int, int]]:
-    """따옴표(``'``·``"``) 안이 아니고 **단어 경계**(라인 선두·공백 뒤)인 ``#`` 부터 줄 끝까지.
+# 셸 heredoc 시작 — ``<<``/``<<-`` 뒤의 구분자. 구분자 모양(따옴표 감싸기 또는 식별자)이
+# here-string(``<<<``)과 산술 좌시프트(``$((1 << 2))``)를 자동으로 배제한다.
+_SHELL_HEREDOC_RE = re.compile(
+    r"<<(?P<dash>-?)[ \t]*(?P<quote>['\"]?)(?P<delimiter>[A-Za-z_][A-Za-z0-9_]*)(?P=quote)"
+)
 
-    ``.sh``·``.rules`` 공용 — 둘 다 ``#`` 한 줄 주석 + 따옴표 문자열 구문이다. 단어 경계 규칙이
-    ``${VAR#pat}``(파라미터 확장)·``pattern#literal`` 같은 임베디드 ``#`` 를 주석에서 제외한다.
-    따옴표 안(작은따옴표는 리터럴·큰따옴표는 백슬래시 이스케이프)의 ``#`` 는 애초에 후보에서 뺀다
-    — ``$(py -c '...')`` 안 임베디드 python 주석은 문자열 데이터로 본다(설계 §회색지대).
+
+def _skip_heredoc_bodies(
+    source: str, position: int, pending: list[tuple[str, bool]]
+) -> int:
+    """대기 중인 heredoc 본문을 구분자 라인까지 건너뛴 위치를 돌려준다.
+
+    본문은 구분자의 따옴표 여부와 무관하게 셸이 주석으로 읽지 않는 데이터다 — 본문 안 ``#``
+    를 주석으로 잡으면 데이터가 산문으로 오분류된다. ``<<-`` 는 구분자 라인의 선행 탭을
+    허용하므로 그때만 탭을 벗기고 대조한다.
+    """
+    length = len(source)
+    cursor = position
+    for delimiter, strips_leading_tabs in pending:
+        while cursor < length:
+            newline = source.find("\n", cursor)
+            line_end = newline if newline != -1 else length
+            line = source[cursor:line_end].rstrip("\r")
+            cursor = line_end + 1 if newline != -1 else length
+            if (line.lstrip("\t") if strips_leading_tabs else line) == delimiter:
+                break
+    return cursor
+
+
+def _hash_comment_spans(source: str, heredoc_aware: bool) -> list[tuple[int, int]]:
+    """따옴표(``'``·``"``) 안이 아니고 **단어 시작**인 ``#`` 부터 줄 끝까지.
+
+    ``.sh``·``.rules`` 공용 — 둘 다 ``#`` 한 줄 주석 + 따옴표 문자열 구문이다. 단어 시작은
+    라인 선두이거나 공백 뒤다(셸의 주석 규칙). 그래서 후행 주석(``echo ok  # 설명``)은 잡고
+    ``${VAR#pat}``(파라미터 확장)·``pattern#literal`` 같은 단어 내부 ``#`` 는 제외한다.
+    따옴표 안(작은따옴표는 리터럴·큰따옴표는 백슬래시 이스케이프)의 ``#`` 는 애초에 후보에서
+    뺀다 — ``$(py -c '...')`` 안 임베디드 python 주석은 문자열 데이터로 본다.
+
+    ``heredoc_aware`` 는 heredoc 문법이 있는 언어(``.sh``)에서만 켠다.
     """
     spans: list[tuple[int, int]] = []
     length = len(source)
     index = 0
     quote: str | None = None
-    at_boundary = True
+    at_word_start = True
     comment_start: int | None = None
+    pending_heredocs: list[tuple[str, bool]] = []
+
+    def advance_past_newline(newline_index: int) -> int:
+        nonlocal pending_heredocs
+        if not pending_heredocs:
+            return newline_index + 1
+        resumed = _skip_heredoc_bodies(source, newline_index + 1, pending_heredocs)
+        pending_heredocs = []
+        return resumed
+
     while index < length:
         char = source[index]
         if comment_start is not None:
             if char == "\n":
                 spans.append((comment_start, index))
                 comment_start = None
-                at_boundary = True
+                at_word_start = True
+                index = advance_past_newline(index)
+                continue
             index += 1
             continue
         if quote == "'":
             if char == "'":
                 quote = None
             index += 1
-            at_boundary = False
+            at_word_start = False
             continue
         if quote == '"':
             if char == "\\" and index + 1 < length:
@@ -471,44 +515,132 @@ def _quote_aware_hash_comment_spans(source: str) -> list[tuple[int, int]]:
                 if char == '"':
                     quote = None
                 index += 1
-            at_boundary = False
+            at_word_start = False
             continue
         if char == "'" or char == '"':
             quote = char
             index += 1
-            at_boundary = False
+            at_word_start = False
             continue
         if char == "\\" and index + 1 < length:
             index += 2
-            at_boundary = False
+            at_word_start = False
             continue
-        if char == "#" and at_boundary:
+        if char == "#" and at_word_start:
             comment_start = index
             index += 1
             continue
+        if heredoc_aware and char == "<":
+            heredoc = _SHELL_HEREDOC_RE.match(source, index)
+            if heredoc is not None:
+                pending_heredocs.append(
+                    (heredoc.group("delimiter"), heredoc.group("dash") == "-")
+                )
+                index = heredoc.end()
+                at_word_start = False
+                continue
         if char in " \t":
             index += 1
+            at_word_start = True
             continue
         if char == "\n":
-            at_boundary = True
-            index += 1
+            at_word_start = True
+            index = advance_past_newline(index)
             continue
-        at_boundary = False
+        at_word_start = False
         index += 1
     if comment_start is not None:
         spans.append((comment_start, length))
     return spans
 
 
+def _shell_prose_spans(source: str) -> list[tuple[int, int]]:
+    """``.sh`` — 따옴표 인식 ``#`` 주석. heredoc 본문은 데이터라 산문에서 뺀다."""
+    return _hash_comment_spans(source, heredoc_aware=True)
+
+
+def _rules_prose_spans(source: str) -> list[tuple[int, int]]:
+    """``.rules`` — 따옴표 인식 ``#`` 주석. 이 문법에는 heredoc 이 없고
+    ``match = [...]`` 의 샘플 argv 는 문자열 데이터라 산문이 아니다."""
+    return _hash_comment_spans(source, heredoc_aware=False)
+
+
+def _toml_skip_string(source: str, index: int) -> int:
+    """TOML 문자열 하나(기본/리터럴 · 단일행/다중행)의 끝 위치(배타)를 돌려준다."""
+    length = len(source)
+    if source.startswith("'''", index) or source.startswith('"""', index):
+        delimiter = source[index:index + 3]
+        search_from = index + 3
+        while True:
+            found = source.find(delimiter, search_from)
+            if found == -1:
+                return length
+            if delimiter[0] == "'":
+                return found + 3
+            backslashes = 0
+            cursor = found - 1
+            while cursor >= 0 and source[cursor] == "\\":
+                backslashes += 1
+                cursor -= 1
+            if backslashes % 2 == 0:
+                return found + 3
+            search_from = found + 3
+    if source[index] == "'":
+        found = source.find("'", index + 1)
+        return found + 1 if found != -1 else length
+    cursor = index + 1
+    while cursor < length:
+        if source[cursor] == "\\":
+            cursor += 2
+            continue
+        if source[cursor] == '"':
+            return cursor + 1
+        cursor += 1
+    return length
+
+
+def _toml_skip_table_header(source: str, index: int) -> int:
+    """``[table]``·``[[array.of.tables]]`` 머리를 닫는 대괄호까지 건너뛴다.
+
+    머리 안의 따옴표 조각은 값이 아니라 이름이라 판정면 밖이다.
+    """
+    length = len(source)
+    cursor = index
+    depth = 0
+    while cursor < length:
+        char = source[cursor]
+        if char in "'\"":
+            cursor = _toml_skip_string(source, cursor)
+            continue
+        if char == "[":
+            depth += 1
+            cursor += 1
+            continue
+        if char == "]":
+            depth -= 1
+            cursor += 1
+            if depth <= 0:
+                return cursor
+            continue
+        if char == "\n":
+            return cursor
+        cursor += 1
+    return length
+
+
 def _toml_prose_spans(source: str) -> list[tuple[int, int]]:
-    """따옴표 인식 ``#`` 주석 + 문자열 값(단일·삼중 따옴표 모두). 키/값을 가리지 않는다.
+    """따옴표 인식 ``#`` 주석 + 문자열 **값**(단일행·다중행). 키는 산문이 아니다.
 
     에이전트 카드의 ``description``·프롬프트 문자열은 채택자가 읽는 출하 산문이라 데이터로
-    면제하지 않는다(python 축의 argparse ``help=`` 문자열과 같은 클래스).
+    면제하지 않는다(python 축의 argparse ``help=`` 문자열과 같은 클래스). 반대로 따옴표 키
+    (``"키" = 1`` · 점 표기 키 · ``["키"]`` 테이블 머리)는 값이 아니라 이름이라 판정면 밖이다.
+    문자열 모양은 둘이 같으므로 구문 위치(키 자리인지 값 자리인지)로 가른다.
     """
     spans: list[tuple[int, int]] = []
     length = len(source)
     index = 0
+    containers: list[str] = []  # 여는 순서대로 "array" 또는 "inline_table"
+    expects_key = True
     while index < length:
         char = source[index]
         if char == "#":
@@ -517,48 +649,45 @@ def _toml_prose_spans(source: str) -> list[tuple[int, int]]:
             spans.append((index, end))
             index = end
             continue
-        if source.startswith("'''", index) or source.startswith('"""', index):
-            delimiter = source[index:index + 3]
-            search_from = index + 3
-            end = length
-            while True:
-                found = source.find(delimiter, search_from)
-                if found == -1:
-                    end = length
-                    break
-                if delimiter[0] == "'":
-                    end = found + 3
-                    break
-                backslashes = 0
-                cursor = found - 1
-                while cursor >= 0 and source[cursor] == "\\":
-                    backslashes += 1
-                    cursor -= 1
-                if backslashes % 2 == 0:
-                    end = found + 3
-                    break
-                search_from = found + 3
-            spans.append((index, end))
+        if char == "\n":
+            # 배열·인라인 테이블은 여러 줄에 걸칠 수 있으므로 그 안에서는 자리를 유지한다.
+            if not containers:
+                expects_key = True
+            index += 1
+            continue
+        if char in "'\"":
+            end = _toml_skip_string(source, index)
+            if not expects_key:
+                spans.append((index, end))
             index = end
             continue
-        if char == "'":
-            found = source.find("'", index + 1)
-            end = found + 1 if found != -1 else length
-            spans.append((index, end))
-            index = end
+        if char == "=":
+            expects_key = False
+            index += 1
             continue
-        if char == '"':
-            cursor = index + 1
-            while cursor < length:
-                if source[cursor] == "\\":
-                    cursor += 2
-                    continue
-                if source[cursor] == '"':
-                    cursor += 1
-                    break
-                cursor += 1
-            spans.append((index, cursor))
-            index = cursor
+        if char == "[":
+            if expects_key and not containers:
+                index = _toml_skip_table_header(source, index)
+                continue
+            containers.append("array")
+            expects_key = False
+            index += 1
+            continue
+        if char == "{":
+            containers.append("inline_table")
+            expects_key = True
+            index += 1
+            continue
+        if char in "]}":
+            if containers:
+                containers.pop()
+            # 닫힌 컨테이너 자신이 값이므로 그 뒤는 값 자리다.
+            expects_key = False
+            index += 1
+            continue
+        if char == ",":
+            expects_key = bool(containers) and containers[-1] == "inline_table"
+            index += 1
             continue
         index += 1
     return spans
@@ -646,6 +775,30 @@ _JS_REGEX_PRECEDING_KEYWORDS = {
     "return", "typeof", "instanceof", "in", "of", "new", "delete", "void",
     "throw", "case", "do", "else", "yield", "await",
 }
+# 제어문 머리(``if (...)``·``while (...)``)의 닫는 괄호 뒤는 값이 아니라 문장 자리라
+# 그 뒤 ``/`` 도 정규식이다. 호출·그룹 괄호(``f(...)``)의 닫는 괄호(나눗셈 자리)와 가르려면
+# 여는 괄호 시점의 직전 토큰을 괄호 스택에 같이 담아야 한다.
+_JS_STATEMENT_HEAD_KEYWORDS = {"if", "for", "while", "switch", "catch", "with"}
+_JS_STATEMENT_PAREN_TOKEN = "STATEMENT_PAREN"
+_JS_LITERAL_TOKEN = "LITERAL"
+
+_JS_FRAME_CODE = "code"
+_JS_FRAME_TEMPLATE = "template"
+
+
+@dataclass
+class _JsFrame:
+    """JS 스캐너의 문맥 한 겹.
+
+    ``code`` 는 주석을 수집하는 코드 문맥(최상위 또는 ``${...}`` 보간 안)이고,
+    ``template`` 은 백틱 문자열의 raw 구간(문자열 데이터라 주석이 없다)이다.
+    """
+
+    mode: str
+    interpolation: bool = False
+    previous_token: str = ""
+    parentheses: list[str] = field(default_factory=list)
+    braces: int = 0
 
 
 def _js_skip_string(source: str, index: int, quote: str) -> int:
@@ -661,108 +814,137 @@ def _js_skip_string(source: str, index: int, quote: str) -> int:
     return length
 
 
-def _js_skip_template(source: str, index: int) -> int:
-    """백틱 문자열 하나를 건너뛴다. ``${...}`` 보간 안 중괄호 깊이만 추적한다(중첩 백틱은 단순
-    처리 — 표면 상한 안에서 실 코퍼스가 요구하는 정밀도만 갖춘다)."""
+def _js_skip_regex(source: str, index: int) -> int:
+    """정규식 리터럴 하나와 뒤따르는 플래그를 건너뛴다.
+
+    문자 클래스(``[...]``) 안의 ``/`` 는 종료 슬래시가 아니다 — ``/[//]x/`` 의 두 슬래시를
+    주석으로 읽는 오탐이 여기서 막힌다.
+    """
     length = len(source)
     cursor = index + 1
+    in_character_class = False
     while cursor < length:
         char = source[cursor]
         if char == "\\":
             cursor += 2
             continue
-        if char == "`":
-            return cursor + 1
-        if char == "$" and cursor + 1 < length and source[cursor + 1] == "{":
-            cursor += 2
-            depth = 1
-            while cursor < length and depth > 0:
-                inner = source[cursor]
-                if inner == "{":
-                    depth += 1
-                    cursor += 1
-                elif inner == "}":
-                    depth -= 1
-                    cursor += 1
-                elif inner in "'\"":
-                    cursor = _js_skip_string(source, cursor, inner)
-                elif inner == "`":
-                    cursor = _js_skip_template(source, cursor)
-                elif inner == "/" and cursor + 1 < length and source[cursor + 1] == "/":
-                    newline = source.find("\n", cursor)
-                    cursor = newline if newline != -1 else length
-                elif inner == "/" and cursor + 1 < length and source[cursor + 1] == "*":
-                    end_block = source.find("*/", cursor + 2)
-                    cursor = end_block + 2 if end_block != -1 else length
-                else:
-                    cursor += 1
-            continue
+        if char == "\n":
+            break
+        if char == "[":
+            in_character_class = True
+        elif char == "]":
+            in_character_class = False
+        elif char == "/" and not in_character_class:
+            cursor += 1
+            break
         cursor += 1
-    return length
+    while cursor < length and source[cursor].isalpha():
+        cursor += 1
+    return cursor
+
+
+def _js_is_regex_context(previous_token: str) -> bool:
+    """직전 유의미 토큰으로 ``/`` 가 정규식 시작인지(나눗셈이 아닌지) 판정한다."""
+    if previous_token in ("", _JS_STATEMENT_PAREN_TOKEN):
+        return True
+    if previous_token in _JS_REGEX_PRECEDING_KEYWORDS:
+        return True
+    return (
+        len(previous_token) == 1
+        and previous_token in _JS_REGEX_PRECEDING_PUNCTUATION
+    )
 
 
 def _js_prose_spans(source: str) -> list[tuple[int, int]]:
     """``//``·``/* */`` 주석 — 문자열·템플릿·정규식 리터럴을 인식해 그 안의 동형 글자를
-    주석 시작으로 오판하지 않는다(``//`` 로 시작하는 문자열 리터럴·슬래시를 포함한 정규식 등)."""
+    주석 시작으로 오판하지 않는다.
+
+    템플릿은 raw 구간(문자열 데이터)과 ``${...}`` 보간 구간(코드)을 나눈다 — 보간 안의
+    주석은 채택자가 읽는 산문이라 수집하고, raw 구간의 ``//`` 는 데이터라 무시한다. 중첩
+    (템플릿 안 템플릿 · 보간 안 객체 리터럴)은 문맥 스택으로 처리한다.
+    """
     spans: list[tuple[int, int]] = []
     length = len(source)
     index = 0
-    prev_token = ""
+    frames = [_JsFrame(mode=_JS_FRAME_CODE)]
     while index < length:
+        frame = frames[-1]
         char = source[index]
-        if char == "/" and index + 1 < length and source[index + 1] == "/":
+        if frame.mode == _JS_FRAME_TEMPLATE:
+            if char == "\\":
+                index += 2
+                continue
+            if char == "`":
+                frames.pop()
+                frames[-1].previous_token = _JS_LITERAL_TOKEN
+                index += 1
+                continue
+            if source.startswith("${", index):
+                frames.append(_JsFrame(mode=_JS_FRAME_CODE, interpolation=True))
+                index += 2
+                continue
+            index += 1
+            continue
+        if source.startswith("//", index):
             newline = source.find("\n", index)
             end = newline if newline != -1 else length
             spans.append((index, end))
             index = end
-            prev_token = ""
+            # 한 줄 주석 뒤는 개행이라 다음 토큰은 문장 자리에서 시작한다.
+            frame.previous_token = ""
             continue
-        if char == "/" and index + 1 < length and source[index + 1] == "*":
-            end_block = source.find("*/", index + 2)
-            end = end_block + 2 if end_block != -1 else length
+        if source.startswith("/*", index):
+            closing = source.find("*/", index + 2)
+            end = closing + 2 if closing != -1 else length
             spans.append((index, end))
             index = end
-            prev_token = ""
+            # 블록 주석은 토큰이 아니므로 직전 토큰을 그대로 둔다.
             continue
         if char == "'" or char == '"':
             index = _js_skip_string(source, index, char)
-            prev_token = "STRING"
+            frame.previous_token = _JS_LITERAL_TOKEN
             continue
         if char == "`":
-            index = _js_skip_template(source, index)
-            prev_token = "STRING"
+            frames.append(_JsFrame(mode=_JS_FRAME_TEMPLATE))
+            index += 1
             continue
         if char == "/":
-            is_regex_context = (
-                prev_token == ""
-                or prev_token in _JS_REGEX_PRECEDING_KEYWORDS
-                or (len(prev_token) == 1 and prev_token in _JS_REGEX_PRECEDING_PUNCTUATION)
-            )
-            if is_regex_context:
-                cursor = index + 1
-                in_class = False
-                while cursor < length:
-                    inner = source[cursor]
-                    if inner == "\\":
-                        cursor += 2
-                        continue
-                    if inner == "\n":
-                        break
-                    if inner == "[":
-                        in_class = True
-                    elif inner == "]":
-                        in_class = False
-                    elif inner == "/" and not in_class:
-                        cursor += 1
-                        break
-                    cursor += 1
-                while cursor < length and source[cursor].isalpha():
-                    cursor += 1
-                index = cursor
-                prev_token = "REGEX"
+            if _js_is_regex_context(frame.previous_token):
+                index = _js_skip_regex(source, index)
+                frame.previous_token = _JS_LITERAL_TOKEN
                 continue
+            frame.previous_token = "/"
             index += 1
-            prev_token = "/"
+            continue
+        if char == "(":
+            frame.parentheses.append(
+                "statement"
+                if frame.previous_token in _JS_STATEMENT_HEAD_KEYWORDS
+                else "expression"
+            )
+            frame.previous_token = "("
+            index += 1
+            continue
+        if char == ")":
+            opened = frame.parentheses.pop() if frame.parentheses else "expression"
+            frame.previous_token = (
+                _JS_STATEMENT_PAREN_TOKEN if opened == "statement" else ")"
+            )
+            index += 1
+            continue
+        if char == "{":
+            frame.braces += 1
+            frame.previous_token = "{"
+            index += 1
+            continue
+        if char == "}":
+            if frame.interpolation and frame.braces == 0:
+                frames.pop()  # 보간이 끝나면 템플릿 raw 로 돌아간다.
+                index += 1
+                continue
+            frame.braces = max(0, frame.braces - 1)
+            frame.previous_token = "}"
+            index += 1
             continue
         if char.isspace():
             index += 1
@@ -771,10 +953,10 @@ def _js_prose_spans(source: str) -> list[tuple[int, int]]:
             cursor = index
             while cursor < length and (source[cursor].isalnum() or source[cursor] in "_$"):
                 cursor += 1
-            prev_token = source[index:cursor]
+            frame.previous_token = source[index:cursor]
             index = cursor
             continue
-        prev_token = char
+        frame.previous_token = char
         index += 1
     return spans
 
@@ -797,14 +979,14 @@ def _manifest_prose_spans(source: str) -> list[tuple[int, int]]:
 
 _LANGUAGE_PROSE_SCANNERS = {
     LANGUAGE_NOEXT: _noext_prose_spans,
-    LANGUAGE_SH: _quote_aware_hash_comment_spans,
+    LANGUAGE_SH: _shell_prose_spans,
     LANGUAGE_CMD: _cmd_prose_spans,
     LANGUAGE_TOML: _toml_prose_spans,
     LANGUAGE_JS: _js_prose_spans,
     LANGUAGE_MANIFEST: _manifest_prose_spans,
     LANGUAGE_JSON: _json_value_spans,
     LANGUAGE_JSONC: _jsonc_prose_spans,
-    LANGUAGE_RULES: _quote_aware_hash_comment_spans,
+    LANGUAGE_RULES: _rules_prose_spans,
     LANGUAGE_TXT: lambda source: [(0, len(source))],
 }
 
