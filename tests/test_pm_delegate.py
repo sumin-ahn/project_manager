@@ -5681,6 +5681,9 @@ def _scope_workspace(
         "title: 범위 훅 e2e\n"
         "status: open\n"
         f"touches:\n{touches_block}\n"
+        # T-0815 설계 근거 게이트(developer 시드 seam)가 요구하는 최소 근거 — 이 픽스처의
+        # 관심사(범위 감사·adapter 축)와는 무관해 waived 로 미리 해소한다.
+        'design: "waived: 범위 훅 e2e 픽스처(설계 근거 게이트 관심사 밖)"\n'
         "---\n\n"
         f"# {TICKET_ID} — 범위 훅 e2e\n\n## 목표\n범위 판정 e2e.\n"
     )
@@ -5849,6 +5852,8 @@ def test_corrupt_ticket_degrades_only_generic_axis_and_adapter_warning_survives(
         # 이 테스트의 축(범위 축만 강등 · 어댑터 축은 생존)이 드러난다.
         "touches:\n"
         f"  work/demo_1/{adapter_root}: yes\n"
+        # T-0815 설계 근거 게이트 관심사 밖 — waived 로 미리 해소(이 테스트의 손상 축이 아니다).
+        'design: "waived: 범위 훅 e2e 픽스처(설계 근거 게이트 관심사 밖)"\n'
         "---\n\n"
         f"# {TICKET_ID}\n\n## 목표\n손상 축 격리.\n"
     )
@@ -5884,7 +5889,10 @@ def test_corrupt_ticket_isolation_oracle_is_sensitive_to_coupled_none(
     # 손상 축은 `touches` 형식뿐이다(매핑) — 티켓 조회는 성립한다.
     corrupt_text = (
         f"---\nid: {TICKET_ID}\ntitle: 손상\nstatus: open\n"
-        "touches:\n  broken: yes\n---\n\n"
+        "touches:\n  broken: yes\n"
+        # T-0815 설계 근거 게이트 관심사 밖 — waived 로 미리 해소(이 테스트의 손상 축이 아니다).
+        'design: "waived: 범위 훅 e2e 픽스처(설계 근거 게이트 관심사 밖)"\n'
+        "---\n\n"
         f"# {TICKET_ID}\n\n## 목표\n손상 축 격리.\n"
     )
     ticket_path.write_text(corrupt_text, encoding="utf-8")

@@ -3979,6 +3979,15 @@ def render_ticket_growth_section_seed(
             "검토 판정: <설계 통과|수정 후 통과|반려>\n"
         )
     if role == "developer":
+        # "PM 초안 → architect 점검 → PM 비준" 3단 규율의 판정 seam. 예약 **전**에
+        # 거부해 잔여를 남기지 않는다 — 호출자(`ticket_rounds._render_round_seed_body`)가
+        # `DelegateError` 를 `RoundsError` 로 번역하고, 그 위(`prepare_ticket_copy`)가 아직
+        # board_lock/reserve_round 를 타기 전이라 라운드 파일도 장부 행도 남지 않는다.
+        design_problem = _load_board().design_evidence_problem(
+            "<T-NNNN>", ticket_text, rounds,
+        )
+        if design_problem is not None:
+            raise DelegateError(design_problem)
         verify_ids: Sequence[str] = ()
         if rounds:
             try:

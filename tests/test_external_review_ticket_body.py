@@ -53,6 +53,8 @@ def _ticket(path: Path, *, body: str) -> Path:
         "touches:\n"
         "- x.py\n"
         "estimate: medium\n"
+        # T-0815 설계 근거 게이트(developer 시드 seam) 관심사 밖 — waived 로 미리 해소한다.
+        'design: "waived: 본문 입력 픽스처(설계 근거 게이트 관심사 밖)"\n'
         "---\n"
         + body,
         encoding="utf-8",

@@ -745,6 +745,12 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
     claim = _board(dest, "claim", tid, "--repo", "pilot", "--slot", "1")
     assert claim.returncode == 0, f"{harness} `board.py claim` 실패: {claim.stderr}"
 
+    # T-0815 설계 근거 게이트 — architect 라운드도 `design: done` 도 없는 신규 티켓은 면제
+    # 선언(T-0817 `board.py design` setter)이 있어야 developer 라운드를 준비할 수 있다.
+    # 이 e2e 의 관심사는 준비→편집→회수 왕복이지 설계 근거 자체가 아니라 waived 로 해소한다.
+    design = _board(dest, "design", tid, "waived: round cycle e2e 픽스처")
+    assert design.returncode == 0, f"{harness} `board.py design` 실패: {design.stderr}"
+
     prepared = _delegate_cli(
         dest, "ticket", "prepare", "--ticket", tid, "--role", "developer",
         "--cwd", str(dest),

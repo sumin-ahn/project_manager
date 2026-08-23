@@ -14906,6 +14906,65 @@ def _design_issues(tid: str, body: str, design: Any) -> list[tuple[str, str, str
              f"(면제는 `design: \"{DESIGN_WAIVED}: <사유>\"`)")]
 
 
+# developer 라운드 준비 게이트의 해소 안내 3종. 문구는 여기 한 곳뿐이라(재작성 0)
+# `_DESIGN_SECTION`·`_DESIGN_PLACEHOLDER_LABELS`·`DESIGN_DONE`·`DESIGN_WAIVED` 를 그대로
+# 인용한다. `T-NNNN`(괄호 없음)은 그대로 둔다 — pm_delegate 쪽 `<T-NNNN>` 치환 문자열과
+# 다른 표기라야, 실 ticket id 를 아는 진입점(치환됨)과 모르는 진입점(치환 안 됨)의 사유
+# 문자열이 우연히 갈리지 않는다(세 진입점 파리티 단언의 전제).
+_DESIGN_EVIDENCE_REMEDY = (
+    "해소: (1) architect 라운드를 회수(시드 그대로면 근거 아님) · "
+    f"(2) `design: {DESIGN_DONE}` + `{_DESIGN_SECTION}` 절 4항목"
+    f"({'·'.join(_DESIGN_PLACEHOLDER_LABELS)}) 충전 · "
+    f"(3) `board.py design T-NNNN \"{DESIGN_WAIVED}: <사유>\"` 로 면제 선언"
+)
+
+
+def design_evidence_problem(tid: str, ticket_text: str, rounds: Sequence) -> str | None:
+    """developer 라운드 준비 직전 설계 근거 판정 — 통과면 None, 아니면 거부 사유 1줄.
+
+    "PM 초안 → architect 점검 → PM 비준" 3단 규율이 산문에만 있어 위임 준비 시점에 아무것도
+    막지 않던 자리를 여기서 잠근다. 통과 근거는 셋 중 하나다: (1) `rounds` 에 `pending=False`
+    (시드 그대로가 아닌 실 산출)인 architect 라운드가 1건 이상(시드 그대로는 근거가 아니다) ·
+    (2) `design: done` 且 `## 설계` 절 4항목 충전(`_design_issues` 0건) · (3)
+    `design: "waived: <사유>"`(빈 사유는 `_design_state` 가 이미 `invalid` 로 거부해 여기서
+    다시 검증하지 않는다). 셋 다 없으면 "기록 없는 건너뜀"이라 거부한다.
+
+    `ticket_text` 파싱 실패·`design` 값 인식 불가는 판정불능이라 통과로 삼키지 않고 거부한다
+    (fail-loud) — architect 실산출이 있어도 마찬가지다. 그래서 파싱·`design` 값 유효성 검사를
+    architect shortcut 보다 **먼저** 수행한다: 손상된 명세 위에서는 architect 실산출 근거가 있어도
+    판정 자체가 불능이라 통과로 삼킬 수 없다. `rounds` 는 호출자가 이미 로드해 손에 든 것을
+    그대로 받는다(재로드 0) — 시드 seam(`render_ticket_growth_section_seed`)의 developer 분기가
+    예약 직전 라운드 전체를 이미 들고 있다. 파싱 소스 식별자에 실 tid 를 싣지 않는 이유는
+    `_DESIGN_EVIDENCE_REMEDY` 와 같다 — 이 함수를 부르는 시드 seam 은 실 ticket id 를 모른다.
+    """
+    try:
+        fm, body = _parse_ticket_text(ticket_text, "<티켓 명세>")
+    except (ValueError, yaml.YAMLError) as exc:
+        # ValueError = frontmatter 구획 자체가 없거나 안 닫힘(`_parse_ticket_text`),
+        # yaml.YAMLError = 구획은 있는데 스칼라 문법 위반(예: 콜론 포함 값을 인용 없이 쓴
+        # `design: waived: 사유`) — 둘 다 판정불능이라 같은 취급이다.
+        return (
+            f"developer 라운드 준비 거부 — 명세 파싱 실패로 설계 근거를 판정할 수 없음: "
+            f"{exc} — {_DESIGN_EVIDENCE_REMEDY}"
+        )
+    design = fm.get("design")
+    state = _design_state(design)
+    if state == DESIGN_INVALID:
+        return (
+            f"developer 라운드 준비 거부 — design 값 인식 불가: {str(design)!r} — "
+            f"{_DESIGN_EVIDENCE_REMEDY}"
+        )
+    if any(item.role == "architect" and not item.pending for item in rounds):
+        return None
+    if state in (DESIGN_DONE, DESIGN_WAIVED):
+        issues = _design_issues(tid, body, design)
+        if not issues:
+            return None
+        return f"developer 라운드 준비 거부 — {issues[0][2]} — {_DESIGN_EVIDENCE_REMEDY}"
+    missing = f"architect 라운드 선행도 design 완료·면제 선언도 없음(design: {state})"
+    return f"developer 라운드 준비 거부 — {missing} — {_DESIGN_EVIDENCE_REMEDY}"
+
+
 def _design_estimate_advisory(
     tid: str, estimate: Any, design: Any,
 ) -> list[tuple[str, str, str]]:

@@ -18,7 +18,15 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
 # 명세 파일 본문 — 라운드 모델에서는 역할 절이 없다(라운드는 사이드카 파일이다).
+# frontmatter 는 T-0815 설계 근거 게이트(developer 시드 seam)가 `design:` 값을 읽는 유일한
+# 입력이라 붙인다 — `design: "waived: <사유>"` 는 이 파일의 관심사(라운드 사이드카 기계 자체)
+# 밖의 근거를 값 하나로 미리 해소해, 아래 대다수 테스트가 공용 헬퍼(`_seed`/`_reserve`)로
+# role="developer" 라운드를 세울 때마다 설계 근거를 따로 갖추지 않아도 되게 한다(무관 실패 0).
 TICKET_TEXT = (
+    "---\n"
+    "id: T-XXXX\n"
+    "design: \"waived: 라운드 seam 기계 테스트(설계 근거 게이트 관심사 밖)\"\n"
+    "---\n"
     "# T-XXXX — 라운드 seam 테스트\n\n"
     "## 목표\n라운드 사이드카를 검증한다.\n\n"
     "## 완료 조건 (Definition of Done)\n- [ ] 실제 동작 검증\n"
