@@ -990,10 +990,16 @@ def test_mutation_lookup_refuses_a_prefix_only_match(board):
     ("unblock", "blocked"),
     ("complete", "claimed"),
     ("promote", "open"),
+    ("claim", "open"),  # T-0784 공백 2 — claim 도 find_ticket_for_mutation 을 쓴다(정체성 인자만 추가).
 ])
 def test_state_changing_commands_never_move_a_prefix_only_match(
         board, capsys, mutation, seeded_status):
-    """없는 번호로 부른 상태-변경 명령은 rc 2 로 끝나고 **아무 티켓도 옮기지 않는다** (DoD)."""
+    """없는 번호로 부른 상태-변경 명령은 rc 2 로 끝나고 **아무 티켓도 옮기지 않는다** (DoD).
+
+    `reid` 는 이 parametrize 밖이다 — canonical 정확 일치만 인정하는 자기 근거
+    (`test_board_reid.py::test_reid_glob_matches_numeric_prefix_ticket_but_canonical_mismatch_aborts`)를
+    이미 갖고 있어 중복이다. `new` 는 ID 인자를 안 받아 near-miss 조회 자체가 없다(board.py cmd_new).
+    """
     path = _seed_prefixed_only(board, status=seeded_status)
     args = {
         "block": _ns(id=_MISSING_LEGACY_ID, reason="r"),
@@ -1002,6 +1008,7 @@ def test_state_changing_commands_never_move_a_prefix_only_match(
         "complete": _ns(id=_MISSING_LEGACY_ID, tests_pass=True,
                         allow_missing_log=True, allow_untested=False),
         "promote": _ns(id=_MISSING_LEGACY_ID),
+        "claim": _ns(id=_MISSING_LEGACY_ID, repo="me", slot=1, user="me"),
     }[mutation]
     command = getattr(board, f"cmd_{mutation}")
 

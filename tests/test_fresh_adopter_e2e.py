@@ -387,6 +387,108 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
         "(반쪽 파리티·T-0433). lifecycle 이 안 밟는 상태-dir 도 채택자는 즉시 쓴다(blocked 이행).")
 
 
+# ── new→promote→claim→complete 4단계 완주 (T-0784 공백 5) ───────────────────
+# 위 lifecycle 은 new→claim→complete(3단계) — `promote` 를 한 번도 안 밟는다. `new` 가
+# draft 격리로 빠지는 형상은 board-git 활성일 때뿐(`_board_git_enabled()`) 이라, 이 케이스만
+# 로컬 bare remote 로 `--board-submodule` 을 실제로 세운다(`test_pm_import_board_submodule.py::
+# test_board_ops_target_submodule` 과 동형 셋업 — 이미 통과가 확인된 패턴 재사용). git 부재
+# 환경은 skip.
+
+_GIT_IDENTITY = {
+    "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+    "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+}
+
+requires_git = pytest.mark.skipif(
+    shutil.which("git") is None,
+    reason="git 바이너리 부재 — board-submodule 4단계 완주 케이스 skip.",
+)
+
+
+def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-c", "protocol.file.allow=always", *args],
+                          cwd=str(cwd), capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", check=False)
+
+
+# 5절 전부 채운(placeholder 0) 대체 본문 — draft 를 promote 게이트에 태우기 위한 재작성.
+_FOUR_STEP_FILLED_BODY = (
+    "## 목표\n실제 목표 문장이다.\n\n"
+    "## 인터페이스\n실제 규격이다.\n\n"
+    "## 결정\n실제 방향이다.\n\n"
+    "## 완료 조건 (Definition of Done)\n- [ ] 실제 산출물\n\n"
+    "## 참고\n- 실제 참고\n"
+)
+
+
+@requires_git
+def test_new_promote_claim_complete_four_step_lifecycle(pm_import, tmp_path, monkeypatch):
+    """new(draft)→promote→claim→complete 4단계 완주 — 매 단계 rc·상태 디렉터리를 단언한다."""
+    for key, val in _GIT_IDENTITY.items():
+        monkeypatch.setenv(key, val)
+    bare = tmp_path / "board.git"
+    _git(["init", "--bare", "-q", str(bare)], tmp_path)
+    dest = tmp_path / "adopter-4step"
+    rc = pm_import.main([
+        "--new", str(dest), "--harness", "claude", "--name", "FourStep",
+        "--board-submodule", "--board-remote", str(bare), "--fill", "manual",
+    ])
+    assert rc == 0, f"board-submodule import 실패 (rc={rc})"
+    board_tickets = dest / ".project_manager" / "board" / "tickets"
+
+    # 1단계 — new: 제목만 있는 미충전 본문은 board-git 활성 하에서 draft 로 격리된다(open/ 창 0).
+    new = _board(dest, "new", "4단계 완주 스모크")
+    assert new.returncode == 0, f"new 실패: {new.stderr}"
+    drafts = list((board_tickets / ".drafts").glob("T-*.md"))
+    assert len(drafts) == 1, f"draft 격리 실패(1건 기대): {drafts}"
+    draft_path = drafts[0]
+    m = re.search(r"(T-\S+?)-", draft_path.name)
+    assert m, f"draft 파일명에서 ID 를 못 뽑음: {draft_path.name}"
+    tid = m.group(1)
+    assert not list(board_tickets.glob(f"open/{tid}-*.md")), (
+        "draft 인데 open/ 에도 나타남 — 격리 실패")
+
+    # promote 게이트(placeholder/thin)를 통과시키려고 frontmatter 는 보존한 채 본문만
+    # 5절 전부 채운 텍스트로 갈아끼운다(board.py 재로드 없이 순수 텍스트 스플릿).
+    raw = draft_path.read_text(encoding="utf-8")
+    _blank, frontmatter, _old_body = raw.split("---\n", 2)
+    draft_path.write_text(
+        f"---\n{frontmatter}---\n\n# {tid} — 4단계 완주 스모크\n\n{_FOUR_STEP_FILLED_BODY}",
+        encoding="utf-8", newline="\n")
+
+    # 2단계 — promote: draft → open/ 이동 + board-git 커밋.
+    promote = _board(dest, "promote", tid)
+    assert promote.returncode == 0, f"promote 실패: {promote.stderr}"
+    assert list(board_tickets.glob(f"open/{tid}-*.md")), "promote 성공인데 open/ 에 없음"
+    assert not list((board_tickets / ".drafts").glob(f"{tid}-*.md")), "promote 후에도 draft 잔존"
+
+    # 3단계 — claim: open/ → claimed/. 대상 정확히 1개·출발(open/) 0개까지 단언한다(F-003 —
+    # 존재만 보면 copy-without-delete 회귀도 green 이 된다).
+    claim = _board(dest, "claim", tid, "--repo", "pilot", "--slot", "1")
+    assert claim.returncode == 0, f"claim 실패: {claim.stderr}"
+    claimed_matches = list(board_tickets.glob(f"claimed/{tid}-*.md"))
+    assert len(claimed_matches) == 1, (
+        f"claim 성공인데 claimed/ 에 정확히 1개가 아님: {claimed_matches}")
+    assert not list(board_tickets.glob(f"open/{tid}-*.md")), (
+        "claim 성공인데 open/ 에 원본이 남음 — copy-without-delete 회귀.")
+
+    # DoD 체크 후 4단계 — complete: claimed/ → done/. 대상 정확히 1개·출발(claimed/) 0개까지
+    # 단언한다(F-003 — 동형 근거).
+    claimed_path = claimed_matches[0]
+    claimed_path.write_text(
+        claimed_path.read_text(encoding="utf-8").replace("- [ ] ", "- [x] "),
+        encoding="utf-8", newline="\n")
+    complete = _board(
+        dest, "complete", tid, "--tests-pass", "--allow-missing-log",
+        "--allow-untested", "--repo", "pilot", "--slot", "1")
+    assert complete.returncode == 0, f"complete 실패: {complete.stderr}"
+    done_matches = list(board_tickets.glob(f"done/{tid}-*.md"))
+    assert len(done_matches) == 1, (
+        f"complete 성공인데 done/ 에 정확히 1개가 아님: {done_matches}")
+    assert not list(board_tickets.glob(f"claimed/{tid}-*.md")), (
+        "complete 성공인데 claimed/ 에 원본이 남음 — copy-without-delete 회귀.")
+
+
 # ── bare 귀속 조작(홈 슬롯 행) ────────────────────────────────────────────
 # 위 lifecycle 은 `claim tid --repo pilot --slot 1`(명시)로 돈다 — 카드가 지시하는 **bare**
 # 형태(`board.py claim T-NNNN`)를 기계층이 한 번도 안 밟는 구조적 사각이었다. fresh 채택자는
