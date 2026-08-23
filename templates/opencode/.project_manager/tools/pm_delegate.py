@@ -1013,6 +1013,10 @@ class TicketCopyPlan(NamedTuple):
     ordinal: int
     board_path: Path
     run_id: str
+    # 이 라운드가 쓸 첫 finding ID 실값(리뷰 채널이 아니면 빈 값). 준비가 시드에 실은 것과 같은
+    # 값이라 사본 프리앰블이 다시 계산하지 않는다 — 프롬프트와 시드가 다른 번호를 말하지 않는다.
+    # 기본값이 없다: 값을 넘기지 않은 조립은 옛 프롬프트로 접히지 않고 TypeError 로 터진다.
+    next_finding_id: str
     # 이 준비가 속한 묶음 — 크기 1 도 묶음이라 항상 실값이다(경로·장부 행이 이 값으로 갈린다).
     cluster: str = ""
     # 이 라운드가 속한 **묶음 run-dir**(`ClusterCopyPlan.run_dir`) — 위 `run_dir` 은 이 티켓
@@ -1039,8 +1043,9 @@ class ClusterCopyPlan(NamedTuple):
 class TicketHarvestResult(NamedTuple):
     changed: bool
     sync_ready: bool
-    # developer 라운드 회수 시 verify 행이 없거나 자리표시자 그대로인 accepted finding ID
-    # (표시면 관용). developer 가 아니거나 accepted 0 건이면 항상 빈 tuple.
+    # 회수 machine line 의 안정된 key 자리 — verify 판정은 회수 게이트
+    # (`_developer_round_harvest_problem`) 한 층이 소유하므로 회수까지 온 산출에는 실을 값이
+    # 없다(항상 빈 tuple). 태만한 accepted 행의 이름은 `review verify-template` 이 낸다.
     verify_missing: tuple[str, ...] = ()
 
 
@@ -2014,6 +2019,7 @@ def prepare_cluster_copy(
     run_dir, run_dir_fd = _secure_cluster_run_dir(cwd, cluster, run_id)
     ticket_dirs: dict[str, tuple[Path, int | None, Path, int | None]] = {}
     seeds: dict[str, str] = {}
+    next_finding_ids: dict[str, str] = {}
     # 예약 성공분의 복구 좌표 — 티켓마다 `ticket·board_path·ordinal·board_rel`. 예약 직후
     # fallback 값으로 먼저 채우고 더 나은 값으로 교체한다(아래 (4) 주석).
     reserved: list[dict[str, Any]] = []
@@ -2046,6 +2052,14 @@ def prepare_cluster_copy(
                         # developer 골격의 verify 프리필 입력 — 이미 손에 든 라운드를 그대로
                         # 넘긴다(신규 로드 0).
                         rounds=existing_rounds[ticket],
+                    )
+                    # 사본 프리앰블이 실을 값 — 시드가 방금 쓴 것과 같은 함수·같은 입력이다
+                    # (리뷰 채널이 아닌 역할은 실을 값 자체가 없다).
+                    next_finding_ids[ticket] = (
+                        next_review_finding_id(
+                            specs[ticket], role, existing_rounds[ticket],
+                        )
+                        if role in REVIEW_ROLES else ""
                     )
                 except rounds_module.RoundsError as exc:
                     # 시드 seam 은 자기 오류형으로 거부한다(board `section-add` 가 잡는 형).
@@ -2176,7 +2190,7 @@ def prepare_cluster_copy(
                     ) from exc
                 plans.append(TicketCopyPlan(
                     copy_path.resolve(), ticket_dir, ticket, role, ordinal, board_path,
-                    run_id, cluster, run_dir,
+                    run_id, next_finding_ids[ticket], cluster, run_dir,
                 ))
         finally:
             for _ticket_dir, ticket_fd, _rounds_dir, rounds_fd in ticket_dirs.values():
@@ -2353,6 +2367,19 @@ def harvest_ticket_copy(
                 f"그대로 보존했습니다 — 사본을 고쳐 같은 경로로 다시 회수하세요: "
                 f"round={board_path.name} · copy={expected}"
             )
+    if row["role"] == "developer":
+        # 검증 게이트는 리뷰 게이트와 **같은 자리**(교체 앞)다 — 교체 뒤로 밀면 낡은 기대값이
+        # 이미 board 에 착지한 뒤라 되돌릴 정식 수단이 없다(라운드 파일은 회수 후 불변).
+        problem = _developer_round_harvest_problem(
+            text, reserved, ticket=row["ticket"], ordinal=int(row["ordinal"]),
+            board=board, rounds_module=rounds_module, cwd=cwd,
+        )
+        if problem is not None:
+            raise DelegateError(
+                f"developer 라운드 회수 거부 — {problem}. board 라운드 파일과 slot run-dir 은 "
+                f"그대로 보존했습니다 — 사본을 고쳐 같은 경로로 다시 회수하세요: "
+                f"round={board_path.name} · copy={expected}"
+            )
     rounds_module.replace_round(board_path, text)
     message = f"ticket-harvest {row['ticket']} {row['role']}"
     # board 부분 커밋 seam 은 직접 부른다 — 이름을 더듬어 찾으면 부분 동기된 사본에서 커밋만
@@ -2364,34 +2391,6 @@ def harvest_ticket_copy(
         datetime.timezone.utc
     ).isoformat()
     _append_delegate_rounds_ledger(pm_home, harvested)
-
-    verify_missing: tuple[str, ...] = ()
-    if row["role"] == "developer":
-        # 표시면 관용(불변식) — 이 점검이 실패해도 회수는 이미 끝났다(하드 게이트 아님).
-        try:
-            found = board.find_ticket_exact(row["ticket"])
-            if found is not None:
-                _status, spec_path = found
-                spec_text = _load_file_lock().read_text_shared(
-                    spec_path, encoding="utf-8", newline="",
-                )
-                current_rounds = rounds_module.load_rounds(
-                    board.tickets_dir(), row["ticket"], ticket_text=spec_text,
-                )
-                verify_missing = tuple(
-                    _pm_review_verify_missing_ids(spec_text, current_rounds)
-                )
-        except (DelegateError, OSError, UnicodeError) as exc:
-            print(
-                f"경고: verify 누락 점검을 확인할 수 없습니다: ticket={row['ticket']} · {exc}",
-                file=sys.stderr,
-            )
-        if verify_missing:
-            print(
-                "경고: accepted finding 의 verify 행이 없거나 자리표시자 그대로입니다: "
-                f"{', '.join(verify_missing)}",
-                file=sys.stderr,
-            )
 
     # run-dir 은 엔진 소유 임시 산출물이다(사용자 파일 아님) — 삭제가 곧 run 닫힘이다.
     _load_file_lock().force_rmtree(run_dir)
@@ -2405,7 +2404,7 @@ def harvest_ticket_copy(
         )
         if message is not None:
             print(f"슬롯 커밋: {row['ticket']} — {message} ({cwd})")
-    return TicketHarvestResult(True, sync_ready, verify_missing)
+    return TicketHarvestResult(True, sync_ready)
 
 
 class ClusterHarvestOutcome(NamedTuple):
@@ -2506,6 +2505,98 @@ def _review_round_harvest_problem(
     )
 
 
+def _developer_round_harvest_problem(
+    text: str, reserved: str, *, ticket: str, ordinal: int, board, rounds_module,
+    cwd: Path,
+) -> str | None:
+    """developer 라운드 회수 직전 verify 판정 — 위반 사유 또는 None(리뷰 게이트와 같은 자리).
+
+    두 가지를 본다.
+
+    (1) **지운 행**: 시드가 실은 verify 행이 산출에 그대로 있는가. 기준선은 판정 시점에 다시
+    계산한 분류기 산출이 아니라 **그 run 의 예약 bytes** 다 — 그 사이 같은 티켓의 다른 라운드가
+    회수되면 프리필 입력이 바뀌어, 손대지 않은 행이 "지워졌다"로 뒤집힌다(무편집 판정과 같은 규율).
+    지운 행을 통과시키면 시드가 열린 accepted 전건을 싣는 의미가 사라진다 — 개발자가 이번 라운드에
+    보지 않은 finding 을 산출에서 빼는 것으로 범위를 스스로 좁히게 된다.
+
+    (2) **선언 검증**: 이번 라운드가 선언한 `machine_verifiable=true` 행의 커맨드를 실제로 돌려
+    기대값이 관측되는가. 실행 대상은 이번 라운드의 선언뿐이라(티켓 전역 최신 행이 아니다) 실행
+    시간이 티켓 수명에 비례하지 않는다. 설계 축 finding 은 기계 확인 대상이 아니므로 여기서도
+    돌리지 않는다(확인 파서와 같은 규칙). 관측이 기대와 다르면 거부다 — 낡은 기대값을 board
+    라운드에 착지시키면 PM 의 기계 확인이 그 값으로 막히고, 라운드 파일은 회수 뒤 불변이라
+    되돌릴 정식 수단이 없다.
+
+    이 관측은 **확인 증거가 아니다**. 회수는 슬롯 트리(개발자가 고친 브랜치)에서 재고, PM 의 기계
+    확인은 묶음 통합 브랜치를 강제한다 — 측정 트리가 다르므로 두 관측을 섞지 않는다.
+
+    입력을 읽지 못하면 통과가 아니라 거부다(리뷰 게이트와 같은 이유 · run-dir 보존이라 되돌릴 수
+    있다).
+    """
+    seed_rows = _dev_round_seed_verify_rows(_normalized_newlines(reserved))
+    if seed_rows is None:
+        return (
+            f"예약 골격의 {PM_REVIEW_VERIFY_BLOCK} 블록을 읽지 못해 회수 판정을 낼 수 "
+            f"없습니다: ordinal={ordinal}"
+        )
+    if not seed_rows:
+        return None
+    try:
+        filled, unfilled = _pm_review_verify_round_declarations(
+            _RoundView("developer", ordinal, text),
+        )
+    except PMReviewError as exc:
+        return f"{PM_REVIEW_VERIFY_BLOCK} 블록을 읽지 못했습니다[{exc.code}]: {exc}"
+    declared = set(filled) | set(unfilled)
+    deleted = [finding_id for finding_id, _values in seed_rows if finding_id not in declared]
+    if deleted:
+        return (
+            f"시드가 실은 verify 행을 지웠습니다: {', '.join(deleted)} — 행은 지우지 말고 값만 "
+            "갱신하세요(이번 라운드에 구현하지 않은 finding 은 machine_verifiable=false · "
+            f"reason={PM_REVIEW_VERIFY_GAP_REASON} 로 선언합니다)"
+        )
+    declared_rows = [row for row in filled.values() if row.machine_verifiable]
+    if not declared_rows:
+        return None
+    try:
+        found = board.find_ticket_exact(ticket)
+        if found is None:
+            return f"티켓 명세를 찾지 못해 회수 판정을 낼 수 없습니다: {ticket}"
+        _status, spec_path = found
+        spec_text = _load_file_lock().read_text_shared(
+            spec_path, encoding="utf-8", newline="",
+        )
+        rounds = rounds_module.load_rounds(
+            board.tickets_dir(), ticket, ticket_text=spec_text,
+        )
+        delta = parse_pm_review_delta(spec_text, rounds)
+    except (
+        DelegateError, PMReviewError, rounds_module.RoundsError, OSError, UnicodeError,
+    ) as exc:
+        return f"회수 판정 입력을 읽지 못했습니다: {ticket}: {exc}"
+    machine_axis_ids = {
+        finding.id for finding, _disposition in delta.accepted
+        if not _pm_review_design_axis(finding)
+    }
+    repo_root = _repo_root_for_cwd(cwd)
+    for row in declared_rows:
+        if row.id not in machine_axis_ids:
+            continue
+        try:
+            status, observed = run_pm_review_confirmation_command(
+                row.command, cwd=repo_root, expected=row.expected,
+            )
+        except (PMReviewError, ValueError) as exc:
+            return f"verify {row.id} 재현 커맨드를 실행하지 못했습니다: {exc}"
+        if status != "resolved":
+            return (
+                f"verify {row.id} 재현 커맨드의 관측이 기대와 다릅니다: `{row.command}` "
+                f"(cwd={repo_root}) · expected={row.expected!r} · 관측: {observed} — "
+                "그 커맨드를 다시 실행해 expected 를 실측값으로 갱신한 뒤 같은 --copy 로 "
+                "재회수하세요"
+            )
+    return None
+
+
 def _abandon_raw_ledger_hint(pm_home: Path, row: dict, relay) -> str:
     """거부 문구에 붙이는 **비-권위 참고** — 같은 (ticket, role) 의 미마감 raw 레코드.
 
@@ -2587,7 +2678,9 @@ def abandon_ticket_copy(
        티켓에 있음) 검증은 인자를 받는 즉시(시드 대조와 무관하게) 끝낸다.
     3. **최대 순번일 때만 board 파일 삭제** — 중간 순번을 지우면 `round-gap`(완료 게이트 red)을
        만든다. 중간 순번이면 board 파일을 **보존**하고 장부 행과 run-dir 만 종결한다. 거부가
-       아니라 분기라서 프로토콜이 항상 수렴한다.
+       아니라 분기라서 프로토콜이 항상 수렴한다. 보존한 파일에는 엔진 표식 줄을 발행한다 —
+       그 라운드는 영원히 시드 그대로라 표식이 없으면 `round-pending` 과 판정 표면에 자리표시
+       골격째로 남는다(발행은 파괴 판정 기준선을 읽은 **뒤**다).
 
     순서는 되돌릴 수 없는 삭제를 마지막에 두고 그 앞을 전부 멱등 기록으로 만든다 — journal 없이
     재개가 성립한다. (1) 인가 + 대체-확인 값·실재 검증 (2) 종료 판단·시드 대조 → mismatch 분기가
@@ -2757,11 +2850,35 @@ def abandon_ticket_copy(
                         f"board 라운드 파일 읽기 실패: {board_path}: {exc}"
                     ) from exc
 
-    # ── 4단계: 락 밖 sync ─────────────────────────────────────────────────
+    # ── 4단계: 락 밖 — 보존 분기 표식 발행 + sync ─────────────────────────
+    # 발행은 `reserved_now` 재판독 **뒤**다: 5단계 파괴 판정이 그 bytes 를 기준선으로 쓰므로,
+    # 앞서 붙이면 표식 자체가 "산출이 생겼다" 로 읽혀 정상 포기가 거부로 뒤집힌다. 락 안에도
+    # 두지 않는다 — 그 임계구역은 순번 판정과 unlink 만 담는다(재진입 교착 주석 참조).
+    marker_issued = False
+    if reserved_now is not None:
+        baseline = _round_text_without_refused_marker(reserved_now, row["role"])
+        if baseline == reserved_now:
+            try:
+                rounds_module.replace_round(
+                    board_path,
+                    _round_text_with_refused_marker(reserved_now, row["role"]),
+                )
+            except (OSError, UnicodeError) as exc:
+                raise DelegateError(
+                    f"board 라운드 표식 발행 실패: {board_path}: {exc}"
+                ) from exc
+            marker_issued = True
+            changed = True
+        # 기준선은 언제나 표식 이전 bytes 다 — 재호출도 같은 값으로 5단계를 판정한다.
+        reserved_now = baseline
     # 이번에 지웠든(첫 통과) 앞선 시도가 지웠든(재개), board 라운드가 사라졌는데 아직 정리할 것이
     # 남아 있으면 부른다 — 앞선 시도의 sync 실패가 영구 미커밋으로 굳지 않게 한다(`git add -A`
-    # + commit 이라 재실행은 no-op).
-    if not os.path.lexists(board_path) and (unlinked or os.path.lexists(run_dir)):
+    # + commit 이라 재실행은 no-op). 보존 분기는 표식이 그 파일을 바꾸므로 같은 이유로 함께
+    # 커밋한다.
+    if (
+        (not os.path.lexists(board_path) and (unlinked or os.path.lexists(run_dir)))
+        or (reserved_now is not None and (marker_issued or os.path.lexists(run_dir)))
+    ):
         message = f"ticket-abandon {row['ticket']} {row['role']}"
         # board 부분 커밋 seam 은 이름으로 직접 부른다 — harvest 와 같은 이유다(부분 동기 사본에서
         # 커밋만 조용히 빠지는 rc0 을 피한다).
@@ -2854,27 +2971,80 @@ def _refund_gate_rejected_ticket_copy(
 
 
 def _ticket_copy_preamble(plan: TicketCopyPlan) -> str:
-    return (
+    """이 위임의 산출 자리 안내 — 좌표도 다음 finding ID 도 준비가 확정한 실값이다.
+
+    리뷰 채널은 라운드마다 fresh 라 이전 라운드가 쓴 번호를 모른다. 시드에만 값을 실으면 사본을
+    열기 전에 프롬프트만 읽는 위임에서 번호가 추측이 된다 — 두 자리가 같은 값을 말해야 한다.
+    """
+    seat = (
         f"라운드 산출 기록: 이 위임의 산출은 {plan.path} **하나에만** 쓴다"
         f"(첫 줄 헤더는 그대로 두고 그 아래 골격을 채운다). 같은 디렉터리의 "
         f"`{TICKET_COPY_SPEC_NAME}`(티켓 명세)와 `{TICKET_COPY_ROUNDS_DIRNAME}/`"
         "(이전 라운드)는 **읽기 전용**이다. PM 홈 티켓은 편집하지 마라. "
         "이 파일은 응답과 별개로 종료 시 기계 회수된다."
     )
+    if not plan.next_finding_id:
+        return seat
+    return seat + "\nfinding ID: " + NEXT_FINDING_ID_RULE.format(
+        next_id=plan.next_finding_id,
+    )
 
 
-# 회수를 거부한 산출에 **엔진만** 남기던 기계 판독 표식. 새 회수는 이 표식을 발행하지 않는다
-# (내용 검증에 걸린 산출은 라운드 파일을 만들지 않고 raw 에만 남는다). 판독은 남긴다 — 단일 파일
-# 시절의 거부 산출을 그대로 옮겨 온 라운드가 판정 표면에 서면 그 티켓의 delta 가 막히기 때문이다.
+# 라운드를 판정 표면에서 빼는 기계 판독 표식 — **엔진만** 발행한다. 발행 자리는 둘이다: 단일
+# 파일 시절의 회수 거부 산출을 그대로 옮겨 온 라운드와, 중간 순번이라 board 예약을 보존한 채
+# 종결하는 포기(`abandon_ticket_copy`)다. 역할은 줄 안에 값으로 실린다 — 리뷰 채널뿐 아니라 어떤
+# 역할의 라운드도 같은 문법 하나로 표식을 달고 판독은 역할을 가리지 않는다.
 # 발행이 엔진 전용이므로 회수 검증은 같은 줄을 실은 외부 산출을 거부한다.
 EXTERNAL_REVIEW_REFUSED_MARKER = "pm-review-refused"
-EXTERNAL_REVIEW_REFUSED_LINE = (
-    f"<!-- {EXTERNAL_REVIEW_REFUSED_MARKER} role={EXTERNAL_REVIEW_ROLE} -->"
+
+
+def pm_review_refused_line(role: str) -> str:
+    """그 역할 라운드에 붙는 표식 줄 — 발행이 이 함수 하나를 본다."""
+    return f"<!-- {EXTERNAL_REVIEW_REFUSED_MARKER} role={role} -->"
+
+
+# 추가 리뷰어 채널 인스턴스 — 옛 산출에 이미 박혀 있는 그 줄이다(마이그레이션 없음).
+EXTERNAL_REVIEW_REFUSED_LINE = pm_review_refused_line(EXTERNAL_REVIEW_ROLE)
+# 판정 기준은 엔진이 **발행하는 그 문법**에서 만든다 — 표식과 판독이 갈리지 않게(문법 일치는
+# 역할 전수 회귀가 고정한다).
+_PM_REVIEW_REFUSED_LINE_RE = re.compile(
+    rf"\A<!-- {re.escape(EXTERNAL_REVIEW_REFUSED_MARKER)} role=[^\s<>]+ -->\Z"
 )
-# 판정 기준은 엔진이 **발행하는 그 줄**에서 만든다 — 표식과 판독이 갈리지 않게.
-_EXTERNAL_REVIEW_REFUSED_LINE_RE = re.compile(
-    rf"\A{re.escape(EXTERNAL_REVIEW_REFUSED_LINE)}\Z"
-)
+
+
+def pm_review_refused_marker_present(text: str) -> bool:
+    """본문에 엔진 표식 줄이 있는가 — 역할 무관 단일 판독.
+
+    `pending`(시드 그대로)을 배제하는 소비면들이 이 술어를 함께 본다. 표식이 붙은 라운드는
+    바이트가 시드와 달라 `pending` 이 아니게 되므로, 이 판독이 없으면 종결된 라운드가 직전
+    산출·판정 표면에 자리표시 골격째로 선다.
+    """
+    return any(
+        _PM_REVIEW_REFUSED_LINE_RE.match(line) is not None
+        for line in text.splitlines()
+    )
+
+
+def _round_text_with_refused_marker(text: str, role: str) -> str:
+    """표식을 끝줄로 붙인 본문 — 개행 표기는 원문을 따른다(bytes 대조를 쓰는 자리들 때문)."""
+    newline = "\r\n" if "\r\n" in text else "\n"
+    separator = "" if text.endswith(("\n", "\r")) else newline
+    return f"{text}{separator}{pm_review_refused_line(role)}{newline}"
+
+
+def _round_text_without_refused_marker(text: str, role: str) -> str:
+    """그 역할 표식을 끝에서 걷어 낸 본문 — 발행 이전 bytes 를 되돌리는 역함수.
+
+    포기(`abandon_ticket_copy`)의 파괴 판정 기준선은 표식을 붙이기 **전** bytes 다. 재호출은
+    이미 표식이 붙은 파일을 읽으므로 그 자리에서 기준선을 되돌리지 않으면, 엔진이 자기가 쓴
+    줄을 "산출이 생겼다" 로 읽어 남은 정리를 영영 끝내지 못한다.
+    """
+    line = pm_review_refused_line(role)
+    for terminator in ("\r\n", "\n", ""):
+        suffix = f"{line}{terminator}"
+        if text.endswith(suffix):
+            return text[: -len(suffix)]
+    return text
 
 
 def validate_review_block(
@@ -2960,33 +3130,34 @@ def next_review_finding_id(
     prefix = _pm_review_finding_id_prefix(reviewer_role)
     seen = collect_review_finding_ids(ticket_text, reviewer_role)
     for item in rounds:
+        if pm_review_refused_marker_present(item.text):
+            # 표식이 붙은 라운드는 종결된 예약이라 그 골격의 ID 를 아무도 선언하지 않았다.
+            # 회수 corpus 가 같은 술어로 그 라운드를 빼므로 여기서도 세지 않아야, 시드가 싣는
+            # 번호와 회수가 허용하는 번호가 갈리지 않는다(표식은 `pending` 을 무너뜨린다).
+            continue
         seen |= collect_review_finding_ids(item.text, reviewer_role)
     numbers = [int(finding_id.split("-", 1)[1]) for finding_id in seen]
     return f"{prefix}-{(max(numbers) + 1 if numbers else 1):03d}"
 
 
 def _pm_review_refused_rounds(rounds: Sequence) -> set[tuple[str, int]]:
-    """엔진이 **회수 거부 표식**을 남긴 라운드의 키 집합(판정 표면 제외 대상).
+    """엔진이 **표식**을 남긴 라운드의 키 집합(판정 표면 제외 대상).
 
     스키마 위반·ID 재선언처럼 판정 표면에 올릴 수 없는 산출은 경고와 함께 평문으로만 남는다.
     그 라운드를 판정 대상으로 세면 "최신 리뷰 라운드에 블록이 없다"로 티켓 전체 delta 가 막혀,
     거부한 라운드가 오히려 회수된 자산을 잠근다. 판정 표면에서만 제외하고 산출은 보존한다.
 
-    판정 기준은 산문 문자열이 아니라 **엔진이 발행한 표식 줄**이다. 지금 그 줄을 발행하는 회수는
-    없다 — 내용 검증에 걸린 산출은 라운드 파일이 되지 못하고 raw·슬롯 run-dir 에만 남으며, 표식을
-    실은 회신은 회수가 거부한다(`review_harvest_problem`). 판독이 남아 있는 이유는 단일 파일
-    시절의 거부 산출을 그대로 옮겨 온 라운드다.
+    판정 기준은 산문 문자열이 아니라 **엔진이 발행한 표식 줄**이고 역할을 가리지 않는다. 발행
+    자리는 둘이다 — 단일 파일 시절의 거부 산출을 옮겨 온 라운드와, 중간 순번이라 board 예약을
+    보존한 채 종결한 포기(`abandon_ticket_copy`)다. 역할로 좁히면 뒤의 것이 판독되지 않아 종결된
+    라운드가 자리표시 골격째로 표면에 선다. 표식을 실은 외부 회신은 회수가 거부한다
+    (`review_harvest_problem`).
     """
-    refused: set[tuple[str, int]] = set()
-    for item in rounds:
-        if item.role != EXTERNAL_REVIEW_ROLE:
-            continue
-        if any(
-            _EXTERNAL_REVIEW_REFUSED_LINE_RE.match(line) is not None
-            for line in item.text.splitlines()
-        ):
-            refused.add((item.role, item.ordinal))
-    return refused
+    return {
+        (item.role, item.ordinal)
+        for item in rounds
+        if pm_review_refused_marker_present(item.text)
+    }
 
 
 def _pm_review_surface_rounds(rounds: Sequence) -> list:
@@ -3144,6 +3315,10 @@ def review_harvest_problem(
     만들지 않고 raw 에 남기고, 내부 채널은 board 라운드 파일 bytes 를 그대로 두고 슬롯 run-dir 을
     유지한다 — 사본을 고쳐 같은 경로로 다시 회수할 수 있다.
 
+    신규 finding ID 대조의 corpus 에서 시드 그대로인(`pending`) 라운드와 엔진 표식이 붙은
+    라운드는 뺀다 — 그 라운드가 실은 ID 는 엔진이 넣은 자리표시이지 선언이 아니고, 회수 대상
+    라운드 자신도 그 상태다.
+
     사유는 네 축이고 종류를 가리지 않고 같은 처리(거부)다: 엔진 전용 표식 선언 · `pm-review-v1`
     블록 규칙 위반(부재·중복·스키마·JSON 손상 · 같은 ID 를 `findings` 와 `confirmations` 양쪽
     기재) · 티켓에 이미 있는 finding ID 재선언 · 티켓 판정 표면에 없는 confirmation 대상.
@@ -3152,10 +3327,7 @@ def review_harvest_problem(
     confirmation 대상은 **판정 표면 선언**과 맞춘다. 차등 판정·반사실 프로브는 없다 — 이 산출이
     다른 라운드의 판정을 오염시킬 자리가 없다(F-028 구조 폐쇄).
     """
-    if any(
-        _EXTERNAL_REVIEW_REFUSED_LINE_RE.match(line) is not None
-        for line in reply_text.splitlines()
-    ):
+    if pm_review_refused_marker_present(reply_text):
         return (
             f"엔진 전용 표식({EXTERNAL_REVIEW_REFUSED_MARKER})을 회신이 선언했습니다 — 그 줄은 "
             "라운드를 판정 표면에서 빼므로 산출이 스스로 쓸 수 없습니다"
@@ -3165,6 +3337,16 @@ def review_harvest_problem(
         return problem
     existing_ids = collect_review_finding_ids(ticket_text, reviewer_role)
     for item in rounds:
+        if (
+            getattr(item, "pending", False)
+            or pm_review_refused_marker_present(item.text)
+        ):
+            # 엔진이 시드에 넣은 ID 는 **선언이 아니다**. 회수 대상 라운드 자신이 이 목록에
+            # 들어 있으므로(예약된 board 파일은 회수 전까지 시드 그대로다), 시드가 실은 다음 ID
+            # 를 그대로 쓴 회신이 자기 자신과 충돌해 거부되는 자기 충돌을 여기서 닫는다.
+            # 표식이 붙은 라운드도 같은 자리에서 뺀다 — 표식은 bytes 를 바꿔 `pending` 을
+            # 무너뜨리지만 그 골격의 ID 는 여전히 엔진이 넣은 자리표시다(종결된 예약).
+            continue
         existing_ids |= collect_review_finding_ids(item.text, reviewer_role)
     collisions = _review_id_collisions(reply_text, existing_ids)
     if collisions:
@@ -3427,6 +3609,13 @@ CONFIRM_ROUND_SCOPE_RULE = (
 LEGACY_CONFIRM_ROUND_SCOPE_RULES = (
     "이 라운드는 직전 must-fix의 해소 확인 전용이다 — 신규 탐색은 그 fix diff로 제한하고, "
     "신규 발견은 `NEW`로만 분리해 보고한다.",
+)
+
+# 다음 finding ID 안내 — 시드 주석과 사본 프리앰블이 같은 문장 하나를 쓴다(값 출처는
+# `next_review_finding_id` 단일). 추가 리뷰어 채널이 프롬프트 산문으로 싣는 규칙과 같은 축이다.
+NEXT_FINDING_ID_RULE = (
+    "이번 라운드의 새 finding 은 `{next_id}` 부터 연번으로 매긴다 — finding ID 는 티켓 전역 "
+    "유일이라 명세·앞 라운드에 이미 있는 번호를 다시 선언하면 이 라운드는 회수되지 않는다."
 )
 
 _INTERNAL_CONFIRM_CHARTER = f"""\
@@ -4149,8 +4338,28 @@ def _pm_review_requote_verify_placeholder(text: str) -> str:
     return "".join(out)
 
 
-def render_pm_review_verify_skeleton(finding_ids: Sequence[str]) -> str:
-    """accepted finding마다 재현 커맨드/기대값 골격 1행 — key 집합·enum 은 파서 상수 파생.
+# 시드가 프리필하는 값 자리 — key 집합은 파서 상수에서 파생한다. `id` 는 행 좌표이고
+# `machine_verifiable` 은 **선언 신호**라 시드는 그 자리를 절대 채우지 않는다(불변식 1의 verify
+# 확장): 그 한 자리가 자리표시자인 한 손대지 않은 시드는 값이 실려 있어도 산출 없음으로 읽힌다.
+_PM_REVIEW_VERIFY_SEED_VALUE_KEYS: tuple[str, ...] = tuple(
+    key for key in PM_REVIEW_VERIFY_ROW_KEYS
+    if key not in ("id", _PM_REVIEW_MACHINE_VERIFIABLE_KEY)
+)
+
+
+def _pm_review_verify_seed_values(row: PMReviewVerifyRow) -> dict[str, str]:
+    """선언 행에서 시드가 다시 실을 값 — 필드 이름이 곧 key 라 대응표를 따로 두지 않는다."""
+    return {key: getattr(row, key) for key in _PM_REVIEW_VERIFY_SEED_VALUE_KEYS}
+
+
+def render_pm_review_verify_skeleton(
+    rows: Sequence[tuple[str, Mapping[str, str] | None]],
+) -> str:
+    """accepted finding마다 재현 커맨드/기대값 1행 — key 집합·enum 은 파서 상수 파생.
+
+    입력은 `(finding ID, 프리필 값 또는 None)` 이다. 프리필 값이 있으면 그 ID 의 **최신 선언**을
+    그대로 다시 싣고(값 자리 4칸), 없으면 자리표시자 골격을 낸다 — 한 블록 안에 두 형상이 섞인다.
+    `machine_verifiable` 은 어느 쪽이든 항상 자리표시자다(`_PM_REVIEW_VERIFY_SEED_VALUE_KEYS`).
 
     `machine_verifiable` 은 boolean 자리라 `_PMReviewRawPlaceholder` 로 따옴표 없이 낸다
     (axis 1). `command` placeholder 는 파서의 재현 커맨드 안전 경계 문구(`_pm_review_command_shape_
@@ -4167,23 +4376,27 @@ def render_pm_review_verify_skeleton(finding_ids: Sequence[str]) -> str:
         "설명은 이 자리가 아니라 라운드 본문에 따로 쓴다), machine_verifiable=false 면 무엇이 "
         f"참이어야 하는지 한 줄로 짧게, reason={PM_REVIEW_VERIFY_GAP_REASON} 이면 빈틈 요지 한 줄>"
     )
-    rows = [
+    hints = {
+        "command": command_hint,
+        "expected": expected_hint,
+        "before": "<machine_verifiable=true 면 fix 전 실값, 아니면 빈 문자열>",
+        "reason": "<machine_verifiable=false 일 때만 "
+                  + "|".join(PM_REVIEW_VERIFY_REASONS) + ", 아니면 빈 문자열>",
+    }
+    seed_rows = [
         _pm_review_seed_object(PM_REVIEW_VERIFY_ROW_KEYS, {
             "id": finding_id,
             _PM_REVIEW_MACHINE_VERIFIABLE_KEY: _PMReviewRawPlaceholder(
                 _PM_REVIEW_MACHINE_VERIFIABLE_PLACEHOLDER,
             ),
-            "command": command_hint,
-            "expected": expected_hint,
-            "before": "<machine_verifiable=true 면 fix 전 실값, 아니면 빈 문자열>",
-            "reason": "<machine_verifiable=false 일 때만 "
-                      + "|".join(PM_REVIEW_VERIFY_REASONS) + ", 아니면 빈 문자열>",
+            **{key: (hints if prefill is None else prefill)[key]
+               for key in _PM_REVIEW_VERIFY_SEED_VALUE_KEYS},
         })
-        for finding_id in finding_ids
+        for finding_id, prefill in rows
     ]
     payload = _pm_review_seed_object(PM_REVIEW_VERIFY_PAYLOAD_KEYS, {
         "version": PM_REVIEW_VERIFY_VERSION,
-        "verifications": rows,
+        "verifications": seed_rows,
     })
     return _pm_review_fenced_json(PM_REVIEW_VERIFY_BLOCK, payload)
 
@@ -4382,15 +4595,20 @@ def _pm_review_disposition_rows_for_ordinal(
 
 def render_pm_review_block_skeleton(
     reviewer_role: str, confirmation_ids: Sequence[str] | None = None,
+    next_finding_id: str | None = None,
 ) -> str:
     """채널의 `pm-review-v1` 골격 블록 — 값 enum·key 집합을 파서 상수에서만 파생한다.
 
     리뷰 절 골격(section-add)과 추가 리뷰어 프롬프트의 출력 형식이 같은 한 함수를 본다. 두 곳이
     스키마를 각자 적으면 한쪽만 갱신돼 회수가 조용히 malformed 로 떨어진다.
+
+    `next_finding_id` 는 이 라운드가 쓸 첫 finding ID 실값이다. 미지정(기본)이면 자리표시자
+    골격 그대로다 — 추가 리뷰어 프롬프트는 그 값을 산문 규칙으로 싣고 골격은 자리표시자를
+    유지하므로, 기본 인자의 bytes 는 이 인자가 생겨도 변하지 않는다.
     """
     placeholder_id = f"{_pm_review_finding_id_prefix(reviewer_role)}-NNN"
     finding = _pm_review_seed_object(PM_REVIEW_FINDING_KEYS, {
-        "id": placeholder_id,
+        "id": next_finding_id or placeholder_id,
         "class": "<" + "|".join(PM_REVIEW_CLASSES) + ">",
         "severity": "<" + "|".join(PM_REVIEW_SEVERITIES) + ">",
         "design_change": False,
@@ -4509,7 +4727,7 @@ def render_ticket_growth_section_seed(
         )
         if design_problem is not None:
             raise DelegateError(design_problem)
-        verify_ids: Sequence[str] = ()
+        verify_rows: Sequence[tuple[str, Mapping[str, str] | None]] = ()
         if rounds:
             try:
                 # 쓰는 쪽과 읽는 쪽이 같은 분류기다 — 시드가 요구하는 ID 집합과 판정이
@@ -4532,8 +4750,8 @@ def render_ticket_growth_section_seed(
                     file=sys.stderr,
                 )
             else:
-                verify_ids = template.seed_prefill_ids()
-        return _render_developer_round_seed_body(verify_ids)
+                verify_rows = template.seed_prefill_rows()
+        return _render_developer_round_seed_body(verify_rows)
     if role == "researcher":
         return (
             "## 조사 질문\n- <무엇을 확정하러 갔는가>\n\n"
@@ -4576,14 +4794,24 @@ def render_ticket_growth_section_seed(
                 )
                 confirmation_ids = [placeholder_id]
 
-    return _render_review_round_seed_body(role, confirmation_ids)
+    # 다음 finding ID 실값은 **이 자리에서만** 계산한다 — 명세와 라운드 전체를 이미 쥐고 있는
+    # 유일한 지점이라 신규 로드가 없고, 아래 렌더러는 문자열만 받는다(무편집 판정의 렌더러이기도
+    # 해서 판정 시점에 다시 계산할 수 있는 입력을 그쪽에 두지 않는다).
+    return _render_review_round_seed_body(
+        role, confirmation_ids, next_review_finding_id(ticket_text, role, rounds),
+    )
 
 
 def _render_review_round_seed_body(
-    role: str, confirmation_ids: Sequence[str],
+    role: str, confirmation_ids: Sequence[str], next_finding_id: str | None,
     *, scope_rule: str = CONFIRM_ROUND_SCOPE_RULE,
 ) -> str:
-    """리뷰 채널 라운드 시드 본문 — 확인 대상 ID 말고는 전부 골격 상수다.
+    """리뷰 채널 라운드 시드 본문 — 확인 대상 ID·다음 finding ID 말고는 전부 골격 상수다.
+
+    `next_finding_id` 는 이 라운드가 쓸 첫 finding ID 실값이다(계산은 호출부 소유 · 기본값 없음).
+    `None`(그 값이 생기기 전에 예약된 라운드를 무편집 판정이 되읽은 결과)이거나 자리표시자면 그
+    라운드와 **같은 bytes** 를 낸다 — 무편집 판정이 본문 자신에서 읽은 값을 그대로 되돌려주므로,
+    옛 시드가 그 변경만으로 "산출 있음" 이 되지 않는다.
 
     `scope_rule` 은 확인 라운드 주석 문장이다. 예약은 항상 현재 문구(기본값)로 시드하고,
     무편집 판정만 옛 문구(`LEGACY_CONFIRM_ROUND_SCOPE_RULES`)를 넣어 다시 렌더한다 — 문구를
@@ -4602,17 +4830,33 @@ def _render_review_round_seed_body(
     # 최초 리뷰 라운드(자리표시자만 있는 골격)는 탐색 스코프를 제한할 대상이 없어 그대로 둔다.
     is_confirmation_round = list(confirmation_ids) != [placeholder_id]
     scope_notice = f"<!-- {scope_rule} -->\n\n" if is_confirmation_round else ""
+    # 다음 ID 는 리뷰어가 추측할 값이 아니다 — 엔진이 실값을 싣는다. 안내는 스코프 문구와 같은
+    # 표기(주석 1줄)를 쓴다: 엔진 지시가 산출 산문으로 굳지 않는다.
+    prefilled_finding_id = (
+        next_finding_id if next_finding_id and next_finding_id != placeholder_id else None
+    )
+    finding_id_notice = (
+        f"<!-- {NEXT_FINDING_ID_RULE.format(next_id=prefilled_finding_id)} -->\n"
+        if prefilled_finding_id is not None else ""
+    )
     return (
         scope_notice
-        + f"## must-fix\n- <없음 또는 finding ID 나열({placeholder_id})·"
+        + f"## must-fix\n{finding_id_notice}- <없음 또는 finding ID 나열({placeholder_id})·"
         "증거와 권고는 아래 블록>\n\n"
         "## 판정\n판정: <통과|반려> · finding <N>건(must-fix <N>건)\n\n"
-        + render_pm_review_block_skeleton(role, confirmation_ids)
+        + render_pm_review_block_skeleton(
+            role, confirmation_ids, prefilled_finding_id,
+        )
     )
 
 
-def _render_developer_round_seed_body(verify_ids: Sequence[str]) -> str:
-    """developer 라운드 시드 본문 — verify 대상 ID 말고는 전부 골격 상수(리뷰 골격과 동형).
+def _render_developer_round_seed_body(
+    verify_rows: Sequence[tuple[str, Mapping[str, str] | None]],
+) -> str:
+    """developer 라운드 시드 본문 — verify 행 말고는 전부 골격 상수(리뷰 골격과 동형).
+
+    `verify_rows` 는 `(finding ID, 프리필 값 또는 None)` 이다 — 프리필 값은 그 ID 의 최신 선언이고
+    `machine_verifiable` 은 렌더가 항상 자리표시자로 낸다.
 
     렌더와 무편집 판정(`ticket_round_body_is_pending`)이 이 함수 하나를 본다 — 판정이 골격을
     따로 적으면 문구가 갈린 순간 손대지 않은 라운드가 "산출 있음"으로 뒤집힌다.
@@ -4625,22 +4869,32 @@ def _render_developer_round_seed_body(verify_ids: Sequence[str]) -> str:
         "## DoD evidence\n- <완료 조건>: <충족 근거>\n\n"
         "## 민감도\n- <상수/가드 임시 변경 → red, 복원 → green 실측>\n"
     )
-    if verify_ids:
-        body += "\n" + render_pm_review_verify_skeleton(verify_ids)
+    if verify_rows:
+        body += "\n" + render_pm_review_verify_skeleton(verify_rows)
     return body
 
 
-def _dev_round_seed_verify_ids(body: str) -> list[str] | None:
-    """본문의 `pm-review-verify-v1` 블록이 실은 finding ID 목록(판정 불가면 None·부재면 []).
+def _dev_round_seed_verify_rows(
+    body: str,
+) -> list[tuple[str, dict[str, str]]] | None:
+    """본문의 `pm-review-verify-v1` 블록이 실은 행 목록(판정 불가면 None·부재면 []).
+
+    행마다 `(finding ID, 값 4칸)` 을 그 파일 자신에서 되읽는다 — 시드가 실은 프리필 값은 예약
+    당시 board 상태의 산물이라 판정 시점에 다시 계산하면 앞 라운드의 회수가 손대지 않은 뒤
+    라운드의 판정을 뒤집는다(`_round_seed_prefill_ids` 와 같은 규율).
+
+    `machine_verifiable` 자리는 **되읽지 않는다**. 되읽으면 dev 가 boolean 을 채운 실산출까지
+    왕복이 성립해 모든 developer 라운드가 영구 `pending` 이 된다 — 그 한 자리가 선언 행위의
+    유일한 신호라 렌더는 항상 자리표시자를 내고, 채워진 순간 대조가 깨진다.
 
     accepted 0 건이던 최초 시드는 verify fence 자체가 없다 — 그건 정상 pristine 형상이라
     빈 목록을 돌려준다. 블록이 있는데 파싱이 안 되거나(자리표시자 그대로 편집 중 등) 둘
-    이상이면 시드 그대로인지 확신할 수 없어 None(=pending 아님·`_round_seed_confirmation_ids`
+    이상이면 시드 그대로인지 확신할 수 없어 None(=pending 아님·`_round_seed_prefill_ids`
     와 동형 규칙)이다.
 
     `machine_verifiable` 골격 자리는 따옴표 없는 raw placeholder 라 손대지 않은
     시드 그대로도 strict JSON 이 아니다 — 구조 스캔 전용 재-인용(`_pm_review_requote_verify_
-    placeholder`)으로 fence 존재만 확인하고 ID 를 뽑는다. 실제 검증 파서
+    placeholder`)으로 fence 존재만 확인하고 행을 뽑는다. 실제 검증 파서
     (`_pm_review_parse_verify_row`)는 이 재-인용을 거치지 않는다(데이터 수용 관용이 아니다)."""
     requoted = _pm_review_requote_verify_placeholder(body)
     try:
@@ -4657,20 +4911,23 @@ def _dev_round_seed_verify_ids(body: str) -> list[str] | None:
     verifications = blocks[0].value.get("verifications")
     if not isinstance(verifications, list):
         return None
-    ids: list[str] = []
+    rows: list[tuple[str, dict[str, str]]] = []
     for item in verifications:
         if not isinstance(item, dict) or not isinstance(item.get("id"), str):
             return None
-        ids.append(item["id"])
-    return ids
+        values = {key: item.get(key) for key in _PM_REVIEW_VERIFY_SEED_VALUE_KEYS}
+        if not all(isinstance(value, str) for value in values.values()):
+            return None
+        rows.append((item["id"], values))
+    return rows
 
 
-def _round_seed_confirmation_ids(body: str) -> list[str] | None:
-    """본문의 유일한 `pm-review-v1` 블록이 실은 confirmation ID 목록 (판정 불가면 None).
+def _round_seed_prefill_ids(body: str) -> tuple[str, list[str]] | None:
+    """본문의 유일한 `pm-review-v1` 블록이 실은 `(첫 finding ID, confirmation ID 목록)`.
 
-    골격 대조의 유일한 가변 입력을 **그 파일 자신**에서 뽑는다 — 프리필된 ID 는 예약 당시
-    board 상태의 산물이라 판정 시점에 다시 계산하면 같은 역할 앞 라운드의 회수가 손대지 않은
-    뒤 라운드의 판정을 뒤집는다.
+    골격 대조의 가변 입력을 **그 파일 자신**에서 뽑는다 — 프리필된 ID 도 다음 finding ID 도
+    예약 당시 board 상태의 산물이라, 판정 시점에 다시 계산하면 같은 역할 앞 라운드의 회수가
+    손대지 않은 뒤 라운드의 판정을 뒤집는다. 판정 불가면 None(=산출 있음 쪽으로 기운다).
     """
     try:
         blocks = [
@@ -4681,6 +4938,12 @@ def _round_seed_confirmation_ids(body: str) -> list[str] | None:
         return None
     if len(blocks) != 1:
         return None
+    findings = blocks[0].value.get("findings")
+    if not isinstance(findings, list) or len(findings) != 1:
+        return None
+    first = findings[0]
+    if not isinstance(first, dict) or not isinstance(first.get("id"), str):
+        return None
     confirmations = blocks[0].value.get("confirmations")
     if not isinstance(confirmations, list):
         return None
@@ -4689,41 +4952,45 @@ def _round_seed_confirmation_ids(body: str) -> list[str] | None:
         if not isinstance(item, dict) or not isinstance(item.get("id"), str):
             return None
         ids.append(item["id"])
-    return ids
+    return first["id"], ids
 
 
 def ticket_round_body_is_pending(role: str, body: str) -> bool:
     """라운드 본문(첫 줄 헤더 제외)이 시드 골격 그대로인가 = 산출 없음.
 
     판정 입력은 **이 본문 하나**다 — 예약 날짜도, 같은 티켓의 다른 라운드도, 명세도 보지 않는다.
-    역할 골격은 상수이고 리뷰 채널만 확인 대상 finding ID 를 예약 시점 board 에서 프리필하므로,
-    그 ID 는 본문 자신에서 읽어 같은 골격을 다시 렌더해 대조한다: 프리필된 ID 가 있어도
-    status·evidence 가 자리표시자 그대로면 산출이 없는 것이다.
+    역할 골격은 상수이고 예약 시점 board 에서 프리필되는 자리(리뷰 채널의 확인 대상·다음 finding
+    ID · developer 의 verify 행)만 가변이므로, 그 값들은 본문 자신에서 읽어 같은 골격을 다시
+    렌더해 대조한다: 프리필된 값이 있어도 선언 자리(리뷰의 status·evidence · verify 의
+    machine_verifiable)가 자리표시자 그대로면 산출이 없는 것이다.
 
     개행 표기는 정규화해 비교한다 — CRLF 체크아웃(또는 CRLF 를 쓰는 슬롯)을 지난 같은 골격을
     "편집됨"으로 읽으면 산출 없는 라운드가 산출 있는 것으로 위장된다.
     """
     normalized = _normalized_newlines(body)
     if role == "developer":
-        verify_ids = _dev_round_seed_verify_ids(normalized)
-        if verify_ids is None:
+        verify_rows = _dev_round_seed_verify_rows(normalized)
+        if verify_rows is None:
             return False
         return normalized == _normalized_newlines(
-            _render_developer_round_seed_body(verify_ids)
+            _render_developer_round_seed_body(verify_rows)
         )
     if role not in REVIEW_ROLES:
         return normalized == _normalized_newlines(
             render_ticket_growth_section_seed(role, "")
         )
-    confirmation_ids = _round_seed_confirmation_ids(normalized)
-    if confirmation_ids is None:
+    prefill = _round_seed_prefill_ids(normalized)
+    if prefill is None:
         return False
+    next_finding_id, confirmation_ids = prefill
     # 후보는 현재 골격과 옛 스코프 문구로 렌더한 같은 골격들이다 — 문구를 바꾸기 전에 예약된
     # 라운드가 그 변경만으로 "산출 있음" 이 되면 안 된다. 값이 채워진 라운드는 어느 후보와도
     # 같지 않으므로 이 후보 확장이 pending 판정을 느슨하게 만들지 않는다.
     return any(
         normalized == _normalized_newlines(
-            _render_review_round_seed_body(role, confirmation_ids, scope_rule=rule)
+            _render_review_round_seed_body(
+                role, confirmation_ids, next_finding_id, scope_rule=rule,
+            )
         )
         for rule in (CONFIRM_ROUND_SCOPE_RULE, *LEGACY_CONFIRM_ROUND_SCOPE_RULES)
     )
@@ -5352,19 +5619,23 @@ class PMReviewVerifyTemplate(NamedTuple):
     gap: tuple[tuple[str, int, str], ...]                     # (id, source round, 빈틈 요지)
     stale: tuple[tuple[str, int, int], ...]                   # (id, source round, 확인 커서)
     missing: tuple[str, ...]                                  # 선언이 어느 라운드에도 없는 id
+    # 열린 accepted 전건 × (그 ID 의 최신 선언 값 또는 None) — 다음 시드가 실을 행 그대로.
+    # 기본값이 없다: 값을 넘기지 않은 조립은 빈 프리필로 접히지 않고 TypeError 로 터진다.
+    prefill_rows: tuple[tuple[str, dict[str, str] | None], ...]
 
-    def seed_prefill_ids(self) -> tuple[str, ...]:
-        """다음 developer 라운드 시드가 verify 행을 프리필할 ID (쓰는 쪽=읽는 쪽).
+    def seed_prefill_rows(self) -> tuple[tuple[str, dict[str, str] | None], ...]:
+        """다음 developer 라운드 시드가 실을 verify 행 — **열린 accepted 전건**이다.
 
-        아직 확인 가능한 선언이 없는 것만이다 — `machine`(PM 이 그대로 확인하면 되는 행)과
-        `reviewer`(사람 확인 대기)를 다시 요구하면, PM 이 "끝났으니 손대지 마라"고 한 항목을
-        시드가 매 라운드 다시 열어 준다.
+        버킷으로 좁히지 않는다. PM 이 fix 라운드의 수정 범위를 좁히면 그 라운드 시드에서 다른
+        finding 의 행이 빠지고, 개발자는 그 행을 다시 보지 못한 채 라운드를 닫는다 — 앞 라운드의
+        기대값이 낡아도 아무도 다시 재지 않는다(그 사건이 이 규칙의 기원이다). 재개방 상한은
+        유한하다: 확인으로 닫힌 finding 은 `delta.accepted` 에서 이미 빠지므로 여기 오지 않는다.
+
+        값이 있는 행은 그 ID 의 최신 선언(command·expected·before·reason)이고, `machine_verifiable`
+        은 렌더가 항상 자리표시자로 낸다 — 개발자가 그 자리를 채우는 것이 곧 재선언이라 확인
+        커서가 그 라운드로 올라가고, PM 의 기계 확인이 열린 accepted 전건을 다시 실행한다.
         """
-        return (
-            self.missing
-            + tuple(finding_id for finding_id, _round, _cursor in self.stale)
-            + tuple(finding_id for finding_id, _round, _summary in self.gap)
-        )
+        return self.prefill_rows
 
 
 def _pm_review_latest_verify_rows(
@@ -5424,8 +5695,14 @@ def pm_review_verify_template(
     gap: list[tuple[str, int, str]] = []
     stale: list[tuple[str, int, int]] = []
     missing: list[str] = []
+    prefill_rows: list[tuple[str, dict[str, str] | None]] = []
     for finding, _disposition in delta.accepted:
         entry = latest_rows.get(finding.id)
+        # 시드 프리필은 버킷과 무관하게 **열린 accepted 전건**이다 — 분류는 PM 확인 대상을
+        # 정하고, 프리필은 다음 라운드가 다시 봐야 할 행을 정한다(두 물음이 다르다).
+        prefill_rows.append(
+            (finding.id, None if entry is None else _pm_review_verify_seed_values(entry[1]))
+        )
         if entry is None:
             missing.append(finding.id)
             continue
@@ -5457,7 +5734,7 @@ def pm_review_verify_template(
     machine_rows.sort(key=lambda pair: pair[0])   # source round 오름차순(왕복 순서) · 라운드 안 순서 보존
     return PMReviewVerifyTemplate(
         tuple(machine_rows), tuple(reviewer_required), tuple(gap), tuple(stale),
-        tuple(missing),
+        tuple(missing), tuple(prefill_rows),
     )
 
 
@@ -5757,20 +6034,6 @@ def pm_verified_evidence_problem(
     ) < 1:
         return f"{reviewer_role} 채널의 기계 확인(pm-review-confirmation-v1) 기록이 없습니다"
     return None
-
-
-def _pm_review_verify_missing_ids(ticket_text: str, rounds: Sequence) -> list[str]:
-    """verify 선언이 없는(또는 자리표시자 그대로인) accepted ID — harvest 표시용 관용 래퍼.
-
-    판정은 `pm_review_verify_template` 하나가 한다. 표시면은 관용적이라(불변식 · 분업) delta/verify
-    파싱 실패도 "확인 불가"로 접어 harvest 를 막지 않는다 — 하드 게이트는 `review verify-template`
-    판정면의 몫이다. 두 표면이 각자 판정하면 한쪽만 갱신돼 서로 반대 결론을 낸다.
-    """
-    try:
-        template = pm_review_verify_template(ticket_text, rounds)
-    except PMReviewError:
-        return []
-    return list(template.missing)
 
 
 def _pm_review_section_review_blocks(round) -> list[_PMReviewBlock]:
@@ -13183,7 +13446,11 @@ def _emit_pm_review_verify_template(template: PMReviewVerifyTemplate) -> int:
         )
         print(
             f"오류: 확인 창을 지난 verify 행: {detail} — 그 ID 는 다음 developer 라운드에서 "
-            "verify 행을 다시 선언해야 기계 확인이 가능합니다",
+            "verify 행을 다시 선언해야 기계 확인이 가능합니다. 관측이 기대와 달라 이 상태가 "
+            "됐다면 기대값이 낡은 것과 회귀 두 가설이 있습니다 — 같은 커맨드를 손으로 1회 "
+            "재현해 가른 뒤, 어느 쪽이든 그 ID 의 행을 다음 developer 라운드에서 다시 "
+            "선언하세요(확인 블록의 round 는 티켓 전역 고유 키라 같은 순번으로 다시 적을 수 "
+            "없습니다)",
             file=sys.stderr,
         )
     if template.missing:

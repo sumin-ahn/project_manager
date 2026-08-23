@@ -206,7 +206,16 @@ def test_every_round_role_seed_comes_from_the_delegate_renderer(pd, board):
         "## must-fix", "## 판정", "```pm-review-v1",
     ))
     # 두 리뷰 채널이 각자 접두의 골격을 받는다(판정 표면은 하나·ID 네임스페이스는 분리).
-    assert '"id":"F-NNN"' in text and '"id":"X-NNN"' in text
+    # 골격 **기본 인자**는 자리표시자 bytes 그대로다 — 추가 리뷰어 프롬프트가 그 골격을 쓴다.
+    for role, prefix in (("code-reviewer", "F"), ("external-reviewer", "X")):
+        default_skeleton = pd.render_pm_review_block_skeleton(role).replace(" ", "")
+        assert f'"id":"{prefix}-NNN"' in default_skeleton
+    # 시드는 다음 finding ID 실값을 싣는다(ID 가 하나도 없는 티켓이면 첫 번호).
+    compact = text.replace(" ", "")
+    assert '"findings":[{"id":"F-001"' in compact
+    assert '"findings":[{"id":"X-001"' in compact
+    assert '"confirmations":[{"id":"F-NNN"' in compact
+    assert '"confirmations":[{"id":"X-NNN"' in compact
 
 
 def test_review_seed_follows_parser_class_status_and_key_constants(pd, monkeypatch):
@@ -357,6 +366,55 @@ def test_refused_previous_round_is_not_a_prefill_source(pd):
     )
     payload = _seed_payload(rendered)
     assert [row["id"] for row in payload["confirmations"]] == ["X-NNN"]
+
+
+def test_the_refused_marker_line_is_read_back_for_every_round_role(pd):
+    """표식 발행 문법과 판독이 갈리지 않는다 — 역할 전수로 왕복을 고정한다."""
+    for role in sorted(pd.TICKET_COPY_ROLES):
+        line = pd.pm_review_refused_line(role)
+        assert pd.pm_review_refused_marker_present(line) is True, role
+        assert pd.pm_review_refused_marker_present(f"머리\n{line}\n꼬리\n") is True, role
+    # 옛 산출에 이미 박혀 있는 줄은 새 문법의 인스턴스다(마이그레이션 없음).
+    assert pd.EXTERNAL_REVIEW_REFUSED_LINE == pd.pm_review_refused_line(
+        pd.EXTERNAL_REVIEW_ROLE,
+    )
+    assert pd.pm_review_refused_marker_present(pd.EXTERNAL_REVIEW_REFUSED_LINE) is True
+    # 표식이 없는 본문은 판독 0 이다(존재가 아니라 문법을 본다).
+    assert pd.pm_review_refused_marker_present(
+        "<!-- pm-review-refused -->\n<!-- pm-review-refused role= -->\n",
+    ) is False
+
+
+def test_a_marked_round_leaves_the_surface_whatever_its_role(pd, capsys):
+    """표식 라운드는 역할과 무관하게 판정 표면·프리필 공급원에서 빠진다(강등 경고 0).
+
+    표식은 시드 bytes 를 바꾸므로 그 라운드는 더 이상 `pending` 이 아니다 — 역할로 좁힌
+    판독은 내부 채널 라운드를 하나도 빼지 못한다.
+    """
+    landed = _reviewer_round(pd, _review_payload("F-001"), ordinal=1)
+    marked_text = (
+        _seeded_round_text(pd, "code-reviewer")
+        + pd.pm_review_refused_line("code-reviewer") + "\n"
+    )
+    marked = _round(pd, 2, marked_text)
+
+    rounds = [landed, marked]
+    assert pd._pm_review_refused_rounds(rounds) == {("code-reviewer", 2)}
+    assert [item.ordinal for item in pd._pm_review_surface_rounds(rounds)] == [1]
+    assert "F-001" in pd.render_pm_review_disposition_template("", rounds)
+    # `review delta` 도 그 라운드를 읽지 않는다 — 남는 사유는 PM 미판정(정상 상태)이지
+    # 자리표시 블록의 malformed 가 아니다(표식이 없으면 그쪽이 티켓 전체를 막는다).
+    with pytest.raises(pd.PMReviewError) as caught:
+        pd.parse_pm_review_delta("", rounds)
+    assert "F-001" in str(caught.value) and "finding.class" not in str(caught.value)
+
+    # 표식 라운드를 직전 라운드로 준 시드는 자리표시자 골격으로 남는다(강등 경고 없이).
+    capsys.readouterr()
+    payload = _seed_payload(pd.render_ticket_growth_section_seed(
+        "code-reviewer", "", previous_round=(2, marked_text),
+    ))
+    assert [row["id"] for row in payload["confirmations"]] == ["F-NNN"]
+    assert "강등" not in capsys.readouterr().err
 
 
 def _materialize(pd, spec: str, rounds, tickets_dir: Path, ticket_id: str) -> Path:

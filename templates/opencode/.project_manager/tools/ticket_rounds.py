@@ -471,18 +471,27 @@ def _text_is_pending(role: str, text: str) -> bool:
     return _load_pm_delegate().ticket_round_body_is_pending(role, body[1:])
 
 
+def _text_is_refused(text: str) -> bool:
+    """엔진이 판정 표면 밖으로 뺀 라운드인가 — 판독은 표식 소유자(`pm_delegate`)가 낸다."""
+    return _load_pm_delegate().pm_review_refused_marker_present(text)
+
+
 def latest_round_of_role(rounds, role: str):
     """그 역할의 **마지막 산출 라운드**(없으면 None) — 직전-라운드 규칙의 단일 소유자.
 
-    배제는 하나다: 산출이 없는 라운드(`pending`)는 자리표시자 골격뿐이라 어떤 소비자에게도
-    직전 산출이 아니다. 시드 프리필(예약)·확인 대상 finding ID(추가 리뷰어 프롬프트)가 같은
-    규칙을 봐야 한쪽이 표면 밖 ID 를 받거나 "prefill 을 해소할 수 없어 강등" 경고를 정상
-    경로에서 낸다. 입력은 `Round`(또는 `role`·`ordinal`·`text`·`pending` 을 가진 같은 모양)의
-    목록이다.
+    배제는 둘이고 같은 뜻이다: 산출이 없는 라운드(`pending`)는 자리표시자 골격뿐이고, 엔진
+    표식이 붙은 라운드는 종결된 예약(대체·회수 거부)이라 판정 표면 밖이다 — 어느 쪽도 어떤
+    소비자에게도 직전 산출이 아니다. 표식이 붙는 순간 그 파일은 시드와 bytes 가 달라 `pending`
+    이 아니게 되므로, 두 배제가 같은 자리에 있어야 종결된 라운드가 직전 산출로 서지 않는다.
+    시드 프리필(예약)·확인 대상 finding ID(추가 리뷰어 프롬프트)가 같은 규칙을 봐야 한쪽이
+    표면 밖 ID 를 받거나 "prefill 을 해소할 수 없어 강등" 경고를 정상 경로에서 낸다. 입력은
+    `Round`(또는 `role`·`ordinal`·`text`·`pending` 을 가진 같은 모양)의 목록이다.
     """
     candidates = [
         item for item in rounds
-        if item.role == role and not getattr(item, "pending", False)
+        if item.role == role
+        and not getattr(item, "pending", False)
+        and not _text_is_refused(item.text)
     ]
     if not candidates:
         return None

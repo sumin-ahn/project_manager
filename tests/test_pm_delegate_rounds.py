@@ -16,9 +16,11 @@ import contextlib
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
+import sys
 import threading
 import unittest.mock
 from pathlib import Path
@@ -238,7 +240,6 @@ def test_harvest_replaces_board_round_and_closes_the_run(pd, rounds_env):
     result = pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
 
     assert result.changed is True and result.sync_ready is True
-    assert result.verify_missing == ()        # 리뷰 라운드가 없어 accepted 대상 자체가 없다.
     assert plan.board_path.read_text(encoding="utf-8") == produced
     assert not plan.run_dir.exists()          # run 닫힘 = 재회수 없음
     assert sync_log[-1][1] == [plan.board_path]
@@ -510,10 +511,170 @@ def test_review_seed_prefill_ignores_other_role_rounds(pd, rounds_env):
     assert '"confirmations":[{"id":"F-NNN"' in block_text
 
 
-# ── T-0786: harvest `verify_missing` (표시면 관용) ──────────────────────
+# ── 다음 finding ID 실값 주입 (시드·사본 프리앰블) ────────────────────────
 
-def test_harvest_reports_verify_missing_for_unfilled_accepted_findings(pd, rounds_env):
-    """dev 라운드 골격에 verify 프리필이 실려도 자리표시자 그대로면 harvest 가 이름을 짚는다."""
+def _tickets_root(pm_home: Path) -> Path:
+    return pm_home / ".project_manager" / "wiki" / "tickets"
+
+
+def _land_architect_round_citing(pd, pm_home: Path, slot: Path, ticket: str, cited: str):
+    """산문에만 그 ID 가 있는 architect 라운드를 실제로 착지시킨다(실 파일 픽스처).
+
+    리뷰 블록이 아니라 **산문 인용**이다 — 관용 스캔이 잡는 그 형상이 다음 번호를 밀어 올린다.
+    """
+    plan = pd.prepare_ticket_copy(
+        ticket=ticket, role="architect", cwd=slot, pm_home=pm_home,
+    )
+    _write_round_output(plan.path, (
+        f"## 경계 실측\n- 다른 티켓 리뷰의 {cited} 인용\n\n"
+        "## 불변식\n- 판정 입력은 그 파일 하나\n\n"
+        "## 표면 상한\n- 픽스처 1건\n\n"
+        "## 테스트 전략\n- 정상·실패 경로\n\n"
+        "검토 판정: 수정 후 통과\n"
+    ))
+    pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
+    return plan
+
+
+def test_review_seed_and_preamble_hold_the_next_finding_id_after_a_prose_citation(
+    pd, rounds_env,
+):
+    """이전 라운드 **산문**에만 있는 ID 도 다음 번호를 밀어 올리고, 그 실값이 시드·프리앰블에 든다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-7030")
+    _land_architect_round_citing(pd, pm_home, slot, "T-7030", "F-003")
+
+    reviewer = pd.prepare_ticket_copy(
+        ticket="T-7030", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+
+    seed = reviewer.path.read_text(encoding="utf-8")
+    assert '"id":"F-004"' in seed.replace(" ", "")
+    assert "`F-004` 부터" in seed.partition("## 판정")[0]
+    assert reviewer.next_finding_id == "F-004"
+    assert "`F-004` 부터" in pd._ticket_copy_preamble(reviewer)
+    assert reviewer.board_path.read_text(encoding="utf-8") == seed
+
+    # 실 ID 를 실은 새 시드도 산출이 없다(판정 입력은 그 파일 자신이다).
+    rounds_module = pd._load_ticket_rounds()
+    loaded = rounds_module.load_rounds(_tickets_root(pm_home), "T-7030")
+    assert [(item.ordinal, item.pending) for item in loaded] == [(1, False), (2, True)]
+    problems = rounds_module.verify_rounds(_tickets_root(pm_home), "T-7030")
+    assert [item.code for item in problems] == [rounds_module.PROBLEM_PENDING]
+
+
+def test_a_reply_that_uses_the_seeded_finding_id_is_harvested(pd, rounds_env):
+    """엔진이 시드에 넣은 ID 는 선언이 아니다 — 그 번호로 쓴 회신이 자기 자신과 충돌하지 않는다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-7031")
+    _land_architect_round_citing(pd, pm_home, slot, "T-7031", "F-003")
+    reviewer = pd.prepare_ticket_copy(
+        ticket="T-7031", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+    assert reviewer.next_finding_id == "F-004"
+
+    _write_round_output(reviewer.path, _review_body(pd, "code-reviewer", ["F-004"]))
+    result = pd.harvest_ticket_copy(
+        copy_path=reviewer.path, cwd=slot, pm_home=pm_home,
+    )
+
+    assert result.changed is True
+    assert not reviewer.run_dir.exists()
+    assert '"id":"F-004"' in reviewer.board_path.read_text(encoding="utf-8").replace(" ", "")
+
+
+def test_a_ticket_without_any_finding_id_seeds_the_first_number(pd, rounds_env):
+    """0건 라운드는 첫 번호다 — 그리고 리뷰 채널이 아닌 역할에는 실을 값이 없다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-7032")
+
+    reviewer = pd.prepare_ticket_copy(
+        ticket="T-7032", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+    assert reviewer.next_finding_id == "F-001"
+    assert '"id":"F-001"' in reviewer.path.read_text(encoding="utf-8").replace(" ", "")
+
+    developer = pd.prepare_ticket_copy(
+        ticket="T-7032", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    assert developer.next_finding_id == ""
+    assert "finding ID" not in pd._ticket_copy_preamble(developer)
+
+
+def test_an_abandoned_seed_gives_its_finding_id_back_to_the_next_round(pd, rounds_env):
+    """표식이 붙은 라운드의 시드 ID 는 다시 비어 있다 — 종결된 예약은 아무것도 선언하지 않았다.
+
+    중간 순번 포기는 board 시드를 보존한 채 표식만 붙인다. 그 골격의 ID 가 스캔 corpus 에 남으면
+    다음 시드는 아무도 쓰지 않은 번호를 건너뛰고, 그 번호를 그대로 쓴 유효 회신은 재선언으로
+    거부된다(두 표면이 같은 술어로 표식 라운드를 빼야 한다).
+    """
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-7041")
+    abandoned = pd.prepare_ticket_copy(
+        ticket="T-7041", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+    assert abandoned.next_finding_id == "F-001"
+    # 뒤 순번이 있어야 포기가 board 시드를 지우지 않고 보존한다(표식 발행 분기).
+    later = pd.prepare_ticket_copy(
+        ticket="T-7041", role="architect", cwd=slot, pm_home=pm_home,
+    )
+    _write_round_output(later.path, (
+        "## 경계 실측\n- 실 파일 픽스처\n\n## 불변식\n- 판정 입력은 그 파일 하나\n\n"
+        "## 표면 상한\n- 픽스처 1건\n\n## 테스트 전략\n- 정상·실패 경로\n\n"
+        "검토 판정: 통과\n"
+    ))
+    pd.harvest_ticket_copy(copy_path=later.path, cwd=slot, pm_home=pm_home)
+
+    pd.abandon_ticket_copy(
+        copy_path=abandoned.path, cwd=slot, pm_home=pm_home, assume_dead=True,
+    )
+    assert pd.pm_review_refused_marker_present(
+        abandoned.board_path.read_text(encoding="utf-8")
+    ), "표식이 발행되지 않았다(전제 붕괴)"
+
+    reviewer = pd.prepare_ticket_copy(
+        ticket="T-7041", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+
+    assert reviewer.next_finding_id == "F-001"
+    assert '"id":"F-001"' in reviewer.path.read_text(encoding="utf-8").replace(" ", "")
+    # 그 번호로 쓴 회신이 회수된다 — 표식 라운드의 시드 ID 는 재선언 corpus 에도 없다.
+    _write_round_output(reviewer.path, _review_body(pd, "code-reviewer", ["F-001"]))
+    assert pd.harvest_ticket_copy(
+        copy_path=reviewer.path, cwd=slot, pm_home=pm_home,
+    ).changed is True
+    assert '"id":"F-001"' in reviewer.board_path.read_text(
+        encoding="utf-8",
+    ).replace(" ", "")
+
+
+def test_seed_value_inputs_have_no_default_that_folds_a_missing_value(pd, tmp_path):
+    """준비가 계산하는 세 값은 기본값이 없다 — 안 넘기면 조용히 접히지 않고 그 자리에서 터진다.
+
+    기본값이 있으면 값을 못 넘긴 조립이 옛 프롬프트 bytes·자리표시자 골격·빈 프리필로 접혀,
+    번호를 말하지 않는 시드가 정상 산출처럼 나간다.
+    """
+    with pytest.raises(TypeError):
+        pd.TicketCopyPlan(
+            tmp_path / "01-code-reviewer.md", tmp_path, "T-7042",
+            pd.INTERNAL_REVIEW_ROLE, 1, tmp_path / "board.md", "e" * 32,
+        )
+    with pytest.raises(TypeError):
+        pd._render_review_round_seed_body(pd.INTERNAL_REVIEW_ROLE, ["F-001"])
+    with pytest.raises(TypeError):
+        pd.PMReviewVerifyTemplate((), (), (), (), ())
+
+
+# ── 회수 게이트: 판정 불능 verify 블록 · 자리표시자 행 ──────────────────
+
+def test_harvest_refuses_a_developer_round_whose_verify_block_is_malformed(
+    pd, rounds_env,
+):
+    """verify 블록을 읽지 못하면 회수는 거부다 — 판정 불능을 통과로 접지 않는다.
+
+    같은 시드를 자리표시자 그대로 둔 산출은 회수된다(태만은 거부 사유가 아니다) — 그 ID 를
+    짚는 것은 회수가 아니라 `review verify-template` 판정면 하나다.
+    """
     pm_home, slot, tickets, _sync = rounds_env
     spec_path = _write_spec(tickets, "T-7020")
 
@@ -557,32 +718,51 @@ def test_harvest_reports_verify_missing_for_unfilled_accepted_findings(pd, round
     seed = dev.path.read_text(encoding="utf-8")
     assert '"id":"F-001"' in seed.partition(f"```{pd.PM_REVIEW_VERIFY_BLOCK}")[2]
 
-    # verify 골격을 자리표시자 그대로 두고 다른 절만 채워 harvest 대상으로 만든다.
+    reserved_before = dev.board_path.read_bytes()
+
+    # 시드가 실은 ID 는 그대로 둔 채 블록만 깨뜨린다 — 지운 행이 아니라 판정 불능이다.
+    dev.path.write_text(
+        seed.replace('"verifications"', '"verifications') + "\n실산출\n",
+        encoding="utf-8", newline="",
+    )
+    with pytest.raises(pd.DelegateError, match="블록을 읽지 못했습니다"):
+        pd.harvest_ticket_copy(copy_path=dev.path, cwd=slot, pm_home=pm_home)
+
+    assert dev.board_path.read_bytes() == reserved_before
+    assert dev.run_dir.exists()
+
+    # 자리표시자 그대로인 행은 게이트를 통과하고, 태만은 판정면이 이름으로 짚는다.
     dev.path.write_text(seed + "\n실산출\n", encoding="utf-8", newline="")
     result = pd.harvest_ticket_copy(copy_path=dev.path, cwd=slot, pm_home=pm_home)
 
     assert result.changed is True
-    assert result.verify_missing == ("F-001",)
+    assert _verify_template_of(pd, pm_home, "T-7020").missing == ("F-001",)
 
 
 # ── T-0805: 시드 시점 의존 — 판정 미기입 거부(잔여 0) · 누적 프리필 ──────
 
-def _finding_payload(pd, fid: str) -> dict:
+def _finding_payload(pd, fid: str, *, design_change: bool = False) -> dict:
     return {
         "id": fid, "class": "implementation-defect", "severity": "must-fix",
         "authority": "[[T-0805]]", "evidence": f"{fid} probe",
-        "recommendation": f"{fid} fix", "design_change": False,
+        "recommendation": f"{fid} fix", "design_change": design_change,
     }
 
 
-def _harvest_review_round(pd, pm_home: Path, slot: Path, ticket: str, finding_ids: list[str]):
+def _harvest_review_round(
+    pd, pm_home: Path, slot: Path, ticket: str, finding_ids: list[str],
+    *, design_change_ids: tuple[str, ...] = (),
+):
     """실 준비→편집→회수로 reviewer 라운드 1개를 board 에 남긴다(조립 dict 아님)."""
     reviewer = pd.prepare_ticket_copy(
         ticket=ticket, role="code-reviewer", cwd=slot, pm_home=pm_home,
     )
     payload = {
         "version": pd.PM_REVIEW_VERSION,
-        "findings": [_finding_payload(pd, fid) for fid in finding_ids],
+        "findings": [
+            _finding_payload(pd, fid, design_change=fid in design_change_ids)
+            for fid in finding_ids
+        ],
         "confirmations": [],
     }
     mustfix = "\n".join(f"- {fid}" for fid in finding_ids)
@@ -610,8 +790,8 @@ def _append_disposition(pd, spec_path: Path, rows: list, *, ordinal: int = 1) ->
     )
 
 
-def _verify_ids_in(pd, text: str) -> list[str]:
-    """시드 골격의 verify 행 ID 목록.
+def _verify_rows_in(pd, text: str) -> list[dict]:
+    """시드 골격의 verify 행 전체 — 자리표시자든 프리필된 실값이든 그대로 돌려준다.
 
     골격의 `machine_verifiable` 자리는 따옴표 없는 raw 자리표시자라 그대로는 유효 JSON 이 아니다
     — 엔진의 구조-스캔 전처리와 같은 재-인용을 거친 뒤 파싱한다(자리표시자 문안은 렌더 소유).
@@ -620,7 +800,52 @@ def _verify_ids_in(pd, text: str) -> list[str]:
         f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n")[2]
     if not body:
         return []
-    return [row["id"] for row in json.loads(body.split("\n```", 1)[0])["verifications"]]
+    return json.loads(body.split("\n```", 1)[0])["verifications"]
+
+
+def _verify_ids_in(pd, text: str) -> list[str]:
+    """시드 골격의 verify 행 ID 목록."""
+    return [row["id"] for row in _verify_rows_in(pd, text)]
+
+
+def _verify_fence(pd, rows: list) -> str:
+    """dev 가 채운 verify 행들을 fence 로 직렬화한다(자리표시자 흉내 금지 — 실 선언 전용)."""
+    return (
+        f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n"
+        + json.dumps({"version": pd.PM_REVIEW_VERIFY_VERSION, "verifications": rows},
+                     ensure_ascii=False)
+        + "\n```\n"
+    )
+
+
+def _report_command(text: str) -> str:
+    """부작용 없는 실 재현 커맨드 — 회수 게이트가 이 커맨드를 실제로 돌린다.
+
+    셸 builtin(`echo`)은 Windows 에 실행 파일이 없어 `shell=False` 실행이 스폰 실패로 떨어진다 —
+    실제로 도는 커맨드는 트리 내 선례(`tests/test_cluster_review_round.py`)와 같은 인터프리터
+    호출로 쓴다(금지 토큰 0 · 트리·네트워크 부작용 0).
+    """
+    return f"{shlex.quote(sys.executable)} -c " + shlex.quote(f"print({text!r})")
+
+
+def _fill_machine_verifiable(pd, text: str, index: int, value: str = "true") -> str:
+    """시드가 심은 boolean 자리표시자 중 `index` 번째만 실값으로 갈아 끼운다.
+
+    자리표시자만 바꾸는 것이 dev 의 정상 채움 경로다 — 나머지 bytes(프리필된 command·expected)는
+    시드가 쓴 그대로 남아 그 행이 값 재입력 없이 재선언된다.
+    """
+    token = (
+        f'"{pd._PM_REVIEW_MACHINE_VERIFIABLE_KEY}":'
+        + pd._PM_REVIEW_MACHINE_VERIFIABLE_PLACEHOLDER
+    )
+    position = -1
+    for _ in range(index + 1):
+        position = text.index(token, position + 1)
+    return (
+        text[:position]
+        + f'"{pd._PM_REVIEW_MACHINE_VERIFIABLE_KEY}":{value}'
+        + text[position + len(token):]
+    )
 
 
 @pytest.mark.parametrize("code", ["pending", "decision-required"])
@@ -629,7 +854,7 @@ def test_prepare_refuses_a_developer_round_until_the_pm_judgment_is_written(
 ):
     """판정 미기입 상태의 준비는 **거부**다 — board 라운드 파일도 장부 행도 남지 않는다(I8).
 
-    강등해서 시드하면 검증 골격이 없는 라운드가 나가고, 두 단계 뒤 `verify_missing`·rc=1 이
+    강등해서 시드하면 검증 골격이 없는 라운드가 나가고, 두 단계 뒤 판정면의 태만 목록·rc=1 이
     dev 태만처럼 표면화된다(T-0790 실증 형상).
     """
     pm_home, slot, tickets, _sync = rounds_env
@@ -722,14 +947,12 @@ def test_prepare_seeds_the_first_developer_round_without_fence_or_warning(
     assert "경고" not in capsys.readouterr().err
 
 
-def test_prepare_after_the_judgment_prefills_only_the_ids_without_a_usable_declaration(
-    pd, rounds_env,
-):
-    """역방향 확인 + I3·I4 왕복 — 판정 뒤 준비는 막히지 않고, 프리필 대상은 분류기 산출이다.
+def test_prepare_after_the_judgment_prefills_every_open_accepted_row(pd, rounds_env):
+    """다음 시드는 **열린 accepted 전건**을 최신 선언 값 그대로 싣고 여전히 pending 이다.
 
-    라운드 2 에서 F-002 는 해소 선언, F-001 은 빈틈 보고로 끝낸다. 라운드 3 시드는 F-001 만
-    다시 요구해야 한다 — F-002 는 PM 이 그대로 확인하면 되는 행이라 다시 열면 "손대지 마라"고
-    한 항목을 시드가 매 라운드 되살린다.
+    라운드 2 에서 F-002 는 해소 선언, F-001 은 빈틈 보고로 끝낸다. 라운드 3 시드는 둘 다 다시
+    싣는다 — PM 이 fix 범위를 좁혀 F-002 를 처방에서 빼도 그 행이 시드에서 빠지면 개발자가
+    낡은 기대값을 다시 보지 못한다(그 누락이 이 규칙의 기원이다).
     """
     pm_home, slot, tickets, _sync = rounds_env
     spec_path = _write_spec(tickets, "T-7033")
@@ -745,12 +968,16 @@ def test_prepare_after_the_judgment_prefills_only_the_ids_without_a_usable_decla
     )
     seed = first.path.read_text(encoding="utf-8")
     assert _verify_ids_in(pd, seed) == ["F-001", "F-002"]
+    # 선언이 아직 없는 ID 는 프리필할 값이 없다 — 자리표시자 골격 그대로다.
+    assert [row["command"].startswith("<") for row in _verify_rows_in(pd, seed)] == [
+        True, True,
+    ]
 
     rows = [
         {"id": "F-001", "machine_verifiable": False, "command": "",
          "expected": "처방이 정하지 않은 지점", "before": "",
          "reason": pd.PM_REVIEW_VERIFY_GAP_REASON},
-        {"id": "F-002", "machine_verifiable": True, "command": "pytest -q",
+        {"id": "F-002", "machine_verifiable": True, "command": _report_command("2 passed"),
          "expected": "2 passed", "before": "1 failed", "reason": ""},
     ]
     first.path.write_text(
@@ -762,12 +989,32 @@ def test_prepare_after_the_judgment_prefills_only_the_ids_without_a_usable_decla
         encoding="utf-8", newline="",
     )
     result = pd.harvest_ticket_copy(copy_path=first.path, cwd=slot, pm_home=pm_home)
-    assert result.verify_missing == ()          # 빈틈 보고는 태만이 아니다
+    assert result.changed is True
+    # 빈틈 보고는 태만이 아니다 — 그 판정은 회수가 아니라 분류기가 낸다.
+    assert _verify_template_of(pd, pm_home, "T-7033").missing == ()
 
     second = pd.prepare_ticket_copy(
         ticket="T-7033", role="developer", cwd=slot, pm_home=pm_home,
     )
-    assert _verify_ids_in(pd, second.path.read_text(encoding="utf-8")) == ["F-001"]
+    seed_two = second.path.read_text(encoding="utf-8")
+    placeholder = pd._PM_REVIEW_MACHINE_VERIFIABLE_PLACEHOLDER
+    assert _verify_rows_in(pd, seed_two) == [
+        # 빈틈 보고 행도 그대로 실린다 — 그 ID 의 최신 선언이 그것이다.
+        {"id": "F-001", "machine_verifiable": placeholder, "command": "",
+         "expected": "처방이 정하지 않은 지점", "before": "",
+         "reason": pd.PM_REVIEW_VERIFY_GAP_REASON},
+        # PM 이 그대로 확인하면 되는 행도 빠지지 않는다(3버킷 배제가 이 자리의 결함이었다).
+        {"id": "F-002", "machine_verifiable": placeholder,
+         "command": _report_command("2 passed"), "expected": "2 passed",
+         "before": "1 failed", "reason": ""},
+    ]
+    # 값이 실려도 선언 자리(`machine_verifiable`)는 자리표시자라 산출 없음 그대로다 —
+    # 판정 입력은 그 파일 하나이고 주입 값은 본문 자신에서 되읽는다.
+    assert _board_round_is_pending(pd, pm_home, "T-7033", second.ordinal) is True
+    # 그 한 자리를 채우는 것이 곧 선언이다 — 채우면 판정이 뒤집힌다.
+    assert pd.ticket_round_body_is_pending(
+        "developer", _fill_machine_verifiable(pd, seed_two, 0).partition("\n\n")[2],
+    ) is False
 
 
 def _verify_block_bytes(pd, text: str) -> str:
@@ -795,19 +1042,27 @@ def _verify_template_of(pd, pm_home: Path, ticket: str):
     return pd.pm_review_verify_template(spec_text, rounds)
 
 
+def _board_round_is_pending(pd, pm_home: Path, ticket: str, ordinal: int) -> bool:
+    """board 에 착지한 그 라운드가 '산출 없음' 인가 — 실제 소비 경로(`load_rounds`)로 읽는다."""
+    board = pd._load_board_for_repo(pm_home)
+    _status, spec_path = board.find_ticket_exact(ticket)
+    rounds = pd._load_ticket_rounds().load_rounds(
+        board.tickets_dir(), ticket,
+        ticket_text=spec_path.read_text(encoding="utf-8"),
+    )
+    return next(item.pending for item in rounds if item.ordinal == ordinal)
+
+
 def _verify_template_rc(pd, pm_home: Path, monkeypatch, ticket: str) -> int:
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: pm_home)
     return pd.main(["review", "verify-template", "--ticket", ticket])
 
 
-def _drive_gap_then_next_round(
-    pd, pm_home: Path, slot: Path, tickets: Path, monkeypatch, ticket: str, *, silent: bool,
-):
-    """실 준비→편집→회수를 두 라운드 태운다 — 라운드 2 는 빈틈 보고, 라운드 3 은 두 형상 중 하나.
+def _gap_round_then_prepare_next(pd, pm_home: Path, slot: Path, tickets: Path, ticket: str):
+    """실 준비→편집→회수로 라운드 2(F-001 빈틈 보고 · F-002 기계 선언)를 남기고 라운드 3 을 준비한다.
 
-    `silent=False` 는 시드가 프리필한 자리표시자 행을 **그대로 둔 채** 산문만 덧붙인 라운드다
-    (이번 라운드에 아무 선언도 없다 = 태만). `silent=True` 는 그 ID 의 행 자체가 없는 라운드다
-    (무활동 = 빈틈 이월). 자리표시자 행은 엔진이 시드한 bytes 그대로 두고 손으로 흉내내지 않는다.
+    돌려주는 값은 라운드 3 의 준비 계획과 그 시드 원문이다 — 시드가 실은 자리표시자 bytes 를
+    손으로 흉내내지 않고 그대로 편집해야 무편집 판정과 회수 판정이 같은 입력을 본다.
     """
     spec_path = _write_spec(tickets, ticket)
     _harvest_review_round(pd, pm_home, slot, ticket, ["F-001", "F-002"])
@@ -826,7 +1081,7 @@ def _drive_gap_then_next_round(
         {"id": "F-001", "machine_verifiable": False, "command": "",
          "expected": "처방이 정하지 않은 지점", "before": "",
          "reason": pd.PM_REVIEW_VERIFY_GAP_REASON},
-        {"id": "F-002", "machine_verifiable": True, "command": "pytest -q",
+        {"id": "F-002", "machine_verifiable": True, "command": _report_command("2 passed"),
          "expected": "2 passed", "before": "1 failed", "reason": ""},
     ]
     second.path.write_text(
@@ -838,109 +1093,258 @@ def _drive_gap_then_next_round(
         encoding="utf-8", newline="",
     )
     gap_round = pd.harvest_ticket_copy(copy_path=second.path, cwd=slot, pm_home=pm_home)
-    assert gap_round.verify_missing == ()          # 빈틈 보고는 태만이 아니다(라운드 2)
+    assert gap_round.changed is True
+    # 빈틈 보고는 태만이 아니다(라운드 2) — 판정면이 그 ID 를 `gap` 으로 든다.
+    assert _verify_template_of(pd, pm_home, ticket).missing == ()
 
     third = pd.prepare_ticket_copy(
         ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
     )
     seed_three = third.path.read_text(encoding="utf-8")
-    assert _verify_ids_in(pd, seed_three) == ["F-001"]   # 시드는 빈틈 ID 만 다시 요구한다
-    prose = "\n## 메모\n- 이번 라운드는 산문만 정리했다\n"
-    edited = (_without_verify_block(pd, seed_three) if silent else seed_three) + prose
-    if not silent:
-        assert _verify_block_bytes(pd, edited) == _verify_block_bytes(pd, seed_three)
-    third.path.write_text(edited, encoding="utf-8", newline="")
-    harvested = pd.harvest_ticket_copy(copy_path=third.path, cwd=slot, pm_home=pm_home)
-    template = _verify_template_of(pd, pm_home, ticket)
-    return harvested, template, _verify_template_rc(pd, pm_home, monkeypatch, ticket)
+    # 라운드 3 시드는 열린 accepted 전건을 다시 싣는다(빈틈 ID 만이 아니다).
+    assert _verify_ids_in(pd, seed_three) == ["F-001", "F-002"]
+    return third, seed_three
 
 
 def test_unfilled_seed_row_in_a_produced_round_buries_the_earlier_gap_declaration(
     pd, rounds_env, monkeypatch, capsys,
 ):
-    """이번 라운드의 '선언 없음' 이 앞 라운드의 빈틈 보고를 덮는다 — 태만은 태만으로 남는다.
+    """부분 태만 — 채운 행은 살고 자리표시자로 둔 행은 앞 라운드의 빈틈 보고를 덮는다.
 
-    실 준비→회수 왕복을 두 번 태워(빈틈 보고 → 자리표시자 미기입) harvest·verify-template 전
-    경로를 지나고, 같은 경로에서 **행 자체가 없는 조용한 라운드**(의도된 빈틈 이월)와 값으로
-    대조한다. 두 형상이 같은 답을 내면 태만과 빈틈 보고의 구별이 사라진 것이다.
+    라운드 3 은 프리필된 F-002 의 boolean 만 갈아 끼워 재선언하고 F-001 은 손대지 않는다.
+    두 ID 가 같은 라운드에서 갈리므로 태만 판정이 부분 확인을 인질로 잡지 않는다.
     """
     pm_home, slot, tickets, _sync = rounds_env
-
-    negligent, negligent_template, negligent_rc = _drive_gap_then_next_round(
-        pd, pm_home, slot, tickets, monkeypatch, "T-7034", silent=False,
+    third, seed_three = _gap_round_then_prepare_next(
+        pd, pm_home, slot, tickets, "T-7034",
     )
-    negligent_err = capsys.readouterr().err
-    silent, silent_template, silent_rc = _drive_gap_then_next_round(
-        pd, pm_home, slot, tickets, monkeypatch, "T-7035", silent=True,
+    edited = _fill_machine_verifiable(pd, seed_three, 1) + "\n## 메모\n- 산문만 정리했다\n"
+    assert _verify_ids_in(pd, edited) == ["F-001", "F-002"]      # 행은 그대로 둔다
+    third.path.write_text(edited, encoding="utf-8", newline="")
+
+    harvested = pd.harvest_ticket_copy(copy_path=third.path, cwd=slot, pm_home=pm_home)
+
+    # 자리표시자로 남은 F-001 은 이번 라운드의 '선언 없음' 이라 앞 라운드 빈틈 보고를 덮는다.
+    assert harvested.changed is True
+    template = _verify_template_of(pd, pm_home, "T-7034")
+    assert template.missing == ("F-001",) and template.gap == ()
+    # 프리필 값 그대로 재선언된 F-002 는 이번 라운드 선언으로 올라간다(확인 커서 재개방).
+    assert [source for source, _row in template.machine_rows] == [3]
+    capsys.readouterr()
+    assert _verify_template_rc(pd, pm_home, monkeypatch, "T-7034") == 1
+    err = capsys.readouterr().err
+    assert "verify 행이 없는 accepted finding" in err and "F-001" in err
+
+
+def test_harvest_refuses_a_round_that_deleted_a_seeded_verify_row(pd, rounds_env, monkeypatch):
+    """시드가 실은 행을 지운 산출은 회수되지 않는다(산출로 범위를 좁힐 수 없다).
+
+    거부는 파괴적이지 않다 — board 라운드 bytes 도 slot run-dir 도 그대로라, 행을 되돌린 사본을
+    같은 경로로 다시 회수하면 통과한다.
+    """
+    pm_home, slot, tickets, _sync = rounds_env
+    third, seed_three = _gap_round_then_prepare_next(
+        pd, pm_home, slot, tickets, "T-7035",
     )
-    silent_err = capsys.readouterr().err
+    reserved_before = third.board_path.read_bytes()
+    produced = _without_verify_block(pd, seed_three) + "\n## 메모\n- 산문만 정리했다\n"
+    third.path.write_text(produced, encoding="utf-8", newline="")
 
-    # (1) 자리표시자를 그대로 둔 라운드 — 앞 라운드의 빈틈 보고가 최신 선언이 되지 않는다.
-    assert negligent.verify_missing == ("F-001",)
-    assert negligent_template.missing == ("F-001",) and negligent_template.gap == ()
-    assert negligent_rc == 1
-    assert "verify 행이 없는 accepted finding" in negligent_err and "F-001" in negligent_err
-    assert [source for source, _row in negligent_template.machine_rows] == [2]
+    with pytest.raises(pd.DelegateError, match="verify 행을 지웠습니다"):
+        pd.harvest_ticket_copy(copy_path=third.path, cwd=slot, pm_home=pm_home)
 
-    # (2) 행 자체가 없는 조용한 라운드 — 의도된 이월이라 rc=0 그대로다(과잉 차단 0).
-    assert silent.verify_missing == ()
-    assert [(item[0], item[1]) for item in silent_template.gap] == [("F-001", 2)]
-    assert silent_template.missing == () and silent_rc == 0
-    assert "빈틈 보고" in silent_err
-    assert [source for source, _row in silent_template.machine_rows] == [2]
+    assert third.board_path.read_bytes() == reserved_before
+    assert third.path.read_text(encoding="utf-8") == produced
+    assert third.run_dir.exists()
+    assert _harvest_rc(pd, monkeypatch, pm_home, slot, third.path) == 1
 
-    # (3) 두 형상이 같은 답을 내면 구별에 실패한 것이다.
-    assert (negligent.verify_missing, negligent_rc) != (silent.verify_missing, silent_rc)
+    third.path.write_text(
+        _fill_machine_verifiable(pd, seed_three, 1) + "\n## 메모\n- 행을 되돌렸다\n",
+        encoding="utf-8", newline="",
+    )
+    assert pd.harvest_ticket_copy(
+        copy_path=third.path, cwd=slot, pm_home=pm_home,
+    ).changed is True
+    assert not third.run_dir.exists()
+
+
+def test_harvest_runs_the_declared_command_and_refuses_a_stale_expected_value(
+    pd, rounds_env, monkeypatch,
+):
+    """이번 라운드가 선언한 기계 검증 행은 회수가 실제로 돌린다(실 subprocess).
+
+    관측이 기대와 다르면 거부다 — 낡은 기대값이 board 에 착지하면 PM 의 기계 확인이 그 값으로
+    막히고 라운드 파일은 회수 뒤 불변이라 되돌릴 정식 수단이 없다.
+    """
+    pm_home, slot, tickets, _sync = rounds_env
+    third, seed_three = _gap_round_then_prepare_next(
+        pd, pm_home, slot, tickets, "T-7037",
+    )
+    reserved_before = third.board_path.read_bytes()
+    stale = [
+        {"id": "F-001", "machine_verifiable": True,
+         "command": _report_command("1 passed"), "expected": "2 passed",
+         "before": "1 failed", "reason": ""},
+        {"id": "F-002", "machine_verifiable": True,
+         "command": _report_command("2 passed"), "expected": "2 passed",
+         "before": "1 failed", "reason": ""},
+    ]
+    third.path.write_text(
+        _without_verify_block(pd, seed_three) + "\n" + _verify_fence(pd, stale),
+        encoding="utf-8", newline="",
+    )
+
+    with pytest.raises(pd.DelegateError, match="관측이 기대와 다릅니다") as caught:
+        pd.harvest_ticket_copy(copy_path=third.path, cwd=slot, pm_home=pm_home)
+
+    # 거부 사유가 관측값을 그대로 싣는다(라운드 파일에는 기입하지 않는다).
+    assert "F-001" in str(caught.value) and "rc=0" in str(caught.value)
+    assert "1 passed" in str(caught.value)
+    assert third.board_path.read_bytes() == reserved_before
+    assert third.run_dir.exists()
+    assert _harvest_rc(pd, monkeypatch, pm_home, slot, third.path) == 1
+    assert _verify_block_bytes(pd, third.board_path.read_text(encoding="utf-8")) == (
+        _verify_block_bytes(pd, seed_three)
+    )   # 관측값 기입 0 — 예약 골격 그대로다
+
+    # 기대값을 실측으로 갱신한 사본은 같은 경로로 회수된다.
+    fixed = [dict(stale[0], expected="1 passed"), stale[1]]
+    third.path.write_text(
+        _without_verify_block(pd, seed_three) + "\n" + _verify_fence(pd, fixed),
+        encoding="utf-8", newline="",
+    )
+    assert pd.harvest_ticket_copy(
+        copy_path=third.path, cwd=slot, pm_home=pm_home,
+    ).changed is True
+    template = _verify_template_of(pd, pm_home, "T-7037")
+    assert [source for source, _row in template.machine_rows] == [3, 3]
+
+
+def test_harvest_does_not_run_reviewer_only_or_design_axis_rows(pd, rounds_env):
+    """역방향 — 실행 대상은 기계 확인 대상과 같은 규칙으로 좁혀진다.
+
+    `machine_verifiable=false` 행은 커맨드 자체가 없고, 설계 축 finding 은 기계 확인 대상이
+    아니라 확인 파서가 거부한다 — 회수가 그 행을 돌리면 두 표면이 다른 규칙을 보게 된다.
+    실행되면 반드시 실패하는 커맨드를 설계 축 행에 실어 실행 여부를 값으로 가른다.
+    """
+    pm_home, slot, tickets, _sync = rounds_env
+    spec_path = _write_spec(tickets, "T-7038")
+    _harvest_review_round(
+        pd, pm_home, slot, "T-7038", ["F-001", "F-002"], design_change_ids=("F-002",),
+    )
+    _append_disposition(pd, spec_path, [
+        # 설계 축 finding 의 수락은 선행 권위(wikilink)를 요구한다 — 그 규칙은 종전 그대로다.
+        {"id": fid, "decision": "accepted", "reason": "PM 수락",
+         "scope": f"{fid} 범위",
+         "prerequisite": "[[T-0805]]" if fid == "F-002" else ""}
+        for fid in ("F-001", "F-002")
+    ])
+    plan = pd.prepare_ticket_copy(
+        ticket="T-7038", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    seed = plan.path.read_text(encoding="utf-8")
+    rows = [
+        {"id": "F-001", "machine_verifiable": False, "command": "",
+         "expected": "사람 판단 필요", "before": "", "reason": "design-judgment"},
+        {"id": "F-002", "machine_verifiable": True,
+         "command": _report_command("설계 축은 돌지 않는다"), "expected": "2 passed",
+         "before": "1 failed", "reason": ""},
+    ]
+    plan.path.write_text(
+        _without_verify_block(pd, seed) + "\n" + _verify_fence(pd, rows),
+        encoding="utf-8", newline="",
+    )
+
+    result = pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
+
+    assert result.changed is True
+    template = _verify_template_of(pd, pm_home, "T-7038")
+    assert template.machine_rows == ()
+    assert [(item[0], item[1]) for item in template.reviewer_required] == [
+        ("F-001", 2), ("F-002", 2),
+    ]
+
+
+def test_harvest_refuses_a_verify_command_outside_the_safety_boundary(pd, rounds_env):
+    """역방향 — 금지 토큰 커맨드는 종전대로 거부다(실행 전 · 파서 경계 그대로)."""
+    pm_home, slot, tickets, _sync = rounds_env
+    third, seed_three = _gap_round_then_prepare_next(
+        pd, pm_home, slot, tickets, "T-7039",
+    )
+    rows = [
+        {"id": "F-001", "machine_verifiable": True,
+         "command": _report_command("2 passed") + " | tee out.txt",
+         "expected": "2 passed", "before": "1 failed", "reason": ""},
+        {"id": "F-002", "machine_verifiable": True,
+         "command": _report_command("2 passed"), "expected": "2 passed",
+         "before": "1 failed", "reason": ""},
+    ]
+    third.path.write_text(
+        _without_verify_block(pd, seed_three) + "\n" + _verify_fence(pd, rows),
+        encoding="utf-8", newline="",
+    )
+
+    with pytest.raises(pd.DelegateError, match="금지 토큰"):
+        pd.harvest_ticket_copy(copy_path=third.path, cwd=slot, pm_home=pm_home)
+
+    assert third.run_dir.exists()
+    assert not (out := slot / "out.txt").exists(), f"셸 해석이 열렸다: {out}"
+
+
+def test_harvest_of_a_round_without_verify_rows_is_unchanged(pd, rounds_env):
+    """역방향 — verify 행이 없는 라운드(최초 구현·리뷰 역할)의 회수는 종전 그대로다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-7040")
+    first = pd.prepare_ticket_copy(
+        ticket="T-7040", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    assert pd.PM_REVIEW_VERIFY_BLOCK not in first.path.read_text(encoding="utf-8")
+    first.path.write_text(
+        first.path.read_text(encoding="utf-8") + "\n## 메모\n- 실산출\n",
+        encoding="utf-8", newline="",
+    )
+
+    assert pd.harvest_ticket_copy(
+        copy_path=first.path, cwd=slot, pm_home=pm_home,
+    ).changed is True
+
+    architect = pd.prepare_ticket_copy(
+        ticket="T-7040", role="architect", cwd=slot, pm_home=pm_home,
+    )
+    architect.path.write_text(
+        architect.path.read_text(encoding="utf-8") + "\n## 메모\n- 실산출\n",
+        encoding="utf-8", newline="",
+    )
+    assert pd.harvest_ticket_copy(
+        copy_path=architect.path, cwd=slot, pm_home=pm_home,
+    ).changed is True
 
 
 def test_filled_fix_round_after_a_gap_report_stays_green(pd, rounds_env, monkeypatch, capsys):
-    """역방향 — 시드가 요구한 ID 를 실제로 채운 fix 라운드는 영향받지 않는다(rc=0·잔여 0)."""
+    """역방향 — 시드가 요구한 행을 전부 채운 fix 라운드는 영향받지 않는다(rc=0·잔여 0)."""
     pm_home, slot, tickets, _sync = rounds_env
-    spec_path = _write_spec(tickets, "T-7036")
-    _harvest_review_round(pd, pm_home, slot, "T-7036", ["F-001", "F-002"])
-    _append_disposition(pd, spec_path, [
-        {"id": fid, "decision": "accepted", "reason": "PM 수락",
-         "scope": f"{fid} 범위", "prerequisite": ""}
-        for fid in ("F-001", "F-002")
-    ])
-    second = pd.prepare_ticket_copy(
-        ticket="T-7036", role="developer", cwd=slot, pm_home=pm_home,
+    third, seed_three = _gap_round_then_prepare_next(
+        pd, pm_home, slot, tickets, "T-7036",
     )
-    seed_two = second.path.read_text(encoding="utf-8")
-    second.path.write_text(
-        _without_verify_block(pd, seed_two) + "\n"
-        + f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n"
-        + json.dumps({"version": pd.PM_REVIEW_VERIFY_VERSION, "verifications": [
-            {"id": "F-001", "machine_verifiable": False, "command": "",
-             "expected": "처방이 정하지 않은 지점", "before": "",
-             "reason": pd.PM_REVIEW_VERIFY_GAP_REASON},
-            {"id": "F-002", "machine_verifiable": True, "command": "pytest -q",
-             "expected": "2 passed", "before": "1 failed", "reason": ""},
-        ]}, ensure_ascii=False) + "\n```\n",
-        encoding="utf-8", newline="",
-    )
-    pd.harvest_ticket_copy(copy_path=second.path, cwd=slot, pm_home=pm_home)
-
-    third = pd.prepare_ticket_copy(
-        ticket="T-7036", role="developer", cwd=slot, pm_home=pm_home,
-    )
-    seed_three = third.path.read_text(encoding="utf-8")
-    assert _verify_ids_in(pd, seed_three) == ["F-001"]
+    rows = [
+        {"id": "F-001", "machine_verifiable": True,
+         "command": _report_command("1 passed"), "expected": "1 passed",
+         "before": "1 failed", "reason": ""},
+        {"id": "F-002", "machine_verifiable": True,
+         "command": _report_command("2 passed"), "expected": "2 passed",
+         "before": "1 failed", "reason": ""},
+    ]
     third.path.write_text(
-        _without_verify_block(pd, seed_three) + "\n"
-        + f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n"
-        + json.dumps({"version": pd.PM_REVIEW_VERIFY_VERSION, "verifications": [
-            {"id": "F-001", "machine_verifiable": True, "command": "pytest -q -k gap",
-             "expected": "1 passed", "before": "1 failed", "reason": ""},
-        ]}, ensure_ascii=False) + "\n```\n",
+        _without_verify_block(pd, seed_three) + "\n" + _verify_fence(pd, rows),
         encoding="utf-8", newline="",
     )
+
     harvested = pd.harvest_ticket_copy(copy_path=third.path, cwd=slot, pm_home=pm_home)
 
-    assert harvested.verify_missing == ()
+    assert harvested.changed is True
     template = _verify_template_of(pd, pm_home, "T-7036")
     assert template.missing == () and template.gap == () and template.stale == ()
-    assert [source for source, _row in template.machine_rows] == [2, 3]
+    assert [source for source, _row in template.machine_rows] == [3, 3]
     capsys.readouterr()
     assert _verify_template_rc(pd, pm_home, monkeypatch, "T-7036") == 0
 
@@ -1035,7 +1439,7 @@ def test_a_plan_without_the_run_dir_coordinate_is_loud(pd, tmp_path):
     plan = pd.TicketCopyPlan(
         tmp_path / "slot" / "01-code-reviewer.md", tmp_path / "slot", "T-7103",
         pd.INTERNAL_REVIEW_ROLE, 1, tmp_path / "board" / "01-code-reviewer.md",
-        "d" * 32,
+        "d" * 32, "F-001",
     )
 
     with pytest.raises(pd.DelegateError, match="묶음 run-dir 좌표"):
@@ -1071,7 +1475,7 @@ def test_all_prompt_wires_get_the_same_round_preamble(pd, tmp_path):
     run_dir.mkdir()
     plan = pd.TicketCopyPlan(
         run_dir / "01-developer.md", run_dir, "T-3001", "developer", 1,
-        tmp_path / "board" / "01-developer.md", "c" * 32,
+        tmp_path / "board" / "01-developer.md", "c" * 32, "",
     )
     note = pd._ticket_copy_preamble(plan)
     assert str(plan.path) in note
@@ -2474,6 +2878,70 @@ def test_cross_delegation_binds_run_id_and_copy_to_its_delegate_rounds_reservati
 
     assert raw_row["run_id"] == round_row["run_id"]
     assert raw_row["copy"] == round_row["copy"]
+
+
+def test_cross_delegation_prompt_carries_the_next_finding_id(pd, refund_env, monkeypatch):
+    """실행 경로 — 하네스로 나가는 프롬프트가 시드와 **같은** 다음 finding ID 를 싣는다.
+
+    리뷰어 세션은 라운드마다 fresh 라 이전 번호를 모른다. 사본을 열기 전에 프롬프트만 읽는
+    위임에서 번호가 추측이 되면 그 라운드는 재선언으로 회수되지 않는다.
+    """
+    home, tickets = refund_env
+    ticket = "T-9107"
+    _write_spec(tickets, ticket)
+    (home / ".project_manager" / "local.conf").write_text(
+        "delegate.enabled=true\n"
+        "delegate.code-reviewer.harness=claude\n"
+        "delegate.code-reviewer.model=opus\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pd, "local_config", lambda: {
+        "delegate.enabled": "true",
+        "delegate.code-reviewer.harness": "claude",
+        "delegate.code-reviewer.model": "opus",
+    })
+    captured_plan: dict[str, object] = {}
+    real_prepare = pd.prepare_ticket_copy
+
+    def _prepare_spy(**kwargs):
+        plan = real_prepare(**kwargs)
+        captured_plan["plan"] = plan
+        return plan
+
+    monkeypatch.setattr(pd, "prepare_ticket_copy", _prepare_spy)
+    prompts: list[str] = []
+
+    def _run_fn(argv, *, stdin_text, cwd, env, timeout, harness):
+        prompts.append(stdin_text)
+        plan = captured_plan["plan"]
+        _write_round_output(
+            plan.path, _review_body(pd, "code-reviewer", [plan.next_finding_id]),
+        )
+        return {
+            "returncode": 0,
+            "stdout": json.dumps({
+                "type": "result", "result": "라운드 파일에 판정을 기록했다.",
+                "session_id": "session-1",
+            }),
+            "stderr": "", "timed_out": False,
+        }
+
+    prompt = home / "task.md"
+    prompt.write_text("구현을 검토하라.", encoding="utf-8")
+
+    rc = pd.main(
+        ["--role", "code-reviewer", "--prompt-file", str(prompt), "--cwd", str(home),
+         "--ticket", ticket, "--output-dir", str(home / "raw")],
+        run_fn=_run_fn,
+    )
+
+    assert rc == 0
+    plan = captured_plan["plan"]
+    assert plan.next_finding_id == "F-001"
+    assert f"`{plan.next_finding_id}` 부터" in prompts[0]
+    # 프롬프트가 지시한 번호로 쓴 산출이 그대로 회수된다(자기 충돌 0).
+    assert not plan.run_dir.exists()
+    assert '"id":"F-001"' in plan.board_path.read_text(encoding="utf-8").replace(" ", "")
 
 
 def test_two_cross_runs_of_the_same_ticket_and_role_bind_1to1_not_swapped(

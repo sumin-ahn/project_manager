@@ -162,7 +162,7 @@ def _skeleton_row(pd, fid: str = "F-001") -> dict:
     재-인용을 거친 뒤 파싱한다 — 자리표시자 문안 자체는 여전히 렌더가 소유한다.
     """
     block = pd._pm_review_requote_verify_placeholder(
-        pd.render_pm_review_verify_skeleton([fid]))
+        pd.render_pm_review_verify_skeleton([(fid, None)]))
     payload = json.loads(
         block.split(f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n", 1)[1].split("\n```", 1)[0]
     )
@@ -314,7 +314,7 @@ def test_pending_judgment_reads_only_the_round_body(pd):
 
     # 같은 골격을 다른 명세로 다시 지어도(다른 accepted 계산 입력) 판정은 그 본문 하나로 같다.
     assert pd.ticket_round_body_is_pending(
-        "developer", pd._render_developer_round_seed_body(["F-001"]),
+        "developer", pd._render_developer_round_seed_body([("F-001", None)]),
     ) is True
 
 
@@ -1227,7 +1227,11 @@ def test_shape5_split_rounds_render_one_block_per_source_round_ascending(
 def test_shape6_confirmed_ids_leave_both_the_render_and_the_seed_alone(
     pd, tmp_path, monkeypatch, capsys,
 ):
-    """확인 기록 뒤 — 확인된 ID 는 렌더 대상 0 이고, 시드도 그 ID 를 다시 요구하지 않는다(I4)."""
+    """확인으로 닫힌 ID 는 렌더 대상 0 이고 시드에도 없다 — 재개방 상한이 여기서 정해진다.
+
+    시드는 **열린 accepted 전건**을 싣지만, 확인이 `resolved` 로 닫은 finding 은 accepted 자체에서
+    빠지므로 다시 열리지 않는다. 열려 있는 나머지 한 건은 최신 선언 값 그대로 프리필된다.
+    """
     spec, rounds = _shape_two_findings(
         pd,
         {2: [_verify_row("F-002", command="echo hey", expected="hey")],
@@ -1243,11 +1247,16 @@ def test_shape6_confirmed_ids_leave_both_the_render_and_the_seed_alone(
     assert [row["id"] for row in payloads[0]["confirmations"]] == ["F-001"]
 
     template = pd.pm_review_verify_template(spec, rounds)
-    assert template.seed_prefill_ids() == ()
+    # 닫힌 F-002 는 없고, 열린 F-001 은 라운드 3 선언 값 그대로 실린다.
+    assert template.seed_prefill_rows() == (
+        ("F-001", {"command": "echo hi", "expected": "hi", "before": "bye", "reason": ""}),
+    )
     seed = pd.render_ticket_growth_section_seed(
         "developer", _with_design_waiver(spec), rounds=rounds,
     )
-    assert pd.PM_REVIEW_VERIFY_BLOCK not in seed   # 손대지 말라고 한 항목을 다시 열지 않는다
+    assert '"id":"F-002"' not in seed              # 확인으로 닫힌 항목은 다시 열지 않는다
+    assert '"id":"F-001","machine_verifiable":<true|false>,"command":"echo hi"' in seed
+    assert pd.ticket_round_body_is_pending("developer", seed) is True
     assert _round_trip_clears(pd, spec, rounds, template) == []
 
 
@@ -1305,7 +1314,12 @@ def test_unfilled_seed_row_in_a_later_round_buries_the_earlier_gap_row(
     assert template.missing == ("F-001",) and template.gap == ()
     # 같은 라운드에서 채워진 ID 의 확인은 그대로 살아 있다(부분 확인 인질 금지).
     assert [source for source, _row in template.machine_rows] == [3]
-    assert template.seed_prefill_ids() == ("F-001",)
+    # 시드는 열린 accepted 전건을 싣는다 — 선언이 지워진 F-001 은 자리표시자, F-002 는 최신 값.
+    assert template.seed_prefill_rows() == (
+        ("F-001", None),
+        ("F-002", {"command": "echo hey2", "expected": "hey2", "before": "bye",
+                   "reason": ""}),
+    )
 
 
 def test_filled_row_wins_over_a_leftover_placeholder_in_the_same_round(pd):
@@ -1333,7 +1347,7 @@ def test_pristine_pending_round_does_not_bury_an_earlier_gap_row(pd):
     seeded = pd._load_ticket_rounds().Round(
         ordinal=3, role="developer", path=Path("03-developer.md"),
         text="## 구현 보충 (developer · 2026-08-22)\n\n"
-             + pd._render_developer_round_seed_body(["F-001"]),
+             + pd._render_developer_round_seed_body([("F-001", None)]),
         pending=True,
     )
     template = pd.pm_review_verify_template(spec, [*rounds, seeded])
@@ -1365,8 +1379,12 @@ def test_shape9_row_past_the_confirmation_cursor_is_stale_and_rc1(
     payloads = _confirmation_payloads(pd, captured.out)
     assert [item["round"] for item in payloads] == [3]
     assert _round_trip_clears(pd, spec, rounds, template) == ["F-001"]
-    # 시드는 stale ID 를 다시 요구한다(재선언 경로).
-    assert template.seed_prefill_ids() == ("F-001",)
+    # 시드는 stale ID 를 그 선언 값 그대로 다시 싣는다(재선언 경로 — 값을 다시 치지 않는다).
+    assert template.seed_prefill_rows() == (
+        ("F-001", {"command": "echo hi", "expected": "hi", "before": "bye", "reason": ""}),
+        ("F-002", {"command": "echo hey2", "expected": "hey2", "before": "bye",
+                   "reason": ""}),
+    )
 
 
 def test_explicit_round_option_replays_the_cumulative_view_at_that_ordinal(pd):
@@ -1390,7 +1408,7 @@ def test_pending_developer_round_is_not_part_of_the_cumulative_view(pd):
     seeded = pd._load_ticket_rounds().Round(
         ordinal=3, role="developer", path=Path("03-developer.md"),
         text="## 구현 보충 (developer · 2026-08-22)\n\n"
-             + pd._render_developer_round_seed_body(["F-001", "F-002"]),
+             + pd._render_developer_round_seed_body([("F-001", None), ("F-002", None)]),
         pending=True,
     )
     template = pd.pm_review_verify_template(spec, [*rounds, seeded])
@@ -1398,23 +1416,7 @@ def test_pending_developer_round_is_not_part_of_the_cumulative_view(pd):
     assert [source for source, _row in template.machine_rows] == [2, 2]
 
 
-# ── 표면 정합 · 소급 파싱 ───────────────────────────────────────────────
-
-def test_harvest_display_and_verify_template_consume_one_classifier(pd):
-    """I4 파리티 — harvest 표시면의 `verify_missing` 과 판정면의 `missing` 이 같은 값이다."""
-    shapes = [
-        _shape_two_findings(pd, {2: [_verify_row("F-001"), _verify_row(
-            "F-002", command="echo hey", expected="hey")]}),
-        _shape_two_findings(pd, {2: [_gap_row(pd, "F-001"), _verify_row(
-            "F-002", command="echo hey", expected="hey")]}),
-        _shape_two_findings(pd, {2: [_verify_row(
-            "F-002", command="echo hey", expected="hey")]}),
-        _shape_two_findings(pd, {2: [_skeleton_row(pd, "F-001"), _skeleton_row(pd, "F-002")]}),
-    ]
-    for spec, rounds in shapes:
-        template = pd.pm_review_verify_template(spec, rounds)
-        assert pd._pm_review_verify_missing_ids(spec, rounds) == list(template.missing)
-
+# ── 소급 파싱 ───────────────────────────────────────────────────────────
 
 def test_pre_change_verify_and_confirmation_bytes_still_parse(pd):
     """I9 소급 파싱 — 이 변경 전 형식의 블록이 바뀐 엔진에서 그대로 판정된다(구 bytes 리터럴)."""
@@ -1447,7 +1449,7 @@ def _naive_placeholder_edit(text: str, token: str, replacement: str) -> str:
 def _verify_fence_text(pd, finding_ids=("F-001",)) -> str:
     """`render_pm_review_verify_skeleton` 이 실제로 낸 골격의 fence 본문만 뽑는다(조립 문자열이
     아니라 엔진 산출 그대로 — T-0808 검증 근거 요구)."""
-    rendered = pd.render_pm_review_verify_skeleton(list(finding_ids))
+    rendered = pd.render_pm_review_verify_skeleton([(fid, None) for fid in finding_ids])
     return rendered.split(f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n", 1)[1].split("\n```", 1)[0]
 
 
@@ -1764,8 +1766,11 @@ def test_pending_seed_round_and_a_harvested_placeholder_hold_both_invariants(pd,
     """
     spec, rounds = _cross_invariant_shape(pd, tmp_path)
     assert [item.pending for item in rounds] == [False, False, False, True]
-    # 시드 라운드는 두 ID 의 자리표시자를 다 싣는다 — 관측으로 세면 F-002 선언이 지워진다.
-    assert pd._dev_round_seed_verify_ids(rounds[3].text) == ["F-001", "F-002"]
+    # 시드 라운드는 두 ID 의 행을 다 싣는다 — 관측으로 세면 F-002 선언이 지워진다.
+    assert [
+        finding_id
+        for finding_id, _values in pd._dev_round_seed_verify_rows(rounds[3].text)
+    ] == ["F-001", "F-002"]
 
     template = pd.pm_review_verify_template(spec, rounds)
     # (a) 회수된 라운드의 미충전 자리표시자 = tombstone — 앞 라운드의 빈틈 보고를 덮는다.
