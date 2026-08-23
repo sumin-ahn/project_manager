@@ -586,7 +586,7 @@ def rollout_context_tokens(transcript_path) -> int:
     claude `context_tokens_from_transcript` 대칭 — 파일 끝에서부터 첫 usable 값을 쓴다. 부재·
     null·읽기 실패·token_count 0건은 전부 0(측정 없음)이라 밴드 판정으로 올라가지 않는다.
 
-    **구조적 한계(T-0835 라이브 실측 · codex-cli 0.147.0)**: 점유의 첫 기록은 첫 모델 **응답 뒤**
+    **구조적 한계(라이브 실측 · codex-cli 0.147.0)**: 점유의 첫 기록은 첫 모델 **응답 뒤**
     `event_msg/token_count` 다 — 새 thread 의 첫 `UserPromptSubmit`/`PreToolUse` 시점 rollout 에는
     그 레코드가 아직 없어 이 함수는 0을 돌려준다. 그 0은 "사용률 0%"가 아니라 "아직 측정 안 됨"
     sentinel 이고, codex 훅 payload 11종 전부(`additionalProperties:false`)에 점유·윈도 신호가
@@ -716,7 +716,7 @@ def ctx_nudge_envelope(payload: dict, root: Path, *,
     claude `ctx_stop_hook.evaluate` 와 같은 순서다 — 서브에이전트 면제 → 점유 측정 → 밴드 판정
     → ok 실측이면 재무장 → 안내 문구 → 사이클 marker 선점 → 주입.
 
-    **첫 turn 은 보호하지 못한다(T-0835)**: `rollout_context_tokens` 가 아직 측정 없는 새
+    **첫 turn 은 보호하지 못한다**: `rollout_context_tokens` 가 아직 측정 없는 새
     thread 첫 요청에서 0(sentinel)을 돌려주면 사용률도 0%로 계산되고 밴드는 항상 `ok` 다 —
     거짓으로 "안전"을 알리는 게 아니라 **판정 자체를 안 하는 침묵**이다(안내 문구를 만들지
     않고 marker 도 건드리지 않는다). codex 훅에 이 구간을 메울 신호·비차단 채널이 없다는 결론은
@@ -783,7 +783,7 @@ CODEX_HOOK_DISPATCH_BUDGET_SEC = 12
 CODEX_HOOK_ADAPTER_FALLBACK_MARKER = "adapter-fallback"
 # `merge_hook_envelopes` 가 두 개 이상의 `hookSpecificOutput` 을 만나면, 그중 이벤트별 output
 #   스키마 허용키라도 합본 규칙이 없는 키(예: `updatedInput`·`updatedMCPToolOutput`·기준이 아닌
-#   응답의 `permissionDecision` 류)는 **조용히 버리지 않고** 이 마커로 남긴다(T-0824).
+#   응답의 `permissionDecision` 류)는 **조용히 버리지 않고** 이 마커로 남긴다.
 CODEX_HOOK_MERGE_UNHANDLED_KEY_MARKER = "merge-unhandled-key"
 
 
@@ -1026,7 +1026,7 @@ def _expand_hook_argv(argv, root: Path) -> list[str]:
     `{py}`·`{tools}`는 cwd 가 아니라 **엔진 루트**에서 해소한다(훅이 어느 디렉토리에서 발화해도
     같은 자식). `{self}`는 root 파생이 **아니다** — 실행 중인 파일은 자기 위치(`__file__`)를 이미
     알고, root 에서 다시 조합한 좌표는 같은 사실의 두 번째 사본이라 레이아웃이 바뀌면 어긋난다
-    (T-0845 — flat 레이아웃에서 `root/.codex/pm_orch_codex.py` 재구성이 실재하지 않는 경로를
+    (flat 레이아웃에서 `root/.codex/pm_orch_codex.py` 재구성이 실재하지 않는 경로를
     가리켜 git-anchor 자식 spawn 이 rc=2 로 죽었다)."""
     tools = str(Path(root) / ".project_manager" / "tools")
     this_file = str(Path(__file__).resolve())
@@ -1112,10 +1112,10 @@ def merge_hook_envelopes(envelopes) -> dict:
       4. `systemMessage` — **문자열 누적**: 전 응답의 값을 줄바꿈으로 이어 붙인다(중복 제외).
          차단이면 `reason`·`hookSpecificOutput.permissionDecisionReason` 도 같은 합본으로 맞춰
          사유가 잘리지 않게 한다.
-      5. `hookSpecificOutput.additionalContext` — **문자열 누적**(T-0824): base 가 아닌 응답도
+      5. `hookSpecificOutput.additionalContext` — **문자열 누적**: base 가 아닌 응답도
          이 키만은 base 의 `hookSpecificOutput` 에 **중첩 dict 병합**으로 실린다. deny 등 base
-         차단 판정과 **동시에** 성립한다(codex 0.147.0 라이브 실측 — 차단 집행 + 안내 주입 동거,
-         `.project_manager/board/tickets/rounds/T-0834/01-architect.md` §5). 값이 문자열이
+         차단 판정과 **동시에** 성립한다(codex 0.147.0 라이브 실측 — 차단 집행과 안내 주입이
+         한 응답에 함께 실리는 것을 확인했다). 값이 문자열이
          아니면(비-str) 침묵하지 않고 6번 마커로 남는다.
       6. `suppressOutput` — **논리 결합**: 하나라도 `False` 면 결과도 `False`(비차단 안내를 억누르지
          않는 쪽이 이긴다).

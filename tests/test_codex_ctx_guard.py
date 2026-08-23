@@ -872,7 +872,12 @@ def test_prose_does_not_claim_first_turn_coverage(codex_ctx):
     docstrings = rollout_doc + (codex_ctx.ctx_nudge_envelope.__doc__ or "")
 
     assert "첫 turn" in readme and "보호하지 못한다" in readme
-    assert "첫 turn" in docstrings and "T-0835" in docstrings
+    # 한계 문장은 **증거에 앵커**돼 있어야 한다. 그 앵커를 티켓 ID 로 잡으면 출하 산문에
+    # 사설 참조를 강제하게 되므로(사설 참조 가드와 정면 충돌) 실측 사실 자체로 잡는다 —
+    # 무엇으로 쟀는지(라이브 실측)와 어느 버전에서 쟀는지가 산문에 남아야 한다.
+    assert "첫 turn" in docstrings
+    assert "라이브 실측" in docstrings and "codex-cli 0.147.0" in docstrings, (
+        "첫 turn 한계가 실측 근거(수단·버전) 없이 주장돼 있다")
     for prose in (readme, docstrings):
         assert "첫 turn도 보호" not in prose and "첫 turn을 보호한다" not in prose
     # F-002: "무방비는 새 thread 첫 요청 1회뿐" 결론은 codex exec 축만 실측했다 — 그 실측
