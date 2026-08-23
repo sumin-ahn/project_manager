@@ -109,11 +109,17 @@ python3 .project_manager/tools/worktree_pool.py switch <slot> <branch>
     `git rebase --continue`하거나 `git rebase --abort`한다. 미완이므로 장부 base는 갱신하지 않으며,
     다음 부트스트랩 0단계가 "rebase 진행 중"으로 감지·안내한다.
   - **성공**: 장부의 base.commit=새 base tip·head=새 tip·recorded_at을 원자 갱신한다.
+  - **대상 ref 해소**: `--onto` 명시 = 준 ref 그대로(로컬 브랜치면 로컬 tip·자동 대체
+    없음·원격 기준은 `origin/<branch>`로 명시). 생략 = 기록된 base.branch의
+    `origin/<branch>` 우선이되 로컬 `<branch>`가 더 앞서면 로컬 tip을 쓰고 그 사실을
+    stderr 1줄로 알린다.
   - **자동 rebase 없음**: 사용자 요청 때만 실행한다.
 - `refresh`: **readonly 공유 슬롯 전용**. fetch 후 detached HEAD를 `--onto <branch>` 또는 기록된
   base.branch 최신 tip으로 옮기고 submodule을 재동기해 옛 gitlink pin 잔존에 따른 stale+dirty
-  자가 잠금을 막는다. ref 해소 규칙: `--onto` 명시 = 준 ref 그대로(로컬 브랜치면 로컬 tip·자동 대체
-  없음·미해소는 loud 거부), 무인자 = 기록된 base.branch 의 `origin/<branch>` 우선(부재 시 로컬 폴백).
+  자가 잠금을 막는다. ref 해소 규칙(rebase와 동일): `--onto` 명시 = 준 ref 그대로(로컬 브랜치면
+  로컬 tip·자동 대체 없음·미해소는 loud 거부), 무인자 = 기록된 base.branch 의 `origin/<branch>`
+  우선이되 로컬 `<branch>` 가 더 앞서면 로컬 tip 을 쓰고 그 사실을 stderr 1줄로 알린다(부재 시도
+  같은 폴백).
   성공 메시지가 실제 해소된 ref 와 sha 를 찍는다. 이동 tip을 base.commit으로 재기록한다. dirty면 "누군가 여기 썼다"는
   신호이므로 reset하지 않고 loud 거부한다. 기준 미해소 또는 non-readonly 대상은 rc 1이다.
   readonly 슬롯의 `set-base`/`rebase`/`dev`/`sync`·`release`/바인딩(`$pm-bootstrap --slot`)은
