@@ -4772,6 +4772,31 @@ def measured_numstat_text(
     return ""
 
 
+def measured_diff_text(
+    root: Path, base: str, paths: Sequence[str],
+    run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
+    *, claimed_rev: str | None = None,
+) -> str:
+    """서킷브레이커 측정 폭의 0-컨텍스트(`--unified=0`) unified diff 원문 —
+    `measured_numstat_text` 와 **같은 폭**, 형식만 다르다(컨텍스트 없는 라인 번호가 필요한
+    소비자용 — 완료 기록의 사설 참조 preflight).
+
+    폭의 단일 정의는 `_measure_stages`뿐이고 여기서 사본을 두지 않는다 — 형식만 `extra_args`로
+    갈린다(`_stage_diff_runs`)."""
+    for stage_base, untracked in _measure_stages(base, claimed_rev):
+        text = "".join(
+            result.stdout
+            for result in _stage_diff_runs(
+                root, stage_base, paths, run_fn, extra_args=("-U0",),
+                untracked=untracked,
+            )
+            if result.returncode == 0
+        )
+        if text.strip():
+            return text
+    return ""
+
+
 def diff_line_total(
     root: Path, base: str, paths: Sequence[str],
     run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
