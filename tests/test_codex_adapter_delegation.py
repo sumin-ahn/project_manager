@@ -367,16 +367,24 @@ def _documented_native_spawns(text: str) -> list[dict[str, str]]:
 
 
 def test_pm_dev_delegate_documents_only_native_codex_spawn_fields():
-    """Codex 출하 스킬이 3개 성장 역할의 native spawn 4필드를 정확히 안내한다.
+    """Codex 출하 스킬이 손-스폰 역할의 native spawn 4필드를 정확히 안내한다.
 
     `subagent_type`/`run_in_background`는 다른 harness의 필드라 Codex 실행 예시에 존재하면 첫 위임이
     schema 단계에서 거부된다. spawn 자체가 비동기 thread를 반환한다는 운영 규칙도 문서화해야 한다.
+    손-스폰 역할은 둘(developer·architect)이다 — 리뷰는 엔진이 스냅샷·프롬프트·라운드 자리를 만들어
+    직접 스폰하므로 카드에 손 spawn 예시가 없다(있으면 두 경로가 갈린다).
     """
     text = PM_DEV_DELEGATE.read_text(encoding="utf-8")
     calls = _documented_native_spawns(text)
-    assert len(calls) == 3, "architect/developer/reviewer 각각 하나의 native spawn_agent 예시가 필요"
-    assert {call.get("agent_type") for call in calls} == set(_CUSTOM_ROLES)
+    assert len(calls) == 2, "developer/architect 각각 하나의 native spawn_agent 예시가 필요"
+    assert {call.get("agent_type") for call in calls} == {"developer", "architect"}
     assert all(_native_spawn_is_accepted(call) for call in calls)
+    assert 'agent_type="code-reviewer"' not in text, (
+        "리뷰가 손 spawn 예시로 되살아남 — 묶음 리뷰는 엔진 경로 하나다"
+    )
+    assert "--role code-reviewer" in text and "--cluster" in text, (
+        "codex 카드에 묶음 리뷰 실행(--role code-reviewer --cluster)이 없음"
+    )
     for stale_field in ("subagent_type", "run_in_background"):
         assert stale_field not in text, f"Codex pm-dev-delegate에 타 harness 필드 잔존: {stale_field}"
     assert "비동기로 진행" in text, "spawn 반환 thread의 비동기 운영 규칙 누락"

@@ -841,13 +841,21 @@ def test_shipped_ticket_templates_include_design_stage(shipped):
 
 
 def test_root_skill_card_documents_design_stage():
-    """pm-ticket 스킬 카드가 설계 단계 운영 규칙(작성 주체·검토 상한·승격)을 명시한다."""
+    """pm-ticket 스킬 카드가 설계 단계 운영 규칙(작성 주체·검토 단위·출구·승격)을 명시한다.
+
+    검토 단위는 묶음 architect 라운드이고 수렴하지 않을 때의 출구는 재설계 하나다 — 옛 "상한
+    2라운드" 축이 아니라 그 값이 현재-진실이라, 상한 어휘가 되살아나면 이 가드가 잡는다.
+    """
     text = SKILL.read_text(encoding="utf-8") + "\n" + (
         SKILL.parent / "references" / "operational-details.md"
     ).read_text(encoding="utf-8")
     for needle in ("## 설계", "design: required", "design: done",
-                   "PM 인라인", "architect", "2라운드", "--design"):
+                   "PM 인라인", "architect", "묶음 architect 라운드",
+                   "cluster replan", "--design"):
         assert needle in text, f"스킬 카드에 설계 단계 규율 {needle!r} 누락."
+    assert "상한 2라운드" not in text, (
+        "폐지된 설계 검토 상한 어휘가 되살아남 — 라운드 수는 묶음 예산이 정한다"
+    )
 
 
 @pytest.mark.parametrize("shipped", _SHIPPED_SKILLS, ids=lambda p: p.parents[3].name)
@@ -856,7 +864,7 @@ def test_shipped_skill_cards_include_design_stage(shipped):
     text = shipped.read_text(encoding="utf-8") + "\n" + (
         shipped.parent / "references" / "operational-details.md"
     ).read_text(encoding="utf-8")
-    for needle in ("## 설계", "design: required", "PM 인라인", "2라운드"):
+    for needle in ("## 설계", "design: required", "PM 인라인", "묶음 architect 라운드"):
         assert needle in text, f"{shipped} 에 설계 단계 규율 {needle!r} 누락."
 
 

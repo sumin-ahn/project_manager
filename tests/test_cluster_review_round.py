@@ -353,6 +353,7 @@ def test_developer_round_harvest_commits_the_slot_output(pd, review_env):
     home, _tickets = review_env
     ticket = _MEMBERS[0]
     before = _head_count(home)
+    _reserve_prior_rounds(pd, home, ("architect",))
     plan = _developer_round(pd, home, ticket)
     (home / f"{ticket.lower()}.py").write_text(
         "# 구현 갱신\nvalue = 2\n", encoding="utf-8", newline="\n")
@@ -388,6 +389,7 @@ def test_developer_round_harvest_without_a_change_leaves_head_alone(
     assert _git(slot, "add", "seed.txt", ".project_manager/.gitignore").returncode == 0
     assert _git(slot, "commit", "-qm", "slot seed").returncode == 0
     before = _head_count(slot)
+    _reserve_prior_rounds(pd, home, ("architect",))
     plan = pd.prepare_ticket_copy(
         ticket=_MEMBERS[1], role="developer", cwd=slot, pm_home=home,
     )
@@ -1203,7 +1205,7 @@ def _rejected_reply(finding_id: str = "F-001") -> str:
 def _record_rejected_round(pd, gate: str) -> None:
     """그 게이트의 내부 라운드 장부에 잔여 must-fix 1 건을 남긴다(처분 대상 상태)."""
     budget = pd._reserve_internal_review_round(
-        gate, confirm_fix=False, wall_timeout_sec=60, target_rev="deadbeef",
+        gate, wall_timeout_sec=60, target_rev="deadbeef",
         diff_fingerprint="fp-a",
     )
     trace = pd.InternalRoundTrace(budget)

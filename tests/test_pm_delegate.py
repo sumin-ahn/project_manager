@@ -7520,9 +7520,8 @@ def _slot_ticket_copy(pd, tmp_path: Path, gate: str, text: str, *, role=None,
 
 def _finish_round(pd, gate: str, *, reply=None, ticket_copy=None, spawned=True):
     budget = pd._reserve_internal_review_round(
-        gate, confirm_fix=False, wall_timeout_sec=60,
+        gate, wall_timeout_sec=60,
         target_rev="deadbeef", diff_fingerprint=None,
-        expected_confirm_evidence=None,
     )
     trace = pd.InternalRoundTrace(budget)
     trace.start_attempt("raw-1")
@@ -7905,7 +7904,8 @@ def test_t0804_both_axes_unusable_still_warns_and_offers_rereview_last(
     # 재리뷰는 유료 외부 송신 표기와 대안 뒤에만 나온다.
     repair = stored["repair"]
     assert repair.index("유료 외부 송신") < repair.index("재리뷰 시")
-    assert "--confirm-fix" in repair and "--pm-verified" in repair
+    # 대안은 PM 직접 판정 하나다 — 라운드를 한 번 더 여는 플래그를 처방하지 않는다.
+    assert "--pm-verified" in repair and "--confirm-fix" not in repair
 
 
 def test_t0804_seed_only_round_output_stays_unknown(internal_pd, tmp_path):

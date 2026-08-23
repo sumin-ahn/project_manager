@@ -77,17 +77,17 @@ PM wave의 claim·finish·qa·dev-delegate·handoff·regression은 **스킬/comm
 
 ## skill 카탈로그
 
-표준 wave: `/pm-bootstrap` → 반복{`/pm-wave-claim` → `/pm-dev-delegate`(dev/reviewer) → `/pm-wave-finish`} → `/pm-handoff`. 자세한 구성은 [`pm_playbook.md`](pm_playbook.md) §"Wave 패턴". 호출줄의 실 인자·`--repo <repo> --slot <N>` 값과 전제 경고는 부트스트랩 카드가 단일 진실이다.
+표준 wave: `/pm-bootstrap` → 묶음마다{`/pm-wave-claim`(묶음 선언+claim) → `/pm-dev-delegate`(architect 1 → developer N → code-reviewer 1 → fix 1) → `/pm-wave-finish`(묶음 종결)} → `/pm-handoff`. 자세한 구성은 [`pm_playbook.md`](pm_playbook.md) §"Wave 패턴". 호출줄의 실 인자·`--repo <repo> --slot <N>` 값과 전제 경고는 부트스트랩 카드가 단일 진실이다.
 
 | skill | 역할 | 감싸는 내부 엔진 (직접호출 금지) |
 |---|---|---|
 | `/pm-bootstrap` | 세션 시작; board·git·차수·log 본문·남은작업 surface | `pm_bootstrap.py` |
-| `/pm-ticket` | 티켓 초안 발행 → architect 점검 라운드 → 비준·승격 | `board.py new/lint/promote` |
-| `/pm-wave-claim T-NNNN` | DoD self-containment 검증 + claim | `board.py show/lint/claim` |
-| `/pm-dev-delegate T-NNNN --role developer\|code-reviewer` | orchestrator 위임 표준 프롬프트 | `Agent` 툴 |
+| `/pm-ticket` | 티켓 초안 발행 → architect 점검 라운드(묶음 1회) → 비준·승격 | `board.py new/lint/promote` |
+| `/pm-wave-claim T-NNNN` | 묶음 선언 + DoD self-containment 검증 + 멤버 claim | `board.py show/lint/claim` |
+| `/pm-dev-delegate T-NNNN --role developer\|code-reviewer` | 묶음 단계 위임 — 설계·리뷰·fix 는 묶음 1회, 개발은 티켓당 1회 | `Agent` 툴 |
 | `/pm-regression` | 비차단 백그라운드 회귀 pre-warm + 완료 알림 | `board.py regression` |
 | `/pm-qa` | 회귀+lint+git 통합 report | `board.py regression/lint` |
-| `/pm-wave-finish T-NNNN` | 회귀+log+board+stage; status 미접촉 | `ticket_finish.py` |
+| `/pm-wave-finish` | 묶음 종결 8단계(확인·처분·완료 기록·커밋·재배치·머지·반납·board); status 미접촉 | `ticket_finish.py` |
 | `/pm-handoff` | 세션 종료 7단계 | `pm_handoff.py` |
 
 **무코드/개념(ADR·doc·decision) ticket의 test-less done:** `board.py complete --allow-untested`를 쓰며 본문에 log entry도 없으면 `--allow-missing-log`를 더한다. `/pm-wave-finish`(`ticket_finish.py`)도 코드 변경 없는 ticket에는 같은 플래그를 넘긴다.
@@ -103,7 +103,7 @@ PM wave의 claim·finish·qa·dev-delegate·handoff·regression은 **스킬/comm
 
 리뷰는 내부 code-reviewer(generate≠evaluate)와 **추가 리뷰어**(additional reviewer·엔진 이름 `external_review`)를 병행한다. 코드: `python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN`; 설계(ADR/spike): `--base <ref> --paths .project_manager/wiki/decisions/ ... --gate <T-NNNN|ADR-NNNN>`(회계 밖 자문만 `--no-gate` 명시). 전제는 `additional_reviewer.enabled=true`(opt-in), 상세·diff-only 한계는 [`pm_playbook.md`](pm_playbook.md) §"검토 루프". Claude Bash 도구 실행은 호출층 `timeout: 29300000`(ms)을 반드시 명시하며, 엔진 CLI `--timeout`은 이 호출층 상한을 대신하지 않는다.
 
-내부 루프의 라운드 비용 규율은 [`pm_playbook.md`](pm_playbook.md) §"라운드 프로토콜"이 단일 진실이다 — 지정 회귀만(전체 회귀는 릴리즈 절차 1단계 1회) · 검증 근거 지정 의무 · versioned finding/PM disposition · accepted-only delta · 내부 라운드 상한 3.
+내부 루프의 라운드 비용 규율은 [`pm_playbook.md`](pm_playbook.md) §"라운드 프로토콜"이 단일 진실이다 — 지정 회귀만(전체 회귀는 릴리즈 절차 1단계 1회) · 검증 근거 지정 의무 · versioned finding/PM disposition · accepted-only delta. 라운드 **수**는 묶음 장부의 고정 예산(설계 1 · 개발 N · 리뷰 1 · fix 1)이 정하고 초과의 유일한 출구는 재설계다.
 
 ## 위임 축 · PM=synthesis
 
@@ -117,46 +117,67 @@ PM wave의 claim·finish·qa·dev-delegate·handoff·regression은 **스킬/comm
 
 PM은 여러 출처의 synthesis를 직접 흡수하고, bounded fact-gather·정해진 초안·구현·검증만 위임한다. librarian 분리는 보류한다.
 
-### 티켓 파이프라인·티어
+### 운영 단위·티켓 파이프라인·티어
+
+**운영 단위는 묶음(클러스터)이다.** 묶음은 PM이 wave 시작에 선언한 티켓 집합 + 통합 브랜치 1개 +
+설계 문서 1개이며, 티켓 하나짜리 wave도 크기 1 묶음이라 같은 경로를 탄다(특례 없음·별도 코드 경로 0).
+엔진은 touches 겹침·가용 슬롯을 경고만 하고 자동으로 묶지 않는다.
 
 모든 티켓은 명세 파일 하나(`tickets/<상태>/<id>.md`)와 라운드 디렉터리
 (`tickets/rounds/<id>/NN-<역할>.md`)로 이뤄진다. 명세는 PM이 소유하고, 역할 산출은 라운드 파일이
-한 건씩 누적한다.
+한 건씩 누적한다. **라운드 순번이 곧 단계**이며 묶음 멤버 전부가 같은 순번을 쓴다 —
+`01-architect` → `02-developer` → `03-code-reviewer` → `04-developer`(fix · accepted 있는 티켓만),
+재설계마다 `architect`·`developer(fix)` 쌍이 뒤에 붙는다. 예산은 묶음 장부가 선언하고 예약 표면이
+예산 초과와 순서 밖 역할을 거부하며, 초과의 유일한 출구는 재설계다(라운드를 더 얹는 플래그는 없다).
+
 PM이 명세에 대략 내용(목표·방향·범위)을 자족적으로 쓴 **초안**을 architect **점검 라운드**가
 실측 대조(본문이 인용한 `파일:줄`·touches 경로)·cross-module 영향(다른 열린 티켓과의 충돌·의존)·
 최소 수단(기존 seam 재사용·삭제 대안·새 설정 키/플래그·서브커맨드의 필요성)으로 검증하고, PM이
-바뀐 지점을 확인해 **비준**한 뒤 promote 한다. PM은 자기 초안의 리뷰어가 아니다(generate ≠
-evaluate) — 초안 작성과 검증은 다른 역할이 맡는다. 점검 라운드 회수는 `design: required|done`
-티켓에서 promote 조건으로 기계 강제되고(미회수면 rc=1), 그 밖의 티켓에는 규범으로 적용한다 —
-다중 티켓을 한 번에 발행할 때와 `estimate: medium` 이상은 점검을 건너뛰지 않는다. 이어서 hard면
-architect 설계 라운드, normal/hard면 developer 구현 보충 라운드와 code-reviewer 리뷰 라운드를
-차례로 누적한다. 구현 결함은 developer가
-고치고, 설계 결함은 architect가 재설계 라운드를 추가한 뒤 developer가 재구현한다. 2회차 이후 리뷰는
-이전 리뷰 라운드를 기준으로 변경분을 먼저 본다. reviewer finding은 PM 판정 전 증거·제안이며 developer 명령이
-아니다. PM은 versioned disposition으로 전수 판정하고 `pm_delegate.py review delta --ticket`이 낸
-accepted-only delta만 재작업에 쓴다. decision-required는 권위 개정 전 차단하며 같은 accepted ID의
-2회 연속 미해소는 재설계·분할로 전환한다. 라운드 파일의 이름·순번은 엔진이 만들며(`section-add`는
-슬롯 없는 준비, `ticket prepare`는 위임용 준비), 에이전트가 파일을 만들지 않는다.
+바뀐 지점을 확인해 **비준**한 뒤 promote 한다. 그 점검은 묶음당 세션 1회이며 산출은 티켓별 라운드
+파일 N개다. PM은 자기 초안의 리뷰어가 아니다(generate ≠ evaluate) — 초안 작성과 검증은 다른 역할이
+맡는다. 점검 라운드 회수는 `design: required|done` 티켓에서 promote 조건으로 기계 강제되고(미회수면
+rc=1), 그 밖의 티켓에는 규범으로 적용한다. **설계 면제 값은 없다** — 설계가 몇 줄이면 몇 줄로 쓰고
+`design: done` 으로 올린다(면제를 남기면 그 티켓만 순번이 어긋난다).
 
-에이전트는 PM 홈 티켓에 직접 쓰지 않는다. `pm_delegate.py ticket prepare`가 board에 순번을 예약하고
-slot run-dir(`.project_manager/.local/delegate-ticket-copies/` 아래)에 쓸 수 있는 라운드 파일 하나와
-읽기 전용 입력(`spec.md`·`rounds/`)을 깐다. 에이전트는 그 파일 하나만 채우고 `ticket harvest`가
-board 라운드 파일을 원자 교체한 뒤 run-dir을 지운다(회수 = run 닫힘). 산출이 시드 그대로면 board를
-바꾸지 않고 경고만 낸다. draft에서는 architect 역할만 `section-add`와 prepare/harvest가 허용되며 이
-로컬 authoring 경로는 board-git sync를 0회 수행한다. developer/code-reviewer draft 실행과 blocked/done
-전 역할은 예약 전에 거부되고, promote/claim 게이트는 그대로다. 라운드 디렉터리는 고정 위치라 티켓
-상태 이동을 따라가지 않는다. 실 위임에서는 `/pm-dev-delegate`가
-`--ticket` prepare/harvest를 감싼다. board 상태 조작과 커밋은
-계속 PM 전담이다. 실행 인자·실패 복구는 카드가 단일 진실이고 여기서는 규율만 소유한다.
+리뷰도 묶음 1회다. 리뷰 입력은 통합 브랜치와 묶음 브랜치의 merge-base 이후 묶음 브랜치 변경 전부이고,
+격리 스냅샷 생성·프롬프트 조립·라운드 자리 예약을 엔진이 한다(PM의 손 git 0 — 구현 산출은 그
+라운드를 돌려받을 때 이미 커밋돼 있다). 구현 결함은 developer가
+고치고, 설계 결함은 재설계가 architect 라운드를 새로 연 뒤 developer가 재구현한다. reviewer finding은
+PM 판정 전 증거·제안이며 developer 명령이 아니다. PM은 versioned disposition으로 전수 판정하고
+`pm_delegate.py review delta --cluster`가 낸 accepted-only delta만 재작업에 쓴다. decision-required는
+권위 개정 전 차단하며 fix 1회 뒤에도 accepted 잔여가 있으면 재설계·분할로 전환한다. 라운드 파일의
+이름·순번은 엔진이 만들며(`section-add`는 슬롯 없는 준비, `ticket prepare`는 위임용 준비),
+에이전트가 파일을 만들지 않는다.
+
+에이전트는 PM 홈 티켓에 직접 쓰지 않는다. `pm_delegate.py ticket prepare --cluster`가 board에 멤버
+전부의 순번을 예약하고 slot run-dir(`.project_manager/.local/delegate-ticket-copies/` 아래) 하나에
+티켓마다 쓸 수 있는 라운드 파일 하나와 읽기 전용 입력(`spec.md`·`rounds/`)을 깐다. 에이전트는 자기
+자리만 채우고 `ticket harvest`가 board 라운드 파일을 원자 교체한 뒤 run-dir을 지운다(회수 = run 닫힘).
+회수가 성공하면 엔진이 그 슬롯의 코드 변경을 티켓 제목을 문안으로 커밋한다(변경이 없으면 커밋도
+없다) — 그래서 다음 단계인 리뷰의 입력이 확정된 트리이고 PM의 손 git은 0이다.
+산출이 시드 그대로면 board를 바꾸지 않고 경고만 낸다. draft에서는 architect 역할만 `section-add`와
+prepare/harvest가 허용되며 이 로컬 authoring 경로는 board-git sync를 0회 수행한다.
+developer/code-reviewer draft 실행과 blocked/done 전 역할은 예약 전에 거부되고, promote/claim 게이트는
+그대로다. 라운드 디렉터리는 고정 위치라 티켓 상태 이동을 따라가지 않는다. 실 위임에서는
+`/pm-dev-delegate`가 prepare/harvest를 감싼다. **종결은 한 커맨드다** — `ticket_finish.py --cluster`가
+기계 확인·게이트 처분·티켓별 완료 기록·커밋·재배치·머지·슬롯 반납·board 기록을 고정 순서로 실행하고,
+실패 지점에서 멈추며 재실행이 곧 재개다. 실행 인자·실패 복구는 카드가 단일 진실이고 여기서는 규율만
+소유한다.
 
 티어는 다음 순서의 첫 매치로 PM이 확정해 `board.py tier <T-NNNN> pm-direct|normal|hard`로 기록한다.
 `board.py tier-signals`의 h1(도구 모듈 2+)·h2(공용 코드)·docs-only는 보조 신호일 뿐 확정이 아니다.
 
 1. **PM-direct** — touches 실제 파일 2개 이하, 동작 무변경 또는 red→green 테스트 확정, hard 신호 0,
-   완료 전 범위 테스트의 네 조건을 모두 만족. 티켓은 발행하되 위임·리뷰 없이 PM이 구현·self-review한다.
+   완료 전 범위 테스트의 네 조건을 모두 만족. 티켓은 발행하되 위임 라운드를 열지 않고 PM이
+   구현·self-review한다.
 2. **hard** — 도구 모듈 2+, 공용 코드, 파싱 규칙, 기존 동작 영향, 보안·시크릿·외부 송신·git 훅,
-   board 상태 전이·lease·잠금·동시성 중 하나라도 해당. architect 설계 뒤 상위 developer와 reviewer를 쓴다.
-3. **normal** — 위 두 단계가 아닌 경우. developer→reviewer, 별도 설계 단계는 없다.
+   board 상태 전이·lease·잠금·동시성 중 하나라도 해당. 상위 developer 프로필
+   (`delegate.developer.hard.*`)로 위임한다.
+3. **normal** — 위 두 단계가 아닌 경우. 기본 developer 프로필로 위임한다.
+
+티어는 **어느 프로필로 위임하는가**만 정한다. 위임하는 티켓의 경로는 티어와 무관하게 하나다 —
+묶음 4단계(설계 → 구현 → 리뷰 → 수정)이고, 그 안에서 안 풀리면 재설계를 기록한 뒤 처음부터 다시
+돈다.
 
 근거를 한 문장으로 확정할 수 없으면 상향한다. 세부 용어·판별 절차는
 [`pm_playbook.md`](pm_playbook.md) §"Wave 패턴"이 단일 진실이다.
@@ -305,6 +326,7 @@ prefix는 작업 카테고리이며 repo 네임스페이스 전용이 아니고 
 
 1. **`board.py livegate record`** — 라이브 wave를 실측해 green(수집 pin 충족)을 push 대상 rev에 기록. 손기록하지 않으며 보호훅이 소비한다.
 2. **CHANGELOG 절 확정** — 루트 `CHANGELOG.md`의 `[Unreleased]`를 `## [X.Y.Z] - YYYY-MM-DD`로 확정. 채택자 관점 Added/Changed/Fixed 3~8줄, ticket 번호·내부 세션 용어 금지. 위에 새 빈 `[Unreleased]` 추가.
+   재료는 손으로 모으지 않는다 — `python3 .project_manager/tools/pm_delegate.py changelog material --since <직전 태그>` 가 그 태그 이후 완료된 티켓의 목표·결정·완료 조건을 티켓당 블록(분류 후보·채택자 영향 인용·근거 절)으로 낸다. **분류 확정과 문안은 PM이 쓴다**(도구는 판단하지 않는다).
 3. **main push** — 사용자 승인 + `PM_ALLOW_PROTECTED_PUSH=1`; 훅이 `livegate check` green을 요구.
 4. **annotated tag `vX.Y.Z`** push.
 5. **GitHub Release 생성 (필수 · 태그만으론 릴리즈 아님)** — `gh release create vX.Y.Z --notes-file <CHANGELOG 해당 절 추출> --verify-tag`. tag push와 별개이며 Release 객체 없이는 미완료다. gh 미인증이면 생략하지 말고 사용자에게 넘기며 "릴리즈 미완료"로 명시.

@@ -405,9 +405,9 @@ def test_cluster_architect_round_satisfies_the_per_ticket_design_gate(pd, cluste
     pm_home, slot, tickets = cluster_env
     _seed_cluster(pm_home, tickets, "C-gate", ["T-6020", "T-6021"], design="n/a")
 
-    # 회수 전 — 두 티켓 다 종전 사유로 거부된다(판정식이 바뀌지 않았다).
+    # 설계 단계를 건너뛴 요청 — 순서 축이 먼저 말한다(예약 자체가 없으므로 근거를 볼 것도 없다).
     for ticket in ("T-6020", "T-6021"):
-        with pytest.raises(pd.DelegateError, match="developer 라운드 준비 거부"):
+        with pytest.raises(pd.ClusterRoundBudgetExceeded, match="다음 라운드는 architect"):
             pd.prepare_ticket_copy(
                 ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
             )
@@ -415,6 +415,13 @@ def test_cluster_architect_round_satisfies_the_per_ticket_design_gate(pd, cluste
     plan = pd.prepare_cluster_copy(
         cluster="C-gate", role="architect", cwd=slot, pm_home=pm_home,
     )
+
+    # 예약만 되고 회수 전인 시드 라운드는 근거가 아니다 — 이번엔 설계 근거 축이 거부한다.
+    with pytest.raises(pd.DelegateError, match="developer 라운드 준비 거부"):
+        pd.prepare_ticket_copy(
+            ticket="T-6020", role="developer", cwd=slot, pm_home=pm_home,
+        )
+
     for round_plan in plan.rounds:
         _fill(round_plan.path, f"## 경계 실측\n- {round_plan.ticket} 실측")
     pd.harvest_cluster_copy(run_dir=plan.run_dir, cwd=slot, pm_home=pm_home)

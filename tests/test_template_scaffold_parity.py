@@ -408,3 +408,113 @@ def test_templates_no_personal_path_leak():
         "출하 template tracked 파일에 개인 절대경로 누출 — `{{PROJECT_ROOT}}`/`/path/to/…` 로 일반화:\n"
         + "\n".join(offenders)
     )
+
+
+# ── fresh-adopter 묶음 카드 — 엔진 값에서 파생한 구조 단언 ────────────────────
+#
+# 출하 산문이 서술하는 절차는 **엔진이 실제로 하는 일**과 같아야 한다. 그 정합을 사람이 눈으로
+# 대조하면 반드시 drift 하므로, 라운드 순번표와 종결 단계 이름을 엔진 상수에서 **파생해** 대조한다
+# (문자열을 테스트에 손으로 재타이핑하지 않는다). 채택자 트리에 실제로 깔리는 표면 전수가 대상이라,
+# 새 타깃이 생겨도 `TEMPLATE_NAMES` 를 통해 자동 편입된다.
+
+_CLUSTER_STAGE_HEADING = "## 클러스터 단계 표"
+_CLOSE_STEP_COUNT_TOKEN = "8단계"
+# 카드 본문에 실린 라운드 순번 표기 전수 — 엔진 수열 밖 순번(확인용 라운드 등)이 하나라도 실리면
+# 그 카드가 서술하는 경로가 엔진 예산과 다르다.
+_ROUND_LABEL_RE = re.compile(r"\b(\d{2})-(architect|developer|code-reviewer)\b")
+# 폐지된 부분 재설계 서술 — 재설계는 예산 4키를 전부 리셋해 주기를 처음부터 다시 연다.
+_RETIRED_REPLAN_PHRASE = "쌍을 뒤에 붙인다"
+
+
+def _load_engine_module(name: str):
+    """엔진 도구를 경로 로드한다(도구는 패키지가 아님)."""
+    spec = importlib.util.spec_from_file_location(
+        f"scaffold_parity_{name}", REPO / ".project_manager" / "tools" / f"{name}.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _round_ordinal_labels() -> tuple[str, ...]:
+    """엔진이 정한 묶음 라운드 순번표 — `NN-<역할>` 표기로 편다."""
+    delegate = _load_engine_module("pm_delegate")
+    board = _load_engine_module("board")
+    sequence = delegate.cluster_round_sequence(
+        board.CLUSTER_BUDGET_DEFAULT, defaults=board.CLUSTER_BUDGET_DEFAULT
+    )
+    assert sequence, "엔진 라운드 수열이 비었다 — 파생 입력이 stale"
+    return tuple(f"{index:02d}-{role}" for index, role in enumerate(sequence, start=1))
+
+
+def _close_step_labels() -> tuple[str, ...]:
+    """엔진이 정한 종결 단계 이름 — 고정 순서 그대로."""
+    finish = _load_engine_module("ticket_finish")
+    steps = tuple(label for _key, label in finish.ClusterCloser.STEPS)
+    assert steps, "엔진 종결 단계가 비었다 — 파생 입력이 stale"
+    return steps
+
+
+def _shipped_cards(name: str, stem: str) -> list[Path]:
+    """그 타깃에 실제로 깔리는 카드 표면 전부(스킬 디렉터리 + 평탄 command 팔레트)."""
+    root = TEMPLATES / name
+    return sorted(root.glob(f"*/skills/{stem}/SKILL.md")) + sorted(
+        root.glob(f"*/command/{stem}.md")
+    )
+
+
+@pytest.mark.parametrize("name", TEMPLATE_NAMES)
+def test_shipped_delegate_card_carries_engine_round_ordinals(name: str):
+    """출하 위임 카드가 묶음 단계 표와 엔진 순번 값을 싣는다(티켓당 절 부재)."""
+    cards = _shipped_cards(name, "pm-dev-delegate")
+    assert cards, f"{name}: pm-dev-delegate 카드 표면 0 — 출하 누락"
+    labels = _round_ordinal_labels()
+    for card in cards:
+        text = card.read_text(encoding="utf-8")
+        assert _CLUSTER_STAGE_HEADING in text, (
+            f"{card.relative_to(REPO)}: 묶음 단계 표 절이 없음 — 운영 단위 서술 누락"
+        )
+        missing = [label for label in labels if label not in text]
+        assert not missing, (
+            f"{card.relative_to(REPO)}: 라운드 순번표가 엔진 값과 어긋남 (누락 {missing})"
+        )
+        # 순서 — 카드에 처음 등장하는 순서가 엔진 수열 순서 그대로여야 한다(존재만으로는
+        # 단계가 뒤바뀐 표를 통과시킨다).
+        positions = [text.index(label) for label in labels]
+        assert positions == sorted(positions), (
+            f"{card.relative_to(REPO)}: 라운드 순번이 엔진 수열 순서와 다름 "
+            f"(카드 순서 {[label for _pos, label in sorted(zip(positions, labels))]})"
+        )
+        # 수열 밖 순번 0 — 확인용 라운드 같은 옛 경로 표기가 카드에 남으면 red 다.
+        extra = sorted({
+            f"{ordinal}-{role}" for ordinal, role in _ROUND_LABEL_RE.findall(text)
+        } - set(labels))
+        assert not extra, (
+            f"{card.relative_to(REPO)}: 엔진 예산 밖 라운드 표기 {extra} — 경로가 둘이다"
+        )
+        assert _RETIRED_REPLAN_PHRASE not in text, (
+            f"{card.relative_to(REPO)}: 폐지된 부분 재설계 서술이 남아 있음"
+        )
+
+
+@pytest.mark.parametrize("name", TEMPLATE_NAMES)
+def test_shipped_finish_card_carries_engine_close_steps(name: str):
+    """출하 종결 카드가 엔진 종결 단계 이름 전수와 단계 수를 싣는다."""
+    cards = _shipped_cards(name, "pm-wave-finish")
+    assert cards, f"{name}: pm-wave-finish 카드 표면 0 — 출하 누락"
+    steps = _close_step_labels()
+    for card in cards:
+        assert _CLOSE_STEP_COUNT_TOKEN in card.read_text(encoding="utf-8"), (
+            f"{card.relative_to(REPO)}: 종결 단계 수 표기가 없음"
+        )
+    # 단계 이름은 상세 문서가 싣는다 — 평탄 command 팔레트는 스킬 디렉터리의 상세를 참조하므로
+    # 그 타깃이 실제로 출하하는 상세 문서 전부를 한 haystack 으로 본다.
+    details = sorted(
+        (TEMPLATES / name).glob("*/skills/pm-wave-finish/references/operational-details.md")
+    )
+    assert details, f"{name}: pm-wave-finish 상세 문서 0 — 출하 누락"
+    haystack = "".join(path.read_text(encoding="utf-8") for path in details)
+    missing = [label for label in steps if label not in haystack]
+    assert not missing, (
+        f"{name}: 종결 단계 이름이 엔진 값과 어긋남 (누락 {missing})"
+    )
