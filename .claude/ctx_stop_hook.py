@@ -18,6 +18,7 @@ PreToolUse/UserPromptSubmit이 payload를 verbatim additionalContext로 1회 주
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -451,8 +452,142 @@ def nudge_output(stdin: dict, guidance: str) -> dict | None:
     return None
 
 
+def _load_principles(root: Path):
+    """`pm_principles.py` 를 root 기준으로 로드한다(codex `_load_board`·claude git-anchor 동형).
+
+    부재·파손은 예외를 삼키고 None — 레지스트리가 없거나 깨져도 훅은 도구 실행을 막지 않는다."""
+    path = root / ".project_manager" / "tools" / "pm_principles.py"
+    if not path.is_file():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("pm_principles", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:  # noqa: BLE001 — 레지스트리 로드 실패는 비차단 침묵.
+        return None
+
+
+def _principle_recall_signal(stdin: dict) -> tuple[str, str] | None:
+    """이 호출의 recall `on` 축 + 대조 텍스트(판별 불가면 None). 도구 이름 → `on` 매핑은
+    어댑터 소유 — claude 실제 도구 이름(Bash·Edit/Write·Agent)을 레지스트리의 닫힌 4어휘로 줄인다."""
+    event = stdin.get("hook_event_name") or stdin.get("hookEventName")
+    if event == "UserPromptSubmit":
+        prompt = stdin.get("prompt")
+        return ("prompt", prompt) if isinstance(prompt, str) else None
+    if event != "PreToolUse":
+        return None
+    tool = stdin.get("tool_name") or stdin.get("toolName")
+    tool_input = stdin.get("tool_input") or stdin.get("toolInput") or {}
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+    if tool == "Bash":
+        command = tool_input.get("command")
+        return ("shell", command) if isinstance(command, str) else None
+    if tool in ("Edit", "Write", "NotebookEdit", "MultiEdit"):
+        file_path = tool_input.get("file_path") or tool_input.get("path")
+        return ("edit", file_path) if isinstance(file_path, str) else None
+    if tool == "Agent":
+        role = tool_input.get("subagent_type") or tool_input.get("description") or ""
+        return ("delegate", str(role))
+    return None
+
+
+def _principle_recall_text(stdin: dict, root: Path) -> str:
+    """매칭 규칙 주입 문안(없거나 판정 불가면 빈 문자열). 어떤 실패도 예외로 새지 않는다."""
+    signal = _principle_recall_signal(stdin)
+    if signal is None:
+        return ""
+    on, text = signal
+    module = _load_principles(root)
+    if module is None:
+        return ""
+    session_id = _session_id(stdin)
+    try:
+        seen = module.load_seen_marker(root, session_id)
+        result = module.judge_recall(root, on=on, text=text, seen=seen)
+    except Exception:  # noqa: BLE001 — 판정 실패는 비차단 침묵(도구 실행을 막지 않는다).
+        return ""
+    if not result:
+        return ""
+    if result.get("keys"):
+        try:
+            module.record_seen_marker(root, session_id, result["keys"])
+        except Exception:  # noqa: BLE001 — marker 기록 실패는 소음(재주입)일 뿐.
+            pass
+    return result.get("text") or ""
+
+
+def _rearm_principle_recall(stdin: dict, root: Path) -> None:
+    """PostCompact 경계에서 원칙 recall marker 를 지워 다음 사이클을 재무장한다."""
+    module = _load_principles(root)
+    if module is None:
+        return
+    try:
+        module.rearm_seen_marker(root, _session_id(stdin))
+    except Exception:  # noqa: BLE001 — 재무장 실패는 다음 경계로 넘긴다(최악 = 재주입 skip).
+        pass
+
+
+# claude additionalContext 계약 상한(nudge_output 이 검증하는 것과 같은 값) — recall 채널은
+# 자기 문안만 이 상한 안으로 접지만(pm_principles._MAX_INJECT_CHARS), 다른 채널과 합본한 뒤에는
+# 재검사하지 않았다. 최종 합본 경계에서 다시 강제한다.
+_MAX_ADDITIONAL_CONTEXT_CHARS = 10_000
+
+
+def _cap_merged_context(existing: str, extra_text: str) -> str:
+    """`existing`(ctx 밴드 안내) + `extra_text`(recall 등 부가 채널)를 합본하되 최종 길이가
+    상한을 넘으면 원문을 자르지 않고 `extra_text` 를 생략 표시로 접는다 — ctx 밴드 안내가
+    안전 경계 안내라 우선순위가 높고, 부가 채널이 짧게 양보한다."""
+    combined = f"{existing}\n{extra_text}" if existing else extra_text
+    if len(combined) <= _MAX_ADDITIONAL_CONTEXT_CHARS:
+        return combined
+    fallback = f"[principle-recall] 문안 생략 — 합본 상한({_MAX_ADDITIONAL_CONTEXT_CHARS}자) 초과"
+    reduced = f"{existing}\n{fallback}" if existing else fallback
+    if len(reduced) <= _MAX_ADDITIONAL_CONTEXT_CHARS:
+        return reduced
+    # existing 자체가 상한 초과인 극단 방어(ctx 밴드 고정 문구 현재 길이로는 도달하지 않는다).
+    return reduced[:_MAX_ADDITIONAL_CONTEXT_CHARS]
+
+
+def _merge_additional_context(output: dict | None, event: str, extra_text: str) -> dict:
+    """additionalContext 문자열 누적(codex `merge_hook_envelopes` 와 같은 의미론).
+
+    ctx 밴드 채널이 이미 안내를 냈으면 줄바꿈으로 이어붙이고, 없었으면 recall 문안 단독으로 낸다.
+    최종 길이가 상한을 넘으면 `_cap_merged_context` 가 원문 절단 대신 생략 표시로 접는다."""
+    if output is None:
+        capped = _cap_merged_context("", extra_text)
+        return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": capped}}
+    hook_output = output.setdefault("hookSpecificOutput", {"hookEventName": event})
+    existing = hook_output.get("additionalContext")
+    existing = existing if isinstance(existing, str) else ""
+    hook_output["additionalContext"] = _cap_merged_context(existing, extra_text)
+    return output
+
+
 def evaluate(stdin: dict, root: Path, conf: dict) -> tuple[int, dict | None]:
-    """훅 핵심 — (rc, output|None). 모든 경로는 비차단이다."""
+    """훅 핵심 진입 — ctx 밴드 판정에 원칙 recall 채널을 합본한다(둘 다 비차단).
+
+    ctx 밴드(snapshot/nudge/nudge2/stop)는 `_evaluate_ctx_bands` 가 그대로 소유한다. recall 은
+    독립 채널이라 밴드 판정과 무관하게 매칭되면 additionalContext 에 누적된다 — 레지스트리 부재·
+    파손이어도 ctx 밴드 출력은 그대로 실린다(비차단 계약)."""
+    rc, output = _evaluate_ctx_bands(stdin, root, conf)
+    transcript = stdin.get("transcript_path")
+    if isinstance(transcript, str) and transcript and ctx_guard.transcript_is_sidechain(transcript):
+        return rc, output
+    event = stdin.get("hook_event_name") or stdin.get("hookEventName")
+    if event == "PostCompact":
+        _rearm_principle_recall(stdin, root)
+        return rc, output
+    if event in {"PreToolUse", "UserPromptSubmit"}:
+        recall_text = _principle_recall_text(stdin, root)
+        if recall_text:
+            output = _merge_additional_context(output, event, recall_text)
+    return rc, output
+
+
+def _evaluate_ctx_bands(stdin: dict, root: Path, conf: dict) -> tuple[int, dict | None]:
+    """ctx 밴드 판정 — (rc, output|None). 모든 경로는 비차단이다."""
     transcript = stdin.get("transcript_path")
     # 서브에이전트(sidechain) 면제는 다른 모든 밴드 판정보다 먼저 적용한다. checkpoint 서사는
     # 메인 PM 세션만 쓰므로 서브에이전트는 marker 없이 통과해 native auto-compact 로 자체 정리한다.

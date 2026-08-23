@@ -109,10 +109,18 @@
 #   (`shipping_paths`). 스트립 도구(scripts/)와 재유입 가드가 같은 한 벌을 소비해야 판정이
 #   갈리지 않으므로 엔진에 둔다. 신설 도구라 등록 필수(미등록=전파 안 됨·pm_render 사례).
 .project_manager/tools/private_refs.py
+# pm_principles: 판단 원칙 레지스트리 로더 + recall 판정. 출하층 `wiki/pm_principles.md`
+#   와 PM 홈 로컬층 `wiki/pm_principles.local.md`(미출하·manifest 미등재)를 합성해 세 어댑터가
+#   공유하는 `judge_recall` 하나로 판정한다. stdlib-only. 신설 도구라 등록 필수(미등록=전파 안 됨·
+#   pm_render 사례).
+.project_manager/tools/pm_principles.py
 
 # ── 방법론 문서 (엔진 · 프로젝트별 칸은 *.local.md / local.conf, manifest 밖) ──
 .project_manager/wiki/pm_role.md
 .project_manager/wiki/pm_playbook.md
+# pm_principles.md: 판단 원칙 레지스트리 출하층 — 위 로더가 파싱하는 기계 입력이자
+#   사람이 읽는 문서. PM 홈 로컬층 `pm_principles.local.md` 는 의도적으로 미등재(인스턴스 소유).
+.project_manager/wiki/pm_principles.md
 .project_manager/wiki/README.md
 
 # ── 템플릿 (도구·skill 이 소비) ──────────────────────────────────
