@@ -14,7 +14,7 @@ set -eu
 # 자기 디렉토리 해석 (호출 cwd 무관).
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# 인터프리터 선택 — 후보를 순회하며 *실행+버전검증*으로 채택(엔진 _detect_py·T-0022 시맨틱과
+# 인터프리터 선택 — 후보를 순회하며 *실행+버전검증*으로 채택(엔진 _detect_py 시맨틱과
 # 동형·POSIX 선호순 python3 → python). 존재검증(command -v)만으론 Windows WindowsApps 가짜 shim
 # (command -v 통과·실행 시 Permission denied rc126)을 못 거른다. 전부 실패 시 진단 후 python 폴백
 # (기존 파사드 fail-soft 계약 유지).

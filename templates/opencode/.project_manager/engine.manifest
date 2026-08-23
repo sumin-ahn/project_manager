@@ -5,38 +5,38 @@
 # 한 줄 = 한 경로(파일/디렉토리), repo 루트 기준. '#' 주석. 디렉토리는 재귀 동기화.
 #
 # claude_code 타깃 대비 차이:
-#   - .claude/agents 제외 (opencode 는 agent 정의를 .opencode/agents 로 가진다 — T-0002~T-0004)
+#   - .claude/agents 제외 (opencode 는 agent 정의를 .opencode/agents 로 가진다 — 자체 표현)
 #   - .claude/skills 스킬 채널과 .opencode/command 사람 슬래시 진입 채널을 둘 다 출하한다.
 #     canonical 은 root `.claude/skills/*/SKILL.md` 하나이며 command 파일은 각 canonical 파일에서
-#     @source 리맵으로 기계 생성한다(T-0674·ADR-0065 개정 대기). 스킬은 모델 `skill` tool 소비,
+#     @source 리맵으로 기계 생성한다(개정 대기). 스킬은 모델 `skill` tool 소비,
 #     command는 팔레트 `/pm-…` 사람 진입이며 두 표면은 서로 대체 관계가 아니다.
 #   - 어댑터 파일(.opencode/agents·lib·plugins·AGENTS.md)은 opencode-고유 어댑터층으로 잔존.
 
 # ── 도구 (순수 엔진) ─────────────────────────────────────────────
 .project_manager/tools/board.py
-# engine_rev: 엔진 사본 rev 스탬프 단일 진실 (T-0397) — sibling 로더가 로드한 형제 모듈의
+# engine_rev: 엔진 사본 rev 스탬프 단일 진실 — sibling 로더가 로드한 형제 모듈의
 #   ENGINE_REV 를 이 값과 대조해 사본 skew(신 도구+구 형제)를 로드 시점 fail-loud 로 표출.
 #   신설 도구라 등록 필수(미등록=전파 안 됨·pm_render 사례). 릴리즈 bump 유일 지점.
 .project_manager/tools/engine_rev.py
 # python_floor: 실제 `py <script>` shebang 디스패치와 동형인 Python 3.11 하한 probe.
 .project_manager/tools/python_floor.py
-# console_encoding: 전 CLI 공용 Windows codepage 65001 + UTF-8 스트림 부트스트랩(T-0481).
+# console_encoding: 전 CLI 공용 Windows codepage 65001 + UTF-8 스트림 부트스트랩.
 #   신규 __main__ 진입점도 정적 전수 가드가 이 helper 호출을 강제한다.
 .project_manager/tools/console_encoding.py
-# domain: v2 도메인 지식 레이어 엔진 (ADR-0018·covers 파서·touches∩covers·staleness·freshness lint·capture). domain/ 페이지는 인스턴스 소유(manifest 밖)
+# domain: v2 도메인 지식 레이어 엔진 (covers 파서·touches∩covers·staleness·freshness lint·capture). domain/ 페이지는 인스턴스 소유(manifest 밖)
 .project_manager/tools/domain.py
 .project_manager/tools/pm_bootstrap.py
 .project_manager/tools/pm_handoff.py
 .project_manager/tools/pm_log.py
 .project_manager/tools/ticket_finish.py
 .project_manager/tools/pm_update.py
-# pm_import: 채택자 홈 생성/임베드 import 엔진 (ADR-0027). manifest 편입(T-0140·ADR-0032) → pm_update 전파로 PM 31 ⓒ stale 해소. 비-@render·verbatim copy2(tools/* 토큰치환 제외). manifest 진화(새 항목이 기존 채택자에 도달)는 pm-update 스킬 reconcile(T-0142·self-list 아님·codex)
+# pm_import: 채택자 홈 생성/임베드 import 엔진. manifest 편입→ pm_update 전파로 ⓒ stale 해소. 비-@render·verbatim copy2(tools/* 토큰치환 제외). manifest 진화(새 항목이 기존 채택자에 도달)는 pm-update 스킬 reconcile(self-list 아님·codex)
 .project_manager/tools/pm_import.py
-# pm_render: 어댑터 render 엔진 (ADR-0028·ADR-0031·operational 토큰 치환). pm_update/pm_import 가 @render path 에 위임. 도구 전파 등록일 뿐 — @render *활성화*는 T-0133(D17)
+# pm_render: 어댑터 render 엔진 (operational 토큰 치환). pm_update/pm_import 가 @render path 에 위임. 도구 전파 등록일 뿐 — @render *활성화*는 별도 결정
 .project_manager/tools/pm_render.py
-# relay core: 하니스 무관 thin stateless supervisor (ADR-0009). 하니스 driver(pm_orch_*.py)는 어댑터층(manifest 밖)
+# relay core: 하니스 무관 thin stateless supervisor. 하니스 driver(pm_orch_*.py)는 어댑터층(manifest 밖)
 .project_manager/tools/pm_relay.py
-# external_review: 추가 리뷰어 어댑터 (ADR-0004·기본 OFF). review_context.local.md·local.conf 는 인스턴스 소유(manifest 밖)
+# external_review: 추가 리뷰어 어댑터 (기본 OFF). review_context.local.md·local.conf 는 인스턴스 소유(manifest 밖)
 .project_manager/tools/external_review.py
 .project_manager/tools/review_rounds.py
 # ticket_rounds: 티켓 명세 파일 옆 라운드 사이드카(tickets/rounds/<id>/NN-<role>.md) 공용 seam —
@@ -44,23 +44,23 @@
 #   호출자 소유(board 를 로드하지 않는다). 신설 도구라 등록 필수(미등록=전파 안 됨).
 .project_manager/tools/ticket_rounds.py
 .project_manager/tools/gate_snapshot.py
-# worktree_pool: repo별 worktree 풀 리스 엔진 (ADR-0013·multi-PM 모델). 순수 엔진(git DI seam)
+# worktree_pool: repo별 worktree 풀 리스 엔진 (multi-PM 모델). 순수 엔진(git DI seam)
 .project_manager/tools/worktree_pool.py
-# pm_config: multi-PM 셋업/관리 파사드 디스패처 (ADR-0011·0014). 루트 forwarder pm-config.sh/.cmd 는
+# pm_config: multi-PM 셋업/관리 파사드 디스패처 (0014). 루트 forwarder pm-config.sh/.cmd 는
 #   per-harness 템플릿 트리(templates/<harness>/)에 두고 pm_import 가 채택자 루트로 복사(pm-update.sh/.cmd 동형·manifest 밖)
 .project_manager/tools/pm_config.py
 # identity_args: 공용 정체성 인자 모듈 — --repo/--slot 파싱(discriminated) + 리스(활성슬롯) 읽기·해소
-#   단일 진실(ADR-0057·B-1). 전 CLI 순차 채택(T-0314/0315/0316/0317/0318) — 신설 도구라 등록 필수
+#   단일 진실(B-1). 전 CLI 가 순차 채택 — 신설 도구라 등록 필수
 #   (미등록=전파 안 됨·pm_render 사례).
 .project_manager/tools/identity_args.py
 # repo_coordinates: PM-home ticket touches(`work/<repo>_<N>/...`)를 검증된 workspace/lease와
-#   일치할 때만 소유-repo 상대 좌표로 바꾸는 공용 normalizer(T-0473). 불일치는 fail-loud.
+#   일치할 때만 소유-repo 상대 좌표로 바꾸는 공용 normalizer. 불일치는 fail-loud.
 .project_manager/tools/repo_coordinates.py
 # repo_owned_files: git 우선 repo 소유 파일 열거 공용 seam. tracked_only/owned 모드를 선언한다.
 #   owned는 git 실패 시 폴백, tracked_only는 비저장소(rc 128)/git 부재만 loud 경고 후 폴백하고
 #   옵션 미지원(rc 129)·손상 index·unmerged는 누출 방지를 위해 실패한다.
 .project_manager/tools/repo_owned_files.py
-# file_lock: 배타 파일락 공용 seam (T-0561) — POSIX flock / Windows msvcrt / 무락 폴백 분기의
+# file_lock: 배타 파일락 공용 seam — POSIX flock / Windows msvcrt / 무락 폴백 분기의
 #   단일 구현. board(board.lock·board-git.lock)·pm_log(log.lock)·pm_relay(raw 장부 .lock)가
 #   소비한다(락 파일 경로 규약은 각 도구 소유). 신설 도구라 등록 필수(미등록=전파 안 됨·pm_render 사례).
 .project_manager/tools/file_lock.py
@@ -70,20 +70,20 @@
 #   board·external_review·pm_delegate·pm_update·pm_import·pm_config·pm_bootstrap·ticket_finish·
 #   pm_handoff. 신설 도구라 등록 필수(미등록=전파 안 됨·pm_render 사례).
 .project_manager/tools/local_conf.py
-# delegate_channel_guard: claude PreToolUse(Agent) 위임 채널 가드 — local.conf delegate 매핑 불일치 시 deny·자체 고장 fail-open (T-0633). 래퍼 delegate_channel_guard_hook.sh 는 claude 어댑터층(ADAPTER_HOOK_SET)
+# delegate_channel_guard: claude PreToolUse(Agent) 위임 채널 가드 — local.conf delegate 매핑 불일치 시 deny·자체 고장 fail-open. 래퍼 delegate_channel_guard_hook.sh 는 claude 어댑터층(ADAPTER_HOOK_SET)
 .project_manager/tools/delegate_channel_guard.py
 # delegate_scope: 위임 전/후 porcelain 상태를 비교해 ticket touches 밖 변경을 loud 경고로
-#   표면화하는 비차단 판정기(T-0462). PM-home 좌표는 repo_coordinates 공용 normalizer를 재사용.
+#   표면화하는 비차단 판정기. PM-home 좌표는 repo_coordinates 공용 normalizer를 재사용.
 .project_manager/tools/delegate_scope.py
-# pm_adr: ADR 발행/개정 명령어化 backbone (ADR-0049 4요소·ADR-0021 lifecycle). 채번·frontmatter
+# pm_adr: ADR 발행/개정 명령어化 backbone (4요소 스키마·lifecycle). 채번·frontmatter
 #   scaffold·개정 대상 back-ref 기록·README 색인·log decide entry 원자화. 신설 도구라 등록 필수
 #   (미등록=전파 안 됨·pm_render 사례). ADR 실경로는 인스턴스 소유(decisions/·manifest 밖·self-location 해소)
 .project_manager/tools/pm_adr.py
-# contradiction_lint: 모순 lint (ADR-0064·T-0369) — 결정 개정(amends/supersedes) 시점에 옛 결정을
+# contradiction_lint: 모순 lint — 결정 개정(amends/supersedes) 시점에 옛 결정을
 #   참조하는 문서의 잔여 모순 후보를 표면화(탐지 LLM DI·기본 dry / 판정 사람·advisory).
 #   pm_adr.py 발행 명령이 트리거로 호출(개정에만 발화).
 .project_manager/tools/contradiction_lint.py
-# pm_delegate: cross-harness 역할 위임 채널 (ADR-0075·기본 OFF·delegate.enabled opt-in). 신설 도구라
+# pm_delegate: cross-harness 역할 위임 채널 (기본 OFF·delegate.enabled opt-in). 신설 도구라
 #   등록 필수(미등록=전파 안 됨). local.conf delegate.* 매핑은 인스턴스 소유(manifest 밖)
 .project_manager/tools/pm_delegate.py
 # private_refs: 사설 참조 판정식 공용 seam — 출하 산문(주석·문서 표현식)에서 사설 작업-항목
@@ -108,7 +108,7 @@
 .project_manager/wiki/pm_state.template.md
 .project_manager/wiki/tickets/_template.md
 .project_manager/wiki/raw/spikes/_template.md
-# domain/ *페이지*는 인스턴스 소유(manifest 밖·domain.py 행 참조) — _template.md 만 엔진 소유 스캐폴드 (ADR-0018·T-0095)
+# domain/ *페이지*는 인스턴스 소유(manifest 밖·domain.py 행 참조) — _template.md 만 엔진 소유 스캐폴드
 .project_manager/wiki/domain/_template.md
 
 # ── 설정 (엔진) ──────────────────────────────────────────────────
@@ -124,18 +124,18 @@
 .claude/skills    @render
 .claude/skills/pm-dev-delegate/SKILL.md    @render @source=templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md
 
-# ── opencode 어댑터 (@render + @source — framework-owned 전파·ADR-0054·claude `.claude/*` 대칭) ──
-# free-form 0 (T-0136 제거) → pm_update/pm_import 가 채택자 트리에서 operational 토큰 재유도(copy2 면 leak).
+# ── opencode 어댑터 (@render + @source — framework-owned 전파·claude `.claude/*` 대칭) ──
+# free-form 0(제거) → pm_update/pm_import 가 채택자 트리에서 operational 토큰 재유도(copy2 면 leak).
 # --target(루트→템플릿)은 render 무시·copy2 로 토큰-form 보존.
-# ⚠️ framework-owned (ADR-0054·T-0303): `.opencode/agents` 는 engine update 로 *전파*된다
+# ⚠️ framework-owned: `.opencode/agents` 는 engine update 로 *전파*된다
 #    (채택자 커스터마이즈 clobber·claude `.claude/*` 계약과 동일). canonical 소스는 프레임워크 루트의
 #    `templates/opencode/.opencode/*` 에 있고(루트=claude·`.opencode/` 부재), `@source=<root-상대경로>`
 #    마커가 그 소스를 채택자 dest `.opencode/*` 로 remap 한다(read-side source-remap·_remap_to_dest).
 #    non-@target-owned 라 소스(templates/opencode) 진짜 부재 시 rc2(템플릿 누락 은폐 금지·안전판).
 #    self-update=source=프레임워크 루트(templates/ 보유)·`--target opencode`=self-copy no-op 둘 다 정합.
 #    AGENTS.md/AGENTS.lite.md 는 제외 — root doc(CLAUDE.md 대칭·instance-owned·PROJECT_TAGLINE 보유)·
-#    @render 경로 밖 (PM 26/27 rescope·ADR-0030).
-# `.opencode/command/<name>.md` 는 사람이 보는 슬래시 팔레트 표면이다(opencode 1.18.16 실측·T-0674).
+#    @render 경로 밖 (범위 재조정).
+# `.opencode/command/<name>.md` 는 사람이 보는 슬래시 팔레트 표면이다(opencode 1.18.16 실측).
 # 수기 소스를 두지 않고 출하 스킬 15개를 root canonical SKILL.md에서 개별 @source 리맵한다.
 # 평탄 파일명(`<name>.md`)과 스킬 디렉터리(`<name>/SKILL.md`)의 레이아웃이 달라 directory
 # 리맵으로는 생성할 수 없으므로, 전건 개별 등록으로 신규 스킬 미등재를 가드가 loud 하게 잡도록 한다.
@@ -163,26 +163,26 @@
 .opencode/references/environment-posix.md    @render @source=.claude/skills/references/environment-posix.md
 .opencode/references/environment-windows.md  @render @source=.claude/skills/references/environment-windows.md
 # pm-instructions: opencode-고유 PM 운영 지침(실행 모델·위임 규약·config 캐싱). AGENTS.md 공통 코어
-#   (instance-owned·harness-neutral)에서 이관·opencode.jsonc `instructions` 배열로 함께 로드(ADR-0069·
-#   T-0401). 기존 instance-owned 진입 doc 과 달리 @source 전파 등록이라 방법론 갱신이 채택자에 도달한다.
+#   (instance-owned·harness-neutral)에서 이관·opencode.jsonc `instructions` 배열로 함께 로드.
+#   기존 instance-owned 진입 doc 과 달리 @source 전파 등록이라 방법론 갱신이 채택자에 도달한다.
 #   operational 토큰(PY·TEST_CMD) 보유 → @render(치환·--target 은 copy2 로 토큰-form 보존).
 .opencode/pm-instructions.md    @render @source=templates/opencode/.opencode/pm-instructions.md
-# ctx-guard core/plugin·relay 드라이버 (엔진-미러·safety-hook·T-0305·ADR-0032 Q3 결착). 비-.md 코드라
-#   @render 아님(byte-copy·치환 토큰 0). T-0283 은 `@target-owned` 등재=self-update skip(전파 0)이라
-#   미등재로 뒀으나, T-0303 `@source` 채널이 그 비대칭(canonical=templates/opencode·루트 `.opencode/`
+# ctx-guard core/plugin·relay 드라이버 (엔진-미러·safety-hook 결착). 비-.md 코드라
+#   @render 아님(byte-copy·치환 토큰 0). 과거 `@target-owned` 등재=self-update skip(전파 0)이라
+#   미등재로 뒀으나, 이후 `@source` 채널이 그 비대칭(canonical=templates/opencode·루트 `.opencode/`
 #   부재)을 이어 이제 *전파*된다(frozen 근절) — ctx-guard-core.cjs 는 board 상수 미러(test_ctx_default_mirror).
 .opencode/lib       @source=templates/opencode/.opencode/lib
 .opencode/plugins   @source=templates/opencode/.opencode/plugins
 .opencode/pm_orch_opencode.py    @source=templates/opencode/.opencode/pm_orch_opencode.py
-# .gitignore: `.opencode/` 로컬 산출물(node_modules·package.json·package-lock.json·bun.lock) 무시 규칙
-#   (T-0492). 원본은 opencode 가 생성하지만(`Config.ensureGitignore`·파일 부재 시에만) 그 원본은 자기
+# .gitignore: `.opencode/` 로컬 산출물(node_modules·package.json·package-lock.json·bun.lock) 무시 규칙.
+#   원본은 opencode 가 생성하지만(`Config.ensureGitignore`·파일 부재 시에만) 그 원본은 자기
 #   자신(`.gitignore`)까지 무시해 어느 clone 에서도 `git status` 에 안 떠 영영 미추적으로 남는다 — 그래서
 #   이 repo 에서도 출하되지 않았다. 프레임워크판(자기-은닉 줄 제거)을 소유·전파한다: 미등재면 기존
 #   채택자에게 영영 도달하지 않는다(pm_import 트리 복사는 신규 채택자만 커버). 비-.md·치환 토큰 0 이라
 #   byte-copy(@render 불요)·canonical=templates/opencode 라 @source remap 필수(lib/plugins 동형).
 #   opencode 는 파일이 있으면 덮어쓰지 않으므로 전파판이 런타임에 유지된다.
 .opencode/.gitignore    @source=templates/opencode/.opencode/.gitignore
-# ── manifest 자기전파 (B-selfprop·T-0305·OQ-B1) ──────────────────
+# ── manifest 자기전파 (self-prop) ──────────────────
 # 매니페스트 자신을 전파해야 위 hook/driver 신 엔트리가 기존 opencode 채택자에 도달한다 — 안 그러면
 #   채택자는 import 시점 frozen manifest 를 유지해 신 엔트리를 영영 못 배운다(frozen 근절의 전제).
 #   opencode 채택자는 자기 flavor 매니페스트를 @source 로 byte-copy 받는다(토큰 0·@render 불요).
@@ -190,4 +190,4 @@
 
 # ── opencode 어댑터 root-doc (instance-owned·미등록·전파 안 함) ──────────────────
 # AGENTS.md/AGENTS.lite.md·opencode.jsonc 는 adopter config/root doc(PROJECT_TAGLINE·권한)이라 manifest
-#   밖(claude settings.json/CLAUDE.md 대칭·T-0300 hygiene 소관).
+#   밖(claude settings.json/CLAUDE.md 대칭·hygiene 소관).

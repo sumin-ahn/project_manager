@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  // 진입 doc 공통 코어 + opencode-고유 운영 지침 로드 (ADR-0069·T-0401). AGENTS.md(harness-neutral
+  // 진입 doc 공통 코어 + opencode-고유 운영 지침 로드. AGENTS.md(harness-neutral
   // 공통 코어)는 opencode 가 자동 로드하고, opencode-고유 실행 모델·위임 규약은 pm-instructions.md 로
   // 이관해 이 `instructions` 배열로 함께 로드한다 — 둘이 합쳐 PM 운영 매뉴얼이 된다. pm-instructions.md
   // 는 @source 전파 등록(engine.manifest)이라 방법론 갱신이 pm_update 로 채택자에 도달한다(instance-owned
@@ -24,7 +24,7 @@
   //   (넛지 %의 분모 예산)와 `ctx.stop_pct`/`ctx.nudge_pct` 로 밴드를 옮긴다. 모델을 바꿔 실제 컨텍스트
   //   창이 달라졌으면 예산부터 그 모델에 맞춘다 — 예산이 실제 창보다 크면 안내가 늦게 온다.
   // (토큰추적·넛지·checkpoint 안내는 .opencode/plugins/ctx-guard.js 가 autoload 로 담당 — 차단 없음.)
-  // 모델 출력 상한 명시 (T-0334·대용량 write 신뢰성 3층 가드 ③). limit.output 을 명시해 fallback
+  // 모델 출력 상한 명시 (대용량 write 신뢰성 3층 가드의 3번째 층). limit.output 을 명시해 fallback
   // *미정의* 상태를 없앤다. ⚠️ 실효 출력은 여전히 min(limit.output, 32000)=32000 이라 이 명시가
   // 출력 상한 자체를 32000 위로 올리진 못한다 — 32000 상향은 env OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX
   // 로만 가능(upstream 실측). 실질 억제 레버는 deny-and-redirect + safe_write chunk 도구
@@ -56,7 +56,7 @@
       }
     }
   },
-  // 서브에이전트(task)·도구 출력 절단 상향 (T-0289·라이브 실증): opencode 전역 tool_output
+  // 서브에이전트(task)·도구 출력 절단 상향 (라이브 실증): opencode 전역 tool_output
   // 기본(max_lines=2000·max_bytes=51200[50KB])이 task 반환도 절단해, researcher/reviewer 의 큰
   // 보고가 PM 에 온전히 도달하지 못했다. 상한을 올려 큰 서브에이전트 보고를 통과시키되, runaway
   // 출력이 context 를 범람하지 않게 무한이 아닌 적정 상한(12000줄·512KB)을 둔다 — PM 세션은

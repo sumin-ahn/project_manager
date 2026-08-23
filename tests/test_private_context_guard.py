@@ -178,6 +178,94 @@ def _python_surface_delta(repo: Path) -> tuple[list[str], list[str]]:
     return missing, extra
 
 
+# 루트 목적지 사본 중 manifest 미등재 잔재 — production ``language_paths`` 의
+# ``_UNREGISTERED_ROOT_DESTINATIONS`` 와 같은 단일 경로 특례(제거는 PM 결정 · 판정 대상에는 포함).
+_LANGUAGE_ORACLE_UNREGISTERED_ROOT_DESTINATIONS: tuple[Path, ...] = (
+    Path(".claude/run_tests_hook.sh"),
+)
+
+
+def _import_channel_language_paths(repo: Path) -> set[Path]:
+    """import 채널 언어 축 — ``pm_import`` 실제 출하 열거에서 python·markdown 이 아닌 것."""
+    pm_import_module = _load_tool_module("pm_import")
+    sources: set[Path] = set()
+    for dirnames in pm_import_module.HARNESS_TEMPLATE_DIRS.values():
+        for dirname in dirnames:
+            template_root = repo / "templates" / dirname
+            if not template_root.is_dir():
+                continue
+            for _dest_relative, source in pm_import_module._iter_source_files(
+                template_root
+            ):
+                if source.suffix not in (".py", ".md"):
+                    sources.add(source)
+    return sources
+
+
+def _manifest_channel_language_paths(repo: Path) -> set[Path]:
+    """update 채널 언어 축 — ``pm_update`` 실제 출하 전개에서 python·markdown 이 아닌 것.
+
+    ``_manifest_dest_roots`` 는 repo(루트) 자신도 dest 로 포함하므로, 루트 manifest 가 선언한
+    루트 목적지 사본(``.gitattributes``·``.project_manager/.gitignore``·
+    ``.project_manager/engine.manifest``·``.claude/precompact_capture_hook.sh``)도 이 한 함수로
+    같이 잡힌다 — 별도 "루트 전용" 파생을 새로 만들지 않는다.
+    """
+    pm_update_module = _load_tool_module("pm_update")
+    paths: set[Path] = set()
+    for dest_root in _manifest_dest_roots(repo):
+        manifest_path = pm_update_module.resolve_manifest_for_dest(dest_root, repo)
+        manifest = pm_update_module.read_manifest(manifest_path)
+        for entry_index in range(len(manifest)):
+            shipped, _source_missing, _target_owned = (
+                pm_update_module.manifest_entry_shipping_inventory(
+                    repo, manifest, entry_index, dest_root
+                )
+            )
+            for dest_relative, source in shipped:
+                source = Path(source)
+                if source.suffix not in (".py", ".md"):
+                    paths.add(source)
+                destination = dest_root / dest_relative
+                if destination.suffix not in (".py", ".md") and destination.is_file():
+                    paths.add(destination)
+    return paths
+
+
+def _language_surface_oracle(repo: Path = REPO) -> set[Path]:
+    """``language_paths`` 와 독립된 코드 경로로 언어 축 출하 표면을 파생한다(설계 §M1).
+
+    두 채널(import·update)의 합집합 + manifest 미등재 단일 예외. ``language_paths`` 자신을
+    호출하지 않으므로 대조가 tautology 가 되지 않는다.
+    """
+    repo = repo.resolve()
+    found = _import_channel_language_paths(repo) | _manifest_channel_language_paths(repo)
+    for relative in _LANGUAGE_ORACLE_UNREGISTERED_ROOT_DESTINATIONS:
+        candidate = repo / relative
+        if candidate.is_file():
+            found.add(candidate)
+    return found
+
+
+def _language_surface_delta(repo: Path) -> tuple[list[str], list[str]]:
+    """``language_paths`` 와 파생 oracle 의 양방향 차집합 ``(missing, extra)``."""
+    repo = repo.resolve()
+    actual = set(_language_paths(repo))
+    expected = _language_surface_oracle(repo)
+    missing = sorted(path.relative_to(repo).as_posix() for path in expected - actual)
+    extra = sorted(path.relative_to(repo).as_posix() for path in actual - expected)
+    return missing, extra
+
+
+def test_language_axis_matches_independent_surface_derivation():
+    """I1/M1 — 언어 축 시야 == 출하 표면 − python − markdown, 양방향 차집합 0."""
+    missing, extra = _language_surface_delta(REPO)
+    assert not missing and not extra, (
+        "language_paths 가 독립 파생 오라클과 어긋남 — "
+        f"missing(시야 미포함) {len(missing)}: {missing}; "
+        f"extra(시야 초과) {len(extra)}: {extra}"
+    )
+
+
 def test_repo_owned_files_exec_failure_removes_partial_cache_and_allows_retry(
     tmp_path, monkeypatch
 ):
@@ -358,6 +446,59 @@ def _markdown_occurrences(
     )
 
 
+# ── 언어 축 — python·markdown 을 뺀 출하 표면. HARD 는 전-파일 스캔 + surface 라벨
+# (python 축과 동일 구조), RATCHET 은 언어별 산문 구간 한정. 판정 사본이 아니라 엔진 모듈
+# (``private_refs.language_paths``/``language_of``/``language_prose_spans``)을 그대로 소비한다.
+LANGUAGE_PROSE_SURFACE = "language-prose"
+LANGUAGE_NON_PROSE_SURFACE = "language-non-prose"
+
+
+def _language_paths(root: Path) -> list[Path]:
+    return PROSE_SCANNER.language_paths(root)
+
+
+def _language_prose_ranges(path: Path, source: str) -> list[tuple[int, int, str]]:
+    return [
+        (span.start, span.end, LANGUAGE_PROSE_SURFACE)
+        for span in PROSE_SCANNER.language_prose_spans(path, source)
+    ]
+
+
+def _language_hard_occurrences(
+    path: str, source: str, prose_ranges: list[tuple[int, int, str]]
+) -> list[Occurrence]:
+    found: list[Occurrence] = []
+    for kind, pattern in HARD_PATTERNS.items():
+        for match in pattern.finditer(source):
+            surface = (
+                LANGUAGE_PROSE_SURFACE
+                if any(
+                    start <= match.start() and match.end() <= end
+                    for start, end, _ in prose_ranges
+                )
+                else LANGUAGE_NON_PROSE_SURFACE
+            )
+            found.append(
+                _occurrence(
+                    path=path,
+                    source=source,
+                    start=match.start(),
+                    end=match.end(),
+                    kind=kind,
+                    surface=surface,
+                )
+            )
+    return found
+
+
+def _language_ratchet_occurrences(
+    path: str, source: str, prose_ranges: list[tuple[int, int, str]]
+) -> list[Occurrence]:
+    return _scan_ranges(
+        path=path, source=source, ranges=prose_ranges, patterns=RATCHET_PATTERNS
+    )
+
+
 def _shipping_paths(root: Path) -> tuple[list[Path], list[Path]]:
     # 테스트와 재생성 스크립트가 같은 공용 OWNED 열거·표면 분류를 사용해야
     # 한쪽에서만 ignored 파생 파일을 baseline에 다시 넣는 판정 어긋남이 없다.
@@ -381,6 +522,12 @@ def _collect(root: Path = REPO) -> tuple[list[Occurrence], list[Occurrence]]:
         ratchet.extend(
             _markdown_occurrences(relative, source, RATCHET_PATTERNS)
         )
+    for path in _language_paths(root):
+        relative = path.relative_to(root).as_posix()
+        source = path.read_text(encoding="utf-8")
+        prose_ranges = _language_prose_ranges(path, source)
+        hard.extend(_language_hard_occurrences(relative, source, prose_ranges))
+        ratchet.extend(_language_ratchet_occurrences(relative, source, prose_ranges))
     key = lambda item: (
         item.path,
         item.line,
@@ -1579,6 +1726,161 @@ def test_repo_raw_output_guard_observes_default_destination_and_ledger(tmp_path)
 
     # `.local` 자체가 없는 트리(신규 clone)는 빈 스냅샷이며 예외를 내지 않는다.
     assert suite_conftest._snapshot_repo_raw_outputs(tmp_path / "absent") == {}
+
+
+# ── 언어 축 시야 fail-loud · 산문 경계 · 민감도 ───────────────────────────────
+# M2 미등록 확장자 fail-loud · M3 11축 각각 정상 1건 + 오탐 유발 1건 · M4 축을 하나씩 빼면
+# 그 축 offender 가 N→0 임을 값으로 고정한다(설계 §M2~M4).
+
+_LANG_REF = "T-" + "9" * 4  # HARD work_item 트리거(합성 — 실 코퍼스 값 아님).
+_LANG_DECISION = "A" + "1"  # RATCHET decision_label 트리거.
+
+
+def _language_offender_count(path: Path, source: str) -> tuple[int, int]:
+    """(HARD 전-파일 출현, RATCHET 산문-한정 출현) — 값 하나로 두 축 모두 잰다."""
+    prose_ranges = _language_prose_ranges(path, source)
+    hard = _language_hard_occurrences(path.as_posix(), source, prose_ranges)
+    ratchet = _language_ratchet_occurrences(path.as_posix(), source, prose_ranges)
+    return len(hard), len(ratchet)
+
+
+def test_unregistered_extension_is_fail_loud(tmp_path, monkeypatch):
+    """M2 — tmp git 트리에 `.yaml` 1건을 templates/codex/.codex/ 에 주입하면 가드가 red."""
+    _git(tmp_path, "init", "-q")
+    manifest = tmp_path / ".project_manager" / "engine.manifest"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(".project_manager/tools/board.py\n", encoding="utf-8")
+    injected = tmp_path / "templates" / "codex" / ".codex" / "x.yaml"
+    injected.parent.mkdir(parents=True)
+    injected.write_text("key: value\n", encoding="utf-8")
+    _git(
+        tmp_path,
+        "add",
+        str(manifest.relative_to(tmp_path)),
+        str(injected.relative_to(tmp_path)),
+    )
+
+    wide = _language_paths(tmp_path)
+    assert injected in wide, "언어 축 열거는 미등록 확장자도 시야에 넣어야 한다(필터 없음)"
+
+    with pytest.raises(ValueError, match="미등록 확장자"):
+        PROSE_SCANNER.language_of(injected)
+    with pytest.raises(ValueError, match="미등록 확장자"):
+        PROSE_SCANNER.language_prose_spans(injected, injected.read_text(encoding="utf-8"))
+
+
+# (확장자, 언어, 정상 소스, 오탐-유발 소스, 정상에 심은 축) — 정상은 HARD 또는 RATCHET 트리거 1건을
+# 담고, 오탐-유발은 실 코퍼스 형상(파라미터 확장·문자열 안 `//`·TOML 문자열 안 `#` 표제 등)이라
+# 산문 경계 밖에 있어야 한다("kind" 는 offender 를 어느 카운트로 잴지: "hard" 또는 "ratchet").
+_LANGUAGE_AXIS_FIXTURES = [
+    pytest.param(
+        "", PROSE_SCANNER.LANGUAGE_NOEXT,
+        f"# {_LANG_REF} 설명\n", "pattern#literal\n", "hard",
+        id="noext",
+    ),
+    pytest.param(
+        ".sh", PROSE_SCANNER.LANGUAGE_SH,
+        f"cmd  # {_LANG_REF}\n", f'echo "값 # {_LANG_REF}"\n${{VAR#{_LANG_REF}}}\n', "hard",
+        id="sh",
+    ),
+    pytest.param(
+        ".manifest", PROSE_SCANNER.LANGUAGE_MANIFEST,
+        f"# {_LANG_REF} 설명\n", f"path/{_LANG_REF}.py\n", "hard",
+        id="manifest",
+    ),
+    pytest.param(
+        ".toml", PROSE_SCANNER.LANGUAGE_TOML,
+        f'desc = "{_LANG_REF} 설명"\n', f"[{_LANG_REF}]\n", "hard",
+        id="toml",
+    ),
+    pytest.param(
+        ".json", PROSE_SCANNER.LANGUAGE_JSON,
+        f'{{"_comment": "{_LANG_REF}"}}\n', f'{{"{_LANG_REF}": 1}}\n', "hard",
+        id="json",
+    ),
+    pytest.param(
+        ".jsonc", PROSE_SCANNER.LANGUAGE_JSONC,
+        f"// {_LANG_REF}\n", f'{{"{_LANG_REF}": 1}}\n', "hard",
+        id="jsonc",
+    ),
+    pytest.param(
+        ".js", PROSE_SCANNER.LANGUAGE_JS,
+        f"x = 1; // {_LANG_REF}\n", f'const s = "//{_LANG_REF}";\nconst re = /{_LANG_REF}\\//;\n', "hard",
+        id="js",
+    ),
+    pytest.param(
+        ".cjs", PROSE_SCANNER.LANGUAGE_JS,
+        f"/* {_LANG_REF} */\n", f'const s = "//{_LANG_REF}";\n', "hard",
+        id="cjs",
+    ),
+    pytest.param(
+        ".rules", PROSE_SCANNER.LANGUAGE_RULES,
+        f"# {_LANG_REF}\n", f'match = ["cmd {_LANG_REF}"]\n', "hard",
+        id="rules",
+    ),
+    pytest.param(
+        ".cmd", PROSE_SCANNER.LANGUAGE_CMD,
+        f"rem {_LANG_REF}\n:: {_LANG_REF}\n", f"echo {_LANG_REF}\n", "hard",
+        id="cmd",
+    ),
+    pytest.param(
+        ".txt", PROSE_SCANNER.LANGUAGE_TXT,
+        f"{_LANG_REF} 안내\n", "", "hard",
+        id="txt",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "suffix, language, positive_source, negative_source, kind", _LANGUAGE_AXIS_FIXTURES
+)
+def test_language_axis_boundary_positive_and_false_positive(
+    suffix, language, positive_source, negative_source, kind, tmp_path
+):
+    """M3 — 11축 각각 정상 1건(산문으로 잡힘) + 오탐 유발 1건(산문 아님·과확장 0)."""
+    path = tmp_path / f"dummy{suffix}"
+    assert PROSE_SCANNER.language_of(path) == language
+
+    positive_hard, positive_ratchet = _language_offender_count(path, positive_source)
+    positive_count = positive_hard if kind == "hard" else positive_ratchet
+    assert positive_count >= 1, f"{suffix} 축이 정상 표식을 못 잡음: {positive_source!r}"
+
+    if negative_source:
+        # HARD 는 전-파일 스캔이라 데이터 구간 출현도 잡히지만 surface 는 non-prose 여야 한다.
+        # 오탐 유발 픽스처가 산문으로 오분류(=language-prose surface)되지 않았는지를 잰다.
+        prose_ranges = _language_prose_ranges(path, negative_source)
+        negative_occurrences = _language_hard_occurrences(
+            path.as_posix(), negative_source, prose_ranges
+        )
+        prose_surface_hits = [
+            item for item in negative_occurrences
+            if item.surface == LANGUAGE_PROSE_SURFACE
+        ]
+        assert not prose_surface_hits, (
+            f"{suffix} 축 오탐 — 산문 아닌 구간이 산문으로 잡힘: {prose_surface_hits}"
+        )
+
+
+@pytest.mark.parametrize(
+    "suffix, language, positive_source, negative_source, kind", _LANGUAGE_AXIS_FIXTURES
+)
+def test_language_axis_sensitivity_disabling_scanner_clears_ratchet_offenders(
+    suffix, language, positive_source, negative_source, kind, tmp_path, monkeypatch
+):
+    """M4 — 레지스트리에서 이 축의 산문 분류기를 비활성화하면 RATCHET offender 가 N→0."""
+    path = tmp_path / f"dummy{suffix}"
+    before_hard, before_ratchet = _language_offender_count(path, positive_source)
+    assert before_ratchet >= 1 or before_hard >= 1
+
+    disabled = dict(PROSE_SCANNER._LANGUAGE_PROSE_SCANNERS)
+    disabled[language] = lambda source: []
+    monkeypatch.setattr(PROSE_SCANNER, "_LANGUAGE_PROSE_SCANNERS", disabled)
+
+    after_hard, after_ratchet = _language_offender_count(path, positive_source)
+    # RATCHET 은 산문 한정이라 분류기를 죽이면 반드시 0 이 된다(load-bearing 확인).
+    assert after_ratchet == 0
+    # HARD 는 전-파일 스캔이라 총 출현 수는 불변(surface 만 non-prose 로 뒤집힌다).
+    assert after_hard == before_hard
 
 
 def _dump_hard_report(report: dict[str, object]) -> str:

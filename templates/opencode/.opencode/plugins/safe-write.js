@@ -1,6 +1,6 @@
-// opencode 어댑터 — 대용량 write/edit 신뢰성 가드 plugin 진입점 (얇은 ESM shim · T-0334).
+// opencode 어댑터 — 대용량 write/edit 신뢰성 가드 plugin 진입점 (얇은 ESM shim).
 //
-// opencode plugin 로드 규약(실측 T-0283 · opencode 1.17.18): `.opencode/plugins/` 안 각 파일의
+// opencode plugin 로드 규약(실측 opencode 1.17.18): `.opencode/plugins/` 안 각 파일의
 // export 를 순회(Object.values)해 *모두 함수*이길 요구하고, 그 각각을 플러그인 팩토리로 호출한다.
 //   - CJS `module.exports`(객체든 단일 함수든)는 거부된다 — `error="Plugin export is not a function"`.
 //   - 비함수 export(상수) 하나라도 있으면 로드 실패하고, 헬퍼 함수까지 각각 플러그인으로 오인·호출한다.

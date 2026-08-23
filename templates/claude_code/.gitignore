@@ -6,7 +6,7 @@ __pycache__/
 # 공통 settings 는 .claude/settings.json 에 (git tracked).
 .claude/settings.local.json
 
-# multi-PM 공유 풀 잔재 (ADR-0011 — repo add 의 bare .git 원·worktree add 의 슬롯은 per-clone·미추적).
+# multi-PM 공유 풀 잔재 (repo add 의 bare .git 원·worktree add 의 슬롯은 per-clone·미추적).
 .repos/
 work/
 

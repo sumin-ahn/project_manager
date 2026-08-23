@@ -1,6 +1,6 @@
-// opencode 어댑터 — ctx checkpoint plugin 진입점 (얇은 ESM shim · T-0551 · T-0283 로드 fix).
+// opencode 어댑터 — ctx checkpoint plugin 진입점 (얇은 ESM shim · 로드 규약 대응).
 //
-// opencode plugin 로드 규약(실측 T-0283 · opencode 1.17.18): `.opencode/plugins/` 안 각 파일의
+// opencode plugin 로드 규약(실측 opencode 1.17.18): `.opencode/plugins/` 안 각 파일의
 // export 를 순회(Object.values)해 *모두 함수*이길 요구하고, 그 각각을 플러그인 팩토리로 호출한다.
 //   - CJS `module.exports`(객체든 단일 함수든)는 거부된다 — `error="Plugin export is not a function"`
 //     (bun 이 만든 CJS import namespace 를 opencode 로더가 받지 않음·form1~4 실측).

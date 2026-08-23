@@ -1,9 +1,9 @@
-// opencode 어댑터 — ctx checkpoint 가드 core (T-0551, ADR-0081 Decision 1·3).
+// opencode 어댑터 — ctx checkpoint 가드 core.
 //
 // 이 파일(CJS)은 ctx-guard 의 *순수 로직 + 플러그인 팩토리 본체*를 담는다. opencode plugin
 // 진입점은 `../plugins/ctx-guard.js`(ESM 얇은 shim)이며 여기서 CtxGuardPlugin 팩토리만 named-export
 // 한다 — opencode 의 plugin 로드 규약(각 plugins/ 파일의 export 를 순회해 *모두 함수*이길 요구하고
-// 각각을 팩토리로 호출·실측 T-0283) 때문에, 순수 헬퍼·상수는 plugins/ *바깥*(이 lib/ 모듈)에 둔다
+// 각각을 팩토리로 호출·실측) 때문에, 순수 헬퍼·상수는 plugins/ *바깥*(이 lib/ 모듈)에 둔다
 // (opencode 는 plugins/ 만 스캔·lib/ 는 로드 안 함). node 자가검증 test 는 이 CJS 모듈을 require 해
 // 순수 함수(parseLocalConf·computeCtxState 등)를 이벤트/opencode 런타임 없이 검증한다.
 //
@@ -12,9 +12,9 @@
 //   session.compacted 를 병행 관측해 세션-로컬 횟수 누적·밴드 재무장·압축 후 checkpoint 안내를 한다.
 //   관측 횟수는 표시하지 않고 plugin 재기동 시 0부터 다시 시작한다.
 //
-// 모델 (ADR-0081): 사전 checkpoint 넛지 → native compaction → 사후 checkpoint 넛지.
+// 모델: 사전 checkpoint 넛지 → native compaction → 사후 checkpoint 넛지.
 //
-// 임계값(엔진 T-0013·T-0207 상향): local.conf `ctx.nudge_pct`/`ctx.stop_pct`(기본 30/20) = "잔여 컨텍스트 %".
+// 임계값(엔진 상향 조정 이력 반영): local.conf `ctx.nudge_pct`/`ctx.stop_pct`(기본 30/20) = "잔여 컨텍스트 %".
 //   잔여% = (1 - used/limit) * 100. computeCtxState 의 stop 반환은 파리티를 위해 유지하고,
 //   plugin 은 stop 밴드를 최종 checkpoint 안내로만 흡수한다(차단·marker 없음).
 //   plugin 은 local.conf 를 직접 파싱(의존 적음·board.py shell-out 회피).
@@ -33,16 +33,16 @@ const childProcess = require("node:child_process");
 const crypto = require("node:crypto");
 
 // ── 엔진 기본값 (board.py CTX_*_PCT_DEFAULT 미러 — 폴백 전용) ──────────────────
-// T-0207 상향(20/10→30/20). stop 값은 computeCtxState 파리티와 nudge2 파생에 계속 쓰인다.
+// 상향 조정(20/10→30/20). stop 값은 computeCtxState 파리티와 nudge2 파생에 계속 쓰인다.
 const NUDGE_PCT_DEFAULT = 30; // 잔여 ≤ 이 % → 넛지 (일은 계속).
 const STOP_PCT_DEFAULT = 20; // 구 stop 경계(판정만 유지·차단 소비 없음).
 
-// 2단(strong) nudge 임계 마진 (%p·파생값·T-0328·ADR-0037). nudge2 밴드 = stop_pct < 잔여 ≤
+// 2단(strong) nudge 임계 마진 (%p·파생값). nudge2 밴드 = stop_pct < 잔여 ≤
 // min(stop_pct + 이 마진, nudge_pct) — compaction 임박 전 강한 유도.
 // config 노브 신설 없이 stop_pct 에서 파생. claude ctx_guard.CTX_NUDGE2_MARGIN_PCT 와 미러.
 const NUDGE2_MARGIN_PCT = 3;
 
-// ── ctx 예산 기본 (board.py CTX_WINDOW_TOKENS_DEFAULT 미러 · ADR-0041) ──────────
+// ── ctx 예산 기본 (board.py CTX_WINDOW_TOKENS_DEFAULT 미러) ──────────
 // 정지/넛지 분모(100% 기준)의 최종 폴백. 물리 window auto-detect 개념 폐기 —
 // resolveBudget 이 하네스별 오버라이드 > generic > 이 기본 순으로 예산 하나를 해소한다.
 const CTX_WINDOW_TOKENS_DEFAULT = 200000;
@@ -178,7 +178,7 @@ function resolveThresholds(conf) {
   return { nudge_pct: nudge, stop_pct: stop };
 }
 
-// ── 순수 함수: ctx 예산 해소 (하네스별 · ADR-0041) ────────────────────────────
+// ── 순수 함수: ctx 예산 해소 (하네스별) ────────────────────────────
 // 정지/넛지 분모(100% 기준) = 해소된 예산 하나 (물리한도 개념 폐기). precedence:
 //   harness.<name>.ctx_window_tokens  (하네스별 오버라이드)
 //   > ctx.window_tokens             (generic)
@@ -216,7 +216,7 @@ function accumulateTokens(tokens) {
   return input + output + reasoning + cacheRead + cacheWrite;
 }
 
-// ── 순수 함수: 2단(strong) nudge 임계 (stop_pct + margin·nudge_pct 캡·T-0328) ────────
+// ── 순수 함수: 2단(strong) nudge 임계 (stop_pct + margin·nudge_pct 캡) ────────
 // nudge2 밴드 = stop_pct < 잔여 ≤ 이 값. margin(+3)이 nudge 밴드를 넘지 않게 min 으로 캡해
 // nudge2 가 nudge 밴드 밖(ok 영역)으로 새지 않는다. claude ctx_guard.nudge2_threshold 와 동형.
 function nudge2Threshold(thresholds) {
@@ -226,9 +226,9 @@ function nudge2Threshold(thresholds) {
 }
 
 // ── 순수 함수: ctx 상태 판정 (테스트 핵심) ──────────────────────────────────
-// used: accumulateTokens 결과, limit: 해소된 ctx 예산(resolveBudget·ADR-0041·구 물리한도 폐기),
+// used: accumulateTokens 결과, limit: 해소된 ctx 예산(resolveBudget·구 물리한도 폐기),
 // thresholds: resolveThresholds 결과. 반환: { remainingPct, usedPct, level: "ok"|"nudge"|"nudge2"|"stop" }.
-//   nudge2(T-0328) = 구 stop 경계 직전 강한 유도 밴드. limit 미상이면 level "ok".
+//   nudge2= 구 stop 경계 직전 강한 유도 밴드. limit 미상이면 level "ok".
 function computeCtxState(used, limit, thresholds) {
   const u = Number(used) || 0;
   const lim = Number(limit);
@@ -585,7 +585,7 @@ function createCompactionCheckpoint(
 
 // ── plugin 팩토리 (진입점 ../plugins/ctx-guard.js 가 ESM named-export 로 재노출·opencode autoload) ──
 const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
-  // 로드 검증 마커 (env-gated·라이브-로드 게이트 T-0283 전용·실 세션엔 무음). opencode 는 성공 로드
+  // 로드 검증 마커 (env-gated·라이브-로드 게이트 전용·실 세션엔 무음). opencode 는 성공 로드
   // 시 positive 로그를 남기지 않아(실측 1.17.18) — factory 실행을 관측하려면 스스로 마커를 낸다.
   // 훅 로직 무관 — CTX_GUARD_LOAD_PROBE 미설정 시 완전 무음(프로덕션 기본).
   if (process.env.CTX_GUARD_LOAD_PROBE) {
@@ -775,7 +775,7 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
       if (session.cycleEpoch !== cycleEpoch) return;
 
       const used = accumulateTokens(info.tokens);
-      const limit = resolveBudget(loadConf(), "opencode"); // ctx 예산 (물리한도 폐기·ADR-0041).
+      const limit = resolveBudget(loadConf(), "opencode"); // ctx 예산 (물리한도 폐기).
       const t = thresholds();
       const state = computeCtxState(used, limit, t);
 
@@ -802,7 +802,7 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
     // experimental.chat.system.transform 은 모델 호출 전 system[] 을 비차단 수정한다(@opencode-ai
     // /plugin Hooks·opencode 1.17.11 타입 확인). chat.message 의 full Part 구성(id/sessionID/
     // messageID 필수)보다 string push 가 안전·정확. ⚠️ experimental namespace — opencode 가 이 surface
-    // 를 바꾸면 *조용히* 주입이 멈출 수 있다. 호환성 게이트 = T-0183 Tier2
+    // 를 바꾸면 *조용히* 주입이 멈출 수 있다. 호환성 게이트 = Tier2
     // 라이브 smoke(버전 회귀 포착)·codex 권고 반영. 변동 시 안정 chat.message 전환 검토.
     // 멱등: in-memory payload는 자기가 stage한 generation만 함께 지운다.
     // 새 프로세스라 in-memory payload가 없으면 최신 marker를 선점·읽기·소거하고,
@@ -837,7 +837,7 @@ const CtxGuardPlugin = async ({ client, directory, worktree, $ }) => {
 
 // CommonJS export — node 자가검증(require)·ESM shim(../plugins/ctx-guard.js) 양쪽 소비.
 // opencode 는 이 모듈을 직접 로드하지 않는다(plugins/ 만 스캔) — 얇은 ESM shim 이 CtxGuardPlugin 만
-// named-export 해 로드 규약(export=단일 함수·실측 T-0283)을 만족한다. 여기 export 는 순수함수+상수+팩토리.
+// named-export 해 로드 규약(export=단일 함수·실측)을 만족한다. 여기 export 는 순수함수+상수+팩토리.
 module.exports = {
   CtxGuardPlugin,
   // 순수 결정 로직 (테스트·자가검증용 export).
