@@ -179,6 +179,11 @@ DELEGATE_ROLES = frozenset(
 )
 DELEGATE_TIERS = frozenset({"normal", "hard"})
 _WORKTREE_PLACEHOLDER = "<worktree>"
+# 훅은 티켓 컨텍스트를 모른다(Agent 도구 입력엔 ticket 필드가 없다) — 실값을 채울 수 없으므로
+# 사람이 채워 넣을 자리만 처방한다. code-reviewer 는 이게 없으면 실행 자체가 usage error(--ticket
+# 또는 --gate 필수)이고, 그 밖 역할도 이게 없으면 라운드 파일이 안 생겨 PM 이 수동 prepare 로
+# 우회한다(그 우회가 cross 역할에서 지금 거부된다 — 두 처방이 서로를 막는 교착이었다).
+_TICKET_PLACEHOLDER = "<T-NNNN>"
 _CODEX_OBSERVATION_RELATIVE_PATH = Path(
     ".project_manager/.local/delegate-channel/codex-observations.jsonl"
 )
@@ -468,7 +473,7 @@ def _remediation(role: str, tier: str) -> str:
         f"(경로: `{prompt_file.as_posix()}`) "
         f"2) backbone `{_prescribed_interpreter()} .project_manager/tools/pm_delegate.py "
         f"--role {role}{tier_arg} --prompt-file {prompt_file.as_posix()} "
-        f"--cwd {_WORKTREE_PLACEHOLDER}`)"
+        f"--cwd {_WORKTREE_PLACEHOLDER} --ticket {_TICKET_PLACEHOLDER}`)"
     )
 
 

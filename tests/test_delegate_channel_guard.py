@@ -421,7 +421,7 @@ def test_deny_json_schema_and_remediation(guard):
                 f"2) backbone `{guard._prescribed_interpreter()} "
                 ".project_manager/tools/pm_delegate.py --role researcher "
                 "--prompt-file .project_manager/.local/delegate/manual-researcher-normal-prompt.md "
-                "--cwd /fixture/worktree`)"
+                "--cwd /fixture/worktree --ticket <T-NNNN>`)"
             ),
         }
     }
@@ -444,6 +444,7 @@ def test_hook_deny_remediation_materializes_payload_cwd(guard, tmp_path):
         "--prompt-file "
         ".project_manager/.local/delegate/manual-developer-normal-prompt.md"
     ) in reason
+    assert "--ticket <T-NNNN>" in reason
     assert "<파일>" not in reason
     assert "<worktree>" not in reason
 
