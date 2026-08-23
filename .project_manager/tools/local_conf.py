@@ -315,12 +315,6 @@ def render_adapter_block(style: str) -> str:
                 f"const LEGACY_CONF_KEYS = [\n{body}\n];\n"
                 f'const LEGACY_CONF_KEY_PREFIX = "{LEGACY_SUFFIX_PREFIX}";\n'
                 f"// {ADAPTER_BLOCK_END}")
-    if style == "sh":
-        body = " ".join(names)
-        return (f"# {ADAPTER_BLOCK_BEGIN}\n"
-                f"legacy_conf_keys='{body}'\n"
-                f"legacy_conf_key_prefix='{LEGACY_SUFFIX_PREFIX}'\n"
-                f"# {ADAPTER_BLOCK_END}")
     raise ValueError(f"모르는 생성 스타일: {style}")
 
 

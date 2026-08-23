@@ -418,7 +418,7 @@ def test_the_notation_guard_field_of_view_matches_the_shipped_surface():
                     "templates/codex/pm-update.cmd",
                     "templates/opencode/.opencode/lib/ctx-guard-core.cjs",
                     "docs/portability.md", "docs/manual-import.md",
-                    ".claude/run_tests_hook.sh", ".project_manager/tools/board.py",
+                    ".project_manager/tools/board.py",
                     ".project_manager/tools/pm_update.py"):
         assert relpath in scanned, relpath
 
@@ -823,11 +823,9 @@ def test_opencode_js_core_stops_on_legacy_conf_before_resolving_values(
     "templates/codex/.codex/pm_orch_codex.py",
     "templates/opencode/.opencode/pm_orch_opencode.py",
     "templates/opencode/.opencode/lib/ctx-guard-core.cjs",
-    ".claude/run_tests_hook.sh",
-    "templates/claude_code/.claude/run_tests_hook.sh",
 ])
 def test_adapter_blocked_key_block_is_generated_not_hand_copied(conf_module, relpath):
     """각 파서가 품은 차단 키 선언이 엔진 생성 산출과 **글자 단위로** 같다(사본 drift 0)."""
-    style = {".py": "python", ".cjs": "js", ".sh": "sh"}[Path(relpath).suffix]
+    style = {".py": "python", ".cjs": "js"}[Path(relpath).suffix]
     assert conf_module.render_adapter_block(style) in (
         REPO / relpath).read_text(encoding="utf-8")
