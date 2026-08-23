@@ -222,6 +222,11 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 ENGINE_REV = "v1.7.8"
 
 
+# 신규 공유 board 에 스캐폴드하는 상태 디렉토리 — board `STATUS_DIRS` 와 같은 집합(리터럴 · 동치는
+# tests/test_status_dirs_single_truth.py 가 값으로 고정한다).
+_SEEDED_STATUS_DIRS: tuple[str, ...] = ("open", "claimed", "blocked", "done", "discarded")
+
+
 def _runtime_skill_entry(skill: str) -> str:
     """현재 실행 하네스의 사용자 호출 표기(Codex env marker 외 slash)."""
     prefix = "$" if os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_CI") else "/"
@@ -8556,7 +8561,7 @@ def setup_board_submodule(dest_root: Path, remote_url: str) -> int:
             shutil.copytree(copied_tickets, tmp_clone / "tickets")
             # board.STATUS_DIRS 와 같은 집합 — 처분 종결 `discarded` 포함. 신규 공유
             # board 는 빈 상태 디렉토리도 추적돼야 다른 clone 이 checkout 에서 받는다.
-            for status in ("open", "claimed", "blocked", "done", "discarded"):
+            for status in _SEEDED_STATUS_DIRS:
                 sd = tmp_clone / "tickets" / status
                 sd.mkdir(parents=True, exist_ok=True)
                 (sd / ".gitkeep").touch(exist_ok=True)  # 빈 status dir git 추적(합류 유저 checkout).

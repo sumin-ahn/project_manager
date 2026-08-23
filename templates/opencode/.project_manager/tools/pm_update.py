@@ -5362,8 +5362,10 @@ _BOARD_TICKET_DIR_CANDIDATES: tuple[tuple[str, ...], ...] = (
     (".project_manager", "board", "tickets"),
     (".project_manager", "wiki", "tickets"),
 )
+# board `STATUS_DIRS` + draft 격리 디렉토리. stdlib-only 라 board 를 import 하지 않는 리터럴이며,
+# board 와의 동치는 tests/test_status_dirs_single_truth.py 가 값으로 고정한다.
 _BOARD_TICKET_SCAN_DIRS: tuple[str, ...] = (
-    "open", "claimed", "blocked", "done", ".drafts")
+    "open", "claimed", "blocked", "done", "discarded", ".drafts")
 
 
 def _has_legacy_growth_marker_line(text: str) -> bool:
