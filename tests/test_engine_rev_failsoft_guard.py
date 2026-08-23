@@ -1085,7 +1085,22 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   · `pm_principles.py:_write_json` — 기계 출력 한 줄이 형제 로드 실패를 통째로 삼키고 stdout
     #     폴백으로 내려가던 자리. `pm_log._write_machine_line` 과 같은 공용 seam 관용구로 바꿔
     #     경계 자체가 없어졌다(형제 손상은 fail-loud · 부모는 비영 rc 를 이미 fail-open 으로 다룬다).
-    assert len(report.boundaries) == 245, "propagation sweep boundary ratchet changed"
+    # 246 = 245 + 1. 통합 브랜치(T-0761)에 래칫 갱신 없이 쌓여 있던 경계 하나:
+    #   + `board.py:lint_local_conf_keys:17850` reraises — local.conf 레지스트리 밖 키 advisory
+    #     조회면. 판독 실패(`local_conf.load` 예외)를 빈 목록(관측 0)으로 접는 lint 관용구지만,
+    #     이 조회도 rev-검증 형제(`local_conf`)를 지나므로 다른 conf 조회면(`lint_local_conf`)과
+    #     같은 규칙으로 마킹된 skew 만 그대로 올린다.
+    # 247 = 246 + 1. livegate drift 게이트 seam 이 marked skew 를 판정 불능으로 잘못 흘리던
+    #   결함(F-012)을 닫으며 얻은 경계:
+    #   + `board.py:_refuse_release_for_engine_drift:8833` terminal-report — 이전엔 `drift_changes`
+    #     호출을 감싸는 핸들러가 아예 없어 마킹된 skew 가 무보호 traceback 으로 죽으며 사전 pass
+    #     기록을 그대로 남겼다(false-green 잔존). 이제 마킹된 skew 를 판정 불능이 아니라 이 게이트의
+    #     가장 강한 확정 양성으로 번역한다 — must-fix 축과 같은 원자 fail 기록
+    #     (status=fail·reason=engine-drift·n=0·rc=null, 사전 pass 를 덮어쓴다) 뒤
+    #     `_report_engine_rev_skew_at_terminal` 로 rc1 을 반환해 라이브 wave 를 돌리지 않는다.
+    #     마킹 안 된 다른 `RuntimeError`(예 `EmptyShippingInventoryError`)는 그 핸들러 밖 `raise` 로
+    #     종전대로 전파한다(non-skew 판정 경로 불변).
+    assert len(report.boundaries) == 247, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

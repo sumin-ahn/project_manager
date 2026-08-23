@@ -8814,6 +8814,11 @@ def _refuse_release_for_engine_drift(flag: Path, cwd: str) -> int:
     아니라 이 형상엔 적용 불가이므로 stderr 경고 1줄만 내고 기존 경로를 그대로 진행한다(upstream
     미등록 채택자의 릴리즈를 막지 않는다). fail 기록은 must-fix 축과 **같은 기록 함수**
     (`_write_json_atomic`)를 쓴다(손기록 경로 신설 금지).
+
+    마킹된 엔진 사본 skew(`pm_update.drift_changes` 가 접지 않고 그대로 올리는 그 예외 —
+    `_is_engine_rev_skew`)는 판정 불능이 아니라 이 게이트의 가장 강한 **확정 양성**이다 — 사본끼리
+    rev 가 갈린 트리는 drift 판정 자체가 신뢰 불가하므로, must-fix 축과 같은 원자 fail 기록으로
+    번역해 rc1·라이브 wave 미실행을 고정한다(사전 pass 기록이 남아 있어도 이 fail 로 교체한다).
     """
     pm_update = _load_pm_update_module()
     if pm_update is None:
@@ -8823,7 +8828,19 @@ def _refuse_release_for_engine_drift(flag: Path, cwd: str) -> int:
         print("livegate: 경고 — pm_update 로더 실패로 엔진 drift 판정 불능(무차단으로 진행).",
               file=sys.stderr)
         return 0
-    changes = pm_update.drift_changes(REPO)
+    try:
+        changes = pm_update.drift_changes(REPO)
+    except RuntimeError as exc:
+        if _is_engine_rev_skew(exc):
+            # 원자 fail 기록(must-fix 축과 같은 기록 함수) 뒤 표준 skew 진단 경계로 넘긴다 —
+            # 사전 pass 기록이 남아 있어도 이 fail 로 교체한다(false-green 잔존 0).
+            flag.parent.mkdir(parents=True, exist_ok=True)   # 기록 경로 보장 (must-fix 거부와 같은 규칙)
+            _write_json_atomic(flag, {
+                "head": _git_head_at(cwd), "status": "fail", "n": 0, "rc": None,
+                "ts": now_utc(), "reason": _LIVEGATE_ENGINE_DRIFT_REASON,
+            })
+            return _report_engine_rev_skew_at_terminal(exc)
+        raise   # 마킹 안 된 RuntimeError(예 EmptyShippingInventoryError)는 종전대로 전파.
     if changes is None:
         print("livegate: 경고 — 실행 엔진 사본 drift 판정 불능(upstream 미설정/URL/경로 미존재/"
               "manifest 부재) — 이 게이트는 이 형상에 적용되지 않는다(무차단). upstream 을 등록하려면 "

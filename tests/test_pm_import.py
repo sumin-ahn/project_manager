@@ -276,7 +276,8 @@ def test_sed_exclude_floor_and_canonical_derivation(pm_import):
     """치환-제외가 하드코딩/모듈-시점 상수 대신 파생이고, 리터럴 floor·canonical manifest 파생 모두
     현행 방법론 문서 집합과 일치한다.
 
-    - SED_EXCLUDE_FLOOR = broken-manifest fail-soft floor(should-fix) == {pm_role, pm_playbook}.
+    - SED_EXCLUDE_FLOOR = broken-manifest fail-soft floor(should-fix) ==
+      {pm_role, pm_playbook, pm_principles}.
     - 이 repo canonical manifest 파생도 동일(직속 템플릿 pm_state.template.md·서브디렉토리
       _template.md 는 비편입).
     - 모듈-시점 상수 `SED_EXCLUDE_RELPATHS` 는 제거됐다(must-fix — dest 시점 산출로 대체)."""
@@ -316,7 +317,7 @@ def test_sed_exclude_auto_includes_new_methodology_doc(pm_import, tmp_path):
 
 def test_sed_exclude_missing_manifest_floors_not_empty(pm_import, tmp_path):
     """manifest 부재/로드 실패 시 빈 집합이 아니라 리터럴 floor 로 폴백 — broken-manifest 엣지에서도
-    기존 제외(pm_role·pm_playbook)를 조용히 잃지 않는다(should-fix)."""
+    기존 제외(pm_role·pm_playbook·pm_principles)를 조용히 잃지 않는다(should-fix)."""
     derived = pm_import._derive_sed_exclude_relpaths(tmp_path / "absent.manifest")
     assert derived == pm_import.SED_EXCLUDE_FLOOR
     assert derived == frozenset(ENGINE_DOCS_KEEP_LITERAL)

@@ -655,6 +655,42 @@ def test_record_blocks_on_engine_drift_before_live_wave(live_board, monkeypatch,
     assert "pm_update.py" in err   # 처방(재동기 커맨드)
 
 
+def test_record_overwrites_existing_pass_when_engine_copy_shows_marked_skew(
+        live_board, monkeypatch, capsys):
+    """마킹된 사본 skew(형제끼리 rev 가 갈린 트리)는 drift 판정 불능이 아니라 이 게이트의 확정
+    양성이다 — **사전 pass 기록이 남아 있어도** fail(reason=engine-drift)로 교체하고(false-green
+    잔존 0) rc1 · 라이브 wave(`shell=True` 호출) 미실행. 실 drift 픽스처 위에서 `drift_changes`가
+    실제로 부르는 `_resolve_engine_sync_plan`만 스텁으로 skew 를 주입한다(board 경유 전 구간 실행)."""
+    upstream = live_board._proj.parent / "upstream"
+    _seed_engine_drift_fixture(live_board.REPO, upstream, drift=True)
+    live_board.LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    live_board.LIVEGATE_FLAG.write_text(json.dumps(
+        {"head": "cafef00dcafef00d0011223344556677", "status": "pass",
+         "n": 22, "rc": 0, "ts": "2026-07-03T00:00:00+00:00"}), encoding="utf-8")
+    real_pm_update = live_board._load_pm_update_module()
+    skew = RuntimeError("injected engine rev skew")
+    skew._engine_rev_skew = True
+    monkeypatch.setattr(
+        real_pm_update, "_resolve_engine_sync_plan",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(skew),
+    )
+    monkeypatch.setattr(live_board, "_load_pm_update_module", lambda: real_pm_update)
+    real_run = live_board.subprocess.run
+    spy = _ShellOnlySpy(real_run, rc=0, stdout="22 passed, 810 deselected in 45.67s")
+    monkeypatch.setattr(live_board.subprocess, "run", spy)
+    rc = live_board.cmd_livegate(_rec_args())
+    assert rc == 1
+    assert spy.calls == [], "마킹된 skew 인데 라이브 wave(shell=True 호출) 가 실행됐다"
+    data = _read_flag(live_board)
+    assert data["status"] == "fail", "사전 pass 기록이 덮이지 않고 남았다(false-green 잔존)"
+    assert data["reason"] == "engine-drift"
+    assert data["rc"] is None
+    assert data["n"] == 0
+    err = capsys.readouterr().err
+    assert "injected engine rev skew" in err
+    assert "pm-update" in err   # 재동기 안내
+
+
 def test_record_proceeds_when_engine_copy_in_sync(live_board, monkeypatch, capsys):
     """drift 0(byte-identical) — 기존 pass 경로와 기록 바이트·rc·stdout 이 동일하다(역방향 확인)."""
     upstream = live_board._proj.parent / "upstream"
