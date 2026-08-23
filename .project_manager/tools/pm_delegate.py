@@ -8686,6 +8686,37 @@ def _cmd_raw_close(argv: list[str]) -> int:
     return 0
 
 
+def _print_orphan_raw_summary(
+    relay, output_dir: Path | None, ledger_path: Path, *, limit: int,
+) -> None:
+    """장부 미참조 엔진 명명 원문을 경고 1줄 + 읽기 전용 목록으로 표면화한다.
+
+    삭제는 하지 않는다 — 목록화만 해서 사용자가 직접 처분하게
+    한다. delegate·review 두 디렉터리를 모두 스캔한다(장부는 두 표면이 공유하는 한 파일).
+    """
+    repo_override = _CONFIG_REPO_OVERRIDE or REPO
+    temp_dir = Path(_gettempdir())
+    delegate_dir, _ = relay.raw_storage_paths(
+        repo_override, "delegate", output_dir, temp_dir=temp_dir,
+    )
+    review_dir, _ = relay.raw_storage_paths(
+        repo_override, "review", output_dir, temp_dir=temp_dir,
+    )
+    summary = relay.scan_orphan_raw_files((delegate_dir, review_dir), ledger_path)
+    if summary.count == 0:
+        return
+    print(
+        f"경고: 장부 미참조 원문 {summary.count}건 {summary.total_bytes}바이트 "
+        "(엔진 명명 · 삭제 안 함 · 목록은 아래)"
+    )
+    shown = summary.paths[:limit]
+    for path in shown:
+        print(f"  · {path.resolve()}")
+    omitted = summary.count - len(shown)
+    if omitted > 0:
+        print(f"  · (이하 {omitted}건 생략 — --limit 상향 시 더 표시)")
+
+
 def _cmd_raw(argv: list[str]) -> int:
     """공유 장부의 raw 조회 또는 명시 레코드 마감을 수행한다."""
     if argv and argv[0] == "close":
@@ -8715,6 +8746,7 @@ def _cmd_raw(argv: list[str]) -> int:
     if args.limit <= 0:
         parser.error("--limit은 양수여야 합니다")
     output_dir = Path(args.output_dir) if args.output_dir is not None else None
+    relay = _load_relay()
     _raw_dir, ledger_path = _raw_storage(output_dir)
     resolved_ledger = ledger_path.resolve()
     print(f"조회 장부: {resolved_ledger}")
@@ -8724,24 +8756,27 @@ def _cmd_raw(argv: list[str]) -> int:
                 "경고: 다른 엔진 사본 장부가 있습니다"
                 f"(이 조회에서는 읽지 않음): {peer_ledger}"
             )
-    rows = _load_relay().raw_records(
+    rows = relay.raw_records(
         ledger_path, unfinished_only=args.unfinished
     )[:args.limit]
     label = "미마감 raw" if args.unfinished else "최근 raw"
     if not rows:
         print(f"{label} 없음")
-        return 0
-    print(f"{label} {len(rows)}건")
-    for row in rows:
-        status = (
-            f"완료(rc={row.get('rc')})"
-            if row.get("finished_at") is not None else "미마감"
-        )
-        print(
-            f"{row.get('started_at')} · {status} · {row.get('surface')} · "
-            f"{row.get('harness')} · role={row.get('role')} · "
-            f"pid={row.get('pid')} · raw={row.get('raw_path')}"
-        )
+    else:
+        print(f"{label} {len(rows)}건")
+        for row in rows:
+            status = (
+                f"완료(rc={row.get('rc')})"
+                if row.get("finished_at") is not None else "미마감"
+            )
+            print(
+                f"{row.get('started_at')} · {status} · {row.get('surface')} · "
+                f"{row.get('harness')} · role={row.get('role')} · "
+                f"pid={row.get('pid')} · raw={row.get('raw_path')}"
+            )
+    # 고아(장부 미참조) 원문 표면화는 rows 유무와 독립이다 — 장부가 텅 비어 있어도(전량 prune)
+    # 디스크에 원문이 남아 있을 수 있고 그게 바로 이 티켓이 잡는 역전이다.
+    _print_orphan_raw_summary(relay, output_dir, ledger_path, limit=args.limit)
     return 0
 
 

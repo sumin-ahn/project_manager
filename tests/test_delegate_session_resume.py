@@ -127,7 +127,8 @@ def _argv(prompt: Path, cwd: Path, out_dir: Path, *extra: str,
 # ── 장부 시드 (실 엔진 경로로 기록 — 대역 장부를 만들지 않는다) ────────────────────
 
 def _recent_seed_time() -> datetime.datetime:
-    """prune 창(완료 7일·미마감 30일) 안에 항상 머무는 시드 기준 시각(고정 달력 날짜 금지)."""
+    """prune 완료/미마감 창(pm_relay.RAW_LEDGER_COMPLETED_DAYS·UNFINISHED_DAYS) 안에 항상
+    머무는 시드 기준 시각(고정 달력 날짜 금지)."""
     return datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
 
 
@@ -136,8 +137,8 @@ def _seed_record(relay, ledger_path: Path, *, role: str = "code-reviewer",
                  surface: str = "delegate", harness: str = "claude",
                  finish: bool = True, extra: dict | None = None,
                  start_extra: dict | None = None) -> str:
-    # 장부 prune(pm_relay.RAW_LEDGER_COMPLETED_DAYS=7·UNFINISHED_DAYS=30) 창 안에 항상 머무는
-    # 상대 시각. 고정 달력 날짜를 쓰면 그 날짜 + 7일이 지나는 순간 시드가 prune 되는 시간폭탄이 된다.
+    # 장부 prune(pm_relay.RAW_LEDGER_COMPLETED_DAYS·UNFINISHED_DAYS) 창 안에 항상 머무는 상대
+    # 시각. 고정 달력 날짜를 쓰면 그 날짜 + 보존일수가 지나는 순간 시드가 prune 되는 시간폭탄이 된다.
     started = started or _recent_seed_time()
     record_id = relay.start_raw_record(
         ledger_path,
