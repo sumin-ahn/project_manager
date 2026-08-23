@@ -977,12 +977,17 @@ def _second_review_slot(pm_home: Path) -> Path:
     return worktree
 
 
-def _round_count(anchor: Path, gate: str) -> int:
-    """앵커의 라운드 장부에 기록된 게이트 전송 횟수 (장부 부재 = 0)."""
+def _round_entry(anchor: Path, gate: str) -> dict:
+    """앵커의 라운드 장부에 기록된 게이트 항목 (장부/항목 부재 = 빈 dict)."""
     path = anchor / ".project_manager" / ".local" / "review_rounds.json"
     if not path.is_file():
-        return 0
-    return _ledger(path).get(gate, {}).get("count", 0)
+        return {}
+    return _ledger(path).get(gate, {})
+
+
+def _round_count(anchor: Path, gate: str) -> int:
+    """앵커의 라운드 장부에 기록된 게이트 전송 횟수 (장부 부재 = 0)."""
+    return _round_entry(anchor, gate).get("count", 0)
 
 
 def test_round_ledger_counts_continue_across_diff_roots(
@@ -1054,31 +1059,37 @@ def _write_legacy_round_ledger(anchor: Path, gate: str, entry: dict) -> Path:
     return path
 
 
-def test_legacy_blocking_gate_is_inherited_and_still_blocks(
+def test_legacy_gate_is_inherited_and_the_retired_field_is_dropped(
         external, monkeypatch, tmp_path, capsys):
-    """차단 중이던 legacy 게이트는 앵커 이동 후에도 rc 4 — 승계 고지 + PM 홈으로 이관된다."""
+    """legacy 게이트는 앵커 이동 후에도 그대로 승계되고, 폐지 필드는 그 경로에서 떨어진다.
+
+    반례 형상 (i) — `rounds` 가 비고 `count` 만 있는 승계 항목이다. 수렴 축의 입력이 0 이라
+    전에는 전송-판정 축만이 이 게이트를 막았고, 그 축이 사라진 지금은 라운드가 열린다(값 단언).
+    폐지 필드는 장부 스캔이 아니라 이 정규화 경로에서 접히므로 승계분도 같은 규칙이다."""
     pm_home, worktree = _review_slot_family(tmp_path)
     _stub_reviewer(external, monkeypatch)
     gate = "T-" + "0001"
-    _write_legacy_round_ledger(worktree, gate, {"count": 4, "acked_through": 0})
+    _write_legacy_round_ledger(worktree, gate, {"count": 4, "acked_through": 2})
     monkeypatch.setattr(external, "REPO", worktree)
 
     rc = external.main(["--paths", "seed.txt", "--gate", gate, "--force"])
 
     err = capsys.readouterr().err
-    assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
+    assert rc == 0                                # 제거된 축이 막던 자리 — 이제 열린다
     assert "legacy 라운드 장부 승계" in err
-    assert f"gate={gate} verdicts=4 incomplete=0" in err
-    home_ledger = pm_home / ".project_manager" / ".local" / "review_rounds.json"
-    assert str(home_ledger) in err                # 상한 안내가 실 장부 절대경로를 찍는다
-    assert "오염 진단으로 무효화된" in err        # 미완 축에 오염이 포함됨을 고지
-    assert _round_count(pm_home, gate) == 4       # 차단 상태가 새 앵커로 이관됨(재승계 불필요)
+    assert f"gate={gate} verdicts=4 incomplete=0" in err   # 승계 고지 집계는 전체 레코드 기준
+    assert f"게이트 {gate}" in err and "acked_through=2" in err   # 폐지 필드 알림(승계 경로)
+    home_entry = _round_entry(pm_home, gate)
+    assert home_entry["count"] == 5               # 승계 4 + 이번 예약 1
+    assert "acked_through" not in home_entry      # 승계분도 스키마에서 떨어진다
 
-    # 2회차 — 이미 이관됐으므로 재승계 없이(고지 1회) 계속 차단한다.
+    # 2회차 — 이미 이관됐으므로 재승계도, 폐지 필드 알림도 없다(장부 재기록 뒤 대상 0).
     assert external.main(
         ["--paths", "seed.txt", "--gate", gate, "--force"]
-    ) == external.EXIT_ROUND_LIMIT_EXCEEDED
-    assert "legacy 라운드 장부 승계" not in capsys.readouterr().err
+    ) == 0
+    err = capsys.readouterr().err
+    assert "legacy 라운드 장부 승계" not in err
+    assert "acked_through" not in err
 
 
 def test_inherited_gate_has_no_round_extension_path(
@@ -1090,7 +1101,7 @@ def test_inherited_gate_has_no_round_extension_path(
     pm_home, worktree = _review_slot_family(tmp_path)
     _stub_reviewer(external, monkeypatch)
     gate = "T-" + "0001"
-    _write_legacy_round_ledger(worktree, gate, {"count": 4, "acked_through": 0})
+    _write_legacy_round_ledger(worktree, gate, {"count": 4})
     monkeypatch.setattr(external, "REPO", worktree)
 
     assert external.main(
@@ -1107,7 +1118,7 @@ def test_gate_absent_from_legacy_starts_from_zero(
     """legacy 에 없는 게이트는 승계 없이 0 에서 시작한다 (없는 카운트를 만들어내지 않는다)."""
     pm_home, worktree = _review_slot_family(tmp_path)
     _stub_reviewer(external, monkeypatch)
-    _write_legacy_round_ledger(worktree, "T-" + "0001", {"count": 4, "acked_through": 0})
+    _write_legacy_round_ledger(worktree, "T-" + "0001", {"count": 4})
     fresh_gate = "T-" + "0002"
     monkeypatch.setattr(external, "REPO", worktree)
 
@@ -1126,7 +1137,7 @@ def test_legacy_round_inheritance_happens_once_per_gate(
     pm_home, worktree = _review_slot_family(tmp_path)
     _stub_reviewer(external, monkeypatch)
     gate = "T-" + "0001"
-    _write_legacy_round_ledger(worktree, gate, {"count": 1, "acked_through": 0})
+    _write_legacy_round_ledger(worktree, gate, {"count": 1})
     monkeypatch.setattr(external, "REPO", worktree)
 
     assert external.main(["--paths", "seed.txt", "--gate", gate, "--force"]) == 0
@@ -1134,7 +1145,7 @@ def test_legacy_round_inheritance_happens_once_per_gate(
     assert _round_count(pm_home, gate) == 2       # 승계 1 + 이번 예약 1
 
     # legacy 를 차단 수위로 바꿔도 두 번째 실행은 쳐다보지 않는다(재승계면 rc 4 로 막혔을 값).
-    _write_legacy_round_ledger(worktree, gate, {"count": 99, "acked_through": 0})
+    _write_legacy_round_ledger(worktree, gate, {"count": 99})
 
     assert external.main(["--paths", "seed.txt", "--gate", gate, "--force"]) == 0
     assert "legacy 라운드 장부 승계" not in capsys.readouterr().err

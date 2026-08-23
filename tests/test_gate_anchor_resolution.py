@@ -1250,14 +1250,13 @@ def test_unfinished_round_record_is_counted_separately():
     external = _load("external_review_unfinished_round")
     entry = {
         "count": 3,
-        "acked_through": 0,
         "records": [
             {"number": 1, "finished_at": "done", "verdict": True},
             {"number": 2, "finished_at": "done", "verdict": False},
             {"number": 3},
         ],
     }
-    assert external._unacked_round_counts(entry) == (3, 1, 2)
+    assert external._round_counts(entry) == (3, 1, 2)
 
 
 def _cross_owned_slot(root, *, declare_review_paths: bool = True):

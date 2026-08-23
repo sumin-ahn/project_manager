@@ -366,7 +366,7 @@ def test_recalculate_actual_ledger_file_repairs_false_divergence_and_opens_next_
         for row in repaired["rounds"]
     ] == [pd.INTERNAL_RECALCULATION_OK, pd.INTERNAL_RECALCULATION_OK]
     assert pd._load_review_rounds().convergence_refusal(
-        repaired, pd.INTERNAL_REVIEW_ROUNDS_MAX, wall_timeout_sec=60,
+        repaired, pd.internal_review_rounds_max(), wall_timeout_sec=60,
     ) is None
     next_round = pd._reserve_internal_review_round(
         gate,
@@ -1245,7 +1245,7 @@ def test_t0663_shape_pm_fixed_opens_completion_and_is_distinctly_reported(
 ):
     """상한 3+confirm-fix 소진·마지막 반려·raw 결속 없는 손기입 형상을 정식 처분으로 닫는다."""
     gate = "T-0663"
-    for _index in range(pd.INTERNAL_REVIEW_ROUNDS_MAX):
+    for _index in range(pd.internal_review_rounds_max()):
         budget, _trace = _consume(pd, gate, _reply(REJECT_REPLY))
         assert budget.refused_rc is None
     confirmation, _trace = _consume(
@@ -1338,7 +1338,7 @@ def test_pm_fixed_rejects_empty_freeform_incomplete_and_unverifiable_evidence(
     pd, capsys, evidence,
 ):
     gate = "T-PMF-002"
-    for _index in range(pd.INTERNAL_REVIEW_ROUNDS_MAX):
+    for _index in range(pd.internal_review_rounds_max()):
         _consume(pd, gate, _reply(REJECT_REPLY))
     _consume(pd, gate, _reply(REJECT_REPLY), confirm_fix=True)
 
@@ -1638,3 +1638,126 @@ def test_gate_flags_are_code_reviewer_only(pd):
     with pytest.raises(SystemExit) as exc:
         pd._validate_args(parser, args)
     assert exc.value.code == 2
+
+
+# ── 내부 라운드 수렴 상한 conf 화 (T-0772 · 병합 T-0773) ────────────────────
+#
+# 추가 리뷰어 축은 전부 local.conf 로 조정되는데 내부 축만 코드에 박혀 있었다. 키는 역할 상수에서
+# 파생하고(표기가 갈리는 자리를 만들지 않는다), 값의 소비자는 둘이다 — 다음 라운드 예약 판정과
+# `pm-fixed` 처분의 발동·완료 재검증. 두 소비자가 같은 값을 봐야 상한을 낮춘 채택자가 "선언은
+# 되는데 완료가 막히는" 형상을 만나지 않는다.
+
+
+def _write_internal_conf(pd, values: dict[str, str]) -> Path:
+    """이 클론의 local.conf 를 쓴다 — 노브 해소는 파일에서 온다(상수 주입 아님)."""
+    path = pd._CONFIG_REPO_OVERRIDE / ".project_manager" / "local.conf"
+    path.write_text("".join(f"{key}={value}\n" for key, value in values.items()),
+                    encoding="utf-8")
+    return path
+
+
+def test_internal_rounds_max_key_is_derived_from_the_role_constant(pd):
+    """키 문자열을 하드코딩하지 않는다 — 역할 표기가 갈리는 자리를 원천 차단한다."""
+    assert (pd.INTERNAL_REVIEW_ROUNDS_MAX_KEY
+            == f"delegate.{pd.INTERNAL_REVIEW_ROLE}.rounds_max")
+    assert pd.DEFAULT_INTERNAL_REVIEW_ROUNDS_MAX == 3
+    assert pd.internal_review_rounds_max() == 3          # conf 없음 = 엔진 기본값
+
+
+def test_pm_fixed_help_states_the_configured_limit_not_a_fixed_three(pd, capsys):
+    """F-003 — `rounds resolve --pm-fixed` 도움말이 고정 `상한 3` 으로 오보하지 않는다.
+
+    하향(1)·상향(5) 설정에서도 실제 차단 시점은 설정값을 따르는데(위 conf 회귀), 도움말이
+    숫자를 재타이핑하면 그 설정에서 오보가 난다. 표현은 '설정된 상한'과 기본값·조정 키를
+    함께 밝힌다(값은 상수에서 주입 — 재타이핑 0)."""
+    with pytest.raises(SystemExit) as exc:
+        pd._cmd_rounds(["resolve", "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "상한 3" not in out                                    # 고정 숫자 잔존 가드
+    assert f"설정된 상한(기본 {pd.DEFAULT_INTERNAL_REVIEW_ROUNDS_MAX}" in out
+    # argparse HelpFormatter 가 폭에 맞춰 줄바꿈하므로(키 중간에 개행 가능) 공백을 지우고 비교한다.
+    assert pd.INTERNAL_REVIEW_ROUNDS_MAX_KEY in "".join(out.split())
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "abc", "-1", "3.5"])
+def test_broken_internal_rounds_max_falls_back_to_the_default(pd, raw):
+    """깨진 값은 기본 3 으로 fail-soft — 설정이 위임을 벽돌로 만들지 않는다."""
+    _write_internal_conf(pd, {pd.INTERNAL_REVIEW_ROUNDS_MAX_KEY: raw})
+    assert pd.internal_review_rounds_max() == 3
+
+
+@pytest.mark.parametrize("limit", [1, 3, 5], ids=["하향", "기본", "상향"])
+def test_internal_rounds_max_conf_moves_the_refusal_point(pd, capsys, limit):
+    """설정값이 실제 차단 시점을 옮기고, 거부 문구가 그 값·조정 키를 그대로 싣는다."""
+    _write_internal_conf(pd, {pd.INTERNAL_REVIEW_ROUNDS_MAX_KEY: str(limit)})
+    gate = f"T-RMX-00{limit}"
+    for index in range(limit):
+        budget, _trace = _consume(pd, gate, _reply(REJECT_REPLY))
+        assert budget.refused_rc is None, f"라운드 {index + 1} 는 상한 안이다"
+    assert _entry(pd, gate)["count"] == limit
+    capsys.readouterr()
+
+    refused, _trace = _consume(pd, gate, _reply(REJECT_REPLY))
+
+    assert refused.refused_rc == 1
+    err = capsys.readouterr().err
+    assert f"사용 라운드: {limit}/{limit}" in err
+    assert f"상한 {limit} 도달" in err                     # 값 재타이핑이 아니라 주입
+    assert f"local.conf `{pd.INTERNAL_REVIEW_ROUNDS_MAX_KEY}`" in err
+    assert "(기본 3)" in err
+    assert _entry(pd, gate)["count"] == limit             # 거부는 예약하지 않는다
+
+
+def test_pm_fixed_declaration_and_completion_recheck_share_the_conf_limit(
+    pd, monkeypatch, capsys,
+):
+    """상한을 1 로 낮춘 형상 — 선언과 완료 재검증이 같은 conf 값을 본다.
+
+    board 가 자기 사본(옛 하드코딩 3)을 들면 같은 선언이 완료에서 "라운드 상한 미소진"으로
+    막힌다. 그 차이를 값으로 대조한다."""
+    conf_path = _write_internal_conf(pd, {pd.INTERNAL_REVIEW_ROUNDS_MAX_KEY: "1"})
+    gate = "T-PMF-772"
+    budget, _trace = _consume(pd, gate, _reply(REJECT_REPLY))
+    assert budget.refused_rc is None
+    confirmation, _trace = _consume(
+        pd, gate, _reply(REJECT_REPLY), confirm_fix=True,
+    )
+    assert confirmation.refused_rc is None
+    assert pd._cmd_rounds([
+        "resolve", "--gate", gate, "--pm-fixed", _pm_fixed_evidence(),
+    ]) == 0
+    capsys.readouterr()
+
+    board = pd._load_board()
+    monkeypatch.setattr(
+        board, "_internal_review_rounds_ledger", pd._internal_round_ledger_path,
+    )
+    monkeypatch.setattr(board, "_ticket_search_dirs", lambda: [])
+    monkeypatch.setattr(board, "LOCAL_CONF", conf_path)
+
+    assert board._internal_review_completion_problem(gate) is None
+    # 같은 항목을 옛 하드코딩 값으로 재검증하면 완료가 막힌다(사본 금지의 근거).
+    common = pd._load_review_rounds()
+    problem = common.recorded_pm_fixed_problem(_entry(pd, gate), 3)
+    assert problem is not None and "완료 2/3" in problem
+
+
+def test_internal_ledger_drops_the_retired_ack_field_too(pd, capsys):
+    """공용 스키마의 두 번째 소비자(내부 장부)도 같은 규칙이다 — 폐지 필드는 승계 없이 떨어진다.
+
+    감지 여부는 `_internal_gate_entry_with_retirement` 가 호출부에 반환한다(F-002) — 정규화
+    자체(`_internal_gate_entry`)는 저장 여부를 모르는 조회 seam이라 침묵한다."""
+    common = pd._load_review_rounds()
+    gate = "T-ACK-INT"
+    ledger = {gate: {"count": 3, common.RETIRED_ACK_FIELD: 2, "records": [], "rounds": []}}
+
+    entry, retired_ack = pd._internal_gate_entry_with_retirement(ledger, gate)
+
+    assert entry["count"] == 3
+    assert common.RETIRED_ACK_FIELD not in entry
+    assert retired_ack == 2
+    assert capsys.readouterr().err == ""
+    # 키가 이미 떨어졌으므로 같은 장부를 다시 정규화해도 감지되지 않는다(자연히 1회).
+    pd._internal_gate_entry(ledger, gate)
+    assert capsys.readouterr().err == ""

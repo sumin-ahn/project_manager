@@ -168,7 +168,12 @@ CONVERGENCE_CAP_REACHED = "cap-reached"
 RESOLUTION_PM_FIXED = "pm-fixed"
 PM_FIXED_EVIDENCE_KEY = "pm_fixed_evidence"
 PM_FIXED_USAGE_KEY = "pm_fixed"
-PM_FIXED_INTERNAL_ROUNDS_LIMIT = 3
+
+# 폐지된 라운드 연장 승인이 장부에 남긴 필드. 스키마에서 뺐고 **값을 승계하지도 않는다** —
+# 승인 수위만큼 집계 창을 잘라 판정 수를 줄이던 값이라, 남아 있으면 그 게이트의 집계가 전체
+# 레코드 기준과 달라진다. 버리는 사실은 게이트·값과 함께 loud 로 알린다(정규화가 키를 떨구므로
+# 장부가 다시 기록되면 알릴 대상이 없어 자연히 1회다 — 별도 상태 파일 없음).
+RETIRED_ACK_FIELD = "acked_through"
 
 # 기계 확인(pm-review-confirmation-v1) 증거로 여는 내부 게이트 처분. `pm-fixed` 와
 # 달리 상한·쿼터가 없다(발동 조건은 증거 — `pm_delegate.pm_verified_evidence_problem` 이
@@ -382,13 +387,33 @@ def write_ledger(path: Path | str, ledger: dict) -> None:
             pass
 
 
+def warn_retired_ack_field(gate: str, value: int) -> None:
+    """폐지 필드를 버린다는 사실을 그 게이트·값과 함께 알린다(승계 없음)."""
+    print(
+        f"경고: 라운드 장부의 폐지 필드 `{RETIRED_ACK_FIELD}` 를 버립니다 — 게이트 {gate} · "
+        f"{RETIRED_ACK_FIELD}={value}. 폐지된 라운드 연장 승인이 남긴 값이라 승계하지 "
+        "않으므로, 이 게이트의 집계는 이제 전체 레코드 기준입니다. 장부가 다시 기록되면 이 "
+        "안내는 사라집니다.",
+        file=sys.stderr,
+    )
+
+
 def normalize_gate_entry(
     ledger: dict,
     gate: str,
     *,
     reserved_keys: Sequence[str] = (),
-) -> dict:
-    """gate entry를 external/internal 공용 스키마로 정규화해 장부에 심는다."""
+) -> tuple[dict, int]:
+    """gate entry를 external/internal 공용 스키마로 정규화해 장부에 심고, 폐기 필드
+    (`RETIRED_ACK_FIELD`) 감지 여부를 호출부에 돌려준다 — `(entry, retired_ack)`.
+
+    폐지 필드는 여기서 떨어진다(승계 없음). `retired_ack` 는 버린 원값(0=미검출)이다 —
+    **알림·영속은 이 함수가 하지 않는다**: 순수 조회(report/preview)는 정규화 결과를 저장할
+    수 없어 '1회' 고지를 지킬 수 없고, mutation/차단 경로는 저장 시점을 스스로 정한다(거부
+    직전에라도 저장해야 알림이 실제로 1회가 된다). 호출부가 `retired_ack` 를 보고 자기
+    계약에 맞는 저장·고지 정책을 고른다(`warn_retired_ack_field` 재사용). 접는 자리를
+    정규화로 둬야 조회·기록·legacy 승계가 한 규칙이다(승계 항목은 장부 스캔이 아니라 이
+    경로로 들어온다)."""
     if gate in reserved_keys:
         raise ValueError(
             f"라운드 장부 예약 키를 게이트로 쓸 수 없습니다: {gate!r} "
@@ -406,9 +431,9 @@ def normalize_gate_entry(
     resolution = entry.get("resolution")
     if not isinstance(resolution, dict):
         resolution = None
+    retired_ack = max(0, as_int(entry.get(RETIRED_ACK_FIELD)))
     normalized = {
         "count": as_int(entry.get("count")),
-        "acked_through": as_int(entry.get("acked_through")),
         "sequence": max(
             as_int(entry.get("sequence")),
             *(as_int(row.get("sequence", row.get("number"))) for row in records),
@@ -423,7 +448,7 @@ def normalize_gate_entry(
         "rounds": rounds,
     }
     ledger[gate] = normalized
-    return normalized
+    return normalized, retired_ack
 
 
 def reservation_deadline(wall_timeout_sec: int | None) -> str | None:

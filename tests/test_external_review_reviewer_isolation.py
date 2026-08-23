@@ -806,21 +806,26 @@ def test_partial_workspace_cleanup_survives_read_only_git_objects(
 
 
 def _blocked_gate_repo(external, monkeypatch, tmp_path, gate: str) -> Path:
-    """라운드 상한이 이미 닫힌 실 저장소 형상 (거부가 확정된 실행의 입력).
+    """미완 라운드 상한이 이미 닫힌 실 저장소 형상 (거부가 확정된 실행의 입력).
 
-    판정 상한은 conf 노브가 아니라 엔진 고정값이라, 그 게이트의 **장부**를 상한만큼 채운
-    상태로 만든다(구 노브 `additional_reviewer.round_limit=0` 을 대체하는 형상 재현)."""
+    미완 축은 판정 없이 마감된 전송을 센다 — 그 게이트의 **장부**를 상한만큼 그런 레코드로
+    채운 상태로 만든다(전송 횟수만 세던 판정 상한은 제거됐다)."""
     repo = _standalone_adopter(tmp_path)
     monkeypatch.setattr(external, "REPO", repo)
     monkeypatch.setattr(external, "extract_diff",
                         lambda *a, **k: ("diff --git a/x b/x\n+n\n", []))
     monkeypatch.setattr(external, "local_config", lambda repo=None: {
         **_REVIEWER_TARGET})
+    spent = external.DEFAULT_INCOMPLETE_ROUND_LIMIT
     ledger = repo / ".project_manager" / ".local" / "review_rounds.json"
     ledger.parent.mkdir(parents=True, exist_ok=True)
     ledger.write_text(json.dumps(
-        {gate: {"count": external.DEFAULT_ROUND_LIMIT, "acked_through": 0,
-                "records": [], "rounds": []}}), encoding="utf-8")
+        {gate: {"count": spent, "records": [
+            {"id": f"r{index}", "sequence": index, "number": index,
+             "started_at": "2026-08-20T00:00:00+00:00",
+             "finished_at": "2026-08-20T00:01:00+00:00"}
+            for index in range(1, spent + 1)
+        ], "rounds": []}}), encoding="utf-8")
     return repo
 
 

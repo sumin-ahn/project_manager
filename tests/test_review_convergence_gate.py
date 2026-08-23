@@ -540,14 +540,14 @@ def test_confirm_fix_evidence_comes_from_the_eligibility_snapshot(
     _wire(external, monkeypatch, tmp_path, series=[0])
     monkeypatch.setattr(external, "run_review", capture)
     rejected = {"T-0602i": {
-        "count": 1, "acked_through": 0, "sequence": 1,
+        "count": 1, "sequence": 1,
         "records": [{"id": "r1", "sequence": 1, "started_at": "2026-08-09T00:00:00+00:00",
                      "finished_at": "2026-08-09T00:00:01+00:00", "verdict": True,
                      "must_fix_items": ["동시 라운드가 남긴 지적"]}],
         "rounds": [{"ts": "2026-08-09T00:00:01+00:00", "id": "r1", "sequence": 1,
                     "verdict": 1, "must_fix": 1, "suggestions": None}],
     }}
-    before_rejection = {"T-0602i": {"count": 0, "acked_through": 0, "sequence": 0,
+    before_rejection = {"T-0602i": {"count": 0, "sequence": 0,
                                     "records": [], "rounds": []}}
     reads = {"n": 0}
 
@@ -578,7 +578,7 @@ def test_legacy_round_without_texts_falls_back_to_the_count(
     ledger = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
     ledger.parent.mkdir(parents=True, exist_ok=True)
     ledger.write_text(json.dumps({"T-0602e": {
-        "count": 1, "acked_through": 0, "sequence": 1,
+        "count": 1, "sequence": 1,
         "records": [{"id": "r1", "sequence": 1, "finished_at": "2026-08-09T00:00:00+00:00",
                      "verdict": True}],
         "rounds": [{"ts": "2026-08-09T00:00:00+00:00", "id": "r1", "sequence": 1,
@@ -626,7 +626,7 @@ def _seed_rounds(tmp_path, gate: str, *, completed: int, inflight: int,
     path = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({gate: {
-        "count": completed + inflight, "acked_through": 0,
+        "count": completed + inflight,
         "sequence": completed + inflight, "records": records, "rounds": rounds,
     }}), encoding="utf-8")
 
@@ -1489,7 +1489,7 @@ def _entry_with(external, *, record_verdict, round_verdict: int = 1):
     if record_verdict is not None:
         record["verdict"] = record_verdict
     return external._gate_entry({"g": {
-        "count": 1, "acked_through": 0, "sequence": 1, "records": [record],
+        "count": 1, "sequence": 1, "records": [record],
         "rounds": [{"ts": "2026-08-09T00:00:01+00:00", "id": "r1", "sequence": 1,
                     "verdict": round_verdict, "must_fix": 1, "suggestions": None}],
     }}, "g")
@@ -1526,7 +1526,7 @@ def test_confirm_fix_after_a_timeout_round_is_refused_before_sending(
     ledger = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
     ledger.parent.mkdir(parents=True, exist_ok=True)
     ledger.write_text(json.dumps({"T-0605a": {
-        "count": 1, "acked_through": 0, "sequence": 1,
+        "count": 1, "sequence": 1,
         "records": [{"id": "r1", "sequence": 1, "started_at": "2026-08-09T00:00:00+00:00",
                      "finished_at": "2026-08-09T00:00:01+00:00", "verdict": False}],
         "rounds": [{"ts": "2026-08-09T00:00:01+00:00", "id": "r1", "sequence": 1,

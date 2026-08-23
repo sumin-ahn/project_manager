@@ -227,7 +227,8 @@ LEGACY_KEY_MAP: dict[str, str | None] = {
     # 추가 리뷰어 축 (사람 역할 이름으로 수렴 · `external_review_*` 는 개칭 이전 이름)
     "additional_reviewer_enabled": "additional_reviewer.enabled",
     "external_review_enabled": "additional_reviewer.enabled",
-    # 제거 — 라운드 상한 축의 정리는 이 티켓 밖이다(대체 키 없음·상한은 엔진 기본값)
+    # 제거 — 전송 횟수만 세던 판정 라운드 상한 축 자체가 없어졌다(대체 키 없음·수렴 축이 같은
+    # 범위를 본다: `additional_reviewer.rounds_max`)
     "additional_reviewer_round_limit": None,
     "external_review_round_limit": None,
     "additional_reviewer_incomplete_round_limit":
@@ -358,6 +359,9 @@ KNOWN_KEYS: tuple[str, ...] = (
     "delegate.enabled",
     "delegate.timeout",
     "delegate.idle_timeout",
+    # 내부 code-reviewer 수렴 상한 — 역할 한 곳에만 있는 고정 키라 패턴이 아니라 실명으로 둔다
+    # (`pm_delegate.INTERNAL_REVIEW_ROUNDS_MAX_KEY` 와 글자 단위로 같다·회귀가 대조한다).
+    "delegate.code-reviewer.rounds_max",
     "additional_reviewer.enabled",
     "additional_reviewer.harness",
     "additional_reviewer.model",

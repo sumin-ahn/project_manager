@@ -8668,8 +8668,11 @@ def _gate_disposition_problem(
         if not allow_pm_fixed:
             return f"{prefix} · {label} — 이 장부에서는 pm-fixed 처분을 허용하지 않습니다"
         common = _load_review_rounds()
+        # 상한은 선언 경로와 **같은 값**을 본다 — pm_delegate 가 그 축의 단일 진실이라 board 에
+        # 사본을 두지 않는다(사본을 두면 상한을 낮춘 채택자가 선언은 되는데 완료가 막힌다).
         problem = common.recorded_pm_fixed_problem(
-            entry, common.PM_FIXED_INTERNAL_ROUNDS_LIMIT,
+            entry,
+            _load_pm_delegate_module().internal_review_rounds_max(local_config()),
         )
         if problem is not None:
             return f"{prefix} · {label} — 발동 조건 재검증 실패: {problem}"

@@ -1054,20 +1054,19 @@ def test_legacy_only_conf_stops_the_run_instead_of_reading_a_stale_decision(
 
 def test_round_limit_refusal_enters_no_isolation_and_creates_no_output_dir(
         external, monkeypatch, tmp_path, capsys):
-    """전송 전 거부(라운드 상한)도 같은 규율이다 — 격리 진입·산출 디렉토리·장부 변화 모두 0.
+    """전송 전 거부(수렴 축)도 같은 규율이다 — 격리 진입·산출 디렉토리·장부 변화 모두 0.
 
     예산 확인·예약이 격리 **뒤**에 서면 이미 상한에 닿은 호출도 거울과 임시 홈을 한 번 만들었다
     지운다. 정리가 성공했다는 것(=`남은 게 없다`)은 seam 에 들어간 적 없다는 것과 다른 진술이다 —
     거부된 호출은 저장소 tracked 사본·홈 인증 사본 복제를 아예 시작하지 않아야 한다."""
-    limit = external.DEFAULT_ROUND_LIMIT
-    # 수렴-형상 상한(기본 2)은 전송 횟수 축보다 앞에서 막으므로 그 노브를 열어 둔다.
-    repo = _repo(tmp_path / "repo", _conf(rounds_max="99"))
+    limit = external.DEFAULT_REVIEW_ROUNDS_MAX      # 전송 횟수 축 제거 후 남는 티켓 축
+    repo = _repo(tmp_path / "repo", _conf())
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     entered = _count_isolation(external, monkeypatch)
     first_out, second_out = tmp_path / "raw-1", tmp_path / "raw-2"
 
-    for _ in range(limit):                          # 상한(엔진 고정)까지 실제로 전송한다
+    for _ in range(limit):                          # 상한까지 실제로 전송한다
         assert external.main(["--gate", "T-0590", "--paths", "x.py",
                               "--output-dir", str(first_out)]) == 0
     after_first = _round_ledger(repo)
@@ -1084,7 +1083,7 @@ def test_round_limit_refusal_enters_no_isolation_and_creates_no_output_dir(
     # 장부는 상한 도달 상태 그대로다 — 거부는 예약도 환불도 하지 않는다(왕복 흔적 없음).
     assert _round_ledger(repo) == after_first
     assert after_first["T-0590"]["count"] == limit
-    assert "라운드 상한 도달" in err
+    assert "수렴 게이트 차단" in err
     assert "추가 리뷰어 실행 중" not in err            # 과금 문구 앞에서 끊긴다
 
 
@@ -1176,8 +1175,7 @@ def test_unexpected_failure_entering_isolation_refunds_and_propagates(
     rc=4 로 막힌다(전송 0인 실패가 예산을 먹는다). 그래서 환불 조건은 예외 종류가 아니라
     '스폰 전 구간'이다. 반대로 rc 로 삼켜서도 안 된다 — 예상 못 한 예외를 격리 실패와 같은
     rc=1 로 바꾸면 진단이 사라진다."""
-    repo = _repo(tmp_path / "repo", _conf(
-        round_limit="1", incomplete_rounds_max="1"))
+    repo = _repo(tmp_path / "repo", _conf(incomplete_rounds_max="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     workspace_stub = external.create_reviewer_workspace   # _wire_main 이 심은 거울 스텁
@@ -1217,8 +1215,7 @@ def test_unexpected_failure_preparing_the_reviewer_environment_refunds_too(
 
     격리 컨테이너는 이미 섰지만 리뷰어 프로세스는 아직 없는 구간이라, 여기서 죽어도 외부 전송은
     확실히 0 이다. 진입 지점만 막으면 예약이 이 한 칸 뒤에서 그대로 새어나간다."""
-    repo = _repo(tmp_path / "repo", _conf(
-        round_limit="1", incomplete_rounds_max="1"))
+    repo = _repo(tmp_path / "repo", _conf(incomplete_rounds_max="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     outdir = tmp_path / "raw-out"
@@ -1250,7 +1247,7 @@ def test_unusable_output_dir_fails_before_any_spawn_and_refunds(
     상한 1·wave 예산 1 형상에서는 다음 **정상** 호출이 곧바로 rc=4 로 막혀, 전송 0·과금 0 인
     실패가 다음 라운드를 먹는다. 이전 시점이 러너 호출 직전이면 이 구간은 그대로 환불 대상이다."""
     repo = _repo(tmp_path / "repo", _conf(
-        round_limit="1", incomplete_rounds_max="1",
+        incomplete_rounds_max="1",
         wave_budget="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
@@ -1288,8 +1285,7 @@ def test_pre_spawn_failure_after_the_raw_reservation_refunds_and_closes_the_reco
     (2) raw 장부의 미마감 레코드 — 그 상태는 "떠 있을지 모르는 자식"(고아 조회면 `--unfinished`
     의 입력)이라는 뜻이라, 스폰이 없었으면 장부가 거짓말을 하는 것이다. 레코드는 실패 축으로
     마감하고 중단 사유는 그 레코드가 가리키는 raw 파일에 박제한다(0바이트 파일도 남기지 않는다)."""
-    repo = _repo(tmp_path / "repo", _conf(
-        round_limit="1", incomplete_rounds_max="1"))
+    repo = _repo(tmp_path / "repo", _conf(incomplete_rounds_max="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     real_transport = external._structured_transport
@@ -1530,7 +1526,7 @@ def test_a_nul_argv_rejected_before_the_child_refunds_and_the_next_call_still_ru
     못한 채** 다음 호출이 막힌다."""
     # 모델 값에 NUL — 구조화 argv(`-m <model>`)로 그대로 실려 `Popen` 이 fork 전에 거절한다.
     repo = _repo(tmp_path / "repo", _conf(
-        model="gpt-5.6-sol\x00bad", round_limit="1", incomplete_rounds_max="1"))
+        model="gpt-5.6-sol\x00bad", incomplete_rounds_max="1"))
     _wire_main(external, monkeypatch, repo)              # 러너는 실 워치독 그대로
 
     assert external.main(["--gate", "T-0590", "--paths", "x.py"]) == 1
@@ -1701,7 +1697,7 @@ def test_a_proven_no_spawn_refunds_even_if_the_summary_dies(
     상한 1·미완 상한 1·wave 1 형상에서 다음 **정상** 호출이 곧바로 rc=4 로 막힌다. 예외는 그대로
     전파되고(진단은 주 예외가 소유한다) raw 레코드는 이미 정직하게 닫혀 있어야 한다."""
     repo = _repo(tmp_path / "repo", _conf(
-        round_limit="1", incomplete_rounds_max="1",
+        incomplete_rounds_max="1",
         wave_budget="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
@@ -1746,8 +1742,7 @@ def test_a_proven_no_spawn_refunds_and_stays_loud_when_raw_bookkeeping_dies(
     선점/미마감 레코드 — 스폰 전 중단과 **같은 보상 경로**로 닫는다. 보상 자체가 또 실패해도
     주 예외를 덮지 않고(중단 사유는 주 예외가 소유한다) 실패 사실만 경고로 남긴다 — 조용히
     성공한 척하는 표면이 없어야 사후에 장부를 믿을 수 있다."""
-    repo = _repo(tmp_path / "repo", _conf(
-        round_limit="1", incomplete_rounds_max="1"))
+    repo = _repo(tmp_path / "repo", _conf(incomplete_rounds_max="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     monkeypatch.setattr(external, "_watchdog_reviewer_run", _missing_binary_runner)
@@ -1812,7 +1807,7 @@ def test_a_proven_no_spawn_refunds_when_the_finalization_save_fails(
     먹은 채 미완으로 남아, 상한 1·미완 상한 1·wave 1 형상에서 다음 **정상** 호출이 곧바로 rc=4 로
     막힌다. 마감 저장은 실패했지만 환불 저장은 성공하는 형상이 실측 축이다(락 경합은 지나간다)."""
     repo = _repo(tmp_path / "repo", _conf(
-        round_limit="1", incomplete_rounds_max="1",
+        incomplete_rounds_max="1",
         wave_budget="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
@@ -1848,8 +1843,7 @@ def test_a_failing_compensation_after_no_spawn_stays_loud_and_conservative(
 
     장부가 실제보다 헐거워지는 방향(전송한 라운드를 안 셈)으로 틀리지 않는 대신, 되돌리지 못한
     사실은 조용히 숨기지 않는다 — 사후에 장부를 믿으려면 실패 표면이 남아야 한다."""
-    repo = _repo(tmp_path / "repo", _conf(
-        round_limit="1", incomplete_rounds_max="1"))
+    repo = _repo(tmp_path / "repo", _conf(incomplete_rounds_max="1"))
     reviewer = _FakeReviewer(stdout=_wire("codex"))
     _wire_main(external, monkeypatch, repo, reviewer)
     monkeypatch.setattr(external, "_watchdog_reviewer_run", _missing_binary_runner)

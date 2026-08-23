@@ -1192,7 +1192,7 @@ def test_codex_cards_keep_dollar_skill_entry_notation():
 # 문서가 그 플래그를 계속 가르치면 PM 이 존재하지 않는 출구를 시도하고, 문서-엔진 모순이 그대로
 # 운영 지침이 된다. 그래서 출하 표면의 **잔존 0** 을 기계로 못박는다. 잔존이 정당한 자리는 셋뿐:
 #   - `CHANGELOG.md` — 릴리즈 히스토리(그 시점의 동작 서술).
-#   - 엔진 `external_review.py` — 폐지 거부 안내 문구 + 구 장부 필드(`acked_through`) 해석 주석.
+#   - 엔진 `external_review.py` — 폐지 거부 안내 문구(구 장부 필드는 제거됐다 · T-0772).
 #   - **명시된 테스트 파일들** — 폐지 동작(거부)·구 장부 해석을 단언하는 테스트 자신.
 # `tests/` 를 통째로 빼지 않는 이유: 그러면 테스트 docstring 에 남은 *옛 흐름 서술*(실제로 R1 이
 # `test_external_review.py` 에서 잡았다)을 가드가 영영 못 본다. 파일을 이름으로 적고, 각 파일이
@@ -1986,10 +1986,10 @@ def test_knob_key_constants_match_the_engine_table():
         core.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY,
         core.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY,
     }
-    # 판정 상한은 노브가 아니다 — 키 상수도 해소 함수도 남아 있지 않다(신설분 철회).
+    # 판정 상한은 노브도 축도 아니다 — 키 상수·해소 함수·엔진 기본값이 모두 없다(축 제거).
     assert not hasattr(core, "ADDITIONAL_REVIEWER_ROUND_LIMIT_KEY")
     assert not hasattr(core, "_round_limit")
-    assert core.DEFAULT_ROUND_LIMIT == 4
+    assert not hasattr(core, "DEFAULT_ROUND_LIMIT")
 
 
 @pytest.mark.parametrize("key", KNOB_KEYS, ids=list(KNOB_KEYS))
@@ -2038,3 +2038,18 @@ def test_engine_guidance_names_the_knob_keys():
     assert core.ADDITIONAL_REVIEWER_INCOMPLETE_ROUND_LIMIT_KEY in round_guidance
     assert "additional_reviewer.round_limit" not in round_guidance
     assert core.ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY in core._WAVE_BUDGET_GUIDANCE
+
+
+def test_internal_round_guidance_names_its_own_knob_key():
+    """내부 축 거부 안내도 같은 규율이다 — 설정값·조정 키를 문구가 스스로 말한다."""
+    delegate = _load("pm_delegate")
+    assert (delegate.INTERNAL_REVIEW_ROUNDS_MAX_KEY
+            == f"delegate.{delegate.INTERNAL_REVIEW_ROLE}.rounds_max")
+    guidance = delegate._INTERNAL_ROUND_REFUSAL
+    assert "{knob}" in guidance and "{default}" in guidance
+    assert "상한 3" not in guidance                  # 값 재타이핑 금지(설정값 주입)
+    # 신키는 레지스트리에도 있다 — 채택자가 적으면 '모르는 키' 경고가 나면 안 된다.
+    conf_module = _load("local_conf")
+    assert delegate.INTERNAL_REVIEW_ROUNDS_MAX_KEY in conf_module.KNOWN_KEYS
+    assert conf_module.unknown_keys(
+        {delegate.INTERNAL_REVIEW_ROUNDS_MAX_KEY: "5"}) == ()
