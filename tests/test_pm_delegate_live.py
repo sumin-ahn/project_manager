@@ -39,7 +39,10 @@ from pathlib import Path
 
 import pytest
 
-from conftest import codex_auth_available, drop_codex_auth, make_codex_home
+from conftest import (
+    codex_auth_available, current_branch, drop_codex_auth, make_codex_home,
+    write_cluster_ledger,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -179,8 +182,18 @@ def _seed_growth_repo(tmp_path: Path, ticket: str) -> tuple[Path, Path]:
         subprocess.run([_GIT, "-C", str(repo), "commit", "-q", "-m", "seed ignore"], check=True)
     source = tickets / f"{ticket}-live-cross-growth.md"
     source.write_text(_growth_ticket_text(ticket), encoding="utf-8")
+    # 라운드 준비는 묶음 장부의 예산·기준 브랜치 선언만 읽는다 — 크기 1 장부를 함께 깐다.
+    write_cluster_ledger(
+        repo / ".project_manager" / "wiki", ticket, base_branch=current_branch(repo))
     return repo, source
 
+
+
+def _stage_reviewable_change(repo: Path) -> None:
+    """리뷰 라운드의 실 입력 — 리뷰할 staged 변경 1건(읽기 역할 preflight 가 요구하는 그 값)."""
+    reviewed = repo / "reviewed.txt"
+    reviewed.write_text("live cross review target\n", encoding="utf-8")
+    subprocess.run([_GIT, "-C", str(repo), "add", "reviewed.txt"], check=True)
 
 def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
                             target: str, model: str, reasoning: str,
@@ -201,14 +214,28 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
     for role in _GROWTH_ROLES:
         sentinel = _GROWTH_SENTINELS[role]
         prompt = repo / f"growth-{target}-{role}.md"
-        final_contract = (
-            "After the edit, reply exactly with:\n판정: 통과\n## must-fix\n- 없음\n"
-            if role == "code-reviewer" else "After the edit, reply with exactly DONE.\n"
-        )
+        if role == "code-reviewer":
+            # 리뷰 입력은 리뷰할 diff 가 있는 트리다 — developer 회수가 작업물을 커밋한 뒤라
+            # 리뷰 직전에 staged 변경을 하나 둔다(codex read 역할 preflight 의 실 입력).
+            _stage_reviewable_change(repo)
+            edit_contract = (
+                "Fill the seeded skeleton as a passing review with zero findings: under `## must-fix` "
+                "write exactly `- 없음`; under `## 판정` write exactly "
+                "`판정: 통과 · finding 0건(must-fix 0건)`; replace the whole content of the "
+                "```pm-review-v1 fenced block with exactly "
+                '{"version":2,"findings":[],"confirmations":[]} (keep the fence lines). '
+                f"Then append exactly {sentinel} on its own line at the end of the file. "
+            )
+            final_contract = "After the edit, reply exactly with:\n판정: 통과\n## must-fix\n- 없음\n"
+        else:
+            edit_contract = (
+                f"Keep the seeded skeleton and append exactly {sentinel} on its own line. "
+            )
+            final_contract = "After the edit, reply with exactly DONE.\n"
         prompt.write_text(
             "The delegation preamble gives one absolute writable round file path. Open that file, keep its "
-            f"first header line and the seeded skeleton, and append exactly {sentinel} on its own line. "
-            "Do not modify any other file — spec.md and the rounds/ directory next to it are read-only. "
+            "first header line. " + edit_contract
+            + "Do not modify any other file — spec.md and the rounds/ directory next to it are read-only. "
             + final_contract,
             encoding="utf-8",
         )
