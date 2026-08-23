@@ -2301,7 +2301,9 @@ class TicketFinisher:
         방향은 묻지 않는다 — 미스테이지 잔여·스코프 밖 staged 어느 쪽이든 비어 있지 않으면
         차단이다(`git add` 한 번이 우회로가 되면 안 된다). `scope_error`(스코프 산출 실패)도
         차단이다 — 이 실행이 코드 트리에서 아무것도 stage 하지 못한다는 확정 사실이라, 여기서
-        '판정 불가'로 접으면 전량 미머지가 조용히 통과한다."""
+        '판정 불가'로 접으면 전량 미머지가 조용히 통과한다. 이때 스코프는 **빈 스코프로
+        읽는다**(아무 경로도 못 덮으므로) — 코드 트리 dirty 전량이 잔여가 되고, PM 홈
+        제외 규칙은 정상 갈래와 동일하게 적용해 잔여 목록·표준 처방을 원인 문장에 동봉한다."""
         code_tree = self._code_tree()
         home_prefixes = self._home_state_prefixes(code_tree)
         for plan in self._stage_plans(ticket_id):
@@ -2309,29 +2311,48 @@ class TicketFinisher:
                 continue
             scope, scope_error = plan.scope
             if scope_error:
-                return (
+                cause = (
                     f"완료 기록 거부 — {ticket_id} stage 스코프를 산출하지 못했다 "
                     f"({scope_error}). 이 실행은 코드 트리에서 아무것도 stage 하지 못하므로 "
                     "변경 전량이 미머지로 남는다 — 먼저 원인(board 사본·PyYAML 등)을 해소하라."
                 )
-            staged_out, unstaged = self._dirty_split(scope, cwd=plan.cwd)
-            if home_prefixes:
-                staged_out = tuple(line for line in staged_out
-                                   if not scope_covers(home_prefixes, _dirty_entry_path(line)))
-                unstaged = tuple(line for line in unstaged
-                                 if not scope_covers(home_prefixes, _dirty_entry_path(line)))
+                staged_out, unstaged = self._residual_split(plan.cwd, (), home_prefixes)
+                if not staged_out and not unstaged:
+                    return cause
+                return cause + "\n" + self._residual_lines(staged_out, unstaged)
+            staged_out, unstaged = self._residual_split(plan.cwd, scope, home_prefixes)
             if not staged_out and not unstaged:
                 continue
             return self._residual_block_message(ticket_id, staged_out, unstaged)
         return None
 
+    def _residual_split(self, cwd: Path, scope: Sequence[str],
+                        home_prefixes: Sequence[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """`_dirty_split` + PM 홈 dev-state 접두 제외 — 정상·`scope_error` 두 갈래가 공유."""
+        staged_out, unstaged = self._dirty_split(scope, cwd=cwd)
+        if not home_prefixes:
+            return staged_out, unstaged
+        staged_out = tuple(line for line in staged_out
+                           if not scope_covers(home_prefixes, _dirty_entry_path(line)))
+        unstaged = tuple(line for line in unstaged
+                         if not scope_covers(home_prefixes, _dirty_entry_path(line)))
+        return staged_out, unstaged
+
     def _residual_block_message(self, ticket_id: str, staged_out: Sequence[str],
                                 unstaged: Sequence[str]) -> str:
-        """잔여 차단 안내 — 잔여 목록(기존 20줄 접기 규약 재사용) + 처방 2가지."""
-        lines = [
+        """잔여 차단 안내 — 원인 헤더 + 잔여 목록·처방 본문(`_residual_lines`)."""
+        header = (
             f"완료 기록 거부 — {ticket_id} 코드 트리에 선언 스코프 밖 변경이 남아 있다 "
             f"(미스테이지 {len(unstaged)}건 · 스코프 밖 staged {len(staged_out)}건)."
-        ]
+        )
+        return header + "\n" + self._residual_lines(staged_out, unstaged)
+
+    def _residual_lines(self, staged_out: Sequence[str], unstaged: Sequence[str]) -> str:
+        """잔여 목록(기존 20줄 접기 규약 재사용) + 처방 2가지 — 헤더 없는 본문만.
+
+        `_residual_block_message`(정상 갈래)와 `_default_residual_block` 의 `scope_error`
+        갈래(원인 문장이 이미 별도 헤더)가 이 본문을 공유한다."""
+        lines: list[str] = []
         if unstaged:
             lines.append("  미스테이지 잔여 (이 커밋에 안 실린다):")
             lines += self._fold_residual_lines(unstaged)

@@ -2406,6 +2406,25 @@ def test_residual_preflight_runs_after_the_dod_block(tf, tmp_path, capsys):
     assert "DoD 미마감" in capsys.readouterr().err
 
 
+def test_preflight_seam_order_is_diff_cap_dod_residual_self_axis(tf, tmp_path):
+    """네 진입 게이트 seam 의 호출 배열을 값으로 고정한다 — diff_cap → dod → residual →
+    self_axis. residual 이 차단하면 self_axis(poison)는 **불리지 않는다**(순서가 값으로
+    확인되지 않으면 residual 삽입이 뒤로 밀려도 코드 리뷰로만 잡힌다)."""
+    calls: list[str] = []
+    finisher = tf.TicketFinisher(
+        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("회귀 미호출이어야 한다")),
+        run_board_fn=lambda args: (_ for _ in ()).throw(AssertionError("board 미호출")),
+        run_git_fn=lambda args: (_ for _ in ()).throw(AssertionError("git 미호출")),
+        diff_cap_block_fn=lambda tid: calls.append("diff_cap") or None,
+        dod_block_fn=lambda tid: calls.append("dod") or None,
+        residual_block_fn=lambda tid: calls.append("residual") or "잔여 1건 — T-1234",
+        self_axis_block_fn=lambda tid: calls.append("self_axis") or None,
+        log_file=tmp_path / "log.md",
+    )
+    assert finisher.run("T-1234", section=None, dry_run=False) == 1
+    assert calls == ["diff_cap", "dod", "residual"], "residual 차단인데 self_axis 가 불렸다"
+
+
 def test_residual_preflight_dry_run_is_also_refused(tf, tmp_path):
     """dry-run 도 같은 거절이다 — 미리보기는 게이트 면제가 아니다."""
     finisher = _residual_finisher(tf, tmp_path, residual_block="잔여 1건")

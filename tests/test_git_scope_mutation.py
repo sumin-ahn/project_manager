@@ -903,38 +903,67 @@ def test_finish_survives_touches_absent_from_this_repo(tf, tmp_path, monkeypatch
 @requires_git
 def test_finish_blocks_when_scope_judge_unavailable(tf, tmp_path, monkeypatch, capsys):
     """stage 판정기(board 모듈)를 못 띄우면 **차단**이다 — stage 0 을 정상 완료로 넘기지
-    않는다.
+    않는다. 차단 문구는 원인 사유뿐 아니라 **잔여 목록·처방도 동봉**한다(스코프를 못
+    산출했다는 사실을 빈 스코프로 읽어 코드 트리 dirty 전량을 잔여로 접는다) — board complete
+    는 이 갈래에서 불리지 않고, log 스켈레톤도 안 남는다.
 
     실제 형상: 실행 인터프리터엔 PyYAML 이 없고 venv 엔 있어 board *CLI* 는 성공하는데
     `import yaml` 하는 board 모듈 로드만 실패한다. `scope_error` 는 '판정 불가'가 아니라 '이
-    실행은 코드 트리에서 아무것도 stage 하지 못한다'는 확정 사실이다 — board·git 어느 것도
+    실행은 코드 트리에서 아무것도 stage 하지 못한다'는 확정 사실이라, board·git 어느 것도
     부르지 않고 기록 전에 거부한다(옛 동작은 여기서 rc=0·stage 0으로 조용히 '기록 완료'였다·
     reviewer 실측).
     """
     root = _make_home_repo(tmp_path / "home")
     _dirty_the_tree(root)
-    finisher = _make_finisher(tf, root, monkeypatch, touches=[_TOUCHED_FILE],
-                              board_py=root / "없는-board.py")
+    log_file = root / ".project_manager" / "wiki" / "log" / "current.md"
+    log_before = log_file.read_text(encoding="utf-8")
+    finisher = _make_finisher(
+        tf, root, monkeypatch, touches=[_TOUCHED_FILE],
+        board_py=root / "없는-board.py",
+        run_board_fn=lambda args: pytest.fail("scope_error 인데 board complete 가 불렸다"))
 
     assert finisher.run("T-0001", section=None, dry_run=False) == 1
     captured = capsys.readouterr()
     assert "[중단]" in captured.err
     assert "스코프를 산출하지 못했다" in captured.err, "판정기 사망이 조용히 넘어감"
+    assert "미스테이지 잔여" in captured.err
+    assert "roadmap.md" in captured.err and "a.py" in captured.err
     assert _staged(root) == set()
+    assert log_file.read_text(encoding="utf-8") == log_before, "차단된 실행이 log 를 건드렸다"
 
 
-# ── 잔여 preflight — 실 git 픽스처 4종 ───────────────────────────
+# ── 잔여 preflight — 실 git 픽스처 5종 ───────────────────────────
 
 @requires_git
 def test_finish_blocks_on_a_single_unstaged_residual(tf, tmp_path, monkeypatch, capsys):
-    """코드 트리에 선언 밖 미스테이지 변경 1건만 있어도 완료 기록을 거부한다 — board.py
-    complete 는 불리지 않는다(I1 · (a)).
+    """코드 트리에 선언 밖 미스테이지 변경 1건만 있어도 완료 기록을 거부한다 — 신규
+    **untracked**(`??`) 축 · board.py complete 는 불리지 않는다(I1 · (a)).
     """
     root = _make_home_repo(tmp_path / "home")
     (root / "others.py").write_text("o = 1\n", encoding="utf-8")   # 선언 밖 신규 미스테이지 1건
     finisher = _make_finisher(
         tf, root, monkeypatch, touches=[_TOUCHED_FILE],
         run_board_fn=lambda args: pytest.fail("잔여 1건인데 board complete 가 불렸다"))
+
+    assert finisher.run("T-0001", section=None, dry_run=False) == 1
+    captured = capsys.readouterr()
+    assert "[중단]" in captured.err and "others.py" in captured.err
+    assert _staged(root) == set()
+
+
+@requires_git
+def test_finish_blocks_on_a_tracked_unstaged_residual(tf, tmp_path, monkeypatch, capsys):
+    """이미 **커밋된**(tracked) 선언 밖 파일을 수정만 하고 stage 하지 않은 형상(` M`)도
+    거부한다 — (a)의 신규 untracked(`??`) 축과 별개로 tracked-unstaged 방향을 직접 잠근다
+    (I1 · (a')).
+    """
+    root = _make_home_repo(tmp_path / "home")
+    (root / "others.py").write_text("o = 1\n", encoding="utf-8")
+    _git_commit_all(root, "seed tracked others.py")   # 커밋해 tracked 로 만든다(clean)
+    (root / "others.py").write_text("o = 2\n", encoding="utf-8")   # 수정만, stage 안 함 → ` M`
+    finisher = _make_finisher(
+        tf, root, monkeypatch, touches=[_TOUCHED_FILE],
+        run_board_fn=lambda args: pytest.fail("tracked-unstaged 잔여인데 board complete 가 불렸다"))
 
     assert finisher.run("T-0001", section=None, dry_run=False) == 1
     captured = capsys.readouterr()
