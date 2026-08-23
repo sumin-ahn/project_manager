@@ -39,7 +39,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Iterator, NamedTuple, Protocol, TextIO
+from typing import Iterable, Iterator, NamedTuple, Protocol, TextIO
 
 _TOOLS_BOOTSTRAP = os.path.dirname(os.path.abspath(__file__))
 _TOOLS_BOOTSTRAP_FILE = os.path.realpath(
@@ -304,11 +304,22 @@ def validate_relay_budget(budget: int | None, stop_pct: int) -> None:
 # read-modify-write 하고 unique tmp를 atomic replace한다. 미마감은 완료 폭주와 별도 보존해
 # 최근 비정상 종료를 찾을 수 있게 하되, 기간과 개수에 모두 상한을 둬 조회가 무한 누적으로
 # 무력화되지 않게 한다. raw 파일은 감사 산출물이므로 이 장부 정리에서 삭제하지 않는다.
+#
+# 완료 축(COMPLETED_DAYS·MAX_COMPLETED)은 귀속(ticket·role·model·rc·elapsed)의 유일 사본이라
+# 원문 txt(무한 보존)보다 짧게 잡으면 계측 소스가 원문보다 먼저 사라진다. 레코드 크기
+# 실측 846B/건·34건/일을 기준으로 90일 보존 시 약 3,060건 2.6MB — 매
+# 위임 시작·마감마다 그 전량을 재기록해도 무리 없는 수준이라 상한을 3,060 여유분을 두고 4096으로
+# 잡는다(무한 보존은 아니다 — 상한 없는 보존은 조회 무력화로 이어진다).
 RAW_LEDGER_VERSION = 1
 RAW_LEDGER_UNFINISHED_DAYS = 30
-RAW_LEDGER_COMPLETED_DAYS = 7
+RAW_LEDGER_COMPLETED_DAYS = 90
 RAW_LEDGER_MAX_UNFINISHED = 128
-RAW_LEDGER_MAX_COMPLETED = 256
+RAW_LEDGER_MAX_COMPLETED = 4096
+
+# 고아(장부 미참조) 원문 스캔 대상 파일명 접두 — 엔진이 만든 raw 만 가리킨다. `.local/delegate`에는
+# 이 밖에 PM 수작업 산출(`T-XXXX-*.txt`·`*.md`)이 섞여 있고(실측 74+185건) 스캔
+# 대상에 넣으면 고아 목록을 보고 사용자가 잘못 지운다.
+ENGINE_RAW_FILENAME_PREFIXES = ("pm_delegate_", "external_review_")
 
 
 def pid_is_alive(
@@ -631,6 +642,49 @@ def raw_records(
 def unfinished_raw_records(ledger_path: Path, *, lock: bool = True) -> list[dict]:
     """미마감 레코드만 최신순으로 반환하는 조회 facade. `lock` 은 `raw_records` 로 전달."""
     return raw_records(ledger_path, unfinished_only=True, lock=lock)
+
+
+class OrphanRawSummary(NamedTuple):
+    """장부 미참조 엔진 명명 원문 스캔 결과 — 읽기 전용. 삭제는 이 티켓의 비목표다."""
+
+    count: int
+    total_bytes: int
+    paths: tuple[Path, ...]
+
+
+def scan_orphan_raw_files(
+    base_dirs: Iterable[Path], ledger_path: Path,
+) -> OrphanRawSummary:
+    """`base_dirs` 아래 엔진 명명 원문 중 장부(`ledger_path`)가 가리키지 않는 것을 나열한다.
+
+    완료·미마감을 가리지 않고 장부의 모든 `raw_path` 를 참조로 본다 — 아직 마감 전인 실행의
+    raw 를 고아로 오판하지 않기 위해서다. 파일은 지우지 않는다(조회만 · 삭제는 사용자 결정).
+    """
+    referenced = {
+        str(Path(row["raw_path"]).resolve())
+        for row in raw_records(ledger_path)
+        if isinstance(row.get("raw_path"), str)
+    }
+    seen_dirs: list[Path] = []
+    for base_dir in base_dirs:
+        if base_dir not in seen_dirs:
+            seen_dirs.append(base_dir)
+    orphans: list[Path] = []
+    for base_dir in seen_dirs:
+        if not base_dir.is_dir():
+            continue
+        for path in sorted(base_dir.iterdir()):
+            if not path.is_file():
+                continue
+            if not path.name.startswith(ENGINE_RAW_FILENAME_PREFIXES):
+                continue
+            if str(path.resolve()) in referenced:
+                continue
+            orphans.append(path)
+    total_bytes = sum(path.stat().st_size for path in orphans)
+    return OrphanRawSummary(
+        count=len(orphans), total_bytes=total_bytes, paths=tuple(orphans),
+    )
 
 
 class SpawnResult(NamedTuple):

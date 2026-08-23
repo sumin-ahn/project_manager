@@ -6,11 +6,16 @@ import importlib.util
 import inspect
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+# 원문 삭제 코드가 새로 생기지 않았는지 확인하는 grep 대상 — `raw_<이름>.unlink(...)` /
+# `raw_<이름>.rmtree(...)` 형(스폰 전 0바이트 정리 하나만 정당). T-0774 DoD 4.
+_RAW_TXT_DELETE_RE = re.compile(r"\braw_\w*\.(?:unlink|rmtree)\(")
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -267,18 +272,21 @@ def test_retention_is_bounded_and_keeps_unfinished_separate(relay):
             item["finished_at"] = now.isoformat()
         return item
 
+    # 만료(생략) 대상 sentinel 은 음수 index 로 둔다 — 벌크 루프는 항상 0..N 범위라 id 충돌
+    # 여지가 없다(상한 상수가 커지면 900/901 같은 고정 index 는 벌크 루프 범위 안으로 들어와
+    # id 를 재사용하고 만다 · T-0774 에서 MAX_COMPLETED 상향으로 실제로 충돌했다).
     records = [
         *(row(i, finished=False) for i in range(relay.RAW_LEDGER_MAX_UNFINISHED + 9)),
         *(row(i, finished=True) for i in range(relay.RAW_LEDGER_MAX_COMPLETED + 11)),
-        row(900, finished=False, age_days=relay.RAW_LEDGER_UNFINISHED_DAYS + 1),
-        row(901, finished=True, age_days=relay.RAW_LEDGER_COMPLETED_DAYS + 1),
+        row(-1, finished=False, age_days=relay.RAW_LEDGER_UNFINISHED_DAYS + 1),
+        row(-2, finished=True, age_days=relay.RAW_LEDGER_COMPLETED_DAYS + 1),
     ]
     kept = relay._prune_raw_records(records, now=now)
     unfinished = [item for item in kept if "finished_at" not in item]
     completed = [item for item in kept if "finished_at" in item]
     assert len(unfinished) == relay.RAW_LEDGER_MAX_UNFINISHED
     assert len(completed) == relay.RAW_LEDGER_MAX_COMPLETED
-    assert all(item["id"] not in {"row-False-900", "row-True-901"} for item in kept)
+    assert all(item["id"] not in {"row-False--1", "row-True--2"} for item in kept)
 
 
 def test_parallel_processes_append_without_record_loss(tmp_path):
@@ -1090,3 +1098,197 @@ def test_main_clears_raw_anchor_between_calls(
     assert external.main(["--paths", "seed.txt", "--force", "--no-gate"]) == 0
     capsys.readouterr()
     assert external._PM_HOME_OVERRIDE is None
+
+
+# ══ T-0774 — 요약 레코드 보존을 원문보다 짧게 두지 않는다(귀속이 먼저 사라지는 역전 정정) ══
+
+def test_completed_retention_raised_and_pm_relay_stays_conf_independent(relay):
+    """완료 보존 상수가 T-0774 이전 실측 기준선(완료 7일·256건 · 2026-08-19 adopter#0)보다
+    상향되고, 새 conf 키는 0이다 — 값 자체가 아니라 상향 방향과 conf 무의존을 단언한다."""
+    PRE_T0774_COMPLETED_DAYS = 7
+    PRE_T0774_MAX_COMPLETED = 256
+    assert relay.RAW_LEDGER_COMPLETED_DAYS > PRE_T0774_COMPLETED_DAYS
+    assert relay.RAW_LEDGER_MAX_COMPLETED > PRE_T0774_MAX_COMPLETED
+
+    # "local.conf" 문자열 자체는 사용자 안내 메시지에 이미 등장한다(예: 승인 근거 문구) —
+    # 그건 conf 의존이 아니라 conf 파일명을 사람에게 안내하는 산문이다. 실 코드 의존 신호만 본다.
+    source = Path(relay.__file__).read_text(encoding="utf-8")
+    for needle in ("import pm_config", "pm_config.", "load_conf(", "local_conf"):
+        assert needle not in source, f"pm_relay 가 conf 의존을 들였다: {needle}"
+
+
+def test_completed_retention_pinned_to_measured_capacity_bound(relay):
+    """F-001(라운드4 리뷰) — 위 테스트의 부등식(구값보다 크다)만으로는 8일/257건 같은 명목상
+    상향도 통과한다(실측: 이 변이는 두 신규 보존 단언을 모두 만족시켰다). 실측 근거
+    (846B/건·34건/일 · 2026-08-19 adopter#0)로 유도한 목표값 자체와, 그 근거가 실제로 요구하는
+    용량 관계(유입률 × 목표 보존일수를 덮는지)를 값으로 고정해 그런 축소를 실패시킨다."""
+    RECORDS_PER_DAY_MEASURED = 34   # 2026-08-19 adopter#0 실측(최근 7일 평균) — pm_relay.py:311
+    TARGET_RETENTION_DAYS = 90      # pm_relay.py:311 주석의 목표 보존창(90일)
+
+    # 상한 상수 자체가 근거로 유도한 목표값에 정확히 고정돼 있는지 — 8/257 은 여기서 이미 실패한다.
+    assert relay.RAW_LEDGER_COMPLETED_DAYS == TARGET_RETENTION_DAYS
+    assert relay.RAW_LEDGER_MAX_COMPLETED == 4096
+
+    # 건수 상한이 실측 유입률로 목표 보존기간 전체를 실제로 덮는지 — 용량 관계.
+    # 257 < 34*90(=3060) 이므로 8/257 변이는 이 부등식에서도 실패한다.
+    assert relay.RAW_LEDGER_MAX_COMPLETED >= RECORDS_PER_DAY_MEASURED * TARGET_RETENTION_DAYS
+
+
+def test_record_aged_past_old_seven_day_policy_survives_under_raised_retention(
+        relay, tmp_path):
+    """구 정책(완료 7일)이면 정리됐을 완료 레코드가 신 정책 아래서는 남는다.
+
+    상수 비교가 아니라 실제 prune 통과 여부를 레코드 존재로 단언한다(시간 경과 주입).
+    원문 txt 는 정책과 무관하게 애초에 엔진이 지우지 않는다는 기존 불변식도 같이 확인한다.
+    """
+    ledger_path = tmp_path / "raw_outputs.json"
+    now = datetime.datetime.now(datetime.timezone.utc)
+    OLD_POLICY_COMPLETED_DAYS = 7  # 회귀 검증용 기준선(2026-08-19 실측) — 현재 상수가 아니다
+    aged = now - datetime.timedelta(days=OLD_POLICY_COMPLETED_DAYS + 1)
+    raw_path = tmp_path / "old-raw.txt"
+    raw_path.write_text("raw\n", encoding="utf-8")
+
+    record_id = relay.start_raw_record(
+        ledger_path, surface="delegate", harness="codex", model="gpt-x",
+        role="developer", raw_path=raw_path, attempt="primary", now=aged,
+    )
+    relay.finish_raw_record(
+        ledger_path, record_id, rc=0, elapsed_sec=1.0, silence_sec=None, now=aged,
+    )
+    # 다음 기록이 prune 을 태운다 — 장부는 쓰기 시점에 정리된다(조회는 정리를 유발하지 않는다).
+    other_id = relay.start_raw_record(
+        ledger_path, surface="delegate", harness="codex", model="gpt-x",
+        role="developer", raw_path=tmp_path / "new-raw.txt", attempt="primary", now=now,
+    )
+    relay.finish_raw_record(
+        ledger_path, other_id, rc=0, elapsed_sec=1.0, silence_sec=None, now=now,
+    )
+
+    ids = {row["id"] for row in relay.raw_records(ledger_path)}
+    assert record_id in ids, "구 정책이면 버려졌을 레코드가 신 정책 아래서는 살아 있어야 한다"
+    assert raw_path.is_file()
+
+
+def test_only_pre_spawn_abort_deletes_raw_txt_files(relay, delegate, external):
+    """raw .txt 삭제 코드는 스폰 전 0바이트 정리(`external_review._abort_pre_spawn_raw`)
+    하나뿐이어야 한다(T-0774 DoD: grep 0). 고아 목록화는 조회만 하고 지우지 않는다."""
+    hits = []
+    for module in (relay, delegate, external):
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        for lineno, line in enumerate(source.splitlines(), start=1):
+            if _RAW_TXT_DELETE_RE.search(line):
+                hits.append(f"{Path(module.__file__).name}:{lineno}: {line.strip()}")
+    assert len(hits) == 1, f"raw txt 삭제 코드가 하나가 아님: {hits}"
+    assert hits[0].startswith("external_review.py:"), hits
+
+
+def _engine_named_raw(base_dir: Path, name: str, size: int = 8) -> Path:
+    base_dir.mkdir(parents=True, exist_ok=True)
+    path = base_dir / name
+    path.write_bytes(b"x" * size)
+    return path
+
+
+def test_orphan_scan_lists_only_unreferenced_engine_named_files(relay, tmp_path):
+    """`scan_orphan_raw_files` — 참조 중인 원문·미마감 원문·PM 수작업 산출은 제외하고,
+    장부 미참조 엔진 명명 원문만 나열한다(건수·바이트 정확)."""
+    ledger_path = tmp_path / "raw_outputs.json"
+    base_dir = tmp_path / "delegate"
+
+    referenced = _engine_named_raw(base_dir, "pm_delegate_codex_1_aaa.txt", size=5)
+    relay.start_raw_record(
+        ledger_path, surface="delegate", harness="codex", model="gpt-x",
+        role="developer", raw_path=referenced, attempt="primary",
+    )
+    unfinished_ref = _engine_named_raw(base_dir, "pm_delegate_codex_2_bbb.txt", size=3)
+    relay.start_raw_record(
+        ledger_path, surface="delegate", harness="codex", model="gpt-x",
+        role="developer", raw_path=unfinished_ref, attempt="primary",
+    )
+    orphan = _engine_named_raw(base_dir, "pm_delegate_codex_3_ccc.txt", size=11)
+    pm_authored_txt = _engine_named_raw(base_dir, "T-0001-dev-prompt.txt", size=999)
+    pm_authored_md = _engine_named_raw(base_dir, "T-0001-dev-prompt.md", size=999)
+    review_orphan = _engine_named_raw(
+        tmp_path / "review", "external_review_codex_20260101_1_ddd.txt", size=13,
+    )
+
+    summary = relay.scan_orphan_raw_files(
+        (base_dir, tmp_path / "review"), ledger_path,
+    )
+
+    assert summary.count == 2
+    assert summary.total_bytes == 11 + 13
+    assert set(summary.paths) == {orphan, review_orphan}
+    assert referenced not in summary.paths
+    assert unfinished_ref not in summary.paths
+    assert pm_authored_txt not in summary.paths
+    assert pm_authored_md not in summary.paths
+
+
+def test_raw_cmd_surfaces_orphan_warning_and_list_even_when_ledger_is_empty(
+        delegate, monkeypatch, tmp_path, capsys):
+    """장부가 텅 비어 있어도(전량 prune·최초 실행) 디스크에 남은 고아 원문은 경고+목록으로
+    나온다 — 이 티켓이 잡는 역전(요약 소실 후 원문만 남는 상태)의 핵심 재현이다."""
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(delegate, "REPO", repo)
+    delegate_dir, _ledger_path = delegate._raw_storage()
+    orphan = _engine_named_raw(
+        delegate_dir, f"pm_delegate_codex_{os.getpid()}_deadbeef.txt", size=42,
+    )
+    pm_authored = _engine_named_raw(delegate_dir, "T-0002-notes.txt", size=999)
+
+    assert delegate._cmd_raw([]) == 0
+    output = capsys.readouterr().out
+    lines = output.splitlines()
+
+    assert "최근 raw 없음" in lines
+    warning = [line for line in lines if line.startswith("경고: 장부 미참조 원문")]
+    assert warning == ["경고: 장부 미참조 원문 1건 42바이트 (엔진 명명 · 삭제 안 함 · 목록은 아래)"]
+    assert any(str(orphan.resolve()) in line for line in lines)
+    assert str(pm_authored.resolve()) not in output
+
+
+def test_raw_cmd_orphan_list_respects_limit_and_notes_omission(
+        delegate, monkeypatch, tmp_path, capsys):
+    """`--limit` 을 넘는 고아는 그만큼만 나열되고 생략 건수가 명시된다."""
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(delegate, "REPO", repo)
+    delegate_dir, _ledger_path = delegate._raw_storage()
+    for index in range(3):
+        _engine_named_raw(
+            delegate_dir, f"pm_delegate_codex_{index}_orphan{index}.txt", size=1,
+        )
+
+    assert delegate._cmd_raw(["--limit", "2"]) == 0
+    output = capsys.readouterr().out
+
+    assert "경고: 장부 미참조 원문 3건 3바이트" in output
+    assert "이하 1건 생략" in output
+
+
+def test_raw_queries_never_delete_files(relay, delegate, monkeypatch, tmp_path):
+    """`raw_records`·`unfinished_raw_records`·`pm_delegate raw` 조회는 디스크 파일을 지우지
+    않는다(참조 원문·고아 원문 모두)."""
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(delegate, "REPO", repo)
+    delegate_dir, ledger_path = delegate._raw_storage()
+
+    referenced = _engine_named_raw(delegate_dir, "pm_delegate_codex_1_ref.txt")
+    orphan = _engine_named_raw(delegate_dir, "pm_delegate_codex_2_orphan.txt")
+    record_id = relay.start_raw_record(
+        ledger_path, surface="delegate", harness="codex", model="gpt-x",
+        role="developer", raw_path=referenced, attempt="primary",
+    )
+    relay.finish_raw_record(
+        ledger_path, record_id, rc=0, elapsed_sec=1.0, silence_sec=None,
+    )
+
+    before = sorted(p.name for p in delegate_dir.iterdir())
+    relay.raw_records(ledger_path)
+    relay.unfinished_raw_records(ledger_path)
+    assert delegate._cmd_raw([]) == 0
+    after = sorted(p.name for p in delegate_dir.iterdir())
+
+    assert before == after
+    assert referenced.is_file()
+    assert orphan.is_file()
