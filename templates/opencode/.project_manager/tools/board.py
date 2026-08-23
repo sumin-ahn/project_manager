@@ -11773,6 +11773,10 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(area_message)
     print("✓ local.conf: py·test_cmd·ctx 예산 (세션·prefix 는 conf 키가 아니다 — "
           "세션=lease 장부 · prefix=areas.md)")
+    # 병합 경로가 손대지 않은 기존 키(오타·폐기)도 같은 목록·같은 함수로 표면화한다 —
+    # `board.py lint` 를 따로 실행하지 않아도 온보딩 시점에 1줄로 보이게(사본 없음).
+    for _, _, detail in lint_local_conf_keys():
+        print(f"  ⚠ {detail}")
     if not PM_STATE_FILE.exists() and PM_STATE_TEMPLATE.exists():
         # `{{DATE}}` 의 소유자는 **생성 시점**이다 — 템플릿은 채택자 디스크에 토큰-form
         #   으로 남아야 pm_update 의 manifest byte-copy 와 진동하지 않는다. 그러니 그 템플릿으로
@@ -16537,6 +16541,7 @@ _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
      "adr-author", "areas-repo-unregistered", "areas-duplicate-repo", "areas-merge-union",
      "delegate-same-model", "design-pending", "design-estimate",
      "codex-delegate-matcher-miss", "open-claimed-contradiction", "local-conf",
+     "local-conf-unknown-key",
      # 라운드 판정 코드(사이드카 seam 소유) + board 고유 잔여·판정불능 관측. 차단은 완료
      # 게이트가 한다.
      "round-name", "round-gap", "round-dup", "round-pending", "round-temporary",
@@ -17821,6 +17826,41 @@ def _restated_conf_comments(text: str) -> list[tuple[str, str]]:
     return pairs
 
 
+# 실 local.conf 의 **레지스트리 밖 키** 관측 kind — `local-conf`(구표기 잔존)와 배타적 축이다.
+_LOCAL_CONF_UNKNOWN_LINT_KIND = "local-conf-unknown-key"
+
+
+def lint_local_conf_keys() -> list[tuple[str, str, str]]:
+    """실 local.conf 의 **레지스트리 밖 키**(오타·폐기·손열거 밖 패턴)를 advisory 로 표면화(never-block).
+
+    known-key 판정은 공용 로더(`local_conf.py`)가 소유한다(사본 금지·`ConfResult.unknown`) —
+    이 함수는 그 결과를 lint finding 으로 감쌀 뿐이다. 구표기 잔존은 `lint_local_conf()` 가 이미
+    별도 kind(`local-conf`)로 낸다 — `unknown` 은 구표기 키를 걸러내므로(`is_legacy_key`) 두
+    kind 는 겹치지 않는다.
+
+    키별 특례는 두지 않는다 — 폐기 키(`review_ticket_body_max_bytes` 등)도 오타 키도 이 규칙
+    하나로 걸린다. 여러 키가 한꺼번에 있어도 finding 은 1개(1줄) — `cmd_init` 병합 경로가 같은
+    목록을 같은 형태로 재사용한다(사본 없이 같은 함수 재호출).
+    """
+    if not LOCAL_CONF.is_file():
+        return []
+    try:
+        module = _load_local_conf()
+        result = module.load(LOCAL_CONF)
+    except Exception as exc:  # noqa: BLE001 — 조회면은 판독 실패로 멈추지 않는다.
+        if _is_engine_rev_skew(exc):
+            raise
+        return []
+    unknown = result.unknown
+    if not unknown:
+        return []
+    where = _rel_to_repo(LOCAL_CONF)
+    keys = ", ".join(f"`{key}`" for key in unknown)
+    return [(where, _LOCAL_CONF_UNKNOWN_LINT_KIND,
+             f"엔진이 모르는 local.conf 키: {keys} (오타 또는 폐기 키 — README.md "
+             "§`local.conf` 키 카탈로그로 이름을 대조하라)")]
+
+
 def lint_delegate() -> list[tuple[str, str, str]]:
     """delegate 동일-모델 dev/reviewer 경고를 board lint finding 으로 표면화 (advisory·never-block).
 
@@ -18135,6 +18175,8 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     design-pending(티켓 설계 단계 `design: required` 미완 — 설계 절 미충전/필드 미승격 가시화·
     advisory·never-block·차단은 claim 게이트) +
     open-claimed-contradiction(status=open 인데 claimed_by 잔존 — 상태-소유 모순 가시화·
+    advisory·never-block) +
+    local-conf-unknown-key(local.conf 의 레지스트리 밖 키 — 오타/폐기 키 조용한 무시 표면화·
     advisory·never-block)."""
     return (lint_dependencies() + lint_bodies() + lint_ideas()
             + lint_status()
@@ -18145,7 +18187,8 @@ def lint_tickets() -> list[tuple[str, str, str]]:
             + lint_render_leak() + lint_unmigrated_overlay()
             + lint_areas_repo_unregistered()
             + lint_areas_duplicate_repo() + lint_areas_merge_union()
-            + lint_delegate() + lint_local_conf() + lint_rounds()
+            + lint_delegate() + lint_local_conf() + lint_local_conf_keys()
+            + lint_rounds()
             + lint_legacy_growth_sections()
             + lint_codex_delegate_observations() + lint_claim_identity())
 
