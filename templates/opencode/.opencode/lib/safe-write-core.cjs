@@ -1,9 +1,9 @@
-// opencode 어댑터 — 대용량 write/edit 신뢰성 가드 core (T-0334, 설계 PM 69/70 리서치).
+// opencode 어댑터 — 대용량 write/edit 신뢰성 가드 core (설계 리서치).
 //
 // 이 파일(CJS)은 safe-write 의 *순수 로직 + 플러그인 팩토리 본체*를 담는다. opencode plugin
 // 진입점은 `../plugins/safe-write.js`(ESM 얇은 shim)이며 거기서 팩토리(SafeWritePlugin) 하나만
 // named-export 한다 — opencode 의 plugin 로드 규약(각 plugins/ 파일의 export 를 순회해 *모두 함수*
-// 이길 요구하고 각각을 팩토리로 호출·실측 T-0283) 때문에, 순수 헬퍼·상수는 plugins/ *바깥*(이 lib/
+// 이길 요구하고 각각을 팩토리로 호출·실측) 때문에, 순수 헬퍼·상수는 plugins/ *바깥*(이 lib/
 // 모듈)에 둔다(opencode 는 plugins/ 만 스캔·lib/ 는 로드 안 함). node 자가검증 test 는 이 CJS
 // 모듈을 require 해 순수 함수(checkOversizeWrite·validateSafeWrite·safeWrite…)를 opencode 런타임
 // 없이 검증한다.
@@ -12,25 +12,25 @@
 //    런타임에만 설치되므로 core 가 직접 import 하면 node 자가검증(plain node require)이 깨진다.
 //    대신 ESM shim 이 `tool` 을 import 해 `makeSafeWritePlugin(tool)` 로 주입한다(팩토리 커링).
 //
-// 무엇 (3층 가드·업계 수렴·PM 70 리서치):
+// 무엇 (3층 가드·업계 수렴 리서치):
 //   opencode 1.17.x~1.18.x 는 대용량 write/edit 를 조용히 절단·유실한다(OUTPUT_TOKEN_MAX=32000
 //   하드코딩·silent truncation·auto-continue 부재·upstream #18108/#19604/#17471 미해결). 어댑터층
 //   3층 가드로 닫는다:
-//     ① deny-and-redirect (tool.execute.before): write/edit 의 대형 args 가 DENY_BYTES 초과 시
+//     1) deny-and-redirect (tool.execute.before): write/edit 의 대형 args 가 DENY_BYTES 초과 시
 //        throw — 에러 메시지가 모델-facing 행동 지시(기존 파일=edit 문자열-치환으로 나눠라 /
 //        신규 파일=safe_write 로 8KB chunk create→append). 업계 수렴(Claude Code·Gemini·Cline·
 //        aider 전부 대형 재작성→문자열-치환 diff 유도·aider 실측 lazy 누락 3배 감소).
-//     ② safe_write custom tool: 신규-대형-파일 갭 전용(anchor 부재로 edit 불가한 케이스). 8KB
+//     2) safe_write custom tool: 신규-대형-파일 갭 전용(anchor 부재로 edit 불가한 케이스). 8KB
 //        chunk 상한을 도구가 강제(초과 거부)·create(신규)→append(이어쓰기) 순으로 쌓고 누적
 //        바이트/라인을 보고(모델이 진행 파악). apply_patch 로 redirect 하지 않는다 — patch 문법은
 //        모델 fluency 의존(비-OpenAI 모델 실패 실측·glm-5.2 신뢰 불가). redirect 대상은 edit·safe_write 둘뿐.
-//     ③ 출력 상한 config: opencode.jsonc `limit.output` 명시 — fallback *미정의* 상태를 없앤다.
+//     3) 출력 상한 config: opencode.jsonc `limit.output` 명시 — fallback *미정의* 상태를 없앤다.
 //        (실효 출력은 여전히 min(limit.output, 32000)=32000 이라 상한 자체를 올리진 못한다 — 32000
-//        상향은 env OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX 로만 가능. deny(①)가 실질 억제 레버.)
+//        상향은 env OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX 로만 가능. deny(1)가 실질 억제 레버.)
 //
 // ⚠️ 한계 (구조): 하드 절단(finish_reason=length·tool-call JSON 자체가 절단)은 plugin 이 못
 //    잡는다 — 완성된 tool call 이 애초에 도착하지 않는다(before 훅은 완성된 args 를 전제). 완화 =
-//    limit.output 명시(③) + deny(①)로 대형 시도 자체 억제. upstream 미해결(#18108 root-cause·
+//    limit.output 명시(3) + deny(1)로 대형 시도 자체 억제. upstream 미해결(#18108 root-cause·
 //    #19604 write silent fail ~1000줄·#17471 auto-continue open·fix PR 전부 closed-unmerged·후속 추적).
 // ⚠️ 범위: 이 가드는 write/edit tool 만 가로챈다 — bash heredoc/echo·apply_patch 등 타 쓰기 표면은
 //    범위 밖(티켓 결정·redirect 대상은 edit·safe_write 둘뿐). safe_write 는 raw fs 라 아래 root
@@ -45,7 +45,7 @@ const path = require("node:path");
 // ── 임계값 상수 (core 상단 명시·env override) ────────────────────────────────
 // DENY_BYTES: write content / edit(newString+oldString) 이 이 크기 초과 시 deny-and-redirect.
 //   16KB — upstream #19604 실측 실패 구간(~1000줄=30~40KB)보다 보수적(routine write 마찰 최소화).
-// CHUNK_BYTES: safe_write 한 chunk 상한(도구가 강제). 8KB — PM 69 발의값(32k 토큰 상한 대비 안전).
+// CHUNK_BYTES: safe_write 한 chunk 상한(도구가 강제). 8KB — 초기 발의값(32k 토큰 상한 대비 안전).
 // 회사/모델별 튜닝: 각 env override(PM_SAFE_WRITE_DENY_BYTES·PM_SAFE_WRITE_CHUNK_BYTES).
 const DENY_BYTES = 16 * 1024; // 16384
 const CHUNK_BYTES = 8 * 1024; // 8192
@@ -128,8 +128,8 @@ function checkOversizeWrite(toolName, args, denyBytes, fileExists, chunkBytes) {
   return { deny: false };
 }
 
-// ── 결정: append 는 기존 파일에도 의식적으로 허용 (codex R4 제안 reject·PM 70) ──────────────
-// codex R4 는 "기존 파일 대형 수정을 safe_write append 로 우회 가능"을 must-fix 로 냈으나 reject 한다:
+// ── 결정: append 는 기존 파일에도 의식적으로 허용 (외부 리뷰 제안 reject) ──────────────
+// 외부 리뷰는 "기존 파일 대형 수정을 safe_write append 로 우회 가능"을 must-fix 로 냈으나 reject 한다:
 // append 는 append-only 라 기존 내용을 덮거나 자를 수 없고(훼손 불가), chunk 상한으로 절단-실패 모드도
 // 없어 데이터 유실 경로가 없다. 기존파일 append 거부·생성경로 상태추적은 중단-후-재개(프로세스 재시작
 // 후 이어쓰기·resume)를 파괴하는 퇴행이다. deny 정책(기존파일 재작성→edit 유도)의 목적은 *신뢰성*
@@ -276,8 +276,8 @@ function assertLeafNotSymlink(target) {
 // ── fs 부작용: safe_write 한 chunk 수행 (root containment → 검증 → create/append + 누적 보고) ──
 // root: 프로젝트 디렉터리(모든 쓰기의 봉쇄 경계). filePath: 프로젝트 상대경로(절대·../ 탈출 거부).
 // raw fs 가 opencode write 권한계층을 우회하므로 다층 containment 로 프로젝트 밖 쓰기를 봉쇄한다:
-//   ① lexical(절대·../ 거부)  ② realpath(조상 dir + 존재 target 이 root 밖 가리키면 거부)
-//   ③ leaf lstat(leaf 가 symlink[dangling 포함]이면 거부)  ④ 커널 강제 open — create=openSync("wx")
+//   1) lexical(절대·../ 거부)  2) realpath(조상 dir + 존재 target 이 root 밖 가리키면 거부)
+//   3) leaf lstat(leaf 가 symlink[dangling 포함]이면 거부)  4) 커널 강제 open — create=openSync("wx")
 //      (O_CREAT|O_EXCL·EEXIST), append=openSync(O_WRONLY|O_APPEND|O_NOFOLLOW)(symlink leaf 면 ELOOP).
 //      lstat 선검사↔write 사이 symlink 교체 TOCTOU 를 커널이 닫는다. 검증 실패 시 throw(모델-facing).
 function safeWrite(root, filePath, content, mode, chunkBytes) {
@@ -355,7 +355,7 @@ function makeSafeWritePlugin(tool) {
     const denyBytes = resolveDenyBytes(process.env);
     const chunkBytes = resolveChunkBytes(process.env);
     return {
-      // ── ② 신규-대형-파일 전용 custom tool: 8KB chunk create→append ──────────
+      // ── (2) 신규-대형-파일 전용 custom tool: 8KB chunk create→append ──────────
       tool: {
         safe_write: tool({
           description:
@@ -386,7 +386,7 @@ function makeSafeWritePlugin(tool) {
         }),
       },
 
-      // ── ① deny-and-redirect: 대형 write/edit args 를 차단하고 모델을 유도 ────
+      // ── (1) deny-and-redirect: 대형 write/edit args 를 차단하고 모델을 유도 ────
       "tool.execute.before": async (input, output) => {
         const toolName = String((input && input.tool) || "").toLowerCase();
         if (toolName !== "write" && toolName !== "edit") return;
@@ -413,7 +413,7 @@ function makeSafeWritePlugin(tool) {
 
 // CommonJS export — node 자가검증(require)·ESM shim(../plugins/safe-write.js) 양쪽 소비.
 // opencode 는 이 모듈을 직접 로드하지 않는다(plugins/ 만 스캔) — 얇은 ESM shim 이 tool 을 주입해
-// 만든 팩토리 하나만 named-export 해 로드 규약(export=단일 함수·실측 T-0283)을 만족한다.
+// 만든 팩토리 하나만 named-export 해 로드 규약(export=단일 함수·실측)을 만족한다.
 module.exports = {
   makeSafeWritePlugin,
   // 순수 결정 로직 (테스트·자가검증용 export).

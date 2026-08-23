@@ -21,10 +21,10 @@ set -u
 hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 0
 repo_root=$(CDPATH= cd -- "$hook_dir/.." && pwd) || exit 0
 
-# 인터프리터 선택 — 후보를 순회하며 *실행검증*(--version rc)으로 채택(엔진 _detect_py·T-0022 시맨틱과
+# 인터프리터 선택 — 후보를 순회하며 *실행검증*(--version rc)으로 채택(엔진 _detect_py 시맨틱과
 # 동형·python3 → python). 존재검증(command -v)만으론 Windows WindowsApps 가짜 shim(command -v 통과·
 # 실행 시 Permission denied rc126)을 못 거른다. 전부 실패 시 rc0 조용 통과(훅은 정상 작업을 막지 않음).
-# stdin JSON 파싱에도 이 인터프리터를 쓰므로 파일 상단에서 먼저 고른다(외부 프로세서 제거 — T-0210).
+# stdin JSON 파싱에도 이 인터프리터를 쓰므로 파일 상단에서 먼저 고른다(외부 프로세서 제거).
 py=""
 for _cand in python3 python; do
     if command -v "$_cand" >/dev/null 2>&1 && "$_cand" --version >/dev/null 2>&1; then
@@ -39,7 +39,7 @@ done
 # (부재·비-dict·malformed JSON 은 빈 출력으로 graceful), 경로 형식 정규화 + containment + .py 게이트도
 # python 이 한다 — repo_root 를 argv 로 넘긴다. bash case 의 리터럴 접두 매칭은 경로 *형식* 에
 # 민감해서, 하네스가 native Windows 경로(C:\...)를 보내면 Git Bash pwd 형(/c/...)인 repo_root 와
-# 불일치→rc0 silent skip 했다(T-0210 must-fix). python 이 세 형식(native C:\ · 드라이브 C:/ · mount
+# 불일치→rc0 silent skip 했다. python 이 세 형식(native C:\ · 드라이브 C:/ · mount
 # /c/)을 단일 canonical 로 수렴시켜 판정하고, 통과 시에만 경로를 emit → bash 는 비어있음만 검사한다.
 # stdin 은 여기서 한 번만 소비하며(이전 구현과 동일 위치), 이후 단계(pytest)는 stdin 을 안 쓴다.
 target=$("$py" -c 'import json, os, re, sys

@@ -1,4 +1,4 @@
-# opencode 어댑터 로컬 산출물 ignore (T-0492 — 추적 전환 · 프레임워크 소유).
+# opencode 어댑터 로컬 산출물 ignore (추적 전환 · 프레임워크 소유).
 #
 # 출처: 이 파일의 원본은 **opencode 자신이 생성**한다. `Config.ensureGitignore` 가 config 디렉토리
 #   (`.opencode/`)마다 ["node_modules","package.json","package-lock.json","bun.lock",".gitignore"] 를
@@ -9,7 +9,7 @@
 #
 # ⚠️ opencode 원본의 다섯째 줄 `.gitignore`(자기 자신 무시)는 **의도적으로 뺐다**. 규칙 파일이 자기를
 #   무시하면 어느 clone 에서도 `git status` 에 뜨지 않아 아무도 `git add` 하지 못한다 — 이 repo 에서
-#   실제로 그렇게 미추적으로 남아 채택자에게 출하되지 않았다(T-0492). 무시 *대상*은 그대로다(아래 4줄)
+#   실제로 그렇게 미추적으로 남아 채택자에게 출하되지 않았다. 무시 *대상*은 그대로다(아래 4줄)
 #   — 산출물 무시 동작은 변하지 않고, 규칙 파일만 보이게 된다.
 #   `tests/test_template_ignore_files_tracked.py` 가 이 클래스(자기-은닉·미추적)를 회귀로 못박는다.
 

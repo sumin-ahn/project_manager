@@ -52,10 +52,29 @@ def test_shipped_engine_prose_has_no_mechanically_removable_private_refs(scanner
     )
 
 
-def _empty_delimiter_offenders(source: str, scanner) -> list[tuple[int, str]]:
-    """산문(주석·docstring) 토큰 안 빈 괄호 잔재를 (line, matched_text) 로 낸다."""
+def test_shipped_language_axis_prose_has_no_mechanically_removable_private_refs(scanner):
+    """언어 축(셸·JS·TOML·manifest 등) 산문에도 기계 제거 가능한 사설 참조가 0 이어야 한다."""
+    offenders: list[str] = []
+    for path in scanner.language_paths(REPO):
+        source = path.read_text(encoding="utf-8")
+        for span in scanner.language_prose_spans(path, source):
+            if scanner._actionable_matches(span.text):
+                relative = path.relative_to(REPO).as_posix()
+                offenders.append(f"{relative}:{span.line}")
+    assert not offenders, (
+        "Mechanically removable private references must stay out of shipped "
+        f"language-axis prose; count={len(offenders)}, first={offenders[:50]}"
+    )
+
+
+def _empty_delimiter_offenders(source: str, scanner, *, spans=None) -> list[tuple[int, str]]:
+    """산문(주석·docstring) 토큰 안 빈 괄호 잔재를 (line, matched_text) 로 낸다.
+
+    ``spans`` 미지정 시 python 축(``prose_token_spans``) — 언어 축 호출부는 자신의
+    ``language_prose_spans`` 결과를 넘긴다(판정 사본을 두지 않고 같은 매칭 로직을 공유).
+    """
     offenders: list[tuple[int, str]] = []
-    for span in scanner.prose_token_spans(source):
+    for span in (spans if spans is not None else scanner.prose_token_spans(source)):
         text = span.text
         protected = [
             (match.start(), match.end())
@@ -116,6 +135,21 @@ def test_shipped_engine_prose_has_no_empty_delimiter_remnants(scanner):
     assert not offenders, (
         "Empty parentheses left behind by mechanical private-reference removal "
         f"must stay out of shipped engine prose; count={len(offenders)}, first={offenders[:50]}"
+    )
+
+
+def test_shipped_language_axis_prose_has_no_empty_delimiter_remnants(scanner):
+    """언어 축 산문에도 토큰 제거 잔재(빈 괄호) 0 — 스트립 잔재 클래스 재유입 금지를 언어 축으로 확장."""
+    offenders: list[str] = []
+    for path in scanner.language_paths(REPO):
+        source = path.read_text(encoding="utf-8")
+        spans = scanner.language_prose_spans(path, source)
+        for line, _matched in _empty_delimiter_offenders(source, scanner, spans=spans):
+            relative = path.relative_to(REPO).as_posix()
+            offenders.append(f"{relative}:{line}")
+    assert not offenders, (
+        "Empty parentheses left behind by mechanical private-reference removal "
+        f"must stay out of shipped language-axis prose; count={len(offenders)}, first={offenders[:50]}"
     )
 
 

@@ -1,4 +1,4 @@
-# templates/codex/.codex/config.toml — codex 어댑터 대화형 ctx 가드 (instance-owned·ADR-0070 D4).
+# templates/codex/.codex/config.toml — codex 어댑터 대화형 ctx 가드 (instance-owned).
 # 이 파일은 trusted project 로 승인된 뒤에만 로드된다(codex trust 모델·실측). manifest 미등록 =
 # 채택자 소유 노브(pm_update 미전파 — settings.json/opencode.jsonc 대칭·hook trust 재승인 churn 회피).
 # 반입 가능 키(실측): model·sandbox/approval·features·hooks·model_auto_compact_token_limit.
@@ -11,7 +11,7 @@ sandbox_mode = "workspace-write"
 approval_policy = "on-request"
 approvals_reviewer = "auto_review"
 
-# D4 ②(대화형 경로): 문서화된 숫자 threshold만 설정한다. 이 값은 auto-compaction을 끄지 않으며,
+# 대화형 경로: 문서화된 숫자 threshold만 설정한다. 이 값은 auto-compaction을 끄지 않으며,
 #   off sentinel을 발명하지 않는다. threshold 도달 시 hooks.json PreCompact는 compaction을
 #   통과시키고 직전 내구 경계 이후 구간의 checkpoint 기록을 안내한다.
 model_auto_compact_token_limit = 900000

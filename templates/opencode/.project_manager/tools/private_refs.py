@@ -23,7 +23,7 @@ import os
 import re
 import sys
 import tokenize
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
@@ -284,6 +284,725 @@ def repo_owned_paths(root: Path) -> list[Path]:
             root, Path("."), mode=repo_files.OWNED
         )
         if (path := root / relative).is_file()
+    ]
+
+
+def _load_pm_update():
+    """``pm_update`` 를 같은 tools/ 에서 형제 로드한다.
+
+    ``pm_update.py`` 는 stamped 모듈이 아니라(``ENGINE_REV`` 미보유) skew 검증을 걸지 않는다 —
+    ``pm_update.py`` 자신이 ``pm_render``/``pm_import`` 를 로드할 때 쓰는 것과 같은
+    ``allow_unverified=True`` 관례다. 이 함수는 manifest 주석 경계(``_parse_manifest_line``)와
+    루트 목적지 사본 판정(``manifest_entry_shipping_inventory``)에 쓰인다 — 판정 사본을 새로
+    쓰지 않고 엔진의 manifest 파서·전개식을 그대로 호출한다.
+    """
+    path = REPO / ".project_manager" / "tools" / "pm_update.py"
+    return _load_module_from_path(
+        path,
+        "pm_update.py",
+        allow_unverified=True,
+        cache=True,
+        cache_key=f"_private_context_pm_update:{path.resolve()}",
+    )
+
+
+# ── 언어 축 ────────────────────────────────────────────────────────────────
+# python·markdown 을 뺀 출하 표면 — 셸·JS·TOML·manifest 등 산문 경계가 언어마다 다른 축.
+LANGUAGE_NOEXT = "noext"
+LANGUAGE_SH = "sh"
+LANGUAGE_CMD = "cmd"
+LANGUAGE_TOML = "toml"
+LANGUAGE_JS = "js"
+LANGUAGE_MANIFEST = "manifest"
+LANGUAGE_JSON = "json"
+LANGUAGE_JSONC = "jsonc"
+LANGUAGE_RULES = "rules"
+LANGUAGE_TXT = "txt"
+
+# 확장자 → 언어. 여기 없는 확장자는 ``language_of`` 가 예외를 낸다(fail-loud·조용한 통과 0) —
+# "아직 안 덮는 축" 목록을 두지 않는다(시야 정의가 두 벌이 되는 것을 막는다).
+_LANGUAGE_BY_SUFFIX: dict[str, str] = {
+    "": LANGUAGE_NOEXT,
+    ".sh": LANGUAGE_SH,
+    ".cmd": LANGUAGE_CMD,
+    ".toml": LANGUAGE_TOML,
+    ".cjs": LANGUAGE_JS,
+    ".js": LANGUAGE_JS,
+    ".manifest": LANGUAGE_MANIFEST,
+    ".json": LANGUAGE_JSON,
+    ".jsonc": LANGUAGE_JSONC,
+    ".rules": LANGUAGE_RULES,
+    ".txt": LANGUAGE_TXT,
+}
+
+# 루트가 자기 자신을 dest 로 두는 manifest 항목 전개로는 안 잡히는, manifest 미등재
+# 루트 목적지 사본. ``.claude/run_tests_hook.sh`` 는 제거 예정 잔재(PM 결정)라 정식
+# manifest 항목으로 등재하지 않되, 판정 대상에는 넣는다 — ``shipping_paths`` 의
+# ``CLAUDE.md`` 단일 경로 특례와 같은 자리다.
+_UNREGISTERED_ROOT_DESTINATIONS: tuple[Path, ...] = (Path(".claude/run_tests_hook.sh"),)
+
+
+def _root_destination_language_paths(root: Path) -> set[Path]:
+    """루트 자신을 dest 로 삼는 manifest 항목을 전개해 언어 축 루트 목적지 사본을 찾는다.
+
+    ``shipping_paths`` 의 python 축은 templates 상대경로 일치로 루트 사본(``ctx_guard.py`` 등)을
+    찾지만, 그 트릭을 확장자 전체로 일반화하면 우연히 같은 상대경로를 쓰는 인스턴스-소유 파일
+    (루트 ``.gitignore``·``.claude/settings.json`` — engine.manifest 가 "미등록·전파 안 함"이라
+    문서화한 예외)까지 오분류한다. 대신 ``pm_update`` 가 실제 update 계획에 쓰는
+    ``manifest_entry_shipping_inventory`` 를 dest=root=source 로 호출해 **루트 자신의 manifest 가
+    실제로 선언한** 항목만 전개한다(판정 사본 0) — 인스턴스-소유 예외는애초에 manifest 미등재라
+    자동으로 빠진다.
+    """
+    pm_update = _load_pm_update()
+    resolved_root = root.resolve()
+    manifest_path = pm_update.resolve_manifest_for_dest(resolved_root, resolved_root)
+    manifest = pm_update.read_manifest(manifest_path)
+    found: set[Path] = set()
+    for entry_index in range(len(manifest)):
+        shipped, _missing, _target_owned = pm_update.manifest_entry_shipping_inventory(
+            resolved_root, manifest, entry_index, resolved_root
+        )
+        for dest_relative, _source in shipped:
+            destination = resolved_root / dest_relative
+            if destination.suffix in (".py", ".md"):
+                continue
+            if destination.is_file():
+                found.add(destination)
+    for relative in _UNREGISTERED_ROOT_DESTINATIONS:
+        candidate = resolved_root / relative
+        if candidate.is_file():
+            found.add(candidate)
+    return found
+
+
+def language_paths(root: Path) -> list[Path]:
+    """출하 표면 − python − markdown. ``shipping_paths`` 와 같은 ``repo_owned_paths`` 열거에서
+    파생한다(두 번째 열거 함수를 신설하지 않는다).
+
+    templates 트리 아래 python·markdown 이 아닌 모든 파일 + 그 상대경로를 실제로 manifest 가
+    루트 목적지로 선언한 사본(``_root_destination_language_paths``). 확장자 등록 여부는 여기서
+    보지 않는다 — 미등록 확장자는 ``language_of``/``language_prose_spans`` 호출 시점에 fail-loud
+    한다(시야를 조용히 좁히지 않는다).
+    """
+    resolved_root = root.resolve()
+    python_paths, markdown_paths = shipping_paths(root)
+    excluded = set(python_paths) | set(markdown_paths)
+    found: set[Path] = set()
+    for path in repo_owned_paths(root):
+        if path in excluded:
+            continue
+        relative = path.relative_to(resolved_root)
+        parts = relative.parts
+        if len(parts) < 3 or parts[0] != "templates":
+            continue
+        found.add(path)
+    found |= _root_destination_language_paths(root) - excluded
+    return sorted(found)
+
+
+def language_of(path: Path) -> str:
+    """확장자 → 언어. 등록되지 않은 확장자는 예외를 낸다(조용한 통과 0)."""
+    suffix = Path(path).suffix
+    try:
+        return _LANGUAGE_BY_SUFFIX[suffix]
+    except KeyError:
+        raise ValueError(
+            f"language_of: 미등록 확장자 {suffix!r} ({path}) — "
+            "_LANGUAGE_BY_SUFFIX 에 언어와 산문 경계를 등록하라"
+        ) from None
+
+
+def _noext_prose_spans(source: str) -> list[tuple[int, int]]:
+    """라인 선두 ``#`` 만 — gitignore/gitattributes/gitkeep 은 인라인 주석 문법이 없다."""
+    return [
+        (start, end)
+        for start, end, text in _line_records(source)
+        if text.lstrip().startswith("#")
+    ]
+
+
+def _cmd_prose_spans(source: str) -> list[tuple[int, int]]:
+    """``rem``(대소문자 무관·단어 경계) 또는 ``::`` 로 시작하는 라인 전체."""
+    spans: list[tuple[int, int]] = []
+    for start, end, text in _line_records(source):
+        stripped = text.lstrip()
+        if stripped.startswith("::"):
+            spans.append((start, end))
+            continue
+        lower = stripped[:3].lower()
+        if lower == "rem" and (len(stripped) == 3 or stripped[3] in " \t"):
+            spans.append((start, end))
+    return spans
+
+
+# 셸 heredoc 시작 — ``<<``/``<<-`` 뒤의 구분자. 구분자 모양(따옴표 감싸기 또는 식별자)이
+# here-string(``<<<``)과 산술 좌시프트(``$((1 << 2))``)를 자동으로 배제한다.
+_SHELL_HEREDOC_RE = re.compile(
+    r"<<(?P<dash>-?)[ \t]*(?P<quote>['\"]?)(?P<delimiter>[A-Za-z_][A-Za-z0-9_]*)(?P=quote)"
+)
+
+
+def _skip_heredoc_bodies(
+    source: str, position: int, pending: list[tuple[str, bool]]
+) -> int:
+    """대기 중인 heredoc 본문을 구분자 라인까지 건너뛴 위치를 돌려준다.
+
+    본문은 구분자의 따옴표 여부와 무관하게 셸이 주석으로 읽지 않는 데이터다 — 본문 안 ``#``
+    를 주석으로 잡으면 데이터가 산문으로 오분류된다. ``<<-`` 는 구분자 라인의 선행 탭을
+    허용하므로 그때만 탭을 벗기고 대조한다.
+    """
+    length = len(source)
+    cursor = position
+    for delimiter, strips_leading_tabs in pending:
+        while cursor < length:
+            newline = source.find("\n", cursor)
+            line_end = newline if newline != -1 else length
+            line = source[cursor:line_end].rstrip("\r")
+            cursor = line_end + 1 if newline != -1 else length
+            if (line.lstrip("\t") if strips_leading_tabs else line) == delimiter:
+                break
+    return cursor
+
+
+def _hash_comment_spans(source: str, heredoc_aware: bool) -> list[tuple[int, int]]:
+    """따옴표(``'``·``"``) 안이 아니고 **단어 시작**인 ``#`` 부터 줄 끝까지.
+
+    ``.sh``·``.rules`` 공용 — 둘 다 ``#`` 한 줄 주석 + 따옴표 문자열 구문이다. 단어 시작은
+    라인 선두이거나 공백 뒤다(셸의 주석 규칙). 그래서 후행 주석(``echo ok  # 설명``)은 잡고
+    ``${VAR#pat}``(파라미터 확장)·``pattern#literal`` 같은 단어 내부 ``#`` 는 제외한다.
+    따옴표 안(작은따옴표는 리터럴·큰따옴표는 백슬래시 이스케이프)의 ``#`` 는 애초에 후보에서
+    뺀다 — ``$(py -c '...')`` 안 임베디드 python 주석은 문자열 데이터로 본다.
+
+    ``heredoc_aware`` 는 heredoc 문법이 있는 언어(``.sh``)에서만 켠다.
+    """
+    spans: list[tuple[int, int]] = []
+    length = len(source)
+    index = 0
+    quote: str | None = None
+    at_word_start = True
+    comment_start: int | None = None
+    pending_heredocs: list[tuple[str, bool]] = []
+
+    def advance_past_newline(newline_index: int) -> int:
+        nonlocal pending_heredocs
+        if not pending_heredocs:
+            return newline_index + 1
+        resumed = _skip_heredoc_bodies(source, newline_index + 1, pending_heredocs)
+        pending_heredocs = []
+        return resumed
+
+    while index < length:
+        char = source[index]
+        if comment_start is not None:
+            if char == "\n":
+                spans.append((comment_start, index))
+                comment_start = None
+                at_word_start = True
+                index = advance_past_newline(index)
+                continue
+            index += 1
+            continue
+        if quote == "'":
+            if char == "'":
+                quote = None
+            index += 1
+            at_word_start = False
+            continue
+        if quote == '"':
+            if char == "\\" and index + 1 < length:
+                index += 2
+            else:
+                if char == '"':
+                    quote = None
+                index += 1
+            at_word_start = False
+            continue
+        if char == "'" or char == '"':
+            quote = char
+            index += 1
+            at_word_start = False
+            continue
+        if char == "\\" and index + 1 < length:
+            index += 2
+            at_word_start = False
+            continue
+        if char == "#" and at_word_start:
+            comment_start = index
+            index += 1
+            continue
+        if heredoc_aware and char == "<":
+            heredoc = _SHELL_HEREDOC_RE.match(source, index)
+            if heredoc is not None:
+                pending_heredocs.append(
+                    (heredoc.group("delimiter"), heredoc.group("dash") == "-")
+                )
+                index = heredoc.end()
+                at_word_start = False
+                continue
+        if char in " \t":
+            index += 1
+            at_word_start = True
+            continue
+        if char == "\n":
+            at_word_start = True
+            index = advance_past_newline(index)
+            continue
+        at_word_start = False
+        index += 1
+    if comment_start is not None:
+        spans.append((comment_start, length))
+    return spans
+
+
+def _shell_prose_spans(source: str) -> list[tuple[int, int]]:
+    """``.sh`` — 따옴표 인식 ``#`` 주석. heredoc 본문은 데이터라 산문에서 뺀다."""
+    return _hash_comment_spans(source, heredoc_aware=True)
+
+
+def _rules_prose_spans(source: str) -> list[tuple[int, int]]:
+    """``.rules`` — 따옴표 인식 ``#`` 주석. 이 문법에는 heredoc 이 없고
+    ``match = [...]`` 의 샘플 argv 는 문자열 데이터라 산문이 아니다."""
+    return _hash_comment_spans(source, heredoc_aware=False)
+
+
+def _toml_skip_string(source: str, index: int) -> int:
+    """TOML 문자열 하나(기본/리터럴 · 단일행/다중행)의 끝 위치(배타)를 돌려준다."""
+    length = len(source)
+    if source.startswith("'''", index) or source.startswith('"""', index):
+        delimiter = source[index:index + 3]
+        search_from = index + 3
+        while True:
+            found = source.find(delimiter, search_from)
+            if found == -1:
+                return length
+            if delimiter[0] == "'":
+                return found + 3
+            backslashes = 0
+            cursor = found - 1
+            while cursor >= 0 and source[cursor] == "\\":
+                backslashes += 1
+                cursor -= 1
+            if backslashes % 2 == 0:
+                return found + 3
+            search_from = found + 3
+    if source[index] == "'":
+        found = source.find("'", index + 1)
+        return found + 1 if found != -1 else length
+    cursor = index + 1
+    while cursor < length:
+        if source[cursor] == "\\":
+            cursor += 2
+            continue
+        if source[cursor] == '"':
+            return cursor + 1
+        cursor += 1
+    return length
+
+
+def _toml_skip_table_header(source: str, index: int) -> int:
+    """``[table]``·``[[array.of.tables]]`` 머리를 닫는 대괄호까지 건너뛴다.
+
+    머리 안의 따옴표 조각은 값이 아니라 이름이라 판정면 밖이다.
+    """
+    length = len(source)
+    cursor = index
+    depth = 0
+    while cursor < length:
+        char = source[cursor]
+        if char in "'\"":
+            cursor = _toml_skip_string(source, cursor)
+            continue
+        if char == "[":
+            depth += 1
+            cursor += 1
+            continue
+        if char == "]":
+            depth -= 1
+            cursor += 1
+            if depth <= 0:
+                return cursor
+            continue
+        if char == "\n":
+            return cursor
+        cursor += 1
+    return length
+
+
+def _toml_prose_spans(source: str) -> list[tuple[int, int]]:
+    """따옴표 인식 ``#`` 주석 + 문자열 **값**(단일행·다중행). 키는 산문이 아니다.
+
+    에이전트 카드의 ``description``·프롬프트 문자열은 채택자가 읽는 출하 산문이라 데이터로
+    면제하지 않는다(python 축의 argparse ``help=`` 문자열과 같은 클래스). 반대로 따옴표 키
+    (``"키" = 1`` · 점 표기 키 · ``["키"]`` 테이블 머리)는 값이 아니라 이름이라 판정면 밖이다.
+    문자열 모양은 둘이 같으므로 구문 위치(키 자리인지 값 자리인지)로 가른다.
+    """
+    spans: list[tuple[int, int]] = []
+    length = len(source)
+    index = 0
+    containers: list[str] = []  # 여는 순서대로 "array" 또는 "inline_table"
+    expects_key = True
+    while index < length:
+        char = source[index]
+        if char == "#":
+            newline = source.find("\n", index)
+            end = newline if newline != -1 else length
+            spans.append((index, end))
+            index = end
+            continue
+        if char == "\n":
+            # 배열·인라인 테이블은 여러 줄에 걸칠 수 있으므로 그 안에서는 자리를 유지한다.
+            if not containers:
+                expects_key = True
+            index += 1
+            continue
+        if char in "'\"":
+            end = _toml_skip_string(source, index)
+            if not expects_key:
+                spans.append((index, end))
+            index = end
+            continue
+        if char == "=":
+            expects_key = False
+            index += 1
+            continue
+        if char == "[":
+            if expects_key and not containers:
+                index = _toml_skip_table_header(source, index)
+                continue
+            containers.append("array")
+            expects_key = False
+            index += 1
+            continue
+        if char == "{":
+            containers.append("inline_table")
+            expects_key = True
+            index += 1
+            continue
+        if char in "]}":
+            if containers:
+                containers.pop()
+            # 닫힌 컨테이너 자신이 값이므로 그 뒤는 값 자리다.
+            expects_key = False
+            index += 1
+            continue
+        if char == ",":
+            expects_key = bool(containers) and containers[-1] == "inline_table"
+            index += 1
+            continue
+        index += 1
+    return spans
+
+
+def _json_string_spans(source: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    length = len(source)
+    index = 0
+    while index < length:
+        if source[index] == '"':
+            cursor = index + 1
+            while cursor < length:
+                if source[cursor] == "\\":
+                    cursor += 2
+                    continue
+                if source[cursor] == '"':
+                    cursor += 1
+                    break
+                cursor += 1
+            spans.append((index, cursor))
+            index = cursor
+            continue
+        index += 1
+    return spans
+
+
+def _json_value_spans(source: str) -> list[tuple[int, int]]:
+    """문자열 값(키가 아닌 문자열)만 — JSON 은 주석 문법이 없다.
+
+    문자열이 끝난 뒤 첫 비-공백 문자가 ``:`` 면 키(판정면 아님), 그 외(``,``·``}``·``]``)면
+    값이다.
+    """
+    spans: list[tuple[int, int]] = []
+    length = len(source)
+    for start, end in _json_string_spans(source):
+        cursor = end
+        while cursor < length and source[cursor] in " \t\r\n":
+            cursor += 1
+        is_key = cursor < length and source[cursor] == ":"
+        if not is_key:
+            spans.append((start, end))
+    return spans
+
+
+def _jsonc_prose_spans(source: str) -> list[tuple[int, int]]:
+    """JSON 문자열 값 판정 + ``//`` 한 줄 주석(따옴표 안은 후보에서 제외)."""
+    spans: list[tuple[int, int]] = []
+    length = len(source)
+    index = 0
+    while index < length:
+        char = source[index]
+        if char == '"':
+            cursor = index + 1
+            while cursor < length:
+                if source[cursor] == "\\":
+                    cursor += 2
+                    continue
+                if source[cursor] == '"':
+                    cursor += 1
+                    break
+                cursor += 1
+            lookahead = cursor
+            while lookahead < length and source[lookahead] in " \t\r\n":
+                lookahead += 1
+            is_key = lookahead < length and source[lookahead] == ":"
+            if not is_key:
+                spans.append((index, cursor))
+            index = cursor
+            continue
+        if char == "/" and index + 1 < length and source[index + 1] == "/":
+            newline = source.find("\n", index)
+            end = newline if newline != -1 else length
+            spans.append((index, end))
+            index = end
+            continue
+        index += 1
+    return spans
+
+
+# JS/CJS 의 정규식-리터럴 판정 — 이 앞 유의미 토큰이 이 집합이면 ``/`` 는 나눗셈이 아니라
+# 정규식 시작이다(직전 토큰이 없음=파일/블록 시작도 포함).
+_JS_REGEX_PRECEDING_PUNCTUATION = set("([{,;:=!&|?+-*%^~<>\n")
+_JS_REGEX_PRECEDING_KEYWORDS = {
+    "return", "typeof", "instanceof", "in", "of", "new", "delete", "void",
+    "throw", "case", "do", "else", "yield", "await",
+}
+# 제어문 머리(``if (...)``·``while (...)``)의 닫는 괄호 뒤는 값이 아니라 문장 자리라
+# 그 뒤 ``/`` 도 정규식이다. 호출·그룹 괄호(``f(...)``)의 닫는 괄호(나눗셈 자리)와 가르려면
+# 여는 괄호 시점의 직전 토큰을 괄호 스택에 같이 담아야 한다.
+_JS_STATEMENT_HEAD_KEYWORDS = {"if", "for", "while", "switch", "catch", "with"}
+_JS_STATEMENT_PAREN_TOKEN = "STATEMENT_PAREN"
+_JS_LITERAL_TOKEN = "LITERAL"
+
+_JS_FRAME_CODE = "code"
+_JS_FRAME_TEMPLATE = "template"
+
+
+@dataclass
+class _JsFrame:
+    """JS 스캐너의 문맥 한 겹.
+
+    ``code`` 는 주석을 수집하는 코드 문맥(최상위 또는 ``${...}`` 보간 안)이고,
+    ``template`` 은 백틱 문자열의 raw 구간(문자열 데이터라 주석이 없다)이다.
+    """
+
+    mode: str
+    interpolation: bool = False
+    previous_token: str = ""
+    parentheses: list[str] = field(default_factory=list)
+    braces: int = 0
+
+
+def _js_skip_string(source: str, index: int, quote: str) -> int:
+    length = len(source)
+    cursor = index + 1
+    while cursor < length:
+        if source[cursor] == "\\":
+            cursor += 2
+            continue
+        if source[cursor] == quote:
+            return cursor + 1
+        cursor += 1
+    return length
+
+
+def _js_skip_regex(source: str, index: int) -> int:
+    """정규식 리터럴 하나와 뒤따르는 플래그를 건너뛴다.
+
+    문자 클래스(``[...]``) 안의 ``/`` 는 종료 슬래시가 아니다 — ``/[//]x/`` 의 두 슬래시를
+    주석으로 읽는 오탐이 여기서 막힌다.
+    """
+    length = len(source)
+    cursor = index + 1
+    in_character_class = False
+    while cursor < length:
+        char = source[cursor]
+        if char == "\\":
+            cursor += 2
+            continue
+        if char == "\n":
+            break
+        if char == "[":
+            in_character_class = True
+        elif char == "]":
+            in_character_class = False
+        elif char == "/" and not in_character_class:
+            cursor += 1
+            break
+        cursor += 1
+    while cursor < length and source[cursor].isalpha():
+        cursor += 1
+    return cursor
+
+
+def _js_is_regex_context(previous_token: str) -> bool:
+    """직전 유의미 토큰으로 ``/`` 가 정규식 시작인지(나눗셈이 아닌지) 판정한다."""
+    if previous_token in ("", _JS_STATEMENT_PAREN_TOKEN):
+        return True
+    if previous_token in _JS_REGEX_PRECEDING_KEYWORDS:
+        return True
+    return (
+        len(previous_token) == 1
+        and previous_token in _JS_REGEX_PRECEDING_PUNCTUATION
+    )
+
+
+def _js_prose_spans(source: str) -> list[tuple[int, int]]:
+    """``//``·``/* */`` 주석 — 문자열·템플릿·정규식 리터럴을 인식해 그 안의 동형 글자를
+    주석 시작으로 오판하지 않는다.
+
+    템플릿은 raw 구간(문자열 데이터)과 ``${...}`` 보간 구간(코드)을 나눈다 — 보간 안의
+    주석은 채택자가 읽는 산문이라 수집하고, raw 구간의 ``//`` 는 데이터라 무시한다. 중첩
+    (템플릿 안 템플릿 · 보간 안 객체 리터럴)은 문맥 스택으로 처리한다.
+    """
+    spans: list[tuple[int, int]] = []
+    length = len(source)
+    index = 0
+    frames = [_JsFrame(mode=_JS_FRAME_CODE)]
+    while index < length:
+        frame = frames[-1]
+        char = source[index]
+        if frame.mode == _JS_FRAME_TEMPLATE:
+            if char == "\\":
+                index += 2
+                continue
+            if char == "`":
+                frames.pop()
+                frames[-1].previous_token = _JS_LITERAL_TOKEN
+                index += 1
+                continue
+            if source.startswith("${", index):
+                frames.append(_JsFrame(mode=_JS_FRAME_CODE, interpolation=True))
+                index += 2
+                continue
+            index += 1
+            continue
+        if source.startswith("//", index):
+            newline = source.find("\n", index)
+            end = newline if newline != -1 else length
+            spans.append((index, end))
+            index = end
+            # 한 줄 주석 뒤는 개행이라 다음 토큰은 문장 자리에서 시작한다.
+            frame.previous_token = ""
+            continue
+        if source.startswith("/*", index):
+            closing = source.find("*/", index + 2)
+            end = closing + 2 if closing != -1 else length
+            spans.append((index, end))
+            index = end
+            # 블록 주석은 토큰이 아니므로 직전 토큰을 그대로 둔다.
+            continue
+        if char == "'" or char == '"':
+            index = _js_skip_string(source, index, char)
+            frame.previous_token = _JS_LITERAL_TOKEN
+            continue
+        if char == "`":
+            frames.append(_JsFrame(mode=_JS_FRAME_TEMPLATE))
+            index += 1
+            continue
+        if char == "/":
+            if _js_is_regex_context(frame.previous_token):
+                index = _js_skip_regex(source, index)
+                frame.previous_token = _JS_LITERAL_TOKEN
+                continue
+            frame.previous_token = "/"
+            index += 1
+            continue
+        if char == "(":
+            frame.parentheses.append(
+                "statement"
+                if frame.previous_token in _JS_STATEMENT_HEAD_KEYWORDS
+                else "expression"
+            )
+            frame.previous_token = "("
+            index += 1
+            continue
+        if char == ")":
+            opened = frame.parentheses.pop() if frame.parentheses else "expression"
+            frame.previous_token = (
+                _JS_STATEMENT_PAREN_TOKEN if opened == "statement" else ")"
+            )
+            index += 1
+            continue
+        if char == "{":
+            frame.braces += 1
+            frame.previous_token = "{"
+            index += 1
+            continue
+        if char == "}":
+            if frame.interpolation and frame.braces == 0:
+                frames.pop()  # 보간이 끝나면 템플릿 raw 로 돌아간다.
+                index += 1
+                continue
+            frame.braces = max(0, frame.braces - 1)
+            frame.previous_token = "}"
+            index += 1
+            continue
+        if char.isspace():
+            index += 1
+            continue
+        if char.isalnum() or char in "_$":
+            cursor = index
+            while cursor < length and (source[cursor].isalnum() or source[cursor] in "_$"):
+                cursor += 1
+            frame.previous_token = source[index:cursor]
+            index = cursor
+            continue
+        frame.previous_token = char
+        index += 1
+    return spans
+
+
+def _manifest_prose_spans(source: str) -> list[tuple[int, int]]:
+    """엔진 파서 ``pm_update._parse_manifest_line`` 이 ``None`` 을 내는 비-빈 라인 전체.
+
+    새 정규식을 쓰지 않는다(판정 사본 금지) — 그 함수가 항상 ``None`` 을 내도록 바뀌면
+    데이터 행까지 산문으로 잡혀 manifest 축 판정이 뒤집힌다(값 확인은 회귀가 한다).
+    """
+    pm_update = _load_pm_update()
+    spans: list[tuple[int, int]] = []
+    for start, end, text in _line_records(source):
+        if not text.strip():
+            continue
+        if pm_update._parse_manifest_line(text) is None:
+            spans.append((start, end))
+    return spans
+
+
+_LANGUAGE_PROSE_SCANNERS = {
+    LANGUAGE_NOEXT: _noext_prose_spans,
+    LANGUAGE_SH: _shell_prose_spans,
+    LANGUAGE_CMD: _cmd_prose_spans,
+    LANGUAGE_TOML: _toml_prose_spans,
+    LANGUAGE_JS: _js_prose_spans,
+    LANGUAGE_MANIFEST: _manifest_prose_spans,
+    LANGUAGE_JSON: _json_value_spans,
+    LANGUAGE_JSONC: _jsonc_prose_spans,
+    LANGUAGE_RULES: _rules_prose_spans,
+    LANGUAGE_TXT: lambda source: [(0, len(source))],
+}
+
+
+def language_prose_spans(path: Path, source: str) -> list[TokenSpan]:
+    """언어별 산문 구간 — ``language_of`` 로 언어를 정하고 등록된 분류기를 호출한다."""
+    language = language_of(path)
+    scanner = _LANGUAGE_PROSE_SCANNERS[language]
+    return [
+        TokenSpan(
+            start=start,
+            end=end,
+            line=1 + source.count("\n", 0, start),
+            text=source[start:end],
+        )
+        for start, end in scanner(source)
     ]
 
 

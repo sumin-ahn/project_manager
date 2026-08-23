@@ -1,7 +1,7 @@
 # project_manager Codex command policy — Claude settings.json allow/deny 대응.
 # 일상 PM git 작업은 sandbox 밖(.git protected path)에서도 묻지 않고 실행한다.
 #
-# raw git cwd-anchor 동적 가드(T-0587·T-0765): execpolicy prefix_rule은 argv prefix와 decision만
+# raw git cwd-anchor 동적 가드: execpolicy prefix_rule은 argv prefix와 decision만
 # 판정하며 프로세스 cwd·등록 slot 장부·양쪽 checkout의 path 실재를 읽거나 모델 context를
 # 주입할 수 없다. 여기서 board.judge_git_anchor의 좁은 동적 deny를 정적 forbidden/prompt로
 # 흉내 내면 정상 PM 홈/worktree commit까지 과차단한다(false-deny 0 위반) — execpolicy 축은
@@ -58,7 +58,7 @@ prefix_rule(
     ],
     decision = "allow",
     justification = "These checked-in PM CLIs are routine project-management entry points.",
-    match = ["python3 .project_manager/tools/board.py list", "python3 .project_manager/tools/ticket_finish.py T-0001"],
+    match = ["python3 .project_manager/tools/board.py list", "python3 .project_manager/tools/ticket_finish.py T-NNNN"],
 )
 
 # 사용자가 normal push를 상시 승인했다. fast-forward 원격 게시는 무질의로 실행하고,

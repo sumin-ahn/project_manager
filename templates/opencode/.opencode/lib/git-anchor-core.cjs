@@ -1,4 +1,4 @@
-// opencode raw git/engine cwd-anchor 가드 core (T-0587, T-0697).
+// opencode raw git/engine cwd-anchor 가드 core.
 // 판정은 Python board.judge_git_anchor_command 단일 진실을 subprocess로 호출하고, 이 모듈은
 // 선필터 + opencode hook 배선만 소유한다. plugins/ 진입점은 팩토리 하나만 export한다.
 const path = require("node:path");

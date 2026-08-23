@@ -1,4 +1,4 @@
-// OpenCode native task delegation-channel guard (T-0641).
+// OpenCode native task delegation-channel guard.
 // Python delegate_channel_guard.py owns normalization, roles, configuration,
 // and decisions.  This module owns only the measured OpenCode hook surface and
 // subprocess/warning wiring.

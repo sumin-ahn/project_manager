@@ -178,6 +178,94 @@ def _python_surface_delta(repo: Path) -> tuple[list[str], list[str]]:
     return missing, extra
 
 
+# 루트 목적지 사본 중 manifest 미등재 잔재 — production ``language_paths`` 의
+# ``_UNREGISTERED_ROOT_DESTINATIONS`` 와 같은 단일 경로 특례(제거는 PM 결정 · 판정 대상에는 포함).
+_LANGUAGE_ORACLE_UNREGISTERED_ROOT_DESTINATIONS: tuple[Path, ...] = (
+    Path(".claude/run_tests_hook.sh"),
+)
+
+
+def _import_channel_language_paths(repo: Path) -> set[Path]:
+    """import 채널 언어 축 — ``pm_import`` 실제 출하 열거에서 python·markdown 이 아닌 것."""
+    pm_import_module = _load_tool_module("pm_import")
+    sources: set[Path] = set()
+    for dirnames in pm_import_module.HARNESS_TEMPLATE_DIRS.values():
+        for dirname in dirnames:
+            template_root = repo / "templates" / dirname
+            if not template_root.is_dir():
+                continue
+            for _dest_relative, source in pm_import_module._iter_source_files(
+                template_root
+            ):
+                if source.suffix not in (".py", ".md"):
+                    sources.add(source)
+    return sources
+
+
+def _manifest_channel_language_paths(repo: Path) -> set[Path]:
+    """update 채널 언어 축 — ``pm_update`` 실제 출하 전개에서 python·markdown 이 아닌 것.
+
+    ``_manifest_dest_roots`` 는 repo(루트) 자신도 dest 로 포함하므로, 루트 manifest 가 선언한
+    루트 목적지 사본(``.gitattributes``·``.project_manager/.gitignore``·
+    ``.project_manager/engine.manifest``·``.claude/precompact_capture_hook.sh``)도 이 한 함수로
+    같이 잡힌다 — 별도 "루트 전용" 파생을 새로 만들지 않는다.
+    """
+    pm_update_module = _load_tool_module("pm_update")
+    paths: set[Path] = set()
+    for dest_root in _manifest_dest_roots(repo):
+        manifest_path = pm_update_module.resolve_manifest_for_dest(dest_root, repo)
+        manifest = pm_update_module.read_manifest(manifest_path)
+        for entry_index in range(len(manifest)):
+            shipped, _source_missing, _target_owned = (
+                pm_update_module.manifest_entry_shipping_inventory(
+                    repo, manifest, entry_index, dest_root
+                )
+            )
+            for dest_relative, source in shipped:
+                source = Path(source)
+                if source.suffix not in (".py", ".md"):
+                    paths.add(source)
+                destination = dest_root / dest_relative
+                if destination.suffix not in (".py", ".md") and destination.is_file():
+                    paths.add(destination)
+    return paths
+
+
+def _language_surface_oracle(repo: Path = REPO) -> set[Path]:
+    """``language_paths`` 와 독립된 코드 경로로 언어 축 출하 표면을 파생한다.
+
+    두 채널(import·update)의 합집합 + manifest 미등재 단일 예외. ``language_paths`` 자신을
+    호출하지 않으므로 대조가 tautology 가 되지 않는다.
+    """
+    repo = repo.resolve()
+    found = _import_channel_language_paths(repo) | _manifest_channel_language_paths(repo)
+    for relative in _LANGUAGE_ORACLE_UNREGISTERED_ROOT_DESTINATIONS:
+        candidate = repo / relative
+        if candidate.is_file():
+            found.add(candidate)
+    return found
+
+
+def _language_surface_delta(repo: Path) -> tuple[list[str], list[str]]:
+    """``language_paths`` 와 파생 oracle 의 양방향 차집합 ``(missing, extra)``."""
+    repo = repo.resolve()
+    actual = set(_language_paths(repo))
+    expected = _language_surface_oracle(repo)
+    missing = sorted(path.relative_to(repo).as_posix() for path in expected - actual)
+    extra = sorted(path.relative_to(repo).as_posix() for path in actual - expected)
+    return missing, extra
+
+
+def test_language_axis_matches_independent_surface_derivation():
+    """언어 축 시야 == 출하 표면 − python − markdown — 양방향 차집합 0."""
+    missing, extra = _language_surface_delta(REPO)
+    assert not missing and not extra, (
+        "language_paths 가 독립 파생 오라클과 어긋남 — "
+        f"missing(시야 미포함) {len(missing)}: {missing}; "
+        f"extra(시야 초과) {len(extra)}: {extra}"
+    )
+
+
 def test_repo_owned_files_exec_failure_removes_partial_cache_and_allows_retry(
     tmp_path, monkeypatch
 ):
@@ -358,6 +446,59 @@ def _markdown_occurrences(
     )
 
 
+# ── 언어 축 — python·markdown 을 뺀 출하 표면. HARD 는 전-파일 스캔 + surface 라벨
+# (python 축과 동일 구조), RATCHET 은 언어별 산문 구간 한정. 판정 사본이 아니라 엔진 모듈
+# (``private_refs.language_paths``/``language_of``/``language_prose_spans``)을 그대로 소비한다.
+LANGUAGE_PROSE_SURFACE = "language-prose"
+LANGUAGE_NON_PROSE_SURFACE = "language-non-prose"
+
+
+def _language_paths(root: Path) -> list[Path]:
+    return PROSE_SCANNER.language_paths(root)
+
+
+def _language_prose_ranges(path: Path, source: str) -> list[tuple[int, int, str]]:
+    return [
+        (span.start, span.end, LANGUAGE_PROSE_SURFACE)
+        for span in PROSE_SCANNER.language_prose_spans(path, source)
+    ]
+
+
+def _language_hard_occurrences(
+    path: str, source: str, prose_ranges: list[tuple[int, int, str]]
+) -> list[Occurrence]:
+    found: list[Occurrence] = []
+    for kind, pattern in HARD_PATTERNS.items():
+        for match in pattern.finditer(source):
+            surface = (
+                LANGUAGE_PROSE_SURFACE
+                if any(
+                    start <= match.start() and match.end() <= end
+                    for start, end, _ in prose_ranges
+                )
+                else LANGUAGE_NON_PROSE_SURFACE
+            )
+            found.append(
+                _occurrence(
+                    path=path,
+                    source=source,
+                    start=match.start(),
+                    end=match.end(),
+                    kind=kind,
+                    surface=surface,
+                )
+            )
+    return found
+
+
+def _language_ratchet_occurrences(
+    path: str, source: str, prose_ranges: list[tuple[int, int, str]]
+) -> list[Occurrence]:
+    return _scan_ranges(
+        path=path, source=source, ranges=prose_ranges, patterns=RATCHET_PATTERNS
+    )
+
+
 def _shipping_paths(root: Path) -> tuple[list[Path], list[Path]]:
     # 테스트와 재생성 스크립트가 같은 공용 OWNED 열거·표면 분류를 사용해야
     # 한쪽에서만 ignored 파생 파일을 baseline에 다시 넣는 판정 어긋남이 없다.
@@ -381,6 +522,12 @@ def _collect(root: Path = REPO) -> tuple[list[Occurrence], list[Occurrence]]:
         ratchet.extend(
             _markdown_occurrences(relative, source, RATCHET_PATTERNS)
         )
+    for path in _language_paths(root):
+        relative = path.relative_to(root).as_posix()
+        source = path.read_text(encoding="utf-8")
+        prose_ranges = _language_prose_ranges(path, source)
+        hard.extend(_language_hard_occurrences(relative, source, prose_ranges))
+        ratchet.extend(_language_ratchet_occurrences(relative, source, prose_ranges))
     key = lambda item: (
         item.path,
         item.line,
@@ -1579,6 +1726,391 @@ def test_repo_raw_output_guard_observes_default_destination_and_ledger(tmp_path)
 
     # `.local` 자체가 없는 트리(신규 clone)는 빈 스냅샷이며 예외를 내지 않는다.
     assert suite_conftest._snapshot_repo_raw_outputs(tmp_path / "absent") == {}
+
+
+# ── 언어 축 시야 fail-loud · 산문 경계 · 민감도 ───────────────────────────────
+# 미등록 확장자는 예외로 막고(조용한 통과 0), 축마다 산문 파일 1건 + 산문 아닌 형상 1건을
+# 실파일로 써서 span 텍스트·줄 번호와 offender 수를 값으로 고정한다. 민감도는 그 축의 산문
+# 분류기를 레지스트리에서 무력화했을 때 산문 한정 offender 가 N→0 이 되는지로 잰다.
+
+# 픽스처 전용 합성 표식 — 실 코퍼스 값이 아니다. 리터럴로 적으면 이 파일 자신이 사설 참조
+# 감사 대상이 되므로 조립해서 만든다.
+_WORK_ITEM_SAMPLE = "T-" + "9" * 4  # HARD work_item 트리거
+_DECISION_LABEL_SAMPLE = "A" + "1"  # RATCHET decision_label 트리거
+
+
+def _language_axis_spans(path: Path, source: str) -> tuple[tuple[int, str], ...]:
+    """(줄 번호, span 텍스트) 전수 — 개수만이 아니라 내용까지 값으로 대조한다."""
+    return tuple(
+        (span.line, span.text)
+        for span in PROSE_SCANNER.language_prose_spans(path, source)
+    )
+
+
+def _language_axis_counts(path: Path, source: str) -> tuple[int, int, int]:
+    """(전-파일 HARD 출현, 그중 산문 표면 출현, 산문 한정 RATCHET 출현)."""
+    prose_ranges = _language_prose_ranges(path, source)
+    hard = _language_hard_occurrences(path.as_posix(), source, prose_ranges)
+    ratchet = _language_ratchet_occurrences(path.as_posix(), source, prose_ranges)
+    prose_hard = [item for item in hard if item.surface == LANGUAGE_PROSE_SURFACE]
+    return len(hard), len(prose_hard), len(ratchet)
+
+
+def _write_language_fixture(tmp_path: Path, name: str, suffix: str, source: str) -> Path:
+    """픽스처를 실파일로 쓴다 — 문자열만 넘기면 확장자 판정 경로가 빠진다."""
+    path = tmp_path / f"{name}{suffix}"
+    path.write_text(source, encoding="utf-8")
+    return path
+
+
+def test_unregistered_extension_is_fail_loud(tmp_path, monkeypatch):
+    """미등록 확장자 — tmp git 트리에 `.yaml` 1건을 주입하면 가드가 예외로 멈춘다."""
+    _git(tmp_path, "init", "-q")
+    manifest = tmp_path / ".project_manager" / "engine.manifest"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(".project_manager/tools/board.py\n", encoding="utf-8")
+    injected = tmp_path / "templates" / "codex" / ".codex" / "x.yaml"
+    injected.parent.mkdir(parents=True)
+    injected.write_text("key: value\n", encoding="utf-8")
+    _git(
+        tmp_path,
+        "add",
+        str(manifest.relative_to(tmp_path)),
+        str(injected.relative_to(tmp_path)),
+    )
+
+    wide = _language_paths(tmp_path)
+    assert injected in wide, "언어 축 열거는 미등록 확장자도 시야에 넣어야 한다(필터 없음)"
+
+    with pytest.raises(ValueError, match="미등록 확장자"):
+        PROSE_SCANNER.language_of(injected)
+    with pytest.raises(ValueError, match="미등록 확장자"):
+        PROSE_SCANNER.language_prose_spans(injected, injected.read_text(encoding="utf-8"))
+
+
+@dataclass(frozen=True)
+class LanguageAxisFixture:
+    """축 하나의 산문 경계 회귀 입력.
+
+    ``prose_source`` 는 그 언어의 산문 자리(주석·문자열 값·전-파일)에 표식을 심은 파일이고,
+    ``data_source`` 는 산문으로 번지기 쉬운 형상(heredoc 본문·중첩 따옴표·따옴표 키·정규식
+    리터럴·템플릿 raw)이다. 기대값은 전부 손으로 고정한 값이라 스캐너가 조용히 좁아지거나
+    넓어지면 값 불일치로 드러난다.
+    """
+
+    suffix: str
+    language: str
+    prose_source: str
+    prose_spans: tuple[tuple[int, str], ...]
+    prose_hard_hits: int
+    prose_ratchet_hits: int
+    data_source: str
+    data_spans: tuple[tuple[int, str], ...]
+    data_hard_total: int
+    data_prose_hard_hits: int
+
+
+_LANGUAGE_AXIS_FIXTURES = [
+    pytest.param(
+        LanguageAxisFixture(
+            suffix="",
+            language=PROSE_SCANNER.LANGUAGE_NOEXT,
+            prose_source=f"# 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\nbuild/\n",
+            prose_spans=((1, f"# 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n"),),
+            prose_hard_hits=1,
+            prose_ratchet_hits=1,
+            # `.gitignore`·`.gitattributes` 에는 인라인 주석 문법이 없다 — 패턴 안 `#` 는 데이터다.
+            data_source=f"pattern#{_WORK_ITEM_SAMPLE}\n*.{_DECISION_LABEL_SAMPLE}\n",
+            data_spans=(),
+            data_hard_total=1,
+            data_prose_hard_hits=0,
+        ),
+        id="noext",
+    ),
+    pytest.param(
+        LanguageAxisFixture(
+            suffix=".sh",
+            language=PROSE_SCANNER.LANGUAGE_SH,
+            prose_source=(
+                f"echo ok  # 후행 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n"
+                f"# 라인 선두 설명 {_WORK_ITEM_SAMPLE}\n"
+            ),
+            prose_spans=(
+                (1, f"# 후행 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}"),
+                (2, f"# 라인 선두 설명 {_WORK_ITEM_SAMPLE}"),
+            ),
+            prose_hard_hits=2,
+            prose_ratchet_hits=1,
+            # heredoc 본문·중첩 따옴표 안·파라미터 확장의 `#` 는 주석이 아니라 데이터다.
+            data_source=(
+                "cat <<'EOF'\n"
+                f"# heredoc 본문 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n"
+                "EOF\n"
+                f"echo \"바깥 '안쪽 # {_WORK_ITEM_SAMPLE}' 끝\"\n"
+                f"echo ${{VAR#{_WORK_ITEM_SAMPLE}}}\n"
+            ),
+            data_spans=(),
+            data_hard_total=3,
+            data_prose_hard_hits=0,
+        ),
+        id="sh",
+    ),
+    pytest.param(
+        LanguageAxisFixture(
+            suffix=".cmd",
+            language=PROSE_SCANNER.LANGUAGE_CMD,
+            prose_source=(
+                f"rem 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n"
+                f":: 두 번째 설명 {_WORK_ITEM_SAMPLE}\n"
+            ),
+            prose_spans=(
+                (1, f"rem 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n"),
+                (2, f":: 두 번째 설명 {_WORK_ITEM_SAMPLE}\n"),
+            ),
+            prose_hard_hits=2,
+            prose_ratchet_hits=1,
+            data_source=f"echo {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n",
+            data_spans=(),
+            data_hard_total=1,
+            data_prose_hard_hits=0,
+        ),
+        id="cmd",
+    ),
+    pytest.param(
+        LanguageAxisFixture(
+            suffix=".toml",
+            language=PROSE_SCANNER.LANGUAGE_TOML,
+            prose_source=(
+                f'description = "설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}"\n'
+                'prompt = """\n'
+                f"여러 줄 값 {_WORK_ITEM_SAMPLE}\n"
+                '"""\n'
+                f"retries = 1  # 후행 주석 {_WORK_ITEM_SAMPLE}\n"
+            ),
+            prose_spans=(
+                (1, f'"설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}"'),
+                (2, f'"""\n여러 줄 값 {_WORK_ITEM_SAMPLE}\n"""'),
+                (5, f"# 후행 주석 {_WORK_ITEM_SAMPLE}"),
+            ),
+            prose_hard_hits=3,
+            prose_ratchet_hits=1,
+            # 따옴표 키·테이블 머리는 값이 아니라 이름이라 판정면 밖이다.
+            data_source=(
+                f'"{_WORK_ITEM_SAMPLE}" = 1\n'
+                f"[{_WORK_ITEM_SAMPLE}.{_DECISION_LABEL_SAMPLE}]\n"
+                "enabled = true\n"
+            ),
+            data_spans=(),
+            data_hard_total=2,
+            data_prose_hard_hits=0,
+        ),
+        id="toml",
+    ),
+    pytest.param(
+        LanguageAxisFixture(
+            suffix=".js",
+            language=PROSE_SCANNER.LANGUAGE_JS,
+            prose_source=(
+                f"const label = `${{1 /* 보간 주석 {_WORK_ITEM_SAMPLE} "
+                f"{_DECISION_LABEL_SAMPLE} */}}`;\n"
+                f"const flag = 1; // 후행 설명 {_WORK_ITEM_SAMPLE}\n"
+            ),
+            prose_spans=(
+                (1, f"/* 보간 주석 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE} */"),
+                (2, f"// 후행 설명 {_WORK_ITEM_SAMPLE}"),
+            ),
+            prose_hard_hits=2,
+            prose_ratchet_hits=1,
+            # 제어문 머리 뒤 정규식·문자열 안 `//`·템플릿 raw 는 전부 데이터다.
+            data_source=(
+                f"if (ok) /[//]{_WORK_ITEM_SAMPLE}/.test(value);\n"
+                f'const text = "//{_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}";\n'
+                f"const raw = `템플릿 // {_WORK_ITEM_SAMPLE}`;\n"
+            ),
+            data_spans=(),
+            data_hard_total=3,
+            data_prose_hard_hits=0,
+        ),
+        id="js",
+    ),
+    pytest.param(
+        LanguageAxisFixture(
+            suffix=".cjs",
+            language=PROSE_SCANNER.LANGUAGE_JS,
+            prose_source=(
+                f"/* 블록 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE} */\n"
+                "module.exports = {};\n"
+            ),
+            prose_spans=(
+                (1, f"/* 블록 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE} */"),
+            ),
+            prose_hard_hits=1,
+            prose_ratchet_hits=1,
+            data_source=(
+                f"const pattern = /{_WORK_ITEM_SAMPLE}\\/{_DECISION_LABEL_SAMPLE}/;\n"
+                f"const text = '//{_WORK_ITEM_SAMPLE}';\n"
+            ),
+            data_spans=(),
+            data_hard_total=2,
+            data_prose_hard_hits=0,
+        ),
+        id="cjs",
+    ),
+    pytest.param(
+        LanguageAxisFixture(
+            suffix=".manifest",
+            language=PROSE_SCANNER.LANGUAGE_MANIFEST,
+            prose_source=(
+                f"# 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n"
+                ".project_manager/tools/board.py\n"
+            ),
+            prose_spans=((1, f"# 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n"),),
+            prose_hard_hits=1,
+            prose_ratchet_hits=1,
+            # 엔진 파서가 엔트리로 읽는 데이터 행은 산문이 아니다.
+            data_source=f"path/{_WORK_ITEM_SAMPLE}/{_DECISION_LABEL_SAMPLE}.py\n",
+            data_spans=(),
+            data_hard_total=1,
+            data_prose_hard_hits=0,
+        ),
+        id="manifest",
+    ),
+    pytest.param(
+        LanguageAxisFixture(
+            suffix=".json",
+            language=PROSE_SCANNER.LANGUAGE_JSON,
+            prose_source=(
+                f'{{"_comment": "설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}"}}\n'
+            ),
+            prose_spans=((1, f'"설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}"'),),
+            prose_hard_hits=1,
+            prose_ratchet_hits=1,
+            # 키 문자열은 판정면이 아니다(값만 산문).
+            data_source=f'{{"{_WORK_ITEM_SAMPLE}.{_DECISION_LABEL_SAMPLE}": 1}}\n',
+            data_spans=(),
+            data_hard_total=1,
+            data_prose_hard_hits=0,
+        ),
+        id="json",
+    ),
+    pytest.param(
+        LanguageAxisFixture(
+            suffix=".jsonc",
+            language=PROSE_SCANNER.LANGUAGE_JSONC,
+            prose_source=(
+                "{\n"
+                f"  // 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n"
+                f'  "note": "값 {_WORK_ITEM_SAMPLE}"\n'
+                "}\n"
+            ),
+            prose_spans=(
+                (2, f"// 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}"),
+                (3, f'"값 {_WORK_ITEM_SAMPLE}"'),
+            ),
+            prose_hard_hits=2,
+            prose_ratchet_hits=1,
+            # 문자열 안 `//` 는 주석 시작이 아니다.
+            data_source=f'{{"{_WORK_ITEM_SAMPLE}//{_DECISION_LABEL_SAMPLE}": 1}}\n',
+            data_spans=(),
+            data_hard_total=1,
+            data_prose_hard_hits=0,
+        ),
+        id="jsonc",
+    ),
+    pytest.param(
+        LanguageAxisFixture(
+            suffix=".rules",
+            language=PROSE_SCANNER.LANGUAGE_RULES,
+            prose_source=(
+                f"allow = true # 후행 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n"
+            ),
+            prose_spans=(
+                (1, f"# 후행 설명 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}"),
+            ),
+            prose_hard_hits=1,
+            prose_ratchet_hits=1,
+            # `match = [...]` 는 샘플 argv 데이터다.
+            data_source=f'match = ["cmd {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}"]\n',
+            data_spans=(),
+            data_hard_total=1,
+            data_prose_hard_hits=0,
+        ),
+        id="rules",
+    ),
+    pytest.param(
+        LanguageAxisFixture(
+            suffix=".txt",
+            language=PROSE_SCANNER.LANGUAGE_TXT,
+            prose_source=f"안내 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n",
+            prose_spans=((1, f"안내 {_WORK_ITEM_SAMPLE} {_DECISION_LABEL_SAMPLE}\n"),),
+            prose_hard_hits=1,
+            prose_ratchet_hits=1,
+            # 전-파일 산문 축이라 면제 구간이 없다 — 코드처럼 보이는 줄도 산문으로 남는다.
+            data_source=f'match = ["cmd {_WORK_ITEM_SAMPLE}"]\n',
+            data_spans=((1, f'match = ["cmd {_WORK_ITEM_SAMPLE}"]\n'),),
+            data_hard_total=1,
+            data_prose_hard_hits=1,
+        ),
+        id="txt",
+    ),
+]
+
+
+@pytest.mark.parametrize("fixture", _LANGUAGE_AXIS_FIXTURES)
+def test_language_axis_prose_spans_are_asserted_by_value(fixture, tmp_path):
+    """축마다 산문 파일을 실파일로 쓰고 span 텍스트·줄 번호·offender 수를 값으로 고정한다."""
+    path = _write_language_fixture(tmp_path, "prose", fixture.suffix, fixture.prose_source)
+    source = path.read_text(encoding="utf-8")
+
+    assert PROSE_SCANNER.language_of(path) == fixture.language
+    assert _language_axis_spans(path, source) == fixture.prose_spans
+
+    _hard_total, prose_hard, ratchet = _language_axis_counts(path, source)
+    assert (prose_hard, ratchet) == (fixture.prose_hard_hits, fixture.prose_ratchet_hits)
+    # 산문 표식이 0 이면 이 축의 경계·민감도 단언이 통째로 공허해진다.
+    assert prose_hard >= 1
+    assert ratchet >= 1
+
+
+@pytest.mark.parametrize("fixture", _LANGUAGE_AXIS_FIXTURES)
+def test_language_axis_data_shapes_keep_their_surface(fixture, tmp_path):
+    """산문으로 번지기 쉬운 형상의 span 과 표면 라벨을 값으로 고정한다.
+
+    HARD 는 전-파일 스캔이라 데이터 구간 출현도 총량에 남고, 달라지는 것은 표면 라벨뿐이다.
+    """
+    path = _write_language_fixture(tmp_path, "data", fixture.suffix, fixture.data_source)
+    source = path.read_text(encoding="utf-8")
+
+    assert _language_axis_spans(path, source) == fixture.data_spans
+
+    hard_total, prose_hard, _ratchet = _language_axis_counts(path, source)
+    assert hard_total == fixture.data_hard_total
+    assert prose_hard == fixture.data_prose_hard_hits
+
+
+@pytest.mark.parametrize("fixture", _LANGUAGE_AXIS_FIXTURES)
+def test_language_axis_sensitivity_disabling_scanner_clears_prose_offenders(
+    fixture, tmp_path, monkeypatch
+):
+    """그 축의 산문 분류기를 무력화하면 산문 한정 offender 가 N→0 이다.
+
+    비활성화 전 N>0 을 먼저 값으로 확인해 "원래부터 0 이라 통과"하는 공허 민감도를 막는다.
+    """
+    path = _write_language_fixture(tmp_path, "prose", fixture.suffix, fixture.prose_source)
+    source = path.read_text(encoding="utf-8")
+
+    hard_total, prose_hard, ratchet = _language_axis_counts(path, source)
+    assert prose_hard == fixture.prose_hard_hits >= 1
+    assert ratchet == fixture.prose_ratchet_hits >= 1
+
+    disabled = dict(PROSE_SCANNER._LANGUAGE_PROSE_SCANNERS)
+    disabled[fixture.language] = lambda _source: []
+    monkeypatch.setattr(PROSE_SCANNER, "_LANGUAGE_PROSE_SCANNERS", disabled)
+
+    after_total, after_prose_hard, after_ratchet = _language_axis_counts(path, source)
+    assert (after_prose_hard, after_ratchet) == (0, 0)
+    # HARD 총량은 불변 — 산문 표면 라벨만 뒤집힌다(축 구조가 python 축과 같다는 확인).
+    assert after_total == hard_total
 
 
 def _dump_hard_report(report: dict[str, object]) -> str:
