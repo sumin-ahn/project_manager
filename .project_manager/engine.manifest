@@ -104,6 +104,11 @@
 #   pm_relay 3파서/워치독을 deep-import 재사용. 신설 도구라 등록 필수(미등록=전파 안 됨·pm_render 사례).
 #   local.conf delegate.* 매핑은 인스턴스 소유(manifest 밖)
 .project_manager/tools/pm_delegate.py
+# private_refs: 사설 참조 판정식 공용 seam — 출하 산문(주석·문서 표현식)에서 사설 작업-항목
+#   참조를 기계 판정하고, 출하 표면(python·markdown)을 repo-owned 열거에서 분류한다
+#   (`shipping_paths`). 스트립 도구(scripts/)와 재유입 가드가 같은 한 벌을 소비해야 판정이
+#   갈리지 않으므로 엔진에 둔다. 신설 도구라 등록 필수(미등록=전파 안 됨·pm_render 사례).
+.project_manager/tools/private_refs.py
 
 # ── 방법론 문서 (엔진 · 프로젝트별 칸은 *.local.md / local.conf, manifest 밖) ──
 .project_manager/wiki/pm_role.md

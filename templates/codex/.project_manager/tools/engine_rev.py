@@ -202,6 +202,7 @@ STAMPED_MODULES = (
     "repo_owned_files.py",
     "file_lock.py",
     "local_conf.py",
+    "private_refs.py",
 )
 
 # deep-import target/loader인데 의도적으로 baked stamp 또는 경계 검증에서 제외하는 복구 채널.

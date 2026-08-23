@@ -13,7 +13,7 @@ from test_private_context_guard import _marker_label_hits
 
 
 REPO = Path(__file__).resolve().parents[1]
-SCRIPT = REPO / "scripts/strip_private_refs.py"
+PRIVATE_REFS_MODULE = REPO / ".project_manager/tools/private_refs.py"
 
 # T-0810 — 스트립이 사설 참조 토큰만 지우고 감싸던 괄호를 남긴 잔재(`()`)를 잡는다. 코드 호출/
 # 식별자(`foo()`)·백틱 인라인코드(`` `()` ``)·키워드형 표기(`touches=()`)·callable 타입 표기
@@ -22,7 +22,10 @@ _EMPTY_PAREN_RE = re.compile(r"(?<![A-Za-z0-9_\]\.\>=])\(\s*\)(?!\s*->)")
 
 
 def _load_scanner():
-    spec = importlib.util.spec_from_file_location("public_reference_scanner", SCRIPT)
+    """출하 표면 판정식을 엔진 모듈에서 로드한다 — lint 와 스트립이 같은 한 벌을 쓴다."""
+    spec = importlib.util.spec_from_file_location(
+        "public_reference_scanner", PRIVATE_REFS_MODULE
+    )
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
