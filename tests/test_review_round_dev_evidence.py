@@ -75,10 +75,15 @@ def _spec_text(ticket: str) -> str:
         "blocks: []\n"
         "touches: []\n"
         "estimate: medium\n"
-        "design: 'waived: test'\n"
+        "design: done\n"
         "tags: []\n"
         "---\n"
-        f"# {ticket}\n\n## 목표\n리뷰 라운드 준비면 판정.\n"
+        f"# {ticket}\n\n## 목표\n리뷰 라운드 준비면 판정.\n\n"
+        "## 설계\n"
+        "- **경계 실측**: 기계 테스트 픽스처\n"
+        "- **불변식**: 이 파일의 축 밖\n"
+        "- **표면 상한**: 픽스처 1건\n"
+        "- **테스트 전략**: 정상·실패 경로\n"
     )
 
 

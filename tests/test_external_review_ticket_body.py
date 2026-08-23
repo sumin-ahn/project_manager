@@ -53,8 +53,9 @@ def _ticket(path: Path, *, body: str) -> Path:
         "touches:\n"
         "- x.py\n"
         "estimate: medium\n"
-        # T-0815 설계 근거 게이트(developer 시드 seam) 관심사 밖 — waived 로 미리 해소한다.
-        'design: "waived: 본문 입력 픽스처(설계 근거 게이트 관심사 밖)"\n'
+        # T-0815 설계 근거 게이트(developer 시드 seam) 관심사 밖 — `done` + 설계 절(본문이
+        # 소유)로 미리 해소한다. 본문 bytes 는 호출부가 준 그대로 둔다(선택 축이 그 값을 잰다).
+        "design: done\n"
         "---\n"
         + body,
         encoding="utf-8",
@@ -349,7 +350,11 @@ SPEC_BODY = (
     "## 목표\n목표 내용\n\n"
     "## 인터페이스\n인터페이스 내용\n\n"
     "## 결정\n결정 내용\n\n"
-    "## 설계\n설계 내용\n\n"
+    "## 설계\n"
+    "- **경계 실측**: 기계 테스트 픽스처\n"
+    "- **불변식**: 이 파일의 축 밖\n"
+    "- **표면 상한**: 픽스처 1건\n"
+    "- **테스트 전략**: 정상·실패 경로\n\n"
     "## 완료 조건 (Definition of Done)\n- [ ] 항목\n\n"
     "## 참고\n참고 내용\n\n"
     "## 메모\n메모 내용\n\n"
@@ -384,7 +389,7 @@ def test_ticket_body_selection_includes_the_whole_spec(
         ("## 목표", "목표 내용"),
         ("## 인터페이스", "인터페이스 내용"),
         ("## 결정", "결정 내용"),
-        ("## 설계", "설계 내용"),
+        ("## 설계", "**경계 실측**: 기계 테스트 픽스처"),
         ("## 완료 조건 (Definition of Done)", "- [ ] 항목"),
         ("## 참고", "참고 내용"),
         ("## 메모", "메모 내용"),

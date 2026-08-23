@@ -978,12 +978,17 @@ _DELEGATE_ROUNDS_LEDGER_REQUIRED_FIELDS: frozenset[str] = frozenset(
 # 선택 키 셋은 하위 호환이다(기존 8키 행에는 없다) — `abandoned_at` 은 kill 잔여를 명시적으로
 # 포기(abandon)한 행에, `owner_pid` 는 준비 프로세스가 그 run 의 소유자일 때(prepare·실행·회수가
 # 한 프로세스인 cross 위임)에만, `superseded_by_ordinal` 은 산출이 시드와 달라도 재실행 대체본을
-# 운영자가 명시해 포기를 허용받은 행에만 붙는다. 검증은 필수-집합 정확 일치가 아니라 상한-집합
-# 포함으로 완화한다: 정확-일치였다면 이 키를 추가하는 순간 기존 행 전부가 schema 불일치로
-# 건너뛰어진다.
+# 운영자가 명시해 포기를 허용받은 행에만 붙는다. `cluster` 는 run-dir 이 묶음 키로 갈린 세대의
+# 행에 붙는다 — **없으면 종전 티켓 키 경로로 조립한다**(엔진 교체 시점에 열려 있던 준비가
+# 회수 불가가 되지 않게). 검증은 필수-집합 정확 일치가 아니라 상한-집합 포함으로 완화한다:
+# 정확-일치였다면 이 키를 추가하는 순간 기존 행 전부가 schema 불일치로 건너뛰어진다.
 _DELEGATE_ROUNDS_LEDGER_OPTIONAL_FIELDS: frozenset[str] = frozenset(
-    {"abandoned_at", "owner_pid", "superseded_by_ordinal"}
+    {"abandoned_at", "owner_pid", "superseded_by_ordinal", "cluster"}
 )
+# 묶음 id 는 run-dir 의 **경로 성분**이 된다 — board 이름 문법과 같은 보수적 집합만 받는다
+# (경로 구분자·상위 참조 배제). 회수측이 같은 형식을 다시 확인해 장부 값 하나로 경로가
+# 넓어지지 않게 한다.
+_CLUSTER_ID_RE = re.compile(r"C-[A-Za-z0-9][A-Za-z0-9._-]*")
 # 증거 없는 예약을 지우는 유일한 통로 — 무엇을 강제하는지가 아니라 **운영자가 무엇을 확인했는지**
 # 를 말하는 이름이다. 문구와 CLI 가 같은 값을 쓰도록 여기 한 자리에 둔다.
 ABANDON_ASSUME_DEAD_FLAG = "--assume-dead"
@@ -1008,6 +1013,27 @@ class TicketCopyPlan(NamedTuple):
     ordinal: int
     board_path: Path
     run_id: str
+    # 이 준비가 속한 묶음 — 크기 1 도 묶음이라 항상 실값이다(경로·장부 행이 이 값으로 갈린다).
+    cluster: str = ""
+    # 이 라운드가 속한 **묶음 run-dir**(`ClusterCopyPlan.run_dir`) — 위 `run_dir` 은 이 티켓
+    # 자리이고, 이 값은 그 자리들을 담는 run 전체다. 쓰기 허용 범위가 run-dir 전체라 하네스가
+    # 여는 좌표는 이 값이다(자리 경로에서 역산하지 않는다 — 역산은 layout 이 바뀌면 조용히
+    # 어긋난다).
+    cluster_run_dir: Path | None = None
+
+
+class ClusterCopyPlan(NamedTuple):
+    """준비 1회의 묶음 좌표 — run-dir 하나와 그 안의 티켓별 라운드 좌표들.
+
+    `rounds` 는 선언 순서(멤버 순서)를 지킨다 — 크기 1 이면 원소 하나이고 그 원소가 종전
+    `prepare_ticket_copy` 의 반환값이다.
+    """
+
+    run_dir: Path
+    cluster: str
+    run_id: str
+    role: str
+    rounds: tuple[TicketCopyPlan, ...]
 
 
 class TicketHarvestResult(NamedTuple):
@@ -1103,6 +1129,10 @@ def _delegate_rounds_ledger_row(row: object, *, line_number: int) -> dict:
             isinstance(row["superseded_by_ordinal"], int)
             and not isinstance(row["superseded_by_ordinal"], bool)
             and row["superseded_by_ordinal"] > 0
+        ))
+        # 묶음 키는 경로 성분이 되므로 값 형식을 행 판독 자리에서 닫는다.
+        or ("cluster" in row and not (
+            isinstance(row["cluster"], str) and _is_valid_cluster_id(row["cluster"])
         ))
     ):
         raise DelegateError(f"delegate-rounds 장부 값 형식 불일치: line={line_number}")
@@ -1268,28 +1298,66 @@ def _secure_machine_dir(
     return current, None
 
 
-def _ticket_run_relative_dir(ticket: str, run_id: str) -> Path:
-    """슬롯 run-dir 의 cwd 상대 경로 — run 이 유일 단위라 `<role>` 세그먼트가 없다.
+def _is_valid_cluster_id(value: object) -> bool:
+    """묶음 id 가 경로 성분으로 안전한 형식인가(회수·예약 양쪽이 쓰는 단일 술어)."""
+    return bool(_CLUSTER_ID_RE.fullmatch(str(value or "")))
 
-    역할 세그먼트를 뺀 만큼 경로가 짧아진다(Windows MAX_PATH 여유). 같은 슬롯·같은 티켓·같은
-    역할을 동시에 위임해도 run_id 가 갈라 놓으므로 겹치지 않는다.
+
+def _cluster_run_relative_dir(cluster: str, run_id: str) -> Path:
+    """run-dir 의 cwd 상대 경로 — `<root>/<묶음>/<run_id>/`. run 이 유일 단위라 `<role>`
+    세그먼트가 없다. 같은 슬롯·같은 묶음·같은 역할을 동시에 위임해도 run_id 가 갈라 놓는다.
+    """
+    return TICKET_COPY_REL_ROOT / cluster / run_id
+
+
+def _ticket_run_relative_dir(cluster: str, run_id: str, ticket: str) -> Path:
+    """run-dir 안 **그 티켓의 자리** — 라운드 파일·명세·이전 라운드가 여기 산다.
+
+    묶음 하나의 준비가 run-dir 하나를 쓰고 그 안에서 티켓별로 갈린다(크기 1 이면 자리 하나).
+    """
+    return _cluster_run_relative_dir(cluster, run_id) / ticket
+
+
+def _legacy_ticket_run_relative_dir(ticket: str, run_id: str) -> Path:
+    """묶음 키가 없던 세대의 자리 — `<root>/<티켓>/<run_id>/`.
+
+    장부 행에 `cluster` 가 없으면 이 규약으로 조립한다. 엔진 교체 시점에 **열려 있던** 준비가
+    회수 불가가 되면 board 라운드만 남으므로, 옛 행의 좌표를 그대로 살려 둔다.
     """
     return TICKET_COPY_REL_ROOT / ticket / run_id
 
 
-def _secure_ticket_copy_dir(
-    cwd: Path, ticket: str, run_id: str, *, extra_parts: tuple[str, ...] = (),
-) -> tuple[Path, int | None]:
+def _row_ticket_relative_dir(row: dict) -> Path:
+    """장부 행이 인가하는 티켓 자리 — 새 세대는 묶음 키로, 옛 행은 종전 규약으로 조립."""
+    cluster = str(row.get("cluster") or "").strip()
+    if cluster:
+        return _ticket_run_relative_dir(cluster, row["run_id"], row["ticket"])
+    return _legacy_ticket_run_relative_dir(row["ticket"], row["run_id"])
+
+
+def _secure_cluster_run_dir(cwd: Path, cluster: str, run_id: str) -> tuple[Path, int | None]:
     return _secure_machine_dir(
-        cwd,
-        (*_ticket_run_relative_dir(ticket, run_id).parts, *extra_parts),
+        cwd, _cluster_run_relative_dir(cluster, run_id).parts,
         label="티켓 라운드 run-dir",
     )
 
 
-def _ticket_copy_relative_path(ticket: str, run_id: str, filename: str) -> Path:
+def _secure_ticket_copy_dir(
+    cwd: Path, cluster: str, run_id: str, ticket: str, *,
+    extra_parts: tuple[str, ...] = (),
+) -> tuple[Path, int | None]:
+    return _secure_machine_dir(
+        cwd,
+        (*_ticket_run_relative_dir(cluster, run_id, ticket).parts, *extra_parts),
+        label="티켓 라운드 run-dir",
+    )
+
+
+def _ticket_copy_relative_path(
+    cluster: str, run_id: str, ticket: str, filename: str,
+) -> Path:
     """run-dir 안 한 파일의 cwd 상대 경로 (ignore 검증·경로 예산 단언의 입력)."""
-    return _ticket_run_relative_dir(ticket, run_id) / filename
+    return _ticket_run_relative_dir(cluster, run_id, ticket) / filename
 
 
 def _parse_check_ignore_verbose_line(line: str) -> tuple[str, str, str] | None:
@@ -1353,7 +1421,7 @@ def _check_ignore_source_is_tracked(cwd: Path, source: str) -> bool:
 
 
 def _assert_ticket_copy_root_ignored(
-    cwd: Path, *, ticket: str, run_id: str,
+    cwd: Path, *, cluster: str, run_id: str, ticket: str,
 ) -> None:
     """ignore 규칙이 실제 ticket-copy 경로 형상을 숨기는지, 그 규칙이 tracked
     `.project_manager/.gitignore` 유래인지 fail-loud 확인한다([[T-0704]]).
@@ -1371,7 +1439,7 @@ def _assert_ticket_copy_root_ignored(
         [
             "git", "-C", str(cwd), "check-ignore", "-v",
             _ticket_copy_relative_path(
-                ticket, run_id, TICKET_COPY_SPEC_NAME,
+                cluster, run_id, ticket, TICKET_COPY_SPEC_NAME,
             ).as_posix(),
         ],
         capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
@@ -1477,15 +1545,28 @@ def _expected_slot_round_path(cwd: Path, row: dict, rounds_module) -> Path:
     양쪽이 같은 대상으로 접혀 결속 판정이 눈먼다 — 대상 무결성은 chain lstat 과 nofollow 판독이
     따로 본다.
     """
-    return Path(cwd) / _ticket_copy_relative_path(
-        row["ticket"], row["run_id"],
-        rounds_module.round_filename(row["ordinal"], row["role"]),
+    return Path(cwd) / _row_ticket_relative_dir(row) / rounds_module.round_filename(
+        row["ordinal"], row["role"],
     )
 
 
 def _same_lexical_path(left: Path, right: Path) -> bool:
     """두 절대경로가 같은 자리를 가리키는가 (정규화만 · 해소 없음)."""
     return os.path.normpath(str(left)) == os.path.normpath(str(right))
+
+
+def _prune_empty_run_dir(ticket_dir: Path) -> None:
+    """티켓 자리를 닫은 뒤 **빈** run-dir 을 걷는다 — 마지막 자리가 닫히면 run 도 닫힌다.
+
+    크기 1 묶음이면 자리가 하나라 회수·포기 즉시 run-dir 이 사라진다(종전과 같은 관측).
+    다른 티켓의 자리가 남아 있으면 아무것도 하지 않는다. `rmdir` 은 빈 디렉터리에서만
+    성공하므로 이 정리가 남의 산출을 지울 수 없다(재귀 삭제 아님).
+    """
+    parent = Path(ticket_dir).parent
+    if not parent.name or parent.name == TICKET_COPY_REL_ROOT.name:
+        return
+    with contextlib.suppress(OSError):
+        parent.rmdir()
 
 
 def _read_slot_round_text(copy_path: Path) -> str:
@@ -1530,15 +1611,17 @@ def _normalized_newlines(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def _assert_slot_run_dir_chain_is_plain(cwd: Path, ticket: str, run_id: str) -> None:
-    """run-dir 까지의 **모든** 마디가 실 디렉터리인지 본다 (symlink 교체 거부).
+def _assert_slot_run_dir_chain_is_plain(cwd: Path, relative_dir: Path) -> None:
+    """티켓 자리까지의 **모든** 마디가 실 디렉터리인지 본다 (symlink 교체 거부).
 
-    시야는 검사 대상 표면과 같아야 한다 — 사본 루트까지만 보면 `<ticket>/<run_id>` 두 마디가
-    검사 밖이라, 그 자리를 symlink 로 갈아끼우면 다른 트리의 파일이 회수되고 `force_rmtree` 가
-    남의 디렉터리를 지운다. 최종 파일의 nofollow 판독은 그 다음 층이다.
+    시야는 검사 대상 표면과 같아야 한다 — 사본 루트까지만 보면 `<묶음>/<run_id>/<티켓>` 세
+    마디가 검사 밖이라, 그 자리를 symlink 로 갈아끼우면 다른 트리의 파일이 회수되고
+    `force_rmtree` 가 남의 디렉터리를 지운다. 최종 파일의 nofollow 판독은 그 다음 층이다.
+    입력은 장부 행이 인가한 상대 경로 그대로다(`_row_ticket_relative_dir`) — 여기서 규약을
+    다시 조립하면 옛 세대 행의 마디를 놓친다.
     """
     current = Path(cwd)
-    for part in _ticket_run_relative_dir(ticket, run_id).parts:
+    for part in Path(relative_dir).parts:
         current = current / part
         try:
             observed = current.lstat()
@@ -1648,22 +1731,53 @@ def prepare_ticket_copy(
     *, ticket: str, role: str, cwd: Path, pm_home: Path, owner_pid: int | None = None,
     confirm_fix: bool = False,
 ) -> TicketCopyPlan:
-    """board 에 라운드 순번을 시드로 예약하고, 같은 파일을 슬롯 run-dir 에 materialize 한다.
+    """티켓 하나의 라운드를 준비한다 — **크기 1 묶음 호출**의 얇은 래퍼.
+
+    티켓당 경로를 따로 두지 않는다(특례 없음). 이 티켓이 속한 묶음은 명세 frontmatter 가
+    말하고, 필드가 없으면 그 티켓 이름의 크기 1 묶음으로 읽힌다(파일 마이그레이션 0).
+    반환은 종전대로 라운드 파일 하나의 좌표다.
+    """
+    board = _load_board_for_repo(pm_home)
+    found = board.find_ticket_exact(ticket)
+    if found is None:
+        raise DelegateError(f"ticket not found: {ticket}")
+    _status, source = found
+    try:
+        spec_text = _load_file_lock().read_bytes_shared(source).decode("utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise DelegateError(f"PM 홈 티켓 읽기 실패: {source}: {exc}") from exc
+    cluster = board.ticket_cluster_from_text(ticket, spec_text)
+    plan = prepare_cluster_copy(
+        cluster=cluster, tickets=(ticket,), role=role, cwd=cwd, pm_home=pm_home,
+        owner_pid=owner_pid, confirm_fix=confirm_fix,
+    )
+    return plan.rounds[0]
+
+
+def prepare_cluster_copy(
+    *, cluster: str, tickets: Sequence[str] | None = None, role: str, cwd: Path,
+    pm_home: Path, owner_pid: int | None = None, confirm_fix: bool = False,
+) -> ClusterCopyPlan:
+    """board 에 티켓별 라운드 순번을 시드로 예약하고, 같은 파일들을 run-dir 하나에 깐다.
+
+    **run 이 단위다** — 묶음의 티켓 N 개가 run-dir 하나를 공유하고, 그 안에서 티켓마다
+    `<티켓>/{NN-<역할>.md, spec.md, rounds/}` 를 갖는다. 쓸 수 있는 자리는 run-dir 전체이고
+    (하네스가 여는 범위가 원래 run-dir 통째다) 티켓별 명세·이전 라운드는 읽기 전용 입력이다.
+    크기 1 묶음이면 티켓 하나짜리 run-dir 이라 종전 준비와 동작이 같다(별도 코드 경로 없음).
 
     **거부 판정은 전부 예약 앞에 둔다** — 역할·티켓 조회·상태·ignore 규칙·run-dir·내부 라운드
-    상한이 모두 board를 건드리기 전에 끝난다. 뒤에 두면 거부된 준비가 board에 회수 불가능한
-    고아 라운드를 남기고 순번 하나를 영구 소모한다(장부 행이 없어 회수 자체가 막힌다).
+    상한·시드 렌더(설계 근거 게이트 포함)가 **N 티켓 전부** board 를 건드리기 전에 끝난다.
+    뒤에 두면 거부된 준비가 board 에 회수 불가능한 고아 라운드를 남기고 순번을 영구 소모한다.
 
-    순서는 여섯이다 — (1) 역할·티켓·상태 판정 (1.5) 내부 라운드 상한 사전판정(빠른
-    실패 — 슬롯 run-dir 을 만들기 전에 흔한/비경합 초과 요청을 끝낸다) (2) ignore 검증과 슬롯
-    run-dir 확보(슬롯 전용 부작용) (3) 시드 렌더 (4) **상태 재확인 + 역할 count 재확인 + 채번
-    +O_EXCL 예약을 하나의 board_lock 임계구역에서 최신 스냅샷으로 수행**(F-003 — (1.5)의
-    사전판정은 신뢰 뿌리가 아니다: 두 준비가 그 사전판정을 동시에 통과해도 이 임계구역의 최신
-    재확인이 그중 하나만 통과시킨다) (5) 슬롯 파일 laydown + PM 홈 장부 기록(회수의 신뢰 뿌리).
+    순서는 여섯이다 — (1) 역할·멤버 해소·티켓별 상태 판정 (1.5) 내부 라운드 상한 사전판정
+    (빠른 실패 — run-dir 을 만들기 전에 흔한/비경합 초과 요청을 끝낸다) (2) ignore 검증과
+    run-dir 확보(슬롯 전용 부작용) (3) 티켓별 시드 렌더 (4) **상태 재확인 + 역할 count 재확인 +
+    채번 + O_EXCL 예약을 하나의 board_lock 임계구역에서 최신 스냅샷으로 수행** (5) 슬롯 파일
+    laydown + PM 홈 장부 기록(회수의 신뢰 뿌리 · 티켓당 한 행).
 
     락은 (4) 구간만 잡는다. 재확인·채번·생성이 그 구간 안에서 한 번에 끝나는 게 두 준비가 같은
     번호를 계산하거나 상한을 함께 넘길 수 있는 유일한 창을 닫는 방법이고, 회수·기록 경로에는
-    락이 없다.
+    락이 없다. 순번은 **티켓별**이다 — 묶음 하나의 라운드가 티켓마다 다른 번호를 받을 수 있다.
 
     `owner_pid` 는 **호출자가 이 run 의 소유자일 때만** 준다 — 준비·실행·회수가 한 프로세스의
     try/finally 인 cross 위임이 그 경우다. 그 값이 장부에 실리면 포기(abandon) 판정이 "이 run 이
@@ -1675,9 +1789,8 @@ def prepare_ticket_copy(
     않는다(외부 채널과 같은 규율 — 출구는 재설계·분할뿐 · 우회 플래그가 없다). 유일한 예외는
     `confirm_fix=True` 다 — 수렴 상한(`internal_review_rounds_max()`)이 소유한 "확인 수정은
     1회만 허용" 규약을 이 예약 상한이 앞서 막지 않도록, 그 한 라운드에 한해 상한을 1 만큼 올려
-    확인한다(F-001 — 별도 예약 상한이 수렴 상한보다 먼저 발동해 설정된 라운드 다 쓴 뒤 필수
-    confirm-fix 조차 예약 못 하던 우선순위 결함). 실제 1회 제한은 여전히 내부 장부
-    (`entry["confirm_fix"] >= 1`)가 소유하며, 여기서는 그 승인이 도달할 길만 연다.
+    확인한다. 실제 1회 제한은 여전히 내부 장부(`entry["confirm_fix"] >= 1`)가 소유하며, 여기서는
+    그 승인이 도달할 길만 연다.
     """
     if role not in TICKET_COPY_PREPARE_ROLES:
         raise DelegateError(f"티켓 라운드 준비 미지원 역할: {role}")
@@ -1685,179 +1798,233 @@ def prepare_ticket_copy(
     rounds_module = _load_ticket_rounds()
     pm_home = Path(pm_home).resolve()
     cwd = Path(cwd).resolve()
+    cluster = str(cluster or "").strip()
+    if not _is_valid_cluster_id(cluster):
+        raise DelegateError(f"클러스터 id 형식이 아닙니다: {cluster!r}")
+    members = tuple(tickets) if tickets else board.cluster_members(cluster)
+    if not members:
+        raise DelegateError(
+            f"클러스터 멤버가 없습니다: {cluster} — `board.py cluster show {cluster}` 로 "
+            "장부를 확인하세요"
+        )
 
+    # ── (1) 티켓별 상태 판정 + 명세 판독 (board 무영향) ─────────────────────
+    specs: dict[str, str] = {}
     with board.board_lock():
-        found = board.find_ticket_exact(ticket)
-        if found is None:
-            raise DelegateError(f"ticket not found: {ticket}")
-        status, source = found
-        if status not in _TICKET_PREPARE_STATUSES and not (
-            status == "draft" and role == "architect"
-        ):
-            raise DelegateError(
-                "티켓 라운드 준비는 open/claimed 또는 draft×architect만 허용: "
-                f"{ticket} role={role} currently in {status}/"
-            )
-        try:
-            spec_text = _load_file_lock().read_bytes_shared(source).decode("utf-8")
-        except (OSError, UnicodeError) as exc:
-            raise DelegateError(f"PM 홈 티켓 읽기 실패: {source}: {exc}") from exc
+        for ticket in members:
+            found = board.find_ticket_exact(ticket)
+            if found is None:
+                raise DelegateError(f"ticket not found: {ticket}")
+            status, source = found
+            if status not in _TICKET_PREPARE_STATUSES and not (
+                status == "draft" and role == "architect"
+            ):
+                raise DelegateError(
+                    "티켓 라운드 준비는 open/claimed 또는 draft×architect만 허용: "
+                    f"{ticket} role={role} currently in {status}/"
+                )
+            try:
+                specs[ticket] = _load_file_lock().read_bytes_shared(source).decode("utf-8")
+            except (OSError, UnicodeError) as exc:
+                raise DelegateError(f"PM 홈 티켓 읽기 실패: {source}: {exc}") from exc
 
     tickets_dir = board.tickets_dir()
-    existing = rounds_module.load_rounds(tickets_dir, ticket, ticket_text=spec_text)
+    existing_rounds = {
+        ticket: rounds_module.load_rounds(tickets_dir, ticket, ticket_text=text)
+        for ticket, text in specs.items()
+    }
     conf = (
         _load_external_review()._local_config_for_repo(pm_home)
         if role in DEFAULT_INTERNAL_ROUND_LIMITS else None
     )
-
-    # ── 내부 라운드 상한 — 빠른 실패 사전판정. 신뢰 뿌리가 아니다: 최종 판정은
-    # 아래 (4) 의 board_lock 임계구역이 최신 스냅샷으로 다시 낸다(F-003). 이 사전판정은 상한을
-    # 넘은 흔한(비경합) 요청이 슬롯 run-dir 을 만들기 전에 끝나게 하는 최적화일 뿐이다.
+    limit = 0
     if role in DEFAULT_INTERNAL_ROUND_LIMITS:
         limit = _internal_round_limit(conf, role)
-        # F-001 — confirm-fix 예약은 수렴 상한이 소유한 1회 예외를 상속한다(위 docstring).
-        # 실제 1회 한도는 `_reserve_internal_review_round` 의 내부 장부가 강제하므로, 이 예약
-        # 상한이 그 자리를 대신 세지 않고 통과 창만 하나 더 연다.
+        # 확인 수정 예약은 수렴 상한이 소유한 1회 예외를 상속한다(위 docstring). 실제 1회
+        # 한도는 `_reserve_internal_review_round` 의 내부 장부가 강제하므로, 이 예약 상한이
+        # 그 자리를 대신 세지 않고 통과 창만 하나 더 연다.
         if confirm_fix:
             limit += 1
-        count = _internal_round_count(existing, role)
-        if count >= limit:
-            raise InternalRoundLimitExceeded(
-                _INTERNAL_ROUND_LIMIT_GUIDANCE.format(
-                    ticket=ticket, role=role, count=count, limit=limit,
-                    rounds=_internal_round_list(existing, role, rounds_module),
-                )
-            )
 
-    # ── 예약 전 거부 판정 (board 무영향) ──────────────────────────────────
+    # ── (1.5) 내부 라운드 상한 — 빠른 실패 사전판정. 신뢰 뿌리가 아니다: 최종 판정은
+    # 아래 (4) 의 board_lock 임계구역이 최신 스냅샷으로 다시 낸다. 이 사전판정은 상한을 넘은
+    # 흔한(비경합) 요청이 run-dir 을 만들기 전에 끝나게 하는 최적화일 뿐이다.
+    if role in DEFAULT_INTERNAL_ROUND_LIMITS:
+        for ticket in members:
+            count = _internal_round_count(existing_rounds[ticket], role)
+            if count >= limit:
+                raise InternalRoundLimitExceeded(
+                    _INTERNAL_ROUND_LIMIT_GUIDANCE.format(
+                        ticket=ticket, role=role, count=count, limit=limit,
+                        rounds=_internal_round_list(
+                            existing_rounds[ticket], role, rounds_module,
+                        ),
+                    )
+                )
+
+    # ── (2) 예약 전 거부 판정 (board 무영향) ──────────────────────────────
     run_id = uuid.uuid4().hex
-    _assert_ticket_copy_root_ignored(cwd, ticket=ticket, run_id=run_id)
-    run_dir, run_dir_fd = _secure_ticket_copy_dir(cwd, ticket, run_id)
-    rounds_dir = rounds_dir_fd = None
-    # F-010 — board_path 예약(reserve_round) 성공 전에 이 블록을 벗어나면(동시
-    # prepare 경합 패자 포함) 이 run_dir 은 이 호출 하나만의 소유라 안전하게 지운다. 성공
-    # 후 실패(장부 append 등)는 board 라운드가 이미 살아 있어 `_reserved_round_residue`
-    # 진단으로 수동 복구 좌표를 남기는 기존 설계를 그대로 둔다(run_dir 을 지우지 않는다).
-    reserved = False
+    _assert_ticket_copy_root_ignored(
+        cwd, cluster=cluster, run_id=run_id, ticket=members[0],
+    )
+    run_dir, run_dir_fd = _secure_cluster_run_dir(cwd, cluster, run_id)
+    ticket_dirs: dict[str, tuple[Path, int | None, Path, int | None]] = {}
+    seeds: dict[str, str] = {}
+    # 예약 성공분의 복구 좌표 — 티켓마다 `ticket·board_path·ordinal·board_rel`. 예약 직후
+    # fallback 값으로 먼저 채우고 더 나은 값으로 교체한다(아래 (4) 주석).
+    reserved: list[dict[str, Any]] = []
+    plans: list[TicketCopyPlan] = []
+    # 예약(reserve_round) 성공 전에 이 블록을 벗어나면(동시 prepare 경합 패자 포함) 이 run_dir
+    # 은 이 호출 하나만의 소유라 안전하게 지운다. 성공 후 실패(장부 append 등)는 board 라운드가
+    # 이미 살아 있어 `_reserved_round_residue` 진단으로 수동 복구 좌표를 남긴다(지우지 않는다).
     try:
         try:
-            rounds_dir, rounds_dir_fd = _secure_ticket_copy_dir(
-                cwd, ticket, run_id, extra_parts=(TICKET_COPY_ROUNDS_DIRNAME,),
-            )
-
-            try:
-                seed = _ticket_round_seed(
-                    rounds_module, role, spec_text,
-                    # 프리필 공급원 규칙(같은 역할 직전 라운드 · 산출 없는 라운드 배제)은 사이드카
-                    # seam 하나가 소유한다 — 여기서 다시 구현하면 예약측·판정측 규칙이 갈린다.
-                    rounds_module.previous_round_of_role(existing, role),
-                    today=datetime.date.today().isoformat(),
-                    # developer 골격의 verify 프리필 입력 — 이미 손에 든 `existing` 을 그대로
-                    # 넘긴다(신규 로드 0).
-                    rounds=existing,
+            for ticket in members:
+                ticket_dir, ticket_fd = _secure_ticket_copy_dir(
+                    cwd, cluster, run_id, ticket,
                 )
-            except rounds_module.RoundsError as exc:
-                # 시드 seam 은 자기 오류형으로 거부한다(board `section-add` 가 잡는 형). 여기서
-                # 되받아 이 CLI 의 오류형으로 옮긴다 — 두 진입점이 같은 규칙·같은 rc 를 낸다.
-                # 시드 seam 은 실 ticket id 를 모른다(ticket_text 만 받는다) 그래서 `<T-NNNN>`
-                # placeholder 로 처방을 낸다(리뷰 결정) — 이 층은 실값을 쥐고 있으므로
-                # 여기서만 치환해 커맨드가 그대로 실행 가능하게 한다(board `section-add` 는 이
-                # 층을 거치지 않아 치환되지 않는다 — touches 밖).
-                raise DelegateError(str(exc).replace("<T-NNNN>", ticket)) from exc
-            # ── 여기부터 board 를 건드린다 (F-003: 상태 재확인·역할 count 재확인·최종
-            # reserve 를 하나의 board_lock 임계구역에서 최신 스냅샷으로 재수행한다 — 위 (1.5)
-            # 사전판정과 이 지점 사이의 gap 이 TOCTOU 였다: 두 준비가 사전판정을 함께 통과해도
-            # 여기서 재확인하는 최신 스캔이 그중 하나만 통과시킨다) ──────────────────────
+                rounds_dir, rounds_fd = _secure_ticket_copy_dir(
+                    cwd, cluster, run_id, ticket,
+                    extra_parts=(TICKET_COPY_ROUNDS_DIRNAME,),
+                )
+                ticket_dirs[ticket] = (ticket_dir, ticket_fd, rounds_dir, rounds_fd)
+
+            # ── (3) 티켓별 시드 렌더 — 설계 근거 게이트가 여기서 거부한다(예약 전·잔여 0).
+            for ticket in members:
+                try:
+                    seeds[ticket] = _ticket_round_seed(
+                        rounds_module, role, specs[ticket],
+                        # 프리필 공급원 규칙(같은 역할 직전 라운드 · 산출 없는 라운드 배제)은
+                        # 사이드카 seam 하나가 소유한다 — 여기서 다시 구현하면 예약측·판정측
+                        # 규칙이 갈린다.
+                        rounds_module.previous_round_of_role(existing_rounds[ticket], role),
+                        today=datetime.date.today().isoformat(),
+                        # developer 골격의 verify 프리필 입력 — 이미 손에 든 라운드를 그대로
+                        # 넘긴다(신규 로드 0).
+                        rounds=existing_rounds[ticket],
+                    )
+                except rounds_module.RoundsError as exc:
+                    # 시드 seam 은 자기 오류형으로 거부한다(board `section-add` 가 잡는 형).
+                    # 여기서 되받아 이 CLI 의 오류형으로 옮긴다 — 두 진입점이 같은 규칙·같은
+                    # rc 를 낸다. 시드 seam 은 실 ticket id 를 모르므로(ticket_text 만 받는다)
+                    # `<T-NNNN>` placeholder 로 처방을 낸다(리뷰 결정) — 이 층은 실값을 쥐고
+                    # 있으므로 여기서만 치환해 커맨드가 그대로 실행 가능하게 한다.
+                    raise DelegateError(str(exc).replace("<T-NNNN>", ticket)) from exc
+
+            # ── (4) 여기부터 board 를 건드린다: 상태 재확인·역할 count 재확인·최종 reserve 를
+            # 하나의 board_lock 임계구역에서 최신 스냅샷으로 재수행한다 — 위 사전판정과 이
+            # 지점 사이의 gap 이 TOCTOU 였다(두 준비가 사전판정을 함께 통과해도 여기서
+            # 재확인하는 최신 스캔이 그중 하나만 통과시킨다). 재확인은 **N 티켓 전부**를 먼저
+            # 통과시키고 그다음에야 첫 예약을 쓴다(부분 예약 금지).
+            board_paths: dict[str, Path] = {}
             with board.board_lock():
-                refreshed = board.find_ticket_exact(ticket)
-                if refreshed is None:
-                    raise DelegateError(f"ticket not found: {ticket}")
-                fresh_status, _fresh_source = refreshed
-                if fresh_status not in _TICKET_PREPARE_STATUSES and not (
-                    fresh_status == "draft" and role == "architect"
-                ):
-                    raise DelegateError(
-                        "티켓 라운드 준비는 open/claimed 또는 draft×architect만 허용: "
-                        f"{ticket} role={role} currently in {fresh_status}/"
-                    )
-                if role in DEFAULT_INTERNAL_ROUND_LIMITS:
-                    fresh_existing = rounds_module.load_rounds(
-                        tickets_dir, ticket, ticket_text=spec_text,
-                    )
-                    count = _internal_round_count(fresh_existing, role)
-                    if count >= limit:
-                        raise InternalRoundLimitExceeded(
-                            _INTERNAL_ROUND_LIMIT_GUIDANCE.format(
-                                ticket=ticket, role=role, count=count, limit=limit,
-                                rounds=_internal_round_list(
-                                    fresh_existing, role, rounds_module,
-                                ),
-                            )
+                for ticket in members:
+                    refreshed = board.find_ticket_exact(ticket)
+                    if refreshed is None:
+                        raise DelegateError(f"ticket not found: {ticket}")
+                    fresh_status, _fresh_source = refreshed
+                    if fresh_status not in _TICKET_PREPARE_STATUSES and not (
+                        fresh_status == "draft" and role == "architect"
+                    ):
+                        raise DelegateError(
+                            "티켓 라운드 준비는 open/claimed 또는 draft×architect만 허용: "
+                            f"{ticket} role={role} currently in {fresh_status}/"
                         )
-                # 이 함수가 이미 board_lock 을 쥐고 있다(재진입 금지) — reserve_round 자신의
-                # `with lock:` 은 null 컨텍스트로 채워 채번+생성이 같은 임계구역 안에서 돈다.
-                board_path = rounds_module.reserve_round(
-                    tickets_dir, ticket, role, content=seed, lock=contextlib.nullcontext(),
-                )
-                # F-002 — reserve_round 반환 즉시, **락 이탈(`__exit__`) 전** 같은 락
-                # 본문 안에서 예약 성공 상태와 복구 좌표를 기록한다. `exclusive_file_lock` 은
-                # unlock/close 실패를 올리는 계약이라, 이 대입이 `with` 밖에 있으면 락 이탈
-                # 실패가 board 만 남기고 run_dir·좌표를 지우는 복구 불능 형상을 만든다.
-                reserved = True
-                # F-001(라운드 5) — 아래 두 계산은 각각 실패 가능한 seam 이다
-                # (`parse_round_filename`은 파일명 파싱 실패 시 `None` 반환 · `_board_relative_path`
-                # 는 PM 홈 밖 해소를 계약형 `DelegateError` 로 던진다). 복구 진단(아래 `elif
-                # reserved:`)이 그 실패로 미초기화 변수를 참조해 `UnboundLocalError` 를 내며 원
-                # 예외를 덮지 않도록, 던지지 않는 fallback 좌표를 먼저 확정한 뒤에만 더 나은
-                # 값으로 교체를 시도한다 — 대입은 원자적이라 우변이 던지면 좌변은 fallback
-                # 그대로 남는다.
-                ordinal = 0
-                board_rel = str(board_path)
-                parsed_round = rounds_module.parse_round_filename(board_path.name)
-                if parsed_round is not None:
-                    ordinal, _role = parsed_round
-                board_rel = _board_relative_path(board_path, pm_home)
-
-            copy_path = run_dir / board_path.name
-            try:
-                _write_exclusive_file(
-                    copy_path, seed.encode("utf-8"), 0o600, parent_fd=run_dir_fd,
-                )
-                _write_exclusive_file(
-                    run_dir / TICKET_COPY_SPEC_NAME,
-                    spec_text.encode("utf-8"),
-                    0o400,
-                    parent_fd=run_dir_fd,
-                )
-            except OSError as exc:
-                raise DelegateError(
-                    f"티켓 라운드 사본 생성 실패: {run_dir}: {exc}"
-                    + _reserved_round_residue(board_rel, ordinal)
-                ) from exc
-            # 이전 라운드는 읽기 전용 입력이다 — 시드 그대로인 미회수 라운드도 함께 깐다(진행 중
-            # 다른 역할의 자리를 숨기지 않는다).
-            try:
-                for item in existing:
-                    _write_exclusive_file(
-                        rounds_dir / item.path.name,
-                        item.text.encode("utf-8"),
-                        0o400,
-                        parent_fd=rounds_dir_fd,
+                    if role in DEFAULT_INTERNAL_ROUND_LIMITS:
+                        fresh_existing = rounds_module.load_rounds(
+                            tickets_dir, ticket, ticket_text=specs[ticket],
+                        )
+                        count = _internal_round_count(fresh_existing, role)
+                        if count >= limit:
+                            raise InternalRoundLimitExceeded(
+                                _INTERNAL_ROUND_LIMIT_GUIDANCE.format(
+                                    ticket=ticket, role=role, count=count, limit=limit,
+                                    rounds=_internal_round_list(
+                                        fresh_existing, role, rounds_module,
+                                    ),
+                                )
+                            )
+                for ticket in members:
+                    # 이 함수가 이미 board_lock 을 쥐고 있다(재진입 금지) — reserve_round 자신의
+                    # `with lock:` 은 null 컨텍스트로 채워 채번+생성이 같은 임계구역 안에서 돈다.
+                    board_path = rounds_module.reserve_round(
+                        tickets_dir, ticket, role, content=seeds[ticket],
+                        lock=contextlib.nullcontext(),
                     )
-            except OSError as exc:
-                raise DelegateError(
-                    f"이전 라운드 사본 생성 실패: {rounds_dir}: {exc}"
-                    + _reserved_round_residue(board_rel, ordinal)
-                ) from exc
+                    board_paths[ticket] = board_path
+                    # 반환 즉시, **락 이탈 전** 같은 락 본문 안에서 예약 성공 상태와 복구 좌표를
+                    # 기록한다. `exclusive_file_lock` 은 unlock/close 실패를 올리는 계약이라,
+                    # 이 기록이 `with` 밖에 있으면 락 이탈 실패가 board 만 남기고 run-dir·좌표를
+                    # 지우는 복구 불능 형상을 만든다. 아래 두 계산은 각각 실패 가능한 seam 이라
+                    # (`parse_round_filename` 은 None 반환 · `_board_relative_path` 는 PM 홈 밖
+                    # 해소를 계약형 오류로 던진다) **던지지 않는 fallback 좌표를 먼저 확정한 뒤**
+                    # 더 나은 값으로 교체를 시도한다 — 그래야 복구 진단이 미초기화 값을 참조해
+                    # 원 예외를 덮지 않는다.
+                    record: dict[str, Any] = {
+                        "ticket": ticket, "board_path": board_path,
+                        "ordinal": 0, "board_rel": str(board_path),
+                    }
+                    reserved.append(record)
+                    parsed_round = rounds_module.parse_round_filename(board_path.name)
+                    if parsed_round is not None:
+                        record["ordinal"] = parsed_round[0]
+                    record["board_rel"] = _board_relative_path(board_path, pm_home)
+
+            # ── (5) 슬롯 파일 laydown ─────────────────────────────────────
+            for record in reserved:
+                ticket = record["ticket"]
+                board_rel = record["board_rel"]
+                ordinal = record["ordinal"]
+                ticket_dir, ticket_fd, rounds_dir, rounds_fd = ticket_dirs[ticket]
+                board_path = record["board_path"]
+                copy_path = ticket_dir / board_path.name
+                try:
+                    _write_exclusive_file(
+                        copy_path, seeds[ticket].encode("utf-8"), 0o600,
+                        parent_fd=ticket_fd,
+                    )
+                    _write_exclusive_file(
+                        ticket_dir / TICKET_COPY_SPEC_NAME,
+                        specs[ticket].encode("utf-8"),
+                        0o400,
+                        parent_fd=ticket_fd,
+                    )
+                except OSError as exc:
+                    raise DelegateError(
+                        f"티켓 라운드 사본 생성 실패: {ticket_dir}: {exc}"
+                        + _reserved_round_residue(board_rel, ordinal)
+                    ) from exc
+                # 이전 라운드는 읽기 전용 입력이다 — 시드 그대로인 미회수 라운드도 함께 깐다
+                # (진행 중 다른 역할의 자리를 숨기지 않는다).
+                try:
+                    for item in existing_rounds[ticket]:
+                        _write_exclusive_file(
+                            rounds_dir / item.path.name,
+                            item.text.encode("utf-8"),
+                            0o400,
+                            parent_fd=rounds_fd,
+                        )
+                except OSError as exc:
+                    raise DelegateError(
+                        f"이전 라운드 사본 생성 실패: {rounds_dir}: {exc}"
+                        + _reserved_round_residue(board_rel, ordinal)
+                    ) from exc
+                plans.append(TicketCopyPlan(
+                    copy_path.resolve(), ticket_dir, ticket, role, ordinal, board_path,
+                    run_id, cluster, run_dir,
+                ))
         finally:
+            for _ticket_dir, ticket_fd, _rounds_dir, rounds_fd in ticket_dirs.values():
+                if ticket_fd is not None:
+                    os.close(ticket_fd)
+                if rounds_fd is not None:
+                    os.close(rounds_fd)
             if run_dir_fd is not None:
                 os.close(run_dir_fd)
-            if rounds_dir_fd is not None:
-                os.close(rounds_dir_fd)
     except BaseException as exc:
-        # F-001 — 정리(force_rmtree)가 `KeyboardInterrupt`·`SystemExit`·비-OSError 로
-        # 죽어도 이미 pending 인 **원** 예외(`exc`)를 대체하지 않는다: 아래는 어떤 예외형이든
-        # 잡아 loud 경고만 남기고 마지막 `raise`(bare)는 항상 `exc` 를 그대로 재전파한다.
+        # 정리(force_rmtree)가 `KeyboardInterrupt`·`SystemExit`·비-OSError 로 죽어도 이미
+        # pending 인 **원** 예외(`exc`)를 대체하지 않는다: 아래는 어떤 예외형이든 잡아 loud
+        # 경고만 남기고 마지막 `raise`(bare)는 항상 `exc` 를 그대로 재전파한다.
         if not reserved and os.path.lexists(run_dir):
             try:
                 _load_file_lock().force_rmtree(run_dir)
@@ -1874,49 +2041,55 @@ def prepare_ticket_copy(
                     file=sys.stderr,
                 )
         elif reserved:
-            # F-002 — board 예약은 이미 성공했지만(예: 락 이탈 실패) 이후 단계가
-            # 실패했다. run_dir 은 지우지 않는다(위 분기가 스킵) — 다음 조작자가 board 좌표로
-            # 찾을 수 있게 기존 `_reserved_round_residue` 진단을 그대로 재사용해 loud 하게
-            # 남긴다(복구 불능 — board 만 남고 run-dir·좌표 모두 없음 — 을 만들지 않는다).
+            # board 예약은 이미 성공했지만(예: 락 이탈 실패) 이후 단계가 실패했다. run_dir 은
+            # 지우지 않는다(위 분기가 스킵) — 다음 조작자가 board 좌표로 찾을 수 있게 예약된
+            # 라운드 전부의 복구 좌표를 loud 하게 남긴다(복구 불능 — board 만 남고 run-dir·
+            # 좌표 모두 없음 — 을 만들지 않는다).
+            residue = " · ".join(
+                f"{record['ticket']}"
+                f"{_reserved_round_residue(record['board_rel'], record['ordinal'])}"
+                for record in reserved
+            )
             print(
                 f"경고: board 라운드 예약 후 준비가 실패했습니다({type(exc).__name__}: {exc})"
-                + _reserved_round_residue(board_rel, ordinal),
+                f" · {residue}",
                 file=sys.stderr,
             )
         raise
 
-    ledger_row = {
-        "ticket": ticket,
-        "role": role,
-        "ordinal": ordinal,
-        "run_id": run_id,
-        "copy": str(copy_path.resolve()),
-        "board_rel": board_rel,
-        "prepared_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "harvested_at": None,
-    }
-    if owner_pid is not None:
-        ledger_row["owner_pid"] = owner_pid
-    try:
-        _append_delegate_rounds_ledger(pm_home, ledger_row)
-    except DelegateError as exc:
-        # 장부 행이 없으면 이 라운드는 회수 자체가 막힌다 — 남은 좌표를 진단에 싣는다.
-        raise DelegateError(
-            f"{exc}{_reserved_round_residue(board_rel, ordinal)}"
-        ) from exc
-    return TicketCopyPlan(
-        copy_path.resolve(), run_dir, ticket, role, ordinal, board_path, run_id,
-    )
+    for plan, record in zip(plans, reserved):
+        ledger_row = {
+            "ticket": plan.ticket,
+            "role": role,
+            "ordinal": plan.ordinal,
+            "run_id": run_id,
+            "cluster": cluster,
+            "copy": str(plan.path),
+            "board_rel": record["board_rel"],
+            "prepared_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "harvested_at": None,
+        }
+        if owner_pid is not None:
+            ledger_row["owner_pid"] = owner_pid
+        try:
+            _append_delegate_rounds_ledger(pm_home, ledger_row)
+        except DelegateError as exc:
+            # 장부 행이 없으면 이 라운드는 회수 자체가 막힌다 — 남은 좌표를 진단에 싣는다.
+            raise DelegateError(
+                f"{exc}{_reserved_round_residue(ledger_row['board_rel'], plan.ordinal)}"
+            ) from exc
+    return ClusterCopyPlan(run_dir, cluster, run_id, role, tuple(plans))
 
 
 def harvest_ticket_copy(
     *, copy_path: Path, cwd: Path, pm_home: Path,
 ) -> TicketHarvestResult:
-    """슬롯 라운드 파일로 board 라운드 파일을 원자 교체하고 run 을 닫는다.
+    """슬롯 라운드 파일로 board 라운드 파일을 원자 교체하고 그 티켓의 자리를 닫는다.
 
-    회수 성공 = run-dir 삭제 = run 닫힘. 재회수 개념이 없고, 닫힌 run 에 다시 부르면 파일이
-    없어 자연 실패한다. 슬롯 파일이 시드 그대로면 board 를 바꾸지 않고 경고만 낸다 — run-dir 은
-    남겨 같은 세션을 이어 시킬 수 있게 한다(게이트가 아니다).
+    회수 성공 = 그 티켓 자리 삭제 = 그 자리 닫힘(빈 run-dir 은 함께 걷는다 — 크기 1 이면 곧
+    run 닫힘). 재회수 개념이 없고, 닫힌 자리에 다시 부르면 파일이 없어 자연 실패한다. 슬롯
+    파일이 시드 그대로면 board 를 바꾸지 않고 경고만 낸다 — 자리는 남겨 같은 세션을 이어 시킬
+    수 있게 한다(게이트가 아니다).
 
     "시드 그대로"는 **board 라운드 파일의 현재 bytes**와의 직접 대조로 판정한다(개행 표기만
     정규화). 그 파일이 이 run 의 예약이 쓴 시드 자신이라 판정 입력이 시점에 의존하지 않는다 —
@@ -1940,7 +2113,7 @@ def harvest_ticket_copy(
             "delegate-rounds 장부가 인가한 라운드 경로와 불일치 — 회수하지 않습니다: "
             f"요청={given} · 장부 인가={expected}"
         )
-    _assert_slot_run_dir_chain_is_plain(cwd, row["ticket"], row["run_id"])
+    _assert_slot_run_dir_chain_is_plain(cwd, _row_ticket_relative_dir(row))
     text = _read_slot_round_text(expected)
     run_dir = expected.parent
     board_path = pm_home / Path(*PurePosixPath(row["board_rel"]).parts)
@@ -2026,7 +2199,76 @@ def harvest_ticket_copy(
 
     # run-dir 은 엔진 소유 임시 산출물이다(사용자 파일 아님) — 삭제가 곧 run 닫힘이다.
     _load_file_lock().force_rmtree(run_dir)
+    _prune_empty_run_dir(run_dir)
     return TicketHarvestResult(True, sync_ready, verify_missing)
+
+
+class ClusterHarvestOutcome(NamedTuple):
+    """묶음 회수 1건의 결과 — 티켓별로 독립이다(교차 원자성 없음).
+
+    `result` 가 있으면 그 티켓의 회수 판정이 끝난 것이고(`changed=False` 는 시드 그대로라
+    board 를 안 바꾼 정상 산출), `refusal` 이 있으면 그 티켓만 거부다 — 다른 티켓의 교체를
+    되돌리지 않는다(실패한 자리는 장부 행이 복구 좌표를 소유한다).
+    """
+
+    ticket: str
+    copy: Path
+    result: TicketHarvestResult | None
+    refusal: str | None
+
+
+def _cluster_run_rows(pm_home: Path, run_dir: Path) -> list[dict]:
+    """run-dir 이 가리키는 **미처분** 장부 행들 — `(묶음, run_id)` 로 해소한다.
+
+    디렉터리 인자는 행을 찾는 **입력 형식**일 뿐이고 인가는 여전히 행이 한다 — 행마다 기존
+    단일-경로 전량 일치 단언을 다시 통과시킨다(판정식 완화 0). 이미 회수·포기된 행은 빠진다
+    (재회수 개념이 없다).
+    """
+    run_dir = Path(run_dir).resolve()
+    run_id = run_dir.name
+    cluster = run_dir.parent.name
+    latest: dict[str, dict] = {}
+    for row in _delegate_rounds_ledger_records(pm_home):
+        if row.get("run_id") == run_id and str(row.get("cluster") or "") == cluster:
+            latest[row["copy"]] = row
+    rows = [
+        row for row in latest.values()
+        if row["harvested_at"] is None and "abandoned_at" not in row
+    ]
+    if not rows:
+        raise DelegateError(
+            f"delegate-rounds 장부에 이 run 의 미회수 준비가 없습니다: {run_dir} — "
+            "준비하지 않았거나 이미 처분된 run 입니다"
+        )
+    return sorted(rows, key=lambda row: (row["ticket"], row["ordinal"]))
+
+
+def harvest_cluster_copy(
+    *, run_dir: Path, cwd: Path, pm_home: Path,
+) -> tuple[ClusterHarvestOutcome, ...]:
+    """run-dir 하나에 깔린 라운드 파일들을 **티켓별로** 회수한다.
+
+    회수는 티켓별 독립이다 — 파일마다 교체·경고·거부를 따로 내고 호출부가 요약 1줄로 집계한다.
+    N 파일을 한꺼번에 되돌리는 교차 원자성은 없다(있는 척하면 실패한 자리의 산출을 잃는다).
+    각 행은 단일 경로 회수(`harvest_ticket_copy`)를 그대로 통과하므로 판정식이 한 벌뿐이고,
+    크기 1 묶음이면 이 함수는 그 한 번의 회수와 같다.
+    """
+    rounds_module = _load_ticket_rounds()
+    cwd = Path(cwd).resolve()
+    pm_home = Path(pm_home).resolve()
+    outcomes: list[ClusterHarvestOutcome] = []
+    for row in _cluster_run_rows(pm_home, run_dir):
+        expected = _expected_slot_round_path(cwd, row, rounds_module)
+        try:
+            result = harvest_ticket_copy(
+                copy_path=expected, cwd=cwd, pm_home=pm_home,
+            )
+        except DelegateError as exc:
+            outcomes.append(
+                ClusterHarvestOutcome(row["ticket"], expected, None, str(exc)))
+            continue
+        outcomes.append(ClusterHarvestOutcome(row["ticket"], expected, result, None))
+    return tuple(outcomes)
 
 
 def _review_round_harvest_problem(
@@ -2176,7 +2418,7 @@ def abandon_ticket_copy(
     # chain 검사는 **지울 것이 남아 있을 때만** 한다 — 이미 지운 run-dir 을 다시 요구하면
     # 수렴한 처분의 재호출이 "경로 검사 실패"로 막혀 전진 수렴이 깨진다.
     if os.path.lexists(run_dir):
-        _assert_slot_run_dir_chain_is_plain(cwd, row["ticket"], row["run_id"])
+        _assert_slot_run_dir_chain_is_plain(cwd, _row_ticket_relative_dir(row))
     board_path = pm_home / Path(*PurePosixPath(row["board_rel"]).parts)
     if board_path.name != expected.name:
         raise DelegateError(
@@ -2347,6 +2589,7 @@ def abandon_ticket_copy(
                 f"run-dir 삭제 실패: {run_dir}: {exc} — 같은 명령을 다시 실행하면 남은 정리를 "
                 "이어 갑니다"
             ) from exc
+        _prune_empty_run_dir(run_dir)
         changed = True
 
     # ── 6단계: 세 자산 재판독 수렴 단언 ───────────────────────────────────
@@ -10510,27 +10753,31 @@ def _probe_writable_target(path: Path, *, label: str) -> None:
 
 
 def _read_tmp_write_targets(
-    mode: str, read_tmp: _ReadRoleTemp, ticket_copy_path: Path | None,
+    mode: str, read_tmp: _ReadRoleTemp, cluster_run_dir: Path | None,
 ) -> tuple[tuple[str, Path], ...]:
-    """이 실행이 실제로 여는 쓰기 대상 — 샌드박스 권한 결정의 근거다."""
+    """이 실행이 실제로 여는 쓰기 대상 — 샌드박스 권한 결정의 근거다.
+
+    라운드 준비가 있었던 실행의 쓰기 자리는 **묶음 run-dir 전체**다(`ClusterCopyPlan.run_dir`) —
+    그 안 티켓 자리 하나가 아니다. 준비가 넘긴 좌표를 그대로 실측하고, 그대로 연다.
+    """
     targets: list[tuple[str, Path]] = [("read 역할 임시", read_tmp.writable_path)]
-    if mode == "workspace-add-dir" and ticket_copy_path is not None:
-        targets.append(("ticket 사본", ticket_copy_path.parent))
+    if mode == "workspace-add-dir" and cluster_run_dir is not None:
+        targets.append(("ticket 사본", cluster_run_dir))
     return tuple(targets)
 
 
 def _apply_read_tmp_argv(
     argv: list[str], harness: str, role: str, read_tmp: _ReadRoleTemp | None,
-    ticket_copy_path: Path | None = None,
+    cluster_run_dir: Path | None = None,
 ) -> list[str]:
     """하네스 실측 수단으로 read tmp 하나만 실행 권한 표면에 연결한다."""
     if role not in READ_ROLES or read_tmp is None:
         return argv
     adjusted = list(argv)
     mode = _READ_TMP_ARGV_MODE_BY_HARNESS[harness]
-    for label, target in _read_tmp_write_targets(mode, read_tmp, ticket_copy_path):
+    for label, target in _read_tmp_write_targets(mode, read_tmp, cluster_run_dir):
         _probe_writable_target(target, label=label)
-    if ticket_copy_path is not None and mode != "workspace-add-dir":
+    if cluster_run_dir is not None and mode != "workspace-add-dir":
         print(
             f"경고: {harness} {role} ticket 사본은 단일-path write 격리를 "
             "보장하지 못합니다. 역할 규약과 위임 전후 git/touches 감사로 변경 범위를 "
@@ -10557,10 +10804,10 @@ def _apply_read_tmp_argv(
         if cwd_index + 1 >= len(adjusted):
             raise DelegateError("codex read 역할 argv의 -C 실행 root 값이 없음")
         # workspace-write는 현재 -C를 암묵적 writable root로 추가하므로 실행 root를 attempt tmp로
-        # 옮긴다. ticket이 있으면 공개 CLI의 --add-dir로 정확한 copy run-dir 하나만 더 연다.
+        # 옮긴다. 라운드 준비가 있었으면 공개 CLI의 --add-dir로 그 묶음 run-dir 하나만 더 연다.
         adjusted[cwd_index + 1] = str(read_tmp.path)
-        if ticket_copy_path is not None:
-            adjusted += ["--add-dir", str(ticket_copy_path.parent)]
+        if cluster_run_dir is not None:
+            adjusted += ["--add-dir", str(cluster_run_dir)]
     elif mode == "add-dir":
         adjusted += ["--add-dir", str(read_tmp.path)]
     elif mode == "role-agent":
@@ -10759,14 +11006,14 @@ def _apply_read_tmp_env(
 def _prepare_attempt_transport(
     harness: str, model: str, reasoning: str | None, role: str, cwd: Path,
     prompt: str, resume_session_id: str | None = None,
-    ticket_copy_path: Path | None = None,
+    cluster_run_dir: Path | None = None,
 ) -> tuple[
     list[str], str | None, _OpenCodeTransportPrompt | None, _ReadRoleTemp | None,
 ]:
     """하네스 wire + read tmp를 attempt 단위로 함께 준비한다(timeout/판정은 미소유)."""
     read_role = role in READ_ROLES
     read_tmp = _create_read_role_temp(harness, cwd) if read_role else None
-    if read_role and ticket_copy_path is not None and read_tmp is None:
+    if read_role and cluster_run_dir is not None and read_tmp is None:
         print(
             f"경고: {harness} {role}용 격리 temp를 준비하지 못해 ticket 사본의 "
             "단일-path write 격리를 보장하지 못합니다. 역할 규약과 위임 전후 git/touches "
@@ -10789,7 +11036,7 @@ def _prepare_attempt_transport(
             return (
                 _apply_read_tmp_argv(_build_target_argv(
                     harness, model, reasoning, role, prompt_path.sandbox, prompt_path,
-                ), harness, role, read_tmp, ticket_copy_path),
+                ), harness, role, read_tmp, cluster_run_dir),
                 None,
                 prompt_path,
                 read_tmp,
@@ -10797,7 +11044,7 @@ def _prepare_attempt_transport(
         return (
             _apply_read_tmp_argv(_build_target_argv(
                 harness, model, reasoning, role, cwd, Path(), resume_session_id,
-            ), harness, role, read_tmp, ticket_copy_path),
+            ), harness, role, read_tmp, cluster_run_dir),
             outgoing_prompt,
             None,
             read_tmp,
@@ -10831,7 +11078,7 @@ def _execute_attempt(
     fresh_reason: str | None = None,
     base_rev: str | None = None,
     internal_trace: InternalRoundTrace | None = None,
-    ticket_copy_path: Path | None = None,
+    cluster_run_dir: Path | None = None,
     run_id: str | None = None,
     round_copy_path: str | None = None,
 ) -> DelegateAttempt:
@@ -10868,7 +11115,7 @@ def _execute_attempt(
         )
     argv, stdin_text, prompt_path, read_tmp = _prepare_attempt_transport(
         harness, model, reasoning, role, cwd, prompt, resume_session_id,
-        ticket_copy_path,
+        cluster_run_dir,
     )
     # env 해소도 실패할 수 있다(하네스 필수 키 누락은 fail-loud) — 그 실패가 attempt 사본과
     # read tmp 를 남기지 않도록 준비 산출물과 같은 소유권 seam 에서 되감는다.
@@ -12041,7 +12288,13 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
     prepare = sub.add_parser(
         "prepare", help="board 에 라운드 순번을 예약하고 slot run-dir 을 준비",
     )
-    prepare.add_argument("--ticket", required=True, metavar="T-NNNN")
+    # 준비 단위는 묶음이다 — `--ticket` 은 크기 1 묶음을 가리키는 표기이고 내부 경로가 같다.
+    target = prepare.add_mutually_exclusive_group(required=True)
+    target.add_argument("--ticket", metavar="T-NNNN")
+    target.add_argument(
+        "--cluster", metavar="C-<이름>",
+        help="클러스터 장부의 멤버 전부에 라운드를 예약한다(run-dir 1 · 라운드 파일 N)",
+    )
     prepare.add_argument(
         "--role", required=True, choices=tuple(sorted(TICKET_COPY_PREPARE_ROLES)),
     )
@@ -12054,7 +12307,10 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
     harvest = sub.add_parser(
         "harvest", help="slot 라운드 파일로 board 라운드 파일을 교체하고 run 을 닫음",
     )
-    harvest.add_argument("--copy", required=True, metavar="ABSPATH")
+    harvest.add_argument(
+        "--copy", required=True, metavar="ABSPATH",
+        help="라운드 파일 하나 또는 run-dir(디렉터리 인자는 그 run 의 티켓 전부를 회수한다)",
+    )
     harvest.add_argument("--cwd", required=True, metavar="ABSPATH")
     abandon = sub.add_parser(
         "abandon",
@@ -12195,10 +12451,29 @@ def _cmd_ticket(argv: list[str]) -> int:
                     file=sys.stderr,
                 )
                 return 3
-            if not _load_board()._is_valid_ticket_id(args.ticket):
+            if args.ticket and not _load_board()._is_valid_ticket_id(args.ticket):
                 parser.error("--ticket은 board 발행 ticket ID 형식이어야 합니다")
+            if args.cluster and not _is_valid_cluster_id(args.cluster):
+                parser.error("--cluster는 board 클러스터 장부 id 형식이어야 합니다")
             tier = args.tier if (args.role == "developer" and args.tier) else "normal"
             _reject_cross_role_prepare(args.role, tier, owner_conf)
+            if args.cluster:
+                cluster_plan = prepare_cluster_copy(
+                    cluster=args.cluster, role=args.role, cwd=cwd_repo, pm_home=owner,
+                )
+                for round_plan in cluster_plan.rounds:
+                    _write_machine_line(json.dumps({
+                        "cluster": cluster_plan.cluster,
+                        "copy": str(round_plan.path),
+                        "ordinal": round_plan.ordinal,
+                        "run_dir": str(cluster_plan.run_dir),
+                        "ticket": round_plan.ticket,
+                    }, sort_keys=True))
+                print(
+                    f"ticket prepare: {cluster_plan.cluster} 라운드 "
+                    f"{len(cluster_plan.rounds)}건 · run-dir={cluster_plan.run_dir}"
+                )
+                return 0
             plan = prepare_ticket_copy(
                 ticket=args.ticket, role=args.role, cwd=cwd_repo, pm_home=owner,
             )
@@ -12234,6 +12509,34 @@ def _cmd_ticket(argv: list[str]) -> int:
                 )
                 return 1
             return 0
+        if copy.is_dir():
+            # 디렉터리 인자 = run-dir. 행마다 같은 회수 판정을 통과시키고 결과를 티켓별로 낸다.
+            outcomes = harvest_cluster_copy(
+                run_dir=copy, cwd=cwd_repo, pm_home=owner,
+            )
+            for outcome in outcomes:
+                if outcome.refusal is not None:
+                    print(
+                        f"오류: ticket harvest 실패: {outcome.refusal}", file=sys.stderr)
+                    continue
+                _write_machine_line(json.dumps({
+                    "changed": outcome.result.changed,
+                    "copy": str(outcome.copy),
+                    "sync_ready": outcome.result.sync_ready,
+                    "ticket": outcome.ticket,
+                    "verify_missing": list(outcome.result.verify_missing),
+                }, sort_keys=True))
+            replaced = sum(
+                1 for item in outcomes if item.result is not None and item.result.changed)
+            unedited = sum(
+                1 for item in outcomes
+                if item.result is not None and not item.result.changed)
+            refused = sum(1 for item in outcomes if item.refusal is not None)
+            print(
+                f"ticket harvest: 교체 {replaced} · 산출 없음 {unedited} · 거부 {refused} "
+                f"(run-dir={copy})"
+            )
+            return 1 if refused else 0
         result = harvest_ticket_copy(
             copy_path=copy, cwd=cwd_repo, pm_home=owner,
         )
@@ -13441,6 +13744,25 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
             )
 
 
+def _round_write_scope(
+    ticket_copy: "TicketCopyPlan | None", role: str,
+) -> Path | None:
+    """이 실행에 열어 줄 쓰기 자리 — 라운드 준비가 있었던 리뷰 실행만 실값이다.
+
+    값은 준비 계획이 실은 **묶음 run-dir**(`ClusterCopyPlan.run_dir`) 그대로다. 좌표가 없는
+    계획으로 여기 오면 쓰기 자리를 조용히 좁히지 않고 멈춘다 — 권한 표면을 말없이 강등하면
+    "실행은 됐는데 산출을 못 쓴" 라운드가 위임 실패로만 보인다.
+    """
+    if ticket_copy is None or role != INTERNAL_REVIEW_ROLE:
+        return None
+    if ticket_copy.cluster_run_dir is None:
+        raise DelegateError(
+            f"라운드 준비 계획에 묶음 run-dir 좌표가 없습니다: {ticket_copy.path} — "
+            "쓰기 자리를 좁히지 않고 중단합니다."
+        )
+    return ticket_copy.cluster_run_dir
+
+
 def _execute_and_collect(
     *,
     args: argparse.Namespace,
@@ -13507,11 +13829,7 @@ def _execute_and_collect(
             fresh_reason=fresh_reason,
             base_rev=base_rev,
             internal_trace=internal_trace,
-            ticket_copy_path=(
-                ticket_copy.path
-                if ticket_copy is not None and args.role == "code-reviewer"
-                else None
-            ),
+            cluster_run_dir=_round_write_scope(ticket_copy, args.role),
             run_id=(ticket_copy.run_id if ticket_copy is not None else None),
             round_copy_path=(
                 str(ticket_copy.path) if ticket_copy is not None else None
@@ -13576,11 +13894,7 @@ def _execute_and_collect(
                 fresh_reason=fresh_reason,
                 base_rev=base_rev,
                 internal_trace=internal_trace,
-                ticket_copy_path=(
-                    ticket_copy.path
-                    if ticket_copy is not None and args.role == "code-reviewer"
-                    else None
-                ),
+                cluster_run_dir=_round_write_scope(ticket_copy, args.role),
                 run_id=(ticket_copy.run_id if ticket_copy is not None else None),
                 round_copy_path=(
                     str(ticket_copy.path) if ticket_copy is not None else None
@@ -13658,11 +13972,7 @@ def _execute_and_collect(
                 fresh_reason=fresh_reason,
                 base_rev=base_rev,
                 internal_trace=internal_trace,
-                ticket_copy_path=(
-                    ticket_copy.path
-                    if ticket_copy is not None and args.role == "code-reviewer"
-                    else None
-                ),
+                cluster_run_dir=_round_write_scope(ticket_copy, args.role),
                 run_id=(ticket_copy.run_id if ticket_copy is not None else None),
                 round_copy_path=(
                     str(ticket_copy.path) if ticket_copy is not None else None

@@ -148,8 +148,13 @@ def _growth_ticket_text(ticket: str) -> str:
         "claimed_at: '2026-08-14T00:00:00+00:00'\n"
         "completed_at: null\n"
         "depends_on: []\nblocks: []\ntouches: []\nestimate: small\n"
-        "design: 'waived: live transport fixture'\ntags: []\n---\n"
-        f"# {ticket} — live cross growth\n\n## 목표\nrole round persistence\n"
+        "design: done\ntags: []\n---\n"
+        f"# {ticket} — live cross growth\n\n## 목표\nrole round persistence\n\n"
+        "## 설계\n"
+        "- **경계 실측**: 라이브 전송 픽스처\n"
+        "- **불변식**: 이 파일의 축 밖\n"
+        "- **표면 상한**: 픽스처 1건\n"
+        "- **테스트 전략**: 정상·실패 경로\n"
         "\nOUTSIDE_MARKER_MUST_STAY\n"
     )
     return text

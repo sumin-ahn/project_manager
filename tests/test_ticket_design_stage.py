@@ -4,13 +4,15 @@
 티켓 인터페이스가 명세한 입력 가정이 실환경과 어긋난 채 구현으로 전진해 리뷰 12라운드로도 미수렴).
 검증 대상:
 
-  1. **필드 파싱·기본값** — `required`/`done`/`waived: <사유>`/`n/a` 4형식 정규화, 필드 부재는
+  1. **필드 파싱·기본값** — `required`/`done`/`n/a` 3형식 정규화, 필드 부재는
      `n/a`(구세대 티켓 하위호환), 형식 위반은 `invalid`(오타로 게이트가 조용히 꺼지지 않음).
-     발행 기본값은 estimate=large → `required`, 그 외 `n/a`.
+     발행 기본값은 estimate=large → `required`, 그 외 `n/a`. **면제 값은 폐지됐다** — 설계
+     단계를 건너뛰는 값이 남으면 그 티켓만 라운드 순번이 어긋나고 면제가 곧 우회가 된다.
   2. **설계 절 판정** — `_template.md` 뼈대 문장 잔존/절 부재를 `design-pending` 1줄로 요약
-     (`_body_lint_issues` 단일 깔때기 편입 · `n/a`·`waived` 는 뼈대가 남아도 무영향).
-  3. **claim 게이트 4경로** — required 차단 / done 통과 / waived 통과 / n/a 무영향 + 구티켓
-     (필드 부재) 하위호환 + invalid 차단. 차단 시 티켓은 `open/` 에 그대로 남는다.
+     (`_body_lint_issues` 단일 깔때기 편입 · `n/a` 는 뼈대가 남아도 무영향).
+  3. **claim 게이트 4경로** — required 차단 / done 통과 / n/a 무영향 + 구티켓
+     (필드 부재) 하위호환 + invalid 차단(폐지된 면제 값 포함). 차단 시 티켓은 `open/` 에
+     그대로 남는다.
   4. **promote 게이트** — board-git 활성 홈에서 `design: required` draft 는 승격 거부, 설계 절
      완성 + `design: done` 은 승격.
   5. **lint advisory** — kind `design-pending` 은 `_ADVISORY_LINT_KINDS` 등재라 `--gate`(pre-push)
@@ -18,8 +20,8 @@
   6. **출하 파리티** — 루트 `_template.md`·pm-ticket 스킬 카드의 설계 단계 내용이 templates/ 3벌에
      전부 도달했는지(채택자 도달 가드).
   7. **`board.py design` 1급 setter(T-0817)** — 발행 후 `design:` 값 전환 CLI. draft 의
-     `design: required` → `waived: <사유>` 전환 후 promote 가 거부(rc=1)에서 통과(rc=0)로
-     뒤집히는 e2e(면제 선언이 손편집 없이도 가능함의 핵심 근거).
+     `design: required` → `done` 전환 후 promote 가 거부(rc=1)에서 통과(rc=0)로 뒤집히는
+     e2e(상태 승격이 손편집 없이도 가능함의 핵심 근거)와, 폐지된 면제 값의 거부.
 
 **hermetic 필수**: board.py 의 경로 전역(`REPO`·`TICKETS_DIR`·`TEMPLATE_FILE` 등)은 import 시점에
 실 repo 절대경로로 굳는다 — tmp 프로젝트로 monkeypatch 재지정해 실 board 를 읽거나 쓰지 않는다
@@ -29,6 +31,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import importlib.util
 import shutil
 import subprocess
@@ -115,13 +118,11 @@ def _body(design_section: str = _DESIGN_FILLED) -> str:
     ("required", board_mod.DESIGN_REQUIRED),
     ("done", board_mod.DESIGN_DONE),
     ("n/a", board_mod.DESIGN_NA),
-    ("waived: 리뷰 상한 초과", board_mod.DESIGN_WAIVED),
-    ("waived:사유", board_mod.DESIGN_WAIVED),
     ("  Required  ", board_mod.DESIGN_REQUIRED),   # 공백·대소문자 관대
     ("N/A", board_mod.DESIGN_NA),
 ])
-def test_design_state_normalizes_four_forms(value, expected):
-    """4형식(required/done/waived: <사유>/n/a)이 정규화 상태로 접힌다."""
+def test_design_state_normalizes_three_forms(value, expected):
+    """3형식(required/done/n/a)이 정규화 상태로 접힌다."""
     assert board_mod._design_state(value) == expected
 
 
@@ -131,11 +132,14 @@ def test_design_state_missing_field_is_na(value):
     assert board_mod._design_state(value) == board_mod.DESIGN_NA
 
 
-@pytest.mark.parametrize("value", ["requried", "todo", "waived", "waived:   ", "true"])
+@pytest.mark.parametrize(
+    "value",
+    ["requried", "todo", "true", "waived", "waived:   ", "waived: 리뷰 상한 초과"],
+)
 def test_design_state_rejects_unrecognized_value(value):
     """형식 위반은 `n/a` 로 삼키지 않고 invalid — 오타 하나로 게이트가 조용히 꺼지지 않는다.
 
-    사유 없는 맨 `waived` 도 위반이다(면제의 근거가 남지 않는다)."""
+    폐지된 면제 값(사유가 있든 없든)도 같은 축이다 — 잔존이 조용히 통과하지 않는다."""
     assert board_mod._design_state(value) == board_mod.DESIGN_INVALID
 
 
@@ -150,18 +154,24 @@ def test_resolve_design_defaults_by_estimate(estimate, expected):
     assert board_mod._resolve_design(None, estimate) == expected
 
 
-@pytest.mark.parametrize("explicit", ["required", "n/a", "waived: 설계 불요"])
+@pytest.mark.parametrize("explicit", ["required", "n/a", "done"])
 def test_resolve_design_honors_explicit_override(explicit):
     """PM 이 발행 시 명시 지정하면 estimate 유도를 덮는다(small 에도 required 지정 가능)."""
     assert board_mod._resolve_design(explicit, "small") == explicit
 
 
 def test_validate_design_rejects_bad_value_and_accepts_forms():
-    """`--design` 입력 sanity — 위반은 사유 문자열, 4형식은 None(`_validate_prefix` 동형)."""
+    """`--design` 입력 sanity — 위반은 사유 문자열, 3형식은 None(`_validate_prefix` 동형)."""
     assert board_mod._validate_design("bogus")
     assert "bogus" in board_mod._validate_design("bogus")
-    for ok in ("required", "done", "n/a", "waived: 사유"):
+    for ok in ("required", "done", "n/a"):
         assert board_mod._validate_design(ok) is None
+
+
+def test_validate_design_rejects_the_abolished_exemption_value():
+    """폐지된 면제 값은 입력 자리에서 거부된다 — 파일에 박히기 전에 막는다."""
+    reason = board_mod._validate_design("waived: 리뷰 상한 초과")
+    assert reason and "waived" in reason
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -232,9 +242,9 @@ def test_done_with_missing_section_is_flagged():
     assert board_mod._DESIGN_SECTION in issues[0][2]
 
 
-@pytest.mark.parametrize("design", [None, "n/a", "waived: 설계 불요"])
-def test_na_and_waived_ignore_design_section(design):
-    """`n/a`·`waived`·필드 부재는 설계 절이 뼈대여도 0건 — 설계 오버헤드 역류 차단."""
+@pytest.mark.parametrize("design", [None, "n/a"])
+def test_na_ignores_design_section(design):
+    """`n/a`·필드 부재는 설계 절이 뼈대여도 0건 — 설계 오버헤드 역류 차단."""
     assert board_mod._design_issues("T-0001", _body(_DESIGN_SKELETON), design) == []
 
 
@@ -246,7 +256,7 @@ def test_invalid_value_is_flagged_once():
 
 def test_design_issue_is_single_line_at_most():
     """어떤 조합에서도 최대 1건 — 전역 lint 의 '경고 1줄' 보장."""
-    for design in (None, "n/a", "waived: x", "required", "done", "bogus"):
+    for design in (None, "n/a", "waived: x", "required", "done", "bogus"):  # noqa: E501 — 폐지 값 포함
         for section in (_DESIGN_SKELETON, _DESIGN_FILLED, ""):
             assert len(board_mod._design_issues("T-0001", _body(section), design)) <= 1
 
@@ -409,11 +419,11 @@ def test_claim_blocked_when_done_but_section_unfilled(board):
     assert board.cmd_claim(_claim_args()) == 1
 
 
-def test_claim_passes_when_design_waived(board):
-    """③ `waived: <사유>` → 통과 (설계 절 뼈대여도 무영향)."""
+def test_claim_blocked_when_design_uses_the_abolished_exemption(board):
+    """③ 폐지된 면제 값은 통과가 아니라 **차단**이다 — 잔존이 게이트를 조용히 열지 않는다."""
     _seed_open(board, design="waived: 표면 없음", body=_body(_DESIGN_SKELETON))
-    assert board.cmd_claim(_claim_args()) == 0
-    assert list((board.TICKETS_DIR / "claimed").glob("T-0001-*.md"))
+    assert board.cmd_claim(_claim_args()) == 1
+    assert list((board.TICKETS_DIR / "open").glob("T-0001-*.md"))
 
 
 def test_claim_unaffected_when_design_na(board):
@@ -496,7 +506,7 @@ def test_large_estimate_with_na_design_is_readvised():
     assert len(issues) == 1
     tid, kind, detail = issues[0]
     assert (tid, kind) == ("T-0601", "design-estimate")
-    assert "large" in detail and "required" in detail and "waived" in detail
+    assert "large" in detail and "required" in detail
 
 
 def test_missing_design_field_counts_as_na(board_estimate="large"):
@@ -511,7 +521,6 @@ def test_missing_design_field_counts_as_na(board_estimate="large"):
     ("", "n/a"),
     ("large", "required"),               # 이미 설계 대상 — design-pending 이 소유
     ("large", "done"),
-    ("large", "waived: 리뷰 상한 초과"),   # 사유와 함께 면제 — 판정이 이미 남았다
     ("large", "requried"),               # invalid — 값 자체 안내는 다른 깔때기가 낸다
     ("LARGE", "required"),
 ])
@@ -751,7 +760,7 @@ def test_promote_rejects_design_required_with_unfilled_section(board_git, capsys
 def test_promote_rejects_design_required_even_when_section_is_filled(board_git, capsys):
     """설계 절을 다 채워도 `design: required` 면 promote 가 거부한다 (엄격 promote).
 
-    claim 게이트와 같은 판정이 승격 자리에도 걸린다 — **설계 검토 완료(`done`/`waived`)가
+    claim 게이트와 같은 판정이 승격 자리에도 걸린다 — **설계 검토 완료(`done`)가
     open 진입 조건**이라, 절만 채우고 검토 없이 공유 보드에 올리는 경로를 막는다. 미충전
     케이스만 있으면 "채우면 통과"로 오독되므로 충전 케이스를 따로 못박는다(T-0594 R1 공백).
     """
@@ -866,11 +875,26 @@ def test_design_subcommand_is_registered_and_shown_in_help():
     assert sub.choices["design"].get_default("fn") is board_mod.cmd_design
 
 
+def _seed_harvested_architect_round(board, tid: str) -> None:
+    """회수된 architect 점검 라운드 1건을 board 라운드 자리에 남긴다(시드 그대로가 아님).
+
+    헤더 렌더는 라운드 사이드카 seam 을 그대로 쓴다 — 형식 사본을 테스트가 다시 쓰지 않는다.
+    """
+    rounds_module = board._load_ticket_rounds()
+    directory = rounds_module.rounds_dir_for_ticket(tid, board.tickets_dir())
+    directory.mkdir(parents=True, exist_ok=True)
+    header = rounds_module.render_round_header(
+        "architect", today=datetime.date.today().isoformat())
+    (directory / rounds_module.round_filename(1, "architect")).write_text(
+        header + "\n## 경계 실측\n- 실측 대조 근거\n",
+        encoding="utf-8", newline="\n")
+
+
 @requires_git
-def test_design_waives_a_blocked_draft_so_promote_now_flips_from_reject_to_pass(
+def test_design_promotes_a_blocked_draft_so_promote_now_flips_from_reject_to_pass(
         board_git, capsys):
-    """draft 의 `design: required` 를 `design <ID> "waived: <사유>"` 로 면제하면 promote 가
-    거부(rc=1) → 통과(rc=0) 로 뒤집힌다 — 손편집 없이 1급 수단만으로 막힌 promote 를 푼다."""
+    """draft 의 `design: required` 를 `design <ID> done` 으로 올리면 promote 가 거부(rc=1) →
+    통과(rc=0) 로 뒤집힌다 — 손편집 없이 1급 수단만으로 막힌 promote 를 푼다."""
     board_dir = board_git._board_dir
     assert board_git.cmd_new(_new_args(estimate="large")) == 0
     draft = _draft_path(board_dir)
@@ -884,17 +908,36 @@ def test_design_waives_a_blocked_draft_so_promote_now_flips_from_reject_to_pass(
     assert list((board_dir / "tickets" / ".drafts").glob(f"{tid}-*.md")), \
         "1차 거부 후 draft 가 .drafts/ 에 남아야 한다."
 
-    reason = 'waived: 콜론:포함 사유(T-0815 architect 라운드 01 §분할 판정 S1)'
-    assert board_git.main(["design", tid, reason]) == 0
+    assert board_git.main(["design", tid, board_git.DESIGN_DONE]) == 0
     assert "local draft; promote가 출하 소유" in capsys.readouterr().out
     fm, _ = board_git.load_ticket(draft)   # 재파싱 성공 = YAML 손상 모드가 닫혔다.
-    assert fm["design"] == reason
-    assert board_git._design_state(fm["design"]) == board_git.DESIGN_WAIVED
+    assert fm["design"] == board_git.DESIGN_DONE
+    assert board_git._design_state(fm["design"]) == board_git.DESIGN_DONE
+    # `done` 은 architect 점검 라운드도 함께 요구한다(면제 경로가 없어진 자리) — 실산출 1건.
+    _seed_harvested_architect_round(board_git, tid)
 
     assert board_git.cmd_promote(argparse.Namespace(id=tid)) == 0
     assert list((board_dir / "tickets" / "open").glob(f"{tid}-*.md")), \
-        "면제 후 promote 가 open/ 으로 이동해야 한다."
+        "승격 후 promote 가 open/ 으로 이동해야 한다."
     assert not list((board_dir / "tickets" / ".drafts").glob(f"{tid}-*.md"))
+
+
+@requires_git
+def test_design_setter_refuses_the_abolished_exemption_value(board_git, capsys):
+    """`board.py design <ID> "waived: <사유>"` 는 rc=1 로 거부되고 파일은 그대로다.
+
+    면제 경로 폐지의 차단 지점은 **값을 파일에 박기 전**이다 — 잔존 값이 생기지 않는다.
+    """
+    board_dir = board_git._board_dir
+    assert board_git.cmd_new(_new_args(estimate="large")) == 0
+    draft = _draft_path(board_dir)
+    tid = board_git.load_ticket(draft)[0]["id"]
+    capsys.readouterr()
+
+    assert board_git.main(["design", tid, "waived: 리뷰 상한 초과"]) == 1
+
+    assert "design 값 인식 불가" in capsys.readouterr().err
+    assert board_git.load_ticket(draft)[0]["design"] == board_git.DESIGN_REQUIRED
 
 
 @requires_git

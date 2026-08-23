@@ -38,7 +38,11 @@ _VALID_BODY = (
     "## 목표\n위임 라운드 기록을 누적한다.\n\n"
     "## 인터페이스\nboard.py CLI 두 개를 쓴다.\n\n"
     "## 결정\n라운드 파일 하나로 왕복한다.\n\n"
-    "## 설계\n설계 면제 티켓이다.\n\n"
+    "## 설계\n"
+    "- **경계 실측**: 성장 테스트 픽스처\n"
+    "- **불변식**: 이 파일의 축 밖\n"
+    "- **표면 상한**: 픽스처 1건\n"
+    "- **테스트 전략**: 정상·실패 경로\n\n"
     "## 완료 조건 (Definition of Done)\n- [ ] 실제 동작 검증\n\n"
     "## 참고\n- T-0675\n\n"
     "## 메모\n원본 메모.\n"
@@ -75,7 +79,7 @@ def _ticket_text(tid: str, status: str, *, tier: str | None = None) -> str:
         "blocks: []\n"
         "touches: []\n"
         "estimate: medium\n"
-        "design: 'waived: 집중 테스트'\n"
+        "design: done\n"
         "tags: []\n"
         "custom:\n"
         "  nested:\n"
@@ -843,6 +847,7 @@ def test_ticket_writer_lock_inventory_and_claim_lock_order_are_ast_guarded():
         "_transition_idea",   # ideas/ open→promoted|killed.
         "cmd_promote_scope",  # decisions/specs frontmatter writer.
         "repin_verified_at",  # current-truth 문서 freshness writer.
+        "dump_cluster",       # 클러스터 장부 writer — 명세 파일이 아니라 묶음 장부를 쓴다.
     }
     discovered_ticket_writers = direct_sink_callers - reviewed_non_ticket_exceptions
     # section-add 는 없다 — 라운드 예약은 명세 파일을 쓰지 않고 자기 라운드 파일만 만든다.
@@ -852,6 +857,8 @@ def test_ticket_writer_lock_inventory_and_claim_lock_order_are_ast_guarded():
         "cmd_new", "cmd_promote", "_cmd_claim_locked", "cmd_complete", "cmd_block",
         "cmd_unclaim", "cmd_unblock", "cmd_discard", "cmd_reopen", "cmd_tier", "cmd_design",
         "_migrate_tickets_apply", "_rounds_migration_rewrite_spec",
+        # 묶음 선언이 멤버 명세의 `cluster` 필드를 박는다(board_lock 안 · `cmd_new` 동형).
+        "_cmd_cluster_new",
     }
     assert direct_sink_callers & reviewed_non_ticket_exceptions == reviewed_non_ticket_exceptions, (
         "reviewed exception이 더 이상 sink caller가 아님 — inventory 분류 갱신 필요")
@@ -861,7 +868,7 @@ def test_ticket_writer_lock_inventory_and_claim_lock_order_are_ast_guarded():
     ordinary_writers = {
         "cmd_new", "cmd_promote", "cmd_complete", "cmd_block", "cmd_unclaim", "cmd_unblock",
         "cmd_discard", "cmd_reopen", "cmd_tier", "cmd_design", "_migrate_tickets_apply",
-        "_rounds_migration_rewrite_spec",
+        "_rounds_migration_rewrite_spec", "_cmd_cluster_new",
     }
     assert ordinary_writers | {"_cmd_claim_locked"} == discovered_ticket_writers
     for name in ordinary_writers:
@@ -918,6 +925,11 @@ def test_promote_ships_the_draft_rounds_with_the_spec(board_env):
 
     assert board.main(["section-add", "T-1007", "--role", "architect"]) == 0
     assert _round_names(board_dir, "T-1007") == ["01-architect.md"]
+    # `design: done` 은 회수된 점검 라운드도 함께 요구한다 — 시드 그대로면 승격이 막힌다.
+    round_path = (board.tickets_dir() / "rounds" / "T-1007" / "01-architect.md")
+    round_path.write_text(
+        round_path.read_text(encoding="utf-8") + "\n## 경계 실측\n- 실측 대조 근거\n",
+        encoding="utf-8", newline="")
     assert board.main(["promote", "T-1007"]) == 0
 
     promoted = board_dir / "tickets" / "open" / path.name
@@ -954,8 +966,7 @@ def test_parser_dispatch_keeps_existing_commands_and_classifies_growth_mutations
 
 @requires_git
 def test_design_cli_records_updates_and_preserves_unrelated_frontmatter(board_env):
-    """claimed 티켓 design 갱신을 실제 commit하고 기존 미지/중첩 field·`waived: <사유>`의
-    콜론 포함 사유를 보존한다(YAML 손편집 손상 모드가 닫혔음의 값 형태)."""
+    """claimed 티켓 design 갱신을 실제 commit 하고 기존 미지/중첩 field 를 보존한다."""
     board, board_dir, bare = board_env
     path = _seed_ticket(board_dir, "T-1019", "claimed")
     before_count = int(_git(["rev-list", "--count", "HEAD"], board_dir).stdout)
@@ -965,16 +976,15 @@ def test_design_cli_records_updates_and_preserves_unrelated_frontmatter(board_en
     assert fm["design"] == "required"
     assert fm["custom"] == {"nested": ["keep"]}
 
-    reason = "waived: 콜론:포함 사유(T-0815 architect 분할)"
-    assert board.main(["design", "T-1019", reason]) == 0
+    assert board.main(["design", "T-1019", "done"]) == 0
     fm, _body = board.load_ticket(path)
-    assert fm["design"] == reason
-    assert board._design_state(fm["design"]) == board.DESIGN_WAIVED
+    assert fm["design"] == "done"
+    assert board._design_state(fm["design"]) == board.DESIGN_DONE
     assert fm["custom"] == {"nested": ["keep"]}
     assert int(_git(["rev-list", "--count", "HEAD"], board_dir).stdout) == before_count + 2
     remote = _remote_text(bare, "tickets/claimed/T-1019-growth.md")
     remote_fm, _ = board._parse_ticket_text(remote, "remote:claimed/T-1019")
-    assert remote_fm["design"] == reason
+    assert remote_fm["design"] == "done"
 
 
 @requires_git
@@ -1048,13 +1058,14 @@ def test_design_unrecognized_value_is_rc1_before_lookup_or_write(board_env, caps
 
 
 @requires_git
-def test_design_bare_waived_without_reason_is_rejected(board_env, capsys):
-    """사유 없는 맨 `waived` 는 `_design_state` 가 invalid 로 세우므로 여기서도 함께 거부된다."""
+@pytest.mark.parametrize("value", ["waived", "waived: 리뷰 상한 초과"])
+def test_design_rejects_the_abolished_exemption_value(board_env, capsys, value):
+    """폐지된 면제 값(사유 유무 무관)은 `_design_state` 가 invalid 로 세워 setter 가 거부한다."""
     board, board_dir, _bare = board_env
     path = _seed_ticket(board_dir, "T-1023", "open")
     before_text = path.read_text(encoding="utf-8")
 
-    assert board.main(["design", "T-1023", "waived"]) == 1
+    assert board.main(["design", "T-1023", value]) == 1
 
     assert path.read_text(encoding="utf-8") == before_text
     assert board.DESIGN_VALUE_FORMS in capsys.readouterr().err

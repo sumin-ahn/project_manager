@@ -738,10 +738,16 @@ _TICKET_FRONTMATTER = (
     "blocks: []\n"
     "touches: []\n"
     "estimate: small\n"
-    # T-0815 설계 근거 게이트(developer 시드 seam) 관심사 밖 — waived 로 미리 해소한다.
-    'design: "waived: 완료 게이트 픽스처(설계 근거 게이트 관심사 밖)"\n'
+    # T-0815 설계 근거 게이트(developer 시드 seam) 관심사 밖 — `done` + 설계 절로 미리
+    # 해소한다(면제 값은 폐지됐다).
+    "design: done\n"
     "tags: []\n"
     "---\n\n"
+    "## 설계\n"
+    "- **경계 실측**: 완료 게이트 픽스처\n"
+    "- **불변식**: 이 파일의 축 밖\n"
+    "- **표면 상한**: 픽스처 1건\n"
+    "- **테스트 전략**: 정상·실패 경로\n\n"
 )
 
 
