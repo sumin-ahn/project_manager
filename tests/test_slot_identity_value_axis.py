@@ -616,11 +616,18 @@ def test_entry_finish_attributes_the_ledger_identity(home, monkeypatch):
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-        def run(self, **kwargs):
+    class _Closer:
+        """완료 기록 단위는 묶음 하나다 — 실행 좌표(귀속 세션)는 이 생성 인자로 온다."""
+
+        def __init__(self, cluster, **kwargs):
+            captured["cluster"] = cluster
             captured.update(kwargs)
+
+        def run(self) -> int:
             return 0
 
     monkeypatch.setattr(tf, "TicketFinisher", _Finisher)
+    monkeypatch.setattr(tf, "ClusterCloser", _Closer)
     rc = tf._main(["T-0001", "--no-pytest", "--repo", "A", "--slot", "1"])
     assert rc == 0
     assert captured["session"] == "A_1"

@@ -327,6 +327,80 @@ def test_uncommitted_change_in_a_reviewed_path_is_refused(pd, review_env):
         pd.assert_cluster_review_tree(board, review, repo=home)
 
 
+def _head_count(home: Path) -> int:
+    """그 트리의 HEAD 까지 커밋 수 — 회수가 커밋을 만들었는지 값으로 본다."""
+    return int(_git(home, "rev-list", "--count", "HEAD").stdout.strip())
+
+
+def _developer_round(pd, home: Path, ticket: str):
+    """dev 라운드 하나를 준비하고 산출을 채운 좌표를 돌려준다."""
+    plan = pd.prepare_ticket_copy(
+        ticket=ticket, role="developer", cwd=home, pm_home=home,
+    )
+    plan.path.write_text(
+        plan.path.read_text(encoding="utf-8") + "\n## 산출\n- 실측 값\n",
+        encoding="utf-8", newline="")
+    return plan
+
+
+@requires_git
+def test_developer_round_harvest_commits_the_slot_output(pd, review_env):
+    """dev 라운드 회수가 그 슬롯에서 산출을 커밋한다 — 문안은 티켓 제목(손 커밋 0).
+
+    커밋이 없으면 스냅샷 결속(브랜치 tip 대조)이 그 산출을 미커밋으로 거부해 묶음 리뷰가
+    아예 서지 않는다 — 회수가 커밋 자리다.
+    """
+    home, _tickets = review_env
+    ticket = _MEMBERS[0]
+    before = _head_count(home)
+    plan = _developer_round(pd, home, ticket)
+    (home / f"{ticket.lower()}.py").write_text(
+        "# 구현 갱신\nvalue = 2\n", encoding="utf-8", newline="\n")
+
+    result = pd.harvest_ticket_copy(copy_path=plan.path, cwd=home, pm_home=home)
+
+    assert result.changed is True
+    assert _head_count(home) == before + 1
+    assert _git(home, "log", "-1", "--format=%s").stdout.strip() == f"묶음 리뷰 {ticket}"
+    assert _git(home, "status", "--porcelain").stdout.strip() == ""
+    # 커밋된 산출은 이제 브랜치 tip 이라 리뷰 입력 결속을 그대로 통과한다.
+    board = _fixture_board(pd, home)
+    pd.assert_cluster_review_tree(
+        board, pd.cluster_review_input(board, _CLUSTER, repo=home), repo=home)
+
+
+@requires_git
+def test_developer_round_harvest_without_a_change_leaves_head_alone(
+        pd, review_env, tmp_path):
+    """커밋할 변경이 없으면 회수는 커밋을 만들지 않는다(빈 커밋 0).
+
+    슬롯은 PM 홈과 다른 트리다 — board 쓰기가 슬롯을 더럽히지 않는 실 형상이라, 이 판정이
+    보는 변경은 dev 산출뿐이다.
+    """
+    home, _tickets = review_env
+    slot = tmp_path / "slot"
+    slot.mkdir()
+    assert _git(slot, "init", "-q", "-b", _CLUSTER_BRANCH).returncode == 0
+    (slot / ".project_manager").mkdir()
+    (slot / ".project_manager" / ".gitignore").write_text(
+        ".local/\n", encoding="utf-8", newline="\n")
+    (slot / "seed.txt").write_text("seed\n", encoding="utf-8", newline="\n")
+    assert _git(slot, "add", "seed.txt", ".project_manager/.gitignore").returncode == 0
+    assert _git(slot, "commit", "-qm", "slot seed").returncode == 0
+    before = _head_count(slot)
+    plan = pd.prepare_ticket_copy(
+        ticket=_MEMBERS[1], role="developer", cwd=slot, pm_home=home,
+    )
+    plan.path.write_text(
+        plan.path.read_text(encoding="utf-8") + "\n## 산출\n- 실측 값\n",
+        encoding="utf-8", newline="")
+
+    result = pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=home)
+
+    assert result.changed is True
+    assert _head_count(slot) == before
+
+
 @requires_git
 def test_delegation_refuses_a_tree_that_is_not_the_cluster_branch(
         pd, review_env, capsys):

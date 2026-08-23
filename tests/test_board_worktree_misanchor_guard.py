@@ -800,6 +800,7 @@ _MUTATION_ARGVS = [
     ["prefix", "delete", "AAA"],
     ["rounds", "migrate", "--dry-run"],
     ["cluster", "new", "wave", "--tickets", "T-0100"],
+    ["cluster", "replan", "wave", "--reason", "설계 축 재설계"],
 ]
 
 

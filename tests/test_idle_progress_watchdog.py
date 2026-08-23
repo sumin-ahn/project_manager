@@ -1410,13 +1410,15 @@ def _apply_mutation_anchor(source: str, needle: str, replacement: str, *, label:
             "        timeout = 1\n"
             "    started = time.monotonic()\n",
         ),
-        # 내부 리뷰 C: dry-run 표시 사유로 함수 통째 면제됐던 main 안의 timeout 강제값.
+        # 내부 리뷰 C: dry-run 표시 사유로 함수 통째 면제됐던 CLI 본체 안의 timeout 강제값.
+        # 소유 함수는 `main` 의 CLI 본체(`_run_delegate_cli`)다 — main 은 콘솔 설정과 백그라운드
+        # 실행 마감만 감싸는 wrapper 이고 timeout 해소는 본체가 쥔다.
         # 앵커는 main()의 실제 들여쓰기(T-0846 예약 try/finally 안 8칸)를 그대로 고정한다 — 4칸
         # 부분 문자열 앵커는 main()이 재구성돼도 count()==1로 조용히 살아남아 자리만 어긋난
         # 변이본(IndentationError)을 만든다(T-0853).
         (
             "pm_delegate",
-            "main",
+            "_run_delegate_cli",
             "        timeout = _resolve_timeout(args, conf, harness)\n",
             '        if harness == "opencode":\n'
             "            timeout = 60\n"

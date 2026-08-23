@@ -482,6 +482,28 @@ def _staged_paths(root: Path) -> list[str]:
     return sorted(line for line in result.stdout.splitlines() if line)
 
 
+def _head_paths(root: Path) -> list[str]:
+    """root 의 마지막 커밋에 실린 경로들 (실 git 조회).
+
+    완료 기록 단위는 묶음 하나라 [4/5] 가 stage 한 자리를 종결의 커밋 단계가 그 트리에서
+    그대로 커밋한다 — 귀속 축(어느 트리가 그 경로를 맡는가)은 이제 이 자리에서 읽는다.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(root), "show", "--name-only", "--format=", "HEAD"],
+        check=True, capture_output=True, text=True, encoding="utf-8",
+    )
+    return sorted(line for line in result.stdout.splitlines() if line)
+
+
+def _commit_subjects(root: Path) -> list[str]:
+    """root 의 커밋 제목들 (최신 순) — 새 커밋이 생겼는지를 값으로 본다."""
+    result = subprocess.run(
+        ["git", "-C", str(root), "log", "--format=%s"],
+        check=True, capture_output=True, text=True, encoding="utf-8",
+    )
+    return [line for line in result.stdout.splitlines() if line]
+
+
 def test_no_pytest_measures_slot_worktree_not_pm_home(tmp_path, monkeypatch, capsys):
     """--no-pytest + 명시 슬롯 → PM 홈 사본이 상한을 넘게 dirty 해도 clean worktree 를 재 통과.
 
@@ -541,12 +563,13 @@ def test_no_pytest_stages_touches_in_slot_worktree_not_pm_home(tmp_path, monkeyp
     out = capsys.readouterr().out
     assert rc == 0
     assert trees and set(trees) == {worktree}
-    assert _staged_paths(worktree) == ["src/engine.py"]          # 코드는 worktree 에만
-    assert _staged_paths(home) == [".project_manager/wiki/log/current.md"]  # 홈은 산출물만
+    assert _head_paths(worktree) == ["src/engine.py"]            # 코드는 worktree 에만
+    assert _staged_paths(worktree) == []                         # 종결이 그 자리에서 커밋
+    assert _head_paths(home) == [".project_manager/wiki/log/current.md"]  # 홈은 산출물만
     assert f"[PM 홈 산출물] cwd={home}" in out
     assert f"[slot worktree touches] cwd={worktree}" in out
-    assert (f"[slot worktree touches] cwd={worktree}: "
-            '`git commit -m "<메시지>" -- src/engine.py`') in out
+    # 커밋은 손 안내가 아니라 종결 파이프라인이 실행한다(계획은 repo 별 그대로).
+    assert "git commit — 종결 파이프라인이 실행한다" in out
 
 
 def test_symlinked_slot_keeps_measurement_and_stage_on_one_tree(
@@ -568,8 +591,8 @@ def test_symlinked_slot_keeps_measurement_and_stage_on_one_tree(
     out = capsys.readouterr().out
     assert rc == 0                                   # 측정은 코드 트리(10줄·상한 이내)
     assert trees and set(trees) == {worktree}
-    assert _staged_paths(worktree) == ["src/engine.py"]
-    assert _staged_paths(home) == [".project_manager/wiki/log/current.md"]
+    assert _head_paths(worktree) == ["src/engine.py"]
+    assert _head_paths(home) == [".project_manager/wiki/log/current.md"]
     assert f"[slot worktree touches] cwd={worktree}" in out
 
 
@@ -590,11 +613,11 @@ def test_home_resident_touch_is_staged_in_pm_home(tmp_path, monkeypatch, capsys)
 
     out = capsys.readouterr().out
     assert rc == 0
-    assert _staged_paths(worktree) == ["src/engine.py"]
-    assert _staged_paths(home) == [
+    assert _head_paths(worktree) == ["src/engine.py"]
+    assert _head_paths(home) == [
         ".project_manager/wiki/log/current.md", home_touch,
     ]
-    assert f'[PM 홈 산출물] cwd={home}: `git commit -m "<메시지>" --' in out
+    assert f"[PM 홈 산출물] cwd={home}" in out
     assert home_touch in out
 
 
@@ -603,6 +626,9 @@ def test_home_resident_touch_deletion_is_staged_in_pm_home(tmp_path, monkeypatch
 
     삭제된 경로는 어느 트리에도 실재하지 않는다 — 코드 몫으로만 접으면 코드 트리에서 추적되지
     않아 stage 필터가 떨구고 삭제가 어느 계획에도 안 실린다.
+
+    종결의 홈 커밋 pathspec 은 그 시점의 stage 스코프라, 이미 index 에 반영된 삭제는 index 에
+    남고 홈 커밋에는 이 실행의 산출물만 실린다 — 귀속(PM 홈 몫)은 index 자리에서 읽는다.
     """
     home_touch = ".project_manager/wiki/roadmap.md"
     home, worktree, tf = _split_home_shape(
@@ -616,10 +642,10 @@ def test_home_resident_touch_deletion_is_staged_in_pm_home(tmp_path, monkeypatch
 
     assert rc == 0
     assert capsys.readouterr() is not None
-    assert _staged_paths(home) == [
-        ".project_manager/wiki/log/current.md", home_touch,
-    ]
+    assert _staged_paths(home) == [home_touch]                   # 삭제는 홈 몫으로 실린다
+    assert _head_paths(home) == [".project_manager/wiki/log/current.md"]
     assert _staged_paths(worktree) == []
+    assert _commit_subjects(worktree) == ["seed"]                # 코드 트리엔 변경 자체가 없다
 
 
 def test_symlinked_slot_with_prefixed_touch_uses_code_tree(tmp_path, monkeypatch, capsys):
@@ -643,5 +669,5 @@ def test_symlinked_slot_with_prefixed_touch_uses_code_tree(tmp_path, monkeypatch
     assert rc == 0                                   # 측정은 코드 트리(10줄·상한 이내)
     assert trees and set(trees) == {worktree}
     assert "좌표 정규화 실패" not in err
-    assert _staged_paths(worktree) == ["src/engine.py"]
-    assert _staged_paths(home) == [".project_manager/wiki/log/current.md"]
+    assert _head_paths(worktree) == ["src/engine.py"]
+    assert _head_paths(home) == [".project_manager/wiki/log/current.md"]
