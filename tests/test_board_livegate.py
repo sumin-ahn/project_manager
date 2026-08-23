@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import re
 import types
 from pathlib import Path
 
@@ -28,6 +29,27 @@ TOOLS = REPO / ".project_manager" / "tools"
 def _load_board():
     """board.py 를 (패키지 아님) importlib 로 경로 로드 — test_board_multipm 와 동일."""
     spec = importlib.util.spec_from_file_location("board", TOOLS / "board.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _load_pm_update():
+    """pm_update.py 를 독립 로드 — `drift_changes`/`main` 직접 단위 테스트용(board 경유 없음)."""
+    spec = importlib.util.spec_from_file_location("pm_update", TOOLS / "pm_update.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture
+def pm_update_module():
+    return _load_pm_update()
+
+
+def _load_pm_render():
+    """pm_render.py 를 독립 로드 — notation 토큰(`SKILL_ENTRY_NAMES`) 실 픽스처 구성용."""
+    spec = importlib.util.spec_from_file_location("pm_render", TOOLS / "pm_render.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -71,6 +93,53 @@ class _FakeRun:
         return types.SimpleNamespace(returncode=self.rc, stdout=self.stdout, stderr="")
 
 
+class _ShellOnlySpy:
+    """board.subprocess.run 대역 — `shell=True`(livegate 의 `pytest -m release` 호출)만 가로채고
+    그 외(엔진 drift 판정 내부의 `git ls-files` 등 list-argv 호출)는 실 `subprocess.run` 에 위임한다.
+
+    drift-차단 테스트는 "라이브 wave 미실행"을 **부작용 없는 spy**로 단언해야 하는데, 무조건
+    가로채는 `_FakeRun` 을 그대로 쓰면 `drift_changes` 내부의 정상 git 조회까지 고정 stdout 을
+    돌려받아 파싱이 깨진다(list-argv 호출과 `shell=True` 호출이 같은 `subprocess.run` 을 공유).
+    """
+
+    def __init__(self, real_run, rc: int = 0, stdout: str = ""):
+        self._real_run = real_run
+        self.rc = rc
+        self.stdout = stdout
+        self.calls: list[dict] = []   # shell=True 호출만 기록(라이브 wave 호출 스펙트럼).
+
+    def __call__(self, *args, **kwargs):
+        if not kwargs.get("shell"):
+            return self._real_run(*args, **kwargs)
+        self.calls.append({"args": args, "kwargs": kwargs})
+        return types.SimpleNamespace(returncode=self.rc, stdout=self.stdout, stderr="")
+
+
+_DRIFT_MANIFEST_REL = ".project_manager/tools/widget.py"
+_DRIFT_MANIFEST_TEXT = _DRIFT_MANIFEST_REL + "\n"
+
+
+def _seed_engine_drift_fixture(dest_root: Path, upstream_root: Path, *, drift: bool) -> None:
+    """`dest_root`(실행 엔진 사본)·`upstream_root` 에 매칭 `engine.manifest` + 파일 1개를 깐다.
+
+    `drift=True` 면 `dest_root` 쪽 파일 바이트를 다르게 써 drift 1건을 만든다. `dest_root` 의
+    `local.conf` 에 `upstream.path=<upstream_root>` 를 등록한다(둘 다 로컬 경로 — URL 클래스는
+    별도 테스트가 문자열만으로 검증한다·네트워크 0 유지)."""
+    for root in (dest_root, upstream_root):
+        (root / ".project_manager" / "tools").mkdir(parents=True, exist_ok=True)
+        (root / ".project_manager" / "engine.manifest").write_text(
+            _DRIFT_MANIFEST_TEXT, encoding="utf-8")
+    (upstream_root / ".project_manager" / "tools" / "widget.py").write_text(
+        "# widget v1\n", encoding="utf-8")
+    (dest_root / ".project_manager" / "tools" / "widget.py").write_text(
+        "# widget v1 — drifted\n" if drift else "# widget v1\n", encoding="utf-8")
+    (dest_root / ".project_manager" / "local.conf").write_text(
+        f"upstream.path={upstream_root}\n", encoding="utf-8")
+
+
+_DRY_RUN_CHANGE_RE = re.compile(r"^\s*\[(?:new|update|render)\]\s+(.+)$")
+
+
 def _rec_args(cwd=None, repo=None, slot=None):
     return argparse.Namespace(action="record", rev=None, cwd=cwd, repo=repo, slot=slot)
 
@@ -96,6 +165,242 @@ def _read_flag(live_board) -> dict:
 def test_livegate_ran_count_parses_summary(live_board, output, expected):
     """요약행에서 수집 N = passed + failed + error(s) (deselected 제외·수집 0 은 0)."""
     assert live_board._livegate_ran_count(output) == expected
+
+
+# ── pm_update.drift_changes — 판정 불능 클래스 전수 + 바이트 drift 판정 ─────────────
+
+def test_drift_changes_detects_byte_diff(tmp_path, pm_update_module):
+    """등재 파일 1개의 바이트가 다르면 그 relpath 1개가 changes 로 나온다."""
+    dest, upstream = tmp_path / "dest", tmp_path / "upstream"
+    _seed_engine_drift_fixture(dest, upstream, drift=True)
+    assert pm_update_module.drift_changes(dest) == [_DRIFT_MANIFEST_REL]
+
+
+def test_drift_changes_empty_when_in_sync(tmp_path, pm_update_module):
+    """dest 가 upstream 과 byte-identical 이면 빈 목록(drift 0)."""
+    dest, upstream = tmp_path / "dest", tmp_path / "upstream"
+    _seed_engine_drift_fixture(dest, upstream, drift=False)
+    assert pm_update_module.drift_changes(dest) == []
+
+
+def test_drift_changes_none_when_local_conf_absent(tmp_path, pm_update_module):
+    """`local.conf` 자체가 없음 → None(판정 불능 클래스 ①)."""
+    dest = tmp_path / "dest"
+    dest.mkdir(parents=True)
+    assert pm_update_module.drift_changes(dest) is None
+
+
+def test_drift_changes_none_when_upstream_key_absent(tmp_path, pm_update_module):
+    """`local.conf` 는 있으나 `upstream.path=` 미등록 → None(판정 불능 클래스 ②)."""
+    dest = tmp_path / "dest"
+    (dest / ".project_manager").mkdir(parents=True)
+    (dest / ".project_manager" / "local.conf").write_text(
+        "project.name=x\n", encoding="utf-8")
+    assert pm_update_module.drift_changes(dest) is None
+
+
+def test_drift_changes_none_when_upstream_is_url(tmp_path, pm_update_module):
+    """upstream 이 URL(릴리스 추적 기본값) → None(판정 불능 클래스 ③ — 네트워크 0 유지·cache
+    clone 필요)."""
+    dest = tmp_path / "dest"
+    (dest / ".project_manager").mkdir(parents=True)
+    (dest / ".project_manager" / "local.conf").write_text(
+        "upstream.path=https://example.invalid/framework.git\n", encoding="utf-8")
+    assert pm_update_module.drift_changes(dest) is None
+
+
+def test_drift_changes_none_when_upstream_path_missing(tmp_path, pm_update_module):
+    """upstream 경로가 디렉토리로 존재하지 않음(이동/삭제) → None(판정 불능 클래스 ④)."""
+    dest = tmp_path / "dest"
+    (dest / ".project_manager").mkdir(parents=True)
+    (dest / ".project_manager" / "local.conf").write_text(
+        f"upstream.path={tmp_path / 'nowhere'}\n", encoding="utf-8")
+    assert pm_update_module.drift_changes(dest) is None
+
+
+def test_drift_changes_none_when_manifest_absent(tmp_path, pm_update_module):
+    """`engine.manifest` 가 dest·source 양쪽 다 없음 → None(판정 불능 클래스 ⑤)."""
+    dest, upstream = tmp_path / "dest", tmp_path / "upstream"
+    (dest / ".project_manager").mkdir(parents=True)
+    upstream.mkdir(parents=True)
+    (dest / ".project_manager" / "local.conf").write_text(
+        f"upstream.path={upstream}\n", encoding="utf-8")
+    assert pm_update_module.drift_changes(dest) is None
+
+
+def test_drift_changes_matches_main_dry_run_relpaths(
+        tmp_path, pm_update_module, monkeypatch, capsys):
+    """`drift_changes` 와 `main(["--dry-run"])` 이 같은 픽스처에서 같은 relpath 집합을 낸다 —
+    별도 diff 구현이 아니라 `plan()` 을 공유한다는 동치 증거(설계 결정: 별도 비교 구현 금지)."""
+    dest, upstream = tmp_path / "dest", tmp_path / "upstream"
+    _seed_engine_drift_fixture(dest, upstream, drift=True)
+    monkeypatch.setattr(pm_update_module, "REPO", dest)   # self-location(--target 생략) 모드.
+    rc = pm_update_module.main(["--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    dry_run_paths = {
+        match.group(1) for line in out.splitlines()
+        if (match := _DRY_RUN_CHANGE_RE.match(line))
+    }
+    assert dry_run_paths == set(pm_update_module.drift_changes(dest)) == {_DRIFT_MANIFEST_REL}
+
+
+def _seed_missing_source_fixture(dest_root: Path, upstream_root: Path) -> None:
+    """manifest 가 등재하지만 upstream source 파일이 없는 픽스처(non-`@target-owned`) — 확정
+    drift 0 과 구분되어야 하는 판정 불능이다."""
+    for root in (dest_root, upstream_root):
+        (root / ".project_manager").mkdir(parents=True, exist_ok=True)
+        (root / ".project_manager" / "engine.manifest").write_text(
+            _DRIFT_MANIFEST_REL + "\n", encoding="utf-8")
+    (dest_root / ".project_manager" / "tools").mkdir(parents=True, exist_ok=True)
+    (dest_root / ".project_manager" / "tools" / "widget.py").write_text(
+        "# widget v1\n", encoding="utf-8")
+    # upstream 쪽 widget.py 는 의도적으로 만들지 않는다 — source 부재.
+    (dest_root / ".project_manager" / "local.conf").write_text(
+        f"upstream.path={upstream_root}\n", encoding="utf-8")
+
+
+def test_drift_changes_none_when_manifest_entry_source_missing(
+        tmp_path, pm_update_module, monkeypatch, capsys):
+    """manifest 가 등재한 source 파일이 upstream 에 없음(non-`@target-owned`) → None — 확정
+    drift 0 과 판정 불능을 구분한다. plan()의 `missing`을 버리면 이 형상이 drift 0 으로
+    오판된다(main 의 rc2·`[source 에 없음]` 과 같은 판정 신호를 공유한다는 증거)."""
+    dest, upstream = tmp_path / "dest", tmp_path / "upstream"
+    _seed_missing_source_fixture(dest, upstream)
+    assert pm_update_module.drift_changes(dest) is None, \
+        "manifest 등재 source 부재를 확정 drift 0 으로 오판했다"
+
+    monkeypatch.setattr(pm_update_module, "REPO", dest)
+    rc = pm_update_module.main(["--dry-run"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "[source 에 없음]" in err
+
+
+def test_drift_changes_detects_legacy_add_harness_guest_backfill_manifest_update(
+        tmp_path, pm_update_module, monkeypatch, capsys):
+    """실 legacy add-harness 픽스처(guest 절 provenance 미기록) — 첫 sync 는 파생 guest backfill
+    을 절에 기록하며 `.project_manager/engine.manifest` 를 update 한다. `drift_changes` 가 이
+    인자(`guest_backfill_lines`)를 놓치면 이 변경을 빠뜨린다(재발 방지 회귀). 같은 픽스처의
+    `.opencode/agents`(`@target-owned`·source 부재)는 판정 불능을 유발하지 않아야 한다
+    (target-owned missing 은 정상 — missing 필터가 방향을 잘못 잡으면 여기서 드러난다)."""
+    from test_pm_update import _make_guest_framework, _make_legacy_guest_adopter
+
+    framework = _make_guest_framework(tmp_path / "fw")
+    dest = tmp_path / "adopter"
+    _make_legacy_guest_adopter(pm_update_module, dest)
+    (dest / ".project_manager" / "local.conf").write_text(
+        f"upstream.path={framework}\n", encoding="utf-8")
+
+    result = pm_update_module.drift_changes(dest)
+    assert result is not None, (
+        "target-owned missing(.opencode/agents) 만으로도 판정 불능이 됐다 — missing 필터가 "
+        "@target-owned 를 걸러내지 못했다"
+    )
+    assert pm_update_module._MANIFEST_SELF_REL in result, (
+        "guest backfill 로 인한 engine.manifest update 를 drift_changes 가 놓쳤다"
+    )
+
+    monkeypatch.setattr(pm_update_module, "REPO", dest)
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+    rc = pm_update_module.main(["--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert f"[update] {pm_update_module._MANIFEST_SELF_REL}" in out
+
+
+def test_engine_sync_plan_call_args_and_result_shared_between_main_and_drift_changes(
+        tmp_path, pm_update_module, monkeypatch, capsys):
+    """`main()` 의 self-update 경로와 `drift_changes()` 가 **같은 함수를 실제로 공동 호출**한다는
+    것을 사람용 stdout 파싱이 아니라 호출 인자·반환된 구조화 계획으로 직접 잠근다 — legacy
+    add-harness 픽스처(guest backfill 축)에서 두 호출의 `changes`/`missing` 집합이 일치한다."""
+    from test_pm_update import _make_guest_framework, _make_legacy_guest_adopter
+
+    framework = _make_guest_framework(tmp_path / "fw")
+    dest = tmp_path / "adopter"
+    _make_legacy_guest_adopter(pm_update_module, dest)
+    (dest / ".project_manager" / "local.conf").write_text(
+        f"upstream.path={framework}\n", encoding="utf-8")
+
+    real_fn = pm_update_module._resolve_engine_sync_plan
+    calls: list[tuple[dict, dict]] = []
+
+    def _spy(*args, **kwargs):
+        returned = real_fn(*args, **kwargs)
+        calls.append((kwargs, returned))
+        return returned
+
+    monkeypatch.setattr(pm_update_module, "_resolve_engine_sync_plan", _spy)
+    monkeypatch.setattr(pm_update_module, "REPO", dest)
+    monkeypatch.setenv("PM_NONINTERACTIVE", "1")
+
+    rc = pm_update_module.main(["--dry-run"])
+    assert rc == 0
+    assert len(calls) == 1, (
+        "main() 이 구조화 계획 함수를 정확히 1회 호출하지 않는다 — 별도 계획 경로가 있다면 복제다"
+    )
+    main_kwargs, main_plan = calls.pop()
+    assert main_kwargs["target"] is None
+
+    result = pm_update_module.drift_changes(dest)
+    assert len(calls) == 1, (
+        "drift_changes() 가 공유 함수를 호출하지 않는다 — 별도 계획 경로가 있다면 복제다"
+    )
+    drift_kwargs, drift_plan = calls.pop()
+    assert drift_kwargs.get("target") is None
+    assert drift_kwargs.get("report") is False
+
+    main_changes = {str(rel) for rel, *_ in main_plan["changes"]}
+    drift_changes_set = {str(rel) for rel, *_ in drift_plan["changes"]}
+    assert main_changes == drift_changes_set == set(result)
+    assert pm_update_module._MANIFEST_SELF_REL in main_changes
+    assert main_plan["missing"] == drift_plan["missing"] == [".opencode/agents"]
+
+
+_NOTATION_WIKI_REL = ".project_manager/wiki/note.md"
+
+
+def _seed_target_render_notation_fixture(
+        pm_render_module, source_root: Path, dest_root: Path, *, rendered: bool) -> str:
+    """`.project_manager/wiki/` 아래 `@render` 항목 1개 — 실 스킬 호출 토큰이 담긴 파일로
+    render·notation 경로를 재현한다. `rendered=False` 면 dest 에 미렌더 원문을 깔아 update
+    경로를 유발한다. 돌려주는 값은 사용한 스킬 이름."""
+    skill = pm_render_module.SKILL_ENTRY_NAMES[0]
+    text = f"참고: /{skill} 를 실행하라.\n"
+    src_file = source_root / _NOTATION_WIKI_REL
+    src_file.parent.mkdir(parents=True, exist_ok=True)
+    src_file.write_text(text, encoding="utf-8")
+    (source_root / ".project_manager").mkdir(parents=True, exist_ok=True)
+    (source_root / ".project_manager" / "engine.manifest").write_text(
+        f"{_NOTATION_WIKI_REL}    @render\n", encoding="utf-8")
+    if not rendered:
+        dst_file = dest_root / _NOTATION_WIKI_REL
+        dst_file.parent.mkdir(parents=True, exist_ok=True)
+        dst_file.write_text(text, encoding="utf-8")  # 미렌더 원문 그대로.
+    return skill
+
+
+def test_resolve_engine_sync_plan_applies_notation_rewrite_for_target_render_entry(
+        tmp_path, pm_update_module):
+    """`@render` 마킹한 `.project_manager/wiki/` 항목 1개 — `--target` 모드에서 notation 토큰이
+    실제로 치환되어 update 계획을 낸다(F-005 render·notation 실 픽스처 — 추출로 render_enabled·
+    entry_notation_template 인자 전달이 깨지지 않았다는 구조적 증거)."""
+    pm_render_module = _load_pm_render()
+    source_root = tmp_path / "fw"
+    dest_root = source_root / "templates" / "codex"
+    dest_root.mkdir(parents=True)
+    _seed_target_render_notation_fixture(
+        pm_render_module, source_root, dest_root, rendered=False)
+
+    sync_plan = pm_update_module._resolve_engine_sync_plan(
+        dest_root, source_root, target="codex", report=False)
+    changes = {str(rel): (kind, dst) for rel, _src, dst, kind in sync_plan["changes"]}
+    assert _NOTATION_WIKI_REL in changes, "notation 토큰이 치환될 파일이 계획에 없다"
+    kind, dst = changes[_NOTATION_WIKI_REL]
+    assert kind == "update"
+    assert dst.entry_notation_template == "codex", (
+        "치환 템플릿이 호출한 target 과 다르다 — notation 인자가 공유 함수에 제대로 전달되지 않았다"
+    )
 
 
 # ── record ① rc0 ∧ N==pin → pass ───────────────────────────────────────────
@@ -304,6 +609,110 @@ def test_record_write_is_atomic_no_tmp_left(live_board, monkeypatch):
     tmp = live_board.LIVEGATE_FLAG.with_suffix(live_board.LIVEGATE_FLAG.suffix + ".tmp")
     assert not tmp.exists(), "atomic write 후 .tmp 잔재가 남았다"
     assert live_board.LIVEGATE_FLAG.exists()
+
+
+# ── record ⑤ 실행 엔진 사본 drift — 라이브 wave 전 조기 거부 ──────────────────────
+
+def test_record_blocks_on_engine_drift_before_live_wave(live_board, monkeypatch, capsys):
+    """drift 1건 → rc1 · fail 기록(reason=engine-drift) · 라이브 wave(`shell=True` 호출) 미실행
+    (spy 로 호출 0 을 값으로 단언) · drift relpath + 처방이 stderr 에 남는다."""
+    upstream = live_board._proj.parent / "upstream"
+    _seed_engine_drift_fixture(live_board.REPO, upstream, drift=True)
+    real_run = live_board.subprocess.run
+    spy = _ShellOnlySpy(real_run, rc=0, stdout="22 passed, 810 deselected in 45.67s")
+    monkeypatch.setattr(live_board.subprocess, "run", spy)
+    rc = live_board.cmd_livegate(_rec_args())
+    assert rc == 1
+    assert spy.calls == [], "drift 차단인데 라이브 wave(shell=True 호출) 가 실행됐다"
+    data = _read_flag(live_board)
+    assert data["status"] == "fail"
+    assert data["reason"] == "engine-drift"
+    assert data["rc"] is None
+    assert data["n"] == 0
+    err = capsys.readouterr().err
+    assert _DRIFT_MANIFEST_REL in err
+    assert "실행 엔진 사본이 upstream 과 drift" in err
+    assert "pm_update.py" in err   # 처방(재동기 커맨드)
+
+
+def test_record_proceeds_when_engine_copy_in_sync(live_board, monkeypatch, capsys):
+    """drift 0(byte-identical) — 기존 pass 경로와 기록 바이트·rc·stdout 이 동일하다(역방향 확인)."""
+    upstream = live_board._proj.parent / "upstream"
+    _seed_engine_drift_fixture(live_board.REPO, upstream, drift=False)
+    real_run = live_board.subprocess.run
+    spy = _ShellOnlySpy(real_run, rc=0, stdout="22 passed, 810 deselected in 45.67s")
+    monkeypatch.setattr(live_board.subprocess, "run", spy)
+    rc = live_board.cmd_livegate(_rec_args())
+    assert rc == 0
+    assert len(spy.calls) == 1, "drift 0 인데 라이브 wave 가 실행되지 않았다"
+    data = _read_flag(live_board)
+    assert data["n"] == live_board.LIVEGATE_RELEASE_PIN == 22
+    assert data["status"] == "pass"
+    assert data["rc"] == 0
+    out = capsys.readouterr().out
+    assert "pass @ cafef00d" in out
+    assert "release 22/22 green" in out
+
+
+def test_record_warns_and_proceeds_when_upstream_unset(live_board, monkeypatch, capsys):
+    """판정 불능(upstream 미등록·`local.conf` 부재) — 거부하지 않고 stderr 경고 1줄 후 현행
+    경로(라이브 wave 실행)를 그대로 진행한다."""
+    fake = _FakeRun(0, "22 passed, 810 deselected in 45.67s")
+    monkeypatch.setattr(live_board.subprocess, "run", fake)
+    rc = live_board.cmd_livegate(_rec_args())
+    assert rc == 0
+    assert any(c["kwargs"].get("shell") for c in fake.calls), \
+        "판정 불능인데 라이브 wave(shell=True 호출) 가 차단됐다"
+    err = capsys.readouterr().err
+    assert "판정 불능" in err
+
+
+def _seed_judgment_incapable_url(live_board) -> None:
+    (live_board.REPO / ".project_manager").mkdir(parents=True, exist_ok=True)
+    (live_board.REPO / ".project_manager" / "local.conf").write_text(
+        "upstream.path=https://example.invalid/framework.git\n", encoding="utf-8")
+
+
+def _seed_judgment_incapable_missing_path(live_board) -> None:
+    (live_board.REPO / ".project_manager").mkdir(parents=True, exist_ok=True)
+    (live_board.REPO / ".project_manager" / "local.conf").write_text(
+        f"upstream.path={live_board.REPO.parent / 'nowhere'}\n", encoding="utf-8")
+
+
+def _seed_judgment_incapable_manifest_absent(live_board) -> None:
+    upstream = live_board.REPO.parent / "upstream_no_manifest"
+    upstream.mkdir(parents=True, exist_ok=True)
+    (live_board.REPO / ".project_manager").mkdir(parents=True, exist_ok=True)
+    (live_board.REPO / ".project_manager" / "local.conf").write_text(
+        f"upstream.path={upstream}\n", encoding="utf-8")
+
+
+def _seed_judgment_incapable_missing_source(live_board) -> None:
+    upstream = live_board.REPO.parent / "upstream_missing_source"
+    _seed_missing_source_fixture(live_board.REPO, upstream)
+
+
+@pytest.mark.parametrize("seed", [
+    _seed_judgment_incapable_url,               # upstream 이 URL(릴리스 추적 기본값)
+    _seed_judgment_incapable_missing_path,       # upstream 경로가 디렉토리로 미존재
+    _seed_judgment_incapable_manifest_absent,    # engine.manifest 양쪽 다 부재
+    _seed_judgment_incapable_missing_source,     # manifest 등재 source 가 non-@target-owned 부재
+])
+def test_record_engine_drift_judgment_incapable_warns_exactly_one_line(
+        live_board, monkeypatch, capsys, seed):
+    """판정 불능 대표 4분기(URL·미존재 경로·manifest 부재·missing>0) — 각각 stderr 경고가
+    정확히 1줄이고(splitlines 로 확인) 라이브 wave 를 차단하지 않는다."""
+    seed(live_board)
+    fake = _FakeRun(0, "22 passed, 810 deselected in 45.67s")
+    monkeypatch.setattr(live_board.subprocess, "run", fake)
+    rc = live_board.cmd_livegate(_rec_args())
+    assert rc == 0
+    assert any(c["kwargs"].get("shell") for c in fake.calls), \
+        "판정 불능인데 라이브 wave(shell=True 호출) 가 차단됐다"
+    err = capsys.readouterr().err
+    lines = [line for line in err.splitlines() if line.strip()]
+    assert len(lines) == 1, f"판정 불능 경고가 정확히 1줄이 아니다: {err!r}"
+    assert "판정 불능" in err
 
 
 # ── check ④ 3분기: 부재 / red / rev 불일치 + green ──────────────────────────

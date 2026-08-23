@@ -4035,6 +4035,221 @@ def plan(
     return changes, missing
 
 
+class _EngineSyncNotationContextError(RuntimeError):
+    """선택된 flavor manifest 에서 notation 템플릿 context 를 해소하지 못함 — 원본 사유를 감싼다.
+
+    `plan()` 자신이 낼 수 있는 다른 `RuntimeError`(예 `EmptyShippingInventoryError`)와 구분되는
+    전용 타입이다 — 호출부(`_main`·`drift_changes`)가 "notation context 실패"만 좁게 받아 처리
+    (에러+rc2 대 None 판정 불능)하고, `plan()` 이 낸 무관한 `RuntimeError` 는 그대로 전파시킨다
+    (엔진 사본 skew 는 이 타입으로 감싸지 않는다 — 마커를 잃지 않도록 원본 그대로 재-raise 한다).
+    """
+
+
+def _resolve_engine_sync_plan(
+    effective_dest: Path,
+    source_root: Path,
+    *,
+    target: str | None = None,
+    guest_entries: list | None = None,
+    guest_backfill: list | None = None,
+    guest_backfill_flavors: list[str] | None = None,
+    inventory_out: set[str] | None = None,
+    dest_inventory_out: set[str] | None = None,
+    report: bool = False,
+) -> dict:
+    """manifest 자기치유 → notation 템플릿 해소 → guest backfill 기록 판정 → `plan()` 을 한
+    호출로 묶어 반환하는 **구조화 계획**. `_main`(self-update·`--target` export 공용)과 드리프트
+    게이트(`drift_changes`)가 이 함수를 실제로 공동 호출한다 — 별도 diff/계획 구현을 두지 않는다.
+
+    `guest_entries`/`guest_backfill`/`guest_backfill_flavors` 는 호출부가 이미 해소했으면 넘기고
+    (중복 IO 회피), 없으면(`guest_backfill is None`) 여기서 해소한다.
+
+    `report=True` 면 `_main` 이 기존에 내던 것과 **같은 지점·같은 문구**로 manifest merge conflict·
+    guest backfill 파생 안내를 stdout/stderr 에 낸다. `report=False`(기본값)는 아무것도 출력하지
+    않는다 — `drift_changes` 는 이 값으로 호출해 출력·부작용 0 을 지킨다.
+
+    manifest 해소 실패(`FileNotFoundError`)·notation context 해소 실패(`_EngineSyncNotationContextError`
+    — `RuntimeError` 서브클래스)는 삼키지 않고 그대로 전파한다 — 호출부마다 처리(에러 메시지+rc2
+    대 None 판정 불능)가 다르기 때문이다. `plan()` 이 낼 수 있는 다른 `RuntimeError`(예
+    `EmptyShippingInventoryError`)는 감싸지 않고 그대로 전파한다(호출부의 좁은 catch 를 우회하지
+    않는다).
+
+    반환 dict:
+      - "changes": `plan()` 의 (rel, src, dst, kind) 튜플 리스트
+      - "missing": `plan()` 의 non-`@target-owned` source 부재 relpath 리스트 (버리지 않는다 —
+        buried 하면 확정 drift 0 과 판정 불능이 뒤섞인다)
+      - "manifest": 계획에 쓰인 manifest
+      - "selfheal": `resolve_manifest_selfheal` 결과(`target` 모드는 skip 상수)
+      - "persisted_guest_backfill": apply 가 절에 기록할 manifest-line 리스트(`legacy_preserved`
+        면 None)
+      - "entry_notation_templates": 계획에 쓰인 notation 템플릿 dict
+    """
+    if guest_entries is None:
+        guest_entries = _dest_guest_manifest_entries(effective_dest)
+    if guest_backfill is None:
+        guest_backfill, guest_backfill_flavors = _guest_engine_backfill_entries(
+            effective_dest, source_root, guest_entries)
+    elif guest_backfill_flavors is None:
+        guest_backfill_flavors = []
+
+    selfheal: dict = {
+        "status": "skipped", "added": [], "removed": [],
+        "manifest": None, "upstream_manifest": None,
+        "upstream_manifests": [], "manifest_text": None,
+        "merge_conflicts": [],
+    }
+    if not target:
+        # 파생 경로를 함께 넘긴다 — 이번 실행이 등재할 파일을 "채널 없음" 으로 경고하면 같은 run 이
+        #   자기모순을 낸다(legacy 코호트 첫 실행). 이미 해소한 산출이라 재파생도 없다.
+        selfheal = resolve_manifest_selfheal(
+            effective_dest, source_root,
+            guest_backfill_paths={
+                str(entry).replace("\\", "/") for entry in guest_backfill})
+        if report:
+            _print_manifest_merge_conflicts(selfheal)
+
+    # 계획 기준 manifest — 승격분 우선·없으면 dest 우선 로컬 해소. `--changes` 미리보기가 **같은
+    #   헬퍼**를 소비한다(판정 사본 0: 미리보기 분류 기준 == 적용 계획 기준). FileNotFoundError 는
+    #   호출부가 처리한다(진입별로 rc 가 다르다 — sync=rc1 에러, drift 게이트=None 판정 불능).
+    manifest = _resolve_planning_manifest(
+        effective_dest, source_root, selfheal,
+        guest_entries=guest_entries, guest_backfill=guest_backfill)
+
+    # 파생 엔진 행의 **기록** 여부 — 전파는 아래 `plan()` 이 이미 계획에 싣고, 여기선 절에 남길지만
+    #   정한다. `legacy_preserved`(로컬 manifest 불가침 선언)는 기록만 생략한다(선언 존중·파일
+    #   동기는 유지). 그 밖에는 apply 의 절 재부착에 실어, 다음 실행부터 추론 없이 provenance 로
+    #   해소되게 한다.
+    persisted_guest_backfill: list[str] | None = None
+    if guest_backfill:
+        recorded = {str(entry).replace("\\", "/") for entry in guest_entries}
+        fresh = sorted(
+            str(entry).replace("\\", "/") for entry in guest_backfill
+            if str(entry).replace("\\", "/") not in recorded
+        )
+        if selfheal["status"] == "legacy_preserved":
+            if report:
+                print("  ⚠️ guest 엔진 행은 동기하되 guest 절에는 기록하지 않는다 — 로컬 manifest "
+                      "불가침(legacy_preserved) 선언을 존중한다. 절 기록은 이 인스턴스가 legacy "
+                      "상태를 벗어난 뒤 다음 sync 에서 이뤄진다.", file=sys.stderr)
+        else:
+            persisted_guest_backfill = [
+                _manifest_entry_line(entry) for entry in guest_backfill]
+        if fresh and report:
+            print(f"  guest 엔진 행 {len(fresh)}건 파생 "
+                  f"(flavor: {', '.join(guest_backfill_flavors)}): {', '.join(fresh)}")
+
+    # --target은 operational 전체 render를 끄되 @render 경로의 호출 표기 토큰만 target 이름으로
+    # 조건부 렌더한다. adopter self-update는 선택된 flavor manifest 경로에서 같은 context를 파생한다.
+    # root canonical manifest는 flavor template가 아니므로 None(기존 `/` token-form 유지).
+    render_enabled = not target
+    entry_notation_template = target if target else None
+    try:
+        notation_manifests = (
+            []
+            if target
+            else _installed_entry_notation_manifests(
+                effective_dest, source_root, selfheal.get("upstream_manifests") or [])
+        )
+        entry_notation_templates = (
+            {}
+            if target
+            else _entry_notation_templates_from_manifests(notation_manifests, source_root)
+        )
+    except RuntimeError as exc:
+        # 엔진 사본 skew 는 감싸지 않고 원본 그대로 재-raise 한다(마커 보존) — `plan()` 자신이
+        #   낼 수 있는 다른 `RuntimeError`(예 `EmptyShippingInventoryError`)와 이 지점의 notation
+        #   context 실패를 구분해야 호출부가 좁게 처리한다(F-001 추출 전 `_main` 의 try/except
+        #   경계와 동형 — 넓게 잡으면 `plan()` 의 무관한 예외까지 이 지점 처리로 오분류된다).
+        if _is_engine_rev_skew(exc):
+            raise
+        raise _EngineSyncNotationContextError(str(exc)) from exc
+
+    changes, missing = plan(
+        source_root, manifest, dest_root=effective_dest,
+        render_enabled=render_enabled,
+        entry_notation_template=entry_notation_template,
+        entry_notation_templates=entry_notation_templates,
+        manifest_source_text=(
+            selfheal.get("manifest_text")
+            if len(selfheal.get("upstream_manifests", [])) > 1 else None
+        ),
+        inventory_out=inventory_out,
+        dest_inventory_out=dest_inventory_out,
+        guest_backfill_lines=persisted_guest_backfill,
+    )
+    return {
+        "changes": changes,
+        "missing": missing,
+        "manifest": manifest,
+        "selfheal": selfheal,
+        "persisted_guest_backfill": persisted_guest_backfill,
+        "entry_notation_templates": entry_notation_templates,
+    }
+
+
+def drift_changes(engine_root: Path) -> list[str] | None:
+    """`engine_root` 의 실행 엔진 사본이 upstream 과 drift 한 relpath 목록.
+
+    `_resolve_engine_sync_plan`(self-update dry-run 이 실제로 호출하는 것과 **같은 함수**) 위의
+    얇은 래퍼다 — 별도 diff 알고리즘을 두지 않는다(render 설정·notation·guest-backfill 인자도
+    dry-run 과 동일하게 태운다).
+
+    판정 불능(`None`) — 아래는 전부 같은 "이 형상엔 게이트가 적용되지 않는다"로 수렴한다(거부가
+    아니라 무판정):
+      - `local.conf` 자체가 없음(빈 dict 로드 → upstream 키도 없음)
+      - upstream 키가 비어 있음(미등록)
+      - upstream 이 URL(릴리스 추적 기본값) — 엔진은 로컬 파일만 비교한다(git clone/fetch 없음·
+        네트워크 0 유지). URL 은 캐시 clone 후 로컬 경로로 재등록해야 판정 가능해진다.
+      - upstream 경로가 디렉토리로 존재하지 않음(이동/삭제)
+      - manifest 부재(engine_root·source_root 양쪽 다 `engine.manifest` 없음)
+      - 선택된 flavor manifest 를 읽을 수 없음(notation context 해소 실패)
+      - manifest 등재 source 가 non-`@target-owned` 인데 upstream 에 없음(missing>0) — 확정
+        drift 0 과 판정 불능을 구분한다(버리면 그 형상을 drift 0 으로 오판하는 false-green).
+
+    출력·부작용 0(stdout·파일 쓰기) — `_resolve_engine_sync_plan(report=False)` 로 호출한다.
+    """
+    engine_root = Path(engine_root)
+    local_conf = engine_root / ".project_manager" / "local.conf"
+    stored = _read_local_conf(local_conf).get("upstream.path", "").strip()
+    if not stored:
+        return None
+    try:
+        # 분류 실패는 `_resolve_dest_source` 와 동형으로 보수적 경로 취급(fail-soft).
+        kind = _load_pm_import().classify_upstream(stored)
+    except Exception:  # noqa: BLE001
+        kind = "path"
+    if kind == "url":
+        return None
+    source_root = Path(stored).resolve()
+    if not source_root.is_dir():
+        return None
+    try:
+        sync_plan = _resolve_engine_sync_plan(engine_root, source_root, report=False)
+    except FileNotFoundError:
+        return None
+    except _EngineSyncNotationContextError:
+        return None
+    except RuntimeError as exc:
+        # 엔진 사본 skew(마커 보존을 위해 `_resolve_engine_sync_plan` 이 원본 그대로 재-raise 함)만
+        #   여기서 판정 불능으로 접는다 — `plan()` 이 낼 수 있는 다른 RuntimeError(예
+        #   `EmptyShippingInventoryError`)는 이 게이트가 가릴 대상이 아니라 그대로 전파한다(`plan()`
+        #   호출은 이 함수에서도 원래 무보호였다 — 좁히지 않으면 F-001 이전 세대보다 더 넓게
+        #   삼키는 회귀가 된다).
+        if _is_engine_rev_skew(exc):
+            return None
+        raise
+    missing = sync_plan["missing"]
+    if missing:
+        # `@target-owned` 항목의 source 부재는 정상(타깃 고유 어댑터·엔진 upstream 에 없음) — `_main`
+        #   의 skip 판별과 같은 술어(`_entry_target_owned_flag`)를 쓴다(별도 판정 사본 없음). 그 밖의
+        #   (non-`@target-owned`) 부재만 판정 불능이다 — 여기까지 `@target-owned` 를 섞으면 정상
+        #   self-update 형상(cross-flavor 어댑터 보유)도 과도하게 "판정 불능" 으로 접힌다.
+        owned = {str(entry): _entry_target_owned_flag(entry) for entry in sync_plan["manifest"]}
+        if any(not owned.get(rel, False) for rel in missing):
+            return None
+    return [str(rel) for rel, _src, _dst, _kind in sync_plan["changes"]]
+
+
 # ── 상류 은퇴 파일 보고 (삭제 전파 없음·read-only 진단) ────────────────────────
 # manifest 디렉토리 엔트리 동기는 **source 열거**라 추가·갱신만 한다(`_iter_files`) — 상류에서
 # 은퇴한 파일은 채택자 dest 에 영구 잔존하는데 어떤 출력도 그 사실을 말하지 않았다. 삭제를
@@ -6306,91 +6521,6 @@ def _main(argv: list[str] | None = None) -> int:
     #    manifest 부재/읽기 실패는 fail-soft(로컬 유지) — baseline 억제가 그 잔여 경로
     #    안전망. --target(엔진 export)은 타깃 manifest 가 루트와 의도적으로 달라 승격하지 않는다
     #    (현행·아래 skew 검출과 동일 경계). 승격 후 skew 는 정의상 0(manifest==upstream).
-    selfheal: dict = {
-        "status": "skipped", "added": [], "removed": [],
-        "manifest": None, "upstream_manifest": None,
-        "upstream_manifests": [], "manifest_text": None,
-        "merge_conflicts": [],
-    }
-    skew_manifest = None
-    if not args.target:
-        # 파생 경로를 함께 넘긴다 — 이번 실행이 등재할 파일을 "채널 없음" 으로 경고하면 같은 run 이
-        #   자기모순을 낸다(legacy 코호트 첫 실행). 이미 해소한 산출이라 재파생도 없다.
-        selfheal = resolve_manifest_selfheal(
-            effective_dest, source_root,
-            guest_backfill_paths={
-                str(entry).replace("\\", "/") for entry in guest_backfill})
-        _print_manifest_merge_conflicts(selfheal)
-
-    # 계획 기준 manifest — 승격분 우선·없으면 dest 우선 로컬 해소. `--changes` 미리보기가 **같은
-    #   헬퍼**를 소비한다(판정 사본 0: 미리보기 분류 기준 == 적용 계획 기준).
-    # add-harness guest 절의 계획 합류(`@render`=재렌더 / 비-`@render`=byte-copy + 파생 백필)도
-    #   이 헬퍼 안에서 일어난다 — `--changes` 미리보기가 같은 기준을 자동 상속한다(판정 사본 0).
-    try:
-        manifest = _resolve_planning_manifest(
-            effective_dest, source_root, selfheal,
-            guest_entries=guest_entries, guest_backfill=guest_backfill)
-    except FileNotFoundError as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
-
-    if selfheal["status"] == "legacy_preserved":
-        # self-prop 계획 제외는 `_resolve_planning_manifest` 가 한다(미리보기와 공유). 여기선 skew
-        # 대조 기준만 갈라 둔다 — 대조는 **원문 전체**를 봐야 upstream 신규 등재분을 정상 검출한다.
-        skew_manifest = _resolve_local_manifest(effective_dest, source_root)
-
-    # 파생 엔진 행의 **기록** 여부 — 전파는 위에서 이미 계획에 실었고, 여기선 절에 남길지만 정한다.
-    #   `legacy_preserved`(로컬 manifest 불가침 선언)는 기록만 생략한다(선언 존중·파일 동기는 유지).
-    #   그 밖에는 apply 의 절 재부착에 실어, 다음 실행부터 추론 없이 provenance 로 해소되게 한다.
-    persisted_guest_backfill: list[str] | None = None
-    if guest_backfill:
-        recorded = {str(entry).replace("\\", "/") for entry in guest_entries}
-        fresh = sorted(
-            str(entry).replace("\\", "/") for entry in guest_backfill
-            if str(entry).replace("\\", "/") not in recorded
-        )
-        if selfheal["status"] == "legacy_preserved":
-            print("  ⚠️ guest 엔진 행은 동기하되 guest 절에는 기록하지 않는다 — 로컬 manifest "
-                  "불가침(legacy_preserved) 선언을 존중한다. 절 기록은 이 인스턴스가 legacy "
-                  "상태를 벗어난 뒤 다음 sync 에서 이뤄진다.", file=sys.stderr)
-        else:
-            persisted_guest_backfill = [
-                _manifest_entry_line(entry) for entry in guest_backfill]
-        if fresh:
-            print(f"  guest 엔진 행 {len(fresh)}건 파생 "
-                  f"(flavor: {', '.join(guest_backfill_flavors)}): {', '.join(fresh)}")
-
-    # --target은 operational 전체 render를 끄되 @render 경로의 호출 표기 토큰만 target 이름으로
-    # 조건부 렌더한다. adopter self-update는 선택된 flavor manifest 경로에서 같은 context를 파생한다.
-    # root canonical manifest는 flavor template가 아니므로 None(기존 `/` token-form 유지).
-    render_enabled = not args.target
-    entry_notation_template = args.target if args.target else None
-    try:
-        notation_manifests = (
-            []
-            if args.target
-            else _installed_entry_notation_manifests(
-                effective_dest,
-                source_root,
-                selfheal.get("upstream_manifests") or [],
-            )
-        )
-        entry_notation_templates = (
-            {}
-            if args.target
-            else _entry_notation_templates_from_manifests(
-                notation_manifests, source_root
-            )
-        )
-    except RuntimeError as exc:
-        # 엔진 사본 skew 는 삼키지 않는다 — 그걸 "context 실패 rc2" 로 덮으면 로드 경계 진단이
-        #   사라진다. 동기 실행 중 발화하는 설치 하네스 판별의 skew 는 **안쪽 경계**
-        #   (`_installed_entry_notation_manifests`)가 이미 흡수하므로, 이 지점은 그 밖에서 온
-        #   사본 불일치를 최외곽까지 올려 보내는 방어선으로 남는다(무진단 침묵 금지).
-        if _is_engine_rev_skew(exc):
-            raise
-        print(f"오류: {exc}", file=sys.stderr)
-        return 2
     # 계획이 훑은 출하 좌표는 두 판정이 함께 쓴다(그래서 스코프 유무와 무관하게 모은다):
     #   - 경로 스코프의 등재 디렉토리 **안의 오타**(`adapterdir/typo.md`) — 등재 검증은 통과하나
     #     대응 파일이 없다. 변경 0 은 "이미 최신" 과 구분되지 않으므로 인벤토리 대응으로 닫는다.
@@ -6399,22 +6529,40 @@ def _main(argv: list[str] | None = None) -> int:
     # 은퇴 판정은 **dest 좌표만** 대조한다 — `--paths` 오타 검출용 합집합에는 상류 좌표가 섞여 있어,
     #   그대로 넘기면 우연한 문자열 일치로 잔존물이 "상류가 공급함" 으로 접힌다(false negative).
     plan_dest_inventory: set[str] = set()
-    changes, missing = plan(
-        source_root,
-        manifest,
-        dest_root=dest_root,
-        render_enabled=render_enabled,
-        entry_notation_template=entry_notation_template,
-        entry_notation_templates=entry_notation_templates,
-        manifest_source_text=(
-            selfheal.get("manifest_text")
-            if len(selfheal.get("upstream_manifests", [])) > 1
-            else None
-        ),
-        inventory_out=plan_inventory,
-        dest_inventory_out=plan_dest_inventory,
-        guest_backfill_lines=persisted_guest_backfill,
-    )
+    # manifest 자기치유 → notation 템플릿 → guest backfill 기록 판정 → `plan()` 을 한 함수로 묶어
+    #   호출한다 — self-update/`--target` export 경로와 drift 게이트(`drift_changes`)가 **같은
+    #   함수**를 공유한다(복제 금지). `report=True` 는 기존과 같은 지점·같은 문구로 안내를 낸다.
+    try:
+        sync_plan = _resolve_engine_sync_plan(
+            effective_dest, source_root,
+            target=args.target,
+            guest_entries=guest_entries,
+            guest_backfill=guest_backfill,
+            guest_backfill_flavors=guest_backfill_flavors,
+            inventory_out=plan_inventory,
+            dest_inventory_out=plan_dest_inventory,
+            report=True,
+        )
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except _EngineSyncNotationContextError as exc:
+        # 엔진 사본 skew 는 이 타입으로 감싸이지 않는다(`_resolve_engine_sync_plan` 이 원본 그대로
+        #   재-raise 해 이 except 를 지나쳐 아래 `main()` 의 최외곽 skew 재-raise 로 올라간다) —
+        #   그걸 "context 실패 rc2" 로 덮으면 로드 경계 진단이 사라진다. 여기 도달한 것만 진짜
+        #   notation context 해소 실패다(무진단 침묵 금지).
+        print(f"오류: {exc}", file=sys.stderr)
+        return 2
+    selfheal = sync_plan["selfheal"]
+    manifest = sync_plan["manifest"]
+    changes, missing = sync_plan["changes"], sync_plan["missing"]
+
+    skew_manifest = None
+    if selfheal["status"] == "legacy_preserved":
+        # self-prop 계획 제외는 `_resolve_planning_manifest` 가 한다(미리보기와 공유). 여기선 skew
+        # 대조 기준만 갈라 둔다 — 대조는 **원문 전체**를 봐야 upstream 신규 등재분을 정상 검출한다.
+        skew_manifest = _resolve_local_manifest(effective_dest, source_root)
+
     retired_files = _retired_manifest_files(
         source_root, manifest, effective_dest, plan_dest_inventory)
 

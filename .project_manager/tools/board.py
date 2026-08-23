@@ -8526,6 +8526,18 @@ _MUST_FIX_BLOCK_GUIDANCE = (
     "  라운드 장부: {ledger}"
 )
 
+# ── 릴리즈 엔진 사본 drift 차단 (릴리즈 절차의 두 번째 기계 관문 · must-fix 거부 직후) ──
+# 실행 엔진 사본(PM 홈 `.project_manager/tools/`)이 upstream 과 drift 한 상태에서 라이브 wave 를
+# 돌리면 게이트 판정이 false 가 된다(빈 diff false-green · stale-pin false-block). must-fix 와
+# 같은 이유로 값비싼 라이브 wave **전에** 막고, fail 을 기록까지 한다(같은 HEAD 의 옛 green 잔존 0).
+_LIVEGATE_ENGINE_DRIFT_REASON = "engine-drift"   # fail 기록의 사유 표식(must-fix 축과 구분).
+
+_ENGINE_DRIFT_BLOCK_GUIDANCE = (
+    "livegate: fail — 실행 엔진 사본이 upstream 과 drift 상태 {count}건 (릴리즈 차단 · 우회 플래그 없음).\n"
+    "{items}\n"
+    "  처방: python3 .project_manager/tools/pm_update.py 로 엔진 사본을 동기한 뒤 재실행하세요."
+)
+
 
 def _release_rounds_ledger(flag: Path) -> Path:
     """릴리즈 검사가 읽을 라운드 장부 — livegate.json 과 **같은 `.local`**.
@@ -8790,6 +8802,50 @@ def _refuse_release_for_must_fix(flag: Path, cwd: str, problems: list[str]) -> i
     return 1
 
 
+_ENGINE_DRIFT_LISTED_MAX = 20   # stderr 목록 상한(넘으면 "외 N건"으로 접는다) — must-fix 목록과 별개 상수.
+
+
+def _refuse_release_for_engine_drift(flag: Path, cwd: str) -> int:
+    """실행 엔진 사본(REPO)이 upstream 과 drift 상태면 fail 기록 + rc1 — 라이브 wave **전** 조기 거부.
+
+    판정은 `pm_update.drift_changes(REPO)` 하나뿐이다(별도 diff 재구현 없음). 판정 불능
+    (`None` — upstream 미설정·URL upstream·upstream 경로 미존재·manifest 부재·engine_root 에
+    local.conf 부재는 모두 같은 "upstream 미설정" 경로로 수렴)은 **거부가 아니다** — 게이트 부재가
+    아니라 이 형상엔 적용 불가이므로 stderr 경고 1줄만 내고 기존 경로를 그대로 진행한다(upstream
+    미등록 채택자의 릴리즈를 막지 않는다). fail 기록은 must-fix 축과 **같은 기록 함수**
+    (`_write_json_atomic`)를 쓴다(손기록 경로 신설 금지).
+    """
+    pm_update = _load_pm_update_module()
+    if pm_update is None:
+        # 형제 로더 실패 — `_load_pm_update_module` 의 기존 계약(호출부가 검사 대상 0 으로 흡수)과
+        # 같은 무차단이되, 이 게이트는 원인을 stderr 로 알린다(완전 침묵은 "적용됐는데 통과"와
+        # "판정 자체를 못 함"을 구분 못 하게 한다).
+        print("livegate: 경고 — pm_update 로더 실패로 엔진 drift 판정 불능(무차단으로 진행).",
+              file=sys.stderr)
+        return 0
+    changes = pm_update.drift_changes(REPO)
+    if changes is None:
+        print("livegate: 경고 — 실행 엔진 사본 drift 판정 불능(upstream 미설정/URL/경로 미존재/"
+              "manifest 부재) — 이 게이트는 이 형상에 적용되지 않는다(무차단). upstream 을 등록하려면 "
+              "python3 .project_manager/tools/pm_update.py --dry-run 안내를 따르세요.",
+              file=sys.stderr)
+        return 0
+    if not changes:
+        return 0
+    flag.parent.mkdir(parents=True, exist_ok=True)   # 기록 경로 보장 (must-fix 거부와 같은 규칙)
+    _write_json_atomic(flag, {
+        "head": _git_head_at(cwd), "status": "fail", "n": 0, "rc": None,
+        "ts": now_utc(), "reason": _LIVEGATE_ENGINE_DRIFT_REASON,
+    })
+    shown = changes[:_ENGINE_DRIFT_LISTED_MAX]
+    items = "\n".join(f"  · {rel}" for rel in shown)
+    remainder = len(changes) - len(shown)
+    if remainder > 0:
+        items += f"\n  … 외 {remainder}건"
+    print(_ENGINE_DRIFT_BLOCK_GUIDANCE.format(count=len(changes), items=items), file=sys.stderr)
+    return 1
+
+
 def _livegate_cwd(override: str | None = None, session: str | None = None) -> str:
     """라이브 wave(`pytest -m release`)를 돌릴 작업 디렉토리를 해소한다.
 
@@ -8881,6 +8937,11 @@ def _livegate_record(args: argparse.Namespace) -> int:
         return 1
     if problems:
         return _refuse_release_for_must_fix(flag, cwd, problems)
+    # 실행 엔진 사본 drift — must-fix 거부 직후·라이브 wave **전**(같은 축: 값비싼 wave 를 헛돌리기
+    # 전에 조기 거부). stale 사본이면 이 판정 자체가 false 가 되므로 wave 보다 앞에 둔다.
+    drift_rc = _refuse_release_for_engine_drift(flag, cwd)
+    if drift_rc:
+        return drift_rc
     print(f"livegate: $ {LIVEGATE_TEST_CMD}  (cwd={cwd})")
     # 자식 pytest 인코딩을 코드로 명시(env 워크어라운드 아님) — cp949 콘솔에서도 UTF-8.
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}

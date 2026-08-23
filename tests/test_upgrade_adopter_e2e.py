@@ -730,7 +730,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   목록이 아니라 그 밖의 코드·산문을 바꿨고, 이 절의 역적용 delta anchor 네 자리는 전부
 #   그 구간 밖이라 그대로 유일 해소된다. 배달 경계(planning → apply → self-update 순서)와
 #   배달 파일 집합은 여전히 불변이고, 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "fa4d8459f2d485949dd5dbb4a3726690ca138b5d1a3b64f3bcbb7e52ba8a558a"
+_T0585_PM_UPDATE_SHA256 = "618e306618b778d3ad593be2ca2faf960f0e346cc96c180fd8c88c4a85f02903"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
@@ -870,6 +870,22 @@ def _t0585_pm_update_source() -> str:
     사본이고(방어적 `getattr(module, "register_home_slot", None)` 이 `None` 을 만나 조용히
     되돌린다), 실제로 재실행해도(위 절차대로 SHA만 현재화) 이 함수 회귀의 다른 단언은 전혀
     안 흔들렸다 — 현재화한 것은 기대 SHA 하나뿐이다.
+
+    T-0861 — 릴리즈 게이트 drift 판정(`board.py livegate record`)이 `pm_update.py` 의 self-update
+    계획 계산을 재사용하도록, `_main()` 의 manifest 자기치유 → notation 템플릿 해소 → guest
+    backfill 기록 판정 → `plan()` 호출 블록을 `_resolve_engine_sync_plan()` 단일 함수로 추출하고
+    기존 `drift_changes()` 를 그 위의 얇은 래퍼로 재작성했다. notation 실패를 `plan()` 자신의
+    다른 `RuntimeError`(예 `EmptyShippingInventoryError`)와 구분하는
+    `_EngineSyncNotationContextError` 도 새로 추가했다. 위 역델타의 네 marker(`instance_owned_
+    template_delta` 초입·`sync_adapter_configs` 블록·`do_adapter_config` 단순화·훅 세트 게이트
+    제거)는 모두 그대로 유일 해소됐고(marker assert 선통과) anachronism 부재 단언 2건도 그대로
+    통과했다 — 새 함수·클래스 둘 다 그 marker 들이 가리키는 어댑터 config/훅 세트 영역과 겹치지
+    않는 `_main()` 바깥의 별도 위치에 있다(T-0585 세대 `_main()` 은 이 새 코드를 호출·참조하지
+    않으므로 합성본에는 무호출(inert) 정의로만 실린다). 배달 경계(source/manifest planning →
+    apply → self-update 순서)·`sync_adapter_configs`·`_adapter_config_gate_failed`·`apply` 는
+    무편집이다 — 함수 추출은 그 안의 계산 순서(manifest 자기치유 → notation → guest-backfill
+    기록 판정 → `plan()`)를 바이트 동일하게 보존하며 호출부만 함수 호출로 치환했다. 현재화한
+    것은 기대 SHA 하나뿐이다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
