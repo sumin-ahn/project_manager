@@ -45,13 +45,30 @@
 - **BREAKING — `--user-ack` 토큰이 `solo` 에서 `<repo>_1` 로 바뀐다.** 스킬은 값을 엔진 출력에서 받아
   쓰므로 계약 문구는 그대로이고, `--user-ack solo` 를 하드코딩한 스크립트만 갱신이 필요하다.
   bare 핸드오프는 슬롯 축으로 승격돼 `--session-seq`·`--wave-summary` 를 종전대로 요구한다.
-
-### Removed
-
-- 솔로 형상 추론·솔로 전용 분기 일체 — "등록 repo 1개 && lease 행 0개 → `<repo>_1`" 유도층
-  (`identity_args.single_registration_session`·`lease_row_count`), livegate/회귀 cwd 의 PM 홈 폴백,
-  핸드오프의 legacy `wiki/pm_state.md` 결속, `pm_log` 의 legacy pm_state 정체성 층, 솔로 전용
-  상수·메시지 (T-0793).
+- **BREAKING — `local.conf` 키 표기 통일(점 표기 단일) · 구키 수용 없음.** flat snake_case·
+  suffix-per-harness 등 혼재 표기가 점 표기 하나로 바뀐다. `reviewer_cmd` 는 제거되고 구조화
+  `ReviewerTarget`(`additional_reviewer.*`)이 필수이며, `delegate_enabled` 는 `delegate.enabled`
+  (채널 무관 마스터 스위치·기본 true)로 재정의된다. 구표기 값은 소비 지점에서 조용한 폴백 없이
+  fail-loud 로 멈추고 `board.py init` 재실행이 신표기 재생성을 처방한다. `pm-update` 는 apply 를
+  막지 않으며(엔진은 받게 한다) `pm_import`/`pm_update` 가 교체 안내를 출력한다. 모델 값은 자동
+  이관하지 않는다(하네스·모델 조합은 환경마다 달라 수동 설정). 채택자 소유 `.codex/config.toml` 의
+  delegate 문구는 키 단위로 지목된다. 출하 conf 템플릿은 실값만 담고 키 설명은 출하 문서로 옮겼다
+  (T-0767).
+- **developer 라운드 준비에 architect 선행 게이트가 생긴다.** `ticket prepare --role developer`·cross
+  자동 준비·`board section-add --role developer` 는 선행 architect 라운드(실 산출)가 있거나 board 에
+  명시 면제(`design: "waived: <사유>"`)가 있어야 통과한다. 둘 다 없으면 rc≠0 으로 거부되며 빈
+  사유·`n/a` 류 자리표시는 면제로 인정되지 않는다. 면제 선언은 새 서브커맨드 `board.py design
+  <T-NNNN> <값>` 으로 기록한다(T-0815·T-0817).
+- **완료 기록(`ticket_finish`)이 `touches` 밖 미스테이지 잔여를 차단한다.** 종전에는 스테이지에서
+  빼고 경고만 냈으나, 이제 잔여가 있으면 board 무변경으로 rc≠0 거부하고 잔여 목록과 처방(`touches`
+  보강)을 출력한다. 테스트 파일을 `touches` 에 적지 않은 티켓은 완료 기록이 막히므로 선언을 맞춘다
+  (T-0854).
+- **완료 기록 preflight 에 사설 참조 유입 차단이 생긴다.** claim 이후 추가한 줄(출하 python 표면 ∩
+  `touches`)에 채택자가 조회할 수 없는 참조(티켓 ID·사설 라벨)가 있으면 `파일:라인 토큰` 을 지목하며
+  rc 1 로 막는다. 미커밋 신규 줄은 raw 전부가 차단 축이고, 커밋된 줄의 raw-only 는 `git blame` sha 를
+  실은 경고다. 판정식은 `private_refs.py` 를 그대로 호출하며 allowlist·baseline 파일을 읽지 않는다
+  (재생성 우회 없음). 완료 기록은 dev 변경이 미커밋인 상태에서 실행한다(WIP 커밋·rebase 는 그 뒤)
+  (T-0816).
 - **편집 시 자동 회귀 훅(`run_tests_hook.sh`) 폐지 — 기존 채택자는 직접 정리한다.** 상류는 삭제를
   전파하지 않으므로(`pm_update` 는 상류 삭제를 dest 에 적용하지 않고, `.claude/run_tests_hook.sh` 는
   manifest **파일** 엔트리라 은퇴 파일 보고에도 안 잡힌다) 기존 인스턴스의 훅은 그대로 계속 돈다.
@@ -65,6 +82,10 @@
 
 ### Removed
 
+- 솔로 형상 추론·솔로 전용 분기 일체 — "등록 repo 1개 && lease 행 0개 → `<repo>_1`" 유도층
+  (`identity_args.single_registration_session`·`lease_row_count`), livegate/회귀 cwd 의 PM 홈 폴백,
+  핸드오프의 legacy `wiki/pm_state.md` 결속, `pm_log` 의 legacy pm_state 정체성 층, 솔로 전용
+  상수·메시지 (T-0793).
 - **추가 리뷰어 판정 라운드 상한 축 제거** — 상수(`DEFAULT_ROUND_LIMIT`)·차단 분기·안내 문구의
   판정 상한 항목이 사라진다. 실 장부 53게이트에서 한 번도 발동하지 않은 축이고, 같은 범위를
   수렴 축이 must_fix 추이로 더 정확히 본다 (T-0772).
@@ -84,6 +105,45 @@
   상한을 채택자가 조정한다. 추가 리뷰어 축과 **별개 예산**이라 한쪽을 올려도 과금 라운드는 늘지
   않는다. 거부 안내가 설정값과 키를 그대로 싣고, `pm-fixed` 처분의 발동·완료 재검증도 같은
   값을 본다 (T-0772).
+- **판단 원칙 레지스트리 + 하네스 3종 recall 주입** — `wiki/pm_principles.md`(출하·`pm_update`
+  관리)에 RECALL(패턴 매칭 시 주입)·JUDGMENT(판단 시점 원칙) 항목을 두고 로더
+  `tools/pm_principles.py`(`load`·`judge_recall`·`count`·`rearm`)가 읽는다. claude 는
+  `ctx_stop_hook.py`, codex 는 `pm_orch_codex.py --hook-dispatch PreToolUse`(in-process), opencode 는
+  새 플러그인 `.opencode/plugins/principle-recall.js` 가 매칭 항목을 `[principle-recall]` 로 주입한다.
+  PM 홈 로컬층 `pm_principles.local.md` 는 같은 스키마로 채택자 소유(manifest 미등재) (T-0848).
+- **티켓 처분 종결 상태 `discarded/` + `discard`·`reopen` 서브커맨드** — `board.py discard <T-NNNN>
+  merged|dropped --reason` 이 open·claimed·blocked 는 물론 `.drafts/` 의 draft 도 받아 `discarded/` 로
+  옮기고 사유를 기록한다(draft 출처는 `discarded_from: draft`). `reopen` 은 draft 출처면 `.drafts/`
+  로, 그 밖은 `open/` 으로 되돌린다. 번호 소비 규칙은 불변이고, 미회수(round-pending) 라운드가 있는
+  티켓의 discard 는 차단 없이 `ⓘ` abandon 처방 1줄만 낸다. `complete` 는 DoD 전항이 `[>]` 이월이고
+  `[x]` 가 0건이면 거부(discard 처방)하며, `complete`·`block`·`unclaim`·`unblock` 은 실행 세션이
+  `claimed_by` 와 다르면 거부한다(해소는 `unclaim --takeover --reason` 1회) (T-0781·T-0865).
+- **내부 위임(architect·developer·code-reviewer) 라운드 기계 상한** — 역할별 상한에 도달하면
+  `ticket prepare` 가 거부하고 현재 라운드 목록과 재설계·분할 처방을 낸다. 새 conf 키·플래그는 없고
+  우회 수단은 외부 채널과 같은 것 하나뿐이며 사유가 장부에 남는다 (T-0841).
+- **`livegate record` 의 PM 홈 엔진 사본 drift-0 선행조건** — 실행 엔진 사본(`.project_manager/tools/`)이
+  upstream 과 drift 하면 라이브 wave 를 돌리기 전에 rc 1 + fail 기록으로 거부한다. 엔진 사본 rev skew 도
+  판정 불능으로 접지 않고 fail 기록으로 번역한다 (T-0861·T-0848).
+- **완료 preflight 를 base 대비 자기 축 델타로 재설계** — 완료 대상 작업 트리에서 `claimed_rev` 대비
+  신규 실패만 차단하고, base 부터 red 였던 상속 실패는 경고만 낸다. 병합 미리보기(합성 트리) 방식은
+  폐기됐다. 새 conf 키·플래그 0 (T-0847).
+- **위임 잔여 정리 `ticket abandon`** — kill·미재개 위임이 남긴 시드 라운드 예약·미회수 장부 행을
+  정리한다. 기본 거부(fail-closed)이며 native 위임처럼 프로세스 생존을 기계로 확인할 수 없으면
+  `--assume-dead` 명시가 필요하다. 산출이 있는 라운드·중간 순번은 거부한다. 재실행으로 대체된 라운드는
+  `--superseded-by <N>` 명시 축으로 종결한다 (T-0789·T-0850).
+- **추가 리뷰어 stale 반려 게이트 종결** — 채널 폐지·PM rejected 처분 뒤에도 남던 반려 게이트를
+  `--resolve-gate --pm-verified` 로 외부 재송신 없이 종결한다(`--pm-fixed` 는 여전히 거부) (T-0791).
+- **codex 하네스 가드 파리티** — git cwd-anchor 보호(PM 홈/worktree 밖 커밋 deny·5필드 deny 엔벨로프)와
+  세션 중 ctx nudge(잔여 밴드 진입 시 checkpoint 권고)가 codex 에도 배선된다. `.codex/hooks.json` 은
+  무변경이며 판정은 디스패처 내부 분기다. ADR-0081 D3 은 "PreCompact 단일" 에서 "잔여 밴드 + PreCompact"
+  로 개정 (T-0765·T-0770).
+- **위임 모델 카드 5역할×3타깃 완성** — claude_code·opencode 에 `developer-hard` 카드가 신설돼 hard
+  티어가 전용 지침으로 돈다. codex 역할 카드 4장에 `model`·`model_reasoning_effort` 가
+  `local.conf delegate.<role>.model/.reasoning` 값으로 렌더된다(ADR-0070 D5 "모델 생략" 폐기) (T-0766).
+- **티켓 발행 시점 `touches` 겹침·가용 슬롯 표면화** — `board.py new`·`promote` 가 다른 활성/draft
+  티켓과 겹치는 경로별 집계와 lease 장부 실측 가용 슬롯 수를 stderr 에 낸다(never-block) (T-0778).
+- `board.py lint` 의 `local-conf-unknown-key` advisory — 엔진이 읽지 않는 키(오타·폐기 키)를 1줄로
+  표면화한다(`--gate` 종료코드 비기여). `init` 병합 경로에도 같은 목록이 뜬다 (T-0761).
 
 ### Changed
 
@@ -97,6 +157,55 @@
 - **출하 산문의 리뷰 루프 서술을 현행 흐름으로 정리** — 추가 리뷰어는 기본 OFF 인 opt-in 채널이라
   "내부 code-reviewer + 추가 리뷰어 (둘 다)"·"표준 리뷰 게이트" 표기를 걷어내고, 켠 채택자만
   병행하는 것으로 서술한다. 기본 흐름은 code-reviewer 1회 → PM 판정 delta → PM 기계 확인이다.
+- **`board.py promote` 내용 검토 게이트** — 형식 검사에 더해 본문이 인용한 실측이 범위 밖이면 red,
+  존재하지 않는 `touches` 경로는 경고 1줄. `design: required|done` 티켓은 architect 라운드 산출이
+  회수·충전돼 있어야 통과한다 (T-0776).
+- **raw 장부 보존 상수 상향** — `raw_outputs.json` 완료 레코드 보존이 7일/256건에서 90일/4096건으로
+  늘어 요약 레코드가 원문 `.txt` 보다 먼저 사라지던 역전을 정정했다. 장부가 참조하지 않는 고아 원문은
+  건수·바이트 경고 1줄과 읽기 전용 목록으로만 표면화한다(삭제 코드 없음) (T-0774).
+- **사설 참조 가드 시야 확장 + 출하 산문 위생** — 가드가 어댑터 python(`.claude/ctx_*.py` 등)과
+  비-python 출하 표면 11언어(셸·cmd·TOML·JS/CJS·manifest·JSON/JSONC·rules·txt·확장자 없음) 85파일까지
+  본다. 출하 산문의 조회 불가 티켓 ID·circled 번호(①·⑦)·fault 라벨(F1 류)·스트립 잔재(빈 괄호)가 읽을
+  수 있는 표현으로 정리됐고, 채택자 대면 CLI 출력(`pm_bootstrap.py`·`pm_orch_*.py --help`·
+  `worktree_pool.py set-base`)도 같은 규칙이다. 동작·스키마 무변경 (T-0814·T-0818·T-0810·T-0801·T-0820).
+
+### Fixed
+
+- 리뷰 라운드 기계 판정 — 확인 라운드의 finding 재선언을 `harvest` 시점에 거부(fail-late 제거) ·
+  시드 그대로인 라운드를 `review delta`·`verify-template`·`rounds resolve` 판정면에서 무해화(malformed
+  차단 제거) · pending 시드 1건이 확인 이력을 지우던 병합 충돌 정정 · `rounds recalculate` 가 회수된
+  라운드 파일의 기계 블록에서 판정을 재도출 · code-reviewer 판정이 terminal reply 대신 라운드 파일
+  기계 블록을 우선 입력으로 사용(오탐 재리뷰 처방 제거) (T-0788·T-0813·T-0822·T-0842·T-0804).
+- 빈틈 보고(prescription-gap) 라운드가 PM 기계 확인을 전면 차단하던 결함 — 검증 사유 어휘에
+  `prescription-gap` 이 추가돼 태만(`missing`)과 구별되며 `missing`·`stale` 만 rc≠0 이다. 판정
+  미기입 상태의 `ticket prepare` 는 부작용 없이 거부된다. 검증 골격의 boolean placeholder·`command`
+  금지 문자 안내도 실값으로 정정 (T-0805·T-0808).
+- 미회수 developer 라운드 위에서 code-reviewer·추가 리뷰어 라운드를 준비하면 stderr 경고(rc 무변경) ·
+  리뷰 프롬프트 미리보기가 실제로 실리는 라운드 이름을 값으로 말한다 (T-0807·T-0812·T-0819).
+- 위임 라운드 예약이 거부·예외·경합에서 run-dir·미회수 장부 행을 남기던 문제를 단일 `try/finally`
+  경계로 정정. 정리 실패가 원 거부 사유·rc 를 덮지 않는다(제어 예외 포함) (T-0846).
+- cross 전용 역할에 수동 `ticket prepare` 를 실행하면 고아 시드가 남던 문제 — rc≠0 거부·board 무변경
+  (T-0855).
+- codex code-reviewer 격리 실행이 `--cwd` 검토 대상 대신 빈 mount 에서 시작하던 결함 — 실행 전
+  preflight 가 root↔`--cwd` 불일치·비-저장소·staged 0 을 외부 호출 없이 잡는다 (T-0844).
+- codex 훅 디스패처 — deny 와 `additionalContext` 동시 발화 시 후자가 유실되던 합본 정정(이벤트별
+  output 스키마 허용키 합본·규칙 없는 키 fail-loud) · 자기 경로 재구성이 flat 레이아웃에서 실패하던
+  문제 정정(`Path(__file__)` 기준) · ctx 가드가 첫 turn 에 0% 단정 안내를 내지 않는다
+  (T-0824·T-0845·T-0835).
+- diff 서킷브레이커 — wave 공유 트리에서 타 티켓 변경분을 합산해 4~10배로 오측정하던 문제(공유
+  디렉터리 양보 보정) · `pm_update --all-targets` 기계 산출(templates 어댑터층)을 손작업으로 계상하던
+  문제(`engine.manifest` `@source=` 파생 제외) 정정 (T-0790·T-0832).
+- `board.py show` 가 티켓 단위 원격 신선도를 대조·표기하고 `claim` 거부 문구에 stale·behind 수치를
+  싣는다 · claimed 티켓의 `block`→`unblock` 왕복이 소유 필드를 보존한 채 claimed 로 돌아온다(lint
+  advisory 추가) (T-0782·T-0783).
+- `worktree_pool.py` — `rebase --onto <로컬 브랜치>` 가 stale `origin/<b>` 로 조용히 대체되던 문제
+  정정(무인자도 로컬이 앞서면 로컬 tip + stderr 좌우 커밋 수) · `switch` 가 다른 worktree 에 checkout 된
+  브랜치를 강제 리셋하던 결함을 rc 1 거부로 정정 (T-0849·T-0859).
+- git-anchor 사본 대조가 sha 불일치를 무조건 "stale import 사본" 으로 단정하던 문제 — worktree
+  dirty/clean 으로 방향을 판정하고 판정 불가를 표기한다(경고 전용) (T-0800).
+- 티켓 상태 디렉터리 집합 소비처 통일 — `external_review`·`pm_log` census·`pm_bootstrap` dump 가
+  `board.STATUS_DIRS` 파생으로 바뀌어 `discarded` 같은 새 상태가 조용히 누락되지 않는다 (T-0839).
+- 완료 기록 실체화 경로의 쓰기 규약 — newline 미선언·삭제 실패 무시를 정정(정리 실패 표면화) (T-0851).
 
 ## [1.7.8] - 2026-08-22
 
