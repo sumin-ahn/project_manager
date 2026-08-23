@@ -3020,6 +3020,66 @@ def test_head_tree_alone_would_have_missed_the_staged_red(tf, tmp_path):
     assert "tests/test_axis_a.py" in tf._self_axis_target_paths(diff_out)
 
 
+# ── T-0851 — 정리 실패 표면화(호출 형태 검사가 아니라 실제 삭제 실패 주입) ─────
+#
+# `test_engine_cleanup_never_swallows_delete_failures`(test_file_lock.py)는 `ignore_errors=True`
+# 호출 형태가 0건임을 AST로만 본다 — "삭제가 실제로 실패했을 때 그 실패가 눈에 보이는가"는
+# 별개 값이다. 아래 둘은 `file_lock.force_rmtree`를 실패하도록 몽키패치해(실제 삭제 실패 주입)
+# 두 정리 지점(`_materialize_tree`의 except 경로·`_default_self_axis_block`의 finally 경로)이
+# 각각의 형제 불변식을 지키는지 값으로 본다.
+
+
+def test_materialize_tree_exception_cleanup_failure_does_not_mask_the_original_error(
+        tf, tmp_path, monkeypatch, capsys):
+    """except 경로 — 정리(force_rmtree) 실패가 원래 예외(git archive 실패)를 덮지 않고, 정리
+    실패 자체는 loud 경고로 표면화된다(삼키지 않는다)."""
+    root = _axis_repo(tmp_path)
+    finisher = tf.TicketFinisher()
+
+    file_lock = tf._load_file_lock()
+    injected = OSError("디렉터리 정리 실패 — 시뮬레이션(권한 거부)")
+    monkeypatch.setattr(
+        file_lock, "force_rmtree",
+        lambda path, **kw: (_ for _ in ()).throw(injected))
+
+    with pytest.raises(RuntimeError, match="git archive"):
+        finisher._materialize_tree(root, "no-such-ref-at-all")
+
+    captured = capsys.readouterr()
+    assert "baseline scratch 정리 실패" in captured.err
+    assert str(injected) in captured.err
+
+
+def test_default_self_axis_block_returns_correctly_despite_a_baseline_cleanup_failure(
+        tf, tmp_path, monkeypatch, capsys):
+    """finally 경로 — baseline 정리 실패가 정상 판정 결과(반환값)를 깨지 않고, 정리 실패
+    자체는 loud 경고로 표면화된다(삼키지 않는다)."""
+    root = _axis_repo(tmp_path)
+    base = _axis_head(root)
+    board_py = _axis_board_ticket(root, "T-AXIS", claimed_rev=base)
+    # staged, not committed — `_self_axis_target_files`의 `git diff --name-only HEAD`가 직접
+    # 잡는다(ratchet 목록 몽키패치 불필요 · T5 관용구와 동형).
+    _axis_write_a(root, "def test_a():\n    assert False  # new red at finish time\n")
+    _axis_git(root, "add", "-A")
+
+    finisher = _axis_finisher(tf, root, board_py)
+
+    file_lock = tf._load_file_lock()
+    injected = OSError("디렉터리 정리 실패 — 시뮬레이션(잠긴 핸들)")
+    monkeypatch.setattr(
+        file_lock, "force_rmtree",
+        lambda path, **kw: (_ for _ in ()).throw(injected))
+
+    block = finisher._default_self_axis_block("T-AXIS")
+
+    assert block is not None
+    assert "✗ tests/test_axis_a.py::test_a" in block  # 정리 실패에도 정상 판정 결과가 나온다
+
+    captured = capsys.readouterr()
+    assert "baseline 트리 정리 실패" in captured.err
+    assert str(injected) in captured.err
+
+
 # ── T6 — alternates 민감도(baseline materialize 의 원 이력 해소) ─────────────
 #
 # F-002 fix — 존재-판정(`git cat-file -e` 직접 확인)이 아니라 값-대조다: alternates 있는/없는
