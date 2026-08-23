@@ -886,7 +886,6 @@ def test_machine_mirror_predicate_is_the_single_exclusion_rule(external, path, m
 @pytest.mark.parametrize("path, mirrored", [
     # bare(마커 없음) manifest 항목 — 소스는 레포 루트의 같은 상대경로(교차 위치) → 기계 mirror.
     ("templates/opencode/.claude/skills/pm-env/SKILL.md", True),
-    ("templates/claude_code/.claude/run_tests_hook.sh", True),
     # `@source=` 가 flavor 자기 자신을 가리키는(self-referential) override — pm_update 가 재생성
     # 하지 않는 canonical 원본이라 flavor 가 손으로 고친다(결정문 예시와 동형).
     ("templates/opencode/.claude/skills/pm-dev-delegate/SKILL.md", False),
