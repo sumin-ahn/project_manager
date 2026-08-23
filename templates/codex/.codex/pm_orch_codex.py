@@ -751,6 +751,119 @@ def ctx_nudge_envelope(payload: dict, root: Path, *,
                                    "additionalContext": guidance}}
 
 
+# ── 판단 원칙 recall (claude `ctx_stop_hook._principle_recall_text` 미러) ────────────────
+# 레지스트리(`.project_manager/wiki/pm_principles.md`)의 `on: shell|edit|delegate|prompt` 태그
+# 항목을 이 호출에 대조해 매칭되면 additionalContext 로 합본한다. 판정 엔진은 세 어댑터가 공유하는
+# `pm_principles.judge_recall` 하나이고, 이 함수는 codex payload → (on, text) 축 변환만 소유한다
+# (§7.3 — 도구 이름→on 매핑은 어댑터 소유). 도구 무관(모든 이벤트에 발화)이라 ctx 넛지와 같은
+# in-process 형태를 쓴다 — 자식 프로세스면 매 도구 호출마다 인터프리터가 하나 더 뜬다.
+_PRINCIPLE_SHELL_TOOL_NAME = "Bash"  # git-anchor(`git_anchor_hook_evaluate`)가 이미 쓰는 실측 값.
+_PRINCIPLE_EDIT_TOOL_NAME = "apply_patch"  # codex 내장 파일 편집 도구 이름 **추정치** — 캡처
+# fixture 에 apply_patch PreToolUse 이벤트가 없어 라이브 미검증(어댑터 소유 매핑, 값이 다르면
+# 이 리터럴과 `_principle_recall_signal` 의 file_path/path/input 필드 시도 순서만 고치면 된다).
+# delegate-channel 기능의 `CODEX_SPAWN_TOOL_NAME`/`CODEX_ROLE_INPUT_FIELD`
+# (`delegate_channel_guard.py`) 와 같은 값의 로컬 리터럴 — 이 파일은 그 모듈을 subprocess argv
+# 로만 부르고 import 하지 않으므로(결합 최소화) 값을 복제한다. 값이 바뀌면 두 곳을 함께 고친다.
+_PRINCIPLE_DELEGATE_TOOL_NAME = "collaborationspawn_agent"
+_PRINCIPLE_DELEGATE_ROLE_FIELD = "task_name"
+
+
+def _load_principles(root: Path):
+    """`.project_manager/tools/pm_principles.py` 를 root 기준으로 로드한다(`_load_board` 동형).
+
+    부재·파손은 예외를 삼키고 None — 레지스트리가 없거나 깨져도 훅은 도구 실행을 막지 않는다."""
+    path = Path(root) / ".project_manager" / "tools" / "pm_principles.py"
+    if not path.is_file():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("pm_principles", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:  # noqa: BLE001 — 레지스트리 로드 실패는 비차단 침묵.
+        return None
+
+
+def _principle_recall_signal(payload: dict) -> tuple[str, str] | None:
+    """codex payload → recall `on` 축 + 대조 텍스트(판별 불가면 None).
+
+    codex tool_name 리터럴은 claude 와 다르다. `Bash`·`collaborationspawn_agent` 는
+    `tests/fixtures/codex_0_147_0_live_hook_payloads.json` 실 캡처 값(git-anchor 가 이미 쓰는
+    `Bash` 와 같은 값)이고, `apply_patch`(파일 편집 축)는 그 fixture 에 이벤트가 없어 도구
+    이름·필드명(`file_path`/`path`/`input` 순서 시도) 모두 **추정치**다(라이브 확인 전까지) —
+    매핑은 어댑터 소유, claude `_principle_recall_signal` 과 같은 축(shell/edit/delegate/prompt)
+    으로 줄인다."""
+    event = payload.get("hook_event_name") or payload.get("hookEventName")
+    if event == "UserPromptSubmit":
+        prompt = payload.get("prompt")
+        return ("prompt", prompt) if isinstance(prompt, str) else None
+    if event != "PreToolUse":
+        return None
+    tool = payload.get("tool_name") or payload.get("toolName")
+    tool_input = payload.get("tool_input") or payload.get("toolInput") or {}
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+    if tool == _PRINCIPLE_SHELL_TOOL_NAME:
+        command = tool_input.get("command")
+        if isinstance(command, (list, tuple)):
+            command = " ".join(str(part) for part in command)
+        return ("shell", command) if isinstance(command, str) else None
+    if tool == _PRINCIPLE_EDIT_TOOL_NAME:
+        file_path = (tool_input.get("file_path") or tool_input.get("path")
+                     or tool_input.get("input"))
+        return ("edit", str(file_path)) if file_path else None
+    if tool == _PRINCIPLE_DELEGATE_TOOL_NAME:
+        role = tool_input.get(_PRINCIPLE_DELEGATE_ROLE_FIELD) or ""
+        return ("delegate", str(role))
+    return None
+
+
+def principle_recall_envelope(payload: dict, root: Path, *,
+                              timeout: float = CTX_GUIDANCE_TIMEOUT_SEC) -> dict:
+    """매칭 원칙을 additionalContext 로 합본(밖 매칭·서브에이전트·레지스트리 부재는 빈 엔벨로프).
+
+    빈 엔벨로프는 디스패처 합본에서 기여 0 — 이 기능이 침묵한 호출의 stdout 은 이 가드가 없던
+    때와 바이트 동일하다. 차단 판정은 내지 않는다(레지스트리 항목은 전부 비차단)."""
+    signal = _principle_recall_signal(payload)
+    if signal is None or hook_is_subagent(payload):
+        return {}
+    on, text = signal
+    module = _load_principles(root)
+    if module is None:
+        return {}
+    session_id = _hook_session_id(payload)
+    try:
+        seen = module.load_seen_marker(root, session_id)
+        result = module.judge_recall(root, on=on, text=text, seen=seen)
+    except Exception:  # noqa: BLE001 — 판정 실패는 비차단 침묵.
+        return {}
+    if not result or not result.get("text"):
+        return {}
+    if result.get("keys"):
+        try:
+            module.record_seen_marker(root, session_id, result["keys"])
+        except Exception:  # noqa: BLE001 — marker 기록 실패는 소음(재주입)일 뿐.
+            pass
+    event = payload.get("hook_event_name") or payload.get("hookEventName")
+    return {"hookSpecificOutput": {"hookEventName": event,
+                                   "additionalContext": result["text"]}}
+
+
+def principle_recall_rearm_envelope(payload: dict, root: Path, *,
+                                    timeout: float = CTX_GUIDANCE_TIMEOUT_SEC) -> dict:
+    """PostCompact 경계에서 원칙 recall marker 를 지워 다음 사이클을 재무장한다(부작용만).
+
+    압축 직후가 규칙이 컨텍스트에서 사라지는 지점이라 재무장 시점이 정확히 그 자리다(§7.5).
+    PostCompact 는 이미 배선된 entrypoint 이벤트라 이 항목 추가는 config 변경이 필요 없다."""
+    module = _load_principles(root)
+    if module is not None:
+        try:
+            module.rearm_seen_marker(root, _hook_session_id(payload))
+        except Exception:  # noqa: BLE001 — 재무장 실패는 다음 경계로 넘긴다.
+            pass
+    return {}
+
+
 # ── codex 훅 범용 진입점 + 기능 디스패처 ──────────────────────────────
 # `.codex/hooks.json` 은 채택자 소유(manifest 밖)라 가드 기능을 하나 더할 때마다 채택자 config
 # 수정 + `/hooks` 재승인을 다시 요구했다. 그 마찰을 1회로 끝내려고 이벤트당 진입점을 **하나만**
@@ -785,6 +898,10 @@ CODEX_HOOK_ADAPTER_FALLBACK_MARKER = "adapter-fallback"
 #   스키마 허용키라도 합본 규칙이 없는 키(예: `updatedInput`·`updatedMCPToolOutput`·기준이 아닌
 #   응답의 `permissionDecision` 류)는 **조용히 버리지 않고** 이 마커로 남긴다.
 CODEX_HOOK_MERGE_UNHANDLED_KEY_MARKER = "merge-unhandled-key"
+# claude additionalContext 계약과 같은 값 — 개별 기능은 자기 문안만 상한 안으로 접지만(예:
+#   `pm_principles._MAX_INJECT_CHARS`), 최종 합본(단일 응답 통과·다중 응답 문자열 누적 둘 다) 뒤에는
+#   재검사하지 않았다. `merge_hook_envelopes` 의 모든 반환 경로에서 다시 강제한다.
+CODEX_ADDITIONAL_CONTEXT_MAX_CHARS = 10_000
 
 
 class CodexHookFeature(NamedTuple):
@@ -848,6 +965,30 @@ CODEX_HOOK_FEATURES: tuple[CodexHookFeature, ...] = (
         tool_pattern=None,
         argv=(),
         handler=ctx_nudge_envelope,
+    ),
+    # 판단 원칙 recall — claude `ctx_stop_hook` 이 같은 두 이벤트에 거는 것과 같은 채널이다.
+    #   도구 무관(tool_pattern=None)이라 in-process 로 돈다.
+    CodexHookFeature(
+        feature_id="principle-recall-pretooluse",
+        event="PreToolUse",
+        tool_pattern=None,
+        argv=(),
+        handler=principle_recall_envelope,
+    ),
+    CodexHookFeature(
+        feature_id="principle-recall-userpromptsubmit",
+        event="UserPromptSubmit",
+        tool_pattern=None,
+        argv=(),
+        handler=principle_recall_envelope,
+    ),
+    CodexHookFeature(
+        feature_id="principle-recall-rearm",
+        event="PostCompact",
+        tool_pattern=None,
+        argv=(),
+        handler=principle_recall_rearm_envelope,
+        side_effect_only=True,
     ),
     CodexHookFeature(
         # 옛 배선: hooks.json `SubagentStart` matcher `.*` 가 직접 감독자를 불렀다. 그 matcher 는
@@ -1101,12 +1242,35 @@ CODEX_HOOK_MERGE_HANDLED_TOP_LEVEL_KEYS = frozenset(
     {"systemMessage", "suppressOutput", "hookSpecificOutput"})
 
 
+def _cap_envelope_additional_context(envelope: dict) -> dict:
+    """`hookSpecificOutput.additionalContext` 최종 길이가 상한을 넘으면 원문을 자르지 않고
+    생략 표시로 접는다(claude `_cap_merged_context` 와 같은 계약 — 어느 기능이 초과의 원인인지
+    최종 합본 층에서는 특정하지 않으므로 문구는 재사용 가능한 일반형이다)."""
+    hook_output = envelope.get("hookSpecificOutput")
+    if not isinstance(hook_output, dict):
+        return envelope
+    context_value = hook_output.get("additionalContext")
+    if not isinstance(context_value, str) or len(context_value) <= CODEX_ADDITIONAL_CONTEXT_MAX_CHARS:
+        return envelope
+    fallback = (f"[principle-recall] 문안 생략 — 합본 상한"
+                f"({CODEX_ADDITIONAL_CONTEXT_MAX_CHARS}자) 초과")
+    capped = dict(envelope)
+    capped["hookSpecificOutput"] = {**hook_output, "additionalContext": fallback}
+    return capped
+    fallback = (f"[principle-recall] 문안 생략 — 합본 상한"
+                f"({CODEX_ADDITIONAL_CONTEXT_MAX_CHARS}자) 초과")
+    capped = dict(envelope)
+    capped["hookSpecificOutput"] = {**hook_output, "additionalContext": fallback}
+    return capped
+
+
 def merge_hook_envelopes(envelopes) -> dict:
     """여러 기능의 응답을 호스트가 읽는 **한 줄**로 합친다.
 
     호스트는 훅 하나당 엔벨로프 하나만 읽는다. 합본 규칙은 키마다 다르다:
       1. 빈 엔벨로프(`{}` = 통과)는 기여하지 않는다 — 아무도 답하지 않으면 `{}`(측정된 allow 형태).
-      2. 응답이 하나면 **그대로** 돌려준다 — 진입점 도입이 기존 판정 값을 바꾸지 않는다.
+      2. 응답이 하나면 **그대로** 돌려준다 — 진입점 도입이 기존 판정 값을 바꾸지 않는다(단,
+         `additionalContext` 최종 길이 상한은 8번처럼 여전히 강제한다).
       3. 둘 이상이면 차단 판정이 있는 응답이 기준(base)이 되고(없으면 첫 응답), 그 base 를 얕은
          복사해 합본을 시작한다 — base 자신의 키는 전량 그대로 실린다(유실 없음).
       4. `systemMessage` — **문자열 누적**: 전 응답의 값을 줄바꿈으로 이어 붙인다(중복 제외).
@@ -1125,12 +1289,15 @@ def merge_hook_envelopes(envelopes) -> dict:
          합성하지 않고** 합본 규칙이 없다는 사실만 `systemMessage` 에 `[hook-dispatch/warn]
          {CODEX_HOOK_MERGE_UNHANDLED_KEY_MARKER}` 마커로 남긴다(F-0824-CR01) — 조용히 버리지
          않는다. base 자신의 키는 `dict(base)` 로 이미 전량 실려 유실이 아니다.
+      8. 최종 `hookSpecificOutput.additionalContext` 길이가 `CODEX_ADDITIONAL_CONTEXT_MAX_CHARS`
+         를 넘으면(개별 기능은 자기 문안만 접지만 합본 뒤 재검사가 없었다) 원문을 자르지 않고
+         생략 표시 한 줄로 접는다 — claude `_cap_merged_context` 와 같은 계약.
     """
     answered = [item for item in envelopes if isinstance(item, dict) and item]
     if not answered:
         return {}
     if len(answered) == 1:
-        return answered[0]
+        return _cap_envelope_additional_context(answered[0])
     blocking = [item for item in answered if _is_blocking_envelope(item)]
     base = blocking[0] if blocking else answered[0]
     merged = dict(base)
@@ -1188,7 +1355,7 @@ def merge_hook_envelopes(envelopes) -> dict:
                     **hook_output, "permissionDecisionReason": combined}
     if any(item.get("suppressOutput") is False for item in answered):
         merged["suppressOutput"] = False
-    return merged
+    return _cap_envelope_additional_context(merged)
 
 
 def dispatch_hook(event: str, payload_bytes: bytes, root: Path, *,

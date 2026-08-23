@@ -158,6 +158,7 @@ _CARRY_WIKI_FILES = (
     ".project_manager/wiki/README.md",
     ".project_manager/wiki/tickets/_template.md",     # ticket 스캐폴드(빈 틀·done 본문 아님)
     ".project_manager/wiki/raw/spikes/_template.md",  # spike 스캐폴드(sealed spike 아님)
+    ".project_manager/wiki/pm_principles.md",         # 판단 원칙 레지스트리 출하층
 )
 _CARRY_WIKI_GLOBS = (
     ".project_manager/wiki/domain/*.md",       # domain 지식 페이지 + _template

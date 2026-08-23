@@ -50,6 +50,9 @@ type: reference
 4. lint clean 확인 + 회귀 통과.
 5. log/current.md 에 split entry append.
 
+### 판단 원칙
+규칙의 단일 진실은 [`pm_principles.md`](pm_principles.md)(출하층) + PM 홈 로컬층 `pm_principles.local.md`(PM 홈 `.project_manager/wiki/` · 미출하)다. 행동 직전 훅(claude `.claude/ctx_stop_hook.py` · codex `pm_orch_codex.py` · opencode `plugins/principle-recall.js`)이 매칭 항목을 그 호출의 context 로 주입한다 — 규칙 본문을 여기서 복제하지 않는다.
+
 ## 위임 — 두 가지 방식
 
 티켓은 PM이 소유하는 명세 파일 하나와, 저작→(hard) 설계→구현 보충→리뷰→(설계 결함) 재설계가 한 건씩
