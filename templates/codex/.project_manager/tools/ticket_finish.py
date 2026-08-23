@@ -1514,6 +1514,11 @@ def scope_covers(pathspec: Sequence[str], path: str) -> bool:
     return any(path == rel or path.startswith(rel.rstrip("/") + "/") for rel in pathspec)
 
 
+def _dirty_entry_path(line: str) -> str:
+    """`split_dirty` 출력 한 줄(`"XY path"`)에서 경로만 뽑는다 — 코드 2자 + 공백 고정폭."""
+    return line[3:]
+
+
 def status_entries(run_git: Callable[[list[str]], tuple[int, str]],
                    board=None) -> tuple[tuple[str, str], ...]:
     """현재 워킹트리 상태 `((XY, 경로), …)` — 조회 실패·비-git 은 `()`(비차단).
@@ -1563,7 +1568,14 @@ def split_dirty(entries: Sequence[tuple[str, str]],
         않고 PM 에게 넘기므로, 남이 미리 stage 해 둔 변경이 **PM 의 커밋에 그대로 실린다**.
         `add` 를 좁히는 것만으로는 안 닫히고 `commit` 쪽으로 새는 갈래다("add 와
         commit 양쪽").
-      - 미스테이지 잔여 (`Y` 가 공백 아님·`??` 포함) — 스코프가 못 덮은 변경(under-stage).
+      - 미스테이지 잔여 (`Y` 가 공백 아님·`??` 포함 ∧ 선언 스코프 밖) — 스코프가 못 덮은
+        변경(under-stage).
+
+    **스코프 필터는 두 방향 모두에 걸린다.** stage **후**에 부르면(기존 사후 보고 용법) 스코프
+    경로는 이미 `Y == " "` 라 필터가 항등이라 무행동 변화다. stage **전**에 부르면(잔여
+    preflight — `TicketFinisher._default_residual_block`) 선언 스코프 안의 미스테이지 변경은
+    "곧 stage 될 것"이라 잔여가 아니다 — 필터가 없으면 stage 전 호출마다 스코프 안 변경까지
+    거짓 잔여로 잡힌다.
     """
     staged_out: list[str] = []
     unstaged: list[str] = []
@@ -1576,7 +1588,7 @@ def split_dirty(entries: Sequence[tuple[str, str]],
             continue
         if code[0] not in (" ", "?") and not scope_covers(pathspec, path):
             staged_out.append(f"{code} {path}")
-        if code[1] != " ":
+        if code[1] != " " and not scope_covers(pathspec, path):
             unstaged.append(f"{code} {path}")
     return tuple(staged_out), tuple(unstaged)
 
@@ -1664,6 +1676,7 @@ class TicketFinisher:
         status_entries_at_fn: Callable[[Path], tuple[tuple[str, str], ...]] | None = None,
         diff_cap_block_fn: Callable[[str], str | None] | None = None,
         dod_block_fn: Callable[[str], str | None] | None = None,
+        residual_block_fn: Callable[[str], str | None] | None = None,
         self_axis_block_fn: Callable[[str], str | None] | None = None,
         log_file: Path = LOG_FILE,
         board_py: Path = BOARD_PY,
@@ -1717,6 +1730,9 @@ class TicketFinisher:
         # DoD 기록 게이트 preflight seam — 차단 사유 문자열 또는 None(통과·판정 불가).
         # 규칙 소유자는 board(`_dod_open_items`)이고 여기서는 **더 앞에서 한 번 더** 물을 뿐이다.
         self._dod_block_fn = dod_block_fn or self._default_dod_block
+        # 잔여(코드 트리 dirty ⊄ 선언 스코프) preflight seam — 차단 사유 문자열 또는 None(통과).
+        # 판정 인구는 코드 트리뿐이다(PM 홈 dev-state 는 `_home_state_prefixes` 로 구조적 제외).
+        self._residual_block_fn = residual_block_fn or self._default_residual_block
         # 완료 대상 작업 트리 자기 축 회귀 preflight seam — 차단 문자열 또는 None(통과·경고·
         # 판정불가). 판정 트리는 이 완료 대상 작업 트리 자체다(합성 병합 트리를 만들지 않는다).
         # 튜플의 **마지막** 원소로만 붙는다(비용순 — diff cap·DoD 는 서브프로세스 0~2회, 이건
@@ -2237,6 +2253,105 @@ class TicketFinisher:
                      "log/current.md 스켈레톤을 남기기 전에 미리 묻는다.")
         return "\n".join(line for line in lines if line)
 
+    def _home_state_prefixes(self, tree: Path) -> tuple[str, ...]:
+        """`tree` 안에 PM 홈 dev-state(board 루트·wiki 루트)가 있으면 그 트리-상대 접두를 낸다.
+
+        새 경로를 여기서 하드코딩하지 않는다 — `board.board_root()`·`pm_log.WIKI_DIR` 은 엔진이
+        이미 소유한 PM 홈 값이다. 분리 형상에서는 두 루트가 PM 홈(`REPO`)에 있고 `tree` 는 다른
+        코드 worktree라 결과가 빈 튜플이다(제외 대상 자체가 없다 — 규칙이 약해지지 않는다).
+        임베디드 형상에서는 `tree == REPO` 라 둘 다 그 안에 있어, 다른 PM 세션의 wiki WIP 로 내
+        완료가 막히지 않는다. 해소 실패는 빈 튜플(fail-soft·제외 없음 = 판정 인구에 남겨 더
+        엄격한 쪽으로 접는다)."""
+        try:
+            tree_resolved = tree.resolve()
+        except OSError:
+            return ()
+        candidates: list[Path] = []
+        board = load_board_module(self._board_py)
+        board_root_fn = getattr(board, "board_root", None) if board else None
+        if board_root_fn is not None:
+            try:
+                candidates.append(Path(board_root_fn()))
+            except Exception as exc:  # noqa: BLE001 — 인구 계산 실패는 제외 없이(포함 유지) 접는다.
+                if _is_engine_rev_skew(exc):
+                    raise
+        try:
+            pm_log = _load_pm_log()
+            candidates.append(Path(pm_log.WIKI_DIR))
+        except Exception as exc:  # noqa: BLE001
+            if _is_engine_rev_skew(exc):
+                raise
+        prefixes: list[str] = []
+        for candidate in candidates:
+            try:
+                relative = candidate.resolve().relative_to(tree_resolved)
+            except (OSError, ValueError):
+                continue
+            prefixes.append(relative.as_posix())
+        return tuple(prefixes)
+
+    def _default_residual_block(self, ticket_id: str) -> str | None:
+        """코드 트리 dirty 전량이 선언 스코프 밖이면 차단 사유 문자열, 통과면 None.
+
+        판정 인구는 **코드 트리**(`plan.cwd == self._code_tree()`)뿐이다 — 분리 형상에서 PM 홈
+        산출물 계획(cwd=`REPO`)은 다른 실행·다른 PM 세션의 wiki WIP 가 상주하는 공유 표면이라
+        구조적으로 제외된다. 임베디드 형상(코드 트리 자신이 PM 홈)에서는 `_home_state_prefixes`
+        가 board 루트·wiki 루트만 같은 방식으로 제외한다.
+
+        방향은 묻지 않는다 — 미스테이지 잔여·스코프 밖 staged 어느 쪽이든 비어 있지 않으면
+        차단이다(`git add` 한 번이 우회로가 되면 안 된다). `scope_error`(스코프 산출 실패)도
+        차단이다 — 이 실행이 코드 트리에서 아무것도 stage 하지 못한다는 확정 사실이라, 여기서
+        '판정 불가'로 접으면 전량 미머지가 조용히 통과한다."""
+        code_tree = self._code_tree()
+        home_prefixes = self._home_state_prefixes(code_tree)
+        for plan in self._stage_plans(ticket_id):
+            if plan.cwd != code_tree:
+                continue
+            scope, scope_error = plan.scope
+            if scope_error:
+                return (
+                    f"완료 기록 거부 — {ticket_id} stage 스코프를 산출하지 못했다 "
+                    f"({scope_error}). 이 실행은 코드 트리에서 아무것도 stage 하지 못하므로 "
+                    "변경 전량이 미머지로 남는다 — 먼저 원인(board 사본·PyYAML 등)을 해소하라."
+                )
+            staged_out, unstaged = self._dirty_split(scope, cwd=plan.cwd)
+            if home_prefixes:
+                staged_out = tuple(line for line in staged_out
+                                   if not scope_covers(home_prefixes, _dirty_entry_path(line)))
+                unstaged = tuple(line for line in unstaged
+                                 if not scope_covers(home_prefixes, _dirty_entry_path(line)))
+            if not staged_out and not unstaged:
+                continue
+            return self._residual_block_message(ticket_id, staged_out, unstaged)
+        return None
+
+    def _residual_block_message(self, ticket_id: str, staged_out: Sequence[str],
+                                unstaged: Sequence[str]) -> str:
+        """잔여 차단 안내 — 잔여 목록(기존 20줄 접기 규약 재사용) + 처방 2가지."""
+        lines = [
+            f"완료 기록 거부 — {ticket_id} 코드 트리에 선언 스코프 밖 변경이 남아 있다 "
+            f"(미스테이지 {len(unstaged)}건 · 스코프 밖 staged {len(staged_out)}건)."
+        ]
+        if unstaged:
+            lines.append("  미스테이지 잔여 (이 커밋에 안 실린다):")
+            lines += self._fold_residual_lines(unstaged)
+        if staged_out:
+            lines.append("  스코프 밖 staged (내 변경이 아닌데 커밋에 실린다):")
+            lines += self._fold_residual_lines(staged_out)
+        lines.append(
+            "  처방: (1) 내 작업 누락이면 ticket `touches` 를 보강해 재실행하거나, (2) 남의 "
+            "변경이면 그대로 두고 커밋/stash/삭제로 이 실행 범위 밖으로 정리하라."
+        )
+        return "\n".join(lines)
+
+    def _fold_residual_lines(self, lines: Sequence[str]) -> list[str]:
+        """차단 안내용 잔여 목록 — `_RESIDUAL_DIRTY_PREVIEW_LINES` 접기 규약을 그대로 쓴다."""
+        folded = [f"    {line}" for line in lines[:self._RESIDUAL_DIRTY_PREVIEW_LINES]]
+        hidden = len(lines) - self._RESIDUAL_DIRTY_PREVIEW_LINES
+        if hidden > 0:
+            folded.append(f"    … 외 {hidden}건")
+        return folded
+
     # ── 완료 대상 작업 트리 자기 축 회귀 판정 ────────────────────────────
     # 판정 트리는 완료 대상 작업 트리 자체다. 대상 집합은 이 트리의 변경분(추적+미추적)과
     # 전-트리 ratchet 가드 목록의 합집합이고, 그 대상을 작업 트리와 claim 시점 baseline
@@ -2683,15 +2798,18 @@ class TicketFinisher:
         # PM 판정은 권위를 유지한다. 이 재검은 경고만 보이고 이후 rc를 바꾸지 않는다.
         self._warn_pm_direct_conditions(ticket_id)
 
-        # ── 0. 진입 게이트(preflight) — diff 서킷브레이커 · DoD 기록 · 자기 축 회귀 ─────
-        # 셋 다 회귀보다 **앞**이고, 무엇보다 [2/5] log 스켈레톤 append 보다 앞이다: 여기서 막힐
+        # ── 0. 진입 게이트(preflight) — diff 서킷브레이커 · DoD 기록 · 코드 트리 잔여 ·
+        # 자기 축 회귀 ─────────────────────────────────────────────────
+        # 넷 다 회귀보다 **앞**이고, 무엇보다 [2/5] log 스켈레톤 append 보다 앞이다: 여기서 막힐
         # 실행은 어떤 부작용(회귀 실행·log append·board·git)도 내지 않아야 한다. DoD 판정이
         # [3/5] `board.py complete` 안에만 있던 동안에는 차단마다 stray 스켈레톤이 남고 재실행이
-        # 그것을 중복 append 했다(실측) — 순서가 곧 결함이었다. 자기 축 회귀는 **비용순으로
-        # 마지막**이다 — 앞 둘은 서브프로세스 0~2회, 이건 작업 트리가 red 일 때만 pytest 를
-        # 최대 2번 돈다(green 이면 0회).
+        # 그것을 중복 append 했다(실측) — 순서가 곧 결함이었다. 잔여 판정(코드 트리 dirty ⊄ 선언
+        # 스코프)도 같은 이유로 여기 있다 — [4/5] stage 뒤라면 board complete 가 이미 기록된
+        # 뒤에야 막혀 되돌릴 수 없다. 자기 축 회귀는 **비용순으로 마지막**이다 — 앞 셋은
+        # 서브프로세스 0~2회, 이건 작업 트리가 red 일 때만 pytest 를 최대 2번 돈다(green 이면
+        # 0회).
         for preflight in (self._diff_cap_block_fn, self._dod_block_fn,
-                          self._self_axis_block_fn):
+                         self._residual_block_fn, self._self_axis_block_fn):
             block = preflight(ticket_id)
             if block:
                 print(f"\n[중단] {block}", file=sys.stderr)
@@ -2804,8 +2922,9 @@ class TicketFinisher:
 
         # ── 4. git stage (선언 경로 스코프) ────────────────────
         # blanket `add -A` 가 아니다 — 이 티켓이 선언한 경로(`touches` ∪ *이 실행이 쓴* 산출물)만
-        # stage 한다. 좁힘이 만드는 반대편 실패(under-stage)는 아래 잔여 dirty loud 보고로
-        # 가시화한다(차단하지 않는다 — `touches` 는 사람이 적는 값이라 누락 가능).
+        # stage 한다. 코드 트리의 스코프 밖 잔여는 preflight `_residual_block_fn` 이 이미 차단했다
+        # (여기 도달했다는 것 자체가 코드 트리는 깨끗하다는 뜻). PM 홈 dev-state(판정 인구 밖) 등
+        # 남는 잔여는 아래 loud 보고로 계속 가시화한다(비차단 — 내가 정리할 수 없는 남의 파일).
         print("\n[4/5] git stage (선언 경로 스코프)...")
         plans = self._stage_plans(ticket_id)
         multi_repo = len(plans) > 1
