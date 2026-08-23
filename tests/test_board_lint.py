@@ -3295,7 +3295,7 @@ def test_lint_tickets_includes_areas_duplicate_repo(board, monkeypatch):
 # ════════════════════════════════════════════════════════════════════════
 # 손상 frontmatter fail-soft (T-0601 ⑤)
 # ════════════════════════════════════════════════════════════════════════
-# 한 티켓의 YAML 이 깨지면(실측: `design: waived: 사유` — 콜론 포함 스칼라를 인용 없이 씀) 그 파일을
+# 한 티켓의 YAML 이 깨지면(실측: 콜론 포함 스칼라를 인용 없이 씀) 그 파일을
 # 읽는 순간 예외가 나고, 순회 소비자(`list`·`lint`·`refresh`)가 통째로 traceback 으로 죽었다.
 # 순회는 그 티켓만 건너뛰되 **조용히 넘기지 않는다**(경고 1줄 + 경로 + 사유). 지정 대상 mutation 은
 # 그대로 fail-loud — 고치라고 지목받은 파일이 조용히 무시되면 안 된다.
@@ -3304,7 +3304,7 @@ _BROKEN_FRONTMATTER = (
     "---\n"
     "id: T-0002\n"
     "title: 손상 티켓\n"
-    "design: waived: 인용 없는 콜론\n"          # ← yaml.safe_load 가 여기서 터진다
+    "design: required: 인용 없는 콜론\n"        # ← yaml.safe_load 가 여기서 터진다
     "---\n"
     "## 목표\n본문\n"
 )
@@ -3678,11 +3678,17 @@ def _lint_ticket(board, status: str, tid: str, *, body: str = "") -> Path:
         "blocks: []\n"
         "touches: []\n"
         "estimate: small\n"
-        # T-0815 설계 근거 게이트(developer 시드 seam) 관심사 밖 — waived 로 미리 해소한다.
-        'design: "waived: lint 픽스처(설계 근거 게이트 관심사 밖)"\n'
+        # T-0815 설계 근거 게이트(developer 시드 seam) 관심사 밖 — `done` + 설계 절로 미리
+        # 해소한다(면제 값은 폐지됐다).
+        "design: done\n"
         "tags: []\n"
         "---\n\n"
         f"# {tid} — 픽스처\n\n## 목표\n판정 입력.\n\n"
+        "## 설계\n"
+        "- **경계 실측**: lint 픽스처\n"
+        "- **불변식**: 이 파일의 축 밖\n"
+        "- **표면 상한**: 픽스처 1건\n"
+        "- **테스트 전략**: 정상·실패 경로\n\n"
         "## 완료 조건 (Definition of Done)\n- [x] 없음\n\n## 참고\n- 없음\n"
         + body,
         encoding="utf-8",

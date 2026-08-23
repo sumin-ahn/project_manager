@@ -43,16 +43,21 @@ def board(pd):
 
 # T-0815 설계 근거 게이트(developer 시드 seam) 관심사 밖 — 이 파일의 축은 verify/confirmation
 # 기계화지 설계 근거가 아니다. `render_round_seed`/`render_ticket_growth_section_seed` 를
-# role="developer" 로 직접 부르는 자리에만 앞에 붙여 그 게이트를 waived 로 미리 해소한다
-# (다른 호출부의 ticket_text/spec bytes 는 건드리지 않는다 — 그쪽은 프론트매터를 보지 않는다).
-_DESIGN_WAIVED_FRONTMATTER = (
-    '---\nid: T-XXXX\ndesign: "waived: pm-review-verify 기계 테스트'
-    '(설계 근거 게이트 관심사 밖)"\n---\n'
+# role="developer" 로 직접 부르는 자리에만 앞에 붙여 그 게이트를 `done` + 설계 절로 미리
+# 해소한다(다른 호출부의 ticket_text/spec bytes 는 건드리지 않는다 — 그쪽은 프론트매터를 보지
+# 않는다).
+_DESIGN_DONE_FRONTMATTER = (
+    "---\nid: T-XXXX\ndesign: done\n---\n"
+    "## 설계\n"
+    "- **경계 실측**: 기계 테스트 픽스처\n"
+    "- **불변식**: 이 파일의 축 밖\n"
+    "- **표면 상한**: 픽스처 1건\n"
+    "- **테스트 전략**: 정상·실패 경로\n\n"
 )
 
 
 def _with_design_waiver(ticket_text: str) -> str:
-    return _DESIGN_WAIVED_FRONTMATTER + ticket_text
+    return _DESIGN_DONE_FRONTMATTER + ticket_text
 
 
 def _round(pd, ordinal: int, role: str, text: str):

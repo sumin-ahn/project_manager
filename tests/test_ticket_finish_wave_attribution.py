@@ -63,7 +63,7 @@ def _ticket_text(ticket_id: str, spec: dict) -> str:
             fields.append(f"{key}: '{spec[key]}'")
     if spec["broken"]:
         # 실측 손상 형상(인용 없는 콜론) — 전문 파싱이 닿으면 여기서 터진다.
-        fields.append("design: waived: 인용 없는 콜론")
+        fields.append("design: required: 인용 없는 콜론")
     fields.append("touches:")
     fields += [f"- {touch}" for touch in spec["touches"]]
     fields.append(f"estimate: {spec['estimate']}")

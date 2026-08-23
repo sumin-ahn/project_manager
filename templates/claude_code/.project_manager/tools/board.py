@@ -356,10 +356,13 @@ _MUTATION_SUBCOMMANDS: frozenset[str] = frozenset({
     "idea new", "idea promote", "idea kill",
     "prefix rename", "prefix strip", "prefix merge", "prefix delete",
     "rounds migrate",
+    # cluster new=묶음 장부 생성 + 멤버 명세의 귀속 필드 쓰기(board 상태).
+    "cluster new",
 })
 # 조회(read-only·board 상태 미변경) — 게이트 없음.
 _READ_SUBCOMMANDS: frozenset[str] = frozenset({
     "list", "show", "lint", "tier-signals", "idea list", "prefix list",
+    "cluster show",
 })
 # read leaf별 PM-owned 입력 전수. dispatch 첫 줄이 이 값을 그대로 표시하므로, worktree에서
 # 어느 홈의 무엇을 읽는지 조용히 숨지 않는다. 제품 코드(REPO 루트 문서·adapter/template 및
@@ -371,6 +374,7 @@ _READ_PM_INPUTS_BY_SUBCOMMAND: dict[str, str] = {
     "tier-signals": "board",
     "idea list": "ideas",
     "prefix list": "board",
+    "cluster show": "board",
 }
 # anchor-keyed sidecar — board 상태 아님. regression=`.local/regression.json`, livegate=
 # 공유 engine-root `livegate.json`(둘 다 anchor HEAD 로 키·**worktree cwd 실행이 설계 의도**).
@@ -382,6 +386,7 @@ _SIDECAR_SUBCOMMANDS: frozenset[str] = frozenset({
 # `_resolved_subcommand` 의 단일 표다 — 파서에 그룹을 더하면 여기에도 등재한다.
 _SUBCOMMAND_GROUP_DESTS: dict[str, str] = {
     "idea": "idea_cmd", "prefix": "prefix_cmd", "rounds": "rounds_cmd",
+    "cluster": "cluster_cmd",
 }
 
 # raw git mutation 가드도 board dispatch의 mutation 분류와 같은 원칙(한 표 → 모든 소비처)을 쓴다.
@@ -9275,7 +9280,7 @@ def load_ticket(path: Path) -> tuple[dict[str, Any], str]:
 
 # 손상 frontmatter fail-soft — **디렉토리 순회** 전용 로더.
 #
-# 한 티켓의 YAML 이 깨지면(실측: `design: waived: 사유` 처럼 콜론을 인용 없이 쓴 스칼라) 그 파일을
+# 한 티켓의 YAML 이 깨지면(실측: 콜론을 인용 없이 쓴 스칼라 값) 그 파일을
 # 읽는 순간 예외가 나고, 순회 소비자(`list`·`lint`·`refresh`)가 통째로 traceback 으로 죽는다 —
 # 보드 전체가 한 파일 때문에 조회 불능이 되는 클래스다. 순회에서는 그 티켓만 건너뛰되 **조용히
 # 넘기지 않는다**(경고 1줄 + 경로 + 사유). 지정 대상 mutation(claim/complete/block/…)은 그대로
@@ -9295,7 +9300,7 @@ def load_ticket_soft(path: Path) -> tuple[dict[str, Any], str] | None:
         print(f"경고: 티켓을 읽지 못해 건너뜁니다 — {_rel_to_repo(path)} "
               f"({type(exc).__name__}: {exc})\n"
               "  · frontmatter YAML 문법을 확인하세요 (콜론 포함 값은 인용 필요 — "
-              'design: "waived: <사유>").', file=sys.stderr)
+              'title: "a: b").', file=sys.stderr)
         return None
     if not isinstance(fm, dict):
         print(f"경고: 티켓 frontmatter 가 매핑이 아니라 건너뜁니다 — {_rel_to_repo(path)} "
@@ -9616,7 +9621,7 @@ def _active_ticket_path(
 
     tier는 계속 open/claimed로 닫는다. section-add는 draft×architect만 연다(설계 bootstrap).
     design은 draft 전체를 연다 — `design: required`가 promote를 막으므로 draft 단계에서
-    `waived: <사유>`로 면제를 선언할 수 없으면 setter가 있어도 실제 막힌 상황을 풀지 못한다.
+    상태를 `done`으로 올릴 수 없으면 setter가 있어도 실제 막힌 상황을 풀지 못한다.
     blocked/done 및 위 두 draft 예외 밖(section-add×developer|code-reviewer 등)은 같은 경계에서
     거부한다. directory 상태가 lifecycle 단일 진실인 기존 mutation 규약을 그대로 쓴다.
     """
@@ -10365,13 +10370,12 @@ def cmd_tier(args: argparse.Namespace) -> int:
 def cmd_design(args: argparse.Namespace) -> int:
     """발행 후 frontmatter `design`을 기록/갱신하는 1급 수단(`cmd_tier` 동형).
 
-    `--design`은 `new` 발행 시점 1회뿐이라 이후 면제(`waived: <사유>`) 선언은 YAML 손편집이
-    유일한 경로였다. 값 검증은 `_validate_design` 재사용 — 인식 불가·사유 없는 `waived`는 파일을
-    읽기 전에 거부한다(rc=1). 대상은 draft/open/claimed를 허용한다(`_active_ticket_path`의
-    design 축) — `design: required`가 promote를 막으므로 draft에서 면제를 선언할 수 없으면
+    `--design`은 `new` 발행 시점 1회뿐이라 이후 상태 갱신은 YAML 손편집이 유일한 경로였다.
+    값 검증은 `_validate_design` 재사용 — 인식 불가 값(폐지된 면제 표기 포함)은 파일을 읽기
+    전에 거부한다(rc=1). 대상은 draft/open/claimed를 허용한다(`_active_ticket_path`의
+    design 축) — `design: required`가 promote를 막으므로 draft에서 상태를 올릴 수 없으면
     setter가 있어도 실제 막힌 상황을 풀지 못한다. 값은 정규화·소문자화 없이 원문 그대로
-    기록한다(`_design_state`가 이미 대소문자 무시로 판정하고, `waived: <사유>`의 사유 원문
-    보존이 필요하다).
+    기록한다(`_design_state`가 이미 대소문자 무시로 판정한다).
     """
     reason = _validate_design(args.value)
     if reason:
@@ -10734,9 +10738,9 @@ def _cmd_claim_locked(args: argparse.Namespace, assignee: str,
                 return 1
 
         # 설계 단계 게이트 — `design: required` 티켓은 설계 절을 완성하고
-        # 필드를 `done`(또는 `waived: <사유>`)으로 승격하기 전에는 집을 수 없다. 의존성
-        # 거부와 같은 자리(이동 *전*·board_lock 안)라 티켓은 open/ 에 그대로 남는다.
-        # `n/a`·`waived`·필드 부재(구세대 티켓)는 무영향 — 판정은 `_design_issues` 단일
+        # 필드를 `done` 으로 승격하기 전에는 집을 수 없다. 의존성 거부와 같은 자리
+        # (이동 *전*·board_lock 안)라 티켓은 open/ 에 그대로 남는다.
+        # `n/a`·필드 부재(구세대 티켓)는 무영향 — 판정은 `_design_issues` 단일
         # 깔때기(lint advisory·promote 게이트와 같은 규칙).
         design_verdict = _design_issues(args.id, body, fm.get("design"))
         if design_verdict:
@@ -11207,10 +11211,11 @@ def _round_pending_abandon_command(
     if match is None:
         return None
     copy_path = Path(match["copy"])
-    # 장부는 `copy` 절대경로만 싣는다 — `--cwd` 는 그 절대경로에서 준비 규약의 상대 경로
-    # (`<TICKET_COPY_REL_ROOT>/<ticket>/<run_id>/<라운드 파일명>`)을 걷어내 역산한다(준비가
-    # 실제로 그 규약대로 쓴 경로라는 전제 — 불일치면 해소 불능으로 판정).
-    relative = delegate.TICKET_COPY_REL_ROOT / match["ticket"] / match["run_id"] / \
+    # 장부는 `copy` 절대경로만 싣는다 — `--cwd` 는 그 절대경로에서 준비 규약의 상대 경로를
+    # 걷어내 역산한다(준비가 실제로 그 규약대로 쓴 경로라는 전제 — 불일치면 해소 불능으로
+    # 판정). 규약 조립은 준비측 단일 소유자(`_row_ticket_relative_dir`)를 그대로 부른다 —
+    # 여기서 다시 쓰면 묶음 키 세대와 옛 세대의 규칙이 board 쪽에서 갈린다.
+    relative = delegate._row_ticket_relative_dir(match) / \
         rounds_module.round_filename(match["ordinal"], match["role"])
     rel_parts = relative.parts
     if copy_path.parts[-len(rel_parts):] != rel_parts:
@@ -12405,6 +12410,15 @@ def cmd_new(args: argparse.Namespace) -> int:
         # 설계 단계 상태 — 템플릿에 이미 `design:` 이 있으면 그 자리를, 없으면(구 템플릿) 끝에
         # 붙는다. 값 자체는 위에서 해소·검증했다.
         fm["design"] = design
+        # 운영 단위 자동 귀속 — 활성 묶음이 하나면 거기에, 없으면 크기 1 장부를 함께 만든다.
+        # **draft 는 미룬다**: 장부는 board-git 공유인데 draft 명세는 격리(공유 밖)라, 지금
+        # 멤버로 올리면 다른 클론에는 없는 티켓을 가리키는 장부가 공유된다. 승격(`promote`)이
+        # 공유 board 로 올리는 그 자리에서 귀속한다(필드 부재 = 크기 1 로 읽히므로 그 사이도
+        # 판정이 성립한다).
+        cluster_ledger: Path | None = None
+        cluster_created = False
+        if not is_draft:
+            fm["cluster"], cluster_ledger, cluster_created = _cluster_auto_attach(tid)
 
         if is_draft:
             drafts_dir().mkdir(parents=True, exist_ok=True)
@@ -12417,6 +12431,10 @@ def cmd_new(args: argparse.Namespace) -> int:
     print(f"created {tid} ({_rel_to_repo(path)})")
     print("  → fill in 목표 / 완료 조건 / 참고, then `board.py lint` "
           "(placeholders left in the body fail lint)")
+    if cluster_ledger is not None:
+        # 기존 stdout 줄은 그대로 두고 귀속 사실만 stderr 1줄로 고지한다(크기 1 = 현행 동작).
+        print(f"  ⓘ 클러스터 귀속: {fm['cluster']}"
+              f"{' (크기 1 장부 생성)' if cluster_created else ''}", file=sys.stderr)
 
     if is_draft:
         # draft 는 STATUS_DIRS 밖(drafts_dir())에 있어 board.md(STATUS_DIRS 스캔)에도, 다른
@@ -12435,7 +12453,8 @@ def cmd_new(args: argparse.Namespace) -> int:
     ready = True
     if sync_needed:
         sync_label = f"new {tid} draft isolation" if is_draft else f"new {tid}"
-        ready = _board_git_sync_best_effort(sync_label, (path,))
+        sync_paths = (path,) if cluster_ledger is None else (path, cluster_ledger)
+        ready = _board_git_sync_best_effort(sync_label, sync_paths)
     if not ready:
         label = "draft 격리 기록" if is_draft else "기록"
         print(f"  ⚠ board-git {label} 보류: local-only/uncommitted", file=sys.stderr)
@@ -12500,6 +12519,13 @@ def cmd_promote(args: argparse.Namespace) -> int:
         # 이 걸러낸다.
         touched: list[Path] = [path]
         final_path = path
+        # 승격 = 공유 board 진입 지점 — 발행이 draft 때 미룬 클러스터 귀속을 여기서 마친다.
+        # 필드가 이미 있으면(예: `cluster new` 가 draft 를 멤버로 선언) 그대로 둔다.
+        cluster_ledger: Path | None = None
+        cluster_created = False
+        if not str(fm.get("cluster") or "").strip():
+            fm["cluster"], cluster_ledger, cluster_created = _cluster_auto_attach(args.id)
+            touched.append(cluster_ledger)
         if status == "draft":
             # drafts_dir() → open/ 이동 — 이제서야 STATUS_DIRS 스캔·board-git 대상이 된다.
             # status dump와 rename도 같은 lock 안이라 claim/tier writer가 중간 형상을 못 본다.
@@ -12509,6 +12535,8 @@ def cmd_promote(args: argparse.Namespace) -> int:
             touched.append(new_path)
             final_path = new_path
             moved = True
+        elif cluster_ledger is not None:
+            dump_ticket(path, fm, body)
         # draft 의 라운드도 promote 가 출하한다 — draft 명세는 board-git ignore 지만
         # `tickets/<라운드 디렉터리>/<티켓>/` 은 ignore 밖이라, 승격 커밋에 함께 싣지 않으면
         # 준비된 라운드가 미커밋으로 눌러앉는다(스코프 전개는 디렉터리를 파일로 펼친다).
@@ -12522,6 +12550,9 @@ def cmd_promote(args: argparse.Namespace) -> int:
         print(f"promoted {args.id} (board-git 승격 완료)")
     else:
         print(f"promoted {args.id} (board-git 기록 보류: local-only/uncommitted)")
+    if cluster_ledger is not None:
+        print(f"  ⓘ 클러스터 귀속: {fm['cluster']}"
+              f"{' (크기 1 장부 생성)' if cluster_created else ''}", file=sys.stderr)
     # 발행 시점 판단 재료 — 성공 경로 두 갈래(승격 완료/기록 보류) 공통 뒤,
     # `_board_git_enabled()` 게이트 분기 밖(솔로/legacy 형상에서도 나온다). 겹침 0 이면 침묵.
     # `promote` 는 `--repo`/`--slot` 인자가 없다 — 슬롯 재료의 repo 는 이 티켓의 provenance
@@ -12554,14 +12585,20 @@ _PUBLISH_OVERLAP_ID_LIMIT = 6        # 경로당 티켓 ID 최대 6개(잔여는
 _PUBLISH_OVERLAP_TOTAL_LINE_BUDGET = 9
 
 
-def _publish_overlap_candidates(exclude_id: str) -> list[tuple[str, dict[str, Any]]]:
-    """겹침 판정 후보 집합 — 활성 3상태(open/claimed/blocked) + drafts, 자기 자신 제외.
+def _publish_overlap_candidates(
+    exclude_ids: Sequence[str],
+) -> list[tuple[str, dict[str, Any]]]:
+    """겹침 판정 후보 집합 — 활성 3상태(open/claimed/blocked) + drafts, 제외 ID 빼고.
+
+    제외 집합이 복수인 이유는 묶음(클러스터) 발행 재료 때문이다 — 멤버끼리의 겹침은 묶음의
+    근거라 후보에서 빼고 별도 줄로 표기한다(호출부가 그 줄을 만든다).
 
     done 은 후보가 아니다(완료된 과거 작업과의 겹침은 판단 재료가 아니다). draft 는
     `board.md`·`list`·board-git 어디에도 안 보이면서 좌표를 이미 점유하므로 포함한다(다른
     draft 가 이미 board.py 같은 엔진 파일을 touch 하고 있는 형상이 실제로 있었다). 손상
     frontmatter 는 `load_ticket_soft` 가 경고 1줄과 함께 skip(fail-soft·rc 불변).
     """
+    excluded = frozenset(exclude_ids)   # 문자열 하나가 들어와도 부분문자열 매칭이 되지 않게.
     paths: list[Path] = []
     for status in _LIST_ACTIVE_STATUSES:
         status_dir = tickets_dir() / status
@@ -12577,7 +12614,7 @@ def _publish_overlap_candidates(exclude_id: str) -> list[tuple[str, dict[str, An
             continue
         fm = loaded[0]
         tid = str(fm.get("id") or "").strip()
-        if not tid or tid == exclude_id:
+        if not tid or tid in excluded:
             continue
         candidates.append((tid, fm))
     return candidates
@@ -12686,7 +12723,7 @@ def _publish_overlap_material(tid: str, touches: object, repo: str) -> list[str]
     own_folded = _fold_publish_touches(own_items, coordinates, delegate)
     if not own_folded:
         return []
-    candidates = _publish_overlap_candidates(tid)
+    candidates = _publish_overlap_candidates((tid,))
     per_path: dict[str, set[str]] = {path: set() for path in own_folded}
     for other_id, other_fm in candidates:
         other_items = _normalized_touches(other_fm.get("touches"))
@@ -12701,6 +12738,567 @@ def _publish_overlap_material(tid: str, touches: object, repo: str) -> list[str]
                 per_path[own_path].add(other_id)
     nonzero = {path: ids for path, ids in per_path.items() if ids}
     return _format_publish_overlap_material(nonzero, _publish_idle_slot_count(repo))
+
+
+# ── 클러스터 장부 (운영 단위 = 티켓 묶음 · 크기 1 도 클러스터) ─────────────────
+#
+# 설계·리뷰·fix 를 묶음당 1회로 도는 운영 단위를 board 가 소유한다. 장부는
+# `tickets/clusters/<id>.md`(frontmatter 만)이고 STATUS_DIRS 밖 sibling 이라
+# (`tickets/rounds/` 와 같은 형상) 상태 순회·board.md 렌더에 섞이지 않는다. 장부가 담는 것은
+# 멤버십·통합 브랜치·설계 spike·라운드 예산·재설계 기록뿐이다 — 라운드 산출 자리는 종전대로
+# `tickets/rounds/<티켓>/` 이고 장부는 그것을 담지 않는다.
+#
+# **특례가 없다** — 티켓 하나짜리 묶음도 크기 1 클러스터다. `new` 는 활성 묶음이 정확히 하나면
+# 거기에 귀속시키고, 없으면 그 티켓 이름의 크기 1 장부를 함께 만든다. 필드도 장부도 없는
+# 구세대 티켓은 **읽는 자리에서** 크기 1 로 접는다(파일 마이그레이션 0 · `cluster_members`).
+CLUSTERS_DIRNAME = "clusters"
+CLUSTER_ID_PREFIX = "C-"                  # 장부 파일명·frontmatter `id` 의 접두
+CLUSTER_BRANCH_PREFIX = "task/"           # 통합 브랜치 이름 접두
+CLUSTER_STATUS_OPEN = "open"
+# 장부 status 열거 — 종결(`closed`)만 비활성이고 나머지는 진행 중(자동 귀속 후보)이다.
+CLUSTER_STATUSES: tuple[str, ...] = ("open", "review", "fix", "closing", "closed")
+CLUSTER_ACTIVE_STATUSES: tuple[str, ...] = CLUSTER_STATUSES[:-1]
+# 라운드 예산 기본값 — 초과 판정(예약 거부)은 라운드 예약 표면이 소유하고, 여기서는 장부에
+# 박는 기본값 한 벌만 정의한다(정의 지점 1 · 리셋도 이 값을 다시 쓴다).
+CLUSTER_BUDGET_DEFAULT: dict[str, int] = {
+    "architect": 1, "developer_per_ticket": 1, "code-reviewer": 1, "fix": 1,
+}
+# 장부 frontmatter 키 선언 순서 — 사람이 읽는 자리라 순서를 고정한다(미래 키는 뒤에 붙는다).
+CLUSTER_LEDGER_KEYS: tuple[str, ...] = (
+    "id", "tickets", "base_branch", "branch", "spike", "budget", "replans", "status",
+)
+# 이름 문법 — 파일명과 git 브랜치 이름에 그대로 들어가므로 경로 구분자·refname 금칙을 배제한
+# 보수적 집합만 받는다(`_validate_prefix` 와 같은 입력측 sanity 자리).
+_CLUSTER_NAME_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+_CLUSTER_NAME_MAX = 40
+# 문자 집합으로는 걸리지 않는 refname 금칙 — 이름은 통합 브랜치의 마지막 마디로 그대로 들어가
+# 므로 `git check-ref-format --branch <브랜치 접두><이름>` 과 같은 판정을 순수 술어로 낸다.
+# 제어문자·공백·`~^:?*[\`·`/`·`@{` 는 위 문자 집합이 이미 배제하고, 남는 셋이 아래다: 이중 점 ·
+# `.lock` 으로 끝나는 마디 · 점으로 끝나는 마디. 이걸 통과시키면 **만들 수 없는 브랜치**를
+# 장부에 선언한 채 명령이 성공하고(브랜치 부재 advisory 만 남는다) 그 묶음은 영구히 통합
+# 브랜치를 못 갖는다.
+_CLUSTER_NAME_DOUBLE_DOT = ".."
+_CLUSTER_NAME_LOCK_SUFFIX = ".lock"
+_CLUSTER_NAME_DOT_SUFFIX = "."
+# 멤버가 될 수 없는 상태 — 종결된 티켓은 운영 단위의 구성원이 아니다.
+_CLUSTER_MEMBER_REJECT_STATUSES: tuple[str, ...] = ("done", "discarded")
+# 클러스터 내부 겹침 줄의 경로 표시 상한 — 발행 재료와 같은 규율(줄 수를 예산 안에 둔다).
+_CLUSTER_INTERNAL_OVERLAP_PATH_LIMIT = 3
+# lint 판정 코드 — advisory 등재(`_ADVISORY_LINT_KINDS`)와 같은 문자열을 여기서 소유한다.
+_CLUSTER_MEMBER_LINT_KIND = "cluster-member-missing"
+_CLUSTER_BRANCH_LINT_KIND = "cluster-branch-missing"
+_CLUSTER_DUPLICATE_LINT_KIND = "cluster-duplicate"
+
+
+def clusters_dir() -> Path:
+    """클러스터 장부 디렉토리 — `tickets_dir()/clusters` (board_root 추종·STATUS_DIRS 밖)."""
+    return tickets_dir() / CLUSTERS_DIRNAME
+
+
+def cluster_id_for_name(name: str) -> str:
+    """사람이 준 이름 → 장부 id. 접두를 이미 쓴 입력은 그대로 둔다(입력 표기 둘 다 수용)."""
+    text = str(name or "").strip()
+    return text if text.startswith(CLUSTER_ID_PREFIX) else f"{CLUSTER_ID_PREFIX}{text}"
+
+
+def cluster_name_of(cluster: str) -> str:
+    """장부 id → 이름(접두 제거) — 브랜치 이름과 진단 문구가 쓰는 사람 표기."""
+    text = str(cluster or "").strip()
+    return text[len(CLUSTER_ID_PREFIX):] if text.startswith(CLUSTER_ID_PREFIX) else text
+
+
+def cluster_branch_name(cluster: str) -> str:
+    """통합 브랜치 이름 — `task/<이름>`(장부 id 접두는 브랜치에 실리지 않는다)."""
+    return f"{CLUSTER_BRANCH_PREFIX}{cluster_name_of(cluster)}"
+
+
+def cluster_ledger_path(cluster: str) -> Path:
+    """장부 파일 경로 — 이름/장부 id 어느 표기로 불러도 같은 파일을 가리킨다."""
+    return clusters_dir() / f"{cluster_id_for_name(cluster)}.md"
+
+
+def is_auto_cluster_id(cluster: str) -> str | None:
+    """자동 생성 크기 1 장부인가 — 맞으면 그 티켓 ID, 아니면 None.
+
+    이름 자리가 티켓 ID 인 장부는 발행이 만든 크기 1 묶음이다. 이 모양은 **자동 귀속의 자석이
+    아니다** — 그렇지 않으면 먼저 발행된 티켓의 자동 장부가 뒤따르는 발행을 전부 빨아들여
+    선언하지 않은 묶음이 생긴다. 사람이 선언하는 이름은 이 모양을 쓸 수 없다(아래 sanity).
+    """
+    name = cluster_name_of(cluster)
+    return name if _is_valid_ticket_id(name) else None
+
+
+def _validate_cluster_name(name: str) -> str | None:
+    """`cluster new <이름>` 입력 sanity — 문제면 사유 문자열, 정상이면 None."""
+    text = cluster_name_of(name)
+    if not text:
+        return "클러스터 이름이 비었다"
+    if is_auto_cluster_id(text):
+        return (f"티켓 ID 모양의 이름은 예약이다: {text!r} — 그 모양은 발행이 만드는 크기 1 "
+                "장부의 자리다(사람이 선언하는 묶음은 다른 이름을 쓴다)")
+    if len(text) > _CLUSTER_NAME_MAX:
+        return f"클러스터 이름이 너무 길다({len(text)}자 · 상한 {_CLUSTER_NAME_MAX})"
+    if not _CLUSTER_NAME_RE.match(text):
+        return (f"클러스터 이름 형식 위반: {text!r} — 영숫자로 시작하고 영숫자·`.`·`_`·`-` "
+                "만 쓴다(파일명과 git 브랜치 이름에 그대로 들어간다)")
+    if (_CLUSTER_NAME_DOUBLE_DOT in text
+            or text.endswith(_CLUSTER_NAME_LOCK_SUFFIX)
+            or text.endswith(_CLUSTER_NAME_DOT_SUFFIX)):
+        return (f"git 브랜치 이름 금칙: {text!r} — `{cluster_branch_name(text)}` 는 만들 수 "
+                f"없다(이중 점 · `{_CLUSTER_NAME_LOCK_SUFFIX}` 끝 · 점 끝). 장부만 남고 통합 "
+                "브랜치는 영원히 생기지 않으므로 첫 쓰기 앞에서 거부한다.")
+    return None
+
+
+def load_cluster(cluster: str) -> dict[str, Any] | None:
+    """장부 frontmatter — 부재는 None, 손상은 경고 1줄 뒤 None(`load_ticket_soft` 동형)."""
+    path = cluster_ledger_path(cluster)
+    if not path.is_file():
+        return None
+    loaded = load_ticket_soft(path)
+    return loaded[0] if loaded is not None else None
+
+
+def dump_cluster(fm: dict[str, Any]) -> Path:
+    """장부를 키 선언 순서로 쓴다 — 본문 없음(라운드 산출은 장부에 담지 않는다)."""
+    ordered: dict[str, Any] = {key: fm.get(key) for key in CLUSTER_LEDGER_KEYS}
+    for key, value in fm.items():
+        if key not in ordered:
+            ordered[key] = value
+    path = cluster_ledger_path(str(ordered.get("id") or ""))
+    dump_ticket(path, ordered, "")
+    return path
+
+
+def cluster_tickets(fm: dict[str, Any]) -> list[str]:
+    """장부의 멤버 목록 — 문자열 하나로 쓴 형상도 1건으로 접는다(형식 관용)."""
+    raw = fm.get("tickets")
+    items = [raw] if isinstance(raw, str) else (raw if isinstance(raw, list) else [])
+    return [str(item).strip() for item in items if str(item).strip()]
+
+
+def all_clusters() -> list[dict[str, Any]]:
+    """장부 전체 — id 순. 손상 파일은 경고 1줄과 함께 빠진다(한 파일이 순회를 죽이지 않는다)."""
+    directory = clusters_dir()
+    if not directory.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for path in sorted(directory.glob(f"{CLUSTER_ID_PREFIX}*.md")):
+        loaded = load_ticket_soft(path)
+        if loaded is None:
+            continue
+        fm = loaded[0]
+        if str(fm.get("id") or "").strip():
+            out.append(fm)
+    return out
+
+
+def active_clusters() -> list[dict[str, Any]]:
+    """진행 중(비-`closed`) 장부 — status 미기재는 `open` 으로 읽는다."""
+    return [fm for fm in all_clusters()
+            if str(fm.get("status") or CLUSTER_STATUS_OPEN).strip()
+            in CLUSTER_ACTIVE_STATUSES]
+
+
+def ticket_cluster(tid: str, fm: dict[str, Any] | None = None) -> str:
+    """그 티켓이 속한 클러스터 id — **필드 부재는 크기 1**(`C-` + 티켓 ID)로 읽는다.
+
+    구세대 티켓(필드도 장부도 없음)을 마이그레이션 없이 같은 코드 경로에 태우는 규칙이다.
+    """
+    value = str((fm or {}).get("cluster") or "").strip()
+    return value or f"{CLUSTER_ID_PREFIX}{tid}"
+
+
+def ticket_cluster_from_text(tid: str, ticket_text: str) -> str:
+    """명세 텍스트에서 그 티켓의 클러스터 id — 라운드 준비가 쓰는 읽기 seam.
+
+    파싱 실패·필드 부재는 크기 1 로 접는다(`ticket_cluster` 와 같은 규칙). 준비는 이 값 하나로
+    run-dir 을 가르므로, 손상 명세에서도 좌표가 결정적이어야 한다.
+    """
+    fm: Any = {}
+    try:
+        fm, _body = _parse_ticket_text(ticket_text, "<티켓 명세>")
+    except (ValueError, yaml.YAMLError):
+        fm = {}
+    if not isinstance(fm, dict):
+        fm = {}
+    return ticket_cluster(tid, fm)
+
+
+def cluster_members(cluster: str) -> tuple[str, ...]:
+    """멤버 티켓 ID — 장부가 있으면 그 목록, 없으면 크기 1 해석(마이그레이션 0).
+
+    장부 없는 `C-` + 티켓 ID 는 필드도 장부도 없는 구세대 티켓의 자리다 — 읽는 쪽이 크기 1
+    묶음으로 접으면 티켓당 경로를 따로 둘 필요가 없다.
+
+    그 폴백은 **이름 모양이 아니라 티켓 실재와 그 명세의 귀속**이 연다: 그 ID 의 티켓이 board 에
+    있고 자기 명세가 `cluster` 를 선언하지 않은 경우에만 크기 1 로 접는다. 이름 모양만 보면 없는
+    티켓 ID 도, 이미 다른 묶음을 선언한 티켓도 멤버로 합성돼 **선언한 적 없는 묶음**이 조회·준비
+    표면에 생긴다(폴백이 자석이 된다). 둘 다 여기서 빈 튜플이 되고, 그 빈 값이 조회 부재(rc≠0)와
+    준비 거부의 입력이다.
+    """
+    fm = load_cluster(cluster)
+    if fm is not None:
+        return tuple(cluster_tickets(fm))
+    candidate = cluster_name_of(cluster)
+    if not _is_valid_ticket_id(candidate):
+        return ()
+    found = find_ticket_exact(candidate)
+    if found is None:
+        return ()
+    loaded = load_ticket_soft(found[1])
+    declared = str((loaded[0] if loaded else {}).get("cluster") or "").strip()
+    return () if declared else (candidate,)
+
+
+def _cluster_of_record(tid: str) -> str | None:
+    """**장부 파일이** 이 티켓을 멤버로 담고 있는 클러스터 id (없으면 None).
+
+    티켓 frontmatter 의 선언과 별개 축이다 — 흡수·중복 귀속 판정은 파일 쪽을 본다.
+    """
+    for fm in all_clusters():
+        if tid in cluster_tickets(fm):
+            return str(fm.get("id") or "").strip() or None
+    return None
+
+
+def _new_cluster_fm(
+    cluster: str, tickets: Sequence[str], *,
+    base_branch: str | None = None, branch: str | None = None,
+    spike: str | None = None,
+) -> dict[str, Any]:
+    """새 장부 frontmatter — 예산 기본값과 빈 재설계 기록을 함께 박는다."""
+    return {
+        "id": cluster_id_for_name(cluster),
+        "tickets": list(tickets),
+        "base_branch": base_branch,
+        "branch": branch,
+        "spike": spike,
+        "budget": dict(CLUSTER_BUDGET_DEFAULT),
+        "replans": [],
+        "status": CLUSTER_STATUS_OPEN,
+    }
+
+
+def _cluster_auto_attach(tid: str) -> tuple[str, Path, bool]:
+    """발행 시점 자동 귀속 — `(클러스터 id, 장부 경로, 새로 만들었는가)`.
+
+    **선언된** 활성 묶음이 정확히 하나면 거기에 넣고, 0개면 그 티켓 이름의 크기 1 장부를 만든다.
+    활성 묶음이 둘 이상이면 **엔진이 고르지 않는다** — 어디에 넣을지는 사람 판정이라 크기 1 로
+    발행하고 `cluster new` 가 나중에 흡수한다(자동 묶기 없음). 다른 티켓의 자동 장부는 후보가
+    아니다(`is_auto_cluster_id`).
+
+    board_lock 보유 전제다(발행·승격 임계구역 안에서 부른다).
+    """
+    active = [fm for fm in active_clusters()
+              if not is_auto_cluster_id(str(fm.get("id") or ""))]
+    if len(active) == 1:
+        fm = active[0]
+        members = cluster_tickets(fm)
+        if tid not in members:
+            members.append(tid)
+        fm["tickets"] = members
+        return str(fm.get("id")), dump_cluster(fm), False
+    fm = _new_cluster_fm(f"{CLUSTER_ID_PREFIX}{tid}", [tid])
+    return str(fm["id"]), dump_cluster(fm), True
+
+
+def _cluster_release_member(cluster: str, tid: str) -> Path | None:
+    """흡수된 멤버를 옛 장부에서 뺀다 — 갱신/제거한 경로(해소 불가면 None).
+
+    발행이 자동으로 만든 크기 1 장부가 비면 그 파일을 지운다: 엔진이 방금 만들고 엔진이 비운
+    산출물이고, 남겨 두면 멤버 0 인 장부가 lint 잡음으로 상주한다. 사람이 선언한 묶음(이름이
+    티켓 ID 가 아니거나 브랜치·재설계 기록이 있는 장부)은 비어도 지우지 않는다.
+
+    삭제 실패에서 관용하는 것은 **부재(`FileNotFoundError`)뿐**이다 — 이미 없으면 이 호출이
+    원하는 상태라 멱등이다. 그 밖의 삭제 실패는 올린다: 삼키면 옛 장부가 멤버를 그대로 쥔 채
+    새 장부와 티켓 명세만 갱신돼 명령이 성공을 선언한 뒤 중복 귀속이 남는다(조용한 모순).
+    삭제 뒤 부재도 확인한다 — 성공 선언의 근거는 반환값이 아니라 파일이 없다는 관측이다.
+    """
+    fm = load_cluster(cluster)
+    if fm is None:
+        return None
+    members = [item for item in cluster_tickets(fm) if item != tid]
+    fm["tickets"] = members
+    path = cluster_ledger_path(cluster)
+    auto_shape = (
+        not members
+        and is_auto_cluster_id(cluster) is not None
+        and not fm.get("branch")
+        and not fm.get("replans")
+    )
+    if auto_shape:
+        with contextlib.suppress(FileNotFoundError):
+            path.unlink()
+        if path.exists():
+            raise OSError(f"자동 장부 삭제 뒤에도 파일이 남아 있다: {path}")
+        return path
+    return dump_cluster(fm)
+
+
+def _cluster_code_tree(args: argparse.Namespace | None = None) -> str:
+    """통합 브랜치가 사는 **코드 트리** — 명시 정체성 > 이 세션의 활성 슬롯 > 이 트리.
+
+    분리된 PM 홈에는 코드가 없다 — 통합 브랜치는 슬롯 worktree 가 공유하는 코드 git 에 있으므로,
+    인자 없는 자리(lint)는 활성 슬롯을 먼저 본다. PM 홈 자신에서 브랜치를 찾으면 "없다"가
+    정상이라 판정이 거짓이 된다. 명시 인자는 claim 과 같은 해소(`_claim_code_tree`)를 쓴다 —
+    코드 트리 해소 규칙을 새로 만들지 않는다.
+    """
+    explicit = None
+    if args is not None and (getattr(args, "repo", None) or getattr(args, "task", None)):
+        explicit = _claim_code_tree(args)
+    return explicit or _active_slot_path() or str(REPO)
+
+
+def _cluster_current_branch(tree: str) -> str | None:
+    """코드 트리의 현재 브랜치 — detached·비-git·git 부재는 None."""
+    result = _git_run(["symbolic-ref", "--quiet", "--short", "HEAD"], repo=Path(tree))
+    if result is None or result[0] != 0:
+        return None
+    return (result[1] or "").strip() or None
+
+
+def _cluster_branch_state(tree: str, branch: str) -> bool | None:
+    """그 트리에 브랜치가 있는가 — 판정 불능(git 부재·비-git·fatal)은 None."""
+    result = _git_run(
+        ["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], repo=Path(tree))
+    if result is None or result[0] > 1:
+        return None
+    return result[0] == 0
+
+
+def _cluster_ensure_branch(tree: str, branch: str, base: str | None) -> str:
+    """통합 브랜치를 만든다(있으면 그대로) — 결과를 사람이 읽는 1줄로 돌려준다.
+
+    브랜치 생성 실패는 장부 생성을 막지 않는다 — 장부가 선언한 브랜치가 실재하지 않는 상태는
+    lint(`cluster-branch-missing`)가 계속 보이게 한다(조용한 통과 아님).
+    """
+    state = _cluster_branch_state(tree, branch)
+    if state is None:
+        return f"생성 보류(코드 git 판정 불능: {tree})"
+    if state:
+        return f"이미 있음 ({tree})"
+    if not base:
+        return f"생성 보류(기점 브랜치 미해소: {tree})"
+    result = _git_run(["branch", branch, base], repo=Path(tree))
+    if result is None or result[0] != 0:
+        return f"생성 실패(기점 {base} · {tree})"
+    return f"생성됨 (기점 {base} · {tree})"
+
+
+def _cluster_overlap_material(
+    members: Sequence[tuple[str, object]], repo: str,
+) -> list[str]:
+    """`cluster new` 판단 재료 — 묶음 **밖** 겹침 + 가용 슬롯 + 묶음 **안** 겹침 1줄.
+
+    후보에서 멤버 전부를 뺀다 — 멤버끼리의 겹침은 묶음을 반대할 근거가 아니라 묶음의 근거라
+    별도 줄로 표기한다(침묵시키면 재료가 준다). 좌표 정규화·비교 규칙 소유자는 발행 재료와
+    같다(`repo_coordinates`·`pm_delegate` · 사본 0). 판정불능(소유자 로드 실패·형식 불명)은
+    이 축 전체를 침묵으로 접는다 — 차단하지 않되 통과로 위장하지도 않는다(재료 축 그대로).
+    """
+    coordinates = _load_repo_coordinates()
+    delegate = _load_pm_delegate_module()
+    if coordinates is None or delegate is None:
+        return []
+    folded: dict[str, tuple[str, ...]] = {}
+    for tid, touches in members:
+        items = _normalized_touches(touches)
+        folded[tid] = _fold_publish_touches(items, coordinates, delegate) if items else ()
+    own_paths = tuple(dict.fromkeys(
+        path for paths in folded.values() for path in paths))
+    if not own_paths:
+        return []
+    per_path: dict[str, set[str]] = {path: set() for path in own_paths}
+    for other_id, other_fm in _publish_overlap_candidates(tuple(folded)):
+        other_items = _normalized_touches(other_fm.get("touches"))
+        if not other_items:
+            continue
+        other_folded = _fold_publish_touches(other_items, coordinates, delegate)
+        if not other_folded:
+            continue
+        for own_path in own_paths:
+            if any(delegate._touch_paths_overlap(own_path, other_path)
+                   for other_path in other_folded):
+                per_path[own_path].add(other_id)
+    lines = _format_publish_overlap_material(
+        {path: ids for path, ids in per_path.items() if ids},
+        _publish_idle_slot_count(repo),
+    )
+    internal: dict[str, list[str]] = {}
+    for path in own_paths:
+        sharing = sorted(tid for tid, paths in folded.items()
+                         if any(delegate._touch_paths_overlap(path, item)
+                                for item in paths))
+        if len(sharing) > 1:
+            internal[path] = sharing
+    if internal:
+        shown = sorted(internal.items())[:_CLUSTER_INTERNAL_OVERLAP_PATH_LIMIT]
+        detail = " · ".join(f"{path}: {', '.join(ids)}" for path, ids in shown)
+        remainder = len(internal) - len(shown)
+        suffix = f" 외 {remainder}개 경로" if remainder > 0 else ""
+        if not lines:
+            lines.append(_PUBLISH_OVERLAP_HEADER)
+        lines.append(f"  클러스터 내부 겹침 {len(internal)}개 경로 ({detail}{suffix}) — "
+                     "묶음 근거(반대 근거 아님)")
+    return lines
+
+
+def _cmd_cluster_new(args: argparse.Namespace) -> int:
+    """장부 + 통합 브랜치 생성 · 멤버 귀속 · 겹침/슬롯 재료.
+
+    거부 판정은 전부 첫 쓰기 앞에 둔다(부분 생성 없음). 발행이 만든 크기 1 장부는 흡수하고,
+    이미 **여러 티켓의** 묶음에 속한 티켓은 옮기지 않는다 — 소속 이동은 사람 판정이라 엔진이
+    조용히 하지 않는다.
+    """
+    reason = _validate_cluster_name(args.name)
+    if reason:
+        print(f"[중단] {reason}", file=sys.stderr)
+        return 1
+    cluster = cluster_id_for_name(args.name)
+    raw = (getattr(args, "tickets", None) or "").strip()
+    if not raw:
+        print("[중단] cluster new 에는 `--tickets T-...,T-...` 가 필수다 — 묶음 선언은 "
+              "PM 이 한다(엔진은 자동으로 묶지 않는다).", file=sys.stderr)
+        return 1
+    members: list[str] = []
+    for item in raw.split(","):
+        tid = item.strip()
+        if not tid or tid in members:
+            continue
+        if not _is_valid_ticket_id(tid):
+            print(f"[중단] 티켓 ID 형식이 아니다: {tid!r}", file=sys.stderr)
+            return 1
+        members.append(tid)
+    if not members:
+        print("[중단] `--tickets` 에 유효한 티켓 ID 가 없다", file=sys.stderr)
+        return 1
+    spike = (getattr(args, "spike", None) or "").strip() or None
+    branch = cluster_branch_name(cluster)
+    touched: list[Path] = []
+    with board_lock():
+        ledger_path = cluster_ledger_path(cluster)
+        if ledger_path.exists():
+            print(f"[중단] 이미 있는 클러스터 장부: {_rel_to_repo(ledger_path)} "
+                  "(멤버 조회는 `cluster show`)", file=sys.stderr)
+            return 1
+        resolved: list[tuple[str, Path, dict[str, Any], str, str | None]] = []
+        drafts: list[str] = []
+        for tid in members:
+            found = find_ticket_exact(tid)
+            if found is None:
+                print(f"[중단] ticket not found: {tid}", file=sys.stderr)
+                return 2
+            status, path = found
+            if status in _CLUSTER_MEMBER_REJECT_STATUSES:
+                print(f"[중단] 종결 티켓은 클러스터 멤버가 아니다: {tid} ({status}/)",
+                      file=sys.stderr)
+                return 1
+            fm, body = load_ticket(path)
+            owner = _cluster_of_record(tid)
+            if owner is not None and owner != cluster and len(cluster_members(owner)) > 1:
+                print(f"[중단] {tid} 는 이미 다른 묶음의 멤버다: {owner}"
+                      f"(멤버 {len(cluster_members(owner))}) — 소속 이동은 엔진이 조용히 "
+                      "하지 않는다(옛 묶음을 먼저 정리하라).", file=sys.stderr)
+                return 1
+            if status == "draft":
+                drafts.append(tid)
+            resolved.append((tid, path, fm, body, owner))
+        tree = _cluster_code_tree(args)
+        base_branch = _cluster_current_branch(tree)
+        branch_note = _cluster_ensure_branch(tree, branch, base_branch)
+        touched.append(dump_cluster(_new_cluster_fm(
+            cluster, members, base_branch=base_branch, branch=branch, spike=spike)))
+        for tid, path, fm, body, owner in resolved:
+            if str(fm.get("cluster") or "").strip() != cluster:
+                fm["cluster"] = cluster
+                dump_ticket(path, fm, body)
+                touched.append(path)
+            if owner is not None and owner != cluster:
+                try:
+                    released = _cluster_release_member(owner, tid)
+                except OSError as exc:
+                    # 옛 장부 정리 실패는 rc 로 말한다 — 이 지점에서 새 장부와 티켓 명세는 이미
+                    # 갱신됐으므로, 조용히 성공하면 두 장부가 같은 티켓을 멤버로 쥔 중복 귀속이
+                    # 남는다(lint `cluster-duplicate` 로만 보이는 모순).
+                    print(f"[중단] 옛 장부에서 {tid} 를 빼지 못했다: "
+                          f"{_rel_to_repo(cluster_ledger_path(owner))}: {exc} — "
+                          f"{cluster} 와 중복 귀속 상태다. 옛 장부를 정리한 뒤 `lint` 로 "
+                          "확인하라(새 장부·티켓 명세는 이미 갱신됐다).", file=sys.stderr)
+                    return 1
+                if released is not None:
+                    touched.append(released)
+    print(f"created {cluster} ({_rel_to_repo(cluster_ledger_path(cluster))}) — "
+          f"멤버 {len(members)}: {', '.join(members)}")
+    print(f"  통합 브랜치 {branch} — {branch_note}")
+    if spike:
+        print(f"  설계 spike: {spike}")
+    ready = _board_git_sync_best_effort(f"cluster new {cluster}", touched)
+    if not ready:
+        print("  ⚠ board-git 기록 보류: local-only/uncommitted", file=sys.stderr)
+    if drafts:
+        print(f"  ⚠ draft 멤버 {len(drafts)}건({', '.join(drafts)}) — 장부는 공유 board 에 "
+              "있으나 draft 명세는 승격 전까지 공유되지 않는다(다른 클론에서 멤버 부재 "
+              "advisory). `promote` 로 승격하라.", file=sys.stderr)
+    try:
+        cluster_repo = identity_args.parse_identity(args).repo
+    except ValueError:
+        cluster_repo = None
+    material = _cluster_overlap_material(
+        [(tid, fm.get("touches")) for tid, _path, fm, _body, _owner in resolved],
+        cluster_repo or REPO.name,
+    )
+    for line in material:
+        print(line, file=sys.stderr)
+    return 0
+
+
+def _cmd_cluster_show(args: argparse.Namespace) -> int:
+    """장부 1건 조회 — 선언값 그대로 + 멤버의 현재 status + 브랜치 실재 여부."""
+    cluster = cluster_id_for_name(args.name)
+    fm = load_cluster(cluster)
+    if fm is None:
+        members = cluster_members(cluster)
+        if members:
+            # 장부 없는 크기 1 해석(구세대 티켓) — 읽기 규칙을 조회 표면에도 그대로 보인다.
+            print(f"-- {cluster} (장부 없음 · 크기 1 해석) --")
+            print(f"  tickets: {members[0]}")
+            return 0
+        print(f"cluster not found: {cluster}", file=sys.stderr)
+        return 2
+    declared = cluster_tickets(fm)
+    status = str(fm.get("status") or CLUSTER_STATUS_OPEN)
+    print(f"-- {cluster} ({status} · 멤버 {len(declared)}) --")
+    print(f"  base_branch: {fm.get('base_branch') or '—'}")
+    branch = str(fm.get("branch") or "").strip()
+    if branch:
+        state = _cluster_branch_state(_cluster_code_tree(args), branch)
+        mark = {True: "존재", False: "부재", None: "판정 불능"}[state]
+        print(f"  branch: {branch} ({mark})")
+    else:
+        print("  branch: —")
+    print(f"  spike: {fm.get('spike') or '—'}")
+    budget = fm.get("budget") if isinstance(fm.get("budget"), dict) else {}
+    print("  budget: " + (" · ".join(f"{key}={value}" for key, value in budget.items())
+                          or "—"))
+    replans = fm.get("replans") if isinstance(fm.get("replans"), list) else []
+    print(f"  replans: {len(replans)}")
+    for tid in declared:
+        found = find_ticket_exact(tid)
+        if found is None:
+            print(f"  {tid}  (부재)")
+            continue
+        member_status, path = found
+        loaded = load_ticket_soft(path)
+        title = str((loaded[0] if loaded else {}).get("title") or "")
+        print(f"  {tid}  {member_status}  {title}")
+    return 0
+
+
+def cmd_cluster(args: argparse.Namespace) -> int:
+    """`cluster new|show` — 운영 단위(티켓 묶음) 장부의 생성·조회."""
+    if getattr(args, "cluster_cmd", "") == "new":
+        return _cmd_cluster_new(args)
+    return _cmd_cluster_show(args)
 
 
 def _tag_values(fm: dict[str, Any]) -> list[str]:
@@ -14936,17 +15534,16 @@ def _dod_open_items(body: str) -> list[str]:
 # 엔진은 필드값과 설계 절 충전 여부만 본다.
 # **전 티켓 강제가 아니다**: 자동 `required` 는 estimate=large 뿐이고 나머지는 `n/a` 기본이라
 # 설계 오버헤드가 새 비용이 되지 않는다(touches 패턴 자동 required 는 운용 후 판단).
-DESIGN_REQUIRED = "required"   # 설계 절 완성 + done/waived 승격 전에는 claim 차단
+DESIGN_REQUIRED = "required"   # 설계 절 완성 + done 승격 전에는 claim 차단
 DESIGN_DONE = "done"           # 설계 절 완성 + 설계 검토 끝 (PM 수동 기입)
-DESIGN_WAIVED = "waived"       # `waived: <사유>` — 사유를 남기고 면제(무영향)
 DESIGN_NA = "n/a"              # 설계 단계 비대상. **필드 부재 = 이 값**(구세대 티켓 하위호환)
-DESIGN_INVALID = "invalid"     # 위 4형식 어디에도 안 맞는 값(오타로 게이트가 조용히 꺼지는 것 방지)
+DESIGN_INVALID = "invalid"     # 위 3형식 어디에도 안 맞는 값(오타로 게이트가 조용히 꺼지는 것 방지)
 # 자동 `required` 판정의 유일한 입력 — estimate=large. 그 외는 `n/a`.
 DESIGN_REQUIRED_ESTIMATE = "large"
-# 사람 표면(--design help·거부 메시지)의 값 형식 — 한 곳에서 렌더한다.
-# YAML 주의: `waived: <사유>` 는 콜론을 포함하므로 손편집 시 따옴표로 감싸야 한다
-# (`design: "waived: 리뷰 상한 초과"`). 엔진이 쓸 때는 yaml.safe_dump 가 알아서 인용한다.
-DESIGN_VALUE_FORMS = 'required | done | "waived: <사유>" | n/a'
+# 사람 표면(--design help·거부 메시지)의 값 형식 — 한 곳에서 렌더한다. **면제 경로는 없다**:
+# 설계 단계를 건너뛰는 값을 두면 그 티켓만 라운드 순번이 어긋나고(설계 라운드가 빠진다) 면제가
+# 곧 우회 플래그가 된다. 설계가 몇 줄이면 몇 줄로 쓰고 `done` 으로 올린다.
+DESIGN_VALUE_FORMS = "required | done | n/a"
 
 _DESIGN_SECTION = "## 설계"
 # `_template.md` 설계 절 하위 항목의 뼈대 문장 — 채우면 사라지는 리터럴이라 오탐 0(`_PLACEHOLDERS`
@@ -14964,21 +15561,18 @@ _DESIGN_PLACEHOLDER_LABELS: tuple[str, ...] = (
 
 
 def _design_state(design: Any) -> str:
-    """frontmatter `design:` 값 → 정규화 상태 (required/done/waived/n/a/invalid).
+    """frontmatter `design:` 값 → 정규화 상태 (required/done/n/a/invalid).
 
     필드 부재·빈값은 `n/a` — 구세대 티켓(설계 절도 필드도 없음)은 마이그레이션 없이 무영향이다.
-    `waived: <사유>` 는 접두만 보고 접는다(사유는 사람용 기록). 형식에 안 맞는 값은 `n/a` 로
-    삼키지 않고 `invalid` 로 세운다 — 오타 하나로 게이트가 조용히 꺼지지 않게(fail-loud).
+    형식에 안 맞는 값은 `n/a` 로 삼키지 않고 `invalid` 로 세운다 — 오타 하나로 게이트가 조용히
+    꺼지지 않게(fail-loud). 폐지된 면제 값도 이 축으로 떨어져 `board.py design` 이 거부하고
+    lint 가 잔존을 보인다.
     """
     if design is None:
         return DESIGN_NA
     text = str(design).strip()
     if not text:
         return DESIGN_NA
-    head, _, reason = text.partition(":")
-    if head.strip().lower() == DESIGN_WAIVED:
-        # 사유 없는 맨 `waived` 는 면제의 근거가 남지 않으므로 형식 위반으로 본다.
-        return DESIGN_WAIVED if reason.strip() else DESIGN_INVALID
     lowered = text.lower()
     if lowered in (DESIGN_REQUIRED, DESIGN_DONE, DESIGN_NA):
         return lowered
@@ -14997,7 +15591,7 @@ def _validate_design(design: str) -> str | None:
     """`--design` 입력 sanity — 문제면 사유 문자열, 정상이면 None (`_validate_prefix` 동형)."""
     if _design_state(design) == DESIGN_INVALID:
         return (f"design 값 인식 불가: {str(design)!r} — {DESIGN_VALUE_FORMS} 중 하나"
-                f"(면제는 사유 필수: \"{DESIGN_WAIVED}: <사유>\")")
+                "(면제 경로는 없다 — 설계 절을 채우고 done 으로 올린다)")
     return None
 
 
@@ -15068,7 +15662,7 @@ def _design_issues(tid: str, body: str, design: Any) -> list[tuple[str, str, str
 
     claim 게이트 · authoring 게이트(new/promote) · 전역 lint advisory 가 공유하는 단일 깔때기다.
     반환은 0 또는 1건(kind=`design-pending`) — 전역 lint 는 "경고 1줄", 게이트는 그 1줄을 차단
-    사유로 쓴다. `n/a`·`waived`(필드 부재 포함)는 항상 0건이라 설계 단계가 무영향이다.
+    사유로 쓴다. `n/a`(필드 부재 포함)는 항상 0건이라 설계 단계가 무영향이다.
 
     `required` 는 설계 절이 다 채워져 있어도 1건을 낸다 — `done` 승격(설계 검토를 사람이 끝냈다는
     선언)이 남아 있기 때문이다. 반대로 `done` 인데 설계 절이 비었으면 필드값과 절 내용이 어긋난
@@ -15090,20 +15684,19 @@ def _design_issues(tid: str, body: str, design: Any) -> list[tuple[str, str, str
     unfilled = f"설계 절 미충전({' · '.join(gaps)}) · " if gaps else ""
     return [(tid, "design-pending",
              f"design: {DESIGN_REQUIRED} — {unfilled}설계 절 완성 후 "
-             f"`design: {DESIGN_DONE}` 으로 승격"
-             f"(면제는 `design: \"{DESIGN_WAIVED}: <사유>\"`)")]
+             f"`design: {DESIGN_DONE}` 으로 승격")]
 
 
-# developer 라운드 준비 게이트의 해소 안내 3종. 문구는 여기 한 곳뿐이라(재작성 0)
-# `_DESIGN_SECTION`·`_DESIGN_PLACEHOLDER_LABELS`·`DESIGN_DONE`·`DESIGN_WAIVED` 를 그대로
-# 인용한다. `T-NNNN`(괄호 없음)은 그대로 둔다 — pm_delegate 쪽 `<T-NNNN>` 치환 문자열과
-# 다른 표기라야, 실 ticket id 를 아는 진입점(치환됨)과 모르는 진입점(치환 안 됨)의 사유
-# 문자열이 우연히 갈리지 않는다(세 진입점 파리티 단언의 전제).
+# developer 라운드 준비 게이트의 해소 안내 2종. 문구는 여기 한 곳뿐이라(재작성 0)
+# `_DESIGN_SECTION`·`_DESIGN_PLACEHOLDER_LABELS`·`DESIGN_DONE` 을 그대로 인용한다.
+# `T-NNNN`(괄호 없음)은 그대로 둔다 — pm_delegate 쪽 `<T-NNNN>` 치환 문자열과 다른 표기라야,
+# 실 ticket id 를 아는 진입점(치환됨)과 모르는 진입점(치환 안 됨)의 사유 문자열이 우연히
+# 갈리지 않는다(세 진입점 파리티 단언의 전제). **면제 항목은 없다** — 설계 단계를 건너뛰는
+# 길이 있으면 그 티켓만 라운드 순번이 어긋난다.
 _DESIGN_EVIDENCE_REMEDY = (
     "해소: (1) architect 라운드를 회수(시드 그대로면 근거 아님) · "
     f"(2) `design: {DESIGN_DONE}` + `{_DESIGN_SECTION}` 절 4항목"
-    f"({'·'.join(_DESIGN_PLACEHOLDER_LABELS)}) 충전 · "
-    f"(3) `board.py design T-NNNN \"{DESIGN_WAIVED}: <사유>\"` 로 면제 선언"
+    f"({'·'.join(_DESIGN_PLACEHOLDER_LABELS)}) 충전"
 )
 
 
@@ -15111,11 +15704,10 @@ def design_evidence_problem(tid: str, ticket_text: str, rounds: Sequence) -> str
     """developer 라운드 준비 직전 설계 근거 판정 — 통과면 None, 아니면 거부 사유 1줄.
 
     "PM 초안 → architect 점검 → PM 비준" 3단 규율이 산문에만 있어 위임 준비 시점에 아무것도
-    막지 않던 자리를 여기서 잠근다. 통과 근거는 셋 중 하나다: (1) `rounds` 에 `pending=False`
+    막지 않던 자리를 여기서 잠근다. 통과 근거는 둘 중 하나다: (1) `rounds` 에 `pending=False`
     (시드 그대로가 아닌 실 산출)인 architect 라운드가 1건 이상(시드 그대로는 근거가 아니다) ·
-    (2) `design: done` 且 `## 설계` 절 4항목 충전(`_design_issues` 0건) · (3)
-    `design: "waived: <사유>"`(빈 사유는 `_design_state` 가 이미 `invalid` 로 거부해 여기서
-    다시 검증하지 않는다). 셋 다 없으면 "기록 없는 건너뜀"이라 거부한다.
+    (2) `design: done` 且 `## 설계` 절 4항목 충전(`_design_issues` 0건). 둘 다 없으면 "기록 없는
+    건너뜀"이라 거부한다 — 면제 경로는 없다.
 
     `ticket_text` 파싱 실패·`design` 값 인식 불가는 판정불능이라 통과로 삼키지 않고 거부한다
     (fail-loud) — architect 실산출이 있어도 마찬가지다. 그래서 파싱·`design` 값 유효성 검사를
@@ -15130,7 +15722,7 @@ def design_evidence_problem(tid: str, ticket_text: str, rounds: Sequence) -> str
     except (ValueError, yaml.YAMLError) as exc:
         # ValueError = frontmatter 구획 자체가 없거나 안 닫힘(`_parse_ticket_text`),
         # yaml.YAMLError = 구획은 있는데 스칼라 문법 위반(예: 콜론 포함 값을 인용 없이 쓴
-        # `design: waived: 사유`) — 둘 다 판정불능이라 같은 취급이다.
+        # `title: a: b`) — 둘 다 판정불능이라 같은 취급이다.
         return (
             f"developer 라운드 준비 거부 — 명세 파싱 실패로 설계 근거를 판정할 수 없음: "
             f"{exc} — {_DESIGN_EVIDENCE_REMEDY}"
@@ -15144,12 +15736,12 @@ def design_evidence_problem(tid: str, ticket_text: str, rounds: Sequence) -> str
         )
     if any(item.role == "architect" and not item.pending for item in rounds):
         return None
-    if state in (DESIGN_DONE, DESIGN_WAIVED):
+    if state == DESIGN_DONE:
         issues = _design_issues(tid, body, design)
         if not issues:
             return None
         return f"developer 라운드 준비 거부 — {issues[0][2]} — {_DESIGN_EVIDENCE_REMEDY}"
-    missing = f"architect 라운드 선행도 design 완료·면제 선언도 없음(design: {state})"
+    missing = f"architect 라운드 선행도 design 완료 선언도 없음(design: {state})"
     return f"developer 라운드 준비 거부 — {missing} — {_DESIGN_EVIDENCE_REMEDY}"
 
 
@@ -15160,11 +15752,11 @@ def _design_estimate_advisory(
 
     자동 `required` 판정은 **발행 시점 1회**뿐이다(`_resolve_design`). 그래서 medium 으로 발행한
     뒤 large 로 사후 교정한 티켓에는 설계 게이트가 영영 붙지 않는다 — 이 wave 에서 실제로 두 번
-    지나갔다. 여기서 자동으로 `required` 로 올리지 않는 이유는 그게 사람의 판정이기 때문이고
-    (면제도 정당하다), 그래서 kind 는 `_ADVISORY_LINT_KINDS` 에 등재된 never-block 이다.
+    지나갔다. 여기서 자동으로 `required` 로 올리지 않는 이유는 그게 사람의 판정이기 때문이고,
+    그래서 kind 는 `_ADVISORY_LINT_KINDS` 에 등재된 never-block 이다.
 
-    `waived: <사유>`(면제를 사유와 함께 선언) · `required`/`done`(이미 대상) · `invalid`(그쪽
-    깔때기가 이미 1줄을 낸다)은 전부 무영향 — 여기서 보는 건 "비대상으로 남아 있는가" 하나다.
+    `required`/`done`(이미 대상) · `invalid`(그쪽 깔때기가 이미 1줄을 낸다)은 전부 무영향 —
+    여기서 보는 건 "비대상으로 남아 있는가" 하나다.
     """
     if str(estimate or "").strip().lower() != DESIGN_REQUIRED_ESTIMATE:
         return []
@@ -15172,8 +15764,8 @@ def _design_estimate_advisory(
         return []
     return [(tid, "design-estimate", (
         f"estimate={DESIGN_REQUIRED_ESTIMATE} 인데 design: {DESIGN_NA} — 발행 후 estimate 를 "
-        f"올린 티켓은 자동 required 를 못 받는다. 설계 대상이면 `design: {DESIGN_REQUIRED}`, "
-        f"아니면 `design: \"{DESIGN_WAIVED}: <사유>\"` 로 판정을 남겨라"))]
+        f"올린 티켓은 자동 required 를 못 받는다. 설계 대상이면 `design: {DESIGN_REQUIRED}` 로 "
+        "판정을 남겨라"))]
 
 
 # ── 본문 사실성 판정 (승격 순간만·opt-in) ─────────────────────────────────────
@@ -15420,7 +16012,7 @@ def _architect_round_issues(
     올라간다 — 형식 게이트가 통과시키는 결함(틀린 인용·티켓 간 충돌·범위 오판)이 그대로 남는다.
 
     "산출이 있나" 판정은 라운드 사이드카 소유(`load_rounds` 가 매기는 역할·`round_is_pending`
-    가 매기는 시드 잔존)를 그대로 쓴다 — 여기서 규칙을 다시 만들지 않는다. `n/a`·`waived`
+    가 매기는 시드 잔존)를 그대로 쓴다 — 여기서 규칙을 다시 만들지 않는다. `n/a`
     (필드 부재 포함)는 설계 단계 비대상이라 무판정이다.
     """
     state = _design_state(design)
@@ -16665,7 +17257,9 @@ _ADVISORY_LINT_KINDS: frozenset[str] = frozenset(
      # 라운드 판정 코드(사이드카 seam 소유) + board 고유 잔여·판정불능 관측. 차단은 완료
      # 게이트가 한다.
      "round-name", "round-gap", "round-dup", "round-pending", "round-temporary",
-     "round-stray", "round-unreadable"})
+     "round-stray", "round-unreadable",
+     # 클러스터 장부 관측 — 운영 재료지 push 결함이 아니다(never-block · `lint_clusters`).
+     _CLUSTER_MEMBER_LINT_KIND, _CLUSTER_BRANCH_LINT_KIND, _CLUSTER_DUPLICATE_LINT_KIND})
 
 
 def _adr_id_from_path(p: Path) -> str:
@@ -18080,6 +18674,47 @@ def lint_rounds() -> list[tuple[str, str, str]]:
     return findings
 
 
+def lint_clusters() -> list[tuple[str, str, str]]:
+    """클러스터 장부 판정 — 멤버 부재·통합 브랜치 부재·중복 귀속 (advisory·never-block).
+
+    장부는 운영 재료지 push 결함이 아니다 — 보이게만 한다. 브랜치 축은 **진행 중 묶음만** 본다:
+    종결된 묶음의 통합 브랜치는 머지 뒤 지우는 것이 정상이라 그걸 결함으로 세면 잡음이 된다.
+    판정 트리는 통합 브랜치가 사는 코드 트리(`_cluster_code_tree` — 분리 PM 홈은 활성 슬롯)이고
+    판정 불능(git 부재·비-git·fatal)은 아무 줄도 내지 않는다(없다고 단정하지 않는다).
+    """
+    clusters = all_clusters()
+    if not clusters:
+        return []
+    findings: list[tuple[str, str, str]] = []
+    owners: dict[str, list[str]] = {}
+    tree = _cluster_code_tree()
+    for fm in clusters:
+        cluster = str(fm.get("id") or "").strip()
+        status = str(fm.get("status") or CLUSTER_STATUS_OPEN).strip()
+        for tid in cluster_tickets(fm):
+            owners.setdefault(tid, []).append(cluster)
+            if find_ticket_exact(tid) is None:
+                findings.append((
+                    cluster, _CLUSTER_MEMBER_LINT_KIND,
+                    f"멤버 티켓 부재: {tid} — 장부가 board 에 없는 티켓을 가리킨다"
+                    "(draft 는 승격 전까지 공유 board 밖이다)",
+                ))
+        branch = str(fm.get("branch") or "").strip()
+        if branch and status in CLUSTER_ACTIVE_STATUSES:
+            if _cluster_branch_state(tree, branch) is False:
+                findings.append((
+                    cluster, _CLUSTER_BRANCH_LINT_KIND,
+                    f"통합 브랜치 부재: {branch} (코드 트리 {tree})",
+                ))
+    for tid, declared in sorted(owners.items()):
+        if len(declared) > 1:
+            findings.append((
+                tid, _CLUSTER_DUPLICATE_LINT_KIND,
+                f"중복 귀속: {', '.join(sorted(declared))} — 티켓은 한 묶음에만 속한다",
+            ))
+    return findings
+
+
 def lint_legacy_growth_sections() -> list[tuple[str, str, str]]:
     """명세 본문에 남은 구 역할 절(marker/봉인 주석)을 blocking 으로 잡는다.
 
@@ -18297,7 +18932,9 @@ def lint_tickets() -> list[tuple[str, str, str]]:
     open-claimed-contradiction(status=open 인데 claimed_by 잔존 — 상태-소유 모순 가시화·
     advisory·never-block) +
     local-conf-unknown-key(local.conf 의 레지스트리 밖 키 — 오타/폐기 키 조용한 무시 표면화·
-    advisory·never-block)."""
+    advisory·never-block) +
+    cluster-*(클러스터 장부의 멤버 부재·통합 브랜치 부재·중복 귀속 가시화·advisory·
+    never-block)."""
     return (lint_dependencies() + lint_bodies() + lint_ideas()
             + lint_status()
             + lint_wikilinks() + lint_unstable_refs() + lint_scopes()
@@ -18308,7 +18945,7 @@ def lint_tickets() -> list[tuple[str, str, str]]:
             + lint_areas_repo_unregistered()
             + lint_areas_duplicate_repo() + lint_areas_merge_union()
             + lint_delegate() + lint_local_conf() + lint_local_conf_keys()
-            + lint_rounds()
+            + lint_rounds() + lint_clusters()
             + lint_legacy_growth_sections()
             + lint_codex_delegate_observations() + lint_claim_identity())
 
@@ -18575,6 +19212,28 @@ def build_parser() -> argparse.ArgumentParser:
                         "(발행 규율 게이트: board-git 공유 시 `new` 가 미충전 티켓을 draft 로 남긴다)")
     p.add_argument("id", metavar="T-NNNN")
     p.set_defaults(fn=cmd_promote)
+
+    # cluster subcommand group — 운영 단위(티켓 묶음) 장부. 쓰기(new)와 조회(show)가 섞여
+    # 있으므로 leaf 별로 분류되는 서브그룹으로 둔다(`idea`·`prefix` 와 같은 형상).
+    cluster_p = sub.add_parser("cluster", help="운영 단위(티켓 묶음) 장부")
+    cluster_sub = cluster_p.add_subparsers(dest="cluster_cmd", required=True)
+
+    cp = cluster_sub.add_parser(
+        "new", help="장부 + 통합 브랜치 생성 · 멤버 귀속 · 겹침/슬롯 재료")
+    cp.add_argument("name", metavar="<이름>",
+                    help="클러스터 이름(장부 id 는 `C-<이름>` · 통합 브랜치는 `task/<이름>`)")
+    cp.add_argument("--tickets", metavar="T-...,T-...", required=True,
+                    help="멤버 티켓 ID 쉼표 구분. 발행이 만든 크기 1 장부는 흡수하고 이미 여러 "
+                         "티켓의 묶음에 속한 티켓은 거부한다.")
+    cp.add_argument("--spike", metavar="경로",
+                    help="설계 단일 진실 문서 경로 (선택 · 장부에 기록만 한다)")
+    identity_args.add_identity_args(cp)  # 통합 브랜치를 둘 코드 트리 해소(claim 과 같은 규칙)
+    cp.set_defaults(fn=cmd_cluster)
+
+    cp = cluster_sub.add_parser("show", help="장부 1건 조회(선언값 + 멤버 현재 status)")
+    cp.add_argument("name", metavar="<이름>")
+    identity_args.add_identity_args(cp)  # 브랜치 실재 판정 트리 해소(조회 표시용)
+    cp.set_defaults(fn=cmd_cluster)
 
     p = sub.add_parser(
         "section-add",

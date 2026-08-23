@@ -79,6 +79,16 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
     )
 
 
+# 설계 근거 게이트가 인정하는 `design: done` 의 짝 — 4항목이 값으로 채워진 설계 절.
+_FILLED_DESIGN_SECTION = (
+    "## 설계\n"
+    "- **경계 실측**: 진입점 3개 실측\n"
+    "- **불변식**: 기록 없는 건너뜀 0\n"
+    "- **표면 상한**: 판정 함수 1개\n"
+    "- **테스트 전략**: 정상 3경로·실패 4형상\n"
+)
+
+
 def _spec_text(ticket: str, *, status: str = "claimed", body: str = "") -> str:
     return (
         "---\n"
@@ -94,10 +104,11 @@ def _spec_text(ticket: str, *, status: str = "claimed", body: str = "") -> str:
         "blocks: []\n"
         "touches: []\n"
         "estimate: medium\n"
-        "design: 'waived: test'\n"
+        "design: done\n"
         "tags: []\n"
         "---\n"
-        f"# {ticket}\n\n## 목표\n라운드 사이드카 왕복.\n" + body
+        f"# {ticket}\n\n## 목표\n라운드 사이드카 왕복.\n\n"
+        + _FILLED_DESIGN_SECTION + body
     )
 
 
@@ -155,6 +166,15 @@ def _write_spec(tickets: Path, ticket: str, **kwargs) -> Path:
     path = tickets / f"{ticket}-rounds.md"
     path.write_text(_spec_text(ticket, **kwargs), encoding="utf-8", newline="\n")
     return path
+
+
+def _copy_root(pd, tree: Path, ticket: str) -> Path:
+    """그 티켓의 **크기 1 묶음** run 들이 사는 자리 — `<사본 루트>/C-<티켓>/`.
+
+    준비 단위가 묶음이라 run-dir 은 묶음 키로 갈리고 그 안에서 티켓별 자리를 갖는다. 티켓
+    하나짜리 준비도 같은 규약을 쓴다(특례 없음).
+    """
+    return tree / pd.TICKET_COPY_REL_ROOT / f"C-{ticket}"
 
 
 def _rounds_dir(pm_home: Path, ticket: str) -> Path:
@@ -929,16 +949,22 @@ def test_filled_fix_round_after_a_gap_report_stays_green(pd, rounds_env, monkeyp
 
 def test_run_dir_path_has_no_role_segment_and_fits_budget(pd):
     """`<role>` 세그먼트 제거로 Windows MAX_PATH 여유가 늘었다(경로 예산 회귀)."""
-    relative = pd._ticket_copy_relative_path("T-2001", "a" * 32, "01-code-reviewer.md")
+    relative = pd._ticket_copy_relative_path(
+        "C-T-2001", "a" * 32, "T-2001", "01-code-reviewer.md")
     text = relative.as_posix()
     assert "code-reviewer/" not in text.rsplit("/", 1)[0]
-    assert len(text) <= 110
+    assert len(text) <= 120
     # 이전 레이아웃(`<ticket>/<role>/<run>/ticket-<ticket>.md`)보다 짧다.
     legacy = (
         pd.TICKET_COPY_REL_ROOT / "T-2001" / "code-reviewer" / ("a" * 32)
         / "ticket-T-2001.md"
     ).as_posix()
     assert len(text) < len(legacy)
+
+
+def _round_write_scope_of(pd, round_plan):
+    """그 라운드 실행이 여는 쓰기 자리 — 엔진 seam 을 그대로 쓴다(좌표 재조립 금지)."""
+    return pd._round_write_scope(round_plan, pd.INTERNAL_REVIEW_ROLE)
 
 
 def _plan_for(pd, tmp_path: Path, ticket: str, run_hex: str):
@@ -949,14 +975,15 @@ def _plan_for(pd, tmp_path: Path, ticket: str, run_hex: str):
     return copy
 
 
-def test_codex_reviewer_opens_only_the_run_dir(pd, monkeypatch, tmp_path):
+def test_codex_reviewer_opens_the_legacy_row_run_dir(pd, monkeypatch, tmp_path):
+    """묶음 키 없는 옛 행 형상(`<루트>/<티켓>/<run>/`)도 그 run-dir 전체를 그대로 연다."""
     temp_root = tmp_path / "system-temp"
     temp_root.mkdir()
     copy = _plan_for(pd, tmp_path, "T-2001", "a" * 32)
     monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
     argv, _stdin, prompt_path, read_tmp = pd._prepare_attempt_transport(
         "codex", "gpt-x", None, "code-reviewer", tmp_path / "worktree", "review",
-        ticket_copy_path=copy,
+        cluster_run_dir=copy.parent,
     )
     try:
         assert argv[argv.index("-s") + 1] == "workspace-write"
@@ -964,6 +991,58 @@ def test_codex_reviewer_opens_only_the_run_dir(pd, monkeypatch, tmp_path):
         assert argv[argv.index("-C") + 1] == str(read_tmp.path)
     finally:
         pd._cleanup_attempt_transport(prompt_path, read_tmp)
+
+
+def test_codex_reviewer_opens_the_whole_cluster_run_dir(
+        pd, rounds_env, monkeypatch, tmp_path):
+    """실 준비 산출 대조 — `--add-dir` 값이 `ClusterCopyPlan.run_dir` 과 정확히 같다.
+
+    새 layout 에서 쓰기 허용 범위는 **묶음 run-dir 전체**다. 티켓 자리 하나(`<run>/<티켓>/`)만
+    열면 같은 run 의 다른 자리가 read-only 라 묶음 라운드가 산출을 못 쓴다.
+    """
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-7101")
+    _write_spec(tickets, "T-7102")
+    plan = pd.prepare_cluster_copy(
+        cluster="C-wave", tickets=("T-7101", "T-7102"), role="code-reviewer",
+        cwd=slot, pm_home=pm_home,
+    )
+    temp_root = tmp_path / "system-temp"
+    temp_root.mkdir()
+    monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
+
+    argv, _stdin, prompt_path, read_tmp = pd._prepare_attempt_transport(
+        "codex", "gpt-x", None, "code-reviewer", slot, "review",
+        cluster_run_dir=_round_write_scope_of(pd, plan.rounds[0]),
+    )
+
+    try:
+        opened = argv[argv.index("--add-dir") + 1]
+        assert opened == str(plan.run_dir)
+        # 자리 하나가 아니라 run 전체다 — 두 티켓 자리가 그 아래 산다.
+        assert sorted(item.name for item in Path(opened).iterdir()) == [
+            "T-7101", "T-7102"]
+        assert {str(round_plan.run_dir) for round_plan in plan.rounds} != {opened}
+        # 라운드 좌표는 준비가 실은 값 그대로다(자리 경로 역산이 아니다).
+        for round_plan in plan.rounds:
+            assert round_plan.cluster_run_dir == plan.run_dir
+    finally:
+        pd._cleanup_attempt_transport(prompt_path, read_tmp)
+
+
+def test_a_plan_without_the_run_dir_coordinate_is_loud(pd, tmp_path):
+    """좌표 없는 계획으로 리뷰 실행에 들어가면 쓰기 자리를 조용히 좁히지 않고 멈춘다."""
+    plan = pd.TicketCopyPlan(
+        tmp_path / "slot" / "01-code-reviewer.md", tmp_path / "slot", "T-7103",
+        pd.INTERNAL_REVIEW_ROLE, 1, tmp_path / "board" / "01-code-reviewer.md",
+        "d" * 32,
+    )
+
+    with pytest.raises(pd.DelegateError, match="묶음 run-dir 좌표"):
+        pd._round_write_scope(plan, pd.INTERNAL_REVIEW_ROLE)
+    # 라운드 준비가 없거나 리뷰 실행이 아니면 열 자리 자체가 없다(종전 형상).
+    assert pd._round_write_scope(plan, "developer") is None
+    assert pd._round_write_scope(None, pd.INTERNAL_REVIEW_ROLE) is None
 
 
 @pytest.mark.parametrize("harness,model", [("claude", "sonnet"), ("opencode", "prov/m")])
@@ -975,7 +1054,7 @@ def test_non_codex_reviewer_warns_and_keeps_selected_target(
     monkeypatch.setattr(pd, "_gettempdir", lambda: str(temp_root))
     argv, _stdin, prompt_path, read_tmp = pd._prepare_attempt_transport(
         harness, model, None, "code-reviewer", tmp_path / "worktree", "review",
-        ticket_copy_path=copy,
+        cluster_run_dir=copy.parent,
     )
     try:
         assert argv[0] == harness
@@ -1999,7 +2078,7 @@ def test_round_limit_rejection_leaves_no_slot_residue(pd, rounds_env):
     _write_spec(tickets, "T-8017")
     limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
     _prepare_n_rounds(pd, pm_home, slot, "T-8017", "developer", limit)
-    copy_root = slot / pd.TICKET_COPY_REL_ROOT / "T-8017"
+    copy_root = _copy_root(pd, slot, "T-8017")
     before = set(copy_root.iterdir()) if copy_root.exists() else set()
 
     with pytest.raises(pd.InternalRoundLimitExceeded):
@@ -2209,7 +2288,7 @@ def _refund_round_file_count(pd, home: Path, ticket: str) -> int:
 
 
 def _refund_run_dir_count(pd, home: Path, ticket: str) -> int:
-    root = home / pd.TICKET_COPY_REL_ROOT / ticket
+    root = _copy_root(pd, home, ticket)
     return len(list(root.iterdir())) if root.is_dir() else 0
 
 
@@ -2710,7 +2789,7 @@ def test_concurrent_prepare_loser_leaves_no_orphaned_run_dir(pd, rounds_env):
         return len(list(rounds_dir.glob("*.md"))) if rounds_dir.is_dir() else 0
 
     def _run_dirs() -> int:
-        root = slot / pd.TICKET_COPY_REL_ROOT / "T-9201"
+        root = _copy_root(pd, slot, "T-9201")
         return len(list(root.iterdir())) if root.is_dir() else 0
 
     def _unterminated_ledger_rows() -> int:
@@ -2872,7 +2951,7 @@ def test_prepare_rollback_control_exceptions_preserve_the_original_round_limit_e
         return len(list(rounds_dir.glob("*.md"))) if rounds_dir.is_dir() else 0
 
     def _run_dirs() -> int:
-        root = slot / pd.TICKET_COPY_REL_ROOT / "T-9304"
+        root = _copy_root(pd, slot, "T-9304")
         return len(list(root.iterdir())) if root.is_dir() else 0
 
     def _unterminated_ledger_rows() -> int:
@@ -2970,7 +3049,7 @@ def test_board_lock_exit_failure_after_reserve_preserves_run_dir_and_diagnostics
         return len(list(rounds_dir.glob("*.md"))) if rounds_dir.is_dir() else 0
 
     def _run_dirs() -> int:
-        root = slot / pd.TICKET_COPY_REL_ROOT / "T-9305"
+        root = _copy_root(pd, slot, "T-9305")
         return len(list(root.iterdir())) if root.is_dir() else 0
 
     def _unterminated_ledger_rows() -> int:
@@ -3019,7 +3098,7 @@ def test_board_relative_path_failure_after_reserve_preserves_original_exception(
         return len(list(rounds_dir.glob("*.md"))) if rounds_dir.is_dir() else 0
 
     def _run_dirs() -> int:
-        root = slot / pd.TICKET_COPY_REL_ROOT / "T-9306"
+        root = _copy_root(pd, slot, "T-9306")
         return len(list(root.iterdir())) if root.is_dir() else 0
 
     def _unterminated_ledger_rows() -> int:
@@ -3077,23 +3156,6 @@ def test_parse_round_filename_returning_none_does_not_crash_prepare(
     assert "T-9307" in str(excinfo.value)  # 실제 board_rel(정상 계산)이 실렸다 — fallback 아님
 
 
-# ── T-0815 — developer 라운드 준비 설계 근거 게이트 ──────────────────────────
-#
-# "PM 초안 → architect 점검 → PM 비준" 3단 규율의 판정 seam(`board.design_evidence_problem`,
-# `render_ticket_growth_section_seed` 의 developer 분기)을 진입점 3개(ticket prepare · cross
-# 자동 준비 · board section-add) 전수로 확인한다. `_spec_text` 기본값이 `design: 'waived:
-# test'` 라 그 헬퍼로 만든 기존 티켓은 근거 ③(waived)을 이미 갖고 있으므로, 근거를 값으로
-# 흔드는 테스트는 별도 스펙 빌더(`_design_spec_text`)를 쓴다.
-
-_FILLED_DESIGN_SECTION = (
-    "## 설계\n"
-    "- **경계 실측**: 진입점 3개 실측\n"
-    "- **불변식**: 기록 없는 건너뜀 0\n"
-    "- **표면 상한**: 판정 함수 1개\n"
-    "- **테스트 전략**: 정상 3경로·실패 4형상\n"
-)
-
-
 def _design_spec_text(
     ticket: str, *, design: str | None, section: str = "",
     raw_design_line: str | None = None,
@@ -3102,7 +3164,7 @@ def _design_spec_text(
 
     `design=None` 은 필드 자체를 뺀다(구세대 티켓 재현). `raw_design_line` 은 YAML 을 깨는
     형상(콜론을 인용 없이 쓴 스칼라)을 frontmatter 에 그대로 박는다 — 그때 `design` 은 무시된다.
-    `json.dumps` 로 값을 인용해 콜론·따옴표가 든 값(예: `waived: 사유`)도 안전하게 싣는다.
+    `json.dumps` 로 값을 인용해 콜론·따옴표가 든 값도 안전하게 싣는다.
     """
     if raw_design_line is not None:
         design_line = raw_design_line
@@ -3187,16 +3249,17 @@ def test_design_gate_passes_with_done_and_a_filled_design_section(pd, rounds_env
     assert plan.board_path.name == "01-developer.md"
 
 
-def test_design_gate_passes_with_an_explicit_waived_reason(pd, rounds_env):
-    """근거 ③(`design: "waived: <사유>"`) — 사유가 있으면 architect 라운드 없이도 통과한다."""
+def test_design_gate_rejects_the_abolished_exemption_value(pd, rounds_env):
+    """폐지된 면제 값은 근거가 아니라 **인식 불가**다 — 설계 단계를 건너뛰는 길이 없다."""
     pm_home, slot, tickets, _sync = rounds_env
     ticket = "T-8102"
     _write_design_spec(tickets, ticket, design="waived: 검증 스코프 밖")
 
-    plan = pd.prepare_ticket_copy(
-        ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
-    )
-    assert plan.board_path.name == "01-developer.md"
+    with pytest.raises(pd.DelegateError, match="design 값 인식 불가"):
+        pd.prepare_ticket_copy(
+            ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
+        )
+    assert [row for row in _ledger_rows(pm_home) if row["ticket"] == ticket] == []
 
 
 def test_design_gate_rejects_a_seed_only_architect_round_then_passes_after_harvest(
@@ -3251,7 +3314,7 @@ def test_design_gate_rejects_when_no_evidence_is_on_record(
 ):
     pm_home, slot, tickets, _sync = rounds_env
     _write_design_spec(tickets, ticket, **kwargs)
-    copy_root = slot / pd.TICKET_COPY_REL_ROOT / ticket
+    copy_root = _copy_root(pd, slot, ticket)
     slot_before = set(copy_root.iterdir()) if copy_root.exists() else set()
 
     with pytest.raises(pd.DelegateError, match="developer 라운드 준비 거부") as caught:
@@ -3260,10 +3323,10 @@ def test_design_gate_rejects_when_no_evidence_is_on_record(
         )
 
     message = str(caught.value)
-    # 사유에 해소 수단 3종이 실린다(architect 회수·done+절 충전·board.py design waived).
+    # 사유에 해소 수단 2종이 실린다(architect 회수·done+절 충전). 면제 항목은 폐지됐다.
     assert "architect 라운드를 회수" in message
     assert "design: done" in message and "설계" in message
-    assert 'board.py design T-NNNN "waived' in message
+    assert "waived" not in message
     assert not _rounds_dir(pm_home, ticket).exists() or list(
         _rounds_dir(pm_home, ticket).iterdir()
     ) == []
@@ -3274,13 +3337,13 @@ def test_design_gate_rejects_when_no_evidence_is_on_record(
 
 @pytest.mark.parametrize(
     ("ticket", "design"),
-    [("T-8114", "waived"), ("T-8115", "waived:  ")],
-    ids=["bare-waived", "blank-reason"],
+    [("T-8114", "waived"), ("T-8115", "waived: 리뷰 상한 초과")],
+    ids=["bare", "with-reason"],
 )
-def test_design_gate_rejects_waived_without_a_non_empty_reason(
+def test_design_gate_rejects_the_abolished_exemption_value_in_both_shapes(
     pd, rounds_env, ticket, design,
 ):
-    """I6 — 사유 없는 면제는 통과가 아니다(`_design_state` 가 이미 invalid 로 거부)."""
+    """폐지된 면제 값은 사유 유무와 무관하게 통과가 아니다(`_design_state` 가 invalid 로 거부)."""
     pm_home, slot, tickets, _sync = rounds_env
     _write_design_spec(tickets, ticket, design=design)
     board = pd._load_board()
@@ -3341,7 +3404,7 @@ def test_design_gate_rejects_invalid_design_even_with_a_harvested_architect_roun
     ticket = "T-8119"
     _write_design_spec(tickets, ticket, design="n/a")
     _harvest_architect_round(pd, pm_home, slot, ticket)
-    _write_design_spec(tickets, ticket, design="waived")  # 사유 없는 면제 = invalid
+    _write_design_spec(tickets, ticket, design="waived")  # 폐지된 면제 값 = invalid
 
     with pytest.raises(pd.DelegateError, match="design 값 인식 불가"):
         pd.prepare_ticket_copy(
@@ -3436,7 +3499,7 @@ def test_disabling_the_design_gate_turns_every_rejection_shape_green(
 
 
 def test_forcing_the_design_gate_turns_every_pass_shape_red(pd, rounds_env, monkeypatch):
-    """판정 함수를 항상-거부로 치환하면 정상 통과 형상(기본 `design: waived: test`)도
+    """판정 함수를 항상-거부로 치환하면 정상 통과 형상(기본 `design: done` + 설계 절)도
     red 로 뒤집힌다 — 세 진입점이 같은 함수를 지난다는 것의 값 형태."""
     pm_home, slot, tickets, sync_log = rounds_env
 
@@ -3515,7 +3578,7 @@ def test_cross_role_prepare_is_denied_with_no_board_or_ledger_side_effect(
     assert "codex" in captured.err and "--ticket" in captured.err
     assert not _rounds_dir(pm_home, "T-7900").exists()
     assert _ledger_rows(pm_home) == []
-    assert not (slot / pd.TICKET_COPY_REL_ROOT / "T-7900").exists()
+    assert not _copy_root(pd, slot, "T-7900").exists()
 
 
 def test_native_role_prepare_is_unaffected_by_a_cross_mapping_elsewhere(
@@ -3697,7 +3760,7 @@ def test_master_switch_off_denies_native_role_prepare_before_any_side_effect(
     assert "위임이 꺼져 있습니다" in captured.err
     assert not _rounds_dir(pm_home, "T-7909").exists()
     assert _ledger_rows(pm_home) == []
-    assert not (slot / pd.TICKET_COPY_REL_ROOT / "T-7909").exists()
+    assert not _copy_root(pd, slot, "T-7909").exists()
 
 
 def test_prepare_denies_using_owner_conf_even_when_engine_copy_conf_lacks_mapping(

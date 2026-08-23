@@ -414,6 +414,8 @@ def _read_argv(subcommand: str) -> list[str]:
     argv = subcommand.split()
     if subcommand in {"show", "tier-signals"}:
         argv.append("T-0100")
+    if subcommand == "cluster show":
+        argv.append("wave")
     return argv
 
 
@@ -797,6 +799,7 @@ _MUTATION_ARGVS = [
     ["prefix", "merge", "AAA", "--into", "BBB"],
     ["prefix", "delete", "AAA"],
     ["rounds", "migrate", "--dry-run"],
+    ["cluster", "new", "wave", "--tickets", "T-0100"],
 ]
 
 

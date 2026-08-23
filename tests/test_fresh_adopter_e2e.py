@@ -745,10 +745,27 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
     claim = _board(dest, "claim", tid, "--repo", "pilot", "--slot", "1")
     assert claim.returncode == 0, f"{harness} `board.py claim` 실패: {claim.stderr}"
 
-    # T-0815 설계 근거 게이트 — architect 라운드도 `design: done` 도 없는 신규 티켓은 면제
-    # 선언(T-0817 `board.py design` setter)이 있어야 developer 라운드를 준비할 수 있다.
-    # 이 e2e 의 관심사는 준비→편집→회수 왕복이지 설계 근거 자체가 아니라 waived 로 해소한다.
-    design = _board(dest, "design", tid, "waived: round cycle e2e 픽스처")
+    # T-0815 설계 근거 게이트 — architect 라운드도 `design: done` 도 없는 신규 티켓은
+    # developer 라운드를 준비할 수 없다(면제 경로는 폐지됐다). 이 e2e 의 관심사는 준비→편집→
+    # 회수 왕복이라, 설계 절을 채우고 setter 로 상태를 올려 근거를 갖춘다.
+    claimed = list((dest / ".project_manager" / "wiki" / "tickets" / "claimed").glob(
+        f"{tid}-*.md"))
+    assert len(claimed) == 1, f"{harness} claim 뒤 명세 1건이어야 한다: {claimed}"
+    ticket_body = claimed[0].read_text(encoding="utf-8")
+    assert "## 설계" in ticket_body, f"{harness} 출하 템플릿에 설계 절이 없다"
+    filled_section = (
+        "## 설계\n"
+        "- **경계 실측**: 채택자 e2e 픽스처\n"
+        "- **불변식**: 준비→회수 왕복 보존\n"
+        "- **표면 상한**: 라운드 파일 1개\n"
+        "- **테스트 전략**: 정상 왕복\n\n"
+    )
+    head, _sep, tail = ticket_body.partition("## 설계\n")
+    _skeleton, done_sep, rest = tail.partition("## 완료 조건")
+    assert done_sep, f"{harness} 출하 템플릿 절 구성이 예상과 다르다"
+    claimed[0].write_text(
+        head + filled_section + done_sep + rest, encoding="utf-8", newline="\n")
+    design = _board(dest, "design", tid, "done")
     assert design.returncode == 0, f"{harness} `board.py design` 실패: {design.stderr}"
 
     prepared = _delegate_cli(

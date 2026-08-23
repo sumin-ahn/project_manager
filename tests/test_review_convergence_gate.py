@@ -1269,7 +1269,8 @@ def test_corrupt_frontmatter_turns_the_guard_off_without_crashing(
     tickets = tmp_path / ".project_manager" / "board" / "tickets" / "claimed"
     tickets.mkdir(parents=True)
     (tickets / "T-0913-x.md").write_text(
-        "---\nid: T-0913\ndesign: waived: 인용 없는 콜론\n---\n\n# 본문\n", encoding="utf-8")
+        "---\nid: T-0913\ndesign: required: 인용 없는 콜론\n---\n\n# 본문\n",
+        encoding="utf-8")
     monkeypatch.setattr(external, "REPO", tmp_path)
     assert external.parse_ticket_estimate("T-0913", pm_home=tmp_path) is None
 

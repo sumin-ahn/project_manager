@@ -151,16 +151,25 @@ def _reviewer_round(pd, payload: dict, *, ordinal: int = 1):
     return _round(pd, ordinal, _reviewer_round_text(pd, payload))
 
 
+# 설계 근거 게이트를 미리 해소하는 frontmatter + 충전된 설계 절(면제 값은 폐지됐다).
+_DESIGN_DONE_PREFIX = (
+    "---\nid: T-XXXX\ndesign: done\n---\n"
+    "## 설계\n"
+    "- **경계 실측**: 기계 테스트 픽스처\n"
+    "- **불변식**: 이 파일의 축 밖\n"
+    "- **표면 상한**: 픽스처 1건\n"
+    "- **테스트 전략**: 정상·실패 경로\n\n"
+)
+
+
 def _seeded_round_text(pd, role: str, ticket_text: str = "", previous=None) -> str:
     rounds_module = pd._load_ticket_rounds()
     if role == "developer" and not ticket_text.startswith("---\n"):
         # T-0815 설계 근거 게이트 관심사 밖 — 이 파일의 축은 골격 렌더러 단일 진실이지
         # 설계 근거가 아니다. 빈 문자열 기본값은 frontmatter 가 없어 그 게이트가 판정불능으로
-        # 거부한다 — waived 로 미리 해소한다(명시 ticket_text 를 준 호출은 건드리지 않는다).
-        ticket_text = (
-            '---\nid: T-XXXX\ndesign: "waived: 골격 렌더러 기계 테스트'
-            '(설계 근거 게이트 관심사 밖)"\n---\n'
-        ) + ticket_text
+        # 거부한다 — `done` + 설계 절로 미리 해소한다(명시 ticket_text 를 준 호출은 건드리지
+        # 않는다).
+        ticket_text = _DESIGN_DONE_PREFIX + ticket_text
     return rounds_module.render_round_seed(
         role, ticket_text, today="2026-08-17", previous_round=previous,
     )

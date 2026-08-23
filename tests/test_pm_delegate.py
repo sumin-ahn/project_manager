@@ -5636,6 +5636,16 @@ ADAPTER_DEGRADED_HEADER = "=== ⚠ 어댑터 편집 경고 축 강등 ==="
 TICKET_ID = "T-9999"
 
 
+# 설계 근거 게이트가 인정하는 `design: done` 의 짝 — 4항목이 값으로 채워진 설계 절.
+_DESIGN_SECTION = (
+    "## 설계\n"
+    "- **경계 실측**: 범위 훅 e2e 픽스처\n"
+    "- **불변식**: 이 파일의 축 밖\n"
+    "- **표면 상한**: 픽스처 1건\n"
+    "- **테스트 전략**: 정상·실패 경로\n"
+)
+
+
 def _scope_workspace(
     tmp_path: Path, monkeypatch, pd, touches=("work/demo_1/src",),
     stage_change: bool = False,
@@ -5682,10 +5692,11 @@ def _scope_workspace(
         "status: open\n"
         f"touches:\n{touches_block}\n"
         # T-0815 설계 근거 게이트(developer 시드 seam)가 요구하는 최소 근거 — 이 픽스처의
-        # 관심사(범위 감사·adapter 축)와는 무관해 waived 로 미리 해소한다.
-        'design: "waived: 범위 훅 e2e 픽스처(설계 근거 게이트 관심사 밖)"\n'
+        # 관심사(범위 감사·adapter 축)와는 무관해 `done` + 설계 절로 미리 해소한다.
+        "design: done\n"
         "---\n\n"
-        f"# {TICKET_ID} — 범위 훅 e2e\n\n## 목표\n범위 판정 e2e.\n"
+        f"# {TICKET_ID} — 범위 훅 e2e\n\n## 목표\n범위 판정 e2e.\n\n"
+        + _DESIGN_SECTION
     )
     # 라운드는 준비가 예약한다([[ADR-0090]]) — 명세에는 역할 산출이 없다.
     ticket_path = tickets / f"{TICKET_ID}-scope.md"
@@ -5852,10 +5863,12 @@ def test_corrupt_ticket_degrades_only_generic_axis_and_adapter_warning_survives(
         # 이 테스트의 축(범위 축만 강등 · 어댑터 축은 생존)이 드러난다.
         "touches:\n"
         f"  work/demo_1/{adapter_root}: yes\n"
-        # T-0815 설계 근거 게이트 관심사 밖 — waived 로 미리 해소(이 테스트의 손상 축이 아니다).
-        'design: "waived: 범위 훅 e2e 픽스처(설계 근거 게이트 관심사 밖)"\n'
+        # T-0815 설계 근거 게이트 관심사 밖 — `done` + 설계 절로 미리 해소(이 테스트의 손상
+        # 축이 아니다).
+        "design: done\n"
         "---\n\n"
-        f"# {TICKET_ID}\n\n## 목표\n손상 축 격리.\n"
+        f"# {TICKET_ID}\n\n## 목표\n손상 축 격리.\n\n"
+        + _DESIGN_SECTION
     )
     ticket_path.write_text(corrupt_text, encoding="utf-8")
     fake = _WritingRun(workspace, ([relative], _ok_result()))
@@ -5890,10 +5903,12 @@ def test_corrupt_ticket_isolation_oracle_is_sensitive_to_coupled_none(
     corrupt_text = (
         f"---\nid: {TICKET_ID}\ntitle: 손상\nstatus: open\n"
         "touches:\n  broken: yes\n"
-        # T-0815 설계 근거 게이트 관심사 밖 — waived 로 미리 해소(이 테스트의 손상 축이 아니다).
-        'design: "waived: 범위 훅 e2e 픽스처(설계 근거 게이트 관심사 밖)"\n'
+        # T-0815 설계 근거 게이트 관심사 밖 — `done` + 설계 절로 미리 해소(이 테스트의 손상
+        # 축이 아니다).
+        "design: done\n"
         "---\n\n"
-        f"# {TICKET_ID}\n\n## 목표\n손상 축 격리.\n"
+        f"# {TICKET_ID}\n\n## 목표\n손상 축 격리.\n\n"
+        + _DESIGN_SECTION
     )
     ticket_path.write_text(corrupt_text, encoding="utf-8")
     real_begin = pd.begin_scope_audit

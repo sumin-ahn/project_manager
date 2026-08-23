@@ -89,9 +89,9 @@ def _ticket_text(pd, ticket_id: str, *, status: str, claimed_by: str | None,
     else:
         touches_block = "touches: []\n"
     claim_line = f"claimed_by: {claimed_by}\n" if claimed_by else ""
-    # T-0815 설계 근거 게이트(developer 시드 seam) 관심사 밖 — waived 로 미리 해소한다(이
-    # 픽스처의 축은 touches 교집합 판정이지 설계 근거가 아니다).
-    design_line = 'design: "waived: 교집합 e2e 픽스처(설계 근거 게이트 관심사 밖)"\n'
+    # T-0815 설계 근거 게이트(developer 시드 seam) 관심사 밖 — `done` + 설계 절로 미리
+    # 해소한다(이 픽스처의 축은 touches 교집합 판정이지 설계 근거가 아니다).
+    design_line = "design: done\n"
     text = (
         "---\n"
         f"id: {ticket_id}\n"
@@ -101,7 +101,12 @@ def _ticket_text(pd, ticket_id: str, *, status: str, claimed_by: str | None,
         f"{touches_block}"
         f"{design_line}"
         "---\n\n"
-        f"# {ticket_id} — 교집합 e2e\n\n## 목표\n교집합 판정 e2e.\n"
+        f"# {ticket_id} — 교집합 e2e\n\n## 목표\n교집합 판정 e2e.\n\n"
+        "## 설계\n"
+        "- **경계 실측**: 기계 테스트 픽스처\n"
+        "- **불변식**: 이 파일의 축 밖\n"
+        "- **표면 상한**: 픽스처 1건\n"
+        "- **테스트 전략**: 정상·실패 경로\n"
     )
     sealed = text
     return sealed

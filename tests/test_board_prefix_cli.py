@@ -860,7 +860,7 @@ _BROKEN_TICKET = (
     "---\n"
     "id: T-foo-004\n"
     "title: 손상 티켓\n"
-    "design: waived: 인용 없는 콜론\n"          # ← yaml.safe_load 가 여기서 터진다
+    "design: required: 인용 없는 콜론\n"        # ← yaml.safe_load 가 여기서 터진다
     "---\n"
     "# T-foo-004\n"
 )

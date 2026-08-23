@@ -1099,7 +1099,11 @@ def test_best_effort_transitions_commit_only_their_paths(board, tmp_path, mutati
 
 @requires_git
 def test_new_commits_only_the_created_ticket(board, tmp_path):
-    """`new` 커밋에 방금 만든 티켓 하나만 담긴다 (무관 dirty 미동반)."""
+    """`new` 커밋엔 방금 만든 티켓과 그 묶음 장부만 담긴다 (무관 dirty 미동반).
+
+    발행은 운영 단위 귀속을 함께 쓴다 — 크기 1 장부도 board-git 공유 파일이라 같은 스코프
+    채널로 실린다(스코프가 넓어진 게 아니라 이 발행이 만든 파일이 둘이다).
+    """
     bare = _bare(tmp_path, "bare-be-new")
     board_dir = _make_board_git(tmp_path, remote=bare)
     dirty = _seed_dirty_three(board_dir)
@@ -1107,8 +1111,9 @@ def test_new_commits_only_the_created_ticket(board, tmp_path):
     assert board.cmd_new(_new_args("새 티켓")) == 0
 
     created = _head_files(board_dir)
-    assert len(created) == 1, f"new 커밋 스코프가 1건을 넘음: {created}"
-    assert next(iter(created)).startswith("tickets/open/"), created
+    assert len(created) == 2, f"new 커밋 스코프가 발행 산출을 넘음: {created}"
+    assert sum(1 for path in created if path.startswith("tickets/open/")) == 1, created
+    assert sum(1 for path in created if path.startswith("tickets/clusters/")) == 1, created
     after = _porcelain(board_dir)
     for path, code in dirty.items():
         assert after.get(path) == code, f"new 가 무관 dirty 를 건드림: {path}"
@@ -1128,8 +1133,9 @@ def test_promote_commits_only_the_promoted_ticket(board, tmp_path):
 
     assert board.cmd_promote(argparse.Namespace(id="T-0009")) == 0
 
-    assert _head_files(board_dir) == {"tickets/open/T-0009-draft.md"}, \
-        f"promote 커밋 스코프가 승격 경로를 넘음: {_head_files(board_dir)}"
+    assert _head_files(board_dir) == {
+        "tickets/open/T-0009-draft.md", "tickets/clusters/C-T-0009.md",
+    }, f"promote 커밋 스코프가 승격 산출을 넘음: {_head_files(board_dir)}"
     after = _porcelain(board_dir)
     for path, code in dirty.items():
         assert after.get(path) == code, f"promote 가 무관 dirty 를 건드림: {path}"
@@ -1186,11 +1192,11 @@ def test_ticket_mutations_pass_scoped_paths():
     calls = [node for node in ast.walk(tree)
              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
              and node.func.id == "_board_git_sync_best_effort"]
-    # 10 = ticket mutation 9(new·promote·complete·discard·reopen·block·unclaim·unblock +
+    # 11 = ticket mutation 9(new·promote·complete·discard·reopen·block·unclaim·unblock +
     # section-add/tier 공용 helper) + `init` 의 areas repo 행 등록(T-0779 — 등록 행도 board git
-    # 의 공유 파일이라 같은 스코프 채널로 기록한다).
-    assert len(calls) == 10, \
-        f"best-effort sync 호출이 10곳이 아님(신규/삭제 시 이 가드를 함께 갱신): {len(calls)}"
+    # 의 공유 파일이라 같은 스코프 채널로 기록한다) + `cluster new`(묶음 장부·멤버 명세).
+    assert len(calls) == 11, \
+        f"best-effort sync 호출이 11곳이 아님(신규/삭제 시 이 가드를 함께 갱신): {len(calls)}"
     for call in calls:
         has_paths = len(call.args) >= 2 or any(kw.arg == "paths" for kw in call.keywords)
         assert has_paths, \
