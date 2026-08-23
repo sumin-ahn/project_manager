@@ -1313,9 +1313,9 @@ DIFF_CAP_KEY_PREFIX = "diff_cap."
 #
 # 이 정규식은 `.project_manager/`(순수 엔진 사본)만 본다 — `templates/<타깃>/`의 나머지(어댑터층
 # `.claude/`·`.codex/`·`.opencode/`·flavor 루트 `*.md/*.sh/*.cmd`)는 `pm_update --all-targets` 가
-# 마찬가지로 기계로 써내는데도 이 정규식 밖이라 손작업으로 계상됐다(689줄 실측·T-0767 라운드7 부수
+# 마찬가지로 기계로 써내는데도 이 정규식 밖이라 손작업으로 계상됐다(689줄 실측으로 드러난 부수
 # 발견). 그 어댑터층 판정은 경로 패턴을 추가로 하드코딩하지 않고 `_adapter_layer_machine_mirror`가
-# 그 타깃 engine.manifest 의 `@source=` 방향에서 파생한다(T-0832) — 이 정규식이 아래 함수보다 먼저
+# 그 타깃 engine.manifest 의 `@source=` 방향에서 파생한다 — 이 정규식이 아래 함수보다 먼저
 # 걸러내는 subtree(=`.project_manager/`)는 그대로 두고, 그 밖의 templates 경로만 매니페스트로 넘긴다.
 _MACHINE_MIRROR_RE = re.compile(
     r"^templates/[^/]+/\.project_manager/|^\.opencode/node_modules/"
@@ -4494,7 +4494,7 @@ def _numstat_path(field: str) -> str:
     return expanded.split(" => ")[-1].strip()
 
 
-# ── 어댑터층 기계 mirror (T-0832) — engine.manifest `@source=` 방향에서 파생 ──────────
+# ── 어댑터층 기계 mirror — engine.manifest `@source=` 방향에서 파생 ────────────────
 # 판정 입력은 그 타깃 engine.manifest 항목 하나뿐이다(새 설정 키·CLI 플래그 0). 항목이
 # bare(마커 없음)면 관례상 소스는 같은 상대경로를 **레포 루트**에서 읽는다는 뜻이라(`pm_update.
 # _source_root_rel` 동형) templates/<타깃>/ 접두가 없는 다른 물리 경로를 가리키므로 늘 진짜 교차
@@ -4554,7 +4554,7 @@ def _adapter_layer_machine_mirror(canonical_path: str) -> bool:
     파일 단위 override(`.claude/skills/pm-dev-delegate/SKILL.md @source=...`)가 있으면 override
     가 이긴다(동률은 나중 선언이 더 구체적이라고 본다). 소유 항목이 없으면(미등재) 손작업(False).
 
-    ``@target-owned`` 항목은 **source 방향 비교 전에** 손작업으로 접는다(F-001·T-0832 라운드3
+    ``@target-owned`` 항목은 **source 방향 비교 전에** 손작업으로 접는다(F-001
     리뷰) — 그 마커는 "upstream 에 source 가 아예 없는 게 정상"이라는 명시 선언이라
     (`pm_update.TARGET_OWNED_TAG`), bare 경로의 관례적 "레포 루트가 source" 폴백을 이 항목에
     적용하면 실재하지 않는 교차 위치와 비교해 기계 mirror로 오분류한다 — 수기 소유 파일이
@@ -4593,7 +4593,7 @@ def is_machine_mirror_path(path: str) -> bool:
 
     정책은 pm_update 엔진 사본인 `templates/<타깃>/.project_manager/` 아래와 패키지 설치
     산출물인 `.opencode/node_modules/` 아래, 그리고 그 타깃 engine.manifest 가 `@source=` 방향으로
-    선언한 어댑터층 경로(`_adapter_layer_machine_mirror`·T-0832)를 제외한다. template subtree 의
+    선언한 어댑터층 경로(`_adapter_layer_machine_mirror`)를 제외한다. template subtree 의
     파일 전부는 아니다 — manifest 밖 손편집 파일도 있어 통째 제외하면 과소 측정이 생기지만,
     오차의 방향이
     **측정 축소 = 가드 약화**라

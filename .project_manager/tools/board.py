@@ -12334,7 +12334,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
         print(f"promoted {args.id} (board-git 승격 완료)")
     else:
         print(f"promoted {args.id} (board-git 기록 보류: local-only/uncommitted)")
-    # 발행 시점 판단 재료 — 성공 경로 두 갈래(승격 완료/부기 보류) 공통 뒤,
+    # 발행 시점 판단 재료 — 성공 경로 두 갈래(승격 완료/기록 보류) 공통 뒤,
     # `_board_git_enabled()` 게이트 분기 밖(솔로/legacy 형상에서도 나온다). 겹침 0 이면 침묵.
     # `promote` 는 `--repo`/`--slot` 인자가 없다 — 슬롯 재료의 repo 는 이 티켓의 provenance
     # (`created_by`)에서 세션 토큰을 뽑아(`_created_by_session` — 기존 세션-뷰 seam) 장부
@@ -15063,7 +15063,7 @@ def _citation_suffix_index(
     안 지우면 같은 파일이 두 건으로 세어져 유일 해소가 사라진다.
 
     순회는 `repo_owned_files` 공용 seam(추적분 + 미추적·비무시 파일)에 위임한다 — 직접
-    `os.walk` 를 부르면 새 재귀 tree-walk 호출을 전수 감시하는 가드([[T-0822]])의 사각이
+    `os.walk` 를 부르면 새 재귀 tree-walk 호출을 전수 감시하는 가드의 사각이
     생긴다. git 부재/비-repo 사본은 그 seam 이 filesystem 전수 순회로 강등해 값은 그대로다.
 
     그 seam 의 Git 성공 경로는 **working-tree 존재를 재검사하지 않는다**(index-only 경로도

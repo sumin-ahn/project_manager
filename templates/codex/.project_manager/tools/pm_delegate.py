@@ -244,14 +244,14 @@ _ENGINE_REV_SKEW_RECOVERY_REASONS = {
         "경고 한 줄로 남겨 재동기 처방이 함께 사라지지 않게 한다"
     ),
     "ticket_copy_gate_refund": (
-        "T-0846(F-001) — 단일 정리 경계의 환불(abandon)은 **원 거부/전파 예외를 덮지 않는 것**이 "
+        "F-001 — 단일 정리 경계의 환불(abandon)은 **원 거부/전파 예외를 덮지 않는 것**이 "
         "계약이다 — 여기서 예외를 올리면 이미 확정된 거부 rc·사유나 전파 중인 예외가 정리 실패로 "
         "뒤바뀐다. 환불 수단이 형제 모듈(`abandon_ticket_copy` → board/file_lock)이라 사본 "
         "불일치가 이 경계에 도달할 수 있는데, 그것도 정리 실패의 한 형태로 흡수하되 원인을 문구로 "
         "구분해 '정리 실패'와 '엔진 사본 불일치'가 같은 경고로 뭉개지지 않게 한다"
     ),
     "ticket_copy_prepare_rollback": (
-        "T-0846(F-001) — 예약 전 rollback 정리는 **원 예외를 덮지 않는 것**이 계약이다 — 여기서 "
+        "F-001 — 예약 전 rollback 정리는 **원 예외를 덮지 않는 것**이 계약이다 — 여기서 "
         "갈아타면 예약이 왜 실패했는지가 사라진다. 삭제 수단이 형제 모듈(`file_lock.force_rmtree`)"
         "이라 사본 불일치가 이 경계에 닿을 수 있는데, 같은 이유로 흡수하되 경고 한 줄로 남겨 "
         "재동기 처방이 함께 사라지지 않게 한다"
@@ -1545,18 +1545,18 @@ class InternalRoundLimitExceeded(DelegateError):
     `external_review.EXIT_ROUND_LIMIT_EXCEEDED` 와 동형)로 낸다."""
 
 
-# ── 내부 위임 라운드 상한 (T-0841) ──────────────────────────────────────────
+# ── 내부 위임 라운드 상한 ──────────────────────────────────────────────────
 # 외부 채널(external_review.py:49-59 라운드 상한)의 미러다 — 판정식·rc·"재설계·분할이
 # 유일한 출구" 처방·우회 없음 규약은 그대로 두고, 입력만 내부 채널이 이미 가진 board 라운드
 # 파일로 좁힌다(결정: 새 장부·새 필드 0). architect·developer·code-reviewer만 대상이다 —
 # researcher는 board 라운드 실사용 0건(전수 실측)이라 티켓 스코프 밖으로 남긴다. 축은
 # 역할별 per-ticket 상한 하나뿐이다(cross-ticket 판정 없음).
 #
-# 값은 `tickets/rounds/` 전수 실측(2026-08-23·107개 티켓 디렉터리)에서 역할별 정상↔이상 분기점
+# 값은 `tickets/rounds/` 전수 실측(티켓 디렉터리 107개)에서 역할별 정상↔이상 분기점
 # 으로 정했다(중간값 없이 갈린다):
-#   developer      정상 최대 4(5건) → 이상 6(T-0694·T-0698·T-0779 — 총 12·11·11 라운드 실측)
-#   code-reviewer  정상 최대 4(1건)·3(6건) → 이상 5~6(T-0698·T-0682·T-0694·T-0696)
-#   architect      정상 최대 3(T-0771) → T-0767(architect 5·총 8라운드)은 재설계 성격 — 결정문
+#   developer      정상 최대 4(5건) → 이상 6(사례 3건 — 각 12·11·11 라운드 실측)
+#   code-reviewer  정상 최대 4(1건)·3(6건) → 이상 5~6(사례 4건)
+#   architect      정상 최대 3(정상 사례) → architect 5회(총 8라운드)로 튄 사례는 재설계 성격 — 결정문
 #     "재설계는 상한에 걸리면 안 되는 경우가 있다"에 해당해 다른 둘보다 크게 둔다.
 DEFAULT_INTERNAL_ROUND_LIMITS: dict[str, int] = {
     "developer": 4,
@@ -1620,10 +1620,10 @@ def prepare_ticket_copy(
     상한이 모두 board를 건드리기 전에 끝난다. 뒤에 두면 거부된 준비가 board에 회수 불가능한
     고아 라운드를 남기고 순번 하나를 영구 소모한다(장부 행이 없어 회수 자체가 막힌다).
 
-    순서는 여섯이다 — (1) 역할·티켓·상태 판정 (1.5) 내부 라운드 상한 사전판정(T-0841 · 빠른
+    순서는 여섯이다 — (1) 역할·티켓·상태 판정 (1.5) 내부 라운드 상한 사전판정(빠른
     실패 — 슬롯 run-dir 을 만들기 전에 흔한/비경합 초과 요청을 끝낸다) (2) ignore 검증과 슬롯
     run-dir 확보(슬롯 전용 부작용) (3) 시드 렌더 (4) **상태 재확인 + 역할 count 재확인 + 채번
-    +O_EXCL 예약을 하나의 board_lock 임계구역에서 최신 스냅샷으로 수행**(T-0841 F-003 — (1.5)의
+    +O_EXCL 예약을 하나의 board_lock 임계구역에서 최신 스냅샷으로 수행**(F-003 — (1.5)의
     사전판정은 신뢰 뿌리가 아니다: 두 준비가 그 사전판정을 동시에 통과해도 이 임계구역의 최신
     재확인이 그중 하나만 통과시킨다) (5) 슬롯 파일 laydown + PM 홈 장부 기록(회수의 신뢰 뿌리).
 
@@ -1637,8 +1637,8 @@ def prepare_ticket_copy(
     세션인 native 위임은 이 값을 **주지 않는다**: 즉사한 준비 pid 를 표식으로 실으면 살아 있는
     run 이 죽은 것으로 읽힌다. 키 부재는 "죽음"이 아니라 "증거 없음"이다.
 
-    내부 라운드 상한(게이트별 · role 당)은 어떤 인자로도 열리지 않는다(외부 채널의
-    `--ack-rounds` 폐지와 같은 규율 — 출구는 재설계·분할뿐 · 우회 플래그가 없다).
+    내부 라운드 상한(게이트별 · role 당)은 어떤 인자로도 열리지 않는다(외부 채널과 같은 규율 —
+    상한 도달 후 발산(라운드 증가)은 차단하고 확인 수정(confirm-fix)은 1회만 허용하며, 출구는 재설계·분할뿐 · 우회 플래그가 없다).
     """
     if role not in TICKET_COPY_PREPARE_ROLES:
         raise DelegateError(f"티켓 라운드 준비 미지원 역할: {role}")
@@ -1671,7 +1671,7 @@ def prepare_ticket_copy(
         if role in DEFAULT_INTERNAL_ROUND_LIMITS else None
     )
 
-    # ── 내부 라운드 상한 (T-0841) — 빠른 실패 사전판정. 신뢰 뿌리가 아니다: 최종 판정은
+    # ── 내부 라운드 상한 — 빠른 실패 사전판정. 신뢰 뿌리가 아니다: 최종 판정은
     # 아래 (4) 의 board_lock 임계구역이 최신 스냅샷으로 다시 낸다(F-003). 이 사전판정은 상한을
     # 넘은 흔한(비경합) 요청이 슬롯 run-dir 을 만들기 전에 끝나게 하는 최적화일 뿐이다.
     if role in DEFAULT_INTERNAL_ROUND_LIMITS:
@@ -1690,7 +1690,7 @@ def prepare_ticket_copy(
     _assert_ticket_copy_root_ignored(cwd, ticket=ticket, run_id=run_id)
     run_dir, run_dir_fd = _secure_ticket_copy_dir(cwd, ticket, run_id)
     rounds_dir = rounds_dir_fd = None
-    # T-0846(F-010) — board_path 예약(reserve_round) 성공 전에 이 블록을 벗어나면(동시
+    # F-010 — board_path 예약(reserve_round) 성공 전에 이 블록을 벗어나면(동시
     # prepare 경합 패자 포함) 이 run_dir 은 이 호출 하나만의 소유라 안전하게 지운다. 성공
     # 후 실패(장부 append 등)는 board 라운드가 이미 살아 있어 `_reserved_round_residue`
     # 진단으로 수동 복구 좌표를 남기는 기존 설계를 그대로 둔다(run_dir 을 지우지 않는다).
@@ -1716,11 +1716,11 @@ def prepare_ticket_copy(
                 # 시드 seam 은 자기 오류형으로 거부한다(board `section-add` 가 잡는 형). 여기서
                 # 되받아 이 CLI 의 오류형으로 옮긴다 — 두 진입점이 같은 규칙·같은 rc 를 낸다.
                 # 시드 seam 은 실 ticket id 를 모른다(ticket_text 만 받는다) 그래서 `<T-NNNN>`
-                # placeholder 로 처방을 낸다(T-0841 라운드 6) — 이 층은 실값을 쥐고 있으므로
+                # placeholder 로 처방을 낸다(리뷰 결정) — 이 층은 실값을 쥐고 있으므로
                 # 여기서만 치환해 커맨드가 그대로 실행 가능하게 한다(board `section-add` 는 이
                 # 층을 거치지 않아 치환되지 않는다 — touches 밖).
                 raise DelegateError(str(exc).replace("<T-NNNN>", ticket)) from exc
-            # ── 여기부터 board 를 건드린다 (T-0841 F-003: 상태 재확인·역할 count 재확인·최종
+            # ── 여기부터 board 를 건드린다 (F-003: 상태 재확인·역할 count 재확인·최종
             # reserve 를 하나의 board_lock 임계구역에서 최신 스냅샷으로 재수행한다 — 위 (1.5)
             # 사전판정과 이 지점 사이의 gap 이 TOCTOU 였다: 두 준비가 사전판정을 함께 통과해도
             # 여기서 재확인하는 최신 스캔이 그중 하나만 통과시킨다) ──────────────────────
@@ -1755,12 +1755,12 @@ def prepare_ticket_copy(
                 board_path = rounds_module.reserve_round(
                     tickets_dir, ticket, role, content=seed, lock=contextlib.nullcontext(),
                 )
-                # T-0846(F-002) — reserve_round 반환 즉시, **락 이탈(`__exit__`) 전** 같은 락
+                # F-002 — reserve_round 반환 즉시, **락 이탈(`__exit__`) 전** 같은 락
                 # 본문 안에서 예약 성공 상태와 복구 좌표를 기록한다. `exclusive_file_lock` 은
                 # unlock/close 실패를 올리는 계약이라, 이 대입이 `with` 밖에 있으면 락 이탈
                 # 실패가 board 만 남기고 run_dir·좌표를 지우는 복구 불능 형상을 만든다.
                 reserved = True
-                # T-0846(F-001 라운드 5) — 아래 두 계산은 각각 실패 가능한 seam 이다
+                # F-001(라운드 5) — 아래 두 계산은 각각 실패 가능한 seam 이다
                 # (`parse_round_filename`은 파일명 파싱 실패 시 `None` 반환 · `_board_relative_path`
                 # 는 PM 홈 밖 해소를 계약형 `DelegateError` 로 던진다). 복구 진단(아래 `elif
                 # reserved:`)이 그 실패로 미초기화 변수를 참조해 `UnboundLocalError` 를 내며 원
@@ -1811,7 +1811,7 @@ def prepare_ticket_copy(
             if rounds_dir_fd is not None:
                 os.close(rounds_dir_fd)
     except BaseException as exc:
-        # T-0846(F-001) — 정리(force_rmtree)가 `KeyboardInterrupt`·`SystemExit`·비-OSError 로
+        # F-001 — 정리(force_rmtree)가 `KeyboardInterrupt`·`SystemExit`·비-OSError 로
         # 죽어도 이미 pending 인 **원** 예외(`exc`)를 대체하지 않는다: 아래는 어떤 예외형이든
         # 잡아 loud 경고만 남기고 마지막 `raise`(bare)는 항상 `exc` 를 그대로 재전파한다.
         if not reserved and os.path.lexists(run_dir):
@@ -1830,7 +1830,7 @@ def prepare_ticket_copy(
                     file=sys.stderr,
                 )
         elif reserved:
-            # T-0846(F-002) — board 예약은 이미 성공했지만(예: 락 이탈 실패) 이후 단계가
+            # F-002 — board 예약은 이미 성공했지만(예: 락 이탈 실패) 이후 단계가
             # 실패했다. run_dir 은 지우지 않는다(위 분기가 스킵) — 다음 조작자가 board 좌표로
             # 찾을 수 있게 기존 `_reserved_round_residue` 진단을 그대로 재사용해 loud 하게
             # 남긴다(복구 불능 — board 만 남고 run-dir·좌표 모두 없음 — 을 만들지 않는다).
@@ -2256,9 +2256,9 @@ def abandon_ticket_copy(
 def _refund_gate_rejected_ticket_copy(
     ticket_copy: TicketCopyPlan, *, cwd: Path, pm_home: Path,
 ) -> None:
-    """T-0846 — 예약(`prepare_ticket_copy`) 이후 ~ 실행 인계(`_execute_and_collect`) 이전 구간의
+    """예약(`prepare_ticket_copy`) 이후 ~ 실행 인계(`_execute_and_collect`) 이전 구간의
     **단일 정리 경계**. `main()` 의 finally 하나가 이 함수를 부른다 — 그 구간을 벗어나는 모든
-    경로(명시 return · 전파 예외)가 지점 삽입 없이 여기로 수렴한다(T-0841 라운드 6이 꽂은 6개
+    경로(명시 return · 전파 예외)가 지점 삽입 없이 여기로 수렴한다(리뷰 라운드가 꽂았던 6개
     지점 삽입을 대체). board 라운드 파일·delegate-rounds 장부 행·run-dir 세 축을 같은 프로세스가
     즉시 종결한다. 새 경로를 만들지 않고 기존 `abandon_ticket_copy` 를 그대로 재사용한다.
     `assume_dead=True` — 이 run 의 `owner_pid` 는 **이 살아 있는 프로세스 자신**이라(핸드오프 전
@@ -2274,7 +2274,7 @@ def _refund_gate_rejected_ticket_copy(
             copy_path=ticket_copy.path, cwd=cwd, pm_home=pm_home, assume_dead=True,
         )
     except BaseException as exc:
-        # T-0846(F-001) — 환불이 `KeyboardInterrupt`·`SystemExit`·비-DelegateError 로 죽어도
+        # F-001 — 환불이 `KeyboardInterrupt`·`SystemExit`·비-DelegateError 로 죽어도
         # 이미 pending 인 원 return 값/전파 예외를 대체하지 않는다: 어떤 예외형이든 여기서 잡아
         # loud 경고만 남기고 `return`(정상 반환) — 호출부 `finally` 통과 뒤 원 결과가 그대로다.
         skew = _absorb_engine_rev_skew_for_recovery(exc, "ticket_copy_gate_refund")
@@ -2963,7 +2963,7 @@ class PMReviewError(DelegateError):
     """versioned reviewer/disposition 구조 또는 상태 전이 거부.
 
     `channels` 는 "pending" 코드에서만 채워지는 구조화 부가 데이터다 — 이 거부가 지목한
-    (reviewer_role, ordinal) 쌍 전체(T-0841 라운드 6). 처방 문구(`_pm_review_prescription`)가
+    (reviewer_role, ordinal) 쌍 전체(리뷰 라운드 결정). 처방 문구(`_pm_review_prescription`)가
     문자열을 재파싱하지 않고 이 값으로 실행 가능한 `--ordinal`/`--reviewer-role` 커맨드를
     바로 조립한다. `ticket_rounds._render_round_seed_body` 를 건너면 `str(exc)` 로 문자열화되며
     이 구조는 사라진다 — 그 전(같은 pm_delegate.py 층)에서만 유효하다."""
@@ -2991,11 +2991,11 @@ def _pm_review_prescription(
 ) -> str:
     """판정 거부 코드별 처방 — CLI 거부와 시드 거부가 같은 문언 하나를 쓴다(복제 0).
 
-    `channels` (T-0841 라운드 6)가 있으면 "pending" 처방은 거부가 지목한 채널·ordinal
+    `channels` (리뷰 라운드 결정)가 있으면 "pending" 처방은 거부가 지목한 채널·ordinal
     실값으로 채널마다 실행 가능한 커맨드를 낸다 — `disposition-template` 의 `--ordinal`
     기본값은 **그 채널의 최신 라운드**라, 거부가 지목한 라운드가 최신이 아니면(예: 그 뒤에
     새 코드-리뷰 라운드가 열렸다) 안내대로 실행해도 "미판정 finding이 없습니다" 로 다시
-    막힌다(실측: PM 2026-08-23). 값이 없으면(다른 코드·구조 없는 옛 예외) 종전 일반 문구로
+    막힌다(실측으로 확인됨). 값이 없으면(다른 코드·구조 없는 옛 예외) 종전 일반 문구로
     fail-soft 한다."""
     if code == "pending" and channels:
         commands = "; ".join(
@@ -4603,7 +4603,7 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> PMReviewDelta:
     pending = sorted(set(findings) - set(dispositions))
     pending_zero = sorted(zero_channels - accepted_zero)
     if pending or pending_zero:
-        # 구조화 채널 좌표(T-0841 라운드 6) — 처방이 문자열을 재파싱하지 않고 이 쌍으로
+        # 구조화 채널 좌표(리뷰 라운드 결정) — 처방이 문자열을 재파싱하지 않고 이 쌍으로
         # 실행 가능한 --ordinal/--reviewer-role 커맨드를 조립한다. 아래 사람용 문구
         # (pending_channels) 는 이 쌍을 다시 문자열로 접어 **기존과 같은 정렬 규칙**(문자열
         # 사전순)으로 낸다 — 관측 가능한 메시지는 바이트 그대로 보존한다.
@@ -10389,11 +10389,11 @@ def _apply_read_tmp_argv(
 
 
 # 재앵커된 read 실행(현재 codex만·_READ_TMP_REANCHOR_EXEC_ROOT_BY_HARNESS)의 3-절대경로
-# preamble — PM 43차 T-0844 라운드 2 반려 근거: `--dry-run` 실측에서 합성 프롬프트에 정체성·
+# preamble — 반려 근거: `--dry-run` 실측에서 합성 프롬프트에 정체성·
 # 금지사항·회귀 범위·산출 형식은 실렸지만 해소된 `--cwd` 절대경로가 **한 글자도 없었다**. 엔진이
 # `-C`를 빈 tmp로 재앵커해 놓고 실 대상 좌표는 PM 산문에만 맡긴 것은 모델 준수 문제가 아니라
 # 엔진 결함이라는 판정이다 — 좌표는 엔진만 아는 기계 사실이므로 엔진이 합성 preamble에 직접
-# 싣는다([[mechanize-dont-instruct-llm]]). 실측 3건(T-0778 r05·T-0841 r02·T-0823 r04)에서 모델의
+# 싣는다([[mechanize-dont-instruct-llm]]). 실측 3건에서 모델의
 # 첫 명령이 `&&`로 묶인 **상대** 명령(`pwd && ls && git rev-parse ...`)이라 격리 root의 빈 pwd에서
 # 곧장 죽었다 — 그래서 예시 명령은 전부 `-C <절대경로>`/명시 target 플래그로 줘서 pwd를 몰라도
 # 그대로 맞게 한다. `_execute_attempt`(실행)와 `main()` dry-run 미리보기가 이 한 함수를 공유한다
@@ -10481,12 +10481,12 @@ def _read_tmp_prompt_note(
 # git 저장소가 아니므로(매 attempt 새로 만드는 빈 0700 디렉터리), 모델은 프롬프트 지시
 # (`_read_tmp_prompt_note`의 codex_note)로 `--cwd` 복귀를 기대받는다 — 그 준수를 기계가 보장할
 # 수는 없다: `codex exec --help` 실측상 `-C`는 항상 암묵적 쓰기 가능 root이고 `--add-dir`는
-# 추가만 한다 — "주 워크스페이스는 read-only·별도 root만 write" 조합이 CLI에 없다(T-0844 실측 —
+# 추가만 한다 — "주 워크스페이스는 read-only·별도 root만 write" 조합이 CLI에 없다(실측 —
 # `-c permissions.<name>=` 동적 override 시도도 codex-cli 0.147.0에서 patch 도구가 read-only로
 # 남아 이미 실패한 바 있다·위 주석). 그래서 기계가 보장할 수 있는 건 재앵커 **이전**의 `--cwd`
 # 자신이 리뷰 가능한 형상인가뿐이다 — 재앵커된 tmp에서 다시 rev-parse해 봐야 항상 실패하는
 # 무의미한 검사가 된다. 이 함수는 `--cwd` 를 스폰 전에 검증해 불량 입력을 과금 전에 끊는다
-# (T-0778 r05·T-0841 r02·T-0823 r04 실측 — 세 라운드 모두 `--cwd` 자체는 정상이었다·즉 모델이
+# (실측 3건 — 세 라운드 모두 `--cwd` 자체는 정상이었다·즉 모델이
 # 격리 tmp에서 `--cwd`로 되짚어가지 못한 것이 근본 원인이고, 이 preflight는 그 모델 준수까지
 # 기계로 보장하진 못한다. 대신 `--cwd` 부실(비-저장소·하위디렉터리 오지정·staged 0)이라는
 # 인접 실패 클래스를 스폰 전에 닫아, 같은 종류의 무의미한 유료 라운드를 줄인다).
@@ -10799,7 +10799,7 @@ def _execute_attempt(
             ):
                 # codex read 역할만 -C를 격리 tmp로 재앵커한다 — 그 tmp는 절대 git 저장소가
                 # 아니므로 여기서 다시 rev-parse해 봐야 무의미하다. 재앵커 **이전**의 --cwd 자신을
-                # 스폰 전에 검증한다(`_preflight_codex_read_exec_root` 선언부 주석 — T-0844).
+                # 스폰 전에 검증한다(`_preflight_codex_read_exec_root` 선언부 주석 참고).
                 try:
                     _preflight_codex_read_exec_root(cwd, role=role)
                 except DelegateError as exc:
@@ -12734,9 +12734,9 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         except DelegateError as exc:
             return fail_loud(f"오류: 위임 티켓 라운드 준비 실패: {exc}")
 
-    # T-0846 — 예약(prepare_ticket_copy) 이후 ~ 실행 인계(_execute_and_collect) 이전 구간
+    # 예약(prepare_ticket_copy) 이후 ~ 실행 인계(_execute_and_collect) 이전 구간
     # 전체를 하나의 정리 경계로 감싼다. 이 구간을 벗어나는 모든 경로(명시 return · 전파
-    # 예외)가 이 finally 하나로 수렴한다 — 지점마다 호출을 꽂지 않는다(T-0841 라운드 6의
+    # 예외)가 이 finally 하나로 수렴한다 — 지점마다 호출을 꽂지 않는다(리뷰 라운드가 꽂았던
     # 6개 지점 삽입을 대체한다). `_ticket_copy_handed_off` 는 `_execute_and_collect` 호출
     # 직전 단 한 곳에서만 True 로 바뀐다 — 그 전에 return 이든 전파 예외든 이 경계를
     # 빠져나가면 전부 환불(abandon) 로 정리한다.
@@ -12991,11 +12991,11 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
             print("--- 합성 프롬프트 ---")
             dry_run_prompt = prompt if resume is None else resume.delta_prompt
             # read 역할 + 재앵커 하네스(현재 codex 단독)는 실행과 같은 3-절대경로 preamble을 미리보기
-            # 에도 낸다 — 조건은 재앵커 플래그 단일(§인터페이스 T-0844 라운드 2 — claude·opencode 특례
+            # 에도 낸다 — 조건은 재앵커 플래그 단일이다(claude·opencode 특례
             # 없음). dry-run은 부작용 0 계약이라 read_tmp를 만들지 않고 `_predict_read_tmp_paths`로
             # 같은 이름 규칙의 대표 경로만 계산한다.
             #
-            # T-0844 라운드 5 must-fix(F-001): 이 조건은 실행 경로가 `read_tmp is not None`(=
+            # 리뷰 must-fix(F-001): 이 조건은 실행 경로가 `read_tmp is not None`(=
             # `_read_tmp_strategy()` 가 전략을 낸다)으로 판정하는 것과 **같은 사실**을 봐야 한다 —
             # 예측 전용 사본을 새로 만들지 않고, 실행이 `_create_read_role_temp`를 통해 소비하는 바로
             # 그 함수(`_read_tmp_strategy()`)를 여기서도 그대로 부른다. 전략이 없는 플랫폼(fd 결속도
@@ -13019,7 +13019,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         # 실행은 여기서 끝난다(엔진이 sandbox 를 완화하거나 다른 모델로 무음 대체하지 않는다).
         if codex_egress_required and not args.codex_egress_escalated:
             # raw 예약 *전* 종료라 장부에도 안 남는다 — 안내가 다른 수신자를 권하면 그 대행은
-            # 아무 데도 기록되지 않는다(감사 실사고가 정확히 이 경로). T-0846 단일 정리 경계(아래
+            # 아무 데도 기록되지 않는다(감사 실사고가 정확히 이 경로). 단일 정리 경계(아래
             # try/finally)가 환불을 담당한다 — 지점 삽입 없음.
             return fail_loud(codex_egress_block_message(resolved, harness, model))
 
@@ -13079,7 +13079,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
                 )
                 if advisory is not None:
                     print(advisory, file=sys.stderr)
-                _ticket_copy_handed_off = True  # T-0846 — 여기부터 harvest 가 정리를 넘겨받는다
+                _ticket_copy_handed_off = True  # 여기부터 harvest 가 정리를 넘겨받는다
                 return _execute_and_collect(
                     args=args, harness=harness, model=model, reasoning=reasoning,
                     fallback=fallback, fallback_skip=fallback_skip, cwd=cwd, prompt=prompt,
