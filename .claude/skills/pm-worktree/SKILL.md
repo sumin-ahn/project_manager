@@ -125,7 +125,8 @@ python3 .project_manager/tools/worktree_pool.py switch <slot> <branch>
   rc 1이다. 아직 전환 전이면 `record` 대신 `switch`로 전환과 재기록을 함께 한다.
 - `switch`: `<slot> <branch>`로 슬롯 브랜치를 전환하고 같은 호출에서 장부 branch·head·recorded_at을
   원자 재기록하며 base는 보존한다. 기존 브랜치는 `checkout --no-recurse-submodules <b>`, 미존재
-  브랜치는 비파괴 `-b <b>`로 전환한다. `sync`/`alloc`과 같은 프리미티브
+  브랜치는 비파괴 `-b <b>`로 전환한다. 어느 경로도 `-B`(create-or-reset)를 쓰지 않아 기존 브랜치
+  ref를 리셋하지 않는다. `sync`/`alloc`과 같은 프리미티브
   (`--no-recurse-submodules` + selective resync)를 사용해 on-branch(dev)는 보호하고 detached는 새
   pin으로 재동기하며 dirty는 skip+경고한다. raw `git switch`는 이 보호와 장부 기록을 건너뛰므로
   **손-git을 쓰지 마라**.
@@ -134,6 +135,9 @@ python3 .project_manager/tools/worktree_pool.py switch <slot> <branch>
   - 보호목록(areas.md `protected`) 브랜치(`main` 등)로의 전환.
   - 보호브랜치 원격을 추적하는 기존 브랜치. 다음 0단계가 다시 main-참조로 막으므로 upstream 없는
     새 작업 브랜치(`switch <slot> <새-브랜치명>`)로 전환한다. 자기 feature 추적(`origin/a5`)은 허용.
+  - 다른 worktree가 이미 checkout 중인 브랜치(통합 브랜치 `task/main` 등). 옛 `-B`(create-or-reset)
+    폴백 결함에서는 전환 시 그 브랜치 ref가 이 슬롯 HEAD로 리셋됐다 — 지금은 선-검사가 부작용
+    없이 거부하며 우회 플래그는 없다. 보유 worktree 경로를 함께 보고한다.
   - dirty, rebase 진행 중(먼저 continue/abort), readonly 슬롯, 장부 미등록 슬롯.
   - 부적합 ref명(`git check-ref-format --branch`) 또는 D/F 충돌(브랜치 `task`가 있으면
     `task/main`은 `cannot lock ref`; 접두 부모 ref를 미리 검사).

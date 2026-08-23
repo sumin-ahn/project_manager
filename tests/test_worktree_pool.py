@@ -435,6 +435,55 @@ def test_alloc_checkout_success_updates_ledger_sensitivity(wp):
     assert wp.current_branch("work/A_1", git_runner=git) == "a2-new"
 
 
+class _AllocElsewhereGit:
+    """alloc 경로 — 대상 브랜치가 로컬에 존재하면서 타 worktree 가 점유(plain 실패)한 모델.
+
+    plain checkout 은 점유로 rc≠0, 프리미티브 폴백(`-b`·create-or-fail)은 로컬 존재로 rc≠0 —
+    어느 쪽도 성공하지 않아 `CheckoutFailed` 로 수렴한다. 구 `-B`(create-or-reset) 폴백이었다면
+    이 조합(plain 실패 + 로컬 존재)에서 checkout 이 **성공**해 그 브랜치 ref 를 이 슬롯 HEAD 로
+    리셋했다 — `alloc` 의 세 checkout 분기(공유 프리미티브)에 남아 있던 같은 클래스 구멍의 회귀
+    가드다.
+    """
+
+    def __init__(self, *, head: "str | None", locked_branch: str):
+        self.head = head
+        self.locked_branch = locked_branch
+        self.calls: list[list] = []
+
+    def __call__(self, argv: list) -> tuple[int, str]:
+        self.calls.append(list(argv))
+        if argv[:2] == ["checkout", "--no-recurse-submodules"]:
+            name = argv[-1]
+            if name != self.locked_branch:
+                self.head = name
+                return (0, "")
+            if argv[2] == "-b":
+                return (128, f"fatal: a branch named '{name}' already exists\n")
+            return (128, f"fatal: '{name}' is already used by worktree at '/other/wt'\n")
+        if argv[:2] == ["status", "--porcelain"]:
+            return (0, "")
+        if argv == ["symbolic-ref", "HEAD"]:
+            return (1, "fatal: ref HEAD is not a symbolic ref\n") if self.head is None \
+                else (0, "refs/heads/" + self.head + "\n")
+        return (0, "")
+
+    def did(self, *prefix) -> bool:
+        return any(c[: len(prefix)] == list(prefix) for c in self.calls)
+
+
+def test_alloc_idle_branch_checked_out_elsewhere_raises_checkoutfailed(wp):
+    """(항목7) alloc case3(idle) — 타 worktree 점유 브랜치를 --branch 로 주면 CheckoutFailed·
+    리스 상태/브랜치 ref 불변(불변식1 을 alloc 경로에서 실증)."""
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="", pid=0, state="idle"))
+    git = _AllocElsewhereGit(head="a1-old", locked_branch="task/main")
+    with pytest.raises(wp.CheckoutFailed):
+        wp.alloc("A", branch="task/main", session="me", git_runner=git)
+    after = wp.list_leases()[0]
+    assert after.state == "idle"
+    assert after.session == ""
+    assert not git.did("checkout", "--no-recurse-submodules", "-B", "task/main")
+
+
 # ════════════════════════════════════════════════════════════════════════
 # task-명의 alloc = 항상 신규 대여 (ADR-0068 I3·④·T-0398)
 # owner_task 로 부르면 idempotent 1경로를 건너뛰어 같은 repo 복수 보유를 지원하고, task 소유
@@ -2647,6 +2696,63 @@ def test_real_git_list_git_worktrees_and_reconcile(proj, tmp_path):
     recon2 = wp.reconcile_worktrees()
     assert {l.slot for l in recon2.stale} == {"work/A_1"}, "장부만 남고 worktree 없음이 stale 미판정"
     assert recon2.orphans == []
+
+
+@_git_required
+def test_real_git_switch_refuses_branch_checked_out_by_other_worktree(proj, tmp_path, capsys):
+    """실 git 두 worktree — CLI `switch` 진입점이 타 worktree 점유 브랜치 전환을 rc 1·부작용 0 으로 거부.
+
+    구 프리미티브(`-B` 폴백)는 plain checkout 이 타 worktree 점유로 rc 128 이면 무조건 `-B` 로
+    재시도해 그 브랜치 ref 를 이 슬롯 HEAD 로 리셋했다(idle 슬롯에 통합 브랜치 `switch` 를 연속
+    실행하면 브랜치가 되감기는 실사고 클래스). holder(task/main)에 커밋을 하나 더해 holder tip 을
+    caller(dev/x) HEAD 와 다른 커밋으로 갈라놓는다 — 갈라놓지 않으면 둘 다 같은 bare 초기 커밋을
+    가리켜, 리셋 회귀가 나도 holder tip 이 우연히 그 값 그대로라 before==after 검사가 공허해진다.
+    실제 CLI 진입점 `wp.main(["switch", ...])` 로 rc 1 · holder tip · caller HEAD · 장부 파일
+    바이트가 모두 불변인지 백스톱한다(선-검사 `checked-out-elsewhere`(진단) + 프리미티브 `-b`
+    고정(불변식1) 두 층).
+    """
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    _mk_real_bare(wp, "A", tmp_path)
+
+    holder = wp.create_slot("A", branch="task/main", session="me1", init_submodules=False)
+    other = wp.create_slot("A", branch="dev/x", session="me2", init_submodules=False)
+    assert holder.slot == "work/A_1" and other.slot == "work/A_2"
+
+    # holder 에 커밋 1개를 더해 holder tip 을 caller HEAD 와 다른 커밋으로 만든다(검사 공허화 방지).
+    holder_path = wp.slot_path(holder.slot)
+    (holder_path / "advance.txt").write_text("holder advance\n", encoding="utf-8")
+    _git(holder_path, "add", "advance.txt")
+    _git(holder_path, "commit", "-q", "-m", "holder advance")
+
+    other_path = wp.slot_path(other.slot)
+    before_holder_sha = _git(holder_path, "rev-parse", "task/main").stdout.strip()
+    before_caller_sha = _git(other_path, "rev-parse", "HEAD").stdout.strip()
+    assert before_holder_sha != before_caller_sha, \
+        "holder tip 과 caller HEAD 가 갈라지지 않음(before==after 검사가 공허해짐)"
+    before_ledger = wp.LEASES_FILE.read_bytes()
+
+    rc = wp.main(["switch", other.slot, "task/main"])
+    err = capsys.readouterr().err
+
+    assert rc == 1, f"CLI 진입점 wp.main(['switch', ...]) 이 rc 1 을 내지 않음(rc={rc})"
+    assert "다른 worktree 가 이미 checkout 중인" in err, \
+        f"checked-out-elsewhere 사유가 stderr 에 안 실림: {err!r}"
+    assert "A_1" in err, f"보유 worktree 경로가 stderr 에 안 실림: {err!r}"
+
+    # 보유 브랜치 ref 불변(리셋 0).
+    after_holder_sha = _git(holder_path, "rev-parse", "task/main").stdout.strip()
+    assert after_holder_sha == before_holder_sha, "타 worktree 보유 브랜치 ref 가 움직임(리셋 회귀)"
+
+    # 피해(호출) 슬롯도 전환 시도 없이 원래 브랜치·HEAD 그대로(부작용 0).
+    after_caller_sha = _git(other_path, "rev-parse", "HEAD").stdout.strip()
+    assert after_caller_sha == before_caller_sha, "피해 슬롯 HEAD 가 움직임(부작용 0 위반)"
+    other_head = _git(other_path, "symbolic-ref", "--short", "HEAD").stdout.strip()
+    assert other_head == "dev/x", "피해 슬롯이 실제로 전환됨(부작용 0 위반)"
+
+    # 장부도 바이트 단위로 불변(선-검사 거부는 재기록을 하지 않는다).
+    after_ledger = wp.LEASES_FILE.read_bytes()
+    assert after_ledger == before_ledger, "장부 파일이 바이트 단위로 바뀜(재기록이 실행됨=부작용)"
 
 
 @_git_required
@@ -6685,13 +6791,20 @@ class _SwitchGit(FakeGit):
     (codex 게이트 must-fix). `emit` 로 비정상 출력(빈 문자열 등)도 모델할 수 있다.
 
     **전환은 기존 프리미티브 경로**(`_checkout_required` → `_checkout` + selective resync·T-0414
-    재배선)라 `checkout --no-recurse-submodules <b>`(미존재면 rc≠0) / `… -B <b>`(생성)를 실 git
-    처럼 모델한다. submodule 계열(`submodule status`·`-C <sub> …`)은 **기존 `_SubmoduleGit` 모델에
+    재배선)라 `checkout --no-recurse-submodules <b>`(미존재면 rc≠0) / `… -b <b>`(생성-실패-불가)를
+    실 git 처럼 모델한다(`-b` 는 이름이 이미 있으면 rc≠0 — `-B` 의 create-or-reset 과 다른
+    지점). submodule 계열(`submodule status`·`-C <sub> …`)은 **기존 `_SubmoduleGit` 모델에
     위임**한다(대역 로직 중복 0·`subs`={path:(role,dirty)}·호출 기록 리스트 공유). raw `git switch`
-    핸들러는 **사람이 손으로 전환하는 경로**(diverged 재현)용으로 남긴다 — 엔진은 안 쓴다."""
+    핸들러는 **사람이 손으로 전환하는 경로**(diverged 재현)용으로 남긴다 — 엔진은 안 쓴다.
+
+    **`worktree_list_porcelain`/`worktree_list_rc`**: `checked-out-elsewhere` 선-검사가 부르는
+    `worktree list --porcelain` 을 모델한다. 기본값(None·rc 0)은 빈 목록(보유자 없음)이라 기존
+    switch 테스트는 무영향. `_porcelain(...)` 픽스처로 값을 준다."""
 
     def __init__(self, *, refs=(), bad_refs=(), checkout_rc: int = 0, expand=None,
-                 emit=None, subs=None, remote_refs=(), tags=(), **kwargs):
+                 emit=None, subs=None, remote_refs=(), tags=(),
+                 worktree_list_porcelain: "str | None" = None, worktree_list_rc: int = 0,
+                 **kwargs):
         super().__init__(**kwargs)
         self.refs = set(refs)
         self.remote_refs = set(remote_refs)  # `refs/remotes/<x>` 존재(예 "origin/main").
@@ -6702,8 +6815,15 @@ class _SwitchGit(FakeGit):
         self.emit = emit                   # None 아니면 check-ref-format stdout 을 이 값으로 고정.
         self._sub = _SubmoduleGit(subs)    # submodule 판정/재동기 모델 재사용.
         self._sub.calls = self.calls       # 호출 기록 공유(did/resynced 가 한 목록을 본다).
+        # `checked-out-elsewhere` 선-검사 모델 — `_porcelain(...)` 픽스처 문자열.
+        # None(기본)이면 빈 목록(보유자 없음) → 기존 모든 switch 테스트 무영향.
+        self.worktree_list_porcelain = worktree_list_porcelain
+        self.worktree_list_rc = worktree_list_rc  # ≠0 = 선-검사 fail-open 모델(불변식4).
 
     def __call__(self, argv: list) -> tuple[int, str]:
+        if argv[:3] == ["worktree", "list", "--porcelain"]:
+            self.calls.append(list(argv))
+            return (self.worktree_list_rc, self.worktree_list_porcelain or "")
         if argv[:3] == ["show-ref", "--verify", "--quiet"]:
             self.calls.append(list(argv))
             ref = argv[3]
@@ -6835,13 +6955,79 @@ def test_checkout_create_only_is_non_destructive(wp):
 
 
 def test_checkout_default_path_unchanged(wp):
-    """`_checkout` 기본값(create_only=False) 동작 불변 — 기존 호출부(alloc 3분기) 회귀 0."""
+    """`_checkout` 기본값(create_only=False) — plain 먼저·실패 시 `-b` 폴백(불변식1·항목8).
+
+    구 폴백은 `-B`(create-or-reset)였다 — 존재 브랜치 전환이 plain 실패(예: 타 worktree 점유)를
+    만나면 그 브랜치 ref 를 리셋했다(공유 통합 브랜치 clobber 실사고). `-b`(create-or-fail)로
+    고정한 뒤에도 로컬 브랜치가 실제로 없는 정상 생성 경로(alloc 3분기)는 결과가 같다(rc 0·
+    새 브랜치 생성) — 의도(plain 먼저, 실패 시 생성)는 불변, 플래그만 비파괴로 바뀐다."""
     git = _SwitchGit(head="old")
     rc, _out = wp._checkout(wp.slot_path("work/A_1"), "brand-new", git_runner=git)
     assert rc == 0
     assert git.did("checkout", "--no-recurse-submodules", "brand-new")        # plain 먼저
-    assert git.did("checkout", "--no-recurse-submodules", "-B", "brand-new")  # 실패 시 -B 폴백
-    assert not git.did("checkout", "--no-recurse-submodules", "-b", "brand-new")
+    assert git.did("checkout", "--no-recurse-submodules", "-b", "brand-new")  # 실패 시 -b 폴백(create-or-fail)
+    assert not git.did("checkout", "--no-recurse-submodules", "-B", "brand-new")  # -B(reset) 재발 가드
+
+
+# ── switch — checked-out-elsewhere 선-검사(공유 통합 브랜치 clobber 거부) ──────────────────
+# 실사고 클래스: idle 슬롯에 `switch <slot> task/main` 을 연속 실행하면 통합 브랜치가 되감긴다.
+# 원인은 `_checkout` 의 무조건 `-B` 재시도(위에서 닫음) — 여기는 그 앞단, 선-검사가 전환 시도
+# 전에 부작용 0 으로 거부하는지(진단·명시 사유 포함)를 검증한다.
+
+
+def test_switch_self_held_branch_passes_hermetic(wp):
+    """(항목1) 자기 슬롯이 이미 보유한 브랜치로의 재-switch 는 통과 — porcelain 에 self 경로만
+    보유자로 등장하면 `_branch_checked_out_elsewhere` 가 self 를 제외하고 None(현존 자산 pin)."""
+    _switch_lease(wp, branch="task/main", head="task/main")
+    porc = _porcelain((str(wp.slot_path("work/A_1")), "task/main"))
+    git = _SwitchGit(head="task/main", head_sha=_NEW_SHA, refs=["task/main"],
+                     worktree_list_porcelain=porc)
+    result = wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    assert result.created is False
+    assert wp.list_leases()[0].git["branch"] == "task/main"
+
+
+def test_switch_home_slot_self_held_branch_passes_hermetic(wp):
+    """(항목2) `HOME_SLOT="."` 채택자가 이미 보유한 브랜치로의 재-switch 통과 — 슬롯 id 가 아니라
+    `slot_path(slot)` 경로 값으로 self 판정(`_slot_from_worktree_path` 는 홈을 None 으로 돌려
+    슬롯 id 비교였다면 false-block 이 났을 형상)."""
+    _switch_lease(wp, slot=".", branch="task/main", head="task/main")
+    porc = _porcelain((str(wp.REPO), "task/main"))
+    git = _SwitchGit(head="task/main", head_sha=_NEW_SHA, refs=["task/main"],
+                     worktree_list_porcelain=porc)
+    result = wp.switch(".", "task/main", protected=["main"], git_runner=git)
+    assert result.created is False
+    assert wp.list_leases()[0].git["branch"] == "task/main"
+
+
+def test_switch_branch_checked_out_elsewhere_refused(wp):
+    """(항목4) 타 worktree 보유 브랜치로 switch 거부 — 보유 경로 표시·전환 시도 0·장부 불변.
+
+    실사고 재현(idle 슬롯 → 통합 브랜치 switch). 구 프리미티브(`-B` 폴백)라면 이 선-검사 없이도
+    checkout 이 성공해 `task/main` ref 를 리셋했다."""
+    _switch_lease(wp, branch="dev/x", head="dev/x")
+    other_path = "/repo/work/A_9"
+    porc = _porcelain((other_path, "task/main"))
+    git = _SwitchGit(head="dev/x", refs=["task/main"], worktree_list_porcelain=porc)
+    with pytest.raises(wp.SwitchRefused) as ei:
+        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    assert ei.value.reason == "checked-out-elsewhere"
+    assert other_path in str(ei.value)
+    assert not git.did("checkout")                              # 전환 시도 0(부작용 0)
+    assert wp.list_leases()[0].git["branch"] == "dev/x"          # 장부 불변
+
+
+def test_switch_worktree_list_failure_failopen_but_primitive_blocks_reset(wp):
+    """(항목6) 선-검사 fail-open 백스톱 — `worktree list` rc≠0 이면 선-검사는 통과시키지만
+    `_checkout` 프리미티브(`-b` 고정)가 리셋을 막는다(불변식4 — 두 층 중 하나가 죽어도 유실 0)."""
+    _switch_lease(wp, branch="dev/x", head="dev/x")
+    git = _SwitchGit(head="dev/x", refs=["task/main"], checkout_rc=1, worktree_list_rc=1)
+    with pytest.raises(wp.SwitchRefused) as ei:
+        wp.switch("work/A_1", "task/main", protected=["main"], git_runner=git)
+    assert ei.value.reason == "git-error"          # 선-검사가 아니라 프리미티브가 잡음(fail-open 실증)
+    assert git.did("checkout", "--no-recurse-submodules", "-b", "task/main")
+    assert not git.did("checkout", "--no-recurse-submodules", "-B", "task/main")
+    assert wp.list_leases()[0].git["branch"] == "dev/x"          # 장부 불변
 
 
 def test_switch_protected_branch_refused(wp):

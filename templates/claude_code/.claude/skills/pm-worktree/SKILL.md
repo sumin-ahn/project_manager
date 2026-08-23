@@ -109,17 +109,11 @@ python3 .project_manager/tools/worktree_pool.py switch <slot> <branch>
     `git rebase --continue`하거나 `git rebase --abort`한다. 미완이므로 장부 base는 갱신하지 않으며,
     다음 부트스트랩 0단계가 "rebase 진행 중"으로 감지·안내한다.
   - **성공**: 장부의 base.commit=새 base tip·head=새 tip·recorded_at을 원자 갱신한다.
-  - **대상 ref 해소**: `--onto` 명시 = 준 ref 그대로(로컬 브랜치면 로컬 tip·자동 대체
-    없음·원격 기준은 `origin/<branch>`로 명시). 생략 = 기록된 base.branch의
-    `origin/<branch>` 우선이되 로컬 `<branch>`가 더 앞서면 로컬 tip을 쓰고 그 사실을
-    stderr 1줄로 알린다.
   - **자동 rebase 없음**: 사용자 요청 때만 실행한다.
 - `refresh`: **readonly 공유 슬롯 전용**. fetch 후 detached HEAD를 `--onto <branch>` 또는 기록된
   base.branch 최신 tip으로 옮기고 submodule을 재동기해 옛 gitlink pin 잔존에 따른 stale+dirty
-  자가 잠금을 막는다. ref 해소 규칙(rebase와 동일): `--onto` 명시 = 준 ref 그대로(로컬 브랜치면
-  로컬 tip·자동 대체 없음·미해소는 loud 거부), 무인자 = 기록된 base.branch 의 `origin/<branch>`
-  우선이되 로컬 `<branch>` 가 더 앞서면 로컬 tip 을 쓰고 그 사실을 stderr 1줄로 알린다(부재 시도
-  같은 폴백).
+  자가 잠금을 막는다. ref 해소 규칙: `--onto` 명시 = 준 ref 그대로(로컬 브랜치면 로컬 tip·자동 대체
+  없음·미해소는 loud 거부), 무인자 = 기록된 base.branch 의 `origin/<branch>` 우선(부재 시 로컬 폴백).
   성공 메시지가 실제 해소된 ref 와 sha 를 찍는다. 이동 tip을 base.commit으로 재기록한다. dirty면 "누군가 여기 썼다"는
   신호이므로 reset하지 않고 loud 거부한다. 기준 미해소 또는 non-readonly 대상은 rc 1이다.
   readonly 슬롯의 `set-base`/`rebase`/`dev`/`sync`·`release`/바인딩(`/pm-bootstrap --slot`)은
@@ -131,7 +125,8 @@ python3 .project_manager/tools/worktree_pool.py switch <slot> <branch>
   rc 1이다. 아직 전환 전이면 `record` 대신 `switch`로 전환과 재기록을 함께 한다.
 - `switch`: `<slot> <branch>`로 슬롯 브랜치를 전환하고 같은 호출에서 장부 branch·head·recorded_at을
   원자 재기록하며 base는 보존한다. 기존 브랜치는 `checkout --no-recurse-submodules <b>`, 미존재
-  브랜치는 비파괴 `-b <b>`로 전환한다. `sync`/`alloc`과 같은 프리미티브
+  브랜치는 비파괴 `-b <b>`로 전환한다. 어느 경로도 `-B`(create-or-reset)를 쓰지 않아 기존 브랜치
+  ref를 리셋하지 않는다. `sync`/`alloc`과 같은 프리미티브
   (`--no-recurse-submodules` + selective resync)를 사용해 on-branch(dev)는 보호하고 detached는 새
   pin으로 재동기하며 dirty는 skip+경고한다. raw `git switch`는 이 보호와 장부 기록을 건너뛰므로
   **손-git을 쓰지 마라**.
@@ -140,6 +135,9 @@ python3 .project_manager/tools/worktree_pool.py switch <slot> <branch>
   - 보호목록(areas.md `protected`) 브랜치(`main` 등)로의 전환.
   - 보호브랜치 원격을 추적하는 기존 브랜치. 다음 0단계가 다시 main-참조로 막으므로 upstream 없는
     새 작업 브랜치(`switch <slot> <새-브랜치명>`)로 전환한다. 자기 feature 추적(`origin/a5`)은 허용.
+  - 다른 worktree가 이미 checkout 중인 브랜치(통합 브랜치 `task/main` 등). 옛 `-B`(create-or-reset)
+    폴백 결함에서는 전환 시 그 브랜치 ref가 이 슬롯 HEAD로 리셋됐다 — 지금은 선-검사가 부작용
+    없이 거부하며 우회 플래그는 없다. 보유 worktree 경로를 함께 보고한다.
   - dirty, rebase 진행 중(먼저 continue/abort), readonly 슬롯, 장부 미등록 슬롯.
   - 부적합 ref명(`git check-ref-format --branch`) 또는 D/F 충돌(브랜치 `task`가 있으면
     `task/main`은 `cannot lock ref`; 접두 부모 ref를 미리 검사).
