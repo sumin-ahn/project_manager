@@ -41,6 +41,20 @@ def board(pd):
 
 # ── 픽스처 빌더 ──────────────────────────────────────────────────────────
 
+# T-0815 설계 근거 게이트(developer 시드 seam) 관심사 밖 — 이 파일의 축은 verify/confirmation
+# 기계화지 설계 근거가 아니다. `render_round_seed`/`render_ticket_growth_section_seed` 를
+# role="developer" 로 직접 부르는 자리에만 앞에 붙여 그 게이트를 waived 로 미리 해소한다
+# (다른 호출부의 ticket_text/spec bytes 는 건드리지 않는다 — 그쪽은 프론트매터를 보지 않는다).
+_DESIGN_WAIVED_FRONTMATTER = (
+    '---\nid: T-XXXX\ndesign: "waived: pm-review-verify 기계 테스트'
+    '(설계 근거 게이트 관심사 밖)"\n---\n'
+)
+
+
+def _with_design_waiver(ticket_text: str) -> str:
+    return _DESIGN_WAIVED_FRONTMATTER + ticket_text
+
+
 def _round(pd, ordinal: int, role: str, text: str):
     rounds_module = pd._load_ticket_rounds()
     return rounds_module.Round(
@@ -218,7 +232,9 @@ def test_seed_prefills_a_verify_row_per_accepted_finding(pd):
     spec = _disposition_block(pd, 1, [
         _decision("F-001", "accepted"), _decision("F-002", "accepted"),
     ])
-    body = pd.render_ticket_growth_section_seed("developer", spec, rounds=[r1])
+    body = pd.render_ticket_growth_section_seed(
+        "developer", _with_design_waiver(spec), rounds=[r1],
+    )
     assert pd.PM_REVIEW_VERIFY_BLOCK in body
     fence = body.split(f"```{pd.PM_REVIEW_VERIFY_BLOCK}\n", 1)[1].split("\n```", 1)[0]
     # 골격의 `machine_verifiable` 자리는 T-0808 이후 따옴표 없는 raw placeholder라 손대지
@@ -233,9 +249,11 @@ def test_seed_prefills_a_verify_row_per_accepted_finding(pd):
 
 def test_seed_has_no_fence_when_accepted_is_empty(pd):
     """accepted 0 건이면 fence 자체가 없다 — 최초 구현 라운드 골격은 bytes 그대로다."""
-    body_no_rounds = pd.render_ticket_growth_section_seed("developer", "")
+    body_no_rounds = pd.render_ticket_growth_section_seed(
+        "developer", _with_design_waiver(""),
+    )
     body_with_empty_rounds = pd.render_ticket_growth_section_seed(
-        "developer", "", rounds=(),
+        "developer", _with_design_waiver(""), rounds=(),
     )
     assert body_no_rounds == body_with_empty_rounds
     assert pd.PM_REVIEW_VERIFY_BLOCK not in body_no_rounds
@@ -259,7 +277,9 @@ def test_seed_degrades_without_fence_when_review_output_is_malformed(pd, capsys)
         pd, 1, "code-reviewer",
         f"## 리뷰 (code-reviewer · 2026-08-22)\n\n```{pd.PM_REVIEW_BLOCK}\nnot json\n```\n",
     )
-    body = pd.render_ticket_growth_section_seed("developer", "", rounds=[r1])
+    body = pd.render_ticket_growth_section_seed(
+        "developer", _with_design_waiver(""), rounds=[r1],
+    )
     assert pd.PM_REVIEW_VERIFY_BLOCK not in body
     assert "accepted delta 를 해소할 수 없어" in capsys.readouterr().err
 
@@ -269,7 +289,7 @@ def test_seed_degrades_without_fence_when_review_output_is_malformed(pd, capsys)
 def test_pending_judgment_reads_only_the_round_body(pd):
     spec, rounds = _basic_ticket(pd)
     seed = pd._load_ticket_rounds().render_round_seed(
-        "developer", spec, today="2026-08-21", rounds=[rounds[0]],
+        "developer", _with_design_waiver(spec), today="2026-08-21", rounds=[rounds[0]],
     )
     body = seed.partition("\n\n")[2]
     assert pd.ticket_round_body_is_pending("developer", body) is True
@@ -735,7 +755,9 @@ def test_machine_confirmation_flow_leaves_internal_ledger_bytes_unchanged(pd, tm
     spec_ok = spec + _confirmation_block(pd, 2, [_confirmation_row("F-001", "resolved")])
     # 시드·판정면·CLI 판정 재료(verify-template) 전부 이 장부 경로를 인자로도 받지 않는다 —
     # 실제로 만지지 않는다는 사실을 bytes 대조로 못박는다.
-    pd.render_ticket_growth_section_seed("developer", spec, rounds=rounds)
+    pd.render_ticket_growth_section_seed(
+        "developer", _with_design_waiver(spec), rounds=rounds,
+    )
     pd.parse_pm_review_delta(spec_ok, rounds)
     pd.pm_review_verify_template(spec, rounds)
     pd.pm_verified_evidence_problem(
@@ -757,7 +779,9 @@ def test_accepted_zero_developer_seed_bytes_are_unchanged_from_pre_t0786(pd):
         "## DoD evidence\n- <완료 조건>: <충족 근거>\n\n"
         "## 민감도\n- <상수/가드 임시 변경 → red, 복원 → green 실측>\n"
     )
-    assert pd.render_ticket_growth_section_seed("developer", "") == pre_t0786_constant
+    assert pd.render_ticket_growth_section_seed(
+        "developer", _with_design_waiver(""),
+    ) == pre_t0786_constant
 
 
 # ── 하위호환: 기존 disposition 블록 2형상(reviewer_role 있음/없음) ────────
@@ -1215,7 +1239,9 @@ def test_shape6_confirmed_ids_leave_both_the_render_and_the_seed_alone(
 
     template = pd.pm_review_verify_template(spec, rounds)
     assert template.seed_prefill_ids() == ()
-    seed = pd.render_ticket_growth_section_seed("developer", spec, rounds=rounds)
+    seed = pd.render_ticket_growth_section_seed(
+        "developer", _with_design_waiver(spec), rounds=rounds,
+    )
     assert pd.PM_REVIEW_VERIFY_BLOCK not in seed   # 손대지 말라고 한 항목을 다시 열지 않는다
     assert _round_trip_clears(pd, spec, rounds, template) == []
 
@@ -1708,7 +1734,7 @@ def _cross_invariant_shape(pd, tmp_path):
         _skeleton_row(pd, "F-001"), _gap_row(pd, "F-002", CROSS_ROUND3_GAP_SUMMARY),
     ]))
     r4 = _round(pd, 4, "developer", rounds_module.render_round_seed(
-        "developer", spec, today="2026-08-22", rounds=[r1, r2, r3],
+        "developer", _with_design_waiver(spec), today="2026-08-22", rounds=[r1, r2, r3],
     ))
     tickets_dir = tmp_path / "tickets"
     _materialize(pd, spec, [r1, r2, r3, r4], tickets_dir, "T-0822")

@@ -334,8 +334,18 @@ def test_harvested_architect_round_passes(anchored):
 
 
 def test_developer_round_does_not_satisfy_the_review_axis(anchored):
-    """다른 역할의 라운드는 점검이 아니다 — 역할로 구분한다(신원 아님)."""
-    _seed_round(anchored, "T-0001", "developer", harvested=True)
+    """다른 역할의 라운드는 점검이 아니다 — 역할로 구분한다(신원 아님).
+
+    seed 대상 티켓 텍스트에 frontmatter(`design: waived`)를 얹는 이유는 T-0815 설계 근거
+    게이트(developer 시드 seam)가 그 값을 읽어서다 — 이 테스트의 관심사(architect 축과
+    developer 축의 구분)와는 무관해, 근거를 값 하나로 미리 해소한다.
+    """
+    _seed_round(
+        anchored, "T-0001", "developer", harvested=True,
+        ticket_text=(
+            '---\nid: T-0001\ndesign: "waived: 설계 근거 게이트 관심사 밖"\n---\n' + _body()
+        ),
+    )
     issues = _issues(anchored, _body(design_section=_DESIGN_FILLED), design="done")
     assert _kinds(issues) == ["architect-review-pending"], issues
 

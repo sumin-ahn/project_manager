@@ -2844,3 +2844,387 @@ def test_parse_round_filename_returning_none_does_not_crash_prepare(
     assert not isinstance(excinfo.value, (TypeError, UnboundLocalError))
     assert "예약한 board 라운드는 남습니다" in str(excinfo.value)
     assert "T-9307" in str(excinfo.value)  # 실제 board_rel(정상 계산)이 실렸다 — fallback 아님
+
+
+# ── T-0815 — developer 라운드 준비 설계 근거 게이트 ──────────────────────────
+#
+# "PM 초안 → architect 점검 → PM 비준" 3단 규율의 판정 seam(`board.design_evidence_problem`,
+# `render_ticket_growth_section_seed` 의 developer 분기)을 진입점 3개(ticket prepare · cross
+# 자동 준비 · board section-add) 전수로 확인한다. `_spec_text` 기본값이 `design: 'waived:
+# test'` 라 그 헬퍼로 만든 기존 티켓은 근거 ③(waived)을 이미 갖고 있으므로, 근거를 값으로
+# 흔드는 테스트는 별도 스펙 빌더(`_design_spec_text`)를 쓴다.
+
+_FILLED_DESIGN_SECTION = (
+    "## 설계\n"
+    "- **경계 실측**: 진입점 3개 실측\n"
+    "- **불변식**: 기록 없는 건너뜀 0\n"
+    "- **표면 상한**: 판정 함수 1개\n"
+    "- **테스트 전략**: 정상 3경로·실패 4형상\n"
+)
+
+
+def _design_spec_text(
+    ticket: str, *, design: str | None, section: str = "",
+    raw_design_line: str | None = None,
+) -> str:
+    """`_spec_text` 골격이되 `design:` 값과 `## 설계` 절을 값으로 바꾼다.
+
+    `design=None` 은 필드 자체를 뺀다(구세대 티켓 재현). `raw_design_line` 은 YAML 을 깨는
+    형상(콜론을 인용 없이 쓴 스칼라)을 frontmatter 에 그대로 박는다 — 그때 `design` 은 무시된다.
+    `json.dumps` 로 값을 인용해 콜론·따옴표가 든 값(예: `waived: 사유`)도 안전하게 싣는다.
+    """
+    if raw_design_line is not None:
+        design_line = raw_design_line
+    elif design is not None:
+        design_line = f"design: {json.dumps(design, ensure_ascii=False)}\n"
+    else:
+        design_line = ""
+    return (
+        "---\n"
+        f"id: {ticket}\n"
+        "title: 설계 근거 게이트\n"
+        "status: claimed\n"
+        "created: '2026-08-18'\n"
+        "created_by: test\n"
+        "claimed_by: test/slot\n"
+        "claimed_at: '2026-08-18T00:00:00+00:00'\n"
+        "completed_at: null\n"
+        "depends_on: []\n"
+        "blocks: []\n"
+        "touches: []\n"
+        "estimate: medium\n"
+        + design_line
+        + "tags: []\n"
+        "---\n"
+        f"# {ticket}\n\n## 목표\n설계 근거 게이트 검증.\n"
+        + (f"\n{section}\n" if section else "")
+    )
+
+
+def _write_design_spec(tickets: Path, ticket: str, **kwargs) -> Path:
+    path = tickets / f"{ticket}-rounds.md"
+    path.write_text(_design_spec_text(ticket, **kwargs), encoding="utf-8", newline="\n")
+    return path
+
+
+def _harvest_architect_round(pd, pm_home: Path, slot: Path, ticket: str) -> None:
+    """실 준비→편집→회수로 architect 라운드 1개를 board 에 실산출로 남긴다(조립 dict 아님)."""
+    plan = pd.prepare_ticket_copy(
+        ticket=ticket, role="architect", cwd=slot, pm_home=pm_home,
+    )
+    plan.path.write_text(
+        plan.path.read_text(encoding="utf-8") + "\n실측 근거\n",
+        encoding="utf-8", newline="",
+    )
+    pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
+
+
+# ── 정상 경로(오탐 0 · I2) ───────────────────────────────────────────────────
+
+def test_design_gate_passes_after_a_harvested_architect_round(pd, rounds_env):
+    """근거 ①(회수된 architect 라운드) — fix 라운드(2·3회차)에서도 근거는 소멸하지 않는다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    ticket = "T-8100"
+    _write_design_spec(tickets, ticket, design="n/a")
+    _harvest_architect_round(pd, pm_home, slot, ticket)
+
+    first = pd.prepare_ticket_copy(
+        ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
+    )
+    assert first.board_path.name == "02-developer.md"
+    first.path.write_text(
+        first.path.read_text(encoding="utf-8") + "\n## 변경 파일\n- x\n",
+        encoding="utf-8", newline="",
+    )
+    pd.harvest_ticket_copy(copy_path=first.path, cwd=slot, pm_home=pm_home)
+
+    second = pd.prepare_ticket_copy(
+        ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
+    )
+    assert second.board_path.name == "03-developer.md"
+
+
+def test_design_gate_passes_with_done_and_a_filled_design_section(pd, rounds_env):
+    """근거 ②(`design: done` + 설계 절 4항목 충전) — architect 라운드 없이도 통과한다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    ticket = "T-8101"
+    _write_design_spec(tickets, ticket, design="done", section=_FILLED_DESIGN_SECTION)
+
+    plan = pd.prepare_ticket_copy(
+        ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
+    )
+    assert plan.board_path.name == "01-developer.md"
+
+
+def test_design_gate_passes_with_an_explicit_waived_reason(pd, rounds_env):
+    """근거 ③(`design: "waived: <사유>"`) — 사유가 있으면 architect 라운드 없이도 통과한다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    ticket = "T-8102"
+    _write_design_spec(tickets, ticket, design="waived: 검증 스코프 밖")
+
+    plan = pd.prepare_ticket_copy(
+        ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
+    )
+    assert plan.board_path.name == "01-developer.md"
+
+
+def test_design_gate_rejects_a_seed_only_architect_round_then_passes_after_harvest(
+    pd, rounds_env,
+):
+    """I3 — 시드 그대로인 architect 라운드는 근거가 아니다. 같은 라운드를 회수하면 같은
+    호출이 통과로 뒤집힌다(값으로)."""
+    pm_home, slot, tickets, _sync = rounds_env
+    ticket = "T-8103"
+    _write_design_spec(tickets, ticket, design="n/a")
+    architect = pd.prepare_ticket_copy(
+        ticket=ticket, role="architect", cwd=slot, pm_home=pm_home,
+    )
+
+    with pytest.raises(pd.DelegateError, match="developer 라운드 준비 거부") as caught:
+        pd.prepare_ticket_copy(
+            ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
+        )
+    assert "architect 라운드를 회수" in str(caught.value)
+    # I8 — 거부는 board·장부에 잔여를 남기지 않는다(시드 architect 라운드 파일 1개만 존재).
+    assert sorted(
+        item.name for item in _rounds_dir(pm_home, ticket).iterdir()
+    ) == ["01-architect.md"]
+    assert [row["ticket"] for row in _ledger_rows(pm_home) if row["role"] == "developer"] == []
+
+    architect.path.write_text(
+        architect.path.read_text(encoding="utf-8") + "\n실측 근거\n",
+        encoding="utf-8", newline="",
+    )
+    pd.harvest_ticket_copy(copy_path=architect.path, cwd=slot, pm_home=pm_home)
+
+    developer = pd.prepare_ticket_copy(
+        ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
+    )
+    assert developer.board_path.name == "02-developer.md"
+
+
+# ── 실패 경로(I1·I9) — 기록 없는 건너뜀 0 ────────────────────────────────────
+
+@pytest.mark.parametrize(
+    ("ticket", "kwargs"),
+    [
+        ("T-8110", dict(design="n/a")),
+        ("T-8111", dict(design=None)),
+        ("T-8112", dict(design="required")),
+        ("T-8113", dict(design="done")),   # section="" — 설계 절 미충전
+    ],
+    ids=["na-no-rounds", "field-absent", "required", "done-unfilled"],
+)
+def test_design_gate_rejects_when_no_evidence_is_on_record(
+    pd, rounds_env, ticket, kwargs,
+):
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_design_spec(tickets, ticket, **kwargs)
+    copy_root = slot / pd.TICKET_COPY_REL_ROOT / ticket
+    slot_before = set(copy_root.iterdir()) if copy_root.exists() else set()
+
+    with pytest.raises(pd.DelegateError, match="developer 라운드 준비 거부") as caught:
+        pd.prepare_ticket_copy(
+            ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
+        )
+
+    message = str(caught.value)
+    # 사유에 해소 수단 3종이 실린다(architect 회수·done+절 충전·board.py design waived).
+    assert "architect 라운드를 회수" in message
+    assert "design: done" in message and "설계" in message
+    assert 'board.py design T-NNNN "waived' in message
+    assert not _rounds_dir(pm_home, ticket).exists() or list(
+        _rounds_dir(pm_home, ticket).iterdir()
+    ) == []
+    assert [row for row in _ledger_rows(pm_home) if row["ticket"] == ticket] == []
+    slot_after = set(copy_root.iterdir()) if copy_root.exists() else set()
+    assert slot_after == slot_before  # 슬롯 run-dir 잔여 0
+
+
+@pytest.mark.parametrize(
+    ("ticket", "design"),
+    [("T-8114", "waived"), ("T-8115", "waived:  ")],
+    ids=["bare-waived", "blank-reason"],
+)
+def test_design_gate_rejects_waived_without_a_non_empty_reason(
+    pd, rounds_env, ticket, design,
+):
+    """I6 — 사유 없는 면제는 통과가 아니다(`_design_state` 가 이미 invalid 로 거부)."""
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_design_spec(tickets, ticket, design=design)
+    board = pd._load_board()
+    assert board._design_state(design) == board.DESIGN_INVALID
+
+    with pytest.raises(pd.DelegateError, match="design 값 인식 불가"):
+        pd.prepare_ticket_copy(
+            ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
+        )
+
+
+def test_design_gate_rejects_unparseable_design_scalar_without_crashing(pd, rounds_env):
+    """I9 — 콜론을 인용 없이 쓴 스칼라(엔진이 이미 문서화한 손상 모드)는 판정불능이라
+    통과가 아니라 제어된 거부다(`yaml.YAMLError` 가 traceback 으로 새지 않는다)."""
+    pm_home, slot, tickets, _sync = rounds_env
+    ticket = "T-8116"
+    _write_design_spec(
+        tickets, ticket, design=None,
+        raw_design_line="design: waived: 인용 없는 콜론 스칼라\n",
+    )
+
+    with pytest.raises(pd.DelegateError, match="명세 파싱 실패") as caught:
+        pd.prepare_ticket_copy(
+            ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
+        )
+    assert "developer 라운드 준비 거부" in str(caught.value)
+
+
+# ── F-001(fix 라운드 4) — architect shortcut 이 판정불능을 통과로 삼키면 안 된다 ─────
+
+def test_design_gate_rejects_malformed_frontmatter_even_with_a_harvested_architect_round(
+    pd, rounds_env,
+):
+    """회수된 architect 라운드(근거 ①)가 있어도 명세 파싱 실패는 판정불능이라 통과가
+    아니다 — frontmatter 파싱은 architect shortcut 보다 먼저 수행된다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    ticket = "T-8118"
+    _write_design_spec(tickets, ticket, design="n/a")
+    _harvest_architect_round(pd, pm_home, slot, ticket)
+    _write_design_spec(
+        tickets, ticket, design=None,
+        raw_design_line="design: waived: 인용 없는 콜론 스칼라\n",
+    )
+
+    with pytest.raises(pd.DelegateError, match="명세 파싱 실패") as caught:
+        pd.prepare_ticket_copy(
+            ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
+        )
+    assert "developer 라운드 준비 거부" in str(caught.value)
+
+
+def test_design_gate_rejects_invalid_design_even_with_a_harvested_architect_round(
+    pd, rounds_env,
+):
+    """회수된 architect 라운드(근거 ①)가 있어도 `design` 값 인식 불가는 판정불능이라
+    통과가 아니다 — design 유효성 검사는 architect shortcut 보다 먼저 수행된다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    ticket = "T-8119"
+    _write_design_spec(tickets, ticket, design="n/a")
+    _harvest_architect_round(pd, pm_home, slot, ticket)
+    _write_design_spec(tickets, ticket, design="waived")  # 사유 없는 면제 = invalid
+
+    with pytest.raises(pd.DelegateError, match="design 값 인식 불가"):
+        pd.prepare_ticket_copy(
+            ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
+        )
+
+
+# ── I7 — 다른 역할·다른 면은 무영향 ───────────────────────────────────────────
+
+def test_design_gate_does_not_apply_to_non_developer_roles(pd, rounds_env):
+    """근거 0(design: n/a·rounds 0)이어도 architect·researcher 준비는 막히지 않는다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    ticket = "T-8117"
+    _write_design_spec(tickets, ticket, design="n/a")
+
+    architect = pd.prepare_ticket_copy(
+        ticket=ticket, role="architect", cwd=slot, pm_home=pm_home,
+    )
+    assert architect.board_path.name == "01-architect.md"
+    researcher = pd.prepare_ticket_copy(
+        ticket=ticket, role="researcher", cwd=slot, pm_home=pm_home,
+    )
+    assert researcher.board_path.name == "02-researcher.md"
+
+
+# ── I4·I5 — 진입점 파리티(판정 1개소·rc 정책 1개소) ───────────────────────────
+
+def test_all_three_entry_points_report_the_identical_rejection_reason(
+    pd, refund_env, monkeypatch, capsys,
+):
+    """세 진입점(ticket prepare·cross 자동 준비·board section-add)이 같은 사유 문자열을
+    낸다 — 판정이 한 seam 에만 있다는 것의 값 형태(I4). 사유는 tid 를 싣지 않으므로(시드
+    seam 은 실 ticket id 를 모른다) 서로 다른 티켓이어도 문자열은 동일하다."""
+    home, tickets = refund_env
+    _write_design_spec(tickets, "T-8140", design="n/a")
+
+    with pytest.raises(pd.DelegateError) as caught1:
+        pd.prepare_ticket_copy(
+            ticket="T-8140", role="developer", cwd=home, pm_home=home,
+        )
+    message1 = str(caught1.value)
+
+    board_fixture = _fixture_board(pd, home, [])
+    rc3 = board_fixture.main(["section-add", "T-8140", "--role", "developer"])
+    err3 = capsys.readouterr().err
+    assert rc3 == 1
+    assert err3.rstrip("\n") == f"cannot section-add: {message1}"
+
+    capsys.readouterr()
+    _write_design_spec(tickets, "T-8141", design="n/a")
+    prompt = home / "task.md"
+    prompt.write_text("작업 내용", encoding="utf-8")
+    rc2 = pd.main(
+        ["--role", "developer", "--prompt-file", str(prompt), "--cwd", str(home),
+         "--ticket", "T-8141", "--output-dir", str(home / "raw")],
+        run_fn=lambda *a, **k: pytest.fail("설계 근거 거부 뒤 스폰되면 안 됨"),
+    )
+    assert rc2 == 1
+    err2 = capsys.readouterr().err
+    assert message1 in err2
+
+
+# ── 민감도 — 판정 호출을 빼면 red, 강제하면 정상 통과도 red ──────────────────
+
+def test_disabling_the_design_gate_turns_every_rejection_shape_green(
+    pd, rounds_env, monkeypatch,
+):
+    """판정 함수를 항상-통과로 치환하면 거부 형상이 rc=0 으로 뒤집힌다 — 판정 호출을
+    빼면 red 라는 것의 역방향 값 형태. entry 1·2(같은 `pd` 그래프)는 `pd._load_board()`,
+    entry 3(별도 board 사본)는 그 사본의 delegate 체인에서 **같은 자리**를 무력화한다."""
+    pm_home, slot, tickets, sync_log = rounds_env
+    monkeypatch.setattr(
+        pd._load_board(), "design_evidence_problem", lambda *a, **k: None,
+    )
+    board_fixture = _fixture_board(pd, pm_home, sync_log)
+    board_via_delegate = (
+        board_fixture._load_ticket_rounds()._load_pm_delegate()._load_board()
+    )
+    monkeypatch.setattr(
+        board_via_delegate, "design_evidence_problem", lambda *a, **k: None,
+    )
+
+    _write_design_spec(tickets, "T-8130", design="n/a")
+    plan = pd.prepare_ticket_copy(
+        ticket="T-8130", role="developer", cwd=slot, pm_home=pm_home,
+    )
+    assert plan.board_path.name == "01-developer.md"
+
+    _write_design_spec(tickets, "T-8131", design="n/a")
+    rc = board_fixture.main(["section-add", "T-8131", "--role", "developer"])
+    assert rc == 0
+
+
+def test_forcing_the_design_gate_turns_every_pass_shape_red(pd, rounds_env, monkeypatch):
+    """판정 함수를 항상-거부로 치환하면 정상 통과 형상(기본 `design: waived: test`)도
+    red 로 뒤집힌다 — 세 진입점이 같은 함수를 지난다는 것의 값 형태."""
+    pm_home, slot, tickets, sync_log = rounds_env
+
+    def _always_block(*_args, **_kwargs):
+        return "test: 강제 거부"
+
+    monkeypatch.setattr(pd._load_board(), "design_evidence_problem", _always_block)
+    board_fixture = _fixture_board(pd, pm_home, sync_log)
+    board_via_delegate = (
+        board_fixture._load_ticket_rounds()._load_pm_delegate()._load_board()
+    )
+    monkeypatch.setattr(board_via_delegate, "design_evidence_problem", _always_block)
+
+    _write_spec(tickets, "T-8132")
+    with pytest.raises(pd.DelegateError, match="강제 거부"):
+        pd.prepare_ticket_copy(
+            ticket="T-8132", role="developer", cwd=slot, pm_home=pm_home,
+        )
+
+    _write_spec(tickets, "T-8133")
+    rc = board_fixture.main(["section-add", "T-8133", "--role", "developer"])
+    assert rc == 1
