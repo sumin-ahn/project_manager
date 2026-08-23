@@ -1706,6 +1706,9 @@ def test_task_stage_plan_separates_pm_outputs_and_worktree_touches(tf, tmp_path,
                                    (("M ", ".project_manager/wiki/log/current.md"),)),
         status_entries_at_fn=lambda cwd: (status_calls.append(("task", cwd)) or
                                           (("M ", "others.py"), (" M", "missed.py"))),
+        # 잔여 preflight 는 별도 관심사 — 이 테스트의 초점은 두-repo stage 분리·[4/5]
+        # 사후 loud 보고이지 새 preflight 판정이 아니다. off로 그 초점만 남긴다.
+        residual_block_fn=lambda ticket_id: None,
         log_file=home / ".project_manager/wiki/log/current.md",
         task_workspace=worktree,
     )
@@ -2073,6 +2076,10 @@ def test_unterminated_frontmatter_fallback_keeps_finish_flow_open(
         stage_scope_fn=lambda tid: tf.StageScope((), None),
         status_entries_fn=lambda: (),
         dod_block_fn=lambda tid: None,
+        # 잔여 preflight 는 board.board_root() 조회를 태운다 — 이 fixture 의 board_py 는
+        # ENGINE_REV 가 없는 손상 사본이라 그 조회 자체가 skew fail-loud 다. 이 테스트의 초점은
+        # frontmatter 손상 폴백이라 off 로 그 관심사만 남긴다.
+        residual_block_fn=lambda tid: None,
         log_file=tmp_path / "log.md",
         board_py=board_py,
     )
@@ -2348,6 +2355,143 @@ def test_dry_run_is_also_refused_by_the_dod_preflight(tf, tmp_path):
     assert finisher.run("T-1234", section=None, dry_run=True) == 1
 
 
+# ── 잔여(코드 트리 dirty ⊄ 선언 스코프) preflight ──────────────────
+#
+# 경고→차단: DoD preflight 와 같은 순서 결함(차단이 [4/5] 안에만 있으면 board complete 가 이미
+# 기록된 뒤에야 막혀 되돌릴 수 없다)을 같은 방식(진입 게이트로 승격)으로 닫는다.
+
+
+def _residual_finisher(tf, tmp_path, *, residual_block, log_file: Path | None = None):
+    """잔여 preflight 만 살아 있는 finisher — `_dod_finisher` 동형(나머지 부작용 seam 폭발 대역)."""
+    return tf.TicketFinisher(
+        run_pytest_fn=_boom_pytest,
+        run_board_fn=lambda args: (_ for _ in ()).throw(AssertionError("board 미호출")),
+        run_git_fn=lambda args: (_ for _ in ()).throw(AssertionError("git 미호출")),
+        board_count_fn=lambda: 10,
+        ticket_title_fn=lambda tid: "t",
+        affected_domain_fn=lambda tid: [],
+        diff_cap_block_fn=lambda tid: None,
+        dod_block_fn=lambda tid: None,
+        residual_block_fn=lambda tid: residual_block,
+        log_file=log_file if log_file is not None else tmp_path / "log.md",
+    )
+
+
+def test_residual_preflight_blocks_before_the_log_skeleton(tf, tmp_path, capsys):
+    """잔여 차단 → rc 1 · 회귀/log/board/git 어느 것도 건드리지 않는다(complete 미실행 · DoD)."""
+    log_file = tmp_path / "log.md"
+    finisher = _residual_finisher(
+        tf, tmp_path, log_file=log_file,
+        residual_block="완료 기록 거부 — T-1234 코드 트리에 선언 스코프 밖 변경이 남아 있다.")
+    assert finisher.run("T-1234", section=None, dry_run=False) == 1
+    assert not log_file.exists(), "차단된 실행이 stray 스켈레톤을 남겼다"
+    err = capsys.readouterr().err
+    assert "[중단]" in err and "T-1234" in err
+
+
+def test_residual_preflight_runs_after_the_dod_block(tf, tmp_path, capsys):
+    """진입 게이트 순서 = 서킷브레이커 → DoD → 잔여(더 넓은/앞선 거절이 먼저·안내 1개만 뜬다)."""
+    finisher = tf.TicketFinisher(
+        run_pytest_fn=_boom_pytest,
+        board_count_fn=lambda: 10,
+        ticket_title_fn=lambda tid: "t",
+        affected_domain_fn=lambda tid: [],
+        diff_cap_block_fn=lambda tid: None,
+        dod_block_fn=lambda tid: "DoD 미마감 — T-1234",
+        residual_block_fn=lambda tid: (_ for _ in ()).throw(
+            AssertionError("DoD 차단 뒤에는 잔여 판정을 묻지 않는다")),
+        log_file=tmp_path / "log.md",
+    )
+    assert finisher.run("T-1234", section=None, dry_run=False) == 1
+    assert "DoD 미마감" in capsys.readouterr().err
+
+
+def test_preflight_seam_order_is_diff_cap_dod_residual_self_axis(tf, tmp_path):
+    """네 진입 게이트 seam 의 호출 배열을 값으로 고정한다 — diff_cap → dod → residual →
+    self_axis. residual 이 차단하면 self_axis(poison)는 **불리지 않는다**(순서가 값으로
+    확인되지 않으면 residual 삽입이 뒤로 밀려도 코드 리뷰로만 잡힌다)."""
+    calls: list[str] = []
+    finisher = tf.TicketFinisher(
+        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("회귀 미호출이어야 한다")),
+        run_board_fn=lambda args: (_ for _ in ()).throw(AssertionError("board 미호출")),
+        run_git_fn=lambda args: (_ for _ in ()).throw(AssertionError("git 미호출")),
+        diff_cap_block_fn=lambda tid: calls.append("diff_cap") or None,
+        dod_block_fn=lambda tid: calls.append("dod") or None,
+        residual_block_fn=lambda tid: calls.append("residual") or "잔여 1건 — T-1234",
+        self_axis_block_fn=lambda tid: calls.append("self_axis") or None,
+        log_file=tmp_path / "log.md",
+    )
+    assert finisher.run("T-1234", section=None, dry_run=False) == 1
+    assert calls == ["diff_cap", "dod", "residual"], "residual 차단인데 self_axis 가 불렸다"
+
+
+def test_residual_preflight_dry_run_is_also_refused(tf, tmp_path):
+    """dry-run 도 같은 거절이다 — 미리보기는 게이트 면제가 아니다."""
+    finisher = _residual_finisher(tf, tmp_path, residual_block="잔여 1건")
+    assert finisher.run("T-1234", section=None, dry_run=True) == 1
+
+
+def test_default_residual_block_treats_scope_error_as_a_block(tf, tmp_path):
+    """`scope_error` 는 '판정 불가'가 아니라 차단이다 — 이 실행은 아무것도 stage 못한다는
+    확정 사실이라, 여기서 fail-soft 하면 전량 미머지가 조용히 통과한다."""
+    finisher = tf.TicketFinisher(
+        stage_scope_fn=lambda tid: tf.StageScope((), "board 모듈을 로드하지 못했다"),
+        status_entries_fn=lambda: (),
+        log_file=tmp_path / "log.md",
+    )
+    block = finisher._default_residual_block("T-1234")
+    assert block is not None
+    assert "스코프를 산출하지 못했다" in block and "board 모듈을 로드하지 못했다" in block
+
+
+def test_default_residual_block_passes_when_nothing_is_dirty(tf, tmp_path):
+    """스코프 밖 잔여가 전혀 없으면 None — 정상 완료 흐름은 무영향(역방향 회귀)."""
+    finisher = tf.TicketFinisher(
+        stage_scope_fn=lambda tid: tf.StageScope(("src/a.py",), None),
+        status_entries_fn=lambda: (("M ", "src/a.py"),),
+        log_file=tmp_path / "log.md",
+    )
+    assert finisher._default_residual_block("T-1234") is None
+
+
+def test_residual_preflight_ignores_the_pm_home_plan_in_separated_configuration(
+        tf, tmp_path, monkeypatch, capsys):
+    """분리 형상(두-git)에서 PM 홈 산출물 계획(cwd=REPO)의 잔여는 판정에 안 들어간다 — 다른 PM
+    세션의 wiki WIP 로 내 완료가 막히지 않는다(I2 · 두-계획 픽스처는
+    `test_task_stage_plan_separates_pm_outputs_and_worktree_touches` 재사용).
+    """
+    home = tmp_path / "pm-home"
+    worktree = home / "work" / "project_manager_1"
+    worktree.mkdir(parents=True)
+    (home / ".project_manager" / "wiki" / "log").mkdir(parents=True)
+    monkeypatch.setattr(tf, "REPO", home)
+
+    def fake_scope(ticket_id, board_py, log_file, run_git, *, repo=None,
+                   include_touches=True, include_engine_outputs=True,
+                   touches_workspace=None, touches=None):
+        repo = Path(repo or home)
+        if include_engine_outputs:
+            return tf.StageScope((".project_manager/wiki/log/current.md",), None)
+        return tf.StageScope(("tests/test_real_change.py",), None)
+
+    monkeypatch.setattr(tf, "stage_scope", fake_scope)
+    finisher = tf.TicketFinisher(
+        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("--no-pytest must skip")),
+        run_board_fn=lambda args: (0, "board ok"),
+        run_git_fn=lambda args: (0, ""),
+        run_git_at_fn=lambda cwd, args: (0, ""),
+        board_count_fn=lambda: 0,
+        ticket_title_fn=lambda ticket_id: "separated plans",
+        affected_domain_fn=lambda ticket_id: None,
+        # 홈 계획은 스코프 밖 잔여 1건(남의 wiki WIP) · 코드 트리 계획은 깨끗하다.
+        status_entries_fn=lambda: (("M ", ".project_manager/wiki/roadmap.md"),),
+        status_entries_at_fn=lambda cwd: (),
+        log_file=home / ".project_manager/wiki/log/current.md",
+        task_workspace=worktree,
+    )
+    assert finisher.run("T-0437", section=None, dry_run=False, skip_pytest=True) == 0
+
+
 def _write_dod_board(tmp_path, body_repr: str, *, with_gate: bool = True) -> Path:
     """`_dod_open_items` 를 노출하는 board.py 대역 (판정 규칙은 실 board 문법 그대로)."""
     gate = (
@@ -2481,6 +2625,10 @@ def test_pm_direct_warning_is_never_block_and_preserves_finish_rc(
         stage_scope_fn=lambda _tid: tf.StageScope((), None),
         diff_cap_block_fn=lambda _tid: None,
         dod_block_fn=lambda _tid: None,
+        # 잔여 preflight 는 별도 관심사 — 이 fixture의 scope=() + dirty 1건은 PM-direct
+        # 재검용 대역일 뿐 잔여 판정 대상이 아니다. off로 이 테스트의 초점(경고가 rc를 절대
+        # 안 바꾼다)만 남긴다.
+        residual_block_fn=lambda _tid: None,
         log_file=tmp_path / "log.md",
     )
 

@@ -415,6 +415,26 @@ def test_split_dirty_excludes_all_project_manager_local_runtime_state(tf):
     assert unstaged == ("?? .project_manager/.locality/keep.md",)
 
 
+def test_split_dirty_scope_covers_excludes_unstaged_before_stage(tf):
+    """스코프 안의 미스테이지 변경은 잔여가 아니다 — 곧 stage 될 것이다(이 함수를 stage
+    **전** 잔여 preflight 에도 재사용하려면 필요한 조건). 이 필터가 없으면 touches 로 선언한
+    파일 자신의 아직 안 올라간 변경까지 거짓 잔여로 잡힌다.
+    """
+    entries = ((" M", "src/a.py"), ("??", "others/new.md"))
+    staged_out, unstaged = tf.split_dirty(entries, ("src/a.py",))
+    assert staged_out == ()
+    assert unstaged == ("?? others/new.md",)   # 스코프 밖만 남는다
+
+
+def test_split_dirty_scope_filter_is_a_noop_after_staging(tf):
+    """stage **후** 호출(기존 사후 보고 용법)에서는 스코프 경로가 이미 `Y == " "` 라 새 필터가
+    항등이다 — 무행동 변화(기존 보고 단언을 깨지 않는다)."""
+    before_stage = tf.split_dirty(((" M", "src/a.py"),), ("src/a.py",))
+    after_stage = tf.split_dirty((("M ", "src/a.py"),), ("src/a.py",))   # add 후 Y == " "
+    assert before_stage == ((), ())
+    assert after_stage == ((), ())
+
+
 def test_parse_porcelain_z_keeps_both_columns_and_rename_target(board):
     """NUL 파서는 XY 두 열을 보존하고 rename 2토큰에서 **신규 경로**를 취한다 (공유 단일 구현)."""
     out = "M  a.md\0 D b.md\0?? c.md\0R  new.md\0old.md\0"
@@ -495,6 +515,9 @@ def test_status_entries_ignores_stderr_noise_from_git(tf, tmp_path, monkeypatch,
         board_count_fn=lambda: 1,
         ticket_title_fn=lambda tid: "t",
         affected_domain_fn=lambda tid: None,
+        # 잔여 preflight 는 별도 관심사 — 이 테스트의 초점은 잡음 필터링(파싱 seam
+        # 사용)이지 touches 밖 real.md 를 잔여로 차단하는 판정이 아니다. off로 그 초점만 남긴다.
+        residual_block_fn=lambda tid: None,
         log_file=root / ".project_manager" / "wiki" / "log" / "current.md",
     )
     assert finisher.run("T-0001", section=None, dry_run=False) == 0
@@ -599,13 +622,15 @@ def _dirty_the_tree(root: Path) -> None:
 
 
 def _make_finisher(tf, root: Path, monkeypatch, *, touches: list[str],
-                   board_py: Path | None = None):
+                   board_py: Path | None = None, run_board_fn=None, run_pytest_fn=None):
     """실 git(root)에서 도는 TicketFinisher — git 만 실물, 나머지는 DI 대역.
 
     `REPO` 를 tmp 홈으로 재지정하면 (1) 기본 git 러너의 cwd, (2) board 모듈 재-앵커
     (`board_root()`/`tickets_dir()`/`_board_git_enabled()`)가 모두 그 트리를 따라온다.
     티켓 `touches` 조회만 stub 한다 — 실 보드가 tmp 에 없을 수 있어서다(스코프 계산·필터·
-    실제 `git add`·잔여 판정은 전부 실 코드 경로).
+    실제 `git add`·잔여 판정은 전부 실 코드 경로). `run_board_fn`/`run_pytest_fn` 은 미지정이면
+    종전 대역(성공 고정값)이고, poison stub 을 넘기면 "차단된 실행이 이 seam 을 부르지 않는다"
+    를 값으로 증명하는 데 쓴다.
     """
     monkeypatch.setattr(tf, "REPO", root)
     monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: list(touches))
@@ -613,8 +638,8 @@ def _make_finisher(tf, root: Path, monkeypatch, *, touches: list[str],
         monkeypatch.setenv(key, val)
     kwargs = {} if board_py is None else {"board_py": board_py}
     return tf.TicketFinisher(
-        run_pytest_fn=lambda: (0, "100 passed, 0 deselected in 0.1s"),
-        run_board_fn=lambda args: (0, "board ok"),
+        run_pytest_fn=run_pytest_fn or (lambda: (0, "100 passed, 0 deselected in 0.1s")),
+        run_board_fn=run_board_fn or (lambda args: (0, "board ok")),
         board_count_fn=lambda: 10,
         ticket_title_fn=lambda tid: "스코프 테스트 티켓",
         affected_domain_fn=lambda tid: None,
@@ -687,7 +712,10 @@ def test_finish_expands_brand_new_untracked_directory_touches(tf, tmp_path, monk
     (fresh / "mine.py").write_text("m = 1\n", encoding="utf-8")
     (fresh / "sub").mkdir()
     (fresh / "sub" / "deep.py").write_text("d = 1\n", encoding="utf-8")
-    finisher = _make_finisher(tf, root, monkeypatch, touches=["newpkg"])
+    # `_dirty_the_tree` 는 `_TOUCHED_FILE`(src/a.py) 도 함께 건드린다 — 이 테스트의 선언은
+    # `newpkg` 뿐이라 그건 이 축(디렉토리 전개)과 무관한 잔여다. 잔여 preflight 가 그것까지
+    # 막지 않도록 touches 에 함께 선언한다(스코프 안으로 옮김·real git 대상 불변).
+    finisher = _make_finisher(tf, root, monkeypatch, touches=["newpkg", _TOUCHED_FILE])
 
     assert finisher.run("T-0001", section=None, dry_run=False) == 0
     out = capsys.readouterr().out
@@ -873,26 +901,125 @@ def test_finish_survives_touches_absent_from_this_repo(tf, tmp_path, monkeypatch
 # ── 축 3: 거짓 안심 (보고 채널) ─────────────────────────────────────────
 
 @requires_git
-def test_finish_fails_loud_when_scope_judge_unavailable(tf, tmp_path, monkeypatch, capsys):
-    """stage 판정기(board 모듈)를 못 띄우면 **loud** — stage 0 을 조용히 정상처럼 넘기지 않는다.
+def test_finish_blocks_when_scope_judge_unavailable(tf, tmp_path, monkeypatch, capsys):
+    """stage 판정기(board 모듈)를 못 띄우면 **차단**이다 — stage 0 을 정상 완료로 넘기지
+    않는다. 차단 문구는 원인 사유뿐 아니라 **잔여 목록·처방도 동봉**한다(스코프를 못
+    산출했다는 사실을 빈 스코프로 읽어 코드 트리 dirty 전량을 잔여로 접는다) — board complete
+    는 이 갈래에서 불리지 않고, log 스켈레톤도 안 남는다.
 
     실제 형상: 실행 인터프리터엔 PyYAML 이 없고 venv 엔 있어 board *CLI* 는 성공하는데
-    `import yaml` 하는 board 모듈 로드만 실패한다. 옛 코드는 scope=() → stage 0, 게다가
-    잔여 보고까지 board 에 의존해 `✓ 잔여 없음` 이라는 **거짓 안심**을 냈다(reviewer 실측).
+    `import yaml` 하는 board 모듈 로드만 실패한다. `scope_error` 는 '판정 불가'가 아니라 '이
+    실행은 코드 트리에서 아무것도 stage 하지 못한다'는 확정 사실이라, board·git 어느 것도
+    부르지 않고 기록 전에 거부한다(옛 동작은 여기서 rc=0·stage 0으로 조용히 '기록 완료'였다·
+    reviewer 실측).
     """
     root = _make_home_repo(tmp_path / "home")
     _dirty_the_tree(root)
-    finisher = _make_finisher(tf, root, monkeypatch, touches=[_TOUCHED_FILE],
-                              board_py=root / "없는-board.py")
+    log_file = root / ".project_manager" / "wiki" / "log" / "current.md"
+    log_before = log_file.read_text(encoding="utf-8")
+    finisher = _make_finisher(
+        tf, root, monkeypatch, touches=[_TOUCHED_FILE],
+        board_py=root / "없는-board.py",
+        run_board_fn=lambda args: pytest.fail("scope_error 인데 board complete 가 불렸다"))
+
+    assert finisher.run("T-0001", section=None, dry_run=False) == 1
+    captured = capsys.readouterr()
+    assert "[중단]" in captured.err
+    assert "스코프를 산출하지 못했다" in captured.err, "판정기 사망이 조용히 넘어감"
+    assert "미스테이지 잔여" in captured.err
+    assert "roadmap.md" in captured.err and "a.py" in captured.err
+    assert _staged(root) == set()
+    assert log_file.read_text(encoding="utf-8") == log_before, "차단된 실행이 log 를 건드렸다"
+
+
+# ── 잔여 preflight — 실 git 픽스처 5종 ───────────────────────────
+
+@requires_git
+def test_finish_blocks_on_a_single_unstaged_residual(tf, tmp_path, monkeypatch, capsys):
+    """코드 트리에 선언 밖 미스테이지 변경 1건만 있어도 완료 기록을 거부한다 — 신규
+    **untracked**(`??`) 축 · board.py complete 는 불리지 않는다(I1 · (a)).
+    """
+    root = _make_home_repo(tmp_path / "home")
+    (root / "others.py").write_text("o = 1\n", encoding="utf-8")   # 선언 밖 신규 미스테이지 1건
+    finisher = _make_finisher(
+        tf, root, monkeypatch, touches=[_TOUCHED_FILE],
+        run_board_fn=lambda args: pytest.fail("잔여 1건인데 board complete 가 불렸다"))
+
+    assert finisher.run("T-0001", section=None, dry_run=False) == 1
+    captured = capsys.readouterr()
+    assert "[중단]" in captured.err and "others.py" in captured.err
+    assert _staged(root) == set()
+
+
+@requires_git
+def test_finish_blocks_on_a_tracked_unstaged_residual(tf, tmp_path, monkeypatch, capsys):
+    """이미 **커밋된**(tracked) 선언 밖 파일을 수정만 하고 stage 하지 않은 형상(` M`)도
+    거부한다 — (a)의 신규 untracked(`??`) 축과 별개로 tracked-unstaged 방향을 직접 잠근다
+    (I1 · (a')).
+    """
+    root = _make_home_repo(tmp_path / "home")
+    (root / "others.py").write_text("o = 1\n", encoding="utf-8")
+    _git_commit_all(root, "seed tracked others.py")   # 커밋해 tracked 로 만든다(clean)
+    (root / "others.py").write_text("o = 2\n", encoding="utf-8")   # 수정만, stage 안 함 → ` M`
+    finisher = _make_finisher(
+        tf, root, monkeypatch, touches=[_TOUCHED_FILE],
+        run_board_fn=lambda args: pytest.fail("tracked-unstaged 잔여인데 board complete 가 불렸다"))
+
+    assert finisher.run("T-0001", section=None, dry_run=False) == 1
+    captured = capsys.readouterr()
+    assert "[중단]" in captured.err and "others.py" in captured.err
+    assert _staged(root) == set()
+
+
+@requires_git
+def test_finish_rejects_staged_only_scope_escape(tf, tmp_path, monkeypatch, capsys):
+    """선언 밖 파일을 **미리 `git add` 만** 해 둔 형상도 거부한다 — 방향 한쪽만 보면 `git add`
+    한 번이 preflight 우회로가 된다(I1 · (b) · 스코프 밖 파일을 미리 staged 해 둔 형상의 직접 재현).
+    """
+    root = _make_home_repo(tmp_path / "home")
+    (root / "others.py").write_text("o = 1\n", encoding="utf-8")
+    _git(["add", "--", "others.py"], root)          # staged 뿐 — 미스테이지 잔여는 0
+    finisher = _make_finisher(
+        tf, root, monkeypatch, touches=[_TOUCHED_FILE],
+        run_board_fn=lambda args: pytest.fail("스코프 밖 staged 인데 board complete 가 불렸다"))
+
+    assert finisher.run("T-0001", section=None, dry_run=False) == 1
+    captured = capsys.readouterr()
+    assert "[중단]" in captured.err and "others.py" in captured.err
+    # add 만으로 우회되지 않는다는 증거 — index 에 그대로 남아 있다(이 도구가 안 건드림).
+    assert "others.py" in _staged(root)
+
+
+@requires_git
+def test_finish_completes_when_residual_is_zero(tf, tmp_path, monkeypatch, capsys):
+    """코드 트리 dirty 전량이 선언 스코프 안이면 현행과 동일하게 완료된다(역방향 회귀 · (c))."""
+    root = _make_home_repo(tmp_path / "home")
+    (root / _TOUCHED_FILE).write_text("x = 2\n", encoding="utf-8")
+    completed: list[list[str]] = []
+    finisher = _make_finisher(
+        tf, root, monkeypatch, touches=[_TOUCHED_FILE],
+        run_board_fn=lambda args: (completed.append(args), (0, "board ok"))[1])
 
     assert finisher.run("T-0001", section=None, dry_run=False) == 0
-    captured = capsys.readouterr()
-    assert "스코프를 산출하지 못했다" in captured.err, "판정기 사망이 조용히 넘어감"
-    assert _staged(root) == set()
-    # 보고 채널은 board 와 무관하게 살아 있어야 한다 — 잔여를 전부 보여준다.
-    assert "미스테이지 잔여" in captured.out
-    assert "roadmap.md" in captured.out and "a.py" in captured.out
-    assert "잔여 변경 없음" not in captured.out
+    assert completed == [["complete", "T-0001", "--tests-pass"]]
+    assert _TOUCHED_FILE in _staged(root)
+
+
+@requires_git
+def test_finish_excludes_pm_home_root_dirty_from_the_block(tf, tmp_path, monkeypatch, capsys):
+    """PM 홈 dev-state(wiki 루트)만 dirty 면 판정 인구 밖 — 남의 wiki WIP 로 내 완료가 막히지
+    않는다(I2·I3 · (d) · 임베디드 형상 — `_home_state_prefixes`).
+    """
+    root = _make_home_repo(tmp_path / "home")
+    (root / _TOUCHED_FILE).write_text("x = 2\n", encoding="utf-8")     # 내 작업(스코프 안)
+    (root / _OTHERS_WIP).write_text("# roadmap — 남이 편집 중\n", encoding="utf-8")  # PM 홈만 dirty
+    finisher = _make_finisher(tf, root, monkeypatch, touches=[_TOUCHED_FILE])
+
+    assert finisher.run("T-0001", section=None, dry_run=False) == 0
+    out = capsys.readouterr().out
+    assert "[중단]" not in out
+    assert _TOUCHED_FILE in _staged(root)
+    assert "미스테이지 잔여" in out and "roadmap.md" in out   # PM 홈 잔여는 여전히 loud(비차단)
 
 
 @requires_git
