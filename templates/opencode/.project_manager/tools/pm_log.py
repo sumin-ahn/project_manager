@@ -1056,13 +1056,37 @@ def _identity_section(pm_home: Path, cwd: Path, task: str, source: str) -> str:
     )
 
 
+def _status_dirs() -> tuple[str, ...]:
+    """티켓 상태 디렉토리 집합 — board 의 `STATUS_DIRS` 단일 진실을 지연 로드로 승계한다(fail-soft).
+
+    census 버킷을 손으로 적으면 board 가 상태를 추가할 때(`discarded` — 처분 종결) 그 상태의
+    티켓이 장부 집계에서 **조용히** 빠진다(crash 0 이라 아무도 못 본다). 로드 실패는
+    `_registered_repos` 와 같은 fail-soft — 빈 튜플이면 소비측이 "미해소"로 명시 표기한다
+    (손으로 적은 목록으로 되돌아가지 않는다). 사본 skew 만 fail-loud.
+    """
+    board_path = Path(__file__).resolve().parent / "board.py"
+    try:
+        board = _load_module_from_path(
+            board_path, "board.py", verifier=_verify_engine_rev,
+        )
+    except Exception as exc:  # noqa: BLE001 — 부재/로드 실패는 census 표기만 완화.
+        if _is_engine_rev_skew(exc):
+            raise
+        return ()
+    return tuple(getattr(board, "STATUS_DIRS", ()))
+
+
 def _ticket_counts(pm_home: Path) -> tuple[Path, dict[str, int]]:
+    """`pm_home` board 의 상태별 티켓 수 — 버킷은 `_status_dirs()`(board 단일 진실) 파생이다.
+
+    상태 디렉토리 스캔 자체는 board.py 호출 없이 디렉토리 존재만 본다(집합만 board 에서 온다).
+    """
     manager = Path(pm_home) / ".project_manager"
-    # board 분리 형상 우선, legacy는 wiki/tickets. board.py 호출 없이 디렉토리 존재만 본다.
+    # board 분리 형상 우선, legacy는 wiki/tickets.
     board_root = manager / "board"
     tickets = (board_root if board_root.is_dir() else manager / "wiki") / "tickets"
     counts: dict[str, int] = {}
-    for status in ("open", "claimed", "blocked", "done"):
+    for status in _status_dirs():
         try:
             counts[status] = sum(1 for path in (tickets / status).glob("T-*.md") if path.is_file())
         except OSError:
@@ -1095,7 +1119,9 @@ def _ledger_section(pm_home: Path, task: str) -> str:
     task_slots = [label for label, _path in _lease_task_slots(pm_home, task)]
     tickets, counts = _ticket_counts(pm_home)
     state_text = ", ".join(f"{key} {states[key]}" for key in sorted(states)) or "장부 없음"
-    count_text = " / ".join(f"{key} {counts[key]}" for key in ("open", "claimed", "blocked", "done"))
+    # 버킷 순서·집합은 `_status_dirs()`(board `STATUS_DIRS`) 그대로다 — 새 상태는 손대지 않고
+    # 뒤에 붙고, 기존 status 표기는 바뀌지 않는다.
+    count_text = " / ".join(f"{key} {value}" for key, value in counts.items()) or "(상태 목록 미해소)"
     return (
         "## 장부 포인터\n"
         f"- 활성 tasks ({len(active)}): {', '.join(active) if active else '(없음)'}\n"

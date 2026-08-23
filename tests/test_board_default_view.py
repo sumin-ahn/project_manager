@@ -286,8 +286,9 @@ def test_bootstrap_parsers_consume_user_session_filtered_slot_view(board, capsys
     assert set(_ids(slot_out)) == {"T-0001", "T-0003"}
 
     bootstrap = _load_bootstrap()
+    # 버킷 골격은 board `STATUS_DIRS` 파생이다(T-0839) — 조회에 안 걸린 상태는 0 으로 남는다.
     assert bootstrap.parse_board_counts(slot_out) == {
-        "done": 0, "open": 1, "claimed": 1, "blocked": 0}
+        "open": 1, "claimed": 1, "blocked": 0, "done": 0, "discarded": 0}
     assert bootstrap.parse_open_tickets(slot_out) == ["T-0001"]
 
 

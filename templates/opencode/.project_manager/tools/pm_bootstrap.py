@@ -1028,6 +1028,18 @@ GIT_NETWORK_TIMEOUT = 20
 
 # ── board 카운트 파서 ────────────────────────────────────────────────────
 
+def _status_dirs() -> tuple[str, ...]:
+    """티켓 상태 디렉토리 집합 — board 의 `STATUS_DIRS` 단일 진실을 지연 로드로 승계한다(fail-soft).
+
+    버킷 골격을 손으로 적으면 board 가 상태를 추가할 때(`discarded` — 처분 종결) 그 상태 행이
+    `if status in counts` 가드에 걸려 **조용히** 버려진다(crash 0 · dump 에 미표시). `_load_board`
+    는 부재/로드 실패에 None 을 주는 소프트 로더라 여기서도 빈 튜플로 접고(소비측이 "미해소"로
+    명시 표기), 사본 skew 만 그 로더가 fail-loud 로 올린다.
+    """
+    board = _load_board()
+    return tuple(getattr(board, "STATUS_DIRS", ())) if board is not None else ()
+
+
 def parse_board_counts(board_output: str) -> dict[str, int]:
     """board list 출력에서 status 별 카운트를 파싱한다.
 
@@ -1035,9 +1047,11 @@ def parse_board_counts(board_output: str) -> dict[str, int]:
       "  [open   ] T-NNNN  title...  claimed_by  tags"
     status 필드는 7자 width 로 패딩된다.
 
-    반환: {"done": N, "open": M, "claimed": K, "blocked": L}
+    버킷 골격 = `_status_dirs()`(board `STATUS_DIRS`) 파생이므로 board 가 아는 상태는 전부
+    키로 존재하고(행이 없으면 0), board 가 모르는 토큰(예 `archived`)만 무시된다. 반환 키 순서는
+    `STATUS_DIRS` 순서다. board 미해소면 빈 dict (렌더가 "미해소"로 표기).
     """
-    counts: dict[str, int] = {"done": 0, "open": 0, "claimed": 0, "blocked": 0}
+    counts: dict[str, int] = {status: 0 for status in _status_dirs()}
     line_pattern = re.compile(r"^\s+\[(\w+)\s*\]")
     for line in board_output.splitlines():
         match = line_pattern.match(line)
@@ -1839,6 +1853,32 @@ def _slot_count_label(session: str, number: int | None = None) -> str:
     return f"slot {number}" if number is not None else f"slot {session}"
 
 
+# 카운트 렌더에서 맨 앞에 두는 status — **표시 순서**만 정하고 집합을 정의하지 않는다(종전
+# dump 가 done 을 머리에 두던 형태 보존). 나머지는 `STATUS_DIRS` 순서(= counts 삽입 순서) 그대로
+# 뒤따르므로 새 상태는 아무도 손대지 않아도 꼬리에 붙는다.
+_COUNTS_LEADING_STATUSES: tuple[str, ...] = ("done",)
+
+
+def _ordered_count_statuses(counts: dict[str, int]) -> list[str]:
+    """카운트 렌더 순서 — 표시 우선 status 를 앞세우고 나머지는 `counts` 삽입 순서 그대로."""
+    leading = [status for status in _COUNTS_LEADING_STATUSES if status in counts]
+    return [*leading, *(status for status in counts if status not in leading)]
+
+
+def _board_count_parts(
+    counts: dict[str, int], scope_label: str, *, delimiter: str
+) -> list[str]:
+    """status 별 카운트 조각 — 두 표면(카운트 줄·권장 첫 turn 요약)이 집합·순서를 공유한다.
+
+    `delimiter` 는 status 와 수 사이 표기만 가른다(카운트 줄 `": "` · 요약 문장 `" "`) — 종전
+    bytes 를 그대로 두면서 status 집합만 board 파생으로 바꾸기 위한 유일한 차이다.
+    """
+    return [
+        f"{status}{delimiter}{counts[status]} ({scope_label})"
+        for status in _ordered_count_statuses(counts)
+    ]
+
+
 def _format_board_counts_line(counts: dict[str, int], scope_label: str = "mine") -> str:
     """board 카운트 한 줄을 만든다 — 수집 스코프 라벨 명확화.
 
@@ -1849,15 +1889,12 @@ def _format_board_counts_line(counts: dict[str, int], scope_label: str = "mine")
     (`--repo`/`--slot`·multi-PM)은 `"slot N"`(그 슬롯 정체성으로 조회·카운트 정합).
 
     **open 도 세션 스코프**: 세션 기본 뷰가 open 을 내 세션 생성분만 보이므로
-    슬롯무관 공유 backlog 전량·접힘 카운트 폐기) 네 status 모두 같은 `scope_label` 을 붙인다 —
+    슬롯무관 공유 backlog 전량·접힘 카운트 폐기) 모든 status 에 같은 `scope_label` 을 붙인다 —
     옛 `_OPEN_SCOPE_LABEL`(공유 backlog 정정) 축이 소멸(open 이 더는 전역 대기열 수가 아님).
     """
-    parts = [
-        f"{label}: {counts[key]} ({scope_label})"
-        for key, label in (
-            ("done", "done"), ("open", "open"), ("claimed", "claimed"), ("blocked", "blocked")
-        )
-    ]
+    parts = _board_count_parts(counts, scope_label, delimiter=": ")
+    if not parts:
+        return "- (상태 목록 미해소 — board.py STATUS_DIRS 를 읽지 못함)"
     return "- " + " / ".join(parts)
 
 
@@ -2321,8 +2358,10 @@ class PmBootstrap:
         # 이 되는 회귀를 막는다. 이 호출이 실패해도(구버전 board.py 등) done=0 으로 fail-soft
         # 하고 abort 하지 않는다(핵심 list 는 이미 성공했으므로 done 카운트만 저하 없는 선에서).
         done_rc, done_output = self._run_board_fn(["list", "--status", "done", *lens])
-        if done_rc == 0:
-            counts["done"] = parse_board_counts(done_output)["done"]
+        # `"done"` 리터럴은 상태 *집합*이 아니라 이 재조회 하나의 대상이다(default 뷰가 done 만
+        # 접기 때문) — 집합 파생 대상 아님. board 미해소로 골격이 비면 덮어쓸 자리도 없다.
+        if done_rc == 0 and "done" in counts:
+            counts["done"] = parse_board_counts(done_output).get("done", 0)
 
         # `--gate` 로 호출 — 차단 카테고리에만 rc=1, advisory(status drift·
         # unstable-ref-advice)는 rc=0 (board.cmd_lint). dump-then-warn—
@@ -3286,12 +3325,13 @@ class PmBootstrap:
         lines.append("PM 세션 시작합니다.")
         # 카운트 스코프 라벨 — 위 `_format_board_counts_line` 과 동일 데이터·스코프(mine/slot N·
         # 요약 문장체로 표기(선두 "- " 없이·마침표로 마감). open 도 이제
-        # 세션 스코프(내 세션 생성분)라 네 status 모두 같은 `_scope` 라벨을 쓴다(옛 open
+        # 세션 스코프(내 세션 생성분)라 모든 status 에 같은 `_scope` 라벨을 쓴다(옛 open
         # 전용 `_OPEN_SCOPE_LABEL` 축 소멸 — open 이 더는 슬롯무관 공유 backlog 전량이 아님).
         _scope = board.get("counts_scope", "mine")
+        _summary_parts = _board_count_parts(counts, _scope, delimiter=" ")
         board_summary = (
-            f"done {counts['done']} ({_scope}) / open {counts['open']} ({_scope}) / "
-            f"claimed {counts['claimed']} ({_scope}) / blocked {counts['blocked']} ({_scope})."
+            " / ".join(_summary_parts) + "." if _summary_parts
+            else "board 카운트 미해소."
         )
         if pytest_result is not None:
             regression_summary = (
@@ -3345,11 +3385,13 @@ class PmBootstrap:
             "board": {
                 # 하위호환 top-level 카운트는 현재 렌즈 값으로 유지하고, 실 스코프를 별도 노출한다.
                 # `counts_mine`은 실제 `--mine` 렌즈에서만 방출해 기존 소비 의미를 보존한다.
+                # 이 네 키는 **고정 스키마**(기존 wrapper 계약)라 상태 집합 파생 대상이 아니다 —
+                # 새 상태는 전량 dict(`counts_task`/`counts_mine`)로만 실린다(추가 전파는 그쪽).
                 # task 렌즈 값은 `counts_task`로 분리해 wrapper가 mine 값으로 오독하지 않게 한다.
-                "done": counts["done"],
-                "open": counts["open"],
-                "claimed": counts["claimed"],
-                "blocked": counts["blocked"],
+                "done": counts.get("done", 0),
+                "open": counts.get("open", 0),
+                "claimed": counts.get("claimed", 0),
+                "blocked": counts.get("blocked", 0),
                 "counts_scope": counts_scope,
                 **(
                     {"counts_task": dict(counts)}

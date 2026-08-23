@@ -353,7 +353,6 @@ REPO = _find_repo_root()
 TICKETS_DIR = REPO / ".project_manager" / "wiki" / "tickets"  # legacy 별칭 (아래 _tickets_dir 가 board_root 추종)
 LOCAL_CONF = REPO / ".project_manager" / "local.conf"  # per-clone (git-ignored)
 REVIEW_CONTEXT_FILE = REPO / ".project_manager" / "review_context.local.md"  # 인스턴스 소유 overlay
-STATUS_DIRS: tuple[str, ...] = ("open", "claimed", "blocked", "done")
 
 # raw 산출/공유 장부의 앵커 = **소유 PM 홈**(diff 슬롯이 아니다). `_main` 이 명시 selector 로 해소한
 # PM 홈을 한 호출 동안만 주입하고, 미주입(라이브러리 직접 호출)은 엔진 자기 앵커 REPO 로 폴백한다 —
@@ -397,6 +396,26 @@ def _load_board():
     """형제 board 엔진을 위치로 로드해 worktree lease 재앵커 판정을 승계한다."""
     path = Path(__file__).resolve().with_name("board.py")
     return _load_module_from_path(path, "board.py", verifier=_verify_engine_rev)
+
+
+def _status_dirs() -> tuple[str, ...]:
+    """티켓 상태 디렉토리 집합 — board 의 `STATUS_DIRS` 단일 진실을 그대로 승계한다.
+
+    이 모듈이 사본을 들면 board 가 상태를 추가할 때(`discarded` — 처분 종결) 사본만 옛 집합에
+    머물러 *같은 board 를 두고 다른 답*을 낸다: 리뷰 대상 경로 해소(`_find_ticket_file`)가 그
+    상태의 티켓을 "board 에 없음"으로 fail-loud 하고, 실-board 판정(`_owns_real_board`)이 그
+    상태만 가진 PM 홈을 빈 scaffold 로 오판한다. 최상위 import 대신 `_load_board()`(경로-앵커
+    지연 로드)를 쓰는 이유는 이 파일의 다른 board 소비와 같다 — 형제 로드 규약(순환 import 없음·
+    도구 standalone 실행).
+
+    fail-soft 비대칭: `pm_log`·`pm_bootstrap` 의 동명 헬퍼는 board 로드 실패를 빈 튜플로 접어
+    호출측이 "미해소"를 명시 표기한다. 여기는 접지 않는다 — `_load_board()` 예외가 그대로
+    전파돼 `_owns_real_board` → `_pm_home_reanchor` → `pm_delegate.check_write_target_reanchor`
+    경로가 board 부재 시 종전 `False`(통과) 대신 abort 한다. 이 모듈은 이미 20여 곳에서
+    `_load_board()` 를 무조건 호출하므로 board 부재는 사실상 모듈 전체가 불능인 상태이고, 이
+    판정은 그 불능을 다른 자리보다 먼저 드러낼 뿐이다(판정 정합·의도된 비대칭).
+    """
+    return tuple(_load_board().STATUS_DIRS)
 
 
 def _absolute_git_common_dir(board, anchor: Path) -> Path | None:
@@ -1168,7 +1187,8 @@ DEFAULT_PATHS: list[str] = ["src/", "tests/", "scripts/", ".project_manager/tool
 # board.py `_pm_home_worktree_misanchor`의 *역방향*: 거긴 worktree 에서 실행된 board 조작을
 # 잡고, 여긴 PM 홈에서 실행된 추가 리뷰를 잡아 worktree 로 재지정한다. 순수 filesystem 판정(subprocess
 # 불요)이라 hermetic — REPO 를 module-level 로 두어 테스트가 monkeypatch 하고, 헬퍼는 anchor/conf 를
-# 명시 인자로 받아 DI seam 이 된다(board `_has_real_board` 를 import 없이 동형 복제·각 파일 self-contained).
+# 명시 인자로 받아 DI seam 이 된다. 판정 *형태*는 board `_has_real_board` 동형이되 상태 집합은
+# 복제하지 않고 board 단일 진실(`_status_dirs()`)을 승계한다 — 사본은 새 상태에서 갈린다.
 
 def _owns_real_board(pm_dir: Path) -> bool:
     """`.project_manager` 디렉토리(`pm_dir`)가 실 티켓(`T-*.md`)을 가진 board 를 소유하는가.
@@ -1179,7 +1199,7 @@ def _owns_real_board(pm_dir: Path) -> bool:
     for base in (pm_dir / "board" / "tickets", pm_dir / "wiki" / "tickets"):
         if not base.is_dir():
             continue
-        for status in STATUS_DIRS:
+        for status in _status_dirs():
             status_dir = base / status
             if status_dir.is_dir() and any(status_dir.glob("T-*.md")):
                 return True
@@ -4899,13 +4919,16 @@ def _find_ticket_file(ticket_id: str, *, pm_home: Path | None = None) -> Path:
     if not ticket_id or re.search(r"[\\/*?\[\]]", ticket_id):
         raise AnchorResolutionError(f"ticket id 형식이 안전하지 않습니다: {ticket_id!r}")
     tickets_dir = _tickets_dir_for(pm_home)
-    found = _load_board().find_ticket_exact(
+    # board 를 한 번만 로드해 조회 seam 과 상태 집합을 *같은 사본*에서 가져온다.
+    board = _load_board()
+    status_dirs = tuple(board.STATUS_DIRS)
+    found = board.find_ticket_exact(
         ticket_id,
-        search_dirs=[(status, tickets_dir / status) for status in STATUS_DIRS],
+        search_dirs=[(status, tickets_dir / status) for status in status_dirs],
     )
     if found is not None:
         return found[1]
-    for status_dir in STATUS_DIRS:
+    for status_dir in status_dirs:
         exact = tickets_dir / status_dir / f"{ticket_id}.md"
         if exact.exists():
             return exact
