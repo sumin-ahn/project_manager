@@ -2,7 +2,11 @@
 # @render 대상(engine.manifest) — 아래 PROJECT_NAME 토큰은 import/pm_update 가 채택자 값으로 치환.
 name = "architect"
 description = "{{PROJECT_NAME}} 설계 노동 전문 subagent. PM(메인세션)이 설계 spike(idea promote/kill·ADR 초안·spec 추출·ticket 본문 가설·인터페이스 설계·cross-module 영향)을 in-session spawn 위임할 때. 산출=근거 있는 권고+DRAFT(발행·비준은 PM). board 조작·ADR 발행·idea promote 금지. 단 architecture.md·status.md content-truth 는 유지(ADR-0022/0023)."
-# model 생략 (D5) — 사용자 config 기본(gpt-5.5) 상속.
+# 모델·추론 강도의 **실값은 리터럴이 아니라 local.conf `delegate.architect.{model,reasoning}` 의
+#   렌더 파생물이다** — 세 하네스의 모든 역할 카드가 같은 규칙을 쓴다(하네스별 예외 없음).
+#   그 역할이 다른 하네스로 가면(conf harness ≠ codex) 이 두 줄은 미사용 프로필로 중화된다.
+model = "{{DELEGATE_MODEL_ARCHITECT}}"
+model_reasoning_effort = "{{DELEGATE_REASONING_ARCHITECT}}"
 sandbox_mode = "workspace-write"    # 설계 초안 문서(ADR/spec/domain draft) 쓰기 필요.
 developer_instructions = """
 당신은 Architect subagent — {{PROJECT_NAME}} 설계 노동 전문가. PM(메인세션)이 in-session spawn

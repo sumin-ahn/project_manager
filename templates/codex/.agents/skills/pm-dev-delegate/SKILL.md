@@ -111,16 +111,18 @@ python3 .project_manager/tools/pm_delegate.py --dry-run \
 - **경계 애매 = hard 상향** — 어느 쪽인지 확실치 않으면 normal 로 내리지 말고 hard 를 고른다
   (난제를 약한 프로필로 돌리는 실패 비용 > 여유 프로필 비용).
 
-티어는 **`--tier hard`**(cross·pm_delegate) 또는 **native 경로의 hard 프로필**로 선택한다.
+티어는 **`--tier hard`**(cross·pm_delegate) 또는 **native 경로의 hard 카드**로 선택한다.
 codex native 단락에선 난제를 `agent_type="developer-hard"`(`.codex/agents/developer-hard.toml`)로
-spawn 한다(평시는 `agent_type="developer"`). 티어 매핑은 **하네스-중립** — 어느 하네스든 normal/hard
+spawn 한다(평시는 `agent_type="developer"`). 하드 카드는 **세 하네스가 모두 출하한다** —
+claude `.claude/agents/developer-hard.md` · opencode `.opencode/agents/developer-hard.md` 가
+같은 규칙의 등가물이다. 티어 매핑은 **하네스-중립** — 어느 하네스든 normal/hard
 두 프로필을 가진다(claude 형상 예: `delegate.developer.harness=claude`·`.model=sonnet` /
 `delegate.developer.hard.harness=claude`·`.model=opus`).
 
 - **hard 프로필 미설정 = fail-loud(폴백 없음)** — `delegate.developer.hard.*` 가 없으면
   pm_delegate 는 `--tier hard` 를 normal 로 강등하지 않고 `rc=1` 로 거부한다(난제를 조용히 약한
-  프로필로 돌리면 의도 왜곡·spike §3.2). native 경로도 동일 — hard 프로필(codex
-  `developer-hard.toml`)이 없으면 명시 추가한다.
+  프로필로 돌리면 의도 왜곡). native 경로도 동일 — 하네스를 이유로 hard 를 normal 로
+  대신하지 않으며, 카드가 없는 트리면 명시 추가한다.
 
 ### 2. native 단락 판정
 

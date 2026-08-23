@@ -31,7 +31,6 @@ import argparse
 import datetime
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -2310,7 +2309,8 @@ class TicketFinisher:
                 common_dir = (code_tree / common_dir).resolve()
             alternates_path = scratch / ".git" / "objects" / "info" / "alternates"
             alternates_path.parent.mkdir(parents=True, exist_ok=True)
-            alternates_path.write_text(f"{common_dir / 'objects'}\n", encoding="utf-8")
+            alternates_path.write_text(
+                f"{common_dir / 'objects'}\n", encoding="utf-8", newline="\n")
 
             for args in (
                 ["add", "-A"],
@@ -2324,7 +2324,17 @@ class TicketFinisher:
                 if result.returncode != 0:
                     raise RuntimeError(f"git {' '.join(args)} 실패: {result.stderr}")
         except Exception:
-            shutil.rmtree(scratch, ignore_errors=True)
+            # 정리 실패로 원 예외를 덮지 않는다 — force_rmtree 는 못 지우면 OSError 를 올리는데,
+            # 그걸 그대로 두면 여기서 진행 중인 원 예외(git archive/init/commit 실패)를 가린다.
+            # 형제 규약(pm_import._force_rmtree 호출부)과 같은 형태: loud 경고 뒤 원 예외 재전파.
+            try:
+                _load_file_lock().force_rmtree(scratch)
+            except OSError as cleanup_exc:
+                print(
+                    f"경고: baseline scratch 정리 실패 — 직접 지우세요: {scratch} "
+                    f"({type(cleanup_exc).__name__}: {cleanup_exc})",
+                    file=sys.stderr,
+                )
             raise
         return scratch
 
@@ -2363,7 +2373,16 @@ class TicketFinisher:
         try:
             base_rc, base_out = self._run_pytest_subset(baseline_tree, sorted(target_files))
         finally:
-            shutil.rmtree(baseline_tree, ignore_errors=True)
+            # `finally` 안이라 정리 실패를 raise 하면 try 블록의 예외(있다면)를 덮는다 — 형제
+            # 규약(pm_import._force_rmtree 호출부)과 같은 형태: loud 경고만 남기고 삼키지 않는다.
+            try:
+                _load_file_lock().force_rmtree(baseline_tree)
+            except OSError as cleanup_exc:
+                print(
+                    f"경고: baseline 트리 정리 실패 — 직접 지우세요: {baseline_tree} "
+                    f"({type(cleanup_exc).__name__}: {cleanup_exc})",
+                    file=sys.stderr,
+                )
         base_failed = _self_axis_failed_node_ids(base_out) if base_rc != 0 else set()
 
         new_failed = sorted(work_failed - base_failed)

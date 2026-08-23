@@ -51,16 +51,31 @@ ENGINE_REV = "v1.7.8"
 # hard 티어(`developer-hard`)는 **별도 완전 세트**다 — normal 프로필을 상속하지 않는다(엔진의
 # 프로필 해소와 같은 규칙). reasoning 토큰은 그 값을 실제로 소비하는 카드가 있는 것만 둔다
 # (codex `model_reasoning_effort`) — 소비처 없는 토큰은 배선만 늘리고 해소를 못 검증한다.
+# 역할 축 4개도 codex 카드가 그 필드를 갖게 되면서 소비처가 생겼으므로 표에 함께 선다. claude·
+# opencode 카드 frontmatter 에는 추론을 실을 필드가 없어 그 두 타깃은 모델 토큰만 소비한다 —
+# 하네스 예외가 아니라 카드 **형식** 차이이며 판정은 CARD_FIELD_TOKEN_PREFIXES 가 소유한다.
 #
 # pm_update 는 이 표를 **역전해** local.conf 채널 배선을 만든다(`_local_conf_operational_map`) —
 # 손으로 재타이핑한 사본을 두면 새 역할/티어가 한쪽에만 늘어 조용히 미배선된다.
 DELEGATE_MODEL_CONF_KEYS: dict[str, str] = {
     "DELEGATE_MODEL_DEVELOPER": "delegate.developer.model",
+    "DELEGATE_REASONING_DEVELOPER": "delegate.developer.reasoning",
     "DELEGATE_MODEL_DEVELOPER_HARD": "delegate.developer.hard.model",
     "DELEGATE_REASONING_DEVELOPER_HARD": "delegate.developer.hard.reasoning",
     "DELEGATE_MODEL_RESEARCHER": "delegate.researcher.model",
+    "DELEGATE_REASONING_RESEARCHER": "delegate.researcher.reasoning",
     "DELEGATE_MODEL_ARCHITECT": "delegate.architect.model",
+    "DELEGATE_REASONING_ARCHITECT": "delegate.architect.reasoning",
     "DELEGATE_MODEL_CODE_REVIEWER": "delegate.code-reviewer.model",
+    "DELEGATE_REASONING_CODE_REVIEWER": "delegate.code-reviewer.reasoning",
+}
+
+# 토큰 접두 → 그 값을 실을 수 있는 카드 필드. **카드 형식이 소비 기대를 정한다**(하네스별 예외
+# 아님): claude·opencode 는 frontmatter 에 모델 한 줄만 있고, codex TOML 만 추론 강도 키를 갖는다.
+# 소비 가드가 이 선언을 읽어 (토큰, 타깃) 기대를 파생하므로 손열거 표를 따로 두지 않는다.
+CARD_FIELD_TOKEN_PREFIXES: dict[str, str] = {
+    "DELEGATE_MODEL_": "model",
+    "DELEGATE_REASONING_": "model_reasoning_effort",
 }
 
 

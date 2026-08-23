@@ -484,12 +484,12 @@ def test_console_menu_surfaces_update_action(pc, capsys):
 
 
 def test_console_unknown_key_help_lists_update(pc, capsys):
-    """오타 메뉴키 안내가 `r/w/b/u/s/q`(update 포함)를 surface."""
+    """오타 메뉴키 안내가 `r/w/b/m/u/s/q`(모델 안내·update 포함)를 surface."""
     rc = pc.run_console(input_fn=_inputs("z", "q"),
                         board=FakeBoardAreas(rows=[]), worktree_pool=FakeWorktreePool())
     assert rc == 0
     out = capsys.readouterr().out
-    assert "r/w/b/u/s/q" in out
+    assert "r/w/b/m/u/s/q" in out
 
 
 # ── 입력 견고성 — 빈입력/오타키 재프롬프트 · EOF/KeyboardInterrupt 우아 종료 ──
@@ -839,3 +839,132 @@ def test_distinct_area_owners_upgrade_wider_row(pc, monkeypatch, tmp_path):
                  "| alpha | AL | g:a | pytest -q | reg | develop | main | alice |\n"
                  "| beta | BE | g:b | pytest -q | reg | develop | main | bob |\n")
     assert pc._distinct_area_owners() == 2
+
+
+# ── 위임 모델 안내 (`[m]`) — 설치된 하네스만·조회 실패는 loud 강등 ──────────────
+# 모델 설정에 검증도 가이드도 없었다: 키 형식은 문서에 있지만 *유효한 값의 목록·확인 방법*이
+# 어디에도 없었다. 위임 시점 검증 함수는 만들지 않고(codex 값은 자유 문자열·alias 미선언
+# 채택자에선 멤버십 검증이 아무것도 잡지 않는다) 이 안내로 비대칭을 닫는다.
+
+
+class _FakePmImport:
+    """`REGISTERED_HARNESSES` + `_harness_binary_available` 만 갖는 최소 대역."""
+
+    REGISTERED_HARNESSES = ("claude", "opencode", "codex")
+
+    def __init__(self, installed):
+        self._installed = set(installed)
+        self.queried = 0
+
+    def _harness_binary_available(self, harness):
+        return harness in self._installed
+
+    def _real_models_runner(self):
+        self.queried += 1
+        return True, ["provider/real-a", "provider/real-b"]
+
+
+def test_model_guidance_lists_only_installed_harnesses(pc, capsys):
+    """설치되지 않은 하네스의 모델은 안내하지 않는다 — 못 쓰는 값을 고르게 만들지 않는다."""
+    fake = _FakePmImport(installed=("claude",))
+    rc = pc._print_delegate_model_guidance(pm_import=fake, conf={})
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "claude" in out
+    assert "opencode" not in out and "codex" not in out
+    assert fake.queried == 0, "미설치 opencode 인데 목록을 조회했다"
+
+
+def test_model_guidance_shows_opencode_real_list(pc, capsys):
+    """조회 수단이 있는 하네스(opencode)만 실조회 목록을 보여준다 — 하드코딩 0."""
+    fake = _FakePmImport(installed=("opencode",))
+    pc._print_delegate_model_guidance(pm_import=fake, conf={})
+    out = capsys.readouterr().out
+
+    assert fake.queried == 1
+    assert "provider/real-a" in out and "provider/real-b" in out
+    assert "가용 모델 2개" in out
+
+
+def test_model_guidance_truncates_long_lists_and_points_at_the_query(pc, capsys):
+    """목록이 길면 앞부분만 보여주고 전량 확인 명령을 지목한다(한 화면 상한)."""
+    total = pc._DELEGATE_MODEL_LIST_LIMIT + 3
+    models = [f"provider/model-{index}" for index in range(total)]
+    fake = _FakePmImport(installed=("opencode",))
+    fake._real_models_runner = lambda: (True, models)
+
+    pc._print_delegate_model_guidance(pm_import=fake, conf={})
+    out = capsys.readouterr().out
+
+    assert f"가용 모델 {total}개" in out
+    assert models[pc._DELEGATE_MODEL_LIST_LIMIT - 1] in out
+    assert models[pc._DELEGATE_MODEL_LIST_LIMIT] not in out
+    assert "opencode models" in out
+
+
+@pytest.mark.parametrize("outcome", [(False, []), (True, [])])
+def test_model_guidance_degrades_loudly_when_the_query_fails(pc, capsys, outcome):
+    """조회 실패·빈 목록은 형식 안내로 **강등**하되 그 사실을 말한다(조용한 강등 금지)."""
+    fake = _FakePmImport(installed=("opencode",))
+    fake._real_models_runner = lambda: outcome
+
+    pc._print_delegate_model_guidance(pm_import=fake, conf={})
+    out = capsys.readouterr().out
+
+    assert "목록 조회 실패" in out and "강등" in out
+    assert "provider/model" in out, "형식 안내까지 사라지면 강등이 아니라 침묵이다"
+
+
+def test_model_guidance_shows_declared_alias_members(pc, capsys):
+    """`delegate.model_alias` 를 선언했으면 그 멤버를 이 환경의 모델로 함께 보여준다."""
+    fake = _FakePmImport(installed=("claude",))
+    pc._print_delegate_model_guidance(
+        pm_import=fake,
+        conf={"delegate.model_alias.high": "opus, claude-opus-5"},
+    )
+    out = capsys.readouterr().out
+
+    assert "high" in out and "claude-opus-5" in out
+
+
+def test_model_guidance_does_not_require_alias_declaration(pc, capsys):
+    """alias 미선언은 정상 형상 — 목록을 위해 alias 를 만들라고 하지 않는다."""
+    fake = _FakePmImport(installed=("claude",))
+    pc._print_delegate_model_guidance(pm_import=fake, conf={})
+    out = capsys.readouterr().out
+
+    assert "선언 없음" in out
+    assert "목록을 위해 만들 필요는 없다" in out
+
+
+def test_model_guidance_handles_no_installed_harness(pc, capsys):
+    """설치된 하네스가 하나도 없으면 빈 안내가 아니라 그 사실을 말한다."""
+    fake = _FakePmImport(installed=())
+    pc._print_delegate_model_guidance(pm_import=fake, conf={})
+    out = capsys.readouterr().out
+
+    assert "설치된 하네스 없음" in out
+
+
+def test_alias_members_parses_comma_list_and_ignores_blanks(pc):
+    """alias 파싱 — 콤마 분리·공백 제거·빈 선언 무시(의미 변경 0)."""
+    assert pc._model_alias_members({
+        "delegate.model_alias.a": " x , y ,, ",
+        "delegate.model_alias.b": "   ",
+        "delegate.developer.model": "opus",
+    }) == {"a": ["x", "y"]}
+
+
+def test_console_menu_routes_m_to_model_guidance(pc, monkeypatch, capsys):
+    """`[m]` 이 모델 안내 핸들러로 라우팅되고 장부는 건드리지 않는다."""
+    calls = []
+    monkeypatch.setattr(pc, "_print_delegate_model_guidance", lambda: calls.append(1))
+    board = FakeBoardAreas(rows=[])
+    wp = FakeWorktreePool()
+
+    rc = pc.run_console(input_fn=_inputs("m", "q"), board=board, worktree_pool=wp)
+
+    assert rc == 0
+    assert calls == [1]
+    assert "[m] 위임 모델 안내" in capsys.readouterr().out

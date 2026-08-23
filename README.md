@@ -541,6 +541,18 @@ transport를 쓰고, 다르면 `pm_delegate.py` cross transport를 쓴다. `dele
 spawn까지 막지는 못한다. Claude native agent 카드의 `model:`이 설정과 어긋나거나 카드가 손상되면
 가드가 비차단 경고를 내며, 설정이나 카드를 자동으로 고치지 않는다.
 
+역할·티어 카드는 세 하네스가 **같은 규칙**을 쓴다 — claude `.claude/agents/*.md` · codex
+`.codex/agents/*.toml` · opencode `.opencode/agents/*.md` 의 모델(과 codex TOML 이 함께 갖는
+추론 강도)은 전부 `local.conf` 의 렌더 파생물이고 다른 출처를 갖지 않는다. 난제 티어
+`developer-hard` 도 세 하네스가 모두 카드를 갖는다(평시 프로필을 상속하지 않는 별도 세트).
+
+**모델 값에 무엇을 넣는가**는 하네스마다 형식이 다르다(claude=별칭 또는 풀네임 ·
+opencode=`provider/model` · codex=사용자 codex config 가 인정하는 문자열). 값 목록을 문서에
+박아 두지 않는다 — 모델은 자주 바뀌어 곧 stale 이 된다. 무인자 `pm-config` 콘솔의
+`[m] 위임 모델 안내`가 **이 환경에 설치된 하네스만** 대상으로 값 형식과 확인 방법을 보여주고,
+조회 수단이 있는 opencode 는 실제 목록을 조회해 보여준다(조회 실패 시 형식 안내로 강등하며 그
+사실을 말한다). `delegate.model_alias`를 선언해 뒀다면 그 멤버도 함께 보여준다.
+
 ### `local.conf` 키 카탈로그
 
 `local.conf`에는 **이 clone이 실제로 정한 값만** 둔다(`board.py init`이 만드는 파일도 실값 6줄뿐).

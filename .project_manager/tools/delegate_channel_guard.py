@@ -233,19 +233,21 @@ CODEX_SUPERVISOR_FALLBACK_STATUS = "wrapper_fallback"
 
 # Agent names are harness-owned surface literals.  Keep their translation in
 # this Python truth rather than duplicating the role set in JavaScript adapters.
-# OpenCode/Claude currently expose the base names; Codex additionally encodes
-# the hard developer tier in its agent name.
+# Every harness now ships a hard developer card, so all three encode that tier
+# in the agent name.  The name label and the card mapping below are registered
+# together: a half registration either strands the card (unknown agent name) or
+# leaves the guard permanently warning about a missing card mapping.
+HARD_TIER_AGENT_NAME = "developer-hard"
 AGENT_NAME_PROFILES: dict[str, dict[str, tuple[str, str]]] = {
-    "claude": {role: (role, "normal") for role in DELEGATE_ROLES},
-    "opencode": {role: (role, "normal") for role in DELEGATE_ROLES},
-    "codex": {
+    harness: {
         **{role: (role, "normal") for role in DELEGATE_ROLES},
-        "developer-hard": ("developer", "hard"),
-    },
+        HARD_TIER_AGENT_NAME: ("developer", "hard"),
+    }
+    for harness in ("claude", "opencode", "codex")
 }
 
-# Claude's native normal-agent surface is finite.  Keep explicit paths instead
-# of deriving a filename from hook input: an unknown role/tier must never make
+# Claude's native agent surface is finite.  Keep explicit paths instead of
+# deriving a filename from hook input: an unknown role/tier must never make
 # this guard read an attacker-selected or merely guessed card.
 _ENGINE_ROOT = Path(__file__).resolve().parents[2]
 CLAUDE_NATIVE_AGENT_CARDS: dict[tuple[str, str], Path] = {
@@ -253,6 +255,7 @@ CLAUDE_NATIVE_AGENT_CARDS: dict[tuple[str, str], Path] = {
     ("code-reviewer", "normal"): Path(".claude/agents/code-reviewer.md"),
     ("researcher", "normal"): Path(".claude/agents/researcher.md"),
     ("architect", "normal"): Path(".claude/agents/architect.md"),
+    ("developer", "hard"): Path(f".claude/agents/{HARD_TIER_AGENT_NAME}.md"),
 }
 _FRONTMATTER_MODEL_RE = re.compile(r"^model\s*:\s*(.*)$")
 

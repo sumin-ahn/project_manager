@@ -10,7 +10,9 @@ absence·opencode 의 `pm.md` primary 에 해당하는 파일 부재).
   (a) `.codex/agents/{architect,code-reviewer,developer,researcher}.toml` 4축 실재 + `pm.toml` 부재.
   (b) 각 TOML 이 `tomllib` 로 파싱된다(포맷 유효·triple-quote developer_instructions 안전).
   (c) 필수 필드 3종 `name`/`description`/`developer_instructions` 존재 + `name` == 파일 stem.
-  (d) `model` 키 **부재**(D5 — 사용자 config 기본 상속·harness-특수 모델 분기 0).
+  (d) 5장 전부 `model`/`model_reasoning_effort` 가 **local.conf 렌더 토큰**이다 — 리터럴
+      모델명이 박히면 채택자의 `delegate.<role>[.hard].{model,reasoning}` 선언이 실행면에
+      닿지 못한다(하네스별 예외 없는 하나의 규칙).
   (e) `sandbox_mode` 존재 + 역할별 값(성장 사본 쓰기 축 developer/architect/code-reviewer=
       `workspace-write`·순수 읽기 축 researcher=`read-only`).
   (f) `{{PROJECT_NAME}}` 토큰이 있어 pm_import/pm_update(@render)의 결정적 치환 타깃이 된다.
@@ -42,10 +44,13 @@ COMMAND_RULES = CODEX / ".codex" / "rules" / "default.rules"
 PM_DEV_DELEGATE = CODEX / ".agents" / "skills" / "pm-dev-delegate" / "SKILL.md"
 
 AGENT_NAMES = ("architect", "code-reviewer", "developer", "researcher")
-# developer 2티어(난제=hard) 프로필 — 4 역할 축이 아니라 developer 축의 티어 변주다(T-0448·spike §3.2).
-# 역할 축(AGENT_NAMES)은 model 상속(D5)이나 티어 프로필은 상위 프로필로 라우팅하는 게 존재 이유라
-# model/reasoning 을 명시 override 한다(아래 model-override 축 검사에서 정반대 계약).
+# developer 2티어(난제=hard) 프로필 — 4 역할 축이 아니라 developer 축의 티어 변주다(T-0448).
+# 역할 축과 티어 프로필은 **같은 계약**을 쓴다(T-0766) — 5장 전부 model/reasoning 이 local.conf
+# 렌더 토큰이다. 티어는 그 값이 normal 과 다른 프로필을 가리킬 뿐 규칙이 다르지 않다.
 TIER_PROFILE_NAMES = ("developer-hard",)
+# 카드 stem → 위임 토큰 접미. 손열거 사본이 아니라 stem 파생이라 카드가 늘어도 따라온다.
+MODEL_TOKEN_RE = re.compile(r"^\{\{DELEGATE_MODEL_[A-Z][A-Z0-9_]*\}\}$")
+REASONING_TOKEN_RE = re.compile(r"^\{\{DELEGATE_REASONING_[A-Z][A-Z0-9_]*\}\}$")
 REQUIRED_FIELDS = ("name", "description", "developer_instructions")
 PROJECT_NAME_TOKEN = "{{PROJECT_NAME}}"
 
@@ -130,28 +135,46 @@ def test_name_matches_filename():
         )
 
 
-# ── (d) model 키 부재 (D5) ──────────────────────────────────────────────────
+# ── (d) model/reasoning 이 local.conf 렌더 토큰 (하나의 규칙) ────────────────
 
-def test_no_model_override_keys():
-    """어느 agent TOML 에도 model/reasoning override 키가 없다 — 사용자 config 기본 상속 (ADR-0070 D5).
+def test_model_and_reasoning_are_local_conf_render_tokens():
+    """5장 전부 `model`·`model_reasoning_effort` 를 갖고 값이 **리터럴이 아니라 렌더 토큰**이다.
 
-    opencode 의 `{{OPENCODE_PRO_MODEL}}` pin·`resolve_opencode_model` 분기가 codex 엔 불필요하다
-    (harness-특수 모델 해소 분기 0). `model` 이 박히면 그 단순성 결정이 깨진 것."""
-    override_keys = {"model", "model_reasoning_effort"}
-    offenders = [name for name in AGENT_NAMES if override_keys & _load(name).keys()]
-    assert not offenders, (
-        f"codex agent TOML 에 model/reasoning override 키 잔존(D5 위반·사용자 config 기본 상속 깨짐): {offenders}"
-    )
+    옛 결정은 codex 역할 카드에서 두 키를 생략해 사용자 config 기본을 상속시켰다. 그 예외는
+    폐기됐다 — codex 를 PM 하네스로 쓰는 채택자가 역할별 모델을 conf 로 제어하지 못했고,
+    같은 트리의 hard 티어 카드는 이미 반대 계약이라 규칙이 둘로 갈려 있었다. 이제 세 하네스의
+    모든 역할·티어 카드가 같은 규칙을 쓴다: 실값은 `local.conf` 의 렌더 파생물이다.
+    리터럴 모델명이 박히면 그 단일 진실이 깨진 것이므로 형태까지 단언한다."""
+    for name in AGENT_NAMES + TIER_PROFILE_NAMES:
+        data = _load(name)
+        for field, pattern in (
+            ("model", MODEL_TOKEN_RE),
+            ("model_reasoning_effort", REASONING_TOKEN_RE),
+        ):
+            assert field in data, (
+                f"{name}.toml 에 {field!r} 없음 — 채택자 local.conf 선언이 실행면에 닿지 못한다"
+            )
+            assert pattern.fullmatch(str(data[field])), (
+                f"{name}.toml 의 {field!r} 가 렌더 토큰이 아니다: {data[field]!r} "
+                "— 리터럴이면 conf 단일 진실이 깨진다"
+            )
+    # 토큰 이름은 카드 stem 에서 파생한다(사본 0) — 표기가 갈리면 렌더가 해소하지 못한다.
+    for name in AGENT_NAMES + TIER_PROFILE_NAMES:
+        suffix = name.upper().replace("-", "_")
+        data = _load(name)
+        assert data["model"] == "{{DELEGATE_MODEL_" + suffix + "}}", data["model"]
+        assert data["model_reasoning_effort"] == (
+            "{{DELEGATE_REASONING_" + suffix + "}}"
+        ), data["model_reasoning_effort"]
 
 
 # ── developer 2티어(난제=hard) 프로필 계약 (T-0448·spike §3.2) ────────────────
 
 def test_developer_hard_tier_profile_valid_and_overrides_model():
-    """`developer-hard.toml` 티어 프로필이 실재·정합하고 상위 모델·추론을 명시 override 한다.
+    """`developer-hard.toml` 티어 프로필이 실재·정합하고 모델·추론을 명시 보유한다.
 
-    역할 축(AGENT_NAMES)은 D5 로 model 상속(위 test)이나, 티어 프로필은 hard 로 판정된 난제를 **더
-    강한 프로필로 라우팅**하는 게 존재 이유다 → model/reasoning override 가 필수(정반대 계약). 미설정
-    이면 native 난제 경로가 평시 프로필로 조용히 강등돼 티어 의도가 왜곡된다(spike §3.2 fail-loud)."""
+    hard 는 normal 프로필을 상속하지 않는 별도 완전 세트다 — 두 키가 없으면 native 난제 경로가
+    평시 프로필로 조용히 강등돼 티어 의도가 왜곡된다(fail-loud)."""
     path = _toml_path("developer-hard")
     assert path.is_file(), f"developer-hard 티어 프로필 없음: {path}"
     with open(path, "rb") as fh:
@@ -164,9 +187,9 @@ def test_developer_hard_tier_profile_valid_and_overrides_model():
     assert data["sandbox_mode"] == "workspace-write", (
         f"developer-hard sandbox_mode 가 workspace-write 아님: {data['sandbox_mode']!r}"
     )
-    # 티어 프로필의 존재 이유 = 상위 프로필 명시 override (역할 축의 D5 상속과 정반대)
+    # 티어 프로필도 역할 축과 같은 계약 — model/reasoning 을 conf 렌더 토큰으로 갖는다.
     assert "model" in data and str(data["model"]).strip(), (
-        "developer-hard 에 model override 없음 — 티어 프로필은 상위 모델을 명시해야 한다(spike §3.2)"
+        "developer-hard 에 model 없음 — 티어 프로필도 자기 모델을 명시해야 한다"
     )
     assert "model_reasoning_effort" in data and str(data["model_reasoning_effort"]).strip(), (
         "developer-hard 에 model_reasoning_effort override 없음 — 난제는 상향 추론이 필요하다"

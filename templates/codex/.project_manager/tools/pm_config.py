@@ -3867,8 +3867,22 @@ def _render_state(board_mod, wp) -> None:
 
 _CONSOLE_MENU = (
     "\n메뉴: [r] repo 추가 · [w] worktree 추가 · [b] 슬롯 빌드명령 설정/변경 · "
-    "[u] 엔진 갱신 · [s] 새로고침 · [q] 종료"
+    "[m] 위임 모델 안내 · [u] 엔진 갱신 · [s] 새로고침 · [q] 종료"
 )
+
+# ── 위임 모델 안내 (`delegate.<role>[.hard].model` 에 무엇을 넣는가) ────────────
+# 모델 **목록을 엔진에 하드코딩하지 않는다** — 모델은 자주 바뀌고 하드코딩은 곧 stale 이다.
+# 조회 수단이 있는 하네스만 실조회 목록을 보여주고, 없는 하네스는 값 **형식**과 확인 방법만
+# 안내한다. 값 형식이 하네스마다 근본적으로 달라 값 자체의 통일은 불가능하고, 통일 대상은
+# 취급 방식(= local.conf 단일 진실)이다.
+_DELEGATE_MODEL_FORMAT_HINTS = {
+    "claude": ("별칭 또는 풀네임", "`claude --help` 의 모델 옵션 설명"),
+    "codex": ("사용자 codex config 가 인정하는 문자열", "사용자 codex config 의 모델 설정"),
+    "opencode": ("provider/model", "`opencode models`"),
+}
+# 실조회 목록은 길 수 있다 — 안내는 콘솔 한 화면을 넘기지 않는다(전량은 조회 명령으로).
+_DELEGATE_MODEL_LIST_LIMIT = 12
+_MODEL_ALIAS_CONF_PREFIX = "delegate.model_alias."
 
 # 콘솔 프롬프트 중단(EOF/Ctrl-C) sentinel — `_console_input` 이 예외 대신 이걸 돌려준다.
 # 호출부(메뉴 루프·각 액션)는 `is _CONSOLE_ABORT` 로 판정해 일관되게 취소/종료한다.
@@ -3994,6 +4008,107 @@ def _console_set_test_cmd(input_fn, wp):
     return None
 
 
+def _installed_harnesses(pm_import_mod) -> list[str]:
+    """등록 하네스 중 **이 환경에 설치된** 것만 (registry 순서 보존).
+
+    설치되지 않은 하네스의 모델을 안내하지 않는다 — 채택자가 쓸 수 없는 값을 고르게 만드는
+    안내는 안내가 아니다. 판정은 `pm_import._harness_binary_available`(shutil.which) 재사용이라
+    새 감지 수단을 만들지 않는다.
+    """
+    return [
+        harness
+        for harness in pm_import_mod.REGISTERED_HARNESSES
+        if pm_import_mod._harness_binary_available(harness)
+    ]
+
+
+def _model_alias_members(conf: dict) -> dict[str, list[str]]:
+    """`delegate.model_alias.<name>=m1, m2` → {alias: [members]} (선언 없으면 빈 dict).
+
+    alias 표의 **의미는 바꾸지 않는다** — 같은 기반 모델의 묶음이고(lint `delegate-same-model`
+    판정용), 안내는 그 멤버를 "이 환경에서 쓰는 모델" 로 보여줄 뿐이다. 목록 선언용으로 alias
+    를 강제하지 않는다(한 모델만 쓰는 채택자가 목록 때문에 alias 를 만들 이유가 없어야 한다).
+    """
+    members: dict[str, list[str]] = {}
+    for key, raw in conf.items():
+        if not key.startswith(_MODEL_ALIAS_CONF_PREFIX):
+            continue
+        name = key[len(_MODEL_ALIAS_CONF_PREFIX):].strip()
+        values = [part.strip() for part in str(raw).split(",") if part.strip()]
+        if name and values:
+            members[name] = values
+    return members
+
+
+def _print_delegate_model_guidance(
+    *,
+    pm_import=None,
+    conf=None,
+    models_runner=None,
+) -> int:
+    """`[m]` — 설치된 하네스별로 `delegate.<role>[.hard].model` 에 넣을 값을 안내한다.
+
+    키 형식은 문서에 있지만 **유효한 값의 목록·확인 방법**이 어디에도 없었다. 위임 시점 검증
+    함수는 만들지 않는다(codex 값은 자유 문자열이라 형식 검증이 공허하고, alias 미선언 채택자에선
+    멤버십 검증이 아무것도 잡지 않는다) — 이 비대칭은 안내로 닫는다.
+
+    조회 실패(바이너리 부재·rc·timeout·파싱 0)는 형식 안내로 **강등**하되 조용하지 않다:
+    강등 사실을 그 자리에 적고, 실패 사유 자체는 조회 seam 이 stderr 한 줄로 남긴다.
+    pm_import·conf·models_runner 주입으로 hermetic 테스트(라이브 CLI 미구동).
+    """
+    pm_import_mod = pm_import or _load_module("pm_import", "pm_import.py")
+    if pm_import_mod is None:
+        print(
+            "[중단] pm_import.py 엔진을 찾을 수 없다 — 모델 안내 불가 "
+            f"({TOOLS_DIR / 'pm_import.py'} 부재 또는 로드 실패).",
+            file=sys.stderr,
+        )
+        return 1
+
+    print("\n## 위임 모델 안내 (local.conf `delegate.<role>[.hard].model` 단일 진실):")
+    installed = _installed_harnesses(pm_import_mod)
+    if not installed:
+        print("  (설치된 하네스 없음 — 안내할 대상이 없다. 하네스를 설치한 뒤 다시 보라.)")
+    for harness in installed:
+        value_format, how_to_check = _DELEGATE_MODEL_FORMAT_HINTS.get(
+            harness, ("(형식 미등록)", "(확인 방법 미등록)")
+        )
+        print(f"  - {harness}: 값 형식 {value_format} · 확인 {how_to_check}")
+        if harness != "opencode":
+            continue
+        runner = models_runner or pm_import_mod._real_models_runner
+        ok, models = runner()
+        if not ok or not models:
+            print(
+                "      ⚠ 목록 조회 실패 — 위 형식 안내로 강등한다(사유는 위 stderr 한 줄). "
+                f"직접 확인: {how_to_check}"
+            )
+            continue
+        shown = models[:_DELEGATE_MODEL_LIST_LIMIT]
+        print(f"      가용 모델 {len(models)}개: {', '.join(shown)}")
+        if len(models) > len(shown):
+            print(f"      (앞 {len(shown)}개만 표시 — 전량은 {how_to_check})")
+
+    values = conf if conf is not None else _load_local_conf()
+    aliases = _model_alias_members(values or {})
+    if aliases:
+        print("  이 환경에서 쓰는 모델 (`delegate.model_alias` 선언 멤버):")
+        for name in sorted(aliases):
+            print(f"    - {name}: {', '.join(aliases[name])}")
+    else:
+        print(
+            "  (`delegate.model_alias` 선언 없음 — 같은 기반 모델의 다른 표기를 묶을 때만 "
+            "선언한다. 목록을 위해 만들 필요는 없다.)"
+        )
+    return 0
+
+
+def _console_delegate_models() -> None:
+    """`[m]` 콘솔 액션 — 모델 안내를 출력만 한다(장부 변경 0)."""
+    _print_delegate_model_guidance()
+    return None
+
+
 def _console_update(pm_update=None) -> None:
     """`[u]` — 엔진 갱신을 `cmd_update([])` 로 위임 (= pm_update.main verbatim).
 
@@ -4016,7 +4131,7 @@ def run_console(
     무인자 `pm-config`(tty)가 진입한다(비-tty 는 main 이 help 로 분기). 흐름:
       1. 상태 렌더(repos via areas · slots via 리스) — cmd_status/list_leases/areas 파서 재사용.
       2. 메뉴 프롬프트 → 키 1자.
-      3. 액션(`[r]`·`[w]`·`[b]`·`[u]`)은 *기존 핸들러*로 위임 → 상태 재렌더.
+      3. 액션(`[r]`·`[w]`·`[b]`·`[m]`·`[u]`)은 *기존 핸들러*로 위임 → 상태 재렌더.
       4. `[s]` 새로고침(재렌더만)·`[q]` 종료. (`[u]` 엔진 갱신 = cmd_update.)
 
     입력 견고성: 빈 입력/오타 메뉴키 → 재프롬프트(크래시 0)·`EOFError`/`KeyboardInterrupt`
@@ -4051,13 +4166,16 @@ def run_console(
             result = _console_worktree_add(input_fn, wp, board_mod)
         elif choice == "b":
             result = _console_set_test_cmd(input_fn, wp)
+        elif choice == "m":
+            # 위임 모델 안내 — 출력 전용(장부 변경 0). 입력 프롬프트가 없어 중단 축이 없다.
+            result = _console_delegate_models()
         elif choice == "u":
             # 엔진 갱신— 입력 프롬프트 없이 cmd_update([]) 위임 후 재렌더.
             result = _console_update()
         else:
             # 빈 입력/오타 메뉴키 → 재프롬프트(크래시 0). 액션 안 함·상태 재렌더 안 함.
             if choice:
-                print(f"  (알 수 없는 선택 {choice!r} — r/w/b/u/s/q 중 하나)")
+                print(f"  (알 수 없는 선택 {choice!r} — r/w/b/m/u/s/q 중 하나)")
             continue
         # 액션 내부 프롬프트가 중단(EOF/Ctrl-C)됐으면 _CONSOLE_ABORT 를 반환 — 루프 우아 종료
         # (must-fix 2 — 메뉴뿐 아니라 액션 프롬프트 중단도 traceback 0·rc 0).

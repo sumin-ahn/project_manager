@@ -20,10 +20,13 @@ SKILL_SURFACES = (
 )
 DEVELOPER_CARD_SURFACES = (
     REPO / ".claude/agents/developer.md",
+    REPO / ".claude/agents/developer-hard.md",
     REPO / "templates/claude_code/.claude/agents/developer.md",
+    REPO / "templates/claude_code/.claude/agents/developer-hard.md",
     REPO / "templates/codex/.codex/agents/developer.toml",
     REPO / "templates/codex/.codex/agents/developer-hard.toml",
     REPO / "templates/opencode/.opencode/agents/developer.md",
+    REPO / "templates/opencode/.opencode/agents/developer-hard.md",
 )
 PLAYBOOK_SURFACES = (
     REPO / ".project_manager/wiki/pm_playbook.md",

@@ -31,7 +31,7 @@ CLAUDE_AGENTS = REPO / "templates" / "claude_code" / ".claude" / "agents"
 OPENCODE_AGENTS = REPO / "templates" / "opencode" / ".opencode" / "agents"
 
 # 독립 파일 산출이 허용된 역할만 이 규약 대상이다. researcher와 reviewer는 아래 별도 계약.
-_ROLES = ("developer", "architect")
+_ROLES = ("developer", "developer-hard", "architect")
 CLAUDE_CARDS = [(f"claude {r}", CLAUDE_AGENTS / f"{r}.md") for r in _ROLES]
 OPENCODE_CARDS = [(f"opencode {r}", OPENCODE_AGENTS / f"{r}.md") for r in _ROLES]
 ALL_CARDS = CLAUDE_CARDS + OPENCODE_CARDS
