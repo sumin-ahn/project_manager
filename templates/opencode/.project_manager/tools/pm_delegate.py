@@ -971,16 +971,21 @@ _DELEGATE_ROUNDS_LEDGER_REQUIRED_FIELDS: frozenset[str] = frozenset(
     {"ticket", "role", "ordinal", "run_id", "copy", "board_rel", "prepared_at",
      "harvested_at"}
 )
-# 선택 키 둘은 하위 호환이다(기존 8키 행에는 없다) — `abandoned_at` 은 kill 잔여를 명시적으로
+# 선택 키 셋은 하위 호환이다(기존 8키 행에는 없다) — `abandoned_at` 은 kill 잔여를 명시적으로
 # 포기(abandon)한 행에, `owner_pid` 는 준비 프로세스가 그 run 의 소유자일 때(prepare·실행·회수가
-# 한 프로세스인 cross 위임)에만 붙는다. 검증은 필수-집합 정확 일치가 아니라 상한-집합 포함으로
-# 완화한다: 정확-일치였다면 이 키를 추가하는 순간 기존 행 전부가 schema 불일치로 건너뛰어진다.
+# 한 프로세스인 cross 위임)에만, `superseded_by_ordinal` 은 산출이 시드와 달라도 재실행 대체본을
+# 운영자가 명시해 포기를 허용받은 행에만 붙는다. 검증은 필수-집합 정확 일치가 아니라 상한-집합
+# 포함으로 완화한다: 정확-일치였다면 이 키를 추가하는 순간 기존 행 전부가 schema 불일치로
+# 건너뛰어진다.
 _DELEGATE_ROUNDS_LEDGER_OPTIONAL_FIELDS: frozenset[str] = frozenset(
-    {"abandoned_at", "owner_pid"}
+    {"abandoned_at", "owner_pid", "superseded_by_ordinal"}
 )
 # 증거 없는 예약을 지우는 유일한 통로 — 무엇을 강제하는지가 아니라 **운영자가 무엇을 확인했는지**
 # 를 말하는 이름이다. 문구와 CLI 가 같은 값을 쓰도록 여기 한 자리에 둔다.
 ABANDON_ASSUME_DEAD_FLAG = "--assume-dead"
+# 재실행으로 대체된 라운드의 "시드 그대로" 거부를 여는 유일한 통로 — 값은 대체본 라운드의
+# ordinal 이다(자기 자신 참조는 거부). `--assume-dead` 와 같은 문구/CLI 단일 출처 원칙.
+ABANDON_SUPERSEDED_BY_FLAG = "--superseded-by"
 _DELEGATE_ROUNDS_LEDGER_FIELDS: frozenset[str] = (
     _DELEGATE_ROUNDS_LEDGER_REQUIRED_FIELDS | _DELEGATE_ROUNDS_LEDGER_OPTIONAL_FIELDS
 )
@@ -1083,6 +1088,13 @@ def _delegate_rounds_ledger_row(row: object, *, line_number: int) -> dict:
             isinstance(row["owner_pid"], int)
             and not isinstance(row["owner_pid"], bool)
             and row["owner_pid"] > 0
+        ))
+        # `superseded_by_ordinal` 도 같은 이유(생존/재확인 조회에 그대로 들어가는 값)로 owner_pid
+        # 와 같은 형식을 요구한다 — 자기 자신 참조 배제는 쓰기 시점(`abandon_ticket_copy`)의 몫이다.
+        or ("superseded_by_ordinal" in row and not (
+            isinstance(row["superseded_by_ordinal"], int)
+            and not isinstance(row["superseded_by_ordinal"], bool)
+            and row["superseded_by_ordinal"] > 0
         ))
     ):
         raise DelegateError(f"delegate-rounds 장부 값 형식 불일치: line={line_number}")
@@ -2079,6 +2091,7 @@ def _abandon_liveness_problem(
 
 def abandon_ticket_copy(
     *, copy_path: Path, cwd: Path, pm_home: Path, assume_dead: bool = False,
+    superseded_by_ordinal: int | None = None,
 ) -> TicketAbandonResult:
     """kill 로 죽어 이어 갈 수 없는 준비를 명시적으로 정리한다 — 장부 행·board 라운드·run-dir.
 
@@ -2087,17 +2100,25 @@ def abandon_ticket_copy(
 
     1. **종료 증거**(`_abandon_liveness_problem`) — 살아 있는 run 을 지우지 않는다.
     2. **시드 그대로** — 슬롯 사본 bytes 와 board 라운드 파일의 현재 bytes 직접 대조(개행 표기만
-       정규화). 산출이 있으면 harvest 로 회수할 대상이지 지울 대상이 아니다.
+       정규화). 산출이 있으면 harvest 로 회수할 대상이지 지울 대상이 아니다. **예외**:
+       `superseded_by_ordinal` 로 운영자가 "이 라운드는 다른 라운드로 대체됐다" 를 명시하면
+       (finding ID 재선언 등으로 harvest 도 거부하는 재실행 대체본 한정) 이 대조를 건너뛴다 —
+       기본은 여전히 거부다. 값 형식(자기 자신 아님·1 이상)과 실재(그 ordinal 의 라운드가 이
+       티켓에 있음) 검증은 인자를 받는 즉시(시드 대조와 무관하게) 끝낸다.
     3. **최대 순번일 때만 board 파일 삭제** — 중간 순번을 지우면 `round-gap`(완료 게이트 red)을
        만든다. 중간 순번이면 board 파일을 **보존**하고 장부 행과 run-dir 만 종결한다. 거부가
        아니라 분기라서 프로토콜이 항상 수렴한다.
 
     순서는 되돌릴 수 없는 삭제를 마지막에 두고 그 앞을 전부 멱등 기록으로 만든다 — journal 없이
-    재개가 성립한다. (1) 인가 (2) 종료 판단·시드 대조 후 `abandoned_at` 마감 행 append(내구성
-    있는 intent) (3) `board_lock` 안에서 최대 순번 재확인 + 최대면 unlink (4) 락 밖 sync
-    (5) 슬롯 파일 재판독 후 시드 그대로일 때만 run-dir 삭제 (6) 세 자산 재판독 수렴 단언.
-    **재호출은 rollback 이 아니라 남은 작업의 완료**다 — 마감 행이 이미 있는 행은 거부하지 않고
-    2 를 건너뛴다.
+    재개가 성립한다. (1) 인가 + 대체-확인 값·실재 검증 (2) 종료 판단·시드 대조 → mismatch 분기가
+    실제로 발화했을 때만(값이 그냥 주어졌다는 사실만으로는 아님) 생존 게이트 통과 뒤 loud +
+    `abandoned_at` 마감 행 append 에 `superseded_by_ordinal` 동반 (3) `board_lock` 안에서 최대
+    순번 재확인 + 최대면 unlink (4) 락 밖 sync (5) 슬롯 파일 재판독 후 시드(또는 **장부에 기록된**
+    대체-확인이면 이번 호출이 관측한 산출) 그대로일 때만 run-dir 삭제 — 재호출이 인자를 다시 줘도
+    장부에 기록되지 않은 값은 이 판정에 쓰지 않는다 (6) 세 자산 재판독 수렴 단언. **재호출은
+    rollback 이 아니라 남은 작업의 완료**다 — 마감 행이 이미 있는 행은 거부하지 않고 2 를
+    건너뛰고, 대체-확인 여부는 장부 행에서 다시 읽는다(재호출은 `superseded_by_ordinal` 인자를
+    다시 주지 않아도 된다).
 
     `board_lock` 안에는 순번 판정과 unlink 만 둔다. `_rounds_mutation_sync_paths` 는
     `refresh_board` → `board_lock` 재진입이고 전역 락 순서(board_git_lock → board_lock) 역전이라
@@ -2130,6 +2151,26 @@ def abandon_ticket_copy(
             f"board={board_path.name} · 기대={expected.name}"
         )
     board = _load_board_for_repo(pm_home)
+    if superseded_by_ordinal is not None:
+        # 값·실재 검증은 시드 대조(mismatch) 분기와 무관하게 인자를 받는 즉시 끝낸다 — 시드
+        # 그대로인 호출(플래그가 no-op 인 호출)에도 잘못된 값을 걸러 장부에 남을 값을 항상
+        # 유효하게 유지한다.
+        if superseded_by_ordinal < 1 or superseded_by_ordinal == row["ordinal"]:
+            raise DelegateError(
+                f"대체 라운드 ordinal 이 올바르지 않습니다(자기 자신이거나 1 미만): "
+                f"{ABANDON_SUPERSEDED_BY_FLAG}={superseded_by_ordinal} · "
+                f"이 라운드 ordinal={row['ordinal']}"
+            )
+        existing_ordinals = {
+            item.ordinal
+            for item in rounds_module.load_rounds(board.tickets_dir(), row["ticket"])
+        }
+        if superseded_by_ordinal not in existing_ordinals:
+            raise DelegateError(
+                "대체 라운드가 존재하지 않습니다 — 없는 ordinal 을 대체본으로 대지 않습니다: "
+                f"{ABANDON_SUPERSEDED_BY_FLAG}={superseded_by_ordinal} · ticket={row['ticket']} · "
+                f"준비된 순번={sorted(existing_ordinals)}"
+            )
     changed = False
     sync_ready = False
     # 이번 호출이 관측한 슬롯 bytes. 5단계가 삭제 직전에 다시 읽어 이 값과 대조한다 — 사전 read
@@ -2139,6 +2180,9 @@ def abandon_ticket_copy(
     )
 
     # ── 2단계: 종료 판단 + 시드 대조 → 마감 행 append(내구성 있는 intent) ──
+    # 이번 호출이 실제로 mismatch 분기를 발화해 대체-확인을 확정했는지 — 장부 기록·loud 는 이
+    # 값이 True 일 때만 한다(값이 그냥 주어졌다는 사실만으로는 기록하지 않는다).
+    superseded_confirmed_this_call = False
     if "abandoned_at" not in row:
         if observed_slot_text is None:
             raise DelegateError(
@@ -2157,22 +2201,53 @@ def abandon_ticket_copy(
                 f"board 라운드 파일 읽기 실패: {board_path}: {exc}"
             ) from exc
         if _normalized_newlines(observed_slot_text) != _normalized_newlines(reserved):
-            raise DelegateError(
-                "산출이 있어 포기할 수 없습니다(시드 그대로가 아님) — `ticket harvest` 로 "
-                f"회수하세요: ticket={row['ticket']} {board_path.name}"
-            )
+            if superseded_by_ordinal is None:
+                raise DelegateError(
+                    "산출이 있어 포기할 수 없습니다(시드 그대로가 아님) — `ticket harvest` 로 "
+                    "회수하거나, 재실행으로 대체된 라운드라면 그 대체본 ordinal 을 "
+                    f"{ABANDON_SUPERSEDED_BY_FLAG} 로 밝히고 다시 부르세요: "
+                    f"ticket={row['ticket']} {board_path.name}"
+                )
+            # 값·실재 검증은 1단계에서 이미 끝났다 — 여기서는 이번 호출이 그 검증을 거쳐
+            # mismatch 분기를 실제로 발화했다는 사실만 표시한다(장부 기록·loud 를 여는 유일한
+            # 조건).
+            superseded_confirmed_this_call = True
         if not assume_dead:
             problem = _abandon_liveness_problem(
                 row, copy_path=expected, pm_home=pm_home, relay=relay,
             )
             if problem is not None:
                 raise DelegateError(problem)
+        if superseded_confirmed_this_call:
+            # loud 는 생존 게이트를 통과한 뒤에만 — 거부된 호출에 "포기합니다" 를 남기지 않는다.
+            print(
+                "[pm-delegate] 대체-확인: 산출이 시드와 달라도 포기합니다 — "
+                f"ticket={row['ticket']} role={row['role']} ordinal={row['ordinal']} 을 "
+                f"ordinal={superseded_by_ordinal} 대체본으로 간주합니다(산출은 board 판정 표면에 "
+                f"오르지 않습니다): copy={copy_path}",
+                file=sys.stderr,
+            )
         abandoned = dict(row)
         abandoned["abandoned_at"] = datetime.datetime.now(
             datetime.timezone.utc
         ).isoformat()
+        if superseded_confirmed_this_call:
+            abandoned["superseded_by_ordinal"] = superseded_by_ordinal
         _append_delegate_rounds_ledger(pm_home, abandoned)
         changed = True
+
+    # 5단계의 파괴 효력은 **장부에 기록된** 대체-확인 값만 인정한다 — 재호출 인자는(다시
+    # 줬어도) 무시한다. 이번 호출이 2단계를 거쳤으면 방금 기록한 값을, 건너뛰었으면(행이 이미
+    # 닫혀 있었으면) 그 닫힌 행에 이미 기록됐던 값을 그대로 읽는다 — 검증을 거치지 않은 이번
+    # 호출의 인자가 파괴 판정에 섞이지 않는다.
+    superseded_marker_recorded: int | None
+    if superseded_confirmed_this_call:
+        superseded_marker_recorded = superseded_by_ordinal
+    else:
+        recorded = row.get("superseded_by_ordinal")
+        superseded_marker_recorded = (
+            recorded if isinstance(recorded, int) and not isinstance(recorded, bool) else None
+        )
 
     # ── 3단계: board_lock 안 — 최대 순번 재확인 + 최대면 unlink (락 안은 여기까지) ──
     board_kept_reason: str | None = None
@@ -2218,8 +2293,10 @@ def abandon_ticket_copy(
             current = _read_slot_round_text(expected)
             references = [observed_slot_text]
             # board 파일이 남아 있으면(중간 순번 보존) 그 bytes 가 시드의 단일 진실이다 — 호출
-            # 사이에 착지한 쓰기까지 이 대조가 잡는다.
-            if reserved_now is not None:
+            # 사이에 착지한 쓰기까지 이 대조가 잡는다. **대체-확인 행은 예외다**: 그 board 파일은
+            # 이 run 이 산출을 낸 뒤로도 시드 그대로 남아 있으므로(harvest 되지 않았다) 시드와
+            # 영구히 어긋난다 — 이 축에서는 관측된 산출(`observed_slot_text`)이 유일한 기준선이다.
+            if reserved_now is not None and superseded_marker_recorded is None:
                 references.append(reserved_now)
             if any(
                 reference is None
@@ -11853,6 +11930,14 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
         ABANDON_ASSUME_DEAD_FLAG, action="store_true", dest="assume_dead",
         help="run 이 끝났음을 운영자가 확인했다 (종료 증거가 없거나 소유 pid 가 살아 있어도 진행)",
     )
+    abandon.add_argument(
+        ABANDON_SUPERSEDED_BY_FLAG, type=int, default=None, dest="superseded_by_ordinal",
+        metavar="N",
+        help=(
+            "이 라운드는 재실행된 ordinal N 라운드로 대체됐다 — 산출이 시드와 달라도 포기를 "
+            "허용한다(생존 확인은 별도 축 — --assume-dead 필요 여부는 그대로)"
+        ),
+    )
     copies = sub.add_parser("copies", help="PM 홈 delegate-rounds 장부 조회")
     copies.add_argument("--ticket", default=None, metavar="T-NNNN")
     copies.add_argument(
@@ -11930,6 +12015,7 @@ def _cmd_ticket(argv: list[str]) -> int:
             abandon_result = abandon_ticket_copy(
                 copy_path=copy, cwd=cwd_repo, pm_home=owner,
                 assume_dead=args.assume_dead,
+                superseded_by_ordinal=args.superseded_by_ordinal,
             )
             _write_machine_line(json.dumps({
                 "copy": str(copy.resolve()),
