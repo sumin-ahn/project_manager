@@ -1328,6 +1328,40 @@ def test_all_orchestration_functions_never_branch_on_harness_name_without_reason
     assert not stale, f"하네스 리터럴 stale 면제(실소유 없음): {sorted(stale)}"
 
 
+class _AnchorUnresolved(AssertionError):
+    """치환 앵커가 소스에 없음 — main() 재구성 등으로 앵커 문자열 자체가 사라진 경우."""
+
+
+class _AnchorAmbiguous(AssertionError):
+    """치환 앵커가 소스에서 두 번 이상 해소됨 — 첫 매치를 조용히 골라 엉뚱한 자리에 변이를
+    심는 대신, 그 자체로 실패한다."""
+
+
+class _MutantUnparsable(AssertionError):
+    """앵커는 유일 해소됐지만 치환 결과가 파싱 불가 — 앵커 들여쓰기가 현재 구조와 어긋남."""
+
+
+def _apply_mutation_anchor(source: str, needle: str, replacement: str, *, label: str) -> str:
+    """앵커를 정확히 한 번 찾아 치환하고 결과가 파싱 가능한지 확인한다.
+
+    앵커 미해소·다중 해소·파싱 실패 세 경로를 같은 red 로 뭉개지 않고 각각 구별되는 예외/메시지로
+    낸다(T-0853) — 그래야 "가드가 우회를 못 잡는다"와 "가드를 시험하지 못한다"가 섞이지 않는다.
+    """
+    count = source.count(needle)
+    if count == 0:
+        raise _AnchorUnresolved(f"[{label}] 앵커 미해소 — 소스에 없음: {needle!r}")
+    if count > 1:
+        raise _AnchorAmbiguous(f"[{label}] 앵커 다중 해소({count}회) — 유일하지 않음: {needle!r}")
+    mutated = source.replace(needle, replacement)
+    try:
+        compile(mutated, label, "exec")
+    except SyntaxError as exc:
+        raise _MutantUnparsable(
+            f"[{label}] 변이본 파싱 실패 — 앵커 들여쓰기가 현재 구조와 어긋남: {exc}"
+        ) from exc
+    return mutated
+
+
 @pytest.mark.parametrize(
     ("module_name", "function_name", "needle", "replacement"),
     [
@@ -1377,14 +1411,17 @@ def test_all_orchestration_functions_never_branch_on_harness_name_without_reason
             "    started = time.monotonic()\n",
         ),
         # 내부 리뷰 C: dry-run 표시 사유로 함수 통째 면제됐던 main 안의 timeout 강제값.
+        # 앵커는 main()의 실제 들여쓰기(T-0846 예약 try/finally 안 8칸)를 그대로 고정한다 — 4칸
+        # 부분 문자열 앵커는 main()이 재구성돼도 count()==1로 조용히 살아남아 자리만 어긋난
+        # 변이본(IndentationError)을 만든다(T-0853).
         (
             "pm_delegate",
             "main",
-            "    timeout = _resolve_timeout(args, conf, harness)\n",
-            '    if harness == "opencode":\n'
-            "        timeout = 60\n"
-            "    else:\n"
             "        timeout = _resolve_timeout(args, conf, harness)\n",
+            '        if harness == "opencode":\n'
+            "            timeout = 60\n"
+            "        else:\n"
+            "            timeout = _resolve_timeout(args, conf, harness)\n",
         ),
         # 세 번째 표면: fill runner가 공용 profile을 받은 뒤 특정 하네스만 idle 축을 끄는 우회.
         (
@@ -1404,10 +1441,55 @@ def test_structural_guard_rejects_new_timeout_bypass_callers(
         name: (TOOLS / f"{name}.py").read_text(encoding="utf-8")
         for name in ("pm_delegate", "external_review", "pm_import", "pm_relay")
     }
-    assert sources[module_name].count(needle) == 1
-    sources[module_name] = sources[module_name].replace(needle, replacement)
+    sources[module_name] = _apply_mutation_anchor(
+        sources[module_name], needle, replacement,
+        label=f"{module_name}.{function_name}")
     unexpected = _unexpected_harness_literal_hits(sources)
     assert (module_name, function_name) in unexpected
+
+
+def test_mutation_anchor_unresolved_fails_distinctly_from_parse_or_guard():
+    """앵커가 소스에 아예 없으면 '미해소'로 실패한다(파싱/가드 실패와 다른 메시지)."""
+    with pytest.raises(_AnchorUnresolved, match="앵커 미해소"):
+        _apply_mutation_anchor(
+            "def f(harness):\n    return harness\n",
+            "이 문자열은 소스에 없다",
+            "무관",
+            label="synthetic.unresolved",
+        )
+
+
+def test_mutation_anchor_ambiguous_fails_distinctly_from_parse_or_guard():
+    """앵커가 두 번 이상 해소되면 '다중 해소'로 실패한다 — 첫 매치를 조용히 골라 엉뚱한 자리에
+    변이를 심지 않는다(첫 매치를 골랐다면 이 assertion 자체가 발동하지 못했을 것)."""
+    source = "def f(harness):\n    x = 1\n    x = 1\n    return x\n"
+    with pytest.raises(_AnchorAmbiguous, match="다중 해소"):
+        _apply_mutation_anchor(
+            source, "    x = 1\n", "    x = 2\n", label="synthetic.ambiguous")
+
+
+def test_mutation_anchor_unparsable_mutant_fails_distinctly_from_anchor_or_guard():
+    """앵커는 유일 해소돼도 치환 결과가 파싱 불가하면 '파싱 실패'로 낸다.
+
+    T-0853 실측 재현: 앵커가 실제 줄의 들여쓰기 접미사만 매칭(4칸 vs 실제 8칸)해 치환 후
+    `if` 블록에 들여쓰기 body 가 붙지 않는 형태를 합성 픽스처로 만든다."""
+    source = "def f(harness):\n        timeout = 1\n        return timeout\n"
+    needle = "    timeout = 1\n"  # 실제 8칸 줄의 뒤쪽 4칸만 매칭(부분 앵커)
+    replacement = '    if harness == "opencode":\n        timeout = 60\n'
+    with pytest.raises(_MutantUnparsable, match="파싱 실패"):
+        _apply_mutation_anchor(source, needle, replacement, label="synthetic.unparsable")
+
+
+def test_mutation_anchor_normal_mutation_still_succeeds():
+    """정상 앵커(유일 해소·파싱 가능)는 세 실패 경로 어느 것도 막지 않고 변이본을 돌려준다.
+
+    파싱 단언을 추가한 fix 가 정상 변이까지 막지 않는지의 역방향 확인(T-0853)."""
+    source = "def f(harness):\n    timeout = 1\n    return timeout\n"
+    mutated = _apply_mutation_anchor(
+        source, "    timeout = 1\n", '    if harness == "opencode":\n        timeout = 60\n',
+        label="synthetic.normal")
+    assert 'harness == "opencode"' in mutated
+    compile(mutated, "synthetic.normal", "exec")  # 파싱 가능함을 재확인(단언 신뢰)
 
 
 # ── ④ 위임 표면 배선 ────────────────────────────────────────────────────────────
