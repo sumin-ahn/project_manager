@@ -23,7 +23,7 @@ import pytest
 
 
 REPO = Path(__file__).resolve().parents[1]
-SCANNER_SCRIPT = REPO / "scripts/strip_private_refs.py"
+PRIVATE_REFS_MODULE = REPO / ".project_manager/tools/private_refs.py"
 DATA_DIR = REPO / "tests/data"
 HARD_REPORT = DATA_DIR / "private_context_hard_allowlist.json"
 RATCHET_BASELINE = DATA_DIR / "private_context_baseline.json"
@@ -53,8 +53,9 @@ RATCHET_PATTERNS = {
 
 
 def _load_prose_scanner():
+    """사설 참조 판정식을 엔진 모듈에서 로드한다 — 판정 사본을 테스트가 다시 쓰지 않는다."""
     spec = importlib.util.spec_from_file_location(
-        "private_context_prose_scanner", SCANNER_SCRIPT
+        "private_context_prose_scanner", PRIVATE_REFS_MODULE
     )
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -182,7 +183,10 @@ def test_repo_owned_files_exec_failure_removes_partial_cache_and_allows_retry(
 ):
     target = tmp_path / ".project_manager/tools/repo_owned_files.py"
     target.parent.mkdir(parents=True)
-    target.write_text("raise RuntimeError('exec boom')\n", encoding="utf-8")
+    # 형제 로드는 baked rev 를 대조하므로 합성 사본도 같은 스탬프를 지녀야 한다 — 값을
+    # 리터럴로 적으면 릴리즈 bump 마다 red 라 로더 사본의 값을 그대로 읽는다.
+    stamp = f"ENGINE_REV = {PROSE_SCANNER.ENGINE_REV!r}\n"
+    target.write_text(stamp + "raise RuntimeError('exec boom')\n", encoding="utf-8")
     monkeypatch.setattr(PROSE_SCANNER, "REPO", tmp_path)
     module_name = f"_private_context_repo_owned_files:{target.resolve()}"
     sys.modules.pop(module_name, None)
@@ -192,7 +196,7 @@ def test_repo_owned_files_exec_failure_removes_partial_cache_and_allows_retry(
 
     assert module_name not in sys.modules
 
-    target.write_text("RETRY_MARKER = 'loaded'\n", encoding="utf-8")
+    target.write_text(stamp + "RETRY_MARKER = 'loaded'\n", encoding="utf-8")
     loaded = PROSE_SCANNER._load_repo_owned_files()
 
     assert loaded.RETRY_MARKER == "loaded"

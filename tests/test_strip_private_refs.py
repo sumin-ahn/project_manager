@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +15,12 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts/strip_private_refs.py"
+PRIVATE_REFS_MODULE = REPO / ".project_manager/tools/private_refs.py"
+
+# 엔진 사본 규약이 소유하는 이름 — 판정식이 아니라 형제 로드/스탬프 표면이라 스크립트가
+# 재수출하지 않는다. 부트스트랩 블록 이름은 접두사로 함께 뺀다.
+_ENGINE_COPY_SURFACE = frozenset({"ENGINE_REV", "_verify_engine_rev"})
+_BOOTSTRAP_PREFIX = "_TOOLS_BOOTSTRAP"
 
 
 def _load():
@@ -707,3 +715,234 @@ def test_dry_run_residual_report_uses_transformed_snapshot(stripper, tmp_path):
     assert removable not in report
     assert residual in report
     assert removable in path.read_text(encoding="utf-8")
+
+
+# ── 판정식 이관 (엔진 모듈 소유 · 스크립트는 재수출만) ────────────────────────
+#
+# 판정식은 `.project_manager/tools/private_refs.py` 가 소유한다. 이 스크립트는 출하 대상이
+# 아니라서 엔진과 가드가 그 판정을 소비할 수 없었다. 아래 세 축이 이관을 잠근다 — 재수출이
+# 사본이 아니라 같은 객체인가, 스크립트가 옮긴 이름을 다시 정의하지 않는가, 그리고 같은
+# 입력에서 이관 전과 같은 판정 결과가 나오는가.
+
+
+def _engine_judgment_names() -> list[str]:
+    """엔진 모듈이 소유한 판정식 이름을 모듈 소스 AST 에서 파생한다.
+
+    손으로 든 목록은 심볼이 늘 때 재수출 누락을 놓친다. 형제 로드/스탬프 표면만 뺀다.
+    """
+    tree = ast.parse(PRIVATE_REFS_MODULE.read_text(encoding="utf-8"))
+    names: list[str] = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.append(node.name)
+        elif isinstance(node, ast.Assign):
+            names.extend(
+                target.id for target in node.targets if isinstance(target, ast.Name)
+            )
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.append(node.target.id)
+    return [
+        name
+        for name in names
+        if name not in _ENGINE_COPY_SURFACE and not name.startswith(_BOOTSTRAP_PREFIX)
+    ]
+
+
+def test_script_reexports_the_engine_judgment_as_the_same_objects(stripper):
+    """스크립트의 이름 하나하나가 엔진 모듈의 **같은 객체**를 가리킨다 (복제 0).
+
+    값을 복사하면 두 벌이 되어 한쪽만 고쳐진 채 판정이 갈린다. 문자열 grep 은 그 실패를
+    증명하지 못하므로 객체 동일성(``is``)으로 단언한다.
+    """
+    engine = stripper.private_refs
+    assert Path(engine.__file__).resolve() == PRIVATE_REFS_MODULE.resolve()
+
+    names = _engine_judgment_names()
+    # 목록이 비면 아래 단언이 공허하게 통과한다 — 하중을 받는 seam 이 실제로 들어 있는지 본다.
+    assert {"shipping_paths", "prose_token_spans", "_actionable_matches"} <= set(names)
+
+    missing = [name for name in names if not hasattr(stripper, name)]
+    assert not missing, f"엔진 판정식 재수출 누락: {missing}"
+
+    copied = [
+        name for name in names if getattr(stripper, name) is not getattr(engine, name)
+    ]
+    assert not copied, f"재수출이 같은 객체가 아니다(사본 발생): {copied}"
+
+
+def test_script_defines_no_copy_of_the_migrated_judgment():
+    """스크립트가 옮긴 이름을 다시 정의하지 않는다 — 재수출 위에 사본을 얹는 경로를 닫는다."""
+    moved = set(_engine_judgment_names())
+    tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
+    redefined = sorted(
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and node.name in moved
+    )
+    assert not redefined, f"스크립트가 옮긴 판정식을 다시 정의한다: {redefined}"
+
+
+def _parity_cases(stripper):
+    """(이름, 입력, 이관 전 구현이 낸 판정 결과) — 기대값은 이관 전에 실측해 박은 값이다."""
+    ticket = _ticket()
+    decision = _decision()
+    marker = "# " + stripper._DATA_LITERAL_MARKER
+    return (
+        (
+            "comment-removable-unit",
+            f"x = 1  # 사유 ({ticket})\n",
+            {
+                "spans": [(7, 20, 1, f"# 사유 ({ticket})")],
+                "data_literal_spans": [],
+                "actionable": [(1, ticket)],
+                "prose_before": 1,
+                "rewritten": "x = 1  # 사유\n",
+                "replacements": 1,
+                "prose_after": 0,
+            },
+        ),
+        (
+            "docstring-residual-unit",
+            f'"""문맥 ({ticket} 게이트)."""\n',
+            {
+                "spans": [(0, 22, 1, f'"""문맥 ({ticket} 게이트)."""')],
+                "data_literal_spans": [],
+                "actionable": [],
+                "prose_before": 1,
+                "rewritten": f'"""문맥 ({ticket} 게이트)."""\n',
+                "replacements": 0,
+                "prose_after": 1,
+            },
+        ),
+        (
+            "inline-code-protected",
+            f"y = 2  # 표기 `({ticket})` 는 보존한다\n",
+            {
+                "spans": [(7, 29, 1, f"# 표기 `({ticket})` 는 보존한다")],
+                "data_literal_spans": [],
+                "actionable": [],
+                "prose_before": 0,
+                "rewritten": f"y = 2  # 표기 `({ticket})` 는 보존한다\n",
+                "replacements": 0,
+                "prose_after": 0,
+            },
+        ),
+        (
+            "data-literal-line",
+            f'WIRE = "<!-- guest {ticket} -->"  {marker}\n',
+            {
+                "spans": [],
+                "data_literal_spans": [(0, 50)],
+                "actionable": [],
+                "prose_before": 0,
+                "rewritten": f'WIRE = "<!-- guest {ticket} -->"  {marker}\n',
+                "replacements": 0,
+                "prose_after": 0,
+            },
+        ),
+        (
+            "data-literal-block",
+            f'{marker}:begin\nWIRE = "<!-- {ticket} -->"\n{marker}:end\n',
+            {
+                "spans": [],
+                "data_literal_spans": [(0, 71)],
+                "actionable": [],
+                "prose_before": 0,
+                "rewritten": (
+                    f'{marker}:begin\nWIRE = "<!-- {ticket} -->"\n{marker}:end\n'
+                ),
+                "replacements": 0,
+                "prose_after": 0,
+            },
+        ),
+        (
+            "plain-string-literal",
+            f'VALUE = "{ticket}"\n',
+            {
+                "spans": [],
+                "data_literal_spans": [],
+                "actionable": [],
+                "prose_before": 0,
+                "rewritten": f'VALUE = "{ticket}"\n',
+                "replacements": 0,
+                "prose_after": 0,
+            },
+        ),
+        (
+            "multiline-docstring",
+            f'def f():\n    """머리 ({ticket}·{decision})\n\n    본문 {ticket} 서술\n    """\n',
+            {
+                "spans": [
+                    (
+                        13,
+                        62,
+                        2,
+                        f'"""머리 ({ticket}·{decision})\n\n    본문 {ticket} 서술\n    """',
+                    )
+                ],
+                "data_literal_spans": [],
+                "actionable": [(2, ticket), (2, decision)],
+                "prose_before": 3,
+                "rewritten": f'def f():\n    """머리\n\n    본문 {ticket} 서술\n    """\n',
+                "replacements": 2,
+                "prose_after": 1,
+            },
+        ),
+        (
+            "delta-guarded-line",
+            f"z = 3  # A·{ticket}·B\n",
+            {
+                "spans": [(7, 19, 1, f"# A·{ticket}·B")],
+                "data_literal_spans": [],
+                "actionable": [(1, ticket)],
+                "prose_before": 1,
+                "rewritten": "z = 3  # A·B\n",
+                "replacements": 1,
+                "prose_after": 0,
+            },
+        ),
+    )
+
+
+def _verdict(stripper, source):
+    """한 입력에 대한 판정 결과 전부 — 존재가 아니라 값으로 대조하기 위한 표현."""
+    spans = stripper.prose_token_spans(source)
+    rewritten, replacements = stripper.rewrite_python(source)
+    return {
+        "spans": [(span.start, span.end, span.line, span.text) for span in spans],
+        "data_literal_spans": stripper._data_literal_spans(source),
+        "actionable": [
+            (span.line, match.group())
+            for span in spans
+            for match in stripper._actionable_matches(span.text)
+        ],
+        "prose_before": stripper._prose_count(source),
+        "rewritten": rewritten,
+        "replacements": replacements,
+        "prose_after": stripper._prose_count(rewritten),
+    }
+
+
+def test_migrated_judgment_reproduces_pre_migration_verdicts(stripper):
+    """이관 전 구현이 같은 입력에 내던 판정 결과를 값으로 재현한다.
+
+    기대값은 판정식이 아직 스크립트 안에 있던 시점의 실측 결과다. 이관이 시야를 넓히거나
+    좁히면(산문 구간·데이터 면제·제거 가능 판정·재작성 결과 중 무엇이든) 같은 입력에서 다른
+    값이 나와 red 다 — 존재 검사가 아니라 결과 값 비교다.
+    """
+    for name, source, expected in _parity_cases(stripper):
+        assert _verdict(stripper, source) == expected, f"{name}: 이관 전후 판정이 다르다"
+
+
+def test_parity_pins_are_load_bearing(stripper, monkeypatch):
+    """민감도 — 보호 규칙 하나를 무력화하면 같은 입력의 판정이 즉시 달라진다.
+
+    기대값이 그저 통과하는 상수가 아니라 실제 판정 경로를 붙들고 있음을 반사실로 보인다.
+    """
+    ticket = _ticket()
+    source = f"y = 2  # 표기 `({ticket})` 는 보존한다\n"
+    assert stripper.rewrite_python(source) == (source, 0)
+
+    monkeypatch.setattr(stripper.private_refs, "_INLINE_CODE_RE", re.compile(r"(?!x)x"))
+    assert stripper.rewrite_python(source) != (source, 0)
