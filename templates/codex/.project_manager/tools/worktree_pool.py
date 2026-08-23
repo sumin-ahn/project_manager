@@ -2802,6 +2802,19 @@ def alloc(
         raise NeedsCreate(repo)
 
 
+def slot_state(slot: str) -> "str | None":
+    """슬롯의 현재 상태(`leased`/`idle`) — 장부에 없으면 None (조회 전용·부작용 0).
+
+    반납이 **필요한지** 묻는 자리다. 자동 종결 경로는 자기 부작용이 이미 있는지 관측해서
+    건너뛰므로(재실행이 곧 재개), 이미 idle 인 슬롯에 반납을 다시 걸어 dirty 판정·소유 검사
+    같은 무관한 거부를 만나지 않는다. 장부 read 동안만 짧게 lock 을 잡는다(`_read_recorded_base`
+    동형)."""
+    with _lease_lock():
+        leases = _read_ledger()
+    target = next((lease for lease in leases if lease.slot == slot), None)
+    return target.state if target is not None else None
+
+
 def release(
     slot: str,
     *,

@@ -4686,12 +4686,16 @@ def _sum_numstat(text: str) -> int:
     return total
 
 
-# ── 서킷브레이커 측정 폭 (claim 앵커) ──────────────────────────────────────
-# 서킷브레이커가 재야 하는 것은 "이 티켓이 claim 이후 남긴 변경"이다. 작업트리+직전 커밋 한 칸
-# 이라는 옛 폭은 dev 브랜치를 `--no-ff` merge 로 흡수하는 형상에서 0 에 수렴한다 — finish 시점
-# 트리는 clean 이고 마지막 커밋이 전파/기록 커밋이면 티켓 경로 교집합이 비기 때문이다(실측).
-# claim 시점 코드 트리 HEAD 를 앵커로 쓰면 그 사이 커밋(merge 로 들어온 dev 누적 포함)이
-# 한 폭에 들어온다.
+# ── 서킷브레이커 측정 폭 (앵커) ────────────────────────────────────────────
+# 서킷브레이커가 재야 하는 것은 "이 작업이 통합 브랜치에서 갈라진 뒤 남긴 변경"이다.
+# 작업트리+직전 커밋 한 칸이라는 옛 폭은 dev 브랜치를 `--no-ff` merge 로 흡수하는 형상에서
+# 0 에 수렴한다 — 완료 기록 시점 트리는 clean 이고 마지막 커밋이 전파/기록 커밋이면 경로
+# 교집합이 비기 때문이다(실측).
+#
+# 기준점은 `merge-base(<통합 브랜치>, HEAD)` 다. 그 값은 커밋·재배치 순서와 무관하게 같으므로
+# 폭이 조작 순서의 함수가 되지 않고, 재배치로 흡수한 남의 커밋은 그 기준점의 조상이라 폭에서
+# 빠진다(claim 시점 rev 를 기준점으로 쓰면 그 흡수분이 자기 폭으로 실렸다·실측). 통합 브랜치를
+# 선언하지 않았거나 이 트리에서 해소되지 않으면 claim 시점 rev 로 접고 사유를 시끄럽게 남긴다.
 
 # 앵커는 git argv 에 그대로 들어가므로 형태를 먼저 좁힌다 — 옵션처럼 보이는 값(`--foo`)이
 # base 자리로 새면 git 이 그것을 플래그로 읽는다. board 가 박제하는 값은 40자 sha 다.
@@ -4705,18 +4709,47 @@ CLAIMED_REV_UNRESOLVED_NOTE = (
     "claimed_rev {rev} 를 이 트리에서 해소하지 못함 — 폭 과소 측정 가능(옛 폭으로 잰다). "
     "박제된 rev 가 다른 저장소의 것이거나 히스토리가 다시 쓰였는지 확인하라."
 )
+INTEGRATION_TIP_UNRESOLVED_NOTE = (
+    "통합 브랜치 {ref} 를 이 트리에서 해소하지 못함 — 폭이 claim 앵커로 접힌다(재배치로 흡수한 "
+    "분량이 이 폭에 실릴 수 있다). 장부가 선언한 통합 브랜치가 이 트리에 있는지 확인하라."
+)
+INTEGRATION_TIP_UNDECLARED_NOTE = (
+    "묶음 장부에 통합 브랜치(base_branch) 선언이 없음 — 폭이 claim 앵커로 접힌다(재배치로 "
+    "흡수한 분량이 이 폭에 실릴 수 있다). `board.py cluster show <이름>` 으로 장부를 확인하라."
+)
+INTEGRATION_TIP_SEAM_ABSENT_NOTE = (
+    "묶음 장부 해소 seam 을 로드하지 못함(구형/부분 설치) — 폭이 claim 앵커로 접힌다(재배치로 "
+    "흡수한 분량이 이 폭에 실릴 수 있다). pm-update 로 .project_manager/tools/ 를 재동기하라."
+)
 
 
-def claim_anchor(
+def _integration_merge_base(
+    root: Path, integration_ref: str,
+    run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
+) -> str | None:
+    """`merge-base(<통합 브랜치>, HEAD)` — 해소 실패는 None(호출부가 옛 폭으로 접는다).
+
+    이 값이 폭의 기준점이면 커밋·재배치가 언제 일어나도 폭이 같다: 통합 브랜치가 이미 가진
+    커밋은 이 기준점의 조상이라 빠지고, 이 작업이 갈라진 뒤 남긴 것만 남는다."""
+    _run = run_fn or subprocess.run
+    try:
+        result = _run(
+            ["git", "-C", str(root), "merge-base", integration_ref, "HEAD"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    merge_base = (result.stdout or "").strip()
+    return merge_base if _CLAIMED_REV_RE.match(merge_base) else None
+
+
+def _claimed_rev_anchor(
     root: Path, claimed_rev: str | None,
     run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
 ) -> tuple[str | None, str | None]:
-    """측정에 쓸 claim 앵커와 **폭 축소 사유** — `(앵커, None)` 또는 `(None, 사유)`.
-
-    `git diff <rev>` 는 rev 를 못 찾으면 rc≠0 이고 측정 경로는 실패한 실행을 '이 단계에는 변경
-    없음'으로 접는다. 그래서 해소되지 않는 앵커를 그대로 넘기면 **조용한 0 줄**(false-green)이
-    된다 — 폭을 고르기 전에 존재를 한 번 묻고, 없으면 사유를 돌려 호출부가 옛 폭으로 접되
-    그 사실을 시끄럽게 알리게 한다."""
+    """claim 시점 rev 를 앵커로 검증한다 — `(앵커, None)` 또는 `(None, 사유)`."""
     if not claimed_rev:
         return None, CLAIMED_REV_ABSENT_NOTE
     if not _CLAIMED_REV_RE.match(claimed_rev):
@@ -4735,20 +4768,93 @@ def claim_anchor(
     return claimed_rev, None
 
 
+def claim_anchor(
+    root: Path, claimed_rev: str | None,
+    run_fn: Callable[..., subprocess.CompletedProcess] | None = None,
+    *, integration_ref: str | None = None,
+) -> tuple[str | None, str | None]:
+    """측정에 쓸 앵커와 **폭 축소 사유** — `(앵커, None)` 또는 `(앵커 또는 None, 사유)`.
+
+    통합 브랜치를 주면 앵커는 `merge-base(<통합 브랜치>, HEAD)` 다. 그 기준점은 커밋·재배치
+    순서에 흔들리지 않으므로(작업트리에만 있든, 이미 커밋됐든, 재배치 뒤든 같은 값) 측정 폭이
+    조작 순서의 함수가 되지 않고, 통합 브랜치가 이미 가진 분량은 폭에서 빠진다.
+
+    통합 브랜치가 없거나(선언 부재) 해소되지 않으면 claim 시점 rev 로 접는다. `git diff <rev>`
+    는 rev 를 못 찾으면 rc≠0 이고 측정 경로는 실패한 실행을 '이 단계에는 변경 없음'으로 접는다
+    — 그래서 해소되지 않는 앵커를 그대로 넘기면 **조용한 0 줄**(false-green)이 된다. 폭을 고르기
+    전에 존재를 한 번 묻고, 없으면 사유를 돌려 호출부가 옛 폭으로 접되 그 사실을 시끄럽게
+    알리게 한다."""
+    if not integration_ref:
+        return _claimed_rev_anchor(root, claimed_rev, run_fn)
+    merge_base = _integration_merge_base(root, integration_ref, run_fn)
+    if merge_base is not None:
+        return merge_base, None
+    anchor, note = _claimed_rev_anchor(root, claimed_rev, run_fn)
+    unresolved = INTEGRATION_TIP_UNRESOLVED_NOTE.format(ref=integration_ref)
+    return anchor, unresolved if note is None else f"{unresolved} {note}"
+
+
+def _load_ticket_finish():
+    """형제 완료 기록 엔진 — 묶음 장부 해소를 **그쪽 단일 정의**에서 빌려 온다(사본 0).
+
+    `_load_board()` 와 같은 형제 로드 규약이다(경로 앵커·순환 import 없음·도구 standalone
+    실행). 같은 값(장부 `base_branch`)을 이 파일이 따로 해석하면 리뷰 송신 폭과 완료 기록 폭이
+    다른 통합 브랜치를 보게 된다 — 두 게이트가 같은 폭을 본다는 성질이 그 사본 하나로 깨진다."""
+    path = Path(__file__).resolve().with_name("ticket_finish.py")
+    return _load_module_from_path(
+        path, "ticket_finish.py", verifier=_verify_engine_rev)
+
+
+def _cluster_board_py(pm_home: Path | None) -> Path:
+    """묶음 장부를 읽을 board 사본 — PM 홈이 주어지면 그 홈의 엔진 사본, 아니면 형제.
+
+    장부 조회는 재앵커 없이 그 사본이 보는 트리를 본다 — 분리 형상에서 형제 사본을 쓰면 이
+    도구가 사는 트리의 board 를 읽어 **다른 장부**를 본다(티켓 조회가 `pm_home` 을 따르는 것과
+    같은 이유)."""
+    if pm_home is not None:
+        candidate = Path(pm_home) / ".project_manager" / "tools" / "board.py"
+        if candidate.is_file():
+            return candidate
+    return Path(__file__).resolve().with_name("board.py")
+
+
+def cluster_integration_tip(
+    ticket_id: str, *, pm_home: Path | None = None,
+) -> tuple[str | None, str | None]:
+    """그 티켓 묶음의 통합 브랜치와 **미해소 사유** — `(브랜치, None)` 또는 `(None, 사유)`.
+
+    폭의 기준점을 고르는 입력이다. 선언이 없거나 장부를 읽지 못하면 값을 지어내지 않고 사유를
+    돌려 호출부가 옛 폭으로 접되 그 사실을 시끄럽게 알리게 한다(조용한 강등 금지)."""
+    try:
+        finish = _load_ticket_finish()
+        resolver = getattr(finish, "_cluster_integration_branch", None)
+        if resolver is None:
+            return None, INTEGRATION_TIP_SEAM_ABSENT_NOTE
+        branch = resolver(_cluster_board_py(pm_home), ticket_id)
+    except Exception as exc:  # noqa: BLE001 — 조회 실패는 옛 폭 + loud(가드 off 아님).
+        if _is_engine_rev_skew(exc):
+            raise  # 사본 skew 는 삼키지 않는다(fail-loud).
+        return None, INTEGRATION_TIP_SEAM_ABSENT_NOTE
+    if not branch:
+        return None, INTEGRATION_TIP_UNDECLARED_NOTE
+    return branch, None
+
+
 def _measure_stages(
-    base: str, claimed_rev: str | None,
+    base: str, anchor: str | None,
 ) -> tuple[tuple[str, bool], ...]:
     """서킷브레이커가 잴 단계 표 — `(git diff 기준, untracked 포함 여부)`.
 
-    claim 앵커가 있고 base 가 기본('HEAD')이면 단계는 하나다: `git diff <claimed_rev>` 는 그
-    커밋 트리와 **현재 작업트리**를 비교하므로 claim 이후 커밋(merge 로 흡수한 dev 브랜치 누적
-    포함)·스테이징·언스테이징이 한 폭에 들어온다. untracked 신규 파일도 작업트리 구성원이라
-    함께 센다(stage 전 대형 신규 파일이 0 줄로 통과하던 창을 그대로 닫아 둔다).
+    앵커(`claim_anchor` 가 고른 기준점 — 통합 브랜치 merge-base 또는 claim 시점 rev)가 있고
+    base 가 기본('HEAD')이면 단계는 하나다: `git diff <앵커>` 는 그 커밋 트리와 **현재
+    작업트리**를 비교하므로 기준점 이후의 커밋·스테이징·언스테이징이 한 폭에 들어온다.
+    untracked 신규 파일도 작업트리 구성원이라 함께 센다(stage 전 대형 신규 파일이 0 줄로
+    통과하던 창을 그대로 닫아 둔다).
 
-    앵커가 없거나(구 티켓) `--base` 가 명시되면 옛 폭 그대로다 — 명시 base 는 사용자가 고른
-    폭이라 앵커가 덮어쓰지 않는다."""
-    if claimed_rev and base == "HEAD":
-        return ((claimed_rev, True),)
+    앵커가 없거나 `--base` 가 명시되면 옛 폭 그대로다 — 명시 base 는 사용자가 고른 폭이라
+    앵커가 덮어쓰지 않는다."""
+    if anchor and base == "HEAD":
+        return ((anchor, True),)
     return tuple((stage, stage == "HEAD") for stage in _diff_bases(base))
 
 
@@ -4822,9 +4928,10 @@ def _diff_cap_refusal(
     """이번 실행의 diff 서킷브레이커 판정 (통과·가드 off 면 None).
 
     상한을 고르는 티켓은 `--ticket`(검토 범위를 정한 티켓) 우선, 없으면 `--gate`(게이트 표식)다.
-    측정 폭은 **이번 실행이 실제로 리뷰하는 범위**(해소된 검토 경로)이고, 기준점은 그 티켓의
-    claim 시점 rev(`claimed_rev`)다 — 완료 기록 서킷브레이커와 **같은 폭**(`measured_numstat_text`
-    한 곳)이라 두 게이트가 다른 단계·다른 제외 규칙을 보지 않는다.
+    측정 폭은 **이번 실행이 실제로 리뷰하는 범위**(해소된 검토 경로)이고, 기준점은 그 티켓
+    묶음의 통합 브랜치와의 merge-base 다(해소 못 하면 claim 시점 rev + 경고) — 완료 기록
+    서킷브레이커와 **같은 기준·같은 폭**(`measured_numstat_text` 한 곳)이라 두 게이트가 다른
+    단계·다른 제외 규칙을 보지 않고, 커밋·재배치 순서가 폭을 바꾸지 않는다.
 
     두 진입점은 같은 폭을 쓰되 **같은 총량을 강제하지 않는다**. 여기서 묻는 것은 "이번에 실제로
     전송되는 diff 가 얼마인가"라 공유 트리 wave 에서도 union 이 정답이고, 완료 기록이 묻는 것은
@@ -4851,8 +4958,16 @@ def _diff_cap_refusal(
     anchor_note: str | None = None
     if args.base == "HEAD":
         # 기본 폭일 때만 앵커를 적용한다 — 명시 `--base` 는 사용자가 고른 폭의 주인이다.
+        # 기준점은 그 티켓 묶음의 통합 브랜치와의 merge-base 다(완료 기록 폭과 같은 기준) —
+        # 커밋·재배치가 언제 일어나도 폭이 같고, 통합 브랜치가 이미 가진 분량은 빠진다.
+        integration_ref, integration_note = cluster_integration_tip(
+            ticket, pm_home=pm_home)
+        if integration_note is not None:
+            print(f"주의: diff 서킷브레이커 측정 폭 — {ticket} {integration_note}",
+                  file=sys.stderr)
         claimed_rev, anchor_note = claim_anchor(
             root, parse_ticket_claimed_rev(ticket, pm_home=pm_home),
+            integration_ref=integration_ref,
         )
     if anchor_note is not None:
         print(f"주의: diff 서킷브레이커 측정 폭 — {ticket} {anchor_note}",
