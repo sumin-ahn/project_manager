@@ -1387,15 +1387,22 @@ def _claude_harness_reply(lines) -> HarnessReply:
 
 
 def _codex_harness_reply(lines) -> HarnessReply:
-    """thread id 가 세션 id 자리다. usage 는 원장 4필드로 옮기지 않는다 — `cached_input` 이
-    `input` 에 포함되고 cache write 의 포함 관계는 미검증이라, 같은 필드 이름으로 접으면 합산
-    의미가 하네스마다 달라진다(추정 매핑 대신 필드 부재)."""
-    thread_id, reply, _usage = parse_codex_json(lines)
-    return HarnessReply(reply, thread_id, None)
+    """thread id 가 세션 id 자리다. usage 는 `_codex_usage_contract` 5필드
+    (`input`·`cached_input`·`cache_write_input`·`output`·`reasoning_output`)를 **접지 않고**
+    그대로 싣는다 — `cached_input` 이 `input` 에 포함되고 cache write 의 포함 관계는 미검증이라,
+    같은 필드 이름(claude 의 4필드)으로 접으면 합산 의미가 하네스마다 달라진다. 소비자는 장부
+    행의 `harness` 를 보고 해석한다. 이 5필드 중 missing/비-정수 키는 `_codex_usage_contract`
+    가 0 으로 채운다 — claude 4필드 축의 "부재=미관측"(값 자체를 만들지 않음)과 다른 규칙이라
+    claude 처럼 "0 은 실측"으로 읽으면 안 된다."""
+    thread_id, reply, usage = parse_codex_json(lines)
+    return HarnessReply(reply, thread_id, usage)
 
 
 def _opencode_harness_reply(lines) -> HarnessReply:
-    """총합 스칼라만 오는 축 — 분해 관측이 없으므로 원장 usage 는 필드 부재로 남긴다."""
+    """총합 스칼라만 내는 파서 축 — wire `part.tokens` 에는 실제로 input/output/reasoning/cache
+    분해가 있지만(`parse_opencode_json`) 파서가 스칼라 하나로 접어, 원장에 실을 하네스 contract가
+    없다. 그 스칼라도 두 갈래 의미(`total` 원값 또는 보수적 상위집합 합)라 값 형태로 실으면 같은
+    이름 아래 다른 사실이 섞인다. 이번 범위 밖(별건 후보) — 원장 usage 는 필드 부재로 남긴다."""
     session_id, reply, _used_tokens = parse_opencode_json(lines)
     return HarnessReply(reply, session_id, None)
 
