@@ -34,6 +34,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import tokenize
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Callable, NamedTuple
@@ -346,6 +347,12 @@ def _load_external_review():
     return mod
 
 
+# 사설 참조 판정식 모듈의 **공용** 캐시 key 접두 — 소비자 이름을 넣지 않는다. 재유입 가드
+# (`tests/test_private_context_guard.py`)도 같은 key 로 올리므로 두 소비자가 한 모듈 객체를
+# 공유하고, "판정식 사본 0" 이 함수 객체 동일성으로 성립한다.
+PRIVATE_REFS_CACHE_KEY_PREFIX = "_project_manager_private_refs:"
+
+
 def _load_private_refs():
     """사설 참조 판정식 모듈을 동적 로드한다 (부재/로드 실패 시 None·fail-soft).
 
@@ -365,7 +372,7 @@ def _load_private_refs():
     try:
         mod = _load_module_from_path(
             pr_path, "private_refs.py", verifier=_verify_engine_rev,
-            cache=True, cache_key=f"_ticket_finish_private_refs:{pr_path.resolve()}",
+            cache=True, cache_key=f"{PRIVATE_REFS_CACHE_KEY_PREFIX}{pr_path.resolve()}",
         )
     except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패가 완료를 막지 않는다.
         if _is_engine_rev_skew(exc):
@@ -1553,60 +1560,88 @@ def _dirty_entry_path(line: str) -> str:
 # 함수는 그 둘 사이 **형식 변환**만 한다 — 새 판정 로직이 아니다.
 
 _DIFF_HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+# blame porcelain 첫 필드 — sha1(40)·sha256(64) 두 오브젝트 형식을 다 받는다.
+_BLAME_SHA_RE = re.compile(r"[0-9a-f]{40,64}")
+# 차단 목록에서 raw 축 유입에 붙는 사유 — actionable(안전 삭제 단위가 잡힌 참조)과 같은 줄
+# 형식을 쓰되, 그 줄이 왜 차단감인지(도입 커밋이 없는 신규 유입)를 값으로 남긴다.
+_PRIVATE_REF_UNCOMMITTED_NOTE = " (미커밋 신규)"
 
 
-def _parsed_diff_added_lines(diff_text: str) -> dict[str, set[int]]:
-    """0-컨텍스트 unified diff 원문 → {새 파일 상대경로: {추가된 새-파일 줄 번호}}.
+def _parsed_diff_added_lines(
+    diff_text: str, block_path_fn: Callable[[list[str]], str | None],
+) -> tuple[dict[str, set[int]], list[str]]:
+    """0-컨텍스트 unified diff 원문 → ({새 파일 상대경로: {추가된 줄 번호}}, 경로 미확정 헤더).
+
+    경로 복원은 `external_review._diff_block_path` 가 소유한다(사본 0) — 비-ASCII 경로의
+    C-quote 8진 표기·rename 목적지·`/dev/null` 을 그 함수가 이미 손실 없이 푼다. 손으로 접두만
+    벗기면 quote 된 표기가 그대로 키가 되어 실제 출하 경로와 결합되지 않고, 그 파일의 유입이
+    통째로 판정에서 빠진다. 여기서는 block 을 나누고 hunk 헤더의 새-파일 줄 번호만 센다.
 
     산문 판정 자체는 여기서 하지 않는다 — `prose_token_spans` 는 완전한 파이썬 소스가
     필요해 `+`로 시작하는 diff 조각을 그대로 파싱할 수 없다. 여기서는 **어느 줄이 새로
     추가됐는지**만 뽑고, 판정은 호출부가 작업트리 파일 전문에 건다."""
+    blocks: list[list[str]] = []
+    for line in diff_text.splitlines(keepends=True):
+        if line.startswith("diff --git "):
+            blocks.append([line])
+        elif blocks:
+            blocks[-1].append(line)
     added: dict[str, set[int]] = {}
-    current_path: str | None = None
-    current_line: int | None = None
-    for line in diff_text.splitlines():
-        if line.startswith("+++ "):
-            field = line[4:]
-            if field == "/dev/null":
-                current_path = None
-            elif field.startswith(("a/", "b/")):
-                current_path = field[2:]
-            else:
-                current_path = field
-            current_line = None
+    unresolved: list[str] = []
+    for block in blocks:
+        path = block_path_fn(block)
+        if path is None:
+            unresolved.append(block[0].rstrip("\r\n"))
             continue
-        if line.startswith("@@"):
-            match = _DIFF_HUNK_HEADER_RE.match(line)
-            current_line = int(match.group(1)) if match else None
-            continue
-        if current_path is None or current_line is None:
-            continue
-        if line.startswith("\\"):
-            continue  # "\ No newline at end of file" — 줄이 아니다.
-        if line.startswith("+"):
-            added.setdefault(current_path, set()).add(current_line)
-            current_line += 1
-        elif not line.startswith("-"):
-            current_line += 1  # 컨텍스트 줄(0-컨텍스트 diff 에선 드묾) — 새 파일 줄 번호를 소비한다.
-    return added
+        current_line: int | None = None
+        for line in block[1:]:
+            if line.startswith("@@"):
+                match = _DIFF_HUNK_HEADER_RE.match(line)
+                current_line = int(match.group(1)) if match else None
+                continue
+            if current_line is None:
+                continue  # hunk 이전 메타데이터(`--- `·`+++ `·mode·index)는 줄이 아니다.
+            if line.startswith("\\"):
+                continue  # "\ No newline at end of file" — 줄이 아니다.
+            if line.startswith("+"):
+                added.setdefault(path, set()).add(current_line)
+                current_line += 1
+            elif not line.startswith("-"):
+                current_line += 1  # 컨텍스트 줄(0-컨텍스트 diff 에선 드묾) — 줄 번호를 소비한다.
+    return added, unresolved
 
 
 def _git_blame_short_sha(
     run_git_stdout_at_fn: Callable[[Path, list[str]], tuple[int, str]],
     code_tree: Path, path: str, line: int,
 ) -> str | None:
-    """`path:line` 을 도입한 커밋의 축약 sha (조회 실패는 None).
+    """`path:line` 을 도입한 커밋의 축약 sha (미커밋 줄·조회 실패는 None).
 
     잔여로 남는 흡수분(claim 이후 다른 커밋이 offender 를 들여온 경우) 경고에만 쓴다 — 이
-    조회가 실패해도 경고 자체는 그대로 나가고 sha 만 빠진다(진단 강화일 뿐 차단 축이 아니다)."""
+    조회가 실패해도 경고 자체는 그대로 나가고 sha 만 빠진다(진단 강화일 뿐 차단 축이 아니다).
+
+    **작업트리를 보는 `git blame` 이어야 한다** — `git log -L` 은 커밋된 내용만 따라가므로
+    아직 커밋되지 않은 줄에 HEAD 의 같은 줄 번호에 있던 **무관한 커밋** sha 를 붙인다(유입
+    커밋을 식별하라는 이 경고의 목적과 반대다). blame 이 미커밋 줄에 내는 all-zero sha 는
+    도입 커밋이 없다는 뜻이므로 sha 없이 경고한다."""
     try:
         rc, out = run_git_stdout_at_fn(
-            code_tree, ["log", "-1", "-s", "--format=%h", f"-L{line},{line}:{path}"],
+            code_tree,
+            ["blame", "--porcelain", f"-L{line},{line}", "--", path],
         )
     except Exception:  # noqa: BLE001 — 진단 강화 실패가 경고를 막지 않는다.
         return None
-    sha = out.strip()
-    return sha if rc == 0 and sha else None
+    if rc != 0 or not out.strip():
+        return None
+    sha = out.split(maxsplit=1)[0]
+    if _BLAME_SHA_RE.fullmatch(sha) is None or set(sha) == {"0"}:
+        return None  # 미커밋(작업트리에만 있는) 줄 — 도입 커밋이 아직 없다.
+    try:
+        rc, short = run_git_stdout_at_fn(code_tree, ["rev-parse", "--short", sha])
+    except Exception:  # noqa: BLE001 — 축약 실패도 경고를 막지 않는다.
+        return None
+    short = short.strip()
+    return short if rc == 0 and short else None
 
 
 def status_entries(run_git: Callable[[list[str]], tuple[int, str]],
@@ -2321,32 +2356,54 @@ class TicketFinisher:
     # ── 사설 참조 완료 기록 preflight ────────────────────────────────────────
     # 판정식·표면 술어는 private_refs.py 소유(사본 0). 측정 폭은 diff 서킷브레이커와 같은
     # claim 앵커(`external_review.claim_anchor`)를 재사용한다 — 리뷰가 본 표면과 이 게이트가
-    # 보는 표면이 갈리지 않는다. rc 정책은 오차단 실측(done 티켓 replay·전량스캔·라이브 표본
-    # 전부 0건)에 근거한다: actionable 축(안전 삭제 가능한 참조 단위)만 차단하고, 더 넓은
-    # recall 의 raw 축(흡수분·허용분 재작성이 실측상 여기서만 걸린다)은 경고로 남긴다.
+    # 보는 표면이 갈리지 않는다. rc 정책의 축은 **줄의 커밋 여부**다: 아직 커밋되지 않은
+    # 줄(작업트리 blame 에 도입 커밋이 없다)의 참조는 이 티켓이 방금 넣은 신규 유입이라 넓은
+    # recall 의 raw 축 전부를 차단하고, 안전 삭제 단위가 잡히는 actionable 은 커밋 여부와
+    # 무관하게 차단한다. 이미 커밋된 줄의 raw 는 흡수분·허용분 재작성이 실측상 걸리는
+    # 갈래라 blame sha 를 실은 경고로 남긴다 — 게이트가 켜진 뒤에는 그 줄이 통합 브랜치에
+    # 도달하지 못해 자기치유한다. 이 축은 완료 기록을 dev 변경이 **미커밋인 상태**에서
+    # 실행한다는 운영 전제 위에 선다(WIP 커밋을 먼저 만들면 신규 유입이 커밋된 줄로 보여
+    # 경고로 강등된다).
 
     def _private_ref_surface_paths(
-        self, code_tree: Path, touches: Sequence[str], private_refs,
+        self, code_tree: Path, touches: Sequence[str], private_refs, external,
     ) -> list[Path]:
-        """터치 선언 ∩ 사설 참조 출하 python 표면 — 절대경로 목록(표면 해소).
+        """터치 선언 ∩ 사설 참조 출하 python 표면 ∖ 기계 mirror — 절대경로 목록(표면 해소).
 
-        표면 정의는 `private_refs.shipping_paths` 가 소유한다(markdown 절반은 이 게이트
-        밖 — 비목표). 여기서는 그 결과를 이 티켓의 선언 스코프로 좁힐 뿐이다."""
+        표면 정의는 `private_refs.shipping_paths` 가, 측정 제외는
+        `external_review.is_machine_mirror_path` 가 소유한다(정의 사본 0 · markdown 절반은
+        이 게이트 밖 — 비목표). 기계 mirror 를 빼는 이유는 `templates/<타깃>/` 아래 엔진
+        사본이 canonical 을 그대로 복사한 결과이기 때문이다 — 빼지 않으면 같은 유입 한 건이
+        canonical 1 + 사본 3 으로 네 번 지목되고, 사람이 고칠 자리가 어디인지 흐려진다."""
         python_paths, _markdown_paths = private_refs.shipping_paths(code_tree)
-        return [
-            path for path in python_paths
-            if scope_covers(touches, path.relative_to(code_tree).as_posix())
-        ]
+        surface: list[Path] = []
+        for path in python_paths:
+            relative = path.relative_to(code_tree).as_posix()
+            if not scope_covers(touches, relative):
+                continue
+            if external.is_machine_mirror_path(relative):
+                continue
+            surface.append(path)
+        return surface
 
     def _private_ref_diff_offenders(
-        self, surface_paths: Sequence[Path], code_tree: Path, diff_text: str, private_refs,
+        self, surface_paths: Sequence[Path], code_tree: Path, diff_text: str,
+        private_refs, block_path_fn,
     ) -> tuple[list[tuple[str, int, str]], list[tuple[str, int, str]]]:
         """표면 파일 중 `diff_text` 가 새로 추가한 줄에서 (actionable, raw) offender 를 낸다.
 
         `(경로, 줄, 토큰)` 3-튜플 목록 두 개 — raw ⊇ actionable(같은 프로세 스팬·같은 정규식을
         재사용한다). 판정은 diff 조각이 아니라 **작업트리 파일 전문**에 건다(`prose_token_spans`
-        는 완전한 파이썬 소스가 필요하다) — diff 는 추가 줄 **번호**를 뽑는 데만 쓴다."""
-        added_by_path = _parsed_diff_added_lines(diff_text)
+        는 완전한 파이썬 소스가 필요하다) — diff 는 추가 줄 **번호**를 뽑는 데만 쓴다.
+
+        판정하지 못한 표면(비-UTF-8 · 구문 오류 · 경로 미확정 diff block)은 차단하지 않되
+        **조용히 넘기지도 않는다** — 확정 사실에만 hard 차단을 걸되, 못 본 자리는 값으로 알린다."""
+        added_by_path, unresolved = _parsed_diff_added_lines(diff_text, block_path_fn)
+        for header in unresolved:
+            print(
+                f"  ⚠ 사설 참조 판정 불가(차단 아님) — diff 경로 미확정: {header}",
+                file=sys.stderr,
+            )
         actionable: list[tuple[str, int, str]] = []
         raw: list[tuple[str, int, str]] = []
         for path in surface_paths:
@@ -2357,24 +2414,74 @@ class TicketFinisher:
             try:
                 source = path.read_text(encoding="utf-8")
                 spans = private_refs.prose_token_spans(source)
-            except (OSError, SyntaxError, private_refs.DataLiteralMarkerError):
-                continue  # 판정 불가(읽기 실패·구문 오류·표식 짝 불일치) — 확정 사실에만 건다.
+            # `TokenError` 는 3.12 미만 토크나이저가 미완성 문자열·괄호에 내는 형식이다
+            # (3.12+ 는 같은 입력을 `SyntaxError` 로 낸다) — 지원 하한을 함께 덮는다.
+            except (
+                OSError, UnicodeError, SyntaxError, tokenize.TokenError,
+                private_refs.DataLiteralMarkerError,
+            ) as exc:
+                print(
+                    f"  ⚠ 사설 참조 판정 불가(차단 아님) — {relative}: "
+                    f"{type(exc).__name__}",
+                    file=sys.stderr,
+                )
+                continue
             for span in spans:
+                # raw 축은 span 원문맥에 건다 — `_specific_matches` 의 인라인 코드 보호(backtick
+                # 쌍)는 여러 줄에 걸칠 수 있어 잘린 줄만 보면 보호가 풀린다. 이 축의 match
+                # offset 은 span 기준이라 그대로 줄 번호로 환산된다.
                 for match in private_refs._specific_matches(span.text):
                     line = span.line + span.text[:match.start()].count("\n")
                     if line in added_lines:
                         raw.append((relative, line, match.group()))
-                for match in private_refs._actionable_matches(span.text):
-                    line = span.line + span.text[:match.start()].count("\n")
+                # actionable 축은 **물리 줄 단위**로 건다 — `_actionable_matches` 는 줄마다 안전
+                # 삭제 계획을 세우고 그 **줄 기준** offset 의 match 를 돌려준다. span 전체 offset
+                # 으로 읽으면 2행 이후에 들어온 유입이 앞줄로 붙어 추가 줄 집합과 어긋나고,
+                # 차단돼야 할 유입이 경고로 강등된다(여러 줄 docstring 실측).
+                offset = 0
+                for chunk in span.text.splitlines(keepends=True):
+                    line = span.line + span.text.count("\n", 0, offset)
                     if line in added_lines:
-                        actionable.append((relative, line, match.group()))
+                        for match in private_refs._actionable_matches(chunk):
+                            actionable.append((relative, line, match.group()))
+                    offset += len(chunk)
         actionable.sort()
         raw.sort()
         return actionable, raw
 
+    def _private_ref_raw_by_commit(
+        self, code_tree: Path, raw_only: Sequence[tuple[str, int, str]],
+    ) -> tuple[list[tuple[str, int, str]], list[tuple[str, int, str, str]]]:
+        """raw-only offender 를 (미커밋 목록, 커밋된 목록 + 그 줄의 blame sha)로 가른다.
+
+        기준은 **작업트리 blame** 하나다 — 도입 커밋이 없는 줄(all-zero sha·조회 불가)은 이
+        티켓이 방금 넣은 신규 유입이고, sha 가 있는 줄은 claim 앵커가 stale 해진 창으로 들어온
+        흡수분·허용분이다. 재유입 가드의 대장(allowlist·ratchet)은 여기서 읽지 않는다 —
+        채택자 트리에 그 파일이 없어 판정이 영구 강등되고, 대장 재생성이 곧 게이트 통과가 된다.
+
+        sha 조회가 실패한 줄도 미커밋으로 본다 — 커밋됐다는 증거가 없는 줄을 통과시키면 이
+        게이트가 막으려는 신규 유입이 조용히 나가고, 반대 방향의 오분류는 사람이 그 자리를
+        한 번 보는 비용에서 끝난다."""
+        uncommitted: list[tuple[str, int, str]] = []
+        committed: list[tuple[str, int, str, str]] = []
+        for path, line, token in raw_only:
+            sha = _git_blame_short_sha(
+                self._run_git_stdout_at_fn, code_tree, path, line,
+            )
+            if sha is None:
+                uncommitted.append((path, line, token))
+            else:
+                committed.append((path, line, token, sha))
+        return uncommitted, committed
+
     def _default_private_ref_block(self, ticket_id: str) -> str | None:
-        """사설 참조 preflight 판정 — actionable > 0 이면 차단 문자열, 아니면 None(경고는
+        """사설 참조 preflight 판정 — 차단감이 있으면 차단 문자열, 아니면 None(경고는
         stderr 로 별도 · rc 는 안 바꾼다).
+
+        차단감은 두 갈래의 합집합이다 — (a) actionable(안전 삭제 단위가 잡히는 참조)은 커밋
+        여부와 무관하게, (b) 아직 커밋되지 않은 줄의 raw 참조는 이 티켓이 방금 넣은 신규
+        유입이라 함께 차단한다. 이미 커밋된 줄의 raw 는 blame sha 를 실어 알린다(차단감이
+        따로 있으면 차단 문구 안에, 없으면 stderr 경고로).
 
         측정 불가(모듈 부재·touches 부재·표면 교집합 없음·claim 앵커 부재)는 **가드 off** 다 —
         이 축의 실패로 완료 기록을 막지 않는다(diff_cap 과 같은 자세 — hard 차단은 확정 사실
@@ -2387,14 +2494,17 @@ class TicketFinisher:
             return None
         measured_diff_text_fn = getattr(external, "measured_diff_text", None)
         claim_anchor_fn = getattr(external, "claim_anchor", None)
-        if measured_diff_text_fn is None or claim_anchor_fn is None:
+        block_path_fn = getattr(external, "_diff_block_path", None)
+        if measured_diff_text_fn is None or claim_anchor_fn is None or block_path_fn is None:
             return None  # 구형/부분 external_review 사본 — diff_cap 이 이미 같은 부재를 경고했다.
         inputs = self._diff_ticket_inputs(ticket_id, external)
         touches = self._normalize_measured_touches(inputs.touches, warn=False)
         if not touches:
             return None
         code_tree = self._code_tree()
-        surface_paths = self._private_ref_surface_paths(code_tree, touches, private_refs)
+        surface_paths = self._private_ref_surface_paths(
+            code_tree, touches, private_refs, external,
+        )
         if not surface_paths:
             return None
         claimed_rev, anchor_note = claim_anchor_fn(code_tree, inputs.claimed_rev)
@@ -2410,32 +2520,47 @@ class TicketFinisher:
         if not diff_text.strip():
             return None
         actionable, raw = self._private_ref_diff_offenders(
-            surface_paths, code_tree, diff_text, private_refs,
+            surface_paths, code_tree, diff_text, private_refs, block_path_fn,
         )
         if not actionable and not raw:
             return None
-        if not actionable:
-            # raw 만 있음 — 경고만(흡수분·허용분 재작성 실측상 이 갈래). blame sha 를 실어
-            # 1회 읽기로 유입 커밋을 식별할 수 있게 한다(알려진 잔여 — claimed_rev 가 stale
-            # 해지면 흡수분이 이 폭에 들어온다).
-            for path, line, token in raw:
-                sha = _git_blame_short_sha(
-                    self._run_git_stdout_at_fn, code_tree, path, line,
-                )
-                suffix = f" (git blame {sha})" if sha else ""
+        # actionable 은 raw 의 부분집합이다(같은 정규식·같은 스팬) — 같은 좌표를 두 번 세지
+        # 않도록 raw 에서 빼고 남은 것만 커밋 여부로 가른다.
+        actionable_keys = set(actionable)
+        uncommitted_raw, committed_raw = self._private_ref_raw_by_commit(
+            code_tree, [entry for entry in raw if entry not in actionable_keys],
+        )
+        if not actionable and not uncommitted_raw:
+            # 커밋된 줄의 raw 만 남음 — 경고만(흡수분·허용분 재작성 실측상 이 갈래). blame
+            # sha 를 실어 1회 읽기로 유입 커밋을 식별할 수 있게 한다(알려진 잔여 —
+            # claimed_rev 가 stale 해지면 흡수분이 이 폭에 들어온다).
+            for path, line, token, sha in committed_raw:
                 print(
                     f"  ⚠ 사설 참조 raw 감지(경고만) — {ticket_id} {path}:{line} {token}"
-                    f"{suffix}",
+                    f" (git blame {sha})",
                     file=sys.stderr,
                 )
             return None
+        offenders = [(entry, "") for entry in actionable]
+        offenders += [
+            (entry, _PRIVATE_REF_UNCOMMITTED_NOTE) for entry in uncommitted_raw
+        ]
+        offenders.sort()
         lines = [
             f"사설 참조 유입 — {ticket_id} claim 이후 추가한 줄에 채택자가 조회할 수 없는 "
-            f"참조가 있다 ({len(actionable)}건):",
+            f"참조가 있다 ({len(offenders)}건):",
         ]
-        lines += [f"  ✗ {path}:{line} {token}" for path, line, token in actionable]
-        lines.append(f"  같은 폭 raw 목록({len(raw)}건 · 한 라운드로 정리):")
-        lines += [f"    · {path}:{line} {token}" for path, line, token in raw]
+        lines += [
+            f"  ✗ {path}:{line} {token}{note}" for (path, line, token), note in offenders
+        ]
+        if committed_raw:
+            lines.append(
+                f"  같은 폭 커밋된 raw 목록({len(committed_raw)}건 · 한 라운드로 정리):"
+            )
+            lines += [
+                f"    · {path}:{line} {token} (git blame {sha})"
+                for path, line, token, sha in committed_raw
+            ]
         return "\n".join(lines)
 
     def _default_dod_block(self, ticket_id: str) -> str | None:
