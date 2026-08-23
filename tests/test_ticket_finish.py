@@ -1262,9 +1262,14 @@ def test_main_multislot_ambiguous_fails_loud_before_regression(tf, monkeypatch, 
     assert "[1/5]" not in captured.out  # run()/회귀 진입 전 중단
 
 
-def test_main_repo_slot_forwards_resolved_regression_cwd(tf, monkeypatch):
-    """--repo/--slot (회귀 실행 경로) → main 이 해소된 worktree 를 regression_cwd forward."""
-    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff((None, None)))
+def _capture_main_forward(tf, monkeypatch) -> dict:
+    """`main` 이 해소해 넘긴 값을 부작용 없이 캡처한다.
+
+    완료 기록 단위는 묶음 하나다(티켓 하나 = 크기 1) — 그래서 `main` 의 forward 대상은 두
+    곳이다: 코드 트리 좌표는 `TicketFinisher` 생성 인자로, 실행 좌표(세션·정체성·회귀 skip)는
+    종결 파이프라인 생성 인자로 간다. 파이프라인이 그 값을 완료 기록 단계로 그대로 넘기는
+    것은 묶음 종결 회귀가 값으로 고정한다 — 여기서는 `main` 의 해소·forward 만 본다.
+    """
     captured: dict = {}
 
     class _SpyFinisher(tf.TicketFinisher):
@@ -1272,12 +1277,24 @@ def test_main_repo_slot_forwards_resolved_regression_cwd(tf, monkeypatch):
             captured["regression_cwd"] = kw.get("regression_cwd")
             super().__init__(**kw)
 
-        def run(self, **kw):
-            captured["skip_pytest"] = kw.get("skip_pytest")
-            captured["session"] = kw.get("session")
+    class _SpyCloser:
+        def __init__(self, cluster, **kw):
+            captured["cluster"] = cluster
+            captured.update(kw)
+
+        def run(self) -> int:
             return 0
 
     monkeypatch.setattr(tf, "TicketFinisher", _SpyFinisher)
+    monkeypatch.setattr(tf, "ClusterCloser", _SpyCloser)
+    return captured
+
+
+def test_main_repo_slot_forwards_resolved_regression_cwd(tf, monkeypatch):
+    """--repo/--slot (회귀 실행 경로) → main 이 해소된 worktree 를 regression_cwd forward."""
+    monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff((None, None)))
+    captured = _capture_main_forward(tf, monkeypatch)
+
     rc = tf.main(["T-1234", "--repo", "project_manager", "--slot", "1"])
     assert rc == 0
     assert captured["regression_cwd"].replace(os.sep, "/").endswith("work/project_manager_1")
@@ -1318,14 +1335,7 @@ def test_run_forwards_board_identity_args_to_complete(tf, tmp_path):
 def test_main_repo_slot_forwards_identity_to_board_complete(tf, monkeypatch):
     """`--repo/--slot` 으로 부른 ticket_finish 는 그 좌표를 board complete 로 forward 한다."""
     monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff((None, None)))
-    captured: dict = {}
-
-    class _SpyFinisher(tf.TicketFinisher):
-        def run(self, **kw):
-            captured.update(kw)
-            return 0
-
-    monkeypatch.setattr(tf, "TicketFinisher", _SpyFinisher)
+    captured = _capture_main_forward(tf, monkeypatch)
 
     assert tf.main(["T-1234", "--repo", "project_manager", "--slot", "1"]) == 0
     assert captured["board_identity_args"] == [
@@ -1335,14 +1345,7 @@ def test_main_repo_slot_forwards_identity_to_board_complete(tf, monkeypatch):
 def test_main_without_identity_keeps_the_bare_complete_argv(tf, monkeypatch):
     """정체성 인자가 없으면 forward 도 없다 — board 의 기존 해소 체인(env·단일 lease)이 돈다."""
     monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff((None, None)))
-    captured: dict = {}
-
-    class _SpyFinisher(tf.TicketFinisher):
-        def run(self, **kw):
-            captured.update(kw)
-            return 0
-
-    monkeypatch.setattr(tf, "TicketFinisher", _SpyFinisher)
+    captured = _capture_main_forward(tf, monkeypatch)
 
     assert tf.main(["T-1234"]) == 0
     assert captured["board_identity_args"] == []
@@ -1408,19 +1411,8 @@ def test_main_no_pytest_forwards_resolved_code_tree(tf, monkeypatch):
         tf, "_load_pm_handoff",
         lambda: _FakeHandoff(("work/project_manager_1", None)),
     )
-    captured: dict = {}
+    captured = _capture_main_forward(tf, monkeypatch)
 
-    class _SpyFinisher(tf.TicketFinisher):
-        def __init__(self, **kw):
-            captured["regression_cwd"] = kw.get("regression_cwd")
-            super().__init__(**kw)
-
-        def run(self, **kw):
-            captured["skip_pytest"] = kw.get("skip_pytest")
-            captured["session"] = kw.get("session")
-            return 0
-
-    monkeypatch.setattr(tf, "TicketFinisher", _SpyFinisher)
     rc = tf.main(["T-1234", "--no-pytest"])
     assert rc == 0
     assert captured["regression_cwd"].replace(os.sep, "/").endswith("work/project_manager_1")
@@ -1431,18 +1423,8 @@ def test_main_no_pytest_forwards_resolved_code_tree(tf, monkeypatch):
 def test_main_no_pytest_solo_keeps_repo_fallback(tf, monkeypatch):
     """--no-pytest + 솔로/미해소 → 모호 아님·regression_cwd 미주입(현행 REPO 런타임 폴백 보존)."""
     monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff((None, None)))
-    captured: dict = {}
+    captured = _capture_main_forward(tf, monkeypatch)
 
-    class _SpyFinisher(tf.TicketFinisher):
-        def __init__(self, **kw):
-            captured["regression_cwd"] = kw.get("regression_cwd")
-            super().__init__(**kw)
-
-        def run(self, **kw):
-            captured["skip_pytest"] = kw.get("skip_pytest")
-            return 0
-
-    monkeypatch.setattr(tf, "TicketFinisher", _SpyFinisher)
     rc = tf.main(["T-1234", "--no-pytest"])
     assert rc == 0
     assert captured["regression_cwd"] is None
@@ -1462,18 +1444,8 @@ def test_main_slot_without_repo_rejected(tf, capsys):
 def test_main_solo_forwards_no_regression_cwd(tf, monkeypatch):
     """(d) 솔로/미해소 → main 이 regression_cwd=None 으로 TicketFinisher 생성(런타임 _regression_cwd 폴백 보존)."""
     monkeypatch.setattr(tf, "_load_pm_handoff", lambda: _FakeHandoff((None, None)))
-    captured: dict = {}
+    captured = _capture_main_forward(tf, monkeypatch)
 
-    class _SpyFinisher(tf.TicketFinisher):
-        def __init__(self, **kw):
-            captured["regression_cwd"] = kw.get("regression_cwd")
-            super().__init__(**kw)
-
-        def run(self, **kw):
-            captured["skip_pytest"] = kw.get("skip_pytest")
-            return 0
-
-    monkeypatch.setattr(tf, "TicketFinisher", _SpyFinisher)
     rc = tf.main(["T-1234"])
     assert rc == 0
     assert captured["regression_cwd"] is None   # 솔로 미주입 → 런타임 폴백(현행 100% 보존)
