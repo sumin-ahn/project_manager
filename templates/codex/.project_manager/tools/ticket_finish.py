@@ -2412,7 +2412,7 @@ class TicketFinisher:
             if not added_lines:
                 continue
             try:
-                source = path.read_text(encoding="utf-8")
+                source = _load_file_lock().read_text_shared(path, encoding="utf-8")
                 spans = private_refs.prose_token_spans(source)
             # `TokenError` 는 3.12 미만 토크나이저가 미완성 문자열·괄호에 내는 형식이다
             # (3.12+ 는 같은 입력을 `SyntaxError` 로 낸다) — 지원 하한을 함께 덮는다.

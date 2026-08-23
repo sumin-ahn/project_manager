@@ -11175,7 +11175,9 @@ def _round_pending_ledger_owner(delegate) -> Path | None:
     try:
         external_review = delegate._load_external_review()
         return Path(external_review.resolve_pm_home_for_repo(REPO)).resolve()
-    except Exception:  # noqa: BLE001 — 장부 해소는 discard 를 막지 않는다(안내만 못 낸다).
+    except Exception as exc:  # noqa: BLE001 — 장부 해소는 discard 를 막지 않는다(안내만 못 낸다).
+        if _is_engine_rev_skew(exc):
+            raise  # 형제 사본 skew 는 안내 결손으로 접지 않는다(fail-loud · 재동기 안내).
         return None
 
 
@@ -11194,7 +11196,9 @@ def _round_pending_abandon_command(
         return None
     try:
         rows = delegate.ticket_copy_records(owner, ticket=tid, unharvested=True)
-    except Exception:  # noqa: BLE001 — 장부 손상도 해소 불능으로 흡수(discard 비차단).
+    except Exception as exc:  # noqa: BLE001 — 장부 손상도 해소 불능으로 흡수(discard 비차단).
+        if _is_engine_rev_skew(exc):
+            raise  # 형제 사본 skew 는 장부 손상과 다르다(fail-loud · 재동기 안내).
         return None
     match = next(
         (row for row in rows if row.get("ordinal") == ordinal and row.get("role") == role),

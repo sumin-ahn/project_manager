@@ -1100,7 +1100,19 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #     `_report_engine_rev_skew_at_terminal` 로 rc1 을 반환해 라이브 wave 를 돌리지 않는다.
     #     마킹 안 된 다른 `RuntimeError`(예 `EmptyShippingInventoryError`)는 그 핸들러 밖 `raise` 로
     #     종전대로 전파한다(non-skew 판정 경로 불변).
-    assert len(report.boundaries) == 247, "propagation sweep boundary ratchet changed"
+    # 250 = 247 + 3. 통합 브랜치에 합류한 두 티켓이 형제 로더 위에 새로 연 경계:
+    #   + `ticket_finish.py:_load_private_refs:377` reraises — 완료 기록 preflight 가 사설 참조
+    #     판정식(`private_refs.py`)을 공용 로더(`cache=True` · 재유입 가드와 같은 cache key)로
+    #     올리는 자리. 부재·파손은 None(가드 off)으로 접되 마킹된 skew 만 그대로 올린다
+    #     (`_load_external_review` 와 같은 관용구).
+    #   + `board.py:_round_pending_ledger_owner:11178` reraises — draft discard 의 round-pending
+    #     안내가 미회수 장부의 PM 홈을 `external_review.resolve_pm_home_for_repo` 로 해소하는
+    #     자리. 해소 실패는 "안내를 못 낸다"로 접고(discard 비차단) 마킹된 skew 는 올린다.
+    #   + `board.py:_round_pending_abandon_command:11199` reraises — 같은 안내가
+    #     `pm_delegate.ticket_copy_records` 로 실 `--copy`/`--cwd` 를 읽는 자리. 장부 손상은
+    #     `ticket copies --unharvested` 처방으로 접고 마킹된 skew 는 올린다. 두 board 경계는
+    #     병합 직후 `unmarked-absorb` 로 들어왔다가 이 관용구로 마킹됐다(이 래칫이 잡은 첫 사례).
+    assert len(report.boundaries) == 250, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
