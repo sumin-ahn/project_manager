@@ -22,6 +22,8 @@ import contextlib
 import importlib.util
 import multiprocessing as mp
 import os
+import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -277,6 +279,39 @@ def _worker_claim(proj_str: str, tid: str, ready, go, out_q) -> None:
     except BaseException as e:  # noqa: BLE001 — 예측 못 한 死 = 부모 행, 무조건 보고
         # FileNotFoundError 도 여기로 — fix 후엔 cmd_claim 이 안 던지므로 *절대* 안 와야 한다.
         out_q.put(("EXC", f"{e!r}\n{_tb.format_exc()}\n--stderr--\n{err.getvalue()}"))
+
+
+def _worker_claim_two_clone(home_str: str, repo_label: str, ready, go, out_q) -> None:
+    """두 clone(각자 board git) 이 배리어에서 동시에 같은 티켓을 claim (T-0784 공백 6).
+
+    각 홈은 `LOCAL_DIR`/`BOARD_LOCK` 이 서로 달라 로컬 flock 이 전혀 직렬화하지 않는다 —
+    `_worker_claim`(같은 홈·공유 락)과 달리 이 워커는 조율의 유일한 권위가 원격 FF push(CAS)
+    임을 겨눈다. 패자는 롤백 뒤 `_board_git_refresh_after_rollback` 가 승자 커밋을 pull 해오므로
+    (실측 — stale 뷰를 남기지 않는 의도된 동작) "로컬 변경 0" 의 진짜 관측점은 파일 위치가 아니라
+    **패자 자신의 board git working tree 가 dirty 하지 않다**(자기 몫의 잔여 변경이 없다)는
+    쪽이다. `git status`/`git rev-parse HEAD` 은 rc 도 함께 보고한다(F-004 — stdout=='' 만으론
+    git 자체 실패와 "진짜 clean" 을 구별 못 한다). 결과는 (label, rc, open_존재, claimed_존재,
+    git_porcelain_stdout, git_status_rc, head_sha, git_head_rc) 로 보고한다."""
+    home = Path(home_str)
+    board = _load_board_bound(home)
+    ready.put(os.getpid())
+    go.wait()
+    rc = board.cmd_claim(_Args(id="T-0001", repo=repo_label, slot=1, user=repo_label))
+    board_dir = home / ".project_manager" / "board"
+    board_tickets = board_dir / "tickets"
+    open_exists = bool(list((board_tickets / "open").glob("T-0001-*.md")))
+    claimed_exists = bool(list((board_tickets / "claimed").glob("T-0001-*.md")))
+    status_proc = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=str(board_dir), capture_output=True,
+        text=True, encoding="utf-8", errors="replace", check=False)
+    head_proc = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=str(board_dir), capture_output=True,
+        text=True, encoding="utf-8", errors="replace", check=False)
+    out_q.put((
+        repo_label, rc, open_exists, claimed_exists,
+        status_proc.stdout, status_proc.returncode,
+        head_proc.stdout.strip(), head_proc.returncode,
+    ))
 
 
 def _worker_hold_lock(proj_str: str, acquired) -> None:
@@ -619,6 +654,144 @@ def test_concurrent_claim_only_one_wins(proj):
     claimed = list((board.TICKETS_DIR / "claimed").glob(f"{tid}-*.md"))
     assert len(claimed) == 1
     assert not list((board.TICKETS_DIR / "open").glob(f"{tid}-*.md"))
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 2b. 두 clone(각자 board git) 동시 claim race — 원격 FF push(CAS) 가 유일한 권위 (T-0784 공백 6)
+# ════════════════════════════════════════════════════════════════════════
+# 위 `test_concurrent_claim_only_one_wins`/`test_claim_load_window_race_lost_cleanly` 는 **같은
+# PM 홈**(공유 board_lock)의 race 다. 서로 다른 PM 홈(clone) 2개가 각자 별도 board git 을 갖고
+# 동시에 같은 티켓을 claim 하면 로컬 flock 이 전혀 겹치지 않는다(LOCAL_DIR/BOARD_LOCK 이 clone
+# 마다 다르다) — 조율의 유일한 권위가 원격 FF push(CAS) 하나임을 이 형상만 증명한다. 엔진 트리
+# 복사는 불요(board.py:172 REPO 는 파일 앵커라, CLI subprocess 였다면 clone 마다 9.7MB 엔진
+# 사본이 필요했다) — `_load_board_bound` 가 board.py 를 새로 로드해 경로 전역을 각 홈으로
+# 재바인딩하는 것만으로 충분하다(위 클로저 재사용).
+
+requires_git = pytest.mark.skipif(
+    shutil.which("git") is None,
+    reason="git 바이너리 부재 — 두 clone board-git race 케이스 skip.",
+)
+
+_TWO_CLONE_GIT_IDENTITY = {
+    "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+    "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+}
+
+_TWO_CLONE_TICKET_TEXT = (
+    "---\nid: T-0001\ntitle: t\nstatus: open\nclaimed_by: null\nclaimed_at: null\n"
+    "completed_at: null\ndepends_on: []\nblocks: []\ntouches: []\nestimate: small\n"
+    "tags: []\n---\n\n# T-0001 — t\n\n## 목표\nx\n"
+)
+
+
+def _tc_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True,
+                          text=True, encoding="utf-8", errors="replace", check=False)
+
+
+def _tc_seed_bare(tmp_path: Path, name: str) -> Path:
+    """bare remote 를 만들고 "이미 배포된" board 형상(tickets/ + T-0001 + areas.md +
+    .gitattributes/.gitignore)을 push 한다(`test_board_claim_strict.py::_make_board_git` 동형)."""
+    bare = tmp_path / name
+    _tc_git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    seed = tmp_path / f"{name}-seed"
+    for status in ("open", "claimed", "blocked", "done"):
+        (seed / "tickets" / status).mkdir(parents=True, exist_ok=True)
+    (seed / "tickets" / "_template.md").write_text(
+        "---\nid: T-NNNN\ntitle: <제목>\nstatus: open\n---\n\n# T-NNNN\n", encoding="utf-8")
+    (seed / "tickets" / "open" / "T-0001-t.md").write_text(
+        _TWO_CLONE_TICKET_TEXT, encoding="utf-8")
+    (seed / "areas.md").write_text("# Area Registry\n", encoding="utf-8")
+    # `_BOARD_GITATTRIBUTES_BLOCK` 은 REPO 와 무관한 리터럴 상수 — 아무 tmp 로 로드해도 값은 같다
+    # ("이미 배포된" board 형상을 재현해 첫 mutation 의 backfill 잡음을 없앤다).
+    (seed / ".gitattributes").write_text(
+        _load_board_bound(tmp_path)._BOARD_GITATTRIBUTES_BLOCK, encoding="utf-8", newline="\n")
+    (seed / ".gitignore").write_text("tickets/.drafts/\n", encoding="utf-8")
+    _tc_git(["init", "-q", "-b", "main"], seed)
+    _tc_git(["remote", "add", "origin", str(bare)], seed)
+    _tc_git(["add", "-A"], seed)
+    _tc_git(["commit", "-qm", "board init"], seed)
+    _tc_git(["push", "-q", "-u", "origin", "main"], seed)
+    return bare
+
+
+def _tc_home_from_bare(tmp_path: Path, bare: Path, name: str) -> Path:
+    """`<name>/.project_manager/board` 를 `bare` 의 실 clone 으로 세운 PM 홈 tmp 트리."""
+    home = tmp_path / name
+    board_dir = home / ".project_manager" / "board"
+    board_dir.parent.mkdir(parents=True, exist_ok=True)
+    _tc_git(["clone", "-q", str(bare), str(board_dir)], tmp_path)
+    (home / ".project_manager" / "wiki").mkdir(parents=True, exist_ok=True)
+    (home / ".project_manager" / ".local").mkdir(parents=True, exist_ok=True)
+    return home
+
+
+@requires_git
+def test_two_clones_claim_race_arbitrated_by_remote_push(tmp_path, monkeypatch):
+    """두 PM 홈(각자 board git clone)이 동시에 같은 티켓을 claim (I4 — 대칭 불변식).
+
+    승자는 정확히 1 이고 자기 몫을 claimed/ 로 확정한다. 패자는 rc≠0 이고 **자기 몫의 잔여
+    변경이 0**(git working tree clean)이다 — 롤백 뒤 `_board_git_refresh_after_rollback` 가
+    승자 커밋을 pull 해오므로(stale 뷰 방지가 의도된 동작·`_board_git_claim_rollback` docstring),
+    패자 로컬도 결과적으로 claimed/ 를 보게 된다(승자가 옮긴 것이지 패자 자신의 이동이 아니다).
+    원격 트리에는 claimed 가 1건만 존재한다. 어느 clone 이 이겼는지엔 의존하지 않는다(비결정
+    승자)."""
+    for key, val in _TWO_CLONE_GIT_IDENTITY.items():
+        monkeypatch.setenv(key, val)
+    bare = _tc_seed_bare(tmp_path, "bare-two-clone")
+    home_a = _tc_home_from_bare(tmp_path, bare, "home-a")
+    home_b = _tc_home_from_bare(tmp_path, bare, "home-b")
+
+    homes = [str(home_a), str(home_b)]
+    labels = ["clone-a", "clone-b"]
+    state = {"i": 0}
+
+    def _args_factory(ready, go, out_q):
+        idx = state["i"]
+        state["i"] += 1
+        return (homes[idx], labels[idx], ready, go, out_q)
+
+    procs, out_q = _spawn_and_sync(2, _worker_claim_two_clone, _args_factory)
+    results = _drain(out_q, 2, procs)
+    # (label, rc, open_exists, claimed_exists, porcelain_stdout, porcelain_rc, head_sha,
+    #  head_rc) × 2
+
+    wins = [r for r in results if r[1] == 0]
+    losers = [r for r in results if r[1] != 0]
+    assert len(wins) == 1, f"승자가 정확히 1이어야 함(대칭 불변식 I4): {results}"
+    assert len(losers) == 1, f"패자가 정확히 1이어야 함: {results}"
+
+    (_label, _rc, loser_open, loser_claimed, loser_porcelain, loser_status_rc,
+     loser_head, loser_head_rc) = losers[0]
+    assert loser_status_rc == 0, (
+        f"패자 `git status --porcelain` 자체가 실패(rc={loser_status_rc}) — "
+        "stdout=='' 만으론 clean 을 신뢰 못 한다(F-004).")
+    assert loser_porcelain == "", (
+        f"패자 board git working tree 가 dirty — 자기 몫의 잔여 변경이 남음: {loser_porcelain!r}")
+    assert not loser_open and loser_claimed, (
+        "패자 로컬 뷰가 승자의 claimed 이동을 못 따라잡음(rollback 뒤 pull 미반영·stale)")
+    assert loser_head_rc == 0, f"패자 `git rev-parse HEAD` 자체가 실패(rc={loser_head_rc})."
+
+    _label, _rc, win_open, win_claimed, _win_porcelain, win_status_rc, _win_head, _win_head_rc = (
+        wins[0])
+    assert win_status_rc == 0, f"승자 `git status --porcelain` 자체가 실패(rc={win_status_rc})."
+    assert win_claimed and not win_open, (
+        "승자 로컬이 claimed/ 로 안 옮겨짐(성공인데 이동 실패)")
+
+    # 원격 — fresh clone 으로 직접 확인. claimed 가 정확히 1건, open 에는 T-0001 이 없다
+    # (두 clone 이 각자 커밋해 원격이 분열되지 않았음을 이 자리에서 못박는다).
+    verify = tmp_path / "verify-clone"
+    _tc_git(["clone", "-q", str(bare), str(verify)], tmp_path)
+    upstream_head = _tc_git(["rev-parse", "HEAD"], verify).stdout.strip()
+    assert upstream_head, "verify clone 의 HEAD 를 못 얻음(rev-parse 실패)."
+    assert loser_head == upstream_head, (
+        f"패자 HEAD 가 갱신된 upstream 과 다르다 — rejected local commit 잔존/divergence 의심: "
+        f"loser={loser_head!r} upstream={upstream_head!r}")
+    claimed_remote = list((verify / "tickets" / "claimed").glob("T-0001-*.md"))
+    assert len(claimed_remote) == 1, (
+        f"원격 claimed 티켓이 정확히 1건이 아님(승자 push 미반영 또는 원격 분열): {claimed_remote}")
+    assert not list((verify / "tickets" / "open").glob("T-0001-*.md")), \
+        "원격 open/ 에 T-0001 이 잔존 — 조율 실패(원격 분열) 의심."
 
 
 def test_claim_load_window_race_lost_cleanly(board, capsys):

@@ -3412,6 +3412,124 @@ def test_designated_mutation_stays_fail_loud(board, monkeypatch, tmp_path):
     assert ticket.exists(), "차단된 claim 이 티켓을 옮겼다"
 
 
+# ── 지정 대상 mutation 전수 — 손상 frontmatter fail-loud (T-0784 공백 3) ─────────
+# `claim` 하나만 고정됐던 회귀를 나머지 lifecycle mutation 으로 넓힌다. 전부 `find_ticket_for_mutation`
+# (디렉터리 = 권위 상태 → 근접조회는 통과) → `load_ticket(path)`(strict — 여기서 raise)를 같은
+# 순서로 밟는다 — 6종이 **같은 로더를 공유**한다는 사실을 주석이 아니라 파라미터화로 고정한다.
+# `reid`는 다른 조회 경로(`_prefix_scan`→`load_ticket_soft`)라 실패 형태가 다르므로(예외가 아니라
+# rc=1 + "읽지 못한 티켓" 메시지) 별도 케이스로 둔다.
+
+_MUTATION_BROKEN_FRONTMATTER_CASES = [
+    ("complete", "claimed", dict(tests_pass=True, allow_missing_log=True,
+                                 allow_untested=False)),
+    ("block", "open", dict(reason="사유")),
+    ("unclaim", "claimed", dict(takeover=False, reason=None)),
+    ("unblock", "blocked", dict()),
+    ("promote", "open", dict()),
+    ("discard", "open", dict(disposition="merged", reason="사유")),
+    ("reopen", "done", dict(reason="사유")),
+]
+
+
+@pytest.mark.parametrize("mutation, seed_status, extra_kwargs",
+                        _MUTATION_BROKEN_FRONTMATTER_CASES)
+def test_designated_mutation_stays_fail_loud_across_lifecycle_commands(
+        board, monkeypatch, tmp_path, mutation, seed_status, extra_kwargs):
+    """`claim` 외 6종 lifecycle mutation 도 손상 frontmatter 를 조용히 넘기지 않는다.
+
+    상태 검사(`find_ticket_for_mutation`)는 **디렉터리**로 판정하므로 손상 frontmatter 라도
+    통과한다(근접조회 아님) — 실패는 그 다음 `load_ticket(path)` 에서 난다. 이 6종은 소유 대조가
+    load_ticket **뒤**라 세션 바인딩이 없어도 이 실패 지점에 도달한다(claim 만 예외 — 위 테스트가
+    이미 커버)."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    pm = tmp_path / ".project_manager"
+    (pm / ".local").mkdir(parents=True, exist_ok=True)
+    for name, value in (("LOCAL_CONF", pm / "local.conf"), ("LOCAL_DIR", pm / ".local"),
+                        ("BOARD_LOCK", pm / ".local" / "board.lock"),
+                        ("AREAS_FILE", pm / "areas.md"),
+                        ("LEASES_FILE", pm / ".local" / "worktree-leases.json")):
+        monkeypatch.setattr(board, name, value)
+    (pm / "local.conf").write_text("identity.user=tester\n", encoding="utf-8")
+    monkeypatch.setattr(board, "_git_config_email", lambda: None)
+    ticket = _ticket(board, seed_status, "T-0002", _BROKEN_FRONTMATTER)
+    args = SimpleNamespace(id="T-0002", repo=None, slot=None, user=None, **extra_kwargs)
+    command = getattr(board, f"cmd_{mutation}")
+
+    with pytest.raises(board.yaml.YAMLError):  # F-006 — strict loader 의 예상 parser 예외로 한정
+        command(args)
+    assert ticket.exists(), f"차단된 {mutation} 이 손상 티켓을 옮겼다"
+
+
+def test_reid_blocks_on_a_broken_ticket_via_unreadable_scan(board, monkeypatch, tmp_path, capsys):
+    """`reid` 는 다른 로더 경로(`_prefix_scan`→`load_ticket_soft`)라 실패 형태가 다르다.
+
+    ID 유일성 판정을 못 하므로(못 읽은 ID 를 모른 채 전진하면 clobber) **rc=1 + 안내 메시지**로
+    막는다 — 다른 6종처럼 예외를 올리지 않지만 조용한 통과도 아니다(fail-loud 의 다른 형태)."""
+    _wire_repo(board, monkeypatch, tmp_path)
+    pm = tmp_path / ".project_manager"
+    (pm / ".local").mkdir(parents=True, exist_ok=True)
+    for name, value in (("LOCAL_CONF", pm / "local.conf"), ("LOCAL_DIR", pm / ".local"),
+                        ("BOARD_LOCK", pm / ".local" / "board.lock"),
+                        ("AREAS_FILE", pm / "areas.md"),
+                        ("LEASES_FILE", pm / ".local" / "worktree-leases.json")):
+        monkeypatch.setattr(board, name, value)
+    (pm / "local.conf").write_text("identity.user=tester\n", encoding="utf-8")
+    monkeypatch.setattr(board, "_git_config_email", lambda: None)
+    monkeypatch.setattr(board, "_home_git_status_porcelain", lambda: "")
+    ticket = _ticket(board, "open", "T-0002", _BROKEN_FRONTMATTER)
+
+    rc = board.cmd_reid(SimpleNamespace(
+        old_id="T-0002", new_id="T-9999", dry_run=False,
+        repo=None, slot=None, user=None, user_ack=None))
+
+    assert rc == 1
+    assert "읽지 못한 티켓" in capsys.readouterr().err
+    assert ticket.exists(), "차단된 reid 가 손상 티켓을 옮겼다"
+
+
+# ── 필수 필드 누락(`id:`) — 파일명 폴백 고정 (T-0784 공백 4) ────────────────────
+# `_canonical_ticket_id` 는 frontmatter `id:` 부재 시 파일명 파싱으로 폴백한다(문서화된
+# fail-soft). mutation 조회(`find_ticket_for_mutation`)에서도 그 폴백이 성립해 정확히 그 티켓만
+# 찾고 무관 티켓을 옮기지 않는지 고정한다 — 이 축의 기대는 "거부" 가 아니라 폴백 동작이다.
+
+def test_missing_id_field_falls_back_to_filename_for_mutation(board, monkeypatch, tmp_path):
+    """`id:` 없는 티켓도 파일명으로 정확히 찾아 이동하고, 무관 티켓은 그대로 둔다.
+
+    `refresh_board()` 는 stub 한다 — board.md 렌더는 이 축(mutation 조회의 파일명 폴백)과
+    무관한 **별도 결함**을 갖고 있다(발견분은 라운드 보고로 분리 — 이 티켓은 동작 변경 0):
+    렌더러의 상태별 표(`open`/`blocked`/…)가 `fm['id']` 를 직접 인덱싱해, mutation 이 `id:` 를
+    되채우지 않는 채 이동만 시키므로 그 다음 렌더가 `KeyError: 'id'` 로 죽는다. 이 테스트는
+    렌더가 아니라 **조회·이동**만 고정한다.
+    """
+    _wire_repo(board, monkeypatch, tmp_path)
+    pm = tmp_path / ".project_manager"
+    (pm / ".local").mkdir(parents=True, exist_ok=True)
+    for name, value in (("LOCAL_CONF", pm / "local.conf"), ("LOCAL_DIR", pm / ".local"),
+                        ("BOARD_LOCK", pm / ".local" / "board.lock"),
+                        ("AREAS_FILE", pm / "areas.md"),
+                        ("LEASES_FILE", pm / ".local" / "worktree-leases.json")):
+        monkeypatch.setattr(board, name, value)
+    (pm / "local.conf").write_text("identity.user=tester\n", encoding="utf-8")
+    monkeypatch.setattr(board, "_git_config_email", lambda: None)
+    monkeypatch.setattr(board, "refresh_board", lambda: None)
+    # `id:` 키 부재 — 나머지는 유효한 매핑 YAML(파싱은 성공·`fm.get("id")` 만 None).
+    no_id_text = (
+        "---\ntitle: id 없는 티켓\nstatus: open\ndepends_on: []\n---\n"
+        "## 목표\n실값\n\n## 완료 조건\n- [x] 끝\n\n## 참고\n- 없음\n")
+    target = _ticket(board, "open", "T-0005", no_id_text)
+    other = _ticket(board, "open", "T-0006", _healthy_ticket_text("T-0006"))
+
+    rc = board.cmd_block(SimpleNamespace(id="T-0005", reason="사유"))
+
+    assert rc == 0, "id: 부재 티켓의 파일명 폴백이 mutation 조회에서 안 먹힘"
+    assert not target.exists(), "block 성공인데 원본 경로에 그대로 남음"
+    moved = list((board.TICKETS_DIR / "blocked").glob("T-0005-*.md"))
+    assert len(moved) == 1, "폴백이 여러 파일에 걸리거나 못 찾음"
+    assert other.exists(), "무관 티켓(T-0006)이 함께 옮겨짐"
+    assert list((board.TICKETS_DIR / "open").glob("T-0006-*.md")), \
+        "무관 티켓이 open/ 밖으로 밀려남"
+
+
 # ── 순회 소비자 전수 soft 화 (T-0602 ⑦) ──────────────────────────────────────
 # codex R2 지적: soft 로더가 **실제 전체 순회**에 일관되게 연결되지 않았다 — YAML 스칼라·리스트
 # frontmatter(파싱은 성공하나 dict 가 아님)는 자체 except 목록을 통과해 뒤따르는 `fm.get` 에서
