@@ -515,6 +515,9 @@ def test_no_prefix_adopter_ticket_finish_completes_green(adopter_board, tf, tmp_
         board_count_fn=lambda: 10,
         ticket_title_fn=lambda tid: "채택자 티켓",
         affected_domain_fn=lambda tid: [],
+        # 잔여 preflight 는 이 테스트의 초점(비-pytest 게이트 green 판정)과 무관하다 — 실
+        # board_py/실 git 을 타지 않게 off 로 그 초점만 남긴다(red 케이스와 같은 배선).
+        residual_block_fn=lambda tid: None,
         log_file=log_file,
     )
     rc = finisher.run("T-0035", section=None, dry_run=False)

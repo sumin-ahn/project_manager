@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import current_branch, write_cluster_ledger
+
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -91,6 +93,11 @@ def _wave_shape(tmp_path: Path, tickets: dict[str, dict], files: dict[str, int],
     _git(root, "init", "-q")
     _git(root, "config", "user.email", "wave-attribution-test@example.invalid")
     _git(root, "config", "user.name", "wave attribution test")
+    # 판정 기준(통합 브랜치)은 묶음 장부가 소유한다 — 실 board 는 발행이 이 파일을 만든다.
+    for ticket_id in tickets:
+        write_cluster_ledger(
+            root / ".project_manager" / "wiki", ticket_id,
+            base_branch=current_branch(root))
     (root / "seed.txt").write_text("seed\n", encoding="utf-8")
     for relative in files:
         target = root / relative

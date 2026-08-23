@@ -2,7 +2,8 @@
 
 여기서 지키는 성질은 넷이다.
   (1) `cluster new` 가 장부와 통합 브랜치를 만들고 멤버 티켓에 귀속을 박는다.
-  (2) 발행(`new`)·승격(`promote`)이 활성 묶음 1개면 거기에, 없으면 크기 1 장부를 만든다.
+  (2) 발행(`new`)·승격(`promote`)이 그 티켓의 크기 1 장부를 만들고 기준 브랜치·예산을 박는다
+      (활성 묶음에 자동으로 끼우지 않는다 — 묶는 것은 사람 선언뿐).
   (3) 필드도 장부도 없는 티켓은 **읽는 자리에서** 크기 1 로 접힌다(파일 마이그레이션 0).
   (4) 장부 관측(멤버 부재·통합 브랜치 부재·중복 귀속)은 advisory 로만 보인다(never-block).
 
@@ -403,7 +404,7 @@ def test_cluster_new_separates_internal_overlap_from_outside_overlap(env, capsys
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 자동 귀속 — 발행 · 승격 · 필드 부재
+# 크기 1 장부 — 발행 · 승격 · 필드 부재
 # ════════════════════════════════════════════════════════════════════════
 
 @requires_git
@@ -420,42 +421,33 @@ def test_new_creates_a_size_one_cluster_and_keeps_the_existing_stdout_lines(
     assert stdout_lines[1].startswith("  → fill in 목표 / 완료 조건 / 참고")
     assert all("클러스터" not in line for line in stdout_lines)
     # 추가 고지는 stderr 1줄이다.
-    assert f"클러스터 귀속: C-{tid}" in captured.err
+    assert f"크기 1 묶음 장부 생성: C-{tid}" in captured.err
     ledger = board.load_cluster(f"C-{tid}")
     assert ledger["tickets"] == [tid]
     assert ledger["branch"] is None       # 브랜치 선언은 `cluster new` 의 몫이다.
+    # 판정 입력 두 값은 발행이 박는다 — 기준 브랜치는 발행 세션이 보는 코드 트리의 브랜치.
+    assert ledger["base_branch"] == _BASE_BRANCH
+    assert ledger["budget"] == board.CLUSTER_BUDGET_DEFAULT
     assert _ticket_fm(board, tid)["cluster"] == f"C-{tid}"
 
 
 @requires_git
-def test_new_joins_the_single_active_cluster(env, capsys):
+def test_new_keeps_its_own_ledger_while_a_declared_cluster_is_active(env, capsys):
+    """활성 묶음이 있어도 새 티켓은 자기 장부를 갖는다 — 엔진은 묶지 않는다.
+
+    자동 합류가 있으면 선언된 묶음이 뒤따르는 발행을 전부 빨아들여, 그 묶음의 예산·기준
+    브랜치가 아무도 그렇게 선언한 적 없는 티켓의 판정을 대신한다.
+    """
     board, _board_dir = env
     seed = _issue_ticket(board, "묶음 씨앗")
     assert board.cmd_cluster(_cluster_args("new", "live", tickets=seed)) == 0
     capsys.readouterr()
 
-    joined = _issue_ticket(board, "자동 합류")
+    issued = _issue_ticket(board, "합류 아님")
 
-    assert _ticket_fm(board, joined)["cluster"] == "C-live"
-    assert board.cluster_members("C-live") == (seed, joined)
-    assert not board.cluster_ledger_path(f"C-{joined}").exists()
-
-
-@requires_git
-def test_new_falls_back_to_size_one_when_two_clusters_are_active(env, capsys):
-    """활성 묶음이 둘이면 엔진이 고르지 않는다 — 크기 1 로 발행한다(자동 묶기 없음)."""
-    board, _board_dir = env
-    first = _issue_ticket(board, "묶음 하나")
-    second = _issue_ticket(board, "묶음 둘")
-    assert board.cmd_cluster(_cluster_args("new", "alpha", tickets=first)) == 0
-    assert board.cmd_cluster(_cluster_args("new", "beta", tickets=second)) == 0
-    capsys.readouterr()
-
-    third = _issue_ticket(board, "판정 보류")
-
-    assert _ticket_fm(board, third)["cluster"] == f"C-{third}"
-    assert board.cluster_members("C-alpha") == (first,)
-    assert board.cluster_members("C-beta") == (second,)
+    assert _ticket_fm(board, issued)["cluster"] == f"C-{issued}"
+    assert board.cluster_members("C-live") == (seed,)
+    assert board.load_cluster(f"C-{issued}")["base_branch"] == _BASE_BRANCH
 
 
 @requires_git
@@ -499,7 +491,8 @@ def test_draft_defers_attribution_until_promote(board, tmp_path, capsys):
 
     assert _ticket_fm(board, tid)["cluster"] == f"C-{tid}"
     assert board.cluster_members(f"C-{tid}") == (tid,)
-    assert f"클러스터 귀속: C-{tid}" in capsys.readouterr().err
+    assert board.load_cluster(f"C-{tid}")["base_branch"] == _BASE_BRANCH
+    assert f"크기 1 묶음 장부 생성: C-{tid}" in capsys.readouterr().err
 
 
 # ════════════════════════════════════════════════════════════════════════

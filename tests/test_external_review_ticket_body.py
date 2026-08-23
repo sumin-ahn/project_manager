@@ -97,6 +97,14 @@ def _wire(external, monkeypatch, tmp_path, ticket: Path | None = None, *, conf=N
 
 
 def _stub_real_send(external, monkeypatch, tmp_path, prompts: list[str]):
+    # 실 송신 경로는 서킷브레이커 진입 검사를 지난다 — 그 폭의 기준점(묶음 장부 통합 브랜치 ·
+    # 그 merge-base)은 이 tmp REPO 에 없으므로 해소된 값을 그 자리에 넣는다. 기준점 해소
+    # 자체의 거부는 전용 파일(`test_external_review_diff_cap.py`)이 실 git 으로 값 단언한다.
+    monkeypatch.setattr(
+        external, "cluster_integration_tip", lambda *a, **k: ("task/main", None))
+    monkeypatch.setattr(
+        external, "integration_anchor", lambda *a, **k: ("a" * 40, None))
+
     def _workspace(*args, **kwargs):
         root = tmp_path / "reviewer"
         tree = root / "tree"

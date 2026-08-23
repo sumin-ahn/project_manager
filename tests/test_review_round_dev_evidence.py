@@ -30,6 +30,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import write_cluster_ledger
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 PM_DELEGATE = TOOLS / "pm_delegate.py"
@@ -136,9 +138,13 @@ def rounds_env(tmp_path, pd, monkeypatch):
     return pm_home, slot, tickets, board
 
 
-def _write_spec(tickets: Path, ticket: str) -> Path:
+def _write_spec(tickets: Path, ticket: str, *, rounds=("developer",)) -> Path:
+    """명세와 그 티켓의 크기 1 묶음 장부를 함께 쓴다 — `rounds` 가 예약할 역할 순서다."""
     path = tickets / f"{ticket}-review-round.md"
     path.write_text(_spec_text(ticket), encoding="utf-8", newline="\n")
+    write_cluster_ledger(
+        tickets.parent.parent, ticket, base_branch="task/main", rounds=rounds,
+    )
     return path
 
 
@@ -183,7 +189,7 @@ def _loaded_rounds(pd, pm_home: Path, ticket: str):
 def test_review_prepare_over_a_seed_developer_round_is_loud(pd, rounds_env, capsys):
     """`01-architect`(회수) → `02-developer`(시드) → `03-code-reviewer`(준비) 재현 형상."""
     pm_home, slot, tickets, _board = rounds_env
-    _write_spec(tickets, "T-7801")
+    _write_spec(tickets, "T-7801", rounds=("architect", "developer", "code-reviewer"))
     _land(pd, pm_home, slot, _prepare(pd, pm_home, slot, "T-7801", "architect"))
     developer = _prepare(pd, pm_home, slot, "T-7801", "developer")
     capsys.readouterr()
@@ -210,7 +216,7 @@ def test_review_prepare_over_a_seed_first_developer_round_is_loud(pd, rounds_env
     형상 A1(dev 시드뿐 · 앞선 산출 라운드 없음) — 실리는 developer 산출 라운드는 `없음`이다
     ([[T-0819]] DoD 값 단언)."""
     pm_home, slot, tickets, _board = rounds_env
-    _write_spec(tickets, "T-7802")
+    _write_spec(tickets, "T-7802", rounds=("developer", "code-reviewer"))
     _prepare(pd, pm_home, slot, "T-7802", "developer")
     capsys.readouterr()
 
@@ -225,7 +231,7 @@ def test_review_prepare_over_a_seed_first_developer_round_is_loud(pd, rounds_env
 
 def test_review_prepare_over_a_harvested_developer_round_is_silent(pd, rounds_env, capsys):
     pm_home, slot, tickets, _board = rounds_env
-    _write_spec(tickets, "T-7803")
+    _write_spec(tickets, "T-7803", rounds=("developer", "code-reviewer"))
     _land(pd, pm_home, slot, _prepare(pd, pm_home, slot, "T-7803", "developer"))
     capsys.readouterr()
 
@@ -238,7 +244,7 @@ def test_review_prepare_over_a_harvested_developer_round_is_silent(pd, rounds_en
 def test_review_prepare_without_any_developer_round_is_silent(pd, rounds_env, capsys):
     """리뷰어 단독 검토(코드만 본다) — 발판이 없는 것과 비어 있는 것은 다른 상태다."""
     pm_home, slot, tickets, _board = rounds_env
-    _write_spec(tickets, "T-7804")
+    _write_spec(tickets, "T-7804", rounds=("code-reviewer",))
     capsys.readouterr()
 
     review = _prepare(pd, pm_home, slot, "T-7804", "code-reviewer")
@@ -250,7 +256,7 @@ def test_review_prepare_without_any_developer_round_is_silent(pd, rounds_env, ca
 def test_developer_round_preparation_is_never_judged(pd, rounds_env, capsys):
     """시야는 리뷰 라운드 준비면뿐이다 — dev 라운드를 겹쳐 잡는 것은 이 판정 대상이 아니다."""
     pm_home, slot, tickets, _board = rounds_env
-    _write_spec(tickets, "T-7805")
+    _write_spec(tickets, "T-7805", rounds=("developer", "developer"))
     _prepare(pd, pm_home, slot, "T-7805", "developer")
     capsys.readouterr()
 
@@ -263,11 +269,13 @@ def test_only_the_latest_developer_round_is_the_judgment_input(pd, rounds_env, c
     """시야는 마지막 developer 라운드 하나 — 더 앞 라운드의 미회수는 대상이 아니다.
 
     두 번째 경고가 재현하는 것이 형상 B(앞 라운드에 dev 산출 있음 · 최신 developer 라운드는
-    시드)다 — 실리는 developer 산출 라운드 이름이 그 앞선 산출(`02-developer.md`)임을 값으로
+    시드)다 — 실리는 developer 산출 라운드 이름이 그 앞선 산출(`01-developer.md`)임을 값으로
     말해야 한다. "실리지 않습니다" 처럼 조건에 따라 거짓이 되는 단정문을 쓰면 안 된다
     ([[T-0819]] DoD 값 단언)."""
     pm_home, slot, tickets, _board = rounds_env
-    _write_spec(tickets, "T-7806")
+    # 형상 A — 마지막 developer 라운드가 산출이다(앞 라운드의 미회수는 시야 밖).
+    quiet_rounds = ("developer", "developer", "code-reviewer")
+    _write_spec(tickets, "T-7806", rounds=quiet_rounds)
     _prepare(pd, pm_home, slot, "T-7806", "developer")            # 01 시드로 남긴다
     _land(pd, pm_home, slot, _prepare(pd, pm_home, slot, "T-7806", "developer"))  # 02 회수
     capsys.readouterr()
@@ -276,14 +284,18 @@ def test_only_the_latest_developer_round_is_the_judgment_input(pd, rounds_env, c
 
     assert capsys.readouterr().err == "", "마지막 dev 라운드가 산출이면 조용해야 한다"
 
-    _prepare(pd, pm_home, slot, "T-7806", "developer")            # 04 시드로 남긴다
+    # 형상 B — 마지막 developer 라운드는 시드이고 그 앞 라운드에 산출이 있다. 예산 수열이
+    # 리뷰 뒤 리뷰를 열지 않으므로(출구는 재설계) 같은 형상을 다른 티켓에서 재현한다.
+    _write_spec(tickets, "T-7817", rounds=quiet_rounds)
+    _land(pd, pm_home, slot, _prepare(pd, pm_home, slot, "T-7817", "developer"))  # 01 회수
+    _prepare(pd, pm_home, slot, "T-7817", "developer")            # 02 시드로 남긴다
     capsys.readouterr()
 
-    _prepare(pd, pm_home, slot, "T-7806", "code-reviewer")
+    _prepare(pd, pm_home, slot, "T-7817", "code-reviewer")
 
     error = capsys.readouterr().err
-    assert WARNING_MARK in error and "04-developer.md" in error
-    assert f"{LANDED_EVIDENCE_MARK} 02-developer.md" in error
+    assert WARNING_MARK in error and "02-developer.md" in error
+    assert f"{LANDED_EVIDENCE_MARK} 01-developer.md" in error
     assert "실리지 않습니다" not in error, "형상 B 에서 거짓 문장을 내면 안 된다"
 
 
@@ -292,7 +304,7 @@ def test_only_the_latest_developer_round_is_the_judgment_input(pd, rounds_env, c
 def test_ticket_prepare_cli_is_rc_zero_and_names_the_round(pd, rounds_env, capsys, monkeypatch):
     """진입점 1 — `ticket prepare --role code-reviewer`(rc + stderr 라운드 이름)."""
     pm_home, slot, tickets, _board = rounds_env
-    _write_spec(tickets, "T-7807")
+    _write_spec(tickets, "T-7807", rounds=("developer", "code-reviewer"))
     monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
     assert pd._cmd_ticket([
         "prepare", "--ticket", "T-7807", "--role", "developer", "--cwd", str(slot),
@@ -319,7 +331,7 @@ def test_cross_auto_prepare_shares_the_prepare_seam(pd, rounds_env, capsys, monk
     """
     pm_home, slot, tickets, _board = rounds_env
     ticket = "T-7816"
-    _write_spec(tickets, ticket)
+    _write_spec(tickets, ticket, rounds=("developer", "code-reviewer"))
     _prepare(pd, pm_home, slot, ticket, "developer")  # 01-developer.md 를 시드로 남긴다
     capsys.readouterr()
 
@@ -474,7 +486,7 @@ def test_seed_judgment_reads_the_round_pending_flag(pd, rounds_env):
 def test_crlf_seed_round_is_still_judged_as_seed(pd, rounds_env, capsys):
     """개행 표기만 다른 같은 골격을 '산출 있음'으로 읽으면 판정이 조용히 빠진다."""
     pm_home, slot, tickets, _board = rounds_env
-    _write_spec(tickets, "T-7813")
+    _write_spec(tickets, "T-7813", rounds=("developer", "code-reviewer"))
     developer = _prepare(pd, pm_home, slot, "T-7813", "developer")
     seed = developer.board_path.read_text(encoding="utf-8")
     developer.board_path.write_bytes(seed.replace("\n", "\r\n").encode("utf-8"))
@@ -536,7 +548,16 @@ def _wire_external(external, monkeypatch, pm_home: Path, *, conf=None):
 
 
 def _stub_real_send_external(external, monkeypatch, tmp_path, prompts: list[str]):
-    """실 스폰 경계 스텁 — 격리 거울·리뷰 실행·산출 회수(다른 축 소유)만 자른다."""
+    """실 스폰 경계 스텁 — 격리 거울·리뷰 실행·산출 회수·측정 폭 기준점(다른 축 소유)을 자른다.
+
+    측정 폭의 기준점은 묶음 장부가 선언한 통합 브랜치와의 merge-base 다. 이 픽스처의 PM 홈은
+    코드 git 이 아니라 그 해소가 성립하지 않으므로 해소된 값을 그 자리에 넣는다 — 기준점
+    해소·거부 자체는 전용 파일(`test_external_review_diff_cap.py`)이 실 git 으로 소유한다.
+    """
+    monkeypatch.setattr(
+        external, "cluster_integration_tip", lambda *a, **k: ("task/main", None))
+    monkeypatch.setattr(
+        external, "integration_anchor", lambda *a, **k: ("a" * 40, None))
 
     def _workspace(*args, **kwargs):
         root = tmp_path / "reviewer"
@@ -612,7 +633,7 @@ def test_spawn_face_shape_b_latest_seed_after_landed_names_the_prior_output(
     "실리지 않습니다"라고 단정하지 않고 실제로 실리는 산출 라운드 이름을 말한다."""
     pm_home, slot, tickets, _board = rounds_env
     ticket = "T-7822"
-    _write_spec(tickets, ticket)
+    _write_spec(tickets, ticket, rounds=("developer", "developer"))
     _land(pd, pm_home, slot, _prepare(pd, pm_home, slot, ticket, "developer"))  # 01 산출
     _prepare(pd, pm_home, slot, ticket, "developer")  # 02 시드로 남긴다
     _wire_external(external, monkeypatch, pm_home)
@@ -655,7 +676,7 @@ def test_spawn_face_shape_d_non_developer_seed_role_is_silent(
     """형상 D — architect 시드만(developer 아닌 역할). 시야 상한 — 무음."""
     pm_home, slot, tickets, _board = rounds_env
     ticket = "T-7824"
-    _write_spec(tickets, ticket)
+    _write_spec(tickets, ticket, rounds=("architect",))
     _prepare(pd, pm_home, slot, ticket, "architect")  # 시드 그대로
     _wire_external(external, monkeypatch, pm_home)
     capsys.readouterr()
@@ -725,8 +746,9 @@ def test_spawn_face_axis_agrees_with_the_preparation_face_across_the_shape_table
     `test_seed_judgment_reads_the_round_pending_flag` 와 같은 기법)."""
     pm_home, slot, tickets, _board = rounds_env
 
-    def _shape_rounds(ticket: str, build) -> list:
-        _write_spec(tickets, ticket)
+    def _shape_rounds(ticket: str, build, rounds=("developer",)) -> list:
+        # 장부는 그 형상이 실제로 예약할 역할 순서를 선언한다(예산 수열 = 그 순서).
+        _write_spec(tickets, ticket, rounds=rounds)
         build()
         return _loaded_rounds(pd, pm_home, ticket)
 
@@ -741,6 +763,7 @@ def test_spawn_face_axis_agrees_with_the_preparation_face_across_the_shape_table
                 _land(pd, pm_home, slot, _prepare(pd, pm_home, slot, "T-7832", "developer")),
                 _prepare(pd, pm_home, slot, "T-7832", "developer"),
             ),
+            rounds=("developer", "developer"),
         ),
         "C": _shape_rounds(
             "T-7833",
@@ -748,6 +771,7 @@ def test_spawn_face_axis_agrees_with_the_preparation_face_across_the_shape_table
         ),
         "D": _shape_rounds(
             "T-7834", lambda: _prepare(pd, pm_home, slot, "T-7834", "architect"),
+            rounds=("architect",),
         ),
     }
 

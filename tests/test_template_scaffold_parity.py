@@ -441,7 +441,7 @@ def _round_ordinal_labels() -> tuple[str, ...]:
     delegate = _load_engine_module("pm_delegate")
     board = _load_engine_module("board")
     sequence = delegate.cluster_round_sequence(
-        board.CLUSTER_BUDGET_DEFAULT, defaults=board.CLUSTER_BUDGET_DEFAULT
+        board.CLUSTER_BUDGET_DEFAULT, cluster="C-round-labels",
     )
     assert sequence, "엔진 라운드 수열이 비었다 — 파생 입력이 stale"
     return tuple(f"{index:02d}-{role}" for index, role in enumerate(sequence, start=1))

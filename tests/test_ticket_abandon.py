@@ -30,6 +30,8 @@ from typing import NamedTuple
 
 import pytest
 
+from conftest import write_cluster_ledger
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 PM_DELEGATE = TOOLS / "pm_delegate.py"
@@ -155,9 +157,18 @@ def env(tmp_path, pd, monkeypatch) -> Env:
     return prepared
 
 
-def _write_spec(env: Env, ticket: str, **kwargs) -> Path:
+def _write_spec(env: Env, ticket: str, *, rounds=("developer",), **kwargs) -> Path:
+    """명세와 그 티켓의 크기 1 묶음 장부를 함께 쓴다.
+
+    준비는 라운드 예산·순서를 장부에서만 읽으므로, `rounds` 로 이 티켓이 예약할 역할 순서를
+    선언한다(예산 수열 = 그 순서).
+    """
     path = env.tickets / f"{ticket}-abandon.md"
     path.write_text(_spec_text(ticket, **kwargs), encoding="utf-8", newline="\n")
+    write_cluster_ledger(
+        env.pm_home / ".project_manager" / "wiki", ticket,
+        base_branch="task/main", rounds=rounds,
+    )
     return path
 
 
@@ -437,7 +448,7 @@ def test_dead_owner_pid_needs_no_explicit_confirmation(pd, env, monkeypatch):
 
 def test_owner_pid_is_recorded_only_when_the_caller_owns_the_run(pd, env, monkeypatch):
     """표식은 run 소유자만 남긴다 — native 준비 CLI 는 키를 싣지 않는다(부재=증거 없음)."""
-    _write_spec(env, "T-8033")
+    _write_spec(env, "T-8033", rounds=("developer", "developer"))
     owned = _prepare(pd, env, "T-8033", owner_pid=4242)
     monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: env.pm_home)
 
@@ -570,11 +581,9 @@ def test_converged_abandon_is_idempotent(pd, env):
 
 def test_middle_ordinal_keeps_the_board_round_and_closes_the_other_two(pd, env):
     """실물 형상(라운드 5개 중 3번이 시드 그대로) — board 파일 보존 · 나머지 두 자산 종결."""
-    _write_spec(env, "T-8060")
-    plans = [
-        _prepare(pd, env, "T-8060", role)
-        for role in ("architect", "developer", "developer", "code-reviewer", "developer")
-    ]
+    roles = ("architect", "developer", "developer", "code-reviewer", "developer")
+    _write_spec(env, "T-8060", rounds=roles)
+    plans = [_prepare(pd, env, "T-8060", role) for role in roles]
     target = plans[2]
     assert target.ordinal == 3
     before_codes = _problem_codes(pd, env, "T-8060")
@@ -598,7 +607,7 @@ def test_middle_ordinal_keeps_the_board_round_and_closes_the_other_two(pd, env):
 
 def test_middle_ordinal_abandon_is_idempotent_too(pd, env):
     """보존 분기의 재호출도 성공한다 — 보존된 board 파일이 '미수렴'으로 읽히지 않는다."""
-    _write_spec(env, "T-8063")
+    _write_spec(env, "T-8063", rounds=("developer", "code-reviewer"))
     target = _prepare(pd, env, "T-8063")
     _prepare(pd, env, "T-8063", "code-reviewer")
     first = _abandon(pd, env, target)
@@ -613,7 +622,7 @@ def test_middle_ordinal_abandon_is_idempotent_too(pd, env):
 
 def test_middle_ordinal_abandon_is_not_listed_as_unharvested(pd, env):
     """PM 표시면(진행 중 작업)의 입력은 board 파일이 아니라 장부 행이다."""
-    _write_spec(env, "T-8061")
+    _write_spec(env, "T-8061", rounds=("developer", "code-reviewer"))
     first = _prepare(pd, env, "T-8061")
     _prepare(pd, env, "T-8061", "code-reviewer")
 
@@ -627,7 +636,7 @@ def test_middle_ordinal_abandon_is_not_listed_as_unharvested(pd, env):
 
 def test_max_ordinal_abandon_leaves_no_gap_for_the_remaining_rounds(pd, env):
     """최대 순번을 지운 뒤에도 남은 라운드의 순번은 연속이다(I5)."""
-    _write_spec(env, "T-8062")
+    _write_spec(env, "T-8062", rounds=("developer", "code-reviewer"))
     _prepare(pd, env, "T-8062")
     last = _prepare(pd, env, "T-8062", "code-reviewer")
 
@@ -823,6 +832,10 @@ def _cli_home(tmp_path: Path, ticket: str) -> Path:
     tickets.mkdir(parents=True)
     (tickets / f"{ticket}-abandon.md").write_text(
         _spec_text(ticket), encoding="utf-8", newline="\n",
+    )
+    write_cluster_ledger(
+        home / ".project_manager" / "wiki", ticket,
+        base_branch="task/main", rounds=("developer",),
     )
     (home / ".project_manager" / ".gitignore").write_text(
         ".local/\n", encoding="utf-8", newline="\n",

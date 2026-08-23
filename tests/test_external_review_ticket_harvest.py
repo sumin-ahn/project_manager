@@ -623,7 +623,8 @@ def test_every_process_role_is_a_round_role(pd, rounds_seam):
     assert set(pd.PM_REVIEW_FINDING_ID_PREFIXES) == set(pd.REVIEW_ROLES)
     assert len(set(pd.PM_REVIEW_FINDING_ID_PREFIXES.values())) == len(pd.REVIEW_ROLES)
     # 추가 리뷰어 라운드는 슬롯 왕복이 아니라 엔진이 쓴다 — 준비 대상이 아니다.
-    assert set(pd.TICKET_COPY_PREPARE_ROLES) == set(rounds_seam.ROLES) - {ROLE}
+    # researcher 는 라운드 역할이지만 묶음 수열의 단계가 아니라 티켓 라운드를 준비하지 않는다.
+    assert set(pd.TICKET_COPY_PREPARE_ROLES) == set(rounds_seam.ROLES) - {ROLE, "researcher"}
 
 
 def test_deleted_single_file_devices_are_absent(pd, external):

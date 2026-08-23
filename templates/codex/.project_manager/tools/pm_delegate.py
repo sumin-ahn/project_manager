@@ -949,7 +949,9 @@ TICKET_COPY_ROLES: frozenset[str] = frozenset(
 )
 # 그중 하네스로 위임돼 slot run-dir 을 준비하는 역할. external-reviewer 라운드는 슬롯 왕복이
 # 아니라 external_review 엔진이 직접 쓴다(추가 리뷰어에게 슬롯 편집 권한을 주지 않는다).
-TICKET_COPY_PREPARE_ROLES: frozenset[str] = TICKET_COPY_ROLES - {EXTERNAL_REVIEW_ROLE}
+# researcher 는 묶음 라운드 수열(architect → developer → code-reviewer → developer)의 단계가 아니다 —
+# 티켓 라운드를 준비하지 않는다(읽기 전용 조사 결과는 회신으로 돌려받는다).
+TICKET_COPY_PREPARE_ROLES: frozenset[str] = TICKET_COPY_ROLES - {EXTERNAL_REVIEW_ROLE, "researcher"}
 TICKET_COPY_REL_ROOT = Path(".project_manager") / ".local" / "delegate-ticket-copies"
 # 사본 루트를 숨기는 ignore 규칙의 정본 위치([[T-0704]]) — 이 파일 유래가 아니면 로컬 전용
 # 소스(`.git/info/exclude`·전역 excludesFile 등)로 보고 fail-loud 한다.
@@ -1743,7 +1745,7 @@ class ClusterRoundBudgetExceeded(DelegateError):
 # 없다(외부 채널 라운드 상한과 같은 규율).
 #
 # 역할별 per-ticket 상한(`DEFAULT_INTERNAL_ROUND_LIMITS`)과 축이 다르다: 그쪽은 한 역할이 몇
-# 번까지인가이고, 이쪽은 **묶음의 라운드 수열 자체**다. 예산이 선언된 묶음에서는 이 판정이 항상
+# 번까지인가이고, 이쪽은 **묶음의 라운드 수열 자체**다. 묶음 준비 표면에서는 이 판정이 항상
 # 먼저 발동하므로, 두 축이 같은 요청을 두 사유로 거부하는 일이 없다.
 CLUSTER_BUDGET_ROLE_SEQUENCE: tuple[tuple[str, str], ...] = (
     ("architect", "architect"),
@@ -1767,6 +1769,22 @@ _CLUSTER_BUDGET_ORDER = (
 )
 
 
+_CLUSTER_LEDGER_ABSENT = (
+    "묶음 장부가 없습니다: {cluster} — 라운드 예산과 재설계 기준선은 장부가 소유하고, 준비는 "
+    "그 선언만 읽습니다(선언 없는 묶음은 판정 입력이 아니라 정지 사유입니다).\n"
+    "  · `python3 .project_manager/tools/board.py cluster show {cluster}` 로 장부를 확인하고, "
+    "없으면 `board.py cluster new <이름> --tickets <T-...>` 로 선언하세요."
+)
+_CLUSTER_BUDGET_UNDECLARED = (
+    "묶음 라운드 예산이 선언되지 않았습니다: {cluster} · 장부 `budget` 의 {key} 가 없거나 "
+    "정수가 아닙니다\n"
+    "  · 예산은 장부를 만들 때 박습니다(`cluster new` · 발행이 만드는 크기 1 장부도 같은 "
+    "기본값) — 없는 값을 기본값으로 지어내지 않습니다.\n"
+    "  · `python3 .project_manager/tools/board.py cluster show {cluster}` 로 확인하고 장부의 "
+    "`budget` 4키를 채운 뒤 다시 실행하세요."
+)
+
+
 def cluster_replan_prescription(cluster: str) -> str:
     """예산 거부의 유일한 처방 문구 — 두 거부가 같은 한 자리에서 커맨드를 낸다."""
     return (
@@ -1775,34 +1793,41 @@ def cluster_replan_prescription(cluster: str) -> str:
     )
 
 
-def cluster_round_sequence(budget: object, *, defaults: Mapping[str, int]) -> tuple[str, ...]:
+def cluster_round_sequence(budget: object, *, cluster: str) -> tuple[str, ...]:
     """예산 4키를 라운드 역할 **수열**로 편다 — 장부 값이 곧 순서다.
 
-    키가 없거나 정수가 아니면 그 키는 0 이 아니라 **엔진 기본값**으로 읽는다(손상된 장부가
-    단계를 조용히 지우지 않는다). 음수는 0 으로 접는다 — 그 단계를 건너뛰겠다는 선언이다.
+    값은 장부를 만들 때 박힌다(`board.CLUSTER_BUDGET_DEFAULT` · 발행이 만드는 크기 1 장부도
+    같은 기본값). 그래서 키가 없거나 정수가 아닌 장부는 판정 입력이 아니라 **에러**다 —
+    없는 값을 기본값으로 지어내면 장부가 선언하지 않은 수열로 라운드가 열린다. 음수는 0 으로
+    접는다 — 그 단계를 건너뛰겠다는 선언이다.
 
     값이 전부 0/음수면 빈 tuple 이다. 그건 "선언 없음"이 아니라 **이 주기에 허용된 라운드가
-    없다**는 선언이라, 판정측은 이 값을 truthiness 가 아니라 `is None` 으로 갈라야 한다.
+    없다**는 선언이라, 그 묶음의 다음 요청은 전부 거부된다(출구는 재설계 하나).
     """
     if not isinstance(budget, Mapping):
-        budget = {}
+        raise DelegateError(_CLUSTER_BUDGET_UNDECLARED.format(
+            cluster=cluster, key="(없음)"))
     sequence: list[str] = []
     for role, key in CLUSTER_BUDGET_ROLE_SEQUENCE:
         value = budget.get(key)
         if not isinstance(value, int) or isinstance(value, bool):
-            value = defaults.get(key, 1)
+            raise DelegateError(_CLUSTER_BUDGET_UNDECLARED.format(
+                cluster=cluster, key=key))
         sequence.extend([role] * max(0, int(value)))
     return tuple(sequence)
 
 
-def _cluster_cycle_roles(existing: Sequence, baseline: int) -> tuple[str, ...]:
-    """이번 주기(마지막 재설계 뒤)에 예약된 라운드의 역할 수열 — 순번 오름차순.
+def _cluster_cycle_roles(
+    existing: Sequence, baseline: int, roles: frozenset[str],
+) -> tuple[str, ...]:
+    """이번 주기(마지막 재설계 뒤)에 예약된 라운드 중 수열 단계 역할만 — 순번 오름차순.
 
     산출 유무는 보지 않는다(예약 자체가 한 단계 소비다 · per-ticket 상한과 같은 규칙).
+    수열에 없는 역할(추가 리뷰어 채널 등)은 단계가 아니라 주기 자리를 먹지 않는다.
     """
     return tuple(
         item.role for item in sorted(existing, key=lambda entry: entry.ordinal)
-        if item.ordinal > baseline
+        if item.ordinal > baseline and item.role in roles
     )
 
 
@@ -1811,7 +1836,7 @@ def _cluster_budget_refusal(
     sequence: Sequence[str], baseline: int,
 ) -> str | None:
     """이 티켓에 그 역할 라운드를 더 예약할 수 있는가 — 거부 사유 문자열 또는 None."""
-    cycle = _cluster_cycle_roles(existing, baseline)
+    cycle = _cluster_cycle_roles(existing, baseline, frozenset(sequence))
     rendered = " → ".join(cycle) if cycle else "(없음)"
     prescription = cluster_replan_prescription(cluster)
     if len(cycle) >= len(sequence):
@@ -1893,6 +1918,8 @@ def prepare_cluster_copy(
     티켓 하나짜리 준비가 단계 게이트를 비켜 가는 길도 없다. 판정은 사전판정과 board_lock
     재확인 **두 지점**에 함께 건다 — 한쪽에만 걸면 동시 준비 둘이 같은 예산을 함께 통과한다
     (per-ticket 상한과 같은 창).
+    장부가 없거나 예산을 선언하지 않았으면 그 요청은 멈춘다(무제한·순서 무검사로 접는 갈래가
+    없다).
     """
     if role not in TICKET_COPY_PREPARE_ROLES:
         raise DelegateError(f"티켓 라운드 준비 미지원 역할: {role}")
@@ -1935,29 +1962,27 @@ def prepare_cluster_copy(
         ticket: rounds_module.load_rounds(tickets_dir, ticket, ticket_text=text)
         for ticket, text in specs.items()
     }
-    # 묶음 예산 입력 — 장부가 선언한 수열과 마지막 재설계 기준선. 장부가 없는 크기 1 해석
-    # (구세대 티켓)에는 선언 자체가 없어 이 축이 발동하지 않는다(예산은 선언된 묶음의 성질이다).
-    def _budget_inputs() -> tuple[tuple[str, ...] | None, int]:
+    # 묶음 예산 입력 — 장부가 선언한 수열과 마지막 재설계 기준선.
+    def _budget_inputs() -> tuple[tuple[str, ...], int]:
         """장부에서 이번 판정의 수열·기준선을 **읽는 자리에서** 해소한다(캐시 없음).
 
         사전판정과 board_lock 재확인이 각자 읽는다 — 그 사이에 재설계가 들어오면 재확인이
         새 기준선을 본다. 장부 판독은 잠금 없는 파일 읽기라 board_lock 안에서 불러도 재진입이
         아니다.
 
-        반환의 `None` 은 **선언 없음**(장부 없는 옛 티켓)이고, 빈 tuple 은 **선언된 빈 수열**
-        (모든 값이 0 = 이 주기에 허용된 라운드가 없다)이다. 둘을 truthiness 하나로 합치면 0 을
-        선언한 장부가 "선언 없음"으로 읽혀 무제한이 된다.
+        장부가 없으면 예약하지 않고 멈춘다 — 판정 입력이 없는 요청을 통과시키면 그 묶음만
+        무제한·순서 무검사가 되고, 장부 삭제가 곧 예산 우회 수단이 된다.
         """
         ledger = board.load_cluster(cluster)
         if ledger is None:
-            return None, 0
+            raise DelegateError(_CLUSTER_LEDGER_ABSENT.format(cluster=cluster))
         return (
-            cluster_round_sequence(
-                ledger.get("budget"), defaults=board.CLUSTER_BUDGET_DEFAULT,
-            ),
+            cluster_round_sequence(ledger.get("budget"), cluster=cluster),
             board.cluster_replan_baseline(ledger),
         )
 
+    budget_sequence: tuple[str, ...] = ()
+    replan_baseline = 0
     budget_sequence, replan_baseline = _budget_inputs()
     conf = (
         _load_external_review()._local_config_for_repo(pm_home)
@@ -1967,19 +1992,17 @@ def prepare_cluster_copy(
     if role in DEFAULT_INTERNAL_ROUND_LIMITS:
         limit = _internal_round_limit(conf, role)
 
-    # ── (1.4) 묶음 예산 사전판정 — per-ticket 상한보다 앞이다(선언된 묶음에서는 이 축이
-    # 항상 먼저 발동해야 같은 요청이 두 사유로 갈리지 않는다). 여기도 신뢰 뿌리가 아니다.
-    # 판정 술어는 **선언 여부**(`is not None`)다 — 빈 수열은 판정을 건너뛰는 값이 아니라
-    # 모든 요청을 거부하는 값이다.
-    if budget_sequence is not None:
-        for ticket in members:
-            refusal = _cluster_budget_refusal(
-                cluster=cluster, ticket=ticket, role=role,
-                existing=existing_rounds[ticket], sequence=budget_sequence,
-                baseline=replan_baseline,
-            )
-            if refusal is not None:
-                raise ClusterRoundBudgetExceeded(refusal)
+    # ── (1.4) 묶음 예산 사전판정 — per-ticket 상한보다 앞이다(예산 축이 항상 먼저 발동해야
+    # 같은 요청이 두 사유로 갈리지 않는다). 여기도 신뢰 뿌리가 아니다. 빈 수열은 판정을
+    # 건너뛰는 값이 아니라 모든 요청을 거부하는 값이다.
+    for ticket in members:
+        refusal = _cluster_budget_refusal(
+            cluster=cluster, ticket=ticket, role=role,
+            existing=existing_rounds[ticket], sequence=budget_sequence,
+            baseline=replan_baseline,
+        )
+        if refusal is not None:
+            raise ClusterRoundBudgetExceeded(refusal)
 
     # ── (1.5) 내부 라운드 상한 — 빠른 실패 사전판정. 신뢰 뿌리가 아니다: 최종 판정은
     # 아래 (4) 의 board_lock 임계구역이 최신 스냅샷으로 다시 낸다. 이 사전판정은 상한을 넘은
@@ -2064,16 +2087,8 @@ def prepare_cluster_copy(
             with board.board_lock():
                 # 재확인은 최신 스냅샷으로 낸다 — 사전판정과 이 지점 사이에 재설계가 들어오면
                 # 그 리셋을 여기서 본다(스냅샷 1회 · 멤버 전부가 같은 장부 판독을 공유한다).
-                # 선언이 있었던 요청은 **항상** 다시 읽는다(빈 수열도 선언이다). 재판독이
-                # 선언 없음으로 바뀌는 유일한 경우는 장부가 그사이 사라진 것이라, 그때는
-                # 판정을 여는 게 아니라 거부한다 — 장부 삭제가 예산 우회 수단이 되지 않는다.
-                if budget_sequence is not None:
-                    budget_sequence, replan_baseline = _budget_inputs()
-                    if budget_sequence is None:
-                        raise DelegateError(
-                            f"묶음 장부가 준비 도중 사라졌습니다: {cluster} — 예산 판정 "
-                            "입력이 없어 예약하지 않습니다"
-                        )
+                # 그사이 장부가 사라졌으면 같은 판독이 그 자리에서 멈춘다(예약 없음).
+                budget_sequence, replan_baseline = _budget_inputs()
                 for ticket in members:
                     refreshed = board.find_ticket_exact(ticket)
                     if refreshed is None:
@@ -2086,18 +2101,16 @@ def prepare_cluster_copy(
                             "티켓 라운드 준비는 open/claimed 또는 draft×architect만 허용: "
                             f"{ticket} role={role} currently in {fresh_status}/"
                         )
-                    if budget_sequence is not None or role in DEFAULT_INTERNAL_ROUND_LIMITS:
-                        fresh_existing = rounds_module.load_rounds(
-                            tickets_dir, ticket, ticket_text=specs[ticket],
-                        )
-                    if budget_sequence is not None:
-                        refusal = _cluster_budget_refusal(
-                            cluster=cluster, ticket=ticket, role=role,
-                            existing=fresh_existing, sequence=budget_sequence,
-                            baseline=replan_baseline,
-                        )
-                        if refusal is not None:
-                            raise ClusterRoundBudgetExceeded(refusal)
+                    fresh_existing = rounds_module.load_rounds(
+                        tickets_dir, ticket, ticket_text=specs[ticket],
+                    )
+                    refusal = _cluster_budget_refusal(
+                        cluster=cluster, ticket=ticket, role=role,
+                        existing=fresh_existing, sequence=budget_sequence,
+                        baseline=replan_baseline,
+                    )
+                    if refusal is not None:
+                        raise ClusterRoundBudgetExceeded(refusal)
                     if role in DEFAULT_INTERNAL_ROUND_LIMITS:
                         count = _internal_round_count(fresh_existing, role)
                         if count >= limit:

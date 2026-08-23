@@ -24,6 +24,8 @@ from typing import TypeVar
 
 import pytest
 
+from conftest import current_branch, write_cluster_ledger
+
 
 REPO = Path(__file__).resolve().parents[1]
 PRIVATE_REFS_MODULE = REPO / ".project_manager/tools/private_refs.py"
@@ -2124,9 +2126,9 @@ def test_language_axis_sensitivity_disabling_scanner_clears_prose_offenders(
 # ── 사설 참조 완료 기록 preflight(``ticket_finish.TicketFinisher._default_private_ref_block``) ──
 #
 # 판정식 자체는 이 파일이 이미 로드한 ``PROSE_SCANNER``(=private_refs.py)와 같은 소스다 — 여기서
-# 사본을 만들지 않는다. 실 git 트리 + 실 board frontmatter 로 재현한다(DI 로 git 을 가짜로
-# 만들지 않는다) — claim 앵커(``external_review.claim_anchor``)를 그대로 태워야 흡수분 같은
-# 실제 형상이 재현된다.
+# 사본을 만들지 않는다. 실 git 트리 + 실 board frontmatter(묶음 장부 포함) 로 재현한다(DI 로
+# git 을 가짜로 만들지 않는다) — 측정 폭의 기준점(``external_review.integration_anchor``)을
+# 그대로 태워야 통합 브랜치가 이미 가진 줄 같은 실제 형상이 재현된다.
 #
 # 합성 티켓 ID·참조 문자열은 이 파일의 기존 관례대로 **조각으로 조립**한다. 완전한 사설 ID
 # 리터럴을 새 추가줄에 남기면 이 게이트가 막으려는 유입을 테스트가 스스로 저지른다.
@@ -2173,13 +2175,6 @@ def _pref_commit(root: Path, message: str) -> str:
     ).stdout.strip()
 
 
-def _pref_short_sha(root: Path, rev: str) -> str:
-    return subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "--short", rev],
-        check=True, capture_output=True, text=True,
-    ).stdout.strip()
-
-
 def _pref_write_ticket(
     root: Path, ticket_id: str, claimed_rev: str,
     *, touches: Sequence[str] = (_PREF_TOUCH,),
@@ -2196,6 +2191,11 @@ def _pref_write_ticket(
         "estimate: small\ntags: []\n---\n\n# 픽스처\n\n## 목표\nx\n",
         encoding="utf-8",
     )
+    # 사설 참조 판정의 신규/흡수 기준은 묶음 장부가 선언한 통합 브랜치다 — 선언이 없으면
+    # 엔진이 멈춘다(다른 기준으로 접지 않는다).
+    write_cluster_ledger(
+        root / ".project_manager" / "board", ticket_id,
+        base_branch=current_branch(root))
 
 
 def _pref_finisher(tf_module, root: Path):
@@ -2337,10 +2337,14 @@ def test_private_ref_preflight_silent_on_clean_ticket(pref_tf, tmp_path, capsys)
     assert captured.out == "" and captured.err == ""
 
 
-def test_private_ref_preflight_warns_absorbed_commit_with_exact_blame_sha(pref_tf, tmp_path):
-    """claim 이후 **다른 커밋**이 들여온 offender(=커밋된 줄의 raw)는 경고 한 줄만 내고
-    차단하지 않는다. 그 경고의 sha 는 유입 커밋과 정확히 같다(알려진 잔여 — claimed_rev 가
-    stale 해지는 창을 1회 읽기로 식별한다)."""
+def test_private_ref_preflight_ignores_a_line_the_integration_branch_already_has(
+    pref_tf, tmp_path,
+):
+    """통합 브랜치가 이미 가진 줄은 이번 폭 밖이다 — 차단도 경고도 없다.
+
+    폭의 기준점이 통합 브랜치와의 merge-base 라, 그 브랜치가 이미 가진 유입은 이 작업의
+    산출이 아니다(그 줄을 이 티켓에 다시 지목하면 매 완료 기록이 남의 잔여를 되짚는다).
+    """
     root = _pref_repo(tmp_path)
     _pref_write_target(root, _PREF_BASE_BODY)
     claimed_rev = _pref_commit(root, "seed")
@@ -2352,13 +2356,12 @@ def test_private_ref_preflight_warns_absorbed_commit_with_exact_blame_sha(pref_t
         + _PREF_MIXED_CONTEXT_COMMENT
         + '    return "hi"\n',
     )
-    absorbed = _pref_commit(root, "absorbed offense from another ticket")
+    _pref_commit(root, "offense the integration branch already carries")
+
     block, stderr = _pref_block_with_stderr(pref_tf, root, ticket)
-    warnings = [line for line in stderr.splitlines() if line.strip()]
+
     assert block is None
-    assert len(warnings) == 1
-    assert _SYNTHETIC_REF in stderr and "pref_target.py:5" in stderr
-    assert f"git blame {_pref_short_sha(root, absorbed)}" in stderr
+    assert stderr == ""
 
 
 def test_private_ref_preflight_blocks_raw_only_when_the_line_is_uncommitted(
@@ -2386,12 +2389,14 @@ def test_private_ref_preflight_blocks_raw_only_when_the_line_is_uncommitted(
     assert "git blame" not in block and stderr == ""
 
 
-def test_private_ref_preflight_block_lists_committed_raw_with_blame_sha(
+def test_private_ref_preflight_block_lists_only_this_widths_offenders(
     pref_tf, tmp_path,
 ):
-    """차단감과 커밋된 raw 가 함께 있으면, 차단 목록(✗)에는 차단감만 싣고 커밋된 raw 는
-    같은 폭 목록에 blame sha 와 함께 싣는다 — 한 번의 읽기로 이번 라운드에 고칠 줄과 앵커가
-    stale 해진 창으로 들어온 줄이 갈린다."""
+    """차단 목록(✗)에는 이번 폭의 유입만 싣는다 — 통합 브랜치가 이미 가진 줄은 폭 밖이다.
+
+    같은 파일에 두 참조가 있어도 판정은 줄 단위다: 기준점 뒤에 추가된 줄만 이 작업의 유입이고,
+    그 앞의 줄은 어느 목록에도 실리지 않는다(순서·커밋 여부가 아니라 도달 여부가 기준이다).
+    """
     root = _pref_repo(tmp_path)
     _pref_write_target(root, _PREF_BASE_BODY)
     claimed_rev = _pref_commit(root, "seed")
@@ -2403,7 +2408,7 @@ def test_private_ref_preflight_block_lists_committed_raw_with_blame_sha(
         + _PREF_MIXED_CONTEXT_COMMENT
         + '    return "hi"\n',
     )
-    absorbed = _pref_commit(root, "absorbed offense from another ticket")
+    _pref_commit(root, "offense the integration branch already carries")
     _pref_write_target(
         root,
         '"""표본."""\n\n\ndef greet():\n'
@@ -2415,11 +2420,8 @@ def test_private_ref_preflight_block_lists_committed_raw_with_blame_sha(
     blocked = [line for line in block.splitlines() if line.lstrip().startswith("✗")]
     assert block is not None
     assert blocked == [f"  ✗ {_PREF_TOUCH}:6 {_SYNTHETIC_REF}"]
-    assert (
-        f"    · {_PREF_TOUCH}:5 {_SYNTHETIC_REF}"
-        f" (git blame {_pref_short_sha(root, absorbed)})"
-    ) in block
-    assert stderr == ""  # 차단 문구가 같은 정보를 실었으므로 경고를 겹쳐 내지 않는다
+    assert f"{_PREF_TOUCH}:5" not in block   # 통합 브랜치가 이미 가진 줄은 폭 밖이다
+    assert stderr == ""
 
 
 def test_private_ref_preflight_silent_when_touches_outside_python_surface(pref_tf, tmp_path):

@@ -145,7 +145,9 @@ def _write_cluster(pm_home: Path, cluster: str, tickets: list[str]) -> Path:
         + "base_branch: task/main\n"
         f"branch: task/{cluster[2:]}\n"
         "spike: null\n"
-        "budget:\n  architect: 1\n"
+        # 예산 4키는 장부가 만들어질 때 박힌다 — 부분 선언은 판정 입력이 아니다.
+        "budget:\n  architect: 1\n  developer_per_ticket: 1\n"
+        "  code-reviewer: 1\n  fix: 1\n"
         "replans: []\n"
         "status: open\n"
         "---\n",
@@ -242,10 +244,12 @@ def test_cluster_prepare_reserves_nothing_when_one_member_fails_the_judgment(
 def test_single_ticket_prepare_uses_the_same_cluster_keyed_path(pd, cluster_env):
     """크기 1 = 별도 코드 경로 0 — `--ticket` 도 묶음 키 run-dir 에 앉고 장부가 그 키를 싣는다.
 
-    필드도 장부도 없는 구세대 티켓은 `C-<티켓 ID>` 크기 1 묶음으로 읽힌다(마이그레이션 0).
+    `cluster` 필드가 없는 티켓은 `C-<티켓 ID>` 크기 1 묶음으로 읽힌다(명세 마이그레이션 0) —
+    그 이름의 장부가 예산을 선언하고 준비는 그 선언만 읽는다.
     """
     pm_home, slot, tickets = cluster_env
     _write_spec(tickets, "T-6005")
+    _write_cluster(pm_home, "C-T-6005", ["T-6005"])
 
     plan = pd.prepare_ticket_copy(
         ticket="T-6005", role="architect", cwd=slot, pm_home=pm_home,

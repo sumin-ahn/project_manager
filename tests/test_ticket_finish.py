@@ -23,6 +23,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from conftest import write_cluster_ledger
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 TICKET_FINISH_PY = TOOLS / "ticket_finish.py"
@@ -49,6 +51,33 @@ def _neutralize_misanchor_guard(tf, monkeypatch):
     None(미해소)로 격리해 가드를 통과시킨다. 가드 자체의 검증은 전용 파일
     `test_board_worktree_misanchor_guard.py` 가 담당한다."""
     monkeypatch.setattr(tf, "_pm_home_misanchor", lambda: None, raising=False)
+
+
+def _git_seed(root: Path) -> None:
+    """커밋 하나를 가진 실 git 트리를 만든다 — 판정 기준(HEAD)이 해소되는 최소 형상.
+
+    완료 기록의 잔여·측정 판정은 코드 트리의 git 상태를 읽는다. 비-git 디렉터리를 코드 트리로
+    주면 그 판정이 기준을 해소하지 못해 멈추므로, 축이 다른 케이스도 트리는 실물로 둔다.
+    """
+    identity = ("-c", "user.email=t@e", "-c", "user.name=t")
+    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True,
+                   capture_output=True, text=True, encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), *identity, "commit", "-q",
+                    "--allow-empty", "-m", "seed"], check=True,
+                   capture_output=True, text=True, encoding="utf-8")
+
+
+@pytest.fixture(autouse=True)
+def _declare_the_integration_basis(tf, monkeypatch):
+    """이 파일의 hermetic 픽스처에는 묶음 장부가 없다 — 판정 기준 선언만 대역으로 세운다.
+
+    엔진은 판정 기준(묶음 장부 `base_branch`)이 없으면 멈춘다. 여기서 검증하는 축은 소프트
+    단계·라벨·stage·회귀 흐름이지 그 기준의 해소가 아니므로, **이 트리의 현재 커밋**을 기준으로
+    선언한다(커밋 인구 = 공집합 · 측정 기준점 = HEAD). 기준 해소 자체를 축으로 삼는 케이스는
+    실 장부를 가진 tmp 저장소와 그 안의 엔진 사본으로 돌아 이 대역과 무관하다
+    (`_load_tool_copy` — 다른 모듈 객체)."""
+    monkeypatch.setattr(
+        tf, "_cluster_integration_branch", lambda _board_py, _ticket_id: "HEAD")
 
 
 # ── parse_pytest_output / is_pytest_green: 조합·rc 가드 ───────────────────────
@@ -1651,6 +1680,7 @@ def test_task_stage_plan_separates_pm_outputs_and_worktree_touches(tf, tmp_path,
     home = tmp_path / "pm-home"
     worktree = home / "work" / "project_manager_1"
     worktree.mkdir(parents=True)
+    _git_seed(worktree)
     (home / ".project_manager" / "wiki" / "log").mkdir(parents=True)
     monkeypatch.setattr(tf, "REPO", home)
     calls = []
@@ -1709,6 +1739,7 @@ def test_task_stage_plan_dry_run_matches_actual_repo_pathspec(tf, tmp_path, monk
     home = tmp_path / "pm-home"
     worktree = home / "work" / "project_manager_1"
     worktree.mkdir(parents=True)
+    _git_seed(worktree)
     monkeypatch.setattr(tf, "REPO", home)
 
     def fake_scope(ticket_id, board_py, log_file, run_git, *, repo=None,
@@ -2099,15 +2130,16 @@ def test_default_diff_cap_seam_is_off_when_external_review_is_absent(
     assert finisher._default_diff_cap_block("T-1234") is None
 
 
-def test_default_diff_cap_seam_absorbs_a_missing_claim_anchor_symbol(
-        tf, tmp_path, monkeypatch, capsys):
-    """사본은 있으나 `claim_anchor` seam 이 없는 구형/부분 설치도 벽돌 대신 옛 폭+경고로 접힌다.
+def test_default_diff_cap_seam_stops_without_the_measurement_anchor_symbol(
+        tf, tmp_path, monkeypatch):
+    """사본은 있으나 앵커 seam 이 없는 구형/부분 설치는 멈춘다 — 폭을 물을 수 없다.
 
-    `_diff_numstat_by_path` 의 required 가드와 짝이 되는 케이스 — 사본 부재(위 테스트)와 달리
-    사본은 있고 다른 seam(측정 numstat)은 갖췄는데 이 seam 만 없는 형상이다."""
+    사본 부재(위 테스트)와 달리 사본은 있고 다른 seam(측정 numstat)은 갖췄는데 이 seam 만 없는
+    형상이다. 기준점 없이 잰 값으로 상한을 판정하면 같은 게이트가 설치 상태에 따라 다른 폭을
+    재게 되므로, 가드 off 가 아니라 정지다."""
     external = tf._load_external_review()
     assert external is not None
-    monkeypatch.delattr(external, "claim_anchor", raising=False)
+    monkeypatch.delattr(external, "integration_anchor", raising=False)
     monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: ["src/pay.py"])
     monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: "small")
     monkeypatch.setattr(external, "local_config", lambda repo=None: {})
@@ -2115,11 +2147,11 @@ def test_default_diff_cap_seam_absorbs_a_missing_claim_anchor_symbol(
     monkeypatch.setattr(tf, "_load_external_review", lambda: external)
 
     finisher = tf.TicketFinisher(log_file=tmp_path / "log.md")
-    block = finisher._default_diff_cap_block("T-1234")
 
-    assert block is not None and "301줄" in block and "300줄" in block
-    err = capsys.readouterr().err
-    assert "claim_anchor 부재" in err and "T-1234" in err
+    with pytest.raises(tf._CloseObservationFailure) as caught:
+        finisher._default_diff_cap_block("T-1234")
+
+    assert "integration_anchor 부재" in str(caught.value)
 
 
 # ── 측정 스코프 정규화 · 기계 mirror 제외 (T-0601 ①⑧) ────────────────────────
@@ -2171,10 +2203,12 @@ def test_diff_cap_measures_the_normalized_scope(tf, tmp_path, monkeypatch):
     """서킷브레이커가 **정규화된 스코프**로 잰다 — 접두 불일치로 상한이 우회되던 구멍 폐쇄."""
     workspace = tmp_path / "work" / "proj_1"
     workspace.mkdir(parents=True)
+    _git_seed(workspace)
     external = tf._load_external_review()
     seen: dict[str, object] = {}
 
-    def _measure(root, base, paths):
+    def _measure(root, base, paths, **kwargs):
+        # 측정 기준점(앵커)은 이 케이스의 축이 아니다 — 받기만 하고 스코프만 관측한다.
         seen["root"], seen["paths"] = root, list(paths)
         return 301
 
@@ -2439,6 +2473,7 @@ def test_residual_preflight_ignores_the_pm_home_plan_in_separated_configuration(
     home = tmp_path / "pm-home"
     worktree = home / "work" / "project_manager_1"
     worktree.mkdir(parents=True)
+    _git_seed(worktree)
     (home / ".project_manager" / "wiki" / "log").mkdir(parents=True)
     monkeypatch.setattr(tf, "REPO", home)
 
@@ -2666,18 +2701,19 @@ def test_pm_direct_finish_wires_directory_expansion_into_condition_a(
     assert "3개 파일" in err
 
 
-# ── 측정 폭 = claim 시점 rev 앵커 (merge 기반 wave) ─────────────────────────
+# ── 측정 폭 = 통합 브랜치와의 merge-base (dev 커밋 누적) ─────────────────────
 #
-# 옛 폭(작업트리 → 비면 직전 커밋 한 칸)은 dev 브랜치를 `--no-ff` merge 로 흡수하는 wave 에서
-# 0 에 수렴했다 — 완료 기록 시점 트리는 clean 이고 마지막 커밋이 전파/기록이라 티켓 경로 교집합이
-# 비기 때문이다(상한을 넘긴 wave 가 그대로 통과한 실측). claim 이 그 시점 **코드 트리 HEAD** 를
-# frontmatter 에 박제하고, 완료 기록이 그것을 앵커로 "claim 이후 누적"을 잰다. 아래 형상은 실
-# git 저장소 + 엔진 사본으로 claim → dev 커밋 → merge → 전파 커밋 순서를 그대로 재현한다.
+# 옛 폭(작업트리 → 비면 직전 커밋 한 칸)은 dev 커밋이 쌓인 형상에서 0 에 수렴했다 — 완료 기록
+# 시점 트리는 clean 이고 마지막 커밋이 전파/기록이라 티켓 경로 교집합이 비기 때문이다(상한을
+# 넘긴 작업이 그대로 통과한 실측). 기준점은 묶음 장부가 선언한 통합 브랜치와의 merge-base 이고,
+# 그 값은 커밋·재배치 순서와 무관하다. 아래 형상은 실 git 저장소 + 엔진 사본으로 dev 커밋 →
+# 통합 브랜치 전진 → 흡수 순서를 그대로 재현한다.
 #
 # claim 표면(박제 위치·코드 트리 해소 3형상·비-git 경고) 자체의 계약은 여기서 재현하지 않는다 —
 # 그 축은 `tests/test_board_claim_strict.py` 가 소유한다(claim 계약 회귀는 그 파일에서 찾는다).
-# 아래는 **이미 박제된 앵커를 소비하는 측정 폭** 케이스만이다.
+# 아래는 **선언된 기준점을 소비하는 측정 폭** 케이스만이다.
 
+_WAVE_INTEGRATION = "task/main"   # 묶음 장부가 선언하는 통합 브랜치(판정 기준)
 _WAVE_TICKET = "T-7301"
 _WAVE_OTHER_TICKET = "T-7302"
 _WAVE_SRC_LINES = 320          # claim 이후 `src/` 누적(dev 커밋 2건) — small 상한 300 초과
@@ -2718,7 +2754,8 @@ def _load_tool_copy(root: Path, name: str):
     return mod
 
 
-def _wave_repo(tmp_path: Path, *, git: bool = True):
+def _wave_repo(tmp_path: Path, *, git: bool = True,
+               base_branch: str | None = _WAVE_INTEGRATION):
     """엔진 사본 + (선택) 실 git 저장소인 솔로 형상 — claim 직전 상태와 board 모듈.
 
     측정 폭 케이스는 코드 트리 해소 자체가 관심사가 아니다(그 축은 F-004 가 별도로 값 단언한다
@@ -2735,10 +2772,15 @@ def _wave_repo(tmp_path: Path, *, git: bool = True):
     (root / ".project_manager" / "local.conf").write_text(
         "test.cmd=pytest -q\n", encoding="utf-8")
     _wave_ticket(root, _WAVE_TICKET, status="open", touch="src/")
+    if base_branch is not None:
+        # 판정 기준은 묶음 장부가 소유한다 — 실 board 는 발행이 이 파일을 만든다.
+        write_cluster_ledger(
+            root / ".project_manager" / "board", _WAVE_TICKET,
+            base_branch=base_branch)
     _wave_write(root / "src" / "app.py", 5)
     _wave_write(root / "docs" / "notes.md", 3)
     if git:
-        _wave_git(root, "init", "-q", "-b", "main")
+        _wave_git(root, "init", "-q", "-b", _WAVE_INTEGRATION)
         _wave_git(root, "config", "user.email", "t@e")
         _wave_git(root, "config", "user.name", "t")
         _wave_git(root, "add", "-A")
@@ -2768,10 +2810,11 @@ def _wave_ticket_path(root: Path, ticket_id: str = _WAVE_TICKET) -> Path:
 
 
 def _wave_work(root: Path) -> None:
-    """claim 기록 커밋 → dev 커밋 2건 → `merge --no-ff` → 전파 커밋 2건.
+    """claim 기록 커밋 → dev 커밋 2건 → 통합 브랜치 전진(전파 커밋 2건) → 그 분량 흡수.
 
-    끝난 트리는 clean 이고 마지막 커밋(전파)은 `src/` 를 안 건드린다 — 옛 폭이 0 으로 접히는
-    바로 그 배치다."""
+    끝난 트리는 clean 이고 HEAD 는 dev 브랜치다. 통합 브랜치가 이미 가진 전파 분량은
+    merge-base 의 조상이라 폭에서 빠지고, 이 작업의 커밋 누적만 남는다 — 작업트리+직전 커밋
+    한 칸으로 재던 옛 폭이 0 으로 접히던 바로 그 배치다."""
     _wave_git(root, "add", "-A")
     _wave_git(root, "commit", "-qm", "claim 기록")
     _wave_git(root, "checkout", "-q", "-b", f"dev/{_WAVE_TICKET}")
@@ -2780,16 +2823,17 @@ def _wave_work(root: Path) -> None:
     _wave_write(root / "src" / "app.py", 5 + _WAVE_SRC_LINES)
     _wave_write(root / "docs" / "notes.md", 3 + _WAVE_DOCS_LINES)
     _wave_git(root, "commit", "-qam", "dev 2")
-    _wave_git(root, "checkout", "-q", "main")
-    _wave_git(root, "merge", "-q", "--no-ff", "-m", "merge dev", f"dev/{_WAVE_TICKET}")
+    _wave_git(root, "checkout", "-q", _WAVE_INTEGRATION)
     for index in (1, 2):
         _wave_write(root / "docs" / f"propagation{index}.md", _WAVE_PROPAGATION_LINES)
         _wave_git(root, "add", "-A")
         _wave_git(root, "commit", "-qm", f"propagation {index}")
+    _wave_git(root, "checkout", "-q", f"dev/{_WAVE_TICKET}")
+    _wave_git(root, "merge", "-q", "--no-ff", "-m", "통합 흡수", _WAVE_INTEGRATION)
 
 
 def _wave_finisher(root: Path, tmp_path: Path):
-    """tmp 저장소를 코드 트리로 쓰는 완료 기록 인스턴스와 그 external_review 사본."""
+    """tmp 저장소를 코드 트리로 쓰는 완료 기록 인스턴스·external_review 사본·엔진 모듈."""
     finish = _load_tool_copy(root, "ticket_finish")
     finisher = finish.TicketFinisher(
         board_py=root / ".project_manager" / "tools" / "board.py",
@@ -2798,26 +2842,15 @@ def _wave_finisher(root: Path, tmp_path: Path):
     )
     external = finish._load_external_review()
     assert external is not None
-    return finisher, external
+    return finisher, external, finish
 
 
-def _wave_set_claimed_rev(board, root: Path, value: str | None) -> None:
-    """박제된 앵커를 구 티켓(부재)·타 저장소 rev 형상으로 바꾼다."""
-    path = _wave_ticket_path(root)
-    fm, body = board.load_ticket(path)
-    if value is None:
-        fm.pop("claimed_rev", None)
-    else:
-        fm["claimed_rev"] = value
-    board.dump_ticket(path, fm, body)
-
-
-def test_merge_wave_is_measured_from_the_claim_anchor(tmp_path):
-    """merge 로 흡수한 dev 누적이 완료 기록 서킷브레이커에 잡힌다(옛 폭에선 0 이던 형상)."""
+def test_merge_wave_is_measured_from_the_integration_base(tmp_path):
+    """dev 커밋 누적이 완료 기록 서킷브레이커에 잡힌다(옛 폭에선 0 이던 형상)."""
     root, board = _wave_repo(tmp_path)
     assert _wave_claim(board) == 0
     _wave_work(root)
-    finisher, external = _wave_finisher(root, tmp_path)
+    finisher, external, _finish = _wave_finisher(root, tmp_path)
 
     assert external.diff_line_total(root, "HEAD", ["src/"]) == 0, \
         "옛 폭이 이 형상을 0 으로 재던 사실이 사라졌다 — 대조군 소실."
@@ -2833,7 +2866,7 @@ def test_uncommitted_work_still_rides_the_measured_width(tmp_path):
     assert _wave_claim(board) == 0
     _wave_work(root)
     _wave_write(root / "src" / "app.py", 5 + _WAVE_SRC_LINES + 11)
-    _finisher, external = _wave_finisher(root, tmp_path)
+    _finisher, external, _finish = _wave_finisher(root, tmp_path)
     fm, _body = board.load_ticket(_wave_ticket_path(root))
 
     assert external.diff_line_total(
@@ -2847,39 +2880,40 @@ def test_other_claimed_ticket_share_is_excluded_under_the_anchor(tmp_path):
     assert _wave_claim(board) == 0
     _wave_ticket(root, _WAVE_OTHER_TICKET, status="claimed", touch="docs/")
     _wave_work(root)
-    finisher, _external = _wave_finisher(root, tmp_path)
+    finisher, _external, _finish = _wave_finisher(root, tmp_path)
 
     block = finisher._default_diff_cap_block(_WAVE_TICKET)
 
-    excluded = _WAVE_DOCS_LINES + 2 * _WAVE_PROPAGATION_LINES
+    # 전파 커밋은 통합 브랜치가 이미 가진 분량이라 폭 밖이다 — 남는 타 티켓 몫은 dev 가
+    # `docs/` 에 남긴 줄뿐이다.
     assert block is not None and f"{_WAVE_SRC_LINES}줄" in block
-    assert f"귀속 제외: {excluded}줄" in block and _WAVE_OTHER_TICKET in block
+    assert f"귀속 제외: {_WAVE_DOCS_LINES}줄" in block and _WAVE_OTHER_TICKET in block
 
 
-def test_ticket_without_an_anchor_falls_back_to_the_old_width_loudly(
-        tmp_path, capsys):
-    """구 티켓(앵커 부재)은 옛 폭으로 재되 통과가 조용하지 않다 — 경고 1줄."""
-    root, board = _wave_repo(tmp_path)
+def test_a_ticket_without_an_integration_declaration_stops(tmp_path):
+    """장부 선언이 없으면 다른 기준으로 접지 않고 멈춘다(구 티켓도 예외가 아니다)."""
+    root, board = _wave_repo(tmp_path, base_branch=None)
     assert _wave_claim(board) == 0
     _wave_work(root)
-    _wave_set_claimed_rev(board, root, None)
-    finisher, _external = _wave_finisher(root, tmp_path)
+    finisher, _external, finish = _wave_finisher(root, tmp_path)
 
-    assert finisher._default_diff_cap_block(_WAVE_TICKET) is None
-    err = capsys.readouterr().err
-    assert "claimed_rev 없음" in err and "과소 측정" in err
+    with pytest.raises(finish._CloseObservationFailure) as caught:
+        finisher._default_diff_cap_block(_WAVE_TICKET)
+
+    assert "통합 브랜치(base_branch)를 선언하지 않았다" in str(caught.value)
 
 
-def test_unresolvable_anchor_falls_back_to_the_old_width_loudly(tmp_path, capsys):
-    """이 트리에서 해소되지 않는 rev 도 같은 처방이다 — 조용한 0 줄로 접지 않는다."""
-    root, board = _wave_repo(tmp_path)
+def test_an_integration_branch_absent_from_this_tree_stops(tmp_path):
+    """선언은 있는데 이 트리에 없는 브랜치도 같은 처방이다 — 조용한 0 줄로 접지 않는다."""
+    root, board = _wave_repo(tmp_path, base_branch="task/absent")
     assert _wave_claim(board) == 0
     _wave_work(root)
-    _wave_set_claimed_rev(board, root, "b" * 40)
-    finisher, _external = _wave_finisher(root, tmp_path)
+    finisher, _external, finish = _wave_finisher(root, tmp_path)
 
-    assert finisher._default_diff_cap_block(_WAVE_TICKET) is None
-    assert "해소하지 못함" in capsys.readouterr().err
+    with pytest.raises(finish._CloseObservationFailure) as caught:
+        finisher._default_diff_cap_block(_WAVE_TICKET)
+
+    assert "task/absent" in str(caught.value)
 
 
 

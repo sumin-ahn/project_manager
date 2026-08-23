@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import write_cluster_ledger
+
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -114,6 +116,7 @@ def _ticket_text(pd, ticket_id: str, *, status: str, claimed_by: str | None,
 
 def _overlap_workspace(
     tmp_path: Path, monkeypatch, pd, *, tickets, board_layout: str = "wiki",
+    rounds=("developer",),
 ) -> tuple[Path, Path]:
     """PM 홈 + `work/demo_1` git 워크스페이스 + claimed ticket 들을 실물로 세운다.
 
@@ -153,6 +156,11 @@ def _overlap_workspace(
                             touches=touches)
         # 라운드는 명세 밖 파일이고 준비가 예약한다([[ADR-0090]]) — 명세만 세우면 된다.
         ticket_path.write_text(text, encoding="utf-8")
+        # 발행이 티켓마다 크기 1 묶음 장부를 만든다 — 준비는 라운드 예산을 그 장부에서만
+        # 읽으므로 픽스처 board 도 같은 파일을 갖는다.
+        write_cluster_ledger(
+            board_root, ticket_id, base_branch="task/main", rounds=rounds,
+        )
 
     ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.parent.mkdir(parents=True, exist_ok=True)
@@ -405,6 +413,7 @@ def test_read_only_role_is_not_subject_to_overlap_warning(
             (TARGET_TICKET, "claimed", SESSION, ["work/demo_1/src/shared.py"]),
             ("T-9702", "claimed", SESSION, ["work/demo_1/src"]),
         ],
+        rounds=("code-reviewer",),
     )
     # codex code-reviewer preflight(`_preflight_codex_read_exec_root` — T-0844)의
     # staged-nonzero 요건 — workspace 자신의 독립 index에 변경 하나를 얹는다.

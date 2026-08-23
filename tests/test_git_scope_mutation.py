@@ -28,6 +28,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import current_branch
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -627,13 +629,17 @@ def _make_finisher(tf, root: Path, monkeypatch, *, touches: list[str],
 
     `REPO` 를 tmp 홈으로 재지정하면 (1) 기본 git 러너의 cwd, (2) board 모듈 재-앵커
     (`board_root()`/`tickets_dir()`/`_board_git_enabled()`)가 모두 그 트리를 따라온다.
-    티켓 `touches` 조회만 stub 한다 — 실 보드가 tmp 에 없을 수 있어서다(스코프 계산·필터·
-    실제 `git add`·잔여 판정은 전부 실 코드 경로). `run_board_fn`/`run_pytest_fn` 은 미지정이면
-    종전 대역(성공 고정값)이고, poison stub 을 넘기면 "차단된 실행이 이 seam 을 부르지 않는다"
-    를 값으로 증명하는 데 쓴다.
+    티켓 `touches` 조회와 **묶음 장부의 통합 브랜치 선언**만 stub 한다 — 실 보드가 tmp 에 없을
+    수 있어서다(스코프 계산·필터·실제 `git add`·잔여 판정은 전부 실 코드 경로). 통합 브랜치는
+    잔여 인구의 기준이라 선언이 없으면 엔진이 멈추므로, 이 트리의 실 브랜치를 그 선언 자리에
+    돌려준다. `run_board_fn`/`run_pytest_fn` 은 미지정이면 종전 대역(성공 고정값)이고, poison
+    stub 을 넘기면 "차단된 실행이 이 seam 을 부르지 않는다" 를 값으로 증명하는 데 쓴다.
     """
     monkeypatch.setattr(tf, "REPO", root)
     monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: list(touches))
+    monkeypatch.setattr(
+        tf, "_cluster_integration_branch",
+        lambda _board_py, _tid: current_branch(root))
     for key, val in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, val)
     kwargs = {} if board_py is None else {"board_py": board_py}

@@ -28,6 +28,7 @@ from pathlib import Path
 import pytest
 
 from _win_skip import _can_symlink as can_symlink, posix_mode_supported
+from conftest import write_cluster_ledger
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -164,9 +165,29 @@ def rounds_env(tmp_path, pd, monkeypatch):
     return pm_home, slot, tickets, sync_log
 
 
-def _write_spec(tickets: Path, ticket: str, **kwargs) -> Path:
+# 이 파일의 티켓은 `cluster` 필드가 없는 크기 1 묶음이다 — 준비는 예산·순서를 그 묶음
+# 장부에서만 읽으므로, 명세를 쓰는 자리가 장부도 함께 쓴다. `rounds` 는 그 티켓이 예약할
+# 라운드 역할 순서다(장부 예산 = 그 수열).
+_LEDGER_BASE_BRANCH = "task/main"
+
+
+def _declare_rounds(tickets: Path, members, rounds, *, cluster: str | None = None) -> Path:
+    """묶음 장부를 board 자리에 쓴다 — 예산은 예약 계획 그대로.
+
+    `cluster` 를 생략하면 그 티켓의 크기 1 묶음(`C-<티켓>`)이다.
+    """
+    return write_cluster_ledger(
+        tickets.parent.parent, members, base_branch=_LEDGER_BASE_BRANCH,
+        cluster=cluster, rounds=rounds,
+    )
+
+
+def _write_spec(
+    tickets: Path, ticket: str, *, rounds=("developer",), **kwargs,
+) -> Path:
     path = tickets / f"{ticket}-rounds.md"
     path.write_text(_spec_text(ticket, **kwargs), encoding="utf-8", newline="\n")
+    _declare_rounds(tickets, ticket, rounds)
     return path
 
 
@@ -320,7 +341,7 @@ def test_symlink_round_file_is_refused(pd, rounds_env, tmp_path):
 def test_unedited_seed_warns_keeps_run_dir_and_leaves_board_untouched(
         pd, rounds_env, capsys):
     pm_home, slot, tickets, sync_log = rounds_env
-    _write_spec(tickets, "T-7006")
+    _write_spec(tickets, "T-7006", rounds=("code-reviewer",))
     plan = pd.prepare_ticket_copy(
         ticket="T-7006", role="code-reviewer", cwd=slot, pm_home=pm_home,
     )
@@ -356,7 +377,7 @@ def test_crlf_slot_round_is_still_judged_unedited(pd, rounds_env, capsys):
 
 def test_same_ticket_same_role_parallel_runs_get_distinct_ordinals(pd, rounds_env):
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-7008")
+    _write_spec(tickets, "T-7008", rounds=("developer", "developer"))
     first = pd.prepare_ticket_copy(
         ticket="T-7008", role="developer", cwd=slot, pm_home=pm_home,
     )
@@ -376,7 +397,7 @@ def test_same_ticket_same_role_parallel_runs_get_distinct_ordinals(pd, rounds_en
 def test_resume_after_harvest_opens_a_new_round(pd, rounds_env):
     """이어 시키는 것은 재회수가 아니라 새 라운드다(`transfer_from` 이 사라진 자리)."""
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-7009")
+    _write_spec(tickets, "T-7009", rounds=("developer", "developer"))
     first = pd.prepare_ticket_copy(
         ticket="T-7009", role="developer", cwd=slot, pm_home=pm_home,
     )
@@ -397,7 +418,7 @@ def test_resume_after_harvest_opens_a_new_round(pd, rounds_env):
 
 def test_ordinal_is_ticket_global_across_roles(pd, rounds_env):
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-7010")
+    _write_spec(tickets, "T-7010", rounds=("developer", "code-reviewer"))
     dev = pd.prepare_ticket_copy(
         ticket="T-7010", role="developer", cwd=slot, pm_home=pm_home,
     )
@@ -430,6 +451,7 @@ def test_draft_ticket_allows_architect_only(pd, rounds_env):
     (drafts / "T-7012-rounds.md").write_text(
         _spec_text("T-7012", status="draft"), encoding="utf-8", newline="\n",
     )
+    _declare_rounds(tickets, "T-7012", ("architect",))
 
     with pytest.raises(pd.DelegateError, match="draft×architect"):
         pd.prepare_ticket_copy(
@@ -458,7 +480,7 @@ def test_slot_without_tracked_ignore_rule_is_refused(pd, rounds_env):
 def test_review_seed_prefills_confirmations_from_previous_round_file(pd, rounds_env):
     """확인 대상 finding ID 의 입력은 **같은 역할의 직전 라운드 파일**이다([[T-0749]] F-007)."""
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-7014")
+    _write_spec(tickets, "T-7014", rounds=("code-reviewer", "code-reviewer"))
     first = pd.prepare_ticket_copy(
         ticket="T-7014", role="code-reviewer", cwd=slot, pm_home=pm_home,
     )
@@ -491,7 +513,7 @@ def test_review_seed_prefills_confirmations_from_previous_round_file(pd, rounds_
 
 def test_review_seed_prefill_ignores_other_role_rounds(pd, rounds_env):
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-7015")
+    _write_spec(tickets, "T-7015", rounds=("developer", "code-reviewer"))
     dev = pd.prepare_ticket_copy(
         ticket="T-7015", role="developer", cwd=slot, pm_home=pm_home,
     )
@@ -541,7 +563,7 @@ def test_review_seed_and_preamble_hold_the_next_finding_id_after_a_prose_citatio
 ):
     """이전 라운드 **산문**에만 있는 ID 도 다음 번호를 밀어 올리고, 그 실값이 시드·프리앰블에 든다."""
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-7030")
+    _write_spec(tickets, "T-7030", rounds=("architect", "code-reviewer"))
     _land_architect_round_citing(pd, pm_home, slot, "T-7030", "F-003")
 
     reviewer = pd.prepare_ticket_copy(
@@ -566,7 +588,7 @@ def test_review_seed_and_preamble_hold_the_next_finding_id_after_a_prose_citatio
 def test_a_reply_that_uses_the_seeded_finding_id_is_harvested(pd, rounds_env):
     """엔진이 시드에 넣은 ID 는 선언이 아니다 — 그 번호로 쓴 회신이 자기 자신과 충돌하지 않는다."""
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-7031")
+    _write_spec(tickets, "T-7031", rounds=("architect", "code-reviewer"))
     _land_architect_round_citing(pd, pm_home, slot, "T-7031", "F-003")
     reviewer = pd.prepare_ticket_copy(
         ticket="T-7031", role="code-reviewer", cwd=slot, pm_home=pm_home,
@@ -586,7 +608,7 @@ def test_a_reply_that_uses_the_seeded_finding_id_is_harvested(pd, rounds_env):
 def test_a_ticket_without_any_finding_id_seeds_the_first_number(pd, rounds_env):
     """0건 라운드는 첫 번호다 — 그리고 리뷰 채널이 아닌 역할에는 실을 값이 없다."""
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-7032")
+    _write_spec(tickets, "T-7032", rounds=("code-reviewer", "developer"))
 
     reviewer = pd.prepare_ticket_copy(
         ticket="T-7032", role="code-reviewer", cwd=slot, pm_home=pm_home,
@@ -609,20 +631,19 @@ def test_an_abandoned_seed_gives_its_finding_id_back_to_the_next_round(pd, round
     거부된다(두 표면이 같은 술어로 표식 라운드를 빼야 한다).
     """
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-7041")
+    _write_spec(
+        tickets, "T-7041",
+        rounds=("code-reviewer", "code-reviewer", "code-reviewer"))
     abandoned = pd.prepare_ticket_copy(
         ticket="T-7041", role="code-reviewer", cwd=slot, pm_home=pm_home,
     )
     assert abandoned.next_finding_id == "F-001"
-    # 뒤 순번이 있어야 포기가 board 시드를 지우지 않고 보존한다(표식 발행 분기).
+    # 뒤 순번이 있어야 포기가 board 시드를 지우지 않고 보존한다(표식 발행 분기). 그 라운드는
+    # finding 0 으로 회수한다 — 번호를 쓰지 않아야 포기한 시드의 ID 반환만 관측된다.
     later = pd.prepare_ticket_copy(
-        ticket="T-7041", role="architect", cwd=slot, pm_home=pm_home,
+        ticket="T-7041", role="code-reviewer", cwd=slot, pm_home=pm_home,
     )
-    _write_round_output(later.path, (
-        "## 경계 실측\n- 실 파일 픽스처\n\n## 불변식\n- 판정 입력은 그 파일 하나\n\n"
-        "## 표면 상한\n- 픽스처 1건\n\n## 테스트 전략\n- 정상·실패 경로\n\n"
-        "검토 판정: 통과\n"
-    ))
+    _write_round_output(later.path, _review_body(pd, "code-reviewer", []))
     pd.harvest_ticket_copy(copy_path=later.path, cwd=slot, pm_home=pm_home)
 
     pd.abandon_ticket_copy(
@@ -676,7 +697,7 @@ def test_harvest_refuses_a_developer_round_whose_verify_block_is_malformed(
     짚는 것은 회수가 아니라 `review verify-template` 판정면 하나다.
     """
     pm_home, slot, tickets, _sync = rounds_env
-    spec_path = _write_spec(tickets, "T-7020")
+    spec_path = _write_spec(tickets, "T-7020", rounds=("code-reviewer", "developer"))
 
     reviewer = pd.prepare_ticket_copy(
         ticket="T-7020", role="code-reviewer", cwd=slot, pm_home=pm_home,
@@ -859,7 +880,7 @@ def test_prepare_refuses_a_developer_round_until_the_pm_judgment_is_written(
     """
     pm_home, slot, tickets, _sync = rounds_env
     ticket = "T-7030" if code == "pending" else "T-7031"
-    spec_path = _write_spec(tickets, ticket)
+    spec_path = _write_spec(tickets, ticket, rounds=("code-reviewer", "developer"))
     _harvest_review_round(pd, pm_home, slot, ticket, ["F-001"])
     if code == "decision-required":
         _append_disposition(pd, spec_path, [{
@@ -896,7 +917,8 @@ def test_pending_prepare_guidance_names_the_real_ordinal_and_channel(pd, rounds_
     """
     pm_home, slot, tickets, _sync = rounds_env
     ticket = "T-7040"
-    spec_path = _write_spec(tickets, ticket)
+    spec_path = _write_spec(
+        tickets, ticket, rounds=("code-reviewer", "code-reviewer", "developer"))
     _harvest_review_round(pd, pm_home, slot, ticket, ["F-001"])  # ordinal 1 — 미판정으로 남긴다
     _harvest_review_round(pd, pm_home, slot, ticket, ["F-002"])  # ordinal 2 — 뒤에서 판정해 최신을 깨끗하게 만든다
     _append_disposition(pd, spec_path, [{
@@ -955,7 +977,8 @@ def test_prepare_after_the_judgment_prefills_every_open_accepted_row(pd, rounds_
     낡은 기대값을 다시 보지 못한다(그 누락이 이 규칙의 기원이다).
     """
     pm_home, slot, tickets, _sync = rounds_env
-    spec_path = _write_spec(tickets, "T-7033")
+    spec_path = _write_spec(
+        tickets, "T-7033", rounds=("code-reviewer", "developer", "developer"))
     _harvest_review_round(pd, pm_home, slot, "T-7033", ["F-001", "F-002"])
     _append_disposition(pd, spec_path, [
         {"id": fid, "decision": "accepted", "reason": "PM 수락",
@@ -1064,7 +1087,8 @@ def _gap_round_then_prepare_next(pd, pm_home: Path, slot: Path, tickets: Path, t
     돌려주는 값은 라운드 3 의 준비 계획과 그 시드 원문이다 — 시드가 실은 자리표시자 bytes 를
     손으로 흉내내지 않고 그대로 편집해야 무편집 판정과 회수 판정이 같은 입력을 본다.
     """
-    spec_path = _write_spec(tickets, ticket)
+    spec_path = _write_spec(
+        tickets, ticket, rounds=("code-reviewer", "developer", "developer"))
     _harvest_review_round(pd, pm_home, slot, ticket, ["F-001", "F-002"])
     _append_disposition(pd, spec_path, [
         {"id": fid, "decision": "accepted", "reason": "PM 수락",
@@ -1228,7 +1252,7 @@ def test_harvest_does_not_run_reviewer_only_or_design_axis_rows(pd, rounds_env):
     실행되면 반드시 실패하는 커맨드를 설계 축 행에 실어 실행 여부를 값으로 가른다.
     """
     pm_home, slot, tickets, _sync = rounds_env
-    spec_path = _write_spec(tickets, "T-7038")
+    spec_path = _write_spec(tickets, "T-7038", rounds=("code-reviewer", "developer"))
     _harvest_review_round(
         pd, pm_home, slot, "T-7038", ["F-001", "F-002"], design_change_ids=("F-002",),
     )
@@ -1294,7 +1318,18 @@ def test_harvest_refuses_a_verify_command_outside_the_safety_boundary(pd, rounds
 def test_harvest_of_a_round_without_verify_rows_is_unchanged(pd, rounds_env):
     """역방향 — verify 행이 없는 라운드(최초 구현·리뷰 역할)의 회수는 종전 그대로다."""
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-7040")
+    _write_spec(tickets, "T-7040", rounds=("architect", "developer"))
+    architect = pd.prepare_ticket_copy(
+        ticket="T-7040", role="architect", cwd=slot, pm_home=pm_home,
+    )
+    architect.path.write_text(
+        architect.path.read_text(encoding="utf-8") + "\n## 메모\n- 실산출\n",
+        encoding="utf-8", newline="",
+    )
+    assert pd.harvest_ticket_copy(
+        copy_path=architect.path, cwd=slot, pm_home=pm_home,
+    ).changed is True
+
     first = pd.prepare_ticket_copy(
         ticket="T-7040", role="developer", cwd=slot, pm_home=pm_home,
     )
@@ -1306,17 +1341,6 @@ def test_harvest_of_a_round_without_verify_rows_is_unchanged(pd, rounds_env):
 
     assert pd.harvest_ticket_copy(
         copy_path=first.path, cwd=slot, pm_home=pm_home,
-    ).changed is True
-
-    architect = pd.prepare_ticket_copy(
-        ticket="T-7040", role="architect", cwd=slot, pm_home=pm_home,
-    )
-    architect.path.write_text(
-        architect.path.read_text(encoding="utf-8") + "\n## 메모\n- 실산출\n",
-        encoding="utf-8", newline="",
-    )
-    assert pd.harvest_ticket_copy(
-        copy_path=architect.path, cwd=slot, pm_home=pm_home,
     ).changed is True
 
 
@@ -1407,6 +1431,8 @@ def test_codex_reviewer_opens_the_whole_cluster_run_dir(
     pm_home, slot, tickets, _sync = rounds_env
     _write_spec(tickets, "T-7101")
     _write_spec(tickets, "T-7102")
+    _declare_rounds(
+        tickets, ["T-7101", "T-7102"], ("code-reviewer",), cluster="C-wave")
     plan = pd.prepare_cluster_copy(
         cluster="C-wave", tickets=("T-7101", "T-7102"), role="code-reviewer",
         cwd=slot, pm_home=pm_home,
@@ -1621,7 +1647,7 @@ def test_parallel_reviewer_rounds_keep_the_untouched_seed_unharvested(
     bytes 여야 한다.
     """
     pm_home, slot, tickets, sync_log = rounds_env
-    _write_spec(tickets, "T-7203")
+    _write_spec(tickets, "T-7203", rounds=("code-reviewer", "code-reviewer"))
     first = pd.prepare_ticket_copy(
         ticket="T-7203", role="code-reviewer", cwd=slot, pm_home=pm_home,
     )
@@ -1656,7 +1682,7 @@ def test_slot_write_failure_after_the_reservation_names_the_leftover_round(
 ):
     """예약 뒤 실패는 board 에 라운드를 남긴다 — 진단이 그 좌표와 이후 상태를 말한다."""
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-7216")
+    _write_spec(tickets, "T-7216", rounds=("developer", "developer"))
 
     def _boom(*_args, **_kwargs):
         raise OSError("디스크 가득")
@@ -1719,7 +1745,7 @@ def test_pending_previous_round_is_not_a_prefill_source(pd, rounds_env, capsys):
     """
     assert not hasattr(pd, "_previous_round_of_role")
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-7204")
+    _write_spec(tickets, "T-7204", rounds=("code-reviewer", "code-reviewer"))
     pd.prepare_ticket_copy(
         ticket="T-7204", role="code-reviewer", cwd=slot, pm_home=pm_home,
     )
@@ -1778,7 +1804,7 @@ def test_harvest_refuses_a_row_whose_binding_does_not_match_the_path(pd, rounds_
 def test_harvest_refuses_a_row_pointing_outside_or_above_the_run_dir(pd, rounds_env):
     """조작된 행이 run-dir 밖·상위를 가리켜도 거부한다 — `force_rmtree` 가 남의 자리를 지우지 않는다."""
     pm_home, slot, tickets, sync_log = rounds_env
-    _write_spec(tickets, "T-7206")
+    _write_spec(tickets, "T-7206", rounds=("developer", "developer"))
     plan = pd.prepare_ticket_copy(
         ticket="T-7206", role="developer", cwd=slot, pm_home=pm_home,
     )
@@ -1987,7 +2013,7 @@ def test_redeclared_prior_finding_id_is_refused_at_harvest(
     재현 형상은 실측 사건 그대로다 — 같은 ID 를 `findings` 와 `confirmations` 양쪽에 기재.
     """
     pm_home, slot, tickets, sync_log = rounds_env
-    _write_spec(tickets, "T-7230")
+    _write_spec(tickets, "T-7230", rounds=("code-reviewer", "code-reviewer"))
     first = _land_review_round(
         pd, pm_home, slot, "T-7230", _review_body(pd, "code-reviewer", ["F-007"]),
     )
@@ -2030,7 +2056,7 @@ def test_first_review_round_confirming_its_own_finding_is_refused_at_harvest(
 ):
     """선행 선언이 공집합인 첫 리뷰 라운드의 자기-확인도 같은 회수면에서 거부된다."""
     pm_home, slot, tickets, sync_log = rounds_env
-    _write_spec(tickets, "T-7231")
+    _write_spec(tickets, "T-7231", rounds=("code-reviewer",))
     plan = pd.prepare_ticket_copy(
         ticket="T-7231", role="code-reviewer", cwd=slot, pm_home=pm_home,
     )
@@ -2067,7 +2093,7 @@ def test_the_two_refused_shapes_map_to_distinct_delta_branches(pd, rounds_env):
     """
     pm_home, slot, tickets, _sync = rounds_env
 
-    _write_spec(tickets, "T-7232")
+    _write_spec(tickets, "T-7232", rounds=("code-reviewer", "code-reviewer"))
     first = _land_review_round(
         pd, pm_home, slot, "T-7232", _review_body(pd, "code-reviewer", ["F-007"]),
     )
@@ -2081,7 +2107,7 @@ def test_the_two_refused_shapes_map_to_distinct_delta_branches(pd, rounds_env):
     assert "티켓 안 finding ID 재선언: F-007" in str(redeclared.value)
     assert first.board_path.exists()
 
-    _write_spec(tickets, "T-7233")
+    _write_spec(tickets, "T-7233", rounds=("code-reviewer",))
     _land_round_bypassing_the_gate(
         pd, pm_home, slot, "T-7233", "code-reviewer",
         _review_body(pd, "code-reviewer", ["F-001"], ["F-001"]),
@@ -2100,7 +2126,7 @@ def test_confirmation_round_referencing_prior_ids_still_lands(
 ):
     """역방향 확인 — 규약대로 쓴 확인 라운드(기존 ID 는 확인만·신규는 새 ID)는 그대로 착지한다."""
     pm_home, slot, tickets, sync_log = rounds_env
-    _write_spec(tickets, "T-7234")
+    _write_spec(tickets, "T-7234", rounds=("code-reviewer", "code-reviewer"))
     _land_review_round(
         pd, pm_home, slot, "T-7234", _review_body(pd, "code-reviewer", ["F-007"]),
     )
@@ -2126,7 +2152,9 @@ def test_confirmation_only_and_finding_zero_rounds_pass_the_gate(
 ):
     """역방향 — 확인 전용 라운드와 finding 0건 통과 라운드는 게이트를 그대로 지난다."""
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-7240")
+    _write_spec(
+        tickets, "T-7240",
+        rounds=("code-reviewer", "code-reviewer", "code-reviewer"))
     _land_review_round(
         pd, pm_home, slot, "T-7240", _review_body(pd, "code-reviewer", ["F-001"]),
     )
@@ -2163,11 +2191,15 @@ def test_both_review_channels_refuse_redeclaration_with_the_same_verdict(
     board = _fixture_board(pd, pm_home, sync_log)
     rounds_module = pd._load_ticket_rounds()
 
-    _write_spec(tickets, "T-7235")
+    _write_spec(tickets, "T-7235", rounds=("code-reviewer", "code-reviewer"))
     _land_review_round(
         pd, pm_home, slot, "T-7235", _review_body(pd, "code-reviewer", ["F-007"]),
     )
+    internal_round = pd.prepare_ticket_copy(
+        ticket="T-7235", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
     # 추가 리뷰어 채널의 선행 라운드도 같은 board 트리에 세운다(접두만 다른 같은 형상).
+    # 그 채널은 슬롯 왕복이 아니라 external_review 엔진이 직접 예약한다.
     external_first = rounds_module.reserve_round(
         _rounds_dir(pm_home, "T-7235").parent.parent, "T-7235",
         pd.EXTERNAL_REVIEW_ROLE,
@@ -2178,9 +2210,6 @@ def test_both_review_channels_refuse_redeclaration_with_the_same_verdict(
     )
     assert external_first.exists()
 
-    internal_round = pd.prepare_ticket_copy(
-        ticket="T-7235", role="code-reviewer", cwd=slot, pm_home=pm_home,
-    )
     reserved = internal_round.board_path.read_bytes()
     _write_round_output(
         internal_round.path, _review_body(pd, "code-reviewer", ["F-007"], ["F-007"]),
@@ -2227,7 +2256,7 @@ def _round_names(pm_home: Path, ticket: str, role: str) -> list[str]:
 def test_disposition_template_skeleton_is_accepted_by_review_delta(pd, rounds_env):
     """왕복 불변식 — 골격대로 채운 판정은 판정 표면이 그대로 수용한다."""
     pm_home, slot, tickets, _sync = rounds_env
-    spec_path = _write_spec(tickets, "T-7236")
+    spec_path = _write_spec(tickets, "T-7236", rounds=("code-reviewer",))
     _land_review_round(
         pd, pm_home, slot, "T-7236",
         _review_body(pd, "code-reviewer", ["F-001", "F-002"]),
@@ -2258,7 +2287,7 @@ def test_disposition_template_emits_no_skeleton_for_a_redeclaring_round(
     "골격을 채우면 수용" 아니면 "골격 미출력" 둘 중 하나로만 선다).
     """
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-7237")
+    _write_spec(tickets, "T-7237", rounds=("code-reviewer", "code-reviewer"))
     _land_review_round(
         pd, pm_home, slot, "T-7237", _review_body(pd, "code-reviewer", ["F-001"]),
     )
@@ -2289,7 +2318,7 @@ def test_disposition_template_emits_no_skeleton_when_every_finding_is_refused(
 ):
     """전량 재선언 라운드도 같은 판정이다 — 빈 골격도 부분 골격도 내지 않는다."""
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-7238")
+    _write_spec(tickets, "T-7238", rounds=("code-reviewer", "code-reviewer"))
     _land_review_round(
         pd, pm_home, slot, "T-7238", _review_body(pd, "code-reviewer", ["F-001"]),
     )
@@ -2313,7 +2342,7 @@ def test_disposition_template_emits_no_skeleton_for_a_self_confirming_round(
 ):
     """자기-확인 혼합 라운드도 골격 미출력이다 — 표면이 그 라운드를 다른 축으로 막는다."""
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-7239")
+    _write_spec(tickets, "T-7239", rounds=("code-reviewer",))
     _land_round_bypassing_the_gate(
         pd, pm_home, slot, "T-7239", "code-reviewer",
         _review_body(pd, "code-reviewer", ["F-001", "F-002"], ["F-001"]),
@@ -2339,7 +2368,7 @@ def test_clean_confirmation_round_skeleton_is_still_accepted_by_review_delta(
 ):
     """역방향 — 재선언·자기-확인이 없는 확인 라운드는 종전대로 골격을 내고 delta 가 수용한다."""
     pm_home, slot, tickets, _sync = rounds_env
-    spec_path = _write_spec(tickets, "T-7240")
+    spec_path = _write_spec(tickets, "T-7240", rounds=("code-reviewer", "code-reviewer"))
     _land_review_round(
         pd, pm_home, slot, "T-7240", _review_body(pd, "code-reviewer", ["F-001"]),
     )
@@ -2379,7 +2408,7 @@ def test_pre_change_confirmation_seed_stays_pending_through_an_unchanged_harvest
     않고(rc 0 · 산출 없음), 그 라운드는 pending 이라 판정 표면을 막지 않는다.
     """
     pm_home, slot, tickets, _sync = rounds_env
-    spec_path = _write_spec(tickets, "T-7241")
+    spec_path = _write_spec(tickets, "T-7241", rounds=("code-reviewer", "code-reviewer"))
     _land_review_round(
         pd, pm_home, slot, "T-7241", _review_body(pd, "code-reviewer", ["F-001"]),
     )
@@ -2427,6 +2456,15 @@ def _prepare_rc(
     return pd._cmd_ticket(["prepare", "--ticket", ticket, "--role", role, "--cwd", str(slot)])
 
 
+def _rounds_past_the_cap(pd, role: str) -> tuple[str, ...]:
+    """그 역할 상한보다 한 건 넉넉한 예약 계획 — 장부 예산이 아니라 상한이 걸리는 픽스처다.
+
+    예산 판정이 상한보다 먼저 발동하므로, 상한 축을 태우는 티켓의 장부는 상한 + 1 건을
+    선언해야 한다(상한과 같으면 예산 소진이 먼저 나서 축이 갈린다).
+    """
+    return (role,) * (pd.DEFAULT_INTERNAL_ROUND_LIMITS[role] + 1)
+
+
 def _prepare_n_rounds(pd, pm_home: Path, slot: Path, ticket: str, role: str, n: int):
     """직접 API 호출로 n 개 라운드를 예약한다(회수 없이 — pending 라운드도 카운트 대상)."""
     plan = None
@@ -2439,7 +2477,7 @@ def _prepare_n_rounds(pd, pm_home: Path, slot: Path, ticket: str, role: str, n: 
 
 def test_developer_round_limit_blocks_at_default_cap(pd, rounds_env, capsys):
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-8001")
+    _write_spec(tickets, "T-8001", rounds=_rounds_past_the_cap(pd, "developer"))
     limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
     _prepare_n_rounds(pd, pm_home, slot, "T-8001", "developer", limit)
     capsys.readouterr()
@@ -2452,7 +2490,7 @@ def test_developer_round_limit_cli_rc_matches_external_channel(
     pd, rounds_env, monkeypatch, capsys,
 ):
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-8002")
+    _write_spec(tickets, "T-8002", rounds=_rounds_past_the_cap(pd, "developer"))
     limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
     _prepare_n_rounds(pd, pm_home, slot, "T-8002", "developer", limit)
     capsys.readouterr()
@@ -2470,7 +2508,7 @@ def test_developer_round_limit_cli_rc_matches_external_channel(
 def test_round_under_cap_is_not_blocked(pd, rounds_env):
     """역방향: 상한 미만이면 정상 준비된다(오차단 0)."""
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-8003")
+    _write_spec(tickets, "T-8003", rounds=_rounds_past_the_cap(pd, "developer"))
     limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
     plan = _prepare_n_rounds(pd, pm_home, slot, "T-8003", "developer", limit - 1)
     assert plan.ordinal == limit - 1
@@ -2479,7 +2517,7 @@ def test_round_under_cap_is_not_blocked(pd, rounds_env):
 def test_round_limit_rejection_leaves_no_slot_residue(pd, rounds_env):
     """게이트는 예약(board)뿐 아니라 슬롯 run-dir 도 만들기 전에 거부한다(고아 0)."""
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-8017")
+    _write_spec(tickets, "T-8017", rounds=_rounds_past_the_cap(pd, "developer"))
     limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
     _prepare_n_rounds(pd, pm_home, slot, "T-8017", "developer", limit)
     copy_root = _copy_root(pd, slot, "T-8017")
@@ -2501,7 +2539,7 @@ def test_code_reviewer_and_architect_caps_are_higher_than_developer(pd):
 
 def test_local_conf_overrides_role_round_limit(pd, rounds_env, capsys):
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-8004")
+    _write_spec(tickets, "T-8004", rounds=_rounds_past_the_cap(pd, "developer"))
     (pm_home / ".project_manager" / "local.conf").write_text(
         "internal_review_round_limit.developer=2\n", encoding="utf-8",
     )
@@ -2515,7 +2553,7 @@ def test_local_conf_overrides_role_round_limit(pd, rounds_env, capsys):
 def test_the_role_cap_is_final_for_every_caller(pd, rounds_env):
     """예약 상한은 어떤 인자로도 한 라운드를 더 열지 않는다 — 출구는 재설계·분할뿐이다."""
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-8021")
+    _write_spec(tickets, "T-8021", rounds=_rounds_past_the_cap(pd, "code-reviewer"))
     limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["code-reviewer"]
     _prepare_n_rounds(pd, pm_home, slot, "T-8021", "code-reviewer", limit)
 
@@ -2527,19 +2565,20 @@ def test_the_role_cap_is_final_for_every_caller(pd, rounds_env):
     assert "재설계" in str(caught.value)
 
 
-def test_researcher_role_is_not_gated(pd, rounds_env):
-    """스코프 밖 역할(researcher)은 게이트 대상이 아니다(티켓 스코프 확대 금지)."""
+def test_researcher_round_prepare_is_refused(pd, rounds_env):
+    """researcher 는 묶음 수열의 단계가 아니라 티켓 라운드를 준비하지 않는다."""
     pm_home, slot, tickets, _sync = rounds_env
     _write_spec(tickets, "T-8005")
-    max_limit = max(pd.DEFAULT_INTERNAL_ROUND_LIMITS.values())
-    plan = _prepare_n_rounds(pd, pm_home, slot, "T-8005", "researcher", max_limit + 3)
-    assert plan.ordinal == max_limit + 3
+    with pytest.raises(pd.DelegateError):
+        pd.prepare_ticket_copy(
+            ticket="T-8005", role="researcher", cwd=slot, pm_home=pm_home,
+        )
 
 
 def test_harvest_and_copies_are_outside_the_gate(pd, rounds_env, monkeypatch):
     """역방향: harvest·copies 는 게이트 밖이다 — 진행 중 라운드를 고아로 만들지 않는다."""
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-8006")
+    _write_spec(tickets, "T-8006", rounds=_rounds_past_the_cap(pd, "developer"))
     limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
     plan = _prepare_n_rounds(pd, pm_home, slot, "T-8006", "developer", limit)
     # 상한 도달 상태에서도 이미 예약된 라운드의 harvest 는 막히지 않는다.
@@ -2589,7 +2628,7 @@ def test_concurrent_prepares_at_the_cap_boundary_admit_exactly_one(
     """F-003 TOCTOU 회귀 — 상한-1 에서 두 동시 prepare 중 정확히 하나만 성공하고
     최종 count 가 상한을 넘지 않는다(리뷰어 결정적 재현 재구성: 사전판정 직후 barrier)."""
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-9001")
+    _write_spec(tickets, "T-9001", rounds=_rounds_past_the_cap(pd, "developer"))
     limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
     _prepare_n_rounds(pd, pm_home, slot, "T-9001", "developer", limit - 1)
 
@@ -2852,7 +2891,7 @@ def test_cross_delegation_binds_run_id_and_copy_to_its_delegate_rounds_reservati
     행과 문자열 그대로 일치한다(두 장부를 각자 실제 파일로 만들어 값으로 확인한다)."""
     home, tickets = refund_env
     ticket = "T-9105"
-    _write_spec(tickets, ticket)
+    _write_spec(tickets, ticket, rounds=("developer",))
 
     prompt = home / "task.md"
     prompt.write_text("문서를 정리하라", encoding="utf-8")
@@ -2883,7 +2922,7 @@ def test_cross_delegation_prompt_carries_the_next_finding_id(pd, refund_env, mon
     """
     home, tickets = refund_env
     ticket = "T-9107"
-    _write_spec(tickets, ticket)
+    _write_spec(tickets, ticket, rounds=("code-reviewer",))
     (home / ".project_manager" / "local.conf").write_text(
         "delegate.enabled=true\n"
         "delegate.code-reviewer.harness=claude\n"
@@ -2951,7 +2990,7 @@ def test_two_cross_runs_of_the_same_ticket_and_role_bind_1to1_not_swapped(
     `ticket_copy_records`(copy 별 최신 append)로 접어서 단언한다."""
     home, tickets = refund_env
     ticket = "T-9106"
-    _write_spec(tickets, ticket)
+    _write_spec(tickets, ticket, rounds=("developer", "developer"))
 
     prepared_plans: list = []
     real_prepare = pd.prepare_ticket_copy
@@ -3022,7 +3061,7 @@ def test_configured_convergence_limit_runs_every_round_through_main(
     `main()` 경유 5회가 전부 성공하고, 그 다음 요청은 rc 1 로 막힌다(상한 뒤 창 0)."""
     home, tickets = refund_env
     ticket = "T-9105"
-    _write_spec(tickets, ticket)
+    _write_spec(tickets, ticket, rounds=_rounds_past_the_cap(pd, "code-reviewer"))
     rounds_max = 5
     assert rounds_max == pd.DEFAULT_INTERNAL_ROUND_LIMITS["code-reviewer"]
     # 실 conf 파일 하나를 단일 진실로 쓴다 — `main()`(prepare/reserve)과 board 의 완료
@@ -3224,7 +3263,7 @@ def test_concurrent_prepare_loser_leaves_no_orphaned_run_dir(pd, rounds_env):
     run-dir 만 남기지 않는다(결정적 barrier 재현 — 라운드 7 실측: developer 상한 4 ·
     before=(3,3,3) → 성공 1·`InternalRoundLimitExceeded` 1 → after=(4,5,4) 였던 결함)."""
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-9201")
+    _write_spec(tickets, "T-9201", rounds=_rounds_past_the_cap(pd, "developer"))
     limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
     _prepare_n_rounds(pd, pm_home, slot, "T-9201", "developer", limit - 1)
 
@@ -3383,7 +3422,7 @@ def test_prepare_rollback_control_exceptions_preserve_the_original_round_limit_e
     자체는 여전히 실패하므로(주입) run-dir 고아는 남는다 — 이번 fix 가 보장하는 건 원 예외
     형·경고 유무이지 정리 성공이 아니다."""
     pm_home, slot, tickets, _sync = rounds_env
-    _write_spec(tickets, "T-9304")
+    _write_spec(tickets, "T-9304", rounds=_rounds_past_the_cap(pd, "developer"))
     limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["developer"]
     # (1.5) 빠른 사전판정은 통과시키고(existing=limit-1), 락 안 **최종 admission** 재확인만
     # 거부시킨다(review 재현과 동일 축 — F-003 TOCTOU 재구성 패턴 재사용). run_dir 은 사전판정
@@ -3638,9 +3677,12 @@ def _design_spec_text(
     )
 
 
-def _write_design_spec(tickets: Path, ticket: str, **kwargs) -> Path:
+def _write_design_spec(
+    tickets: Path, ticket: str, *, rounds=("developer",), **kwargs,
+) -> Path:
     path = tickets / f"{ticket}-rounds.md"
     path.write_text(_design_spec_text(ticket, **kwargs), encoding="utf-8", newline="\n")
+    _declare_rounds(tickets, ticket, rounds)
     return path
 
 
@@ -3662,7 +3704,9 @@ def test_design_gate_passes_after_a_harvested_architect_round(pd, rounds_env):
     """근거 ①(회수된 architect 라운드) — fix 라운드(2·3회차)에서도 근거는 소멸하지 않는다."""
     pm_home, slot, tickets, _sync = rounds_env
     ticket = "T-8100"
-    _write_design_spec(tickets, ticket, design="n/a")
+    _write_design_spec(
+        tickets, ticket, rounds=("architect", "developer", "developer"),
+        design="n/a")
     _harvest_architect_round(pd, pm_home, slot, ticket)
 
     first = pd.prepare_ticket_copy(
@@ -3713,7 +3757,7 @@ def test_design_gate_rejects_a_seed_only_architect_round_then_passes_after_harve
     호출이 통과로 뒤집힌다(값으로)."""
     pm_home, slot, tickets, _sync = rounds_env
     ticket = "T-8103"
-    _write_design_spec(tickets, ticket, design="n/a")
+    _write_design_spec(tickets, ticket, rounds=("architect", "developer"), design="n/a")
     architect = pd.prepare_ticket_copy(
         ticket=ticket, role="architect", cwd=slot, pm_home=pm_home,
     )
@@ -3825,10 +3869,10 @@ def test_design_gate_rejects_malformed_frontmatter_even_with_a_harvested_archite
     아니다 — frontmatter 파싱은 architect shortcut 보다 먼저 수행된다."""
     pm_home, slot, tickets, _sync = rounds_env
     ticket = "T-8118"
-    _write_design_spec(tickets, ticket, design="n/a")
+    _write_design_spec(tickets, ticket, rounds=("architect", "developer"), design="n/a")
     _harvest_architect_round(pd, pm_home, slot, ticket)
     _write_design_spec(
-        tickets, ticket, design=None,
+        tickets, ticket, rounds=("architect", "developer"), design=None,
         raw_design_line="design: waived: 인용 없는 콜론 스칼라\n",
     )
 
@@ -3846,9 +3890,11 @@ def test_design_gate_rejects_invalid_design_even_with_a_harvested_architect_roun
     통과가 아니다 — design 유효성 검사는 architect shortcut 보다 먼저 수행된다."""
     pm_home, slot, tickets, _sync = rounds_env
     ticket = "T-8119"
-    _write_design_spec(tickets, ticket, design="n/a")
+    _write_design_spec(tickets, ticket, rounds=("architect", "developer"), design="n/a")
     _harvest_architect_round(pd, pm_home, slot, ticket)
-    _write_design_spec(tickets, ticket, design="waived")  # 폐지된 면제 값 = invalid
+    # 폐지된 면제 값 = invalid
+    _write_design_spec(
+        tickets, ticket, rounds=("architect", "developer"), design="waived")
 
     with pytest.raises(pd.DelegateError, match="design 값 인식 불가"):
         pd.prepare_ticket_copy(
@@ -3859,19 +3905,15 @@ def test_design_gate_rejects_invalid_design_even_with_a_harvested_architect_roun
 # ── I7 — 다른 역할·다른 면은 무영향 ───────────────────────────────────────────
 
 def test_design_gate_does_not_apply_to_non_developer_roles(pd, rounds_env):
-    """근거 0(design: n/a·rounds 0)이어도 architect·researcher 준비는 막히지 않는다."""
+    """근거 0(design: n/a·rounds 0)이어도 architect 준비는 막히지 않는다."""
     pm_home, slot, tickets, _sync = rounds_env
     ticket = "T-8117"
-    _write_design_spec(tickets, ticket, design="n/a")
+    _write_design_spec(tickets, ticket, rounds=("architect",), design="n/a")
 
     architect = pd.prepare_ticket_copy(
         ticket=ticket, role="architect", cwd=slot, pm_home=pm_home,
     )
     assert architect.board_path.name == "01-architect.md"
-    researcher = pd.prepare_ticket_copy(
-        ticket=ticket, role="researcher", cwd=slot, pm_home=pm_home,
-    )
-    assert researcher.board_path.name == "02-researcher.md"
 
 
 # ── I4·I5 — 진입점 파리티(판정 1개소·rc 정책 1개소) ───────────────────────────
@@ -4062,7 +4104,7 @@ def test_prepare_denial_follows_conf_not_role_name(pd, rounds_env, monkeypatch, 
     monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
     _isolate_harness_env(monkeypatch)
     monkeypatch.setenv("CLAUDECODE", "1")
-    _write_spec(tickets, "T-7902")
+    _write_spec(tickets, "T-7902", rounds=("code-reviewer",))
 
     _write_local_conf(pm_home, {
         "delegate.enabled": "true",
@@ -4135,7 +4177,7 @@ def test_fail_open_when_pm_harness_marker_is_absent(pd, rounds_env, monkeypatch,
         "delegate.code-reviewer.model": "gpt-5.6-sol",
     })
     _isolate_harness_env(monkeypatch)
-    _write_spec(tickets, "T-7905")
+    _write_spec(tickets, "T-7905", rounds=("code-reviewer",))
 
     rc = _prepare_cli(pd, slot, "T-7905", "code-reviewer")
 
@@ -4156,7 +4198,7 @@ def test_fail_open_when_pm_harness_markers_collide(pd, rounds_env, monkeypatch, 
     _isolate_harness_env(monkeypatch)
     monkeypatch.setenv("CLAUDECODE", "1")
     monkeypatch.setenv("OPENCODE", "1")
-    _write_spec(tickets, "T-7906")
+    _write_spec(tickets, "T-7906", rounds=("code-reviewer",))
 
     rc = _prepare_cli(pd, slot, "T-7906", "code-reviewer")
 
@@ -4172,7 +4214,7 @@ def test_fail_open_and_not_silent_when_no_delegate_mapping_exists(
     monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
     _isolate_harness_env(monkeypatch)
     monkeypatch.setenv("CLAUDECODE", "1")
-    _write_spec(tickets, "T-7907")
+    _write_spec(tickets, "T-7907", rounds=("code-reviewer",))
 
     rc = _prepare_cli(pd, slot, "T-7907", "code-reviewer")
 

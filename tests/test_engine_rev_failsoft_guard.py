@@ -1117,11 +1117,10 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   만들지 않는다) 마킹된 skew 만 그대로 올린다:
     #   + `ticket_finish.py:_board_module_at` · `_cluster_integration_branch` reraises — 통합
     #     브랜치 선언(묶음 장부 `base_branch`)을 board 사본에서 읽는 자리. 선언 부재·조회 실패는
-    #     None(옛 기준으로 접고 경고)이다.
-    #   + `ticket_finish.py:TicketFinisher._integration_tip` ·
-    #     `TicketFinisher._line_reached_integration` reraises — 그 선언을 코드 트리에서 해소하고
-    #     (`rev-parse`) 줄의 도입 커밋이 통합 브랜치에 있는지 묻는(`merge-base --is-ancestor`)
-    #     판정. 해소 실패는 옛 기준, 판정 실패는 신규 취급(차단 방향)이다.
+    #     None 이고, 그 값을 받는 소비자가 멈춘다(접는 갈래 없음).
+    #   + `ticket_finish.py:TicketFinisher._line_reached_integration` reraises — 줄의 도입
+    #     커밋이 통합 브랜치에 있는지 묻는(`merge-base --is-ancestor`) 판정. 판정 실패는 신규
+    #     취급(차단 방향)이다.
     #   + `ticket_finish.py:ClusterCloser` 의 관측·seam 자리 11 — `_default_release`(반납 거부
     #     사유를 값으로) · `_slot_state`·`_ticket_status`·`_pending_paths`·`_is_ancestor`·
     #     `_dirty_paths`·`_integration_worktree`·`_board_pointer_path`(단계 건너뛰기 관측) ·
@@ -1132,21 +1131,24 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #     스켈레톤을 log 에서 관측하는 자리(재실행이 같은 스켈레톤을 다시 쌓지 않게). 읽기 실패는
     #     '없음'(중복 방지 판정 불능 — 기록을 막지 않는다)이고 마킹된 skew 만 올린다.
     #   + `external_review.py:cluster_integration_tip` reraises — 리뷰 송신 폭의 기준점(묶음 장부
-    #     통합 브랜치)을 형제 완료 기록 엔진의 해소 seam 으로 읽는 자리. 부재/손상은 옛 폭 +
-    #     loud 1줄로 접고 마킹된 skew 는 그대로 올린다(다른 형제 로더와 같은 규칙).
+    #     통합 브랜치)을 형제 완료 기록 엔진의 해소 seam 으로 읽는 자리. 부재/손상은 사유를 돌려
+    #     호출부가 거부하게 하고 마킹된 skew 는 그대로 올린다(다른 형제 로더와 같은 규칙).
     # 269 = 267 + 2. 잔여 판정 인구가 커밋분까지 넓어지며 연 두 경계다:
     #   + `ticket_finish.py:_cluster_member_ids` reraises — 묶음 멤버 목록을 board 술어
     #     (`cluster_tickets`)로 읽는 자리. 장부 부재·조회 실패는 빈 목록(제외 없이 인구 유지 —
     #     선언 누락을 숨기지 않는 쪽)이고 마킹된 skew 만 올린다.
     #   + `ticket_finish.py:TicketFinisher._committed_out_of_scope` reraises — 통합 tip 기준
-    #     커밋 인구를 `git diff` 로 세는 자리. 조회 실패는 인구 축소 + loud 1줄로 접고(완료를
-    #     벽돌로 만들지 않는다) 마킹된 skew 는 그대로 올린다.
+    #     커밋 인구를 `git diff` 로 세는 자리.
     # 270 = 269 + 1. 묶음 리뷰 백그라운드 실행 장부의 마감 경계:
     #   + `pm_delegate.py:main` reraises — CLI 진입을 감싸 자식 프로세스가 rc 반환·`SystemExit`·
     #     전파 예외 어느 경로로 끝나든 실행 장부 행을 자기 rc 로 마감하는 자리. 예외는 마감만
     #     기록하고 그대로 다시 올린다(흡수 0 — 마킹된 skew 포함). 통합 브랜치 합류 뒤 형제 티켓의
     #     래칫 서사에 빠져 있던 것을 여기서 보충한다.
-    assert len(report.boundaries) == 270, "propagation sweep boundary ratchet changed"
+    # 268 = 270 − 2. 판정 기준(통합 브랜치)을 다른 기준으로 접던 갈래가 사라지며 두 경계가 없어
+    #   졌다 — `TicketFinisher._integration_tip`(해소 실패 → 정지) ·
+    #   `TicketFinisher._committed_out_of_scope`(조회 실패 → 정지). 접을 곳이 없으면 흡수 경계도
+    #   없다. 래칫은 제거 방향으로만 움직인다.
+    assert len(report.boundaries) == 268, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

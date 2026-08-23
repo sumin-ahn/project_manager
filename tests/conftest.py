@@ -311,6 +311,90 @@ def anchor_board_module(mod, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr(mod, "refresh_board", _refresh_with_parent)
 
 
+# ── 묶음 장부 픽스처 (완료 기록·리뷰 폭 판정의 입력) ──────────────────────────
+#
+# 엔진은 판정 기준(통합 브랜치)을 묶음 장부 `base_branch` 에서만 읽고, 선언이 없으면 다른
+# 기준으로 접지 않고 멈춘다. 실 board 에서는 티켓 발행이 크기 1 장부를 만들며 그 값을 박는다 —
+# 픽스처 board 도 같은 파일을 가져야 완료 기록·리뷰 폭 판정이 성립한다. 파일 하나를 여러 테스트
+# 파일이 각자 재타이핑하면 스키마가 갈리므로 여기 한 곳에 둔다.
+#
+# 장부 `budget` 4키는 라운드 역할 **수열**이기도 하다 — 준비는 그 수열이 말하는 순서로만
+# 다음 라운드를 연다. 그래서 픽스처는 자기가 실제로 예약할 단계를 선언해야 하고, 선언하지
+# 않은 단계(값 0)는 건너뛴다.
+_CLUSTER_BUDGET_STAGES: tuple[tuple[str, str], ...] = (
+    ("architect", "architect"),
+    ("developer", "developer_per_ticket"),
+    ("code-reviewer", "code-reviewer"),
+    ("developer", "fix"),
+)
+_CLUSTER_BUDGET_DEFAULT: dict[str, int] = {
+    key: 1 for _role, key in _CLUSTER_BUDGET_STAGES
+}
+
+
+def cluster_budget_for(roles) -> dict[str, int]:
+    """예약할 라운드 역할 순서를 장부 `budget` 4키로 옮긴다.
+
+    수열이 곧 허용 순서라, 계획을 단계에 그리디로 배분한다 — 같은 역할이 이어지면 그 단계의
+    수가 늘고, 역할이 바뀌면 그 역할이 나오는 다음 단계로 넘어간다. 수열로 표현할 수 없는
+    순서는 여기서 바로 실패한다: 장부가 선언할 수 없는 계획을 테스트가 조용히 기대하지 않게
+    한다.
+    """
+    budget = {key: 0 for _role, key in _CLUSTER_BUDGET_STAGES}
+    stage = 0
+    for role in roles:
+        while (stage < len(_CLUSTER_BUDGET_STAGES)
+               and _CLUSTER_BUDGET_STAGES[stage][0] != role):
+            stage += 1
+        if stage == len(_CLUSTER_BUDGET_STAGES):
+            stage_roles = tuple(item for item, _key in _CLUSTER_BUDGET_STAGES)
+            raise AssertionError(
+                f"장부 예산 수열로 선언할 수 없는 라운드 순서다: {tuple(roles)} — "
+                f"{role!r} 를 그 자리에 둘 단계가 없다(단계 순서 {stage_roles})")
+        budget[_CLUSTER_BUDGET_STAGES[stage][1]] += 1
+    return budget
+
+
+def write_cluster_ledger(
+    board_dir: Path, tickets, *, base_branch: str, cluster: str | None = None,
+    branch: str | None = None, rounds=None,
+) -> Path:
+    """`<board_dir>/tickets/clusters/<묶음>.md` 를 쓴다 — 멤버·기준 브랜치·예산 선언.
+
+    `cluster` 를 생략하면 크기 1 묶음(`C-<티켓>`)이다 — 티켓 frontmatter 에 `cluster` 필드가
+    없는 픽스처가 읽히는 그 이름이라, 명세를 건드리지 않고 장부만 얹으면 된다.
+    `rounds` 는 이 묶음이 예약할 라운드 역할 순서다 — 생략하면 단계마다 1건씩(기본 수열).
+    """
+    members = [tickets] if isinstance(tickets, str) else list(tickets)
+    name = cluster or f"C-{members[0]}"
+    budget = _CLUSTER_BUDGET_DEFAULT if rounds is None else cluster_budget_for(rounds)
+    directory = board_dir / "tickets" / "clusters"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{name}.md"
+    path.write_text(
+        "---\n"
+        f"id: {name}\n"
+        "tickets:\n" + "".join(f"- {member}\n" for member in members)
+        + f"base_branch: {base_branch}\n"
+        + f"branch: {branch or 'null'}\n"
+        "spike: null\n"
+        "budget:\n"
+        + "".join(f"  {key}: {value}\n" for key, value in budget.items())
+        + "replans: []\n"
+        "status: open\n"
+        "---\n",
+        encoding="utf-8", newline="\n")
+    return path
+
+
+def current_branch(root: Path) -> str:
+    """그 git 트리의 현재 브랜치 — 픽스처 장부의 `base_branch` 실값."""
+    result = subprocess.run(
+        ["git", "-C", str(root), "symbolic-ref", "--quiet", "--short", "HEAD"],
+        capture_output=True, text=True, encoding="utf-8", check=True)
+    return result.stdout.strip()
+
+
 # ── ① codex ambient env 중화 (autouse) ────────────────────────────────────────
 
 # 카드 감지 predicate 의 두 마커와 T-0592 실송신 게이트의 network-off 마커를 중화한다.
