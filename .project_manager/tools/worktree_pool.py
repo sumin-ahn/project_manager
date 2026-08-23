@@ -4265,6 +4265,52 @@ class RefreshRefused(RuntimeError):
         super().__init__(msg + tail + f"")
 
 
+def _origin_or_local_base_ref(base_branch: str, *, slot: str, runner: GitRunner) -> str:
+    """`origin/<base_branch>` 대 로컬 `<base_branch>` 신선도 해소 — 무인자(`onto` 생략) 공용 helper.
+
+    `rebase`(base 미지정)와 `refresh`(onto 미지정) 두 하위명령이 같은 인자에 반대 규칙을 쓰던 결함을
+    닫는다 — 둘 다 이 helper 하나로 대상 ref 를 해소해, 같은 도구·같은 인자에 규칙이 갈리지 않는다.
+
+    `refs/remotes/origin/<base_branch>` 가 없으면(`show-ref` rc≠0) 비교 없이 `base_branch` 그대로
+    돌려준다(원격 기준면 자체가 없다 — 기존 폴백 불변). 있으면 `rev-list --left-right --count
+    origin/<base_branch>...<base_branch>` **1회**로 좌(origin 전용 커밋 수)·우(로컬 전용 커밋 수)를
+    함께 잰다:
+      - 우(로컬 전용) > 0 → 로컬이 origin 에 없는 커밋을 가진다 — origin 대체를 건너뛰고
+        `base_branch` 를 그대로 돌려주며, stderr 1줄에 좌·우 두 수를 함께 고지한다(diverged — 좌도
+        >0 — 여도 두 수가 함께 찍히므로 조용한 선택이 아니다).
+      - 그 외(우=0 — 로컬이 origin 과 같거나 뒤짐) → `origin/<base_branch>` 를 돌려준다(종전 동작).
+      - `rev-list` rc≠0(로컬 ref 부재 등 비교 불가)·출력 파싱 실패 → 좌·우를 0 으로 보고 같은 origin
+        폴백에 흡수한다(비교 불가가 새 거부 사유로 격상되지 않는다 — fail-soft).
+
+    origin 선호를 기본으로 유지하는 이유: 풀 bare 의 로컬 heads 는 `fetch` 로 움직이지 않는다
+    (`+refs/heads/*:refs/remotes/origin/*` 갱신 대상은 remote-tracking ref 뿐이다) — origin 에 정기
+    push 되는 브랜치는 로컬 쪽이 동결된 채 뒤처지므로 origin 이 항상 최신 기준이고, origin 에 안
+    올리는 통합 브랜치에서만 로컬이 유일한 최신이라 그때만 예외로 로컬을 쓴다."""
+    rc2, _ = runner(["show-ref", "--verify", "--quiet",
+                     f"refs/remotes/origin/{base_branch}"])
+    if rc2 != 0:
+        return base_branch
+    rc3, out3 = runner(["rev-list", "--left-right", "--count",
+                        f"origin/{base_branch}...{base_branch}"])
+    origin_ahead = local_ahead = 0
+    if rc3 == 0:
+        parts = (out3 or "").split()
+        if len(parts) == 2:
+            try:
+                origin_ahead, local_ahead = int(parts[0]), int(parts[1])
+            except (ValueError, TypeError):
+                origin_ahead = local_ahead = 0
+    if local_ahead > 0:
+        print(
+            f"[정보] 슬롯 {slot} 로컬 브랜치 `{base_branch}` 이 `origin/{base_branch}` 보다 앞서 "
+            f"있다(origin 전용 {origin_ahead}커밋 · 로컬 전용 {local_ahead}커밋) — origin 대체를 "
+            "건너뛰고 로컬 tip 을 쓴다.",
+            file=sys.stderr,
+        )
+        return base_branch
+    return f"origin/{base_branch}"
+
+
 def refresh(slot: str, *, onto: "str | None" = None,
             git_runner: GitRunner | None = None) -> "tuple[str, str]":
     """readonly 공유 슬롯을 released 최신으로 갱신한다 — fetch → detached HEAD 이동.
@@ -4283,8 +4329,11 @@ def refresh(slot: str, *, onto: "str | None" = None,
              명시 인자를 `origin/<branch>` 로 조용히 바꾸면 미push 로컬 tip 으로 갱신할 길이 없고,
              사용자가 지정한 기준과 실제 이동 지점이 어긋난 채 성공 보고된다. 원격 기준을 원하면
              `origin/<branch>` 로 적는다. 해소 실패는 대체 없이 fail-loud(`RefreshRefused`).
-           - `onto` **미지정**(기록된 base.branch) = `origin/<branch>` 우선·미해소면 로컬 `<branch>`
-             폴백(readonly 기준면 = 공개된 released 상태라는 기본 경로 설계 의도 유지).
+           - `onto` **미지정**(기록된 base.branch) = `origin/<branch>` 선호를 유지하되, 로컬
+             `<branch>` 가 그보다 앞서 있으면(origin 에 없는 커밋 보유) 대체하지 않고 로컬 tip 을
+             쓴다(stderr 1줄 고지). 그 외(로컬 없음/동일/origin 이 앞섬)는 origin 채택. 해소는
+             `rebase` 무인자와 **같은 helper**(`_origin_or_local_base_ref`)를 써서 같은 도구·같은
+             인자에 규칙이 갈리지 않는다.
       4b. **submodule 재동기** — `git submodule update --init --recursive --force`(gitlink 옛 pin 잔존
          →stale+dirty 자가 잠금 방지·readonly=dev submodule 없어 전체 재동기 안전).
       5. **스냅 갱신** — `record_git_snapshot(base_branch=기준 branch)` — 기준 branch 는 onto(명시 시)
@@ -4292,8 +4341,8 @@ def refresh(slot: str, *, onto: "str | None" = None,
          branch 가 남는다), base.commit 을 새 head 로 갱신한다(onto 생략에도 갱신 — HEAD 이동했는데
          장부 base.commit 옛값 잔존 불일치 방지). refresh 는 base 가 정당하게 바뀌는 유일 지점
          ("rebase 로만" 의 readonly 예외). 주의: 명시 `--onto` 는 비-고착 — 장부에 남는 건 그 branch 명이라
-         다음 무인자 refresh 는 기본 규칙(origin 우선)대로 origin/<branch> 로 되돌아간다(성공 메시지의
-         실측 ref/sha 로 확인).
+         다음 무인자 refresh 는 `_origin_or_local_base_ref` 로 다시 해소된다(origin 이 앞서거나 같으면
+         origin/<branch>·로컬이 앞서면 로컬 그대로 — 성공 메시지의 실측 ref/sha 로 확인).
     반환 = `(이동한 기준 ref, 이동 후 HEAD 커밋 sha)` — 본체 CLI 가 이 실측값을 그대로 보고한다(조용한
     ref 대체 제거의 짝: 결과 메시지도 추정이 아니라 실제 해소값). sha 조회 불가는 빈 문자열(fail-soft·
     이동 자체는 성공). `git_runner` 주입 시 그 runner(테스트 hermetic·미주입이면 슬롯 worktree 바인딩
@@ -4337,11 +4386,9 @@ def refresh(slot: str, *, onto: "str | None" = None,
             file=sys.stderr,
         )
     elif onto is None and not base_branch.startswith("origin/"):
-        # `--onto` 미지정 기본 경로 한정 — 기록된 base.branch 는 순수 브랜치명이면 origin/<branch> 로
-        # 해소 시도(공개 released 상태 = readonly 기준면), 미해소면 로컬 <branch> 폴백.
-        rc2, _ = runner(["show-ref", "--verify", "--quiet", f"refs/remotes/origin/{base_branch}"])
-        if rc2 == 0:
-            ref = f"origin/{base_branch}"
+        # `--onto` 미지정 기본 경로 한정 — 대상 ref 해소는 `rebase` 무인자와 같은 helper 로 — origin/
+        # <branch> 선호를 유지하되 로컬이 앞서 있으면 대체하지 않는다(stderr 1줄 고지).
+        ref = _origin_or_local_base_ref(base_branch, slot=slot, runner=runner)
     rc, out = runner(["checkout", "--detach", ref])
     if rc != 0:
         # 명시 인자 해소 실패는 자동 대체 없이 여기서 끝난다 — 대안(원격 기준)은 사용자가 명시한다.
@@ -4692,10 +4739,18 @@ def _rebase_one(slot: str, *, onto: "str | None", owner: str,
     선-검사(스킵+loud·순서): readonly(공유 기준면·mutation 불가) → 소유(`owner` 명의 leased
     아님 — `owner` 는 세션 또는 task 명의·해소는 `rebase`) → dirty(clean 전제) → rebase
     진행 중. 통과하면 `resolve_rebase_base` gate(미기록+onto 없음=거부·
-    onto=진행+기록) 로 대상 base 브랜치를 해소하고, `origin/<base>` 최신을 fetch 후 `git
-    rebase` 한다. rc≠0(충돌 등) = **그 상태 그대로 두고 conflict**(엔진 임의 abort 금지). 성공 =
-    `record_git_snapshot(base_branch, base_commit=새 base tip)` 로 base.commit·head·recorded_at 을
-    원자 갱신. **raise 하지 않는다** — 모든 조건을 RebaseSlotResult 로 돌려 일괄 독립성을
+    onto=진행+기록) 로 대상 base 브랜치를 해소하고 fetch 한 뒤, **대상 ref 해소는 `refresh` 와 같은
+    규칙**을 쓴다:
+      - `onto` **명시** = 준 ref 를 **그대로** rebase 대상으로 쓴다. `origin/<ref>` 로 조용히 바꾸지
+        않는다(로컬 브랜치를 지정했는데 같은 이름의 stale `origin/<ref>` 위로 rebase 되는 사고 차단).
+      - `onto` **생략**(기록된 base.branch) = `origin/<base>` 선호를 유지하되, 로컬 `<base>` 가 그보다
+        **앞서 있으면**(로컬이 origin 에 없는 커밋을 가짐) 대체하지 않고 로컬 tip 을 쓴다(stderr 1줄
+        고지에 좌·우 두 수를 함께 적어 diverged 도 침묵이 아니다). origin 이 같거나 앞서면 종전대로
+        `origin/<base>` 채택. 해소는 `refresh` 무인자와 **같은 helper**(`_origin_or_local_base_ref`)를
+        써서 같은 도구·같은 인자에 규칙이 갈리지 않는다.
+    이후 `git rebase <target>`. rc≠0(충돌 등) = **그 상태 그대로 두고 conflict**(엔진 임의 abort 금지).
+    성공 = `record_git_snapshot(base_branch, base_commit=새 base tip)` 로 base.commit·head·recorded_at
+    을 원자 갱신. **raise 하지 않는다** — 모든 조건을 RebaseSlotResult 로 돌려 일괄 독립성을
     보장한다(한 슬롯의 예외가 나머지를 막지 않음)."""
     def skip(reason: str, base: "str | None" = None) -> RebaseSlotResult:
         return RebaseSlotResult(slot, REBASE_SKIPPED, reason=reason, base=base)
@@ -4743,12 +4798,12 @@ def _rebase_one(slot: str, *, onto: "str | None", owner: str,
             "(fail-soft).",
             file=sys.stderr,
         )
-    else:
-        if not base_branch.startswith("origin/"):
-            rc2, _ = runner(["show-ref", "--verify", "--quiet",
-                             f"refs/remotes/origin/{base_branch}"])
-            if rc2 == 0:
-                target = f"origin/{base_branch}"
+    elif onto is None and not base_branch.startswith("origin/"):
+        # `--onto` 생략(기록된 base.branch) 경로 한정 — 대상 ref 해소는 `refresh` 무인자와 같은
+        # helper(같은 도구·같은 인자에 반대 규칙을 쓰던 것을 한 규칙으로 통일). `onto`
+        # 명시 경로는 이 elif 자체를 안 타므로(위 조건) `target=base_branch`(해소된 onto 그대로)가
+        # 유지된다 — 조용한 origin 대체 없음(refresh 명시-onto 계약과 동형).
+        target = _origin_or_local_base_ref(base_branch, slot=slot, runner=runner)
     rc, out = runner(["rebase", target])
     if rc != 0:
         # 충돌(또는 실패) — **그 상태 그대로 두고 fail-loud**. 엔진이 임의 abort 하지 않는다
@@ -6224,7 +6279,10 @@ def _main(argv: "list[str] | None" = None) -> int:
                           help="task 명의(소유검사 축). `<slot>` 없이 주면 "
                                "그 task 보유 전 슬롯 일괄 rebase.")
     p_rebase.add_argument("--onto", default=None,
-                          help="rebase 기준 브랜치(생략 시 기록된 base.branch 최신·미기록이면 거부).")
+                          help="rebase 기준 브랜치(생략 시 기록된 base.branch 최신·미기록이면 거부). "
+                               "명시 시 준 값 그대로 해소한다(로컬 브랜치명=로컬 tip·자동 대체 없음·"
+                               "원격 기준은 `origin/<branch>` 로 명시). 생략 시 origin 을 우선하되 "
+                               "로컬이 더 앞서 있으면 대체하지 않고 로컬 tip 을 쓴다.")
 
     # refresh <slot> [--onto <branch>] — readonly 공유 슬롯 갱신(위치인자 <slot>).
     p_refresh = subparsers.add_parser(
@@ -6233,8 +6291,9 @@ def _main(argv: "list[str] | None" = None) -> int:
     p_refresh.add_argument("slot", help="대상 readonly 슬롯(`work/<repo>_<N>` 또는 접두 생략 `<repo>_<N>`).")
     p_refresh.add_argument("--onto", default=None,
                            help="갱신 기준 ref — 준 값 그대로 해소한다(로컬 브랜치명=로컬 tip·원격 기준은 "
-                                "`origin/<branch>` 로 명시·자동 대체 없음). 생략 시 기록된 "
-                                "base.branch 를 origin 우선으로 해소하고, 둘 다 없으면 거부.")
+                                "`origin/<branch>` 로 명시·자동 대체 없음). 생략 시 기록된 base.branch 의 "
+                                "origin 을 우선하되 로컬이 더 앞서 있으면 대체하지 않고 로컬 tip 을 쓰며, "
+                                "둘 다 없으면 거부.")
 
     # record <slot> — 도착 기대 스냅(lease.git)을 live 로 재기록(base 보존·위치인자 <slot>).
     # 0단계 record-vs-live diverged FAIL-LOUD 를 사용자가 정당(의도한 브랜치 전환 등)이라 판단했을

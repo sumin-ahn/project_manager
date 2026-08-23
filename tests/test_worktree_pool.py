@@ -9459,7 +9459,10 @@ def test_rebase_onto_conflict_leaves_ledger_fully_unchanged(wp, monkeypatch):
 
 
 def test_rebase_onto_resolves_and_records_base(wp, monkeypatch):
-    """--onto 명시 → 그 기준으로 진행 + base 기록(gate 소비·resolve_rebase_base)."""
+    """--onto 명시 → 그 기준으로 진행 + base 기록(gate 소비·resolve_rebase_base).
+
+    `--onto` 명시는 준 ref 를 **그대로** rebase 대상으로 쓴다 — `origin/<ref>` 로 조용히
+    대체하지 않는다(refresh 명시-onto 계약과 동형)."""
     _seed_rebase_lease(wp)   # base 미기록 — onto 로 해소
     monkeypatch.setattr(wp, "_default_session", lambda: "job")
     git = _RebaseGit(rebase_rc=0, origin_has_base=True,
@@ -9467,9 +9470,251 @@ def test_rebase_onto_resolves_and_records_base(wp, monkeypatch):
                      head_sha=_REBASED_HEAD)
     [r] = wp.rebase(["work/A_1"], onto="develop", git_runner=git)
     assert r.outcome == wp.REBASE_REBASED and r.base == "develop"
-    assert git.did("rebase", "origin/develop")   # origin/<base> 최신 타깃
+    assert git.did("rebase", "develop")          # 준 ref 그대로(대체 없음)
+    assert not git.did("rebase", "origin/develop")
     recorded = next(l for l in wp.list_leases() if l.slot == "work/A_1").git
     assert recorded["base"]["branch"] == "develop"
+
+
+# ── rebase — 대상 ref 신선도(실 git) ──────────────────────────────────────────
+# `_rebase_one` 이 `--onto` 로 준 로컬 브랜치를 같은 이름의 stale `origin/<base>` 로 조용히
+# 대체하던 결함(재현: origin 에 안 올리는 통합 브랜치가 로컬 tip 대신 origin 의 낡은 기록 위로
+# rebase 시작). mock(`_RebaseGit`)의 `show-ref`/`rev-list` 존재-검사 모델로는 "대체가 일어났는가"만
+# 보이고 "어느 ref 값으로" 는 안 보이므로, 실 git 로 로컬/origin 을 실제로 갈라놓고 **rebase 대상
+# ref 를 값으로** 단언한다(존재 검사 아님).
+
+
+def _push_local_only_commit(tmp_path: Path, bare: Path, branch: str, *, label: str) -> str:
+    """`bare`(bare repo)의 로컬 `refs/heads/<branch>` 만 전진시킨다 — 옆 `origin`(fs 원격)은 안 건드림.
+
+    bare 는 워킹트리가 없어 직접 커밋 불가 — 임시 non-bare clone 에서 커밋 후 그 clone 을
+    **`bare` 에** push 한다(origin 이 아니라 bare 에 push 해야 "origin 엔 안 올린 로컬 전진"
+    형상이 된다 — `origin/<branch>` 는 이 커밋을 모른다). 반환 = 새 커밋 sha."""
+    clone_dir = tmp_path / f"{branch}-local-advance-{label}"
+    _git(tmp_path, "clone", "-q", str(bare), str(clone_dir))
+    _git(clone_dir, "checkout", "-q", branch)
+    (clone_dir / f"LOCAL_ONLY_{label}.txt").write_text(f"{label}\n", encoding="utf-8")
+    _git(clone_dir, "add", f"LOCAL_ONLY_{label}.txt")
+    _git(clone_dir, "commit", "-q", "-m", f"{branch} local-only advance ({label}, not pushed to origin)")
+    tip = _git(clone_dir, "rev-parse", branch).stdout.strip()
+    _git(clone_dir, "push", "-q", str(bare), f"{branch}:{branch}")
+    return tip
+
+
+def _mk_release_family(tmp_path: Path, wp) -> "tuple[Path, Path]":
+    """family origin(main + release) + bare clone(refspec 보정 + fetch) — 3 rebase 신선도 테스트 공용.
+
+    반환 = (origin 작업 repo, bare)."""
+    origin = _init_repo(tmp_path / "A-origin")
+    _git(origin, "checkout", "-q", "-b", "release")
+    (origin / "R0.txt").write_text("r0\n", encoding="utf-8")
+    _git(origin, "add", "R0.txt")
+    _git(origin, "commit", "-q", "-m", "release r0")
+    _git(origin, "checkout", "-q", "main")
+    bare = wp.bare_repo_path("A")
+    bare.parent.mkdir(parents=True, exist_ok=True)
+    _git(tmp_path, "clone", "--bare", "-q", str(origin), str(bare))
+    _git(bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+    _git(bare, "fetch", "-q", "origin")
+    return origin, bare
+
+
+def _spy_runner(real_runner):
+    """실 runner 를 감싸 argv 호출을 그대로 기록하면서 실행은 real git 로 위임(값 단언용)."""
+    calls: list[list] = []
+
+    def _run(argv):
+        calls.append(list(argv))
+        return real_runner(argv)
+
+    return _run, calls
+
+
+@_git_required
+def test_real_git_rebase_onto_explicit_uses_given_ref_not_stale_origin(proj, tmp_path, monkeypatch):
+    """실 git — `--onto release`(로컬 앞섬) → `origin/release`(stale) 대체 없이 **준 ref 그대로** rebase.
+
+    origin/release 는 R0 에 동결(로컬만 R0→R1 로컬-전용 전진) — `--onto` 명시는 대체를 아예
+    시도하지 않으므로, rebase 호출 argv 가 정확히 `["rebase", "release"]`(값)이고
+    `["rebase", "origin/release"]` 는 한 번도 없어야 한다."""
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    monkeypatch.setattr(wp, "_default_session", lambda: "me")
+
+    origin, bare = _mk_release_family(tmp_path, wp)
+    local_tip = _push_local_only_commit(tmp_path, bare, "release", label="r1")
+    # 전제 — origin/release 는 R0 에 동결, 로컬 release 는 R1(local_tip)로 앞섬.
+    assert _git(bare, "rev-parse", "refs/remotes/origin/release").stdout.strip() != local_tip
+
+    lease = wp.create_slot("A", base="release", session="me", init_submodules=False)
+    slot_dir = wp.slot_path(lease.slot)
+    real_runner = wp._real_git_runner(slot_dir)
+    spy, calls = _spy_runner(real_runner)
+
+    [r] = wp.rebase([lease.slot], onto="release", git_runner=spy)
+    assert r.outcome == wp.REBASE_REBASED, r.reason
+    assert ["rebase", "release"] in calls, f"준 ref 그대로 rebase 안 됨: {calls!r}"
+    assert ["rebase", "origin/release"] not in calls, "stale origin/release 로 조용히 대체됐다"
+    assert _git(slot_dir, "rev-parse", "HEAD").stdout.strip() == local_tip, \
+        "슬롯 HEAD 가 로컬 release(R1)가 아니라 stale origin/release(R0)로 rebase 됐다"
+
+
+@_git_required
+def test_real_git_rebase_no_onto_prefers_local_when_origin_stale(proj, tmp_path, monkeypatch):
+    """실 git — `--onto` 생략(기록된 base=release)·origin stale → 대체 건너뛰고 로컬 tip 채택 + stderr 고지."""
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    monkeypatch.setattr(wp, "_default_session", lambda: "me")
+
+    origin, bare = _mk_release_family(tmp_path, wp)
+    local_tip = _push_local_only_commit(tmp_path, bare, "release", label="r1")
+
+    lease = wp.create_slot("A", base="release", session="me", init_submodules=False)
+    slot_dir = wp.slot_path(lease.slot)
+    real_runner = wp._real_git_runner(slot_dir)
+    spy, calls = _spy_runner(real_runner)
+
+    [r] = wp.rebase([lease.slot], git_runner=spy)
+    assert r.outcome == wp.REBASE_REBASED, r.reason
+    assert r.base == "release"
+    assert ["rebase", "release"] in calls, f"로컬 release 로 rebase 안 됨: {calls!r}"
+    assert ["rebase", "origin/release"] not in calls, "stale origin/release 로 조용히 대체됐다"
+    assert _git(slot_dir, "rev-parse", "HEAD").stdout.strip() == local_tip
+
+
+@_git_required
+def test_real_git_rebase_no_onto_prefers_local_when_origin_stale_stderr(proj, tmp_path, monkeypatch, capsys):
+    """위 케이스의 stderr 고지 — 대체를 건너뛴 사실이 조용히 넘어가지 않는다."""
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    monkeypatch.setattr(wp, "_default_session", lambda: "me")
+
+    origin, bare = _mk_release_family(tmp_path, wp)
+    _push_local_only_commit(tmp_path, bare, "release", label="r1")
+
+    lease = wp.create_slot("A", base="release", session="me", init_submodules=False)
+    slot_dir = wp.slot_path(lease.slot)
+    spy, _calls = _spy_runner(wp._real_git_runner(slot_dir))
+
+    capsys.readouterr()   # create_slot 의 콘솔 출력 소거(신호 격리).
+    [r] = wp.rebase([lease.slot], git_runner=spy)
+    assert r.outcome == wp.REBASE_REBASED, r.reason
+    err = capsys.readouterr().err
+    assert "release" in err and "origin/release" in err and lease.slot in err, \
+        f"origin 대체를 건너뛴 사실이 stderr 에 없다: {err!r}"
+
+
+@_git_required
+def test_real_git_rebase_no_onto_diverged_prefers_local_and_reports_two_counts(
+    proj, tmp_path, monkeypatch, capsys,
+):
+    """실 git — origin·로컬이 각자 다른 커밋으로 전진한 diverged 형상 → 로컬 tip 을 값으로 채택하고
+    stderr 에 좌(origin 전용)·우(로컬 전용) 두 수를 값으로 찍는다. `rev-list --left-right --count`
+    호출은 1회뿐이다(spy)."""
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    monkeypatch.setattr(wp, "_default_session", lambda: "me")
+
+    origin, bare = _mk_release_family(tmp_path, wp)
+    lease = wp.create_slot("A", base="release", session="me", init_submodules=False)
+    slot_dir = wp.slot_path(lease.slot)
+
+    # 로컬(=bare 의 refs/heads/release)을 2 커밋 전진 — origin 은 안 건드림.
+    _push_local_only_commit(tmp_path, bare, "release", label="r1")
+    local_tip = _push_local_only_commit(tmp_path, bare, "release", label="r2")
+
+    # origin(외부 fake remote)은 별도로 1 커밋 전진 — 로컬과 서로 다른 커밋(diverged).
+    _git(origin, "checkout", "-q", "release")
+    (origin / "R1_ORIGIN.txt").write_text("origin-only\n", encoding="utf-8")
+    _git(origin, "add", "R1_ORIGIN.txt")
+    _git(origin, "commit", "-q", "-m", "release advanced on origin only (diverged)")
+    origin_tip = _git(origin, "rev-parse", "release").stdout.strip()
+    assert origin_tip != local_tip   # 전제 — 양쪽이 서로 다른 커밋으로 각자 전진했다.
+
+    real_runner = wp._real_git_runner(slot_dir)
+    spy, calls = _spy_runner(real_runner)
+
+    capsys.readouterr()   # create_slot·픽스처 준비의 콘솔 출력 소거(신호 격리).
+    [r] = wp.rebase([lease.slot], git_runner=spy)
+    assert r.outcome == wp.REBASE_REBASED, r.reason
+    assert r.base == "release"
+    assert ["rebase", "release"] in calls, f"diverged 인데도 로컬 release 를 안 씀: {calls!r}"
+    assert ["rebase", "origin/release"] not in calls, "diverged 인데 origin/release 로 대체됐다"
+    assert _git(slot_dir, "rev-parse", "HEAD").stdout.strip() == local_tip
+
+    revlist_calls = [c for c in calls if c[:3] == ["rev-list", "--left-right", "--count"]]
+    assert len(revlist_calls) == 1, \
+        f"rev-list --left-right --count 호출이 1회가 아니다: {revlist_calls!r}"
+
+    err = capsys.readouterr().err
+    assert "origin 전용 1커밋" in err and "로컬 전용 2커밋" in err, \
+        f"stderr 에 diverged 좌·우 두 수(origin 1·로컬 2)가 값으로 없다: {err!r}"
+
+
+@_git_required
+def test_real_git_rebase_no_onto_prefers_origin_when_advanced(proj, tmp_path, monkeypatch):
+    """실 git — `--onto` 생략·origin 이 로컬보다 앞선(정상) 형상 → 종전대로 `origin/<base>` 채택(역방향)."""
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+    monkeypatch.setattr(wp, "_default_session", lambda: "me")
+
+    origin, bare = _mk_release_family(tmp_path, wp)
+    lease = wp.create_slot("A", base="release", session="me", init_submodules=False)
+    slot_dir = wp.slot_path(lease.slot)
+
+    # origin 을 로컬(bare refs/heads/release)보다 앞서게 — origin 은 non-bare 워킹 repo 라 직접 커밋.
+    _git(origin, "checkout", "-q", "release")
+    (origin / "R1_ORIGIN.txt").write_text("origin-only\n", encoding="utf-8")
+    _git(origin, "add", "R1_ORIGIN.txt")
+    _git(origin, "commit", "-q", "-m", "release advanced on origin only")
+    origin_tip = _git(origin, "rev-parse", "release").stdout.strip()
+    local_frozen = _git(bare, "rev-parse", "refs/heads/release").stdout.strip()
+    assert local_frozen != origin_tip, "전제 위반 — 로컬 release 가 이미 origin tip"
+
+    real_runner = wp._real_git_runner(slot_dir)
+    spy, calls = _spy_runner(real_runner)
+    [r] = wp.rebase([lease.slot], git_runner=spy)   # rebase 자체의 `fetch origin` 이 origin/release 를 갱신.
+    assert r.outcome == wp.REBASE_REBASED, r.reason
+    assert ["rebase", "origin/release"] in calls, f"origin 이 앞섰는데도 origin/release 를 안 씀: {calls!r}"
+    assert _git(slot_dir, "rev-parse", "HEAD").stdout.strip() == origin_tip
+
+
+# ── refresh 무인자 — rebase 와 같은 신선도 helper ────────────────────────────
+# `refresh`(onto 생략)는 신선도 검사 없이 항상 origin 을 선호해, 기록된 base(로컬 전용 tip)보다
+# **뒤로** readonly 슬롯을 되감을 수 있었다(경계 실측 재현: 현존 readonly 슬롯이 기록 base 보다
+# 뒤로 감기는 것이 재현됨). `rebase` 무인자와 같은 `_origin_or_local_base_ref` helper 를 쓰게 되어
+# 닫힌다 — 값(HEAD sha·장부 base.commit)으로 "뒤로 감기지 않음"을 확인한다.
+
+
+@_git_required
+def test_real_git_refresh_no_onto_does_not_rewind_readonly_slot_past_recorded_base(proj, tmp_path):
+    """실 git — readonly 슬롯의 기록 base 가 origin 보다 앞선(로컬 전용) 채로 무인자 refresh 해도
+    origin 의 stale tip 으로 뒤로 감기지 않는다."""
+    _init_repo(proj)
+    wp = _load_wp_bound(proj)
+
+    origin, bare = _mk_release_family(tmp_path, wp)
+    lease = wp.create_slot("A", base="release", readonly=True, init_submodules=False)
+    origin_r0 = _git(bare, "rev-parse", "refs/remotes/origin/release").stdout.strip()
+    recorded0 = next(l for l in wp.list_leases() if l.slot == lease.slot).git["base"]
+    assert recorded0 == {"branch": "release", "commit": origin_r0}   # 생성 직후 = origin R0(전제)
+
+    local_tip = _push_local_only_commit(tmp_path, bare, "release", label="r1")  # origin 은 안 건드림.
+
+    # 명시 onto(불변 경로) 로 로컬 tip 으로 먼저 이동 — "기록 base 가 이미 로컬 전용 tip" 형상을 만든다.
+    ref1, head1 = wp.refresh(lease.slot, onto="release")
+    assert (ref1, head1) == ("release", local_tip)
+    recorded1 = next(l for l in wp.list_leases() if l.slot == lease.slot).git["base"]
+    assert recorded1 == {"branch": "release", "commit": local_tip}
+
+    # 무인자 refresh — origin/release 는 여전히 R0(stale). 구 버그: 무조건 origin 선호라 R0 로
+    # **뒤로** 되감고 장부도 R0 로 퇴행했다. 수정 후: 로컬이 앞서 있으니 대체를 건너뛴다.
+    ref2, head2 = wp.refresh(lease.slot)
+    assert head2 == local_tip, \
+        f"기록 base(로컬 tip) 보다 뒤로 감겼다 — head={head2!r} vs local_tip={local_tip!r}"
+    recorded2 = next(l for l in wp.list_leases() if l.slot == lease.slot).git["base"]
+    assert recorded2 == {"branch": "release", "commit": local_tip}, \
+        f"장부 base 가 로컬 tip 보다 뒤로 퇴행했다: {recorded2!r}"
 
 
 # ── rebase — 일괄 독립성(한 충돌이 나머지를 안 막음) ─────────────────────────
