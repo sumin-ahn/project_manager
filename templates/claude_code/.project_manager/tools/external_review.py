@@ -1485,7 +1485,7 @@ _VERSIONED_BLOCK_HEADER = """\
 
 """
 _VERSIONED_BLOCK_RULES = """\
-- `id` 는 이 채널 전용 접두 `{prefix}-` 를 쓰고 **이번 라운드는 `{next_id}` 부터** 매긴다 —
+- `id` 는 이 채널 전용 접두 `{prefix}-` 를 쓰고 **이번 라운드는 {next_id} 부터** 매긴다 —
   티켓 전역 유일이라 본문에 이미 있는 ID 를 다시 쓰면 이 라운드는 회수되지 않는다.
 - `severity` 가 "반드시 고쳐야 하는가"의 단일 진실이다(가장 높은 값 `{top_severity}` 는 산문
   must-fix 절과 같은 건수여야 한다).
@@ -1501,6 +1501,8 @@ _VERSIONED_BLOCK_RULES = """\
 def _versioned_block_requirement(
     next_finding_id: str | None = None,
     confirmation_ids: Sequence[str] | None = None,
+    *,
+    next_id_label: str | None = None,
 ) -> str:
     """추가 리뷰어 채널의 구조화 블록 요구 — 골격·접두·ID 실값을 엔진에서 렌더한다.
 
@@ -1519,7 +1521,9 @@ def _versioned_block_requirement(
         + "\n"
         + _VERSIONED_BLOCK_RULES.format(
             prefix=delegate.PM_REVIEW_FINDING_ID_PREFIXES[role],
-            next_id=next_id,
+            # 표기는 호출부가 정할 수 있다 — 대상이 티켓 하나면 ID 실값 하나이고, 묶음이면
+            # 그 값이 티켓마다 다르다(그 실값은 각 라운드 파일 시드가 이미 들고 있다).
+            next_id=next_id_label or f"`{next_id}`",
             top_severity=delegate.PM_REVIEW_SEVERITIES[0],
         )
     )
@@ -5304,6 +5308,9 @@ def build_prompt(
     ticket_id: str | None = None,
     next_finding_id: str | None = None,
     confirmation_ids: Sequence[str] | None = None,
+    ticket_bodies: Sequence[tuple[str, str]] | None = None,
+    focus: str | None = None,
+    versioned_block: bool = True,
 ) -> str:
     """맥락 헤더 + 티켓 본문 + diff 를 결합해 표준 리뷰 프롬프트를 생성한다.
 
@@ -5312,12 +5319,19 @@ def build_prompt(
     `confirm_fix_evidence`(라운드 장부가 만든 직전 must-fix 근거 블록)가 있으면 헌장 **바로
     뒤**에 싣는다 — 임무 선언과 그 임무의 대상이 붙어 있어야 fresh 세션이 무엇을 확인하는지 안다.
     `next_finding_id` 는 회수 대상 티켓에서 읽은 이 채널의 다음 ID 실값이고,
-    `confirmation_ids` 는 그 티켓에서 확인할 수 있는 ID 실값 목록이다(빈 목록 = 확인 대상 없음)."""
+    `confirmation_ids` 는 그 티켓에서 확인할 수 있는 ID 실값 목록이다(빈 목록 = 확인 대상 없음).
+
+    검토 대상은 티켓 하나(`ticket_body`)이거나 **묶음의 티켓 N**(`ticket_bodies`)이다 — 두
+    채널이 이 한 조립기를 쓰고, 본문 절은 같은 표제로 티켓 수만큼 반복된다(크기 1 도 같은 경로).
+    `focus` 는 PM 이 준 검토 중점 한 문단이다(내용은 PM 소유 · 엔진은 자리만 만든다).
+    `versioned_block` 은 구조화 블록 요구를 이 프롬프트가 소유하는가다 — 산출이 라운드 파일이고
+    그 시드가 이미 채널별 골격·다음 ID 를 들고 있는 경로에서는 끈다(요구가 두 벌이면 갈린다)."""
     parts: list[str] = [
         _load_review_context().rstrip() + "\n\n",
         _OUTPUT_FORMAT_BLOCK,
-        _versioned_block_requirement(next_finding_id, confirmation_ids),
     ]
+    if versioned_block:
+        parts.append(_versioned_block_requirement(next_finding_id, confirmation_ids))
     if confirm_fix:
         parts.append(_CONFIRM_FIX_CHARTER)
         if confirm_fix_evidence:
@@ -5326,14 +5340,19 @@ def build_prompt(
         parts.append(f"관련 ADR: {', '.join(adr_refs)}\n\n")
     if gate:
         parts.append(f"게이트 ticket: {gate}\n\n")
-    if ticket_body is not None:
-        ticket_label_value = ticket_id or gate
-        ticket_label = f" ({ticket_label_value})" if ticket_label_value else ""
+    bodies: list[tuple[str | None, str]] = list(ticket_bodies or ())
+    if not bodies and ticket_body is not None:
+        bodies = [(ticket_id or gate, ticket_body)]
+    for label_value, body in bodies:
+        ticket_label = f" ({label_value})" if label_value else ""
         parts.append(f"### 게이트 티켓 본문{ticket_label}\n")
-        parts.append(ticket_body)
-        if not ticket_body.endswith("\n"):
+        parts.append(body)
+        if not body.endswith("\n"):
             parts.append("\n")
         parts.append("\n")
+    if focus and focus.strip():
+        parts.append("### PM 검토 중점\n")
+        parts.append(focus.strip() + "\n\n")
     parts.append("### 리뷰 대상 diff\n")
     if diff.strip():
         parts.append("```diff\n")

@@ -1727,6 +1727,103 @@ _INTERNAL_ROUND_LIMIT_GUIDANCE = (
 )
 
 
+class ClusterRoundBudgetExceeded(DelegateError):
+    """묶음 고정 예산 밖 라운드 요청 — 초과도 순서 밖도 출구는 재설계 하나다(rc=1)."""
+
+
+# ── 묶음 고정 예산 ────────────────────────────────────────────────────────
+# 묶음 하나가 도는 라운드는 정해져 있다: 설계(architect) → 구현(developer · 티켓마다 1) →
+# 리뷰(code-reviewer) → fix(developer). 장부 `budget` 의 4키가 그 수열의 **길이**를 값으로
+# 말하고, 아래 표가 키↔역할 대응과 순서를 소유한다. 초과(라운드를 더 요구)도 순서 밖(설계 없이
+# 리뷰·fix 뒤 구현)도 같은 처방 하나로 끝난다 — 묶음 재설계다. 라운드를 한 번 더 여는 플래그는
+# 없다(외부 채널 라운드 상한과 같은 규율).
+#
+# 역할별 per-ticket 상한(`DEFAULT_INTERNAL_ROUND_LIMITS`)과 축이 다르다: 그쪽은 한 역할이 몇
+# 번까지인가이고, 이쪽은 **묶음의 라운드 수열 자체**다. 예산이 선언된 묶음에서는 이 판정이 항상
+# 먼저 발동하므로, 두 축이 같은 요청을 두 사유로 거부하는 일이 없다.
+CLUSTER_BUDGET_ROLE_SEQUENCE: tuple[tuple[str, str], ...] = (
+    ("architect", "architect"),
+    ("developer", "developer_per_ticket"),
+    (INTERNAL_REVIEW_ROLE, "code-reviewer"),
+    ("developer", "fix"),
+)
+_CLUSTER_BUDGET_OVER = (
+    "묶음 라운드 예산 소진 — {cluster} · {ticket} role={role} · 이번 주기 라운드 "
+    "{count}건(예산 {limit}건)\n"
+    "  이번 주기 수열: {sequence}\n"
+    "  · **재설계가 유일한 출구입니다** — 라운드를 더 얹는 플래그는 없습니다.\n"
+    "  · {prescription}"
+)
+_CLUSTER_BUDGET_ORDER = (
+    "묶음 라운드 순서 밖 역할 — {cluster} · {ticket} 다음 라운드는 {expected} 인데 "
+    "{role} 을 요청했습니다\n"
+    "  이번 주기 수열: {sequence}\n"
+    "  · 순번이 곧 단계입니다 — 단계를 건너뛰거나 되돌리려면 재설계로 주기를 다시 여세요.\n"
+    "  · {prescription}"
+)
+
+
+def cluster_replan_prescription(cluster: str) -> str:
+    """예산 거부의 유일한 처방 문구 — 두 거부가 같은 한 자리에서 커맨드를 낸다."""
+    return (
+        f"재설계: python3 .project_manager/tools/board.py cluster replan {cluster} "
+        "--reason <사유>"
+    )
+
+
+def cluster_round_sequence(budget: object, *, defaults: Mapping[str, int]) -> tuple[str, ...]:
+    """예산 4키를 라운드 역할 **수열**로 편다 — 장부 값이 곧 순서다.
+
+    키가 없거나 정수가 아니면 그 키는 0 이 아니라 **엔진 기본값**으로 읽는다(손상된 장부가
+    단계를 조용히 지우지 않는다). 음수는 0 으로 접는다 — 그 단계를 건너뛰겠다는 선언이다.
+
+    값이 전부 0/음수면 빈 tuple 이다. 그건 "선언 없음"이 아니라 **이 주기에 허용된 라운드가
+    없다**는 선언이라, 판정측은 이 값을 truthiness 가 아니라 `is None` 으로 갈라야 한다.
+    """
+    if not isinstance(budget, Mapping):
+        budget = {}
+    sequence: list[str] = []
+    for role, key in CLUSTER_BUDGET_ROLE_SEQUENCE:
+        value = budget.get(key)
+        if not isinstance(value, int) or isinstance(value, bool):
+            value = defaults.get(key, 1)
+        sequence.extend([role] * max(0, int(value)))
+    return tuple(sequence)
+
+
+def _cluster_cycle_roles(existing: Sequence, baseline: int) -> tuple[str, ...]:
+    """이번 주기(마지막 재설계 뒤)에 예약된 라운드의 역할 수열 — 순번 오름차순.
+
+    산출 유무는 보지 않는다(예약 자체가 한 단계 소비다 · per-ticket 상한과 같은 규칙).
+    """
+    return tuple(
+        item.role for item in sorted(existing, key=lambda entry: entry.ordinal)
+        if item.ordinal > baseline
+    )
+
+
+def _cluster_budget_refusal(
+    *, cluster: str, ticket: str, role: str, existing: Sequence,
+    sequence: Sequence[str], baseline: int,
+) -> str | None:
+    """이 티켓에 그 역할 라운드를 더 예약할 수 있는가 — 거부 사유 문자열 또는 None."""
+    cycle = _cluster_cycle_roles(existing, baseline)
+    rendered = " → ".join(cycle) if cycle else "(없음)"
+    prescription = cluster_replan_prescription(cluster)
+    if len(cycle) >= len(sequence):
+        return _CLUSTER_BUDGET_OVER.format(
+            cluster=cluster, ticket=ticket, role=role, count=len(cycle),
+            limit=len(sequence), sequence=rendered, prescription=prescription,
+        )
+    expected = sequence[len(cycle)]
+    if role != expected:
+        return _CLUSTER_BUDGET_ORDER.format(
+            cluster=cluster, ticket=ticket, role=role, expected=expected,
+            sequence=rendered, prescription=prescription,
+        )
+    return None
+
+
 def prepare_ticket_copy(
     *, ticket: str, role: str, cwd: Path, pm_home: Path, owner_pid: int | None = None,
     confirm_fix: bool = False,
@@ -1757,6 +1854,7 @@ def prepare_ticket_copy(
 def prepare_cluster_copy(
     *, cluster: str, tickets: Sequence[str] | None = None, role: str, cwd: Path,
     pm_home: Path, owner_pid: int | None = None, confirm_fix: bool = False,
+    enforce_budget: bool = False,
 ) -> ClusterCopyPlan:
     """board 에 티켓별 라운드 순번을 시드로 예약하고, 같은 파일들을 run-dir 하나에 깐다.
 
@@ -1791,6 +1889,12 @@ def prepare_cluster_copy(
     1회만 허용" 규약을 이 예약 상한이 앞서 막지 않도록, 그 한 라운드에 한해 상한을 1 만큼 올려
     확인한다. 실제 1회 제한은 여전히 내부 장부(`entry["confirm_fix"] >= 1`)가 소유하며, 여기서는
     그 승인이 도달할 길만 연다.
+
+    `enforce_budget` 은 **묶음 준비 표면**(`ticket prepare --cluster`·묶음 리뷰 위임)이 켠다 —
+    장부가 예산을 선언한 묶음이면 역할 수열 판정을 per-ticket 상한보다 **먼저** 낸다. 이 축은
+    `confirm_fix` 예외를 상속하지 않는다: 확인 라운드도 라운드라 예산 안에서만 산다(예산 밖
+    송신을 여는 인자가 없다). 판정은 사전판정과 board_lock 재확인 **두 지점**에 함께 건다 —
+    한쪽에만 걸면 동시 준비 둘이 같은 예산을 함께 통과한다(per-ticket 상한과 같은 창).
     """
     if role not in TICKET_COPY_PREPARE_ROLES:
         raise DelegateError(f"티켓 라운드 준비 미지원 역할: {role}")
@@ -1833,6 +1937,32 @@ def prepare_cluster_copy(
         ticket: rounds_module.load_rounds(tickets_dir, ticket, ticket_text=text)
         for ticket, text in specs.items()
     }
+    # 묶음 예산 입력 — 장부가 선언한 수열과 마지막 재설계 기준선. 장부가 없는 크기 1 해석
+    # (구세대 티켓)에는 선언 자체가 없어 이 축이 발동하지 않는다(예산은 선언된 묶음의 성질이다).
+    def _budget_inputs() -> tuple[tuple[str, ...] | None, int]:
+        """장부에서 이번 판정의 수열·기준선을 **읽는 자리에서** 해소한다(캐시 없음).
+
+        사전판정과 board_lock 재확인이 각자 읽는다 — 그 사이에 재설계가 들어오면 재확인이
+        새 기준선을 본다. 장부 판독은 잠금 없는 파일 읽기라 board_lock 안에서 불러도 재진입이
+        아니다.
+
+        반환의 `None` 은 **선언 없음**(예산 축이 없는 요청·장부 없는 옛 티켓)이고, 빈 tuple 은
+        **선언된 빈 수열**(모든 값이 0 = 이 주기에 허용된 라운드가 없다)이다. 둘을 truthiness
+        하나로 합치면 0 을 선언한 장부가 "선언 없음"으로 읽혀 무제한이 된다.
+        """
+        if not enforce_budget:
+            return None, 0
+        ledger = board.load_cluster(cluster)
+        if ledger is None:
+            return None, 0
+        return (
+            cluster_round_sequence(
+                ledger.get("budget"), defaults=board.CLUSTER_BUDGET_DEFAULT,
+            ),
+            board.cluster_replan_baseline(ledger),
+        )
+
+    budget_sequence, replan_baseline = _budget_inputs()
     conf = (
         _load_external_review()._local_config_for_repo(pm_home)
         if role in DEFAULT_INTERNAL_ROUND_LIMITS else None
@@ -1845,6 +1975,20 @@ def prepare_cluster_copy(
         # 그 자리를 대신 세지 않고 통과 창만 하나 더 연다.
         if confirm_fix:
             limit += 1
+
+    # ── (1.4) 묶음 예산 사전판정 — per-ticket 상한보다 앞이다(선언된 묶음에서는 이 축이
+    # 항상 먼저 발동해야 같은 요청이 두 사유로 갈리지 않는다). 여기도 신뢰 뿌리가 아니다.
+    # 판정 술어는 **선언 여부**(`is not None`)다 — 빈 수열은 판정을 건너뛰는 값이 아니라
+    # 모든 요청을 거부하는 값이다.
+    if budget_sequence is not None:
+        for ticket in members:
+            refusal = _cluster_budget_refusal(
+                cluster=cluster, ticket=ticket, role=role,
+                existing=existing_rounds[ticket], sequence=budget_sequence,
+                baseline=replan_baseline,
+            )
+            if refusal is not None:
+                raise ClusterRoundBudgetExceeded(refusal)
 
     # ── (1.5) 내부 라운드 상한 — 빠른 실패 사전판정. 신뢰 뿌리가 아니다: 최종 판정은
     # 아래 (4) 의 board_lock 임계구역이 최신 스냅샷으로 다시 낸다. 이 사전판정은 상한을 넘은
@@ -1918,6 +2062,18 @@ def prepare_cluster_copy(
             # 통과시키고 그다음에야 첫 예약을 쓴다(부분 예약 금지).
             board_paths: dict[str, Path] = {}
             with board.board_lock():
+                # 재확인은 최신 스냅샷으로 낸다 — 사전판정과 이 지점 사이에 재설계가 들어오면
+                # 그 리셋을 여기서 본다(스냅샷 1회 · 멤버 전부가 같은 장부 판독을 공유한다).
+                # 선언이 있었던 요청은 **항상** 다시 읽는다(빈 수열도 선언이다). 재판독이
+                # 선언 없음으로 바뀌는 유일한 경우는 장부가 그사이 사라진 것이라, 그때는
+                # 판정을 여는 게 아니라 거부한다 — 장부 삭제가 예산 우회 수단이 되지 않는다.
+                if budget_sequence is not None:
+                    budget_sequence, replan_baseline = _budget_inputs()
+                    if budget_sequence is None:
+                        raise DelegateError(
+                            f"묶음 장부가 준비 도중 사라졌습니다: {cluster} — 예산 판정 "
+                            "입력이 없어 예약하지 않습니다"
+                        )
                 for ticket in members:
                     refreshed = board.find_ticket_exact(ticket)
                     if refreshed is None:
@@ -1930,10 +2086,19 @@ def prepare_cluster_copy(
                             "티켓 라운드 준비는 open/claimed 또는 draft×architect만 허용: "
                             f"{ticket} role={role} currently in {fresh_status}/"
                         )
-                    if role in DEFAULT_INTERNAL_ROUND_LIMITS:
+                    if budget_sequence is not None or role in DEFAULT_INTERNAL_ROUND_LIMITS:
                         fresh_existing = rounds_module.load_rounds(
                             tickets_dir, ticket, ticket_text=specs[ticket],
                         )
+                    if budget_sequence is not None:
+                        refusal = _cluster_budget_refusal(
+                            cluster=cluster, ticket=ticket, role=role,
+                            existing=fresh_existing, sequence=budget_sequence,
+                            baseline=replan_baseline,
+                        )
+                        if refusal is not None:
+                            raise ClusterRoundBudgetExceeded(refusal)
+                    if role in DEFAULT_INTERNAL_ROUND_LIMITS:
                         count = _internal_round_count(fresh_existing, role)
                         if count >= limit:
                             raise InternalRoundLimitExceeded(
@@ -2984,12 +3149,14 @@ def review_harvest_problem(
 
 def _with_ticket_copy_preamble(
     prompt: str, ticket_copy: TicketCopyPlan | None,
+    cluster_plan: "ClusterCopyPlan | None" = None,
 ) -> str:
-    """full/resume delta/fallback/fresh 모든 wire가 이번 run의 같은 사본 지시를 받는 seam."""
-    if ticket_copy is None:
-        return prompt
-    note = _ticket_copy_preamble(ticket_copy)
-    if note in prompt:
+    """full/resume delta/fallback/fresh 모든 wire가 이번 run의 같은 사본 지시를 받는 seam.
+
+    자리가 N 이면 N 자리 안내가 붙는다 — 붙이는 쪽과 준비한 쪽이 같은 판정을 쓴다.
+    """
+    note = _round_copy_preamble(ticket_copy, cluster_plan)
+    if note is None or note in prompt:
         return prompt
     return note + "\n\n" + prompt
 
@@ -3002,6 +3169,15 @@ def _load_external_review():
     path = Path(__file__).resolve().parent / "external_review.py"
     return _load_module_from_path(
         path, "external_review.py", verifier=_verify_engine_rev,
+    )
+
+
+def _load_gate_snapshot():
+    """엔진 gate_snapshot 을 importlib 로 직접 로드 — 격리 스냅샷 생성·정리를 재사용한다
+    (격리 경로 사본 0 · 형제 `.project_manager/tools/`)."""
+    path = Path(__file__).resolve().parent / "gate_snapshot.py"
+    return _load_module_from_path(
+        path, "gate_snapshot.py", verifier=_verify_engine_rev, cache=True,
     )
 
 
@@ -3990,6 +4166,29 @@ def _pm_review_parse_machine_confirmation_row(
     return PMReviewMachineConfirmation(finding_id, status, command, observed, round_ordinal)
 
 
+def _pm_review_design_axis(finding: PMReviewFinding) -> bool:
+    """설계 축 finding 인가 — 분류 또는 dev 선언 어느 쪽이든 설계 변경이면 참.
+
+    이 축은 기계 확인 대상이 아니다. 종결 수단은 **묶음 재설계**이고 reviewer 재송신이 아니다 —
+    파서(기계 확인 거부)와 확인 대상 분류기(`verify-template`)가 같은 이 술어를 본다.
+    """
+    return finding.classification == "design-proposal" or finding.design_change
+
+
+def _pm_review_design_axis_replanned(
+    finding: PMReviewFinding, replan_ordinal: int,
+) -> bool:
+    """그 설계 축 finding 이 재설계로 종결됐는가.
+
+    기준은 **관측 가능한 기준선 하나**다: 재설계가 그 finding 을 선언한 리뷰 라운드 순번 이후에
+    기록됐는가. 그 전의 재설계는 이 지적을 받기 전 사건이라 종결 근거가 아니다.
+    """
+    return (
+        _pm_review_design_axis(finding)
+        and replan_ordinal >= finding.reviewer_ordinal
+    )
+
+
 def _pm_review_confirmation_floor(
     finding: PMReviewFinding,
     reviewer_confirmations: Sequence,
@@ -4866,11 +5065,11 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> PMReviewDelta:
                     "참조하지 않습니다",
                 )
             source_finding = findings[row.id]
-            if source_finding.classification == "design-proposal" or source_finding.design_change:
+            if _pm_review_design_axis(source_finding):
                 raise PMReviewError(
                     "malformed",
                     f"{PM_REVIEW_CONFIRMATION_BLOCK} id={row.id}는 설계 축 finding이라 기계 "
-                    "확인 대상이 아닙니다(reviewer 확인 전용 · 불변식 10)",
+                    "확인 대상이 아닙니다(종결 수단은 묶음 재설계 · reviewer 재송신 아님)",
                 )
             confirmation_floor = _pm_review_confirmation_floor(
                 source_finding,
@@ -5196,11 +5395,11 @@ def pm_review_verify_template(
             # 않았다" 이고, PM 이 읽어야 하는 것도 그쪽이다(확인 채널이 아니라 상태).
             gap.append((finding.id, source_round, row.expected))
             continue
-        if finding.classification == "design-proposal" or finding.design_change:
+        if _pm_review_design_axis(finding):
             reviewer_required.append((
                 finding.id, source_round,
                 "설계 축 finding(class=design-proposal 또는 design_change=true) — "
-                "reviewer 확인 전용(불변식 10)",
+                "묶음 재설계로 종결합니다(reviewer 재송신 경로 없음)",
             ))
             continue
         if not row.machine_verifiable:
@@ -5265,6 +5464,147 @@ def render_pm_review_verify_template(template: PMReviewVerifyTemplate) -> str:
     return "\n".join(blocks)
 
 
+# ── 확인 커맨드 실행 — 엔진이 돌리고 엔진이 기입한다 ────────────────
+# 확인 골격(`render_pm_review_verify_template`)이 내던 자리표시자 두 칸(`status`·`observed`)을
+# 엔진이 실행 결과로 채운다. 사람이 커맨드를 옮겨 치고 관측값을 옮겨 적는 왕복이 사라지므로
+# 옮겨 적기 drift 도 사라진다. 판정은 여전히 파서가 소유한다 — 여기서는 `expected ⊂ observed`
+# 와 rc 를 그대로 재현할 뿐 완화하지 않는다(비-0 rc 는 통과로 접지 않는다).
+#
+# 안전 경계는 신설하지 않는다: 커맨드는 이미 "금지 토큰 없는 단일 명령"(불변식 12)이라
+# `shell=False` + 인자 분해로 그대로 실행된다. 셸 해석을 열면 그 경계가 무의미해진다.
+PM_REVIEW_CONFIRMATION_COMMAND_TIMEOUT_SEC = 1800
+# 관측값 발췌 상한 — 명세에 그대로 실리는 값이라 회귀 전문을 담지 않는다. 기대값이 실제로
+# 관측됐다면 그 자리를 중심으로 자르고(판정과 기입이 갈리지 않게), 아니면 꼬리를 남긴다
+# (실패 진단은 대개 끝에 있다).
+PM_REVIEW_CONFIRMATION_OBSERVED_LIMIT = 2000
+_PM_REVIEW_OBSERVED_ELLIPSIS = "…"
+# 명세 PM 영역에 기입하는 절 제목 — PM 관행이던 문자열을 **엔진 소유 상수**로 승격한다.
+# 엔진이 그 절을 쓰기 시작하는 순간 제목은 관행이 아니라 기계 표면이다.
+PM_REVIEW_CONFIRMATION_SECTION = "## PM 기계 확인"
+
+
+def _pm_review_observed_excerpt(text: str, expected: str) -> str:
+    """관측값 발췌 — 기대값이 있으면 그 자리를 포함하도록 자른다.
+
+    판정(전문 기준)과 기입(발췌)이 갈리면 엔진이 resolved 로 적은 행을 파서가 malformed 로
+    거부한다(왕복 정합 위반). 그래서 자르는 자리는 기대값 위치가 정한다.
+    """
+    limit = PM_REVIEW_CONFIRMATION_OBSERVED_LIMIT
+    if len(text) <= limit:
+        return text
+    index = text.find(expected) if expected else -1
+    if index < 0:
+        return _PM_REVIEW_OBSERVED_ELLIPSIS + text[-limit:]
+    end = min(len(text), max(index + len(expected), index + limit))
+    start = max(0, end - limit)
+    prefix = _PM_REVIEW_OBSERVED_ELLIPSIS if start > 0 else ""
+    suffix = _PM_REVIEW_OBSERVED_ELLIPSIS if end < len(text) else ""
+    return prefix + text[start:end] + suffix
+
+
+def run_pm_review_confirmation_command(
+    command: str, *, cwd: Path, expected: str,
+    timeout: int = PM_REVIEW_CONFIRMATION_COMMAND_TIMEOUT_SEC,
+    run_fn: Callable | None = None,
+) -> tuple[str, str]:
+    """확인 커맨드 1회 실행 → `(status, observed)`.
+
+    실행 실패(스폰 불가·타임아웃·비-0 rc)도 관측값에 실어 `unresolved` 로 남긴다 — 실행이
+    안 됐다는 사실을 통과로 접으면 기계 확인이 확인이 아니게 된다.
+    """
+    _pm_review_assert_verify_command_shape(command, "confirmation.command")
+    argv = shlex.split(command)
+    if not argv:
+        raise PMReviewError("malformed", f"확인 커맨드가 비어 있습니다: {command!r}")
+    runner = run_fn or subprocess.run
+    try:
+        result = runner(
+            argv, cwd=str(cwd), capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=timeout, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return "unresolved", f"rc=timeout({timeout}s)"
+    except OSError as exc:
+        return "unresolved", f"rc=실행 실패({type(exc).__name__}: {exc})"
+    returncode = int(getattr(result, "returncode", 1))
+    output = (getattr(result, "stdout", "") or "") + (getattr(result, "stderr", "") or "")
+    status = "resolved" if returncode == 0 and expected and expected in output else "unresolved"
+    return status, f"rc={returncode}\n" + _pm_review_observed_excerpt(output, expected)
+
+
+def run_pm_review_confirmations(
+    template: PMReviewVerifyTemplate, *, cwd: Path,
+    timeout: int = PM_REVIEW_CONFIRMATION_COMMAND_TIMEOUT_SEC,
+    run_fn: Callable | None = None,
+) -> tuple[tuple[int, PMReviewMachineConfirmation], ...]:
+    """확인 가능한 행 전부를 실행해 확인 행으로 만든다(source round 오름차순 보존)."""
+    rows: list[tuple[int, PMReviewMachineConfirmation]] = []
+    for source_round, verify_row in template.machine_rows:
+        status, observed = run_pm_review_confirmation_command(
+            verify_row.command, cwd=cwd, expected=verify_row.expected,
+            timeout=timeout, run_fn=run_fn,
+        )
+        rows.append((source_round, PMReviewMachineConfirmation(
+            verify_row.id, status, verify_row.command, observed, source_round,
+        )))
+    return tuple(rows)
+
+
+def render_pm_review_confirmation_section(
+    rows: Sequence[tuple[int, PMReviewMachineConfirmation]],
+) -> str:
+    """실행 결과를 명세 PM 영역에 붙일 절로 렌더한다 — 자리표시자 0.
+
+    블록을 source round 별로 나누는 규칙·오름차순은 확인 골격(`render_pm_review_verify_template`)
+    과 같다 — 파서의 전역 단조 증가 규칙과 같은 순서라 낸 순서대로 붙으면 그대로 수용된다.
+    """
+    if not rows:
+        return ""
+    grouped: dict[int, list[PMReviewMachineConfirmation]] = {}
+    for source_round, row in rows:
+        grouped.setdefault(source_round, []).append(row)
+    sections: list[str] = []
+    for source_round in sorted(grouped):
+        payload = _pm_review_seed_object(PM_REVIEW_MACHINE_CONFIRMATION_PAYLOAD_KEYS, {
+            "version": PM_REVIEW_MACHINE_CONFIRMATION_VERSION,
+            "round": source_round,
+            "confirmations": [
+                _pm_review_seed_object(PM_REVIEW_MACHINE_CONFIRMATION_ROW_KEYS, {
+                    "id": row.id,
+                    "status": row.status,
+                    "command": row.command,
+                    "observed": row.observed,
+                })
+                for row in grouped[source_round]
+            ],
+        })
+        sections.append(
+            f"{PM_REVIEW_CONFIRMATION_SECTION} (developer round {source_round})\n\n"
+            + _pm_review_fenced_json(PM_REVIEW_CONFIRMATION_BLOCK, payload)
+        )
+    return "\n".join(sections)
+
+
+def append_pm_review_confirmation(
+    pm_home: Path, ticket: str, section: str,
+) -> Path:
+    """확인 절을 티켓 명세 **PM 영역**(라운드 파일 밖) 끝에 붙이고 board-git 에 싣는다.
+
+    명세 쓰기 seam 은 새로 만들지 않는다 — board 의 기존 조합(`load_ticket` →
+    `dump_ticket_atomic` → `_rounds_mutation_sync_paths`)을 그대로 쓴다.
+    """
+    board = _load_board_for_repo(Path(pm_home))
+    with board.board_lock():
+        found = board.find_ticket_exact(ticket)
+        if found is None:
+            raise DelegateError(f"ticket not found: {ticket}")
+        _status, path = found
+        fm, body = board.load_ticket(path)
+        board.dump_ticket_atomic(path, fm, body.rstrip("\n") + "\n\n" + section)
+    board._rounds_mutation_sync_paths(f"pm-review confirmation {ticket}", (path,))
+    return path
+
+
 def _pm_review_machine_confirmation_count(
     ticket_text: str, *, reviewer_role: str,
 ) -> int:
@@ -5297,6 +5637,7 @@ def pm_verified_evidence_problem(
     *,
     reviewer_role: str,
     surface_floor: int | None,
+    design_replan_ordinal: int = 0,
 ) -> str | None:
     """`pm-verified` 완료 처분의 발동 조건(증거) — 선언·완료 재검증 공용 · **채널 스코프 필수**.
 
@@ -5312,7 +5653,14 @@ def pm_verified_evidence_problem(
     두 인자 모두 **키워드 필수**다 — 생략은 조용한 전역 판정이 아니라 `TypeError` 이고, review
     채널이 아닌 값(`None` 포함)은 `PMReviewError` 다(fail-loud). 생산 호출부는 내부 완료 게이트
     (`INTERNAL_REVIEW_ROLE`)와 추가 리뷰어 release 게이트(`EXTERNAL_REVIEW_ROLE`) 둘뿐이고,
-    `surface_floor` 가 정수가 아니면(장부 잔여 '미상') 차단한다(fail-closed)."""
+    `surface_floor` 가 정수가 아니면(장부 잔여 '미상') 차단한다(fail-closed).
+
+    `design_replan_ordinal` 은 이 티켓이 속한 묶음의 **마지막 재설계 기준선**이다. 설계 축
+    accepted 는 기계 확인으로 닫히지 않으므로(확인 대상이 아니다) 그 잔여를 여는 유일한 사실이
+    재설계 기록이고, 그 기록이 그 finding 선언 라운드 뒤일 때만 종결로 읽는다. 기본값 0 은
+    "재설계 없음" 이라 종전 판정과 같다 — 선언 시점과 완료 재검증이 **같은 장부 사실**을 넘겨
+    같은 답을 내야 한다(한쪽만 넘기면 선언은 되고 완료가 막힌다).
+    """
     if reviewer_role not in REVIEW_ROLES:
         raise PMReviewError(
             "malformed",
@@ -5322,13 +5670,32 @@ def pm_verified_evidence_problem(
         delta = parse_pm_review_delta(ticket_text, rounds)
     except PMReviewError as exc:
         return f"delta 파싱 실패[{exc.code}]: {exc}"
+    # 재설계로 닫힌 설계 축은 잔여도 아니고 **확인 대상도 아니다** — 아래 "accepted 가
+    # 있었으면 기계 확인 1건" 요구에서도 빼야 한다(기계 확인이 불가능한 항목을 근거로
+    # 요구하면 재설계를 마친 티켓이 영구히 막힌다).
+    replan_closed = {
+        finding.id for finding, _disposition in delta.accepted
+        if finding.reviewer_role == reviewer_role
+        and _pm_review_design_axis_replanned(finding, design_replan_ordinal)
+    }
     channel_accepted = [
         finding for finding, _disposition in delta.accepted
-        if finding.reviewer_role == reviewer_role
+        if finding.reviewer_role == reviewer_role and finding.id not in replan_closed
     ]
     if channel_accepted:
         remaining = ", ".join(finding.id for finding in channel_accepted)
-        return f"{reviewer_role} 채널 PM 판정 accepted 잔여가 있습니다: {remaining}"
+        design_axis = [
+            finding.id for finding in channel_accepted
+            if _pm_review_design_axis(finding)
+        ]
+        note = (
+            f" · 설계 축 {', '.join(design_axis)} 는 기계 확인 대상이 아닙니다 — "
+            "묶음 재설계 기록이 있어야 종결합니다"
+            if design_axis else ""
+        )
+        return (
+            f"{reviewer_role} 채널 PM 판정 accepted 잔여가 있습니다: {remaining}{note}"
+        )
     declared = collect_review_finding_declarations(ticket_text, reviewer_role, rounds)
     if not isinstance(surface_floor, int) or isinstance(surface_floor, bool):
         return f"{reviewer_role} 채널 표면 잔여 하한을 확인할 수 없어 차단합니다(미상)"
@@ -5344,7 +5711,7 @@ def pm_verified_evidence_problem(
         rejected |= _pm_review_rejected_finding_ids(
             ticket_text, reviewer_role=reviewer_role, reviewer_ordinal=item.ordinal,
         )
-    had_accepted = bool(declared - rejected)
+    had_accepted = bool(declared - rejected - replan_closed)
     if had_accepted and _pm_review_machine_confirmation_count(
         ticket_text, reviewer_role=reviewer_role,
     ) < 1:
@@ -6836,6 +7203,9 @@ def _declare_internal_review_resolution(
                 spec_text, ticket_rounds,
                 reviewer_role=INTERNAL_REVIEW_ROLE,
                 surface_floor=residual,
+                # 설계 축 accepted 의 종결 근거는 묶음 재설계 기록이다 — 선언(여기)과 완료
+                # 재검증(board)이 같은 장부 사실을 같은 판독으로 본다.
+                design_replan_ordinal=board.ticket_design_replan_ordinal(gate, spec_text),
             )
             if problem is not None:
                 raise DelegateError(f"pm-verified 처분을 사용할 수 없습니다: {problem}")
@@ -10966,6 +11336,11 @@ def _preflight_codex_read_exec_root(cwd: Path, *, role: str) -> None:
         )
     if role not in _READ_ROLE_STAGED_REQUIRED:
         return
+    if _load_gate_snapshot().is_snapshot(resolved_cwd):
+        # 검토 입력이 **확정된 격리 스냅샷**이면 staged 요구가 성립하지 않는다 — 그 트리는
+        # 생성기가 이미 대조를 마친 리뷰 대상이고, 묶음 리뷰의 입력은 미커밋 작업물이 아니라
+        # 브랜치 diff 다(스냅샷 마커가 그 사실의 기계 증거다).
+        return
     staged = subprocess.run(
         ["git", "-C", str(resolved_cwd), "diff", "--cached", "--name-only"],
         capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
@@ -12235,6 +12610,24 @@ def _repo_root_for_cwd(cwd: Path, er=None) -> Path:
     return Path(external_review.repo_root_from_cwd(resolved) or resolved).resolve()
 
 
+# 묶음 조회의 티켓 구분선 — 세 렌더가 같은 한 줄로 이어 붙는다(PM 이 어느 티켓의 출력인지
+# 산문 없이 안다). 크기 1 묶음도 같은 줄을 낸다(특례 없음).
+_REVIEW_CLUSTER_TICKET_HEADER = "# {ticket}"
+
+
+def _add_review_target_args(parser: argparse.ArgumentParser) -> None:
+    """조회 대상 = 티켓 하나 또는 묶음 하나 — 세 서브커맨드가 같은 인자 쌍을 쓴다.
+
+    `--cluster` 는 새 파서가 아니라 **같은 렌더를 티켓마다 반복**하는 입력이다(판정식 사본 0).
+    """
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--ticket", metavar="T-NNNN")
+    target.add_argument(
+        "--cluster", metavar="C-<이름>",
+        help="묶음 멤버 전부의 출력을 티켓별로 이어 낸다(내부는 티켓 반복)",
+    )
+
+
 def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
     """flat delegate parser 밖 special command의 실제 argparse 표면을 introspection에 공개한다.
 
@@ -12252,12 +12645,12 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
         delta = sub.add_parser(
             "delta", help="티켓 라운드에서 developer에게 허용된 finding만 렌더"
         )
-        delta.add_argument("--ticket", required=True, metavar="T-NNNN")
+        _add_review_target_args(delta)
         disposition = sub.add_parser(
             "disposition-template",
             help="리뷰 라운드의 미판정 finding ID를 PM disposition 골격으로 렌더",
         )
-        disposition.add_argument("--ticket", required=True, metavar="T-NNNN")
+        _add_review_target_args(disposition)
         disposition.add_argument(
             "--ordinal", type=int, default=None, metavar="N",
             help="대상 reviewer ordinal (기본: 최신 절)",
@@ -12270,13 +12663,25 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
             "verify-template",
             help="accepted finding 의 기계 확인 대상을 pm-review-confirmation-v1 골격으로 렌더",
         )
-        verify.add_argument("--ticket", required=True, metavar="T-NNNN")
+        _add_review_target_args(verify)
         verify.add_argument(
             "--round", type=int, default=None, metavar="N", dest="round_ordinal",
             help=(
                 "그 developer 라운드 시점까지의 누적으로 판정 (기본: 티켓 전역 누적)"
             ),
         )
+        return parser
+    if command == "cluster":
+        parser = argparse.ArgumentParser(
+            prog="pm_delegate.py cluster",
+            description="묶음 리뷰 백그라운드 실행의 회수(대기)",
+        )
+        sub = parser.add_subparsers(dest="cluster_command", required=True)
+        wait = sub.add_parser(
+            "wait", help="백그라운드 묶음 리뷰가 끝날 때까지 기다리고 회수 상태를 낸다",
+        )
+        wait.add_argument("--cluster", required=True, metavar="C-<이름>")
+        wait.add_argument("--cwd", required=True, metavar="ABSPATH")
         return parser
     if command != "ticket":
         return None
@@ -12397,6 +12802,146 @@ def _reject_cross_role_prepare(role: str, tier: str, conf: dict[str, str]) -> No
         print(f"[pm-delegate/warn] {reason} — prepare 통과(fail-open)", file=sys.stderr)
 
 
+def _parse_ledger_timestamp(value: object) -> datetime.datetime | None:
+    """장부 시각 문자열 → datetime(판독 불가는 None · 판정에서 그 조건만 뺀다)."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _cluster_run_round_rows(pm_home: Path, run: Mapping[str, object]) -> list[dict]:
+    """**이 실행이 만든** 라운드 준비 행만 — 옛 실행의 잔여는 여기 들어오지 않는다.
+
+    결속은 두 값이다: 준비 행의 소유자 pid(묶음 리뷰 자식이 자기 pid 로 준비한다)와 준비
+    시각(이 실행 시작 이후). pid 는 재사용되므로 시각 조건이 옛 실행의 같은 번호를 막는다.
+    """
+    started = _parse_ledger_timestamp(run.get("started_at"))
+    rows: list[dict] = []
+    for row in ticket_copy_records(pm_home):
+        if str(row.get("cluster") or "") != str(run.get("cluster") or ""):
+            continue
+        if row.get("owner_pid") != run.get("pid"):
+            continue
+        prepared = _parse_ledger_timestamp(row.get("prepared_at"))
+        if started is not None and prepared is not None and prepared < started:
+            continue
+        rows.append(row)
+    return rows
+
+
+def cluster_wait(
+    pm_home: Path, cluster: str, *,
+    sleep_fn: Callable | None = None, clock_fn: Callable | None = None,
+    budget_sec: int | None = None,
+) -> int:
+    """백그라운드 묶음 리뷰 **한 실행**의 종료를 기다리고 그 실행만으로 판정한다.
+
+    판정 입력은 장부가 마지막으로 연 실행 하나다 — 그 실행의 마감 rc 와, 그 실행이 만든 라운드
+    준비의 회수 상태. 묶음의 역사(옛 pid·옛 미회수 행)는 이 판정에 들어오지 않는다: 들어오면
+    예약 전에 죽은 자식이 "미회수 0" 으로 성공이 되고, 무관한 옛 잔여 하나가 새 실행을
+    실패시킨다.
+
+    자식의 rc 는 부모가 끝난 뒤 `wait(2)` 로 회수할 수 없으므로 **자식이 스스로 장부 행을
+    마감**한다. 마감 없이 pid 가 사라졌으면 그것 자체가 실패 관측이다(끝났다고 말하지 않는다).
+    """
+    sleep_fn = sleep_fn or time.sleep
+    clock_fn = clock_fn or time.monotonic
+
+    def _latest_run() -> dict | None:
+        runs = cluster_review_runs(pm_home, cluster)
+        return runs[-1] if runs else None
+
+    run = _latest_run()
+    if run is None:
+        print(
+            f"오류: 백그라운드 실행 기록이 없습니다: {cluster} "
+            f"(장부: {_cluster_review_runs_ledger(pm_home)})",
+            file=sys.stderr,
+        )
+        return 1
+    relay = _load_relay()
+    deadline = clock_fn() + (
+        budget_sec if budget_sec is not None else max_declared_execution_path_budget()
+    )
+    while run["rc"] is None:
+        if not relay.pid_is_alive(run.get("pid")):
+            # 마감 append 와 프로세스 종료 사이의 경합을 한 번 흡수한 뒤에도 마감이 없으면
+            # 자식이 자기 종료를 남기지 못하고 죽은 것이다.
+            run = _latest_run() or run
+            if run["rc"] is None:
+                print(
+                    f"오류: 백그라운드 자식이 마감 없이 종료했습니다: run={run.get('run_id')} "
+                    f"· pid={run.get('pid')} · 로그={run.get('log')} "
+                    "(끝났다고 판정하지 않습니다)",
+                    file=sys.stderr,
+                )
+                return 1
+            break
+        if clock_fn() >= deadline:
+            print(
+                f"오류: 묶음 리뷰 대기 상한 도달 — 아직 살아 있는 pid: {run.get('pid')} "
+                "(끝났다고 판정하지 않습니다)",
+                file=sys.stderr,
+            )
+            return 1
+        sleep_fn(_CLUSTER_WAIT_POLL_SEC)
+        run = _latest_run() or run
+    print(
+        f"실행 종료: run={run.get('run_id')} · pid={run.get('pid')} · rc={run['rc']} "
+        f"· 로그={run.get('log')}"
+    )
+    if run["rc"] != 0:
+        print(
+            f"오류: 백그라운드 묶음 리뷰 실패: rc={run['rc']} · 로그={run.get('log')} "
+            "— 라운드 예약 전에 끝났으면 준비 자체가 없습니다(로그가 사유입니다)",
+            file=sys.stderr,
+        )
+        return 1
+    rows = _cluster_run_round_rows(pm_home, run)
+    unharvested = [
+        row for row in rows
+        if row["harvested_at"] is None and "abandoned_at" not in row
+    ]
+    if unharvested:
+        for row in unharvested:
+            print(
+                f"오류: 미회수 라운드 준비: {row['ticket']} · ordinal={row['ordinal']} · "
+                f"copy={row['copy']}",
+                file=sys.stderr,
+            )
+        print(
+            "  · 로그를 확인한 뒤 같은 run-dir 로 `ticket harvest` 를 부르거나, 죽은 예약이면 "
+            "`ticket abandon` 으로 정리하세요.",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        f"묶음 리뷰 회수 완료: {cluster} · 이번 실행 준비 {len(rows)}건 · 미회수 0"
+    )
+    return 0
+
+
+def _cmd_cluster(argv: list[str]) -> int:
+    """묶음 리뷰 백그라운드 실행의 회수 CLI — 실행(`--background`)과 분리된 표면이다."""
+    parser = build_subcommand_parser("cluster")
+    assert parser is not None
+    args = parser.parse_args(argv)
+    if not _is_valid_cluster_id(args.cluster):
+        parser.error("--cluster는 board 클러스터 장부 id 형식이어야 합니다")
+    cwd = Path(args.cwd)
+    if not cwd.is_absolute():
+        parser.error("--cwd 는 절대경로여야 합니다")
+    try:
+        owner = _ticket_cli_owner(_repo_root_for_cwd(cwd))
+        return cluster_wait(owner, args.cluster)
+    except DelegateError as exc:
+        print(f"오류: cluster {args.cluster_command} 실패: {exc}", file=sys.stderr)
+        return 1
+
+
 def _cmd_ticket(argv: list[str]) -> int:
     """native 위임도 cross와 같은 사본 helper를 쓰는 prepare/harvest CLI."""
     parser = build_subcommand_parser("ticket")
@@ -12460,6 +13005,8 @@ def _cmd_ticket(argv: list[str]) -> int:
             if args.cluster:
                 cluster_plan = prepare_cluster_copy(
                     cluster=args.cluster, role=args.role, cwd=cwd_repo, pm_home=owner,
+                    # 묶음 준비 표면 — 장부가 선언한 고정 예산·역할 순서가 여기서 발동한다.
+                    enforce_budget=True,
                 )
                 for round_plan in cluster_plan.rounds:
                     _write_machine_line(json.dumps({
@@ -12578,7 +13125,7 @@ def _emit_pm_review_verify_template(template: PMReviewVerifyTemplate) -> int:
         sys.stdout.write(rendered)
     for finding_id, source_round, reason in template.reviewer_required:
         print(
-            f"안내: {finding_id} 는 reviewer 확인 대상입니다 — {reason} "
+            f"안내: {finding_id} 는 기계 확인 대상이 아닙니다 — {reason} "
             f"(선언 round={source_round})",
             file=sys.stderr,
         )
@@ -12611,26 +13158,56 @@ def _emit_pm_review_verify_template(template: PMReviewVerifyTemplate) -> int:
 
 
 def _cmd_review(argv: list[str]) -> int:
-    """review delta/disposition-template — 티켓 read-only 구조화 렌더 CLI."""
+    """review delta/disposition-template/verify-template — read-only 구조화 렌더 CLI.
+
+    대상은 티켓 하나 또는 묶음 하나다. 묶음은 **같은 렌더의 티켓별 반복**이고 rc 는 하나라도
+    실패하면 1 이다(부분 성공을 성공으로 접지 않는다).
+    """
     parser = build_subcommand_parser("review")
     assert parser is not None
     args = parser.parse_args(argv)
     board = _load_board()
-    if not board._is_valid_ticket_id(args.ticket):
+    if args.ticket is not None and not board._is_valid_ticket_id(args.ticket):
         parser.error("--ticket은 board 발행 ticket ID 형식이어야 합니다")
+    if args.cluster is not None and not _is_valid_cluster_id(args.cluster):
+        parser.error("--cluster는 board 클러스터 장부 id 형식이어야 합니다")
+    if args.ticket is not None:
+        return _cmd_review_ticket(args, args.ticket)
+    try:
+        owner = _activate_internal_rounds_cli_owner()
+        members = _load_board_for_repo(owner).cluster_members(args.cluster)
+    except (DelegateError, OSError, UnicodeError, ValueError) as exc:
+        print(f"오류: review {args.review_command} 실패: {exc}", file=sys.stderr)
+        return 1
+    if not members:
+        print(
+            f"오류: 클러스터 멤버가 없습니다: {args.cluster} — "
+            f"`board.py cluster show {args.cluster}` 로 장부를 확인하세요",
+            file=sys.stderr,
+        )
+        return 1
+    rc = 0
+    for ticket in members:
+        print(_REVIEW_CLUSTER_TICKET_HEADER.format(ticket=ticket))
+        rc = max(rc, _cmd_review_ticket(args, ticket))
+    return rc
+
+
+def _cmd_review_ticket(args: argparse.Namespace, ticket: str) -> int:
+    """대상 티켓 하나의 렌더 — 묶음 반복도 이 한 판정을 그대로 쓴다."""
     ticket_text: str | None = None
     try:
         owner = _activate_internal_rounds_cli_owner()
         owner_board = _load_board_for_repo(owner)
         rounds_module = _load_ticket_rounds()
         with owner_board.board_lock():
-            found = owner_board.find_ticket_exact(args.ticket)
+            found = owner_board.find_ticket_exact(ticket)
             if found is None:
-                raise DelegateError(f"ticket not found: {args.ticket}")
+                raise DelegateError(f"ticket not found: {ticket}")
             status, path = found
             if status not in ("open", "claimed"):
                 raise DelegateError(
-                    f"review delta는 open/claimed 티켓만 허용: {args.ticket} in {status}/"
+                    f"review delta는 open/claimed 티켓만 허용: {ticket} in {status}/"
                 )
             try:
                 with _load_file_lock().open_shared(path, binary=False, encoding="utf-8", newline="") as handle:
@@ -12638,10 +13215,10 @@ def _cmd_review(argv: list[str]) -> int:
             except (OSError, UnicodeError) as exc:
                 raise DelegateError(f"티켓 읽기 실패: {path}: {exc}") from exc
             rounds = rounds_module.load_rounds(
-                owner_board.tickets_dir(), args.ticket, ticket_text=ticket_text,
+                owner_board.tickets_dir(), ticket, ticket_text=ticket_text,
             )
             problems = rounds_module.verify_rounds(
-                owner_board.tickets_dir(), args.ticket, ticket_text=ticket_text,
+                owner_board.tickets_dir(), ticket, ticket_text=ticket_text,
             )
         # 순번 유일성·연속성이 깨진 상태만 차단한다 — 산출 없음(`round-pending`)과 이름 문법
         # (`round-name`)은 표시용이라 판정을 막지 않는다(심각도는 소비자 소유다).
@@ -12667,14 +13244,14 @@ def _cmd_review(argv: list[str]) -> int:
             return _emit_pm_review_verify_template(template)
         else:
             delta = parse_pm_review_delta(ticket_text, rounds)
-            rendered = render_pm_review_delta(args.ticket, delta)
+            rendered = render_pm_review_delta(ticket, delta)
         if rendered:
             sys.stdout.write(rendered)
         return 0
     except PMReviewError as exc:
         print(
             f"오류: review {args.review_command} 거부[{exc.code}]: {exc}\n"
-            f"  · {_pm_review_prescription(exc.code, args.ticket, channels=exc.channels)}",
+            f"  · {_pm_review_prescription(exc.code, ticket, channels=exc.channels)}",
             file=sys.stderr,
         )
         return 1
@@ -12683,8 +13260,181 @@ def _cmd_review(argv: list[str]) -> int:
         return 1
 
 
-def _cmd_rounds(argv: list[str]) -> int:
-    """내부 라운드 raw 재계산·잔여 처분 기록 서브커맨드."""
+def _print_internal_resolution(resolution, owner: Path) -> None:
+    """처분 선언 1건의 사람용 요약 — 티켓 하나든 묶음 반복이든 같은 줄을 낸다."""
+    board = _load_board()
+    declared = resolution.declared
+    if resolution.previous is not None:
+        print("이전 내부 처분 선언을 현재 라운드 좌표의 선언으로 교체합니다.", file=sys.stderr)
+    residual = "미상" if resolution.residual is None else str(resolution.residual)
+    target = declared.get("ticket") or declared.get("evidence_gate")
+    if declared["kind"] == board.GATE_RESOLUTION_PM_FIXED:
+        description = _load_review_rounds().describe_pm_fixed_resolution(declared)
+    elif declared["kind"] == board.GATE_RESOLUTION_PM_VERIFIED:
+        description = _load_review_rounds().describe_pm_verified_resolution(declared)
+    else:
+        label = "재설계" if declared["kind"] == board.GATE_RESOLUTION_INTO else "해소"
+        description = f"{label}→{target}"
+    print(
+        f"내부 게이트 처분 선언: {resolution.gate} · 잔여 must-fix {residual} · "
+        f"{description} · PM 홈={owner}"
+    )
+    print(
+        "  · 결속: "
+        f"round #{declared['round_sequence']} / 산출 {declared['rounds']}건"
+    )
+    if declared["kind"] == board.GATE_RESOLUTION_INTO:
+        print(
+            f"  · 면제가 아닙니다 — {target} 티켓이 done일 때만 board complete가 통과합니다."
+        )
+    print(f"내부 장부: {resolution.ledger_path}")
+
+
+def _cluster_confirmation_tree(board, cluster: str) -> Path:
+    """확인 커맨드를 돌릴 트리 1곳 — 묶음 통합 브랜치를 체크아웃한 코드 트리.
+
+    관측값을 만드는 자리라 그 자리가 그 브랜치가 아니면 **거부한다**: 다른 브랜치에서 잰 값을
+    확인으로 적으면 기계 확인이 거짓이 된다. 트리 해소는 board 의 기존 규칙 하나를 쓴다
+    (명시 정체성 > 활성 슬롯 > 이 트리) — 여기서 해소 규칙을 새로 만들지 않는다.
+    """
+    tree = Path(board._cluster_code_tree())
+    branch = str((board.load_cluster(cluster) or {}).get("branch") or "").strip()
+    if branch:
+        current = board._cluster_current_branch(str(tree))
+        if current != branch:
+            raise DelegateError(
+                f"확인 커맨드 실행 트리가 묶음 통합 브랜치가 아닙니다: {tree} "
+                f"(현재 {current or '미상'} · 필요 {branch}) — 다른 브랜치에서 잰 관측을 "
+                "기계 확인으로 적지 않습니다"
+            )
+    return tree
+
+
+def _ticket_spec_and_rounds(board, ticket: str) -> tuple[str, list]:
+    """확인·처분 판정 입력 — 명세 원문과 그 티켓의 라운드 목록."""
+    found = board.find_ticket_exact(ticket)
+    if found is None:
+        raise DelegateError(f"ticket not found: {ticket}")
+    _status, path = found
+    try:
+        spec_text = _load_file_lock().read_text_shared(
+            path, encoding="utf-8", newline="",
+        )
+    except (OSError, UnicodeError) as exc:
+        raise DelegateError(f"티켓 명세 읽기 실패: {path}: {exc}") from exc
+    rounds_module = _load_ticket_rounds()
+    return spec_text, rounds_module.load_rounds(
+        board.tickets_dir(), ticket, ticket_text=spec_text,
+    )
+
+
+def _design_axis_replan_block(
+    ticket: str, cluster: str, delta: PMReviewDelta, replan_ordinal: int,
+) -> str | None:
+    """재설계 없이 남은 설계 축 accepted — 있으면 거부 사유(없으면 None).
+
+    설계 축은 기계 확인 대상이 아니고 reviewer 재송신 경로도 없다. 남은 출구는 재설계 하나라,
+    그 기록이 없으면 여기서 멈춘다(확인 커맨드를 돌리기 **전**이라 실행 부작용 0).
+    """
+    blocked = [
+        finding.id for finding, _disposition in delta.accepted
+        if _pm_review_design_axis(finding)
+        and not _pm_review_design_axis_replanned(finding, replan_ordinal)
+    ]
+    if not blocked:
+        return None
+    return (
+        f"{ticket}: 재설계 없이 남은 설계 축 accepted — {', '.join(sorted(blocked))}\n"
+        "  · 설계 축은 기계 확인 대상이 아니고 reviewer 재송신 경로도 없습니다.\n"
+        f"  · {cluster_replan_prescription(cluster)}"
+    )
+
+
+def _resolve_ticket_pm_verified(
+    ticket: str, *, cluster: str, board, owner: Path, tree: Path,
+    run_fn: Callable | None = None,
+) -> int:
+    """티켓 하나의 기계 확인 실행 → 기입 → `pm-verified` 처분.
+
+    순서가 계약이다: (1) 설계 축 재설계 게이트 (2) 확인 커맨드 실행 (3) 확인 절 기입
+    (4) 처분 선언. 처분의 증거 판정은 명세를 **다시 읽으므로**, 기입이 먼저여야 방금 만든
+    확인이 증거로 잡힌다.
+    """
+    try:
+        spec_text, rounds = _ticket_spec_and_rounds(board, ticket)
+        delta = parse_pm_review_delta(spec_text, rounds)
+        refusal = _design_axis_replan_block(
+            ticket, cluster, delta, board.ticket_design_replan_ordinal(ticket, spec_text),
+        )
+        if refusal is not None:
+            print(f"오류: {refusal}", file=sys.stderr)
+            return 1
+        template = pm_review_verify_template(spec_text, rounds)
+        rows = run_pm_review_confirmations(template, cwd=tree, run_fn=run_fn)
+        if rows:
+            append_pm_review_confirmation(
+                owner, ticket, render_pm_review_confirmation_section(rows),
+            )
+            unresolved = [row.id for _round, row in rows if row.status != "resolved"]
+            print(
+                f"{ticket}: 기계 확인 {len(rows)}건 기입 "
+                f"(미해소 {len(unresolved)}{': ' + ', '.join(unresolved) if unresolved else ''}) "
+                f"· 실행 트리={tree}"
+            )
+        else:
+            print(f"{ticket}: 기계 확인 대상 0건 — 실행 없이 처분으로 넘어갑니다")
+        resolution = _declare_internal_review_resolution(ticket, pm_verified=True)
+    except PMReviewError as exc:
+        print(
+            f"오류: 내부 리뷰 라운드 처분 선언 실패[{exc.code}]: {ticket}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    except (DelegateError, OSError, UnicodeError, ValueError) as exc:
+        print(
+            f"오류: 내부 리뷰 라운드 처분 선언 실패: {ticket}: {exc}", file=sys.stderr,
+        )
+        return 1
+    _print_internal_resolution(resolution, owner)
+    return 0
+
+
+def _cmd_rounds_resolve_cluster(
+    cluster: str, *, owner: Path, run_fn: Callable | None = None,
+) -> int:
+    """`resolve --cluster --pm-verified` — 멤버마다 확인 실행·기입·처분(내부는 티켓 반복).
+
+    rc 는 하나라도 실패하면 1 이다. 앞 티켓의 기입·처분은 되돌리지 않는다 — 티켓별 독립이라
+    실패한 자리만 다시 부르면 이어진다(회수와 같은 규율).
+    """
+    board = _load_board_for_repo(owner)
+    members = board.cluster_members(cluster)
+    if not members:
+        print(
+            f"오류: 클러스터 멤버가 없습니다: {cluster} — "
+            f"`board.py cluster show {cluster}` 로 장부를 확인하세요",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        tree = _cluster_confirmation_tree(board, cluster)
+    except DelegateError as exc:
+        print(f"오류: {exc}", file=sys.stderr)
+        return 1
+    rc = 0
+    for ticket in members:
+        rc = max(rc, _resolve_ticket_pm_verified(
+            ticket, cluster=cluster, board=board, owner=owner, tree=tree,
+            run_fn=run_fn,
+        ))
+    return rc
+
+
+def _cmd_rounds(argv: list[str], run_fn: Callable | None = None) -> int:
+    """내부 라운드 raw 재계산·잔여 처분 기록 서브커맨드.
+
+    `run_fn` 은 확인 커맨드 실행 seam(테스트 DI) — 생략하면 `subprocess.run` 이다.
+    """
     # 외부 리뷰의 기존 조회 어휘와 맞춘 명시 별칭. argparse는 `--`로 시작하는 토큰을 subparser
     # 이름으로 해석하지 않으므로 파서에 넘기기 전에 읽기 전용 `report` 명령으로 정규화한다.
     if argv and argv[0] == "--rounds-report":
@@ -12717,7 +13467,14 @@ def _cmd_rounds(argv: list[str]) -> int:
         "resolve",
         help="마지막 반려 잔여를 후속 티켓·후속 통과·PM 직접 해소 근거에 결속해 처분",
     )
-    resolve.add_argument("--gate", required=True, metavar="T-NNNN")
+    # 처분 대상 = 게이트 하나 또는 묶음 하나. 묶음은 **같은 처분의 티켓별 반복**이고
+    # (새 파서 0) 확인 커맨드를 엔진이 실행하는 `--pm-verified` 전용이다.
+    resolve_target = resolve.add_mutually_exclusive_group(required=True)
+    resolve_target.add_argument("--gate", metavar="T-NNNN")
+    resolve_target.add_argument(
+        "--cluster", metavar="C-<이름>",
+        help="묶음 멤버 전부에 처분을 낸다(--pm-verified 전용 · 확인 커맨드는 엔진이 실행)",
+    )
     resolution_mode = resolve.add_mutually_exclusive_group(required=True)
     resolution_mode.add_argument(
         "--into",
@@ -12758,6 +13515,15 @@ def _cmd_rounds(argv: list[str]) -> int:
             "--gate는 board 발행 ticket ID 형식"
             "(T-NNNN 또는 T-<prefix>-NNN)이어야 합니다"
         )
+    cluster = getattr(args, "cluster", None)
+    if cluster is not None:
+        if not _is_valid_cluster_id(cluster):
+            parser.error("--cluster는 board 클러스터 장부 id 형식이어야 합니다")
+        if not args.pm_verified:
+            parser.error(
+                "--cluster 는 --pm-verified 전용이다(후속 티켓·근거 게이트·PM 직접 해소는 "
+                "게이트별 판단이라 묶음으로 접지 않는다)."
+            )
     for flag in ("into", "fixed"):
         value = getattr(args, flag, None)
         if value is not None and not board._is_valid_ticket_id(value):
@@ -12765,6 +13531,8 @@ def _cmd_rounds(argv: list[str]) -> int:
 
     try:
         owner = _activate_internal_rounds_cli_owner()
+        if cluster is not None:
+            return _cmd_rounds_resolve_cluster(cluster, owner=owner, run_fn=run_fn)
         if args.rounds_command == "resolve":
             resolution = _declare_internal_review_resolution(
                 args.gate,
@@ -12795,31 +13563,7 @@ def _cmd_rounds(argv: list[str]) -> int:
         return 1
 
     if args.rounds_command == "resolve":
-        declared = resolution.declared
-        if resolution.previous is not None:
-            print("이전 내부 처분 선언을 현재 라운드 좌표의 선언으로 교체합니다.", file=sys.stderr)
-        residual = "미상" if resolution.residual is None else str(resolution.residual)
-        if declared["kind"] == board.GATE_RESOLUTION_PM_FIXED:
-            description = _load_review_rounds().describe_pm_fixed_resolution(declared)
-        elif declared["kind"] == board.GATE_RESOLUTION_PM_VERIFIED:
-            description = _load_review_rounds().describe_pm_verified_resolution(declared)
-        else:
-            target = declared.get("ticket") or declared.get("evidence_gate")
-            label = "재설계" if declared["kind"] == board.GATE_RESOLUTION_INTO else "해소"
-            description = f"{label}→{target}"
-        print(
-            f"내부 게이트 처분 선언: {resolution.gate} · 잔여 must-fix {residual} · "
-            f"{description} · PM 홈={owner}"
-        )
-        print(
-            "  · 결속: "
-            f"round #{declared['round_sequence']} / 산출 {declared['rounds']}건"
-        )
-        if declared["kind"] == board.GATE_RESOLUTION_INTO:
-            print(
-                f"  · 면제가 아닙니다 — {target} 티켓이 done일 때만 board complete가 통과합니다."
-            )
-        print(f"내부 장부: {resolution.ledger_path}")
+        _print_internal_resolution(resolution, owner)
         return 0
 
     if args.rounds_command == "report":
@@ -12846,6 +13590,517 @@ def _cmd_rounds(argv: list[str]) -> int:
     print(f"내부 장부: {report.ledger_path}")
     print(f"raw 장부: {report.raw_ledger_path}")
     return 0
+
+
+# ── 묶음 리뷰 — 격리 스냅샷 · 프롬프트 조립 · 백그라운드 장부 ──────────────
+#
+# 리뷰 단위는 묶음이다. PM 이 손으로 하던 셋(격리 스냅샷 생성 · 프롬프트 조립 · 백그라운드
+# 실행/회수)을 엔진이 가져온다 — 손 git 0. 수단은 전부 **기존 것**이다:
+#   · 스냅샷 = `gate_snapshot.create_snapshot`(격리 worktree + index overlay + 생성 전후 대조
+#     + 사실 마커). 새 격리 경로를 만들지 않는다.
+#   · 프롬프트 = `external_review.build_prompt`(맥락 헤더 + 출력 형식 + 티켓 본문 N + 검토
+#     중점 + diff). 내부 채널만 손조립이던 비대칭을 여기서 없앤다.
+#   · 라운드 자리 = `prepare_cluster_copy`(run-dir 1 · 티켓당 라운드 파일 1).
+# 리뷰 입력은 `merge-base(<통합 tip>, <묶음 브랜치>)..<묶음 브랜치>` 다 — 통합 브랜치가
+# 앞서 가도 이 묶음이 만든 것만 본다.
+_CLUSTER_SNAPSHOT_PREFIX = "pm_cluster_review_"
+_CLUSTER_SNAPSHOT_DIRNAME = "snapshot"
+# 백그라운드 실행 장부 — **실행 1건**이 단위다. 시작 행(`run_id`·pid·로그·시작 시각)과 자식이
+# 스스로 남기는 마감 행(같은 `run_id`·rc)이 짝을 이루고, 회수 판정(`cluster wait`)은 그 짝
+# **하나**만 본다. 실행 키가 없으면 판정이 묶음 전체의 역사(옛 pid·옛 미회수 행)로 번져
+# 예약 전에 죽은 자식을 성공으로, 무관한 옛 잔여를 실패로 읽는다.
+CLUSTER_REVIEW_RUNS_REL_PATH = (
+    Path(".project_manager") / ".local" / "cluster-review-runs.jsonl"
+)
+_CLUSTER_REVIEW_RUN_START_FIELDS: frozenset[str] = frozenset(
+    {"cluster", "run_id", "pid", "started_at", "log", "cwd"}
+)
+_CLUSTER_REVIEW_RUN_END_FIELDS: frozenset[str] = frozenset(
+    {"cluster", "run_id", "rc", "ended_at"}
+)
+# 부모→자식 실행 결속. 자식은 `--background` 를 뺀 같은 CLI 라 자기가 백그라운드 실행인지
+# 스스로 알 수 없다 — 부모가 이 env 로 **어느 장부의 어느 실행인가**를 넘겨야 자식이 자기 rc 로
+# 그 행을 마감할 수 있다. 장부 경로를 값으로 넘기는 건 자식이 PM 홈을 다시 해소하다 다른
+# 장부에 마감을 적는 형상을 막기 위해서다(새 플래그·conf 키가 아니라 실행 내부 결속이다).
+CLUSTER_REVIEW_RUN_ENV = "PM_CLUSTER_REVIEW_RUN"
+_CLUSTER_REVIEW_HANDOFF_FIELDS: frozenset[str] = frozenset(
+    {"cluster", "run_id", "ledger"}
+)
+# 백그라운드 회수 폴링 — 간격은 고정이고 상한은 엔진이 이미 선언한 최악 실행 경로 예산이다
+# (새 노브 0). 상한을 넘기면 "끝났다"고 말하지 않고 미상으로 rc≠0 을 낸다.
+_CLUSTER_WAIT_POLL_SEC = 5
+
+
+class ClusterReviewInput(NamedTuple):
+    """묶음 리뷰 1회의 입력 좌표 — 브랜치 diff 와 그 범위."""
+
+    cluster: str
+    members: tuple[str, ...]
+    base_branch: str
+    branch: str
+    merge_base: str
+    paths: tuple[str, ...]
+    diff: str
+
+
+def _cluster_git(
+    repo: Path, *args: str, git_run_fn: Callable | None = None,
+) -> str:
+    """묶음 브랜치 조회 git — 실패는 그대로 올린다(조용한 빈 값 금지)."""
+    runner = git_run_fn or subprocess.run
+    result = runner(
+        ["git", "-C", str(repo), *args],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    if getattr(result, "returncode", 1) != 0:
+        detail = (
+            (getattr(result, "stderr", "") or "").strip()
+            or (getattr(result, "stdout", "") or "").strip()
+            or "원인 미상"
+        )
+        raise DelegateError(f"git {' '.join(args)} 실패: {detail}")
+    return getattr(result, "stdout", "") or ""
+
+
+def cluster_review_input(
+    board, cluster: str, *, repo: Path, git_run_fn: Callable | None = None,
+) -> ClusterReviewInput:
+    """리뷰 대상 diff 와 그 범위를 묶음 장부에서 해소한다.
+
+    기준은 `merge-base(<통합 브랜치 tip>, <묶음 브랜치>)` 다 — 통합 브랜치가 그동안 앞서
+    갔어도 이 묶음이 만든 변경만 리뷰 입력이 된다(흡수분은 조상이라 빠진다).
+    스냅샷 범위에는 **삭제분을 넣지 않는다**: 지워진 경로는 현재 트리에 비교할 Git 소유 파일이
+    없어 생성기가 거부한다(삭제 자체는 diff 본문에 그대로 실린다).
+    """
+    fm = board.load_cluster(cluster)
+    if fm is None:
+        raise DelegateError(
+            f"클러스터 장부가 없습니다: {cluster} — 리뷰 단위는 선언된 묶음입니다"
+            f"(`board.py cluster new` 로 먼저 선언하세요)"
+        )
+    branch = str(fm.get("branch") or "").strip()
+    base_branch = str(fm.get("base_branch") or "").strip()
+    if not branch or not base_branch:
+        raise DelegateError(
+            f"묶음 장부에 통합 브랜치 좌표가 없습니다: {cluster} "
+            f"(branch={branch or '—'} · base_branch={base_branch or '—'})"
+        )
+    members = tuple(board.cluster_members(cluster))
+    if not members:
+        raise DelegateError(f"클러스터 멤버가 없습니다: {cluster}")
+    merge_base = _cluster_git(
+        repo, "merge-base", base_branch, branch, git_run_fn=git_run_fn,
+    ).strip()
+    if not merge_base:
+        raise DelegateError(
+            f"merge-base 를 해소하지 못했습니다: {base_branch}..{branch}"
+        )
+    span = f"{merge_base}..{branch}"
+    paths = tuple(
+        line.strip() for line in _cluster_git(
+            repo, "diff", "--name-only", "--diff-filter=d", span,
+            git_run_fn=git_run_fn,
+        ).splitlines() if line.strip()
+    )
+    diff = _cluster_git(repo, "diff", span, git_run_fn=git_run_fn)
+    if not diff.strip():
+        raise DelegateError(
+            f"리뷰할 diff 가 없습니다: {span} — 묶음 브랜치에 이 주기의 변경이 없습니다"
+            "(dev 라운드 산출이 묶음 브랜치에 올라와 있는지 확인하세요)"
+        )
+    if not paths:
+        raise DelegateError(
+            f"격리 스냅샷 범위가 비었습니다: {span} — 변경이 삭제뿐이라 대조할 파일이 "
+            "없습니다"
+        )
+    review = ClusterReviewInput(
+        cluster, members, base_branch, branch, merge_base, paths, diff,
+    )
+    # 입력을 해소한 자리에서 곧바로 트리를 결속한다 — 이 판정이 여기 있어야 백그라운드 부모가
+    # 어긋난 트리로 자식을 띄우지 않는다(최종 판정은 스냅샷 생성 직전에 한 번 더).
+    assert_cluster_review_tree(board, review, repo=repo, git_run_fn=git_run_fn)
+    return review
+
+
+def assert_cluster_review_tree(
+    board, review: ClusterReviewInput, *, repo: Path,
+    git_run_fn: Callable | None = None,
+) -> None:
+    """스냅샷 입력 트리가 묶음 브랜치 tip 인지 결속한다 — 아니면 거부한다(fail-closed).
+
+    프롬프트가 싣는 diff 는 장부 브랜치의 `merge-base..tip` 이고, 모델이 실제로 읽는 파일은
+    스냅샷에 복제된 **이 트리의 내용**이다. 트리가 그 브랜치 tip 이 아니면 둘이 서로 다른
+    코드가 되어 판정 전체가 헛돈다. 브랜치 대조 seam 은 확인 커맨드 실행 트리와 같은 하나다
+    (`board._cluster_current_branch`) — 여기서 브랜치 판독을 새로 만들지 않는다.
+    """
+    current = board._cluster_current_branch(str(repo))
+    if current != review.branch:
+        raise DelegateError(
+            f"리뷰 대상 트리가 묶음 브랜치가 아닙니다: {repo} "
+            f"(현재 {current or '미상'} · 필요 {review.branch}) — 다른 브랜치의 파일을 "
+            "리뷰 입력으로 넘기지 않습니다"
+        )
+    drifted = tuple(
+        line.strip() for line in _cluster_git(
+            repo, "diff", "--name-only", review.branch, "--", *review.paths,
+            git_run_fn=git_run_fn,
+        ).splitlines() if line.strip()
+    )
+    if drifted:
+        raise DelegateError(
+            f"리뷰 대상 파일이 묶음 브랜치 tip 과 다릅니다: {', '.join(drifted)} — "
+            "커밋되지 않은 변경은 리뷰 입력이 아닙니다(라운드 산출은 회수 시 커밋됩니다)"
+        )
+
+
+def create_cluster_review_snapshot(
+    repo: Path, review: ClusterReviewInput, *, board,
+    git_run_fn: Callable | None = None,
+) -> Path:
+    """리뷰 대상 트리를 저장소 밖 격리 스냅샷으로 확정한다(생성 실패는 실행 전 차단).
+
+    생성 경로·검증·마커는 전부 기존 생성기 소유다 — 여기서는 저장소 밖 자리 하나를 잡아
+    넘길 뿐이다. 넘기기 **직전에** 트리를 다시 결속한다: 입력 해소와 이 지점 사이에 트리가
+    다른 브랜치로 옮겨 갔으면 그 순간부터 스냅샷은 프롬프트 diff 와 다른 코드다.
+    """
+    assert_cluster_review_tree(board, review, repo=repo, git_run_fn=git_run_fn)
+    gate_snapshot = _load_gate_snapshot()
+    destination = Path(tempfile.mkdtemp(prefix=_CLUSTER_SNAPSHOT_PREFIX))
+    output = destination / _CLUSTER_SNAPSHOT_DIRNAME
+    try:
+        created, _files = gate_snapshot.create_snapshot(
+            repo, output, list(review.paths),
+        )
+    except gate_snapshot.SnapshotError as exc:
+        with contextlib.suppress(OSError):
+            shutil.rmtree(destination, ignore_errors=True)
+        raise DelegateError(f"격리 스냅샷 생성 실패: {exc}") from exc
+    return Path(created)
+
+
+def remove_cluster_review_snapshot(repo: Path, snapshot: Path) -> None:
+    """다 쓴 스냅샷을 등록까지 정리한다 — 실패는 좌표와 함께 알리기만 한다(주 결과 불변)."""
+    gate_snapshot = _load_gate_snapshot()
+    problem = gate_snapshot.remove_snapshot(repo, snapshot)
+    if problem is not None:
+        print(
+            f"경고: 격리 스냅샷 정리 실패 — 잔류할 수 있습니다: {snapshot}: {problem}",
+            file=sys.stderr,
+        )
+        return
+    with contextlib.suppress(OSError):
+        shutil.rmtree(Path(snapshot).parent, ignore_errors=True)
+
+
+def _cluster_review_focus(path: Path, *, cwd: Path, pm_home: Path) -> str:
+    """PM 검토 중점 파일 — 프롬프트 파일과 같은 경계 규칙으로 읽는다(유출 경로 0)."""
+    focus_path = Path(path)
+    if not focus_path.is_file():
+        raise DelegateError(f"--focus 파일이 없습니다: {focus_path}")
+    if not _prompt_file_contained(focus_path, cwd, pm_home=pm_home):
+        raise DelegateError(
+            f"--focus 파일이 repo 경계 밖입니다: {focus_path} — 해소된 --cwd 하위 또는 소유 "
+            "PM 홈 하위만 허용됩니다"
+        )
+    try:
+        return _load_file_lock().read_text_shared(
+            focus_path.resolve(), encoding="utf-8",
+        )
+    except (OSError, UnicodeError) as exc:
+        raise DelegateError(f"--focus 파일 읽기 실패: {focus_path}: {exc}") from exc
+
+
+def _cluster_next_finding_id_label(specs: Mapping[str, str], rounds_by_ticket) -> str:
+    """티켓마다 다른 다음 finding ID 를 한 줄 표기로 편다(실값 · 재타이핑 0)."""
+    return " · ".join(
+        f"{ticket}: `{next_review_finding_id(text, INTERNAL_REVIEW_ROLE, rounds_by_ticket.get(ticket, ()))}`"
+        for ticket, text in specs.items()
+    )
+
+
+def build_cluster_review_prompt(
+    review: ClusterReviewInput, specs: Mapping[str, str], *,
+    snapshot: Path | None, focus: str | None,
+) -> str:
+    """묶음 리뷰 프롬프트 — 조립기는 추가 리뷰어 채널과 **같은 하나**다.
+
+    구조화 블록 요구는 이 프롬프트가 소유하지 않는다: 산출 자리가 티켓별 라운드 파일이고 그
+    시드가 이미 채널 골격과 다음 ID 실값을 들고 있다(요구가 두 벌이면 갈린다).
+    """
+    external = _load_external_review()
+    header = (
+        f"## 리뷰 단위: {review.cluster} (티켓 {len(review.members)})\n\n"
+        f"- 리뷰 대상 트리(격리 스냅샷): {snapshot if snapshot is not None else '(미생성)'}\n"
+        f"- 리뷰 입력: {review.base_branch} 와 {review.branch} 의 merge-base "
+        f"({review.merge_base[:12]}) 이후 {review.branch} 변경 전부\n"
+        f"- 변경 파일 {len(review.paths)}건: {', '.join(review.paths)}\n\n"
+    )
+    return header + external.build_prompt(
+        review.diff,
+        ticket_bodies=[(ticket, specs[ticket]) for ticket in review.members],
+        focus=focus,
+        versioned_block=False,
+    )
+
+
+def _cluster_copy_preamble(plan: ClusterCopyPlan) -> str:
+    """묶음 산출 자리 안내 — 티켓마다 자기 라운드 파일 하나다(좌표는 엔진이 준다)."""
+    seats = "\n".join(
+        f"- {round_plan.ticket}: {round_plan.path}" for round_plan in plan.rounds
+    )
+    return (
+        "라운드 산출 기록: 이 위임의 산출은 아래 티켓별 라운드 파일에만 쓴다"
+        "(첫 줄 헤더는 그대로 두고 그 아래 골격을 채운다). 티켓 하나에 대한 지적은 그 티켓의 "
+        "파일에만 적는다.\n"
+        f"{seats}\n"
+        f"같은 디렉터리의 `{TICKET_COPY_SPEC_NAME}`(티켓 명세)와 "
+        f"`{TICKET_COPY_ROUNDS_DIRNAME}/`(이전 라운드)는 **읽기 전용**이다. PM 홈 티켓은 "
+        "편집하지 마라. 이 파일들은 응답과 별개로 종료 시 기계 회수된다."
+    )
+
+
+def _cluster_diff_fingerprint(scope_audit) -> str | None:
+    """묶음 리뷰가 실제로 본 트리 내용의 지문 — 단일 게이트 축과 같은 seam 을 쓴다."""
+    return _internal_diff_fingerprint(scope_audit)
+
+
+def _reserve_cluster_internal_rounds(
+    plan: ClusterCopyPlan, *, wall_timeout_sec: int, target_rev: str | None,
+    diff_fingerprint: str | None,
+) -> tuple[tuple[InternalRoundBudget, ...], int | None]:
+    """멤버마다 내부 리뷰 라운드를 예약한다 — 하나라도 거부면 앞선 예약을 환불하고 rc 를 낸다.
+
+    부분 예약을 남기면 그 게이트의 장부에 영원히 안 끝나는 라운드가 생겨 다음 수렴 판정이
+    그것을 진행 중으로 센다(라운드 준비의 부분 예약 금지와 같은 규율).
+
+    `--confirm-fix` 는 묶음 축에 없다 — 확인 라운드도 라운드라 묶음 예산 안에서만 산다.
+    """
+    reserved: list[InternalRoundBudget] = []
+    for seat in plan.rounds:
+        budget = _reserve_internal_review_round(
+            seat.ticket, confirm_fix=False, wall_timeout_sec=wall_timeout_sec,
+            target_rev=target_rev, diff_fingerprint=diff_fingerprint,
+        )
+        if budget.refused_rc is not None:
+            _refund_internal_round_reservations(reserved)
+            return (), budget.refused_rc
+        reserved.append(budget)
+    return tuple(reserved), None
+
+
+def _refund_internal_round_reservations(
+    budgets: Sequence[InternalRoundBudget],
+) -> None:
+    """스폰 전에 되돌리는 예약 환불 — 마감 seam 의 "스폰 0" 분기를 그대로 쓴다(경로 신설 0)."""
+    for budget in budgets:
+        _finish_internal_review_round(budget, InternalRoundTrace(budget))
+
+
+def _round_copy_preamble(
+    ticket_copy: TicketCopyPlan | None, cluster_plan: ClusterCopyPlan | None,
+) -> str | None:
+    """이 실행의 산출 자리 안내 — 자리가 N 이면 N 을 적는다(자리 없으면 None).
+
+    쓰는 쪽(준비)과 읽는 쪽(프롬프트)이 이 한 함수를 지나야 "하나만 쓰라"는 안내와 실제로
+    깔린 자리 수가 갈리지 않는다.
+    """
+    if cluster_plan is not None:
+        return _cluster_copy_preamble(cluster_plan)
+    if ticket_copy is not None:
+        return _ticket_copy_preamble(ticket_copy)
+    return None
+
+
+def _cluster_member_specs(board, members: Sequence[str]) -> dict[str, str]:
+    """멤버 티켓 본문 — 프롬프트에 실릴 실값(선언 순서 보존)."""
+    specs: dict[str, str] = {}
+    for ticket in members:
+        found = board.find_ticket_exact(ticket)
+        if found is None:
+            raise DelegateError(f"ticket not found: {ticket}")
+        _status, path = found
+        try:
+            specs[ticket] = _load_file_lock().read_text_shared(
+                path, encoding="utf-8", newline="",
+            )
+        except (OSError, UnicodeError) as exc:
+            raise DelegateError(f"PM 홈 티켓 읽기 실패: {path}: {exc}") from exc
+    return specs
+
+
+def _background_detach_kwargs() -> dict[str, object]:
+    """부모와 수명을 끊는 스폰 인자 — POSIX 는 새 세션, Windows 는 분리 프로세스 그룹."""
+    if os.name == "nt":  # pragma: no cover — Windows 실환경 경로
+        detached_process = 0x00000008
+        create_new_process_group = 0x00000200
+        return {"creationflags": detached_process | create_new_process_group}
+    return {"start_new_session": True}
+
+
+def _terminate_untracked_child(process) -> str:
+    """장부에 실을 수 없게 된 자식을 정리한다 — 결과를 사람이 읽는 1줄로 돌려준다.
+
+    추적 못 하는 자식을 그대로 두면 회수할 수 없는 라운드 예약을 만들고 스냅샷을 남긴다.
+    """
+    try:
+        process.kill()
+    except Exception as exc:  # 이미 죽었거나 스텁이면 정리할 것이 없다.
+        return f"정리 실패({type(exc).__name__}: {exc})"
+    with contextlib.suppress(Exception):
+        process.wait(timeout=_CLUSTER_WAIT_POLL_SEC)
+    return "정리함(kill)"
+
+
+def _spawn_background_cluster_review(
+    argv: Sequence[str], *, cwd: Path, pm_home: Path, cluster: str,
+    spawn_fn: Callable | None = None,
+) -> int:
+    """같은 CLI 를 `--background` 만 뺀 채 분리 세션으로 띄우고 실행 1건을 장부에 연다.
+
+    부모는 아무 부작용도 만들지 않는다 — 준비(예약)·스냅샷·실행·회수는 전부 자식이 한다.
+    자식의 rc 는 부모가 죽은 뒤에는 `wait(2)` 로 회수할 수 없으므로, **자식이 자기 rc 를 장부
+    행에 마감**하고 회수(`cluster wait`)는 그 행 하나로 판정한다.
+
+    장부에 못 쓰는 실행은 아예 띄우지 않는다: 기록 없는 자식은 회수도 진단도 불가능한
+    예약·스냅샷을 남긴다. 그래서 스폰 **앞**에 장부 쓰기를 실제로 한 번 확인하고, 그럼에도
+    시작 행 기록이 실패하면 자식을 정리한 뒤 비성공을 반환한다.
+    """
+    child_argv = [item for item in argv if item != "--background"]
+    log_dir = Path(pm_home).resolve() / ".project_manager" / ".local" / "delegate"
+    run_id = uuid.uuid4().hex
+    try:
+        ledger = _ensure_cluster_review_ledger(pm_home)
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except (DelegateError, OSError) as exc:
+        return fail_loud(
+            f"오류: 백그라운드 실행 장부를 쓸 수 없어 띄우지 않습니다: {exc}"
+        )
+    started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    log_path = log_dir / f"cluster-review-{cluster}-{run_id}.log"
+    try:
+        handle = open(log_path, "wb")
+    except OSError as exc:
+        return fail_loud(f"오류: 백그라운드 로그 파일 생성 실패: {log_path}: {exc}")
+    child_env = dict(os.environ)
+    child_env[CLUSTER_REVIEW_RUN_ENV] = json.dumps(
+        {"cluster": cluster, "run_id": run_id, "ledger": str(ledger)},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    )
+    spawn = spawn_fn or subprocess.Popen
+    try:
+        process = spawn(
+            [sys.executable, str(Path(__file__).resolve()), *child_argv],
+            cwd=str(cwd), stdin=subprocess.DEVNULL, stdout=handle,
+            stderr=subprocess.STDOUT, env=child_env, **_background_detach_kwargs(),
+        )
+    except OSError as exc:
+        return fail_loud(f"오류: 백그라운드 묶음 리뷰 스폰 실패: {exc}")
+    finally:
+        handle.close()
+    try:
+        _append_cluster_review_run(pm_home, {
+            "cluster": cluster,
+            "run_id": run_id,
+            "pid": int(process.pid),
+            "started_at": started_at,
+            "log": str(log_path),
+            "cwd": str(cwd),
+        })
+    except DelegateError as exc:
+        cleanup = _terminate_untracked_child(process)
+        return fail_loud(
+            f"오류: 백그라운드 실행 시작 행 기록 실패 — 자식을 {cleanup}: "
+            f"pid={process.pid} · 로그={log_path} · {exc}"
+        )
+    print(
+        f"묶음 리뷰 백그라운드 실행: {cluster} · run={run_id} · pid={process.pid} · "
+        f"로그={log_path}"
+    )
+    print(f"  회수: pm_delegate.py cluster wait --cluster {cluster} --cwd {cwd}")
+    print(f"실행 장부: {ledger}")
+    return 0
+
+
+def _cluster_review_runs_ledger(pm_home: Path) -> Path:
+    return Path(pm_home).resolve() / CLUSTER_REVIEW_RUNS_REL_PATH
+
+
+def _cluster_review_ledger_rows(path: Path) -> list[dict]:
+    """장부 원문 행 — 손상 행은 건너뛴다(진행 중 실행을 잠그지 않는다)."""
+    if not Path(path).is_file():
+        return []
+    try:
+        text = _load_file_lock().read_text_shared(Path(path), encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise DelegateError(f"묶음 리뷰 실행 장부 읽기 실패: {path}: {exc}") from exc
+    rows: list[dict] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def cluster_review_runs(pm_home: Path, cluster: str | None = None) -> list[dict]:
+    """백그라운드 **실행** 목록 — 시작 행에 그 실행의 마감(rc)을 접어 넣는다.
+
+    반환은 시작 행 그대로에 `rc`·`ended_at` 두 관측을 더한 dict 다(아직 안 끝났으면 None).
+    마감 행만 있고 시작 행이 없는 `run_id` 는 실행으로 세지 않는다 — 시작을 기록하지 못한
+    스폰은 애초에 rc 1 로 끝나므로, 그 잔여를 실행으로 읽으면 없는 실행을 판정하게 된다.
+    """
+    runs: dict[str, dict] = {}
+    for row in _cluster_review_ledger_rows(_cluster_review_runs_ledger(pm_home)):
+        run_id = row.get("run_id")
+        if not isinstance(run_id, str) or not run_id:
+            continue
+        if set(row) == _CLUSTER_REVIEW_RUN_START_FIELDS:
+            runs[run_id] = {**row, "rc": None, "ended_at": None}
+        elif set(row) == _CLUSTER_REVIEW_RUN_END_FIELDS and run_id in runs:
+            rc = row.get("rc")
+            runs[run_id]["rc"] = rc if isinstance(rc, int) and not isinstance(rc, bool) else 1
+            runs[run_id]["ended_at"] = row.get("ended_at")
+    return [
+        run for run in runs.values()
+        if cluster is None or run.get("cluster") == cluster
+    ]
+
+
+def _append_cluster_review_row(path: Path, row: Mapping[str, object]) -> Path:
+    """실행 장부 1행 — delegate-rounds 장부와 같은 원자 append seam·같은 0600 권한."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(
+        dict(row), ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ) + "\n"
+    try:
+        _load_file_lock().append_atomic(path, payload, mode=0o600)
+    except OSError as exc:
+        raise DelegateError(f"묶음 리뷰 실행 장부 기록 실패: {path}: {exc}") from exc
+    return path
+
+
+def _append_cluster_review_run(pm_home: Path, row: Mapping[str, object]) -> Path:
+    return _append_cluster_review_row(_cluster_review_runs_ledger(pm_home), row)
+
+
+def _ensure_cluster_review_ledger(pm_home: Path) -> Path:
+    """장부를 **실제로 쓸 수 있는지** 스폰 전에 확인한다(0바이트 append · 같은 seam·권한).
+
+    자리 존재만 보는 게 아니라 같은 통로로 한 번 열어 쓴다 — 권한·경로 형상 문제를 자식을
+    띄운 뒤가 아니라 띄우기 전에 본다. 행을 늘리지 않으므로 판독에는 영향이 없다.
+    """
+    path = _cluster_review_runs_ledger(pm_home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _load_file_lock().append_atomic(path, "", mode=0o600)
+    except OSError as exc:
+        raise DelegateError(f"묶음 리뷰 실행 장부 기록 실패: {path}: {exc}") from exc
+    return path
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────
@@ -12875,8 +14130,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--role", required=True, choices=ROLE_CHOICES,
                         help="위임 역할(권한축 자동 매핑)")
-    parser.add_argument("--prompt-file", required=True, metavar="PATH",
-                        help="PM 이 만든 task 프롬프트 파일(자족·repo 경계 안)")
+    parser.add_argument("--prompt-file", default=None, metavar="PATH",
+                        help="PM 이 만든 task 프롬프트 파일(자족·repo 경계 안). "
+                             "--cluster 묶음 리뷰는 엔진이 프롬프트를 조립하므로 주지 않는다")
     parser.add_argument("--cwd", required=True, metavar="ABSPATH",
                         help="위임 대상 작업공간(절대경로·모든 역할 필수)")
     parser.add_argument("--tier", default=None, choices=TIER_CHOICES,
@@ -12904,6 +14160,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gate", default=None, metavar="T-NNNN",
                         help="내부 code-reviewer 라운드 게이트(기본 --ticket에서 유도). "
                              "code-reviewer는 항상 --ticket 라운드 파일에 결과를 기록한다")
+    parser.add_argument("--cluster", default=None, metavar="C-<이름>",
+                        help="리뷰 단위 = 묶음(code-reviewer 전용). 격리 스냅샷 생성·프롬프트 조립·"
+                             "run-dir 1/라운드 파일 N 예약을 엔진이 한다(손 git 0)")
+    parser.add_argument("--focus", default=None, metavar="PATH",
+                        help="PM 검토 중점 문단 파일(--cluster 전용) — 조립 프롬프트에 그대로 실린다")
+    parser.add_argument("--background", action="store_true",
+                        help="묶음 리뷰를 분리 세션으로 띄우고 즉시 반환한다(--cluster 전용). "
+                             "회수는 별도 `cluster wait`")
     parser.add_argument("--confirm-fix", action="store_true",
                         help="직전 유효 반려 must-fix만 확인하는 게이트당 1회 확인 전용 라운드")
     parser.add_argument("--resume-from", default=None, metavar="T-NNNN|RECORD-ID",
@@ -12950,9 +14214,30 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--cwd 는 파일시스템 루트일 수 없다(작업공간 절대경로 요구·containment 우회 차단).")
     if args.tier is not None and args.role != "developer":
         parser.error("--tier 는 developer 전용이다(비-개발 역할 지정 = usage error·무시 아님).")
-    if args.role == INTERNAL_REVIEW_ROLE and args.ticket is None and args.gate is None:
+    if args.cluster is not None:
+        if args.role != INTERNAL_REVIEW_ROLE:
+            parser.error("--cluster 는 code-reviewer 역할 전용이다(리뷰 단위 = 묶음).")
+        if args.ticket is not None or args.gate is not None:
+            parser.error("--cluster 는 --ticket/--gate 와 병용할 수 없다(대상이 둘이 된다).")
+        if args.prompt_file is not None:
+            parser.error(
+                "--cluster 는 프롬프트를 엔진이 조립한다 — --prompt-file 을 주지 않는다."
+            )
+        if not _is_valid_cluster_id(args.cluster):
+            parser.error("--cluster 는 board 클러스터 장부 id 형식이어야 한다.")
+    elif args.prompt_file is None:
+        parser.error("--prompt-file 은 필수다(엔진이 조립하는 --cluster 묶음 리뷰만 예외).")
+    if args.focus is not None and args.cluster is None:
+        parser.error("--focus 는 --cluster 전용이다.")
+    if args.background and args.cluster is None:
+        parser.error("--background 는 --cluster 전용이다.")
+    if (
+        args.role == INTERNAL_REVIEW_ROLE
+        and args.ticket is None and args.gate is None and args.cluster is None
+    ):
         parser.error(
-            "code-reviewer는 티켓 리뷰 절 영속화를 위해 --ticket 또는 --gate가 필수다."
+            "code-reviewer는 티켓 리뷰 절 영속화를 위해 --ticket 또는 --gate 또는 "
+            "--cluster 가 필수다."
         )
     if args.gate is not None and args.role != INTERNAL_REVIEW_ROLE:
         parser.error("--gate 는 code-reviewer 역할 전용이다.")
@@ -13109,8 +14394,61 @@ def _dry_run_harness_annotations(
     return budget_note, transport_note
 
 
+def _background_run_handoff(env: Mapping[str, str]) -> dict | None:
+    """부모가 넘긴 실행 결속(없거나 형식 밖이면 None — 실행 자체는 그대로 계속한다)."""
+    raw = (env.get(CLUSTER_REVIEW_RUN_ENV) or "").strip()
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict) or set(payload) != _CLUSTER_REVIEW_HANDOFF_FIELDS:
+        return None
+    if not all(isinstance(value, str) and value for value in payload.values()):
+        return None
+    return payload
+
+
+def _close_background_run(handoff: Mapping[str, str], rc: int) -> None:
+    """이 실행의 장부 행을 자기 rc 로 마감한다 — 기록 실패는 알리되 rc 를 바꾸지 않는다."""
+    try:
+        _append_cluster_review_row(Path(handoff["ledger"]), {
+            "cluster": handoff["cluster"],
+            "run_id": handoff["run_id"],
+            "rc": int(rc),
+            "ended_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        })
+    except (DelegateError, OSError, ValueError) as exc:
+        print(f"경고: 백그라운드 실행 마감 기록 실패: {exc}", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None, run_fn: Callable | None = None,
          git_run_fn: Callable | None = None) -> int:
+    """CLI 진입 — 백그라운드 자식이면 **어떤 경로로 끝나든** 자기 rc 로 실행을 마감한다.
+
+    마감이 없으면 회수(`cluster wait`)는 예약 전에 죽은 자식과 정상 종료를 구별할 수 없다.
+    그래서 rc 반환·`SystemExit`(인자 오류 등)·전파 예외가 전부 이 한 자리로 수렴한다.
+    """
+    handoff = _background_run_handoff(os.environ)
+    if handoff is None:
+        return _run_delegate_cli(argv, run_fn=run_fn, git_run_fn=git_run_fn)
+    rc = 1
+    try:
+        rc = _run_delegate_cli(argv, run_fn=run_fn, git_run_fn=git_run_fn)
+        return rc
+    except SystemExit as exc:
+        rc = exc.code if isinstance(exc.code, int) else 1
+        raise
+    except BaseException:
+        rc = 1
+        raise
+    finally:
+        _close_background_run(handoff, rc)
+
+
+def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = None,
+                      git_run_fn: Callable | None = None) -> int:
     _console_encoding = _load_module_from_path(
         Path(__file__).resolve().with_name("console_encoding.py"),
         "console_encoding.py",
@@ -13134,6 +14472,8 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         return _cmd_ticket(resolved[1:])
     if resolved and resolved[0] == "review":
         return _cmd_review(resolved[1:])
+    if resolved and resolved[0] == "cluster":
+        return _cmd_cluster(resolved[1:])
     parser = build_arg_parser()
     args = parser.parse_args(resolved)
     try:
@@ -13258,14 +14598,48 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
                              "한도 소진된 같은 채널 재타격 금지")
             fallback = None
 
+    # 묶음 리뷰 입력 해소 — 읽기 전용(브랜치 diff·티켓 본문·검토 중점)이라 부작용이 없다.
+    # 격리 스냅샷 생성은 부작용이라 아래 정리 경계 **안**에서 만든다(dry-run 은 만들지 않는다).
+    cluster_review: ClusterReviewInput | None = None
+    cluster_specs: dict[str, str] = {}
+    cluster_focus: str | None = None
+    cluster_snapshot: Path | None = None
+    # 하네스가 실제로 서는 자리 — 기본은 `--cwd` 이고, 묶음 리뷰만 확정된 격리 스냅샷으로
+    # 옮긴다(판정 입력이 트리 하나로 확정된다).
+    exec_cwd = cwd
+    if args.cluster:
+        try:
+            cluster_board = _load_board_for_repo(config_repo)
+            cluster_review = cluster_review_input(
+                cluster_board, args.cluster, repo=cwd_repo, git_run_fn=git_run_fn,
+            )
+            cluster_specs = _cluster_member_specs(cluster_board, cluster_review.members)
+            if args.focus:
+                cluster_focus = _cluster_review_focus(
+                    Path(args.focus), cwd=cwd, pm_home=config_repo,
+                )
+        except DelegateError as exc:
+            return fail_loud(f"오류: 묶음 리뷰 입력 해소 실패: {exc}")
+
+    # 백그라운드 요청은 **부작용을 만들기 전에** 갈린다 — 부모는 띄우고 즉시 반환하고, 준비·
+    # 스냅샷·실행·회수는 전부 분리 세션이 한다(예약이 두 번 되지 않는다).
+    if args.background:
+        return _spawn_background_cluster_review(
+            resolved, cwd=cwd, pm_home=config_repo, cluster=args.cluster,
+        )
+
     # target repo 해소값은 write-target 재앵커에 먼저 쓰되, conf 분기 비교는 프롬프트 시크릿 판정으로
     # fallback의 실제 발동 가능성까지 해소한 뒤 수행한다.
     # prompt-file 존재 + 경로 자체 denylist(내용 읽기 전) + containment (repo 경계 안·유출 차단)
-    prompt_file = Path(args.prompt_file)
-    if not prompt_file.is_file():
+    prompt_file = Path(args.prompt_file or "")
+    task_text = ""
+    if cluster_review is None and not prompt_file.is_file():
         print(f"오류: --prompt-file 이 없음: {prompt_file}", file=sys.stderr)
         return 1
-    path_pattern = _prompt_file_denylist_pattern(prompt_file)
+    path_pattern = (
+        None if cluster_review is not None
+        else _prompt_file_denylist_pattern(prompt_file)
+    )
     if path_pattern is not None:
         print(
             "오류: --prompt-file 경로/이름이 시크릿 denylist 패턴에 걸립니다 — 내용 읽기 전 차단합니다.\n"
@@ -13273,23 +14647,27 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
             file=sys.stderr,
         )
         return 1
-    if not _prompt_file_contained(prompt_file, cwd, pm_home=config_repo):
+    if cluster_review is None and not _prompt_file_contained(
+        prompt_file, cwd, pm_home=config_repo,
+    ):
         print(
             f"오류: --prompt-file 이 repo 경계 밖입니다: {prompt_file}\n"
             "  해소된 --cwd 하위 또는 소유 PM 홈(.project_manager/) 하위만 허용됩니다(유출 경로 차단).",
             file=sys.stderr,
         )
         return 1
-    # 검증된 해소 경로에서 읽는다(symlink 우회 폐쇄 — denylist 는 원본+해소 양쪽을 이미 통과·must-fix 1).
-    try:
-        read_target = prompt_file.resolve()
-    except OSError:
-        read_target = prompt_file
-    try:
-        task_text = _load_file_lock().read_text_shared(read_target, encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        print(f"오류: --prompt-file 읽기 실패: {exc}", file=sys.stderr)
-        return 1
+    if cluster_review is None:
+        # 검증된 해소 경로에서 읽는다(symlink 우회 폐쇄 — denylist 는 원본+해소 양쪽을 이미
+        # 통과·must-fix 1).
+        try:
+            read_target = prompt_file.resolve()
+        except OSError:
+            read_target = prompt_file
+        try:
+            task_text = _load_file_lock().read_text_shared(read_target, encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            print(f"오류: --prompt-file 읽기 실패: {exc}", file=sys.stderr)
+            return 1
 
     # [A] 실제 공유 장부와 그 행이 가리키는 raw 파일에서 최종 reply를 읽는다. 첨부는 task 원문
     # 말미에 붙으므로 full payload와 resume delta 어느 쪽에서도 같은 원문 1회가 실제 송신된다.
@@ -13297,7 +14675,8 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         attached_raw = resolve_attached_raw(args.attach_raw, output_dir=output_dir)
     except DelegateError as exc:
         return fail_loud(f"오류: {exc}")
-    task_text = append_attached_raw(task_text, attached_raw)
+    if cluster_review is None:
+        task_text = append_attached_raw(task_text, attached_raw)
     if internal_confirm_evidence is not None:
         # 확인 자격과 근거는 내부 장부 최신 반려 한 건만 읽는다. 예약 임계 구역에서 같은 문자열을
         # 재대조하므로, 이 read 뒤 동시 라운드가 끝나면 stale 근거를 보내지 않고 재실행을 요구한다.
@@ -13306,7 +14685,29 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
     # cross 실위임의 라운드 준비. dry-run은 미전송/무부수효과 계약이라 만들지 않고, 하네스로
     # 위임되는 역할의 실제 실행만 prepare한다(ticket 없는 legacy 호출은 종전 형상 유지).
     ticket_copy: TicketCopyPlan | None = None
-    if not args.dry_run and effective_ticket and args.role in TICKET_COPY_PREPARE_ROLES:
+    cluster_plan: ClusterCopyPlan | None = None
+    if not args.dry_run and cluster_review is not None:
+        try:
+            cluster_plan = prepare_cluster_copy(
+                cluster=cluster_review.cluster, role=args.role, cwd=cwd_repo,
+                pm_home=config_repo, owner_pid=os.getpid(),
+                # 묶음 준비 표면 — 고정 예산·역할 순서가 여기서 발동한다(우회 인자 없음).
+                enforce_budget=True,
+            )
+            # 쓰기 자리·run_id·환불 좌표는 run 단위라 대표 자리 하나로 잡아도 같은 값이다.
+            # 티켓별로 갈리는 판정(라운드 마감 입력·회수)은 아래에서 `cluster_plan.rounds` 를
+            # 그대로 순회한다.
+            ticket_copy = cluster_plan.rounds[0]
+        except ClusterRoundBudgetExceeded as exc:
+            return fail_loud(f"오류: 묶음 리뷰 라운드 준비 실패: {exc}")
+        except InternalRoundLimitExceeded as exc:
+            return fail_loud(
+                f"오류: 묶음 리뷰 라운드 준비 실패: {exc}",
+                rc=_load_external_review().EXIT_ROUND_LIMIT_EXCEEDED,
+            )
+        except DelegateError as exc:
+            return fail_loud(f"오류: 묶음 리뷰 라운드 준비 실패: {exc}")
+    elif not args.dry_run and effective_ticket and args.role in TICKET_COPY_PREPARE_ROLES:
         try:
             ticket_copy = prepare_ticket_copy(
                 ticket=effective_ticket, role=args.role, cwd=cwd_repo, pm_home=config_repo,
@@ -13340,8 +14741,22 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         # 바뀌어도 전달한 금지 루트와 다른 현재값으로 재판정하지 않는다.
         adapter_roots = _resolved_adapter_directories()
         preamble = _role_preamble(args.role, adapter_roots)
-        if ticket_copy is not None:
-            preamble += "\n" + _ticket_copy_preamble(ticket_copy)
+        if cluster_review is not None:
+            # 격리 스냅샷은 여기서 만든다 — 이 경계를 벗어나는 모든 경로가 아래 finally 하나로
+            # 수렴해 정리된다(생성 실패는 실행 전 차단이고 강등하지 않는다).
+            if not args.dry_run:
+                cluster_snapshot = create_cluster_review_snapshot(
+                    cwd_repo, cluster_review, board=cluster_board,
+                    git_run_fn=git_run_fn,
+                )
+                exec_cwd = cluster_snapshot
+            task_text = append_attached_raw(build_cluster_review_prompt(
+                cluster_review, cluster_specs,
+                snapshot=cluster_snapshot, focus=cluster_focus,
+            ), attached_raw)
+        round_note = _round_copy_preamble(ticket_copy, cluster_plan)
+        if round_note is not None:
+            preamble += "\n" + round_note
         prompt = preamble + "\n\n" + task_text
 
         # 세션 재사용 해소 — **전송 전 게이트보다 앞**이다. 재사용 라운드가 실제로 내보내는 건 delta
@@ -13379,7 +14794,7 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
         # 드라이버 argv 준비 (dry-run·실행 공용). opencode 는 실행 시 합성 프롬프트를 ``--dir`` 아래
         # wire 사본으로 만들어 --file 전달하므로, dry-run argv 는 사용자 prompt-file 경로로만 표시한다.
         argv_display = _build_target_argv(
-            harness, model, reasoning, args.role, cwd, prompt_file,
+            harness, model, reasoning, args.role, exec_cwd, prompt_file,
             None if resume is None else resume.session_id,
         )
 
@@ -13525,10 +14940,23 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
             print("=== [dry-run] pm_delegate 미리보기 (미실행) ===")
             print(f"role: {args.role} · tier: {tier} · 권한축: {_perm_axis(args.role)}")
             if args.role == INTERNAL_REVIEW_ROLE:
+                gate_label = (
+                    f"{cluster_review.cluster} 멤버 {len(cluster_review.members)}건 "
+                    f"({', '.join(cluster_review.members)})"
+                    if cluster_review is not None
+                    else internal_gate or "없음(자문·장부 증거 아님)"
+                )
                 print(
-                    f"내부 리뷰 게이트: {internal_gate or '없음(자문·장부 증거 아님)'}"
+                    f"내부 리뷰 게이트: {gate_label}"
                     + (" · 확인 전용" if args.confirm_fix else "")
                 )
+            if cluster_review is not None:
+                print(
+                    f"리뷰 입력: {cluster_review.base_branch} 와 {cluster_review.branch} 의 "
+                    f"merge-base({cluster_review.merge_base[:12]}) 이후 · 변경 파일 "
+                    f"{len(cluster_review.paths)}건"
+                )
+                print("격리 스냅샷: dry-run 은 만들지 않는다(실행 시 생성·부작용 0 계약)")
             print(f"해소: harness={harness} model={model} reasoning={reasoning}")
             if fallback_skip is not None:
                 print(f"폴백: 비발동 — {fallback_skip}")
@@ -13641,17 +15069,33 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
             diff_fingerprint = (
                 _internal_diff_fingerprint(scope_audit) if internal_gate else None
             )
-            internal_budget = _reserve_internal_review_round(
-                internal_gate,
-                confirm_fix=bool(args.confirm_fix),
-                wall_timeout_sec=timeout,
-                target_rev=target_rev,
-                diff_fingerprint=diff_fingerprint,
-                expected_confirm_evidence=internal_confirm_evidence,
+            if cluster_plan is not None:
+                # 묶음 리뷰는 게이트가 N 이다 — 멤버마다 라운드를 예약하고, 하나라도 거부되면
+                # 앞서 잡은 예약을 되돌린다(부분 예약 금지). 판정 입력(라운드 마감)은 티켓별
+                # 산출 bytes 라 예약도 티켓별이어야 한다.
+                internal_budgets, refused_rc = _reserve_cluster_internal_rounds(
+                    cluster_plan, wall_timeout_sec=timeout, target_rev=target_rev,
+                    diff_fingerprint=_cluster_diff_fingerprint(scope_audit),
+                )
+                if refused_rc is not None:
+                    return refused_rc
+            else:
+                internal_budget = _reserve_internal_review_round(
+                    internal_gate,
+                    confirm_fix=bool(args.confirm_fix),
+                    wall_timeout_sec=timeout,
+                    target_rev=target_rev,
+                    diff_fingerprint=diff_fingerprint,
+                    expected_confirm_evidence=internal_confirm_evidence,
+                )
+                if internal_budget.refused_rc is not None:
+                    return internal_budget.refused_rc
+                internal_budgets = (internal_budget,)
+            # 실행은 한 번이라 추적기도 하나다 — attempt raw 는 N 라운드가 공유하고, 티켓별로
+            # 갈리는 것은 마감 판정 입력(그 티켓의 라운드 파일 bytes)뿐이다.
+            internal_trace = InternalRoundTrace(
+                internal_budgets[0] if internal_budgets else InternalRoundBudget()
             )
-            if internal_budget.refused_rc is not None:
-                return internal_budget.refused_rc
-            internal_trace = InternalRoundTrace(internal_budget)
             try:
                 # 비용/송신 경고는 라운드 예약 승인 뒤에만 낸다. 상한/발산 거부(rc=1)가 "전송 중"을
                 # 출력하면 실제 subprocess 0인 실행을 송신으로 오보한다.
@@ -13676,7 +15120,8 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
                 _ticket_copy_handed_off = True  # 여기부터 harvest 가 정리를 넘겨받는다
                 return _execute_and_collect(
                     args=args, harness=harness, model=model, reasoning=reasoning,
-                    fallback=fallback, fallback_skip=fallback_skip, cwd=cwd, prompt=prompt,
+                    fallback=fallback, fallback_skip=fallback_skip, cwd=exec_cwd,
+                    prompt=prompt,
                     timeout=timeout, fallback_timeout=fallback_timeout,
                     output_dir=output_dir, run_fn=_run,
                     secret_scan_ack_digest=secret_scan_ack_digest,
@@ -13696,34 +15141,55 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
                     base_rev=target_rev,
                     internal_trace=internal_trace,
                     ticket_copy=ticket_copy,
+                    cluster_plan=cluster_plan,
                 )
             finally:
-                _finish_internal_review_round(
-                    internal_budget, internal_trace, ticket_copy=ticket_copy,
+                # 마감은 라운드마다다 — 묶음이면 그 티켓의 라운드 파일이 그 게이트의 판정
+                # 입력이다(같은 실행, 다른 산출).
+                seats = (
+                    tuple(cluster_plan.rounds) if cluster_plan is not None
+                    else (ticket_copy,)
                 )
+                for budget, seat in zip(internal_budgets, seats):
+                    _finish_internal_review_round(
+                        budget, internal_trace, ticket_copy=seat,
+                    )
         finally:
             pending_exception = sys.exception()
             report_scope_audit(scope_audit, args.role)
             if ticket_copy is not None and _ticket_copy_handed_off:
                 try:
-                    result = harvest_ticket_copy(
-                        copy_path=ticket_copy.path, cwd=cwd_repo, pm_home=config_repo,
-                    )
-                    print(
-                        "[pm-delegate] ticket harvest: "
-                        f"{'applied' if result.changed else 'unchanged'} · "
-                        f"sync_ready={str(result.sync_ready).lower()} · copy={ticket_copy.path}",
-                        file=sys.stderr,
-                    )
+                    if cluster_plan is not None:
+                        # 묶음은 자리마다 독립 회수다 — 한 자리의 거부가 다른 자리의 교체를
+                        # 되돌리지 않는다(회수 판정식은 단일 경로와 같은 하나다).
+                        _report_cluster_harvest(harvest_cluster_copy(
+                            run_dir=cluster_plan.run_dir, cwd=cwd_repo,
+                            pm_home=config_repo,
+                        ))
+                    else:
+                        result = harvest_ticket_copy(
+                            copy_path=ticket_copy.path, cwd=cwd_repo, pm_home=config_repo,
+                        )
+                        print(
+                            "[pm-delegate] ticket harvest: "
+                            f"{'applied' if result.changed else 'unchanged'} · "
+                            f"sync_ready={str(result.sync_ready).lower()} · "
+                            f"copy={ticket_copy.path}",
+                            file=sys.stderr,
+                        )
                 except Exception as exc:
                     # 정상 return rc에는 harvest 실패 rc=1이 더 강하다. 반면 runner/실행 예외가 이미
                     # 전파 중이면 finally return으로 삼키지 않고 원 예외를 그대로 보존하며 두 원인을
                     # 모두 stderr에 남긴다.
+                    residue = (
+                        cluster_plan.run_dir if cluster_plan is not None
+                        else ticket_copy.path
+                    )
                     recovery = (
                         "오류: 위임 종료 ticket harvest 실패 — board 라운드와 slot run-dir 을 "
                         "그대로 보존했습니다. run-dir 을 진단한 뒤 같은 경로로 "
                         "`ticket harvest` 를 다시 부르거나 새 prepare/위임으로 복구하세요. "
-                        f"copy={ticket_copy.path} · "
+                        f"copy={residue} · "
                         f"{exc}"
                     )
                     if pending_exception is not None:
@@ -13739,9 +15205,45 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
                         return fail_loud(recovery)
     finally:
         if ticket_copy is not None and not _ticket_copy_handed_off:
-            _refund_gate_rejected_ticket_copy(
-                ticket_copy, cwd=cwd_repo, pm_home=config_repo,
+            seats = (
+                tuple(cluster_plan.rounds) if cluster_plan is not None
+                else (ticket_copy,)
             )
+            for seat in seats:
+                _refund_gate_rejected_ticket_copy(
+                    seat, cwd=cwd_repo, pm_home=config_repo,
+                )
+        if cluster_snapshot is not None:
+            # 스냅샷은 이 실행의 판정 입력이었다 — 실행이 끝나면 등록까지 정리한다(같은 경로의
+            # 다음 생성이 삭제된 worktree 등록에 막히지 않게).
+            remove_cluster_review_snapshot(cwd_repo, cluster_snapshot)
+
+
+def _report_cluster_harvest(outcomes: Sequence[ClusterHarvestOutcome]) -> None:
+    """묶음 회수 결과 요약 — 자리마다 한 줄. 거부가 하나라도 있으면 실패로 올린다.
+
+    자리별 독립 회수라 성공한 자리는 그대로 두되, 남은 거부를 성공 rc 로 덮지 않는다
+    (단일 경로의 회수 실패 처리와 같은 축 — 호출부의 복구 안내가 그대로 붙는다).
+    """
+    refused: list[str] = []
+    for outcome in outcomes:
+        if outcome.refusal is not None:
+            refused.append(outcome.ticket)
+            print(
+                f"오류: 위임 종료 ticket harvest 거부: {outcome.ticket}: "
+                f"{outcome.refusal}",
+                file=sys.stderr,
+            )
+            continue
+        print(
+            "[pm-delegate] ticket harvest: "
+            f"{'applied' if outcome.result.changed else 'unchanged'} · "
+            f"sync_ready={str(outcome.result.sync_ready).lower()} · "
+            f"copy={outcome.copy}",
+            file=sys.stderr,
+        )
+    if refused:
+        raise DelegateError(f"묶음 회수 거부 {len(refused)}건: {', '.join(refused)}")
 
 
 def _round_write_scope(
@@ -13788,6 +15290,7 @@ def _execute_and_collect(
     base_rev: str | None = None,
     internal_trace: InternalRoundTrace | None = None,
     ticket_copy: TicketCopyPlan | None = None,
+    cluster_plan: ClusterCopyPlan | None = None,
 ) -> int:
     """primary(+선택적 폴백) 실행과 결과 회수 — main 의 종료 rc 를 그대로 낸다.
 
@@ -13813,6 +15316,7 @@ def _execute_and_collect(
             cwd=cwd,
             prompt=_with_ticket_copy_preamble(
                 prompt if resume is None else resume.delta_prompt, ticket_copy,
+                cluster_plan,
             ),
             timeout=timeout,
             output_dir=output_dir,
@@ -13878,7 +15382,7 @@ def _execute_and_collect(
                 reasoning=reasoning,
                 role=args.role,
                 cwd=cwd,
-                prompt=_with_ticket_copy_preamble(prompt, ticket_copy),
+                prompt=_with_ticket_copy_preamble(prompt, ticket_copy, cluster_plan),
                 timeout=timeout,
                 output_dir=output_dir,
                 run_fn=run_fn,
@@ -13957,7 +15461,7 @@ def _execute_and_collect(
                 reasoning=fallback_reasoning,
                 role=args.role,
                 cwd=cwd,
-                prompt=_with_ticket_copy_preamble(prompt, ticket_copy),
+                prompt=_with_ticket_copy_preamble(prompt, ticket_copy, cluster_plan),
                 timeout=fallback_timeout if fallback_timeout is not None else timeout,
                 output_dir=output_dir,
                 run_fn=run_fn,
