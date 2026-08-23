@@ -1690,9 +1690,8 @@ def _internal_conf_int(conf: dict[str, str], key: str, default: int) -> int:
 def internal_review_rounds_max(conf: dict[str, str] | None = None) -> int:
     """내부 code-reviewer 수렴 상한 (local.conf 노브·미설정/손상은 엔진 기본값).
 
-    이 값의 소비자는 둘이다 — 다음 라운드 예약 판정(이 모듈)과 `pm-fixed` 처분의 발동/완료
-    재검증(board). 한 축을 두 값으로 두면 상한을 낮춘 채택자가 선언은 되는데 완료가 막히는
-    형상을 만든다. `conf` 미지정은 이 클론의 local.conf 를 읽는다."""
+    소비자는 다음 라운드 예약 판정 하나다 — 상한에 걸린 게이트의 출구는 재설계뿐이고, 상한을
+    소진해서 여는 처분은 없다. `conf` 미지정은 이 클론의 local.conf 를 읽는다."""
     if conf is None:
         conf = local_config()
     return _internal_conf_int(
@@ -1831,7 +1830,6 @@ def _cluster_budget_refusal(
 
 def prepare_ticket_copy(
     *, ticket: str, role: str, cwd: Path, pm_home: Path, owner_pid: int | None = None,
-    confirm_fix: bool = False,
 ) -> TicketCopyPlan:
     """티켓 하나의 라운드를 준비한다 — **크기 1 묶음 호출**의 얇은 래퍼.
 
@@ -1851,15 +1849,14 @@ def prepare_ticket_copy(
     cluster = board.ticket_cluster_from_text(ticket, spec_text)
     plan = prepare_cluster_copy(
         cluster=cluster, tickets=(ticket,), role=role, cwd=cwd, pm_home=pm_home,
-        owner_pid=owner_pid, confirm_fix=confirm_fix,
+        owner_pid=owner_pid,
     )
     return plan.rounds[0]
 
 
 def prepare_cluster_copy(
     *, cluster: str, tickets: Sequence[str] | None = None, role: str, cwd: Path,
-    pm_home: Path, owner_pid: int | None = None, confirm_fix: bool = False,
-    enforce_budget: bool = False,
+    pm_home: Path, owner_pid: int | None = None,
 ) -> ClusterCopyPlan:
     """board 에 티켓별 라운드 순번을 시드로 예약하고, 같은 파일들을 run-dir 하나에 깐다.
 
@@ -1889,17 +1886,13 @@ def prepare_cluster_copy(
     run 이 죽은 것으로 읽힌다. 키 부재는 "죽음"이 아니라 "증거 없음"이다.
 
     내부 라운드 상한(게이트별 · role 당)은 발산(라운드 증가) 방향으로는 어떤 인자로도 열리지
-    않는다(외부 채널과 같은 규율 — 출구는 재설계·분할뿐 · 우회 플래그가 없다). 유일한 예외는
-    `confirm_fix=True` 다 — 수렴 상한(`internal_review_rounds_max()`)이 소유한 "확인 수정은
-    1회만 허용" 규약을 이 예약 상한이 앞서 막지 않도록, 그 한 라운드에 한해 상한을 1 만큼 올려
-    확인한다. 실제 1회 제한은 여전히 내부 장부(`entry["confirm_fix"] >= 1`)가 소유하며, 여기서는
-    그 승인이 도달할 길만 연다.
+    않는다(외부 채널과 같은 규율 — 출구는 재설계·분할뿐 · 우회 플래그가 없다).
 
-    `enforce_budget` 은 **묶음 준비 표면**(`ticket prepare --cluster`·묶음 리뷰 위임)이 켠다 —
-    장부가 예산을 선언한 묶음이면 역할 수열 판정을 per-ticket 상한보다 **먼저** 낸다. 이 축은
-    `confirm_fix` 예외를 상속하지 않는다: 확인 라운드도 라운드라 예산 안에서만 산다(예산 밖
-    송신을 여는 인자가 없다). 판정은 사전판정과 board_lock 재확인 **두 지점**에 함께 건다 —
-    한쪽에만 걸면 동시 준비 둘이 같은 예산을 함께 통과한다(per-ticket 상한과 같은 창).
+    묶음 고정 예산은 **모든 준비 표면**에서 같은 판정을 받는다 — 장부가 예산을 선언한 묶음이면
+    역할 수열 판정을 per-ticket 상한보다 **먼저** 낸다. 표면마다 켜고 끄는 인자가 없으므로
+    티켓 하나짜리 준비가 단계 게이트를 비켜 가는 길도 없다. 판정은 사전판정과 board_lock
+    재확인 **두 지점**에 함께 건다 — 한쪽에만 걸면 동시 준비 둘이 같은 예산을 함께 통과한다
+    (per-ticket 상한과 같은 창).
     """
     if role not in TICKET_COPY_PREPARE_ROLES:
         raise DelegateError(f"티켓 라운드 준비 미지원 역할: {role}")
@@ -1951,12 +1944,10 @@ def prepare_cluster_copy(
         새 기준선을 본다. 장부 판독은 잠금 없는 파일 읽기라 board_lock 안에서 불러도 재진입이
         아니다.
 
-        반환의 `None` 은 **선언 없음**(예산 축이 없는 요청·장부 없는 옛 티켓)이고, 빈 tuple 은
-        **선언된 빈 수열**(모든 값이 0 = 이 주기에 허용된 라운드가 없다)이다. 둘을 truthiness
-        하나로 합치면 0 을 선언한 장부가 "선언 없음"으로 읽혀 무제한이 된다.
+        반환의 `None` 은 **선언 없음**(장부 없는 옛 티켓)이고, 빈 tuple 은 **선언된 빈 수열**
+        (모든 값이 0 = 이 주기에 허용된 라운드가 없다)이다. 둘을 truthiness 하나로 합치면 0 을
+        선언한 장부가 "선언 없음"으로 읽혀 무제한이 된다.
         """
-        if not enforce_budget:
-            return None, 0
         ledger = board.load_cluster(cluster)
         if ledger is None:
             return None, 0
@@ -1975,11 +1966,6 @@ def prepare_cluster_copy(
     limit = 0
     if role in DEFAULT_INTERNAL_ROUND_LIMITS:
         limit = _internal_round_limit(conf, role)
-        # 확인 수정 예약은 수렴 상한이 소유한 1회 예외를 상속한다(위 docstring). 실제 1회
-        # 한도는 `_reserve_internal_review_round` 의 내부 장부가 강제하므로, 이 예약 상한이
-        # 그 자리를 대신 세지 않고 통과 창만 하나 더 연다.
-        if confirm_fix:
-            limit += 1
 
     # ── (1.4) 묶음 예산 사전판정 — per-ticket 상한보다 앞이다(선언된 묶음에서는 이 축이
     # 항상 먼저 발동해야 같은 요청이 두 사유로 갈리지 않는다). 여기도 신뢰 뿌리가 아니다.
@@ -3593,9 +3579,9 @@ def _internal_review_format_preamble() -> str:
         "키·상태·분류를 다시 쓰거나 골격 밖 schema를 만들지 않는다."
     )
 
-# 확인 전용 라운드의 스코프 문구 단일 진실(F-001 fix) — cross 경로(`_INTERNAL_CONFIRM_CHARTER`)와
-# native 경로(`_render_review_round_seed_body`의 HTML 주석) 양쪽이 이 상수 하나를 embed한다.
-# 손으로 각자 다시 쓰면 두 경로가 갈린다.
+# 확인 라운드의 스코프 문구 단일 진실 — 라운드 시드
+# (`_render_review_round_seed_body` 의 HTML 주석)가 이 상수 하나를 embed한다. 손으로 다시 쓰면
+# 시드와 무편집 판정이 갈린다.
 CONFIRM_ROUND_SCOPE_RULE = (
     "이 라운드는 직전 must-fix의 해소 확인 전용이다 — 신규 탐색은 그 fix diff로 제한하고, "
     "신규 발견은 `NEW`로만 분리해 보고한다. 기존 finding 은 `confirmations` 로만 참조하고 "
@@ -3618,21 +3604,13 @@ NEXT_FINDING_ID_RULE = (
     "유일이라 명세·앞 라운드에 이미 있는 번호를 다시 선언하면 이 라운드는 회수되지 않는다."
 )
 
-_INTERNAL_CONFIRM_CHARTER = f"""\
-## 내부 리뷰 확인 전용 라운드
-
-{CONFIRM_ROUND_SCOPE_RULE} 먼저 각 항목을 해소/미해소/퇴행으로 판정한다.
-
-"""
-
 _INTERNAL_ROUND_REFUSAL = (
     "오류: 내부 code-reviewer 게이트 {gate}의 다음 라운드를 거부합니다 — {reason}.\n"
     "  · 사용 라운드: {used}/{limit} · must-fix 추이: {series}\n"
     "  · 상한 조정은 local.conf `{knob}` (기본 {default}).\n"
     "  · 과거 계측이 의심되면 회수된 라운드 파일·기록된 raw reply로 재계산하세요: "
     "`python3 .project_manager/tools/pm_delegate.py rounds recalculate --gate {gate}`\n"
-    "  · 같은 구현을 더 검토하지 말고 재설계하거나 티켓을 분할하세요. 직전 반려 항목의 해소만 "
-    "확인하려면 게이트당 1회 `--confirm-fix`를 사용하세요.\n"
+    "  · 같은 구현을 더 검토하지 말고 재설계하거나 티켓을 분할하세요.\n"
     "  · 판정 근거: {ledger}"
 )
 
@@ -5958,8 +5936,8 @@ def pm_verified_evidence_problem(
 ) -> str | None:
     """`pm-verified` 완료 처분의 발동 조건(증거) — 선언·완료 재검증 공용 · **채널 스코프 필수**.
 
-    `review_rounds.recorded_pm_fixed_problem` 과 동형으로, 선언 시점과 완료 재검증 시점이
-    **같은 함수**를 본다. 조건은 상한·쿼터가 아니라 증거다: delta 가 정상 파싱돼야 한다.
+    선언 시점과 완료 재검증 시점이 **같은 함수**를 본다. 조건은 상한·쿼터가 아니라 증거다:
+    delta 가 정상 파싱돼야 한다.
 
     판정은 언제나 한 채널 안에서만 한다(다른 채널의 accepted 잔여도, 다른 채널의 기계 확인도
     보지 않는다 — 채널 격리): 그 채널의 accepted 잔여가 없어야 하고, 그 채널 판정 표면
@@ -6236,8 +6214,6 @@ class InternalRoundBudget(NamedTuple):
     started_at: str = ""
     target_rev: str | None = None
     diff_fingerprint: str | None = None
-    confirm_fix_spent: bool = False
-    confirm_fix_evidence: str | None = None
     refused_rc: int | None = None
 
     @property
@@ -6313,8 +6289,7 @@ def _internal_gate_entry_with_retirement(ledger: dict, gate: str) -> tuple[dict,
     """`_internal_gate_entry` 와 같은 정규화 + 폐기 필드(`RETIRED_ACK_FIELD`) 감지 여부.
 
     둘째 값은 이 호출이 방금 떨군 폐기 필드 원값(0=미검출). 알림·영속은 호출부 소유 —
-    `_reserve_internal_review_round` 는 감지 즉시 저장 후 1회 고지하고, 읽기 전용
-    (`_preview_internal_confirm_fix_evidence`)은 영속할 수 없는 고지를 하지 않는다."""
+    `_reserve_internal_review_round` 는 감지 즉시 저장 후 1회 고지한다."""
     return _load_review_rounds().normalize_gate_entry(ledger, gate)
 
 
@@ -6432,12 +6407,10 @@ def _extract_internal_must_fix_items(reply: str) -> list[str] | None:
 
 
 # 재리뷰는 유료 외부 송신이라 판정 불능의 기본 처방이 아니다. 두 축이 모두 판정을 못 세운
-# 실행에서만 선택지로 제시하고, 그때도 비용과 대안(회수된 산출 직접 판정·확인 전용 라운드)을
-# 함께 적는다.
+# 실행에서만 선택지로 제시하고, 그때도 비용과 대안(회수된 산출 직접 판정)을 함께 적는다.
 _INTERNAL_REREVIEW_LAST_RESORT = (
     "재리뷰는 유료 외부 송신이라 기본 행동이 아닙니다 — 먼저 회수된 라운드 파일을 읽고 PM이 "
-    "직접 판정하거나(`rounds resolve --pm-verified`), 게이트당 1회 `--confirm-fix` 확인 전용 "
-    "라운드로 잔여만 확인하세요. 그래도 재리뷰가 필요하면:"
+    "직접 판정하세요(`rounds resolve --pm-verified`). 그래도 재리뷰가 필요하면:"
 )
 # 통과는 두 축 합의로만 인정한다 — 한 축만 통과인 실행의 처방은 "못 선 축을 채워라"다. 채울
 # 대상은 축마다 다르므로 규칙 문장과 재리뷰 불요 문장만 공유하고 가운데만 갈린다.
@@ -6783,44 +6756,6 @@ def _internal_round_verdict(
     )
 
 
-def _internal_confirm_fix_evidence(entry: dict) -> str | None:
-    """최신 완료 라운드가 유효 반려일 때만 확인 전용 근거를 만든다."""
-    common = _load_review_rounds()
-    outcome = common.latest_round_outcome(entry)
-    if outcome is None or outcome.get("verdict") != 1:
-        return None
-    round_id = outcome.get("id")
-    record = next(
-        (row for row in entry.get("records", [])
-         if isinstance(row, dict) and row.get("id") == round_id),
-        None,
-    )
-    if not isinstance(record, dict) or record.get("verdict") is not True:
-        return None
-    items = record.get("must_fix_items")
-    sequence = outcome.get("sequence")
-    header = f"### 직전 반려 라운드 #{sequence if isinstance(sequence, int) else '?'} must-fix\n"
-    if isinstance(items, list) and items:
-        listed = "\n".join(
-            f"{index}. {str(item).strip()}" for index, item in enumerate(items, start=1)
-            if str(item).strip()
-        )
-        return f"{_INTERNAL_CONFIRM_CHARTER}{header}{listed}\n\n"
-    count = outcome.get("must_fix")
-    label = str(count) if isinstance(count, int) and not isinstance(count, bool) else "미상"
-    return (
-        f"{_INTERNAL_CONFIRM_CHARTER}{header}항목 원문 미보관 · 건수 {label}. "
-        "직전 리뷰 원문을 함께 대조하라.\n\n"
-    )
-
-
-def _preview_internal_confirm_fix_evidence(gate: str | None) -> str | None:
-    if not gate:
-        return None
-    ledger = _load_internal_round_ledger()
-    return _internal_confirm_fix_evidence(_internal_gate_entry(dict(ledger), gate))
-
-
 def _format_internal_series(entry: dict) -> str:
     series = _load_review_rounds().recorded_must_fix_series(entry)
     return _format_internal_must_fix_series(series)
@@ -6835,11 +6770,9 @@ def _format_internal_must_fix_series(series: Sequence[int | None]) -> str:
 def _reserve_internal_review_round(
     gate: str | None,
     *,
-    confirm_fix: bool,
     wall_timeout_sec: int,
     target_rev: str | None,
     diff_fingerprint: str | None = None,
-    expected_confirm_evidence: str | None = None,
 ) -> InternalRoundBudget:
     """락 안에서 확인→상한/발산 판정→예약→저장을 한 번에 수행한다."""
     if not gate:
@@ -6861,34 +6794,11 @@ def _reserve_internal_review_round(
             if retired_ack:
                 _save_internal_round_ledger(ledger)
                 common.warn_retired_ack_field(gate, retired_ack)
-            evidence = _internal_confirm_fix_evidence(entry) if confirm_fix else None
-            if confirm_fix:
-                if entry["confirm_fix"] >= 1:
-                    print(
-                        f"오류: `--confirm-fix`는 내부 게이트 {gate}당 1회입니다 — 이미 "
-                        f"{entry['confirm_fix']}회 사용했습니다 (장부: {_internal_round_ledger_path()}).",
-                        file=sys.stderr,
-                    )
-                    return InternalRoundBudget(refused_rc=1)
-                if evidence is None:
-                    print(
-                        f"오류: `--confirm-fix`는 최신 내부 라운드가 유효 반려인 게이트에서만 "
-                        f"사용합니다: {gate} (장부: {_internal_round_ledger_path()}).",
-                        file=sys.stderr,
-                    )
-                    return InternalRoundBudget(refused_rc=1)
-                if evidence != expected_confirm_evidence:
-                    print(
-                        f"오류: 내부 게이트 {gate}의 확인 근거가 프롬프트 구성 뒤 변경됐습니다 — "
-                        "동시 라운드 결과를 반영해 재실행하세요.",
-                        file=sys.stderr,
-                    )
-                    return InternalRoundBudget(refused_rc=1)
             refusal = common.convergence_refusal(
                 entry, rounds_max,
                 wall_timeout_sec=wall_timeout_sec,
             )
-            if refusal is not None and not confirm_fix:
+            if refusal is not None:
                 completed, inflight = common.convergence_round_usage(
                     entry, wall_timeout_sec=wall_timeout_sec,
                 )
@@ -6901,8 +6811,6 @@ def _reserve_internal_review_round(
                     ledger=_internal_round_ledger_path(),
                 ), file=sys.stderr)
                 return InternalRoundBudget(refused_rc=1)
-            if confirm_fix:
-                entry["confirm_fix"] += 1
             round_id = uuid.uuid4().hex
             record = common.reserve_round(
                 entry, round_id, wall_timeout_sec=wall_timeout_sec,
@@ -6916,7 +6824,6 @@ def _reserve_internal_review_round(
                 gate=gate, round_id=round_id, sequence=record["sequence"],
                 started_at=record["started_at"], target_rev=record["target_rev"],
                 diff_fingerprint=record["diff_fingerprint"],
-                confirm_fix_spent=confirm_fix, confirm_fix_evidence=evidence,
             )
     except (OSError, UnicodeError) as exc:
         print(
@@ -6971,8 +6878,7 @@ def _finish_internal_review_round(
             ledger = _load_internal_round_ledger()
             entry = _internal_gate_entry(ledger, budget.gate)
             if not trace.any_spawned:
-                if common.refund_round(entry, budget.round_id) and budget.confirm_fix_spent:
-                    entry["confirm_fix"] = max(0, common.as_int(entry["confirm_fix"]) - 1)
+                common.refund_round(entry, budget.round_id)
                 _save_internal_round_ledger(ledger)
                 print(
                     f"내부 리뷰 라운드 예약 환불: 게이트 {budget.gate} — 전 attempt 스폰 전 실패.",
@@ -7273,7 +7179,7 @@ def _recalculate_internal_review_rounds(
     권위 입력은 라운드 마감과 같다 — **회수된 board 라운드 파일**이고, 그 좌표가 안 서거나
     판독이 실패할 때만 기록된 raw reply 로 내려간다. 두 입력이 모두 판정을 못 세우면 과거 값을
     신뢰하지 않고 해당 셀을 ``None``으로 바꾼다. 실패 사실과 이유는 라운드 메타데이터에 남는다.
-    라운드 삭제, count 변경, confirm-fix 쿼터 변경은 이 경로의 권한 밖이다.
+    라운드 삭제와 count 변경은 이 경로의 권한 밖이다.
     """
     common = _load_review_rounds()
     with _internal_round_lock():
@@ -7421,13 +7327,12 @@ def _declare_internal_review_resolution(
     *,
     into: str | None = None,
     fixed: str | None = None,
-    pm_fixed: str | None = None,
     pm_verified: bool = False,
 ) -> InternalResolutionReport:
-    """현재 마지막 반려 잔여에 후속 티켓·후속 통과·PM 직접 해소·기계 확인 해소를 결속한다."""
-    if sum((into is not None, fixed is not None, pm_fixed is not None, pm_verified)) != 1:
+    """현재 마지막 반려 잔여에 후속 티켓·후속 통과·기계 확인 해소를 결속한다."""
+    if sum((into is not None, fixed is not None, pm_verified)) != 1:
         raise DelegateError(
-            "--into, --fixed, --pm-fixed, --pm-verified 중 하나만 지정해야 합니다"
+            "--into, --fixed, --pm-verified 중 하나만 지정해야 합니다"
         )
     target = into or fixed
     if target is not None and target == gate:
@@ -7518,16 +7423,6 @@ def _declare_internal_review_resolution(
                 "must_fix": residual,
                 **board.gate_round_binding(entry),
             }
-        elif pm_fixed is not None:
-            try:
-                declared = common.declare_pm_fixed_resolution(
-                    entry,
-                    pm_fixed,
-                    limit=internal_review_rounds_max(),
-                    repo_root=REPO,
-                )
-            except ValueError as exc:
-                raise DelegateError(str(exc)) from exc
         else:
             declared = {
                 "kind": (
@@ -12974,6 +12869,21 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
             ),
         )
         return parser
+    if command == "changelog":
+        parser = argparse.ArgumentParser(
+            prog="pm_delegate.py changelog",
+            description="완료 티켓 본문에서 릴리즈 노트 재료 추출(문안은 PM)",
+        )
+        sub = parser.add_subparsers(dest="changelog_command", required=True)
+        material = sub.add_parser(
+            "material",
+            help="완료 시점이 지정 rev 이후인 done 티켓의 목표·결정·완료 조건을 재료로 낸다",
+        )
+        material.add_argument(
+            "--since", required=True, metavar="<tag|rev>",
+            help="구간 시작 — 코드 체크아웃에서 이 rev 의 커밋 시각을 해소해 완료 시점과 비교한다",
+        )
+        return parser
     if command == "cluster":
         parser = argparse.ArgumentParser(
             prog="pm_delegate.py cluster",
@@ -13308,8 +13218,6 @@ def _cmd_ticket(argv: list[str]) -> int:
             if args.cluster:
                 cluster_plan = prepare_cluster_copy(
                     cluster=args.cluster, role=args.role, cwd=cwd_repo, pm_home=owner,
-                    # 묶음 준비 표면 — 장부가 선언한 고정 예산·역할 순서가 여기서 발동한다.
-                    enforce_budget=True,
                 )
                 for round_plan in cluster_plan.rounds:
                     _write_machine_line(json.dumps({
@@ -13567,6 +13475,228 @@ def _cmd_review_ticket(args: argparse.Namespace, ticket: str) -> int:
         return 1
 
 
+
+# ── CHANGELOG 재료 추출 (완료 티켓 본문 → 릴리즈 노트 재료) ────────────────────
+#
+# 릴리즈 노트의 **문안은 사람이 쓴다**. 이 표면이 내는 것은 재료뿐이다 — 어떤 티켓이 이 릴리즈
+# 구간에 들어갔고, 그 티켓이 자기 본문에서 무엇을 하겠다고 선언했는가. 분류(Added/Changed/…)는
+# **후보**만 세운다: 확정은 채택자 관점의 판단이고, 기계가 그 판단을 대신하면 아무도 읽고 고르지
+# 않은 문장이 그대로 릴리즈 노트가 된다.
+#
+# 구간의 기준은 **코드 저장소의 rev 시각**이다. board 는 PM 홈에 있고 태그는 코드 저장소에 있어
+# 두 좌표를 잇는 규칙이 하나 필요하다 — 태그·rev 를 코드 체크아웃에서 커밋 시각으로 바꾸고, 그
+# 시각 이후에 완료된 티켓을 고른다. 코드 체크아웃이나 rev 를 해소하지 못하면 빈 목록이 아니라
+# rc≠0 이다(조용한 빈 손은 곧 릴리즈 노트 누락이다).
+#
+# 이 표면은 board 를 **읽기만** 한다 — 순회는 board 의 공용 strict 로더(그 안에서 공유 읽기
+# seam)를 쓰고 어떤 티켓 파일도 쓰지 않는다. done 티켓 하나가 손상돼 있으면 그 경로를 찍고
+# 멈춘다: 건너뛴 티켓은 출력에서 '원래 없던 재료'와 구별되지 않는다.
+
+# 코드 체크아웃 좌표를 담은 per-clone conf 키 — 엔진 갱신이 쓰는 그 키 하나다(사본 0).
+CHANGELOG_UPSTREAM_KEY = "upstream.path"
+# 재료로 싣는 본문 절 — 무엇을(목표)·왜 그렇게(결정)·무엇으로 끝났나(완료 조건).
+CHANGELOG_MATERIAL_SECTIONS: tuple[str, ...] = ("## 목표", "## 결정", "## 완료 조건")
+# 분류 **후보** 신호. 확정이 아니라 후보라 겹치면 겹친 대로 전부 싣는다(선언 순서 보존).
+CHANGELOG_CATEGORY_SIGNALS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Added", ("신설", "추가", "도입")),
+    ("Changed", ("교체", "변경", "개편", "전환")),
+    ("Removed", ("폐지", "제거", "삭제")),
+    ("Fixed", ("결함", "버그", "오류", "회귀")),
+)
+# 채택자 트리에서 무엇이 달라지는가를 말하는 줄의 신호 — 그 줄을 원문 그대로 인용한다.
+CHANGELOG_ADOPTER_SIGNALS: tuple[str, ...] = (
+    "채택자", "마이그레이션", "기본값", "호환", "폐지", "출하", "업그레이드",
+)
+# 인용 상한 — 재료는 사람이 읽는 것이라 티켓 하나가 화면을 통째로 먹으면 안 된다.
+CHANGELOG_ADOPTER_QUOTE_MAX = 5
+_CHANGELOG_BLOCK_HEADER = "## {ticket} — {title}"
+_CHANGELOG_EMPTY = "(없음)"
+_CHANGELOG_CATEGORY_JOIN = " · "
+
+
+class ChangelogMaterial(NamedTuple):
+    """완료 티켓 하나의 재료 블록 — 판단이 아니라 인용과 후보만 담는다."""
+
+    ticket: str
+    title: str
+    completed_at: str
+    categories: tuple[str, ...]
+    adopter_quotes: tuple[str, ...]
+    sections: tuple[tuple[str, str], ...]
+
+
+def _changelog_instant(value: object, *, source: str) -> datetime.datetime:
+    """시각 값 → 비교 가능한 시각 — 판독 불가는 그 자리(`source`)를 찍고 터진다.
+
+    tz 없는 값은 UTC 로 읽는다: offset 이 빠진 값도 시각으로는 읽히므로 판독 실패가 아니다
+    (board 가 기록하는 값은 offset 을 달고 있다).
+    """
+    parsed = (value if isinstance(value, datetime.datetime)
+              else _parse_ledger_timestamp(value))
+    if parsed is None:
+        raise DelegateError(f"시각을 읽지 못했습니다: {source} → {value!r}")
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed
+
+
+def _changelog_required(value: object, *, field: str, path: Path) -> str:
+    """완료 티켓의 필수 값 — 없거나 비었으면 그 경로를 찍고 터진다(파일명 폴백 없음)."""
+    text = str(value or "").strip()
+    if not text:
+        raise DelegateError(f"완료 티켓의 `{field}` 가 비어 있습니다: {path}")
+    return text
+
+
+def changelog_code_checkout(conf: Mapping[str, str], *, pm_home: Path) -> Path:
+    """재료 구간의 rev 를 해소할 코드 체크아웃 — 미해소는 fail-loud."""
+    raw = str(conf.get(CHANGELOG_UPSTREAM_KEY, "") or "").strip()
+    if not raw:
+        raise DelegateError(
+            f"코드 체크아웃을 해소하지 못했습니다 — {pm_home}/.project_manager/local.conf 의 "
+            f"`{CHANGELOG_UPSTREAM_KEY}=` 가 비어 있습니다"
+        )
+    path = Path(raw)
+    if not path.is_absolute():
+        path = pm_home / path
+    resolved = path.resolve()
+    if not resolved.is_dir():
+        raise DelegateError(
+            f"코드 체크아웃이 로컬 디렉터리가 아닙니다: {raw} — rev 시각은 로컬 체크아웃에서만 "
+            f"해소합니다(`{CHANGELOG_UPSTREAM_KEY}=` 를 코드 체크아웃 경로로 두세요)"
+        )
+    return resolved
+
+
+def changelog_since_instant(
+    checkout: Path, rev: str, *, git_run_fn: Callable | None = None,
+) -> datetime.datetime:
+    """`--since` 의 태그·rev → 그 커밋 시각(해소 실패는 fail-loud).
+
+    git 실행은 이 모듈이 이미 가진 조회 seam 하나를 그대로 쓴다(runner 사본 0).
+    """
+    try:
+        raw = _cluster_git(
+            checkout, "log", "-1", "--format=%cI", rev, git_run_fn=git_run_fn,
+        ).strip()
+    except DelegateError as exc:
+        raise DelegateError(
+            f"rev 를 해소하지 못했습니다: {rev} (체크아웃 {checkout}) — {exc}"
+        ) from exc
+    return _changelog_instant(raw, source=f"rev {rev} (체크아웃 {checkout})")
+
+
+def _changelog_categories(text: str) -> tuple[str, ...]:
+    """분류 후보 — 신호가 하나도 없으면 빈 튜플(렌더가 없음으로 표시한다)."""
+    return tuple(
+        label for label, signals in CHANGELOG_CATEGORY_SIGNALS
+        if any(signal in text for signal in signals)
+    )
+
+
+def _changelog_adopter_quotes(text: str) -> tuple[str, ...]:
+    """채택자 영향을 말하는 줄의 원문 인용 — 상한까지만."""
+    quotes: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip().lstrip("-*+ ").strip()
+        if not stripped:
+            continue
+        if any(signal in stripped for signal in CHANGELOG_ADOPTER_SIGNALS):
+            quotes.append(stripped)
+        if len(quotes) >= CHANGELOG_ADOPTER_QUOTE_MAX:
+            break
+    return tuple(quotes)
+
+
+def _changelog_section_text(board, body: str, heading: str, *, path: Path) -> str:
+    """절 본문 — 절 경계 규칙은 board 의 슬라이서 하나가 소유한다(사본 0).
+
+    근거 절이 없거나 비었으면 그 경로와 절 이름을 찍고 터진다 — 빈 값으로 실으면 그 티켓의
+    근거가 사라진 것과 재료가 원래 없는 것이 같은 출력이 된다.
+    """
+    section = board._section_text(body, heading)
+    text = "" if section is None else "\n".join(
+        line.rstrip() for line in section.strip("\n").splitlines()
+    ).strip("\n")
+    if not text:
+        raise DelegateError(f"완료 티켓의 `{heading}` 절이 없거나 비어 있습니다: {path}")
+    return text
+
+
+def changelog_material(board, *, since: datetime.datetime) -> list[ChangelogMaterial]:
+    """`since` 이후에 완료된 done 티켓의 재료 — 완료 시각 오름차순.
+
+    done 티켓은 strict 로더로 읽고 필수 값(완료 시각·id·제목·근거 절)을 전부 요구한다. 하나라도
+    없거나 판독 불가면 그 경로를 찍고 터진다 — 건너뛰면 '손상된 완료 티켓'과 '구간에 재료가
+    없음'이 같은 빈 stdout·rc 0 이 돼 릴리즈 노트 누락이 조용히 생긴다. 재료에서 빠지는 유일한
+    사유는 구간 밖(경계 포함) 완료다.
+    """
+    materials: list[tuple[datetime.datetime, ChangelogMaterial]] = []
+    for path in sorted((board.tickets_dir() / "done").glob("T-*.md")):
+        fm, body = board.load_ticket(path)
+        completed = _changelog_instant(
+            fm.get("completed_at"), source=f"완료 티켓 `completed_at`: {path}",
+        )
+        if completed <= since:
+            continue
+        sections = tuple(
+            (heading.removeprefix("## ").strip(),
+             _changelog_section_text(board, body, heading, path=path))
+            for heading in CHANGELOG_MATERIAL_SECTIONS
+        )
+        joined = "\n".join(text for _label, text in sections)
+        materials.append((completed, ChangelogMaterial(
+            ticket=_changelog_required(fm.get("id"), field="id", path=path),
+            title=_changelog_required(fm.get("title"), field="title", path=path),
+            completed_at=str(fm.get("completed_at")),
+            categories=_changelog_categories(joined),
+            adopter_quotes=_changelog_adopter_quotes(joined),
+            sections=sections,
+        )))
+    materials.sort(key=lambda item: (item[0], item[1].ticket))
+    return [material for _instant, material in materials]
+
+
+def render_changelog_material(materials: Sequence[ChangelogMaterial]) -> str:
+    """재료 블록 렌더 — 재료가 없으면 빈 문자열(빈 손은 오류가 아니다)."""
+    lines: list[str] = []
+    for material in materials:
+        lines.append(_CHANGELOG_BLOCK_HEADER.format(
+            ticket=material.ticket, title=material.title))
+        lines.append(f"- 완료: {material.completed_at}")
+        categories = (_CHANGELOG_CATEGORY_JOIN.join(material.categories)
+                      if material.categories else _CHANGELOG_EMPTY)
+        lines.append(f"- 분류 후보: {categories}")
+        if material.adopter_quotes:
+            lines.append("- 채택자 영향 인용:")
+            lines.extend(f"  - {quote}" for quote in material.adopter_quotes)
+        else:
+            lines.append(f"- 채택자 영향 인용: {_CHANGELOG_EMPTY}")
+        for label, text in material.sections:
+            lines.append(f"- 근거 · {label}:")
+            lines.extend(f"  {line}" if line else "" for line in text.splitlines())
+        lines.append("")
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def _cmd_changelog(argv: list[str], git_run_fn: Callable | None = None) -> int:
+    """`changelog material --since <tag|rev>` — 완료 티켓 재료를 stdout 으로(board 무변경)."""
+    parser = build_subcommand_parser("changelog")
+    assert parser is not None
+    args = parser.parse_args(argv)
+    try:
+        owner = _activate_internal_rounds_cli_owner()
+        checkout = changelog_code_checkout(local_config(owner), pm_home=owner)
+        since = changelog_since_instant(checkout, args.since, git_run_fn=git_run_fn)
+        materials = changelog_material(_load_board_for_repo(owner), since=since)
+    except (DelegateError, OSError, UnicodeError, ValueError) as exc:
+        print(f"오류: changelog {args.changelog_command} 실패: {exc}", file=sys.stderr)
+        return 1
+    rendered = render_changelog_material(materials)
+    if rendered:
+        sys.stdout.write(rendered)
+    return 0
+
 def _print_internal_resolution(resolution, owner: Path) -> None:
     """처분 선언 1건의 사람용 요약 — 티켓 하나든 묶음 반복이든 같은 줄을 낸다."""
     board = _load_board()
@@ -13575,9 +13705,7 @@ def _print_internal_resolution(resolution, owner: Path) -> None:
         print("이전 내부 처분 선언을 현재 라운드 좌표의 선언으로 교체합니다.", file=sys.stderr)
     residual = "미상" if resolution.residual is None else str(resolution.residual)
     target = declared.get("ticket") or declared.get("evidence_gate")
-    if declared["kind"] == board.GATE_RESOLUTION_PM_FIXED:
-        description = _load_review_rounds().describe_pm_fixed_resolution(declared)
-    elif declared["kind"] == board.GATE_RESOLUTION_PM_VERIFIED:
+    if declared["kind"] == board.GATE_RESOLUTION_PM_VERIFIED:
         description = _load_review_rounds().describe_pm_verified_resolution(declared)
     else:
         label = "재설계" if declared["kind"] == board.GATE_RESOLUTION_INTO else "해소"
@@ -13772,7 +13900,7 @@ def _cmd_rounds(argv: list[str], run_fn: Callable | None = None) -> int:
     report_parser.add_argument("--gate", default=None, metavar="T-NNNN")
     resolve = subparsers.add_parser(
         "resolve",
-        help="마지막 반려 잔여를 후속 티켓·후속 통과·PM 직접 해소 근거에 결속해 처분",
+        help="마지막 반려 잔여를 후속 티켓·후속 통과·기계 확인 근거에 결속해 처분",
     )
     # 처분 대상 = 게이트 하나 또는 묶음 하나. 묶음은 **같은 처분의 티켓별 반복**이고
     # (새 파서 0) 확인 커맨드를 엔진이 실행하는 `--pm-verified` 전용이다.
@@ -13796,17 +13924,6 @@ def _cmd_rounds(argv: list[str], run_fn: Callable | None = None) -> int:
         help="반려 뒤 코드 변경을 검토해 통과한 내부 근거 게이트",
     )
     resolution_mode.add_argument(
-        "--pm-fixed",
-        default=None,
-        metavar="EVIDENCE",
-        help=(
-            f"설정된 상한(기본 {DEFAULT_INTERNAL_REVIEW_ROUNDS_MAX} · local.conf "
-            f"`{INTERNAL_REVIEW_ROUNDS_MAX_KEY}` 로 조정)+confirm-fix 1회 소진 뒤 PM 직접 "
-            "해소. 근거 형식: "
-            "change=<file>:<line>; regression=<command>; result=rc=0 (<summary>)"
-        ),
-    )
-    resolution_mode.add_argument(
         "--pm-verified",
         action="store_true",
         help=(
@@ -13828,8 +13945,8 @@ def _cmd_rounds(argv: list[str], run_fn: Callable | None = None) -> int:
             parser.error("--cluster는 board 클러스터 장부 id 형식이어야 합니다")
         if not args.pm_verified:
             parser.error(
-                "--cluster 는 --pm-verified 전용이다(후속 티켓·근거 게이트·PM 직접 해소는 "
-                "게이트별 판단이라 묶음으로 접지 않는다)."
+                "--cluster 는 --pm-verified 전용이다(후속 티켓·근거 게이트는 게이트별 "
+                "판단이라 묶음으로 접지 않는다)."
             )
     for flag in ("into", "fixed"):
         value = getattr(args, flag, None)
@@ -13845,7 +13962,6 @@ def _cmd_rounds(argv: list[str], run_fn: Callable | None = None) -> int:
                 args.gate,
                 into=args.into,
                 fixed=args.fixed,
-                pm_fixed=args.pm_fixed,
                 pm_verified=args.pm_verified,
             )
         elif args.rounds_command == "report":
@@ -14197,13 +14313,11 @@ def _reserve_cluster_internal_rounds(
 
     부분 예약을 남기면 그 게이트의 장부에 영원히 안 끝나는 라운드가 생겨 다음 수렴 판정이
     그것을 진행 중으로 센다(라운드 준비의 부분 예약 금지와 같은 규율).
-
-    `--confirm-fix` 는 묶음 축에 없다 — 확인 라운드도 라운드라 묶음 예산 안에서만 산다.
     """
     reserved: list[InternalRoundBudget] = []
     for seat in plan.rounds:
         budget = _reserve_internal_review_round(
-            seat.ticket, confirm_fix=False, wall_timeout_sec=wall_timeout_sec,
+            seat.ticket, wall_timeout_sec=wall_timeout_sec,
             target_rev=target_rev, diff_fingerprint=diff_fingerprint,
         )
         if budget.refused_rc is not None:
@@ -14493,8 +14607,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--background", action="store_true",
                         help="묶음 리뷰를 분리 세션으로 띄우고 즉시 반환한다(--cluster 전용). "
                              "회수는 별도 `cluster wait`")
-    parser.add_argument("--confirm-fix", action="store_true",
-                        help="직전 유효 반려 must-fix만 확인하는 게이트당 1회 확인 전용 라운드")
     parser.add_argument("--resume-from", default=None, metavar="T-NNNN|RECORD-ID",
                         help="직전 위임 세션을 이어받아 delta 만 보낸다(캐시 단가 재적재·도구 "
                              "재읽기 0). 티켓 표기면 그 티켓·같은 역할의 성공 마감 레코드 중 "
@@ -14566,8 +14678,6 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         )
     if args.gate is not None and args.role != INTERNAL_REVIEW_ROLE:
         parser.error("--gate 는 code-reviewer 역할 전용이다.")
-    if args.confirm_fix and args.role != INTERNAL_REVIEW_ROLE:
-        parser.error("--confirm-fix 는 code-reviewer 역할 전용이다.")
     effective_gate = args.gate or (
         args.ticket if args.role == INTERNAL_REVIEW_ROLE else None
     )
@@ -14576,8 +14686,6 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
             "내부 리뷰 gate는 board 발행 ticket ID 형식"
             "(T-NNNN 또는 T-<prefix>-NNN)이어야 한다."
         )
-    if args.confirm_fix and effective_gate is None:
-        parser.error("--confirm-fix 는 --gate 또는 --ticket 이 필요하다.")
     if bool(args.harness) != bool(args.model):
         parser.error("--harness 와 --model 은 동반 필수(부분 override 금지·원자 tuple).")
     if args.reasoning is not None and not (args.harness and args.model):
@@ -14802,6 +14910,8 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
         return _cmd_review(resolved[1:])
     if resolved and resolved[0] == "cluster":
         return _cmd_cluster(resolved[1:])
+    if resolved and resolved[0] == "changelog":
+        return _cmd_changelog(resolved[1:], git_run_fn=git_run_fn)
     parser = build_arg_parser()
     args = parser.parse_args(resolved)
     try:
@@ -14840,10 +14950,6 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
     _CONFIG_REPO_OVERRIDE = config_repo
     internal_gate = (
         args.gate or args.ticket if args.role == INTERNAL_REVIEW_ROLE else None
-    )
-    internal_confirm_evidence = (
-        _preview_internal_confirm_fix_evidence(internal_gate)
-        if args.confirm_fix else None
     )
     board_repo = config_repo
     if (
@@ -15005,10 +15111,6 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
         return fail_loud(f"오류: {exc}")
     if cluster_review is None:
         task_text = append_attached_raw(task_text, attached_raw)
-    if internal_confirm_evidence is not None:
-        # 확인 자격과 근거는 내부 장부 최신 반려 한 건만 읽는다. 예약 임계 구역에서 같은 문자열을
-        # 재대조하므로, 이 read 뒤 동시 라운드가 끝나면 stale 근거를 보내지 않고 재실행을 요구한다.
-        task_text = internal_confirm_evidence + task_text
 
     # cross 실위임의 라운드 준비. dry-run은 미전송/무부수효과 계약이라 만들지 않고, 하네스로
     # 위임되는 역할의 실제 실행만 prepare한다(ticket 없는 legacy 호출은 종전 형상 유지).
@@ -15019,8 +15121,6 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
             cluster_plan = prepare_cluster_copy(
                 cluster=cluster_review.cluster, role=args.role, cwd=cwd_repo,
                 pm_home=config_repo, owner_pid=os.getpid(),
-                # 묶음 준비 표면 — 고정 예산·역할 순서가 여기서 발동한다(우회 인자 없음).
-                enforce_budget=True,
             )
             # 쓰기 자리·run_id·환불 좌표는 run 단위라 대표 자리 하나로 잡아도 같은 값이다.
             # 티켓별로 갈리는 판정(라운드 마감 입력·회수)은 아래에서 `cluster_plan.rounds` 를
@@ -15043,9 +15143,6 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
                 # 이 pid 가 살아 있으면 run 도 살아 있다. 포기(abandon) 판정의 유일한 기계
                 # 증거이고, 소유자가 아닌 native 준비는 이 값을 싣지 않는다.
                 owner_pid=os.getpid(),
-                # F-001 — 이 예약이 confirm-fix 라운드면 예약 상한이 수렴 상한의 1회 예외를
-                # 앞서 막지 않게 한다(role!=code-reviewer 면 이미 인자 검증에서 항상 False).
-                confirm_fix=bool(args.confirm_fix),
             )
         except InternalRoundLimitExceeded as exc:
             # 전용 rc(F-004) — 외부 채널 exit 4(EXIT_ROUND_LIMIT_EXCEEDED)와 동형. per-ticket
@@ -15274,10 +15371,7 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
                     if cluster_review is not None
                     else internal_gate or "없음(자문·장부 증거 아님)"
                 )
-                print(
-                    f"내부 리뷰 게이트: {gate_label}"
-                    + (" · 확인 전용" if args.confirm_fix else "")
-                )
+                print(f"내부 리뷰 게이트: {gate_label}")
             if cluster_review is not None:
                 print(
                     f"리뷰 입력: {cluster_review.base_branch} 와 {cluster_review.branch} 의 "
@@ -15410,11 +15504,9 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
             else:
                 internal_budget = _reserve_internal_review_round(
                     internal_gate,
-                    confirm_fix=bool(args.confirm_fix),
                     wall_timeout_sec=timeout,
                     target_rev=target_rev,
                     diff_fingerprint=diff_fingerprint,
-                    expected_confirm_evidence=internal_confirm_evidence,
                 )
                 if internal_budget.refused_rc is not None:
                     return internal_budget.refused_rc

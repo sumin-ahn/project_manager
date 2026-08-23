@@ -5,7 +5,8 @@
   (2) 예산을 넘긴 요청도, 순서 밖 역할 요청도 **예약 전에** 거부되고 처방은 재설계 하나다.
   (3) 판정은 사전판정과 board_lock 재확인 **두 지점**에 걸려 동시 준비가 예산을 함께 넘지 못한다.
   (4) `cluster replan` 이 예산을 리셋하고 기준선을 박제하면 다음 주기가 다시 설계부터 열린다.
-  (5) 크기 1 묶음도 같은 경로이고, 장부 없는 옛 티켓 경로는 이 축의 영향을 받지 않는다.
+  (5) 크기 1 묶음도, 티켓 단축 표기 준비도 같은 판정을 받고(표면이 판정을 정하지 않는다),
+      장부 없는 옛 티켓 경로만 이 축의 영향을 받지 않는다.
 
 hermetic 패턴은 `test_delegate_cluster_rounds.py`(라운드 예약)와 `test_board_cluster.py`
 (실 board git)를 각각 그대로 따른다.
@@ -201,8 +202,7 @@ def _write_round_output(pd, path: Path, role: str) -> None:
 def _advance(pd, cluster: str, role: str, *, pm_home: Path, slot: Path):
     """한 단계를 실제로 예약하고 산출을 채워 회수한다(다음 단계의 입력이 된다)."""
     plan = pd.prepare_cluster_copy(
-        cluster=cluster, role=role, cwd=slot, pm_home=pm_home, enforce_budget=True,
-    )
+        cluster=cluster, role=role, cwd=slot, pm_home=pm_home,    )
     for round_plan in plan.rounds:
         _write_round_output(pd, round_plan.path, role)
     outcomes = pd.harvest_cluster_copy(run_dir=plan.run_dir, cwd=slot, pm_home=pm_home)
@@ -292,7 +292,6 @@ def test_the_declared_cycle_runs_and_the_next_request_is_refused(pd, budget_env)
     with pytest.raises(pd.ClusterRoundBudgetExceeded) as caught:
         pd.prepare_cluster_copy(
             cluster="C-cycle", role="developer", cwd=slot, pm_home=pm_home,
-            enforce_budget=True,
         )
 
     message = str(caught.value)
@@ -312,7 +311,6 @@ def test_review_without_the_implementation_round_is_refused(pd, budget_env):
     with pytest.raises(pd.ClusterRoundBudgetExceeded) as caught:
         pd.prepare_cluster_copy(
             cluster="C-order", role="code-reviewer", cwd=slot, pm_home=pm_home,
-            enforce_budget=True,
         )
 
     message = str(caught.value)
@@ -331,22 +329,39 @@ def test_implementation_after_the_fix_round_is_refused(pd, budget_env):
     with pytest.raises(pd.ClusterRoundBudgetExceeded):
         pd.prepare_cluster_copy(
             cluster="C-tail", role="developer", cwd=slot, pm_home=pm_home,
-            enforce_budget=True,
         )
 
 
-def test_confirm_fix_does_not_open_the_cluster_budget(pd, budget_env):
-    """확인 라운드도 라운드다 — per-role 상한의 1회 예외가 묶음 예산을 열지 않는다."""
+def test_the_ticket_surface_gets_the_same_budget_verdict(pd, budget_env):
+    """표면이 판정을 정하지 않는다 — 티켓 단축 표기 준비도 같은 예산·같은 처방을 받는다."""
     pm_home, slot, tickets = budget_env
-    _seed(pm_home, tickets, "C-confirm", ["T-7030"])
+    _seed(pm_home, tickets, "C-surface", ["T-7030"])
     for role in _CYCLE:
-        _advance(pd, "C-confirm", role, pm_home=pm_home, slot=slot)
+        _advance(pd, "C-surface", role, pm_home=pm_home, slot=slot)
 
-    with pytest.raises(pd.ClusterRoundBudgetExceeded):
-        pd.prepare_cluster_copy(
-            cluster="C-confirm", role="code-reviewer", cwd=slot, pm_home=pm_home,
-            enforce_budget=True, confirm_fix=True,
+    with pytest.raises(pd.ClusterRoundBudgetExceeded) as caught:
+        pd.prepare_ticket_copy(
+            ticket="T-7030", role="developer", cwd=slot, pm_home=pm_home,
         )
+
+    message = str(caught.value)
+    assert "예산 소진" in message and "T-7030" in message
+    assert "cluster replan C-surface --reason" in message
+    assert len(_round_names(pm_home, "T-7030")) == 4
+
+
+def test_the_ticket_surface_refuses_an_out_of_order_role_too(pd, budget_env):
+    """순서 판정도 표면과 무관하다 — 설계 없이 구현을 티켓 표면으로 열 수 없다."""
+    pm_home, slot, tickets = budget_env
+    _seed(pm_home, tickets, "C-surfaceorder", ["T-7031"])
+
+    with pytest.raises(pd.ClusterRoundBudgetExceeded) as caught:
+        pd.prepare_ticket_copy(
+            ticket="T-7031", role="developer", cwd=slot, pm_home=pm_home,
+        )
+
+    assert "다음 라운드는 architect" in str(caught.value)
+    assert _round_names(pm_home, "T-7031") == []
 
 
 def test_cli_prepare_refuses_over_budget_with_the_replan_prescription(
@@ -404,7 +419,6 @@ def test_the_lock_recheck_refuses_a_racing_prepare(pd, budget_env, monkeypatch):
     with pytest.raises(pd.ClusterRoundBudgetExceeded) as caught:
         pd.prepare_cluster_copy(
             cluster="C-race", role="developer", cwd=slot, pm_home=pm_home,
-            enforce_budget=True,
         )
 
     assert "예산 소진" in str(caught.value)
@@ -436,7 +450,6 @@ def test_a_zero_budget_ledger_refuses_every_role(pd, budget_env):
         with pytest.raises(pd.ClusterRoundBudgetExceeded) as caught:
             pd.prepare_cluster_copy(
                 cluster="C-zero", role=role, cwd=slot, pm_home=pm_home,
-                enforce_budget=True,
             )
         message = str(caught.value)
         assert "예산 소진" in message and "예산 0건" in message
@@ -449,7 +462,6 @@ def test_a_zero_budget_ledger_refuses_every_role(pd, budget_env):
     _write_cluster(pm_home, "C-zero", ["T-7100"])
     plan = pd.prepare_cluster_copy(
         cluster="C-zero", role="architect", cwd=slot, pm_home=pm_home,
-        enforce_budget=True,
     )
     assert plan.rounds[0].board_path.name == "01-architect.md"
 
@@ -484,7 +496,6 @@ def test_the_lock_recheck_sees_a_budget_that_shrank_to_zero(
     with pytest.raises(pd.ClusterRoundBudgetExceeded) as caught:
         pd.prepare_cluster_copy(
             cluster="C-shrink", role="architect", cwd=slot, pm_home=pm_home,
-            enforce_budget=True,
         )
 
     assert "예산 0건" in str(caught.value)
@@ -500,7 +511,6 @@ def test_a_ledger_that_disappears_mid_prepare_refuses(pd, budget_env, monkeypatc
     with pytest.raises(pd.DelegateError, match="준비 도중 사라졌습니다"):
         pd.prepare_cluster_copy(
             cluster="C-vanish", role="architect", cwd=slot, pm_home=pm_home,
-            enforce_budget=True,
         )
 
     assert _round_names(pm_home, "T-7120") == []
@@ -523,7 +533,6 @@ def test_replan_baseline_reopens_the_cycle_from_design(pd, budget_env):
 
     plan = pd.prepare_cluster_copy(
         cluster="C-reset", role="architect", cwd=slot, pm_home=pm_home,
-        enforce_budget=True,
     )
 
     assert plan.rounds[0].board_path.name == "05-architect.md"
@@ -541,7 +550,6 @@ def test_replan_does_not_reopen_a_role_out_of_order(pd, budget_env):
     with pytest.raises(pd.ClusterRoundBudgetExceeded) as caught:
         pd.prepare_cluster_copy(
             cluster="C-resetorder", role="code-reviewer", cwd=slot, pm_home=pm_home,
-            enforce_budget=True,
         )
     assert "다음 라운드는 architect" in str(caught.value)
 
@@ -561,7 +569,6 @@ def test_size_one_cluster_takes_the_same_path(pd, budget_env):
     with pytest.raises(pd.ClusterRoundBudgetExceeded) as caught:
         pd.prepare_cluster_copy(
             cluster="C-one", role="developer", cwd=slot, pm_home=pm_home,
-            enforce_budget=True,
         )
     assert "cluster replan C-one --reason" in str(caught.value)
 

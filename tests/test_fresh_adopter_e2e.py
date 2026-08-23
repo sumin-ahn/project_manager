@@ -768,6 +768,30 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
     design = _board(dest, "design", tid, "done")
     assert design.returncode == 0, f"{harness} `board.py design` 실패: {design.stderr}"
 
+    # 라운드 순번이 곧 단계다 — 채택자 사본에서도 구현 라운드 앞에 설계 라운드가 선다.
+    # (묶음은 발행이 만든 크기 1 장부이고, 준비 표면이 티켓 표기든 묶음 표기든 판정은 같다.)
+    design_prepared = _delegate_cli(
+        dest, "ticket", "prepare", "--ticket", tid, "--role", "architect",
+        "--cwd", str(dest),
+    )
+    assert design_prepared.returncode == 0, (
+        f"{harness} architect `ticket prepare` 실패(rc={design_prepared.returncode})\n"
+        f"--- stdout ---\n{design_prepared.stdout}\n--- stderr ---\n{design_prepared.stderr}"
+    )
+    design_round = Path(
+        json.loads(design_prepared.stdout.strip().splitlines()[-1])["copy"])
+    design_round.write_text(
+        design_round.read_text(encoding="utf-8") + "\n## 경계 실측\n- 채택자 e2e 실측\n",
+        encoding="utf-8", newline="",
+    )
+    design_harvested = _delegate_cli(
+        dest, "ticket", "harvest", "--copy", str(design_round), "--cwd", str(dest),
+    )
+    assert design_harvested.returncode == 0, (
+        f"{harness} architect `ticket harvest` 실패(rc={design_harvested.returncode})\n"
+        f"--- stdout ---\n{design_harvested.stdout}\n--- stderr ---\n{design_harvested.stderr}"
+    )
+
     prepared = _delegate_cli(
         dest, "ticket", "prepare", "--ticket", tid, "--role", "developer",
         "--cwd", str(dest),

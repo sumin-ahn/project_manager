@@ -208,19 +208,27 @@ def test_opencode_pm_dev_delegate_ships_as_canonical_skill_mirror():
 
 
 def test_opencode_native_ticket_rounds_use_task_contract_only():
-    """3개 위임 역할은 OpenCode task의 실제 3필드로 prepare→spawn→harvest한다.
+    """손-스폰 위임 역할은 OpenCode task의 실제 3필드로 prepare→spawn→harvest한다.
 
     라운드 파일 모델(ADR-0090)에서 쓰기 대상은 `NN-<역할>.md` 하나이고 명세·이전 라운드는
-    읽기 전용 입력이라, 프롬프트 블록이 그 좌표를 실값으로 실어야 한다.
+    읽기 전용 입력이라, 프롬프트 블록이 그 좌표를 실값으로 실어야 한다. 손-스폰 역할은
+    둘(developer·architect)이다 — 리뷰는 엔진이 스냅샷·프롬프트·라운드 자리를 만들어 직접
+    스폰하므로 카드에 손 위임 블록이 없다.
     """
     text = PM_DEV_DELEGATE_CANONICAL.read_text(encoding="utf-8")
     blocks = re.findall(r"task tool 호출:\n(.*?)(?=\n```)", text, flags=re.DOTALL)
-    assert len(blocks) == 3
-    for role, block in zip(("developer", "code-reviewer", "architect"), blocks):
+    assert len(blocks) == 2
+    for role, block in zip(("developer", "architect"), blocks):
         assert f"subagent_type: {role}" in block
         assert "description:" in block and "prompt:" in block
         assert f"NN-{role}.md" in block and "<prepare JSON의 copy>" in block
         assert "spec.md" in block and "rounds/" in block
+    assert "subagent_type: code-reviewer" not in text, (
+        "리뷰가 손 위임 블록으로 되살아남 — 묶음 리뷰는 엔진 경로 하나다"
+    )
+    assert "--role code-reviewer \\\n    --cluster" in text, (
+        "카드에 묶음 리뷰 실행(--role code-reviewer --cluster)이 없음"
+    )
     assert "ticket prepare" in text and "ticket harvest" in text
     assert "Agent 툴 호출" not in text
     assert "run_in_background" not in text

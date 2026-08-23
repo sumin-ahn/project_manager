@@ -46,14 +46,6 @@ _DIFF_B = "sha256:" + "b" * 64
 _DIFF_C = "sha256:" + "c" * 64
 
 
-def _pm_fixed_evidence() -> str:
-    return (
-        "change=tests/test_internal_review_rounds.py:1; "
-        "regression=pytest tests/test_internal_review_rounds.py -q; "
-        "result=rc=0 (targeted regression passed)"
-    )
-
-
 def _load(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -81,17 +73,13 @@ def _consume(
     *,
     raw_ids=("raw-1",),
     spawned=(True,),
-    confirm_fix=False,
     diff_fingerprint=_DIFF_A,
 ):
-    evidence = pd._preview_internal_confirm_fix_evidence(gate) if confirm_fix else None
     budget = pd._reserve_internal_review_round(
         gate,
-        confirm_fix=confirm_fix,
         wall_timeout_sec=60,
         target_rev="deadbeef",
         diff_fingerprint=diff_fingerprint,
-        expected_confirm_evidence=evidence,
     )
     if budget.refused_rc is not None:
         return budget, None
@@ -370,10 +358,8 @@ def test_recalculate_actual_ledger_file_repairs_false_divergence_and_opens_next_
     ) is None
     next_round = pd._reserve_internal_review_round(
         gate,
-        confirm_fix=False,
         wall_timeout_sec=60,
         target_rev="after-recalculation",
-        expected_confirm_evidence=None,
     )
     assert next_round.refused_rc is None
     assert next_round.reserved
@@ -1214,7 +1200,8 @@ def test_one_spawned_attempt_consumes_even_when_terminal_attempt_did_not_spawn(p
     assert entry["rounds"][0]["must_fix"] is None
 
 
-def test_cap_three_and_one_confirm_fix_exception_matrix(pd, capsys):
+def test_cap_reached_gate_gets_no_further_round_of_any_kind(pd, capsys):
+    """상한에 걸린 게이트의 출구는 재설계 하나다 — 확인 전용 라운드로 한 번 더 여는 창이 없다."""
     gate = "T-0654"
     for _ in range(3):
         budget, _ = _consume(pd, gate, _reply(REJECT_REPLY))
@@ -1225,145 +1212,42 @@ def test_cap_three_and_one_confirm_fix_exception_matrix(pd, capsys):
     refusal = capsys.readouterr().err
     assert "재설계" in refusal
     assert "rounds recalculate --gate T-0654" in refusal
+    assert "--confirm-fix" not in refusal
 
-    confirmation, _ = _consume(
-        pd, gate, _reply(PASS_REPLY), confirm_fix=True,
-    )
-    assert confirmation.refused_rc is None
+    again, _ = _consume(pd, gate, _reply(PASS_REPLY))
     entry = _entry(pd, gate)
-    assert entry["count"] == 4
-    assert entry["confirm_fix"] == 1
-    assert entry["rounds"][-1]["verdict"] == 0
-
-    second, _ = _consume(pd, gate, _reply(PASS_REPLY), confirm_fix=True)
-    assert second.refused_rc == 1
-    assert _entry(pd, gate)["confirm_fix"] == 1
+    assert again.refused_rc == 1
+    assert entry["count"] == 3                 # 거부는 예약하지 않는다
+    assert entry["confirm_fix"] == 0           # 이 채널에는 쿼터를 쓰는 경로가 없다
 
 
-def test_t0663_shape_pm_fixed_opens_completion_and_is_distinctly_reported(
-    pd, monkeypatch, capsys,
-):
-    """상한 3+confirm-fix 소진·마지막 반려·raw 결속 없는 손기입 형상을 정식 처분으로 닫는다."""
-    gate = "T-0663"
-    for _index in range(pd.internal_review_rounds_max()):
-        budget, _trace = _consume(pd, gate, _reply(REJECT_REPLY))
-        assert budget.refused_rc is None
-    confirmation, _trace = _consume(
-        pd, gate, _reply(REJECT_REPLY), confirm_fix=True,
-    )
-    assert confirmation.refused_rc is None
+def test_resolve_offers_three_dispositions_and_no_cap_spent_pm_path(pd, capsys):
+    """처분은 후속 티켓·근거 게이트·기계 확인 셋뿐이다 — 상한 소진으로 여는 PM 직접 해소는 없다."""
+    with pytest.raises(SystemExit) as exc:
+        pd._cmd_rounds(["resolve", "--help"])
 
-    # 실 손기입 라운드와 같은 내구성: outcome_record_id가 양쪽 레코드에서 없어도 처분/판정은
-    # 라운드 산출 사실만 소비하며 raw 재계산 축과 섞이지 않는다.
-    ledger = json.loads(pd._internal_round_ledger_path().read_text(encoding="utf-8"))
-    for row in ledger[gate]["rounds"] + ledger[gate]["records"]:
-        row.pop("outcome_record_id", None)
-    pd._save_internal_round_ledger(ledger)
-
-    assert pd._cmd_rounds([
-        "resolve", "--gate", gate, "--pm-fixed", _pm_fixed_evidence(),
-    ]) == 0
-    declaration = capsys.readouterr().out
-    entry = _entry(pd, gate)
-    common = pd._load_review_rounds()
-    assert entry[common.PM_FIXED_USAGE_KEY] == 1
-    assert entry["resolution"]["kind"] == common.RESOLUTION_PM_FIXED
-    assert "pm-fixed(PM 직접 해소·리뷰 통과 아님" in declaration
-
-    assert pd._cmd_rounds(["--rounds-report", "--gate", gate]) == 0
-    report = capsys.readouterr().out
-    assert "처분=pm-fixed(PM 직접 해소·리뷰 통과 아님" in report
-    assert "판정=1(비통과)" in report
-
-    board = pd._load_board()
-    monkeypatch.setattr(
-        board, "_internal_review_rounds_ledger", pd._internal_round_ledger_path,
-    )
-    monkeypatch.setattr(board, "_ticket_search_dirs", lambda: [])
-    assert board._internal_review_completion_problem(gate) is None
-    completion_output = capsys.readouterr().err
-    assert "완료 증거는 리뷰 통과가 아니라 pm-fixed" in completion_output
-    assert "변경 tests/test_internal_review_rounds.py:1" in completion_output
-
-    assert pd._cmd_rounds([
-        "resolve", "--gate", gate, "--pm-fixed", _pm_fixed_evidence(),
-    ]) == 1
-    assert "게이트당 1회 제한을 이미 소진" in capsys.readouterr().err
+    assert exc.value.code == 0
+    out = "".join(capsys.readouterr().out.split())
+    assert "--into" in out and "--fixed" in out and "--pm-verified" in out
+    assert "--pm-fixed" not in out
 
 
-def test_pm_fixed_refuses_before_round_cap_even_after_confirm_fix(pd, capsys):
+def test_resolve_rejects_the_retired_pm_direct_disposition(pd, capsys):
+    """폐지된 처분 표기는 조용히 무시되지 않고 usage error 다(장부 무변경)."""
     gate = "T-PMF-001"
-    _consume(pd, gate, _reply(REJECT_REPLY))
-    _consume(pd, gate, _reply(REJECT_REPLY), confirm_fix=True)
-
-    assert pd._cmd_rounds([
-        "resolve", "--gate", gate, "--pm-fixed", _pm_fixed_evidence(),
-    ]) == 1
-    assert _entry(pd, gate).get("resolution") is None
-    assert "라운드 상한이 미소진" in capsys.readouterr().err
-
-
-def test_pm_fixed_does_not_turn_divergence_into_a_completion_bypass(pd, capsys):
-    gate = "T-PMF-003"
-    _consume(pd, gate, _reply(REJECT_REPLY))
-    _consume(pd, gate, _reply(REJECT_REPLY))
-    entry = _entry(pd, gate)
-    entry["rounds"][1]["must_fix"] = 2
-    pd._save_internal_round_ledger({gate: entry})
-    _consume(pd, gate, _reply(REJECT_REPLY), confirm_fix=True)
-    entry = _entry(pd, gate)
-    entry["rounds"][2]["must_fix"] = 3
-    pd._save_internal_round_ledger({gate: entry})
-
-    assert pd._cmd_rounds([
-        "resolve", "--gate", gate, "--pm-fixed", _pm_fixed_evidence(),
-    ]) == 1
-    assert _entry(pd, gate).get("resolution") is None
-    assert "증가(발산)" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize(
-    "evidence",
-    [
-        "",
-        "직접 고쳤고 회귀도 통과",
-        "change=tests/test_internal_review_rounds.py:1; regression=pytest -q",
-        (
-            "change=tests/test_internal_review_rounds.py:999999; "
-            "regression=pytest tests/test_internal_review_rounds.py -q; result=rc=0"
-        ),
-    ],
-)
-def test_pm_fixed_rejects_empty_freeform_incomplete_and_unverifiable_evidence(
-    pd, capsys, evidence,
-):
-    gate = "T-PMF-002"
     for _index in range(pd.internal_review_rounds_max()):
         _consume(pd, gate, _reply(REJECT_REPLY))
-    _consume(pd, gate, _reply(REJECT_REPLY), confirm_fix=True)
+    capsys.readouterr()
 
-    assert pd._cmd_rounds([
-        "resolve", "--gate", gate, "--pm-fixed", evidence,
-    ]) == 1
+    with pytest.raises(SystemExit) as exc:
+        pd._cmd_rounds([
+            "resolve", "--gate", gate, "--pm-fixed",
+            "change=tests/test_internal_review_rounds.py:1; "
+            "regression=pytest -q; result=rc=0 (ok)",
+        ])
+
+    assert exc.value.code == 2
     assert _entry(pd, gate).get("resolution") is None
-    error = capsys.readouterr().err
-    assert "--pm-fixed" in error and ("근거" in error or "변경 지점" in error)
-
-
-def test_confirm_fix_quota_is_refunded_with_a_no_spawn_call(pd):
-    gate = "T-0655"
-    _consume(pd, gate, _reply(REJECT_REPLY))
-    budget, _ = _consume(
-        pd, gate, None,
-        raw_ids=("no-child",), spawned=(False,), confirm_fix=True,
-    )
-    assert budget.reserved
-    entry = _entry(pd, gate)
-    assert entry["count"] == 1
-    assert entry["confirm_fix"] == 0
-
-    retry, _ = _consume(pd, gate, _reply(PASS_REPLY), confirm_fix=True)
-    assert retry.refused_rc is None
 
 
 def test_divergence_blocks_before_the_three_round_cap(pd, capsys):
@@ -1399,8 +1283,8 @@ def test_actual_file_lock_serializes_check_and_reserve_at_cap(pd):
 
     def reserve(_index):
         return pd._reserve_internal_review_round(
-            gate, confirm_fix=False, wall_timeout_sec=60,
-            target_rev="same", expected_confirm_evidence=None,
+            gate, wall_timeout_sec=60,
+            target_rev="same",
         )
 
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -1424,8 +1308,8 @@ def test_lock_failure_warns_and_allows_unmetered_advisory(pd, monkeypatch, capsy
 
     monkeypatch.setattr(pd, "_internal_round_lock", broken_lock)
     budget = pd._reserve_internal_review_round(
-        "T-LOCK-001", confirm_fix=False, wall_timeout_sec=60,
-        target_rev="same", expected_confirm_evidence=None,
+        "T-LOCK-001", wall_timeout_sec=60,
+        target_rev="same",
     )
 
     assert budget.refused_rc is None
@@ -1475,8 +1359,8 @@ def test_damaged_ledger_warns_recovers_and_keeps_reservation_metered(
         monkeypatch.setattr(seam, "read_text_shared", permission_denied_once)
 
     budget = pd._reserve_internal_review_round(
-        "T-DAMAGE-001", confirm_fix=False, wall_timeout_sec=60,
-        target_rev="same", expected_confirm_evidence=None,
+        "T-DAMAGE-001", wall_timeout_sec=60,
+        target_rev="same",
     )
 
     assert budget.refused_rc is None
@@ -1498,8 +1382,8 @@ def test_reservation_boundary_absorbs_unicode_error_from_reader(
 
     monkeypatch.setattr(pd, "_load_internal_round_ledger", fail_decode)
     budget = pd._reserve_internal_review_round(
-        "T-DAMAGE-002", confirm_fix=False, wall_timeout_sec=60,
-        target_rev="same", expected_confirm_evidence=None,
+        "T-DAMAGE-002", wall_timeout_sec=60,
+        target_rev="same",
     )
 
     assert budget.refused_rc is None
@@ -1514,8 +1398,8 @@ def test_driver_return_before_raw_write_failure_still_consumes_round(
 ):
     """driver 송신 뒤 raw 박제가 실패해도 any_spawned가 이미 고정돼 환불되지 않는다."""
     budget = pd._reserve_internal_review_round(
-        "T-SPAWN-001", confirm_fix=False, wall_timeout_sec=60,
-        target_rev="same", expected_confirm_evidence=None,
+        "T-SPAWN-001", wall_timeout_sec=60,
+        target_rev="same",
     )
     trace = pd.InternalRoundTrace(budget)
     driver_returned = False
@@ -1643,9 +1527,8 @@ def test_gate_flags_are_code_reviewer_only(pd):
 # ── 내부 라운드 수렴 상한 conf 화 (T-0772 · 병합 T-0773) ────────────────────
 #
 # 추가 리뷰어 축은 전부 local.conf 로 조정되는데 내부 축만 코드에 박혀 있었다. 키는 역할 상수에서
-# 파생하고(표기가 갈리는 자리를 만들지 않는다), 값의 소비자는 둘이다 — 다음 라운드 예약 판정과
-# `pm-fixed` 처분의 발동·완료 재검증. 두 소비자가 같은 값을 봐야 상한을 낮춘 채택자가 "선언은
-# 되는데 완료가 막히는" 형상을 만나지 않는다.
+# 파생하고(표기가 갈리는 자리를 만들지 않는다), 소비자는 다음 라운드 예약 판정 하나다 — 상한을
+# 소진해서 여는 처분이 없으므로 값이 갈릴 두 번째 자리도 없다.
 
 
 def _write_internal_conf(pd, values: dict[str, str]) -> Path:
@@ -1662,22 +1545,6 @@ def test_internal_rounds_max_key_is_derived_from_the_role_constant(pd):
             == f"delegate.{pd.INTERNAL_REVIEW_ROLE}.rounds_max")
     assert pd.DEFAULT_INTERNAL_REVIEW_ROUNDS_MAX == 3
     assert pd.internal_review_rounds_max() == 3          # conf 없음 = 엔진 기본값
-
-
-def test_pm_fixed_help_states_the_configured_limit_not_a_fixed_three(pd, capsys):
-    """F-003 — `rounds resolve --pm-fixed` 도움말이 고정 `상한 3` 으로 오보하지 않는다.
-
-    하향(1)·상향(5) 설정에서도 실제 차단 시점은 설정값을 따르는데(위 conf 회귀), 도움말이
-    숫자를 재타이핑하면 그 설정에서 오보가 난다. 표현은 '설정된 상한'과 기본값·조정 키를
-    함께 밝힌다(값은 상수에서 주입 — 재타이핑 0)."""
-    with pytest.raises(SystemExit) as exc:
-        pd._cmd_rounds(["resolve", "--help"])
-    assert exc.value.code == 0
-    out = capsys.readouterr().out
-    assert "상한 3" not in out                                    # 고정 숫자 잔존 가드
-    assert f"설정된 상한(기본 {pd.DEFAULT_INTERNAL_REVIEW_ROUNDS_MAX}" in out
-    # argparse HelpFormatter 가 폭에 맞춰 줄바꿈하므로(키 중간에 개행 가능) 공백을 지우고 비교한다.
-    assert pd.INTERNAL_REVIEW_ROUNDS_MAX_KEY in "".join(out.split())
 
 
 @pytest.mark.parametrize("raw", ["", "   ", "abc", "-1", "3.5"])
@@ -1707,40 +1574,6 @@ def test_internal_rounds_max_conf_moves_the_refusal_point(pd, capsys, limit):
     assert f"local.conf `{pd.INTERNAL_REVIEW_ROUNDS_MAX_KEY}`" in err
     assert "(기본 3)" in err
     assert _entry(pd, gate)["count"] == limit             # 거부는 예약하지 않는다
-
-
-def test_pm_fixed_declaration_and_completion_recheck_share_the_conf_limit(
-    pd, monkeypatch, capsys,
-):
-    """상한을 1 로 낮춘 형상 — 선언과 완료 재검증이 같은 conf 값을 본다.
-
-    board 가 자기 사본(옛 하드코딩 3)을 들면 같은 선언이 완료에서 "라운드 상한 미소진"으로
-    막힌다. 그 차이를 값으로 대조한다."""
-    conf_path = _write_internal_conf(pd, {pd.INTERNAL_REVIEW_ROUNDS_MAX_KEY: "1"})
-    gate = "T-PMF-772"
-    budget, _trace = _consume(pd, gate, _reply(REJECT_REPLY))
-    assert budget.refused_rc is None
-    confirmation, _trace = _consume(
-        pd, gate, _reply(REJECT_REPLY), confirm_fix=True,
-    )
-    assert confirmation.refused_rc is None
-    assert pd._cmd_rounds([
-        "resolve", "--gate", gate, "--pm-fixed", _pm_fixed_evidence(),
-    ]) == 0
-    capsys.readouterr()
-
-    board = pd._load_board()
-    monkeypatch.setattr(
-        board, "_internal_review_rounds_ledger", pd._internal_round_ledger_path,
-    )
-    monkeypatch.setattr(board, "_ticket_search_dirs", lambda: [])
-    monkeypatch.setattr(board, "LOCAL_CONF", conf_path)
-
-    assert board._internal_review_completion_problem(gate) is None
-    # 같은 항목을 옛 하드코딩 값으로 재검증하면 완료가 막힌다(사본 금지의 근거).
-    common = pd._load_review_rounds()
-    problem = common.recorded_pm_fixed_problem(_entry(pd, gate), 3)
-    assert problem is not None and "완료 2/3" in problem
 
 
 def test_internal_ledger_drops_the_retired_ack_field_too(pd, capsys):

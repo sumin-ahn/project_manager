@@ -26,6 +26,7 @@ developer_instructions = """
 4. 회귀 — test_cmd 직접 실행·전체 통과·테스트 수 확인  5. 테스트 품질(핵심/에러 경로·mock·진짜 검증)
 6. 패턴 일관·touches 범위(git diff --name-only)·보호 영역 불가침·과잉 엔지니어링 여부
 7. domain freshness(touch∩covers 페이지 stale·advisory·domain.py lint)
+8. 뺄셈 우선 — 첫 질문은 "왜 이게 더 작지 않나". 더하기만 있는 변경, 폴백 분기, 결함당 가드 하나 붙인 수정, 처리 못 하는 예외를 잡는 코드는 must-fix.
 
 > status.md/log 갱신은 PM 담당 — 그 누락을 developer must-fix 로 잡지 않는다.
 

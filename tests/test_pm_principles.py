@@ -314,7 +314,7 @@ def test_canonical_registry_recall_and_judgment_counts(m):
     rules = m.load(REPO)
     recall = [rule for rule in rules if rule.on is not None]
     judgment = [rule for rule in rules if rule.on is None]
-    assert len(recall) == 9, [rule.match for rule in recall]
+    assert len(recall) == 12, [rule.match for rule in recall]
     assert len(judgment) == 12
     for rule in recall:
         assert rule.on in m.ON_VALUES
@@ -334,7 +334,7 @@ def test_canonical_registry_loads_from_each_shipped_target(m):
     for target in ("claude_code", "codex", "opencode"):
         target_root = REPO / "templates" / target
         rules = m.load(target_root)
-        assert len(rules) == 21, target
+        assert len(rules) == 24, target
 
 
 # ── engine.manifest 정합 ──────────────────────────────────────────────────

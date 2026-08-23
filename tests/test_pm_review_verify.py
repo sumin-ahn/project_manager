@@ -873,12 +873,7 @@ def test_gate_disposition_problem_surfaces_pm_verified_evidence_failure(board):
     assert problem is not None and "발동 조건 재검증 실패" in problem
 
 
-# ── R4 리뷰 fix — F-001 CONFIRM_ROUND_SCOPE_RULE 단일 상수(cross+native 양 경로) ──────────
-
-def test_confirm_charter_embeds_the_single_scope_rule_constant(pd):
-    """cross 경로 — `_INTERNAL_CONFIRM_CHARTER`가 단일 상수를 그대로 embed한다(손 복제 0)."""
-    assert pd.CONFIRM_ROUND_SCOPE_RULE in pd._INTERNAL_CONFIRM_CHARTER
-
+# ── CONFIRM_ROUND_SCOPE_RULE 단일 상수 — 라운드 시드와 회수 사유가 같은 문장을 쓴다 ──────
 
 def test_native_confirmation_round_seed_embeds_scope_rule_as_html_comment(pd):
     """native 경로 — 프리필된 실 ID가 있는 확인 라운드는 첫 줄(헤더) 아래에 같은 상수를 심는다."""
@@ -897,15 +892,14 @@ def test_native_initial_review_round_seed_has_no_scope_rule_comment(pd):
 
 
 def test_scope_rule_states_where_existing_finding_ids_belong(pd):
-    """확인 라운드 규약이 ID 배치를 말한다 — 회수면이 거부하는 형상을 시드가 먼저 알린다.
+    """확인 규약이 ID 배치를 말한다 — 회수면이 거부하는 형상을 시드가 먼저 알린다.
 
-    상수 하나가 native·cross 두 경로의 단일 진실이라 문장 추가로 두 경로가 함께 받는다.
+    상수 하나가 시드와 회수 사유의 단일 진실이라 문장을 고치면 두 자리가 함께 받는다.
     """
     rule = pd.CONFIRM_ROUND_SCOPE_RULE
     assert "`confirmations` 로만 참조" in rule and "`findings` 에는 신규 ID 만" in rule
-    assert rule in pd._INTERNAL_CONFIRM_CHARTER          # cross 경로
     previous = _round(pd, 1, "code-reviewer", _reviewer_round_text(pd, [_finding("F-001")]))
-    body = pd.render_ticket_growth_section_seed(          # native 경로
+    body = pd.render_ticket_growth_section_seed(          # 라운드 시드
         "code-reviewer", "", previous_round=(previous.ordinal, previous.text),
     )
     assert rule in body
