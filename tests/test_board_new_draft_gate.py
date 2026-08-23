@@ -452,3 +452,121 @@ def test_new_legacy_no_git_gate_no_op(board, tmp_path, monkeypatch):
     assert called["n"] == 0
     assert list((wiki / "tickets" / "open").glob("T-*-*.md")), \
         "legacy 에서도 파일은 정상 생성돼야 한다."
+
+
+# ════════════════════════════════════════════════════════════════════════
+# draft 종결 경로 — discard 가 draft 도 받아 discarded/ 로 박제하고 reopen 이 되돌린다.
+# 번호 배정(`_ID_SCAN_STATUSES`)은 무변경 — 여기선 종결 기록만 다룬다.
+# ════════════════════════════════════════════════════════════════════════
+
+def _discard_args(tid: str, disposition: str, reason: str) -> argparse.Namespace:
+    return argparse.Namespace(id=tid, disposition=disposition, reason=reason)
+
+
+def _reopen_args(tid: str, reason: str) -> argparse.Namespace:
+    return argparse.Namespace(id=tid, reason=reason)
+
+
+def _draft_id_and_path(board_dir: Path) -> tuple[str, Path]:
+    path = list((board_dir / "tickets" / ".drafts").glob("T-*-*.md"))[0]
+    tid = "-".join(path.stem.split("-")[:2])
+    return tid, path
+
+
+def _commit_file_status(board_dir: Path, rev: str = "HEAD") -> list[str]:
+    """`<STATUS>\t<경로>` 목록 — 커밋 메타 없이 그 한 커밋이 담은 파일만.
+
+    `-z`(NUL 구분)로 받는다 — 기본 출력은 non-ASCII(한글) 파일명을 core.quotepath 8진
+    이스케이프로 quote 해 문자열 비교가 깨진다(이 파일의 다른 `ls-tree -z` 케이스와 동형)."""
+    out = _git(["diff-tree", "--no-commit-id", "--name-status", "-r", "-z", rev], board_dir).stdout
+    parts = [p for p in out.split("\0") if p]
+    pairs = iter(parts)
+    return [f"{status}\t{path}" for status, path in zip(pairs, pairs)]
+
+
+@requires_git
+def test_discard_accepts_a_draft_and_commits_only_the_new_file(board, tmp_path):
+    """draft 를 discard 하면 discarded/ 로 이동 + discarded_from 기록 + board-git 커밋은 추가 1건만."""
+    bare = tmp_path / "bare-discard-draft"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    board_dir = _make_board_git(tmp_path, remote=bare)
+
+    board.cmd_new(_new_args("치울 draft"))
+    tid, draft_path = _draft_id_and_path(board_dir)
+    head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
+
+    rc = board.cmd_discard(_discard_args(tid, "dropped", "폐기 — 대상 아님"))
+
+    assert rc == 0
+    assert not draft_path.exists(), "draft 원본이 .drafts/ 에 남아있으면 안 된다."
+    discarded = list((board_dir / "tickets" / "discarded").glob(f"{tid}-*.md"))
+    assert discarded, "discard 뒤 discarded/ 에 파일이 있어야 한다."
+    fm, body = board.load_ticket(discarded[0])
+    assert fm["status"] == "discarded"
+    assert fm["disposition"] == "dropped"
+    assert fm["discarded_from"] == "draft"
+    assert "## Discarded" in body
+
+    head_after = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
+    assert head_after != head_before, "discard 가 board-git 커밋을 내지 않았다."
+    assert _commit_file_status(board_dir) == [f"A\ttickets/discarded/{discarded[0].name}"]
+    assert _git(["status", "--porcelain"], board_dir).stdout.strip() == "", \
+        "discard 뒤 워킹트리가 clean 이어야 한다(옛 draft 경로가 untracked 로 남으면 안 됨)."
+
+
+@requires_git
+def test_discard_of_a_draft_with_a_pending_round_passes_with_a_notice(board, tmp_path, capsys):
+    """미회수(시드 그대로) 라운드가 있어도 draft discard 는 차단되지 않고 ⓘ 안내만 낸다."""
+    bare = tmp_path / "bare-discard-pending"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    board_dir = _make_board_git(tmp_path, remote=bare)
+
+    board.cmd_new(_new_args("라운드 딸린 draft"))
+    tid, draft_path = _draft_id_and_path(board_dir)
+    rounds = board._load_ticket_rounds()
+    round_dir = rounds.rounds_dir_for_ticket(tid, board.tickets_dir())
+    round_dir.mkdir(parents=True, exist_ok=True)
+    seed_text = rounds.render_round_seed(
+        "architect", draft_path.read_text(encoding="utf-8"), today="2026-01-02")
+    (round_dir / "01-architect.md").write_text(seed_text, encoding="utf-8")
+
+    rc = board.cmd_discard(_discard_args(tid, "dropped", "폐기 — 라운드 미회수"))
+
+    err = capsys.readouterr().err
+    assert rc == 0, f"미회수 라운드가 discard 를 막았다: {err}"
+    assert "round-pending" in err and "01-architect.md" in err
+    assert list((board_dir / "tickets" / "discarded").glob(f"{tid}-*.md")), \
+        "안내만 내고 discard 자체는 통과해야 한다."
+
+
+@requires_git
+def test_reopen_of_a_draft_discard_returns_to_drafts(board, tmp_path):
+    """`discarded_from: draft` 의 reopen 은 `.drafts/` 로 복귀 — status=draft·필드 제거·삭제 커밋 1건."""
+    bare = tmp_path / "bare-reopen-draft"
+    _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
+    board_dir = _make_board_git(tmp_path, remote=bare)
+
+    board.cmd_new(_new_args("되돌릴 draft"))
+    tid, _draft_path = _draft_id_and_path(board_dir)
+    assert board.cmd_discard(_discard_args(tid, "dropped", "일단 폐기")) == 0
+    discarded_name = list((board_dir / "tickets" / "discarded").glob(f"{tid}-*.md"))[0].name
+    head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
+
+    rc = board.cmd_reopen(_reopen_args(tid, "다시 필요함"))
+
+    assert rc == 0
+    assert not list((board_dir / "tickets" / "discarded").glob(f"{tid}-*.md"))
+    assert not list((board_dir / "tickets" / "open").glob(f"{tid}-*.md")), \
+        "draft 출처 reopen 이 open/ 으로 갔다(placeholder 게이트를 우회함)."
+    restored = list((board_dir / "tickets" / ".drafts").glob(f"{tid}-*.md"))
+    assert restored, "draft 출처 reopen 이 .drafts/ 로 복귀하지 않았다."
+    fm, body = board.load_ticket(restored[0])
+    assert fm["status"] == "draft"
+    assert "discarded_from" not in fm
+    assert "## Reopened" in body
+
+    head_after = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
+    assert head_after != head_before, "reopen 이 board-git 커밋을 내지 않았다."
+    assert _commit_file_status(board_dir) == [f"D\ttickets/discarded/{discarded_name}"], \
+        "reopen 커밋은 discarded/ 삭제만 담아야 한다(복귀 경로는 ignore 대상)."
+    assert _git(["status", "--porcelain"], board_dir).stdout.strip() == ""

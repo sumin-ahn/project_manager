@@ -11153,7 +11153,29 @@ def cmd_unblock(args: argparse.Namespace) -> int:
 # 갈리므로 조회·렌더·집계에서 자동으로 섞이지 않는다.
 # 처분·복구 모두 기존 lifecycle 4단 프리미티브(move_ticket → frontmatter 수정 → refresh_board
 # → _board_git_sync_best_effort)를 그대로 쓴다 — 별도 이동 장치·별도 sync 경로를 만들지 않는다.
-_DISCARD_SOURCE_STATUSES: tuple[str, ...] = ACTIVE_STATUS_DIRS
+# pseudo-status "draft" 도 출처에 넣는다 — draft(drafts_dir())는 번호만 배정된 채 board-git
+# 밖에 있고, discard 가 아니면 그 번호를 설명하는 기록이 보드에 영영 안 남는다(사람이 `rm`
+# 으로 치우던 자리). draft 는 `claimed_by` 가 없어 아래 소유 대조를 그대로 통과한다.
+_DISCARD_SOURCE_STATUSES: tuple[str, ...] = (*ACTIVE_STATUS_DIRS, "draft")
+
+
+def _discard_round_pending_notice(tid: str) -> None:
+    """미회수(round-pending) 라운드가 있어도 discard 를 막지 않고 ⓘ 로 회수 처방만 안내한다.
+
+    완료 게이트(`_round_completion_problems`)와 같은 축(round-pending=비차단·표시용)이지만
+    seam 은 단일 티켓 `verify_rounds(tickets_dir(), tid)`다 — `lint_rounds()` 는 무인자 전역
+    순회라 discard 1건 처리엔 과하다. round-gap·round-dup·round-name 은 완료 게이트가 이미
+    다루는 축이라 여기서 재확인하지 않는다(discard 는 그 축을 차단하지 않는다).
+    """
+    rounds = _load_ticket_rounds()
+    for problem in rounds.verify_rounds(tickets_dir(), tid):
+        if problem.code != rounds.PROBLEM_PENDING:
+            continue
+        print(
+            f"ⓘ  {problem.code}: {problem.detail} — 회수하려면 `pm_delegate.py ticket "
+            "abandon --copy <ticket 사본 경로> --cwd <작업 디렉터리> --assume-dead` 로 정리하라",
+            file=sys.stderr,
+        )
 
 
 def cmd_discard(args: argparse.Namespace) -> int:
@@ -11186,10 +11208,15 @@ def cmd_discard(args: argparse.Namespace) -> int:
         if not ownership.ok:
             print(_ownership_rejection("discard", args.id, ownership), file=sys.stderr)
             return 1
+        _discard_round_pending_notice(args.id)
         new_path = move_ticket(path, "discarded")
         fm["status"] = "discarded"
         fm["disposition"] = args.disposition
         fm["disposition_reason"] = reason
+        # 출처 status 를 모든 discard 에 기록한다 — draft 출처면 reopen 이 `.drafts/` 로
+        # 되돌아갈 목적지를 이 값으로 판정한다(부재 = 비-draft 출처 · 기존 discarded 자산과
+        # 하위호환).
+        fm["discarded_from"] = status
         note = (f"\n## Discarded\n{args.disposition} — {reason} — {now_utc()}\n")
         dump_ticket(new_path, fm, body + note)
     refresh_board()
@@ -11201,13 +11228,18 @@ def cmd_discard(args: argparse.Namespace) -> int:
 
 
 def cmd_reopen(args: argparse.Namespace) -> int:
-    """`reopen <T-NNNN> --reason <사유>` — 종결(done·discarded)을 open 으로 되돌린다.
+    """`reopen <T-NNNN> --reason <사유>` — 종결(done·discarded)을 open(또는 draft)으로 되돌린다.
 
     잘못 처리된 종결을 되돌리는 **유일한 문**이다(옛 안내는 "홈 git 으로 revert" 뿐이었다).
     완료·처분 표식(`completed_at`·`disposition*`)과 소유 표식(`claimed_by`·`claimed_at`·
-    `claimed_rev`)을 전부 비워 open 티켓의 정상 형상으로 되돌리고, 사유·시각을 본문과
-    board-git 커밋에 남긴다. 소유 대조는 하지 않는다 — 되돌릴 대상은 이미 소유가 끝난
-    종결 티켓이고, 오처리 복구는 그 종결을 낸 세션이 이미 없을 때가 정상이다.
+    `claimed_rev`)을 전부 비워 정상 형상으로 되돌리고, 사유·시각을 본문과 board-git 커밋에
+    남긴다. 소유 대조는 하지 않는다 — 되돌릴 대상은 이미 소유가 끝난 종결 티켓이고,
+    오처리 복구는 그 종결을 낸 세션이 이미 없을 때가 정상이다.
+
+    `discarded_from: draft` 로 기록된 티켓(=discard 직전이 draft 였다)은 `open/` 이 아니라
+    `.drafts/` 로 되돌아간다 — draft 본문은 placeholder 게이트를 안 거쳤으므로 open 진입을
+    허용하면 board-git 에 미충전 본문이 노출된다(`open/` 승격은 `promote` 전용 문).
+    `discarded_from` 부재(기존 자산 전부)는 현행대로 `open/`.
     """
     reason = (getattr(args, "reason", None) or "").strip()
     if not reason:
@@ -11225,12 +11257,14 @@ def cmd_reopen(args: argparse.Namespace) -> int:
                   f"{'/'.join(TERMINAL_STATUS_DIRS)}", file=sys.stderr)
             return 1
         fm, body = load_ticket(path)
-        new_path = move_ticket(path, "open")
-        fm["status"] = "open"
+        to_draft = fm.get("discarded_from") == "draft"
+        dest_status = "draft" if to_draft else "open"
+        new_path = move_ticket(path, ".drafts" if to_draft else "open")
+        fm["status"] = dest_status
         fm["completed_at"] = None
         fm["claimed_by"] = None
         fm["claimed_at"] = None
-        for field in ("claimed_rev", "disposition", "disposition_reason"):
+        for field in ("claimed_rev", "disposition", "disposition_reason", "discarded_from"):
             fm.pop(field, None)
         note = f"\n## Reopened\n{reason} — {now_utc()} (이전 상태 {status}/)\n"
         dump_ticket(new_path, fm, body + note)

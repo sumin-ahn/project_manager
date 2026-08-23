@@ -458,6 +458,21 @@ def test_reopen_resets_every_terminal_field(board):
     assert "## Reopened" in body and "병합 판정 철회" in body
 
 
+def test_reopen_without_discarded_from_goes_to_open(board):
+    """`discarded_from` 부재(기존 discarded 자산 전부)의 reopen 은 draft 분기를 안 타고 `open/` 로 간다."""
+    _seed(board, status="discarded", claimed_by="alice/pm_1",
+          disposition="dropped", disposition_reason="취소")
+
+    rc = board.cmd_reopen(argparse.Namespace(id="T-0001", reason="오판정 철회"))
+
+    assert rc == 0
+    assert list((board.tickets_dir() / "open").glob("T-0001-*.md"))
+    assert not list((board.tickets_dir() / ".drafts").glob("T-0001-*.md"))
+    fm, _body = board.load_ticket(_ticket_path(board, "T-0001", "open"))
+    assert fm["status"] == "open"
+    assert "discarded_from" not in fm
+
+
 def test_reopen_rejects_a_non_terminal_ticket(board):
     """진행 중(open·claimed·blocked) 티켓은 되돌릴 종결이 없다 → 거부."""
     path = _seed(board, status="claimed")
