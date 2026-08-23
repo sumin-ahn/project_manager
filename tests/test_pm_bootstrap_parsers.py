@@ -122,21 +122,25 @@ _BOARD_OUTPUT = """\
 def test_parse_board_counts_happy():
     mod = _load_module()
     counts = mod.parse_board_counts(_BOARD_OUTPUT)
-    assert counts == {"done": 2, "open": 2, "claimed": 1, "blocked": 1}
+    assert counts == {"open": 2, "claimed": 1, "blocked": 1, "done": 2, "discarded": 0}
 
 
 def test_parse_board_counts_empty():
-    """빈 입력 → 모든 status 0 (KeyError 없이 dict 골격 유지)."""
+    """빈 입력 → 모든 status 0 (KeyError 없이 dict 골격 유지).
+
+    골격 키는 board `STATUS_DIRS` 파생이라 손으로 적은 4버킷이 아니다(T-0839).
+    """
     mod = _load_module()
-    assert mod.parse_board_counts("") == {"done": 0, "open": 0, "claimed": 0, "blocked": 0}
+    assert mod.parse_board_counts("") == dict.fromkeys(_load_board().STATUS_DIRS, 0)
 
 
 def test_parse_board_counts_ignores_unknown_status():
-    """dict 에 없는 status 토큰(예: archived)은 무시된다 — 골격 키만 카운트."""
+    """board 가 모르는 status 토큰(예: archived)은 무시된다 — `STATUS_DIRS` 키만 카운트."""
     mod = _load_module()
     out = "  [archived] T-0099  옛날 ticket  pm  old\n  [open   ] T-0100  새 ticket  -  new\n"
     counts = mod.parse_board_counts(out)
-    assert counts == {"done": 0, "open": 1, "claimed": 0, "blocked": 0}
+    expected = dict.fromkeys(_load_board().STATUS_DIRS, 0) | {"open": 1}
+    assert counts == expected
 
 
 # ── parse_open_tickets ──────────────────────────────────────────────────────
@@ -1077,12 +1081,11 @@ def test_run_json_board_counts_include_mine_alias(tmp_path, capsys):
     data = _json.loads(capsys.readouterr().out)
     board = data["board"]
     assert board["counts_scope"] == "mine"
-    assert board["counts_mine"] == {
-        "done": board["done"],
-        "open": board["open"],
-        "claimed": board["claimed"],
-        "blocked": board["blocked"],
-    }
+    # 하위호환 top-level 네 키는 고정 스키마고, 전량 dict(`counts_mine`)는 board `STATUS_DIRS`
+    # 파생이다(T-0839) — 별칭은 그 네 키 값을 그대로 보존하고 새 상태를 더 싣는다.
+    assert set(board["counts_mine"]) == set(_load_board().STATUS_DIRS)
+    for key in ("done", "open", "claimed", "blocked"):
+        assert board["counts_mine"][key] == board[key]
     assert "counts_task" not in board
     assert data["pytest"] == {"passed": 1, "total": 1}
     assert "scopes" not in data["pytest"]
