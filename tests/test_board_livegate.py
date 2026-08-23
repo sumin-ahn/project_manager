@@ -228,6 +228,26 @@ def test_drift_changes_none_when_manifest_absent(tmp_path, pm_update_module):
     assert pm_update_module.drift_changes(dest) is None
 
 
+def test_drift_changes_reraises_marked_engine_rev_skew(
+        tmp_path, pm_update_module, monkeypatch):
+    """사본 rev 불일치는 판정 불능(`None`)으로 접지 않고 그대로 올린다.
+
+    `None` 은 호출부에서 "이 형상엔 게이트 미적용(무차단)" 으로 읽힌다 — 사본끼리 rev 가 갈린
+    트리는 이 게이트가 잡으라고 만들어진 형상이라, 접으면 거기서만 릴리즈 drift 게이트가 조용히
+    통과한다. 다른 판정 불능 클래스(upstream 미설정·URL·경로 부재)는 종전대로 `None` 이다.
+    """
+    dest, upstream = tmp_path / "dest", tmp_path / "upstream"
+    _seed_engine_drift_fixture(dest, upstream, drift=True)
+    skew = RuntimeError("injected engine rev skew")
+    skew._engine_rev_skew = True
+    monkeypatch.setattr(
+        pm_update_module, "_resolve_engine_sync_plan",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(skew),
+    )
+    with pytest.raises(RuntimeError, match="engine rev skew"):
+        pm_update_module.drift_changes(dest)
+
+
 def test_drift_changes_matches_main_dry_run_relpaths(
         tmp_path, pm_update_module, monkeypatch, capsys):
     """`drift_changes` 와 `main(["--dry-run"])` 이 같은 픽스처에서 같은 relpath 집합을 낸다 —

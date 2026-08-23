@@ -25,9 +25,21 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 PM_PRINCIPLES_PY = TOOLS / "pm_principles.py"
+# 로더가 실행 중 지연 로드하는 형제 seam — 중앙 로더(repo_owned_files)·공용 읽기(file_lock)·
+# 기계 출력(console_encoding). 채택자 트리엔 항상 함께 있고, 로더는 이들을 rev 검증으로만 부르므로
+# 사본 fixture 도 같은 집합을 깔아야 실제 형상과 같아진다.
+ENGINE_SIBLING_PY = ("repo_owned_files.py", "file_lock.py", "console_encoding.py")
 CANONICAL_REGISTRY = REPO / ".project_manager" / "wiki" / "pm_principles.md"
 CODEX_DISPATCHER_PY = REPO / "templates" / "codex" / ".codex" / "pm_orch_codex.py"
 CODEX_LIVE_HOOK_FIXTURE = REPO / "tests" / "fixtures" / "codex_0_147_0_live_hook_payloads.json"
+
+
+def _write_engine_tools(tools_dir: Path) -> None:
+    """tmp 채택자 트리의 `.project_manager/tools/` 에 로더와 그 형제 seam 을 배치한다."""
+    tools_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(PM_PRINCIPLES_PY, tools_dir / "pm_principles.py")
+    for name in ENGINE_SIBLING_PY:
+        shutil.copyfile(TOOLS / name, tools_dir / name)
 
 
 def _load_module():
@@ -427,9 +439,7 @@ def test_opencode_principle_recall_core_fires_suppresses_and_rearms_on_compactio
     파일 IO 를 실제로 태운다(judge 인자를 mock 하지 않는다)."""
     if _NODE is None:
         pytest.skip("node 없음 — 재무장 사이클 skip")
-    tools_dir = tmp_path / ".project_manager" / "tools"
-    tools_dir.mkdir(parents=True)
-    shutil.copyfile(PM_PRINCIPLES_PY, tools_dir / "pm_principles.py")
+    _write_engine_tools(tmp_path / ".project_manager" / "tools")
     wiki_dir = tmp_path / ".project_manager" / "wiki"
     wiki_dir.mkdir(parents=True)
     (wiki_dir / "pm_principles.md").write_text(
@@ -481,9 +491,7 @@ def test_opencode_principle_recall_core_surfaces_broken_registry_warning(tmp_pat
     끝나면(node 프로세스 rc0 과 동형) system.transform 출력에 경고 문안이 실린다."""
     if _NODE is None:
         pytest.skip("node 없음 — 파손 경고 표면화 skip")
-    tools_dir = tmp_path / ".project_manager" / "tools"
-    tools_dir.mkdir(parents=True)
-    shutil.copyfile(PM_PRINCIPLES_PY, tools_dir / "pm_principles.py")
+    _write_engine_tools(tmp_path / ".project_manager" / "tools")
     wiki_dir = tmp_path / ".project_manager" / "wiki"
     wiki_dir.mkdir(parents=True)
     (wiki_dir / "pm_principles.md").write_text(
@@ -522,9 +530,7 @@ def _write_codex_root(root: Path, registry_text: str) -> None:
     wiki = root / ".project_manager" / "wiki"
     wiki.mkdir(parents=True, exist_ok=True)
     (wiki / "pm_principles.md").write_text(registry_text, encoding="utf-8")
-    tools = root / ".project_manager" / "tools"
-    tools.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(PM_PRINCIPLES_PY, tools / "pm_principles.py")
+    _write_engine_tools(root / ".project_manager" / "tools")
 
 
 def test_codex_bash_tool_name_maps_to_shell_axis_using_the_live_fixture(codex):

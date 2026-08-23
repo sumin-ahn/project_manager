@@ -47,6 +47,7 @@ requires_symlink = pytest.mark.skipif(
 ENGINE_DOCS_KEEP_LITERAL = (
     ".project_manager/wiki/pm_role.md",
     ".project_manager/wiki/pm_playbook.md",
+    ".project_manager/wiki/pm_principles.md",
 )
 
 FREE_FORM_TOKENS = ("{{PROJECT_CONSTRAINTS}}", "{{PROTECTED_PATHS}}", "{{USER_GATE_ITEMS}}")
@@ -161,7 +162,7 @@ def _grep_token_files(root: Path, token: str, *, exclude_engine_docs: bool = Fal
         if exclude_engine_docs:
             relp = rel.as_posix()
             # 엔진 문서/소스/생성-config 는 placeholder 대상이 아니라 *토큰명을 문서화*한다 — verbatim.
-            #   - pm_role.md·pm_playbook.md (방법론 문서·기존)
+            #   - pm_role.md·pm_playbook.md·pm_principles.md (방법론 문서·manifest 파생 집합)
             #   - .project_manager/tools/* (엔진 소스 .py — 주석/docstring 이 토큰 메커니즘 설명·T-0133)
             #   - local.conf (board init 헤더 주석이 해소 키를 `{{PY}}·{{PROJECT_NAME}}` 로 설명)
             #   - engine.manifest (엔진 메타데이터·verbatim copy — 주석이 토큰 메커니즘을 *설명*하며
