@@ -12083,7 +12083,7 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
 
 
 # cross 채널 판정이 "결정 못함"으로 접는 allow reason — 이 둘만 침묵 통과다(그 밖 verdict!=deny 는
-# 판정불능이라 stderr 경고 1줄을 낸다. I4). native harness 일치·역할 harness 미설정은 decide()가
+# 판정불능이라 stderr 경고 1줄을 낸다. 불변식 4). native harness 일치·역할 harness 미설정은 decide()가
 # 이미 확정적으로 답한 상태라 노이즈를 더하지 않는다.
 _PREPARE_CROSS_ROLE_SILENT_ALLOW_PREFIXES = (
     "[delegate-channel/allow] conf 와 native harness 일치",
@@ -12103,11 +12103,11 @@ def _reject_cross_role_prepare(role: str, tier: str, conf: dict[str, str]) -> No
     """cross 역할(PM 하네스 ≠ 매핑된 하네스) 수동 prepare 를 거부한다.
 
     판정식은 `delegate_channel_guard.decide`(native Agent 위임 훅과 같은 seam) 하나 — 여기서
-    하네스 비교를 다시 쓰지 않는다(I1·I2). `conf` 는 호출부가 이미 owner(PM 홈)에서 읽어 마스터
-    스위치 판정과 함께 쓴 값을 그대로 받는다(I3 — 실행 엔진 사본 repo 로 읽으면 역할 매핑이 없는
+    하네스 비교를 다시 쓰지 않는다(불변식 1·2). `conf` 는 호출부가 이미 owner(PM 홈)에서 읽어 마스터
+    스위치 판정과 함께 쓴 값을 그대로 받는다(불변식 3 — 실행 엔진 사본 repo 로 읽으면 역할 매핑이 없는
     사본에서 조용히 no-op). 거부는 `verdict=="deny"` 중에서도 cross-harness 불일치 사유뿐이고,
-    그 구별은 사용자용 사유 문자열이 아니라 구조 필드(harness/model 이 비어 있지 않음)로 한다(I1).
-    가드 로드 실패·PM 하네스 미상 등 판정불능은 fail-open 이되 침묵하지 않는다(I4).
+    그 구별은 사용자용 사유 문자열이 아니라 구조 필드(harness/model 이 비어 있지 않음)로 한다(불변식 1).
+    가드 로드 실패·PM 하네스 미상 등 판정불능은 fail-open 이되 침묵하지 않는다(불변식 4).
     """
     try:
         guard = _load_delegate_channel_guard()
@@ -12180,7 +12180,7 @@ def _cmd_ticket(argv: list[str]) -> int:
             # `harvest`·`copies` 는 게이트 밖이다 — 이미 준비된 라운드를 회수/조회하는 길까지
             # 막으면 스위치를 끄는 순간 진행 중 라운드가 고아가 된다.
             # owner_conf 를 한 번만 읽어 마스터 스위치와 cross 판정에 함께 넘긴다 — 실행 엔진
-            # 사본(REPO) conf 는 판정에 관여하지 않는다(I3: owner 가 provenance 단일 진실).
+            # 사본(REPO) conf 는 판정에 관여하지 않는다(불변식 3: owner 가 provenance 단일 진실).
             owner_conf = local_config(owner)
             if not _is_enabled(owner_conf):
                 print(
