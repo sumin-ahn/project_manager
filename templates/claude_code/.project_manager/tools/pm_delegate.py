@@ -2787,6 +2787,16 @@ def _load_delegate_scope():
     )
 
 
+def _load_delegate_channel_guard():
+    """엔진 delegate_channel_guard 를 로드해 cross-role 채널 판정(`decide`)을 재사용한다.
+
+    native Agent 위임 훅과 같은 seam — `ticket prepare`가 별도 하네스 비교식을 다시 쓰지 않는다."""
+    path = Path(__file__).resolve().parent / "delegate_channel_guard.py"
+    return _load_module_from_path(
+        path, "delegate_channel_guard.py", verifier=_verify_engine_rev, cache=True,
+    )
+
+
 def _load_repo_coordinates():
     """ticket touches 표기 정규화(Windows 구분자·`./` 접두)를 단일 진실에서 재사용한다."""
     path = Path(__file__).resolve().parent / "repo_coordinates.py"
@@ -6637,13 +6647,16 @@ def _declare_internal_review_resolution(
 _CONFIG_REPO_OVERRIDE: Path | None = None
 
 
-def local_config() -> dict[str, str]:
+def local_config(repo: Path | None = None) -> dict[str, str]:
     """per-clone local.conf 를 KEY=value 로 읽는다(external_review.local_config 재사용).
 
     독립 주석 라인(`#` 시작)만 처리하고 값 안의 `#` 은 제거하지 않는다 — `delegate.*` 값은 inline
-    주석 금지(독립 주석 라인만). REPO 를 호출 시점 읽어 테스트 monkeypatch 를 추종한다."""
+    주석 금지(독립 주석 라인만). REPO 를 호출 시점 읽어 테스트 monkeypatch 를 추종한다.
+
+    `repo` 는 호출부가 이미 해소한 owner(PM 홈)를 명시할 때만 넘긴다 — 생략 시 기존 provenance
+    (`_CONFIG_REPO_OVERRIDE or REPO`, 즉 실행한 엔진 사본의 repo)를 그대로 쓴다."""
     er = _load_external_review()
-    config_repo = _CONFIG_REPO_OVERRIDE or REPO
+    config_repo = repo or _CONFIG_REPO_OVERRIDE or REPO
     er.REPO = config_repo
     er.LOCAL_CONF = config_repo / ".project_manager" / "local.conf"
     return er.local_config()
@@ -12032,6 +12045,11 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
     prepare.add_argument(
         "--role", required=True, choices=tuple(sorted(TICKET_COPY_PREPARE_ROLES)),
     )
+    prepare.add_argument(
+        "--tier", default=None, choices=TIER_CHOICES,
+        help="developer 2티어(normal/hard) — 그 외 역할은 항상 normal 로 강제(cross 채널 판정 입력, "
+             "flat CLI와 같은 규칙)",
+    )
     prepare.add_argument("--cwd", required=True, metavar="ABSPATH")
     harvest = sub.add_parser(
         "harvest", help="slot 라운드 파일로 board 라운드 파일을 교체하고 run 을 닫음",
@@ -12062,6 +12080,61 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
         "--unharvested", action="store_true", help="미회수 준비만 표시",
     )
     return parser
+
+
+# cross 채널 판정이 "결정 못함"으로 접는 allow reason — 이 둘만 침묵 통과다(그 밖 verdict!=deny 는
+# 판정불능이라 stderr 경고 1줄을 낸다. I4). native harness 일치·역할 harness 미설정은 decide()가
+# 이미 확정적으로 답한 상태라 노이즈를 더하지 않는다.
+_PREPARE_CROSS_ROLE_SILENT_ALLOW_PREFIXES = (
+    "[delegate-channel/allow] conf 와 native harness 일치",
+    "[delegate-channel/allow] 역할 harness 미설정",
+)
+
+# 이 게이트가 거부로 접는 유일한 deny 는 매핑된 하네스가 PM 하네스와 달라 cross 인 경우
+# (decide() Row 5)뿐이다 — 그 판정은 verdict=="deny" 와 함께 항상 비어 있지 않은 harness/model 을
+# 실어 온다(resolve_delegate 가 harness·model 을 원자 tuple 로만 해소하므로 하나만 비는 경우가
+# 없다). 마스터 스위치 꺼짐(Row 0.5, "위임이 꺼져 있습니다")은 verdict=="deny" 이되 harness·model 이
+# 둘 다 비어 있고, 여기 도달하기 전에 호출부가 owner_conf 로 이미 걸러낸다(별개 축이라 여기서
+# 거부하지 않되 침묵하지도 않는다) — 사용자용 한국어 사유 문자열은 진단 출력에만 쓰고 정책 분기에는
+# 쓰지 않는다(문구가 바뀌어도 verdict/harness/model 구조는 안정적이다).
+
+
+def _reject_cross_role_prepare(role: str, tier: str, conf: dict[str, str]) -> None:
+    """cross 역할(PM 하네스 ≠ 매핑된 하네스) 수동 prepare 를 거부한다.
+
+    판정식은 `delegate_channel_guard.decide`(native Agent 위임 훅과 같은 seam) 하나 — 여기서
+    하네스 비교를 다시 쓰지 않는다(I1·I2). `conf` 는 호출부가 이미 owner(PM 홈)에서 읽어 마스터
+    스위치 판정과 함께 쓴 값을 그대로 받는다(I3 — 실행 엔진 사본 repo 로 읽으면 역할 매핑이 없는
+    사본에서 조용히 no-op). 거부는 `verdict=="deny"` 중에서도 cross-harness 불일치 사유뿐이고,
+    그 구별은 사용자용 사유 문자열이 아니라 구조 필드(harness/model 이 비어 있지 않음)로 한다(I1).
+    가드 로드 실패·PM 하네스 미상 등 판정불능은 fail-open 이되 침묵하지 않는다(I4).
+    """
+    try:
+        guard = _load_delegate_channel_guard()
+        pm_harness = _session_harness(os.environ) or ""
+        result = guard.decide(role, tier, conf, pm_harness)
+    except Exception as exc:
+        detail = " ".join(str(exc).splitlines()).strip() or type(exc).__name__
+        print(
+            "[pm-delegate/warn] cross 역할 채널 판정 불가"
+            f"(가드 로드/실행 실패: {type(exc).__name__}: {detail}) — prepare 통과(fail-open)",
+            file=sys.stderr,
+        )
+        return
+    reason = result.get("reason", "")
+    is_cross_harness_deny = (
+        result.get("verdict") == "deny"
+        and result.get("harness")
+        and result.get("model")
+    )
+    if is_cross_harness_deny:
+        raise DelegateError(
+            f"cross 역할은 수동 prepare 가 거부됩니다({reason}) — 고아 시드를 만들지 않는다. "
+            "이 역할의 위임은 `--ticket` 실 실행(pm_delegate.py --role ... --ticket <T-NNNN> ...)이 "
+            "안에서 자동으로 prepare 한다."
+        )
+    if not reason.startswith(_PREPARE_CROSS_ROLE_SILENT_ALLOW_PREFIXES):
+        print(f"[pm-delegate/warn] {reason} — prepare 통과(fail-open)", file=sys.stderr)
 
 
 def _cmd_ticket(argv: list[str]) -> int:
@@ -12106,10 +12179,13 @@ def _cmd_ticket(argv: list[str]) -> int:
             # 장부 순번 예약보다 앞이라 off 형상에서 고아 산출물이 남지 않는다.
             # `harvest`·`copies` 는 게이트 밖이다 — 이미 준비된 라운드를 회수/조회하는 길까지
             # 막으면 스위치를 끄는 순간 진행 중 라운드가 고아가 된다.
-            if not _is_enabled(local_config()):
+            # owner_conf 를 한 번만 읽어 마스터 스위치와 cross 판정에 함께 넘긴다 — 실행 엔진
+            # 사본(REPO) conf 는 판정에 관여하지 않는다(I3: owner 가 provenance 단일 진실).
+            owner_conf = local_config(owner)
+            if not _is_enabled(owner_conf):
                 print(
                     "위임이 꺼져 있습니다 — 채널(native/cross) 무관 "
-                    f"(local.conf: {_local_conf_path()} · {DELEGATE_ENABLED_KEY}=false).\n"
+                    f"(local.conf: {_local_conf_path(owner)} · {DELEGATE_ENABLED_KEY}=false).\n"
                     f"켜기: local.conf 에서 `{DELEGATE_ENABLED_KEY}=true` "
                     "(또는 그 줄을 지우면 기본 허용).",
                     file=sys.stderr,
@@ -12117,6 +12193,8 @@ def _cmd_ticket(argv: list[str]) -> int:
                 return 3
             if not _load_board()._is_valid_ticket_id(args.ticket):
                 parser.error("--ticket은 board 발행 ticket ID 형식이어야 합니다")
+            tier = args.tier if (args.role == "developer" and args.tier) else "normal"
+            _reject_cross_role_prepare(args.role, tier, owner_conf)
             plan = prepare_ticket_copy(
                 ticket=args.ticket, role=args.role, cwd=cwd_repo, pm_home=owner,
             )

@@ -3459,3 +3459,425 @@ def test_forcing_the_design_gate_turns_every_pass_shape_red(pd, rounds_env, monk
     _write_spec(tickets, "T-8133")
     rc = board_fixture.main(["section-add", "T-8133", "--role", "developer"])
     assert rc == 1
+
+
+# ── cross 역할 수동 prepare 거부 [[T-0855]] ──────────────────────────────────
+#
+# `ticket prepare --role R`은 R 이 cross(PM 하네스 ≠ conf 매핑 하네스)면 rc≠0 으로 거부한다 —
+# 통과시키면 cross 실 실행(`--ticket`)이 내부에서 다시 prepare 해 고아 시드가 남는다. 판정은
+# `delegate_channel_guard.decide`(native Agent 위임 훅과 같은 seam) 하나 — 거부는 verdict=="deny"
+# 뿐이고, 판정불능(PM 하네스 미상·매핑 미설정·해소 실패)은 fail-open 이되 stderr 경고 1줄을 낸다.
+
+_HARNESS_MARKER_KEYS = ("CLAUDECODE", "CODEX_THREAD_ID", "CODEX_CI", "OPENCODE", "OPENCODE_PID")
+
+
+def _isolate_harness_env(monkeypatch) -> None:
+    """실측 세션 마커를 전부 지운 뒤 각 테스트가 필요한 것만 켠다(ambient 오염 차단)."""
+    for key in _HARNESS_MARKER_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
+def _write_local_conf(pm_home: Path, conf: dict[str, str]) -> Path:
+    path = pm_home / ".project_manager" / "local.conf"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(f"{key}={value}" for key, value in conf.items()) + "\n",
+        encoding="utf-8", newline="",
+    )
+    return path
+
+
+def _prepare_cli(pd, slot: Path, ticket: str, role: str, *, tier: str | None = None) -> int:
+    argv = ["prepare", "--ticket", ticket, "--role", role, "--cwd", str(slot)]
+    if tier is not None:
+        argv += ["--tier", tier]
+    return pd._cmd_ticket(argv)
+
+
+def test_cross_role_prepare_is_denied_with_no_board_or_ledger_side_effect(
+        pd, rounds_env, monkeypatch, capsys):
+    """실 ② PM 홈 형상(code-reviewer=codex) 재현 — cross 수동 prepare 는 rc≠0·부작용 0."""
+    pm_home, slot, tickets, _sync = rounds_env
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+    _write_local_conf(pm_home, {
+        "delegate.enabled": "true",
+        "delegate.code-reviewer.harness": "codex",
+        "delegate.code-reviewer.model": "gpt-5.6-sol",
+    })
+    _isolate_harness_env(monkeypatch)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    _write_spec(tickets, "T-7900")
+
+    rc = _prepare_cli(pd, slot, "T-7900", "code-reviewer")
+
+    captured = capsys.readouterr()
+    assert rc != 0
+    assert "codex" in captured.err and "--ticket" in captured.err
+    assert not _rounds_dir(pm_home, "T-7900").exists()
+    assert _ledger_rows(pm_home) == []
+    assert not (slot / pd.TICKET_COPY_REL_ROOT / "T-7900").exists()
+
+
+def test_native_role_prepare_is_unaffected_by_a_cross_mapping_elsewhere(
+        pd, rounds_env, monkeypatch, capsys):
+    """역방향 — developer=claude(native)는 code-reviewer=codex(cross) conf 옆에서도 현행 그대로
+    (prepare→harvest 왕복 green)."""
+    pm_home, slot, tickets, _sync = rounds_env
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+    _write_local_conf(pm_home, {
+        "delegate.enabled": "true",
+        "delegate.developer.harness": "claude",
+        "delegate.developer.model": "opus",
+        "delegate.code-reviewer.harness": "codex",
+        "delegate.code-reviewer.model": "gpt-5.6-sol",
+    })
+    _isolate_harness_env(monkeypatch)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    _write_spec(tickets, "T-7901")
+
+    rc = _prepare_cli(pd, slot, "T-7901", "developer")
+    assert rc == 0
+    plan_json = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    copy_path = Path(plan_json["copy"])
+    copy_path.write_text(
+        copy_path.read_text(encoding="utf-8") + "\n## 산출\n- 값\n", encoding="utf-8", newline="",
+    )
+
+    harvest_rc = pd._cmd_ticket(["harvest", "--copy", str(copy_path), "--cwd", str(slot)])
+
+    assert harvest_rc == 0
+    assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])["changed"] is True
+
+
+def test_prepare_denial_follows_conf_not_role_name(pd, rounds_env, monkeypatch, capsys):
+    """같은 명령이 conf 를 바꾸면 판정도 바뀐다 — 역할 이름을 하드코딩하지 않았다는 고정."""
+    pm_home, slot, tickets, _sync = rounds_env
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+    _isolate_harness_env(monkeypatch)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    _write_spec(tickets, "T-7902")
+
+    _write_local_conf(pm_home, {
+        "delegate.enabled": "true",
+        "delegate.code-reviewer.harness": "codex",
+        "delegate.code-reviewer.model": "gpt-5.6-sol",
+    })
+    assert _prepare_cli(pd, slot, "T-7902", "code-reviewer") != 0
+    capsys.readouterr()
+
+    _write_local_conf(pm_home, {
+        "delegate.enabled": "true",
+        "delegate.code-reviewer.harness": "claude",
+        "delegate.code-reviewer.model": "opus",
+    })
+    assert _prepare_cli(pd, slot, "T-7902", "code-reviewer") == 0
+
+
+def test_tier_hard_is_denied_when_only_hard_maps_cross(pd, rounds_env, monkeypatch, capsys):
+    """tier 양방향(a) — normal 은 native, hard 만 cross 면 `--tier hard` 만 거부된다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+    _write_local_conf(pm_home, {
+        "delegate.enabled": "true",
+        "delegate.developer.harness": "claude",
+        "delegate.developer.model": "opus",
+        "delegate.developer.hard.harness": "codex",
+        "delegate.developer.hard.model": "gpt-5.6-sol",
+    })
+    _isolate_harness_env(monkeypatch)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    _write_spec(tickets, "T-7903")
+
+    assert _prepare_cli(pd, slot, "T-7903", "developer") == 0        # --tier 생략 = normal
+    capsys.readouterr()
+    rc = _prepare_cli(pd, slot, "T-7903", "developer", tier="hard")
+
+    captured = capsys.readouterr()
+    assert rc != 0
+    assert "codex" in captured.err
+
+
+def test_tier_hard_passes_when_only_normal_maps_cross(pd, rounds_env, monkeypatch, capsys):
+    """tier 양방향(b) — 역형상(hard 만 native)에서 hard 는 통과하고 생략(normal)은 거부된다
+    (false-deny 부재 고정)."""
+    pm_home, slot, tickets, _sync = rounds_env
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+    _write_local_conf(pm_home, {
+        "delegate.enabled": "true",
+        "delegate.developer.harness": "codex",
+        "delegate.developer.model": "gpt-5.6-sol",
+        "delegate.developer.hard.harness": "claude",
+        "delegate.developer.hard.model": "opus",
+    })
+    _isolate_harness_env(monkeypatch)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    _write_spec(tickets, "T-7904")
+
+    assert _prepare_cli(pd, slot, "T-7904", "developer", tier="hard") == 0
+    capsys.readouterr()
+    assert _prepare_cli(pd, slot, "T-7904", "developer") != 0        # --tier 생략 = normal = cross
+
+
+def test_fail_open_when_pm_harness_marker_is_absent(pd, rounds_env, monkeypatch, capsys):
+    """fail-open(a) — 세션 마커가 하나도 없으면(PM 하네스 미상) 통과하되 침묵하지 않는다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+    _write_local_conf(pm_home, {
+        "delegate.enabled": "true",
+        "delegate.code-reviewer.harness": "codex",
+        "delegate.code-reviewer.model": "gpt-5.6-sol",
+    })
+    _isolate_harness_env(monkeypatch)
+    _write_spec(tickets, "T-7905")
+
+    rc = _prepare_cli(pd, slot, "T-7905", "code-reviewer")
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "fail-open" in captured.err
+
+
+def test_fail_open_when_pm_harness_markers_collide(pd, rounds_env, monkeypatch, capsys):
+    """fail-open(b) — 중첩 세션(마커 2개 동시 일치)도 통과하되 침묵하지 않는다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+    _write_local_conf(pm_home, {
+        "delegate.enabled": "true",
+        "delegate.code-reviewer.harness": "codex",
+        "delegate.code-reviewer.model": "gpt-5.6-sol",
+    })
+    _isolate_harness_env(monkeypatch)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("OPENCODE", "1")
+    _write_spec(tickets, "T-7906")
+
+    rc = _prepare_cli(pd, slot, "T-7906", "code-reviewer")
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "fail-open" in captured.err
+
+
+def test_fail_open_and_not_silent_when_no_delegate_mapping_exists(
+        pd, rounds_env, monkeypatch, capsys):
+    """fail-open(c) — conf 에 `delegate.*` 매핑이 아예 없어도(새 설치) 침묵 통과가 아니다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+    _isolate_harness_env(monkeypatch)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    _write_spec(tickets, "T-7907")
+
+    rc = _prepare_cli(pd, slot, "T-7907", "code-reviewer")
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.err.strip() != ""
+
+
+def test_master_switch_off_denies_native_role_prepare_before_any_side_effect(
+        pd, rounds_env, monkeypatch, capsys):
+    """F-002 — 마스터 스위치(`delegate.enabled=false`)는 owner conf 로 판정하고, 채널
+    (native/cross) 무관하게 prepare 전 rc=3·부작용 0 으로 거부한다(모듈 계약과
+    tests/test_local_conf_notation.py 의 off 계약을 따른다). 침묵하지도 않는다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+    _write_local_conf(pm_home, {
+        "delegate.enabled": "false",
+        "delegate.developer.harness": "claude",
+        "delegate.developer.model": "opus",
+    })
+    _isolate_harness_env(monkeypatch)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    _write_spec(tickets, "T-7909")
+
+    rc = _prepare_cli(pd, slot, "T-7909", "developer")
+
+    captured = capsys.readouterr()
+    assert rc == 3
+    assert "위임이 꺼져 있습니다" in captured.err
+    assert not _rounds_dir(pm_home, "T-7909").exists()
+    assert _ledger_rows(pm_home) == []
+    assert not (slot / pd.TICKET_COPY_REL_ROOT / "T-7909").exists()
+
+
+def test_prepare_denies_using_owner_conf_even_when_engine_copy_conf_lacks_mapping(
+        pd, rounds_env, monkeypatch, capsys, tmp_path):
+    """conf provenance — ① 사본 실행 형상 재현. 실행 엔진 사본(REPO) conf 에 역할 매핑이 없어도
+    owner(PM 홈) conf 로 deny 된다(실측: REPO 로 읽으면 매핑 없는 사본에서 조용히 no-op)."""
+    pm_home, slot, tickets, _sync = rounds_env
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+    engine_copy = tmp_path / "engine-copy-without-mapping"
+    engine_copy.mkdir()
+    monkeypatch.setattr(pd, "REPO", engine_copy)
+    monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", None)
+    _write_local_conf(pm_home, {
+        "delegate.enabled": "true",
+        "delegate.code-reviewer.harness": "codex",
+        "delegate.code-reviewer.model": "gpt-5.6-sol",
+    })
+    _isolate_harness_env(monkeypatch)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    _write_spec(tickets, "T-7908")
+
+    # 선-단언 — REPO(엔진 사본) conf 로 읽으면 매핑이 비어 no-op 이 된다는 전제 자체를 확인한다.
+    assert pd.local_config() == {}
+
+    rc = _prepare_cli(pd, slot, "T-7908", "code-reviewer")
+
+    assert rc != 0
+    assert _ledger_rows(pm_home) == []
+
+
+def test_master_switch_denial_follows_owner_conf_not_engine_copy_conf(
+        pd, rounds_env, monkeypatch, capsys, tmp_path):
+    """F-002 — 마스터 스위치도 conf provenance 는 owner 단일 진실이다(I3 확장). 엔진 사본
+    (REPO) conf 가 스위치를 아예 모르는 상태에서, owner off 는 여전히 rc=3·부작용 0 으로
+    거부하고(정형) owner on 은 여전히 통과한다(역방향 — 엔진 사본 conf 는 판정에 관여하지
+    않는다는 것의 값 형태)."""
+    pm_home, slot, tickets, _sync = rounds_env
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+    engine_copy = tmp_path / "engine-copy-without-switch"
+    engine_copy.mkdir()
+    monkeypatch.setattr(pd, "REPO", engine_copy)
+    monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", None)
+    _isolate_harness_env(monkeypatch)
+    monkeypatch.setenv("CLAUDECODE", "1")
+
+    # 선-단언 — REPO(엔진 사본) conf 로 읽으면 스위치 설정이 아예 없다는 전제 자체를 확인한다.
+    assert pd.local_config() == {}
+
+    _write_local_conf(pm_home, {
+        "delegate.enabled": "false",
+        "delegate.developer.harness": "claude",
+        "delegate.developer.model": "opus",
+    })
+    _write_spec(tickets, "T-7910")
+    rc = _prepare_cli(pd, slot, "T-7910", "developer")
+    captured = capsys.readouterr()
+    assert rc == 3
+    assert "위임이 꺼져 있습니다" in captured.err
+    assert not _rounds_dir(pm_home, "T-7910").exists()
+    assert _ledger_rows(pm_home) == []
+
+    _write_local_conf(pm_home, {
+        "delegate.enabled": "true",
+        "delegate.developer.harness": "claude",
+        "delegate.developer.model": "opus",
+    })
+    _write_spec(tickets, "T-7911")
+    rc2 = _prepare_cli(pd, slot, "T-7911", "developer")
+    assert rc2 == 0
+
+
+def test_cross_role_prepare_denial_survives_a_reworded_deny_reason(
+        pd, rounds_env, monkeypatch, capsys):
+    """F-003 — cross deny 판정은 verdict(+harness/model 이 비어 있지 않음) 구조 필드로 소비한다.
+    가드의 사유 문자열 접두만 바뀌어도(reason.startswith 분기 부재 고정) 거부는 warning+prepare 로
+    강등되지 않는다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+    _write_local_conf(pm_home, {
+        "delegate.enabled": "true",
+        "delegate.code-reviewer.harness": "codex",
+        "delegate.code-reviewer.model": "gpt-5.6-sol",
+    })
+    _isolate_harness_env(monkeypatch)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    _write_spec(tickets, "T-7912")
+
+    guard = pd._load_delegate_channel_guard()
+    real_decide = guard.decide
+
+    def _reworded_decide(role, tier, conf, self_harness):
+        result = real_decide(role, tier, conf, self_harness)
+        if result.get("verdict") == "deny" and result.get("harness"):
+            result = dict(result, reason="문구가 완전히 바뀐 새 사유")
+        return result
+
+    monkeypatch.setattr(guard, "decide", _reworded_decide)
+
+    rc = _prepare_cli(pd, slot, "T-7912", "code-reviewer")
+
+    captured = capsys.readouterr()
+    assert rc != 0
+    assert "문구가 완전히 바뀐 새 사유" in captured.err
+    assert not _rounds_dir(pm_home, "T-7912").exists()
+    assert _ledger_rows(pm_home) == []
+
+
+def test_reject_cross_role_prepare_does_not_misclassify_a_master_switch_deny_as_cross(
+        pd, monkeypatch, capsys):
+    """역방향 — `verdict=="deny"` 이되 harness/model 이 둘 다 비어 있는 스위치-off deny(Row 0.5)는
+    cross-harness 오판(`DelegateError`)으로 잘못 분류되지 않는다. `_cmd_ticket` 의 선행 게이트가
+    실무에서는 이 경로에 닿기 전에 이미 걸러내지만, 판정식 `_reject_cross_role_prepare` 자체의
+    구조적 안전판(harness/model 비어 있음 = cross 아님)을 직접 고정한다."""
+    _isolate_harness_env(monkeypatch)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    conf = {"delegate.enabled": "false"}
+
+    pd._reject_cross_role_prepare("developer", "normal", conf)  # raise 없이 통과해야 한다
+
+    captured = capsys.readouterr()
+    assert "위임이 꺼져 있습니다" in captured.err
+
+
+def test_fail_open_and_single_stderr_line_when_the_guard_module_fails_to_load(
+        pd, rounds_env, monkeypatch, capsys):
+    """F-004 — 가드 로드 예외(개행 포함)를 직접 주입해도 rc=0·prepare 성공·stderr 침묵 없이
+    정확히 물리 1행으로 접힌다(예외 텍스트의 CR/LF 를 공백으로 정규화)."""
+    pm_home, slot, tickets, _sync = rounds_env
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+    _write_local_conf(pm_home, {
+        "delegate.enabled": "true",
+        "delegate.developer.harness": "claude",
+        "delegate.developer.model": "opus",
+    })
+    _isolate_harness_env(monkeypatch)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    _write_spec(tickets, "T-7913")
+
+    def _boom():
+        raise RuntimeError("가드 로드 실패\r\n2행째")
+
+    monkeypatch.setattr(pd, "_load_delegate_channel_guard", _boom)
+
+    rc = _prepare_cli(pd, slot, "T-7913", "developer")
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.err.count("\n") == 1
+    assert "가드 로드 실패 2행째" in captured.err
+    plan_json = json.loads(captured.out.strip().splitlines()[-1])
+    assert Path(plan_json["copy"]).exists()
+
+
+def test_fail_open_and_single_stderr_line_when_decide_raises(
+        pd, rounds_env, monkeypatch, capsys):
+    """F-004 — decide() 실행 예외(개행 포함)를 직접 주입해도 rc=0·prepare 성공·stderr 침묵 없이
+    정확히 물리 1행으로 접힌다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: pm_home)
+    _write_local_conf(pm_home, {
+        "delegate.enabled": "true",
+        "delegate.developer.harness": "claude",
+        "delegate.developer.model": "opus",
+    })
+    _isolate_harness_env(monkeypatch)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    _write_spec(tickets, "T-7914")
+
+    guard = pd._load_delegate_channel_guard()
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("decide 실행 실패\r\n2행째")
+
+    monkeypatch.setattr(guard, "decide", _boom)
+
+    rc = _prepare_cli(pd, slot, "T-7914", "developer")
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.err.count("\n") == 1
+    assert "decide 실행 실패 2행째" in captured.err
+    plan_json = json.loads(captured.out.strip().splitlines()[-1])
+    assert Path(plan_json["copy"]).exists()

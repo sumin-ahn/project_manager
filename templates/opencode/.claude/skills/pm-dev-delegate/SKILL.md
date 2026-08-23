@@ -81,6 +81,8 @@ developer·code-reviewer·architect·researcher는 PM 홈 티켓을 직접 편�
   prepare가 실패하면 spawn하지 않는다. harvest가 실패하면 티켓을 다음 단계로 넘기지 않고 같은
   `--copy`로 재실행한다. 회수 성공 = run-dir 삭제 = run 닫힘이라 재회수 개념이 없고, 닫힌 run에
   다시 부르면 파일이 없어 자연 실패한다. 준비마다 새 run-dir 을 쓰므로 서로 덮지 않는다.
+  **`ticket prepare`는 역할이 native(하네스가 PM 하네스와 일치)일 때만 통과한다** — cross 역할은
+  고아 시드를 막기 위해 rc≠0 으로 거부되며, 아래 `--ticket` 실 실행이 자동 준비하라는 처방을 낸다.
 
 - **cross 자동 후처리**: 아래 실 실행에 `--ticket T-NNNN`을 주면 `pm_delegate.py`가 prepare,
   라운드 파일 경로 preamble 합성, subprocess 실행, `finally` harvest를 한 호출에서 수행한다.

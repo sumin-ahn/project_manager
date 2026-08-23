@@ -75,7 +75,9 @@ prepare 실패 시 spawn하지 않는다. harvest 실패 시 같은 copy로 재�
 경고만 내며 run-dir 을 남긴다(게이트 아님). 에이전트는 지정된 라운드 파일 하나만 쓰고 명세·이전
 라운드는 읽기 전용으로 읽는다. code-reviewer native profile은 그 파일을 쓰도록 `workspace-write`지만
 코드·board·git 수정은 금지이며, spawn 전후 `git status --short`·`git diff --name-only` 감사가 위반을
-loud 표면화한다.
+loud 표면화한다. **`ticket prepare`는 역할이 native(하네스가 PM 하네스와 일치)일 때만 통과한다** —
+cross 역할은 고아 시드를 막기 위해 rc≠0 으로 거부되며, `--ticket` 실 실행(아래 cross-harness 위임)이
+자동 준비하라는 처방을 낸다.
 
 ## cross-harness 위임 판정 (native 단락 · pm_delegate 채널 · ADR-0075)
 
