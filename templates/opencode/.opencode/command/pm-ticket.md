@@ -37,6 +37,7 @@ python3 .project_manager/tools/board.py new "<한 줄 제목>" \
   출하를 소유한다. draft에서 developer/code-reviewer 라운드 준비는 거부된다. 라운드 디렉터리
   `tickets/rounds/<T-NNNN>/`는 티켓 상태 이동을 따라가지 않으므로 promote 뒤에도 같은 자리다.
 - legacy(board 비-git) 형상: draft 격리가 없어 곧바로 `open/`에 발행된다.
+- draft를 폐기할 땐 `board.py discard <T-NNNN> dropped --reason <사유>` — `discarded/`로 이동해 처분 기록이 남는다(번호만 쓰고 지워지지 않음). 되돌리려면 `board.py reopen <T-NNNN> --reason <사유>`로 `.drafts/`에 복귀한다.
 - `--touches`: 작업 범위 및 다른 슬롯과의 충돌 평가용.
 - `--prefix`: 작업 카테고리(자유 입력). multi-repo(등록 repo ≥2)에서는 필수다(네임스페이스).
 - `--design`: 설계 단계 상태. 값은 `required` / `done` / `"waived: <사유>"` / `n/a` 네 형식이며(references 설계 단계 표), 인식 불가한 값은 발행 전에 거부된다. 생략 시 `--estimate large`면 `required`, 그 외는 `n/a`로 박힌다. 설계 검증이 필요하다고 판단하면 small/medium에도 `--design required`로 명시 지정한다.

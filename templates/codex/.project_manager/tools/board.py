@@ -11153,7 +11153,94 @@ def cmd_unblock(args: argparse.Namespace) -> int:
 # 갈리므로 조회·렌더·집계에서 자동으로 섞이지 않는다.
 # 처분·복구 모두 기존 lifecycle 4단 프리미티브(move_ticket → frontmatter 수정 → refresh_board
 # → _board_git_sync_best_effort)를 그대로 쓴다 — 별도 이동 장치·별도 sync 경로를 만들지 않는다.
-_DISCARD_SOURCE_STATUSES: tuple[str, ...] = ACTIVE_STATUS_DIRS
+# pseudo-status "draft" 도 출처에 넣는다 — draft(drafts_dir())는 번호만 배정된 채 board-git
+# 밖에 있고, discard 가 아니면 그 번호를 설명하는 기록이 보드에 영영 안 남는다(사람이 `rm`
+# 으로 치우던 자리). draft 는 `claimed_by` 가 없어 아래 소유 대조를 그대로 통과한다.
+_DISCARD_SOURCE_STATUSES: tuple[str, ...] = (*ACTIVE_STATUS_DIRS, "draft")
+
+
+_ROUND_PENDING_UNHARVESTED_QUERY = (
+    "python3 .project_manager/tools/pm_delegate.py ticket copies --unharvested"
+)
+
+
+def _round_pending_ledger_owner(delegate) -> Path | None:
+    """미회수 라운드 장부의 PM 홈 — board 자신의 `REPO`(테스트·slot 재앵커 존중)로 해소한다.
+
+    `pm_delegate._activate_internal_rounds_cli_owner()` 는 그 모듈 **자신의** 고정 `REPO`(자기
+    파일 경로에서 계산)를 써서 board 의 `REPO` 재앵커(테스트·등록 슬롯)를 못 본다 — 그래서 같은
+    해소 함수(`external_review.resolve_pm_home_for_repo`)를 board 의 `REPO` 로 직접 부른다.
+    해소 실패는 안내를 못 내는 것으로 흡수한다(discard 는 이 축을 차단하지 않는다).
+    """
+    try:
+        external_review = delegate._load_external_review()
+        return Path(external_review.resolve_pm_home_for_repo(REPO)).resolve()
+    except Exception:  # noqa: BLE001 — 장부 해소는 discard 를 막지 않는다(안내만 못 낸다).
+        return None
+
+
+def _round_pending_abandon_command(
+    tid: str, ordinal: int, role: str, rounds_module,
+) -> str | None:
+    """미회수 장부에서 이 pending 라운드의 실 `--copy`/`--cwd` 를 해소해 완성 abandon 커맨드를 낸다.
+
+    장부 부재·PM 홈 미확정·이 (순번, 역할)의 미회수 행 부재·경로 형태 불일치는 전부 해소
+    불능으로 `None`(호출부가 `ticket copies --unharvested` 조회 처방으로 대체한다)."""
+    delegate = _load_pm_delegate_module()
+    if delegate is None:
+        return None
+    owner = _round_pending_ledger_owner(delegate)
+    if owner is None:
+        return None
+    try:
+        rows = delegate.ticket_copy_records(owner, ticket=tid, unharvested=True)
+    except Exception:  # noqa: BLE001 — 장부 손상도 해소 불능으로 흡수(discard 비차단).
+        return None
+    match = next(
+        (row for row in rows if row.get("ordinal") == ordinal and row.get("role") == role),
+        None,
+    )
+    if match is None:
+        return None
+    copy_path = Path(match["copy"])
+    # 장부는 `copy` 절대경로만 싣는다 — `--cwd` 는 그 절대경로에서 준비 규약의 상대 경로
+    # (`<TICKET_COPY_REL_ROOT>/<ticket>/<run_id>/<라운드 파일명>`)을 걷어내 역산한다(준비가
+    # 실제로 그 규약대로 쓴 경로라는 전제 — 불일치면 해소 불능으로 판정).
+    relative = delegate.TICKET_COPY_REL_ROOT / match["ticket"] / match["run_id"] / \
+        rounds_module.round_filename(match["ordinal"], match["role"])
+    rel_parts = relative.parts
+    if copy_path.parts[-len(rel_parts):] != rel_parts:
+        return None
+    cwd = Path(*copy_path.parts[:-len(rel_parts)])
+    return (
+        "python3 .project_manager/tools/pm_delegate.py ticket abandon "
+        f"--copy {copy_path} --cwd {cwd} --assume-dead"
+    )
+
+
+def _discard_round_pending_notice(tid: str) -> None:
+    """미회수(round-pending) 라운드가 있어도 discard 를 막지 않고 ⓘ 로 회수 처방만 안내한다.
+
+    완료 게이트(`_round_completion_problems`)와 같은 축(round-pending=비차단·표시용)이다.
+    여러 pending 이 있어도 안내는 **정확히 1줄**(건수 + 첫 pending 의 처방)로 접는다 — pending
+    마다 자리표시자 줄을 찍던 옛 형태는 실행 가능한 값이 아니었다(reviewer). round-gap·
+    round-dup·round-name 은 완료 게이트가 이미 다루는 축이라 여기서 재확인하지 않는다(discard
+    는 그 축을 차단하지 않는다).
+    """
+    rounds_module = _load_ticket_rounds()
+    pending = [
+        item for item in rounds_module.load_rounds(tickets_dir(), tid) if item.pending
+    ]
+    if not pending:
+        return
+    first = pending[0]
+    resolved = _round_pending_abandon_command(tid, first.ordinal, first.role, rounds_module)
+    prescription = resolved if resolved is not None else _ROUND_PENDING_UNHARVESTED_QUERY
+    print(
+        f"ⓘ  round-pending {len(pending)}건({first.path.name}) — "
+        f"회수하려면 `{prescription}`",
+        file=sys.stderr,
+    )
 
 
 def cmd_discard(args: argparse.Namespace) -> int:
@@ -11186,10 +11273,15 @@ def cmd_discard(args: argparse.Namespace) -> int:
         if not ownership.ok:
             print(_ownership_rejection("discard", args.id, ownership), file=sys.stderr)
             return 1
+        _discard_round_pending_notice(args.id)
         new_path = move_ticket(path, "discarded")
         fm["status"] = "discarded"
         fm["disposition"] = args.disposition
         fm["disposition_reason"] = reason
+        # 출처 status 를 모든 discard 에 기록한다 — draft 출처면 reopen 이 `.drafts/` 로
+        # 되돌아갈 목적지를 이 값으로 판정한다(부재 = 비-draft 출처 · 기존 discarded 자산과
+        # 하위호환).
+        fm["discarded_from"] = status
         note = (f"\n## Discarded\n{args.disposition} — {reason} — {now_utc()}\n")
         dump_ticket(new_path, fm, body + note)
     refresh_board()
@@ -11201,13 +11293,18 @@ def cmd_discard(args: argparse.Namespace) -> int:
 
 
 def cmd_reopen(args: argparse.Namespace) -> int:
-    """`reopen <T-NNNN> --reason <사유>` — 종결(done·discarded)을 open 으로 되돌린다.
+    """`reopen <T-NNNN> --reason <사유>` — 종결(done·discarded)을 open(또는 draft)으로 되돌린다.
 
     잘못 처리된 종결을 되돌리는 **유일한 문**이다(옛 안내는 "홈 git 으로 revert" 뿐이었다).
     완료·처분 표식(`completed_at`·`disposition*`)과 소유 표식(`claimed_by`·`claimed_at`·
-    `claimed_rev`)을 전부 비워 open 티켓의 정상 형상으로 되돌리고, 사유·시각을 본문과
-    board-git 커밋에 남긴다. 소유 대조는 하지 않는다 — 되돌릴 대상은 이미 소유가 끝난
-    종결 티켓이고, 오처리 복구는 그 종결을 낸 세션이 이미 없을 때가 정상이다.
+    `claimed_rev`)을 전부 비워 정상 형상으로 되돌리고, 사유·시각을 본문과 board-git 커밋에
+    남긴다. 소유 대조는 하지 않는다 — 되돌릴 대상은 이미 소유가 끝난 종결 티켓이고,
+    오처리 복구는 그 종결을 낸 세션이 이미 없을 때가 정상이다.
+
+    `discarded_from: draft` 로 기록된 티켓(=discard 직전이 draft 였다)은 `open/` 이 아니라
+    `.drafts/` 로 되돌아간다 — draft 본문은 placeholder 게이트를 안 거쳤으므로 open 진입을
+    허용하면 board-git 에 미충전 본문이 노출된다(`open/` 승격은 `promote` 전용 문).
+    `discarded_from` 부재(기존 자산 전부)는 현행대로 `open/`.
     """
     reason = (getattr(args, "reason", None) or "").strip()
     if not reason:
@@ -11225,12 +11322,14 @@ def cmd_reopen(args: argparse.Namespace) -> int:
                   f"{'/'.join(TERMINAL_STATUS_DIRS)}", file=sys.stderr)
             return 1
         fm, body = load_ticket(path)
-        new_path = move_ticket(path, "open")
-        fm["status"] = "open"
+        to_draft = fm.get("discarded_from") == "draft"
+        dest_status = "draft" if to_draft else "open"
+        new_path = move_ticket(path, ".drafts" if to_draft else "open")
+        fm["status"] = dest_status
         fm["completed_at"] = None
         fm["claimed_by"] = None
         fm["claimed_at"] = None
-        for field in ("claimed_rev", "disposition", "disposition_reason"):
+        for field in ("claimed_rev", "disposition", "disposition_reason", "discarded_from"):
             fm.pop(field, None)
         note = f"\n## Reopened\n{reason} — {now_utc()} (이전 상태 {status}/)\n"
         dump_ticket(new_path, fm, body + note)
