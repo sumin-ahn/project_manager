@@ -178,7 +178,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 
 
 # baked 엔진 rev — engine_rev.py --bump 이 STAMPED_MODULES 전체와 함께 기계 재작성한다.
-ENGINE_REV = "v1.7.8"
+ENGINE_REV = "v1.7.9"
 
 # 라운드 디렉터리는 status 디렉터리(open/claimed/blocked/done)의 형제다 — 티켓 파일이 그 사이를
 # 옮겨다녀도 라운드는 자기 자리에 남는다.
