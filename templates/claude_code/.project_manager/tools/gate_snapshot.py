@@ -982,6 +982,25 @@ def create_snapshot(
     return destination, selection_final.files
 
 
+def snapshot_marker_path(destination: Path) -> Path:
+    """그 트리가 이 생성기의 산출임을 말하는 마커 경로 — 판독자가 규약을 재조립하지 않게 한다."""
+    return Path(destination) / _GATE_SNAPSHOT_MARKER
+
+
+def is_snapshot(destination: Path) -> bool:
+    """이 트리가 검증을 마친 격리 스냅샷인가(마커 실재로 판정)."""
+    return snapshot_marker_path(destination).is_file()
+
+
+def remove_snapshot(repo: Path, output: Path) -> str | None:
+    """다 쓴 격리 스냅샷을 등록까지 지운다 — 실패 사유(정상이면 None).
+
+    생성이 등록(`worktree add`)까지 했으므로 제거도 생성기가 소유한다: 호출부가 디렉터리만
+    지우면 저장소에 삭제된 worktree 등록이 남아 같은 경로의 다음 생성이 거부된다.
+    """
+    return _rollback(_repo_root(repo), Path(os.path.abspath(output)))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="검토 대상 경로가 최신임을 검증하는 격리 worktree 스냅샷 생성기"

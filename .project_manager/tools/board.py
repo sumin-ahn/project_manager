@@ -356,8 +356,9 @@ _MUTATION_SUBCOMMANDS: frozenset[str] = frozenset({
     "idea new", "idea promote", "idea kill",
     "prefix rename", "prefix strip", "prefix merge", "prefix delete",
     "rounds migrate",
-    # cluster new=묶음 장부 생성 + 멤버 명세의 귀속 필드 쓰기(board 상태).
-    "cluster new",
+    # cluster new=묶음 장부 생성 + 멤버 명세의 귀속 필드 쓰기(board 상태) ·
+    # cluster replan=그 장부의 예산·재설계 기록 쓰기.
+    "cluster new", "cluster replan",
 })
 # 조회(read-only·board 상태 미변경) — 게이트 없음.
 _READ_SUBCOMMANDS: frozenset[str] = frozenset({
@@ -10831,7 +10832,19 @@ def _pm_verified_evidence_problem(tid: str, *, channel: str, entry: dict) -> str
         spec_text, rounds,
         reviewer_role=reviewer_role,
         surface_floor=gate_residual_must_fix(entry),
+        # 설계 축 accepted 는 기계 확인으로 닫히지 않는다 — 그 잔여를 여는 유일한 사실인
+        # 묶음 재설계 기준선을 **장부에서 읽어** 넘긴다. 선언(pm_delegate)과 이 재검증이 같은
+        # 사실을 보므로 "선언은 되는데 완료가 막히는" 형상이 생기지 않는다.
+        design_replan_ordinal=ticket_design_replan_ordinal(tid, spec_text),
     )
+
+
+def ticket_design_replan_ordinal(tid: str, ticket_text: str) -> int:
+    """이 티켓이 속한 묶음의 마지막 재설계 기준선(없으면 0).
+
+    묶음 귀속은 명세 frontmatter 가 말한다(필드 부재는 크기 1 해석 · 장부 부재는 0).
+    """
+    return cluster_replan_baseline(load_cluster(ticket_cluster_from_text(tid, ticket_text)))
 
 
 def _gate_pm_verified_problem(
@@ -12763,6 +12776,12 @@ CLUSTER_ACTIVE_STATUSES: tuple[str, ...] = CLUSTER_STATUSES[:-1]
 CLUSTER_BUDGET_DEFAULT: dict[str, int] = {
     "architect": 1, "developer_per_ticket": 1, "code-reviewer": 1, "fix": 1,
 }
+# 재설계(replan) 기록 1건의 키. `from_ordinal` 은 그 재설계 시점 멤버 라운드의 최대 순번이고,
+# 예산 판정은 **그 순번 뒤** 라운드만 이번 주기로 센다 — 리셋을 "장부에 적힌 수" 가 아니라
+# 관측 가능한 기준선으로 만든다(라운드 파일은 지우지 않는다). 스키마는 장부 소유자인 여기
+# 한 자리에 두고 소비자(라운드 예약 표면)는 이 상수를 읽는다(문자열 재타이핑 0).
+CLUSTER_REPLAN_BASELINE_KEY = "from_ordinal"
+CLUSTER_REPLAN_KEYS: tuple[str, ...] = ("ts", "reason", CLUSTER_REPLAN_BASELINE_KEY)
 # 장부 frontmatter 키 선언 순서 — 사람이 읽는 자리라 순서를 고정한다(미래 키는 뒤에 붙는다).
 CLUSTER_LEDGER_KEYS: tuple[str, ...] = (
     "id", "tickets", "base_branch", "branch", "spike", "budget", "replans", "status",
@@ -12949,6 +12968,28 @@ def cluster_members(cluster: str) -> tuple[str, ...]:
     loaded = load_ticket_soft(found[1])
     declared = str((loaded[0] if loaded else {}).get("cluster") or "").strip()
     return () if declared else (candidate,)
+
+
+def cluster_replan_baseline(fm: dict[str, Any] | None) -> int:
+    """장부의 마지막 재설계 기준선 — 그 순번 **뒤** 라운드만 이번 주기다(없으면 0).
+
+    소비자는 둘이다: 라운드 예약 표면의 예산 판정과, 설계 축 accepted 잔여의 종결 판정. 두
+    소비자가 같은 이 한 판독을 봐야 "예산은 리셋됐는데 잔여는 안 열린" 상태가 생기지 않는다.
+    값 형식이 어긋난 기록은 세지 않는다 — 리셋을 주장하려면 관측 가능한 기준선이 있어야 한다.
+    """
+    if not isinstance(fm, dict):
+        return 0
+    replans = fm.get("replans")
+    if not isinstance(replans, list):
+        return 0
+    baseline = 0
+    for item in replans:
+        if not isinstance(item, dict):
+            continue
+        value = item.get(CLUSTER_REPLAN_BASELINE_KEY)
+        if isinstance(value, int) and not isinstance(value, bool) and value > baseline:
+            baseline = value
+    return baseline
 
 
 def _cluster_of_record(tid: str) -> str | None:
@@ -13294,10 +13335,73 @@ def _cmd_cluster_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cluster_round_baseline(members: Sequence[str]) -> int:
+    """멤버 전체 라운드의 최대 순번 — 재설계가 예산을 리셋하는 기준선.
+
+    라운드 파일은 지우지 않는다(산출 보존). 대신 "이 순번 뒤부터가 새 주기"라는 기준선을
+    장부에 박아, 예약 표면이 같은 관측으로 이번 주기의 라운드만 세게 한다.
+    """
+    rounds_module = _load_ticket_rounds()
+    directory = tickets_dir()
+    baseline = 0
+    for tid in members:
+        for item in rounds_module.load_rounds(directory, tid):
+            baseline = max(baseline, int(item.ordinal))
+    return baseline
+
+
+def _cmd_cluster_replan(args: argparse.Namespace) -> int:
+    """재설계 1회 — 예산 리셋 + 기준선 박제. 라운드 파일은 만들지 않는다.
+
+    예산을 넘겼거나 순서 밖 역할이 필요해진 묶음의 **유일한 출구**다(우회 플래그 없음). 리셋
+    뒤 다음 준비는 다시 설계(architect) 1 라운드부터다 — 라운드를 한 번 더 얹는 수단이 아니라
+    주기를 다시 여는 선언이라, 사유를 필수로 받아 장부에 남긴다.
+
+    라운드 자리는 예약 표면(`ticket prepare`)이 소유한다 — 여기서 시드를 깔면 run-dir 없는
+    고아 라운드가 생긴다. 그래서 이 명령이 바꾸는 것은 장부 3필드(`replans`·`budget`·`status`)뿐이다.
+    """
+    reason = (getattr(args, "reason", None) or "").strip()
+    if not reason:
+        print("[중단] cluster replan 에는 `--reason <사유>` 가 필수다 — 재설계는 기록을 "
+              "남기는 선언이다.", file=sys.stderr)
+        return 1
+    cluster = cluster_id_for_name(args.name)
+    with board_lock():
+        fm = load_cluster(cluster)
+        if fm is None:
+            print(f"cluster not found: {cluster} — 재설계는 선언된 장부에만 기록한다 "
+                  f"(`cluster new` 로 먼저 선언하라)", file=sys.stderr)
+            return 2
+        members = cluster_tickets(fm)
+        baseline = _cluster_round_baseline(members)
+        replans = fm.get("replans")
+        if not isinstance(replans, list):
+            replans = []
+        replans.append({
+            "ts": _load_review_rounds().utc_now_iso(),
+            "reason": reason,
+            CLUSTER_REPLAN_BASELINE_KEY: baseline,
+        })
+        fm["replans"] = replans
+        fm["budget"] = dict(CLUSTER_BUDGET_DEFAULT)
+        fm["status"] = CLUSTER_STATUS_OPEN
+        path = dump_cluster(fm)
+    print(f"replan {cluster} — 재설계 {len(replans)}회차 · 기준선 순번 {baseline} · "
+          f"예산 리셋({' · '.join(f'{k}={v}' for k, v in CLUSTER_BUDGET_DEFAULT.items())})")
+    print(f"  다음 준비는 architect 1 라운드다: 사유 {reason}")
+    ready = _board_git_sync_best_effort(f"cluster replan {cluster}", (path,))
+    if not ready:
+        print("  ⚠ board-git 기록 보류: local-only/uncommitted", file=sys.stderr)
+    return 0
+
+
 def cmd_cluster(args: argparse.Namespace) -> int:
-    """`cluster new|show` — 운영 단위(티켓 묶음) 장부의 생성·조회."""
-    if getattr(args, "cluster_cmd", "") == "new":
+    """`cluster new|show|replan` — 운영 단위(티켓 묶음) 장부의 생성·조회·재설계."""
+    leaf = getattr(args, "cluster_cmd", "")
+    if leaf == "new":
         return _cmd_cluster_new(args)
+    if leaf == "replan":
+        return _cmd_cluster_replan(args)
     return _cmd_cluster_show(args)
 
 
@@ -19233,6 +19337,13 @@ def build_parser() -> argparse.ArgumentParser:
     cp = cluster_sub.add_parser("show", help="장부 1건 조회(선언값 + 멤버 현재 status)")
     cp.add_argument("name", metavar="<이름>")
     identity_args.add_identity_args(cp)  # 브랜치 실재 판정 트리 해소(조회 표시용)
+    cp.set_defaults(fn=cmd_cluster)
+
+    cp = cluster_sub.add_parser(
+        "replan", help="재설계 1회 — 라운드 예산 리셋 + 기준선·사유 기록(예산 초과의 유일한 출구)")
+    cp.add_argument("name", metavar="<이름>")
+    cp.add_argument("--reason", required=True, metavar="<사유>",
+                    help="재설계 사유(장부에 그대로 박제된다)")
     cp.set_defaults(fn=cmd_cluster)
 
     p = sub.add_parser(
