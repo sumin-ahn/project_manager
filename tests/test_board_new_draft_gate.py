@@ -17,7 +17,9 @@ hermetic 패턴은 `test_board_git_sync.py` 와 동형 — 실 board git + bare 
 from __future__ import annotations
 
 import argparse
+import datetime
 import importlib.util
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -513,10 +515,21 @@ def test_discard_accepts_a_draft_and_commits_only_the_new_file(board, tmp_path):
     assert _git(["status", "--porcelain"], board_dir).stdout.strip() == "", \
         "discard 뒤 워킹트리가 clean 이어야 한다(옛 draft 경로가 untracked 로 남으면 안 됨)."
 
+    # I4 — 폐기된 번호는 재사용되지 않는다: 다음 발행이 정확히 다음 순번을 받는다
+    # (`_ID_SCAN_STATUSES` 가 discarded 를 놓치면 여기서 실패한다).
+    assert board.cmd_new(_new_args("다음 draft")) == 0
+    next_tid, _next_path = _draft_id_and_path(board_dir)
+    discarded_number = int(tid.split("-", 1)[1])
+    next_number = int(next_tid.split("-", 1)[1])
+    assert next_number == discarded_number + 1, \
+        f"폐기 번호({tid}) 다음이 아니라 {next_tid} 가 배정됐다."
+
 
 @requires_git
 def test_discard_of_a_draft_with_a_pending_round_passes_with_a_notice(board, tmp_path, capsys):
-    """미회수(시드 그대로) 라운드가 있어도 draft discard 는 차단되지 않고 ⓘ 안내만 낸다."""
+    """미회수(시드 그대로) 라운드가 있어도 draft discard 는 차단되지 않고, 미회수 장부에서 해소한
+    실행 가능한 abandon 처방 1줄만 ⓘ 로 낸다 — board-git 커밋은 discarded/ 추가만 담고, tracked
+    pending 라운드는 discard 전후로 바이트 하나 바뀌지 않는다."""
     bare = tmp_path / "bare-discard-pending"
     _git(["init", "--bare", "-q", "-b", "main", str(bare)], tmp_path)
     board_dir = _make_board_git(tmp_path, remote=bare)
@@ -527,16 +540,64 @@ def test_discard_of_a_draft_with_a_pending_round_passes_with_a_notice(board, tmp
     round_dir = rounds.rounds_dir_for_ticket(tid, board.tickets_dir())
     round_dir.mkdir(parents=True, exist_ok=True)
     seed_text = rounds.render_round_seed(
-        "architect", draft_path.read_text(encoding="utf-8"), today="2026-01-02")
-    (round_dir / "01-architect.md").write_text(seed_text, encoding="utf-8")
+        "architect", draft_path.read_text(encoding="utf-8"),
+        today=datetime.date.today().isoformat())
+    round_path = round_dir / "01-architect.md"
+    round_path.write_text(seed_text, encoding="utf-8")
+    # 실 prepare/sync 와 동형: 이 라운드는 이미 board-git 에 tracked 다(예 — 다른 라운드가
+    # 나중에 승격 스코프를 통해 같은 디렉터리를 함께 실었을 때의 형상). discard 자신은 이
+    # tracked 상태를 건드리지 않는다는 것이 아래 값 단언(I6)의 대상이다.
+    _git(["add", "-A", "--", "tickets/rounds"], board_dir)
+    _git(["commit", "-qm", "seed pending round"], board_dir)
+    round_bytes_before = round_path.read_bytes()
+    head_before = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
+
+    # 실 prepare 가 남기는 미회수 장부 행 — discard 의 ⓘ 안내가 여기서 --copy/--cwd 실값을
+    # 해소해야 한다(F-001). run-dir 자체는 짓지 않는다(안내는 장부 값만 읽는다).
+    run_id = "f" * 32
+    copy_root = tmp_path / "delegate-cwd"
+    copy_path = (
+        copy_root / ".project_manager" / ".local" / "delegate-ticket-copies"
+        / tid / run_id / "01-architect.md"
+    )
+    copy_path.parent.mkdir(parents=True, exist_ok=True)
+    copy_path.write_text(seed_text, encoding="utf-8")
+    ledger_row = {
+        "ticket": tid, "role": "architect", "ordinal": 1, "run_id": run_id,
+        "copy": str(copy_path.resolve()),
+        "board_rel": f"tickets/rounds/{tid}/01-architect.md",
+        "prepared_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "harvested_at": None,
+    }
+    ledger_dir = tmp_path / ".project_manager" / ".local"
+    ledger_dir.mkdir(parents=True, exist_ok=True)
+    (ledger_dir / "delegate-rounds.jsonl").write_text(
+        json.dumps(ledger_row, sort_keys=True) + "\n", encoding="utf-8")
 
     rc = board.cmd_discard(_discard_args(tid, "dropped", "폐기 — 라운드 미회수"))
 
     err = capsys.readouterr().err
     assert rc == 0, f"미회수 라운드가 discard 를 막았다: {err}"
-    assert "round-pending" in err and "01-architect.md" in err
-    assert list((board_dir / "tickets" / "discarded").glob(f"{tid}-*.md")), \
-        "안내만 내고 discard 자체는 통과해야 한다."
+    notice_lines = [line for line in err.splitlines() if "round-pending" in line]
+    assert len(notice_lines) == 1, f"round-pending 안내가 정확히 1줄이 아니다: {err!r}"
+    notice = notice_lines[0]
+    assert "01-architect.md" in notice
+    expected_command = (
+        "python3 .project_manager/tools/pm_delegate.py ticket abandon "
+        f"--copy {copy_path.resolve()} --cwd {copy_root.resolve()} --assume-dead"
+    )
+    assert expected_command in notice, notice
+    discarded = list((board_dir / "tickets" / "discarded").glob(f"{tid}-*.md"))
+    assert discarded, "안내만 내고 discard 자체는 통과해야 한다."
+
+    head_after = _git(["rev-parse", "HEAD"], board_dir).stdout.strip()
+    assert head_after != head_before, "discard 가 board-git 커밋을 내지 않았다."
+    assert _commit_file_status(board_dir) == [f"A\ttickets/discarded/{discarded[0].name}"], \
+        "discard 커밋은 discarded/ 추가만 담아야 한다(tracked pending 라운드는 안 건드린다)."
+    assert _git(["status", "--porcelain"], board_dir).stdout.strip() == "", \
+        "discard 뒤 워킹트리가 clean 이어야 한다(tracked pending 라운드가 dirty 로 남으면 안 됨)."
+    assert round_path.read_bytes() == round_bytes_before, \
+        "discard 가 tracked pending 라운드 파일을 건드리면 안 된다(바이트 무변경)."
 
 
 @requires_git

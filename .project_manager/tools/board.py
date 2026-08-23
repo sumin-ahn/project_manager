@@ -11159,23 +11159,88 @@ def cmd_unblock(args: argparse.Namespace) -> int:
 _DISCARD_SOURCE_STATUSES: tuple[str, ...] = (*ACTIVE_STATUS_DIRS, "draft")
 
 
+_ROUND_PENDING_UNHARVESTED_QUERY = (
+    "python3 .project_manager/tools/pm_delegate.py ticket copies --unharvested"
+)
+
+
+def _round_pending_ledger_owner(delegate) -> Path | None:
+    """미회수 라운드 장부의 PM 홈 — board 자신의 `REPO`(테스트·slot 재앵커 존중)로 해소한다.
+
+    `pm_delegate._activate_internal_rounds_cli_owner()` 는 그 모듈 **자신의** 고정 `REPO`(자기
+    파일 경로에서 계산)를 써서 board 의 `REPO` 재앵커(테스트·등록 슬롯)를 못 본다 — 그래서 같은
+    해소 함수(`external_review.resolve_pm_home_for_repo`)를 board 의 `REPO` 로 직접 부른다.
+    해소 실패는 안내를 못 내는 것으로 흡수한다(discard 는 이 축을 차단하지 않는다).
+    """
+    try:
+        external_review = delegate._load_external_review()
+        return Path(external_review.resolve_pm_home_for_repo(REPO)).resolve()
+    except Exception:  # noqa: BLE001 — 장부 해소는 discard 를 막지 않는다(안내만 못 낸다).
+        return None
+
+
+def _round_pending_abandon_command(
+    tid: str, ordinal: int, role: str, rounds_module,
+) -> str | None:
+    """미회수 장부에서 이 pending 라운드의 실 `--copy`/`--cwd` 를 해소해 완성 abandon 커맨드를 낸다.
+
+    장부 부재·PM 홈 미확정·이 (순번, 역할)의 미회수 행 부재·경로 형태 불일치는 전부 해소
+    불능으로 `None`(호출부가 `ticket copies --unharvested` 조회 처방으로 대체한다)."""
+    delegate = _load_pm_delegate_module()
+    if delegate is None:
+        return None
+    owner = _round_pending_ledger_owner(delegate)
+    if owner is None:
+        return None
+    try:
+        rows = delegate.ticket_copy_records(owner, ticket=tid, unharvested=True)
+    except Exception:  # noqa: BLE001 — 장부 손상도 해소 불능으로 흡수(discard 비차단).
+        return None
+    match = next(
+        (row for row in rows if row.get("ordinal") == ordinal and row.get("role") == role),
+        None,
+    )
+    if match is None:
+        return None
+    copy_path = Path(match["copy"])
+    # 장부는 `copy` 절대경로만 싣는다 — `--cwd` 는 그 절대경로에서 준비 규약의 상대 경로
+    # (`<TICKET_COPY_REL_ROOT>/<ticket>/<run_id>/<라운드 파일명>`)을 걷어내 역산한다(준비가
+    # 실제로 그 규약대로 쓴 경로라는 전제 — 불일치면 해소 불능으로 판정).
+    relative = delegate.TICKET_COPY_REL_ROOT / match["ticket"] / match["run_id"] / \
+        rounds_module.round_filename(match["ordinal"], match["role"])
+    rel_parts = relative.parts
+    if copy_path.parts[-len(rel_parts):] != rel_parts:
+        return None
+    cwd = Path(*copy_path.parts[:-len(rel_parts)])
+    return (
+        "python3 .project_manager/tools/pm_delegate.py ticket abandon "
+        f"--copy {copy_path} --cwd {cwd} --assume-dead"
+    )
+
+
 def _discard_round_pending_notice(tid: str) -> None:
     """미회수(round-pending) 라운드가 있어도 discard 를 막지 않고 ⓘ 로 회수 처방만 안내한다.
 
-    완료 게이트(`_round_completion_problems`)와 같은 축(round-pending=비차단·표시용)이지만
-    seam 은 단일 티켓 `verify_rounds(tickets_dir(), tid)`다 — `lint_rounds()` 는 무인자 전역
-    순회라 discard 1건 처리엔 과하다. round-gap·round-dup·round-name 은 완료 게이트가 이미
-    다루는 축이라 여기서 재확인하지 않는다(discard 는 그 축을 차단하지 않는다).
+    완료 게이트(`_round_completion_problems`)와 같은 축(round-pending=비차단·표시용)이다.
+    여러 pending 이 있어도 안내는 **정확히 1줄**(건수 + 첫 pending 의 처방)로 접는다 — pending
+    마다 자리표시자 줄을 찍던 옛 형태는 실행 가능한 값이 아니었다(reviewer). round-gap·
+    round-dup·round-name 은 완료 게이트가 이미 다루는 축이라 여기서 재확인하지 않는다(discard
+    는 그 축을 차단하지 않는다).
     """
-    rounds = _load_ticket_rounds()
-    for problem in rounds.verify_rounds(tickets_dir(), tid):
-        if problem.code != rounds.PROBLEM_PENDING:
-            continue
-        print(
-            f"ⓘ  {problem.code}: {problem.detail} — 회수하려면 `pm_delegate.py ticket "
-            "abandon --copy <ticket 사본 경로> --cwd <작업 디렉터리> --assume-dead` 로 정리하라",
-            file=sys.stderr,
-        )
+    rounds_module = _load_ticket_rounds()
+    pending = [
+        item for item in rounds_module.load_rounds(tickets_dir(), tid) if item.pending
+    ]
+    if not pending:
+        return
+    first = pending[0]
+    resolved = _round_pending_abandon_command(tid, first.ordinal, first.role, rounds_module)
+    prescription = resolved if resolved is not None else _ROUND_PENDING_UNHARVESTED_QUERY
+    print(
+        f"ⓘ  round-pending {len(pending)}건({first.path.name}) — "
+        f"회수하려면 `{prescription}`",
+        file=sys.stderr,
+    )
 
 
 def cmd_discard(args: argparse.Namespace) -> int:
