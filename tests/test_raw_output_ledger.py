@@ -179,6 +179,45 @@ def test_start_and_finish_record_preserve_audit_fields(relay, tmp_path):
     assert rows[0]["finished_at"]
 
 
+def test_claude_and_codex_usage_shapes_coexist_and_survive_prune_round_trip(
+        relay, tmp_path):
+    """4필드(claude)·5필드(codex) 행이 한 장부에 공존하고 `_prune_raw_records` 왕복 후에도
+    각 행의 usage 가 원형 보존된다(T-0780)."""
+    ledger_path = tmp_path / "raw_outputs.json"
+    claude_usage = {
+        "input": 4, "cache_creation": 1_204, "cache_read": 26_079, "output": 311}
+    codex_usage = {
+        "input": 12_481, "cached_input": 9_600, "cache_write_input": 0,
+        "output": 105, "reasoning_output": 92,
+    }
+    claude_id = relay.start_raw_record(
+        ledger_path, surface="delegate", harness="claude", model="opus",
+        role="developer", raw_path=tmp_path / "claude.txt", attempt="primary",
+    )
+    relay.finish_raw_record(
+        ledger_path, claude_id, rc=0, elapsed_sec=1.0, silence_sec=None,
+        extra={"usage": claude_usage},
+    )
+    codex_id = relay.start_raw_record(
+        ledger_path, surface="delegate", harness="codex", model="gpt-x",
+        role="developer", raw_path=tmp_path / "codex.txt", attempt="primary",
+    )
+    relay.finish_raw_record(
+        ledger_path, codex_id, rc=0, elapsed_sec=1.0, silence_sec=None,
+        extra={"usage": codex_usage},
+    )
+    # 정리 규칙이 다시 도는 레코드 하나 더 시드 — prune 왕복.
+    relay.start_raw_record(
+        ledger_path, surface="delegate", harness="claude", model="opus",
+        role="developer", raw_path=tmp_path / "third.txt", attempt="primary",
+    )
+    rows = {row["id"]: row for row in relay.raw_records(ledger_path)}
+    assert rows[claude_id]["usage"] == claude_usage
+    assert rows[claude_id]["harness"] == "claude"
+    assert rows[codex_id]["usage"] == codex_usage
+    assert rows[codex_id]["harness"] == "codex"
+
+
 def test_reserved_key_table_covers_every_common_schema_field(relay, tmp_path):
     """예약표가 시작·마감이 쓰는 공통 필드를 전부 담는다 — 표가 뒤처지면 예약이 헐거워진다."""
     ledger_path = tmp_path / "raw_outputs.json"
@@ -641,6 +680,49 @@ def test_external_review_kill_leaves_discoverable_unfinished_record_before_runne
     assert unfinished[0]["model"] == "gpt-x"
     assert "gpt-x" in unfinished[0]["command"]
     assert Path(unfinished[0]["raw_path"]).is_file()
+
+
+def test_review_run_records_usage_for_structured_codex_target_including_nonzero_rc(
+        external, tmp_path):
+    """리뷰 표면(structured codex)의 레코드에도 usage 가 실린다 — 실패(rc≠0) 실행도 포함해
+    관측이 ok/rc 에 걸리지 않는다(T-0780 · 위임 표면과 대칭)."""
+    target = external.resolve_reviewer_target({
+        "additional_reviewer.harness": "codex",
+        "additional_reviewer.model": "gpt-5.6-sol",
+    })
+    usage_wire = {
+        "input_tokens": 47_200_000, "cached_input_tokens": 40_000_000,
+        "cache_write_input_tokens": 0, "output_tokens": 900_000,
+        "reasoning_output_tokens": 100_000,
+    }
+    expected_usage = {
+        "input": 47_200_000, "cached_input": 40_000_000, "cache_write_input": 0,
+        "output": 900_000, "reasoning_output": 100_000,
+    }
+
+    def _wire(rc):
+        events = [
+            json.dumps({"type": "item.completed",
+                       "item": {"type": "agent_message",
+                                "text": "판정: 통과\n\n**must-fix**:\n- 없음\n"}}),
+            json.dumps({"type": "turn.completed", "usage": usage_wire}),
+        ]
+        return subprocess.CompletedProcess(
+            args=["codex"], returncode=rc, stdout="\n".join(events), stderr="")
+
+    ok_result = external.run_review(
+        "p", target=target, output_dir=tmp_path, run_fn=lambda *a, **k: _wire(0))
+    assert ok_result["ok"] is True
+
+    fail_result = external.run_review(
+        "p", target=target, output_dir=tmp_path, run_fn=lambda *a, **k: _wire(1))
+    assert fail_result["failed"] is True
+
+    rows = _ledger(tmp_path / "raw_outputs.json")["records"]
+    assert len(rows) == 2
+    assert all(row["usage"] == expected_usage for row in rows)
+    assert all(row["harness"] == "codex" for row in rows)
+    assert {row["rc"] for row in rows} == {0, 1}
 
 
 def test_completed_delegate_keeps_existing_raw_audit_header(

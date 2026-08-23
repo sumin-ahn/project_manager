@@ -7023,11 +7023,17 @@ def run_review(
         # 취급은 종전과 같다(판정 없음 = 미완 라운드 · 전송은 있었으므로 환불 없음).
         answer = output.answer
         reply_extraction_failed = False
-        if target.structured and ok:
-            extracted = relay.extract_harness_reply(target.harness, output.answer)
-            reply_extraction_failed = extracted is None
-            answer = extracted or ""
-            ok = not reply_extraction_failed
+        # usage 관측은 회신 판정과 **분리한 축**이다 — 실패한 리뷰(ok=False)도 토큰을 썼으므로
+        # ok/rc 에 걸지 않는다. structured 대상에서만 관측한다 — legacy 대상은 임의 실행기라
+        # wire 계약이 없다.
+        review_usage: dict[str, int] | None = None
+        if target.structured:
+            observed = relay.extract_harness_result(target.harness, output.answer)
+            review_usage = observed.usage
+            if ok:
+                reply_extraction_failed = observed.reply is None
+                answer = observed.reply or ""
+                ok = not reply_extraction_failed
         verdict = parse_verdict(answer)
         contamination = detect_output_contamination(answer)
         _write_reserved_output(
@@ -7045,6 +7051,7 @@ def run_review(
                 rc=int(metrics["rc"]),
                 elapsed_sec=elapsed,
                 silence_sec=metrics.get("silence_sec"),
+                extra={"usage": review_usage} if review_usage else None,
             )
         except relay.RawRecordAlreadyFinished as exc:
             # 수동 `raw close`(--force) 가 먼저 마감한 충돌 — 첫 마감을 보존하고 리뷰

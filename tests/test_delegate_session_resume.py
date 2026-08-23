@@ -80,6 +80,31 @@ _MEASURED_USAGE = {
 }
 
 
+# ── canned wire (codex exec --json 실측 형식) ─────────────────────────────────
+
+def _codex_wire(reply: str = "DONE", thread_id: str = "th-usage",
+                usage: dict | None = None) -> str:
+    events = [{"type": "thread.started", "thread_id": thread_id},
+              {"type": "item.completed",
+               "item": {"type": "agent_message", "text": reply}}]
+    if usage is not None:
+        events.append({"type": "turn.completed", "usage": usage})
+    return "\n".join(json.dumps(event) for event in events)
+
+
+_MEASURED_CODEX_USAGE_WIRE = {
+    "input_tokens": 12_481,
+    "cached_input_tokens": 9_600,
+    "cache_write_input_tokens": 0,
+    "output_tokens": 105,
+    "reasoning_output_tokens": 92,
+}
+_MEASURED_CODEX_USAGE = {
+    "input": 12_481, "cached_input": 9_600, "cache_write_input": 0,
+    "output": 105, "reasoning_output": 92,
+}
+
+
 class _FakeRun:
     """run_fn seam stub — 호출마다 준비된 RunResult 를 내고 argv/stdin 을 기록한다."""
 
@@ -192,8 +217,9 @@ def test_scalar_usage_contract_of_public_parser_is_unchanged(relay):
     assert relay.parse_stream_json(lines) == relay._parse_stream_json_events(lines)[:3]
 
 
-def test_harness_without_breakdown_records_no_usage_field(relay):
-    """분해 관측이 없는 축은 추정 매핑 대신 **필드 부재**(false-정밀 금지)."""
+def test_codex_usage_is_loaded_flat_not_folded_into_claude_fields(relay):
+    """codex 5필드 contract 를 접지 않고 그대로 싣는다 — 미관측 키는 0(claude 축의
+    '부재=미관측'과 다른 규칙, `_codex_usage_contract` 의 `_n` 이 소유)."""
     codex_wire = "\n".join([
         json.dumps({"type": "thread.started", "thread_id": "th-1"}),
         json.dumps({"type": "item.completed",
@@ -201,22 +227,58 @@ def test_harness_without_breakdown_records_no_usage_field(relay):
         json.dumps({"type": "turn.completed", "usage": {"input_tokens": 10}}),
     ])
     observed = relay.extract_harness_result("codex", codex_wire)
-    assert (observed.reply, observed.session_id, observed.usage) == ("OK", "th-1", None)
+    assert (observed.reply, observed.session_id) == ("OK", "th-1")
+    assert observed.usage == {
+        "input": 10, "cached_input": 0, "cache_write_input": 0,
+        "output": 0, "reasoning_output": 0,
+    }
 
+
+def test_codex_usage_event_absent_leaves_field_absent(relay):
+    """`turn.completed` 자체가 wire 에 없으면(실패 실행 등) 필드 부재다 — 0 채우기 아님."""
+    codex_wire = "\n".join([
+        json.dumps({"type": "thread.started", "thread_id": "th-1"}),
+        json.dumps({"type": "item.completed",
+                    "item": {"type": "agent_message", "text": "OK"}}),
+    ])
+    observed = relay.extract_harness_result("codex", codex_wire)
+    assert observed.usage is None
+
+
+def test_opencode_usage_stays_absent_out_of_this_tickets_scope(relay):
+    """opencode 는 범위 밖 — 총합 스칼라의 의미가 두 갈래라 필드 부재를 유지한다."""
     opencode_wire = json.dumps({
         "type": "text", "sessionID": "ses_1", "part": {"type": "text", "text": "OK"}})
     observed = relay.extract_harness_result("opencode", opencode_wire)
     assert (observed.reply, observed.session_id, observed.usage) == ("OK", "ses_1", None)
 
 
+def test_codex_and_claude_usage_keysets_do_not_fold(relay):
+    """codex·claude 키집합 교집합은 `{input, output}` 뿐 — 어느 쪽도 상대의 캐시 분해 키를
+    갖지 않는다(grep 부재 단언 대신 값으로 접힘 부재를 고정)."""
+    claude_usage = relay.extract_harness_result(
+        "claude", _claude_wire(usage=_MEASURED_USAGE)).usage
+    codex_usage = relay.extract_harness_result(
+        "codex", _codex_wire(usage=_MEASURED_CODEX_USAGE_WIRE)).usage
+    claude_keys, codex_keys = set(claude_usage), set(codex_usage)
+    assert claude_keys & codex_keys == {"input", "output"}
+    assert codex_keys - claude_keys == {
+        "cached_input", "cache_write_input", "reasoning_output"}
+    assert claude_keys - codex_keys == {"cache_creation", "cache_read"}
+
+
 def test_reply_only_facade_keeps_both_call_sites_intact(relay, pd):
-    """회신 전용 seam 의 반환 계약(str|None)은 불변 — 두 호출부가 그대로 산다."""
+    """회신 전용 seam 의 반환 계약(str|None)은 불변 — 위임 호출부는 그대로 산다.
+
+    리뷰 표면은 usage 관측을 위해 `extract_harness_result` 로 옮겨갔다(회신은 `.reply`) — 그
+    이관 자체를 값으로 고정한다(T-0780)."""
     assert relay.extract_harness_reply("claude", _claude_wire("답")) == "답"
     assert relay.extract_harness_reply("claude", _claude_wire("   ")) is None
     assert pd.extract_reply("claude", _claude_wire("답")) == "답"      # 위임 호출부
     external = _load("external_review")
     source = Path(external.__file__).read_text(encoding="utf-8")
-    assert source.count("relay.extract_harness_reply(") == 1           # 리뷰어 호출부
+    assert source.count("relay.extract_harness_reply(") == 0    # 리뷰어 호출부는 usage 관측으로 이관
+    assert source.count("relay.extract_harness_result(") == 1
     with pytest.raises(relay.HarnessContractError, match="미지원 harness"):
         relay.extract_harness_reply("gemini", "{}")
 
@@ -469,6 +531,24 @@ def test_structured_fields_live_on_the_single_delegate_ledger_row(pd, relay, tmp
     survived = _row(ledger_path, row["id"])
     assert survived["session_id"] == SESSION_ID
     assert survived["must_fix_items"] == row["must_fix_items"]
+
+
+def test_codex_delegate_ledger_row_carries_the_flat_five_field_contract(pd, tmp_path):
+    """codex 위임 레코드에 5필드 contract 가 평평하게 실리고 같은 행에 `harness == 'codex'` 가
+    있다(T-0780) — claude 4필드 축과 이름이 겹쳐도(`input`·`output`) 접지 않는다."""
+    out_dir = tmp_path / "raw"
+    ledger_path = out_dir / "raw_outputs.json"
+    pd._execute_attempt(
+        harness="codex", model="gpt-x", reasoning=None, role="developer",
+        cwd=tmp_path, prompt="p", timeout=60, output_dir=out_dir,
+        run_fn=_FakeRun(_ok(_codex_wire("완료", usage=_MEASURED_CODEX_USAGE_WIRE))),
+        attempt="primary",
+    )
+    rows = _rows(ledger_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["harness"] == "codex"
+    assert row["usage"] == _MEASURED_CODEX_USAGE
 
 
 def test_run_id_and_copy_land_on_the_same_row_when_a_round_plan_is_known(pd, tmp_path):
