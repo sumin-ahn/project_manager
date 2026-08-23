@@ -1141,7 +1141,12 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   + `ticket_finish.py:TicketFinisher._committed_out_of_scope` reraises — 통합 tip 기준
     #     커밋 인구를 `git diff` 로 세는 자리. 조회 실패는 인구 축소 + loud 1줄로 접고(완료를
     #     벽돌로 만들지 않는다) 마킹된 skew 는 그대로 올린다.
-    assert len(report.boundaries) == 269, "propagation sweep boundary ratchet changed"
+    # 270 = 269 + 1. 묶음 리뷰 백그라운드 실행 장부의 마감 경계:
+    #   + `pm_delegate.py:main` reraises — CLI 진입을 감싸 자식 프로세스가 rc 반환·`SystemExit`·
+    #     전파 예외 어느 경로로 끝나든 실행 장부 행을 자기 rc 로 마감하는 자리. 예외는 마감만
+    #     기록하고 그대로 다시 올린다(흡수 0 — 마킹된 skew 포함). 통합 브랜치 합류 뒤 형제 티켓의
+    #     래칫 서사에 빠져 있던 것을 여기서 보충한다.
+    assert len(report.boundaries) == 270, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
