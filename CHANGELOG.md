@@ -9,6 +9,16 @@
 
 ### 업그레이드 노트
 
+- **BREAKING — 추가 리뷰어의 판정 라운드 상한(전송 횟수 축)이 제거됐다.** 같은 게이트로 판정 4회를
+  채우면 막던 축이 사라지고, 티켓 단위 차단은 수렴 축(`additional_reviewer.rounds_max`·must_fix
+  추이)과 미완 축(`additional_reviewer.incomplete_rounds_max`)이 맡는다. 두 축이 겹치지 않는
+  형상(`rounds` 가 빈 승계 항목 · `--confirm-fix` 실행)에서는 라운드가 전보다 늦게 막힌다.
+  구키 `additional_reviewer_round_limit`·`external_review_round_limit` 는 v1.7.8 부터 이미 값을
+  공급하지 않았고, 이제 그 축 자체가 없다.
+- **라운드 장부의 폐지 필드 `acked_through` 를 버린다(승계 없음).** 폐지된 라운드 연장 승인이 남긴
+  값이라 새로 늘어나지 않지만, 값이 남은 게이트는 집계 창이 잘려 있었다. 정규화가 그 키를 떨구며
+  게이트·값을 한 번 알리고, 장부가 다시 기록되면 안내는 사라진다(별도 마이그레이션 명령 없음).
+  구 장부는 그대로 읽히고 게이트 항목 판별도 유지된다(`count` 가 같은 판별을 덮는다).
 - **managed `.codex/hooks.json` 값 변경 — codex 채택자는 `/hooks` 재승인 1회가 필요하다.** 훅 이벤트
   6종(`PreToolUse`·`UserPromptSubmit`·`PostToolUse`·`SubagentStart`·`PreCompact`·`PostCompact`)이
   이벤트당 범용 진입점 하나(`matcher .*` → `.codex/pm_orch_codex.py --hook-dispatch <이벤트>`)로
@@ -55,6 +65,11 @@
 
 ### Removed
 
+- **추가 리뷰어 판정 라운드 상한 축 제거** — 상수(`DEFAULT_ROUND_LIMIT`)·차단 분기·안내 문구의
+  판정 상한 항목이 사라진다. 실 장부 53게이트에서 한 번도 발동하지 않은 축이고, 같은 범위를
+  수렴 축이 must_fix 추이로 더 정확히 본다 (T-0772).
+- **라운드 장부 스키마에서 `acked_through` 제거** — 정규화·집계·조회 표(`--rounds-report`)·게이트
+  항목 판별 마커에서 모두 빠진다. 값이 남은 구 장부는 loud 안내와 함께 그 값을 버린다 (T-0772).
 - **편집 시 자동 회귀 훅(`run_tests_hook.sh`) 제거** — `.py` 편집 1회마다 `test_cmd`(전체 회귀)를
   돌리던 claude_code 전용 `PostToolUse` 훅을 폐지했다. 훅 본체 2본·배선(양 `settings.json` 의
   `PostToolUse` 블록과 권한 행)·manifest 등재 2본·`pm_import` 어댑터 훅 집합 항목·전용 테스트
@@ -62,6 +77,13 @@
   티켓 지정 회귀와 push 게이트 회귀가 중복으로 잡고, 전체 회귀의 실행 지점은 릴리즈 절차 1회다.
   claude_code 채택자의 `.claude/settings.json` 에서 `PostToolUse` 항목이 없어지며, 그 이벤트 자체를
   금지하지는 않는다(채택자 자작 훅은 무관) (T-0771).
+
+### Added
+
+- `local.conf` 노브 `delegate.code-reviewer.rounds_max`(기본 3) — 내부 code-reviewer 라운드 수렴
+  상한을 채택자가 조정한다. 추가 리뷰어 축과 **별개 예산**이라 한쪽을 올려도 과금 라운드는 늘지
+  않는다. 거부 안내가 설정값과 키를 그대로 싣고, `pm-fixed` 처분의 발동·완료 재검증도 같은
+  값을 본다 (T-0772).
 
 ### Changed
 

@@ -2029,6 +2029,26 @@ def test_local_conf_overrides_role_round_limit(pd, rounds_env, capsys):
         pd.prepare_ticket_copy(ticket="T-8004", role="developer", cwd=slot, pm_home=pm_home)
 
 
+def test_confirm_fix_reservation_gets_one_round_beyond_the_role_cap(pd, rounds_env):
+    """F-001 — 예약 상한(code-reviewer 기본값)과 수렴 상한(`delegate.code-reviewer.rounds_max`)이
+    같은 값일 때, 수렴 상한이 소유한 confirm-fix 1회 예외를 이 예약 상한이 앞서 막으면 안 된다.
+    반대로 그 예외는 정확히 1회다 — 두 번째 confirm-fix 예약 시도는 여전히 막힌다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    _write_spec(tickets, "T-8021")
+    limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["code-reviewer"]
+    _prepare_n_rounds(pd, pm_home, slot, "T-8021", "code-reviewer", limit)
+
+    plan = pd.prepare_ticket_copy(
+        ticket="T-8021", role="code-reviewer", cwd=slot, pm_home=pm_home, confirm_fix=True,
+    )
+    assert plan.ordinal == limit + 1
+
+    with pytest.raises(pd.InternalRoundLimitExceeded, match=r"상한 \d+\)"):
+        pd.prepare_ticket_copy(
+            ticket="T-8021", role="code-reviewer", cwd=slot, pm_home=pm_home, confirm_fix=True,
+        )
+
+
 def test_researcher_role_is_not_gated(pd, rounds_env):
     """스코프 밖 역할(researcher)은 게이트 대상이 아니다(티켓 스코프 확대 금지)."""
     pm_home, slot, tickets, _sync = rounds_env
@@ -2453,6 +2473,101 @@ def test_two_cross_runs_of_the_same_ticket_and_role_bind_1to1_not_swapped(
 
     # 서로 다른 run 이므로 raw 행의 copy 도 서로 다르다(같은 예약으로 뒤섞이지 않는다).
     assert raw_rows[0]["copy"] != raw_rows[1]["copy"]
+def test_configured_convergence_limit_reaches_confirm_fix_through_main(
+    pd, refund_env, monkeypatch,
+):
+    """F-001 회귀 — `delegate.code-reviewer.rounds_max=5`(예약 상한 기본값과 같은 값)에서
+    `main()` 경유 일반 5회가 전부 성공하고, 그 뒤 `--confirm-fix` 라운드도 예약 상한에 막히지
+    않고 예약·실행된다. `pm-fixed` 선언과 board 완료 재검증도 같은 conf 값을 공유한다."""
+    home, tickets = refund_env
+    ticket = "T-9105"
+    _write_spec(tickets, ticket)
+    # `--pm-fixed` 근거의 `change=` 파일은 선언 시(canonical `REPO`)와 board 완료 재검증 시
+    # (`board.REPO` = 이 fixture PM 홈 `home`, `_fixture_board` 재배선)에 서로 다른 루트로
+    # 두 번 실존 검증된다 — 같은 상대경로가 두 루트 모두에 있어야 두 검증을 다 통과한다.
+    (home / "tests").mkdir()
+    (home / "tests" / "test_pm_delegate_rounds.py").write_text("# fixture\n", encoding="utf-8")
+    rounds_max = 5
+    assert rounds_max == pd.DEFAULT_INTERNAL_ROUND_LIMITS["code-reviewer"]
+    # 실 conf 파일 하나를 단일 진실로 쓴다 — `main()`(prepare/reserve)과 board 의 완료
+    # 재검증(별도로 로드되는 pm_delegate 사본)이 같은 파일을 읽어야 F-001 이 재현·검증된다.
+    (home / ".project_manager" / "local.conf").write_text(
+        "delegate.enabled=true\n"
+        "delegate.code-reviewer.harness=claude\n"
+        "delegate.code-reviewer.model=opus\n"
+        f"{pd.INTERNAL_REVIEW_ROUNDS_MAX_KEY}={rounds_max}\n",
+        encoding="utf-8",
+    )
+    # `refund_env` 가 이미 `local_config` 를 developer 프로필 dict 로 monkeypatch 해 뒀다 —
+    # 여기서 code-reviewer 프로필(+ 수렴 상한)을 포함하도록 덮어써 `main()` 호출이 그 값을 본다.
+    # board 의 완료 재검증은 별도 로드되는 pm_delegate 사본이라 이 monkeypatch 가 안 닿는다 —
+    # 그쪽은 위에서 쓴 실 conf 파일을 그대로 읽는다(같은 값 · 한 진실).
+    monkeypatch.setattr(pd, "local_config", lambda: {
+        "delegate.enabled": "true",
+        "delegate.code-reviewer.harness": "claude",
+        "delegate.code-reviewer.model": "opus",
+        pd.INTERNAL_REVIEW_ROUNDS_MAX_KEY: str(rounds_max),
+    })
+
+    # 내부 code-reviewer 판정은 회수될 라운드 파일 bytes 에서 나온다(터미널 회신은 `--ticket`
+    # 없는 실행의 대체 입력일 뿐이다) — 그래서 `_run_fn` 은 준비가 넘긴 실제 슬롯 경로에
+    # must-fix 1건짜리 반려 본문을 직접 써 넣는다. finding ID 는 라운드마다 새로 발급한다
+    # (같은 ID 재선언은 harvest 가 별도 축으로 거부한다 — 여기서 재는 축이 아니다).
+    captured_plan: dict[str, object] = {}
+    real_prepare = pd.prepare_ticket_copy
+
+    def _prepare_spy(**kwargs):
+        plan = real_prepare(**kwargs)
+        captured_plan["plan"] = plan
+        return plan
+
+    monkeypatch.setattr(pd, "prepare_ticket_copy", _prepare_spy)
+    finding_counter = iter(range(1, rounds_max + 2))
+
+    def _run_fn(argv, *, stdin_text, cwd, env, timeout, harness):
+        finding_id = f"F-{next(finding_counter):03d}"
+        body = _review_body(pd, "code-reviewer", [finding_id])
+        _write_round_output(captured_plan["plan"].path, body)
+        return {
+            "returncode": 0,
+            "stdout": json.dumps({
+                "type": "result", "result": "라운드 파일에 판정을 기록했다.",
+                "session_id": "session-1",
+            }),
+            "stderr": "", "timed_out": False,
+        }
+
+    prompt = home / "task.md"
+    prompt.write_text("구현을 검토하라.", encoding="utf-8")
+
+    for index in range(rounds_max):
+        rc = pd.main(
+            ["--role", "code-reviewer", "--prompt-file", str(prompt), "--cwd", str(home),
+             "--ticket", ticket, "--output-dir", str(home / "raw")],
+            run_fn=_run_fn,
+        )
+        assert rc == 0, f"일반 라운드 {index + 1}/{rounds_max} 는 설정된 상한 안이다"
+
+    rc = pd.main(
+        ["--role", "code-reviewer", "--prompt-file", str(prompt), "--cwd", str(home),
+         "--ticket", ticket, "--output-dir", str(home / "raw"), "--confirm-fix"],
+        run_fn=_run_fn,
+    )
+    assert rc == 0, "confirm-fix 라운드가 예약 상한(F-001)에 막히면 안 된다"
+
+    # `--pm-fixed` 근거의 `change=` 파일은 canonical 엔진 repo(`REPO`) 기준으로 실재를
+    # 검증한다(이 fixture PM 홈이 아니다 — `_declare_internal_review_resolution` 은
+    # `repo_root=REPO` 로 고정한다) — 그래서 이 테스트 파일 자신을 가리킨다.
+    evidence = (
+        "change=tests/test_pm_delegate_rounds.py:1; "
+        "regression=pytest tests/test_pm_delegate_rounds.py -q; "
+        "result=rc=0 (targeted regression passed)"
+    )
+    rc = pd._cmd_rounds(["resolve", "--gate", ticket, "--pm-fixed", evidence])
+    assert rc == 0
+
+    board = pd._load_board_for_repo(home)
+    assert board._internal_review_completion_problem(ticket) is None
 
 
 # ── T-0846 — 단일 정리 경계(지점 삽입 대체) ─────────────────────────────────

@@ -574,6 +574,7 @@ dot notation이고 세그먼트 안 철자는 그 식별자의 정본을 따른�
 | `delegate.<role>[.hard].fallback.{harness,model,reasoning}` | (없음) | **인프라 실패**(스폰 실패·타임아웃·한도/인증) 1회 대체. 정상 완료 판정(반려·must-fix)은 대상이 아니다 |
 | `delegate.model_alias.<name>` | (없음) | 모델 별칭 |
 | `delegate.timeout` · `delegate.idle_timeout` | 하네스별 엔진 기본 | 위임 실행의 벽시계 백스톱과 무진행 판정(하네스별 키가 이긴다) |
+| `delegate.code-reviewer.rounds_max` | `3` | 내부 code-reviewer 라운드 수렴 상한(추가 리뷰어 예산과 별개 축·과금 없음) |
 | `harness.<name>.{idle_timeout,wall_timeout}` | 하네스별 엔진 기본 | 외부 하네스 실행의 무진행 판정(주)과 벽시계 백스톱. 미설정이어도 안전하다 |
 | `harness.<name>.ctx_window_tokens` | `ctx.window_tokens` | 그 하네스의 컨텍스트 예산(분모) |
 | `harness.opencode.pro_model` | (없음) | opencode 어댑터 카드 렌더에 쓰는 모델 |

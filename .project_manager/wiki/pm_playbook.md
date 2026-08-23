@@ -112,10 +112,11 @@ PM-direct는 이 루프 대신 PM 구현·self-review·범위 테스트를 거�
 6. **accepted-only delta + 세션 재사용.** `python3 .project_manager/tools/pm_delegate.py review delta --ticket T-NNNN` 출력만 fix 프롬프트에 붙인다. renderer는 accepted ID의 원문 필드와 PM scope만 내며 rejected는 제외한다. 미판정·decision-required는 전체 delta를 차단하고, 같은 accepted ID가 2회 연속 unresolved/regressed면 추가 loop 대신 architect 재설계 또는 티켓 분할을 처방한다. accepted 0/finding 0은 성공+빈 stdout이라 developer를 재투입하지 않는다. fix 라운드는 이 delta를 `pm_delegate --resume-from <T-NNNN>` 으로 **직전 dev 세션에 재사용**하는 것이 기본이다. reviewer 전문·rejected/decision-required 원문을 developer에게 다시 보내지 않는다. accepted 의 해소는 reviewer 확인 라운드 또는 **PM 기계 확인**(dev 가 라운드에 남긴 재현 커맨드를
    PM 이 직접 실행해 관측값과 함께 명세에 기록)으로 성립하며, 둘은 같은 확인 이력에 합류해 2회 연속
    미해소 규칙을 똑같이 받는다.
-7. **내부 라운드 상한 3.** 추가 리뷰어 게이트와 동형이며, 상한이 세는 것은 **reviewer 스폰
+7. **내부 라운드 상한.** 기본 3이고 local.conf `delegate.code-reviewer.rounds_max` 로 조정한다.
+   추가 리뷰어 게이트와 동형이며, 상한이 세는 것은 **reviewer 스폰
    라운드**(장부에 예약이 남는 실행)다. PM 기계 확인은 스폰이 없어 장부에 기록되지 않으므로 상한
-   계산에 들어가지 않는다. 3라운드에 수렴하지 않으면 라운드 추가가 아니라 재설계·티켓 분할로
-   전환한다.
+   계산에 들어가지 않는다. 설정된 상한(기본 3)에 수렴하지 않으면 라운드 추가가 아니라 재설계·
+   티켓 분할로 전환한다.
 8. **확인은 기계가 먼저.** fix 라운드 산출에는 accepted finding 마다 재현 커맨드·기대값·fix 전
    실값이 엔진 골격으로 실린다. PM 은 그 커맨드를 직접 실행해 관측값과 함께 명세에 확인을
    기록한다(골격은 엔진이 낸다 — 커맨드를 손으로 옮겨 적지 않는다). reviewer 재투입은 엔진이

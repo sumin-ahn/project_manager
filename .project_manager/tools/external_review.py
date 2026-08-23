@@ -46,8 +46,8 @@ raw 파일 접두)에만 남는다. 설정 키는 `additional_reviewer.enabled`/
   - diff 서킷브레이커 → exit 1 (리뷰어 호출 전 거부). 티켓 estimate 별 diff 총량 상한
     (small 300 / medium 1,000 / large 2,500 · local.conf diff_cap.<estimate>)을 넘긴 스코프는
     리뷰 라운드로 닫히지 않으므로 분할·재설계로 보낸다.
-  - 라운드 상한 도달(--gate 별) → exit 4 (실행 전 거부·전용 rc). 같은 게이트로
-    판정 4회(엔진 고정) 또는 미완 2회
+  - 미완 라운드 상한 도달(--gate 별) → exit 4 (실행 전 거부·전용 rc). 같은 게이트로 판정 없이
+    끝난 전송 2회
     (local.conf additional_reviewer.incomplete_rounds_max)를 채우면 이후 실행을 기계 차단한다. 성격은
     **무한 루프 차단(anti-loop pause)**이다 — 연장 승인(`--ack-rounds`)은 폐지됐고, 호출하면
     아무것도 하지 않고 거부한다.
@@ -79,7 +79,9 @@ raw 파일 접두)에만 남는다. 설정 키는 `additional_reviewer.enabled`/
     --ticket/기본 암묵 수집분 제외는 종합 판정 라인에 병기. additional_reviewer.denylist_extra 로 추가 가능.
   - 라운드 상한 기계 차단: 추가 리뷰어 호출(과금·전송)이 무한 반복되지 않게 `--gate <T-NNNN>`
     별 라운드 장부(`.project_manager/.local/review_rounds.json`·per-clone·git-ignored)에 실 전송을
-    count 하고, limit(기본 4)회를 넘기면 실행 *전에* 거부(exit 4)한다. "몇 라운드나 돌았나"라는
+    count 하고, 수렴 축(must_fix 추이)과 미완 축이 상한에 닿으면 실행 *전에* 거부(exit 4)한다.
+    전송 횟수만 세던 판정 라운드 상한은 제거됐다 — 수렴 판정이 같은 범위를 더 정확히 본다.
+    "몇 라운드나 돌았나"라는
     PM 자의 집계를 기계 장부로 대체하는 것이고([[mechanize-dont-instruct-llm]]), 수렴 여부 판정도
     같은 장부의 must_fix 추이가 소유한다(사람의 "이번엔 진짜 수렴 중" 판단을 입력으로 쓰지 않는다).
     게이트를 붙이는 것도 기억에 맡기지 않는다 — `--gate` 미지정 `--ticket` 실행은 게이트를 그
@@ -1293,14 +1295,13 @@ _REVIEWER_PROGRESS_CONTRACTS = {
     },
 }
 
-# 라운드 상한 — 같은 --gate 로 이 횟수를 넘겨 실 전송하면 이후 실행을 거부한다.
-# 기본 4 는 사용자 전역 규율(추가 리뷰 ">3~4 라운드면 수렴 판단")의 기계화다. **conf 노브가
-# 없다** — 판정 상한을 채택자가 낮췄다 높였다 하는 축은 이 표기 통일에서 제거됐다(대체 키 없음).
-DEFAULT_ROUND_LIMIT = 4
+# 미완 라운드 상한 — 판정 없이 끝난 전송(타임아웃·중단·오염 무효화)이 같은 게이트에서 이 횟수를
+# 채우면 이후 실행을 거부한다. 전송 횟수만 세던 판정 라운드 상한은 같은 범위를 보는 수렴 축과
+# 중복이라 제거됐다(실 장부 53게이트에서 한 번도 발동하지 않았고, 발산은 수렴 축이 더 일찍 잡는다).
 DEFAULT_INCOMPLETE_ROUND_LIMIT = 2
 
 # 수렴-형상 상한 — 코드 리뷰 라운드 수 상한(기본 2·local.conf `additional_reviewer.rounds_max`).
-# 위 판정 상한(4)이 "몇 번 전송했나"만 보는 반면 이 축은 **장부의 must_fix 추이**로 수렴 여부를
+# 이 축은 전송 횟수가 아니라 **장부의 must_fix 추이**로 수렴 여부를
 # 본다: 상한을 넘겼거나(초과), 직전 라운드보다 must_fix 가 늘었으면(발산) 라운드를 더 쓰지 않는다.
 # 실측에서 green 6건 중 5건이 2R 종결이고 관측된 3R 시도 8건은 모두 반려였다.
 DEFAULT_REVIEW_ROUNDS_MAX = 2
@@ -1352,7 +1353,7 @@ MEASURED_SCOPE_NOTE = "측정=손작업 스코프(기계 mirror 제외)"
 
 # wave(세션) 단위 총 라운드 예산 — 게이트별 상한과 **별개** 축이다. 게이트 상한만 있으면 비용이
 # 티켓 수 × 라운드 상한으로 확장되므로, 전 게이트 합계 전송을 이 예산으로 묶는다. 기본 24 는
-# 게이트 상한 4 × 동시 진행 6티켓 어림이고 실측 세션당 라운드(~50)보다 낮게 잡아 PM 이 중간에
+# 게이트당 4라운드 × 동시 진행 6티켓 어림이고 실측 세션당 라운드(~50)보다 낮게 잡아 PM 이 중간에
 # `--rounds-report`로 수렴 상태를 점검하는 관측점을 만든다. local.conf
 # additional_reviewer.wave_budget 로 조정 가능.
 DEFAULT_WAVE_BUDGET = 24
@@ -1582,26 +1583,26 @@ def _empty_diff_guidance(paths: Sequence[str], *, root: Path) -> str:
         + "\n    예: --paths a.py b.py (자동 교정하지 않음 — 콤마가 파일명인 경우를 보존)."
     )
 
-# 라운드 상한 초과 fail-loud 안내. 같은 게이트로 limit 회를 넘겨 실 전송이 시도되면
+# 미완 라운드 상한 초과 fail-loud 안내. 같은 게이트에서 판정 없이 끝난 전송이 상한을 채우면
 # diff 추출·추가 리뷰어 호출 전에 이 안내로 차단한다.
 #
 # 이 상한의 성격은 **무한 루프 차단(anti-loop pause)**이다. 연장 승인(`--ack-rounds`)은 폐지됐다 —
 # "반례가 진짜니까 계속"을 사람이 승인하는 구조 자체가 비용 누수였다(실측 12라운드). 남은 출구는
 # **재설계·티켓 분할**뿐이고, 직전 지적의 해소만 확인하려면 게이트당 1회 `--confirm-fix` 를 쓴다.
 _ROUND_LIMIT_GUIDANCE = (
-    "오류: 추가 리뷰어 라운드 상한 도달 — 게이트 {gate} · "
+    "오류: 추가 리뷰어 미완 라운드 상한 도달 — 게이트 {gate} · "
     "count={unacked}(판정 {verdicts} · 미완 {incomplete})\n"
-    "  (판정 상한 {limit} · 미완 재시도 상한 {incomplete_limit}). 무한 라운드 차단이라 "
+    "  (미완 재시도 상한 {incomplete_limit}). 무한 라운드 차단이라 "
     "초과분은 기계가 멈춥니다 — 자의 우회 불가.\n"
     "  · **미완**은 판정이 없던 전송입니다 — 타임아웃·중단뿐 아니라 **오염 진단으로 무효화된 "
     "판정**도 이 축에 들어갑니다(판정 표면과 같은 규칙이라 두 표면이 갈리지 않습니다).\n"
     "  · 먼저 `--rounds-report` 로 라운드별 산출과 수렴 상황을 확인하세요.\n"
     "  · **재설계·티켓 분할이 유일한 출구입니다** — 라운드 연장 승인(`--ack-rounds`)은 "
-    "폐지됐고, 확인 전용 라운드(`--confirm-fix`)는 수렴 축의 예외라 이 전송 횟수 상한은 "
+    "폐지됐고, 확인 전용 라운드(`--confirm-fix`)는 수렴 축의 예외라 이 미완 축은 "
     "열지 않습니다.\n"
-    "  · 판정 상한은 엔진 고정값이고, 미완 재시도 상한만 local.conf "
+    "  · 미완 재시도 상한은 local.conf "
     "`additional_reviewer.incomplete_rounds_max` 로 조정합니다.\n"
-    "  (장부: {ledger} · count={count} acked_through={acked})"
+    "  (장부: {ledger} · count={count})"
 )
 
 # 수렴-형상 차단 안내 (라운드 상한 rc 를 그대로 쓴다 — 전송 전 예산 거부라 같은 축).
@@ -2380,9 +2381,10 @@ def _diff_cap(conf: dict[str, str], estimate: str | None) -> int | None:
 # ── 라운드 상한 장부 ─────────────
 # 추가 리뷰어 호출은 과금·전송 게이트라 라운드가 무한정 이어지면 비용이 쌓인다(PM 10차 실측: 한
 # 게이트 클러스터 25라운드). PM 자의 라운드 집계를 기계 장부로 대체한다
-# ([[mechanize-dont-instruct-llm]]): `--gate <T-NNNN>` 별로 실 전송 횟수(count)와 옛 승인 수위
-# (acked_through — 폐지된 `--ack-rounds` 의 잔존 필드·구 장부 해석에만 쓴다)를 per-clone·
-# git-ignored 장부에 기록하고, limit 을 넘기면 실행 전에 거부한다. 장부는 세션/클론 로컬 현상이라
+# ([[mechanize-dont-instruct-llm]]): `--gate <T-NNNN>` 별로 실 전송 횟수(count)와 라운드별 산출을
+# per-clone·git-ignored 장부에 기록하고, 상한을 넘기면 실행 전에 거부한다. 폐지된 라운드 연장
+# 승인이 남긴 필드는 정규화가 승계 없이 떨어뜨린다(`review_rounds.RETIRED_ACK_FIELD` — 그 사실은
+# 게이트·값과 함께 한 번 알린다). 장부는 세션/클론 로컬 현상이라
 # `.project_manager/.local/`(regression/livegate sidecar 와 동위·board 상태 아님)에 둔다. 경로는
 # 호출 시점 REPO(module-level·monkeypatch 가능)에서 파생해 hermetic 테스트가 tmp 로 격리할 수 있게
 # 한다(_tickets_dir 동형). 손상 장부는 빈 장부로 fail-soft(회귀해소·regression flag 동형).
@@ -2438,7 +2440,7 @@ def _read_round_ledger_at(path: Path) -> dict:
 
 
 def _load_round_ledger() -> dict:
-    """라운드 장부(gate→{count, acked_through})를 읽는다 — 없거나 손상 시 빈 dict(fail-soft)."""
+    """라운드 장부(gate→{count, records, rounds})를 읽는다 — 없거나 손상 시 빈 dict(fail-soft)."""
     return _read_round_ledger_at(_round_ledger_path())
 
 
@@ -2458,7 +2460,13 @@ def _inherit_legacy_round_entry(ledger: dict, gate: str) -> dict | None:
     legacy = _read_round_ledger_at(legacy_path)
     if gate not in legacy:
         return None
-    ledger[gate] = _gate_entry(legacy, gate)   # 손상 필드는 저장과 같은 규칙으로 정규화
+    # 손상 필드는 저장과 같은 규칙으로 정규화한다. 이 호출부는 반환 즉시 PM 홈 장부를
+    # 저장하므로(위 docstring) 폐기 필드 고지도 여기서 낸다 — 승계 항목도 일반 항목과
+    # 같은 "저장 후 1회 고지" 규칙을 받는다.
+    entry, retired_ack = _gate_entry_with_retirement(legacy, gate)
+    if retired_ack:
+        _load_review_rounds().warn_retired_ack_field(gate, retired_ack)
+    ledger[gate] = entry
     return ledger[gate]
 
 
@@ -2667,7 +2675,7 @@ _RESERVED_LEDGER_KEYS: frozenset[str] = frozenset({WAVE_SECTION_KEY})
 
 # 게이트 항목임을 알아보는 필드 — 예약 키 자리에 이런 항목이 들어 있으면 예약 키 도입 *이전에*
 # 그 이름을 게이트로 쓴 장부다(교체 사실을 조용히 넘기지 않고 알린다).
-_GATE_ENTRY_MARKERS: tuple[str, ...] = ("count", "acked_through", "records", "rounds")
+_GATE_ENTRY_MARKERS: tuple[str, ...] = ("count", "records", "rounds")
 
 _RESERVED_GATE_GUIDANCE = (
     "오류: `{flag} {gate}` 는 라운드 장부의 예약 키라 게이트 이름으로 쓸 수 없습니다 "
@@ -2837,6 +2845,17 @@ def _reset_wave(ledger: dict) -> dict:
     return ledger[WAVE_SECTION_KEY]
 
 
+def _gate_entry_with_retirement(ledger: dict, gate: str) -> tuple[dict, int]:
+    """`_gate_entry` 와 같은 정규화 + 폐기 필드(`RETIRED_ACK_FIELD`) 감지 여부.
+
+    반환 둘째 값은 이 호출이 방금 떨군 폐기 필드 원값(0=미검출)이다. 알림·영속 정책은
+    호출부 소유다 — mutation/차단 경로(`_reserve_round_budget`)는 감지 즉시 저장 후 1회
+    고지하고, 읽기 전용 조회(`render_rounds_report`)는 영속할 수 없는 고지를 하지 않는다."""
+    return _load_review_rounds().normalize_gate_entry(
+        ledger, gate, reserved_keys=tuple(_RESERVED_LEDGER_KEYS),
+    )
+
+
 def _gate_entry(ledger: dict, gate: str) -> dict:
     """게이트 항목을 전송 레코드를 포함한 현 스키마로 정규화한다.
 
@@ -2848,27 +2867,28 @@ def _gate_entry(ledger: dict, gate: str) -> dict:
 
     예약 키(wave 절)를 게이트로 정규화하려는 호출은 **fail-loud** 다 — 그 자리에 게이트 항목을 쓰면
     같은 항목을 wave 예산이 덮어써 상한·예산이 둘 다 조용히 무력화된다. 정상 경로는 `_main` 이
-    `--gate` 를 이미 거른 뒤라 여기 오지 않는다(불변식을 주석이 아니라 기계로 지킨다)."""
-    return _load_review_rounds().normalize_gate_entry(
-        ledger, gate, reserved_keys=tuple(_RESERVED_LEDGER_KEYS),
-    )
+    `--gate` 를 이미 거른 뒤라 여기 오지 않는다(불변식을 주석이 아니라 기계로 지킨다).
+
+    폐기 필드 감지 여부가 필요한 호출부는 `_gate_entry_with_retirement` 를 대신 쓴다(이
+    함수는 그 감지를 조용히 버린다 — 대부분의 호출부는 저장 여부를 스스로 정하지 않는
+    읽기 경로라 알림 대상이 아니다)."""
+    entry, _retired_ack = _gate_entry_with_retirement(ledger, gate)
+    return entry
 
 
-def _unacked_round_counts(entry: dict) -> tuple[int, int, int]:
-    """승인 이후 (전체, 판정, 미완) 수를 구한다; 구 장부 count는 판정으로 보수 승계한다."""
+def _round_counts(entry: dict) -> tuple[int, int, int]:
+    """이 게이트의 (전체, 판정, 미완) 전송 수; 구 장부 count는 판정으로 보수 승계한다."""
     count = max(0, _as_int(entry.get("count")))
-    acked = min(count, max(0, _as_int(entry.get("acked_through"))))
     records = [row for row in entry.get("records", []) if isinstance(row, dict)]
     # sequence/number는 identity일 뿐 count 좌표가 아니다. 환불로 sequence에 gap이 생겨도
-    # 장부의 순서와 count만으로 승인 이전 레코드를 잘라 조기 차단/예산 우회를 모두 막는다.
+    # 장부의 순서와 count만으로 집계 창을 잡아 조기 차단/예산 우회를 모두 막는다.
     logical_records = records[-min(len(records), count):] if count else []
-    legacy_count = max(0, count - len(logical_records))
-    legacy_verdicts = max(0, legacy_count - acked)
-    acked_records = max(0, acked - legacy_count)
-    current = logical_records[acked_records:]
-    verdicts = legacy_verdicts + sum(bool(row.get("verdict")) for row in current)
-    total = count - acked
-    return total, verdicts, max(0, total - verdicts)
+    # 레코드가 없던 시절의 전송(count 만 있는 구세대 항목)은 판정으로 세는 쪽이 보수적이다.
+    legacy_verdicts = max(0, count - len(logical_records))
+    verdicts = legacy_verdicts + sum(
+        bool(row.get("verdict")) for row in logical_records
+    )
+    return count, verdicts, max(0, count - verdicts)
 
 
 def _round_has_verdict(result: dict) -> bool:
@@ -3014,7 +3034,7 @@ def _inflight_reservations(entry: dict, *, wall_timeout_sec: int | None = None) 
     보는 미마감 예약을 상한에 더하면 창이 닫힌다.
 
     **미완 재시도 상한(`additional_reviewer.incomplete_rounds_max`)과 역할이 다르다.** 그쪽은
-    "판정을 못 낸 전송을 몇 번까지 다시 시도하나"(전송 횟수 축·승인 창 기준)이고, 이 수는
+    "판정을 못 낸 전송을 몇 번까지 다시 시도하나"(전송 횟수 축)이고, 이 수는
     "지금 몇 라운드가 이미 나가 있나"(수렴 축의 동시성)다. 같은 레코드를 보지만 묻는 질문이
     달라 한쪽이 다른 쪽을 대신하지 못한다 — 미완 상한(기본 2)은 상한 3 설정을 넘기는 4전송 창을
     막지 못하고, 이 수는 재시도 예산을 세지 않는다.
@@ -3423,7 +3443,6 @@ def _reserve_round_budget(
         print(_UNACCOUNTED_OPT_OUT_NOTICE, file=sys.stderr)
         return RoundBudget()
 
-    limit = DEFAULT_ROUND_LIMIT
     incomplete_limit = _incomplete_round_limit(conf)
     wave_budget = _wave_budget(conf)
     rounds_max = _review_rounds_max(conf)
@@ -3435,7 +3454,7 @@ def _reserve_round_budget(
             # 승계분은 판정 *이전에* 저장한다: 차단으로 조기 return 해도 마이그레이션은
             # 남아야 다음 실행이 다시 승계하지 않는다(게이트당 1회).
             if _inherit_legacy_round_entry(ledger, args.gate) is not None:
-                _, legacy_verdicts, legacy_incomplete = _unacked_round_counts(
+                _, legacy_verdicts, legacy_incomplete = _round_counts(
                     ledger[args.gate]
                 )
                 print(
@@ -3445,7 +3464,14 @@ def _reserve_round_budget(
                     file=sys.stderr,
                 )
                 _save_round_ledger(ledger)
-            entry = _gate_entry(ledger, args.gate)
+            entry, retired_ack = _gate_entry_with_retirement(ledger, args.gate)
+            # F-002 — 폐기 필드 정리는 이 실행이 뒤에서 거부되든 승인되든 **여기서 즉시**
+            # 저장하고 1회만 고지한다. 아래 각 차단 분기의 `approved or wave_repaired`
+            # 조건에 태우면(그 축은 다른 손상 복구 전용) 이 정리만 저장을 놓쳐 거부가
+            # 반복될 때마다 같은 경고가 되풀이된다 — 그 자체가 F-002 결함이었다.
+            if retired_ack:
+                _save_round_ledger(ledger)
+                _load_review_rounds().warn_retired_ack_field(args.gate, retired_ack)
             # 손상 복구(재계산된 spent)는 거부되는 실행에서도 저장한다 — 안 그러면 손상값이
             # 남아 매 실행 같은 경고를 반복하고 장부가 계속 거짓말을 한다. 저장 판정은 정규화와
             # **같은 술어**를 쓴다.
@@ -3523,20 +3549,21 @@ def _reserve_round_budget(
                     ledger=_round_ledger_path()), file=sys.stderr)
                 return RoundBudget(refused_rc=EXIT_ROUND_LIMIT_EXCEEDED)
 
-            # (2) 판정/미완 라운드 상한 (전송 횟수 축). wave 예산은 이와 독립 축이라 한쪽 승인이
+            # (2) 미완 라운드 상한 (판정 없이 끝난 전송 축). 전송 횟수만 세던 판정 상한은
+            #     수렴 축과 같은 범위라 제거됐다. wave 예산은 이와 독립 축이라 한쪽 승인이
             #     다른 쪽을 열지 않는다.
-            count, acked = entry["count"], entry["acked_through"]
-            unacked, verdicts, incomplete = _unacked_round_counts(entry)
-            if verdicts >= limit or incomplete >= incomplete_limit:
+            count = entry["count"]
+            total, verdicts, incomplete = _round_counts(entry)
+            if incomplete >= incomplete_limit:
                 if approved or wave_repaired:
                     _save_round_ledger(ledger)      # 승인·손상 복구는 거부돼도 남긴다
                 announce(resumed=False)
                 print(_ROUND_LIMIT_GUIDANCE.format(
-                    gate=args.gate, unacked=unacked, verdicts=verdicts,
-                    incomplete=incomplete, limit=limit,
+                    gate=args.gate, unacked=total, verdicts=verdicts,
+                    incomplete=incomplete,
                     incomplete_limit=incomplete_limit,
                     ledger=_round_ledger_path(),
-                    count=count, acked=acked), file=sys.stderr)
+                    count=count), file=sys.stderr)
                 # 예약 없음 (전송 전 거부) — 격리도 아직 없다(이 게이트가 그보다 앞이다).
                 return RoundBudget(refused_rc=EXIT_ROUND_LIMIT_EXCEEDED)
             if wave["spent"] >= wave_budget:
@@ -3827,8 +3854,7 @@ def render_rounds_report(
         entry = _gate_entry(snapshot, name)
         rounds = entry["rounds"]
         lines.append(
-            f"게이트 {name}: count={entry['count']} · "
-            f"acked_through={entry['acked_through']} · 산출 {len(rounds)}건 · "
+            f"게이트 {name}: count={entry['count']} · 산출 {len(rounds)}건 · "
             f"처분={_format_gate_resolution(entry)}"
         )
         if not rounds:

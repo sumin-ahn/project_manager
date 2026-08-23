@@ -318,7 +318,11 @@ INTERNAL_REVIEW_ROLE = "code-reviewer"
 EXTERNAL_REVIEW_ROLE = "external-reviewer"
 # 티켓 게이트 리뷰 채널 — 두 채널의 finding 은 같은 delta/disposition 표면에서 판정된다.
 REVIEW_ROLES: tuple[str, ...] = (INTERNAL_REVIEW_ROLE, EXTERNAL_REVIEW_ROLE)
-INTERNAL_REVIEW_ROUNDS_MAX = 3
+# 내부 code-reviewer 수렴 상한 — 추가 리뷰어 축과 같은 성격의 상한이라 채택자가 조정한다.
+# 키는 역할 상수에서 파생한다(표기가 갈리는 자리를 만들지 않는다). 외부 축과 **합치지 않는다** —
+# 대상 장부와 과금 채널이 달라, 한 값으로 묶으면 내부 라운드를 늘릴 때 과금 라운드까지 는다.
+DEFAULT_INTERNAL_REVIEW_ROUNDS_MAX = 3
+INTERNAL_REVIEW_ROUNDS_MAX_KEY = f"delegate.{INTERNAL_REVIEW_ROLE}.rounds_max"
 INTERNAL_REVIEW_LEDGER_NAME = "internal_review_rounds.json"
 INTERNAL_REVIEW_LOCK_NAME = "internal_review_rounds.lock"
 INTERNAL_ROUND_ID_FIELD = "internal_round_id"
@@ -1595,6 +1599,19 @@ def _internal_conf_int(conf: dict[str, str], key: str, default: int) -> int:
     return value if value >= 0 else default
 
 
+def internal_review_rounds_max(conf: dict[str, str] | None = None) -> int:
+    """내부 code-reviewer 수렴 상한 (local.conf 노브·미설정/손상은 엔진 기본값).
+
+    이 값의 소비자는 둘이다 — 다음 라운드 예약 판정(이 모듈)과 `pm-fixed` 처분의 발동/완료
+    재검증(board). 한 축을 두 값으로 두면 상한을 낮춘 채택자가 선언은 되는데 완료가 막히는
+    형상을 만든다. `conf` 미지정은 이 클론의 local.conf 를 읽는다."""
+    if conf is None:
+        conf = local_config()
+    return _internal_conf_int(
+        conf, INTERNAL_REVIEW_ROUNDS_MAX_KEY, DEFAULT_INTERNAL_REVIEW_ROUNDS_MAX,
+    )
+
+
 def _internal_round_limit(conf: dict[str, str], role: str) -> int:
     return _internal_conf_int(
         conf, f"{INTERNAL_ROUND_LIMIT_KEY_PREFIX}{role}",
@@ -1629,6 +1646,7 @@ _INTERNAL_ROUND_LIMIT_GUIDANCE = (
 
 def prepare_ticket_copy(
     *, ticket: str, role: str, cwd: Path, pm_home: Path, owner_pid: int | None = None,
+    confirm_fix: bool = False,
 ) -> TicketCopyPlan:
     """board 에 라운드 순번을 시드로 예약하고, 같은 파일을 슬롯 run-dir 에 materialize 한다.
 
@@ -1653,8 +1671,13 @@ def prepare_ticket_copy(
     세션인 native 위임은 이 값을 **주지 않는다**: 즉사한 준비 pid 를 표식으로 실으면 살아 있는
     run 이 죽은 것으로 읽힌다. 키 부재는 "죽음"이 아니라 "증거 없음"이다.
 
-    내부 라운드 상한(게이트별 · role 당)은 어떤 인자로도 열리지 않는다(외부 채널과 같은 규율 —
-    상한 도달 후 발산(라운드 증가)은 차단하고 확인 수정(confirm-fix)은 1회만 허용하며, 출구는 재설계·분할뿐 · 우회 플래그가 없다).
+    내부 라운드 상한(게이트별 · role 당)은 발산(라운드 증가) 방향으로는 어떤 인자로도 열리지
+    않는다(외부 채널과 같은 규율 — 출구는 재설계·분할뿐 · 우회 플래그가 없다). 유일한 예외는
+    `confirm_fix=True` 다 — 수렴 상한(`internal_review_rounds_max()`)이 소유한 "확인 수정은
+    1회만 허용" 규약을 이 예약 상한이 앞서 막지 않도록, 그 한 라운드에 한해 상한을 1 만큼 올려
+    확인한다(F-001 — 별도 예약 상한이 수렴 상한보다 먼저 발동해 설정된 라운드 다 쓴 뒤 필수
+    confirm-fix 조차 예약 못 하던 우선순위 결함). 실제 1회 제한은 여전히 내부 장부
+    (`entry["confirm_fix"] >= 1`)가 소유하며, 여기서는 그 승인이 도달할 길만 연다.
     """
     if role not in TICKET_COPY_PREPARE_ROLES:
         raise DelegateError(f"티켓 라운드 준비 미지원 역할: {role}")
@@ -1692,6 +1715,11 @@ def prepare_ticket_copy(
     # 넘은 흔한(비경합) 요청이 슬롯 run-dir 을 만들기 전에 끝나게 하는 최적화일 뿐이다.
     if role in DEFAULT_INTERNAL_ROUND_LIMITS:
         limit = _internal_round_limit(conf, role)
+        # F-001 — confirm-fix 예약은 수렴 상한이 소유한 1회 예외를 상속한다(위 docstring).
+        # 실제 1회 한도는 `_reserve_internal_review_round` 의 내부 장부가 강제하므로, 이 예약
+        # 상한이 그 자리를 대신 세지 않고 통과 창만 하나 더 연다.
+        if confirm_fix:
+            limit += 1
         count = _internal_round_count(existing, role)
         if count >= limit:
             raise InternalRoundLimitExceeded(
@@ -2942,6 +2970,7 @@ _INTERNAL_CONFIRM_CHARTER = f"""\
 _INTERNAL_ROUND_REFUSAL = (
     "오류: 내부 code-reviewer 게이트 {gate}의 다음 라운드를 거부합니다 — {reason}.\n"
     "  · 사용 라운드: {used}/{limit} · must-fix 추이: {series}\n"
+    "  · 상한 조정은 local.conf `{knob}` (기본 {default}).\n"
     "  · 과거 계측이 의심되면 회수된 라운드 파일·기록된 raw reply로 재계산하세요: "
     "`python3 .project_manager/tools/pm_delegate.py rounds recalculate --gate {gate}`\n"
     "  · 같은 구현을 더 검토하지 말고 재설계하거나 티켓을 분할하세요. 직전 반려 항목의 해소만 "
@@ -5357,8 +5386,18 @@ def _internal_round_lock() -> Iterator[None]:
         yield
 
 
-def _internal_gate_entry(ledger: dict, gate: str) -> dict:
+def _internal_gate_entry_with_retirement(ledger: dict, gate: str) -> tuple[dict, int]:
+    """`_internal_gate_entry` 와 같은 정규화 + 폐기 필드(`RETIRED_ACK_FIELD`) 감지 여부.
+
+    둘째 값은 이 호출이 방금 떨군 폐기 필드 원값(0=미검출). 알림·영속은 호출부 소유 —
+    `_reserve_internal_review_round` 는 감지 즉시 저장 후 1회 고지하고, 읽기 전용
+    (`_preview_internal_confirm_fix_evidence`)은 영속할 수 없는 고지를 하지 않는다."""
     return _load_review_rounds().normalize_gate_entry(ledger, gate)
+
+
+def _internal_gate_entry(ledger: dict, gate: str) -> dict:
+    entry, _retired_ack = _internal_gate_entry_with_retirement(ledger, gate)
+    return entry
 
 
 def _extract_internal_must_fix_items(reply: str) -> list[str] | None:
@@ -5883,15 +5922,22 @@ def _reserve_internal_review_round(
     if not gate:
         return InternalRoundBudget()
     common = _load_review_rounds()
+    rounds_max = internal_review_rounds_max()
     reasons = {
         common.CONVERGENCE_DIVERGING: "직전 라운드 대비 must-fix 증가(발산)",
-        common.CONVERGENCE_CAP_UNRESOLVED: "상한 3 도달·must-fix 미해소/미상",
-        common.CONVERGENCE_CAP_REACHED: "상한 3 도달",
+        common.CONVERGENCE_CAP_UNRESOLVED: f"상한 {rounds_max} 도달·must-fix 미해소/미상",
+        common.CONVERGENCE_CAP_REACHED: f"상한 {rounds_max} 도달",
     }
     try:
         with _internal_round_lock():
             ledger = _load_internal_round_ledger()
-            entry = _internal_gate_entry(ledger, gate)
+            entry, retired_ack = _internal_gate_entry_with_retirement(ledger, gate)
+            # F-002 — 이 예약이 뒤에서 거부되든 승인되든 폐기 필드 정리는 여기서 즉시
+            # 저장하고 1회만 고지한다. 성공 경로의 마감 저장(`_finish_internal_review_round`)
+            # 에 맡기면 거부로 끝나는 실행에서는 저장이 없어 다음 호출이 같은 경고를 반복한다.
+            if retired_ack:
+                _save_internal_round_ledger(ledger)
+                common.warn_retired_ack_field(gate, retired_ack)
             evidence = _internal_confirm_fix_evidence(entry) if confirm_fix else None
             if confirm_fix:
                 if entry["confirm_fix"] >= 1:
@@ -5916,7 +5962,7 @@ def _reserve_internal_review_round(
                     )
                     return InternalRoundBudget(refused_rc=1)
             refusal = common.convergence_refusal(
-                entry, INTERNAL_REVIEW_ROUNDS_MAX,
+                entry, rounds_max,
                 wall_timeout_sec=wall_timeout_sec,
             )
             if refusal is not None and not confirm_fix:
@@ -5925,7 +5971,9 @@ def _reserve_internal_review_round(
                 )
                 print(_INTERNAL_ROUND_REFUSAL.format(
                     gate=gate, reason=reasons[refusal],
-                    used=completed + inflight, limit=INTERNAL_REVIEW_ROUNDS_MAX,
+                    used=completed + inflight, limit=rounds_max,
+                    knob=INTERNAL_REVIEW_ROUNDS_MAX_KEY,
+                    default=DEFAULT_INTERNAL_REVIEW_ROUNDS_MAX,
                     series=_format_internal_series(entry),
                     ledger=_internal_round_ledger_path(),
                 ), file=sys.stderr)
@@ -6549,7 +6597,7 @@ def _declare_internal_review_resolution(
                 declared = common.declare_pm_fixed_resolution(
                     entry,
                     pm_fixed,
-                    limit=INTERNAL_REVIEW_ROUNDS_MAX,
+                    limit=internal_review_rounds_max(),
                     repo_root=REPO,
                 )
             except ValueError as exc:
@@ -12303,7 +12351,9 @@ def _cmd_rounds(argv: list[str]) -> int:
         default=None,
         metavar="EVIDENCE",
         help=(
-            "상한 3+confirm-fix 1회 소진 뒤 PM 직접 해소. 근거 형식: "
+            f"설정된 상한(기본 {DEFAULT_INTERNAL_REVIEW_ROUNDS_MAX} · local.conf "
+            f"`{INTERNAL_REVIEW_ROUNDS_MAX_KEY}` 로 조정)+confirm-fix 1회 소진 뒤 PM 직접 "
+            "해소. 근거 형식: "
             "change=<file>:<line>; regression=<command>; result=rc=0 (<summary>)"
         ),
     )
@@ -12879,6 +12929,9 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
                 # 이 pid 가 살아 있으면 run 도 살아 있다. 포기(abandon) 판정의 유일한 기계
                 # 증거이고, 소유자가 아닌 native 준비는 이 값을 싣지 않는다.
                 owner_pid=os.getpid(),
+                # F-001 — 이 예약이 confirm-fix 라운드면 예약 상한이 수렴 상한의 1회 예외를
+                # 앞서 막지 않게 한다(role!=code-reviewer 면 이미 인자 검증에서 항상 False).
+                confirm_fix=bool(args.confirm_fix),
             )
         except InternalRoundLimitExceeded as exc:
             # 전용 rc(F-004) — 외부 채널 exit 4(EXIT_ROUND_LIMIT_EXCEEDED)와 동형. per-ticket
