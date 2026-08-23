@@ -1192,11 +1192,12 @@ def test_ticket_mutations_pass_scoped_paths():
     calls = [node for node in ast.walk(tree)
              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
              and node.func.id == "_board_git_sync_best_effort"]
-    # 11 = ticket mutation 9(new·promote·complete·discard·reopen·block·unclaim·unblock +
+    # 12 = ticket mutation 9(new·promote·complete·discard·reopen·block·unclaim·unblock +
     # section-add/tier 공용 helper) + `init` 의 areas repo 행 등록(T-0779 — 등록 행도 board git
-    # 의 공유 파일이라 같은 스코프 채널로 기록한다) + `cluster new`(묶음 장부·멤버 명세).
-    assert len(calls) == 11, \
-        f"best-effort sync 호출이 11곳이 아님(신규/삭제 시 이 가드를 함께 갱신): {len(calls)}"
+    # 의 공유 파일이라 같은 스코프 채널로 기록한다) + `cluster new`(묶음 장부·멤버 명세)
+    # + `cluster replan`(재설계 기준선·예산 리셋도 같은 장부 파일을 바꾼다).
+    assert len(calls) == 12, \
+        f"best-effort sync 호출이 12곳이 아님(신규/삭제 시 이 가드를 함께 갱신): {len(calls)}"
     for call in calls:
         has_paths = len(call.args) >= 2 or any(kw.arg == "paths" for kw in call.keywords)
         assert has_paths, \

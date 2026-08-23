@@ -387,29 +387,47 @@ def tf(tmp_path, monkeypatch):
     return mod
 
 
-def test_ticket_finish_task_resolves_regression_cwd(tf, monkeypatch, capsys):
-    """ticket_finish --task → F6 로 슬롯 특정 후 그 worktree 를 회귀 cwd 로 forward·절대경로 surface."""
-    _write_leases(tf.LEASES_FILE, [
-        {"slot": "work/A_1", "repo": "A", "session": "job6", "state": "leased"},
-    ])
-    captured = {}
+def _capture_finish_forward(tf, monkeypatch) -> dict:
+    """`main` 이 해소해 넘긴 값을 부작용 없이 캡처한다.
+
+    완료 기록 단위는 묶음 하나다(티켓 하나 = 크기 1) — 코드 트리 좌표는 `TicketFinisher` 생성
+    인자로, 실행 좌표(세션·정체성·회귀 skip)는 종결 파이프라인 생성 인자로 간다. 파이프라인이
+    그 값을 완료 기록 단계로 넘기는 것은 묶음 종결 회귀가 값으로 고정한다 — 여기서는 `main` 의
+    해소·forward 만 본다.
+    """
+    captured: dict = {}
 
     class _FakeFinisher:
         def __init__(self, regression_cwd=None, task_workspace=None):
             captured["regression_cwd"] = regression_cwd
             captured["task_workspace"] = task_workspace
 
-        def run(self, **kwargs):
-            captured["run"] = kwargs
+    class _SpyCloser:
+        def __init__(self, cluster, **kwargs):
+            captured["cluster"] = cluster
+            captured.update(kwargs)
+
+        def run(self) -> int:
             return 0
 
     monkeypatch.setattr(tf, "TicketFinisher", _FakeFinisher)
+    monkeypatch.setattr(tf, "ClusterCloser", _SpyCloser)
+    return captured
+
+
+def test_ticket_finish_task_resolves_regression_cwd(tf, monkeypatch, capsys):
+    """ticket_finish --task → F6 로 슬롯 특정 후 그 worktree 를 회귀 cwd 로 forward·절대경로 surface."""
+    _write_leases(tf.LEASES_FILE, [
+        {"slot": "work/A_1", "repo": "A", "session": "job6", "state": "leased"},
+    ])
+    captured = _capture_finish_forward(tf, monkeypatch)
+
     rc = tf.main(["T-0001", "--task", "job6"])
     assert rc == 0
     assert captured["regression_cwd"] == "CWD::work/A_1"   # F6 슬롯을 회귀 cwd 로 forward
     assert captured["task_workspace"] == tf.REPO / "work" / "A_1"
     # task 귀속은 `<user>/<task>` 다 — board complete 소유 대조(T-0781)에 같은 축을 넘긴다.
-    assert captured["run"]["board_identity_args"] == ["--task", "job6"]
+    assert captured["board_identity_args"] == ["--task", "job6"]
     out = capsys.readouterr().out
     assert str(tf.REPO / "work" / "A_1") in out             # 절대경로 surface
 
@@ -437,22 +455,12 @@ def test_ticket_finish_task_no_pytest_still_resolves_workspace(tf, monkeypatch, 
     _write_leases(tf.LEASES_FILE, [
         {"slot": "work/A_3", "repo": "A", "session": "job8", "state": "leased"},
     ])
-    captured = {}
+    captured = _capture_finish_forward(tf, monkeypatch)
 
-    class _FakeFinisher:
-        def __init__(self, regression_cwd=None, task_workspace=None):
-            captured["regression_cwd"] = regression_cwd
-            captured["task_workspace"] = task_workspace
-
-        def run(self, **kwargs):
-            captured["run"] = kwargs
-            return 0
-
-    monkeypatch.setattr(tf, "TicketFinisher", _FakeFinisher)
     assert tf.main(["T-0001", "--task", "job8", "--no-pytest"]) == 0
     assert captured["regression_cwd"] == "CWD::work/A_3"   # 회귀 skip 여도 해소는 수행
     assert captured["task_workspace"] == tf.REPO / "work" / "A_3"
-    assert captured["run"]["skip_pytest"] is True
+    assert captured["skip_pytest"] is True
     assert str(tf.REPO / "work" / "A_3") in capsys.readouterr().out
 
 

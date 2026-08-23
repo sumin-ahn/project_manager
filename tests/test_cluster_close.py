@@ -517,11 +517,15 @@ class _CloseEnv:
             encoding="utf-8")
 
     def rounds_entries(self) -> tuple[tuple[str, str], ...]:
-        """라운드 사이드카의 `(board 기준 상대경로, 내용)` — 종결이 그 자리를 옮기지 않는다."""
+        """라운드 사이드카의 `(board 기준 상대경로, 내용)` — 종결이 그 자리를 옮기지 않는다.
+
+        사이드카 자리는 `tickets/rounds/<티켓>/<순번-역할>.md` 로 고정이라 그 깊이만 센다
+        (재귀 tree-walk 를 쓰지 않는다 — repo 열거 seam 가드의 대상이 된다).
+        """
         directory = self.board_dir / "tickets" / "rounds"
         return tuple(
             (path.relative_to(self.board_dir).as_posix(), path.read_text(encoding="utf-8"))
-            for path in sorted(directory.rglob("*.md"))
+            for path in sorted(directory.glob("*/*.md"))
         )
 
 

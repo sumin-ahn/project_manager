@@ -985,9 +985,14 @@ def test_find_repo_root_tool_inventory_and_scope_are_explicit():
         for name in found
     }
     assert "reviewer_cmd" in source["external_review.py"]
-    assert "delegate." in source["pm_delegate.py"]
+    # 판정 축은 **conf 키 리터럴**(`"delegate.…"`)이다 — 도구 파일명(`pm_delegate.py`)은 키가
+    # 아니다. 부분 문자열로 재면 CLI 를 subprocess 로 부르는 호출부까지 키 소비로 읽힌다.
+    def _reads_delegate_conf_keys(text: str) -> bool:
+        return '"delegate.' in text or "'delegate." in text
+
+    assert _reads_delegate_conf_keys(source["pm_delegate.py"])
     assert "local.conf" not in source["contradiction_lint.py"]
     # ticket_finish 는 local.conf 를 읽지만 외부 송신 프로필 키/소비자는 없다.
     assert "LOCAL_CONF" in source["ticket_finish.py"]
     assert "reviewer_cmd" not in source["ticket_finish.py"]
-    assert "delegate." not in source["ticket_finish.py"]
+    assert not _reads_delegate_conf_keys(source["ticket_finish.py"])

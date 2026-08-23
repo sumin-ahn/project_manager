@@ -2246,6 +2246,37 @@ def prepare_cluster_copy(
     return ClusterCopyPlan(run_dir, cluster, run_id, role, tuple(plans))
 
 
+def _ticket_commit_message(board, ticket: str) -> str:
+    """그 티켓의 커밋 문안 — 명세 제목(없으면 티켓 ID). 조회 실패는 그대로 올린다."""
+    found = board.find_ticket_exact(ticket)
+    if found is None:
+        return ticket
+    fm, _body = board.load_ticket(found[1])
+    title = str((fm or {}).get("title") or "").strip() if isinstance(fm, dict) else ""
+    return title or ticket
+
+
+def _commit_developer_round_output(cwd: Path, *, ticket: str, board) -> str | None:
+    """dev 산출을 그 슬롯에서 커밋한다 — 커밋했으면 문안, 커밋할 변경이 없으면 None.
+
+    dev 산출의 커밋 자리는 여기 하나다(손 커밋 0). 리뷰 스냅샷 입력은 묶음 브랜치 tip 이라
+    회수한 산출이 커밋되지 않으면 그 라운드는 리뷰 입력에 실리지 않는다. 서브모듈 내부 dirty 는
+    변경으로 세지 않는다 — 상위 repo 가 커밋할 수 있는 것은 포인터뿐이다(종결 단계와 같은 관측).
+    실패는 삼키지 않는다: 커밋되지 않은 산출을 커밋된 것처럼 보고하면 그 라운드가 리뷰에서
+    통째로 빠진다.
+    """
+    pending = _cluster_git(
+        cwd, "status", "--porcelain", "--untracked-files=all",
+        "--ignore-submodules=dirty",
+    ).strip()
+    if not pending:
+        return None
+    message = _ticket_commit_message(board, ticket)
+    _cluster_git(cwd, "add", "-A")
+    _cluster_git(cwd, "commit", "-m", message)
+    return message
+
+
 def harvest_ticket_copy(
     *, copy_path: Path, cwd: Path, pm_home: Path,
 ) -> TicketHarvestResult:
@@ -2365,6 +2396,15 @@ def harvest_ticket_copy(
     # run-dir 은 엔진 소유 임시 산출물이다(사용자 파일 아님) — 삭제가 곧 run 닫힘이다.
     _load_file_lock().force_rmtree(run_dir)
     _prune_empty_run_dir(run_dir)
+    if row["role"] == "developer":
+        # 회수가 끝난 **뒤** 커밋한다 — run-dir 이 이미 걷혀 임시 라운드 사본이 커밋에 실리지
+        # 않는다. 커밋 문안은 티켓 제목이고, 종결의 커밋 단계는 이 커밋 뒤 "커밋할 변경 없음"
+        # 을 관측해 건너뛴다(커밋 자리는 하나다).
+        message = _commit_developer_round_output(
+            cwd, ticket=row["ticket"], board=board,
+        )
+        if message is not None:
+            print(f"슬롯 커밋: {row['ticket']} — {message} ({cwd})")
     return TicketHarvestResult(True, sync_ready, verify_missing)
 
 
@@ -13772,14 +13812,26 @@ def create_cluster_review_snapshot(
             repo, output, list(review.paths),
         )
     except gate_snapshot.SnapshotError as exc:
-        with contextlib.suppress(OSError):
-            shutil.rmtree(destination, ignore_errors=True)
+        # 정리 실패를 삼키면 저장소 사본이 디스크에 남는데도 아무도 모른다 — 원래 실패(격리
+        # 실패 사유)를 덮지 않되 침묵하지도 않는다: 지우고, 못 지웠으면 자리를 알린다.
+        try:
+            _load_file_lock().force_rmtree(destination)
+        except OSError as cleanup_exc:
+            print(
+                "경고: 부분 격리 스냅샷 정리 실패 — 저장소 사본이 남아 있을 수 있습니다. "
+                f"직접 지우세요: {destination}: {cleanup_exc}",
+                file=sys.stderr,
+            )
         raise DelegateError(f"격리 스냅샷 생성 실패: {exc}") from exc
     return Path(created)
 
 
 def remove_cluster_review_snapshot(repo: Path, snapshot: Path) -> None:
-    """다 쓴 스냅샷을 등록까지 정리한다 — 실패는 좌표와 함께 알리기만 한다(주 결과 불변)."""
+    """다 쓴 스냅샷을 등록까지 정리한다 — 실패는 좌표와 함께 알리기만 한다(주 결과 불변).
+
+    두 갈래(등록 해제·컨테이너 삭제) 모두 같은 규칙이다: 못 지웠으면 그 자리를 loud 하게
+    알린다. 삼키면 검토 대상 저장소 사본이 남는데도 rc 는 성공으로 보인다.
+    """
     gate_snapshot = _load_gate_snapshot()
     problem = gate_snapshot.remove_snapshot(repo, snapshot)
     if problem is not None:
@@ -13788,8 +13840,14 @@ def remove_cluster_review_snapshot(repo: Path, snapshot: Path) -> None:
             file=sys.stderr,
         )
         return
-    with contextlib.suppress(OSError):
-        shutil.rmtree(Path(snapshot).parent, ignore_errors=True)
+    container = Path(snapshot).parent
+    try:
+        _load_file_lock().force_rmtree(container)
+    except OSError as exc:
+        print(
+            f"경고: 격리 스냅샷 정리 실패 — 잔류할 수 있습니다: {container}: {exc}",
+            file=sys.stderr,
+        )
 
 
 def _cluster_review_focus(path: Path, *, cwd: Path, pm_home: Path) -> str:
@@ -14429,7 +14487,16 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
 
     마감이 없으면 회수(`cluster wait`)는 예약 전에 죽은 자식과 정상 종료를 구별할 수 없다.
     그래서 rc 반환·`SystemExit`(인자 오류 등)·전파 예외가 전부 이 한 자리로 수렴한다.
+
+    콘솔 인코딩 설정은 이 진입의 **첫 동작**이다 — 마감 기록·인자 오류처럼 CLI 본체 앞뒤에서
+    나가는 출력도 같은 콘솔 설정 아래 있어야 한다(형제 진입점 관용구와 동형).
     """
+    _console_encoding = _load_module_from_path(
+        Path(__file__).resolve().with_name("console_encoding.py"),
+        "console_encoding.py",
+        verifier=_verify_engine_rev,
+    )
+    _console_encoding.configure_console_utf8()
     handoff = _background_run_handoff(os.environ)
     if handoff is None:
         return _run_delegate_cli(argv, run_fn=run_fn, git_run_fn=git_run_fn)
@@ -14449,12 +14516,6 @@ def main(argv: list[str] | None = None, run_fn: Callable | None = None,
 
 def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = None,
                       git_run_fn: Callable | None = None) -> int:
-    _console_encoding = _load_module_from_path(
-        Path(__file__).resolve().with_name("console_encoding.py"),
-        "console_encoding.py",
-        verifier=_verify_engine_rev,
-    )
-    _console_encoding.configure_console_utf8()
     global _CONFIG_REPO_OVERRIDE
     # main() 재호출 간 config 앵커가 새지 않게 모든 분기(lint/raw 포함) 진입 전에 초기화한다.
     _CONFIG_REPO_OVERRIDE = None
