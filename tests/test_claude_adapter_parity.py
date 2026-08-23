@@ -9,7 +9,7 @@
     서브에이전트는 compaction 자체 정리). breadcrumb 은 net-less 도그푸딩 root 전용으로 유지.
   - `precompact_capture_hook.sh`: template canonical·manifest @source 정식 출하. root 교체는 PM update 몫.
   - `skills/pm-handoff/SKILL.md`·`skills/pm-dev-delegate/SKILL.md`: byte-identical.
-  - `agents/*.md`: byte-identical(4파일).
+  - `agents/*.md`: byte-identical(5파일 — 4 역할 축 + developer hard 티어).
 
 **의도된 차이 허용**: 루트 settings 는 ctx 훅(PreToolUse/UserPromptSubmit/statusLine·
 ctx_stop_hook·ctx_statusline)을 *싣지 않는다* — 루트 도그푸딩은 그 훅을 안 쓴다. 그래서
@@ -36,7 +36,7 @@ ROOT_CLAUDE = REPO / ".claude"
 TEMPLATE_CLAUDE = REPO / "templates" / "claude_code" / ".claude"
 
 # 양 트리에서 byte-identical 이어야 하는 어댑터 산출물 (의도된 차이 없음).
-# 상호 참조: `tests/test_board_lint.py::_T0463_TOKEN_FORM_MIRRORS`(12파일·`.claude/` prefix 포함)가
+# 상호 참조: `tests/test_board_lint.py::_T0463_TOKEN_FORM_MIRRORS`(13파일·`.claude/` prefix 포함)가
 # 같은 불변식의 상위집합 — 거긴 이 동일성이 render-leak 면제의 근거라는 축이다. 한쪽 수정 시 같이 본다.
 IDENTICAL_RELPATHS = [
     "skills/pm-handoff/SKILL.md",
@@ -46,6 +46,7 @@ IDENTICAL_RELPATHS = [
     "agents/architect.md",
     "agents/code-reviewer.md",
     "agents/developer.md",
+    "agents/developer-hard.md",
     "agents/researcher.md",
 ]
 

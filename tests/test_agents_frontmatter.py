@@ -22,7 +22,12 @@ REPO = Path(__file__).resolve().parents[1]
 ROOT_AGENTS = REPO / ".claude" / "agents"
 TEMPLATE_AGENTS = REPO / "templates" / "claude_code" / ".claude" / "agents"
 
-AGENT_NAMES = ["architect.md", "code-reviewer.md", "developer.md", "researcher.md"]
+# 4 역할 축 + developer 의 hard 티어 카드(T-0766). 양 트리 byte-identical 축이 이 목록을
+# 순회하므로, 카드를 늘리고 여기를 안 늘리면 새 카드가 가드 시야 밖으로 조용히 빠진다.
+AGENT_NAMES = [
+    "architect.md", "code-reviewer.md", "developer.md", "developer-hard.md",
+    "researcher.md",
+]
 REQUIRED_KEYS = ("name", "description", "tools")
 
 # researcher = 조사 전용 에이전트 — 제품 트리를 고치지 않는다(카드 가드 T-0086).

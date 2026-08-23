@@ -2408,14 +2408,15 @@ def test_render_leak_differing_mirror_message_hints_propagation(board, monkeypat
     )
 
 
-# T-0463 재발 가드 대상 — 공개 루트의 token-form 어댑터 12파일(agents 4 + skills 8).
+# T-0463 재발 가드 대상 — 공개 루트의 token-form 어댑터 13파일(agents 5 + skills 8).
 # 이 열거는 `tests/test_claude_adapter_parity.py::IDENTICAL_RELPATHS`(root↔templates byte-identical
-# 8파일)와 같은 불변식의 *부분 중복*이다: 저쪽은 전파 드리프트 0, 이쪽은 그 동일성이 render-leak
+# 9파일)와 같은 불변식의 *부분 중복*이다: 저쪽은 전파 드리프트 0, 이쪽은 그 동일성이 render-leak
 # 면제의 근거라는 축. 한쪽을 고치면 다른 쪽도 같이 본다.
 _T0463_TOKEN_FORM_MIRRORS = (
     ".claude/agents/architect.md",
     ".claude/agents/code-reviewer.md",
     ".claude/agents/developer.md",
+    ".claude/agents/developer-hard.md",
     ".claude/agents/researcher.md",
     ".claude/skills/pm-adr/SKILL.md",
     ".claude/skills/pm-bootstrap/SKILL.md",
@@ -2429,12 +2430,12 @@ _T0463_TOKEN_FORM_MIRRORS = (
 
 
 def test_render_leak_public_claude_token_form_mirrors_are_clean(board, monkeypatch, tmp_path):
-    """T-0463 재발 가드 — 공개 루트의 12개 token-form 어댑터는 render-leak 0 (hermetic).
+    """T-0463 재발 가드 — 공개 루트의 13개 token-form 어댑터는 render-leak 0 (hermetic).
 
     lint 단언을 실 REPO 에서 돌리면 local.conf 가 없는 CI/fresh clone 에서 `lint_render_leak()`
     이 조기 반환(검사 대상 0)해 **자명 통과**한다(변이 주입해도 green). 그래서 실 파일 바이트를
     tmp 사본 트리(local.conf + 루트 manifest + 출하 템플릿 사본)로 옮겨 hermetic 하게 돌린다 —
-    어느 환경에서도 lint 가 실제로 이 12파일을 스캔한다. 실 트리에 대해서는 (a) 12파일이 실재하고
+    어느 환경에서도 lint 가 실제로 이 12파일을 스캔한다. 실 트리에 대해서는 (a) 13파일이 실재하고
     (b) templates 사본과 byte-identical 이며 (c) 토큰을 실제로 담고 있음을 별도로 단언한다.
     """
     real_repo = board.REPO
@@ -2466,14 +2467,14 @@ def test_render_leak_public_claude_token_form_mirrors_are_clean(board, monkeypat
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(payload)
     assert token_bearing, (
-        "12파일 중 미해소 토큰을 가진 게 하나도 없다 — 이 가드가 자명 통과 상태다."
+        "13파일 중 미해소 토큰을 가진 게 하나도 없다 — 이 가드가 자명 통과 상태다."
     )
 
     monkeypatch.setattr(board, "REPO", fake_repo)
     assert board._render_managed_relpaths(), "tmp 트리에서 검사 대상이 0 — 가드가 자명 통과한다."
     assert [issue for issue in board.lint_render_leak()
             if issue[0] in _T0463_TOKEN_FORM_MIRRORS] == [], (
-        "T-0463 의 token-form 출하 원본 12파일에서 render-leak 이 재발했다."
+        "T-0463 의 token-form 출하 원본 13파일에서 render-leak 이 재발했다."
     )
 
     # 변이 실증: 루트 사본만 바꾸면(=전파 안 된 실 leak) 같은 lint 가 잡는다 → 위 green 은 자명하지 않다.

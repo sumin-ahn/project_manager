@@ -17,6 +17,9 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 GUARD_PY = REPO / ".project_manager" / "tools" / "delegate_channel_guard.py"
 ROLES = ("developer", "code-reviewer", "researcher", "architect")
+# claude 카드 stem — 4 역할 축 + developer 의 hard 티어 변주(T-0766). 토큰 이름은 stem 파생이라
+# 새 카드가 늘어도 픽스처가 손열거를 따로 들지 않는다.
+CARD_STEMS = ROLES + ("developer-hard",)
 
 
 @pytest.fixture
@@ -25,17 +28,18 @@ def rendered_cards(guard, monkeypatch, tmp_path):
     conf 해소값으로 렌더한 채택자 트리가 가드의 실 입력이다. 이 픽스처가 그 렌더본을 만들어 `_ENGINE_ROOT`
     를 거기 묶는다. `model` 인자로 렌더값을 정한다.
     """
-    def _render(model: str = "opus") -> Path:
+    def _render(model: str = "opus", hard_model: str | None = None) -> Path:
         root = tmp_path / "rendered"
         cards = root / ".claude" / "agents"
         cards.mkdir(parents=True, exist_ok=True)
-        for role in ROLES:
-            src = (REPO / ".claude" / "agents" / f"{role}.md").read_text(encoding="utf-8")
-            token = "{{DELEGATE_MODEL_" + role.upper().replace("-", "_") + "}}"
+        for stem in CARD_STEMS:
+            src = (REPO / ".claude" / "agents" / f"{stem}.md").read_text(encoding="utf-8")
+            token = "{{DELEGATE_MODEL_" + stem.upper().replace("-", "_") + "}}"
             # 주입 선-단언 — 소스 카드가 실제로 토큰이어야 이 픽스처가 렌더를 흉내낸다.
-            assert f'model: "{token}"' in src, f"소스 카드가 토큰이 아니다: {role}"
-            (cards / f"{role}.md").write_text(
-                src.replace(f'model: "{token}"', f'model: "{model}"'), encoding="utf-8")
+            assert f'model: "{token}"' in src, f"소스 카드가 토큰이 아니다: {stem}"
+            rendered = model if stem != "developer-hard" else (hard_model or model)
+            (cards / f"{stem}.md").write_text(
+                src.replace(f'model: "{token}"', f'model: "{rendered}"'), encoding="utf-8")
         monkeypatch.setattr(guard, "_ENGINE_ROOT", root)
         return root
     return _render
@@ -681,15 +685,36 @@ def test_tracked_claude_native_card_map_is_finite_and_nonempty(guard):
     """Read the shipped files, not a synthetic list, so the assertion cannot be vacuous."""
     assert set(guard.CLAUDE_NATIVE_AGENT_CARDS) == {
         (role, "normal") for role in ROLES
-    }
-    for role in ROLES:
-        model, relative = guard._read_claude_native_agent_model(role, "normal")
-        assert relative == Path(f".claude/agents/{role}.md")
+    } | {("developer", "hard")}
+    for stem in CARD_STEMS:
+        role, tier = ("developer", "hard") if stem == "developer-hard" else (stem, "normal")
+        model, relative = guard._read_claude_native_agent_model(role, tier)
+        assert relative == Path(f".claude/agents/{stem}.md")
         # T-0731 — 출하 카드는 렌더 **소스**라 model 이 operational 토큰이다. 리터럴 모델을 여기서
         # 기대하면 채택자가 conf 로 모델을 못 바꾸던 결함이 되살아난다.
         assert guard._is_unrendered_model_token(model), model
-        assert model == "{{DELEGATE_MODEL_" + role.upper().replace("-", "_") + "}}"
+        assert model == "{{DELEGATE_MODEL_" + stem.upper().replace("-", "_") + "}}"
         assert (REPO / relative).read_bytes()
+
+
+def test_agent_name_label_and_card_map_register_atomically(guard):
+    """이름표(`AGENT_NAME_PROFILES`)와 카드 매핑(`CLAUDE_NATIVE_AGENT_CARDS`)은 함께 등재된다.
+
+    반쪽 등재는 조용히 반쪽 동작이 된다 — 이름표만 있으면 `decide` 가 "명시 agent card 매핑
+    없음" 경고를 영구히 내고, 카드 매핑만 있으면 훅이 그 agent 이름을 정규화하지 못해 판정
+    자체가 일어나지 않는다. 양방향 등호로 그 두 반쪽을 묶는다.
+    """
+    claude_labels = set(guard.AGENT_NAME_PROFILES["claude"].values())
+    assert claude_labels == set(guard.CLAUDE_NATIVE_AGENT_CARDS), (
+        "claude 이름표와 카드 매핑이 갈렸다 — 반쪽 등재는 영구 warn 또는 판정 누락이다"
+    )
+    # 하네스별 예외 0 — 세 하네스가 같은 이름표 집합을 갖는다(카드가 세 타깃에 다 있으므로).
+    profiles = guard.AGENT_NAME_PROFILES
+    assert profiles["claude"] == profiles["opencode"] == profiles["codex"], (
+        "하네스마다 agent 이름표가 다르다 — 하나의 규칙(하네스별 예외 금지)이 깨졌다"
+    )
+    assert guard.normalize_agent_name("developer-hard", "claude") == ("developer", "hard")
+    assert guard.normalize_agent_name("developer-hard", "opencode") == ("developer", "hard")
 
 
 @pytest.mark.parametrize("role", ROLES)
@@ -1289,15 +1314,44 @@ def test_claude_agent_card_reader_exception_is_nonblocking_warning(
     assert "permissionDecision" not in hook["hookSpecificOutput"]
 
 
-def test_claude_unsupported_hard_is_not_guessed_and_warns(guard):
+def test_claude_hard_tier_reads_its_own_card_and_is_quiet_on_match(
+    guard, rendered_cards
+):
+    """hard 티어가 등재됐으므로 판정은 `developer-hard.md` 를 읽고 conf 와 대조한다 (T-0766).
+
+    등재 전에는 "명시 agent card 매핑 없음(developer/hard)" 경고가 영구히 났고 hard 위임이
+    normal 카드로 돌았다. 그 부재를 고정하던 잠금 테스트를 이 판정 단언으로 대체한다.
+    """
+    rendered_cards("sonnet", hard_model="opus")
     conf = {
         "delegate.developer.hard.harness": "claude",
         "delegate.developer.hard.model": "opus",
     }
     result = guard.decide("developer", "hard", conf, "claude")
     assert result["verdict"] == "allow"
-    assert "명시 agent card 매핑 없음(developer/hard)" in result["reason"]
-    assert "developer-hard.md" not in result["reason"]
+    assert not result["reason"].startswith("[delegate-channel/warn]"), (
+        f"카드가 일치하는데 경고가 났다: {result['reason']}"
+    )
+    assert "명시 agent card 매핑 없음" not in result["reason"]
+
+
+def test_claude_hard_tier_card_drift_is_loud_and_names_the_hard_card(
+    guard, rendered_cards
+):
+    """hard 카드가 normal 모델로 렌더돼 있으면(=티어 강등) 조용히 통과하지 않는다.
+
+    민감도 축 — 카드 매핑만 늘리고 값을 안 재면 "카드를 읽었다" 는 사실이 아무것도 막지 못한다.
+    """
+    rendered_cards("sonnet", hard_model="sonnet")
+    conf = {
+        "delegate.developer.hard.harness": "claude",
+        "delegate.developer.hard.model": "opus",
+    }
+    result = guard.decide("developer", "hard", conf, "claude")
+    assert result["verdict"] == "allow"
+    assert result["reason"].startswith("[delegate-channel/warn]")
+    assert "developer-hard.md" in result["reason"]
+    assert "card_model=sonnet" in result["reason"]
 
 
 def test_codex_hard_and_opencode_native_do_not_read_claude_cards(

@@ -10,7 +10,7 @@ frontmatter `model:`)가 정한다. (ADR-0006 §3/D3/D5 supersede.)
   (a) templates/opencode 트리에 `opencode run ... -m {{OPENCODE_PRO_MODEL}}` 패턴(= 위임마다
       모델 명시)이 0건.  더 넓게 `-m {{OPENCODE_PRO_MODEL}}` 자체가 0건.
   (b) AGENTS.md 에 task tool 위임·`subagent_type` 매핑 문구가 존재.
-  (c) 역할 카드(developer/architect/code-reviewer/researcher)의 `model:` 이 역할별 위임 토큰
+  (c) 역할 카드(developer/developer-hard/architect/code-reviewer/researcher)의 `model:` 이 위임 토큰
       (`{{DELEGATE_MODEL_<ROLE>}}` — local.conf `delegate.<role>.model` 의 렌더 파생물)이고,
       primary `pm.md` 만 설치 모델 pin(`{{OPENCODE_PRO_MODEL}}`)을 유지.
   (d) `{{OPENCODE_PRO_MODEL}}` 전체 잔존이 정확히 `pm.md` 의 `model:` 줄 하나뿐.
@@ -35,6 +35,7 @@ AGENTS_LITE_MD = OPENCODE / "AGENTS.lite.md"
 PM_INSTRUCTIONS_MD = OPENCODE / ".opencode" / "pm-instructions.md"
 AGENT_FILES = [
     OPENCODE / ".opencode" / "agents" / "developer.md",
+    OPENCODE / ".opencode" / "agents" / "developer-hard.md",
     OPENCODE / ".opencode" / "agents" / "code-reviewer.md",
     OPENCODE / ".opencode" / "agents" / "architect.md",
     OPENCODE / ".opencode" / "agents" / "researcher.md",
@@ -46,10 +47,13 @@ AGENT_FILES = [
 DASH_M_PIN = "-m {{OPENCODE_PRO_MODEL}}"
 PRO_MODEL_TOKEN = "{{OPENCODE_PRO_MODEL}}"
 
-# cross 폴백도 custom 역할명을 직접 선택한다. 네 카드는 mode: all이라 native task와
+# cross 폴백도 custom 역할명을 직접 선택한다. 다섯 카드는 mode: all이라 native task와
 # `opencode run --agent <role>` 양쪽에서 동일한 prompt/model/permission을 쓴다.
+# developer-hard 는 developer 축의 hard 티어 변주다 — 역할 축이 늘어난 게 아니라
+# 티어가 자기 카드를 갖는다(T-0766·세 하네스 같은 규칙).
 FALLBACK_AGENT = {
     "developer.md": "developer",
+    "developer-hard.md": "developer-hard",
     "architect.md": "architect",
     "code-reviewer.md": "code-reviewer",
     "researcher.md": "researcher",
@@ -61,6 +65,7 @@ FALLBACK_AGENT = {
 PRO_MODEL_PIN_LINE = 'model: "{{OPENCODE_PRO_MODEL}}"'
 ROLE_MODEL_TOKENS = {
     "developer.md": "{{DELEGATE_MODEL_DEVELOPER}}",
+    "developer-hard.md": "{{DELEGATE_MODEL_DEVELOPER_HARD}}",
     "code-reviewer.md": "{{DELEGATE_MODEL_CODE_REVIEWER}}",
     "architect.md": "{{DELEGATE_MODEL_ARCHITECT}}",
     "researcher.md": "{{DELEGATE_MODEL_RESEARCHER}}",

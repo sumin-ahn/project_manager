@@ -7223,6 +7223,7 @@ def test_flat_opencode_command_rewrite_fails_loud_on_link_count(pm_update, sourc
 
 CARD_MODEL_TOKENS = {
     "developer.md": "DELEGATE_MODEL_DEVELOPER",
+    "developer-hard.md": "DELEGATE_MODEL_DEVELOPER_HARD",
     "researcher.md": "DELEGATE_MODEL_RESEARCHER",
     "architect.md": "DELEGATE_MODEL_ARCHITECT",
     "code-reviewer.md": "DELEGATE_MODEL_CODE_REVIEWER",
@@ -7242,10 +7243,15 @@ CARD_ROLE_CONF_KEYS = {
     "DELEGATE_MODEL_CODE_REVIEWER": "delegate.code-reviewer.model",
 }
 
-# 위임 토큰 표 전체 — claude 역할 카드(4) + codex 티어 프로필의 모델·추론(2). 표가 조용히 줄면
-# 그 카드가 영영 TODO 로 중화되므로 기대 집합을 못박는다(가드 시야 == 표면).
+# 위임 토큰 표 전체 — 4 역할 축 + developer hard 티어의 모델·추론 각 5키(T-0766: codex 역할
+# 카드가 추론 필드를 갖게 되면서 추론 토큰도 5개가 됐다). 표가 조용히 줄면 그 카드가 영영
+# TODO 로 중화되므로 기대 집합을 못박는다(가드 시야 == 표면).
 DELEGATE_CONF_KEYS = {
     **CARD_ROLE_CONF_KEYS,
+    "DELEGATE_REASONING_DEVELOPER": "delegate.developer.reasoning",
+    "DELEGATE_REASONING_RESEARCHER": "delegate.researcher.reasoning",
+    "DELEGATE_REASONING_ARCHITECT": "delegate.architect.reasoning",
+    "DELEGATE_REASONING_CODE_REVIEWER": "delegate.code-reviewer.reasoning",
     "DELEGATE_MODEL_DEVELOPER_HARD": "delegate.developer.hard.model",
     "DELEGATE_REASONING_DEVELOPER_HARD": "delegate.developer.hard.reasoning",
 }
@@ -7293,13 +7299,14 @@ def test_delegate_harness_from_local_conf_reads_profile_harness(pm_update, tmp_p
 
     assert pm_update._delegate_harness_from_local_conf(dest) == {
         "DELEGATE_MODEL_DEVELOPER": "claude",
+        "DELEGATE_REASONING_DEVELOPER": "claude",
         "DELEGATE_MODEL_DEVELOPER_HARD": "codex",
         "DELEGATE_REASONING_DEVELOPER_HARD": "codex",
     }
 
 
 def test_agent_cards_use_role_model_tokens_and_no_literal_model():
-    """카드 4장 × 두 소스 트리 — `model:` 이 역할별 토큰이고 리터럴 `opus` 0."""
+    """카드 5장 × 두 소스 트리 — `model:` 이 역할·티어별 토큰이고 리터럴 `opus` 0."""
     for tree in CARD_TREES:
         for name, token_key in CARD_MODEL_TOKENS.items():
             text = (tree / name).read_text(encoding="utf-8")

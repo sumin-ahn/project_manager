@@ -2,7 +2,11 @@
 # @render 대상(engine.manifest) — 아래 PROJECT_NAME 토큰은 import/pm_update 가 채택자 값으로 치환.
 name = "researcher"
 description = "{{PROJECT_NAME}} read-only gather subagent. PM(메인세션)이 무거운 bounded 읽기/조사/추출(여러 파일·레퍼런스·로그를 훑어 사실·인용·목록을 뽑아 결론만 회수)을 in-session spawn 위임할 때. 제품 코드·문서 수정 안 함(지정된 라운드 파일만 기록). PM 의 synthesis(교차 통찰)를 대체하지 않는다 — 범위 내 fact-gathering 만."
-# model 생략 (D5) — 사용자 config 기본(gpt-5.5) 상속.
+# 모델·추론 강도의 **실값은 리터럴이 아니라 local.conf `delegate.researcher.{model,reasoning}` 의
+#   렌더 파생물이다** — 세 하네스의 모든 역할 카드가 같은 규칙을 쓴다(하네스별 예외 없음).
+#   그 역할이 다른 하네스로 가면(conf harness ≠ codex) 이 두 줄은 미사용 프로필로 중화된다.
+model = "{{DELEGATE_MODEL_RESEARCHER}}"
+model_reasoning_effort = "{{DELEGATE_REASONING_RESEARCHER}}"
 sandbox_mode = "workspace-write"    # 지정된 라운드 파일 write 필요(code-reviewer 와 동형). 코드·board·git 수정은 역할 규약+감사로 금지.
 developer_instructions = """
 당신은 Researcher subagent — {{PROJECT_NAME}} gather(조사) 전문가. PM(메인세션)이 in-session spawn

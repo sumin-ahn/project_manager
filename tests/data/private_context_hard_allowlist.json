@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "count": 560,
+  "count": 559,
   "surface_counts": {
-    "markdown": 144,
+    "markdown": 143,
     "python-non-prose": 24,
     "python-prose": 392
   },
@@ -1829,14 +1829,6 @@
       "match": "ADR-0062",
       "surface": "markdown",
       "hash": "12d8c16e1213a2909e98674f879fa2692769a1e3a54e31394259adff1f3b80b7",
-      "count": 1
-    },
-    {
-      "path": "templates/codex/.agents/skills/pm-dev-delegate/SKILL.md",
-      "kind": "private_section",
-      "match": "spike §3.2",
-      "surface": "markdown",
-      "hash": "a2bc1976e41f28d7c0726042a3631b99b7b9d4d10aaf3861144e0c79e060d475",
       "count": 1
     },
     {

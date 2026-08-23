@@ -121,9 +121,9 @@ python3 .project_manager/tools/pm_delegate.py --dry-run \
 - **normal**: 단일 모듈 변경, docs, 기계적 sweep(rename·표기 통일), 테스트 추가, 자명한 fix.
 - 경계가 애매하면 **hard 상향**.
 
-cross는 **`--tier hard`**, native는 hard 프로필(codex `developer-hard` agent 등)을 선택한다. 티어 매핑은 하네스-중립이며 각 하네스가 normal/hard 프로필을 가진다(예: `delegate.developer.harness=claude`·`.model=sonnet` / `delegate.developer.hard.harness=claude`·`.model=opus`).
+cross는 **`--tier hard`**, native는 그 하네스의 hard 카드(`developer-hard`)를 선택한다. 세 하네스가 모두 그 카드를 출하한다(claude `.claude/agents/developer-hard.md` · codex `.codex/agents/developer-hard.toml` · opencode `.opencode/agents/developer-hard.md`). 티어 매핑은 하네스-중립이며 각 하네스가 normal/hard 프로필을 가진다(예: `delegate.developer.harness=claude`·`.model=sonnet` / `delegate.developer.hard.harness=claude`·`.model=opus`).
 
-**hard 프로필 미설정은 fail-loud·폴백 없음.** `delegate.developer.hard.*`가 없으면 normal로 강등하지 않고 `rc=1`로 거부한다. native도 hard 프로필(예 codex `developer-hard.toml`)이 없으면 명시 추가한다.
+**hard 프로필 미설정은 fail-loud·폴백 없음.** `delegate.developer.hard.*`가 없으면 normal로 강등하지 않고 `rc=1`로 거부한다. native hard 카드는 세 하네스에 모두 출하되므로 하네스를 이유로 hard 를 normal 로 대신하지 않는다 — 카드가 없는 트리면 명시 추가한다.
 
 ### 2. native/cross
 
