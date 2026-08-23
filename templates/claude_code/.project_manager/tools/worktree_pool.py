@@ -5031,24 +5031,66 @@ def _branch_df_conflict(branch: str, *, git_runner: GitRunner) -> "str | None":
     return None
 
 
+def _branch_checked_out_elsewhere(branch: str, slot: str, *,
+                                  git_runner: GitRunner) -> "str | None":
+    """기존 브랜치 `branch` 를 **이 슬롯이 아닌 다른 worktree** 가 이미 checkout 중이면 그 경로,
+    아니면 None — `switch` 의 `checked-out-elsewhere` 선-검사가 쓴다.
+
+    `git worktree list --porcelain`(`_parse_worktree_porcelain` 재사용 — 새 파서 0)을 슬롯의
+    git_runner(슬롯이 속한 repo 전체를 보는 `worktree list`라 어느 worktree cwd 로 불러도 같은
+    목록이 나온다·DI seam 유지)로 조회해, 대상 브랜치를 보유한 bare-아닌 엔트리 중 **self 가
+    아닌** 것을 찾는다. self 판정은 슬롯 id 가 아니라 **경로 값**(`slot_path(slot)` vs porcelain
+    경로, 둘 다 `resolve()`)으로 한다 — `HOME_SLOT="."` 채택자(`slot_path(".")` = `REPO`)가
+    `_slot_from_worktree_path` 로는 슬롯 식별이 안 돼도 값 비교로는 정확히 self 로 잡힌다.
+
+    fail-open: `worktree list` 호출 실패·rc≠0·예외는 None(판정 생략) — 이 선-검사가 fail-open
+    해도 `_checkout` 프리미티브(`-b` 고정)가 기존 브랜치 리셋을 막는 최종 방어선이다(불변식 4·
+    두 층 중 하나가 죽어도 데이터 유실은 0). 이 함수는 리셋을 막지 않는다 — 진단·명시 사유만
+    낸다(정책은 여기, 비파괴 실행은 `_checkout` — 프리미티브가 정책을 알지 않는다)."""
+    try:
+        rc, out = git_runner(["worktree", "list", "--porcelain"])
+    except Exception:  # noqa: BLE001 — fail-soft: 조회 실패는 판정 생략(프리미티브가 최종 방어).
+        return None
+    if rc != 0:
+        return None
+    self_path = slot_path(slot).resolve()
+    for w in _parse_worktree_porcelain(out):
+        if w.bare or w.branch != branch:
+            continue
+        try:
+            holder_path = Path(w.path).resolve()
+        except OSError:
+            continue
+        if holder_path != self_path:
+            return w.path
+    return None
+
+
 class SwitchRefused(RuntimeError):
     """`switch <slot> <branch>` 거부 — rc 1 + 사유.
 
     ⚠ **부작용 범위는 사유마다 다르다**(내부 리뷰 should-fix — docstring 이 자기 사유와 모순이면
     안 된다):
-      - **선-검사 사유**(unregistered·protected·protected-upstream·no-worktree·dirty·
-        rebase-in-progress·invalid-ref·ambiguous-ref·df-conflict) — 전환도 기록도 하지 않는다(부작용 0).
+      - **선-검사 사유**(unregistered·protected·protected-upstream·checked-out-elsewhere·
+        no-worktree·dirty·rebase-in-progress·invalid-ref·ambiguous-ref·df-conflict) — 전환도
+        기록도 하지 않는다(부작용 0).
       - **git-error** — `_checkout_required`(checkout+resync)를 *시도한 뒤* 실패(트리 상태는 git 이
         남긴 그대로·장부 불변·`CheckoutFailed` 를 이 사유로 감싼다).
       - **record-failed** — 전환은 **성공**했고 장부 스냅 재기록만 실패(원자성 파손 → 아래 안내).
 
-    `reason` ∈ {"unregistered", "protected", "protected-upstream", "no-worktree", "dirty",
-    "invalid-ref", "ambiguous-ref", "df-conflict", "git-error", "record-failed"}:
+    `reason` ∈ {"unregistered", "protected", "protected-upstream", "checked-out-elsewhere",
+    "no-worktree", "dirty", "invalid-ref", "ambiguous-ref", "df-conflict", "git-error",
+    "record-failed"}:
       - **unregistered** — 장부에 없는 슬롯(스냅 기록 대상이 아니다·`record` 동형 메시지).
       - **protected** — 대상 브랜치가 그 repo 보호목록. 보호브랜치로 *들어가는* 전환은 이
         커맨드의 목적(main-참조 해소)과 정반대다.
       - **protected-upstream** — 대상(기존) 브랜치가 **보호브랜치 원격을 origin-추적**한다.
         전환은 되지만 다음 0단계가 다시 main-참조로 막으므로 여기서 거부한다(remedy-유발 상태전이).
+      - **checked-out-elsewhere** — 대상(기존) 브랜치를 **이 슬롯이 아닌 다른 worktree** 가 이미
+        checkout 중이다(통합 브랜치 `task/main` 등). 전환을 강행하면 plain checkout 이 실패하고
+        옛 `-B` 폴백이 그 브랜치 ref 를 이 슬롯 HEAD 로 **리셋**했을 공유 브랜치 clobber 클래스다.
+        `--force` 류 우회는 없다(슬롯은 dev 브랜치 전용·통합 브랜치는 전용 worktree 소관).
+        self(같은 슬롯)가 이미 보유한 브랜치로의 재-switch 는 통과한다.
       - **no-worktree** — 슬롯 worktree 경로 부재(실경로·runner 미주입).
       - **dirty** — 미커밋 변경이 있다. 전환이 WIP 를 흔든다(rebase 선-검사 동형).
       - **rebase-in-progress** — 그 슬롯에 rebase 가 진행 중(`.git/rebase-merge|rebase-apply`).
@@ -5079,6 +5121,9 @@ class SwitchRefused(RuntimeError):
                                    f"거부한다 — 전환은 되지만 다음 부트스트랩 0단계가 다시 main-참조"
                                    f"(origin-추적)로 막는다. upstream 이 없는 새 작업 브랜치로 "
                                    f"전환하라(`switch {slot} <새-브랜치명>`)"),
+            "checked-out-elsewhere": (f"슬롯 {slot!r} 을 **다른 worktree 가 이미 checkout 중인** 브랜치로 "
+                                      f"전환하는 것은 거부한다 — 전환을 강행하면 그 브랜치 ref 가 이 슬롯 "
+                                      f"HEAD 로 리셋된다(공유 브랜치 clobber). 우회 플래그는 없다"),
             "no-worktree": f"슬롯 {slot!r} 의 worktree 경로가 없다 — 전환할 트리가 없다",
             "dirty": (f"슬롯 {slot!r} 에 미커밋 변경이 있어 switch 를 거부한다 — 브랜치 전환이 WIP 를 "
                       f"흔든다(커밋/stash 후 재시도)"),
@@ -5148,12 +5193,15 @@ def switch(slot: str, branch: str, *, protected: "list[str] | None" = None,
          (조용히 다른 브랜치로 가지 않는다).
       6. **보호목록 거부** — 정규화된 브랜치가 그 repo 보호목록이면 거부.
          `protected` 주입 시 그 목록(테스트 hermetic), 아니면 `_resolve_protected(repo)`.
-      7. **존재 판정**(`refs/heads/<정규화>`) → **기존 브랜치면 `@{upstream}` 보호 추적 거부**
-         (·`protected-upstream`) · **미존재(=생성 의도)면 모호 인자 거부**(remote-tracking·
-         태그로 해소되면 `ambiguous-ref` — 축 2 와 다른 축) + **D/F 충돌** 선-검사.
+      7. **존재 판정**(`refs/heads/<정규화>`) → **기존 브랜치면 타 worktree 점유 거부**
+         (`checked-out-elsewhere` — 다른 worktree 가 이미 checkout 중이면 그 경로를 실어 거부·
+         우회 없음) + **`@{upstream}` 보호 추적 거부**(`protected-upstream`) ·
+         **미존재(=생성 의도)면 모호 인자 거부**(remote-tracking·태그로 해소되면
+         `ambiguous-ref` — 축 2 와 다른 축) + **D/F 충돌** 선-검사.
       8. **전환** — 기존 프리미티브 `_checkout_required(slot, <정규화>)` **조합**(raw git 금지):
-         `_checkout`(`checkout --no-recurse-submodules <b>` → 실패 시 `-B <b>` 생성
-         ambient `submodule.recurse=true` override) + 성공 직후 `_resync_submodules_selective`
+         `_checkout`(`checkout --no-recurse-submodules <b>` → 실패 시 `-b <b>` 생성(create-or-fail·
+         기존 브랜치를 리셋하지 않는다) + ambient `submodule.recurse=true` override) + 성공 직후
+         `_resync_submodules_selective`
          (detached=pin 재동기·**on-branch(dev)=skip**·dirty=skip+경고·fail-soft). alloc 의 브랜치
          전환 3분기가 쓰는 그 경로다 — 새 프리미티브를 쓰면 이 submodule 보호가 통째로 빠진다
          (codex 게이트 must-fix). 실패는 `CheckoutFailed` → `git-error`.
@@ -5199,6 +5247,14 @@ def switch(slot: str, branch: str, *, protected: "list[str] | None" = None,
 
     exists = _local_branch_exists(target, git_runner=runner)
     if exists:
+        # 타 worktree 가 이미 checkout 중인 기존 브랜치로의 전환은 부작용 0 으로 거부한다 —
+        # 강행하면 plain checkout 이 실패하고 옛 `-B` 폴백이 그 브랜치 ref 를 이 슬롯 HEAD 로
+        # 리셋하는 공유 통합 브랜치 clobber 클래스였다. self(같은 슬롯)가 보유한 브랜치로의
+        # 재-switch 는 값 비교로 통과한다(protected-upstream **앞** — 데이터 안전 클래스가 먼저).
+        elsewhere = _branch_checked_out_elsewhere(target, slot, git_runner=runner)
+        if elsewhere is not None:
+            raise SwitchRefused(slot, "checked-out-elsewhere",
+                                detail=f"`{target}` → {elsewhere}")
         # 보호브랜치 원격을 추적하는 기존 브랜치로 가면 다음 0단계가 다시 main-참조로
         # 막는다(remedy 가 다른 축의 fault 를 만든다). 새 브랜치(`-c`)는 upstream 이 없어 무관.
         tracked = _branch_protected_upstream(target, protected_list, git_runner=runner)
@@ -5217,12 +5273,13 @@ def switch(slot: str, branch: str, *, protected: "list[str] | None" = None,
                                 detail=f"`{target}` vs 기존 브랜치 `{parent}`")
 
     # ── 전환 = 기존 프리미티브 조합(raw git 금지) ────────────────────────────
-    # `_checkout_required` = `_checkout`(--no-recurse-submodules·미존재면 `-B` 생성) +
+    # `_checkout_required` = `_checkout`(--no-recurse-submodules·실패 시 `-b` 재시도) +
     # `_resync_submodules_selective`(on-branch dev 보호·detached 재동기·dirty skip+경고·fail-soft).
     # ambient `submodule.recurse=true` 환경에서 raw 전환은 작업 중 submodule 을
     # detached pin 으로 파괴한다 — 그 보호는 이 쌍에만 있다(alloc 전환 3분기와 동일 경로).
     # `create_only=not exists` — 생성 의도면 **비파괴 `-b` 만**(plain 폴백 금지: DWIM 자동 tracking·
-    # detached 이동 회피 / `-B` 금지: 판정↔실행 경합에도 기존 브랜치 리셋 0).
+    # detached 이동 회피). `_checkout` 은 이제 어느 경로도 `-B` 를 쓰지 않는다 — 존재 브랜치
+    # 전환은 판정↔실행 경합·타 worktree 점유에도 절대 reset 하지 않는다(불변식 1·프리미티브 층).
     try:
         _checkout_required(slot, target, create_only=not exists, git_runner=runner)
     except CheckoutFailed as exc:
@@ -5282,21 +5339,24 @@ def _checkout(slot_path_: Path, branch: str, *, create_only: bool = False,
               git_runner: GitRunner | None = None) -> tuple[int, str]:
     """슬롯 worktree 에서 브랜치 체크아웃 (브랜치 변경 = 같은 슬롯 재체크아웃).
 
-    `git checkout --no-recurse-submodules <branch>`. 브랜치가 없으면 새로 만든다(`-B`) — 풀
-    슬롯에 새 작업스트림을 붙이는 정상 경로. (같은 브랜치 동시 2-worktree checkout 은 git 이
-    거부)
+    `git checkout --no-recurse-submodules <branch>`. plain checkout 이 실패하면(로컬 브랜치
+    미존재·타 worktree 점유 등) `-b <branch>`(create-or-fail)로 재시도한다 — **어느 경로도
+    `-B`(create-or-**reset**)를 쓰지 않는다**. 옛 폴백은 `-B` 였는데, plain checkout 이 *타
+    worktree 가 이미 점유한 기존 브랜치*를 만나면 rc≠0(예 128)이 되고, 그 재시도가 **기존 브랜치
+    ref 를 이 슬롯 HEAD 로 리셋**하는 공유 통합 브랜치 clobber 클래스였다. `-b` 는 이미 있는
+    이름이면 rc≠0 로 **loud 실패**할 뿐 리셋하지 않으므로, 판정↔실행 경합·타 worktree 점유·판정
+    오차 어느 경우든 **기존 브랜치 데이터 유실 0** 이다(`worktree add -B` 의 보존-브랜치 리셋
+    유실을 닫은 것과 같은 결론 — 거기선 존재 선-판정으로 갈랐고 여기선 실행 자체를 비파괴로 고정해
+    한 단계 더 잠근다). 로컬 브랜치가 실제로 없는 정상 케이스(풀 슬롯에 새 작업스트림을 붙임)는
+    `-b` 가 그대로 생성하므로 기존 동작과 결과가 같다(같은 브랜치 동시 2-worktree checkout 은 git
+    이 애초에 거부).
 
-    **`create_only=True` (`switch` 생성 경로 전용·기본값은 현행 동작 불변)**: plain checkout
-    폴백 없이 **비파괴 생성**(`-b <branch>`)만 시도한다. 기본 경로의 "plain → 실패하면 `-B`" 는
-    *전환 의도*엔 맞지만 **생성 의도엔 위험**하다 — 로컬 브랜치가 없어도 plain checkout 이 성공해
-    버리는 두 경우(실측):
+    **`create_only=True` (`switch` 생성 경로 전용)**: plain checkout 폴백 없이 **비파괴 생성**
+    (`-b <branch>`)만 시도한다 — 로컬 브랜치가 없어도 plain checkout 이 성공해버리는 두 경우를
+    피한다(실측):
       - `origin/<b>` 가 있으면 **DWIM 자동 tracking 브랜치 생성**(의도한 "새 작업 브랜치"가 아니다).
       - 인자가 remote-tracking ref·태그를 가리키면 **detached HEAD** 로 이동(`git checkout
         origin/main` → `## HEAD (브랜치 없음)`).
-    `-b`(create-or-fail) 는 `-B`(create-or-**reset**)와 달리 기존 브랜치를 리셋하지 않는다 —
-    존재 판정과 실행 사이의 경합/판정 오차에도 **데이터 유실 0**(`worktree add -B` 의
-    보존-브랜치 리셋 유실을 닫은 것과 같은 결론·거기선 존재 선-판정으로 갈랐고 여기선 실행 자체를
-    비파괴로 고정해 한 단계 더 잠근다). 이미 있으면 rc≠0 로 **loud 실패**(조용한 리셋보다 낫다).
 
     **`--no-recurse-submodules`**: 사용자 환경(전역
     `~/.gitconfig` 또는 repo config)에 `submodule.recurse=true` 가 설정돼 있으면 plain
@@ -5311,7 +5371,7 @@ def _checkout(slot_path_: Path, branch: str, *, create_only: bool = False,
         return runner(["checkout", "--no-recurse-submodules", "-b", branch])
     rc, out = runner(["checkout", "--no-recurse-submodules", branch])
     if rc != 0:
-        rc, out = runner(["checkout", "--no-recurse-submodules", "-B", branch])
+        rc, out = runner(["checkout", "--no-recurse-submodules", "-b", branch])
     return rc, out
 
 
@@ -5489,8 +5549,11 @@ def _checkout_required(slot: str, branch: str, *, create_only: bool = False,
     유지한다. 재동기는 fail-soft(raise 안 함)라 checkout 성공을 되돌리지 않는다.
 
     `create_only` 는 `_checkout` 으로 그대로 전달한다(`switch` 생성 경로 — 비파괴 `-b` 만
-    시도·DWIM tracking/detached 회피). **기본값 False = 현행 동작 불변**(alloc 전환 3분기 무영향).
-    selective 재동기는 두 경로에서 동일하게 붙는다.
+    시도·DWIM tracking/detached 회피). **기본값 False**(alloc 전환 3분기)는 대상 브랜치가 이 슬롯
+    아닌 다른 worktree 에 점유돼 있지 않은 통상 케이스는 현행 동작과 같다(plain checkout 성공). 단
+    타 worktree 점유 브랜치를 만나면 `_checkout` 의 폴백이 옛 `-B`(reset 성공)에서 `-b`(create-or-fail)
+    로 바뀌었으므로 이제는 `CheckoutFailed` 로 loud 실패한다(의도적 의미 변경 — 공유 브랜치 clobber
+    방지가 alloc 경로에도 적용됨). selective 재동기는 두 경로에서 동일하게 붙는다.
     """
     rc, out = _checkout(slot_path(slot), branch, create_only=create_only, git_runner=git_runner)
     if rc != 0:
