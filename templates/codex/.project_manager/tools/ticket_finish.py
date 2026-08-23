@@ -346,6 +346,34 @@ def _load_external_review():
     return mod
 
 
+def _load_private_refs():
+    """사설 참조 판정식 모듈을 동적 로드한다 (부재/로드 실패 시 None·fail-soft).
+
+    판정식(`prose_token_spans`·`_actionable_matches`·`shipping_paths` 등)의 단일 진실은
+    `private_refs.py` 다 — 완료 기록은 그 함수를 그대로 호출할 뿐 사본을 두지 않는다.
+    `scripts/strip_private_refs.py`·`tests/test_private_context_guard.py` 와 같은 소스를 본다.
+
+    `cache=True` 가 **load-bearing** 이다 — `private_refs.py` 는 postponed annotation
+    (`from __future__ import annotations`) 아래 `@dataclass(frozen=True)` 를 쓰는데, 공용
+    로더가 `cache=False` 로 실행하면(기본값) `exec_module` 이 돌기 **전에** 모듈이
+    `sys.modules` 에 없어 `dataclasses._is_type`(3.12)이 `cls.__module__` 을 못 찾고
+    `AttributeError` 로 죽는다(모듈 자기 자신을 찾으려는 dataclass 내부 조회일 뿐, 이 사본이
+    다른 소비자와 공유되는 것과는 무관하다)."""
+    pr_path = TOOLS_DIR / "private_refs.py"
+    if not pr_path.exists():
+        return None
+    try:
+        mod = _load_module_from_path(
+            pr_path, "private_refs.py", verifier=_verify_engine_rev,
+            cache=True, cache_key=f"_ticket_finish_private_refs:{pr_path.resolve()}",
+        )
+    except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패가 완료를 막지 않는다.
+        if _is_engine_rev_skew(exc):
+            raise  # 사본 skew 는 fail-loud(삼키지 않는다).
+        return None
+    return mod
+
+
 def _regression_cwd(worktree_slot: str | None = None) -> str:
     """회귀를 실행할 작업 디렉토리를 해소한다 (pm_handoff `_regression_cwd` 위임).
 
@@ -1519,6 +1547,68 @@ def _dirty_entry_path(line: str) -> str:
     return line[3:]
 
 
+# ── 사설 참조 완료 기록 preflight 보조 (측정 폭·판정식은 다른 소유자를 그대로 부른다) ──
+# 판정식 자체(`prose_token_spans`·`_actionable_matches`)는 private_refs.py 가, 측정 폭
+# 원문(0-컨텍스트 unified diff)은 external_review.measured_diff_text 가 소유한다. 여기 두
+# 함수는 그 둘 사이 **형식 변환**만 한다 — 새 판정 로직이 아니다.
+
+_DIFF_HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+
+def _parsed_diff_added_lines(diff_text: str) -> dict[str, set[int]]:
+    """0-컨텍스트 unified diff 원문 → {새 파일 상대경로: {추가된 새-파일 줄 번호}}.
+
+    산문 판정 자체는 여기서 하지 않는다 — `prose_token_spans` 는 완전한 파이썬 소스가
+    필요해 `+`로 시작하는 diff 조각을 그대로 파싱할 수 없다. 여기서는 **어느 줄이 새로
+    추가됐는지**만 뽑고, 판정은 호출부가 작업트리 파일 전문에 건다."""
+    added: dict[str, set[int]] = {}
+    current_path: str | None = None
+    current_line: int | None = None
+    for line in diff_text.splitlines():
+        if line.startswith("+++ "):
+            field = line[4:]
+            if field == "/dev/null":
+                current_path = None
+            elif field.startswith(("a/", "b/")):
+                current_path = field[2:]
+            else:
+                current_path = field
+            current_line = None
+            continue
+        if line.startswith("@@"):
+            match = _DIFF_HUNK_HEADER_RE.match(line)
+            current_line = int(match.group(1)) if match else None
+            continue
+        if current_path is None or current_line is None:
+            continue
+        if line.startswith("\\"):
+            continue  # "\ No newline at end of file" — 줄이 아니다.
+        if line.startswith("+"):
+            added.setdefault(current_path, set()).add(current_line)
+            current_line += 1
+        elif not line.startswith("-"):
+            current_line += 1  # 컨텍스트 줄(0-컨텍스트 diff 에선 드묾) — 새 파일 줄 번호를 소비한다.
+    return added
+
+
+def _git_blame_short_sha(
+    run_git_stdout_at_fn: Callable[[Path, list[str]], tuple[int, str]],
+    code_tree: Path, path: str, line: int,
+) -> str | None:
+    """`path:line` 을 도입한 커밋의 축약 sha (조회 실패는 None).
+
+    잔여로 남는 흡수분(claim 이후 다른 커밋이 offender 를 들여온 경우) 경고에만 쓴다 — 이
+    조회가 실패해도 경고 자체는 그대로 나가고 sha 만 빠진다(진단 강화일 뿐 차단 축이 아니다)."""
+    try:
+        rc, out = run_git_stdout_at_fn(
+            code_tree, ["log", "-1", "-s", "--format=%h", f"-L{line},{line}:{path}"],
+        )
+    except Exception:  # noqa: BLE001 — 진단 강화 실패가 경고를 막지 않는다.
+        return None
+    sha = out.strip()
+    return sha if rc == 0 and sha else None
+
+
 def status_entries(run_git: Callable[[list[str]], tuple[int, str]],
                    board=None) -> tuple[tuple[str, str], ...]:
     """현재 워킹트리 상태 `((XY, 경로), …)` — 조회 실패·비-git 은 `()`(비차단).
@@ -1675,6 +1765,7 @@ class TicketFinisher:
         run_git_stdout_at_fn: Callable[[Path, list[str]], tuple[int, str]] | None = None,
         status_entries_at_fn: Callable[[Path], tuple[tuple[str, str], ...]] | None = None,
         diff_cap_block_fn: Callable[[str], str | None] | None = None,
+        private_ref_block_fn: Callable[[str], str | None] | None = None,
         dod_block_fn: Callable[[str], str | None] | None = None,
         residual_block_fn: Callable[[str], str | None] | None = None,
         self_axis_block_fn: Callable[[str], str | None] | None = None,
@@ -1727,6 +1818,12 @@ class TicketFinisher:
         # diff 서킷브레이커 seam — 차단 안내 문자열 또는 None(통과·가드 off). 정책·측정식은
         # external_review 가 소유하고 여기서는 판정만 소비한다.
         self._diff_cap_block_fn = diff_cap_block_fn or self._default_diff_cap_block
+        # 사설 참조 완료 기록 preflight seam — 차단 사유 문자열 또는 None(통과·경고·판정
+        # 불가). diff 서킷브레이커 바로 뒤에 둔다 — 둘 다 같은 claim 앵커 측정 폭(touches ∩
+        # 출하 표면)을 재는 diff-축 판정이고, 크기(diff_cap)보다 내용(사설 참조)이 먼저
+        # 확정 차단감이면 그 뒤의 DoD·잔여 판정을 물을 이유가 없다. 판정식은 private_refs.py
+        # 소유(사본 0) — 여기서는 측정 폭 재사용 + 호출만 한다.
+        self._private_ref_block_fn = private_ref_block_fn or self._default_private_ref_block
         # DoD 기록 게이트 preflight seam — 차단 사유 문자열 또는 None(통과·판정 불가).
         # 규칙 소유자는 board(`_dod_open_items`)이고 여기서는 **더 앞에서 한 번 더** 물을 뿐이다.
         self._dod_block_fn = dod_block_fn or self._default_dod_block
@@ -2219,6 +2316,126 @@ class TicketFinisher:
                 f"  디렉터리 양보 보류: {attribution.unattributed_total}줄"
                 " (창 안 타 티켓과 겹친 디렉터리 선언 — 티켓별 분리 증거 없음)"
             )
+        return "\n".join(lines)
+
+    # ── 사설 참조 완료 기록 preflight ────────────────────────────────────────
+    # 판정식·표면 술어는 private_refs.py 소유(사본 0). 측정 폭은 diff 서킷브레이커와 같은
+    # claim 앵커(`external_review.claim_anchor`)를 재사용한다 — 리뷰가 본 표면과 이 게이트가
+    # 보는 표면이 갈리지 않는다. rc 정책은 오차단 실측(done 티켓 replay·전량스캔·라이브 표본
+    # 전부 0건)에 근거한다: actionable 축(안전 삭제 가능한 참조 단위)만 차단하고, 더 넓은
+    # recall 의 raw 축(흡수분·허용분 재작성이 실측상 여기서만 걸린다)은 경고로 남긴다.
+
+    def _private_ref_surface_paths(
+        self, code_tree: Path, touches: Sequence[str], private_refs,
+    ) -> list[Path]:
+        """터치 선언 ∩ 사설 참조 출하 python 표면 — 절대경로 목록(표면 해소).
+
+        표면 정의는 `private_refs.shipping_paths` 가 소유한다(markdown 절반은 이 게이트
+        밖 — 비목표). 여기서는 그 결과를 이 티켓의 선언 스코프로 좁힐 뿐이다."""
+        python_paths, _markdown_paths = private_refs.shipping_paths(code_tree)
+        return [
+            path for path in python_paths
+            if scope_covers(touches, path.relative_to(code_tree).as_posix())
+        ]
+
+    def _private_ref_diff_offenders(
+        self, surface_paths: Sequence[Path], code_tree: Path, diff_text: str, private_refs,
+    ) -> tuple[list[tuple[str, int, str]], list[tuple[str, int, str]]]:
+        """표면 파일 중 `diff_text` 가 새로 추가한 줄에서 (actionable, raw) offender 를 낸다.
+
+        `(경로, 줄, 토큰)` 3-튜플 목록 두 개 — raw ⊇ actionable(같은 프로세 스팬·같은 정규식을
+        재사용한다). 판정은 diff 조각이 아니라 **작업트리 파일 전문**에 건다(`prose_token_spans`
+        는 완전한 파이썬 소스가 필요하다) — diff 는 추가 줄 **번호**를 뽑는 데만 쓴다."""
+        added_by_path = _parsed_diff_added_lines(diff_text)
+        actionable: list[tuple[str, int, str]] = []
+        raw: list[tuple[str, int, str]] = []
+        for path in surface_paths:
+            relative = path.relative_to(code_tree).as_posix()
+            added_lines = added_by_path.get(relative)
+            if not added_lines:
+                continue
+            try:
+                source = path.read_text(encoding="utf-8")
+                spans = private_refs.prose_token_spans(source)
+            except (OSError, SyntaxError, private_refs.DataLiteralMarkerError):
+                continue  # 판정 불가(읽기 실패·구문 오류·표식 짝 불일치) — 확정 사실에만 건다.
+            for span in spans:
+                for match in private_refs._specific_matches(span.text):
+                    line = span.line + span.text[:match.start()].count("\n")
+                    if line in added_lines:
+                        raw.append((relative, line, match.group()))
+                for match in private_refs._actionable_matches(span.text):
+                    line = span.line + span.text[:match.start()].count("\n")
+                    if line in added_lines:
+                        actionable.append((relative, line, match.group()))
+        actionable.sort()
+        raw.sort()
+        return actionable, raw
+
+    def _default_private_ref_block(self, ticket_id: str) -> str | None:
+        """사설 참조 preflight 판정 — actionable > 0 이면 차단 문자열, 아니면 None(경고는
+        stderr 로 별도 · rc 는 안 바꾼다).
+
+        측정 불가(모듈 부재·touches 부재·표면 교집합 없음·claim 앵커 부재)는 **가드 off** 다 —
+        이 축의 실패로 완료 기록을 막지 않는다(diff_cap 과 같은 자세 — hard 차단은 확정 사실
+        에만 건다)."""
+        private_refs = _load_private_refs()
+        if private_refs is None:
+            return None
+        external = _load_external_review()
+        if external is None:
+            return None
+        measured_diff_text_fn = getattr(external, "measured_diff_text", None)
+        claim_anchor_fn = getattr(external, "claim_anchor", None)
+        if measured_diff_text_fn is None or claim_anchor_fn is None:
+            return None  # 구형/부분 external_review 사본 — diff_cap 이 이미 같은 부재를 경고했다.
+        inputs = self._diff_ticket_inputs(ticket_id, external)
+        touches = self._normalize_measured_touches(inputs.touches, warn=False)
+        if not touches:
+            return None
+        code_tree = self._code_tree()
+        surface_paths = self._private_ref_surface_paths(code_tree, touches, private_refs)
+        if not surface_paths:
+            return None
+        claimed_rev, anchor_note = claim_anchor_fn(code_tree, inputs.claimed_rev)
+        if anchor_note is not None:
+            self._warn_claim_anchor_gap(ticket_id, anchor_note)
+        relative_paths = [path.relative_to(code_tree).as_posix() for path in surface_paths]
+        try:
+            diff_text = measured_diff_text_fn(
+                code_tree, "HEAD", relative_paths, claimed_rev=claimed_rev,
+            )
+        except OSError:
+            return None
+        if not diff_text.strip():
+            return None
+        actionable, raw = self._private_ref_diff_offenders(
+            surface_paths, code_tree, diff_text, private_refs,
+        )
+        if not actionable and not raw:
+            return None
+        if not actionable:
+            # raw 만 있음 — 경고만(흡수분·허용분 재작성 실측상 이 갈래). blame sha 를 실어
+            # 1회 읽기로 유입 커밋을 식별할 수 있게 한다(알려진 잔여 — claimed_rev 가 stale
+            # 해지면 흡수분이 이 폭에 들어온다).
+            for path, line, token in raw:
+                sha = _git_blame_short_sha(
+                    self._run_git_stdout_at_fn, code_tree, path, line,
+                )
+                suffix = f" (git blame {sha})" if sha else ""
+                print(
+                    f"  ⚠ 사설 참조 raw 감지(경고만) — {ticket_id} {path}:{line} {token}"
+                    f"{suffix}",
+                    file=sys.stderr,
+                )
+            return None
+        lines = [
+            f"사설 참조 유입 — {ticket_id} claim 이후 추가한 줄에 채택자가 조회할 수 없는 "
+            f"참조가 있다 ({len(actionable)}건):",
+        ]
+        lines += [f"  ✗ {path}:{line} {token}" for path, line, token in actionable]
+        lines.append(f"  같은 폭 raw 목록({len(raw)}건 · 한 라운드로 정리):")
+        lines += [f"    · {path}:{line} {token}" for path, line, token in raw]
         return "\n".join(lines)
 
     def _default_dod_block(self, ticket_id: str) -> str | None:
@@ -2821,18 +3038,22 @@ class TicketFinisher:
         # PM 판정은 권위를 유지한다. 이 재검은 경고만 보이고 이후 rc를 바꾸지 않는다.
         self._warn_pm_direct_conditions(ticket_id)
 
-        # ── 0. 진입 게이트(preflight) — diff 서킷브레이커 · DoD 기록 · 코드 트리 잔여 ·
-        # 자기 축 회귀 ─────────────────────────────────────────────────
-        # 넷 다 회귀보다 **앞**이고, 무엇보다 [2/5] log 스켈레톤 append 보다 앞이다: 여기서 막힐
-        # 실행은 어떤 부작용(회귀 실행·log append·board·git)도 내지 않아야 한다. DoD 판정이
-        # [3/5] `board.py complete` 안에만 있던 동안에는 차단마다 stray 스켈레톤이 남고 재실행이
-        # 그것을 중복 append 했다(실측) — 순서가 곧 결함이었다. 잔여 판정(코드 트리 dirty ⊄ 선언
-        # 스코프)도 같은 이유로 여기 있다 — [4/5] stage 뒤라면 board complete 가 이미 기록된
-        # 뒤에야 막혀 되돌릴 수 없다. 자기 축 회귀는 **비용순으로 마지막**이다 — 앞 셋은
-        # 서브프로세스 0~2회, 이건 작업 트리가 red 일 때만 pytest 를 최대 2번 돈다(green 이면
-        # 0회).
-        for preflight in (self._diff_cap_block_fn, self._dod_block_fn,
-                         self._residual_block_fn, self._self_axis_block_fn):
+        # ── 0. 진입 게이트(preflight) — diff 서킷브레이커 · 사설 참조 · DoD 기록 ·
+        # 코드 트리 잔여 · 자기 축 회귀 ────────────────────────────────────
+        # 다섯 다 회귀보다 **앞**이고, 무엇보다 [2/5] log 스켈레톤 append 보다 앞이다: 여기서
+        # 막힐 실행은 어떤 부작용(회귀 실행·log append·board·git)도 내지 않아야 한다. 사설
+        # 참조는 diff 서킷브레이커 바로 뒤다 — 둘 다 같은 claim 앵커 측정 폭(touches ∩ 출하
+        # 표면)을 diff 축에서 재는 판정이고, 크기(diff_cap)든 내용(사설 참조)이든 그 결과가
+        # 확정 차단이면 뒤의 DoD·잔여 판정을 물을 이유가 없다. DoD 판정이 [3/5]
+        # `board.py complete` 안에만 있던 동안에는 차단마다 stray 스켈레톤이 남고 재실행이
+        # 그것을 중복 append 했다(실측) — 순서가 곧 결함이었다. 잔여 판정(코드 트리 dirty ⊄
+        # 선언 스코프)도 같은 이유로 여기 있다 — [4/5] stage 뒤라면 board complete 가 이미
+        # 기록된 뒤에야 막혀 되돌릴 수 없다. 자기 축 회귀는 **비용순으로 마지막**이다 — 앞
+        # 넷은 서브프로세스 0~2회, 이건 작업 트리가 red 일 때만 pytest 를 최대 2번 돈다
+        # (green 이면 0회).
+        for preflight in (self._diff_cap_block_fn, self._private_ref_block_fn,
+                         self._dod_block_fn, self._residual_block_fn,
+                         self._self_axis_block_fn):
             block = preflight(ticket_id)
             if block:
                 print(f"\n[중단] {block}", file=sys.stderr)

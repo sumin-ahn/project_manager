@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import importlib.util
 import io
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tokenize
+import types
 import unicodedata
 from collections import Counter
 from collections.abc import Callable, Sequence
@@ -2111,6 +2114,343 @@ def test_language_axis_sensitivity_disabling_scanner_clears_prose_offenders(
     assert (after_prose_hard, after_ratchet) == (0, 0)
     # HARD 총량은 불변 — 산문 표면 라벨만 뒤집힌다(축 구조가 python 축과 같다는 확인).
     assert after_total == hard_total
+
+# ── 사설 참조 완료 기록 preflight(``ticket_finish.TicketFinisher._default_private_ref_block``) ──
+#
+# 판정식 자체는 이 파일이 이미 로드한 ``PROSE_SCANNER``(=private_refs.py)와 같은 소스다 — 여기서
+# 사본을 만들지 않는다. 실 git 트리 + 실 board frontmatter 로 재현한다(DI 로 git 을 가짜로
+# 만들지 않는다) — claim 앵커(``external_review.claim_anchor``)를 그대로 태워야 흡수분 같은
+# 실제 형상이 재현된다.
+
+_PREF_TOUCH = ".project_manager/tools/pref_target.py"
+_PREF_BASE_BODY = '"""표본 shipping 모듈."""\n\n\ndef greet():\n    return "hi"\n'
+
+
+def _pref_repo(tmp_path: Path) -> Path:
+    """``.project_manager/tools/`` 실 사본 + board 골격을 갖춘 최소 git 저장소."""
+    root = tmp_path / "pref-repo"
+    shutil.copytree(REPO / ".project_manager" / "tools", root / ".project_manager" / "tools")
+    for status in ("open", "claimed", "blocked", "done"):
+        (root / ".project_manager" / "board" / "tickets" / status).mkdir(parents=True)
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "config", "user.email", "pref@example.com")
+    _git(root, "config", "user.name", "pref")
+    return root
+
+
+def _pref_write_target(root: Path, body: str) -> None:
+    (root / _PREF_TOUCH).write_text(body, encoding="utf-8")
+
+
+def _pref_commit(root: Path, message: str) -> str:
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", message)
+    return subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def _pref_write_ticket(
+    root: Path, ticket_id: str, claimed_rev: str, *, touch: str = _PREF_TOUCH,
+) -> None:
+    path = (root / ".project_manager" / "board" / "tickets" / "claimed"
+            / f"{ticket_id}-pref.md")
+    path.write_text(
+        "---\n"
+        f"id: {ticket_id}\ntitle: pref fixture\nstatus: claimed\n"
+        "claimed_by: pref\nclaimed_at: '2020-01-01T00:00:00+00:00'\n"
+        f"claimed_rev: {claimed_rev}\ncompleted_at: null\n"
+        f"depends_on: []\nblocks: []\ntouches:\n- {touch}\n"
+        "estimate: small\ntags: []\n---\n\n# 픽스처\n\n## 목표\nx\n",
+        encoding="utf-8",
+    )
+
+
+def _pref_finisher(tf_module, root: Path):
+    return tf_module.TicketFinisher(
+        board_py=root / ".project_manager" / "tools" / "board.py",
+        task_workspace=root,
+    )
+
+
+@pytest.fixture(scope="module")
+def pref_tf():
+    return _load_tool_module("ticket_finish")
+
+
+def test_private_ref_preflight_blocks_new_actionable_reference(pref_tf, tmp_path):
+    """claim 이후 추가한 줄의 사설 참조는 파일:라인·토큰을 값으로 지목하며 차단한다."""
+    root = _pref_repo(tmp_path)
+    _pref_write_target(root, _PREF_BASE_BODY)
+    claimed_rev = _pref_commit(root, "seed")
+    _pref_write_ticket(root, "T-9101", claimed_rev)
+    _pref_write_target(
+        root,
+        '"""표본 shipping 모듈."""\n\n\ndef greet():\n'
+        '    # 사설 참조 표식 (T-9999)\n'
+        '    return "hi"\n',
+    )
+    block = _pref_finisher(pref_tf, root)._default_private_ref_block("T-9101")
+    assert block is not None
+    assert "pref_target.py:5" in block
+    assert "T-9999" in block
+
+
+def test_private_ref_preflight_pre_existing_offense_is_not_a_false_block(pref_tf, tmp_path):
+    """base 커밋에 이미 있던 참조는 이 티켓 탓으로 잡히지 않는다(false-block 0)."""
+    root = _pref_repo(tmp_path)
+    _pref_write_target(
+        root,
+        '"""표본."""\n\n\ndef greet():\n'
+        '    # 사설 참조 표식 (T-9999)\n'
+        '    return "hi"\n',
+    )
+    claimed_rev = _pref_commit(root, "seed with pre-existing offense")
+    _pref_write_ticket(root, "T-9102", claimed_rev)
+    # 이 티켓은 같은 파일에서 참조 줄과 무관한 줄만 고친다.
+    _pref_write_target(
+        root,
+        '"""표본."""\n\n\ndef greet():\n'
+        '    # 사설 참조 표식 (T-9999)\n'
+        '    return "hi" + "!"\n',
+    )
+    block = _pref_finisher(pref_tf, root)._default_private_ref_block("T-9102")
+    assert block is None
+
+
+def test_private_ref_preflight_cites_only_the_new_line(pref_tf, tmp_path):
+    """base 와 신규가 공존하면 신규 줄만 지목한다(base 줄의 참조는 안 실린다)."""
+    root = _pref_repo(tmp_path)
+    _pref_write_target(
+        root,
+        '"""표본."""\n\n\ndef greet():\n'
+        '    # 사설 참조 표식 (T-1111)\n'
+        '    return "hi"\n',
+    )
+    claimed_rev = _pref_commit(root, "seed with pre-existing offense")
+    _pref_write_ticket(root, "T-9103", claimed_rev)
+    _pref_write_target(
+        root,
+        '"""표본."""\n\n\ndef greet():\n'
+        '    # 사설 참조 표식 (T-1111)\n'
+        '    # 사설 참조 표식 (T-9999)\n'
+        '    return "hi"\n',
+    )
+    block = _pref_finisher(pref_tf, root)._default_private_ref_block("T-9103")
+    assert block is not None
+    assert "T-9999" in block
+    assert "T-1111" not in block
+
+
+def test_private_ref_preflight_silent_on_clean_ticket(pref_tf, tmp_path, capsys):
+    """유입 0 이면 반환값·stdout·stderr 모두 조용하다(오탐 0)."""
+    root = _pref_repo(tmp_path)
+    _pref_write_target(root, _PREF_BASE_BODY)
+    claimed_rev = _pref_commit(root, "seed")
+    _pref_write_ticket(root, "T-9104", claimed_rev)
+    _pref_write_target(root, _PREF_BASE_BODY.replace('"hi"', '"hello"'))
+    block = _pref_finisher(pref_tf, root)._default_private_ref_block("T-9104")
+    captured = capsys.readouterr()
+    assert block is None
+    assert captured.out == "" and captured.err == ""
+
+
+def test_private_ref_preflight_warns_absorbed_commit_with_blame_sha(pref_tf, tmp_path):
+    """claim 이후 다른 커밋이 들여온 offender 는 raw 경고만(actionable 차단 없음) +
+    git blame sha 로 유입 커밋을 식별할 수 있게 한다(알려진 잔여 — claimed_rev 가 stale 해지는
+    창)."""
+    root = _pref_repo(tmp_path)
+    _pref_write_target(root, _PREF_BASE_BODY)
+    claimed_rev = _pref_commit(root, "seed")
+    _pref_write_ticket(root, "T-9105", claimed_rev)
+    # claim **이후** 다른 커밋이 offender 를 들여온다 — "괄호 안이 혼합 문맥" 참조(안전 삭제
+    # 불가능한 형태)라 raw 축에만 걸린다(actionable 은 삭제 가능한 단위만 잡는다).
+    _pref_write_target(
+        root,
+        '"""표본."""\n\n\ndef greet():\n'
+        '    # 완료 조건(DoD) 기록 게이트 (complete 차단 — T-9999)\n'
+        '    return "hi"\n',
+    )
+    _pref_commit(root, "absorbed offense from another ticket")
+    finisher = _pref_finisher(pref_tf, root)
+    stderr_buffer = io.StringIO()
+    with contextlib.redirect_stderr(stderr_buffer):
+        block = finisher._default_private_ref_block("T-9105")
+    stderr = stderr_buffer.getvalue()
+    assert block is None
+    assert "T-9999" in stderr and "pref_target.py:5" in stderr
+    assert re.search(r"git blame [0-9a-f]{7,40}", stderr)
+
+
+def test_private_ref_preflight_warns_raw_only_non_actionable_reference(pref_tf, tmp_path):
+    """안전 삭제 불가능한(허용분 재작성형) 참조는 raw 경고만·차단 없음."""
+    root = _pref_repo(tmp_path)
+    _pref_write_target(root, _PREF_BASE_BODY)
+    claimed_rev = _pref_commit(root, "seed")
+    _pref_write_ticket(root, "T-9106", claimed_rev)
+    _pref_write_target(
+        root,
+        '"""표본."""\n\n\ndef greet():\n'
+        '    # 완료 조건(DoD) 기록 게이트 (complete 차단 — T-9999)\n'
+        '    return "hi"\n',
+    )
+    stderr_buffer = io.StringIO()
+    with contextlib.redirect_stderr(stderr_buffer):
+        block = _pref_finisher(pref_tf, root)._default_private_ref_block("T-9106")
+    assert block is None
+    assert "T-9999" in stderr_buffer.getvalue()
+
+
+def test_private_ref_preflight_silent_when_touches_outside_python_surface(pref_tf, tmp_path):
+    """touches 가 사설 참조 python 표면과 안 겹치면 판정 로딩조차 안 하고 무발화한다."""
+    root = _pref_repo(tmp_path)
+    (root / "docs").mkdir()
+    (root / "docs" / "readme.md").write_text("hello\n", encoding="utf-8")
+    claimed_rev = _pref_commit(root, "seed")
+    _pref_write_ticket(root, "T-9107", claimed_rev, touch="docs/readme.md")
+    (root / "docs" / "readme.md").write_text("hello (T-9999)\n", encoding="utf-8")
+    block = _pref_finisher(pref_tf, root)._default_private_ref_block("T-9107")
+    assert block is None
+
+
+def test_private_ref_preflight_surface_is_touches_intersect_shipping_python(pref_tf, tmp_path):
+    """표면 해소는 `shipping_paths` 결과를 touches 로 좁힌 것과 값으로 일치한다
+    (하드코딩 목록이 아니다)."""
+    root = _pref_repo(tmp_path)
+    _pref_write_target(root, _PREF_BASE_BODY)
+    claimed_rev = _pref_commit(root, "seed")
+    _pref_write_ticket(root, "T-9108", claimed_rev)
+    finisher = _pref_finisher(pref_tf, root)
+    private_refs = pref_tf._load_private_refs()
+    expected = {
+        path for path in private_refs.shipping_paths(root)[0]
+        if path.relative_to(root).as_posix() == _PREF_TOUCH
+    }
+    actual = set(finisher._private_ref_surface_paths(root, [_PREF_TOUCH], private_refs))
+    assert actual == expected and actual  # 비어 있으면 교집합이 실재하지 않아 무의미한 단언이다
+
+
+def test_private_ref_preflight_runs_before_regression_log_board_git(pref_tf, tmp_path):
+    """이 preflight 가 차단하면 회귀·log·board·git mutation 어떤 부작용도 없다(diff_cap·DoD
+    와 동형인 자리 계약). 실 판정으로 재현한다 — DI 스텁이 아니라 실 판정이 앞자리에서
+    막는지를 본다."""
+    root = _pref_repo(tmp_path)
+    _pref_write_target(root, _PREF_BASE_BODY)
+    claimed_rev = _pref_commit(root, "seed")
+    _pref_write_ticket(root, "T-9109", claimed_rev)
+    _pref_write_target(
+        root,
+        '"""표본 shipping 모듈."""\n\n\ndef greet():\n'
+        '    # 사설 참조 표식 (T-9999)\n'
+        '    return "hi"\n',
+    )
+    finisher = pref_tf.TicketFinisher(
+        board_py=root / ".project_manager" / "tools" / "board.py",
+        task_workspace=root,
+        run_pytest_fn=lambda: (_ for _ in ()).throw(AssertionError("회귀 미호출이어야 한다")),
+        run_board_fn=lambda args: (_ for _ in ()).throw(AssertionError("board 미호출")),
+        run_git_fn=lambda args: (_ for _ in ()).throw(AssertionError("git mutation 미호출")),
+        log_file=tmp_path / "log.md",
+    )
+    assert finisher.run("T-9109", section=None, dry_run=False) == 1
+    assert not (tmp_path / "log.md").exists()
+
+
+def test_private_ref_preflight_sensitivity_removed_call_lets_offense_through(pref_tf, tmp_path):
+    """민감도 — 이 판정을 preflight 배열에서 빼면(override→None) 같은 유입이 안 걸린다.
+    같은 트리에서 실 판정(`_default_private_ref_block`)은 차단함을 대조로 고정한다."""
+    root = _pref_repo(tmp_path)
+    _pref_write_target(root, _PREF_BASE_BODY)
+    claimed_rev = _pref_commit(root, "seed")
+    _pref_write_ticket(root, "T-9110", claimed_rev)
+    _pref_write_target(
+        root,
+        '"""표본 shipping 모듈."""\n\n\ndef greet():\n'
+        '    # 사설 참조 표식 (T-9999)\n'
+        '    return "hi"\n',
+    )
+    finisher = pref_tf.TicketFinisher(
+        board_py=root / ".project_manager" / "tools" / "board.py",
+        task_workspace=root,
+        private_ref_block_fn=lambda tid: None,
+    )
+    assert finisher._private_ref_block_fn("T-9110") is None
+    assert finisher._default_private_ref_block("T-9110") is not None
+
+
+def test_private_ref_block_defers_entirely_to_loaded_scanner_no_duplicate(
+    pref_tf, tmp_path, monkeypatch,
+):
+    """판정은 `_load_private_refs()` 가 준 모듈의 함수만 쓴다(사본 0). 실 참조 패턴이
+    하나도 없는 파일에서, 스텁 스캐너의 sentinel 결과가 그대로 출력에 실리는 것으로 "숨은
+    재구현이 없다"를 값으로 증명한다 — 사본이 있었다면 스텁을 갈아 끼워도 원래 판정이
+    남아 이 단언이 깨진다."""
+    root = _pref_repo(tmp_path)
+    _pref_write_target(root, _PREF_BASE_BODY)  # 실 T-XXXX 패턴 0
+    claimed_rev = _pref_commit(root, "seed")
+    _pref_write_ticket(root, "T-9111", claimed_rev)
+    _pref_write_target(root, _PREF_BASE_BODY + "# 평범한 주석 한 줄 추가\n")
+
+    real_private_refs = pref_tf._load_private_refs()
+    sentinel = "SENTINEL-9999"
+
+    class _FakeSpan:
+        def __init__(self, line, text):
+            self.line = line
+            self.text = text
+
+    class _FakeMatch:
+        def __init__(self, text):
+            self._text = text
+
+        def group(self):
+            return self._text
+
+        def start(self):
+            return 0
+
+    def fake_prose_token_spans(source):
+        # 실 소스 내용과 무관하게 sentinel 한 건을 새로 추가된 줄(6번째)에 심는다.
+        return [_FakeSpan(line=6, text=sentinel)]
+
+    def fake_actionable_matches(text):
+        return [_FakeMatch(sentinel)] if text == sentinel else []
+
+    def fake_specific_matches(text):
+        return [_FakeMatch(sentinel)] if text == sentinel else []
+
+    fake_module = types.SimpleNamespace(
+        shipping_paths=real_private_refs.shipping_paths,
+        prose_token_spans=fake_prose_token_spans,
+        _actionable_matches=fake_actionable_matches,
+        _specific_matches=fake_specific_matches,
+        DataLiteralMarkerError=real_private_refs.DataLiteralMarkerError,
+    )
+    monkeypatch.setattr(pref_tf, "_load_private_refs", lambda: fake_module)
+
+    block = _pref_finisher(pref_tf, root)._default_private_ref_block("T-9111")
+    assert block is not None
+    assert sentinel in block
+
+
+def test_private_ref_preflight_does_not_reference_allowlist_or_baseline_files():
+    """판정 코드는 재유입 가드의 allowlist/ratchet 원장 파일 경로를 참조하지 않는다
+    (재생성으로 통과시키는 경로가 구조적으로 없다)."""
+    source = (REPO / ".project_manager" / "tools" / "ticket_finish.py").read_text(
+        encoding="utf-8"
+    )
+    assert "private_context_hard_allowlist" not in source
+    assert "private_context_baseline" not in source
+
+
+def test_measured_diff_text_reuses_measure_stages_no_width_copy():
+    """`measured_diff_text` 는 `_measure_stages`·`_stage_diff_runs` 를 그대로 호출한다
+    (폭 정의 사본 0). 형식만 `--numstat` 대신 0-컨텍스트로 갈린다."""
+    external = _load_tool_module("external_review")
+    names = external.measured_diff_text.__code__.co_names
+    assert "_measure_stages" in names
+    assert "_stage_diff_runs" in names
 
 
 def _dump_hard_report(report: dict[str, object]) -> str:
