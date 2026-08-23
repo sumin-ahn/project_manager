@@ -589,7 +589,11 @@ def test_middle_ordinal_keeps_the_board_round_and_closes_the_other_two(pd, env):
     after_codes = _problem_codes(pd, env, "T-8060")
     for code in ("round-gap", "round-dup"):
         assert after_codes.count(code) == before_codes.count(code) == 0
-    assert env.sync_calls == []                           # 보존이면 board 커밋도 없다.
+    # 보존 분기도 board 파일을 바꾼다(표식 발행) — 그 write 를 커밋하지 않으면 PM 홈에 미커밋
+    # 변경이 남아 다음 board mutation 에 섞인다.
+    assert env.sync_calls == [
+        ("ticket-abandon T-8060 developer", [target.board_path]),
+    ]
 
 
 def test_middle_ordinal_abandon_is_idempotent_too(pd, env):

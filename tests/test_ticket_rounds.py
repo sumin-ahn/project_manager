@@ -82,11 +82,15 @@ class RecordingLock:
         return False
 
 
-def _seed(rounds, role, *, today="2026-01-02"):
+# 라운드 헤더 픽스처 날짜 — 헤더 문법만 판정에 쓰이므로 값 하나를 공용으로 재사용한다.
+SEED_DATE = "2026-01-02"
+
+
+def _seed(rounds, role, *, today=SEED_DATE):
     return rounds.render_round_seed(role, TICKET_TEXT, today=today)
 
 
-def _reserve(rounds, tickets_dir, ticket, role, *, content=None, today="2026-01-02"):
+def _reserve(rounds, tickets_dir, ticket, role, *, content=None, today=SEED_DATE):
     return rounds.reserve_round(
         tickets_dir, ticket, role,
         content=_seed(rounds, role, today=today) if content is None else content,
@@ -584,6 +588,77 @@ def test_a_round_whose_review_block_is_broken_is_not_pending(rounds, tickets_dir
 
     loaded = rounds.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
     assert loaded[0].pending is False
+
+
+def test_a_seed_with_the_next_finding_id_is_still_pending(rounds, tickets_dir):
+    """다음 finding ID 실값을 실은 새 시드도 산출이 없다 — 판정은 본문 자신의 값으로 재렌더한다."""
+    first = _reserve(rounds, tickets_dir, "T-0001", "code-reviewer")
+    rounds.replace_round(first, _reviewer_output("F-003"))
+    loaded = rounds.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+
+    seed = rounds.render_round_seed(
+        "code-reviewer", TICKET_TEXT, today=SEED_DATE,
+        previous_round=rounds.previous_round_of_role(loaded, "code-reviewer"),
+        rounds=loaded,
+    )
+    assert '"id":"F-004"' in seed.replace(" ", ""), "다음 ID 주입이 없다(전제 붕괴)"
+    _reserve(rounds, tickets_dir, "T-0001", "code-reviewer", content=seed)
+
+    reloaded = rounds.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+    assert [(item.ordinal, item.pending) for item in reloaded] == [(1, False), (2, True)]
+    # CRLF 사본도 같은 골격이다.
+    crlf = rounds.Round(*reloaded[1][:3], seed.replace("\n", "\r\n"), False)
+    assert rounds.round_is_pending(crlf) is True
+    # 한 글자만 채우면 산출이다.
+    filled = rounds.Round(
+        *reloaded[1][:3], seed.replace("<resolved|unresolved|regressed>", "resolved"), False,
+    )
+    assert rounds.round_is_pending(filled) is False
+
+
+def test_an_engine_marked_round_is_not_pending_and_not_the_previous_output(
+    rounds, tickets_dir, delegate,
+):
+    """엔진 표식이 붙은 라운드는 `pending` 을 배제하는 자리에서 함께 빠진다.
+
+    표식이 붙는 순간 bytes 가 시드와 달라 `pending` 이 아니게 되므로, 두 배제가 같은 자리에
+    없으면 종결된 예약이 직전 산출·프리필 공급원으로 선다.
+    """
+    first = _reserve(rounds, tickets_dir, "T-0001", "code-reviewer")
+    rounds.replace_round(first, _reviewer_output("F-001"))
+    second = _reserve(rounds, tickets_dir, "T-0001", "code-reviewer")
+    marker = delegate.pm_review_refused_line("code-reviewer")
+    rounds.replace_round(
+        second, second.read_text(encoding="utf-8") + marker + "\n",
+    )
+
+    loaded = rounds.load_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT)
+
+    assert [(item.ordinal, item.pending) for item in loaded] == [(1, False), (2, False)]
+    assert rounds.verify_rounds(tickets_dir, "T-0001", ticket_text=TICKET_TEXT) == []
+    assert rounds.latest_round_of_role(loaded, "code-reviewer").ordinal == 1
+    assert rounds.previous_round_of_role(loaded, "code-reviewer")[0] == 1
+
+
+def test_the_engine_marker_is_read_for_every_round_role(rounds, tickets_dir, delegate):
+    """판독은 역할을 가리지 않는다 — 표식이 붙는 자리는 리뷰 채널만이 아니다."""
+    for role in sorted(delegate.TICKET_COPY_ROLES):
+        ticket = f"T-{9100 + sorted(delegate.TICKET_COPY_ROLES).index(role)}"
+        landed = _reserve(rounds, tickets_dir, ticket, role)
+        rounds.replace_round(
+            landed,
+            f"## 산출 ({role} · {SEED_DATE})\n\n실제 산출.\n",
+        )
+        marked = _reserve(rounds, tickets_dir, ticket, role)
+        rounds.replace_round(
+            marked,
+            marked.read_text(encoding="utf-8")
+            + delegate.pm_review_refused_line(role) + "\n",
+        )
+
+        loaded = rounds.load_rounds(tickets_dir, ticket, ticket_text=TICKET_TEXT)
+        assert rounds.verify_rounds(tickets_dir, ticket, ticket_text=TICKET_TEXT) == [], role
+        assert rounds.latest_round_of_role(loaded, role).ordinal == 1, role
 
 
 # ── 직전 라운드 규칙 (프리필·확인 대상의 단일 소유자) ───────────────────────

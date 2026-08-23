@@ -3696,6 +3696,10 @@ def _lint_ticket(board, status: str, tid: str, *, body: str = "") -> Path:
     return path
 
 
+# 라운드 헤더 픽스처 날짜 — 헤더 문법만 판정에 쓰이므로 이 값 하나를 재사용한다.
+ROUND_DATE = "2026-01-02"
+
+
 def _lint_round(board, tid: str, name: str, text: str) -> Path:
     path = board._load_ticket_rounds().rounds_dir_for_ticket(tid, board.tickets_dir()) / name
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -3730,6 +3734,31 @@ def test_lint_rounds_surfaces_gap_and_pending(board, monkeypatch, tmp_path):
     assert kinds == {rounds.PROBLEM_GAP, rounds.PROBLEM_PENDING}, issues
     assert all(name == "T-3001" for name, _kind, _detail in issues)
     assert any("02" in detail for _n, kind, detail in issues if kind == rounds.PROBLEM_GAP)
+
+
+def test_lint_rounds_stops_reporting_pending_for_an_engine_marked_round(
+    board, monkeypatch, tmp_path,
+):
+    """중간 순번 포기가 보존한 시드는 엔진 표식 때문에 `round-pending` 에서 빠진다.
+
+    표식 없는 같은 시드는 그대로 보고된다 — 배제 조건은 표식 하나다.
+    """
+    _wire_repo(board, monkeypatch, tmp_path)
+    path = _lint_ticket(board, "claimed", "T-3020")
+    rounds = board._load_ticket_rounds()
+    seed = rounds.render_round_seed(
+        "code-reviewer", path.read_text(encoding="utf-8"), today=ROUND_DATE)
+    marker = rounds._load_pm_delegate().pm_review_refused_line("code-reviewer")
+    _lint_round(board, "T-3020", "01-developer.md",
+                f"## 구현 보충 (developer · {ROUND_DATE})\n\n실제 산출.\n")
+    _lint_round(board, "T-3020", "02-code-reviewer.md", seed)
+    _lint_round(board, "T-3020", "03-code-reviewer.md", seed + marker + "\n")
+
+    issues = board.lint_rounds()
+
+    assert [(name, kind) for name, kind, _detail in issues] == [
+        ("T-3020", rounds.PROBLEM_PENDING)]
+    assert "02-code-reviewer.md" in issues[0][2]
 
 
 def test_lint_rounds_reports_engine_temporary_leftovers(board, monkeypatch, tmp_path):

@@ -246,7 +246,7 @@ def test_pm_delegate_ticket_cli_json_is_utf8(capture_console, monkeypatch, tmp_p
     monkeypatch.setattr(pm_delegate, "_ticket_cli_owner", lambda _cwd: tmp_path / "pm")
     plan = pm_delegate.TicketCopyPlan(
         slot / "01-developer.md", slot, "T-2000", "developer", 1,
-        tmp_path / "pm" / "01-developer.md", "a" * 32,
+        tmp_path / "pm" / "01-developer.md", "a" * 32, "",
     )
     monkeypatch.setattr(pm_delegate, "prepare_ticket_copy", lambda **_kwargs: plan)
     stream = capture_console()

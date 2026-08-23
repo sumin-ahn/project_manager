@@ -595,7 +595,7 @@ def test_resume_mismatch_fresh_rerun_binds_the_ticket_copy_run_id(pd, tmp_path):
     out_dir = tmp_path / "raw"
     plan = pd.TicketCopyPlan(
         tmp_path / "slot" / "01-developer.md", tmp_path / "slot", "T-9201",
-        "developer", 1, tmp_path / "board" / "01-developer.md", "b" * 32,
+        "developer", 1, tmp_path / "board" / "01-developer.md", "b" * 32, "",
     )
     calls: list = []
 
@@ -634,7 +634,7 @@ def test_infra_fallback_attempt_binds_the_ticket_copy_run_id(pd, tmp_path):
     out_dir = tmp_path / "raw"
     plan = pd.TicketCopyPlan(
         tmp_path / "slot" / "01-developer.md", tmp_path / "slot", "T-9202",
-        "developer", 1, tmp_path / "board" / "01-developer.md", "c" * 32,
+        "developer", 1, tmp_path / "board" / "01-developer.md", "c" * 32, "",
     )
     calls: list = []
 

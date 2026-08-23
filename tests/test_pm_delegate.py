@@ -7514,7 +7514,7 @@ def _slot_ticket_copy(pd, tmp_path: Path, gate: str, text: str, *, role=None,
         path.unlink()
     return pd.TicketCopyPlan(
         path, run_dir, gate, role or pd.INTERNAL_REVIEW_ROLE, ordinal, board_path,
-        "b" * 32,
+        "b" * 32, "",
     )
 
 

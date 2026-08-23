@@ -19,6 +19,9 @@
   R8 값·실재·순서    — `<1`·자기참조·부재 ordinal 은 시드 대조 분기와 무관하게 거부되고,
                        loud 는 생존 게이트를 통과한 뒤에만 남는다.
 
+중간 순번이라 보존한 board 시드에는 엔진 표식이 발행돼 `round-pending`·판정 표면·직전 산출에서
+함께 빠지고, 파괴 판정 기준선은 그 발행 **이전** bytes 다(최대 순번 삭제 분기는 불변).
+
 검증 근거는 실 board 트리·실 라운드 파일·실 `delegate-rounds.jsonl` 이고, 리뷰 블록은 엔진 골격
 렌더(`render_pm_review_block_skeleton`)에서 key·enum 을 받아 값만 채운다(스키마 재타이핑 0).
 """
@@ -187,10 +190,16 @@ def _write_round_output(path: Path, body: str) -> str:
     return produced
 
 
+def _tickets_root(pm_home: Path) -> Path:
+    return pm_home / ".project_manager" / "wiki" / "tickets"
+
+
 def _problem_codes(pd, pm_home: Path, ticket: str) -> list[str]:
     rounds_module = pd._load_ticket_rounds()
-    tickets_root = pm_home / ".project_manager" / "wiki" / "tickets"
-    return [item.code for item in rounds_module.verify_rounds(tickets_root, ticket)]
+    return [
+        item.code
+        for item in rounds_module.verify_rounds(_tickets_root(pm_home), ticket)
+    ]
 
 
 def _use_relay_pid(pd, monkeypatch, *, alive: bool):
@@ -361,18 +370,35 @@ def test_superseded_round_closes_the_real_deadlock_shape(pd, env, capsys):
     assert result.board_removed is False           # 중간 순번 보존 규칙은 그대로다.
     assert result.run_dir_removed is True
     assert round1.board_path.exists()
-    assert round1.board_path.read_bytes() == round1_board_seed   # board 는 시드 그대로 보존.
+    # 보존한 시드에는 엔진 표식 한 줄만 붙는다(그 앞 bytes 는 시드 그대로다).
+    marker = pd.pm_review_refused_line("code-reviewer")
+    assert round1.board_path.read_bytes() == round1_board_seed + f"{marker}\n".encode("utf-8")
+    assert sync_log[-1] == (
+        "ticket-abandon T-9005 code-reviewer", [round1.board_path],
+    )
     assert not round1.run_dir.exists()
     loud = capsys.readouterr().err
     assert "대체-확인" in loud and f"ordinal={round2.ordinal}" in loud
+
+    # 표식이 붙은 라운드는 `pending` 을 배제하는 자리에서 함께 빠진다.
+    rounds_module = pd._load_ticket_rounds()
+    loaded = rounds_module.load_rounds(_tickets_root(pm_home), "T-9005")
+    assert [(item.ordinal, item.pending) for item in loaded] == [
+        (round1.ordinal, False), (round2.ordinal, False)]
+    assert pd._pm_review_refused_rounds(loaded) == {("code-reviewer", round1.ordinal)}
+    assert [item.ordinal for item in pd._pm_review_surface_rounds(loaded)] == [round2.ordinal]
+    assert rounds_module.latest_round_of_role(
+        loaded, "code-reviewer",
+    ).ordinal == round2.ordinal
+    spec_text = (tickets / "T-9005-supersede.md").read_text(encoding="utf-8")
+    assert "F-001" in pd.render_pm_review_disposition_template(spec_text, loaded)
 
     # 값으로 사라짐 — 미회수 목록에 더는 라운드 1 사본이 없다.
     unharvested = pd.ticket_copy_records(pm_home, ticket="T-9005", unharvested=True)
     assert str(round1.path) not in [row["copy"] for row in unharvested]
     assert unharvested == []          # 라운드 2 는 harvested, 라운드 1 은 abandoned.
 
-    codes = _problem_codes(pd, pm_home, "T-9005")
-    assert codes.count("round-gap") == 0 and codes.count("round-dup") == 0
+    assert _problem_codes(pd, pm_home, "T-9005") == []      # `round-pending` 도 사라진다.
 
 
 def test_superseded_abandon_retry_omits_the_flag_and_still_converges(pd, env, monkeypatch):
@@ -418,6 +444,116 @@ def test_superseded_abandon_retry_omits_the_flag_and_still_converges(pd, env, mo
     assert not round1.run_dir.exists()
     unharvested = pd.ticket_copy_records(pm_home, ticket="T-9006", unharvested=True)
     assert unharvested == []
+
+
+# ── 보존 시드 표식 ─────────────────────────────────────────────────────────
+
+def test_middle_ordinal_abandon_marks_the_preserved_seed_out_of_the_surfaces(
+    pd, env,
+):
+    """대체-확인 **없는** 중간 순번 포기도 보존한 시드에 표식을 발행한다.
+
+    그 board 파일은 영원히 시드 그대로라 표식이 없으면 `round-pending` 으로 남는다. 표식은
+    파괴 판정 기준선을 읽은 뒤 붙으므로 run-dir 정리는 종전대로 끝난다.
+    """
+    pm_home, slot, tickets, sync_log = env
+    _write_spec(tickets, "T-9020")
+    round1 = pd.prepare_ticket_copy(
+        ticket="T-9020", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+    round1_seed = round1.board_path.read_bytes()
+    round2 = pd.prepare_ticket_copy(
+        ticket="T-9020", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+    _write_round_output(round2.path, _review_body(pd, "code-reviewer", ["F-921"]))
+    pd.harvest_ticket_copy(copy_path=round2.path, cwd=slot, pm_home=pm_home)
+    assert _problem_codes(pd, pm_home, "T-9020") == ["round-pending"]
+
+    result = pd.abandon_ticket_copy(
+        copy_path=round1.path, cwd=slot, pm_home=pm_home, assume_dead=True,
+    )
+
+    assert (result.changed, result.converged) == (True, True)
+    assert result.board_removed is False and result.run_dir_removed is True
+    marker = pd.pm_review_refused_line("code-reviewer")
+    assert round1.board_path.read_bytes() == round1_seed + f"{marker}\n".encode("utf-8")
+    assert sync_log[-1] == (
+        "ticket-abandon T-9020 code-reviewer", [round1.board_path],
+    )
+    assert _problem_codes(pd, pm_home, "T-9020") == []
+    rounds_module = pd._load_ticket_rounds()
+    loaded = rounds_module.load_rounds(_tickets_root(pm_home), "T-9020")
+    assert pd._pm_review_refused_rounds(loaded) == {("code-reviewer", round1.ordinal)}
+    assert rounds_module.latest_round_of_role(
+        loaded, "code-reviewer",
+    ).ordinal == round2.ordinal
+
+
+def test_max_ordinal_abandon_still_deletes_the_board_round_without_a_marker(pd, env):
+    """역방향 — 최대 순번은 종전대로 board 파일을 지운다(표식 발행 0)."""
+    pm_home, slot, tickets, sync_log = env
+    _write_spec(tickets, "T-9021")
+    only = pd.prepare_ticket_copy(
+        ticket="T-9021", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+
+    result = pd.abandon_ticket_copy(
+        copy_path=only.path, cwd=slot, pm_home=pm_home, assume_dead=True,
+    )
+
+    assert (result.board_removed, result.run_dir_removed) == (True, True)
+    assert not only.board_path.exists()
+    assert _problem_codes(pd, pm_home, "T-9021") == []
+    rounds_module = pd._load_ticket_rounds()
+    assert rounds_module.load_rounds(_tickets_root(pm_home), "T-9021") == []
+
+
+def test_marker_is_not_a_second_write_and_does_not_block_the_retry(
+    pd, env, monkeypatch,
+):
+    """재호출은 표식을 다시 쓰지 않고, 자기가 쓴 줄 때문에 산출 보존으로 뒤집히지도 않는다.
+
+    파괴 판정 기준선은 표식 **이전** bytes 다 — 되돌리지 않으면 첫 호출이 붙인 줄이 다음
+    호출에 "산출이 생겼다" 로 읽혀 남은 정리가 영영 끝나지 않는다.
+    """
+    pm_home, slot, tickets, sync_log = env
+    _write_spec(tickets, "T-9022")
+    round1 = pd.prepare_ticket_copy(
+        ticket="T-9022", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+    round1_seed = round1.board_path.read_bytes()
+    round2 = pd.prepare_ticket_copy(
+        ticket="T-9022", role="code-reviewer", cwd=slot, pm_home=pm_home,
+    )
+    _write_round_output(round2.path, _review_body(pd, "code-reviewer", ["F-922"]))
+    pd.harvest_ticket_copy(copy_path=round2.path, cwd=slot, pm_home=pm_home)
+
+    real_rmtree = pd._load_file_lock().force_rmtree
+    state = {"calls": 0}
+
+    def _flaky_rmtree(path):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise OSError("주입 실패")
+        return real_rmtree(path)
+
+    monkeypatch.setattr(pd._load_file_lock(), "force_rmtree", _flaky_rmtree)
+
+    with pytest.raises(pd.DelegateError, match="run-dir 삭제 실패"):
+        pd.abandon_ticket_copy(
+            copy_path=round1.path, cwd=slot, pm_home=pm_home, assume_dead=True,
+        )
+    marker = pd.pm_review_refused_line("code-reviewer")
+    assert round1.board_path.read_bytes() == round1_seed + f"{marker}\n".encode("utf-8")
+
+    result = pd.abandon_ticket_copy(
+        copy_path=round1.path, cwd=slot, pm_home=pm_home, assume_dead=True,
+    )
+
+    assert result.converged is True
+    assert not round1.run_dir.exists()
+    # 표식은 한 줄뿐이다(재호출이 자기 줄 위에 다시 쓰지 않는다).
+    assert round1.board_path.read_bytes() == round1_seed + f"{marker}\n".encode("utf-8")
 
 
 # ── R6 harvest 비목표 ────────────────────────────────────────────────────────
