@@ -802,6 +802,27 @@ def test_close_resolves_each_gate_when_the_bundle_surface_is_absent(
 
 
 @requires_git
+def test_close_task_identity_is_forwarded_to_resolve_without_ambient_env(
+    close_env, monkeypatch,
+):
+    """task-mode에서 해소한 정체성을 resolve subprocess argv에도 직접 싣는다."""
+    env = close_env
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    closer = env.closer(
+        task="main", board_identity_args=["--task", "main"],
+    )
+    monkeypatch.setattr(closer, "_delegate_supports_cluster", lambda: True)
+    monkeypatch.setattr(closer, "_pending_gates", lambda: [env.ticket])
+
+    assert closer._step_resolve() is None
+    assert env.delegate_calls == [[
+        "rounds", "resolve", "--cluster", _CLUSTER, "--pm-verified",
+        "--task", "main",
+    ]]
+
+
+@requires_git
 def test_close_refuses_to_move_a_branch_that_is_not_the_cluster_branch(close_env):
     """슬롯이 묶음 브랜치를 들고 있지 않으면 재배치·머지 앞에서 거부한다."""
     env = close_env

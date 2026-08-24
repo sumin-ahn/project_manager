@@ -990,6 +990,41 @@ def _pm_owned_ticket(
     return spec, [reviewer, developer]
 
 
+def _partially_confirmed_pm_owned_ticket(pd):
+    """같은 fix round의 machine 행만 먼저 기록되고 PM-owned 행이 빠진 재시도 입력."""
+    pm_owned = _finding("F-003")
+    pm_owned["fix_contract"] = {
+        "location": "/pm-home/.project_manager/.local/review_rounds.json",
+        "failure": "PM-owned current-truth 감사 미완",
+        "design": "PM이 같은 fix 단계에서 권위 문서와 local ledger를 일회 정리",
+        "test": "PM 홈 절대경로 audit 결과와 current-truth 정렬을 종결 기록한다",
+        "command": "python3 -c \"print(0)\"",
+        "expected": "0",
+    }
+    reviewer = _round(
+        pd, 1, "code-reviewer",
+        _reviewer_round_text(pd, [_finding("F-001"), pm_owned]),
+    )
+    pm_owned_decision = _decision("F-003")
+    pm_owned_decision["scope"] = "pm-owned: ADR·current-truth·local ledger"
+    spec = _disposition_block(
+        pd, 1, [_decision("F-001"), pm_owned_decision],
+    )
+    developer = _round(pd, 2, "developer", _developer_round_text(pd, [
+        _verify_row("F-001", command="echo hi", expected="hi"),
+        _verify_row(
+            "F-003", command="", expected="PM audit 완료 실값", before="",
+            machine_verifiable=False, reason="pm-owned",
+        ),
+    ]))
+    partial = pd.render_pm_review_confirmation_section((
+        (2, pd.PMReviewMachineConfirmation(
+            "F-001", "resolved", "echo hi", "rc=0\nhi", 2,
+        )),
+    ))
+    return spec + "\n" + partial, [reviewer, developer]
+
+
 @requires_git
 def test_review_delta_over_a_cluster_concatenates_per_ticket_output(
         pd, review_env, monkeypatch, capsys):
@@ -1193,7 +1228,7 @@ def test_confirmation_is_appended_to_the_pm_area_of_the_spec(pd, review_env):
         template, cwd=home, run_fn=_stub_run(0, "hi\n"))
 
     written = pd.append_pm_review_confirmation(
-        home, ticket, pd.render_pm_review_confirmation_section(rows))
+        home, ticket, pd.render_pm_review_confirmation_section(rows), rounds=rounds)
 
     assert written == path
     text = path.read_text(encoding="utf-8")
@@ -1201,6 +1236,76 @@ def test_confirmation_is_appended_to_the_pm_area_of_the_spec(pd, review_env):
     # 기입은 명세 PM 영역이다 — frontmatter 는 그대로다.
     assert text.startswith("---\n")
     assert pd.parse_pm_review_delta(text, rounds).accepted == ()
+
+
+@requires_git
+def test_confirmation_append_merges_missing_pm_owned_row_into_existing_round_idempotently(
+    pd, review_env,
+):
+    """부분 실패 뒤 같은 fix round 재시도는 두 번째 block 대신 PM-owned 행만 병합한다."""
+    home, tickets = review_env
+    ticket = _MEMBERS[0]
+    spec, rounds = _partially_confirmed_pm_owned_ticket(pd)
+    path = tickets / f"{ticket}-review.md"
+    path.write_text(
+        path.read_text(encoding="utf-8") + "\n" + spec,
+        encoding="utf-8", newline="",
+    )
+    template = pd.pm_review_verify_template(path.read_text(encoding="utf-8"), rounds)
+    rows = pd.run_pm_review_confirmations(
+        template, cwd=home,
+        run_fn=lambda *_a, **_k: pytest.fail("남은 행은 PM-owned라 command 실행이 없어야 한다"),
+    )
+    section = pd.render_pm_review_confirmation_section(rows)
+
+    pd.append_pm_review_confirmation(home, ticket, section, rounds=rounds)
+    first = path.read_bytes()
+    pd.append_pm_review_confirmation(home, ticket, section, rounds=rounds)
+
+    assert path.read_bytes() == first
+    text = path.read_text(encoding="utf-8")
+    blocks = [
+        block for block in pd._pm_review_json_blocks(text)
+        if block.kind == pd.PM_REVIEW_CONFIRMATION_BLOCK
+    ]
+    assert len(blocks) == 1 and blocks[0].value["round"] == 2
+    assert [row["id"] for row in blocks[0].value["confirmations"]] == [
+        "F-001", "F-003",
+    ]
+    assert pd.parse_pm_review_delta(text, rounds).accepted == ()
+
+
+@pytest.mark.parametrize(("row", "message"), (
+    (
+        ("F-001", "resolved", "echo hi", "충돌한 관측"),
+        "기존 행과 충돌",
+    ),
+    (
+        ("F-003", "resolved", "echo spoof", "PM audit 완료 실값"),
+        "strict PM-owned",
+    ),
+))
+@requires_git
+def test_confirmation_same_round_merge_rejects_conflict_and_spoof_atomically(
+    pd, review_env, row, message,
+):
+    home, tickets = review_env
+    ticket = _MEMBERS[0]
+    spec, rounds = _partially_confirmed_pm_owned_ticket(pd)
+    path = tickets / f"{ticket}-review.md"
+    path.write_text(
+        path.read_text(encoding="utf-8") + "\n" + spec,
+        encoding="utf-8", newline="",
+    )
+    before = path.read_bytes()
+    incoming = pd.render_pm_review_confirmation_section((
+        (2, pd.PMReviewMachineConfirmation(*row, 2)),
+    ))
+
+    with pytest.raises(pd.PMReviewError, match=message):
+        pd.append_pm_review_confirmation(home, ticket, incoming, rounds=rounds)
+
+    assert path.read_bytes() == before
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1330,10 +1435,19 @@ def test_resolve_cluster_executes_writes_and_declares_per_ticket(
     """엔진이 확인 커맨드를 실행해 기입하고 그 증거로 처분까지 낸다(티켓마다)."""
     home, tickets = review_env
     board = _fixture_board(pd, home)
-    board._cluster_code_tree = lambda *_a, **_k: str(home)
+    tree_identities = []
+
+    def task_tree(identity=None):
+        tree_identities.append(identity)
+        return str(home)
+
+    board._cluster_code_tree = task_tree
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", home)
     monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
     monkeypatch.setattr(pd, "_load_board", lambda: board)
+    monkeypatch.setattr(pd, "_load_board_for_repo", lambda _repo: board)
     rounds_module = pd._load_ticket_rounds()
     import contextlib
     for ticket in _MEMBERS:
@@ -1350,11 +1464,14 @@ def test_resolve_cluster_executes_writes_and_declares_per_ticket(
     capsys.readouterr()
 
     rc = pd._cmd_rounds(
-        ["resolve", "--cluster", _CLUSTER, "--pm-verified"],
+        ["resolve", "--cluster", _CLUSTER, "--pm-verified", "--task", "main"],
         run_fn=_stub_run(0, "hi\n"),
     )
 
     assert rc == 0, capsys.readouterr()
+    assert len(tree_identities) == 1
+    assert tree_identities[0].task == "main"
+    assert tree_identities[0].repo is None and tree_identities[0].slot is None
     out = capsys.readouterr().out
     ledger = json.loads((
         home / ".project_manager" / ".local" / pd.INTERNAL_REVIEW_LEDGER_NAME
@@ -1416,6 +1533,58 @@ def test_resolve_cluster_closes_strict_pm_owned_findings_without_reviewer_or_com
 
 
 @requires_git
+def test_resolve_retry_merges_pm_owned_row_into_partial_same_round_and_completes(
+    pd, review_env, monkeypatch, capsys,
+):
+    """machine 확인 append 뒤 처분 실패를 재시도해도 같은 round block을 중복하지 않는다."""
+    home, tickets = review_env
+    board = _fixture_board(pd, home)
+    board._cluster_code_tree = lambda *_a, **_k: str(home)
+    monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", home)
+    monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
+    monkeypatch.setattr(pd, "_load_board", lambda: board)
+    rounds_module = pd._load_ticket_rounds()
+    import contextlib
+    for ticket in _MEMBERS:
+        spec, rounds = _partially_confirmed_pm_owned_ticket(pd)
+        path = tickets / f"{ticket}-review.md"
+        path.write_text(
+            path.read_text(encoding="utf-8") + "\n" + spec,
+            encoding="utf-8", newline="",
+        )
+        for item in rounds:
+            rounds_module.reserve_round(
+                board.tickets_dir(), ticket, item.role, content=item.text,
+                lock=contextlib.nullcontext(),
+            )
+        _record_rejected_round(pd, ticket)
+    capsys.readouterr()
+
+    no_command = lambda *_a, **_k: pytest.fail(
+        "partial state의 남은 행은 PM-owned라 command를 실행하지 않는다"
+    )
+    assert pd._cmd_rounds(
+        ["resolve", "--cluster", _CLUSTER, "--pm-verified"], run_fn=no_command,
+    ) == 0
+    # 이미 처분된 상태의 재실행도 append/중복 없이 성공해야 한다.
+    assert pd._cmd_rounds(
+        ["resolve", "--cluster", _CLUSTER, "--pm-verified"], run_fn=no_command,
+    ) == 0
+
+    for ticket in _MEMBERS:
+        spec_text, rounds = pd._ticket_spec_and_rounds(board, ticket)
+        blocks = [
+            block for block in pd._pm_review_json_blocks(spec_text)
+            if block.kind == pd.PM_REVIEW_CONFIRMATION_BLOCK
+        ]
+        assert len(blocks) == 1 and blocks[0].value["round"] == 2
+        assert [row["id"] for row in blocks[0].value["confirmations"]] == [
+            "F-001", "F-003",
+        ]
+        assert pd.parse_pm_review_delta(spec_text, rounds).accepted == ()
+
+
+@requires_git
 def test_resolve_cluster_is_scoped_to_the_machine_evidence_disposition(pd, capsys):
     """묶음 처분은 `--pm-verified` 전용이다 — 게이트별 판단은 묶음으로 접지 않는다."""
     with pytest.raises(SystemExit):
@@ -1427,6 +1596,15 @@ def test_resolve_cluster_is_scoped_to_the_machine_evidence_disposition(pd, capsy
         pd._cmd_rounds(["resolve", "--cluster", _CLUSTER, "--gate", "T-0001",
                         "--pm-verified"])
     assert "not allowed with argument" in capsys.readouterr().err
+
+
+def test_resolve_identity_rejects_task_and_repo_slot_mix(pd, capsys):
+    with pytest.raises(SystemExit) as exc:
+        pd._cmd_rounds([
+            "resolve", "--cluster", _CLUSTER, "--pm-verified",
+            "--task", "main", "--repo", "project_manager", "--slot", "1",
+        ])
+    assert "--task 는 독립 정체성" in str(exc.value)
 
 
 @requires_git

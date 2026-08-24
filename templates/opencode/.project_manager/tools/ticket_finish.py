@@ -4196,10 +4196,16 @@ class ClusterCloser:
         return None
 
     def _resolve_argv_sets(self, pending: Sequence[str]) -> list[list[str]]:
-        """이번 처분이 쓸 argv 목록 — 묶음 단위 표면 유무로만 갈린다."""
+        """이번 처분이 쓸 argv 목록 — 대상과 이미 해소한 코드 트리 정체성을 함께 넘긴다."""
+        identity = list(self._board_identity_args)
         if self._delegate_supports_cluster():
-            return [["rounds", "resolve", "--cluster", self._cluster, "--pm-verified"]]
-        return [["rounds", "resolve", "--gate", tid, "--pm-verified"] for tid in pending]
+            return [[
+                "rounds", "resolve", "--cluster", self._cluster, "--pm-verified", *identity,
+            ]]
+        return [
+            ["rounds", "resolve", "--gate", tid, "--pm-verified", *identity]
+            for tid in pending
+        ]
 
     def _delegate_supports_cluster(self) -> bool:
         """처분 표면이 묶음 인자를 받는가 — 그 CLI 자신에게 물어본다(사본 판정 없음)."""

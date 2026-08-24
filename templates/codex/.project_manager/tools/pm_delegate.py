@@ -6429,43 +6429,191 @@ def render_pm_review_confirmation_section(
         grouped.setdefault(source_round, []).append(row)
     sections: list[str] = []
     for source_round in sorted(grouped):
-        payload = _pm_review_seed_object(PM_REVIEW_MACHINE_CONFIRMATION_PAYLOAD_KEYS, {
-            "version": PM_REVIEW_MACHINE_CONFIRMATION_VERSION,
-            "round": source_round,
-            "confirmations": [
-                _pm_review_seed_object(PM_REVIEW_MACHINE_CONFIRMATION_ROW_KEYS, {
-                    "id": row.id,
-                    "status": row.status,
-                    "command": row.command,
-                    "observed": row.observed,
-                })
-                for row in grouped[source_round]
-            ],
-        })
         sections.append(
             f"{PM_REVIEW_CONFIRMATION_SECTION} (developer round {source_round})\n\n"
-            + _pm_review_fenced_json(PM_REVIEW_CONFIRMATION_BLOCK, payload)
+            + _render_pm_review_confirmation_block(source_round, grouped[source_round])
         )
     return "\n".join(sections)
 
 
+def _render_pm_review_confirmation_block(
+    source_round: int, rows: Sequence[PMReviewMachineConfirmation],
+) -> str:
+    """한 developer round의 confirmation fence — 새 append와 기존 block merge 공용."""
+    payload = _pm_review_seed_object(PM_REVIEW_MACHINE_CONFIRMATION_PAYLOAD_KEYS, {
+        "version": PM_REVIEW_MACHINE_CONFIRMATION_VERSION,
+        "round": source_round,
+        "confirmations": [
+            _pm_review_seed_object(PM_REVIEW_MACHINE_CONFIRMATION_ROW_KEYS, {
+                "id": row.id,
+                "status": row.status,
+                "command": row.command,
+                "observed": row.observed,
+            })
+            for row in rows
+        ],
+    })
+    return _pm_review_fenced_json(PM_REVIEW_CONFIRMATION_BLOCK, payload)
+
+
+def _pm_review_confirmation_blocks_for_merge(
+    text: str, *, confirmation_only: bool,
+) -> tuple[tuple[_PMReviewBlock, int, tuple[PMReviewMachineConfirmation, ...]], ...]:
+    """confirmation block을 merge 가능한 strict 행으로 읽는다."""
+    parsed: list[tuple[_PMReviewBlock, int, tuple[PMReviewMachineConfirmation, ...]]] = []
+    for block in _pm_review_json_blocks(text):
+        if block.kind != PM_REVIEW_CONFIRMATION_BLOCK:
+            if confirmation_only:
+                raise PMReviewError(
+                    "malformed",
+                    f"confirmation append 입력에 다른 review block이 있습니다: {block.kind}",
+                )
+            continue
+        value = block.value
+        _pm_review_exact_keys(
+            value, PM_REVIEW_MACHINE_CONFIRMATION_PAYLOAD_KEYS,
+            PM_REVIEW_CONFIRMATION_BLOCK,
+        )
+        _pm_review_version(
+            value, PM_REVIEW_CONFIRMATION_BLOCK,
+            allowed=(PM_REVIEW_MACHINE_CONFIRMATION_VERSION,),
+        )
+        source_round = value.get("round")
+        if (
+            not isinstance(source_round, int) or isinstance(source_round, bool)
+            or source_round < 1
+        ):
+            raise PMReviewError(
+                "malformed", "confirmation.round은 1 이상 정수여야 합니다",
+            )
+        raw_rows = value.get("confirmations")
+        if not isinstance(raw_rows, list):
+            raise PMReviewError("malformed", "confirmations는 JSON array여야 합니다")
+        rows = tuple(
+            _pm_review_parse_machine_confirmation_row(
+                raw, round_ordinal=source_round,
+            )
+            for raw in raw_rows
+        )
+        ids = [row.id for row in rows]
+        if len(ids) != len(set(ids)):
+            raise PMReviewError(
+                "malformed", f"{PM_REVIEW_CONFIRMATION_BLOCK} round={source_round} ID 중복",
+            )
+        parsed.append((block, source_round, rows))
+    if confirmation_only and not parsed:
+        raise PMReviewError("malformed", "append할 confirmation block이 없습니다")
+    return tuple(parsed)
+
+
+def _merge_pm_review_confirmation_section(
+    body: str, section: str, *, rounds: Sequence,
+) -> tuple[str, bool]:
+    """같은 developer round block에는 빠진 strict PM-owned 행만 원자 병합한다."""
+    existing = _pm_review_confirmation_blocks_for_merge(
+        body, confirmation_only=False,
+    )
+    incoming = _pm_review_confirmation_blocks_for_merge(
+        section, confirmation_only=True,
+    )
+    existing_rounds = [source_round for _block, source_round, _rows in existing]
+    incoming_rounds = [source_round for _block, source_round, _rows in incoming]
+    if len(existing_rounds) != len(set(existing_rounds)):
+        raise PMReviewError(
+            "malformed", f"기존 confirmation round 중복: {existing_rounds}",
+        )
+    if len(incoming_rounds) != len(set(incoming_rounds)):
+        raise PMReviewError(
+            "malformed", f"append confirmation round 중복: {incoming_rounds}",
+        )
+
+    by_round = {
+        source_round: (block, rows)
+        for block, source_round, rows in existing
+    }
+    replacements: list[tuple[int, int, str]] = []
+    additions: list[tuple[int, PMReviewMachineConfirmation]] = []
+    changed = False
+    for _incoming_block, source_round, rows in incoming:
+        current = by_round.get(source_round)
+        if current is None:
+            additions.extend((source_round, row) for row in rows)
+            changed = True
+            continue
+        block, existing_rows = current
+        merged = list(existing_rows)
+        existing_by_id = {row.id: row for row in existing_rows}
+        round_changed = False
+        for row in rows:
+            present = existing_by_id.get(row.id)
+            if present is not None:
+                if present != row:
+                    raise PMReviewError(
+                        "malformed",
+                        f"confirmation round={source_round} id={row.id} 기존 행과 충돌합니다",
+                    )
+                continue
+            if not (
+                row.status == "resolved"
+                and row.command == PM_REVIEW_PM_OWNED_CONFIRMATION_COMMAND
+            ):
+                raise PMReviewError(
+                    "malformed",
+                    f"confirmation round={source_round} 기존 block에는 빠진 strict PM-owned "
+                    f"terminal 행만 병합할 수 있습니다: {row.id}",
+                )
+            merged.append(row)
+            existing_by_id[row.id] = row
+            round_changed = True
+        if round_changed:
+            replacements.append((
+                block.start, block.end,
+                _render_pm_review_confirmation_block(source_round, merged),
+            ))
+            changed = True
+
+    merged_body = body
+    for start, end, replacement in sorted(replacements, reverse=True):
+        merged_body = merged_body[:start] + replacement + merged_body[end:]
+    if additions:
+        merged_body = (
+            merged_body.rstrip("\n") + "\n\n"
+            + render_pm_review_confirmation_section(additions)
+        )
+    # merge 뒤 full parser가 disposition/verify 이중 결속과 spoof를 최종 판정한다. write는 이
+    # 검증 뒤라 conflict/malformed가 원본 일부를 바꾸는 창이 없다.
+    parse_pm_review_delta(merged_body, rounds)
+    return merged_body, changed
+
+
 def append_pm_review_confirmation(
-    pm_home: Path, ticket: str, section: str,
+    pm_home: Path, ticket: str, section: str, *, rounds: Sequence | None = None,
 ) -> Path:
-    """확인 절을 티켓 명세 **PM 영역**(라운드 파일 밖) 끝에 붙이고 board-git 에 싣는다.
+    """확인 절을 티켓 명세 PM 영역에 append/동일 round 병합하고 board-git 에 싣는다.
 
     명세 쓰기 seam 은 새로 만들지 않는다 — board 의 기존 조합(`load_ticket` →
     `dump_ticket_atomic` → `_rounds_mutation_sync_paths`)을 그대로 쓴다.
     """
     board = _load_board_for_repo(Path(pm_home))
+    changed = False
     with board.board_lock():
         found = board.find_ticket_exact(ticket)
         if found is None:
             raise DelegateError(f"ticket not found: {ticket}")
         _status, path = found
         fm, body = board.load_ticket(path)
-        board.dump_ticket_atomic(path, fm, body.rstrip("\n") + "\n\n" + section)
-    board._rounds_mutation_sync_paths(f"pm-review confirmation {ticket}", (path,))
+        if rounds is None:
+            rounds_module = _load_ticket_rounds()
+            rounds = rounds_module.load_rounds(
+                board.tickets_dir(), ticket, ticket_text=body,
+            )
+        merged, changed = _merge_pm_review_confirmation_section(
+            body, section, rounds=rounds,
+        )
+        if changed:
+            board.dump_ticket_atomic(path, fm, merged)
+    if changed:
+        board._rounds_mutation_sync_paths(f"pm-review confirmation {ticket}", (path,))
     return path
 
 
@@ -14267,14 +14415,16 @@ def _print_internal_resolution(resolution, owner: Path) -> None:
     print(f"내부 장부: {resolution.ledger_path}")
 
 
-def _cluster_confirmation_tree(board, cluster: str) -> Path:
+def _cluster_confirmation_tree(
+    board, cluster: str, *, identity: argparse.Namespace | None = None,
+) -> Path:
     """확인 커맨드를 돌릴 트리 1곳 — 묶음 통합 브랜치를 체크아웃한 코드 트리.
 
     관측값을 만드는 자리라 그 자리가 그 브랜치가 아니면 **거부한다**: 다른 브랜치에서 잰 값을
     확인으로 적으면 기계 확인이 거짓이 된다. 트리 해소는 board 의 기존 규칙 하나를 쓴다
     (명시 정체성 > 활성 슬롯 > 이 트리) — 여기서 해소 규칙을 새로 만들지 않는다.
     """
-    tree = Path(board._cluster_code_tree())
+    tree = Path(board._cluster_code_tree(identity))
     branch = str((board.load_cluster(cluster) or {}).get("branch") or "").strip()
     if branch:
         current = board._cluster_current_branch(str(tree))
@@ -14332,7 +14482,7 @@ def _resolve_ticket_pm_verified(
         rows = run_pm_review_confirmations(template, cwd=tree, run_fn=run_fn)
         if rows:
             append_pm_review_confirmation(
-                owner, ticket, render_pm_review_confirmation_section(rows),
+                owner, ticket, render_pm_review_confirmation_section(rows), rounds=rounds,
             )
             unresolved = [row.id for _round, row in rows if row.status != "resolved"]
             pm_owned_count = len(template.pm_owned_rows)
@@ -14369,7 +14519,8 @@ def _resolve_ticket_pm_verified(
 
 
 def _cmd_rounds_resolve_cluster(
-    cluster: str, *, owner: Path, run_fn: Callable | None = None,
+    cluster: str, *, owner: Path, identity: argparse.Namespace | None = None,
+    run_fn: Callable | None = None,
 ) -> int:
     """`resolve --cluster --pm-verified` — 멤버마다 확인 실행·기입·처분(내부는 티켓 반복).
 
@@ -14386,7 +14537,7 @@ def _cmd_rounds_resolve_cluster(
         )
         return 1
     try:
-        tree = _cluster_confirmation_tree(board, cluster)
+        tree = _cluster_confirmation_tree(board, cluster, identity=identity)
     except DelegateError as exc:
         print(f"오류: {exc}", file=sys.stderr)
         return 1
@@ -14454,8 +14605,16 @@ def _cmd_rounds(argv: list[str], run_fn: Callable | None = None) -> int:
             "accepted 가 있었다면 내부 채널 기계 확인이 1건 이상 존재"
         ),
     )
-    args = parser.parse_args(argv)
     board = _load_board()
+    identity_module = board.identity_args
+    identity_module.add_identity_args(resolve)
+    args = parser.parse_args(argv)
+    if args.rounds_command == "resolve":
+        board._reject_task_slot_identity_mix(args)
+        try:
+            identity_module.parse_identity(args)
+        except ValueError as exc:
+            parser.error(str(exc))
     if args.gate is not None and not board._is_valid_ticket_id(args.gate):
         parser.error(
             "--gate는 board 발행 ticket ID 형식"
@@ -14469,7 +14628,9 @@ def _cmd_rounds(argv: list[str], run_fn: Callable | None = None) -> int:
     try:
         owner = _activate_internal_rounds_cli_owner()
         if cluster is not None:
-            return _cmd_rounds_resolve_cluster(cluster, owner=owner, run_fn=run_fn)
+            return _cmd_rounds_resolve_cluster(
+                cluster, owner=owner, identity=args, run_fn=run_fn,
+            )
         if args.rounds_command == "resolve":
             resolution = _declare_internal_review_resolution(
                 args.gate,
