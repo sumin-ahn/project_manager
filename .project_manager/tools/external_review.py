@@ -41,11 +41,11 @@ raw 파일 접두)에만 남는다. 설정 키는 `additional_reviewer.enabled`/
   - 통과 → exit 0
   - 수렴-형상 차단(--gate 별) → exit 4 (실행 전 거부). 라운드 장부의 must_fix 추이로 판정한다:
     라운드 수가 상한(local.conf additional_reviewer.rounds_max·기본 2)에 닿았거나 직전 라운드보다 must_fix 가
-    늘었으면(발산·조기 차단) 라운드를 더 쓰지 않는다. 출구는 **재설계·티켓 분할**이고, 직전 지적
-    해소만 확인하려면 게이트당 1회 `--confirm-fix`(확인 전용 라운드)를 쓴다.
+    늘었으면(발산·조기 차단) 라운드를 더 쓰지 않는다. 현재 티켓을 정지하고 사용자에게 보고하며,
+    직전 지적 해소만 확인하려면 게이트당 1회 `--confirm-fix`(확인 전용 라운드)를 쓴다.
   - diff 서킷브레이커 → exit 1 (리뷰어 호출 전 거부). 티켓 estimate 별 diff 총량 상한
     (small 300 / medium 1,000 / large 2,500 · local.conf diff_cap.<estimate>)을 넘긴 스코프는
-    리뷰 라운드로 닫히지 않으므로 분할·재설계로 보낸다.
+    리뷰 라운드로 닫히지 않으므로 현재 티켓을 정지하고 사용자에게 보고한다.
   - 미완 라운드 상한 도달(--gate 별) → exit 4 (실행 전 거부·전용 rc). 같은 게이트로 판정 없이
     끝난 전송 2회
     (local.conf additional_reviewer.incomplete_rounds_max)를 채우면 이후 실행을 기계 차단한다. 성격은
@@ -1536,8 +1536,8 @@ _CONFIRM_FIX_CHARTER = """\
 이번 라운드는 **직전 라운드 must-fix 의 해소 확인 전용**이다. 리뷰 라운드의 연장이 아니다.
 
 - 직전 must-fix 항목이 실제로 해소됐는지만 판정하라.
-- 새로 발견한 사항은 must-fix 로 올리지 말고 **"재설계 신호"** 라는 표기와 함께 suggestion 에
-  적어라 — 다음 라운드 거리가 아니라 다음 티켓(재설계·분할)의 입력이다.
+- 새로 발견한 사항은 must-fix 로 올리지 말고 **"추가 발견"** 표기와 함께 suggestion 에 적어라.
+  현재 티켓을 벗어나 새 작업으로 넘기지 말고 PM이 사용자에게 보고할 입력으로만 남긴다.
 - 직전 지적이 해소됐으면 신규 발견 유무와 무관하게 `판정: 통과` 로 마감하라.
 
 """
@@ -1591,8 +1591,8 @@ def _empty_diff_guidance(paths: Sequence[str], *, root: Path) -> str:
 # diff 추출·추가 리뷰어 호출 전에 이 안내로 차단한다.
 #
 # 이 상한의 성격은 **무한 루프 차단(anti-loop pause)**이다. 연장 승인(`--ack-rounds`)은 폐지됐다 —
-# "반례가 진짜니까 계속"을 사람이 승인하는 구조 자체가 비용 누수였다(실측 12라운드). 남은 출구는
-# **재설계·티켓 분할**뿐이고, 직전 지적의 해소만 확인하려면 게이트당 1회 `--confirm-fix` 를 쓴다.
+# "반례가 진짜니까 계속"을 사람이 승인하는 구조 자체가 비용 누수였다(실측 12라운드). 상한에
+# 닿으면 현재 티켓을 정지·보고하고, 직전 지적의 해소만 확인하려면 1회 `--confirm-fix` 를 쓴다.
 _ROUND_LIMIT_GUIDANCE = (
     "오류: 추가 리뷰어 미완 라운드 상한 도달 — 게이트 {gate} · "
     "count={unacked}(판정 {verdicts} · 미완 {incomplete})\n"
@@ -1601,9 +1601,8 @@ _ROUND_LIMIT_GUIDANCE = (
     "  · **미완**은 판정이 없던 전송입니다 — 타임아웃·중단뿐 아니라 **오염 진단으로 무효화된 "
     "판정**도 이 축에 들어갑니다(판정 표면과 같은 규칙이라 두 표면이 갈리지 않습니다).\n"
     "  · 먼저 `--rounds-report` 로 라운드별 산출과 수렴 상황을 확인하세요.\n"
-    "  · **재설계·티켓 분할이 유일한 출구입니다** — 라운드 연장 승인(`--ack-rounds`)은 "
-    "폐지됐고, 확인 전용 라운드(`--confirm-fix`)는 수렴 축의 예외라 이 미완 축은 "
-    "열지 않습니다.\n"
+    "  · 현재 티켓을 정지하고 사용자에게 보고하세요 — 라운드 연장 승인(`--ack-rounds`)은 "
+    "폐지됐고, 확인 전용 라운드(`--confirm-fix`)도 이 미완 축은 열지 않습니다.\n"
     "  · 미완 재시도 상한은 local.conf "
     "`additional_reviewer.incomplete_rounds_max` 로 조정합니다.\n"
     "  (장부: {ledger} · count={count})"
@@ -1616,10 +1615,9 @@ _CONVERGENCE_GUIDANCE = (
     "오류: 리뷰 수렴 게이트 차단 — 게이트 {gate} · {reason}\n"
     "  라운드 {rounds}(완료 {completed} · 진행 중 예약 {inflight}) / 상한 {limit} · "
     "must_fix 추이 [{series}]\n"
-    "  · 라운드를 더 쓰지 않습니다 — **재설계·티켓 분할이 유일한 출구입니다**. 남은 지적은 "
-    "다음 티켓의 목표로 옮기세요.\n"
+    "  · 라운드를 더 쓰지 않습니다. 현재 티켓을 정지하고 남은 지적을 사용자에게 보고하세요.\n"
     "  · 직전 must_fix 해소만 확인하려면 게이트당 1회 `--confirm-fix` 로 확인 전용 라운드를 "
-    "쓸 수 있습니다 (신규 발견은 '재설계 신호'로 보고 — 라운드 계속이 아닙니다):\n"
+    "쓸 수 있습니다 (신규 발견은 사용자 보고 입력일 뿐 라운드 계속 사유가 아닙니다):\n"
     "      python3 .project_manager/tools/external_review.py --gate {gate} --confirm-fix "
     "[기존 옵션]\n"
     "  · 라운드별 산출은 `--rounds-report --gate {gate}` 로 확인하세요.\n"
@@ -1631,7 +1629,7 @@ _CONVERGENCE_GUIDANCE = (
 _CONFIRM_FIX_SPENT_GUIDANCE = (
     "오류: `--confirm-fix` 는 게이트당 1회입니다 — 게이트 {gate} 는 이미 확인 전용 라운드를 "
     "썼습니다 (사용 {used}회).\n"
-    "  · 남은 지적은 라운드로 닫지 않습니다 — 재설계·티켓 분할로 전환하세요.\n"
+    "  · 남은 지적은 라운드로 닫지 않습니다 — 현재 티켓을 정지하고 사용자에게 보고하세요.\n"
     "  · 지금까지의 산출은 `--rounds-report --gate {gate}` 로 확인하세요.\n"
     "  (장부: {ledger})"
 )
@@ -1678,7 +1676,7 @@ _CONFIRMABLE_IDS_DEGRADED = (
 # 호출 자체를 거부한다. 연장 승인 경로가 남아 있으면 상한이 상한이 아니게 된다.
 _ACK_ROUNDS_REMOVED_GUIDANCE = (
     "오류: `--ack-rounds`(라운드 연장 승인)는 폐지됐습니다 — 이 실행은 아무것도 하지 않았습니다.\n"
-    "  · 라운드 상한·수렴 상한에 걸렸다면 출구는 **재설계·티켓 분할**입니다 (연장 승인 없음).\n"
+    "  · 라운드 상한·수렴 상한에 걸리면 현재 티켓을 정지하고 사용자에게 보고합니다.\n"
     "  · 직전 must_fix 해소 확인만 필요하면 게이트당 1회 `--confirm-fix` 를 쓰세요.\n"
     "  · wave 예산 재개(`--ack-wave`)는 그대로입니다 — 별개 축입니다.\n"
     "  · 현재 수렴 상황은 `--rounds-report --gate <T-NNNN>` 로 확인하세요."
@@ -1798,7 +1796,7 @@ _DIFF_CAP_GUIDANCE = (
     "  측정 범위: {scope}\n"
     "  측정 의미: {measured_note}\n"
     "  · 한 티켓의 구현 스코프가 estimate 를 넘겼습니다 — 리뷰 라운드가 수렴하지 않는 원인입니다.\n"
-    "  · **티켓 분할·재설계**로 스코프를 줄이세요 (분할 후 각 티켓이 자기 상한 안에서 돕니다).\n"
+    "  · 자동 분할이나 새 티켓 발행 없이 현재 티켓을 정지하고 사용자에게 보고하세요.\n"
     "  · estimate 자체가 틀렸다면 티켓 frontmatter `estimate` 를 고치세요 "
     "(상한: small {small} / medium {medium} / large {large}).\n"
     "  · 프로젝트 상한 조정은 local.conf `{key}`."
@@ -1816,7 +1814,7 @@ _WAVE_BUDGET_GUIDANCE = (
     "  · 같은 범위가 정상 수렴 중이면 PM 이 자율로 `--ack-wave` 를 붙여 재개합니다 "
     "(spent 를 0 으로 리셋):\n"
     "      python3 .project_manager/tools/external_review.py --gate {gate} --ack-wave [기존 옵션]\n"
-    "  · 수렴이 안 되고 있으면(같은 지적 반복·범위 재설계) 그때 사용자에게 보고하세요.\n"
+    "  · 수렴이 안 되고 있으면(같은 지적 반복·범위 발산) 사용자에게 보고하세요.\n"
     "  · 예산 조정은 local.conf `additional_reviewer.wave_budget`.\n"
     "  (장부: {ledger})"
 )
@@ -1827,15 +1825,11 @@ _WAVE_BUDGET_GUIDANCE = (
 # 선언 자체가 판정이 아니라 *기록*이고, 릴리즈 차단(`board.py livegate record`)은 그 기록 사실만
 # 읽는다 — "사소하니 넘어간다"는 자의 판정이 들어갈 자리를 어느 쪽에도 만들지 않는다.
 _RESOLVE_GATE_MODE_GUIDANCE = (
-    "오류: `--resolve-gate {gate}` 에는 처분을 **하나** 지정해야 합니다 — 이 실행은 아무것도 "
+    "오류: `--resolve-gate {gate}` 에는 `--pm-verified`가 필요합니다 — 이 실행은 아무것도 "
     "하지 않았습니다.\n"
-    "  · 후속 티켓으로 재설계: `--into <T-NNNN>` (면제가 아닙니다 — 그 티켓이 done 이어야 "
-    "릴리즈가 열립니다)\n"
-    "  · 코드로 해소: `--fixed <근거 게이트>` (반려 종료 뒤 **시작**해 변경된 diff를 검토하고 "
-    "통과한 장부 게이트를 지목하세요 — 확인 라운드나 후속 게이트)\n"
-    "  · PM 판정 표면의 기계 확인 증거로 해소: `--pm-verified` (외부 재송신 없음 — accepted "
-    "잔여 0·잔여 must-fix 건수만큼 전건 처분·필요 시 기계 확인 1건 이상)\n"
-    "  · 세 처분을 같이 쓸 수 없습니다 (한 게이트의 잔여는 한 갈래로 소화됩니다)."
+    "  · PM 판정 표면의 기계 확인 증거로만 해소합니다(외부 재송신 없음 — accepted 잔여 "
+    "0·잔여 must-fix 건수만큼 전건 처분·필요 시 기계 확인 1건 이상).\n"
+    "  · 후속 티켓·후속 게이트로 잔여를 넘기는 처분은 지원하지 않습니다."
 )
 
 _RESOLVE_GATE_REQUIRED_GUIDANCE = (
@@ -1874,31 +1868,6 @@ _RESOLVE_GATE_NO_RESIDUAL_GUIDANCE = (
     "게이트도 이 게이트를 보지 않습니다(무대상).\n"
     "  · 현재 상태는 `--rounds-report --gate {gate}` 로 확인하세요."
 )
-
-_RESOLVE_GATE_SELF_INTO_GUIDANCE = (
-    "오류: 게이트 {gate} 의 잔여를 **자기 자신**({ticket})으로 재설계할 수 없습니다.\n"
-    "  · 재설계는 잔여 must-fix 를 소화할 **다른** 후속 티켓을 지목하는 선언입니다 — 자기 지목은 "
-    "그 게이트가 done 이라는 사실만으로 잔여를 지워 릴리즈를 여는 우회입니다.\n"
-    "  · 코드로 이미 해소됐다면 `--fixed <근거 게이트>` 를 쓰세요."
-)
-
-_RESOLVE_GATE_TICKET_GUIDANCE = (
-    "오류: 재설계 대상 티켓 {ticket} 을 보드에서 찾지 못했습니다 — {detail}\n"
-    "  · 먼저 후속 티켓을 만들고(`board.py new`) 그 ID 로 다시 선언하세요.\n"
-    "  · 재설계 대상은 릴리즈 시점에 **done** 이어야 합니다 (같은 릴리즈 안 소화)."
-)
-
-_RESOLVE_GATE_EVIDENCE_GUIDANCE = (
-    "오류: 근거 게이트 {evidence} 가 해소를 뒷받침하지 못합니다 — {detail}\n"
-    "  · `--fixed` 는 '마지막 반려분이 코드로 해소됐고 그 사실을 **통과 라운드가 보였다**'는 "
-    "선언입니다 — 근거는 장부의 기록(마지막 라운드 판정 0 + 반려 종료 뒤 started_at + 서로 다른 "
-    "target_rev)이어야 합니다. 구 라운드처럼 결속 필드가 없거나 ts가 ISO 8601 UTC가 아니면 "
-    "근거로 인정하지 않습니다.\n"
-    "  · 확인 전용 라운드(`--gate {gate} --confirm-fix`)나 후속 게이트를 통과시킨 뒤 그 게이트를 "
-    "지목하세요.\n"
-    "  · 아직 통과 근거가 없으면 후속 티켓으로 재설계하세요: `--resolve-gate {gate} --into <T-NNNN>`."
-)
-
 
 # ── 설정 ──────────────────────────────────────────────────────────────────
 
@@ -2694,8 +2663,8 @@ def _reserved_gate_error(gate: str | None, *, flag: str = "--gate") -> str | Non
     """게이트 이름이 장부 예약 키면 차단 안내를 돌려준다 (아니면 None).
 
     판정 입력은 이름 하나뿐이라 전송·장부 접근 **전에** 부를 수 있다 — 거부된 실행은 외부 전송도
-    장부 변경도 남기지 않는다. 게이트 이름을 받는 표면이 여럿이라(`--gate`·`--resolve-gate`·
-    `--fixed` 근거 게이트) 어느 플래그가 걸렸는지는 인자로 받는다 — 판정 규칙은 한 곳이다."""
+    장부 변경도 남기지 않는다. 게이트 이름을 받는 표면이 여럿이라(`--gate`·`--resolve-gate`)
+    어느 플래그가 걸렸는지는 인자로 받는다 — 판정 규칙은 한 곳이다."""
     if gate is None or gate not in _RESERVED_LEDGER_KEYS:
         return None
     return _RESERVED_GATE_GUIDANCE.format(
@@ -3424,7 +3393,7 @@ def _reserve_round_budget(
     잔여 슬롯을 통과 못 하게 한다. 초과면 리뷰어 호출 전에 거부(전용 rc·과금 없음).
 
     상한 축은 셋이고 이 순서로 본다: **수렴-형상**(장부 must_fix 추이) → 판정/미완 라운드 상한 →
-    wave 예산. 수렴 축을 먼저 보는 이유는 그쪽이 더 좁고 처방이 구체적(재설계·분할)이기 때문이다.
+    wave 예산. 수렴 축을 먼저 보는 이유는 그쪽이 더 좁고 정지 사유가 구체적이기 때문이다.
     유일한 예외는 `--confirm-fix`(게이트당 1회 확인 전용 라운드)이고, 그 소비도 이 임계 구역이
     기록한다. wave 승인(`--ack-wave`)은 **먼저 적용한 뒤** 남은 축을 다시 본다 — 적용해 놓고 저장
     없이 되돌아가면 PM 이 적용한 승인이 조용히 사라진다.
@@ -3806,7 +3775,7 @@ def _ordered_round_outcomes(rounds: list) -> list[dict]:
 
 
 def _format_gate_resolution(entry: dict) -> str:
-    """게이트 처분 열 — `미처분` / `재설계→T-NNNN` / `해소(근거 T-NNNN)` / `무대상`.
+    """게이트 처분 열 — `미처분` / `pm-verified` / `무대상`.
 
     판정은 board 의 공용 seam(`gate_resolution`·`gate_residual_must_fix`)이 소유한다 — 릴리즈
     차단이 보는 것과 **같은 사실**을 그대로 보여야 이 표로 차단을 미리 예측할 수 있다.
@@ -3839,8 +3808,8 @@ def render_rounds_report(
     lines = [
         f"{title}: {ledger_path if ledger_path is not None else '(미해소)'}",
         "범례: 판정 0=통과 · 1=비통과(반려·실패·불명확) · '미상'=판정이 무효했던 라운드",
-        "처분: 미처분=잔여 must-fix 선언 없음(릴리즈 차단) · 재설계→티켓(그 티켓 done 이 조건) · "
-        "해소(근거 게이트) · pm-fixed=PM 직접 해소(리뷰 통과 아님) · 무대상=잔여 없음",
+        "처분: 미처분=잔여 must-fix 선언 없음(릴리즈 차단) · "
+        "pm-verified=현재 티켓 fix의 기계 확인 완료 · 무대상=잔여 없음",
     ]
     if include_wave:
         lines.insert(
@@ -3911,52 +3880,14 @@ def _print_rounds_report(
 
 
 # ── 게이트 처분 선언면 (--resolve-gate) ─────────────────────────────────────
-# 라운드 상한으로 종결된 게이트의 **잔여 must-fix 를 어떻게 소화했는지**를 장부에 남기는 기록면이다
-# (외부 전송 없음). 릴리즈 차단(`board.py livegate record`)은 이 기록 사실만 읽는다 — 선언은
-# 판정이 아니라 기록이고, 두 갈래(재설계·해소) 모두 장부로 확인 가능한 근거를 요구한다:
-#   · `--into <T-NNNN>`  — 잔여를 후속 티켓으로 재설계. 면제가 아니라 **그 티켓이 done 이어야**
-#     릴리즈가 열린다(같은 릴리즈 안 소화 강제). 자기 자신 지목은 우회라 거부한다.
-#   · `--fixed <근거 게이트>` — 코드로 해소. 근거 게이트의 **마지막 라운드 판정이 통과(0)** 라는
-#     장부 사실이 조건이다("해소했다"는 주장만으로는 선언되지 않는다).
-# 앵커는 selector 없는 조회면(`--rounds-report`)과 같다 — 엔진 repo 의 소유 PM 홈. 기록면이 쓰는
-# 그 장부를 보고, 같은 홈의 보드에서 재설계 대상 티켓을 확인한다.
-
-# `--fixed` 를 값 없이 쓴 실행의 표식 — 근거 게이트 지목은 필수라 안내로 거부한다(argparse 의
-# 일반 "expected one argument" 대신 왜 필요한지를 말한다).
-_FIXED_WITHOUT_EVIDENCE = "\x00-근거-미지목"
+# 라운드 상한으로 종결된 게이트의 잔여 must-fix가 현재 티켓의 fix에서 기계적으로
+# 닫혔음을 장부에 남기는 기록면이다(외부 전송 없음). 후속 티켓·후속 게이트로 넘기는
+# 처분은 고정 5단계 수렴 계약과 충돌하므로 제공하지 않는다.
 
 
 def _describe_resolution(declared: dict) -> str:
-    """처분 선언 한 줄 표기 — `재설계→T-NNNN` / `해소(근거 T-NNNN)` (조회 표·선언 응답 공용).
-
-    어휘는 board 의 표기 표(`GATE_RESOLUTION_LABELS`)를 쓴다 — 차단 사유와 선언 응답이 같은 처분을
-    다른 말로 부르지 않게."""
-    board = _load_board()
-    label = board.GATE_RESOLUTION_LABELS[declared["kind"]]
-    if declared["kind"] == board.GATE_RESOLUTION_INTO:
-        return f"{label}→{declared['ticket']}"
-    if declared["kind"] == board.GATE_RESOLUTION_PM_FIXED:
-        return _load_review_rounds().describe_pm_fixed_resolution(declared)
-    if declared["kind"] == board.GATE_RESOLUTION_PM_VERIFIED:
-        return _load_review_rounds().describe_pm_verified_resolution(declared)
-    return f"{label}(근거 {declared['evidence_gate']})"
-
-
-def _evidence_gate_problem(ledger: dict, gate: str, entry: dict, evidence: str) -> str | None:
-    """근거 게이트가 이 게이트의 해소를 뒷받침하는지 — 아니면 사유 1줄 (뒷받침하면 None).
-
-    입력은 장부 사실뿐이고, 판정은 board 의 공용 seam(`gate_evidence_problem`)이 소유한다 —
-    선언 시점(여기)과 릴리즈 재검증이 다른 규칙을 쓰면 "선언은 됐는데 릴리즈에서 막힌다"가 난다.
-    자기 자신 지목은 근거가 될 수 없다: 반려로 끝난 그 게이트의 통과 라운드를 자기 안에서 찾는
-    셈이라 정의상 성립하지 않는다(명시 거부로 안내를 정확히 한다)."""
-    if evidence == gate:
-        return "자기 자신은 근거가 될 수 없습니다 — 해소를 보인 다른 게이트를 지목하세요"
-    if evidence not in ledger:
-        return "라운드 장부에 그 게이트의 기록이 없습니다"
-    # 차단 게이트 항목은 **호출부가 정규화한 그 객체**를 그대로 받는다 — 여기서 다시
-    # `_gate_entry` 를 부르면 장부의 항목이 새 dict 로 교체돼 호출부가 들고 있던 참조가 고아가
-    # 되고, 그 뒤 기록한 처분이 저장되지 않는다(선언은 rc0 인데 장부는 그대로).
-    return _load_board().gate_evidence_problem(entry, _gate_entry(ledger, evidence))
+    """현재 유일한 처분 선언을 사람용 한 줄로 표기한다."""
+    return _load_review_rounds().describe_pm_verified_resolution(declared)
 
 
 def _resolve_gate_ignored_flags(args: argparse.Namespace) -> str:
@@ -3986,17 +3917,10 @@ def _resolve_gate_command(args: argparse.Namespace, engine_repo: Path) -> int:
     if reserved is not None:
         print(reserved, file=sys.stderr)
         return 1
-    into, fixed, pm_verified = args.into, args.fixed, args.pm_verified
-    modes_given = sum((bool(into), bool(fixed), pm_verified))
-    if modes_given != 1 or fixed == _FIXED_WITHOUT_EVIDENCE:
-        # 0개 · 2개 이상 · 근거 없는 `--fixed` — 셋 다 "처분이 확정되지 않았다"는 한 축.
+    pm_verified = args.pm_verified
+    if not pm_verified:
         print(_RESOLVE_GATE_MODE_GUIDANCE.format(gate=gate), file=sys.stderr)
         return 1
-    if fixed:
-        reserved = _reserved_gate_error(fixed, flag="--fixed")
-        if reserved is not None:
-            print(reserved, file=sys.stderr)
-            return 1
     if args.dry_run:
         # 선언은 기록이 목적인 실행이라 "미리보기"가 성립하지 않는다 — 경고 후 기록하면
         # `--dry-run` 의 부작용 0 계약이 이 표면에서만 깨진다. 거부가 정직하다.
@@ -4007,17 +3931,6 @@ def _resolve_gate_command(args: argparse.Namespace, engine_repo: Path) -> int:
         print(f"경고: --resolve-gate 는 장부 기록 전용이라 다음 플래그를 무시합니다: {ignored}.",
               file=sys.stderr)
     _PM_HOME_OVERRIDE = resolve_pm_home_for_repo(engine_repo, required=False)
-    if into:
-        if into == gate:
-            print(_RESOLVE_GATE_SELF_INTO_GUIDANCE.format(gate=gate, ticket=into),
-                  file=sys.stderr)
-            return 1
-        try:
-            _find_ticket_file(into, pm_home=_PM_HOME_OVERRIDE)
-        except AnchorResolutionError as exc:
-            print(_RESOLVE_GATE_TICKET_GUIDANCE.format(ticket=into, detail=exc),
-                  file=sys.stderr)
-            return 1
     board = _load_board()
     with _round_ledger_lock():
         ledger = _load_round_ledger()
@@ -4033,43 +3946,23 @@ def _resolve_gate_command(args: argparse.Namespace, engine_repo: Path) -> int:
                 gate=gate, residual=board.gate_residual_label(entry)), file=sys.stderr)
             return 1
         residual = board.gate_residual_must_fix(entry)
-        if fixed:
-            detail = _evidence_gate_problem(ledger, gate, entry, fixed)
-            if detail is not None:
-                print(_RESOLVE_GATE_EVIDENCE_GUIDANCE.format(
-                    evidence=fixed, gate=gate, detail=detail), file=sys.stderr)
-                return 1
-        elif pm_verified:
-            # 추가 리뷰어 채널로 스코프해 판정한다 — board 는 채널과 그 게이트의 장부 항목을
-            # 받아 다른 채널의 accepted 잔여·기계 확인은 보지 않는다(내부 축과 같은 술어·같은
-            # 규칙이고 채널만 다르다).
-            detail = board._pm_verified_evidence_problem(
-                gate, channel=board.GATE_CHANNEL_ADDITIONAL, entry=entry,
-            )
-            if detail is not None:
-                print(_RESOLVE_GATE_PM_VERIFIED_GUIDANCE.format(
-                    gate=gate, detail=detail), file=sys.stderr)
-                return 1
+        # 추가 리뷰어 채널로 스코프해 판정한다 — board 는 채널과 그 게이트의 장부 항목을
+        # 받아 다른 채널의 accepted 잔여·기계 확인은 보지 않는다.
+        detail = board._pm_verified_evidence_problem(
+            gate, channel=board.GATE_CHANNEL_ADDITIONAL, entry=entry,
+        )
+        if detail is not None:
+            print(_RESOLVE_GATE_PM_VERIFIED_GUIDANCE.format(
+                gate=gate, detail=detail), file=sys.stderr)
+            return 1
         residual_label = board.gate_residual_label(entry)
         previous = board.gate_resolution(entry)
-        if pm_verified:
-            declared = {
-                "kind": board.GATE_RESOLUTION_PM_VERIFIED,
-                "ts": _utc_now_iso(),
-                "must_fix": residual,
-                **board.gate_round_binding(entry),
-            }
-        else:
-            declared = {
-                "kind": board.GATE_RESOLUTION_INTO if into else board.GATE_RESOLUTION_FIXED,
-                "ticket" if into else "evidence_gate": into or fixed,
-                "ts": _utc_now_iso(),
-                # 선언 시점의 잔여 건수 — 나중에 "무엇을 처분했나"를 되짚는 감사 사실이다.
-                "must_fix": residual,
-                # 처분이 결속하는 라운드 좌표 — 이 뒤에 새 라운드가 오면 그 잔여는 미처분이다
-                # (좌표 없는 선언은 board 가 처분으로 인정하지 않는다·`gate_resolution`).
-                **board.gate_round_binding(entry),
-            }
+        declared = {
+            "kind": board.GATE_RESOLUTION_PM_VERIFIED,
+            "ts": _utc_now_iso(),
+            "must_fix": residual,
+            **board.gate_round_binding(entry),
+        }
         entry["resolution"] = declared
         _save_round_ledger(ledger)
     if previous is not None:
@@ -4077,9 +3970,6 @@ def _resolve_gate_command(args: argparse.Namespace, engine_repo: Path) -> int:
     print(f"게이트 처분 선언: {gate} · 잔여 must_fix {residual_label} · "
           f"{_describe_resolution(declared)}")
     print(f"  · 장부: {_round_ledger_path()}")
-    if into:
-        print(f"  · 재설계는 면제가 아닙니다 — `board.py livegate record` 는 {into} 가 done 일 "
-              "때만 릴리즈를 엽니다.")
     return 0
 
 
@@ -5367,7 +5257,7 @@ def build_prompt(
     """맥락 헤더 + 티켓 본문 + diff 를 결합해 표준 리뷰 프롬프트를 생성한다.
 
     `confirm_fix` 면 확인 전용 라운드 헌장을 앞에 얹는다 — 이 라운드는 라운드의 연장이 아니라
-    직전 지적의 해소 확인이고, 새로 발견한 것은 다음 라운드 거리가 아니라 **재설계 신호**다.
+    직전 지적의 해소 확인이고, 새로 발견한 것은 다음 라운드 거리가 아니라 사용자 보고 입력이다.
     `confirm_fix_evidence`(라운드 장부가 만든 직전 must-fix 근거 블록)가 있으면 헌장 **바로
     뒤**에 싣는다 — 임무 선언과 그 임무의 대상이 붙어 있어야 fresh 세션이 무엇을 확인하는지 안다.
     `next_finding_id` 는 회수 대상 티켓에서 읽은 이 채널의 다음 ID 실값이고,
@@ -7357,10 +7247,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
   python3 .project_manager/tools/external_review.py --rounds-report --gate T-NNNN
 
   # 게이트 처분 선언 (외부 전송 없음 — 릴리즈 게이트가 읽는 잔여 must-fix 소화 기록)
-  python3 .project_manager/tools/external_review.py --resolve-gate T-NNNN --into T-MMMM
-  python3 .project_manager/tools/external_review.py --resolve-gate T-NNNN --fixed T-MMMM
   python3 .project_manager/tools/external_review.py --resolve-gate T-NNNN --pm-verified
-  # --fixed 근거는 마지막 반려 종료 뒤 시작 + 변경된 target_rev + 통과가 모두 필요.
   # --pm-verified 는 PM 판정 표면의 기계 확인 증거로 해소한다(외부 재송신 없음).
   # --resolve-gate 와 --dry-run 조합은 기록 목적과 모순이라 rc1로 거부.
 
@@ -7397,11 +7284,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "--gate 와 함께 쓸 수 없음)")
     parser.add_argument("--ack-rounds", action="store_true",
                         help="(폐지됨) 라운드 연장 승인 — 호출하면 아무것도 하지 않고 거부한다. "
-                             "출구는 재설계·티켓 분할이고, 해소 확인만 필요하면 --confirm-fix.")
+                             "현재 티켓의 고정 fix 단계에서 종결해야 한다.")
     parser.add_argument("--confirm-fix", action="store_true",
                         help="확인 전용 라운드 — 상한 밖에서 게이트당 1회만 허용"
                              "(게이트 지정 필수 — --gate 또는 --ticket 유도). "
-                             "직전 must-fix 해소만 확인하고 신규 발견은 '재설계 신호'로 보고하는 "
+                             "직전 must-fix 해소만 확인하고 신규 발견은 사용자에게 보고하는 "
                              "헌장을 프롬프트에 싣는다 (장부 기록·2회째는 거부)")
     parser.add_argument("--ack-wave", action="store_true",
                         help="wave 예산 재개 — wave spent 를 0 으로 리셋 후 재개 "
@@ -7412,18 +7299,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "spent 를 출력하고 종료 (외부 전송 없음·--gate 로 한 게이트만)")
     parser.add_argument("--resolve-gate", default=None, metavar="T-NNNN",
                         help="게이트 처분 선언 — 반려로 끝난 게이트의 잔여 must-fix 를 어떻게 "
-                             "소화했는지 장부에 남기고 종료 (외부 전송 없음). `--into`·`--fixed`·"
-                             "`--pm-verified` 중 하나 필수. 릴리즈 게이트(`board.py livegate "
+                             "소화했는지 장부에 남기고 종료 (외부 전송 없음). `--pm-verified` "
+                             "필수. 릴리즈 게이트(`board.py livegate "
                              "record`)가 이 선언을 읽어 미처분 잔여를 차단한다")
-    parser.add_argument("--into", default=None, metavar="T-NNNN",
-                        help="--resolve-gate 처분: 잔여 must-fix 를 이 후속 티켓으로 재설계 선언 "
-                             "(면제 아님 — 그 티켓이 done 이어야 릴리즈가 열린다)")
-    parser.add_argument("--fixed", nargs="?", const=_FIXED_WITHOUT_EVIDENCE, default=None,
-                        metavar="T-NNNN",
-                        help="--resolve-gate 처분: 잔여 must-fix 가 코드로 해소됐음을 선언 — 값은 "
-                             "그 사실을 보인 **근거 게이트**다. 근거 마지막 라운드는 반려 종료 뒤 "
-                             "시작했고(started_at·ISO 8601 UTC), 다른 target_rev를 검토해 통과해야 "
-                             "한다. 결속 필드 없는 구 라운드는 거부. 지목은 필수")
     parser.add_argument("--pm-verified", action="store_true",
                         help="--resolve-gate 처분: PM 판정 표면(리뷰 delta)의 기계 확인 증거로 "
                              "해소 — 외부 재송신 없음(`pm_delegate rounds resolve --pm-verified` "
@@ -7824,17 +7702,12 @@ def _main(argv: list[str] | None = None) -> int:
         return 1
     # 처분 인자는 `--resolve-gate` 없이는 뜻이 없다 — 선언할 게이트가 없으면 남길 사실도 없다
     # (`--confirm-fix` 게이트 누락과 같은 부작용 0 지점·경고-만-실행 금지).
-    for flag, value, value_suffix in (
-        ("--into", args.into, " <T-NNNN>"),
-        ("--fixed", args.fixed, " <T-NNNN>"),
-        ("--pm-verified", args.pm_verified, ""),
-    ):
-        if value and not args.resolve_gate:
-            print(
-                _RESOLVE_GATE_REQUIRED_GUIDANCE.format(flag=flag, value=value_suffix),
-                file=sys.stderr,
-            )
-            return 1
+    if args.pm_verified and not args.resolve_gate:
+        print(
+            _RESOLVE_GATE_REQUIRED_GUIDANCE.format(flag="--pm-verified", value=""),
+            file=sys.stderr,
+        )
+        return 1
     if args.resolve_gate:
         # 장부 기록 전용면 — 전송 경로(conf 분기·denylist·diff 추출)보다 앞에서 끝낸다.
         return _resolve_gate_command(args, engine_repo)
@@ -8379,7 +8252,7 @@ def _main(argv: list[str] | None = None) -> int:
 
     # ── diff 서킷브레이커 (전송 경로 진입 검사) ──────────
     # 스코프가 estimate 상한을 넘긴 티켓은 리뷰 라운드로 닫히지 않는다 — 리뷰어를 부르기 전에
-    # 멈추고 분할·재설계로 보낸다. 자리는 **전송이 확정된 구간**이라 미리보기(dry-run)·비활성
+    # 멈추고 사용자에게 보고한다. 자리는 **전송이 확정된 구간**이라 미리보기(dry-run)·비활성
     # no-op·egress 차단은 이 검사를 지나지 않는다: 그 실행들은 전송도 과금도 없어 이 게이트가
     # 막으려는 비용이 애초에 없고, 미리보기를 막으면 분할 판단에 필요한 diff 확인 채널까지 닫힌다.
     # estimate 를 못 읽으면(자유 문자열 게이트·티켓 부재) 가드는 조용히 off 다.

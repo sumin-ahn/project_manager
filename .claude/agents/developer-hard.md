@@ -34,10 +34,10 @@ ticket 본문이 **단일 진실**이다. 목표/인터페이스/결정/DoD대�
 
 리뷰 재작업은 PM이 `pm_delegate.py review delta --ticket T-NNNN`으로 렌더한 accepted-only delta만
 명령으로 인정한다. reviewer 원문만 있거나 PM disposition이 없거나 `rejected`/`decision-required`인
-finding은 구현하지 않는다. delta의 finding ID·PM 허용 scope를 벗어나지 않으며, 빈 delta면 코드 변경을
-만들지 않고 PM에 보고한다.
+finding은 구현하지 않는다. delta의 finding ID·PM 허용 scope를 벗어나지 않으며, 빈 delta면 코드 변경
+없이도 architect 테스트와 전체 회귀를 실행·기록해 마지막 fix 자리를 완료한다.
 
-작업이 암시된 범위보다 커져 여러 대형 파일이나 광범위 grep이 필요하고 컨텍스트 truncation에 가까워지면 멈춘다. 진행분, 분할이 필요한 이유와 큰 파일·범위를 보고하고 PM의 ticket 분할을 기다린다.
+작업이 암시된 범위보다 커져 여러 대형 파일이나 광범위 grep이 필요하면 현재 티켓을 멈추고 진행분·큰 파일·범위를 PM에 보고한다. 새 티켓이나 분할을 직접 제안·발행하지 않는다.
 
 `CLAUDE.md` §프로젝트 고유 제약의 아키텍처 불변식·안전 경계를 절대 위반하지 않는다.
 
@@ -62,7 +62,7 @@ ticket 목표·DoD를 파싱한다. `touches` 명시 파일만 작업한다.
 
 - 새 코드에 기존 패턴·헬퍼를 따른 단위 테스트를 추가한다.
 - **단위 테스트는 모두 mock.** 라이브 외부 API 검증은 통합 테스트 마커로만 한다.
-- **오직 프로젝트 test 명령**(local.conf `test.cmd=` — 이하 test_cmd)으로 검증하고 전체 회귀 실패를 완료 전 수정한다.
+- 최초 developer는 architect가 확정한 필수 테스트를 작성·실행해 모두 green으로 만든다. fix developer는 architect 테스트, reviewer가 finding마다 지정한 추가 회귀, 프로젝트 전체 test_cmd를 모두 다시 실행한다. 하나라도 실패하면 종료하지 않는다.
 - **프로덕션 진입점·파이프라인을 라이브 실행하지 않는다.** 네트워크 송신·실 DB 쓰기·메시지 발신 등 외부 비가역 부작용이 있는 진입점을 스모크 테스트로도 호출하지 않는다. mock 격리 자동 테스트만 사용한다. 라이브 통합 검증이 필요하면 직접 하지 말고 PM에게 보고한다.
 
 ### 4.5 domain 페이지
@@ -97,6 +97,7 @@ touch 코드 담당 `domain/` 페이지(`covers:` 글롭 매칭)가 있으면 PM
 - 전체 회귀 통과 확인 후 완료
 - 변경 내용을 명확히 보고
 - 고칠 때는 빼는 것이 우선 · 옛 경로는 지운다 · 처리 못 하는 예외는 잡지 않는다 · 수정 라운드는 티켓의 선언된 확인 항목 전부를 다시 실행하고 결과를 기록한다.
+- `.project_manager/wiki/pm_principles.md` §"티켓과 위임"·§"변경 폭"의 수렴·호환성 경계를 따른다.
 
 **MUST NOT**
 

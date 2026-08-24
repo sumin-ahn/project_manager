@@ -584,22 +584,19 @@ def test_rounds_report_missing_companion_fails_loud_in_subprocess(tmp_path):
     assert "pm-update" in proc.stderr
 
 
-def test_resolve_gate_and_no_gate_records_disposition_with_ignore_warning_in_subprocess(
+def test_removed_into_is_rejected_before_gate_no_gate_precedence_in_subprocess(
         tmp_path):
-    """처분면의 `--gate`+병행 시 `--no-gate`를 무시하고 정상 재설계 선언을 기록한다."""
+    """폐지된 into는 argparse에서 거부되고 기존 장부 bytes를 보존한다."""
     project, script = _subprocess_project(tmp_path)
     _write_ledger(project, _rejected_ledger())
 
+    before = (project / ".project_manager" / ".local" / "review_rounds.json").read_bytes()
     proc = _run_external_review(
         project, script,
         "--resolve-gate", TICKET, "--into", FOLLOW_UP_TICKET,
         "--gate", OTHER_GATE, "--no-gate",
     )
 
-    assert proc.returncode == 0, proc.stderr
-    assert "무시합니다" in proc.stderr and "--no-gate" in proc.stderr
-    assert f"게이트 처분 선언: {TICKET}" in proc.stdout
-    assert f"재설계→{FOLLOW_UP_TICKET}" in proc.stdout
-    resolution = _ledger(project)[TICKET]["resolution"]
-    assert resolution["kind"] == "into"
-    assert resolution["ticket"] == FOLLOW_UP_TICKET
+    assert proc.returncode == 2
+    assert "unrecognized arguments: --into" in proc.stderr
+    assert (project / ".project_manager" / ".local" / "review_rounds.json").read_bytes() == before

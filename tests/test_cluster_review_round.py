@@ -507,9 +507,25 @@ def _reserve_prior_rounds(pd, home: Path, roles: tuple[str, ...]) -> None:
     rounds_module = pd._load_ticket_rounds()
     for ticket in _MEMBERS:
         for role in roles:
+            if role == "architect":
+                test_payload = json.dumps({
+                    "version": pd.ARCHITECT_TEST_VERSION,
+                    "tests": [{
+                        "id": "AT-001", "target": "tests/test_cluster_review_round.py",
+                        "command": "python3 --version", "expected": "Python",
+                        "negative": "계약 누락은 developer 준비를 차단한다",
+                    }],
+                }, ensure_ascii=False, separators=(",", ":"))
+                content = (
+                    "## 경계 실측\n- 묶음 리뷰\n\n## 불변식\n- 고정 수열\n\n"
+                    "## 표면 상한\n- 추가 라운드 없음\n\n## 테스트 전략\n- 정상·실패\n\n"
+                    f"```{pd.ARCHITECT_TEST_BLOCK}\n{test_payload}\n```\n"
+                )
+            else:
+                content = f"## {role} 산출\n- {ticket} 실측\n"
             rounds_module.reserve_round(
                 board.tickets_dir(), ticket, role,
-                content=f"## {role} 산출\n- {ticket} 실측\n",
+                content=content,
                 lock=_contextlib.nullcontext(),
             )
 
@@ -588,7 +604,7 @@ def test_delegation_refuses_when_the_cluster_budget_is_spent(pd, review_env, cap
 
     assert rc == 1
     err = capsys.readouterr().err
-    assert "예산 소진" in err and f"cluster replan {_CLUSTER} --reason" in err
+    assert "고정 라운드 종료" in err and "추가 라운드 없이 정지·보고" in err
 
 
 @requires_git
@@ -777,7 +793,7 @@ def test_wait_fails_when_the_child_ended_before_reserving_a_round(
     assert rc == 1, (captured, log_text)
     # 자식이 자기 rc 로 그 실행을 마감했고, 회수는 그 값을 그대로 판정에 쓴다.
     assert runs[-1]["rc"] == 1 and runs[-1]["ended_at"]
-    assert "예산 소진" in log_text
+    assert "고정 라운드 종료" in log_text
     assert "rc=1" in captured.out and "백그라운드 묶음 리뷰 실패" in captured.err
     # 예약 자체가 없었다 — 미회수 0 을 성공으로 읽던 자리다.
     assert pd.ticket_copy_records(home) == []
@@ -865,6 +881,11 @@ def _finding(fid: str, *, design_change: bool = False,
     return {
         "id": fid, "class": classification, "severity": "must-fix",
         "authority": "티켓 §목표", "evidence": f"{fid} 관측", "recommendation": f"{fid} 권고",
+        "fix_contract": {
+            "location": "src/example.py:1", "failure": f"{fid} 관측",
+            "design": f"{fid} 수정", "test": f"{fid} 회귀",
+            "command": "python3 --version", "expected": "Python",
+        },
         "design_change": design_change,
     }
 
@@ -925,9 +946,7 @@ def _accepted_ticket(pd, *, command: str = "echo hi", expected: str = "hi",
     developer = _round(pd, 2, "developer", _developer_round_text(
         pd, [_verify_row(
             "F-001", command=command, expected=expected,
-            before="" if design_change else "옛 값",
-            machine_verifiable=not design_change,
-            reason="design-judgment" if design_change else "")]))
+            before="옛 값", machine_verifiable=True, reason="")]))
     return spec, [reviewer, developer]
 
 
@@ -1075,67 +1094,48 @@ def test_confirmation_is_appended_to_the_pm_area_of_the_spec(pd, review_env):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# 설계 축 — 재설계로 종결한다(reviewer 재송신 경로 0)
+# 설계 축도 reviewer의 수정·테스트 계약으로 fix에서 종결한다
 # ════════════════════════════════════════════════════════════════════════
 
-def test_design_axis_is_not_a_machine_confirmation_target(pd):
-    """두 판정 지점(파서·확인 대상 분류)이 같은 술어를 보고 같은 사유를 낸다."""
-    spec, rounds = _accepted_ticket(
-        pd, design_change=True, command="", expected="사람 판단 필요")
+def test_design_axis_uses_the_reviewer_machine_test_contract(pd):
+    spec, rounds = _accepted_ticket(pd, design_change=True)
     template = pd.pm_review_verify_template(spec, rounds)
 
-    assert template.machine_rows == ()
-    reasons = {item[0]: item[2] for item in template.reviewer_required}
-    assert "설계 축" in reasons["F-001"]
-    assert "재설계" in reasons["F-001"] and "재송신" in reasons["F-001"]
+    assert [(source, row.id) for source, row in template.machine_rows] == [(2, "F-001")]
+    assert template.reviewer_required == ()
 
     confirmation = json.dumps({
         "version": pd.PM_REVIEW_MACHINE_CONFIRMATION_VERSION, "round": 2,
         "confirmations": [{"id": "F-001", "status": "resolved",
                            "command": "echo hi", "observed": "hi"}],
     }, ensure_ascii=False, separators=(",", ":"))
-    with pytest.raises(pd.PMReviewError, match="설계 축"):
-        pd.parse_pm_review_delta(
-            spec + f"\n```{pd.PM_REVIEW_CONFIRMATION_BLOCK}\n{confirmation}\n```\n",
-            rounds,
-        )
+    delta = pd.parse_pm_review_delta(
+        spec + f"\n```{pd.PM_REVIEW_CONFIRMATION_BLOCK}\n{confirmation}\n```\n",
+        rounds,
+    )
+    assert delta.accepted == ()
 
 
-def test_design_axis_residual_closes_only_after_a_replan(pd):
-    """재설계 기록이 없으면 잔여이고, 그 지적 뒤 재설계가 있으면 종결이다."""
-    spec, rounds = _accepted_ticket(
-        pd, design_change=True, command="", expected="사람 판단 필요")
+def test_design_axis_residual_closes_after_the_fix_test_confirmation(pd):
+    spec, rounds = _accepted_ticket(pd, design_change=True)
 
-    without = pd.pm_verified_evidence_problem(
+    before = pd.pm_verified_evidence_problem(
         spec, rounds, reviewer_role="code-reviewer", surface_floor=1)
-    before_the_finding = pd.pm_verified_evidence_problem(
-        spec, rounds, reviewer_role="code-reviewer", surface_floor=1,
-        design_replan_ordinal=0)
+    confirmation = json.dumps({
+        "version": pd.PM_REVIEW_MACHINE_CONFIRMATION_VERSION, "round": 2,
+        "confirmations": [{"id": "F-001", "status": "resolved",
+                           "command": "echo hi", "observed": "hi"}],
+    }, ensure_ascii=False, separators=(",", ":"))
     after = pd.pm_verified_evidence_problem(
-        spec, rounds, reviewer_role="code-reviewer", surface_floor=1,
-        design_replan_ordinal=2)
+        spec + f"\n```{pd.PM_REVIEW_CONFIRMATION_BLOCK}\n{confirmation}\n```\n",
+        rounds, reviewer_role="code-reviewer", surface_floor=1)
 
-    assert without is not None and "설계 축" in without and "재설계" in without
-    assert before_the_finding is not None
+    assert before is not None and "F-001" in before
     assert after is None
 
 
-@requires_git
-def test_resolve_cluster_refuses_the_design_axis_without_a_replan(pd, review_env):
-    """확인 커맨드를 돌리기 전에 멈춘다(실행 부작용 0) — 처방은 재설계다."""
-    home, tickets = review_env
-    ticket = _MEMBERS[0]
-    spec, rounds = _accepted_ticket(
-        pd, design_change=True, command="", expected="사람 판단 필요")
-    delta = pd.parse_pm_review_delta(spec, rounds)
-
-    blocked = pd._design_axis_replan_block(ticket, _CLUSTER, delta, 0)
-    cleared = pd._design_axis_replan_block(ticket, _CLUSTER, delta, 2)
-
-    assert blocked is not None
-    assert "F-001" in blocked and f"cluster replan {_CLUSTER} --reason" in blocked
-    assert "재송신" in blocked
-    assert cleared is None
+def test_design_axis_replan_escape_hatch_is_removed(pd):
+    assert not hasattr(pd, "_design_axis_replan_block")
 
 
 @requires_git
@@ -1262,7 +1262,8 @@ def test_resolve_cluster_is_scoped_to_the_machine_evidence_disposition(pd, capsy
     """묶음 처분은 `--pm-verified` 전용이다 — 게이트별 판단은 묶음으로 접지 않는다."""
     with pytest.raises(SystemExit):
         pd._cmd_rounds(["resolve", "--cluster", _CLUSTER, "--into", "T-0001"])
-    assert "--pm-verified 전용" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "--pm-verified" in err and "--into" not in err
 
     with pytest.raises(SystemExit):
         pd._cmd_rounds(["resolve", "--cluster", _CLUSTER, "--gate", "T-0001",

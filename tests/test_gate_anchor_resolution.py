@@ -365,10 +365,10 @@ def test_resolver_override_is_guard_seam_even_when_anchor_has_snapshot_marker(
     assert "게이트 스냅샷 마커가 있는 앵커" not in capsys.readouterr().err
 
 
-def test_unregistered_snapshot_dry_run_report_and_disposition_surfaces_stay_open(
+def test_unregistered_snapshot_dry_run_and_report_stay_open_but_fixed_is_removed(
     tmp_path, monkeypatch, capsys,
 ):
-    """미전송 dry-run·조회와 외부 송신 없는 처분 기록은 새 라운드 차단 대상이 아니다."""
+    """미전송 dry-run·조회는 열리지만 폐지된 fixed 처분은 장부를 바꾸지 않는다."""
     _source, snapshot = _unregistered_worktree(tmp_path)
     _enable_additional_review(snapshot)
     (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
@@ -405,14 +405,15 @@ def test_unregistered_snapshot_dry_run_report_and_disposition_surfaces_stay_open
         },
     }), encoding="utf-8")
 
-    assert external.main([
-        "--resolve-gate", "T-0634-rejected", "--fixed", "T-0634-passed",
-    ]) == 0
-    saved = json.loads(ledger_path.read_text(encoding="utf-8"))
-    assert saved["T-0634-rejected"]["resolution"]["kind"] == "fixed"
+    before = ledger_path.read_bytes()
+    with pytest.raises(SystemExit):
+        external.main([
+            "--resolve-gate", "T-0634-rejected", "--fixed", "T-0634-passed",
+        ])
+    assert ledger_path.read_bytes() == before
     captured = capsys.readouterr()
     assert "[dry-run] 외부 호출 생략" in captured.out
-    assert "게이트 처분 선언: T-0634-rejected" in captured.out
+    assert "unrecognized arguments: --fixed" in captured.err
     assert "미등록 linked worktree 자기 앵커에서는" not in captured.err
 
 

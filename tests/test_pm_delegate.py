@@ -5702,12 +5702,44 @@ def _scope_workspace(
     # 라운드는 준비가 예약한다([[ADR-0090]]) — 명세에는 역할 산출이 없다.
     ticket_path = tickets / f"{TICKET_ID}-scope.md"
     ticket_path.write_text(ticket_text, encoding="utf-8")
-    # 준비는 라운드 예산·기준 브랜치를 묶음 장부에서만 읽는다 — `cluster` 필드가 없는 이
-    # 티켓은 크기 1 묶음이고, 그 장부가 이 픽스처가 태울 라운드 하나를 선언한다.
+    # 준비는 라운드 예산·기준 브랜치를 묶음 장부에서만 읽는다. 이 픽스처의
+    # `rounds` 는 예산을 줄이는 통로가 아니라 **이 테스트가 실행할 현재 역할**이다. 장부는
+    # 항상 architect→developer→code-reviewer→developer 4단계를 모두 선언하고,
+    # 현재 역할 앞의 완료 라운드는 실물 sidecar로 시드한다. 범위 감사 테스가 고정
+    # 수열 게이트를 무효화하지 않으면서 자기 관심사에 진입하기 위한 형상이다.
     write_cluster_ledger(
         pm_home / ".project_manager" / "wiki", TICKET_ID,
-        base_branch="task/main", rounds=rounds,
+        base_branch="task/main",
     )
+    assert len(rounds) == 1 and rounds[0] in {"architect", "developer", "code-reviewer"}
+    current_role = rounds[0]
+    preceding = {
+        "architect": (),
+        "developer": ("architect",),
+        "code-reviewer": ("architect", "developer"),
+    }[current_role]
+    rounds_dir = (
+        pm_home / ".project_manager" / "wiki" / "tickets" / "rounds" / TICKET_ID
+    )
+    if preceding:
+        rounds_dir.mkdir(parents=True)
+    architect_contract = _json.dumps({
+        "version": pd.ARCHITECT_TEST_VERSION,
+        "tests": [{
+            "id": "AT-001",
+            "target": "tests/test_pm_delegate.py",
+            "command": "python3 --version",
+            "expected": "Python",
+            "negative": "red면 developer 단계를 종료하지 않는다",
+        }],
+    }, ensure_ascii=False, separators=(",", ":"))
+    for ordinal, prior_role in enumerate(preceding, start=1):
+        output = "## 산출\n- 고정 수열 픽스처\n"
+        if prior_role == "architect":
+            output += f"\n```{pd.ARCHITECT_TEST_BLOCK}\n{architect_contract}\n```\n"
+        (rounds_dir / f"{ordinal:02d}-{prior_role}.md").write_text(
+            f"## {prior_role} 라운드\n\n{output}", encoding="utf-8", newline="\n",
+        )
     ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.parent.mkdir(parents=True)
     ledger.write_text(

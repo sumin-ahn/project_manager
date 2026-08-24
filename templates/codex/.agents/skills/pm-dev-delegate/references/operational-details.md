@@ -40,18 +40,17 @@ dev N 동시 spawn 전 disjoint 확인은 **엔진이 계산한다** — 손으�
 
 ## reviewer 후 처리
 
-- **PM 직접 fix**: 1줄·1패턴·dev가 작업하지 않는 영역.
-- **dev 재작업**: 여러 줄 또는 dev가 같은 file 작업 중.
-- **별도 ticket 후보 메모**: 본 ticket 범위 밖/후속 caller.
-- **suggestion 보류**: 운영 영향 0·기능 충분.
+- **accepted finding**: reviewer 수정·테스트 계약을 그대로 fix 입력으로 전달한다.
+- **rejected/suggestion**: board 의무로 만들지 않고 현재 판정에서 닫는다.
+- **결정 필요**: board를 쓰지 않고 사용자에게 목표 확대 여부를 묻는다.
 
 reviewer 결과를 그대로 믿지 말고 should-fix 전 코드 흐름을 PM이 독립 점검한다. 부정확하면 변경하지 않고 `log/current.md`에 영구 기록. 다른 ticket 결함을 현재 ticket 영역으로 잘못 attribute할 수 있으므로 실제 영역 확인 후 분기한다.
 
 ## 운용
 
 - board 조작은 PM, 서브에이전트는 구현/검토만.
-- dev 보고에는 변경 파일, 신규 테스트, 지정 회귀(범위 명시), DoD별 evidence를 강제. 전체 회귀는 릴리즈 절차 1단계 1회(PM)다.
-- background 우선. 다음 ticket이 결과에 의존하면 foreground.
+- dev 보고에는 변경 파일, 신규 테스트, 단계별 지정 회귀, DoD별 evidence를 강제한다. fix는 전체 회귀까지 실행한다.
+- background 중에는 현재 티켓의 읽기 전용 근거만 정리하고 board를 쓰지 않는다.
 - 프롬프트가 길어지면 ticket 본문을 보강한다.
 - 같은 dev를 반복 resume하면 transcript 누적으로 컨텍스트 한도에 실패한다(14회 resume에서 "Prompt is too long"). 대략 5~6회↑면 새 에이전트에 자족 프롬프트로 재투입하고 현 코드 상태(신설 심볼·미커밋 변경)를 요약한다. 산출물은 워킹트리에 유지된다.
 

@@ -357,8 +357,8 @@ _MUTATION_SUBCOMMANDS: frozenset[str] = frozenset({
     "prefix rename", "prefix strip", "prefix merge", "prefix delete",
     "rounds migrate",
     # cluster new=묶음 장부 생성 + 멤버 명세의 귀속 필드 쓰기(board 상태) ·
-    # cluster replan=그 장부의 예산·재설계 기록 쓰기.
-    "cluster new", "cluster replan",
+    # cluster new=고정 5단계 장부 쓰기.
+    "cluster new",
 })
 # 조회(read-only·board 상태 미변경) — 게이트 없음.
 _READ_SUBCOMMANDS: frozenset[str] = frozenset({
@@ -7180,10 +7180,7 @@ def _last_round_verdict(entry: dict) -> int | None:
 
 
 def gate_passed(entry: dict) -> bool:
-    """마지막 라운드가 **통과**(rc 0)로 끝난 게이트인가 (공용 seam).
-
-    처분 선언(`external_review --resolve-gate ... --fixed <근거 게이트>`)이 "근거 게이트가 실제로
-    통과했나"를 이 술어로 묻는다 — 선언자의 주장이 아니라 장부의 기록 사실이 입력이다."""
+    """마지막 라운드가 **통과**(rc 0)로 끝난 게이트인가 (공용 seam)."""
     return _last_round_verdict(entry) == 0
 
 
@@ -7240,9 +7237,6 @@ def internal_verdict_diagnostic(entry: dict) -> str | None:
 # 쓰는 쪽은 external_review(`--resolve-gate`)지만 **읽는 규칙은 여기 하나**다 — 릴리즈 차단과
 # 조회 표가 각자 해석하면 같은 장부를 놓고 "처분됐다/아니다"가 갈린다. 로드 방향이
 # external_review → board 라 공용 판정은 board 가 소유한다(`round_outcome_order_key` 와 같은 자리).
-GATE_RESOLUTION_INTO = "into"     # 후속 티켓 재설계 — 그 티켓이 done 이어야 릴리즈가 열린다.
-GATE_RESOLUTION_FIXED = "fixed"   # 코드로 해소 — 근거 게이트(통과로 끝난 게이트) 지목이 조건.
-GATE_RESOLUTION_PM_FIXED = "pm-fixed"  # 상한+confirm-fix 소진 뒤 PM 직접 해소(리뷰 통과 아님).
 # 기계 확인 증거로 여는 게이트 처분 — 장부마다 `allow_pm_verified` 명시 시에만 인정된다(내부
 # 완료 축·추가 리뷰어 release 축 모두 스코프 인자로 채널 격리해 허용 · 기본 호출은 허용하지 않는다).
 GATE_RESOLUTION_PM_VERIFIED = "pm-verified"
@@ -7252,17 +7246,8 @@ GATE_RESOLUTION_PM_VERIFIED = "pm-verified"
 # 해소한다(`_pm_verified_channel_role`).
 GATE_CHANNEL_INTERNAL = "internal"        # internal_review_rounds.json (내부 code-reviewer)
 GATE_CHANNEL_ADDITIONAL = "additional"    # review_rounds.json (추가 리뷰어)
-# 처분 종류별 **대상 필드** — 재설계는 티켓 ID, 해소는 근거 게이트 이름을 싣는다. pm-fixed·
-# pm-verified 는 target key 가 없다(각자 별도 evidence/재검증 축을 쓴다).
-_GATE_RESOLUTION_TARGET_KEYS: dict[str, str] = {
-    GATE_RESOLUTION_INTO: "ticket",
-    GATE_RESOLUTION_FIXED: "evidence_gate",
-}
 # 처분 표기 어휘 — 선언 응답(external_review)과 차단 사유(여기)가 같은 말을 쓰게.
 GATE_RESOLUTION_LABELS: dict[str, str] = {
-    GATE_RESOLUTION_INTO: "재설계",
-    GATE_RESOLUTION_FIXED: "해소",
-    GATE_RESOLUTION_PM_FIXED: "pm-fixed(PM 직접 해소·리뷰 통과 아님)",
     GATE_RESOLUTION_PM_VERIFIED: "pm-verified(PM 기계 확인 해소·reviewer 재투입 없음)",
 }
 # 처분이 결속하는 **라운드 좌표** 필드 — 선언 시점의 마지막 라운드 순번과 산출 수.
@@ -7312,33 +7297,15 @@ def gate_resolution(entry: dict) -> dict | None:
     읽을 수 없는 값은 처분이 아니다(fail-closed) — 손상된 한 줄이 릴리즈 차단을 **여는** 방향으로
     작동하면 그 게이트는 기계가 아니다. 라운드 좌표(`round_sequence`·`rounds`)도 같은 축이다:
     좌표 없는 선언은 어느 잔여를 처분했는지 확인할 수 없으므로 처분으로 인정하지 않는다.
-    반환은 정규화된 사본
-    `{kind, ticket|evidence_gate|pm_fixed_evidence, round_sequence, rounds, ts?}`.
+    반환은 정규화된 `{kind, round_sequence, rounds, ts?}` 사본이다. 폐지 kind는 None으로
+    읽혀 잔여 게이트를 그대로 차단한다.
     """
     raw = entry.get("resolution")
     if not isinstance(raw, dict):
         return None
     kind = raw.get("kind")
-    key = _GATE_RESOLUTION_TARGET_KEYS.get(kind)
-    pm_fixed_evidence = None
-    if kind == GATE_RESOLUTION_PM_FIXED:
-        common = _load_review_rounds()
-        if common.as_int(entry.get(common.PM_FIXED_USAGE_KEY)) != 1:
-            return None
-        try:
-            pm_fixed_evidence = common.parse_pm_fixed_evidence(
-                raw.get(common.PM_FIXED_EVIDENCE_KEY)
-            )
-        except ValueError:
-            return None
-    elif kind == GATE_RESOLUTION_PM_VERIFIED:
-        pass    # 대상 필드 없음 — 증거는 재검증 시점에 라이브로 다시 읽는다(장부에 안 싣는다).
-    else:
-        if key is None:
-            return None
-        target = raw.get(key)
-        if not isinstance(target, str) or not target.strip():
-            return None
+    if kind != GATE_RESOLUTION_PM_VERIFIED:
+        return None
     sequence = raw.get("round_sequence", _MISSING_BINDING)
     count = raw.get("rounds")
     if sequence is _MISSING_BINDING:
@@ -7352,26 +7319,6 @@ def gate_resolution(entry: dict) -> dict | None:
         "round_sequence": sequence,
         "rounds": count,
     }
-    if kind == GATE_RESOLUTION_PM_FIXED:
-        declared[_load_review_rounds().PM_FIXED_EVIDENCE_KEY] = pm_fixed_evidence
-    elif kind != GATE_RESOLUTION_PM_VERIFIED:
-        declared[key] = target.strip()
-    # 내부 reviewer의 새 `fixed` 선언은 반려/근거 diff 지문을 함께 결속한다. 둘 중 하나만
-    # 있거나 형식이 손상된 선언은 처분이 아니다(fail-closed). 둘 다 없는 구 선언은 여기서
-    # 폐기하지 않는다 — `_gate_disposition_problem(..., allow_legacy_internal_fixed=True)`가
-    # 명시적으로 ``legacy-unverifiable``로 구분해 소급 안전만 제공한다.
-    proof_keys = ("blocked_diff_fingerprint", "evidence_diff_fingerprint")
-    proof_present = tuple(key in raw for key in proof_keys)
-    if any(proof_present):
-        if raw["kind"] != GATE_RESOLUTION_FIXED or not all(proof_present):
-            return None
-        proof = {key: raw.get(key) for key in proof_keys}
-        if any(
-            not isinstance(value, str) or _TARGET_REV_RE.fullmatch(value) is None
-            for value in proof.values()
-        ):
-            return None
-        declared.update(proof)
     ts = raw.get("ts")
     if isinstance(ts, str) and ts.strip():
         declared["ts"] = ts.strip()
@@ -7398,127 +7345,6 @@ def _parse_utc_iso(value: object) -> datetime.datetime | None:
     except ValueError:
         return None
     return parsed if parsed.utcoffset() == datetime.timedelta(0) else None
-
-
-def _round_timestamp(outcome: dict | None, key: str = "ts") -> datetime.datetime | None:
-    """라운드 산출의 UTC 시각 필드 — 누락·비-ISO·비-UTC면 None (fail-closed 판정용)."""
-    return _parse_utc_iso(outcome.get(key) if outcome is not None else None)
-
-
-def _round_target_rev(outcome: dict | None) -> str | None:
-    """실제 전송 diff의 안정 fingerprint(`sha256:<hex>`) — 구/손상 라운드는 None."""
-    value = outcome.get("target_rev") if outcome is not None else None
-    return value if isinstance(value, str) and _TARGET_REV_RE.fullmatch(value) else None
-
-
-def _round_diff_fingerprint(outcome: dict | None) -> str | None:
-    """내부 reviewer가 실제 본 HEAD+dirty worktree 내용 지문 — 구/손상 라운드는 None."""
-    value = outcome.get("diff_fingerprint") if outcome is not None else None
-    return value if isinstance(value, str) and _TARGET_REV_RE.fullmatch(value) else None
-
-
-def _gate_evidence_problem_with_rev(
-    entry: dict,
-    evidence_entry: object,
-    *,
-    rev_reader: Callable[[dict | None], str | None] | None,
-    rev_label: str | None,
-) -> str | None:
-    """통과 근거의 선후·대상 변경 검증 공용 본체."""
-    corruption = gate_entry_corruption(evidence_entry)
-    if corruption is not None:
-        return corruption
-    if not gate_passed(evidence_entry):
-        return (f"마지막 라운드가 통과가 아닙니다 "
-                f"(잔여 must_fix {gate_residual_label(evidence_entry)})")
-    evidence_round = gate_last_round(evidence_entry)
-    blocked_round = gate_last_round(entry)
-    evidence_ts = _round_timestamp(evidence_round)
-    evidence_started = _round_timestamp(evidence_round, "started_at")
-    blocked_ts = _round_timestamp(blocked_round)
-    blocked_started = _round_timestamp(blocked_round, "started_at")
-    blocked_rev = rev_reader(blocked_round) if rev_reader is not None else None
-    evidence_rev = rev_reader(evidence_round) if rev_reader is not None else None
-    if (evidence_ts is None or evidence_started is None
-            or blocked_ts is None or blocked_started is None):
-        return ("반려/근거 라운드 ts/started_at 이 엄격한 ISO 8601 UTC 형식이 아니거나 기록되지 않아 "
-                "반려 이후 시작을 확인할 수 없습니다 (결속 불충분 · 근거로 인정하지 않음)")
-    if rev_reader is not None and (blocked_rev is None or evidence_rev is None):
-        return (f"라운드 대상 {rev_label}가 없거나 형식이 손상돼 검토 대상을 "
-                "확인할 수 없습니다 (결속 불충분 · 근거로 인정하지 않음)")
-    if evidence_ts < evidence_started:
-        return ("근거 라운드 완료 ts가 started_at 보다 앞서 장부 선후를 신뢰할 수 없습니다 "
-                "(결속 불충분 · 근거로 인정하지 않음)")
-    if blocked_ts < blocked_started:
-        return ("반려 라운드 완료 ts가 started_at 보다 앞서 장부 선후를 신뢰할 수 없습니다 "
-                "(결속 불충분 · 근거로 인정하지 않음)")
-    if evidence_started <= blocked_ts:
-        return ("근거 라운드가 반려 이후에 시작되지 않았습니다 "
-                f"(시작 {evidence_started.isoformat()} ≤ 반려 {blocked_ts.isoformat()}) — "
-                "근거는 그 반려 **이후 시작한** 통과여야 합니다")
-    if rev_reader is not None and evidence_rev == blocked_rev:
-        return (f"근거 라운드가 반려와 같은 대상 {rev_label}({evidence_rev})를 검토했습니다 — "
-                "코드 변경 뒤의 통과가 아니므로 근거로 인정하지 않습니다")
-    return None
-
-
-def gate_evidence_problem(entry: dict, evidence_entry: object) -> str | None:
-    """근거 게이트가 이 게이트의 잔여 해소를 뒷받침하는지 — 사유 1줄 (뒷받침하면 None·공용 seam).
-
-    조건을 장부 사실로만 본다: (1) 항목이 해석 가능하고, (2) 마지막 라운드가 통과(rc 0)이며,
-    (3) 반려·근거 양쪽의 시작≤완료가 정합하고, (4) 근거 라운드가 차단 반려의 **종료 뒤 시작**했고,
-    (5) 실제 검토한 diff fingerprint 가 반려 때와 다르다. 완료 시각만 뒤인 동시 리뷰는 반려 전에
-    같은 미수정 diff 로 이미 시작했을 수 있어 근거가 아니다. 시각·fingerprint 를 못 읽는 구
-    라운드는 통과로 추측하지 않고 "결속 불충분"으로 거부한다(fail-closed — 확인 못 함 ≠ 뒷받침함).
-
-    선언 시점(external_review)과 릴리즈 재검증(여기)이 **같은 한 술어**를 쓴다."""
-    return _gate_evidence_problem_with_rev(
-        entry,
-        evidence_entry,
-        rev_reader=_round_target_rev,
-        rev_label="rev fingerprint(target_rev)",
-    )
-
-
-def internal_gate_evidence_problem(entry: dict, evidence_entry: object) -> str | None:
-    """내부 reviewer의 후속 통과가 반려 잔여의 코드 해소 근거인지 판정한다.
-
-    ``target_rev``(HEAD)만으로는 dirty worktree 변경을 식별할 수 없다. 내부 writer가 별도로
-    기록한 ``diff_fingerprint``(HEAD+dirty 내용)를 요구해, 반려와 같은 미수정 대상을 나중에
-    다시 통과시킨 라운드는 해소 근거로 인정하지 않는다. 지문을 만들지 못한 라운드도 새 처분의
-    근거로 추측하지 않는다(증명 불가·fail-closed).
-    """
-    return _gate_evidence_problem_with_rev(
-        entry,
-        evidence_entry,
-        rev_reader=_round_diff_fingerprint,
-        rev_label="diff fingerprint(diff_fingerprint)",
-    )
-
-
-def _legacy_internal_gate_evidence_problem(entry: dict, evidence_entry: object) -> str | None:
-    """지문 도입 전에 **이미 선언된** 내부 fixed 처분의 시각 결속만 재검증한다.
-
-    구 라운드는 내용 변경을 증명할 수 없으므로 새 `--fixed` 선언에는 절대 이 seam을 쓰지 않는다.
-    다만 과거 선언까지 소급 무효화하면 이번 릴리즈의 기존 처분 전체가 뒤집히므로, 선언 자체에
-    diff proof 필드가 없는 경우만 ``legacy-unverifiable``로 구분해 종전 시각 경계를 유지한다.
-    """
-    return _gate_evidence_problem_with_rev(
-        entry,
-        evidence_entry,
-        rev_reader=None,
-        rev_label=None,
-    )
-
-
-def internal_fixed_proof_status(declared: dict) -> str:
-    """내부 fixed 선언의 내용 증명 상태(보고/소급 분기 공용)."""
-    if all(
-        _TARGET_REV_RE.fullmatch(str(declared.get(key, ""))) is not None
-        for key in ("blocked_diff_fingerprint", "evidence_diff_fingerprint")
-    ):
-        return "verified"
-    return "legacy-unverifiable"
 
 
 def gate_resolution_is_stale(entry: dict, declared: dict) -> bool:
@@ -8505,12 +8331,12 @@ def _resolve_livegate_flag(cwd: str) -> tuple[Path, str]:
 
 # ── 릴리즈 must-fix 잔여 차단 (릴리즈 절차의 첫 기계 관문) ────────────────
 # "must-fix 잔여가 있으면 릴리즈하지 않는다"를 PM 규율이 아니라 기계 게이트로 박는다. 라운드
-# 상한으로 종결된 게이트의 잔여 must-fix 가 후속 티켓으로 소화되지 않은 채 릴리즈 절차가 진행되던
-# 것이 근절 대상이다(실사고: PM 자체 판정 "전이-세대 엣지"로 must-fix 4건을 이월한 채 릴리즈).
+# 상한으로 종결된 게이트의 잔여 must-fix가 현재 티켓 fix에서 닫히지 않은 채 릴리즈 절차가
+# 진행되던 것이 근절 대상이다.
 #
 # 판정 입력은 **장부의 기록 사실**뿐이다 — 최종 라운드의 must_fix 수(`gate_residual_must_fix`),
-# 처분 선언(`gate_resolution`), 재설계 대상 티켓의 보드 status. PM 자의 판정("사소함·엣지")이 들어갈
-# 자리를 만들지 않는다(그 자의 판정이 사고의 원인이었다). 우회 플래그도 없다.
+# 처분 선언(`gate_resolution`)과 기계 확인 증거다. PM 자의 판정("사소함·엣지")이 들어갈
+# 자리를 만들지 않는다. 우회 플래그도 없다.
 #
 # 검사 지점이 `livegate record` 인 이유는 그것이 릴리즈 절차의 첫 기계 관문이고 push 보호훅이 그
 # green 을 소비하기 때문이다 — 여기서 막으면 하류 전체가 막힌다. 그래서 차단은 **fail 기록까지**
@@ -8523,12 +8349,9 @@ _RELEASE_MUST_FIX_BLOCKED = "blocked"
 _MUST_FIX_BLOCK_GUIDANCE = (
     "livegate: fail — 미해소 must-fix 잔여 {count}건 (릴리즈 차단 · 우회 플래그 없음).\n"
     "{items}\n"
-    "  처방 — 게이트마다 처분을 **선언**하세요 (선언 없이는 릴리즈가 열리지 않습니다):\n"
-    "    · 코드로 해소했으면: python3 .project_manager/tools/external_review.py "
-    "--resolve-gate <게이트> --fixed <근거 게이트>\n"
-    "    · 후속 티켓으로 재설계하면: python3 .project_manager/tools/external_review.py "
-    "--resolve-gate <게이트> --into <T-NNNN>\n"
-    "      (재설계는 면제가 아니라 처분입니다 — 그 티켓이 done 이어야 이번 릴리즈가 열립니다)\n"
+    "  처방 — 현재 티켓 fix의 기계 확인 증거로 게이트마다 처분을 선언하세요:\n"
+    "    python3 .project_manager/tools/external_review.py "
+    "--resolve-gate <게이트> --pm-verified\n"
     "  라운드 장부: {ledger}"
 )
 
@@ -8590,63 +8413,10 @@ def _write_release_must_fix_marker(flag: Path, problems: Sequence[str]) -> Path:
     return marker
 
 
-class _ReleaseGateBoardResolutionError(RuntimeError):
-    """라운드 장부가 참조할 board 소유 PM 홈을 확정하지 못한 오류."""
-
-
-def _release_gate_search_dirs(ledger: Path) -> list[tuple[str, Path]]:
-    """재설계 대상 티켓을 조회할 실제 소유 board 범위.
-
-    PM 홈 ``.local``의 추가 리뷰 장부처럼 장부 홈 자체가 실 board를 소유하면 종전 경로를
-    그대로 쓴다. 내부 리뷰 장부처럼 board 없는 linked worktree에 장부가 있으면 공용 read
-    해소 seam으로 lease 소유 PM 홈을 확정한다. 해소 실패는 빈 scaffold 검색으로 강등하지
-    않고 호출자가 사용자에게 원 사유를 표면화할 수 있도록 예외로 올린다.
-    """
-    ledger_home = ledger.parent.parent.parent
-    if _has_real_board(ledger_home / ".project_manager"):
-        board_root_path = _board_root_at(ledger_home)
-    else:
-        resolution = _resolve_read_board(ledger_home)
-        if resolution.error is not None:
-            raise _ReleaseGateBoardResolutionError(resolution.error)
-        if resolution.root is None:
-            raise _ReleaseGateBoardResolutionError(
-                f"{ledger_home}: 라운드 장부가 참조할 board 루트를 확정하지 못했습니다"
-            )
-        board_root_path = resolution.root
-    return [(status, board_root_path / "tickets" / status)
-            for status in STATUS_DIRS]
-
-
-def _fixed_evidence_problem(
-    ledger_data: dict,
-    entry: dict,
-    evidence: str,
-    *,
-    evidence_problem: Callable[[dict, object], str | None] = gate_evidence_problem,
-) -> str | None:
-    """`fixed` 근거 게이트가 **지금도** 통과인지 (뒷받침하면 None).
-
-    근거는 선언 시점에 한 번 확인하고 끝낼 사실이 아니다 — 그 게이트가 뒤이어 반려로 뒤집히거나
-    장부에서 사라지면 "코드로 해소됐다"는 선언의 근거 자체가 없어진다. 판정은 선언 시점과 같은
-    공용 seam(`gate_evidence_problem`)이 소유하고 여기서는 장부 조회만 얹는다."""
-    if evidence not in ledger_data:
-        return f"근거 게이트 {evidence} 의 기록이 장부에서 사라졌습니다"
-    problem = evidence_problem(entry, ledger_data.get(evidence))
-    return None if problem is None else f"근거 게이트 {evidence} — {problem}"
-
-
 def _gate_disposition_problem(
     gate: str,
     entry: object,
-    ledger_data: dict,
-    search_dirs: list[tuple[str, Path]],
     *,
-    evidence_problem: Callable[
-        [dict, object], str | None
-    ] = gate_evidence_problem,
-    allow_legacy_internal_fixed: bool = False,
-    allow_pm_fixed: bool = False,
     allow_pm_verified: bool = False,
     pm_verified_problem: Callable[[], str | None] | None = None,
 ) -> str | None:
@@ -8654,10 +8424,8 @@ def _gate_disposition_problem(
 
     순서대로 본다: **항목 해석 가능성**(손상이면 잔여를 셀 수 없으니 차단) → 잔여 must_fix(0 이면
     비대상·suggestion 만 남은 게이트 포함·**미상은 대상**) → 처분 선언(미선언·좌표 stale 이면 차단)
-    → 갈래별 조건(`fixed` = 근거 게이트가 지금도 뒷받침 · `into` = 대상 티켓이 done ·
-    `pm-fixed` = 내부 장부에서만 허용하며 구조화 근거의 변경 지점을 현재 repo에서 재검증 ·
-    `pm-verified` = 허용된 장부에서만(`allow_pm_verified`) `pm_verified_problem` 콜백으로
-    delta/기계 확인 증거를 라이브 재검증)."""
+    → `pm-verified` 발동 증거의 라이브 재검증. 폐지 kind는 `gate_resolution=None`이라
+    미처분으로 fail-loud 한다."""
     corruption = gate_entry_corruption(entry)
     if corruption is not None:
         return f"  · {gate}: {corruption} — 잔여 must-fix 를 확인할 수 없어 차단합니다"
@@ -8673,59 +8441,12 @@ def _gate_disposition_problem(
         return (f"{prefix} · {label} 이후 새 라운드가 기록됐습니다 "
                 f"(선언 시점 #{declared['round_sequence']}/{declared['rounds']}건 ≠ 현재 "
                 f"#{current['round_sequence']}/{current['rounds']}건) · 새 잔여로 다시 선언하세요")
-    if declared["kind"] == GATE_RESOLUTION_PM_VERIFIED:
-        if not allow_pm_verified:
-            return f"{prefix} · {label} — 이 장부에서는 pm-verified 처분을 허용하지 않습니다"
-        if pm_verified_problem is None:
-            return f"{prefix} · {label} — 발동 조건을 재검증할 수 없습니다(호출부 설정 누락)"
-        problem = pm_verified_problem()
-        if problem is not None:
-            return f"{prefix} · {label} — 발동 조건 재검증 실패: {problem}"
-        return None
-    if declared["kind"] == GATE_RESOLUTION_PM_FIXED:
-        if not allow_pm_fixed:
-            return f"{prefix} · {label} — 이 장부에서는 pm-fixed 처분을 허용하지 않습니다"
-        common = _load_review_rounds()
-        # 상한은 선언 경로와 **같은 값**을 본다 — pm_delegate 가 그 축의 단일 진실이라 board 에
-        # 사본을 두지 않는다(사본을 두면 상한을 낮춘 채택자가 선언은 되는데 완료가 막힌다).
-        problem = common.recorded_pm_fixed_problem(
-            entry,
-            _load_pm_delegate_module().internal_review_rounds_max(local_config()),
-        )
-        if problem is not None:
-            return f"{prefix} · {label} — 발동 조건 재검증 실패: {problem}"
-        try:
-            common.parse_pm_fixed_evidence(
-                declared[common.PM_FIXED_EVIDENCE_KEY], repo_root=REPO,
-            )
-        except ValueError as exc:
-            return f"{prefix} · {label} — 구조화 근거 재검증 실패: {exc}"
-        return None
-    if declared["kind"] == GATE_RESOLUTION_FIXED:
-        selected_evidence_problem = evidence_problem
-        if (
-            allow_legacy_internal_fixed
-            and internal_fixed_proof_status(declared) == "legacy-unverifiable"
-        ):
-            # 지문 도입 전 **기선언**만 소급 보존한다. 새 선언 경로는 이 함수를 거치지 않고
-            # `internal_gate_evidence_problem`을 직접 호출하므로 증명 불가 라운드를 열 수 없다.
-            selected_evidence_problem = _legacy_internal_gate_evidence_problem
-        problem = _fixed_evidence_problem(
-            ledger_data,
-            entry,
-            declared["evidence_gate"],
-            evidence_problem=selected_evidence_problem,
-        )
-        return None if problem is None else f"{prefix} · {label} — {problem}"
-    ticket = declared["ticket"]
-    found = find_ticket_exact(ticket, search_dirs=search_dirs)
-    if found is None:
-        return (f"{prefix} · {label} {ticket} — 그 티켓을 보드에서 찾지 못했습니다 "
-                "(ID 오기 또는 미생성)")
-    if found[0] != "done":
-        return (f"{prefix} · {label} {ticket} — 아직 done 이 아닙니다(현재 {found[0]}) · "
-                "재설계는 면제가 아니라 같은 릴리즈 안 소화입니다")
-    return None
+    if not allow_pm_verified:
+        return f"{prefix} · {label} — 이 장부에서는 pm-verified 처분을 허용하지 않습니다"
+    if pm_verified_problem is None:
+        return f"{prefix} · {label} — 발동 조건을 재검증할 수 없습니다(호출부 설정 누락)"
+    problem = pm_verified_problem()
+    return None if problem is None else f"{prefix} · {label} — 발동 조건 재검증 실패: {problem}"
 
 
 def _unresolved_must_fix_data(data: object, ledger: Path) -> list[str]:
@@ -8733,23 +8454,15 @@ def _unresolved_must_fix_data(data: object, ledger: Path) -> list[str]:
     if not isinstance(data, dict):
         return ["  · 라운드 장부 형식 오류(최상위가 매핑이 아님) — 잔여 must-fix 를 확인할 수 "
                 "없어 차단합니다"]
-    try:
-        search_dirs = _release_gate_search_dirs(ledger)
-    except _ReleaseGateBoardResolutionError as exc:
-        return [
-            "  · 라운드 장부의 board 소유 PM 홈 해소 실패 — "
-            f"{exc} 처분 상태를 확인할 수 없어 차단합니다"
-        ]
     problems: list[str] = []
     for gate, entry in sorted(data.items()):
         if gate == _REVIEW_LEDGER_WAVE_KEY:
             continue                     # 예약 키(wave 예산 절)는 게이트가 아니다.
         # 추가 리뷰어(release) 축은 pm-verified 처분을 허용한다 — PM rejected/기계 확인 증거로
         # 채널 폐지 뒤에도 외부 재송신 없이 잔여를 종결할 수 있어야 한다(콜백은 그 게이트의
-        # 잔여 must-fix 건수로 스코프한 채널 격리 재검증). pm-fixed 는 계속 허용하지 않는다 —
-        # 이 장부에는 pm-fixed 발동 형상(상한+confirm-fix 소진)이 성립하지 않는다.
+        # 잔여 must-fix 건수로 스코프한 채널 격리 재검증).
         problem = _gate_disposition_problem(
-            gate, entry, data, search_dirs,
+            gate, entry,
             allow_pm_verified=True,
             pm_verified_problem=_gate_pm_verified_problem(
                 gate, entry, GATE_CHANNEL_ADDITIONAL,
@@ -10832,19 +10545,7 @@ def _pm_verified_evidence_problem(tid: str, *, channel: str, entry: dict) -> str
         spec_text, rounds,
         reviewer_role=reviewer_role,
         surface_floor=gate_residual_must_fix(entry),
-        # 설계 축 accepted 는 기계 확인으로 닫히지 않는다 — 그 잔여를 여는 유일한 사실인
-        # 묶음 재설계 기준선을 **장부에서 읽어** 넘긴다. 선언(pm_delegate)과 이 재검증이 같은
-        # 사실을 보므로 "선언은 되는데 완료가 막히는" 형상이 생기지 않는다.
-        design_replan_ordinal=ticket_design_replan_ordinal(tid, spec_text),
     )
-
-
-def ticket_design_replan_ordinal(tid: str, ticket_text: str) -> int:
-    """이 티켓이 속한 묶음의 마지막 재설계 기준선(없으면 0).
-
-    묶음 귀속은 명세 frontmatter 가 말한다(필드 부재는 크기 1 해석 · 장부 부재는 0).
-    """
-    return cluster_replan_baseline(load_cluster(ticket_cluster_from_text(tid, ticket_text)))
 
 
 def _gate_pm_verified_problem(
@@ -10885,11 +10586,6 @@ def _internal_review_completion_problem(tid: str) -> str | None:
     disposition_problem = _gate_disposition_problem(
         tid,
         entry,
-        ledger,
-        _ticket_search_dirs(),
-        evidence_problem=internal_gate_evidence_problem,
-        allow_legacy_internal_fixed=True,
-        allow_pm_fixed=True,
         allow_pm_verified=True,
         # 내부 완료 축도 자기 채널로 스코프한다 — 그 게이트 장부 잔여를 표면 하한으로 삼아
         # 추가 리뷰어 채널의 기계 확인이 내부 잔여를 여는 경로를 닫는다(채널 격리 양방향).
@@ -10897,13 +10593,7 @@ def _internal_review_completion_problem(tid: str) -> str | None:
     )
     if disposition_problem is None:
         declared = gate_resolution(entry)
-        if declared is not None and declared["kind"] == GATE_RESOLUTION_PM_FIXED:
-            print(
-                f"주의: internal code-reviewer 완료 증거는 리뷰 통과가 아니라 "
-                f"{_load_review_rounds().describe_pm_fixed_resolution(declared)} 입니다.",
-                file=sys.stderr,
-            )
-        elif declared is not None and declared["kind"] == GATE_RESOLUTION_PM_VERIFIED:
+        if declared is not None and declared["kind"] == GATE_RESOLUTION_PM_VERIFIED:
             print(
                 f"주의: internal code-reviewer 완료 증거는 리뷰 통과가 아니라 "
                 f"{_load_review_rounds().describe_pm_verified_resolution(declared)} 입니다.",
@@ -12754,7 +12444,7 @@ def _publish_overlap_material(tid: str, touches: object, repo: str) -> list[str]
 # 설계·리뷰·fix 를 묶음당 1회로 도는 운영 단위를 board 가 소유한다. 장부는
 # `tickets/clusters/<id>.md`(frontmatter 만)이고 STATUS_DIRS 밖 sibling 이라
 # (`tickets/rounds/` 와 같은 형상) 상태 순회·board.md 렌더에 섞이지 않는다. 장부가 담는 것은
-# 멤버십·통합 브랜치·설계 spike·라운드 예산·재설계 기록뿐이다 — 라운드 산출 자리는 종전대로
+# 멤버십·통합 브랜치·설계 spike·고정 라운드 예산뿐이다 — 라운드 산출 자리는 종전대로
 # `tickets/rounds/<티켓>/` 이고 장부는 그것을 담지 않는다.
 #
 # **특례가 없다** — 티켓 하나짜리 묶음도 크기 1 클러스터다. `new` 는 그 티켓 이름의 크기 1
@@ -12770,19 +12460,13 @@ CLUSTER_STATUS_OPEN = "open"
 CLUSTER_STATUSES: tuple[str, ...] = ("open", "review", "fix", "closing", "closed")
 CLUSTER_ACTIVE_STATUSES: tuple[str, ...] = CLUSTER_STATUSES[:-1]
 # 라운드 예산 기본값 — 초과 판정(예약 거부)은 라운드 예약 표면이 소유하고, 여기서는 장부에
-# 박는 기본값 한 벌만 정의한다(정의 지점 1 · 리셋도 이 값을 다시 쓴다).
+# 박는 기본값 한 벌만 정의한다(각 단계 정확히 1회).
 CLUSTER_BUDGET_DEFAULT: dict[str, int] = {
     "architect": 1, "developer_per_ticket": 1, "code-reviewer": 1, "fix": 1,
 }
-# 재설계(replan) 기록 1건의 키. `from_ordinal` 은 그 재설계 시점 멤버 라운드의 최대 순번이고,
-# 예산 판정은 **그 순번 뒤** 라운드만 이번 주기로 센다 — 리셋을 "장부에 적힌 수" 가 아니라
-# 관측 가능한 기준선으로 만든다(라운드 파일은 지우지 않는다). 스키마는 장부 소유자인 여기
-# 한 자리에 두고 소비자(라운드 예약 표면)는 이 상수를 읽는다(문자열 재타이핑 0).
-CLUSTER_REPLAN_BASELINE_KEY = "from_ordinal"
-CLUSTER_REPLAN_KEYS: tuple[str, ...] = ("ts", "reason", CLUSTER_REPLAN_BASELINE_KEY)
 # 장부 frontmatter 키 선언 순서 — 사람이 읽는 자리라 순서를 고정한다(미래 키는 뒤에 붙는다).
 CLUSTER_LEDGER_KEYS: tuple[str, ...] = (
-    "id", "tickets", "base_branch", "branch", "spike", "budget", "replans", "status",
+    "id", "tickets", "base_branch", "branch", "spike", "budget", "status",
 )
 # 이름 문법 — 파일명과 git 브랜치 이름에 그대로 들어가므로 경로 구분자·refname 금칙을 배제한
 # 보수적 집합만 받는다(`_validate_prefix` 와 같은 입력측 sanity 자리).
@@ -12961,28 +12645,6 @@ def cluster_members(cluster: str) -> tuple[str, ...]:
     return () if declared else (candidate,)
 
 
-def cluster_replan_baseline(fm: dict[str, Any] | None) -> int:
-    """장부의 마지막 재설계 기준선 — 그 순번 **뒤** 라운드만 이번 주기다(없으면 0).
-
-    소비자는 둘이다: 라운드 예약 표면의 예산 판정과, 설계 축 accepted 잔여의 종결 판정. 두
-    소비자가 같은 이 한 판독을 봐야 "예산은 리셋됐는데 잔여는 안 열린" 상태가 생기지 않는다.
-    값 형식이 어긋난 기록은 세지 않는다 — 리셋을 주장하려면 관측 가능한 기준선이 있어야 한다.
-    """
-    if not isinstance(fm, dict):
-        return 0
-    replans = fm.get("replans")
-    if not isinstance(replans, list):
-        return 0
-    baseline = 0
-    for item in replans:
-        if not isinstance(item, dict):
-            continue
-        value = item.get(CLUSTER_REPLAN_BASELINE_KEY)
-        if isinstance(value, int) and not isinstance(value, bool) and value > baseline:
-            baseline = value
-    return baseline
-
-
 def _cluster_of_record(tid: str) -> str | None:
     """**장부 파일이** 이 티켓을 멤버로 담고 있는 클러스터 id (없으면 None).
 
@@ -12999,7 +12661,7 @@ def _new_cluster_fm(
     base_branch: str | None = None, branch: str | None = None,
     spike: str | None = None,
 ) -> dict[str, Any]:
-    """새 장부 frontmatter — 예산 기본값과 빈 재설계 기록을 함께 박는다."""
+    """새 장부 frontmatter — 고정 단계별 1회 예산을 박는다."""
     return {
         "id": cluster_id_for_name(cluster),
         "tickets": list(tickets),
@@ -13007,7 +12669,6 @@ def _new_cluster_fm(
         "branch": branch,
         "spike": spike,
         "budget": dict(CLUSTER_BUDGET_DEFAULT),
-        "replans": [],
         "status": CLUSTER_STATUS_OPEN,
     }
 
@@ -13051,7 +12712,7 @@ def _cluster_release_member(cluster: str, tid: str) -> Path | None:
 
     발행이 자동으로 만든 크기 1 장부가 비면 그 파일을 지운다: 엔진이 방금 만들고 엔진이 비운
     산출물이고, 남겨 두면 멤버 0 인 장부가 lint 잡음으로 상주한다. 사람이 선언한 묶음(이름이
-    티켓 ID 가 아니거나 브랜치·재설계 기록이 있는 장부)은 비어도 지우지 않는다.
+    티켓 ID 가 아니거나 브랜치가 있는 장부)은 비어도 지우지 않는다.
 
     삭제 실패에서 관용하는 것은 **부재(`FileNotFoundError`)뿐**이다 — 이미 없으면 이 호출이
     원하는 상태라 멱등이다. 그 밖의 삭제 실패는 올린다: 삼키면 옛 장부가 멤버를 그대로 쥔 채
@@ -13068,7 +12729,6 @@ def _cluster_release_member(cluster: str, tid: str) -> Path | None:
         not members
         and is_auto_cluster_id(cluster) is not None
         and not fm.get("branch")
-        and not fm.get("replans")
     )
     if auto_shape:
         with contextlib.suppress(FileNotFoundError):
@@ -13322,8 +12982,6 @@ def _cmd_cluster_show(args: argparse.Namespace) -> int:
     budget = fm.get("budget") if isinstance(fm.get("budget"), dict) else {}
     print("  budget: " + (" · ".join(f"{key}={value}" for key, value in budget.items())
                           or "—"))
-    replans = fm.get("replans") if isinstance(fm.get("replans"), list) else []
-    print(f"  replans: {len(replans)}")
     for tid in declared:
         found = find_ticket_exact(tid)
         if found is None:
@@ -13336,73 +12994,11 @@ def _cmd_cluster_show(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cluster_round_baseline(members: Sequence[str]) -> int:
-    """멤버 전체 라운드의 최대 순번 — 재설계가 예산을 리셋하는 기준선.
-
-    라운드 파일은 지우지 않는다(산출 보존). 대신 "이 순번 뒤부터가 새 주기"라는 기준선을
-    장부에 박아, 예약 표면이 같은 관측으로 이번 주기의 라운드만 세게 한다.
-    """
-    rounds_module = _load_ticket_rounds()
-    directory = tickets_dir()
-    baseline = 0
-    for tid in members:
-        for item in rounds_module.load_rounds(directory, tid):
-            baseline = max(baseline, int(item.ordinal))
-    return baseline
-
-
-def _cmd_cluster_replan(args: argparse.Namespace) -> int:
-    """재설계 1회 — 예산 리셋 + 기준선 박제. 라운드 파일은 만들지 않는다.
-
-    예산을 넘겼거나 순서 밖 역할이 필요해진 묶음의 **유일한 출구**다(우회 플래그 없음). 리셋
-    뒤 다음 준비는 다시 설계(architect) 1 라운드부터다 — 라운드를 한 번 더 얹는 수단이 아니라
-    주기를 다시 여는 선언이라, 사유를 필수로 받아 장부에 남긴다.
-
-    라운드 자리는 예약 표면(`ticket prepare`)이 소유한다 — 여기서 시드를 깔면 run-dir 없는
-    고아 라운드가 생긴다. 그래서 이 명령이 바꾸는 것은 장부 3필드(`replans`·`budget`·`status`)뿐이다.
-    """
-    reason = (getattr(args, "reason", None) or "").strip()
-    if not reason:
-        print("[중단] cluster replan 에는 `--reason <사유>` 가 필수다 — 재설계는 기록을 "
-              "남기는 선언이다.", file=sys.stderr)
-        return 1
-    cluster = cluster_id_for_name(args.name)
-    with board_lock():
-        fm = load_cluster(cluster)
-        if fm is None:
-            print(f"cluster not found: {cluster} — 재설계는 선언된 장부에만 기록한다 "
-                  f"(`cluster new` 로 먼저 선언하라)", file=sys.stderr)
-            return 2
-        members = cluster_tickets(fm)
-        baseline = _cluster_round_baseline(members)
-        replans = fm.get("replans")
-        if not isinstance(replans, list):
-            replans = []
-        replans.append({
-            "ts": _load_review_rounds().utc_now_iso(),
-            "reason": reason,
-            CLUSTER_REPLAN_BASELINE_KEY: baseline,
-        })
-        fm["replans"] = replans
-        fm["budget"] = dict(CLUSTER_BUDGET_DEFAULT)
-        fm["status"] = CLUSTER_STATUS_OPEN
-        path = dump_cluster(fm)
-    print(f"replan {cluster} — 재설계 {len(replans)}회차 · 기준선 순번 {baseline} · "
-          f"예산 리셋({' · '.join(f'{k}={v}' for k, v in CLUSTER_BUDGET_DEFAULT.items())})")
-    print(f"  다음 준비는 architect 1 라운드다: 사유 {reason}")
-    ready = _board_git_sync_best_effort(f"cluster replan {cluster}", (path,))
-    if not ready:
-        print("  ⚠ board-git 기록 보류: local-only/uncommitted", file=sys.stderr)
-    return 0
-
-
 def cmd_cluster(args: argparse.Namespace) -> int:
-    """`cluster new|show|replan` — 운영 단위(티켓 묶음) 장부의 생성·조회·재설계."""
+    """`cluster new|show` — 고정 5단계 운영 단위 장부의 생성·조회."""
     leaf = getattr(args, "cluster_cmd", "")
     if leaf == "new":
         return _cmd_cluster_new(args)
-    if leaf == "replan":
-        return _cmd_cluster_replan(args)
     return _cmd_cluster_show(args)
 
 
@@ -19338,13 +18934,6 @@ def build_parser() -> argparse.ArgumentParser:
     cp = cluster_sub.add_parser("show", help="장부 1건 조회(선언값 + 멤버 현재 status)")
     cp.add_argument("name", metavar="<이름>")
     identity_args.add_identity_args(cp)  # 브랜치 실재 판정 트리 해소(조회 표시용)
-    cp.set_defaults(fn=cmd_cluster)
-
-    cp = cluster_sub.add_parser(
-        "replan", help="재설계 1회 — 라운드 예산 리셋 + 기준선·사유 기록(예산 초과의 유일한 출구)")
-    cp.add_argument("name", metavar="<이름>")
-    cp.add_argument("--reason", required=True, metavar="<사유>",
-                    help="재설계 사유(장부에 그대로 박제된다)")
     cp.set_defaults(fn=cmd_cluster)
 
     p = sub.add_parser(

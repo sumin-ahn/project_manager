@@ -76,7 +76,13 @@ def _finding(
     return {
         "id": fid, "class": classification, "severity": "must-fix",
         "authority": "[[T-0786]] §완료 조건", "evidence": f"{fid} probe",
-        "recommendation": f"{fid} fix", "design_change": design_change,
+        "recommendation": f"{fid} fix",
+        "fix_contract": {
+            "location": "src/example.py:1", "failure": f"{fid} probe",
+            "design": f"{fid} fix", "test": f"{fid} regression",
+            "command": "python3 --version", "expected": "Python",
+        },
+        "design_change": design_change,
     }
 
 
@@ -494,7 +500,7 @@ def test_resolved_confirmation_requires_expected_substring_in_observed(pd):
     assert caught.value.code == "malformed"
 
 
-def test_machine_confirmation_rejected_for_design_axis_finding(pd):
+def test_machine_confirmation_closes_design_axis_when_reviewer_supplied_test_contract(pd):
     r1 = _round(pd, 1, "code-reviewer", _reviewer_round_text(
         pd, [_finding("F-001", classification="design-proposal", design_change=True)],
     ))
@@ -504,10 +510,8 @@ def test_machine_confirmation_rejected_for_design_axis_finding(pd):
     dev2 = _round(pd, 2, "developer", _developer_round_text(
         pd, [_verify_row("F-001")],
     ))
-    spec_bad = spec + _confirmation_block(pd, 2, [_confirmation_row("F-001", "resolved")])
-    with pytest.raises(pd.PMReviewError, match="설계 축") as caught:
-        _verify_delta(pd, spec_bad, [r1, dev2])
-    assert caught.value.code == "malformed"
+    spec_ok = spec + _confirmation_block(pd, 2, [_confirmation_row("F-001", "resolved")])
+    assert _verify_delta(pd, spec_ok, [r1, dev2]).accepted == ()
 
 
 def test_rejected_finding_id_reappearing_in_machine_confirmation_is_malformed(pd):
@@ -559,7 +563,7 @@ def test_unresolved_machine_confirmation_keeps_finding_accepted(pd):
 
 # ── verify-template CLI 판정면 ──────────────────────────────────────────
 
-def test_verify_template_routes_design_axis_and_dev_declared_reasons_to_reviewer(pd):
+def test_verify_template_uses_reviewer_test_contract_even_for_design_axis(pd):
     r1 = _round(pd, 1, "code-reviewer", _reviewer_round_text(pd, [
         _finding("F-001", classification="design-proposal", design_change=True),
         _finding("F-002"),
@@ -576,13 +580,12 @@ def test_verify_template_routes_design_axis_and_dev_declared_reasons_to_reviewer
         ),
     ]))
     template = pd.pm_review_verify_template(spec, [r1, dev2])
-    assert template.machine_rows == ()
+    assert [(source, row.id) for source, row in template.machine_rows] == [(2, "F-001")]
     assert template.missing == ()
     reasons = {
         finding_id: (source_round, reason)
         for finding_id, source_round, reason in template.reviewer_required
     }
-    assert reasons["F-001"][0] == 2 and "설계 축" in reasons["F-001"][1]
     assert reasons["F-002"][0] == 2 and "design-judgment" in reasons["F-002"][1]
 
 
@@ -836,9 +839,7 @@ def test_gate_disposition_problem_rejects_pm_verified_when_not_allowed(board):
         },
         "rounds": [{"sequence": 1, "verdict": 1, "must_fix": 1}],
     }
-    problem = board._gate_disposition_problem(
-        "T-0786", entry, {"T-0786": entry}, [],
-    )
+    problem = board._gate_disposition_problem("T-0786", entry)
     assert problem is not None and "허용하지 않습니다" in problem
 
 
@@ -851,7 +852,7 @@ def test_gate_disposition_problem_accepts_pm_verified_when_evidence_clears(board
         "rounds": [{"sequence": 1, "verdict": 1, "must_fix": 1}],
     }
     problem = board._gate_disposition_problem(
-        "T-0786", entry, {"T-0786": entry}, [],
+        "T-0786", entry,
         allow_pm_verified=True, pm_verified_problem=lambda: None,
     )
     assert problem is None
@@ -866,7 +867,7 @@ def test_gate_disposition_problem_surfaces_pm_verified_evidence_failure(board):
         "rounds": [{"sequence": 1, "verdict": 1, "must_fix": 1}],
     }
     problem = board._gate_disposition_problem(
-        "T-0786", entry, {"T-0786": entry}, [],
+        "T-0786", entry,
         allow_pm_verified=True,
         pm_verified_problem=lambda: "PM 판정 accepted 잔여가 있습니다: F-001",
     )
@@ -1308,9 +1309,11 @@ def test_unfilled_seed_row_in_a_later_round_buries_the_earlier_gap_row(
     assert template.missing == ("F-001",) and template.gap == ()
     # 같은 라운드에서 채워진 ID 의 확인은 그대로 살아 있다(부분 확인 인질 금지).
     assert [source for source, _row in template.machine_rows] == [3]
-    # 시드는 열린 accepted 전건을 싣는다 — 선언이 지워진 F-001 은 자리표시자, F-002 는 최신 값.
+    # 시드는 열린 accepted 전건을 싣는다 — 선언이 지워져도 reviewer 계약이 F-001의
+    # 실행 가능한 기본값을 복구하고, F-002는 최신 developer 값을 유지한다.
     assert template.seed_prefill_rows() == (
-        ("F-001", None),
+        ("F-001", {"command": "python3 --version", "expected": "Python",
+                   "before": "F-001 probe", "reason": ""}),
         ("F-002", {"command": "echo hey2", "expected": "hey2", "before": "bye",
                    "reason": ""}),
     )

@@ -103,7 +103,7 @@ PM wave의 claim·finish·qa·dev-delegate·handoff·regression은 **스킬/comm
 
 리뷰는 내부 code-reviewer(generate≠evaluate)와 **추가 리뷰어**(additional reviewer·엔진 이름 `external_review`)를 병행한다. 코드: `python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN`; 설계(ADR/spike): `--base <ref> --paths .project_manager/wiki/decisions/ ... --gate <T-NNNN|ADR-NNNN>`(회계 밖 자문만 `--no-gate` 명시). 전제는 `additional_reviewer.enabled=true`(opt-in), 상세·diff-only 한계는 [`pm_playbook.md`](pm_playbook.md) §"검토 루프". Claude Bash 도구 실행은 호출층 `timeout: 29300000`(ms)을 반드시 명시하며, 엔진 CLI `--timeout`은 이 호출층 상한을 대신하지 않는다.
 
-내부 루프의 라운드 비용 규율은 [`pm_playbook.md`](pm_playbook.md) §"라운드 프로토콜"이 단일 진실이다 — 지정 회귀만(전체 회귀는 릴리즈 절차 1단계 1회) · 검증 근거 지정 의무 · versioned finding/PM disposition · accepted-only delta. 라운드 **수**는 묶음 장부의 고정 예산(설계 1 · 개발 N · 리뷰 1 · fix 1)이 정하고 초과의 유일한 출구는 재설계다.
+내부 루프의 수렴 불변식은 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"이 단일 진실이고, 실행 절차는 [`pm_playbook.md`](pm_playbook.md) §"라운드 프로토콜"을 따른다. 묶음 장부는 architect 1 · developer 1 · code-reviewer 1 · developer(fix) 1의 고정 순서만 허용하며, fix 뒤에는 사람 라운드를 열지 않는다.
 
 ## 위임 축 · PM=synthesis
 
@@ -126,26 +126,27 @@ PM은 여러 출처의 synthesis를 직접 흡수하고, bounded fact-gather·�
 모든 티켓은 명세 파일 하나(`tickets/<상태>/<id>.md`)와 라운드 디렉터리
 (`tickets/rounds/<id>/NN-<역할>.md`)로 이뤄진다. 명세는 PM이 소유하고, 역할 산출은 라운드 파일이
 한 건씩 누적한다. **라운드 순번이 곧 단계**이며 묶음 멤버 전부가 같은 순번을 쓴다 —
-`01-architect` → `02-developer` → `03-code-reviewer` → `04-developer`(fix · accepted 있는 티켓만),
-재설계마다 `architect`·`developer(fix)` 쌍이 뒤에 붙는다. 예산은 묶음 장부가 선언하고 예약 표면이
-예산 초과와 순서 밖 역할을 거부하며, 초과의 유일한 출구는 재설계다(라운드를 더 얹는 플래그는 없다).
+`01-architect` → `02-developer` → `03-code-reviewer` → `04-developer`(fix)다. 예산은 묶음 장부가
+각 자리를 정확히 1회로 선언하고 예약 표면이 생략·반복·순서 밖 역할을 거부한다. fix 실패나 예산
+초과는 라운드를 더 열지 않고 티켓을 정지해 사용자에게 보고한다.
 
 PM이 명세에 대략 내용(목표·방향·범위)을 자족적으로 쓴 **초안**을 architect **점검 라운드**가
 실측 대조(본문이 인용한 `파일:줄`·touches 경로)·cross-module 영향(다른 열린 티켓과의 충돌·의존)·
 최소 수단(기존 seam 재사용·삭제 대안·새 설정 키/플래그·서브커맨드의 필요성)으로 검증하고, PM이
 바뀐 지점을 확인해 **비준**한 뒤 promote 한다. 그 점검은 묶음당 세션 1회이며 산출은 티켓별 라운드
 파일 N개다. PM은 자기 초안의 리뷰어가 아니다(generate ≠ evaluate) — 초안 작성과 검증은 다른 역할이
-맡는다. 점검 라운드 회수는 `design: required|done` 티켓에서 promote 조건으로 기계 강제되고(미회수면
+맡는다. architect는 같은 산출에 developer가 구현 전에 반드시 통과시킬 테스트 계약을 남긴다. 점검 라운드 회수는 `design: required|done` 티켓에서 promote 조건으로 기계 강제되고(미회수면
 rc=1), 그 밖의 티켓에는 규범으로 적용한다. **설계 면제 값은 없다** — 설계가 몇 줄이면 몇 줄로 쓰고
 `design: done` 으로 올린다(면제를 남기면 그 티켓만 순번이 어긋난다).
 
 리뷰도 묶음 1회다. 리뷰 입력은 통합 브랜치와 묶음 브랜치의 merge-base 이후 묶음 브랜치 변경 전부이고,
 격리 스냅샷 생성·프롬프트 조립·라운드 자리 예약을 엔진이 한다(PM의 손 git 0 — 구현 산출은 그
-라운드를 돌려받을 때 이미 커밋돼 있다). 구현 결함은 developer가
-고치고, 설계 결함은 재설계가 architect 라운드를 새로 연 뒤 developer가 재구현한다. reviewer finding은
+라운드를 돌려받을 때 이미 커밋돼 있다). reviewer finding은
 PM 판정 전 증거·제안이며 developer 명령이 아니다. PM은 versioned disposition으로 전수 판정하고
 `pm_delegate.py review delta --cluster`가 낸 accepted-only delta만 재작업에 쓴다. decision-required는
-권위 개정 전 차단하며 fix 1회 뒤에도 accepted 잔여가 있으면 재설계·분할로 전환한다. 라운드 파일의
+현재 티켓을 정지해 사용자 결정을 요청한다. reviewer must-fix는 fix가 바로 실행할 수정·테스트 계약을
+모두 포함해야 하고, fix는 그 계약과 architect 테스트 및 전체 회귀를 통과해야 한다. 실패하면 추가
+라운드 없이 정지·보고한다. 라운드 파일의
 이름·순번은 엔진이 만들며(`section-add`는 슬롯 없는 준비, `ticket prepare`는 위임용 준비),
 에이전트가 파일을 만들지 않는다.
 
@@ -176,8 +177,7 @@ developer/code-reviewer draft 실행과 blocked/done 전 역할은 예약 전에
 3. **normal** — 위 두 단계가 아닌 경우. 기본 developer 프로필로 위임한다.
 
 티어는 **어느 프로필로 위임하는가**만 정한다. 위임하는 티켓의 경로는 티어와 무관하게 하나다 —
-묶음 4단계(설계 → 구현 → 리뷰 → 수정)이고, 그 안에서 안 풀리면 재설계를 기록한 뒤 처음부터 다시
-돈다.
+묶음 4단계(설계 → 구현 → 리뷰 → 수정)이며 수정이 마지막 사람 라운드다.
 
 근거를 한 문장으로 확정할 수 없으면 상향한다. 세부 용어·판별 절차는
 [`pm_playbook.md`](pm_playbook.md) §"Wave 패턴"이 단일 진실이다.
@@ -218,9 +218,9 @@ developer·reviewer·추가 리뷰어 없이 PM이 직접 편집할 수 있다. 
 
 PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비용으로·밖으로 내보낼지* 결정한다.
 
-**자율+사후 `log/current.md` 기록:** 새 ticket, super-ticket 분할, `depends_on`·`blocks` 변경, `block`·`unblock`, spec 추출·갱신, 일상 ADR(`scope: internal-process`), 위임·세션 spawn, 추가 리뷰어 wave 예산 상한의 **같은 scope 정상 수렴 ack**(`--ack-wave` — 리뷰 라운드 축엔 재개 ack 자체가 없다).
+**자율+사후 `log/current.md` 기록:** 사용자가 선택한 목표 안에서 **claim 전** 자족성을 위한 super-ticket 분할(원 티켓을 대체·종결하고 목표 확대 0), `depends_on`·`blocks` 변경, `block`·`unblock`, spec 추출·갱신, 일상 ADR(`scope: internal-process`), 위임·세션 spawn, 추가 리뷰어 wave 예산 상한의 **같은 scope 정상 수렴 ack**(`--ack-wave` — 리뷰 라운드 축엔 재개 ack 자체가 없다).
 
-**사용자 게이트(사전 동의):** [[pm_role.local.md]] §사용자 게이트. 예: 미션·핵심 안전 경계, 유료/한도 API 대량 호출, 키 발급·외부 게시·배포, `scope:mission` ADR.
+**사용자 게이트(사전 동의):** 새 ticket·claim 뒤 분할·현재 목표 확대, [[pm_role.local.md]] §사용자 게이트. 그 밖의 예: 미션·핵심 안전 경계, 유료/한도 API 대량 호출, 키 발급·외부 게시·배포, `scope:mission` ADR. 리뷰 finding·suggestion은 새 ticket 발행 승인이 아니다.
 
 **작업 중단 사유 판정.** 유효 집합 3항목만 작업 중단 사유로 인정한다. 무효 집합 5항목으로 중단하면 규약 위반이다. 각 항목은 조건과 결론을 함께 판정한다.
 
@@ -242,10 +242,10 @@ PM은 *어떻게*를 자율 결정하고, 사용자는 *무엇을·얼마의 비
 
 - **다음 행동 명시**: 조건: 세션이 "여기까지"라고 알리면서 다음 행동을 명시하지 않은 미완 보고. 결론: 다음 행동 없는 미완 보고는 규약 위반이다.
 - **자기 수행 우선**: 조건: 세션이 직접 수행할 수 있는 다음 행동이 남은 상태. 결론: 수행 가능한 행동을 남긴 미완 보고는 규약 위반이다.
-- **상한 이후 계속**: 조건: 라운드·wave 상한 도달로 해당 루프가 정지한 상태. 결론: 재설계·분할·다음 티켓으로 계속한다.
+- **상한 이후 보고**: 조건: 라운드·wave 상한 도달로 해당 루프가 정지한 상태. 결론: 라운드를 더 열거나 board를 쓰지 않고 현재 티켓 상태와 실패 근거를 사용자에게 보고한다.
 - **종료·축소 권한**: 조건: 세션 종료 또는 작업 축소를 결정하는 경우. 결론: 세션 종료·작업 축소는 사용자 지시로만 한다.
 
-비용 동의는 **켤 때 한 번**이다 — `additional_reviewer.enabled=true`(추가 리뷰어)는 설정된 외부 전송과 통상 과금에 대한 지속 의사표시이고, 그 뒤 호출마다 비용을 다시 묻지 않는다. 위임의 `delegate.enabled`는 동의 축이 아니라 "위임을 해도 되는가"를 정하는 마스터 스위치다(기본 허용·채널 무관). 라운드/wave 상한은 비용 게이트가 아니라 기계적 anti-loop 정지다(§"검토 루프"). **리뷰 라운드 축은 연장 승인이 없다** — 상한 2회(`additional_reviewer.rounds_max`)·직전 라운드 대비 must-fix 증가(발산) 조기 차단에 걸리면 출구는 재설계·티켓 분할이고, 해소 확인만 필요할 때 게이트당 1회 `--confirm-fix`(확인 전용 라운드)를 쓴다. 사용자에게 올리는 경우는 중대 scope 확대·독립적 사용자 게이트 사유다.
+비용 동의는 **켤 때 한 번**이다 — `additional_reviewer.enabled=true`(추가 리뷰어)는 설정된 외부 전송과 통상 과금에 대한 지속 의사표시이고, 그 뒤 호출마다 비용을 다시 묻지 않는다. 위임의 `delegate.enabled`는 동의 축이 아니라 "위임을 해도 되는가"를 정하는 마스터 스위치다(기본 허용·채널 무관). 라운드/wave 상한은 비용 게이트가 아니라 기계적 anti-loop 정지다(§"검토 루프"). 리뷰 라운드 축은 연장 승인이 없고 상한이나 발산 차단에 걸리면 현재 티켓을 정지해 사용자에게 보고한다. 사용자에게 올리는 경우는 중대 scope 확대·독립적 사용자 게이트 사유다.
 
 **금지(양측 합의+별도 ADR 필요):** [[pm_role.local.md]] §금지. 예: 미션 변경, 핵심 안전 경계(kill switch/한도/보호 영역) 약화, 영구 수동 영역 자동화.
 

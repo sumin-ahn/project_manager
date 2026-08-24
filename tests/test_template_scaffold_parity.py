@@ -498,6 +498,75 @@ def test_shipped_delegate_card_carries_engine_round_ordinals(name: str):
 
 
 @pytest.mark.parametrize("name", TEMPLATE_NAMES)
+@pytest.mark.parametrize("stem", ("pm-ticket", "pm-review"))
+def test_shipped_authoring_and_review_guides_reference_the_canonical_principles(
+    name: str, stem: str,
+):
+    """ticket/reviewer 출하 표면이 수렴 원문을 복제하지 않고 참조한다.
+
+    architect/reviewer 역할 카드의 호환성(변경 폭) 계약은 아래 역할별 테스트가
+    더 구체적인 필드와 함께 검증한다. 위임 스킬의 모든 평탄 command 표면에까지
+    원문 절 이름을 복제하라는 과도한 제약은 두지 않는다.
+    """
+    cards = _shipped_cards(name, stem)
+    assert cards, f"{name}: {stem} 출하 카드 누락"
+    for card in cards:
+        text = card.read_text(encoding="utf-8")
+        assert "pm_principles.md" in text
+        assert "티켓과 위임" in text
+
+
+@pytest.mark.parametrize("name", TEMPLATE_NAMES)
+@pytest.mark.parametrize(
+    "stem", ("pm-dev-delegate", "pm-review", "pm-wave-finish", "pm-release"),
+)
+def test_shipped_current_workflow_guides_do_not_move_review_residue_to_a_new_ticket(
+    name: str, stem: str,
+):
+    cards = _shipped_cards(name, stem)
+    assert cards, f"{name}: {stem} 출하 카드 누락"
+    retired = (
+        "후속 티켓으로", "다음 티켓으로", "별도 티켓으로",
+        "cluster replan", "--resolve-gate <게이트> --into",
+        "--resolve-gate <게이트> --fixed",
+    )
+    for card in cards:
+        text = card.read_text(encoding="utf-8")
+        found = [phrase for phrase in retired if phrase in text]
+        assert not found, f"{card.relative_to(REPO)}: 폐지 처방 잔존 {found}"
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "claude_code/.claude/agents/architect.md",
+        "codex/.codex/agents/architect.toml",
+        "opencode/.opencode/agents/architect.md",
+    ),
+)
+def test_shipped_architect_contracts_name_required_test_fields(relative: str):
+    text = (TEMPLATES / relative).read_text(encoding="utf-8")
+    for marker in ("pm_principles.md", "대상", "명령", "기대값", "음성"):
+        assert marker in text, f"{relative}: architect 계약 marker 누락 {marker}"
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "claude_code/.claude/agents/code-reviewer.md",
+        "codex/.codex/agents/code-reviewer.toml",
+        "opencode/.opencode/agents/code-reviewer.md",
+    ),
+)
+def test_shipped_reviewer_contracts_name_complete_fix_inputs(relative: str):
+    text = (TEMPLATES / relative).read_text(encoding="utf-8")
+    for marker in (
+        "pm_principles.md", "코드 위치", "오류 거동", "수정 설계", "추가 회귀", "명령", "기대값",
+    ):
+        assert marker in text, f"{relative}: reviewer fix 계약 marker 누락 {marker}"
+
+
+@pytest.mark.parametrize("name", TEMPLATE_NAMES)
 def test_shipped_finish_card_carries_engine_close_steps(name: str):
     """출하 종결 카드가 엔진 종결 단계 이름 전수와 단계 수를 싣는다."""
     cards = _shipped_cards(name, "pm-wave-finish")

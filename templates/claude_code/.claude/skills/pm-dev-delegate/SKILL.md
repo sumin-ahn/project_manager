@@ -37,13 +37,11 @@ python3 .project_manager/tools/ticket_finish.py --cluster <C-이름>
 ```
 
 - **예산은 장부가 선언한다** — `architect 1 · developer_per_ticket 1 · code-reviewer 1 · fix 1`.
-  라운드 예약이 예산 초과와 순서 밖 역할을 거부하며 처방은 재설계 하나다:
-  `python3 .project_manager/tools/board.py cluster replan <이름> --reason <사유>`. 재설계는 예산
-  4키를 전부 리셋하고 주기를 처음부터(설계 → 구현 → 리뷰 → fix) 다시 연다. 라운드를 더 얹는
-  플래그는 없다.
+  네 값은 정확히 1이며 라운드 예약이 생략·반복·순서 밖 역할을 거부한다. fix가 마지막 사람
+  라운드이고 실패하면 board를 더 쓰지 않고 사용자에게 보고한다. 라운드를 더 얹는 플래그는 없다.
 - **판정은 표면과 무관하다** — 티켓 단축 표기(`--ticket`)로 준비해도 같은 예산·같은 순서 판정을
   받는다(장부가 없는 옛 티켓만 이 축 밖이다).
-- fix 1회 뒤에도 accepted 잔여가 있으면 fix 를 더 돌리지 않고 재설계로 간다.
+- fix는 architect 필수 테스트, reviewer 추가 회귀, 전체 회귀를 모두 통과해야 회수된다. 실패하면 추가 라운드 없이 정지·보고한다.
 - **게이트 처분은 종결이 실행한다** — 종결 2단계가 `pm_delegate.py rounds resolve --cluster <C-이름> --pm-verified` 를 부르고 확인 커맨드도 엔진이 돌린다. PM 이 따로 부를 일은 처분만 먼저 확인할 때뿐이다.
 - 묶음을 선언하지 않은 티켓은 발행이 만든 크기 1 장부에 귀속된다(stderr 1줄). 그 장부는 통합·묶음
   브랜치를 선언하지 않으므로 종결의 재배치·머지 단계가 `통합 브랜치 미선언 — 무대상`으로 건너뛴다
@@ -56,7 +54,7 @@ python3 .project_manager/tools/ticket_finish.py --cluster <C-이름>
 - depends_on 모두 done.
 - touches 명시.
 - DoD verify-able.
-- **컨텍스트 예산 확인** — touches 대형 파일·광범위 읽기 필요 시 dev truncation 위험. 미리 분할했거나 본문이 정확한 함수/라인·패턴 reference 로 dev 읽기를 좁히는지 확인. 아니면 위임 전 본문 보강·분할.
+- **컨텍스트 예산 확인** — touches 대형 파일·광범위 읽기 필요 시 dev truncation 위험. claim 전에 본문이 정확한 함수/라인·패턴 reference로 읽기 범위를 좁혔는지 확인한다. claim 뒤에는 자동 분할이나 새 티켓으로 옮기지 않는다.
 
 ## domain 소환 (dev 위임 전)
 
@@ -316,7 +314,7 @@ python3 .project_manager/tools/pm_delegate.py cluster wait \
 - 검토 중점 문단에는 이 wave 에서 특히 볼 축을 적는다. `status.md`/`log/current.md` 갱신은 PM 담당
   이므로 그 누락은 developer must-fix 가 아니라는 점도 여기에 적는다.
 
-### architect 위임·재설계 (묶음 1회)
+### architect 위임 (묶음 1회)
 
 설계도 묶음 단위다 — **세션 1 · 라운드 파일 N**. `ticket prepare --cluster --role architect` 가
 멤버 전부에 `01-architect` 를 예약하고 run-dir 하나에 티켓별 자리를 깐다. 설계 단일 진실은 묶음
@@ -328,20 +326,18 @@ Agent 툴 호출:
   subagent_type: architect
   run_in_background: false
   prompt:
-    "<C-이름> 묶음의 설계 또는 재설계를 수행하라.
+    "<C-이름> 묶음의 설계를 수행하라.
 
      라운드 파일(절대경로): <prepare JSON의 copy> — 티켓마다 하나이고 이름은 `NN-architect.md` 다.
-     경계 실측·불변식·표면 상한·테스트 전략을 각 티켓 자리에만 기록하라(첫 줄 헤더 유지). 재투입
-     이면 같은 디렉터리 `rounds/`의 이전 설계·developer·code-reviewer 라운드를 대조하고, 이번에
-     준비된 라운드 파일에 결함과 변경 결정을 남겨라. `spec.md`·`rounds/`는 읽기 전용이다."
+     경계 실측·불변식·표면 상한과 developer가 실행할 필수 테스트의 대상·명령·기대값·음성 사례를
+     각 티켓 자리에 기록하라(첫 줄 헤더 유지). `spec.md`·`rounds/`는 읽기 전용이다."
 ```
 
 architect도 위 `ticket prepare --cluster` 뒤 Agent를 호출하고 종료 뒤 `ticket harvest --copy <run-dir>`
-를 실행한다. 재설계는 `board.py cluster replan <이름> --reason <사유>` 가 예산을 리셋한 뒤 예약하는
-**다음 순번의 새 라운드 파일**에 쓰며 이전 라운드는 읽기 전용으로 남는다(라운드는 회수 후 불변).
+를 실행한다. architect는 1회이고 회수 뒤 불변이다.
 
 **본문 점검(draft·승격 전)** 도 같은 architect 호출을 쓴다 — 바꾸는 것은 프롬프트 본문 한 곳이다.
-"묶음의 설계 또는 재설계를 수행하라" 자리에 "각 티켓 초안 본문의 사실성을 점검하라. 새 설계가
+"묶음의 설계를 수행하라" 자리에 "각 티켓 초안 본문의 사실성을 점검하라. 새 설계가
 아니라 **실측 대조**다" 를 넣고, 기록 항목을 지시한다: 본문이 인용한 `파일:줄`의 실재와 줄 범위 ·
 touches 경로의 실재(소유 repo 좌표 기준) · 묶음 안팎 다른 열린 티켓과의 충돌·의존(cross-module) ·
 최소 수단(기존 seam 재사용·삭제 대안·새 설정 키/플래그·서브커맨드가 정말 필요한지) · 구현
@@ -358,14 +354,13 @@ touches 경로의 실재(소유 repo 좌표 기준) · 묶음 안팎 다른 열�
 > 각 티켓 명세의 PM 영역에 붙인 뒤
 > `python3 .project_manager/tools/pm_delegate.py review delta --cluster <C-이름>`을 실행한다. 출력된
 > delta 를 발췌하지 말고 그대로 developer에게 전달한다(끝의 제약 블록 포함).
-> rejected/decision-required·보고서 전문은 출력에 없고 따로 전달하지도 않는다. 비성공이면 표시된 판정·재설계 처방을 먼저 수행하고, 빈 성공이면 재투입하지 않는다.
+> rejected/decision-required·보고서 전문은 출력에 없고 따로 전달하지도 않는다. 비성공이면 board를 더 쓰지 않고 사용자에게 보고한다.
 > fix 는 묶음 브랜치를 체크아웃한 슬롯에서 **developer 1명**이 accepted 전부를 해소한다
 > (`ticket prepare --cluster --role developer` 가 `04-developer` 를 예약한다).
-> **fix 라운드 지시에는 그 티켓이 선언한 verify 행을 전부 재실행시킨다** — 수정 범위가 좁아도
-> 부분 재실행은 확인이 아니다. cross fix 라운드는
+> fix harvest는 architect 테스트·reviewer 추가 회귀·전체 회귀를 모두 실행한다. cross fix 라운드는
 > `pm_delegate --resume-from <T-NNNN>` 으로 **직전 dev 세션을 재사용**한다(cold 재투입은 티켓+코드
-> 재섭취를 라운드마다 다시 낸다 — fresh 는 resume 미일치 폴백·전사 과대 시에만). fix 1회 뒤에도
-> accepted 잔여가 있으면 라운드를 더 얹지 않고 재설계(`board.py cluster replan`)로 전환한다.
+> 재섭취를 라운드마다 다시 낸다 — fresh 는 resume 미일치 폴백·전사 과대 시에만). fix 실패는
+> 추가 라운드를 열지 않고 사용자에게 보고한다.
 
 `additional_reviewer.enabled=true` 로 추가 리뷰어(additional reviewer) 채널을 켠 채택자는 reviewer 라운드와 같은 시점에 교차검증을 돌린다. 기본은 OFF 이고, 끈 채택자에게 이 단계는 없다:
 `python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN`

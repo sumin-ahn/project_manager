@@ -422,7 +422,7 @@ def test_ledger_corrupt_falls_back_to_empty(external, tmp_path, monkeypatch):
 def test_gate_entry_normalizes_missing_and_corrupt(external):
     """`_gate_entry` — 부재/손상 항목을 0/0 으로 정규화하고 ledger 에 심는다."""
     empty = {"count": 0, "sequence": 0, "confirm_fix": 0,
-             "pm_fixed": 0, "resolution": None, "records": [], "rounds": []}
+             "resolution": None, "records": [], "rounds": []}
     gate_one, gate_two, gate_three = ("T-" + suffix for suffix in ("0001", "0002", "0003"))
     ledger: dict = {
         gate_two: {"count": "bad", "acked_through": None, "pm_fixed": "bad"},
@@ -444,7 +444,6 @@ def test_gate_entry_normalizes_missing_and_corrupt(external):
         "count": 0,
         "sequence": 3,
         "confirm_fix": 0,
-        "pm_fixed": 2,
         "resolution": None,
         "records": [{"sequence": "3", "verdict": True}],
         "rounds": [{"ts": "2026-08-07T00:00:00+00:00", "verdict": 1}],
@@ -895,7 +894,7 @@ def test_ack_rounds_is_refused_and_changes_nothing(
     assert "acked_through" not in entry                  # 폐지 필드는 되살아나지 않는다
     err = capsys.readouterr().err
     assert "폐지" in err
-    assert "재설계" in err and "분할" in err
+    assert "현재 티켓을 정지" in err and "사용자에게 보고" in err
     assert "--confirm-fix" in err
 
 
@@ -2512,22 +2511,22 @@ def pm_verified_declare(tmp_path, monkeypatch):
     )
 
 
-def test_resolve_gate_mode_guidance_lists_pm_verified(external, monkeypatch, tmp_path, capsys):
-    """`--resolve-gate` 처분 미지정 안내에 `--pm-verified` 가 3번째 선택지로 실린다."""
+def test_resolve_gate_mode_guidance_lists_only_pm_verified(external, monkeypatch, tmp_path, capsys):
+    """`--resolve-gate` 처분 미지정 안내는 유일한 `--pm-verified`만 싣는다."""
     calls = _wire(external, monkeypatch, tmp_path)
     assert external.main(["--resolve-gate", "T-0001"]) == 1
     err = capsys.readouterr().err
-    assert "--into" in err and "--fixed" in err and "--pm-verified" in err
+    assert "--pm-verified" in err and "--into" not in err and "--fixed" not in err
     assert calls["n"] == 0
 
 
-def test_resolve_gate_rejects_pm_verified_combined_with_into(
+def test_resolve_gate_parser_rejects_removed_into_option(
         external, monkeypatch, tmp_path, capsys):
-    """세 처분 중 둘 이상을 같이 쓰면 거부(한 게이트의 잔여는 한 갈래로 소화)."""
+    """폐지한 into 표면은 argparse 단계에서 fail-loud한다."""
     calls = _wire(external, monkeypatch, tmp_path)
-    rc = external.main(["--resolve-gate", "T-0001", "--into", "T-0002", "--pm-verified"])
-    assert rc == 1
-    assert "--pm-verified" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        external.main(["--resolve-gate", "T-0001", "--into", "T-0002", "--pm-verified"])
+    assert "unrecognized arguments: --into" in capsys.readouterr().err
     assert calls["n"] == 0
 
 

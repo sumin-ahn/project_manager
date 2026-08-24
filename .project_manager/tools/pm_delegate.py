@@ -357,10 +357,10 @@ _PM_REVIEW_FENCE_CANDIDATE_RE = re.compile(r"`{3,}(pm-review[^\s`]*)")
 # fence 이름(`…-v1`)은 블록 **종류** 라벨이고, payload 의 `version` 이 스키마 세대다. severity 를
 # 필수로 올리면서 세대를 2 로 승격했다 — 이미 봉인돼 손댈 수 없는 v1 블록(진행 중 티켓 실측
 # 8건·라운드 산출)을 파서가 legacy 로 계속 읽어야 판정 표면이 현존 자산을 잠그지 않는다.
-PM_REVIEW_VERSION = 2
+PM_REVIEW_VERSION = 3
 PM_REVIEW_LEGACY_VERSION = 1
 PM_REVIEW_SUPPORTED_VERSIONS: tuple[int, ...] = (
-    PM_REVIEW_LEGACY_VERSION, PM_REVIEW_VERSION,
+    PM_REVIEW_LEGACY_VERSION, 2, PM_REVIEW_VERSION,
 )
 # severity 를 요구하기 시작하는 세대. v1 블록은 부재를 허용하고 렌더가 '미기재'로 표기한다.
 PM_REVIEW_SEVERITY_MIN_VERSION = 2
@@ -399,7 +399,13 @@ PM_REVIEW_PAYLOAD_KEYS: tuple[str, ...] = (
 )
 PM_REVIEW_FINDING_KEYS: tuple[str, ...] = (
     "id", "class", "severity", "authority", "evidence", "recommendation",
-    "design_change",
+    "fix_contract", "design_change",
+)
+PM_REVIEW_LEGACY_FINDING_KEYS: tuple[str, ...] = tuple(
+    key for key in PM_REVIEW_FINDING_KEYS if key != "fix_contract"
+)
+PM_REVIEW_FIX_CONTRACT_KEYS: tuple[str, ...] = (
+    "location", "failure", "design", "test", "command", "expected",
 )
 PM_REVIEW_CONFIRMATION_KEYS: tuple[str, ...] = (
     "id", "status", "evidence",
@@ -428,6 +434,16 @@ PM_REVIEW_VERIFY_BLOCK = "pm-review-verify-v1"
 PM_REVIEW_CONFIRMATION_BLOCK = "pm-review-confirmation-v1"
 PM_REVIEW_VERIFY_VERSION = 1
 PM_REVIEW_MACHINE_CONFIRMATION_VERSION = 1
+
+# architect가 developer 착수 전에 확정하는 최소 테스트 계약. developer/fix harvest가 같은
+# command·expected를 실제 실행하므로 산문 체크리스트와 실행 게이트가 갈리지 않는다.
+ARCHITECT_TEST_BLOCK = "pm-architect-tests-v1"
+ARCHITECT_TEST_VERSION = 1
+ARCHITECT_TEST_PAYLOAD_KEYS: tuple[str, ...] = ("version", "tests")
+ARCHITECT_TEST_ROW_KEYS: tuple[str, ...] = (
+    "id", "target", "command", "expected", "negative",
+)
+_ARCHITECT_TEST_ID_RE = re.compile(r"AT-[0-9]{3,}")
 PM_REVIEW_VERIFY_PAYLOAD_KEYS: tuple[str, ...] = ("version", "verifications")
 PM_REVIEW_VERIFY_ROW_KEYS: tuple[str, ...] = (
     "id", "machine_verifiable", "command", "expected", "before", "reason",
@@ -451,7 +467,7 @@ PM_REVIEW_FIX_SCOPE_NOTICE = f"""\
   더 나은 방법이 보여도 이번 라운드에서 건드리지 않는다.
 - 처방이나 명세에 빈틈이 있으면 스스로 메우지 않는다. 처방대로 따르면 다른 결함이 생기는
   상호작용도 빈틈이다. 구현을 멈추고 아래 형식으로 라운드 파일에 적은 뒤 종료한다.
-  보강 처방과 재설계는 PM 이 낸다.
+  보강 처방이 필요하면 현재 티켓을 멈추고 사용자에게 보고한다.
 - 빈틈 보고로 끝난 라운드는 정상 산출이고 성공 종료다. 빈 손으로 끝내지 않으려고
   처방 밖 구현을 얹지 않는다.
 
@@ -1656,8 +1672,8 @@ class InternalRoundLimitExceeded(DelegateError):
 
 
 # ── 내부 위임 라운드 상한 ──────────────────────────────────────────────────
-# 외부 채널(external_review.py:49-59 라운드 상한)의 미러다 — 판정식·rc·"재설계·분할이
-# 유일한 출구" 처방·우회 없음 규약은 그대로 두고, 입력만 내부 채널이 이미 가진 board 라운드
+# 외부 채널의 라운드 상한 미러다 — 판정식·rc·정지/보고 처방·우회 없음 규약은 그대로 두고,
+# 입력만 내부 채널이 이미 가진 board 라운드
 # 파일로 좁힌다(결정: 새 장부·새 필드 0). architect·developer·code-reviewer만 대상이다 —
 # researcher는 board 라운드 실사용 0건(전수 실측)이라 티켓 스코프 밖으로 남긴다. 축은
 # 역할별 per-ticket 상한 하나뿐이다(cross-ticket 판정 없음).
@@ -1666,8 +1682,7 @@ class InternalRoundLimitExceeded(DelegateError):
 # 으로 정했다(중간값 없이 갈린다):
 #   developer      정상 최대 4(5건) → 이상 6(사례 3건 — 각 12·11·11 라운드 실측)
 #   code-reviewer  정상 최대 4(1건)·3(6건) → 이상 5~6(사례 4건)
-#   architect      정상 최대 3(정상 사례) → architect 5회(총 8라운드)로 튄 사례는 재설계 성격 — 결정문
-#     "재설계는 상한에 걸리면 안 되는 경우가 있다"에 해당해 다른 둘보다 크게 둔다.
+#   architect      정상 최대 3(정상 사례) → architect 5회(총 8라운드)로 튄 사례는 발산이다.
 DEFAULT_INTERNAL_ROUND_LIMITS: dict[str, int] = {
     "developer": 4,
     "code-reviewer": 5,
@@ -1692,7 +1707,7 @@ def _internal_conf_int(conf: dict[str, str], key: str, default: int) -> int:
 def internal_review_rounds_max(conf: dict[str, str] | None = None) -> int:
     """내부 code-reviewer 수렴 상한 (local.conf 노브·미설정/손상은 엔진 기본값).
 
-    소비자는 다음 라운드 예약 판정 하나다 — 상한에 걸린 게이트의 출구는 재설계뿐이고, 상한을
+    소비자는 다음 라운드 예약 판정 하나다 — 상한에 걸리면 현재 티켓을 정지·보고하며, 상한을
     소진해서 여는 처분은 없다. `conf` 미지정은 이 클론의 local.conf 를 읽는다."""
     if conf is None:
         conf = local_config()
@@ -1727,22 +1742,21 @@ def _internal_round_list(existing, role: str, rounds_module) -> str:
 _INTERNAL_ROUND_LIMIT_GUIDANCE = (
     "오류: 내부 위임 라운드 상한 도달 — {ticket} role={role} · count={count}(상한 {limit})\n"
     "  현재 라운드: {rounds}\n"
-    "  · **재설계·티켓 분할이 유일한 출구입니다** — 이 역할로 라운드를 더 예약하지 않습니다"
+    "  · 현재 티켓을 정지하고 사용자에게 보고합니다 — 이 역할로 라운드를 더 예약하지 않습니다"
     "(우회 없음 · 외부 채널 라운드 상한과 같은 규율).\n"
     "  · 상한 조정은 local.conf `internal_review_round_limit.{role}`(기본 {limit})."
 )
 
 
 class ClusterRoundBudgetExceeded(DelegateError):
-    """묶음 고정 예산 밖 라운드 요청 — 초과도 순서 밖도 출구는 재설계 하나다(rc=1)."""
+    """고정 수열 밖 라운드 요청. fix 뒤에는 사람 라운드를 다시 열지 않는다."""
 
 
 # ── 묶음 고정 예산 ────────────────────────────────────────────────────────
 # 묶음 하나가 도는 라운드는 정해져 있다: 설계(architect) → 구현(developer · 티켓마다 1) →
 # 리뷰(code-reviewer) → fix(developer). 장부 `budget` 의 4키가 그 수열의 **길이**를 값으로
-# 말하고, 아래 표가 키↔역할 대응과 순서를 소유한다. 초과(라운드를 더 요구)도 순서 밖(설계 없이
-# 리뷰·fix 뒤 구현)도 같은 처방 하나로 끝난다 — 묶음 재설계다. 라운드를 한 번 더 여는 플래그는
-# 없다(외부 채널 라운드 상한과 같은 규율).
+# 말하고, 아래 표가 키↔역할 대응과 순서를 소유한다. 초과나 순서 밖 요청은 티켓을 정지시키며
+# 예산 리셋·추가 설계·추가 fix로 다시 열 수 없다.
 #
 # 역할별 per-ticket 상한(`DEFAULT_INTERNAL_ROUND_LIMITS`)과 축이 다르다: 그쪽은 한 역할이 몇
 # 번까지인가이고, 이쪽은 **묶음의 라운드 수열 자체**다. 묶음 준비 표면에서는 이 판정이 항상
@@ -1754,23 +1768,21 @@ CLUSTER_BUDGET_ROLE_SEQUENCE: tuple[tuple[str, str], ...] = (
     ("developer", "fix"),
 )
 _CLUSTER_BUDGET_OVER = (
-    "묶음 라운드 예산 소진 — {cluster} · {ticket} role={role} · 이번 주기 라운드 "
+    "묶음 고정 라운드 종료 — {cluster} · {ticket} role={role} · 라운드 "
     "{count}건(예산 {limit}건)\n"
-    "  이번 주기 수열: {sequence}\n"
-    "  · **재설계가 유일한 출구입니다** — 라운드를 더 얹는 플래그는 없습니다.\n"
-    "  · {prescription}"
+    "  고정 수열: {sequence}\n"
+    "  · fix가 마지막 사람 라운드입니다. 티켓을 완료하지 못하면 추가 라운드 없이 정지·보고합니다."
 )
 _CLUSTER_BUDGET_ORDER = (
     "묶음 라운드 순서 밖 역할 — {cluster} · {ticket} 다음 라운드는 {expected} 인데 "
     "{role} 을 요청했습니다\n"
-    "  이번 주기 수열: {sequence}\n"
-    "  · 순번이 곧 단계입니다 — 단계를 건너뛰거나 되돌리려면 재설계로 주기를 다시 여세요.\n"
-    "  · {prescription}"
+    "  고정 수열: {sequence}\n"
+    "  · 순번이 곧 단계입니다 — 단계를 건너뛰거나 되돌리는 경로는 없습니다."
 )
 
 
 _CLUSTER_LEDGER_ABSENT = (
-    "묶음 장부가 없습니다: {cluster} — 라운드 예산과 재설계 기준선은 장부가 소유하고, 준비는 "
+    "묶음 장부가 없습니다: {cluster} — 고정 라운드 수열은 장부가 소유하고, 준비는 "
     "그 선언만 읽습니다(선언 없는 묶음은 판정 입력이 아니라 정지 사유입니다).\n"
     "  · `python3 .project_manager/tools/board.py cluster show {cluster}` 로 장부를 확인하고, "
     "없으면 `board.py cluster new <이름> --tickets <T-...>` 로 선언하세요."
@@ -1785,24 +1797,11 @@ _CLUSTER_BUDGET_UNDECLARED = (
 )
 
 
-def cluster_replan_prescription(cluster: str) -> str:
-    """예산 거부의 유일한 처방 문구 — 두 거부가 같은 한 자리에서 커맨드를 낸다."""
-    return (
-        f"재설계: python3 .project_manager/tools/board.py cluster replan {cluster} "
-        "--reason <사유>"
-    )
-
-
 def cluster_round_sequence(budget: object, *, cluster: str) -> tuple[str, ...]:
     """예산 4키를 라운드 역할 **수열**로 편다 — 장부 값이 곧 순서다.
 
-    값은 장부를 만들 때 박힌다(`board.CLUSTER_BUDGET_DEFAULT` · 발행이 만드는 크기 1 장부도
-    같은 기본값). 그래서 키가 없거나 정수가 아닌 장부는 판정 입력이 아니라 **에러**다 —
-    없는 값을 기본값으로 지어내면 장부가 선언하지 않은 수열로 라운드가 열린다. 음수는 0 으로
-    접는다 — 그 단계를 건너뛰겠다는 선언이다.
-
-    값이 전부 0/음수면 빈 tuple 이다. 그건 "선언 없음"이 아니라 **이 주기에 허용된 라운드가
-    없다**는 선언이라, 그 묶음의 다음 요청은 전부 거부된다(출구는 재설계 하나).
+    네 값은 모두 정확히 1이어야 한다. 묶음마다 예산을 늘이거나 단계를 생략하면 고정 수열이
+    다시 가변 루프가 되므로 장부 손상으로 거부한다.
     """
     if not isinstance(budget, Mapping):
         raise DelegateError(_CLUSTER_BUDGET_UNDECLARED.format(
@@ -1813,42 +1812,45 @@ def cluster_round_sequence(budget: object, *, cluster: str) -> tuple[str, ...]:
         if not isinstance(value, int) or isinstance(value, bool):
             raise DelegateError(_CLUSTER_BUDGET_UNDECLARED.format(
                 cluster=cluster, key=key))
-        sequence.extend([role] * max(0, int(value)))
+        if value != 1:
+            raise DelegateError(
+                f"묶음 고정 라운드 예산은 {key}=1이어야 합니다: {cluster} · got={value}"
+            )
+        sequence.append(role)
     return tuple(sequence)
 
 
 def _cluster_cycle_roles(
-    existing: Sequence, baseline: int, roles: frozenset[str],
+    existing: Sequence, roles: frozenset[str],
 ) -> tuple[str, ...]:
-    """이번 주기(마지막 재설계 뒤)에 예약된 라운드 중 수열 단계 역할만 — 순번 오름차순.
+    """예약된 라운드 중 고정 수열 역할만 — 순번 오름차순.
 
     산출 유무는 보지 않는다(예약 자체가 한 단계 소비다 · per-ticket 상한과 같은 규칙).
     수열에 없는 역할(추가 리뷰어 채널 등)은 단계가 아니라 주기 자리를 먹지 않는다.
     """
     return tuple(
         item.role for item in sorted(existing, key=lambda entry: entry.ordinal)
-        if item.ordinal > baseline and item.role in roles
+        if item.role in roles
     )
 
 
 def _cluster_budget_refusal(
     *, cluster: str, ticket: str, role: str, existing: Sequence,
-    sequence: Sequence[str], baseline: int,
+    sequence: Sequence[str],
 ) -> str | None:
     """이 티켓에 그 역할 라운드를 더 예약할 수 있는가 — 거부 사유 문자열 또는 None."""
-    cycle = _cluster_cycle_roles(existing, baseline, frozenset(sequence))
+    cycle = _cluster_cycle_roles(existing, frozenset(sequence))
     rendered = " → ".join(cycle) if cycle else "(없음)"
-    prescription = cluster_replan_prescription(cluster)
     if len(cycle) >= len(sequence):
         return _CLUSTER_BUDGET_OVER.format(
             cluster=cluster, ticket=ticket, role=role, count=len(cycle),
-            limit=len(sequence), sequence=rendered, prescription=prescription,
+            limit=len(sequence), sequence=rendered,
         )
     expected = sequence[len(cycle)]
     if role != expected:
         return _CLUSTER_BUDGET_ORDER.format(
             cluster=cluster, ticket=ticket, role=role, expected=expected,
-            sequence=rendered, prescription=prescription,
+            sequence=rendered,
         )
     return None
 
@@ -1911,7 +1913,7 @@ def prepare_cluster_copy(
     run 이 죽은 것으로 읽힌다. 키 부재는 "죽음"이 아니라 "증거 없음"이다.
 
     내부 라운드 상한(게이트별 · role 당)은 발산(라운드 증가) 방향으로는 어떤 인자로도 열리지
-    않는다(외부 채널과 같은 규율 — 출구는 재설계·분할뿐 · 우회 플래그가 없다).
+    않는다(외부 채널과 같은 규율 — 정지·사용자 보고만 허용 · 우회 플래그가 없다).
 
     묶음 고정 예산은 **모든 준비 표면**에서 같은 판정을 받는다 — 장부가 예산을 선언한 묶음이면
     역할 수열 판정을 per-ticket 상한보다 **먼저** 낸다. 표면마다 켜고 끄는 인자가 없으므로
@@ -1962,13 +1964,12 @@ def prepare_cluster_copy(
         ticket: rounds_module.load_rounds(tickets_dir, ticket, ticket_text=text)
         for ticket, text in specs.items()
     }
-    # 묶음 예산 입력 — 장부가 선언한 수열과 마지막 재설계 기준선.
-    def _budget_inputs() -> tuple[tuple[str, ...], int]:
-        """장부에서 이번 판정의 수열·기준선을 **읽는 자리에서** 해소한다(캐시 없음).
+    # 묶음 예산 입력 — 장부가 선언한 고정 수열.
+    def _budget_inputs() -> tuple[str, ...]:
+        """장부에서 고정 수열을 **읽는 자리에서** 해소한다(캐시 없음).
 
-        사전판정과 board_lock 재확인이 각자 읽는다 — 그 사이에 재설계가 들어오면 재확인이
-        새 기준선을 본다. 장부 판독은 잠금 없는 파일 읽기라 board_lock 안에서 불러도 재진입이
-        아니다.
+        사전판정과 board_lock 재확인이 각자 읽는다. 장부 판독은 잠금 없는 파일 읽기라
+        board_lock 안에서 불러도 재진입이 아니다.
 
         장부가 없으면 예약하지 않고 멈춘다 — 판정 입력이 없는 요청을 통과시키면 그 묶음만
         무제한·순서 무검사가 되고, 장부 삭제가 곧 예산 우회 수단이 된다.
@@ -1976,14 +1977,10 @@ def prepare_cluster_copy(
         ledger = board.load_cluster(cluster)
         if ledger is None:
             raise DelegateError(_CLUSTER_LEDGER_ABSENT.format(cluster=cluster))
-        return (
-            cluster_round_sequence(ledger.get("budget"), cluster=cluster),
-            board.cluster_replan_baseline(ledger),
-        )
+        return cluster_round_sequence(ledger.get("budget"), cluster=cluster)
 
     budget_sequence: tuple[str, ...] = ()
-    replan_baseline = 0
-    budget_sequence, replan_baseline = _budget_inputs()
+    budget_sequence = _budget_inputs()
     conf = (
         _load_external_review()._local_config_for_repo(pm_home)
         if role in DEFAULT_INTERNAL_ROUND_LIMITS else None
@@ -1999,7 +1996,6 @@ def prepare_cluster_copy(
         refusal = _cluster_budget_refusal(
             cluster=cluster, ticket=ticket, role=role,
             existing=existing_rounds[ticket], sequence=budget_sequence,
-            baseline=replan_baseline,
         )
         if refusal is not None:
             raise ClusterRoundBudgetExceeded(refusal)
@@ -2019,6 +2015,17 @@ def prepare_cluster_copy(
                         ),
                     )
                 )
+
+    # developer 준비의 입력 계약은 실제 prepare 경계에서 검증한다. 순수 시드 renderer는
+    # 리뷰/verify 골격 단위 테스트에서도 쓰이므로 architect 라운드에 결합하지 않는다. 고정
+    # 수열·라운드 상한 판정을 먼저 낸 뒤, 아직 run-dir/board 예약 전인 여기서 누락·미완성
+    # architect 계약을 잔여 없이 거부한다.
+    if role == "developer":
+        for ticket in members:
+            try:
+                architect_tests_from_rounds(existing_rounds[ticket])
+            except DelegateError as exc:
+                raise DelegateError(f"{ticket}: {exc}") from exc
 
     # ── (2) 예약 전 거부 판정 (board 무영향) ──────────────────────────────
     run_id = uuid.uuid4().hex
@@ -2085,10 +2092,9 @@ def prepare_cluster_copy(
             # 통과시키고 그다음에야 첫 예약을 쓴다(부분 예약 금지).
             board_paths: dict[str, Path] = {}
             with board.board_lock():
-                # 재확인은 최신 스냅샷으로 낸다 — 사전판정과 이 지점 사이에 재설계가 들어오면
-                # 그 리셋을 여기서 본다(스냅샷 1회 · 멤버 전부가 같은 장부 판독을 공유한다).
+                # 재확인은 최신 스냅샷으로 낸다(스냅샷 1회 · 멤버 전부가 같은 장부 판독을 공유한다).
                 # 그사이 장부가 사라졌으면 같은 판독이 그 자리에서 멈춘다(예약 없음).
-                budget_sequence, replan_baseline = _budget_inputs()
+                budget_sequence = _budget_inputs()
                 for ticket in members:
                     refreshed = board.find_ticket_exact(ticket)
                     if refreshed is None:
@@ -2107,7 +2113,6 @@ def prepare_cluster_copy(
                     refusal = _cluster_budget_refusal(
                         cluster=cluster, ticket=ticket, role=role,
                         existing=fresh_existing, sequence=budget_sequence,
-                        baseline=replan_baseline,
                     )
                     if refusal is not None:
                         raise ClusterRoundBudgetExceeded(refusal)
@@ -2353,6 +2358,15 @@ def harvest_ticket_copy(
         return TicketHarvestResult(False, True)
 
     board = _load_board_for_repo(pm_home)
+    if row["role"] == "architect":
+        try:
+            parse_architect_tests(text)
+        except DelegateError as exc:
+            raise DelegateError(
+                f"architect 라운드 회수 거부 — {exc}. board 라운드 파일과 slot run-dir 은 "
+                f"그대로 보존했습니다 — 사본을 고쳐 같은 경로로 다시 회수하세요: "
+                f"round={board_path.name} · copy={expected}"
+            ) from exc
     if row["role"] in REVIEW_ROLES:
         # 판정 표면에 올릴 수 없는 리뷰 산출은 board 라운드가 되지 못한다 — 들어가고 나면
         # 티켓 전역 delta 가 막히고 라운드 파일을 되돌릴 정식 수단이 없다(회수면에서 끊는다).
@@ -2504,6 +2518,48 @@ def _review_round_harvest_problem(
     )
 
 
+def _run_required_test(command: str, expected: str | None, *, cwd: Path) -> str | None:
+    """필수 테스트 한 건을 실행하고 실패 사유만 반환한다."""
+    if expected is None:
+        try:
+            _pm_review_assert_verify_command_shape(command, "full-regression.command")
+            result = subprocess.run(
+                shlex.split(command), cwd=str(cwd), capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+                timeout=PM_REVIEW_CONFIRMATION_COMMAND_TIMEOUT_SEC, check=False,
+            )
+        except (PMReviewError, OSError, subprocess.TimeoutExpired, ValueError) as exc:
+            return f"실행할 수 없습니다: {exc}"
+        if result.returncode != 0:
+            observed = (result.stdout or "") + (result.stderr or "")
+            return f"green이 아닙니다: `{command}` · rc={result.returncode} · {observed[-2000:]}"
+        return None
+    try:
+        status, observed = run_pm_review_confirmation_command(
+            command, cwd=cwd, expected=expected,
+        )
+    except (PMReviewError, ValueError) as exc:
+        return f"실행할 수 없습니다: {exc}"
+    if status != PM_REVIEW_CONFIRMATION_RESOLVED:
+        return f"green이 아닙니다: `{command}` · expected={expected!r} · 관측: {observed}"
+    return None
+
+
+def _full_regression_command(cwd: Path) -> str:
+    """fix 종료의 전체 회귀 명령. 코드 트리 local.conf의 test.cmd가 단일 입력이다."""
+    conf = _load_external_review()._local_config_for_repo(Path(cwd).resolve())
+    return str(conf.get("test.cmd") or "python3 -m pytest tests/ -q").strip()
+
+
+def _fix_round(rounds: Sequence, ordinal: int) -> bool:
+    """현재 developer 자리가 reviewer 뒤의 마지막 fix 자리인가."""
+    return any(
+        item.role == INTERNAL_REVIEW_ROLE and item.ordinal < ordinal
+        and not getattr(item, "pending", False)
+        for item in rounds
+    )
+
+
 def _developer_round_harvest_problem(
     text: str, reserved: str, *, ticket: str, ordinal: int, board, rounds_module,
     cwd: Path,
@@ -2531,6 +2587,54 @@ def _developer_round_harvest_problem(
     입력을 읽지 못하면 통과가 아니라 거부다(리뷰 게이트와 같은 이유 · run-dir 보존이라 되돌릴 수
     있다).
     """
+    try:
+        found = board.find_ticket_exact(ticket)
+        if found is None:
+            return f"티켓 명세를 찾지 못해 회수 판정을 낼 수 없습니다: {ticket}"
+        _status, spec_path = found
+        spec_text = _load_file_lock().read_text_shared(
+            spec_path, encoding="utf-8", newline="",
+        )
+        rounds = rounds_module.load_rounds(
+            board.tickets_dir(), ticket, ticket_text=spec_text,
+        )
+    except (rounds_module.RoundsError, OSError, UnicodeError) as exc:
+        return f"회수 판정 입력을 읽지 못했습니다: {ticket}: {exc}"
+
+    repo_root = _repo_root_for_cwd(cwd)
+    try:
+        architect_tests = architect_tests_from_rounds(rounds)
+    except DelegateError as exc:
+        return str(exc)
+    for case in architect_tests:
+        problem = _run_required_test(case.command, case.expected, cwd=repo_root)
+        if problem is not None:
+            return f"architect 필수 테스트 {case.id} {problem}"
+
+    is_fix = _fix_round(rounds, ordinal)
+    delta: PMReviewDelta | None = None
+    if is_fix:
+        try:
+            delta = parse_pm_review_delta(spec_text, rounds)
+        except PMReviewError as exc:
+            return f"fix 입력 리뷰 delta를 읽지 못했습니다[{exc.code}]: {exc}"
+        for finding, _disposition in delta.accepted:
+            if finding.fix_contract is None:
+                return (
+                    f"fix 입력 {finding.id}에 reviewer 수정·테스트 계약이 없습니다 — "
+                    "코드 위치·오류 거동·수정 설계·회귀 테스트·명령·기대값이 모두 필요합니다"
+                )
+            problem = _run_required_test(
+                finding.fix_contract["command"], finding.fix_contract["expected"],
+                cwd=repo_root,
+            )
+            if problem is not None:
+                return f"reviewer 추가 회귀 {finding.id} {problem}"
+        full_command = _full_regression_command(repo_root)
+        problem = _run_required_test(full_command, None, cwd=repo_root)
+        if problem is not None:
+            return f"fix 전체 회귀 {problem}"
+
     seed_rows = _dev_round_seed_verify_rows(_normalized_newlines(reserved))
     if seed_rows is None:
         return (
@@ -2557,26 +2661,14 @@ def _developer_round_harvest_problem(
     if not declared_rows:
         return None
     try:
-        found = board.find_ticket_exact(ticket)
-        if found is None:
-            return f"티켓 명세를 찾지 못해 회수 판정을 낼 수 없습니다: {ticket}"
-        _status, spec_path = found
-        spec_text = _load_file_lock().read_text_shared(
-            spec_path, encoding="utf-8", newline="",
-        )
-        rounds = rounds_module.load_rounds(
-            board.tickets_dir(), ticket, ticket_text=spec_text,
-        )
-        delta = parse_pm_review_delta(spec_text, rounds)
+        delta = delta or parse_pm_review_delta(spec_text, rounds)
     except (
         DelegateError, PMReviewError, rounds_module.RoundsError, OSError, UnicodeError,
     ) as exc:
         return f"회수 판정 입력을 읽지 못했습니다: {ticket}: {exc}"
     machine_axis_ids = {
         finding.id for finding, _disposition in delta.accepted
-        if not _pm_review_design_axis(finding)
     }
-    repo_root = _repo_root_for_cwd(cwd)
     for row in declared_rows:
         if row.id not in machine_axis_ids:
             continue
@@ -3623,7 +3715,7 @@ _INTERNAL_ROUND_REFUSAL = (
     "  · 상한 조정은 local.conf `{knob}` (기본 {default}).\n"
     "  · 과거 계측이 의심되면 회수된 라운드 파일·기록된 raw reply로 재계산하세요: "
     "`python3 .project_manager/tools/pm_delegate.py rounds recalculate --gate {gate}`\n"
-    "  · 같은 구현을 더 검토하지 말고 재설계하거나 티켓을 분할하세요.\n"
+    "  · 같은 구현을 더 검토하지 말고 현재 티켓을 정지해 사용자에게 보고하세요.\n"
     "  · 판정 근거: {ledger}"
 )
 
@@ -3685,6 +3777,17 @@ class PMReviewFinding(NamedTuple):
     reviewer_ordinal: int
     severity: str
     reviewer_role: str
+    # v3 reviewer 산출에만 존재한다. 끝에 기본값을 둬 봉인된 v1/v2 라운드와
+    # 기존 호출부를 읽는 호환성은 유지하되, 새 v3 파서는 아래에서 반드시 채운다.
+    fix_contract: dict[str, str] | None = None
+
+
+class ArchitectTest(NamedTuple):
+    id: str
+    target: str
+    command: str
+    expected: str
+    negative: str
 
 
 class PMReviewConfirmation(NamedTuple):
@@ -3779,12 +3882,9 @@ def _pm_review_prescription(
             " (오류의 대상 채널이 여러 개면 채널마다 "
             f"`--reviewer-role <{ '|'.join(REVIEW_ROLES) }>`를 붙여 반복하세요)"
         ),
-        "decision-required": (
-            "Architect 재설계와 권위 ticket/spec/ADR 개정(필요 시 사용자 결정)을 먼저 하고 "
-            "PM이 재판정하세요"
-        ),
+        "decision-required": "현재 티켓을 정지하고 필요한 사용자 결정을 요청하세요",
         "repeated-unresolved": (
-            "추가 fix/review loop를 열지 말고 Architect 재설계 또는 티켓 분할로 전환하세요"
+            "추가 fix/review loop를 열지 말고 현재 티켓을 정지해 사용자에게 보고하세요"
         ),
     }
     return prescriptions[code]
@@ -3918,9 +4018,11 @@ def _pm_review_assert_id_namespace(
 
 def _pm_review_finding_keys(version: int) -> tuple[str, ...]:
     """세대별 finding key 집합 — v1 은 severity 이전 스키마다(부재 허용·존재도 허용)."""
-    if version >= PM_REVIEW_SEVERITY_MIN_VERSION:
+    if version >= 3:
         return PM_REVIEW_FINDING_KEYS
-    return tuple(key for key in PM_REVIEW_FINDING_KEYS if key != "severity")
+    if version >= PM_REVIEW_SEVERITY_MIN_VERSION:
+        return PM_REVIEW_LEGACY_FINDING_KEYS
+    return tuple(key for key in PM_REVIEW_LEGACY_FINDING_KEYS if key != "severity")
 
 
 def _pm_review_parse_finding(
@@ -3934,9 +4036,9 @@ def _pm_review_parse_finding(
     # **하나와 정확히** 일치해야 하며, v2 는 severity 를 포함한 집합만 받는다.
     expected_keys = _pm_review_finding_keys(version)
     if version < PM_REVIEW_SEVERITY_MIN_VERSION and set(value) == set(
-        PM_REVIEW_FINDING_KEYS
+        PM_REVIEW_LEGACY_FINDING_KEYS
     ):
-        expected_keys = PM_REVIEW_FINDING_KEYS
+        expected_keys = PM_REVIEW_LEGACY_FINDING_KEYS
     _pm_review_exact_keys(value, expected_keys, "finding")
     finding_id = _pm_review_nonempty_string(value["id"], "finding.id")
     prefix = _pm_review_finding_id_prefix(reviewer_role)
@@ -3959,6 +4061,23 @@ def _pm_review_parse_finding(
             raise PMReviewError("malformed", f"finding.severity 미지원: {severity!r}")
     if not isinstance(value["design_change"], bool):
         raise PMReviewError("malformed", "finding.design_change는 boolean이어야 합니다")
+    fix_contract: dict[str, str] | None = None
+    if version >= 3:
+        raw_contract = value.get("fix_contract")
+        if not isinstance(raw_contract, dict):
+            raise PMReviewError("malformed", "finding.fix_contract는 JSON object여야 합니다")
+        _pm_review_exact_keys(
+            raw_contract, PM_REVIEW_FIX_CONTRACT_KEYS, "finding.fix_contract",
+        )
+        fix_contract = {
+            key: _pm_review_nonempty_string(
+                raw_contract[key], f"finding.fix_contract.{key}",
+            )
+            for key in PM_REVIEW_FIX_CONTRACT_KEYS
+        }
+        _pm_review_assert_verify_command_shape(
+            fix_contract["command"], "finding.fix_contract.command",
+        )
     return PMReviewFinding(
         finding_id,
         classification,
@@ -3969,6 +4088,7 @@ def _pm_review_parse_finding(
         reviewer_ordinal,
         severity,
         reviewer_role,
+        fix_contract,
     )
 
 
@@ -4082,6 +4202,108 @@ def _pm_review_render_json(value: object) -> str:
     if isinstance(value, list):
         return "[" + ",".join(_pm_review_render_json(item) for item in value) + "]"
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def render_architect_test_skeleton() -> str:
+    """architect가 채울 필수 테스트 계약. 실행 게이트와 같은 key 집합에서 렌더한다."""
+    row = _pm_review_seed_object(ARCHITECT_TEST_ROW_KEYS, {
+        "id": "AT-001",
+        "target": "<테스트 파일/케이스 또는 검증 대상>",
+        "command": "<shell 메타문자 없는 단일 테스트 명령>",
+        "expected": "<성공 output에 포함될 짧은 문자열>",
+        "negative": "<변경 전 실패하거나 거부돼야 하는 음성 사례>",
+    })
+    payload = _pm_review_seed_object(ARCHITECT_TEST_PAYLOAD_KEYS, {
+        "version": ARCHITECT_TEST_VERSION,
+        "tests": [row],
+    })
+    return f"```{ARCHITECT_TEST_BLOCK}\n{_pm_review_render_json(payload)}\n```\n"
+
+
+def parse_architect_tests(text: str) -> tuple[ArchitectTest, ...]:
+    """architect 라운드의 유일한 테스트 계약을 엄격 파싱한다."""
+    lines = text.splitlines()
+    openings = [index for index, line in enumerate(lines) if line == f"```{ARCHITECT_TEST_BLOCK}"]
+    malformed = [
+        line for line in lines
+        if ARCHITECT_TEST_BLOCK in line and line != f"```{ARCHITECT_TEST_BLOCK}"
+    ]
+    if malformed or len(openings) != 1:
+        raise DelegateError(
+            f"architect 테스트 계약은 `{ARCHITECT_TEST_BLOCK}` block 정확히 1개여야 합니다"
+        )
+    start = openings[0]
+    try:
+        end = lines.index("```", start + 1)
+    except ValueError as exc:
+        raise DelegateError("architect 테스트 계약 종료 fence가 없습니다") from exc
+    if any(line.startswith("```") for line in lines[start + 1:end]):
+        raise DelegateError("architect 테스트 계약 안에 중첩 fence가 있습니다")
+    try:
+        payload = json.loads(
+            "\n".join(lines[start + 1:end]), object_pairs_hook=_pm_review_json_object,
+        )
+    except ValueError as exc:
+        raise DelegateError(f"architect 테스트 계약 JSON 파싱 실패: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise DelegateError("architect 테스트 계약 payload는 JSON object여야 합니다")
+    try:
+        _pm_review_exact_keys(payload, ARCHITECT_TEST_PAYLOAD_KEYS, ARCHITECT_TEST_BLOCK)
+    except PMReviewError as exc:
+        raise DelegateError(str(exc)) from exc
+    if payload.get("version") != ARCHITECT_TEST_VERSION:
+        raise DelegateError(
+            f"architect 테스트 계약 version은 {ARCHITECT_TEST_VERSION}이어야 합니다"
+        )
+    raw_tests = payload.get("tests")
+    if not isinstance(raw_tests, list) or not raw_tests:
+        raise DelegateError("architect 테스트 계약에는 필수 테스트가 1건 이상 필요합니다")
+    tests: list[ArchitectTest] = []
+    seen: set[str] = set()
+    for raw in raw_tests:
+        if not isinstance(raw, dict):
+            raise DelegateError("architect test 행은 JSON object여야 합니다")
+        try:
+            _pm_review_exact_keys(raw, ARCHITECT_TEST_ROW_KEYS, "architect test")
+        except PMReviewError as exc:
+            raise DelegateError(str(exc)) from exc
+        values: dict[str, str] = {}
+        for key in ARCHITECT_TEST_ROW_KEYS:
+            value = raw.get(key)
+            if not isinstance(value, str) or not value.strip() or value.strip().startswith("<"):
+                raise DelegateError(f"architect test.{key}를 실값으로 채워야 합니다")
+            values[key] = value.strip()
+        if _ARCHITECT_TEST_ID_RE.fullmatch(values["id"]) is None:
+            raise DelegateError(f"architect test.id 형식 불일치: {values['id']!r}")
+        if values["id"] in seen:
+            raise DelegateError(f"architect test.id 중복: {values['id']}")
+        seen.add(values["id"])
+        try:
+            _pm_review_assert_verify_command_shape(
+                values["command"], f"architect test {values['id']}.command",
+            )
+        except PMReviewError as exc:
+            raise DelegateError(str(exc)) from exc
+        tests.append(ArchitectTest(**values))
+    return tuple(tests)
+
+
+def architect_tests_from_rounds(
+    rounds: Sequence, *, required: bool = True,
+) -> tuple[ArchitectTest, ...]:
+    """마지막 architect 산출의 테스트 계약. 신규 준비면 부재도 fail-loud한다."""
+    candidates = [
+        item for item in rounds
+        if item.role == "architect" and not getattr(item, "pending", False)
+    ]
+    if not candidates:
+        if required:
+            raise DelegateError("developer 착수 전 architect 테스트 계약이 없습니다")
+        return ()
+    latest = max(candidates, key=lambda item: item.ordinal)
+    if ARCHITECT_TEST_BLOCK not in latest.text and not required:
+        return ()
+    return parse_architect_tests(latest.text)
 
 
 def _pm_review_block_text(payload: Mapping[str, object]) -> str:
@@ -4410,29 +4632,6 @@ def _pm_review_parse_machine_confirmation_row(
     return PMReviewMachineConfirmation(finding_id, status, command, observed, round_ordinal)
 
 
-def _pm_review_design_axis(finding: PMReviewFinding) -> bool:
-    """설계 축 finding 인가 — 분류 또는 dev 선언 어느 쪽이든 설계 변경이면 참.
-
-    이 축은 기계 확인 대상이 아니다. 종결 수단은 **묶음 재설계**이고 reviewer 재송신이 아니다 —
-    파서(기계 확인 거부)와 확인 대상 분류기(`verify-template`)가 같은 이 술어를 본다.
-    """
-    return finding.classification == "design-proposal" or finding.design_change
-
-
-def _pm_review_design_axis_replanned(
-    finding: PMReviewFinding, replan_ordinal: int,
-) -> bool:
-    """그 설계 축 finding 이 재설계로 종결됐는가.
-
-    기준은 **관측 가능한 기준선 하나**다: 재설계가 그 finding 을 선언한 리뷰 라운드 순번 이후에
-    기록됐는가. 그 전의 재설계는 이 지적을 받기 전 사건이라 종결 근거가 아니다.
-    """
-    return (
-        _pm_review_design_axis(finding)
-        and replan_ordinal >= finding.reviewer_ordinal
-    )
-
-
 def _pm_review_confirmation_floor(
     finding: PMReviewFinding,
     reviewer_confirmations: Sequence,
@@ -4602,6 +4801,14 @@ def render_pm_review_block_skeleton(
         "id": next_finding_id or placeholder_id,
         "class": "<" + "|".join(PM_REVIEW_CLASSES) + ">",
         "severity": "<" + "|".join(PM_REVIEW_SEVERITIES) + ">",
+        "fix_contract": _pm_review_seed_object(PM_REVIEW_FIX_CONTRACT_KEYS, {
+            "location": "<잘못된 코드 위치(file:line 또는 symbol)>",
+            "failure": "<현재 잘못된 거동과 재현 조건>",
+            "design": "<수정 설계와 보존할 불변식>",
+            "test": "<추가할 회귀 테스트 파일/케이스>",
+            "command": "<추가 테스트 실행 명령(shell 메타문자 없는 단일 명령)>",
+            "expected": "<성공 output에 포함될 짧은 문자열>",
+        }),
         "design_change": False,
     })
     confirmations = [
@@ -4706,6 +4913,7 @@ def render_ticket_growth_section_seed(
             "## 불변식\n- <보존할 불변식>\n\n"
             "## 표면 상한\n- <허용 인터페이스와 비목표>\n\n"
             "## 테스트 전략\n- <검증할 정상·실패 경로>\n\n"
+            + render_architect_test_skeleton() + "\n"
             "검토 판정: <설계 통과|수정 후 통과|반려>\n"
         )
     if role == "developer":
@@ -4721,6 +4929,17 @@ def render_ticket_growth_section_seed(
         verify_rows: Sequence[tuple[str, Mapping[str, str] | None]] = ()
         if rounds:
             try:
+                delta = parse_pm_review_delta(ticket_text, rounds)
+                missing_contracts = [
+                    finding.id for finding, _disposition in delta.accepted
+                    if finding.fix_contract is None
+                ]
+                if missing_contracts:
+                    raise PMReviewError(
+                        "malformed",
+                        "fix 입력 reviewer 수정·테스트 계약 누락: "
+                        + ", ".join(missing_contracts),
+                    )
                 # 쓰는 쪽과 읽는 쪽이 같은 분류기다 — 시드가 요구하는 ID 집합과 판정이
                 # 요구하는 ID 집합은 정의상 같다.
                 template = pm_review_verify_template(ticket_text, rounds)
@@ -5363,12 +5582,6 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> PMReviewDelta:
                     "참조하지 않습니다",
                 )
             source_finding = findings[row.id]
-            if _pm_review_design_axis(source_finding):
-                raise PMReviewError(
-                    "malformed",
-                    f"{PM_REVIEW_CONFIRMATION_BLOCK} id={row.id}는 설계 축 finding이라 기계 "
-                    "확인 대상이 아닙니다(종결 수단은 묶음 재설계 · reviewer 재송신 아님)",
-                )
             confirmation_floor = _pm_review_confirmation_floor(
                 source_finding,
                 confirmations.get(row.id, ()),
@@ -5691,9 +5904,18 @@ def pm_review_verify_template(
         entry = latest_rows.get(finding.id)
         # 시드 프리필은 버킷과 무관하게 **열린 accepted 전건**이다 — 분류는 PM 확인 대상을
         # 정하고, 프리필은 다음 라운드가 다시 봐야 할 행을 정한다(두 물음이 다르다).
-        prefill_rows.append(
-            (finding.id, None if entry is None else _pm_review_verify_seed_values(entry[1]))
-        )
+        contract_prefill = None
+        if finding.fix_contract is not None:
+            contract_prefill = {
+                "command": finding.fix_contract["command"],
+                "expected": finding.fix_contract["expected"],
+                "before": finding.fix_contract["failure"],
+                "reason": "",
+            }
+        prefill_rows.append((
+            finding.id,
+            contract_prefill if entry is None else _pm_review_verify_seed_values(entry[1]),
+        ))
         if entry is None:
             missing.append(finding.id)
             continue
@@ -5702,13 +5924,6 @@ def pm_review_verify_template(
             # 빈틈 보고가 먼저다 — 설계 축이든 아니든 dev 의 최신 선언은 "이번에 구현하지
             # 않았다" 이고, PM 이 읽어야 하는 것도 그쪽이다(확인 채널이 아니라 상태).
             gap.append((finding.id, source_round, row.expected))
-            continue
-        if _pm_review_design_axis(finding):
-            reviewer_required.append((
-                finding.id, source_round,
-                "설계 축 finding(class=design-proposal 또는 design_change=true) — "
-                "묶음 재설계로 종결합니다(reviewer 재송신 경로 없음)",
-            ))
             continue
         if not row.machine_verifiable:
             reviewer_required.append((
@@ -5945,7 +6160,6 @@ def pm_verified_evidence_problem(
     *,
     reviewer_role: str,
     surface_floor: int | None,
-    design_replan_ordinal: int = 0,
 ) -> str | None:
     """`pm-verified` 완료 처분의 발동 조건(증거) — 선언·완료 재검증 공용 · **채널 스코프 필수**.
 
@@ -5963,11 +6177,8 @@ def pm_verified_evidence_problem(
     (`INTERNAL_REVIEW_ROLE`)와 추가 리뷰어 release 게이트(`EXTERNAL_REVIEW_ROLE`) 둘뿐이고,
     `surface_floor` 가 정수가 아니면(장부 잔여 '미상') 차단한다(fail-closed).
 
-    `design_replan_ordinal` 은 이 티켓이 속한 묶음의 **마지막 재설계 기준선**이다. 설계 축
-    accepted 는 기계 확인으로 닫히지 않으므로(확인 대상이 아니다) 그 잔여를 여는 유일한 사실이
-    재설계 기록이고, 그 기록이 그 finding 선언 라운드 뒤일 때만 종결로 읽는다. 기본값 0 은
-    "재설계 없음" 이라 종전 판정과 같다 — 선언 시점과 완료 재검증이 **같은 장부 사실**을 넘겨
-    같은 답을 내야 한다(한쪽만 넘기면 선언은 되고 완료가 막힌다).
+    finding 종류와 무관하게 마지막 fix의 기계 확인만 종결 증거다. 설계 축도 같은 reviewer
+    테스트 계약을 실행하며 재설계나 추가 reviewer 라운드로 우회하지 않는다.
     """
     if reviewer_role not in REVIEW_ROLES:
         raise PMReviewError(
@@ -5978,32 +6189,13 @@ def pm_verified_evidence_problem(
         delta = parse_pm_review_delta(ticket_text, rounds)
     except PMReviewError as exc:
         return f"delta 파싱 실패[{exc.code}]: {exc}"
-    # 재설계로 닫힌 설계 축은 잔여도 아니고 **확인 대상도 아니다** — 아래 "accepted 가
-    # 있었으면 기계 확인 1건" 요구에서도 빼야 한다(기계 확인이 불가능한 항목을 근거로
-    # 요구하면 재설계를 마친 티켓이 영구히 막힌다).
-    replan_closed = {
-        finding.id for finding, _disposition in delta.accepted
-        if finding.reviewer_role == reviewer_role
-        and _pm_review_design_axis_replanned(finding, design_replan_ordinal)
-    }
     channel_accepted = [
         finding for finding, _disposition in delta.accepted
-        if finding.reviewer_role == reviewer_role and finding.id not in replan_closed
+        if finding.reviewer_role == reviewer_role
     ]
     if channel_accepted:
         remaining = ", ".join(finding.id for finding in channel_accepted)
-        design_axis = [
-            finding.id for finding in channel_accepted
-            if _pm_review_design_axis(finding)
-        ]
-        note = (
-            f" · 설계 축 {', '.join(design_axis)} 는 기계 확인 대상이 아닙니다 — "
-            "묶음 재설계 기록이 있어야 종결합니다"
-            if design_axis else ""
-        )
-        return (
-            f"{reviewer_role} 채널 PM 판정 accepted 잔여가 있습니다: {remaining}{note}"
-        )
+        return f"{reviewer_role} 채널 PM 판정 accepted 잔여가 있습니다: {remaining}"
     declared = collect_review_finding_declarations(ticket_text, reviewer_role, rounds)
     if not isinstance(surface_floor, int) or isinstance(surface_floor, bool):
         return f"{reviewer_role} 채널 표면 잔여 하한을 확인할 수 없어 차단합니다(미상)"
@@ -6019,7 +6211,7 @@ def pm_verified_evidence_problem(
         rejected |= _pm_review_rejected_finding_ids(
             ticket_text, reviewer_role=reviewer_role, reviewer_ordinal=item.ordinal,
         )
-    had_accepted = bool(declared - rejected - replan_closed)
+    had_accepted = bool(declared - rejected)
     if had_accepted and _pm_review_machine_confirmation_count(
         ticket_text, reviewer_role=reviewer_role,
     ) < 1:
@@ -7338,35 +7530,13 @@ def _recalculate_internal_review_rounds(
 def _declare_internal_review_resolution(
     gate: str,
     *,
-    into: str | None = None,
-    fixed: str | None = None,
     pm_verified: bool = False,
 ) -> InternalResolutionReport:
-    """현재 마지막 반려 잔여에 후속 티켓·후속 통과·기계 확인 해소를 결속한다."""
-    if sum((into is not None, fixed is not None, pm_verified)) != 1:
-        raise DelegateError(
-            "--into, --fixed, --pm-verified 중 하나만 지정해야 합니다"
-        )
-    target = into or fixed
-    if target is not None and target == gate:
-        raise DelegateError(
-            "자기 자신을 --into/--fixed 대상으로 지목할 수 없습니다"
-        )
+    """현재 티켓 fix의 기계 확인 증거로 마지막 반려 잔여를 해소한다."""
+    if not pm_verified:
+        raise DelegateError("내부 리뷰 처분에는 --pm-verified가 필요합니다")
     board = _load_board()
     ledger_path = _internal_round_ledger_path()
-    if into is not None:
-        try:
-            search_dirs = board._release_gate_search_dirs(ledger_path)
-        except board._ReleaseGateBoardResolutionError as exc:
-            raise DelegateError(str(exc)) from exc
-        found = board.find_ticket_exact(
-            into,
-            search_dirs=search_dirs,
-        )
-        if found is None:
-            raise DelegateError(
-                f"후속 티켓을 보드에서 찾지 못했습니다: {into}"
-            )
 
     with _internal_round_lock():
         ledger = _load_internal_round_ledger()
@@ -7380,81 +7550,36 @@ def _declare_internal_review_resolution(
                 f"게이트 {gate}에는 처분할 반려 잔여가 없습니다 "
                 f"(must-fix {board.gate_residual_label(entry)})"
             )
-        if fixed is not None:
-            evidence_raw = ledger.get(fixed)
-            if not isinstance(evidence_raw, dict):
-                raise DelegateError(
-                    f"근거 게이트가 내부 라운드 장부에 없습니다: {fixed}"
-                )
-            evidence_entry = _internal_gate_entry(ledger, fixed)
-            problem = board.internal_gate_evidence_problem(entry, evidence_entry)
-            if problem is not None:
-                raise DelegateError(
-                    f"근거 게이트 {fixed}가 코드 해소를 뒷받침하지 못합니다: {problem}"
-                )
-            blocked_diff_fingerprint = board._round_diff_fingerprint(
-                board.gate_last_round(entry)
-            )
-            evidence_diff_fingerprint = board._round_diff_fingerprint(
-                board.gate_last_round(evidence_entry)
-            )
         residual = board.gate_residual_must_fix(entry)
         previous = board.gate_resolution(entry)
         common = _load_review_rounds()
-        if pm_verified:
-            found = board.find_ticket_exact(gate)
-            if found is None:
-                raise DelegateError(f"게이트에 해당하는 티켓을 보드에서 찾지 못했습니다: {gate}")
-            _status, spec_path = found
-            try:
-                spec_text = _load_file_lock().read_text_shared(
-                    spec_path, encoding="utf-8", newline="",
-                )
-            except (OSError, UnicodeError) as exc:
-                raise DelegateError(f"티켓 명세 읽기 실패: {spec_path}: {exc}") from exc
-            rounds_module = _load_ticket_rounds()
-            ticket_rounds = rounds_module.load_rounds(
-                board.tickets_dir(), gate, ticket_text=spec_text,
+        found = board.find_ticket_exact(gate)
+        if found is None:
+            raise DelegateError(f"게이트에 해당하는 티켓을 보드에서 찾지 못했습니다: {gate}")
+        _status, spec_path = found
+        try:
+            spec_text = _load_file_lock().read_text_shared(
+                spec_path, encoding="utf-8", newline="",
             )
-            # 내부 채널로 스코프한다 — 이 게이트 장부의 잔여 must-fix 를 판정 표면 하한으로
-            # 삼고 다른 채널(추가 리뷰어)의 accepted 잔여·기계 확인은 증거로 세지 않는다.
-            # 선언(여기)과 완료 재검증(board `_gate_pm_verified_problem`)이 같은 인자로
-            # 같은 술어를 본다.
-            problem = pm_verified_evidence_problem(
-                spec_text, ticket_rounds,
-                reviewer_role=INTERNAL_REVIEW_ROLE,
-                surface_floor=residual,
-                # 설계 축 accepted 의 종결 근거는 묶음 재설계 기록이다 — 선언(여기)과 완료
-                # 재검증(board)이 같은 장부 사실을 같은 판독으로 본다.
-                design_replan_ordinal=board.ticket_design_replan_ordinal(gate, spec_text),
-            )
-            if problem is not None:
-                raise DelegateError(f"pm-verified 처분을 사용할 수 없습니다: {problem}")
-            declared = {
-                "kind": board.GATE_RESOLUTION_PM_VERIFIED,
-                "ts": common.utc_now_iso(),
-                "must_fix": residual,
-                **board.gate_round_binding(entry),
-            }
-        else:
-            declared = {
-                "kind": (
-                    board.GATE_RESOLUTION_INTO
-                    if into is not None
-                    else board.GATE_RESOLUTION_FIXED
-                ),
-                "ticket" if into is not None else "evidence_gate": target,
-                "ts": common.utc_now_iso(),
-                "must_fix": residual,
-                **board.gate_round_binding(entry),
-            }
-        if fixed is not None:
-            # 위의 strict evidence seam이 둘 다 유효하고 서로 다름을 이미 증명했다. 선언에도
-            # 결속해, 지문 도입 전 구 선언(legacy-unverifiable)과 새 증명 선언을 재검증 때 구분한다.
-            declared.update({
-                "blocked_diff_fingerprint": blocked_diff_fingerprint,
-                "evidence_diff_fingerprint": evidence_diff_fingerprint,
-            })
+        except (OSError, UnicodeError) as exc:
+            raise DelegateError(f"티켓 명세 읽기 실패: {spec_path}: {exc}") from exc
+        rounds_module = _load_ticket_rounds()
+        ticket_rounds = rounds_module.load_rounds(
+            board.tickets_dir(), gate, ticket_text=spec_text,
+        )
+        problem = pm_verified_evidence_problem(
+            spec_text, ticket_rounds,
+            reviewer_role=INTERNAL_REVIEW_ROLE,
+            surface_floor=residual,
+        )
+        if problem is not None:
+            raise DelegateError(f"pm-verified 처분을 사용할 수 없습니다: {problem}")
+        declared = {
+            "kind": board.GATE_RESOLUTION_PM_VERIFIED,
+            "ts": common.utc_now_iso(),
+            "must_fix": residual,
+            **board.gate_round_binding(entry),
+        }
         entry["resolution"] = declared
         _save_internal_round_ledger(ledger)
     return InternalResolutionReport(
@@ -12239,7 +12364,7 @@ def _internal_diff_fingerprint(audit: ScopeAudit | None) -> str | None:
 
     범위 감사가 이미 캡처한 porcelain 상태·dirty blob hash·mode·HEAD를 재사용한다. 현존 dirty
     경로의 내용/mode 신호가 빠졌으면 같은 상태코드 안 재수정을 구분할 수 없으므로 지문을 만들었다고
-    가장하지 않고 None을 돌린다. 그 라운드는 자문 기록은 되지만 `--fixed` 근거로는 fail-closed다.
+    가장하지 않고 None을 돌린다. 그 라운드는 기계 확인 근거로 쓰지 않는다.
     """
     if audit is None:
         return None
@@ -13717,12 +13842,7 @@ def _print_internal_resolution(resolution, owner: Path) -> None:
     if resolution.previous is not None:
         print("이전 내부 처분 선언을 현재 라운드 좌표의 선언으로 교체합니다.", file=sys.stderr)
     residual = "미상" if resolution.residual is None else str(resolution.residual)
-    target = declared.get("ticket") or declared.get("evidence_gate")
-    if declared["kind"] == board.GATE_RESOLUTION_PM_VERIFIED:
-        description = _load_review_rounds().describe_pm_verified_resolution(declared)
-    else:
-        label = "재설계" if declared["kind"] == board.GATE_RESOLUTION_INTO else "해소"
-        description = f"{label}→{target}"
+    description = _load_review_rounds().describe_pm_verified_resolution(declared)
     print(
         f"내부 게이트 처분 선언: {resolution.gate} · 잔여 must-fix {residual} · "
         f"{description} · PM 홈={owner}"
@@ -13731,10 +13851,6 @@ def _print_internal_resolution(resolution, owner: Path) -> None:
         "  · 결속: "
         f"round #{declared['round_sequence']} / 산출 {declared['rounds']}건"
     )
-    if declared["kind"] == board.GATE_RESOLUTION_INTO:
-        print(
-            f"  · 면제가 아닙니다 — {target} 티켓이 done일 때만 board complete가 통과합니다."
-        )
     print(f"내부 장부: {resolution.ledger_path}")
 
 
@@ -13776,47 +13892,18 @@ def _ticket_spec_and_rounds(board, ticket: str) -> tuple[str, list]:
     )
 
 
-def _design_axis_replan_block(
-    ticket: str, cluster: str, delta: PMReviewDelta, replan_ordinal: int,
-) -> str | None:
-    """재설계 없이 남은 설계 축 accepted — 있으면 거부 사유(없으면 None).
-
-    설계 축은 기계 확인 대상이 아니고 reviewer 재송신 경로도 없다. 남은 출구는 재설계 하나라,
-    그 기록이 없으면 여기서 멈춘다(확인 커맨드를 돌리기 **전**이라 실행 부작용 0).
-    """
-    blocked = [
-        finding.id for finding, _disposition in delta.accepted
-        if _pm_review_design_axis(finding)
-        and not _pm_review_design_axis_replanned(finding, replan_ordinal)
-    ]
-    if not blocked:
-        return None
-    return (
-        f"{ticket}: 재설계 없이 남은 설계 축 accepted — {', '.join(sorted(blocked))}\n"
-        "  · 설계 축은 기계 확인 대상이 아니고 reviewer 재송신 경로도 없습니다.\n"
-        f"  · {cluster_replan_prescription(cluster)}"
-    )
-
-
 def _resolve_ticket_pm_verified(
     ticket: str, *, cluster: str, board, owner: Path, tree: Path,
     run_fn: Callable | None = None,
 ) -> int:
     """티켓 하나의 기계 확인 실행 → 기입 → `pm-verified` 처분.
 
-    순서가 계약이다: (1) 설계 축 재설계 게이트 (2) 확인 커맨드 실행 (3) 확인 절 기입
-    (4) 처분 선언. 처분의 증거 판정은 명세를 **다시 읽으므로**, 기입이 먼저여야 방금 만든
+    순서가 계약이다: (1) 확인 커맨드 실행 (2) 확인 절 기입 (3) 처분 선언.
+    처분의 증거 판정은 명세를 **다시 읽으므로**, 기입이 먼저여야 방금 만든
     확인이 증거로 잡힌다.
     """
     try:
         spec_text, rounds = _ticket_spec_and_rounds(board, ticket)
-        delta = parse_pm_review_delta(spec_text, rounds)
-        refusal = _design_axis_replan_block(
-            ticket, cluster, delta, board.ticket_design_replan_ordinal(ticket, spec_text),
-        )
-        if refusal is not None:
-            print(f"오류: {refusal}", file=sys.stderr)
-            return 1
         template = pm_review_verify_template(spec_text, rounds)
         rows = run_pm_review_confirmations(template, cwd=tree, run_fn=run_fn)
         if rows:
@@ -13913,7 +14000,7 @@ def _cmd_rounds(argv: list[str], run_fn: Callable | None = None) -> int:
     report_parser.add_argument("--gate", default=None, metavar="T-NNNN")
     resolve = subparsers.add_parser(
         "resolve",
-        help="마지막 반려 잔여를 후속 티켓·후속 통과·기계 확인 근거에 결속해 처분",
+        help="마지막 반려 잔여를 현재 티켓 fix의 기계 확인 근거에 결속해 처분",
     )
     # 처분 대상 = 게이트 하나 또는 묶음 하나. 묶음은 **같은 처분의 티켓별 반복**이고
     # (새 파서 0) 확인 커맨드를 엔진이 실행하는 `--pm-verified` 전용이다.
@@ -13923,22 +14010,10 @@ def _cmd_rounds(argv: list[str], run_fn: Callable | None = None) -> int:
         "--cluster", metavar="C-<이름>",
         help="묶음 멤버 전부에 처분을 낸다(--pm-verified 전용 · 확인 커맨드는 엔진이 실행)",
     )
-    resolution_mode = resolve.add_mutually_exclusive_group(required=True)
-    resolution_mode.add_argument(
-        "--into",
-        default=None,
-        metavar="T-NNNN",
-        help="잔여를 후속 티켓으로 재설계(그 티켓이 done이어야 complete 통과)",
-    )
-    resolution_mode.add_argument(
-        "--fixed",
-        default=None,
-        metavar="T-NNNN",
-        help="반려 뒤 코드 변경을 검토해 통과한 내부 근거 게이트",
-    )
-    resolution_mode.add_argument(
+    resolve.add_argument(
         "--pm-verified",
         action="store_true",
+        required=True,
         help=(
             "기계 확인 증거로 해소. 발동 조건(내부 채널로 스코프): delta 가 정상 파싱되고 "
             "내부 채널 accepted 잔여가 0 이며 판정 표면 finding 수가 장부 잔여 이상이고, "
@@ -13956,15 +14031,6 @@ def _cmd_rounds(argv: list[str], run_fn: Callable | None = None) -> int:
     if cluster is not None:
         if not _is_valid_cluster_id(cluster):
             parser.error("--cluster는 board 클러스터 장부 id 형식이어야 합니다")
-        if not args.pm_verified:
-            parser.error(
-                "--cluster 는 --pm-verified 전용이다(후속 티켓·근거 게이트는 게이트별 "
-                "판단이라 묶음으로 접지 않는다)."
-            )
-    for flag in ("into", "fixed"):
-        value = getattr(args, flag, None)
-        if value is not None and not board._is_valid_ticket_id(value):
-            parser.error(f"--{flag}는 board 발행 ticket ID 형식이어야 합니다")
 
     try:
         owner = _activate_internal_rounds_cli_owner()
@@ -13973,8 +14039,6 @@ def _cmd_rounds(argv: list[str], run_fn: Callable | None = None) -> int:
         if args.rounds_command == "resolve":
             resolution = _declare_internal_review_resolution(
                 args.gate,
-                into=args.into,
-                fixed=args.fixed,
                 pm_verified=args.pm_verified,
             )
         elif args.rounds_command == "report":
