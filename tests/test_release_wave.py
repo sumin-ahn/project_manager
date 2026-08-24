@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import inspect
 import json
 import os
 import re
@@ -81,6 +82,11 @@ _CLAUDE_TIMEOUT = int(os.environ.get(
     "PM_ORCH_LIVE_RELEASE_CLAUDE_TIMEOUT", str(_CLAUDE_TIMEOUT_DEFAULT),
 ))
 _CODEX_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_CODEX_TIMEOUT", "900"))
+
+# Claude Code 2.1.241의 non-interactive `-p`는 prompt 문자열 `/compact`를 slash command로
+# dispatch하지 않는다(PreCompact/PostCompact hook 0건 실측). 현재 CLI의 native 경계 옵션을
+# full-wave 세션 시작부터 켜 실제 auto compaction event를 유도한다.
+_CLAUDE_AUTOCOMPACT_THRESHOLD = "100k"
 
 # T-0621 compaction boundary probe. 신규 @release 함수를 더하지 않고 기존 harness full-wave
 # 항목에 결합해 전역 livegate 수 pin/board 소유 표면은 그대로 둔다.
@@ -148,6 +154,49 @@ def _opencode_snapshot_receipts(marker_dir: Path) -> frozenset[tuple[str, str]]:
         if match and receipt.is_file():
             generations.add((match.group(1), match.group(2)))
     return frozenset(generations)
+
+
+def _compaction_checkpoint_markers(marker_dir: Path) -> frozenset[str]:
+    """PreCompact가 남긴 durable marker 이름 집합(격리 adopter의 전후 delta용)."""
+    return frozenset(
+        marker.name
+        for marker in marker_dir.glob("compact-checkpoint.*")
+        if marker.is_file()
+    )
+
+
+def _claude_session_transcript(session_id: str) -> Path:
+    """UUID로 현 live Claude main-session transcript를 유일 해소한다."""
+    candidates = list(
+        (Path.home() / ".claude" / "projects").glob(f"*/{session_id}.jsonl")
+    )
+    assert len(candidates) == 1, (
+        f"Claude session transcript 유일 해소 실패: {session_id} -> {candidates}"
+    )
+    return candidates[0]
+
+
+def _claude_recovery_deliveries(transcript: Path) -> int:
+    """PostCompact snapshot이 hook additional context로 실제 전달된 횟수."""
+    count = 0
+    for line in transcript.read_text(encoding="utf-8").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        attachment = event.get("attachment")
+        if not isinstance(attachment, dict):
+            continue
+        if attachment.get("type") != "hook_additional_context":
+            continue
+        content = attachment.get("content")
+        chunks = content if isinstance(content, list) else [content]
+        if any(
+            isinstance(chunk, str) and "## PM 정체성 (compaction 복구)" in chunk
+            for chunk in chunks
+        ):
+            count += 1
+    return count
 
 
 def _force_opencode_compaction_threshold(dest: Path, model: str) -> None:
@@ -268,6 +317,21 @@ def _full_wave_prompt(entry_doc: str) -> str:
         {"version": _PM_REVIEW_VERSION, "findings": [], "confirmations": []},
         ensure_ascii=False, separators=(",", ":"),
     )
+    architect_body = (
+        "## 경계 실측\n- isolated release-wave adopter and canonical ticket rounds\n\n"
+        "## 불변식\n- architect then developer then code-reviewer then final developer\n\n"
+        "## 표면 상한\n- probe.txt and one stable regression test\n\n"
+        "## 테스트 전략\n- positive canonical round/probe check and negative mismatch check\n\n"
+        f"```{_ARCHITECT_TEST_BLOCK}\n{architect_payload}\n```\n\n"
+        "검토 판정: 설계 통과\n"
+        f"{_GROWTH_PIPELINE[0][1]}\n"
+    )
+    reviewer_zero_body = (
+        "## must-fix\n- 없음\n\n"
+        "## 판정\n판정: 통과 · finding 0건(must-fix 0건)\n\n"
+        f"```{_PM_REVIEW_BLOCK}\n{zero_review_payload}\n```\n\n"
+        f"{_GROWTH_PIPELINE[2][1]}\n"
+    )
     return (
         f"You are the PM for this project. Read {entry_doc} to learn how the project board "
         "tool works. Then run a full release wave: "
@@ -277,9 +341,12 @@ def _full_wave_prompt(entry_doc: str) -> str:
         "(3) execute exactly these four human rounds in order. For every round use pm_delegate.py ticket "
         "prepare with the stated role, pass the returned absolute round file to the matching native "
         "subagent, then always ticket harvest before advancing:\n"
-        "ROUND 01 architect: replace every seeded placeholder with measured content. The "
-        f"```{_ARCHITECT_TEST_BLOCK} block must contain exactly this real test contract payload: "
-        f"{architect_payload}. Append {_GROWTH_PIPELINE[0][1]}.\n"
+        "ROUND 01 architect: use replacement/truncation, never append. Preserve the seeded first header "
+        "line and make every byte from line 2 through EOF equal the body between BEGIN/END here:\n"
+        f"BEGIN EXACT ARCHITECT BODY\n{architect_body}END EXACT ARCHITECT BODY\n"
+        "Before replying, reopen the file and verify exact body equality, exactly one architect test "
+        "contract block, exactly one architect sentinel, and zero `<...>` placeholder tokens. If the old "
+        "skeleton follows the sentinel or any check fails, rewrite line 2 through EOF and reread it.\n"
         "ROUND 02 developer: implement that contract. Create probe.txt with exactly "
         f"'{PROBE_TEXT}' and create {_WAVE_TEST_FILE}. The test must derive this ticket id at runtime from "
         "the union of stable filesystem entries `.project_manager/wiki/tickets/claimed/T-*.md` and "
@@ -287,15 +354,24 @@ def _full_wave_prompt(entry_doc: str) -> str:
         "default `board.py list` view for this lookup because it omits done tickets after completion. "
         "Inspect the stable canonical "
         ".project_manager/wiki/tickets/rounds/<ticket>/01-architect.md plus probe.txt. It must never refer "
-        "to .local/delegate-ticket-copies, an absolute temp path, a random run id, UUID, or hash. Run "
-        f"`{_WAVE_TARGETED_COMMAND}` and then `{_WAVE_FULL_COMMAND}` yourself. Only actual rc=0 may be "
+        "to .local/delegate-ticket-copies, an absolute temp path, a random run id, UUID, or hash. "
+        "After writing the test, reopen its source and verify the literal `.local/delegate-ticket-copies` "
+        "occurs zero times in the entire file bytes, including comments and docstrings; describe this ban "
+        "only in the round evidence, never inside the generated test. Also verify no 32-hex run hash occurs. "
+        f"Run `{_WAVE_TARGETED_COMMAND}` and then `{_WAVE_FULL_COMMAND}` yourself. Only actual rc=0 may be "
         "recorded under `## 회귀` using the exact full command and the observed pytest summary; never "
         f"fabricate a count. Append {_GROWTH_PIPELINE[1][1]}.\n"
-        "ROUND 03 code-reviewer: review probe.txt and its regression test. If there is a real defect, fill "
-        "the seeded v3 finding without changing its keys; include evidence and all fix_contract fields, "
-        f"with test={_WAVE_TEST_FILE}, command=`{_WAVE_TARGETED_COMMAND}`, expected=passed. If there is no "
-        "defect, record `## must-fix` / `- 없음`, `판정: 통과 · finding 0건(must-fix 0건)`, and exact "
-        f"```{_PM_REVIEW_BLOCK} payload {zero_review_payload}. Append {_GROWTH_PIPELINE[2][1]}.\n"
+        "ROUND 03 code-reviewer: review probe.txt and its regression test. If the known stable fixture is "
+        "correct, use replacement/truncation, preserve the first header, and make line 2 through EOF equal "
+        "the body between BEGIN/END here:\n"
+        f"BEGIN EXACT REVIEWER BODY\n{reviewer_zero_body}END EXACT REVIEWER BODY\n"
+        "Reopen the file and verify exact body equality, one review block, one sentinel, and no old skeleton "
+        "after the sentinel before replying. "
+        "If there is a real defect instead, fill the seeded v3 finding without changing its keys; include "
+        "evidence and all fix_contract fields, "
+        f"with test={_WAVE_TEST_FILE}, command=`{_WAVE_TARGETED_COMMAND}`, expected=passed. PM must harvest "
+        "ROUND 03 and observe rc=0 plus the canonical reviewer content before running ROUND 04 prepare; never "
+        "reserve or pre-create ROUND 04 earlier.\n"
         "PM DISPOSITION: after reviewer harvest, run review disposition-template for the actual reviewer "
         "ordinal. Accept only real current-ticket findings. For zero findings, keep dispositions rows at "
         "zero: append only the exact finding-zero block emitted by the template, never invent a finding row, "
@@ -304,13 +380,23 @@ def _full_wave_prompt(entry_doc: str) -> str:
         "ROUND 04 developer (terminal final fix): always prepare and delegate this second developer round, "
         "even when review delta is empty. Apply every accepted finding, add or modify its required regression "
         "test, and fill every preseeded pm-review-verify-v1 row. Run the architect/reviewer targeted commands "
-        f"and `{_WAVE_FULL_COMMAND}` yourself; record only the actual rc=0 command and observed summary. "
-        f"Append {_GROWTH_PIPELINE[3][1]}, harvest once, and open no further human round.\n"
+        f"and `{_WAVE_FULL_COMMAND}` yourself. The final body must use the completed sections in exact order "
+        "`## 변경 파일`, `## 신규 테스트`, `## 회귀`, `## DoD evidence`, `## 민감도`, then any "
+        "seeded verify block and the final sentinel. The `## 회귀` section must contain exactly two "
+        f"nonblank rows: `- 커맨드: `{_WAVE_FULL_COMMAND}`` and `- 결과: rc=0 · <the one observed "
+        "full pytest summary>`. Put targeted evidence under `## DoD evidence`, not under `## 회귀`. "
+        "Before replying, reopen the final file and extract `## 회귀` through the next `## ` heading; "
+        f"rewrite and reread unless it has exactly those two rows, contains `{_WAVE_FULL_COMMAND}` once, "
+        f"contains neither `{_WAVE_TARGETED_COMMAND}` nor a placeholder, and the whole body contains "
+        f"{_GROWTH_PIPELINE[3][1]} exactly once. Harvest once and open no further human round.\n"
         "(4) after all four harvests, start a fresh board.py show process and verify the exact role order "
         "architect, developer, code-reviewer, developer and all four sentinels, "
-        "(5) resolve any accepted review gate with the documented pm-verified command, then mark the ticket "
-        "complete/done (satisfy the complete sync gate however the docs say — "
-        "e.g. a log entry and the tests-pass / untested flag). "
+        "(5) if and only if accepted findings exist, run exactly `python3 .project_manager/tools/"
+        "pm_delegate.py rounds resolve --gate <ticket> --pm-verified`; when the review delta is empty, "
+        "skip resolve entirely. Do not search source or help for another gate command. Check all ticket DoD "
+        "boxes, update the status row, append one ticket entry to log/current.md, then run exactly "
+        "`python3 .project_manager/tools/board.py complete <ticket> --tests-pass` using the sole local lease. "
+        "Do not do further discovery after that command succeeds. "
         "Reply with the ticket id when the ticket is done."
     )
 
@@ -428,21 +514,24 @@ def _assert_wave_side_effects(dest: Path, proc: subprocess.CompletedProcess, har
     reason="release wave — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). 기본 skip·사용자 트리거.",
 )
 def test_release_wave_claude_full_wave(tmp_path):
-    """실 claude full wave + 수동 `/compact`가 snapshot marker 재주입·checkpoint를 남긴다.
+    """실 claude full wave + native auto-compaction이 snapshot을 재주입한다.
 
     PM 36 라이브 probe(`scratchpad/release_probe.py`·PASS·dev×15·reviewer×21)의 mechanics 를 옮긴 것.
     claude 는 subprocess cwd 를 존중한다(`--dir` 불요). stream-json 으로 위임(subagent_type)을 관측하고
-    side-effect(probe.txt·done)를 단언한다. 경계는 미검증 env knob 대신 실 하네스의 수동
-    `/compact`로 유도한다. PostCompact payload marker 생성 → 다음 UserPromptSubmit 1회 소거,
+    side-effect(probe.txt·done)를 단언한다. 경계는 현 CLI의 native `--autocompact`를 full-wave
+    시작부터 적용해 유도한다. PostCompact payload marker 생성 → 다음 UserPromptSubmit 1회 소거,
     checkpoint 1건 이상, 모델 sentinel 응답을 함께 확인한다. API 과금.
     """
     dest = _import_adopter(tmp_path, "claude")
     session_id = str(uuid.uuid4())
     checkpoints_before = _compaction_checkpoint_count(dest)
+    marker_dir = dest / ".project_manager" / ".local" / "ctx-stop"
+    checkpoint_markers_before = _compaction_checkpoint_markers(marker_dir)
 
     proc = subprocess.run(
         ["claude", "-p", "--model", CLAUDE_MODEL,
          "--session-id", session_id,
+         "--autocompact", _CLAUDE_AUTOCOMPACT_THRESHOLD,
          "--allowedTools", "Bash", "Task",
          "--output-format", "stream-json", "--verbose",
          "--dangerously-skip-permissions",
@@ -469,41 +558,16 @@ def test_release_wave_claude_full_wave(tmp_path):
     # side-effect(hard) — developer 위임 결과(probe.txt)·done 전이.
     _assert_wave_side_effects(dest, proc, "claude")
 
-    # T-0621 release boundary: 수동 /compact는 Claude 실 이벤트 PreCompact→PostCompact를
-    # 결정적으로 발화시키는 정본(자동 window env knob 미사용).
-    compact = subprocess.run(
-        ["claude", "-p", "--resume", session_id, "--model", CLAUDE_MODEL,
-         "--dangerously-skip-permissions", "/compact"],
-        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
-        env=_live_env(CLAUDE_MODEL), timeout=_CLAUDE_TIMEOUT,
-    )
-    snapshot_marker = (
-        dest / ".project_manager" / ".local" / "ctx-stop" /
-        f"compact-snapshot.{session_id}"
-    )
-    assert compact.returncode == 0 and snapshot_marker.is_file(), (
-        "claude /compact 후 PostCompact snapshot payload marker 미생성.\n"
-        f"stdout={compact.stdout[-1200:]!r}\nstderr={compact.stderr[-800:]!r}"
-    )
+    assert proc.returncode == 0
     assert _compaction_checkpoint_count(dest) >= checkpoints_before + 1, (
         "claude compaction 경계 checkpoint 골격이 log에 생성되지 않음"
     )
-
-    recovered = subprocess.run(
-        ["claude", "-p", "--resume", session_id, "--model", CLAUDE_MODEL,
-         "--dangerously-skip-permissions",
-         "If a PM recovery snapshot was injected as additional context after the immediately "
-         f"preceding compaction, reply with exactly {_COMPACTION_RECOVERY_SENTINEL}; otherwise "
-         "reply with exactly NO_COMPACTION_RECOVERY."],
-        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
-        env=_live_env(CLAUDE_MODEL), timeout=_CLAUDE_TIMEOUT,
+    assert _compaction_checkpoint_markers(marker_dir) - checkpoint_markers_before, (
+        "claude PreCompact durable checkpoint marker 증가분이 없음"
     )
-    assert recovered.returncode == 0 and not snapshot_marker.exists(), (
-        "claude PostCompact payload가 다음 UserPromptSubmit에서 1회 소비되지 않음"
-    )
-    assert _COMPACTION_RECOVERY_SENTINEL in recovered.stdout, (
-        "claude compaction snapshot이 모델 context에 도달하지 않음.\n"
-        f"stdout={recovered.stdout[-1200:]!r}\nstderr={recovered.stderr[-800:]!r}"
+    transcript = _claude_session_transcript(session_id)
+    assert _claude_recovery_deliveries(transcript) >= 1, (
+        "claude PostCompact snapshot이 후속 PreToolUse additional context에 도달한 증거가 없음"
     )
 
 
@@ -544,9 +608,9 @@ def test_release_wave_opencode_full_wave(tmp_path):
     모델 `limit.context-output`만 낮추고 반복 입력으로 넘긴다. 출하 config/generic 예산은 무변경.
     """
     dest = _import_adopter(tmp_path, "opencode")
-    _force_opencode_compaction_threshold(dest, LIVE_MODEL)
     marker_dir = dest / ".project_manager" / ".local" / "ctx-stop"
     checkpoints_before = _compaction_checkpoint_count(dest)
+    checkpoint_markers_before = _compaction_checkpoint_markers(marker_dir)
     receipts_before_turn = _opencode_snapshot_receipts(marker_dir)
 
     proc = _run_opencode_live(
@@ -561,6 +625,10 @@ def test_release_wave_opencode_full_wave(tmp_path):
 
     # side-effect(hard) — full wave 의 핵심 결과(developer 위임 산출 probe.txt·done 전이).
     _assert_wave_side_effects(dest, proc, "opencode")
+
+    # full wave를 정상 context로 완주한 뒤에만 같은 completed session의 native
+    # compaction 경계를 낮춰, 아래 bounded safe turns로 checkpoint+receipt를 관측한다.
+    _force_opencode_compaction_threshold(dest, LIVE_MODEL)
 
     # 위임 흔적(best-effort) — opencode 출력에 서브에이전트 이름이 등장하면 위임 관측으로 단언.
     # 등장 안 해도 fail 시키지 않는다 — opencode 위임 관측 수단=stream-json 아님·gemma 비결정으로
@@ -577,6 +645,7 @@ def test_release_wave_opencode_full_wave(tmp_path):
     receipt_appearances = []
     checkpoint_increased = (
         _compaction_checkpoint_count(dest) >= checkpoints_before + 1
+        or bool(_compaction_checkpoint_markers(marker_dir) - checkpoint_markers_before)
     )
     receipts = _opencode_snapshot_receipts(marker_dir)
     delivered_receipts = set(receipts - receipts_before_turn)
@@ -598,6 +667,7 @@ def test_release_wave_opencode_full_wave(tmp_path):
         )
         checkpoint_increased = (
             _compaction_checkpoint_count(dest) >= checkpoints_before + 1
+            or bool(_compaction_checkpoint_markers(marker_dir) - checkpoint_markers_before)
         )
         receipts = _opencode_snapshot_receipts(marker_dir)
         appeared = receipts - receipts_before_turn
@@ -639,7 +709,8 @@ def test_release_wave_opencode_full_wave(tmp_path):
         )
     )
     assert checkpoint_increased, (
-        "opencode 강제 임계에서 session.compacted→checkpoint 증가분이 발화하지 않음.\n" + trace
+        "opencode 강제 임계에서 session.compacted→checkpoint log/marker 증가분이 "
+        "발화하지 않음.\n" + trace
     )
     assert delivered_receipts, (
         "opencode checkpoint 증가 뒤 staged snapshot이 system[]에 전달됐다는 새 "
@@ -1349,19 +1420,72 @@ def test_full_wave_prompt_has_ticket_growth_stages():
     assert _WAVE_FULL_COMMAND in prompt and "Only actual rc=0" in prompt
     assert "review disposition-template" in prompt and "review delta" in prompt
     assert "even when review delta is empty" in prompt
+    assert "BEGIN EXACT ARCHITECT BODY" in prompt
+    assert "exact body equality" in prompt
+    assert "old skeleton follows the sentinel" in prompt
+    assert "extract `## 회귀`" in prompt
+    assert "exactly two" in prompt and "contains neither" in prompt
+    assert "if and only if accepted findings exist" in prompt
+    assert "skip resolve entirely" in prompt
+    assert "Do not search source or help" in prompt
+    assert "board.py complete <ticket> --tests-pass" in prompt
     assert ".project_manager/wiki/tickets/rounds/<ticket>/01-architect.md" in prompt
     assert ".project_manager/wiki/tickets/claimed/T-*.md" in prompt
     assert ".project_manager/wiki/tickets/done/T-*.md" in prompt
     assert "default `board.py list` view" in prompt and "omits done tickets" in prompt
     assert ".local/delegate-ticket-copies" in prompt and "random run id" in prompt
+    assert "including comments and docstrings" in prompt
+    assert "occurs zero times in the entire file bytes" in prompt
+    assert "never inside the generated test" in prompt
+    assert "BEGIN EXACT REVIEWER BODY" in prompt
+    assert "exact body equality, one review block" in prompt
+    assert "harvest ROUND 03 and observe rc=0" in prompt
+    assert "never reserve or pre-create ROUND 04 earlier" in prompt
     # (4) 새 프로세스 canonical 재조회.
     assert "fresh board.py show process" in prompt
     # (5) complete + sync gate.
-    assert "mark the ticket complete/done" in prompt
+    assert "board.py complete <ticket> --tests-pass" in prompt
     # 진입문서가 프롬프트에 박힌다(harness 별 CLAUDE.md/AGENTS.md).
     assert "CLAUDE.md" in prompt
     assert "AGENTS.md" in _full_wave_prompt("AGENTS.md")
     assert _CLAUDE_TIMEOUT_DEFAULT == 900
+
+
+def test_claude_full_wave_uses_native_autocompact_not_print_slash_command():
+    """non-interactive Claude release probe는 native auto boundary를 세션 시작에 결속한다."""
+    source = inspect.getsource(test_release_wave_claude_full_wave)
+
+    assert '"--autocompact", _CLAUDE_AUTOCOMPACT_THRESHOLD' in source
+    assert '"/compact"' not in source
+    assert _CLAUDE_AUTOCOMPACT_THRESHOLD == "100k"
+
+
+def test_claude_recovery_delivery_reads_durable_transcript_attachment(tmp_path):
+    """marker가 후속 tool에 소비된 후에도 transcript가 실제 전달을 증명한다."""
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_text(
+        "not-json\n"
+        + json.dumps({
+            "type": "attachment",
+            "attachment": {
+                "type": "hook_additional_context",
+                "hookName": "PreToolUse:Bash",
+                "content": ["## PM 정체성 (compaction 복구)\n- task: live"],
+            },
+        }, ensure_ascii=False)
+        + "\n"
+        + json.dumps({
+            "type": "attachment",
+            "attachment": {
+                "type": "hook_success",
+                "content": ["## PM 정체성 (compaction 복구)"],
+            },
+        }, ensure_ascii=False)
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert _claude_recovery_deliveries(transcript) == 1
 
 
 def test_opencode_full_wave_uses_compaction_evidence_from_initial_run(
@@ -1389,14 +1513,11 @@ def test_opencode_full_wave_uses_compaction_evidence_from_initial_run(
     def fake_run(argv, *, cwd, env, timeout):
         calls.append(argv)
         assert len(calls) == 1, "pre-wave 증거가 있는데 compaction probe를 추가 호출함"
-        log = tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
-        log.parent.mkdir(parents=True, exist_ok=True)
-        log.write_text(
-            "## [2026-08-25] checkpoint | test — compaction\n",
-            encoding="utf-8",
-        )
         marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
         marker_dir.mkdir(parents=True, exist_ok=True)
+        (marker_dir / "compact-checkpoint.live.boundary1").write_text(
+            "durable precompact evidence\n", encoding="utf-8",
+        )
         (marker_dir / "compact-snapshot-receipt.live.generation1").write_text(
             "delivered\n", encoding="utf-8",
         )
@@ -1412,6 +1533,10 @@ def test_opencode_full_wave_uses_compaction_evidence_from_initial_run(
 
     assert len(calls) == 1
     assert "--continue" not in calls[0]
+    source = inspect.getsource(test_release_wave_opencode_full_wave)
+    assert source.index('_assert_wave_side_effects(dest, proc, "opencode")') < source.index(
+        "_force_opencode_compaction_threshold(dest, LIVE_MODEL)"
+    ) < source.index("_opencode_compaction_probe_prompts()")
 
 
 def test_wave_side_effect_guard_rejects_ephemeral_run_hash(tmp_path, monkeypatch):

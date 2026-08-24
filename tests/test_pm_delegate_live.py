@@ -266,9 +266,7 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
                     "negative": "pipeline_roles에서 마지막 developer를 빼면 회귀가 실패해야 한다",
                 }],
             }, ensure_ascii=False, separators=(",", ":"))
-            edit_contract = (
-                "Replace everything after the preserved first header line with exactly these substantive "
-                "sections and contract (no placeholder may remain):\n"
+            architect_body = (
                 "## 경계 실측\n- fixed release pipeline fixture\n\n"
                 "## 불변식\n- architect then developer then code-reviewer then final developer\n\n"
                 "## 표면 상한\n- one stable module and one stable regression test\n\n"
@@ -276,6 +274,15 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
                 f"```{pd.ARCHITECT_TEST_BLOCK}\n{payload}\n```\n\n"
                 "검토 판정: 설계 통과\n"
                 f"{sentinel}\n"
+            )
+            edit_contract = (
+                "Use replacement/truncation, never append: preserve the first header line and make every "
+                "byte from line 2 through EOF equal the exact body between BEGIN/END below.\n"
+                f"BEGIN EXACT ARCHITECT BODY\n{architect_body}END EXACT ARCHITECT BODY\n"
+                "Mandatory self-check before replying: reopen the file and verify the exact body equality, "
+                f"exactly one ```{pd.ARCHITECT_TEST_BLOCK} block, exactly one `{sentinel}`, and zero `<...>` "
+                "placeholder tokens. If the old skeleton follows the sentinel or any check fails, rewrite "
+                "from line 2 through EOF and reread it again. Do not reply before every check passes. "
             )
             final_contract = "After the edit, reply exactly DONE.\n"
         elif role == "code-reviewer":
@@ -319,9 +326,16 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
                 "row with a real boolean and the exact executed command/expected/before values. Run "
                 f"`{_CROSS_TEST_COMMAND}` and then `{_CROSS_FULL_COMMAND}`. Only after both actually return "
                 "rc=0, replace all remaining developer skeleton placeholders and keep any verify block. "
-                "Under `## 회귀`, record exactly two nonblank rows: the exact full command and its actual "
-                "rc=0 pytest summary. Record targeted-command evidence under `## DoD evidence`, never as "
-                "extra `## 회귀` rows. Append "
+                "Write one final body with the normal completed sections in this exact order: `## 변경 파일`, "
+                "`## 신규 테스트`, `## 회귀`, `## DoD evidence`, `## 민감도`, then an existing "
+                "verify block if one was seeded, then the sentinel. The `## 회귀` section itself must be exactly "
+                f"`- 커맨드: `{_CROSS_FULL_COMMAND}`` followed by `- 결과: rc=0 · <the one actual full "
+                "pytest summary>` and no third nonblank row. Put targeted-command evidence only under "
+                "`## DoD evidence`. Mandatory self-check before replying: reopen the file, extract `## 회귀` "
+                "through the next `## ` heading, and refuse to finish unless it has exactly those two rows, "
+                f"contains `{_CROSS_FULL_COMMAND}` once, contains neither `{_CROSS_TEST_COMMAND}` nor any "
+                "placeholder, and the whole body contains the sentinel exactly once. Rewrite and reread if "
+                "any check fails. Append "
                 f"`{sentinel}`. Never fabricate counts and never create another round or ticket.\n"
                 "ACCEPTED-ONLY DELTA:\n" + (fix_delta or "(empty: reviewer finding zero accepted)\n")
             )
@@ -646,9 +660,14 @@ def test_cross_growth_fixture_pins_fixed_pipeline_and_parallel_full_command(tmp_
     assert f"test.cmd={_CROSS_FULL_COMMAND}" in conf_lines
     route_source = inspect.getsource(_run_cross_growth_route)
     assert 'resume_from=ticket if stage == 4 and role == "developer" else None' in route_source
-    assert "record exactly two nonblank rows" in route_source
-    assert "targeted-command evidence under `## DoD evidence`" in route_source
-    assert "extra `## 회귀` rows" in route_source
+    assert "BEGIN EXACT ARCHITECT BODY" in route_source
+    assert "exact body equality" in route_source
+    assert "old skeleton follows the sentinel" in route_source
+    assert "exactly those two rows" in route_source
+    assert "targeted-command evidence only under" in route_source
+    assert "no third nonblank row" in route_source
+    assert "extract `## 회귀`" in route_source
+    assert "contains neither" in route_source
 
 
 def test_delegate_forwards_resume_from_without_fresh(tmp_path, monkeypatch, capsys):
