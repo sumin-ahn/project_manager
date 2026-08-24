@@ -84,13 +84,18 @@ _CLAUDE_TIMEOUT = int(os.environ.get(
 _CODEX_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_CODEX_TIMEOUT", "900"))
 
 # Claude Code 2.1.241의 non-interactive `-p`는 prompt 문자열 `/compact`를 slash command로
-# dispatch하지 않는다(PreCompact/PostCompact hook 0건 실측). 현재 CLI의 native 경계 옵션을
-# full-wave 세션 시작부터 켜 실제 auto compaction event를 유도한다.
+# dispatch하지 않는다(PreCompact/PostCompact hook 0건 실측). 업무 중 compaction은 억제하고
+# full-wave 완료 뒤 같은 세션을 낮은 native 경계로 resume해 compaction event를 유도한다.
+_CLAUDE_WAVE_AUTOCOMPACT_THRESHOLD = "1m"
 _CLAUDE_AUTOCOMPACT_THRESHOLD = "100k"
 
 # T-0621 compaction boundary probe. 신규 @release 함수를 더하지 않고 기존 harness full-wave
 # 항목에 결합해 전역 livegate 수 pin/board 소유 표면은 그대로 둔다.
 _COMPACTION_RECOVERY_SENTINEL = "RECOVERED_AFTER_COMPACTION"
+_CLAUDE_COMPACTION_PROBE_PROMPT = (
+    "Use Bash exactly once to run `pwd`, then reply exactly "
+    f"{_COMPACTION_RECOVERY_SENTINEL}"
+)
 _OPENCODE_COMPACTION_CONTEXT = 32768
 _OPENCODE_COMPACTION_OUTPUT = 4096
 # 현재 user prompt는 native compaction 대상이 아니므로 각 turn 자체가 context-output 입력
@@ -334,7 +339,16 @@ def _full_wave_prompt(entry_doc: str) -> str:
     )
     return (
         f"You are the PM for this project. Read {entry_doc} to learn how the project board "
-        "tool works. Then run a full release wave: "
+        "tool works. HARD DELEGATION GATE: the PM main may run board, prepare, and harvest commands but "
+        "must not directly write, edit, cp, or sed any round file body. Call native Task exactly four "
+        "times in this order: architect once, developer once, code-reviewer once, developer once. After "
+        "each prepare, pass that absolute round path and its complete ROUND contract below to the matching "
+        "Task; do not start the next Task until the current Task succeeds and its harvest returns rc=0. "
+        "If a Task is missing or fails, stop without directly substituting for it. The code-reviewer Task "
+        "prompt must include the nested BEGIN EXACT REVIEWER BODY through END EXACT REVIEWER BODY content "
+        "below verbatim, without paraphrasing or changing its schema. Before completion, self-check spawned "
+        "role counts exactly architect=1, developer=2, code-reviewer=1 and stop on any mismatch. "
+        "Then run a full release wave: "
         "(1) create exactly one ticket titled 'release wave probe' (touches README.md) with the "
         "board tool, "
         "(2) claim it, "
@@ -374,8 +388,12 @@ def _full_wave_prompt(entry_doc: str) -> str:
         "reserve or pre-create ROUND 04 earlier.\n"
         "PM DISPOSITION: after reviewer harvest, run review disposition-template for the actual reviewer "
         "ordinal. Accept only real current-ticket findings. For zero findings, keep dispositions rows at "
-        "zero: append only the exact finding-zero block emitted by the template, never invent a finding row, "
-        "and confirm review delta is empty. Then pass the exact accepted-only delta output to "
+        "zero: append only the exact finding-zero block emitted by the template under `## PM 기계 확인` "
+        "in the claimed ticket file, never in the canonical ROUND 03 reviewer file or any round file, and "
+        "never invent a finding row. Do not search source or help for the block location. Reopen both files "
+        "and verify the disposition fence occurs zero times in canonical ROUND 03 and exactly once under "
+        "the claimed ticket's `## PM 기계 확인`; only after these counts are true may ROUND 04 prepare run. "
+        "Confirm review delta is empty. Then pass the exact accepted-only delta output to "
         "the final developer. Do not create another ticket or reviewer round.\n"
         "ROUND 04 developer (terminal final fix): always prepare and delegate this second developer round, "
         "even when review delta is empty. Apply every accepted finding, add or modify its required regression "
@@ -518,9 +536,9 @@ def test_release_wave_claude_full_wave(tmp_path):
 
     PM 36 라이브 probe(`scratchpad/release_probe.py`·PASS·dev×15·reviewer×21)의 mechanics 를 옮긴 것.
     claude 는 subprocess cwd 를 존중한다(`--dir` 불요). stream-json 으로 위임(subagent_type)을 관측하고
-    side-effect(probe.txt·done)를 단언한다. 경계는 현 CLI의 native `--autocompact`를 full-wave
-    시작부터 적용해 유도한다. PostCompact payload marker 생성 → 다음 UserPromptSubmit 1회 소거,
-    checkpoint 1건 이상, 모델 sentinel 응답을 함께 확인한다. API 과금.
+    side-effect(probe.txt·done)를 먼저 단언한다. 그 뒤 같은 세션을 낮은 native `--autocompact`
+    경계로 resume한다. PostCompact payload marker 생성 → 후속 PreToolUse 전달, checkpoint 1건 이상,
+    모델 sentinel 응답을 함께 확인한다. API 과금.
     """
     dest = _import_adopter(tmp_path, "claude")
     session_id = str(uuid.uuid4())
@@ -531,7 +549,7 @@ def test_release_wave_claude_full_wave(tmp_path):
     proc = subprocess.run(
         ["claude", "-p", "--model", CLAUDE_MODEL,
          "--session-id", session_id,
-         "--autocompact", _CLAUDE_AUTOCOMPACT_THRESHOLD,
+         "--autocompact", _CLAUDE_WAVE_AUTOCOMPACT_THRESHOLD,
          "--allowedTools", "Bash", "Task",
          "--output-format", "stream-json", "--verbose",
          "--dangerously-skip-permissions",
@@ -559,6 +577,23 @@ def test_release_wave_claude_full_wave(tmp_path):
     _assert_wave_side_effects(dest, proc, "claude")
 
     assert proc.returncode == 0
+    resume_proc = subprocess.run(
+        ["claude", "-p", "--model", CLAUDE_MODEL,
+         "--resume", session_id,
+         "--autocompact", _CLAUDE_AUTOCOMPACT_THRESHOLD,
+         "--allowedTools", "Bash",
+         "--output-format", "stream-json", "--verbose",
+         "--dangerously-skip-permissions",
+         _CLAUDE_COMPACTION_PROBE_PROMPT],
+        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env=_live_env(CLAUDE_MODEL), timeout=_CLAUDE_TIMEOUT,
+    )
+    assert resume_proc.returncode == 0, (
+        "claude same-session native compaction probe 실패\n"
+        f"--- stdout(tail) ---\n{resume_proc.stdout[-2500:]}\n"
+        f"--- stderr(tail) ---\n{resume_proc.stderr[-1000:]}"
+    )
+    assert _COMPACTION_RECOVERY_SENTINEL in resume_proc.stdout
     assert _compaction_checkpoint_count(dest) >= checkpoints_before + 1, (
         "claude compaction 경계 checkpoint 골격이 log에 생성되지 않음"
     )
@@ -1451,13 +1486,74 @@ def test_full_wave_prompt_has_ticket_growth_stages():
     assert _CLAUDE_TIMEOUT_DEFAULT == 900
 
 
-def test_claude_full_wave_uses_native_autocompact_not_print_slash_command():
-    """non-interactive Claude release probe는 native auto boundary를 세션 시작에 결속한다."""
+def test_full_wave_prompt_requires_exact_native_task_sequence():
+    """PM main의 round 직접 대체와 Task 생략을 round 시작 전에 차단한다."""
+    prompt = _full_wave_prompt("CLAUDE.md")
+    gate = "HARD DELEGATION GATE"
+    contracts = (
+        "must not directly write, edit, cp, or sed any round file body",
+        "architect once, developer once, code-reviewer once, developer once",
+        "do not start the next Task until the current Task succeeds and its harvest returns rc=0",
+        "If a Task is missing or fails, stop without directly substituting for it",
+        "BEGIN EXACT REVIEWER BODY through END EXACT REVIEWER BODY content below verbatim",
+        "role counts exactly architect=1, developer=2, code-reviewer=1",
+    )
+
+    assert prompt.index(gate) < prompt.index("(1) create exactly one ticket")
+    assert prompt.index(gate) < prompt.index("ROUND 01 architect")
+    for contract in contracts:
+        assert contract in prompt
+    assert prompt.index(contracts[4]) < prompt.index("BEGIN EXACT REVIEWER BODY\n")
+
+
+def test_zero_finding_disposition_is_ticket_owned_before_round04_prepare():
+    """zero-finding PM 판정은 reviewer round를 오염시키지 않고 04보다 먼저 닫힌다."""
+    prompt = _full_wave_prompt("CLAUDE.md")
+    disposition = "append only the exact finding-zero block emitted by the template"
+    ticket_owner = "under `## PM 기계 확인` in the claimed ticket file"
+    round_negative = "never in the canonical ROUND 03 reviewer file or any round file"
+    count_guard = (
+        "zero times in canonical ROUND 03 and exactly once under the claimed ticket's "
+        "`## PM 기계 확인`"
+    )
+    prepare_barrier = "only after these counts are true may ROUND 04 prepare run"
+
+    for contract in (
+        disposition,
+        ticket_owner,
+        round_negative,
+        "Do not search source or help for the block location",
+        count_guard,
+        prepare_barrier,
+    ):
+        assert contract in prompt
+    assert prompt.index(disposition) < prompt.index(ticket_owner)
+    assert prompt.index(ticket_owner) < prompt.index(round_negative)
+    assert prompt.index(round_negative) < prompt.index(count_guard)
+    assert prompt.index(count_guard) < prompt.index(prepare_barrier)
+    assert prompt.index(prepare_barrier) < prompt.index("ROUND 04 developer")
+
+
+def test_claude_full_wave_uses_two_phase_native_autocompact():
+    """wave 완료 뒤 같은 세션에서만 낮은 native compaction 경계를 적용한다."""
     source = inspect.getsource(test_release_wave_claude_full_wave)
 
-    assert '"--autocompact", _CLAUDE_AUTOCOMPACT_THRESHOLD' in source
+    side_effect = source.index('_assert_wave_side_effects(dest, proc, "claude")')
+    resume = source.index('"--resume", session_id')
+    low_threshold = source.index('"--autocompact", _CLAUDE_AUTOCOMPACT_THRESHOLD')
+    evidence = source.index("_claude_recovery_deliveries(transcript)")
+
+    assert '"--autocompact", _CLAUDE_WAVE_AUTOCOMPACT_THRESHOLD' in source
+    assert source.count('"--resume", session_id') == 1
+    assert side_effect < resume < low_threshold < evidence
+    assert '"--allowedTools", "Bash"' in source[resume:evidence]
     assert '"/compact"' not in source
+    assert _CLAUDE_WAVE_AUTOCOMPACT_THRESHOLD == "1m"
     assert _CLAUDE_AUTOCOMPACT_THRESHOLD == "100k"
+    assert _CLAUDE_COMPACTION_PROBE_PROMPT == (
+        "Use Bash exactly once to run `pwd`, then reply exactly "
+        f"{_COMPACTION_RECOVERY_SENTINEL}"
+    )
 
 
 def test_claude_recovery_delivery_reads_durable_transcript_attachment(tmp_path):
