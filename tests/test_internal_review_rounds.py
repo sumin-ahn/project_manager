@@ -1127,7 +1127,7 @@ def test_cap_reached_gate_gets_no_further_round_of_any_kind(pd, capsys):
     entry = _entry(pd, gate)
     assert again.refused_rc == 1
     assert entry["count"] == 3                 # 거부는 예약하지 않는다
-    assert entry["confirm_fix"] == 0           # 이 채널에는 쿼터를 쓰는 경로가 없다
+    assert "confirm_fix" not in entry          # 폐지 필드는 정규화에서 되살아나지 않는다
 
 
 def test_resolve_offers_only_pm_verified(pd, capsys):

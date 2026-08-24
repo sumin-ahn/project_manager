@@ -433,7 +433,6 @@ def normalize_gate_entry(
             *(as_int(row.get("sequence", row.get("number"))) for row in records),
             0,
         ),
-        "confirm_fix": max(0, as_int(entry.get("confirm_fix"))),
         "resolution": resolution,
         "records": records,
         "rounds": rounds,

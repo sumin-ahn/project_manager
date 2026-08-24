@@ -272,7 +272,7 @@ def test_seed_has_no_fence_when_accepted_is_empty(pd):
         "## 변경 파일\n- `<경로>`: <변경 내용과 이유>\n\n"
         "## 신규 테스트\n- 추가한 테스트: <N개 · 파일/케이스>\n\n"
         "## 회귀\n- 커맨드: `<실행 커맨드>`\n"
-        "- 결과: <A passed / B failed>\n\n"
+        "- 결과: <rc=0 · A passed / 0 failed>\n\n"
         "## DoD evidence\n- <완료 조건>: <충족 근거>\n\n"
         "## 민감도\n- <상수/가드 임시 변경 → red, 복원 → green 실측>\n"
     )
@@ -783,7 +783,7 @@ def test_accepted_zero_developer_seed_bytes_are_unchanged_from_pre_t0786(pd):
         "## 변경 파일\n- `<경로>`: <변경 내용과 이유>\n\n"
         "## 신규 테스트\n- 추가한 테스트: <N개 · 파일/케이스>\n\n"
         "## 회귀\n- 커맨드: `<실행 커맨드>`\n"
-        "- 결과: <A passed / B failed>\n\n"
+        "- 결과: <rc=0 · A passed / 0 failed>\n\n"
         "## DoD evidence\n- <완료 조건>: <충족 근거>\n\n"
         "## 민감도\n- <상수/가드 임시 변경 → red, 복원 → green 실측>\n"
     )
@@ -1079,9 +1079,12 @@ def _shape_two_findings(pd, dev_rows_by_round: dict[int, list], *, spec_tail: st
 
 
 def test_gap_reason_is_a_member_of_the_closed_reason_vocabulary(pd):
-    """축 1 어휘 — 새 값은 하나이고 닫힌 enum 안에 있다(새 key·새 블록·새 version 0)."""
+    """축 1 어휘 — false 사유는 닫힌 enum이고 새 key·블록·version은 없다."""
     assert pd.PM_REVIEW_VERIFY_GAP_REASON == "prescription-gap"
     assert pd.PM_REVIEW_VERIFY_GAP_REASON in pd.PM_REVIEW_VERIFY_REASONS
+    assert pd.PM_REVIEW_VERIFY_PM_OWNED_REASON == "pm-owned"
+    assert pd.PM_REVIEW_VERIFY_PM_OWNED_REASON in pd.PM_REVIEW_VERIFY_REASONS
+    assert pd.PM_REVIEW_PM_OWNED_SCOPE_PREFIX == "pm-owned:"
     assert set(pd.PM_REVIEW_VERIFY_ROW_KEYS) == {
         "id", "machine_verifiable", "command", "expected", "before", "reason",
     }

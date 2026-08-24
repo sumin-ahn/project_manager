@@ -13,7 +13,6 @@ PM_PLAYBOOK = ROOT / ".project_manager" / "wiki" / "pm_playbook.md"
 
 POLICY_SECTIONS = (
     (PM_ROLE, "## 결정 권한", "\n## "),
-    (PM_PLAYBOOK, "### 라운드 프로토콜", "\n### "),
 )
 
 GROUP_ITEMS = {
@@ -32,7 +31,7 @@ GROUP_ITEMS = {
     "미완 보고 판정": (
         "다음 행동 명시",
         "자기 수행 우선",
-        "상한 이후 계속",
+        "상한 이후 보고",
         "종료·축소 권한",
     ),
 }
@@ -60,7 +59,7 @@ CONDITION_CONCEPTS = {
     "세션 자기 판단": (("세션",), ("자기 판단",), ("정확한 상태",)),
     "다음 행동 명시": (("여기까지",), ("다음 행동", "다음 한 걸음"), ("명시", "밝히", "제시"), ("않", "없")),
     "자기 수행 우선": (("세션",), ("직접 수행",), ("수행할 수 있",)),
-    "상한 이후 계속": (("라운드",), ("wave",), ("상한", "제한"), ("루프",), ("정지", "끝")),
+    "상한 이후 보고": (("라운드",), ("wave",), ("상한", "제한"), ("루프",), ("정지", "끝")),
     "종료·축소 권한": (("세션 종료",), ("작업 축소",), ("결정",)),
 }
 
@@ -75,7 +74,7 @@ EXPECTED_CONCLUSIONS = {
     "세션 자기 판단": "이를 이유로 작업을 중단하면 규약 위반이다.",
     "다음 행동 명시": "다음 행동 없는 미완 보고는 규약 위반이다.",
     "자기 수행 우선": "수행 가능한 행동을 남긴 미완 보고는 규약 위반이다.",
-    "상한 이후 계속": "재설계·분할·다음 티켓으로 계속한다.",
+    "상한 이후 보고": "라운드를 더 열거나 board를 쓰지 않고 현재 티켓 상태와 실패 근거를 사용자에게 보고한다.",
     "종료·축소 권한": "세션 종료·작업 축소는 사용자 지시로만 한다.",
 }
 
@@ -111,10 +110,10 @@ REPHRASES = (
         "조건: 필요한 자원이 없거나 권한이 없어 수행할 수 없는 경우. 결론: 작업 중단 가능.",
     ),
     (
-        "continue-synonym",
-        "상한 이후 계속",
+        "report-synonym",
+        "상한 이후 보고",
         "조건: 라운드 및 wave 제한에 닿아 해당 루프만 끝난 상태. "
-        "결론: 재설계·분할·다음 티켓으로 계속한다.",
+        "결론: 라운드를 더 열거나 board를 쓰지 않고 현재 티켓 상태와 실패 근거를 사용자에게 보고한다.",
     ),
 )
 
@@ -162,9 +161,9 @@ HARMFUL_MUTATIONS = (
         "결론: 세션 종료·작업 축소는 사용자 지시가 없는 경우에만 한다.",
     ),
     (
-        "continue-becomes-discretion",
+        "report-becomes-discretion",
         "replace",
-        "상한 이후 계속",
+        "상한 이후 보고",
         "조건: 라운드·wave 상한 도달로 해당 루프가 정지한 상태. "
         "결론: 재설계·분할·다음 티켓 진행 여부는 세션 판단에 맡긴다.",
     ),
@@ -267,12 +266,12 @@ def _apply_harmful_mutation(section: str, kind: str, key: str, payload) -> str:
     return _replace_item(section, key, payload)
 
 
-@pytest.mark.parametrize("path,heading,next_heading", POLICY_SECTIONS, ids=("pm_role", "pm_playbook"))
+@pytest.mark.parametrize("path,heading,next_heading", POLICY_SECTIONS, ids=("pm_role",))
 def test_structured_stop_policy_is_complete(path, heading, next_heading):
     _validate_policy(_policy_section(path, heading, next_heading))
 
 
-@pytest.mark.parametrize("path,heading,next_heading", POLICY_SECTIONS, ids=("pm_role", "pm_playbook"))
+@pytest.mark.parametrize("path,heading,next_heading", POLICY_SECTIONS, ids=("pm_role",))
 @pytest.mark.parametrize("key", ALL_ITEMS, ids=ALL_ITEMS)
 @pytest.mark.parametrize("mutation", ("delete", "neutralize"))
 def test_every_policy_concept_deletion_or_neutralization_is_red(
@@ -286,7 +285,7 @@ def test_every_policy_concept_deletion_or_neutralization_is_red(
         _validate_policy(mutated)
 
 
-@pytest.mark.parametrize("path,heading,next_heading", POLICY_SECTIONS, ids=("pm_role", "pm_playbook"))
+@pytest.mark.parametrize("path,heading,next_heading", POLICY_SECTIONS, ids=("pm_role",))
 @pytest.mark.parametrize("case_id,kind,key,payload", HARMFUL_MUTATIONS, ids=[case[0] for case in HARMFUL_MUTATIONS])
 def test_reviewer_meaning_reversals_are_red(path, heading, next_heading, case_id, kind, key, payload):
     section = _policy_section(path, heading, next_heading)
@@ -295,7 +294,7 @@ def test_reviewer_meaning_reversals_are_red(path, heading, next_heading, case_id
         _validate_policy(mutated)
 
 
-@pytest.mark.parametrize("path,heading,next_heading", POLICY_SECTIONS, ids=("pm_role", "pm_playbook"))
+@pytest.mark.parametrize("path,heading,next_heading", POLICY_SECTIONS, ids=("pm_role",))
 @pytest.mark.parametrize("case_id,key,rephrased", REPHRASES, ids=[case[0] for case in REPHRASES])
 def test_meaning_preserving_rephrases_are_green(path, heading, next_heading, case_id, key, rephrased):
     section = _replace_item(_policy_section(path, heading, next_heading), key, rephrased)

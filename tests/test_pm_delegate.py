@@ -6622,6 +6622,8 @@ def test_native_advisory_rejects_values_outside_public_domain(pd, monkeypatch):
 def test_save_raw_output_tempdir_fallback_with_injected_destination(
         pd, monkeypatch, tmp_path):
     """PM 홈 미해소 폴백은 유지하되 테스트에서는 pytest 관리 목적지를 주입한다."""
+    # module-scoped 도구의 직전 main 호출이 남긴 config owner는 이 독립 폴백 축의 입력이 아니다.
+    monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", None)
     monkeypatch.setattr(pd, "REPO", tmp_path / "unresolved-adopter")
     monkeypatch.setattr(pd, "_gettempdir", lambda: str(tmp_path))
     dest = pd.save_raw_output("codex", "fallback content")
@@ -7079,14 +7081,16 @@ def _seed_t0650_raw(
     return record_id, raw_path
 
 
-@pytest.mark.parametrize("role", ["developer", "code-reviewer"])
-def test_t0650_regression_scope_is_in_both_execution_preambles(pd, role):
-    """[P] 두 실행 role의 합성 preamble에 전체 스위트 금지 상수가 글자 그대로 들어간다."""
-    preamble = pd._role_preamble(role, (".claude", ".opencode", ".codex", ".agents"))
-    assert pd.REGRESSION_SCOPE_PREAMBLE in preamble
-    assert "회귀는 프롬프트가 지정한 범위만" in preamble
-    assert "`pytest tests/` 무인자" in preamble
-    assert "PM 이 1회" in preamble
+def test_t0650_stage_exit_regression_scope_is_only_in_developer_preamble(pd):
+    """stage-exit full은 실행·기록 책임이 있는 developer/fix에만 주입된다."""
+    directories = (".claude", ".opencode", ".codex", ".agents")
+    developer = pd._role_preamble("developer", directories)
+    reviewer = pd._role_preamble("code-reviewer", directories)
+    assert pd.REGRESSION_SCOPE_PREAMBLE in developer
+    assert "targeted tests" in developer
+    assert "프로젝트 `test_cmd`" in developer
+    assert "`rc=0`" in developer
+    assert pd.REGRESSION_SCOPE_PREAMBLE not in reviewer
 
 
 @pytest.mark.parametrize(

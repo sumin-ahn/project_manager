@@ -444,6 +444,15 @@ ARCHITECT_TEST_ROW_KEYS: tuple[str, ...] = (
     "id", "target", "command", "expected", "negative",
 )
 _ARCHITECT_TEST_ID_RE = re.compile(r"AT-[0-9]{3,}")
+_CONTRACT_PLACEHOLDER_RE = re.compile(
+    r"<[^>\n]+>|^(?:todo|tbd|placeholder|n/?a|none|미정|미기재)(?:\b|$)",
+    re.IGNORECASE,
+)
+_CONTRACT_TEST_TARGET_RE = re.compile(
+    r"(?<![A-Za-z0-9_./-])(?P<path>tests/[A-Za-z0-9_./-]+\.py)"
+    r"(?=::|(?:(?:에서|에는|에도|에게|으로|에|은|는|이|가|을|를|와|과|의|로))?"
+    r"(?:$|[\s,.;:!?…·，。)\]}>'\"`]))",
+)
 PM_REVIEW_VERIFY_PAYLOAD_KEYS: tuple[str, ...] = ("version", "verifications")
 PM_REVIEW_VERIFY_ROW_KEYS: tuple[str, ...] = (
     "id", "machine_verifiable", "command", "expected", "before", "reason",
@@ -452,10 +461,14 @@ PM_REVIEW_VERIFY_ROW_KEYS: tuple[str, ...] = (
 # 선언**이다. 이 값이 없으면 빈틈 보고와 태만이 둘 다 "행의 부재" 한 형상이라
 # 기계로 구별되지 않는다.
 PM_REVIEW_VERIFY_GAP_REASON = "prescription-gap"
+# PM 이 같은 fix 단계에서 직접 닫는 finding 의 닫힌 교차-소유권 표식. disposition 과 developer
+# verify 선언 두 축이 정확히 맞아야만 reviewer test/command 계약에서 제외한다.
+PM_REVIEW_VERIFY_PM_OWNED_REASON = "pm-owned"
+PM_REVIEW_PM_OWNED_SCOPE_PREFIX = "pm-owned:"
 # `machine_verifiable=false` 일 때만 쓰는 닫힌 사유 — dev 선언(불변식 9)의 유일한 어휘.
 PM_REVIEW_VERIFY_REASONS: tuple[str, ...] = (
     "design-judgment", "adversarial-probing", "not-reproducible",
-    PM_REVIEW_VERIFY_GAP_REASON,
+    PM_REVIEW_VERIFY_GAP_REASON, PM_REVIEW_VERIFY_PM_OWNED_REASON,
 )
 # fix 라운드 delta 꼬리에 부착하는 수정 범위 제약 문구 단일 진실 — 스킬·카드·playbook은
 # 이 상수를 복제하지 않고 "출력을 그대로 전달"만 지시한다(no-hand-retyping 원칙). 빈틈 보고
@@ -470,6 +483,10 @@ PM_REVIEW_FIX_SCOPE_NOTICE = f"""\
   보강 처방이 필요하면 현재 티켓을 멈추고 사용자에게 보고한다.
 - 빈틈 보고로 끝난 라운드는 정상 산출이고 성공 종료다. 빈 손으로 끝내지 않으려고
   처방 밖 구현을 얹지 않는다.
+- `허용 수정 범위`가 `{PM_REVIEW_PM_OWNED_SCOPE_PREFIX}`로 시작하는 finding은 PM 소유다.
+  developer는 구현하지 않고 해당 verify 행을 machine_verifiable=false ·
+  reason={PM_REVIEW_VERIFY_PM_OWNED_REASON} · expected=<PM 완료 기준 실값>으로 채운다. scope 표식과
+  verify 선언 중 하나만 있으면 회수가 거부된다.
 
 빈틈 보고 형식:
 - 대상: 어느 finding ID 의 어느 처방인가
@@ -903,14 +920,17 @@ _ROLE_IDENTITIES: dict[str, str] = {
         "(코드를 수정하지 않는다).",
 }
 
-# 라운드 중 회귀 범위는 호출 프롬프트가 소유한다. 비용이 큰 전체 스위트는 PM 릴리즈 절차의
-# 단일 전량 검증으로만 실행하게 developer와 code-reviewer 두 실행 역할에 기계 주입한다.
+# 라운드 중 회귀 범위는 호출 프롬프트가 소유한다. stage-exit 전체 회귀를 직접 기록할 책임이
+# 있는 developer 역할에만 기계 주입한다. code-reviewer는 계약을 설계하지만 구현 단계를 종료하지 않는다.
 REGRESSION_SCOPE_PREAMBLE = (
-    "회귀는 프롬프트가 지정한 범위만 실행하라. "
-    "전체 스위트(`pytest tests/` 무인자)는 실행 금지 — "
-    "전량 검증은 릴리즈 절차에서 PM 이 1회 수행한다."
+    "구현 중 inner-loop는 프롬프트가 지정한 targeted tests만 실행하라. "
+    "developer 단계 종료 직전에 해소된 프로젝트 `test_cmd`의 전체 회귀를 직접 정확히 1회 실행하고 "
+    "라운드 파일 `## 회귀`에 정확한 커맨드와 `rc=0` 결과를 기록하라. 전체 회귀가 red면 이미 "
+    "수집한 실패를 공통 원인으로 batch 수정하고 targeted tests를 확인한 뒤 terminal 확인용 전체 "
+    "회귀를 정확히 1회만 다시 실행하라. `-x` full 반복이나 serial fallback은 금지다. 규범은 "
+    "`.project_manager/wiki/pm_principles.md` §티켓과 위임을 따른다."
 )
-REGRESSION_SCOPE_ROLES: frozenset[str] = frozenset({"developer", "code-reviewer"})
+REGRESSION_SCOPE_ROLES: frozenset[str] = frozenset({"developer"})
 
 
 def _role_preamble(role: str, adapter_directories: Sequence[str] | None = None) -> str:
@@ -958,6 +978,10 @@ class DelegateError(Exception):
     """config 해소·검증·containment·재앵커 등의 fail-loud 오류 (main 이 rc=1 로 변환)."""
 
 
+class TerminalFixHarvestError(DelegateError):
+    """마지막 fix 회수 거부 — 증거는 보존하되 복구 라운드는 없는 종단 상태."""
+
+
 # PM 개발 프로세스에 참여하는 모든 역할은 자기 산출을 라운드 파일로 남긴다 — 라운드 파일명이
 # 허용하는 역할 집합이다(`ROLE_CHOICES` ⊆ 이 집합 · 불변식은 테스트가 고정).
 TICKET_COPY_ROLES: frozenset[str] = frozenset(
@@ -1001,7 +1025,7 @@ _DELEGATE_ROUNDS_LEDGER_REQUIRED_FIELDS: frozenset[str] = frozenset(
 # 회수 불가가 되지 않게). 검증은 필수-집합 정확 일치가 아니라 상한-집합 포함으로 완화한다:
 # 정확-일치였다면 이 키를 추가하는 순간 기존 행 전부가 schema 불일치로 건너뛰어진다.
 _DELEGATE_ROUNDS_LEDGER_OPTIONAL_FIELDS: frozenset[str] = frozenset(
-    {"abandoned_at", "owner_pid", "superseded_by_ordinal", "cluster"}
+    {"abandoned_at", "owner_pid", "superseded_by_ordinal", "cluster", "base_rev"}
 )
 # 묶음 id 는 run-dir 의 **경로 성분**이 된다 — board 이름 문법과 같은 보수적 집합만 받는다
 # (경로 구분자·상위 참조 배제). 회수측이 같은 형식을 다시 확인해 장부 값 하나로 경로가
@@ -1929,6 +1953,10 @@ def prepare_cluster_copy(
     rounds_module = _load_ticket_rounds()
     pm_home = Path(pm_home).resolve()
     cwd = Path(cwd).resolve()
+    base_rev = (
+        _cluster_git(cwd, "rev-parse", "HEAD").strip()
+        if role == "developer" else ""
+    )
     cluster = str(cluster or "").strip()
     if not _is_valid_cluster_id(cluster):
         raise DelegateError(f"클러스터 id 형식이 아닙니다: {cluster!r}")
@@ -2254,6 +2282,8 @@ def prepare_cluster_copy(
         }
         if owner_pid is not None:
             ledger_row["owner_pid"] = owner_pid
+        if base_rev:
+            ledger_row["base_rev"] = base_rev
         try:
             _append_delegate_rounds_ledger(pm_home, ledger_row)
         except DelegateError as exc:
@@ -2383,11 +2413,23 @@ def harvest_ticket_copy(
     if row["role"] == "developer":
         # 검증 게이트는 리뷰 게이트와 **같은 자리**(교체 앞)다 — 교체 뒤로 밀면 낡은 기대값이
         # 이미 board 에 착지한 뒤라 되돌릴 정식 수단이 없다(라운드 파일은 회수 후 불변).
+        terminal_fix = _terminal_developer_round(
+            ticket=row["ticket"], ordinal=int(row["ordinal"]),
+            board=board, rounds_module=rounds_module,
+        )
         problem = _developer_round_harvest_problem(
             text, reserved, ticket=row["ticket"], ordinal=int(row["ordinal"]),
             board=board, rounds_module=rounds_module, cwd=cwd,
+            base_rev=str(row.get("base_rev") or "HEAD"),
         )
         if problem is not None:
+            if terminal_fix:
+                raise TerminalFixHarvestError(
+                    f"최종 fix 회수 거부 — {problem}. terminal stop: board 라운드 "
+                    f"파일과 slot run-dir 증거를 그대로 보존했습니다. 현재 티켓 "
+                    f"상태와 실패 근거를 사용자에게 보고하세요: "
+                    f"round={board_path.name} · copy={expected}"
+                )
             raise DelegateError(
                 f"developer 라운드 회수 거부 — {problem}. board 라운드 파일과 slot run-dir 은 "
                 f"그대로 보존했습니다 — 사본을 고쳐 같은 경로로 다시 회수하세요: "
@@ -2432,6 +2474,7 @@ class ClusterHarvestOutcome(NamedTuple):
     copy: Path
     result: TicketHarvestResult | None
     refusal: str | None
+    terminal: bool = False
 
 
 def _cluster_run_rows(pm_home: Path, run_dir: Path) -> list[dict]:
@@ -2482,7 +2525,10 @@ def harvest_cluster_copy(
             )
         except DelegateError as exc:
             outcomes.append(
-                ClusterHarvestOutcome(row["ticket"], expected, None, str(exc)))
+                ClusterHarvestOutcome(
+                    row["ticket"], expected, None, str(exc),
+                    isinstance(exc, TerminalFixHarvestError),
+                ))
             continue
         outcomes.append(ClusterHarvestOutcome(row["ticket"], expected, result, None))
     return tuple(outcomes)
@@ -2546,9 +2592,92 @@ def _run_required_test(command: str, expected: str | None, *, cwd: Path) -> str 
 
 
 def _full_regression_command(cwd: Path) -> str:
-    """fix 종료의 전체 회귀 명령. 코드 트리 local.conf의 test.cmd가 단일 입력이다."""
-    conf = _load_external_review()._local_config_for_repo(Path(cwd).resolve())
-    return str(conf.get("test.cmd") or "python3 -m pytest tests/ -q").strip()
+    """developer 단계 종료의 프로젝트 test_cmd(areas/slot/local/default 해소 전부)."""
+    repo = Path(cwd).resolve()
+    er = _load_external_review()
+    owner = er.resolve_pm_home_for_repo(repo, required=False)
+    config_root = Path(owner).resolve() if owner else repo
+    board = _load_board_for_repo(config_root)
+    command = str(board._test_cmd(None, session=None)).strip()
+    if not command:
+        raise DelegateError("developer 단계 종료 전체 회귀 test_cmd를 해소하지 못했습니다")
+    return command
+
+
+class DeveloperRegressionRecord(NamedTuple):
+    command: str
+    result: str
+
+
+_DEVELOPER_REGRESSION_HEADING = "## 회귀"
+_DEVELOPER_REGRESSION_COMMAND_PREFIX = "- 커맨드: `"
+_DEVELOPER_REGRESSION_RESULT_PREFIX = "- 결과: "
+_DEVELOPER_REGRESSION_GREEN_RE = re.compile(r"(?:^|[ ·])rc\s*=\s*0(?:$|[ ·])")
+
+
+def parse_developer_regression_record(text: str) -> DeveloperRegressionRecord:
+    """developer가 직접 실행해 라운드에 남긴 stage-exit 전체 회귀 기록."""
+    lines = _normalized_newlines(text).splitlines()
+    headings = [index for index, line in enumerate(lines) if line == _DEVELOPER_REGRESSION_HEADING]
+    if len(headings) != 1:
+        raise DelegateError("developer 전체 회귀 기록은 `## 회귀` 절 정확히 1개여야 합니다")
+    start = headings[0]
+    section_end = next(
+        (index for index in range(start + 1, len(lines)) if lines[index].startswith("## ")),
+        len(lines),
+    )
+    section = [line for line in lines[start + 1:section_end] if line.strip()]
+    if len(section) != 2:
+        raise DelegateError(
+            "developer 전체 회귀 기록은 커맨드·결과 두 행이어야 합니다"
+        )
+    command_line, result_line = section
+    if not (
+        command_line.startswith(_DEVELOPER_REGRESSION_COMMAND_PREFIX)
+        and command_line.endswith("`")
+    ):
+        raise DelegateError("developer 전체 회귀 커맨드 기록 형식이 올바르지 않습니다")
+    if not result_line.startswith(_DEVELOPER_REGRESSION_RESULT_PREFIX):
+        raise DelegateError("developer 전체 회귀 결과 기록 형식이 올바르지 않습니다")
+    command = command_line[len(_DEVELOPER_REGRESSION_COMMAND_PREFIX):-1].strip()
+    result = result_line[len(_DEVELOPER_REGRESSION_RESULT_PREFIX):].strip()
+    for value, field in ((command, "커맨드"), (result, "결과")):
+        if not value or _CONTRACT_PLACEHOLDER_RE.search(value):
+            raise DelegateError(
+                f"developer 전체 회귀 {field}를 placeholder가 아닌 실값으로 기록해야 합니다"
+            )
+    if not _DEVELOPER_REGRESSION_GREEN_RE.search(result):
+        raise DelegateError(
+            "developer 전체 회귀 결과가 green이 아닙니다 — `rc=0` 관측을 기록해야 합니다"
+        )
+    return DeveloperRegressionRecord(command, result)
+
+
+def _developer_round_changed_paths(
+    repo_root: Path, *, base_rev: str,
+) -> frozenset[str]:
+    """직전 developer 커밋 후 현재 라운드가 추가·수정한 경로.
+
+    developer 산출은 harvest 성공 뒤에만 커밋되므로 ``HEAD..작업트리``가
+    해당 단계의 자연스런 기준선이다. 삭제는 회귀를 추가한 것이 아니므로
+    대상에서 빼고, untracked 테스트는 별도로 포함한다.
+    """
+    changed = {
+        line.strip()
+        for line in _cluster_git(
+            repo_root, "diff", "--name-only", "--diff-filter=ACMRTUXB",
+            base_rev, "--",
+        ).splitlines()
+        if line.strip()
+    }
+    changed.update(
+        line.strip()
+        for line in _cluster_git(
+            repo_root, "ls-files", "--others", "--exclude-standard", "--",
+        ).splitlines()
+        if line.strip()
+    )
+    return frozenset(changed)
 
 
 def _fix_round(rounds: Sequence, ordinal: int) -> bool:
@@ -2560,13 +2689,33 @@ def _fix_round(rounds: Sequence, ordinal: int) -> bool:
     )
 
 
+def _terminal_developer_round(
+    *, ticket: str, ordinal: int, board, rounds_module,
+) -> bool:
+    """회수 거부 문구가 사람을 다시 투입해도 되는지 판정하는 단일 seam."""
+    try:
+        found = board.find_ticket_exact(ticket)
+        if found is None:
+            return False
+        _status, spec_path = found
+        spec_text = _load_file_lock().read_text_shared(
+            spec_path, encoding="utf-8", newline="",
+        )
+        rounds = rounds_module.load_rounds(
+            board.tickets_dir(), ticket, ticket_text=spec_text,
+        )
+    except (rounds_module.RoundsError, OSError, UnicodeError):
+        return False
+    return _fix_round(rounds, ordinal)
+
+
 def _developer_round_harvest_problem(
     text: str, reserved: str, *, ticket: str, ordinal: int, board, rounds_module,
-    cwd: Path,
+    cwd: Path, base_rev: str = "HEAD",
 ) -> str | None:
     """developer 라운드 회수 직전 verify 판정 — 위반 사유 또는 None(리뷰 게이트와 같은 자리).
 
-    두 가지를 본다.
+    세 가지를 본다.
 
     (1) **지운 행**: 시드가 실은 verify 행이 산출에 그대로 있는가. 기준선은 판정 시점에 다시
     계산한 분류기 산출이 아니라 **그 run 의 예약 bytes** 다 — 그 사이 같은 티켓의 다른 라운드가
@@ -2580,6 +2729,12 @@ def _developer_round_harvest_problem(
     돌리지 않는다(확인 파서와 같은 규칙). 관측이 기대와 다르면 거부다 — 낡은 기대값을 board
     라운드에 착지시키면 PM 의 기계 확인이 그 값으로 막히고, 라운드 파일은 회수 뒤 불변이라
     되돌릴 정식 수단이 없다.
+
+    (3) **stage-exit 전체 회귀 기록**: developer가 local.conf `test.cmd`를 직접 실행한 정확한
+    커맨드와 ``rc=0`` 결과가 `## 회귀` 절에 있는가. harvest가 full을 다시 실행하면 inner-loop
+    탐색에 전체 회귀를 반복하는 경로가 되므로 최초 developer와 final fix 모두 기록을 엄격 검증하고
+    이 경계에서는 targeted architect/reviewer 계약만 재실행한다. final fix developer가 terminal
+    전체 회귀를 직접 실행하며, 기록 누락·명령 불일치·nonzero 또는 계약 red는 terminal stop이다.
 
     이 관측은 **확인 증거가 아니다**. 회수는 슬롯 트리(개발자가 고친 브랜치)에서 재고, PM 의 기계
     확인은 묶음 통합 브랜치를 강제한다 — 측정 트리가 다르므로 두 관측을 섞지 않는다.
@@ -2606,23 +2761,89 @@ def _developer_round_harvest_problem(
         architect_tests = architect_tests_from_rounds(rounds)
     except DelegateError as exc:
         return str(exc)
+    is_fix = _fix_round(rounds, ordinal)
+    try:
+        changed_paths = _developer_round_changed_paths(repo_root, base_rev=base_rev)
+    except DelegateError as exc:
+        return f"developer 단계 diff를 읽지 못했습니다: {exc}"
+
+    # accepted reviewer 계약과 결속하기 전에 **이번 산출의 선언**을 먼저 확정한다. PM-owned
+    # 예외는 disposition 산문만으로 열리지 않고 같은 ID의 채워진 false verify 행까지 요구한다.
+    seed_rows = _dev_round_seed_verify_rows(_normalized_newlines(reserved))
+    if seed_rows is None:
+        return (
+            f"예약 골격의 {PM_REVIEW_VERIFY_BLOCK} 블록을 읽지 못해 회수 판정을 낼 수 "
+            f"없습니다: ordinal={ordinal}"
+        )
+    filled: dict[str, PMReviewVerifyRow] = {}
+    unfilled: tuple[str, ...] = ()
+    if seed_rows:
+        try:
+            filled, unfilled = _pm_review_verify_round_declarations(
+                _RoundView("developer", ordinal, text),
+            )
+        except PMReviewError as exc:
+            return f"{PM_REVIEW_VERIFY_BLOCK} 블록을 읽지 못했습니다[{exc.code}]: {exc}"
+        declared = set(filled) | set(unfilled)
+        deleted = [
+            finding_id for finding_id, _values in seed_rows
+            if finding_id not in declared
+        ]
+        if deleted:
+            return (
+                f"시드가 실은 verify 행을 지웠습니다: {', '.join(deleted)} — 행은 지우지 말고 값만 "
+                "갱신하세요(이번 라운드에 구현하지 않은 finding 은 machine_verifiable=false · "
+                f"reason={PM_REVIEW_VERIFY_GAP_REASON} 로 선언합니다)"
+            )
+    if not is_fix:
+        for case in architect_tests:
+            try:
+                targets = _contract_test_targets(
+                    case.target, f"architect 필수 테스트 {case.id}.target",
+                )
+            except DelegateError as exc:
+                return str(exc)
+            missing = [target for target in targets if target not in changed_paths]
+            if missing:
+                return (
+                    f"architect 필수 테스트 {case.id} 대상이 이 developer diff에 "
+                    f"추가·수정되지 않았습니다: {', '.join(missing)}"
+                )
     for case in architect_tests:
         problem = _run_required_test(case.command, case.expected, cwd=repo_root)
         if problem is not None:
             return f"architect 필수 테스트 {case.id} {problem}"
 
-    is_fix = _fix_round(rounds, ordinal)
     delta: PMReviewDelta | None = None
     if is_fix:
         try:
             delta = parse_pm_review_delta(spec_text, rounds)
         except PMReviewError as exc:
             return f"fix 입력 리뷰 delta를 읽지 못했습니다[{exc.code}]: {exc}"
+        try:
+            pm_owned_ids = _pm_review_pm_owned_contract_ids(delta, filled)
+        except DelegateError as exc:
+            return str(exc)
         for finding, _disposition in delta.accepted:
             if finding.fix_contract is None:
                 return (
                     f"fix 입력 {finding.id}에 reviewer 수정·테스트 계약이 없습니다 — "
                     "코드 위치·오류 거동·수정 설계·회귀 테스트·명령·기대값이 모두 필요합니다"
+                )
+            if finding.id in pm_owned_ids:
+                continue
+            try:
+                targets = _contract_test_targets(
+                    finding.fix_contract["test"],
+                    f"reviewer 추가 회귀 {finding.id}.test",
+                )
+            except DelegateError as exc:
+                return str(exc)
+            missing = [target for target in targets if target not in changed_paths]
+            if missing:
+                return (
+                    f"reviewer 추가 회귀 {finding.id} 대상이 이 fix diff에 "
+                    f"추가·수정되지 않았습니다: {', '.join(missing)}"
                 )
             problem = _run_required_test(
                 finding.fix_contract["command"], finding.fix_contract["expected"],
@@ -2630,33 +2851,18 @@ def _developer_round_harvest_problem(
             )
             if problem is not None:
                 return f"reviewer 추가 회귀 {finding.id} {problem}"
-        full_command = _full_regression_command(repo_root)
-        problem = _run_required_test(full_command, None, cwd=repo_root)
-        if problem is not None:
-            return f"fix 전체 회귀 {problem}"
-
-    seed_rows = _dev_round_seed_verify_rows(_normalized_newlines(reserved))
-    if seed_rows is None:
+    full_command = _full_regression_command(repo_root)
+    try:
+        regression = parse_developer_regression_record(text)
+    except DelegateError as exc:
+        return str(exc)
+    if regression.command != full_command:
         return (
-            f"예약 골격의 {PM_REVIEW_VERIFY_BLOCK} 블록을 읽지 못해 회수 판정을 낼 수 "
-            f"없습니다: ordinal={ordinal}"
+            "developer 전체 회귀 커맨드가 stage-exit 명령과 다릅니다: "
+            f"기록={regression.command!r} · 기대={full_command!r}"
         )
     if not seed_rows:
         return None
-    try:
-        filled, unfilled = _pm_review_verify_round_declarations(
-            _RoundView("developer", ordinal, text),
-        )
-    except PMReviewError as exc:
-        return f"{PM_REVIEW_VERIFY_BLOCK} 블록을 읽지 못했습니다[{exc.code}]: {exc}"
-    declared = set(filled) | set(unfilled)
-    deleted = [finding_id for finding_id, _values in seed_rows if finding_id not in declared]
-    if deleted:
-        return (
-            f"시드가 실은 verify 행을 지웠습니다: {', '.join(deleted)} — 행은 지우지 말고 값만 "
-            "갱신하세요(이번 라운드에 구현하지 않은 finding 은 machine_verifiable=false · "
-            f"reason={PM_REVIEW_VERIFY_GAP_REASON} 로 선언합니다)"
-        )
     declared_rows = [row for row in filled.values() if row.machine_verifiable]
     if not declared_rows:
         return None
@@ -2681,9 +2887,7 @@ def _developer_round_harvest_problem(
         if status != "resolved":
             return (
                 f"verify {row.id} 재현 커맨드의 관측이 기대와 다릅니다: `{row.command}` "
-                f"(cwd={repo_root}) · expected={row.expected!r} · 관측: {observed} — "
-                "그 커맨드를 다시 실행해 expected 를 실측값으로 갱신한 뒤 같은 --copy 로 "
-                "재회수하세요"
+                f"(cwd={repo_root}) · expected={row.expected!r} · 관측: {observed}"
             )
     return None
 
@@ -3903,6 +4107,78 @@ def _pm_review_nonempty_string(value: object, field: str) -> str:
     return value.strip()
 
 
+def _pm_review_contract_string(value: object, field: str) -> str:
+    """v3/architect 계약의 문자열을 실값으로 제한한다.
+
+    빈 값만 거부하면 엔진이 낸 ``<...>`` 골격이 구조화 필드 전체를
+    채운 것처럼 보이고, 상관없는 green command로 회수를 닫을 수 있다.
+    """
+    text = _pm_review_nonempty_string(value, field)
+    if _CONTRACT_PLACEHOLDER_RE.search(text):
+        raise PMReviewError("malformed", f"{field}를 placeholder가 아닌 실값으로 채워야 합니다")
+    return text
+
+
+def _contract_test_targets(value: str, field: str) -> tuple[str, ...]:
+    """계약 산문에서 repo-relative Python 테스트 대상을 해소한다."""
+    targets: list[str] = []
+    for match in _CONTRACT_TEST_TARGET_RE.finditer(value):
+        target = match.group("path")
+        path = PurePosixPath(target)
+        if path.is_absolute() or ".." in path.parts or path.parts[0] != "tests":
+            raise DelegateError(f"{field} 테스트 대상은 repo-relative tests/*.py여야 합니다: {target}")
+        if target not in targets:
+            targets.append(target)
+    if not targets:
+        raise DelegateError(
+            f"{field}에 repo-relative 테스트 대상(tests/*.py)이 없습니다"
+        )
+    return tuple(targets)
+
+
+def _pm_review_pm_owned_contract_ids(delta, verify_rows) -> frozenset[str]:
+    """PM-owned disposition/verify 쌍만 developer 계약 실행에서 제외한다.
+
+    산문이나 finding 위치로 소유권을 추정하지 않는다. PM accepted scope의 닫힌 prefix와 이번
+    developer 라운드의 채워진 false 선언이 같은 ID에서 동시에 있어야 한다. 어느 한쪽만 있으면
+    일반 developer-owned finding을 우회하거나 PM-owned 작업을 개발자가 떠안는 형상이므로 loud
+    거부한다.
+    """
+    accepted = {
+        finding.id: disposition
+        for finding, disposition in delta.accepted
+    }
+    marked = {
+        finding_id
+        for finding_id, disposition in accepted.items()
+        if disposition.scope.startswith(PM_REVIEW_PM_OWNED_SCOPE_PREFIX)
+    }
+    declared = {
+        finding_id
+        for finding_id, row in verify_rows.items()
+        if (
+            not row.machine_verifiable
+            and row.reason == PM_REVIEW_VERIFY_PM_OWNED_REASON
+            and bool(row.expected)
+        )
+    }
+    undeclared = sorted(marked - declared)
+    if undeclared:
+        raise DelegateError(
+            "PM-owned accepted scope와 developer verify 선언이 일치하지 않습니다: "
+            f"{', '.join(undeclared)} — machine_verifiable=false · "
+            f"reason={PM_REVIEW_VERIFY_PM_OWNED_REASON} · expected 실값이 필요합니다"
+        )
+    impostors = sorted(declared - marked)
+    if impostors:
+        raise DelegateError(
+            "developer verify가 PM-owned를 선언했지만 accepted scope 표식이 없습니다: "
+            f"{', '.join(impostors)} — scope는 "
+            f"{PM_REVIEW_PM_OWNED_SCOPE_PREFIX!r} prefix로 시작해야 합니다"
+        )
+    return frozenset(marked)
+
+
 def _pm_review_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     """JSON object의 raw member를 보존해 모든 깊이에서 중복 key를 거부한다."""
     value: dict[str, object] = {}
@@ -4070,7 +4346,7 @@ def _pm_review_parse_finding(
             raw_contract, PM_REVIEW_FIX_CONTRACT_KEYS, "finding.fix_contract",
         )
         fix_contract = {
-            key: _pm_review_nonempty_string(
+            key: _pm_review_contract_string(
                 raw_contract[key], f"finding.fix_contract.{key}",
             )
             for key in PM_REVIEW_FIX_CONTRACT_KEYS
@@ -4269,10 +4545,12 @@ def parse_architect_tests(text: str) -> tuple[ArchitectTest, ...]:
             raise DelegateError(str(exc)) from exc
         values: dict[str, str] = {}
         for key in ARCHITECT_TEST_ROW_KEYS:
-            value = raw.get(key)
-            if not isinstance(value, str) or not value.strip() or value.strip().startswith("<"):
-                raise DelegateError(f"architect test.{key}를 실값으로 채워야 합니다")
-            values[key] = value.strip()
+            try:
+                values[key] = _pm_review_contract_string(
+                    raw.get(key), f"architect test.{key}",
+                )
+            except PMReviewError as exc:
+                raise DelegateError(str(exc)) from exc
         if _ARCHITECT_TEST_ID_RE.fullmatch(values["id"]) is None:
             raise DelegateError(f"architect test.id 형식 불일치: {values['id']!r}")
         if values["id"] in seen:
@@ -4284,6 +4562,9 @@ def parse_architect_tests(text: str) -> tuple[ArchitectTest, ...]:
             )
         except PMReviewError as exc:
             raise DelegateError(str(exc)) from exc
+        _contract_test_targets(
+            values["target"], f"architect test {values['id']}.target",
+        )
         tests.append(ArchitectTest(**values))
     return tuple(tests)
 
@@ -5075,7 +5356,7 @@ def _render_developer_round_seed_body(
         "## 변경 파일\n- `<경로>`: <변경 내용과 이유>\n\n"
         "## 신규 테스트\n- 추가한 테스트: <N개 · 파일/케이스>\n\n"
         "## 회귀\n- 커맨드: `<실행 커맨드>`\n"
-        "- 결과: <A passed / B failed>\n\n"
+        "- 결과: <rc=0 · A passed / 0 failed>\n\n"
         "## DoD evidence\n- <완료 조건>: <충족 근거>\n\n"
         "## 민감도\n- <상수/가드 임시 변경 → red, 복원 → green 실측>\n"
     )
@@ -15682,13 +15963,7 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
                         cluster_plan.run_dir if cluster_plan is not None
                         else ticket_copy.path
                     )
-                    recovery = (
-                        "오류: 위임 종료 ticket harvest 실패 — board 라운드와 slot run-dir 을 "
-                        "그대로 보존했습니다. run-dir 을 진단한 뒤 같은 경로로 "
-                        "`ticket harvest` 를 다시 부르거나 새 prepare/위임으로 복구하세요. "
-                        f"copy={residue} · "
-                        f"{exc}"
-                    )
+                    recovery = _delegation_harvest_failure_message(exc, residue)
                     if pending_exception is not None:
                         print(
                             "오류: 위임 실행 예외도 그대로 전파합니다: "
@@ -15716,6 +15991,23 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
             remove_cluster_review_snapshot(cwd_repo, cluster_snapshot)
 
 
+def _delegation_harvest_failure_message(exc: Exception, residue: Path) -> str:
+    """cross 위임 종료의 회수 실패 처방 — terminal fix만 복구 루프를 열지 않는다."""
+    if isinstance(exc, TerminalFixHarvestError):
+        return (
+            "오류: 최종 fix ticket harvest 실패 — terminal stop. "
+            "board 라운드와 slot run-dir 증거를 그대로 보존했습니다. "
+            "현재 티켓 상태와 실패 근거를 사용자에게 보고하세요. "
+            f"copy={residue} · {exc}"
+        )
+    return (
+        "오류: 위임 종료 ticket harvest 실패 — board 라운드와 slot run-dir 을 "
+        "그대로 보존했습니다. run-dir 을 진단한 뒤 같은 경로로 "
+        "`ticket harvest` 를 다시 부르거나 새 prepare/위임으로 복구하세요. "
+        f"copy={residue} · {exc}"
+    )
+
+
 def _report_cluster_harvest(outcomes: Sequence[ClusterHarvestOutcome]) -> None:
     """묶음 회수 결과 요약 — 자리마다 한 줄. 거부가 하나라도 있으면 실패로 올린다.
 
@@ -15740,7 +16032,10 @@ def _report_cluster_harvest(outcomes: Sequence[ClusterHarvestOutcome]) -> None:
             file=sys.stderr,
         )
     if refused:
-        raise DelegateError(f"묶음 회수 거부 {len(refused)}건: {', '.join(refused)}")
+        message = f"묶음 회수 거부 {len(refused)}건: {', '.join(refused)}"
+        if any(outcome.terminal for outcome in outcomes):
+            raise TerminalFixHarvestError(message)
+        raise DelegateError(message)
 
 
 def _round_write_scope(

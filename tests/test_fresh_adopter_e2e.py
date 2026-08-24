@@ -780,8 +780,25 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
     )
     design_round = Path(
         json.loads(design_prepared.stdout.strip().splitlines()[-1])["copy"])
+    design_text = design_round.read_text(encoding="utf-8")
+    contract_open = "```pm-architect-tests-v1\n"
+    contract_start = design_text.index(contract_open) + len(contract_open)
+    contract_end = design_text.index("\n```", contract_start)
+    contract = {
+        "version": 1,
+        "tests": [{
+            "id": "AT-001",
+            "target": "tests/test_round_cycle.py",
+            "command": "python3 -m pytest tests/test_round_cycle.py -q",
+            "expected": "passed",
+            "negative": "테스트 산출 누락은 developer 회수를 거부한다",
+        }],
+    }
     design_round.write_text(
-        design_round.read_text(encoding="utf-8") + "\n## 경계 실측\n- 채택자 e2e 실측\n",
+        design_text[:contract_start]
+        + json.dumps(contract, ensure_ascii=False, separators=(",", ":"))
+        + design_text[contract_end:]
+        + "\n## 경계 실측\n- 채택자 e2e 실측\n",
         encoding="utf-8", newline="",
     )
     design_harvested = _delegate_cli(
@@ -815,8 +832,20 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
     ]
 
     sentinel = "ROUND_CYCLE_PERSISTED"
+    contract_test = dest / "tests" / "test_round_cycle.py"
+    contract_test.parent.mkdir(parents=True, exist_ok=True)
+    contract_test.write_text(
+        "def test_round_cycle():\n    assert True\n",
+        encoding="utf-8", newline="\n",
+    )
     round_file.write_text(
-        round_file.read_text(encoding="utf-8") + f"\n{sentinel}\n",
+        round_file.read_text(encoding="utf-8").replace(
+            "- 커맨드: `<실행 커맨드>`",
+            "- 커맨드: `python3 -m pytest tests/ -q -n auto`",
+        ).replace(
+            "- 결과: <rc=0 · A passed / 0 failed>",
+            "- 결과: rc=0 · 1 passed / 0 failed",
+        ) + f"\n{sentinel}\n",
         encoding="utf-8", newline="",
     )
     harvested = _delegate_cli(

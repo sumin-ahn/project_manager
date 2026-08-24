@@ -597,7 +597,7 @@ def _resolve_per_repo_test_cmd() -> str | None:
       1. areas.md 활성 **prefix** 행의 `test_cmd`   (multi-repo 네임스페이스 형상)
       2. areas.md 활성 **repo** 행의 `test_cmd`     (prefix 칼럼이 빈 무prefix 형상)
       3. `local.conf` 의 `test.cmd`                 (per-clone 명시 설정)
-      4. None → 호출부가 기본 `pytest tests/ -q` venv argv (도그푸딩 불변)
+      4. None → 호출부가 병렬 기본 `pytest tests/ -q -n auto` venv argv
 
     **체인 자체는 pm_handoff `_resolve_gate_cmd` 가 소유한다** — 사본을 두지 않고 동적 로드해
     위임한다(`_regression_cwd` 위임과 같은 방향·DRY). 해소 함수가 이 도구에만 있고 pm_handoff
@@ -641,7 +641,7 @@ def _resolve_per_repo_test_cmd() -> str | None:
 _PYTEST_GATE_TOKEN = "pytest"
 
 # 해소 실패 시 실제로 실행하는 기본 argv 의 표시용 라벨 (dry-run 안내 문구).
-_DEFAULT_GATE_LABEL = "pytest tests/ -q"
+_DEFAULT_GATE_LABEL = "pytest tests/ -q -n auto"
 
 
 def _gate_is_pytest(gate_cmd: str | None) -> bool:
@@ -2024,7 +2024,7 @@ class TicketFinisher:
           - **해소 성공** — `_resolve_per_repo_test_cmd()`(areas prefix 행 > areas repo 행 >
             local.conf)가 준 문자열을 shell 로 실행(board.py 회귀와 동형·비-Python repo 수용).
           - **프레임워크 자기 회귀** — 해소 실패면 현행 그대로
-            `[venv_python, -m, pytest, tests/, -q]` venv argv(도그푸딩 불변·하위호환).
+            `[venv_python, -m, pytest, tests/, -q, -n, auto]` venv argv.
 
         cwd 는 런타임 해소— 명시 주입(`regression_cwd` 인자)이 있으면 그 경로,
         없으면 `_regression_cwd()` 가 self-host 단일 슬롯을 자동해소(홈 cwd 에서도 활성
@@ -2044,9 +2044,9 @@ class TicketFinisher:
                 cwd=cwd,
             )
         else:
-            # 프레임워크 자기 회귀 — 현행 venv pytest argv 보존(불변).
+            # 프레임워크 자기 회귀 — xdist 가용 환경의 병렬 기본 argv.
             result = subprocess.run(
-                [str(self._venv_python), "-m", "pytest", "tests/", "-q"],
+                [str(self._venv_python), "-m", "pytest", "tests/", "-q", "-n", "auto"],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

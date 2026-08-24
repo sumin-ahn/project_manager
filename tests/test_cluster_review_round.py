@@ -337,9 +337,14 @@ def _developer_round(pd, home: Path, ticket: str):
     plan = pd.prepare_ticket_copy(
         ticket=ticket, role="developer", cwd=home, pm_home=home,
     )
+    command = pd._full_regression_command(home)
+    text = plan.path.read_text(encoding="utf-8").replace(
+        "- 커맨드: `<실행 커맨드>`", f"- 커맨드: `{command}`",
+    ).replace(
+        "- 결과: <rc=0 · A passed / 0 failed>", "- 결과: rc=0 · fixture green",
+    )
     plan.path.write_text(
-        plan.path.read_text(encoding="utf-8") + "\n## 산출\n- 실측 값\n",
-        encoding="utf-8", newline="")
+        text + "\n## 산출\n- 실측 값\n", encoding="utf-8", newline="")
     return plan
 
 
@@ -357,6 +362,12 @@ def test_developer_round_harvest_commits_the_slot_output(pd, review_env):
     plan = _developer_round(pd, home, ticket)
     (home / f"{ticket.lower()}.py").write_text(
         "# 구현 갱신\nvalue = 2\n", encoding="utf-8", newline="\n")
+    contract_test = home / "tests" / "test_cluster_review_round.py"
+    contract_test.parent.mkdir(parents=True, exist_ok=True)
+    contract_test.write_text(
+        "def test_cluster_output():\n    assert True\n",
+        encoding="utf-8", newline="\n",
+    )
 
     result = pd.harvest_ticket_copy(copy_path=plan.path, cwd=home, pm_home=home)
 
@@ -371,9 +382,9 @@ def test_developer_round_harvest_commits_the_slot_output(pd, review_env):
 
 
 @requires_git
-def test_developer_round_harvest_without_a_change_leaves_head_alone(
+def test_developer_round_harvest_without_the_architect_test_leaves_head_alone(
         pd, review_env, tmp_path):
-    """커밋할 변경이 없으면 회수는 커밋을 만들지 않는다(빈 커밋 0).
+    """architect 대상 테스트 변경이 없으면 회수·커밋 모두 거부한다.
 
     슬롯은 PM 홈과 다른 트리다 — board 쓰기가 슬롯을 더럽히지 않는 실 형상이라, 이 판정이
     보는 변경은 dev 산출뿐이다.
@@ -397,9 +408,9 @@ def test_developer_round_harvest_without_a_change_leaves_head_alone(
         plan.path.read_text(encoding="utf-8") + "\n## 산출\n- 실측 값\n",
         encoding="utf-8", newline="")
 
-    result = pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=home)
+    with pytest.raises(pd.DelegateError, match="architect 필수 테스트 .* 추가·수정되지"):
+        pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=home)
 
-    assert result.changed is True
     assert _head_count(slot) == before
 
 

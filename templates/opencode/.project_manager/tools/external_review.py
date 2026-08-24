@@ -41,8 +41,7 @@ raw 파일 접두)에만 남는다. 설정 키는 `additional_reviewer.enabled`/
   - 통과 → exit 0
   - 수렴-형상 차단(--gate 별) → exit 4 (실행 전 거부). 라운드 장부의 must_fix 추이로 판정한다:
     라운드 수가 상한(local.conf additional_reviewer.rounds_max·기본 2)에 닿았거나 직전 라운드보다 must_fix 가
-    늘었으면(발산·조기 차단) 라운드를 더 쓰지 않는다. 현재 티켓을 정지하고 사용자에게 보고하며,
-    직전 지적 해소만 확인하려면 게이트당 1회 `--confirm-fix`(확인 전용 라운드)를 쓴다.
+    늘었으면(발산·조기 차단) 라운드를 더 쓰지 않고 현재 티켓을 정지해 사용자에게 보고한다.
   - diff 서킷브레이커 → exit 1 (리뷰어 호출 전 거부). 티켓 estimate 별 diff 총량 상한
     (small 300 / medium 1,000 / large 2,500 · local.conf diff_cap.<estimate>)을 넘긴 스코프는
     리뷰 라운드로 닫히지 않으므로 현재 티켓을 정지하고 사용자에게 보고한다.
@@ -1507,10 +1506,8 @@ def _versioned_block_requirement(
     """추가 리뷰어 채널의 구조화 블록 요구 — 골격·접두·ID 실값을 엔진에서 렌더한다.
 
     리뷰어 세션은 라운드마다 fresh 라 이전 라운드의 ID 를 모른다. 회수 대상 티켓에서 읽어 온
-    **다음 ID 실값**(`_next_external_finding_id`)과 **확인 가능한 ID 목록**
-    (`_confirmable_external_finding_ids`)을 골격에 싣는다 — 내부 리뷰 절 시드가 같은 값을 같은
-    엔진 함수로 채우는 것과 같은 축이다. 실값이 없으면(회수 대상 없는 실행) 첫 ID·placeholder 로
-    돌려준다.
+    **다음 ID 실값**(`_next_external_finding_id`)을 골격에 싣는다. 실값이 없으면(회수 대상 없는
+    실행) 첫 ID·placeholder 로 돌려준다.
     """
     delegate = _load_pm_delegate()
     role = delegate.EXTERNAL_REVIEW_ROLE
@@ -1528,34 +1525,6 @@ def _versioned_block_requirement(
         )
     )
 
-
-# 확인 전용 라운드(`--confirm-fix`) 헌장 — 이 라운드의 임무를 프롬프트에서 좁힌다. 좁히지 않으면
-# 예외 라운드가 그냥 한 라운드 더가 되어 상한이 무의미해진다(실측 12라운드의 형상).
-_CONFIRM_FIX_CHARTER = """\
-### 이 라운드의 임무 (확인 전용 · 필수)
-이번 라운드는 **직전 라운드 must-fix 의 해소 확인 전용**이다. 리뷰 라운드의 연장이 아니다.
-
-- 직전 must-fix 항목이 실제로 해소됐는지만 판정하라.
-- 새로 발견한 사항은 must-fix 로 올리지 말고 **"추가 발견"** 표기와 함께 suggestion 에 적어라.
-  현재 티켓을 벗어나 새 작업으로 넘기지 말고 PM이 사용자에게 보고할 입력으로만 남긴다.
-- 직전 지적이 해소됐으면 신규 발견 유무와 무관하게 `판정: 통과` 로 마감하라.
-
-"""
-
-# 확인 전용 라운드 근거 블록 — 리뷰어 세션은 라운드마다 fresh 라, 직전 지적을 **프롬프트가**
-# 들고 가지 않으면 "무엇을 확인하는지 모르는 확인 라운드"가 된다. 텍스트는 라운드 장부의 예약
-# 레코드가 보관한 항목이고(`records[].must_fix_items`), 보관분이 없는 구세대 라운드는 건수만
-# 싣고 재구성을 지시한다.
-_CONFIRM_FIX_EVIDENCE_HEADER = """\
-### 직전 라운드 must-fix (이번 확인의 대상)
-아래는 직전 반려 라운드({round})가 지적한 항목이다. 이 항목들의 해소 여부만 판정하라.
-
-"""
-_CONFIRM_FIX_EVIDENCE_UNRECORDED = """\
-항목 텍스트가 장부에 남아 있지 않다 (그 라운드가 기록한 must-fix 건수: {count}). 리뷰 대상
-diff 와 티켓 본문에서 직전 지적을 재구성해 해소 여부를 판정하라 — 새 결함 탐색이 아니다.
-
-"""
 
 # 빈-diff fail-loud 안내.
 # 검토 경로에 tracked 변경이 없어 diff 가 비면 codex 는 "변경 없음"을 통과로 판정해 가짜
@@ -1592,7 +1561,7 @@ def _empty_diff_guidance(paths: Sequence[str], *, root: Path) -> str:
 #
 # 이 상한의 성격은 **무한 루프 차단(anti-loop pause)**이다. 연장 승인(`--ack-rounds`)은 폐지됐다 —
 # "반례가 진짜니까 계속"을 사람이 승인하는 구조 자체가 비용 누수였다(실측 12라운드). 상한에
-# 닿으면 현재 티켓을 정지·보고하고, 직전 지적의 해소만 확인하려면 1회 `--confirm-fix` 를 쓴다.
+# 닿으면 현재 티켓을 정지하고 사용자에게 보고한다.
 _ROUND_LIMIT_GUIDANCE = (
     "오류: 추가 리뷰어 미완 라운드 상한 도달 — 게이트 {gate} · "
     "count={unacked}(판정 {verdicts} · 미완 {incomplete})\n"
@@ -1602,7 +1571,7 @@ _ROUND_LIMIT_GUIDANCE = (
     "판정**도 이 축에 들어갑니다(판정 표면과 같은 규칙이라 두 표면이 갈리지 않습니다).\n"
     "  · 먼저 `--rounds-report` 로 라운드별 산출과 수렴 상황을 확인하세요.\n"
     "  · 현재 티켓을 정지하고 사용자에게 보고하세요 — 라운드 연장 승인(`--ack-rounds`)은 "
-    "폐지됐고, 확인 전용 라운드(`--confirm-fix`)도 이 미완 축은 열지 않습니다.\n"
+    "폐지됐습니다.\n"
     "  · 미완 재시도 상한은 local.conf "
     "`additional_reviewer.incomplete_rounds_max` 로 조정합니다.\n"
     "  (장부: {ledger} · count={count})"
@@ -1616,60 +1585,9 @@ _CONVERGENCE_GUIDANCE = (
     "  라운드 {rounds}(완료 {completed} · 진행 중 예약 {inflight}) / 상한 {limit} · "
     "must_fix 추이 [{series}]\n"
     "  · 라운드를 더 쓰지 않습니다. 현재 티켓을 정지하고 남은 지적을 사용자에게 보고하세요.\n"
-    "  · 직전 must_fix 해소만 확인하려면 게이트당 1회 `--confirm-fix` 로 확인 전용 라운드를 "
-    "쓸 수 있습니다 (신규 발견은 사용자 보고 입력일 뿐 라운드 계속 사유가 아닙니다):\n"
-    "      python3 .project_manager/tools/external_review.py --gate {gate} --confirm-fix "
-    "[기존 옵션]\n"
     "  · 라운드별 산출은 `--rounds-report --gate {gate}` 로 확인하세요.\n"
     "  · 상한 조정은 local.conf `{knob}` (기본 {default}).\n"
     "  (장부: {ledger})"
-)
-
-# `--confirm-fix` 소진 안내 — 확인 전용 라운드는 게이트당 1회다(장부가 소유·자의 재사용 불가).
-_CONFIRM_FIX_SPENT_GUIDANCE = (
-    "오류: `--confirm-fix` 는 게이트당 1회입니다 — 게이트 {gate} 는 이미 확인 전용 라운드를 "
-    "썼습니다 (사용 {used}회).\n"
-    "  · 남은 지적은 라운드로 닫지 않습니다 — 현재 티켓을 정지하고 사용자에게 보고하세요.\n"
-    "  · 지금까지의 산출은 `--rounds-report --gate {gate}` 로 확인하세요.\n"
-    "  (장부: {ledger})"
-)
-
-# `--confirm-fix` 자격 미달 안내 — 확인 전용 라운드는 **확인할 지적이 있을 때만** 뜻이 있다.
-# 반려 라운드가 없는 게이트(첫 라운드·전건 통과)에서 열어 주면 그 라운드는 근거 없는 통과 판정
-# 채널이 된다(리뷰어 세션은 fresh 라 직전 맥락을 스스로 알지 못한다).
-_CONFIRM_FIX_NO_REJECTION_GUIDANCE = (
-    "오류: `--confirm-fix` 는 **최신 완료 라운드가 반려인 게이트**에서만 씁니다 — 게이트 {gate} 의 "
-    "최신 판정은 {verdict} 입니다 (기록된 산출 {rounds}건).\n"
-    "  · 확인 전용 라운드의 임무는 '직전 must_fix 해소 확인'입니다 — 확인할 지적이 없으면 "
-    "근거 없는 통과 판정만 남습니다.\n"
-    "  · 첫 리뷰는 `--confirm-fix` 없이 그냥 실행하세요 (일반 라운드).\n"
-    "  · 통과로 닫힌 게이트는 다시 열지 않습니다 — 옛 반려를 근거로 과금 라운드를 여는 경로입니다. "
-    "새 변경은 일반 라운드로 리뷰하세요.\n"
-    "  · 기록 상황은 `--rounds-report --gate {gate}` 로 확인하세요.\n"
-    "  (장부: {ledger})"
-)
-
-# `--confirm-fix` 자격 미달 안내(확인 대상이 표면 밖) — 최신 반려는 실재하지만 그 지적이 판정
-# 표면에 없다(회수 거부된 라운드이거나 PM 이 `rejected` 로 판정한 ID). 그대로 확인 대상으로
-# 실으면 확인 라운드가 표면 밖 ID 를 `confirmations` 에 담아 회수 게이트에 다시 걸린다(과금만
-# 소비하는 왕복). 처방은 일반 라운드인데 그 축은 수렴 상한이 막을 수 있어 노브까지 함께 안내한다.
-_CONFIRM_FIX_REFUSED_HARVEST_GUIDANCE = (
-    "오류: `--confirm-fix` 의 확인 대상이 판정 표면에 없습니다 — 게이트 {gate} 의 최신 반려 "
-    "라운드 지적이 회수 거부됐거나 PM 이 rejected 로 판정했습니다 (표면 밖 finding: {ids}).\n"
-    "  · 그 산출은 raw 에만 남고 `review delta` 표면에는 없습니다 — 그 ID 를 "
-    "확인해도 회수가 다시 거부됩니다.\n"
-    "  · 그 지적은 **일반 라운드**로 다시 받으세요 (`--confirm-fix` 없이 실행).\n"
-    "  · 수렴 상한이 일반 라운드를 막으면 상한 조정은 local.conf `{knob}` (기본 {default}).\n"
-    "  · 거부 사유는 그 실행의 stderr 와 raw 산출, `--rounds-report --gate {gate}` 로 "
-    "확인하세요.\n"
-    "  (장부: {ledger})"
-)
-
-# 확인 가능한 finding ID 해소 실패 안내의 강등 서술 — **두 소비자**를 함께 적는다. 하나만 적으면
-# `--confirm-fix` 운영자가 표면 대조가 꺼진 것을 모른 채 장부 기록만 실린 근거를 받는다.
-_CONFIRMABLE_IDS_DEGRADED = (
-    "골격은 확인 가능한 finding ID 없이 싣고, `--confirm-fix` 근거는 판정 표면 대조 없이 "
-    "장부 기록 그대로 싣습니다."
 )
 
 # `--ack-rounds` 폐지 안내 — 플래그는 인자표에 남겨 두고(모르는 인자 오류 대신 처방을 낸다)
@@ -1677,26 +1595,9 @@ _CONFIRMABLE_IDS_DEGRADED = (
 _ACK_ROUNDS_REMOVED_GUIDANCE = (
     "오류: `--ack-rounds`(라운드 연장 승인)는 폐지됐습니다 — 이 실행은 아무것도 하지 않았습니다.\n"
     "  · 라운드 상한·수렴 상한에 걸리면 현재 티켓을 정지하고 사용자에게 보고합니다.\n"
-    "  · 직전 must_fix 해소 확인만 필요하면 게이트당 1회 `--confirm-fix` 를 쓰세요.\n"
     "  · wave 예산 재개(`--ack-wave`)는 그대로입니다 — 별개 축입니다.\n"
     "  · 현재 수렴 상황은 `--rounds-report --gate <T-NNNN>` 로 확인하세요."
 )
-
-# `--confirm-fix` 게이트 누락 안내 — 확인 전용 라운드는 **게이트당 1회**라 장부 항목이 있어야
-# 회계가 성립한다. 게이트 없는 confirm-fix 는 그 1회 제한 밖에서 도는 전송이므로(경고만 내고
-# 실행하면 상한 밖 라운드가 무한히 열린다) 전송 전에 거부한다 — `--ack-rounds` 폐지와 같은 자리·
-# 같은 규율이다(부작용 0 지점).
-_CONFIRM_FIX_REQUIRES_GATE_GUIDANCE = (
-    "오류: `--confirm-fix` 는 `--gate <T-NNNN>` 와 함께 써야 합니다 — 이 실행은 아무것도 "
-    "하지 않았습니다.\n"
-    "  · 확인 전용 라운드는 **게이트당 1회**이고 그 회계를 라운드 장부가 소유합니다 — 게이트가 "
-    "없으면 1회 제한이 성립하지 않습니다.\n"
-    "  · 이번 확인이 어느 티켓의 must_fix 해소인지 게이트로 지정하세요:\n"
-    "      python3 .project_manager/tools/external_review.py --gate <T-NNNN> --confirm-fix "
-    "[기존 옵션]\n"
-    "  · 게이트 없이 그냥 한 번 더 보고 싶은 것이면 `--confirm-fix` 를 빼세요(상한 대상 밖 실행)."
-)
-
 
 # ── 게이트 회계 자동 유도 (`--ticket` → `--gate`) ─────────────────────────────
 # `--ticket` 만 준 실행은 리뷰를 정상 전송·과금하면서 라운드 예약·기록·상한 회계를 통째로
@@ -1780,7 +1681,7 @@ _SUMMARY_UNACCOUNTED_GATE = "(없음 — 회계 밖·라운드 장부 미기록)
 
 # `--gate` 와 `--no-gate` 동시 지정 안내 — 한 실행이 "기록한다"와 "기록하지 않는다"를 동시에
 # 뜻할 수 없다. 경고 후 한쪽을 골라 실행하면 그 선택이 조용한 자의 판정이 되므로 부작용 0
-# 지점에서 거부한다(`--confirm-fix` 게이트 누락·`--ack-rounds` 폐지와 같은 자리·같은 규율).
+# 지점에서 거부한다(`--ack-rounds` 폐지와 같은 자리·같은 규율).
 _GATE_OPT_OUT_CONFLICT_GUIDANCE = (
     "오류: `--no-gate` 와 `--gate {gate}` 는 함께 쓸 수 없습니다 — 이 실행은 아무것도 "
     "하지 않았습니다.\n"
@@ -2366,9 +2267,9 @@ def _diff_cap(conf: dict[str, str], estimate: str | None) -> int | None:
 #   · 게이트 축 — 최상위 키가 게이트 이름이고 값이 `_gate_entry` 스키마다. 상한 집계용
 #     `records`(예약/마감 레코드) 옆에 **라운드별 산출** `rounds`(판정 rc·결함 수)를 append 한다.
 #     `rounds` 는 지워지지 않는 이력이라 "그 라운드가 실결함을 냈는가"를 나중에도 기계로 확인할 수
-#     있고, 수렴-형상 게이트(`_convergence_refusal`)의 판정 입력이기도 하다. 확인 전용 라운드
-#     소비(`confirm_fix`)와 게이트 종결 시점의 **처분 선언**(`resolution` — `--resolve-gate`)도
-#     같은 항목에 실린다. 처분 선언은 릴리즈 차단(`board.py livegate record`)이 읽는 절이고,
+#     있고, 수렴-형상 게이트(`_convergence_refusal`)의 판정 입력이기도 하다. 게이트 종결 시점의
+#     **처분 선언**(`resolution` — `--resolve-gate`)도 같은 항목에 실린다. 처분 선언은 릴리즈
+#     차단(`board.py livegate record`)이 읽는 절이고,
 #     그 값의 해석은 board 의 공용 seam(`gate_resolution`)이 소유한다(여기선 구조만 보존).
 #   · wave 축 — 예약 키 `wave`(`WAVE_SECTION_KEY`) 하나에 {started, spent} 를 둔다. 게이트 상한만
 #     있으면 비용이 티켓 수 × 상한으로 확장되므로 전 게이트 합계를 이 예산이 묶는다. 두 축이 한
@@ -2926,7 +2827,7 @@ def _round_must_fix_items(result: dict) -> list[str] | None:
     (항목 근거 없이 반려만 있는 응답을 '결함 0건 반려'로 박제하면 비용 판단이 거짓이 된다).
     섹션 인식은 판정 파서와 **같은 정규식**(`_MUST_FIX_SECTION_RE`)을 쓰고, 항목 추출은 판정
     파서와 **같은 함수**(`_extract_must_fix_items`)를 쓴다 — 개수와 텍스트가 다른 규칙으로 갈리면
-    확인 전용 라운드에 실리는 근거가 장부의 건수와 어긋난다."""
+    장부의 건수와 근거가 어긋난다."""
     if not _round_has_verdict(result):
         return None
     answer = result.get("answer")
@@ -2942,7 +2843,7 @@ def _must_fix_count(result: dict) -> int | None:
     """이번 라운드가 지적한 must-fix 항목 수 (셀 근거가 없으면 None).
 
     셈의 입력은 항목 텍스트 추출(`_round_must_fix_items`)과 **같은 한 함수**다 — 건수와 텍스트가
-    각자 파싱하면 장부의 `must_fix` 와 확인 전용 라운드 근거가 서로 다른 라운드를 말하게 된다."""
+    각자 파싱하면 장부의 `must_fix` 와 기록 근거가 서로 다른 라운드를 말하게 된다."""
     items = _round_must_fix_items(result)
     return None if items is None else len(items)
 
@@ -3057,205 +2958,6 @@ def _convergence_refusal(
     )
 
 
-# ── 확인 전용 라운드의 자격·근거 (최신 반려 must_fix) ────────────────────────
-# 리뷰어 세션은 라운드마다 fresh 다 — 장부에 "몇 건이었나"만 있으면 확인 전용 라운드는 *무엇을*
-# 확인하는지 모른 채 통과를 선언할 수 있다. 이 절이 두 축을 한 함수로 소유한다:
-#   (a) **자격** — **최신 완료 라운드의 판정이 반려(rc≠0)** 인 게이트에서만 예외를 연다. 첫 라운드나
-#      전건 통과 게이트의 `--confirm-fix` 는 확인할 지적이 없어 근거 없는 통과 판정 채널이 되고,
-#      '과거에 반려가 하나라도 있었나'로 물으면 **반려 → 통과로 이미 닫힌 게이트**에도 옛 지적을
-#      근거로 과금 라운드가 열린다(수렴 축의 유일한 예외가 상시 예외가 된다).
-#   (b) **근거** — 그 최신 반려 라운드의 must_fix 항목 **텍스트**를 프롬프트에 싣는다. 텍스트는 마감
-#      시점에 예약 레코드(`records[].must_fix_items`)가 보관하고, 구세대 라운드처럼 보관분이
-#      없으면 건수 + 재구성 안내로 떨어진다(무근거 통과보다 낫다).
-# 자격과 근거가 **같은 함수**를 쓰는 이유는 갈림 방지다 — 따로 두면 "자격은 있는데 실을 근거가
-# 없다"(또는 그 반대)가 조용히 생긴다.
-
-
-def _latest_round_outcome(entry: dict) -> dict | None:
-    """예약 순번 순 **마지막 완료 라운드** 산출 (기록이 없으면 None).
-
-    순서는 조회 표·수렴 추이와 같은 정렬(`_ordered_round_outcomes`)이다 — append 순서는 완료
-    순서라 동시 라운드가 역순으로 끝나면 '최신'이 뒤바뀐다."""
-    return _load_review_rounds().latest_round_outcome(
-        entry, order_key=_load_board().round_outcome_order_key,
-    )
-
-
-def _has_recorded_verdict(entry: dict, outcome: dict) -> bool:
-    """그 산출을 낸 **예약 레코드**가 실제 리뷰 판정을 남겼는가 (`records[].verdict` 가 참).
-
-    산출의 `verdict` 는 `determine_exit_code()` 의 rc 라 **timeout·하네스 실패·판정 불명확도
-    1** 이다 — 그 값만 보면 리뷰어가 아무 판정도 내지 않은 라운드가 '반려'로 세어져 확인 전용
-    라운드(과금 예외)의 자격이 선다. 마감 시점에 예약 레코드가 따로 새기는
-    `verdict = _round_has_verdict(result)`(통과 또는 must-fix 선언이 실재했는가)를 함께 본다.
-
-    연결 좌표는 예약 identity(`id`)다(`_recorded_must_fix_texts` 와 같은 규칙). 레코드를 못
-    찾거나 그 축이 없는 구세대 기록은 **자격 없음**이다 — 과금 축은 못 세우는 쪽이 보수 방향이다.
-    """
-    round_id = outcome.get("id")
-    if not round_id:
-        return False
-    for row in entry.get("records") or []:
-        if isinstance(row, dict) and row.get("id") == round_id:
-            return bool(row.get("verdict"))
-    return False
-
-
-def _is_rejection(entry: dict, outcome: dict) -> bool:
-    """그 산출이 **실제 리뷰 판정으로서의** 반려(rc≠0)인가.
-
-    판정 미상(기록 없음·손상)은 반려로 세지 않는다 — 확인 전용 라운드는 과금 라운드라 자격을 못
-    세우는 쪽이 보수 방향이다(board 강등 판정이 미상 게이트를 활성으로 세지 않는 것과 같은 방향).
-    rc 만으로는 timeout·하네스 실패·판정 불명확이 반려와 구분되지 않으므로 예약 레코드의 실제
-    verdict 존재(`_has_recorded_verdict`)를 함께 요구한다."""
-    verdict = outcome.get("verdict")
-    if not (isinstance(verdict, int) and not isinstance(verdict, bool) and verdict != 0):
-        return False
-    return _has_recorded_verdict(entry, outcome)
-
-
-def _latest_verdict_label(entry: dict) -> str:
-    """최신 완료 라운드의 판정 표기 — 거부 안내가 '무엇을 보고 막았는지' 그대로 말한다.
-
-    rc 는 비통과인데 실제 리뷰 판정이 없던 라운드(timeout·하네스 실패·판정 불명확)는 그 사실을
-    함께 적는다 — 안 적으면 안내가 "최신 판정은 1(비통과)"이라고 말해 놓고 반려 자격은 없다고
-    막는 모순으로 읽힌다."""
-    outcome = _latest_round_outcome(entry)
-    if outcome is None:
-        return "라운드 기록 없음"
-    label = _format_round_verdict(outcome.get("verdict"))
-    verdict = outcome.get("verdict")
-    if (isinstance(verdict, int) and not isinstance(verdict, bool) and verdict != 0
-            and not _has_recorded_verdict(entry, outcome)):
-        return f"{label} · 리뷰 판정 없음(timeout·하네스 실패·판정 불명확)"
-    return label
-
-
-def _recorded_must_fix_texts(entry: dict, outcome: dict) -> list[str]:
-    """그 산출을 낸 **예약 레코드**가 보관한 must_fix 항목 텍스트 (미보관·손상이면 []).
-
-    산출(`rounds`)과 예약(`records`)의 연결 좌표는 예약 identity(`id`)다 — 동시 라운드에서도
-    어느 텍스트가 어느 라운드의 것인지 확정된다."""
-    round_id = outcome.get("id")
-    if not round_id:
-        return []
-    for row in entry.get("records") or []:
-        if not isinstance(row, dict) or row.get("id") != round_id:
-            continue
-        items = row.get("must_fix_items")
-        if not isinstance(items, list):
-            return []
-        return [str(item).strip() for item in items if str(item).strip()]
-    return []
-
-
-def _must_fix_items_on_surface(
-    items: Sequence[str], surface_finding_ids: set[str],
-) -> list[str]:
-    """must-fix 항목 중 **확인 가능한** finding 을 가리키는 것만 남긴다.
-
-    입력 집합은 회수 대상 티켓의 confirmable 목록이다(회수 거부 절 제외 · PM `rejected` 제외 —
-    배제 규칙은 리뷰 절 시드와 같은 엔진 함수가 소유한다).
-
-    항목의 ID 표기 해석은 회수 엔진과 같은 함수(`collect_review_finding_ids`)를 쓴다 — 두 자리가
-    다른 규칙으로 읽으면 근거에 실린 ID 와 회수 게이트가 받는 ID 가 갈린다. ID 를 하나도 담지
-    않은 항목(구세대 자유 산문)은 판정할 근거가 없어 그대로 둔다.
-    """
-    delegate = _load_pm_delegate()
-    kept: list[str] = []
-    for item in items:
-        ids = delegate.collect_review_finding_ids(
-            item, delegate.EXTERNAL_REVIEW_ROLE,
-        )
-        if not ids or (ids & set(surface_finding_ids)):
-            kept.append(item)
-    return kept
-
-
-def _confirm_fix_offsurface_ids(
-    entry: dict, surface_finding_ids: set[str] | None,
-) -> list[str]:
-    """최신 반려 라운드 must_fix 가 가리키는 ID 중 판정 표면 **밖**의 것 (거부 라운드 진단).
-
-    자격 거부 안내가 "확인할 반려가 없다"가 아니라 "그 라운드 산출이 회수 거부돼 판정 표면에
-    없다"고 정확히 말하게 하는 입력이다.
-    """
-    if surface_finding_ids is None:
-        return []
-    outcome = _latest_round_outcome(entry)
-    if outcome is None or not _is_rejection(entry, outcome):
-        return []
-    delegate = _load_pm_delegate()
-    referenced: set[str] = set()
-    for item in _recorded_must_fix_texts(entry, outcome):
-        referenced |= delegate.collect_review_finding_ids(
-            item, delegate.EXTERNAL_REVIEW_ROLE,
-        )
-    return sorted(referenced - set(surface_finding_ids))
-
-
-def _confirm_fix_evidence(
-    entry: dict, *, surface_finding_ids: set[str] | None = None,
-) -> str | None:
-    """확인 전용 라운드 프롬프트에 실을 근거 블록 — **최신 완료 라운드가 반려가 아니면
-    None(자격 없음)**. 근거는 그 최신 반려 라운드의 must_fix 다(자격과 같은 산출 1건).
-
-    `surface_finding_ids`(회수 대상 티켓이 있는 실행)가 주어지면 **표면 밖 지적을 근거에서
-    뺀다** — 회수 거부된 라운드의 ID 와 PM 이 `rejected` 로 판정한 ID 다. 그 ID 를 근거로 실으면
-    확인 라운드가 규칙대로 `confirmations` 에 담아 회수 게이트에 다시 걸린다(엔진이 스스로
-    함정을 지시하는 경로). 배제 규칙은 리뷰 절 시드와 같은 엔진 함수가 소유한다. 남는 지적이
-    없으면 자격 없음이다 — 과금 라운드는 못 세우는 쪽이 보수 방향이다.
-    """
-    outcome = _latest_round_outcome(entry)
-    if outcome is None or not _is_rejection(entry, outcome):
-        return None
-    sequence = _round_sequence(outcome)
-    header = _CONFIRM_FIX_EVIDENCE_HEADER.format(
-        round=f"#{sequence}" if sequence is not None else "직전 반려 라운드")
-    items = _recorded_must_fix_texts(entry, outcome)
-    if items and surface_finding_ids is not None:
-        items = _must_fix_items_on_surface(items, surface_finding_ids)
-        if not items:
-            return None
-    if not items:
-        return header + _CONFIRM_FIX_EVIDENCE_UNRECORDED.format(
-            count=_format_round_field(outcome.get("must_fix")))
-    listed = "\n".join(f"{index}. {item}" for index, item in enumerate(items, start=1))
-    return f"{header}{listed}\n\n"
-
-
-def _gate_confirm_fix_evidence(
-    gate: str, *, surface_finding_ids: set[str] | None = None,
-) -> str | None:
-    """게이트 장부를 **읽기 전용**으로 열어 확인 전용 라운드 근거 블록을 만든다 (없으면 None).
-
-    프롬프트 조립은 예약(임계 구역)보다 앞이라 여기서 한 번 더 읽는다 — 장부를 고치지 않으므로
-    사본(`dict(ledger)`)에 정규화한다(조회 표 `render_rounds_report` 와 같은 규약). 앵커 승계
-    규칙도 예약 경로와 같게 본다: PM 홈 장부에 그 게이트가 아직 없으면 legacy(diff 앵커) 장부를
-    읽는다 — 예약 시점에 승계될 항목을 프롬프트만 못 보면 "자격은 있는데 근거가 빈" 라운드가 난다.
-    """
-    ledger = _load_round_ledger()
-    if gate not in ledger:
-        legacy_path = _legacy_round_ledger_path()
-        if legacy_path != _round_ledger_path():
-            legacy = _read_round_ledger_at(legacy_path)
-            if gate in legacy:
-                ledger = legacy
-    return _confirm_fix_evidence(
-        _gate_entry(dict(ledger), gate), surface_finding_ids=surface_finding_ids,
-    )
-
-
-def _spend_confirm_fix(entry: dict) -> None:
-    """확인 전용 라운드 1회를 장부에서 소비한다 (게이트당 1회 예외의 유일한 기록 지점)."""
-    entry["confirm_fix"] = max(0, _as_int(entry.get("confirm_fix"))) + 1
-
-
-def _refund_confirm_fix(entry: dict) -> None:
-    """전송이 확실히 없던 실행의 확인 전용 라운드 quota 를 되돌린다 (라운드 count 환불과 동조)."""
-    entry["confirm_fix"] = max(0, _as_int(entry.get("confirm_fix")) - 1)
-
-
 # 승인 고지 — 같은 승인이라도 **재개된 실행**과 **남은 축이 막아 거부된 실행**의 문구가 달라야
 # 한다. rc 4 로 끝나는 실행이 "재개"를 말하면 stderr 가 종료 코드와 어긋난 loud 오보가 된다
 # (승인 자체는 저장되므로 다음 실행이 이어받는다).
@@ -3301,13 +3003,7 @@ class RoundBudget(NamedTuple):
     비워진 실행만 순번을 잃는다. `wave_id` 는 예약 시점 wave 세대라
     환불이 그 세대에만 유효하다(리셋된 새 wave 의 예산을 옛 실패가 깎지 못한다).
 
-    `confirm_fix_spent` 는 이번 예약이 확인 전용 라운드 quota 를 썼는지다 — 환불도 같은 조건이라
-    (전송 0 이면 예산을 안 먹는다) 라운드 count·wave 와 **한 축으로** 되돌린다.
-
-    `confirm_fix_evidence` 는 확인 전용 라운드가 실을 직전 must_fix 근거 블록이다 — **자격을
-    판정한 그 스냅샷**에서 나온다. 프롬프트가 장부를 따로 읽으면 두 read 사이에 끼어든 라운드
-    때문에 "자격은 통과했는데 근거 블록이 빈" 라운드가 난다(반대 방향도 같다). 자격이 열린
-    실행에서만 채워진다."""
+    """
 
     refused_rc: int | None = None
     gate: str | None = None
@@ -3316,8 +3012,6 @@ class RoundBudget(NamedTuple):
     started_at: str | None = None
     target_rev: str | None = None
     wave_id: str | None = None
-    confirm_fix_spent: bool = False
-    confirm_fix_evidence: str | None = None
 
     @property
     def reserved(self) -> bool:
@@ -3372,7 +3066,7 @@ def _derive_gate_from_ticket(args) -> GateDerivation:
 
 def _reserve_round_budget(
     args, conf: dict[str, str], *, wall_timeout_sec: int | None = None,
-    target_rev: str | None = None, surface_finding_ids: set[str] | None = None,
+    target_rev: str | None = None,
 ) -> RoundBudget:
     """라운드 상한·wave 예산을 한 임계 구역에서 확인하고 이번 전송을 예약한다.
 
@@ -3394,18 +3088,13 @@ def _reserve_round_budget(
 
     상한 축은 셋이고 이 순서로 본다: **수렴-형상**(장부 must_fix 추이) → 판정/미완 라운드 상한 →
     wave 예산. 수렴 축을 먼저 보는 이유는 그쪽이 더 좁고 정지 사유가 구체적이기 때문이다.
-    유일한 예외는 `--confirm-fix`(게이트당 1회 확인 전용 라운드)이고, 그 소비도 이 임계 구역이
-    기록한다. wave 승인(`--ack-wave`)은 **먼저 적용한 뒤** 남은 축을 다시 본다 — 적용해 놓고 저장
+    wave 승인(`--ack-wave`)은 **먼저 적용한 뒤** 남은 축을 다시 본다 — 적용해 놓고 저장
     없이 되돌아가면 PM 이 적용한 승인이 조용히 사라진다.
 
     `wall_timeout_sec` 는 이 실행이 해소한 하네스 벽시계 백스톱이다 — 진행 중 예약 합산의 회수
-    기준으로 그대로 넘긴다(그 시각을 넘긴 미마감 예약은 실행 중일 수 없다). 확인 전용 라운드의
-    근거 블록도 **이 임계 구역이 만들어** 결과에 실어 보낸다: 자격을 판정한 스냅샷과 프롬프트에
-    실리는 근거가 같은 read 에서 나와야 둘이 갈리지 않는다."""
+    기준으로 그대로 넘긴다(그 시각을 넘긴 미마감 예약은 실행 중일 수 없다)."""
     if not args.gate:
-        # `--confirm-fix` 는 여기 오지 못한다 — main 이 부작용 0 지점에서 rc 거부한다(게이트당
-        # 1회 회계가 장부 항목 없이는 성립하지 않는다). wave 승인만 무시 경고로 흡수한다:
-        # 그쪽은 "예산 리셋"이라 게이트가 없으면 리셋할 대상 자체가 없고 실행은 정상이다.
+        # wave 승인은 게이트 단위 예산 리셋이므로 대상이 없으면 무시한다.
         if args.ack_wave:
             print("경고: --ack-wave 는 --gate 와 함께 써야 합니다 (게이트 단위 장부) — 무시.",
                   file=sys.stderr)
@@ -3419,7 +3108,6 @@ def _reserve_round_budget(
     incomplete_limit = _incomplete_round_limit(conf)
     wave_budget = _wave_budget(conf)
     rounds_max = _review_rounds_max(conf)
-    confirm_fix = bool(getattr(args, "confirm_fix", False))
     try:
         with _round_ledger_lock():
             ledger = _load_round_ledger()
@@ -3465,48 +3153,10 @@ def _reserve_round_budget(
                 ):
                     print(note, file=sys.stderr)
 
-            # (1) 수렴-형상 — 장부 must_fix 추이로 "닫히고 있나"를 본다. `--confirm-fix` 는 이 축의
-            #     유일한 예외(게이트당 1회)이고, 그 소비는 통과 직전에 기록한다.
+            # (1) 수렴-형상 — 장부 must_fix 추이로 "닫히고 있나"를 본다.
             convergence = _convergence_refusal(
                 entry, rounds_max, wall_timeout_sec=wall_timeout_sec)
-            # 확인 전용 라운드의 자격과 근거를 **이 스냅샷에서 한 번** 읽는다 — 자격은 여기서
-            # 보고 근거는 프롬프트가 따로 읽으면, 두 read 사이에 끼어든 라운드가 "자격 통과 ·
-            # 근거 없음"(또는 그 반대)을 만든다.
-            confirm_fix_evidence = (
-                _confirm_fix_evidence(
-                    entry, surface_finding_ids=surface_finding_ids,
-                ) if confirm_fix else None
-            )
-            if confirm_fix and entry["confirm_fix"] >= 1:
-                if approved or wave_repaired:
-                    _save_round_ledger(ledger)
-                announce(resumed=False)
-                print(_CONFIRM_FIX_SPENT_GUIDANCE.format(
-                    gate=args.gate, used=entry["confirm_fix"],
-                    ledger=_round_ledger_path()), file=sys.stderr)
-                return RoundBudget(refused_rc=EXIT_ROUND_LIMIT_EXCEEDED)
-            # 예외의 **자격** — 확인할 지적(최신 완료 라운드의 반려)이 실재해야 한다. 판정 입력은
-            # 방금 만든 근거 블록 자체라, 자격이 열린 실행은 반드시 실을 근거를 갖는다.
-            if confirm_fix and confirm_fix_evidence is None:
-                if approved or wave_repaired:
-                    _save_round_ledger(ledger)
-                announce(resumed=False)
-                # 자격이 없는 사유는 둘이고 처방이 다르다 — 반려 자체가 없거나(첫 라운드·전건
-                # 통과), 반려는 있는데 그 산출이 회수 거부돼 판정 표면에 없거나.
-                offsurface = _confirm_fix_offsurface_ids(entry, surface_finding_ids)
-                if offsurface:
-                    print(_CONFIRM_FIX_REFUSED_HARVEST_GUIDANCE.format(
-                        gate=args.gate, ids=", ".join(offsurface),
-                        knob=REVIEW_ROUNDS_MAX_KEY,
-                        default=DEFAULT_REVIEW_ROUNDS_MAX,
-                        ledger=_round_ledger_path()), file=sys.stderr)
-                else:
-                    print(_CONFIRM_FIX_NO_REJECTION_GUIDANCE.format(
-                        gate=args.gate, rounds=len(entry["rounds"]),
-                        verdict=_latest_verdict_label(entry),
-                        ledger=_round_ledger_path()), file=sys.stderr)
-                return RoundBudget(refused_rc=EXIT_ROUND_LIMIT_EXCEEDED)
-            if convergence is not None and not confirm_fix:
+            if convergence is not None:
                 if approved or wave_repaired:
                     _save_round_ledger(ledger)
                 announce(resumed=False)
@@ -3549,16 +3199,6 @@ def _reserve_round_budget(
                     ledger=_round_ledger_path()), file=sys.stderr)
                 return RoundBudget(refused_rc=EXIT_ROUND_LIMIT_EXCEEDED)
             announce(resumed=True)                  # 세 축을 모두 통과한 뒤에만 "재개"
-            if confirm_fix:
-                # 확인 전용 라운드 소비 — 통과가 확정된 뒤에 기록한다(거부된 실행은 예외를
-                # 쓰지 않는다). 수렴 축이 막지 않는 상태에서 써도 같은 규칙으로 1회를 쓴다:
-                # "플래그를 쓴 실행 = 예외를 쓴 실행"이라 회계가 조건 분기를 갖지 않는다.
-                _spend_confirm_fix(entry)
-                print(
-                    f"확인 전용 라운드(--confirm-fix) 사용: 게이트 {args.gate} — "
-                    f"게이트당 1회 (사용 {entry['confirm_fix']}회).",
-                    file=sys.stderr,
-                )
             round_id = uuid.uuid4().hex
             # 예약 sequence 는 **여기서** 잡는다 — 마감 시점에 레코드를 되찾아 읽으면 그 사이
             # 집계 창이 비워진 실행만 순번을 잃는다. 만료 시각도 같은 자리에서 새긴다 — 이 예약이
@@ -3573,8 +3213,6 @@ def _reserve_round_budget(
                 gate=args.gate, round_id=round_id, sequence=record["sequence"],
                 started_at=record["started_at"], target_rev=record["target_rev"],
                 wave_id=wave["id"],                   # 환불은 이 세대에만 유효
-                confirm_fix_spent=confirm_fix,        # 전송 0 이면 quota 도 되돌린다
-                confirm_fix_evidence=confirm_fix_evidence,   # 자격을 판정한 그 스냅샷의 근거
             )
     except OSError as exc:
         # 락 획득/장부 write 실패 — 상한을 확인하지 못한 채 전송하면 과금 게이트가 무력화되므로
@@ -3590,15 +3228,11 @@ def _reserve_round_budget(
 
 
 def _refund_reserved_round(ledger: dict, reservation: RoundBudget) -> bool:
-    """예약 하나를 **세 예산 축에서 같은 조건으로** 되돌린다 (전송이 확실히 없던 실행).
+    """예약 하나를 라운드·wave 예산에서 같은 조건으로 되돌린다 (전송이 확실히 없던 실행).
 
     호출부가 이미 `_round_ledger_lock()` 안에서 로드한 장부를 그 자리에서 고치고 저장은 호출부가
     한다 — 마감 경로는 같은 임계 구역에서 산출 기록까지 함께 쓰기 때문이다. 환불 조건이 한 군데라
     "격리 실패로 되돌린 예약"과 "스폰 실패로 되돌린 예약"이 서로 다른 규칙을 갖지 않는다.
-
-    세 축은 라운드 count · wave 예산 · **확인 전용 라운드 quota** 다. quota 를 빼놓으면 스폰 실패
-    한 번으로 게이트당 1회뿐인 예외가 소멸해, 전송도 과금도 없던 실행이 유일한 처방을 먹는다
-    ("전송 0·과금 0 실행은 예산을 먹지 않는다" 불변식의 세 번째 축).
 
     wave 는 **예약 시점 세대**만 깎는다: 그 사이 `--ack-wave` 로 새 wave 가 열렸으면 이 실패는 그
     예산과 무관하다(깎으면 승인 1회로 예산이 늘어난다). 라운드 count 를 되돌리지 못했으면(레코드가
@@ -3606,8 +3240,6 @@ def _refund_reserved_round(ledger: dict, reservation: RoundBudget) -> bool:
     entry = _gate_entry(ledger, reservation.gate)
     if not _refund_round(entry, reservation.round_id):
         return False
-    if reservation.confirm_fix_spent:
-        _refund_confirm_fix(entry)
     if not _refund_wave_round(_wave_state(ledger), reservation.wave_id):
         print(
             "경고: 예약 시점 wave 가 이미 리셋돼 wave 예산은 환불하지 않았습니다 "
@@ -3898,7 +3530,6 @@ def _resolve_gate_ignored_flags(args: argparse.Namespace) -> str:
             # 회계 opt-out 도 선언면에선 뜻이 없다 — 이 실행은 전송도 예약도 하지 않는다.
             ("--no-gate", bool(getattr(args, "no_gate", False))),
             ("--rounds-report", args.rounds_report),
-            ("--confirm-fix", args.confirm_fix),
             ("--ack-wave", args.ack_wave),
             ("--force", args.force),
         ) if given
@@ -5244,8 +4875,6 @@ def build_prompt(
     ticket_body: str | None = None,
     adr_refs: list[str] | None = None,
     gate: str | None = None,
-    confirm_fix: bool = False,
-    confirm_fix_evidence: str | None = None,
     *,
     ticket_id: str | None = None,
     next_finding_id: str | None = None,
@@ -5256,10 +4885,6 @@ def build_prompt(
 ) -> str:
     """맥락 헤더 + 티켓 본문 + diff 를 결합해 표준 리뷰 프롬프트를 생성한다.
 
-    `confirm_fix` 면 확인 전용 라운드 헌장을 앞에 얹는다 — 이 라운드는 라운드의 연장이 아니라
-    직전 지적의 해소 확인이고, 새로 발견한 것은 다음 라운드 거리가 아니라 사용자 보고 입력이다.
-    `confirm_fix_evidence`(라운드 장부가 만든 직전 must-fix 근거 블록)가 있으면 헌장 **바로
-    뒤**에 싣는다 — 임무 선언과 그 임무의 대상이 붙어 있어야 fresh 세션이 무엇을 확인하는지 안다.
     `next_finding_id` 는 회수 대상 티켓에서 읽은 이 채널의 다음 ID 실값이고,
     `confirmation_ids` 는 그 티켓에서 확인할 수 있는 ID 실값 목록이다(빈 목록 = 확인 대상 없음).
 
@@ -5274,10 +4899,6 @@ def build_prompt(
     ]
     if versioned_block:
         parts.append(_versioned_block_requirement(next_finding_id, confirmation_ids))
-    if confirm_fix:
-        parts.append(_CONFIRM_FIX_CHARTER)
-        if confirm_fix_evidence:
-            parts.append(confirm_fix_evidence)
     if adr_refs:
         parts.append(f"관련 ADR: {', '.join(adr_refs)}\n\n")
     if gate:
@@ -7285,11 +6906,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ack-rounds", action="store_true",
                         help="(폐지됨) 라운드 연장 승인 — 호출하면 아무것도 하지 않고 거부한다. "
                              "현재 티켓의 고정 fix 단계에서 종결해야 한다.")
-    parser.add_argument("--confirm-fix", action="store_true",
-                        help="확인 전용 라운드 — 상한 밖에서 게이트당 1회만 허용"
-                             "(게이트 지정 필수 — --gate 또는 --ticket 유도). "
-                             "직전 must-fix 해소만 확인하고 신규 발견은 사용자에게 보고하는 "
-                             "헌장을 프롬프트에 싣는다 (장부 기록·2회째는 거부)")
     parser.add_argument("--ack-wave", action="store_true",
                         help="wave 예산 재개 — wave spent 를 0 으로 리셋 후 재개 "
                              "(게이트 지정 필수 — --gate 또는 --ticket 유도 · 같은 범위의 "
@@ -7686,22 +7302,12 @@ def _main(argv: list[str] | None = None) -> int:
     if args.ack_rounds:
         print(_ACK_ROUNDS_REMOVED_GUIDANCE, file=sys.stderr)
         return 1
-    # 게이트 회계 자동 유도 — `--ticket` 실행의 기본값은 "기록"이다(조용한 무기록 폐지). 아무것도
-    # 하지 않고 끝나는 `--ack-rounds` 거부 **뒤**에 둔다: 그 실행이 유도 고지를 내면 오보다.
-    # `--confirm-fix` 게이트 누락 검사보다는 **앞**이라, 유도된 게이트가 확인 전용 라운드의
-    # 회계 자리도 그대로 제공한다. **고지 출력은 여기서 하지 않는다** — stderr 첫 줄은 config
-    # provenance 라 그 뒤에 낸다(아래 provenance 직후).
+    # 게이트 회계 자동 유도 — `--ticket` 실행의 기본값은 "기록"이다(조용한 무기록 폐지).
     gate_derivation = _derive_gate_from_ticket(args)
     if gate_derivation.refusal is not None:
         print(gate_derivation.refusal, file=sys.stderr)
         return 1
-    # 게이트 없는 확인 전용 라운드는 어느 표면에서도 뜻이 없다 — 장부 항목이 없어 1회 제한을
-    # 셀 수 없다. `--ack-rounds` 와 같은 부작용 0 지점에서 거부한다(경고-만-실행 폐지).
-    if getattr(args, "confirm_fix", False) and not args.gate:
-        print(_CONFIRM_FIX_REQUIRES_GATE_GUIDANCE, file=sys.stderr)
-        return 1
-    # 처분 인자는 `--resolve-gate` 없이는 뜻이 없다 — 선언할 게이트가 없으면 남길 사실도 없다
-    # (`--confirm-fix` 게이트 누락과 같은 부작용 0 지점·경고-만-실행 금지).
+    # 처분 인자는 `--resolve-gate` 없이는 뜻이 없다 — 선언할 게이트가 없으면 남길 사실도 없다.
     if args.pm_verified and not args.resolve_gate:
         print(
             _RESOLVE_GATE_REQUIRED_GUIDANCE.format(flag="--pm-verified", value=""),
@@ -7714,7 +7320,7 @@ def _main(argv: list[str] | None = None) -> int:
     if args.rounds_report:
         ignored = ", ".join(
             flag for flag, given in (
-                ("--confirm-fix", args.confirm_fix), ("--ack-wave", args.ack_wave),
+                ("--ack-wave", args.ack_wave),
                 # 조회면은 전송도 예약도 없어 회계 자체가 없다 — opt-out 도 무시 대상이다.
                 ("--no-gate", args.no_gate),
                 ("--dry-run", args.dry_run), ("--force", args.force),
@@ -8145,45 +7751,19 @@ def _main(argv: list[str] | None = None) -> int:
         ticket_body_omitted_rounds = selection.omitted_rounds
         return True
 
-    # 확인 가능한 finding ID 실값은 **소비 지점에서** 한 번만 해소한다(회수 대상이 있는 실행만 ·
-    # 읽기 전용). 두 소비자(프롬프트 골격 실값 · 확인 전용 라운드 근거의 표면 대조)가 같은 목록을
-    # 봐야 리뷰어가 표면 밖 ID(회수 거부 라운드·PM rejected)를 확인 대상으로 받지 않는다.
-    # 미리 읽지 않는 이유는 부작용 규율이다 — 비활성 no-op·프롬프트를 만들지 않는 조기 종료는
-    # 티켓 파일을 건드리지 않는다.
-    resolved_confirmable: dict[str, list[str] | None] = {}
-
-    def confirmable_finding_ids() -> list[str] | None:
-        if "ids" not in resolved_confirmable:
-            resolved_confirmable["ids"] = _confirmable_external_finding_ids(
-                args, pm_home=pm_home, degraded=_CONFIRMABLE_IDS_DEGRADED,
-            )
-        return resolved_confirmable["ids"]
-
-    def surface_finding_ids() -> set[str] | None:
-        ids = confirmable_finding_ids()
-        return None if ids is None else set(ids)
-
-    def compose_prompt(confirm_fix_evidence: str | None) -> str:
-        """이번 실행의 프롬프트 — 확인 전용 라운드 근거만 호출 시점에 따라 다르다."""
+    def compose_prompt() -> str:
+        """이번 실행의 표준 리뷰 프롬프트."""
         return build_prompt(
             diff=diff, ticket_body=ticket_body, ticket_id=args.ticket,
             adr_refs=args.adr, gate=args.gate,
-            confirm_fix=args.confirm_fix,
-            confirm_fix_evidence=confirm_fix_evidence,
             next_finding_id=_next_external_finding_id(args, pm_home=pm_home),
-            confirmation_ids=confirmable_finding_ids(),
+            confirmation_ids=[],
         )
 
     if args.dry_run:
         if not prepare_ticket_body():
             return 1
-        # dry-run은 예약 스냅샷이 없으므로 읽기 전용 장부 조회 근거로 미리보기를 조립한다.
-        prompt = compose_prompt(
-            _gate_confirm_fix_evidence(
-                args.gate, surface_finding_ids=surface_finding_ids(),
-            )
-            if getattr(args, "confirm_fix", False) and args.gate else None
-        )
+        prompt = compose_prompt()
         # 미리보기는 **부작용 0**이다(외부 송신·raw 예약·라운드 예약·격리 거울·`--output-dir`
         # 생성 모두 없음). 여기까지의 준비는 전부 읽기 전용이고(conf 해소·denylist·git diff),
         # 그 diff 는 아래 프롬프트 미리보기가 **실제 나갈 내용**을 보여주기 위해 필요하다.
@@ -8295,26 +7875,14 @@ def _main(argv: list[str] | None = None) -> int:
     # 상한을 판정한다. 여기서 실패하면 외부 전송·라운드/wave 소비 모두 0이다.
     if not prepare_ticket_body():
         return 1
-    # 예약 전 조회는 미리보기 성격일 뿐 자격 근거가 아니다. confirm-fix 예약이 반환한 eligibility
-    # snapshot evidence로 아래에서 반드시 재조립한다(동시 마감 라운드와 두 read가 갈려도 한 스냅샷).
-    prompt = compose_prompt(
-        _gate_confirm_fix_evidence(
-            args.gate, surface_finding_ids=surface_finding_ids(),
-        )
-        if getattr(args, "confirm_fix", False) and args.gate else None
-    )
+    prompt = compose_prompt()
 
     budget = _reserve_round_budget(
         args, conf, wall_timeout_sec=timeout,
         target_rev=_target_rev_fingerprint(diff),
-        surface_finding_ids=surface_finding_ids(),
     )
     if budget.refused_rc is not None:
         return budget.refused_rc
-    if budget.confirm_fix_evidence is not None:
-        # 확인 전용 라운드가 열렸다 — 자격을 판정한 스냅샷의 근거로 프롬프트를 다시 조립한다.
-        # (열리지 않은 실행은 근거가 없어 재조립도 없다 — 일반 라운드 프롬프트는 그대로다.)
-        prompt = compose_prompt(budget.confirm_fix_evidence)
 
     # ── 추가 리뷰어 가시 범위 격리 ──────────
     # 리뷰어는 이 거울 안에서만 돈다. 스폰 전에 중단하는 실행은 외부 전송이 없으므로 방금 잡은
@@ -8434,36 +8002,6 @@ def _next_external_finding_id(args, *, pm_home: Path | None) -> str | None:
     return delegate.next_review_finding_id(
         state.text, delegate.EXTERNAL_REVIEW_ROLE, state.rounds,
     )
-
-
-def _confirmable_external_finding_ids(
-    args, *, pm_home: Path | None, degraded: str,
-) -> list[str] | None:
-    """확인 라운드가 참조할 수 있는 이 채널 finding ID 실값 목록 (대상 없으면 None).
-
-    입력은 이 채널의 **직전 라운드 파일** 하나다 — 확인 전용 라운드의 임무가 "직전 라운드
-    must-fix 의 해소 확인"이라 리뷰 라운드 시드 프리필과 같은 시야여야 한다. 그 "직전 라운드"
-    규칙(역할 필터 · 산출 없는 라운드 배제 · 마지막 순번)은 사이드카 seam 이 소유한다 — 여기서
-    다시 구현하면 예약해 둔 시드 라운드가 직전 산출 자리를 차지해 확인 대상이 빈 목록이 된다.
-    배제(PM 이 `rejected` 로 판정한 ID)는 시드와 **같은 엔진 함수**가 소유한다 — 두 채널이 서로
-    다른 목록을 보면 한쪽 리뷰어가 표면이 거부할 ID 를 확인 대상으로 받는다.
-    """
-    state = _harvest_target_ticket_state(args, pm_home=pm_home, degraded=degraded)
-    if state is None:
-        return None
-    delegate = _load_pm_delegate()
-    role = delegate.EXTERNAL_REVIEW_ROLE
-    latest = _load_ticket_rounds().latest_round_of_role(state.rounds, role)
-    if latest is None:
-        return []
-    try:
-        return delegate.collect_confirmable_finding_ids(state.text, role, [latest])
-    except delegate.DelegateError as exc:
-        print(
-            f"경고: 확인 가능한 finding ID 목록을 해소하지 못했습니다({exc}) — {degraded}",
-            file=sys.stderr,
-        )
-        return None
 
 
 def _harvest_external_review_section(
@@ -8693,9 +8231,8 @@ def _run_isolated_review(
             })
             if started else None
         )
-        # 확인 전용 라운드가 "무엇을 확인하는지" 알려면 **항목 텍스트**가 남아야 한다(건수만으로는
-        # fresh 세션이 대상을 모른다). 산출 파싱과 같은 자리·같은 함수라 건수와 텍스트가 갈리지
-        # 않고, 저장 지점은 예약 레코드 안이라 정규화(`_gate_entry`)에서 살아남는다.
+        # 항목 텍스트를 산출 파싱과 같은 자리·같은 함수에서 남겨 건수와 텍스트가 갈리지 않게 한다.
+        # 저장 지점은 예약 레코드 안이라 정규화(`_gate_entry`)에서 살아남는다.
         must_fix_items = _round_must_fix_items(result) if started else None
         refunded_round = False
         try:

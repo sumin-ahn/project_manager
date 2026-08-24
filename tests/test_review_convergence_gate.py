@@ -1,4 +1,4 @@
-"""리뷰 수렴 게이트 · 확인 전용 라운드 · diff 서킷브레이커 (T-0593).
+"""리뷰 수렴 게이트 · 폐지 플래그 차단 · diff 서킷브레이커 (T-0593).
 
 라운드 상한(T-0457)과 wave 예산(T-0583)은 "몇 번 전송했나"만 셌고 "닫히고 있나"는 묻지 않았다.
 실측 두 형상이 그 공백이다 — 리뷰 12라운드(연장 승인 반복)와 must_fix 3→2→2 평탄. 이 파일은 세
@@ -6,9 +6,8 @@
 
   ① 수렴-형상 게이트 — 라운드 장부의 `rounds[].must_fix` 추이로 판정한다(LLM 판단 0).
      상한 도달(local.conf `additional_reviewer.rounds_max`·기본 2)·직전 대비 증가(조기 차단)면 rc 4 로 막고,
-     감소 수렴은 그대로 통과시킨다. 출구는 재설계·티켓 분할뿐이다(`--ack-rounds` 폐지).
-  ② 확인 전용 라운드(`--confirm-fix`) — 수렴 축의 유일한 예외. 게이트당 1회이고 장부가 소유하며,
-     프롬프트에 "신규 발견은 재설계 신호" 헌장을 싣는다.
+     감소 수렴은 그대로 통과시킨다. 상한에서는 현재 티켓을 정지해 사용자에게 보고한다.
+  ② 폐지 플래그 — fix 후 재리뷰 예약 인자는 장부 상태와 무관하게 파서에서 거부한다.
   ③ diff 서킷브레이커 — 티켓 estimate 별 diff 총량(추가+삭제) 상한. 측정 폭은 리뷰가 보는 폭과
      같은 단계 표를 쓰고(`_diff_bases`), 초과면 리뷰어 호출 전에 rc 1 로 막는다.
 
@@ -228,8 +227,8 @@ def test_default_cap_blocks_the_third_round(external, monkeypatch, tmp_path, cap
     err = capsys.readouterr().err
     assert "수렴 게이트 차단" in err
     assert "3 → 2" in err                         # 판정 근거를 그대로 보여준다
-    assert "재설계" in err and "분할" in err        # 유일한 출구
-    assert "--confirm-fix" in err                 # 해소 확인 전용 예외
+    assert "현재 티켓을 정지" in err and "사용자에게 보고" in err
+    assert "--confirm-fix" not in err
     assert _ledger(tmp_path)["T-0593"]["count"] == 2   # 거부는 장부를 늘리지 않는다
 
 
@@ -288,315 +287,43 @@ def test_gate_without_a_ledger_is_untouched(external, monkeypatch, tmp_path):
     assert reviewer.calls == 1
 
 
-# ══ ② 확인 전용 라운드 (`--confirm-fix`) ════════════════════════════════════
+# ══ ② 폐지한 fix 후 재리뷰 표면 ═══════════════════════════════════════════════
 
 
-def test_confirm_fix_opens_exactly_one_round_per_gate(
-        external, monkeypatch, tmp_path, capsys):
-    """차단된 게이트를 1회만 연다 — 장부에 기록되고 2회째는 거부된다 (DoD)."""
-    conf = {**_REVIEWER_TARGET, "additional_reviewer.rounds_max": "3"}
-    reviewer = _wire(external, monkeypatch, tmp_path, series=[2, 2, 2, 0, 0], conf=conf)
+@pytest.mark.parametrize("gate_state", ("empty", "rejected", "passed"))
+def test_removed_confirm_fix_flag_is_rejected_before_any_send(
+        external, monkeypatch, tmp_path, capsys, gate_state):
+    """게이트 이력과 무관하게 폐지 플래그는 argparse 에서 거부되고 장부·전송은 불변이다."""
+    reviewer = _wire(
+        external, monkeypatch, tmp_path,
+        series=[0] if gate_state == "passed" else [1],
+    )
     argv = ["--gate", "T-0598", "--paths", "x.py"]
-    for _ in range(3):
+    if gate_state == "rejected":
         assert external.main(argv) == 1
-    assert external.main(argv) == external.EXIT_ROUND_LIMIT_EXCEEDED
+    elif gate_state == "passed":
+        assert external.main(argv) == 0
+    before_calls = reviewer.calls
+    ledger_path = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
+    before = ledger_path.read_bytes() if ledger_path.exists() else None
     capsys.readouterr()
 
-    assert external.main(argv + ["--confirm-fix"]) == 0       # 예외 1회
-    assert reviewer.calls == 4
-    assert "확인 전용 라운드" in capsys.readouterr().err
-    assert _ledger(tmp_path)["T-0598"]["confirm_fix"] == 1
+    with pytest.raises(SystemExit):
+        external.main(argv + ["--confirm-fix"])
 
-    assert external.main(argv + ["--confirm-fix"]) == external.EXIT_ROUND_LIMIT_EXCEEDED
-    assert reviewer.calls == 4                                # 2회째는 전송 없음
-    err = capsys.readouterr().err
-    assert "게이트당 1회" in err and "사용 1회" in err
-    assert "재설계" in err and "분할" in err
-    assert _ledger(tmp_path)["T-0598"]["confirm_fix"] == 1     # 거부는 quota 를 더 쓰지 않는다
+    assert "unrecognized arguments: --confirm-fix" in capsys.readouterr().err
+    assert reviewer.calls == before_calls
+    assert (ledger_path.read_bytes() if ledger_path.exists() else None) == before
 
 
-def test_confirm_fix_quota_is_refunded_when_nothing_was_sent(
+def test_round_records_keep_must_fix_texts_for_audit(
         external, monkeypatch, tmp_path):
-    """스폰 전 실패(전송 0·과금 0)는 quota 도 되돌린다 — 라운드 count·wave 와 같은 조건.
-
-    안 되돌리면 설치/PATH 문제 한 번으로 게이트당 1회뿐인 유일한 처방이 소멸한다("전송 0 실행은
-    예산을 먹지 않는다" 불변식의 세 번째 축)."""
-    conf = {**_REVIEWER_TARGET, "additional_reviewer.rounds_max": "3"}
-    _wire(external, monkeypatch, tmp_path, series=[2, 2, 2], conf=conf)
-    argv = ["--gate", "T-0603", "--paths", "x.py"]
-    for _ in range(3):
-        assert external.main(argv) == 1
-    assert external.main(argv) == external.EXIT_ROUND_LIMIT_EXCEEDED
-
-    unstarted = {
-        "reviewer": "x", "ok": False, "output": "[리뷰어 명령 없음]",
-        "answer": "[리뷰어 명령 없음]",
-        "verdict": {"has_must_fix": False, "has_pass": False}, "file": None,
-        "failed": True, "started": False, "any_must_fix": False, "all_pass": False,
-    }
-    monkeypatch.setattr(external, "run_review", lambda *a, **k: dict(unstarted))
-    assert external.main(argv + ["--confirm-fix"]) == 1
-    entry = _ledger(tmp_path)["T-0603"]
-    assert entry["count"] == 3            # 라운드 count 환불
-    assert entry["confirm_fix"] == 0      # quota 도 함께 환불
-
-    # 처방이 살아 있다 — 다음 시도가 실제로 확인 전용 라운드를 쓴다.
-    reviewer = _Reviewer([0])
-    monkeypatch.setattr(external, "run_review", reviewer)
-    assert external.main(argv + ["--confirm-fix"]) == 0
-    assert reviewer.calls == 1
-    assert _ledger(tmp_path)["T-0603"]["confirm_fix"] == 1
-
-
-def test_confirm_fix_quota_is_refunded_when_isolation_fails(
-        external, monkeypatch, tmp_path):
-    """예약 뒤·스폰 전 중단(격리 실패)도 같은 환불 규칙을 탄다 (환불 소유가 한 seam)."""
-    conf = {**_REVIEWER_TARGET, "additional_reviewer.rounds_max": "3"}
-    _wire(external, monkeypatch, tmp_path, series=[2, 2, 2], conf=conf)
-    argv = ["--gate", "T-0604", "--paths", "x.py"]
-    for _ in range(3):
-        assert external.main(argv) == 1
-
-    def _fail(*a, **k):
-        raise external.ReviewerWorkspaceError("거울 생성 실패")
-
-    monkeypatch.setattr(external, "create_reviewer_workspace", _fail)
-    assert external.main(argv + ["--confirm-fix"]) == 1
-    entry = _ledger(tmp_path)["T-0604"]
-    assert entry["count"] == 3 and entry["confirm_fix"] == 0
-
-
-def test_confirm_fix_quota_is_per_gate(external, monkeypatch, tmp_path):
-    """quota 는 게이트별이다 — 한 티켓이 썼다고 다른 티켓이 잠기지 않는다.
-
-    두 게이트 모두 **반려 라운드를 먼저 쓴다** — 확인 전용 라운드는 확인할 지적이 있는 게이트
-    에서만 열리므로(T-0602 ①), 자격을 갖춘 상태에서 quota 의 게이트별 독립성을 본다."""
-    _wire(external, monkeypatch, tmp_path, series=[1, 0, 1, 0])
-    for gate in ("T-0599", "T-0600"):
-        assert external.main(["--gate", gate, "--paths", "x.py"]) == 1     # 반려 1라운드
-        assert external.main(["--gate", gate, "--paths", "x.py", "--confirm-fix"]) == 0
-    ledger = _ledger(tmp_path)
-    assert ledger["T-0599"]["confirm_fix"] == ledger["T-0600"]["confirm_fix"] == 1
-
-
-def test_confirm_fix_prompt_carries_the_charter(external, monkeypatch):
-    """확인 전용 라운드 프롬프트는 임무를 좁힌다 — 신규 발견은 '재설계 신호'로 보고."""
-    monkeypatch.setattr(external, "_load_review_context", lambda: "맥락")
-    prompt = external.build_prompt(diff="x", gate="T-0593", confirm_fix=True)
-    assert "확인 전용" in prompt
-    assert "재설계 신호" in prompt
-    assert "must-fix 로 올리지 말고" in prompt
-    # 일반 라운드에는 헌장이 없다 (예외가 기본이 되지 않게).
-    assert "확인 전용" not in external.build_prompt(diff="x", gate="T-0593")
-
-
-# ══ ②-a 확인 전용 라운드의 **자격·근거** (T-0602 ①) ══════════════════════════
-# codex R2 지적: 리뷰어는 매 라운드 fresh 세션이고 장부에는 must_fix **개수**만 남았다 — 그래서
-# ① 첫 라운드에서도 `--confirm-fix` 를 쓸 수 있고(확인할 지적이 없는데 통과 판정만 나온다)
-# ② 열리더라도 프롬프트가 직전 지적을 들고 가지 않아 무엇을 확인하는지 모른다.
-# 아래 절은 두 우회를 **그 형상 그대로** 재현하고 차단을 단언한다.
-
-
-class _PromptCapture:
-    """run_review 대역 — 프롬프트를 보관하면서 지정한 must_fix 수를 돌려준다."""
-
-    def __init__(self, series: list[int]):
-        self._series = list(series)
-        self.prompts: list[str] = []
-
-    def __call__(self, *args, **kwargs):
-        must_fix = self._series[min(len(self.prompts), len(self._series) - 1)]
-        self.prompts.append(kwargs.get("prompt") or (args[0] if args else ""))
-        return dict(_result(must_fix))
-
-
-def test_confirm_fix_on_a_first_round_gate_is_refused(
-        external, monkeypatch, tmp_path, capsys):
-    """장부가 없는 **첫 라운드**의 `--confirm-fix` 는 전송 전에 거부된다 (근거 없는 통과 차단).
-
-    재현: 반려 라운드가 하나도 없는 게이트에 확인 전용 라운드를 요청한다(codex R2 지적 형상)."""
-    reviewer = _wire(external, monkeypatch, tmp_path, series=[0])
-
-    rc = external.main(["--gate", "T-0602", "--paths", "x.py", "--confirm-fix"])
-
-    assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
-    assert reviewer.calls == 0                      # 외부 전송 0
-    err = capsys.readouterr().err
-    assert "최신 완료 라운드가 반려인 게이트" in err
-    assert "라운드 기록 없음" in err                  # 무엇을 보고 막았는지 그대로
-    assert "첫 리뷰는" in err                        # 처방 1줄
-    assert _ledger(tmp_path) == {}                  # 거부는 장부를 만들지 않는다
-
-
-def test_confirm_fix_on_an_all_pass_gate_is_refused(
-        external, monkeypatch, tmp_path, capsys):
-    """라운드는 있으나 **전건 통과**인 게이트도 자격 미달이다 — 확인할 지적이 없다."""
-    reviewer = _wire(external, monkeypatch, tmp_path, series=[0, 0])
-    argv = ["--gate", "T-0602b", "--paths", "x.py"]
-    assert external.main(argv) == 0
-    capsys.readouterr()
-
-    assert external.main(argv + ["--confirm-fix"]) == external.EXIT_ROUND_LIMIT_EXCEEDED
-    assert reviewer.calls == 1                      # 확인 전용 라운드는 나가지 않았다
-    assert "최신 판정은 0(통과)" in capsys.readouterr().err
-    assert _ledger(tmp_path)["T-0602b"]["confirm_fix"] == 0   # quota 도 안 쓴다
-
-
-# ── 자격은 **최신** 완료 판정이다 (T-0603 ②) ────────────────────────────────
-# codex R3 지적: 자격 판정이 '과거의 마지막 반려'를 찾는다 — 반려 → 통과로 이미 닫힌 게이트도
-# 옛 지적을 근거로 영원히 자격을 갖는다(수렴 축의 1회 예외가 상시 예외가 되고 과금이 따라온다).
-
-
-def test_confirm_fix_on_a_gate_closed_by_a_pass_is_refused(
-        external, monkeypatch, tmp_path, capsys):
-    """반려 → 통과로 **이미 닫힌** 게이트의 `--confirm-fix` 는 전송 전에 거부된다 (DoD).
-
-    재현: 1라운드 반려 · 2라운드 통과로 수렴을 마친 게이트에 확인 전용 라운드를 요청한다."""
-    reviewer = _wire(external, monkeypatch, tmp_path, series=[1, 0])
-    argv = ["--gate", "T-0603a", "--paths", "x.py"]
-    assert external.main(argv) == 1                 # 1R 반려
-    assert external.main(argv) == 0                 # 2R 통과 — 사이클 마감
-    capsys.readouterr()
-
-    assert external.main(argv + ["--confirm-fix"]) == external.EXIT_ROUND_LIMIT_EXCEEDED
-    assert reviewer.calls == 2                      # 외부 전송 0 (과금 라운드가 열리지 않는다)
-    err = capsys.readouterr().err
-    assert "최신 완료 라운드가 반려인 게이트" in err
-    assert "최신 판정은 0(통과)" in err
-    assert _ledger(tmp_path)["T-0603a"]["confirm_fix"] == 0   # quota 미소비
-
-
-def test_confirm_fix_opens_for_the_latest_rejection_after_a_pass(
-        external, monkeypatch, tmp_path):
-    """정상 경로 무변경 — 통과 뒤 다시 반려로 끝났으면 열리고, 근거는 **그 최신 반려**다."""
-    capture = _PromptCapture([3, 0, 2, 0])
-    conf = {**_REVIEWER_TARGET, "additional_reviewer.rounds_max": "3"}
-    _wire(external, monkeypatch, tmp_path, series=[3], conf=conf)
-    monkeypatch.setattr(external, "run_review", capture)
-    argv = ["--gate", "T-0603b", "--paths", "x.py"]
-    assert external.main(argv) == 1                 # 1R 반려 3건
-    assert external.main(argv) == 0                 # 2R 통과
-    assert external.main(argv) == 1                 # 3R 반려 2건 — 최신 반려
-
-    assert external.main(argv + ["--confirm-fix"]) == 0
-    prompt = capture.prompts[-1]
-    assert "결함 1" in prompt and "결함 2" in prompt
-    assert "결함 3" not in prompt, "1라운드(3건)가 아니라 최신 반려(2건)가 근거여야 한다"
-
-
-def test_latest_round_helpers_read_reservation_order(external):
-    """자격 판정 입력은 **예약 순번**의 마지막이다 — append 순서로 읽으면 최신이 뒤바뀐다."""
-    entry = external._gate_entry({"g": {"rounds": [
-        {"sequence": 2, "verdict": 0, "must_fix": 0},     # 나중 순번이 먼저 append 됨
-        {"sequence": 1, "verdict": 1, "must_fix": 2},
-    ]}}, "g")
-    assert external._latest_round_outcome(entry)["sequence"] == 2
-    assert external._latest_verdict_label(entry) == "0(통과)"
-    assert external._confirm_fix_evidence(entry) is None       # 최신이 통과 = 자격 없음
-
-
-def test_unknown_latest_verdict_does_not_open_the_exception(external):
-    """최신 라운드 판정이 미상(기록 없음·손상)이면 자격을 세우지 않는다 (과금 축 보수 방향)."""
-    entry = external._gate_entry({"g": {"rounds": [
-        {"sequence": 1, "verdict": 1, "must_fix": 2},
-        {"sequence": 2, "verdict": None, "must_fix": None},
-    ]}}, "g")
-    assert external._confirm_fix_evidence(entry) is None
-    assert external._latest_verdict_label(entry) == "미상"
-
-
-def test_confirm_fix_prompt_carries_the_previous_must_fix_items(
-        external, monkeypatch, tmp_path):
-    """확인 전용 라운드 프롬프트에 **직전 반려 항목 텍스트**가 실린다 (fresh 세션 근거 주입)."""
-    capture = _PromptCapture([2, 0])
-    _wire(external, monkeypatch, tmp_path, series=[2])
-    monkeypatch.setattr(external, "run_review", capture)
-    argv = ["--gate", "T-0602c", "--paths", "x.py"]
-    assert external.main(argv) == 1                 # 반려 1라운드 (근거 생성)
-
-    assert external.main(argv + ["--confirm-fix"]) == 0
-    prompt = capture.prompts[-1]
-    assert "직전 라운드 must-fix" in prompt
-    assert "결함 1" in prompt and "결함 2" in prompt  # 항목 **텍스트** 그대로
-    assert "확인 전용" in prompt                     # 헌장과 같은 프롬프트에 붙는다
-    # 일반 라운드 프롬프트에는 근거 블록이 없다 (예외 전용).
-    assert "직전 라운드 must-fix" not in capture.prompts[0]
-
-
-def test_recorded_must_fix_texts_survive_in_the_reservation_record(
-        external, monkeypatch, tmp_path):
-    """항목 텍스트의 저장 지점은 예약 레코드다 — 정규화(`_gate_entry`)에서 살아남는다."""
+    """폐지 경로와 무관하게 라운드 기록은 결함 건수와 항목 텍스트를 함께 보존한다."""
     _wire(external, monkeypatch, tmp_path, series=[2])
     assert external.main(["--gate", "T-0602d", "--paths", "x.py"]) == 1
-
     entry = _ledger(tmp_path)["T-0602d"]
-    assert [row.get("must_fix_items") for row in entry["records"]] == [["결함 1", "결함 2"]]
-    # 개수 축(rounds[].must_fix)과 텍스트 축이 같은 파서를 쓴다 — 갈리면 근거가 거짓이 된다.
     assert entry["rounds"][0]["must_fix"] == 2
-    assert external._gate_entry({"g": entry}, "g")["records"][0]["must_fix_items"] == [
-        "결함 1", "결함 2"]
-
-
-def test_confirm_fix_evidence_comes_from_the_eligibility_snapshot(
-        external, monkeypatch, tmp_path):
-    """자격 판정과 프롬프트 근거는 **같은 스냅샷**에서 나온다 (두 번 읽으면 갈린다).
-
-    재현: 프롬프트 조립 시점의 read 는 반려 *이전* 장부를, 예약 임계 구역의 read 는 반려가 실린
-    장부를 본다(동시 라운드가 그 사이에 마감한 형상). 두 read 를 그대로 두면 "자격 통과 · 근거
-    블록 없음" 라운드가 난다 — 근거 없는 통과 판정 채널이 다시 열리는 것과 같다."""
-    capture = _PromptCapture([0])
-    _wire(external, monkeypatch, tmp_path, series=[0])
-    monkeypatch.setattr(external, "run_review", capture)
-    rejected = {"T-0602i": {
-        "count": 1, "sequence": 1,
-        "records": [{"id": "r1", "sequence": 1, "started_at": "2026-08-09T00:00:00+00:00",
-                     "finished_at": "2026-08-09T00:00:01+00:00", "verdict": True,
-                     "must_fix_items": ["동시 라운드가 남긴 지적"]}],
-        "rounds": [{"ts": "2026-08-09T00:00:01+00:00", "id": "r1", "sequence": 1,
-                    "verdict": 1, "must_fix": 1, "suggestions": None}],
-    }}
-    before_rejection = {"T-0602i": {"count": 0, "sequence": 0,
-                                    "records": [], "rounds": []}}
-    reads = {"n": 0}
-
-    def _load_round_ledger():
-        reads["n"] += 1
-        # 첫 read(프롬프트 조립)만 반려 이전 상태 — 이후 read(자격·마감)는 반려가 실린 장부.
-        import copy
-        return copy.deepcopy(before_rejection if reads["n"] == 1 else rejected)
-
-    monkeypatch.setattr(external, "_load_round_ledger", _load_round_ledger)
-
-    assert external.main(["--gate", "T-0602i", "--paths", "x.py", "--confirm-fix"]) == 0
-    assert reads["n"] >= 2, "스냅샷이 하나뿐이면 이 재현이 성립하지 않는다"
-    prompt = capture.prompts[-1]
-    assert "직전 라운드 must-fix" in prompt
-    assert "동시 라운드가 남긴 지적" in prompt, (
-        "자격은 통과했는데 프롬프트에 근거가 없다 — 두 read 가 갈렸다")
-
-
-def test_legacy_round_without_texts_falls_back_to_the_count(
-        external, monkeypatch, tmp_path):
-    """텍스트 보관분이 없는 구세대 반려 라운드는 **건수 + 재구성 지시**로 떨어진다.
-
-    자격은 그대로 열린다 — '근거가 빈 통과'보다 '무엇을 확인할지 재구성하라'가 낫다."""
-    capture = _PromptCapture([0])
-    _wire(external, monkeypatch, tmp_path, series=[0])
-    monkeypatch.setattr(external, "run_review", capture)
-    ledger = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    ledger.write_text(json.dumps({"T-0602e": {
-        "count": 1, "sequence": 1,
-        "records": [{"id": "r1", "sequence": 1, "finished_at": "2026-08-09T00:00:00+00:00",
-                     "verdict": True}],
-        "rounds": [{"ts": "2026-08-09T00:00:00+00:00", "id": "r1", "sequence": 1,
-                    "verdict": 1, "must_fix": 3, "suggestions": None}],
-    }}), encoding="utf-8")
-
-    assert external.main(["--gate", "T-0602e", "--paths", "x.py", "--confirm-fix"]) == 0
-    prompt = capture.prompts[-1]
-    assert "직전 라운드 must-fix" in prompt
-    assert "must-fix 건수: 3" in prompt and "재구성" in prompt
+    assert entry["records"][0]["must_fix_items"] == ["결함 1", "결함 2"]
 
 
 # ══ ②-b 수렴 상한의 **진행 중 예약** (T-0602 ②) ══════════════════════════════
@@ -851,7 +578,7 @@ def test_diff_cap_boundaries(external, estimate, total, blocked):
     )
     assert (block is not None) is blocked
     if blocked:
-        assert "분할" in block and "재설계" in block
+        assert "현재 티켓을 정지" in block and "사용자에게 보고" in block
         assert f"{total}줄" in block and f"{cap}줄" in block
 
 
@@ -1471,9 +1198,7 @@ def test_an_upgrade_pass_becomes_the_latest_over_a_legacy_rejection(external):
         {"sequence": 1, "verdict": 0, "must_fix": 0},        # 업그레이드 후 통과
     ]}}, "g")
 
-    assert external._latest_round_outcome(entry)["verdict"] == 0
-    assert external._latest_verdict_label(entry) == "0(통과)"
-    assert external._confirm_fix_evidence(entry) is None
+    assert external._ordered_round_outcomes(entry["rounds"])[-1]["verdict"] == 0
 
 
 def test_the_ordering_rule_is_the_shared_board_seam(external):
@@ -1482,69 +1207,3 @@ def test_the_ordering_rule_is_the_shared_board_seam(external):
     rounds = [{"sequence": 2}, {"verdict": 1}, {"sequence": 1}]
     assert external._ordered_round_outcomes(rounds) == sorted(
         rounds, key=board.round_outcome_order_key)
-
-
-# ══ ⑦ 확인 전용 라운드 자격 = 실제 리뷰 판정 (T-0605 ⑦) ═════════════════════
-# codex R5 지적: timeout·하네스 실패·판정 불명확도 `determine_exit_code()` 에서 rc 1 로 저장되므로
-# 산출의 rc 만 보면 **리뷰 판정이 없는 라운드**가 반려로 세어져 과금 예외(`--confirm-fix`)가 열린다.
-# 예약 레코드가 마감 때 새기는 실제 verdict 존재를 함께 본다.
-
-
-def _entry_with(external, *, record_verdict, round_verdict: int = 1):
-    """산출 1건 + 그 산출을 낸 예약 레코드 1건을 가진 게이트 항목."""
-    record = {"id": "r1", "sequence": 1, "started_at": "2026-08-09T00:00:00+00:00",
-              "finished_at": "2026-08-09T00:00:01+00:00", "must_fix_items": ["결함 1"]}
-    if record_verdict is not None:
-        record["verdict"] = record_verdict
-    return external._gate_entry({"g": {
-        "count": 1, "sequence": 1, "records": [record],
-        "rounds": [{"ts": "2026-08-09T00:00:01+00:00", "id": "r1", "sequence": 1,
-                    "verdict": round_verdict, "must_fix": 1, "suggestions": None}],
-    }}, "g")
-
-
-def test_a_timeout_round_does_not_open_the_confirm_fix_exception(external):
-    """판정을 못 낸 라운드(timeout·하네스 실패·불명확)는 반려로 세지 않는다 (재현 → 차단)."""
-    entry = _entry_with(external, record_verdict=False)
-
-    assert external._confirm_fix_evidence(entry) is None
-    assert "리뷰 판정 없음" in external._latest_verdict_label(entry)
-
-
-def test_an_unlinked_outcome_does_not_open_the_exception(external):
-    """예약 레코드에 그 축이 없는 구세대 기록도 자격 없음이다 (과금 축 보수 방향)."""
-    assert external._confirm_fix_evidence(_entry_with(external, record_verdict=None)) is None
-
-
-def test_a_real_rejection_still_opens_the_exception(external):
-    """정상 경로 무변경 — 실제 리뷰 판정으로서의 반려는 그대로 자격을 연다."""
-    entry = _entry_with(external, record_verdict=True)
-    evidence = external._confirm_fix_evidence(entry)
-
-    assert evidence is not None and "결함 1" in evidence
-    assert external._latest_verdict_label(entry) == "1(비통과)"
-
-
-def test_confirm_fix_after_a_timeout_round_is_refused_before_sending(
-        external, monkeypatch, tmp_path, capsys):
-    """e2e — 판정 없이 끝난 라운드 뒤의 `--confirm-fix` 는 **전송 전에** 거부된다(과금 0)."""
-    capture = _PromptCapture([0])
-    _wire(external, monkeypatch, tmp_path, series=[0])
-    monkeypatch.setattr(external, "run_review", capture)
-    ledger = tmp_path / ".project_manager" / ".local" / "review_rounds.json"
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    ledger.write_text(json.dumps({"T-0605a": {
-        "count": 1, "sequence": 1,
-        "records": [{"id": "r1", "sequence": 1, "started_at": "2026-08-09T00:00:00+00:00",
-                     "finished_at": "2026-08-09T00:00:01+00:00", "verdict": False}],
-        "rounds": [{"ts": "2026-08-09T00:00:01+00:00", "id": "r1", "sequence": 1,
-                    "verdict": 1, "must_fix": None, "suggestions": None}],
-    }}), encoding="utf-8")
-
-    rc = external.main(["--gate", "T-0605a", "--paths", "x.py", "--confirm-fix"])
-
-    assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
-    assert capture.prompts == []                     # 외부 전송 0
-    err = capsys.readouterr().err
-    assert "최신 완료 라운드가 반려인 게이트" in err and "리뷰 판정 없음" in err
-    assert _ledger(tmp_path)["T-0605a"].get("confirm_fix", 0) == 0   # quota 미소비

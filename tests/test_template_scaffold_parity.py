@@ -463,6 +463,70 @@ def _shipped_cards(name: str, stem: str) -> list[Path]:
     )
 
 
+# 수렴 규범의 문장 소유자는 pm_principles 하나뿐이다. 역할/플레이북/스킬은 링크와 실행 절차만
+# 싣는다. 정규식은 문구 하나를 golden 으로 고정하지 않고 같은 규칙을 다시 풀어 쓴 형상을 잡는다.
+_CONVERGENCE_RULE_COPY_RE = tuple(re.compile(pattern, re.IGNORECASE) for pattern in (
+    r"fix[^.]{0,120}마지막[^.]{0,40}(?:사람 )?라운드",
+    r"(?:실패|하나라도).{0,140}(?:추가 )?(?:사람 )?라운드.{0,80}(?:열지|정지|보고)",
+    r"architect.{0,180}reviewer.{0,120}(?:전체 회귀|모두).{0,80}(?:green|통과)",
+    r"architect\s*1.{0,80}developer(?:_per_ticket)?\s*1.{0,80}code-reviewer\s*1.{0,80}fix\s*1",
+    r"(?:developer와 fix|developer/fix).{0,220}전체 회귀.{0,100}정확히\s*1회",
+    r"pm-owned:.{0,220}machine_verifiable=false.{0,80}reason=pm-owned",
+))
+
+
+def _convergence_rule_copies(text: str) -> list[str]:
+    normalized = " ".join(text.split())
+    return [match.group(0) for rule in _CONVERGENCE_RULE_COPY_RE
+            if (match := rule.search(normalized))]
+
+
+def _convergence_reference_guides() -> list[Path]:
+    paths = [
+        REPO / ".project_manager/wiki/pm_role.md",
+        REPO / ".project_manager/wiki/pm_playbook.md",
+        REPO / ".claude/skills/pm-dev-delegate/SKILL.md",
+    ]
+    for name in TEMPLATE_NAMES:
+        paths.extend((
+            _wiki(name) / "pm_role.md",
+            _wiki(name) / "pm_playbook.md",
+        ))
+        paths.extend(_shipped_cards(name, "pm-dev-delegate"))
+    return sorted(set(paths))
+
+
+def test_convergence_normative_sentences_live_only_in_pm_principles():
+    """role/playbook/skill와 출하 사본은 수렴 규범을 재서술하지 않고 canonical 절을 참조한다."""
+    owners = [REPO / ".project_manager/wiki/pm_principles.md"] + [
+        _wiki(name) / "pm_principles.md" for name in TEMPLATE_NAMES
+    ]
+    assert all(_convergence_rule_copies(path.read_text(encoding="utf-8")) for path in owners), (
+        "pm_principles owner의 수렴 규범이 sensitivity 정규식에 잡히지 않음"
+    )
+    offenders = {}
+    for path in _convergence_reference_guides():
+        text = path.read_text(encoding="utf-8")
+        copies = _convergence_rule_copies(text)
+        if copies:
+            offenders[str(path.relative_to(REPO))] = copies
+        assert "pm_principles.md" in text, f"{path.relative_to(REPO)}: canonical 원칙 참조 누락"
+    assert not offenders, f"pm_principles 밖 수렴 규범 복제: {offenders}"
+
+
+@pytest.mark.parametrize("sample", (
+    "fix가 마지막 사람 라운드다.",
+    "실패하면 추가 사람 라운드를 열지 않고 사용자에게 보고한다.",
+    "architect 테스트와 reviewer 테스트와 전체 회귀를 모두 green으로 만든다.",
+    "architect 1 developer_per_ticket 1 code-reviewer 1 fix 1",
+    "developer와 fix는 전체 회귀를 정확히 1회 실행한다.",
+    "pm-owned: scope와 machine_verifiable=false 및 reason=pm-owned가 함께 있어야 한다.",
+))
+def test_convergence_normative_copy_guard_is_sensitive(sample: str):
+    """가드가 실제 복제 문장을 잡는 음성 사례 — 스캔 대상만 비우면 통과하는 공허한 테스트 금지."""
+    assert _convergence_rule_copies(sample)
+
+
 @pytest.mark.parametrize("name", TEMPLATE_NAMES)
 def test_shipped_delegate_card_carries_engine_round_ordinals(name: str):
     """출하 위임 카드가 묶음 단계 표와 엔진 순번 값을 싣는다(티켓당 절 부재)."""

@@ -95,36 +95,33 @@ T-NNNN 의 변경을 검토하라. 변경 파일: <경로>. (code-reviewer)
 
 ⚠️ code-reviewer 프롬프트에 "`status.md`/`log/current.md` 갱신은 orchestrator 담당 — 그 누락은 developer must-fix 아님" 을 덧붙인다.
 
-**검토 루프(묶음 1회):** developer N → code-reviewer 1회(묶음) → PM finding 판정과 승인 delta(§라운드
-프로토콜 5~6항) → developer 1명이 fix → 기계 확인(같은 절 8항 · `pm_delegate.py rounds resolve
---cluster <C-이름> --pm-verified` — 확인 커맨드는 엔진이 실행한다) → `ticket_finish.py --cluster`. 추가 리뷰어는 기본 OFF 인 opt-in 채널이라 `additional_reviewer.enabled=true` 인
+**검토 루프:** 단계 준비·회수는 `/pm-dev-delegate`, 기계 확인은 `pm_delegate.py rounds resolve
+--cluster <C-이름> --pm-verified`, 종결은 `ticket_finish.py --cluster`가 수행한다. 수렴 불변식은
+[`pm_principles.md`](pm_principles.md) §"티켓과 위임"만 소유한다. 추가 리뷰어는 기본 OFF 인 opt-in 채널이라 `additional_reviewer.enabled=true` 인
 채택자만 이 루프에 병행한다(§추가 리뷰어 교차검증). reviewer 산출은 구현 명령이 아니라
-증거·제안이다. reviewer는 PM이 accepted한 구현·설계 결함마다 fix가 바로 실행할 수정·테스트 계약을
-남긴다. 계약이 불완전하면 티켓을 정지해 사용자에게 보고한다. 리뷰는 1회이고 루프를 다시 열지 않는다.
+증거·제안이며, `review disposition-template`과 `review delta`가 PM 판정 및 fix 입력을 연결한다.
 git 도입 후 code-reviewer는 `git diff`로 변경 범위·내용을 직접 검증한다. PM-direct는 이 루프 대신 PM 구현·self-review·범위 테스트를 거친다.
 
 ### 라운드 프로토콜 (내부 루프 비용 규율)
 
 라운드당 비용(회귀 벽시계 × 에이전트 × 라운드·PM 재작성 토큰)과 라운드 수 자체를 다음 규율로 통제한다.
 
-1. **단계별 테스트 계약.** architect가 developer 착수 전에 지정 회귀의 대상·명령·기대값·음성 사례를 확정하고, 최초 developer는 그 계약을 green으로 만들어야 종료한다. reviewer는 must-fix마다 추가 회귀 계약을 낸다. fix는 architect 계약과 reviewer 계약을 모두 다시 실행하고 **전체 회귀까지 green**이어야 종료한다.
+1. **단계별 테스트 계약 처리.** 계약의 규범 의미는 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"을 참조한다. architect/reviewer 라운드 파서가 대상·명령·기대값·음성 사례를 구조화하고, harvest가 계약 명령을 실행해 결과를 기록한다.
 2. **검증 근거 지정 의무.** 위임 프롬프트는 "무엇으로 재는지"를 명시한다 — 실제 git 이 만든 산출물, 설치 바이너리에서 추출한 fixture, fake runner 아닌 층의 동작 단언. cold dev 는 트리 기억이 없어 검증 근거를 지정하지 않으면 픽스처를 지어내고(조립 문자열·순환 단언·문자열만 검사), 그 결함이 라운드를 늘린다.
 3. **클래스 전수 열거 의무.** dev 는 구현 전에 결함 클래스의 인스턴스를 진입점·플랫폼·실패 모드·호출 경로 축으로 전수 나열해 보고하고 전부 처리한다. 보고된 형상만 처리한 결과는 미완이다. 전수 열거가 불가능하면 그 사실과 열거 경계를 보고한다. 클래스는 해당 결함의 클래스에 한정하며 티켓 밖 기능으로 스코프를 확대하지 않는다. 완료 보고에는 열거한 인스턴스 목록과 각각의 처리를 포함하며, 목록이 없으면 PM 이 반려한다.
 4. **역방향 확인 의무.** dev 는 고침이 반대 방향 실패를 만들지 않았는지 단언한다. 느슨함을 조인 fix 는 과결속을, 조임을 푼 fix 는 누락을, 차단을 추가한 fix 는 정상 사용 차단을 각각 확인한다.
 5. **finding/disposition 장부.** 블록 스키마의 단일 진실은 엔진 파서 상수이며 엔진이 골격을 공급한다. reviewer는 안정 ID와 must-fix별 수정·테스트 계약을 실값으로 채우고, PM은 `review disposition-template --cluster`가 낸 골격에 전수 disposition을 남긴다. finding 0도 reviewer의 0건 선언 뒤 fix 자리로 진행한다.
 6. **accepted-only delta + 세션 재사용.** `pm_delegate.py review delta --cluster <C-이름>` 출력만 fix 프롬프트에 붙인다. 미판정·decision-required·계약 누락은 fix 준비를 차단하고 티켓을 정지해 사용자에게 보고한다. fix는 직전 dev 세션에 재사용하는 것이 기본이며 accepted가 0이어도 마지막 테스트·종결 자리로 실행한다.
-7. **고정 예산.** 라운드 수는 묶음 장부가 선언한다 — `architect 1 · developer_per_ticket 1 ·
-   code-reviewer 1 · fix 1`. 라운드 예약이 예산 초과와 순서 밖 역할을 **예약 전에** 거부하며
-   표면(`--cluster` · `--ticket`)에 따라 판정이 갈리지 않는다. 네 값은 모두 정확히 1이며 순서는
-   `architect → developer → code-reviewer → developer(fix)`다. 단계 생략·반복·예산 변경은 거부하고
-   현재 티켓을 정지해 사용자에게 보고한다. 라운드를 더 얹는 플래그는 없다.
-   예산이 세는 것은 **예약**이다(산출 유무를 보지 않는다) — 기계 확인은 스폰이 없어 예산에 들어가지
-   않는다.
-8. **확인은 기계가 먼저.** fix harvest는 architect 필수 테스트, reviewer가 요구한 추가 회귀,
-   프로젝트 전체 회귀를 엔진이 실행한다. 이후 `rounds resolve --cluster <C-이름> --pm-verified`가
-   확인 관측을 명세에 기록하며 PM이 커맨드나 confirmation을 손으로 옮겨 적지 않는다. 하나라도
-   실패하면 fix 회수를 거부하고 추가 사람 라운드를 열지 않는다. 재현 커맨드는
-   메타문자 없는 단일 비파괴 명령이어야 하며, 그 밖이면 실행하지 않고 fix 라운드를 반려한다.
+7. **라운드 장부 처리.** `cluster_round_sequence`가 예약 전 현재 단계와 예산을 검증하고,
+   `ticket prepare`가 예약 좌표를 라운드 사본에 기록한다. 수열과 실패 시 행동의 규범은
+   [`pm_principles.md`](pm_principles.md) §"티켓과 위임"을 참조한다.
+8. **기계 확인 절차.** developer/fix는 inner-loop에 지정 targeted tests를 쓰고 단계 종료 때
+   해소된 프로젝트 `test_cmd`를 직접 실행해 라운드 `## 회귀`의 커맨드·`rc=0` 결과를 채운다. 횟수와 red
+   처리 규범은 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"을 참조한다. harvest는
+   architect/reviewer 계약 명령과 전체 회귀 기록만 검증하며 full은 다시 실행하지 않는다.
+   `rounds resolve --cluster <C-이름>
+   --pm-verified`가 확인 관측을 명세에 기록한다. 재현 커맨드의 문법 검사는 엔진의 비파괴 명령
+   파서가 담당한다.
 9. **작업 중단 사유 판정.** 유효 집합 3항목만 작업 중단 사유로 인정한다. 무효 집합 5항목으로 중단하면 규약 위반이다. 각 항목은 조건과 결론을 함께 판정한다.
 
    **유효 집합.**
@@ -134,7 +131,7 @@ git 도입 후 code-reviewer는 `git diff`로 변경 범위·내용을 직접 �
 
    **무효 집합.**
    - **컨텍스트 잔량**: 조건: 컨텍스트 잔량을 작업 범위나 중단 결정과 함께 관측한 상태. 결론: 이를 이유로 작업을 중단하면 규약 위반이다.
-   - **라운드·wave 상한**: 조건: 라운드·wave 상한에 도달한 상태. 결론: 새 라운드나 board 쓰기는 중단하고 사용자에게 근거를 보고한다.
+   - **라운드·wave 상한**: 조건과 처리의 규범은 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"을 참조한다.
    - **티켓 미완**: 조건: 티켓이 아직 미완인 상태. 결론: 이를 이유로 작업을 중단하면 규약 위반이다.
    - **남은 작업량**: 조건: 남은 작업량이 많다고 평가한 상태. 결론: 이를 이유로 작업을 중단하면 규약 위반이다.
    - **세션 자기 판단**: 조건: 세션이 "정확한 상태만 남기겠다"고 자기 판단한 상태. 결론: 이를 이유로 작업을 중단하면 규약 위반이다.
@@ -142,7 +139,7 @@ git 도입 후 code-reviewer는 `git diff`로 변경 범위·내용을 직접 �
    **미완 보고 판정.**
    - **다음 행동 명시**: 조건: 세션이 "여기까지"라고 알리면서 다음 행동을 명시하지 않은 미완 보고. 결론: 다음 행동 없는 미완 보고는 규약 위반이다.
    - **자기 수행 우선**: 조건: 세션이 직접 수행할 수 있는 다음 행동이 남은 상태. 결론: 수행 가능한 행동을 남긴 미완 보고는 규약 위반이다.
-   - **상한 이후 보고**: 조건: 라운드·wave 상한 도달로 해당 루프가 정지한 상태. 결론: 현재 티켓 상태와 실패 근거를 사용자에게 보고한다.
+   - **상한 이후 보고**: 보고 내용은 엔진이 보존한 실패 근거와 현재 티켓 상태를 사용한다.
    - **종료·축소 권한**: 조건: 세션 종료 또는 작업 축소를 결정하는 경우. 결론: 세션 종료·작업 축소는 사용자 지시로만 한다.
 
 wave 중 묶음 종결은 `ticket_finish.py --cluster <C-이름> --no-pytest` + 지정 회귀 실측 근거가 표준이다(전량 검증은 릴리즈 절차 1단계가 담당).
@@ -150,8 +147,8 @@ wave 중 묶음 종결은 `ticket_finish.py --cluster <C-이름> --no-pytest` + 
 10. **처방 밖 수정 금지·빈틈은 보고.** fix 라운드에서 고칠 수 있는 것은 `review delta` 가 낸 finding ID 와
     각 허용 수정 범위뿐이다. 그 제약과 빈틈 보고 형식은 delta 렌더러가 출력 끝에 함께 싣는다 — 카드·스킬·
     프롬프트에 같은 문장을 복제하지 않고, PM 은 렌더된 출력을 발췌하지 않고 그대로 fix 프롬프트에 붙인다.
-    처방대로 따르면 다른 결함이 생기는 상호작용을 developer 가 발견하면 스스로 메우지 않고 라운드 파일에
-    빈틈을 적고 종료한다. 엔진은 라운드를 더 열지 않고 PM이 현재 티켓의 실패 근거를 사용자에게 보고한다.
+    처방대로 따르면 다른 결함이 생기는 상호작용을 developer 가 발견하면 라운드 파일의 빈틈 절에
+    기록한다. 이후 처리 규범은 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"을 참조한다.
 
 ### 추가 리뷰어 교차검증 (opt-in 채널 · 기본 OFF)
 

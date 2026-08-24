@@ -52,7 +52,21 @@ def _load_pd():
 
 @pytest.fixture(scope="module")
 def pd():
-    return _load_pd()
+    module = _load_pd()
+
+    # 이 모듈은 superseded copy의 abandon/harvest 저수준 상태만 검증한다.
+    # 출하 고정 architect→developer→reviewer→fix 수열은 test_round_budget.py가
+    # 담당하므로 여기서는 기존 fixture가 선언한 reviewer 좌석만 편다.
+    def _copy_transport_sequence(budget, *, cluster):
+        del cluster
+        return tuple(
+            role
+            for role, key in module.CLUSTER_BUDGET_ROLE_SEQUENCE
+            for _ in range(int(budget.get(key, 0)))
+        )
+
+    module.cluster_round_sequence = _copy_transport_sequence
+    return module
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
@@ -168,6 +182,14 @@ def _finding_values(pd, finding_id: str) -> dict:
         "authority": "[[ADR-0090]] §경계",
         "evidence": f"{finding_id} probe rc=1",
         "recommendation": f"{finding_id}만 수정",
+        "fix_contract": {
+            "location": ".project_manager/tools/pm_delegate.py:abandon_ticket_copy",
+            "failure": f"{finding_id} 대체 회수 순환 재현",
+            "design": f"{finding_id} 범위에서 장부·증거 보존",
+            "test": "tests/test_pm_delegate_ticket_copies.py",
+            "command": "python3 --version",
+            "expected": "Python",
+        },
         "design_change": False,
     }
 

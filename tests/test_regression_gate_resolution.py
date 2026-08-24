@@ -317,7 +317,7 @@ def test_pytest_gate_verdict_unchanged(tool):
 def test_gate_label_shows_solo_argv_for_none(tool):
     """안내 문구 — 해소 실패(None)는 실제 실행 argv 라벨을 보여준다."""
     mod, _seam = tool
-    assert mod._gate_label(None) == "pytest tests/ -q"
+    assert mod._gate_label(None) == "pytest tests/ -q -n auto"
     assert mod._gate_label(NON_PYTEST_CMD) == NON_PYTEST_CMD
 
 
@@ -606,6 +606,7 @@ def test_solo_shape_keeps_venv_pytest_argv(hf, monkeypatch):
     handoff = hf.PmHandoff(venv_python="/venv/bin/python",
                            run_git_fn=lambda args: (0, ""))
     handoff._default_run_pytest()
-    assert captured["cmd"] == ["/venv/bin/python", "-m", "pytest", "tests/", "-q"]
+    assert captured["cmd"] == [
+        "/venv/bin/python", "-m", "pytest", "tests/", "-q", "-n", "auto",
+    ]
     assert captured["shell"] is False
-

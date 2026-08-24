@@ -719,13 +719,20 @@ def _protected_push_gate_config(
 
 
 def _default_test_cmd() -> str:
-    """worktree add 빌드명령 프롬프트의 최종 폴백값 — `local.conf test.cmd` 또는 `pytest -q`.
+    """worktree add 빌드명령 프롬프트의 최종 폴백값 — local.conf 또는 board 기본.
 
     board._test_cmd 의 최종 폴백 레이어(`local_config().get("test.cmd") or "pytest -q"`)와
     동형. `_resolve_repo_test_cmd` 의 마지막 레이어(areas 미등록·빈 값일 때)다 —
     프롬프트 표시값 resolve 의 폴백.
     """
-    return _local_conf_test_cmd() or "pytest -q"
+    configured = _local_conf_test_cmd()
+    if configured:
+        return configured
+    board = _load_module("board", "board.py")
+    if board is not None and hasattr(board, "default_pytest_cmd"):
+        return board.default_pytest_cmd()
+    # 부분 설치에서 board 기본 해소가 불가능해도 serial 하드코딩으로 조용히 강등하지 않는다.
+    return "python3 -m pytest tests/ -q -n auto"
 
 
 def _resolve_repo_test_cmd(repo: str, *, board=None) -> str:

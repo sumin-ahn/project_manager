@@ -1432,10 +1432,10 @@ def test_cli_success_marks_paths_absent_from_the_snapshot(tmp_path):
     assert "  - review/kept.txt\n" in result.stdout
 
 
-def test_snapshot_recreation_keeps_pm_home_round_ledger_for_confirm_fix(
+def test_snapshot_recreation_keeps_pm_home_ledger_while_removed_fix_flag_is_inert(
     tmp_path, monkeypatch, capsys,
 ):
-    """스냅샷 cwd 라운드는 막고 PM 홈 장부는 새 스냅샷 뒤 confirm-fix까지 존속한다."""
+    """스냅샷 재생성 뒤에도 PM 홈 장부는 존속하고 폐지 플래그는 이를 바꾸지 않는다."""
     repo = _repo(tmp_path)
     tickets = repo / ".project_manager" / "wiki" / "tickets" / "open"
     tickets.mkdir(parents=True)
@@ -1524,7 +1524,7 @@ def test_snapshot_recreation_keeps_pm_home_round_ledger_for_confirm_fix(
     assert json.loads(ledger_path.read_text(encoding="utf-8"))["T-0634"]["count"] == 1
     capsys.readouterr()
 
-    # 새 격리 스냅샷을 만들어도 장부는 PM 홈 소유라 사라지지 않고 confirm-fix 자격/근거가 산다.
+    # 새 격리 스냅샷을 만들어도 장부는 PM 홈 소유라 사라지지 않는다.
     second, _files = snapshot.create_snapshot(
         repo, tmp_path / "gate-round-2", ["review/target.txt"],
     )
@@ -1535,16 +1535,20 @@ def test_snapshot_recreation_keeps_pm_home_round_ledger_for_confirm_fix(
         second / ".project_manager" / ".local" / "review_rounds.json"
     ).exists()
     external.REPO = repo
-    assert external.main([
-        "--gate", "T-0634", "--paths", "review/target.txt", "--confirm-fix",
-        "--output-dir", str(tmp_path / "home-raw-confirm"),
-    ]) == 0
+    before = ledger_path.read_bytes()
+    with pytest.raises(SystemExit):
+        external.main([
+            "--gate", "T-0634", "--paths", "review/target.txt", "--confirm-fix",
+            "--output-dir", str(tmp_path / "home-raw-confirm"),
+        ])
+    assert "unrecognized arguments: --confirm-fix" in capsys.readouterr().err
 
     ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
-    assert ledger["T-0634"]["count"] == 2
-    assert ledger["T-0634"]["confirm_fix"] == 1
-    assert [row["verdict"] for row in ledger["T-0634"]["rounds"]] == [1, 0]
-    assert review_calls["n"] == 2
+    assert ledger_path.read_bytes() == before
+    assert ledger["T-0634"]["count"] == 1
+    assert "confirm_fix" not in ledger["T-0634"]
+    assert [row["verdict"] for row in ledger["T-0634"]["rounds"]] == [1]
+    assert review_calls["n"] == 1
 
 
 # ══ T-0701: --paths 가 staged 변경 집합보다 좁을 때 (경고 / --strict-scope 차단) ══

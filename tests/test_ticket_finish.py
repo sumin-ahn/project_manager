@@ -253,7 +253,7 @@ def test_resolve_per_repo_cmd_reads_local_conf_without_areas(tf, tmp_path, monke
 
 
 def test_default_run_pytest_solo_uses_venv_pytest_argv(tf, tmp_path, monkeypatch):
-    """솔로 회귀 보존 결정적 확인 — per-repo cmd 없으면 `[venv_python,-m,pytest,tests/,-q]` argv 실행.
+    """솔로 기본도 xdist 병렬 argv를 쓴다.
 
     이게 깨지면 도그푸딩(현 repo·areas.md 없음) 자체가 깨진다 — must-fix 1 핵심 보존.
     """
@@ -274,7 +274,9 @@ def test_default_run_pytest_solo_uses_venv_pytest_argv(tf, tmp_path, monkeypatch
     rc, out = finisher._default_run_pytest()
     assert rc == 0
     # 솔로 = venv pytest argv(리스트)·shell 미사용·tests/ 경로 보존.
-    assert captured["cmd"] == ["/venv/bin/python", "-m", "pytest", "tests/", "-q"]
+    assert captured["cmd"] == [
+        "/venv/bin/python", "-m", "pytest", "tests/", "-q", "-n", "auto",
+    ]
     assert captured["shell"] is False
 
 
@@ -410,12 +412,12 @@ def test_dry_run_label_shows_resolved_gate(tf, tmp_path, monkeypatch, capsys):
 
 
 def test_dry_run_label_shows_solo_argv_when_unresolved(tf, tmp_path, monkeypatch, capsys):
-    """해소 실패(솔로)면 dry-run 안내도 현행 `pytest tests/ -q` 그대로(도그푸딩 불변)."""
+    """해소 실패(솔로) dry-run 안내도 병렬 기본을 보여준다."""
     monkeypatch.setattr(tf, "_resolve_per_repo_test_cmd", lambda: None)
     finisher = _make_finisher(tf, tmp_path, affected=[])
     rc = finisher.run("T-1234", section=None, dry_run=True)
     assert rc == 0
-    assert "[dry-run] pytest tests/ -q 실행 중" in capsys.readouterr().out
+    assert "[dry-run] pytest tests/ -q -n auto 실행 중" in capsys.readouterr().out
 
 
 def test_soft_step_runs_in_dry_run_too(tf, tmp_path, capsys):

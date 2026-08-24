@@ -21,6 +21,7 @@ import contextlib
 import datetime
 import functools
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -6851,8 +6852,9 @@ def _test_cmd(override: str | None, session: str | None = None) -> str:
          id_prefix 에도 thread** — M>1 슬롯 순회에서 슬롯 lease test_cmd 가 비면 prefix 유도가
          *그 슬롯의* repo 로 해소돼야 한다(전역 재해소 시 모호 None·env 오귀속으로 전 슬롯이
          같은 test_cmd 를 돌리는 false-green·codex must-fix).
-      4. **최종 폴백** — 위 전부 미스면 현 단일 `local.conf test.cmd`
-         (없으면 `pytest -q`). 100% 하위호환(multi-PM-미배선 무영향).
+      4. **최종 폴백** — 위 전부 미스면 현 단일 `local.conf test.cmd`.
+         없으면 실행 가능한 Python으로 `pytest tests/ -q`를 만들고 pytest-xdist를 import할 수
+         있는 환경에서는 `-n auto`를 붙인다.
     """
     if override:
         return override
@@ -6864,7 +6866,7 @@ def _test_cmd(override: str | None, session: str | None = None) -> str:
         row = _areas_row_for_prefix(prefix)
         if row and row.get("test_cmd"):
             return row["test_cmd"]
-    return local_config().get("test.cmd") or "pytest -q"
+    return local_config().get("test.cmd") or default_pytest_cmd()
 
 
 def _regression_cwd(override: str | None = None) -> str:
@@ -7008,6 +7010,28 @@ def _detect_py() -> str:
         message = f"Python 지원 하한 확인 불가(engine_rev.py), 발견: {discovered}"
     print(message, file=sys.stderr)
     return "python3"
+
+
+@functools.lru_cache(maxsize=None)
+def _pytest_xdist_available(py: str) -> bool:
+    """엔진 Python 환경에 pytest-xdist가 설치됐는지 import 없이 확인한다.
+
+    ``default_pytest_cmd``의 runtime은 이 엔진이 실행 검증해 고른 interpreter다. 여기서 다시
+    subprocess를 열면 regression 테스트가 주입한 Popen/run seam을 침범하고, 스캐폴드 기본값을
+    묻는 순수 해소가 프로세스 생성 부작용을 갖는다. module spec 조회만으로 같은 환경을 판정한다.
+    ``py``는 cache key이자 호출 계약을 보존한다.
+    """
+    return importlib.util.find_spec("xdist") is not None
+
+
+def default_pytest_cmd(py: str | None = None) -> str:
+    """Python 프로젝트의 스캐폴드 test_cmd; xdist가 있으면 병렬이 기본이다."""
+    # 이미 이 엔진을 실행 중인 interpreter는 재-probe할 이유가 없다. 기본값 해소가
+    # subprocess를 열면 regression runner의 Popen DI seam을 선점해 실제 테스트 호출 관측을
+    # 오염시킨다. scaffold init은 감지한 runtime을 명시 인자로 넘기므로 그 계약도 보존된다.
+    runtime = py or sys.executable or "python3"
+    parallel = " -n auto" if _pytest_xdist_available(runtime) else ""
+    return f"{runtime} -m pytest tests/ -q{parallel}"
 
 
 # ── ctx 임계 (context 정지-핸드오프) ──────────────────────────────
@@ -10662,7 +10686,7 @@ def _complete_gate(tid: str, args: argparse.Namespace,
     # 2. regression must be confirmed by the implementing session.
     if not (args.tests_pass or args.allow_untested):
         problems.append(
-            "regression not confirmed — run `pytest tests/ -q`, then pass "
+            "regression not confirmed — run the project test_cmd, then pass "
             "--tests-pass (or --allow-untested for a regression-irrelevant "
             "ticket)")
 
@@ -11383,6 +11407,7 @@ def _write_init_local_conf() -> None:
     # 인터프리터 탐지는 conf 내용과 무관한 **외부 프로브**(subprocess)다 — 락 밖에서 미리 푼다
     # (임계 구간을 프로브 시간만큼 늘리지 않는다).
     detected_py = _detect_py()
+    detected_test_cmd = default_pytest_cmd(detected_py)
     with _local_conf_write_lock(LOCAL_CONF):
         if not LOCAL_CONF.exists():
             # 부재 시(첫 생성) — 현행 그대로 전체 default conf write. 회귀 0.
@@ -11392,7 +11417,7 @@ def _write_init_local_conf() -> None:
                 "# per-clone 설정 (git-ignored). board.py init 생성. clone 마다 다름.\n"
                 "# 여기엔 실값만 둔다 — 키 카탈로그·설명은 출하 문서 참조.\n"
                 f"runtime.py={detected_py}\n"
-                "test.cmd=pytest -q\n"
+                f"test.cmd={detected_test_cmd}\n"
                 "project.name=\n"
                 f"ctx.nudge_pct={CTX_NUDGE_PCT_DEFAULT}\n"
                 f"ctx.stop_pct={CTX_STOP_PCT_DEFAULT}\n"
@@ -11409,7 +11434,7 @@ def _write_init_local_conf() -> None:
         # init 기본키는 *없을 때만* 추가 — 기존 값(커스텀 `ctx.window_tokens` 등)은 보존.
         defaults = {
             "runtime.py": detected_py,
-            "test.cmd": "pytest -q",
+            "test.cmd": detected_test_cmd,
             "project.name": "",
             "ctx.nudge_pct": str(CTX_NUDGE_PCT_DEFAULT),
             "ctx.stop_pct": str(CTX_STOP_PCT_DEFAULT),
@@ -18999,7 +19024,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("regression",
                        help="회귀 게이트 (run=측정·기록 / check=HEAD green 검증·pre-push 훅용)")
     p.add_argument("action", choices=["run", "check"])
-    p.add_argument("--cmd", help="테스트 명령 (기본: 활성 repo areas.md test_cmd → local.conf test.cmd → pytest -q)")
+    p.add_argument("--cmd", help="테스트 명령 (기본: 활성 repo areas.md test_cmd → local.conf test.cmd → Python pytest 병렬 기본)")
     p.add_argument("--cwd", help="회귀 실행 cwd (seam·기본=이 트리 REPO · 슬롯 자동해소 없음 — "
                                  "다른 트리는 여기서 명시)")
     identity_args.add_identity_args(p)  # 명시 슬롯 = 디스패치(M>1 순회 생략)와 그 슬롯 test_cmd

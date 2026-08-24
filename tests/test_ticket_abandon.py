@@ -157,25 +157,59 @@ def env(tmp_path, pd, monkeypatch) -> Env:
     return prepared
 
 
-def _write_spec(env: Env, ticket: str, *, rounds=("developer",), **kwargs) -> Path:
+_FIXED_ROUNDS = ("architect", "developer", "code-reviewer", "developer")
+
+
+def _write_spec(env: Env, ticket: str, *, rounds=_FIXED_ROUNDS, **kwargs) -> Path:
     """명세와 그 티켓의 크기 1 묶음 장부를 함께 쓴다.
 
-    준비는 라운드 예산·순서를 장부에서만 읽으므로, `rounds` 로 이 티켓이 예약할 역할 순서를
-    선언한다(예산 수열 = 그 순서).
+    abandon 축과 무관하게 장부 예산은 제품의 고정 수열만 쓴다. ``rounds`` 인자는 옛 fixture
+    호출부 호환용이며 값을 바꿔도 가변 예산을 되살리지 않는다.
     """
     path = env.tickets / f"{ticket}-abandon.md"
     path.write_text(_spec_text(ticket, **kwargs), encoding="utf-8", newline="\n")
     write_cluster_ledger(
         env.pm_home / ".project_manager" / "wiki", ticket,
-        base_branch="task/main", rounds=rounds,
+        base_branch="task/main", rounds=_FIXED_ROUNDS,
     )
     return path
 
 
-def _prepare(pd, env: Env, ticket: str, role: str = "developer", **kwargs):
+def _prepare(pd, env: Env, ticket: str, role: str = "architect", **kwargs):
     return pd.prepare_ticket_copy(
         ticket=ticket, role=role, cwd=env.slot, pm_home=env.pm_home, **kwargs,
     )
+
+
+def _fill_architect(pd, plan) -> None:
+    """architect 사본의 계약 placeholder 를 harvest 가능한 실값으로 채운다."""
+    text = plan.path.read_text(encoding="utf-8")
+    opening = f"```{pd.ARCHITECT_TEST_BLOCK}\n"
+    start = text.index(opening) + len(opening)
+    end = text.index("\n```", start)
+    contract = json.dumps({
+        "version": 1,
+        "tests": [{
+            "id": "AT-001",
+            "target": "tests/test_ticket_abandon.py",
+            "command": "python3 -m pytest tests/test_ticket_abandon.py -q",
+            "expected": "passed",
+            "negative": "abandon 자산 누락을 거부한다",
+        }],
+    }, ensure_ascii=False, separators=(",", ":"))
+    plan.path.write_text(
+        text[:start] + contract + text[end:] + "\n## 실 산출\n- architect 계약\n",
+        encoding="utf-8", newline="",
+    )
+
+
+def _land_architect(pd, env: Env, plan) -> None:
+    """고정 수열의 다음 단계 준비가 가능하도록 architect 계약을 실값으로 회수한다."""
+    _fill_architect(pd, plan)
+    result = pd.harvest_ticket_copy(
+        copy_path=plan.path, cwd=env.slot, pm_home=env.pm_home,
+    )
+    assert result.changed is True
 
 
 def _abandon(pd, env: Env, plan, *, assume_dead: bool = True):
@@ -380,7 +414,7 @@ def test_evidence_refusal_message_carries_the_reservation_coordinates(pd, env):
         _abandon(pd, env, plan, assume_dead=False)
 
     message = str(caught.value)
-    for coordinate in ("T-8021", "ordinal=1", prepared_at, str(plan.path)):
+    for coordinate in ("T-8021", f"ordinal={plan.ordinal}", prepared_at, str(plan.path)):
         assert coordinate in message
 
 
@@ -391,7 +425,7 @@ def test_unfinished_raw_record_is_a_hint_and_not_a_decision_input(pd, env):
     ledger = env.pm_home / ".project_manager" / ".local" / "raw_outputs.json"
     ledger.write_text(json.dumps({"version": 1, "records": [{
         "id": "rawid01", "surface": "delegate", "harness": "codex", "model": "m",
-        "role": "developer", "attempt": "1", "pid": 999999999,
+        "role": "architect", "attempt": "1", "pid": 999999999,
         "started_at": "2026-08-22T00:00:00+00:00", "raw_path": str(plan.run_dir),
         "finished_at": None, "ticket": "T-8022",
     }]}), encoding="utf-8", newline="\n")
@@ -448,18 +482,19 @@ def test_dead_owner_pid_needs_no_explicit_confirmation(pd, env, monkeypatch):
 
 def test_owner_pid_is_recorded_only_when_the_caller_owns_the_run(pd, env, monkeypatch):
     """표식은 run 소유자만 남긴다 — native 준비 CLI 는 키를 싣지 않는다(부재=증거 없음)."""
-    _write_spec(env, "T-8033", rounds=("developer", "developer"))
+    _write_spec(env, "T-8033")
+    _write_spec(env, "T-8034")
     owned = _prepare(pd, env, "T-8033", owner_pid=4242)
     monkeypatch.setattr(pd, "_ticket_cli_owner", lambda _cwd: env.pm_home)
 
     rc = pd._cmd_ticket([
-        "prepare", "--ticket", "T-8033", "--role", "developer", "--cwd", str(env.slot),
+        "prepare", "--ticket", "T-8034", "--role", "architect", "--cwd", str(env.slot),
     ])
 
     assert rc == 0
-    rows = {row["ordinal"]: row for row in _ledger_rows(env)}
-    assert rows[owned.ordinal]["owner_pid"] == 4242
-    assert "owner_pid" not in rows[owned.ordinal + 1]
+    rows = {row["ticket"]: row for row in _ledger_rows(env)}
+    assert rows[owned.ticket]["owner_pid"] == 4242
+    assert "owner_pid" not in rows["T-8034"]
 
 
 # ── I1 경합: 사전 read 이후 착지한 산출은 지우지 않는다 ─────────────────────
@@ -580,12 +615,13 @@ def test_converged_abandon_is_idempotent(pd, env):
 # ── I5·D3 순번: 중간 순번은 board 파일을 보존한다 ──────────────────────────
 
 def test_middle_ordinal_keeps_the_board_round_and_closes_the_other_two(pd, env):
-    """실물 형상(라운드 5개 중 3번이 시드 그대로) — board 파일 보존 · 나머지 두 자산 종결."""
-    roles = ("architect", "developer", "developer", "code-reviewer", "developer")
-    _write_spec(env, "T-8060", rounds=roles)
-    plans = [_prepare(pd, env, "T-8060", role) for role in roles]
-    target = plans[2]
-    assert target.ordinal == 3
+    """고정 수열의 중간 developer 시드 — board 파일 보존 · 나머지 두 자산 종결."""
+    _write_spec(env, "T-8060")
+    architect = _prepare(pd, env, "T-8060", "architect")
+    _land_architect(pd, env, architect)
+    target = _prepare(pd, env, "T-8060", "developer")
+    _prepare(pd, env, "T-8060", "code-reviewer")
+    assert target.ordinal == 2
     before_codes = _problem_codes(pd, env, "T-8060")
 
     result = _abandon(pd, env, target)
@@ -600,15 +636,17 @@ def test_middle_ordinal_keeps_the_board_round_and_closes_the_other_two(pd, env):
         assert after_codes.count(code) == before_codes.count(code) == 0
     # 보존 분기도 board 파일을 바꾼다(표식 발행) — 그 write 를 커밋하지 않으면 PM 홈에 미커밋
     # 변경이 남아 다음 board mutation 에 섞인다.
-    assert env.sync_calls == [
-        ("ticket-abandon T-8060 developer", [target.board_path]),
-    ]
+    assert env.sync_calls[-1] == (
+        "ticket-abandon T-8060 developer", [target.board_path],
+    )
 
 
 def test_middle_ordinal_abandon_is_idempotent_too(pd, env):
     """보존 분기의 재호출도 성공한다 — 보존된 board 파일이 '미수렴'으로 읽히지 않는다."""
-    _write_spec(env, "T-8063", rounds=("developer", "code-reviewer"))
-    target = _prepare(pd, env, "T-8063")
+    _write_spec(env, "T-8063")
+    architect = _prepare(pd, env, "T-8063")
+    _land_architect(pd, env, architect)
+    target = _prepare(pd, env, "T-8063", "developer")
     _prepare(pd, env, "T-8063", "code-reviewer")
     first = _abandon(pd, env, target)
     board_bytes = target.board_path.read_bytes()
@@ -622,8 +660,10 @@ def test_middle_ordinal_abandon_is_idempotent_too(pd, env):
 
 def test_middle_ordinal_abandon_is_not_listed_as_unharvested(pd, env):
     """PM 표시면(진행 중 작업)의 입력은 board 파일이 아니라 장부 행이다."""
-    _write_spec(env, "T-8061", rounds=("developer", "code-reviewer"))
-    first = _prepare(pd, env, "T-8061")
+    _write_spec(env, "T-8061")
+    architect = _prepare(pd, env, "T-8061")
+    _land_architect(pd, env, architect)
+    first = _prepare(pd, env, "T-8061", "developer")
     _prepare(pd, env, "T-8061", "code-reviewer")
 
     _abandon(pd, env, first)
@@ -631,13 +671,15 @@ def test_middle_ordinal_abandon_is_not_listed_as_unharvested(pd, env):
     unharvested = pd.ticket_copy_records(
         env.pm_home, ticket="T-8061", unharvested=True,
     )
-    assert [row["ordinal"] for row in unharvested] == [2]
+    assert [row["ordinal"] for row in unharvested] == [3]
 
 
 def test_max_ordinal_abandon_leaves_no_gap_for_the_remaining_rounds(pd, env):
     """최대 순번을 지운 뒤에도 남은 라운드의 순번은 연속이다(I5)."""
-    _write_spec(env, "T-8062", rounds=("developer", "code-reviewer"))
-    _prepare(pd, env, "T-8062")
+    _write_spec(env, "T-8062")
+    architect = _prepare(pd, env, "T-8062")
+    _land_architect(pd, env, architect)
+    _prepare(pd, env, "T-8062", "developer")
     last = _prepare(pd, env, "T-8062", "code-reviewer")
 
     _abandon(pd, env, last)
@@ -652,8 +694,7 @@ def test_max_ordinal_abandon_leaves_no_gap_for_the_remaining_rounds(pd, env):
 def test_abandon_refuses_an_already_harvested_run(pd, env):
     _write_spec(env, "T-8070")
     plan = _prepare(pd, env, "T-8070")
-    _write_output(plan.path, "산출")
-    pd.harvest_ticket_copy(copy_path=plan.path, cwd=env.slot, pm_home=env.pm_home)
+    _land_architect(pd, env, plan)
 
     with pytest.raises(pd.DelegateError, match="이미 회수된 준비는 포기할 수 없습니다"):
         _abandon(pd, env, plan)
@@ -749,12 +790,11 @@ def test_mixed_legacy_and_new_rows_stay_readable_and_harvestable(pd, env, capsys
     for ticket in ("T-8101", "T-8102", "T-8103"):
         _write_spec(env, ticket)
     legacy = _prepare(pd, env, "T-8101")
-    _write_output(legacy.path, "산출")
-    pd.harvest_ticket_copy(copy_path=legacy.path, cwd=env.slot, pm_home=env.pm_home)
+    _land_architect(pd, env, legacy)
     abandoned = _prepare(pd, env, "T-8102")
     _abandon(pd, env, abandoned)
     owned = _prepare(pd, env, "T-8103", owner_pid=4242)
-    _write_output(owned.path, "산출")
+    _fill_architect(pd, owned)
 
     capsys.readouterr()
     rows = pd.ticket_copy_records(env.pm_home)
@@ -766,7 +806,7 @@ def test_mixed_legacy_and_new_rows_stay_readable_and_harvestable(pd, env, capsys
     assert "손상" not in warning
     assert {row["ticket"] for row in rows} == {"T-8101", "T-8102", "T-8103"}
     assert harvested.changed is True
-    assert owned.board_path.read_text(encoding="utf-8").endswith("산출\n")
+    assert owned.board_path.read_text(encoding="utf-8").endswith("architect 계약\n")
 
 
 # ── CLI 표면 ────────────────────────────────────────────────────────────────
@@ -835,7 +875,7 @@ def _cli_home(tmp_path: Path, ticket: str) -> Path:
     )
     write_cluster_ledger(
         home / ".project_manager" / "wiki", ticket,
-        base_branch="task/main", rounds=("developer",),
+        base_branch="task/main", rounds=_FIXED_ROUNDS,
     )
     (home / ".project_manager" / ".gitignore").write_text(
         ".local/\n", encoding="utf-8", newline="\n",
@@ -867,7 +907,7 @@ def _machine_payload(completed: subprocess.CompletedProcess) -> dict:
 
 def _cli_prepare(home: Path, ticket: str) -> dict:
     prepared = _cli(
-        home, "prepare", "--ticket", ticket, "--role", "developer", "--cwd", str(home),
+        home, "prepare", "--ticket", ticket, "--role", "architect", "--cwd", str(home),
     )
     assert prepared.returncode == 0, prepared.stdout + prepared.stderr
     return _machine_payload(prepared)

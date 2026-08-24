@@ -45,8 +45,7 @@ EXPECTED_DEFAULTS = (
 
 # 폐지된 라운드 연장 승인 플래그 (T-0593) — 출하 문서에서 0 이어야 한다(축 5 가드).
 RETIRED_ROUND_ACK_FLAG = "--ack-rounds"
-# 새 수렴 게이트(T-0593)의 카드 서술 계약 — 문장이 아니라 **규율 4요소**를 못박는다:
-# 상한 2회 · 발산 조기 차단 · 확인 전용 라운드 1회(신규 발견은 재설계 신호) · 출구는 재설계/분할.
+# 수렴 게이트 카드 서술 계약 — 문장이 아니라 상한·발산·terminal stop 요소를 못박는다.
 # 두 판정 경계는 엔진(`_convergence_refusal`)과 글자로 맞춘다 — 상한 도달은 must-fix 잔존과 무관한
 # 차단이고(사유 라벨만 `cap-unresolved`/`cap-reached` 로 갈린다), 조기 차단은 **strict 증가**만이다
 # (평탄 3→2→2 는 조기 차단이 아니라 상한에서 걸린다). 이 둘을 느슨하게 적으면 카드가 "must-fix 0
@@ -56,9 +55,9 @@ CONVERGENCE_GATE_CONTRACTS = (
     "라운드 상한 2회",
     "must-fix 잔존과 무관하게 차단",
     "발산 조기 차단",
-    "--confirm-fix",
-    "신규 발견은 재설계 신호",
-    "재설계·티켓 분할",
+    "현재 티켓을 정지",
+    "사용자에게 보고",
+    "새 티켓·분할·재설계로 잔여를 넘기지 않는다",
 )
 
 CANONICAL_PM_REVIEW = REPO / ".claude" / "skills" / "pm-review" / "SKILL.md"
@@ -756,7 +755,7 @@ def test_codex_pm_review_card_is_self_contained_for_egress():
 
 
 def test_codex_pm_review_card_states_durable_consent_and_mechanical_caps():
-    """지속 동의 + 수렴 게이트 규율(3R·발산(증가) 차단·confirm-fix 1회)이 codex 카드에 명시된다."""
+    """지속 동의 + 수렴 게이트의 상한·발산·terminal stop이 codex 카드에 명시된다."""
     text = _card_with_operational_details(CODEX_PM_REVIEW)
     assert "additional_reviewer.enabled=true" in text
     assert "후속 호출마다 비용을 다시 묻지 않는다" in text
@@ -887,11 +886,9 @@ def test_pm_role_makes_cap_ack_autonomous_not_a_cost_gate():
     assert RETIRED_ROUND_ACK_FLAG not in text
     assert "비용 동의는 **켤 때 한 번**이다" in text
     assert "기계적 anti-loop 정지" in text
-    # 새 규율: 라운드 축의 출구는 재설계·티켓 분할이고 예외는 확인 전용 라운드 1회다.
-    assert "리뷰 라운드 축은 연장 승인이 없다" in text
-    assert "additional_reviewer.rounds_max" in text
-    assert "--confirm-fix" in text
-    assert "재설계·티켓 분할" in text
+    assert "리뷰 라운드 축은 연장 승인이 없고" in text
+    assert "현재 티켓을 정지" in text and "사용자에게 보고" in text
+    assert "--confirm-fix" not in text
 
 
 def test_active_docs_have_no_per_round_user_cost_approval_rule():
@@ -1212,7 +1209,6 @@ _RETIRED_ACK_TEST_FILES = (
     "tests/test_additional_reviewer_onboarding.py",   # 이 가드 자신(상수·부재 단언)
     "tests/test_external_review.py",                  # 어느 표면에서도 거부됨을 단언
     "tests/test_raw_output_ledger.py",                # 폐지 플래그 argv 의 장부 무변경
-    "tests/test_review_convergence_gate.py",          # 수렴 축 서술(폐지 사실 인용)
 )
 
 

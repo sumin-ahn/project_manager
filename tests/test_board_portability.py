@@ -421,7 +421,8 @@ def test_init_absent_writes_full_default(board, monkeypatch, tmp_path):
     conf_text = conf_path.read_text(encoding="utf-8")
     # 세션·prefix 는 per-clone conf 의 키가 아니다(T-0779) — 정체성은 lease 장부·areas.md.
     assert "session=" not in conf_text and "prefix=" not in conf_text
-    assert "runtime.py=" in conf_text and "test.cmd=pytest -q" in conf_text
+    assert "runtime.py=" in conf_text
+    assert f"test.cmd={board.default_pytest_cmd(board._detect_py())}" in conf_text
     assert f"ctx.window_tokens={board.CTX_WINDOW_TOKENS_DEFAULT}" in conf_text
     assert "ctx.nudge_pct=" in conf_text and "ctx.stop_pct=" in conf_text
 

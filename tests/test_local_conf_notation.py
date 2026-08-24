@@ -606,7 +606,7 @@ def test_init_conf_holds_only_real_values(tmp_path, monkeypatch):
     conf = (pm / "local.conf").read_text(encoding="utf-8")
     assert [line for line in conf.splitlines()
             if line.startswith("#") and "=" in line] == []
-    assert board.local_config()["test.cmd"] == "pytest -q"
+    assert board.local_config()["test.cmd"] == board.default_pytest_cmd("python3")
 
 
 def test_shipped_catalog_documents_the_keys_the_conf_no_longer_explains(conf_module):

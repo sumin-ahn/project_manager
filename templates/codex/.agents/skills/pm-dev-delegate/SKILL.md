@@ -38,12 +38,9 @@ python3 .project_manager/tools/pm_delegate.py cluster wait --cluster <C-이름> 
 python3 .project_manager/tools/ticket_finish.py --cluster <C-이름>
 ```
 
-- **예산은 장부가 선언한다** — `architect 1 · developer_per_ticket 1 · code-reviewer 1 · fix 1`.
-  네 값은 정확히 1이며 라운드 예약이 생략·반복·순서 밖 역할을 거부한다. fix가 마지막 사람
-  라운드이고 실패하면 board를 더 쓰지 않고 사용자에게 보고한다. 라운드를 더 얹는 플래그는 없다.
-- **판정은 표면과 무관하다** — 티켓 단축 표기(`--ticket`)로 준비해도 같은 예산·같은 순서 판정을
-  받는다(장부가 없는 옛 티켓만 이 축 밖이다).
-- fix는 architect 필수 테스트, reviewer 추가 회귀, 전체 회귀를 모두 통과해야 회수된다. 실패하면 추가 라운드 없이 정지·보고한다.
+- 수열·테스트·종결의 규범은 [`pm_principles.md`](../../../.project_manager/wiki/pm_principles.md)
+  §"티켓과 위임"만 소유한다. 이 카드는 위 표의 prepare/harvest 호출 절차만 제공한다.
+- 현재 장부 단계는 `python3 .project_manager/tools/pm_delegate.py cluster show --cluster <C-이름>`으로 확인한다.
 - **게이트 처분은 종결이 실행한다** — 종결 2단계가 `pm_delegate.py rounds resolve --cluster <C-이름> --pm-verified` 를 부르고 확인 커맨드도 엔진이 돌린다. PM 이 따로 부를 일은 처분만 먼저 확인할 때뿐이다.
 - 묶음을 선언하지 않은 티켓은 발행이 만든 크기 1 장부에 귀속된다(stderr 1줄). 그 장부는 통합·묶음
   브랜치를 선언하지 않으므로 종결의 재배치·머지 단계가 `통합 브랜치 미선언 — 무대상`으로 건너뛴다
@@ -56,7 +53,7 @@ python3 .project_manager/tools/ticket_finish.py --cluster <C-이름>
 - depends_on 모두 done.
 - touches 명시.
 - DoD verify-able.
-- **컨텍스트 예산 확인** — claim 전에 본문이 정확한 함수/라인·패턴 reference로 dev 읽기 범위를 좁혔는지 확인한다. claim 뒤에는 자동 분할이나 새 티켓으로 옮기지 않는다.
+- **컨텍스트 예산 확인** — claim 전에 본문이 정확한 함수/라인·패턴 reference로 dev 읽기 범위를 좁혔는지 확인한다. 티켓 생성·목표 확대 판단은 [`pm_principles.md`](../../../.project_manager/wiki/pm_principles.md) §"티켓과 위임"을 참조한다.
 
 ## domain 소환 (recall — dev 위임 *전*)
 
@@ -312,14 +309,16 @@ spawn_agent(
 
      검증 근거(PM 이 실값으로 지정): <무엇으로 재는지 — 실제 git 이 만든 산출물·설치 바이너리에서
      추출한 fixture·fake runner 아닌 층의 동작 단언. 미지정 금지 — cold dev 는 픽스처를 지어낸다.>
-     회귀 범위: <티켓 테스트 파일 목록> 만. **전체 회귀를 돌리지 마라** — 전량 검증은 릴리즈 절차
-     1단계 1회다(병렬 wave 의 전체 회귀는 타 dev WIP 로 오염된 폐기 신호).
+     inner-loop 회귀 범위: <티켓 테스트 파일 목록>. 단계 종료 때는 해소된 프로젝트 `test_cmd`를 직접
+     실행하고 라운드 파일 `## 회귀`의 커맨드·`rc=0` 결과를 실값으로 채운다. 실행 횟수와 red 처리의
+     규범은 `.project_manager/wiki/pm_principles.md` §티켓과 위임을 참조한다.
 
      완료 시 보고:
      - 변경 파일 목록
      - 열거한 인스턴스 목록과 각각의 처리
      - 신규 테스트 수
      - 지정 회귀 결과 (A passed · 범위 명시)
+     - 단계 종료 전체 회귀 명령과 `rc=0` 결과
      - DoD 각 항목별 충족 evidence 명시""",
 )
 ```
@@ -411,13 +410,15 @@ touches 경로의 실재(소유 repo 좌표 기준) · 묶음 안팎 다른 열�
 > 각 티켓 명세의 PM 영역에 붙인 뒤
 > `python3 .project_manager/tools/pm_delegate.py review delta --cluster <C-이름>`을 실행한다. 출력된
 > delta 를 발췌하지 말고 그대로 developer에게 전달한다(끝의 제약 블록 포함).
-> rejected/decision-required·보고서 전문은 출력에 없고 따로 전달하지도 않는다. 비성공이면 board를 더 쓰지 않고 사용자에게 보고한다.
+> rejected/decision-required·보고서 전문은 출력에 없고 따로 전달하지도 않는다.
 > fix 는 묶음 브랜치를 체크아웃한 슬롯에서 **developer 1명**이 accepted 전부를 해소한다
 > (`ticket prepare --cluster --role developer` 가 `04-developer` 를 예약한다).
-> fix harvest는 architect 테스트·reviewer 추가 회귀·전체 회귀를 모두 실행한다. cross fix 라운드는
+> fix developer가 해소한 프로젝트 `test_cmd`를 직접 실행하고 정확한 명령·`rc=0`을 라운드에
+> 기록한다. harvest는 그 기록과 architect/reviewer targeted 계약만 검증하며 full을 재실행하지 않는다.
+> cross fix 라운드는
 > `pm_delegate --resume-from <T-NNNN>` 으로 **직전 dev 세션을 재사용**한다(cold 재투입은 티켓+코드
-> 재섭취를 라운드마다 다시 낸다 — fresh 는 resume 미일치 폴백·전사 과대 시에만). fix 실패는
-> 추가 라운드를 열지 않고 사용자에게 보고한다.
+> 재섭취를 라운드마다 다시 낸다 — fresh 는 resume 미일치 폴백·전사 과대 시에만). 실패 처리는
+> [`pm_principles.md`](../../../.project_manager/wiki/pm_principles.md) §"티켓과 위임"을 참조한다.
 
 > ⚙️ `additional_reviewer.enabled=true` 로 추가 리뷰어(additional reviewer) 채널을 켠 채택자는
 > reviewer 위임과 같은 시점에 교차검증을 돌린다. 기본은 OFF 이고, 끈 채택자에게 이 단계는 없다:

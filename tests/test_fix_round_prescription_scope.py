@@ -180,7 +180,16 @@ def test_confirmation_resolved_exhaustion_stays_empty(pd):
         "findings": [{
             "id": "F-001", "class": "implementation-defect", "severity": "must-fix",
             "authority": "사양 §허용 범위", "evidence": "F-001 probe rc=1",
-            "recommendation": "F-001만 수정", "design_change": False,
+            "recommendation": "F-001만 수정",
+            "fix_contract": {
+                "location": ".project_manager/tools/pm_delegate.py:parse_pm_review_delta",
+                "failure": "확인으로 해소된 finding이 accepted delta에 남는다.",
+                "design": "후속 resolved 확인을 소진 처리한다.",
+                "test": "tests/test_fix_round_prescription_scope.py의 delta 소진 회귀",
+                "command": "python3 -m pytest tests/test_fix_round_prescription_scope.py -q",
+                "expected": "passed",
+            },
+            "design_change": False,
         }],
         "confirmations": [],
     })
