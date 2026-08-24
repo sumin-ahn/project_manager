@@ -178,7 +178,7 @@ def _seed_growth_repo(tmp_path: Path, ticket: str) -> tuple[Path, Path]:
     tickets.mkdir(parents=True)
     (repo / ".project_manager" / ".local").mkdir(parents=True)
     (repo / ".project_manager" / "local.conf").write_text(
-        f"py=python3\ntest.cmd={_CROSS_FULL_COMMAND}\n",
+        f"runtime.py=python3\ntest.cmd={_CROSS_FULL_COMMAND}\n",
         encoding="utf-8",
     )
     # 사본 루트(.local/)는 tracked `.project_manager/.gitignore` 로 무시돼야 prepare 가 받는다
@@ -631,8 +631,12 @@ def test_cross_growth_fixture_pins_fixed_pipeline_and_parallel_full_command(tmp_
         "python3 -m pytest tests/test_live_cross_growth.py -q -n auto"
     )
     repo, _source = _seed_growth_repo(tmp_path, "T-9199")
-    conf = (repo / ".project_manager" / "local.conf").read_text(encoding="utf-8")
-    assert f"test.cmd={_CROSS_FULL_COMMAND}\n" in conf
+    conf_lines = (repo / ".project_manager" / "local.conf").read_text(
+        encoding="utf-8"
+    ).splitlines()
+    assert "runtime.py=python3" in conf_lines
+    assert "py=python3" not in conf_lines
+    assert f"test.cmd={_CROSS_FULL_COMMAND}" in conf_lines
 
 
 def test_release_markers_pinned():

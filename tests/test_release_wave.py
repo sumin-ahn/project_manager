@@ -73,9 +73,13 @@ _WAVE_TARGETED_COMMAND = f"python3 -m pytest {_WAVE_TEST_FILE} -q -n auto"
 _WAVE_FULL_COMMAND = "python3 -m pytest tests/ -q -n auto"
 
 
-# opencode 는 gemma 가 느리고 변동 커 1800s, claude 는 probe 실측 145s 여유분 600s.
+# opencode 는 gemma 가 느리고 변동 커 1800s. Claude full-wave는 고정 4단계+PM disposition
+# 실측이 600s를 넘겨 기본 900s이고, 환경변수 override는 그대로 유지한다.
 _OPENCODE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_TIMEOUT", "1800"))
-_CLAUDE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_CLAUDE_TIMEOUT", "600"))
+_CLAUDE_TIMEOUT_DEFAULT = 900
+_CLAUDE_TIMEOUT = int(os.environ.get(
+    "PM_ORCH_LIVE_RELEASE_CLAUDE_TIMEOUT", str(_CLAUDE_TIMEOUT_DEFAULT),
+))
 _CODEX_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_CODEX_TIMEOUT", "900"))
 
 # T-0621 compaction boundary probe. 신규 @release 함수를 더하지 않고 기존 harness full-wave
@@ -1343,6 +1347,7 @@ def test_full_wave_prompt_has_ticket_growth_stages():
     # 진입문서가 프롬프트에 박힌다(harness 별 CLAUDE.md/AGENTS.md).
     assert "CLAUDE.md" in prompt
     assert "AGENTS.md" in _full_wave_prompt("AGENTS.md")
+    assert _CLAUDE_TIMEOUT_DEFAULT == 900
 
 
 def test_wave_side_effect_guard_rejects_ephemeral_run_hash(tmp_path, monkeypatch):
