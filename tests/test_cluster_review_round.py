@@ -8,8 +8,8 @@
       자리 전부를 회수하고 스냅샷을 정리한다.
   (5) `--background` 는 부작용 없이 분리 세션을 띄우고 pid 를 장부에 남긴다. 회수 판정은
       rc 가 아니라 라운드 회수 상태다.
-  (6) 기계 확인은 엔진이 커맨드를 실행해 관측값으로 기입하고, 설계 축은 기계 확인이 아니라
-      묶음 재설계로 종결한다(reviewer 재송신 경로 없음).
+  (6) final-fix 확인 입력은 read-only preflight하고, PM resolve가 기계 확인과 엄격히 이중 결속된
+      PM-owned terminal 확인을 만든 뒤 게이트를 처분한다(reviewer 재송신 경로 없음).
 
 hermetic 패턴은 `test_pm_delegate_rounds.py`(자기-정박 PM 홈 + 실 git)를 따른다.
 """
@@ -961,6 +961,35 @@ def _accepted_ticket(pd, *, command: str = "echo hi", expected: str = "hi",
     return spec, [reviewer, developer]
 
 
+def _pm_owned_ticket(
+    pd, *, scope: str = "pm-owned: ADR·current-truth·local ledger",
+    reason: str = "pm-owned",
+):
+    """F-003 형상 — PM-owned dual binding 외에는 terminal 확인 경로가 없다."""
+    finding = _finding("F-003")
+    finding["fix_contract"] = {
+        "location": "/pm-home/.project_manager/.local/review_rounds.json",
+        "failure": "legacy resolution 32건이 current ledger에 남음",
+        "design": "PM이 같은 fix 단계에서 권위 문서와 local ledger를 일회 정리",
+        "test": "PM 홈 절대경로 audit 결과와 current-truth 정렬을 종결 기록한다",
+        "command": "python3 -c \"print(0)\"",
+        "expected": "0",
+    }
+    reviewer = _round(
+        pd, 1, "code-reviewer", _reviewer_round_text(pd, [finding]),
+    )
+    decision = _decision("F-003")
+    decision["scope"] = scope
+    spec = _disposition_block(pd, 1, [decision])
+    developer = _round(pd, 2, "developer", _developer_round_text(pd, [
+        _verify_row(
+            "F-003", command="", expected="PM audit 완료 실값", before="",
+            machine_verifiable=False, reason=reason,
+        ),
+    ]))
+    return spec, [reviewer, developer]
+
+
 @requires_git
 def test_review_delta_over_a_cluster_concatenates_per_ticket_output(
         pd, review_env, monkeypatch, capsys):
@@ -1079,6 +1108,76 @@ def test_written_confirmation_section_round_trips_through_the_parser(pd, tmp_pat
         spec + "\n" + section, rounds,
         reviewer_role="code-reviewer", surface_floor=1,
     ) is None
+
+
+def test_pm_owned_terminal_confirmation_is_generated_without_running_a_command(
+    pd, tmp_path,
+):
+    spec, rounds = _pm_owned_ticket(pd)
+    template = pd.pm_review_verify_template(spec, rounds)
+    assert template.machine_rows == ()
+    assert [(source, row.id) for source, row in template.pm_owned_rows] == [(2, "F-003")]
+    assert pd.pm_verified_resolution_input_problem(
+        spec, rounds, reviewer_role="code-reviewer", surface_floor=1,
+    ) is None
+
+    rows = pd.run_pm_review_confirmations(
+        template, cwd=tmp_path,
+        run_fn=lambda *_a, **_k: pytest.fail("PM-owned confirmation은 command를 실행하지 않는다"),
+    )
+    source, row = rows[0]
+    assert (source, row.id, row.status) == (2, "F-003", "resolved")
+    assert row.command == pd.PM_REVIEW_PM_OWNED_CONFIRMATION_COMMAND
+    assert row.observed == "PM audit 완료 실값"
+
+    confirmed = spec + "\n" + pd.render_pm_review_confirmation_section(rows)
+    assert pd.parse_pm_review_delta(confirmed, rounds).accepted == ()
+    assert pd.pm_verified_evidence_problem(
+        confirmed, rounds, reviewer_role="code-reviewer", surface_floor=1,
+    ) is None
+
+
+@pytest.mark.parametrize(("scope", "reason"), (
+    ("F-003 developer 범위", "pm-owned"),
+    ("pm-owned: ADR·current-truth·local ledger", "design-judgment"),
+))
+def test_pm_owned_terminal_confirmation_rejects_scope_verify_spoof(
+    pd, scope, reason,
+):
+    spec, rounds = _pm_owned_ticket(pd, scope=scope, reason=reason)
+    problem = pd.pm_verified_resolution_input_problem(
+        spec, rounds, reviewer_role="code-reviewer", surface_floor=1,
+    )
+    assert problem is not None and (
+        "PM-owned" in problem or "machine_verifiable=false" in problem
+    )
+    forged = json.dumps({
+        "version": pd.PM_REVIEW_MACHINE_CONFIRMATION_VERSION,
+        "round": 2,
+        "confirmations": [{
+            "id": "F-003", "status": "resolved",
+            "command": pd.PM_REVIEW_PM_OWNED_CONFIRMATION_COMMAND,
+            "observed": "PM audit 완료 실값",
+        }],
+    }, ensure_ascii=False, separators=(",", ":"))
+    with pytest.raises(pd.PMReviewError, match="strict pm-owned|PM-owned"):
+        pd.parse_pm_review_delta(
+            spec + f"\n```{pd.PM_REVIEW_CONFIRMATION_BLOCK}\n{forged}\n```\n",
+            rounds,
+        )
+
+
+def test_arbitrary_false_verify_remains_reviewer_required_at_terminal_preflight(pd):
+    spec, rounds = _pm_owned_ticket(
+        pd, scope="F-003 developer 범위", reason="design-judgment",
+    )
+    template = pd.pm_review_verify_template(spec, rounds)
+    assert template.pm_owned_rows == ()
+    assert [row[0] for row in template.reviewer_required] == ["F-003"]
+    problem = pd.pm_verified_resolution_input_problem(
+        spec, rounds, reviewer_role="code-reviewer", surface_floor=1,
+    )
+    assert problem is not None and "machine_verifiable=false" in problem
 
 
 @requires_git
@@ -1266,6 +1365,54 @@ def test_resolve_cluster_executes_writes_and_declares_per_ticket(
         assert '"observed":"rc=0' in text and "hi" in text
         assert ledger[ticket]["resolution"]["kind"] == "pm-verified"
         assert "기계 확인 1건 기입" in out and ticket in out
+
+
+@requires_git
+def test_resolve_cluster_closes_strict_pm_owned_findings_without_reviewer_or_command(
+    pd, review_env, monkeypatch, capsys,
+):
+    home, tickets = review_env
+    board = _fixture_board(pd, home)
+    board._cluster_code_tree = lambda *_a, **_k: str(home)
+    monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", home)
+    monkeypatch.setattr(pd, "_activate_internal_rounds_cli_owner", lambda: home)
+    monkeypatch.setattr(pd, "_load_board", lambda: board)
+    rounds_module = pd._load_ticket_rounds()
+    import contextlib
+    for ticket in _MEMBERS:
+        spec, rounds = _pm_owned_ticket(pd)
+        path = tickets / f"{ticket}-review.md"
+        path.write_text(
+            path.read_text(encoding="utf-8") + "\n" + spec,
+            encoding="utf-8", newline="",
+        )
+        for item in rounds:
+            rounds_module.reserve_round(
+                board.tickets_dir(), ticket, item.role, content=item.text,
+                lock=contextlib.nullcontext(),
+            )
+        _record_rejected_round(pd, ticket)
+    capsys.readouterr()
+
+    rc = pd._cmd_rounds(
+        ["resolve", "--cluster", _CLUSTER, "--pm-verified"],
+        run_fn=lambda *_a, **_k: pytest.fail(
+            "PM-owned terminal confirmation은 reviewer contract command를 실행하지 않는다"
+        ),
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured
+    ledger = json.loads((
+        home / ".project_manager" / ".local" / pd.INTERNAL_REVIEW_LEDGER_NAME
+    ).read_text(encoding="utf-8"))
+    for ticket in _MEMBERS:
+        text = (tickets / f"{ticket}-review.md").read_text(encoding="utf-8")
+        assert f'"command":"{pd.PM_REVIEW_PM_OWNED_CONFIRMATION_COMMAND}"' in text
+        spec_text, rounds = pd._ticket_spec_and_rounds(board, ticket)
+        assert pd.parse_pm_review_delta(spec_text, rounds).accepted == ()
+        assert ledger[ticket]["resolution"]["kind"] == "pm-verified"
+    assert "PM-owned terminal 확인 1건 기입" in captured.out
 
 
 @requires_git

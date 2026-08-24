@@ -6,8 +6,8 @@
 
 | # | 단계 | 하는 일 | 건너뛰기 관측 |
 |---|---|---|---|
-| 1 | 기계 확인 (확인 존재·accepted 잔여 0) | 처분 대기 게이트마다 확인 증거와 잔여를 판정 | 잔여 게이트 0 |
-| 2 | 리뷰 게이트 처분 | `rounds resolve --cluster --pm-verified`(확인 커맨드는 엔진이 실행) | 처분할 게이트 없음 |
+| 1 | final-fix 확인 입력 preflight | 처분 대기 게이트마다 확인 입력의 완전성·실행 가능성을 read-only 판정 | 잔여 게이트 0 |
+| 2 | 기계 확인 생성·리뷰 게이트 처분 | `rounds resolve --cluster --pm-verified`가 기계/PM-owned terminal 확인을 만들고 처분 | 처분할 게이트 없음 |
 | 3 | 티켓별 완료 기록 | 회귀·log 스켈레톤·`board complete`·선언 경로 stage | 이미 done |
 | 4 | 슬롯 커밋 | 티켓마다 그 티켓이 stage 한 경로를 **티켓 제목 문안**으로 커밋 | 커밋할 변경 없음 |
 | 5 | 통합 브랜치로 재배치 | 묶음 브랜치를 통합 브랜치 위로 rebase(충돌은 abort 후 정지) | 통합 브랜치 미선언 |

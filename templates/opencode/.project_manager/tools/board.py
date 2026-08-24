@@ -10537,13 +10537,13 @@ def _pm_verified_channel_role(delegate, channel: str) -> str | None:
     }.get(channel)
 
 
-def _pm_verified_evidence_problem(tid: str, *, channel: str, entry: dict) -> str | None:
-    """`pm-verified` 발동 조건을 지금 다시 판정한다(선언·완료 재검증 공용 · fail-closed).
+def _pm_verified_delegate_problem(
+    tid: str, *, channel: str, entry: dict, checker_name: str,
+) -> str | None:
+    """티켓/채널 입력을 해소해 pm_delegate의 지정 pm-verified checker를 호출한다.
 
-    delta 재파싱·기계 확인 카운트는 `pm_delegate.pm_verified_evidence_problem` 이 단일
-    진실이다 — board 는 이 함수로 deep-import 해 호출하고(순환 회피 · `_load_pm_delegate_module`
-    관례), 사본을 두지 않는다. 티켓을 못 찾거나 명세를 못 읽거나 pm_delegate.py 를 못 불러오면
-    증거를 확인할 수 없어 차단한다(fail-closed).
+    preflight와 post-resolution evidence가 티켓/채널/표면 하한 해소를 복제하지 않게 하는 공용
+    배선이다. 실제 판정은 checker_name이 가리키는 pm_delegate 함수만 소유한다.
 
     **두 축이 같은 규칙을 쓴다**(one rule, no special cases): 내부 완료 게이트는
     `channel=GATE_CHANNEL_INTERNAL`, 추가 리뷰어 release 게이트는 `GATE_CHANNEL_ADDITIONAL`
@@ -10565,10 +10565,31 @@ def _pm_verified_evidence_problem(tid: str, *, channel: str, entry: dict) -> str
         return f"pm-verified 재검증 채널을 확정할 수 없습니다: {channel!r}"
     rounds_module = _load_ticket_rounds()
     rounds = rounds_module.load_rounds(tickets_dir(), tid, ticket_text=spec_text)
-    return delegate.pm_verified_evidence_problem(
+    checker = getattr(delegate, checker_name, None)
+    if checker is None:
+        return f"pm_delegate.py 에 {checker_name} seam이 없어 판정할 수 없습니다"
+    return checker(
         spec_text, rounds,
         reviewer_role=reviewer_role,
         surface_floor=gate_residual_must_fix(entry),
+    )
+
+
+def _pm_verified_evidence_problem(tid: str, *, channel: str, entry: dict) -> str | None:
+    """`pm-verified` 발동·완료의 post-resolution 증거를 엄격 재검증한다."""
+    return _pm_verified_delegate_problem(
+        tid, channel=channel, entry=entry,
+        checker_name="pm_verified_evidence_problem",
+    )
+
+
+def _pm_verified_resolution_input_problem(
+    tid: str, *, channel: str, entry: dict,
+) -> str | None:
+    """rounds resolve 전 final-fix 확인 입력 preflight(confirmation 부재는 정상)."""
+    return _pm_verified_delegate_problem(
+        tid, channel=channel, entry=entry,
+        checker_name="pm_verified_resolution_input_problem",
     )
 
 

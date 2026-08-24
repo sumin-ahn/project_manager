@@ -95,7 +95,7 @@ T-NNNN 의 변경을 검토하라. 변경 파일: <경로>. (code-reviewer)
 
 ⚠️ code-reviewer 프롬프트에 "`status.md`/`log/current.md` 갱신은 orchestrator 담당 — 그 누락은 developer must-fix 아님" 을 덧붙인다.
 
-**검토 루프:** 단계 준비·회수는 `/pm-dev-delegate`, 기계 확인은 `pm_delegate.py rounds resolve
+**검토 루프:** 단계 준비·회수는 `/pm-dev-delegate`, 확인 생성과 처분은 `pm_delegate.py rounds resolve
 --cluster <C-이름> --pm-verified`, 종결은 `ticket_finish.py --cluster`가 수행한다. 수렴 불변식은
 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"만 소유한다. 추가 리뷰어는 기본 OFF 인 opt-in 채널이라 `additional_reviewer.enabled=true` 인
 채택자만 이 루프에 병행한다(§추가 리뷰어 교차검증). reviewer 산출은 구현 명령이 아니라
@@ -115,12 +115,13 @@ git 도입 후 code-reviewer는 `git diff`로 변경 범위·내용을 직접 �
 7. **라운드 장부 처리.** `cluster_round_sequence`가 예약 전 현재 단계와 예산을 검증하고,
    `ticket prepare`가 예약 좌표를 라운드 사본에 기록한다. 수열과 실패 시 행동의 규범은
    [`pm_principles.md`](pm_principles.md) §"티켓과 위임"을 참조한다.
-8. **기계 확인 절차.** developer/fix는 inner-loop에 지정 targeted tests를 쓰고 단계 종료 때
+8. **종결 확인 절차.** developer/fix는 inner-loop에 지정 targeted tests를 쓰고 단계 종료 때
    해소된 프로젝트 `test_cmd`를 직접 실행해 라운드 `## 회귀`의 커맨드·`rc=0` 결과를 채운다. 횟수와 red
    처리 규범은 [`pm_principles.md`](pm_principles.md) §"티켓과 위임"을 참조한다. harvest는
    architect/reviewer 계약 명령과 전체 회귀 기록만 검증하며 full은 다시 실행하지 않는다.
-   `rounds resolve --cluster <C-이름>
-   --pm-verified`가 확인 관측을 명세에 기록한다. 재현 커맨드의 문법 검사는 엔진의 비파괴 명령
+   `ticket_finish.py`의 1단계가 final-fix 확인 입력을 read-only preflight하고, 2단계의
+   `rounds resolve --cluster <C-이름> --pm-verified`가 기계/PM-owned terminal 확인을 명세에 기록해
+   게이트를 처분한다. 재현 커맨드의 문법 검사는 엔진의 비파괴 명령
    파서가 담당한다.
 9. **작업 중단 사유 판정.** 유효 집합 3항목만 작업 중단 사유로 인정한다. 무효 집합 5항목으로 중단하면 규약 위반이다. 각 항목은 조건과 결론을 함께 판정한다.
 
@@ -249,7 +250,7 @@ wave 하나 = 묶음 하나다. 단계 표·커맨드의 단일 진실은 `/pm-d
    - **fix 라운드**: accepted finding 전부를 reviewer 수정·테스트 계약대로 해소한다.
    - **rejected/suggestion**: board 의무로 바꾸지 않고 현재 판정에서 닫는다.
    - **결정 필요**: 목표 확대가 필요하면 board를 쓰지 않고 사용자에게 선택을 요청한다.
-8. **묶음 종결** — `/pm-wave-finish`(`ticket_finish.py --cluster`)가 기계 확인 → 게이트 처분 →
+8. **묶음 종결** — `/pm-wave-finish`(`ticket_finish.py --cluster`)가 final-fix 확인 입력 preflight → 기계/PM-owned terminal 확인 생성·게이트 처분 →
    티켓별 완료 기록 → 슬롯 커밋 → 재배치 → 머지 → 슬롯 반납 → board·포인터 커밋을 고정 순서로
    실행한다. 실패 지점에서 멈추고 재실행이 곧 재개다. **status.md 는 건드리지 않는다**(judgment-only ·
    테스트 수 박제 ✗).
@@ -274,7 +275,7 @@ wave 하나 = 묶음 하나다. 단계 표·커맨드의 단일 진실은 `/pm-d
 
 board·status·log·로드맵 단일 진실은 PM 1명이 유지하되 잡일을 줄인다:
 
-- **종결 자동화** — 묶음 종결(기계 확인 → 게이트 처분 → 티켓별 완료 기록 → 슬롯 커밋 → 재배치 → 머지 → 슬롯 반납 → board·포인터 커밋)은 `.project_manager/tools/ticket_finish.py --cluster` / `/pm-wave-finish` skill 이 고정 순서로 실행한다. **손 git 은 0**이고 커밋 문안도 엔진이 낸다. status.md 는 안 건드린다. PM 은 서술(왜·무엇)과 status.md **모듈 행 판정/비고**만 채우며, 묶음 산출 밖 파일(ADR·domain·status.md)은 그 경로만 따로 `git add` 해 별도 커밋으로 싣는다.
+- **종결 자동화** — 묶음 종결(final-fix 확인 입력 preflight → 기계/PM-owned terminal 확인 생성·게이트 처분 → 티켓별 완료 기록 → 슬롯 커밋 → 재배치 → 머지 → 슬롯 반납 → board·포인터 커밋)은 `.project_manager/tools/ticket_finish.py --cluster` / `/pm-wave-finish` skill 이 고정 순서로 실행한다. **손 git 은 0**이고 커밋 문안도 엔진이 낸다. status.md 는 안 건드린다. PM 은 서술(왜·무엇)과 status.md **모듈 행 판정/비고**만 채우며, 묶음 산출 밖 파일(ADR·domain·status.md)은 그 경로만 따로 `git add` 해 별도 커밋으로 싣는다.
 - **세션 시작·종료 자동화** — `/pm-bootstrap` (세션 시작 dump), `/pm-handoff` (세션 종료 7단계).
 - **dev→review 는 background 우선** — 실행 중 PM은 검토 대상 코드와 board를 바꾸지 않고 현재 티켓의 읽기 전용 근거만 정리한다. 검토 대상 코드 파일 편집은 reviewer `git diff`를 오염시킨다.
 - **회귀 tmp 위생 (worktree 다발 실행 시 필수)** — worktree 병렬 회귀는 pytest run·tmp 를 폭증시킨다. **pytest 쓰는 인스턴스는 `pytest.ini` 에 `tmp_path_retention_policy=failed` + `tmp_path_retention_count=3`** 을 둔다(통과 tmp 즉시 teardown·실패만 보존). `pytest.ini` 는 instance 소유라 엔진이 자동 못 고치므로 채택 시 직접 추가. ⚠️ 중단 run 의 stale `.lock` 이 옛 세션 cleanup 을 skip 하는 pytest+xdist 동작은 패치 불가 — `policy=failed` 로 디스크 영향을 무력화한다. **perf**: worktree 다발 실행에서 `-n auto`(코어수) 워커가 경합하면 `-n N` 또는 `PYTEST_XDIST_AUTO_NUM_WORKERS` 로 캡한다.

@@ -3788,7 +3788,7 @@ class TicketFinisher:
 
 # ── close 파이프라인 (묶음 종결) ───────────────────────────────────────────
 #
-# 종결은 순서가 있는 여덟 단계다: 기계 확인 → 리뷰 게이트 처분 → 티켓별 완료 기록 → 슬롯
+# 종결은 순서가 있는 여덟 단계다: final-fix 확인 입력 preflight → 리뷰 게이트 처분(확인 생성) → 티켓별 완료 기록 → 슬롯
 # 커밋 → 통합 브랜치로 재배치 → 머지 → 슬롯 반납 → board·포인터 커밋. 사람이 순서를 규칙으로
 # 지키던 자리를 한 커맨드가 가져간다 — 순서가 판정 결과를 바꾸던 축(사설 참조·측정 폭)은 이미
 # 판정 기준 교체로 닫혔으므로, 남은 것은 "빠뜨리지 않는" 축이다(반납 누락·포인터 커밋 누락이
@@ -3835,8 +3835,8 @@ class ClusterCloser:
     """
 
     STEPS: tuple[tuple[str, str], ...] = (
-        ("confirm", "기계 확인 (확인 존재·accepted 잔여 0)"),
-        ("resolve", "리뷰 게이트 처분"),
+        ("confirm", "final-fix 확인 입력 preflight"),
+        ("resolve", "기계 확인 생성·리뷰 게이트 처분"),
         ("record", "티켓별 완료 기록"),
         ("commit", "슬롯 커밋"),
         ("rebase", "통합 브랜치로 재배치"),
@@ -4149,29 +4149,30 @@ class ClusterCloser:
     # ── 단계 ──────────────────────────────────────────────────────────
 
     def _step_confirm(self) -> str | None:
-        """기계 확인 존재·그 채널 accepted 잔여 0 — 판정 소유자는 board(사본 0)."""
+        """resolve가 소비할 final-fix verify 입력을 read-only 검증한다(board 판정 소유)."""
         board = self._board
-        problem_fn = getattr(board, "_pm_verified_evidence_problem", None) if board else None
-        channel = getattr(board, "GATE_CHANNEL_INTERNAL", None) if board else None
-        if problem_fn is None or channel is None:
-            print("  ⚠ 기계 확인 판정 seam 부재 — 이 단계는 판정 불능이다(board 사본 확인).",
-                  file=sys.stderr)
-            return None
         pending = self._pending_gates()
         if not pending:
-            print("  처분할 리뷰 잔여 없음 — 확인 대상 0")
+            print("  처분할 리뷰 잔여 없음 — preflight 대상 0")
             return None
+        problem_fn = (
+            getattr(board, "_pm_verified_resolution_input_problem", None)
+            if board else None
+        )
+        channel = getattr(board, "GATE_CHANNEL_INTERNAL", None) if board else None
+        if problem_fn is None or channel is None:
+            return "final-fix 확인 입력 preflight seam 부재 — board 사본을 확인하세요"
         ledger = self._gate_ledger()
         problems: list[str] = []
         for tid in pending:
             problem = problem_fn(tid, channel=channel, entry=ledger.get(tid) or {})
             if problem is None:
-                print(f"  ✓ {tid} 기계 확인 증거 있음 · accepted 잔여 0")
+                print(f"  ✓ {tid} final-fix 확인 입력 complete · resolve 실행 가능")
             else:
                 problems.append(f"  ✗ {tid}: {problem}")
         if problems:
             return "\n".join([
-                "기계 확인 미충족 — 종결 전에 확인을 채운다(아직 아무 부작용도 내지 않았다):",
+                "final-fix 확인 입력 미충족 — resolve 전 preflight에서 정지했습니다:",
                 *problems,
             ])
         return None
