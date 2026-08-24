@@ -318,8 +318,10 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
                 f"{_CROSS_TEST_FILE} as its regression target and fill every preseeded pm-review-verify-v1 "
                 "row with a real boolean and the exact executed command/expected/before values. Run "
                 f"`{_CROSS_TEST_COMMAND}` and then `{_CROSS_FULL_COMMAND}`. Only after both actually return "
-                "rc=0, replace all remaining developer skeleton placeholders, keep any verify block, record "
-                f"the exact full command and actual rc=0 pytest summary under `## 회귀`, and append "
+                "rc=0, replace all remaining developer skeleton placeholders and keep any verify block. "
+                "Under `## 회귀`, record exactly two nonblank rows: the exact full command and its actual "
+                "rc=0 pytest summary. Record targeted-command evidence under `## DoD evidence`, never as "
+                "extra `## 회귀` rows. Append "
                 f"`{sentinel}`. Never fabricate counts and never create another round or ticket.\n"
                 "ACCEPTED-ONLY DELTA:\n" + (fix_delta or "(empty: reviewer finding zero accepted)\n")
             )
@@ -644,6 +646,9 @@ def test_cross_growth_fixture_pins_fixed_pipeline_and_parallel_full_command(tmp_
     assert f"test.cmd={_CROSS_FULL_COMMAND}" in conf_lines
     route_source = inspect.getsource(_run_cross_growth_route)
     assert 'resume_from=ticket if stage == 4 and role == "developer" else None' in route_source
+    assert "record exactly two nonblank rows" in route_source
+    assert "targeted-command evidence under `## DoD evidence`" in route_source
+    assert "extra `## 회귀` rows" in route_source
 
 
 def test_delegate_forwards_resume_from_without_fresh(tmp_path, monkeypatch, capsys):

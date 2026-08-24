@@ -282,7 +282,10 @@ def _full_wave_prompt(entry_doc: str) -> str:
         f"{architect_payload}. Append {_GROWTH_PIPELINE[0][1]}.\n"
         "ROUND 02 developer: implement that contract. Create probe.txt with exactly "
         f"'{PROBE_TEXT}' and create {_WAVE_TEST_FILE}. The test must derive this ticket id at runtime from "
-        "the single claimed-or-done release-wave ticket and inspect the stable canonical "
+        "the union of stable filesystem entries `.project_manager/wiki/tickets/claimed/T-*.md` and "
+        "`.project_manager/wiki/tickets/done/T-*.md` (exactly one release-wave ticket). Do not use the "
+        "default `board.py list` view for this lookup because it omits done tickets after completion. "
+        "Inspect the stable canonical "
         ".project_manager/wiki/tickets/rounds/<ticket>/01-architect.md plus probe.txt. It must never refer "
         "to .local/delegate-ticket-copies, an absolute temp path, a random run id, UUID, or hash. Run "
         f"`{_WAVE_TARGETED_COMMAND}` and then `{_WAVE_FULL_COMMAND}` yourself. Only actual rc=0 may be "
@@ -1347,6 +1350,9 @@ def test_full_wave_prompt_has_ticket_growth_stages():
     assert "review disposition-template" in prompt and "review delta" in prompt
     assert "even when review delta is empty" in prompt
     assert ".project_manager/wiki/tickets/rounds/<ticket>/01-architect.md" in prompt
+    assert ".project_manager/wiki/tickets/claimed/T-*.md" in prompt
+    assert ".project_manager/wiki/tickets/done/T-*.md" in prompt
+    assert "default `board.py list` view" in prompt and "omits done tickets" in prompt
     assert ".local/delegate-ticket-copies" in prompt and "random run id" in prompt
     # (4) 새 프로세스 canonical 재조회.
     assert "fresh board.py show process" in prompt
