@@ -542,6 +542,9 @@ def test_release_wave_opencode_full_wave(tmp_path):
     """
     dest = _import_adopter(tmp_path, "opencode")
     _force_opencode_compaction_threshold(dest, LIVE_MODEL)
+    marker_dir = dest / ".project_manager" / ".local" / "ctx-stop"
+    checkpoints_before = _compaction_checkpoint_count(dest)
+    receipts_before_turn = _opencode_snapshot_receipts(marker_dir)
 
     proc = _run_opencode_live(
         # `--dangerously-skip-permissions`: 비대화 헤드리스라 opencode 가 `--dir` 디렉토리를
@@ -566,15 +569,20 @@ def test_release_wave_opencode_full_wave(tmp_path):
     # turn은 native compaction으로 줄일 수 있지만 현재 prompt는 줄일 수 없으므로 단일 초대형
     # prompt를 쓰지 않는다. 새 checkpoint 증가 뒤에는 snapshot payload가 system[]에 실제 push된
     # generation receipt를 모델 phrasing·in-process marker 수명과 독립적으로 관측한다.
-    checkpoints_before = _compaction_checkpoint_count(dest)
-    marker_dir = dest / ".project_manager" / ".local" / "ctx-stop"
     probe_results = []
     receipt_observations = []
     receipt_appearances = []
-    receipts_before_turn = _opencode_snapshot_receipts(marker_dir)
-    checkpoint_increased = False
-    delivered_receipts = set()
-    for turn, prompt in enumerate(_opencode_compaction_probe_prompts(), start=1):
+    checkpoint_increased = (
+        _compaction_checkpoint_count(dest) >= checkpoints_before + 1
+    )
+    receipts = _opencode_snapshot_receipts(marker_dir)
+    delivered_receipts = set(receipts - receipts_before_turn)
+    receipts_before_turn = receipts
+    for turn, prompt in enumerate(
+        () if checkpoint_increased and delivered_receipts
+        else _opencode_compaction_probe_prompts(),
+        start=1,
+    ):
         compacted = _run_opencode_live(
             ["opencode", "run", "--continue", "--agent", "build", "--dir", str(dest),
              "--dangerously-skip-permissions", "-m", LIVE_MODEL, prompt],
@@ -1348,6 +1356,56 @@ def test_full_wave_prompt_has_ticket_growth_stages():
     assert "CLAUDE.md" in prompt
     assert "AGENTS.md" in _full_wave_prompt("AGENTS.md")
     assert _CLAUDE_TIMEOUT_DEFAULT == 900
+
+
+def test_opencode_full_wave_uses_compaction_evidence_from_initial_run(
+    tmp_path, monkeypatch,
+):
+    """full-wave 안의 checkpoint+receipt delta면 불필요한 추가 외부 turn을 생략한다."""
+    calls = []
+
+    monkeypatch.setitem(
+        test_release_wave_opencode_full_wave.__globals__,
+        "_import_adopter",
+        lambda _tmp_path, _harness: tmp_path,
+    )
+    monkeypatch.setitem(
+        test_release_wave_opencode_full_wave.__globals__,
+        "_force_opencode_compaction_threshold",
+        lambda _dest, _model: None,
+    )
+    monkeypatch.setitem(
+        test_release_wave_opencode_full_wave.__globals__,
+        "_assert_wave_side_effects",
+        lambda _dest, _proc, _harness: None,
+    )
+
+    def fake_run(argv, *, cwd, env, timeout):
+        calls.append(argv)
+        assert len(calls) == 1, "pre-wave 증거가 있는데 compaction probe를 추가 호출함"
+        log = tmp_path / ".project_manager" / "wiki" / "log" / "current.md"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(
+            "## [2026-08-25] checkpoint | test — compaction\n",
+            encoding="utf-8",
+        )
+        marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        (marker_dir / "compact-snapshot-receipt.live.generation1").write_text(
+            "delivered\n", encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setitem(
+        test_release_wave_opencode_full_wave.__globals__,
+        "_run_opencode_live",
+        fake_run,
+    )
+
+    test_release_wave_opencode_full_wave(tmp_path)
+
+    assert len(calls) == 1
+    assert "--continue" not in calls[0]
 
 
 def test_wave_side_effect_guard_rejects_ephemeral_run_hash(tmp_path, monkeypatch):

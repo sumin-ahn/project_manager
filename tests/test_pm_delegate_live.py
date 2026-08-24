@@ -32,6 +32,7 @@ always-run 가드(라이브 없이·매 회귀): backbone 존재·로드 + 실�
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import os
 import shutil
@@ -125,7 +126,8 @@ def _seed_repo(tmp_path: Path) -> tuple[Path, Path]:
 # ── 위임 실행 (in-process main·실 subprocess 스폰) ────────────────────────────────
 def _delegate(pd, monkeypatch, capsys, repo: Path, prompt: Path, harness: str, model: str,
               reasoning: str | None, output_dir: Path, timeout: int, *,
-              role: str = "researcher", ticket: str | None = None) -> tuple[int, str, str]:
+              role: str = "researcher", ticket: str | None = None,
+              resume_from: str | None = None) -> tuple[int, str, str]:
     """pm_delegate.main() 을 in-process 로 호출(local_config=enabled monkeypatch·실 run_fn 스폰).
 
     reply 는 stdout(print)로 나오므로 capsys 로 회수한다. rc·reply·stderr 반환."""
@@ -137,6 +139,8 @@ def _delegate(pd, monkeypatch, capsys, repo: Path, prompt: Path, harness: str, m
         argv += ["--reasoning", reasoning]
     if ticket:
         argv += ["--ticket", ticket]
+    if resume_from:
+        argv += ["--resume-from", resume_from]
     rc = pd.main(argv)
     captured = capsys.readouterr()
     return rc, captured.out, captured.err
@@ -331,6 +335,7 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
         rc, reply, err = _delegate(
             pd, monkeypatch, capsys, repo, prompt, target, model, reasoning,
             output_dir, timeout, role=role, ticket=ticket,
+            resume_from=ticket if stage == 4 and role == "developer" else None,
         )
         tail = f"\n--- stderr ---\n{err[-1800:]}\n--- reply ---\n{reply[-1000:]}"
         assert rc == 0, (
@@ -637,6 +642,33 @@ def test_cross_growth_fixture_pins_fixed_pipeline_and_parallel_full_command(tmp_
     assert "runtime.py=python3" in conf_lines
     assert "py=python3" not in conf_lines
     assert f"test.cmd={_CROSS_FULL_COMMAND}" in conf_lines
+    route_source = inspect.getsource(_run_cross_growth_route)
+    assert 'resume_from=ticket if stage == 4 and role == "developer" else None' in route_source
+
+
+def test_delegate_forwards_resume_from_without_fresh(tmp_path, monkeypatch, capsys):
+    """final-fix 재주입은 ticket resume 결속만 쓰고 fresh 우회를 만들지 않는다."""
+    seen = []
+
+    class StubDelegate:
+        local_config = None
+
+        @staticmethod
+        def main(argv):
+            seen.append(argv)
+            return 0
+
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("final fix\n", encoding="utf-8")
+    rc, _reply, _err = _delegate(
+        StubDelegate(), monkeypatch, capsys, tmp_path, prompt, "opencode", "test-model",
+        "high", tmp_path / "raw", 30, role="developer", ticket="T-9199",
+        resume_from="T-9199",
+    )
+
+    assert rc == 0
+    assert seen[0][seen[0].index("--resume-from") + 1] == "T-9199"
+    assert "--fresh" not in seen[0]
 
 
 def test_release_markers_pinned():
