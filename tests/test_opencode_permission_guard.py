@@ -5,7 +5,7 @@ opencode 어댑터의 위험 명령 차단 가드를 두 곳에서 단언한다:
   2. agent frontmatter — 실행 역할 developer/architect/code-reviewer/pm
      (coarse `bash: allow` override 차단 — 두 곳 모두 패턴맵이어야 머지 후 deny 가 보존된다)
 
-researcher는 진짜 read-only라 bash 전체를 deny하며 별도 단언한다. PM은 네 역할 task만 허용한다.
+researcher의 bash 는 위험명령 제외 패턴맵(T-opencode-002·code-reviewer 동형)이며 카드↔fragment parity 를 별도 단언한다. PM은 네 역할 task만 허용한다.
 
 claude 어댑터(.claude/settings.json·settings.local.json)의 permissions.deny 와 항목 정합도 단언한다.
 
@@ -210,8 +210,8 @@ def test_agents_match_project_config():
 
 def test_researcher_writes_only_its_ticket_copy_section_without_bash_bypass():
     """researcher 는 성장 티켓 사본의 자기 절을 edit 한다(ADR-0089 전원 참여) — 저장소 read-only 는
-    역할 계약 + harvest 의 자기 절 밖 bytes 일치 강제로 지키고, bash/task 는 deny 로 두어 edit 밖의
-    쓰기 우회(bash 로 파일 쓰기·중첩 위임)를 기계로 막는다.
+    역할 계약 + harvest 의 자기 절 밖 bytes 일치 강제로 지키고, task 는 deny 로 중첩 위임을 막으며
+    bash 는 위험명령 제외 패턴맵(T-opencode-002)으로 한정한다.
 
     edit/bash/task 기대값은 손기입하지 않고 pm_relay fragment 에서 파생한다 — 카드만 바뀌고
     fragment 가 stale 로 남는 half-fix 를 이 테스트가 놓치지 않게 한다(T-0696 F-014 → T-0745 →

@@ -5,16 +5,17 @@ opencode 1.17.x~1.18.x 는 대용량 write/edit 를 조용히 절단·유실한�
 3층 가드(safe-write plugin)로 닫는다:
   ① deny-and-redirect (tool.execute.before): write/edit 대형 args 를 DENY_BYTES 초과 시 throw —
      에러 메시지가 모델-facing 행동 지시(기존 파일=edit 로 나눠라 / 신규=safe_write chunk).
-  ② safe_write custom tool: 신규-대형-파일 갭 전용. 8KB chunk 상한 강제·create→append 순.
+  ② safe_write custom tool: 신규-대형-파일 갭 전용. 16KB chunk 상한 강제·create→append 순.
   ③ 출력 상한 config: opencode.jsonc `limit.output` 명시.
 
 여러 층위에서 단언한다:
   1. 파일 존재 + ESM 로드 규약(진입점 shim = 팩토리 단일 named-export·core 는 lib/ CJS·T-0283).
-  2. core 상수(DENY/CHUNK_BYTES) + env override 키 정적 참조.
+  2. core 상수(DENY=64KB·CHUNK=16KB·T-opencode-002) + env override 키 정적 참조.
   3. opencode.jsonc `limit.output` 명시(왜: 32000 하드코딩 fallback) + 기존 config 무회귀.
   4. engine.manifest 등재(plugins/·lib/ 디렉토리 엔트리가 신규 파일 커버·전파 drift 0).
-  5. (node 있으면) core 순수 로직 자가검증 — deny 발화(write>16KB·edit>16KB)·safe_write
-     create/append/상한거부/기존파일 create 거부·env override. node 부재 시 skip(정적 검증만).
+  5. (node 있으면) core 순수 로직 자가검증 — deny 발화(write/edit >64KB)·safe_write create/
+     append/상한거부(16KB 경계·multibyte·code)/기존파일 create 거부(read 후 append 재개 안내)·
+     env override·endsWithNewline 경계 피드백. node 부재 시 skip(정적 검증만).
 
 로드 규약(실측 T-0283): `.opencode/plugins/` 각 파일의 export 를 순회해 *모두 함수*이길 요구하고
 각각을 팩토리로 호출한다. 그래서 진입점 `plugins/safe-write.js` 는 ESM 으로 팩토리 하나만 export
@@ -132,12 +133,15 @@ def test_ctx_guard_untouched_by_safe_write():
 # ── 2. core 상수 + env override 정적 참조 ────────────────────────────────────
 
 def test_core_declares_thresholds_and_env_overrides():
-    """core 상단에 DENY_BYTES(16KB)·CHUNK_BYTES(8KB) 상수 + env override 키를 명시한다."""
+    """core 상단에 DENY_BYTES(64KB)·CHUNK_BYTES(16KB) 상수 + env override 키를 명시한다 (T-opencode-002)."""
     src = _core_src()
-    assert re.search(r"DENY_BYTES\s*=\s*16\s*\*\s*1024", src), "DENY_BYTES=16KB 상수 없음"
-    assert re.search(r"CHUNK_BYTES\s*=\s*8\s*\*\s*1024", src), "CHUNK_BYTES=8KB 상수 없음"
+    assert re.search(r"DENY_BYTES\s*=\s*64\s*\*\s*1024", src), "DENY_BYTES=64KB 상수 없음"
+    assert re.search(r"CHUNK_BYTES\s*=\s*16\s*\*\s*1024", src), "CHUNK_BYTES=16KB 상수 없음"
     assert "PM_SAFE_WRITE_DENY_BYTES" in src, "DENY env override 키 없음"
     assert "PM_SAFE_WRITE_CHUNK_BYTES" in src, "CHUNK env override 키 없음"
+    # 근거 주석(DoD): sweep 실측 인용 — 89KB 성공·237KB 실패 구간과 65KB byte-exact sweep.
+    assert "89KB" in src and "237KB" in src, "DENY 64KB 근거(무가드 89KB 성공·237KB 실패) 주석 없음"
+    assert "65KB" in src, "sweep 65KB 까지 byte-exact 근거 주석 없음"
 
 
 def test_core_declares_guard_and_tool_wiring():
@@ -339,66 +343,122 @@ for (const fn of ["makeSafeWritePlugin","byteLength","resolveDenyBytes","resolve
                   "isWithinRoot","assertContainedPath","assertRealpathContained","assertLeafNotSymlink"]) {
   assert.strictEqual(typeof m[fn], "function", "missing export: " + fn);
 }
-assert.strictEqual(m.DENY_BYTES, 16384, "DENY_BYTES 기본 16KB 아님");
-assert.strictEqual(m.CHUNK_BYTES, 8192, "CHUNK_BYTES 기본 8KB 아님");
+assert.strictEqual(m.DENY_BYTES, 65536, "DENY_BYTES 기본 64KB 아님");
+assert.strictEqual(m.CHUNK_BYTES, 16384, "CHUNK_BYTES 기본 16KB 아님");
 
 // env override (>0 정수만·아니면 기본).
-assert.strictEqual(m.resolveDenyBytes({}), 16384);
+assert.strictEqual(m.resolveDenyBytes({}), 65536);
 assert.strictEqual(m.resolveDenyBytes({PM_SAFE_WRITE_DENY_BYTES:"4096"}), 4096);
-assert.strictEqual(m.resolveDenyBytes({PM_SAFE_WRITE_DENY_BYTES:"0"}), 16384);   // ≤0→기본
-assert.strictEqual(m.resolveDenyBytes({PM_SAFE_WRITE_DENY_BYTES:"1.5"}), 16384); // 비정수→기본
+assert.strictEqual(m.resolveDenyBytes({PM_SAFE_WRITE_DENY_BYTES:"0"}), 65536);   // ≤0→기본
+assert.strictEqual(m.resolveDenyBytes({PM_SAFE_WRITE_DENY_BYTES:"1.5"}), 65536); // 비정수→기본
 assert.strictEqual(m.resolveChunkBytes({PM_SAFE_WRITE_CHUNK_BYTES:"2048"}), 2048);
 
 // ── ① deny 발화: write 대형 (신규→safe_write 유도 / 기존→edit 유도) ──────────
-const big = "x".repeat(17000);
-assert.strictEqual(m.checkOversizeWrite("write", {content:"small"}, 16384, false, 8192).deny, false);
-let v = m.checkOversizeWrite("write", {content:big}, 16384, false, 8192);
+const big = "x".repeat(70000);
+assert.strictEqual(m.checkOversizeWrite("write", {content:"small"}, 65536, false, 16384).deny, false);
+let v = m.checkOversizeWrite("write", {content:big}, 65536, false, 16384);
 assert.strictEqual(v.deny, true); assert.strictEqual(v.kind, "write-new");
 assert.ok(v.message.includes("safe_write"), "신규 파일 메시지가 safe_write 유도 아님: " + v.message);
-assert.ok(v.message.includes("8192B"), "신규 파일 메시지가 chunkBytes 값을 안내 안 함: " + v.message);
-v = m.checkOversizeWrite("write", {content:big}, 16384, true, 8192);
+assert.ok(v.message.includes("16384B"), "신규 파일 메시지가 chunkBytes 값을 안내 안 함: " + v.message);
+v = m.checkOversizeWrite("write", {content:big}, 65536, true, 16384);
 assert.strictEqual(v.deny, true); assert.strictEqual(v.kind, "write-existing");
 assert.ok(v.message.includes("edit"), "기존 파일 메시지가 edit 유도 아님: " + v.message);
 // edit: newString+oldString 합 초과.
-v = m.checkOversizeWrite("edit", {newString:"y".repeat(10000), oldString:"z".repeat(7000)}, 16384, true, 8192);
+v = m.checkOversizeWrite("edit", {newString:"y".repeat(40000), oldString:"z".repeat(30000)}, 65536, true, 16384);
 assert.strictEqual(v.deny, true); assert.strictEqual(v.kind, "edit");
-assert.strictEqual(m.checkOversizeWrite("edit", {newString:"a", oldString:"b"}, 16384, true, 8192).deny, false);
-// deny 메시지의 chunk 안내가 env override(chunkBytes) 값을 동적 반영 (하드 "8KB" 아님).
-const vOverride = m.checkOversizeWrite("write", {content:big}, 16384, false, 4096);
+assert.strictEqual(m.checkOversizeWrite("edit", {newString:"a".repeat(30000), oldString:"b".repeat(30000)}, 65536, true, 16384).deny, false);
+// deny 메시지의 chunk 안내가 env override(chunkBytes) 값을 동적 반영 (하드 "16KB" 아님).
+const vOverride = m.checkOversizeWrite("write", {content:big}, 65536, false, 4096);
 assert.ok(vOverride.message.includes("4096B"), "chunkBytes override 가 메시지에 반영 안 됨: " + vOverride.message);
-assert.ok(!vOverride.message.includes("8192B"), "override 인데 기본 8192 가 잔존: " + vOverride.message);
-// 경계: 정확히 상한이면 통과(<=).
-assert.strictEqual(m.checkOversizeWrite("write", {content:"z".repeat(16384)}, 16384, false, 8192).deny, false);
-assert.strictEqual(m.checkOversizeWrite("write", {content:"z".repeat(16385)}, 16384, false, 8192).deny, true);
+assert.ok(!vOverride.message.includes("16384B"), "override 인데 기본 16384 가 잔존: " + vOverride.message);
+// 경계: 정확히 상한이면 통과(<=)·+1B 는 deny.
+assert.strictEqual(m.checkOversizeWrite("write", {content:"z".repeat(65536)}, 65536, false, 16384).deny, false);
+assert.strictEqual(m.checkOversizeWrite("write", {content:"z".repeat(65537)}, 65536, false, 16384).deny, true);
 // 무관 도구는 무판정.
-assert.strictEqual(m.checkOversizeWrite("read", {content:big}, 16384, false, 8192).deny, false);
+assert.strictEqual(m.checkOversizeWrite("read", {content:big}, 65536, false, 16384).deny, false);
 
 // ── ② validateSafeWrite (순수) ─────────────────────────────────────────────
-assert.strictEqual(m.validateSafeWrite("hi","create",false,8192).ok, true);
-assert.strictEqual(m.validateSafeWrite("x".repeat(9000),"create",false,8192).ok, false); // 상한 초과
-assert.strictEqual(m.validateSafeWrite("hi","create",true,8192).ok, false);              // 기존 파일 create
-assert.strictEqual(m.validateSafeWrite("hi","append",false,8192).ok, false);             // 파일 부재 append
-assert.strictEqual(m.validateSafeWrite("hi","bogus",false,8192).ok, false);              // 잘못된 mode
-assert.strictEqual(m.validateSafeWrite("z".repeat(8192),"create",false,8192).ok, true);  // 경계(<=)
+assert.strictEqual(m.validateSafeWrite("hi","create",false,16384).ok, true);
+assert.strictEqual(m.validateSafeWrite("x".repeat(17000),"create",false,16384).ok, false); // 상한 초과
+assert.strictEqual(m.validateSafeWrite("hi","create",true,16384).ok, false);              // 기존 파일 create
+assert.strictEqual(m.validateSafeWrite("hi","append",false,16384).ok, false);             // 파일 부재 append
+assert.strictEqual(m.validateSafeWrite("hi","bogus",false,16384).ok, false);              // 잘못된 mode
+assert.strictEqual(m.validateSafeWrite("z".repeat(16384),"create",false,16384).ok, true); // 경계(<=)
+// create-on-existing 거부 메시지에 재개 안내(read 후 append)가 있다 (T-opencode-002).
+const vResume = m.validateSafeWrite("hi","create",true,16384);
+assert.ok(vResume.message.includes("read"), "재개 안내(read) 없음: " + vResume.message);
+assert.ok(vResume.message.includes('mode="append"'), "재개 안내(append) 없음: " + vResume.message);
 
 // ── ② safeWrite fs: create → append (root containment·상대경로·누적 바이트/라인 보고) ──
 const td = fs.mkdtempSync(path.join(os.tmpdir(), "safewrite-"));
 try {
 const fp = path.join(td, "sub", "out.txt");   // 부모 dir 자동 생성 확인.
-let r = m.safeWrite(td, "sub/out.txt", "line1\nline2\n", "create", 8192);
+let r = m.safeWrite(td, "sub/out.txt", "line1\nline2\n", "create", 16384);
 assert.strictEqual(r.mode, "create");
 assert.strictEqual(r.totalLines, 2, "create 후 줄 수: " + r.totalLines);
-r = m.safeWrite(td, "sub/out.txt", "line3\n", "append", 8192);
+assert.strictEqual(r.endsWithNewline, true, "\\n 종단 파일의 endsWithNewline");
+r = m.safeWrite(td, "sub/out.txt", "line3\n", "append", 16384);
 assert.strictEqual(r.totalLines, 3, "append 후 줄 수: " + r.totalLines);
 assert.strictEqual(fs.readFileSync(fp, "utf-8"), "line1\nline2\nline3\n");
 assert.ok(r.totalBytes > r.wroteBytes, "누적 바이트가 이번 조각보다 커야");
 assert.ok(m.isWithinRoot(td, r.filePath), "결과 경로가 root 안이어야");
-// create on existing → throw.
-assert.throws(() => m.safeWrite(td, "sub/out.txt", "z", "create", 8192), /이미 존재/);
+// 비종단 조각 → endsWithNewline=false (경계 피드백·T-opencode-002).
+r = m.safeWrite(td, "partial.txt", "no-trailing-newline", "create", 16384);
+assert.strictEqual(r.endsWithNewline, false);
+assert.strictEqual(r.totalLines, 1);
+// create on existing → throw (재개 안내 포함).
+assert.throws(() => m.safeWrite(td, "sub/out.txt", "z", "create", 16384),
+              /이미 존재[\s\S]*read[\s\S]*mode="append"/);
 // append on absent → throw.
-assert.throws(() => m.safeWrite(td, "nope.txt", "z", "append", 8192), /없다/);
+assert.throws(() => m.safeWrite(td, "nope.txt", "z", "append", 16384), /없다/);
 // chunk 상한 초과 → throw.
-assert.throws(() => m.safeWrite(td, "big.txt", "x".repeat(9000), "create", 8192), /상한/);
+assert.throws(() => m.safeWrite(td, "big.txt", "x".repeat(20000), "create", 16384), /상한/);
+
+// ── ② CHUNK 16KB 채택 근거 자가검증(T-opencode-002): 정확히 16,384B 완성 args 도달 ──
+// ASCII 경계.
+const asciiExact = "x".repeat(16384);
+assert.strictEqual(Buffer.byteLength(asciiExact, "utf-8"), 16384);
+r = m.safeWrite(td, "exact-ascii.txt", asciiExact, "create", 16384);
+assert.strictEqual(r.wroteBytes, 16384, "ASCII 정확히 16384B wroteBytes");
+assert.strictEqual(fs.readFileSync(path.join(td, "exact-ascii.txt"), "utf-8"), asciiExact);
+// UTF-8 multibyte(CJK 3B) 경계 — '가'*5461(16383B) + 'x'(1B) = 정확히 16384B·문자 경계 보존.
+const cjkExact = "\uAC00".repeat(5461) + "x";
+assert.strictEqual(Buffer.byteLength(cjkExact, "utf-8"), 16384, "CJK 구성 바이트");
+r = m.safeWrite(td, "exact-cjk.txt", cjkExact, "create", 16384);
+assert.strictEqual(r.wroteBytes, 16384, "multibyte 경계 wroteBytes");
+assert.strictEqual(fs.readFileSync(path.join(td, "exact-cjk.txt"), "utf-8"), cjkExact,
+                   "multibyte byte-exact");
+// quote/backslash 많은 코드 내용 — JSON tool-call args 직렬화 왕복 후 byte-exact 도달.
+// (따옴표·백슬래시는 fromCharCode 로 조립해 이스케이프 모호성 제거)
+let codeContent = "";
+const DQ = String.fromCharCode(34);   // 큰따옴표
+const SQ = String.fromCharCode(39);   // 작은따옴표
+const BS = String.fromCharCode(92);   // 백슬래시
+const codeFrag = "if (a === " + DQ + "b" + DQ + " && c === " + SQ + "d" + SQ +
+                 ") { p.q(" + DQ + BS + "n" + DQ + "); } // comment\n";
+while (Buffer.byteLength(codeContent, "utf-8") +
+       Buffer.byteLength(codeFrag, "utf-8") <= 16384) codeContent += codeFrag;
+while (Buffer.byteLength(codeContent, "utf-8") < 16384) codeContent += ";";
+assert.strictEqual(Buffer.byteLength(codeContent, "utf-8"), 16384, "code 구성 바이트");
+const argsJson = JSON.stringify({ filePath: "exact-code.txt", content: codeContent, mode: "create" });
+const parsedArgs = JSON.parse(argsJson);
+assert.strictEqual(parsedArgs.content, codeContent, "JSON args 왕복 내용 일치");
+r = m.safeWrite(td, parsedArgs.filePath, parsedArgs.content, parsedArgs.mode, 16384);
+assert.strictEqual(r.wroteBytes, 16384, "code 경계 wroteBytes");
+// 마지막 개행 뒤 ";" 패딩이 붙으므로 비종단(false)이 정상 — 경계 피드백 대상.
+assert.strictEqual(r.endsWithNewline, false);
+
+// F1 강제 게이트(T-opencode-002): 비종단 파일+비개행 chunk append 는 거부(처방 포함)·
+// 개행으로 시작하는 chunk 는 허용 — line-aligned 계약 강제.
+assert.throws(() => m.safeWrite(td, "partial.txt", "more", "append", 16384),
+              /개행[\s\S]*첫 문자/);
+r = m.safeWrite(td, "partial.txt", "\nmore\n", "append", 16384);
+assert.strictEqual(fs.readFileSync(path.join(td, "partial.txt"), "utf-8"),
+                   "no-trailing-newline\nmore\n");
+
+// F-006 정적 가드(T-opencode-002): core src 의 mode enum 배선 존재 — schema 회귀 무감시 방지.
+const coreSrc = fs.readFileSync(path.join(process.cwd(), "safe-write-core.cjs"), "utf-8");
+assert.ok(/create\|[\s]*"append"|enum\(/.test(coreSrc) || /"create".{0,40}"append"/.test(coreSrc), "mode enum 배선이 core src 에 없다");
 
 console.log("SAFE_WRITE_SELFCHECK_OK");
 } finally {
@@ -428,7 +488,10 @@ const os = require("node:os");
 const path = require("node:path");
 
 // opencode 없이 tool 헬퍼 흉내 (identity + zod-like schema stub).
-const fakeSchema = { string: () => ({ describe: () => ({}) }) };
+const fakeSchema = {
+  string: () => ({ describe: () => ({}) }),
+  enum: () => ({ describe: () => ({}) }),   // mode enum 강제(T-opencode-002) stub.
+};
 const fakeTool = (def) => def; fakeTool.schema = fakeSchema;
 
 (async () => {
@@ -446,11 +509,19 @@ const fakeTool = (def) => def; fakeTool.schema = fakeSchema;
     const out2 = await hooks.tool.safe_write.execute({filePath:"doc.txt", content:"b\n", mode:"append"}, {directory:td});
     assert.ok(out2.includes("append ok"), "append 보고 아님: " + out2);
     assert.strictEqual(fs.readFileSync(path.join(td, "doc.txt"), "utf-8"), "a\nb\n");
+    // 종단 파일엔 경계 지시가 없다.
+    assert.ok(!out2.includes("끝나지 않는다"), "종단 파일인데 경계 지시 발화: " + out2);
+
+    // 비종단(\n 없는) 조각 → 응답에 다음 조각 첫 문자 \n 지시 포함(T-opencode-002).
+    const out3 = await hooks.tool.safe_write.execute(
+      {filePath:"part.txt", content:"tail-without-newline", mode:"create"}, {directory:td});
+    assert.ok(out3.includes("끝나지 않는다"), "비종단 경계 절 누락: " + out3);
+    assert.ok(out3.includes("\\n 으로 시작하라"), "\\n 시작 지시 누락: " + out3);
 
     // before 훅: 대형 신규 write → throw(safe_write 유도).
     let threw = false;
     try {
-      await hooks["tool.execute.before"]({tool:"write"}, {args:{content:"x".repeat(20000), filePath:path.join(td,"new.txt")}});
+      await hooks["tool.execute.before"]({tool:"write"}, {args:{content:"x".repeat(70000), filePath:path.join(td,"new.txt")}});
     } catch (e) { threw = true; assert.ok(e.message.includes("safe_write"), "deny 메시지 아님: " + e.message); }
     assert.ok(threw, "대형 신규 write 가 deny 안 됨");
 
@@ -458,7 +529,7 @@ const fakeTool = (def) => def; fakeTool.schema = fakeSchema;
     fs.writeFileSync(path.join(td, "exists.txt"), "seed");
     let threw2 = false;
     try {
-      await hooks["tool.execute.before"]({tool:"write"}, {args:{content:"x".repeat(20000), filePath:path.join(td,"exists.txt")}});
+      await hooks["tool.execute.before"]({tool:"write"}, {args:{content:"x".repeat(70000), filePath:path.join(td,"exists.txt")}});
     } catch (e) { threw2 = true; assert.ok(e.message.includes("edit"), "기존 파일 deny 가 edit 유도 아님: " + e.message); }
     assert.ok(threw2, "대형 기존 write 가 deny 안 됨");
 
@@ -511,27 +582,27 @@ td = fs.mkdtempSync(path.join(os.tmpdir(), "swroot-"));
 outside = fs.mkdtempSync(path.join(os.tmpdir(), "swout-"));
 
 // (회귀) 정상 상대경로 create+append 는 통과.
-let r = m.safeWrite(td, "sub/ok.txt", "one\n", "create", 8192);
+let r = m.safeWrite(td, "sub/ok.txt", "one\n", "create", 16384);
 assert.ok(m.isWithinRoot(td, r.filePath), "정상 결과가 root 안이어야");
-r = m.safeWrite(td, "sub/ok.txt", "two\n", "append", 8192);
+r = m.safeWrite(td, "sub/ok.txt", "two\n", "append", 16384);
 assert.strictEqual(fs.readFileSync(path.join(td,"sub","ok.txt"),"utf-8"), "one\ntwo\n");
 
 // ── lexical: 절대경로 거부 (모델-facing: 프로젝트 상대경로만) ──────────────────
-assert.throws(() => m.safeWrite(td, "/tmp/abs.txt", "x", "create", 8192), /절대경로|상대경로/);
-assert.throws(() => m.safeWrite(td, path.join(outside,"z.txt"), "x", "create", 8192), /절대경로/);
+assert.throws(() => m.safeWrite(td, "/tmp/abs.txt", "x", "create", 16384), /절대경로|상대경로/);
+assert.throws(() => m.safeWrite(td, path.join(outside,"z.txt"), "x", "create", 16384), /절대경로/);
 // ── lexical: ../ 프로젝트 밖 탈출 거부 ──────────────────────────────────────
-assert.throws(() => m.safeWrite(td, "../escape.txt", "x", "create", 8192), /벗어나|프로젝트/);
-assert.throws(() => m.safeWrite(td, "a/../../escape.txt", "x", "create", 8192), /벗어나|프로젝트/);
+assert.throws(() => m.safeWrite(td, "../escape.txt", "x", "create", 16384), /벗어나|프로젝트/);
+assert.throws(() => m.safeWrite(td, "a/../../escape.txt", "x", "create", 16384), /벗어나|프로젝트/);
 
 // ── realpath: symlink 디렉터리 탈출 거부 (create) ────────────────────────────
 fs.symlinkSync(outside, path.join(td, "link"));
-assert.throws(() => m.safeWrite(td, "link/file.txt", "x", "create", 8192), /밖을 가리|symlink/);
+assert.throws(() => m.safeWrite(td, "link/file.txt", "x", "create", 16384), /밖을 가리|symlink/);
 
 // ── realpath: symlink 파일 탈출 거부 (append) — 프로젝트 밖 victim 을 보호 ────
 const victim = path.join(outside, "victim.txt");
 fs.writeFileSync(victim, "orig\n");
 fs.symlinkSync(victim, path.join(td, "evil.txt"));
-assert.throws(() => m.safeWrite(td, "evil.txt", "PWNED\n", "append", 8192), /밖을 가리|symlink/);
+assert.throws(() => m.safeWrite(td, "evil.txt", "PWNED\n", "append", 16384), /밖을 가리|symlink/);
 assert.strictEqual(fs.readFileSync(victim,"utf-8"), "orig\n", "victim 이 변조되면 안 됨");
 
 // ── R4: append 대상이 symlink 로 교체된 경우 거부 (leaf lstat 메시지 유지·O_NOFOLLOW TOCTOU 백스톱) ──
@@ -539,12 +610,12 @@ assert.strictEqual(fs.readFileSync(victim,"utf-8"), "orig\n", "victim 이 변조
 // 쓰기 금지). lstat 선검사가 잡고, 통과 시엔 openSync(O_NOFOLLOW)가 ELOOP 로 커널 거부(race-safe).
 fs.writeFileSync(path.join(td, "real.txt"), "real\n");
 fs.symlinkSync(path.join(td, "real.txt"), path.join(td, "link-append.txt"));
-assert.throws(() => m.safeWrite(td, "link-append.txt", "x\n", "append", 8192), /symlink/);
+assert.throws(() => m.safeWrite(td, "link-append.txt", "x\n", "append", 16384), /symlink/);
 assert.strictEqual(fs.readFileSync(path.join(td,"real.txt"),"utf-8"), "real\n", "symlink 통한 append 로 real 훼손 금지");
 
 // ── R4 결정(PM 70): 기존 *일반* 파일 append 는 의식적 허용 — resume(중단 후 재개) 보전 ──────
 fs.writeFileSync(path.join(td, "resume.txt"), "head\n");
-const rr = m.safeWrite(td, "resume.txt", "tail\n", "append", 8192);
+const rr = m.safeWrite(td, "resume.txt", "tail\n", "append", 16384);
 assert.strictEqual(fs.readFileSync(path.join(td,"resume.txt"),"utf-8"), "head\ntail\n", "기존 파일 append 허용(resume)");
 assert.strictEqual(rr.totalLines, 2);
 
@@ -555,7 +626,7 @@ const outsideNew = path.join(outside, "created-via-dangling.txt");
 assert.ok(!fs.existsSync(outsideNew), "precondition: 밖 파일 부재");
 fs.symlinkSync(outsideNew, path.join(td, "evil2.txt"));
 assert.ok(!fs.existsSync(path.join(td, "evil2.txt")), "dangling → existsSync follow 시 false");
-assert.throws(() => m.safeWrite(td, "evil2.txt", "PWNED\n", "create", 8192), /symlink|이미 존재/);
+assert.throws(() => m.safeWrite(td, "evil2.txt", "PWNED\n", "create", 16384), /symlink|이미 존재/);
 assert.ok(!fs.existsSync(outsideNew), "보안 실패 — dangling symlink 로 밖 파일이 생성됨!");
 // leaf lstat 순수 단언: symlink leaf 거부 · 진짜 부재/일반 파일 통과.
 assert.throws(() => m.assertLeafNotSymlink(path.join(td, "evil2.txt")), /symlink/);
