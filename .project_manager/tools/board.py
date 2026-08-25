@@ -8230,6 +8230,10 @@ def cmd_regression(args: argparse.Namespace) -> int:
         # key 자체가 없던 legacy 기록만 board REPO 좌표로 폴백한다.
         anchor = str(REPO)
         head = _git_head()
+        if not head:
+            print(f"regression: stale (legacy REPO {anchor}의 Git HEAD 해소 실패) "
+                  "— 재실행 필요.", file=sys.stderr)
+            return 1
     else:
         anchor = data.get("conf_anchor")
         if (

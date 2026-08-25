@@ -284,6 +284,16 @@ def test_single_check_legacy_flag_without_conf_anchor_falls_back_to_repo(board):
     assert board.cmd_regression(argparse.Namespace(action="check")) == 0
 
 
+def test_single_check_fails_closed_when_legacy_repo_head_is_unresolvable(
+        board, monkeypatch, capsys):
+    monkeypatch.setattr(board, "_git_head", lambda: "")
+    _write_flag(board, status="pass", rc=0, collected=1, floor=0, head="")
+    assert "conf_anchor" not in _flag(board)
+
+    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+    assert "Git HEAD 해소 실패" in capsys.readouterr().err
+
+
 # ════════════════════════════════════════════════════════════════════════
 # ① 요약행 파서 — 실행 수 = passed + skipped + failed(+error/xfail/xpass)
 # ════════════════════════════════════════════════════════════════════════
