@@ -160,7 +160,10 @@ def test_opencode_researcher_writes_only_its_ticket_section():
     assert permission.get("edit") == "allow", (
         "researcher가 티켓 사본 자기 절을 기록할 수 없음(T-0696) — permission.edit=allow 필요"
     )
-    assert permission.get("bash") == "deny"
+    bash = permission.get("bash")
+    assert isinstance(bash, dict) and bash.get("rm *") == "deny", (
+        "researcher bash 는 위험명령 제외 패턴맵(T-opencode-002) — rm 등 위험 명령은 여전히 deny"
+    )
     assert permission.get("task") == "deny"
 
 

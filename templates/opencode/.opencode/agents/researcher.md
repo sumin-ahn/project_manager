@@ -93,7 +93,7 @@ python3 .project_manager/tools/board.py show T-NNNN
 - [확인 못한 것 / 범위 밖이라 남긴 것]
 ```
 
-> **대형 산출은 분할한다.** researcher는 bash 가 deny 이고 edit 는 지정된 라운드 파일 전용이라 파일 산출로 우회하지 않는다. 보고가 대략 200줄/16KB를 넘길 것 같으면 핵심 요약과 남은 조사 범위를 반환하고, PM이 후속 bounded 조사로 나눈다.
+> **대형 산출은 분할한다.** researcher는 bash 가 deny 이고 edit 는 지정된 라운드 파일 전용이라 파일 산출로 우회하지 않는다. 보고가 대략 200줄/8KB를 넘길 것 같으면 핵심 요약과 남은 조사 범위를 반환하고, PM이 후속 bounded 조사로 나눈다.
 
 ## 제약
 

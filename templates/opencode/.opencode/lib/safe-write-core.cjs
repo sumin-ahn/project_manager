@@ -45,9 +45,9 @@ const path = require("node:path");
 
 // ── 임계값 상수 (core 상단 명시·env override) ────────────────────────────────
 // DENY_BYTES: write content / edit(newString+oldString) 이 이 크기 초과 시 deny-and-redirect.
-//   64KB — 근거(2026-08 확정·T-opencode-001 sweep): ① PM 70차 실측 무가드 native write 89KB
-//   성공·237KB 실패 → 실패선은 (89KB,237KB] 구간, 그 아래인 64KB 는 안전 마진 ② 2026-08-24
-//   경계 sweep 에서 emit 성공분은 65KB 까지 전량 byte-exact(절단 흔적 없음) ③ 16~64KB 를
+//   64KB — 근거(T-opencode-001 sweep 확정): 1) 선행 라이브 실측 무가드 native write 89KB
+//   성공·237KB 실패 → 실패선은 (89KB,237KB] 구간, 그 아래인 64KB 는 안전 마진 2) [[T-opencode-001]]
+//   경계 sweep 에서 emit 성공분은 65KB 까지 전량 byte-exact(절단 흔적 없음) 3) 16~64KB 를
 //   네이티브 허용으로 풀어 그 구간의 프로토콜 강제 마찰을 제거.
 // CHUNK_BYTES: safe_write 한 chunk 상한(도구가 강제). 16KB — 조건부 채택: UTF-8 multibyte
 //   경계·quote/backslash 많은 코드 내용이 정확히 16,384B 에서 완성 args 로 도달하는 node

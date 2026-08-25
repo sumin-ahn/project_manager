@@ -1105,7 +1105,7 @@ def opencode_runtime_role_config(role: str) -> str:
         "grep": "allow",
         "list": "allow",
         "task": "deny",
-        # researcher 도 위험명령 제외 bash 를 허용한다(T-opencode-002·2026-08-25): write 단일
+        # researcher 도 위험명령 제외 bash 를 허용한다(T-opencode-002): write 단일
         # 경로 강제 시 대형·반복 산출에서 NO-WRITE 멈춤이 관측됐고(code-reviewer 선례와 동일
         # 패턴맵으로 쓰기 사다리를 닫지 않게 한다), pre/post delegation touches 감사가 남는다.
         "bash": dict(_OPENCODE_DANGEROUS_BASH_PERMISSION),

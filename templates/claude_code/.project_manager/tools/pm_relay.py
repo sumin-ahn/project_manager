@@ -1105,10 +1105,10 @@ def opencode_runtime_role_config(role: str) -> str:
         "grep": "allow",
         "list": "allow",
         "task": "deny",
-        "bash": (
-            "deny" if role == "researcher"
-            else dict(_OPENCODE_DANGEROUS_BASH_PERMISSION)
-        ),
+        # researcher 도 위험명령 제외 bash 를 허용한다(T-opencode-002): write 단일
+        # 경로 강제 시 대형·반복 산출에서 NO-WRITE 멈춤이 관측됐고(code-reviewer 선례와 동일
+        # 패턴맵으로 쓰기 사다리를 닫지 않게 한다), pre/post delegation touches 감사가 남는다.
+        "bash": dict(_OPENCODE_DANGEROUS_BASH_PERMISSION),
         "webfetch": "deny",
     }
     config = {
@@ -2915,7 +2915,7 @@ def cap_hit_warning_message(reason: str) -> str:
         f"[pm-orch] ⚠ 출력 상한(32k tok) 근방: {reason}. **opencode 하니스라면** 이 응답이 silent "
         "절단됐을 가능성이 있다 — opencode 는 32k 출력 토큰에서 응답을 조용히 자르고 finish 를 'stop' "
         "으로 위장한다(수신자 감지 불가). 잘렸다면 파일-전달 규약으로 재시도하라: 대형 "
-        "산출물은 파일로 쓰고(opencode 는 safe_write 8KB 청크·write 는 16KB 초과 거부), 응답엔 절대경로 "
+        "산출물은 파일로 쓰고(opencode 는 safe_write 16KB 청크·write 는 64KB 초과 거부), 응답엔 절대경로 "
         "+ 핵심 요약 ≤10줄만 반환."
     )
 
