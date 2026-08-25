@@ -73,11 +73,53 @@ def board(tmp_path, monkeypatch):
     for name, val in overrides.items():
         monkeypatch.setattr(mod, name, val)
     monkeypatch.setattr(mod, "_git_head", lambda: "deadbeef01234567")
+    monkeypatch.setattr(mod, "_git_head_at", lambda _cwd: "deadbeef01234567")
     monkeypatch.setattr(mod, "_git_config_email", lambda: None)
     monkeypatch.delenv("PM_SESSION_NAME", raising=False)
     monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
     mod._proj = proj
     return mod
+
+
+@pytest.fixture
+def actual_git_board(tmp_path, monkeypatch):
+    """PM 홈과 분리된 실제 Git target으로 single FULL SHA 좌표를 검증한다."""
+    home = tmp_path / "pm-home"
+    local = home / ".project_manager" / ".local"
+    local.mkdir(parents=True)
+    target = tmp_path / "target"
+    (target / "tests").mkdir(parents=True)
+    (target / "tests" / "test_sample.py").write_text(
+        "def test_sample():\n    assert True\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=target, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=target, check=True)
+    git_env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "test@example.invalid",
+        "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "test@example.invalid",
+    }
+    subprocess.run(["git", "commit", "-qm", "initial"], cwd=target,
+                   env=git_env, check=True)
+
+    mod = _load_board()
+    for name, value in {
+        "REPO": home,
+        "LOCAL_CONF": home / ".project_manager" / "local.conf",
+        "AREAS_FILE": home / ".project_manager" / "areas.md",
+        "LOCAL_DIR": local,
+        "REGRESSION_FLAG": local / "regression.json",
+        "LEASES_FILE": local / "worktree-leases.json",
+    }.items():
+        monkeypatch.setattr(mod, name, value)
+    monkeypatch.setattr(mod, "_stale_pre_push_hook_refusal", lambda: None)
+    monkeypatch.setattr(mod, "_review_cycle_downgrade", lambda: ([], []))
+    monkeypatch.setattr(
+        mod, "_run_regression_cmd",
+        lambda _cmd, _cwd, _env: (0, "1 passed in 0.01s\n", ""),
+    )
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    return mod, target, git_env
 
 
 def _patch_atomic_replace(monkeypatch, module, fake):
@@ -172,6 +214,74 @@ def _without_suite(board) -> None:
     """이 트리를 **스위트 없는 트리**(분리 형상 PM 홈)로 만든다 — `tests/` 를 지운다."""
     shutil.rmtree(board.REPO / "tests", ignore_errors=True)
     assert not (board.REPO / "tests").is_dir()
+
+
+# ════════════════════════════════════════════════════════════════════════
+# T-0872 — single FULL 실행 cwd/HEAD/conf anchor 좌표 정합
+# ════════════════════════════════════════════════════════════════════════
+
+
+@requires_git
+def test_single_full_run_records_target_cwd_head_and_anchor(actual_git_board):
+    board, target, _git_env = actual_git_board
+    target_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=target, check=True,
+        capture_output=True, text=True, encoding="utf-8",
+    ).stdout.strip()
+
+    assert board.cmd_regression(_run_args(cwd=str(target), final=True)) == 0
+
+    evidence = _flag(board)
+    assert evidence["head"] == target_head
+    assert evidence["conf_anchor"] == str(target.resolve())
+    assert evidence["head"] != board._git_head(), "PM-home HEAD를 기록했다"
+
+
+@requires_git
+def test_single_check_turns_stale_when_recorded_target_head_changes(
+        actual_git_board, capsys):
+    board, target, git_env = actual_git_board
+    assert board.cmd_regression(_run_args(cwd=str(target), final=True)) == 0
+    first_head = _flag(board)["head"]
+    (target / "second.txt").write_text("second\n", encoding="utf-8")
+    subprocess.run(["git", "add", "second.txt"], cwd=target, check=True)
+    subprocess.run(["git", "commit", "-qm", "second"], cwd=target,
+                   env=git_env, check=True)
+
+    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+    assert first_head != board._git_head_at(str(target))
+    assert "stale" in capsys.readouterr().err
+
+
+@requires_git
+@pytest.mark.parametrize("anchor_kind", ["empty", "relative", "removed", "non-git"])
+def test_single_check_fails_closed_for_present_invalid_anchor(
+        actual_git_board, tmp_path, anchor_kind, capsys):
+    board, target, _git_env = actual_git_board
+    target_head = board._git_head_at(str(target))
+    if anchor_kind == "empty":
+        anchor = ""
+    elif anchor_kind == "relative":
+        anchor = "relative/target"
+    elif anchor_kind == "removed":
+        anchor = str(tmp_path / "removed")
+    else:
+        nongit = tmp_path / "non-git"
+        nongit.mkdir()
+        anchor = str(nongit)
+    # empty anchor + empty fallback HEAD 동치도 green이 아니어야 한다.
+    recorded_head = board._git_head() if anchor_kind == "empty" else target_head
+    _write_flag(board, status="pass", rc=0, collected=1, floor=0,
+                head=recorded_head, conf_anchor=anchor)
+
+    assert board.cmd_regression(argparse.Namespace(action="check")) == 1
+    assert "stale" in capsys.readouterr().err
+
+
+def test_single_check_legacy_flag_without_conf_anchor_falls_back_to_repo(board):
+    _write_flag(board, status="pass", rc=0, collected=1, floor=0)
+    assert "conf_anchor" not in _flag(board)
+    assert board.cmd_regression(argparse.Namespace(action="check")) == 0
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -699,6 +809,24 @@ def multi_board(board, monkeypatch):
     heads = {_slot_cwd(board, "A_1"): "HEAD_A", _slot_cwd(board, "B_1"): "HEAD_B"}
     monkeypatch.setattr(board, "_git_head_at", lambda cwd: heads.get(cwd, "HEAD_?"))
     return board
+
+
+def test_multi_slot_regression_keeps_per_slot_head_seam(multi_board):
+    board = multi_board
+    for session, head in (("A_1", "HEAD_A"), ("B_1", "HEAD_B")):
+        flag = board._regression_flag_for(session)
+        flag.write_text(json.dumps({
+            "head": head, "status": "pass", "rc": 0, "scope": "full",
+            "collected": 1, "floor": 0, "conf_anchor": _slot_cwd(board, session),
+            "session": session, "ts": "2026-08-25T00:00:00+00:00",
+        }), encoding="utf-8")
+    assert board._regression_slot_state("A_1", _slot_cwd(board, "A_1")).state == "green"
+    assert board._regression_slot_state("B_1", _slot_cwd(board, "B_1")).state == "green"
+
+    original = board._git_head_at
+    board._git_head_at = lambda cwd: "HEAD_A_2" if cwd == _slot_cwd(board, "A_1") else original(cwd)
+    assert board._regression_slot_state("A_1", _slot_cwd(board, "A_1")).state == "stale"
+    assert board._regression_slot_state("B_1", _slot_cwd(board, "B_1")).state == "green"
 
 
 def _set_slot_floor(board, session: str, value) -> None:

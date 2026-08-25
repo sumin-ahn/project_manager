@@ -1318,7 +1318,8 @@ def test_upgrade_adopter_gains_a_codex_hook_feature_by_engine_code_alone(tmp_pat
     assert set(installed) == set(declared), "설치 config 와 엔진 선언의 이벤트 집합이 갈렸다"
     for event in declared:
         groups = installed[event]
-        assert len(groups) == 1 and groups[0]["matcher"] == ".*", event
+        expected = "^(Bash|collaborationspawn_agent)$" if event == "PreToolUse" else ".*"
+        assert len(groups) == 1 and groups[0]["matcher"] == expected, event
         for key in ("command", "commandWindows"):
             assert _CODEX_DISPATCHER_REL in groups[0]["hooks"][0][key], (event, key)
             assert f"--hook-dispatch {event}" in groups[0]["hooks"][0][key], (event, key)

@@ -1,9 +1,9 @@
-"""codex 훅 범용 진입점 + 기능 디스패처 (T-0777).
+"""codex 훅 진입점 + 기능 디스패처 (T-0777/T-0872).
 
 ## 이 파일이 있는 이유
 `.codex/hooks.json` 은 채택자 소유(manifest 밖)라, 가드 기능을 하나 더할 때마다 **채택자 config
 수정 + `/hooks` 재승인**을 다시 요구했다. 그 마찰이 기능마다 반복되는 것이 결함이다. 이제
-이벤트당 진입점을 하나만 열고(`matcher .*` → `.codex/pm_orch_codex.py --hook-dispatch <이벤트>`)
+이벤트당 진입점을 하나만 열고(PreToolUse exact, 나머지 `.*` → 디스패처)
 "어떤 가드를 돌릴지" 의 판단을 **manifest 등재 코드**가 쥔다 — 이후 기능 추가는 registry 한
 줄이고 config 는 다시 안 건드린다.
 
@@ -79,12 +79,13 @@ def _entry_handler(event: str) -> dict:
 # ── 진입점 선언이 세 곳에서 같은 값인가 ──────────────────────────────────────
 
 
-def test_shipped_hooks_json_opens_one_universal_entrypoint_per_declared_event(
+def test_shipped_hooks_json_opens_one_entrypoint_per_declared_event(
         dispatcher):
-    """선언된 이벤트마다 `matcher .*` 진입점이 정확히 하나씩 있고 디스패처를 부른다."""
+    """선언된 이벤트마다 진입점이 하나이고 PreToolUse만 안전 도구로 좁다."""
     events = _hooks()
     for event in dispatcher.CODEX_HOOK_ENTRYPOINT_EVENTS:
-        assert events[event][0]["matcher"] == ".*", event
+        expected = "^(Bash|collaborationspawn_agent)$" if event == "PreToolUse" else ".*"
+        assert events[event][0]["matcher"] == expected, event
         handler = _entry_handler(event)
         assert handler["type"] == "command"
         for key in ("command", "commandWindows"):
@@ -101,9 +102,38 @@ def test_engine_reverse_declaration_names_the_same_entrypoints(dispatcher, pm_im
     assert tuple(item.event for item in declared) == tuple(
         dispatcher.CODEX_HOOK_ENTRYPOINT_EVENTS)
     for item in declared:
-        assert item.matcher == ".*"
+        expected = "^(Bash|collaborationspawn_agent)$" if item.event == "PreToolUse" else ".*"
+        assert item.matcher == expected
         assert item.dispatcher == DISPATCHER_REL
         assert item.flag == dispatcher.CODEX_HOOK_DISPATCH_FLAG
+
+
+def test_pretooluse_native_matcher_is_exact_bash_and_live_spawn_only():
+    pattern = _hooks()["PreToolUse"][0]["matcher"]
+    live = json.loads((REPO / "tests" / "fixtures" /
+                       "codex_0_147_0_live_hook_payloads.json").read_text(encoding="utf-8"))
+    live_tools = [event["tool_name"] for event in live["events"]
+                  if event.get("hook_event_name") == "PreToolUse"]
+    assert "Bash" in live_tools and "collaborationspawn_agent" in live_tools
+    for tool in ("Bash", "collaborationspawn_agent"):
+        assert re.fullmatch(pattern, tool), tool
+    for tool in ("Agent", "spawn_agent", "collaborationwait_agent", "apply_patch",
+                 "update_plan", "BashExtra", "xBash", "collaborationspawn_agent_extra"):
+        assert re.fullmatch(pattern, tool) is None, tool
+
+
+def test_pretooluse_has_no_tool_independent_feature_and_prompt_compact_features_survive(
+        dispatcher):
+    pretool = [feature for feature in dispatcher.CODEX_HOOK_FEATURES
+               if feature.event == "PreToolUse"]
+    assert pretool and all(feature.tool_pattern is not None for feature in pretool)
+    by_id = {feature.feature_id: feature for feature in dispatcher.CODEX_HOOK_FEATURES}
+    assert by_id["ctx-nudge-userpromptsubmit"].event == "UserPromptSubmit"
+    assert by_id["principle-recall-userpromptsubmit"].event == "UserPromptSubmit"
+    assert by_id["principle-recall-rearm"].event == "PostCompact"
+    for feature_id in ("compaction-checkpoint-pre", "compaction-guidance",
+                       "compaction-checkpoint-post", "compaction-snapshot"):
+        assert feature_id in by_id
 
 
 def test_every_registered_feature_has_a_shipped_entrypoint(dispatcher):
@@ -126,7 +156,8 @@ def test_no_hook_event_is_left_outside_the_entrypoint_set():
     assert set(events) == set(_load("pm_orch_codex", DISPATCHER_PY)
                               .CODEX_HOOK_ENTRYPOINT_EVENTS)
     for event in events:
-        assert [group["matcher"] for group in events[event]] == [".*"], event
+        expected = "^(Bash|collaborationspawn_agent)$" if event == "PreToolUse" else ".*"
+        assert [group["matcher"] for group in events[event]] == [expected], event
         handler = _entry_handler(event)
         for key in ("command", "commandWindows"):
             assert DISPATCHER_REL in handler[key], (event, key)
@@ -190,14 +221,16 @@ README = CODEX_TEMPLATE / "README.md"
 
 
 def test_readme_documents_the_universal_entrypoint_and_feature_registry(dispatcher):
-    """출하 README 가 진입점·registry·재승인 불요를 명시한다(채택자가 읽는 유일한 산문)."""
+    """출하 README가 exact PreToolUse와 나머지 범용 진입점을 설명한다."""
     readme = " ".join(README.read_text(encoding="utf-8").split())
 
     for anchor in (
-        "`SubagentStart`·`PreCompact`·`PostCompact`)는 이벤트당 진입점을 **하나씩만** 연다",
+        "`PreToolUse`의 native matcher는 exact `^(Bash|collaborationspawn_agent)$`",
+        "나머지 다섯 이벤트만 `.*`",
+        "대기·일반 도구는 PreToolUse 디스패처 프로세스를 시작하지 않는다",
         "진입점 밖에 남은 이벤트는 없다",
         "`.codex/pm_orch_codex.py --hook-dispatch <이벤트>`",
-        "가드 기능 추가는 엔진 코드 변경뿐",
+        "**가드 기능 추가는 엔진 코드 변경뿐**",
         "`/hooks` 재승인도 다시 하지 않는다",
         "--hook-features",
         "진입점 집합 자체는 릴리즈 간 불변",
@@ -729,11 +762,9 @@ def test_shipped_entrypoint_runs_the_registered_guard_for_a_spawn_payload(
 
 @pytest.mark.skipif(not posix_bash_supported(),
                     reason="POSIX bash wrapper 실행 환경이 아님")
-def test_shipped_entrypoint_merges_spawn_deny_and_ctx_nudge_without_losing_either(
+def test_shipped_entrypoint_keeps_spawn_deny_without_pretooluse_ctx_nudge(
         tmp_path):
-    """출하 PreToolUse 진입점에서 스폰 deny 와 ctx 넛지가 같은 호출에서 동시에 걸리면 둘 다
-    실린다(T-0824 재현 픽스처). 이 fix 전에는 `hookSpecificOutput` 이 통째로 사라져
-    `additionalContext` 가 조용히 유실됐다(실측: 이 테스트를 되돌리면 그 유실이 재현된다)."""
+    """PreToolUse 스폰 deny는 유지되고 프롬프트 단위 ctx 넛지는 섞이지 않는다."""
     root = _adopter_tree(
         tmp_path, conf_lines=(*_CROSS_CONF, "harness.codex.ctx_window_tokens=20000"))
     rollout = root / "rollout-live.jsonl"
@@ -752,9 +783,7 @@ def test_shipped_entrypoint_merges_spawn_deny_and_ctx_nudge_without_losing_eithe
     hook_output = result["hookSpecificOutput"]
     assert hook_output["permissionDecision"] == "deny"         # deny 유지
     assert hook_output["permissionDecisionReason"] == result["reason"]
-    additional_context = hook_output["additionalContext"]      # 유실되던 값이 이제 실린다
-    assert additional_context.strip() != ""
-    assert "77%" in additional_context and "23%" in additional_context
+    assert "additionalContext" not in hook_output
 
 
 @pytest.mark.skipif(not posix_bash_supported(),

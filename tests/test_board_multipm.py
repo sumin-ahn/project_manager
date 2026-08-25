@@ -1492,6 +1492,7 @@ def reg_board(board, monkeypatch):
     monkeypatch.setattr(board, "REGRESSION_FLAG", local / "regression.json")
     monkeypatch.setattr(board, "LEASES_FILE", local / "worktree-leases.json")  # 부재
     monkeypatch.setattr(board, "_git_head", lambda: "deadbeef01234567")
+    monkeypatch.setattr(board, "_git_head_at", lambda _cwd: "deadbeef01234567")
     return board
 
 

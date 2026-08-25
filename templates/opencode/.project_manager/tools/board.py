@@ -939,6 +939,7 @@ def judge_engine_invocation(
         ):
             return {
                 "verdict": "deny", "cwd_identity": identity,
+                "code": "pm-home-relative-pytest-tests-missing",
                 "reason": (
                     "PM 홈 cwd에서 pytest tests/를 실행하려 하나 cwd의 tests/ 디렉터리가 "
                     "실재하지 않음 — 대상 worktree의 workdir에서 실행하라"
@@ -1926,7 +1927,13 @@ def judge_git_anchor_command(
         f"호출 {index} [{item['cwd_identity']}/{item['verdict']}]: {item['reason']}"
         for index, item in enumerate(judgments, 1)
     )
-    return {**strongest, "reason": reasons}
+    result = {**strongest, "reason": reasons}
+    denies = [item for item in judgments if item["verdict"] == "deny"]
+    if denies and not all(
+        item.get("code") == "pm-home-relative-pytest-tests-missing" for item in denies
+    ):
+        result.pop("code", None)
+    return result
 
 
 def _resolved_subcommand(args: argparse.Namespace) -> str:
@@ -8200,13 +8207,18 @@ def cmd_regression(args: argparse.Namespace) -> int:
         # 하한 앵커는 **회귀를 도는 트리**(cwd) — 호출 사본의 REPO 가 아니다.
         floor = _regression_min_collected(cwd)
         status, recorded_rc, floor_note = _apply_collection_floor(rc, status, collected, floor)
+        head = _git_head_at(cwd)
+        if not head:
+            status = "fail"
+            recorded_rc = rc or 1
+            floor_note += " · Git HEAD 해소 실패"
         detail = f"{status} (rc={recorded_rc}{rc5_note}{floor_note})"
         LOCAL_DIR.mkdir(parents=True, exist_ok=True)
         REGRESSION_FLAG.write_text(json.dumps(
-            {"head": _git_head(), "status": status, "rc": recorded_rc, "scope": "full",
+            {"head": head, "status": status, "rc": recorded_rc, "scope": "full",
              "collected": collected, "floor": floor, "conf_anchor": cwd,
              "ts": now_utc()}), encoding="utf-8", newline="\n")
-        print(f"regression: {detail} @ {_git_head()[:8] or '?'}")
+        print(f"regression: {detail} @ {head[:8] or '?'}")
         return 0 if status == "pass" else 1
     # action == "check" — pre-push 게이트
     if not REGRESSION_FLAG.exists():
@@ -8214,7 +8226,24 @@ def cmd_regression(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
     data = json.loads(file_lock.read_text_shared(REGRESSION_FLAG, encoding="utf-8"))
-    head = _git_head()
+    if "conf_anchor" not in data:
+        # key 자체가 없던 legacy 기록만 board REPO 좌표로 폴백한다.
+        anchor = str(REPO)
+        head = _git_head()
+    else:
+        anchor = data.get("conf_anchor")
+        if (
+            not isinstance(anchor, str) or not anchor
+            or not os.path.isabs(anchor) or not Path(anchor).is_dir()
+        ):
+            print("regression: stale (기록 conf_anchor가 유효한 절대 디렉토리가 아님) "
+                  "— 재실행 필요.", file=sys.stderr)
+            return 1
+        head = _git_head_at(anchor)
+        if not head:
+            print(f"regression: stale (기록 conf_anchor {anchor}의 Git HEAD 해소 실패) "
+                  "— 재실행 필요.", file=sys.stderr)
+            return 1
     if data.get("head") != head:
         print(f"regression: stale (기록 {str(data.get('head'))[:8]} ≠ HEAD {head[:8]}) "
               "— 재실행 필요.", file=sys.stderr)
@@ -8240,8 +8269,7 @@ def cmd_regression(args: argparse.Namespace) -> int:
     # 하한 해소 앵커 = **그 실행이 기록한 conf 앵커**. 훅은 `--cwd` 를 못 넘기므로 여기서
     # 재해소하면 `run --cwd <tree>` 와 다른 local.conf 를 읽는다(false-green/false-RED).
     recorded_collected = _flag_collected(data)
-    floor_now = _regression_min_collected(_flag_conf_anchor(
-        data, _regression_cwd(getattr(args, "cwd", None))))
+    floor_now = _regression_min_collected(anchor)
     if _green_floor_stale(recorded_collected, floor_now):
         print(f"regression: stale (기록 수집 {recorded_collected} < 현재 하한 {floor_now} "
               "— 하한 신규/상향) — 재실행 필요.", file=sys.stderr)

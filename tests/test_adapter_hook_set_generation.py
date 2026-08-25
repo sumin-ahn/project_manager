@@ -414,11 +414,13 @@ _DISPATCHER_PREVIOUS_EVENT_SET = (
 _DISPATCHER_OLD = 'def main(argv=None):\n    return 0\n'
 
 
-def _codex_hooks(events=_CODEX_ENTRYPOINT_EVENTS, *, matcher: str = ".*") -> str:
-    """codex hooks.json — 이벤트별 범용 진입점 하나씩(출하 형상의 최소 재현)."""
+def _codex_hooks(events=_CODEX_ENTRYPOINT_EVENTS, *, matcher: str | None = None) -> str:
+    """codex hooks.json — PreToolUse만 안전 도구 exact, 나머지는 범용인 출하 형상."""
     return json.dumps({"hooks": {
         event: [{
-            "matcher": matcher,
+            "matcher": (matcher if matcher is not None else
+                        ("^(Bash|collaborationspawn_agent)$"
+                         if event == "PreToolUse" else ".*")),
             "hooks": [{"type": "command", "timeout": 15,
                        "command": f'"$py" {_CODEX_DISPATCHER_REL} '
                                   f'{_CODEX_DISPATCH_FLAG} {event}'}],

@@ -1549,6 +1549,95 @@ def _codex_live_bash_event() -> dict:
     return dict(events[0])
 
 
+def test_codex_explicit_tool_coordinate_precedes_session_cwd(monkeypatch, tmp_path):
+    dispatcher = _load("git_anchor_codex_coordinate_priority", CODEX_DISPATCHER)
+    calls = []
+
+    class FakeBoard:
+        @staticmethod
+        def judge_git_anchor_command(cwd, command):
+            calls.append((cwd, command))
+            return {"verdict": "ok", "cwd_identity": "non-repo", "reason": "fixture"}
+
+    monkeypatch.setattr(dispatcher, "_load_board", lambda _root: FakeBoard)
+    session = tmp_path / "session"
+    session.mkdir()
+    payload = _codex_live_bash_event()
+    payload["cwd"] = str(session)
+    payload["tool_input"] = {
+        "command": "git status", "cwd": "tool-cwd", "workdir": "tool-workdir",
+    }
+    assert dispatcher.git_anchor_hook_evaluate(payload, session) == {}
+    assert calls[-1][0] == str((session / "tool-workdir").resolve())
+
+    payload["tool_input"].pop("workdir")
+    assert dispatcher.git_anchor_hook_evaluate(payload, session) == {}
+    assert calls[-1][0] == str((session / "tool-cwd").resolve())
+
+
+def test_codex_live_bash_without_internal_workdir_warns_once_for_pm_home_relative_pytest(
+        monkeypatch, topology_without_home_tests):
+    dispatcher = _load("git_anchor_codex_missing_workdir", CODEX_DISPATCHER)
+    monkeypatch.setattr(
+        dispatcher, "_load_board",
+        lambda _root: _load("git_anchor_board_codex_missing_workdir", BOARD_PY),
+    )
+    home, _slot = topology_without_home_tests
+    payload = _codex_live_bash_event()
+    payload["cwd"] = str(home)
+    payload["session_id"] = "t0872-missing-workdir"
+    payload["tool_input"] = {"command": "python3 -m pytest tests/ -q -n auto"}
+
+    first = dispatcher.git_anchor_hook_evaluate(payload, home)
+    second = dispatcher.git_anchor_hook_evaluate(payload, home)
+    assert first["systemMessage"].startswith("[git-anchor/warn]")
+    assert "decision" not in first
+    assert second == {}
+
+
+def test_codex_missing_coordinate_keeps_real_git_mutation_deny(
+        monkeypatch, topology_without_home_tests):
+    dispatcher = _load("git_anchor_codex_missing_coordinate_mutation", CODEX_DISPATCHER)
+    monkeypatch.setattr(
+        dispatcher, "_load_board",
+        lambda _root: _load("git_anchor_board_codex_missing_coordinate_mutation", BOARD_PY),
+    )
+    home, _slot = topology_without_home_tests
+    payload = _codex_live_bash_event()
+    payload["cwd"] = str(home)
+    payload["tool_input"] = {"command": "git add templates/shared.txt"}
+    assert dispatcher.git_anchor_hook_evaluate(payload, home)["decision"] == "block"
+
+    payload["tool_input"] = {
+        "command": "python3 -m pytest tests/ -q; git add templates/shared.txt",
+    }
+    compound = dispatcher.git_anchor_hook_evaluate(payload, home)
+    assert compound["decision"] == "block"
+
+
+def test_codex_explicit_coordinate_keeps_engine_mutation_and_pytest_denies(
+        monkeypatch, topology_without_home_tests):
+    dispatcher = _load("git_anchor_codex_explicit_coordinate_denies", CODEX_DISPATCHER)
+    monkeypatch.setattr(
+        dispatcher, "_load_board",
+        lambda _root: _load("git_anchor_board_codex_explicit_coordinate_denies", BOARD_PY),
+    )
+    home, slot = topology_without_home_tests
+    payload = _codex_live_bash_event()
+    payload["cwd"] = str(home)
+    payload["tool_input"] = {
+        "command": "python3 -m pytest tests/ -q", "workdir": str(home),
+    }
+    assert dispatcher.git_anchor_hook_evaluate(payload, home)["decision"] == "block"
+
+    _seed_engine_copy(slot, "slot-rev")
+    payload["tool_input"] = {
+        "command": "python3 .project_manager/tools/board.py claim T-0001",
+        "workdir": str(slot),
+    }
+    assert dispatcher.git_anchor_hook_evaluate(payload, home)["decision"] == "block"
+
+
 def test_codex_bash_axis_deny_matches_the_measured_five_field_envelope(monkeypatch, topology):
     """라이브 픽스처의 Bash 이벤트로 판정을 호출하고 deny 엔벨로프 5필드가 값으로 일치한다."""
     dispatcher = _load("git_anchor_codex_deny", CODEX_DISPATCHER)
