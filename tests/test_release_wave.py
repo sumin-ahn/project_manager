@@ -376,8 +376,13 @@ def _full_wave_prompt(entry_doc: str, harness: str) -> str:
         "occurs zero times in the entire file bytes, including comments and docstrings; describe this ban "
         "only in the round evidence, never inside the generated test. Also verify no 32-hex run hash occurs. "
         f"Run `{_WAVE_TARGETED_COMMAND}` and then `{_WAVE_FULL_COMMAND}` yourself. Only actual rc=0 may be "
-        "recorded under `## 회귀` using the exact full command and the observed pytest summary; never "
-        f"fabricate a count. Append {_GROWTH_PIPELINE[1][1]}.\n"
+        "recorded. The `## 회귀` section must contain exactly two nonblank rows: "
+        f"`- 커맨드: `{_WAVE_FULL_COMMAND}`` and `- 결과: rc=0 · <the one observed full pytest "
+        "summary>`. Put targeted evidence under `## DoD evidence`, not under `## 회귀`. Before replying, "
+        "reopen the developer file and extract `## 회귀` through the next `## ` heading; rewrite and "
+        f"reread unless it has exactly those two rows, contains `{_WAVE_FULL_COMMAND}` once, contains "
+        f"neither `{_WAVE_TARGETED_COMMAND}` nor a placeholder, and the whole body contains "
+        f"{_GROWTH_PIPELINE[1][1]} exactly once. Never fabricate a count.\n"
         "ROUND 03 code-reviewer: review probe.txt and its regression test. If the known stable fixture is "
         "correct, use replacement/truncation, preserve the first header, and make line 2 through EOF equal "
         "the body between BEGIN/END here:\n"
@@ -1508,6 +1513,13 @@ def test_full_wave_prompt_has_ticket_growth_stages():
     assert "including comments and docstrings" in prompt
     assert "occurs zero times in the entire file bytes" in prompt
     assert "never inside the generated test" in prompt
+    round02 = prompt[prompt.index("ROUND 02 developer"):prompt.index("ROUND 03 code-reviewer")]
+    assert "The `## 회귀` section must contain exactly two nonblank rows" in round02
+    assert f"`- 커맨드: `{_WAVE_FULL_COMMAND}``" in round02
+    assert "`- 결과: rc=0 · <the one observed full pytest summary>`" in round02
+    assert "Put targeted evidence under `## DoD evidence`, not under `## 회귀`" in round02
+    assert f"contains neither `{_WAVE_TARGETED_COMMAND}` nor a placeholder" in round02
+    assert f"{_GROWTH_PIPELINE[1][1]} exactly once" in round02
     assert "BEGIN EXACT REVIEWER BODY" in prompt
     assert "exact body equality, one review block" in prompt
     assert "harvest ROUND 03 and observe rc=0" in prompt
