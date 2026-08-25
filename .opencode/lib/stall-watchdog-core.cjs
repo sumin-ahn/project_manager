@@ -196,7 +196,7 @@ function isAbortOutcome(message) {
 function buildNudge(kind) {
   if (kind === "declare-no-action") {
     return (
-      NUDGE_MARKER_PREFIX + " 대형 단일 출력 시도로 보인다 — safe_write 8KB 청크(create→append)로 " +
+      NUDGE_MARKER_PREFIX + " 대형 단일 출력 시도로 보인다 — safe_write 16KB 청크(create→append)로 " +
       "나눠 써라. 반복 내용이면 bash 생성이 낫다."
     );
   }

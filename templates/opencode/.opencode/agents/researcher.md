@@ -6,9 +6,17 @@ temperature: 0.1
 permission:
   read: allow
   # edit 는 위임 프롬프트가 지정한 라운드 파일 기록 전용(code-reviewer 와 동형).
-  # 코드·문서·PM 상태 수정 권한이 아니며 PM 이 위임 전후 git 상태를 감사한다. bash 는 계속 거부.
+  # 코드·문서·PM 상태 수정 권한이 아니며 PM 이 위임 전후 git 상태를 감사한다.
+  # bash 는 위험명령 제외 허용(T-opencode-002·code-reviewer 와 동일 패턴맵) — write 단일
+  # 경로 강제 시 대형·반복 산출 NO-WRITE 멈춤 방지(쓰기 사다리 보장).
   edit: allow
-  bash: deny
+  bash:
+    "*": allow
+    "rm *": deny
+    "git push --force*": deny
+    "git push -f*": deny
+    "git clean -f*": deny
+    "git reset --hard*": ask
   glob: allow
   grep: allow
   list: allow
@@ -85,7 +93,7 @@ python3 .project_manager/tools/board.py show T-NNNN
 - [확인 못한 것 / 범위 밖이라 남긴 것]
 ```
 
-> **대형 산출은 분할한다.** researcher는 bash 가 deny 이고 edit 는 지정된 라운드 파일 전용이라 파일 산출로 우회하지 않는다. 보고가 대략 200줄/8KB를 넘길 것 같으면 핵심 요약과 남은 조사 범위를 반환하고, PM이 후속 bounded 조사로 나눈다.
+> **대형 산출은 분할한다.** researcher는 bash 가 deny 이고 edit 는 지정된 라운드 파일 전용이라 파일 산출로 우회하지 않는다. 보고가 대략 200줄/16KB를 넘길 것 같으면 핵심 요약과 남은 조사 범위를 반환하고, PM이 후속 bounded 조사로 나눈다.
 
 ## 제약
 

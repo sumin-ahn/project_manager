@@ -9,10 +9,14 @@
 durable 하게 검증한다 (결정: 규약이지 강제가 아니다).
 
 검사 축 (T-0266 4어휘 패턴 동형 — 얕은 단일 문자열이 아니라 규약 절 안의 어휘 클래스 검증):
-  (1) 쓰기 산출 역할 4 카드가 규약 절 마커 + 4 핵심 어휘 + 임계(200줄/8KB)를 가진다.
-  (2) opencode 2 카드는 safe_write(8KB 청크)·write 16KB deny 를 추가 명시하고,
-      claude 2 카드는 opencode 전용 safe_write 를 섞지 않는다.
+  (1) 쓰기 산출 역할 4 카드가 규약 절 마커 + 4 핵심 어휘 + 임계(200줄/8KB 보고 가이드)를 가진다.
+  (2) opencode 3 카드는 safe_write(16KB 청크)·write 64KB deny 를 추가 명시하고,
+      claude 카드는 opencode 전용 safe_write 를 섞지 않는다.
   (3) 규약 절에 미충전 placeholder({{…}})·framework wikilink([[…]]) 0.
+
+숫자 정합(T-opencode-002): DENY_BYTES=64KB·CHUNK_BYTES=16KB 로 상향 — 카드·relay 안내와
+core 상수의 단일 진실(core 주석·sweep 근거)만 다르지 않게 임계 소비 표면을 함께 갱신한다.
+"200줄/8KB" 보고 임계는 파일-전달 규약 고유의 가이드로 별도 정책이라 그대로 둔다.
 
 ⚠️ '요약'·'파일' 은 카드 다른 곳(researcher 산출 형식 등)에도 등장하므로 whole-file 검사는
 vacuous — 반드시 규약 절(마커 ~ 다음 '## ' 헤딩)만 슬라이스해 그 안에서 어휘를 확인한다
@@ -60,17 +64,17 @@ _THRESHOLD = [
     ("바이트 임계", ("8KB", "8 KB")),
 ]
 
-# opencode 하네스 관용 — 대형 파일 쓰기 = safe_write(8KB chunk). 4 카드 공통 요구.
+# opencode 하네스 관용 — 대형 파일 쓰기 = safe_write(16KB chunk). 4 카드 공통 요구.
 _OPENCODE_SAFE_WRITE = [
     ("safe_write 지시", ("safe_write",)),
 ]
-# write 16KB deny 임계는 OPENCODE_CARDS(developer·architect·전부 write-capable)에 무조건
+# write 64KB deny 임계는 OPENCODE_CARDS(developer·architect·전부 write-capable)에 무조건
 # 요구한다 — read-only 역할(researcher·code-reviewer)은 OPENCODE_CARDS 밖(REPORT_ONLY_CARDS)이고
 # edit 가 자기 티켓 사본 절로 한정돼(ADR-0089 전원 참여·T-0696·T-0745 — edit permission 자체는
-# 두 역할 모두 allow) 대형 산출 **파일**을 새로 쓰지 않으므로 16KB 임계 자체가 무의미(그 문구를
-# 이 카드에 넣으면 write 가 16KB 까지는 되는 듯 오인 · T-0342: read-only 카드 16KB 문구 정합).
-_OPENCODE_WRITE_16KB_DENY = [
-    ("write deny 임계(16KB)", ("16KB", "16 KB")),
+# 두 역할 모두 allow) 대형 산출 **파일**을 새로 쓰지 않으므로 64KB 임계 자체가 무의미(그 문구를
+# 이 카드에 넣으면 write 가 64KB 까지는 되는 듯 오인 · T-0342: read-only 카드 임계 문구 정합).
+_OPENCODE_WRITE_64KB_DENY = [
+    ("write deny 임계(64KB)", ("64KB", "64 KB")),
 ]
 
 # 출하 doc 이 wikilink 하면 안 되는 framework-내부 ID (채택자 트리엔 부재 → dangling · T-0090).
@@ -135,22 +139,23 @@ def test_card_convention_states_threshold(label, path):
 
 @pytest.mark.parametrize("label,path", OPENCODE_CARDS)
 def test_opencode_card_convention_uses_safe_write(label, path):
-    """opencode 2 카드 규약 절이 safe_write(8KB 청크) + write 16KB deny 임계를 명시한다 (T-0334 연계).
+    """opencode 카드 규약 절이 safe_write(16KB 청크) + write 64KB deny 임계를 명시한다 (T-0334 연계).
 
-    opencode write 는 16KB 초과를 거부하므로 대형 파일 쓰기는 safe_write chunk 로 해야 한다 —
-    inbound(tool_output) 이 아니라 outbound(생성) 축의 파일-쓰기 채널을 카드가 안내해야 함.
-    OPENCODE_CARDS(developer·architect)는 전부 write-capable 역할이라 16KB 임계 명시를 무조건
-    요구한다 — read-only 역할(researcher·code-reviewer)은 REPORT_ONLY_CARDS 로 별도 취급되며
-    edit 가 자기 티켓 사본 절로 한정돼(ADR-0089 전원 참여·T-0696·T-0745 — edit permission 자체는
-    두 역할 모두 allow) 대형 산출 파일을 새로 쓰지 않으므로 16KB 임계가 무의미하다(T-0342).
+    opencode write 는 64KB 초과를 거부하므로 그 아래는 네이티브 write 로 가능하되, 대형 파일
+    쓰기(무결성 완주 보장)는 safe_write chunk 가 단일 계약이다 — outbound(생성) 축의 파일-쓰기
+    채널을 카드가 안내해야 함. OPENCODE_CARDS(developer·architect)는 전부 write-capable 역할이라
+    64KB 임계 명시를 무조건 요구한다 — read-only 역할(researcher·code-reviewer)은
+    REPORT_ONLY_CARDS 로 별도 취급되며 edit 가 자기 티켓 사본 절로 한정돼(ADR-0089 전원 참여·
+    T-0696·T-0745 — edit permission 자체는 두 역할 모두 allow) 대형 산출 파일을 새로 쓰지 않으므로
+    64KB 임계가 무의미하다(T-0342).
     """
     region = _convention_region(path)
     assert region, f"{label} ({path.relative_to(REPO)}): 규약 절 마커 부재 (T-0337)"
-    required = list(_OPENCODE_SAFE_WRITE) + list(_OPENCODE_WRITE_16KB_DENY)
+    required = list(_OPENCODE_SAFE_WRITE) + list(_OPENCODE_WRITE_64KB_DENY)
     missing = [name for name, tokens in required if not any(t in region for t in tokens)]
     assert not missing, (
         f"{label} ({path.relative_to(REPO)}) 규약 절에 opencode 대형-쓰기 지시 누락: {missing} "
-        f"— safe_write(8KB 청크)·write 16KB deny 를 명시해야 함 (T-0334 · T-0337 · T-0342)"
+        f"— safe_write(16KB 청크)·write 64KB deny 를 명시해야 함 (T-0334 · T-0337 · T-0342)"
     )
 
 

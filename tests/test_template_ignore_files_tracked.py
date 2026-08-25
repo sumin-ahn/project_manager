@@ -260,18 +260,34 @@ def test_opencode_manifest_registers_adapter_gitignore():
 
 # ── 가드 ④ 제품 루트 opencode npm 산출물 재추적 방지 ───────────────────────────
 
+# 루트 .opencode 추적 허용집합 — ignore 규칙 파일 + stall-watchdog 인스턴스 사본(T-opencode-003).
+# 인스턴스 사본(lib/plugins)은 fresh clone 에서 디스크 존재+templates byte-identical 가드
+# (test_stall_watchdog_plugin_files_exist_and_instance_copies_match)가 성립하려면 추적돼야 한다.
+# npm 재생성물(node_modules·package.json·package-lock.json·bun.lock)은 계속 금지다 — 집합 일치
+# 비교라 허용집합 밖 신규 추적 전환은 즉시 발화한다.
+ROOT_OPENCODE_TRACKED_ALLOWLIST = frozenset({
+    ".opencode/.gitignore",
+    ".opencode/lib/stall-watchdog-core.cjs",
+    ".opencode/plugins/stall-watchdog.js",
+})
+
 
 @requires_git_worktree
 def test_root_opencode_tracks_only_its_gitignore():
-    """제품 루트 `.opencode` 추적 집합은 ignore 규칙 파일 1건뿐이다 (T-0631).
+    """제품 루트 `.opencode` 추적 집합은 허용집합에 머문다 (T-0631 · T-opencode-003 갱신).
 
     opencode 런타임이 `node_modules`·`package*.json` 을 다시 만들어도 제품 소스가 아니므로 index 에
-    들어오면 안 된다. 반대로 `.gitignore` 자체는 fresh clone 에도 있어야 이 규칙이 계속 유효하다.
+    들어오면 안 된다. 반대로 `.gitignore` 자체와 워치독 엔진 인스턴스 사본 2건은 fresh clone 에
+    있어야 각각의 규칙·byte-identical 가드가 유효하다.
     """
     rel = ".opencode/.gitignore"
     assert (REPO / rel).is_file(), f"루트 opencode ignore 규칙 파일 부재: {rel}"
-    assert _tracked_relpaths(REPO, ".opencode") == {rel}, (
-        "루트 .opencode 추적 집합은 .gitignore 1건이어야 한다 — npm 재생성물 재추적 회귀")
+    tracked = _tracked_relpaths(REPO, ".opencode")
+    unexpected = sorted(tracked - ROOT_OPENCODE_TRACKED_ALLOWLIST)
+    missing = sorted(ROOT_OPENCODE_TRACKED_ALLOWLIST - tracked)
+    assert not unexpected and not missing, (
+        "루트 .opencode 추적 집합이 허용집합에서 이탈했다 — npm 재생성물 재추적 회귀"
+        f"(unexpected={unexpected}, missing={missing})")
 
 
 @requires_git_binary

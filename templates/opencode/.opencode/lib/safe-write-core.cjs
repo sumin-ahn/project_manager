@@ -18,11 +18,12 @@
 //   3층 가드로 닫는다:
 //     1) deny-and-redirect (tool.execute.before): write/edit 의 대형 args 가 DENY_BYTES 초과 시
 //        throw — 에러 메시지가 모델-facing 행동 지시(기존 파일=edit 문자열-치환으로 나눠라 /
-//        신규 파일=safe_write 로 8KB chunk create→append). 업계 수렴(Claude Code·Gemini·Cline·
+//        신규 파일=safe_write 로 16KB chunk create→append). 업계 수렴(Claude Code·Gemini·Cline·
 //        aider 전부 대형 재작성→문자열-치환 diff 유도·aider 실측 lazy 누락 3배 감소).
-//     2) safe_write custom tool: 신규-대형-파일 갭 전용(anchor 부재로 edit 불가한 케이스). 8KB
+//     2) safe_write custom tool: 신규-대형-파일 갭 전용(anchor 부재로 edit 불가한 케이스). 16KB
 //        chunk 상한을 도구가 강제(초과 거부)·create(신규)→append(이어쓰기) 순으로 쌓고 누적
-//        바이트/라인을 보고(모델이 진행 파악). apply_patch 로 redirect 하지 않는다 — patch 문법은
+//        바이트/라인/개행 종단 여부를 보고(모델이 진행·청크 경계 상태 파악). apply_patch 로
+//        redirect 하지 않는다 — patch 문법은
 //        모델 fluency 의존(비-OpenAI 모델 실패 실측·glm-5.2 신뢰 불가). redirect 대상은 edit·safe_write 둘뿐.
 //     3) 출력 상한 config: opencode.jsonc `limit.output` 명시 — fallback *미정의* 상태를 없앤다.
 //        (실효 출력은 여전히 min(limit.output, 32000)=32000 이라 상한 자체를 올리진 못한다 — 32000
@@ -44,11 +45,16 @@ const path = require("node:path");
 
 // ── 임계값 상수 (core 상단 명시·env override) ────────────────────────────────
 // DENY_BYTES: write content / edit(newString+oldString) 이 이 크기 초과 시 deny-and-redirect.
-//   16KB — upstream #19604 실측 실패 구간(~1000줄=30~40KB)보다 보수적(routine write 마찰 최소화).
-// CHUNK_BYTES: safe_write 한 chunk 상한(도구가 강제). 8KB — 초기 발의값(32k 토큰 상한 대비 안전).
+//   64KB — 근거(2026-08 확정·T-opencode-001 sweep): ① PM 70차 실측 무가드 native write 89KB
+//   성공·237KB 실패 → 실패선은 (89KB,237KB] 구간, 그 아래인 64KB 는 안전 마진 ② 2026-08-24
+//   경계 sweep 에서 emit 성공분은 65KB 까지 전량 byte-exact(절단 흔적 없음) ③ 16~64KB 를
+//   네이티브 허용으로 풀어 그 구간의 프로토콜 강제 마찰을 제거.
+// CHUNK_BYTES: safe_write 한 chunk 상한(도구가 강제). 16KB — 조건부 채택: UTF-8 multibyte
+//   경계·quote/backslash 많은 코드 내용이 정확히 16,384B 에서 완성 args 로 도달하는 node
+//   자가검증(test_opencode_safe_write.py 경계 자가검증) 통과. 라이브 6런 게이트는 티켓 DoD(PM).
 // 회사/모델별 튜닝: 각 env override(PM_SAFE_WRITE_DENY_BYTES·PM_SAFE_WRITE_CHUNK_BYTES).
-const DENY_BYTES = 16 * 1024; // 16384
-const CHUNK_BYTES = 8 * 1024; // 8192
+const DENY_BYTES = 64 * 1024; // 65536
+const CHUNK_BYTES = 16 * 1024; // 16384
 const DENY_BYTES_ENV = "PM_SAFE_WRITE_DENY_BYTES";
 const CHUNK_BYTES_ENV = "PM_SAFE_WRITE_CHUNK_BYTES";
 
@@ -157,7 +163,9 @@ function validateSafeWrite(content, mode, fileExists, chunkBytes) {
   if (mode === "create" && fileExists) {
     return {
       ok: false,
-      message: `create 인데 파일이 이미 존재한다 — 이어쓰려면 mode="append" 를 써라.`,
+      message:
+        `create 인데 파일이 이미 존재한다 — 파일 끝을 read 한 뒤 mode="append" 로 이어 써라 ` +
+        `(재개). 새로 만들려면 다른 경로를 써라.`,
     };
   }
   if (mode === "append" && !fileExists) {
@@ -299,8 +307,8 @@ function safeWrite(root, filePath, content, mode, chunkBytes) {
     } catch (e) {
       if (e && e.code === "EEXIST") {
         throw new Error(
-          '[safe-write] create 대상이 이미 존재하거나 symlink 다 — 이어쓰려면 mode="append", ' +
-            "프로젝트 밖 symlink 면 다른 경로를 써라.",
+          '[safe-write] create 대상이 이미 존재하거나 symlink 다 — 파일 끝을 read 한 뒤 ' +
+            'mode="append" 로 이어 써라(재개). 프로젝트 밖 symlink 면 다른 경로를 써라.',
         );
       }
       throw e;
@@ -334,7 +342,15 @@ function safeWrite(root, filePath, content, mode, chunkBytes) {
   const totalBytes = byteLength(full);
   // 줄 수 = 개행 개수 + (마지막 개행 없는 잔여줄 1). 빈 파일은 0.
   const totalLines = full.length === 0 ? 0 : full.split("\n").length - (full.endsWith("\n") ? 1 : 0);
-  return { filePath: target, mode, wroteBytes: byteLength(content), totalBytes, totalLines };
+  // endsWithNewline: 청크 경계 피드백 — false 면 다음 조각이 \n 으로 시작해야 줄 단위 계약이 유지된다.
+  return {
+    filePath: target,
+    mode,
+    wroteBytes: byteLength(content),
+    totalBytes,
+    totalLines,
+    endsWithNewline: full.endsWith("\n"),
+  };
 }
 
 // ── 순수 함수: 파일 경로 해소 (상대→directory 기준 절대·read-only 휴리스틱 전용) ──
@@ -355,13 +371,16 @@ function makeSafeWritePlugin(tool) {
     const denyBytes = resolveDenyBytes(process.env);
     const chunkBytes = resolveChunkBytes(process.env);
     return {
-      // ── (2) 신규-대형-파일 전용 custom tool: 8KB chunk create→append ──────────
+      // ── (2) 신규-대형-파일 전용 custom tool: 16KB chunk create→append ──────────
       tool: {
         safe_write: tool({
           description:
             `대형 신규 파일을 ${chunkBytes}B 이하 chunk 로 안전하게 쓰는 도구. mode="create" 로 ` +
-            `첫 조각을 쓰고 mode="append" 로 이어 붙인다. 한 번에 ${chunkBytes}B 이하만 허용(초과 ` +
-            `거부)·create 는 기존 파일 있으면 거부·append 는 파일 없으면 거부. 반환은 누적 바이트/라인 ` +
+            `첫 조각을 쓰고 mode="append" 로 이어 붙인다. content 는 줄 단위(line-aligned) 텍스트 ` +
+            `조각만 — 각 조각의 시작·끝은 줄 경계에 맞추고, 끝이 개행(\\n)이 아니면 응답이 알려주니 ` +
+            `다음 조각 첫 문자를 \\n 으로 시작하라. 줄 중간(mid-line) 분할은 계약 밖이다. 한 번에 ` +
+            `${chunkBytes}B 이하만 허용(초과 거부)·create 는 기존 파일 있으면 거부(파일 끝을 read 한 뒤 ` +
+            `append 로 재개)·append 는 파일 없으면 거부. 반환은 누적 바이트/라인+개행 종단 여부 ` +
             `(진행 파악용). 기존 파일 대형 수정에는 이 도구 대신 edit(문자열 치환)를 써라.`,
           args: {
             filePath: tool.schema
@@ -369,7 +388,7 @@ function makeSafeWritePlugin(tool) {
               .describe("쓸 파일 경로 — 프로젝트 상대경로만 (절대경로·../ 프로젝트 밖 탈출은 거부됨)"),
             content: tool.schema.string().describe(`이번 chunk 내용 (${chunkBytes}B 이하)`),
             mode: tool.schema
-              .string()
+              .enum(["create", "append"])
               .describe('"create"(첫 조각·신규 파일) 또는 "append"(이어쓰기)'),
           },
           async execute(args, context) {
@@ -377,10 +396,15 @@ function makeSafeWritePlugin(tool) {
             // root(프로젝트 디렉터리) + 모델이 준 상대 filePath 를 그대로 넘긴다 — safeWrite 가
             // 절대·../·symlink 탈출을 봉쇄한다(raw fs 가 opencode 권한계층을 우회하므로).
             const res = safeWrite(root, args.filePath, args.content, args.mode, resolveChunkBytes(process.env));
+            const boundaryNote = res.endsWithNewline
+              ? ""
+              : " ⚠ 파일이 개행(\\n)으로 끝나지 않는다 — 다음 조각 첫 문자를 \\n 으로 시작하라" +
+                "(줄 단위 텍스트 chunk 전용 계약이다).";
             return (
               `[safe-write] ${res.mode} ok — 이번 ${res.wroteBytes}B 썼고 누적 ` +
-              `${res.totalBytes}B / ${res.totalLines}줄 (${args.filePath}). ` +
-              `다음 조각은 mode="append" 로 이어 써라.`
+              `${res.totalBytes}B / ${res.totalLines}줄 (${args.filePath}).` +
+              boundaryNote +
+              ` 다음 조각은 mode="append" 로 이어 써라.`
             );
           },
         }),

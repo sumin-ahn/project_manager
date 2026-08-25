@@ -2915,7 +2915,7 @@ def cap_hit_warning_message(reason: str) -> str:
         f"[pm-orch] ⚠ 출력 상한(32k tok) 근방: {reason}. **opencode 하니스라면** 이 응답이 silent "
         "절단됐을 가능성이 있다 — opencode 는 32k 출력 토큰에서 응답을 조용히 자르고 finish 를 'stop' "
         "으로 위장한다(수신자 감지 불가). 잘렸다면 파일-전달 규약으로 재시도하라: 대형 "
-        "산출물은 파일로 쓰고(opencode 는 safe_write 8KB 청크·write 는 16KB 초과 거부), 응답엔 절대경로 "
+        "산출물은 파일로 쓰고(opencode 는 safe_write 16KB 청크·write 는 64KB 초과 거부), 응답엔 절대경로 "
         "+ 핵심 요약 ≤10줄만 반환."
     )
 
