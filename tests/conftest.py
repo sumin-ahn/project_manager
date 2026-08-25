@@ -466,13 +466,17 @@ def codex_live_env(home: Path) -> dict[str, str]:
 
 
 def run_codex_exec(prompt: str, cwd: Path, home: Path, *, model: str | None = None,
-                   timeout: int = 600) -> subprocess.CompletedProcess:
+                   timeout: int = 600, sandbox: str = "workspace-write",
+                   ) -> subprocess.CompletedProcess:
     """`codex exec` 한 turn 을 격리 홈으로 실행한다 (stdin=DEVNULL 필수·미닫힘 시 무기한 대기·실측).
 
     기본 모델 = codex 로컬 config 상속(`-m` 생략). `model` 명시(예 env `PM_ORCH_LIVE_CODEX_MODEL`)면
     `-m <model>` 로 override. cwd 는 `-C` 로 핀(child cwd 격리·PM repo root). resume 커맨드형이
     필요하면 driver(`pm_orch_codex.py`)를 쓴다 — 이 헬퍼는 단일-turn exec 전용."""
+    if sandbox not in {"workspace-write", "danger-full-access"}:
+        raise ValueError(f"unsupported codex sandbox: {sandbox}")
     cmd = list(_CODEX_EXEC_PREFIX)
+    cmd[cmd.index("-s") + 1] = sandbox
     if model:
         cmd += ["-m", model]
     cmd += ["-C", str(cwd)]

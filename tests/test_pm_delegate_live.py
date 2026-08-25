@@ -312,10 +312,16 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
                 f"{_CROSS_TEST_FILE} which imports that function and asserts that exact tuple. "
                 "Do not use a random value, run id, temporary delegate-copy path, or session hash. Run "
                 f"`{_CROSS_TEST_COMMAND}` and then `{_CROSS_FULL_COMMAND}`. Only after both actually return "
-                "rc=0, replace the round body after its first header with completed 변경 파일/신규 테스트/"
-                "DoD evidence/민감도 sections and a `## 회귀` section containing exactly two nonblank "
+                "rc=0, replace the round body after its first header with completed sections in this exact "
+                "order: `## 변경 파일`, `## 신규 테스트`, `## 회귀`, `## DoD evidence`, `## 민감도`, "
+                "then the sentinel. The `## 회귀` section must contain exactly two nonblank "
                 f"rows: `- 커맨드: `{_CROSS_FULL_COMMAND}`` and `- 결과: rc=0 · <the actual pytest "
-                f"summary you just observed>`. Append `{sentinel}`. Never fabricate a result. "
+                "summary you just observed>`. Put targeted-command evidence only under `## DoD evidence`. "
+                "Mandatory self-check before replying: reopen the file, extract `## 회귀` through the next "
+                "`## ` heading, and refuse to finish unless it has exactly those two rows, contains the full "
+                "command once, and contains neither the targeted command nor the sentinel. Also verify the "
+                f"whole body contains `{sentinel}` exactly once. Rewrite and reread if any check fails. "
+                "Never fabricate a result. "
             )
             final_contract = "After the edit and real green commands, reply exactly DONE.\n"
         else:
@@ -668,6 +674,23 @@ def test_cross_growth_fixture_pins_fixed_pipeline_and_parallel_full_command(tmp_
     assert "no third nonblank row" in route_source
     assert "extract `## 회귀`" in route_source
     assert "contains neither" in route_source
+
+
+def test_cross_stage2_regression_section_has_exact_boundary_and_negative_guard():
+    """02 developer sentinel/targeted 증거가 exact two-row 회귀 절에 흡수되지 않는다."""
+    route_source = inspect.getsource(_run_cross_growth_route)
+    stage2_source = route_source.split("elif stage == 2:", 1)[1].split(
+        "        else:", 1,
+    )[0]
+    section_order = (
+        "`## 변경 파일`, `## 신규 테스트`, `## 회귀`, `## DoD evidence`, `## 민감도`"
+    )
+
+    assert section_order in stage2_source
+    assert "extract `## 회귀` through the next" in stage2_source
+    assert "contains neither the targeted command nor the sentinel" in stage2_source
+    assert "targeted-command evidence only under `## DoD evidence`" in stage2_source
+    assert "whole body contains" in stage2_source and "exactly once" in stage2_source
 
 
 def test_delegate_forwards_resume_from_without_fresh(tmp_path, monkeypatch, capsys):

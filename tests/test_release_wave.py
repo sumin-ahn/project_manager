@@ -298,7 +298,7 @@ def _run_opencode_live(argv, *, cwd, env, timeout):
     )
 
 
-def _full_wave_prompt(entry_doc: str) -> str:
+def _full_wave_prompt(entry_doc: str, harness: str) -> str:
     """PM 세션이 고정 4회 위임과 native 라운드 파일 왕복을 운영하라는 프롬프트.
 
     board.py 경로를 *주지 않는다* — adopter 가 `entry_doc` 만으로 도구를 찾아 운영해야 통과(= 문서 운영성).
@@ -337,14 +337,17 @@ def _full_wave_prompt(entry_doc: str) -> str:
         f"```{_PM_REVIEW_BLOCK}\n{zero_review_payload}\n```\n\n"
         f"{_GROWTH_PIPELINE[2][1]}\n"
     )
+    delegation_tool = "spawn_agent" if harness == "codex" else "Task"
     return (
         f"You are the PM for this project. Read {entry_doc} to learn how the project board "
         "tool works. HARD DELEGATION GATE: the PM main may run board, prepare, and harvest commands but "
-        "must not directly write, edit, cp, or sed any round file body. Call native Task exactly four "
+        f"must not directly write, edit, cp, or sed any round file body. Call native {delegation_tool} exactly four "
         "times in this order: architect once, developer once, code-reviewer once, developer once. After "
         "each prepare, pass that absolute round path and its complete ROUND contract below to the matching "
-        "Task; do not start the next Task until the current Task succeeds and its harvest returns rc=0. "
-        "If a Task is missing or fails, stop without directly substituting for it. The code-reviewer Task "
+        f"{delegation_tool}; do not start the next {delegation_tool} until the current {delegation_tool} "
+        "succeeds and its harvest returns rc=0. "
+        f"If a {delegation_tool} call is missing or fails, stop without directly substituting for it. "
+        f"The code-reviewer {delegation_tool} "
         "prompt must include the nested BEGIN EXACT REVIEWER BODY through END EXACT REVIEWER BODY content "
         "below verbatim, without paraphrasing or changing its schema. Before completion, self-check spawned "
         "role counts exactly architect=1, developer=2, code-reviewer=1 and stop on any mismatch. "
@@ -526,6 +529,38 @@ def _assert_wave_side_effects(dest: Path, proc: subprocess.CompletedProcess, har
             )
 
 
+def _baseline_codex_adopter(dest: Path) -> None:
+    """Codex native wave 전에 host가 imported adopter의 초기 HEAD/index를 확립한다.
+
+    Codex main은 이후 ticket/round 변경을 직접 commit해야 하므로 initial import만 host 경계에서
+    추적한다. throwaway adopter에는 remote가 없고, 테스트 전용 identity도 repo config에 남기지 않는다.
+    """
+    commands = (
+        ["git", "-C", str(dest), "add", "--all"],
+        [
+            "git", "-C", str(dest),
+            "-c", "user.name=PM release fixture",
+            "-c", "user.email=pm-release-fixture@example.invalid",
+            "commit", "--no-gpg-sign", "-m", "release fixture baseline",
+        ],
+    )
+    for command in commands:
+        proc = subprocess.run(
+            command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            check=False,
+        )
+        assert proc.returncode == 0, (
+            f"Codex native adopter baseline 실패: {' '.join(command)}\n"
+            f"stdout={proc.stdout[-1200:]}\nstderr={proc.stderr[-1200:]}"
+        )
+    assert (dest / ".git" / "index").is_file()
+    head = subprocess.run(
+        ["git", "-C", str(dest), "rev-parse", "--verify", "HEAD"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    assert head.returncode == 0 and head.stdout.strip()
+
+
 @pytest.mark.release
 @pytest.mark.skipif(
     not _RELEASE_LIVE or not shutil.which("claude"),
@@ -553,7 +588,7 @@ def test_release_wave_claude_full_wave(tmp_path):
          "--allowedTools", "Bash", "Task",
          "--output-format", "stream-json", "--verbose",
          "--dangerously-skip-permissions",
-         _full_wave_prompt("CLAUDE.md")],
+         _full_wave_prompt("CLAUDE.md", "claude")],
         cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
         env=_live_env(CLAUDE_MODEL), timeout=_CLAUDE_TIMEOUT,
     )
@@ -614,11 +649,12 @@ def test_release_wave_claude_full_wave(tmp_path):
 def test_release_wave_codex_native_ticket_growth(tmp_path):
     """실 Codex main이 spawn_agent 3역할로 같은 ticket copy를 성장·harvest하고 done까지 완주한다."""
     dest = _import_adopter(tmp_path, "codex")
+    _baseline_codex_adopter(dest)
     home = make_codex_home(tmp_path)
     try:
         proc = run_codex_exec(
-            _full_wave_prompt("AGENTS.md"), dest, home,
-            model=CODEX_MODEL, timeout=_CODEX_TIMEOUT,
+            _full_wave_prompt("AGENTS.md", "codex"), dest, home,
+            model=CODEX_MODEL, timeout=_CODEX_TIMEOUT, sandbox="danger-full-access",
         )
     finally:
         drop_codex_auth(home)
@@ -654,7 +690,7 @@ def test_release_wave_opencode_full_wave(tmp_path):
         # 이 플래그로 권한을 통과시켜야 wave 완주(throwaway tmp adopter 격리라 안전·PM 36 probe 실측).
         ["opencode", "run", "--agent", "build", "--dir", str(dest),
          "--dangerously-skip-permissions", "-m", LIVE_MODEL,
-         _full_wave_prompt("AGENTS.md")],
+         _full_wave_prompt("AGENTS.md", "opencode")],
         cwd=str(dest), env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
     )
 
@@ -1436,7 +1472,7 @@ def test_release_wave_claude_final_nudge_driver_marker_contract(tmp_path):
 
 def test_full_wave_prompt_has_ticket_growth_stages():
     """full wave 프롬프트가 고정 01→02→03→04와 실제 테스트 계약을 담는다."""
-    prompt = _full_wave_prompt("CLAUDE.md")
+    prompt = _full_wave_prompt("CLAUDE.md", "claude")
     # (1) new — 정확히 1개 ticket 발행 지시.
     assert "create exactly one ticket" in prompt
     # (2) claim.
@@ -1482,19 +1518,19 @@ def test_full_wave_prompt_has_ticket_growth_stages():
     assert "board.py complete <ticket> --tests-pass" in prompt
     # 진입문서가 프롬프트에 박힌다(harness 별 CLAUDE.md/AGENTS.md).
     assert "CLAUDE.md" in prompt
-    assert "AGENTS.md" in _full_wave_prompt("AGENTS.md")
+    assert "AGENTS.md" in _full_wave_prompt("AGENTS.md", "codex")
     assert _CLAUDE_TIMEOUT_DEFAULT == 900
 
 
 def test_full_wave_prompt_requires_exact_native_task_sequence():
     """PM main의 round 직접 대체와 Task 생략을 round 시작 전에 차단한다."""
-    prompt = _full_wave_prompt("CLAUDE.md")
+    prompt = _full_wave_prompt("CLAUDE.md", "claude")
     gate = "HARD DELEGATION GATE"
     contracts = (
         "must not directly write, edit, cp, or sed any round file body",
         "architect once, developer once, code-reviewer once, developer once",
         "do not start the next Task until the current Task succeeds and its harvest returns rc=0",
-        "If a Task is missing or fails, stop without directly substituting for it",
+        "If a Task call is missing or fails, stop without directly substituting for it",
         "BEGIN EXACT REVIEWER BODY through END EXACT REVIEWER BODY content below verbatim",
         "role counts exactly architect=1, developer=2, code-reviewer=1",
     )
@@ -1506,9 +1542,71 @@ def test_full_wave_prompt_requires_exact_native_task_sequence():
     assert prompt.index(contracts[4]) < prompt.index("BEGIN EXACT REVIEWER BODY\n")
 
 
+def test_full_wave_prompt_uses_each_harness_native_delegation_tool():
+    """Claude/OpenCode는 Task, Codex는 존재하는 spawn_agent만 지시한다."""
+    claude = _full_wave_prompt("CLAUDE.md", "claude")
+    opencode = _full_wave_prompt("AGENTS.md", "opencode")
+    codex = _full_wave_prompt("AGENTS.md", "codex")
+
+    for prompt in (claude, opencode):
+        assert "Call native Task exactly four times" in prompt
+        assert "spawn_agent" not in prompt
+    assert "Call native spawn_agent exactly four times" in codex
+    assert "next spawn_agent" in codex
+    assert "code-reviewer spawn_agent" in codex
+    assert "Task" not in codex
+
+
+def test_codex_native_fixture_baselines_git_before_isolated_writable_call(
+    tmp_path, monkeypatch,
+):
+    """unborn adopter를 host가 추적하고 Codex native wave 한 호출만 git 쓰기를 연다."""
+    dest = tmp_path / "adopter-codex"
+    (dest / ".project_manager").mkdir(parents=True)
+    (dest / ".project_manager" / ".gitignore").write_text(".local/\n", encoding="utf-8")
+    (dest / "README.md").write_text("fixture\n", encoding="utf-8")
+    init = subprocess.run(
+        ["git", "init", str(dest)], capture_output=True, text=True, check=False,
+    )
+    assert init.returncode == 0
+
+    _baseline_codex_adopter(dest)
+
+    tracked = subprocess.run(
+        ["git", "-C", str(dest), "ls-files"], capture_output=True, text=True, check=False,
+    )
+    assert tracked.returncode == 0
+    assert ".project_manager/.gitignore" in tracked.stdout.splitlines()
+    assert (dest / ".git" / "index").is_file()
+    assert subprocess.run(
+        ["git", "-C", str(dest), "rev-parse", "--verify", "HEAD"],
+        capture_output=True, text=True, check=False,
+    ).returncode == 0
+
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    run_codex_exec("default", dest, home)
+    run_codex_exec("native wave", dest, home, sandbox="danger-full-access")
+    assert calls[0][calls[0].index("-s") + 1] == "workspace-write"
+    assert calls[1][calls[1].index("-s") + 1] == "danger-full-access"
+
+    live_source = inspect.getsource(test_release_wave_codex_native_ticket_growth)
+    assert live_source.index("_baseline_codex_adopter(dest)") < live_source.index(
+        "run_codex_exec("
+    )
+    assert 'sandbox="danger-full-access"' in live_source
+
+
 def test_zero_finding_disposition_is_ticket_owned_before_round04_prepare():
     """zero-finding PM 판정은 reviewer round를 오염시키지 않고 04보다 먼저 닫힌다."""
-    prompt = _full_wave_prompt("CLAUDE.md")
+    prompt = _full_wave_prompt("CLAUDE.md", "claude")
     disposition = "append only the exact finding-zero block emitted by the template"
     ticket_owner = "under `## PM 기계 확인` in the claimed ticket file"
     round_negative = "never in the canonical ROUND 03 reviewer file or any round file"
