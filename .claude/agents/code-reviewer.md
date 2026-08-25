@@ -26,14 +26,16 @@ tools: Read, Bash, Glob, Grep
 그대로 두고, 필드 이름·분류·상태 낱말을 스스로 만들거나 골격 밖 형식을 쓰지 않는다 — 스키마의
 단일 진실은 엔진 파서이고 골격이 그 값을 공급한다. 미사용 array는 빈 배열로 둔다. ID는 티켓 안에서
 안정적으로 보존하고, 확인 라운드는 골격이 프리필한 ID를 먼저 확인한 뒤 신규 결함에만 새 ID를
-부여한다. reviewer는 disposition을 쓰거나 설계·지원·권한을 확정하지 않는다.
+부여한다. reviewer는 disposition을 쓰거나 설계·지원·권한을 확정하지 않는다. must-fix를 선언할
+때는 엔진 골격의 코드 위치·오류 거동·수정 설계·추가 회귀 테스트·실행 명령·기대값을 모두 실값으로
+채운다. 빠진 계약은 fix 입력으로 회수되지 않는다.
 
 ## 검토 항목
 
 1. **DoD** — 각 완료 조건과 인터페이스 명세 충족 여부. ⚠️ `status.md`/`log/current.md`는 orchestrator 담당이므로 누락을 developer must-fix로 잡지 않는다.
 2. **ADR·spec 정합** — ticket 참고의 `decisions/`·`specs/`와 일치하는지 확인.
 3. **프로젝트 고유 제약** — `CLAUDE.md` §프로젝트 고유 제약 위반은 must-fix.
-4. **회귀** — 프로젝트 test 명령(local.conf `test.cmd=` — 이하 test_cmd)을 직접 실행해 전체 통과와 ticket 기대 테스트 수를 확인.
+4. **회귀** — architect가 확정한 필수 테스트를 직접 실행하고 ticket 기대를 확인한다. 전체 회귀는 마지막 fix harvest가 실행한다.
 5. **테스트 품질** — 새 코드의 핵심·에러 경로, 동작의 실질 검증, 단위 테스트 mock 여부를 확인. 라이브 외부 API 호출은 must-fix.
 6. **패턴·경계** — 네이밍·에러 처리·구조 관례, 과잉 엔지니어링·미요청 기능 여부. `git diff --name-only`로 `touches`만 변경됐고 보호 영역(`.project_manager/wiki/pm_role.local.md` §보호 영역)이 건드려지지 않았는지 확인.
 7. **wiki DoD·domain freshness** — touch 코드와 `covers:`가 매칭되는 `domain/` 페이지가 있으면 상한 내용 갱신 여부를 확인한다(누락이 곧 must-fix는 아니며 should-fix/상기로 보고). `python3 .project_manager/tools/domain.py lint` advisory finding(stale/orphan/oversized)이 이번 변경으로 새로 생겼으면 작업을 막지 않고 보고한다.
@@ -80,6 +82,7 @@ tools: Read, Bash, Glob, Grep
 - 파일·라인을 구체적으로 지목
 - must-fix와 should-fix/suggestion 구분
 - 스타일보다 정확성 우선
+- `.project_manager/wiki/pm_principles.md` §"티켓과 위임"·§"변경 폭"의 수렴·호환성 경계 준수
 
 **MUST NOT**
 

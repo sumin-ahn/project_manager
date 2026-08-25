@@ -250,20 +250,18 @@ def test_plain_list_ticket_scope_is_explicitly_a_test_fixture_seam(
     assert "### 게이트 티켓 본문" not in captured.out
 
 
-def test_confirm_fix_prompt_keeps_the_same_ticket_body(
+def test_removed_confirm_fix_dry_run_is_rejected_before_loading_ticket_body(
     external, monkeypatch, tmp_path, capsys,
 ):
-    body = "## 결정\n확인 라운드에서도 이 결정을 권위로 삼는다.\n"
+    body = "## 결정\n이 결정은 권위 입력이다.\n"
     ticket = _ticket(tmp_path / "T-9001-confirm.md", body=body)
     _wire(external, monkeypatch, tmp_path, ticket)
 
-    assert external.main([
-        "--ticket", "T-9001", "--confirm-fix", "--dry-run",
-    ]) == 0
-    out = capsys.readouterr().out
-    assert "### 이 라운드의 임무 (확인 전용 · 필수)" in out
-    assert "### 게이트 티켓 본문 (T-9001)" in out
-    assert "확인 라운드에서도 이 결정을 권위로 삼는다." in out
+    with pytest.raises(SystemExit):
+        external.main(["--ticket", "T-9001", "--confirm-fix", "--dry-run"])
+    captured = capsys.readouterr()
+    assert "unrecognized arguments: --confirm-fix" in captured.err
+    assert "### 게이트 티켓 본문" not in captured.out
 
 
 def test_review_context_always_declares_ticket_decisions_authoritative(

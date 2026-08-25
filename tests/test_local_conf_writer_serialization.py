@@ -823,7 +823,7 @@ def test_board_init_write_takes_the_shared_lock(board, monkeypatch, tmp_path):
 
     assert taken == [str(conf.parent / ".local" / "local-conf.lock")]
     parsed = _parse_conf(conf.read_text(encoding="utf-8"))
-    assert parsed["test.cmd"] == "pytest -q"
+    assert parsed["test.cmd"] == board.default_pytest_cmd("python3")
     # 세션·prefix 는 per-clone conf 의 키가 아니다 (T-0779).
     assert "session" not in parsed and "prefix" not in parsed
 

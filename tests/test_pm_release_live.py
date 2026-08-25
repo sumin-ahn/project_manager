@@ -160,6 +160,24 @@ def _setup_home(tmp_path: Path, harness: str) -> Path:
     return home
 
 
+def _prepare_release_readonly(home: Path) -> Path:
+    """합성 wave를 commit한 실제 detached worktree를 release readonly 좌표로 만든다."""
+    assert _GIT is not None, "release readonly fixture에 git 필요"
+    subprocess.run([_GIT, "-C", str(home), "add", "--all"], check=True)
+    subprocess.run(
+        [_GIT, "-C", str(home), "-c", "user.name=release-live",
+         "-c", "user.email=release-live@example.invalid", "commit", "-q", "-m",
+         "synthetic release wave"],
+        check=True,
+    )
+    readonly = home.parent / f"{home.name}-readonly"
+    subprocess.run(
+        [_GIT, "-C", str(home), "worktree", "add", "--detach", "-q", str(readonly), "HEAD"],
+        check=True,
+    )
+    return readonly
+
+
 def _livegate_json(home: Path) -> Path:
     return home / _LIVEGATE_JSON_REL
 
@@ -380,7 +398,7 @@ def _proc_tail(proc: subprocess.CompletedProcess, harness: str) -> str:
     )
 
 
-def _pm_release_prompt(skill_text: str) -> str:
+def _pm_release_prompt(skill_text: str, *, repo: str, readonly_cwd: Path) -> str:
     """실 LLM 에 스킬만 주고 릴리즈 pre-push 준비를 시키는 프롬프트 (스킬 = 유일 컨텍스트).
 
     진입문서(CLAUDE.md/AGENTS.md) 경로를 *주지 않는다* — 스킬만으로 커맨드를 골라야 통과(= 스킬
@@ -388,16 +406,20 @@ def _pm_release_prompt(skill_text: str) -> str:
     push 를 아직 승인하지 않았다** — 스킬이 정의한 로컬·가역 pre-push 단계(release livegate 기록)만
     수행하고 push/tag/gh 는 하지 않는다(승인 대기). pm_worktree_live 의 --help 금지 문구 미러(사용성).
     """
+    exact_record = (
+        "PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py livegate record "
+        f"--repo {shlex.quote(repo)} --cwd {shlex.quote(str(readonly_cwd))}"
+    )
     return (
         "You are the PM for a solo, single-slot project. Below (between <<<SKILL and SKILL>>>) is "
         "the pm-release skill — use ONLY it to decide the exact command for each step. Do NOT run "
         "any command with --help or -h, and do NOT open other documentation.\n\n"
         f"Context: you are preparing release {_RELEASE_VERSION}. The human has NOT yet approved the "
-        "public main push. This is a solo single-slot project, so you do not need any --repo/--slot "
-        "flags.\n\n"
+        f"public main push. The registered repo is `{repo}` and the already-prepared detached readonly "
+        f"release coordinate is `{readonly_cwd}`. Do not invent or discover either value.\n\n"
         "Do ONLY the local, reversible pre-push verification step this skill defines — record the "
-        "release livegate for this project — from the project root (the directory that contains "
-        ".project_manager), using the EXACT command form the skill shows. Then STOP and report.\n"
+        "release livegate for this project — from the PM home root. Run exactly this concrete command "
+        f"once: `{exact_record}`. Then STOP and report.\n"
         "Do NOT run `git push`, do NOT run `git tag`, and do NOT run any `gh` command — the human "
         "has NOT approved the public main push yet (the skill keeps that behind an approval gate).\n\n"
         "<<<SKILL\n" + skill_text + "\nSKILL>>>\n\n"
@@ -423,9 +445,14 @@ def test_pm_release_live_claude(tmp_path):
     비가역 부작용 0(safety).
     """
     home = _setup_home(tmp_path, "claude")
+    readonly = _prepare_release_readonly(home)
     pin = _home_livegate_pin(home)
 
-    prompt = _pm_release_prompt(_CLAUDE_SKILL.read_text(encoding="utf-8"))
+    prompt = _pm_release_prompt(
+        _CLAUDE_SKILL.read_text(encoding="utf-8"),
+        repo=home.name,
+        readonly_cwd=readonly,
+    )
     proc = subprocess.run(
         ["claude", "-p", "--model", CLAUDE_MODEL,
          "--allowedTools", "Bash",
@@ -476,9 +503,14 @@ def test_pm_release_live_opencode_best_effort(tmp_path):
     tmp 홈 격리). API 과금 0(ollama).
     """
     home = _setup_home(tmp_path, "opencode")
+    readonly = _prepare_release_readonly(home)
     pin = _home_livegate_pin(home)
 
-    prompt = _pm_release_prompt(_OPENCODE_SKILL.read_text(encoding="utf-8"))
+    prompt = _pm_release_prompt(
+        _OPENCODE_SKILL.read_text(encoding="utf-8"),
+        repo=home.name,
+        readonly_cwd=readonly,
+    )
     proc = subprocess.run(
         ["opencode", "run", "--agent", "build", "--dir", str(home),
          "--dangerously-skip-permissions", "-m", LIVE_MODEL, prompt],
@@ -527,7 +559,10 @@ def test_pm_release_skill_files_exist_and_reference_backbone():
 def test_pm_release_prompt_embeds_skill_and_scenario():
     """프롬프트가 스킬 전문 + 시나리오(릴리즈 버전·push 금지·유일 컨텍스트)를 담고 --help 를 금한다."""
     skill_text = _CLAUDE_SKILL.read_text(encoding="utf-8")
-    prompt = _pm_release_prompt(skill_text)
+    readonly = Path("/tmp/release-readonly")
+    prompt = _pm_release_prompt(
+        skill_text, repo="fixture-repo", readonly_cwd=readonly,
+    )
     # 스킬이 유일 컨텍스트로 임베드된다(진입문서 경로 미제공 — 스킬 사용성).
     assert skill_text in prompt
     assert "CLAUDE.md" not in prompt and "AGENTS.md" not in prompt
@@ -535,6 +570,9 @@ def test_pm_release_prompt_embeds_skill_and_scenario():
     assert _RELEASE_VERSION in prompt
     assert "git push" in prompt and "gh" in prompt
     assert "livegate" in prompt
+    assert "--repo fixture-repo" in prompt
+    assert f"--cwd {readonly}" in prompt
+    assert "Do not invent or discover either value" in prompt
     # --help 사용 금지 명시(사용성 판정 대상·pm_worktree_live 미러).
     assert "Do NOT run any command with --help or -h" in prompt
 
@@ -559,7 +597,9 @@ def test_setup_home_has_no_remote_and_backbone(tmp_path):
     assert (home / ".project_manager" / "tools" / "board.py").is_file(), "board.py backbone 부재"
 
 
-def _run_livegate_record(home: Path, *, live_env: bool) -> subprocess.CompletedProcess:
+def _run_livegate_record(
+    home: Path, *, live_env: bool, release_cwd: Path | None = None,
+) -> subprocess.CompletedProcess:
     """홈 board.py 로 livegate record 실행 — `live_env` 면 `PM_ORCH_LIVE_RELEASE=1` 주입, 아니면 제거.
 
     합성 wave 가 실 release 테스트처럼 env-gated 라, positive-control 은 env 를 명시 주입해 green 을
@@ -569,8 +609,11 @@ def _run_livegate_record(home: Path, *, live_env: bool) -> subprocess.CompletedP
     env = utf8_child_env(env)
     if live_env:
         env["PM_ORCH_LIVE_RELEASE"] = "1"
+    argv = [sys.executable, str(board_py), "livegate", "record"]
+    if release_cwd is not None:
+        argv += ["--repo", home.name, "--cwd", str(release_cwd)]
     return subprocess.run(
-        [sys.executable, str(board_py), "livegate", "record"],
+        argv,
         cwd=str(home), capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
     )
 
@@ -584,8 +627,18 @@ def test_scenario_backbone_records_green_livegate(tmp_path):
     run→green 이 된다. 라이브가 fail 하면 스킬(LLM) 문제이지 시나리오/side-effect 문제가 아님을 가른다
     (ADR-0050·release 마커 밖 always-run). green 을 backbone 으로 재현해 강판정이 vacuous 아님을 증명."""
     home = _setup_home(tmp_path, "claude")
+    readonly = _prepare_release_readonly(home)
     pin = _home_livegate_pin(home)
-    proc = _run_livegate_record(home, live_env=True)
+    detached = subprocess.run(
+        [_GIT, "-C", str(readonly), "symbolic-ref", "-q", "HEAD"],
+        capture_output=True, text=True,
+    )
+    assert detached.returncode != 0, "release fixture가 detached readonly 좌표가 아님"
+    remotes = subprocess.run(
+        [_GIT, "-C", str(readonly), "remote"], capture_output=True, text=True,
+    )
+    assert remotes.stdout.strip() == "", "detached release fixture에 외부 remote가 생김"
+    proc = _run_livegate_record(home, live_env=True, release_cwd=readonly)
     assert proc.returncode == 0, (
         f"backbone livegate record 가 green(rc0)을 못 냄(rc={proc.returncode}) — 합성 wave setup rot 또는 "
         f"env-gate 오배선.\n{proc.stdout[-800:]}\n{proc.stderr[-800:]}"

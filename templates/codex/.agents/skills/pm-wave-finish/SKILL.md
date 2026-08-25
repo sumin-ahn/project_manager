@@ -1,6 +1,6 @@
 ---
 name: pm-wave-finish
-description: "묶음 종결(close) — ticket_finish.py 고정 8단계 wrapper: 기계 확인 → 게이트 처분 → 티켓별 완료 기록 → 슬롯 커밋 → 재배치 → 머지 → 슬롯 반납 → board·포인터 커밋. 재실행이 곧 재개. 모듈 판정·비고·log/current.md 서술은 PM 손. Triggers: 'T-NNNN 완료', '묶음 종결', 'ticket 정리', 'finish', 'pm-wave-finish'."
+description: "묶음 종결(close) — ticket_finish.py 고정 8단계 wrapper: final-fix 확인 입력 preflight → 확인 생성·게이트 처분 → 티켓별 완료 기록 → 슬롯 커밋 → 재배치 → 머지 → 슬롯 반납 → board·포인터 커밋. 재실행이 곧 재개. 모듈 판정·비고·log/current.md 서술은 PM 손. Triggers: 'T-NNNN 완료', '묶음 종결', 'ticket 정리', 'finish', 'pm-wave-finish'."
 audience: pm-internal
 ---
 
@@ -25,7 +25,7 @@ python3 .project_manager/tools/ticket_finish.py T-NNNN
 
 - **완료 기록 단위는 묶음 하나다.** 티켓 ID 를 준 호출도 그 티켓의 묶음으로 해소해 같은 파이프라인을
   탄다(티켓당 별도 코드 경로 0). 묶음을 선언하지 않은 티켓은 board 가 크기 1로 접어 준다.
-  멤버 중 아직 확인·완료가 안 된 티켓이 있으면 **1단계(기계 확인) 또는 3단계(완료 기록)에서 멈춘다**
+  멤버 중 final-fix 확인 입력이나 완료 조건이 덜 채워진 티켓이 있으면 **1단계(preflight) 또는 3단계(완료 기록)에서 멈춘다**
   — 그 지점까지의 부작용만 남고 나머지 단계는 실행되지 않는다.
 - **재실행이 곧 재개다.** 각 단계는 자기 부작용이 이미 있는지 관측해서 건너뛴다(티켓이 done 인가 ·
   커밋할 변경이 남았나 · 통합 브랜치의 조상인가 · 슬롯이 아직 대여 중인가). 실패 지점을 고치고 같은

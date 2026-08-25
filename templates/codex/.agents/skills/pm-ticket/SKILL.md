@@ -15,7 +15,7 @@ PM이 draft 발행 → 본문 fill → promote를 실행하는 운영 스킬이�
 ## 사용 시점
 
 - 사용자가 새 작업을 티켓으로 만들거나 발행하라고 지시할 때.
-- 설계/논의에서 나온 후속 작업을 board에 올릴 때.
+- 사용자가 설계/논의에서 나온 새 목표를 board에 올리기로 명시 선택했을 때.
 - placeholder만 남은 draft의 본문을 채우고 승격할 때.
 
 **무티켓/미충전 stub 발행 금지**. board-git 공유 형상에서 `new`는 미충전 본문을 `open/`이 아닌 draft로 격리하고, `promote`는 placeholder가 남은 승격을 차단한다.
@@ -70,13 +70,13 @@ python3 .project_manager/tools/board.py new "<한 줄 제목>" \
 
 ```bash
 python3 .project_manager/tools/pm_delegate.py ticket prepare --cluster <C-이름> --role architect --cwd <worktree 절대경로>
-# 위임(스킬 $pm-dev-delegate §architect 위임·재설계) 후 — run-dir 을 주면 티켓 전부를 한 번에 회수한다:
+# 위임(스킬 $pm-dev-delegate §architect 위임) 후 — run-dir 을 주면 티켓 전부를 한 번에 회수한다:
 python3 .project_manager/tools/pm_delegate.py ticket harvest --copy <prepare JSON의 run-dir> --cwd <worktree 절대경로>
 ```
 
 - draft × architect는 엔진이 이미 허용한다(claim 이전·board-git sync 0회). developer·code-reviewer의 draft 라운드는 거부된다. **PM이 채운 라운드는 이 점검을 충족하지 않는다** — promote는 역할명과 비시드 여부만 보므로 PM이 직접 쓰면 기계는 통과시키지만 초안자==점검자가 되어 3단이 무너진다. 본문 점검은 위 prepare/harvest 위임으로만 하고, `section-add`는 hard draft **설계** 인라인 작성에 쓴다(§1).
 - 점검 항목: 본문이 인용한 `파일:줄`과 touches 경로의 실재, 묶음 안팎 다른 열린 티켓과의 충돌·의존(cross-module), **최소 수단**(기존 seam 재사용·삭제 대안·새 설정 키/플래그·서브커맨드가 정말 필요한지), 구현 가능하도록 인터페이스·DoD 보정.
-- 회수된 라운드를 PM이 읽고 **바뀐 지점을 확인해 본문에 반영**한 뒤 승격한다(비준). 라운드는 회수 후 불변이므로 재점검은 재설계(`board.py cluster replan <이름> --reason <사유>`)가 여는 다음 순번의 새 라운드다.
+- 회수된 라운드를 PM이 읽고 **바뀐 지점을 확인해 본문에 반영**한 뒤 승격한다(비준). 수렴·호환성 경계는 [`pm_principles.md`](../../../.project_manager/wiki/pm_principles.md) §"티켓과 위임"·§"변경 폭"을 따른다. architect 라운드는 1회이며 불완전하면 board를 더 쓰지 않고 사용자에게 보고한다.
 - `design: required|done` 티켓은 이 라운드가 회수·충전되기 전 `promote`가 rc=1로 거부한다. `n/a`는 기계 강제 밖이지만, 다중 티켓을 한 번에 발행할 때와 `estimate: medium` 이상은 규범으로 점검을 받는다.
 
 ## 4. 검증 → 승격

@@ -7,7 +7,7 @@
 limit(엔진 고정 4)을 넘기면 실행 *전에* 거부(전용 rc
 `EXIT_ROUND_LIMIT_EXCEEDED`)하고 loud 안내를 낸다. **재개 승인 경로는 없다**(T-0593 이 라운드 연장
 승인을 폐지 — 이 파일의 `--ack-rounds` 리터럴은 전부 "어느 표면에서도 rc=1 로 거부된다"는 단언이다).
-출구는 재설계·티켓 분할이고, 직전 must-fix 해소 확인만 게이트당 1회 `--confirm-fix` 로 한다.
+출구는 현재 티켓 정지와 사용자 보고이며, fix 뒤 재리뷰 예약 경로는 없다.
 
 T-0583 이 같은 장부에 두 축을 더한다: 라운드별 **산출**(`rounds` — 판정 rc·must-fix 수) append 와
 게이트별 상한과 **별개**인 wave 단위 총 예산(`wave` 절 · local.conf `additional_reviewer.wave_budget`·
@@ -421,8 +421,8 @@ def test_ledger_corrupt_falls_back_to_empty(external, tmp_path, monkeypatch):
 
 def test_gate_entry_normalizes_missing_and_corrupt(external):
     """`_gate_entry` — 부재/손상 항목을 0/0 으로 정규화하고 ledger 에 심는다."""
-    empty = {"count": 0, "sequence": 0, "confirm_fix": 0,
-             "pm_fixed": 0, "resolution": None, "records": [], "rounds": []}
+    empty = {"count": 0, "sequence": 0,
+             "resolution": None, "records": [], "rounds": []}
     gate_one, gate_two, gate_three = ("T-" + suffix for suffix in ("0001", "0002", "0003"))
     ledger: dict = {
         gate_two: {"count": "bad", "acked_through": None, "pm_fixed": "bad"},
@@ -443,8 +443,6 @@ def test_gate_entry_normalizes_missing_and_corrupt(external):
     assert external._gate_entry(ledger, "mixed-records") == {
         "count": 0,
         "sequence": 3,
-        "confirm_fix": 0,
-        "pm_fixed": 2,
         "resolution": None,
         "records": [{"sequence": "3", "verdict": True}],
         "rounds": [{"ts": "2026-08-07T00:00:00+00:00", "verdict": 1}],
@@ -842,36 +840,28 @@ def test_blocked_gate_warns_about_the_retired_field_exactly_once_across_repeats(
     assert "acked_through" not in second_err
 
 
-def test_confirm_fix_round_is_no_longer_capped_by_the_removed_axis(
-        external, monkeypatch, tmp_path, capsys):
-    """반례 형상 (ii) — `--confirm-fix` 는 수렴 축을 건너뛰므로 옛 전송 축이 유일한 티켓 차단이었다.
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--gate", "T-0317", "--paths", "x.py", "--confirm-fix"],
+        ["--rounds-report", "--confirm-fix"],
+    ],
+)
+def test_removed_confirm_fix_flag_is_rejected_without_side_effects(
+        external, monkeypatch, tmp_path, capsys, argv):
+    """폐지한 fix 후 재리뷰 표면은 argparse 에서 거부되고 전송·장부 쓰기가 없다."""
+    calls = _wire(external, monkeypatch, tmp_path)
+    ledger_path = external._round_ledger_path()
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    original = b'{"sentinel": {"count": 1}}\n'
+    ledger_path.write_bytes(original)
 
-    축 제거 후 그 실행에서 무엇이 막는지 값으로 단언한다: 게이트당 1회 쿼터다(무한 확장 아님).
-    제거 전에는 판정 5건 게이트에서 확인 전용 라운드가 열리지 않았다."""
-    calls = _wire(
-        external, monkeypatch, tmp_path,
-        result=_REJECT_WITH_ANSWER, conf=_ROUNDS_MAX_OFF,
-    )
-    argv = ["--gate", "T-0317", "--paths", "x.py"]
-    for _ in range(5):                                  # 옛 전송 상한 4 를 넘겨 쌓는다
-        assert external.main(argv) == 1
-    # 수렴 축을 기본값으로 되돌리면 일반 라운드는 막힌다 — 확인 전용만 남는 형상.
-    monkeypatch.setattr(
-        external, "local_config",
-        lambda repo=None: {**_ENABLED_CONF, "additional_reviewer.rounds_max": "2"})
-    capsys.readouterr()
-    assert external.main(argv) == external.EXIT_ROUND_LIMIT_EXCEEDED
-    assert "수렴 게이트 차단" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        external.main(argv)
 
-    assert external.main(argv + ["--confirm-fix"]) == 1  # 확인 전용 라운드가 열린다
-    entry = _ledger(external, tmp_path)["T-0317"]
-    assert (calls["n"], entry["count"], entry["confirm_fix"]) == (6, 6, 1)
-    capsys.readouterr()
-
-    # 두 번째 확인 전용 라운드는 쿼터가 막는다 — 제거된 축이 아니라 이 축이 상한이다.
-    assert external.main(argv + ["--confirm-fix"]) == external.EXIT_ROUND_LIMIT_EXCEEDED
-    assert "게이트당 1회" in capsys.readouterr().err
-    assert calls["n"] == 6
+    assert "unrecognized arguments: --confirm-fix" in capsys.readouterr().err
+    assert calls["n"] == 0
+    assert ledger_path.read_bytes() == original
 
 
 # ── --ack-rounds 폐지: 어느 표면에서도 통하지 않는다 (DoD) ────────────────────
@@ -895,8 +885,8 @@ def test_ack_rounds_is_refused_and_changes_nothing(
     assert "acked_through" not in entry                  # 폐지 필드는 되살아나지 않는다
     err = capsys.readouterr().err
     assert "폐지" in err
-    assert "재설계" in err and "분할" in err
-    assert "--confirm-fix" in err
+    assert "현재 티켓을 정지" in err and "사용자에게 보고" in err
+    assert "--confirm-fix" not in err
 
 
 def test_ack_rounds_is_refused_even_on_the_report_surface(
@@ -1053,29 +1043,6 @@ def test_ack_rounds_without_gate_is_refused_too(external, monkeypatch, tmp_path,
     assert "폐지" in capsys.readouterr().err
     assert calls["n"] == 0
     assert _ledger(external, tmp_path) == {}
-
-
-def test_confirm_fix_without_gate_is_refused_before_sending(
-        external, monkeypatch, tmp_path, capsys):
-    """`--confirm-fix` 를 --gate 없이 쓰면 **전송 전 rc 거부** (T-0601 ⑨ — 경고-만-실행 폐지).
-
-    확인 전용 라운드는 게이트당 1회이고 그 회계를 장부가 소유한다 — 게이트가 없으면 1회 제한을
-    셀 자리가 없어, 경고만 내고 실행하면 상한 밖 전송이 무한히 열린다."""
-    calls = _wire(external, monkeypatch, tmp_path)
-    assert external.main(["--confirm-fix", "--paths", "x.py"]) == 1
-    err = capsys.readouterr().err
-    assert "--gate" in err and "게이트당 1회" in err
-    assert calls["n"] == 0                       # 외부 전송 0(과금 0)
-    assert _ledger(external, tmp_path) == {}     # 장부도 만들지 않는다
-
-
-def test_confirm_fix_without_gate_is_refused_on_the_report_surface_too(
-        external, monkeypatch, tmp_path, capsys):
-    """조회면에서도 무시 경고로 흡수하지 않는다 (`--ack-rounds` 거부와 같은 규율·형상 예외 없음)."""
-    _wire(external, monkeypatch, tmp_path)
-    assert external.main(["--rounds-report", "--confirm-fix"]) == 1
-    err = capsys.readouterr().err
-    assert "--gate" in err and "무시" not in err
 
 
 def test_ack_wave_without_gate_still_warns_and_proceeds(
@@ -1589,26 +1556,6 @@ def test_spawn_failure_leaves_no_outcome(external, monkeypatch, tmp_path):
     assert entry["count"] == 0 and entry["rounds"] == []
 
 
-def test_confirm_fix_round_keeps_the_outcome_history(
-        external, monkeypatch, tmp_path, capsys):
-    """확인 전용 라운드도 산출 이력에 그대로 쌓인다 — 비용 판단 근거는 append-only 다.
-
-    라운드는 **반려**로 채운다 — 확인 전용 라운드는 확인할 지적(반려 라운드)이 있는 게이트에서만
-    열리므로(T-0602 ①), 이력 축을 보려면 자격을 갖춘 형상이어야 한다."""
-    conf = {**_ENABLED_CONF, "additional_reviewer.rounds_max": "3"}
-    _wire(external, monkeypatch, tmp_path, result=_REJECT_WITH_ANSWER, conf=conf)
-    argv = ["--gate", "T-0308", "--paths", "x.py"]
-    for _ in range(3):
-        assert external.main(argv) == 1
-    assert external.main(argv) == external.EXIT_ROUND_LIMIT_EXCEEDED
-    capsys.readouterr()
-
-    assert external.main(argv + ["--confirm-fix"]) == 1
-    entry = _ledger(external, tmp_path)["T-0308"]
-    assert len(entry["rounds"]) == 4          # 상한 3 + 확인 전용 1 (이력은 append-only)
-    assert entry["confirm_fix"] == 1
-
-
 def test_old_schema_ledger_keeps_counting_and_gains_outcomes(
         external, monkeypatch, tmp_path, capsys):
     """구세대 장부(rounds/wave 절 없음·폐지 필드 잔존)로도 실행이 이어지고 산출만 뒤에 쌓인다 (DoD).
@@ -1840,27 +1787,6 @@ def test_ack_wave_does_not_open_the_gate_round_limit(
     assert calls["n"] == spend
 
 
-def test_confirm_fix_does_not_open_the_wave_budget(
-        external, monkeypatch, tmp_path, capsys):
-    """반대 방향도 같다 — 확인 전용 라운드가 wave 예산을 열지 않는다 (축이 다르다).
-
-    거부된 실행은 예외 quota 도 쓰지 않는다 — 쓰지도 못한 라운드로 1회를 소모하면 다음 실행이
-    처방(`--confirm-fix`)을 잃는다. 라운드는 **반려**로 채운다 — 확인 전용 라운드의 자격
-    (반려 라운드 실재·T-0602 ①)을 갖춘 게이트라야 wave 축이 판정 자리에 온다."""
-    conf = {**_ENABLED_CONF, "additional_reviewer.wave_budget": "3"}
-    calls = _wire(external, monkeypatch, tmp_path, conf=conf, result=_REJECT_WITH_ANSWER)
-    for gate in ("T-0316", "T-0317", "T-0318"):
-        assert external.main(["--gate", gate, "--paths", "x.py"]) == 1
-    capsys.readouterr()
-
-    rc = external.main(["--gate", "T-0318", "--paths", "x.py", "--confirm-fix"])
-    assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
-    assert "wave 예산 소진" in capsys.readouterr().err
-    assert calls["n"] == 3
-    # 거부는 quota 도 쓰지 않는다 — 처방이 다음 실행에 살아 있어야 한다.
-    assert _ledger(external, tmp_path)["T-0318"]["confirm_fix"] == 0
-
-
 def test_refused_run_leaves_no_gate_entry_in_the_ledger(
         external, monkeypatch, tmp_path, capsys):
     """거부된 실행은 그 게이트의 장부 항목 자체를 만들지 않는다 (전송 0 = 흔적 0).
@@ -1922,13 +1848,9 @@ def test_wave_approval_survives_a_round_limit_refusal(
     assert "wave 예산 승인 재개" not in err                # 거부된 실행은 '재개'라 말하지 않는다
     assert "wave 예산 승인 기록" in err and "거부" in err
 
-    # 라운드 축에는 재개 승인이 없다 — 리셋된 wave 로도 그 게이트는 계속 막힌다. 확인 전용
-    # 라운드는 **수렴 축의 예외**라 미완 축을 열지 않는다(예외가 두 축을 겸하면 상한이
-    # 사실상 +1 로 올라간다).
+    # 라운드 축에는 재개 승인이 없다 — 리셋된 wave 로도 그 게이트는 계속 막힌다.
     assert external.main(argv) == external.EXIT_ROUND_LIMIT_EXCEEDED
-    assert external.main(argv + ["--confirm-fix"]) == external.EXIT_ROUND_LIMIT_EXCEEDED
     assert calls["n"] == spent
-    assert _ledger(external, tmp_path)["T-0330"]["confirm_fix"] == 0   # quota 소모 없음
 
 
 def test_dry_run_and_empty_diff_do_not_spend_the_wave_budget(
@@ -2512,22 +2434,22 @@ def pm_verified_declare(tmp_path, monkeypatch):
     )
 
 
-def test_resolve_gate_mode_guidance_lists_pm_verified(external, monkeypatch, tmp_path, capsys):
-    """`--resolve-gate` 처분 미지정 안내에 `--pm-verified` 가 3번째 선택지로 실린다."""
+def test_resolve_gate_mode_guidance_lists_only_pm_verified(external, monkeypatch, tmp_path, capsys):
+    """`--resolve-gate` 처분 미지정 안내는 유일한 `--pm-verified`만 싣는다."""
     calls = _wire(external, monkeypatch, tmp_path)
     assert external.main(["--resolve-gate", "T-0001"]) == 1
     err = capsys.readouterr().err
-    assert "--into" in err and "--fixed" in err and "--pm-verified" in err
+    assert "--pm-verified" in err and "--into" not in err and "--fixed" not in err
     assert calls["n"] == 0
 
 
-def test_resolve_gate_rejects_pm_verified_combined_with_into(
+def test_resolve_gate_parser_rejects_removed_into_option(
         external, monkeypatch, tmp_path, capsys):
-    """세 처분 중 둘 이상을 같이 쓰면 거부(한 게이트의 잔여는 한 갈래로 소화)."""
+    """폐지한 into 표면은 argparse 단계에서 fail-loud한다."""
     calls = _wire(external, monkeypatch, tmp_path)
-    rc = external.main(["--resolve-gate", "T-0001", "--into", "T-0002", "--pm-verified"])
-    assert rc == 1
-    assert "--pm-verified" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        external.main(["--resolve-gate", "T-0001", "--into", "T-0002", "--pm-verified"])
+    assert "unrecognized arguments: --into" in capsys.readouterr().err
     assert calls["n"] == 0
 
 
@@ -2542,10 +2464,10 @@ def test_pm_verified_flag_without_resolve_gate_is_refused(
 
 
 def test_pm_verified_declares_the_v178_shape_with_zero_external_send(pm_verified_declare):
-    """v1.7.8 실물 형상(잔여1·confirm_fix0·완료라운드1·X-001 rejected·기계확인0)이 신규 경로로 rc0.
+    """v1.7.8 실물 형상이 신규 선언 경로로 rc0 이고 폐지 필드는 정규화에서 제거된다.
 
     단언: reviewer 스폰 0(고정 fixture) · raw 레코드 증가 0 · `wave.spent` 불변 · 게이트
-    `count`/`confirm_fix` 불변(선언은 장부 기록 전용이라 회계 절을 건드리지 않는다)."""
+    `count` 불변(선언은 장부 기록 전용이라 회계 절을 건드리지 않는다)."""
     tid = "T-9764"
     entry = _pv_seed_v178_shape(pm_verified_declare.proj, tid)
     before = json.loads(json.dumps(entry))
@@ -2556,7 +2478,7 @@ def test_pm_verified_declares_the_v178_shape_with_zero_external_send(pm_verified
     after = pm_verified_declare.read_ledger()[tid]
     assert after["resolution"]["kind"] == "pm-verified"
     assert after["count"] == before["count"]
-    assert after["confirm_fix"] == before["confirm_fix"]
+    assert "confirm_fix" not in after
     assert after["rounds"] == before["rounds"]
     assert "wave" not in after       # wave 절 자체를 건드리지 않는다(불변)
     assert not raw_dir.exists(), "선언면이 raw 출력 디렉토리를 만들면 전송이 있었다는 뜻이다"

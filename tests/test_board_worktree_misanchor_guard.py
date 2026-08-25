@@ -28,7 +28,6 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 BOARD_PY = TOOLS / "board.py"
-PM_DELEGATE_PY = TOOLS / "pm_delegate.py"
 TICKET_FINISH_PY = TOOLS / "ticket_finish.py"
 
 
@@ -45,10 +44,6 @@ def _load_board():
 
 def _load_tf():
     return _load("tf_misanchor_test", TICKET_FINISH_PY)
-
-
-def _load_pd(name: str):
-    return _load(name, PM_DELEGATE_PY)
 
 
 # ── fixture helpers ──────────────────────────────────────────────────────
@@ -140,55 +135,6 @@ def _make_pm_home_with_worktree(
     if register:
         _register_slot(pm_home, worktree)
     return pm_home, worktree
-
-
-def _make_rounds_ledger_topology(
-    tmp_path: Path, *, register: bool = True,
-) -> tuple[Path, Path, Path]:
-    """내부 라운드 장부의 라이브 형상: git PM 홈 + linked slot + 빈 slot scaffold.
-
-    PM 홈의 실 board와 slot worktree는 같은 git checkout 관계다. board는 worktree 생성 뒤에
-    만들어 slot에는 출하 scaffold만 남기고, 내부 장부는 slot의 ``.local``에 둔다.
-    """
-    pm_home = tmp_path / "project_manager"
-    pm_home.mkdir(parents=True)
-    _git(["init", "-q", "-b", "main"], pm_home)
-    (pm_home / "seed.txt").write_text("seed\n", encoding="utf-8")
-    _git(["add", "-A"], pm_home)
-    _git(["commit", "-qm", "seed"], pm_home)
-    worktree = pm_home / "work" / "product_1"
-    _git(["worktree", "add", "-q", str(worktree)], pm_home)
-
-    tickets = _make_real_board(pm_home / ".project_manager", split=True)
-    (tickets / "claimed" / "T-0654-target.md").write_text(
-        "---\nid: T-0654\nstatus: claimed\ntitle: target\n---\n",
-        encoding="utf-8",
-    )
-    _make_scaffold_board(worktree / ".project_manager")
-    if register:
-        _register_slot(pm_home, worktree)
-
-    ledger = (
-        worktree / ".project_manager" / ".local"
-        / "internal_review_rounds.json"
-    )
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    ledger.write_text(
-        json.dumps({
-            "T-0651": {
-                "rounds": [{
-                    "sequence": 1,
-                    "verdict": 1,
-                    "must_fix": 1,
-                    "started_at": "2026-08-12T00:00:00+00:00",
-                    "ts": "2026-08-12T00:01:00+00:00",
-                    "target_rev": "sha256:" + "a" * 64,
-                }],
-            },
-        }, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-    return pm_home, worktree, ledger
 
 
 def _fake_runner(git_dir: str, common_dir: str):
@@ -321,90 +267,6 @@ def test_is_linked_worktree_real_pm_home_false(pm_home_worktree):
     b = _load_board()
     pm_home, _worktree = pm_home_worktree
     assert b._is_linked_worktree(pm_home) is False
-
-
-# ── T-0654 fix3: 라운드 장부의 실제 board 소유 홈 해소 ────────────────────
-
-def test_internal_rounds_ledger_resolves_owner_board_and_declares_into(
-        tmp_path, capsys):
-    """형상 A: slot 내부 장부가 PM 홈 board를 찾고 claimed 후속 티켓 선언에 성공한다."""
-    b = _load_board()
-    pm_home, worktree, ledger = _make_rounds_ledger_topology(tmp_path)
-    owner_tickets = pm_home / ".project_manager" / "board" / "tickets"
-    local_tickets = worktree / ".project_manager" / "wiki" / "tickets"
-    assert list(local_tickets.glob("*/*.md")) == []
-
-    search_dirs = b._release_gate_search_dirs(ledger)
-
-    assert search_dirs == [
-        (status, owner_tickets / status) for status in b.STATUS_DIRS
-    ]
-    pd = _load_pd(f"pm_delegate_rounds_owner_{tmp_path.name}")
-    pd._CONFIG_REPO_OVERRIDE = worktree
-    assert pd._cmd_rounds([
-        "resolve", "--gate", "T-0651", "--into", "T-0654",
-    ]) == 0
-    captured = capsys.readouterr()
-    assert "내부 게이트 처분 선언: T-0651" in captured.out
-    assert "재설계→T-0654" in captured.out
-    saved = json.loads(ledger.read_text(encoding="utf-8"))
-    assert saved["T-0651"]["resolution"]["ticket"] == "T-0654"
-
-
-def test_pm_home_rounds_ledger_keeps_direct_owner_board_path(tmp_path):
-    """형상 B: 실 board를 직접 소유한 PM 홈의 추가 리뷰 장부는 종전 경로를 유지한다."""
-    b = _load_board()
-    pm_home, _worktree, _internal_ledger = _make_rounds_ledger_topology(tmp_path)
-    ledger = (
-        pm_home / ".project_manager" / ".local" / "review_rounds.json"
-    )
-    ledger.write_text("{}\n", encoding="utf-8")
-    owner_tickets = pm_home / ".project_manager" / "board" / "tickets"
-
-    assert b._release_gate_search_dirs(ledger) == [
-        (status, owner_tickets / status) for status in b.STATUS_DIRS
-    ]
-
-
-@pytest.mark.parametrize(
-    ("failure_shape", "reason_fragment"),
-    [
-        ("missing-ledger", "worktree lease 장부 없음"),
-        ("damaged-ledger", "worktree lease 장부를 읽을 수 없음"),
-        ("duplicate-owner", "여러 PM 홈의 worktree lease 장부"),
-    ],
-)
-def test_internal_rounds_owner_resolution_failure_is_loud_and_release_closed(
-        tmp_path, capsys, failure_shape, reason_fragment):
-    """형상 C: lease 부재·손상·복수 소유자는 티켓 부재로 오보하지 않고 릴리즈도 닫는다."""
-    registered = failure_shape != "missing-ledger"
-    pm_home, worktree, ledger = _make_rounds_ledger_topology(
-        tmp_path, register=registered,
-    )
-    if failure_shape == "damaged-ledger":
-        (
-            pm_home / ".project_manager" / ".local" / "worktree-leases.json"
-        ).write_text("{broken\n", encoding="utf-8")
-    elif failure_shape == "duplicate-owner":
-        second_home = tmp_path
-        _make_real_board(second_home / ".project_manager", split=True)
-        _register_slot(second_home, worktree)
-
-    pd = _load_pd(f"pm_delegate_rounds_failure_{failure_shape}_{tmp_path.name}")
-    pd._CONFIG_REPO_OVERRIDE = worktree
-    assert pd._cmd_rounds([
-        "resolve", "--gate", "T-0651", "--into", "T-0654",
-    ]) == 1
-    err = capsys.readouterr().err
-    assert reason_fragment in err
-    assert "후속 티켓을 보드에서 찾지 못했습니다" not in err
-
-    b = _load_board()
-    problems = b._unresolved_must_fix_gates(ledger)
-    assert problems
-    assert "board 소유 PM 홈 해소 실패" in problems[0]
-    assert reason_fragment in problems[0]
-    assert "확인할 수 없어 차단" in problems[0]
 
 
 # ── T-0465 read anchor display ───────────────────────────────────────────
@@ -800,7 +662,6 @@ _MUTATION_ARGVS = [
     ["prefix", "delete", "AAA"],
     ["rounds", "migrate", "--dry-run"],
     ["cluster", "new", "wave", "--tickets", "T-0100"],
-    ["cluster", "replan", "wave", "--reason", "설계 축 재설계"],
 ]
 
 

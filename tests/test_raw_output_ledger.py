@@ -1097,7 +1097,7 @@ def test_inherited_gate_has_no_round_extension_path(
     """승계된 차단 게이트에는 재개 경로가 없다 — 라운드 연장 승인은 폐지됐다(T-0593).
 
     승계는 차단 상태를 그대로 이관하는 마이그레이션이므로, 이관된 상한도 새 상한과 같은 규율을
-    따른다: 출구는 재설계·티켓 분할이다."""
+    따른다: 현재 티켓을 정지하고 사용자에게 보고한다."""
     pm_home, worktree = _review_slot_family(tmp_path)
     _stub_reviewer(external, monkeypatch)
     gate = "T-" + "0001"
@@ -1108,7 +1108,7 @@ def test_inherited_gate_has_no_round_extension_path(
         ["--paths", "seed.txt", "--gate", gate, "--ack-rounds", "--force"]
     ) == 1
     err = capsys.readouterr().err
-    assert "폐지" in err and "재설계" in err
+    assert "폐지" in err and "정지" in err and "사용자에게 보고" in err
     assert "legacy 라운드 장부 승계" not in err   # 거부는 장부에 손대지 않는다
     assert _round_count(pm_home, gate) == 0       # 승계조차 하지 않는다(부작용 0)
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import inspect
 import json
 import os
 import re
@@ -58,25 +59,43 @@ CODEX_MODEL = os.environ.get("PM_ORCH_LIVE_CODEX_MODEL")
 PROBE_FILE = "probe.txt"
 PROBE_TEXT = "hello from dev"
 
-# 위임 단언 대상 서브에이전트 — full wave 가 성장 역할 3종을 모두 거쳐야 통과.
+# 위임 단언 대상 서브에이전트 — developer가 구현(02)과 terminal fix(04)에 두 번 등장한다.
 _ARCH_SUBAGENT = "architect"
 _DEV_SUBAGENT = "developer"
 _REVIEWER_SUBAGENT = "code-reviewer"
-_GROWTH_SENTINELS = {
-    _ARCH_SUBAGENT: "LIVE_TICKET_ARCHITECT_PERSISTED",
-    _DEV_SUBAGENT: "LIVE_TICKET_DEVELOPER_PERSISTED",
-    _REVIEWER_SUBAGENT: "LIVE_TICKET_REVIEWER_PERSISTED",
-}
+_GROWTH_PIPELINE = (
+    (_ARCH_SUBAGENT, "LIVE_TICKET_ARCHITECT_PERSISTED"),
+    (_DEV_SUBAGENT, "LIVE_TICKET_DEVELOPER_PERSISTED"),
+    (_REVIEWER_SUBAGENT, "LIVE_TICKET_REVIEWER_PERSISTED"),
+    (_DEV_SUBAGENT, "LIVE_TICKET_FINAL_FIX_PERSISTED"),
+)
+_WAVE_TEST_FILE = "tests/test_release_wave_probe.py"
+_WAVE_TARGETED_COMMAND = f"python3 -m pytest {_WAVE_TEST_FILE} -q -n auto"
+_WAVE_FULL_COMMAND = "python3 -m pytest tests/ -q -n auto"
 
 
-# opencode 는 gemma 가 느리고 변동 커 1800s, claude 는 probe 실측 145s 여유분 600s.
+# opencode 는 gemma 가 느리고 변동 커 1800s. Claude full-wave는 고정 4단계+PM disposition
+# 실측이 600s를 넘겨 기본 900s이고, 환경변수 override는 그대로 유지한다.
 _OPENCODE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_TIMEOUT", "1800"))
-_CLAUDE_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_CLAUDE_TIMEOUT", "600"))
+_CLAUDE_TIMEOUT_DEFAULT = 900
+_CLAUDE_TIMEOUT = int(os.environ.get(
+    "PM_ORCH_LIVE_RELEASE_CLAUDE_TIMEOUT", str(_CLAUDE_TIMEOUT_DEFAULT),
+))
 _CODEX_TIMEOUT = int(os.environ.get("PM_ORCH_LIVE_RELEASE_CODEX_TIMEOUT", "900"))
+
+# Claude Code 2.1.241의 non-interactive `-p`는 prompt 문자열 `/compact`를 slash command로
+# dispatch하지 않는다(PreCompact/PostCompact hook 0건 실측). 업무 중 compaction은 억제하고
+# full-wave 완료 뒤 같은 세션을 낮은 native 경계로 resume해 compaction event를 유도한다.
+_CLAUDE_WAVE_AUTOCOMPACT_THRESHOLD = "1m"
+_CLAUDE_AUTOCOMPACT_THRESHOLD = "100k"
 
 # T-0621 compaction boundary probe. 신규 @release 함수를 더하지 않고 기존 harness full-wave
 # 항목에 결합해 전역 livegate 수 pin/board 소유 표면은 그대로 둔다.
 _COMPACTION_RECOVERY_SENTINEL = "RECOVERED_AFTER_COMPACTION"
+_CLAUDE_COMPACTION_PROBE_PROMPT = (
+    "Use Bash exactly once to run `pwd`, then reply exactly "
+    f"{_COMPACTION_RECOVERY_SENTINEL}"
+)
 _OPENCODE_COMPACTION_CONTEXT = 32768
 _OPENCODE_COMPACTION_OUTPUT = 4096
 # 현재 user prompt는 native compaction 대상이 아니므로 각 turn 자체가 context-output 입력
@@ -96,18 +115,22 @@ _OPENCODE_COMPACTION_TURNS = (
 _TOOLS = Path(__file__).resolve().parents[1] / ".project_manager" / "tools"
 
 
-def _pm_review_block_name() -> str:
-    """리뷰 블록 이름의 단일 진실 = 엔진 상수 (문자열을 테스트에 재타이핑하지 않는다)."""
+def _pm_delegate_contract() -> tuple[str, int, str, int]:
+    """라이브 prompt가 쓰는 review/architect schema 값을 엔진 상수에서 읽는다."""
     spec = importlib.util.spec_from_file_location(
         "_release_wave_pm_delegate", _TOOLS / "pm_delegate.py"
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod.PM_REVIEW_BLOCK
+    return (
+        mod.PM_REVIEW_BLOCK, mod.PM_REVIEW_VERSION,
+        mod.ARCHITECT_TEST_BLOCK, mod.ARCHITECT_TEST_VERSION,
+    )
 
 
-# 회수된 리뷰 라운드가 담아야 하는 판정 블록 이름(엔진 파생).
-_PM_REVIEW_BLOCK = _pm_review_block_name()
+# 회수된 라운드가 담아야 하는 구조화 계약(엔진 파생).
+(_PM_REVIEW_BLOCK, _PM_REVIEW_VERSION,
+ _ARCHITECT_TEST_BLOCK, _ARCHITECT_TEST_VERSION) = _pm_delegate_contract()
 
 
 def _compaction_checkpoint_count(dest: Path) -> int:
@@ -136,6 +159,49 @@ def _opencode_snapshot_receipts(marker_dir: Path) -> frozenset[tuple[str, str]]:
         if match and receipt.is_file():
             generations.add((match.group(1), match.group(2)))
     return frozenset(generations)
+
+
+def _compaction_checkpoint_markers(marker_dir: Path) -> frozenset[str]:
+    """PreCompact가 남긴 durable marker 이름 집합(격리 adopter의 전후 delta용)."""
+    return frozenset(
+        marker.name
+        for marker in marker_dir.glob("compact-checkpoint.*")
+        if marker.is_file()
+    )
+
+
+def _claude_session_transcript(session_id: str) -> Path:
+    """UUID로 현 live Claude main-session transcript를 유일 해소한다."""
+    candidates = list(
+        (Path.home() / ".claude" / "projects").glob(f"*/{session_id}.jsonl")
+    )
+    assert len(candidates) == 1, (
+        f"Claude session transcript 유일 해소 실패: {session_id} -> {candidates}"
+    )
+    return candidates[0]
+
+
+def _claude_recovery_deliveries(transcript: Path) -> int:
+    """PostCompact snapshot이 hook additional context로 실제 전달된 횟수."""
+    count = 0
+    for line in transcript.read_text(encoding="utf-8").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        attachment = event.get("attachment")
+        if not isinstance(attachment, dict):
+            continue
+        if attachment.get("type") != "hook_additional_context":
+            continue
+        content = attachment.get("content")
+        chunks = content if isinstance(content, list) else [content]
+        if any(
+            isinstance(chunk, str) and "## PM 정체성 (compaction 복구)" in chunk
+            for chunk in chunks
+        ):
+            count += 1
+    return count
 
 
 def _force_opencode_compaction_threshold(dest: Path, model: str) -> None:
@@ -232,37 +298,126 @@ def _run_opencode_live(argv, *, cwd, env, timeout):
     )
 
 
-def _full_wave_prompt(entry_doc: str) -> str:
-    """PM 세션이 full wave와 native 3역할 라운드 파일 왕복을 운영하라는 프롬프트.
+def _full_wave_prompt(entry_doc: str, harness: str) -> str:
+    """PM 세션이 고정 4회 위임과 native 라운드 파일 왕복을 운영하라는 프롬프트.
 
     board.py 경로를 *주지 않는다* — adopter 가 `entry_doc` 만으로 도구를 찾아 운영해야 통과(= 문서 운영성).
-    같은 claimed ticket에서 역할마다 prepare→native subagent→harvest를 수행한다. 준비가 예약한 라운드
+    같은 claimed ticket에서 01 architect→02 developer→03 reviewer→04 developer 순서로
+    prepare→native subagent→harvest를 수행한다. 준비가 예약한 라운드
     파일(`tickets/rounds/<T-NNNN>/NN-<역할>.md`)의 고유 sentinel과 developer의 probe.txt를 side-effect로
     관측한다. `section-add`는 여기서 쓰지 않는다 — 슬롯 없는 준비라 위임 경로와 겹치면 빈 라운드가
     하나 더 예약된다. 기존 Claude/OpenCode full-wave 호출을 재사용해 별도 native 중복 테스트를 만들지 않는다.
     """
+    architect_payload = json.dumps({
+        "version": _ARCHITECT_TEST_VERSION,
+        "tests": [{
+            "id": "AT-001",
+            "target": _WAVE_TEST_FILE,
+            "command": _WAVE_TARGETED_COMMAND,
+            "expected": "passed",
+            "negative": "probe 내용 또는 canonical architect round가 틀리면 실패해야 한다",
+        }],
+    }, ensure_ascii=False, separators=(",", ":"))
+    zero_review_payload = json.dumps(
+        {"version": _PM_REVIEW_VERSION, "findings": [], "confirmations": []},
+        ensure_ascii=False, separators=(",", ":"),
+    )
+    architect_body = (
+        "## 경계 실측\n- isolated release-wave adopter and canonical ticket rounds\n\n"
+        "## 불변식\n- architect then developer then code-reviewer then final developer\n\n"
+        "## 표면 상한\n- probe.txt and one stable regression test\n\n"
+        "## 테스트 전략\n- positive canonical round/probe check and negative mismatch check\n\n"
+        f"```{_ARCHITECT_TEST_BLOCK}\n{architect_payload}\n```\n\n"
+        "검토 판정: 설계 통과\n"
+        f"{_GROWTH_PIPELINE[0][1]}\n"
+    )
+    reviewer_zero_body = (
+        "## must-fix\n- 없음\n\n"
+        "## 판정\n판정: 통과 · finding 0건(must-fix 0건)\n\n"
+        f"```{_PM_REVIEW_BLOCK}\n{zero_review_payload}\n```\n\n"
+        f"{_GROWTH_PIPELINE[2][1]}\n"
+    )
+    delegation_tool = "spawn_agent" if harness == "codex" else "Task"
     return (
         f"You are the PM for this project. Read {entry_doc} to learn how the project board "
-        "tool works. Then run a full release wave: "
+        "tool works. HARD DELEGATION GATE: the PM main may run board, prepare, and harvest commands but "
+        f"must not directly write, edit, cp, or sed any round file body. Call native {delegation_tool} exactly four "
+        "times in this order: architect once, developer once, code-reviewer once, developer once. After "
+        "each prepare, pass that absolute round path and its complete ROUND contract below to the matching "
+        f"{delegation_tool}; do not start the next {delegation_tool} until the current {delegation_tool} "
+        "succeeds and its harvest returns rc=0. "
+        f"If a {delegation_tool} call is missing or fails, stop without directly substituting for it. "
+        f"The code-reviewer {delegation_tool} "
+        "prompt must include the nested BEGIN EXACT REVIEWER BODY through END EXACT REVIEWER BODY content "
+        "below verbatim, without paraphrasing or changing its schema. Before completion, self-check spawned "
+        "role counts exactly architect=1, developer=2, code-reviewer=1 and stop on any mismatch. "
+        "Then run a full release wave: "
         "(1) create exactly one ticket titled 'release wave probe' (touches README.md) with the "
         "board tool, "
         "(2) claim it, "
-        "(3) for EACH role architect, developer, and code-reviewer, use pm_delegate.py ticket prepare "
-        "for that role, pass the returned absolute round file path to the harness-native "
-        "subagent tool, and always run ticket harvest afterward. Each subagent must edit ONLY that one "
-        "round file (keep its first header line and the seeded skeleton) and write this exact role "
-        "sentinel into it: "
-        f"architect={_GROWTH_SENTINELS[_ARCH_SUBAGENT]}, "
-        f"developer={_GROWTH_SENTINELS[_DEV_SUBAGENT]}, "
-        f"code-reviewer={_GROWTH_SENTINELS[_REVIEWER_SUBAGENT]}. "
-        "Use the native role/subagent name matching each role; do not edit the ticket spec file directly. "
-        f"The {_DEV_SUBAGENT} must ALSO create {PROBE_FILE} in the project root containing exactly "
-        f"'{PROBE_TEXT}'. The code-reviewer final reply must contain '판정: 통과', a '## must-fix' heading, "
-        "and '- 없음'. "
-        "(4) after all three harvests, start a fresh board.py show process and verify all three sentinels are "
-        "present in the ticket rounds it prints, "
-        "(5) mark the ticket complete/done (satisfy the complete sync gate however the docs say — "
-        "e.g. a log entry and the tests-pass / untested flag). "
+        "(3) execute exactly these four human rounds in order. For every round use pm_delegate.py ticket "
+        "prepare with the stated role, pass the returned absolute round file to the matching native "
+        "subagent, then always ticket harvest before advancing:\n"
+        "ROUND 01 architect: use replacement/truncation, never append. Preserve the seeded first header "
+        "line and make every byte from line 2 through EOF equal the body between BEGIN/END here:\n"
+        f"BEGIN EXACT ARCHITECT BODY\n{architect_body}END EXACT ARCHITECT BODY\n"
+        "Before replying, reopen the file and verify exact body equality, exactly one architect test "
+        "contract block, exactly one architect sentinel, and zero `<...>` placeholder tokens. If the old "
+        "skeleton follows the sentinel or any check fails, rewrite line 2 through EOF and reread it.\n"
+        "ROUND 02 developer: implement that contract. Create probe.txt with exactly "
+        f"'{PROBE_TEXT}' and create {_WAVE_TEST_FILE}. The test must derive this ticket id at runtime from "
+        "the union of stable filesystem entries `.project_manager/wiki/tickets/claimed/T-*.md` and "
+        "`.project_manager/wiki/tickets/done/T-*.md` (exactly one release-wave ticket). Do not use the "
+        "default `board.py list` view for this lookup because it omits done tickets after completion. "
+        "Inspect the stable canonical "
+        ".project_manager/wiki/tickets/rounds/<ticket>/01-architect.md plus probe.txt. It must never refer "
+        "to .local/delegate-ticket-copies, an absolute temp path, a random run id, UUID, or hash. "
+        "After writing the test, reopen its source and verify the literal `.local/delegate-ticket-copies` "
+        "occurs zero times in the entire file bytes, including comments and docstrings; describe this ban "
+        "only in the round evidence, never inside the generated test. Also verify no 32-hex run hash occurs. "
+        f"Run `{_WAVE_TARGETED_COMMAND}` and then `{_WAVE_FULL_COMMAND}` yourself. Only actual rc=0 may be "
+        "recorded under `## 회귀` using the exact full command and the observed pytest summary; never "
+        f"fabricate a count. Append {_GROWTH_PIPELINE[1][1]}.\n"
+        "ROUND 03 code-reviewer: review probe.txt and its regression test. If the known stable fixture is "
+        "correct, use replacement/truncation, preserve the first header, and make line 2 through EOF equal "
+        "the body between BEGIN/END here:\n"
+        f"BEGIN EXACT REVIEWER BODY\n{reviewer_zero_body}END EXACT REVIEWER BODY\n"
+        "Reopen the file and verify exact body equality, one review block, one sentinel, and no old skeleton "
+        "after the sentinel before replying. "
+        "If there is a real defect instead, fill the seeded v3 finding without changing its keys; include "
+        "evidence and all fix_contract fields, "
+        f"with test={_WAVE_TEST_FILE}, command=`{_WAVE_TARGETED_COMMAND}`, expected=passed. PM must harvest "
+        "ROUND 03 and observe rc=0 plus the canonical reviewer content before running ROUND 04 prepare; never "
+        "reserve or pre-create ROUND 04 earlier.\n"
+        "PM DISPOSITION: after reviewer harvest, run review disposition-template for the actual reviewer "
+        "ordinal. Accept only real current-ticket findings. For zero findings, keep dispositions rows at "
+        "zero: append only the exact finding-zero block emitted by the template under `## PM 기계 확인` "
+        "in the claimed ticket file, never in the canonical ROUND 03 reviewer file or any round file, and "
+        "never invent a finding row. Do not search source or help for the block location. Reopen both files "
+        "and verify the disposition fence occurs zero times in canonical ROUND 03 and exactly once under "
+        "the claimed ticket's `## PM 기계 확인`; only after these counts are true may ROUND 04 prepare run. "
+        "Confirm review delta is empty. Then pass the exact accepted-only delta output to "
+        "the final developer. Do not create another ticket or reviewer round.\n"
+        "ROUND 04 developer (terminal final fix): always prepare and delegate this second developer round, "
+        "even when review delta is empty. Apply every accepted finding, add or modify its required regression "
+        "test, and fill every preseeded pm-review-verify-v1 row. Run the architect/reviewer targeted commands "
+        f"and `{_WAVE_FULL_COMMAND}` yourself. The final body must use the completed sections in exact order "
+        "`## 변경 파일`, `## 신규 테스트`, `## 회귀`, `## DoD evidence`, `## 민감도`, then any "
+        "seeded verify block and the final sentinel. The `## 회귀` section must contain exactly two "
+        f"nonblank rows: `- 커맨드: `{_WAVE_FULL_COMMAND}`` and `- 결과: rc=0 · <the one observed "
+        "full pytest summary>`. Put targeted evidence under `## DoD evidence`, not under `## 회귀`. "
+        "Before replying, reopen the final file and extract `## 회귀` through the next `## ` heading; "
+        f"rewrite and reread unless it has exactly those two rows, contains `{_WAVE_FULL_COMMAND}` once, "
+        f"contains neither `{_WAVE_TARGETED_COMMAND}` nor a placeholder, and the whole body contains "
+        f"{_GROWTH_PIPELINE[3][1]} exactly once. Harvest once and open no further human round.\n"
+        "(4) after all four harvests, start a fresh board.py show process and verify the exact role order "
+        "architect, developer, code-reviewer, developer and all four sentinels, "
+        "(5) if and only if accepted findings exist, run exactly `python3 .project_manager/tools/"
+        "pm_delegate.py rounds resolve --gate <ticket> --pm-verified`; when the review delta is empty, "
+        "skip resolve entirely. Do not search source or help for another gate command. Check all ticket DoD "
+        "boxes, update the status row, append one ticket entry to log/current.md, then run exactly "
+        "`python3 .project_manager/tools/board.py complete <ticket> --tests-pass` using the sole local lease. "
+        "Do not do further discovery after that command succeeds. "
         "Reply with the ticket id when the ticket is done."
     )
 
@@ -316,6 +471,26 @@ def _assert_wave_side_effects(dest: Path, proc: subprocess.CompletedProcess, har
     assert probe_path.read_text(encoding="utf-8").strip() == PROBE_TEXT, (
         f"{PROBE_FILE} 내용이 '{PROBE_TEXT}' 아님 — developer 가 다르게 구현.\n" + tail
     )
+    wave_test = dest / _WAVE_TEST_FILE
+    assert wave_test.is_file(), f"architect 지정 회귀 {_WAVE_TEST_FILE} 부재.\n" + tail
+    wave_test_text = wave_test.read_text(encoding="utf-8")
+    assert all(
+        token in wave_test_text for token in (".project_manager", "wiki", "tickets", "rounds")
+    ), "release probe가 canonical round 경로 구성요소를 검증하지 않음.\n" + tail
+    assert ".local/delegate-ticket-copies" not in wave_test_text, (
+        "release probe가 일회성 delegate copy 경로에 결속됨.\n" + tail
+    )
+    assert re.search(r"\b[0-9a-f]{32}\b", wave_test_text, re.IGNORECASE) is None, (
+        "release probe가 랜덤 run hash를 hardcode함.\n" + tail
+    )
+    targeted = subprocess.run(
+        _WAVE_TARGETED_COMMAND.split(), cwd=dest, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", check=False,
+    )
+    assert targeted.returncode == 0, (
+        f"live side-effect에서 architect 지정 테스트 재실행 red: {_WAVE_TARGETED_COMMAND}\n"
+        f"stdout={targeted.stdout[-1200:]}\nstderr={targeted.stderr[-800:]}\n" + tail
+    )
     done_tickets = _tickets_in(dest, "done")
     assert done_tickets, (
         f"실 {harness} 가 ticket 을 done/ 까지 운영하지 못함 — full wave 미완주.\n"
@@ -332,28 +507,58 @@ def _assert_wave_side_effects(dest: Path, proc: subprocess.CompletedProcess, har
         f"실 {harness} done ticket에 라운드 디렉터리 부재 — prepare 예약이 board 에 남지 않았다: "
         f"{rounds_dir}\n" + tail
     )
-    for role, sentinel in _GROWTH_SENTINELS.items():
-        # 회수된 라운드는 `NN-<역할>.md` 다 — 이름 문법은 엔진(ticket_rounds)이 단일 진실이라
-        # 여기서는 그 형식으로 찾고 내용만 단언한다.
-        role_rounds = sorted(rounds_dir.glob(f"*-{role}.md"))
-        assert role_rounds, (
-            f"실 {harness} done ticket에 {role} 라운드 파일 부재 — native prepare→subagent→harvest "
-            f"영속 왕복 미성립: {rounds_dir}\n" + tail
-        )
-        texts = [path.read_text(encoding="utf-8") for path in role_rounds]
-        assert any(sentinel in text for text in texts), (
-            f"실 {harness} {role} 라운드 파일에 harvest sentinel 부재 — 산출이 회수되지 않았다: "
-            f"{[str(path) for path in role_rounds]}\n" + tail
+    round_files = sorted(rounds_dir.glob("*.md"))
+    actual_roles = [path.stem.split("-", 1)[1] for path in round_files]
+    expected_roles = [role for role, _sentinel in _GROWTH_PIPELINE]
+    assert actual_roles == expected_roles, (
+        f"실 {harness} 고정 라운드 수열 불일치: {actual_roles} != {expected_roles}\n" + tail
+    )
+    for path, (role, sentinel) in zip(round_files, _GROWTH_PIPELINE):
+        text = path.read_text(encoding="utf-8")
+        assert sentinel in text, (
+            f"실 {harness} {path.name}({role})에 harvest sentinel 부재.\n" + tail
         )
         # 첫 줄 헤더(라벨·역할·날짜)는 엔진이 시드하지만 사람 참고용이라 엔진이 재작성을
         # 강제하지 않는다(ticket_rounds 단일 진실은 파일명의 순번·역할) — 라이브 tier 판정 축은
         # 엔진이 실제로 강제하는 성질(sentinel·아래 pm-review-v1 블록)로 좁힌다.
         if role == _REVIEWER_SUBAGENT:
             # 리뷰 라운드는 엔진이 시드한 판정 블록을 담은 채 회수돼야 delta 단계가 선다.
-            assert any(f"```{_PM_REVIEW_BLOCK}" in text for text in texts), (
+            assert f"```{_PM_REVIEW_BLOCK}" in text, (
                 f"실 {harness} 리뷰 라운드에 {_PM_REVIEW_BLOCK} 블록 부재 — 시드 골격이 지워졌다: "
-                f"{[str(path) for path in role_rounds]}\n" + tail
+                f"{path}\n" + tail
             )
+
+
+def _baseline_codex_adopter(dest: Path) -> None:
+    """Codex native wave 전에 host가 imported adopter의 초기 HEAD/index를 확립한다.
+
+    Codex main은 이후 ticket/round 변경을 직접 commit해야 하므로 initial import만 host 경계에서
+    추적한다. throwaway adopter에는 remote가 없고, 테스트 전용 identity도 repo config에 남기지 않는다.
+    """
+    commands = (
+        ["git", "-C", str(dest), "add", "--all"],
+        [
+            "git", "-C", str(dest),
+            "-c", "user.name=PM release fixture",
+            "-c", "user.email=pm-release-fixture@example.invalid",
+            "commit", "--no-gpg-sign", "-m", "release fixture baseline",
+        ],
+    )
+    for command in commands:
+        proc = subprocess.run(
+            command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            check=False,
+        )
+        assert proc.returncode == 0, (
+            f"Codex native adopter baseline 실패: {' '.join(command)}\n"
+            f"stdout={proc.stdout[-1200:]}\nstderr={proc.stderr[-1200:]}"
+        )
+    assert (dest / ".git" / "index").is_file()
+    head = subprocess.run(
+        ["git", "-C", str(dest), "rev-parse", "--verify", "HEAD"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    assert head.returncode == 0 and head.stdout.strip()
 
 
 @pytest.mark.release
@@ -362,78 +567,77 @@ def _assert_wave_side_effects(dest: Path, proc: subprocess.CompletedProcess, har
     reason="release wave — PM_ORCH_LIVE_RELEASE=1 + claude CLI 필요(API 과금). 기본 skip·사용자 트리거.",
 )
 def test_release_wave_claude_full_wave(tmp_path):
-    """실 claude full wave + 수동 `/compact`가 snapshot marker 재주입·checkpoint를 남긴다.
+    """실 claude full wave + native auto-compaction이 snapshot을 재주입한다.
 
     PM 36 라이브 probe(`scratchpad/release_probe.py`·PASS·dev×15·reviewer×21)의 mechanics 를 옮긴 것.
     claude 는 subprocess cwd 를 존중한다(`--dir` 불요). stream-json 으로 위임(subagent_type)을 관측하고
-    side-effect(probe.txt·done)를 단언한다. 경계는 미검증 env knob 대신 실 하네스의 수동
-    `/compact`로 유도한다. PostCompact payload marker 생성 → 다음 UserPromptSubmit 1회 소거,
-    checkpoint 1건 이상, 모델 sentinel 응답을 함께 확인한다. API 과금.
+    side-effect(probe.txt·done)를 먼저 단언한다. 그 뒤 같은 세션을 낮은 native `--autocompact`
+    경계로 resume한다. PostCompact payload marker 생성 → 후속 PreToolUse 전달, checkpoint 1건 이상,
+    모델 sentinel 응답을 함께 확인한다. API 과금.
     """
     dest = _import_adopter(tmp_path, "claude")
     session_id = str(uuid.uuid4())
     checkpoints_before = _compaction_checkpoint_count(dest)
+    marker_dir = dest / ".project_manager" / ".local" / "ctx-stop"
+    checkpoint_markers_before = _compaction_checkpoint_markers(marker_dir)
 
     proc = subprocess.run(
         ["claude", "-p", "--model", CLAUDE_MODEL,
          "--session-id", session_id,
+         "--autocompact", _CLAUDE_WAVE_AUTOCOMPACT_THRESHOLD,
          "--allowedTools", "Bash", "Task",
          "--output-format", "stream-json", "--verbose",
          "--dangerously-skip-permissions",
-         _full_wave_prompt("CLAUDE.md")],
+         _full_wave_prompt("CLAUDE.md", "claude")],
         cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
         env=_live_env(CLAUDE_MODEL), timeout=_CLAUDE_TIMEOUT,
     )
 
-    # 위임 관측(hard) — stream-json 에서 성장 역할 3종이 모두 등장해야 통과(probe 검증됨).
+    # 위임 관측(hard) — fixed pipeline의 developer가 구현·fix 두 번 등장해야 한다.
     subagent_types = _collect_subagent_types(proc.stdout)
     tail = (
         f"--- claude stdout(tail) ---\n{proc.stdout[-2500:]}\n"
         f"--- stderr(tail) ---\n{proc.stderr[-1000:]}"
     )
-    assert all(role in subagent_types for role in _GROWTH_SENTINELS), (
+    assert (
+        _ARCH_SUBAGENT in subagent_types
+        and _REVIEWER_SUBAGENT in subagent_types
+        and subagent_types.count(_DEV_SUBAGENT) >= 2
+    ), (
         f"claude full wave 에서 위임 미관측 — subagent_type={subagent_types} "
-        f"(architect·developer·code-reviewer 모두 필요).\n" + tail
+        f"(architect 1·developer 2·code-reviewer 1 필요).\n" + tail
     )
 
     # side-effect(hard) — developer 위임 결과(probe.txt)·done 전이.
     _assert_wave_side_effects(dest, proc, "claude")
 
-    # T-0621 release boundary: 수동 /compact는 Claude 실 이벤트 PreCompact→PostCompact를
-    # 결정적으로 발화시키는 정본(자동 window env knob 미사용).
-    compact = subprocess.run(
-        ["claude", "-p", "--resume", session_id, "--model", CLAUDE_MODEL,
-         "--dangerously-skip-permissions", "/compact"],
+    assert proc.returncode == 0
+    resume_proc = subprocess.run(
+        ["claude", "-p", "--model", CLAUDE_MODEL,
+         "--resume", session_id,
+         "--autocompact", _CLAUDE_AUTOCOMPACT_THRESHOLD,
+         "--allowedTools", "Bash",
+         "--output-format", "stream-json", "--verbose",
+         "--dangerously-skip-permissions",
+         _CLAUDE_COMPACTION_PROBE_PROMPT],
         cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
         env=_live_env(CLAUDE_MODEL), timeout=_CLAUDE_TIMEOUT,
     )
-    snapshot_marker = (
-        dest / ".project_manager" / ".local" / "ctx-stop" /
-        f"compact-snapshot.{session_id}"
+    assert resume_proc.returncode == 0, (
+        "claude same-session native compaction probe 실패\n"
+        f"--- stdout(tail) ---\n{resume_proc.stdout[-2500:]}\n"
+        f"--- stderr(tail) ---\n{resume_proc.stderr[-1000:]}"
     )
-    assert compact.returncode == 0 and snapshot_marker.is_file(), (
-        "claude /compact 후 PostCompact snapshot payload marker 미생성.\n"
-        f"stdout={compact.stdout[-1200:]!r}\nstderr={compact.stderr[-800:]!r}"
-    )
+    assert _COMPACTION_RECOVERY_SENTINEL in resume_proc.stdout
     assert _compaction_checkpoint_count(dest) >= checkpoints_before + 1, (
         "claude compaction 경계 checkpoint 골격이 log에 생성되지 않음"
     )
-
-    recovered = subprocess.run(
-        ["claude", "-p", "--resume", session_id, "--model", CLAUDE_MODEL,
-         "--dangerously-skip-permissions",
-         "If a PM recovery snapshot was injected as additional context after the immediately "
-         f"preceding compaction, reply with exactly {_COMPACTION_RECOVERY_SENTINEL}; otherwise "
-         "reply with exactly NO_COMPACTION_RECOVERY."],
-        cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
-        env=_live_env(CLAUDE_MODEL), timeout=_CLAUDE_TIMEOUT,
+    assert _compaction_checkpoint_markers(marker_dir) - checkpoint_markers_before, (
+        "claude PreCompact durable checkpoint marker 증가분이 없음"
     )
-    assert recovered.returncode == 0 and not snapshot_marker.exists(), (
-        "claude PostCompact payload가 다음 UserPromptSubmit에서 1회 소비되지 않음"
-    )
-    assert _COMPACTION_RECOVERY_SENTINEL in recovered.stdout, (
-        "claude compaction snapshot이 모델 context에 도달하지 않음.\n"
-        f"stdout={recovered.stdout[-1200:]!r}\nstderr={recovered.stderr[-800:]!r}"
+    transcript = _claude_session_transcript(session_id)
+    assert _claude_recovery_deliveries(transcript) >= 1, (
+        "claude PostCompact snapshot이 후속 PreToolUse additional context에 도달한 증거가 없음"
     )
 
 
@@ -445,11 +649,12 @@ def test_release_wave_claude_full_wave(tmp_path):
 def test_release_wave_codex_native_ticket_growth(tmp_path):
     """실 Codex main이 spawn_agent 3역할로 같은 ticket copy를 성장·harvest하고 done까지 완주한다."""
     dest = _import_adopter(tmp_path, "codex")
+    _baseline_codex_adopter(dest)
     home = make_codex_home(tmp_path)
     try:
         proc = run_codex_exec(
-            _full_wave_prompt("AGENTS.md"), dest, home,
-            model=CODEX_MODEL, timeout=_CODEX_TIMEOUT,
+            _full_wave_prompt("AGENTS.md", "codex"), dest, home,
+            model=CODEX_MODEL, timeout=_CODEX_TIMEOUT, sandbox="danger-full-access",
         )
     finally:
         drop_codex_auth(home)
@@ -474,7 +679,10 @@ def test_release_wave_opencode_full_wave(tmp_path):
     모델 `limit.context-output`만 낮추고 반복 입력으로 넘긴다. 출하 config/generic 예산은 무변경.
     """
     dest = _import_adopter(tmp_path, "opencode")
-    _force_opencode_compaction_threshold(dest, LIVE_MODEL)
+    marker_dir = dest / ".project_manager" / ".local" / "ctx-stop"
+    checkpoints_before = _compaction_checkpoint_count(dest)
+    checkpoint_markers_before = _compaction_checkpoint_markers(marker_dir)
+    receipts_before_turn = _opencode_snapshot_receipts(marker_dir)
 
     proc = _run_opencode_live(
         # `--dangerously-skip-permissions`: 비대화 헤드리스라 opencode 가 `--dir` 디렉토리를
@@ -482,12 +690,16 @@ def test_release_wave_opencode_full_wave(tmp_path):
         # 이 플래그로 권한을 통과시켜야 wave 완주(throwaway tmp adopter 격리라 안전·PM 36 probe 실측).
         ["opencode", "run", "--agent", "build", "--dir", str(dest),
          "--dangerously-skip-permissions", "-m", LIVE_MODEL,
-         _full_wave_prompt("AGENTS.md")],
+         _full_wave_prompt("AGENTS.md", "opencode")],
         cwd=str(dest), env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
     )
 
     # side-effect(hard) — full wave 의 핵심 결과(developer 위임 산출 probe.txt·done 전이).
     _assert_wave_side_effects(dest, proc, "opencode")
+
+    # full wave를 정상 context로 완주한 뒤에만 같은 completed session의 native
+    # compaction 경계를 낮춰, 아래 bounded safe turns로 checkpoint+receipt를 관측한다.
+    _force_opencode_compaction_threshold(dest, LIVE_MODEL)
 
     # 위임 흔적(best-effort) — opencode 출력에 서브에이전트 이름이 등장하면 위임 관측으로 단언.
     # 등장 안 해도 fail 시키지 않는다 — opencode 위임 관측 수단=stream-json 아님·gemma 비결정으로
@@ -499,15 +711,21 @@ def test_release_wave_opencode_full_wave(tmp_path):
     # turn은 native compaction으로 줄일 수 있지만 현재 prompt는 줄일 수 없으므로 단일 초대형
     # prompt를 쓰지 않는다. 새 checkpoint 증가 뒤에는 snapshot payload가 system[]에 실제 push된
     # generation receipt를 모델 phrasing·in-process marker 수명과 독립적으로 관측한다.
-    checkpoints_before = _compaction_checkpoint_count(dest)
-    marker_dir = dest / ".project_manager" / ".local" / "ctx-stop"
     probe_results = []
     receipt_observations = []
     receipt_appearances = []
-    receipts_before_turn = _opencode_snapshot_receipts(marker_dir)
-    checkpoint_increased = False
-    delivered_receipts = set()
-    for turn, prompt in enumerate(_opencode_compaction_probe_prompts(), start=1):
+    checkpoint_increased = (
+        _compaction_checkpoint_count(dest) >= checkpoints_before + 1
+        or bool(_compaction_checkpoint_markers(marker_dir) - checkpoint_markers_before)
+    )
+    receipts = _opencode_snapshot_receipts(marker_dir)
+    delivered_receipts = set(receipts - receipts_before_turn)
+    receipts_before_turn = receipts
+    for turn, prompt in enumerate(
+        () if checkpoint_increased and delivered_receipts
+        else _opencode_compaction_probe_prompts(),
+        start=1,
+    ):
         compacted = _run_opencode_live(
             ["opencode", "run", "--continue", "--agent", "build", "--dir", str(dest),
              "--dangerously-skip-permissions", "-m", LIVE_MODEL, prompt],
@@ -520,6 +738,7 @@ def test_release_wave_opencode_full_wave(tmp_path):
         )
         checkpoint_increased = (
             _compaction_checkpoint_count(dest) >= checkpoints_before + 1
+            or bool(_compaction_checkpoint_markers(marker_dir) - checkpoint_markers_before)
         )
         receipts = _opencode_snapshot_receipts(marker_dir)
         appeared = receipts - receipts_before_turn
@@ -561,7 +780,8 @@ def test_release_wave_opencode_full_wave(tmp_path):
         )
     )
     assert checkpoint_increased, (
-        "opencode 강제 임계에서 session.compacted→checkpoint 증가분이 발화하지 않음.\n" + trace
+        "opencode 강제 임계에서 session.compacted→checkpoint log/marker 증가분이 "
+        "발화하지 않음.\n" + trace
     )
     assert delivered_receipts, (
         "opencode checkpoint 증가 뒤 staged snapshot이 system[]에 전달됐다는 새 "
@@ -1251,31 +1471,316 @@ def test_release_wave_claude_final_nudge_driver_marker_contract(tmp_path):
 
 
 def test_full_wave_prompt_has_ticket_growth_stages():
-    """full wave 프롬프트가 claim 뒤 native 3역할 prepare→harvest와 complete를 담는다."""
-    prompt = _full_wave_prompt("CLAUDE.md")
+    """full wave 프롬프트가 고정 01→02→03→04와 실제 테스트 계약을 담는다."""
+    prompt = _full_wave_prompt("CLAUDE.md", "claude")
     # (1) new — 정확히 1개 ticket 발행 지시.
     assert "create exactly one ticket" in prompt
     # (2) claim.
     assert "claim it" in prompt
-    # (3) 성장 역할 3종 + prepare/harvest + developer probe.
-    for role, sentinel in _GROWTH_SENTINELS.items():
+    # (3) 성장 역할 4자리 + prepare/harvest + developer probe.
+    for role, sentinel in _GROWTH_PIPELINE:
         assert role in prompt and sentinel in prompt
+    assert [role for role, _sentinel in _GROWTH_PIPELINE] == [
+        "architect", "developer", "code-reviewer", "developer",
+    ]
+    assert all(f"ROUND {ordinal:02d}" in prompt for ordinal in range(1, 5))
     assert "ticket prepare" in prompt and "ticket harvest" in prompt
     assert PROBE_FILE in prompt and PROBE_TEXT in prompt
+    assert _ARCHITECT_TEST_BLOCK in prompt
+    assert _WAVE_TEST_FILE in prompt and _WAVE_TARGETED_COMMAND in prompt
+    assert _WAVE_FULL_COMMAND in prompt and "Only actual rc=0" in prompt
+    assert "review disposition-template" in prompt and "review delta" in prompt
+    assert "even when review delta is empty" in prompt
+    assert "BEGIN EXACT ARCHITECT BODY" in prompt
+    assert "exact body equality" in prompt
+    assert "old skeleton follows the sentinel" in prompt
+    assert "extract `## 회귀`" in prompt
+    assert "exactly two" in prompt and "contains neither" in prompt
+    assert "if and only if accepted findings exist" in prompt
+    assert "skip resolve entirely" in prompt
+    assert "Do not search source or help" in prompt
+    assert "board.py complete <ticket> --tests-pass" in prompt
+    assert ".project_manager/wiki/tickets/rounds/<ticket>/01-architect.md" in prompt
+    assert ".project_manager/wiki/tickets/claimed/T-*.md" in prompt
+    assert ".project_manager/wiki/tickets/done/T-*.md" in prompt
+    assert "default `board.py list` view" in prompt and "omits done tickets" in prompt
+    assert ".local/delegate-ticket-copies" in prompt and "random run id" in prompt
+    assert "including comments and docstrings" in prompt
+    assert "occurs zero times in the entire file bytes" in prompt
+    assert "never inside the generated test" in prompt
+    assert "BEGIN EXACT REVIEWER BODY" in prompt
+    assert "exact body equality, one review block" in prompt
+    assert "harvest ROUND 03 and observe rc=0" in prompt
+    assert "never reserve or pre-create ROUND 04 earlier" in prompt
     # (4) 새 프로세스 canonical 재조회.
     assert "fresh board.py show process" in prompt
     # (5) complete + sync gate.
-    assert "mark the ticket complete/done" in prompt
+    assert "board.py complete <ticket> --tests-pass" in prompt
     # 진입문서가 프롬프트에 박힌다(harness 별 CLAUDE.md/AGENTS.md).
     assert "CLAUDE.md" in prompt
-    assert "AGENTS.md" in _full_wave_prompt("AGENTS.md")
+    assert "AGENTS.md" in _full_wave_prompt("AGENTS.md", "codex")
+    assert _CLAUDE_TIMEOUT_DEFAULT == 900
 
 
-def test_collect_subagent_types_extracts_from_stream_json():
-    """subagent_type walk 가 claude stream-json 형 샘플에서 developer·code-reviewer 를 정확히 추출한다."""
+def test_full_wave_prompt_requires_exact_native_task_sequence():
+    """PM main의 round 직접 대체와 Task 생략을 round 시작 전에 차단한다."""
+    prompt = _full_wave_prompt("CLAUDE.md", "claude")
+    gate = "HARD DELEGATION GATE"
+    contracts = (
+        "must not directly write, edit, cp, or sed any round file body",
+        "architect once, developer once, code-reviewer once, developer once",
+        "do not start the next Task until the current Task succeeds and its harvest returns rc=0",
+        "If a Task call is missing or fails, stop without directly substituting for it",
+        "BEGIN EXACT REVIEWER BODY through END EXACT REVIEWER BODY content below verbatim",
+        "role counts exactly architect=1, developer=2, code-reviewer=1",
+    )
+
+    assert prompt.index(gate) < prompt.index("(1) create exactly one ticket")
+    assert prompt.index(gate) < prompt.index("ROUND 01 architect")
+    for contract in contracts:
+        assert contract in prompt
+    assert prompt.index(contracts[4]) < prompt.index("BEGIN EXACT REVIEWER BODY\n")
+
+
+def test_full_wave_prompt_uses_each_harness_native_delegation_tool():
+    """Claude/OpenCode는 Task, Codex는 존재하는 spawn_agent만 지시한다."""
+    claude = _full_wave_prompt("CLAUDE.md", "claude")
+    opencode = _full_wave_prompt("AGENTS.md", "opencode")
+    codex = _full_wave_prompt("AGENTS.md", "codex")
+
+    for prompt in (claude, opencode):
+        assert "Call native Task exactly four times" in prompt
+        assert "spawn_agent" not in prompt
+    assert "Call native spawn_agent exactly four times" in codex
+    assert "next spawn_agent" in codex
+    assert "code-reviewer spawn_agent" in codex
+    assert "Task" not in codex
+
+
+def test_codex_native_fixture_baselines_git_before_isolated_writable_call(
+    tmp_path, monkeypatch,
+):
+    """unborn adopter를 host가 추적하고 Codex native wave 한 호출만 git 쓰기를 연다."""
+    dest = tmp_path / "adopter-codex"
+    (dest / ".project_manager").mkdir(parents=True)
+    (dest / ".project_manager" / ".gitignore").write_text(".local/\n", encoding="utf-8")
+    (dest / "README.md").write_text("fixture\n", encoding="utf-8")
+    init = subprocess.run(
+        ["git", "init", str(dest)], capture_output=True, text=True, check=False,
+    )
+    assert init.returncode == 0
+
+    _baseline_codex_adopter(dest)
+
+    tracked = subprocess.run(
+        ["git", "-C", str(dest), "ls-files"], capture_output=True, text=True, check=False,
+    )
+    assert tracked.returncode == 0
+    assert ".project_manager/.gitignore" in tracked.stdout.splitlines()
+    assert (dest / ".git" / "index").is_file()
+    assert subprocess.run(
+        ["git", "-C", str(dest), "rev-parse", "--verify", "HEAD"],
+        capture_output=True, text=True, check=False,
+    ).returncode == 0
+
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    run_codex_exec("default", dest, home)
+    run_codex_exec("native wave", dest, home, sandbox="danger-full-access")
+    assert calls[0][calls[0].index("-s") + 1] == "workspace-write"
+    assert calls[1][calls[1].index("-s") + 1] == "danger-full-access"
+
+    live_source = inspect.getsource(test_release_wave_codex_native_ticket_growth)
+    assert live_source.index("_baseline_codex_adopter(dest)") < live_source.index(
+        "run_codex_exec("
+    )
+    assert 'sandbox="danger-full-access"' in live_source
+
+
+def test_zero_finding_disposition_is_ticket_owned_before_round04_prepare():
+    """zero-finding PM 판정은 reviewer round를 오염시키지 않고 04보다 먼저 닫힌다."""
+    prompt = _full_wave_prompt("CLAUDE.md", "claude")
+    disposition = "append only the exact finding-zero block emitted by the template"
+    ticket_owner = "under `## PM 기계 확인` in the claimed ticket file"
+    round_negative = "never in the canonical ROUND 03 reviewer file or any round file"
+    count_guard = (
+        "zero times in canonical ROUND 03 and exactly once under the claimed ticket's "
+        "`## PM 기계 확인`"
+    )
+    prepare_barrier = "only after these counts are true may ROUND 04 prepare run"
+
+    for contract in (
+        disposition,
+        ticket_owner,
+        round_negative,
+        "Do not search source or help for the block location",
+        count_guard,
+        prepare_barrier,
+    ):
+        assert contract in prompt
+    assert prompt.index(disposition) < prompt.index(ticket_owner)
+    assert prompt.index(ticket_owner) < prompt.index(round_negative)
+    assert prompt.index(round_negative) < prompt.index(count_guard)
+    assert prompt.index(count_guard) < prompt.index(prepare_barrier)
+    assert prompt.index(prepare_barrier) < prompt.index("ROUND 04 developer")
+
+
+def test_claude_full_wave_uses_two_phase_native_autocompact():
+    """wave 완료 뒤 같은 세션에서만 낮은 native compaction 경계를 적용한다."""
+    source = inspect.getsource(test_release_wave_claude_full_wave)
+
+    side_effect = source.index('_assert_wave_side_effects(dest, proc, "claude")')
+    resume = source.index('"--resume", session_id')
+    low_threshold = source.index('"--autocompact", _CLAUDE_AUTOCOMPACT_THRESHOLD')
+    evidence = source.index("_claude_recovery_deliveries(transcript)")
+
+    assert '"--autocompact", _CLAUDE_WAVE_AUTOCOMPACT_THRESHOLD' in source
+    assert source.count('"--resume", session_id') == 1
+    assert side_effect < resume < low_threshold < evidence
+    assert '"--allowedTools", "Bash"' in source[resume:evidence]
+    assert '"/compact"' not in source
+    assert _CLAUDE_WAVE_AUTOCOMPACT_THRESHOLD == "1m"
+    assert _CLAUDE_AUTOCOMPACT_THRESHOLD == "100k"
+    assert _CLAUDE_COMPACTION_PROBE_PROMPT == (
+        "Use Bash exactly once to run `pwd`, then reply exactly "
+        f"{_COMPACTION_RECOVERY_SENTINEL}"
+    )
+
+
+def test_claude_recovery_delivery_reads_durable_transcript_attachment(tmp_path):
+    """marker가 후속 tool에 소비된 후에도 transcript가 실제 전달을 증명한다."""
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_text(
+        "not-json\n"
+        + json.dumps({
+            "type": "attachment",
+            "attachment": {
+                "type": "hook_additional_context",
+                "hookName": "PreToolUse:Bash",
+                "content": ["## PM 정체성 (compaction 복구)\n- task: live"],
+            },
+        }, ensure_ascii=False)
+        + "\n"
+        + json.dumps({
+            "type": "attachment",
+            "attachment": {
+                "type": "hook_success",
+                "content": ["## PM 정체성 (compaction 복구)"],
+            },
+        }, ensure_ascii=False)
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert _claude_recovery_deliveries(transcript) == 1
+
+
+def test_opencode_full_wave_uses_compaction_evidence_from_initial_run(
+    tmp_path, monkeypatch,
+):
+    """full-wave 안의 checkpoint+receipt delta면 불필요한 추가 외부 turn을 생략한다."""
+    calls = []
+
+    monkeypatch.setitem(
+        test_release_wave_opencode_full_wave.__globals__,
+        "_import_adopter",
+        lambda _tmp_path, _harness: tmp_path,
+    )
+    monkeypatch.setitem(
+        test_release_wave_opencode_full_wave.__globals__,
+        "_force_opencode_compaction_threshold",
+        lambda _dest, _model: None,
+    )
+    monkeypatch.setitem(
+        test_release_wave_opencode_full_wave.__globals__,
+        "_assert_wave_side_effects",
+        lambda _dest, _proc, _harness: None,
+    )
+
+    def fake_run(argv, *, cwd, env, timeout):
+        calls.append(argv)
+        assert len(calls) == 1, "pre-wave 증거가 있는데 compaction probe를 추가 호출함"
+        marker_dir = tmp_path / ".project_manager" / ".local" / "ctx-stop"
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        (marker_dir / "compact-checkpoint.live.boundary1").write_text(
+            "durable precompact evidence\n", encoding="utf-8",
+        )
+        (marker_dir / "compact-snapshot-receipt.live.generation1").write_text(
+            "delivered\n", encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setitem(
+        test_release_wave_opencode_full_wave.__globals__,
+        "_run_opencode_live",
+        fake_run,
+    )
+
+    test_release_wave_opencode_full_wave(tmp_path)
+
+    assert len(calls) == 1
+    assert "--continue" not in calls[0]
+    source = inspect.getsource(test_release_wave_opencode_full_wave)
+    assert source.index('_assert_wave_side_effects(dest, proc, "opencode")') < source.index(
+        "_force_opencode_compaction_threshold(dest, LIVE_MODEL)"
+    ) < source.index("_opencode_compaction_probe_prompts()")
+
+
+def test_wave_side_effect_guard_rejects_ephemeral_run_hash(tmp_path, monkeypatch):
+    """canonical 4라운드는 통과하고 delegate-copy run hash 결속은 역방향으로 거부한다."""
+    (tmp_path / PROBE_FILE).write_text(PROBE_TEXT + "\n", encoding="utf-8")
+    wave_test = tmp_path / _WAVE_TEST_FILE
+    wave_test.parent.mkdir(parents=True)
+    wave_test.write_text(
+        "# stable Path components: .project_manager wiki tickets rounds\n",
+        encoding="utf-8",
+    )
+    done = tmp_path / ".project_manager" / "wiki" / "tickets" / "done"
+    done.mkdir(parents=True)
+    (done / "T-0001-release-wave-probe.md").write_text("done\n", encoding="utf-8")
+    rounds = done.parent / "rounds" / "T-0001"
+    rounds.mkdir(parents=True)
+    for ordinal, (role, sentinel) in enumerate(_GROWTH_PIPELINE, start=1):
+        body = sentinel + "\n"
+        if role == _REVIEWER_SUBAGENT:
+            body += f"```{_PM_REVIEW_BLOCK}\n{{}}\n```\n"
+        (rounds / f"{ordinal:02d}-{role}.md").write_text(body, encoding="utf-8")
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "1 passed\n", ""),
+    )
+    proc = subprocess.CompletedProcess([], 0, "", "")
+
+    _assert_wave_side_effects(tmp_path, proc, "hermetic")
+
+    wave_test.write_text(
+        wave_test.read_text(encoding="utf-8")
+        + "# .local/delegate-ticket-copies/T-0001/0123456789abcdef0123456789abcdef\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(AssertionError, match="delegate copy"):
+        _assert_wave_side_effects(tmp_path, proc, "hermetic")
+
+
+def test_collect_subagent_types_extracts_fixed_pipeline_from_stream_json():
+    """stream-json에서 architect→developer→reviewer→developer를 순서·중복까지 보존한다."""
     # claude stream-json 근사: 각 라인 1 json. Task tool_use input 깊숙이 subagent_type 가 박힌다.
     sample_lines = [
         json.dumps({"type": "system", "subtype": "init"}),
+        json.dumps({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "tool_use", "name": "Task",
+                 "input": {"subagent_type": _ARCH_SUBAGENT, "prompt": "design tests"}}
+            ]},
+        }),
         json.dumps({
             "type": "assistant",
             "message": {"content": [
@@ -1292,15 +1797,20 @@ def test_collect_subagent_types_extracts_from_stream_json():
                  "input": {"subagent_type": _REVIEWER_SUBAGENT, "prompt": "review"}}
             ]},
         }),
+        json.dumps({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "tool_use", "name": "Task",
+                 "input": {"subagent_type": _DEV_SUBAGENT, "prompt": "terminal final fix"}}
+            ]},
+        }),
     ]
     stdout = "\n".join(sample_lines)
 
     types = _collect_subagent_types(stdout)
 
-    assert _DEV_SUBAGENT in types
-    assert _REVIEWER_SUBAGENT in types
     # 비-json·빈 줄은 조용히 무시(파싱 예외로 죽지 않음).
-    assert types == [_DEV_SUBAGENT, _REVIEWER_SUBAGENT]
+    assert types == [role for role, _sentinel in _GROWTH_PIPELINE]
 
 
 def test_collect_subagent_types_handles_no_delegation():

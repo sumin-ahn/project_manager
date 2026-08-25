@@ -190,7 +190,7 @@ def test_cluster_new_writes_ledger_branch_and_membership(env, capsys):
     assert ledger["base_branch"] == _BASE_BRANCH
     assert ledger["spike"] == "raw/spikes/design.md"
     assert ledger["budget"] == board.CLUSTER_BUDGET_DEFAULT
-    assert ledger["replans"] == []
+    assert "replans" not in ledger
     assert ledger["status"] == board.CLUSTER_STATUS_OPEN
     # 장부 파일은 STATUS_DIRS 밖 sibling 이다(상태 순회에 섞이지 않는다).
     assert board.cluster_ledger_path("C-wave") == (
@@ -563,7 +563,7 @@ def test_cluster_show_renders_the_declared_values(env, capsys):
     assert "branch: task/view (존재)" in out
     assert "spike: raw/spikes/x.md" in out
     assert "architect=1" in out and "fix=1" in out
-    assert "replans: 0" in out
+    assert "replans:" not in out
     assert f"{first}  open  조회 멤버" in out
 
 

@@ -181,9 +181,19 @@ def _ledger_rows(pm_home: Path) -> list[dict]:
 
 
 def _fill(path: Path, marker: str) -> None:
-    path.write_text(
-        path.read_text(encoding="utf-8") + f"\n{marker}\n",
-        encoding="utf-8", newline="")
+    text = path.read_text(encoding="utf-8")
+    if "```pm-architect-tests-v1" in text:
+        replacements = {
+            "<테스트 파일/케이스 또는 검증 대상>": "tests/test_delegate_cluster_rounds.py",
+            "<실행할 비파괴 커맨드>": "python3 --version",
+            "<shell 메타문자 없는 단일 테스트 명령>": "python3 --version",
+            "<stdout/stderr/exit 또는 output에 포함될 짧은 문자열>": "Python",
+            "<성공 output에 포함될 짧은 문자열>": "Python",
+            "<변경 전 실패하거나 거부돼야 하는 음성 사례>": "계약 누락은 회수를 거부한다",
+        }
+        for old, new in replacements.items():
+            text = text.replace(old, new)
+    path.write_text(text + f"\n{marker}\n", encoding="utf-8", newline="")
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -385,8 +395,8 @@ def test_a_ledger_row_without_the_cluster_key_keeps_the_legacy_path(pd, cluster_
     legacy_dir = slot / pd.TICKET_COPY_REL_ROOT / "T-6016" / ("b" * 32)
     legacy_dir.mkdir(parents=True)
     copy_path = legacy_dir / "01-architect.md"
-    copy_path.write_text(seed + "\n## 경계 실측\n- 옛 세대 산출\n",
-                         encoding="utf-8", newline="")
+    copy_path.write_text(seed, encoding="utf-8", newline="")
+    _fill(copy_path, "## 경계 실측\n- 옛 세대 산출")
     pd._append_delegate_rounds_ledger(pm_home, {
         "ticket": "T-6016", "role": "architect", "ordinal": 1, "run_id": "b" * 32,
         "copy": str(copy_path), "board_rel": str(
@@ -421,7 +431,7 @@ def test_cluster_architect_round_satisfies_the_per_ticket_design_gate(pd, cluste
     )
 
     # 예약만 되고 회수 전인 시드 라운드는 근거가 아니다 — 이번엔 설계 근거 축이 거부한다.
-    with pytest.raises(pd.DelegateError, match="developer 라운드 준비 거부"):
+    with pytest.raises(pd.DelegateError, match="developer 착수 전 architect 테스트 계약"):
         pd.prepare_ticket_copy(
             ticket="T-6020", role="developer", cwd=slot, pm_home=pm_home,
         )

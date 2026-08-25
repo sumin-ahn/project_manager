@@ -18,7 +18,7 @@
 
 - **작성은 PM 인라인이 기본**이다. 발행 시점의 warm한 메인 세션에서 그대로 이어 쓴다(설계용 별도 세션을 띄우지 않는다 — 설계 오버헤드가 새 비용이 되면 역류한다).
 - **그 초안은 architect 점검 라운드가 검증한다**(카드 §3). PM 인라인으로 쓴 설계도 예외가 아니다 — `design: required|done` 티켓은 점검 라운드가 회수되기 전 `promote`가 거부한다. 백지 설계까지 맡기는 architect **설계** 위임은 estimate=large + 신규 표면일 때만이고, 기존 표면의 변경은 PM 인라인 초안 + 점검 라운드로 끝낸다.
-- **설계 검토는 묶음 architect 라운드가 한다**(설계 전용 리뷰 세션 없음). 예산은 묶음당 architect 1회이고, 그 안에 수렴하지 않으면 라운드를 더 돌리지 않고 재설계(`board.py cluster replan <이름> --reason <사유>`)로 주기를 다시 연다.
+- **설계 검토는 묶음 architect 라운드가 한다**(설계 전용 리뷰 세션 없음). 예산은 묶음당 architect 1회이며, architect는 구현 경계와 필수 테스트 계약을 함께 확정한다. 불완전하면 라운드를 더 열지 않고 사용자에게 보고한다.
 - 검토가 끝나면 PM이 `python3 .project_manager/tools/board.py design <T-NNNN> done` 으로 값을 올린다. 설계가 몇 줄이면 몇 줄로 쓰고 `done` 으로 올린다 — 건너뛰는 값은 없다.
 - 설계 절이 미충전이거나 필드가 `required`로 남아 있으면 `promote`·`claim`이 rc=1로 거부하고, 전역 `lint`는 `design-pending` 경고 1줄(never-block)로 보여준다.
 

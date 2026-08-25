@@ -10,7 +10,7 @@
      (`--resolve-gate`) 면은 유도 대상이 아니다 — 거기서 `--gate` 는 필터·무시 목록이다.
   ② opt-out — 회계 밖 자문 실행은 명시 `--no-gate` 로만 열리고, 무기록·비회계 사실을 loud 로
      표기한다. `--gate` 와 동시 지정은 부작용 0 지점에서 거부한다.
-  ③ 회귀 무변경 — 명시 `--gate` 실행과 `--confirm-fix` 회계는 종전 그대로다.
+  ③ 회귀 무변경 — 명시 `--gate` 실행은 종전 그대로고 폐지 플래그는 파서에서 거부된다.
 
 hermetic: REPO 를 tmp 로 monkeypatch 해 장부를 격리하고(형제 `test_external_review.py`·
 `test_review_convergence_gate.py` 동일 규약), PM 홈 해소·touches·extract_diff·run_review 를 주입해
@@ -362,7 +362,7 @@ def test_resolve_gate_surface_is_not_a_derivation_target(external):
     assert args.gate is None
     assert "--gate" not in external._resolve_gate_ignored_flags(
         argparse.Namespace(gate=args.gate, no_gate=False, rounds_report=False,
-                           confirm_fix=False, ack_wave=False, force=False))
+                           ack_wave=False, force=False))
 
 
 def test_derivation_helper_sets_the_gate_and_returns_one_line(external, capsys):
@@ -445,14 +445,15 @@ def test_no_gate_with_an_explicit_gate_is_refused_before_sending(
     assert "함께 쓸 수 없습니다" in err and OTHER_GATE in err
 
 
-def test_no_gate_leaves_confirm_fix_without_a_gate(external, monkeypatch, tmp_path, capsys):
-    """opt-out 실행의 `--confirm-fix` 는 게이트가 없어 거부된다 (1회 회계는 장부가 소유)."""
+def test_no_gate_rejects_removed_confirm_fix_before_accounting(external, monkeypatch, tmp_path, capsys):
+    """opt-out 조합에서도 폐지 플래그는 argparse 단계에서 거부된다."""
     reviewer = _wire(external, monkeypatch, tmp_path)
 
-    assert external.main(["--ticket", TICKET, "--no-gate", "--confirm-fix"]) == 1
+    with pytest.raises(SystemExit):
+        external.main(["--ticket", TICKET, "--no-gate", "--confirm-fix"])
     assert reviewer.calls == 0
     assert _ledger(tmp_path) == {}
-    assert "게이트당 1회" in capsys.readouterr().err
+    assert "unrecognized arguments: --confirm-fix" in capsys.readouterr().err
 
 
 # ══ ③ 기존 동작 회귀 무변경 ═════════════════════════════════════════════════
@@ -469,33 +470,31 @@ def test_explicit_gate_run_is_unchanged(external, monkeypatch, tmp_path, capsys)
     assert "게이트 없는 실행" not in err
 
 
-def test_confirm_fix_opens_on_a_derived_gate(external, monkeypatch, tmp_path, capsys):
-    """확인 전용 라운드 회계도 유도된 게이트 위에서 종전과 동형으로 돈다 (게이트당 1회)."""
-    reviewer = _wire(external, monkeypatch, tmp_path, series=[2, 2, 0])
+def test_removed_confirm_fix_does_not_open_a_derived_gate(external, monkeypatch, tmp_path, capsys):
+    """티켓에서 게이트를 유도할 수 있어도 폐지 플래그는 새 라운드를 열지 않는다."""
+    reviewer = _wire(external, monkeypatch, tmp_path, series=[2])
     argv = ["--ticket", TICKET]
-    for _ in range(2):
-        assert external.main(argv) == 1
-    assert external.main(argv) == external.EXIT_ROUND_LIMIT_EXCEEDED     # 수렴 상한
+    assert external.main(argv) == 1
+    before = external._round_ledger_path().read_bytes()
     capsys.readouterr()
 
-    assert external.main(argv + ["--confirm-fix"]) == 0                  # 예외 1회
-    assert reviewer.calls == 3
-    assert _ledger(tmp_path)[TICKET]["confirm_fix"] == 1
-    assert "확인 전용 라운드" in capsys.readouterr().err
-
-    assert external.main(argv + ["--confirm-fix"]) == external.EXIT_ROUND_LIMIT_EXCEEDED
-    assert reviewer.calls == 3                                           # 2회째는 전송 없음
+    with pytest.raises(SystemExit):
+        external.main(argv + ["--confirm-fix"])
+    assert reviewer.calls == 1
+    assert external._round_ledger_path().read_bytes() == before
+    assert "unrecognized arguments: --confirm-fix" in capsys.readouterr().err
 
 
-def test_confirm_fix_without_any_selector_is_still_refused(
+def test_removed_confirm_fix_without_any_selector_is_rejected(
         external, monkeypatch, tmp_path, capsys):
-    """티켓도 게이트도 없는 `--confirm-fix` 는 종전대로 전송 전 거부다 (회귀 무변경)."""
+    """티켓도 게이트도 없는 폐지 플래그 역시 argparse에서 거부된다."""
     reviewer = _wire(external, monkeypatch, tmp_path)
 
-    assert external.main(["--confirm-fix", "--paths", "x.py"]) == 1
+    with pytest.raises(SystemExit):
+        external.main(["--confirm-fix", "--paths", "x.py"])
     assert reviewer.calls == 0
     assert _ledger(tmp_path) == {}
-    assert "--gate" in capsys.readouterr().err
+    assert "unrecognized arguments: --confirm-fix" in capsys.readouterr().err
 
 
 # ══ ④ 무기록 고지의 시점·확정성 ═════════════════════════════════════════════
@@ -553,7 +552,7 @@ def test_resolve_gate_surface_warns_that_no_gate_is_ignored(external):
     """처분 선언면의 무시 목록에도 `--no-gate` 가 든다 (선언은 전송·예약이 없다)."""
     ignored = external._resolve_gate_ignored_flags(
         argparse.Namespace(gate=None, no_gate=True, rounds_report=False,
-                           confirm_fix=False, ack_wave=False, force=False))
+                           ack_wave=False, force=False))
     assert ignored == "--no-gate"
 
 
@@ -584,22 +583,19 @@ def test_rounds_report_missing_companion_fails_loud_in_subprocess(tmp_path):
     assert "pm-update" in proc.stderr
 
 
-def test_resolve_gate_and_no_gate_records_disposition_with_ignore_warning_in_subprocess(
+def test_removed_into_is_rejected_before_gate_no_gate_precedence_in_subprocess(
         tmp_path):
-    """처분면의 `--gate`+병행 시 `--no-gate`를 무시하고 정상 재설계 선언을 기록한다."""
+    """폐지된 into는 argparse에서 거부되고 기존 장부 bytes를 보존한다."""
     project, script = _subprocess_project(tmp_path)
     _write_ledger(project, _rejected_ledger())
 
+    before = (project / ".project_manager" / ".local" / "review_rounds.json").read_bytes()
     proc = _run_external_review(
         project, script,
         "--resolve-gate", TICKET, "--into", FOLLOW_UP_TICKET,
         "--gate", OTHER_GATE, "--no-gate",
     )
 
-    assert proc.returncode == 0, proc.stderr
-    assert "무시합니다" in proc.stderr and "--no-gate" in proc.stderr
-    assert f"게이트 처분 선언: {TICKET}" in proc.stdout
-    assert f"재설계→{FOLLOW_UP_TICKET}" in proc.stdout
-    resolution = _ledger(project)[TICKET]["resolution"]
-    assert resolution["kind"] == "into"
-    assert resolution["ticket"] == FOLLOW_UP_TICKET
+    assert proc.returncode == 2
+    assert "unrecognized arguments: --into" in proc.stderr
+    assert (project / ".project_manager" / ".local" / "review_rounds.json").read_bytes() == before

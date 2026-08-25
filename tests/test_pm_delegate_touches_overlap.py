@@ -35,7 +35,39 @@ def _load(name: str, path: Path):
 
 @pytest.fixture(scope="module")
 def pd():
-    return _load("pm_delegate", TOOLS / "pm_delegate.py")
+    module = _load("pm_delegate", TOOLS / "pm_delegate.py")
+
+    # touches 경고 e2e는 위임 전후 경고만 관측한다. 고정 5단계 수열과
+    # architect 테스트 계약은 전용 회귀가 담당하므로, 이 fixture가 선언한
+    # 단일 role 좌석과 유효한 상위 계약을 운송 입력으로 공급한다.
+    def _overlap_sequence(budget, *, cluster):
+        del cluster
+        return tuple(
+            role
+            for role, key in module.CLUSTER_BUDGET_ROLE_SEQUENCE
+            for _ in range(int(budget.get(key, 0)))
+        )
+
+    transport_test = module.ArchitectTest(
+        id="AT-OVERLAP",
+        target="tests/test_pm_delegate_touches_overlap.py",
+        command="python3 --version",
+        expected="Python",
+        negative="명령 실패 또는 Python 표식 누락은 거부",
+    )
+    real_architect_tests = module.architect_tests_from_rounds
+
+    def _overlap_architect_tests(rounds, *, required=True):
+        try:
+            return real_architect_tests(rounds, required=required)
+        except module.DelegateError as exc:
+            if required and "architect 테스트 계약이 없습니다" in str(exc):
+                return (transport_test,)
+            raise
+
+    module.cluster_round_sequence = _overlap_sequence
+    module.architect_tests_from_rounds = _overlap_architect_tests
+    return module
 
 
 def _codex_stdout(reply: str = "DONE") -> str:

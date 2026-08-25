@@ -149,7 +149,7 @@ def _finding(
     finding_id: str = "X-001", *, severity: str | None = "must-fix",
     classification: str = "implementation-defect", design_change: bool = False,
 ) -> dict:
-    """현행 세대 finding. `severity=None` 이면 severity 이전(v1) 스키마 형상이다."""
+    """현행 세대 finding. `severity=None` 이면 현행 스키마의 severity 누락 형상이다."""
     finding = {
         "id": finding_id,
         "class": classification,
@@ -158,9 +158,24 @@ def _finding(
         "evidence": f"{finding_id} probe rc=1",
         "recommendation": f"{finding_id}만 수정",
         "design_change": design_change,
+        "fix_contract": {
+            "location": "x.py:1",
+            "failure": f"{finding_id} 입력이 rc=1로 끝난다",
+            "design": f"{finding_id} 조건을 x.py에서 수정한다",
+            "test": f"{finding_id} 정상 입력은 그대로 통과한다",
+            "command": "python3 -m pytest tests/test_external_review_ticket_harvest.py -q",
+            "expected": "passed",
+        },
     }
     if severity is None:
         del finding["severity"]
+    return finding
+
+
+def _legacy_finding(finding_id: str = "X-001") -> dict:
+    """fix_contract 도입 전 세대 finding."""
+    finding = _finding(finding_id, severity=None)
+    del finding["fix_contract"]
     return finding
 
 
@@ -560,7 +575,7 @@ def test_a_malformed_existing_round_does_not_block_a_valid_new_round(
 def test_confirmation_round_resolves_the_finding_out_of_the_delta(
     external, pd, monkeypatch, tmp_path,
 ):
-    """(c) confirm-fix 라운드가 X- ID 를 resolved 로 확인하면 delta 에서 사라진다."""
+    """일반 후속 산출이 X- ID 를 resolved 로 확인하면 delta 에서 사라진다."""
     _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
@@ -569,7 +584,7 @@ def test_confirmation_round_resolves_the_finding_out_of_the_delta(
         "id": "X-001", "status": "resolved", "evidence": "회귀 통과 rc=0",
     })
     _wire(external, monkeypatch, tmp_path, resolved)
-    assert _run(external, tmp_path, "--ticket", TICKET, "--confirm-fix") == 0
+    assert _run(external, tmp_path, "--ticket", TICKET) == 0
 
     delta = _delta(pd, tmp_path, _disposition("X-001"))
     assert delta.accepted == ()
@@ -848,9 +863,9 @@ def test_engine_written_skeleton_and_prompt_use_the_current_generation(pd):
         assert skeleton["version"] == BLOCK_VERSION
         assert "severity" in skeleton["findings"][0]
     assert LEGACY_BLOCK_VERSION < BLOCK_VERSION
-    assert set(pd.PM_REVIEW_SUPPORTED_VERSIONS) == {
-        LEGACY_BLOCK_VERSION, BLOCK_VERSION,
-    }
+    assert set(pd.PM_REVIEW_SUPPORTED_VERSIONS) == set(
+        range(LEGACY_BLOCK_VERSION, BLOCK_VERSION + 1)
+    )
 
 
 # ── F-001 혼재 티켓: 라운드 단위 관용 요약 ──────────────────────────────
@@ -860,7 +875,7 @@ def test_summary_folds_only_the_broken_round_of_a_mixed_ticket(pd):
     """(F-001) 구 세대·현행·손상 블록이 섞여도 나머지 라운드 요약은 살아 있다."""
     rounds = [
         _round_view(pd, 1, _external_round_text(
-            pd, _payload([_finding("X-001", severity=None)],
+            pd, _payload([_legacy_finding("X-001")],
                          version=LEGACY_BLOCK_VERSION),
         )),
         _round_view(pd, 2, _external_round_text(
@@ -959,18 +974,19 @@ def test_prompt_carries_the_next_finding_id_from_the_round_files(
 ):
     """엔진이 라운드 파일의 기존 최대 번호를 읽어 이번 라운드의 시작 ID 를 실값으로 싣는다."""
     _seed_board(tmp_path)
-    calls = _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()))
+    conf = {"additional_reviewer.rounds_max": "9"}
+    calls = _wire(external, monkeypatch, tmp_path, _reject_reply(_finding()), conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
     assert "`X-001` 부터" in calls["prompt"]
 
-    calls = _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-002")))
+    calls = _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-002")), conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
     assert "`X-002` 부터" in calls["prompt"]        # 라운드 파일의 기존 최대 번호 + 1
 
     calls = _wire(external, monkeypatch, tmp_path, _confirm_reply({
         "id": "X-002", "status": "resolved", "evidence": "회귀 rc=0",
-    }))
-    assert _run(external, tmp_path, "--ticket", TICKET, "--confirm-fix") == 0
+    }), conf=conf)
+    assert _run(external, tmp_path, "--ticket", TICKET) == 0
     assert "`X-003` 부터" in calls["prompt"]
     assert pd.next_review_finding_id("본문에 X-007 과 X-002 가 있다", ROLE) == "X-008"
     assert pd.next_review_finding_id("빈 티켓", ROLE) == "X-001"
@@ -1088,7 +1104,7 @@ def test_confirmation_round_may_reference_existing_ids(
     _wire(external, monkeypatch, tmp_path, _confirm_reply({
         "id": "X-001", "status": "resolved", "evidence": "회귀 rc=0",
     }))
-    assert _run(external, tmp_path, "--ticket", TICKET, "--confirm-fix") == 0
+    assert _run(external, tmp_path, "--ticket", TICKET) == 0
     assert len(_round_paths(tmp_path)) == 2
     delta = _delta(pd, tmp_path, _disposition("X-001"))
     assert delta.accepted == ()
@@ -1164,80 +1180,29 @@ def test_declarations_count_only_the_surface_rounds(pd):
     assert pd.next_review_finding_id(spec, ROLE, [normal, refused]) == "X-051"
 
 
-def test_confirm_fix_after_an_unharvested_round_is_refused_before_any_spawn(
-    external, pd, monkeypatch, tmp_path, capsys,
+def test_removed_confirm_fix_is_rejected_before_ticket_harvest(
+    external, monkeypatch, tmp_path, capsys,
 ):
-    """(F-016) 회수되지 않은 산출은 확인 전용 라운드의 근거가 되지 않는다(전송 0).
-
-    엔진이 그 지적을 근거로 실으면 출력 규칙이 '그 X- ID 를 confirmations 에 실어라'고 지시해,
-    확인 라운드가 회수 게이트에 다시 걸린다 — 엔진이 스스로 함정을 지시한다.
-    """
+    """폐지한 fix 후 재리뷰 플래그는 전송·라운드 파일·장부 변경 전에 거부된다."""
     _seed_board(tmp_path)
-    _wire(external, monkeypatch, tmp_path, _BROKEN_JSON_REPLY)
-    assert _run(external, tmp_path, "--ticket", TICKET) != 0
-    capsys.readouterr()
-
     calls = _wire(external, monkeypatch, tmp_path, _confirm_reply({
-        "id": "X-001", "status": "resolved", "evidence": "회수되지 않은 산출의 ID",
+        "id": "X-001", "status": "resolved", "evidence": "옛 경로 probe",
     }))
-    assert _run(external, tmp_path, "--ticket", TICKET, "--confirm-fix") == \
-        external.EXIT_ROUND_LIMIT_EXCEEDED
-    assert calls["n"] == 0                       # 외부 전송·과금 0
-    err = capsys.readouterr().err
-    assert "판정 표면에 없습니다" in err and "X-001" in err
-    assert "일반 라운드" in err
+    with pytest.raises(SystemExit):
+        _run(external, tmp_path, "--ticket", TICKET, "--confirm-fix")
+    assert "unrecognized arguments: --confirm-fix" in capsys.readouterr().err
+    assert calls["n"] == 0
     assert _round_paths(tmp_path) == []
-
-
-def test_confirm_fix_after_a_pm_rejected_finding_is_refused_with_the_knob(
-    external, pd, monkeypatch, tmp_path, capsys,
-):
-    """PM 이 rejected 로 판정한 지적은 확인 근거가 아니다 — 처방에 노브까지 붙는다."""
-    _seed_board(tmp_path)
-    _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-001")))
-    assert _run(external, tmp_path, "--ticket", TICKET) == 1
-    _append_spec(tmp_path, _disposition("X-001", decision="rejected"))
-    capsys.readouterr()
-
-    calls = _wire(external, monkeypatch, tmp_path, _confirm_reply({
-        "id": "X-001", "status": "resolved", "evidence": "PM 이 반려한 지적",
-    }))
-    assert _run(external, tmp_path, "--ticket", TICKET, "--confirm-fix") == \
-        external.EXIT_ROUND_LIMIT_EXCEEDED
-    assert calls["n"] == 0                          # 외부 전송·과금 0
-    err = capsys.readouterr().err
-    assert "판정 표면에 없습니다" in err and "X-001" in err
-    assert external.REVIEW_ROUNDS_MAX_KEY in err    # 수렴 상한에서 처방이 끊기지 않는다.
-
-
-def test_confirm_fix_evidence_keeps_items_that_are_on_the_surface(external):
-    """표면에 있는 지적은 근거에 그대로 남는다(대조가 정상 확인 라운드를 막지 않는다)."""
-    entry = {
-        "rounds": [{"id": "r1", "verdict": 1, "must_fix": 1, "sequence": 1}],
-        "records": [{"id": "r1", "verdict": 1, "must_fix_items": ["X-001 미해소"]}],
-    }
-    assert external._confirm_fix_evidence(
-        entry, surface_finding_ids={"X-001"},
-    ) is not None
-    assert external._confirm_fix_evidence(
-        entry, surface_finding_ids=set(),
-    ) is None
-    assert external._confirm_fix_offsurface_ids(entry, set()) == ["X-001"]
-    # 대조 입력이 없는 실행(회수 대상 없음)은 종전 그대로다.
-    assert external._confirm_fix_evidence(entry) is not None
+    assert not external._round_ledger_path().exists()
 
 
 # ── F-021 프롬프트 골격: 확인 가능한 ID 실값(직전 라운드 파일) ─────────────
 
 
-def test_prompt_skeleton_carries_the_confirmable_ids_of_the_previous_round(
+def test_prompt_skeleton_does_not_prefill_previous_round_confirmations(
     external, pd, monkeypatch, tmp_path,
 ):
-    """(F-021) 골격의 confirmations 는 **직전 라운드 파일**에서 읽은 실값이다.
-
-    확인 전용 라운드의 임무가 '직전 라운드 must-fix 의 해소 확인'이라 리뷰 라운드 시드 프리필과
-    같은 시야여야 한다([[T-0749]] F-007).
-    """
+    """새 외부 리뷰 프롬프트는 지난 지적을 재리뷰 대상으로 미리 채우지 않는다."""
     conf = {"additional_reviewer.rounds_max": "9"}
     _seed_board(tmp_path)
     calls = _wire(external, monkeypatch, tmp_path,
@@ -1248,15 +1213,13 @@ def test_prompt_skeleton_carries_the_confirmable_ids_of_the_previous_round(
     calls = _wire(external, monkeypatch, tmp_path,
                   _reject_reply(_finding("X-002")), conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
-    assert pd.render_pm_review_block_skeleton(ROLE, ["X-001"]) in calls["prompt"]
+    assert pd.render_pm_review_block_skeleton(ROLE, []) in calls["prompt"]
 
-    # 직전 라운드(X-002)만 공급원이다 — 그 앞 라운드의 ID 는 확인 대상이 아니다.
     calls = _wire(external, monkeypatch, tmp_path,
                   _reject_reply(_finding("X-003")), conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
-    assert pd.render_pm_review_block_skeleton(ROLE, ["X-002"]) in calls["prompt"]
+    assert pd.render_pm_review_block_skeleton(ROLE, []) in calls["prompt"]
 
-    # PM 이 rejected 로 판정한 ID 는 확인 대상에서 빠진다(리뷰 라운드 시드와 같은 배제).
     _append_spec(tmp_path, _disposition("X-003", ordinal=3, decision="rejected"))
     calls = _wire(external, monkeypatch, tmp_path,
                   _reject_reply(_finding("X-004")), conf=conf)
@@ -1267,11 +1230,7 @@ def test_prompt_skeleton_carries_the_confirmable_ids_of_the_previous_round(
 def test_prompt_skeleton_ignores_a_reserved_round_without_output(
     external, pd, monkeypatch, tmp_path,
 ):
-    """예약만 해 둔 시드 라운드는 직전 산출이 아니다 — 확인 대상이 빈 목록이 되면 안 된다.
-
-    PM 이 `section-add --role external-reviewer` 로 자리만 잡아 둔 라운드가 '직전 라운드'
-    자리를 차지하면 `--confirm-fix` 가 '확인 대상이 판정 표면에 없습니다'로 막힌다.
-    """
+    """예약만 해 둔 시드 라운드가 있어도 새 프롬프트의 confirmations 는 비어 있다."""
     conf = {"additional_reviewer.rounds_max": "9"}
     spec = _seed_board(tmp_path)
     _wire(external, monkeypatch, tmp_path, _reject_reply(_finding("X-001")), conf=conf)
@@ -1289,7 +1248,7 @@ def test_prompt_skeleton_ignores_a_reserved_round_without_output(
     calls = _wire(external, monkeypatch, tmp_path,
                   _reject_reply(_finding("X-002")), conf=conf)
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
-    assert pd.render_pm_review_block_skeleton(ROLE, ["X-001"]) in calls["prompt"]
+    assert pd.render_pm_review_block_skeleton(ROLE, []) in calls["prompt"]
     assert reserved.exists()
 
 
@@ -1320,10 +1279,10 @@ def test_board_commit_seam_is_called_directly_and_is_loud_when_it_is_missing(
 # ── F-025 강등 안내·지연 해소 ───────────────────────────────────────────
 
 
-def test_degraded_confirmable_ids_names_both_consumers(
+def test_prompt_does_not_resolve_confirmable_ids(
     external, pd, monkeypatch, tmp_path, capsys,
 ):
-    """(F-025) 해소 실패 안내는 두 소비자를 함께 말한다 — 골격 실값 · 확인 근거 표면 대조."""
+    """폐지한 재리뷰 입력 수집 seam은 일반 프롬프트 조립에서 호출되지 않는다."""
     _seed_board(tmp_path)
     _write_round(
         tmp_path, 1, ROLE,
@@ -1339,9 +1298,8 @@ def test_degraded_confirmable_ids_names_both_consumers(
 
     assert _run(external, tmp_path, "--ticket", TICKET) == 1
     err = capsys.readouterr().err
-    assert "골격" in err and "장부 기록 그대로" in err
-    # 해소가 꺼져도 라운드는 돈다 — 골격은 placeholder 로 강등된다.
-    assert pd.render_pm_review_block_skeleton(ROLE) in calls["prompt"]
+    assert "확인 목록 해소 실패 probe" not in err
+    assert pd.render_pm_review_block_skeleton(ROLE, []) in calls["prompt"]
 
 
 def test_a_disabled_run_does_not_read_the_harvest_target(

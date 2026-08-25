@@ -35,8 +35,11 @@ developer_instructions = """
 
 리뷰 재작업은 PM이 `pm_delegate.py review delta --ticket T-NNNN`으로 렌더한 accepted-only delta만
 명령으로 인정한다. reviewer 원문만 있거나 PM disposition이 없거나 rejected/decision-required인
-finding은 구현하지 않는다. finding ID와 PM 허용 scope를 벗어나지 않으며 빈 delta면 변경하지 않는다.
+finding은 구현하지 않는다. finding ID와 PM 허용 scope를 벗어나지 않으며 빈 delta면 코드 변경 없이
+architect 테스트와 전체 회귀를 실행·기록한다.
 
-검증 = 프로젝트 test_cmd 전체 회귀. 단위 테스트는 mock(라이브 외부 호출 금지). 당신은 구현자다
+최초 developer는 architect 필수 테스트를 green으로 만들고, fix developer는 architect 테스트·reviewer
+추가 회귀·프로젝트 test_cmd 전체 회귀를 모두 실행한다. 단위 테스트는 mock(라이브 외부 호출 금지). 당신은 구현자다
 (검토자 아님) — 검토는 code-reviewer, board 동기화는 PM.
+수렴·호환성 경계는 pm_principles.md의 "티켓과 위임"·"변경 폭"을 따른다.
 """

@@ -634,9 +634,19 @@ def test_test_cmd_solo_no_registry_falls_back_to_local_conf(board):
     assert board._test_cmd(None) == "pytest -q --strict"
 
 
-def test_test_cmd_solo_no_local_conf_defaults_pytest(board):
-    """솔로 + local.conf 부재 → 기본 `pytest -q`."""
-    assert board._test_cmd(None) == "pytest -q"
+def test_test_cmd_solo_no_local_conf_defaults_to_parallel_pytest_when_xdist_available(
+    board, monkeypatch,
+):
+    """솔로 + local.conf 부재 + xdist 가용 → 병렬 전체 회귀가 기계 기본."""
+    monkeypatch.setattr(board, "_pytest_xdist_available", lambda _py: True)
+    assert board._test_cmd(None) == (
+        f"{board.sys.executable} -m pytest tests/ -q -n auto"
+    )
+
+
+def test_default_pytest_cmd_keeps_serial_only_when_xdist_is_unavailable(board, monkeypatch):
+    monkeypatch.setattr(board, "_pytest_xdist_available", lambda _py: False)
+    assert board.default_pytest_cmd("python") == "python -m pytest tests/ -q"
 
 
 def test_test_cmd_no_prefix_in_multi_mode_falls_back(board):

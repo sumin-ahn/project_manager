@@ -1148,7 +1148,11 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   졌다 — `TicketFinisher._integration_tip`(해소 실패 → 정지) ·
     #   `TicketFinisher._committed_out_of_scope`(조회 실패 → 정지). 접을 곳이 없으면 흡수 경계도
     #   없다. 래칫은 제거 방향으로만 움직인다.
-    assert len(report.boundaries) == 268, "propagation sweep boundary ratchet changed"
+    # 269 = 268 + T-0871 Python scaffold test_cmd의 한 경계. `pm_import._default_test_cmd`가
+    #   board의 병렬 pytest 기본값 단일 소유자를 소비한다. 부분 사본에서 board 로드가 실패하면
+    #   같은 `-n auto` 값으로 폴백하되, marked skew는 다른 형제 로더와 같이 그대로 올려 사본
+    #   불일치를 기본값 해소로 숨기지 않는다.
+    assert len(report.boundaries) == 269, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 
