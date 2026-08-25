@@ -7,8 +7,19 @@
 
 ## [Unreleased]
 
+## [1.7.11] - 2026-08-25
+
+### Added
+
+- OpenCode `session.idle`에서 선언 후 무실행·열린 todo·잘린 응답을 감지하면 원인별 재개 처방을 주입하는 stall watchdog을 추가했다. 연속 무진행·세션 총량 상한과 진행 시 reset으로 무한 재개를 막는다.
+
+### Changed
+
+- OpenCode 대형 파일 작성은 실측에 따라 safe-write 전환 하한 64KB와 권장 chunk 16KB를 사용한다. researcher의 제한된 bash 생성 경로를 역할 계약과 맞추고 mode 값을 enum으로 고정했다.
+
 ### Fixed
 
+- OpenCode safe-write가 개행 없이 끝난 파일에 개행 없이 시작하는 chunk를 append해 줄 경계를 붙이는 손상을 거부하고, 다음 조각의 정확한 복구 방법을 안내한다.
 - `board.py regression run --cwd <target>`가 실제 실행 target의 Git HEAD와 절대 `conf_anchor`를 같은 좌표로 기록하고, `check`도 그 target의 HEAD·수집 하한을 기준으로 stale을 판정한다. 손상된 present anchor는 fail-closed이며 key가 없는 legacy 기록만 PM 홈으로 폴백한다.
 - Codex `PreToolUse` native matcher를 `Bash`·`collaborationspawn_agent`로 제한하고 프롬프트 단위 ctx/principle 알림을 도구 호출 경로에서 제거했다. live Bash payload에 내부 workdir가 없을 때만 PM 홈 상대 pytest 오차단을 1회 warning으로 낮추며, 명시 좌표·Git·엔진 mutation deny는 유지한다.
 
