@@ -456,6 +456,10 @@ r = m.safeWrite(td, "partial.txt", "\nmore\n", "append", 16384);
 assert.strictEqual(fs.readFileSync(path.join(td, "partial.txt"), "utf-8"),
                    "no-trailing-newline\nmore\n");
 
+// F-006 정적 가드(T-opencode-002): core src 의 mode enum 배선 존재 — schema 회귀 무감시 방지.
+const coreSrc = fs.readFileSync(path.join(process.cwd(), "safe-write-core.cjs"), "utf-8");
+assert.ok(/create\|[\s]*"append"|enum\(/.test(coreSrc) || /"create".{0,40}"append"/.test(coreSrc), "mode enum 배선이 core src 에 없다");
+
 console.log("SAFE_WRITE_SELFCHECK_OK");
 } finally {
   fs.rmSync(td, {recursive:true, force:true});
