@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [1.7.10] - 2026-08-25
+
 ### Changed
 
 - **BREAKING — 티켓 개발을 PM → architect → developer → reviewer → fix의 고정 5단계로 수렴시킨다.** architect 테스트 계약은 developer 종료 게이트가 되고 reviewer must-fix는 수정·추가 회귀 계약을 포함하며, 마지막 fix가 두 테스트 계약과 전체 회귀를 모두 통과해야 한다. fix 뒤 추가 설계·구현·리뷰 라운드는 열리지 않는다.

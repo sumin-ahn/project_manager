@@ -159,7 +159,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 
 
 # baked 엔진 rev — engine_rev.py --bump가 기계 일괄 재작성한다.
-ENGINE_REV = "v1.7.9"
+ENGINE_REV = "v1.7.10"
 
 CONVERGENCE_DIVERGING = "diverging"
 CONVERGENCE_CAP_UNRESOLVED = "cap-unresolved"
