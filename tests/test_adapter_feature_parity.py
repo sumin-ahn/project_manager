@@ -246,6 +246,11 @@ TABLE: dict[str, str | SubsetExpectation] = {
         "intent:opencode 1.17~1.18 대용량 write/edit 자동절단 실측 대응 — 다른 하네스는 그 결함이 "
         "없어 무해",
     ),
+    "stall-watchdog": subset(
+        {"opencode"},
+        "intent:opencode run auto-continue 부재(upstream open) 대응 세션 idle 미완료 감지·처방 "
+        "넛지 — 턴 완결성 축은 auto-continue 가 있는 하네스에서 무해",
+    ),
     "pm": subset(
         {"opencode"},
         "intent:orchestrator 가 PM 세션을 spawn 하는 타깃 카드 — 그 spawn 형상이 opencode 에서만 "
