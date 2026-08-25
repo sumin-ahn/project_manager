@@ -958,12 +958,11 @@ def test_used_pct_from_tokens_mirrors_claude(codex_ctx, claude_ctx, tokens, budg
 # ── 4.3 배선: registry 한 줄이고 채택자 config 는 무변경 ──────────────────────
 
 def test_ctx_nudge_is_wired_through_the_dispatcher_registry(codex_ctx):
-    """두 진입점 이벤트에 도구 무관 기능으로 등록되고, 판정은 in-process 다."""
+    """프롬프트 진입점 하나에 도구 무관 기능으로 등록되고, 판정은 in-process 다."""
     features = {feature.feature_id: feature for feature in codex_ctx.CODEX_HOOK_FEATURES
                 if feature.feature_id.startswith("ctx-nudge")}
 
-    assert {feature.event for feature in features.values()} == {"PreToolUse",
-                                                                "UserPromptSubmit"}
+    assert {feature.event for feature in features.values()} == {"UserPromptSubmit"}
     for feature in features.values():
         assert feature.tool_pattern is None, feature
         assert feature.handler is codex_ctx.ctx_nudge_envelope, feature
@@ -1145,12 +1144,7 @@ def test_guidance_failure_modes_are_silent(codex_ctx, tmp_path):
 # ── 4.5 디스패처 합본·출하 CLI (침묵이 실제로 침묵인가) ──────────────────────
 
 def test_dispatcher_merges_the_nudge_without_touching_other_features(codex_ctx, tmp_path):
-    """진입점 합본에서 ctx 넛지만 답하면 그 엔벨로프가 그대로 나가고, 자식은 안 뜬다.
-
-    `tool_name="Read"` — git-anchor(T-0765)가 `^Bash$` 에 등재된 뒤로 `tool_name="Bash"` 페이로드는
-    ctx-nudge 와 git-anchor 둘 다에 걸려 이 단언(무관 기능은 자식을 띄우지 않는다)과 별개로
-    자식이 하나 뜬다 — 이 테스트가 격리하려는 축(도구 무관 in-process 판정)과 무관한 매치라
-    Bash 가 아닌 도구로 고정한다."""
+    """UserPromptSubmit에서 ctx 넛지만 답하면 그대로 나가고 자식은 안 뜬다."""
     root = _adopter_root(tmp_path, conf=_IN_BAND_BUDGET, pm_log_body=_STUB_PM_LOG)
     rollout = _write_rollout(tmp_path)
     spawned = []
@@ -1160,10 +1154,11 @@ def test_dispatcher_merges_the_nudge_without_touching_other_features(codex_ctx, 
         return subprocess.CompletedProcess(argv, 0, stdout=b"{}", stderr=b"")
 
     envelope = codex_ctx.dispatch_hook(
-        "PreToolUse", json.dumps(_payload(rollout, tool_name="Read")).encode("utf-8"),
+        "UserPromptSubmit", json.dumps(_payload(
+            rollout, hook_event_name="UserPromptSubmit", tool_name="Read")).encode("utf-8"),
         root, runner=runner)
 
-    assert envelope["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    assert envelope["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
     assert spawned == [], "도구 무관 판정이 매 호출마다 자식 프로세스를 띄웠다"
 
 
@@ -1192,8 +1187,9 @@ def test_shipped_cli_emits_one_line_and_rc0(tmp_path, conf, expected_prefix):
     rollout = _write_rollout(tmp_path)
 
     completed = subprocess.run(
-        [sys.executable, str(root / "pm_orch_codex.py"), "--hook-dispatch", "PreToolUse"],
-        input=json.dumps(_payload(rollout)).encode("utf-8"),
+        [sys.executable, str(root / "pm_orch_codex.py"), "--hook-dispatch", "UserPromptSubmit"],
+        input=json.dumps(_payload(
+            rollout, hook_event_name="UserPromptSubmit")).encode("utf-8"),
         capture_output=True, timeout=60)
 
     assert completed.returncode == 0, completed.stderr

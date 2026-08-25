@@ -86,18 +86,20 @@ PowerShell 5.1 리다이렉션의 cp949 기본값에서도 JSON이 깨지지 않
 false-green이었다. direct TUI rollout의 token_count는 관측되지만 stable post-turn usage callback은 없으므로,
 장기 PM은 relay의 `turn.completed.usage` 가드를 사용한다.
 
-## 훅 범용 진입점 (기능 추가가 config를 안 건드린다)
+## 훅 진입점 (PreToolUse 비용 경계)
 
-`hooks.json`이 선언하는 **모든** 이벤트(`PreToolUse`·`UserPromptSubmit`·`PostToolUse`·
-`SubagentStart`·`PreCompact`·`PostCompact`)는 이벤트당 진입점을 **하나씩만** 연다 — `matcher`는
-`.*`이고 실행 대상은 manifest 등재 디스패처 `.codex/pm_orch_codex.py --hook-dispatch <이벤트>`다.
+`hooks.json`이 선언하는 이벤트(`PreToolUse`·`UserPromptSubmit`·`PostToolUse`·`SubagentStart`·
+`PreCompact`·`PostCompact`)는 이벤트당 진입점을 **하나씩만** 연다. 실행 대상은 manifest 등재
+디스패처 `.codex/pm_orch_codex.py --hook-dispatch <이벤트>`다. `PreToolUse`의 native matcher는
+exact `^(Bash|collaborationspawn_agent)$`이고, 나머지 다섯 이벤트만 `.*`다. 따라서 대기·일반 도구는
+PreToolUse 디스패처 프로세스를 시작하지 않는다.
 "이 payload에 어떤 가드를 돌릴지"의 판단은 그 코드 안의 registry가 쥔다. native spawn 위임 채널,
 SubagentStart 관측, 압축 checkpoint·안내·snapshot이 전부 그 registry의 항목이고, 옛
 `^collaborationspawn_agent$`·`^auto$`·`^manual$` matcher 판정은 값 그대로 진입점 뒤 분기로 옮겨 왔다
 (`^auto$`+`^manual$`는 `trigger` enum 전수라 `.*` 하나와 값이 같다).
 
-그래서 **가드 기능 추가는 엔진 코드 변경뿐**이다. 채택자는 `.codex/hooks.json`을 다시 고치지
-않고 `/hooks` 재승인도 다시 하지 않는다. 등록된 기능 목록은
+열린 도구·이벤트 안의 **가드 기능 추가는 엔진 코드 변경뿐**이다. 채택자는 `.codex/hooks.json`을
+다시 고치지 않고 `/hooks` 재승인도 다시 하지 않는다. 등록된 기능 목록은
 `python3 .codex/pm_orch_codex.py --hook-features`가 JSON으로 낸다.
 
 진입점 집합 자체는 릴리즈 간 불변이다. 늘리려면 채택자 config 변경 + 재승인이 다시 필요하므로
@@ -106,8 +108,8 @@ SubagentStart 관측, 압축 checkpoint·안내·snapshot이 전부 그 registry
 디스패처가 구세대여도 훅은 rc0 + 완전한 엔벨로프로 끝나고 폴백 사실이 `adapter-fallback`
 마커로 남는다. 도구 호출은 어느 경우에도 막히지 않는다.
 
-진입점 밖에 남은 이벤트는 없다. 어느 이벤트에 두 번째 기능을 얹더라도 `.codex/hooks.json`은
-그대로이고 `/hooks` 재승인도 다시 필요하지 않다.
+진입점 밖에 남은 이벤트는 없다. 열린 matcher 범위 안에서 두 번째 기능을 얹을 때는
+`.codex/hooks.json`과 `/hooks` 재승인이 다시 필요하지 않다.
 
 ## 어댑터 config 도달 채널 (managed / report)
 

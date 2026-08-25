@@ -864,11 +864,12 @@ def principle_recall_rearm_envelope(payload: dict, root: Path, *,
     return {}
 
 
-# ── codex 훅 범용 진입점 + 기능 디스패처 ──────────────────────────────
+# ── codex 훅 진입점 + 기능 디스패처 ──────────────────────────────────
 # `.codex/hooks.json` 은 채택자 소유(manifest 밖)라 가드 기능을 하나 더할 때마다 채택자 config
 # 수정 + `/hooks` 재승인을 다시 요구했다. 그 마찰을 1회로 끝내려고 이벤트당 진입점을 **하나만**
-# 열고(`matcher .*` → 이 파일), "이 payload 에 어떤 가드를 돌릴지" 의 판단을 **manifest 등재
-# 코드**인 여기로 옮긴다 — 이후 기능 추가는 아래 registry 한 줄이고 config 는 다시 안 건드린다.
+# 연다(PreToolUse는 안전 도구 exact, 나머지는 `.*` → 이 파일). "이 payload 에 어떤 가드를
+# 돌릴지"의 판단은 **manifest 등재 코드**인 여기로 옮긴다. 열린 matcher 범위 안의 기능 추가는
+# 아래 registry 한 줄이고 config 는 다시 안 건드린다.
 # opencode `plugins/` 디렉토리 스캔이 같은 문제를 구조적으로 없앤 참고 모델이다.
 #
 # 진입점 집합은 **릴리즈 간 불변**이다. 늘리려면 채택자 config 변경 + 재승인이 다시 필요하므로
@@ -950,15 +951,7 @@ CODEX_HOOK_FEATURES: tuple[CodexHookFeature, ...] = (
         argv=("{py}", "{tools}/delegate_channel_guard.py", "supervise", "PreToolUse",
               "{py}", "{tools}/delegate_channel_guard.py", "codex-hook"),
     ),
-    # 세션 안 ctx 넛지 — claude 가 같은 두 이벤트에 거는 것과 같은 채널이다. 두 항목은
-    #   사이클 marker 를 공유하므로 먼저 발화한 채널 하나만 주입한다(멱등).
-    CodexHookFeature(
-        feature_id="ctx-nudge-pretooluse",
-        event="PreToolUse",
-        tool_pattern=None,  # 도구 무관 — 긴 turn 안에서도 밴드 진입을 그 자리에서 알린다.
-        argv=(),
-        handler=ctx_nudge_envelope,
-    ),
+    # 세션 안 ctx 넛지는 프롬프트 단위 채널에서 한 번 판정한다.
     CodexHookFeature(
         feature_id="ctx-nudge-userpromptsubmit",
         event="UserPromptSubmit",
@@ -966,15 +959,7 @@ CODEX_HOOK_FEATURES: tuple[CodexHookFeature, ...] = (
         argv=(),
         handler=ctx_nudge_envelope,
     ),
-    # 판단 원칙 recall — claude `ctx_stop_hook` 이 같은 두 이벤트에 거는 것과 같은 채널이다.
-    #   도구 무관(tool_pattern=None)이라 in-process 로 돈다.
-    CodexHookFeature(
-        feature_id="principle-recall-pretooluse",
-        event="PreToolUse",
-        tool_pattern=None,
-        argv=(),
-        handler=principle_recall_envelope,
-    ),
+    # 판단 원칙 recall도 프롬프트 단위로 실행하고 PostCompact에서 재무장한다.
     CodexHookFeature(
         feature_id="principle-recall-userpromptsubmit",
         event="UserPromptSubmit",
@@ -1463,11 +1448,33 @@ def git_anchor_hook_evaluate(payload: dict, root: Path) -> dict:
         or re.search(r"(?:^|[;&|])\s*cd(?=\s)", prefilter)
     ):
         return {}
-    cwd = payload.get("cwd")
-    anchor = cwd if isinstance(cwd, str) and cwd else str(root)
+    session_cwd = payload.get("cwd")
+    session_anchor = (
+        os.path.expanduser(session_cwd)
+        if isinstance(session_cwd, str) and session_cwd else str(root)
+    )
+    if not os.path.isabs(session_anchor):
+        session_anchor = os.path.join(str(root), session_anchor)
+    session_anchor = os.path.abspath(session_anchor)
+    coordinate_explicit = False
+    anchor = session_anchor
+    for key in ("workdir", "cwd"):
+        value = tool_input.get(key)
+        if not isinstance(value, str) or not value:
+            continue
+        coordinate_explicit = True
+        value = os.path.expanduser(value)
+        anchor = value if os.path.isabs(value) else os.path.join(session_anchor, value)
+        anchor = os.path.abspath(anchor)
+        break
     judgment = _load_board(root).judge_git_anchor_command(anchor, command)
     verdict = judgment.get("verdict")
     reason = judgment.get("reason", "git cwd 정체 판정")
+    if (
+        verdict == "deny" and not coordinate_explicit
+        and judgment.get("code") == "pm-home-relative-pytest-tests-missing"
+    ):
+        verdict = "warn"
     if verdict == "deny":
         text = f"[git-anchor/deny] {reason}"
         return {

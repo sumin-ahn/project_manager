@@ -691,13 +691,20 @@ ADAPTER_HOOK_SET = {
         live_files=(".codex/pm_orch_codex.py",),
         flag_support={},
         entrypoints=tuple(
-            # 이벤트당 진입점 하나(`matcher .*`)가 manifest 등재 디스패처를 부르고,
+            # 이벤트당 진입점 하나가 manifest 등재 디스패처를 부른다. PreToolUse는 실제
+            #   안전 판정 대상(Bash·collaborationspawn_agent)만 native matcher에서 열고,
+            #   나머지 이벤트는 값 공간 전체(`.*`)를 연다.
             #   "어떤 가드를 돌릴지" 는 그 코드 안에서 갈린다. 그래서 가드 **기능** 추가는 이제
             #   엔진 코드 변경뿐이고 채택자 config·`/hooks` 재승인을 다시 요구하지 않는다.
             #   이 집합은 릴리즈 간 불변이다 — 늘리려면 채택자 config 재승인을 동반한 1회
             #   마이그레이션이다. 그래서 codex 가 발화시키는 **모든** 이벤트를 한 번에 담는다:
             #   일부만 담으면 남은 이벤트가 다음 기능에서 재승인을 다시 부른다.
-            AdapterHookEntrypoint(event, ".*", ".codex/pm_orch_codex.py", "--hook-dispatch")
+            AdapterHookEntrypoint(
+                event,
+                "^(Bash|collaborationspawn_agent)$" if event == "PreToolUse" else ".*",
+                ".codex/pm_orch_codex.py",
+                "--hook-dispatch",
+            )
             for event in ("PreToolUse", "UserPromptSubmit", "PostToolUse",
                           "SubagentStart", "PreCompact", "PostCompact")
         ),
