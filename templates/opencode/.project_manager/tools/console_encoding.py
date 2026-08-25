@@ -19,7 +19,7 @@ from typing import Any
 
 
 # 여러 CLI가 공유하는 엔진 의존성이므로 부분 전파 skew 가드에 편입한다.
-ENGINE_REV = "v1.7.10"
+ENGINE_REV = "v1.7.11"
 
 _UTF8_CODEPAGE = 65001
 _TH32CS_SNAPPROCESS = 0x00000002
