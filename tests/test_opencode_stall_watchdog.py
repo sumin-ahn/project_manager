@@ -624,12 +624,14 @@ def test_opencode_stall_watchdog_e2e_kill_retry_failloud(tmp_path, monkeypatch):
 #   ㉡ core 정적 계약 — @opencode-ai/plugin 비의존(node require 보존)·env 노브 3종·session.idle
 #     구독 + client.session.prompt 주입 배선.
 #   ㉢ (node 있으면) core 순수 로직 자가검증 — classifyStall 3종 양성/음성(선언+tool 파트 쌍·
-#     truncated 단일 신호 억제·결론형 종료 정상)·isAbortOutcome(abort 직후 넛지 금지)·buildNudge
+#     interleaved [선언,tool,완료] 완료 턴 F-001 회귀·truncated 단일 신호 억제·결론형 종료 정상)·
+#     isAbortOutcome(abort 직후 넛지 금지)·isSelfNudgeEntry(F-002 자기 넛지 판별)·buildNudge
 #     3종 문어체·shouldNudge 게이트 경계(연속 무진행 3 차단·진행 리셋·백스톱 20·사용자 해제)·env
 #     override. node 부재 시 skip.
 #   ㉣ (node 있으면) 팩토리 배선 자가검증 — fake client 로 session.idle 구동: 넛지 주입(sessionID+
-#     text parts)·연속 차단·abort 면제·todo 진행 리셋·사용자 메시지 영구 해제·주입 실패 흡수
-#     (never-block)·durable marker 영속 확인. node 부재 시 skip.
+#     text parts)·interleaved 완료 턴 넛지 없음(F-001)·연속 차단·abort 면제·todo 진행 리셋·넛지
+#     user 엔트리 비해제(F-002)·사용자 메시지 영구 해제·주입 실패 흡수(never-block)·durable marker
+#     영속 확인. node 부재 시 skip.
 #   ㉤ (node 있으면) 게이트 상태 프로세스 간 이어짐 — headless one-shot 모델 대응의 핵심 계약을
 #     별개 node 프로세스 3개(save→load+nudge→load)로 실측. node 부재 시 skip.
 
@@ -803,6 +805,35 @@ assert.strictEqual(v.stall, false);
 // 선언 후 tool 파트 존재 → 실행된 것 (architect should-fix 오판 차단).
 v = m.classifyStall("파일을 생성하겠습니다.", [], true);
 assert.strictEqual(v.stall, false);
+// F-001 회귀 — [text(선언), tool, text(완료)] 결합 텍스트는 선언에 매칭돼도 이미 실행을 마친
+// 완료 턴이다. 핸들러와 동일하게 마지막 tool 이후 text 구간을 declCandidate 로 주입해야 한다.
+const interleave = [
+  {type:"text", text:"설정 파일을 생성하겠습니다."},
+  {type:"tool"},
+  {type:"text", text:"생성을 완료했습니다."},
+];
+v = m.classifyStall(
+  m.extractAssistantText(interleave), [],
+  m.hasToolPartAfterText(interleave),
+  m.extractAssistantTextAfterLastTool(interleave),
+);
+assert.strictEqual(v.stall, false, "interleaved 완료 턴을 declare-no-action 으로 오검출 (F-001)");
+// 보존 — 단일 text 선언 NO-WRITE 는 여전히 양성 (핸들러 4인자 경로).
+const soloDecl = [{type:"text", text:"새 파일을 생성하겠습니다."}];
+v = m.classifyStall(
+  m.extractAssistantText(soloDecl), [],
+  m.hasToolPartAfterText(soloDecl),
+  m.extractAssistantTextAfterLastTool(soloDecl),
+);
+assert.deepStrictEqual(v, {stall:true, kind:"declare-no-action"});
+// 보존 — 마지막 tool 이후 꼬리 발화의 선언(실행 없음)도 양성.
+const tailDecl = [{type:"tool"},{type:"text", text:"이제 결과 파일을 생성하겠습니다."}];
+v = m.classifyStall(
+  m.extractAssistantText(tailDecl), [],
+  m.hasToolPartAfterText(tailDecl),
+  m.extractAssistantTextAfterLastTool(tailDecl),
+);
+assert.deepStrictEqual(v, {stall:true, kind:"declare-no-action"});
 // truncated 단일 신호(todo 부재)는 stall 아님.
 v = m.classifyStall("설정은 아래와 같다 (", [], false);
 assert.strictEqual(v.stall, false);
@@ -816,6 +847,20 @@ assert.strictEqual(m.isAbortOutcome({finish:"abort"}), true);
 assert.strictEqual(m.isAbortOutcome({finish:"stop"}), false);
 assert.strictEqual(m.isAbortOutcome({}), false);
 assert.strictEqual(m.isAbortOutcome(null), false);
+
+// ── isSelfNudgeEntry (F-002 — 자기 넛지 user 엔트리는 실사용자 도착이 아님) ────
+assert.strictEqual(m.isSelfNudgeEntry(
+  {info:{role:"user"}, parts:[{type:"text", text:m.NUDGE_MARKER_PREFIX + " 응답이 잘렸다"}]}), true);
+assert.strictEqual(m.isSelfNudgeEntry(
+  {info:{role:"user"}, parts:[{type:"text", text:"  " + m.NUDGE_MARKER_PREFIX + " x"}]}), true);
+assert.strictEqual(m.isSelfNudgeEntry(
+  {info:{role:"user"}, parts:[{type:"text", text:"다음은 어떻게 하나요?"}]}), false);
+assert.strictEqual(m.isSelfNudgeEntry({info:{role:"user"}, parts:[]}), false);
+assert.strictEqual(m.isSelfNudgeEntry(
+  {info:{role:"user"}, parts:[{type:"tool"}]}), false);
+assert.strictEqual(m.isSelfNudgeEntry(
+  {info:{role:"assistant"}, parts:[{type:"text", text:m.NUDGE_MARKER_PREFIX + " x"}]}), false);
+assert.strictEqual(m.isSelfNudgeEntry(null), false);
 
 // ── buildNudge (3종 문어체 고정·unknown null) ─────────────────────────────────
 assert.ok(m.buildNudge("declare-no-action").includes("safe_write"), "선언 처방이 safe_write 청크 유도 아님");
@@ -943,6 +988,15 @@ function msg(role, parts, extra) {
   await idle();
   assert.strictEqual(prompts.length, 1);
 
+  // F-001 회귀 — interleaved [선언, tool, 완료] 다중 text 파트 정상 턴은 넛지하지 않는다.
+  currentMessages = [msg("assistant", [
+    {type:"text", text:"새 파일을 생성하겠습니다."},
+    {type:"tool"},
+    {type:"text", text:"생성을 완료했습니다."},
+  ])];
+  await idle();
+  assert.strictEqual(prompts.length, 1, "interleaved 완료 턴에 넛지함 (F-001 오검출)");
+
   // ② 연속 무진행 게이트 — 같은 멈춤 반복: 스트릭당 3회 넛지 후 차단.
   currentMessages = [msg("assistant", [{type:"text", text:"이어서 작업하고"}])];
   currentTodos = [{content:"a", status:"pending"}];
@@ -968,6 +1022,17 @@ function msg(role, parts, extra) {
   st = persisted();
   assert.strictEqual(st.consecutiveIdle, 1);
   assert.strictEqual(st.lastCompletedCount, 1);
+
+  // F-002 회귀 — 자기 넛지 직후 assistant 회신 없는 idle: [stall-watchdog] 접두 user 엔트리는
+  // 실사용자 도착이 아니므로 워치독이 영구 해제되지 않는다.
+  currentMessages = [
+    msg("assistant", [{type:"text", text:"작업을 완료했습니다."}]),
+    msg("user", [{type:"text", text:"[stall-watchdog] 남은 todo 중 가장 작은 것 하나부터 수행하라."}]),
+  ];
+  currentTodos = [];
+  await idle();
+  assert.strictEqual(persisted().released, false, "자기 넛지를 사용자 도착으로 오판해 영구 해제함 (F-002)");
+  assert.strictEqual(prompts.length, 4);   // 해제 아님 — 결론형 종료라 stall 도 아니어서 넛지 없음.
 
   // ⑤ 사용자 메시지 도착(마지막 assistant 이후 user) → 영구 해제.
   currentMessages = [
