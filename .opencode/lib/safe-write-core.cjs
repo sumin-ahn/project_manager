@@ -296,7 +296,7 @@ function safeWrite(root, filePath, content, mode, chunkBytes) {
   const v = validateSafeWrite(content, mode, exists, chunkBytes);
   if (!v.ok) throw new Error("[safe-write] " + v.message);
   // ── F1 강제 게이트(line-aligned 계약 · T-opencode-002 라이브 실측) ──────────────
-  // 경계 피드백(응답 경고)만으로는 glm류가 반복 무시해 접착 손상이 계속됐다(2026-08-25
+  // 경계 피드백(응답 경고)만으로는 glm류가 반복 무시해 접착 손상이 계속됐다(T-opencode-002 라이브
   // run2-glm-A: 경고 5회 무시·8/12 헤더 접착). 완화를 강제로 승격: append 시 대상 파일이
   // 개행 없이 끝나고 이번 조각도 개행으로 시작하지 않으면 거부한다 — 줄 단위 텍스트 chunk
   // 전용 계약상 mid-line 이어붙임은 범위 밖이며, 거부 메시지가 정확한 처방을 준다.
