@@ -132,47 +132,17 @@ def test_internal_review_latest_sequence_pass_opens_completion(board):
     assert board._complete_gate("T-PAY-001", _gate_args()) == []
 
 
-@pytest.mark.parametrize(("round_count", "opens"), [(2, False), (4, True)])
-def test_internal_pm_fixed_completion_surface_revalidates_cap_and_names_nonpass_evidence(
-    board, capsys, round_count, opens,
-):
-    """손기입 resolution만으로는 못 열고, 정식 상한 형상은 pm-fixed를 통과와 구분해 출력한다."""
-    proof = board.REPO / "pm_fixed_proof.py"
-    _write(proof, "fixed = True\n")
-    rounds = [
-        {"sequence": sequence, "verdict": 1, "must_fix": 1}
-        for sequence in range(1, round_count + 1)
-    ]
+def test_internal_legacy_pm_fixed_resolution_is_unrecognized(board):
     entry = {
-        "count": round_count,
-        "confirm_fix": 1,
-        "pm_fixed": 1,
-        "rounds": rounds,
-        "resolution": {
-            "kind": board.GATE_RESOLUTION_PM_FIXED,
-            "pm_fixed_evidence": {
-                "change": "pm_fixed_proof.py:1",
-                "path": "pm_fixed_proof.py",
-                "line": 1,
-                "regression": "pytest tests/test_board_complete_gate.py -q",
-                "result": "rc=0 (targeted regression passed)",
-            },
-            "round_sequence": round_count,
-            "rounds": round_count,
-        },
+        "rounds": [{"sequence": 1, "verdict": 1, "must_fix": 1}],
+        "resolution": {"kind": "pm-fixed", "round_sequence": 1, "rounds": 1},
     }
     gate = "T-PMF-101"
     _write_internal_rounds(board, {gate: entry})
 
     problems = board._complete_gate(gate, _gate_args())
-    output = capsys.readouterr().err
-
-    assert (not problems) is opens
-    if opens:
-        assert "리뷰 통과가 아니라 pm-fixed" in output
-    else:
-        assert "발동 조건 재검증 실패" in problems[0]
-        assert "상한이 미소진" in problems[0]
+    assert board.gate_resolution(entry) is None
+    assert problems and "처분 선언 없음" in problems[0]
 
 
 # ── T-0786(D1) — `pm-verified` 완료 게이트(기계 확인 증거) ────────────────
@@ -211,6 +181,11 @@ def _reviewer_round_text(pd, finding_id: str) -> str:
         "findings": [{
             "id": finding_id, "class": "implementation-defect", "severity": "must-fix",
             "authority": "[[T-0786]]", "evidence": "probe", "recommendation": "fix",
+            "fix_contract": {
+                "location": "src/example.py:1", "failure": "probe",
+                "design": "fix", "test": "regression",
+                "command": "python3 --version", "expected": "Python",
+            },
             "design_change": False,
         }],
         "confirmations": [],
@@ -873,82 +848,33 @@ def test_cmd_complete_requires_last_recorded_internal_round_to_pass(
     assert list((live_board.tickets_dir() / "done").glob(f"{tid}*"))
 
 
-@pytest.mark.parametrize(
-    ("target_status", "expected_rc"),
-    [("claimed", 1), ("done", 0)],
-)
-def test_cmd_complete_internal_into_disposition_requires_target_done(
-    live_board, target_status, expected_rc,
-):
+def test_internal_legacy_into_resolution_never_completes(live_board):
     gate = "T-9201"
-    target = "T-9202"
     claimed = _seed_ticket(live_board, gate, _dod_body("- [x] 코드"))
-    _seed_ticket(
-        live_board, target, _dod_body("- [x] 후속 소화"), status=target_status,
-    )
-    entry = {"rounds": [
-        _internal_round(
-            1, 1, 2,
-            started_at="2026-08-12T00:00:00+00:00",
-            ts="2026-08-12T00:01:00+00:00",
-            target_rev="a" * 40,
-        )
-    ]}
-    entry["resolution"] = _internal_resolution(
-        live_board, entry, kind=live_board.GATE_RESOLUTION_INTO, target=target,
-    )
+    entry = {"rounds": [_internal_round(
+        1, 1, 2, started_at="2026-08-12T00:00:00+00:00",
+        ts="2026-08-12T00:01:00+00:00", target_rev="a" * 40,
+    )]}
+    entry["resolution"] = {"kind": "into", "ticket": "T-9202",
+                           **live_board.gate_round_binding(entry)}
     _write_internal_rounds(live_board, {gate: entry})
 
-    assert live_board.cmd_complete(_complete_args(gate)) == expected_rc
-    if expected_rc == 0:
-        assert list((live_board.tickets_dir() / "done").glob(f"{gate}*"))
-    else:
-        assert claimed.exists()
+    assert live_board.cmd_complete(_complete_args(gate)) == 1
+    assert claimed.exists() and live_board.gate_resolution(entry) is None
 
 
-@pytest.mark.parametrize(("evidence_verdict", "expected_problem"), [(1, True), (0, False)])
-def test_internal_fixed_disposition_requires_later_changed_pass(
-    board, evidence_verdict, expected_problem,
-):
-    gate = "T-9301"
-    evidence = "T-9302"
-    entry = {"rounds": [
-        _internal_round(
-            1, 1, 1,
-            started_at="2026-08-12T00:00:00+00:00",
-            ts="2026-08-12T00:01:00+00:00",
-            target_rev="a" * 40,
-        )
-    ]}
-    entry["resolution"] = _internal_resolution(
-        board, entry, kind=board.GATE_RESOLUTION_FIXED, target=evidence,
-    )
-    evidence_entry = {"rounds": [
-        _internal_round(
-            1, evidence_verdict, 0 if evidence_verdict == 0 else 1,
-            started_at="2026-08-12T00:03:00+00:00",
-            ts="2026-08-12T00:04:00+00:00",
-            target_rev="b" * 40,
-        )
-    ]}
-    _write_internal_rounds(board, {gate: entry, evidence: evidence_entry})
-
-    problems = board._complete_gate(gate, _gate_args())
-
-    assert bool(problems) is expected_problem
-    if problems:
-        assert "근거 게이트" in problems[0]
+def test_internal_legacy_fixed_resolution_is_unrecognized(board):
+    entry = {"rounds": [_internal_round(
+        1, 1, 1, started_at="2026-08-12T00:00:00+00:00",
+        ts="2026-08-12T00:01:00+00:00", target_rev="a" * 40,
+    )]}
+    entry["resolution"] = {"kind": "fixed", "evidence_gate": "T-9302",
+                           **board.gate_round_binding(entry)}
+    assert board.gate_resolution(entry) is None
 
 
 def test_internal_resolution_becomes_stale_after_new_rejection(board):
     gate = "T-9401"
-    target = "T-9402"
-    ticket_dir = board.tickets_dir() / "done"
-    ticket_dir.mkdir(parents=True, exist_ok=True)
-    _write(
-        ticket_dir / f"{target}-후속.md",
-        _TICKET_FRONTMATTER.format(tid=target, status="done") + _dod_body("- [x] 소화"),
-    )
     first = _internal_round(
         1, 1, 2,
         started_at="2026-08-12T00:00:00+00:00",
@@ -956,9 +882,10 @@ def test_internal_resolution_becomes_stale_after_new_rejection(board):
         target_rev="a" * 40,
     )
     entry = {"rounds": [first]}
-    entry["resolution"] = _internal_resolution(
-        board, entry, kind=board.GATE_RESOLUTION_INTO, target=target,
-    )
+    entry["resolution"] = {
+        "kind": board.GATE_RESOLUTION_PM_VERIFIED,
+        **board.gate_round_binding(entry),
+    }
     entry["rounds"].append(_internal_round(
         2, 1, 1,
         started_at="2026-08-12T00:03:00+00:00",

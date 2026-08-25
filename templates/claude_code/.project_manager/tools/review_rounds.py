@@ -159,15 +159,11 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 
 
 # baked 엔진 rev — engine_rev.py --bump가 기계 일괄 재작성한다.
-ENGINE_REV = "v1.7.9"
+ENGINE_REV = "v1.7.10"
 
 CONVERGENCE_DIVERGING = "diverging"
 CONVERGENCE_CAP_UNRESOLVED = "cap-unresolved"
 CONVERGENCE_CAP_REACHED = "cap-reached"
-
-RESOLUTION_PM_FIXED = "pm-fixed"
-PM_FIXED_EVIDENCE_KEY = "pm_fixed_evidence"
-PM_FIXED_USAGE_KEY = "pm_fixed"
 
 # 폐지된 라운드 연장 승인이 장부에 남긴 필드. 스키마에서 뺐고 **값을 승계하지도 않는다** —
 # 승인 수위만큼 집계 창을 잘라 판정 수를 줄이던 값이라, 남아 있으면 그 게이트의 집계가 전체
@@ -175,13 +171,11 @@ PM_FIXED_USAGE_KEY = "pm_fixed"
 # 장부가 다시 기록되면 알릴 대상이 없어 자연히 1회다 — 별도 상태 파일 없음).
 RETIRED_ACK_FIELD = "acked_through"
 
-# 기계 확인(pm-review-confirmation-v1) 증거로 여는 내부 게이트 처분. `pm-fixed` 와
-# 달리 상한·쿼터가 없다(발동 조건은 증거 — `pm_delegate.pm_verified_evidence_problem` 이
+# 기계 확인(pm-review-confirmation-v1) 증거로 여는 내부 게이트 처분. 상한·쿼터 대신
+# 증거를 요구한다(`pm_delegate.pm_verified_evidence_problem` 이
 # 선언·완료 재검증 공용으로 판정한다). 이 모듈은 표기 문구만 소유한다.
 RESOLUTION_PM_VERIFIED = "pm-verified"
 
-_PM_FIXED_RESULT_RE = re.compile(r"^rc=0(?:\s+\([^\r\n;]+\))?$")
-_WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -439,10 +433,6 @@ def normalize_gate_entry(
             *(as_int(row.get("sequence", row.get("number"))) for row in records),
             0,
         ),
-        "confirm_fix": max(0, as_int(entry.get("confirm_fix"))),
-        # PM 직접 해소는 confirm-fix와 마찬가지로 장부가 소유하는 게이트당 1회 쿼터다.
-        # 1 초과 손상값도 그대로 보존해 재사용을 닫는 쪽으로 판정한다.
-        PM_FIXED_USAGE_KEY: max(0, as_int(entry.get(PM_FIXED_USAGE_KEY))),
         "resolution": resolution,
         "records": records,
         "rounds": rounds,
@@ -622,218 +612,11 @@ def latest_round_outcome(
     return ordered[-1] if ordered else None
 
 
-def parse_pm_fixed_evidence(
-    value: object,
-    *,
-    repo_root: Path | str | None = None,
-) -> dict[str, object]:
-    """PM 직접 해소 근거를 구조화하고 선택적으로 실제 변경 지점을 검증한다.
-
-    CLI 문자열 형식은 정확히 다음 세 필드다::
-
-        change=<repo-relative-file>:<line>; regression=<command>; result=rc=0 (<summary>)
-
-    자유 서술 한 줄은 받지 않는다. 회귀 명령과 성공 exit 값(``rc=0``)을 분리해 장부 소비자가
-    기계적으로 확인할 수 있게 하고, ``repo_root``가 주어지면 경로 containment·파일 실존·행 범위도
-    선언 전에 확인한다. 장부에 이미 구조화된 dict가 들어온 경우에도 같은 정규화를 적용한다.
-    """
-    if isinstance(value, str):
-        parts = value.split("; ")
-        if len(parts) != 3:
-            raise ValueError(
-                "--pm-fixed 근거 형식은 `change=<file>:<line>; "
-                "regression=<command>; result=rc=0 (<summary>)` 이어야 합니다"
-            )
-        change_part, regression_part, result_part = parts
-        if not change_part.startswith("change="):
-            raise ValueError("--pm-fixed 근거에 `change=<file>:<line>`이 필요합니다")
-        if not regression_part.startswith("regression="):
-            raise ValueError("--pm-fixed 근거에 `regression=<command>`가 필요합니다")
-        if not result_part.startswith("result="):
-            raise ValueError("--pm-fixed 근거에 `result=rc=0`이 필요합니다")
-        change = change_part.removeprefix("change=").strip()
-        regression = regression_part.removeprefix("regression=").strip()
-        result = result_part.removeprefix("result=").strip()
-    elif isinstance(value, dict):
-        change = value.get("change")
-        regression = value.get("regression")
-        result = value.get("result")
-        if not all(isinstance(item, str) for item in (change, regression, result)):
-            raise ValueError("pm-fixed 구조화 근거의 change/regression/result는 문자열이어야 합니다")
-        change = change.strip()
-        regression = regression.strip()
-        result = result.strip()
-    else:
-        raise ValueError("--pm-fixed 근거는 비어 있지 않은 구조화 문자열이어야 합니다")
-
-    location = re.fullmatch(r"(.+):([1-9][0-9]*)", change)
-    if location is None:
-        raise ValueError("--pm-fixed 변경 지점은 `<repo-relative-file>:<positive-line>` 형식이어야 합니다")
-    path_text = location.group(1).strip()
-    line = int(location.group(2))
-    relative = Path(path_text)
-    if (
-        not path_text
-        or "\\" in path_text
-        or relative.is_absolute()
-        or _WINDOWS_ABSOLUTE_RE.match(path_text) is not None
-        or any(part in ("", ".", "..") for part in relative.parts)
-    ):
-        raise ValueError("--pm-fixed 변경 파일은 traversal 없는 repo 상대 POSIX 경로여야 합니다")
-    if not regression or "\n" in regression or "\r" in regression:
-        raise ValueError("--pm-fixed regression에는 실행한 회귀 명령이 필요합니다")
-    if _PM_FIXED_RESULT_RE.fullmatch(result) is None:
-        raise ValueError("--pm-fixed result는 성공 종료 `rc=0`과 선택적 요약을 기록해야 합니다")
-
-    normalized: dict[str, object] = {
-        "change": f"{relative.as_posix()}:{line}",
-        "path": relative.as_posix(),
-        "line": line,
-        "regression": regression,
-        "result": result,
-    }
-    if repo_root is None:
-        return normalized
-
-    root = Path(repo_root).resolve()
-    target = (root / relative).resolve()
-    try:
-        target.relative_to(root)
-    except ValueError as exc:
-        raise ValueError("--pm-fixed 변경 파일이 repo 경계를 벗어납니다") from exc
-    if not target.is_file():
-        raise ValueError(f"--pm-fixed 변경 파일을 찾을 수 없습니다: {relative.as_posix()}")
-    try:
-        with _open_shared(target, binary=False, encoding="utf-8") as stream:
-            line_count = sum(1 for _line in stream)
-    except (OSError, UnicodeError) as exc:
-        raise ValueError(
-            f"--pm-fixed 변경 파일 행을 검증할 수 없습니다: {relative.as_posix()} "
-            f"({type(exc).__name__}: {exc})"
-        ) from exc
-    if line > line_count:
-        raise ValueError(
-            f"--pm-fixed 변경 지점이 파일 범위를 벗어납니다: "
-            f"{relative.as_posix()}:{line} (총 {line_count}행)"
-        )
-    return normalized
-
-
-def _pm_fixed_shape_problem(
-    entry: dict,
-    limit: int,
-    *,
-    wall_timeout_sec: int | None = None,
-) -> str | None:
-    """쿼터를 제외한 PM 직접 해소의 상한/confirm-fix/마지막 반려 형상."""
-    completed, inflight = convergence_round_usage(
-        entry, wall_timeout_sec=wall_timeout_sec,
-    )
-    if completed < limit:
-        return f"라운드 상한이 미소진입니다(완료 {completed}/{limit})"
-    if inflight:
-        return f"진행 중 라운드 예약 {inflight}건이 남아 있습니다"
-    refusal = convergence_refusal(
-        entry, limit, wall_timeout_sec=wall_timeout_sec,
-    )
-    if refusal == CONVERGENCE_DIVERGING:
-        return "마지막 must-fix 추이가 증가(발산)해 PM 직접 해소 대상이 아닙니다"
-    confirm_fix = max(0, as_int(entry.get("confirm_fix")))
-    if confirm_fix < 1:
-        return "confirm-fix 1회가 아직 소진되지 않았습니다"
-    latest = latest_round_outcome(entry)
-    if latest is None or latest.get("verdict") != 1:
-        return "마지막 완료 라운드가 유효 반려(rc=1)가 아닙니다"
-    residual = latest.get("must_fix")
-    if isinstance(residual, bool) or not isinstance(residual, int) or residual <= 0:
-        return "마지막 반려 라운드에 양의 must-fix 잔여가 없습니다"
-    return None
-
-
-def pm_fixed_refusal(
-    entry: dict,
-    limit: int,
-    *,
-    wall_timeout_sec: int | None = None,
-) -> str | None:
-    """새 PM 직접 해소를 열 수 없는 이유(가능하면 ``None``).
-
-    일반 라운드 상한과 confirm-fix 1회를 모두 소비하고 마지막 완료 라운드가 잔여를 가진 유효
-    반려일 때만 연다. 진행 중 예약이 있으면 그 결과를 앞질러 닫지 않는다. 쿼터는 장부의
-    ``pm_fixed`` 필드가 소유하며 한 번 소비된 뒤에는 처분이 교체돼도 되살아나지 않는다.
-    """
-    used = max(0, as_int(entry.get(PM_FIXED_USAGE_KEY)))
-    if used >= 1:
-        return f"게이트당 1회 제한을 이미 소진했습니다(pm-fixed={used})"
-    return _pm_fixed_shape_problem(
-        entry, limit, wall_timeout_sec=wall_timeout_sec,
-    )
-
-
-def recorded_pm_fixed_problem(
-    entry: dict,
-    limit: int,
-    *,
-    wall_timeout_sec: int | None = None,
-) -> str | None:
-    """기록된 pm-fixed 처분을 소비할 때 쿼터와 발동 형상을 다시 검증한다."""
-    used = max(0, as_int(entry.get(PM_FIXED_USAGE_KEY)))
-    if used != 1:
-        return f"pm-fixed 사용 횟수가 정확히 1이 아닙니다(pm-fixed={used})"
-    return _pm_fixed_shape_problem(
-        entry, limit, wall_timeout_sec=wall_timeout_sec,
-    )
-
-
-def declare_pm_fixed_resolution(
-    entry: dict,
-    evidence: object,
-    *,
-    limit: int,
-    repo_root: Path | str,
-    wall_timeout_sec: int | None = None,
-) -> dict:
-    """검증·상한·1회 쿼터 소비와 처분 기록값 생성을 한 공용 축에서 수행한다."""
-    normalized_evidence = parse_pm_fixed_evidence(evidence, repo_root=repo_root)
-    problem = pm_fixed_refusal(
-        entry, limit, wall_timeout_sec=wall_timeout_sec,
-    )
-    if problem is not None:
-        raise ValueError(f"pm-fixed 처분을 사용할 수 없습니다: {problem}")
-    rounds = [
-        row for row in (entry.get("rounds") or []) if isinstance(row, dict)
-    ]
-    latest = latest_round_outcome(entry)
-    sequence = latest.get("sequence") if latest is not None else None
-    if isinstance(sequence, bool) or not isinstance(sequence, int):
-        sequence = None
-    entry[PM_FIXED_USAGE_KEY] = max(
-        0, as_int(entry.get(PM_FIXED_USAGE_KEY))
-    ) + 1
-    return {
-        "kind": RESOLUTION_PM_FIXED,
-        PM_FIXED_EVIDENCE_KEY: normalized_evidence,
-        "ts": utc_now_iso(),
-        "must_fix": latest["must_fix"],
-        "round_sequence": sequence,
-        "rounds": len(rounds),
-    }
-
-
-def describe_pm_fixed_resolution(declared: dict) -> str:
-    """보고/완료 출력용 표기. 리뷰 통과와 혼동되지 않는 고정 어휘를 쓴다."""
-    evidence = parse_pm_fixed_evidence(declared.get(PM_FIXED_EVIDENCE_KEY))
-    return (
-        "pm-fixed(PM 직접 해소·리뷰 통과 아님; "
-        f"변경 {evidence['change']}; 회귀 {evidence['regression']} => {evidence['result']})"
-    )
-
-
 def describe_pm_verified_resolution(declared: dict) -> str:
     """보고/완료 출력용 표기 — 기계 확인 해소임을 명시(리뷰 재투입 없음).
 
-    `declared` 는 `describe_pm_fixed_resolution` 과 같은 호출 관례를 유지하려고 받는다 —
-    이 처분은 별도 근거 blob 을 싣지 않아(증거는 매번 라이브로 재검증) 문구는 kind 고정이다.
+    `declared` 는 보고 호출 관례를 유지하려고 받는다. 이 처분은 별도 근거 blob 을 싣지 않아
+    (증거는 매번 라이브로 재검증) 문구는 kind 고정이다.
     """
     del declared
     return "pm-verified(PM 기계 확인 해소·reviewer 재투입 없음)"

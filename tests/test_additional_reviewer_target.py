@@ -2276,9 +2276,11 @@ def test_round_and_wave_caps_are_anti_loop_without_round_extension(external):
         assert "--rounds-report" in guidance                # 먼저 볼 조회면
         assert "대기" not in guidance                        # '사용자 승인 대기' 규율 삭제
         assert "승인 후" not in guidance
-    # 라운드 축의 출구는 재설계·분할뿐이다 (연장 승인 없음).
+    # 라운드 축은 현재 티켓을 terminal stop 하고 사용자에게 근거만 보고한다.
     for guidance in (external._ROUND_LIMIT_GUIDANCE, external._CONVERGENCE_GUIDANCE):
-        assert "재설계" in guidance and "분할" in guidance
+        assert "현재 티켓" in guidance and "사용자에게 보고" in guidance
+        assert "재설계" not in guidance and "분할" not in guidance
+        assert "새 티켓" not in guidance and "후속 티켓" not in guidance
     # wave 축만 승인으로 재개한다 (별개 비용 축).
     assert "--ack-wave" in external._WAVE_BUDGET_GUIDANCE
     assert "자율" in external._WAVE_BUDGET_GUIDANCE

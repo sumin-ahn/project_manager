@@ -54,6 +54,21 @@ def pim():
     return _load_pm_import()
 
 
+def test_slot_default_test_cmd_uses_board_parallel_default(pc, monkeypatch):
+    """worktree slot의 Enter 기본도 PM 설정 부재 시 board xdist 기본을 그대로 쓴다."""
+    class _Board:
+        @staticmethod
+        def default_pytest_cmd():
+            return "python3 -m pytest tests/ -q -n auto"
+
+    monkeypatch.setattr(pc, "_local_conf_test_cmd", lambda: None)
+    monkeypatch.setattr(pc, "_load_module", lambda *_a, **_k: _Board)
+    assert pc._default_test_cmd() == "python3 -m pytest tests/ -q -n auto"
+    assert pc._resolve_repo_test_cmd("fixture", board=_Board) == (
+        "python3 -m pytest tests/ -q -n auto"
+    )
+
+
 # ── 주입형 pm_import fake (DI seam — hermetic) ────────────────────────────────
 
 

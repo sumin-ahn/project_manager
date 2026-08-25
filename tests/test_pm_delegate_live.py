@@ -32,6 +32,8 @@ always-run 가드(라이브 없이·매 회귀): backbone 존재·로드 + 실�
 from __future__ import annotations
 
 import importlib.util
+import inspect
+import json
 import os
 import shutil
 import subprocess
@@ -66,13 +68,16 @@ _MARKER = "QZX4242DELEGATE"
 
 # T-0685 선택 cross 3경로의 실제 target×role 티켓 영속성. main 차원은 cross CLI의 argv/driver를
 # 바꾸지 않으므로 기존 27셀 기계표가 맡고, live는 사용 경로별 실제 target transport를 1회씩 친다.
-_GROWTH_ROLES = ("architect", "developer", "code-reviewer")
 _CROSS_MAIN_FOR_TARGET = {"codex": "claude", "opencode": "claude", "claude": "codex"}
-_GROWTH_SENTINELS = {
-    "architect": "LIVE_CROSS_ARCHITECT_PERSISTED",
-    "developer": "LIVE_CROSS_DEVELOPER_PERSISTED",
-    "code-reviewer": "LIVE_CROSS_REVIEWER_PERSISTED",
-}
+_GROWTH_PIPELINE = (
+    ("architect", "LIVE_CROSS_ARCHITECT_PERSISTED"),
+    ("developer", "LIVE_CROSS_DEVELOPER_PERSISTED"),
+    ("code-reviewer", "LIVE_CROSS_REVIEWER_PERSISTED"),
+    ("developer", "LIVE_CROSS_FINAL_FIX_PERSISTED"),
+)
+_CROSS_TEST_FILE = "tests/test_live_cross_growth.py"
+_CROSS_TEST_COMMAND = f"python3 -m pytest {_CROSS_TEST_FILE} -q -n auto"
+_CROSS_FULL_COMMAND = "python3 -m pytest tests/ -q -n auto"
 
 # 이 파일 release 마커 수(file-local pin·마커 소실/개명 방어). 전역 커플드-pin 등재는 orchestrator 소유.
 _EXPECTED_RELEASE_TESTS = 4
@@ -121,7 +126,8 @@ def _seed_repo(tmp_path: Path) -> tuple[Path, Path]:
 # ── 위임 실행 (in-process main·실 subprocess 스폰) ────────────────────────────────
 def _delegate(pd, monkeypatch, capsys, repo: Path, prompt: Path, harness: str, model: str,
               reasoning: str | None, output_dir: Path, timeout: int, *,
-              role: str = "researcher", ticket: str | None = None) -> tuple[int, str, str]:
+              role: str = "researcher", ticket: str | None = None,
+              resume_from: str | None = None) -> tuple[int, str, str]:
     """pm_delegate.main() 을 in-process 로 호출(local_config=enabled monkeypatch·실 run_fn 스폰).
 
     reply 는 stdout(print)로 나오므로 capsys 로 회수한다. rc·reply·stderr 반환."""
@@ -133,6 +139,8 @@ def _delegate(pd, monkeypatch, capsys, repo: Path, prompt: Path, harness: str, m
         argv += ["--reasoning", reasoning]
     if ticket:
         argv += ["--ticket", ticket]
+    if resume_from:
+        argv += ["--resume-from", resume_from]
     rc = pd.main(argv)
     captured = capsys.readouterr()
     return rc, captured.out, captured.err
@@ -173,6 +181,10 @@ def _seed_growth_repo(tmp_path: Path, ticket: str) -> tuple[Path, Path]:
     tickets = repo / ".project_manager" / "wiki" / "tickets" / "claimed"
     tickets.mkdir(parents=True)
     (repo / ".project_manager" / ".local").mkdir(parents=True)
+    (repo / ".project_manager" / "local.conf").write_text(
+        f"runtime.py=python3\ntest.cmd={_CROSS_FULL_COMMAND}\n",
+        encoding="utf-8",
+    )
     # 사본 루트(.local/)는 tracked `.project_manager/.gitignore` 로 무시돼야 prepare 가 받는다
     # (채택자 출하 형상과 같게 — ignore 규칙 출처 검증).
     ignore = repo / ".project_manager" / ".gitignore"
@@ -195,10 +207,41 @@ def _stage_reviewable_change(repo: Path) -> None:
     reviewed.write_text("live cross review target\n", encoding="utf-8")
     subprocess.run([_GIT, "-C", str(repo), "add", "reviewed.txt"], check=True)
 
+
+def _record_growth_review_disposition(pd, source: Path, ticket: str) -> str:
+    """PM 역할을 fixture에서 수행해 zero/finding reviewer 산출을 04 입력으로 닫는다."""
+    ticket_text = source.read_text(encoding="utf-8")
+    rounds = pd._load_ticket_rounds().load_rounds(
+        source.parent.parent, ticket, ticket_text=ticket_text,
+    )
+    rendered = pd.render_pm_review_disposition_template(ticket_text, rounds)
+    lines = rendered.splitlines()
+    payload = json.loads("\n".join(lines[1:-1]))
+    for row in payload.get("dispositions", []):
+        row.update({
+            "decision": "accepted",
+            "reason": "live reviewer가 찾은 현재 티켓 결함을 final fix에서 닫는다",
+            "scope": "live_cross_probe.py와 tests/test_live_cross_growth.py",
+            "prerequisite": "없음",
+        })
+    block = (
+        f"```{pd.PM_REVIEW_DISPOSITION_BLOCK}\n"
+        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        + "\n```\n"
+    )
+    source.write_text(ticket_text + "\n" + block, encoding="utf-8", newline="")
+    updated = source.read_text(encoding="utf-8")
+    updated_rounds = pd._load_ticket_rounds().load_rounds(
+        source.parent.parent, ticket, ticket_text=updated,
+    )
+    return pd.render_pm_review_delta(
+        ticket, pd.parse_pm_review_delta(updated, updated_rounds),
+    )
+
 def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
                             target: str, model: str, reasoning: str,
                             timeout: int) -> None:
-    """선택 main→target 한 경로에서 역할 3종을 실제 CLI로 실행하고 canonical 재조회를 단언한다."""
+    """선택 main→target 한 경로에서 고정 4라운드를 실행하고 canonical 재조회를 단언한다."""
     ticket = {"codex": "T-9101", "opencode": "T-9102", "claude": "T-9103"}[target]
     repo, source = _seed_growth_repo(tmp_path, ticket)
     er = pd._load_external_review()
@@ -208,40 +251,113 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
     rounds_dir = (
         repo / ".project_manager" / "wiki" / "tickets" / "rounds" / ticket
     )
-    # 명세 파일은 위임 전체에서 1 byte 도 바뀌지 않아야 한다(쓰기 대상은 라운드 파일 하나).
-    spec_before = source.read_bytes()
+    fix_delta = ""
 
-    for role in _GROWTH_ROLES:
-        sentinel = _GROWTH_SENTINELS[role]
-        prompt = repo / f"growth-{target}-{role}.md"
-        if role == "code-reviewer":
+    for stage, (role, sentinel) in enumerate(_GROWTH_PIPELINE, start=1):
+        prompt = repo / f"growth-{target}-{stage:02d}-{role}.md"
+        if role == "architect":
+            payload = json.dumps({
+                "version": pd.ARCHITECT_TEST_VERSION,
+                "tests": [{
+                    "id": "AT-001",
+                    "target": _CROSS_TEST_FILE,
+                    "command": _CROSS_TEST_COMMAND,
+                    "expected": "passed",
+                    "negative": "pipeline_roles에서 마지막 developer를 빼면 회귀가 실패해야 한다",
+                }],
+            }, ensure_ascii=False, separators=(",", ":"))
+            architect_body = (
+                "## 경계 실측\n- fixed release pipeline fixture\n\n"
+                "## 불변식\n- architect then developer then code-reviewer then final developer\n\n"
+                "## 표면 상한\n- one stable module and one stable regression test\n\n"
+                "## 테스트 전략\n- positive sequence and missing-final-developer negative\n\n"
+                f"```{pd.ARCHITECT_TEST_BLOCK}\n{payload}\n```\n\n"
+                "검토 판정: 설계 통과\n"
+                f"{sentinel}\n"
+            )
+            edit_contract = (
+                "Use replacement/truncation, never append: preserve the first header line and make every "
+                "byte from line 2 through EOF equal the exact body between BEGIN/END below.\n"
+                f"BEGIN EXACT ARCHITECT BODY\n{architect_body}END EXACT ARCHITECT BODY\n"
+                "Mandatory self-check before replying: reopen the file and verify the exact body equality, "
+                f"exactly one ```{pd.ARCHITECT_TEST_BLOCK} block, exactly one `{sentinel}`, and zero `<...>` "
+                "placeholder tokens. If the old skeleton follows the sentinel or any check fails, rewrite "
+                "from line 2 through EOF and reread it again. Do not reply before every check passes. "
+            )
+            final_contract = "After the edit, reply exactly DONE.\n"
+        elif role == "code-reviewer":
             # 리뷰 입력은 리뷰할 diff 가 있는 트리다 — developer 회수가 작업물을 커밋한 뒤라
             # 리뷰 직전에 staged 변경을 하나 둔다(codex read 역할 preflight 의 실 입력).
             _stage_reviewable_change(repo)
-            edit_contract = (
-                "Fill the seeded skeleton as a passing review with zero findings: under `## must-fix` "
-                "write exactly `- 없음`; under `## 판정` write exactly "
-                "`판정: 통과 · finding 0건(must-fix 0건)`; replace the whole content of the "
-                "```pm-review-v1 fenced block with exactly "
-                '{"version":2,"findings":[],"confirmations":[]} (keep the fence lines). '
-                f"Then append exactly {sentinel} on its own line at the end of the file. "
+            zero_payload = json.dumps(
+                {"version": pd.PM_REVIEW_VERSION, "findings": [], "confirmations": []},
+                ensure_ascii=False, separators=(",", ":"),
             )
-            final_contract = "After the edit, reply exactly with:\n판정: 통과\n## must-fix\n- 없음\n"
+            edit_contract = (
+                "Inspect live_cross_probe.py and tests/test_live_cross_growth.py and run the targeted "
+                f"command `{_CROSS_TEST_COMMAND}`. Do not invent a finding. If the stable four-role "
+                "contract is correct, replace everything after the first header with `## must-fix`, "
+                "`- 없음`, `## 판정`, `판정: 통과 · finding 0건(must-fix 0건)`, then the exact "
+                f"```{pd.PM_REVIEW_BLOCK} block payload `{zero_payload}`, and finally `{sentinel}`. "
+                "If a real defect exists instead, fill the seeded F-001 v3 schema without adding keys: "
+                "include code evidence and every fix_contract field; fix_contract.test must name "
+                f"{_CROSS_TEST_FILE}, command must be `{_CROSS_TEST_COMMAND}`, expected must be `passed`. "
+            )
+            final_contract = "After the edit, reply with the same 판정 and must-fix summary.\n"
+        elif stage == 2:
+            edit_contract = (
+                "Implement the architect contract using stable canonical files only. Create "
+                "live_cross_probe.py with a function pipeline_roles() returning exactly "
+                "('architect', 'developer', 'code-reviewer', 'developer'). Create "
+                f"{_CROSS_TEST_FILE} which imports that function and asserts that exact tuple. "
+                "Do not use a random value, run id, temporary delegate-copy path, or session hash. Run "
+                f"`{_CROSS_TEST_COMMAND}` and then `{_CROSS_FULL_COMMAND}`. Only after both actually return "
+                "rc=0, replace the round body after its first header with completed sections in this exact "
+                "order: `## 변경 파일`, `## 신규 테스트`, `## 회귀`, `## DoD evidence`, `## 민감도`, "
+                "then the sentinel. The `## 회귀` section must contain exactly two nonblank "
+                f"rows: `- 커맨드: `{_CROSS_FULL_COMMAND}`` and `- 결과: rc=0 · <the actual pytest "
+                "summary you just observed>`. Put targeted-command evidence only under `## DoD evidence`. "
+                "Mandatory self-check before replying: reopen the file, extract `## 회귀` through the next "
+                "`## ` heading, and refuse to finish unless it has exactly those two rows, contains the full "
+                "command once, and contains neither the targeted command nor the sentinel. Also verify the "
+                f"whole body contains `{sentinel}` exactly once. Rewrite and reread if any check fails. "
+                "Never fabricate a result. "
+            )
+            final_contract = "After the edit and real green commands, reply exactly DONE.\n"
         else:
             edit_contract = (
-                f"Keep the seeded skeleton and append exactly {sentinel} on its own line. "
+                "This is terminal round 04, not another initial implementation. Apply every accepted-only "
+                "delta below; if it is empty, make no code change. For each accepted finding, modify or add "
+                f"{_CROSS_TEST_FILE} as its regression target and fill every preseeded pm-review-verify-v1 "
+                "row with a real boolean and the exact executed command/expected/before values. Run "
+                f"`{_CROSS_TEST_COMMAND}` and then `{_CROSS_FULL_COMMAND}`. Only after both actually return "
+                "rc=0, replace all remaining developer skeleton placeholders and keep any verify block. "
+                "Write one final body with the normal completed sections in this exact order: `## 변경 파일`, "
+                "`## 신규 테스트`, `## 회귀`, `## DoD evidence`, `## 민감도`, then an existing "
+                "verify block if one was seeded, then the sentinel. The `## 회귀` section itself must be exactly "
+                f"`- 커맨드: `{_CROSS_FULL_COMMAND}`` followed by `- 결과: rc=0 · <the one actual full "
+                "pytest summary>` and no third nonblank row. Put targeted-command evidence only under "
+                "`## DoD evidence`. Mandatory self-check before replying: reopen the file, extract `## 회귀` "
+                "through the next `## ` heading, and refuse to finish unless it has exactly those two rows, "
+                f"contains `{_CROSS_FULL_COMMAND}` once, contains neither `{_CROSS_TEST_COMMAND}` nor any "
+                "placeholder, and the whole body contains the sentinel exactly once. Rewrite and reread if "
+                "any check fails. Append "
+                f"`{sentinel}`. Never fabricate counts and never create another round or ticket.\n"
+                "ACCEPTED-ONLY DELTA:\n" + (fix_delta or "(empty: reviewer finding zero accepted)\n")
             )
             final_contract = "After the edit, reply with exactly DONE.\n"
         prompt.write_text(
             "The delegation preamble gives one absolute writable round file path. Open that file, keep its "
             "first header line. " + edit_contract
-            + "Do not modify any other file — spec.md and the rounds/ directory next to it are read-only. "
+            + "The spec.md and rounds/ directory next to it are read-only. "
             + final_contract,
             encoding="utf-8",
         )
+        spec_before_stage = source.read_bytes()
         rc, reply, err = _delegate(
             pd, monkeypatch, capsys, repo, prompt, target, model, reasoning,
             output_dir, timeout, role=role, ticket=ticket,
+            resume_from=ticket if stage == 4 and role == "developer" else None,
         )
         tail = f"\n--- stderr ---\n{err[-1800:]}\n--- reply ---\n{reply[-1000:]}"
         assert rc == 0, (
@@ -265,13 +381,15 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
                    for text in texts), (
             f"{_CROSS_MAIN_FOR_TARGET[target]}→{target} {role} 라운드 첫 줄 헤더 소실" + tail
         )
-        # 명세는 읽기 전용 입력이다 — 회수는 명세를 건드리지 않는다.
-        assert source.read_bytes() == spec_before, (
+        # 각 subagent에게 명세는 읽기 전용이다. reviewer 뒤 PM fixture만 별도로 disposition을 쓴다.
+        assert source.read_bytes() == spec_before_stage, (
             f"{_CROSS_MAIN_FOR_TARGET[target]}→{target} {role} 위임이 명세 파일을 변경함: {source}" + tail
         )
         assert list(output_dir.glob(f"pm_delegate_{target}_*.txt")), "raw 감사 산출물 부재"
+        if role == "code-reviewer":
+            fix_delta = _record_growth_review_disposition(pd, source, ticket)
 
-    # 새 Python 프로세스가 라운드 디렉터리를 다시 읽어 세 역할 결과를 모두 관측해야 영속 증거다.
+    # 새 Python 프로세스가 고정 4라운드(동일 developer 02/04)를 다시 읽어야 영속 증거다.
     probe = subprocess.run(
         [shutil.which("python3") or "python3", "-c",
          "from pathlib import Path; "
@@ -280,9 +398,10 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
         cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
     )
     assert probe.returncode == 0, probe.stderr
-    assert all(sentinel in probe.stdout for sentinel in _GROWTH_SENTINELS.values())
-    # 명세는 끝까지 원본 그대로다.
-    assert source.read_bytes() == spec_before
+    assert all(sentinel in probe.stdout for _role, sentinel in _GROWTH_PIPELINE)
+    round_roles = [path.stem.split("-", 1)[1] for path in sorted(rounds_dir.glob("*.md"))]
+    assert round_roles == [role for role, _sentinel in _GROWTH_PIPELINE]
+    # subagent는 명세를 건드리지 않고 PM disposition만 추가했으며 원래 marker는 보존된다.
     assert source.read_text(encoding="utf-8").count("OUTSIDE_MARKER_MUST_STAY") == 1
 
 
@@ -526,6 +645,77 @@ def test_marker_absent_from_prompt_present_in_readme(tmp_path):
     assert _MARKER not in prompt.read_text(encoding="utf-8"), (
         "프롬프트에 marker 가 있음 — reply marker 단언이 에코로 vacuous 통과 가능(false-green 가드 무력)."
     )
+
+
+def test_cross_growth_fixture_pins_fixed_pipeline_and_parallel_full_command(tmp_path):
+    """세 cross route가 공유하는 fixture는 developer 02/04와 exact stage-exit 명령을 고정한다."""
+    assert [role for role, _sentinel in _GROWTH_PIPELINE] == [
+        "architect", "developer", "code-reviewer", "developer",
+    ]
+    assert len({sentinel for _role, sentinel in _GROWTH_PIPELINE}) == 4
+    assert _CROSS_TEST_FILE.startswith("tests/") and _CROSS_TEST_FILE.endswith(".py")
+    assert _CROSS_TEST_COMMAND == (
+        "python3 -m pytest tests/test_live_cross_growth.py -q -n auto"
+    )
+    repo, _source = _seed_growth_repo(tmp_path, "T-9199")
+    conf_lines = (repo / ".project_manager" / "local.conf").read_text(
+        encoding="utf-8"
+    ).splitlines()
+    assert "runtime.py=python3" in conf_lines
+    assert "py=python3" not in conf_lines
+    assert f"test.cmd={_CROSS_FULL_COMMAND}" in conf_lines
+    route_source = inspect.getsource(_run_cross_growth_route)
+    assert 'resume_from=ticket if stage == 4 and role == "developer" else None' in route_source
+    assert "BEGIN EXACT ARCHITECT BODY" in route_source
+    assert "exact body equality" in route_source
+    assert "old skeleton follows the sentinel" in route_source
+    assert "exactly those two rows" in route_source
+    assert "targeted-command evidence only under" in route_source
+    assert "no third nonblank row" in route_source
+    assert "extract `## 회귀`" in route_source
+    assert "contains neither" in route_source
+
+
+def test_cross_stage2_regression_section_has_exact_boundary_and_negative_guard():
+    """02 developer sentinel/targeted 증거가 exact two-row 회귀 절에 흡수되지 않는다."""
+    route_source = inspect.getsource(_run_cross_growth_route)
+    stage2_source = route_source.split("elif stage == 2:", 1)[1].split(
+        "        else:", 1,
+    )[0]
+    section_order = (
+        "`## 변경 파일`, `## 신규 테스트`, `## 회귀`, `## DoD evidence`, `## 민감도`"
+    )
+
+    assert section_order in stage2_source
+    assert "extract `## 회귀` through the next" in stage2_source
+    assert "contains neither the targeted command nor the sentinel" in stage2_source
+    assert "targeted-command evidence only under `## DoD evidence`" in stage2_source
+    assert "whole body contains" in stage2_source and "exactly once" in stage2_source
+
+
+def test_delegate_forwards_resume_from_without_fresh(tmp_path, monkeypatch, capsys):
+    """final-fix 재주입은 ticket resume 결속만 쓰고 fresh 우회를 만들지 않는다."""
+    seen = []
+
+    class StubDelegate:
+        local_config = None
+
+        @staticmethod
+        def main(argv):
+            seen.append(argv)
+            return 0
+
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("final fix\n", encoding="utf-8")
+    rc, _reply, _err = _delegate(
+        StubDelegate(), monkeypatch, capsys, tmp_path, prompt, "opencode", "test-model",
+        "high", tmp_path / "raw", 30, role="developer", ticket="T-9199",
+        resume_from="T-9199",
+    )
+
+    assert rc == 0
+    assert seen[0][seen[0].index("--resume-from") + 1] == "T-9199"
+    assert "--fresh" not in seen[0]
 
 
 def test_release_markers_pinned():

@@ -834,94 +834,28 @@ def test_pm_verified_still_refuses_the_finding_zero_review_round(pd):
     assert "finding-zero 리뷰 라운드" in problem
 
 
-def test_rounds_resolve_into_records_current_binding_and_rejects_self(pd, capsys):
+def test_rounds_resolve_rejects_removed_into_without_mutating_ledger(pd, capsys):
     gate = "T-RESOLVE-001"
-    target = "T-RESOLVE-002"
     _consume(pd, gate, _reply(REJECT_REPLY), raw_ids=("reject-source",))
-    _seed_pm_ticket(pd, target)
+    before = pd._internal_round_ledger_path().read_bytes()
 
-    assert pd._cmd_rounds([
-        "resolve", "--gate", gate, "--into", gate,
-    ]) == 1
-    assert _entry(pd, gate).get("resolution") is None
-    assert "자기 자신" in capsys.readouterr().err
-
-    assert pd._cmd_rounds([
-        "resolve", "--gate", gate, "--into", target,
-    ]) == 0
-    declared = _entry(pd, gate)["resolution"]
-    assert declared["kind"] == pd._load_board().GATE_RESOLUTION_INTO
-    assert declared["ticket"] == target
-    assert declared["round_sequence"] == 1
-    assert declared["rounds"] == 1
-    assert declared["must_fix"] == 1
+    with pytest.raises(SystemExit):
+        pd._cmd_rounds(["resolve", "--gate", gate, "--into", "T-RESOLVE-002"])
+    assert pd._internal_round_ledger_path().read_bytes() == before
+    assert "--pm-verified" in capsys.readouterr().err
 
 
-def test_rounds_resolve_fixed_requires_later_changed_pass(pd, capsys):
+def test_rounds_resolve_rejects_removed_fixed_without_mutating_ledger(pd, capsys):
     gate = "T-FIXED-001"
-    rejected_evidence = "T-FIXED-002"
-    unchanged_evidence = "T-FIXED-003"
-    passed_evidence = "T-FIXED-004"
     _consume(
         pd, gate, _reply(REJECT_REPLY), raw_ids=("blocked",),
         diff_fingerprint=_DIFF_A,
     )
-    _consume(
-        pd, rejected_evidence, _reply(REJECT_REPLY), raw_ids=("still-rejected",),
-        diff_fingerprint=_DIFF_B,
-    )
-    _consume(
-        pd, unchanged_evidence, _reply(PASS_REPLY), raw_ids=("unchanged-pass",),
-        diff_fingerprint=_DIFF_A,
-    )
-    _consume(
-        pd, passed_evidence, _reply(PASS_REPLY), raw_ids=("changed-pass",),
-        diff_fingerprint=_DIFF_C,
-    )
-    ledger = json.loads(
-        pd._internal_round_ledger_path().read_text(encoding="utf-8")
-    )
-    coordinates = {
-        gate: ("2026-08-12T00:00:00+00:00", "2026-08-12T00:01:00+00:00", "a" * 40),
-        rejected_evidence: (
-            "2026-08-12T00:02:00+00:00", "2026-08-12T00:03:00+00:00", "b" * 40,
-        ),
-        unchanged_evidence: (
-            "2026-08-12T00:04:00+00:00", "2026-08-12T00:05:00+00:00", "c" * 40,
-        ),
-        passed_evidence: (
-            "2026-08-12T00:06:00+00:00", "2026-08-12T00:07:00+00:00", "d" * 40,
-        ),
-    }
-    for gate_id, (started_at, ts, target_rev) in coordinates.items():
-        ledger[gate_id]["rounds"][0].update({
-            "started_at": started_at,
-            "ts": ts,
-            "target_rev": target_rev,
-        })
-    pd._save_internal_round_ledger(ledger)
-
-    assert pd._cmd_rounds([
-        "resolve", "--gate", gate, "--fixed", rejected_evidence,
-    ]) == 1
-    assert _entry(pd, gate).get("resolution") is None
-    assert "통과가 아닙니다" in capsys.readouterr().err
-
-    assert pd._cmd_rounds([
-        "resolve", "--gate", gate, "--fixed", unchanged_evidence,
-    ]) == 1
-    assert _entry(pd, gate).get("resolution") is None
-    assert "같은 대상 diff fingerprint" in capsys.readouterr().err
-
-    assert pd._cmd_rounds([
-        "resolve", "--gate", gate, "--fixed", passed_evidence,
-    ]) == 0
-    declared = _entry(pd, gate)["resolution"]
-    assert declared["kind"] == pd._load_board().GATE_RESOLUTION_FIXED
-    assert declared["evidence_gate"] == passed_evidence
-    assert declared["round_sequence"] == 1
-    assert declared["blocked_diff_fingerprint"] == _DIFF_A
-    assert declared["evidence_diff_fingerprint"] == _DIFF_C
+    before = pd._internal_round_ledger_path().read_bytes()
+    with pytest.raises(SystemExit):
+        pd._cmd_rounds(["resolve", "--gate", gate, "--fixed", "T-FIXED-002"])
+    assert pd._internal_round_ledger_path().read_bytes() == before
+    assert "--pm-verified" in capsys.readouterr().err
 
 
 def test_internal_round_records_dirty_diff_fingerprint_next_to_target_rev(pd):
@@ -939,32 +873,18 @@ def test_internal_round_records_dirty_diff_fingerprint_next_to_target_rev(pd):
     assert entry["rounds"][0]["diff_fingerprint"] == _DIFF_B
 
 
-def test_internal_fixed_rejects_unfingerprinted_old_rounds_for_new_declaration(
-    pd, capsys,
-):
+def test_removed_fixed_does_not_gain_a_legacy_fingerprint_exception(pd, capsys):
     gate, evidence = "T-OLD-001", "T-OLD-002"
     _consume(pd, gate, _reply(REJECT_REPLY), diff_fingerprint=None)
     _consume(pd, evidence, _reply(PASS_REPLY), diff_fingerprint=None)
-    ledger = json.loads(pd._internal_round_ledger_path().read_text(encoding="utf-8"))
-    ledger[gate]["rounds"][0].update({
-        "started_at": "2026-08-12T00:00:00+00:00",
-        "ts": "2026-08-12T00:01:00+00:00",
-    })
-    ledger[evidence]["rounds"][0].update({
-        "started_at": "2026-08-12T00:02:00+00:00",
-        "ts": "2026-08-12T00:03:00+00:00",
-    })
-    pd._save_internal_round_ledger(ledger)
-
-    assert pd._cmd_rounds([
-        "resolve", "--gate", gate, "--fixed", evidence,
-    ]) == 1
-    assert _entry(pd, gate).get("resolution") is None
-    error = capsys.readouterr().err
-    assert "diff fingerprint" in error and "확인할 수 없습니다" in error
+    before = pd._internal_round_ledger_path().read_bytes()
+    with pytest.raises(SystemExit):
+        pd._cmd_rounds(["resolve", "--gate", gate, "--fixed", evidence])
+    assert pd._internal_round_ledger_path().read_bytes() == before
+    assert "--pm-verified" in capsys.readouterr().err
 
 
-def test_legacy_unfingerprinted_fixed_resolution_is_distinguished_and_preserved(pd):
+def test_legacy_unfingerprinted_fixed_resolution_is_unrecognized(pd):
     board = pd._load_board()
     gate = {
         "rounds": [{
@@ -973,26 +893,15 @@ def test_legacy_unfingerprinted_fixed_resolution_is_distinguished_and_preserved(
             "ts": "2026-08-12T00:01:00+00:00",
         }],
         "resolution": {
-            "kind": board.GATE_RESOLUTION_FIXED,
+            "kind": "fixed",
             "evidence_gate": "T-LEGACY-PASS",
             "round_sequence": 1,
             "rounds": 1,
         },
     }
-    evidence = {"rounds": [{
-        "sequence": 1, "verdict": 0, "must_fix": 0,
-        "started_at": "2026-08-12T00:02:00+00:00",
-        "ts": "2026-08-12T00:03:00+00:00",
-    }]}
-    declared = board.gate_resolution(gate)
-
-    assert board.internal_fixed_proof_status(declared) == "legacy-unverifiable"
-    assert board.internal_gate_evidence_problem(gate, evidence) is not None
-    assert board._gate_disposition_problem(
-        "T-LEGACY-BLOCK", gate, {"T-LEGACY-PASS": evidence}, [],
-        evidence_problem=board.internal_gate_evidence_problem,
-        allow_legacy_internal_fixed=True,
-    ) is None
+    assert board.gate_resolution(gate) is None
+    problem = board._gate_disposition_problem("T-LEGACY-BLOCK", gate)
+    assert problem is not None and "처분 선언 없음" in problem
 
 
 def test_internal_diff_fingerprint_changes_with_dirty_content_and_fails_closed(pd, tmp_path):
@@ -1201,7 +1110,7 @@ def test_one_spawned_attempt_consumes_even_when_terminal_attempt_did_not_spawn(p
 
 
 def test_cap_reached_gate_gets_no_further_round_of_any_kind(pd, capsys):
-    """상한에 걸린 게이트의 출구는 재설계 하나다 — 확인 전용 라운드로 한 번 더 여는 창이 없다."""
+    """상한에 걸린 게이트는 추가 라운드 없이 정지·보고한다."""
     gate = "T-0654"
     for _ in range(3):
         budget, _ = _consume(pd, gate, _reply(REJECT_REPLY))
@@ -1210,25 +1119,26 @@ def test_cap_reached_gate_gets_no_further_round_of_any_kind(pd, capsys):
     blocked, _ = _consume(pd, gate, _reply(REJECT_REPLY))
     assert blocked.refused_rc == 1
     refusal = capsys.readouterr().err
-    assert "재설계" in refusal
-    assert "rounds recalculate --gate T-0654" in refusal
+    assert "현재 티켓을 정지해 사용자에게 보고" in refusal
+    assert "라운드를 더" not in refusal
     assert "--confirm-fix" not in refusal
 
     again, _ = _consume(pd, gate, _reply(PASS_REPLY))
     entry = _entry(pd, gate)
     assert again.refused_rc == 1
     assert entry["count"] == 3                 # 거부는 예약하지 않는다
-    assert entry["confirm_fix"] == 0           # 이 채널에는 쿼터를 쓰는 경로가 없다
+    assert "confirm_fix" not in entry          # 폐지 필드는 정규화에서 되살아나지 않는다
 
 
-def test_resolve_offers_three_dispositions_and_no_cap_spent_pm_path(pd, capsys):
-    """처분은 후속 티켓·근거 게이트·기계 확인 셋뿐이다 — 상한 소진으로 여는 PM 직접 해소는 없다."""
+def test_resolve_offers_only_pm_verified(pd, capsys):
+    """내부 처분 표면은 기계 확인 하나뿐이다."""
     with pytest.raises(SystemExit) as exc:
         pd._cmd_rounds(["resolve", "--help"])
 
     assert exc.value.code == 0
     out = "".join(capsys.readouterr().out.split())
-    assert "--into" in out and "--fixed" in out and "--pm-verified" in out
+    assert "--pm-verified" in out
+    assert "--into" not in out and "--fixed" not in out
     assert "--pm-fixed" not in out
 
 

@@ -182,7 +182,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
-ENGINE_REV = "v1.7.9"
+ENGINE_REV = "v1.7.10"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -1471,8 +1471,8 @@ $branch
                     blocked)
                         echo "[pm 라이브 게이트] 보호 브랜치 '$branch' push 거부 — 미해소 must-fix 잔여." >&2
                         echo "  PM_SKIP_LIVE_GATE 는 라이브 축 우회이고 이 차단은 리뷰 잔여 축이다 — 우회 대상이 아니다." >&2
-                        echo "  게이트마다 처분을 선언한 뒤 다시 기록하라:" >&2
-                        echo "    external_review.py --resolve-gate <게이트> --into <T-NNNN> | --fixed <근거 게이트>" >&2
+                        echo "  현재 티켓 fix의 기계 확인 증거로 게이트마다 처분을 선언한 뒤 다시 기록하라:" >&2
+                        echo "    external_review.py --resolve-gate <게이트> --pm-verified" >&2
                         echo "    board.py livegate record" >&2
                         exit 1
                         ;;

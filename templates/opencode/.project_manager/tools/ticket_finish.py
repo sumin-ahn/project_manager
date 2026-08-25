@@ -219,7 +219,7 @@ TOOLS_DIR = REPO / ".project_manager" / "tools"  # pm_handoff 동적 로드 앵�
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
-ENGINE_REV = "v1.7.9"
+ENGINE_REV = "v1.7.10"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -597,7 +597,7 @@ def _resolve_per_repo_test_cmd() -> str | None:
       1. areas.md 활성 **prefix** 행의 `test_cmd`   (multi-repo 네임스페이스 형상)
       2. areas.md 활성 **repo** 행의 `test_cmd`     (prefix 칼럼이 빈 무prefix 형상)
       3. `local.conf` 의 `test.cmd`                 (per-clone 명시 설정)
-      4. None → 호출부가 기본 `pytest tests/ -q` venv argv (도그푸딩 불변)
+      4. None → 호출부가 병렬 기본 `pytest tests/ -q -n auto` venv argv
 
     **체인 자체는 pm_handoff `_resolve_gate_cmd` 가 소유한다** — 사본을 두지 않고 동적 로드해
     위임한다(`_regression_cwd` 위임과 같은 방향·DRY). 해소 함수가 이 도구에만 있고 pm_handoff
@@ -641,7 +641,7 @@ def _resolve_per_repo_test_cmd() -> str | None:
 _PYTEST_GATE_TOKEN = "pytest"
 
 # 해소 실패 시 실제로 실행하는 기본 argv 의 표시용 라벨 (dry-run 안내 문구).
-_DEFAULT_GATE_LABEL = "pytest tests/ -q"
+_DEFAULT_GATE_LABEL = "pytest tests/ -q -n auto"
 
 
 def _gate_is_pytest(gate_cmd: str | None) -> bool:
@@ -2024,7 +2024,7 @@ class TicketFinisher:
           - **해소 성공** — `_resolve_per_repo_test_cmd()`(areas prefix 행 > areas repo 행 >
             local.conf)가 준 문자열을 shell 로 실행(board.py 회귀와 동형·비-Python repo 수용).
           - **프레임워크 자기 회귀** — 해소 실패면 현행 그대로
-            `[venv_python, -m, pytest, tests/, -q]` venv argv(도그푸딩 불변·하위호환).
+            `[venv_python, -m, pytest, tests/, -q, -n, auto]` venv argv.
 
         cwd 는 런타임 해소— 명시 주입(`regression_cwd` 인자)이 있으면 그 경로,
         없으면 `_regression_cwd()` 가 self-host 단일 슬롯을 자동해소(홈 cwd 에서도 활성
@@ -2044,9 +2044,9 @@ class TicketFinisher:
                 cwd=cwd,
             )
         else:
-            # 프레임워크 자기 회귀 — 현행 venv pytest argv 보존(불변).
+            # 프레임워크 자기 회귀 — xdist 가용 환경의 병렬 기본 argv.
             result = subprocess.run(
-                [str(self._venv_python), "-m", "pytest", "tests/", "-q"],
+                [str(self._venv_python), "-m", "pytest", "tests/", "-q", "-n", "auto"],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -3788,7 +3788,7 @@ class TicketFinisher:
 
 # ── close 파이프라인 (묶음 종결) ───────────────────────────────────────────
 #
-# 종결은 순서가 있는 여덟 단계다: 기계 확인 → 리뷰 게이트 처분 → 티켓별 완료 기록 → 슬롯
+# 종결은 순서가 있는 여덟 단계다: final-fix 확인 입력 preflight → 리뷰 게이트 처분(확인 생성) → 티켓별 완료 기록 → 슬롯
 # 커밋 → 통합 브랜치로 재배치 → 머지 → 슬롯 반납 → board·포인터 커밋. 사람이 순서를 규칙으로
 # 지키던 자리를 한 커맨드가 가져간다 — 순서가 판정 결과를 바꾸던 축(사설 참조·측정 폭)은 이미
 # 판정 기준 교체로 닫혔으므로, 남은 것은 "빠뜨리지 않는" 축이다(반납 누락·포인터 커밋 누락이
@@ -3835,8 +3835,8 @@ class ClusterCloser:
     """
 
     STEPS: tuple[tuple[str, str], ...] = (
-        ("confirm", "기계 확인 (확인 존재·accepted 잔여 0)"),
-        ("resolve", "리뷰 게이트 처분"),
+        ("confirm", "final-fix 확인 입력 preflight"),
+        ("resolve", "기계 확인 생성·리뷰 게이트 처분"),
         ("record", "티켓별 완료 기록"),
         ("commit", "슬롯 커밋"),
         ("rebase", "통합 브랜치로 재배치"),
@@ -4149,29 +4149,30 @@ class ClusterCloser:
     # ── 단계 ──────────────────────────────────────────────────────────
 
     def _step_confirm(self) -> str | None:
-        """기계 확인 존재·그 채널 accepted 잔여 0 — 판정 소유자는 board(사본 0)."""
+        """resolve가 소비할 final-fix verify 입력을 read-only 검증한다(board 판정 소유)."""
         board = self._board
-        problem_fn = getattr(board, "_pm_verified_evidence_problem", None) if board else None
-        channel = getattr(board, "GATE_CHANNEL_INTERNAL", None) if board else None
-        if problem_fn is None or channel is None:
-            print("  ⚠ 기계 확인 판정 seam 부재 — 이 단계는 판정 불능이다(board 사본 확인).",
-                  file=sys.stderr)
-            return None
         pending = self._pending_gates()
         if not pending:
-            print("  처분할 리뷰 잔여 없음 — 확인 대상 0")
+            print("  처분할 리뷰 잔여 없음 — preflight 대상 0")
             return None
+        problem_fn = (
+            getattr(board, "_pm_verified_resolution_input_problem", None)
+            if board else None
+        )
+        channel = getattr(board, "GATE_CHANNEL_INTERNAL", None) if board else None
+        if problem_fn is None or channel is None:
+            return "final-fix 확인 입력 preflight seam 부재 — board 사본을 확인하세요"
         ledger = self._gate_ledger()
         problems: list[str] = []
         for tid in pending:
             problem = problem_fn(tid, channel=channel, entry=ledger.get(tid) or {})
             if problem is None:
-                print(f"  ✓ {tid} 기계 확인 증거 있음 · accepted 잔여 0")
+                print(f"  ✓ {tid} final-fix 확인 입력 complete · resolve 실행 가능")
             else:
                 problems.append(f"  ✗ {tid}: {problem}")
         if problems:
             return "\n".join([
-                "기계 확인 미충족 — 종결 전에 확인을 채운다(아직 아무 부작용도 내지 않았다):",
+                "final-fix 확인 입력 미충족 — resolve 전 preflight에서 정지했습니다:",
                 *problems,
             ])
         return None
@@ -4195,10 +4196,16 @@ class ClusterCloser:
         return None
 
     def _resolve_argv_sets(self, pending: Sequence[str]) -> list[list[str]]:
-        """이번 처분이 쓸 argv 목록 — 묶음 단위 표면 유무로만 갈린다."""
+        """이번 처분이 쓸 argv 목록 — 대상과 이미 해소한 코드 트리 정체성을 함께 넘긴다."""
+        identity = list(self._board_identity_args)
         if self._delegate_supports_cluster():
-            return [["rounds", "resolve", "--cluster", self._cluster, "--pm-verified"]]
-        return [["rounds", "resolve", "--gate", tid, "--pm-verified"] for tid in pending]
+            return [[
+                "rounds", "resolve", "--cluster", self._cluster, "--pm-verified", *identity,
+            ]]
+        return [
+            ["rounds", "resolve", "--gate", tid, "--pm-verified", *identity]
+            for tid in pending
+        ]
 
     def _delegate_supports_cluster(self) -> bool:
         """처분 표면이 묶음 인자를 받는가 — 그 CLI 자신에게 물어본다(사본 판정 없음)."""

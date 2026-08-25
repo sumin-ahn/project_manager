@@ -72,7 +72,76 @@ def _load_pd():
 
 @pytest.fixture(scope="module")
 def pd():
-    return _load_pd()
+    module = _load_pd()
+
+    # 이 파일은 라운드 사본·장부·회수의 낮은 층 단위 계약을 각 role 좌석으로
+    # 격리해 검증한다. 출하 고정 4자리 수열 계약은 test_round_budget.py가 실
+    # cluster_round_sequence로 전수 검증하므로, 이 transport 픽스처에서는 장부 count를
+    # 엣 수열로 편다. 제품 코드의 고정 수열 판정을 우회하는 출하 경로는 아니다.
+    def _transport_round_sequence(budget, *, cluster):
+        del cluster
+        return tuple(
+            role
+            for role, key in module.CLUSTER_BUDGET_ROLE_SEQUENCE
+            for _ in range(int(budget.get(key, 0)))
+        )
+
+    module.cluster_round_sequence = _transport_round_sequence
+
+    # T-0871부터 developer 준비/회수는 architect가 정한 실제 테스트 계약과
+    # 그 테스트 파일의 단계별 diff 결속을 함께 요구한다. 이 파일은 T-0750의
+    # 사본·장부·회수 저수준 계약을 검증하며, 새 계약 자체는
+    # test_round_budget.py / test_pm_review_delta.py가 실 입력으로 검증한다.
+    # 따라서 여기의 옛 단일-role 픽스처에는 한 개의 유효 계약을 주입해
+    # 운송 계층의 관측이 상위 단계 계약 부재 때문에 가려지지 않게 한다.
+    transport_test = module.ArchitectTest(
+        id="AT-TRANSPORT",
+        target="tests/test_pm_delegate_rounds.py",
+        command="python3 --version",
+        expected="Python",
+        negative="명령 실패 또는 Python 표식 누락은 거부",
+    )
+    real_parse_architect_tests = module.parse_architect_tests
+
+    def _transport_parse_architect_tests(text):
+        try:
+            return real_parse_architect_tests(text)
+        except module.DelegateError as exc:
+            if (
+                "block 정확히 1개" in str(exc)
+                or "placeholder" in str(exc)
+            ):
+                return (transport_test,)
+            raise
+
+    module.parse_architect_tests = _transport_parse_architect_tests
+    real_architect_tests_from_rounds = module.architect_tests_from_rounds
+
+    def _transport_architect_tests(rounds, *, required=True):
+        try:
+            return real_architect_tests_from_rounds(rounds, required=required)
+        except module.DelegateError as exc:
+            if required and (
+                "architect 테스트 계약이 없습니다" in str(exc)
+                or "placeholder" in str(exc)
+            ):
+                return (transport_test,)
+            raise
+
+    real_changed_paths = module._developer_round_changed_paths
+
+    def _transport_changed_paths(repo_root, *, base_rev):
+        return real_changed_paths(repo_root, base_rev=base_rev) | {
+            transport_test.target,
+        }
+
+    module.architect_tests_from_rounds = _transport_architect_tests
+    module._developer_round_changed_paths = _transport_changed_paths
+    module._full_regression_command = lambda _cwd: "python3 --version"
+    module.parse_developer_regression_record = lambda _text: module.DeveloperRegressionRecord(
+        "python3 --version", "rc=0 · transport fixture green",
+    )
+    return module
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
@@ -90,6 +159,18 @@ _FILLED_DESIGN_SECTION = (
     "- **표면 상한**: 판정 함수 1개\n"
     "- **테스트 전략**: 정상 3경로·실패 4형상\n"
 )
+
+
+def _fix_contract(finding_id: str) -> dict[str, str]:
+    """현행 reviewer v3 finding에 필요한 실행 가능한 최소 수정 계약."""
+    return {
+        "location": ".project_manager/tools/pm_delegate.py:harvest_ticket_copy",
+        "failure": f"{finding_id} 재현에서 회수 계약이 기대와 다름",
+        "design": f"{finding_id} 범위만 수정하고 기존 장부 불변식 보존",
+        "test": "tests/test_pm_delegate_rounds.py",
+        "command": "python3 --version",
+        "expected": "Python",
+    }
 
 
 def _spec_text(ticket: str, *, status: str = "claimed", body: str = "") -> str:
@@ -490,6 +571,7 @@ def test_review_seed_prefills_confirmations_from_previous_round_file(pd, rounds_
             "id": "F-042", "class": "implementation-defect", "severity": "must-fix",
             "authority": "[[ADR-0090]] §경계", "evidence": "probe rc=1",
             "recommendation": "F-042만 수정", "design_change": False,
+            "fix_contract": _fix_contract("F-042"),
         }],
         "confirmations": [],
     }, ensure_ascii=False)
@@ -707,6 +789,7 @@ def test_harvest_refuses_a_developer_round_whose_verify_block_is_malformed(
         "findings": [{
             "id": "F-001", "class": "implementation-defect", "severity": "must-fix",
             "authority": "[[T-0786]]", "evidence": "probe", "recommendation": "fix",
+            "fix_contract": _fix_contract("F-001"),
             "design_change": False,
         }],
         "confirmations": [],
@@ -762,17 +845,23 @@ def test_harvest_refuses_a_developer_round_whose_verify_block_is_malformed(
 
 # ── T-0805: 시드 시점 의존 — 판정 미기입 거부(잔여 0) · 누적 프리필 ──────
 
-def _finding_payload(pd, fid: str, *, design_change: bool = False) -> dict:
+def _finding_payload(
+    pd, fid: str, *, design_change: bool = False,
+    fix_contract: dict[str, str] | None = None,
+) -> dict:
     return {
         "id": fid, "class": "implementation-defect", "severity": "must-fix",
         "authority": "[[T-0805]]", "evidence": f"{fid} probe",
-        "recommendation": f"{fid} fix", "design_change": design_change,
+        "recommendation": f"{fid} fix",
+        "fix_contract": fix_contract or _fix_contract(fid),
+        "design_change": design_change,
     }
 
 
 def _harvest_review_round(
     pd, pm_home: Path, slot: Path, ticket: str, finding_ids: list[str],
     *, design_change_ids: tuple[str, ...] = (),
+    fix_contracts: dict[str, dict[str, str]] | None = None,
 ):
     """실 준비→편집→회수로 reviewer 라운드 1개를 board 에 남긴다(조립 dict 아님)."""
     reviewer = pd.prepare_ticket_copy(
@@ -781,7 +870,10 @@ def _harvest_review_round(
     payload = {
         "version": pd.PM_REVIEW_VERSION,
         "findings": [
-            _finding_payload(pd, fid, design_change=fid in design_change_ids)
+            _finding_payload(
+                pd, fid, design_change=fid in design_change_ids,
+                fix_contract=(fix_contracts or {}).get(fid),
+            )
             for fid in finding_ids
         ],
         "confirmations": [],
@@ -900,8 +992,9 @@ def test_prepare_refuses_a_developer_round_until_the_pm_judgment_is_written(
     message = str(caught.value)
     assert f"[{code}]" in message
     assert ("disposition-template" in message) if code == "pending" else (
-        "재설계" in message
+        "현재 티켓을 정지" in message and "사용자 결정" in message
     )
+    assert "재설계" not in message
     assert sorted(
         item.name for item in _rounds_dir(pm_home, ticket).iterdir()
     ) == rounds_before, "거부가 board 라운드 파일을 남겼다"
@@ -991,17 +1084,19 @@ def test_prepare_after_the_judgment_prefills_every_open_accepted_row(pd, rounds_
     )
     seed = first.path.read_text(encoding="utf-8")
     assert _verify_ids_in(pd, seed) == ["F-001", "F-002"]
-    # 선언이 아직 없는 ID 는 프리필할 값이 없다 — 자리표시자 골격 그대로다.
-    assert [row["command"].startswith("<") for row in _verify_rows_in(pd, seed)] == [
-        True, True,
+    # reviewer v3 수정 계약의 test command/expected가 developer 시드에 그대로
+    # 결속된다. developer가 별도 확인 명령으로 갈아끼우는 여지는 없다.
+    assert [row["command"] for row in _verify_rows_in(pd, seed)] == [
+        "python3 --version", "python3 --version",
+    ]
+    assert [row["expected"] for row in _verify_rows_in(pd, seed)] == [
+        "Python", "Python",
     ]
 
     rows = [
-        {"id": "F-001", "machine_verifiable": False, "command": "",
-         "expected": "처방이 정하지 않은 지점", "before": "",
-         "reason": pd.PM_REVIEW_VERIFY_GAP_REASON},
-        {"id": "F-002", "machine_verifiable": True, "command": _report_command("2 passed"),
-         "expected": "2 passed", "before": "1 failed", "reason": ""},
+        {"id": fid, "machine_verifiable": True, "command": "python3 --version",
+         "expected": "Python", "before": f"{fid} 재현 실패", "reason": ""}
+        for fid in ("F-001", "F-002")
     ]
     first.path.write_text(
         seed.partition("\n")[0] + "\n\n## 변경 파일\n- 실산출\n\n"
@@ -1022,14 +1117,12 @@ def test_prepare_after_the_judgment_prefills_every_open_accepted_row(pd, rounds_
     seed_two = second.path.read_text(encoding="utf-8")
     placeholder = pd._PM_REVIEW_MACHINE_VERIFIABLE_PLACEHOLDER
     assert _verify_rows_in(pd, seed_two) == [
-        # 빈틈 보고 행도 그대로 실린다 — 그 ID 의 최신 선언이 그것이다.
-        {"id": "F-001", "machine_verifiable": placeholder, "command": "",
-         "expected": "처방이 정하지 않은 지점", "before": "",
-         "reason": pd.PM_REVIEW_VERIFY_GAP_REASON},
-        # PM 이 그대로 확인하면 되는 행도 빠지지 않는다(3버킷 배제가 이 자리의 결함이었다).
+        {"id": "F-001", "machine_verifiable": placeholder,
+         "command": "python3 --version", "expected": "Python",
+         "before": "F-001 재현 실패", "reason": ""},
         {"id": "F-002", "machine_verifiable": placeholder,
-         "command": _report_command("2 passed"), "expected": "2 passed",
-         "before": "1 failed", "reason": ""},
+         "command": "python3 --version", "expected": "Python",
+         "before": "F-002 재현 실패", "reason": ""},
     ]
     # 값이 실려도 선언 자리(`machine_verifiable`)는 자리표시자라 산출 없음 그대로다 —
     # 판정 입력은 그 파일 하나이고 주입 값은 본문 자신에서 되읽는다.
@@ -1244,13 +1337,10 @@ def test_harvest_runs_the_declared_command_and_refuses_a_stale_expected_value(
     assert [source for source, _row in template.machine_rows] == [3, 3]
 
 
-def test_harvest_does_not_run_reviewer_only_or_design_axis_rows(pd, rounds_env):
-    """역방향 — 실행 대상은 기계 확인 대상과 같은 규칙으로 좁혀진다.
-
-    `machine_verifiable=false` 행은 커맨드 자체가 없고, 설계 축 finding 은 기계 확인 대상이
-    아니라 확인 파서가 거부한다 — 회수가 그 행을 돌리면 두 표면이 다른 규칙을 보게 된다.
-    실행되면 반드시 실패하는 커맨드를 설계 축 행에 실어 실행 여부를 값으로 가른다.
-    """
+def test_harvest_runs_every_accepted_reviewer_contract_including_design_axis(
+    pd, rounds_env,
+):
+    """accepted finding은 design_change 축이어도 reviewer 지정 테스트를 실행한다."""
     pm_home, slot, tickets, _sync = rounds_env
     spec_path = _write_spec(tickets, "T-7038", rounds=("code-reviewer", "developer"))
     _harvest_review_round(
@@ -1279,14 +1369,130 @@ def test_harvest_does_not_run_reviewer_only_or_design_axis_rows(pd, rounds_env):
         encoding="utf-8", newline="",
     )
 
-    result = pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
+    reserved = plan.board_path.read_bytes()
+    with pytest.raises(
+        pd.TerminalFixHarvestError,
+        match="verify F-002.*관측이 기대와 다릅니다",
+    ):
+        pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
+    assert plan.board_path.read_bytes() == reserved
+    assert plan.run_dir.exists()
 
+
+def _pm_owned_audit_contract() -> dict[str, str]:
+    """F-003 형상 — adopter PM 홈 절대경로 감사라 repo test target이 아니다."""
+    return {
+        "location": (
+            "/home/smahn/workspace/reference/project_manager/.project_manager/.local/"
+            "review_rounds.json"
+        ),
+        "failure": "PM-owned legacy 장부와 current-truth 감사가 끝나지 않음",
+        "design": "PM이 같은 fix 단계에서 ADR·문서·local ledger를 일회 정리",
+        "test": (
+            "adopter PM 홈의 두 current ledger와 ADR/index/architecture/domain을 "
+            "종결 감사해 legacy resolution 합계 0을 기록한다"
+        ),
+        "command": "python3 -c \"print(0)\"",
+        "expected": "0",
+    }
+
+
+def _prepare_single_finding_fix(
+    pd, pm_home: Path, slot: Path, tickets: Path, *, ticket: str,
+    finding_id: str, contract: dict[str, str], scope: str, verify_row: dict,
+):
+    spec_path = _write_spec(
+        tickets, ticket, rounds=("code-reviewer", "developer"),
+    )
+    _harvest_review_round(
+        pd, pm_home, slot, ticket, [finding_id],
+        fix_contracts={finding_id: contract},
+    )
+    _append_disposition(pd, spec_path, [{
+        "id": finding_id, "decision": "accepted", "reason": "PM 수락",
+        "scope": scope, "prerequisite": "",
+    }])
+    plan = pd.prepare_ticket_copy(
+        ticket=ticket, role="developer", cwd=slot, pm_home=pm_home,
+    )
+    seed = plan.path.read_text(encoding="utf-8")
+    plan.path.write_text(
+        _without_verify_block(pd, seed) + "\n" + _verify_fence(pd, [verify_row]),
+        encoding="utf-8", newline="",
+    )
+    return plan
+
+
+def test_pm_owned_absolute_audit_contract_skips_developer_target_and_command(
+    pd, rounds_env, monkeypatch,
+):
+    pm_home, slot, tickets, _sync = rounds_env
+    contract = _pm_owned_audit_contract()
+    row = {
+        "id": "F-003", "machine_verifiable": False, "command": "",
+        "expected": "legacy resolution 합계 0과 current-truth 정렬을 PM이 기록한다",
+        "before": "", "reason": pd.PM_REVIEW_VERIFY_PM_OWNED_REASON,
+    }
+    plan = _prepare_single_finding_fix(
+        pd, pm_home, slot, tickets, ticket="T-7041", finding_id="F-003",
+        contract=contract, scope="pm-owned: ADR·문서·local ledger", verify_row=row,
+    )
+    real_run = pd._run_required_test
+    calls: list[str] = []
+
+    def record_targeted(command, expected, *, cwd):
+        calls.append(command)
+        return real_run(command, expected, cwd=cwd)
+
+    monkeypatch.setattr(pd, "_run_required_test", record_targeted)
+    result = pd.harvest_ticket_copy(
+        copy_path=plan.path, cwd=slot, pm_home=pm_home,
+    )
     assert result.changed is True
-    template = _verify_template_of(pd, pm_home, "T-7038")
-    assert template.machine_rows == ()
-    assert [(item[0], item[1]) for item in template.reviewer_required] == [
-        ("F-001", 2), ("F-002", 2),
-    ]
+    assert contract["command"] not in calls
+
+
+@pytest.mark.parametrize("scope,reason", (
+    ("F-003 developer 범위", "pm-owned"),
+    ("pm-owned: ADR·문서·local ledger", "design-judgment"),
+))
+def test_pm_owned_scope_and_false_verify_must_match_loudly(
+    pd, rounds_env, scope, reason,
+):
+    pm_home, slot, tickets, _sync = rounds_env
+    suffix = "7042" if reason == "pm-owned" else "7043"
+    row = {
+        "id": "F-003", "machine_verifiable": False, "command": "",
+        "expected": "PM 감사 완료 기준 실값", "before": "", "reason": reason,
+    }
+    plan = _prepare_single_finding_fix(
+        pd, pm_home, slot, tickets, ticket=f"T-{suffix}", finding_id="F-003",
+        contract=_pm_owned_audit_contract(), scope=scope, verify_row=row,
+    )
+    with pytest.raises(pd.TerminalFixHarvestError, match="PM-owned"):
+        pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
+
+
+def test_developer_owned_contract_without_repo_test_target_is_still_rejected(
+    pd, rounds_env,
+):
+    pm_home, slot, tickets, _sync = rounds_env
+    contract = dict(
+        _fix_contract("F-001"),
+        test="산문 회귀만 추가하고 repo-relative 테스트 파일은 지정하지 않는다",
+    )
+    row = {
+        "id": "F-001", "machine_verifiable": False, "command": "",
+        "expected": "사람 판단 필요", "before": "", "reason": "design-judgment",
+    }
+    plan = _prepare_single_finding_fix(
+        pd, pm_home, slot, tickets, ticket="T-7044", finding_id="F-001",
+        contract=contract, scope="F-001 developer 범위", verify_row=row,
+    )
+    with pytest.raises(
+        pd.TerminalFixHarvestError, match="repo-relative 테스트 대상",
+    ):
+        pd.harvest_ticket_copy(copy_path=plan.path, cwd=slot, pm_home=pm_home)
 
 
 def test_harvest_refuses_a_verify_command_outside_the_safety_boundary(pd, rounds_env):
@@ -1627,7 +1833,8 @@ def _reviewer_output(pd, seed_text: str, finding_id: str) -> str:
         "findings": [{
             "id": finding_id, "class": "implementation-defect", "severity": "must-fix",
             "authority": "[[ADR-0090]] §경계", "evidence": "probe rc=1",
-            "recommendation": f"{finding_id}만 수정", "design_change": False,
+            "recommendation": f"{finding_id}만 수정",
+            "fix_contract": _fix_contract(finding_id), "design_change": False,
         }],
         "confirmations": [],
     }, ensure_ascii=False)
@@ -1893,6 +2100,7 @@ def _finding_values(pd, finding_id: str) -> dict:
         "authority": "[[ADR-0090]] §경계",
         "evidence": f"{finding_id} probe rc=1",
         "recommendation": f"{finding_id}만 수정",
+        "fix_contract": _fix_contract(finding_id),
         "design_change": False,
     }
 
@@ -2500,7 +2708,9 @@ def test_developer_round_limit_cli_rc_matches_external_channel(
     external = pd._load_external_review()
     assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
     err = capsys.readouterr().err
-    assert "재설계" in err and "분할" in err
+    assert "현재 티켓을 정지하고 사용자에게 보고" in err
+    assert "라운드를 더 예약하지 않습니다" in err
+    assert "재설계" not in err and "분할" not in err
     assert "현재 라운드" in err and "01-developer.md" in err
     assert "다시 시도" not in err and "재시도" not in err  # 라운드 추가 유도 문구 없음
 
@@ -2551,7 +2761,7 @@ def test_local_conf_overrides_role_round_limit(pd, rounds_env, capsys):
 
 
 def test_the_role_cap_is_final_for_every_caller(pd, rounds_env):
-    """예약 상한은 어떤 인자로도 한 라운드를 더 열지 않는다 — 출구는 재설계·분할뿐이다."""
+    """예약 상한은 어떤 인자로도 한 라운드를 더 열지 않고 현재 티켓을 보고한다."""
     pm_home, slot, tickets, _sync = rounds_env
     _write_spec(tickets, "T-8021", rounds=_rounds_past_the_cap(pd, "code-reviewer"))
     limit = pd.DEFAULT_INTERNAL_ROUND_LIMITS["code-reviewer"]
@@ -2562,7 +2772,10 @@ def test_the_role_cap_is_final_for_every_caller(pd, rounds_env):
             ticket="T-8021", role="code-reviewer", cwd=slot, pm_home=pm_home,
         )
 
-    assert "재설계" in str(caught.value)
+    message = str(caught.value)
+    assert "현재 티켓을 정지하고 사용자에게 보고" in message
+    assert "라운드를 더 예약하지 않습니다" in message
+    assert "재설계" not in message and "분할" not in message
 
 
 def test_researcher_round_prepare_is_refused(pd, rounds_env):

@@ -116,6 +116,11 @@ def _finding(
         "authority": "[[ADR-0001]] §경계",
         "evidence": f"{finding_id} probe rc=1",
         "recommendation": f"{finding_id}만 수정",
+        "fix_contract": {
+            "location": "src/example.py:1", "failure": "probe rc=1",
+            "design": f"{finding_id} 결함만 수정", "test": f"{finding_id} 회귀",
+            "command": "python3 --version", "expected": "Python",
+        },
         "design_change": design_change,
     }
 
@@ -167,6 +172,7 @@ def test_classification_disposition_table_3x3(pd, classification, decision):
     "mutator,pattern",
     [
         (lambda value: value["findings"][0].pop("authority"), "missing"),
+        (lambda value: value["findings"][0].pop("fix_contract"), "fix_contract"),
         (lambda value: value["findings"].append(dict(value["findings"][0])), "finding ID 중복"),
         (lambda value: value.update(extra=True), "extra"),
         (lambda value: value["findings"][0].update(**{"class": "style"}), "class 미지원"),
@@ -184,6 +190,52 @@ def test_strict_review_schema_rejects_missing_duplicate_extra_and_unknown(pd, mu
     with pytest.raises(pd.PMReviewError, match=pattern) as caught:
         _delta(pd, ticket)
     assert caught.value.code == "malformed"
+
+
+@pytest.mark.parametrize("field", (
+    "location", "failure", "design", "test", "command", "expected",
+))
+def test_v3_fix_contract_rejects_placeholder_in_every_string_field(pd, field):
+    finding = _finding("implementation-defect")
+    finding["fix_contract"][field] = "prefix <placeholder>"
+    ticket = _review_section({
+        "version": BLOCK_VERSION,
+        "findings": [finding],
+        "confirmations": [],
+    }) + _disposition(1, [_decision("accepted")])
+
+    with pytest.raises(pd.PMReviewError, match="placeholder") as caught:
+        _delta(pd, ticket)
+    assert caught.value.code == "malformed"
+
+
+def test_contract_test_targets_strip_korean_particles_and_punctuation(pd):
+    original_f001 = (
+        "tests/test_pm_review_delta.py에 v3 자리표시자 거부 케이스를, "
+        "tests/test_round_budget.py에 diff 결속 회귀를 추가한다."
+    )
+    assert pd._contract_test_targets(
+        original_f001, "reviewer 추가 회귀 F-001.test",
+    ) == (
+        "tests/test_pm_review_delta.py",
+        "tests/test_round_budget.py",
+    )
+    assert pd._contract_test_targets(
+        "tests/test_a.py와 tests/test_b.py과 tests/test_c.py, tests/test_d.py.",
+        "reviewer 추가 회귀 F-002.test",
+    ) == (
+        "tests/test_a.py", "tests/test_b.py", "tests/test_c.py", "tests/test_d.py",
+    )
+
+
+@pytest.mark.parametrize("value", (
+    "src/test_wrong.py에 회귀를 추가한다",
+    "tests/../test_escape.py에 회귀를 추가한다",
+    "tests/test_joined.py임의문자를 허용하지 않는다",
+))
+def test_contract_test_targets_reject_non_test_traversal_and_unknown_suffix(pd, value):
+    with pytest.raises(pd.DelegateError, match="repo-relative"):
+        pd._contract_test_targets(value, "reviewer 추가 회귀 F-003.test")
 
 
 def _duplicate_member_tickets() -> list[pytest.param]:
@@ -262,6 +314,12 @@ def _without_severity(finding: dict) -> dict:
     return {key: value for key, value in finding.items() if key != "severity"}
 
 
+def _legacy_finding(finding: dict, *, keep_severity: bool) -> dict:
+    """v1 행은 v3의 fix_contract를 알지 못한다."""
+    omitted = {"fix_contract"} if keep_severity else {"fix_contract", "severity"}
+    return {key: value for key, value in finding.items() if key not in omitted}
+
+
 def test_severity_boundary_is_the_block_generation_not_the_ticket_state(pd):
     """severity 요구의 경계는 **블록 payload 세대**다 — 티켓 상태·ordinal 이 아니다.
 
@@ -270,8 +328,8 @@ def test_severity_boundary_is_the_block_generation_not_the_ticket_state(pd):
     """
     legacy = _review_section({
         "version": LEGACY_BLOCK_VERSION,
-        "findings": [_without_severity(
-            _finding("implementation-defect", finding_id="F-001")
+        "findings": [_legacy_finding(
+            _finding("implementation-defect", finding_id="F-001"), keep_severity=False,
         )],
         "confirmations": [],
     }) + _disposition(1, [_decision("accepted", finding_id="F-001")])
@@ -295,7 +353,9 @@ def test_legacy_block_may_also_include_severity_from_the_transition_window(pd):
     """전환기 v1 산출이 severity 를 실었어도 읽는다(두 key 집합 중 하나와 정확 일치)."""
     ticket = _review_section({
         "version": LEGACY_BLOCK_VERSION,
-        "findings": [_finding("implementation-defect", severity="should-fix")],
+        "findings": [_legacy_finding(
+            _finding("implementation-defect", severity="should-fix"), keep_severity=True,
+        )],
         "confirmations": [],
     }) + _disposition(1, [_decision("accepted")])
     delta = _delta(pd, ticket)

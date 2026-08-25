@@ -216,7 +216,7 @@ LEASES_FILE = REPO / ".project_manager" / ".local" / "worktree-leases.json"
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
-ENGINE_REV = "v1.7.9"
+ENGINE_REV = "v1.7.10"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
@@ -2347,7 +2347,7 @@ def _resolve_gate_cmd(board_module) -> str | None:
       1. areas.md 활성 **prefix** 행의 `test_cmd`   (multi-repo 네임스페이스 형상)
       2. areas.md 활성 **repo** 행의 `test_cmd`     (prefix 칼럼이 빈 무prefix 형상)
       3. `local.conf` 의 `test.cmd`                 (per-clone 명시 설정)
-      4. None → 호출부가 기본 `pytest tests/ -q` venv argv (도그푸딩 불변)
+      4. board `default_pytest_cmd()` — xdist 가용 Python이면 `-n auto` 병렬 기본
 
     areas.md 존재 가드는 board 의 `areas_file()`(board_root 추종)에 위임한다 — board/ 분리 시
     areas.md 가 board/ 안(submodule)으로 옮겨가므로 legacy 위치를 보면 stale 이다. **3층은 그
@@ -2381,7 +2381,8 @@ def _resolve_gate_cmd(board_module) -> str | None:
         if getattr(exc, "_legacy_conf_key", False):
             raise
         return None
-    return None
+    default_cmd = getattr(board_module, "default_pytest_cmd", None)
+    return default_cmd() if callable(default_cmd) else None
 
 
 def _resolve_per_repo_test_cmd() -> str | None:
@@ -2408,7 +2409,7 @@ def _resolve_per_repo_test_cmd() -> str | None:
 _PYTEST_GATE_TOKEN = "pytest"
 
 # 해소 실패 시 실제로 실행하는 기본 argv 의 표시용 라벨 (안내 문구).
-_DEFAULT_GATE_LABEL = "pytest tests/ -q"
+_DEFAULT_GATE_LABEL = "pytest tests/ -q -n auto"
 
 
 def _gate_is_pytest(gate_cmd: str | None) -> bool:
@@ -3311,8 +3312,7 @@ class PmHandoff:
         명령 해소(ticket_finish `_default_run_pytest` 와 동형):
           - **해소 성공** — `_resolve_per_repo_test_cmd()` 가 준 문자열을 shell 로 실행
             (board.py 회귀와 동형·비-Python repo 수용).
-          - **해소 실패** — 현행 그대로 `[venv_python, -m, pytest, tests/, -q]` venv argv
-            (도그푸딩 불변·하위호환).
+          - **해소 실패** — `[venv_python, -m, pytest, tests/, -q, -n, auto]` 병렬 기본 argv.
 
         cwd 는 _regression_cwd 가 해소한다— 분리된 PM 홈엔 tests/ 가 없으므로
         활성 worktree 슬롯에서 돌린다. 미해소면 REPO 폴백(현행 보존).
@@ -3331,9 +3331,9 @@ class PmHandoff:
                 cwd=cwd,
             )
         else:
-            # 프레임워크 자기 회귀 — 현행 venv pytest argv 보존(불변).
+            # 프레임워크 자기 회귀 — xdist 가용 환경의 병렬 기본 argv.
             result = subprocess.run(
-                [str(self._venv_python), "-m", "pytest", "tests/", "-q"],
+                [str(self._venv_python), "-m", "pytest", "tests/", "-q", "-n", "auto"],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

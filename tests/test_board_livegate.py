@@ -899,7 +899,13 @@ def _pv_finding(finding_id: str) -> dict:
     return {
         "id": finding_id, "class": "implementation-defect", "severity": "must-fix",
         "authority": "[[ADR-0001]] §경계", "evidence": f"{finding_id} probe rc=1",
-        "recommendation": f"{finding_id}만 수정", "design_change": False,
+        "recommendation": f"{finding_id}만 수정",
+        "fix_contract": {
+            "location": "src/example.py:1", "failure": f"{finding_id} probe rc=1",
+            "design": f"{finding_id} 수정", "test": f"{finding_id} 회귀",
+            "command": "python3 --version", "expected": "Python",
+        },
+        "design_change": False,
     }
 
 
@@ -1157,7 +1163,7 @@ def test_pm_fixed_resolution_is_still_rejected_on_the_release_ledger(pm_verified
     pm_verified_release.write_ledger({tid: entry})
     assert pm_verified_release.record() == 1
     assert pm_verified_release.runner.calls == []
-    assert "이 장부에서는 pm-fixed 처분을 허용하지 않습니다" in capsys.readouterr().err
+    assert "처분 선언 없음" in capsys.readouterr().err
 
 
 # ── 실패 경로 7종 ────────────────────────────────────────────────────────────
@@ -1305,19 +1311,17 @@ def test_sensitivity_allow_pm_verified_reverted_reblocks_the_v178_shape(pm_verif
         "kind": "pm-verified", "ts": "2026-08-01T02:00:00+00:00", "must_fix": 1,
         "round_sequence": 1, "rounds": 1,
     }
-    ledger = {tid: entry}
-    pm_verified_release.write_ledger(ledger)
-    search_dirs = mod._release_gate_search_dirs(pm_verified_release.ledger_path)
+    pm_verified_release.write_ledger({tid: entry})
     # 배선대로(allow_pm_verified=True) 면 통과.
     assert mod._gate_disposition_problem(
-        tid, entry, ledger, search_dirs,
+        tid, entry,
         allow_pm_verified=True,
         pm_verified_problem=mod._gate_pm_verified_problem(
             tid, entry, _PV_CHANNEL_ADDITIONAL,
         ),
     ) is None
     # 되돌리면(기본 False) 같은 형상이 다시 차단된다.
-    reverted = mod._gate_disposition_problem(tid, entry, ledger, search_dirs)
+    reverted = mod._gate_disposition_problem(tid, entry)
     assert reverted is not None
     assert "허용하지 않습니다" in reverted
 

@@ -725,11 +725,59 @@ def test_close_stops_before_any_side_effect_when_the_confirmation_is_missing(
     out = capsys.readouterr()
 
     assert rc == 1
-    assert "기계 확인 미충족" in out.err
+    assert "final-fix 확인 입력 미충족" in out.err
     assert env.board_calls == []
     assert env.delegate_calls == []
     assert env.slot_log()[0] == "code seed"
     assert env.lease_state() == "leased"
+
+
+@requires_git
+def test_close_preflight_precedes_resolve_in_dry_run_and_actual(
+    close_env, capsys, monkeypatch,
+):
+    """step 1은 confirmation 부재를 허용하는 입력 preflight, step 2가 실제 생성·처분 소유자다."""
+    env = close_env
+    assert [key for key, _label in env.tf.ClusterCloser.STEPS[:2]] == [
+        "confirm", "resolve",
+    ]
+
+    dry_events: list[str] = []
+    dry = env.closer(dry_run=True)
+    monkeypatch.setattr(dry, "_pending_gates", lambda: [env.ticket])
+    monkeypatch.setattr(dry, "_gate_ledger", lambda: {env.ticket: {}})
+    monkeypatch.setattr(dry, "_delegate_supports_cluster", lambda: True)
+    monkeypatch.setattr(
+        dry._board, "_pm_verified_resolution_input_problem",
+        lambda *_a, **_k: dry_events.append("preflight") or None,
+    )
+    monkeypatch.setattr(
+        dry._board, "_pm_verified_evidence_problem",
+        lambda *_a, **_k: pytest.fail("step 1이 post-resolution evidence를 선호출했다"),
+    )
+    assert dry._step_confirm() is None
+    assert dry._step_resolve() is None
+    assert dry_events == ["preflight"]
+    assert env.delegate_calls == []
+    assert "rounds resolve --cluster" in capsys.readouterr().out
+
+    actual_events: list[str] = []
+
+    def resolve(args):
+        actual_events.append("resolve")
+        return 0, "resolved"
+
+    actual = env.closer(run_delegate_fn=resolve)
+    monkeypatch.setattr(actual, "_pending_gates", lambda: [env.ticket])
+    monkeypatch.setattr(actual, "_gate_ledger", lambda: {env.ticket: {}})
+    monkeypatch.setattr(actual, "_delegate_supports_cluster", lambda: True)
+    monkeypatch.setattr(
+        actual._board, "_pm_verified_resolution_input_problem",
+        lambda *_a, **_k: actual_events.append("preflight") or None,
+    )
+    assert actual._step_confirm() is None
+    assert actual._step_resolve() is None
+    assert actual_events == ["preflight", "resolve"]
 
 
 @requires_git
@@ -751,6 +799,27 @@ def test_close_resolves_each_gate_when_the_bundle_surface_is_absent(
     assert closer._step_resolve() is None
     assert env.delegate_calls == [
         ["rounds", "resolve", "--cluster", _CLUSTER, "--pm-verified"]]
+
+
+@requires_git
+def test_close_task_identity_is_forwarded_to_resolve_without_ambient_env(
+    close_env, monkeypatch,
+):
+    """task-mode에서 해소한 정체성을 resolve subprocess argv에도 직접 싣는다."""
+    env = close_env
+    monkeypatch.delenv("PM_SESSION_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_NAME", raising=False)
+    closer = env.closer(
+        task="main", board_identity_args=["--task", "main"],
+    )
+    monkeypatch.setattr(closer, "_delegate_supports_cluster", lambda: True)
+    monkeypatch.setattr(closer, "_pending_gates", lambda: [env.ticket])
+
+    assert closer._step_resolve() is None
+    assert env.delegate_calls == [[
+        "rounds", "resolve", "--cluster", _CLUSTER, "--pm-verified",
+        "--task", "main",
+    ]]
 
 
 @requires_git

@@ -153,8 +153,9 @@ def test_claude_native_ticket_rounds_use_agent_contract_for_hand_spawned_roles()
         "카드에 묶음 리뷰 실행(--role code-reviewer --cluster)이 없음"
     )
     assert "ticket prepare" in text and "ticket harvest" in text
-    # 재설계는 같은 절을 키우지 않고 다음 순번의 새 라운드 파일에 쓴다.
-    assert "다음 순번의 새 라운드 파일" in text
+    # 수열·종결 규범은 카드에 복제하지 않고 단일 원칙을 참조한다.
+    assert "pm_principles.md" in text
+    assert "다음 순번의 새 라운드 파일" not in text
     # 단일 파일 컨테이너 시절 어휘가 카드에 남아 있으면 라운드 모델과 어긋난다.
     for stale in ("pm-ticket-section", "성장 티켓 사본", "capability", "transfer-from"):
         assert stale not in text, f"pm-dev-delegate 카드에 옛 모델 어휘 잔존: {stale}"

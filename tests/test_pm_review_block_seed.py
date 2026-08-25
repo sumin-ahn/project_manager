@@ -258,8 +258,14 @@ def test_review_seed_pins_current_parser_schema_contract(pd):
     )
     assert list(payload["findings"][0]) == [
         "id", "class", "severity", "authority", "evidence", "recommendation",
-        "design_change",
+        "fix_contract", "design_change",
     ]
+    assert list(payload["findings"][0]["fix_contract"]) == [
+        "location", "failure", "design", "test", "command", "expected",
+    ]
+    assert payload["findings"][0]["fix_contract"]["command"] == (
+        "<추가 테스트 실행 명령(shell 메타문자 없는 단일 명령)>"
+    )
 
 
 def _seed_payload(rendered: str) -> dict:

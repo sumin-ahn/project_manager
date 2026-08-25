@@ -230,7 +230,7 @@ GitRunner = Callable[[list], "tuple[int, str]"]
 # 공유-읽기였다면 같은 디렉토리 안 자기-일치라 미검출). 릴리즈 bump 는 `engine_rev.py --bump
 # vX.Y.Z` 가 전 stamped 모듈 리터럴을 기계 일괄 재작성한다(사람 N곳 편집 0). 평시 회귀 가드
 # (test_engine_rev_stamp)가 전 모듈 리터럴 == engine_rev.ENGINE_REV 를 강제한다.
-ENGINE_REV = "v1.7.9"
+ENGINE_REV = "v1.7.10"
 
 # rev 스탬프를 지닌 형제 파일만 대조 대상. pm_update는 복구 채널이라 의도적으로 제외한다.
 # deep-import AST 가드가 실제 호출 target에서 목록/검증 누락을 자동 적발한다.
@@ -719,13 +719,20 @@ def _protected_push_gate_config(
 
 
 def _default_test_cmd() -> str:
-    """worktree add 빌드명령 프롬프트의 최종 폴백값 — `local.conf test.cmd` 또는 `pytest -q`.
+    """worktree add 빌드명령 프롬프트의 최종 폴백값 — local.conf 또는 board 기본.
 
     board._test_cmd 의 최종 폴백 레이어(`local_config().get("test.cmd") or "pytest -q"`)와
     동형. `_resolve_repo_test_cmd` 의 마지막 레이어(areas 미등록·빈 값일 때)다 —
     프롬프트 표시값 resolve 의 폴백.
     """
-    return _local_conf_test_cmd() or "pytest -q"
+    configured = _local_conf_test_cmd()
+    if configured:
+        return configured
+    board = _load_module("board", "board.py")
+    if board is not None and hasattr(board, "default_pytest_cmd"):
+        return board.default_pytest_cmd()
+    # 부분 설치에서 board 기본 해소가 불가능해도 serial 하드코딩으로 조용히 강등하지 않는다.
+    return "python3 -m pytest tests/ -q -n auto"
 
 
 def _resolve_repo_test_cmd(repo: str, *, board=None) -> str:

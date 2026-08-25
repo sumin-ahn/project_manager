@@ -150,34 +150,32 @@ flowchart TB
     Pick["다음 작업 선택<br/>open ticket · 사용자 요청"]
     Claim["claim<br/>한 세션이 소유"]
     Plan["PM 계획<br/>DoD · touches · 위임 경계"]
-    Research["선택: researcher / architect<br/>조사 · 설계 · spike · ADR"]
+    Research["architect<br/>경계 · 필수 테스트 계약"]
     Dev["developer 위임<br/>코드 · 테스트 · domain 갱신"]
     Review["code-reviewer 검토<br/>generate ≠ evaluate"]
-    Fix["must-fix 반영<br/>developer 재작업"]
+    Fix["fix<br/>수정 계약 · 추가 회귀 · 전체 회귀"]
     Capture["지식 채록<br/>domain capture · ADR · log"]
     Finish["finish / qa<br/>테스트 · lint · ticket done"]
     Continue{"계속 진행?"}
     Handoff["/pm-handoff<br/>다음 세션이 이어받을 기록"]
 
     Start --> Boot --> Pick --> Claim --> Plan --> Research --> Dev --> Review
-    Review -->|통과| Capture --> Finish --> Continue
+    Review --> Fix --> Capture --> Finish --> Continue
     Continue -->|다음 작업| Pick
     Continue -->|세션 종료 · ctx 임계| Handoff
-    Review -->|must-fix| Fix --> Review
     Pick -. 새 이슈 .-> New["ticket 발행<br/>draft → open"]
     New --> Claim
     Research -. 설계 불확실 .-> Spike["spike / ADR<br/>옵션 합의 · 결정 박제"]
     Spike --> Dev
     Plan -. 바로 구현 가능 .-> Dev
-    Dev -. 컨텍스트 임계 .-> Handoff
-    Review -. 컨텍스트 임계 .-> Handoff
+    Fix -. 실패 .-> Stop["티켓 정지<br/>사용자에게 근거 보고"]
 ```
 
 세션 안에서 자주 갈라지는 작업은 네 종류다.
 
 | 상황 | 보통 하는 일 | 남는 기록 |
 |---|---|---|
-| 바로 구현 가능한 일 | ticket claim → developer → reviewer → finish | ticket done, log |
+| 바로 구현 가능한 일 | ticket claim → architect → developer → reviewer → fix → finish | ticket done, log |
 | 사실 확인이 필요한 일 | researcher 로 읽기 조사 → PM 이 종합 | log, domain research |
 | 설계 결정이 필요한 일 | spike 로 옵션 합의 → ADR 발행 → 구현 ticket 분할 | spike, ADR, ticket |
 | 작업 중 배운 지식 | 관련 `covers:` domain 페이지 갱신 | domain page, stale 해소 |
@@ -692,11 +690,11 @@ PM 이 메인 세션이고, 일은 네 축의 서브에이전트에 나눠 준�
 
 | 에이전트 | 하는 일 | 하지 않는 일 |
 |---|---|---|
-| PM (메인 세션) | ticket 발행·분할·위임·비준, 보드와 일지 기록. 결정과 종합은 여기서만 한다. | 직접 구현 (위임이 원칙) |
+| PM (메인 세션) | 사용자 지시의 ticket 발행·claim 전 자족성 분할·위임·비준, 보드와 일지 기록. 결정과 종합은 여기서만 한다. | 직접 구현 (위임이 원칙) |
 | researcher | 여러 파일과 레퍼런스를 훑어 사실만 수집해 온다 (read-only). | 코드·문서 수정 |
-| architect | 설계 노동 — 옵션 분석, ADR/스펙 초안, 인터페이스 설계. | 결정·발행 (비준은 PM) |
-| developer | 티켓 하나를 코드와 테스트로 구현한다. | 보드 조작, 일지 갱신 |
-| code-reviewer | developer 의 변경을 독립 검토하고 승인/must-fix 를 낸다. | 코드 수정 |
+| architect | 구현 경계와 developer 필수 테스트 계약을 확정한다. | 결정·발행 (비준은 PM) |
+| developer | 최초 구현과 마지막 fix에서 단계별 테스트를 실행한다. | 보드 조작, 일지 갱신 |
+| code-reviewer | 변경을 독립 검토하고 must-fix마다 수정·추가 회귀 계약을 낸다. | 코드 수정 |
 
 모델과 권한은 어댑터 정의에서 정한다. Claude Code 는 `.claude/agents/<역할>.md`,
 opencode 는 `.opencode/agents/<역할>.md`, codex 는 `.codex/agents/<역할>.toml` 쪽 정의를 쓴다.

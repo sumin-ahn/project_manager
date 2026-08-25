@@ -232,7 +232,8 @@ def test_opencode_native_ticket_rounds_use_task_contract_only():
     assert "ticket prepare" in text and "ticket harvest" in text
     assert "Agent 툴 호출" not in text
     assert "run_in_background" not in text
-    assert "다음 순번의 새 라운드 파일" in text
+    assert "pm_principles.md" in text
+    assert "다음 순번의 새 라운드 파일" not in text
     for stale in ("pm-ticket-section", "성장 티켓 사본", "capability", "transfer-from"):
         assert stale not in text, f"opencode pm-dev-delegate 카드에 옛 모델 어휘 잔존: {stale}"
 

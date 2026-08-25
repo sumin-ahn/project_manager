@@ -247,6 +247,14 @@ def test_section_add_refuses_a_developer_round_until_the_pm_judgment_is_written(
         "findings": [{
             "id": "F-001", "class": "implementation-defect", "severity": "must-fix",
             "authority": "[[T-0805]]", "evidence": "probe", "recommendation": "fix",
+            "fix_contract": {
+                "location": ".project_manager/tools/board.py:cmd_section_add",
+                "failure": "PM disposition 없이 developer 라운드가 열린다.",
+                "design": "accepted-only delta가 확정될 때까지 준비를 거부한다.",
+                "test": "tests/test_board_ticket_growth.py의 판정 미기입 회귀",
+                "command": "python3 -m pytest tests/test_board_ticket_growth.py -q",
+                "expected": "passed",
+            },
             "design_change": False,
         }],
         "confirmations": [],

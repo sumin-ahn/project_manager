@@ -5702,12 +5702,44 @@ def _scope_workspace(
     # 라운드는 준비가 예약한다([[ADR-0090]]) — 명세에는 역할 산출이 없다.
     ticket_path = tickets / f"{TICKET_ID}-scope.md"
     ticket_path.write_text(ticket_text, encoding="utf-8")
-    # 준비는 라운드 예산·기준 브랜치를 묶음 장부에서만 읽는다 — `cluster` 필드가 없는 이
-    # 티켓은 크기 1 묶음이고, 그 장부가 이 픽스처가 태울 라운드 하나를 선언한다.
+    # 준비는 라운드 예산·기준 브랜치를 묶음 장부에서만 읽는다. 이 픽스처의
+    # `rounds` 는 예산을 줄이는 통로가 아니라 **이 테스트가 실행할 현재 역할**이다. 장부는
+    # 항상 architect→developer→code-reviewer→developer 4단계를 모두 선언하고,
+    # 현재 역할 앞의 완료 라운드는 실물 sidecar로 시드한다. 범위 감사 테스가 고정
+    # 수열 게이트를 무효화하지 않으면서 자기 관심사에 진입하기 위한 형상이다.
     write_cluster_ledger(
         pm_home / ".project_manager" / "wiki", TICKET_ID,
-        base_branch="task/main", rounds=rounds,
+        base_branch="task/main",
     )
+    assert len(rounds) == 1 and rounds[0] in {"architect", "developer", "code-reviewer"}
+    current_role = rounds[0]
+    preceding = {
+        "architect": (),
+        "developer": ("architect",),
+        "code-reviewer": ("architect", "developer"),
+    }[current_role]
+    rounds_dir = (
+        pm_home / ".project_manager" / "wiki" / "tickets" / "rounds" / TICKET_ID
+    )
+    if preceding:
+        rounds_dir.mkdir(parents=True)
+    architect_contract = _json.dumps({
+        "version": pd.ARCHITECT_TEST_VERSION,
+        "tests": [{
+            "id": "AT-001",
+            "target": "tests/test_pm_delegate.py",
+            "command": "python3 --version",
+            "expected": "Python",
+            "negative": "red면 developer 단계를 종료하지 않는다",
+        }],
+    }, ensure_ascii=False, separators=(",", ":"))
+    for ordinal, prior_role in enumerate(preceding, start=1):
+        output = "## 산출\n- 고정 수열 픽스처\n"
+        if prior_role == "architect":
+            output += f"\n```{pd.ARCHITECT_TEST_BLOCK}\n{architect_contract}\n```\n"
+        (rounds_dir / f"{ordinal:02d}-{prior_role}.md").write_text(
+            f"## {prior_role} 라운드\n\n{output}", encoding="utf-8", newline="\n",
+        )
     ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.parent.mkdir(parents=True)
     ledger.write_text(
@@ -6590,6 +6622,8 @@ def test_native_advisory_rejects_values_outside_public_domain(pd, monkeypatch):
 def test_save_raw_output_tempdir_fallback_with_injected_destination(
         pd, monkeypatch, tmp_path):
     """PM 홈 미해소 폴백은 유지하되 테스트에서는 pytest 관리 목적지를 주입한다."""
+    # module-scoped 도구의 직전 main 호출이 남긴 config owner는 이 독립 폴백 축의 입력이 아니다.
+    monkeypatch.setattr(pd, "_CONFIG_REPO_OVERRIDE", None)
     monkeypatch.setattr(pd, "REPO", tmp_path / "unresolved-adopter")
     monkeypatch.setattr(pd, "_gettempdir", lambda: str(tmp_path))
     dest = pd.save_raw_output("codex", "fallback content")
@@ -7047,14 +7081,16 @@ def _seed_t0650_raw(
     return record_id, raw_path
 
 
-@pytest.mark.parametrize("role", ["developer", "code-reviewer"])
-def test_t0650_regression_scope_is_in_both_execution_preambles(pd, role):
-    """[P] 두 실행 role의 합성 preamble에 전체 스위트 금지 상수가 글자 그대로 들어간다."""
-    preamble = pd._role_preamble(role, (".claude", ".opencode", ".codex", ".agents"))
-    assert pd.REGRESSION_SCOPE_PREAMBLE in preamble
-    assert "회귀는 프롬프트가 지정한 범위만" in preamble
-    assert "`pytest tests/` 무인자" in preamble
-    assert "PM 이 1회" in preamble
+def test_t0650_stage_exit_regression_scope_is_only_in_developer_preamble(pd):
+    """stage-exit full은 실행·기록 책임이 있는 developer/fix에만 주입된다."""
+    directories = (".claude", ".opencode", ".codex", ".agents")
+    developer = pd._role_preamble("developer", directories)
+    reviewer = pd._role_preamble("code-reviewer", directories)
+    assert pd.REGRESSION_SCOPE_PREAMBLE in developer
+    assert "targeted tests" in developer
+    assert "프로젝트 `test_cmd`" in developer
+    assert "`rc=0`" in developer
+    assert pd.REGRESSION_SCOPE_PREAMBLE not in reviewer
 
 
 @pytest.mark.parametrize(

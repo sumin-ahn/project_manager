@@ -391,6 +391,21 @@ def test_local_conf_operational_values_synced(pm_import, tmp_path):
         f"local.conf py 가 _detected_py() 와 불일치: {conf.get('runtime.py')!r}"
 
 
+def test_default_test_cmd_delegates_to_board_parallel_default(pm_import, monkeypatch):
+    """새 scaffold 기본은 board의 xdist 판정을 우회한 serial 상수가 아니다."""
+    class _Board:
+        @staticmethod
+        def default_pytest_cmd(runtime):
+            assert runtime == "fixture-python"
+            return "fixture-python -m pytest tests/ -q -n auto"
+
+    monkeypatch.setattr(pm_import, "_detected_py", lambda: "fixture-python")
+    monkeypatch.setattr(pm_import, "_load_module_from_path", lambda *_a, **_k: _Board)
+    assert pm_import._default_test_cmd() == (
+        "fixture-python -m pytest tests/ -q -n auto"
+    )
+
+
 def test_local_conf_preserves_board_init_keys(pm_import, tmp_path):
     """operational 값 동기화가 board.py init 이 쓴 다른 키(ctx 예산 등)·주석을 보존한다.
 

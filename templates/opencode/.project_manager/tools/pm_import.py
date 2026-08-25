@@ -219,7 +219,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
 # Python 하한 probe보다 먼저 평가되므로 3.10에서도 파싱 가능한 문법만 쓴다.
-ENGINE_REV = "v1.7.9"
+ENGINE_REV = "v1.7.10"
 
 
 # 신규 공유 board 에 스캐폴드하는 상태 디렉토리 — board `STATUS_DIRS` 와 같은 집합(리터럴 · 동치는
@@ -949,13 +949,23 @@ def _detected_py() -> str:
 
 
 def _default_test_cmd() -> str:
-    """기본 test_cmd — 탐지된 인터프리터로 pytest 실행 (Windows 에선 `python`, POSIX 는 python3).
+    """기본 test_cmd — board의 xdist 가용성 판정과 같은 명령을 사용한다.
 
     상수 하드코딩(`python3 -m pytest`)은 Windows 에서 깨진다(`python3`=비기능 shim 또는
     엉뚱한 Store Python). `_detected_py()` 를 경유해 board.py `_detect_py()` 의 실행검증된
     인터프리터를 쓴다 — local.conf `runtime.py=` 와 동일 소스라 일관.
     """
-    return f"{_detected_py()} -m pytest tests/ -q"
+    runtime = _detected_py()
+    board_py = Path(__file__).resolve().parent / "board.py"
+    try:
+        board_mod = _load_module_from_path(
+            board_py, "board.py", verifier=_verify_engine_rev,
+        )
+        return board_mod.default_pytest_cmd(runtime)
+    except Exception as exc:  # noqa: BLE001 — 부분 사본도 serial로 조용히 강등하지 않는다.
+        if _is_engine_rev_skew(exc):
+            raise
+        return f"{runtime} -m pytest tests/ -q -n auto"
 
 
 DEFAULT_TAGLINE = "한 줄 프로젝트 설명"
@@ -3162,8 +3172,8 @@ def print_conf_migration_notice(dest_root: Path) -> None:
 def sync_local_conf(dest_root: Path, project_name: str) -> bool:
     """board.py init 직후 local.conf 의 operational 해소값을 pm_import 치환값과 일치시킨다.
 
-    board.py init 은 `project.name` 빈값·`test.cmd=pytest -q` 를 하드코딩하므로(seam
-    불완전), 엔진 문서(local.conf 해소)와 CLAUDE.md(sed 치환)가 *다른 값*을 보게 된다.
+    board.py init 의 감지값을 import 인자의 operational 값과 맞춰 엔진 문서(local.conf 해소)와
+    CLAUDE.md(sed 치환)가 *다른 값*을 보지 않게 한다.
     `project.name`·`test.cmd`·`runtime.py` 3개 키만 키 단위 갱신해 정렬한다. 나머지 키
     (ctx 예산·additional_reviewer 등)와 주석은 보존. clobber 금지. 파일 변경 시 True.
     """
@@ -9293,7 +9303,6 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return rc
 
-    # board.py init 은 `project.name` 빈값·`test.cmd=pytest -q` 를 하드코딩한다.
     # init 성공 직후 local.conf 의 operational 해소값(project.name·test.cmd·runtime.py)을 sed
     # 치환값과 정렬해 엔진 문서(local.conf 해소)와 CLAUDE.md(치환)가 같은 값을 보게 한다.
     if sync_local_conf(dest_root, project_name):
