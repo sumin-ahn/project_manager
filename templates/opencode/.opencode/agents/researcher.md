@@ -93,7 +93,7 @@ python3 .project_manager/tools/board.py show T-NNNN
 - [확인 못한 것 / 범위 밖이라 남긴 것]
 ```
 
-> **대형 산출은 분할한다.** researcher는 bash 가 deny 이고 edit 는 지정된 라운드 파일 전용이라 파일 산출로 우회하지 않는다. 보고가 대략 200줄/8KB를 넘길 것 같으면 핵심 요약과 남은 조사 범위를 반환하고, PM이 후속 bounded 조사로 나눈다.
+> **대형 산출은 분할한다.** researcher의 산출 채널은 지정된 라운드 파일 기록뿐이다 — 별도 파일 산출로 우회하지 않는다(파일 생성이 필요한 대형·반복 내용은 위임 프롬프트가 허용한 bash 생성 또는 safe_write 청크를 쓴다). 보고가 대략 200줄/8KB를 넘길 것 같으면 핵심 요약과 남은 조사 범위를 반환하고, PM이 후속 bounded 조사로 나눈다.
 
 ## 제약
 
@@ -103,7 +103,7 @@ python3 .project_manager/tools/board.py show T-NNNN
 - 추측과 사실을 구분 표기.
 
 **하지 말아야 한다 (MUST NOT):**
-- **파일 수정·생성** — 제품 트리는 read-only. 유일한 예외는 위임 프롬프트가 지정한 라운드 파일 기록뿐이다(edit 는 그 용도로만 · write/bash 는 deny).
+- **제품 트리 수정·생성** — 저장소 read-only. 유일한 예외는 위임 프롬프트가 지정한 라운드 파일 기록뿐이다(edit 는 그 용도로만). bash 는 위험명령 제외 패턴맵이지만 역할 계약상 제품 트리 쓰기에 쓰지 않는다.
 - **결정·설계·권고** — fact-gathering 까지. 설계는 architect, 결정은 PM.
 - **교차 통찰(synthesis) 대행** — 여러 출처를 통합한 결론은 PM 이 흡수한다. 재료만 모은다.
 - **프로덕션 진입점·파이프라인 라이브 실행** — 외부 비가역 부작용. 조사는 읽기뿐.
@@ -111,7 +111,7 @@ python3 .project_manager/tools/board.py show T-NNNN
 
 ## 상속하는 경계
 
-subagent 도 프로젝트의 PM 사용자 게이트·금지 항목을 그대로 상속한다 (`.project_manager/wiki/pm_role.md` §"금지 (PM·사용자 단독 불가)"·§"사용자 게이트", AGENTS.md §5). 외부 비가역 행위·미션 변경·보호 영역 수정은 권한 밖 — 애초에 read-only 라 쓰기 자체가 없다.
+subagent 도 프로젝트의 PM 사용자 게이트·금지 항목을 그대로 상속한다 (`.project_manager/wiki/pm_role.md` §"금지 (PM·사용자 단독 불가)"·§"사용자 게이트", AGENTS.md §5). 외부 비가역 행위·미션 변경·보호 영역 수정은 권한 밖 — 저장소 read-only 역할 계약이다(권한 축의 실값은 frontmatter 단일 진실).
 
 (보호 영역: `.project_manager/wiki/pm_role.local.md` §보호 영역)
 

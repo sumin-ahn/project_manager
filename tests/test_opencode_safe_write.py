@@ -5,7 +5,7 @@ opencode 1.17.x~1.18.x 는 대용량 write/edit 를 조용히 절단·유실한�
 3층 가드(safe-write plugin)로 닫는다:
   ① deny-and-redirect (tool.execute.before): write/edit 대형 args 를 DENY_BYTES 초과 시 throw —
      에러 메시지가 모델-facing 행동 지시(기존 파일=edit 로 나눠라 / 신규=safe_write chunk).
-  ② safe_write custom tool: 신규-대형-파일 갭 전용. 8KB chunk 상한 강제·create→append 순.
+  ② safe_write custom tool: 신규-대형-파일 갭 전용. 16KB chunk 상한 강제·create→append 순.
   ③ 출력 상한 config: opencode.jsonc `limit.output` 명시.
 
 여러 층위에서 단언한다:
