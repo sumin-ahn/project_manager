@@ -448,6 +448,14 @@ assert.strictEqual(r.wroteBytes, 16384, "code 경계 wroteBytes");
 // 마지막 개행 뒤 ";" 패딩이 붙으므로 비종단(false)이 정상 — 경계 피드백 대상.
 assert.strictEqual(r.endsWithNewline, false);
 
+// F1 강제 게이트(T-opencode-002): 비종단 파일+비개행 chunk append 는 거부(처방 포함)·
+// 개행으로 시작하는 chunk 는 허용 — line-aligned 계약 강제.
+assert.throws(() => m.safeWrite(td, "partial.txt", "more", "append", 16384),
+              /개행[\s\S]*첫 문자/);
+r = m.safeWrite(td, "partial.txt", "\nmore\n", "append", 16384);
+assert.strictEqual(fs.readFileSync(path.join(td, "partial.txt"), "utf-8"),
+                   "no-trailing-newline\nmore\n");
+
 console.log("SAFE_WRITE_SELFCHECK_OK");
 } finally {
   fs.rmSync(td, {recursive:true, force:true});
