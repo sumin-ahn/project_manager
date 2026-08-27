@@ -2560,11 +2560,33 @@ def task_archive_candidates(name: str) -> "tuple[Path, ...]":
     ended_root = TASKS_DIR / _ENDED_DIR_NAME
     if not ended_root.is_dir() or ended_root.is_symlink():
         return ()
-    pattern = re.compile(rf"^{re.escape(name)}-\d{{8}}(?:-\d+)?$")
-    candidates = [
-        path for path in ended_root.iterdir()
-        if pattern.fullmatch(path.name) and path.is_dir() and not path.is_symlink()
-    ]
+    pattern = re.compile(
+        rf"^{re.escape(name)}-(?P<date>\d{{8}})(?:-(?P<ordinal>\d+))?$"
+    )
+    candidates: list[Path] = []
+    for path in ended_root.iterdir():
+        match = pattern.fullmatch(path.name)
+        if match is None or not path.is_dir() or path.is_symlink():
+            continue
+        try:
+            archive_date = datetime.datetime.strptime(match.group("date"), "%Y%m%d")
+        except ValueError:
+            continue
+        if archive_date.strftime("%Y%m%d") != match.group("date"):
+            continue
+        ordinal = match.group("ordinal")
+        if ordinal is not None and len(ordinal) == 8:
+            try:
+                nested_date = datetime.datetime.strptime(ordinal, "%Y%m%d")
+            except ValueError:
+                pass
+            else:
+                if nested_date.strftime("%Y%m%d") == ordinal:
+                    # ``name-date-date``는 짧은 name의 재종료 ordinal과
+                    # 긴 task ``name-date``의 archive 양쪽으로 성립한다. 소유권을
+                    # 증명할 metadata가 없으므로 짧은 이름에서는 fail-closed한다.
+                    continue
+        candidates.append(path)
     return tuple(sorted(candidates, key=lambda path: path.name))
 
 
@@ -2763,9 +2785,10 @@ def end_task(name: str, *, git_runner: GitRunner | None = None) -> EndTaskResult
     엔진 진입점 방어다. 무검증이면 `end_task("../evil")` 이 `_archive_dest` 파생 후 `.local/tasks` 밖으로
     `shutil.move` 한다. 예약패턴(`<repo>_<N>`)은 생성
     시점(bind_task/cmd_alloc)에서 걸리는 **생성 관심사**라 여기선 registered_repos 를 요구하지 않는다
-    (종료엔 path-safety 만 필요·session 은 이미 장부에 있음). dirty 검사·반납·장부/task write 는 **한
-    `_lease_lock` 안에서** 직렬화한다(release/reclaim 동형·부분상태 차단). 폴더 이동은 락 밖(fs op·장부
-    무관). git_runner 주입으로 hermetic.
+    (종료엔 path-safety 만 필요·session 은 이미 장부에 있음). dirty 검사·반납·장부/task write와
+    archive 목적지 결정·폴더 이동을 **한 `_lease_lock` 안에서** 직렬화한다. 장부 제거와 archive 공개
+    사이에 동명 bind/reopen이 끼어 identity와 pm_state가 분리되는 락 공백을 두지 않는다.
+    git_runner 주입으로 hermetic.
     """
     _validate_task_name(name)   # 장부 write·shutil.move 이전 fail-loud
     with _lease_lock():
@@ -2807,13 +2830,14 @@ def end_task(name: str, *, git_runner: GitRunner | None = None) -> EndTaskResult
         # 2b) 장부의 task 레코드 제거(같은 락·형제 leases 는 위에서 이미 반영됨).
         _write_tasks([task for task in tasks if task.name != name])
 
-    # 2c) 서술 폴더 이동(락 밖·fs op) — 부재면 이동 없음(장부만 정리된 task·graceful).
-    src = task_dir(name)
-    dest: "Path | None" = None
-    if src.exists():
-        dest = _archive_dest(name)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(src), str(dest))
+        # 2c) 서술 폴더 이동도 같은 lifecycle 임계구역에서 완료한다. archive가 공개된 뒤에만
+        # bind_task가 락을 얻어 TaskArchived로 수렴하므로 동명 신규 생성 TOCTOU가 없다.
+        src = task_dir(name)
+        dest: "Path | None" = None
+        if src.exists():
+            dest = _archive_dest(name)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dest))
     return EndTaskResult(name, released=sorted(released), dirty=[],
                          moved_from=src if dest is not None else None, moved_to=dest)
 

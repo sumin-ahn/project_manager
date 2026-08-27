@@ -33,6 +33,7 @@ import shutil
 import shlex
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -8653,6 +8654,28 @@ def test_reopen_task_zero_multiple_and_exact_selection_are_side_effect_free(wp):
     assert first.exists()
 
 
+def test_reopen_task_rejects_overlapping_task_name_archive(wp):
+    long_name = "job-20260827"
+    archive = _archive_task(
+        wp, "job-20260827-20260827", b"archive for task job-20260827"
+    )
+    before = wp.LEASES_FILE.read_bytes() if wp.LEASES_FILE.exists() else None
+
+    assert wp.task_archive_candidates("job") == ()
+    for selected in (None, archive.name):
+        with pytest.raises(wp.TaskReopenRefused):
+            wp.reopen_task("job", archive=selected)
+        assert archive.exists() and not wp.task_dir("job").exists()
+        assert (wp.LEASES_FILE.read_bytes() if wp.LEASES_FILE.exists() else None) == before
+
+    assert wp.task_archive_candidates(long_name) == (archive,)
+    result = wp.reopen_task(long_name)
+    assert result.moved_from == archive
+    assert (wp.task_dir(long_name) / "pm_state.md").read_bytes() == (
+        b"archive for task job-20260827"
+    )
+
+
 @pytest.mark.parametrize("archive", ["../job-20260827", "/tmp/job-20260827",
                                       "job\\20260827", ".", "other-20260827"])
 def test_reopen_task_rejects_unsafe_or_nonmember_archive(wp, archive):
@@ -8739,6 +8762,59 @@ def test_end_task_clean_releases_all_removes_record_and_archives(wp, proj):
     assert not wp.task_dir("job").exists()
     assert result.moved_to is not None and result.moved_to.exists()
     assert (result.moved_to / "pm_state.md").read_text(encoding="utf-8") == "state"
+
+
+def test_end_task_archive_move_serializes_bind_task(wp, monkeypatch):
+    wp.bind_task("job")
+    wp.release_task_pid("job")
+    (wp.task_dir("job") / "pm_state.md").write_text("state", encoding="utf-8")
+
+    move_entered = threading.Event()
+    allow_move = threading.Event()
+    bind_started = threading.Event()
+    bind_done = threading.Event()
+    outcomes = {}
+    real_move = wp.shutil.move
+
+    def blocked_move(src, dest):
+        move_entered.set()
+        assert allow_move.wait(SYNC_TIMEOUT)
+        return real_move(src, dest)
+
+    def run_end():
+        try:
+            outcomes["end"] = wp.end_task("job", git_runner=FakeGit(dirty=False))
+        except Exception as exc:  # noqa: BLE001 — thread outcome를 본 스레드에서 단언.
+            outcomes["end_error"] = exc
+
+    def run_bind():
+        bind_started.set()
+        try:
+            outcomes["bind"] = wp.bind_task("job", pid=456)
+        except Exception as exc:  # noqa: BLE001 — 구조화된 TaskArchived를 본 스레드에서 단언.
+            outcomes["bind_error"] = exc
+        finally:
+            bind_done.set()
+
+    monkeypatch.setattr(wp.shutil, "move", blocked_move)
+    end_thread = threading.Thread(target=run_end)
+    bind_thread = threading.Thread(target=run_bind)
+    end_thread.start()
+    assert move_entered.wait(SYNC_TIMEOUT)
+    bind_thread.start()
+    assert bind_started.wait(SYNC_TIMEOUT)
+    bind_finished_before_move = bind_done.wait(0.2)
+    allow_move.set()
+    end_thread.join(SYNC_TIMEOUT)
+    bind_thread.join(SYNC_TIMEOUT)
+
+    assert not end_thread.is_alive() and not bind_thread.is_alive()
+    assert not bind_finished_before_move
+    assert "end_error" not in outcomes
+    assert isinstance(outcomes.get("bind_error"), wp.TaskArchived)
+    assert wp.find_task("job") is None
+    assert not wp.task_dir("job").exists()
+    assert outcomes["end"].moved_to.exists()
 
 
 def test_end_task_dirty_refuses_with_no_side_effects(wp, proj):
