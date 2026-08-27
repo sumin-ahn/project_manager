@@ -1907,6 +1907,34 @@ def test_implicit_task_promotion_rejects_explicit_session_seq(
     assert captured_run == {}
 
 
+def test_implicit_archived_task_refuses_legacy_demotion(
+    hf, captured_run, monkeypatch, capsys,
+):
+    archive = Path("_ended/main-20260827")
+
+    class ArchivedPool:
+        @staticmethod
+        def find_task(name):
+            return None
+
+        @staticmethod
+        def task_archive_candidates(name):
+            return (archive,)
+
+        @staticmethod
+        def _validate_task_name(name, registered_repos=None):
+            return None
+
+    monkeypatch.setattr(hf, "_load_worktree_pool", lambda: ArchivedPool())
+    rc = hf.main(
+        ["--no-pytest"],
+        identity_resolver=lambda: ("main", None, "단일 활성 task"),
+    )
+    assert rc == 1 and captured_run == {}
+    err = capsys.readouterr().err
+    assert "task reopen main" in err and "legacy 쓰기 경로로 강등하지 않는다" in err
+
+
 def test_slot_resolution_docstrings_describe_actual_path_contract(hf):
     """F-017: docstring이 basename canonical 키와 실제 lease 경로 반환을 반대로 쓰지 않는다."""
     state_doc = hf._resolve_state_slot.__doc__ or ""
@@ -2360,6 +2388,41 @@ def test_run_unregistered_task_fails_without_side_effects(
     assert not dashboard_file.exists()
     assert not (tmp_path / ".project_manager" / ".local" / "tasks" / "not-registered").exists()
     assert "미등록 task" in capsys.readouterr().err
+
+
+def test_run_archived_task_fails_with_reopen_before_any_writes(
+    hf, tmp_path, monkeypatch, capsys,
+):
+    monkeypatch.setattr(hf, "REPO", tmp_path)
+    archive = tmp_path / "tasks" / "_ended" / "mytask-20260827"
+    pytest_calls = []
+
+    class ArchivedPool:
+        @staticmethod
+        def find_task(name):
+            return None
+
+        @staticmethod
+        def task_archive_candidates(name):
+            return (archive,)
+
+    handoff = hf.PmHandoff(
+        run_pytest_fn=lambda: (pytest_calls.append(True) or (0, pytest_summary())),
+        run_git_fn=lambda args: (0, ""),
+        log_file=tmp_path / "current.md",
+        pm_playbook_file=tmp_path / "unused.md",
+        dashboard_file=tmp_path / "dashboard.md",
+        worktree_pool=ArchivedPool(),
+    )
+    rc = handoff.run(
+        session_num=1, wave_summary="x", dry_run=False, skip_pytest=False,
+        task="mytask", user_ack="mytask",
+    )
+    assert rc != 0 and pytest_calls == []
+    assert not (tmp_path / "current.md").exists()
+    assert not (tmp_path / "dashboard.md").exists()
+    err = capsys.readouterr().err
+    assert "task reopen mytask" in err and "mytask-20260827" in err
 
 
 def test_run_task_records_precreated_pm_state(hf, tmp_path, capsys, monkeypatch):

@@ -328,6 +328,32 @@ def _make_bootstrap(bootstrap, tmp_path, *, worktree_pool, board_fn=None):
     )
 
 
+def test_bind_task_rejects_archived_name_with_reopen_prescription(
+    bootstrap, tmp_path, capsys,
+):
+    archive = tmp_path / "tasks" / "_ended" / "job-20260827"
+
+    class ArchivedPool:
+        class TaskArchived(Exception):
+            def __init__(self):
+                self.archives = (archive,)
+
+        class TaskActiveElsewhere(Exception):
+            pass
+
+        class InvalidTaskName(Exception):
+            pass
+
+        def bind_task(self, name, registered_repos=None):
+            raise self.TaskArchived()
+
+    inst = _make_bootstrap(bootstrap, tmp_path, worktree_pool=ArchivedPool())
+    assert inst._bind_task_or_reject("job") is None
+    err = capsys.readouterr().err
+    assert "task reopen job" in err and "job-20260827" in err
+    assert f"{bootstrap._runtime_skill_entry('pm-bootstrap')} --task job" in err
+
+
 def test_bootstrap_lean_surfaces_dev_ahead_vs_drift(bootstrap, wp, tmp_path, capsys):
     """lean bind 경로 부트스트랩이 `### 슬롯 상태` 절에서 dev-ahead(정보) vs drift(경고 ⚠) 를 구별 표시한다.
 

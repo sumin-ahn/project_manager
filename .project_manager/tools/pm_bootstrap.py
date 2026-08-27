@@ -401,6 +401,9 @@ _C_DOMAIN_AFFECTED = _CardCmd("domain.py", "affected --ticket <T-NNNN>", ("affec
 _C_PC_ALLOC = _CardCmd("pm_config.py", "alloc <repo>", ("alloc",), ())
 _C_PC_RELEASE = _CardCmd("pm_config.py", "release <slot>", ("release",), ())
 _C_PC_TASK_END = _CardCmd("pm_config.py", "task end <이름>", ("task", "end"), ())
+_C_PC_TASK_REOPEN = _CardCmd(
+    "pm_config.py", "task reopen <이름> [--archive <basename>]", ("task", "reopen"), ()
+)
 _C_PC_TASK_PREFIX = _CardCmd("pm_config.py", "task prefix <이름> <p|none>", ("task", "prefix"), ())
 
 # readonly 공유 슬롯 CLI 커맨드 — 조회만.
@@ -421,7 +424,8 @@ _CARD_TASK_CLI = (
     # 는 정체성 축이라 실값 보간(suffix)이고 base render 는 `list`(슬롯 카드의 slot-scoped 뷰와 동형).
     # `_C_BOARD_LIST_MINE` = user-wide(전 task·직교 렌즈).
     _C_BOARD_LIST, _C_BOARD_LIST_MINE, _C_PC_ALLOC, _C_PC_RELEASE, _C_PC_TASK_PREFIX,
-    _C_PC_TASK_END, _C_BOARD_CLAIM, _C_BOARD_SHOW, _C_BOARD_LINT, _C_BOARD_REGRESSION,
+    _C_PC_TASK_END, _C_PC_TASK_REOPEN, _C_BOARD_CLAIM, _C_BOARD_SHOW, _C_BOARD_LINT,
+    _C_BOARD_REGRESSION,
     _C_TICKET_FINISH, _C_PM_HANDOFF_TASK, _C_PM_LOG_TAIL,
 )
 _CARD_READONLY_CLI = (
@@ -4295,6 +4299,17 @@ class PmBootstrap:
             record, action, reclaimed_from = wp.bind_task(
                 task, registered_repos=_registered_repos(self._areas_file)
             )
+        except getattr(wp, "TaskArchived", ()) as exc:
+            archives = ", ".join(path.name for path in exc.archives)
+            print(
+                f"[중단] task {task!r} 은(는) 종료 archive로 보관되어 있어 새 task로 만들지 "
+                f"않습니다 ({archives}).\n"
+                f"  → `pm-config.py task reopen {task}`"
+                " (복수 후보면 `--archive <basename>` 추가) 후 "
+                f"`{_runtime_skill_entry('pm-bootstrap')} --task {task}` 로 재진입하세요.",
+                file=sys.stderr,
+            )
+            return None
         except wp.TaskActiveElsewhere as exc:
             print(
                 f"[중단] task {task!r} 이(가) 다른 살아있는 세션(pid {exc.pid})에서 열려 "
@@ -5526,6 +5541,9 @@ class PmBootstrap:
         ))
         lines.append(cmd(
             _C_PC_TASK_END, "task 종료 — 일괄 idle 반납 + 서술 폴더 _ended 아카이브(worktree 미삭제)",
+        ))
+        lines.append(cmd(
+            _C_PC_TASK_REOPEN, "종료 archive를 같은 task identity로 복원(bootstrap 별도 재진입)",
         ))
         lines.append(
             "  ⚠ task end 는 claimed 소진 + 전 슬롯 clean 전제 — 미완 claim/dirty 있으면 거부."

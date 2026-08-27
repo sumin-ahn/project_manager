@@ -22,6 +22,7 @@ user 가 여러 repo(multi-PM 셋업)를 도는 토폴로지의 *셋업·조회�
     pm-config release <slot> [--task <이름>] [--force]      # 작업완료 반납 (--task 소유검사) / 수동 강제(백스톱)
     pm-config task prefix <이름> <p|none> [--user-ack <p>] # 신규 prefix 사용자 승인값 결속·변경/해제 (`none`=해제)
     pm-config task end <이름>                               # task 종료 — claimed 소진 게이트·dirty 게이트·일괄 반납 + _ended 아카이브
+    pm-config task reopen <이름> [--archive <basename>]     # 종료 archive를 동일 task 정체성으로 복원
     pm-config update [--from <upstream>]                   # 엔진 갱신 (pm-update 흡수)
     pm-config upstream show | set <url|path>               # upstream 조회/전환 (검증·fail-closed)
     pm-config add-harness <harness> [--from <src>] [--dry-run]  # 라이브 인스턴스에 두 번째 harness 어댑터 추가
@@ -2946,7 +2947,15 @@ def cmd_task_end(
         return 1
 
     # 2) dirty 게이트 + 3) clean 시 일괄 반납 + 서술 폴더 아카이브 이동 — 엔진 end_task.
-    result = wp.end_task(name)
+    try:
+        result = wp.end_task(name)
+    except wp.TaskEndRefused as exc:
+        print(
+            f"[중단] task {name!r} 종료 거부 — {exc.reason}. "
+            "task end는 handoff 진입이 남긴 durable intent(pid=0) 뒤에만 허용된다.",
+            file=sys.stderr,
+        )
+        return 1
     if result.refused:
         print(
             f"[중단] task {name!r} 보유 작업공간에 dirty(미커밋 변경)가 있다 — 종료 거부:",
@@ -2984,6 +2993,44 @@ def cmd_task_end(
     )
     # 집합 변경(일괄 반납) 직후 재열거 — 종료 후 보유 슬롯 0(전부 idle 반납)을 확인.
     _render_task_slots(wp, name)
+    return 0
+
+
+def cmd_task_reopen(
+    args: argparse.Namespace,
+    *,
+    worktree_pool=None,
+) -> int:
+    """`task reopen <이름> [--archive <basename>]` — 종료 task identity 복원."""
+    wp = worktree_pool or _load_module("worktree_pool", "worktree_pool.py")
+    if wp is None:
+        print(
+            "[중단] worktree_pool.py 엔진을 찾을 수 없다 — task reopen 불가.",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        result = wp.reopen_task(args.name, archive=args.archive)
+    except wp.InvalidTaskName as exc:
+        print(f"[중단] 부적합 task 명 {args.name!r} — {exc.reason}.", file=sys.stderr)
+        return 1
+    except wp.TaskReopenRefused as exc:
+        print(f"[중단] {exc}", file=sys.stderr)
+        if exc.archives:
+            print(
+                "  archive 후보: " + ", ".join(path.name for path in exc.archives),
+                file=sys.stderr,
+            )
+        return 1
+
+    print(f"✓ task {args.name!r} 동일 정체성 복원: {result.moved_from} → {result.moved_to}")
+    print(
+        "  장부 재등록: prefix=None(reset) · pid=0(durable handoff intent 상태) · "
+        f"started={result.task.started}"
+    )
+    print(
+        f"  다음 진입: `{_runtime_skill_entry('pm-bootstrap')} --task {args.name}`"
+    )
     return 0
 
 
@@ -4360,7 +4407,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_release.set_defaults(func=cmd_release)
 
     # task end <이름> — task 종료: claimed 소진 게이트·dirty 게이트·clean 시 일괄 반납 + 아카이브 이동
-    p_task = sub.add_parser("task", help="task 정체성 관리 (prefix·end)")
+    p_task = sub.add_parser("task", help="task 정체성 관리 (prefix·end·reopen)")
     task_sub = p_task.add_subparsers(dest="task_command", metavar="<task-command>")
     p_task_end = task_sub.add_parser(
         "end",
@@ -4369,6 +4416,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_task_end.add_argument("name", help="종료할 task 이름")
     p_task_end.set_defaults(func=cmd_task_end)
+
+    p_task_reopen = task_sub.add_parser(
+        "reopen",
+        help="종료 archive를 같은 task identity로 복원(bootstrap은 별도 실행)",
+    )
+    p_task_reopen.add_argument("name", help="복원할 task 이름")
+    p_task_reopen.add_argument(
+        "--archive", metavar="<basename>", default=None,
+        help="복수 후보 중 정확히 고를 _ended archive basename",
+    )
+    p_task_reopen.set_defaults(func=cmd_task_reopen)
 
     # task prefix <이름> <p|none> — task 의 ticket prefix 지정/변경/해제(중간 변경 자유).
     # `board.py new --task` 가 3단 해소(명시 --prefix > task 설정 > 기본 없음)로 이 값을 소비한다.

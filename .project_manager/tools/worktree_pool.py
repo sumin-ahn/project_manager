@@ -387,6 +387,47 @@ class InvalidTaskName(Exception):
         super().__init__(f"부적합 task 명 {name!r} — {reason}")
 
 
+class TaskArchived(Exception):
+    """동명 종료 archive가 있어 신규 task 생성을 거부한다."""
+
+    def __init__(self, name: str, archives: "tuple[Path, ...]"):
+        self.name = name
+        self.archives = archives
+        names = ", ".join(path.name for path in archives)
+        super().__init__(
+            f"task {name!r} 은(는) 종료 archive로 보관됨 ({names}) — task reopen 필요"
+        )
+
+
+class TaskReopenRefused(Exception):
+    """task archive 복원을 안전하게 완료할 수 없어 거부한다."""
+
+    def __init__(self, name: str, reason: str, *,
+                 archives: "tuple[Path, ...]" = (),
+                 moved_from: "Path | None" = None,
+                 moved_to: "Path | None" = None):
+        self.name = name
+        self.reason = reason
+        self.archives = archives
+        self.moved_from = moved_from
+        self.moved_to = moved_to
+        paths = ""
+        if moved_from is not None or moved_to is not None:
+            paths = f" (archive={moved_from}, active={moved_to})"
+        super().__init__(f"task {name!r} reopen 거부 — {reason}{paths}")
+
+
+class TaskEndRefused(Exception):
+    """등록 task의 durable handoff intent가 없어 종료를 거부한다."""
+
+    def __init__(self, name: str, reason: str, *, pid: "int | None" = None):
+        self.name = name
+        self.reason = reason
+        self.pid = pid
+        detail = f" (pid={pid})" if pid is not None else ""
+        super().__init__(f"task {name!r} 종료 거부 — {reason}{detail}")
+
+
 class NotTaskOwner(Exception):
     """release `--task <이름>` 이 그 task 명의가 아닌 슬롯을 반납하려 함 — 소유검사 거부.
 
@@ -716,6 +757,20 @@ class Task:
             started=d.get("started", ""),
             extra=extra,
         )
+
+
+class ReopenTaskResult:
+    """`reopen_task` 성공 결과."""
+
+    def __init__(self, name: str, moved_from: Path, moved_to: Path, task: Task):
+        self.name = name
+        self.moved_from = moved_from
+        self.moved_to = moved_to
+        self.task = task
+
+    def __repr__(self) -> str:
+        return (f"ReopenTaskResult(name={self.name!r}, moved_from={self.moved_from!r}, "
+                f"moved_to={self.moved_to!r}, task={self.task!r})")
 
 
 class SubmoduleStatus:
@@ -2398,6 +2453,9 @@ def bind_task(name: str, *, pid: "int | None" = None,
         tasks = _read_tasks_strict()
         existing = next((t for t in tasks if t.name == name), None)
         if existing is None:
+            archives = task_archive_candidates(name)
+            if archives:
+                raise TaskArchived(name, archives)
             task = Task(name=name, prefix=None, pid=pid, started=_now_utc())
             ensure_task_pm_state(name)
             tasks.append(task)
@@ -2490,6 +2548,106 @@ def release_task_pid(name: str) -> "Task | None":
 # 종료된 task 서술 폴더의 아카이브 루트 — `.local/tasks/_ended/`. 선행 `_` 라 `_validate_task_name`
 # 이 실 task 명으로는 거부하므로(path 컴포넌트 규칙) 아카이브 하위와 실 task 가 절대 충돌하지 않는다.
 _ENDED_DIR_NAME = "_ended"
+
+
+def task_archive_candidates(name: str) -> "tuple[Path, ...]":
+    """동명 task의 종료 archive 실디렉터리를 basename 순으로 반환한다.
+
+    후보는 정확히 ``_ended/<name>-YYYYMMDD[-N]`` 모양인 실디렉터리뿐이다.
+    파일과 symlink(디렉터리 symlink 포함)는 복원 후보가 아니다.
+    """
+    _validate_task_name(name)
+    ended_root = TASKS_DIR / _ENDED_DIR_NAME
+    if not ended_root.is_dir() or ended_root.is_symlink():
+        return ()
+    pattern = re.compile(rf"^{re.escape(name)}-\d{{8}}(?:-\d+)?$")
+    candidates = [
+        path for path in ended_root.iterdir()
+        if pattern.fullmatch(path.name) and path.is_dir() and not path.is_symlink()
+    ]
+    return tuple(sorted(candidates, key=lambda path: path.name))
+
+
+def reopen_task(name: str, archive: "str | None" = None) -> ReopenTaskResult:
+    """종료 archive를 같은 task identity로 복원한다.
+
+    모든 선검사를 마친 뒤 archive 디렉터리를 active 경로로 rename하고, 장부 raw dict의
+    ``tasks``만 갱신해 단 한 번 atomic replace한다. 장부 write 실패 시 원 archive 경로로
+    보상 rename하며, 보상도 실패하면 양쪽 경로를 포함해 fail-loud한다.
+    """
+    _validate_task_name(name)
+    if archive is not None:
+        if (not isinstance(archive, str) or not archive or archive in {".", ".."}
+                or Path(archive).is_absolute() or "/" in archive or "\\" in archive
+                or Path(archive).name != archive):
+            raise TaskReopenRefused(name, f"부적합 archive basename {archive!r}")
+
+    with _lease_lock():
+        data = _read_ledger_raw_strict()
+        rows = data.get("tasks", [])
+        if not isinstance(rows, list):
+            raise ValueError("worktree lease 장부의 'tasks' 값이 list가 아님")
+        tasks: list[Task] = []
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict) or not row.get("name"):
+                raise ValueError(
+                    f"worktree lease 장부의 tasks[{index}] 값이 유효한 task object가 아님"
+                )
+            tasks.append(Task.from_dict(row))
+
+        if any(task.name == name for task in tasks):
+            raise TaskReopenRefused(name, "활성 task 장부 레코드가 이미 존재함")
+        active = task_dir(name)
+        if active.exists() or active.is_symlink():
+            raise TaskReopenRefused(name, f"활성 task 폴더가 이미 존재함: {active}")
+
+        candidates = task_archive_candidates(name)
+        if not candidates:
+            raise TaskReopenRefused(name, "복원할 종료 archive가 없음")
+        if archive is None:
+            if len(candidates) != 1:
+                raise TaskReopenRefused(
+                    name,
+                    "archive 후보가 여러 개라 --archive exact basename이 필요함: "
+                    + ", ".join(path.name for path in candidates),
+                    archives=candidates,
+                )
+            selected = candidates[0]
+        else:
+            selected = next((path for path in candidates if path.name == archive), None)
+            if selected is None:
+                raise TaskReopenRefused(
+                    name,
+                    f"archive 후보에 없는 basename {archive!r}",
+                    archives=candidates,
+                )
+
+        task = Task(name=name, prefix=None, pid=0, started=_now_utc())
+        try:
+            selected.rename(active)
+        except OSError as exc:
+            raise TaskReopenRefused(
+                name, f"archive rename 실패: {exc}", archives=candidates,
+                moved_from=selected, moved_to=active,
+            ) from exc
+
+        data["tasks"] = [task_row.to_dict() for task_row in tasks] + [task.to_dict()]
+        try:
+            _write_ledger_raw(data)
+        except Exception as write_exc:
+            try:
+                active.rename(selected)
+            except Exception as rollback_exc:
+                raise TaskReopenRefused(
+                    name,
+                    f"장부 replace 실패({write_exc}); 보상 rename도 실패({rollback_exc})",
+                    archives=candidates, moved_from=selected, moved_to=active,
+                ) from rollback_exc
+            raise TaskReopenRefused(
+                name, f"장부 replace 실패; archive 원위치 보상 완료: {write_exc}",
+                archives=candidates, moved_from=selected, moved_to=active,
+            ) from write_exc
+        return ReopenTaskResult(name, selected, active, task)
 
 
 def slots_for_task(name: str) -> list[Lease]:
@@ -2615,6 +2773,13 @@ def end_task(name: str, *, git_runner: GitRunner | None = None) -> EndTaskResult
         # task 컬렉션도 어떤 lease/fs 변경보다 먼저 strict로 스냅샷한다. 뒤늦게 손상을 발견하면
         # 슬롯은 이미 idle로 썼는데 task 레코드는 남는 반쪽 end가 되므로 선검증이 필수다.
         tasks = _read_tasks_strict()
+        target = next((task for task in tasks if task.name == name), None)
+        if target is None:
+            raise TaskEndRefused(name, "등록 task가 아님")
+        if target.pid != 0:
+            raise TaskEndRefused(
+                name, "durable handoff intent(pid=0)가 없음", pid=target.pid,
+            )
         owned = [l for l in leases if l.state == "leased" and l.session == name]
 
         # 1) dirty 검사 — 하나라도 dirty 면 거부(부작용 0·장부 미변경).

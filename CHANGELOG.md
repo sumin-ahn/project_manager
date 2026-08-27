@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- 종료 archive를 같은 task identity로 복원하는 `task reopen`을 추가하고, archived 이름의 신규 bootstrap을 차단했다. `task end`는 handoff 진입이 남긴 durable `pid=0` intent 뒤에만 허용해 무handoff 종료의 슬롯·state 손실을 막는다.
+
 ## [1.7.11] - 2026-08-25
 
 ### Added

@@ -358,7 +358,7 @@ def test_card_rendered_flags_exist_in_parser(tree, mode):
 
 
 def test_task_mode_covers_new_task_commands():
-    """task 모드 정의서가 F1~F7 신규 task 커맨드(alloc·release·task end·task prefix)를 covered.
+    """task 모드 정의서가 task 관리 커맨드(alloc·release·end·reopen·prefix)를 covered.
 
     **한계 (spot-check·not generic 자동검출)**: 파서→정의서 방향을 완전 generic 으로(모든 파서 leaf
     가 카드에 있나) 강제하면 잘못이다 — 카드는 **curated** 표면(모드-스코프·신호 대 잡음·⑰)이라
@@ -375,6 +375,7 @@ def test_task_mode_covers_new_task_commands():
         ("pm_config.py", ("alloc",)),
         ("pm_config.py", ("release",)),
         ("pm_config.py", ("task", "end")),
+        ("pm_config.py", ("task", "reopen")),
         ("pm_config.py", ("task", "prefix")),
     }
     missing = required - declared

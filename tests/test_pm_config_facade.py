@@ -116,6 +116,20 @@ class FakeWorktreePool:
             self.reason = reason
             super().__init__(name)
 
+    class TaskReopenRefused(Exception):
+        def __init__(self, name, reason="거부", *, archives=()):
+            self.name = name
+            self.reason = reason
+            self.archives = tuple(archives)
+            super().__init__(f"task {name!r} reopen 거부 — {reason}")
+
+    class TaskEndRefused(Exception):
+        def __init__(self, name, reason="durable handoff intent(pid=0)가 없음", *, pid=1):
+            self.name = name
+            self.reason = reason
+            self.pid = pid
+            super().__init__(reason)
+
     class ReadonlySlotNotLeasable(RuntimeError):
         # readonly 공유 슬롯 lease-op 거부 대역 (⑬·T-0358·should-fix) — release/force_release 가
         # readonly 를 가리키면 이 예외로 rc1 surface 하는 CLI 경로를 검증.
@@ -128,7 +142,8 @@ class FakeWorktreePool:
                  set_test_raises=None, live_branches=None, reconcile=None,
                  alloc_returns=None, alloc_raises=None, task_record="__unset__",
                  end_task_result=None, validate_raises=False,
-                 set_prefix_result="__unset__", tasks=None, slot_git=None):
+                 set_prefix_result="__unset__", tasks=None, slot_git=None,
+                 reopen_result="__unset__", reopen_raises=None, end_raises=None):
         self.leases = leases or []
         self.calls: list[tuple] = []
         self._release_raises = release_raises   # 예외 클래스 또는 None
@@ -144,6 +159,9 @@ class FakeWorktreePool:
         self._task_record = task_record
         # end_task(T-0354) — 반환할 EndTaskResult 대역(SimpleNamespace).
         self._end_task_result = end_task_result
+        self._end_raises = end_raises
+        self._reopen_result = reopen_result
+        self._reopen_raises = reopen_raises
         # set_task_prefix(T-0357·F5) — 반환할 갱신 Task 대역 또는 None(task 부재). "__unset__"
         # 기본은 인자(name, prefix) 를 실은 SimpleNamespace 로 해소(대다수 테스트가 성공 경로).
         self._set_prefix_result = set_prefix_result
@@ -277,10 +295,25 @@ class FakeWorktreePool:
 
     def end_task(self, name, *, git_runner=None):
         self.calls.append(("end_task", name))
+        if self._end_raises is not None:
+            raise self._end_raises
         if self._end_task_result is not None:
             return self._end_task_result
         return SimpleNamespace(name=name, released=[], dirty=[], refused=False,
                                moved_from=None, moved_to=None)
+
+    def reopen_task(self, name, archive=None):
+        self.calls.append(("reopen_task", name, archive))
+        if self._reopen_raises is not None:
+            raise self._reopen_raises
+        if self._reopen_result != "__unset__":
+            return self._reopen_result
+        return SimpleNamespace(
+            name=name,
+            moved_from=Path("_ended") / f"{name}-20260827",
+            moved_to=Path("tasks") / name,
+            task=SimpleNamespace(prefix=None, pid=0, started="2026-08-27T00:00:00+00:00"),
+        )
 
     def set_task_prefix(self, name, prefix):
         # task prefix 지정/변경/해제 write 백엔드 대역 (T-0357·F5) — (name, prefix) 를 기록.
@@ -3563,6 +3596,51 @@ def test_main_routes_task_end_to_engine(pc, monkeypatch):
     rc = pc.main(["task", "end", "job"])
     assert rc == 0
     assert wp.did("end_task")
+
+
+def test_task_end_handoff_intent_gate_is_rc1(pc, capsys):
+    refusal = FakeWorktreePool.TaskEndRefused("job", pid=77)
+    wp = FakeWorktreePool(end_raises=refusal)
+    rc = pc.cmd_task_end(
+        argparse.Namespace(name="job"), worktree_pool=wp,
+        board=FakeBoard(task_scan={"claimed": [], "prefix_open": []}),
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "pid=0" in err and "durable" in err
+
+
+def test_task_reopen_forwards_archive_and_prints_bootstrap_prescription(pc, capsys):
+    wp = FakeWorktreePool()
+    rc = pc.cmd_task_reopen(
+        argparse.Namespace(name="job", archive="job-20260827"), worktree_pool=wp,
+    )
+    assert rc == 0
+    assert ("reopen_task", "job", "job-20260827") in wp.calls
+    out = capsys.readouterr().out
+    assert "prefix=None" in out and "pid=0" in out
+    assert f"{pc._runtime_skill_entry('pm-bootstrap')} --task job" in out
+
+
+def test_task_reopen_refusal_lists_candidates(pc, capsys):
+    archives = (Path("_ended/job-20260827"), Path("_ended/job-20260827-2"))
+    wp = FakeWorktreePool(reopen_raises=FakeWorktreePool.TaskReopenRefused(
+        "job", "복수 후보", archives=archives,
+    ))
+    rc = pc.cmd_task_reopen(
+        argparse.Namespace(name="job", archive=None), worktree_pool=wp,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "job-20260827" in err and "job-20260827-2" in err
+
+
+def test_main_routes_task_reopen_to_engine(pc, monkeypatch):
+    wp = FakeWorktreePool()
+    monkeypatch.setattr(pc, "_load_module", lambda name, filename: wp)
+    rc = pc.main(["task", "reopen", "job", "--archive", "job-20260827"])
+    assert rc == 0
+    assert ("reopen_task", "job", "job-20260827") in wp.calls
 
 
 # ════════════════════════════════════════════════════════════════════════

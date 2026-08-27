@@ -8168,6 +8168,17 @@ def test_bind_task_rejects_corrupt_tasks_collection_without_rewrite(wp):
     assert not wp.task_dir("newjob").exists()
 
 
+def test_bind_task_refuses_archived_identity_without_creating_state(wp):
+    archive = wp.TASKS_DIR / "_ended" / "job-20260827"
+    archive.mkdir(parents=True)
+    (archive / "pm_state.md").write_text("old-state", encoding="utf-8")
+    with pytest.raises(wp.TaskArchived) as exc_info:
+        wp.bind_task("job")
+    assert exc_info.value.archives == (archive,)
+    assert wp.find_task("job") is None and not wp.task_dir("job").exists()
+    assert (archive / "pm_state.md").read_text(encoding="utf-8") == "old-state"
+
+
 def test_bind_task_resume_same_pid(wp):
     """기존 task 를 내 pid 로 재개 = resumed(crash 전 나·재진입)."""
     wp.bind_task("job1")                             # created (pid=os.getpid())
@@ -8578,8 +8589,130 @@ def test_bind_slot_task_name_immediately_resolves_via_slots_for_task(wp):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# end_task — task 종료(dirty 게이트·일괄 반납·아카이브 이동·②·T-0354·F4)
+# task reopen + end_task — 동일 정체성 복원·종료 게이트
 # ════════════════════════════════════════════════════════════════════════
+
+
+def _archive_task(wp, basename="job-20260827", content=b"old-state\x00"):
+    archive = wp.TASKS_DIR / "_ended" / basename
+    archive.mkdir(parents=True)
+    (archive / "pm_state.md").write_bytes(content)
+    return archive
+
+
+def test_task_archive_candidates_only_exact_real_directories(wp):
+    exact = _archive_task(wp)
+    (exact.parent / "job-20260827-2").mkdir()
+    (exact.parent / "job-20260827.txt").mkdir()
+    (exact.parent / "other-20260827").mkdir()
+    (exact.parent / "job-20260828").write_text("file", encoding="utf-8")
+    try:
+        (exact.parent / "job-20260829").symlink_to(exact, target_is_directory=True)
+    except OSError:
+        pass
+    assert [path.name for path in wp.task_archive_candidates("job")] == [
+        "job-20260827", "job-20260827-2"
+    ]
+
+
+def test_reopen_task_single_archive_preserves_tree_and_ledger_siblings(wp, monkeypatch):
+    archive = _archive_task(wp)
+    payload = {
+        "leases": [{"slot": "work/A_1", "repo": "A", "session": "", "pid": 0,
+                    "started": "t", "state": "idle", "test_cmd": None}],
+        "tasks": [{"name": "other", "prefix": "PAY", "pid": 0, "started": "old"}],
+        "future": {"keep": True},
+    }
+    wp.LEASES_FILE.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(wp, "_now_utc", lambda: "2026-08-27T14:00:00+00:00")
+    result = wp.reopen_task("job")
+    assert result.moved_from == archive and result.moved_to == wp.task_dir("job")
+    assert not archive.exists()
+    assert (wp.task_dir("job") / "pm_state.md").read_bytes() == b"old-state\x00"
+    assert result.task == wp.Task("job", prefix=None, pid=0,
+                                  started="2026-08-27T14:00:00+00:00")
+    rewritten = json.loads(wp.LEASES_FILE.read_text(encoding="utf-8"))
+    assert rewritten["leases"] == payload["leases"] and rewritten["future"] == payload["future"]
+    assert [row["name"] for row in rewritten["tasks"]] == ["other", "job"]
+
+
+def test_reopen_task_zero_multiple_and_exact_selection_are_side_effect_free(wp):
+    before = wp.LEASES_FILE.read_bytes() if wp.LEASES_FILE.exists() else None
+    with pytest.raises(wp.TaskReopenRefused, match="archive가 없음"):
+        wp.reopen_task("job")
+    assert (wp.LEASES_FILE.read_bytes() if wp.LEASES_FILE.exists() else None) == before
+    first = _archive_task(wp)
+    second = _archive_task(wp, "job-20260827-2", b"second")
+    with pytest.raises(wp.TaskReopenRefused) as exc_info:
+        wp.reopen_task("job")
+    assert exc_info.value.archives == (first, second)
+    assert first.exists() and second.exists() and not wp.task_dir("job").exists()
+    result = wp.reopen_task("job", archive=second.name)
+    assert result.moved_from == second
+    assert (wp.task_dir("job") / "pm_state.md").read_bytes() == b"second"
+    assert first.exists()
+
+
+@pytest.mark.parametrize("archive", ["../job-20260827", "/tmp/job-20260827",
+                                      "job\\20260827", ".", "other-20260827"])
+def test_reopen_task_rejects_unsafe_or_nonmember_archive(wp, archive):
+    candidate = _archive_task(wp)
+    with pytest.raises(wp.TaskReopenRefused):
+        wp.reopen_task("job", archive=archive)
+    assert candidate.exists() and not wp.task_dir("job").exists()
+
+
+def test_reopen_task_refuses_active_record_or_folder(wp):
+    archive = _archive_task(wp)
+    with wp._lease_lock():
+        wp._write_tasks([wp.Task("job", pid=0, started="t")])
+    with pytest.raises(wp.TaskReopenRefused, match="장부 레코드"):
+        wp.reopen_task("job")
+    assert archive.exists()
+    with wp._lease_lock():
+        wp._write_tasks([])
+    wp.task_dir("job").mkdir()
+    with pytest.raises(wp.TaskReopenRefused, match="활성 task 폴더"):
+        wp.reopen_task("job")
+    assert archive.exists()
+
+
+def test_reopen_task_ledger_failure_compensates_archive_rename(wp, monkeypatch):
+    archive = _archive_task(wp)
+    before = wp.LEASES_FILE.read_bytes() if wp.LEASES_FILE.exists() else None
+    monkeypatch.setattr(wp, "_write_ledger_raw",
+                        lambda data: (_ for _ in ()).throw(OSError("write")))
+    with pytest.raises(wp.TaskReopenRefused, match="보상 완료"):
+        wp.reopen_task("job")
+    assert archive.exists() and not wp.task_dir("job").exists()
+    assert (wp.LEASES_FILE.read_bytes() if wp.LEASES_FILE.exists() else None) == before
+
+
+def test_reopen_task_initial_rename_failure_keeps_archive_and_ledger(wp, monkeypatch):
+    archive = _archive_task(wp)
+    before = wp.LEASES_FILE.read_bytes() if wp.LEASES_FILE.exists() else None
+    monkeypatch.setattr(Path, "rename", lambda path, target: (_ for _ in ()).throw(OSError("move")))
+    with pytest.raises(wp.TaskReopenRefused, match="archive rename 실패"):
+        wp.reopen_task("job")
+    assert archive.exists() and not wp.task_dir("job").exists()
+    assert (wp.LEASES_FILE.read_bytes() if wp.LEASES_FILE.exists() else None) == before
+
+
+def test_reopen_task_rollback_failure_reports_both_paths(wp, monkeypatch):
+    archive = _archive_task(wp)
+    active = wp.task_dir("job")
+    real_rename = Path.rename
+    def rename(path, target):
+        if path == active:
+            raise OSError("rollback")
+        return real_rename(path, target)
+    monkeypatch.setattr(Path, "rename", rename)
+    monkeypatch.setattr(wp, "_write_ledger_raw",
+                        lambda data: (_ for _ in ()).throw(OSError("write")))
+    with pytest.raises(wp.TaskReopenRefused) as exc_info:
+        wp.reopen_task("job")
+    assert str(archive) in str(exc_info.value) and str(active) in str(exc_info.value)
+    assert active.exists()
 
 
 def test_end_task_clean_releases_all_removes_record_and_archives(wp, proj):
@@ -8587,6 +8720,7 @@ def test_end_task_clean_releases_all_removes_record_and_archives(wp, proj):
     (proj / "work" / "A_1").mkdir(parents=True, exist_ok=True)
     (proj / "work" / "A_2").mkdir(parents=True, exist_ok=True)
     wp.bind_task("job")                                        # task 레코드 + .local/tasks/job/
+    wp.release_task_pid("job")
     (wp.task_dir("job") / "pm_state.md").write_text("state", encoding="utf-8")
     _seed(wp,
           _lease(wp, slot="work/A_1", repo="A", session="job", state="leased"),
@@ -8611,6 +8745,7 @@ def test_end_task_dirty_refuses_with_no_side_effects(wp, proj):
     """보유 슬롯 dirty → 거부(released/moved 없음·슬롯 leased·task 레코드·서술 폴더 모두 잔존)."""
     (proj / "work" / "A_1").mkdir(parents=True, exist_ok=True)
     wp.bind_task("job")
+    wp.release_task_pid("job")
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="job", state="leased"))
     git = FakeGit(dirty=True)
     result = wp.end_task("job", git_runner=git)
@@ -8626,7 +8761,7 @@ def test_end_task_dirty_refuses_with_no_side_effects(wp, proj):
 def test_end_task_no_descriptor_folder_graceful(wp):
     """서술 폴더 부재(장부 task 레코드만) → 이동 없음(moved_to None)·반납/제거는 수행."""
     with wp._lease_lock():
-        wp._write_tasks([wp.Task(name="job", pid=1, started="t")])   # 폴더 없이 레코드만
+        wp._write_tasks([wp.Task(name="job", pid=0, started="t")])   # 폴더 없이 레코드만
     _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="job", state="leased"))
     git = FakeGit(dirty=False)
     result = wp.end_task("job", git_runner=git)
@@ -8639,6 +8774,7 @@ def test_end_task_no_descriptor_folder_graceful(wp):
 def test_end_task_no_owned_slots_still_ends(wp):
     """보유 슬롯 0 이어도 task 레코드 제거 + 서술 폴더 이동은 수행(released 빈 리스트)."""
     wp.bind_task("job")
+    wp.release_task_pid("job")
     git = FakeGit(dirty=False)
     result = wp.end_task("job", git_runner=git)
     assert result.released == [] and not result.refused
@@ -8650,6 +8786,7 @@ def test_end_task_clears_bound_marker(wp, proj):
     """end_task 일괄 idle 반납은 release 동형 lifecycle — bound 마커도 해제한다(codex suggestion·T-0389)."""
     (proj / "work" / "A_1").mkdir(parents=True, exist_ok=True)
     wp.bind_task("job")
+    wp.release_task_pid("job")
     _seed(wp, wp.Lease(slot="work/A_1", repo="A", session="job", pid=os.getpid(),
                        started="t", state="leased", bound=True))   # 사람 bind 슬롯
     git = FakeGit(dirty=False)
@@ -8664,8 +8801,9 @@ def test_end_task_archive_dir_collision_uniquifies(wp):
     import datetime as _dt
     date = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d")
     ended = wp.TASKS_DIR / "_ended"
-    (ended / f"job-{date}").mkdir(parents=True, exist_ok=True)      # 선점 목적지
     wp.bind_task("job")
+    wp.release_task_pid("job")
+    (ended / f"job-{date}").mkdir(parents=True, exist_ok=True)      # 선점 목적지
     (wp.task_dir("job") / "x").write_text("y", encoding="utf-8")
     git = FakeGit(dirty=False)
     result = wp.end_task("job", git_runner=git)
@@ -8691,9 +8829,27 @@ def test_end_task_rejects_unsafe_name_before_writes(wp, proj):
 def test_end_task_valid_name_still_ends(wp):
     """정상 이름은 검증 통과 후 종료(검증이 정상 경로를 막지 않음·sensitivity 대조)."""
     wp.bind_task("job")
+    wp.release_task_pid("job")
     git = FakeGit(dirty=False)
     result = wp.end_task("job", git_runner=git)
     assert not result.refused and wp.find_task("job") is None
+
+
+def test_end_task_missing_or_without_handoff_intent_has_no_side_effects(wp, proj):
+    (proj / "work" / "A_1").mkdir(parents=True)
+    _seed(wp, _lease(wp, slot="work/A_1", repo="A", session="job", state="leased"))
+    before = wp.LEASES_FILE.read_bytes()
+    git = FakeGit(dirty=False)
+    with pytest.raises(wp.TaskEndRefused, match="등록 task"):
+        wp.end_task("job", git_runner=git)
+    assert git.calls == [] and wp.LEASES_FILE.read_bytes() == before
+
+    wp.bind_task("job")
+    before = wp.LEASES_FILE.read_bytes()
+    with pytest.raises(wp.TaskEndRefused, match="pid=0"):
+        wp.end_task("job", git_runner=git)
+    assert git.calls == [] and wp.LEASES_FILE.read_bytes() == before
+    assert wp.task_dir("job").exists()
 
 
 # ════════════════════════════════════════════════════════════════════════

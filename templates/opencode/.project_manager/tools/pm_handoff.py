@@ -3818,6 +3818,14 @@ class PmHandoff:
         except Exception as exc:  # noqa: BLE001 — 호출부가 strict 중단/관측용 강등을 결정한다.
             return "lookup-failed", str(exc)
         if registered is None:
+            candidates_fn = getattr(wp, "task_archive_candidates", None)
+            if callable(candidates_fn):
+                try:
+                    archives = candidates_fn(task)
+                except Exception as exc:  # noqa: BLE001 — archive lookup도 strict 진단으로 승격.
+                    return "lookup-failed", str(exc)
+                if archives:
+                    return "archived", ", ".join(path.name for path in archives)
             return "unregistered", None
         self._task_record_snapshot = (task, registered)
         return "registered", None
@@ -3845,6 +3853,16 @@ class PmHandoff:
             print(
                 f"\n[중단] task 장부 membership 조회 실패 — {detail}. "
                 "task 상태를 만들거나 기록하지 않는다.",
+                file=sys.stderr,
+            )
+            return False
+        if status == "archived":
+            print(
+                f"\n[중단] task {task!r} 은(는) 종료 archive로 보관됨 ({detail}) — "
+                "새 task로 bootstrap하지 않는다. "
+                f"`pm-config.py task reopen {task}`"
+                " (복수 후보면 `--archive <basename>` 추가) 후 bootstrap으로 재진입하라. "
+                "(log/current.md·pm_state·dashboard 어떤 것도 건드리지 않는다.)",
                 file=sys.stderr,
             )
             return False
@@ -4916,6 +4934,15 @@ def _main(
                 resolved_task
             )
             if registration_status != "registered":
+                if registration_status == "archived":
+                    print(
+                        f"[중단] 자동 해소 task {resolved_task!r} 은(는) 종료 archive로 보관됨 "
+                        f"({registration_detail}). `pm-config.py task reopen {resolved_task}`"
+                        " (복수 후보면 `--archive <basename>` 추가) 후 bootstrap으로 재진입하라. "
+                        "legacy 쓰기 경로로 강등하지 않는다.",
+                        file=sys.stderr,
+                    )
+                    return 1
                 if registration_status == "unregistered":
                     demotion_reason = "task 장부 미등록"
                 elif registration_status == "lookup-failed":
