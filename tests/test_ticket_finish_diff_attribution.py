@@ -95,7 +95,7 @@ def _measurement(root: Path, tf, ticket_id: str):
         regression_cwd=root,
         log_file=root / "log.md",
     )
-    external = tf._load_external_review()
+    external = tf._load_additional_reviewer()
     assert external is not None
     touches = finisher._measured_touches(ticket_id)
     assert touches is not None
@@ -186,7 +186,7 @@ def test_staged_rename_uses_source_and_destination_for_attribution(
         regression_cwd=root,
         log_file=root / "log.md",
     )
-    external = tf._load_external_review()
+    external = tf._load_additional_reviewer()
     assert external is not None
     touches = finisher._measured_touches("T-6601")
     assert touches is not None
@@ -365,7 +365,7 @@ def test_git_call_count_does_not_scale_with_claimed_ticket_count(
         regression_cwd=root,
         log_file=root / "log.md",
     )
-    external = tf._load_external_review()
+    external = tf._load_additional_reviewer()
     touches = finisher._measured_touches(ticket_id)
     assert external is not None and touches is not None
     git_calls: list[list[str]] = []

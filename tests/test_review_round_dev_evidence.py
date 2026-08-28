@@ -16,7 +16,7 @@
 재현 형상은 board 에 실재하던 두 티켓이다 — `01-architect`(회수) → `02-developer`(시드) →
 `03-code-reviewer`(준비), 그리고 `01-developer`(시드) → `02-code-reviewer`(준비).
 
-[[T-0812]] 가 스폰면(`external_review.py` 의 `prepare_ticket_body`)에 같은 축을 배선한다 —
+[[T-0812]] 가 스폰면(`additional_reviewer.py` 의 `prepare_ticket_body`)에 같은 축을 배선한다 —
 판정 함수는 이 파일이 소유하는 `pd.unharvested_developer_round` 그대로이고, 축이 둘로 갈리지
 않게 두 표면 형상표(A0/A1/B/C/D/E)를 이 파일 하나에서 고정한다(§스폰면).
 """
@@ -374,11 +374,11 @@ def test_cross_auto_prepare_shares_the_prepare_seam(pd, rounds_env, capsys, monk
 
     # config/board 소유 해소 — 실 board 트리는 pm_home 이지 slot(cwd) 이 아니다(rounds_env 형상과
     # 같다). 하네스 스폰 앞의 게이트만 우회하고, 준비·예약·장부는 전부 실 코드가 만든다.
-    external = pd._load_external_review()
+    external = pd._load_additional_reviewer()
     monkeypatch.setattr(external, "repo_root_from_cwd", lambda _cwd: slot)
     monkeypatch.setattr(external, "resolve_pm_home_for_repo", lambda *_a, **_kw: pm_home)
     monkeypatch.setattr(external, "_owns_real_board", lambda _path: False)
-    monkeypatch.setattr(pd, "_load_external_review", lambda: external)
+    monkeypatch.setattr(pd, "_load_additional_reviewer", lambda: external)
     monkeypatch.setattr(pd, "local_config", lambda: {pd.DELEGATE_ENABLED_KEY: "true"})
     # 범위 감사·codex egress 승격은 이 진입점 판정과 독립 축이다(전용 회귀가 각각 소유) —
     # 여기서 죽이면 준비/예약/장부 축만 남는다.
@@ -443,7 +443,7 @@ def test_both_review_channels_get_the_same_rule(pd, rounds_env, capsys):
     경로가 열려 있어 같은 준비면을 지난다.
     """
     pm_home, slot, tickets, board = rounds_env
-    for ticket, role in (("T-7814", "code-reviewer"), ("T-7815", "external-reviewer")):
+    for ticket, role in (("T-7814", "code-reviewer"), ("T-7815", "additional-reviewer")):
         _write_spec(tickets, ticket)
         assert board.main(["section-add", ticket, "--role", "developer"]) == 0
         capsys.readouterr()
@@ -534,7 +534,7 @@ def test_crlf_seed_round_is_still_judged_as_seed(pd, rounds_env, capsys):
     assert WARNING_MARK in capsys.readouterr().err
 
 
-# ── 스폰면([[T-0812]]) — external_review.py 의 `prepare_ticket_body` seam ──────────────
+# ── 스폰면([[T-0812]]) — additional_reviewer.py 의 `prepare_ticket_body` seam ──────────────
 #
 # 준비면과 축은 같되(`pd.unharvested_developer_round` 를 그대로 부른다) 문구는 다르다 — 형상 B
 # 에서 "실리지 않습니다"라고 단정하지 않고, 이번 프롬프트에 실제로 실리는 developer 산출 라운드
@@ -542,13 +542,13 @@ def test_crlf_seed_round_is_still_judged_as_seed(pd, rounds_env, capsys):
 # 여기서 고정한다.
 
 SPAWN_WARNING_MARK = "산출 없는 developer 라운드 위에서 스폰됩니다"
-EXTERNAL_REVIEW = TOOLS / "external_review.py"
+ADDITIONAL_REVIEWER = TOOLS / "additional_reviewer.py"
 DIFF = "diff --git a/x.py b/x.py\n@@ -1 +1 @@\n-old\n+new\n"
 
 
 def _load_external():
     spec = importlib.util.spec_from_file_location(
-        "external_review_dev_evidence", EXTERNAL_REVIEW,
+        "additional_reviewer_dev_evidence", ADDITIONAL_REVIEWER,
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -589,7 +589,7 @@ def _stub_real_send_external(external, monkeypatch, tmp_path, prompts: list[str]
 
     측정 폭의 기준점은 묶음 장부가 선언한 통합 브랜치와의 merge-base 다. 이 픽스처의 PM 홈은
     코드 git 이 아니라 그 해소가 성립하지 않으므로 해소된 값을 그 자리에 넣는다 — 기준점
-    해소·거부 자체는 전용 파일(`test_external_review_diff_cap.py`)이 실 git 으로 소유한다.
+    해소·거부 자체는 전용 파일(`test_additional_reviewer_diff_cap.py`)이 실 git 으로 소유한다.
     """
     monkeypatch.setattr(
         external, "cluster_integration_tip", lambda *a, **k: ("task/main", None))
@@ -619,7 +619,7 @@ def _stub_real_send_external(external, monkeypatch, tmp_path, prompts: list[str]
     monkeypatch.setattr(external, "create_reviewer_workspace", _workspace)
     monkeypatch.setattr(external, "run_review", _run_review)
     monkeypatch.setattr(
-        external, "_harvest_external_review_section", lambda *_a, **_k: None,
+        external, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
     )
 
 
@@ -752,7 +752,7 @@ def test_spawn_face_real_send_over_a_seed_developer_round_warns_without_seed_bod
 ):
     """실 스폰 1건(형상 A1) — 미리보기와 같은 seam 이 실전송 경로도 지나는지 값으로 확인한다.
 
-    스텁 경계는 `create_reviewer_workspace`·`run_review`·`_harvest_external_review_section`
+    스텁 경계는 `create_reviewer_workspace`·`run_review`·`_harvest_additional_reviewer_section`
     셋뿐이다. rc=0 · stderr 경고 · 프롬프트에 시드 라운드 본문이 실리지 않음을 단언한다.
     """
     pm_home, slot, tickets, _board = rounds_env

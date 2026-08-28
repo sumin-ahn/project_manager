@@ -40,7 +40,7 @@ engine은 `--gate <T-NNNN>`별 라운드 장부를 세고, 실행 전에 **수�
 상한으로 종결된 게이트에 must-fix 가 남았으면 게이트를 닫기 전에 그 잔여의 처분을 장부에 선언한다. 선언되지 않은 잔여는 릴리즈를 막는다 — `board.py livegate record`/`check` 가 실행 전에 차단하고 우회 플래그는 없다(그 자리에 "사소하니 넘어간다"는 판단이 들어가 실사고가 났다).
 
 ```bash
-python3 .project_manager/tools/external_review.py --resolve-gate <게이트> --pm-verified
+python3 .project_manager/tools/additional_reviewer.py --resolve-gate <게이트> --pm-verified
 ```
 
 - 처분은 현재 티켓 fix의 판정 표면과 기계 확인을 재검증하는 `pm-verified` 하나다.

@@ -47,7 +47,7 @@ sed 로 못 채우는 **자유서술 placeholder** 채움(하니스 헤드리스
     안 됐다"는 잘못된 신호가 된다 — 백업 자리가 막힌 공유 문서를 재렌더에서 빼고 rc 0 으로 끝내는
     기존 처리와 같은 규칙이다. 계획 단계 위반은 반대다: 아직 아무것도 복사하지 않았으므로 전체를
     rc 1 로 멈춘다(부분 설치 0). dest 루트 자체 교체만 예외로 적용 중에도 즉시 전체 중단이다.
-  - fill opt-in 게이트(external_review 선례): 하니스 실구동은 토큰·외부모델 비용 → 기본 OFF.
+  - fill opt-in 게이트(additional_reviewer 선례): 하니스 실구동은 토큰·외부모델 비용 → 기본 OFF.
     **실호출은 환경변수 PM_IMPORT_LIVE_HARNESS=1 AND --fill auto 동시 충족 시만.** 둘 중 하나라도
     없으면 실 runner 를 호출하지 않는다(CI·기본 테스트는 stub). 회사 배포(claude code 없음)는
     opencode 구동 경로 1급 — 혼합이면 등록 순서상 첫 가용 하네스를 택한다.
@@ -422,7 +422,7 @@ OPENCODE_MODEL_TOKEN = "{{OPENCODE_PRO_MODEL}}"
 # `opencode models` 조회 명령 — 가용 모델의 단일 진실(LLM 추측 아님). 줄당 `provider/model`.
 OPENCODE_MODELS_CMD = ("opencode", "models")
 
-# fill 실 하니스 구동 opt-in 게이트 환경변수 (external_review 선례). PM_IMPORT_LIVE_HARNESS=1
+# fill 실 하니스 구동 opt-in 게이트 환경변수 (additional_reviewer 선례). PM_IMPORT_LIVE_HARNESS=1
 # AND --fill auto 동시 충족 시만 실 runner 호출 — 둘 중 하나라도 없으면 stub/manual 강제.
 LIVE_HARNESS_ENV = "PM_IMPORT_LIVE_HARNESS"
 
@@ -3092,7 +3092,7 @@ def run_board_init(dest_root: Path) -> int:
     필요 없다(신규 카테고리 신설이 아니다).
 
     같은 인터프리터(sys.executable)로 호출 — board.py 는 pyyaml 의존이라 venv 보존 필요.
-    비대화형(stdin 비-tty)이면 external_review opt-in 은 board.py 가 안전쪽(OFF)으로 건너뛴다.
+    비대화형(stdin 비-tty)이면 additional_reviewer opt-in 은 board.py 가 안전쪽(OFF)으로 건너뛴다.
     stdin=DEVNULL 의 isatty() 가 Windows 서 신뢰불가라, env 로
     `PM_NONINTERACTIVE=1` 을 명시 전달해 결정적으로 skip 시킨다 (isatty 폴백 보조).
 
@@ -4222,7 +4222,7 @@ def _real_harness_runner(
 ) -> tuple[bool, str]:
     """실 하니스 바이너리를 subprocess 로 구동(fail-soft). 반환: (성공 여부, stdout).
 
-    external_review.run_reviewer 선례 — 예외를 raise 하지 않고 (False, 에러텍스트)로 감싼다.
+    additional_reviewer.run_reviewer 선례 — 예외를 raise 하지 않고 (False, 에러텍스트)로 감싼다.
     프롬프트는 argv 마지막 인자로 전달한다(claude -p "<prompt>" / opencode run "<prompt>" ...).
 
     SF: cwd 가 주어지면 *대상 repo* 에서 구동한다(run_fill 이 dest_root 를 바인딩). 호출자

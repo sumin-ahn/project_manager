@@ -1,7 +1,7 @@
 """board_root 추종 — board.py 밖 도구들의 board-path 해소 가드 (T-0162 A6·ADR-0033 ①).
 
 A(board.py board_root + pm_config)가 board/ 분리를 board.py 안에서 해소했지만, **board.py 밖**
-도구들(ticket_finish·pm_handoff·pm_bootstrap·external_review)이 board path 를 자체 상수/legacy
+도구들(ticket_finish·pm_handoff·pm_bootstrap·additional_reviewer)이 board path 를 자체 상수/legacy
 별칭으로 굳혀, board/ 분리(B) 후 stale(wiki) 위치를 봐 count 0/미해소가 되던 갭(code-reviewer
 포착)을 닫는다. 각 도구가 board_root() 를 *추종*하는지 — board import 도구는 함수 호출, 안 하는
 도구는 board.py 동형 자체 해소 — 를 hermetic 하게 단언한다.
@@ -179,12 +179,12 @@ def test_bootstrap_instance_areas_file_legacy(bootstrap):
 
 
 # ════════════════════════════════════════════════════════════════════════
-# external_review — parse_ticket_touches(_tickets_dir 추종)
+# additional_reviewer — parse_ticket_touches(_tickets_dir 추종)
 # ════════════════════════════════════════════════════════════════════════
 
 @pytest.fixture
 def external(tmp_path, monkeypatch):
-    mod = _load("external_review")
+    mod = _load("additional_reviewer")
     monkeypatch.setattr(mod, "REPO", tmp_path)
     mod._tmp = tmp_path
     return mod

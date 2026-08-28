@@ -19,6 +19,8 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
+_ADDITIONAL_REVIEWER_MODULE = "additional_reviewer.py"
+_RETIRED_REVIEWER_MODULE = "external_review.py"
 
 
 def _load_engine_rev(tools: Path = TOOLS):
@@ -56,6 +58,21 @@ def test_stamped_modules_list_is_complete():
         f"목록에만: {sorted(set(er.STAMPED_MODULES) - found)} / "
         f"파일에만(미등재): {sorted(found - set(er.STAMPED_MODULES))}"
     )
+
+
+def test_reviewer_rename_is_exact_in_stamped_module_inventory():
+    """stamp/bump 인벤토리는 신 리뷰어 모듈만 추적한다(구 파일명·두 이름 공존 금지).
+
+    단순 glob 완결성만으로는 구 파일이 함께 남고 둘 다 STAMPED_MODULES에 등재된 잘못된 출하도
+    green이다. rename 계약은 신 이름 포함과 구 이름 제외를 각각 값으로 고정해야 한다.
+    """
+    er = _load_engine_rev()
+    inventory = set(er.STAMPED_MODULES)
+
+    assert _ADDITIONAL_REVIEWER_MODULE in inventory
+    assert _RETIRED_REVIEWER_MODULE not in inventory
+    assert (TOOLS / _ADDITIONAL_REVIEWER_MODULE).is_file()
+    assert not (TOOLS / _RETIRED_REVIEWER_MODULE).exists()
 
 
 def test_bump_is_idempotent_and_covers_all_files():

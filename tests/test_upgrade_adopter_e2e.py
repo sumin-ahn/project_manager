@@ -601,13 +601,13 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
     )
 
 
-# T-0590 재현행: 추가 리뷰어 온보딩(기본 프로필 상수 + maybe_prompt_external_review)이
+# T-0590 재현행: 추가 리뷰어 온보딩(기본 프로필 상수 + maybe_prompt_additional_reviewer)이
 #   updater 본문에 들어오면서 whole-file SHA 가 이동했다. 역적용 delta(T-0591 어댑터 수취 채널)는
 #   그대로 적용되므로 실 배달 경계는 불변이고, RUN1 fixture 는 새 온보딩을 포함한 실 updater 다
 #   (이 경로는 PM_NONINTERACTIVE=1 로 돌아 질문·conf write 가 발화하지 않는다).
 #   T-0590 R2 에서 한 번 더 이동 — 온보딩의 "이미 결정됨" 판정면을 conf raw 텍스트 substring 에서
 #   `_read_local_conf` 파싱 키 존재로 바꿨다(주석 한 줄이 결정을 가로채던 결함). 재검토 결과 이동
-#   범위는 maybe_prompt_external_review 본문뿐이고, 이 fixture 가 ratchet 하는 배달 경계
+#   범위는 maybe_prompt_additional_reviewer 본문뿐이고, 이 fixture 가 ratchet 하는 배달 경계
 #   (source/manifest planning → apply → self-update 순서)와 역적용 delta 구간에는 겹침이 없다.
 #   T-0590 R3 에서 또 한 번 이동 — `_main` 의 변경 0 수렴 지점이 추가 리뷰어 opt-in 도 호출하게
 #   됐다(has-changes 경로에서만 부르던 결함). 이동분은 `print("최신 — 변경 없음.")` 뒤의
@@ -617,12 +617,12 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   T-0590 R3 후속에서 또 이동 — 온보딩이 기존 대상(레거시 `reviewer_cmd`·구조화 튜플)을 덮지
 #   않도록 대상 판정(classify_additional_reviewer_target)과 활성 플래그 전용 블록이 들어왔고,
 #   EOF 응답이 false 를 박제하지 않게 바뀌었다. 이동 범위는 온보딩 상수/헬퍼와
-#   maybe_prompt_external_review 본문뿐이라 역적용 delta 구간·배달 경계와 겹치지 않는다.
+#   maybe_prompt_additional_reviewer 본문뿐이라 역적용 delta 구간·배달 경계와 겹치지 않는다.
 #   T-0590 R4 에서 또 이동 — 온보딩 응답의 기록 시점 판정이 질문 **전** 판정에서 커밋 시점
 #   재읽기·재판정(배타락 + 단일 O_APPEND)으로 바뀌었다. 들어온 것은 온보딩 상수/헬퍼
 #   (`_load_file_lock`·`_local_conf_lock_path`·`_local_conf_write_lock`·
 #   `_append_local_conf_atomic`·`_commit_additional_reviewer_optin`)와
-#   maybe_prompt_external_review 본문, 그리고 `contextlib` import 한 줄뿐이다. 역적용 delta 의
+#   maybe_prompt_additional_reviewer 본문, 그리고 `contextlib` import 한 줄뿐이다. 역적용 delta 의
 #   4개 anchor(어댑터 config 게이트·sync_adapter_configs 본문·`_main` 수렴 블록)와 배달 경계
 #   (source/manifest planning → apply → self-update 순서)에는 겹침이 없고, 이 테스트의 두 실행은
 #   모두 PM_NONINTERACTIVE=1 이라 질문·conf write 자체가 발화하지 않는다.
@@ -648,7 +648,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   구키가 1릴리즈 fallback 이 됐다. 들어온 것은 온보딩 상수
 #   (`ADDITIONAL_REVIEWER_ENABLED_KEY`·`LEGACY_EXTERNAL_REVIEW_ENABLED_KEY`·
 #   `LEGACY_ENABLED_KEY_DEPRECATION`)와 판정 헬퍼(`additional_reviewer_decision_key`),
-#   그 헬퍼를 쓰는 `_commit_additional_reviewer_optin`·`maybe_prompt_external_review` 의 결정 분기,
+#   그 헬퍼를 쓰는 `_commit_additional_reviewer_optin`·`maybe_prompt_additional_reviewer` 의 결정 분기,
 #   그리고 블록/힌트 문자열의 키 이름뿐이다. 역적용 delta 의 anchor(어댑터 config 게이트·
 #   `sync_adapter_configs` 본문·`_main` 수렴 블록)와 배달 경계(source/manifest planning → apply →
 #   self-update 순서)에는 겹침이 없고, 이번에도 네 anchor 가 모두 유일하게 해소됐다
@@ -730,7 +730,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   목록이 아니라 그 밖의 코드·산문을 바꿨고, 이 절의 역적용 delta anchor 네 자리는 전부
 #   그 구간 밖이라 그대로 유일 해소된다. 배달 경계(planning → apply → self-update 순서)와
 #   배달 파일 집합은 여전히 불변이고, 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "37babe5274bf015189d565459018105c9e91a995ece96c1845da2df045a9604e"
+_T0585_PM_UPDATE_SHA256 = "77b739e7688350d68e8b371797b8a72e4c7d1eb2b7005cdee9c7f68e5a36daea"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
@@ -892,6 +892,12 @@ def _t0585_pm_update_source() -> str:
     무편집이다 — 함수 추출은 그 안의 계산 순서(manifest 자기치유 → notation → guest-backfill
     기록 판정 → `plan()`)를 바이트 동일하게 보존하며 호출부만 함수 호출로 치환했다. 현재화한
     것은 기대 SHA 하나뿐이다.
+
+    T-0876 — manifest가 선언한 퇴역 파일을 full self-sync 두 번째 실행에서 백업 이주하는 단계가
+    apply 직후 추가됐다. 이 fixture의 fresh codex 대상에는 구 물리 파일이 없어 새 단계는
+    idempotent no-op이고, 역델타가 검증하는 adapter config 판정·source/manifest planning·apply·
+    self-update 순서는 그대로다. marker 4곳과 anachronism 부재 단언 2건이 선통과한 상태에서 새
+    migration 정의/호출 bytes만 합성본 SHA에 반영했다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")

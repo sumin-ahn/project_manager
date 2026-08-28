@@ -225,19 +225,19 @@ LEGACY_KEY_MAP: dict[str, str | None] = {
     "delegate_enabled": "delegate.enabled",
     "delegate_timeout": "delegate.timeout",
     "delegate_idle_timeout": "delegate.idle_timeout",
-    # 추가 리뷰어 축 (사람 역할 이름으로 수렴 · `external_review_*` 는 개칭 이전 이름)
+    # 추가 리뷰어 축(구 flat key 판독 호환만 유지)
     "additional_reviewer_enabled": "additional_reviewer.enabled",
     "external_review_enabled": "additional_reviewer.enabled",
     # 제거 — 전송 횟수만 세던 판정 라운드 상한 축 자체가 없어졌다(대체 키 없음·수렴 축이 같은
     # 범위를 본다: `additional_reviewer.rounds_max`)
     "additional_reviewer_round_limit": None,
     "external_review_round_limit": None,
-    "additional_reviewer_incomplete_round_limit":
-        "additional_reviewer.incomplete_rounds_max",
     "external_review_incomplete_round_limit":
         "additional_reviewer.incomplete_rounds_max",
-    "additional_reviewer_wave_budget": "additional_reviewer.wave_budget",
+    "additional_reviewer_incomplete_round_limit":
+        "additional_reviewer.incomplete_rounds_max",
     "external_review_wave_budget": "additional_reviewer.wave_budget",
+    "additional_reviewer_wave_budget": "additional_reviewer.wave_budget",
     "review_rounds_max": "additional_reviewer.rounds_max",
     "review_paths": "additional_reviewer.paths",
     "review_denylist_extra": "additional_reviewer.denylist_extra",
@@ -585,7 +585,7 @@ def load_checked(path: Path | str) -> dict[str, str]:
 def load_checked_readable(path: Path | str) -> dict[str, str]:
     """부재는 빈 결과, **존재하는데 판독 실패면 예외를 그대로 올린다** + 구표기 fail-loud.
 
-    `local_config()` 계열(board·ticket_finish·external_review)의 정책이다 — 그 호출부들은
+    `local_config()` 계열(board·ticket_finish·additional_reviewer)의 정책이다 — 그 호출부들은
     `OSError`/`UnicodeError` 를 잡아 "외부 송신 전에 중단" 으로 닫는다. 여기서 빈 dict 로 강등하면
     denylist·opt-in 선언을 **확인하지 못한 채** 통과한 실행이 된다."""
     conf_path = Path(path)
@@ -713,8 +713,8 @@ def _harness_names() -> tuple[str, ...]:
 
 
 def _diff_cap_names() -> tuple[str, ...]:
-    """diff 상한 estimate 목록 — `external_review.DEFAULT_DIFF_CAPS` 키 파생."""
-    return _sibling_sequence("external_review.py", "DEFAULT_DIFF_CAPS")
+    """diff 상한 estimate 목록 — `additional_reviewer.DEFAULT_DIFF_CAPS` 키 파생."""
+    return _sibling_sequence("additional_reviewer.py", "DEFAULT_DIFF_CAPS")
 
 
 _SEQUENCE_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}

@@ -8,7 +8,7 @@ supersede) 채운 완성형으로 코드 생성 dump 한다("--help 자체를 �
   - 사용자 입력(`T-NNNN`·`<PFX>`·`<요약>`)은 placeholder 로 남는다(ADR-0045 §Decision 1).
   - 숨은 전제 4대장(claim/prefix/livegate/migrate-identity) + reid=홈 git clean 이 해당
     커맨드 줄 바로 아래 1줄 ⚠ 경고로 인접(ADR-0045 §Decision 2 — 인접성이 학습 보장).
-  - "정체성 불요" 절(ticket_finish·external_review·pm_log·pm_update·domain)·"자기 것 보기"
+  - "정체성 불요" 절(ticket_finish·additional_reviewer·pm_log·pm_update·domain)·"자기 것 보기"
     (--mine 우선·전체 보드 강등·ADR-0047)·"찾아가기" 포인터 절 존재.
   - 솔로(정체성 미해소)는 `--repo`/`--slot` 없는 형태로 분기 · fail-soft(렌더 실패=None).
   - **drift 가드(durable)**: dump 된 board.py/pm_handoff.py 커맨드 전건이 실 CLI argparse 로
@@ -257,11 +257,11 @@ def test_card_identity_free_section(bootstrap):
     """정체성-free CLI 도구가 카드에 명시된다(--repo/--slot 불요·ADR-0045 §Decision 3).
 
     "정체성 불요" 절(pm_log·domain 조회) + wave 절의 정체성-free CLI 엔진(ticket_finish·
-    external_review)이 노출된다. pm_update.py 는 facade(/pm-update) 뒤로 감춰져 raw CLI 로
+    additional_reviewer)이 노출된다. pm_update.py 는 facade(/pm-update) 뒤로 감춰져 raw CLI 로
     노출하지 않는다(ADR-0052·must-fix #4 — facade 우회 금지)."""
     card = _card(bootstrap, LEAN_IDENTITY)
     assert "정체성 불요" in card
-    for tool in ("ticket_finish.py", "external_review.py", "pm_log.py", "domain.py"):
+    for tool in ("ticket_finish.py", "additional_reviewer.py", "pm_log.py", "domain.py"):
         assert tool in card, f"정체성-free 도구 {tool} 누락"
     assert "pm_update.py" not in card, "facade 우회 raw pm_update.py 가 카드에 렌더됨"
 
@@ -431,7 +431,7 @@ def _iter_card_cli_commands(card: str):
     """카드에서 board.py/pm_handoff.py 커맨드를 (tool, arg-tokens) 로 뽑는다.
 
     - 마크다운 리스트 마커·backtick·trailing 주석(`# …`)을 벗겨 CLI 인자만 남긴다.
-    - 정체성 불요 절의 ticket_finish/external_review/... 는 board.py/pm_handoff.py 가 아니라
+    - 정체성 불요 절의 ticket_finish/additional_reviewer/... 는 board.py/pm_handoff.py 가 아니라
       매칭 안 됨(예시형·`...` 포함) — 정체성-bearing canonical 커맨드만 가드 대상.
     """
     for raw in card.splitlines():
@@ -794,14 +794,14 @@ def test_card_qa_demotes_regression_and_lint(bootstrap):
     assert any("board.py lint" in ln for ln in qa_block), "qa 강등 엔진에 lint 누락"
 
 
-def test_card_external_review_is_direct_sibling_gate(bootstrap):
-    """must-fix #1: external_review 는 /pm-dev-delegate 의 강등 엔진이 아니라 직후 sibling
+def test_card_additional_reviewer_is_direct_sibling_gate(bootstrap):
+    """must-fix #1: additional_reviewer 는 /pm-dev-delegate 의 강등 엔진이 아니라 직후 sibling
     직접-CLI 게이트(래핑 스킬 없음·직접 OK 예외). dev-delegate 엔진은 Agent 툴(python3 줄 없음)."""
     card = _card(bootstrap, LEAN_IDENTITY)
     lines = card.splitlines()
     delegate_i = _line_index(card, "/pm-dev-delegate")
-    review_i = _line_index(card, "external_review.py")
-    assert delegate_i < review_i, "external_review 가 dev-delegate 앞(직후 sibling 아님)"
+    review_i = _line_index(card, "additional_reviewer.py")
+    assert delegate_i < review_i, "additional_reviewer 가 dev-delegate 앞(직후 sibling 아님)"
     # '직접 금지' 강등 프레이밍이 아니라 '직접(래핑 스킬 없음)' 게이트로 표기.
     review_line = lines[review_i]
     assert "직접" in review_line and "직접 금지" not in review_line

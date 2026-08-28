@@ -879,7 +879,7 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     # 163 = 162 + T-0590 R6 부분 업그레이드 호환의 한 경계. pm_import 의 락 경로 유도가
     #   `conf_lock_path` 없는 구세대 file_lock 사본에서 같은 규칙의 인라인 폴백으로 물러나되,
     #   마킹된 skew(rev 자체가 다른 사본)는 삼키지 않고 그대로 올린다.
-    # 164 = 163 + T-0593 diff 서킷브레이커의 한 경계. ticket_finish 가 external_review 를
+    # 164 = 163 + T-0593 diff 서킷브레이커의 한 경계. ticket_finish 가 additional_reviewer 를
     #   형제 로드해 상한 정책·측정식을 빌려 쓰되, 부재/손상은 가드 off 로 물러나고 마킹된
     #   skew 는 그대로 올린다(다른 형제 로더와 같은 규칙).
     # 166 = 164 + T-0595 위임 원장 보강의 두 경계. 회신 구조화 관측과 must_fix 항목 추출은
@@ -927,7 +927,7 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   검증한다. 독립 `sync-adapter-config --check` 경계는 복구 실행이 아니므로 같은 skew를 그대로
     #   re-raise한다. 일반 판독 실패만 전량 확인 advisory로 내린다.
     # 183 = 181 + T-0625 raw close 수동 마감 충돌 경계 둘. 원 실행(pm_delegate
-    #   `_execute_attempt` · external_review run_review)의 종료 마감이 수동 `raw close --force`
+    #   `_execute_attempt` · additional_reviewer run_review)의 종료 마감이 수동 `raw close --force`
     #   선행 마감과 충돌하면 전용 타입(`RawRecordAlreadyFinished`)만 잡아 경고로 강등한다 —
     #   첫 마감 보존이 계약이고 회신은 raw 파일에 이미 박제돼 있어 rc 를 뒤집지 않는다.
     #   marked skew 는 그 타입이 아니므로 이 경계가 흡수하지 않는다.
@@ -966,7 +966,7 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   · `pm_delegate._create_read_role_temp` · `_cleanup_read_role_temp` 흡수 두 경계 — 둘 다
     #     `_ENGINE_REV_SKEW_RECOVERY_REASONS` 에 사유를 등록하고 경고 문구로 원인을 구분한다
     #     (정리 실패가 성공한 실행을 뒤집지 않는다는 계약).
-    #   · `external_review.create_reviewer_workspace` 재-raise · `_remove_partial_container` 흡수.
+    #   · `additional_reviewer.create_reviewer_workspace` 재-raise · `_remove_partial_container` 흡수.
     #   · `pm_config._protected_push_gate_config` 재-raise 한 경계.
     #   · `delegate_channel_guard._record_supervisor_fallback` 흡수 한 경계 — PowerShell 인용
     #     삼킴으로 래퍼가 폴백할 때 그 사실 기록이 판정을 막지 않는다.
@@ -990,7 +990,7 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   형제가 없거나 손상이면 게이트를 해소하지 못해도 솔로 `pytest tests/ -q` 폴백으로 완주해야
     #   하므로 흡수하되(`_regression_cwd`·`_resolve_finish_slot` 의 같은 위임과 동형), 마킹된
     #   skew 는 그대로 올린다 — 사본이 갈린 사실이 "게이트 미해소"로 위장되면 안 된다.
-    # 218 = 213 + T-0729 **공유 읽기 강등**의 다섯 경계(`_shared_read_api` — external_review ·
+    # 218 = 213 + T-0729 **공유 읽기 강등**의 다섯 경계(`_shared_read_api` — additional_reviewer ·
     #   pm_import · pm_log · pm_update · review_rounds). 판독이 공용 seam 을 지나게 되면서 그
     #   형제 로드가 판독 경로에 닿는데, 이 다섯은 "판독은 형제 없이도 떠야 한다" 를 각자 로더
     #   주석에 명시한 채널이다(복구/도입 채널 둘 · pm_bootstrap 이 재사용하는 로그 판독 ·
@@ -1005,7 +1005,7 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   "중첩 로드 형제 skew 는 fail-loud")을 그대로 따라 marked skew 만 재전파하고 나머지는
     #   종전대로 접는다(surface 생략·게이트 graceful skip).
     # 224 = 222 + T-0696 추가 리뷰어 산출 **회수 경계**의 두 자리(`_load_pm_delegate`/board 재앵커
-    #   로드 · `_reserve_external_review_round` 쓰기). 회수는 이미 끝나고 과금된 라운드의 기록이라,
+    #   로드 · `_reserve_additional_reviewer_round` 쓰기). 회수는 이미 끝나고 과금된 라운드의 기록이라,
     #   여기서 사본 불일치를 그대로 올리면 판정·요약을 출력한 뒤 traceback 으로 죽어 채택자에게는
     #   "리뷰 실패"로만 보인다. 등록 사유 `ticket_harvest` 로 흡수하되 설계된 회수 실패 처방
     #   (재동기 안내 + rc≠0 + raw 경로)으로 접고, 표시 없는 RuntimeError 는 그대로 전파한다.
@@ -1104,9 +1104,9 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   + `ticket_finish.py:_load_private_refs:377` reraises — 완료 기록 preflight 가 사설 참조
     #     판정식(`private_refs.py`)을 공용 로더(`cache=True` · 재유입 가드와 같은 cache key)로
     #     올리는 자리. 부재·파손은 None(가드 off)으로 접되 마킹된 skew 만 그대로 올린다
-    #     (`_load_external_review` 와 같은 관용구).
+    #     (`_load_additional_reviewer` 와 같은 관용구).
     #   + `board.py:_round_pending_ledger_owner:11178` reraises — draft discard 의 round-pending
-    #     안내가 미회수 장부의 PM 홈을 `external_review.resolve_pm_home_for_repo` 로 해소하는
+    #     안내가 미회수 장부의 PM 홈을 `additional_reviewer.resolve_pm_home_for_repo` 로 해소하는
     #     자리. 해소 실패는 "안내를 못 낸다"로 접고(discard 비차단) 마킹된 skew 는 올린다.
     #   + `board.py:_round_pending_abandon_command:11199` reraises — 같은 안내가
     #     `pm_delegate.ticket_copy_records` 로 실 `--copy`/`--cwd` 를 읽는 자리. 장부 손상은
@@ -1130,7 +1130,7 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   + `ticket_finish.py:TicketFinisher._log_has_entry` reraises — 이미 남은 완료 기록
     #     스켈레톤을 log 에서 관측하는 자리(재실행이 같은 스켈레톤을 다시 쌓지 않게). 읽기 실패는
     #     '없음'(중복 방지 판정 불능 — 기록을 막지 않는다)이고 마킹된 skew 만 올린다.
-    #   + `external_review.py:cluster_integration_tip` reraises — 리뷰 송신 폭의 기준점(묶음 장부
+    #   + `additional_reviewer.py:cluster_integration_tip` reraises — 리뷰 송신 폭의 기준점(묶음 장부
     #     통합 브랜치)을 형제 완료 기록 엔진의 해소 seam 으로 읽는 자리. 부재/손상은 사유를 돌려
     #     호출부가 거부하게 하고 마킹된 skew 는 그대로 올린다(다른 형제 로더와 같은 규칙).
     # 269 = 267 + 2. 잔여 판정 인구가 커밋분까지 넓어지며 연 두 경계다:
@@ -1152,7 +1152,9 @@ def test_no_failsoft_boundary_silently_absorbs_marked_engine_skew():
     #   board의 병렬 pytest 기본값 단일 소유자를 소비한다. 부분 사본에서 board 로드가 실패하면
     #   같은 `-n auto` 값으로 폴백하되, marked skew는 다른 형제 로더와 같이 그대로 올려 사본
     #   불일치를 기본값 해소로 숨기지 않는다.
-    assert len(report.boundaries) == 269, "propagation sweep boundary ratchet changed"
+    # 270 = 269 + platform test command의 local.conf 해소 한 경계. 구표기 키만 사용자 입력
+    #   오류로 번역하고 marked skew는 다른 local.conf 소비자와 같이 그대로 올린다.
+    assert len(report.boundaries) == 270, "propagation sweep boundary ratchet changed"
     assert not report.violations, "\n".join(report.violations)
 
 

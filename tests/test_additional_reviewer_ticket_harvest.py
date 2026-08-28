@@ -1,8 +1,8 @@
 """T-0696 — 추가 리뷰어 산출의 티켓 회수·finding severity 단일 진실 (라운드 사이드카).
 
 두 축을 소유한다.
-  · 회수: `external_review --ticket` 실행이 끝나면 **엔진이** 산출을 그 티켓의 새
-    `external-reviewer` 라운드 파일(`tickets/rounds/<T>/NN-external-reviewer.md`)로 기록하고,
+  · 회수: `additional_reviewer --ticket` 실행이 끝나면 **엔진이** 산출을 그 티켓의 새
+    `additional-reviewer` 라운드 파일(`tickets/rounds/<T>/NN-additional-reviewer.md`)로 기록하고,
     내부 리뷰어와 같은 `review delta` 표면에 올린다. 내용 검증(블록 부재·스키마 위반·중복·JSON
     손상·finding ID 재선언·표면에 없는 confirmation 대상)에 걸리면 **라운드 파일을 만들지 않고**
     rc≠0 으로 사유를 말한다 — 산출 원문은 raw 에 남는다([[ADR-0090]] · 차등 판정·반사실 프로브
@@ -24,10 +24,10 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
-EXTERNAL_REVIEW = TOOLS / "external_review.py"
+ADDITIONAL_REVIEWER = TOOLS / "additional_reviewer.py"
 DIFF = "diff --git a/x.py b/x.py\n@@ -1 +1 @@\n-old\n+new\n"
 TICKET = "T-9601"
-ROLE = "external-reviewer"
+ROLE = "additional-reviewer"
 
 
 # 해소 가능한 추가 리뷰어 대상 — 대상은 `harness`+`model` 구조화 키로만 서므로(엔진 기본 커맨드
@@ -57,7 +57,7 @@ DISPOSITION_VERSION = PD.PM_REVIEW_DISPOSITION_VERSION
 
 @pytest.fixture
 def external():
-    return _load("external_review")
+    return _load("additional_reviewer")
 
 
 @pytest.fixture
@@ -163,7 +163,7 @@ def _finding(
             "failure": f"{finding_id} 입력이 rc=1로 끝난다",
             "design": f"{finding_id} 조건을 x.py에서 수정한다",
             "test": f"{finding_id} 정상 입력은 그대로 통과한다",
-            "command": "python3 -m pytest tests/test_external_review_ticket_harvest.py -q",
+            "command": "python3 -m pytest tests/test_additional_reviewer_ticket_harvest.py -q",
             "expected": "passed",
         },
     }
@@ -491,12 +491,12 @@ def test_reply_cannot_declare_the_engine_refusal_marker(
     _seed_board(tmp_path)
     _wire(
         external, monkeypatch, tmp_path,
-        _prose("- X-001") + f"{pd.EXTERNAL_REVIEW_REFUSED_LINE}\n\n"
+        _prose("- X-001") + f"{pd.ADDITIONAL_REVIEWER_REFUSED_LINE}\n\n"
         + _block(_payload([_finding("X-001")])),
     )
     assert _run(external, tmp_path, "--ticket", TICKET) != 0
     err = capsys.readouterr().err
-    assert "회수 문제" in err and pd.EXTERNAL_REVIEW_REFUSED_MARKER in err
+    assert "회수 문제" in err and pd.PM_REVIEW_REFUSED_MARKER in err
     assert _round_paths(tmp_path) == []
 
 
@@ -645,11 +645,11 @@ def test_every_process_role_is_a_round_role(pd, rounds_seam):
 def test_deleted_single_file_devices_are_absent(pd, external):
     """단일 파일 컨테이너 때문에 있던 장치는 옮겨 살리지 않고 지운다([[ADR-0090]])."""
     for symbol in (
-        "write_external_reviewer_section", "build_external_review_section_content",
-        "ExternalReviewSectionWrite", "_render_external_review_section",
+        "write_additional_reviewerer_section", "build_additional_reviewer_section_content",
+        "ExternalReviewSectionWrite", "_render_additional_reviewer_section",
         "neutralize_ticket_growth_markup", "_neutralize_review_fence",
         "EXTERNAL_REVIEW_BLOCK_WARNING_PREFIX", "EXTERNAL_REVIEW_SECTION_LABEL",
-        "_external_review_delta_regression", "_pm_review_delta_regression_reason",
+        "_additional_reviewer_delta_regression", "_pm_review_delta_regression_reason",
         "_pm_review_probe_section_content", "_PM_REVIEW_PROBE_TEXT",
     ):
         assert not hasattr(pd, symbol), symbol
@@ -1168,7 +1168,7 @@ def test_declarations_count_only_the_surface_rounds(pd):
     """
     normal = _round_view(pd, 1, _external_round_text(pd, _payload([_finding("X-001")])))
     refused = _round_view(pd, 2, _external_round_text(
-        pd, {}, head=f"{pd.EXTERNAL_REVIEW_REFUSED_LINE}\n\n",
+        pd, {}, head=f"{pd.ADDITIONAL_REVIEWER_REFUSED_LINE}\n\n",
         raw_block=_block(_payload([_finding("X-002")])),
     ))
     spec = "\n산문에서 X-050 을 인용한다.\n"
@@ -1256,7 +1256,7 @@ def test_board_commit_seam_is_called_directly_and_is_loud_when_it_is_missing(
     external, monkeypatch, tmp_path,
 ):
     """부분 동기 사본에서 커밋만 조용히 빠진 rc0 을 만들지 않는다 (이름 폴백 없음)."""
-    source = EXTERNAL_REVIEW.read_text(encoding="utf-8")
+    source = ADDITIONAL_REVIEWER.read_text(encoding="utf-8")
     assert "board._rounds_mutation_sync_paths(" in source
     assert "_growth_mutation_sync_paths" not in source
     assert 'getattr(board, "_rounds_mutation_sync_paths"' not in source
@@ -1355,7 +1355,7 @@ def _skew_delegate_after_prompt(external, monkeypatch, *, marked: bool) -> None:
         if not state["prompt_done"]:
             return real_loader()
         error = RuntimeError(
-            "엔진 사본 버전 불일치 — 로더 external_review.py" if marked
+            "엔진 사본 버전 불일치 — 로더 additional_reviewer.py" if marked
             else "표시 없는 실패"
         )
         if marked:

@@ -1,7 +1,7 @@
 """무진행(idle) 판정 — 벽시계 단독 판정의 정상-진행 false-kill 폐쇄 (T-0489).
 
 **왜 판정 기준을 바꾸나**: 외부 프로세스를 "시작 후 경과 시간"으로 죽이면 임계값이 정상 작업의
-분산 대역 *안*에 놓인다. 1차 증거는 통계가 아니라 같은 작업 2회다 — PM 17차가 `external_review` 로
+분산 대역 *안*에 놓인다. 1차 증거는 통계가 아니라 같은 작업 2회다 — PM 17차가 `additional_reviewer` 로
 같은 diff·같은 모델을 두 번 돌렸는데 1차는 900초 초과 kill(raw **138바이트**·회신 0), 2차는
 `--timeout 1500` 만 붙여 성공(raw 271,713바이트)했다. 어떤 값을 골라도 그 분산 때문에 정상 완주가
 잘리고, 잘리면 **산출물이 전량 폐기**된다.
@@ -15,7 +15,7 @@
   ④ 드라이버 능력 **선언**(분기 특례 아님) + 신호 없는 축은 벽시계 유지.
   ⑤ claude `--output-format stream-json` 전환 후에도 회신 추출 동일(파서 동치).
   ⑥ 감사 헤더에 최종 이벤트 이후 침묵 초.
-  ⑧ `external_review` 도 **같은 공용 seam**(pm_relay)으로 전환 — 복붙 구현 0.
+  ⑧ `additional_reviewer` 도 **같은 공용 seam**(pm_relay)으로 전환 — 복붙 구현 0.
   ⑨ kill 시점까지 받은 출력 보존(위임·외부리뷰·fill 세 표면).
 
 **벽시계의 위치**: DoD 는 "이벤트가 계속 흐르면 벽시계 초과해도 안 죽음"을 요구하고 §결정은
@@ -69,7 +69,7 @@ def pd():
 
 @pytest.fixture(scope="module")
 def external():
-    return _load("external_review", TOOLS / "external_review.py")
+    return _load("additional_reviewer", TOOLS / "additional_reviewer.py")
 
 
 @pytest.fixture(scope="module")
@@ -226,10 +226,10 @@ _HARNESS_LITERAL_EXEMPTIONS = {
         "세 전용 argv 빌더 중 하나를 고르는 전달 어댑터",
     ("pm_delegate", "_prepare_attempt_transport"):
         "opencode만 요구하는 prompt-file wire transport 전용 어댑터(timeout 비소유)",
-    ("external_review", "_structured_reviewer_argv"):
+    ("additional_reviewer", "_structured_reviewer_argv"):
         "추가 리뷰어 쪽에서 세 전용 argv 빌더 중 하나를 고르는 전달 어댑터"
         "(pm_delegate._build_target_argv 와 같은 역할·timeout 비소유)",
-    ("external_review", "_structured_transport"):
+    ("additional_reviewer", "_structured_transport"):
         "opencode만 요구하는 prompt-file wire transport 전용 어댑터(timeout 비소유)",
     ("pm_delegate", "_dry_run_harness_annotations"):
         "dry-run 표시 문구만 만드는 표현 어댑터(timeout 비소유)",
@@ -307,7 +307,7 @@ def _unexpected_harness_literal_hits(
         sources: dict[str, str] | None = None) -> dict[tuple[str, str], list[tuple[int, str]]]:
     sources = sources or {
         name: (TOOLS / f"{name}.py").read_text(encoding="utf-8")
-        for name in ("pm_delegate", "external_review", "pm_import", "pm_relay")
+        for name in ("pm_delegate", "additional_reviewer", "pm_import", "pm_relay")
     }
     unexpected = {}
     for module_name, source in sources.items():
@@ -1320,7 +1320,7 @@ def test_all_orchestration_functions_never_branch_on_harness_name_without_reason
     # stale 면제는 검토 없이 범위만 넓힌 흔적이므로 제거한다.
     live = {
         (module_name, qualname)
-        for module_name in ("pm_delegate", "external_review", "pm_import", "pm_relay")
+        for module_name in ("pm_delegate", "additional_reviewer", "pm_import", "pm_relay")
         for qualname in _module_harness_literal_hits(
             module_name, (TOOLS / f"{module_name}.py").read_text(encoding="utf-8"))
     }
@@ -1367,7 +1367,7 @@ def _apply_mutation_anchor(source: str, needle: str, replacement: str, *, label:
     [
         # 내부 리뷰어가 실제로 통과시킨 우회: 공용 워치독에 들어갈 idle_timeout을 호출자에서 무력화.
         (
-            "external_review",
+            "additional_reviewer",
             "_run_reviewer_ex",
             "idle_timeout=_reviewer_idle_timeout(reviewer_cmd, idle_timeout),",
             'idle_timeout=(None if reviewer_name(reviewer_cmd) == "opencode"\n'
@@ -1375,7 +1375,7 @@ def _apply_mutation_anchor(source: str, needle: str, replacement: str, *, label:
         ),
         # 추가 적대 지점: 수합 호출자가 내부 호출로 넘기기 직전에 claude 축만 무진행 판정을 제거.
         (
-            "external_review",
+            "additional_reviewer",
             "run_review",
             "ok, output, started = _run_reviewer_ex(\n"
             "                prompt, reviewer_cmd, timeout, run_fn, idle_timeout, metrics,\n"
@@ -1392,7 +1392,7 @@ def _apply_mutation_anchor(source: str, needle: str, replacement: str, *, label:
         ),
         # S(b): 값이 아니라 signal on/off를 쥔 판정 함수 선두에서 특정 CLI만 NONE으로 강등.
         (
-            "external_review",
+            "additional_reviewer",
             "_reviewer_progress_signal",
             "    if not argv:\n"
             "        return relay.PROGRESS_SIGNAL_NONE\n",
@@ -1441,7 +1441,7 @@ def test_structural_guard_rejects_new_timeout_bypass_callers(
     """열거 튜플에 없던 호출자에 새 우회를 심어도 구조 스캔이 자동 red 낸다."""
     sources = {
         name: (TOOLS / f"{name}.py").read_text(encoding="utf-8")
-        for name in ("pm_delegate", "external_review", "pm_import", "pm_relay")
+        for name in ("pm_delegate", "additional_reviewer", "pm_import", "pm_relay")
     }
     sources[module_name] = _apply_mutation_anchor(
         sources[module_name], needle, replacement,
@@ -2003,7 +2003,7 @@ def board(tmp_path, monkeypatch):
                       "PM_STATE_TEMPLATE": pm / "wiki" / "pm_state.template.md"}.items():
         monkeypatch.setattr(mod, name, val)
     monkeypatch.setattr(mod, "install_pre_push_hook", lambda: False)
-    monkeypatch.setattr(mod, "prompt_external_review_optin", lambda: None)
+    monkeypatch.setattr(mod, "prompt_additional_reviewer_optin", lambda: None)
     monkeypatch.setattr(mod, "_configure_board_submodule", lambda: False)
     monkeypatch.setattr(mod, "_detect_py", lambda: "python3")
     monkeypatch.setattr(mod, "_is_noninteractive", lambda: True)
@@ -2139,9 +2139,9 @@ def test_execute_attempt_writes_silence_into_raw(pd, tmp_path):
     assert "PART" in raw, "부분 산출물이 raw 에 박제되지 않았다"
 
 
-# ── ⑧ external_review 표면 — 같은 공용 seam ──────────────────────────────────────
+# ── ⑧ additional_reviewer 표면 — 같은 공용 seam ──────────────────────────────────────
 
-def test_external_review_default_runner_uses_shared_relay_seam(external, monkeypatch):
+def test_additional_reviewer_default_runner_uses_shared_relay_seam(external, monkeypatch):
     """리뷰어 기본 러너가 pm_relay 공용 워치독을 탄다 — `subprocess.run` 단일 호출이 아니다."""
     fake = _RecordingRelay(
         completed=subprocess.CompletedProcess(["codex"], 0, "판정: 통과", ""))
@@ -2158,7 +2158,7 @@ def test_external_review_default_runner_uses_shared_relay_seam(external, monkeyp
     assert call["input_text"] == "prompt"         # 프롬프트 stdin 주입
 
 
-def test_external_review_opencode_profile_enables_startup_retry(
+def test_additional_reviewer_opencode_profile_enables_startup_retry(
         external, monkeypatch):
     """리뷰 축도 opencode 프로필의 startup watchdog/재시도를 소비한다."""
     fake = _RecordingRelay(
@@ -2179,7 +2179,7 @@ def _forbidden_subprocess_run(*a, **k):
     raise AssertionError("리뷰어가 공용 seam 을 우회해 subprocess.run 을 직접 썼다(T-0489 ⑧ 위반)")
 
 
-def test_external_review_idle_kill_preserves_partial_output(external, monkeypatch):
+def test_additional_reviewer_idle_kill_preserves_partial_output(external, monkeypatch):
     """무진행 kill 시 **그때까지 받은 출력**이 결과 본문에 남는다 — 17차 138바이트 폐쇄(⑨)."""
     exc = subprocess.TimeoutExpired(["codex"], 900.0, output="REVIEW SO FAR",
                                     stderr="progress log")
@@ -2191,10 +2191,10 @@ def test_external_review_idle_kill_preserves_partial_output(external, monkeypatc
     diagnosis = output.answer
     assert "REVIEW SO FAR" in diagnosis and "progress log" in diagnosis
     assert "무진행 임계 900초" in diagnosis and "실측 침묵 905초" in diagnosis
-    assert "--idle-timeout" in diagnosis and external.EXTERNAL_IDLE_TIMEOUT_KEY in diagnosis
+    assert "--idle-timeout" in diagnosis and external.ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY in diagnosis
 
 
-def test_external_review_wall_timeout_keeps_actual_diagnostics(
+def test_additional_reviewer_wall_timeout_keeps_actual_diagnostics(
         external, relay, monkeypatch):
     """벽시계 안내는 기존 조정 토큰과 실제 임계·실측 침묵을 함께 보존한다."""
     exc = relay.WallTimeoutExpired(
@@ -2210,7 +2210,7 @@ def test_external_review_wall_timeout_keeps_actual_diagnostics(
     assert "PARTIAL" in diagnosis
 
 
-def test_external_review_run_review_saves_partial_output(external, monkeypatch, tmp_path):
+def test_additional_reviewer_run_review_saves_partial_output(external, monkeypatch, tmp_path):
     """타임아웃 결과도 원문 파일로 박제된다 — 부분 산출물이 디스크에 남아야 재개가 가능하다."""
     exc = subprocess.TimeoutExpired(["codex"], 900.0, output="HALF REVIEW")
     exc.idle_seconds = 902.0
@@ -2222,7 +2222,7 @@ def test_external_review_run_review_saves_partial_output(external, monkeypatch, 
     assert "HALF REVIEW" in result["file"].read_text(encoding="utf-8")
 
 
-def test_external_review_cleanup_failure_saves_partial_output(
+def test_additional_reviewer_cleanup_failure_saves_partial_output(
         external, relay, tmp_path):
     """리뷰 소비처도 cleanup sentinel을 실패로 수합하고 부분 산출물을 raw에 박제한다."""
     exc = relay.ProcessCleanupError(
@@ -2248,29 +2248,29 @@ def test_external_review_cleanup_failure_saves_partial_output(
     assert "cleanup diagnostic" in raw
 
 
-def test_external_review_idle_resolution_order(external, relay, capsys):
+def test_additional_reviewer_idle_resolution_order(external, relay, capsys):
     """`--idle-timeout` > 하네스 키 > 리뷰 축 키 > 프로필 선언 — 위임 축과 **같은 해소 순서**.
 
     리뷰어 커맨드는 해소된 대상에서 오므로(기본 커맨드 없음) 이 해소자는 그것을 인자로 받는다."""
     codex = "codex exec"
     cli = external.argparse.Namespace(idle_timeout=45.0)
     assert external._resolve_idle_timeout(
-        cli, {external.EXTERNAL_IDLE_TIMEOUT_KEY: "77"}, codex) == 45.0
+        cli, {external.ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY: "77"}, codex) == 45.0
     unset = external.argparse.Namespace(idle_timeout=None)
     assert external._resolve_idle_timeout(
-        unset, {external.EXTERNAL_IDLE_TIMEOUT_KEY: "77"}, codex) == 77.0
+        unset, {external.ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY: "77"}, codex) == 77.0
     assert external._resolve_idle_timeout(
-        unset, {external.EXTERNAL_IDLE_TIMEOUT_KEY: "77",
+        unset, {external.ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY: "77",
                 "harness.codex.idle_timeout": "88"}, codex) == 88.0   # 하네스 키가 더 구체적
     # 미설정이면 리뷰어 커맨드의 하네스 프로필(codex 축) — 별도 상수가 아니다.
     assert external._resolve_idle_timeout(unset, {}, codex) == relay.CLOUD_IDLE_TIMEOUT_SEC
     assert external._resolve_idle_timeout(
-        unset, {external.EXTERNAL_IDLE_TIMEOUT_KEY: "x"}, codex) == \
+        unset, {external.ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY: "x"}, codex) == \
         relay.CLOUD_IDLE_TIMEOUT_SEC
-    assert external.EXTERNAL_IDLE_TIMEOUT_KEY in capsys.readouterr().err
+    assert external.ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY in capsys.readouterr().err
 
 
-def test_external_review_follows_reviewer_harness_profile(external, relay):
+def test_additional_reviewer_follows_reviewer_harness_profile(external, relay):
     """리뷰어 커맨드의 **하네스 프로필**을 따른다 — 별도 타임아웃 상수 0(값 출처 단일)."""
     unset = external.argparse.Namespace(timeout=None, idle_timeout=None)
     assert external._resolve_timeout(unset, {}, "codex exec --sandbox read-only") == \
@@ -2283,7 +2283,7 @@ def test_external_review_follows_reviewer_harness_profile(external, relay):
     assert unknown.progress_signal == relay.PROGRESS_SIGNAL_NONE
     assert unknown.wall_timeout == relay.DEFAULT_WALL_TIMEOUT_SEC
     # 이 모듈은 자체 타임아웃 상수를 두지 않는다(값이 두 군데면 규칙이 둘).
-    source = (TOOLS / "external_review.py").read_text(encoding="utf-8")
+    source = (TOOLS / "additional_reviewer.py").read_text(encoding="utf-8")
     assert "EXTERNAL_TIMEOUT_SECONDS" not in source
 
 
@@ -2339,7 +2339,7 @@ def test_reviewer_progress_signal_requires_known_executable_and_option_contract(
 
     configured = external.reviewer_profile(
         "future-reviewer --json",
-        {external.EXTERNAL_PROGRESS_SIGNAL_KEY: relay.PROGRESS_SIGNAL_PLAINTEXT},
+        {external.ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY: relay.PROGRESS_SIGNAL_PLAINTEXT},
     )
     assert configured.progress_signal == relay.PROGRESS_SIGNAL_PLAINTEXT
 
@@ -2351,7 +2351,7 @@ def test_unknown_reviewer_can_only_opt_into_progress_explicitly(external, relay)
     ).progress_signal == relay.PROGRESS_SIGNAL_NONE
     configured = external.reviewer_profile(
         "future-reviewer --quiet",
-        {external.EXTERNAL_PROGRESS_SIGNAL_KEY: relay.PROGRESS_SIGNAL_PLAINTEXT},
+        {external.ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY: relay.PROGRESS_SIGNAL_PLAINTEXT},
     )
     assert configured.progress_signal == relay.PROGRESS_SIGNAL_PLAINTEXT
 
@@ -2363,7 +2363,7 @@ def test_reviewer_profile_facade_reads_local_conf(external, relay, monkeypatch):
         "local_config",
         lambda: {
             "harness.claude.wall_timeout": "4321",
-            external.EXTERNAL_PROGRESS_SIGNAL_KEY: relay.PROGRESS_SIGNAL_PLAINTEXT,
+            external.ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY: relay.PROGRESS_SIGNAL_PLAINTEXT,
         },
     )
     profile = external.reviewer_profile("claude -p --output-format json")
@@ -2371,7 +2371,7 @@ def test_reviewer_profile_facade_reads_local_conf(external, relay, monkeypatch):
     assert profile.progress_signal == relay.PROGRESS_SIGNAL_PLAINTEXT
 
 
-def test_external_review_cli_rejects_nonpositive_idle_timeout(external, capsys):
+def test_additional_reviewer_cli_rejects_nonpositive_idle_timeout(external, capsys):
     """CLI `--idle-timeout` 0/음수는 usage error(rc=2) — `--timeout` 과 동일 규칙."""
     for raw in ("0", "-5"):
         with pytest.raises(SystemExit) as exc:
@@ -2381,7 +2381,7 @@ def test_external_review_cli_rejects_nonpositive_idle_timeout(external, capsys):
 
 
 @pytest.mark.parametrize("raw", ["nan", "inf", "-inf", "0.5", "1.5"])
-def test_external_review_cli_rejects_nonfinite_or_fractional_idle(external, raw, capsys):
+def test_additional_reviewer_cli_rejects_nonfinite_or_fractional_idle(external, raw, capsys):
     """idle CLI 는 유한한 정수 초만 허용 — NaN 우회와 int 절단을 함께 폐쇄."""
     with pytest.raises(SystemExit) as exc:
         external.main(["--idle-timeout", raw, "--dry-run"])
@@ -2410,7 +2410,7 @@ def test_watchdog_api_rejects_invalid_idle_timeout_at_shared_boundary(relay, val
         )
 
 
-def test_external_review_wall_clock_is_a_backstop_not_a_primary(external):
+def test_additional_reviewer_wall_clock_is_a_backstop_not_a_primary(external):
     """벽시계 기본이 백스톱 대역으로 올라갔다 — 옛 900 은 정상 리뷰 분산 대역 *안*이었다.
 
     실측: 같은 입력 2회 중 하나는 900초 초과 kill / 다른 하나는 `--timeout 1500` 성공. 900 으로
@@ -2419,7 +2419,7 @@ def test_external_review_wall_clock_is_a_backstop_not_a_primary(external):
     assert external._resolve_timeout(unset, {}, "codex exec") > 1500
 
 
-def test_external_review_runtime_harness_cap_advisory(external):
+def test_additional_reviewer_runtime_harness_cap_advisory(external):
     """명시 timeout 호출은 MAX가 제약: 출하 DEFAULT 1800/MAX 29300 조합은 상시 경고하지 않는다."""
     shipped = {
         "CLAUDECODE": "1",
@@ -2495,7 +2495,7 @@ def test_idle_judgment_is_implemented_once(relay):
     """무진행 판정 구현은 pm_relay 단독 — 세 표면에 복붙되면 red(규칙 분기 방지)."""
     relay_src = (TOOLS / "pm_relay.py").read_text(encoding="utf-8")
     assert relay_src.count("raise IdleTimeoutExpired(") == 1
-    for tool in ("pm_delegate.py", "external_review.py", "pm_import.py"):
+    for tool in ("pm_delegate.py", "additional_reviewer.py", "pm_import.py"):
         src = (TOOLS / tool).read_text(encoding="utf-8")
         assert "IdleTimeoutExpired(" not in src, (
             f"{tool} 이 무진행 판정을 자체 구현했다 — 공용 seam(pm_relay) 재사용이 DoD")

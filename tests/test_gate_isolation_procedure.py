@@ -121,7 +121,7 @@ def test_isolation_section_keeps_additional_reviewer_channel_separate():
     assert region, "격리 절 마커 부재"
     missing = [
         name for name, token in (
-            ("추가 리뷰어 도구명", "external_review"),
+            ("추가 리뷰어 도구명", "additional_reviewer"),
             ("staged diff 근거", "staged diff"),
             ("별개 축 명시", "별개"),
         ) if token not in _flat(region)

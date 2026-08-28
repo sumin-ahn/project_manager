@@ -49,6 +49,7 @@ import base64
 import contextlib
 import datetime
 import filecmp
+import hashlib
 import inspect
 import os
 import re
@@ -202,7 +203,7 @@ MANIFEST = REPO / ".project_manager" / "engine.manifest"
 # 추가 리뷰어(additional reviewer) 첫 opt-in 이 원자적으로 심는 기본 프로필 —
 #   board.ADDITIONAL_REVIEWER_DEFAULTS 와 **같은 값**이어야 한다(두 온보딩 진입·동일 프로필).
 #   board 를 import 하지 않는 이유는 의존 방향(pm_update 는 stdlib-only 로 돈다)이고, 실행
-#   해소를 하지 않는 이유는 무거운 external_review 코어를 업데이트 경로로 끌어오지 않기
+#   해소를 하지 않는 이유는 무거운 additional_reviewer 코어를 업데이트 경로로 끌어오지 않기
 #   위해서다 — 여기서는 값만 시드하고 드리프트는 테스트가 잡는다.
 #   자유 문자열 리뷰어 커맨드 키는 폐지됐다 — 대상은 구조화 튜플 하나뿐이다. 구표기 키가 남은
 #   conf 는 값을 소비하는 지점에서 fail-loud 다(공용 로더 `local_conf.assert_no_legacy`).
@@ -219,7 +220,7 @@ ADDITIONAL_REVIEWER_DEFAULTS: tuple[tuple[str, str], ...] = (
 def additional_reviewer_decision_key(conf: dict[str, str]) -> str | None:
     """이미 기록된 opt-in 결정을 공급하는 키 — **신키뿐** (없으면 None).
 
-    board·external_review 사본과 같은 판정이다. 판정은 키 존재이고(`false` 도 결정), 구표기 키는
+    board·additional_reviewer 사본과 같은 판정이다. 판정은 키 존재이고(`false` 도 결정), 구표기 키는
     값을 공급하지 않으며 그 잔존은 conf 소비 지점에서 fail-loud 다.
     """
     return (ADDITIONAL_REVIEWER_ENABLED_KEY
@@ -267,9 +268,9 @@ OPTIN_COMMIT_ENABLE_ONLY = "enable_only"  # 대상 있음 + 수락 → 활성 �
 OPTIN_COMMIT_DECLINED = "declined"        # 거절 → false 실키
 
 # ── 기존 대상 판정 (온보딩 전용 · 실행 해소 없음 · board 와 같은 규칙) ────────
-# 실행 해소(하네스→실 명령·값 검증)는 external_review 코어가 소유하고, 온보딩이 알아야 하는 것은
+# 실행 해소(하네스→실 명령·값 검증)는 additional_reviewer 코어가 소유하고, 온보딩이 알아야 하는 것은
 # "덧쓰면 안 되는 선언이 이미 있는가" 하나다. board 를 import 하지 않는 이유는 의존 방향
-# (pm_update 는 stdlib-only), external_review 를 import 하지 않는 이유는 무거운 실행 코어를
+# (pm_update 는 stdlib-only), additional_reviewer 를 import 하지 않는 이유는 무거운 실행 코어를
 # 업데이트 경로로 끌어오지 않기 위해서다. 세 사본의 키/판정 일치는 테스트가 잡는다.
 ADDITIONAL_REVIEWER_PREFIX = "additional_reviewer"
 ADDITIONAL_REVIEWER_HARNESS_KEY = f"{ADDITIONAL_REVIEWER_PREFIX}.harness"
@@ -298,7 +299,7 @@ def classify_additional_reviewer_target(conf: dict[str, str]) -> str:
       그 둘이 온전하면 `structured`. 판정 기준을 값의 truthiness 로 하면 비운 채 선언한 부분
       튜플이 '대상 없음'으로 떨어져, 온보딩이 기본 4키를 덧써 사용자의 선언을 갈아치운다.
     · 부분 튜플은 `AdditionalReviewerTargetError` 다 — 절반만 반영된 대상을 추측해 쓰지 않는다
-      (external_review 의 해소 규칙과 같은 판정·같은 이유).
+      (additional_reviewer 의 해소 규칙과 같은 판정·같은 이유).
     """
     present = tuple(key for key in ADDITIONAL_REVIEWER_KEYS if key in conf)
     if not present:
@@ -592,6 +593,11 @@ TARGET_OWNED_TAG = "@target-owned"
 # 잇는다(framework-owned·claude `.claude/*` 대칭). `@target-owned`(source-부재 정상·skip)와 대비:
 # @source 는 source 가 *실재*(templates/ 아래)하므로 부재면 rc2(엔진/템플릿 누락 은폐 금지).
 SOURCE_TAG_PREFIX = "@source="
+# 구 updater도 무시하는 manifest 주석 지시문. 일반 상류 부재 파일을
+# 지우지 않고, 이 prefix로 명시된 engine-owned 경로만 한 번 backup+퇴역한다.
+RETIRED_PATH_DIRECTIVE_PREFIX = "# pm-retired-path:"
+RETIRED_PATH_LOCK_REL = ".project_manager/.local/retired-paths.lock"
+RETIRED_PATH_BACKUP_ROOT_REL = ".pm_import_backups"
 # read_manifest 가 path 행 끝에서 떼어낼 수 있는 boolean 마커들(복수·순서 무관). `@source=<path>` 는
 # 값 운반 마커라 prefix 검사로 별도 처리(이 튜플 밖).
 _MANIFEST_MARKERS = (RENDER_TAG, TARGET_OWNED_TAG)
@@ -962,7 +968,7 @@ def print_conf_migration_notice(dest_root: Path) -> None:
         print(f"[pm_update] {line}")
 
 
-def maybe_prompt_external_review(dest_root: Path) -> None:
+def maybe_prompt_additional_reviewer(dest_root: Path) -> None:
     """업데이트 후 추가 리뷰어(additional reviewer) opt-in — 아직 미설정이면 **1회** 묻는다.
 
     코드 diff 외부 *전송*이라 기본 OFF. `additional_reviewer.enabled` **실키**가 이미 있으면
@@ -970,7 +976,7 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
     conf 는 **미결정**이라 다시 묻되(그 답이 신키로 기록되는 게 이주 경로다) 먼저 안내 1줄로 왜
     다시 묻는지 말한다 — 엔진은 채택자 conf 를 대신 고쳐 쓰지 않는다(자동 마이그레이션 없음).
     비대화형은 안전쪽으로 건너뛰되 나중에 켜는 법을 1줄로 남긴다.
-    board.prompt_external_review_optin 과 같은 계약이다 — "예" 는 기존 대상이 없을 때만
+    board.prompt_additional_reviewer_optin 과 같은 계약이다 — "예" 는 기존 대상이 없을 때만
     ADDITIONAL_REVIEWER_DEFAULTS 4키를 원자 기록하고, 이미 유효한 대상(
     구조화 튜플)이 있으면 **활성 플래그 한 줄만** 덧붙여 그 대상을 byte 그대로 둔다. 어느
     기존 대상이 깨져 있으면(부분 튜플)
@@ -992,7 +998,7 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
         # 실키로 이미 결정됨(true/false 무관·기존 프로필 불변). 판정은 파싱된
         # 키 존재로 한다 — raw 텍스트 substring 으로 보면 주석(`# additional_reviewer.enabled=false`)
         # 이나 안내 문장이 결정을 가로채, 켜려던 채택자가 질문도 안내도 못 받는다.
-        # board.prompt_external_review_optin 과 같은 seam.
+        # board.prompt_additional_reviewer_optin 과 같은 seam.
         return
     try:
         target = classify_additional_reviewer_target(conf)
@@ -1019,7 +1025,7 @@ def maybe_prompt_external_review(dest_root: Path) -> None:
         answer = input("  켜기 [y/N]: ").strip().lower()
     except EOFError:
         # stdin EOF = 비대화/파이프 종료 신호이지 **거절이 아니다** — TTY 오판정으로 들어온
-        # 질문이라 결정을 박제하면 안 된다(board.prompt_external_review_optin 과 같은 계약).
+        # 질문이라 결정을 박제하면 안 된다(board.prompt_additional_reviewer_optin 과 같은 계약).
         # 아무것도 쓰지 않고 반환한다: 다음 실행이 제대로 된 표면에서 다시 묻는다.
         return
     # 질문 전 판정(target)은 **질문 문구**까지의 입력이다. 기록의 입력(대상 판정·개행 가드)은
@@ -1066,6 +1072,277 @@ def read_manifest(path: Path) -> list[ManifestEntry]:
     # 구형·flavor manifest의 물리 행 순서가 남아 있어도 새 updater는 중앙 loader를 먼저
     # 배포한다. self-update가 pm_update 직후 중단돼도 재실행 시 이 정규화가 복구 창을 닫는다.
     return sorted(out, key=lambda entry: str(entry) != _CENTRAL_LOADER_REL)
+
+
+class RetiredPathError(RuntimeError):
+    """retired-path 선언·사전조건이 이주를 안전하게 정의하지 못한다."""
+
+
+def _retired_repo_rel(value: str, *, manifest_path: Path, line_no: int) -> str:
+    """retired directive 한 경로를 POSIX repo-relative canonical 표기로 검증한다."""
+    raw = value.strip()
+    parts = raw.split("/")
+    posix = PurePosixPath(raw)
+    windows = PureWindowsPath(raw)
+    if (
+        not raw or "\\" in raw or posix.is_absolute() or windows.is_absolute()
+        or windows.drive or any(part in ("", ".", "..") for part in parts)
+        or posix.as_posix() != raw
+    ):
+        raise RetiredPathError(
+            f"{manifest_path}:{line_no}: repo-relative POSIX 경로가 아님: {value!r}"
+        )
+    return raw
+
+
+def parse_retired_path_directives(manifest_path: Path) -> list[tuple[str, str]]:
+    """manifest의 `# pm-retired-path: OLD -> NEW` 주석만 strict하게 파싱한다."""
+    declarations: list[tuple[str, str]] = []
+    seen_old: set[str] = set()
+    text = _read_text_shared(manifest_path, encoding="utf-8")
+    for line_no, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped.startswith(RETIRED_PATH_DIRECTIVE_PREFIX):
+            continue
+        body = stripped[len(RETIRED_PATH_DIRECTIVE_PREFIX):].strip()
+        if body.count(" -> ") != 1:
+            raise RetiredPathError(
+                f"{manifest_path}:{line_no}: retired-path는 `OLD -> NEW` 형식이어야 함"
+            )
+        old_raw, new_raw = body.split(" -> ", 1)
+        old = _retired_repo_rel(old_raw, manifest_path=manifest_path, line_no=line_no)
+        new = _retired_repo_rel(new_raw, manifest_path=manifest_path, line_no=line_no)
+        if old == new:
+            raise RetiredPathError(
+                f"{manifest_path}:{line_no}: retired-path의 OLD와 NEW가 같음: {old}"
+            )
+        if old in seen_old:
+            raise RetiredPathError(
+                f"{manifest_path}:{line_no}: retired-path OLD 중복: {old}"
+            )
+        seen_old.add(old)
+        declarations.append((old, new))
+
+    edges = dict(declarations)
+    for start in edges:
+        visited: set[str] = set()
+        cursor = start
+        while cursor in edges:
+            if cursor in visited:
+                raise RetiredPathError(
+                    f"{manifest_path}: retired-path 순환 선언: {start}"
+                )
+            visited.add(cursor)
+            cursor = edges[cursor]
+    return declarations
+
+
+def _path_is_link_or_reparse(path: Path) -> bool:
+    """symlink와 Windows reparse point를 같은 탈출 경로로 본다."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    attrs = getattr(info, "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return stat.S_ISLNK(info.st_mode) or bool(attrs & reparse_flag)
+
+
+def _assert_no_link_components(root: Path, path: Path, *, label: str) -> None:
+    """`root` 아래 존재 조상 중 symlink/reparse가 있으면 탈출 전에 막는다."""
+    root = Path(root).absolute()
+    path = Path(path).absolute()
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise RetiredPathError(f"{label} 경로가 repo 밖임: {path}") from exc
+    cursor = root
+    for part in relative.parts:
+        cursor = cursor / part
+        if cursor.exists() or cursor.is_symlink():
+            if _path_is_link_or_reparse(cursor):
+                raise RetiredPathError(f"{label} 경로에 symlink/reparse point가 있음: {cursor}")
+
+
+def _retired_backup_path(dest_root: Path, old_rel: str) -> Path:
+    """오늘 backup 좌표를 고르되 기존 backup을 덮지 않는다."""
+    base = (
+        Path(dest_root) / RETIRED_PATH_BACKUP_ROOT_REL
+        / datetime.date.today().isoformat() / old_rel
+    )
+    candidate = base
+    suffix = 1
+    while candidate.exists() or candidate.is_symlink():
+        candidate = base.with_name(f"{base.name}.{suffix}")
+        suffix += 1
+    return candidate
+
+
+def _validate_retired_path_plan(
+    dest_root: Path,
+    source_root: Path,
+    manifest: list,
+    declarations: list[tuple[str, str]],
+    prospective_replacements: dict[str, Path] | None = None,
+) -> list[tuple[str, str, Path]]:
+    """선언 전부를 쓰기 전에 검증하고, 실재 old만 backup 계획으로 돌린다."""
+    dest_root = Path(dest_root)
+    source_root = Path(source_root)
+    owned = {str(entry).replace("\\", "/") for entry in manifest}
+    prospective_replacements = prospective_replacements or {}
+    old_paths = {old for old, _new in declarations}
+    for old, new in declarations:
+        if new not in owned:
+            raise RetiredPathError(f"replacement가 manifest-owned 경로가 아님: {new}")
+        if new in old_paths:
+            raise RetiredPathError(f"retired-path chain/conflict는 허용하지 않음: {old} -> {new}")
+        source_new = source_root / new
+        dest_new = dest_root / new
+        _assert_no_link_components(source_root, source_new, label="upstream replacement")
+        if not source_new.is_file() or _path_is_link_or_reparse(source_new):
+            raise RetiredPathError(f"upstream replacement가 regular file이 아님: {source_new}")
+        _assert_no_link_components(dest_root, dest_new, label="destination replacement")
+        source_hash = hashlib.sha256(_read_bytes_shared(source_new)).digest()
+        prospective = prospective_replacements.get(new)
+        if prospective is not None:
+            if not prospective.is_file() or _path_is_link_or_reparse(prospective):
+                raise RetiredPathError(
+                    f"적용 계획의 replacement source가 regular file이 아님: {prospective}"
+                )
+            dest_hash = hashlib.sha256(_read_bytes_shared(prospective)).digest()
+        else:
+            if not dest_new.is_file() or _path_is_link_or_reparse(dest_new):
+                raise RetiredPathError(
+                    f"destination replacement가 regular file이 아님: {dest_new}"
+                )
+            dest_hash = hashlib.sha256(_read_bytes_shared(dest_new)).digest()
+        if source_hash != dest_hash:
+            raise RetiredPathError(
+                f"replacement hash 불일치(적용 미완료): {dest_new}"
+            )
+
+    planned: list[tuple[str, str, Path]] = []
+    for old, new in declarations:
+        old_path = dest_root / old
+        _assert_no_link_components(dest_root, old_path, label="retired source")
+        if not old_path.exists() and not old_path.is_symlink():
+            continue
+        if not old_path.is_file() or _path_is_link_or_reparse(old_path):
+            raise RetiredPathError(f"retired source가 regular file이 아님: {old_path}")
+        backup = _retired_backup_path(dest_root, old)
+        _assert_no_link_components(dest_root, backup.parent, label="retired backup")
+        planned.append((old, new, backup))
+    return planned
+
+
+def retire_manifest_paths(
+    dest_root: Path,
+    source_root: Path,
+    manifest: list,
+    manifest_paths: list[Path],
+    *,
+    write: bool,
+    prospective_replacements: dict[str, Path] | None = None,
+) -> list[tuple[str, Path]]:
+    """full self-sync의 명시 퇴역 경로를 backup으로 원자 이동한다."""
+    declarations: list[tuple[str, str]] = []
+    seen: dict[str, str] = {}
+    for manifest_path in manifest_paths:
+        for old, new in parse_retired_path_directives(Path(manifest_path)):
+            previous = seen.get(old)
+            if previous is not None and previous != new:
+                raise RetiredPathError(
+                    f"retired-path 선언 충돌: {old} -> {previous} / {new}"
+                )
+            # 다중 harness 회복은 동일 지시문을 여러 flavor manifest에서
+            # 읽을 수 있다. 파일 내 중복은 parser가 거부하고, 파일 간 동일값만 접는다.
+            if previous is None:
+                seen[old] = new
+                declarations.append((old, new))
+    if not declarations:
+        return []
+
+    dest_root = Path(dest_root)
+    source_root = Path(source_root)
+    if not write:
+        plan = _validate_retired_path_plan(
+            dest_root, source_root, manifest, declarations,
+            prospective_replacements=prospective_replacements,
+        )
+    else:
+        # lock 파일도 쓰기이므로 선언·경로·hash를 먼저 전부 검증한다.
+        _validate_retired_path_plan(dest_root, source_root, manifest, declarations)
+        lock = _load_file_lock()
+        section = getattr(lock, "exclusive_file_lock", None)
+        if not callable(section):
+            raise RetiredPathError("retired-path 전용 배타락 seam을 로드할 수 없음")
+        lock_path = dest_root / RETIRED_PATH_LOCK_REL
+        _assert_no_link_components(dest_root, lock_path.parent, label="retired lock")
+        with section(lock_path):
+            plan = _validate_retired_path_plan(
+                dest_root, source_root, manifest, declarations,
+            )
+            for old, _new, backup in plan:
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                # overwrite 금지: 위에서 고른 좌표가 락 구간에서도 비어 있다.
+                if backup.exists() or backup.is_symlink():
+                    raise RetiredPathError(f"retired backup 충돌: {backup}")
+                os.replace(dest_root / old, backup)
+                if (dest_root / old).exists() or (dest_root / old).is_symlink():
+                    raise RetiredPathError(f"retired source 사후조건 실패: {old}")
+    return [(old, backup) for old, _new, backup in plan]
+
+
+def _run_retired_path_migration(
+    effective_dest: Path,
+    source_root: Path,
+    manifest: list,
+    selfheal: dict,
+    *,
+    write: bool,
+    changes: list[tuple] | None = None,
+) -> bool:
+    """retired migration 실행+보고. 실패는 호출부가 baseline 억제로 바꾼다."""
+    manifest_paths = [Path(path) for path in selfheal.get("upstream_manifests", [])]
+    if not manifest_paths:
+        manifest_paths = [Path(source_root) / ".project_manager" / "engine.manifest"]
+    # 구 upstream은 manifest 자체가 없을 수 있다. 명시 이주 채널이 없는
+    # 세대를 기존과 같이 fail-soft로 지나간다(임의 삭제로 추측하지 않음).
+    manifest_paths = [path for path in manifest_paths if path.is_file()]
+    if not manifest_paths:
+        return True
+    # legacy_preserved는 로컬 manifest를 의도적으로 승격하지 않은 형상이다.
+    # 그 형상의 계획 manifest가 replacement를 소유하지 않으면 신 파일도
+    # 설치하지 않으므로 퇴역을 유보한다(구 파일 단독 제거 금지).
+    if selfheal.get("status") == "legacy_preserved":
+        owned = {str(entry).replace("\\", "/") for entry in manifest}
+        try:
+            declared = [
+                pair
+                for path in manifest_paths
+                for pair in parse_retired_path_directives(path)
+            ]
+        except (OSError, UnicodeError, RetiredPathError) as exc:
+            print(f"[중단] retired-path 이주 실패 — {exc}", file=sys.stderr)
+            return False
+        if declared and not any(new in owned for _old, new in declared):
+            return True
+    try:
+        prospective = {
+            str(rel).replace("\\", "/"): Path(src)
+            for rel, src, _dst, _kind in (changes or [])
+        }
+        planned = retire_manifest_paths(
+            effective_dest, source_root, manifest, manifest_paths, write=write,
+            prospective_replacements=prospective if not write else None,
+        )
+    except (OSError, UnicodeError, RetiredPathError) as exc:
+        print(f"[중단] retired-path 이주 실패 — {exc}", file=sys.stderr)
+        return False
+    verb = "퇴역 예정" if not write else "퇴역"
+    for old, backup in planned:
+        print(f"  [{verb}] {old} -> {backup}")
+    return True
 
 
 def _parse_manifest_line(line: str) -> ManifestEntry | None:
@@ -3744,7 +4021,7 @@ def _render_codex_operational_detail(text: str, skill_name: str) -> str:
         )
     if skill_name == "pm-review":
         old = (
-            "**Claude PM은 이 문서의 `external_review.py` 실 실행 커맨드를 Bash 툴로 호출할 때\n"
+            "**Claude PM은 이 문서의 `additional_reviewer.py` 실 실행 커맨드를 Bash 툴로 호출할 때\n"
             "`timeout: 29300000`(ms)을 반드시 명시한다.** 이는 CLI `--timeout`(리뷰어 벽시계)이 아니라\n"
             "호출층 Bash 툴 파라미터다. Windows 진입 규약은 상시 `SKILL.md`에 남아 있다."
         )
@@ -6752,6 +7029,10 @@ def _main(argv: list[str] | None = None) -> int:
     #    `--paths`(부분 전파)도 비발화다 — 요청 밖 인스턴스 파일을 고치지 않는다는 게 이 모드의
     #    전부이고, 진입 doc 전환은 요청하지 않은 write 다.
     do_migrate = not args.target and not scope_paths
+    # manifest가 명시한 engine-owned 구 경로 퇴역도 전량 self-sync에서만 돈다.
+    # 구 updater가 신 파일·신 updater를 배달한 뒤 다음 changes=0 실행이
+    # 실제 퇴역을 닫는다. `--paths`/`--target`은 요청 밖 write라 비발화다.
+    do_retire = not args.target and not scope_paths
 
     # ── 보호 훅 정합 확인 + drift 재설치 — migrate 와 **같은 경계·같은
     #    시퀀싱**(--target 비발화 · changes 0 경로에서도 write · dry-run 은 판정만). changes 로
@@ -6787,6 +7068,11 @@ def _main(argv: list[str] | None = None) -> int:
         _print_retired_manifest_files(retired_files)
         _print_manifest_selfheal_finding(selfheal, dry_run=args.dry_run)
         _print_manifest_skew_finding(skew_status, skew_new, dry_run=args.dry_run)
+        if do_retire and not _run_retired_path_migration(
+            effective_dest, source_root, manifest, selfheal,
+            write=not args.dry_run,
+        ):
+            return 1
         if do_migrate:
             # 엔진 변경 0 = 이미 최신(신규 등재분도 laydown 완료) → 전환 write 안전(apply 무관).
             result = migrate_entry_doc(
@@ -6848,13 +7134,18 @@ def _main(argv: list[str] | None = None) -> int:
             #   같은 이유로 그 답을 local.conf 에 박을 자리가 아니다(수렴한 뒤 실행이 묻는다).
             if converge_upstream_revs(
                     effective_dest, source_root, skew_status, skew_new):
-                maybe_prompt_external_review(effective_dest)
+                maybe_prompt_additional_reviewer(effective_dest)
         return 0
     if args.dry_run:
         print(f"[dry-run] {len(changes)} 파일 변경 예정 (적용 안 함).")
         _print_retired_manifest_files(retired_files)  # apply 경로와 같은 보고(무write).
         _print_manifest_selfheal_finding(selfheal, dry_run=True)
         _print_manifest_skew_finding(skew_status, skew_new, dry_run=True)
+        if do_retire and not _run_retired_path_migration(
+            effective_dest, source_root, manifest, selfheal, write=False,
+            changes=changes,
+        ):
+            return 1
         if do_migrate:  # 판정만(write=False·무부작용).
             result = migrate_entry_doc(effective_dest, source_root, write=False)
             _print_entry_doc_migration_finding(result, dry_run=True)
@@ -6877,6 +7168,13 @@ def _main(argv: list[str] | None = None) -> int:
           is_hook_set_path=resolve_hook_set_predicate(source_root))
     msg = f"✓ {len(changes)} 파일 동기화"
     print(msg)
+
+    # apply 완료를 관측한 뒤에만 구 경로를 옮긴다. 이 게이트가 실패하면
+    # 아래 instance migration·upstream.rev baseline 모두에 도달하지 않는다.
+    if do_retire and not _run_retired_path_migration(
+        effective_dest, source_root, manifest, selfheal, write=True,
+    ):
+        return 1
 
     _print_retired_manifest_files(retired_files)
     _print_manifest_selfheal_finding(selfheal, dry_run=False)
@@ -6943,7 +7241,7 @@ def _main(argv: list[str] | None = None) -> int:
     # 미수렴이면 프롬프트도 건너뛴다 — baseline 억제와 같은 논거다(성공하지 않은 실행이 던진
     #   질문의 답을 local.conf 에 박으면, 그 실행의 rc1 과 기록이 어긋난다).
     if converge_upstream_revs(effective_dest, source_root, skew_status, skew_new):
-        maybe_prompt_external_review(effective_dest)
+        maybe_prompt_additional_reviewer(effective_dest)
     return 0
 
 

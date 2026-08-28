@@ -3,7 +3,7 @@
 
 PM 메인세션(claude/codex/opencode 어디든)이 세션을 떠나지 않고 역할 노동
 (developer/researcher/architect/code-reviewer)을 **다른 하네스 CLI subprocess** 로 위임하는
-순수 CLI. N×N 대칭 — 호출측 하네스 조건 0 (external_review 와 동형 seam).
+순수 CLI. N×N 대칭 — 호출측 하네스 조건 0 (additional_reviewer 와 동형 seam).
 
 이 도구는 **엔진 코어**만 담는다:
   · config 해소  — `delegate.<role>[.<tier>].harness/.model/.reasoning` 3키를 **원자 tuple**
@@ -13,7 +13,7 @@ PM 메인세션(claude/codex/opencode 어디든)이 세션을 떠나지 않고 �
   · 권한 매핑    — 역할축(write=developer/architect·read=researcher/code-reviewer)을 argv/sandbox 로
                   강제하되 보장 수준을 정직 표기.
   · 쓰기-타깃 axis — 엔진 코드(`.project_manager/tools/`) write 위임이 PM 홈 cwd 면 canonical
-                  worktree 재앵커 fail-loud(external_review `_pm_home_reanchor` 재사용).
+                  worktree 재앵커 fail-loud(additional_reviewer `_pm_home_reanchor` 재사용).
   · 시크릿 통제  — 합성 프롬프트 denylist 스캔 + 전 탐지를 본 사람의 건별 CLI ack + subprocess env
                   allowlist 정제 + prompt-file containment. ack digest는 해소된 primary
                   harness:model과 합성 전문에 결속한다. ack으로 차단을 통과한 실행은 primary 인프라
@@ -288,7 +288,7 @@ def _write_machine_line(text: str) -> None:
     console_encoding.write_machine_line(text)
 
 
-# ── REPO 앵커 (external_review 동형·상향 탐색·hermetic 테스트 monkeypatch seam) ────────
+# ── REPO 앵커 (additional_reviewer 동형·상향 탐색·hermetic 테스트 monkeypatch seam) ────────
 # 하드코딩 parents[2] 대신 `.project_manager` 를 품은 첫 조상을 REPO 로 삼는다(채택자/worktree 등
 # 다른 깊이여도 견고). module-level 상수라 테스트가 monkeypatch 할 수 있다.
 
@@ -313,11 +313,11 @@ ROLE_CHOICES: tuple[str, ...] = ("developer", "researcher", "architect", "code-r
 TIER_CHOICES: tuple[str, ...] = ("normal", "hard")
 
 INTERNAL_REVIEW_ROLE = "code-reviewer"
-# 추가 리뷰어(external_review) 산출이 회수되는 역할. 하네스로 위임되는 역할이 아니라 엔진이
+# 추가 리뷰어(additional_reviewer) 산출이 회수되는 역할. 하네스로 위임되는 역할이 아니라 엔진이
 # 직접 쓰는 채널이라 `ROLE_CHOICES` 에는 없고 라운드 역할 집합에만 있다.
-EXTERNAL_REVIEW_ROLE = "external-reviewer"
+ADDITIONAL_REVIEWER_ROLE = "additional-reviewer"
 # 티켓 게이트 리뷰 채널 — 두 채널의 finding 은 같은 delta/disposition 표면에서 판정된다.
-REVIEW_ROLES: tuple[str, ...] = (INTERNAL_REVIEW_ROLE, EXTERNAL_REVIEW_ROLE)
+REVIEW_ROLES: tuple[str, ...] = (INTERNAL_REVIEW_ROLE, ADDITIONAL_REVIEWER_ROLE)
 # 내부 code-reviewer 수렴 상한 — 추가 리뷰어 축과 같은 성격의 상한이라 채택자가 조정한다.
 # 키는 역할 상수에서 파생한다(표기가 갈리는 자리를 만들지 않는다). 외부 축과 **합치지 않는다** —
 # 대상 장부와 과금 채널이 달라, 한 값으로 묶으면 내부 라운드를 늘릴 때 과금 라운드까지 는다.
@@ -389,7 +389,7 @@ PM_REVIEW_SEVERITY_MUST_FIX: str = PM_REVIEW_SEVERITIES[0]
 # finding ID 는 티켓 전역 유일이라 채널별 접두로 네임스페이스를 나눈다(판정 표면은 하나다).
 PM_REVIEW_FINDING_ID_PREFIXES: dict[str, str] = {
     INTERNAL_REVIEW_ROLE: "F",
-    EXTERNAL_REVIEW_ROLE: "X",
+    ADDITIONAL_REVIEWER_ROLE: "X",
 }
 # JSON member collections live beside the value enums because the strict parsers and every
 # machine-supplied skeleton must move together.  Tuples retain the canonical rendering order;
@@ -986,13 +986,13 @@ class TerminalFixHarvestError(DelegateError):
 # PM 개발 프로세스에 참여하는 모든 역할은 자기 산출을 라운드 파일로 남긴다 — 라운드 파일명이
 # 허용하는 역할 집합이다(`ROLE_CHOICES` ⊆ 이 집합 · 불변식은 테스트가 고정).
 TICKET_COPY_ROLES: frozenset[str] = frozenset(
-    {"developer", "code-reviewer", "architect", "researcher", EXTERNAL_REVIEW_ROLE}
+    {"developer", "code-reviewer", "architect", "researcher", ADDITIONAL_REVIEWER_ROLE}
 )
-# 그중 하네스로 위임돼 slot run-dir 을 준비하는 역할. external-reviewer 라운드는 슬롯 왕복이
-# 아니라 external_review 엔진이 직접 쓴다(추가 리뷰어에게 슬롯 편집 권한을 주지 않는다).
+# 그중 하네스로 위임돼 slot run-dir 을 준비하는 역할. additional-reviewer 라운드는 슬롯 왕복이
+# 아니라 additional_reviewer 엔진이 직접 쓴다(추가 리뷰어에게 슬롯 편집 권한을 주지 않는다).
 # researcher 는 묶음 라운드 수열(architect → developer → code-reviewer → developer)의 단계가 아니다 —
 # 티켓 라운드를 준비하지 않는다(읽기 전용 조사 결과는 회신으로 돌려받는다).
-TICKET_COPY_PREPARE_ROLES: frozenset[str] = TICKET_COPY_ROLES - {EXTERNAL_REVIEW_ROLE, "researcher"}
+TICKET_COPY_PREPARE_ROLES: frozenset[str] = TICKET_COPY_ROLES - {ADDITIONAL_REVIEWER_ROLE, "researcher"}
 TICKET_COPY_REL_ROOT = Path(".project_manager") / ".local" / "delegate-ticket-copies"
 # 사본 루트를 숨기는 ignore 규칙의 정본 위치([[T-0704]]) — 이 파일 유래가 아니면 로컬 전용
 # 소스(`.git/info/exclude`·전역 excludesFile 등)로 보고 fail-loud 한다.
@@ -1534,7 +1534,7 @@ def anchor_board_to_repo(board, repo: Path):
 
     동적 import의 REPO는 파일 깊이로 파생되지만 hermetic fixture처럼 tools만 옮긴 형상도 명시된
     PM 홈 좌표가 권위다. board의 기존 함수는 모두 module REPO에서 경로를 해소한다. **자기 형제
-    board 를 로드해 PM 홈 데이터에 쓰는 호출자**(external_review 회수)도 같은 규칙을 쓰도록
+    board 를 로드해 PM 홈 데이터에 쓰는 호출자**(additional_reviewer 회수)도 같은 규칙을 쓰도록
     공용으로 둔다 — 앵커 규칙이 두 군데면 규칙이 둘이 된다."""
     board.REPO = Path(repo).resolve()
     board.LOCAL_DIR = board.REPO / ".project_manager" / ".local"
@@ -1693,7 +1693,7 @@ def _board_relative_path(board_path: Path, pm_home: Path) -> str:
 
 class InternalRoundLimitExceeded(DelegateError):
     """내부 위임 라운드 상한 도달 — `_cmd_ticket`/cross flat CLI 가 exit 4(외부 채널
-    `external_review.EXIT_ROUND_LIMIT_EXCEEDED` 와 동형)로 낸다."""
+    `additional_reviewer.EXIT_ROUND_LIMIT_EXCEEDED` 와 동형)로 낸다."""
 
 
 # ── 내부 위임 라운드 상한 ──────────────────────────────────────────────────
@@ -2011,7 +2011,7 @@ def prepare_cluster_copy(
     budget_sequence: tuple[str, ...] = ()
     budget_sequence = _budget_inputs()
     conf = (
-        _load_external_review()._local_config_for_repo(pm_home)
+        _load_additional_reviewer()._local_config_for_repo(pm_home)
         if role in DEFAULT_INTERNAL_ROUND_LIMITS else None
     )
     limit = 0
@@ -2595,7 +2595,7 @@ def _run_required_test(command: str, expected: str | None, *, cwd: Path) -> str 
 def _full_regression_command(cwd: Path) -> str:
     """developer 단계 종료의 프로젝트 test_cmd(areas/slot/local/default 해소 전부)."""
     repo = Path(cwd).resolve()
-    er = _load_external_review()
+    er = _load_additional_reviewer()
     owner = er.resolve_pm_home_for_repo(repo, required=False)
     config_root = Path(owner).resolve() if owner else repo
     board = _load_board_for_repo(config_root)
@@ -3291,20 +3291,20 @@ def _ticket_copy_preamble(plan: TicketCopyPlan) -> str:
 # 종결하는 포기(`abandon_ticket_copy`)다. 역할은 줄 안에 값으로 실린다 — 리뷰 채널뿐 아니라 어떤
 # 역할의 라운드도 같은 문법 하나로 표식을 달고 판독은 역할을 가리지 않는다.
 # 발행이 엔진 전용이므로 회수 검증은 같은 줄을 실은 외부 산출을 거부한다.
-EXTERNAL_REVIEW_REFUSED_MARKER = "pm-review-refused"
+PM_REVIEW_REFUSED_MARKER = "pm-review-refused"
 
 
 def pm_review_refused_line(role: str) -> str:
     """그 역할 라운드에 붙는 표식 줄 — 발행이 이 함수 하나를 본다."""
-    return f"<!-- {EXTERNAL_REVIEW_REFUSED_MARKER} role={role} -->"
+    return f"<!-- {PM_REVIEW_REFUSED_MARKER} role={role} -->"
 
 
 # 추가 리뷰어 채널 인스턴스 — 옛 산출에 이미 박혀 있는 그 줄이다(마이그레이션 없음).
-EXTERNAL_REVIEW_REFUSED_LINE = pm_review_refused_line(EXTERNAL_REVIEW_ROLE)
+ADDITIONAL_REVIEWER_REFUSED_LINE = pm_review_refused_line(ADDITIONAL_REVIEWER_ROLE)
 # 판정 기준은 엔진이 **발행하는 그 문법**에서 만든다 — 표식과 판독이 갈리지 않게(문법 일치는
 # 역할 전수 회귀가 고정한다).
 _PM_REVIEW_REFUSED_LINE_RE = re.compile(
-    rf"\A<!-- {re.escape(EXTERNAL_REVIEW_REFUSED_MARKER)} role=[^\s<>]+ -->\Z"
+    rf"\A<!-- {re.escape(PM_REVIEW_REFUSED_MARKER)} role=[^\s<>]+ -->\Z"
 )
 
 
@@ -3344,7 +3344,7 @@ def _round_text_without_refused_marker(text: str, role: str) -> str:
 
 
 def validate_review_block(
-    reply_text: str, *, reviewer_role: str = EXTERNAL_REVIEW_ROLE,
+    reply_text: str, *, reviewer_role: str = ADDITIONAL_REVIEWER_ROLE,
 ) -> str | None:
     """리뷰 산출의 `pm-review-v1` 블록을 회수 전에 검증한다(위반 사유 또는 None).
 
@@ -3599,11 +3599,11 @@ def _review_missing_confirmation_targets(
 
 def review_harvest_problem(
     reply_text: str, *, ticket_text: str, rounds: Sequence,
-    reviewer_role: str = EXTERNAL_REVIEW_ROLE,
+    reviewer_role: str = ADDITIONAL_REVIEWER_ROLE,
 ) -> str | None:
     """리뷰 산출을 라운드로 회수해도 되는지 판정한다 — 위반 사유 또는 None.
 
-    두 회수 경로가 이 함수 하나를 부른다: 추가 리뷰어 회수(`external_review`)와 내부 채널 회수
+    두 회수 경로가 이 함수 하나를 부른다: 추가 리뷰어 회수(`additional_reviewer`)와 내부 채널 회수
     (`harvest_ticket_copy`). 채널이 가르는 것은 finding ID 접두뿐이고 사유·강도는 같다 — 판정
     표면이 하나라 한쪽만 관대하면 그쪽 산출이 표면을 막는다.
 
@@ -3625,7 +3625,7 @@ def review_harvest_problem(
     """
     if pm_review_refused_marker_present(reply_text):
         return (
-            f"엔진 전용 표식({EXTERNAL_REVIEW_REFUSED_MARKER})을 회신이 선언했습니다 — 그 줄은 "
+            f"엔진 전용 표식({PM_REVIEW_REFUSED_MARKER})을 회신이 선언했습니다 — 그 줄은 "
             "라운드를 판정 표면에서 빼므로 산출이 스스로 쓸 수 없습니다"
         )
     problem = validate_review_block(reply_text, reviewer_role=reviewer_role)
@@ -3681,12 +3681,12 @@ def _with_ticket_copy_preamble(
 
 # ── 형제 모듈 deep-import seam (pm_import._load_watchdog 관례·PYTHONPATH 무의존) ─────
 
-def _load_external_review():
-    """엔진 external_review 를 importlib 로 직접 로드 — local_config·denylist·PM 홈 재앵커 판정
+def _load_additional_reviewer():
+    """엔진 additional_reviewer 를 importlib 로 직접 로드 — local_config·denylist·PM 홈 재앵커 판정
     (`_pm_home_reanchor`·`_matching_denylist_pattern`)을 복붙 없이 재사용(형제 `.project_manager/tools/`)."""
-    path = Path(__file__).resolve().parent / "external_review.py"
+    path = Path(__file__).resolve().parent / "additional_reviewer.py"
     return _load_module_from_path(
-        path, "external_review.py", verifier=_verify_engine_rev,
+        path, "additional_reviewer.py", verifier=_verify_engine_rev,
     )
 
 
@@ -3831,7 +3831,7 @@ def _internal_verdict_declaration_forms(
     external=None,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """external verdict 파서의 정확일치 토큰에서 preamble 선언형을 파생한다."""
-    external = _load_external_review() if external is None else external
+    external = _load_additional_reviewer() if external is None else external
 
     def declarations(tokens: Sequence[str]) -> tuple[str, ...]:
         # casefold가 같은 대소문자 변형도 parser가 각각 받으므로 생략하지 않는다.
@@ -3846,7 +3846,7 @@ def _internal_verdict_declaration_forms(
 
 def _internal_canonical_verdict_forms(external=None) -> tuple[str, str]:
     """exact 허용집합과 parser 선호 순서의 교집합에서 한국어 표준 선언을 고른다."""
-    external = _load_external_review() if external is None else external
+    external = _load_additional_reviewer() if external is None else external
 
     def canonical(preferred: Sequence[str], allowed: Sequence[str]) -> str:
         token = next((word for word in preferred if word in allowed), None)
@@ -3865,7 +3865,7 @@ def _internal_canonical_verdict_forms(external=None) -> tuple[str, str]:
 
 def _internal_review_format_preamble() -> str:
     """내부 reviewer가 보는 산출 계약 — 판정/0건 parser 원천에서 매번 합성."""
-    external = _load_external_review()
+    external = _load_additional_reviewer()
     pass_forms, reject_forms = _internal_verdict_declaration_forms(external)
     canonical_pass, canonical_reject = _internal_canonical_verdict_forms(external)
     pass_examples = ", ".join(f"`{form}`" for form in pass_forms)
@@ -5134,7 +5134,7 @@ def unharvested_developer_round(rounds: Sequence):
     """리뷰 라운드가 딛고 설 **직전 developer 라운드**가 산출 없음이면 그 라운드(아니면 None).
 
     시야는 그 티켓의 마지막 developer 라운드 하나다 — 리뷰 입력은 역할별 **마지막 산출**만
-    싣고(`external_review._select_ticket_body_for_review`), 더 앞 라운드의 미회수는 이 준비가
+    싣고(`additional_reviewer._select_ticket_body_for_review`), 더 앞 라운드의 미회수는 이 준비가
     되돌릴 수 있는 상태가 아니다.
 
     developer 라운드가 **아예 없는** 티켓(코드만 보는 독립 검토)은 발판 자체가 없어 대상이
@@ -5171,7 +5171,7 @@ def _warn_unharvested_developer_round(rounds: Sequence) -> None:
     name = rounds_module.round_filename(stale.ordinal, stale.role)
     # 단정문 대신 값 진술 — 앞선 라운드에 산출이 있으면(형상 B) 그것이 리뷰어 입력에 실린다.
     # "실리지 않습니다" 는 그 형상에서 거짓이라 쓰지 않는다. 스폰면
-    # (`external_review._warn_seed_developer_round`)과 같은 계산 하나(
+    # (`additional_reviewer._warn_seed_developer_round`)과 같은 계산 하나(
     # `latest_round_of_role`)를 써 두 표면이 같은 값을 말하게 한다.
     latest = rounds_module.latest_round_of_role(rounds, REVIEW_SUBJECT_ROLE)
     latest_name = (
@@ -5656,7 +5656,7 @@ def parse_pm_review_delta(ticket_text: str, rounds: Sequence) -> PMReviewDelta:
     """reviewer 제안→PM disposition→확인 상태를 accepted-only delta로 축약한다.
 
     입력은 둘이다 — 명세(`ticket_text`)가 PM disposition 블록의 자리이고, reviewer 블록은
-    라운드 파일에만 있다. 두 리뷰 채널(내부 code-reviewer·추가 external-reviewer)을 같은
+    라운드 파일에만 있다. 두 리뷰 채널(내부 code-reviewer·추가 additional-reviewer)을 같은
     표면에서 판정하며 순번은 티켓 전역, finding ID 는 접두로 갈려 티켓 전역 유일이다.
 
     라운드가 파일로 갈려 "블록이 어느 절 안에 있나" 를 좌표로 물을 일이 없다 — 리뷰 블록은
@@ -6735,7 +6735,7 @@ def pm_verified_evidence_problem(
 
     두 인자 모두 **키워드 필수**다 — 생략은 조용한 전역 판정이 아니라 `TypeError` 이고, review
     채널이 아닌 값(`None` 포함)은 `PMReviewError` 다(fail-loud). 생산 호출부는 내부 완료 게이트
-    (`INTERNAL_REVIEW_ROLE`)와 추가 리뷰어 release 게이트(`EXTERNAL_REVIEW_ROLE`) 둘뿐이고,
+    (`INTERNAL_REVIEW_ROLE`)와 추가 리뷰어 release 게이트(`ADDITIONAL_REVIEWER_ROLE`) 둘뿐이고,
     `surface_floor` 가 정수가 아니면(장부 잔여 '미상') 차단한다(fail-closed).
 
     machine 행은 마지막 fix의 기계 확인, 엄격한 `pm-owned:` scope + false verify 이중 결속 행은
@@ -7253,7 +7253,7 @@ def _internal_reply_assessment(reply: str | None) -> InternalReplyAssessment:
             unknown,
             _internal_reply_diagnostic(INTERNAL_DIAGNOSTIC_MISSING_VERDICT),
         )
-    external = _load_external_review()
+    external = _load_additional_reviewer()
     words = external.verdict_words(reply)
     if not words:
         return InternalReplyAssessment(
@@ -8158,14 +8158,14 @@ _CONFIG_REPO_OVERRIDE: Path | None = None
 
 
 def local_config(repo: Path | None = None) -> dict[str, str]:
-    """per-clone local.conf 를 KEY=value 로 읽는다(external_review.local_config 재사용).
+    """per-clone local.conf 를 KEY=value 로 읽는다(additional_reviewer.local_config 재사용).
 
     독립 주석 라인(`#` 시작)만 처리하고 값 안의 `#` 은 제거하지 않는다 — `delegate.*` 값은 inline
     주석 금지(독립 주석 라인만). REPO 를 호출 시점 읽어 테스트 monkeypatch 를 추종한다.
 
     `repo` 는 호출부가 이미 해소한 owner(PM 홈)를 명시할 때만 넘긴다 — 생략 시 기존 provenance
     (`_CONFIG_REPO_OVERRIDE or REPO`, 즉 실행한 엔진 사본의 repo)를 그대로 쓴다."""
-    er = _load_external_review()
+    er = _load_additional_reviewer()
     config_repo = repo or _CONFIG_REPO_OVERRIDE or REPO
     er.REPO = config_repo
     er.LOCAL_CONF = config_repo / ".project_manager" / "local.conf"
@@ -8337,7 +8337,7 @@ def build_opencode_argv(
 #     실측됐고, 첫-이벤트 창을 신호 축 전부에 켜면 기동이 느린 실행을 새로 false-kill 한다.
 #   · idle_timeout / wall_timeout — 클라우드 축(codex·claude)과 로컬 GPU 축(opencode)의 값이 다르다
 #     (근거 수치는 pm_relay 선언부 주석). 값이 갈리는 건 허용, **코드가 갈리면 위반**이다.
-# 테이블은 **pm_relay 가 단일 소유**한다 — external_review 도 같은 테이블을 읽어야 리뷰어 축과 위임
+# 테이블은 **pm_relay 가 단일 소유**한다 — additional_reviewer 도 같은 테이블을 읽어야 리뷰어 축과 위임
 # 축의 규칙이 갈리지 않는다(값이 두 군데면 규칙이 둘).
 
 
@@ -8362,7 +8362,7 @@ def harness_profile(harness: str, conf: dict[str, str] | None = None):
 # ── 시크릿 통제  ──────────────────────────────────────────────────────
 #
 # 프롬프트 스캔은 **파일 경로/이름 + 시크릿 값**만 겨냥한다.
-# external_review 의 denylist(`*token*`·`*secret*` …)는 원래 *파일 경로* 필터라, 그 substring glob 을
+# additional_reviewer 의 denylist(`*token*`·`*secret*` …)는 원래 *파일 경로* 필터라, 그 substring glob 을
 # 산문·식별자에 그대로 대면 정상 conf 키(`ctx.window_tokens`)·변수명·"토큰 수" 서술이 전부
 # 걸린다. 그래서 판정을
 # **양성매칭 2축**으로 바꾼다(파서 양성매칭 전환 동형):
@@ -8430,7 +8430,7 @@ _CANDIDATE_FRAGMENT_RE = re.compile(r"[()\[\]]+")
 # 분리가 산문 오탐을 되살린다).
 _ANCHORED_PATH_RE = re.compile(r"^(?:[/\\~$]|\.{1,2}[/\\])")
 
-# 경로 형태(확장자)가 없어도 그 자체로 시크릿 파일인 이름 — external_review denylist 는 확장자/
+# 경로 형태(확장자)가 없어도 그 자체로 시크릿 파일인 이름 — additional_reviewer denylist 는 확장자/
 # substring 위주라 이 계열(ssh 개인키·rc 파일)을 안 담는다. 프롬프트 스캔 전용 보강(미탐 폐쇄).
 # `.npmrc`/`.netrc` 는 정확 파일명으로 여기 둔다 — `_SECRET_DATA_EXTENSIONS` 의 동명 확장자만으로는
 # denylist 패턴이 하나도 안 걸려 도달 불가였다(외부 리뷰 MF4·데드 상수).
@@ -8708,7 +8708,7 @@ def _matching_secret_path_pattern(
     전문이 아니라 basename+마커로 나눈 이유는 `_STRICT_PATH_NAME_RE`·`_PROSE_MARKER_RE` 주석 참조 —
     전문 strict 판정은 경로 성분 하나의 비ASCII/`@`/`$` 로 전 축을 skip 시켜 실 시크릿 경로를 통과시켰다.
     `match_fn` 은 호출부가 로드해둔 matcher 주입 — 토큰마다 형제 모듈을 재-import 하지 않는다."""
-    match = match_fn or _load_external_review()._matching_denylist_pattern
+    match = match_fn or _load_additional_reviewer()._matching_denylist_pattern
     if _PROSE_MARKER_RE.search(token):
         return None
     normalized = token.replace("\\", "/")
@@ -8935,7 +8935,7 @@ def _iter_prompt_secret_hits(prompt: str) -> Iterator[PromptSecretHit]:
     경로만 끝까지 소비해 모든 탐지를 표시한다. 즉 패턴·축·마스킹 로직은 바꾸지 않고,
     조기 반환만 exhaustive 수집 가능한 yield로 푼다.
     """
-    er = _load_external_review()
+    er = _load_additional_reviewer()
     patterns = er._SECRET_DENYLIST_PATTERNS
     for pem in _PEM_PRIVATE_KEY_RE.finditer(prompt):
         yield PromptSecretHit(
@@ -9010,7 +9010,7 @@ def scan_prompt_secrets(prompt: str) -> PromptSecretHit | None:
     """합성 프롬프트에서 첫 시크릿(파일 경로/이름 · 크리덴셜 값)을 찾는다(전송 전 차단).
 
     양성매칭 2축: ⓐ **경로축** — `=`/`:` 분리·구두점 트리밍·조사 제거·소문자 정규화로 토큰
-    후보를 낸 뒤 *경로 형태* 후보에만 external_review denylist(`.env`·`*secret*`·`*.key` …)를 적용 +
+    후보를 낸 뒤 *경로 형태* 후보에만 additional_reviewer denylist(`.env`·`*secret*`·`*.key` …)를 적용 +
     알려진 시크릿 파일명(`id_rsa`·`.npmrc`) 매칭 + 원격 URL 경로는 정확-이름/확장자 패턴만.
     ⓑ **값축** — PEM 개인키 블록·알려진 값 prefix(`ghp_…`·URL 안까지)·URL userinfo 자격증명·시크릿
     키명(성분 경계 + camelCase hump) 할당의 고엔트로피 값. 반환: 매칭 시 `PromptSecretHit`(발췌·
@@ -9340,7 +9340,7 @@ def _cwd_in_git_repo(cwd: Path, run_fn: Callable | None = None) -> bool:
 
     광범위 경로(홈 디렉토리 등 non-repo)를 신뢰 작업공간으로 삼는 것을 차단한다(codex must-fix) —
     실제 허용 작업공간을 git repo 로 조여 cwd (a) 신뢰 루트가 과도하게 넓어지는 것을 막는다. git 미설치·
-    실행 불가·비-repo 는 False(호출부 fail-loud). run_fn 주입(테스트 mock·external_review 동형 seam)."""
+    실행 불가·비-repo 는 False(호출부 fail-loud). run_fn 주입(테스트 mock·additional_reviewer 동형 seam)."""
     _run = run_fn or subprocess.run
     try:
         result = _run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
@@ -9378,7 +9378,7 @@ def _prompt_file_denylist_pattern(prompt_file: Path) -> str | None:
 
     `prompt.md → <cwd>/.env` 같은 symlink 는 원본 이름(prompt.md)이 clean 이라 통과하나 resolve() 해소
     경로(.env)는 denylist 에 걸린다 — 양쪽을 검사해 symlink 를 통한 secret 읽기를 차단한다(codex must-fix).
-    external_review `_matching_denylist_pattern`(fnmatch·`.env`·`*credential*`·`*.key`) 재사용. 걸린
+    additional_reviewer `_matching_denylist_pattern`(fnmatch·`.env`·`*credential*`·`*.key`) 재사용. 걸린
     패턴명 반환(원문 토큰 미노출).
 
     판정 대상은 **파일 이름**이다(`_matching_secret_name_pattern` 공유) — 옛 전체 경로 fnmatch 는
@@ -9401,7 +9401,7 @@ def _prompt_file_denylist_pattern(prompt_file: Path) -> str | None:
     넘기는 걸 막는 방어심층이지 적대적 PM 을 막는 층이 아니고(위임 프로세스는 어차피 cwd 를 직접 읽는다·
     ), 문서 안의 실 크리덴셜은 값축이 다시 잡는다. 단 **디렉토리 성분 검사는 문서에도 적용**되어
     `secrets/`·`credentials/`·`.aws/` 아래 파일은 확장자와 무관하게 차단된다(아래 `_secret_directory_segment`)."""
-    er = _load_external_review()
+    er = _load_additional_reviewer()
     patterns = er._SECRET_DENYLIST_PATTERNS
     # 기본 denylist 엔 `/` 패턴이 없다 — 이 분기는 conf 확장(`additional_reviewer.denylist_extra` 에 `secrets/` 류를
     # 넣은 채택자)에서만 도달한다. 기본 형상에서 dead 로 보이는 건 그 때문(관측 메모).
@@ -9885,11 +9885,11 @@ def check_local_conf_divergence(
     config_repo: Path,
     cli_override: bool = False,
     compare_fallback: bool = False,
-    external_review_module=None,
+    additional_reviewer_module=None,
 ) -> tuple[Path | None, object | None, object]:
     """기존 `--cwd` repo축으로 이번 role/tier의 **유효 primary/fallback 프로필** 분기를 검사한다.
 
-    external_review의 repo-root/conf 비교 seam을 재사용해 두 표면이 별도 판정 규칙을 갖지 않게 한다.
+    additional_reviewer의 repo-root/conf 비교 seam을 재사용해 두 표면이 별도 판정 규칙을 갖지 않게 한다.
     양쪽 모두 `resolve_delegate`를 거쳐 reasoning 미지정(None)까지 포함한 완전 tuple을 비교하므로,
     한쪽만 키를 생략한 실제 수신 프로필 차이도 잡는다. 대상 역할/티어가 불완전하거나 잘못돼
     해소되지 않으면 실행 가능한 비교 대상이 아니므로 skip한다. CLI 완전지정은 local.conf를 primary
@@ -9898,14 +9898,14 @@ def check_local_conf_divergence(
     비교한다. 또한 양쪽 `resolve_fallback` 결과가 모두 tuple이고 각 후보의 primary와 harness/model이
     다를 때만 값 차이를 판정한다. 한쪽 미설정·primary 동일은 실제 발동 불가능하므로 무소음이며,
     불완전/잘못된 대상 tuple도 실행 가능한 비교값이 아니어서 skip한다. 호출자가 이미 로드한
-    external_review 모듈을 넘길 수 있는 것은 그 모듈이 정의한 예외 클래스의 identity를 raise/catch
+    additional_reviewer 모듈을 넘길 수 있는 것은 그 모듈이 정의한 예외 클래스의 identity를 raise/catch
     사이에 보존하기 위함이다. 반환 target_repo는 이 skip들과 무관하게 write-target 재앵커에도
     재사용한다.
 
-    범위 경계: `additional_reviewer.denylist_extra`와 `additional_reviewer.paths`는 external_review가 유효 내용 값 비교와
+    범위 경계: `additional_reviewer.denylist_extra`와 `additional_reviewer.paths`는 additional_reviewer가 유효 내용 값 비교와
     denylist 합집합 적용을 소유한다.
     """
-    er = external_review_module or _load_external_review()
+    er = additional_reviewer_module or _load_additional_reviewer()
     target_repo = er.repo_root_from_cwd(cwd)
     if cli_override:
         return target_repo, None, er
@@ -9956,13 +9956,13 @@ def check_write_target_reanchor(role: str, cwd: Path, prompt: str) -> Path | Non
     """write 역할이 PM 홈 cwd 에서 엔진 코드(import 사본)를 write 타깃하면 재앵커 대상 worktree 반환.
 
     재앵커는 cwd 자체가 아니라 **쓰기-타깃 axis** 로 판정 — PM-doc(wiki/ADR/spike) 작업은 PM 홈 cwd
-    정당. 판정 = external_review `_pm_home_reanchor`(실 board 소유 + `work/*` canonical 보유·파일 존재
+    정당. 판정 = additional_reviewer `_pm_home_reanchor`(실 board 소유 + `work/*` canonical 보유·파일 존재
     휴리스틱 금지) 재사용. read 역할·비-엔진-코드 타깃·PM 홈 아닌 cwd 는 None(통과)."""
     if role not in WRITE_ROLES:
         return None
     if not _prompt_targets_engine_code(prompt):
         return None
-    er = _load_external_review()
+    er = _load_additional_reviewer()
     return er._pm_home_reanchor(cwd)
 
 
@@ -9973,7 +9973,7 @@ def save_raw_output(
 ) -> Path:
     """raw 하네스 출력 + 메타를 파일로 박제한다 — O_EXCL·mode 0600·PID/UUID 원자 파일명.
 
-    external_review.save_output 형이나 보안 요구(원자 생성·0600 권한)를 더한다 — 감사용·충돌/권한
+    additional_reviewer.save_output 형이나 보안 요구(원자 생성·0600 권한)를 더한다 — 감사용·충돌/권한
     유출 회귀 가드. 반환: 박제 파일 경로."""
     base_dir, _ledger_path = _raw_storage(output_dir)
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -10003,7 +10003,7 @@ FRESH_REASON_FIELD = "fresh_reason"
 ATTACH_RAW_SECTION_TITLE = "## 직전 검토 보고 원문"
 _DELEGATE_RAW_STDOUT_MARKER = "\n## stdout\n"
 _DELEGATE_RAW_STDERR_MARKER = "\n\n## stderr\n"
-_EXTERNAL_REVIEW_STDERR_MARKER = "\n[stderr]\n"
+_ADDITIONAL_REVIEWER_STDERR_MARKER = "\n[stderr]\n"
 
 
 class AttachedRaw(NamedTuple):
@@ -10113,10 +10113,14 @@ def _delegate_raw_stdout(content: str, raw_path: Path) -> str:
     return stdout
 
 
-def _external_review_raw_answer(content: str) -> str:
-    """external_review 감사 헤더와 표시용 stderr 꼬리를 떼고 회신 wire 원문만 반환한다."""
+def _additional_reviewer_raw_answer(content: str) -> str:
+    """신구 추가 리뷰 감사 헤더와 stderr 꼬리를 떼고 wire 원문만 반환한다."""
     body = content
-    if content.startswith("# external_review raw 출력 (감사)\n"):
+    headers = (
+        "# additional_reviewer raw 출력 (감사)\n",
+        "# external_review raw 출력 (감사)\n",
+    )
+    if content.startswith(headers):
         lines = content.splitlines(keepends=True)
         index = 0
         while index < len(lines) and lines[index].startswith("#"):
@@ -10124,7 +10128,7 @@ def _external_review_raw_answer(content: str) -> str:
         if index < len(lines) and not lines[index].strip():
             index += 1
         body = "".join(lines[index:])
-    answer, marker, _log = body.rpartition(_EXTERNAL_REVIEW_STDERR_MARKER)
+    answer, marker, _log = body.rpartition(_ADDITIONAL_REVIEWER_STDERR_MARKER)
     return answer if marker else body
 
 
@@ -10143,7 +10147,7 @@ def _attached_record_reply(record: Mapping[str, object], raw_path: Path) -> str:
             raise DelegateError(f"첨부 레코드 harness 형식 오류: {record.get('id')}")
         reply = extract_reply(harness, _delegate_raw_stdout(content, raw_path))
     else:
-        answer = _external_review_raw_answer(content)
+        answer = _additional_reviewer_raw_answer(content)
         if isinstance(harness, str) and harness in HARNESS_CHOICES:
             reply = extract_reply(harness, answer)
         else:
@@ -10224,10 +10228,10 @@ def _peer_engine_ledgers() -> tuple[Path, ...]:
     """
     try:
         current = REPO.resolve()
-        external_review = _load_external_review()
+        additional_reviewer = _load_additional_reviewer()
         pm_home = (_CONFIG_REPO_OVERRIDE or
-                   external_review.resolve_pm_home_for_repo(current)).resolve()
-        candidates = [pm_home, *external_review._registered_worktrees(pm_home)]
+                   additional_reviewer.resolve_pm_home_for_repo(current)).resolve()
+        candidates = [pm_home, *additional_reviewer._registered_worktrees(pm_home)]
         ledgers: set[Path] = set()
         for repo in candidates:
             resolved_repo = repo.resolve()
@@ -10709,7 +10713,7 @@ def _observed_must_fix_items(reply: str | None) -> list[str]:
     if not reply or not reply.strip():
         return []
     try:
-        external = _load_external_review()
+        external = _load_additional_reviewer()
         items = external._extract_must_fix_items(reply)
         items = [item for item in items if item and item.strip()]
         return [] if external._is_none_items(items) else items
@@ -11115,7 +11119,7 @@ def _default_run_fn(
 
     **launch 오류 정규화**(codex must-fix): 하네스 바이너리 미설치/실행 불가(FileNotFoundError·
     PermissionError 등 **스폰 단계** 오류)는 traceback 으로 전파하지 않고 RunResult(rc≠0·진단 stderr)로
-    감싼다 — 3드라이버 공통(external_review.run_reviewer 의 FileNotFoundError fail-soft 계약 동형).
+    감싼다 — 3드라이버 공통(additional_reviewer.run_reviewer 의 FileNotFoundError fail-soft 계약 동형).
 
     **스폰 단계 한정**: 프롬프트를 이미 보낸 뒤의 I/O 오류(communicate 중 EPIPE 등)를 launch
     실패로 표시하면 폴백이 발동해 **같은 프롬프트가 외부로 중복 전송**된다. 그래서 launch 신호는
@@ -13485,7 +13489,7 @@ def _ticket_cli_owner(cwd: Path) -> Path:
     resolved = cwd.resolve()
     if resolved == resolved.parent or not _cwd_in_git_repo(resolved):
         raise DelegateError(f"--cwd 는 파일시스템 루트가 아닌 git 작업공간이어야 합니다: {resolved}")
-    er = _load_external_review()
+    er = _load_additional_reviewer()
     try:
         owner = Path(er.resolve_pm_home_for_repo(resolved, required=True)).resolve()
     except er.AnchorResolutionError as exc:
@@ -13503,8 +13507,8 @@ def _repo_root_for_cwd(cwd: Path, er=None) -> Path:
     if not cwd.is_absolute():
         raise DelegateError("--cwd 는 절대경로여야 합니다")
     resolved = cwd.resolve()
-    external_review = er if er is not None else _load_external_review()
-    return Path(external_review.repo_root_from_cwd(resolved) or resolved).resolve()
+    additional_reviewer = er if er is not None else _load_additional_reviewer()
+    return Path(additional_reviewer.repo_root_from_cwd(resolved) or resolved).resolve()
 
 
 # 묶음 조회의 티켓 구분선 — 세 렌더가 같은 한 줄로 이어 붙는다(PM 이 어느 티켓의 출력인지
@@ -14007,7 +14011,7 @@ def _cmd_ticket(argv: list[str]) -> int:
     except InternalRoundLimitExceeded as exc:
         # 외부 채널 exit 4(EXIT_ROUND_LIMIT_EXCEEDED)와 동형 — 실행 전 거부라 slot 부작용 0.
         print(str(exc), file=sys.stderr)
-        return _load_external_review().EXIT_ROUND_LIMIT_EXCEEDED
+        return _load_additional_reviewer().EXIT_ROUND_LIMIT_EXCEEDED
     except DelegateError as exc:
         print(f"오류: ticket {args.ticket_command} 실패: {exc}", file=sys.stderr)
         return 1
@@ -14017,7 +14021,7 @@ def _activate_internal_rounds_cli_owner() -> Path:
     """현재 엔진 사본에서 소유 PM 홈을 해소해 내부/공유 raw 장부 좌표를 맞춘다."""
     global _CONFIG_REPO_OVERRIDE
     if _CONFIG_REPO_OVERRIDE is None:
-        owner = _load_external_review().resolve_pm_home_for_repo(REPO)
+        owner = _load_additional_reviewer().resolve_pm_home_for_repo(REPO)
         _CONFIG_REPO_OVERRIDE = Path(owner).resolve()
     return _CONFIG_REPO_OVERRIDE
 
@@ -14637,7 +14641,7 @@ def _cmd_rounds(argv: list[str], run_fn: Callable | None = None) -> int:
                 pm_verified=args.pm_verified,
             )
         elif args.rounds_command == "report":
-            external = _load_external_review()
+            external = _load_additional_reviewer()
             rendered = external.render_rounds_report(
                 _load_internal_round_ledger(),
                 ledger_path=_internal_round_ledger_path(),
@@ -14693,7 +14697,7 @@ def _cmd_rounds(argv: list[str], run_fn: Callable | None = None) -> int:
 # 실행/회수)을 엔진이 가져온다 — 손 git 0. 수단은 전부 **기존 것**이다:
 #   · 스냅샷 = `gate_snapshot.create_snapshot`(격리 worktree + index overlay + 생성 전후 대조
 #     + 사실 마커). 새 격리 경로를 만들지 않는다.
-#   · 프롬프트 = `external_review.build_prompt`(맥락 헤더 + 출력 형식 + 티켓 본문 N + 검토
+#   · 프롬프트 = `additional_reviewer.build_prompt`(맥락 헤더 + 출력 형식 + 티켓 본문 N + 검토
 #     중점 + diff). 내부 채널만 손조립이던 비대칭을 여기서 없앤다.
 #   · 라운드 자리 = `prepare_cluster_copy`(run-dir 1 · 티켓당 라운드 파일 1).
 # 리뷰 입력은 `merge-base(<통합 tip>, <묶음 브랜치>)..<묶음 브랜치>` 다 — 통합 브랜치가
@@ -14940,7 +14944,7 @@ def build_cluster_review_prompt(
     구조화 블록 요구는 이 프롬프트가 소유하지 않는다: 산출 자리가 티켓별 라운드 파일이고 그
     시드가 이미 채널 골격과 다음 ID 실값을 들고 있다(요구가 두 벌이면 갈린다).
     """
-    external = _load_external_review()
+    external = _load_additional_reviewer()
     header = (
         f"## 리뷰 단위: {review.cluster} (티켓 {len(review.members)})\n\n"
         f"- 리뷰 대상 트리(격리 스냅샷): {snapshot if snapshot is not None else '(미생성)'}\n"
@@ -15610,7 +15614,7 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
             file=sys.stderr,
         )
         return 1
-    er = _load_external_review()
+    er = _load_additional_reviewer()
     cwd_repo = _repo_root_for_cwd(cwd, er)
     try:
         config_repo = er.resolve_pm_home_for_repo(
@@ -15803,7 +15807,7 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
         except InternalRoundLimitExceeded as exc:
             return fail_loud(
                 f"오류: 묶음 리뷰 라운드 준비 실패: {exc}",
-                rc=_load_external_review().EXIT_ROUND_LIMIT_EXCEEDED,
+                rc=_load_additional_reviewer().EXIT_ROUND_LIMIT_EXCEEDED,
             )
         except DelegateError as exc:
             return fail_loud(f"오류: 묶음 리뷰 라운드 준비 실패: {exc}")
@@ -15821,7 +15825,7 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
             # cap 은 어떤 승인으로도 열리지 않는다(우회 플래그 없음).
             return fail_loud(
                 f"오류: 위임 티켓 라운드 준비 실패: {exc}",
-                rc=_load_external_review().EXIT_ROUND_LIMIT_EXCEEDED,
+                rc=_load_additional_reviewer().EXIT_ROUND_LIMIT_EXCEEDED,
             )
         except DelegateError as exc:
             return fail_loud(f"오류: 위임 티켓 라운드 준비 실패: {exc}")
@@ -15973,9 +15977,9 @@ def _run_delegate_cli(argv: list[str] | None = None, run_fn: Callable | None = N
                 config_repo=config_repo,
                 cli_override=(profile_source == "cli-override"),
                 compare_fallback=compare_fallback,
-                # 이미 cwd 해소에 쓴 같은 모듈 객체를 전달한다. `_load_external_review()` 재호출은 새
+                # 이미 cwd 해소에 쓴 같은 모듈 객체를 전달한다. `_load_additional_reviewer()` 재호출은 새
                 # 모듈/예외 클래스를 만들어 TargetLocalConfReadError catch identity를 깨뜨린다.
-                external_review_module=er,
+                additional_reviewer_module=er,
             )
         except er.TargetLocalConfReadError as exc:
             print(f"오류: {exc}", file=sys.stderr)

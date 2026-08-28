@@ -14,6 +14,7 @@ import importlib.util
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import warnings
@@ -5163,6 +5164,213 @@ def test_retired_planned_filter_uses_dest_coordinates_only(pm_update, tmp_path):
         source, manifest, dest, dest_only | {".codex/agents/retired.md"}) == []
 
 
+# ── T-0876: manifest 명시 퇴역 경로(backup + atomic move) ─────────────────
+
+_RETIRED_REVIEWER_OLD = ".project_manager/tools/external_review.py"
+_RETIRED_REVIEWER_NEW = ".project_manager/tools/additional_reviewer.py"
+_RETIRED_REVIEWER_DIRECTIVE = (
+    f"# pm-retired-path: {_RETIRED_REVIEWER_OLD} -> {_RETIRED_REVIEWER_NEW}"
+)
+
+
+def _retired_path_fixture(pm_update, tmp_path, *, dest_new=True):
+    source = tmp_path / "source"
+    dest = tmp_path / "dest"
+    source_new = source / _RETIRED_REVIEWER_NEW
+    source_new.parent.mkdir(parents=True)
+    source_new.write_bytes(b"new reviewer\n")
+    source_manifest = source / ".project_manager" / "engine.manifest"
+    source_manifest.write_text(
+        f"{_RETIRED_REVIEWER_NEW}\n{_RETIRED_REVIEWER_DIRECTIVE}\n",
+        encoding="utf-8",
+    )
+    old = dest / _RETIRED_REVIEWER_OLD
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"locally modified old reviewer\n")
+    if dest_new:
+        new = dest / _RETIRED_REVIEWER_NEW
+        new.write_bytes(source_new.read_bytes())
+    manifest = [pm_update.ManifestEntry(_RETIRED_REVIEWER_NEW)]
+    return source, dest, source_manifest, manifest, old
+
+
+def test_retired_path_parser_rejects_duplicate_conflict_cycle_and_escape(
+        pm_update, tmp_path):
+    manifest = tmp_path / "engine.manifest"
+    invalid = [
+        (
+            "# pm-retired-path: a.py -> b.py\n"
+            "# pm-retired-path: a.py -> b.py\n",
+            "OLD 중복",
+        ),
+        (
+            "# pm-retired-path: a.py -> b.py\n"
+            "# pm-retired-path: b.py -> a.py\n",
+            "순환",
+        ),
+        ("# pm-retired-path: ../a.py -> b.py\n", "repo-relative POSIX"),
+        ("# pm-retired-path: C:\\\\a.py -> b.py\n", "repo-relative POSIX"),
+    ]
+    for text, expected in invalid:
+        manifest.write_text(text, encoding="utf-8")
+        with pytest.raises(pm_update.RetiredPathError, match=expected):
+            pm_update.parse_retired_path_directives(manifest)
+
+
+def test_retired_path_dry_run_accepts_planned_new_but_changes_zero_requires_hash(
+        pm_update, tmp_path):
+    source, dest, source_manifest, manifest, old = _retired_path_fixture(
+        pm_update, tmp_path, dest_new=False,
+    )
+    source_new = source / _RETIRED_REVIEWER_NEW
+
+    planned = pm_update.retire_manifest_paths(
+        dest, source, manifest, [source_manifest], write=False,
+        prospective_replacements={_RETIRED_REVIEWER_NEW: source_new},
+    )
+
+    assert planned and planned[0][0] == _RETIRED_REVIEWER_OLD
+    assert old.read_bytes() == b"locally modified old reviewer\n"
+    assert not (dest / ".pm_import_backups").exists(), "dry-run이 backup 디렉터리를 쓸"
+    with pytest.raises(pm_update.RetiredPathError, match="destination replacement"):
+        pm_update.retire_manifest_paths(
+            dest, source, manifest, [source_manifest], write=False,
+        )
+
+
+def test_retired_path_moves_modified_old_bytes_and_mode_then_is_idempotent(
+        pm_update, tmp_path):
+    source, dest, source_manifest, manifest, old = _retired_path_fixture(
+        pm_update, tmp_path,
+    )
+    original = old.read_bytes()
+    if posix_mode_supported():
+        old.chmod(0o751)
+
+    moved = pm_update.retire_manifest_paths(
+        dest, source, manifest, [source_manifest], write=True,
+    )
+
+    assert not old.exists()
+    assert len(moved) == 1
+    backup = moved[0][1]
+    assert backup.read_bytes() == original
+    if posix_mode_supported():
+        assert stat.S_IMODE(backup.stat().st_mode) == 0o751
+    assert pm_update.retire_manifest_paths(
+        dest, source, manifest, [source_manifest], write=True,
+    ) == []
+
+
+def test_retired_path_hash_or_symlink_failure_keeps_old_and_writes_no_backup(
+        pm_update, tmp_path):
+    source, dest, source_manifest, manifest, old = _retired_path_fixture(
+        pm_update, tmp_path,
+    )
+    (dest / _RETIRED_REVIEWER_NEW).write_bytes(b"wrong generation\n")
+    with pytest.raises(pm_update.RetiredPathError, match="hash 불일치"):
+        pm_update.retire_manifest_paths(
+            dest, source, manifest, [source_manifest], write=True,
+        )
+    assert old.is_file()
+    assert not (dest / ".pm_import_backups").exists()
+
+    (dest / _RETIRED_REVIEWER_NEW).write_bytes(
+        (source / _RETIRED_REVIEWER_NEW).read_bytes()
+    )
+    old.unlink()
+    old.symlink_to(source / _RETIRED_REVIEWER_NEW)
+    with pytest.raises(pm_update.RetiredPathError, match="symlink/reparse"):
+        pm_update.retire_manifest_paths(
+            dest, source, manifest, [source_manifest], write=True,
+        )
+    assert old.is_symlink()
+
+
+def test_retired_path_os_replace_failure_keeps_old_and_surfaces_error(
+        pm_update, tmp_path, monkeypatch):
+    source, dest, source_manifest, manifest, old = _retired_path_fixture(
+        pm_update, tmp_path,
+    )
+
+    def blocked_replace(_old, _backup):
+        raise PermissionError("open handle blocks rename")
+
+    monkeypatch.setattr(pm_update.os, "replace", blocked_replace)
+    with pytest.raises(PermissionError, match="open handle"):
+        pm_update.retire_manifest_paths(
+            dest, source, manifest, [source_manifest], write=True,
+        )
+    assert old.is_file()
+
+
+def test_retired_path_blocked_backup_keeps_old(pm_update, tmp_path):
+    source, dest, source_manifest, manifest, old = _retired_path_fixture(
+        pm_update, tmp_path,
+    )
+    date_root = dest / ".pm_import_backups" / pm_update.datetime.date.today().isoformat()
+    date_root.parent.mkdir(parents=True)
+    date_root.write_text("backup path blocker\n", encoding="utf-8")
+
+    with pytest.raises(OSError):
+        pm_update.retire_manifest_paths(
+            dest, source, manifest, [source_manifest], write=True,
+        )
+    assert old.is_file()
+
+
+def test_retired_path_main_failure_suppresses_baseline(pm_update, tmp_path, monkeypatch):
+    source, dest, _source_manifest, _manifest, old = _retired_path_fixture(
+        pm_update, tmp_path,
+    )
+    _write_dest_manifest(dest, [_RETIRED_REVIEWER_NEW, _RETIRED_REVIEWER_DIRECTIVE])
+    _track_source_tree(source)
+    monkeypatch.setattr(pm_update, "REPO", dest)
+    baseline_calls = []
+    monkeypatch.setattr(
+        pm_update, "converge_upstream_revs",
+        lambda *a, **k: baseline_calls.append((a, k)) or True,
+    )
+    monkeypatch.setattr(
+        pm_update.os, "replace",
+        lambda *_args: (_ for _ in ()).throw(PermissionError("open handle")),
+    )
+
+    assert pm_update.main(["--from", str(source)]) == 1
+    assert old.is_file()
+    assert baseline_calls == [], "retired move 실패 뒤 baseline을 전진시킴"
+
+
+def test_retired_path_main_dry_run_predicts_install_then_changes_zero_retires(
+        pm_update, tmp_path, monkeypatch, capsys):
+    source, dest, _source_manifest, _manifest, old = _retired_path_fixture(
+        pm_update, tmp_path, dest_new=False,
+    )
+    _write_dest_manifest(dest, [_RETIRED_REVIEWER_NEW, _RETIRED_REVIEWER_DIRECTIVE])
+    _track_source_tree(source)
+    monkeypatch.setattr(pm_update, "REPO", dest)
+
+    assert pm_update.main(["--from", str(source), "--dry-run"]) == 0
+    preview = capsys.readouterr().out
+    assert "퇴역 예정" in preview and _RETIRED_REVIEWER_OLD in preview
+    assert old.is_file() and not (dest / _RETIRED_REVIEWER_NEW).exists()
+
+    # 구 updater가 RUN1에서 신 파일을 설치한 상태를 재현한다. 새 updater의
+    # changes=0 RUN2가 바로 backup+퇴역을 닫아야 하며 baseline보다 먼저다.
+    (dest / _RETIRED_REVIEWER_NEW).write_bytes(
+        (source / _RETIRED_REVIEWER_NEW).read_bytes()
+    )
+    monkeypatch.setattr(pm_update, "converge_upstream_revs", lambda *a, **k: False)
+    monkeypatch.setattr(pm_update, "_verify_engine_rev_convergence", lambda *a, **k: True)
+    assert pm_update.main(["--from", str(source)]) == 0
+    assert not old.exists()
+    backups = list((dest / ".pm_import_backups").glob(
+        "*/.project_manager/tools/external_review.py"
+    ))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == b"locally modified old reviewer\n"
+
+
 def test_changes_reports_rename_old_path_leaving_manifest(
         pm_update, tmp_path, monkeypatch, capsys):
     """manifest 밖으로 나가는 rename 은 낡은 dest 파일이 잔존한다 — old 경로가 보고에 뜬다."""
@@ -6256,10 +6464,30 @@ def test_paths_scope_skips_whole_instance_steps(pm_update, tmp_path, monkeypatch
     monkeypatch.setattr(
         pm_update, "reinstall_protected_hooks",
         lambda *a, **k: called.append("hooks") or {"status": "skipped"})
+    monkeypatch.setattr(
+        pm_update, "_run_retired_path_migration",
+        lambda *a, **k: called.append("retire") or True)
 
     assert pm_update.main(["--paths", "adapterdir/one.md"]) == 0
 
     assert called == [], f"부분 전파가 전량 흡수 후속 단계를 태웠다: {called}"
+
+
+def test_target_mode_never_runs_retired_path_migration(
+        pm_update, tmp_path, monkeypatch):
+    fake_repo = tmp_path / "manager"
+    (fake_repo / "templates" / "tgt").mkdir(parents=True)
+    source = tmp_path / "source"
+    _make_upstream(source)
+    monkeypatch.setattr(pm_update, "REPO", fake_repo)
+    monkeypatch.setattr(
+        pm_update, "_run_retired_path_migration",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("target retire fired")),
+    )
+
+    assert pm_update.main([
+        "--from", str(source), "--target", "tgt", "--dry-run",
+    ]) == 0
 
 
 def test_paths_scope_forwards_to_every_target(pm_update, tmp_path, monkeypatch, capsys):

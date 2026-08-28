@@ -524,7 +524,7 @@ def test_stage_exit_uses_pm_owned_project_test_cmd_not_candidate_local_serial(
             assert session is None
             return "python3 -m pytest tests/ -q -n 8"
 
-    monkeypatch.setattr(pd, "_load_external_review", lambda: _ER)
+    monkeypatch.setattr(pd, "_load_additional_reviewer", lambda: _ER)
     monkeypatch.setattr(pd, "_load_board_for_repo", lambda root: _Board if root == pm_home else None)
     assert pd._full_regression_command(candidate) == "python3 -m pytest tests/ -q -n 8"
 

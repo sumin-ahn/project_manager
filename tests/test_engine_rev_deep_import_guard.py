@@ -1591,14 +1591,14 @@ def test_mutation_target_missing_from_stamped_modules_is_red(tmp_path):
     assignment.value.elts = [
         node
         for node in assignment.value.elts
-        if not (isinstance(node, ast.Constant) and node.value == "external_review.py")
+        if not (isinstance(node, ast.Constant) and node.value == "additional_reviewer.py")
     ]
     ast.fix_missing_locations(tree)
     engine_path.write_text(ast.unparse(tree) + "\n", encoding="utf-8")
 
     report = collect_central_guard_report(tools)
     assert any(
-        "external_review.py" in item and "STAMPED_MODULES" in item
+        "additional_reviewer.py" in item and "STAMPED_MODULES" in item
         for item in report.violations
     )
 
@@ -1659,7 +1659,7 @@ def test_bump_round_trip_rewrites_every_newly_measured_target(tmp_path):
     isolated = _load_module(tools, "engine_rev")
     next_rev = "v99.0.1"
     newly_measured = {
-        "pm_relay.py", "external_review.py", "pm_render.py", "pm_import.py",
+        "pm_relay.py", "additional_reviewer.py", "pm_render.py", "pm_import.py",
         "pm_log.py", "repo_owned_files.py",
     }
 
@@ -1963,7 +1963,7 @@ def test_mutation_find_repo_root_anchors_fail_loud_in_all_four_modules(tmp_path)
     tools = _copy_tools(tmp_path, *[path.stem for path in TOOLS.glob("*.py")])
     loaders = (
         "pm_delegate.py",
-        "external_review.py",
+        "additional_reviewer.py",
         "ticket_finish.py",
         "contradiction_lint.py",
     )
@@ -2244,15 +2244,15 @@ def test_guard_is_portable_and_needs_no_git_or_wiki(tmp_path):
 
 _LOADER_CASES = (
     (
-        "pm_delegate", "external_review", lambda mod, _tools: mod._load_external_review(),
-        "_load_external_review",
+        "pm_delegate", "additional_reviewer", lambda mod, _tools: mod._load_additional_reviewer(),
+        "_load_additional_reviewer",
     ),
     (
         "pm_delegate", "pm_relay", lambda mod, _tools: mod._load_relay(),
         "_load_relay",
     ),
     (
-        "external_review", "pm_relay", lambda mod, _tools: mod._load_relay(),
+        "additional_reviewer", "pm_relay", lambda mod, _tools: mod._load_relay(),
         "_load_relay",
     ),
     (
@@ -2632,30 +2632,30 @@ def test_sensitivity_removing_each_failsoft_reraise_loses_skew(
         assert getattr(exc, "_engine_rev_skew", False) is not True
 
 
-def test_external_review_failsoft_consumer_reraises_only_skew(monkeypatch):
-    external_review = _load_module(TOOLS, "external_review")
+def test_additional_reviewer_failsoft_consumer_reraises_only_skew(monkeypatch):
+    additional_reviewer = _load_module(TOOLS, "additional_reviewer")
     skew = RuntimeError("nested relay skew")
     skew._engine_rev_skew = True
 
     def raise_skew(*_args, **_kwargs):
         raise skew
 
-    monkeypatch.setattr(external_review, "_reviewer_idle_timeout", raise_skew)
+    monkeypatch.setattr(additional_reviewer, "_reviewer_idle_timeout", raise_skew)
     with pytest.raises(RuntimeError, match="nested relay skew") as exc:
-        external_review._run_reviewer_ex(
+        additional_reviewer._run_reviewer_ex(
             "prompt", "reviewer", 1, lambda *_a, **_kw: None,
         )
     assert getattr(exc.value, "_engine_rev_skew", False) is True
 
 
-def test_sensitivity_removing_external_review_reraise_swallows_skew(tmp_path, monkeypatch):
+def test_sensitivity_removing_additional_reviewer_reraise_swallows_skew(tmp_path, monkeypatch):
     # reviewer_cmd argv 분해가 board 공용 seam(`split_command_argv`)을 타므로(T-0722) 그 형제와
     # board 자신이 import 시점에 바인딩하는 형제까지 함께 복사한다 — 이 tmp 트리에서도 실행 경로가
     # 실제 엔진과 같은 모듈을 지나게 한다.
     tools = _copy_tools(
-        tmp_path, "external_review", "board", "identity_args", "file_lock", "engine_rev",
+        tmp_path, "additional_reviewer", "board", "identity_args", "file_lock", "engine_rev",
     )
-    path = tools / "external_review.py"
+    path = tools / "additional_reviewer.py"
     source = path.read_text(encoding="utf-8")
     block = (
         "        if _is_engine_rev_skew(exc):\n"
@@ -2665,7 +2665,7 @@ def test_sensitivity_removing_external_review_reraise_swallows_skew(tmp_path, mo
     replacement = "        if getattr(exc, \"process_cleanup_failed\", False) is True:\n"
     assert block in source
     path.write_text(source.replace(block, replacement, 1), encoding="utf-8")
-    mutant = _load_module(tools, "external_review")
+    mutant = _load_module(tools, "additional_reviewer")
     skew = RuntimeError("nested relay skew")
     skew._engine_rev_skew = True
 

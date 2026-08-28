@@ -58,7 +58,7 @@ DELETED_SYMBOLS = (
     "_mark_ticket_copy_harvested", "_read_machine_files",
     "_pm_review_probe_section_text", "_pm_review_probe_self_check",
     "_pm_review_probe_section_content", "_pm_review_delta_regression_reason",
-    "_external_review_delta_regression", "_pm_review_delta_malformed_reason",
+    "_additional_reviewer_delta_regression", "_pm_review_delta_malformed_reason",
     "_pm_review_outside_sections_text", "_pm_review_refused_section_keys",
     "_cmd_ticket_seal_backfill", "_seal_backfill_one", "_SEAL_BACKFILL_STATUSES",
 )
@@ -2407,8 +2407,8 @@ def test_both_review_channels_refuse_redeclaration_with_the_same_verdict(
     """채널 파리티 — 같은 형상에 두 채널이 같은 사유를 내고 어느 쪽도 산출을 잃지 않는다."""
     pm_home, slot, tickets, sync_log = rounds_env
     external = pd._load_module_from_path(
-        pm_home / ".project_manager" / "tools" / "external_review.py",
-        "external_review.py", verifier=pd._verify_engine_rev,
+        pm_home / ".project_manager" / "tools" / "additional_reviewer.py",
+        "additional_reviewer.py", verifier=pd._verify_engine_rev,
     )
     board = _fixture_board(pd, pm_home, sync_log)
     rounds_module = pd._load_ticket_rounds()
@@ -2421,13 +2421,13 @@ def test_both_review_channels_refuse_redeclaration_with_the_same_verdict(
         ticket="T-7235", role="code-reviewer", cwd=slot, pm_home=pm_home,
     )
     # 추가 리뷰어 채널의 선행 라운드도 같은 board 트리에 세운다(접두만 다른 같은 형상).
-    # 그 채널은 슬롯 왕복이 아니라 external_review 엔진이 직접 예약한다.
+    # 그 채널은 슬롯 왕복이 아니라 additional_reviewer 엔진이 직접 예약한다.
     external_first = rounds_module.reserve_round(
         _rounds_dir(pm_home, "T-7235").parent.parent, "T-7235",
-        pd.EXTERNAL_REVIEW_ROLE,
+        pd.ADDITIONAL_REVIEWER_ROLE,
         content=rounds_module.render_round_header(
-            pd.EXTERNAL_REVIEW_ROLE, today="2026-08-22",
-        ) + "\n\n" + _review_body(pd, pd.EXTERNAL_REVIEW_ROLE, ["X-007"]),
+            pd.ADDITIONAL_REVIEWER_ROLE, today="2026-08-22",
+        ) + "\n\n" + _review_body(pd, pd.ADDITIONAL_REVIEWER_ROLE, ["X-007"]),
         lock=board.board_lock(),
     )
     assert external_first.exists()
@@ -2436,12 +2436,12 @@ def test_both_review_channels_refuse_redeclaration_with_the_same_verdict(
     _write_round_output(
         internal_round.path, _review_body(pd, "code-reviewer", ["F-007"], ["F-007"]),
     )
-    external_reply = _review_body(pd, pd.EXTERNAL_REVIEW_ROLE, ["X-007"], ["X-007"])
+    external_reply = _review_body(pd, pd.ADDITIONAL_REVIEWER_ROLE, ["X-007"], ["X-007"])
     capsys.readouterr()
 
     internal_rc = _harvest_rc(pd, monkeypatch, pm_home, slot, internal_round.path)
     internal_error = capsys.readouterr().err
-    external_problem = external._reserve_external_review_round(
+    external_problem = external._reserve_additional_reviewer_round(
         "T-7235", external_reply, delegate=pd, rounds_module=rounds_module, board=board,
     )
 
@@ -2460,7 +2460,7 @@ def test_both_review_channels_refuse_redeclaration_with_the_same_verdict(
     assert internal_problem in internal_error
     assert internal_round.board_path.read_bytes() == reserved
     assert internal_round.run_dir.exists()
-    assert _round_names(pm_home, "T-7235", pd.EXTERNAL_REVIEW_ROLE) == [
+    assert _round_names(pm_home, "T-7235", pd.ADDITIONAL_REVIEWER_ROLE) == [
         external_first.name,
     ]
 
@@ -2668,7 +2668,7 @@ def test_pre_change_confirmation_seed_stays_pending_through_an_unchanged_harvest
     assert [finding.id for finding, _row in delta.accepted] == ["F-001"]
 
 
-# ── T-0841: 내부 위임 라운드 상한 (external_review.py:49-59 미러) ──────────────────
+# ── T-0841: 내부 위임 라운드 상한 (additional_reviewer.py:49-59 미러) ──────────────────
 
 def _prepare_rc(
     pd, monkeypatch, pm_home: Path, slot: Path, ticket: str, role: str,
@@ -2719,7 +2719,7 @@ def test_developer_round_limit_cli_rc_matches_external_channel(
 
     rc = _prepare_rc(pd, monkeypatch, pm_home, slot, "T-8002", "developer")
 
-    external = pd._load_external_review()
+    external = pd._load_additional_reviewer()
     assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
     err = capsys.readouterr().err
     assert "현재 티켓을 정지하고 사용자에게 보고" in err
@@ -2845,7 +2845,7 @@ def test_flat_cross_cli_preserves_round_limit_rc(pd, rounds_env, monkeypatch):
         run_fn=lambda *a, **k: pytest.fail("라운드 상한 거부 뒤 스폰되면 안 됨"),
     )
 
-    external = pd._load_external_review()
+    external = pd._load_additional_reviewer()
     assert rc == external.EXIT_ROUND_LIMIT_EXCEEDED
 
 
@@ -3000,14 +3000,14 @@ def test_secret_scan_rejection_refunds_the_reserved_ticket_copy(pd, refund_env):
 
 def test_reanchor_rejection_refunds_the_reserved_ticket_copy(pd, refund_env):
     """F-005 — 엔진 코드 write 재앵커 거부 뒤 board 라운드·run-dir·장부 미회수 행이 0으로
-    되돌아간다. adopter#0 재앵커 판정은 canonical worktree(`work/<n>/…/external_review.py`)
+    되돌아간다. adopter#0 재앵커 판정은 canonical worktree(`work/<n>/…/additional_reviewer.py`)
     존재를 추가로 요구한다."""
     home, tickets = refund_env
     ticket = "T-9102"
     _write_spec(tickets, ticket)
     wt_tools = home / "work" / "wt1" / ".project_manager" / "tools"
     wt_tools.mkdir(parents=True)
-    (wt_tools / "external_review.py").write_text("# stub", encoding="utf-8")
+    (wt_tools / "additional_reviewer.py").write_text("# stub", encoding="utf-8")
     before = (
         _refund_round_file_count(pd, home, ticket),
         _refund_run_dir_count(pd, home, ticket),
@@ -3355,7 +3355,7 @@ def test_configured_convergence_limit_runs_every_round_through_main(
          "--ticket", ticket, "--output-dir", str(home / "raw")],
         run_fn=_run_fn,
     )
-    assert rc == pd._load_external_review().EXIT_ROUND_LIMIT_EXCEEDED, (
+    assert rc == pd._load_additional_reviewer().EXIT_ROUND_LIMIT_EXCEEDED, (
         "상한을 넘긴 요청은 예약되지 않는다")
 
 

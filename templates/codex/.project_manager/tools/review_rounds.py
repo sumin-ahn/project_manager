@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """리뷰 라운드 장부 공용 seam.
 
-추가 리뷰어(`external_review.py`)와 내부 code-reviewer(`pm_delegate.py`)는 저장 파일은 서로
+추가 리뷰어(`additional_reviewer.py`)와 내부 code-reviewer(`pm_delegate.py`)는 저장 파일은 서로
 분리하지만, 장부의 gate entry/예약/산출/수렴 판정 스키마는 같이 쓴다. 이 모듈은 두 축에서
 갈리면 안 되는 다음 규칙만 소유한다.
 

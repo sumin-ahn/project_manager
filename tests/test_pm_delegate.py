@@ -368,7 +368,7 @@ def test_t0658_code_reviewer_dry_run_prompt_contains_parser_derived_contract(
         fake,
     )
     out = capsys.readouterr().out
-    external = pd._load_external_review()
+    external = pd._load_additional_reviewer()
 
     assert rc == 0 and fake.calls == []
     assert "행 선두" in out and "인용문·코드펜스" in out
@@ -391,7 +391,7 @@ def test_t0658_review_contract_tracks_parser_token_sources_without_literal_copy(
         _PASS_VERDICT_TOKENS = frozenset({"PROBE_PASS"})
         _REJECT_VERDICT_TOKENS = frozenset({"PROBE_REJECT"})
 
-    monkeypatch.setattr(pd, "_load_external_review", lambda: _ContractProbe)
+    monkeypatch.setattr(pd, "_load_additional_reviewer", lambda: _ContractProbe)
     preamble = pd._internal_review_format_preamble()
 
     assert "`판정: PROBE_PASS`" in preamble
@@ -2322,14 +2322,14 @@ def test_read_tmp_cleanup_on_raw_reservation_failure(
 
 def _fake_pm_home(tmp_path: Path) -> tuple[Path, Path]:
     """실 board 소유(board/tickets/open/T-*.md) + canonical worktree(work/wt/.project_manager/tools/
-    external_review.py)를 가진 PM 홈 형상 구성 — external_review._pm_home_reanchor 판정 대상."""
+    additional_reviewer.py)를 가진 PM 홈 형상 구성 — additional_reviewer._pm_home_reanchor 판정 대상."""
     home = tmp_path / "pmhome"
     open_dir = home / ".project_manager" / "board" / "tickets" / "open"
     open_dir.mkdir(parents=True)
     (open_dir / "T-0001-x.md").write_text("---\nid: T-0001\n---\n", encoding="utf-8")
     wt_tools = home / "work" / "wt1" / ".project_manager" / "tools"
     wt_tools.mkdir(parents=True)
-    (wt_tools / "external_review.py").write_text("# stub", encoding="utf-8")
+    (wt_tools / "additional_reviewer.py").write_text("# stub", encoding="utf-8")
     return home, home / "work" / "wt1"
 
 
@@ -4094,16 +4094,16 @@ def test_looks_like_secret_value_table(pd, value, expected):
     assert pd._looks_like_secret_value(value) is expected
 
 
-def test_secret_scan_loads_external_review_once(pd, monkeypatch):
+def test_secret_scan_loads_additional_reviewer_once(pd, monkeypatch):
     """형제 모듈 로드는 스캔당 1회 — 토큰마다 재-import 하면 긴 프롬프트에서 비용이 폭증한다."""
-    real = pd._load_external_review
+    real = pd._load_additional_reviewer
     calls = []
 
     def _counting():
         calls.append(1)
         return real()
 
-    monkeypatch.setattr(pd, "_load_external_review", _counting)
+    monkeypatch.setattr(pd, "_load_additional_reviewer", _counting)
     pd.scan_prompt_secrets(" ".join(f"토큰{i} harness.opencode.ctx_window_tokens" for i in range(200)))
     assert len(calls) == 1
 
@@ -4189,7 +4189,7 @@ def test_secret_path_candidates_trims_particle_and_wrappers(pd):
 )
 def test_matching_secret_path_pattern_basename_anchor(pd, token, matched):
     """경로 판정은 basename 앵커 + 산문 마커 배제 — 토큰 전문 strict 는 실 경로를 통째로 skip 했다."""
-    er = pd._load_external_review()
+    er = pd._load_additional_reviewer()
     pattern = pd._matching_secret_path_pattern(
         token, er._SECRET_DENYLIST_PATTERNS, er._matching_denylist_pattern)
     assert (pattern is not None) is matched
@@ -7239,6 +7239,16 @@ def test_t0650_attach_raw_selects_latest_completed_and_preserves_reply_in_prompt
     assert pd.resolve_attached_raw(
         latest_id, output_dir=output_dir,
     ).reply == exact_reply
+
+
+@pytest.mark.parametrize("prefix", ["additional_reviewer", "external_review"])
+def test_additional_reviewer_raw_answer_accepts_new_and_legacy_header(pd, prefix):
+    content = (
+        f"# {prefix} raw 출력 (감사)\n"
+        "# reviewer: claude\n\n"
+        "판정: 통과\n\n[stderr]\nprogress\n"
+    )
+    assert pd._additional_reviewer_raw_answer(content) == "판정: 통과\n"
 
 
 @pytest.mark.parametrize("selector_kind", ["missing", "unfinished"])

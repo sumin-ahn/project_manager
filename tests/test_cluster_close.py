@@ -78,7 +78,7 @@ def tf():
 
 @pytest.fixture(scope="module")
 def external():
-    return _load_tool("external_review")
+    return _load_tool("additional_reviewer")
 
 
 @pytest.fixture(autouse=True)

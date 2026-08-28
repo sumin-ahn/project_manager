@@ -16,7 +16,7 @@ from test_gate_anchor_resolution import (
 def test_shape_a_pm_home_and_registered_worktree_keep_existing_owner(tmp_path):
     """형상 A: PM 홈 직접 실행과 lease 등록 슬롯은 기존 소유자 해소를 그대로 유지한다."""
     home, worktree, _ticket = _managed_worktree(tmp_path)
-    external = _load("external_review_shape_a_registered_owner")
+    external = _load("additional_reviewer_shape_a_registered_owner")
 
     assert external.resolve_pm_home_for_repo(home, required=True) == home.resolve()
     assert external.resolve_pm_home_for_repo(worktree, required=True) == home.resolve()
@@ -40,7 +40,7 @@ def test_shape_b_unregistered_gate_worktree_uses_pm_home_for_delegate(
     prompt = snapshot / "prompt.md"
     prompt.write_text("review the isolated gate snapshot", encoding="utf-8")
 
-    external = _load("external_review_shape_b_gate_owner")
+    external = _load("additional_reviewer_shape_b_gate_owner")
     assert external.resolve_pm_home_for_repo(snapshot, required=True) == home.resolve()
 
     delegate = _load("pm_delegate_shape_b_gate_owner")
@@ -96,7 +96,7 @@ def test_shape_b_bare_common_dir_uses_registered_checkout_owner(tmp_path):
     snapshot.parent.mkdir()
     _git(canonical, "worktree", "add", "-q", "--detach", str(snapshot), "HEAD")
 
-    external = _load("external_review_shape_b_bare_gate_owner")
+    external = _load("additional_reviewer_shape_b_bare_gate_owner")
     assert external.resolve_pm_home_for_repo(snapshot, required=True) == home.resolve()
 
 
@@ -115,7 +115,7 @@ def test_shape_c_unrelated_repository_cannot_reuse_pm_home(tmp_path):
     snapshot.parent.mkdir()
     _git(unrelated, "worktree", "add", "-q", "--detach", str(snapshot), "HEAD")
 
-    external = _load("external_review_shape_c_unrelated")
+    external = _load("additional_reviewer_shape_c_unrelated")
     with pytest.raises(external.AnchorResolutionError, match="PM 홈을 찾지 못했습니다"):
         external.resolve_pm_home_for_repo(snapshot, required=True)
 
@@ -160,7 +160,7 @@ def test_same_repo_multiple_checkout_owners_fail_loud(tmp_path):
     snapshot.parent.mkdir()
     _git(home_a, "worktree", "add", "-q", "--detach", str(snapshot), "HEAD")
 
-    external = _load("external_review_same_repo_multiple_owners")
+    external = _load("additional_reviewer_same_repo_multiple_owners")
     with pytest.raises(external.AnchorResolutionError) as caught:
         external.resolve_pm_home_for_repo(snapshot, required=True)
     message = str(caught.value)

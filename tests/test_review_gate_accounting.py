@@ -1,6 +1,6 @@
 """게이트 회계 자동 유도 — `--ticket` 실행의 조용한 무기록 폐쇄 (T-0626).
 
-`external_review.py` 를 `--ticket`(+`--paths`)만으로 돌리면 리뷰는 정상 전송·과금되면서 라운드
+`additional_reviewer.py` 를 `--ticket`(+`--paths`)만으로 돌리면 리뷰는 정상 전송·과금되면서 라운드
 예약·기록·상한 회계가 전부 생략됐다(`_reserve_round_budget` 첫 분기 = `--gate` 미지정 → 상한 대상
 밖·무기록). 실측(2026-08-10): 하루 8+ 라운드가 장부에 0건이라, 반려 must-fix 가 릴리즈 차단
 표면(`board.py livegate record`)에 도달하지 못했다. 이 파일은 그 함정이 기계로 닫혔음을 단언한다:
@@ -12,7 +12,7 @@
      표기한다. `--gate` 와 동시 지정은 부작용 0 지점에서 거부한다.
   ③ 회귀 무변경 — 명시 `--gate` 실행은 종전 그대로고 폐지 플래그는 파서에서 거부된다.
 
-hermetic: REPO 를 tmp 로 monkeypatch 해 장부를 격리하고(형제 `test_external_review.py`·
+hermetic: REPO 를 tmp 로 monkeypatch 해 장부를 격리하고(형제 `test_additional_reviewer.py`·
 `test_review_convergence_gate.py` 동일 규약), PM 홈 해소·touches·extract_diff·run_review 를 주입해
 실제 git/추가 리뷰어 없이(외부 전송 0·ADR-0004 opt-in) 분기를 단언한다.
 """
@@ -49,7 +49,7 @@ _REVIEWER_TARGET = {
 }
 
 
-def _load(name: str = "external_review"):
+def _load(name: str = "additional_reviewer"):
     spec = importlib.util.spec_from_file_location(f"gate_accounting_{name}", TOOLS / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -58,7 +58,7 @@ def _load(name: str = "external_review"):
 
 @pytest.fixture
 def external():
-    return _load("external_review")
+    return _load("additional_reviewer")
 
 
 # ── 배선 ─────────────────────────────────────────────────────────────────────
@@ -123,11 +123,11 @@ def _wire(external, monkeypatch, tmp_path, *, series: list[int] | None = None, c
             files=1, skipped_unsafe=0, git_repo=True,
         ))
     monkeypatch.setattr(external, "_diff_cap_refusal", lambda *a, **k: None)
-    # 이 파일의 스코프는 회계 축 하나다. 리뷰 뒤 게이트 티켓에 external-reviewer 절을 기록하는
+    # 이 파일의 스코프는 회계 축 하나다. 리뷰 뒤 게이트 티켓에 additional-reviewer 절을 기록하는
     # 회수(T-0696)는 실 보드 왕복이 필요한 별도 축이라 여기서는 격리한다 — 그 회귀는
-    # tests/test_external_review_ticket_harvest.py 가 소유한다(run_review stub 과 같은 결).
+    # tests/test_additional_reviewer_ticket_harvest.py 가 소유한다(run_review stub 과 같은 결).
     monkeypatch.setattr(
-        external, "_harvest_external_review_section", lambda *_a, **_k: None,
+        external, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
     )
     reviewer = _Reviewer(series if series is not None else [0])
     monkeypatch.setattr(external, "run_review", reviewer)
@@ -170,7 +170,7 @@ def _rejected_ledger() -> dict:
 
 
 def _subprocess_project(tmp_path: Path) -> tuple[Path, Path]:
-    """`external_review.py` 실 CLI 프로세스를 tmp PM 홈의 엔진 사본에서 돌린다.
+    """`additional_reviewer.py` 실 CLI 프로세스를 tmp PM 홈의 엔진 사본에서 돌린다.
 
     형제 모듈 목록을 테스트가 재선언하지 않고 tools 집합을 그대로 복사한다. 엔진 seam이 새로
     분리돼도 사본만 낡아 실 CLI 경로가 깨지는 형상을 만들지 않는다.
@@ -193,10 +193,10 @@ def _subprocess_project(tmp_path: Path) -> tuple[Path, Path]:
         f"---\nid: {FOLLOW_UP_TICKET}\ntitle: 후속\ntouches:\n- x.py\n---\n",
         encoding="utf-8",
     )
-    return project, tools / "external_review.py"
+    return project, tools / "additional_reviewer.py"
 
 
-def _run_external_review(project: Path, script: Path, *argv: str) -> subprocess.CompletedProcess:
+def _run_additional_reviewer(project: Path, script: Path, *argv: str) -> subprocess.CompletedProcess:
     """tmp PM 홈에서 실 인자 파싱→`_main`→조회/처분 경로를 실행한다."""
     return subprocess.run(
         [sys.executable, str(script), *argv], cwd=project,
@@ -283,7 +283,7 @@ def test_paths_only_real_send_requires_gate_or_explicit_opt_out(
 
 def test_real_send_help_examples_choose_gate_accounting(external):
     """도움말의 복사 가능한 실 전송 예시는 게이트 회계 선택 없이 rc=1 경로를 안내하지 않는다."""
-    prefix = "python3 .project_manager/tools/external_review.py"
+    prefix = "python3 .project_manager/tools/additional_reviewer.py"
     commands = [
         shlex.split(line.strip())
         for line in external.build_arg_parser().format_help().splitlines()
@@ -385,7 +385,7 @@ def test_derivation_notice_follows_the_provenance_first_line(
 
     assert external.main(["--ticket", TICKET]) == 0
     lines = [line for line in capsys.readouterr().err.splitlines() if line.strip()]
-    assert lines[0].startswith("[external-review] config provenance:")
+    assert lines[0].startswith("[additional-reviewer] config provenance:")
     assert lines[1].startswith(_DERIVED_PREFIX)
 
 
@@ -561,7 +561,7 @@ def test_report_gate_and_no_gate_reaches_report_with_ignore_warning_in_subproces
     project, script = _subprocess_project(tmp_path)
     _write_ledger(project, _rejected_ledger())
 
-    proc = _run_external_review(
+    proc = _run_additional_reviewer(
         project, script, "--rounds-report", "--gate", TICKET, "--no-gate",
     )
 
@@ -575,7 +575,7 @@ def test_rounds_report_missing_companion_fails_loud_in_subprocess(tmp_path):
     project, script = _subprocess_project(tmp_path)
     (script.parent / "review_rounds.py").unlink()
 
-    proc = _run_external_review(project, script, "--rounds-report")
+    proc = _run_additional_reviewer(project, script, "--rounds-report")
 
     assert proc.returncode == 1
     assert "엔진 사본 불완전" in proc.stderr
@@ -590,7 +590,7 @@ def test_removed_into_is_rejected_before_gate_no_gate_precedence_in_subprocess(
     _write_ledger(project, _rejected_ledger())
 
     before = (project / ".project_manager" / ".local" / "review_rounds.json").read_bytes()
-    proc = _run_external_review(
+    proc = _run_additional_reviewer(
         project, script,
         "--resolve-gate", TICKET, "--into", FOLLOW_UP_TICKET,
         "--gate", OTHER_GATE, "--no-gate",

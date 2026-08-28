@@ -2,7 +2,7 @@
 
 `file_lock.py` 가 두 프리미티브를 소유한다 — **배타 파일락**(board `board.lock`·
 `board-git.lock` / pm_log `log.lock` / pm_relay raw 장부 `<ledger>.lock` / pm_handoff
-`dashboard.lock` / worktree_pool `worktree-leases.lock` / external_review 라운드 장부
+`dashboard.lock` / worktree_pool `worktree-leases.lock` / additional_reviewer 라운드 장부
 `review_rounds.lock`)과 **O_APPEND 원자 추가**(board areas 등록 · pm_log log append). 각 도구가
 복제하던 플랫폼 분기(POSIX flock·Windows msvcrt·무락 폴백)와 append 구현을 한 곳으로 수렴했다.
 검증 축:
@@ -43,7 +43,7 @@ FILE_LOCK_PY = TOOLS / "file_lock.py"
 SYNC_TIMEOUT = 120
 
 # 아직 공용 seam 으로 수렴하지 않은 사본의 등재부 — **현재 0건**(전 도구 수렴 완결: board·
-# pm_log·pm_relay·pm_handoff·worktree_pool·external_review). 비어 있는 상태가 정상이고,
+# pm_log·pm_relay·pm_handoff·worktree_pool·additional_reviewer). 비어 있는 상태가 정상이고,
 # `test_lock_convergence_has_no_pending_duplicates` 가 그 완결을 박제한다. 새 사본이 불가피하면
 # 사유와 함께 등재하되(그만큼 가드가 느슨해진다) 그 완결 테스트도 함께 손대야 하므로, 조용히
 # 미수렴 사본이 되살아나지 않는다.
@@ -161,7 +161,8 @@ _ATOMIC_REPLACE_CONSUMERS = (
 )
 
 
-# **등재된 예외** — 원자 교체 seam 을 *설치·복구하는* 경로 둘. `(모듈, 함수)` → 사유.
+# **등재된 예외** — 원자 교체 seam 을 설치·복구하거나 파일을 보존 이주하는 경로.
+# `(모듈, 함수)` → 사유.
 # seam 을 설치하는 쓰기가 그 seam 에 의존할 수는 없다(어떤 설계로도 없앨 수 없는 성질). 두 곳은
 # `atomic_replace` 가 있으면 그것을 쓰고, 없거나 로드가 실패할 때만 loud 강등한다. 등재 밖 직접
 # 호출도, 사유가 빈 등재도 red 다 — 예외가 조용히 늘어나지 못하게 한다([[T-0729]] §결정).
@@ -170,6 +171,10 @@ ATOMIC_REPLACE_BOOTSTRAP_EXCEPTIONS: dict[tuple[str, str], str] = {
         "`_predeploy_central_loader` 가 중앙 로더를 내려놓는 부트스트랩 쓰기가 이 함수를 지난다 — "
         "그 시점 목적지 트리에는 file_lock.py 가 아직 없거나 손상일 수 있고, 여기서 올리면 중단된 "
         "업데이트를 채택자가 스스로 못 고친다"
+    ),
+    ("pm_update.py", "retire_manifest_paths"): (
+        "manifest 퇴역 파일의 원본 bytes/mode를 백업 경로로 그대로 옮겨야 하며, 전용 락 안의 "
+        "동일 파일시스템 rename 자체가 계약이라 복사 후 교체 seam으로 바꿀 수 없다"
     ),
     ("pm_import.py", "_atomic_replace_conf"): (
         "복구 채널의 conf writer — 구세대·손상 사본에서도 키 기록이 성립한다는 기존 보장"
@@ -684,7 +689,7 @@ def test_import_time_consumers_bind_the_canonical_seam(tool):
 
 @pytest.mark.parametrize(
     "tool",
-    ("pm_log.py", "pm_relay.py", "external_review.py", "pm_update.py", "pm_import.py"),
+    ("pm_log.py", "pm_relay.py", "additional_reviewer.py", "pm_update.py", "pm_import.py"),
 )
 def test_lazy_consumers_load_the_canonical_seam(tool):
     """지연 소비자는 쓰는 경로에서만 seam 을 로드한다(읽기·재사용 경로 fail-soft 보존).
@@ -813,7 +818,7 @@ def test_converged_tools_delegate_instead_of_reimplementing():
     """수렴 도구는 락 컨텍스트를 seam 위임으로만 연다 (자체 open+acquire 재구현 0)."""
     for tool in (
         "board.py", "pm_log.py", "pm_relay.py", "pm_handoff.py", "worktree_pool.py",
-        "external_review.py",
+        "additional_reviewer.py",
     ):
         source = (TOOLS / tool).read_text(encoding="utf-8")
         assert "exclusive_file_lock(" in source, tool
@@ -967,7 +972,7 @@ def _make_stale(path: Path) -> None:
         ("pm_relay", ("repo_owned_files",)),
         ("pm_handoff", ("identity_args", "repo_owned_files", "console_encoding")),
         ("worktree_pool", ("identity_args", "repo_owned_files", "console_encoding")),
-        ("external_review", ("repo_owned_files", "console_encoding")),
+        ("additional_reviewer", ("repo_owned_files", "console_encoding")),
     ),
 )
 def test_stale_seam_copy_is_reported_as_marked_skew(tmp_path, consumer, extra):
@@ -991,7 +996,7 @@ def test_stale_seam_copy_is_reported_as_marked_skew(tmp_path, consumer, extra):
         ("pm_relay", ("repo_owned_files",)),
         ("pm_handoff", ("identity_args", "repo_owned_files", "console_encoding")),
         ("worktree_pool", ("identity_args", "repo_owned_files", "console_encoding")),
-        ("external_review", ("repo_owned_files", "console_encoding")),
+        ("additional_reviewer", ("repo_owned_files", "console_encoding")),
     ),
 )
 def test_missing_seam_copy_is_translated_like_a_stale_copy(tmp_path, consumer, extra):
@@ -1618,7 +1623,8 @@ def test_atomic_replace_consumers_delegate_to_the_seam():
     for tool in _ATOMIC_REPLACE_CONSUMERS:
         source = (TOOLS / tool).read_text(encoding="utf-8")
         assert _delegates_to_atomic_replace(source), f"{tool}: seam 위임이 없다"
-        allowed = 1 if tool in exempt_modules else 0
+        allowed = sum(1 for module, _function in ATOMIC_REPLACE_BOOTSTRAP_EXCEPTIONS
+                      if module == tool)
         assert _os_replace_call_count(source) == allowed, (
             f"{tool}: `os.replace` 직접 호출이 등재({allowed}개)와 다르다")
 
@@ -2327,7 +2333,7 @@ SHARED_READ_EXCEPTIONS: dict[tuple[str, str], str] = {
         "쓰는 도구들이 복구를 안내한다(로더 주석의 명시 계약)",
         "_read_text_shared", "_open_shared",
     ),
-    ("external_review.py", "_read_text_shared"): (
+    ("additional_reviewer.py", "_read_text_shared"): (
         "판독은 형제 없이도 떠야 한다 — 진단·denylist·재앵커는 seam 이 필요한 `--gate` 구간 밖이고 "
         "pm_delegate 가 그 경로를 deep-import 로 재사용한다(로더 주석의 기능 축)"
     ),

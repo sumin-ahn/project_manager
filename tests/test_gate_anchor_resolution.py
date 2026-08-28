@@ -14,7 +14,7 @@ TOOLS = ROOT / ".project_manager" / "tools"
 
 
 def _load(name: str):
-    source = "pm_delegate.py" if name.startswith("pm_delegate") else "external_review.py"
+    source = "pm_delegate.py" if name.startswith("pm_delegate") else "additional_reviewer.py"
     spec = importlib.util.spec_from_file_location(name, TOOLS / source)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -210,7 +210,7 @@ def test_unregistered_worktree_allows_boardless_delegate_and_review(
     assert delegate_err.count("board가 필요 없는 실행") == 1
     assert f"pm_home={worktree.resolve()}" in delegate_err
 
-    external = _load("external_review_unregistered")
+    external = _load("additional_reviewer_unregistered")
     monkeypatch.setattr(external, "REPO", worktree)
     assert external.main(["--paths", "seed.txt", "--dry-run"]) == 0
     review_err = capsys.readouterr().err
@@ -228,7 +228,7 @@ def test_unregistered_snapshot_gated_round_fails_before_ledger_raw_or_spawn(
     _source, snapshot = _unregistered_worktree(tmp_path)
     _enable_additional_review(snapshot)
     (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
-    external = _load("external_review_unregistered_round_block")
+    external = _load("additional_reviewer_unregistered_round_block")
     monkeypatch.setattr(external, "REPO", snapshot)
     monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
     monkeypatch.setattr(
@@ -272,7 +272,7 @@ def test_unregistered_snapshot_with_ticket_gated_round_still_fails_before_side_e
         encoding="utf-8",
     )
     (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
-    external = _load("external_review_unregistered_ticket_round_block")
+    external = _load("additional_reviewer_unregistered_ticket_round_block")
     monkeypatch.setattr(external, "REPO", snapshot)
     monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
 
@@ -317,7 +317,7 @@ def test_unregistered_snapshot_no_gate_send_keeps_explicit_paths_recovery_channe
     _source, snapshot = _unregistered_worktree(tmp_path)
     _enable_additional_review(snapshot)
     (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
-    external = _load("external_review_unregistered_no_gate")
+    external = _load("additional_reviewer_unregistered_no_gate")
     monkeypatch.setattr(external, "REPO", snapshot)
     monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
     calls = _stub_review_send(external, monkeypatch, tmp_path)
@@ -345,7 +345,7 @@ def test_resolver_override_is_guard_seam_even_when_anchor_has_snapshot_marker(
     marker.parent.mkdir(parents=True)
     marker.write_text("{}\n", encoding="utf-8")
     (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
-    external = _load("external_review_resolver_guard_seam")
+    external = _load("additional_reviewer_resolver_guard_seam")
     monkeypatch.setattr(external, "REPO", snapshot)
     monkeypatch.setattr(
         external, "resolve_pm_home_for_repo", lambda anchor, **kwargs: snapshot.resolve(),
@@ -372,7 +372,7 @@ def test_unregistered_snapshot_dry_run_and_report_stay_open_but_fixed_is_removed
     _source, snapshot = _unregistered_worktree(tmp_path)
     _enable_additional_review(snapshot)
     (snapshot / "seed.txt").write_text("changed\n", encoding="utf-8")
-    external = _load("external_review_unregistered_non_sending")
+    external = _load("additional_reviewer_unregistered_non_sending")
     monkeypatch.setattr(external, "REPO", snapshot)
 
     assert external.main([
@@ -424,7 +424,7 @@ def test_registered_worktree_gated_round_still_uses_pm_home_ledger(
     home, worktree, _ticket = _managed_worktree(tmp_path)
     _enable_additional_review(home)
     (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
-    external = _load("external_review_registered_round")
+    external = _load("additional_reviewer_registered_round")
     monkeypatch.setattr(external, "REPO", worktree)
     monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
     calls = _stub_review_send(external, monkeypatch, tmp_path)
@@ -454,7 +454,7 @@ def test_registered_worktree_with_ticket_gated_round_remains_allowed(
     )
     _enable_additional_review(worktree)
     (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
-    external = _load("external_review_registered_ticket_round")
+    external = _load("additional_reviewer_registered_ticket_round")
     monkeypatch.setattr(external, "REPO", worktree)
     monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
     calls = _stub_review_send(external, monkeypatch, tmp_path)
@@ -486,7 +486,7 @@ def test_corrupt_lease_registered_slot_keeps_round_recovery_fallback(
     ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.write_text("{broken", encoding="utf-8")
     (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
-    external = _load("external_review_corrupt_lease_round_recovery")
+    external = _load("additional_reviewer_corrupt_lease_round_recovery")
     monkeypatch.setattr(external, "REPO", worktree)
     monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
     calls = _stub_review_send(external, monkeypatch, tmp_path)
@@ -526,7 +526,7 @@ def test_self_board_registered_slot_keeps_recovery_for_unreadable_lease(
     _enable_additional_review(worktree)
     (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
 
-    external = _load(f"external_review_self_board_{ledger_state}_lease_recovery")
+    external = _load(f"additional_reviewer_self_board_{ledger_state}_lease_recovery")
     monkeypatch.setattr(external, "REPO", worktree)
     monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
     calls = _stub_review_send(external, monkeypatch, tmp_path)
@@ -566,7 +566,7 @@ def test_markerless_snapshot_with_corrupt_lease_keeps_known_exposure_open(
         snapshot / ".project_manager" / ".local" / "gate-snapshot.json"
     ).exists()
 
-    external = _load("external_review_markerless_corrupt_lease_exposure")
+    external = _load("additional_reviewer_markerless_corrupt_lease_exposure")
     monkeypatch.setattr(external, "REPO", snapshot)
     monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
     calls = _stub_review_send(external, monkeypatch, tmp_path)
@@ -602,7 +602,7 @@ def test_valid_empty_lease_blocks_unregistered_worktree_round(
     ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.write_text(json.dumps({"leases": []}), encoding="utf-8")
     (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
-    external = _load("external_review_valid_empty_lease_round_block")
+    external = _load("additional_reviewer_valid_empty_lease_round_block")
     monkeypatch.setattr(external, "REPO", worktree)
     monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
 
@@ -677,7 +677,7 @@ def test_boardless_review_oracle_is_sensitive_to_unconditional_anchor_error(
 ):
     _home, worktree = _unregistered_worktree(tmp_path)
     (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
-    external = _load("external_review_anchor_sensitivity")
+    external = _load("additional_reviewer_anchor_sensitivity")
     monkeypatch.setattr(external, "REPO", worktree)
 
     def _old_half_fix(anchor, **kwargs):
@@ -693,7 +693,7 @@ def test_explicit_paths_ignore_missing_ticket_in_unregistered_worktree(
 ):
     _home, worktree = _unregistered_worktree(tmp_path)
     (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
-    external = _load("external_review_explicit_paths")
+    external = _load("additional_reviewer_explicit_paths")
     monkeypatch.setattr(external, "REPO", worktree)
 
     missing = "T-" + "missing"
@@ -735,7 +735,7 @@ def test_standalone_repo_uses_itself_for_both_tools(tmp_path, monkeypatch, capsy
     ]) == 0
     assert f"pm_home={repo.resolve()}" in capsys.readouterr().err
 
-    external = _load("external_review_standalone")
+    external = _load("additional_reviewer_standalone")
     monkeypatch.setattr(external, "REPO", repo)
     assert external.main(["--paths", "seed.txt", "--dry-run"]) == 0
     err = capsys.readouterr().err
@@ -779,7 +779,7 @@ def test_delegate_and_review_failure_sets_match_across_three_repo_shapes(
 
         delegate = _load(f"pm_delegate_shape_{index}")
         monkeypatch.setattr(delegate, "REPO", repo)
-        review = _load(f"external_review_shape_{index}")
+        review = _load(f"additional_reviewer_shape_{index}")
         monkeypatch.setattr(review, "REPO", repo)
         results = {
             "delegate-normal": delegate.main([
@@ -824,12 +824,12 @@ def test_delegate_anchor_handles_symlink_standalone_and_missing_inputs(
     monkeypatch.setattr(delegate, "REPO", worktree)
     link = tmp_path / "worktree-link"
     link.symlink_to(worktree, target_is_directory=True)
-    assert delegate._load_external_review().resolve_pm_home_for_repo(link) == home.resolve()
+    assert delegate._load_additional_reviewer().resolve_pm_home_for_repo(link) == home.resolve()
 
     standalone = tmp_path / "standalone"
     standalone.mkdir()
     _git(standalone, "init", "-q")
-    assert delegate._load_external_review().resolve_pm_home_for_repo(standalone) == standalone
+    assert delegate._load_additional_reviewer().resolve_pm_home_for_repo(standalone) == standalone
 
     prompt = worktree / "prompt.md"
     prompt.write_text("safe task", encoding="utf-8")
@@ -869,7 +869,7 @@ def test_duplicate_pm_home_registration_is_rejected(tmp_path):
             encoding="utf-8",
         )
 
-    external = _load("external_review_duplicate_owner")
+    external = _load("additional_reviewer_duplicate_owner")
     assert external.resolve_pm_home_for_repo(worktree) == worktree.resolve()
     with pytest.raises(external.AnchorResolutionError, match="모호"):
         external.resolve_pm_home_for_repo(worktree, required=True)
@@ -881,7 +881,7 @@ def test_registered_worktree_owner_does_not_require_existing_ticket(tmp_path):
     for ticket_file in (ticket_root / "open").glob("*.md"):
         ticket_file.unlink()
 
-    external = _load("external_review_empty_board_owner")
+    external = _load("additional_reviewer_empty_board_owner")
     assert external.resolve_pm_home_for_repo(worktree, required=True) == home.resolve()
 
 
@@ -913,7 +913,7 @@ def test_tools_only_checkout_cannot_override_unique_board_lease_owner(tmp_path):
         encoding="utf-8",
     )
 
-    external = _load("external_review_tools_only_ancestor")
+    external = _load("additional_reviewer_tools_only_ancestor")
     assert external.resolve_pm_home_for_repo(worktree, required=True) == home.resolve()
 
 
@@ -925,7 +925,7 @@ def test_non_ticket_absolute_paths_bypass_corrupt_lease_ledger(
     source.write_text("changed\n", encoding="utf-8")
     ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
     ledger.write_text("{broken", encoding="utf-8")
-    external = _load("external_review_absolute_recovery")
+    external = _load("additional_reviewer_absolute_recovery")
     monkeypatch.setattr(external, "REPO", home)
 
     assert external.main(["--paths", str(source), "--dry-run"]) == 0
@@ -951,7 +951,7 @@ def test_external_main_restores_selector_globals_between_calls(
         conf.write_text(_REVIEWER_TARGET_LINES, encoding="utf-8")
         repos.append(repo)
     engine, absolute = repos
-    external = _load("external_review_global_restore")
+    external = _load("additional_reviewer_global_restore")
     original = (
         engine,
         engine / ".project_manager" / "local.conf",
@@ -980,7 +980,7 @@ def test_external_main_restores_selector_globals_between_calls(
 
 
 def test_external_public_annotations_resolve_at_runtime():
-    external = _load("external_review_type_hints")
+    external = _load("additional_reviewer_type_hints")
     assert typing.get_type_hints(external._resolve_diff_root)["paths"] == typing.Sequence[str]
 
 
@@ -999,7 +999,7 @@ def test_external_ticket_uses_board_home_and_worktree_diff_from_both_shell_dirs(
 
     outputs = []
     for index, shell_dir in enumerate((home, worktree)):
-        external = _load(f"external_review_dual_anchor_{index}")
+        external = _load(f"additional_reviewer_dual_anchor_{index}")
         # 엔진 사본(PM 홈)과 실제 diff worktree를 갈라 REPO=diff_root 주입을 판별한다.
         monkeypatch.setattr(external, "REPO", home)
         monkeypatch.chdir(shell_dir)
@@ -1015,7 +1015,7 @@ def test_external_ticket_uses_board_home_and_worktree_diff_from_both_shell_dirs(
 
 def test_ticket_resolution_failure_never_calls_diff(tmp_path, monkeypatch, capsys):
     _home, worktree, _ticket = _managed_worktree(tmp_path)
-    external = _load("external_review_missing_ticket")
+    external = _load("additional_reviewer_missing_ticket")
     monkeypatch.setattr(external, "REPO", worktree)
     monkeypatch.setattr(
         external, "extract_diff",
@@ -1034,7 +1034,7 @@ def test_empty_inline_touches_fails_before_diff(tmp_path, monkeypatch, capsys):
         f"---\nid: {empty_ticket}\ntitle: empty\nstatus: open\ntouches: []\n---\n",
         encoding="utf-8",
     )
-    external = _load("external_review_empty_touches")
+    external = _load("additional_reviewer_empty_touches")
     monkeypatch.setattr(external, "REPO", worktree)
     monkeypatch.setattr(
         external, "extract_diff",
@@ -1050,7 +1050,7 @@ def test_empty_inline_touches_fails_before_diff(tmp_path, monkeypatch, capsys):
 
 def test_repository_root_is_a_valid_review_pathspec(tmp_path):
     home, worktree, _ticket = _managed_worktree(tmp_path)
-    external = _load("external_review_root_pathspec")
+    external = _load("additional_reviewer_root_pathspec")
 
     assert external._normalize_review_paths(
         ["."], diff_root=worktree, pm_home=worktree, ticket_selected=False,
@@ -1075,7 +1075,7 @@ def test_ticket_touching_other_registered_slot_names_anchor_mismatch(tmp_path):
         ]}),
         encoding="utf-8",
     )
-    external = _load("external_review_other_slot")
+    external = _load("additional_reviewer_other_slot")
 
     with pytest.raises(
         external.AnchorResolutionError,
@@ -1148,7 +1148,7 @@ def test_configured_review_paths_selects_same_changed_slot_used_for_diff(
     home, _first, second = _dual_slot_home(tmp_path / "pm")
     (second / "src" / "module.py").write_text("value = 2\n", encoding="utf-8")
 
-    external = _load("external_review_config_selector")
+    external = _load("additional_reviewer_config_selector")
     monkeypatch.setattr(external, "REPO", home)
     assert external.main(["--dry-run"]) == 0
     err = capsys.readouterr().err
@@ -1209,7 +1209,7 @@ def test_delegate_divergence_names_resolved_pm_home_as_profile_source(
 
 
 def test_comma_guidance_requires_comma_and_missing_element(tmp_path):
-    external = _load("external_review_comma_guidance")
+    external = _load("additional_reviewer_comma_guidance")
     (tmp_path / "exists.py").write_text("", encoding="utf-8")
     (tmp_path / "valid,name.py").write_text("", encoding="utf-8")
 
@@ -1248,7 +1248,7 @@ def test_template_scope_expansion_discovers_every_real_harness(tmp_path):
 
 
 def test_unfinished_round_record_is_counted_separately():
-    external = _load("external_review_unfinished_round")
+    external = _load("additional_reviewer_unfinished_round")
     entry = {
         "count": 3,
         "records": [
@@ -1312,7 +1312,7 @@ def test_config_paths_from_other_pm_home_block_before_external_send(
     tmp_path, monkeypatch, capsys,
 ):
     home_a, home_b, _slot = _cross_owned_slot(tmp_path / "cross")
-    external = _load("external_review_cross_owned_conf")
+    external = _load("additional_reviewer_cross_owned_conf")
     monkeypatch.setattr(external, "REPO", home_a)
 
     assert external.main(["--dry-run"]) == 1
@@ -1325,7 +1325,7 @@ def test_explicit_paths_escape_cross_owned_conf_block(
     tmp_path, monkeypatch, capsys,
 ):
     home_a, _home_b, slot = _cross_owned_slot(tmp_path / "escape")
-    external = _load("external_review_cross_owned_escape")
+    external = _load("additional_reviewer_cross_owned_escape")
     monkeypatch.setattr(external, "REPO", home_a)
 
     assert external.main(["--dry-run", "--paths", str(slot / "src" / "a.py")]) == 0
@@ -1371,7 +1371,7 @@ def test_demoted_conf_owner_inherits_owner_pm_home_review_filters(
 ):
     """강등 실행도 소유 PM 홈의 denylist/additional_reviewer.paths 를 승계해 필터가 좁아지지 않는다."""
     home, worktree = _demoted_worktree_with_owner_filters(tmp_path)
-    external = _load("external_review_demoted_inherit")
+    external = _load("additional_reviewer_demoted_inherit")
     monkeypatch.setattr(external, "REPO", worktree)
 
     assert external.main(["--dry-run"]) == 0
@@ -1388,7 +1388,7 @@ def test_demoted_owner_without_unique_candidate_blocks_before_external_send(
     """소유 PM 홈을 되찾을 수 없는 강등은 diff 추출 전에 차단한다 — 무필터 송신 0."""
     _home, worktree = _unregistered_worktree(tmp_path)
     (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
-    external = _load("external_review_demoted_block")
+    external = _load("additional_reviewer_demoted_block")
     monkeypatch.setattr(external, "REPO", worktree)
     monkeypatch.setattr(
         external, "extract_diff",
@@ -1414,7 +1414,7 @@ def test_explicit_paths_escape_demoted_owner_filter_block(
     """명시 --paths 는 강등 차단의 탈출구로 남는다(복구 채널 자기잠김 금지)."""
     _home, worktree = _unregistered_worktree(tmp_path)
     (worktree / "seed.txt").write_text("changed\n", encoding="utf-8")
-    external = _load("external_review_demoted_escape")
+    external = _load("additional_reviewer_demoted_escape")
     monkeypatch.setattr(external, "REPO", worktree)
 
     assert external.main(["--paths", "seed.txt", "--dry-run"]) == 0
@@ -1427,7 +1427,7 @@ def test_ambiguous_owner_candidates_block_without_paths_and_warn_with_paths(
     tmp_path, capsys,
 ):
     """후보 2+ 행: 어느 PM 홈이 지배하는지 확정 못 하므로 차단, 명시 --paths 만 탈출구."""
-    external = _load("external_review_owner_filter_matrix")
+    external = _load("additional_reviewer_owner_filter_matrix")
     homes = (tmp_path / "home-a", tmp_path / "home-b")
     for home in homes:
         (home / ".project_manager").mkdir(parents=True)
@@ -1482,7 +1482,7 @@ def test_demoted_run_inherits_owner_default_scope_over_slot_declaration(
 ):
     """소유 PM 홈이 미선언이면 그 **유효 범위**(엔진 기본 경로)를 승계한다 — 슬롯 `.` 는 진다."""
     _home, worktree = _demoted_worktree_with_owner_default_scope(tmp_path)
-    external = _load("external_review_owner_default_scope")
+    external = _load("additional_reviewer_owner_default_scope")
     monkeypatch.setattr(external, "REPO", worktree)
 
     assert external.main(["--dry-run"]) == 0
@@ -1497,7 +1497,7 @@ def test_owner_scope_oracle_is_sensitive_to_surviving_slot_declaration(
 ):
     """소유 미선언 시 슬롯 선언을 남기던 옛 병합으로 되돌리면 송신 범위가 `.` 로 넓어진다."""
     _home, worktree = _demoted_worktree_with_owner_default_scope(tmp_path)
-    external = _load("external_review_owner_scope_sensitivity")
+    external = _load("additional_reviewer_owner_scope_sensitivity")
     monkeypatch.setattr(external, "REPO", worktree)
 
     def _legacy_merge(conf, owner_filters):
@@ -1520,7 +1520,7 @@ def test_owner_conf_read_failure_blocks_with_and_without_explicit_paths(
     """소유 conf 를 못 읽으면 어떤 인자에서도 차단한다 — --paths 는 확인 못 한 denylist 를 대체 못 한다."""
     home, worktree = _demoted_worktree_with_owner_filters(tmp_path)
     (home / ".project_manager" / "local.conf").write_bytes(b"\xff\xfe\x00")
-    external = _load("external_review_owner_conf_unreadable")
+    external = _load("additional_reviewer_owner_conf_unreadable")
     monkeypatch.setattr(external, "REPO", worktree)
     monkeypatch.setattr(
         external, "extract_diff",
@@ -1583,7 +1583,7 @@ def test_absolute_paths_to_other_repo_use_selected_owner_not_engine_context(
     home_a, slot_a, home_b, slot_b = _cross_repo_absolute_target(
         tmp_path, break_target_owner=False,
     )
-    external = _load("external_review_cross_repo_absolute")
+    external = _load("additional_reviewer_cross_repo_absolute")
     monkeypatch.setattr(external, "REPO", slot_a)
 
     # A 컨텍스트는 실제로 차단 사유를 갖는다 — 옛 순서(엔진 먼저 검사)라면 여기서 막혔다.
@@ -1615,7 +1615,7 @@ def test_explicit_anchor_run_has_zero_pre_selection_conf_dependency(
     _home_a, slot_a, home_b, slot_b = _cross_repo_absolute_target(
         tmp_path, break_target_owner=False,
     )
-    external = _load("external_review_no_pre_selection_conf")
+    external = _load("additional_reviewer_no_pre_selection_conf")
     monkeypatch.setattr(external, "REPO", slot_a)
     real_loader = external._local_config_for_repo
     loaded: list[Path] = []
@@ -1641,7 +1641,7 @@ def test_absolute_paths_still_fail_closed_when_target_owner_conf_is_unreadable(
     _home_a, slot_a, home_b, slot_b = _cross_repo_absolute_target(
         tmp_path, break_target_owner=True,
     )
-    external = _load("external_review_cross_repo_absolute_closed")
+    external = _load("additional_reviewer_cross_repo_absolute_closed")
     monkeypatch.setattr(external, "REPO", slot_a)
     monkeypatch.setattr(
         external, "run_review",
@@ -1662,7 +1662,7 @@ def test_owner_conf_read_failure_oracle_is_sensitive_to_paths_escape(
     """읽기 실패를 후보 모호성과 같은 등급으로 되돌리면 --paths 가 미검증 필터 송신을 통과시킨다."""
     home, worktree = _demoted_worktree_with_owner_filters(tmp_path)
     (home / ".project_manager" / "local.conf").write_bytes(b"\xff\xfe\x00")
-    external = _load("external_review_owner_conf_escape_sensitivity")
+    external = _load("additional_reviewer_owner_conf_escape_sensitivity")
     monkeypatch.setattr(external, "REPO", worktree)
     real_owner_filter_conf = external._owner_filter_conf
 
@@ -1682,7 +1682,7 @@ def test_demoted_filter_oracle_is_sensitive_to_unfiltered_send(
 ):
     """승계·차단 가드를 강등 이전 동작으로 되돌리면 두 형상 모두 무필터로 통과한다."""
     _home, worktree = _demoted_worktree_with_owner_filters(tmp_path / "inherit")
-    external = _load("external_review_demoted_sensitivity")
+    external = _load("additional_reviewer_demoted_sensitivity")
     monkeypatch.setattr(external, "REPO", worktree)
     monkeypatch.setattr(
         external, "_conf_with_owner_filters",
@@ -1759,7 +1759,7 @@ def _multi_commit_base_home(root: Path) -> tuple[Path, Path, Path]:
 
 def test_diff_width_table_and_slot_ownership_evidence_are_stated_once():
     """폭 표는 한 곳뿐이고, 슬롯 소유 근거는 그 표에서 **명시 base 만** 남긴 부분집합이다."""
-    external = _load("external_review_diff_width")
+    external = _load("additional_reviewer_diff_width")
     assert external._diff_bases("HEAD") == ("HEAD", "HEAD~1..HEAD")
     assert external._diff_bases("main") == ("main",)
     # 암묵 폴백 단계는 소유 근거가 아니다. 사용자가 그 리비전을 직접 지정하면 근거가 된다.
@@ -1773,7 +1773,7 @@ def test_clean_slot_on_multi_commit_base_is_never_selected_as_changed(
 ):
     """공유 base 의 마지막 커밋은 슬롯 소유 근거가 아니다 — 놀고 있는 슬롯을 뽑지 않는다."""
     home, _old, tip = _multi_commit_base_home(tmp_path / "multi-commit")
-    external = _load("external_review_multi_commit_base")
+    external = _load("additional_reviewer_multi_commit_base")
     monkeypatch.setattr(external, "REPO", home)
     monkeypatch.setattr(
         external, "run_review",
@@ -1795,7 +1795,7 @@ def test_commit_only_change_needs_explicit_anchor_in_multi_slot_home(
     home, _first, second = _dual_slot_home(tmp_path / "commit-only")
     base_commit = _git_out(home, "rev-parse", "HEAD")
     _commit_in_slot(second, "value = 2\n")
-    external = _load("external_review_commit_only_slot")
+    external = _load("additional_reviewer_commit_only_slot")
     monkeypatch.setattr(external, "REPO", home)
 
     assert external.main(["--dry-run"]) == 1
@@ -1814,7 +1814,7 @@ def test_worktree_change_selects_its_slot_over_commit_only_slot(
     home, first, second = _dual_slot_home(tmp_path / "stage-order")
     (first / "src" / "module.py").write_text("value = wip\n", encoding="utf-8")
     _commit_in_slot(second, "value = committed\n")
-    external = _load("external_review_stage_order")
+    external = _load("additional_reviewer_stage_order")
     monkeypatch.setattr(external, "REPO", home)
 
     assert external.main(["--dry-run"]) == 0
@@ -1826,7 +1826,7 @@ def test_slot_selection_oracle_is_sensitive_to_commit_fallback_as_evidence(
 ):
     """폴백 단계를 소유 근거로 되돌리면 놀던 tip 슬롯이 뽑혀 공유 base 커밋이 송신된다."""
     home, _old, tip = _multi_commit_base_home(tmp_path / "fallback-evidence")
-    external = _load("external_review_fallback_evidence")
+    external = _load("additional_reviewer_fallback_evidence")
     monkeypatch.setattr(external, "REPO", home)
     monkeypatch.setattr(external, "_slot_selection_bases", external._diff_bases)
 
@@ -1846,7 +1846,7 @@ def test_default_review_paths_cross_owned_slot_blocks_before_external_send(
     home_a, home_b, _slot = _cross_owned_slot(
         tmp_path / "default-cross", declare_review_paths=False,
     )
-    external = _load("external_review_default_cross_owned")
+    external = _load("additional_reviewer_default_cross_owned")
     monkeypatch.setattr(external, "REPO", home_a)
     monkeypatch.setattr(
         external, "run_review",
@@ -1867,7 +1867,7 @@ def test_explicit_paths_escape_default_paths_cross_owned_block(
     home_a, _home_b, slot = _cross_owned_slot(
         tmp_path / "default-escape", declare_review_paths=False,
     )
-    external = _load("external_review_default_cross_owned_escape")
+    external = _load("additional_reviewer_default_cross_owned_escape")
     monkeypatch.setattr(external, "REPO", home_a)
 
     assert external.main(["--dry-run", "--paths", str(slot / "src" / "a.py")]) == 0
@@ -1881,7 +1881,7 @@ def test_default_paths_cross_owned_oracle_is_sensitive_to_declared_only_guard(
     home_a, _home_b, _slot = _cross_owned_slot(
         tmp_path / "declared-only", declare_review_paths=False,
     )
-    external = _load("external_review_declared_only_guard")
+    external = _load("additional_reviewer_declared_only_guard")
     monkeypatch.setattr(external, "REPO", home_a)
     monkeypatch.setattr(
         external, "_scope_from_initial_pm_home", lambda **kwargs: False,

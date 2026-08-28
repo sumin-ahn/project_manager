@@ -244,7 +244,7 @@ def _run_cross_growth_route(pd, monkeypatch, capsys, tmp_path: Path, *,
     """선택 main→target 한 경로에서 고정 4라운드를 실행하고 canonical 재조회를 단언한다."""
     ticket = {"codex": "T-9101", "opencode": "T-9102", "claude": "T-9103"}[target]
     repo, source = _seed_growth_repo(tmp_path, ticket)
-    er = pd._load_external_review()
+    er = pd._load_additional_reviewer()
     monkeypatch.setattr(pd, "check_local_conf_divergence", lambda *_a, **_k: (repo, None, er))
     monkeypatch.setattr(pd, "_cwd_in_git_repo", lambda *_a, **_k: True)
     output_dir = tmp_path / "raw"

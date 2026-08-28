@@ -2,7 +2,7 @@
 
 > 아래 절은 상시 카드에서 분리한 원문이다. 해당 상황에서만 읽는다.
 
-**Claude PM은 이 문서의 `external_review.py` 실 실행 커맨드를 Bash 툴로 호출할 때
+**Claude PM은 이 문서의 `additional_reviewer.py` 실 실행 커맨드를 Bash 툴로 호출할 때
 `timeout: 29300000`(ms)을 반드시 명시한다.** 이는 CLI `--timeout`(리뷰어 벽시계)이 아니라
 호출층 Bash 툴 파라미터다. Windows 진입 규약은 상시 `SKILL.md`에 남아 있다.
 
@@ -42,7 +42,7 @@ engine은 `--gate <T-NNNN>`별 라운드 장부를 세고, 실행 전에 **수�
 상한으로 종결된 게이트에 must-fix 가 남았으면 게이트를 닫기 전에 그 잔여의 처분을 장부에 선언한다. 선언되지 않은 잔여는 릴리즈를 막는다 — `board.py livegate record`/`check` 가 실행 전에 차단하고 우회 플래그는 없다(그 자리에 "사소하니 넘어간다"는 판단이 들어가 실사고가 났다).
 
 ```bash
-python3 .project_manager/tools/external_review.py --resolve-gate <게이트> --pm-verified
+python3 .project_manager/tools/additional_reviewer.py --resolve-gate <게이트> --pm-verified
 ```
 
 - 처분은 현재 티켓 fix의 판정 표면과 기계 확인을 재검증하는 `pm-verified` 하나다.

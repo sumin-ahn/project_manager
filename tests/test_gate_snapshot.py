@@ -270,7 +270,7 @@ def test_pm_home_work_snapshot_marker_blocks_round_despite_corrupt_lease_candida
     (created / ".project_manager").mkdir(parents=True, exist_ok=True)
     (created / ".project_manager" / "local.conf").write_text(
         _REVIEWER_TARGET_LINES, encoding="utf-8")
-    external = _load("external_review")
+    external = _load("additional_reviewer")
     external.REPO = created
     monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
     demotions = []
@@ -1252,8 +1252,8 @@ def test_module_and_cli_help_require_file_scope_for_parallel_waves(snapshot):
     )
 
 
-def test_external_review_head_diff_includes_unstaged_selected_path(tmp_path):
-    external = _load("external_review")
+def test_additional_reviewer_head_diff_includes_unstaged_selected_path(tmp_path):
+    external = _load("additional_reviewer")
     repo = _repo(tmp_path)
     target = repo / "review" / "target.txt"
     target.write_text("working-only\n", encoding="utf-8")
@@ -1269,7 +1269,7 @@ def test_external_review_head_diff_includes_unstaged_selected_path(tmp_path):
 def test_snapshot_index_exposes_new_modified_deleted_and_renamed_files(
     snapshot, tmp_path
 ):
-    external = _load("external_review")
+    external = _load("additional_reviewer")
     repo = _repo(tmp_path)
     deleted = repo / "review" / "deleted.txt"
     renamed = repo / "review" / "rename-source.txt"
@@ -1460,7 +1460,7 @@ def test_snapshot_recreation_keeps_pm_home_ledger_while_removed_fix_flag_is_iner
     (first / ".project_manager").mkdir(parents=True, exist_ok=True)
     (first / ".project_manager" / "local.conf").write_text(
         _REVIEWER_TARGET_LINES, encoding="utf-8")
-    external = _load("external_review")
+    external = _load("additional_reviewer")
     monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
 
     workspace_calls = {"n": 0}

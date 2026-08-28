@@ -103,7 +103,7 @@ def test_parse_page_full(dm, tmp_path):
             "title: 이중 게이트 리뷰\n"
             "type: guide\n"
             "covers:\n"
-            "  - .project_manager/tools/external_review.py\n"
+            "  - .project_manager/tools/additional_reviewer.py\n"
             "  - .claude/agents/code-reviewer.md\n"
             "derived: false\n"
             "updated: 2026-06-19"
@@ -114,7 +114,7 @@ def test_parse_page_full(dm, tmp_path):
     assert page["title"] == "이중 게이트 리뷰"
     assert page["type"] == "guide"
     assert page["covers"] == [
-        ".project_manager/tools/external_review.py",
+        ".project_manager/tools/additional_reviewer.py",
         ".claude/agents/code-reviewer.md",
     ]
     assert page["derived"] is False

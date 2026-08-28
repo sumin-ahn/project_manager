@@ -206,7 +206,7 @@ def test_t0658_real_reply_fixtures_keep_prose_none_unknown_and_reject_list_count
 def test_t0658_fix1_real_structured_pass_reply_records_zero_verdict_and_must_fix(pd):
     """T-0657 2R 실 reply의 bare 절이 `확인 결과`에서 닫혀 통과 0건으로 기록된다."""
     reply = _reply(T0657_ROUND2_STRUCTURED_PASS_REPLY)
-    external = pd._load_external_review()
+    external = pd._load_additional_reviewer()
 
     assert external.verdict_words(reply) == ("통과",)
     assert pd._extract_internal_must_fix_items(reply) == []
@@ -1376,13 +1376,13 @@ def test_main_derives_gate_from_ticket_and_links_the_real_raw_record(
         "delegate.code-reviewer.harness": "claude",
         "delegate.code-reviewer.model": "opus",
     }
-    external = pd._load_external_review()
+    external = pd._load_additional_reviewer()
     monkeypatch.setattr(pd, "local_config", lambda: conf)
     monkeypatch.setattr(pd, "_cwd_in_git_repo", lambda *_args, **_kw: True)
     monkeypatch.setattr(external, "repo_root_from_cwd", lambda cwd: owner)
     monkeypatch.setattr(external, "resolve_pm_home_for_repo", lambda *_a, **_kw: owner)
     monkeypatch.setattr(external, "_owns_real_board", lambda _path: False)
-    monkeypatch.setattr(pd, "_load_external_review", lambda: external)
+    monkeypatch.setattr(pd, "_load_additional_reviewer", lambda: external)
     monkeypatch.setattr(
         pd, "check_local_conf_divergence",
         lambda *args, **kwargs: (owner, None, external),

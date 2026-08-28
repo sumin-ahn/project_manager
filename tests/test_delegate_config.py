@@ -48,7 +48,7 @@ def board(tmp_path, monkeypatch):
     # 실 git hook 설치·stdin opt-in 프롬프트·board submodule 조작을 무해 stub 으로 차단
     # (init 의 local.conf 효과만 검증).
     monkeypatch.setattr(mod, "install_pre_push_hook", lambda: False)
-    monkeypatch.setattr(mod, "prompt_external_review_optin", lambda: None)
+    monkeypatch.setattr(mod, "prompt_additional_reviewer_optin", lambda: None)
     monkeypatch.setattr(mod, "_configure_board_submodule", lambda: False)
     monkeypatch.setattr(mod, "_detect_py", lambda: "python3")
     monkeypatch.setattr(mod, "_is_noninteractive", lambda: True)

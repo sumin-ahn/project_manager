@@ -212,8 +212,8 @@ def _seed_measured_board(board_dir: Path) -> dict[str, list[str]]:
         if index % 5 == 0:
             sections.append(("developer", f"{tid} 재작업 산출."))
         if index % 11 == 0:
-            sections.append(("external-reviewer",
-                             "<!-- pm-review-refused role=external-reviewer -->\n\n"
+            sections.append(("additional-reviewer",
+                             "<!-- pm-review-refused role=additional-reviewer -->\n\n"
                              f"{tid} 거부된 추가 리뷰 산출."))
         _path, contents = _write_legacy_ticket(board_dir, tid, "done", sections)
         expected[tid] = contents
@@ -571,20 +571,20 @@ def test_migrate_converts_drafts_without_committing_them(legacy_board):
 
 
 @requires_git
-def test_migrated_external_reviewer_round_keeps_the_engine_refusal_marker(legacy_board):
+def test_migrated_additional_reviewerer_round_keeps_the_engine_refusal_marker(legacy_board):
     """옛 거부 산출의 표식은 라운드로 그대로 옮겨진다 — 판정 표면 제외 근거가 그 줄이다."""
     board, board_dir, _root = legacy_board
     _write_legacy_ticket(board_dir, "T-3960", "done", [
-        ("external-reviewer",
-         "<!-- pm-review-refused role=external-reviewer -->\n\n거부된 산출."),
+        ("additional-reviewer",
+         "<!-- pm-review-refused role=additional-reviewer -->\n\n거부된 산출."),
     ])
     _commit_board(board_dir)
 
     assert board.main(["rounds", "migrate"]) == 0
 
-    text = (_rounds_dir(board_dir, "T-3960") / "01-external-reviewer.md").read_text(
+    text = (_rounds_dir(board_dir, "T-3960") / "01-additional-reviewer.md").read_text(
         encoding="utf-8")
-    assert "<!-- pm-review-refused role=external-reviewer -->" in text
+    assert "<!-- pm-review-refused role=additional-reviewer -->" in text
 
 
 # ── 단위: 절 파서·명세 정리·배포 선언 ────────────────────────────────────────

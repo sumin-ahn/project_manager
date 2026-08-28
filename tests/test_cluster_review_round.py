@@ -478,7 +478,7 @@ def test_prompt_leaves_the_block_requirement_to_the_round_seed(pd, review_env):
     assert "### 구조화 판정 블록 (필수)" not in prompt
     assert "### PM 검토 중점" not in prompt
     # 추가 리뷰어 채널의 기존 조립은 그대로다(요구 블록 포함).
-    external = pd._load_external_review()
+    external = pd._load_additional_reviewer()
     assert "### 구조화 판정 블록 (필수)" in external.build_prompt("diff", "본문")
 
 

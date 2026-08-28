@@ -27,7 +27,7 @@ drift 가 재발한다 — 이 가드가 **양방향**으로 못박는다:
 사본이 *각자의* board/pm_config 파서와 정합하는지 트리별 parametrize(사본 stale=drift 클래스).
 
 skill(`/pm-…`) 줄은 CLI 가 아니라 대상 밖(backbone 강등 `python3 …` 줄만 파서-검증). worktree_pool
-(build_parser 없음)·external_review(build_parser 없음)는 파서-backed 도구가 아니라 leaf/flag 강제
+(build_parser 없음)·additional_reviewer(build_parser 없음)는 파서-backed 도구가 아니라 leaf/flag 강제
 검증에서 제외하되, 정의서 record 로는 카드↔정의서 대조에 남는다(카드가 지어낸 도구 방지).
 """
 from __future__ import annotations
@@ -237,7 +237,7 @@ def test_card_interpreter_read_failure_uses_platform_default(tmp_path, monkeypat
 def test_definition_leaves_and_flags_exist_in_parser(tree):
     """모든 정의서 record 의 leaf(`subpath`)가 실 등록 leaf 이고 flag 가 그 leaf 에 실 등록됐다.
 
-    파서-backed 도구만 강제(worktree_pool/external_review 는 build_parser 없음 → 강제 제외·카드가
+    파서-backed 도구만 강제(worktree_pool/additional_reviewer 는 build_parser 없음 → 강제 제외·카드가
     지어낸 도구 방지는 카드↔정의서 대조가 커버). 정의서가 옵션 rename·삭제로 어긋나면 red.
 
     구조 메모: 이 가드는 flag 이 파서에 *등록*됐는지만 본다 — 파서는 수용하나 핸들러가 무시하는
@@ -253,7 +253,7 @@ def test_definition_leaves_and_flags_exist_in_parser(tree):
     for mode, records in bootstrap._CARD_MODE_CLI.items():
         for rec in records:
             if rec.tool not in leaves:
-                continue  # 파서 없는 도구(external_review 등) — 강제 제외.
+                continue  # 파서 없는 도구(additional_reviewer 등) — 강제 제외.
             leaf_opts = leaves[rec.tool]
             assert rec.subpath in leaf_opts, (
                 f"[{tree}/{mode}] 정의서 record {rec.tool} {rec.subpath} 가 실 등록 leaf 가 아님 "

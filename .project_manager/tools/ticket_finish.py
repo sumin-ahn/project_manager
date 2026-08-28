@@ -179,7 +179,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 # ── REPO 앵커 (상향 탐색·board_root() graceful 탐지 동형) ──────────
 # 하드코딩 `parents[2]` 는 tools 가 `<root>/.project_manager/tools/` 정확히 2단 깊이에 있다고
 # 가정한다 — 채택자 형상(다른 깊이)에선 어긋난다.
-# external_review 와 *동형*(각 파일 self-contained·공유 import 미도입)으로 상향 탐색해 견고화한다:
+# additional_reviewer 와 *동형*(각 파일 self-contained·공유 import 미도입)으로 상향 탐색해 견고화한다:
 # `.project_manager` 마커를 품은 첫(최근접) 조상을 REPO 로, 못 찾으면 현행 `parents[2]` 폴백(회귀 0).
 
 def _find_repo_root() -> Path:
@@ -332,18 +332,18 @@ def _load_pm_handoff():
     return mod
 
 
-def _load_external_review():
-    """external_review 모듈을 동적 로드한다 (부재/로드 실패 시 None·fail-soft).
+def _load_additional_reviewer():
+    """additional_reviewer 모듈을 동적 로드한다 (부재/로드 실패 시 None·fail-soft).
 
-    diff 서킷브레이커의 **정책과 측정식**은 external_review 가 소유한다(그쪽이 diff 산정 로직의
+    diff 서킷브레이커의 **정책과 측정식**은 additional_reviewer 가 소유한다(그쪽이 diff 산정 로직의
     단일 진실이다). 완료 기록은 그 판정을 빌려 쓸 뿐이라 사본을 두지 않는다 — 두 표면이 서로 다른
     상한/산정식을 쓰면 "리뷰는 통과했는데 완료가 막힌다"가 규칙이 아니라 사고가 된다."""
-    er_path = TOOLS_DIR / "external_review.py"
+    er_path = TOOLS_DIR / "additional_reviewer.py"
     if not er_path.exists():
         return None
     try:
         mod = _load_module_from_path(
-            er_path, "external_review.py", verifier=_verify_engine_rev,
+            er_path, "additional_reviewer.py", verifier=_verify_engine_rev,
         )
     except Exception as exc:  # noqa: BLE001 — fail-soft: 로드 실패가 완료를 막지 않는다.
         if _is_engine_rev_skew(exc):
@@ -1031,7 +1031,7 @@ def _fallback_ticket_frontmatter(
 
     정상 경로의 YAML 판정을 대체하지 않는다. board.py 위치에서 PM 루트와 board/legacy tickets
     디렉터리를 결정하고, frontmatter `id`가 정확히 같은 후보가 **하나**일 때만 쓴다. touches는
-    external_review 의 기존 raw frontmatter parser를 재사용하고 estimate는 알려진 diff-cap 키만
+    additional_reviewer 의 기존 raw frontmatter parser를 재사용하고 estimate는 알려진 diff-cap 키만
     인정한다. 후보가 모호하거나 읽히지 않으면 {}라 임의 스코프/상한을 만들지 않는다.
     """
     try:
@@ -1056,7 +1056,7 @@ def _fallback_ticket_frontmatter(
     parser_error = getattr(external, "AnchorResolutionError", None)
     parser_errors = (AttributeError, OSError, UnicodeError)
     if isinstance(parser_error, type) and issubclass(parser_error, Exception):
-        # external_review의 원문 frontmatter parser는 손상된 opener를 이 타입으로
+        # additional_reviewer의 원문 frontmatter parser는 손상된 opener를 이 타입으로
         # 알린다. 이 fallback은 측정 가드용 입력 복구라 그 경우에도 가드 off로
         # 접어 완료 기록을 막지 않는다. 다른 예외는 삼키지 않는다.
         parser_errors += (parser_error,)
@@ -1576,7 +1576,7 @@ def _is_local_runtime_path(path: str) -> bool:
 
 # ── 사설 참조 완료 기록 preflight 보조 (측정 폭·판정식은 다른 소유자를 그대로 부른다) ──
 # 판정식 자체(`prose_token_spans`·`_actionable_matches`)는 private_refs.py 가, 측정 폭
-# 원문(0-컨텍스트 unified diff)은 external_review.measured_diff_text 가 소유한다. 여기 두
+# 원문(0-컨텍스트 unified diff)은 additional_reviewer.measured_diff_text 가 소유한다. 여기 두
 # 함수는 그 둘 사이 **형식 변환**만 한다 — 새 판정 로직이 아니다.
 
 _DIFF_HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
@@ -1680,7 +1680,7 @@ def _parsed_diff_added_lines(
 ) -> tuple[dict[str, set[int]], list[str]]:
     """0-컨텍스트 unified diff 원문 → ({새 파일 상대경로: {추가된 줄 번호}}, 경로 미확정 헤더).
 
-    경로 복원은 `external_review._diff_block_path` 가 소유한다(사본 0) — 비-ASCII 경로의
+    경로 복원은 `additional_reviewer._diff_block_path` 가 소유한다(사본 0) — 비-ASCII 경로의
     C-quote 8진 표기·rename 목적지·`/dev/null` 을 그 함수가 이미 손실 없이 푼다. 손으로 접두만
     벗기면 quote 된 표기가 그대로 키가 되어 실제 출하 경로와 결합되지 않고, 그 파일의 유입이
     통째로 판정에서 빠진다. 여기서는 block 을 나누고 hunk 헤더의 새-파일 줄 번호만 센다.
@@ -1903,7 +1903,7 @@ _INTEGRATION_TIP_UNRESOLVED = (
     "해소하지 못했다. 장부의 통합 브랜치 이름과 이 트리의 브랜치를 대조하라."
 )
 _INTEGRATION_ANCHOR_SEAM_ABSENT = (
-    "external_review 사본에 integration_anchor 부재(구형/부분 설치) — 측정 폭의 기준점을 물을 "
+    "additional_reviewer 사본에 integration_anchor 부재(구형/부분 설치) — 측정 폭의 기준점을 물을 "
     "수 없다. pm-update 로 .project_manager/tools/ 를 재동기하라."
 )
 _RESIDUAL_POPULATION_UNRESOLVED = (
@@ -1990,7 +1990,7 @@ class TicketFinisher:
         self._run_git_stdout_at_fn = run_git_stdout_at_fn or self._default_run_git_stdout_at
         self._status_entries_at_fn = status_entries_at_fn or self._default_status_entries_at
         # diff 서킷브레이커 seam — 차단 안내 문자열 또는 None(통과·가드 off). 정책·측정식은
-        # external_review 가 소유하고 여기서는 판정만 소비한다.
+        # additional_reviewer 가 소유하고 여기서는 판정만 소비한다.
         self._diff_cap_block_fn = diff_cap_block_fn or self._default_diff_cap_block
         # 사설 참조 완료 기록 preflight seam — 차단 사유 문자열 또는 None(통과·경고·판정
         # 불가). diff 서킷브레이커 바로 뒤에 둔다 — 둘 다 같은 claim 앵커 측정 폭(touches ∩
@@ -2298,7 +2298,7 @@ class TicketFinisher:
         external, root: Path, paths: Sequence[str], *, run_fn=None,
         claimed_rev: str | None = None,
     ) -> tuple[DiffPathStat, ...]:
-        """external_review 측정 폭의 numstat 한 벌을 경로별 총량으로 접는다.
+        """additional_reviewer 측정 폭의 numstat 한 벌을 경로별 총량으로 접는다.
 
         폭(claim 앵커·staged+unstaged+untracked·폴백 단계)은 `measured_numstat_text` 가 소유하고
         `_sum_numstat` 은 binary/machine-mirror 제외를 소유한다. 이 함수는 그 결과 **한 번**을
@@ -2306,7 +2306,7 @@ class TicketFinisher:
         """
         required = ("measured_numstat_text", "_sum_numstat", "_numstat_path")
         if not all(hasattr(external, name) for name in required):
-            raise AttributeError("external_review numstat seam 부재")
+            raise AttributeError("additional_reviewer numstat seam 부재")
         text = external.measured_numstat_text(
             root, "HEAD", list(paths), run_fn, claimed_rev=claimed_rev,
         )
@@ -2441,7 +2441,7 @@ class TicketFinisher:
                 claimed_rev=claimed_rev,
             )
         except AttributeError:
-            # 부분 설치/구형 external_review 에선 귀속 보정을 포기하되 종전 측정은 유지한다.
+            # 부분 설치/구형 additional_reviewer 에선 귀속 보정을 포기하되 종전 측정은 유지한다.
             total = external.diff_line_total(root, "HEAD", list(touches))
             return DiffAttribution(total, 0, ())
 
@@ -2494,13 +2494,13 @@ class TicketFinisher:
     def _default_diff_cap_block(self, ticket_id: str) -> str | None:
         """diff 서킷브레이커 판정 — 차단 안내 문자열, 통과·가드 off 면 None.
 
-        상한 표·측정식·문구는 external_review 소유분을 그대로 쓴다(기계 mirror 제외도 그
+        상한 표·측정식·문구는 additional_reviewer 소유분을 그대로 쓴다(기계 mirror 제외도 그
         측정 seam 이 소유한다 — 여기 사본 없음). 측정 폭의 기준점은 통합 브랜치와의
         merge-base 다(해소 못 하면 claim 시점 rev) — 사설 참조 preflight 와 **같은 폭**이라
         두 판정이 다른 것을 보고 갈리지 않는다. 측정 불가
         (모듈 부재·touches 부재·좌표 정규화 불능·estimate 미선언·비-git 트리)는 **가드 off** 다 —
         이 축의 실패로 완료 기록을 막지 않는다(hard 차단은 상한 초과라는 확정 사실에만 건다)."""
-        external = _load_external_review()
+        external = _load_additional_reviewer()
         if external is None:
             return None
         inputs = self._diff_ticket_inputs(ticket_id, external)
@@ -2562,7 +2562,7 @@ class TicketFinisher:
         """터치 선언 ∩ 사설 참조 출하 python 표면 ∖ 기계 mirror — 절대경로 목록(표면 해소).
 
         표면 정의는 `private_refs.shipping_paths` 가, 측정 제외는
-        `external_review.is_machine_mirror_path` 가 소유한다(정의 사본 0 · markdown 절반은
+        `additional_reviewer.is_machine_mirror_path` 가 소유한다(정의 사본 0 · markdown 절반은
         이 게이트 밖 — 비목표). 기계 mirror 를 빼는 이유는 `templates/<타깃>/` 아래 엔진
         사본이 canonical 을 그대로 복사한 결과이기 때문이다 — 빼지 않으면 같은 유입 한 건이
         canonical 1 + 사본 3 으로 네 번 지목되고, 사람이 고칠 자리가 어디인지 흐려진다."""
@@ -2704,13 +2704,13 @@ class TicketFinisher:
         private_refs = _load_private_refs()
         if private_refs is None:
             return None
-        external = _load_external_review()
+        external = _load_additional_reviewer()
         if external is None:
             return None
         measured_diff_text_fn = getattr(external, "measured_diff_text", None)
         block_path_fn = getattr(external, "_diff_block_path", None)
         if measured_diff_text_fn is None or block_path_fn is None:
-            return None  # 구형/부분 external_review 사본 — 표면 자체가 없다.
+            return None  # 구형/부분 additional_reviewer 사본 — 표면 자체가 없다.
         inputs = self._diff_ticket_inputs(ticket_id, external)
         touches = self._normalize_measured_touches(inputs.touches, warn=False)
         if not touches:

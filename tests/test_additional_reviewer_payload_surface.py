@@ -27,7 +27,7 @@ _REVIEWER_TARGET = {
 
 def _load_external():
     spec = importlib.util.spec_from_file_location(
-        "external_review_t0637", TOOLS / "external_review.py",
+        "additional_reviewer_t0637", TOOLS / "additional_reviewer.py",
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -272,7 +272,7 @@ def test_hand_edited_template_manifest_remains_in_payload(external, target):
     """실재하는 손편집 manifest는 측정 subtree 안이어도 payload에 남는다."""
     hand_edited_manifest = f"templates/{target}/.project_manager/engine.manifest"
     assert (REPO / hand_edited_manifest).is_file(), f"테스트 대상 실파일 없음: {hand_edited_manifest}"
-    machine_copy = f"templates/{target}/.project_manager/tools/external_review.py"
+    machine_copy = f"templates/{target}/.project_manager/tools/additional_reviewer.py"
     raw = _raw_diff(machine_copy, hand_edited_manifest)
 
     def _git(argv, **kwargs):
@@ -530,7 +530,7 @@ def test_gate_and_anchor_order_remains_unambiguous(external):
 
 def test_help_and_shipped_skill_send_examples_choose_gate_accounting(external):
     """복사 가능한 help/SKILL 실송 예시는 ticket/gate/no-gate 중 하나를 반드시 고른다."""
-    script = "python3 .project_manager/tools/external_review.py"
+    script = "python3 .project_manager/tools/additional_reviewer.py"
     help_commands = [
         line.strip()
         for line in external.build_arg_parser().format_help().splitlines()

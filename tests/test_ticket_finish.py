@@ -1054,7 +1054,7 @@ def test_default_run_pytest_resolves_cwd_at_runtime_when_not_injected(tf, monkey
 # 하드코딩 `REPO = Path(__file__).resolve().parents[2]` 는 tools 가 `<root>/.project_manager/
 # tools/` 정확히 2단 깊이라고 가정한다 — 채택자 형상(PM 홈/worktree 구조 상이·다른 깊이)에선
 # 어긋난다. `_find_repo_root()` 가 `.project_manager` 마커를 품은 첫(최근접) 조상으로 견고 해소
-# 하고, 마커 부재 시 현행 `parents[2]` 로 폴백함을 hermetic 하게 단언한다 (external_review 동형).
+# 하고, 마커 부재 시 현행 `parents[2]` 로 폴백함을 hermetic 하게 단언한다 (additional_reviewer 동형).
 #
 # hermetic seam: 헬퍼는 모듈 전역 `__file__` 을 읽으므로 fresh 모듈 인스턴스의 `__file__` 을
 # tmp 합성 경로로 monkeypatch 해 실제 파일 이동 없이 임의 깊이를 모사한다.
@@ -1999,7 +1999,7 @@ def test_coordinate_loader_old_sibling_reports_explicit_skew(
 # 리뷰 라운드가 수렴하지 않는 두 번째 원인은 구현 스코프 팽창이다(실측 5,018줄 단일 티켓).
 # estimate 를 넘긴 스코프는 회귀가 green 이어도 완료 대상이 아니라 분할 대상이라, 어떤 부작용
 # (회귀 실행·log append·board complete·git stage)도 나기 전에 멈춘다. 상한 표와 측정식은
-# external_review 가 소유하고 여기서는 판정만 소비한다(사본 0).
+# additional_reviewer 가 소유하고 여기서는 판정만 소비한다(사본 0).
 
 
 def _boom_pytest():
@@ -2054,7 +2054,7 @@ def test_unterminated_frontmatter_fallback_keeps_finish_flow_open(
         "---\nid: T-9001\nestimate: small\ntouches:\n- src/app.py\n",
         encoding="utf-8",
     )
-    external = tf._load_external_review()
+    external = tf._load_additional_reviewer()
     assert external is not None
     assert hasattr(external, "AnchorResolutionError")
     monkeypatch.setattr(
@@ -2094,16 +2094,16 @@ def test_unterminated_frontmatter_fallback_keeps_finish_flow_open(
     assert "T-9001" in (tmp_path / "log.md").read_text(encoding="utf-8")
 
 
-def test_default_diff_cap_seam_consumes_the_external_review_policy(
+def test_default_diff_cap_seam_consumes_the_additional_reviewer_policy(
         tf, tmp_path, monkeypatch):
-    """기본 seam 은 external_review 의 상한 표·측정식을 그대로 쓴다 (사본 0·배선 고정)."""
-    external = tf._load_external_review()
+    """기본 seam 은 additional_reviewer 의 상한 표·측정식을 그대로 쓴다 (사본 0·배선 고정)."""
+    external = tf._load_additional_reviewer()
     assert external is not None
     monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: ["src/pay.py"])
     monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: "small")
     monkeypatch.setattr(external, "local_config", lambda repo=None: {})
     monkeypatch.setattr(external, "diff_line_total", lambda *a, **k: 301)
-    monkeypatch.setattr(tf, "_load_external_review", lambda: external)
+    monkeypatch.setattr(tf, "_load_additional_reviewer", lambda: external)
 
     finisher = tf.TicketFinisher(log_file=tmp_path / "log.md")
     block = finisher._default_diff_cap_block("T-1234")
@@ -2124,10 +2124,10 @@ def test_default_diff_cap_seam_is_off_without_touches(tf, tmp_path, monkeypatch)
     assert finisher._default_diff_cap_block("T-1234") is None
 
 
-def test_default_diff_cap_seam_is_off_when_external_review_is_absent(
+def test_default_diff_cap_seam_is_off_when_additional_reviewer_is_absent(
         tf, tmp_path, monkeypatch):
-    """external_review 사본이 없으면 가드 off — 부분 설치가 완료를 벽돌로 만들지 않는다."""
-    monkeypatch.setattr(tf, "_load_external_review", lambda: None)
+    """additional_reviewer 사본이 없으면 가드 off — 부분 설치가 완료를 벽돌로 만들지 않는다."""
+    monkeypatch.setattr(tf, "_load_additional_reviewer", lambda: None)
     finisher = tf.TicketFinisher(log_file=tmp_path / "log.md")
     assert finisher._default_diff_cap_block("T-1234") is None
 
@@ -2139,14 +2139,14 @@ def test_default_diff_cap_seam_stops_without_the_measurement_anchor_symbol(
     사본 부재(위 테스트)와 달리 사본은 있고 다른 seam(측정 numstat)은 갖췄는데 이 seam 만 없는
     형상이다. 기준점 없이 잰 값으로 상한을 판정하면 같은 게이트가 설치 상태에 따라 다른 폭을
     재게 되므로, 가드 off 가 아니라 정지다."""
-    external = tf._load_external_review()
+    external = tf._load_additional_reviewer()
     assert external is not None
     monkeypatch.delattr(external, "integration_anchor", raising=False)
     monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: ["src/pay.py"])
     monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: "small")
     monkeypatch.setattr(external, "local_config", lambda repo=None: {})
     monkeypatch.setattr(external, "diff_line_total", lambda *a, **k: 301)
-    monkeypatch.setattr(tf, "_load_external_review", lambda: external)
+    monkeypatch.setattr(tf, "_load_additional_reviewer", lambda: external)
 
     finisher = tf.TicketFinisher(log_file=tmp_path / "log.md")
 
@@ -2160,7 +2160,7 @@ def test_default_diff_cap_seam_stops_without_the_measurement_anchor_symbol(
 #
 # ⑧ PM 홈 좌표 touches(`work/<repo>_<N>/…`)를 그대로 재면 측정 트리에 그 경로가 없어 diff 가 0 이
 #    나오고 상한이 조용히 우회된다. 정규화는 stage 경로와 **같은** `repo_coordinates` seam 이다.
-# ① 기계 mirror 제외는 external_review 측정 seam 이 소유한다 — 완료 기록은 그 판정을 빌려 쓴다.
+# ① 기계 mirror 제외는 additional_reviewer 측정 seam 이 소유한다 — 완료 기록은 그 판정을 빌려 쓴다.
 
 
 def test_measured_touches_normalizes_pm_home_coordinates(tf, tmp_path, monkeypatch):
@@ -2206,7 +2206,7 @@ def test_diff_cap_measures_the_normalized_scope(tf, tmp_path, monkeypatch):
     workspace = tmp_path / "work" / "proj_1"
     workspace.mkdir(parents=True)
     _git_seed(workspace)
-    external = tf._load_external_review()
+    external = tf._load_additional_reviewer()
     seen: dict[str, object] = {}
 
     def _measure(root, base, paths, **kwargs):
@@ -2220,7 +2220,7 @@ def test_diff_cap_measures_the_normalized_scope(tf, tmp_path, monkeypatch):
     monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: "small")
     monkeypatch.setattr(external, "local_config", lambda repo=None: {})
     monkeypatch.setattr(external, "diff_line_total", _measure)
-    monkeypatch.setattr(tf, "_load_external_review", lambda: external)
+    monkeypatch.setattr(tf, "_load_additional_reviewer", lambda: external)
 
     finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", task_workspace=workspace)
     block = finisher._default_diff_cap_block("T-1")
@@ -2258,11 +2258,11 @@ def test_a_large_untracked_file_is_measured_before_staging(tf, tmp_path, monkeyp
     실 git 트리로 `diff_line_total` 을 그대로 태운다(측정 스텁 없음) — 이 순서 결함은 측정식이
     아니라 '무엇이 diff 에 들어오나'의 문제였기 때문이다."""
     root = _git_tree_with_untracked(tmp_path, "src/new_module.py", 400)
-    external = tf._load_external_review()
+    external = tf._load_additional_reviewer()
     monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: ["src/"])
     monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: "small")
     monkeypatch.setattr(external, "local_config", lambda repo=None: {})
-    monkeypatch.setattr(tf, "_load_external_review", lambda: external)
+    monkeypatch.setattr(tf, "_load_additional_reviewer", lambda: external)
 
     finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", regression_cwd=root)
     block = finisher._default_diff_cap_block("T-0604")
@@ -2273,11 +2273,11 @@ def test_a_large_untracked_file_is_measured_before_staging(tf, tmp_path, monkeyp
 def test_an_untracked_file_within_the_cap_still_completes(tf, tmp_path, monkeypatch):
     """상한 이내면 종전대로 통과한다 — 포함이 정당한 완료를 오차단하지 않는다."""
     root = _git_tree_with_untracked(tmp_path, "src/new_module.py", 40)
-    external = tf._load_external_review()
+    external = tf._load_additional_reviewer()
     monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: ["src/"])
     monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: "small")
     monkeypatch.setattr(external, "local_config", lambda repo=None: {})
-    monkeypatch.setattr(tf, "_load_external_review", lambda: external)
+    monkeypatch.setattr(tf, "_load_additional_reviewer", lambda: external)
 
     finisher = tf.TicketFinisher(log_file=tmp_path / "log.md", regression_cwd=root)
 
@@ -2287,12 +2287,12 @@ def test_an_untracked_file_within_the_cap_still_completes(tf, tmp_path, monkeypa
 def test_completion_surface_carries_the_shared_measurement_meaning(
         tf, tmp_path, monkeypatch):
     """완료 기록 안내도 '측정=손작업 스코프(기계 mirror 제외)'를 싣는다 (문구 단일 출처)."""
-    external = tf._load_external_review()
+    external = tf._load_additional_reviewer()
     monkeypatch.setattr(tf, "get_ticket_touches", lambda board_py, tid: ["templates/"])
     monkeypatch.setattr(tf, "get_ticket_estimate", lambda board_py, tid: "small")
     monkeypatch.setattr(external, "local_config", lambda repo=None: {})
     monkeypatch.setattr(external, "diff_line_total", lambda *a, **k: 301)
-    monkeypatch.setattr(tf, "_load_external_review", lambda: external)
+    monkeypatch.setattr(tf, "_load_additional_reviewer", lambda: external)
 
     finisher = tf.TicketFinisher(log_file=tmp_path / "log.md")
     assert external.MEASURED_SCOPE_NOTE in finisher._default_diff_cap_block("T-1")
@@ -2835,14 +2835,14 @@ def _wave_work(root: Path) -> None:
 
 
 def _wave_finisher(root: Path, tmp_path: Path):
-    """tmp 저장소를 코드 트리로 쓰는 완료 기록 인스턴스·external_review 사본·엔진 모듈."""
+    """tmp 저장소를 코드 트리로 쓰는 완료 기록 인스턴스·additional_reviewer 사본·엔진 모듈."""
     finish = _load_tool_copy(root, "ticket_finish")
     finisher = finish.TicketFinisher(
         board_py=root / ".project_manager" / "tools" / "board.py",
         regression_cwd=root,
         log_file=tmp_path / "log.md",
     )
-    external = finish._load_external_review()
+    external = finish._load_additional_reviewer()
     assert external is not None
     return finisher, external, finish
 

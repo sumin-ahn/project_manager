@@ -319,7 +319,9 @@ RAW_LEDGER_MAX_COMPLETED = 4096
 # 고아(장부 미참조) 원문 스캔 대상 파일명 접두 — 엔진이 만든 raw 만 가리킨다. `.local/delegate`에는
 # 이 밖에 PM 수작업 산출(`T-XXXX-*.txt`·`*.md`)이 섞여 있고(실측 74+185건) 스캔
 # 대상에 넣으면 고아 목록을 보고 사용자가 잘못 지운다.
-ENGINE_RAW_FILENAME_PREFIXES = ("pm_delegate_", "external_review_")
+ENGINE_RAW_FILENAME_PREFIXES = (
+    "pm_delegate_", "additional_reviewer_", "external_review_",
+)
 
 
 def pid_is_alive(
@@ -1024,10 +1026,10 @@ def parse_codex_json(lines) -> tuple[str | None, str | None, dict | None]:
 
 # ── 하네스 드라이버 계약 (검증·argv·회신 추출) — 위임/추가 리뷰어 공용 단일 소유 ────────
 #
-# 위임(pm_delegate)과 추가 리뷰어(external_review)는 **같은 세 하네스 CLI**를 스폰한다. 값 테이블과
+# 위임(pm_delegate)과 추가 리뷰어(additional_reviewer)는 **같은 세 하네스 CLI**를 스폰한다. 값 테이블과
 # argv 조립이 두 표면에 각각 있으면 규칙이 둘로 갈리므로(진행신호 테이블·시간 프로필과 같은 이유)
 # 이 leaf 모듈이 단일 소유한다. 이 모듈은 다른 엔진 도구를 import 하지 않아(cycle-free) 양쪽이
-# 안전하게 deep-import 할 수 있다 — external_review 는 pm_delegate 를 import 하지 않는다(역방향
+# 안전하게 deep-import 할 수 있다 — additional_reviewer 는 pm_delegate 를 import 하지 않는다(역방향
 # deep-import 가 이미 있어 순환이 된다).
 
 HARNESS_CHOICES: tuple[str, ...] = ("claude", "codex", "opencode")
@@ -1468,7 +1470,7 @@ def extract_harness_reply(harness: str, stdout: str) -> str | None:
 # 형상인가"만 판정하고, "이번 호출이 승격됐는가"는 attestation 플래그가 소유한다(플래그는 권한을
 # 만들지 않으므로 샌드박스 안에서 잘못 붙이면 권한 상승 없이 타겟 CLI 가 기존처럼 fail-loud 한다).
 #
-# 두 외부 스폰 표면(pm_delegate 실위임·external_review 추가 리뷰어)이 이 절을 공유한다 — 진입점
+# 두 외부 스폰 표면(pm_delegate 실위임·additional_reviewer 추가 리뷰어)이 이 절을 공유한다 — 진입점
 # 스크립트와 게이트 키만 표면별 인자다(승인 prefix 는 그 표면 자신을 가리켜야 재사용된다).
 
 CODEX_EGRESS_MARKER_ENV = "CODEX_SANDBOX_NETWORK_DISABLED"
@@ -1479,7 +1481,7 @@ _CODEX_EGRESS_MARKER_TRUE = frozenset({"1", "true", "yes", "on"})
 
 # 표면별 진입점 — Codex 도구 재사용 승인 prefix 가 되는 2-token 이다.
 DELEGATE_ENTRYPOINT = ".project_manager/tools/pm_delegate.py"
-EXTERNAL_REVIEW_ENTRYPOINT = ".project_manager/tools/external_review.py"
+ADDITIONAL_REVIEWER_ENTRYPOINT = ".project_manager/tools/additional_reviewer.py"
 
 
 def running_on_windows() -> bool:
@@ -1630,7 +1632,7 @@ _KILL_GRACE_SEC = 5.0
 # 하네스 상한 계산이 한 단계만 세면 부분 산출물 수확 전에 호출층이 먼저 프로세스를 죽일 수 있다.
 _PROCESS_CLEANUP_GRACE_PHASES = 2
 
-# 정리 뒤 분류·raw 박제·범위 감사에 남기는 공용 여유. 두 소비 표면(pm_delegate/external_review)이
+# 정리 뒤 분류·raw 박제·범위 감사에 남기는 공용 여유. 두 소비 표면(pm_delegate/additional_reviewer)이
 # 같은 `harness_cap_required_budget`을 써야 상한 계산 규칙이 갈리지 않는다. 실측 보조 단계 합 7초를
 # 플랫폼 편차를 위해 다음 10초 경계로 올린 값이다.
 HARNESS_CAP_MEASURED_AUX_BUDGET_SEC = 7
@@ -1681,7 +1683,7 @@ def format_partial_output(head: str, exc: BaseException) -> str:
     이미 실패한 timeout/cleanup 경로에서 쓰이므로, 예외 객체의 비정상 속성이나 비-UTF8 bytes가
     원래 진단을 가리는 일은 허용하지 않는다. 문자열 입력의 형식은 기존 소비처 형식을 보존한다.
 
-    | 입력 ``output=b\"ok\\xff\"`` | 이전 external-review | 현재 공용 포맷터 |
+    | 입력 ``output=b\"ok\\xff\"`` | 이전 additional-reviewer | 현재 공용 포맷터 |
     | --- | --- | --- |
     | 표시 | ``b'ok\\xff'`` (repr) | ``ok�`` (UTF-8 replacement decode) |
 
@@ -1822,14 +1824,14 @@ def stall_retries_default() -> int:
 # 강등한다(worktree_pool.py:84-100 "진행이 보이면 관대하게, 안 보이면 유한하게"의 승계).
 # ── 시간 예산 실측 근거 (추측 상수 금지) ────────────────────────────────────────────
 # **클라우드 축**(codex·claude — 원격 추론). 재료 = /tmp 잔존 위임 raw 코퍼스(pm_delegate_codex_*
-# 5,100건·pm_delegate_claude_* 749건) + external_review raw(codex 평문 축 207건).
+# 5,100건·pm_delegate_claude_* 749건) + additional_reviewer raw(codex 평문 축 207건).
 #   ⓐ 도구 실행 침묵(직접 실측·N=860 표본/89 파일) — codex 는 command_execution 을 item.started →
 #      (그 도구가 도는 동안 stdout 이벤트 0) → item.completed 로 내므로 **한 도구 실행의 소요 =
 #      그 구간의 stdout 침묵**이다. 도구가 스스로 찍은 소요(pytest "in NNNs")를 표본으로:
 #      p50 0.5s · p90 82.6s · p95 102.7s · p99 124.9s · **max 254.6s**.
 #   ⓑ 이벤트 간 평균 간격(비둘기집 하한·rc=0 완주 153건) — 총 소요/이벤트 수 ≤ 최대 간격:
 #      p50 9.0s · p99 16.4s · max 17.7s. (총 소요 자체는 p50 370.2s·p99 1036.6s·max 1429.1s.)
-#   ⓒ 평문 축(external_review 의 `codex exec` — `--json` 없음) — 진행 로그가 **stderr** 로 촘촘히
+#   ⓒ 평문 축(additional_reviewer 의 `codex exec` — `--json` 없음) — 진행 로그가 **stderr** 로 촘촘히
 #      흐른다(리뷰 1건 stderr 12,233줄·hook/exec/succeeded 라인이 도구마다). stdout 은 최종 회신
 #      뿐이라(실측 498~759 바이트) **stdout 단독 관측은 이 축을 전량 false-kill 한다** — 그래서
 #      진행 신호는 stdout·stderr **양쪽 chunk 도착**으로 본다.
@@ -2145,7 +2147,7 @@ def _mark_spawn_failed(exc: BaseException, failed: bool) -> None:
 
 # `Popen` 이 던졌을 때 "자식이 뜬 적 없음"을 **확정**할 수 있는 종류. exec 자체가 실패한 형상들이고
 # (파일 부재·실행 권한·경로 형상), CPython 은 이때 자기가 만든 자식을 errpipe 로 확인한 뒤 회수한다.
-# external_review 의 `_DEFINITE_LAUNCH_FAILURES` 와 같은 집합이다(양쪽 테스트가 동치를 못박는다).
+# additional_reviewer 의 `_DEFINITE_LAUNCH_FAILURES` 와 같은 집합이다(양쪽 테스트가 동치를 못박는다).
 _DEFINITE_LAUNCH_FAILURES = (
     FileNotFoundError, PermissionError, NotADirectoryError, IsADirectoryError,
 )

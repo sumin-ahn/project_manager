@@ -55,7 +55,7 @@ def _rejected_entry(*, resolution: dict | None = None) -> dict:
 @pytest.fixture
 def review(tmp_path, monkeypatch):
     root = _project(tmp_path)
-    module = _load("external_review", "release_gate_review")
+    module = _load("additional_reviewer", "release_gate_review")
     monkeypatch.setattr(module, "REPO", root)
     _write_ledger(root, {"T-0610": _rejected_entry()})
     return types.SimpleNamespace(module=module, root=root, ledger=_ledger_path(root))

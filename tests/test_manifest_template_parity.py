@@ -145,6 +145,11 @@ TEMPLATE_ROOTS = {
     "codex": REPO / "templates" / "codex",
 }
 
+RETIRED_REVIEWER_PATH = (
+    ".project_manager/tools/external_review.py",
+    ".project_manager/tools/additional_reviewer.py",
+)
+
 # T-0873 reopen lifecycle은 이 네 엔진을 함께 바꾼다. 전역 parity가 우연히 스코프를 비워도
 # feature 출하 계약이 공허 통과하지 않도록 manifest membership부터 직접 고정한다.
 REOPEN_LIFECYCLE_ENGINE_PATHS = (
@@ -209,6 +214,30 @@ def _manifest_path_set(manifest: Path) -> set[str]:
     """manifest 의 *경로* 집합 (주석·빈 줄·`@마커` 제거 — read_manifest 재사용)."""
     pm_update = _load_pm_update()
     return {str(entry) for entry in pm_update.read_manifest(manifest)}
+
+
+def test_reviewer_retired_path_directive_is_identical_and_comment_compatible():
+    """4 manifest가 같은 이주를 선언하고 기존 path parser에는 행으로 안 샌다."""
+    pm_update = _load_pm_update()
+    for manifest in (ROOT_MANIFEST, CC_MANIFEST, OC_MANIFEST, CODEX_MANIFEST):
+        assert pm_update.parse_retired_path_directives(manifest) == [
+            RETIRED_REVIEWER_PATH,
+        ]
+        entries = {str(entry) for entry in pm_update.read_manifest(manifest)}
+        assert RETIRED_REVIEWER_PATH[1] in entries
+        assert RETIRED_REVIEWER_PATH[0] not in entries
+
+
+def test_reviewer_executable_has_only_the_new_physical_name_in_all_shipping_trees():
+    roots = [REPO, *TEMPLATE_ROOTS.values()]
+    for root in roots:
+        assert (root / RETIRED_REVIEWER_PATH[1]).is_file()
+        assert not (root / RETIRED_REVIEWER_PATH[0]).exists()
+    tracked_old = [
+        path for path in repo_owned_paths(REPO, ".", mode=OWNED)
+        if "external_review" in str(path) or "external-review" in str(path)
+    ]
+    assert tracked_old == [], f"구 물리 파일명 잔존: {tracked_old}"
 
 
 # ── 가드 2: manifest 경로 집합 정합 ──────────────────────────────────────────

@@ -2359,7 +2359,7 @@ def local_config(repo: Path | None = None) -> dict[str, str]:
     `repo` 를 주면 **그 트리의** conf 를 읽는다(`<repo>/.project_manager/local.conf`) —
     이 board.py 사본의 `REPO` 가 아니라 판정 대상 트리가 앵커여야 하는 소비처(회귀 수집 하한 —
     스위트는 실행 cwd 트리의 것이다)를 위한 seam. 미지정은 현행 `LOCAL_CONF`(무변경).
-    `external_review.local_config(repo)` 와 동형 시그니처.
+    `additional_reviewer.local_config(repo)` 와 동형 시그니처.
 
     파싱·판정은 공용 로더(`local_conf.py`)가 소유한다 — 이 함수는 경로만 정하고 값 소비
     지점의 계약(구표기 키가 남아 있으면 `LegacyConfKeyError` fail-loud)을 그대로 물려받는다.
@@ -7175,12 +7175,12 @@ def _scope_args(touches: list[str]) -> str:
 # 리뷰가 아직 닫히지 않은 티켓의 FULL 요청은 그 티켓 touches 로 강등한다 — 라운드 중에 필요한
 # 신호는 "내가 건드린 것이 깨졌나"고, 스위트 전체 green 은 **수렴 후 한 번**이면 된다.
 #
-# 판정 입력은 external_review 의 라운드 장부(`.local/review_rounds.json`)뿐이다. 스키마 소유는
-# external_review 이고 여기서는 **읽기만** 한다 — deep-import 하지 않는 이유는 방향이다:
-# external_review 가 board 를 로드하므로(`_load_board`) 역방향 로드는 순환이 된다.
+# 판정 입력은 additional_reviewer 의 라운드 장부(`.local/review_rounds.json`)뿐이다. 스키마 소유는
+# additional_reviewer 이고 여기서는 **읽기만** 한다 — deep-import 하지 않는 이유는 방향이다:
+# additional_reviewer 가 board 를 로드하므로(`_load_board`) 역방향 로드는 순환이 된다.
 REVIEW_ROUNDS_LEDGER_NAME = "review_rounds.json"
 INTERNAL_REVIEW_ROUNDS_LEDGER_NAME = "internal_review_rounds.json"
-_REVIEW_LEDGER_WAVE_KEY = "wave"       # 게이트가 아닌 예약 키 (external_review WAVE_SECTION_KEY)
+_REVIEW_LEDGER_WAVE_KEY = "wave"       # 게이트가 아닌 예약 키 (additional_reviewer WAVE_SECTION_KEY)
 
 
 def _review_rounds_ledger() -> Path:
@@ -7234,7 +7234,7 @@ def _last_round_verdict(entry: dict) -> int | None:
     """게이트의 **마지막 라운드** 판정 rc (기록 없음/손상이면 None).
 
     나열 순서는 append 순서가 아니라 **예약 순번**이다(공용 seam `gate_last_round` —
-    external_review 조회 표와 같은 한 규칙)."""
+    additional_reviewer 조회 표와 같은 한 규칙)."""
     outcome = gate_last_round(entry)
     verdict = outcome.get("verdict") if outcome is not None else None
     return verdict if isinstance(verdict, int) and not isinstance(verdict, bool) else None
@@ -7251,7 +7251,7 @@ def gate_residual_must_fix(entry: dict) -> int | None:
     반환은 `0`(잔여 없음) · `N>0`(N 건) · **`None`(미상)** 이다. 미상은 "전송은 됐는데 판정이
     무효했다"(타임아웃·오염·섹션 부재로 셀 근거가 없던 라운드)이고, 그건 "잔여가 없다"가 아니라
     **확인하지 못했다**이다 — 0 으로 접으면 판정 무효 라운드로 끝난 게이트에서 릴리즈 차단이
-    조용히 풀린다(실장부 실례). 형제 seam(external_review 의 수렴 판정)도 '미상'을 해소로 세지
+    조용히 풀린다(실장부 실례). 형제 seam(additional_reviewer 의 수렴 판정)도 '미상'을 해소로 세지
     않는 같은 규칙이다.
 
     다만 **통과(rc 0)로 끝난 라운드의 미상은 비대상(0)** 이다 — 그쪽은 판정이 났고 must-fix 섹션이
@@ -7295,9 +7295,9 @@ def internal_verdict_diagnostic(entry: dict) -> str | None:
 
 # ── 게이트 처분 선언 (장부 `resolution` 절) ────────────────────────────────
 # 라운드 상한으로 종결된 게이트의 **잔여 must-fix 를 어떻게 소화했는가**를 장부에 남기는 절이다.
-# 쓰는 쪽은 external_review(`--resolve-gate`)지만 **읽는 규칙은 여기 하나**다 — 릴리즈 차단과
+# 쓰는 쪽은 additional_reviewer(`--resolve-gate`)지만 **읽는 규칙은 여기 하나**다 — 릴리즈 차단과
 # 조회 표가 각자 해석하면 같은 장부를 놓고 "처분됐다/아니다"가 갈린다. 로드 방향이
-# external_review → board 라 공용 판정은 board 가 소유한다(`round_outcome_order_key` 와 같은 자리).
+# additional_reviewer → board 라 공용 판정은 board 가 소유한다(`round_outcome_order_key` 와 같은 자리).
 # 기계 확인 증거로 여는 게이트 처분 — 장부마다 `allow_pm_verified` 명시 시에만 인정된다(내부
 # 완료 축·추가 리뷰어 release 축 모두 스코프 인자로 채널 격리해 허용 · 기본 호출은 허용하지 않는다).
 GATE_RESOLUTION_PM_VERIFIED = "pm-verified"
@@ -7307,7 +7307,7 @@ GATE_RESOLUTION_PM_VERIFIED = "pm-verified"
 # 해소한다(`_pm_verified_channel_role`).
 GATE_CHANNEL_INTERNAL = "internal"        # internal_review_rounds.json (내부 code-reviewer)
 GATE_CHANNEL_ADDITIONAL = "additional"    # review_rounds.json (추가 리뷰어)
-# 처분 표기 어휘 — 선언 응답(external_review)과 차단 사유(여기)가 같은 말을 쓰게.
+# 처분 표기 어휘 — 선언 응답(additional_reviewer)과 차단 사유(여기)가 같은 말을 쓰게.
 GATE_RESOLUTION_LABELS: dict[str, str] = {
     GATE_RESOLUTION_PM_VERIFIED: "pm-verified(PM 기계 확인 해소·reviewer 재투입 없음)",
 }
@@ -7901,6 +7901,8 @@ def _platform_test_commands(cwd: str) -> tuple[tuple[str, str], ...]:
     except RuntimeError as exc:
         # 구표기 키는 공용 로더의 RuntimeError 서브클래스다. 엔진 rev skew 등 다른
         # RuntimeError까지 사용자 설정 오류로 축약하면 복구 진단을 잃으므로 정확한 클래스만 번역한다.
+        if _is_engine_rev_skew(exc):
+            raise
         if type(exc).__name__ != "LegacyConfKeyError":
             raise
         raise PlatformConfigError(str(exc)) from exc
@@ -8852,7 +8854,7 @@ _MUST_FIX_BLOCK_GUIDANCE = (
     "livegate: fail — 미해소 must-fix 잔여 {count}건 (릴리즈 차단 · 우회 플래그 없음).\n"
     "{items}\n"
     "  처방 — 현재 티켓 fix의 기계 확인 증거로 게이트마다 처분을 선언하세요:\n"
-    "    python3 .project_manager/tools/external_review.py "
+    "    python3 .project_manager/tools/additional_reviewer.py "
     "--resolve-gate <게이트> --pm-verified\n"
     "  라운드 장부: {ledger}"
 )
@@ -8874,7 +8876,7 @@ def _release_rounds_ledger(flag: Path) -> Path:
     """릴리즈 검사가 읽을 라운드 장부 — livegate.json 과 **같은 `.local`**.
 
     기록 위치 정렬(`_resolve_livegate_flag`)을 그대로 물려받는다 — 어느 board.py 사본/cwd 로
-    record 하든 external_review 가 실제로 쓴 그 장부(소유 PM 홈 `.local/review_rounds.json`)를
+    record 하든 additional_reviewer 가 실제로 쓴 그 장부(소유 PM 홈 `.local/review_rounds.json`)를
     본다. 사본별로 다른 장부를 읽으면 잔여가 있는데 "무대상"으로 통과하는 false-green 이 난다.
 
     정렬이 성립하는 범위는 **engine-root 모드**(보호훅 활성)다 — 훅 부재 폴백(`_LG_NO_HOOK`)에서는 호출된
@@ -8888,7 +8890,7 @@ def _release_must_fix_marker(flag: Path) -> Path:
 
 
 def _release_rounds_lock(ledger: Path) -> Path:
-    """external_review writer 와 livegate record/check 가 공유하는 장부 락 경로."""
+    """additional_reviewer writer 와 livegate record/check 가 공유하는 장부 락 경로."""
     return ledger.with_name("review_rounds.lock")
 
 
@@ -8996,7 +8998,7 @@ def _unresolved_must_fix_gates(ledger: Path) -> list[str]:
 def _sync_release_must_fix_marker(flag: Path) -> list[str]:
     """장부 스냅샷 판정과 잔여 표식 교체를 writer 락 하나로 직렬화한다.
 
-    livegate record/check 경로다. external_review 는 이미 같은 락을 보유한 `_save_round_ledger` 안에서
+    livegate record/check 경로다. additional_reviewer 는 이미 같은 락을 보유한 `_save_round_ledger` 안에서
     `_unresolved_must_fix_data` + `_write_release_must_fix_marker` 를 직접 호출해 재진입을 피한다."""
     ledger = _release_rounds_ledger(flag)
     with file_lock.exclusive_file_lock(_release_rounds_lock(ledger)):
@@ -9466,7 +9468,7 @@ def find_ticket_exact(
     이 판정을 쓰는 표면이 board 밖에도 있어(추가 리뷰어 estimate 조회·`ticket_finish` 티켓 로드)
     공용 seam 으로 둔다 — 사본을 만들면 그 사본이 다시 첫-매칭으로 흘러 half-fix 가 재발한다.
     `search_dirs` 를 주면 그 (status 라벨, 디렉토리) 순서로만 본다 — 다른 PM 홈의 보드를 읽는
-    호출부(`external_review --pm-home`)가 자기 범위를 명시하는 자리다. 미지정이면 이 board 의
+    호출부(`additional_reviewer --pm-home`)가 자기 범위를 명시하는 자리다. 미지정이면 이 board 의
     STATUS_DIRS → drafts.
     """
     for status, directory in (search_dirs if search_dirs is not None
@@ -11149,7 +11151,7 @@ def _pm_verified_channel_role(delegate, channel: str) -> str | None:
     role 문자열은 pm_delegate 가 단일 진실이라 board 에 사본을 두지 않는다."""
     return {
         GATE_CHANNEL_INTERNAL: delegate.INTERNAL_REVIEW_ROLE,
-        GATE_CHANNEL_ADDITIONAL: delegate.EXTERNAL_REVIEW_ROLE,
+        GATE_CHANNEL_ADDITIONAL: delegate.ADDITIONAL_REVIEWER_ROLE,
     }.get(channel)
 
 
@@ -11537,12 +11539,12 @@ def _round_pending_ledger_owner(delegate) -> Path | None:
 
     `pm_delegate._activate_internal_rounds_cli_owner()` 는 그 모듈 **자신의** 고정 `REPO`(자기
     파일 경로에서 계산)를 써서 board 의 `REPO` 재앵커(테스트·등록 슬롯)를 못 본다 — 그래서 같은
-    해소 함수(`external_review.resolve_pm_home_for_repo`)를 board 의 `REPO` 로 직접 부른다.
+    해소 함수(`additional_reviewer.resolve_pm_home_for_repo`)를 board 의 `REPO` 로 직접 부른다.
     해소 실패는 안내를 못 내는 것으로 흡수한다(discard 는 이 축을 차단하지 않는다).
     """
     try:
-        external_review = delegate._load_external_review()
-        return Path(external_review.resolve_pm_home_for_repo(REPO)).resolve()
+        additional_reviewer = delegate._load_additional_reviewer()
+        return Path(additional_reviewer.resolve_pm_home_for_repo(REPO)).resolve()
     except Exception as exc:  # noqa: BLE001 — 장부 해소는 discard 를 막지 않는다(안내만 못 낸다).
         if _is_engine_rev_skew(exc):
             raise  # 형제 사본 skew 는 안내 결손으로 접지 않는다(fail-loud · 재동기 안내).
@@ -11728,9 +11730,9 @@ INIT_GUIDE = """\
 #   이므로(공용 로더 `local_conf.assert_no_legacy`) 온보딩이 그 형상을 따로 감지하지 않는다.
 #   자유 문자열 리뷰어 커맨드 키는 폐지됐다 — 대상은 구조화 튜플 하나뿐이다.
 #   같은 값을 pm_update.ADDITIONAL_REVIEWER_DEFAULTS 도 심는다(두 온보딩 진입·동일 프로필).
-#   실행 해소(하네스/모델/추론 강도 → 실 명령)는 external_review 가 하고, 여기서는 값만
+#   실행 해소(하네스/모델/추론 강도 → 실 명령)는 additional_reviewer 가 하고, 여기서는 값만
 #   시드한다 — 무거운 실행 코어를 board 로 끌어오지 않는다. 드리프트는 테스트가 잡는다.
-#   키 이름은 external_review 코어 선언과 글자로 같아야 한다(드리프트는 회귀가 잡는다).
+#   키 이름은 additional_reviewer 코어 선언과 글자로 같아야 한다(드리프트는 회귀가 잡는다).
 ADDITIONAL_REVIEWER_ENABLED_KEY = "additional_reviewer.enabled"
 
 ADDITIONAL_REVIEWER_DEFAULTS: tuple[tuple[str, str], ...] = (
@@ -11745,7 +11747,7 @@ def additional_reviewer_decision_key(conf: dict[str, str]) -> str | None:
     """이미 기록된 opt-in 결정을 공급하는 키 — **신키뿐** (없으면 None).
 
     판정은 키 존재다(값의 truthiness 가 아니다 — `false` 도 결정이다). 구표기 키는 값을 공급하지
-    않고 그 잔존은 conf 를 읽는 지점에서 fail-loud 다. external_review 코어의
+    않고 그 잔존은 conf 를 읽는 지점에서 fail-loud 다. additional_reviewer 코어의
     `enabled_decision_key` 와 같은 판정이다.
     """
     return (ADDITIONAL_REVIEWER_ENABLED_KEY
@@ -11794,10 +11796,10 @@ def _additional_reviewer_enable_hint(target: str) -> str:
             else ADDITIONAL_REVIEWER_ENABLE_ONLY_HINT)
 
 # ── 기존 대상 판정 (온보딩 전용 · 실행 해소 없음) ────────────────────────────
-# 실행 해소(하네스→실 명령·값 검증)는 external_review 코어가 소유한다. 여기서 필요한 건 훨씬
+# 실행 해소(하네스→실 명령·값 검증)는 additional_reviewer 코어가 소유한다. 여기서 필요한 건 훨씬
 # 좁은 판정 하나다: **활성 플래그만 없는 conf 에 이미 대상이 있는가**. 무거운 실행 코어를 온보딩
 # 경로로 끌어오지 않으려고 키 이름과 선언 규칙만 미러링하고, 드리프트는 테스트가 잡는다
-# (pm_update 에도 같은 판정이 있고, 두 사본과 external_review 의 키/판정 일치를 회귀가 단언한다).
+# (pm_update 에도 같은 판정이 있고, 두 사본과 additional_reviewer 의 키/판정 일치를 회귀가 단언한다).
 ADDITIONAL_REVIEWER_PREFIX = "additional_reviewer"
 ADDITIONAL_REVIEWER_HARNESS_KEY = f"{ADDITIONAL_REVIEWER_PREFIX}.harness"
 ADDITIONAL_REVIEWER_MODEL_KEY = f"{ADDITIONAL_REVIEWER_PREFIX}.model"
@@ -11824,7 +11826,7 @@ def classify_additional_reviewer_target(conf: dict[str, str]) -> str:
       그 둘이 온전하면 `structured`. 판정 기준을 값의 truthiness 로 하면 비운 채 선언한 부분
       튜플이 '대상 없음'으로 떨어져, 온보딩이 기본 4키를 덧써 사용자의 선언을 갈아치운다.
     · 부분 튜플은 `AdditionalReviewerTargetError` 다 — 절반만 반영된 대상을 추측해 쓰지 않는다
-      (external_review 의 해소 규칙과 같은 판정·같은 이유).
+      (additional_reviewer 의 해소 규칙과 같은 판정·같은 이유).
 
     값 자체의 유효성(하네스 이름·모델 sentinel·reasoning 허용집합)은 판정하지 않는다. 그건 실행
     해소의 일이고, 온보딩이 알아야 하는 것은 "덧쓰면 안 되는 선언이 있는가" 하나다.
@@ -11958,7 +11960,7 @@ def _is_noninteractive() -> bool:
     )
 
 
-def prompt_external_review_optin() -> None:
+def prompt_additional_reviewer_optin() -> None:
     """추가 리뷰어(additional reviewer) opt-in 프롬프트 → local.conf 에 기록.
 
     코드 diff 가 외부로 *전송*되므로 기본 거부. **첫 1회만** 묻는다 — 이미 결정돼 있거나
@@ -12085,7 +12087,7 @@ def _write_init_local_conf() -> None:
         # 남아 있어도 동작은 같다.
         merged = _set_conf_keys(text, updates)
         # trailing newline 보장 — updates 가 비어(default 키 전부 존재) `_set_conf_keys` 가
-        # 원문을 그대로 반환하고 그 원문이 개행 없이 끝나면, 뒤이은 prompt_external_review_optin()
+        # 원문을 그대로 반환하고 그 원문이 개행 없이 끝나면, 뒤이은 prompt_additional_reviewer_optin()
         # 의 append 가 마지막 키에 그대로 붙어 기존 키를 변질시킨다(codex must-fix·병합 경로 회귀).
         if merged and not merged.endswith("\n"):
             merged += "\n"
@@ -12288,7 +12290,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     # dirty(`?? .gitattributes`)로 남아 다음 `claim` 이 STRICT dirty 가드에 막힌다(엔진이 만든
     # 파일을 사용자 편집으로 오인·clone→init→claim 온보딩 직격) — 미배포 근거는 그대로 유효하다.
     # 배포는 `_board_git_stage_and_commit`(write→stage→commit 이 한 호출에 닫힘) **단일 채널**로 한다.
-    prompt_external_review_optin()
+    prompt_additional_reviewer_optin()
     # 완료 안내의 ID 포맷은 **이 clone 에서 `board.py new` 가 실제로 발행할 값**이다 —
     # 등록 결과가 아니라 해소 체인(`cmd_new` 와 같은 함수·같은 세션 override)에서 뽑는다.
     # 등록이 생략/거부된 형상에서 발행되지 않을 포맷을 성공 메시지로 내던 거짓 안내 차단.

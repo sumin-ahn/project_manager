@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ROOT / ".project_manager" / "tools"
 
 
-def _load(name: str = "external_review"):
+def _load(name: str = "additional_reviewer"):
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -39,7 +39,7 @@ def _load(name: str = "external_review"):
 
 @pytest.fixture
 def external():
-    return _load("external_review")
+    return _load("additional_reviewer")
 
 
 def _git(path: Path, *args: str) -> None:
@@ -85,7 +85,7 @@ def _standalone_adopter(tmp_path: Path) -> Path:
     # 옛 리뷰 raw(git-ignored) + PM 세션 전사 흉내 — 격리 대상 두 축.
     raw_dir = repo / ".project_manager" / ".local" / "review"
     raw_dir.mkdir(parents=True)
-    (raw_dir / "external_review_codex_20260806_040406_11_ab.txt").write_text(
+    (raw_dir / "additional_reviewer_codex_20260806_040406_11_ab.txt").write_text(
         "판정: 반려\n\n**must-fix**:\n- 옛 라운드 지적\n", encoding="utf-8",
     )
     (repo / "src" / "scratch_untracked.py").write_text("secret_note = 1\n", encoding="utf-8")
@@ -123,7 +123,7 @@ def test_workspace_hides_old_review_raw_from_reviewer_visible_tree(external, tmp
             if path.is_file() and ".git" not in path.relative_to(workspace.tree).parts
         ]
         assert visible, "거울이 비어 있으면 격리가 아니라 검토 불능이다"
-        assert not any("external_review_" in path.name for path in visible)
+        assert not any("additional_reviewer_" in path.name for path in visible)
         assert not any("옛 라운드 지적" in path.read_text(encoding="utf-8", errors="replace")
                        for path in visible)
     finally:
@@ -1345,11 +1345,11 @@ def test_detects_old_raw_artifact_citation(external):
     output = (
         "판정: 통과\n\n**must-fix**:\n- 없음\n\n"
         "참고: .project_manager/.local/review/"
-        "external_review_codex_20260806_040406_11_ab.txt 의 지적과 동일하다.\n"
+        "additional_reviewer_codex_20260806_040406_11_ab.txt 의 지적과 동일하다.\n"
     )
     contamination = external.detect_output_contamination(output)
     assert contamination.raw_artifacts == (
-        "external_review_codex_20260806_040406_11_ab.txt",
+        "additional_reviewer_codex_20260806_040406_11_ab.txt",
     )
     assert any("raw 파일명 인용" in marker for marker in contamination.markers)
 
@@ -1485,14 +1485,14 @@ def test_unknown_verdict_line_beside_a_real_one_is_ambiguous(external):
 
 
 def test_raw_artifact_regex_accepts_underscored_reviewer_names(external):
-    """reviewer 이름에 `_` 가 있는 배포(`external_review_my_reviewer_…`)의 인용도 잡는다."""
+    """reviewer 이름에 `_` 가 있는 배포(`additional_reviewer_my_reviewer_…`)의 인용도 잡는다."""
     output = (
         "판정: 통과\n\n**must-fix** (반드시 수정):\n- 없음\n\n**suggestion** (권장):\n"
-        "- external_review_my_reviewer_20260806_040406_11_ab.txt 의 지적과 같다.\n"
+        "- additional_reviewer_my_reviewer_20260806_040406_11_ab.txt 의 지적과 같다.\n"
     )
     contamination = external.detect_output_contamination(output)
     assert contamination.raw_artifacts == (
-        "external_review_my_reviewer_20260806_040406_11_ab.txt",
+        "additional_reviewer_my_reviewer_20260806_040406_11_ab.txt",
     )
 
 
@@ -1635,7 +1635,7 @@ def test_quoted_and_fenced_verdicts_count_for_neither_parser_nor_detector(extern
 
 
 @pytest.mark.parametrize("citation", (
-    "- external_review_codex_20260806_040406_11_ab.txt 의 지적과 같다.\n",
+    "- additional_reviewer_codex_20260806_040406_11_ab.txt 의 지적과 같다.\n",
     "- /home/user/.claude/projects/-home-user-repo/9f2.jsonl 에서 확인했다.\n",
 ))
 def test_run_review_downgrades_any_contaminated_pass(external, tmp_path, citation):
@@ -1688,7 +1688,7 @@ def test_progress_log_prompt_echo_is_not_contamination(external, tmp_path):
         "Reading prompt from stdin...\nworkdir: /tmp/pm_review_workspace_x\n"
         "판정: [통과 | 반려]\n"                     # 프롬프트 출력 형식 템플릿 echo
         "+    output = \"판정: 반려\\n\"\n"          # 검토 대상 diff 안의 판정 문안
-        "+    raw = \"external_review_codex_20260806_040406_11_ab.txt\"\n"
+        "+    raw = \"additional_reviewer_codex_20260806_040406_11_ab.txt\"\n"
     )
     result = external.run_review(
         "p", target=_direct_target(external), output_dir=tmp_path,
@@ -1705,12 +1705,12 @@ def test_print_summary_surfaces_contamination(external, capsys):
     external.print_summary({
         "reviewer": "codex", "ok": True, "output": "판정: 통과",
         "verdict": {"has_must_fix": False, "has_pass": True},
-        "contamination": ("옛 리뷰/위임 raw 파일명 인용: external_review_codex_1.txt",),
+        "contamination": ("옛 리뷰/위임 raw 파일명 인용: additional_reviewer_codex_1.txt",),
         "file": None, "failed": False, "started": True,
         "any_must_fix": False, "all_pass": True,
     })
     out = capsys.readouterr().out
-    assert "오염 의심" in out and "external_review_codex_1.txt" in out
+    assert "오염 의심" in out and "additional_reviewer_codex_1.txt" in out
 
 
 def test_print_summary_unchanged_without_contamination(external, capsys):

@@ -1,11 +1,11 @@
-"""external_review 시크릿 denylist 제외 보고 — 게이트 false-confidence 차단 (T-0428).
+"""additional_reviewer 시크릿 denylist 제외 보고 — 게이트 false-confidence 차단 (T-0428).
 
 시크릿 denylist 오탐이 경로를 diff 에서 제외하고도 판정에 전혀 안 남으면, 지정분이 조용히 빠진 채
 '통과'가 나 게이트가 실제보다 넓게 검증한 것처럼 보인다(false-confidence). 발단(2026-07-21·T-0424
 게이트): 신규 가드 테스트 `tests/test_adapter_token_substitution.py` 가 패턴 `*token*` 에 걸려 통째로
 제외됐고 그 상태로 '종합 판정: 통과' 가 나왔다.
 
-denylist 패턴 자체는 불변(오탐 허용·누락 금지·external_review.py:165) — 이 파일은 *판정 보고*만
+denylist 패턴 자체는 불변(오탐 허용·누락 금지·additional_reviewer.py:165) — 이 파일은 *판정 보고*만
 고쳤음을 박제한다: (A) 실 filter 가 발단 파일을 제외함(real matching), (B) --paths 명시 지정분 제외
 → 차단(exit 1 + 왜), (C) --ticket/기본 암묵 수집분 제외 → 비차단·판정 라인 병기, (D) 제외 0건 →
 종전 완전 동일.
@@ -39,8 +39,8 @@ _REVIEWER_TARGET = {
 }
 
 
-def _load(name: str = "external_review"):
-    """도구 모듈을 (패키지 아님) importlib 로 경로 로드 — 형제 external_review 테스트 동일 규약."""
+def _load(name: str = "additional_reviewer"):
+    """도구 모듈을 (패키지 아님) importlib 로 경로 로드 — 형제 additional_reviewer 테스트 동일 규약."""
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -49,7 +49,7 @@ def _load(name: str = "external_review"):
 
 @pytest.fixture
 def external():
-    return _load("external_review")
+    return _load("additional_reviewer")
 
 
 @pytest.fixture(autouse=True)
@@ -199,9 +199,9 @@ def _run_main(external, monkeypatch, *, argv, excluded, diff=None,
 
     monkeypatch.setattr(external, "run_review", _fake_run_review)
     # 이 파일은 denylist 판정 보고 축을 소유한다. 산출 회수(T-0696)는 별도 축이라
-    # tests/test_external_review_ticket_harvest.py 가 소유하고 여기서는 격리한다.
+    # tests/test_additional_reviewer_ticket_harvest.py 가 소유하고 여기서는 격리한다.
     monkeypatch.setattr(
-        external, "_harvest_external_review_section", lambda *_a, **_k: None,
+        external, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
     )
     return external.main(argv), called["reviewer"]
 

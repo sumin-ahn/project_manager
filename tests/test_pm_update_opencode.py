@@ -355,10 +355,10 @@ def test_opencode_manifest_includes_engine_tools(pm_update):
         assert entry in entries, f"필수 엔진 항목 누락: {entry}"
 
 
-# ── maybe_prompt_external_review dest_root 기반 동작 ─────────────────────
+# ── maybe_prompt_additional_reviewer dest_root 기반 동작 ─────────────────────
 
-def test_maybe_prompt_external_review_uses_dest_local_conf(pm_update, tmp_path):
-    """maybe_prompt_external_review 가 dest_root 기준 local.conf 를 읽는다.
+def test_maybe_prompt_additional_reviewer_uses_dest_local_conf(pm_update, tmp_path):
+    """maybe_prompt_additional_reviewer 가 dest_root 기준 local.conf 를 읽는다.
 
     --target 모드에서 루트 local.conf 를 오염시키지 않음을 검증한다.
     dest_root 에 local.conf 가 없으면 (init 전) 아무 일도 일어나지 않아야 한다.
@@ -369,7 +369,7 @@ def test_maybe_prompt_external_review_uses_dest_local_conf(pm_update, tmp_path):
     root_local_conf = pm_update.REPO / ".project_manager" / "local.conf"
     existed_before = root_local_conf.exists()
 
-    pm_update.maybe_prompt_external_review(dest)
+    pm_update.maybe_prompt_additional_reviewer(dest)
 
     # 루트 local.conf 존재 여부가 변해서는 안 된다
     assert root_local_conf.exists() == existed_before, (
@@ -380,7 +380,7 @@ def test_maybe_prompt_external_review_uses_dest_local_conf(pm_update, tmp_path):
     assert not dest_local_conf.exists()
 
 
-def test_maybe_prompt_external_review_skips_when_already_set(pm_update, tmp_path):
+def test_maybe_prompt_additional_reviewer_skips_when_already_set(pm_update, tmp_path):
     """dest_root 의 local.conf 에 additional_reviewer.enabled 가 있으면 아무것도 하지 않는다."""
     dest = tmp_path / "dest_instance"
     local_conf = dest / ".project_manager" / "local.conf"
@@ -388,13 +388,13 @@ def test_maybe_prompt_external_review_skips_when_already_set(pm_update, tmp_path
     local_conf.write_text("additional_reviewer.enabled=false\n", encoding="utf-8")
 
     mtime_before = local_conf.stat().st_mtime
-    pm_update.maybe_prompt_external_review(dest)
+    pm_update.maybe_prompt_additional_reviewer(dest)
     mtime_after = local_conf.stat().st_mtime
 
     assert mtime_before == mtime_after, "이미 설정된 경우 local.conf 를 수정해선 안 된다."
 
 
-def test_maybe_prompt_external_review_skips_non_tty(pm_update, tmp_path, monkeypatch):
+def test_maybe_prompt_additional_reviewer_skips_non_tty(pm_update, tmp_path, monkeypatch):
     """비대화형(stdin isatty=False)이면 prompt 없이 넘어간다 — local.conf 변경 없음."""
     dest = tmp_path / "dest_instance"
     local_conf = dest / ".project_manager" / "local.conf"
@@ -405,7 +405,7 @@ def test_maybe_prompt_external_review_skips_non_tty(pm_update, tmp_path, monkeyp
     monkeypatch.setattr("sys.stdin", type("FakeStdin", (), {"isatty": lambda self: False})())
 
     mtime_before = local_conf.stat().st_mtime
-    pm_update.maybe_prompt_external_review(dest)
+    pm_update.maybe_prompt_additional_reviewer(dest)
     mtime_after = local_conf.stat().st_mtime
 
     assert mtime_before == mtime_after, "비대화형에서 local.conf 를 수정해선 안 된다."
@@ -434,7 +434,7 @@ def test_maybe_prompt_skips_when_pm_noninteractive_truthy(
     )
 
     mtime_before = local_conf.stat().st_mtime
-    pm_update.maybe_prompt_external_review(dest)
+    pm_update.maybe_prompt_additional_reviewer(dest)
     mtime_after = local_conf.stat().st_mtime
 
     assert mtime_before == mtime_after, "PM_NONINTERACTIVE 면 local.conf 미수정."
@@ -451,7 +451,7 @@ def test_maybe_prompt_falsy_env_preserves_isatty_path(pm_update, tmp_path, monke
     monkeypatch.setenv("PM_NONINTERACTIVE", "0")
     monkeypatch.setattr("builtins.input", lambda prompt="": "y")
 
-    pm_update.maybe_prompt_external_review(dest)
+    pm_update.maybe_prompt_additional_reviewer(dest)
 
     assert "additional_reviewer.enabled=true" in local_conf.read_text(encoding="utf-8")
 

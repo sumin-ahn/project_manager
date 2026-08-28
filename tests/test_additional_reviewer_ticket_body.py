@@ -1,4 +1,4 @@
-"""external_review 게이트 티켓 본문 입력 회귀 (T-0695 · 라운드 사이드카 [[ADR-0090]]).
+"""additional_reviewer 게이트 티켓 본문 입력 회귀 (T-0695 · 라운드 사이드카 [[ADR-0090]]).
 
 리뷰 입력은 **명세 파일 전문 + 역할별 마지막 산출 라운드 파일**이다. 입력 바이트 상한은 없다
 (파일 선별이 대체 · 명세 과대는 lint 문제) — 이 파일은 상한 축을 소유하지 않는다.
@@ -13,7 +13,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
-TOOL = TOOLS / "external_review.py"
+TOOL = TOOLS / "additional_reviewer.py"
 DIFF = "diff --git a/x.py b/x.py\n@@ -1 +1 @@\n-old\n+new\n"
 
 
@@ -27,7 +27,7 @@ _REVIEWER_TARGET = {
 
 
 def _load():
-    spec = importlib.util.spec_from_file_location("external_review_ticket_body", TOOL)
+    spec = importlib.util.spec_from_file_location("additional_reviewer_ticket_body", TOOL)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -99,7 +99,7 @@ def _wire(external, monkeypatch, tmp_path, ticket: Path | None = None, *, conf=N
 def _stub_real_send(external, monkeypatch, tmp_path, prompts: list[str]):
     # 실 송신 경로는 서킷브레이커 진입 검사를 지난다 — 그 폭의 기준점(묶음 장부 통합 브랜치 ·
     # 그 merge-base)은 이 tmp REPO 에 없으므로 해소된 값을 그 자리에 넣는다. 기준점 해소
-    # 자체의 거부는 전용 파일(`test_external_review_diff_cap.py`)이 실 git 으로 값 단언한다.
+    # 자체의 거부는 전용 파일(`test_additional_reviewer_diff_cap.py`)이 실 git 으로 값 단언한다.
     monkeypatch.setattr(
         external, "cluster_integration_tip", lambda *a, **k: ("task/main", None))
     monkeypatch.setattr(
@@ -128,9 +128,9 @@ def _stub_real_send(external, monkeypatch, tmp_path, prompts: list[str]):
     monkeypatch.setattr(external, "create_reviewer_workspace", _workspace)
     monkeypatch.setattr(external, "run_review", _run_review)
     # 이 파일은 프롬프트 입력 축(T-0695)을 소유한다. 산출 회수(T-0696)는 실 board 왕복이 필요한
-    # 별도 축이라 tests/test_external_review_ticket_harvest.py가 소유하고 여기서는 격리한다.
+    # 별도 축이라 tests/test_additional_reviewer_ticket_harvest.py가 소유하고 여기서는 격리한다.
     monkeypatch.setattr(
-        external, "_harvest_external_review_section", lambda *_a, **_k: None,
+        external, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
     )
 
 

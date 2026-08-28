@@ -1527,7 +1527,7 @@ $branch
                         echo "[pm 라이브 게이트] 보호 브랜치 '$branch' push 거부 — 미해소 must-fix 잔여." >&2
                         echo "  PM_SKIP_LIVE_GATE 는 라이브 축 우회이고 이 차단은 리뷰 잔여 축이다 — 우회 대상이 아니다." >&2
                         echo "  현재 티켓 fix의 기계 확인 증거로 게이트마다 처분을 선언한 뒤 다시 기록하라:" >&2
-                        echo "    external_review.py --resolve-gate <게이트> --pm-verified" >&2
+                        echo "    additional_reviewer.py --resolve-gate <게이트> --pm-verified" >&2
                         echo "    board.py livegate record" >&2
                         exit 1
                         ;;

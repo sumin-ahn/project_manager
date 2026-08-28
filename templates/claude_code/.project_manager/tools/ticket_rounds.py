@@ -193,9 +193,14 @@ ROLE_LABELS: dict[str, str] = {
     "developer": "구현 보충",
     "code-reviewer": "리뷰",
     "researcher": "조사",
-    "external-reviewer": "추가 리뷰",
+    "additional-reviewer": "추가 리뷰",
 }
 ROLES: tuple[str, ...] = tuple(ROLE_LABELS)
+# 신규 writer는 `ROLES`만 받는다. 이 alias는 개칭 전 라운드 파일을
+# canonical role로 접어 읽는 호환 표면이며 구 이름 파일을 생성하지 않는다.
+READ_ONLY_ROLE_ALIASES: dict[str, str] = {
+    "external-reviewer": "additional-reviewer",
+}
 
 ROUND_FILE_SUFFIX = ".md"
 # 2자리 zero-pad. 100 이상은 자릿수만 늘고 숫자 정렬(파서가 int 로 뗀다)은 그대로다.
@@ -373,11 +378,14 @@ def parse_round_filename(name: str) -> tuple[int, str] | None:
     matched = _ROUND_FILENAME_RE.match(text[: -len(ROUND_FILE_SUFFIX)])
     if matched is None:
         return None
-    role = matched.group("role")
+    raw_role = matched.group("role")
+    role = READ_ONLY_ROLE_ALIASES.get(raw_role, raw_role)
     if role not in ROLES:
         return None
     ordinal = int(matched.group("ordinal"))
-    if ordinal < 1 or f"{_round_stem(ordinal, role)}{ROUND_FILE_SUFFIX}" != text:
+    if ordinal < 1 or (
+        f"{ordinal:0{ROUND_ORDINAL_WIDTH}d}-{raw_role}{ROUND_FILE_SUFFIX}" != text
+    ):
         return None
     return ordinal, role
 

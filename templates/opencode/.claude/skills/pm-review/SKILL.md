@@ -1,12 +1,12 @@
 ---
 name: pm-review
-description: "추가 리뷰어(additional reviewer) 교차검증 게이트 실행 규율 명령어化 — worktree cwd 앵커 + stage 선행(git add) + --paths/--ticket 경로 핀. backbone = external_review.py(opt-in). 앵커는 명시 selector 기반 diff_root 해소(등록 슬롯 lease 장부 자동 파생)·소유 PM 홈 해소 불가 무인자 실행은 rc=1 차단. 외부 전송은 load-bearing 게이트에만(사소 docs 는 self/내부 리뷰). Triggers: '추가 리뷰어', 'codex 게이트', '외부 교차검증', 'external review 돌려', 'pm-review'."
+description: "추가 리뷰어(additional reviewer) 교차검증 게이트 실행 규율 명령어化 — worktree cwd 앵커 + stage 선행(git add) + --paths/--ticket 경로 핀. backbone = additional_reviewer.py(opt-in). 앵커는 명시 selector 기반 diff_root 해소(등록 슬롯 lease 장부 자동 파생)·소유 PM 홈 해소 불가 무인자 실행은 rc=1 차단. 외부 전송은 load-bearing 게이트에만(사소 docs 는 self/내부 리뷰). Triggers: '추가 리뷰어', 'codex 게이트', '추가 교차검증', 'additional review 돌려', 'pm-review'."
 audience: pm-internal
 ---
 
 # /pm-review — 추가 리뷰어 교차검증 게이트
 
-backbone은 `.project_manager/tools/external_review.py`(opt-in)이며, PM이 추가 리뷰어 게이트를 실행할 때 사용한다. 역할 이름은 **추가 리뷰어(additional reviewer)** 이고 설정 키도 `additional_reviewer.enabled`·`additional_reviewer.*` 로 통일돼 있다. `external_review*` 는 모듈 파일 이름·raw 파일 접두처럼 이미 기록된 산출물에 박힌 기계 식별자와 외부 전송·격리·과금 축의 이름으로만 남는다. 개칭 전 구키를 쓰는 `local.conf` 는 실행 시 안내 1줄을 받는다(마이그레이션 절차는 README).
+backbone은 `.project_manager/tools/additional_reviewer.py`(opt-in)이며, PM이 추가 리뷰어 게이트를 실행할 때 사용한다. 역할 이름은 **추가 리뷰어(additional reviewer)** 이고 설정 키도 `additional_reviewer.enabled`·`additional_reviewer.*` 로 통일돼 있다. `additional_reviewer*` 는 모듈 파일 이름·raw 파일 접두처럼 이미 기록된 산출물에 박힌 기계 식별자와 외부 전송·격리·과금 축의 이름으로만 남는다. 개칭 전 구키를 쓰는 `local.conf` 는 실행 시 안내 1줄을 받는다(마이그레이션 절차는 README).
 
 수신자 프로필은 `local.conf` 의 원자적 튜플 하나다.
 
@@ -36,7 +36,7 @@ opt-in 질문은 **첫 1회**뿐이다. `additional_reviewer.enabled=true` 는 �
 
 ### 1. worktree cwd 앵커
 
-실 코드가 변경된 worktree cwd의 canonical `external_review.py`로 실행한다(엔진 갱신 동기 전 PM 홈 import 사본은 stale 일 수 있다). 앵커 해소는 명시 selector 기반이다 — `--ticket`/`--paths` 를 주면 엔진이 lease 장부에서 diff worktree 를 자동 파생하므로 PM 홈 cwd 에서도 올바른 슬롯으로 해소된다(provenance 첫 줄의 `diff_root` 로 확인).
+실 코드가 변경된 worktree cwd의 canonical `additional_reviewer.py`로 실행한다(엔진 갱신 동기 전 PM 홈 import 사본은 stale 일 수 있다). 앵커 해소는 명시 selector 기반이다 — `--ticket`/`--paths` 를 주면 엔진이 lease 장부에서 diff worktree 를 자동 파생하므로 PM 홈 cwd 에서도 올바른 슬롯으로 해소된다(provenance 첫 줄의 `diff_root` 로 확인).
 
 ```bash
 # canonical 코드 worktree 에서 실행 (PM 홈 import 사본 금지).
@@ -47,7 +47,7 @@ cd <worktree-canonical-경로>     # 예 work/project_manager_1
 
 ### 2. stage 선행
 
-external_review는 `git diff` 기반이라 untracked(신규) 파일을 보지 못한다. 검토 전에 스테이징한다.
+additional_reviewer는 `git diff` 기반이라 untracked(신규) 파일을 보지 못한다. 검토 전에 스테이징한다.
 
 ```bash
 git add <신규/변경 경로>     # untracked 파일이 diff 에 포함되게
@@ -67,10 +67,10 @@ ticket의 `touches`로 정하려면 `--ticket`, 직접 지정하려면 `--paths`
 
 ```bash
 # ticket touches 로 경로 결정 (권장 — DoD/touches 와 정합·게이트는 이 티켓으로 자동 유도)
-python3 .project_manager/tools/external_review.py --ticket T-NNNN
+python3 .project_manager/tools/additional_reviewer.py --ticket T-NNNN
 
 # 또는 경로/base 직접 지정 (실 전송 회계 선택: 여기서는 --gate)
-python3 .project_manager/tools/external_review.py --base main --paths src/ tests/ .project_manager/tools/ --gate T-NNNN
+python3 .project_manager/tools/additional_reviewer.py --base main --paths src/ tests/ .project_manager/tools/ --gate T-NNNN
 ```
 
 - `--gate T-NNNN`: 게이트 표식 겸 라운드 장부 키. `--ticket` 실행에서는 자동 유도되므로 다른 이름을 쓸 때만 명시한다.

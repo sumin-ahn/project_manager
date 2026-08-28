@@ -3,8 +3,8 @@
 `board.py` 가 상태를 추가하면(`discarded` — 처분 종결·T-0781) 밖에서 그 집합을 다시 적은 자리는
 조용히 옛 집합에 머문다. crash 가 없어 아무도 못 보고, 그 상태의 티켓만 표면에서 사라진다:
 
-  - `external_review._find_ticket_file` — 그 상태의 리뷰 대상을 "board 에 없음"으로 fail-loud
-  - `external_review._owns_real_board` — 그 상태만 가진 PM 홈을 빈 scaffold 로 오판
+  - `additional_reviewer._find_ticket_file` — 그 상태의 리뷰 대상을 "board 에 없음"으로 fail-loud
+  - `additional_reviewer._owns_real_board` — 그 상태만 가진 PM 홈을 빈 scaffold 로 오판
   - `pm_log` 장부 census — 그 상태 티켓이 핸드오프 스냅샷 집계에서 누락
   - `pm_bootstrap` dump — `if status in counts` 가드가 그 상태 행을 버림
 
@@ -25,7 +25,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 
 # 이 티켓이 소유한 소비처 — board 밖에서 상태 집합을 읽는 자리. 나머지 하드코딩(`pm_import`·
 # `pm_update`·`ticket_finish`)은 각자 무변경 근거가 따로 있어 이 티켓 범위 밖이다.
-STATUS_DIRS_CONSUMERS: tuple[str, ...] = ("external_review", "pm_log", "pm_bootstrap")
+STATUS_DIRS_CONSUMERS: tuple[str, ...] = ("additional_reviewer", "pm_log", "pm_bootstrap")
 
 # 주입용 가짜 상태 — board 가 아직 모르는 이름이어야 "정의를 바꾸면 따라온다"를 증명한다.
 FAKE_STATUS = "quarantined"
@@ -46,7 +46,7 @@ def board():
 
 @pytest.fixture
 def external(board):
-    mod = _load("external_review")
+    mod = _load("additional_reviewer")
     return mod
 
 
@@ -84,9 +84,9 @@ def test_status_dirs_seam_equals_board_value(board, tool):
     assert mod._status_dirs() != ("open", "claimed", "blocked", "done")
 
 
-# ── (2) external_review — 경로 해소·실-board 판정이 board 집합을 따른다 ──────
+# ── (2) additional_reviewer — 경로 해소·실-board 판정이 board 집합을 따른다 ──────
 
-def test_external_review_resolves_ticket_in_every_status_dir(external, board, tmp_path):
+def test_additional_reviewer_resolves_ticket_in_every_status_dir(external, board, tmp_path):
     """모든 `STATUS_DIRS` 상태의 티켓이 리뷰 대상 경로로 해소된다 (사본이면 `discarded` 에서 red)."""
     tickets = tmp_path / ".project_manager" / "board" / "tickets"
     for index, status in enumerate(board.STATUS_DIRS):
@@ -97,10 +97,10 @@ def test_external_review_resolves_ticket_in_every_status_dir(external, board, tm
         assert resolved == tickets / status / f"T-90{index:02d}.md"
 
 
-def test_external_review_owns_real_board_matches_board_for_every_status(
+def test_additional_reviewer_owns_real_board_matches_board_for_every_status(
     external, board, tmp_path,
 ):
-    """상태 하나만 가진 board 를 external_review 와 board 가 **같게** 판정한다.
+    """상태 하나만 가진 board 를 additional_reviewer 와 board 가 **같게** 판정한다.
 
     `discarded` 만 가진 PM 홈은 board 기준 실 board 다 — 옛 사본은 이를 빈 scaffold(False)로
     오판했다(가드가 엉뚱한 앵커를 통과시키는 축).
@@ -116,7 +116,7 @@ def test_external_review_owns_real_board_matches_board_for_every_status(
     assert external._owns_real_board(empty) is False
 
 
-def test_external_review_follows_injected_status_without_code_change(
+def test_additional_reviewer_follows_injected_status_without_code_change(
     external, board, tmp_path, monkeypatch,
 ):
     """board 정의에 상태를 주입하면 경로 해소·실-board 판정이 **손대지 않고** 따라온다."""

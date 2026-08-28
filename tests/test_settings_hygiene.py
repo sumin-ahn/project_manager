@@ -203,7 +203,7 @@ def _execution_command_budget_seconds(card_text: str) -> list[tuple[str, int]]:
         # 추가 리뷰어 대상은 `additional_reviewer.harness`+`.model` 로 해소된다 — 엔진 기본
         # 커맨드가 없으므로 어느 하네스가 설정돼도 담기는 값, 곧 선언 프로필 중 가장 긴 벽시계를
         # 최악 예산으로 본다.
-        "external_review.py": int(max(
+        "additional_reviewer.py": int(max(
             profile.wall_timeout for profile in relay.HARNESS_PROFILES.values())),
     }
     for script, budget in command_budgets.items():
@@ -291,13 +291,13 @@ def test_new_markdown_with_engine_command_is_automatically_classified(tmp_path):
     new_doc = tmp_path / ".claude" / "skills" / "future" / "SKILL.md"
     new_doc.parent.mkdir(parents=True)
     new_doc.write_text(
-        "```bash\npython3 .project_manager/tools/external_review.py --ticket T-9999\n```\n",
+        "```bash\npython3 .project_manager/tools/additional_reviewer.py --ticket T-9999\n```\n",
         encoding="utf-8",
     )
     with pytest.warns(RepoFilesFallbackWarning, match="filesystem 전수 순회"):
         targets = _long_engine_command_markdown(tmp_path)
     assert list(targets) == [new_doc]
-    assert targets[new_doc][0][0] == "external_review.py"
+    assert targets[new_doc][0][0] == "additional_reviewer.py"
 
 
 def test_real_command_card_without_timeout_contract_is_red(tmp_path):

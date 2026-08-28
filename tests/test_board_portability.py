@@ -108,7 +108,7 @@ def test_load_ticket_passes_utf8_encoding(board, tmp_path, monkeypatch):
     assert captured.get("encoding") == "utf-8"
 
 
-# ── C6: prompt_external_review_optin — 비대화/EOF stdin 에서 아무것도 안 씀 ──
+# ── C6: prompt_additional_reviewer_optin — 비대화/EOF stdin 에서 아무것도 안 씀 ──
 
 def _isolated_local_conf(board, monkeypatch, tmp_path) -> Path:
     """LOCAL_CONF 를 tmp 로 격리하고 빈 상태(미결정)로 둔다."""
@@ -122,7 +122,7 @@ def test_prompt_optin_writes_nothing_when_non_tty(board, monkeypatch, tmp_path):
     conf = _isolated_local_conf(board, monkeypatch, tmp_path)
     monkeypatch.setattr(board.sys.stdin, "isatty", lambda: False)
 
-    board.prompt_external_review_optin()
+    board.prompt_additional_reviewer_optin()
 
     assert not conf.exists() or "additional_reviewer.enabled" not in conf.read_text(encoding="utf-8")
 
@@ -141,7 +141,7 @@ def test_prompt_optin_writes_nothing_on_eof_under_tty(board, monkeypatch, tmp_pa
 
     monkeypatch.setattr("builtins.input", _raise_eof)
 
-    board.prompt_external_review_optin()
+    board.prompt_additional_reviewer_optin()
 
     assert not conf.exists() or "additional_reviewer.enabled" not in conf.read_text(encoding="utf-8")
 
@@ -153,7 +153,7 @@ def test_prompt_optin_does_not_clobber_existing_true(board, monkeypatch, tmp_pat
     monkeypatch.setattr(board.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": (_ for _ in ()).throw(EOFError))
 
-    board.prompt_external_review_optin()
+    board.prompt_additional_reviewer_optin()
 
     text = conf.read_text(encoding="utf-8")
     assert "additional_reviewer.enabled=true" in text
@@ -179,7 +179,7 @@ def test_prompt_optin_skips_when_pm_noninteractive_truthy(
         lambda prompt="": pytest.fail("PM_NONINTERACTIVE 인데 input() 호출됨 — skip 위반."),
     )
 
-    board.prompt_external_review_optin()
+    board.prompt_additional_reviewer_optin()
 
     assert not conf.exists() or "additional_reviewer.enabled" not in conf.read_text(
         encoding="utf-8"
@@ -199,7 +199,7 @@ def test_prompt_optin_falsy_pm_noninteractive_preserves_isatty_path(
     monkeypatch.setenv("PM_NONINTERACTIVE", val)
     monkeypatch.setattr("builtins.input", lambda prompt="": "y")
 
-    board.prompt_external_review_optin()
+    board.prompt_additional_reviewer_optin()
 
     assert "additional_reviewer.enabled=true" in conf.read_text(encoding="utf-8")
 
@@ -210,7 +210,7 @@ def test_prompt_optin_no_env_preserves_non_tty_skip(board, monkeypatch, tmp_path
     monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
     monkeypatch.setattr(board.sys.stdin, "isatty", lambda: False)
 
-    board.prompt_external_review_optin()
+    board.prompt_additional_reviewer_optin()
 
     assert not conf.exists() or "additional_reviewer.enabled" not in conf.read_text(
         encoding="utf-8"
@@ -294,7 +294,7 @@ def _init_isolated(board, monkeypatch, tmp_path):
     monkeypatch.setattr(board, "PM_STATE_FILE", tmp_path / "pm_state.md")
     monkeypatch.setattr(board, "PM_STATE_TEMPLATE", tmp_path / "missing-template.md")
     monkeypatch.setattr(board, "install_pre_push_hook", lambda: False)
-    monkeypatch.setattr(board, "prompt_external_review_optin", lambda: None)
+    monkeypatch.setattr(board, "prompt_additional_reviewer_optin", lambda: None)
     return conf_path
 
 
@@ -464,12 +464,12 @@ _NO_TRAILING_NL_CONF = (
 def test_init_rerun_no_trailing_newline_optin_append_preserves_last_key(
     board, monkeypatch, tmp_path
 ):
-    """codex must-fix: 병합 경로가 개행 없는 local.conf 를 남기면 뒤이은 external_review
+    """codex must-fix: 병합 경로가 개행 없는 local.conf 를 남기면 뒤이은 additional_reviewer
     opt-in append 가 마지막 키에 그대로 붙어 기존 키를 변질시킨다. cmd_init 이 write 전
     trailing newline 을 보장해 (a) 마지막 키(ctx_window_tokens=5000)가 온전하고 뒤에 `#` 이
     붙지 않으며 (b) opt-in 블록이 *새 줄*에서 시작함을 검증한다.
 
-    `_init_isolated`(opt-in stub)를 안 쓰고 *실제* prompt_external_review_optin append 를
+    `_init_isolated`(opt-in stub)를 안 쓰고 *실제* prompt_additional_reviewer_optin append 를
     태운다 — 대화형 'n' 경로(additional_reviewer.enabled=false 를 append)를 결정적으로 재현."""
     conf_path = tmp_path / "local.conf"
     monkeypatch.setattr(board, "LOCAL_CONF", conf_path)

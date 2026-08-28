@@ -42,7 +42,7 @@ def delegate():
 
 @pytest.fixture
 def external():
-    return _load("external_review")
+    return _load("additional_reviewer")
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -104,7 +104,7 @@ def _engine_family(tmp_path: Path) -> tuple[Path, Path]:
         tools = repo / ".project_manager" / "tools"
         tools.mkdir(parents=True)
         (tools / "pm_delegate.py").write_text("# engine copy\n", encoding="utf-8")
-        (tools / "external_review.py").write_text(
+        (tools / "additional_reviewer.py").write_text(
             "# engine copy\n", encoding="utf-8"
         )
     ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
@@ -650,7 +650,7 @@ def test_delegate_registration_is_structurally_before_runner(delegate):
     assert registration < execution < completion
 
 
-def test_external_review_kill_leaves_discoverable_unfinished_record_before_runner(
+def test_additional_reviewer_kill_leaves_discoverable_unfinished_record_before_runner(
         external, monkeypatch, tmp_path):
     repo = _repo(tmp_path)
     monkeypatch.setattr(external, "REPO", repo)
@@ -659,7 +659,7 @@ def test_external_review_kill_leaves_discoverable_unfinished_record_before_runne
     def killed_runner(*_args, **_kwargs):
         rows = _ledger(ledger_path)["records"]
         assert len(rows) == 1
-        assert rows[0]["surface"] == "external-review"
+        assert rows[0]["surface"] == "additional-reviewer"
         assert "finished_at" not in rows[0]
         raise SimulatedHarnessKill()
 
@@ -824,11 +824,11 @@ def _stub_reviewer(external, monkeypatch) -> None:
 
     monkeypatch.setattr(external, "_run_reviewer_ex", _fake_run_reviewer_ex)
     # 이 파일의 축은 raw·라운드 장부다. 게이트가 ticket 형상이면 엔진이 리뷰 뒤 그 티켓의
-    # external-reviewer 절 회수를 시도하는데, 여기 픽스처의 `T-0001.md` 는 장부 축용 빈 파일이라
-    # board 의 티켓 해소를 통과하지 못한다 — 회수 축은 `test_external_review_ticket_harvest.py`
+    # additional-reviewer 절 회수를 시도하는데, 여기 픽스처의 `T-0001.md` 는 장부 축용 빈 파일이라
+    # board 의 티켓 해소를 통과하지 못한다 — 회수 축은 `test_additional_reviewer_ticket_harvest.py`
     # 가 소유하므로 여기서는 격리한다.
     monkeypatch.setattr(
-        external, "_harvest_external_review_section", lambda *args, **kwargs: None,
+        external, "_harvest_additional_reviewer_section", lambda *args, **kwargs: None,
     )
 
 
@@ -878,7 +878,7 @@ def test_review_run_records_raw_in_pm_home_and_unified_query_shows_it(
     home_ledger = pm_home / ".project_manager" / ".local" / "raw_outputs.json"
     rows = _ledger(home_ledger)["records"]
     assert len(rows) == 1
-    assert rows[0]["surface"] == "external-review"
+    assert rows[0]["surface"] == "additional-reviewer"
     assert rows[0]["rc"] == 0
     raw_path = Path(rows[0]["raw_path"])
     assert raw_path.parent == pm_home / ".project_manager" / ".local" / "review"
@@ -892,7 +892,7 @@ def test_review_run_records_raw_in_pm_home_and_unified_query_shows_it(
     query = capsys.readouterr().out
     assert query.splitlines()[0] == f"조회 장부: {home_ledger.resolve()}"
     assert "최근 raw 1건" in query
-    assert "external-review" in query
+    assert "additional-reviewer" in query
     assert str(raw_path.resolve()) in query
 
 
@@ -924,7 +924,7 @@ def test_legacy_diff_root_raw_anchor_writes_to_the_slot_ledger(
         worktree / ".project_manager" / ".local" / "raw_outputs.json"
     )["records"]
     assert len(slot_rows) == 1
-    assert slot_rows[0]["surface"] == "external-review"
+    assert slot_rows[0]["surface"] == "additional-reviewer"
 
 
 def test_unresolvable_pm_home_keeps_loud_diff_root_fallback(
@@ -946,7 +946,7 @@ def test_unresolvable_pm_home_keeps_loud_diff_root_fallback(
         worktree / ".project_manager" / ".local" / "raw_outputs.json"
     )["records"]
     assert len(slot_rows) == 1
-    assert slot_rows[0]["surface"] == "external-review"
+    assert slot_rows[0]["surface"] == "additional-reviewer"
     assert not (
         pm_home / ".project_manager" / ".local" / "raw_outputs.json"
     ).exists()
@@ -969,7 +969,7 @@ def _second_review_slot(pm_home: Path) -> Path:
     (worktree / "seed.txt").write_text("changed elsewhere\n", encoding="utf-8")
     tools = worktree / ".project_manager" / "tools"
     tools.mkdir(parents=True)
-    (tools / "external_review.py").write_text("# engine copy\n", encoding="utf-8")
+    (tools / "additional_reviewer.py").write_text("# engine copy\n", encoding="utf-8")
     ledger = pm_home / ".project_manager" / ".local" / "worktree-leases.json"
     data = _ledger(ledger)
     data["leases"].append({"slot": "work/project_2", "state": "leased"})
@@ -1263,7 +1263,7 @@ def test_record_aged_past_old_seven_day_policy_survives_under_raised_retention(
 
 
 def test_only_pre_spawn_abort_deletes_raw_txt_files(relay, delegate, external):
-    """raw .txt 삭제 코드는 스폰 전 0바이트 정리(`external_review._abort_pre_spawn_raw`)
+    """raw .txt 삭제 코드는 스폰 전 0바이트 정리(`additional_reviewer._abort_pre_spawn_raw`)
     하나뿐이어야 한다(T-0774 DoD: grep 0). 고아 목록화는 조회만 하고 지우지 않는다."""
     hits = []
     for module in (relay, delegate, external):
@@ -1272,7 +1272,7 @@ def test_only_pre_spawn_abort_deletes_raw_txt_files(relay, delegate, external):
             if _RAW_TXT_DELETE_RE.search(line):
                 hits.append(f"{Path(module.__file__).name}:{lineno}: {line.strip()}")
     assert len(hits) == 1, f"raw txt 삭제 코드가 하나가 아님: {hits}"
-    assert hits[0].startswith("external_review.py:"), hits
+    assert hits[0].startswith("additional_reviewer.py:"), hits
 
 
 def _engine_named_raw(base_dir: Path, name: str, size: int = 8) -> Path:
@@ -1302,7 +1302,7 @@ def test_orphan_scan_lists_only_unreferenced_engine_named_files(relay, tmp_path)
     pm_authored_txt = _engine_named_raw(base_dir, "T-0001-dev-prompt.txt", size=999)
     pm_authored_md = _engine_named_raw(base_dir, "T-0001-dev-prompt.md", size=999)
     review_orphan = _engine_named_raw(
-        tmp_path / "review", "external_review_codex_20260101_1_ddd.txt", size=13,
+        tmp_path / "review", "additional_reviewer_codex_20260101_1_ddd.txt", size=13,
     )
 
     summary = relay.scan_orphan_raw_files(

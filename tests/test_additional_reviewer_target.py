@@ -1,6 +1,6 @@
 """추가 리뷰어 원자 tuple 대상 — 해소·argv·wire·provenance·egress 계약 (T-0590).
 
-추가 리뷰어(external_review)가 자유 문자열 `reviewer_cmd` 대신 위임과 **동형의 원자 tuple**
+추가 리뷰어(additional_reviewer)가 자유 문자열 `reviewer_cmd` 대신 위임과 **동형의 원자 tuple**
 (`additional_reviewer.{harness,model,reasoning}`)로 대상을 정하고, 세 하네스 CLI 를 위임과 **같은
 공용 드라이버 계약**(pm_relay)으로 스폰하는 절의 회귀다. 이 파일이 닫는 축:
 
@@ -14,7 +14,7 @@
 6. provenance 동일성 — dry-run·stderr 첫 줄·raw 헤더·raw 장부가 **같은 문자열**을 말한다.
 7. Codex egress 게이트(network-off 안전 경계) — 증명 없는 실행은 스폰 전에 끊고 `--force` 로도
    못 넘으며, dry-run 은 부작용 0 으로 처방만 낸다.
-8. 모듈 경계 — pm_relay 는 cycle-free(다른 엔진 표면을 읽지 않는다)·external_review 는
+8. 모듈 경계 — pm_relay 는 cycle-free(다른 엔진 표면을 읽지 않는다)·additional_reviewer 는
    opencode 전달 사본만 pm_delegate에서 지연 재사용한다·위임 공개 wrapper 는 T-0592 행동을
    그대로 보존한다.
 9. 문구 규율 — 사람 역할 이름은 **추가 리뷰어**, 상한은 anti-loop PM 자율 ack, 기계 식별자·전송
@@ -54,7 +54,7 @@ def _load(name: str):
 
 @pytest.fixture
 def external():
-    return _load("external_review")
+    return _load("additional_reviewer")
 
 
 def _owner_only(path: Path) -> bool:
@@ -232,7 +232,7 @@ def _raw_ledger(repo: Path) -> list[dict]:
 
 def _raw_text(repo: Path) -> str:
     review_dir = repo / ".project_manager" / ".local" / "review"
-    files = sorted(review_dir.glob("external_review_*.txt"))
+    files = sorted(review_dir.glob("additional_reviewer_*.txt"))
     assert len(files) == 1, files
     return files[0].read_text(encoding="utf-8")
 
@@ -926,7 +926,7 @@ def test_structured_provenance_is_one_string_across_four_surfaces(
     row = _raw_ledger(repo)[0]
     assert row["local_conf"] == str(conf_path)          # 절대경로 앵커
     assert Path(row["local_conf"]).is_absolute()
-    assert row["surface"] == "external-review"
+    assert row["surface"] == "additional-reviewer"
     assert row["harness"] == harness                    # 정규화 실행 키
     assert row["model"] == model                        # 명시 모델(구조화는 `default` 불가)
     assert row["model"] != "default"
@@ -1038,7 +1038,7 @@ def test_legacy_only_conf_stops_the_run_instead_of_reading_a_stale_decision(
     아무 리뷰도 받지 못한 채 green 을 본다. 안내는 어느 키를 무엇으로 바꿀지 키 단위로 말한다."""
     conf = _conf()
     del conf[external.ADDITIONAL_REVIEWER_ENABLED_KEY]
-    conf["external_review_enabled"] = "false"
+    conf["additional_reviewer_enabled"] = "false"
     repo = _repo(tmp_path / "repo", conf)
     _wire_main(external, monkeypatch, repo, _FakeReviewer(stdout=_wire("codex")))
     legacy_error = external._load_local_conf().LegacyConfKeyError
@@ -1047,7 +1047,7 @@ def test_legacy_only_conf_stops_the_run_instead_of_reading_a_stale_decision(
         external.main(["--paths", "x.py"])
 
     message = str(caught.value)
-    assert "external_review_enabled" in message                       # 어느 키가 문제인지
+    assert "additional_reviewer_enabled" in message                       # 어느 키가 문제인지
     assert external.ADDITIONAL_REVIEWER_ENABLED_KEY in message        # 무엇으로 바꾸는지
     assert "모델 값은 자동으로 옮기지 않습니다" in message              # 수동 합의 요구
 
@@ -1310,7 +1310,7 @@ def test_pre_spawn_failure_after_the_raw_reservation_refunds_and_closes_the_reco
     assert records[0]["finished_at"] is not None                 # 미마감으로 두지 않는다
     assert records[0]["rc"] == 1                    # 리뷰를 하나도 못 받은 실행 = 실패 축
     raw = _raw_text(repo)
-    assert Path(records[0]["raw_path"]).name.startswith("external_review_")
+    assert Path(records[0]["raw_path"]).name.startswith("additional_reviewer_")
     assert "스폰 전 중단" in raw and "전송 0·과금 0" in raw
     assert failure.__name__ in raw                               # 무엇으로 끊겼는지까지
 
@@ -2001,7 +2001,7 @@ def test_permitted_run_still_creates_the_requested_output_dir(
     capsys.readouterr()
 
     assert outdir.is_dir()
-    assert len(list(outdir.glob("external_review_*.txt"))) == 1
+    assert len(list(outdir.glob("additional_reviewer_*.txt"))) == 1
     assert (outdir / "raw_outputs.json").is_file()
     # 격리 산출은 PM 홈 기본 위치를 쓰지 않는다(종전 격리 계약 보존).
     assert not (repo / ".project_manager" / ".local" / "review").exists()
@@ -2014,7 +2014,7 @@ def _resolved_prefix_rule(external, relay, *, windows: bool | None = None) -> st
     플랫폼을 박제하므로, 렌더 소유자(pm_relay)와 이 표면의 판정 seam(`_running_on_windows`)에서
     같은 값을 만들어 쓴다."""
     return relay.codex_egress_prefix_rule_text(
-        relay.EXTERNAL_REVIEW_ENTRYPOINT,
+        relay.ADDITIONAL_REVIEWER_ENTRYPOINT,
         windows=external._running_on_windows() if windows is None else windows,
     )
 
@@ -2062,7 +2062,7 @@ def test_dry_run_prefix_rule_follows_engine_interpreter_resolution(
 
     assert rc == 0 and reviewer.calls == []
     assert _resolved_prefix_rule(external, relay) in out          # 존재 + 내용 일치
-    assert relay.EXTERNAL_REVIEW_ENTRYPOINT in out
+    assert relay.ADDITIONAL_REVIEWER_ENTRYPOINT in out
     assert _resolved_prefix_rule(external, relay, windows=not windows) not in out
 
 
@@ -2089,8 +2089,8 @@ def test_attested_run_proceeds_and_labels_the_boundary_everywhere(
 
 
 @pytest.mark.parametrize("windows,expected_prefix", [
-    (False, "python3 .project_manager/tools/external_review.py"),
-    (True, "py .project_manager/tools/external_review.py"),
+    (False, "python3 .project_manager/tools/additional_reviewer.py"),
+    (True, "py .project_manager/tools/additional_reviewer.py"),
 ])
 def test_retry_command_starts_with_this_surface_entrypoint(
         external, relay, monkeypatch, windows, expected_prefix):
@@ -2098,7 +2098,7 @@ def test_retry_command_starts_with_this_surface_entrypoint(
     monkeypatch.setattr(external, "_running_on_windows", lambda: windows)
     message = relay.codex_egress_block_message(
         ["--gate", "T-0590", "--paths", "x.py"], "codex", "gpt-5.6-sol",
-        script=relay.EXTERNAL_REVIEW_ENTRYPOINT,
+        script=relay.ADDITIONAL_REVIEWER_ENTRYPOINT,
         gate_key=external.ADDITIONAL_REVIEWER_ENABLED_KEY,
         subject="추가 리뷰어 외부 전송",
         windows=windows,
@@ -2112,7 +2112,7 @@ def test_retry_command_starts_with_this_surface_entrypoint(
     assert "--gate" in retry and "T-0590" in retry
     assert "powershell.exe" not in retry
     assert relay.codex_egress_prefix_rule_text(
-        relay.EXTERNAL_REVIEW_ENTRYPOINT, windows=windows) in message
+        relay.ADDITIONAL_REVIEWER_ENTRYPOINT, windows=windows) in message
 
 
 # ══ ⑧ 모듈 경계 (cycle-free 공용 계약) ═════════════════════════════════════
@@ -2146,7 +2146,7 @@ def test_pm_relay_is_cycle_free(relay):
     """공용 계약 모듈은 다른 엔진 표면을 읽지 않는다 — 양쪽이 안전하게 deep-import 한다."""
     loads = {name for name in _sibling_loads("pm_relay.py") if (TOOLS / name).is_file()}
     assert "pm_delegate.py" not in loads
-    assert "external_review.py" not in loads
+    assert "additional_reviewer.py" not in loads
     # 형제는 부트스트랩 로더와 공용 파일락뿐이고, 그 둘은 아무것도 되로드하지 않는 leaf 다 —
     # 어느 표면이 relay 를 deep-import 해도 순환이 생기지 않는다.
     assert loads == {"file_lock.py", "repo_owned_files.py"}
@@ -2155,9 +2155,9 @@ def test_pm_relay_is_cycle_free(relay):
     assert Path(relay._load_file_lock().__file__).name == "file_lock.py"
 
 
-def test_external_review_reuses_only_pm_delegate_transport_seam(external):
+def test_additional_reviewer_reuses_only_pm_delegate_transport_seam(external):
     """리뷰 축은 opencode 전달 사본만 실행 시점에 지연 로드해 복제 구현을 두지 않는다."""
-    assert "pm_delegate.py" in _sibling_loads("external_review.py")
+    assert "pm_delegate.py" in _sibling_loads("additional_reviewer.py")
     assert not hasattr(external, "pm_delegate")
     assert Path(external._load_relay().__file__).name == "pm_relay.py"
     assert Path(external._load_delegate_transport().__file__).name == "pm_delegate.py"
@@ -2166,7 +2166,7 @@ def test_external_review_reuses_only_pm_delegate_transport_seam(external):
     assert "_cleanup_attempt_transport" in source
     assert "mkstemp" not in source
     # 위임 쪽 반대 방향 deep-import는 지연 함수 안에만 있어 import-time 순환은 생기지 않는다.
-    assert "external_review.py" in _sibling_loads("pm_delegate.py")
+    assert "additional_reviewer.py" in _sibling_loads("pm_delegate.py")
 
 
 def test_delegate_public_wrappers_still_speak_the_shared_contract():
@@ -2188,7 +2188,7 @@ def test_delegate_public_wrappers_still_speak_the_shared_contract():
         assert shared.extract_harness_reply(harness, wire) == _PASS_REPLY
     # egress 브리지는 위임 진입점을 유지한다(표면별 인자는 진입점·동의 키뿐).
     assert delegate._codex_egress_entrypoint()[1] == shared.DELEGATE_ENTRYPOINT
-    assert shared.DELEGATE_ENTRYPOINT != shared.EXTERNAL_REVIEW_ENTRYPOINT
+    assert shared.DELEGATE_ENTRYPOINT != shared.ADDITIONAL_REVIEWER_ENTRYPOINT
 
 
 def test_structured_opencode_reviewer_receives_shared_runtime_role_config(
@@ -2226,7 +2226,7 @@ def test_structured_opencode_reviewer_receives_shared_runtime_role_config(
 def test_delegate_and_reviewer_reject_the_same_misconfiguration_wording():
     """두 표면의 오설정 진단은 문구까지 같은 소유자에게서 나온다."""
     delegate = _load("pm_delegate")
-    external = _load("external_review")
+    external = _load("additional_reviewer")
     with pytest.raises(delegate.DelegateError) as delegate_error:
         delegate._validate_reasoning("opencode", "xhigh")
     with pytest.raises(external.ReviewerTargetError) as reviewer_error:
@@ -2242,7 +2242,7 @@ def test_delegate_and_reviewer_reject_the_same_misconfiguration_wording():
 # 실행 세 도구 + 채택자 온보딩 표면(board.py·pm_update.py). 온보딩은 T-0590 시점엔 병렬 작업의
 # 소유라 빠져 있었고, 게이트 키 개칭(T-0597)으로 그쪽이 수렴하면서 같은 규율로 확장됐다.
 _OWNED_TOOLS = (
-    "external_review.py", "pm_delegate.py", "pm_relay.py", "board.py", "pm_update.py",
+    "additional_reviewer.py", "pm_delegate.py", "pm_relay.py", "board.py", "pm_update.py",
 )
 
 
@@ -2254,19 +2254,16 @@ def test_owned_tools_call_the_person_an_additional_reviewer(name):
 
 
 def test_reviewer_surface_states_the_name_and_keeps_the_transport_axis(external):
-    """`external` 은 전송/격리/과금 축과 기계 식별자에만 남는다."""
-    source = (TOOLS / "external_review.py").read_text(encoding="utf-8")
+    """추가 리뷰어 명칭과 외부 전송이라는 동작 축은 서로 구분한다."""
+    source = (TOOLS / "additional_reviewer.py").read_text(encoding="utf-8")
     assert "추가 리뷰어" in source
     assert "외부 전송" in source and "과금" in source          # 전송 축 문구는 유지
     # 설정 키는 역할 이름과 같은 축으로 통일됐다(T-0597) — 구키는 값을 공급하지 않는다.
     assert external.ADDITIONAL_REVIEWER_ENABLED_KEY == "additional_reviewer.enabled"
     assert external.ADDITIONAL_REVIEWER_PREFIX == "additional_reviewer"
-    # 파일 이름은 개칭하지 않는다 — 동기가 상류 부재 파일을 지우지 않아 채택자 PM 홈에 구 사본이
-    # 남고(두 진입점 공존), 이미 기록된 raw 감사물의 접두와도 어긋난다. 이력은 docstring 1줄.
-    assert (TOOLS / "external_review.py").is_file()
-    assert not (TOOLS / "additional_reviewer.py").exists()
-    assert "명칭 이력:" in source
-    assert "external_review.py" in source.split('"""')[1]     # 모듈 docstring 안
+    # 신규 진입점만 출하하고 구 물리명은 retire migration이 제거한다. 이력은 docstring 1줄.
+    assert (TOOLS / "additional_reviewer.py").is_file()
+    assert not (TOOLS / "external_review.py").exists()
 
 
 def test_round_and_wave_caps_are_anti_loop_without_round_extension(external):
@@ -2290,7 +2287,7 @@ def test_round_and_wave_caps_are_anti_loop_without_round_extension(external):
 
 def test_reviewer_source_comments_match_structured_target_and_durable_consent():
     """능동 source 설명이 legacy-only·사용자 비용 재승인 계약으로 되돌아가지 않는다."""
-    source = (TOOLS / "external_review.py").read_text(encoding="utf-8")
+    source = (TOOLS / "additional_reviewer.py").read_text(encoding="utf-8")
     stale = (
         "reviewer_cmd 의 하네스 프로필",
         "리뷰어 커맨드의 하네스 프로필",

@@ -1,6 +1,6 @@
 r"""reviewer_cmd argv 분해의 **실행 플랫폼 규칙**과 분해 규칙 사본 대조 (T-0722).
 
-`external_review` 는 `reviewer_cmd`(local.conf 자유 문자열)를 argv 로 분해해 추가 리뷰어를 띄운다.
+`additional_reviewer` 는 `reviewer_cmd`(local.conf 자유 문자열)를 argv 로 분해해 추가 리뷰어를 띄운다.
 그 분해가 POSIX `shlex.split` 단독이면 Windows 실행 경로의 ``\`` 가 escape 로 소비돼
 ``C:\Users\pm\...\codex.exe`` 가 ``C:Userspm...codex.exe`` 가 되고, 실행은 `FileNotFoundError` 로
 끝난다. 그 실패는 started=False 라 라운드가 환불되므로 **채택자에게는 아무 일도 없었던 것처럼**
@@ -12,7 +12,7 @@ r"""reviewer_cmd argv 분해의 **실행 플랫폼 규칙**과 분해 규칙 사
      소유 모듈을 값으로 확인하고, 다른 엔진 모듈에 사본이 생기면 red 다([[T-0712]] 의 `~user` 축과
      같은 대조).
   2. Windows 규칙은 실행 경로 구분자를 보존하고, POSIX 규칙은 종전 `shlex.split` 그대로다.
-  3. `external_review` 는 그 공용 seam 을 **호출**한다(자기 사본 아님) — 로더를 갈아끼워 확인한다.
+  3. `additional_reviewer` 는 그 공용 seam 을 **호출**한다(자기 사본 아님) — 로더를 갈아끼워 확인한다.
   4. Windows 경로를 담은 `reviewer_cmd` 가 러너까지 실행 가능한 argv 로 도착한다(POSIX 개발기에서
      플랫폼 seam 주입으로 태운다 · 주입이 실제로 걸렸는지 선-단언).
   5. 실행 파일 해소 실패는 loud 이고 "설정상 리뷰어 없음"과 **다른 진단**이다(무음 환불 0).
@@ -55,7 +55,7 @@ def board():
 
 @pytest.fixture
 def external():
-    return _load("external_review")
+    return _load("additional_reviewer")
 
 
 def _completed(rc: int, out: str = "판정: 통과") -> subprocess.CompletedProcess:
@@ -88,13 +88,13 @@ def test_the_windows_argv_split_rule_has_exactly_one_implementation(board):
         WINDOWS_EXECUTABLE), "소유 모듈이 그 규칙을 실제로 구현하지 않는다"
 
 
-def test_external_review_keeps_no_second_split_of_the_reviewer_command():
-    """external_review 소스에 POSIX 전용 `shlex.split(reviewer_cmd)` 가 남아 있지 않다.
+def test_additional_reviewer_keeps_no_second_split_of_the_reviewer_command():
+    """additional_reviewer 소스에 POSIX 전용 `shlex.split(reviewer_cmd)` 가 남아 있지 않다.
 
     한 자리만 고치고 나머지(진행신호·프로필 키·model 관측)를 남겨 두면 같은 커맨드가 표면마다
     다른 argv 로 읽힌다 — 그 비대칭이 Windows 에서 다시 무음 실패를 만든다.
     """
-    source = (TOOLS / "external_review.py").read_text(encoding="utf-8")
+    source = (TOOLS / "additional_reviewer.py").read_text(encoding="utf-8")
     offenders = [
         line.strip() for line in source.splitlines()
         if "shlex.split(reviewer_cmd)" in line and not line.lstrip().startswith("#")
@@ -102,7 +102,7 @@ def test_external_review_keeps_no_second_split_of_the_reviewer_command():
     assert offenders == [], offenders
 
 
-def test_external_review_calls_the_shared_seam_instead_of_its_own_copy(external, monkeypatch):
+def test_additional_reviewer_calls_the_shared_seam_instead_of_its_own_copy(external, monkeypatch):
     """분해는 board 공용 seam 을 **거쳐서만** 일어난다 — 로더를 갈아끼우면 결과가 따라 바뀐다."""
     class _StubBoard:
         seen: list[tuple[str, bool]] = []
@@ -120,7 +120,7 @@ def test_external_review_calls_the_shared_seam_instead_of_its_own_copy(external,
         "분해가 board seam 을 타지 않았거나 플랫폼 판정을 넘기지 않았다")
 
 
-def test_the_shared_seam_and_external_review_agree_token_for_token(board, external, monkeypatch):
+def test_the_shared_seam_and_additional_reviewer_agree_token_for_token(board, external, monkeypatch):
     """같은 커맨드를 두 표면이 같은 argv 로 읽는다 (분해 결과 대조)."""
     commands = (
         WINDOWS_REVIEWER_CMD,

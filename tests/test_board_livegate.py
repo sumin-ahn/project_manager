@@ -1032,7 +1032,7 @@ def test_record_pass_then_check_green_roundtrip(live_board, monkeypatch, capsys)
 # `_gate_disposition_problem`)에서 실제로 열리고, `pm-fixed` 는 여전히 막히며, 다른 채널의
 # accepted 잔여가 이 채널 처분을 막지 않는지(채널 격리)를 실 board 트리 + 실 라운드/명세 파일 +
 # 실 review_rounds.json 으로 검증한다. `--resolve-gate --pm-verified` CLI 선언면(전송 0 단언 포함)
-# 은 `tests/test_external_review.py` 가 진다.
+# 은 `tests/test_additional_reviewer.py` 가 진다.
 
 
 def _pm_verified_pd():
@@ -1048,7 +1048,7 @@ def _pm_verified_pd():
 _PVPD = _pm_verified_pd()
 _PV_BLOCK_VERSION = _PVPD.PM_REVIEW_VERSION
 _PV_DISPOSITION_VERSION = _PVPD.PM_REVIEW_DISPOSITION_VERSION
-_PV_EXTERNAL_ROLE = _PVPD.EXTERNAL_REVIEW_ROLE
+_PV_ADDITIONAL_ROLE = _PVPD.ADDITIONAL_REVIEWER_ROLE
 _PV_INTERNAL_ROLE = _PVPD.INTERNAL_REVIEW_ROLE
 # 채널 어휘는 board 상수가 단일 진실이다(사본 금지) — 빌더·테스트가 같은 값을 쓴다.
 _PV_BOARD = _load_board()
@@ -1143,9 +1143,9 @@ def _pv_ledger_entry(rounds: list, *, confirm_fix: int = 0) -> dict:
 def _pv_seed_v178_shape(proj: Path, tid: str) -> dict:
     """v1.7.8 실물 형상 재현 — 잔여 1·confirm_fix 0·완료 라운드 1·X-001 rejected(사유 있음)·기계 확인 0."""
     _pv_write_ticket(proj, tid, "claimed", body=_pv_disposition_block(
-        1, [_pv_decision("X-001", "rejected")], reviewer_role=_PV_EXTERNAL_ROLE,
+        1, [_pv_decision("X-001", "rejected")], reviewer_role=_PV_ADDITIONAL_ROLE,
     ))
-    _pv_write_round(proj, tid, 1, _PV_EXTERNAL_ROLE, _pv_review_block([_pv_finding("X-001")]))
+    _pv_write_round(proj, tid, 1, _PV_ADDITIONAL_ROLE, _pv_review_block([_pv_finding("X-001")]))
     return _pv_ledger_entry([_pv_round_outcome(1, 1)])
 
 
@@ -1208,9 +1208,9 @@ def _pv_seed_mixed_channel_shape(
     machine_internal = machine_channel == _PV_CHANNEL_INTERNAL
     machine_ids = ["F-001"] if machine_internal else ["X-001"]
     _pv_write_round(proj, tid, 1, _PV_INTERNAL_ROLE, _pv_review_block([_pv_finding("F-001")]))
-    _pv_write_round(proj, tid, 2, _PV_EXTERNAL_ROLE, _pv_review_block([_pv_finding("X-001")]))
+    _pv_write_round(proj, tid, 2, _PV_ADDITIONAL_ROLE, _pv_review_block([_pv_finding("X-001")]))
     _pv_write_round(proj, tid, 3, "developer", _pv_developer_round_block(machine_ids))
-    reviewer_confirmed_role = _PV_EXTERNAL_ROLE if machine_internal else _PV_INTERNAL_ROLE
+    reviewer_confirmed_role = _PV_ADDITIONAL_ROLE if machine_internal else _PV_INTERNAL_ROLE
     reviewer_confirmed_id = "X-001" if machine_internal else "F-001"
     _pv_write_round(proj, tid, 4, reviewer_confirmed_role, _pv_confirmation_only_block([
         {"id": reviewer_confirmed_id, "status": "resolved", "evidence": "재검토 결과 해소 확인"},
@@ -1220,7 +1220,7 @@ def _pv_seed_mixed_channel_shape(
             1, [_pv_decision("F-001", "accepted")], reviewer_role=_PV_INTERNAL_ROLE,
         )
         + _pv_disposition_block(
-            2, [_pv_decision("X-001", "accepted")], reviewer_role=_PV_EXTERNAL_ROLE,
+            2, [_pv_decision("X-001", "accepted")], reviewer_role=_PV_ADDITIONAL_ROLE,
         )
         + _pv_machine_confirmation_block(3, machine_ids)
     ))
@@ -1263,7 +1263,7 @@ def pm_verified_release(tmp_path, monkeypatch):
 
     한 시나리오가 생산 경로를 그대로 태운다: 내부 선언(`pm_delegate rounds resolve
     --pm-verified` CLI) · 내부 완료 재검증(`board._complete_gate`) · 릴리즈 재검증
-    (`board livegate record`). 추가 채널 선언 CLI 는 `tests/test_external_review.py` 가
+    (`board livegate record`). 추가 채널 선언 CLI 는 `tests/test_additional_reviewer.py` 가
     같은 빌더를 import 해 태운다 — 형상 정의는 한 곳(`_pv_seed_mixed_channel_shape`)뿐이다.
     """
     proj = tmp_path / "proj"
@@ -1322,7 +1322,7 @@ def test_pm_verified_resolution_opens_the_v178_release_shape(pm_verified_release
     """v1.7.8 실물 형상(잔여1·confirm_fix0·완료라운드1·X-001 rejected·기계확인0)이 신규 경로로 rc0.
 
     단언은 라이브 wave 가 실제로 도는 것(=차단이 풀렸다) — 전송 0 단언 자체는 선언면(CLI) 을 도는
-    `tests/test_external_review.py` 가 진다.
+    `tests/test_additional_reviewer.py` 가 진다.
     """
     tid = "T-9764"
     entry = _pv_seed_v178_shape(pm_verified_release.proj, tid)
@@ -1358,9 +1358,9 @@ def test_pm_verified_declaration_blocks_when_surface_finding_count_is_short(pm_v
     findings = [_pv_finding(f"X-00{i}") for i in (1, 2, 3)]
     rows = [_pv_decision(f"X-00{i}", "rejected") for i in (1, 2, 3)]
     _pv_write_ticket(proj, tid, "claimed", body=_pv_disposition_block(
-        1, rows, reviewer_role=_PV_EXTERNAL_ROLE,
+        1, rows, reviewer_role=_PV_ADDITIONAL_ROLE,
     ))
-    _pv_write_round(proj, tid, 1, _PV_EXTERNAL_ROLE, _pv_review_block(findings))
+    _pv_write_round(proj, tid, 1, _PV_ADDITIONAL_ROLE, _pv_review_block(findings))
     entry = _pv_ledger_entry([_pv_round_outcome(1, 5)])
     problem = mod._pm_verified_evidence_problem(
         tid, channel=_PV_CHANNEL_ADDITIONAL, entry=entry,
@@ -1376,9 +1376,9 @@ def test_pm_verified_declaration_blocks_on_undisposed_finding(pm_verified_releas
     findings = [_pv_finding("X-001"), _pv_finding("X-002")]
     rows = [_pv_decision("X-001", "rejected")]     # X-002 는 판정 없음
     _pv_write_ticket(proj, tid, "claimed", body=_pv_disposition_block(
-        1, rows, reviewer_role=_PV_EXTERNAL_ROLE,
+        1, rows, reviewer_role=_PV_ADDITIONAL_ROLE,
     ))
-    _pv_write_round(proj, tid, 1, _PV_EXTERNAL_ROLE, _pv_review_block(findings))
+    _pv_write_round(proj, tid, 1, _PV_ADDITIONAL_ROLE, _pv_review_block(findings))
     entry = _pv_ledger_entry([_pv_round_outcome(1, 2)])
     problem = mod._pm_verified_evidence_problem(
         tid, channel=_PV_CHANNEL_ADDITIONAL, entry=entry,
@@ -1393,9 +1393,9 @@ def test_pm_verified_declaration_blocks_on_blank_rejection_reason(pm_verified_re
     tid = "T-9772"
     rows = [_pv_decision("X-001", "rejected", reason="")]
     _pv_write_ticket(proj, tid, "claimed", body=_pv_disposition_block(
-        1, rows, reviewer_role=_PV_EXTERNAL_ROLE,
+        1, rows, reviewer_role=_PV_ADDITIONAL_ROLE,
     ))
-    _pv_write_round(proj, tid, 1, _PV_EXTERNAL_ROLE, _pv_review_block([_pv_finding("X-001")]))
+    _pv_write_round(proj, tid, 1, _PV_ADDITIONAL_ROLE, _pv_review_block([_pv_finding("X-001")]))
     entry = _pv_ledger_entry([_pv_round_outcome(1, 1)])
     problem = mod._pm_verified_evidence_problem(
         tid, channel=_PV_CHANNEL_ADDITIONAL, entry=entry,
@@ -1410,9 +1410,9 @@ def test_pm_verified_declaration_blocks_on_open_accepted_finding(pm_verified_rel
     tid = "T-9773"
     rows = [_pv_decision("X-001", "accepted")]
     _pv_write_ticket(proj, tid, "claimed", body=_pv_disposition_block(
-        1, rows, reviewer_role=_PV_EXTERNAL_ROLE,
+        1, rows, reviewer_role=_PV_ADDITIONAL_ROLE,
     ))
-    _pv_write_round(proj, tid, 1, _PV_EXTERNAL_ROLE, _pv_review_block([_pv_finding("X-001")]))
+    _pv_write_round(proj, tid, 1, _PV_ADDITIONAL_ROLE, _pv_review_block([_pv_finding("X-001")]))
     entry = _pv_ledger_entry([_pv_round_outcome(1, 1)])
     problem = mod._pm_verified_evidence_problem(
         tid, channel=_PV_CHANNEL_ADDITIONAL, entry=entry,
@@ -1427,10 +1427,10 @@ def test_pm_verified_declaration_blocks_when_accepted_lacks_machine_confirmation
     tid = "T-9774"
     rows = [_pv_decision("X-001", "accepted")]
     _pv_write_ticket(proj, tid, "claimed", body=_pv_disposition_block(
-        1, rows, reviewer_role=_PV_EXTERNAL_ROLE,
+        1, rows, reviewer_role=_PV_ADDITIONAL_ROLE,
     ))
-    _pv_write_round(proj, tid, 1, _PV_EXTERNAL_ROLE, _pv_review_block([_pv_finding("X-001")]))
-    _pv_write_round(proj, tid, 2, _PV_EXTERNAL_ROLE, _pv_confirmation_only_block([
+    _pv_write_round(proj, tid, 1, _PV_ADDITIONAL_ROLE, _pv_review_block([_pv_finding("X-001")]))
+    _pv_write_round(proj, tid, 2, _PV_ADDITIONAL_ROLE, _pv_confirmation_only_block([
         {"id": "X-001", "status": "resolved", "evidence": "재검토 결과 해소 확인"},
     ]))
     entry = _pv_ledger_entry([_pv_round_outcome(1, 1)])
@@ -1512,7 +1512,7 @@ def test_sensitivity_allow_pm_verified_reverted_reblocks_the_v178_shape(pm_verif
 # ── 채널 격리 양방향 — 실제 선언/완료·릴리즈 경로 (직접 술어 호출 아님) ─────────────
 # 혼합 채널 형상(두 채널 모두 accepted 였고 한 채널만 기계 확인)을 네 생산 경로에 각각 태운다.
 # 티켓 전역 판정으로는 두 채널이 다 열려 보이는 형상이라, 채널 스코프가 실제로 배선돼 있어야만
-# 기계 확인이 없는 쪽이 닫힌다. 추가 선언 CLI 축은 tests/test_external_review.py 가 같은 빌더로 진다.
+# 기계 확인이 없는 쪽이 닫힌다. 추가 선언 CLI 축은 tests/test_additional_reviewer.py 가 같은 빌더로 진다.
 
 
 def _pv_legacy_global_problem(delegate, spec_text: str, rounds):
@@ -1661,7 +1661,7 @@ def test_release_axis_stays_closed_when_only_the_internal_channel_is_confirmed(
 
     assert pm_verified_release.record() == 1
     assert pm_verified_release.runner.calls == []
-    assert "external-reviewer 채널의 기계 확인" in capsys.readouterr().err
+    assert "additional-reviewer 채널의 기계 확인" in capsys.readouterr().err
 
 
 def test_pm_verified_refusal_is_channel_symmetric_on_the_real_paths(
@@ -1689,7 +1689,7 @@ def test_pm_verified_refusal_is_channel_symmetric_on_the_real_paths(
 
     rule = "채널의 기계 확인(pm-review-confirmation-v1) 기록이 없습니다"
     assert f"{_PV_INTERNAL_ROLE} {rule}" in internal_reason
-    assert f"{_PV_EXTERNAL_ROLE} {rule}" in additional_reason
+    assert f"{_PV_ADDITIONAL_ROLE} {rule}" in additional_reason
 
 
 def test_internal_surface_floor_comes_from_the_internal_ledger_residual(
@@ -1713,13 +1713,13 @@ def test_sensitivity_surface_floor_check_removed_lets_a_short_surface_pass():
     """민감도(c) — 건수 대조(불변식 5)를 지우면(하한 0) 표면 미달 케이스가 잘못 green 이 된다."""
     findings = [_pv_finding(f"X-00{i}") for i in (1, 2, 3)]
     rows = [_pv_decision(f"X-00{i}", "rejected") for i in (1, 2, 3)]
-    spec = _pv_disposition_block(1, rows, reviewer_role=_PV_EXTERNAL_ROLE)
-    rounds = [_pv_round_tuple(1, _PV_EXTERNAL_ROLE, _pv_review_block(findings))]
+    spec = _pv_disposition_block(1, rows, reviewer_role=_PV_ADDITIONAL_ROLE)
+    rounds = [_pv_round_tuple(1, _PV_ADDITIONAL_ROLE, _pv_review_block(findings))]
     correct = _PVPD.pm_verified_evidence_problem(
-        spec, rounds, reviewer_role=_PV_EXTERNAL_ROLE, surface_floor=5,   # 장부 잔여 5(실제 배선값)
+        spec, rounds, reviewer_role=_PV_ADDITIONAL_ROLE, surface_floor=5,   # 장부 잔여 5(실제 배선값)
     )
     assert correct is not None and "5건" in correct
     removed = _PVPD.pm_verified_evidence_problem(
-        spec, rounds, reviewer_role=_PV_EXTERNAL_ROLE, surface_floor=0,   # 대조 제거를 흉내
+        spec, rounds, reviewer_role=_PV_ADDITIONAL_ROLE, surface_floor=0,   # 대조 제거를 흉내
     )
     assert removed is None, "건수 대조가 제거되면 표면 미달이 잘못 통과한다"

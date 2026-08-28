@@ -1,4 +1,4 @@
-"""external_review 라운드 상한 게이트 — codex 게이트 무한 라운드 기계 차단 (T-0457).
+"""additional_reviewer 라운드 상한 게이트 — codex 게이트 무한 라운드 기계 차단 (T-0457).
 
 외부 리뷰(codex)는 과금·외부 전송 게이트라 라운드가 무한정 이어지면 비용이 쌓인다(PM 10차 실측:
 한 게이트 클러스터 25라운드). PM 자의 "수렴 판단"을 기계 판정으로 대체한다
@@ -42,7 +42,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 from test_board_livegate import (  # noqa: E402
     _PV_CHANNEL_ADDITIONAL,
     _PV_CHANNEL_INTERNAL,
-    _PV_EXTERNAL_ROLE,
+    _PV_ADDITIONAL_ROLE,
     _PV_INTERNAL_ROLE,
     _load_board as _pv_load_board,
     _pv_decision,
@@ -60,7 +60,7 @@ from test_board_livegate import (  # noqa: E402
 )
 
 
-def _load(name: str = "external_review"):
+def _load(name: str = "additional_reviewer"):
     """도구 모듈을 (패키지 아님) importlib 로 경로 로드 — sibling 테스트 동일 규약."""
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
@@ -70,7 +70,7 @@ def _load(name: str = "external_review"):
 
 @pytest.fixture
 def external():
-    return _load("external_review")
+    return _load("additional_reviewer")
 
 
 def _patch_atomic_replace(monkeypatch, module, fake):
@@ -166,7 +166,7 @@ def test_harness_cap_advisory_ignores_config_and_unmeasured_keys(external, key):
 def test_harness_cap_advisory_does_not_load_relay_without_session_marker(monkeypatch):
     """비하네스 셸은 advisory 계산/로더 실패 표면을 만들지 않고 즉시 반환한다."""
     spec = importlib.util.spec_from_file_location(
-        "external_review_no_relay", TOOLS / "external_review.py",
+        "additional_reviewer_no_relay", TOOLS / "additional_reviewer.py",
     )
     module = importlib.util.module_from_spec(spec)
     real_spec_from_file_location = importlib.util.spec_from_file_location
@@ -194,7 +194,7 @@ def test_harness_cap_advisory_warns_for_all_nested_session_axes(external, monkey
         execution_budget=10,
     )
     assert warning is not None
-    assert warning.count("[external-review] 경고:") == 2
+    assert warning.count("[additional-reviewer] 경고:") == 2
     assert "BASH_MAX_TIMEOUT_MS" in warning
     assert "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS" in warning
 
@@ -275,7 +275,7 @@ def test_timeout_output_reraises_engine_rev_skew(external, monkeypatch, failure_
     (b"ok\xff", "ok�"),
 ])
 def test_timeout_output_shared_formatter_policy(external, output, expected):
-    """변경된 external-review 소비처에도 무절단·bytes 정책을 고정한다."""
+    """변경된 additional-reviewer 소비처에도 무절단·bytes 정책을 고정한다."""
     rendered = external._timeout_output(1, subprocess.TimeoutExpired(["reviewer"], 1, output=output))
     assert rendered.startswith("[리뷰어 타임아웃")
     assert expected in rendered
@@ -620,7 +620,7 @@ def _stub_reviewer_isolation(external, monkeypatch) -> None:
     """리뷰어 가시 범위 거울 생성을 스텁한다 (T-0563 · run_review 스텁과 같은 취지).
 
     이 파일의 게이트 테스트는 라운드 장부/앵커 분기만 보며 diff 를 주입하므로 tmp REPO 가 실제 git
-    저장소가 아니다. 실 거울(격리) 회귀는 `test_external_review_reviewer_isolation.py` 가 실 저장소로
+    저장소가 아니다. 실 거울(격리) 회귀는 `test_additional_reviewer_reviewer_isolation.py` 가 실 저장소로
     소유한다 — 여기서는 격리 성립을 가정하고 그 아래 분기만 격리한다."""
     def _fake_workspace(diff_root, *, base_dir=None, conf=None, source_home=None,
                         denylist=()):
@@ -1236,9 +1236,21 @@ _REJECT_WITH_ANSWER = {
 # 오염 진단이 붙은 출력 — 판정 표면에서 무효화되므로 결함 수도 세지 않아야 한다.
 _CONTAMINATED_WITH_ANSWER = {
     **_REJECT_WITH_ANSWER,
-    "contamination": ("external_review_codex_20260807_1.txt",),
+    "contamination": ("additional_reviewer_codex_20260807_1.txt",),
     "any_must_fix": False, "all_pass": False,
 }
+
+
+def test_output_contamination_reads_old_and_new_raw_prefixes(external):
+    output = (
+        "external_review_codex_20260807_1.txt\n"
+        "additional_reviewer_codex_20260807_2.txt\n"
+    )
+    contamination = external.detect_output_contamination(output)
+    assert contamination.raw_artifacts == (
+        "external_review_codex_20260807_1.txt",
+        "additional_reviewer_codex_20260807_2.txt",
+    )
 
 
 def _wave(external, tmp_path) -> dict:
@@ -2390,8 +2402,8 @@ def test_knob_conf_run_names_no_retired_key(external, monkeypatch, tmp_path, cap
 
     assert external.main(["--paths", "x.py", "--no-gate"]) == 0
     err = capsys.readouterr().err
-    for legacy in ("external_review_round_limit", "additional_reviewer_round_limit",
-                   "external_review_wave_budget", "external_review_enabled"):
+    for legacy in ("additional_reviewer_round_limit", "additional_reviewer_round_limit",
+                   "additional_reviewer_wave_budget", "additional_reviewer_enabled"):
         assert legacy not in err, legacy
 
 
@@ -2411,7 +2423,7 @@ def pm_verified_declare(tmp_path, monkeypatch):
     _pv_seed_ticket_tree(proj)
     board_mod = _pv_load_board()
     monkeypatch.setattr(board_mod, "REPO", proj)
-    external = _load("external_review")
+    external = _load("additional_reviewer")
     monkeypatch.setattr(external, "REPO", proj)
     monkeypatch.setattr(external, "_load_board", lambda: board_mod)
     monkeypatch.setattr(
@@ -2493,9 +2505,9 @@ def test_pm_verified_declaration_is_refused_with_reason_when_evidence_is_insuffi
     findings = [_pv_finding("X-001")]
     rows = [_pv_decision("X-001", "rejected")]
     _pv_write_ticket(proj, tid, "claimed", body=_pv_disposition_block(
-        1, rows, reviewer_role=_PV_EXTERNAL_ROLE,
+        1, rows, reviewer_role=_PV_ADDITIONAL_ROLE,
     ))
-    _pv_write_round(proj, tid, 1, _PV_EXTERNAL_ROLE, _pv_review_block(findings))
+    _pv_write_round(proj, tid, 1, _PV_ADDITIONAL_ROLE, _pv_review_block(findings))
     entry = _pv_ledger_entry([_pv_round_outcome(1, 3)])   # 잔여 3인데 표면은 1건뿐
     pm_verified_declare.write_ledger({tid: entry})
 
@@ -2551,6 +2563,6 @@ def test_additional_declaration_is_refused_when_only_the_internal_channel_is_con
 
     assert pm_verified_declare.run("--resolve-gate", tid, "--pm-verified") == 1
     err = capsys.readouterr().err
-    assert f"{_PV_EXTERNAL_ROLE} 채널의 기계 확인" in err
+    assert f"{_PV_ADDITIONAL_ROLE} 채널의 기계 확인" in err
     assert f"{_PV_INTERNAL_ROLE} 채널의 기계 확인" not in err
     assert "resolution" not in pm_verified_declare.read_ledger()[tid]

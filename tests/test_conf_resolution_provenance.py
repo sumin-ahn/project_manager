@@ -27,7 +27,7 @@ def _load(name: str):
 
 @pytest.fixture
 def external():
-    return _load("external_review")
+    return _load("additional_reviewer")
 
 
 @pytest.fixture
@@ -124,7 +124,7 @@ def _wire_external(external, monkeypatch, engine: Path, target: Path,
     )
     # 리뷰어 가시 범위 거울 스텁 (T-0563) — 이 파일은 conf provenance 만 본다. 픽스처 앵커는 실
     # git 저장소가 아니라 거울을 못 만든다. 실 거울 회귀는
-    # test_external_review_reviewer_isolation.py 가 실 저장소로 소유한다.
+    # test_additional_reviewer_reviewer_isolation.py 가 실 저장소로 소유한다.
     monkeypatch.setattr(
         external, "create_reviewer_workspace",
         lambda diff_root, *, base_dir=None, conf=None, source_home=None, denylist=():
@@ -481,7 +481,7 @@ def test_delegate_cli_override_raw_records_override_source(
     )
 
 
-def test_external_review_cross_repo_different_reviewer_warns_without_blocking(
+def test_additional_reviewer_cross_repo_different_reviewer_warns_without_blocking(
         external, monkeypatch, tmp_path, capsys):
     engine_conf = dict(_REVIEWER_TARGET)
     engine = _repo(tmp_path / "engine", engine_conf)
@@ -494,7 +494,7 @@ def test_external_review_cross_repo_different_reviewer_warns_without_blocking(
 
     assert external.main(["--paths", "x.py", "--dry-run"]) == 0
     err = capsys.readouterr().err
-    assert err.splitlines()[0].startswith("[external-review] config provenance:")
+    assert err.splitlines()[0].startswith("[additional-reviewer] config provenance:")
     assert "local.conf 프로필 분기" in err
     assert "경고:" in err
     assert "reviewer_cmd" in err
@@ -508,7 +508,7 @@ def test_external_review_cross_repo_different_reviewer_warns_without_blocking(
     assert str(target / ".project_manager" / "local.conf") in err
 
 
-def test_external_review_same_effective_reviewer_is_quiet_with_provenance(
+def test_additional_reviewer_same_effective_reviewer_is_quiet_with_provenance(
         external, monkeypatch, tmp_path, capsys):
     # 두 conf 가 같은 구조화 대상을 지정 — 실제 송신값이 같으므로 무소음이다.
     engine_conf = dict(_REVIEWER_TARGET)
@@ -519,16 +519,16 @@ def test_external_review_same_effective_reviewer_is_quiet_with_provenance(
     assert external.main(["--paths", "x.py", "--dry-run"]) == 0
     captured = capsys.readouterr()
     assert "local.conf 프로필 분기" not in captured.err
-    assert captured.err.splitlines()[0].startswith("[external-review] config provenance:")
+    assert captured.err.splitlines()[0].startswith("[additional-reviewer] config provenance:")
     assert (
-        f"[external-review] config provenance: "
+        f"[additional-reviewer] config provenance: "
         f"local_conf={engine / '.project_manager' / 'local.conf'}"
     ) in captured.err
     resolved = external.resolve_reviewer_target(engine_conf).command
     assert f"resolved_profile=(reviewer_cmd={resolved}" in captured.err
 
 
-def test_external_review_missing_target_conf_is_quiet(
+def test_additional_reviewer_missing_target_conf_is_quiet(
         external, monkeypatch, tmp_path, capsys):
     engine_conf = dict(_REVIEWER_TARGET)
     engine = _repo(tmp_path / "engine", engine_conf)
@@ -539,7 +539,7 @@ def test_external_review_missing_target_conf_is_quiet(
     assert "local.conf 프로필 분기" not in capsys.readouterr().err
 
 
-def test_external_review_dangling_target_conf_symlink_fails_closed(
+def test_additional_reviewer_dangling_target_conf_symlink_fails_closed(
         external, monkeypatch, tmp_path, capsys):
     """dangling local.conf는 부재가 아니라 판독 실패이며 대상 denylist 미확인 송신을 차단한다."""
     engine_conf = dict(_REVIEWER_TARGET)
@@ -562,7 +562,7 @@ def test_external_review_dangling_target_conf_symlink_fails_closed(
 
 
 @pytest.mark.parametrize("failure_kind", ["invalid-utf8", "not-a-file"])
-def test_external_review_existing_unreadable_target_conf_fails_closed(
+def test_additional_reviewer_existing_unreadable_target_conf_fails_closed(
         external, monkeypatch, tmp_path, capsys, failure_kind):
     """대상 conf의 정상 부재와 달리, 존재하지만 읽기/해석 불가면 diff 추출 전에 중단한다."""
     engine_conf = dict(_REVIEWER_TARGET)
@@ -589,7 +589,7 @@ def test_external_review_existing_unreadable_target_conf_fails_closed(
 
 def test_delegate_target_conf_read_error_is_caught_without_traceback(
         delegate, monkeypatch, tmp_path, capsys):
-    """raise/catch가 같은 external_review 모듈 클래스를 써 판독 오류를 rc=1 진단으로 닫는다."""
+    """raise/catch가 같은 additional_reviewer 모듈 클래스를 써 판독 오류를 rc=1 진단으로 닫는다."""
     engine_conf = _delegate_conf()
     engine = _repo(tmp_path / "engine", engine_conf)
     target = _repo(tmp_path / "target", None)
@@ -606,7 +606,7 @@ def test_delegate_target_conf_read_error_is_caught_without_traceback(
     assert "Traceback" not in err
 
 
-def test_external_review_target_only_denylist_warns_and_is_union_applied(
+def test_additional_reviewer_target_only_denylist_warns_and_is_union_applied(
         external, monkeypatch, tmp_path, capsys):
     """대상 보호 선언을 경고만 하고 무시하지 않고 실제 diff denylist에 합친다."""
     engine_conf = {
@@ -638,7 +638,7 @@ def test_external_review_target_only_denylist_warns_and_is_union_applied(
     ) == "*.target-private"
 
 
-def test_external_review_same_denylist_is_quiet(
+def test_additional_reviewer_same_denylist_is_quiet(
         external, monkeypatch, tmp_path, capsys):
     conf = {
         **_REVIEWER_TARGET,
@@ -652,7 +652,7 @@ def test_external_review_same_denylist_is_quiet(
     assert "local.conf 프로필 분기" not in capsys.readouterr().err
 
 
-def test_external_review_engine_denylist_superset_is_safe_and_quiet(
+def test_additional_reviewer_engine_denylist_superset_is_safe_and_quiet(
         external, monkeypatch, tmp_path, capsys):
     """엔진이 대상 선언을 이미 모두 포함하면 값 문자열이 달라도 안전 방향이라 무소음이다."""
     engine_conf = {
@@ -670,7 +670,7 @@ def test_external_review_engine_denylist_superset_is_safe_and_quiet(
     assert "local.conf 프로필 분기" not in capsys.readouterr().err
 
 
-def test_external_review_effective_review_paths_difference_warns_when_used(
+def test_additional_reviewer_effective_review_paths_difference_warns_when_used(
         external, monkeypatch, tmp_path, capsys):
     engine_conf = {
         **_REVIEWER_TARGET,
@@ -694,7 +694,7 @@ def test_external_review_effective_review_paths_difference_warns_when_used(
     assert "차단하지 않고 계속합니다" in err
 
 
-def test_external_review_same_effective_review_path_set_is_quiet(
+def test_additional_reviewer_same_effective_review_path_set_is_quiet(
         external, monkeypatch, tmp_path, capsys):
     """순서·중복과 src/src/./src 표기만 다르면 같은 Git 경로 집합이라 무소음이다."""
     engine_conf = {
@@ -712,7 +712,7 @@ def test_external_review_same_effective_review_path_set_is_quiet(
     assert "local.conf 프로필 분기" not in capsys.readouterr().err
 
 
-def test_external_review_target_denylist_explicit_path_uses_real_filter_and_blocks(
+def test_additional_reviewer_target_denylist_explicit_path_uses_real_filter_and_blocks(
         external, monkeypatch, tmp_path, capsys):
     """대상 전용 합집합 패턴은 실 extract_diff 필터를 거쳐 명시 --paths를 fail-loud 차단한다."""
     engine_conf = {
@@ -757,7 +757,7 @@ def test_external_review_target_denylist_explicit_path_uses_real_filter_and_bloc
     assert "외부 호출 생략" not in captured.out
 
 
-def test_external_review_explicit_paths_suppresses_unused_review_paths_difference(
+def test_additional_reviewer_explicit_paths_suppresses_unused_review_paths_difference(
         external, monkeypatch, tmp_path, capsys):
     engine_conf = {
         **_REVIEWER_TARGET,
@@ -801,7 +801,7 @@ def test_review_content_new_axis_preserves_structural_quiet_cases(
     assert resolution.denylist == external._denylist_patterns(engine_conf)
 
 
-def test_external_review_actual_execution_keeps_same_provenance(
+def test_additional_reviewer_actual_execution_keeps_same_provenance(
         external, monkeypatch, tmp_path, capsys):
     conf = dict(_REVIEWER_TARGET)
     engine = _repo(tmp_path / "engine", conf)
@@ -820,13 +820,13 @@ def test_external_review_actual_execution_keeps_same_provenance(
     monkeypatch.setattr(external, "run_review", _run_review)
     assert external.main(["--paths", "x.py", "--no-gate"]) == 0
     err = capsys.readouterr().err
-    assert err.splitlines()[0].startswith("[external-review] config provenance:")
+    assert err.splitlines()[0].startswith("[additional-reviewer] config provenance:")
     assert seen["local_conf_path"] == engine / ".project_manager" / "local.conf"
     assert seen["resolved_profile"].startswith(
         f"(reviewer_cmd={external.resolve_reviewer_target(conf).command}")
 
 
-def test_external_review_invalid_timeout_warning_follows_first_line_provenance(
+def test_additional_reviewer_invalid_timeout_warning_follows_first_line_provenance(
         external, monkeypatch, tmp_path, capsys):
     """fail-soft timeout 경고가 있어도 stderr 첫 줄은 항상 config provenance다."""
     conf = {
@@ -838,7 +838,7 @@ def test_external_review_invalid_timeout_warning_follows_first_line_provenance(
 
     assert external.main(["--paths", "x.py", "--dry-run"]) == 0
     lines = capsys.readouterr().err.splitlines()
-    assert lines[0].startswith("[external-review] config provenance:")
+    assert lines[0].startswith("[additional-reviewer] config provenance:")
     warning_index = next(
         index for index, line in enumerate(lines)
         if "harness.codex.wall_timeout='not-a-timeout'" in line
@@ -906,7 +906,7 @@ def test_delegate_subdirectory_cwd_still_triggers_pm_home_reanchor(
     worktree = home / "work" / "canonical"
     worktree_tools = worktree / ".project_manager" / "tools"
     worktree_tools.mkdir(parents=True)
-    (worktree_tools / "external_review.py").write_text("# marker\n", encoding="utf-8")
+    (worktree_tools / "additional_reviewer.py").write_text("# marker\n", encoding="utf-8")
     nested_cwd = home / "work-area" / "nested"
     nested_cwd.mkdir(parents=True)
     prompt = home / ".project_manager" / "task.md"
@@ -941,7 +941,7 @@ def test_divergence_helper_without_cwd_repo_or_with_same_repo_is_quiet(
         ) is None
 
 
-def test_external_review_raw_records_conf_and_profile(external, tmp_path):
+def test_additional_reviewer_raw_records_conf_and_profile(external, tmp_path):
     conf_path = tmp_path / "engine" / ".project_manager" / "local.conf"
     result = external.run_review(
         "prompt",
@@ -975,7 +975,7 @@ def test_find_repo_root_tool_inventory_and_scope_are_explicit():
     }
     assert found == {
         "contradiction_lint.py",
-        "external_review.py",
+        "additional_reviewer.py",
         "pm_delegate.py",
         "ticket_finish.py",
     }
@@ -984,7 +984,7 @@ def test_find_repo_root_tool_inventory_and_scope_are_explicit():
         name: (TOOLS / name).read_text(encoding="utf-8")
         for name in found
     }
-    assert "reviewer_cmd" in source["external_review.py"]
+    assert "reviewer_cmd" in source["additional_reviewer.py"]
     # 판정 축은 **conf 키 리터럴**(`"delegate.…"`)이다 — 도구 파일명(`pm_delegate.py`)은 키가
     # 아니다. 부분 문자열로 재면 CLI 를 subprocess 로 부르는 호출부까지 키 소비로 읽힌다.
     def _reads_delegate_conf_keys(text: str) -> bool:

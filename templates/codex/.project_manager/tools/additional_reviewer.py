@@ -2,15 +2,12 @@
 """추가 리뷰어 래퍼 — 추가 리뷰어(외부 하네스) 어댑터 CLI.
 
 사람 역할 이름은 **추가 리뷰어(additional reviewer)** 다 — 팀에 한 명 더 붙는 리뷰어다.
-`external` 은 전송/격리/과금 축(코드가 저장소 밖으로 나간다)과 기계 식별자(모듈 파일 이름·
-raw 파일 접두)에만 남는다. 설정 키는 `additional_reviewer.enabled`/`additional_reviewer.*` 다.
-
-명칭 이력: 이 모듈의 파일 이름은 개칭 전 이름 `external_review.py` 그대로다(T-0597 판단) —
-파일명을 바꾸면 동기가 상류 부재 파일을 지우지 않으므로 채택자 PM 홈에 구 사본이 남아 두 진입점이
-공존하고, 이미 기록된 raw 감사물(`external_review_*.txt`)의 접두와도 어긋난다.
+설정 키는 `additional_reviewer.enabled`/`additional_reviewer.*`이고, 모듈·신규 raw
+식별자도 `additional_reviewer`다. 개칭 전 `external_review` raw는 과거 감사물
+판독에서만 받는다.
 
 사용:
-    python3 .project_manager/tools/external_review.py [옵션]
+    python3 .project_manager/tools/additional_reviewer.py [옵션]
 
 동작:
   git diff <base> -- <paths> 추출 (시크릿 denylist 경로 자동 제외)
@@ -1163,7 +1160,7 @@ def _scope_from_initial_pm_home(*, ticket_selected: bool, explicit_paths: bool) 
 # ── board root 추종 (board/ 분리) ───────────────────────
 # board(tickets)는 `.project_manager/board/`(submodule)로 분리될 수 있다. 그러면
 # ticket touches 해소(`parse_ticket_touches`)가 wiki/ legacy 위치를 보면 *stale*(ticket 미발견
-# → 빈 touches)이다. external_review 는 board.py 를 import 하지 않으므로(YAML frontmatter 직접
+# → 빈 touches)이다. additional_reviewer 는 board.py 를 import 하지 않으므로(YAML frontmatter 직접
 # 파싱), board.py 의 graceful 탐지를 *동형*으로 최소 복제한다 — board/tickets 가 실 디렉토리면
 # board/ 루트, 아니면 wiki/(legacy). 미분리면 현 위치 100% 폴백(회귀 0). 상수 TICKETS_DIR
 # 는 hermetic 테스트 seam·legacy 기본값으로 유지.
@@ -1182,7 +1179,7 @@ DEFAULT_PATHS: list[str] = ["src/", "tests/", "scripts/", ".project_manager/tool
 
 
 # ── PM 홈 앵커 재지정 감지 (adopter#0 false-green 게이트) ────────────────
-# external_review 의 import 사본은 PM 홈에 있어 REPO 가 PM 홈으로
+# additional_reviewer 의 import 사본은 PM 홈에 있어 REPO 가 PM 홈으로
 # 해소된다 — 실 코드 변경은 canonical worktree에 있으므로 `git diff` 가 비어 codex 가 "변경
 # 없음"을 통과로 판정하는 false-green 이 난다.
 # board.py `_pm_home_worktree_misanchor`의 *역방향*: 거긴 worktree 에서 실행된 board 조작을
@@ -1210,7 +1207,7 @@ def _owns_real_board(pm_dir: Path) -> bool:
 def _canonical_worktree(anchor: Path) -> Path | None:
     """adopter#0 PM 홈 `anchor` 의 canonical 코드 worktree(재지정 대상) 경로 — 없으면 None.
 
-    `<anchor>/work/*` 스캔 중 엔진 사본(`.project_manager/tools/external_review.py`)을 가진 첫
+    `<anchor>/work/*` 스캔 중 엔진 사본(`.project_manager/tools/additional_reviewer.py`)을 가진 첫
     디렉토리를 반환한다(board.py `_registers_worktree` (a) `work/<name>` 등록 관례와 동형). 없으면
     None(무관 형상·재지정 대상 없음).
 
@@ -1223,7 +1220,7 @@ def _canonical_worktree(anchor: Path) -> Path | None:
     work_dir = anchor / "work"
     if work_dir.is_dir():
         for sub in sorted(work_dir.iterdir()):
-            if (sub / ".project_manager" / "tools" / "external_review.py").is_file():
+            if (sub / ".project_manager" / "tools" / "additional_reviewer.py").is_file():
                 return sub
     return None
 
@@ -1235,7 +1232,7 @@ def _pm_home_reanchor(anchor: Path) -> Path | None:
     전용·board 미소유)에서 실행하면 여기서 탈락해 None(정상·재지정 불요), (2) anchor 아래 canonical
     코드 worktree(`work/<name>`) 존재. 일반 채택자(로컬 upstream 포함)는 (1) 또는 (2) 미충족으로
     None(무영향)."""
-    # external_review.main은 명시 selector 기반 diff_root 해소로 전환되어 이 헬퍼를 호출하지 않는다.
+    # additional_reviewer.main은 명시 selector 기반 diff_root 해소로 전환되어 이 헬퍼를 호출하지 않는다.
     # pm_delegate.check_write_target_reanchor가 adopter write-target 보호에 계속 사용하므로 유지한다.
     if not _owns_real_board(anchor / ".project_manager"):
         return None
@@ -1266,9 +1263,9 @@ ADDITIONAL_REVIEWER_WAVE_BUDGET_KEY = "additional_reviewer.wave_budget"
 # 선언용 사본이다(드리프트는 회귀 테스트가 막는다).
 CODEX_EGRESS_FLAG = "--codex-egress-escalated"
 
-EXTERNAL_TIMEOUT_KEY = "additional_reviewer.timeout"
-EXTERNAL_IDLE_TIMEOUT_KEY = "additional_reviewer.idle_timeout"
-EXTERNAL_PROGRESS_SIGNAL_KEY = "additional_reviewer.progress_signal"
+ADDITIONAL_REVIEWER_TIMEOUT_KEY = "additional_reviewer.timeout"
+ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY = "additional_reviewer.idle_timeout"
+ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY = "additional_reviewer.progress_signal"
 
 # 알려진 reviewer CLI의 **실행 파일 + 옵션 계약**. 함수 밖 선언이라 새 CLI/형식 추가가 판정 코드
 # 분기로 번지지 않는다. attr 값은 동적 로드한 pm_relay의 공개 상수명이다.
@@ -1479,7 +1476,7 @@ _OUTPUT_FORMAT_BLOCK = """\
 _VERSIONED_BLOCK_HEADER = """\
 ### 구조화 판정 블록 (필수)
 위 산문 뒤에 아래 스키마의 블록을 **정확히 하나** 출력하라. 엔진이 이 회신 전문을 게이트 티켓의
-`external-reviewer` 라운드 파일로 회수하고, PM 은 이 블록으로 판정한다 — 증거·권고·심각도는 블록이
+`additional-reviewer` 라운드 파일로 회수하고, PM 은 이 블록으로 판정한다 — 증거·권고·심각도는 블록이
 단일 진실이므로 산문에 같은 항목을 다시 서술하지 마라.
 
 """
@@ -1510,7 +1507,7 @@ def _versioned_block_requirement(
     실행) 첫 ID·placeholder 로 돌려준다.
     """
     delegate = _load_pm_delegate()
-    role = delegate.EXTERNAL_REVIEW_ROLE
+    role = delegate.ADDITIONAL_REVIEWER_ROLE
     next_id = next_finding_id or delegate.next_review_finding_id("", role)
     return (
         _VERSIONED_BLOCK_HEADER
@@ -1714,7 +1711,7 @@ _WAVE_BUDGET_GUIDANCE = (
     "  · 먼저 `--rounds-report` 로 라운드별 산출을 확인하세요.\n"
     "  · 같은 범위가 정상 수렴 중이면 PM 이 자율로 `--ack-wave` 를 붙여 재개합니다 "
     "(spent 를 0 으로 리셋):\n"
-    "      python3 .project_manager/tools/external_review.py --gate {gate} --ack-wave [기존 옵션]\n"
+    "      python3 .project_manager/tools/additional_reviewer.py --gate {gate} --ack-wave [기존 옵션]\n"
     "  · 수렴이 안 되고 있으면(같은 지적 반복·범위 발산) 사용자에게 보고하세요.\n"
     "  · 예산 조정은 local.conf `additional_reviewer.wave_budget`.\n"
     "  (장부: {ledger})"
@@ -1736,7 +1733,7 @@ _RESOLVE_GATE_MODE_GUIDANCE = (
 _RESOLVE_GATE_REQUIRED_GUIDANCE = (
     "오류: `{flag}` 는 `--resolve-gate <게이트>` 와 함께 써야 합니다 — 처분할 게이트가 없으면 "
     "선언할 사실이 없습니다.\n"
-    "      python3 .project_manager/tools/external_review.py --resolve-gate <게이트> {flag}"
+    "      python3 .project_manager/tools/additional_reviewer.py --resolve-gate <게이트> {flag}"
     "{value}"
 )
 
@@ -1856,7 +1853,7 @@ def _is_enabled(conf: dict[str, str]) -> bool:
 # 사람 역할 이름은 **추가 리뷰어(additional reviewer)** 다 — 팀에 한 명 더 붙는 리뷰어라는 뜻이고,
 # `external` 은 전송/격리/과금(외부로 나간다)에만 남는다. 그래서 설정 키는 opt-in 게이트
 # `additional_reviewer.enabled` + 대상 `additional_reviewer.*` 이고, raw 파일 접두·모듈 파일 이름
-# 같은 **이미 기록된 산출물에 박힌 기계 식별자만 external_review 그대로** 유지한다.
+# 같은 **이미 기록된 산출물에 박힌 기계 식별자만 additional_reviewer 그대로** 유지한다.
 #
 # 대상은 위임과 동형의 **원자 tuple**(harness+model 동반 필수·reasoning 선택) 하나뿐이다.
 # 모델을 고정하지 않는 자유 문자열 경로는 "어느 모델이 봤는지"를 사후에 알 수 없어 라운드 장부·
@@ -2080,12 +2077,12 @@ def _reviewer_progress_signal(
     알려진 옵션 조합만 계약으로 인정한다. 미지 CLI/형식은 신호 없음으로 두며, 자유 문자열 커맨드는
     local.conf 명시 키로만 선언할 수 있다.
     """
-    explicit = (conf.get(EXTERNAL_PROGRESS_SIGNAL_KEY) or "").strip()
+    explicit = (conf.get(ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY) or "").strip()
     if explicit:
         if explicit in relay.PROGRESS_SIGNAL_KINDS:
             return explicit
         print(
-            f"경고: local.conf {EXTERNAL_PROGRESS_SIGNAL_KEY}={explicit!r} 은 "
+            f"경고: local.conf {ADDITIONAL_REVIEWER_PROGRESS_SIGNAL_KEY}={explicit!r} 은 "
             f"{sorted(relay.PROGRESS_SIGNAL_KINDS)} 중 하나가 아님 — argv 형식 판정 사용.",
             file=sys.stderr,
         )
@@ -2134,8 +2131,8 @@ def reviewer_profile(reviewer_cmd: str, conf: dict[str, str] | None = None):
     profile = relay.resolve_harness_profile(
         reviewer_name(reviewer_cmd), conf,
         fallback=relay.REVIEWER_FALLBACK_PROFILE,
-        legacy_idle_key=EXTERNAL_IDLE_TIMEOUT_KEY,
-        legacy_wall_key=EXTERNAL_TIMEOUT_KEY,
+        legacy_idle_key=ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY,
+        legacy_wall_key=ADDITIONAL_REVIEWER_TIMEOUT_KEY,
     )
     return profile._replace(
         progress_signal=_reviewer_progress_signal(reviewer_cmd, conf, relay)
@@ -4170,7 +4167,7 @@ def is_machine_mirror_path(path: str) -> bool:
     **측정 축소 = 가드 약화**라
     정당한 작업을 오차단하지 않는다(과다 차단이 아니라 과소 차단 쪽으로만 틀린다).
 
-    **측정 제외 규칙의 단일 진실** — 리뷰(external_review)와 완료 기록(ticket_finish)가 같은 판정을
+    **측정 제외 규칙의 단일 진실** — 리뷰(additional_reviewer)와 완료 기록(ticket_finish)가 같은 판정을
     쓴다(사본 0). 판정은 경로 문자열뿐이라 트리 상태에 의존하지 않는다."""
     canonical = _canonical_measure_path(path)
     if _MACHINE_MIRROR_RE.match(canonical) is not None:
@@ -4976,8 +4973,8 @@ _REVIEWER_WORKSPACE_PREFIX = "pm_review_workspace_"
 
 # 거울 커밋용 명시 identity — 로컬 git 설정(user.*)이 없어도 거울 생성이 실패하지 않게.
 _WORKSPACE_GIT_IDENTITY = (
-    "-c", "user.name=external-review",
-    "-c", "user.email=external-review@localhost",
+    "-c", "user.name=additional-reviewer",
+    "-c", "user.email=additional-reviewer@localhost",
 )
 
 # 리뷰어에게 물려줄 env **최소 allowlist**(이름 완전일치·대소문자 무시). 제거-list 는 쓰지 않는다 —
@@ -5271,7 +5268,7 @@ def _init_workspace_git(destination: Path) -> bool:
         ("-c", "init.defaultBranch=main", "-c", "init.templateDir=", "init", "-q"),
         ("add", "-A"),
         (*_WORKSPACE_GIT_IDENTITY, "commit", "-q", "--no-verify",
-         "-m", "external review basis"),
+         "-m", "additional review basis"),
     )
     for step in steps:
         result = subprocess.run(
@@ -5443,7 +5440,7 @@ def _remove_partial_container(container: Path) -> None:
         skew = _absorb_engine_rev_skew_for_recovery(exc, "partial_container_cleanup")
         cause = f"엔진 사본 불일치 — {exc}" if skew else f"{exc}"
         print(
-            "[external-review] 경고: 부분 격리 컨테이너 정리 실패 — 저장소 사본과 인증 파일 "
+            "[additional-reviewer] 경고: 부분 격리 컨테이너 정리 실패 — 저장소 사본과 인증 파일 "
             f"사본이 남아 있을 수 있습니다. 직접 지우세요: {container} ({cause})",
             file=sys.stderr,
         )
@@ -5590,7 +5587,7 @@ def _remove_reviewer_workspace(workspace: ReviewerWorkspace) -> None:
         _force_rmtree(workspace.root)
     except OSError as exc:
         print(
-            "[external-review] 경고: 리뷰어 격리 컨테이너 정리 실패 — 저장소 사본과 인증 파일 "
+            "[additional-reviewer] 경고: 리뷰어 격리 컨테이너 정리 실패 — 저장소 사본과 인증 파일 "
             f"사본이 남아 있습니다. 직접 지우세요: {workspace.root} ({exc})",
             file=sys.stderr,
         )
@@ -5618,7 +5615,7 @@ def reviewer_visibility_scope(
         if not allow_unisolated:
             raise
         print(
-            f"[external-review] 경고: {UNISOLATED_REVIEWER_FLAG} 로 미격리 실행합니다 — "
+            f"[additional-reviewer] 경고: {UNISOLATED_REVIEWER_FLAG} 로 미격리 실행합니다 — "
             "리뷰어가 PM 세션 cwd 에서 옛 리뷰 raw·세션 전사를 탐색할 수 있습니다.",
             file=sys.stderr,
         )
@@ -5649,7 +5646,7 @@ def _load_delegate_transport():
     """opencode sandbox 전달 사본 seam을 형제 pm_delegate에서 지연 로드한다.
 
     위임 축이 확립한 O_EXCL·0600 생성, 자기-은닉 ignore, fd containment와 정리를 리뷰 축에서도
-    그대로 호출한다. pm_delegate가 external_review의 다른 판정을 지연 로드하는 반대 방향 seam을
+    그대로 호출한다. pm_delegate가 additional_reviewer의 다른 판정을 지연 로드하는 반대 방향 seam을
     갖지만, 이 로드는 두 모듈의 import 완료 뒤 opencode 실행 시점에만 일어나 순환 import를 만들지
     않는다.
     """
@@ -5751,11 +5748,11 @@ def harness_cap_advisory(
         session_markers=session_markers, cap_env=cap_env,
         render_missing=None,
         render_invalid=lambda harness, cap_key, raw, required: (
-            f"[external-review] 경고: {harness} 호출층 상한 {cap_key}={raw!r} 해석 불가 — "
+            f"[additional-reviewer] 경고: {harness} 호출층 상한 {cap_key}={raw!r} 해석 불가 — "
             f"리뷰 실행+재시도별 정리+박제 여유 {required}s 이상을 Bash tool timeout으로 명시하세요."
         ),
         render_low=lambda harness, cap_key, cap_seconds, required: (
-            f"[external-review] 경고: {harness} 호출층 최대상한 "
+            f"[additional-reviewer] 경고: {harness} 호출층 최대상한 "
             f"{cap_key}={cap_seconds:g}s < "
             f"리뷰 실행+재시도별 정리+박제 여유 {required}s — 엔진 진단/부분 산출물 보존 전에 하네스가 kill할 수 "
             "있습니다. Bash tool 호출에 장시간 timeout을 명시하세요."
@@ -5794,7 +5791,7 @@ def _timeout_output(timeout: int, exc: subprocess.TimeoutExpired) -> str:
         head = (f"[리뷰어 타임아웃 — 무진행 임계 {threshold:.0f}초 발화"
                 f" · 실측 침묵 {measured_label}] "
                 f"벽시계 상한 {timeout}초는 미도달. 재시도: `--idle-timeout <초>` 또는 local.conf "
-                f"`{EXTERNAL_IDLE_TIMEOUT_KEY}=<초>` (양의 정수).")
+                f"`{ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY}=<초>` (양의 정수).")
     try:
         return _load_relay().format_partial_output(head, exc)
     except Exception as formatter_exc:  # noqa: BLE001 - timeout diagnosis must survive formatter/load failure.
@@ -6252,10 +6249,11 @@ def parse_verdict(output: str) -> dict[str, bool]:
 
 # 이 엔진이 만드는 raw 산출물 파일명(`_reserve_output`·pm_delegate 동형). 타임스탬프/pid 자리가
 # 있어 diff 본문에서 우연히 나오지 않는다 — 인용됐다면 로컬 산출물 디렉터리를 읽었다는 증거다.
-# reviewer/harness 이름에는 `_` 가 들어갈 수 있다(`external_review_<이름>_<타임스탬프>_…`) —
+# reviewer/harness 이름에는 `_` 가 들어갈 수 있다(`additional_reviewer_<이름>_<타임스탬프>_…`) —
 # 이름 문자에서 `_` 를 빼면 그런 배포의 인용을 통째로 놓친다.
 _RAW_ARTIFACT_RE = re.compile(
-    r"\b(?:external_review|pm_delegate)_[A-Za-z0-9._-]+_\d{4,}[A-Za-z0-9_.-]*\.txt\b"
+    r"\b(?:additional_reviewer|external_review|pm_delegate)_"
+    r"[A-Za-z0-9._-]+_\d{4,}[A-Za-z0-9_.-]*\.txt\b"
 )
 # 하네스 세션 전사 저장소(실측 경로만 선언 — 추정 경로는 넣지 않는다). 구분자는 `/`·`\` 양쪽을
 # 받는다 — Windows 형상(`C:\Users\u\.claude\projects\…`)을 못 보면 그 플랫폼에서 백스톱이 없다.
@@ -6366,7 +6364,7 @@ def _reserve_output(reviewer: str, output_dir: Path | None = None) -> Path:
     base_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     dest = base_dir / (
-        f"external_review_{reviewer}_{ts}_{os.getpid()}_{uuid.uuid4().hex}.txt"
+        f"additional_reviewer_{reviewer}_{ts}_{os.getpid()}_{uuid.uuid4().hex}.txt"
     )
     fd = os.open(str(dest), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     os.close(fd)
@@ -6602,7 +6600,7 @@ def run_review(
         # 닫힌다. local_conf 는 그 축의 앵커라(어느 conf 가 이 대상을 골랐나) 함께 남긴다.
         record_id = relay.start_raw_record(
             ledger_path,
-            surface="external-review",
+            surface="additional-reviewer",
             harness=name,
             model=model,
             role=REVIEWER_ROLE,
@@ -6847,34 +6845,34 @@ def build_arg_parser() -> argparse.ArgumentParser:
         epilog="""
 예시:
   # 기본 (HEAD 기준 변경, local.conf additional_reviewer.paths/기본 경로) — 회계 밖 실행을 명시
-  python3 .project_manager/tools/external_review.py --no-gate
+  python3 .project_manager/tools/additional_reviewer.py --no-gate
 
   # ticket 의 touches 로 경로 결정 (--gate 미지정이면 그 티켓으로 게이트 자동 유도·장부 기록)
-  python3 .project_manager/tools/external_review.py --ticket T-0259
+  python3 .project_manager/tools/additional_reviewer.py --ticket T-0259
 
   # 게이트 회계 밖 자문 실행 (명시 opt-out · 장부 미기록·예산 미소모)
-  python3 .project_manager/tools/external_review.py --ticket T-NNNN --no-gate
+  python3 .project_manager/tools/additional_reviewer.py --ticket T-NNNN --no-gate
 
   # 특정 base 와 경로·게이트 지정
-  python3 .project_manager/tools/external_review.py --base main --paths src/ tests/ --gate T-NNNN
+  python3 .project_manager/tools/additional_reviewer.py --base main --paths src/ tests/ --gate T-NNNN
 
   # dry-run (diff·프롬프트만 출력, 외부 호출/전송 안 함 — 비활성이어도 허용)
-  python3 .project_manager/tools/external_review.py --dry-run
+  python3 .project_manager/tools/additional_reviewer.py --dry-run
 
   # 비활성 상태에서 1회 강제 실행
-  python3 .project_manager/tools/external_review.py --force --no-gate
+  python3 .project_manager/tools/additional_reviewer.py --force --no-gate
 
   # 라운드 장부 조회 (외부 전송 없음 — 게이트별 라운드 수·라운드별 산출·처분·wave spent)
-  python3 .project_manager/tools/external_review.py --rounds-report --gate T-NNNN
+  python3 .project_manager/tools/additional_reviewer.py --rounds-report --gate T-NNNN
 
   # 게이트 처분 선언 (외부 전송 없음 — 릴리즈 게이트가 읽는 잔여 must-fix 소화 기록)
-  python3 .project_manager/tools/external_review.py --resolve-gate T-NNNN --pm-verified
+  python3 .project_manager/tools/additional_reviewer.py --resolve-gate T-NNNN --pm-verified
   # --pm-verified 는 PM 판정 표면의 기계 확인 증거로 해소한다(외부 재송신 없음).
   # --resolve-gate 와 --dry-run 조합은 기록 목적과 모순이라 rc1로 거부.
 
   # Codex sandbox(network-off) 안에서: 미리보기 → 도구 승격 + 증명 동반 실행
-  python3 .project_manager/tools/external_review.py --ticket T-NNNN --dry-run
-  python3 .project_manager/tools/external_review.py --ticket T-NNNN --codex-egress-escalated
+  python3 .project_manager/tools/additional_reviewer.py --ticket T-NNNN --dry-run
+  python3 .project_manager/tools/additional_reviewer.py --ticket T-NNNN --codex-egress-escalated
 
 활성화: local.conf 에 `additional_reviewer.enabled=true` ·
         또는 `board.py init` / `pm_update` 시 opt-in 프롬프트.
@@ -6944,11 +6942,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         metavar="SEC",
                         help="외부 호출 벽시계 백스톱(초) — 기본은 해소 대상의 하네스 프로필. "
                              "local.conf harness.<reviewer>.wall_timeout 또는 "
-                             f"{EXTERNAL_TIMEOUT_KEY} 로 조정")
+                             f"{ADDITIONAL_REVIEWER_TIMEOUT_KEY} 로 조정")
     parser.add_argument("--idle-timeout", type=_timeout_seconds_arg, default=None, metavar="SEC",
                         help="무진행 상한(초) — 마지막 진행 출력 이후 이 시간 침묵하면 중단(주 판정). "
                              "local.conf harness.<reviewer>.idle_timeout 또는 "
-                             f"{EXTERNAL_IDLE_TIMEOUT_KEY} 로 조정")
+                             f"{ADDITIONAL_REVIEWER_IDLE_TIMEOUT_KEY} 로 조정")
     parser.add_argument("--adr", nargs="+", default=None, metavar="ADR-NNNN",
                         help="관련 ADR 목록 (프롬프트에 포함)")
     parser.add_argument(UNISOLATED_REVIEWER_FLAG, action="store_true",
@@ -6959,8 +6957,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 # ── local.conf 송신 프로필 provenance/divergence ───────────────────────────
 # `_find_repo_root` 보유 도구 기계 inventory: contradiction_lint.py,
-# external_review.py, pm_delegate.py, ticket_finish.py. 이 중 local.conf 로 외부 송신 대상을 고르는
-# 표면은 external_review(reviewer_cmd)와 pm_delegate(delegate.*)뿐이다. ticket_finish는 local.conf의
+# additional_reviewer.py, pm_delegate.py, ticket_finish.py. 이 중 local.conf 로 외부 송신 대상을 고르는
+# 표면은 additional_reviewer(reviewer_cmd)와 pm_delegate(delegate.*)뿐이다. ticket_finish는 local.conf의
 # 완료/회귀 노브만 읽고, contradiction_lint는 local.conf 자체를 읽지 않아 이번 송신 분기 범위에서
 # 제외한다. tests/test_conf_resolution_provenance.py가 이 전수와 소비 여부를 소스에서 다시 센다.
 
@@ -6985,7 +6983,7 @@ def _review_raw_content(
     content: str, local_conf_path: Path | None, resolved_profile: str | None,
     target: ReviewerTarget | None = None, codex_egress: str | None = None,
 ) -> str:
-    """pm_delegate와 같은 `# key: value` 감사 헤더를 external_review 원문에 붙인다.
+    """pm_delegate와 같은 `# key: value` 감사 헤더를 additional_reviewer 원문에 붙인다.
 
     헤더는 **추가만** 한다(기존 두 줄의 위치·표기 불변). 해소 축(출처·harness·model·reasoning·
     실행 커맨드)과 egress 라벨을 한 줄씩 더해, raw 하나만 봐도 "무엇이 어떤 권한으로 이 판정을
@@ -6993,7 +6991,7 @@ def _review_raw_content(
     if (local_conf_path is None and resolved_profile is None
             and target is None and codex_egress is None):
         return content
-    header = ["# external_review raw 출력 (감사)"]
+    header = ["# additional_reviewer raw 출력 (감사)"]
     if local_conf_path is not None:
         header.append(f"# local_conf: {local_conf_path}")
     if resolved_profile is not None:
@@ -7079,7 +7077,7 @@ def delegate_profile_config(
 
 
 def reviewer_profile_config(conf: dict[str, str]) -> dict[str, str]:
-    """external_review의 실제 송신 대상 값. 미지정과 명시 default는 같은 값으로 정규화한다.
+    """additional_reviewer의 실제 송신 대상 값. 미지정과 명시 default는 같은 값으로 정규화한다.
 
     비교 대상은 **해소된 대상**이다 — 한쪽이 구조화 tuple 이고 다른 쪽이 legacy 커맨드면 실제
     수신자가 다르므로 커맨드·출처 축이 모두 갈려 loud 하다. 해소 불가능한 대상 conf 는 값 자리에
@@ -7516,7 +7514,7 @@ def _main(argv: list[str] | None = None) -> int:
     # 정상 실행·dry-run 공용 첫 provenance. 이후 cap/reanchor/diff 진단이 붙더라도 어느 PM-home conf와
     # reviewer tuple을 해소했는지가 stderr에 남는다.
     print(
-        f"[external-review] config provenance: local_conf={conf_path} "
+        f"[additional-reviewer] config provenance: local_conf={conf_path} "
         f"· diff_root={diff_root} · pm_home={pm_home} · resolved_profile={profile}",
         file=sys.stderr,
     )
@@ -7544,7 +7542,7 @@ def _main(argv: list[str] | None = None) -> int:
         print(
             format_local_conf_divergence(
                 divergence,
-                surface="external_review",
+                surface="additional_reviewer",
                 cwd_label="diff worktree",
                 source_label="해소된 PM 홈",
                 resolution_note=(
@@ -7595,7 +7593,7 @@ def _main(argv: list[str] | None = None) -> int:
         print(
             format_local_conf_divergence(
                 content_resolution.divergence,
-                surface="external_review 송신 내용",
+                surface="additional_reviewer 송신 내용",
                 cwd_label="diff worktree",
                 source_label="해소된 PM 홈",
                 resolution_note=(
@@ -7786,7 +7784,7 @@ def _main(argv: list[str] | None = None) -> int:
         print(relay.dry_run_codex_egress_line(
             escalation_required=codex_egress_required,
             attested=args.codex_egress_escalated,
-            script=relay.EXTERNAL_REVIEW_ENTRYPOINT,
+            script=relay.ADDITIONAL_REVIEWER_ENTRYPOINT,
             gate_key=ADDITIONAL_REVIEWER_ENABLED_KEY,
             windows=_running_on_windows(),
         ))
@@ -7811,7 +7809,7 @@ def _main(argv: list[str] | None = None) -> int:
             relay.codex_egress_block_message(
                 list(sys.argv[1:] if argv is None else argv),
                 target.name, target.ledger_model,
-                script=relay.EXTERNAL_REVIEW_ENTRYPOINT,
+                script=relay.ADDITIONAL_REVIEWER_ENTRYPOINT,
                 gate_key=ADDITIONAL_REVIEWER_ENABLED_KEY,
                 subject="추가 리뷰어 외부 전송",
                 windows=_running_on_windows(),
@@ -7822,7 +7820,7 @@ def _main(argv: list[str] | None = None) -> int:
 
     # 실행 provenance — raw 헤더와 같은 라벨을 stderr 에도 남긴다(사후 안전 경계 재구성 입력).
     print(
-        "[external-review] 실행 provenance: "
+        "[additional-reviewer] 실행 provenance: "
         + relay.codex_egress_provenance(
             escalation_required=codex_egress_required,
             attested=args.codex_egress_escalated,
@@ -8000,14 +7998,14 @@ def _next_external_finding_id(args, *, pm_home: Path | None) -> str | None:
         return None
     delegate = _load_pm_delegate()
     return delegate.next_review_finding_id(
-        state.text, delegate.EXTERNAL_REVIEW_ROLE, state.rounds,
+        state.text, delegate.ADDITIONAL_REVIEWER_ROLE, state.rounds,
     )
 
 
-def _harvest_external_review_section(
+def _harvest_additional_reviewer_section(
     ticket: str, result: dict, *, pm_home: Path | None,
 ) -> str | None:
-    """추가 리뷰어 산출을 게이트 티켓의 새 `external-reviewer` 라운드 파일로 회수한다.
+    """추가 리뷰어 산출을 게이트 티켓의 새 `additional-reviewer` 라운드 파일로 회수한다.
 
     회수 주체는 **엔진**이다 — 리뷰어에게 티켓/보드 편집 권한을 주지 않는다. 라운드 본문은 첫 줄
     헤더 + 산문 회신 전문(그 안에 versioned 블록 하나)이고, 내용 검증(`pm_delegate` 소유)을
@@ -8034,7 +8032,7 @@ def _harvest_external_review_section(
             raise
         return _HARVEST_ENGINE_SKEW_PROBLEM.format(detail=exc)
     try:
-        return _reserve_external_review_round(
+        return _reserve_additional_reviewer_round(
             ticket, reply, delegate=delegate, rounds_module=rounds_module, board=board,
         )
     # 라운드 규약 위반은 `RuntimeError` 하위형이라 **사본 skew 절보다 먼저** 받는다 — 순서를
@@ -8048,7 +8046,7 @@ def _harvest_external_review_section(
         return _HARVEST_ENGINE_SKEW_PROBLEM.format(detail=exc)
 
 
-def _reserve_external_review_round(
+def _reserve_additional_reviewer_round(
     ticket: str, reply: str, *, delegate, rounds_module, board,
 ) -> str | None:
     """내용 검증 → 통과 시 라운드 예약 + board 부분 커밋 (위반 사유 또는 None).
@@ -8056,14 +8054,14 @@ def _reserve_external_review_round(
     검증 입력(명세 + 라운드)은 예약 **직전**에 읽는다 — finding ID 재선언·confirmation 대상
     판정이 실제로 쓰이는 상태와 같은 스냅샷을 봐야 한다.
     """
-    role = delegate.EXTERNAL_REVIEW_ROLE
+    role = delegate.ADDITIONAL_REVIEWER_ROLE
     found = board.find_ticket_exact(ticket)
     if found is None:
         raise delegate.DelegateError(f"ticket not found: {ticket}")
     status, ticket_path = found
     if status not in ("open", "claimed"):
         raise delegate.DelegateError(
-            f"external-reviewer 라운드 기록은 open/claimed 티켓만 허용: "
+            f"additional-reviewer 라운드 기록은 open/claimed 티켓만 허용: "
             f"{ticket} in {status}/"
         )
     with _load_file_lock().open_shared(
@@ -8091,12 +8089,12 @@ def _reserve_external_review_round(
         tickets_dir, ticket, role, content=content, lock=board.board_lock(),
     )
     ordinal, _role = rounds_module.parse_round_filename(round_path.name)
-    message = f"external-review {ticket} {role}"
+    message = f"additional-reviewer {ticket} {role}"
     # board 부분 커밋 seam 은 직접 부른다 — 이름을 더듬어 찾으면 그 이름이 갈렸을 때 라운드
     # 파일만 만들어지고 board 커밋은 조용히 빠진 rc0 이 된다(AttributeError 로 죽는 편이 낫다).
     sync_ready = bool(board._rounds_mutation_sync_paths(message, [round_path]))
     print(
-        f"[external-review] 티켓 회수: {ticket} {role}[{ordinal}] → {round_path}"
+        f"[additional-reviewer] 티켓 회수: {ticket} {role}[{ordinal}] → {round_path}"
         + ("" if sync_ready else " (board-git 동기 미준비)"),
         file=sys.stderr,
     )
@@ -8146,7 +8144,7 @@ def _run_isolated_review(
     )
     if workspace is not None:
         print(
-            f"[external-review] 리뷰어 가시 범위: cwd={workspace.tree} "
+            f"[additional-reviewer] 리뷰어 가시 범위: cwd={workspace.tree} "
             f"· HOME={workspace.home} "
             f"(tracked {workspace.files}개 거울 · git 저장소="
             f"{'예' if workspace.git_repo else '아니오'}"
@@ -8205,7 +8203,7 @@ def _run_isolated_review(
         # 회신 추출 실패는 예외다 — 프로세스가 rc=0 으로 끝났으니 인증은 통과한 실행이고, 여기서
         # 인증 힌트를 내면 원인을 반대로 가리킨다(진단 채널은 요약의 사유 줄과 raw wire 다).
         print(
-            "[external-review] 힌트: 격리(임시 홈·allowlist env)에서 인증 입력이 빠져 실패했을 수 "
+            "[additional-reviewer] 힌트: 격리(임시 홈·allowlist env)에서 인증 입력이 빠져 실패했을 수 "
             f"있습니다 — 홈 인증/설정 복제 {len(workspace.copied_home_artifacts)}개("
             f"{', '.join(workspace.copied_home_artifacts) or '없음'}) · "
             f"{_REVIEWER_ENV_KEEP_EXTRA_KEY} 통과 {len(applied_extra)}개("
@@ -8319,7 +8317,7 @@ def _run_isolated_review(
             file=sys.stderr,
         )
     if harvest_ticket and started and not result.get("failed"):
-        problem = _harvest_external_review_section(
+        problem = _harvest_additional_reviewer_section(
             harvest_ticket, result, pm_home=pm_home,
         )
         if problem is not None:

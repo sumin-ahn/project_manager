@@ -5,7 +5,7 @@
 한글 커밋 메시지·diff·로그를 캡처하다 UnicodeDecodeError 로 크래시한다.
 
 검증 축:
-  - external_review: git diff 캡처 + 리뷰어 호출이 encoding="utf-8", errors="replace".
+  - additional_reviewer: git diff 캡처 + 리뷰어 호출이 encoding="utf-8", errors="replace".
   - pm_import: 하니스 runner + board init 캡처가 encoding 명시.
   - ticket_finish / pm_handoff: _default_run_pytest/board/git 가 encoding 명시.
   - bench_weight: _run_subprocess 캡처가 encoding 명시.
@@ -44,8 +44,8 @@ def _load(name: str, base: Path):
 
 
 @pytest.fixture(scope="module")
-def external_review():
-    return _load("external_review", TOOLS)
+def additional_reviewer():
+    return _load("additional_reviewer", TOOLS)
 
 
 @pytest.fixture(scope="module")
@@ -115,28 +115,28 @@ def _assert_utf8(kwargs: dict) -> None:
     )
 
 
-# ── external_review (run_fn DI 로 직접 주입) ────────────────────────────────
+# ── additional_reviewer (run_fn DI 로 직접 주입) ────────────────────────────────
 
 
-def test_extract_diff_passes_utf8_encoding(external_review):
+def test_extract_diff_passes_utf8_encoding(additional_reviewer):
     rec = _Recorder()
-    external_review.extract_diff("main", ["foo.py"], run_fn=rec)
+    additional_reviewer.extract_diff("main", ["foo.py"], run_fn=rec)
     assert rec.calls, "git diff 캡처 호출이 일어나지 않음"
     for kwargs in rec.calls:
         _assert_utf8(kwargs)
 
 
-def test_extract_diff_head_path_passes_utf8(external_review):
+def test_extract_diff_head_path_passes_utf8(additional_reviewer):
     rec = _Recorder(stdout="")  # 빈 staged/unstaged → HEAD~1 폴백까지 모두 거침
-    external_review.extract_diff("HEAD", ["foo.py"], run_fn=rec)
+    additional_reviewer.extract_diff("HEAD", ["foo.py"], run_fn=rec)
     assert len(rec.calls) >= 2
     for kwargs in rec.calls:
         _assert_utf8(kwargs)
 
 
-def test_run_reviewer_passes_utf8_encoding(external_review):
+def test_run_reviewer_passes_utf8_encoding(additional_reviewer):
     rec = _Recorder()
-    ok, _ = external_review.run_reviewer("echo hi", reviewer_cmd="echo hi", run_fn=rec)
+    ok, _ = additional_reviewer.run_reviewer("echo hi", reviewer_cmd="echo hi", run_fn=rec)
     assert rec.calls
     _assert_utf8(rec.calls[0])
 

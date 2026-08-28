@@ -26,7 +26,7 @@
 
 ```
 .project_manager/
-  tools/               # canonical 엔진 *.py (board·ticket_finish·pm_*·domain·worktree_pool·external_review) + engine.manifest
+  tools/               # canonical 엔진 *.py (board·ticket_finish·pm_*·domain·worktree_pool·additional_reviewer) + engine.manifest
   wiki/                # 방법론 (pm_role.md·pm_playbook.md·_template·domain/)  ← dev-state(architecture·ADR·roadmap·board)는 ② 소유
 templates/
   claude_code/         # 출하 Claude Code 템플릿 (엔진 사본 + .claude 어댑터 + CLAUDE.md)
@@ -38,7 +38,7 @@ tests/                 # 엔진 단위테스트 (pytest)
 ## 핵심 규칙 (반드시)
 
 - **엔진은 이 공개 제품 repo(① worktree `work/project_manager_1`)에서 고친다.** `board.py`·`ticket_finish.py`·
-  `pm_*.py`·`external_review.py` 등 엔진 코드 + `wiki/` 방법론·`_template` 의 **canonical 단일 진실 = 이 repo**.
+  `pm_*.py`·`additional_reviewer.py` 등 엔진 코드 + `wiki/` 방법론·`_template` 의 **canonical 단일 진실 = 이 repo**.
   "고치는 곳 = 테스트하는 곳" — 여기서 고치고 `tests/` 로 검증한다.
 - **`templates/*/` 의 엔진을 직접 고치지 마라.** 거긴 이 제품 repo(① worktree)에서 동기화된 사본이다 —
   엔진 변경 후 `pm_update.py --all-targets` 로 `templates/` 아래에 **존재하는 모든 타깃**에 내보낸다

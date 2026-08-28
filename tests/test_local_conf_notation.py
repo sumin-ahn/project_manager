@@ -116,7 +116,7 @@ def test_duplicate_key_resolves_the_same_in_every_consuming_module(tmp_path):
     _write_conf(tmp_path, "identity.user=first@example.com\n"
                           "identity.user=last@example.com\n")
     board = _load("board", "notation_board")
-    external = _load("external_review", "notation_external")
+    external = _load("additional_reviewer", "notation_external")
     config = _load("pm_config", "notation_config")
     board.LOCAL_CONF = tmp_path / ".project_manager" / "local.conf"
     board.REPO = tmp_path
@@ -131,7 +131,7 @@ def test_duplicate_key_resolves_the_same_in_every_consuming_module(tmp_path):
 
 def test_module_level_local_config_seams_are_still_patchable(monkeypatch):
     """모듈 레벨 `local_config` 이름은 시그니처째 보존된다 — 63지점 테스트 seam."""
-    for name in ("board", "external_review", "ticket_finish", "pm_delegate"):
+    for name in ("board", "additional_reviewer", "ticket_finish", "pm_delegate"):
         module = _load(name, f"seam_{name}")
         assert callable(module.local_config)
         monkeypatch.setattr(module, "local_config", lambda *a, **k: {"test.cmd": "x"})
@@ -148,7 +148,7 @@ _LEGACY_CONF = (
 )
 
 
-@pytest.mark.parametrize("name", ("board", "external_review", "ticket_finish",
+@pytest.mark.parametrize("name", ("board", "additional_reviewer", "ticket_finish",
                                   "pm_delegate"))
 def test_legacy_keys_stop_the_consumer_instead_of_silently_defaulting(tmp_path, name):
     """구표기 conf 를 **읽는 지점**이 멈춘다 — 조용히 엔진 기본값으로 떨어지지 않는다.
@@ -263,13 +263,13 @@ def test_the_exception_text_points_at_adopter_owned_files(tmp_path):
 
 def test_the_round_limit_axis_is_named_as_removed_not_renamed(conf_module):
     """라운드 상한 구키 두 이름은 '대체 없이 제거'다 — 이 티켓이 신키를 만들지 않는다."""
-    retired = ("additional_reviewer_round_limit", "external_review_round_limit")
+    retired = ("additional_reviewer_round_limit", "additional_reviewer_round_limit")
     for key in retired:
         assert conf_module.LEGACY_KEY_MAP[key] is None
         assert f"`{key}` → 제거(대체 키 없음)" in "\n".join(
             conf_module.migration_lines({key: None}))
     assert [key for key in conf_module.KNOWN_KEYS if key.endswith(".round_limit")] == []
-    external = _load("external_review", "round_limit_external")
+    external = _load("additional_reviewer", "round_limit_external")
     assert not hasattr(external, "_round_limit")
     assert ".round_limit" not in (REPO / "README.md").read_text(encoding="utf-8")
 

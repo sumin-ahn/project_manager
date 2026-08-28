@@ -1694,7 +1694,7 @@ def test_temp_output_guard_scopes_concurrent_process_output_to_session_directory
             "-c",
             writer,
             str(session_dir),
-            "external_review_codex_probe.txt",
+            "additional_reviewer_codex_probe.txt",
         ],
         check=True,
     )
@@ -1724,7 +1724,7 @@ def test_repo_raw_output_guard_observes_default_destination_and_ledger(tmp_path)
     after_raw = suite_conftest._snapshot_repo_raw_outputs(tmp_path)
     assert set(after_raw) == {raw}
 
-    review = local / "review" / "external_review_codex_probe.txt"
+    review = local / "review" / "additional_reviewer_codex_probe.txt"
     review.write_text("raw", encoding="utf-8")
     ledger = local / "raw_outputs.json"
     ledger.write_text("{}", encoding="utf-8")
@@ -2127,7 +2127,7 @@ def test_language_axis_sensitivity_disabling_scanner_clears_prose_offenders(
 #
 # 판정식 자체는 이 파일이 이미 로드한 ``PROSE_SCANNER``(=private_refs.py)와 같은 소스다 — 여기서
 # 사본을 만들지 않는다. 실 git 트리 + 실 board frontmatter(묶음 장부 포함) 로 재현한다(DI 로
-# git 을 가짜로 만들지 않는다) — 측정 폭의 기준점(``external_review.integration_anchor``)을
+# git 을 가짜로 만들지 않는다) — 측정 폭의 기준점(``additional_reviewer.integration_anchor``)을
 # 그대로 태워야 통합 브랜치가 이미 가진 줄 같은 실제 형상이 재현된다.
 #
 # 합성 티켓 ID·참조 문자열은 이 파일의 기존 관례대로 **조각으로 조립**한다. 완전한 사설 ID
@@ -2493,7 +2493,7 @@ def test_private_ref_preflight_blocks_inflow_at_quoted_rename_destination(pref_t
         '    return "hi"\n',
         encoding="utf-8",
     )
-    external = _load_tool_module("external_review")
+    external = _load_tool_module("additional_reviewer")
     diff_text = external.measured_diff_text(
         root, "HEAD", [_PREF_RENAME_SOURCE, _PREF_NON_ASCII_TOUCH],
         claimed_rev=claimed_rev,
@@ -2543,7 +2543,7 @@ def test_private_ref_preflight_surface_is_touches_intersect_shipping_python(pref
     _pref_write_target(root, _PREF_BASE_BODY)
     claimed_rev = _pref_commit(root, "seed")
     _pref_write_ticket(root, _pref_ticket("108"), claimed_rev)
-    external = _load_tool_module("external_review")
+    external = _load_tool_module("additional_reviewer")
     finisher = _pref_finisher(pref_tf, root)
     private_refs = pref_tf._load_private_refs()
     expected = {
@@ -2559,8 +2559,8 @@ def test_private_ref_preflight_surface_is_touches_intersect_shipping_python(pref
 def test_private_ref_preflight_surface_excludes_machine_mirror_copies(pref_tf):
     """표면 = 출하 python ∩ touches ∖ 기계 mirror. 실 트리에서 canonical 엔진 파일 하나와
     그 template 사본 전부를 선언해도 남는 것은 canonical 하나다 — 같은 유입을 사본 수만큼
-    중복 지목하지 않는다(제외 술어는 `external_review` 소유)."""
-    external = _load_tool_module("external_review")
+    중복 지목하지 않는다(제외 술어는 `additional_reviewer` 소유)."""
+    external = _load_tool_module("additional_reviewer")
     pm_import_module = _load_tool_module("pm_import")
     canonical = ".project_manager/tools/ticket_finish.py"
     mirrors = sorted({
@@ -2715,7 +2715,7 @@ def test_private_ref_preflight_does_not_reference_allowlist_or_baseline_files():
 def test_measured_diff_text_reuses_measure_stages_no_width_copy():
     """`measured_diff_text` 는 `_measure_stages`·`_stage_diff_runs` 를 그대로 호출한다
     (폭 정의 사본 0). 형식만 `--numstat` 대신 0-컨텍스트로 갈린다."""
-    external = _load_tool_module("external_review")
+    external = _load_tool_module("additional_reviewer")
     names = external.measured_diff_text.__code__.co_names
     assert "_measure_stages" in names
     assert "_stage_diff_runs" in names
@@ -2768,7 +2768,7 @@ def test_real_historical_inflow_agrees_with_the_reinflow_guard(pref_tf, tmp_path
     target.parent.mkdir(parents=True)
     target.write_text(source, encoding="utf-8")
 
-    external = _load_tool_module("external_review")
+    external = _load_tool_module("additional_reviewer")
     private_refs = pref_tf._load_private_refs()
     finisher = pref_tf.TicketFinisher(
         board_py=REPO / ".project_manager" / "tools" / "board.py",

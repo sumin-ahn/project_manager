@@ -11,7 +11,7 @@
   ③ diff 서킷브레이커 — 티켓 estimate 별 diff 총량(추가+삭제) 상한. 측정 폭은 리뷰가 보는 폭과
      같은 단계 표를 쓰고(`_diff_bases`), 초과면 리뷰어 호출 전에 rc 1 로 막는다.
 
-hermetic: REPO 를 tmp 로 monkeypatch 해 장부를 격리하고(`test_external_review.py` 동형),
+hermetic: REPO 를 tmp 로 monkeypatch 해 장부를 격리하고(`test_additional_reviewer.py` 동형),
 extract_diff·run_review·local_config 를 주입해 실제 git/추가 리뷰어 없이(외부 전송 0) 분기를
 단언한다. diff 측정만 실 git 을 쓰는 테스트는 tmp 저장소를 직접 만든다.
 """
@@ -38,7 +38,7 @@ _REVIEWER_TARGET = {
 }
 
 
-def _load(name: str = "external_review"):
+def _load(name: str = "additional_reviewer"):
     spec = importlib.util.spec_from_file_location(f"convergence_{name}", TOOLS / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -47,7 +47,7 @@ def _load(name: str = "external_review"):
 
 @pytest.fixture
 def external():
-    return _load("external_review")
+    return _load("additional_reviewer")
 
 
 # ── 응답 대역 — 산출 파싱은 **회신 채널**(answer)만 본다 ─────────────────────
@@ -115,7 +115,7 @@ def _wire(external, monkeypatch, tmp_path, *, series: list[int], conf=None,
     else:
         # 서킷 절은 총량 축만 태운다 — 폭의 기준점(묶음 장부 통합 브랜치 · 그 merge-base)은
         # 이 tmp REPO 에 없으므로 해소된 값을 그 자리에 넣는다. 기준점 해소 자체의 거부는
-        # 전용 파일(`test_external_review_diff_cap.py`)이 실 git 으로 값 단언한다.
+        # 전용 파일(`test_additional_reviewer_diff_cap.py`)이 실 git 으로 값 단언한다.
         monkeypatch.setattr(
             external, "cluster_integration_tip", lambda *a, **k: ("task/main", None))
         monkeypatch.setattr(

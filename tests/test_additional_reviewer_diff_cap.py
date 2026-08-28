@@ -39,7 +39,7 @@ requires_git = pytest.mark.skipif(
 _WAVE_SRC_LINES = 320
 
 
-def _load(name: str = "external_review"):
+def _load(name: str = "additional_reviewer"):
     spec = importlib.util.spec_from_file_location(f"diff_cap_{name}", TOOLS / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -48,7 +48,7 @@ def _load(name: str = "external_review"):
 
 @pytest.fixture
 def external():
-    return _load("external_review")
+    return _load("additional_reviewer")
 
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess:

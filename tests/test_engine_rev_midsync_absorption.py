@@ -986,8 +986,8 @@ def test_unconverged_run_skips_the_optin_prompts(pm_update, tmp_path, monkeypatc
     dest, source, rel = _sync_tree(tmp_path, dest_rev="v0.0.0-stale")
     monkeypatch.setattr(pm_update, "REPO", dest)
     asked: list[str] = []
-    monkeypatch.setattr(pm_update, "maybe_prompt_external_review",
-                        lambda _dest: asked.append("external_review"))
+    monkeypatch.setattr(pm_update, "maybe_prompt_additional_reviewer",
+                        lambda _dest: asked.append("additional_reviewer"))
 
     rc = pm_update.main(["--from", str(source)])
 
@@ -1004,13 +1004,13 @@ def test_converged_run_still_asks_the_optin_prompts(pm_update, tmp_path, monkeyp
     dest, source, rel = _sync_tree(tmp_path, dest_rev="v9.9.9")
     monkeypatch.setattr(pm_update, "REPO", dest)
     asked: list[str] = []
-    monkeypatch.setattr(pm_update, "maybe_prompt_external_review",
-                        lambda _dest: asked.append("external_review"))
+    monkeypatch.setattr(pm_update, "maybe_prompt_additional_reviewer",
+                        lambda _dest: asked.append("additional_reviewer"))
 
     rc = pm_update.main(["--from", str(source)])
 
     assert rc == 0, capsys.readouterr().err
-    assert asked == ["external_review"]
+    assert asked == ["additional_reviewer"]
 
 
 def test_converge_returns_the_convergence_verdict(pm_update, tmp_path, capsys):

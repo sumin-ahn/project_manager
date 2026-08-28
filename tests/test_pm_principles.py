@@ -369,6 +369,15 @@ def test_manifest_bare_entries_are_a_superset_of_the_pre_regression_baseline(man
         line for line in manifest_path.read_text(encoding="utf-8").splitlines() if line.strip()
     }
     missing = baseline_lines - current_lines
+    # 선언된 retire는 기존 bare 파일과 그 이름을 설명하던 주석의 의도적 제거다. 그 밖의
+    # baseline 행은 계속 부분집합이어야 하므로 rename이 unrelated manifest 누락을 가리지 않는다.
+    retired_stems = {
+        Path(line.split(":", 1)[1].split("->", 1)[0].strip()).stem
+        for line in current_lines
+        if line.startswith("# pm-retired-path:")
+    }
+    missing = {line for line in missing
+               if not any(stem in line for stem in retired_stems)}
     assert not missing, f"{rel} 에서 task/main 대비 누락된 행: {sorted(missing)}"
     # 이번 라운드의 두 신규 bare 등재도 값으로 함께 확인한다(F-001 이 지운 두 항목).
     assert ".project_manager/tools/private_refs.py" in current_lines

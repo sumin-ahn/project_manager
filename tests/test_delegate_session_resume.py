@@ -275,7 +275,7 @@ def test_reply_only_facade_keeps_both_call_sites_intact(relay, pd):
     assert relay.extract_harness_reply("claude", _claude_wire("답")) == "답"
     assert relay.extract_harness_reply("claude", _claude_wire("   ")) is None
     assert pd.extract_reply("claude", _claude_wire("답")) == "답"      # 위임 호출부
-    external = _load("external_review")
+    external = _load("additional_reviewer")
     source = Path(external.__file__).read_text(encoding="utf-8")
     assert source.count("relay.extract_harness_reply(") == 0    # 리뷰어 호출부는 usage 관측으로 이관
     assert source.count("relay.extract_harness_result(") == 1
@@ -355,7 +355,7 @@ def test_candidate_selection_excludes_other_axes(pd):
                    session_id="01994a1e-2b3c-7def-8123-456789abcdef"),
         _candidate(id="x", rc=1, started_at=newest),
         _candidate(id="x", rc=None, started_at=newest),
-        _candidate(id="x", surface="external-review", started_at=newest),
+        _candidate(id="x", surface="additional-reviewer", started_at=newest),
         _candidate(id="x", ticket="T-" + "0001", started_at=newest),
     ):
         rows = [_candidate(id="keeper"), excluded]
@@ -718,7 +718,7 @@ def test_ledger_extra_cannot_overwrite_common_schema(relay, tmp_path):
 
 def test_review_round_ledger_is_never_touched(pd, monkeypatch, tmp_path, capsys):
     """위임 회계는 별도 네임스페이스 — 리뷰 라운드 장부는 생성도 갱신도 되지 않는다."""
-    external = _load("external_review")
+    external = _load("additional_reviewer")
     pm_home = tmp_path / "pm_home"
     (pm_home / ".project_manager" / ".local").mkdir(parents=True)
     monkeypatch.setattr(external, "REPO", pm_home)

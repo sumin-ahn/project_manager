@@ -380,8 +380,8 @@ _C_BOARD_LINT = _CardCmd("board.py", "lint", ("lint",), ())
 _C_BOARD_CLAIM = _CardCmd("board.py", "claim T-NNNN", ("claim",), ())
 _C_BOARD_REGRESSION = _CardCmd("board.py", "regression run", ("regression",), ())
 _C_TICKET_FINISH = _CardCmd("ticket_finish.py", "<T-NNNN>", (), ())
-_C_EXTERNAL_REVIEW = _CardCmd(
-    "external_review.py", "--ticket T-NNNN --adr ADR-NNNN", (), ("--ticket", "--adr"))
+_C_ADDITIONAL_REVIEWER = _CardCmd(
+    "additional_reviewer.py", "--ticket T-NNNN --adr ADR-NNNN", (), ("--ticket", "--adr"))
 _C_PM_HANDOFF = _CardCmd(
     "pm_handoff.py", '--session-seq <N> --wave-summary "<요약>"', (),
     ("--session-seq", "--wave-summary"))
@@ -415,7 +415,7 @@ _C_PC_STATUS = _CardCmd("pm_config.py", "status", ("status",), ())
 _CARD_SLOT_CLI = (
     _C_BOARD_LIST_MINE, _C_BOARD_LIST, _C_BOARD_LIST_ALL, _C_BOARD_NEW, _C_BOARD_PROMOTE,
     _C_BOARD_COMPLETE, _C_BOARD_SHOW, _C_BOARD_LINT, _C_BOARD_CLAIM, _C_BOARD_REGRESSION,
-    _C_TICKET_FINISH, _C_EXTERNAL_REVIEW, _C_PM_HANDOFF, _C_BOARD_LIVEGATE, _C_BOARD_PREFIX_LIST,
+    _C_TICKET_FINISH, _C_ADDITIONAL_REVIEWER, _C_PM_HANDOFF, _C_BOARD_LIVEGATE, _C_BOARD_PREFIX_LIST,
     _C_BOARD_PREFIX_RENAME, _C_BOARD_PREFIX_MERGE, _C_BOARD_REID, _C_BOARD_MIGRATE_IDENTITY,
     _C_PM_LOG_TAIL, _C_DOMAIN_AFFECTED,
 )
@@ -5207,7 +5207,7 @@ class PmBootstrap:
         pm_role 표기). **엔진이 Python CLI(`tools/*.py` — board.py/ticket_finish.py/
         pm_handoff.py)일 때만** "직접 금지" 강등 줄로 그리고, 엔진이 Agent 툴(`/pm-dev-delegate`)·
         facade 셸(`/pm-update`=pm-update.sh)이면 python3 줄을 지어내지 않고 skill-only + 평문 note
-        로 둔다. external_review 는 래핑 스킬 없는 별도 추가 리뷰어 게이트라 강등이 아니라 직접-CLI 예외
+        로 둔다. additional_reviewer 는 래핑 스킬 없는 별도 추가 리뷰어 게이트라 강등이 아니라 직접-CLI 예외
         (`board.py complete` 직접완료 경로·new/promote 도 동일). 강등 = 제거 아님: CLI backbone
         줄은 정체성 보간·⚠ 인접·argparse 정합 가드를 위해 남긴다. 규칙·why 는 재설명하지 않고
         카드 상단 1줄 pointer 로 pm_role 규율 절을 가리킨다.
@@ -5384,11 +5384,11 @@ class PmBootstrap:
             "orchestrator 위임 표준 프롬프트(dev / reviewer)",
         ))
         lines.append("  ↳ 엔진=Agent 툴(위임)·직접 CLI 아님 — skill-only.")
-        # external_review = 래핑 스킬 없는 별도 추가 리뷰어 게이트(직접 OK 예외·reviewer 병행).
+        # additional_reviewer = 래핑 스킬 없는 별도 추가 리뷰어 게이트(직접 OK 예외·reviewer 병행).
         # 위임 직후 sibling. 역할 이름은 **추가 리뷰어**이고 수신 하네스(codex 등)는 채택자
         # local.conf 설정값이라 카드 문구에 고정하지 않는다.
         lines.append(cmd(
-            _C_EXTERNAL_REVIEW,
+            _C_ADDITIONAL_REVIEWER,
             "추가 리뷰어 교차검증 게이트 — 직접(래핑 스킬 없음)·reviewer 병행",
         ))
         lines.append(skill("/pm-handoff", "세션 종료 7단계 자동화"))
@@ -5435,7 +5435,7 @@ class PmBootstrap:
         lines.append("")
 
         # 정체성 불요 조회 (read-only·직접·cwd/conf/env 자동 해소) — 래핑
-        # 스킬 없는 read-only op 만. ticket_finish/external_review/pm_update 는 위 wave 운영서
+        # 스킬 없는 read-only op 만. ticket_finish/additional_reviewer/pm_update 는 위 wave 운영서
         # 각 스킬의 강등 backbone 으로 이미 표기.
         lines.append("# 정체성 불요 (read-only 조회·직접 — cwd/conf/env 자동 해소)")
         lines.append(cmd(_C_PM_LOG_TAIL))

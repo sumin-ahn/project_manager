@@ -16,5 +16,5 @@
 | `pm_playbook.md` | ✅ 도메인 무관 | PM 활동별 레퍼런스. 누적 학습은 `pm_playbook.local.md` 로 분리(ADR-0007). |
 | 진입 문서 (`CLAUDE.md`·`AGENTS.md`) | 🟡 템플릿 | 부트스트랩 패턴 재사용, 프로젝트 한 줄·제약은 placeholder. |
 | `ticket_finish.py` | 🟡 **Python+pytest 결합** | status.md 의 정확한 라인 형식에 정규식 앵커. **선택 도구** — 없어도 board.py 만으로 완결. Python 외 언어면 pytest 파싱 교체. |
-| `external_review.py` | 🟡 **선택 · 외부 전송 · 기본 OFF** | 추가 리뷰어(additional reviewer) 어댑터(ADR-0004). opt-in 은 첫 1회 질문이고 `local.conf` 튜플 하나(`additional_reviewer.enabled=true` + `additional_reviewer.harness`/`.model`/`.reasoning`)로 기록된다. 켠 뒤 리뷰마다 비용 승인을 다시 받지 않는다. 없어도 내부 code-reviewer 로 완결. |
+| `additional_reviewer.py` | 🟡 **선택 · 외부 전송 · 기본 OFF** | 추가 리뷰어(additional reviewer) 어댑터(ADR-0004). opt-in 은 첫 1회 질문이고 `local.conf` 튜플 하나(`additional_reviewer.enabled=true` + `additional_reviewer.harness`/`.model`/`.reasoning`)로 기록된다. 켠 뒤 리뷰마다 비용 승인을 다시 받지 않는다. 없어도 내부 code-reviewer 로 완결. |
 | `run_tests_hook.sh` | 🟡 러너는 설정으로, 발화는 `.py` 고정 | 러너 명령은 `local.conf` 의 `test.cmd` 로 지정한다(파일 자체는 엔진 소유·manifest 등재라 직접 고치면 다음 동기에 덮인다). 미지정이면 `pytest tests/` 폴백. 발화 게이트는 `.py` 편집 고정이라 다른 언어에선 훅이 발화하지 않는다. |

@@ -46,8 +46,9 @@
 .project_manager/tools/pm_render.py
 # relay core: 하니스 무관 thin stateless supervisor. 하니스 driver(pm_orch_*.py)는 어댑터층(manifest 밖)
 .project_manager/tools/pm_relay.py
-# external_review: 추가 리뷰어 어댑터 (기본 OFF). review_context.local.md·local.conf 는 인스턴스 소유(manifest 밖)
-.project_manager/tools/external_review.py
+# additional_reviewer: 추가 리뷰어 어댑터 (기본 OFF). review_context.local.md·local.conf 는 인스턴스 소유(manifest 밖)
+.project_manager/tools/additional_reviewer.py
+# pm-retired-path: .project_manager/tools/external_review.py -> .project_manager/tools/additional_reviewer.py
 # review_rounds: 추가 리뷰어/내부 code-reviewer가 공유하는 라운드 장부 read/write·수렴 판정 seam.
 # 저장 파일·파일락 경로와 축별 부가 기록은 각 호출 도구가 소유한다.
 .project_manager/tools/review_rounds.py
@@ -76,13 +77,13 @@
 # file_lock: 배타 파일락 + O_APPEND 원자 append 공용 seam — POSIX flock / Windows msvcrt /
 #   무락 폴백(프리미티브 부재 시에만·있는데 실패면 전파) 단일 구현. 소비자 6: board(board.lock·
 #   board-git.lock·append)·pm_log(log.lock·append)·pm_relay(raw 장부 .lock)·pm_handoff(대시보드
-#   .lock)·worktree_pool(리스 장부 .lock)·external_review(라운드 장부 .lock). 락 파일 경로 규약은
+#   .lock)·worktree_pool(리스 장부 .lock)·additional_reviewer(라운드 장부 .lock). 락 파일 경로 규약은
 #   각 도구 소유. 등록 필수(미등록=전파 안 됨).
 .project_manager/tools/file_lock.py
 # local_conf: local.conf 파싱/구표기 판정 공용 seam — `KEY=value`·`#` 주석·중복키 last-wins·
 #   미존재/IO 실패는 빈 맵. 구표기(flat) 키가 남아 있으면 소비 시점에 fail-loud 하고 키마다
 #   신표기를 처방한다(pm_update/pm_import 의 파일 반영 경로만 비차단 안내). 소비자 9:
-#   board·external_review·pm_delegate·pm_update·pm_import·pm_config·pm_bootstrap·ticket_finish·
+#   board·additional_reviewer·pm_delegate·pm_update·pm_import·pm_config·pm_bootstrap·ticket_finish·
 #   pm_handoff. 신설 도구라 등록 필수(미등록=전파 안 됨·pm_render 사례).
 .project_manager/tools/local_conf.py
 # delegate_channel_guard: claude PreToolUse(Agent) 위임 채널 가드 — local.conf delegate 매핑 불일치 시 deny·자체 고장 fail-open. 래퍼 delegate_channel_guard_hook.sh 는 어댑터층(ADAPTER_HOOK_SET)
@@ -100,7 +101,7 @@
 #   pm_render 사례). wikilink 문법·파일 수집은 board.py 재사용(자체 매핑 신설 0)
 .project_manager/tools/contradiction_lint.py
 # pm_delegate: cross-harness 역할 위임 채널 (기본 OFF·delegate.enabled opt-in). PM 이 세션을
-#   안 떠나고 역할 노동을 다른 하네스 CLI subprocess 로 위임(순수 CLI·N×N). external_review denylist·
+#   안 떠나고 역할 노동을 다른 하네스 CLI subprocess 로 위임(순수 CLI·N×N). additional_reviewer denylist·
 #   pm_relay 3파서/워치독을 deep-import 재사용. 신설 도구라 등록 필수(미등록=전파 안 됨·pm_render 사례).
 #   local.conf delegate.* 매핑은 인스턴스 소유(manifest 밖)
 .project_manager/tools/pm_delegate.py

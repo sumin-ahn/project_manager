@@ -153,7 +153,7 @@ wave 중 묶음 종결은 `ticket_finish.py --cluster <C-이름> --no-pytest` + 
 
 ### 추가 리뷰어 교차검증 (opt-in 채널 · 기본 OFF)
 
-추가 리뷰어(additional reviewer)는 기본 OFF 인 opt-in 채널이다. `additional_reviewer.enabled=true` 로 켠 채택자만 code-reviewer 라운드에 이 채널을 병행하며, 아래 규약은 켠 경우에 적용된다. 역할 이름도 설정 키(`additional_reviewer.enabled`·`additional_reviewer.*`)도 추가 리뷰어로 통일돼 있다 — `external_review` 는 엔진 모듈 파일 이름·raw 파일 접두처럼 이미 기록된 산출물에 박힌 기계 식별자와 외부 전송 축의 이름으로만 남는다. 개칭 전 구키를 쓰는 채택자 `local.conf` 는 실행 시 안내 1줄을 받는다(마이그레이션 절차는 README).
+추가 리뷰어(additional reviewer)는 기본 OFF 인 opt-in 채널이다. `additional_reviewer.enabled=true` 로 켠 채택자만 code-reviewer 라운드에 이 채널을 병행하며, 아래 규약은 켠 경우에 적용된다. 역할 이름도 설정 키(`additional_reviewer.enabled`·`additional_reviewer.*`)도 추가 리뷰어로 통일돼 있다 — `additional_reviewer` 는 엔진 모듈 파일 이름·raw 파일 접두처럼 이미 기록된 산출물에 박힌 기계 식별자와 외부 전송 축의 이름으로만 남는다. 개칭 전 구키를 쓰는 채택자 `local.conf` 는 실행 시 안내 1줄을 받는다(마이그레이션 절차는 README).
 
 전제는 `local.conf` 의 원자적 튜플 하나다(첫 init/update 에서 **1회만** 묻는다 — 비활성이면 `--dry-run` 미리보기·`--force` 1회 강제).
 
@@ -172,7 +172,7 @@ additional_reviewer.reasoning=max
 **잔여 must-fix 의 처분(릴리즈 전 필수).** 상한으로 종결된 게이트에 must-fix 가 남았으면 그 잔여를 어떻게 소화했는지 장부에 선언한다. 건수를 읽지 못한 판정 무효 라운드의 잔여는 `0`이 아니라 **미상**이며 똑같이 차단·처분 대상이다. 선언 없는 잔여는 릴리즈가 열리지 않는다(`board.py livegate record` 가 실행 전에 차단·우회 플래그 없음). 보호훅의 `PM_SKIP_LIVE_GATE=1`도 장부 writer가 원자 갱신한 현행 잔여 표식이 명확히 `clear`일 때만 라이브 축을 우회한다. 표식 부재·손상·판독 실패는 잔여 미상이라 fail-closed이며, `board.py livegate record` 1회로 환경과 표식을 먼저 복구한다.
 
 ```bash
-python3 .project_manager/tools/external_review.py --resolve-gate <게이트> --pm-verified
+python3 .project_manager/tools/additional_reviewer.py --resolve-gate <게이트> --pm-verified
 ```
 
 처분은 현재 티켓 fix의 판정 표면과 기계 확인 증거를 재검증하는 `pm-verified` 하나다. 선언은 그때의 라운드에 결속하므로 선언 뒤 새 라운드가 오면 stale로 다시 막힌다. `--resolve-gate`는 기록 명령이라 `--dry-run`과 함께 쓰면 rc=1로 거부한다. 상태는 `--rounds-report`의 처분 열(미처분/pm-verified/무대상)로 확인한다.
@@ -185,12 +185,12 @@ Claude Bash 도구로 아래 장시간 커맨드를 실행할 때는 호출층 `
 
 - **코드 리뷰**: code-reviewer 라운드와 같은 시점에 교차검증을 돌린다.
   ```
-  python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN
+  python3 .project_manager/tools/additional_reviewer.py --ticket T-NNNN --adr ADR-NNNN
   ```
   `--ticket` 이 touches 를 diff 경로로 잡고, `--adr` 이 관련 ADR 을 프롬프트에 참조로 넣는다.
 - **설계 리뷰** (ADR/spike): ADR/spike 문서 자체를 diff 로 보낸다.
   ```
-  python3 .project_manager/tools/external_review.py --base <ref> --paths .project_manager/wiki/decisions/ ... --gate <T-NNNN|ADR-NNNN>   # 실 전송은 --gate(또는 --ticket 유도)나 명시적 --no-gate 필수
+  python3 .project_manager/tools/additional_reviewer.py --base <ref> --paths .project_manager/wiki/decisions/ ... --gate <T-NNNN|ADR-NNNN>   # 실 전송은 --gate(또는 --ticket 유도)나 명시적 --no-gate 필수
   ```
 - **diff-only 한계**: 추가 리뷰어는 **diff 만** 본다 (`--adr` 은 ID 참조일 뿐 본문 미포함). ADR 본문이 필요하거나 코드 ticket 이 ADR 을 함께 개정하면 **`--paths` 에 코드 경로(ticket touches)와 ADR/문서 경로를 함께 나열**한다. ⚠️ `--paths` 는 `--ticket` touches 를 *대체*하므로 코드 경로 누락 시 코드 diff 가 리뷰에서 빠진다. 또는 코드(`--ticket`)·설계(`--paths`)를 **별도 실행**한다.
 - 판정: 추가 리뷰어가 must-fix 감지 시 exit 1 (반려). 외부 호출 실패(인증/한도/네트워크/타임아웃) → exit 1 + `FALLBACK_INTERNAL` (내부 reviewer 폴백 신호).

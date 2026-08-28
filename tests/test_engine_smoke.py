@@ -34,8 +34,8 @@ def ticket_finish():
 
 
 @pytest.fixture(scope="module")
-def external_review():
-    return _load("external_review")
+def additional_reviewer():
+    return _load("additional_reviewer")
 
 
 # ── import + 핵심 심볼 존재 (R14·R15·R16·R17) ──────────────────────────
@@ -43,7 +43,7 @@ def external_review():
 def test_board_exposes_lint_seams(board):
     assert callable(board.lint_wikilinks)        # R14
     assert callable(board._run_lint_hooks)       # R15
-    assert callable(board.prompt_external_review_optin)  # R17 opt-in
+    assert callable(board.prompt_additional_reviewer_optin)  # R17 opt-in
 
 
 def test_ticket_finish_pytest_parser_seams(ticket_finish):
@@ -55,9 +55,9 @@ def test_ticket_finish_pytest_parser_seams(ticket_finish):
     assert not hasattr(ticket_finish, "status_total_style")
 
 
-def test_external_review_symbols(external_review):
+def test_additional_reviewer_symbols(additional_reviewer):
     for sym in ("run_review", "parse_verdict", "filter_secret_hunks", "build_prompt"):
-        assert callable(getattr(external_review, sym))
+        assert callable(getattr(additional_reviewer, sym))
 
 
 # ── 순수 로직 (R16·R17) ─────────────────────────────────────────────────
@@ -69,7 +69,7 @@ def test_pytest_output_parse_green(ticket_finish):
     assert ticket_finish.is_pytest_green("1 failed, 11 passed in 1s", returncode=1) is False
 
 
-def test_verdict_and_exit(external_review, tmp_path):
+def test_verdict_and_exit(additional_reviewer, tmp_path):
     def mock(output, rc=0):
         def run_fn(argv, **kw):
             return subprocess.CompletedProcess(argv, rc, stdout=output, stderr="")
@@ -82,30 +82,30 @@ def test_verdict_and_exit(external_review, tmp_path):
                           ensure_ascii=False) + "\n"
 
     # 실행 대상은 해소된 구조화 tuple 하나다(모델 미고정 커맨드 직접 실행 경로는 폐지).
-    target = external_review.resolve_reviewer_target({
+    target = additional_reviewer.resolve_reviewer_target({
         "additional_reviewer.harness": "codex",
         "additional_reviewer.model": "gpt-5.6-sol",
     })
 
-    r = external_review.run_review(
+    r = additional_reviewer.run_review(
         "p", target=target, output_dir=tmp_path,
         run_fn=mock(reply("판정: 통과\n\n**must-fix**:\n- 없음\n")),
     )
-    assert r["all_pass"] and external_review.determine_exit_code(r) == 0
+    assert r["all_pass"] and additional_reviewer.determine_exit_code(r) == 0
 
-    r = external_review.run_review(
+    r = additional_reviewer.run_review(
         "p", target=target, output_dir=tmp_path,
         run_fn=mock(reply("판정: 반려\n\n**must-fix**:\n- foo\n")),
     )
-    assert r["any_must_fix"] and external_review.determine_exit_code(r) == 1
+    assert r["any_must_fix"] and additional_reviewer.determine_exit_code(r) == 1
 
-    r = external_review.run_review(
+    r = additional_reviewer.run_review(
         "p", target=target, output_dir=tmp_path, run_fn=mock("boom", rc=1),
     )
-    assert r["failed"] and external_review.determine_exit_code(r) == 1
+    assert r["failed"] and additional_reviewer.determine_exit_code(r) == 1
 
 
-def test_secret_denylist(external_review):
+def test_secret_denylist(additional_reviewer):
     diff = "diff --git a/x.py b/x.py\n+ok\ndiff --git a/.env b/.env\n+SECRET=1\n"
-    filtered, excluded = external_review.filter_secret_hunks(diff, external_review._SECRET_DENYLIST_PATTERNS)
+    filtered, excluded = additional_reviewer.filter_secret_hunks(diff, additional_reviewer._SECRET_DENYLIST_PATTERNS)
     assert excluded == [".env"] and "SECRET" not in filtered

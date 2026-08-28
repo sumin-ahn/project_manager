@@ -1,6 +1,6 @@
-"""T-0608 — external_review 인스턴스 overlay `review_context.local.md` 의 ignore 등재 가드.
+"""T-0608 — additional_reviewer 인스턴스 overlay `review_context.local.md` 의 ignore 등재 가드.
 
-실측한 결함(2026-08-09·PM 33차 릴리즈): external_review 가 읽는 인스턴스 소유 overlay
+실측한 결함(2026-08-09·PM 33차 릴리즈): additional_reviewer 가 읽는 인스턴스 소유 overlay
 `.project_manager/review_context.local.md` 가 어느 ignore 파일에도 없어(`git check-ignore` rc=1)
 PM 홈에 untracked 로 표면화했다. per-clone 파일이 커밋에 유입되면 인스턴스마다 다른 외부 리뷰어
 프롬프트 보강이 공유 히스토리에 박힌다.
@@ -8,7 +8,7 @@ PM 홈에 untracked 로 표면화했다. per-clone 파일이 커밋에 유입되
 `local.conf`·`.local/` 과 같은 per-clone 클래스라 엔진 `.project_manager/.gitignore` 에 등재하고
 manifest 전파로 출하 템플릿 전 타깃(=채택자가 받는 사본)에 내린다. 가드는 세 축이다:
 
-  ① 생성 주체와 ignore 규칙이 같은 파일을 가리킨다 — `external_review.REVIEW_CONTEXT_FILE` 에서
+  ① 생성 주체와 ignore 규칙이 같은 파일을 가리킨다 — `additional_reviewer.REVIEW_CONTEXT_FILE` 에서
      이름·디렉토리를 파생해 단언한다(상수 rename 시 ignore 규칙 미갱신을 잡는다).
   ② 엔진 canonical + 출하 템플릿 전 타깃에 규칙이 등재돼 있다 — 엔진만 고치면 채택자에게 닿는
      채널(pm_import 트리 복사·pm_update manifest 전파)이 비어 출하 누락으로 남는다([[T-0473]] 선례).
@@ -36,7 +36,7 @@ TOOLS = REPO / ".project_manager" / "tools"
 TEMPLATES_DIR = REPO / "templates"
 ENGINE_GITIGNORE = REPO / ".project_manager" / ".gitignore"
 
-# external_review 가 읽는 인스턴스 overlay 파일명 = ignore 규칙의 단일 대상 (정확명·와일드카드 아님).
+# additional_reviewer 가 읽는 인스턴스 overlay 파일명 = ignore 규칙의 단일 대상 (정확명·와일드카드 아님).
 OVERLAY_FILE_NAME = "review_context.local.md"
 
 # 정확명 등재의 반대급부 — 이 dev-state 문서들은 채택자 소유라 엔진이 추적 여부를 대신 결정하지 않는다.
@@ -48,10 +48,10 @@ requires_git_binary = pytest.mark.skipif(
     _GIT is None, reason="git 바이너리 부재 — check-ignore 실판정 실행 불가.")
 
 
-def _load_external_review():
+def _load_additional_reviewer():
     """도구 모듈을 (패키지 아님) importlib 로 경로 로드 — tests/ 공통 규약."""
     spec = importlib.util.spec_from_file_location(
-        "external_review", TOOLS / "external_review.py")
+        "additional_reviewer", TOOLS / "additional_reviewer.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -132,16 +132,16 @@ def _write(repo: Path, relpath: str, body: str = "본문\n") -> None:
 # ── ① 생성 주체 ↔ ignore 규칙 동일 대상 ────────────────────────────────────────
 
 
-def test_ignore_rule_targets_the_external_review_overlay_constant():
-    """ignore 규칙 대상이 external_review 가 실제로 읽는 overlay 파일과 같다.
+def test_ignore_rule_targets_the_additional_reviewer_overlay_constant():
+    """ignore 규칙 대상이 additional_reviewer 가 실제로 읽는 overlay 파일과 같다.
 
     상수를 rename 하면 규칙이 죽은 이름을 무시하게 되고 새 이름이 다시 untracked 로 샌다. 위치
     단언(부모 디렉토리 `.project_manager`)도 함께 건다 — bare-name 패턴은 규칙 파일이 있는
     디렉토리 하위에서만 유효하므로, overlay 가 다른 곳으로 옮겨지면 이 등재는 무력해진다.
     """
-    overlay = _load_external_review().REVIEW_CONTEXT_FILE
+    overlay = _load_additional_reviewer().REVIEW_CONTEXT_FILE
     assert overlay.name == OVERLAY_FILE_NAME, (
-        "external_review overlay 파일명이 바뀌었는데 ignore 규칙이 옛 이름에 남아 있다 — "
+        "additional_reviewer overlay 파일명이 바뀌었는데 ignore 규칙이 옛 이름에 남아 있다 — "
         f"규칙 대상을 {overlay.name!r} 로 갱신하라")
     assert overlay.parent.name == ".project_manager", (
         f"overlay 가 .project_manager/ 밖({overlay.parent}) 으로 이동 — "
@@ -149,20 +149,20 @@ def test_ignore_rule_targets_the_external_review_overlay_constant():
 
 
 def test_every_overlay_literal_in_source_matches_the_registered_name():
-    """external_review.py 안의 overlay 파일명 리터럴 전 지점이 등재명과 같다.
+    """additional_reviewer.py 안의 overlay 파일명 리터럴 전 지점이 등재명과 같다.
 
     모듈 로드 시점 바인딩 외에 PM 홈 재바인딩 지점이 같은 리터럴을 중복 보유한다 — 재바인딩
     쪽만 rename 되면 위 상수 단언은 green 인 채 `--pm-home` 해소 실행이 읽는 파일명이 갈린다.
     소스의 `*.local.md` 파일명 리터럴을 전수 스캔해 등재명 하나로 고정한다 (지점 수 하한 2).
     """
-    source = (TOOLS / "external_review.py").read_text(encoding="utf-8")
+    source = (TOOLS / "additional_reviewer.py").read_text(encoding="utf-8")
     literals = re.findall(r'"([A-Za-z0-9_.-]+\.local\.md)"', source)
     assert len(literals) >= 2, (
         "overlay 파일명 리터럴이 2지점(모듈 바인딩 + PM 홈 재바인딩) 미만으로 줄었다 — "
         "경로 조립이 바뀌었으면 이 스캔 패턴을 실 조립 형태로 갱신하라")
     stray = [lit for lit in literals if lit != OVERLAY_FILE_NAME]
     assert not stray, (
-        f"external_review.py 의 overlay 리터럴 {stray!r} 가 등재명 {OVERLAY_FILE_NAME!r} 와 "
+        f"additional_reviewer.py 의 overlay 리터럴 {stray!r} 가 등재명 {OVERLAY_FILE_NAME!r} 와 "
         "다르다 — 전 지점을 같은 이름으로 맞추고 ignore 등재를 갱신하라")
 
 

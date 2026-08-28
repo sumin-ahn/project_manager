@@ -579,7 +579,7 @@ def test_init_leaves_board_clean_and_claim_not_blocked(board, tmp_path, monkeypa
     monkeypatch.setattr(board, "PM_STATE_FILE", tmp_path / "pm_state.md")
     monkeypatch.setattr(board, "PM_STATE_TEMPLATE", tmp_path / "missing-template.md")
     monkeypatch.setattr(board, "install_pre_push_hook", lambda: False)
-    monkeypatch.setattr(board, "prompt_external_review_optin", lambda: None)
+    monkeypatch.setattr(board, "prompt_additional_reviewer_optin", lambda: None)
 
     assert board.cmd_init(argparse.Namespace(
         prefix=None, area=None, owner=None, session="pm")) == 0

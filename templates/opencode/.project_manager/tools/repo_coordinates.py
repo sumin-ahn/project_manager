@@ -19,11 +19,11 @@ Ticket ``touches`` 는 PM 홈 기준이라 ``work/<repo>_<N>/path`` 형태일 �
 좌표계 surface grep 감사 메모:
 ``rg -n 'def (_ticket_touches|_scope_args)|pages_for_touches\\(|get_ticket_touches\\(|repo / touch|\
 paths = touches|_freshness_owner_repo|--ticket|--paths' .project_manager/tools/{board.py,domain.py,\
-ticket_finish.py,external_review.py}`` 로 ticket 경로 생산·소비와 scoped regression 지점을 함께
+ticket_finish.py,additional_reviewer.py}`` 로 ticket 경로 생산·소비와 scoped regression 지점을 함께
 확인했다. 정확 좌표가 필요한 활성 소비는 domain의 affected/capture·ticket_finish의 완료
 domain 알림/task stage이며 모두 이 normalizer를 지난다. board scoped regression은
 ``_ticket_touches``→``_scope_args``에서 ``Path(t).stem``만 써 좌표 무관, freshness는
-owner-repo clock을 쓴다. external_review는 **canonical worktree에서 ``--ticket``은
+owner-repo clock을 쓴다. additional_reviewer는 **canonical worktree에서 ``--ticket``은
 접두 경로→빈 diff 차단·엔진 티켓 codex 게이트는 ``--paths`` 필수**다.
 """
 

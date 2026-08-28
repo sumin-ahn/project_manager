@@ -62,7 +62,7 @@ os.environ["PYTHONUTF8"] = "1"
 # 세션 기본 tempdir를 pytest 소유 디렉터리로 격리해 다른 checkout/PM 프로세스 출력과 섞지 않는다.
 _PROJECT_TEMPDIR_GLOBS = (
     "pm_delegate_*",
-    "external_review_*",
+    "additional_reviewer_*",
     "pm_board_seed_*",
     "safewrite-*",
     "safewrite-fac-*",
@@ -110,7 +110,7 @@ def _snapshot_repo_raw_outputs(
     특정 접두어로 좁히지 않고 디렉토리의 직계 파일 전부를 본다.
 
     직계 열거(`iterdir`)로 충분하다 — raw 박제는 목적지 디렉토리에 **평평하게** 파일을 만든다
-    (`pm_delegate_<harness>_<pid>_<uuid>.txt`·`external_review_<reviewer>_<ts>.txt`). 재귀 walk 는
+    (`pm_delegate_<harness>_<pid>_<uuid>.txt`·`additional_reviewer_<reviewer>_<ts>.txt`). 재귀 walk 는
     공용 repo-owned 열거 seam 을 우회하는 형태가 되고, 감시 대상은 git-ignored 산출물이라 그 seam 의
     tracked-only 의미와도 맞지 않는다. 하위 디렉토리가 생기는 설계 변경이 오면 그때 seam 을 태운다.
     """
@@ -183,7 +183,7 @@ def _snapshot_project_temp_outputs(
         root: Path) -> dict[Path, tuple[int, int, int, int]]:
     """프로젝트가 지정 tempdir에 만드는 이름 있는 산출물의 경로와 파일 정체를 스냅샷한다.
 
-    external_review 파일명은 초 단위라 기존 파일을 덮어쓸 수 있다. 경로 집합만 비교하지 않고
+    additional_reviewer 파일명은 초 단위라 기존 파일을 덮어쓸 수 있다. 경로 집합만 비교하지 않고
     inode/mtime/size도 함께 기록해 같은 이름 덮어쓰기도 신규 tempdir 쓰기로 판정한다.
     """
     snapshot: dict[Path, tuple[int, int, int, int]] = {}

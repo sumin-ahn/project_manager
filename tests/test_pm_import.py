@@ -2659,7 +2659,7 @@ def test_into_backs_up_and_preserves_existing_local_conf(pm_import, tmp_path):
 
     T-0021 메모 — additional_reviewer.enabled 보존(아래 assert)은 **T-0017 의 board.py
     EOF/비대화 가드**에 의존한다: board init 은 pm_import 가 stdin=DEVNULL 로 호출하므로
-    `prompt_external_review_optin` 은 비대화(isatty=False/EOF)로 판정해 **아무것도 쓰지
+    `prompt_additional_reviewer_optin` 은 비대화(isatty=False/EOF)로 판정해 **아무것도 쓰지
     않고 반환**해야 한다. 그래야 reapply_preserved_conf_keys 가 백업의 사용자값('true')을
     그대로 재병합한다. board.py 가 pre-fix(가드 없음)면 init 이 `additional_reviewer.enabled=false`
     를 먼저 써 버려 재병합이 스킵되고 이 테스트는 'false' 로 실패한다 — 정상(엔진 미수정 신호).
@@ -2740,7 +2740,7 @@ def test_run_board_init_passes_pm_noninteractive_env(pm_import, tmp_path, monkey
     """run_board_init 이 셋업 subprocess env 에 PM_NONINTERACTIVE=1 을 넣는지.
 
     Windows DEVNULL stdin 의 isatty() 신뢰불가 함정 회피(T-0071) — stdin=DEVNULL 와 함께
-    env 명시 신호로 external_review opt-in 프롬프트를 결정적 skip. 실 셋업을 돌리지
+    env 명시 신호로 additional_reviewer opt-in 프롬프트를 결정적 skip. 실 셋업을 돌리지
     않고 subprocess.run 을 가로채(부작용 0) 전달된 env/stdin 만 친다.
     """
     # 셋업 진입(pm_config init — board init 위임 + 홈 슬롯 등록) 존재 가드를 통과시킬 더미 트리.

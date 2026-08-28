@@ -2,7 +2,7 @@
 
 [[ADR-0052]] 규율(PM wave 운영은 스킬로 invoke·backbone CLI 직접호출 금지)을 문구 rot·pointer
 dangling·**카드↔pm_role 카탈로그 drift** 로부터 지키는 결정론적 가드다. 특히 #3 은 T-0280 codex
-게이트가 2 라운드에 걸쳐 손으로 잡던 카드↔카탈로그 불일치 클래스(external_review 오귀속·facade
+게이트가 2 라운드에 걸쳐 손으로 잡던 카드↔카탈로그 불일치 클래스(additional_reviewer 오귀속·facade
 우회·sub-op 누락 등)를 LLM whack-a-mole 대신 상시 회귀로 닫는 **class-closer** 다.
 
 검사 소스 두 개 — 둘 다 살아있어 어느 쪽이 drift 해도 fail 한다:
@@ -163,8 +163,8 @@ def _parse_catalog(text: str) -> dict[str, set[str]]:
 # ── 카드 파싱 ─────────────────────────────────────────────────────────────────
 
 # 강등 backbone 줄 = engine() 이 2-space 들여쓴 `python3 …/tools/<tool>` 줄. 직접 sibling
-# (external_review 등 cmd() 산출)은 들여쓰기가 없어 제외된다 — 이 구분이 must-fix #1
-# (external_review 오귀속) 클래스를 닫는다.
+# (additional_reviewer 등 cmd() 산출)은 들여쓰기가 없어 제외된다 — 이 구분이 must-fix #1
+# (additional_reviewer 오귀속) 클래스를 닫는다.
 _DEMOTION_RE = re.compile(
     r"(?:python3|py -3(?:\.\d+)?) \.project_manager/tools/(\S+\.py)(.*)"
 )
@@ -197,7 +197,7 @@ def _demotion_engine_tokens(block_lines: list[str]) -> set[str]:
     tokens: set[str] = set()
     for raw in block_lines:
         if not raw.startswith(" "):
-            continue  # 들여쓰기 없는 직접 sibling(external_review 등)은 강등 아님.
+            continue  # 들여쓰기 없는 직접 sibling(additional_reviewer 등)은 강등 아님.
         s = raw.strip()
         cmd_part = s.split("#", 1)[0].strip()  # trailing '# ↳ 주석' 제거.
         m = _DEMOTION_RE.match(cmd_part)

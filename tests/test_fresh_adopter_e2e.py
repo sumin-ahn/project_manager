@@ -51,6 +51,18 @@ _RAW_SLASH_ENTRY = re.compile(
     + r")(?![A-Za-z0-9_>/\-]|\.[A-Za-z0-9_])"
 )
 
+_PM_REVIEW_CLI_CARDS = {
+    "claude": Path(".claude/skills/pm-review/SKILL.md"),
+    "opencode": Path(".opencode/command/pm-review.md"),
+    "codex": Path(".agents/skills/pm-review/SKILL.md"),
+}
+_ADDITIONAL_REVIEWER_CLI = (
+    "python3 .project_manager/tools/additional_reviewer.py --ticket T-NNNN"
+)
+_RETIRED_REVIEWER_CLI = (
+    "python3 .project_manager/tools/external_review.py --ticket T-NNNN"
+)
+
 
 def _expected_opencode_command(skill_text: str, skill_name: str) -> str:
     canonical = "(references/operational-details.md)"
@@ -263,6 +275,25 @@ def test_fresh_adopter_imports_lints_clean_and_runs_workflow(pm_import, tmp_path
     )
     assert rc == 0, f"{harness} import 실패 (rc={rc})"
     assert (dest / ".project_manager" / "tools" / "board.py").is_file()
+
+    # (a-1·T-0876) source/template parity가 아니라 **실 fresh landing**에서 실행 파일과 사람
+    # 진입 카드를 함께 검증한다. 세 하네스 중 하나라도 구 파일을 계속 복사하거나 카드가 구 CLI를
+    # 가리키면 import 자체는 성공하므로 이 e2e 단언이 없으면 fresh adopter가 두 진입점을 품은 채
+    # green이 된다.
+    reviewer = dest / ".project_manager" / "tools" / "additional_reviewer.py"
+    retired = dest / ".project_manager" / "tools" / "external_review.py"
+    assert reviewer.is_file(), f"{harness}: fresh import에 신 추가 리뷰어 CLI가 없다: {reviewer}"
+    assert not retired.exists(), f"{harness}: fresh import가 구 추가 리뷰어 CLI도 출하했다: {retired}"
+
+    review_card = dest / _PM_REVIEW_CLI_CARDS[harness]
+    assert review_card.is_file(), f"{harness}: fresh import에 pm-review CLI 카드가 없다: {review_card}"
+    review_card_text = review_card.read_text(encoding="utf-8")
+    assert _ADDITIONAL_REVIEWER_CLI in review_card_text, (
+        f"{harness}: pm-review 카드가 신 CLI 호출을 제공하지 않는다: {review_card}"
+    )
+    assert _RETIRED_REVIEWER_CLI not in review_card_text, (
+        f"{harness}: pm-review 카드에 구 CLI 호출이 남았다: {review_card}"
+    )
 
     # (a0·T-0283) opencode: ctx-guard shim↔core co-presence (load-bearing 커플링 가드). 어댑터 파일은
     #   pm_import(rglob 전체트리 byte-copy)로만 출하된다 — manifest 미등재·self-update 채널 없음

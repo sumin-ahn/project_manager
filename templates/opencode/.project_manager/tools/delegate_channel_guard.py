@@ -296,7 +296,7 @@ def _absorb_engine_rev_skew_for_recovery(exc, boundary: str) -> bool:
     """훅 fail-open 경계가 marked skew 를 의도적으로 흡수했음을 표시한다 (사유 등록 필수).
 
     반환값으로 일반 실패와 사본 불일치를 구분한다 — 흡수는 하되 조용하지는 않다
-    (external_review 동형·self-contained 복제)."""
+    (additional_reviewer 동형·self-contained 복제)."""
     reason = _ENGINE_REV_SKEW_RECOVERY_REASONS.get(boundary, "").strip()
     if not reason:
         raise ValueError(f"등록되지 않았거나 사유가 빈 복구 경계: {boundary!r}")

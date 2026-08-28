@@ -12,7 +12,7 @@ python3 -m pytest tests/ -q
 ## 범위
 
 - `test_engine_smoke.py` — 엔진 도구 import + 핵심 함수 존재 스모크 (지금).
-- (후속) 다운스트림 인스턴스 `test_external_review.py` 등 일반화 포팅 → board.py·ticket_finish·external_review 단위테스트.
+- (후속) 다운스트림 인스턴스 `test_additional_reviewer.py` 등 일반화 포팅 → board.py·ticket_finish·additional_reviewer 단위테스트.
 
 ## 비고
 

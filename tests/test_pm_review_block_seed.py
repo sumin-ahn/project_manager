@@ -207,7 +207,7 @@ def test_every_round_role_seed_comes_from_the_delegate_renderer(pd, board):
     ))
     # 두 리뷰 채널이 각자 접두의 골격을 받는다(판정 표면은 하나·ID 네임스페이스는 분리).
     # 골격 **기본 인자**는 자리표시자 bytes 그대로다 — 추가 리뷰어 프롬프트가 그 골격을 쓴다.
-    for role, prefix in (("code-reviewer", "F"), ("external-reviewer", "X")):
+    for role, prefix in (("code-reviewer", "F"), ("additional-reviewer", "X")):
         default_skeleton = pd.render_pm_review_block_skeleton(role).replace(" ", "")
         assert f'"id":"{prefix}-NNN"' in default_skeleton
     # 시드는 다음 finding ID 실값을 싣는다(ID 가 하나도 없는 티켓이면 첫 번호).
@@ -315,7 +315,7 @@ def test_unedited_seed_is_malformed_review_output(pd):
 def test_seed_round_is_judged_pending_by_the_rounds_seam(pd):
     """'산출 없음' 판정은 라운드 seam 이 소유한다 — 회수는 그 판정만 본다."""
     rounds_module = pd._load_ticket_rounds()
-    for role in ("developer", "code-reviewer", "external-reviewer"):
+    for role in ("developer", "code-reviewer", "additional-reviewer"):
         seed = _seeded_round_text(pd, role)
         item = rounds_module.Round(
             ordinal=1, role=role,
@@ -363,12 +363,12 @@ def test_legacy_previous_round_prefill_degrades_to_placeholder(pd, capsys):
 def test_refused_previous_round_is_not_a_prefill_source(pd):
     """회수 거부 표식이 있는 라운드는 판정 표면 밖이라 확인 대상을 공급하지 않는다."""
     refused_text = (
-        "## 추가 리뷰 (external-reviewer · 2026-08-17)\n\n"
-        + pd.EXTERNAL_REVIEW_REFUSED_LINE + "\n\n"
+        "## 추가 리뷰 (additional-reviewer · 2026-08-17)\n\n"
+        + pd.ADDITIONAL_REVIEWER_REFUSED_LINE + "\n\n"
         + _reviewer_round_text(pd, _review_payload("X-001")).partition("\n")[2]
     )
     rendered = pd.render_ticket_growth_section_seed(
-        "external-reviewer", "", previous_round=(1, refused_text),
+        "additional-reviewer", "", previous_round=(1, refused_text),
     )
     payload = _seed_payload(rendered)
     assert [row["id"] for row in payload["confirmations"]] == ["X-NNN"]
@@ -381,10 +381,10 @@ def test_the_refused_marker_line_is_read_back_for_every_round_role(pd):
         assert pd.pm_review_refused_marker_present(line) is True, role
         assert pd.pm_review_refused_marker_present(f"머리\n{line}\n꼬리\n") is True, role
     # 옛 산출에 이미 박혀 있는 줄은 새 문법의 인스턴스다(마이그레이션 없음).
-    assert pd.EXTERNAL_REVIEW_REFUSED_LINE == pd.pm_review_refused_line(
-        pd.EXTERNAL_REVIEW_ROLE,
+    assert pd.ADDITIONAL_REVIEWER_REFUSED_LINE == pd.pm_review_refused_line(
+        pd.ADDITIONAL_REVIEWER_ROLE,
     )
-    assert pd.pm_review_refused_marker_present(pd.EXTERNAL_REVIEW_REFUSED_LINE) is True
+    assert pd.pm_review_refused_marker_present(pd.ADDITIONAL_REVIEWER_REFUSED_LINE) is True
     # 표식이 없는 본문은 판독 0 이다(존재가 아니라 문법을 본다).
     assert pd.pm_review_refused_marker_present(
         "<!-- pm-review-refused -->\n<!-- pm-review-refused role= -->\n",

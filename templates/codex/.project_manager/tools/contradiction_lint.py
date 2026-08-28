@@ -9,7 +9,7 @@
 역할 분업:
   - **탐지 = LLM** — prose 의미 모순은 정규식으로 못 잡는다(LLM 필요). 단 호출은 **DI seam + 기본 dry
     (미호출)** — 기본은 스코프를 기계로 수집하고 LLM 프롬프트를 산출물로 표면화한다(비용 없음·hermetic).
-    실 LLM 배선이 필요하면 `run_fn` 을 주입한다(external_review DI 동형).
+    실 LLM 배선이 필요하면 `run_fn` 을 주입한다(additional_reviewer DI 동형).
   - **판정 = 사람** — 실제 모순인지 판정·해소는 사람(generate≠evaluate). **차단 아님**(advisory·
     후보 표면화까지가 lint 역할).
 
@@ -166,7 +166,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
             raise
 
 
-# ── REPO 앵커 (external_review `_find_repo_root` 동형·adopter self-location) ──────
+# ── REPO 앵커 (additional_reviewer `_find_repo_root` 동형·adopter self-location) ──────
 
 def _find_repo_root() -> Path:
     """스크립트 위치에서 부모 체인을 상향 탐색해 `.project_manager` 를 품은 첫 조상을 반환한다.

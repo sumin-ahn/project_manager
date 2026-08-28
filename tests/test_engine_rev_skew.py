@@ -308,14 +308,14 @@ def test_engine_rev_skew_absorption_ledger_owners_are_a_closed_set():
     """흡수 장부를 가진 도구는 닫힌 집합이다 — 일반 CLI 는 완화 지점을 갖지 않는다.
 
     `pm_update` 는 skew 를 실제로 **고치는** 복구 채널이라 자기 실행 중의 rev 혼합을 흡수하고,
-    `external_review` 는 스폰 전 중단의 정리 경계 하나만 흡수한다(주 예외를 덮지 않기 위해).
+    `additional_reviewer` 는 스폰 전 중단의 정리 경계 하나만 흡수한다(주 예외를 덮지 않기 위해).
     `delegate_channel_guard` 는 PreToolUse 훅 fail-open 경계 하나만 흡수한다(T-0633 — 가드
     자신의 고장[사본 skew 포함]이 정상 Agent 위임을 막지 않는 것이 계약·skew 진단은 stderr 로
     남긴다). `pm_delegate` 는 read 역할 temp 의 **정리·롤백** 두 경계만 흡수한다 — Windows 에는
     `shutil.rmtree(dir_fd=)` 가 없어 삭제 수단이 형제 모듈(`file_lock.force_rmtree`)로 옮겨졌고,
     그래서 사본 불일치가 이 정리 경로에 닿을 수 있게 됐다. 정리는 위임이 끝난 뒤이거나 생성 실패
     롤백 중이라 여기서 예외를 올리면 성공한 실행이 뒤집히거나 진짜 실패 사유가 가려진다
-    (`external_review` 의 `abort_pre_spawn_raw` 와 같은 형상). 흡수하되 경고 문구로 원인을
+    (`additional_reviewer` 의 `abort_pre_spawn_raw` 와 같은 형상). 흡수하되 경고 문구로 원인을
     구분해 재동기 처방이 사라지지 않게 한다.
 
     **판정 경로는 어느 도구에서도 흡수하지 않는다** — 위 넷은 전부 정리/fail-open 경계다. 그 밖의
@@ -332,9 +332,9 @@ def test_engine_rev_skew_absorption_ledger_owners_are_a_closed_set():
     owners = sorted(
         path.name for path in TOOLS.glob("*.py")
         if "_ENGINE_REV_SKEW_RECOVERY_REASONS" in path.read_text(encoding="utf-8")
-    )
+        )
     assert owners == [
-        "delegate_channel_guard.py", "external_review.py", "pm_delegate.py",
+        "additional_reviewer.py", "delegate_channel_guard.py", "pm_delegate.py",
         "pm_import.py", "pm_log.py", "pm_update.py", "review_rounds.py",
     ]
 

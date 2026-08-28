@@ -35,7 +35,7 @@ _CLAIMED_AT = "2026-08-21T16:29:57+00:00"
 _COMPLETED_IN_WINDOW = "2026-08-21T16:31:40+00:00"    # claim 이후 완료 — 창 안
 _COMPLETED_BEFORE_WINDOW = "2026-08-21T15:00:00+00:00"  # claim 이전 완료 — 창 밖
 
-_MEDIUM_CAP = 1000  # external_review.DEFAULT_DIFF_CAPS["medium"] — 재현 형상의 상한
+_MEDIUM_CAP = 1000  # additional_reviewer.DEFAULT_DIFF_CAPS["medium"] — 재현 형상의 상한
 
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
@@ -136,7 +136,7 @@ def _measure(root: Path, tf, ticket_id: str, *, claimed_rev: str | None = None,
              run_fn=None):
     """한 티켓의 측정 — (finisher, external, touches, attribution)."""
     finisher = _finisher(root, tf)
-    external = tf._load_external_review()
+    external = tf._load_additional_reviewer()
     assert external is not None
     touches = finisher._measured_touches(ticket_id)
     assert touches is not None

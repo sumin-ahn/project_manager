@@ -36,10 +36,10 @@ PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py livegate record -
 #   readonly 슬롯 경로는 `pm-config status` 의 role=readonly 행에서 확인(`worktree` 서브커맨드는 add·prune-stale·remove 뿐).
 ```
 
-record는 라이브 wave 전에 추가 리뷰 라운드 장부의 미해소 must-fix를 차단한다(rc=1·우회 플래그 없음). 차단되면 현재 티켓 fix의 기계 확인이 끝난 게이트만 `external_review.py --resolve-gate <게이트> --pm-verified`로 선언한다. 다른 티켓이나 근거 게이트로 잔여를 넘기는 처분은 없다. 상태는 `external_review.py --rounds-report`로 확인하며 `livegate check`도 같은 판정을 반복한다.
+record는 라이브 wave 전에 추가 리뷰 라운드 장부의 미해소 must-fix를 차단한다(rc=1·우회 플래그 없음). 차단되면 현재 티켓 fix의 기계 확인이 끝난 게이트만 `additional_reviewer.py --resolve-gate <게이트> --pm-verified`로 선언한다. 다른 티켓이나 근거 게이트로 잔여를 넘기는 처분은 없다. 상태는 `additional_reviewer.py --rounds-report`로 확인하며 `livegate check`도 같은 판정을 반복한다.
 
 - readonly 슬롯은 `--cwd <절대경로>`로 명시한다. 무명시 + leased ≥2이면 seam이 fail-loud한다. 침묵 폴백 금지.
-- 릴리즈 전 추가 리뷰어 교차검증(`external_review`)의 `--paths`도 같은 readonly 슬롯 worktree를 가리킨다.
+- 릴리즈 전 추가 리뷰어 교차검증(`additional_reviewer`)의 `--paths`도 같은 readonly 슬롯 worktree를 가리킨다.
 - `PM_ORCH_LIVE_RELEASE=1`이 없으면 release wave가 skip되어 수집 N=0, record가 fail한다.
 - board 출력 `release N/<pin> green ✓`의 N==pin을 눈으로 확인해 보고한다. 다르면 마커 소실·wrong-cwd이므로 fail로 릴리즈를 막는다.
 - live tier는 **release 단일**이고 **3 하네스 실측**이다 — claude·opencode 는 wave 전 구간(부트스트랩~핸드오프·multi-repo·multi-user), codex 는 위임 완주와 relay 마커 정체성 2건으로 커버 깊이가 얕다. opencode 는 회사 기준 버전·격리 `--dir`·glm-5.2 로 돈다.

@@ -1,13 +1,13 @@
-"""external_review PM 홈 앵커 재지정 게이트 — adopter#0 false-green 능동 차단 (T-0367·ADR-0049).
+"""additional_reviewer PM 홈 앵커 재지정 게이트 — adopter#0 false-green 능동 차단 (T-0367·ADR-0049).
 
-빈-diff fail-loud 가드(T-0326·`test_external_review_repo_root.py`)는 diff 가 *실제로 빈 뒤* 사후
-차단한다. 이 게이트는 그 안내(external_review.py:166)를 **능동 게이트로 승격**한다 — REPO 앵커가
+빈-diff fail-loud 가드(T-0326·`test_additional_reviewer_repo_root.py`)는 diff 가 *실제로 빈 뒤* 사후
+차단한다. 이 게이트는 그 안내(additional_reviewer.py:166)를 **능동 게이트로 승격**한다 — REPO 앵커가
 adopter#0 PM 홈(import 사본)을 가리키고 `--paths` override 가 없으면, diff 추출 전에 canonical 코드
 worktree 재지정을 안내하며 fail-loud 한다([[adopter0-gates-use-worktree-canonical]]·PM 65).
 
 규율 경로(cwd·paths) 단언은 순수 filesystem 판정이라 hermetic — 외부 codex 실호출(과금·ADR-0004
 opt-in) 없이 REPO 앵커를 tmp PM 홈/worktree 형상으로 monkeypatch 해 게이트 분기를 단언한다. stage
-선행(git add)·빈-diff 백스톱은 `test_external_review_repo_root.py` 가 이미 커버(직교).
+선행(git add)·빈-diff 백스톱은 `test_additional_reviewer_repo_root.py` 가 이미 커버(직교).
 
 **오탐 0 (codex/reviewer 이중 게이트 수렴 must-fix)**: 재지정 대상은 `work/` 슬롯 스캔으로만 잡고
 local.conf `upstream` 은 참조하지 않는다 — upstream 은 URL/무관 로컬 checkout(`pm_import --from
@@ -28,8 +28,8 @@ TOOLS = REPO / ".project_manager" / "tools"
 _FIXTURE_TICKET = "T-" + "0001"
 
 
-def _load(name: str = "external_review"):
-    """도구 모듈을 (패키지 아님) importlib 로 경로 로드 — test_external_review_repo_root 동일 규약."""
+def _load(name: str = "additional_reviewer"):
+    """도구 모듈을 (패키지 아님) importlib 로 경로 로드 — test_additional_reviewer_repo_root 동일 규약."""
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -38,7 +38,7 @@ def _load(name: str = "external_review"):
 
 @pytest.fixture
 def external():
-    return _load("external_review")
+    return _load("additional_reviewer")
 
 
 # ── 형상 fixtures ──────────────────────────────────────────────────────────
@@ -60,7 +60,7 @@ def _make_pm_home(tmp_path: Path, *, with_ticket: bool = True,
     if with_worktree:
         (worktree / ".project_manager" / "tools").mkdir(parents=True)
         (worktree / ".git").write_text("gitdir: fixture\n", encoding="utf-8")
-        (worktree / ".project_manager" / "tools" / "external_review.py").write_text(
+        (worktree / ".project_manager" / "tools" / "additional_reviewer.py").write_text(
             "# engine copy\n", encoding="utf-8")
         ledger = home / ".project_manager" / ".local" / "worktree-leases.json"
         ledger.parent.mkdir(parents=True)
@@ -127,7 +127,7 @@ def test_canonical_worktree_ignores_upstream_foreign_checkout(external, tmp_path
     home, _ = _make_pm_home(tmp_path, with_worktree=False)
     foreign = tmp_path / "foreign_checkout"
     (foreign / ".project_manager" / "tools").mkdir(parents=True)
-    (foreign / ".project_manager" / "tools" / "external_review.py").write_text(
+    (foreign / ".project_manager" / "tools" / "additional_reviewer.py").write_text(
         "# unrelated checkout\n", encoding="utf-8")
     # foreign 이 존재하고 upstream 이 이를 가리켜도 work/ 슬롯 부재라 canonical=None (upstream 미참조).
     assert external._canonical_worktree(home) is None
@@ -174,7 +174,7 @@ def _run_main(external, monkeypatch, anchor: Path, conf: dict, argv: list[str]):
     # extract_diff 는 (diff, 제외 경로 목록) 튜플 반환 (T-0428) — 제외 없음(빈 목록)으로 주입.
     monkeypatch.setattr(external, "extract_diff", lambda *a, **k: ("diff --git a/x b/x\n+y\n", []))
     # 리뷰어 가시 범위 거울도 스텁 (T-0563) — 이 픽스처의 앵커는 실 git 저장소가 아니고, 이 파일이
-    # 보는 것은 앵커 해소/차단 분기다. 실 거울 회귀는 test_external_review_reviewer_isolation.py 소유.
+    # 보는 것은 앵커 해소/차단 분기다. 실 거울 회귀는 test_additional_reviewer_reviewer_isolation.py 소유.
     monkeypatch.setattr(
         external, "create_reviewer_workspace",
         lambda diff_root, *, base_dir=None, conf=None, source_home=None, denylist=():
@@ -195,9 +195,9 @@ def _run_main(external, monkeypatch, anchor: Path, conf: dict, argv: list[str]):
 
     monkeypatch.setattr(external, "run_review", _fake_run_review)
     # 이 파일은 PM 홈/diff 앵커 파생 축을 소유한다. 산출 회수(T-0696)는 별도 축이라
-    # tests/test_external_review_ticket_harvest.py 가 소유하고 여기서는 격리한다.
+    # tests/test_additional_reviewer_ticket_harvest.py 가 소유하고 여기서는 격리한다.
     monkeypatch.setattr(
-        external, "_harvest_external_review_section", lambda *_a, **_k: None,
+        external, "_harvest_additional_reviewer_section", lambda *_a, **_k: None,
     )
     return external.main(argv), called["reviewer"]
 

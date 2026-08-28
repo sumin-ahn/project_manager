@@ -323,8 +323,8 @@ spawn_agent(
 )
 ```
 
-> ⚠ **kill 되어도 산출은 남는다 — 단 `pm_delegate`/`external_review` 실행에 한한다.**
-> **cross-harness** 위임(`pm_delegate.py`)과 추가 리뷰(`external_review.py`)는 raw 를 실행 *전*에
+> ⚠ **kill 되어도 산출은 남는다 — 단 `pm_delegate`/`additional_reviewer` 실행에 한한다.**
+> **cross-harness** 위임(`pm_delegate.py`)과 추가 리뷰(`additional_reviewer.py`)는 raw 를 실행 *전*에
 > 공유 JSON 장부(`.project_manager/.local/raw_outputs.json`)에 등재하고 종료 시 감사 관측치
 > (`rc`·`elapsed_sec`·`silence_sec`)로 마감한다. 백그라운드 호출이 끊겨 stdout(그 안의 raw 경로)을
 > 잃어도 `python3 .project_manager/tools/pm_delegate.py raw [--unfinished]` 로 절대경로를 조회하라 —
@@ -422,6 +422,6 @@ touches 경로의 실재(소유 repo 좌표 기준) · 묶음 안팎 다른 열�
 
 > ⚙️ `additional_reviewer.enabled=true` 로 추가 리뷰어(additional reviewer) 채널을 켠 채택자는
 > reviewer 위임과 같은 시점에 교차검증을 돌린다. 기본은 OFF 이고, 끈 채택자에게 이 단계는 없다:
-> `python3 .project_manager/tools/external_review.py --ticket T-NNNN --adr ADR-NNNN`
+> `python3 .project_manager/tools/additional_reviewer.py --ticket T-NNNN --adr ADR-NNNN`
 > (ADR 본문 정합 필요 시 `--paths` 에 **코드 경로+ADR 함께 나열** — `--paths` 는
 > `--ticket` touches 를 *대체*함). 상세는 `pm_playbook.md` §"추가 리뷰어 교차검증".

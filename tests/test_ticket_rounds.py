@@ -1,6 +1,6 @@
 """라운드 사이드카 seam(`ticket_rounds.py`)의 경로·예약·판정·렌더 계약.
 
-소비자(board·pm_delegate·external_review·ticket_finish)가 붙기 전의 기준선이라 이 파일은
+소비자(board·pm_delegate·additional_reviewer·ticket_finish)가 붙기 전의 기준선이라 이 파일은
 모듈을 **단독으로** 로드해 실 파일시스템 위에서 검증한다.
 """
 from __future__ import annotations
@@ -155,12 +155,20 @@ def test_round_filename_refuses_roles_outside_the_round_role_set(rounds):
     [
         ("01-developer.md", (1, "developer")),
         ("02-code-reviewer.md", (2, "code-reviewer")),
-        ("03-external-reviewer.md", (3, "external-reviewer")),
+        ("03-additional-reviewer.md", (3, "additional-reviewer")),
         ("100-architect.md", (100, "architect")),
     ],
 )
 def test_parse_round_filename_accepts_canonical_names(rounds, name, expected):
     assert rounds.parse_round_filename(name) == expected
+
+
+def test_parse_round_filename_reads_legacy_external_role_as_canonical_only(rounds):
+    assert rounds.parse_round_filename("03-external-reviewer.md") == (
+        3, "additional-reviewer",
+    )
+    with pytest.raises(rounds.RoundsError):
+        rounds.round_filename(3, "external-reviewer")
 
 
 @pytest.mark.parametrize(
@@ -249,9 +257,9 @@ def test_reserve_round_numbers_across_roles_in_ticket_wide_order(rounds, tickets
 
 
 def test_reserve_round_writes_the_given_content_verbatim(rounds, tickets_dir):
-    body = "## 추가 리뷰 (external-reviewer · 2026-01-02)\n\n실제 회신 본문\n"
+    body = "## 추가 리뷰 (additional-reviewer · 2026-01-02)\n\n실제 회신 본문\n"
     path = _reserve(
-        rounds, tickets_dir, "T-0001", "external-reviewer", content=body,
+        rounds, tickets_dir, "T-0001", "additional-reviewer", content=body,
     )
     assert path.read_bytes() == body.encode("utf-8")
 

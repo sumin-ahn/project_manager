@@ -530,7 +530,7 @@ def test_delegate_optin_and_key_writer_do_not_lose_either_decision(
     done = threading.Event()
 
     def _optin():
-        board.prompt_external_review_optin()
+        board.prompt_additional_reviewer_optin()
         done.set()
 
     optin_thread = threading.Thread(target=_optin, daemon=True)
@@ -636,7 +636,7 @@ def test_an_in_flight_preserve_blocks_a_later_optin_and_keeps_both_decisions(
     done = threading.Event()
 
     def _optin():
-        board.prompt_external_review_optin()
+        board.prompt_additional_reviewer_optin()
         done.set()
 
     optin_thread = threading.Thread(target=_optin, daemon=True)
@@ -848,7 +848,7 @@ def test_pm_update_optin_takes_the_shared_lock(pm_update, monkeypatch, tmp_path)
     taken: list[str] = []
     _spy_lock(pm_update._load_file_lock(), monkeypatch, taken)
 
-    pm_update.maybe_prompt_external_review(conf.parent.parent)
+    pm_update.maybe_prompt_additional_reviewer(conf.parent.parent)
 
     assert taken == [str(conf.parent / ".local" / "local-conf.lock")]
     assert (_parse_conf(conf.read_text(encoding="utf-8"))["additional_reviewer.enabled"]
@@ -992,7 +992,7 @@ def test_a_copy_without_any_lock_primitive_keeps_the_lockless_recovery_contract(
         monkeypatch.delenv("PM_NONINTERACTIVE", raising=False)
         monkeypatch.setattr(module.sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr("builtins.input", lambda prompt="": "y")
-        module.maybe_prompt_external_review(conf.parent.parent)
+        module.maybe_prompt_additional_reviewer(conf.parent.parent)
         assert (_parse_conf(conf.read_text(encoding="utf-8"))["additional_reviewer.enabled"]
                 == "true")
 

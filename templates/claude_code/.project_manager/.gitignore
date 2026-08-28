@@ -16,7 +16,7 @@ wiki/pm_state.md
 # local.conf = per-clone 설정 (prefix·session). pm-init 이 생성.
 local.conf
 
-# review_context.local.md = external_review 가 읽는 인스턴스 소유 overlay (외부 리뷰어 프롬프트 보강).
+# review_context.local.md = additional_reviewer 가 읽는 인스턴스 소유 overlay (외부 리뷰어 프롬프트 보강).
 #   인스턴스마다 내용이 다른 per-clone 파일이라 공유하지 않는다.
 review_context.local.md
 
