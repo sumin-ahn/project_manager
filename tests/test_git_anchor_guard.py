@@ -701,7 +701,6 @@ def test_mixed_git_and_engine_calls_promote_missing_tests_deny(
         str(home), "git status && python3 -m pytest tests/",
     )
     assert got["verdict"] == "deny"
-    assert "호출 1 [pm-home/ok]" in got["reason"]
     assert "호출 2 [pm-home/deny]" in got["reason"]
 
 
@@ -744,13 +743,48 @@ def test_reason_rendering_does_not_rerun_judgments(monkeypatch, topology):
     assert got["reason"] == "호출 1–4 [pm-home/warn] ×4: repeat"
 
 
+def test_strongest_renderer_filters_lower_verdicts_without_closing_call_gaps(
+    monkeypatch, topology,
+):
+    board = _load("git_anchor_strongest_render_runs", BOARD_PY)
+    home, _slot = topology
+    verdicts = iter([
+        ("ok", "ok"), ("ok", "ok"), ("ok", "ok"), ("ok", "ok"),
+        ("warn", "repeat"), ("warn", "repeat"),
+    ])
+
+    def filtered_judge(cwd, argv, *, runner):
+        verdict, reason = next(verdicts)
+        return {"verdict": verdict, "cwd_identity": "pm-home", "reason": reason}
+
+    monkeypatch.setattr(board, "judge_git_anchor", filtered_judge)
+    filtered = board.judge_git_anchor_command(
+        str(home), "git status && git status && git status && git status && git status && git status",
+    )
+    assert filtered["reason"] == "호출 5–6 [pm-home/warn] ×2: repeat"
+    assert "ok" not in filtered["reason"]
+
+    gap_verdicts = iter([("warn", "repeat"), ("ok", "ok"), ("warn", "repeat")])
+
+    def gapped_judge(cwd, argv, *, runner):
+        verdict, reason = next(gap_verdicts)
+        return {"verdict": verdict, "cwd_identity": "pm-home", "reason": reason}
+
+    monkeypatch.setattr(board, "judge_git_anchor", gapped_judge)
+    gapped = board.judge_git_anchor_command(
+        str(home), "git status && git status && git status",
+    )
+    assert gapped["reason"] == (
+        "호출 1 [pm-home/warn]: repeat | 호출 3 [pm-home/warn]: repeat"
+    )
+
+
 def test_nonadjacent_or_different_warns_remain_separate(topology):
     board = _load("git_anchor_warn_run_boundaries", BOARD_PY)
     home, _slot = topology
     commit_warning = board.judge_git_anchor(
         str(home), ["git", "commit", "-m", "repeat"],
     )["reason"]
-    status = board.judge_git_anchor(str(home), ["git", "status"])["reason"]
     missing_path_warning = board.judge_git_anchor(
         str(home), ["git", "add", "tests/not-there.txt"],
     )["reason"]
@@ -760,7 +794,6 @@ def test_nonadjacent_or_different_warns_remain_separate(topology):
     )
     assert nonadjacent["reason"] == (
         f"호출 1 [pm-home/warn]: {commit_warning} | "
-        f"호출 2 [pm-home/ok]: {status} | "
         f"호출 3 [pm-home/warn]: {commit_warning}"
     )
 
@@ -831,7 +864,7 @@ def test_persistent_cd_pattern_warns_with_executable_prescription(
         str(home), f"echo pre{separator}cd {shell_slot}{separator}git status",
     )
     assert contextual["verdict"] == "warn"
-    assert "호출 1 [slot/ok]" in contextual["reason"]
+    assert "호출 2 [non-repo/warn]" in contextual["reason"]
 
 
 @pytest.mark.parametrize(
@@ -906,7 +939,6 @@ def test_shell_if_and_multiple_git_calls_keep_context(topology, path_notation):
         str(home), f"git -C {shell_slot} commit -m slot && git commit -m home"
     )
     assert multiple["verdict"] == "warn"
-    assert "호출 1 [slot/ok]" in multiple["reason"]
     assert "호출 2 [pm-home/warn]" in multiple["reason"]
 
     reversed_calls = board.judge_git_anchor_command(
@@ -914,7 +946,6 @@ def test_shell_if_and_multiple_git_calls_keep_context(topology, path_notation):
     )
     assert reversed_calls["verdict"] == "warn"
     assert "호출 1 [pm-home/warn]" in reversed_calls["reason"]
-    assert "호출 2 [slot/ok]" in reversed_calls["reason"]
 
 
 def test_dynamic_cd_is_ambiguous_and_never_blocks(topology):
@@ -1049,7 +1080,6 @@ def test_newline_is_a_sequential_shell_boundary(topology, path_notation):
         str(home), f"git -C {shell_slot} status\ngit add tests/shared.txt"
     )
     assert got["verdict"] == "deny"
-    assert "호출 1 [slot/ok]" in got["reason"]
     assert "호출 2 [pm-home/deny]" in got["reason"]
 
 

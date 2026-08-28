@@ -1923,21 +1923,27 @@ def judge_git_anchor_command(
     strongest = max(judgments, key=lambda item: rank[item["verdict"]])
     if len(judgments) == 1:
         return strongest
+    strongest_judgments = [
+        (call, item)
+        for call, item in enumerate(judgments, 1)
+        if item["verdict"] == strongest["verdict"]
+    ]
     rendered: list[str] = []
     index = 0
-    while index < len(judgments):
-        item = judgments[index]
+    while index < len(strongest_judgments):
+        start_call, item = strongest_judgments[index]
         key = (item["cwd_identity"], item["verdict"], item["reason"])
         end = index + 1
-        while end < len(judgments):
-            candidate = judgments[end]
+        while end < len(strongest_judgments):
+            candidate_call, candidate = strongest_judgments[end]
             if (
-                candidate["cwd_identity"], candidate["verdict"], candidate["reason"]
-            ) != key:
+                candidate_call != strongest_judgments[end - 1][0] + 1
+                or (candidate["cwd_identity"], candidate["verdict"], candidate["reason"])
+                != key
+            ):
                 break
             end += 1
-        start_call = index + 1
-        end_call = end
+        end_call = strongest_judgments[end - 1][0]
         if end - index == 1:
             rendered.append(
                 f"호출 {start_call} [{item['cwd_identity']}/{item['verdict']}]: "
