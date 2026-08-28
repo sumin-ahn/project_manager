@@ -616,7 +616,7 @@ additional_reviewer.reasoning=max
 
 `local.conf` 키 표기는 **dot notation 하나로 통일**돼 있다(`additional_reviewer.enabled`·
 `delegate.timeout`·`ctx.window_tokens`·`harness.opencode.pro_model` 형태). 옛 flat 표기
-(`additional_reviewer_enabled`·`additional_reviewer_enabled`·`reviewer_cmd`·`ctx_window_tokens_opencode`
+(`external_review_enabled`·`additional_reviewer_enabled`·`reviewer_cmd`·`ctx_window_tokens_opencode`
 등)는 **읽히지 않고 조용히 무시되지도 않는다** — 그 conf 를 소비하는 도구가 실행 시점에 멈추고
 구키마다 대응 신키(또는 제거됨)를 한 줄씩 찍는다. 엔진은 인스턴스 소유인 `local.conf` 를 대신
 고쳐 쓰지 않으므로 안내대로 키 이름을 바꿔 주면 된다. `pm-update` 의 파일 반영 자체는 이 검사에

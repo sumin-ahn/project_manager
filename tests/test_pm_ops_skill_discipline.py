@@ -32,6 +32,17 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 PM_ROLE = REPO / ".project_manager" / "wiki" / "pm_role.md"
+REVIEW_OPERATION_DOCS = (
+    REPO / ".claude" / "skills" / "pm-review" / "SKILL.md",
+    REPO / "templates" / "claude_code" / ".claude" / "skills" / "pm-review" / "SKILL.md",
+    REPO / "templates" / "opencode" / ".claude" / "skills" / "pm-review" / "SKILL.md",
+    REPO / "templates" / "opencode" / ".opencode" / "command" / "pm-review.md",
+    REPO / "templates" / "codex" / ".agents" / "skills" / "pm-review" / "SKILL.md",
+    REPO / ".project_manager" / "wiki" / "pm_playbook.md",
+    REPO / "templates" / "claude_code" / ".project_manager" / "wiki" / "pm_playbook.md",
+    REPO / "templates" / "opencode" / ".project_manager" / "wiki" / "pm_playbook.md",
+    REPO / "templates" / "codex" / ".project_manager" / "wiki" / "pm_playbook.md",
+)
 
 # 규율 섹션 헤더(ADR-0052·T-0279) + 카드가 가리키는 pointer 앵커 문구(T-0280).
 _DISCIPLINE_HEADER = "## 스킬 우선 운영 규율 (backbone 직접호출 금지)"
@@ -247,6 +258,16 @@ def test_pm_role_discipline_section_exists():
     assert "직접" in body and "금지" in body, "규율에 '직접 금지' 문구 부재"
     # (c) 이유 신호 — 스킬 md 의 load-bearing 판단이 backbone 직접 실행 시 스킵된다.
     assert "판단" in body or "스킵" in body, "규율에 이유 신호(판단/스킵) 부재"
+
+
+def test_review_operation_docs_keep_current_and_legacy_names_in_the_right_direction():
+    """additional_reviewer는 current surface, external_review는 read-only 호환뿐이다."""
+    for path in REVIEW_OPERATION_DOCS:
+        text = path.read_text(encoding="utf-8")
+        assert "canonical은 `additional_reviewer`" in text, path
+        assert "개칭 전 `external_review`" in text and "read-only 호환 이름" in text, path
+        assert "구 실행 파일은 다시 만들지 않는다" in text, path
+        assert "`additional_reviewer` 는 엔진 모듈 파일 이름" not in text, path
 
 
 # ── 2. 카드 pointer → pm_role 섹션 정합 (dangling 방지) ────────────────────────

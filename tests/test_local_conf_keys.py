@@ -26,6 +26,7 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 BOARD_PY = TOOLS / "board.py"
 LOCAL_CONF_PY = TOOLS / "local_conf.py"
+README = REPO / "README.md"
 
 
 def _load_module(name: str, path: Path):
@@ -101,6 +102,14 @@ def test_board_platform_resolution_does_not_duplicate_the_local_conf_parser():
     assert "qa.platforms" not in resolver
     assert ".partition(" not in resolver
     assert "platform_test_commands" in resolver
+
+
+def test_readme_legacy_flat_key_example_names_both_reviewer_generations():
+    """신·구 flat key를 한 번씩 적어 migration 방향을 뒤집지 않는다."""
+    text = README.read_text(encoding="utf-8")
+    legacy_example = text.split("옛 flat 표기", 1)[1].split("등)는", 1)[0]
+    assert legacy_example.count("`external_review_enabled`") == 1
+    assert legacy_example.count("`additional_reviewer_enabled`") == 1
 
 
 def test_no_local_conf_file_is_quiet(board, monkeypatch, tmp_path):

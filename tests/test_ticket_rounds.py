@@ -290,13 +290,17 @@ def test_concurrent_reservations_under_one_lock_get_unique_ordinals(rounds, tick
     lock = threading.Lock()
     reserved: list[Path] = []
     errors: list[BaseException] = []
+    roles = ("developer", "code-reviewer")
+    # Jinja 환경의 첫 로드는 이 계약의 병렬 대상이 아니다. main thread에서 시드를 먼저
+    # 렌더해 두고, worker는 단일 lock 아래의 채번/파일 예약만 동시에 실행한다.
+    seeds = {role: _seed(rounds, role) for role in roles}
 
     def reserve(role: str) -> None:
         try:
             reserved.append(
                 rounds.reserve_round(
                     tickets_dir, "T-0001", role,
-                    content=_seed(rounds, role), lock=lock,
+                    content=seeds[role], lock=lock,
                 )
             )
         except BaseException as exc:      # noqa: BLE001 — 스레드 실패를 본 스레드로 옮긴다.
@@ -304,7 +308,7 @@ def test_concurrent_reservations_under_one_lock_get_unique_ordinals(rounds, tick
 
     threads = [
         threading.Thread(target=reserve, args=(role,))
-        for role in ("developer", "code-reviewer")
+        for role in roles
     ]
     for thread in threads:
         thread.start()

@@ -1018,6 +1018,164 @@ def _install_t0585_updater(dest: Path) -> None:
         _t0585_pm_update_source(), encoding="utf-8", newline="\n")
 
 
+_PRE_T0876_PM_UPDATE_SHA256 = "2949e925d012e12f20867144e1222c42ea75ce135c85b0d12dc64f509ef09ccc"
+
+
+def _pre_t0876_pm_update_source() -> str:
+    """현행 updater에서 T-0876 delta만 exact-marker로 역적용한 동결 구 실행 파일.
+
+    git history나 HEAD^가 없는 출하 트리에서도 RUN1을 실제 구 updater subprocess로 재현한다.
+    whole-file SHA는 역적용 범위를 역사적 구 source bytes에 고정한다.
+    """
+    source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
+        encoding="utf-8")
+    exact_reversals = (
+        ("import hashlib\n", ""),
+        ("무거운 additional_reviewer 코어를 업데이트 경로", "무거운 external_review 코어를 업데이트 경로"),
+        ("board·additional_reviewer 사본과 같은 판정", "board·external_review 사본과 같은 판정"),
+        ("additional_reviewer 코어가 소유하고", "external_review 코어가 소유하고"),
+        ("additional_reviewer 를 import 하지 않는 이유", "external_review 를 import 하지 않는 이유"),
+        ("(additional_reviewer 의 해소 규칙과 같은 판정·같은 이유)",
+         "(external_review 의 해소 규칙과 같은 판정·같은 이유)"),
+        ("def maybe_prompt_additional_reviewer(dest_root: Path) -> None:",
+         "def maybe_prompt_external_review(dest_root: Path) -> None:"),
+        ("board.prompt_additional_reviewer_optin", "board.prompt_external_review_optin"),
+        ("`additional_reviewer.py` 실 실행 커맨드", "`external_review.py` 실 실행 커맨드"),
+        ("maybe_prompt_additional_reviewer(effective_dest)",
+         "maybe_prompt_external_review(effective_dest)"),
+    )
+    for current, legacy in exact_reversals:
+        assert current in source, current
+        source = source.replace(current, legacy)
+    source = _slice_replace(
+        source,
+        "# 구 updater도 무시하는 manifest 주석 지시문. 일반 상류 부재 파일을\n",
+        "# read_manifest 가 path 행 끝에서 떼어낼 수 있는 boolean 마커들",
+        "",
+    )
+    source = _slice_replace(
+        source, "class RetiredPathError(RuntimeError):\n", "def _parse_manifest_line(", "",
+    )
+    source = _slice_replace(
+        source,
+        "    # manifest가 명시한 engine-owned 구 경로 퇴역도 전량 self-sync에서만 돈다.\n",
+        "    # ── 보호 훅 정합 확인 + drift 재설치",
+        "\n",
+    )
+    for block in (
+        "        if do_retire and not _run_retired_path_migration(\n"
+        "            effective_dest, source_root, manifest, selfheal,\n"
+        "            write=not args.dry_run,\n"
+        "        ):\n"
+        "            return 1\n",
+        "        if do_retire and not _run_retired_path_migration(\n"
+        "            effective_dest, source_root, manifest, selfheal, write=False,\n"
+        "            changes=changes,\n"
+        "        ):\n"
+        "            return 1\n",
+        "    # apply 완료를 관측한 뒤에만 구 경로를 옮긴다. 이 게이트가 실패하면\n"
+        "    # 아래 instance migration·upstream.rev baseline 모두에 도달하지 않는다.\n"
+        "    if do_retire and not _run_retired_path_migration(\n"
+        "        effective_dest, source_root, manifest, selfheal, write=True,\n"
+        "    ):\n"
+        "        return 1\n\n",
+    ):
+        assert source.count(block) == 1, block
+        source = source.replace(block, "", 1)
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    assert digest == _PRE_T0876_PM_UPDATE_SHA256, (
+        f"pre-T0876 updater fixture drift: {digest}; retirement delta의 exact-marker와 "
+        "historical whole-file SHA를 함께 재검토하라"
+    )
+    return source
+
+
+def _make_pre_t0876_codex_framework(tmp_path: Path) -> Path:
+    """현행 출하 tree를 구 reviewer 물리명/manifest/updater 세대로 되감은 설치 소스."""
+    framework = _build_codex_framework(tmp_path)
+    for tools in (
+        framework / ".project_manager" / "tools",
+        framework / "templates" / "codex" / ".project_manager" / "tools",
+    ):
+        (tools / "additional_reviewer.py").replace(tools / "external_review.py")
+        (tools / "pm_update.py").write_text(
+            _pre_t0876_pm_update_source(), encoding="utf-8", newline="\n")
+    for manifest in (
+        framework / ".project_manager" / "engine.manifest",
+        framework / "templates" / "codex" / ".project_manager" / "engine.manifest",
+    ):
+        lines = [
+            line for line in manifest.read_text(encoding="utf-8").splitlines()
+            if not line.startswith("# pm-retired-path:")
+        ]
+        manifest.write_text(
+            "\n".join(lines).replace("additional_reviewer", "external_review") + "\n",
+            encoding="utf-8", newline="\n",
+        )
+    return framework
+
+
+def test_legacy_updater_run1_delivers_new_reviewer_and_run2_retires_old(tmp_path):
+    """동결 구 updater RUN1 배달 → 설치된 신 updater changes=0 RUN2 퇴역 전체 경로."""
+    legacy_framework = _make_pre_t0876_codex_framework(tmp_path)
+    dest = tmp_path / "legacy-reviewer-adopter"
+    installed = subprocess.run(
+        [
+            sys.executable,
+            str(legacy_framework / ".project_manager" / "tools" / "pm_import.py"),
+            "--new", str(dest), "--harness", "codex", "--name", _ADOPTER_NAME,
+            "--fill", "manual", "--from", str(legacy_framework),
+        ],
+        cwd=str(legacy_framework), capture_output=True, text=True, encoding="utf-8",
+        errors="replace", env={**os.environ, "PM_NONINTERACTIVE": "1"}, timeout=300,
+    )
+    assert installed.returncode == 0, f"{installed.stdout}\n{installed.stderr}"
+
+    tools = dest / ".project_manager" / "tools"
+    updater = tools / "pm_update.py"
+    old_reviewer = tools / "external_review.py"
+    new_reviewer = tools / "additional_reviewer.py"
+    old_updater_bytes = _pre_t0876_pm_update_source().encode("utf-8")
+    assert updater.read_bytes() == old_updater_bytes
+    assert old_reviewer.is_file() and not new_reviewer.exists(), \
+        "RUN1 전 구 물리명 단독 형상이 아니다"
+    old_reviewer.write_bytes(old_reviewer.read_bytes() + b"\n# adopter-local legacy bytes\n")
+    preserved = old_reviewer.read_bytes()
+    # 공개 pm-update facade의 manifest reconcile이 먼저 도착한 상태. NEW 실행 파일은 여전히
+    # 없고, 아래 RUN1의 구 updater가 comment directive를 무시하면서 manifest row만 배달한다.
+    (dest / ".project_manager" / "engine.manifest").write_bytes(
+        (REPO / "templates" / "codex" / ".project_manager" / "engine.manifest").read_bytes()
+    )
+    assert not new_reviewer.exists() and updater.read_bytes() == old_updater_bytes
+
+    run1 = _run_adopter_tool(
+        dest, "pm_update.py", "--from", str(REPO), "--paths",
+        ".project_manager/tools/pm_update.py",
+        ".project_manager/tools/additional_reviewer.py",
+    )
+    assert run1.returncode == 0, f"{run1.stdout}\n{run1.stderr}"
+    assert "파일 동기화" in run1.stdout, "RUN1이 실제 planning/apply 경로를 타지 않았다"
+    assert updater.read_bytes() == (REPO / ".project_manager/tools/pm_update.py").read_bytes(), \
+        "구 updater가 신 updater를 self-deliver하지 못했다"
+    assert updater.read_bytes() != old_updater_bytes
+    assert new_reviewer.read_bytes() == \
+        (REPO / ".project_manager/tools/additional_reviewer.py").read_bytes(), \
+        "구 updater가 신 reviewer를 manifest에서 배달하지 못했다"
+    assert old_reviewer.read_bytes() == preserved, \
+        "directive를 모르는 구 updater RUN1이 old를 조기 제거/수정했다"
+
+    # 손복사 없이 RUN1이 놓은 바로 그 신 updater를 같은 adopter 경로에서 재실행한다.
+    run2 = _run_adopter_tool(dest, "pm_update.py", "--from", str(REPO))
+    assert run2.returncode == 0, f"{run2.stdout}\n{run2.stderr}"
+    assert "최신 — 변경 없음." in run2.stdout, "RUN2가 changes=0 경계를 타지 않았다"
+    assert "[퇴역] .project_manager/tools/external_review.py" in run2.stdout
+    assert not old_reviewer.exists()
+    backups = list((dest / ".pm_import_backups").glob(
+        "*/.project_manager/tools/external_review.py"))
+    assert len(backups) == 1, backups
+    assert backups[0].read_bytes() == preserved, "RUN2 backup이 채택자 old bytes를 보존하지 않았다"
+
+
 def test_upgrade_adopter_zero_change_run2_blocks_until_adapter_accept(tmp_path):
     """구 updater RUN1 → 신 zero-change RUN2 red → accept/backfill → check green 전체 경로."""
     dest = tmp_path / "legacy-adapter-adopter"
