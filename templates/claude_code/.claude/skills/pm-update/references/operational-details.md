@@ -25,6 +25,21 @@ baseline(local.conf `upstream.rev`)과 cache/경로 HEAD 사이 commit 수 및 �
 - **변경 > 0**: "엔진 영향(이번 동기가 받는 것)" 목록을 PM에게 보고한 뒤 reconcile → sync.
 - baseline 미기록(첫 동기·구 import): "다음 sync 후 추적" 안내가 정상이며 그대로 진행.
 
+### 2.6 v1.7.11 물리 rename bridge
+
+v1.7.11 updater가 설치된 채택자는 source에서 사라진 구 reviewer 경로를 아직 일반 소유행으로
+읽으므로 첫 full sync가 `source 에 없음` rc=2로 멈추는 것이 정상이다. manifest나 reviewer를
+손복사하지 말고, 구 updater가 이미 소유하는 updater 파일 하나만 먼저 self-delivery한다.
+
+```bash
+./pm-update.sh --from <cache-or-path> --paths .project_manager/tools/pm_update.py
+./pm-update.sh --from <cache-or-path>
+```
+
+두 번째 명령은 설치된 신 updater의 full sync다. 이 한 번이 신 manifest와 replacement를 적용한 뒤
+구 경로를 backup/퇴역하고 baseline을 수렴시킨다. 이 scoped `--paths`는 v1.7.11 물리 rename만의
+bridge이며, 이후 업데이트의 정상 흡수 단위는 항상 full sync다.
+
 ### 3. manifest reconcile (pm_update 전·PM 주도·사용자 개입 0)
 
 **기본 경로 = 선-cp 없이 4단계 sync 만 실행한다.** `@source` self-prop 채택자(현행 import 전원)는 엔진이 manifest 신 항목 도달을 스스로 처리한다 — 등재 행이 지워진 채택자도 sync 1회가 행 복구 + 파일 전파 + guest 절 보존을 함께 수행한다(실측 게이트 박제).

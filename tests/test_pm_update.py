@@ -2391,6 +2391,164 @@ def test_legacy_exact_path_set_must_match_exactly_one_candidate(
         "관측 flavor가 0개여도 빈 --harness가 아닌 안전한 migration 안내가 필요함"
 
 
+_RETIRE_OLD = ".project_manager/tools/external_review.py"
+_RETIRE_NEW = ".project_manager/tools/additional_reviewer.py"
+
+
+def _write_retirement_flavor(source, flavor, *, selfprop=False):
+    manifest = source / "templates" / flavor / ".project_manager" / "engine.manifest"
+    manifest.parent.mkdir(parents=True)
+    lines = [".shared/a", _RETIRE_NEW]
+    if selfprop:
+        lines.append(
+            f"{MANIFEST_SELF_REL}    "
+            f"@source=templates/{flavor}/.project_manager/engine.manifest"
+        )
+    lines.append(f"# pm-retired-path: {_RETIRE_OLD} -> {_RETIRE_NEW}")
+    manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    replacement = source / _RETIRE_NEW
+    replacement.parent.mkdir(parents=True, exist_ok=True)
+    replacement.write_text("new reviewer\n", encoding="utf-8")
+    return manifest
+
+
+def test_retirement_inverse_exact_match_selects_unique_legacy_flavor_and_heals(
+        pm_update, tmp_path):
+    source = tmp_path / "source"
+    root = source / ".project_manager" / "engine.manifest"
+    root.parent.mkdir(parents=True)
+    root.write_text(f"{MANIFEST_SELF_REL}\n", encoding="utf-8")
+    selected = _write_retirement_flavor(source, "selected")
+    other = source / "templates" / "other" / ".project_manager" / "engine.manifest"
+    other.parent.mkdir(parents=True)
+    other.write_text(".other/a\n", encoding="utf-8")
+    dest = tmp_path / "dest"
+    _write_dest_manifest(dest, [".shared/a", _RETIRE_OLD])
+
+    result = pm_update.resolve_manifest_selfheal(dest, source)
+
+    assert result["status"] == "heal"
+    assert result["upstream_manifests"] == [selected]
+    assert result["added"] == [_RETIRE_NEW]
+    assert result["removed"] == []
+    assert result["retired_removed"] == [_RETIRE_OLD]
+
+
+@pytest.mark.parametrize("candidate_count", [0, 2])
+def test_retirement_inverse_requires_exactly_one_candidate(
+        pm_update, tmp_path, candidate_count):
+    source = tmp_path / "source"
+    root = source / ".project_manager" / "engine.manifest"
+    root.parent.mkdir(parents=True)
+    root.write_text(f"{MANIFEST_SELF_REL}\n", encoding="utf-8")
+    for index in range(max(candidate_count, 1)):
+        _write_retirement_flavor(source, f"flavor-{index}")
+    dest = tmp_path / "dest"
+    local = [".shared/a", _RETIRE_OLD]
+    if candidate_count == 0:
+        local.append(".local/unapproved")
+    _write_dest_manifest(dest, local)
+
+    result = pm_update.resolve_manifest_selfheal(dest, source)
+
+    assert result["status"] == "legacy_preserved"
+    assert result["manifest"] is None
+    assert result["retired_removed"] == []
+
+
+def test_retirement_filter_keeps_undeclared_local_only_path_diverged(
+        pm_update, tmp_path):
+    source = tmp_path / "source"
+    selected = _write_retirement_flavor(source, "selected", selfprop=True)
+    dest = tmp_path / "dest"
+    selfprop = (
+        f"{MANIFEST_SELF_REL}    "
+        "@source=templates/selected/.project_manager/engine.manifest"
+    )
+    _write_dest_manifest(
+        dest, [".shared/a", _RETIRE_OLD, ".local/unapproved", selfprop]
+    )
+
+    result = pm_update.resolve_manifest_selfheal(dest, source)
+
+    assert result["status"] == "diverged"
+    assert result["upstream_manifests"] == [selected]
+    assert result["removed"] == [".local/unapproved"]
+    assert result["retired_removed"] == [_RETIRE_OLD]
+    assert result["manifest"] is None
+
+
+def test_declared_flavor_validates_only_selected_retirement_manifests(
+        pm_update, tmp_path):
+    source = tmp_path / "source"
+    selected = _write_retirement_flavor(source, "selected", selfprop=True)
+    unrelated = source / "templates/unrelated/.project_manager/engine.manifest"
+    unrelated.parent.mkdir(parents=True)
+    unrelated.write_text(
+        ".other/a\n# pm-retired-path: malformed\n", encoding="utf-8"
+    )
+    dest = tmp_path / "dest"
+    _write_dest_manifest(dest, [
+        ".shared/a",
+        _RETIRE_OLD,
+        f"{MANIFEST_SELF_REL}    "
+        "@source=templates/selected/.project_manager/engine.manifest",
+    ])
+
+    result = pm_update.resolve_manifest_selfheal(dest, source)
+
+    assert result["status"] == "heal"
+    assert result["upstream_manifests"] == [selected]
+    assert result["retired_removed"] == [_RETIRE_OLD]
+
+
+@pytest.mark.parametrize("shape,expected", [
+    ("unowned", "manifest-owned"),
+    ("render", "bare byte-copy"),
+    ("missing", "regular file"),
+])
+def test_validated_retirement_rejects_unowned_marked_or_missing_replacement(
+        pm_update, tmp_path, shape, expected):
+    source = tmp_path / shape
+    manifest = source / ".project_manager" / "engine.manifest"
+    manifest.parent.mkdir(parents=True)
+    row = "" if shape == "unowned" else _RETIRE_NEW
+    if shape == "render":
+        row += "    @render"
+    manifest.write_text(
+        (row + "\n" if row else "")
+        + f"# pm-retired-path: {_RETIRE_OLD} -> {_RETIRE_NEW}\n",
+        encoding="utf-8",
+    )
+    if shape == "render":
+        replacement = source / _RETIRE_NEW
+        replacement.parent.mkdir(parents=True)
+        replacement.write_text("new\n", encoding="utf-8")
+
+    with pytest.raises(pm_update.RetiredPathError, match=expected):
+        pm_update.validated_retired_path_directives(source, [manifest])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows symlink 권한과 무관한 POSIX 경계")
+def test_validated_retirement_rejects_symlink_replacement(pm_update, tmp_path):
+    source = tmp_path / "source"
+    manifest = source / ".project_manager" / "engine.manifest"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        f"{_RETIRE_NEW}\n"
+        f"# pm-retired-path: {_RETIRE_OLD} -> {_RETIRE_NEW}\n",
+        encoding="utf-8",
+    )
+    target = source / "payload.py"
+    target.write_text("payload\n", encoding="utf-8")
+    replacement = source / _RETIRE_NEW
+    replacement.parent.mkdir(parents=True, exist_ok=True)
+    replacement.symlink_to(target)
+
+    with pytest.raises(pm_update.RetiredPathError, match="symlink/reparse|regular file"):
+        pm_update.validated_retired_path_directives(source, [manifest])
+
+
 def test_legacy_opencode_proper_subset_does_not_promote_or_rewrite_manifest(
         pm_update, tmp_path):
     """@source 없는 opencode legacy의 한 줄 누락은 exact-match가 아니므로 불가침이다."""

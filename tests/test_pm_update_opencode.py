@@ -37,6 +37,18 @@ def test_pm_update_exposes_new_symbols(pm_update):
     )
 
 
+def test_opencode_update_command_routes_v171_bridge_without_hand_copy():
+    """OpenCode 사람 진입 카드도 상세의 updater-only bridge를 놓치지 않는다."""
+    command = REPO / "templates/opencode/.opencode/command/pm-update.md"
+    text = command.read_text(encoding="utf-8")
+    details_rel = "../../.claude/skills/pm-update/references/operational-details.md"
+    assert details_rel in text
+    details = (command.parent / details_rel).resolve().read_text(encoding="utf-8")
+    assert "v1.7.11 물리 rename bridge" in details
+    assert "--paths .project_manager/tools/pm_update.py" in details
+    assert "manifest나 reviewer를\n손복사하지 말고" in details
+
+
 # ── resolve_target_root ────────────────────────────────────────────────────
 
 def test_resolve_target_root_opencode_ok(pm_update):

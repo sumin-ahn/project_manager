@@ -240,6 +240,29 @@ def test_reviewer_executable_has_only_the_new_physical_name_in_all_shipping_tree
     assert tracked_old == [], f"구 물리 파일명 잔존: {tracked_old}"
 
 
+def test_pm_update_operational_details_ship_the_v171_rename_bridge():
+    """4개 운영 상세가 updater-only RUN1과 신 updater full RUN2를 같은 계약으로 출하한다."""
+    details = (
+        REPO / ".claude/skills/pm-update/references/operational-details.md",
+        REPO / "templates/claude_code/.claude/skills/pm-update/references/operational-details.md",
+        REPO / "templates/opencode/.claude/skills/pm-update/references/operational-details.md",
+        REPO / "templates/codex/.agents/skills/pm-update/references/operational-details.md",
+    )
+    bridge_sections = []
+    for path in details:
+        text = path.read_text(encoding="utf-8")
+        assert "### 2.6 v1.7.11 물리 rename bridge" in text, path
+        bridge = text.split("### 2.6 v1.7.11 물리 rename bridge", 1)[1].split(
+            "### 3. manifest reconcile", 1
+        )[0]
+        assert "`source 에 없음` rc=2" in bridge, path
+        assert "--paths .project_manager/tools/pm_update.py" in bridge, path
+        assert bridge.count("./pm-update.sh --from <cache-or-path>") == 2, path
+        assert "manifest나 reviewer를\n손복사하지 말고" in bridge, path
+        bridge_sections.append(bridge)
+    assert len(set(bridge_sections)) == 1, "harness별 v1.7.11 bridge 계약이 갈렸다"
+
+
 # ── 가드 2: manifest 경로 집합 정합 ──────────────────────────────────────────
 
 

@@ -38,6 +38,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -730,7 +731,7 @@ def _run_adopter_tool(dest: Path, tool: str, *args: str) -> subprocess.Completed
 #   목록이 아니라 그 밖의 코드·산문을 바꿨고, 이 절의 역적용 delta anchor 네 자리는 전부
 #   그 구간 밖이라 그대로 유일 해소된다. 배달 경계(planning → apply → self-update 순서)와
 #   배달 파일 집합은 여전히 불변이고, 현재화한 것은 기대 SHA 하나뿐이다.
-_T0585_PM_UPDATE_SHA256 = "77b739e7688350d68e8b371797b8a72e4c7d1eb2b7005cdee9c7f68e5a36daea"
+_T0585_PM_UPDATE_SHA256 = "deb672530e35dfaee4d63c075bd3857f155e0f65cc4972ef91a0e8433ed9ef7f"
 
 _T0585_SYNC_ADAPTER_CONFIGS = '''def sync_adapter_configs(dest_root: Path, source_root: Path, *, write: bool) -> dict:
     """instance-owned 어댑터 config 채널을 1회 돌린다 — 판정 결과 dict(출력은 호출부).
@@ -898,6 +899,12 @@ def _t0585_pm_update_source() -> str:
     idempotent no-op이고, 역델타가 검증하는 adapter config 판정·source/manifest planning·apply·
     self-update 순서는 그대로다. marker 4곳과 anachronism 부재 단언 2건이 선통과한 상태에서 새
     migration 정의/호출 bytes만 합성본 SHA에 반영했다.
+
+    T-0878 — strict retired-path 선언의 검증된 역상만 legacy flavor exact-match에 허용하고 같은
+    선언의 OLD를 self-heal 제거분에서 제외했다. 이 fixture는 현행 codex manifest와 신 reviewer만
+    가진 fresh 대상이라 legacy 역상·removed 면제가 모두 비발화하고 기존 in-sync 계획으로 간다.
+    adapter config 판정·apply·self-update 순서는 무편집이며 marker 4곳과 anachronism 부재 단언도
+    선통과했으므로, 새 검증 helper/선택 판정 bytes만 합성본 SHA에 반영했다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
@@ -1022,13 +1029,123 @@ _PRE_T0876_PM_UPDATE_SHA256 = "2949e925d012e12f20867144e1222c42ea75ce135c85b0d12
 
 
 def _pre_t0876_pm_update_source() -> str:
-    """현행 updater에서 T-0876 delta만 exact-marker로 역적용한 동결 구 실행 파일.
+    """현행 updater에서 T-0878·T-0876 delta를 exact-marker로 역적용한 동결 구 실행 파일.
 
     git history나 HEAD^가 없는 출하 트리에서도 RUN1을 실제 구 updater subprocess로 재현한다.
     whole-file SHA는 역적용 범위를 역사적 구 source bytes에 고정한다.
     """
     source = (REPO / ".project_manager" / "tools" / "pm_update.py").read_text(
         encoding="utf-8")
+    # T-0878은 아래 T-0876 은퇴 기능 위에 쌓인 flavor 자기치유 보강이다. 먼저 그 delta만
+    # exact-marker로 걷어내야 이어지는 T-0876 역적용이 역사적 구 source bytes로 수렴한다.
+    source = _slice_replace(
+        source,
+        "def validated_retired_path_directives(\n",
+        "def _path_is_link_or_reparse(",
+        "",
+    )
+    source = source.replace(
+        "    declarations = validated_retired_path_directives(\n"
+        "        source_root, [Path(path) for path in manifest_paths]\n"
+        "    )\n",
+        "    declarations: list[tuple[str, str]] = []\n"
+        "    seen: dict[str, str] = {}\n"
+        "    for manifest_path in manifest_paths:\n"
+        "        for old, new in parse_retired_path_directives(Path(manifest_path)):\n"
+        "            previous = seen.get(old)\n"
+        "            if previous is not None and previous != new:\n"
+        "                raise RetiredPathError(\n"
+        "                    f\"retired-path 선언 충돌: {old} -> {previous} / {new}\"\n"
+        "                )\n"
+        "            # 다중 harness 회복은 동일 지시문을 여러 flavor manifest에서\n"
+        "            # 읽을 수 있다. 파일 내 중복은 parser가 거부하고, 파일 간 동일값만 접는다.\n"
+        "            if previous is None:\n"
+        "                seen[old] = new\n"
+        "                declarations.append((old, new))\n",
+        1,
+    )
+    source = source.replace(
+        "완전 일치**할 때만 그 후보를 primary로 고른다. 단 strict retired-path 선언의 검증된 역상\n"
+        "    ``(upstream - NEW) ∪ OLD``도 exact-match 후보로 인정한다. 부분집합, 존재 경로, 이름 추측,\n"
+        "    최소 초과집합/tiebreak는 사용하지 않는다. 완전 일치가 아니면 로컬 manifest를 그대로 계획에\n",
+        "완전 일치**할 때만 그 후보를 primary로 고른다. 부분집합, 존재 경로, 은퇴 행 추정, 최소\n"
+        "    초과집합/tiebreak는 사용하지 않는다. 완전 일치가 아니면 로컬 manifest를 그대로 계획에\n",
+        1,
+    )
+    source = source.replace(
+        "    # provenance가 없는 legacy 후보를 고를 때만 후보별 선언을 검증한다. 현행 manifest가 flavor를\n"
+        "    # 명시했다면 위에서 선택한 manifest만 후속 self-heal 검증 대상이며, 무관한 template flavor의\n"
+        "    # 손상 선언이 그 정상 경로를 가로막아서는 안 된다.\n",
+        "",
+        1,
+    )
+    source = source.replace(
+        "    candidate_retirements = {\n"
+        "        candidate: validated_retired_path_directives(source_root, [candidate])\n"
+        "        for candidate in candidate_entries\n"
+        "    }\n",
+        "",
+        1,
+    )
+    source = _slice_replace(
+        source,
+        "    exact_matches = []\n",
+        "    legacy_primary = (\n",
+        "    exact_matches = [\n"
+        "        candidate for candidate, paths in candidate_paths.items()\n"
+        "        if paths == local_core_paths\n"
+        "    ]\n",
+    )
+    source = source.replace(
+        "      - retired_removed: strict retired-path 선언으로 검증되어 divergence에서 제외한 OLD 경로\n",
+        "",
+        1,
+    )
+    source = source.replace('                "retired_removed": [],\n', "")
+    source = source.replace(
+        "        validated_retirements = validated_retired_path_directives(\n"
+        "            source_root, upstream_manifests\n"
+        "        )\n",
+        "",
+        1,
+    )
+    source = source.replace(
+        "    validated_old = {old for old, _new in validated_retirements}\n"
+        "    retired_removed = sorted(set(removed) & validated_old)\n"
+        "    effective_removed = sorted(set(removed) - validated_old)\n",
+        "",
+        1,
+    )
+    source = source.replace("    if effective_removed or marker_divergent:\n",
+                            "    if removed or marker_divergent:\n", 1)
+    source = source.replace(
+        '        return {"status": "diverged", "added": added, "removed": effective_removed,\n'
+        '                "retired_removed": retired_removed,\n',
+        '        return {"status": "diverged", "added": added, "removed": removed,\n',
+        1,
+    )
+    source = source.replace('            "retired_removed": retired_removed,\n', "", 1)
+    source = source.replace(
+        '    retired_removed = selfheal.get("retired_removed", [])\n', "", 1)
+    source = source.replace(
+        '        f"(선택 flavor 합집합·선언 순서 우선): 신규 등재 +{len(added)}"\n'
+        '        + (f", retired-path OLD -{len(retired_removed)}" if retired_removed else "")\n',
+        '        f"(선택 flavor 합집합·선언 순서 우선): 신규 등재 +{len(added)}"\n',
+        1,
+    )
+    source = source.replace(
+        "    for path in retired_removed:\n"
+        "        print(f\"    - {path}  (검증된 retired-path OLD — apply 뒤 backup/퇴역)\")\n",
+        "",
+        1,
+    )
+    source = source.replace(
+        "    except RetiredPathError as exc:\n"
+        "        print(f\"[중단] retired-path manifest 자기치유 실패 — {exc}\", file=sys.stderr)\n"
+        "        return 1\n",
+        "",
+        1,
+    )
     exact_reversals = (
         ("import hashlib\n", ""),
         ("무거운 additional_reviewer 코어를 업데이트 경로", "무거운 external_review 코어를 업데이트 경로"),
@@ -1116,7 +1233,7 @@ def _make_pre_t0876_codex_framework(tmp_path: Path) -> Path:
 
 
 def test_legacy_updater_run1_delivers_new_reviewer_and_run2_retires_old(tmp_path):
-    """동결 구 updater RUN1 배달 → 설치된 신 updater changes=0 RUN2 퇴역 전체 경로."""
+    """구 full rc2 → updater 단독 self-delivery → 신 full 1회가 rename을 수렴한다."""
     legacy_framework = _make_pre_t0876_codex_framework(tmp_path)
     dest = tmp_path / "legacy-reviewer-adopter"
     installed = subprocess.run(
@@ -1141,39 +1258,62 @@ def test_legacy_updater_run1_delivers_new_reviewer_and_run2_retires_old(tmp_path
         "RUN1 전 구 물리명 단독 형상이 아니다"
     old_reviewer.write_bytes(old_reviewer.read_bytes() + b"\n# adopter-local legacy bytes\n")
     preserved = old_reviewer.read_bytes()
-    # 공개 pm-update facade의 manifest reconcile이 먼저 도착한 상태. NEW 실행 파일은 여전히
-    # 없고, 아래 RUN1의 구 updater가 comment directive를 무시하면서 manifest row만 배달한다.
-    (dest / ".project_manager" / "engine.manifest").write_bytes(
-        (REPO / "templates" / "codex" / ".project_manager" / "engine.manifest").read_bytes()
-    )
-    assert not new_reviewer.exists() and updater.read_bytes() == old_updater_bytes
+    if os.name != "nt":
+        old_reviewer.chmod(0o751)
+    manifest = dest / ".project_manager" / "engine.manifest"
+    old_manifest_bytes = manifest.read_bytes()
 
+    # 불가능한 one-shot 계약을 음성 증거로 고정한다. 구 updater는 source에서 사라진 OLD를
+    # apply 전에 거부하며 updater/reviewer/manifest 어느 것도 바꾸지 않는다.
+    impossible = _run_adopter_tool(dest, "pm_update.py", "--from", str(REPO))
+    assert impossible.returncode == 2, f"{impossible.stdout}\n{impossible.stderr}"
+    assert "source 에 없음" in impossible.stderr and "external_review.py" in impossible.stderr
+    assert updater.read_bytes() == old_updater_bytes
+    assert manifest.read_bytes() == old_manifest_bytes
+    assert old_reviewer.read_bytes() == preserved and not new_reviewer.exists()
+
+    # bridge RUN1: 구 manifest가 이미 소유하는 updater 하나만 self-delivery한다. manifest와
+    # reviewer는 손복사/선전파하지 않으며 부분 실행이라 baseline도 전진하지 않는다.
     run1 = _run_adopter_tool(
         dest, "pm_update.py", "--from", str(REPO), "--paths",
         ".project_manager/tools/pm_update.py",
-        ".project_manager/tools/additional_reviewer.py",
     )
     assert run1.returncode == 0, f"{run1.stdout}\n{run1.stderr}"
     assert "파일 동기화" in run1.stdout, "RUN1이 실제 planning/apply 경로를 타지 않았다"
     assert updater.read_bytes() == (REPO / ".project_manager/tools/pm_update.py").read_bytes(), \
         "구 updater가 신 updater를 self-deliver하지 못했다"
     assert updater.read_bytes() != old_updater_bytes
-    assert new_reviewer.read_bytes() == \
-        (REPO / ".project_manager/tools/additional_reviewer.py").read_bytes(), \
-        "구 updater가 신 reviewer를 manifest에서 배달하지 못했다"
+    assert manifest.read_bytes() == old_manifest_bytes, "scoped RUN1이 manifest를 손댔다"
+    assert not new_reviewer.exists(), "scoped RUN1이 reviewer를 선전파했다"
     assert old_reviewer.read_bytes() == preserved, \
         "directive를 모르는 구 updater RUN1이 old를 조기 제거/수정했다"
 
-    # 손복사 없이 RUN1이 놓은 바로 그 신 updater를 같은 adopter 경로에서 재실행한다.
+    # bridge RUN2: RUN1이 놓은 신 updater의 첫 full sync 한 번이 manifest+NEW 적용 뒤 OLD를
+    # backup으로 이동한다. 이 사이 manifest/reviewer 손복사는 없다.
     run2 = _run_adopter_tool(dest, "pm_update.py", "--from", str(REPO))
     assert run2.returncode == 0, f"{run2.stdout}\n{run2.stderr}"
-    assert "최신 — 변경 없음." in run2.stdout, "RUN2가 changes=0 경계를 타지 않았다"
+    assert "파일 동기화" in run2.stdout, "신 updater full sync가 apply 경계를 타지 않았다"
+    assert "engine.manifest 자기치유" in run2.stdout
+    assert "retired-path OLD" in run2.stdout
     assert "[퇴역] .project_manager/tools/external_review.py" in run2.stdout
+    assert manifest.read_bytes() == \
+        (REPO / "templates/codex/.project_manager/engine.manifest").read_bytes()
+    assert new_reviewer.read_bytes() == \
+        (REPO / ".project_manager/tools/additional_reviewer.py").read_bytes()
     assert not old_reviewer.exists()
     backups = list((dest / ".pm_import_backups").glob(
         "*/.project_manager/tools/external_review.py"))
     assert len(backups) == 1, backups
     assert backups[0].read_bytes() == preserved, "RUN2 backup이 채택자 old bytes를 보존하지 않았다"
+    if os.name != "nt":
+        assert stat.S_IMODE(backups[0].stat().st_mode) == 0o751
+    conf = {
+        key.strip(): value.strip()
+        for line in (dest / ".project_manager/local.conf").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#") and "=" in line
+        for key, value in [line.split("=", 1)]
+    }
+    assert conf.get("upstream.rev") and conf["upstream.rev"] == conf.get("upstream.seen_rev")
 
 
 def test_upgrade_adopter_zero_change_run2_blocks_until_adapter_accept(tmp_path):

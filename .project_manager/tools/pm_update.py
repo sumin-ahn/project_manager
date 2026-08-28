@@ -1137,6 +1137,82 @@ def parse_retired_path_directives(manifest_path: Path) -> list[tuple[str, str]]:
     return declarations
 
 
+def validated_retired_path_directives(
+    source_root: Path,
+    manifest_paths: list[Path],
+) -> list[tuple[str, str]]:
+    """선택 upstream manifest들의 strict·출하 가능한 retired-path 선언 합집합.
+
+    flavor 선택과 실제 이주가 같은 판정을 소비한다. OLD는 upstream 소유집합에서 빠져 있어야 하고,
+    NEW는 선택 manifest의 bare byte-copy 행이면서 source_root의 regular file이어야 한다.
+    """
+    source_root = Path(source_root)
+    declarations: list[tuple[str, str]] = []
+    seen: dict[str, str] = {}
+    entries_by_path: dict[str, list[ManifestEntry]] = {}
+    for manifest_path in (Path(path) for path in manifest_paths):
+        for entry in read_manifest(manifest_path):
+            entries_by_path.setdefault(
+                str(entry).replace("\\", "/"), []
+            ).append(entry)
+        for old, new in parse_retired_path_directives(manifest_path):
+            previous = seen.get(old)
+            if previous is not None and previous != new:
+                raise RetiredPathError(
+                    f"retired-path 선언 충돌: {old} -> {previous} / {new}"
+                )
+            if previous is None:
+                seen[old] = new
+                declarations.append((old, new))
+
+    edges = dict(declarations)
+    for start in edges:
+        visited: set[str] = set()
+        cursor = start
+        while cursor in edges:
+            if cursor in visited:
+                raise RetiredPathError(
+                    f"선택 manifest retired-path 순환 선언: {start}"
+                )
+            visited.add(cursor)
+            cursor = edges[cursor]
+
+    owned = set(entries_by_path)
+    old_paths = set(edges)
+    for old, new in declarations:
+        if old in owned:
+            raise RetiredPathError(
+                f"retired OLD가 upstream manifest-owned 경로로 남아 있음: {old}"
+            )
+        if new in old_paths:
+            raise RetiredPathError(
+                f"retired-path chain/conflict는 허용하지 않음: {old} -> {new}"
+            )
+        replacement_entries = entries_by_path.get(new, [])
+        if not replacement_entries:
+            raise RetiredPathError(
+                f"replacement가 선택 upstream manifest-owned 경로가 아님: {new}"
+            )
+        if any(
+            _entry_render_flag(entry)
+            or _entry_target_owned_flag(entry)
+            or getattr(entry, "source_rel", None)
+            for entry in replacement_entries
+        ):
+            raise RetiredPathError(
+                f"replacement가 bare byte-copy manifest 행이 아님: {new}"
+            )
+        source_new = source_root / new
+        _assert_no_link_components(
+            source_root, source_new, label="upstream replacement"
+        )
+        if not source_new.is_file() or _path_is_link_or_reparse(source_new):
+            raise RetiredPathError(
+                f"upstream replacement가 regular file이 아님: {source_new}"
+            )
+    return declarations
+
+
 def _path_is_link_or_reparse(path: Path) -> bool:
     """symlink와 Windows reparse point를 같은 탈출 경로로 본다."""
     try:
@@ -1245,20 +1321,9 @@ def retire_manifest_paths(
     prospective_replacements: dict[str, Path] | None = None,
 ) -> list[tuple[str, Path]]:
     """full self-sync의 명시 퇴역 경로를 backup으로 원자 이동한다."""
-    declarations: list[tuple[str, str]] = []
-    seen: dict[str, str] = {}
-    for manifest_path in manifest_paths:
-        for old, new in parse_retired_path_directives(Path(manifest_path)):
-            previous = seen.get(old)
-            if previous is not None and previous != new:
-                raise RetiredPathError(
-                    f"retired-path 선언 충돌: {old} -> {previous} / {new}"
-                )
-            # 다중 harness 회복은 동일 지시문을 여러 flavor manifest에서
-            # 읽을 수 있다. 파일 내 중복은 parser가 거부하고, 파일 간 동일값만 접는다.
-            if previous is None:
-                seen[old] = new
-                declarations.append((old, new))
+    declarations = validated_retired_path_directives(
+        source_root, [Path(path) for path in manifest_paths]
+    )
     if not declarations:
         return []
 
@@ -3199,8 +3264,9 @@ def _selected_upstream_manifests(
     우선 + 후속 선언 순서라는 합집합 우선순위를 그대로 보존한다.
 
     ``@source`` flavor 선언이 전혀 없는 구 manifest는 로컬 core 경로 집합이 **정확히 한 후보와
-    완전 일치**할 때만 그 후보를 primary로 고른다. 부분집합, 존재 경로, 은퇴 행 추정, 최소
-    초과집합/tiebreak는 사용하지 않는다. 완전 일치가 아니면 로컬 manifest를 그대로 계획에
+    완전 일치**할 때만 그 후보를 primary로 고른다. 단 strict retired-path 선언의 검증된 역상
+    ``(upstream - NEW) ∪ OLD``도 exact-match 후보로 인정한다. 부분집합, 존재 경로, 이름 추측,
+    최소 초과집합/tiebreak는 사용하지 않는다. 완전 일치가 아니면 로컬 manifest를 그대로 계획에
     사용하고, frozen/stray를 구분할 수 없다는 진단과 검증된 완전 재-import 절차만 낸다.
 
     선언이 하나라도 있으면 존재-휴리스틱에 의한 자동 선택은 비발화한다. 선언되지 않은 flavor의
@@ -3348,10 +3414,21 @@ def _selected_upstream_manifests(
     if not candidate_entries:
         return [primary], False
 
-    exact_matches = [
-        candidate for candidate, paths in candidate_paths.items()
-        if paths == local_core_paths
-    ]
+    # provenance가 없는 legacy 후보를 고를 때만 후보별 선언을 검증한다. 현행 manifest가 flavor를
+    # 명시했다면 위에서 선택한 manifest만 후속 self-heal 검증 대상이며, 무관한 template flavor의
+    # 손상 선언이 그 정상 경로를 가로막아서는 안 된다.
+    candidate_retirements = {
+        candidate: validated_retired_path_directives(source_root, [candidate])
+        for candidate in candidate_entries
+    }
+    exact_matches = []
+    for candidate, paths in candidate_paths.items():
+        retired = candidate_retirements[candidate]
+        inverse_paths = (
+            paths - {new for _old, new in retired}
+        ) | {old for old, _new in retired}
+        if paths == local_core_paths or inverse_paths == local_core_paths:
+            exact_matches.append(candidate)
     legacy_primary = (
         exact_matches[0]
         if (
@@ -3452,6 +3529,7 @@ def resolve_manifest_selfheal(
                   'heal'(upstream 신규 등재 또는 exact-match legacy provenance 승격)
       - added   : flavor upstream 에만 있는 순수 경로(신규/재-등재·정렬) — 'heal' 이면 이번 sync 로 도달
       - removed : 로컬 manifest 에만 있던 순수 경로('diverged' 판정 근거·정렬)
+      - retired_removed: strict retired-path 선언으로 검증되어 divergence에서 제외한 OLD 경로
       - manifest: plan 이 쓸 ManifestEntry 리스트 — 'heal' 이면 flavor upstream_entries, 그 외 None
                   (None 이면 호출부가 resolve_manifest_for_dest 산출 로컬 manifest 를 그대로 쓴다).
       - upstream_manifest: 대조에 쓴 flavor-correct upstream engine.manifest **Path** — 호출부(main)가
@@ -3465,6 +3543,7 @@ def resolve_manifest_selfheal(
         #   집으므로 plan 이 upstream 기준(신규 등재 포함)으로 돈다. 승격 불요(무변경·현행). self-prop
         #   이 없어 skew 대조는 root(=resolve 산출과 동일) 로 정합.
         return {"status": "no_local", "added": [], "removed": [],
+                "retired_removed": [],
                 "manifest": None, "upstream_manifest": root_manifest,
                 "upstream_manifests": [root_manifest], "manifest_text": None,
                 "merge_conflicts": []}
@@ -3491,6 +3570,7 @@ def resolve_manifest_selfheal(
                 "status": "legacy_preserved",
                 "added": [],
                 "removed": [],
+                "retired_removed": [],
                 "manifest": None,
                 "upstream_manifest": upstream_manifest,
                 "upstream_manifests": upstream_manifests,
@@ -3500,9 +3580,13 @@ def resolve_manifest_selfheal(
         merged_upstream = merge_manifest_sources(upstream_manifests)
         upstream_text = merged_upstream["text"]
         upstream_entries = merged_upstream["entries"]
+        validated_retirements = validated_retired_path_directives(
+            source_root, upstream_manifests
+        )
     except (FileNotFoundError, OSError, UnicodeError, ValueError):
         # flavor upstream 읽기 실패 — skew 대조도 같은 경로를 넘겨 upstream_missing 으로 정합(fail-soft).
         return {"status": "upstream_missing", "added": [], "removed": [],
+                "retired_removed": [],
                 "manifest": None, "upstream_manifest": upstream_manifest,
                 "upstream_manifests": upstream_manifests, "manifest_text": None,
                 "merge_conflicts": []}
@@ -3516,6 +3600,7 @@ def resolve_manifest_selfheal(
         if ln.strip() and not ln.strip().startswith("#")} if guest_block else set()
     if _strip_guest_manifest_block(local_text) == upstream_text:
         return {"status": "in_sync", "added": [], "removed": [],
+                "retired_removed": [],
                 "manifest": None, "upstream_manifest": upstream_manifest,
                 "upstream_manifests": upstream_manifests,
                 "manifest_text": upstream_text,
@@ -3533,6 +3618,9 @@ def resolve_manifest_selfheal(
     upstream_markers = {str(e): _manifest_marker_key(e) for e in upstream_entries}
     added = sorted(set(upstream_markers) - set(local_markers))
     removed = sorted(set(local_markers) - set(upstream_markers))
+    validated_old = {old for old, _new in validated_retirements}
+    retired_removed = sorted(set(removed) & validated_old)
+    effective_removed = sorted(set(removed) - validated_old)
     legacy_without_source_provenance = not any(
         getattr(entry, "source_rel", None) for entry in core_local_entries
     )
@@ -3548,12 +3636,13 @@ def resolve_manifest_selfheal(
             else local_markers[p] != upstream_markers[p]
         )
     )
-    if removed or marker_divergent:
+    if effective_removed or marker_divergent:
         # 로컬-전용 경로 또는 공통 경로 마커 divergence = 로컬이 flavor upstream 의 단순 부분집합이
         #   아니다(채택자 커스텀 편집·마커 손질). 전체 교체하면 그 커스텀/구조를 클로버하므로 승격하지
         #   않고 현행 로컬 manifest 를 유지한다. upstream 신규 등재분은 skew 대조가
         #   surface 한다(안전망). "항목 제외" 커스텀(로컬⊂upstream·마커 정합)은 아래 heal 로 전체 교체.
-        return {"status": "diverged", "added": added, "removed": removed,
+        return {"status": "diverged", "added": added, "removed": effective_removed,
+                "retired_removed": retired_removed,
                 "manifest": None, "upstream_manifest": upstream_manifest,
                 "upstream_manifests": upstream_manifests,
                 "manifest_text": upstream_text,
@@ -3564,6 +3653,7 @@ def resolve_manifest_selfheal(
         # 경로/마커 동일(주석만 차이) — 도달할 신규 등재 경로 0. manifest 자신도 self-prop 엔트리라
         #   plan 이 파일은 갱신한다(승격 불요). in_sync 로 취급(baseline 갱신 진행).
         return {"status": "in_sync", "added": [], "removed": [],
+                "retired_removed": [],
                 "manifest": None, "upstream_manifest": upstream_manifest,
                 "upstream_manifests": upstream_manifests,
                 "manifest_text": upstream_text,
@@ -3573,6 +3663,7 @@ def resolve_manifest_selfheal(
     # sync에서 도달시킨다. provenance-only 승격은 bare opencode 경로를 source root에서 찾는 rc=2도
     # 막는다.
     return {"status": "heal", "added": added, "removed": [],
+            "retired_removed": retired_removed,
             "manifest": upstream_entries, "upstream_manifest": upstream_manifest,
             "upstream_manifests": upstream_manifests,
             "manifest_text": upstream_text,
@@ -3599,6 +3690,7 @@ def _print_manifest_selfheal_finding(selfheal: dict, *, dry_run: bool = False) -
     if selfheal.get("status") != "heal":
         return
     added = selfheal["added"]
+    retired_removed = selfheal.get("retired_removed", [])
     verb = "자기치유 예정" if dry_run else "자기치유"
     if selfheal.get("multi_flavor_recovery"):
         flavors = [
@@ -3626,9 +3718,12 @@ def _print_manifest_selfheal_finding(selfheal: dict, *, dry_run: bool = False) -
     print(
         f"→ engine.manifest {verb} — upstream manifest 를 계획 기준으로 승격 "
         f"(선택 flavor 합집합·선언 순서 우선): 신규 등재 +{len(added)}"
+        + (f", retired-path OLD -{len(retired_removed)}" if retired_removed else "")
     )
     for path in added:
         print(f"    + {path}  (upstream 신규/재-등재 — 이번 sync 로 도달)")
+    for path in retired_removed:
+        print(f"    - {path}  (검증된 retired-path OLD — apply 뒤 backup/퇴역)")
 
 
 def _print_manifest_merge_conflicts(selfheal: dict) -> None:
@@ -6822,6 +6917,9 @@ def _main(argv: list[str] | None = None) -> int:
         )
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)
+        return 1
+    except RetiredPathError as exc:
+        print(f"[중단] retired-path manifest 자기치유 실패 — {exc}", file=sys.stderr)
         return 1
     except _EngineSyncNotationContextError as exc:
         # 엔진 사본 skew 는 이 타입으로 감싸이지 않는다(`_resolve_engine_sync_plan` 이 원본 그대로
