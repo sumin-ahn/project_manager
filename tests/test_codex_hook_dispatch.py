@@ -308,8 +308,8 @@ def test_only_matching_features_spawn_a_child(dispatcher, tmp_path):
     assert len(runner.calls) == 1
     argv = runner.calls[0]
     assert argv[0] == sys.executable
-    assert argv[1] == str(tmp_path / ".project_manager" / "tools"
-                          / "delegate_channel_guard.py")
+    assert Path(argv[1]) == (tmp_path / ".project_manager" / "tools"
+                             / "delegate_channel_guard.py")
     assert argv[2:4] == ["supervise", "PreToolUse"]
     assert argv[-1] == "codex-hook"
 

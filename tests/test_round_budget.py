@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from _test_exec import python_argv_command
 from conftest import anchor_board_module
 
 REPO = Path(__file__).resolve().parents[1]
@@ -127,7 +128,7 @@ def budget_env(tmp_path, pd, monkeypatch):
     ignore.parent.mkdir()
     ignore.write_text(".local/\n", encoding="utf-8", newline="\n")
     (slot / ".project_manager" / "local.conf").write_text(
-        "test.cmd=python3 --version\n", encoding="utf-8", newline="\n",
+        f"test.cmd={python_argv_command('--version')}\n", encoding="utf-8", newline="\n",
     )
     (slot / "tracked.txt").write_text("seed\n", encoding="utf-8", newline="\n")
     assert _git(slot, "add", "tracked.txt", ".project_manager/.gitignore").returncode == 0
@@ -300,8 +301,9 @@ def _round_names(pm_home: Path, ticket: str) -> list[str]:
 
 
 def _architect_output(
-    pd, *, command: str = "python3 --version", expected: str = "Python",
+    pd, *, command: str | None = None, expected: str = "Python",
 ) -> str:
+    command = command or python_argv_command("--version")
     payload = json.dumps({
         "version": pd.ARCHITECT_TEST_VERSION,
         "tests": [{
@@ -324,8 +326,11 @@ def _architect_output(
 def _prepare_accepted_review(
     pd, *, pm_home: Path, slot: Path, cluster: str, ticket: str,
     target: str = "tests/test_terminal_regression.py",
-    command: str = "python3 -m pytest tests/test_terminal_regression.py -q",
+    command: str | None = None,
 ):
+    command = command or python_argv_command(
+        "-m", "pytest", "tests/test_terminal_regression.py", "-q",
+    )
     review = pd.prepare_cluster_copy(
         cluster=cluster, role="code-reviewer", cwd=slot, pm_home=pm_home,
     )
@@ -533,7 +538,7 @@ def test_developer_harvest_refuses_when_an_architect_required_test_is_red(
     pd._load_ticket_rounds().reserve_round(
         board.tickets_dir(), "T-7003", "architect",
         content=_architect_output(
-            pd, command="python3 -m module_that_does_not_exist_t0871", expected="green",
+            pd, command=python_argv_command("-m", "module_that_does_not_exist_t0871"), expected="green",
         ),
         lock=contextlib.nullcontext(),
     )
@@ -748,7 +753,7 @@ def test_fix_harvest_runs_the_reviewer_required_regression(pd, budget_env):
             "location": "src/example.py:1", "failure": "현재 red",
             "design": "불변식을 보존하며 수정",
             "test": "tests/test_review_regression.py 회귀 1건 추가",
-            "command": "python3 -m module_that_does_not_exist_t0871",
+            "command": python_argv_command("-m", "module_that_does_not_exist_t0871"),
             "expected": "green",
         },
         "design_change": False,
@@ -792,13 +797,15 @@ def test_final_fix_red_is_a_terminal_stop_with_preserved_evidence(
     _seed(pm_home, tickets, cluster, [ticket])
     for role in _CYCLE[:2]:
         _advance(pd, cluster, role, pm_home=pm_home, slot=slot)
-    reviewer_command = "python3 -m pytest tests/test_terminal_regression.py -q"
+    reviewer_command = python_argv_command(
+        "-m", "pytest", "tests/test_terminal_regression.py", "-q",
+    )
     _prepare_accepted_review(
         pd, pm_home=pm_home, slot=slot, cluster=cluster, ticket=ticket,
         command=reviewer_command,
     )
     (slot / ".project_manager" / "local.conf").write_text(
-        "test.cmd=python3 -m pytest tests/ -q -n auto\n",
+        f"test.cmd={python_argv_command('-m', 'pytest', 'tests/', '-q', '-n', 'auto')}\n",
         encoding="utf-8", newline="\n",
     )
     fix = pd.prepare_cluster_copy(
@@ -816,7 +823,7 @@ def test_final_fix_red_is_a_terminal_stop_with_preserved_evidence(
 
     def required_test(command, expected, *, cwd):
         assert expected is not None, "final-fix harvest가 stage-exit full을 중복 실행했다"
-        if red_axis == "architect" and command == "python3 --version":
+        if red_axis == "architect" and command == python_argv_command("--version"):
             return "green이 아닙니다: architect axis"
         if red_axis == "reviewer" and command == reviewer_command:
             return "green이 아닙니다: reviewer axis"

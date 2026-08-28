@@ -24,10 +24,11 @@ import shutil
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
+from _test_exec import python_argv_command
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 
@@ -458,7 +459,7 @@ def test_prompt_carries_every_ticket_body_changed_files_focus_and_diff(pd, revie
         assert f"### 게이트 티켓 본문 ({ticket})" in prompt
         assert f"{ticket} 목표 문장." in prompt
     for path in review.paths:
-        assert path in prompt
+        assert PurePosixPath(path).as_posix() in prompt
     assert "### PM 검토 중점" in prompt and focus in prompt
     assert "### 리뷰 대상 diff" in prompt and "```diff" in prompt
     assert review.merge_base[:12] in prompt
@@ -523,7 +524,7 @@ def _reserve_prior_rounds(pd, home: Path, roles: tuple[str, ...]) -> None:
                     "version": pd.ARCHITECT_TEST_VERSION,
                     "tests": [{
                         "id": "AT-001", "target": "tests/test_cluster_review_round.py",
-                        "command": "python3 --version", "expected": "Python",
+                        "command": python_argv_command("--version"), "expected": "Python",
                         "negative": "계약 누락은 developer 준비를 차단한다",
                     }],
                 }, ensure_ascii=False, separators=(",", ":"))
@@ -895,7 +896,7 @@ def _finding(fid: str, *, design_change: bool = False,
         "fix_contract": {
             "location": "src/example.py:1", "failure": f"{fid} 관측",
             "design": f"{fid} 수정", "test": f"{fid} 회귀",
-            "command": "python3 --version", "expected": "Python",
+            "command": python_argv_command("--version"), "expected": "Python",
         },
         "design_change": design_change,
     }

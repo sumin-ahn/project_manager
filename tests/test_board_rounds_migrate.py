@@ -417,7 +417,7 @@ def test_migrate_stops_on_unharvested_legacy_copies_without_the_discard_flag(
 
     err = capsys.readouterr().err
     assert "미회수 2건" in err
-    assert str(artifacts["legacy_run"] / "ticket-T-2001.md") in err, (
+    assert (artifacts["legacy_run"] / "ticket-T-2001.md").as_posix() in err.replace("\\", "/"), (
         "미회수 사본 경로가 안내에 없다")
     assert artifacts["ledger"].exists() and artifacts["trust"].exists()
     assert growth.is_dir(), "게이트가 서기 전에 장부를 지웠다"
@@ -446,7 +446,7 @@ def test_migrate_discard_flag_removes_unharvested_copies_too(legacy_board, capsy
 
     err = capsys.readouterr().err
     assert "등록 슬롯 밖 경로의 파일은 지우지 않는다" in err
-    assert str(outside) in err
+    assert outside.as_posix() in err.replace("\\", "/")
     assert outside.is_file(), "소유하지 않은 경로를 지웠다"
     assert not artifacts["ledger"].exists()
     assert not artifacts["legacy_role_dir"].exists()

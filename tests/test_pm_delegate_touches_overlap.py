@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from _test_exec import python_argv_command
 from conftest import write_cluster_ledger
 
 
@@ -51,7 +52,7 @@ def pd():
     transport_test = module.ArchitectTest(
         id="AT-OVERLAP",
         target="tests/test_pm_delegate_touches_overlap.py",
-        command="python3 --version",
+        command=python_argv_command("--version"),
         expected="Python",
         negative="명령 실패 또는 Python 표식 누락은 거부",
     )

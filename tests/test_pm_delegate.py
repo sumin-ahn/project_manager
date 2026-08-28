@@ -1072,7 +1072,7 @@ def test_opencode_symlink_cwd_preserves_lexical_process_and_file_paths(
         file_arg = argv[argv.index("--file") + 1]
         seen.update(process_cwd=cwd, dir_arg=dir_arg, file_arg=file_arg)
         assert cwd == dir_arg == str(linked_cwd)
-        assert file_arg.startswith(str(linked_cwd) + os.sep)
+        assert Path(file_arg).is_relative_to(linked_cwd)
         assert Path(file_arg).resolve().is_relative_to(Path(dir_arg).resolve())
         return {
             "returncode": 0,

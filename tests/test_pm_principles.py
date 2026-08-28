@@ -246,7 +246,10 @@ def test_adopter_shape_without_local_file_uses_shipped_only(m, tmp_path):
 
 # ── 3. 비차단 · 상한 ──────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("text", ["", "\x00\x01binary-ish\xff", "x" * 100_000])
+@pytest.mark.parametrize(
+    "text", ["", "\x00\x01binary-ish\xff", "x" * 100_000],
+    ids=("empty", "binary", "long-100k"),
+)
 def test_judge_recall_never_raises_on_hostile_input(m, tmp_path, text):
     _write_registry(tmp_path, "#### 공유\n- `[shell: git]` 문구. 어기면 깨진다.\n")
     # 예외를 던지면 pytest 가 실패로 잡는다 — 호출 자체가 단언이다.

@@ -408,7 +408,7 @@ def _pm_release_prompt(skill_text: str, *, repo: str, readonly_cwd: Path) -> str
     """
     exact_record = (
         "PM_ORCH_LIVE_RELEASE=1 python3 .project_manager/tools/board.py livegate record "
-        f"--repo {shlex.quote(repo)} --cwd {shlex.quote(str(readonly_cwd))}"
+        f"--repo {shlex.quote(repo)} --cwd {shlex.quote(readonly_cwd.as_posix())}"
     )
     return (
         "You are the PM for a solo, single-slot project. Below (between <<<SKILL and SKILL>>>) is "

@@ -25,6 +25,8 @@ import sys
 from pathlib import Path
 
 import pytest
+
+from _test_exec import python_argv_command
 from _settings_portability import portability_failures, referenced_hook_paths
 from _harness_matrix import (
     HARNESSES,
@@ -789,7 +791,9 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
         "tests": [{
             "id": "AT-001",
             "target": "tests/test_round_cycle.py",
-            "command": "python3 -m pytest tests/test_round_cycle.py -q",
+            "command": python_argv_command(
+                "-m", "pytest", "tests/test_round_cycle.py", "-q",
+            ),
             "expected": "passed",
             "negative": "테스트 산출 누락은 developer 회수를 거부한다",
         }],

@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from _test_exec import python_shell_command
 
 REPO = Path(__file__).resolve().parents[1]
 PM_DELEGATE = REPO / ".project_manager" / "tools" / "pm_delegate.py"
@@ -187,7 +188,9 @@ def _fill_verify_field(text: str, key: str, raw_json: str, *, count: int = 1) ->
     구조로 찾아 규칙대로 갈아 끼우는 dev 편집을 흉내낸다(엔진이 실제로 낸 골격에 태우는
     왕복 단언 · T-0808). `count=0` 이면 행 전부(무제한)를 갈아 끼운다."""
     pattern = re.compile(rf'"{key}":(?:"(?:[^"\\]|\\.)*"|[^,}}]+)')
-    new_text, replaced = pattern.subn(f'"{key}":{raw_json}', text, count=count)
+    new_text, replaced = pattern.subn(
+        lambda _match: f'"{key}":{raw_json}', text, count=count,
+    )
     assert replaced > 0, f"{key!r} 자리를 찾을 수 없습니다: {text!r}"
     return new_text
 
@@ -1597,7 +1600,7 @@ def test_expected_short_literal_round_trips_through_a_real_command_into_the_conf
     """축 3 본체(왕복 단언) — 골격대로 짧은 문자열을 채운 verify 행을 실제 커맨드로 실행해
     얻은 observed 가 expected 를 포함하고, 그 값으로 확인 블록을 구성해도 malformed 가 없다
     (`expected ⊆ observed` 계약이 실제로 성립함을 로컬 서브프로세스로 확인 — 외부 발신 없음)."""
-    command = f"{sys.executable} -c \"print('3 passed')\""
+    command = python_shell_command("-c", "print('3 passed')")
     fence = _verify_fence_text(pd)
     fence = _naive_placeholder_edit(fence, "<true|false>", "true")
     fence = _fill_verify_field(fence, "command", json.dumps(command))

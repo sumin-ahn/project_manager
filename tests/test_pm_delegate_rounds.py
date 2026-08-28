@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest
 
+from _test_exec import python_argv_command
 from _win_skip import _can_symlink as can_symlink, posix_mode_supported
 from conftest import write_cluster_ledger
 
@@ -97,7 +98,7 @@ def pd():
     transport_test = module.ArchitectTest(
         id="AT-TRANSPORT",
         target="tests/test_pm_delegate_rounds.py",
-        command="python3 --version",
+        command=python_argv_command("--version"),
         expected="Python",
         negative="명령 실패 또는 Python 표식 누락은 거부",
     )
@@ -137,9 +138,9 @@ def pd():
 
     module.architect_tests_from_rounds = _transport_architect_tests
     module._developer_round_changed_paths = _transport_changed_paths
-    module._full_regression_command = lambda _cwd: "python3 --version"
+    module._full_regression_command = lambda _cwd: python_argv_command("--version")
     module.parse_developer_regression_record = lambda _text: module.DeveloperRegressionRecord(
-        "python3 --version", "rc=0 · transport fixture green",
+        python_argv_command("--version"), "rc=0 · transport fixture green",
     )
     return module
 
@@ -168,7 +169,7 @@ def _fix_contract(finding_id: str) -> dict[str, str]:
         "failure": f"{finding_id} 재현에서 회수 계약이 기대와 다름",
         "design": f"{finding_id} 범위만 수정하고 기존 장부 불변식 보존",
         "test": "tests/test_pm_delegate_rounds.py",
-        "command": "python3 --version",
+        "command": python_argv_command("--version"),
         "expected": "Python",
     }
 
@@ -938,7 +939,7 @@ def _report_command(text: str) -> str:
     실제로 도는 커맨드는 트리 내 선례(`tests/test_cluster_review_round.py`)와 같은 인터프리터
     호출로 쓴다(금지 토큰 0 · 트리·네트워크 부작용 0).
     """
-    return f"{shlex.quote(sys.executable)} -c " + shlex.quote(f"print({text!r})")
+    return python_argv_command("-c", f"print({text!r})")
 
 
 def _fill_machine_verifiable(pd, text: str, index: int, value: str = "true") -> str:
@@ -1087,7 +1088,7 @@ def test_prepare_after_the_judgment_prefills_every_open_accepted_row(pd, rounds_
     # reviewer v3 수정 계약의 test command/expected가 developer 시드에 그대로
     # 결속된다. developer가 별도 확인 명령으로 갈아끼우는 여지는 없다.
     assert [row["command"] for row in _verify_rows_in(pd, seed)] == [
-        "python3 --version", "python3 --version",
+        python_argv_command("--version"), python_argv_command("--version"),
     ]
     assert [row["expected"] for row in _verify_rows_in(pd, seed)] == [
         "Python", "Python",
@@ -1392,7 +1393,7 @@ def _pm_owned_audit_contract() -> dict[str, str]:
             "adopter PM 홈의 두 current ledger와 ADR/index/architecture/domain을 "
             "종결 감사해 legacy resolution 합계 0을 기록한다"
         ),
-        "command": "python3 -c \"print(0)\"",
+        "command": python_argv_command("-c", "print(0)"),
         "expected": "0",
     }
 

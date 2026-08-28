@@ -251,7 +251,7 @@ def _problem_codes(pd, env: Env, ticket: str) -> list[str]:
 def _assets(plan, env: Env) -> tuple[bool, bytes | None, bool, dict]:
     """세 자산의 현재 값 — run-dir 존재 · board bytes · 장부 마지막 행."""
     board_bytes = plan.board_path.read_bytes() if plan.board_path.exists() else None
-    rows = [row for row in _ledger_rows(env) if row["copy"] == str(plan.path)]
+    rows = [row for row in _ledger_rows(env) if Path(row["copy"]) == plan.path]
     return plan.run_dir.exists(), board_bytes, plan.path.exists(), rows[-1]
 
 
@@ -306,7 +306,7 @@ def test_abandon_closes_all_three_kill_residue_assets(pd, env):
     plan = _prepare(pd, env, "T-8001")
     assert plan.run_dir.exists() and plan.board_path.exists()
     before = _ledger_rows(env)[-1]
-    assert before["copy"] == str(plan.path) and before["harvested_at"] is None
+    assert Path(before["copy"]) == plan.path and before["harvested_at"] is None
     assert "abandoned_at" not in before and "owner_pid" not in before
 
     result = _abandon(pd, env, plan)
@@ -525,7 +525,7 @@ def test_output_landing_before_the_removal_preserves_bytes_and_run_dir(
 # ── I4 실패 주입 × 3 → 같은 명령 재호출로 수렴 ─────────────────────────────
 
 def _assert_converged(pd, env: Env, plan, *, board_removed: bool = True) -> None:
-    row = [row for row in _ledger_rows(env) if row["copy"] == str(plan.path)][-1]
+    row = [row for row in _ledger_rows(env) if Path(row["copy"]) == plan.path][-1]
     assert row["abandoned_at"] is not None
     assert not plan.run_dir.exists()
     assert plan.board_path.exists() is not board_removed
@@ -629,7 +629,7 @@ def test_middle_ordinal_keeps_the_board_round_and_closes_the_other_two(pd, env):
     assert result.board_removed is False and result.converged is True
     assert target.board_path.exists()                     # 자산 2 보존
     assert not target.run_dir.exists()                    # 자산 1 종결
-    row = [row for row in _ledger_rows(env) if row["copy"] == str(target.path)][-1]
+    row = [row for row in _ledger_rows(env) if Path(row["copy"]) == target.path][-1]
     assert row["abandoned_at"] is not None                # 자산 3 종결
     after_codes = _problem_codes(pd, env, "T-8060")
     for code in ("round-gap", "round-dup"):
