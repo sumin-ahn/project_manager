@@ -7,9 +7,21 @@
 
 ## [Unreleased]
 
+## [1.7.12] - 2026-08-29
+
+### Added
+
+- `qa.platforms` / `test.<platform>.cmd` 선언으로 Linux core 회귀와 같은 HEAD의 Windows QEMU 회귀를 하나의 `pm-qa`·livegate 증거로 집계하는 platform QA gate를 추가했다. 각 스위트 내부는 `pytest -n auto`로 병렬 실행하고, 공유 QEMU 경합을 피하기 위해 platform 간은 직렬로 검증한다.
+
+### Changed
+
+- 추가 리뷰어의 canonical 물리 진입점을 `.project_manager/tools/additional_reviewer.py`로 완전 개명했다. 구 `external_review.py`는 shim으로 남기지 않고, `pm_update` full sync가 신 파일 설치를 확인한 뒤 채택자의 구 파일을 `.pm_import_backups/`에 보존하고 퇴역한다. 과거 raw/config/header/role 판독은 호환을 유지하지만 신규 writer는 `additional_reviewer` 식별자만 생성한다.
+
 ### Fixed
 
 - 종료 archive를 같은 task identity로 복원하는 `task reopen`을 추가하고, archived 이름의 신규 bootstrap을 차단했다. `task end`는 handoff 진입이 남긴 durable `pid=0` intent 뒤에만 허용해 무handoff 종료의 슬롯·state 손실을 막는다.
+- Windows 11 QEMU 전체 회귀에서 발견한 99 node·13파일의 테스트 이식성 결함을 실행 인터프리터, 논리/네이티브 경로, JSON backslash, 과대한 parameter ID 축으로 전수 폐쇄했다. 가짜 WindowsApps `python3` shim을 설치한 실제 VM에서도 출하 계약을 유지한다.
+- 한 shell cell의 `git-anchor` `PreToolUse` 판정은 최강 verdict만 남기고 인접한 동일 경고를 `호출 5–6 [pm-home/warn] ×2: …` 형태로 압축한다. 하위 `slot/ok` 반복은 최종 `systemMessage`에서 제외하되 deny code·호출 순서는 보존한다.
 
 ## [1.7.11] - 2026-08-25
 

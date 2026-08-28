@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud · engine_rev.py --bump 대상) ──────────
-ENGINE_REV = "v1.7.11"
+ENGINE_REV = "v1.7.12"
 
 # ── 엔진 중앙 로더 부트스트랩 (형제 로드는 이 한 경로만 · `repo_owned_files.load_module`) ──
 # 파싱 자체는 정규식 하나로 끝나지만 이 모듈도 형제 둘을 지연 로드한다 — 레지스트리·marker 판독은

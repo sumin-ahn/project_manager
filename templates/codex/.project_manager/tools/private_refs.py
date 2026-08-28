@@ -162,7 +162,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
 # baked 리터럴 — `local_conf.py`·`file_lock.py` 와 같은 규약이다. 릴리즈 bump 는
 # `engine_rev.py --bump vX.Y.Z` 가 전 stamped 모듈을 기계 일괄 재작성한다.
-ENGINE_REV = "v1.7.11"
+ENGINE_REV = "v1.7.12"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):

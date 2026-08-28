@@ -247,7 +247,7 @@ except Exception as _TOOLS_BOOTSTRAP_ERROR:
 
 # ── 엔진 사본 rev 스탬프 (형제 사본 skew fail-loud) ──────────────────────
 # baked 리터럴 — engine_rev.py --bump가 전 stamped 모듈과 함께 재작성한다.
-ENGINE_REV = "v1.7.11"
+ENGINE_REV = "v1.7.12"
 
 
 def _verify_engine_rev(sibling_module, sibling_filename):
