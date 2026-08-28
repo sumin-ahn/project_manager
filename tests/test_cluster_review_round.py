@@ -454,7 +454,7 @@ def test_prompt_carries_every_ticket_body_changed_files_focus_and_diff(pd, revie
     )
 
     assert f"리뷰 단위: {_CLUSTER}" in prompt
-    assert "/tmp/snap" in prompt
+    assert str(Path("/tmp/snap")) in prompt
     for ticket in _MEMBERS:
         assert f"### 게이트 티켓 본문 ({ticket})" in prompt
         assert f"{ticket} 목표 문장." in prompt

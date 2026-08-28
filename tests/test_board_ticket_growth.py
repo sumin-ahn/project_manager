@@ -124,7 +124,7 @@ def _write_ticket(board_dir: Path, tid: str, status: str, *, tier: str | None = 
     target = ".drafts" if status == "draft" else status
     path = board_dir / "tickets" / target / f"{tid}-growth.md"
     path.write_text(_ticket_text(tid, "open" if status == "draft" else status, tier=tier),
-                    encoding="utf-8")
+                    encoding="utf-8", newline="\n")
     return path
 
 

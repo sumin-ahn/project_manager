@@ -842,10 +842,19 @@ def test_fresh_adopter_runs_one_round_prepare_harvest_cycle(pm_import, tmp_path,
         "def test_round_cycle():\n    assert True\n",
         encoding="utf-8", newline="\n",
     )
+    configured_test_cmds = [
+        line.partition("=")[2]
+        for line in (dest / ".project_manager" / "local.conf")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.startswith("test.cmd=")
+    ]
+    assert configured_test_cmds, f"{harness}: local.conf 에 test.cmd 가 없다"
+    configured_test_cmd = configured_test_cmds[-1]
     round_file.write_text(
         round_file.read_text(encoding="utf-8").replace(
             "- 커맨드: `<실행 커맨드>`",
-            "- 커맨드: `python3 -m pytest tests/ -q -n auto`",
+            f"- 커맨드: `{configured_test_cmd}`",
         ).replace(
             "- 결과: <rc=0 · A passed / 0 failed>",
             "- 결과: rc=0 · 1 passed / 0 failed",

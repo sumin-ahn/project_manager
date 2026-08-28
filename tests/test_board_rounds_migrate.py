@@ -723,7 +723,7 @@ def test_migrate_warns_when_a_leased_slot_is_not_covered_by_registered_or_repo(
 
     err = capsys.readouterr().err
     assert "등록 슬롯 해소 누락 1건" in err
-    assert "work/product_1" in err
+    assert str(root / "work" / "product_1") in err
 
 
 @requires_git

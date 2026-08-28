@@ -571,7 +571,7 @@ def test_pm_release_prompt_embeds_skill_and_scenario():
     assert "git push" in prompt and "gh" in prompt
     assert "livegate" in prompt
     assert "--repo fixture-repo" in prompt
-    assert f"--cwd {readonly}" in prompt
+    assert f"--cwd {readonly.as_posix()}" in prompt
     assert "Do not invent or discover either value" in prompt
     # --help 사용 금지 명시(사용성 판정 대상·pm_worktree_live 미러).
     assert "Do NOT run any command with --help or -h" in prompt

@@ -1107,7 +1107,8 @@ def test_prepare_after_the_judgment_prefills_every_open_accepted_row(pd, rounds_
     ]
 
     rows = [
-        {"id": fid, "machine_verifiable": True, "command": "python3 --version",
+        {"id": fid, "machine_verifiable": True,
+         "command": python_argv_command("--version"),
          "expected": "Python", "before": f"{fid} 재현 실패", "reason": ""}
         for fid in ("F-001", "F-002")
     ]
@@ -1131,10 +1132,10 @@ def test_prepare_after_the_judgment_prefills_every_open_accepted_row(pd, rounds_
     placeholder = pd._PM_REVIEW_MACHINE_VERIFIABLE_PLACEHOLDER
     assert _verify_rows_in(pd, seed_two) == [
         {"id": "F-001", "machine_verifiable": placeholder,
-         "command": "python3 --version", "expected": "Python",
+         "command": python_argv_command("--version"), "expected": "Python",
          "before": "F-001 재현 실패", "reason": ""},
         {"id": "F-002", "machine_verifiable": placeholder,
-         "command": "python3 --version", "expected": "Python",
+         "command": python_argv_command("--version"), "expected": "Python",
          "before": "F-002 재현 실패", "reason": ""},
     ]
     # 값이 실려도 선언 자리(`machine_verifiable`)는 자리표시자라 산출 없음 그대로다 —

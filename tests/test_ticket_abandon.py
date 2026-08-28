@@ -738,7 +738,7 @@ def test_reused_ordinal_survives_the_old_runs_harvest(pd, env):
 def _base_row(**overrides) -> dict:
     row = {
         "ticket": "T-8100", "role": "developer", "ordinal": 1,
-        "run_id": "a" * 32, "copy": "/abs/copy.md",
+        "run_id": "a" * 32, "copy": str((Path.cwd() / "copy.md").resolve()),
         "board_rel": "wiki/tickets/rounds/T-8100/01-developer.md",
         "prepared_at": "2026-08-22T00:00:00+00:00", "harvested_at": None,
     }

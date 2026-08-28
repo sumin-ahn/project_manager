@@ -188,7 +188,7 @@ def _overlap_workspace(
         text = _ticket_text(pd, ticket_id, status=status, claimed_by=claimed_by,
                             touches=touches)
         # 라운드는 명세 밖 파일이고 준비가 예약한다([[ADR-0090]]) — 명세만 세우면 된다.
-        ticket_path.write_text(text, encoding="utf-8")
+        ticket_path.write_text(text, encoding="utf-8", newline="\n")
         # 발행이 티켓마다 크기 1 묶음 장부를 만든다 — 준비는 라운드 예산을 그 장부에서만
         # 읽으므로 픽스처 board 도 같은 파일을 갖는다.
         write_cluster_ledger(

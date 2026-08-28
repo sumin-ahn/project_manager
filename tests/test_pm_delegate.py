@@ -5701,7 +5701,7 @@ def _scope_workspace(
     )
     # 라운드는 준비가 예약한다([[ADR-0090]]) — 명세에는 역할 산출이 없다.
     ticket_path = tickets / f"{TICKET_ID}-scope.md"
-    ticket_path.write_text(ticket_text, encoding="utf-8")
+    ticket_path.write_text(ticket_text, encoding="utf-8", newline="\n")
     # 준비는 라운드 예산·기준 브랜치를 묶음 장부에서만 읽는다. 이 픽스처의
     # `rounds` 는 예산을 줄이는 통로가 아니라 **이 테스트가 실행할 현재 역할**이다. 장부는
     # 항상 architect→developer→code-reviewer→developer 4단계를 모두 선언하고,
@@ -5910,7 +5910,7 @@ def test_corrupt_ticket_degrades_only_generic_axis_and_adapter_warning_survives(
         f"# {TICKET_ID}\n\n## 목표\n손상 축 격리.\n\n"
         + _DESIGN_SECTION
     )
-    ticket_path.write_text(corrupt_text, encoding="utf-8")
+    ticket_path.write_text(corrupt_text, encoding="utf-8", newline="\n")
     fake = _WritingRun(workspace, ([relative], _ok_result()))
 
     rc = _run_main(
@@ -5950,7 +5950,7 @@ def test_corrupt_ticket_isolation_oracle_is_sensitive_to_coupled_none(
         f"# {TICKET_ID}\n\n## 목표\n손상 축 격리.\n\n"
         + _DESIGN_SECTION
     )
-    ticket_path.write_text(corrupt_text, encoding="utf-8")
+    ticket_path.write_text(corrupt_text, encoding="utf-8", newline="\n")
     real_begin = pd.begin_scope_audit
 
     def _coupled_begin(ticket, cwd, *, pm_root=None, adapter_roots=None):
