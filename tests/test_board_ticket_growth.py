@@ -294,8 +294,8 @@ def test_show_assembles_the_spec_and_the_rounds_in_ordinal_order(board_env, caps
 
     out = capsys.readouterr().out
     assert path.read_text(encoding="utf-8") in out, "명세 전문이 조회에 없다"
-    # board가 표시하는 repo 좌표는 host separator와 무관한 `/` 표기다.
-    assert (Path("tickets") / "rounds" / "T-1015").as_posix() in out
+    # board가 표시하는 repo 좌표는 실행 호스트의 네이티브 separator를 따른다.
+    assert str(Path("tickets") / "rounds" / "T-1015") in out
     assert out.index("--- 01-developer ---") < out.index("--- 02-code-reviewer")
     assert "실제 구현 산출." in out
     assert "--- 02-code-reviewer (산출 없음) ---" in out
